@@ -214,7 +214,7 @@ build-host/spb_dump /tmp/spb && python3 idf/tools/spb_decode.py --check /tmp/spb
 
 `spb_dump` genera NDEATH, NBIRTH, DBIRTH, DDATA y NDATA reales del motor. `spb_decode.py` los compila con `grpc_tools.protoc` a partir del `sparkplug_b.proto` oficial de eclipse/tahu (copiado sin cambios en `components/gw_core/proto/`) y los decodifica con **Google protobuf 7.36**.
 
-Resultado: **5 payloads decodificados, 0 errores estructurales**. Además se decodificaron los 30 mensajes capturados en el E2E.
+Resultado: **5 payloads decodificados, 0 errores estructurales**. Además se decodificaron los 36 mensajes capturados en el E2E.
 
 ### 4.3 QA-3: punta a punta con el firmware real en QEMU
 
@@ -231,21 +231,25 @@ E2E_PYTHON=~/e2e/bin/python idf/tools/e2e/run_e2e.sh
 - Ethernet `open_eth` sobre slirp.
 - UART1 → socket → **pymodbus 3.8.6** como esclavo RTU, unidades 1 (`Meter1`, tags de §6) y 2 (`Bulk`, 60 registros).
 - UART0 → socket, para el log y para inyectar las DI.
-- **mosquitto 2.0.18** privado y un respondedor SNTP.
+- **mosquitto 2.0.18** privado (copia renombrada del binario, puerto 18831) y un respondedor SNTP. El harness solo envía señales a los procesos que arrancó él.
+- Para los arranques de configuración, el harness genera variantes de la imagen con otra partición `storage` (con `littlefs-python`, el mismo que usa la build) o con la partición borrada.
 
-Configuración usada: `tools/e2e/fs/config.json`.
+Configuración usada: `tools/e2e/fs/config.json` (keepalive de 10 s).
 
-Resultado: **22/22 comprobaciones OK** en la corrida con el código final, y también en la anterior, que solo difería en una línea de log.
+Resultado: **31/31 comprobaciones OK**.
 
 | Criterio | Resultado medido |
 |---|---|
-| §7.1 NBIRTH con seq = 0 y bdSeq; al matar la conexión TCP (SIGKILL a QEMU) el broker publica el NDEATH con el mismo bdSeq | OK: NBIRTH a 2,0–2,2 s del arranque; NDEATH bdSeq = 4 igual al de la sesión |
-| §7.2 Esclavo apagado → DDEATH; encendido → DBIRTH | OK: DDEATH en 3,0–4,1 s (cota 5,8 s); DBIRTH 0,5–0,6 s después de volver |
-| §7.3 DI → NDATA en menos de 100 ms; NCMD DO/3 = true → NDATA | OK: 27–45 ms (incluye 20 ms de debounce); NDATA alias 22 = true |
+| CFG-1 / CFG-2: arranques con `config.json` de 131 073 B, vacío, con error de sintaxis, con error de esquema y con la partición borrada; y sin archivo | OK: en los cinco primeros no arranca nada (ni UART RS485, ni red, ni MQTT, 0 NBIRTH), el LED pasa a error y el log ERROR da el motivo (`… 131073 bytes; el máximo es 131072`, `línea 5, columna 3`, `devices[0].tags[0].type`, `no montable`). Sin archivo: configuración embebida |
+| §7.1 NBIRTH con seq = 0 y bdSeq; al matar la conexión TCP (SIGKILL a QEMU) el broker publica el NDEATH con el mismo bdSeq | OK: NBIRTH a 1,9 s del arranque; NDEATH con el bdSeq de la sesión |
+| Reinicio del broker (SIGTERM, 9 s parado) | OK: mosquitto publica el will (NDEATH, bdSeq de la sesión) al cerrarse; backoff 1000 → 1655 → 3209 → 6439 ms con bdSeq nuevo en cada intento; NBIRTH (seq 0, bdSeq nuevo) y DBIRTH de los dos equipos (seq 1 y 2) |
+| Broker congelado (SIGSTOP 20 s > 1,5 × keepalive) | OK: el gateway declara muerta la sesión por keepalive a los 10,0 s (`No PING_RESP`); tras SIGCONT llegan los will de la sesión muerta y del intento hecho durante el congelamiento, y luego NBIRTH con bdSeq nuevo y los dos DBIRTH; la sesión nueva sigue viva |
+| §7.2 Esclavo apagado → DDEATH; encendido → DBIRTH | OK: DDEATH en 3,0 s (cota 5,8 s); DBIRTH 0,7 s después de volver |
+| §7.3 DI → NDATA en menos de 100 ms; NCMD DO/3 = true → NDATA | OK: 24 ms (incluye 20 ms de debounce); NDATA alias 22 = true (pines simulados con la polaridad de `gw_bsp`) |
 | §7.4 DCMD Setpoint = 12,3 → holding 10 = 123 por FC06 y DDATA | OK: el esclavo registró `(6, 10, [123])`; DDATA 12,3 |
 | §7.5 NCMD Rebirth → NBIRTH (seq 0, mismo bdSeq) y todos los DBIRTH | OK |
-| §7.6 Todos los payloads se decodifican con el proto oficial | OK: 30 mensajes, 0 errores |
-| Extras | OK: DDATA solo por excepción, solo alias, deadband 0,1 respetada; DCMD por alias (FC05) y DCMD sobre métrica de solo lectura descartado con log; backoff 1000 → 1664 → 3308 → 7581 ms con bdSeq nuevo en cada intento; bdSeq persistido en NVS tras un corte de energía; NCMD Reboot publica NDEATH QoS 1 y **un solo** NDEATH (will descartado); DBIRTH de 2684 B (mayor que el búfer de 2 KB de esp-mqtt); 60 registros leídos con una sola FC03; timestamps UTC vía SNTP; continuidad de seq |
+| §7.6 Todos los payloads se decodifican con el proto oficial | OK: 36 mensajes, 0 errores |
+| Extras | OK: DDATA solo por excepción, solo alias, deadband 0,1 respetada; DCMD por alias (FC05) y DCMD sobre métrica de solo lectura descartado con log; bdSeq persistido en NVS tras un corte de energía; NCMD Reboot publica NDEATH QoS 1 y **un solo** NDEATH (will descartado); DBIRTH de 2684 B (mayor que el búfer de 2 KB de esp-mqtt); 60 registros leídos con una sola FC03; timestamps UTC vía SNTP; continuidad de seq |
 
 **Lo que QEMU no cubre**, y por qué la build de emulador difiere (`sdkconfig.qemu`):
 
@@ -273,8 +277,8 @@ Leyenda de **Evidencia**:
 | NET-2 | Implementado | `components/gw_net/gw_net.c` (`configure_ip`) | Q para DHCP; C para IP estática y DNS manual |
 | NET-3 | Implementado | `components/gw_edge/gw_edge.c` (hostname → esp-mqtt/getaddrinfo) | C: el E2E usa una IP literal; DNS no ejercitado |
 | TIME-1 | Implementado | `components/gw_net/gw_net.c`, `gw_edge.c` | Q: timestamps UTC a menos de 30 ms del host |
-| MQTT-1 | Implementado | `components/gw_edge/gw_edge.c` | Q (host, puerto, client_id = edge_node_id, keepalive); usuario y contraseña C |
-| MQTT-2 | Implementado | `gw_edge.c`, `gw_core/src/gw_backoff.c` | H + Q |
+| MQTT-1 | Implementado | `components/gw_edge/gw_edge.c` | Q (host, puerto, client_id = edge_node_id; keepalive: broker congelado detectado en 1 × keepalive); usuario y contraseña C |
+| MQTT-2 | Implementado | `gw_edge.c`, `gw_core/src/gw_backoff.c` | H + Q (reinicio del broker y broker congelado: NDEATH, bdSeq nuevo, NBIRTH y todos los DBIRTH) |
 | MQTT-3 | Implementado | `gw_edge.c` (`prepare_attempt`) | Q |
 | MQTT-7 | Implementado | `gw_edge.c`, `gw_bus.c` | Colas y búferes estáticos, `outbox.limit` y `SKIP_PUBLISH_IF_DISCONNECTED`. Sin prueba de estrés |
 | SPB-1 | Implementado | `gw_core/src/spb.c`, `proto/` | H + interoperabilidad Python + Q |

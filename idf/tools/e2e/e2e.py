@@ -140,11 +140,16 @@ class Observer:
 
     def __init__(self):
         self.q = queue.Queue()
+        self.subscribed = threading.Event()
         self.c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"e2e-{time.monotonic()}")
         self.c.on_message = self._on_msg
-        self.c.connect("127.0.0.1", MQTT_PORT)
+        self.c.on_subscribe = lambda *a: self.subscribed.set()
+        # Long keepalive: the observer must survive the frozen-broker scenario.
+        self.c.connect("127.0.0.1", MQTT_PORT, keepalive=120)
         self.c.subscribe("spBv1.0/#", qos=1)
         self.c.loop_start()
+        if not self.subscribed.wait(5):
+            raise SystemExit("observer: no SUBACK from the broker")
 
     def close(self):
         self.c.loop_stop()
@@ -160,6 +165,18 @@ class Observer:
     def drain(self):
         while not self.q.empty():
             self.q.get_nowait()
+
+    def wait_all(self, topics, timeout):
+        """{topic: first message} for every topic in @topics seen within @timeout."""
+        found, end = {}, time.monotonic() + timeout
+        while len(found) < len(topics) and time.monotonic() < end:
+            try:
+                item = self.q.get(timeout=max(0.01, end - time.monotonic()))
+            except queue.Empty:
+                break
+            if item[1] in topics and item[1] not in found:
+                found[item[1]] = item
+        return found
 
     def wait(self, topic, timeout, pred=lambda p: True):
         end = time.monotonic() + timeout
@@ -258,12 +275,13 @@ class Gateway:
         """Time of the first log line matching @pattern, or None."""
         rx = re.compile(pattern)
         end = time.monotonic() + timeout
-        while time.monotonic() < end:
+        while True:
             for t, line in list(self.lines):
                 if t >= since and rx.search(line):
                     return t
+            if time.monotonic() >= end:
+                return None
             time.sleep(0.05)
-        return None
 
 
 # ---------------------------------------------------------------- storage partition variants
@@ -537,17 +555,29 @@ def run(args, log, slave, broker, conf, work):
     db = obs.wait(dbirth_t, 10)
     check("2b. Slave back -> DBIRTH", db, f"{db[0] - on:.2f} s after restart" if db else "no DBIRTH")
 
-    # MQTT-2: broker down -> exponential backoff, new bdSeq on every attempt
+    dbirth_topics = [f"{T}/DBIRTH/{NODE}/{d}" for d in (DEVICE, BULK)]
+
+    def births_ok(nb, dbs):
+        """NBIRTH with seq 0 followed by one DBIRTH per device with seq 1, 2."""
+        return nb and nb[2].seq == 0 and sorted(m[2].seq for m in dbs.values()) == [1, 2] \
+            and all(m[0] >= nb[0] for m in dbs.values())
+
+    # MQTT-2 broker restart: the broker publishes the session's will (NDEATH) while shutting
+    # down; the gateway retries with exponential backoff and a new bdSeq per attempt, and the
+    # new session starts with NBIRTH and every DBIRTH.
+    obs.drain()
     since = time.monotonic()
     broker.terminate()
     broker.wait()
+    will = obs.wait(ndeath_t, 2)
     time.sleep(9)
     delays = [int(x) for x in re.findall(r"in (\d+) ms", " ".join(gw.find(r"reconnect attempt", since)))]
     attempts = gw.find(r"connecting to .* bdSeq=", since)
     obs.close()
-    start_broker(conf, work / "mosquitto2.log")
+    broker = start_broker(conf, work / "mosquitto2.log")
     obs = Observer()
     nb = obs.wait(nbirth_t, 70)
+    dbs = obs.wait_all(dbirth_topics, 10)
     growing = len(delays) >= 3 and all(1000 <= d <= 60000 for d in delays) and delays[2] > delays[0]
     check("MQTT-2 reconnect with exponential backoff and jitter (1 s..60 s)", growing and nb,
           f"delays {delays} ms, {len(attempts)} attempts while down, NBIRTH after restart: {bool(nb)}")
@@ -555,14 +585,53 @@ def run(args, log, slave, broker, conf, work):
     check("SPB-3 bdSeq incremented on every connection attempt",
           nb and b1 == (b0 + len(attempts) + 1) % 256,
           f"first session bdSeq={b0}, attempts while down={len(attempts)}, new NBIRTH bdSeq={b1}")
+    check("Broker restart: NDEATH (will, session bdSeq) at shutdown, then NBIRTH (new bdSeq, "
+          "seq 0) and every DBIRTH",
+          will and bdseq_of(will[2]) == b0 and b1 != b0 and births_ok(nb, dbs),
+          f"NDEATH bdSeq={bdseq_of(will[2]) if will else None} (session {b0}); NBIRTH bdSeq={b1} "
+          f"seq={nb[2].seq if nb else None}; DBIRTH seq "
+          f"{ {t.split('/')[-1]: m[2].seq for t, m in dbs.items()} }")
+
+    # MQTT keepalive: a frozen broker (SIGSTOP for longer than 1.5 x keepalive) keeps the TCP
+    # connection open but never answers PINGREQ. The gateway must declare the session dead on
+    # its own and, once the broker runs again, start a new session.
+    keepalive = json.loads((HERE / "fs" / "config.json").read_text())["mqtt"]["keepalive_s"]
+    obs.drain()
+    stopped = time.monotonic()
+    broker.send_signal(signal.SIGSTOP)
+    time.sleep(1.5 * keepalive + 5)
+    lost = gw.wait_log(r"No PING_RESP|MQTT down; reconnect attempt", 0, stopped)
+    broker.send_signal(signal.SIGCONT)
+    resumed = time.monotonic()
+    check(f"MQTT keepalive: frozen broker ({1.5 * keepalive + 5:.0f} s SIGSTOP, keepalive "
+          f"{keepalive} s) detected by the gateway within 1.5 x keepalive",
+          lost and lost - stopped <= 1.5 * keepalive,
+          f"session declared dead {lost - stopped:.1f} s after SIGSTOP: "
+          f"{gw.find(r'No PING_RESP|MQTT down', stopped)[:2]}" if lost else "never detected")
+    nb = obs.wait(nbirth_t, 70)
+    time.sleep(3)  # let stale connections queued while frozen play out
+    nbs = [m for m in CAPTURE if m[0] >= resumed and m[1] == nbirth_t]
+    nb = nbs[-1] if nbs else None
+    dbs = {t: m for t in dbirth_topics for m in CAPTURE if nb and m[1] == t and m[0] >= nb[0]}
+    b2 = bdseq_of(nb[2]) if nb else None
+    deaths = [bdseq_of(m[2]) for m in CAPTURE if m[0] >= resumed and m[1] == ndeath_t]
+    attempts = gw.find(r"connecting to .* bdSeq=", stopped)
+    check("Frozen broker resumed: NDEATH (will) of the dead session, then NBIRTH with a new "
+          "bdSeq and every DBIRTH; the new session stays up",
+          b1 in deaths and nb and b2 == (b1 + len(attempts)) % 256 and b2 != b1
+          and b2 not in deaths and births_ok(nb, dbs),
+          f"NDEATH bdSeqs after SIGCONT {deaths} (dead session {b1}); {len(attempts)} attempts; "
+          f"NBIRTH bdSeq={b2} seq={nb[2].seq if nb else None}; DBIRTH seq "
+          f"{ {t.split('/')[-1]: m[2].seq for t, m in dbs.items()} }")
 
     # 1c. Kill the TCP connection (QEMU process) -> broker publishes the will
     obs.drain()
     gw.kill()
     nd = obs.wait(ndeath_t, 10)
     check("1c. TCP connection killed -> broker publishes NDEATH with the same bdSeq",
-          nd and bdseq_of(nd[2]) == b1 and not nd[2].HasField("seq"),
-          f"NDEATH bdSeq={bdseq_of(nd[2]) if nd else None} (NBIRTH had {b1})")
+          nd and bdseq_of(nd[2]) == b2 and not nd[2].HasField("seq"),
+          f"NDEATH bdSeq={bdseq_of(nd[2]) if nd else None} (NBIRTH had {b2})")
+    b1 = b2
 
     # Restart on the same flash: bdSeq persisted in NVS
     gw = Gateway(args, log)
