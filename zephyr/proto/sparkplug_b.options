@@ -1,0 +1,34 @@
+# nanopb options for the official Eclipse Tahu sparkplug_b.proto.
+#
+# Only the subset used by the edge node is generated: scalar metric values,
+# names and aliases. Recursive and variable-size structures (templates,
+# datasets, property sets, metadata, bytes) are ignored so that every
+# generated struct has a fixed, statically known size (REL-2). Ignored fields
+# are skipped transparently when decoding commands that carry them.
+
+org.eclipse.tahu.protobuf.Payload.metrics              type:FT_CALLBACK
+org.eclipse.tahu.protobuf.Payload.uuid                 type:FT_IGNORE
+org.eclipse.tahu.protobuf.Payload.body                 type:FT_IGNORE
+
+org.eclipse.tahu.protobuf.Payload.Metric.name          max_size:64
+org.eclipse.tahu.protobuf.Payload.Metric.string_value  max_size:64
+org.eclipse.tahu.protobuf.Payload.Metric.metadata      type:FT_IGNORE
+org.eclipse.tahu.protobuf.Payload.Metric.properties    type:FT_IGNORE
+org.eclipse.tahu.protobuf.Payload.Metric.bytes_value   type:FT_IGNORE
+org.eclipse.tahu.protobuf.Payload.Metric.dataset_value type:FT_IGNORE
+org.eclipse.tahu.protobuf.Payload.Metric.template_value type:FT_IGNORE
+org.eclipse.tahu.protobuf.Payload.Metric.extension_value type:FT_IGNORE
+
+org.eclipse.tahu.protobuf.Payload.Template             skip_message:true
+org.eclipse.tahu.protobuf.Payload.Template.Parameter   skip_message:true
+org.eclipse.tahu.protobuf.Payload.Template.Parameter.ParameterValueExtension skip_message:true
+org.eclipse.tahu.protobuf.Payload.DataSet              skip_message:true
+org.eclipse.tahu.protobuf.Payload.DataSet.DataSetValue skip_message:true
+org.eclipse.tahu.protobuf.Payload.DataSet.DataSetValue.DataSetValueExtension skip_message:true
+org.eclipse.tahu.protobuf.Payload.DataSet.Row          skip_message:true
+org.eclipse.tahu.protobuf.Payload.PropertyValue        skip_message:true
+org.eclipse.tahu.protobuf.Payload.PropertyValue.PropertyValueExtension skip_message:true
+org.eclipse.tahu.protobuf.Payload.PropertySet          skip_message:true
+org.eclipse.tahu.protobuf.Payload.PropertySetList      skip_message:true
+org.eclipse.tahu.protobuf.Payload.MetaData             skip_message:true
+org.eclipse.tahu.protobuf.Payload.Metric.MetricValueExtension skip_message:true
