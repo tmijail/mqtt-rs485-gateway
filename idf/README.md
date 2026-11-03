@@ -18,13 +18,14 @@ Firmware del MVP (`docs/SPEC.md` §5) para la Waveshare **ESP32-S3-POE-ETH-8DI-8
 
 | Componente | Responsabilidad | Depende de IDF |
 |---|---|---|
-| `gw_core` | **Lógica pura en C, sin IDF; se prueba en el host:**<br>• `gw_config`: parseo y validación JSON §6.<br>• `mb_rtu`: CRC y tramas FC01–06/15/16.<br>• `mb_master`: transacciones, t3,5, timeout y reintentos.<br>• `gw_conv`: tipos, escala, orden de palabras y datatype Sparkplug.<br>• `gw_plan`: lecturas en bloque.<br>• `gw_poll`: encuesta, fuera de línea y escrituras.<br>• `gw_rbe`: reporte por excepción y deadband.<br>• `gw_debounce`, `gw_backoff`, `gw_devstate`.<br>• `gw_tagdb`: imagen de proceso compartida.<br>• `spb`: codec Sparkplug con nanopb.<br>• `gw_node`: motor del Edge Node con births, deaths, seq, alias, NCMD/DCMD y rebirth. | No (solo `port/gw_port_esp.c`) |
+| `gw_core` | **Lógica pura en C, sin IDF; se prueba en el host:**<br>• `gw_config`: parseo y validación JSON §6.<br>• `gw_dout`: secuencia de arranque del TCA9554 y polaridad de las E/S.<br>• `mb_rtu`: CRC y tramas FC01–06/15/16.<br>• `mb_master`: transacciones, t3,5, timeout y reintentos.<br>• `gw_conv`: tipos, escala, orden de palabras y datatype Sparkplug.<br>• `gw_plan`: lecturas en bloque.<br>• `gw_poll`: encuesta, fuera de línea y escrituras.<br>• `gw_rbe`: reporte por excepción y deadband.<br>• `gw_debounce`, `gw_backoff`, `gw_devstate`.<br>• `gw_tagdb`: imagen de proceso compartida.<br>• `spb`: codec Sparkplug con nanopb.<br>• `gw_node`: motor del Edge Node con births, deaths, seq, alias, NCMD/DCMD y rebirth. | No (solo `port/gw_port_esp.c`) |
 | `nanopb` | Runtime nanopb 0.4.9.1 vendorizado (Zlib) | No |
 | `gw_rs485` | UART1 en `UART_MODE_RS485_HALF_DUPLEX` (RTS = GPIO21), expuesta como `mb_transport_t` | Sí |
 | `gw_bus` | Tarea **dueña única del bus RS485**: encuesta y escrituras DCMD | Sí |
 | `gw_edge` | Tarea Sparkplug: cliente esp-mqtt, bdSeq, will, backoff, motor `gw_node` | Sí |
 | `gw_net` | W5500 por SPI (u openeth en QEMU), DHCP o IP estática, SNTP | Sí |
-| `gw_board` | 8 DI con muestreo a 1 kHz y debounce; 8 DO en el TCA9554 (driver propio, sin pulsos al arrancar); LED WS2812 de estado | Sí |
+| `gw_bsp` | **Descripción declarativa de la placa** (`gw_bsp.c`): todos los pines, direcciones I²C y niveles activos (DI, DO, DE del RS485, I²C, LED y orden de color, buzzer, W5500). Los drivers la leen y no contienen datos de la placa | Sí (tipos) |
+| `gw_board` | 8 DI con muestreo a 1 kHz y debounce; 8 DO en el TCA9554 (sobre `gw_dout`, sin pulsos al arrancar); LED WS2812 de estado | Sí |
 | `gw_storage` | bdSeq en NVS; configuración desde LittleFS o embebida | Sí |
 | `main` | `app_main`: carga la configuración y conecta los componentes | Sí |
 
@@ -102,7 +103,8 @@ No se encontró esquemático publicado.
 
 | Dato | Hallazgo | Evidencia | Confianza |
 |---|---|---|---|
-| Expansor de las DO | **TCA9554 en 0x20**; nivel alto = DO activa | Demo: `TCA9554_ADDRESS 0x20` (`WS_TCA9554PWR.h`), `Dout_Open()` → `Set_EXIO(ch, true)`. ESPHome de la hermana: `pca9554 address: 0x20` | Alta |
+| Expansor de las DO | **TCA9554 en 0x20** | Demo: `TCA9554_ADDRESS 0x20` (`WS_TCA9554PWR.h`). ESPHome de la hermana: `pca9554 address: 0x20` | Alta |
+| Polaridad de las DO | **Nivel bajo en el pin del expansor = DO activa** (salida Darlington) | Demo: `Dout_Init()` → `TCA9554PWR_Init(0x00, 0xFF)`, es decir, todas en alto al arrancar (un demo no energiza 8 cargas al encender), y el modo DI→DO de `WS_DIN.cpp` copia el nivel crudo (DI en reposo = 1 → DO = 1 = apagada). ESPHome: `inverted: true` en las 8 DO. Zephyr llegó a lo mismo (`GPIO_ACTIVE_LOW`) | Media-alta. Configurable: `CONFIG_GW_DO_ACTIVE_LOW` (por defecto `y`). **Medir con un multímetro antes de conectar cargas** |
 | RTC | **PCF85063 en 0x51** (SDA 42, SCL 41, INT 40) | Demo: `PCF85063_ADDRESS (0x51)` (`WS_PCF85063.h`); ESPHome: `platform: pcf85063` | Alta (no se usa en el MVP) |
 | Polaridad de las DI | GPIO con pull-up; **entrada activa = nivel 0** (se invierte) | Demo: `pinMode(DIN_PIN_CHx, INPUT_PULLUP)` y estado de reposo `0xFF`; ESPHome: `INPUT_PULLUP` + `inverted: true` | Media-alta. Configurable: `CONFIG_GW_DI_ACTIVE_LOW` |
 | Buzzer | **Pasivo** (necesita PWM) | Demo: `ledcAttach(46, 1000 Hz, 8 bits)` con duty 200/255; ESPHome usa `rtttl` sobre `ledc` | Media (no se usa en el MVP) |
@@ -111,7 +113,9 @@ No se encontró esquemático publicado.
 | W5500 | SPI 13/14/15, CS 16, INT 12, RST 39 | Wiki y `WS_ETH.h` | Alta |
 | Consola | USB-C → puente USB-UART CH34x en UART0 (GPIO 43/44) | La wiki enlaza el driver CH34XSER | Media. Si no hay logs, probar con `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG` |
 
-**Pines de *strapping*** con periféricos de la placa: GPIO0 (BOOT), GPIO45 (SD D0) y GPIO46 (buzzer). El MVP no los usa.
+Todos estos datos están en un solo lugar, `components/gw_bsp/gw_bsp.c`. Las dos polaridades que solo se deducen de forma indirecta (DI y DO) se pueden invertir en `menuconfig` (menú `Gateway: board`); el resto es fijo. Arranque de las DO (`gw_dout`): el latch se carga con el nivel OFF de cada canal (0xFF con activa en bajo) **antes** de pasar los pines a salida; la escritura y la relectura se invierten según la máscara de polaridad.
+
+**Pines de *strapping*** con periféricos de la placa: GPIO0 (BOOT), GPIO3 (RX del CAN, JTAG), GPIO45 (SD D0) y GPIO46 (buzzer). El MVP no los usa.
 
 ## 3. Compilar, grabar y configurar
 
@@ -153,8 +157,7 @@ Tabla de particiones (`partitions.csv`, 16 MB): `nvs` 24 KB, `otadata`, `phy_ini
 
 Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 
-- pines de la placa;
-- polaridad de las DI;
+- polaridad de las DI y de las DO (los pines son fijos, en `gw_bsp`);
 - prioridades y núcleos de las tareas;
 - lecturas en bloque y hueco máximo;
 - FC15/FC16 forzadas;
@@ -180,7 +183,7 @@ Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 cmake -S idf/test/host -B build-host && cmake --build build-host -j3 && ctest --test-dir build-host
 ```
 
-Resultado: **9/9 ejecutables y 54/54 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
+Resultado: **10/10 ejecutables y 60/60 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
 
 | Suite | Casos | Qué cubre |
 |---|---|---|
@@ -193,6 +196,7 @@ Resultado: **9/9 ejecutables y 54/54 casos OK**, compilados con `-Wall -Wextra -
 | `test_spb` | 7 | Ida y vuelta de todos los tipos, formato wire (Int16 con extensión de signo), NDEATH sin seq, peor caso de DBIRTH en el búfer |
 | `test_node` | 8 | NBIRTH y DBIRTH (nombre, alias, datatype, valor; alias únicos), DDEATH, DDATA por excepción, seq compartido con vuelta a 0, rebirth, NCMD DO/Reboot, DCMD por nombre y alias, descartes |
 | `test_poll` | 6 | Encuesta contra un esclavo simulado, fuera de línea tras N ciclos, excepción, planificación, escritura FC06 con relectura, FC15/FC16 forzadas |
+| `test_dout` | 6 | Polaridad de 8 canales (activa en bajo, en alto y mixta), arranque del TCA9554 (latch OFF antes de CONFIG, también en arranque en caliente), DO/3 → pin bajo y relectura, errores de bus |
 
 Los tests de host descargan Unity y cJSON con `FetchContent`, desde GitHub y con tag fijo.
 
@@ -277,7 +281,7 @@ Leyenda de **Evidencia**:
 | SPB-8 | Implementado | `gw_node.h` (mapa de alias) | H + Q |
 | SPB-9 | Implementado | `gw_node.c` (`gw_node_rebirth`) | H + Q |
 | SPB-10 | Implementado | `gw_node.c`, `gw_poll.c` (`gw_poller_write`) | H + Q |
-| SPB-11 | Implementado | `gw_node.c`, `gw_board/gw_io.c` | H + Q (DO simulada; TCA9554 C) |
+| SPB-11 | Implementado | `gw_node.c`, `gw_board/gw_io.c` | H + Q (DO simulada con la polaridad de la placa; TCA9554 C) |
 | SPB-12 | Implementado | `gw_rbe.c` | H + Q |
 | MB-1 | Implementado | `components/gw_rs485/gw_rs485.c` | Q a 9600 8N1; otras paridades C |
 | MB-2 | Implementado | `gw_rs485.c` (`UART_MODE_RS485_HALF_DUPLEX`) | **C**: QEMU no soporta el modo; la temporización de RTS/DE no está verificada |
@@ -289,8 +293,8 @@ Leyenda de **Evidencia**:
 | MB-9 | Implementado | `gw_devstate.c`, `gw_poll.c` | H + Q |
 | MB-10 | Implementado | `gw_poll.c` (`gw_poller_next`) | H + Q |
 | MB-16 | Implementado | `components/gw_bus/gw_bus.c` | Diseño: una tarea y una cola |
-| IO-1 | Implementado | `components/gw_board/gw_io.c`, `gw_debounce.c` | H (debounce) + Q (backend simulado); GPIO y polaridad reales C |
-| IO-2 | Implementado | `gw_io.c` (driver TCA9554 propio) | Q (simulado); I²C real C |
+| IO-1 | Implementado | `components/gw_board/gw_io.c`, `gw_debounce.c`, `gw_bsp` | H (debounce y polaridad) + Q (pines simulados con la polaridad de `gw_bsp`); GPIO reales C |
+| IO-2 | Implementado | `gw_core/src/gw_dout.c`, `gw_io.c`, `gw_bsp` | H (secuencia de arranque, activa en bajo, mezclas, errores de bus) + Q (registros simulados); I²C real C |
 | IO-5 | Implementado | `components/gw_board/gw_status.c` | Q (estados en el log); RMT/WS2812 C; colores sin verificar |
 | CFG-1 | Implementado | `gw_core/src/gw_config.c`, `main/main.c` | H + Q |
 | CFG-2 | Implementado | `gw_storage/gw_storage.c`, `main/CMakeLists.txt` | Q (LittleFS y respaldo embebido) |
@@ -298,7 +302,7 @@ Leyenda de **Evidencia**:
 | REL-1 | Implementado | `gw_bus.c`, `gw_edge.c`, `sdkconfig.defaults` | C/Q (configurado; sin inyección de fallos) |
 | REL-2 | **Parcial** | Todo `gw_*` | El código propio es estático y no asigna en el camino crítico; **lwIP y esp-mqtt asignan del heap internamente** (acotado, no estático) |
 | REL-3 | Implementado | `esp_log` en todos los módulos | Q |
-| QA-1 | Implementado | `test/host/` | 54 casos |
+| QA-1 | Implementado | `test/host/` | 60 casos |
 | QA-2 | Implementado | — | 0 warnings; tamaño en §3.2 |
 
 **Fuera del MVP**, implementado total o parcialmente:
@@ -371,7 +375,8 @@ Sin SNTP no hay hora válida: no hay RTC (TIME-2). Antes de la primera conexión
 
 - Una DI que cambia más rápido que el debounce se pierde.
 - El timestamp de NDATA es el del lote de cambios, no el de cada bit.
-- Las DO arrancan en OFF siempre, también tras un reset por watchdog.
+- Las DO arrancan en OFF siempre, también tras un reset por watchdog: el latch se reescribe con el nivel OFF.
+- La polaridad de las DO (activa en bajo) se dedujo del demo y de ESPHome, sin esquemático ni placa. Si la medición dice lo contrario, basta con `CONFIG_GW_DO_ACTIVE_LOW=n`.
 
 ### 6.8 Pruebas y entorno
 
@@ -382,4 +387,4 @@ Sin SNTP no hay hora válida: no hay RTC (TIME-2). Antes de la primera conexión
   - si el 123 está ocupado, el check TIME-1 depende del servidor NTP que responda.
 - **pymodbus se fijó en 3.8.6**: la 3.16 cambió el API del datastore (SimDevice).
 - `idf.py` no acepta `-j`: la build usó el paralelismo por defecto de ninja.
-- Hay dos componentes de terceros: nanopb (vendorizado) y `joltwallet/littlefs`. El paquete `livekit/nanopb` del registro se descartó por un defecto de ABI. `espressif/esp_io_expander_tca9554` se descartó porque **pone las 8 DO en ON** durante la inicialización (ver `docs/feasibility-idf.md`, IO-2).
+- Hay dos componentes de terceros: nanopb (vendorizado) y `joltwallet/littlefs`. El paquete `livekit/nanopb` del registro se descartó por un defecto de ABI. `espressif/esp_io_expander_tca9554` se descartó: carga el latch con 0xFF, que con las DO activas en bajo es justamente OFF, pero no permite probar en host la secuencia ni la polaridad (`gw_dout`). La viabilidad (`docs/feasibility-idf.md`, IO-2) lo descartaba suponiendo, por error, DO activas en alto.

@@ -1,0 +1,20 @@
+menu "Gateway: board (Waveshare ESP32-S3-POE-ETH-8DI-8DO)"
+
+    config GW_DI_ACTIVE_LOW
+        bool "DI inputs are active low"
+        default y
+        help
+            Waveshare's demo configures GPIO4-11 with pull-ups and ESPHome marks them
+            inverted: an energised input pulls the GPIO low. The internal pull-ups are
+            enabled only for active-low inputs.
+
+    config GW_DO_ACTIVE_LOW
+        bool "DO outputs are active low (LOW expander pin = output on)"
+        default y
+        help
+            Waveshare's demo loads 0xFF into the TCA9554 at boot and mirrors the raw DI
+            levels onto the DOs, and ESPHome declares the 8 outputs inverted: a LOW pin
+            energises the output. The latch is loaded with the OFF level of every
+            channel before the pins become outputs. Verify on the board before use.
+
+endmenu

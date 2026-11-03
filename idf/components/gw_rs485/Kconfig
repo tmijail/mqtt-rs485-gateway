@@ -1,27 +1,11 @@
 menu "Gateway: RS485 port"
 
-    config GW_RS485_UART_PORT
-        int "UART peripheral"
-        range 1 2
-        default 1
-
-    config GW_RS485_TX_GPIO
-        int "TX GPIO"
-        default 17
-
-    config GW_RS485_RX_GPIO
-        int "RX GPIO"
-        default 18
-
-    config GW_RS485_RTS_GPIO
-        int "RTS / DE GPIO (driven by the UART in RS485 half-duplex mode)"
-        default 21
-
     config GW_RS485_HW_HALF_DUPLEX
         bool "Hardware RS485 half-duplex mode (UART_MODE_RS485_HALF_DUPLEX)"
         default y
         help
-            The UART driver asserts RTS while transmitting and releases it on TX_DONE.
-            Disable only for emulators that do not model the RS485 UART mode.
+            The UART driver asserts RTS (the transceiver's DE, see gw_bsp) while
+            transmitting and releases it on TX_DONE. Disable only for emulators that do
+            not model the RS485 UART mode.
 
 endmenu

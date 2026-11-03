@@ -8,6 +8,7 @@
 #include "freertos/task.h"
 
 #if !CONFIG_GW_IO_SIMULATED
+#include "gw_bsp.h"
 #include "led_strip.h"
 #endif
 
@@ -77,11 +78,12 @@ typedef led_strip_handle_t led_handle_t;
 static esp_err_t led_open(led_handle_t *h)
 {
     const led_strip_config_t sc = {
-        .strip_gpio_num = CONFIG_GW_LED_GPIO,
+        .strip_gpio_num = gw_bsp.status_led.gpio,
         .max_leds = 1,
         .led_model = LED_MODEL_WS2812,
-        /* Waveshare drives this LED in R,G,B byte order (demo swaps neopixelWrite args). */
-        .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_RGB,
+        .color_component_format = gw_bsp.status_led.order == GW_BSP_LED_ORDER_RGB
+                                      ? LED_STRIP_COLOR_COMPONENT_FMT_RGB
+                                      : LED_STRIP_COLOR_COMPONENT_FMT_GRB,
     };
     const led_strip_rmt_config_t rc = {
         .clk_src = RMT_CLK_SRC_DEFAULT,

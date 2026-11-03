@@ -19,6 +19,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "gw_bsp.h"
 #include "gw_bus.h"
 #include "gw_config.h"
 #include "gw_edge.h"
@@ -92,7 +93,7 @@ void app_main(void)
 
     esp_chip_info_t chip;
     esp_chip_info(&chip);
-    snprintf(s_hardware, sizeof(s_hardware), "Waveshare ESP32-S3-POE-ETH-8DI-8DO (ESP32-S3 rev %d.%d)",
+    snprintf(s_hardware, sizeof(s_hardware), "%s (ESP32-S3 rev %d.%d)", gw_bsp.name,
              chip.revision / 100, chip.revision % 100);
 
     ESP_ERROR_CHECK(gw_edge_start(&s_cfg, app->version, s_hardware));
