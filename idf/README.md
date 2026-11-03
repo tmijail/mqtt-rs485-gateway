@@ -189,7 +189,7 @@ Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 cmake -S idf/test/host -B build-host && cmake --build build-host -j3 && ctest --test-dir build-host
 ```
 
-Resultado: **10/10 ejecutables y 65/65 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
+Resultado: **10/10 ejecutables y 67/67 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
 
 | Suite | Casos | Qué cubre |
 |---|---|---|
@@ -201,7 +201,7 @@ Resultado: **10/10 ejecutables y 65/65 casos OK**, compilados con `-Wall -Wextra
 | `test_plan` | 2 | Lecturas en bloque, solapes, huecos, límite de 125 registros |
 | `test_spb` | 7 | Ida y vuelta de todos los tipos, formato wire (Int16 con extensión de signo), NDEATH sin seq, peor caso de DBIRTH en el búfer |
 | `test_node` | 8 | NBIRTH y DBIRTH (nombre, alias, datatype, valor; alias únicos), DDEATH, DDATA por excepción, seq compartido con vuelta a 0, rebirth, NCMD DO/Reboot, DCMD por nombre y alias, descartes |
-| `test_poll` | 6 | Encuesta contra un esclavo simulado, fuera de línea tras N ciclos, excepción, planificación, escritura FC06 con relectura, FC15/FC16 forzadas |
+| `test_poll` | 8 | Encuesta contra un esclavo simulado, fuera de línea tras N ciclos, excepción, un bloque sin respuesta (ciclo fallido, tags sin refrescar, DDEATH, sin vuelta a línea con el ciclo incompleto), planificación, escritura FC06 con relectura, FC15/FC16 forzadas |
 | `test_dout` | 6 | Polaridad de 8 canales (activa en bajo, en alto y mixta), arranque del TCA9554 (latch OFF antes de CONFIG, también en arranque en caliente), DO/3 → pin bajo y relectura, errores de bus |
 
 Los tests de host descargan Unity y cJSON con `FetchContent`, desde GitHub y con tag fijo.
@@ -296,7 +296,7 @@ Leyenda de **Evidencia**:
 | MB-5 | Implementado | `gw_core/src/gw_conv.c` | H + Q (float32, int16, uint16, bool) |
 | MB-7 | Implementado | `gw_conv.c` | H + Q |
 | MB-8 | Implementado | `gw_core/src/mb_master.c` | H + Q |
-| MB-9 | Implementado | `gw_devstate.c`, `gw_poll.c` | H + Q |
+| MB-9 | Implementado | `gw_devstate.c`, `gw_poll.c` | H (también un bloque sin respuesta mientras otro responde) + Q |
 | MB-10 | Implementado | `gw_poll.c` (`gw_poller_next`) | H + Q |
 | MB-16 | Implementado | `components/gw_bus/gw_bus.c` | Diseño: una tarea y una cola |
 | IO-1 | Implementado | `components/gw_board/gw_io.c`, `gw_debounce.c`, `gw_bsp` | H (debounce y polaridad) + Q (pines simulados con la polaridad de `gw_bsp`); GPIO reales C |
@@ -308,7 +308,7 @@ Leyenda de **Evidencia**:
 | REL-1 | Implementado | `gw_bus.c`, `gw_edge.c`, `sdkconfig.defaults` | C/Q (configurado; sin inyección de fallos) |
 | REL-2 | **Parcial** | Todo `gw_*` | El código propio es estático y no asigna en el camino crítico; **lwIP y esp-mqtt asignan del heap internamente** (acotado, no estático) |
 | REL-3 | Implementado | `esp_log` en todos los módulos | Q |
-| QA-1 | Implementado | `test/host/` | 65 casos |
+| QA-1 | Implementado | `test/host/` | 67 casos |
 | QA-2 | Implementado | — | 0 warnings; tamaño en §3.2 |
 
 **Fuera del MVP**, implementado total o parcialmente:
@@ -358,7 +358,8 @@ La build de QEMU difiere de la de placa en esos puntos (`sdkconfig.qemu`).
 
 - Una lectura fallida (excepción) se publica como `is_null` en DDATA. No hay calidad (SPB-16).
 - Un dispositivo arranca fuera de línea y solo se publica su DBIRTH tras la primera respuesta.
-- Un ciclo se corta en el primer bloque que no responde tras los reintentos. Así el DDEATH llega en `offline_after` ciclos, sin multiplicar el timeout por el número de bloques.
+- **Un ciclo falla si alguna petición queda sin respuesta tras los reintentos** (una excepción Modbus cuenta como respuesta). El ciclo se corta ahí, sin gastar el timeout en los bloques restantes, y los ciclos fallidos cuentan para `offline_after`. Así el DDEATH llega en `offline_after` ciclos aunque los demás bloques del equipo respondan.
+- Los tags de los bloques no leídos **conservan el valor y el timestamp de su última lectura**: no se reportan como frescos. Si la falta persiste, el DDEATH los invalida a todos. Un equipo pasa (o vuelve) a estar en línea solo tras un ciclo completo, así que su DBIRTH nunca lleva valores que no se leyeron.
 - Un DCMD a un dispositivo fuera de línea se descarta, no se encola.
 - Las escrituras se reintentan como cualquier transacción. FC05/06/15/16 son idempotentes, pero un esclavo que ejecuta y no responde recibe la escritura dos veces.
 - **Rebirth espontáneo:** si el primer NBIRTH salió antes de que sincronizara SNTP (timestamps de 1970), se reemite al sincronizar. Esta rama no se ejercitó en el E2E.

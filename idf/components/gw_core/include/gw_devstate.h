@@ -20,8 +20,8 @@ typedef struct {
 } gw_devstate_t;
 
 /**
- * Account for one poll cycle. A cycle succeeds when the device answered at
- * least one request (exception responses count as answers). The device goes
+ * Account for one poll cycle. A cycle succeeds when the device answered every
+ * request of the cycle (exception responses count as answers). The device goes
  * offline after @p offline_after consecutive failed cycles and back online on
  * the first successful one.
  */

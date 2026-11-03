@@ -77,18 +77,25 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
     bool online;
     gw_tagdb_get_device(cfg, dev, p->work, &online);
 
-    bool answered = false;
-    for (uint16_t b = 0; b < p->plan.dev_block_count[dev]; b++) {
+    /* A cycle fails as soon as a request stays unanswered after its retries (an exception
+     * response is an answer). The remaining blocks are skipped, so the timeout is not spent
+     * on each of them, and the tags of every block not read keep the value and timestamp of
+     * their last read: nothing is reported for them as fresh. offline_after failed cycles in
+     * a row declare the device offline (DDEATH, all values invalid), and only a complete
+     * cycle brings it (back) online, so a DBIRTH never carries a value that was not read. */
+    bool failed = false;
+    for (uint16_t b = 0; b < p->plan.dev_block_count[dev] && !failed; b++) {
         const gw_block_t *blk = &p->plan.blocks[p->plan.dev_first_block[dev] + b];
         mb_request_t rq = {
             .unit = d->unit_id, .fc = read_fc(blk->area), .addr = blk->start, .qty = blk->qty};
         mb_response_t rsp;
         mb_status_t st = mb_master_execute(p->mb, &rq, &rsp);
         if (st != MB_OK && st != MB_ERR_EXCEPTION) {
-            /* No usable answer even after retries: do not spend the timeout on every block. */
-            break;
+            failed = true;
+            GW_LOGD(TAG, "%s: fc %u addr %u qty %u unanswered (status %d); cycle failed", d->name,
+                    rq.fc, rq.addr, rq.qty, st);
+            continue;
         }
-        answered = true;
         uint64_t ts = gw_port_time_ms();
         if (st == MB_ERR_EXCEPTION) {
             GW_LOGW(TAG, "%s: exception %u reading fc %u addr %u qty %u", d->name, rsp.exception,
@@ -105,7 +112,7 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
         }
     }
 
-    gw_dev_event_t ev = gw_devstate_cycle(&p->state[dev], answered, d->offline_after);
+    gw_dev_event_t ev = gw_devstate_cycle(&p->state[dev], !failed, d->offline_after);
     if (ev == GW_DEV_WENT_OFFLINE) {
         for (uint16_t i = 0; i < d->tag_count; i++) {
             p->work[i].valid = false;

@@ -21,6 +21,7 @@ const gw_config_t *support_spec_config(void);
 typedef struct {
     uint8_t unit;
     bool offline;              /* never answers */
+    uint8_t mute_fc;           /* never answers requests with this function code (0 = none) */
     int crc_errors;            /* corrupt the CRC of the next N responses */
     int wrong_unit;            /* answer the next N requests with another unit id */
     uint8_t exception;         /* answer every request with this exception (0 = none) */
