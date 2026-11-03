@@ -1,0 +1,203 @@
+#include "gw_poll.h"
+
+#include <string.h>
+
+#include "gw_conv.h"
+#include "gw_port.h"
+
+static const char *TAG = "poll";
+
+static mb_fc_t read_fc(gw_area_t area)
+{
+    switch (area) {
+    case GW_AREA_COIL:
+        return MB_FC_READ_COILS;
+    case GW_AREA_DISCRETE:
+        return MB_FC_READ_DISCRETE_INPUTS;
+    case GW_AREA_HOLDING:
+        return MB_FC_READ_HOLDING_REGISTERS;
+    default:
+        return MB_FC_READ_INPUT_REGISTERS;
+    }
+}
+
+static double decode_member(const gw_tag_cfg_t *t, const mb_response_t *rsp, uint16_t start)
+{
+    uint16_t off = (uint16_t)(t->address - start);
+    if (t->type == GW_TYPE_BOOL) {
+        return mb_rsp_bit(rsp, off) ? 1.0 : 0.0;
+    }
+    uint16_t regs[2] = {mb_rsp_reg(rsp, off), 0};
+    if (gw_tag_width(t) == 2) {
+        regs[1] = mb_rsp_reg(rsp, (uint16_t)(off + 1));
+    }
+    return gw_conv_from_regs(t, regs);
+}
+
+void gw_poller_init(gw_poller_t *p, const gw_config_t *cfg, mb_master_t *mb,
+                    const gw_poller_opts_t *opts, uint32_t now_ms)
+{
+    memset(p, 0, sizeof(*p));
+    p->cfg = cfg;
+    p->mb = mb;
+    p->opts = *opts;
+    gw_plan_build(&p->plan, cfg, opts->merge_reads, opts->max_gap);
+    for (uint16_t d = 0; d < cfg->device_count; d++) {
+        p->next_due_ms[d] = now_ms;
+    }
+}
+
+int gw_poller_next(const gw_poller_t *p, uint32_t now_ms, uint32_t *wait_ms)
+{
+    int best = -1;
+    int32_t best_wait = INT32_MAX;
+    for (uint16_t d = 0; d < p->cfg->device_count; d++) {
+        int32_t w = (int32_t)(p->next_due_ms[d] - now_ms);
+        if (w < best_wait) {
+            best_wait = w;
+            best = d;
+        }
+    }
+    if (best < 0) {
+        *wait_ms = UINT32_MAX;
+        return -1;
+    }
+    if (best_wait > 0) {
+        *wait_ms = (uint32_t)best_wait;
+        return -1;
+    }
+    *wait_ms = 0;
+    return best;
+}
+
+gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
+{
+    const gw_config_t *cfg = p->cfg;
+    const gw_device_cfg_t *d = &cfg->devices[dev];
+    bool online;
+    gw_tagdb_get_device(cfg, dev, p->work, &online);
+
+    bool answered = false;
+    for (uint16_t b = 0; b < p->plan.dev_block_count[dev]; b++) {
+        const gw_block_t *blk = &p->plan.blocks[p->plan.dev_first_block[dev] + b];
+        mb_request_t rq = {
+            .unit = d->unit_id, .fc = read_fc(blk->area), .addr = blk->start, .qty = blk->qty};
+        mb_response_t rsp;
+        mb_status_t st = mb_master_execute(p->mb, &rq, &rsp);
+        if (st != MB_OK && st != MB_ERR_EXCEPTION) {
+            /* No usable answer even after retries: do not spend the timeout on every block. */
+            break;
+        }
+        answered = true;
+        uint64_t ts = gw_port_time_ms();
+        if (st == MB_ERR_EXCEPTION) {
+            GW_LOGW(TAG, "%s: exception %u reading fc %u addr %u qty %u", d->name, rsp.exception,
+                    rq.fc, rq.addr, rq.qty);
+        }
+        for (uint16_t m = 0; m < blk->member_count; m++) {
+            uint16_t tag = p->plan.members[blk->first_member + m];
+            gw_tag_value_t *v = &p->work[tag - d->first_tag];
+            v->ts_ms = ts;
+            v->valid = st == MB_OK;
+            if (v->valid) {
+                v->value = decode_member(&cfg->tags[tag], &rsp, blk->start);
+            }
+        }
+    }
+
+    gw_dev_event_t ev = gw_devstate_cycle(&p->state[dev], answered, d->offline_after);
+    if (ev == GW_DEV_WENT_OFFLINE) {
+        for (uint16_t i = 0; i < d->tag_count; i++) {
+            p->work[i].valid = false;
+        }
+        const mb_stats_t *st = &p->mb->stats;
+        GW_LOGW(TAG,
+                "%s (unit %u) offline after %u failed cycles; bus totals: ok %lu timeout %lu "
+                "crc %lu frame %lu exception %lu",
+                d->name, d->unit_id, d->offline_after, (unsigned long)st->ok,
+                (unsigned long)st->timeout, (unsigned long)st->crc, (unsigned long)st->frame,
+                (unsigned long)st->exception);
+    } else if (ev == GW_DEV_WENT_ONLINE) {
+        GW_LOGI(TAG, "%s (unit %u) online", d->name, d->unit_id);
+    }
+    gw_tagdb_put_device(cfg, dev, p->work, p->state[dev].online);
+
+    p->next_due_ms[dev] += d->poll_ms;
+    if ((int32_t)(p->next_due_ms[dev] - now_ms) <= 0) {
+        p->next_due_ms[dev] = now_ms + d->poll_ms;  /* overrun: skip, never burst to catch up */
+    }
+    return ev;
+}
+
+gw_write_status_t gw_poller_write(gw_poller_t *p, uint16_t tag, double value)
+{
+    const gw_config_t *cfg = p->cfg;
+    const gw_tag_cfg_t *t = &cfg->tags[tag];
+    const gw_device_cfg_t *d = &cfg->devices[gw_config_tag_device(cfg, tag)];
+    if (!t->writable) {
+        return GW_WRITE_NOT_WRITABLE;
+    }
+    uint16_t width = gw_tag_width(t);
+    uint16_t regs[2] = {0, 0};
+    uint8_t bits[1] = {0};
+    mb_request_t rq = {.unit = d->unit_id, .addr = t->address};
+    double confirmed;
+
+    if (t->area == GW_AREA_COIL) {
+        bool on = value != 0.0;
+        confirmed = on ? 1.0 : 0.0;
+        if (p->opts.force_multi_write) {
+            bits[0] = on ? 1u : 0u;
+            rq.fc = MB_FC_WRITE_MULTIPLE_COILS;
+            rq.qty = 1;
+            rq.bits = bits;
+        } else {
+            rq.fc = MB_FC_WRITE_SINGLE_COIL;
+            rq.value = on;
+        }
+    } else {
+        gw_conv_status_t cs = gw_conv_to_regs(t, value, regs);
+        if (cs != GW_CONV_OK) {
+            GW_LOGW(TAG, "%s/%s: value %g not representable (%d)", d->name, t->name, value, cs);
+            return GW_WRITE_BAD_VALUE;
+        }
+        confirmed = gw_conv_from_regs(t, regs);
+        if (width == 1 && !p->opts.force_multi_write) {
+            rq.fc = MB_FC_WRITE_SINGLE_REGISTER;
+            rq.value = regs[0];
+        } else {
+            rq.fc = MB_FC_WRITE_MULTIPLE_REGISTERS;
+            rq.qty = width;
+            rq.regs = regs;
+        }
+    }
+
+    mb_response_t rsp;
+    mb_status_t st = mb_master_execute(p->mb, &rq, &rsp);
+    if (st != MB_OK) {
+        GW_LOGW(TAG, "%s/%s: write fc %u failed (status %d, exception %u)", d->name, t->name,
+                rq.fc, st, st == MB_ERR_EXCEPTION ? rsp.exception : 0);
+        return GW_WRITE_BUS_ERROR;
+    }
+
+    /* Read back so the published value is what the device actually holds. */
+    mb_request_t rd = {.unit = d->unit_id, .fc = read_fc(t->area), .addr = t->address, .qty = width};
+    if (mb_master_execute(p->mb, &rd, &rsp) == MB_OK) {
+        confirmed = decode_member(t, &rsp, t->address);
+    } else {
+        GW_LOGW(TAG, "%s/%s: read-back failed, reporting the acknowledged value", d->name, t->name);
+    }
+    gw_tag_value_t v = {.value = confirmed, .ts_ms = gw_port_time_ms(), .valid = true};
+    gw_tagdb_put_tag(tag, &v);
+    GW_LOGI(TAG, "%s/%s <- %g (fc %u)", d->name, t->name, confirmed, rq.fc);
+    return GW_WRITE_OK;
+}
+
+uint16_t gw_poller_offline_count(const gw_poller_t *p)
+{
+    uint16_t n = 0;
+    for (uint16_t d = 0; d < p->cfg->device_count; d++) {
+        n = (uint16_t)(n + (p->state[d].online ? 0u : 1u));
+    }
+    return n;
+}

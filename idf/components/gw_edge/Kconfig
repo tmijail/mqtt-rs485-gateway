@@ -1,0 +1,51 @@
+menu "Gateway: Sparkplug / MQTT"
+
+    config GW_EDGE_TASK_PRIORITY
+        int "Sparkplug task priority"
+        default 8
+
+    config GW_EDGE_TASK_CORE
+        int "Sparkplug task core"
+        range 0 1
+        default 0
+
+    config GW_EDGE_QUEUE_LEN
+        int "Sparkplug task event queue length"
+        range 8 64
+        default 24
+
+    config GW_CMD_SLOTS
+        int "Inbound NCMD/DCMD buffers"
+        range 1 16
+        default 4
+
+    config GW_CMD_MAX_PAYLOAD
+        int "Largest inbound NCMD/DCMD payload (bytes)"
+        range 128 4096
+        default 1024
+
+    config GW_MQTT_BUFFER_SIZE
+        int "esp-mqtt send/receive buffer (bytes)"
+        default 2048
+
+    config GW_MQTT_OUTBOX_LIMIT
+        int "esp-mqtt outbox limit (bytes, QoS>0 messages awaiting ACK)"
+        default 8192
+
+    config GW_MQTT_BACKOFF_MIN_MS
+        int "Reconnect backoff minimum (ms)"
+        default 1000
+
+    config GW_MQTT_BACKOFF_MAX_MS
+        int "Reconnect backoff maximum (ms)"
+        default 60000
+
+    config GW_SNTP_WAIT_MS
+        int "Wait for SNTP before the first MQTT connection (ms)"
+        range 0 30000
+        default 3000
+        help
+            Births carry better timestamps if the clock is set first. The connection
+            proceeds without synchronised time once this expires.
+
+endmenu
