@@ -9,7 +9,7 @@
  *
  * Alias map (SPB-8, unique per node, stable for a given configuration):
  *   1 bdSeq, 2 Node Control/Rebirth, 3 Node Control/Reboot,
- *   4 Node Info/Firmware, 5 Node Info/Hardware,
+ *   4 Node Info/Firmware, 5 Node Info/Hardware, 6 Node Info/Reset Reason,
  *   10..17 DI/1..DI/8, 20..27 DO/1..DO/8, 100 + n device tag with global index n.
  */
 #pragma once
@@ -32,12 +32,13 @@ extern "C" {
 #define GW_ALIAS_REBOOT    3u
 #define GW_ALIAS_FIRMWARE  4u
 #define GW_ALIAS_HARDWARE  5u
+#define GW_ALIAS_RESET_REASON 6u
 #define GW_ALIAS_DI_BASE   10u
 #define GW_ALIAS_DO_BASE   20u
 #define GW_ALIAS_TAG_BASE  100u
 
 #define GW_NODE_IO_COUNT        8
-#define GW_NODE_BIRTH_METRICS   (5 + 2 * GW_NODE_IO_COUNT)
+#define GW_NODE_BIRTH_METRICS   (6 + 2 * GW_NODE_IO_COUNT)
 #define GW_SPB_PAYLOAD_MAX      6144   /* > worst-case DBIRTH: 64 tags with 39-char names */
 #define GW_TOPIC_MAX            160
 
@@ -54,11 +55,17 @@ typedef struct {
     void *ctx;
 } gw_node_ops_t;
 
+/** Static node description published in NBIRTH ("Node Info/..."); strings must outlive the node. */
+typedef struct {
+    const char *firmware;       /* FW-4 */
+    const char *hardware;
+    const char *reset_reason;   /* REL-5: why the gateway last restarted */
+} gw_node_info_t;
+
 typedef struct {
     const gw_config_t *cfg;
     gw_node_ops_t ops;
-    const char *firmware;
-    const char *hardware;
+    gw_node_info_t info;
 
     bool online;                       /* NBIRTH published on the current MQTT session */
     uint64_t bdseq;                    /* bdSeq of the current session (SPB-3) */
@@ -83,7 +90,7 @@ typedef struct {
 } gw_node_t;
 
 void gw_node_init(gw_node_t *n, const gw_config_t *cfg, const gw_node_ops_t *ops,
-                  const char *firmware, const char *hardware);
+                  const gw_node_info_t *info);
 
 /** Build "spBv1.0/<group>/<type>/<edge>[/<device>]" for this node. */
 bool gw_node_topic(const gw_node_t *n, const char *type, const char *device, char *out, size_t cap);

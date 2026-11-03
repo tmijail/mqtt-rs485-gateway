@@ -15,12 +15,14 @@
 
 #include "esp_err.h"
 #include "gw_config.h"
+#include "gw_node.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-esp_err_t gw_edge_start(const gw_config_t *cfg, const char *firmware, const char *hardware);
+/** @p info (and its strings) must outlive the gateway. */
+esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info);
 
 void gw_edge_notify_ip(bool up);
 void gw_edge_notify_time_synced(void);

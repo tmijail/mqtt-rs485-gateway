@@ -23,7 +23,9 @@ void setUp(void)
     gw_tagdb_reset();
     recorder_clear();
     gw_node_ops_t ops = recorder_ops();
-    gw_node_init(&node, cfg, &ops, "0.1.0+gdeadbee", "test-hw");
+    const gw_node_info_t info = {
+        .firmware = "0.1.0+gdeadbee", .hardware = "test-hw", .reset_reason = "task watchdog"};
+    gw_node_init(&node, cfg, &ops, &info);
 }
 void tearDown(void) {}
 
@@ -85,6 +87,11 @@ static void test_nbirth_and_dbirth(void)
     i = decoded_find_name(&dec, "Node Info/Firmware");
     TEST_ASSERT_EQUAL_STRING("0.1.0+gdeadbee", dec.m[i].str);
     TEST_ASSERT_TRUE(decoded_find_name(&dec, "Node Info/Hardware") >= 0);
+    i = decoded_find_name(&dec, "Node Info/Reset Reason");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_STRING, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_RESET_REASON, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_STRING("task watchdog", dec.m[i].str);
     i = decoded_find_name(&dec, "DI/1");
     TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[i].num);
     TEST_ASSERT_EQUAL_UINT64(500, dec.m[i].timestamp);

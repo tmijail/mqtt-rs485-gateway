@@ -17,17 +17,17 @@ static const char *const k_do_names[GW_NODE_IO_COUNT] = {"DO/1", "DO/2", "DO/3",
 #define NAME_REBOOT   "Node Control/Reboot"
 #define NAME_FIRMWARE "Node Info/Firmware"
 #define NAME_HARDWARE "Node Info/Hardware"
+#define NAME_RESET_REASON "Node Info/Reset Reason"
 
 /* ---------- helpers ---------- */
 
 void gw_node_init(gw_node_t *n, const gw_config_t *cfg, const gw_node_ops_t *ops,
-                  const char *firmware, const char *hardware)
+                  const gw_node_info_t *info)
 {
     memset(n, 0, sizeof(*n));
     n->cfg = cfg;
     n->ops = *ops;
-    n->firmware = firmware;
-    n->hardware = hardware;
+    n->info = *info;
 }
 
 bool gw_node_topic(const gw_node_t *n, const char *type, const char *device, char *out, size_t cap)
@@ -107,8 +107,10 @@ static void publish_nbirth(gw_node_t *n)
     metric(n, i++, NAME_BDSEQ, GW_ALIAS_BDSEQ, SPB_DT_UINT64, now)->v.num = (double)n->bdseq;
     metric(n, i++, NAME_REBIRTH, GW_ALIAS_REBIRTH, SPB_DT_BOOLEAN, now)->v.num = 0;
     metric(n, i++, NAME_REBOOT, GW_ALIAS_REBOOT, SPB_DT_BOOLEAN, now)->v.num = 0;
-    metric(n, i++, NAME_FIRMWARE, GW_ALIAS_FIRMWARE, SPB_DT_STRING, now)->v.str = n->firmware;
-    metric(n, i++, NAME_HARDWARE, GW_ALIAS_HARDWARE, SPB_DT_STRING, now)->v.str = n->hardware;
+    metric(n, i++, NAME_FIRMWARE, GW_ALIAS_FIRMWARE, SPB_DT_STRING, now)->v.str = n->info.firmware;
+    metric(n, i++, NAME_HARDWARE, GW_ALIAS_HARDWARE, SPB_DT_STRING, now)->v.str = n->info.hardware;
+    metric(n, i++, NAME_RESET_REASON, GW_ALIAS_RESET_REASON, SPB_DT_STRING, now)->v.str =
+        n->info.reset_reason;
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         metric(n, i++, k_di_names[k], GW_ALIAS_DI_BASE + k, SPB_DT_BOOLEAN,
                io.di_ts_ms ? io.di_ts_ms : now)

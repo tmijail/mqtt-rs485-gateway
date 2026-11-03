@@ -236,7 +236,7 @@ E2E_PYTHON=~/e2e/bin/python idf/tools/e2e/run_e2e.sh
 
 Configuración usada: `tools/e2e/fs/config.json` (keepalive de 10 s).
 
-Resultado: **31/31 comprobaciones OK**.
+Resultado: **32/32 comprobaciones OK**.
 
 | Criterio | Resultado medido |
 |---|---|
@@ -284,7 +284,7 @@ Leyenda de **Evidencia**:
 | SPB-1 | Implementado | `gw_core/src/spb.c`, `proto/` | H + interoperabilidad Python + Q |
 | SPB-2 | Implementado | `gw_node.c`, `gw_edge.c` (`op_reboot`) | H + Q |
 | SPB-3 | Implementado | `gw_storage/gw_storage.c`, `gw_edge.c` | Q (por intento y persistido) |
-| SPB-4 | Implementado | `gw_core/src/gw_node.c` (`publish_nbirth`) | H + Q |
+| SPB-4 | Implementado | `gw_core/src/gw_node.c` (`publish_nbirth`) | H + Q. Métricas de nodo: bdSeq, Rebirth, Reboot, `Node Info/Firmware`, `Hardware`, `Reset Reason` (alias 1–6), DI/1–8 y DO/1–8 |
 | SPB-5 | Implementado | `gw_node.c` | H (vuelta 255 → 0) + Q (continuidad) |
 | SPB-6 | Implementado | `gw_node.c` (`gw_node_device_changed`) | H + Q |
 | SPB-7 | Implementado | `gw_node.c`, `gw_rbe.c` | H + Q |
@@ -321,7 +321,7 @@ Leyenda de **Evidencia**:
 - **MB-13** Parcial: excepciones decodificadas y en el log; contadores globales, no por dispositivo.
 - **MB-14** Parcial: escrituras antes del siguiente sondeo, no entre bloques.
 - **IO-3** Parcial: DO a OFF al reiniciar, sin el resto del modo seguro.
-- **REL-5** Parcial: el motivo del reinicio va al log, no al NBIRTH.
+- **REL-5** Implementado: `esp_reset_reason()` va al log de arranque y al NBIRTH como `Node Info/Reset Reason` (String, alias 6). H + Q (`power-on` en el primer arranque, `software` tras NCMD Reboot).
 - **REL-6**: medido en QEMU.
 - **QA-3** Parcial: QEMU, sin hardware.
 

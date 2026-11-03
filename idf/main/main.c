@@ -35,6 +35,7 @@ static const char *TAG = "main";
 
 static gw_config_t s_cfg;   /* immutable after boot; shared read-only by every task */
 static char s_hardware[64];
+static gw_node_info_t s_info;  /* NBIRTH "Node Info/..." */
 
 static void on_device_updated(uint16_t dev)
 {
@@ -51,25 +52,36 @@ static void halt_with_config_error(const gw_cfg_err_t *err, const char *source)
     }
 }
 
+/* REL-5: logged at boot and published in NBIRTH as "Node Info/Reset Reason". */
 static const char *reset_reason(void)
 {
     switch (esp_reset_reason()) {
     case ESP_RST_POWERON: return "power-on";
+    case ESP_RST_EXT: return "external pin";
     case ESP_RST_SW: return "software";
     case ESP_RST_PANIC: return "panic";
     case ESP_RST_INT_WDT: return "interrupt watchdog";
     case ESP_RST_TASK_WDT: return "task watchdog";
     case ESP_RST_WDT: return "watchdog";
+    case ESP_RST_DEEPSLEEP: return "deep sleep";
     case ESP_RST_BROWNOUT: return "brownout";
-    default: return "other";
+    case ESP_RST_SDIO: return "SDIO";
+    case ESP_RST_USB: return "USB";
+    case ESP_RST_JTAG: return "JTAG";
+    case ESP_RST_EFUSE: return "eFuse error";
+    case ESP_RST_PWR_GLITCH: return "power glitch";
+    case ESP_RST_CPU_LOCKUP: return "CPU lock-up";
+    default: return "unknown";
     }
 }
 
 void app_main(void)
 {
     const esp_app_desc_t *app = esp_app_get_description();
+    s_info.firmware = app->version;
+    s_info.reset_reason = reset_reason();
     ESP_LOGI(TAG, "%s %s (IDF %s), reset reason: %s", app->project_name, app->version,
-             app->idf_ver, reset_reason());
+             app->idf_ver, s_info.reset_reason);
 
     gw_port_init();
     gw_tagdb_reset();
@@ -96,7 +108,8 @@ void app_main(void)
     snprintf(s_hardware, sizeof(s_hardware), "%s (ESP32-S3 rev %d.%d)", gw_bsp.name,
              chip.revision / 100, chip.revision % 100);
 
-    ESP_ERROR_CHECK(gw_edge_start(&s_cfg, app->version, s_hardware));
+    s_info.hardware = s_hardware;
+    ESP_ERROR_CHECK(gw_edge_start(&s_cfg, &s_info));
     if (gw_io_init(&s_cfg, gw_edge_notify_io) != ESP_OK) {
         /* Keep the gateway running: DIs are still published, DO commands are refused. */
         ESP_LOGE(TAG, "digital outputs unavailable");

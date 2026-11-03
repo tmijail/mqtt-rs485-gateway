@@ -373,7 +373,7 @@ static void edge_task(void *arg)
     }
 }
 
-esp_err_t gw_edge_start(const gw_config_t *cfg, const char *firmware, const char *hardware)
+esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
 {
     s_cfg = cfg;
     const gw_node_ops_t ops = {
@@ -383,7 +383,7 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const char *firmware, const char
         .reboot = op_reboot,
         .ctx = NULL,
     };
-    gw_node_init(&s_node, cfg, &ops, firmware, hardware);
+    gw_node_init(&s_node, cfg, &ops, info);
     if (!gw_node_topic(&s_node, "NDEATH", NULL, s_death_topic, sizeof(s_death_topic)) ||
         !gw_node_topic(&s_node, "NCMD", NULL, s_ncmd_topic, sizeof(s_ncmd_topic)) ||
         !gw_node_topic(&s_node, "DCMD", "+", s_dcmd_topic, sizeof(s_dcmd_topic))) {

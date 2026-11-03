@@ -458,6 +458,7 @@ def run(args, log, slave, broker, conf, work):
         return
     p = nb[2]
     b0 = bdseq_of(p)
+    reason0 = metric(p, name="Node Info/Reset Reason")
     check("1b. NBIRTH seq=0, bdSeq metric, timestamp", p.seq == 0 and p.timestamp > 0,
           f"seq={p.seq} bdSeq={b0} timestamp={p.timestamp}")
     check("TIME-1 timestamps are UTC ms from SNTP", abs(p.timestamp / 1000 - time.time()) < 60,
@@ -656,6 +657,12 @@ def run(args, log, slave, broker, conf, work):
           f"NDEATH bdSeq={bdseq_of(nd[2]) if nd else None} sent by the node={explicit}, "
           f"NDEATHs with that bdSeq={len(deaths)} (will discarded if 1), "
           f"NBIRTH after reboot bdSeq={bdseq_of(nb[2]) if nb else None}")
+    reason1 = metric(nb[2], name="Node Info/Reset Reason") if nb else None
+    check("REL-5 NBIRTH 'Node Info/Reset Reason': power-on at first boot, software after NCMD Reboot",
+          reason0 and reason1 and reason0.string_value == "power-on"
+          and reason1.string_value == "software",
+          f"first boot {reason0.string_value if reason0 else None!r}, after reboot "
+          f"{reason1.string_value if reason1 else None!r}")
     obs.close()
 
 
