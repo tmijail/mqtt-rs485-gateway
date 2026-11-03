@@ -1,0 +1,33 @@
+menu "Gateway: Modbus bus task"
+
+    config GW_BUS_TASK_PRIORITY
+        int "RS485 owner task priority"
+        default 10
+
+    config GW_BUS_TASK_CORE
+        int "RS485 owner task core"
+        range 0 1
+        default 1
+        help
+            Core 1 keeps bus timing away from the network stack (lwIP, esp_eth, MQTT on core 0).
+
+    config GW_BUS_WRITE_QUEUE_LEN
+        int "Pending DCMD writes"
+        range 1 32
+        default 8
+
+    config GW_MB_BLOCK_READS
+        bool "Merge adjacent tags into block reads (MB-11)"
+        default y
+
+    config GW_MB_BLOCK_MAX_GAP
+        int "Largest unused register/bit gap bridged by a block read"
+        range 0 32
+        default 0
+        depends on GW_MB_BLOCK_READS
+
+    config GW_MB_FORCE_MULTI_WRITE
+        bool "Always write with FC15/FC16 (for slaves without FC05/FC06)"
+        default n
+
+endmenu

@@ -1,0 +1,437 @@
+{
+  "network": {
+    "dhcp": true
+  },
+  "ntp": {
+    "server": "10.0.2.2"
+  },
+  "mqtt": {
+    "host": "10.0.2.2",
+    "port": 18831,
+    "client_id": "",
+    "username": "",
+    "password": "",
+    "keepalive_s": 10
+  },
+  "sparkplug": {
+    "group_id": "Plant1",
+    "edge_node_id": "GW01",
+    "primary_host_id": ""
+  },
+  "rs485": {
+    "baud": 9600,
+    "parity": "none",
+    "stop_bits": 1,
+    "response_timeout_ms": 200,
+    "retries": 2,
+    "inter_frame_delay_ms": 5
+  },
+  "local_io": {
+    "di_debounce_ms": 20
+  },
+  "devices": [
+    {
+      "name": "Meter1",
+      "unit_id": 1,
+      "poll_ms": 1000,
+      "offline_after": 3,
+      "tags": [
+        {
+          "name": "Voltage",
+          "area": "input",
+          "address": 0,
+          "type": "float32",
+          "word_order": "big",
+          "scale": 1.0,
+          "offset": 0.0,
+          "deadband": 0.1,
+          "writable": false,
+          "units": "V"
+        },
+        {
+          "name": "Setpoint",
+          "area": "holding",
+          "address": 10,
+          "type": "int16",
+          "scale": 0.1,
+          "writable": true
+        },
+        {
+          "name": "Run",
+          "area": "coil",
+          "address": 0,
+          "type": "bool",
+          "writable": true
+        }
+      ]
+    },
+    {
+      "name": "Bulk",
+      "unit_id": 2,
+      "poll_ms": 1000,
+      "offline_after": 3,
+      "tags": [
+        {
+          "name": "Holding_Register_100_Value",
+          "area": "holding",
+          "address": 100,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_101_Value",
+          "area": "holding",
+          "address": 101,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_102_Value",
+          "area": "holding",
+          "address": 102,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_103_Value",
+          "area": "holding",
+          "address": 103,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_104_Value",
+          "area": "holding",
+          "address": 104,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_105_Value",
+          "area": "holding",
+          "address": 105,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_106_Value",
+          "area": "holding",
+          "address": 106,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_107_Value",
+          "area": "holding",
+          "address": 107,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_108_Value",
+          "area": "holding",
+          "address": 108,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_109_Value",
+          "area": "holding",
+          "address": 109,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_110_Value",
+          "area": "holding",
+          "address": 110,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_111_Value",
+          "area": "holding",
+          "address": 111,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_112_Value",
+          "area": "holding",
+          "address": 112,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_113_Value",
+          "area": "holding",
+          "address": 113,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_114_Value",
+          "area": "holding",
+          "address": 114,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_115_Value",
+          "area": "holding",
+          "address": 115,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_116_Value",
+          "area": "holding",
+          "address": 116,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_117_Value",
+          "area": "holding",
+          "address": 117,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_118_Value",
+          "area": "holding",
+          "address": 118,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_119_Value",
+          "area": "holding",
+          "address": 119,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_120_Value",
+          "area": "holding",
+          "address": 120,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_121_Value",
+          "area": "holding",
+          "address": 121,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_122_Value",
+          "area": "holding",
+          "address": 122,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_123_Value",
+          "area": "holding",
+          "address": 123,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_124_Value",
+          "area": "holding",
+          "address": 124,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_125_Value",
+          "area": "holding",
+          "address": 125,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_126_Value",
+          "area": "holding",
+          "address": 126,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_127_Value",
+          "area": "holding",
+          "address": 127,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_128_Value",
+          "area": "holding",
+          "address": 128,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_129_Value",
+          "area": "holding",
+          "address": 129,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_130_Value",
+          "area": "holding",
+          "address": 130,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_131_Value",
+          "area": "holding",
+          "address": 131,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_132_Value",
+          "area": "holding",
+          "address": 132,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_133_Value",
+          "area": "holding",
+          "address": 133,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_134_Value",
+          "area": "holding",
+          "address": 134,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_135_Value",
+          "area": "holding",
+          "address": 135,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_136_Value",
+          "area": "holding",
+          "address": 136,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_137_Value",
+          "area": "holding",
+          "address": 137,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_138_Value",
+          "area": "holding",
+          "address": 138,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_139_Value",
+          "area": "holding",
+          "address": 139,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_140_Value",
+          "area": "holding",
+          "address": 140,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_141_Value",
+          "area": "holding",
+          "address": 141,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_142_Value",
+          "area": "holding",
+          "address": 142,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_143_Value",
+          "area": "holding",
+          "address": 143,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_144_Value",
+          "area": "holding",
+          "address": 144,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_145_Value",
+          "area": "holding",
+          "address": 145,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_146_Value",
+          "area": "holding",
+          "address": 146,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_147_Value",
+          "area": "holding",
+          "address": 147,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_148_Value",
+          "area": "holding",
+          "address": 148,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_149_Value",
+          "area": "holding",
+          "address": 149,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_150_Value",
+          "area": "holding",
+          "address": 150,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_151_Value",
+          "area": "holding",
+          "address": 151,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_152_Value",
+          "area": "holding",
+          "address": 152,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_153_Value",
+          "area": "holding",
+          "address": 153,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_154_Value",
+          "area": "holding",
+          "address": 154,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_155_Value",
+          "area": "holding",
+          "address": 155,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_156_Value",
+          "area": "holding",
+          "address": 156,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_157_Value",
+          "area": "holding",
+          "address": 157,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_158_Value",
+          "area": "holding",
+          "address": 158,
+          "type": "uint16"
+        },
+        {
+          "name": "Holding_Register_159_Value",
+          "area": "holding",
+          "address": 159,
+          "type": "uint16"
+        }
+      ]
+    }
+  ]
+}
