@@ -45,8 +45,8 @@ static void halt_with_config_error(const gw_cfg_err_t *err, const char *source)
 {
     gw_status_set(GW_ST_CFG_ERROR, true);
     for (;;) {
-        ESP_LOGE(TAG, "invalid configuration (%s): %s", source, err->msg);
-        ESP_LOGE(TAG, "nothing is started; fix the JSON and reflash (see README)");
+        ESP_LOGE(TAG, "configuration rejected (%s): %s", source, err->msg);
+        ESP_LOGE(TAG, "nothing is started (no polling, no MQTT); fix it and reflash (see README)");
         vTaskDelay(pdMS_TO_TICKS(10000));
     }
 }

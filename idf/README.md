@@ -88,7 +88,7 @@ Dependencias gestionadas, **con versión fija** (`==`) en cada `idf_component.ym
   - `gw_bus` unos 10 KB: planificador, encuesta y pila de 4 KB;
   - `gw_core` unos 6 KB (`gw_tagdb`).
 - Sin `malloc` en encuesta, codificación ni publicación.
-- Se asigna memoria solo al arrancar: parseo cJSON y lectura de LittleFS.
+- Se asigna memoria solo al arrancar: lectura de LittleFS y árbol de cJSON, ambos en PSRAM si la hay (§3.3).
 - lwIP y esp-mqtt asignan internamente (ver §6).
 
 ## 2. Datos de la placa marcados "verificar"
@@ -153,7 +153,11 @@ Tabla de particiones (`partitions.csv`, 16 MB): `nvs` 24 KB, `otadata`, `phy_ini
 
 1. El firmware embebe `components/gw_storage/default_config.json`, que es el ejemplo de §6.
 2. Para reemplazarla, copie el JSON a `idf/fs/config.json` y edítelo. `idf.py flash` graba la carpeta `fs/` en la partición `storage` y el firmware lee `/cfg/config.json` al arrancar.
-3. Si el archivo existe pero es inválido, **no arranca nada** (ni red ni encuesta). El LED parpadea en rojo y el log repite cada 10 s el error con su ruta JSON, por ejemplo: `devices[0].tags[1].writable: solo las áreas coil y holding son escribibles`.
+3. **La configuración embebida se usa solo si `/cfg/config.json` no existe.** Cualquier otro problema detiene el equipo: la partición LittleFS no monta, el archivo está vacío, no se puede leer, supera el límite o es inválido. Entonces **no arranca nada** (ni encuesta, ni red, ni MQTT), el LED parpadea en rojo y el log repite cada 10 s, con nivel ERROR, el motivo, por ejemplo:
+   - `/cfg/config.json: 140000 bytes; el máximo es 131072 (CONFIG_GW_CONFIG_MAX_BYTES)`;
+   - `partición LittleFS 'storage' no montable (ESP_FAIL)`;
+   - `devices[0].tags[1].writable: solo las áreas coil y holding son escribibles`.
+4. **Límite de tamaño: 128 KiB** (`CONFIG_GW_CONFIG_MAX_BYTES`, menú `Gateway: storage`). El máximo del esquema (16 dispositivos, 256 tags con todos los campos) ocupa unos 46 KB en JSON compacto y 82 KB con sangría de 2 espacios. Al arrancar se asignan el búfer del archivo y el árbol de cJSON (unos 200 KB para 256 tags), **en PSRAM** si la hay; se liberan antes de arrancar las tareas. Sin PSRAM (QEMU) el límite real es el heap interno libre, y quedarse sin memoria se informa como tal.
 
 Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 
@@ -183,7 +187,7 @@ Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 cmake -S idf/test/host -B build-host && cmake --build build-host -j3 && ctest --test-dir build-host
 ```
 
-Resultado: **10/10 ejecutables y 60/60 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
+Resultado: **10/10 ejecutables y 62/62 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
 
 | Suite | Casos | Qué cubre |
 |---|---|---|
@@ -191,7 +195,7 @@ Resultado: **10/10 ejecutables y 60/60 casos OK**, compilados con `-Wall -Wextra
 | `test_mb_master` | 8 | t3,5 y retardo entre tramas, timeout y reintentos, CRC malo, unidad equivocada, excepción sin reintento |
 | `test_conv` | 5 | Mapeo de datatypes §6, int16/uint16/int32/uint32/float32, ABCD/CDAB, escala inversa (12,3 → 123), rangos |
 | `test_logic` | 6 | RBE y deadband contra el último valor reportado (deriva), validez y NaN, debounce, backoff 1–60 s, fuera de línea |
-| `test_config` | 6 | Ejemplo §6 literal, JSON embebido, valores por defecto, reglas del esquema, errores con ruta, límites 16/64/256 |
+| `test_config` | 8 | Ejemplo §6 literal, JSON embebido, valores por defecto, reglas del esquema, errores con ruta, límites 16/64/256, documento máximo (256 tags, > 40 KB), asignador del árbol y falta de memoria |
 | `test_plan` | 2 | Lecturas en bloque, solapes, huecos, límite de 125 registros |
 | `test_spb` | 7 | Ida y vuelta de todos los tipos, formato wire (Int16 con extensión de signo), NDEATH sin seq, peor caso de DBIRTH en el búfer |
 | `test_node` | 8 | NBIRTH y DBIRTH (nombre, alias, datatype, valor; alias únicos), DDEATH, DDATA por excepción, seq compartido con vuelta a 0, rebirth, NCMD DO/Reboot, DCMD por nombre y alias, descartes |
@@ -296,13 +300,13 @@ Leyenda de **Evidencia**:
 | IO-1 | Implementado | `components/gw_board/gw_io.c`, `gw_debounce.c`, `gw_bsp` | H (debounce y polaridad) + Q (pines simulados con la polaridad de `gw_bsp`); GPIO reales C |
 | IO-2 | Implementado | `gw_core/src/gw_dout.c`, `gw_io.c`, `gw_bsp` | H (secuencia de arranque, activa en bajo, mezclas, errores de bus) + Q (registros simulados); I²C real C |
 | IO-5 | Implementado | `components/gw_board/gw_status.c` | Q (estados en el log); RMT/WS2812 C; colores sin verificar |
-| CFG-1 | Implementado | `gw_core/src/gw_config.c`, `main/main.c` | H + Q |
-| CFG-2 | Implementado | `gw_storage/gw_storage.c`, `main/CMakeLists.txt` | Q (LittleFS y respaldo embebido) |
+| CFG-1 | Implementado | `gw_core/src/gw_config.c`, `gw_storage/gw_storage.c`, `main/main.c` | H (documento máximo de 256 tags, falta de memoria) + Q (archivo demasiado grande, vacío y partición sin montar: nada arranca, LED de error, log ERROR) |
+| CFG-2 | Implementado | `gw_storage/gw_storage.c`, `main/CMakeLists.txt` | Q (LittleFS; respaldo embebido solo si falta el archivo) |
 | FW-4 | Implementado | `idf/CMakeLists.txt` (`PROJECT_VER`) | Q (`0.1.0+g<hash>[.dirty]` en NBIRTH) |
 | REL-1 | Implementado | `gw_bus.c`, `gw_edge.c`, `sdkconfig.defaults` | C/Q (configurado; sin inyección de fallos) |
 | REL-2 | **Parcial** | Todo `gw_*` | El código propio es estático y no asigna en el camino crítico; **lwIP y esp-mqtt asignan del heap internamente** (acotado, no estático) |
 | REL-3 | Implementado | `esp_log` en todos los módulos | Q |
-| QA-1 | Implementado | `test/host/` | 60 casos |
+| QA-1 | Implementado | `test/host/` | 62 casos |
 | QA-2 | Implementado | — | 0 warnings; tamaño en §3.2 |
 
 **Fuera del MVP**, implementado total o parcialmente:
@@ -333,7 +337,8 @@ La build de QEMU difiere de la de placa en esos puntos (`sdkconfig.qemu`).
 
 ### 6.2 Configuración
 
-- **Configuración inválida = nada arranca.** La SPEC pide "no arrancar la encuesta". Aquí tampoco arrancan la red ni MQTT, porque sin una configuración válida no hay a qué conectarse. Recuperarse requiere regrabar (no hay web ni consola en el MVP).
+- **Configuración inválida o ilegible = nada arranca.** La SPEC pide "no arrancar la encuesta". Aquí tampoco arrancan la red ni MQTT, porque sin una configuración válida no hay a qué conectarse. Recuperarse requiere regrabar (no hay web en el MVP).
+- **Respaldo embebido solo si falta el archivo.** Un equipo grabado sin la partición `storage` (por ejemplo, solo la app) no monta LittleFS y queda detenido: es deliberado, para no arrancar nunca con la identidad Sparkplug del ejemplo.
 - **Validación estricta y decisiones propias:**
   - claves desconocidas = error;
   - `coil`/`discrete` ⇒ `bool`;

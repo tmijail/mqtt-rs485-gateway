@@ -129,6 +129,14 @@ typedef struct {
  */
 bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_t *err);
 
+/**
+ * Allocator for the temporary document tree built while parsing (default:
+ * malloc/free). A spec-maximum document (256 tags) needs about 200 KB of tree,
+ * so the firmware points this at PSRAM. Running out is reported as such, not as
+ * a syntax error.
+ */
+void gw_config_set_allocator(void *(*alloc)(size_t size), void (*release)(void *ptr));
+
 /** Index of the device named @p name (length @p len), or -1. */
 int gw_config_find_device(const gw_config_t *cfg, const char *name, size_t len);
 

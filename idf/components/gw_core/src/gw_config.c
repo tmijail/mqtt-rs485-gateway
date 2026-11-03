@@ -3,9 +3,31 @@
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cJSON.h"
+
+/* ---------- parser memory ---------- */
+
+static void *(*s_alloc)(size_t) = malloc;
+static void (*s_release)(void *) = free;
+static bool s_alloc_failed;
+
+static void *tracked_alloc(size_t size)
+{
+    void *p = s_alloc(size);
+    if (p == NULL) {
+        s_alloc_failed = true;
+    }
+    return p;
+}
+
+void gw_config_set_allocator(void *(*alloc)(size_t size), void (*release)(void *ptr))
+{
+    s_alloc = alloc;
+    s_release = release;
+}
 
 /* ---------- error reporting ---------- */
 
@@ -507,7 +529,14 @@ bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_
     memset(cfg, 0, sizeof(*cfg));
     err->msg[0] = '\0';
 
+    cJSON_Hooks hooks = {.malloc_fn = tracked_alloc, .free_fn = s_release};
+    cJSON_InitHooks(&hooks);
+    s_alloc_failed = false;
     cJSON *root = cJSON_ParseWithLength(json, len);
+    if (root == NULL && s_alloc_failed) {
+        fail(err, "$", "memoria insuficiente para analizar %zu bytes de JSON", len);
+        return false;
+    }
     if (root == NULL) {
         const char *at = cJSON_GetErrorPtr();
         size_t off = (at != NULL && at >= json && at <= json + len) ? (size_t)(at - json) : 0;

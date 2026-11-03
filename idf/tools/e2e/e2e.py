@@ -196,14 +196,15 @@ def bdseq_of(p):
 # ---------------------------------------------------------------- QEMU
 
 class Gateway:
-    def __init__(self, args, log_path):
+    def __init__(self, args, log_path, flash=None):
         self.args, self.log_path = args, log_path
+        self.flash = flash or args.flash
         self.proc, self.sock, self.lines = None, None, []
 
     def start(self):
         a = self.args
         cmd = [a.qemu, "-M", "esp32s3", "-m", "32M", "-nographic",
-               "-drive", f"file={a.flash},if=mtd,format=raw",
+               "-drive", f"file={self.flash},if=mtd,format=raw",
                "-drive", f"file={a.efuse},if=none,format=raw,id=efuse",
                "-global", "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
                "-global", "driver=timer.esp32s3.timg,property=wdt_disable,value=true",
@@ -253,6 +254,52 @@ class Gateway:
         rx = re.compile(pattern)
         return [l for t, l in self.lines if t >= since and rx.search(l)]
 
+    def wait_log(self, pattern, timeout, since=0.0):
+        """Time of the first log line matching @pattern, or None."""
+        rx = re.compile(pattern)
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            for t, line in list(self.lines):
+                if t >= since and rx.search(line):
+                    return t
+            time.sleep(0.05)
+        return None
+
+
+# ---------------------------------------------------------------- storage partition variants
+
+def storage_partition():
+    """(offset, size) of the "storage" partition in partitions.csv."""
+    for line in (HERE.parent.parent / "partitions.csv").read_text().splitlines():
+        cols = [c.strip() for c in line.split(",")]
+        if cols[0] == "storage":
+            return int(cols[3], 0), int(cols[4], 0)
+    raise SystemExit("no storage partition in partitions.csv")
+
+
+def flash_variant(args, work, name, files):
+    """Copy of the flash image whose LittleFS partition holds @files ({name: bytes});
+    files=None leaves the partition erased (not mountable)."""
+    offset, size = storage_partition()
+    if files is None:
+        image = b"\xff" * size
+    else:
+        src = work / f"fs-{name}"
+        shutil.rmtree(src, ignore_errors=True)
+        src.mkdir()
+        for fname, data in files.items():
+            (src / fname).write_bytes(data)
+        img = work / f"storage-{name}.bin"
+        subprocess.run([args.littlefs_python, "-m", "littlefs", "create", str(src), str(img),
+                        f"--fs-size={size}", "--name-max=64", "--block-size=4096"],
+                       check=True, stdout=subprocess.DEVNULL)
+        image = img.read_bytes()
+    flash = bytearray(pathlib.Path(args.flash).read_bytes())
+    flash[offset:offset + len(image)] = image
+    out = work / f"flash-{name}.bin"
+    out.write_bytes(flash)
+    return out
+
 
 # ---------------------------------------------------------------- scenario
 
@@ -275,6 +322,8 @@ def main():
     ap.add_argument("--flash", required=True)
     ap.add_argument("--efuse", required=True)
     ap.add_argument("--workdir", required=True)
+    ap.add_argument("--littlefs-python", required=True,
+                    help="python with the littlefs-python package (build-qemu/littlefs_py_venv)")
     args = ap.parse_args()
     work = pathlib.Path(args.workdir)
     log = work / "uart0.log"
@@ -290,6 +339,7 @@ def main():
     slave.ctx.setValues(3, 10, [50])   # Setpoint raw 50 -> 5.0
     slave.start()
     try:
+        run_config_failsafe(args, work)
         run(args, log, slave, broker, conf, work)
     finally:
         stop.set()
@@ -328,6 +378,44 @@ def seq_continuity(msgs):
             errors.append(f"{kind} seq {p.seq} expected {expect}")
         expect = (p.seq + 1) % 256
     return errors
+
+
+def run_config_failsafe(args, work):
+    """CFG-1: the embedded default is used only when /cfg/config.json does not exist; any
+    other problem stops the gateway (no polling, no MQTT) with the error state and a log."""
+    good = (HERE / "fs" / "config.json").read_bytes()
+    limit = 128 * 1024  # CONFIG_GW_CONFIG_MAX_BYTES
+    cases = [
+        ("oversized", {"config.json": good + b" " * (limit + 1 - len(good))},
+         r"config\.json: 131073 bytes; el máximo es 131072"),
+        ("unmountable", None, r"partición LittleFS 'storage' no montable"),
+        ("empty", {"config.json": b""}, r"config\.json: archivo vacío"),
+    ]
+    obs = Observer()
+    for name, files, reason in cases:
+        gw = Gateway(args, work / f"uart0-{name}.log", flash_variant(args, work, name, files))
+        obs.drain()
+        t0 = time.monotonic()
+        gw.start()
+        hit = gw.wait_log(r"configuration rejected .*" + reason, 20, t0)
+        led = gw.wait_log(r"status: config error", 2, t0)
+        time.sleep(6)  # long enough for DHCP + SNTP wait + a connection attempt
+        started = gw.find(r"connecting to|rs485: UART|net: IPv4", t0)
+        births = [m for m in CAPTURE if m[0] >= t0 and "/NBIRTH/" in m[1]]
+        gw.kill()
+        check(f"CFG-1 {name} config file -> nothing starts, error LED, ERROR log with the reason",
+              hit and led and not started and not births,
+              (gw.find(r"configuration rejected", t0) or ["no 'configuration rejected' log"])[0] +
+              f"; LED error={bool(led)}; started={started[:1]}; NBIRTHs={len(births)}")
+
+    gw = Gateway(args, work / "uart0-absent.log", flash_variant(args, work, "absent", {}))
+    t0 = time.monotonic()
+    gw.start()
+    hit = gw.wait_log(r"configuration from embedded default", 20, t0)
+    gw.kill()
+    check("CFG-2 missing config file -> embedded default", hit,
+          (gw.find(r"configuration from", t0) or ["no 'configuration from' log"])[0])
+    obs.close()
 
 
 def run(args, log, slave, broker, conf, work):
