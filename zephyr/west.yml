@@ -1,0 +1,25 @@
+# Minimal west manifest used to build this application (Zephyr v4.5.0).
+#
+# Usage (outside this repository):
+#   mkdir -p ws/manifest && cp west.yml ws/manifest/
+#   cd ws && west init -l manifest && west update --narrow -o=--depth=1
+#   west blobs fetch hal_espressif   # only needed for Wi-Fi/BLE, not by the MVP
+manifest:
+  remotes:
+    - name: zephyrproject-rtos
+      url-base: https://github.com/zephyrproject-rtos
+  projects:
+    - name: zephyr
+      remote: zephyrproject-rtos
+      revision: v4.5.0
+      import:
+        name-allowlist:
+          - hal_espressif
+          - mbedtls
+          - nanopb
+          - littlefs
+          - mcuboot
+          - picolibc
+          - zcbor
+  self:
+    path: manifest
