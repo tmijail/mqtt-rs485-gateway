@@ -49,24 +49,57 @@ static bool fail(gw_cfg_err_t *err, const char *path, const char *fmt, ...)
 
 static void join(char *out, size_t cap, const char *path, const char *key)
 {
-    snprintf(out, cap, "%s.%s", path, key);
+    snprintf(out, cap, "%s%s%s", path, path[0] != '\0' ? "." : "", key);
+}
+
+/* 1-based line and column (in characters, not UTF-8 bytes) of @p at in @p json. */
+static void line_col(const char *json, const char *at, unsigned *line, unsigned *col)
+{
+    *line = 1;
+    *col = 1;
+    for (const char *c = json; c < at; c++) {
+        if (*c == '\n') {
+            (*line)++;
+            *col = 1;
+        } else if (((unsigned char)*c & 0xC0u) != 0x80u) {
+            (*col)++;
+        }
+    }
+}
+
+static bool fail_at(gw_cfg_err_t *err, const char *json, const char *at, const char *what)
+{
+    unsigned line, col;
+    line_col(json, at, &line, &col);
+    snprintf(err->msg, sizeof(err->msg), "JSON mal formado en la línea %u, columna %u: %s", line,
+             col, what);
+    return false;
 }
 
 /* ---------- generic typed getters ---------- */
 
+/* Every object of the schema goes through here: unknown keys (typos) and duplicated
+ * keys (cJSON keeps both and lookups see only the first) are rejected. */
 static bool check_keys(const cJSON *obj, const char *path, const char *const *allowed, size_t n,
                        gw_cfg_err_t *err)
 {
     if (!cJSON_IsObject(obj)) {
-        return fail(err, path, "se esperaba un objeto JSON");
+        return fail(err, path[0] != '\0' ? path : "$", "se esperaba un objeto JSON");
     }
     for (const cJSON *it = obj->child; it != NULL; it = it->next) {
+        char p[96];
+        join(p, sizeof(p), path, it->string);
         bool known = false;
         for (size_t i = 0; i < n && !known; i++) {
             known = strcmp(it->string, allowed[i]) == 0;
         }
         if (!known) {
-            return fail(err, path, "clave desconocida '%s'", it->string);
+            return fail(err, p, "clave desconocida");
+        }
+        for (const cJSON *prev = obj->child; prev != it; prev = prev->next) {
+            if (strcmp(prev->string, it->string) == 0) {
+                return fail(err, p, "clave duplicada");
+            }
         }
     }
     return true;
@@ -532,19 +565,25 @@ bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_
     cJSON_Hooks hooks = {.malloc_fn = tracked_alloc, .free_fn = s_release};
     cJSON_InitHooks(&hooks);
     s_alloc_failed = false;
-    cJSON *root = cJSON_ParseWithLength(json, len);
+    const char *end = NULL;
+    cJSON *root = cJSON_ParseWithLengthOpts(json, len, &end, false);
     if (root == NULL && s_alloc_failed) {
         fail(err, "$", "memoria insuficiente para analizar %zu bytes de JSON", len);
         return false;
     }
     if (root == NULL) {
         const char *at = cJSON_GetErrorPtr();
-        size_t off = (at != NULL && at >= json && at <= json + len) ? (size_t)(at - json) : 0;
-        fail(err, "$", "JSON mal formado cerca del byte %zu", off);
-        memset(cfg, 0, sizeof(*cfg));
-        return false;
+        return fail_at(err, json, (at != NULL && at >= json && at <= json + len) ? at : json,
+                       "sintaxis no válida");
     }
-    bool ok = check_keys(root, "$", keys, 7, err) && parse_network(root, cfg, err) &&
+    while (end < json + len && (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')) {
+        end++;
+    }
+    if (end < json + len && *end != '\0') {
+        cJSON_Delete(root);
+        return fail_at(err, json, end, "contenido después del documento");
+    }
+    bool ok = check_keys(root, "", keys, 7, err) && parse_network(root, cfg, err) &&
               parse_ntp(root, cfg, err) && parse_mqtt(root, cfg, err) &&
               parse_sparkplug(root, cfg, err) && parse_rs485(root, cfg, err) &&
               parse_local_io(root, cfg, err) && parse_devices(root, cfg, err);

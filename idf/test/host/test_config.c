@@ -134,7 +134,7 @@ static void test_schema_rules(void)
                               "\"word_order\":\"middle\"}"),
                     "big|little");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"adress\":0,\"type\":\"int16\"}"),
-                    "clave desconocida 'adress'");
+                    "devices[0].tags[0].adress: clave desconocida");
     ASSERT_REJECTED(parse_tag("{\"area\":\"input\",\"address\":0,\"type\":\"int16\"}"),
                     "devices[0].tags[0].name: campo obligatorio");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\"},"
@@ -170,8 +170,7 @@ static void test_section_errors(void)
                     "rs485.baud");
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
                           "\"edge_node_id\":\"E\"},\"extra\":1}"),
-                    "clave desconocida 'extra'");
-    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\",}"), "JSON mal formado");
+                    "extra: clave desconocida");
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
                           "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"D\",\"unit_id\":248,"
                           "\"tags\":[]}]}"),
@@ -223,6 +222,48 @@ static void test_limits(void)
     snprintf(doc + n, sizeof(doc) - (size_t)n, "]}");
     ASSERT_REJECTED(parse(doc), "devices[4].tags: se supera el máximo total de 256");
     TEST_ASSERT_EQUAL(0, cfg.tag_count);  /* zeroed on failure */
+}
+
+static void test_syntax_errors_give_line_and_column(void)
+{
+    ASSERT_REJECTED(parse("{\n  \"mqtt\": {\"host\": \"b\"}\n  \"sparkplug\": {}\n}"),
+                    "JSON mal formado en la línea 3, columna 3");  /* missing ',' */
+    ASSERT_REJECTED(parse("{\"mqtt\": {\"host\": tru}}"), "línea 1, columna 19");
+    /* columns count characters, not UTF-8 bytes */
+    ASSERT_REJECTED(parse("{\"mqtt\": {\"host\": \"\xc3\xa1\" x}}"), "línea 1, columna 23");
+    ASSERT_REJECTED(parse("{\"mqtt\": {\"host\": \"b\"}, \"devices\": [\n"), "línea 1");
+    ASSERT_REJECTED(parse("{\"mqtt\": {\"host\": \"b\"}}\n\n  x"),
+                    "línea 3, columna 3: contenido después del documento");
+    TEST_ASSERT_NULL(strstr(err.msg, "$"));
+}
+
+static void test_semantic_errors_give_json_path(void)
+{
+    static const char doc[] =
+        "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+        "\"devices\":[{\"name\":\"A\",\"unit_id\":1,\"tags\":[{\"name\":\"t\",\"area\":\"coil\","
+        "\"address\":0,\"type\":\"bool\"}]},"
+        "{\"name\":\"B\",\"unit_id\":2,\"tags\":["
+        "{\"name\":\"a\",\"area\":\"input\",\"address\":0,\"type\":\"int16\"},"
+        "{\"name\":\"b\",\"area\":\"input\",\"address\":1,\"type\":\"int16\"},"
+        "{\"name\":\"c\",\"area\":\"input\",\"address\":2,\"type\":\"int8\"}]}]}";
+    ASSERT_REJECTED(parse(doc), "devices[1].tags[2].type: valor no válido");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":[]}"),
+                    "sparkplug: se esperaba un objeto JSON");
+    ASSERT_REJECTED(parse("[]"), "$: se esperaba un objeto JSON");
+}
+
+static void test_duplicate_keys_rejected(void)
+{
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"a\",\"port\":1883,\"host\":\"b\"},"
+                          "\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}}"),
+                    "mqtt.host: clave duplicada");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
+                              "\"address\":4}"),
+                    "devices[0].tags[0].address: clave duplicada");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[],\"devices\":[]}"),
+                    "devices: clave duplicada");
 }
 
 /* SPEC maximum: 16 devices x 16 tags carrying every optional field (CFG-1 with H1 of the
@@ -299,6 +340,9 @@ int main(void)
     RUN_TEST(test_schema_rules);
     RUN_TEST(test_section_errors);
     RUN_TEST(test_limits);
+    RUN_TEST(test_syntax_errors_give_line_and_column);
+    RUN_TEST(test_semantic_errors_give_json_path);
+    RUN_TEST(test_duplicate_keys_rejected);
     RUN_TEST(test_spec_maximum_document);
     RUN_TEST(test_allocator_and_out_of_memory);
     return UNITY_END();

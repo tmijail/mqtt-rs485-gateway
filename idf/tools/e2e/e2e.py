@@ -390,6 +390,12 @@ def run_config_failsafe(args, work):
          r"config\.json: 131073 bytes; el máximo es 131072"),
         ("unmountable", None, r"partición LittleFS 'storage' no montable"),
         ("empty", {"config.json": b""}, r"config\.json: archivo vacío"),
+        # without the ',' that closes "network" (line 4), the parser stops at the '"' of
+        # "ntp": line 5, column 3
+        ("syntax-error", {"config.json": good.replace(b'"dhcp": true\n  },', b'"dhcp": true\n  }', 1)},
+         r"JSON mal formado en la línea 5, columna 3"),
+        ("semantic-error", {"config.json": good.replace(b'"type": "float32"', b'"type": "float64"', 1)},
+         r"devices\[0\]\.tags\[0\]\.type: valor no válido"),
     ]
     obs = Observer()
     for name, files, reason in cases:

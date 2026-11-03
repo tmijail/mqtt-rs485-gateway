@@ -157,6 +157,8 @@ Tabla de particiones (`partitions.csv`, 16 MB): `nvs` 24 KB, `otadata`, `phy_ini
    - `/cfg/config.json: 140000 bytes; el máximo es 131072 (CONFIG_GW_CONFIG_MAX_BYTES)`;
    - `partición LittleFS 'storage' no montable (ESP_FAIL)`;
    - `devices[0].tags[1].writable: solo las áreas coil y holding son escribibles`.
+
+   Los errores semánticos llevan la **ruta JSON** del valor (`devices[1].tags[2].type: valor no válido (se esperaba bool|uint16|…)`, `devices[0].tags[0].scal: clave desconocida`). Los de sintaxis llevan **línea y columna**, contadas en caracteres a partir del puntero de error de cJSON (`JSON mal formado en la línea 5, columna 3: sintaxis no válida`); también se rechaza el contenido que sobra después del documento. Las **claves duplicadas** en cualquier objeto se rechazan (`mqtt.host: clave duplicada`): cJSON las acepta y sus búsquedas solo ven la primera.
 4. **Límite de tamaño: 128 KiB** (`CONFIG_GW_CONFIG_MAX_BYTES`, menú `Gateway: storage`). El máximo del esquema (16 dispositivos, 256 tags con todos los campos) ocupa unos 46 KB en JSON compacto y 82 KB con sangría de 2 espacios. Al arrancar se asignan el búfer del archivo y el árbol de cJSON (unos 200 KB para 256 tags), **en PSRAM** si la hay; se liberan antes de arrancar las tareas. Sin PSRAM (QEMU) el límite real es el heap interno libre, y quedarse sin memoria se informa como tal.
 
 Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
@@ -187,7 +189,7 @@ Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 cmake -S idf/test/host -B build-host && cmake --build build-host -j3 && ctest --test-dir build-host
 ```
 
-Resultado: **10/10 ejecutables y 62/62 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
+Resultado: **10/10 ejecutables y 65/65 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
 
 | Suite | Casos | Qué cubre |
 |---|---|---|
@@ -195,7 +197,7 @@ Resultado: **10/10 ejecutables y 62/62 casos OK**, compilados con `-Wall -Wextra
 | `test_mb_master` | 8 | t3,5 y retardo entre tramas, timeout y reintentos, CRC malo, unidad equivocada, excepción sin reintento |
 | `test_conv` | 5 | Mapeo de datatypes §6, int16/uint16/int32/uint32/float32, ABCD/CDAB, escala inversa (12,3 → 123), rangos |
 | `test_logic` | 6 | RBE y deadband contra el último valor reportado (deriva), validez y NaN, debounce, backoff 1–60 s, fuera de línea |
-| `test_config` | 8 | Ejemplo §6 literal, JSON embebido, valores por defecto, reglas del esquema, errores con ruta, límites 16/64/256, documento máximo (256 tags, > 40 KB), asignador del árbol y falta de memoria |
+| `test_config` | 11 | Ejemplo §6 literal, JSON embebido, valores por defecto, reglas del esquema, errores con ruta (`devices[1].tags[2].type`), sintaxis con línea y columna (también con UTF-8 y contenido sobrante), claves duplicadas, límites 16/64/256, documento máximo (256 tags, > 40 KB), asignador del árbol y falta de memoria |
 | `test_plan` | 2 | Lecturas en bloque, solapes, huecos, límite de 125 registros |
 | `test_spb` | 7 | Ida y vuelta de todos los tipos, formato wire (Int16 con extensión de signo), NDEATH sin seq, peor caso de DBIRTH en el búfer |
 | `test_node` | 8 | NBIRTH y DBIRTH (nombre, alias, datatype, valor; alias únicos), DDEATH, DDATA por excepción, seq compartido con vuelta a 0, rebirth, NCMD DO/Reboot, DCMD por nombre y alias, descartes |
@@ -300,13 +302,13 @@ Leyenda de **Evidencia**:
 | IO-1 | Implementado | `components/gw_board/gw_io.c`, `gw_debounce.c`, `gw_bsp` | H (debounce y polaridad) + Q (pines simulados con la polaridad de `gw_bsp`); GPIO reales C |
 | IO-2 | Implementado | `gw_core/src/gw_dout.c`, `gw_io.c`, `gw_bsp` | H (secuencia de arranque, activa en bajo, mezclas, errores de bus) + Q (registros simulados); I²C real C |
 | IO-5 | Implementado | `components/gw_board/gw_status.c` | Q (estados en el log); RMT/WS2812 C; colores sin verificar |
-| CFG-1 | Implementado | `gw_core/src/gw_config.c`, `gw_storage/gw_storage.c`, `main/main.c` | H (documento máximo de 256 tags, falta de memoria) + Q (archivo demasiado grande, vacío y partición sin montar: nada arranca, LED de error, log ERROR) |
+| CFG-1 | Implementado | `gw_core/src/gw_config.c`, `gw_storage/gw_storage.c`, `main/main.c` | H (documento máximo de 256 tags, falta de memoria, rutas JSON, línea y columna, claves duplicadas) + Q (archivo demasiado grande, vacío, con error de sintaxis o de esquema y partición sin montar: nada arranca, LED de error, log ERROR con el motivo) |
 | CFG-2 | Implementado | `gw_storage/gw_storage.c`, `main/CMakeLists.txt` | Q (LittleFS; respaldo embebido solo si falta el archivo) |
 | FW-4 | Implementado | `idf/CMakeLists.txt` (`PROJECT_VER`) | Q (`0.1.0+g<hash>[.dirty]` en NBIRTH) |
 | REL-1 | Implementado | `gw_bus.c`, `gw_edge.c`, `sdkconfig.defaults` | C/Q (configurado; sin inyección de fallos) |
 | REL-2 | **Parcial** | Todo `gw_*` | El código propio es estático y no asigna en el camino crítico; **lwIP y esp-mqtt asignan del heap internamente** (acotado, no estático) |
 | REL-3 | Implementado | `esp_log` en todos los módulos | Q |
-| QA-1 | Implementado | `test/host/` | 62 casos |
+| QA-1 | Implementado | `test/host/` | 65 casos |
 | QA-2 | Implementado | — | 0 warnings; tamaño en §3.2 |
 
 **Fuera del MVP**, implementado total o parcialmente:
@@ -340,7 +342,7 @@ La build de QEMU difiere de la de placa en esos puntos (`sdkconfig.qemu`).
 - **Configuración inválida o ilegible = nada arranca.** La SPEC pide "no arrancar la encuesta". Aquí tampoco arrancan la red ni MQTT, porque sin una configuración válida no hay a qué conectarse. Recuperarse requiere regrabar (no hay web en el MVP).
 - **Respaldo embebido solo si falta el archivo.** Un equipo grabado sin la partición `storage` (por ejemplo, solo la app) no monta LittleFS y queda detenido: es deliberado, para no arrancar nunca con la identidad Sparkplug del ejemplo.
 - **Validación estricta y decisiones propias:**
-  - claves desconocidas = error;
+  - claves desconocidas o duplicadas = error;
   - `coil`/`discrete` ⇒ `bool`;
   - `scale` ≠ 0;
   - `bool` sin `scale`/`offset`;
