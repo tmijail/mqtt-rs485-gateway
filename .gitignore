@@ -1,0 +1,8 @@
+build/
+build-*/
+twister-out*/
+sdkconfig.old
+managed_components/
+__pycache__/
+*.pyc
+.venv/
