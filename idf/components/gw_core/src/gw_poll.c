@@ -34,6 +34,21 @@ static double decode_member(const gw_tag_cfg_t *t, const mb_response_t *rsp, uin
     return gw_conv_from_regs(t, regs);
 }
 
+/* One transaction to @p dev; the attempts it took are added to the device's counters. */
+static mb_status_t execute(gw_poller_t *p, uint16_t dev, const mb_request_t *rq, mb_response_t *rsp)
+{
+    const mb_stats_t before = p->mb->stats;
+    mb_status_t st = mb_master_execute(p->mb, rq, rsp);
+    const mb_stats_t *after = &p->mb->stats;
+    mb_stats_t *acc = &p->stats[dev].bus;
+    acc->ok += after->ok - before.ok;
+    acc->timeout += after->timeout - before.timeout;
+    acc->crc += after->crc - before.crc;
+    acc->frame += after->frame - before.frame;
+    acc->exception += after->exception - before.exception;
+    return st;
+}
+
 void gw_poller_init(gw_poller_t *p, const gw_config_t *cfg, mb_master_t *mb,
                     const gw_poller_opts_t *opts, uint32_t now_ms)
 {
@@ -89,7 +104,7 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
         mb_request_t rq = {
             .unit = d->unit_id, .fc = read_fc(blk->area), .addr = blk->start, .qty = blk->qty};
         mb_response_t rsp;
-        mb_status_t st = mb_master_execute(p->mb, &rq, &rsp);
+        mb_status_t st = execute(p, dev, &rq, &rsp);
         if (st != MB_OK && st != MB_ERR_EXCEPTION) {
             failed = true;
             GW_LOGD(TAG, "%s: fc %u addr %u qty %u unanswered (status %d); cycle failed", d->name,
@@ -113,13 +128,15 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
     }
 
     gw_dev_event_t ev = gw_devstate_cycle(&p->state[dev], !failed, d->offline_after);
+    p->stats[dev].cycles++;
+    p->stats[dev].failed_cycles += failed ? 1u : 0u;
     if (ev == GW_DEV_WENT_OFFLINE) {
         for (uint16_t i = 0; i < d->tag_count; i++) {
             p->work[i].valid = false;
         }
-        const mb_stats_t *st = &p->mb->stats;
+        const mb_stats_t *st = &p->stats[dev].bus;
         GW_LOGW(TAG,
-                "%s (unit %u) offline after %u failed cycles; bus totals: ok %lu timeout %lu "
+                "%s (unit %u) offline after %u failed cycles; device totals: ok %lu timeout %lu "
                 "crc %lu frame %lu exception %lu",
                 d->name, d->unit_id, d->offline_after, (unsigned long)st->ok,
                 (unsigned long)st->timeout, (unsigned long)st->crc, (unsigned long)st->frame,
@@ -128,6 +145,7 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
         GW_LOGI(TAG, "%s (unit %u) online", d->name, d->unit_id);
     }
     gw_tagdb_put_device(cfg, dev, p->work, p->state[dev].online);
+    gw_tagdb_put_stats(dev, &p->stats[dev]);
 
     p->next_due_ms[dev] += d->poll_ms;
     if ((int32_t)(p->next_due_ms[dev] - now_ms) <= 0) {
@@ -140,7 +158,8 @@ gw_write_status_t gw_poller_write(gw_poller_t *p, uint16_t tag, double value)
 {
     const gw_config_t *cfg = p->cfg;
     const gw_tag_cfg_t *t = &cfg->tags[tag];
-    const gw_device_cfg_t *d = &cfg->devices[gw_config_tag_device(cfg, tag)];
+    uint16_t dev = gw_config_tag_device(cfg, tag);
+    const gw_device_cfg_t *d = &cfg->devices[dev];
     if (!t->writable) {
         return GW_WRITE_NOT_WRITABLE;
     }
@@ -180,7 +199,8 @@ gw_write_status_t gw_poller_write(gw_poller_t *p, uint16_t tag, double value)
     }
 
     mb_response_t rsp;
-    mb_status_t st = mb_master_execute(p->mb, &rq, &rsp);
+    mb_status_t st = execute(p, dev, &rq, &rsp);
+    gw_tagdb_put_stats(dev, &p->stats[dev]);
     if (st != MB_OK) {
         GW_LOGW(TAG, "%s/%s: write fc %u failed (status %d, exception %u)", d->name, t->name,
                 rq.fc, st, st == MB_ERR_EXCEPTION ? rsp.exception : 0);
@@ -189,7 +209,9 @@ gw_write_status_t gw_poller_write(gw_poller_t *p, uint16_t tag, double value)
 
     /* Read back so the published value is what the device actually holds. */
     mb_request_t rd = {.unit = d->unit_id, .fc = read_fc(t->area), .addr = t->address, .qty = width};
-    if (mb_master_execute(p->mb, &rd, &rsp) == MB_OK) {
+    bool read_back = execute(p, dev, &rd, &rsp) == MB_OK;
+    gw_tagdb_put_stats(dev, &p->stats[dev]);
+    if (read_back) {
         confirmed = decode_member(t, &rsp, t->address);
     } else {
         GW_LOGW(TAG, "%s/%s: read-back failed, reporting the acknowledged value", d->name, t->name);

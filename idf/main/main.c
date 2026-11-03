@@ -7,6 +7,7 @@
  *   sparkplug   (core 0, prio 8)   gw_edge: MQTT session, Sparkplug engine, NCMD/DCMD
  *   esp_timer                      gw_io:   1 kHz DI sampling and debounce
  *   status_led  (prio 2)           gw_status
+ *   console     (prio 2)           gw_shell: diagnostic REPL on the console UART
  *   + IDF tasks: esp-mqtt, lwIP tcpip, esp_eth, event loop
  */
 #include <stdio.h>
@@ -27,6 +28,7 @@
 #include "gw_net.h"
 #include "gw_port.h"
 #include "gw_rs485.h"
+#include "gw_shell.h"
 #include "gw_status.h"
 #include "gw_storage.h"
 #include "gw_tagdb.h"
@@ -36,15 +38,26 @@ static const char *TAG = "main";
 static gw_config_t s_cfg;   /* immutable after boot; shared read-only by every task */
 static char s_hardware[64];
 static gw_node_info_t s_info;  /* NBIRTH "Node Info/..." */
+static gw_cfg_err_t s_cfg_err;
 
 static void on_device_updated(uint16_t dev)
 {
     gw_edge_notify_device(dev);
 }
 
+static void start_shell(const gw_config_t *cfg, const char *source)
+{
+    const gw_shell_ctx_t ctx = {
+        .cfg = cfg, .config_source = source, .config_error = s_cfg_err.msg, .info = &s_info};
+    if (gw_shell_start(&ctx) != ESP_OK) {
+        ESP_LOGE(TAG, "console shell unavailable");
+    }
+}
+
 static void halt_with_config_error(const gw_cfg_err_t *err, const char *source)
 {
     gw_status_set(GW_ST_CFG_ERROR, true);
+    start_shell(NULL, source);  /* diagnostics stay available */
     for (;;) {
         ESP_LOGE(TAG, "configuration rejected (%s): %s", source, err->msg);
         ESP_LOGE(TAG, "nothing is started (no polling, no MQTT); fix it and reflash (see README)");
@@ -90,10 +103,15 @@ void app_main(void)
     }
     gw_storage_init();  /* failure is logged; bdSeq then lives in RAM only */
 
-    gw_cfg_err_t err;
+    esp_chip_info_t chip;
+    esp_chip_info(&chip);
+    snprintf(s_hardware, sizeof(s_hardware), "%s (ESP32-S3 rev %d.%d)", gw_bsp.name,
+             chip.revision / 100, chip.revision % 100);
+    s_info.hardware = s_hardware;
+
     const char *source;
-    if (!gw_storage_load_config(&s_cfg, &err, &source)) {
-        halt_with_config_error(&err, source);
+    if (!gw_storage_load_config(&s_cfg, &s_cfg_err, &source)) {
+        halt_with_config_error(&s_cfg_err, source);
     }
     ESP_LOGI(TAG, "configuration from %s: group '%s', node '%s', %u devices, %u tags", source,
              s_cfg.sparkplug.group_id, s_cfg.sparkplug.edge_node_id, s_cfg.device_count,
@@ -103,12 +121,6 @@ void app_main(void)
                  s_cfg.sparkplug.primary_host_id);
     }
 
-    esp_chip_info_t chip;
-    esp_chip_info(&chip);
-    snprintf(s_hardware, sizeof(s_hardware), "%s (ESP32-S3 rev %d.%d)", gw_bsp.name,
-             chip.revision / 100, chip.revision % 100);
-
-    s_info.hardware = s_hardware;
     ESP_ERROR_CHECK(gw_edge_start(&s_cfg, &s_info));
     if (gw_io_init(&s_cfg, gw_edge_notify_io) != ESP_OK) {
         /* Keep the gateway running: DIs are still published, DO commands are refused. */
@@ -130,4 +142,5 @@ void app_main(void)
         .time_synced = gw_edge_notify_time_synced,
     };
     ESP_ERROR_CHECK(gw_net_start(&s_cfg, &net_cb));
+    start_shell(&s_cfg, source);
 }

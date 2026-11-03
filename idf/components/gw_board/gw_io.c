@@ -1,24 +1,16 @@
 #include "gw_io.h"
 
-#include <stdio.h>
-
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "gw_bsp.h"
 #include "gw_debounce.h"
 #include "gw_dout.h"
 #include "gw_port.h"
 #include "gw_tagdb.h"
-
-#if CONFIG_GW_IO_SIMULATED
-#include "driver/uart.h"
-#include "driver/uart_vfs.h"
-#endif
 
 static const char *TAG = "io";
 
@@ -59,36 +51,21 @@ static uint8_t read_pins(void)
     return s_sim_pins;
 }
 
-static void sim_console_task(void *arg)
+void gw_io_sim_set_di(uint8_t index, bool active)
 {
-    (void)arg;
-    char line[32];
-    for (;;) {
-        unsigned ch, level;
-        if (fgets(line, sizeof(line), stdin) == NULL) {
-            vTaskDelay(pdMS_TO_TICKS(20));
-            continue;
-        }
-        if (sscanf(line, "di %u %u", &ch, &level) == 2 && ch >= 1 && ch <= GW_BSP_IO_CHANNELS) {
-            /* The console sets the logical input; the pin takes the board's level for it. */
-            uint8_t bit = (uint8_t)(1u << (ch - 1));
-            uint8_t active = gw_pins_to_active(s_sim_pins, gw_bsp.di.active_low);
-            active = level ? (uint8_t)(active | bit) : (uint8_t)(active & ~bit);
-            s_sim_pins = gw_active_to_pins(active, gw_bsp.di.active_low);
-            ESP_LOGI(TAG, "sim: DI%u <- %u", ch, level ? 1 : 0);
-        }
-    }
+    /* The console sets the logical input; the pin takes the board's level for it. */
+    uint8_t bit = (uint8_t)(1u << index);
+    uint8_t now = gw_pins_to_active(s_sim_pins, gw_bsp.di.active_low);
+    now = active ? (uint8_t)(now | bit) : (uint8_t)(now & ~bit);
+    s_sim_pins = gw_active_to_pins(now, gw_bsp.di.active_low);
+    ESP_LOGI(TAG, "sim: DI%u <- %u", index + 1, active ? 1 : 0);
 }
 
 static esp_err_t hw_init(void)
 {
     s_sim_pins = gw_active_to_pins(0, gw_bsp.di.active_low);  /* all inputs idle */
-    ESP_RETURN_ON_ERROR(uart_driver_install(CONFIG_ESP_CONSOLE_UART_NUM, 256, 0, 0, NULL, 0), TAG,
-                        "console uart");
-    uart_vfs_dev_use_driver(CONFIG_ESP_CONSOLE_UART_NUM);
-    ESP_LOGW(TAG, "SIMULATED I/O: DIs from the console ('di <1-8> <0|1>'), DOs in RAM");
-    return xTaskCreate(sim_console_task, "sim_di", 3072, NULL, 1, NULL) == pdPASS ? ESP_OK
-                                                                                  : ESP_ERR_NO_MEM;
+    ESP_LOGW(TAG, "SIMULATED I/O: DIs from the console shell ('di <1-8> <0|1>'), DOs in RAM");
+    return ESP_OK;
 }
 
 #else /* real board */

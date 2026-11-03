@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "gw_config.h"
+#include "mb_master.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,6 +21,13 @@ typedef struct {
     uint64_t ts_ms;      /* acquisition time, UTC ms */
     bool valid;          /* false: never read, read failed with an exception, or device offline */
 } gw_tag_value_t;
+
+/** Per-device diagnostics (MB-13), kept by the poll engine. */
+typedef struct {
+    uint32_t cycles;          /* poll cycles run */
+    uint32_t failed_cycles;   /* cycles with a request unanswered after its retries */
+    mb_stats_t bus;           /* outcome of every attempt (retries included) to this device */
+} gw_dev_stats_t;
 
 typedef struct {
     uint8_t di;          /* bit n = DI n+1 (debounced, true = active) */
@@ -37,6 +45,9 @@ void gw_tagdb_put_device(const gw_config_t *cfg, uint16_t dev, const gw_tag_valu
 
 /** Copy a device's values (tag_count entries) and online flag. */
 void gw_tagdb_get_device(const gw_config_t *cfg, uint16_t dev, gw_tag_value_t *vals, bool *online);
+
+void gw_tagdb_put_stats(uint16_t dev, const gw_dev_stats_t *stats);
+void gw_tagdb_get_stats(uint16_t dev, gw_dev_stats_t *stats);
 
 /** Update one tag (write confirmation). */
 void gw_tagdb_put_tag(uint16_t tag, const gw_tag_value_t *val);

@@ -6,7 +6,7 @@ menu "Gateway: board I/O"
         help
             Replaces the GPIO inputs, the I2C output expander and the RGB LED by RAM
             models so the firmware runs under QEMU. DI levels are then set from the
-            console with "di <1-8> <0|1>". Never enable on hardware.
+            console shell with "di <1-8> <0|1>". Never enable on hardware.
 
     config GW_DI_SAMPLE_US
         int "DI sampling period (us)"

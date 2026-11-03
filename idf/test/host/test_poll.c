@@ -132,6 +132,28 @@ static void test_unanswered_block_skips_the_rest_of_the_cycle(void)
     TEST_ASSERT_EQUAL(before + 1 + 3, s.requests);  /* coil once, holding 1 + 2 retries, no input */
 }
 
+static void test_device_counters(void)
+{
+    gw_dev_stats_t st;
+    gw_poller_poll(&p, 0, 0);                 /* 3 blocks answered */
+    s.mute_fc = MB_FC_READ_INPUT_REGISTERS;
+    gw_poller_poll(&p, 0, 1000);              /* 2 answered, 1 x (1 + 2 retries) timeouts */
+    s.mute_fc = 0;
+    s.exception = 2;
+    gw_poller_poll(&p, 0, 2000);              /* 3 exceptions, not retried */
+    gw_tagdb_get_stats(0, &st);
+    TEST_ASSERT_EQUAL_UINT32(3, st.cycles);
+    TEST_ASSERT_EQUAL_UINT32(1, st.failed_cycles);
+    TEST_ASSERT_EQUAL_UINT32(5, st.bus.ok);
+    TEST_ASSERT_EQUAL_UINT32(3, st.bus.timeout);
+    TEST_ASSERT_EQUAL_UINT32(3, st.bus.exception);
+    s.exception = 0;
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 1, 1.0));  /* write + read-back */
+    gw_tagdb_get_stats(0, &st);
+    TEST_ASSERT_EQUAL_UINT32(7, st.bus.ok);
+    TEST_ASSERT_EQUAL_UINT32(3, st.cycles);
+}
+
 static void test_scheduling(void)
 {
     uint32_t wait;
@@ -191,6 +213,7 @@ int main(void)
     RUN_TEST(test_exception_keeps_device_online);
     RUN_TEST(test_unanswered_block_fails_the_cycle);
     RUN_TEST(test_unanswered_block_skips_the_rest_of_the_cycle);
+    RUN_TEST(test_device_counters);
     RUN_TEST(test_scheduling);
     RUN_TEST(test_write_setpoint_fc06);
     RUN_TEST(test_write_forced_multi);

@@ -26,7 +26,8 @@ Firmware del MVP (`docs/SPEC.md` §5) para la Waveshare **ESP32-S3-POE-ETH-8DI-8
 | `gw_net` | W5500 por SPI (u openeth en QEMU), DHCP o IP estática, SNTP | Sí |
 | `gw_bsp` | **Descripción declarativa de la placa** (`gw_bsp.c`): todos los pines, direcciones I²C y niveles activos (DI, DO, DE del RS485, I²C, LED y orden de color, buzzer, W5500). Los drivers la leen y no contienen datos de la placa | Sí (tipos) |
 | `gw_board` | 8 DI con muestreo a 1 kHz y debounce; 8 DO en el TCA9554 (sobre `gw_dout`, sin pulsos al arrancar); LED WS2812 de estado | Sí |
-| `gw_storage` | bdSeq en NVS; configuración desde LittleFS o embebida | Sí |
+| `gw_storage` | bdSeq en NVS; configuración desde LittleFS o embebida (solo si falta el archivo) | Sí |
+| `gw_shell` | Shell de diagnóstico `esp_console` en la consola: `status`, `devices`, `config` (y `di` en QEMU) | Sí |
 | `main` | `app_main`: carga la configuración y conecta los componentes | Sí |
 
 Dependencias gestionadas, **con versión fija** (`==`) en cada `idf_component.yml` y hash en `dependencies.lock`:
@@ -40,7 +41,7 @@ Dependencias gestionadas, **con versión fija** (`==`) en cada `idf_component.ym
 ### 1.2 Tareas, colas y propiedad
 
 ```
-                 esp_timer (1 kHz)                 consola UART0 (logs)
+                 esp_timer (1 kHz)                 consola UART0 (logs + shell)
                  gw_io: debounce DI ──┐
                                       │ flag + despertar
   ┌──────────────┐  cola escrituras   ▼            ┌──────────────────────────┐
@@ -61,6 +62,7 @@ Dependencias gestionadas, **con versión fija** (`==`) en cada `idf_component.ym
 | `sparkplug` (`gw_edge`) | 0 / 8 | 6 KB estática | Sí; despierta como mínimo cada 1 s | Cliente MQTT, `gw_node_t` (seq, alias, estado RBE), las DO (llamadas a `gw_io_set_do`) |
 | `esp_timer` (IDF) | — | IDF | — | Muestreo de DI (callback de 1 ms) |
 | `status_led` | — / 2 | 2,5 KB | No (no crítica) | El RMT del LED |
+| `console` (`gw_shell`) | — / 2 | 4 KB | No (no crítica) | La UART de la consola (REPL `esp_console`); solo lee `gw_tagdb` y `gw_status` |
 | esp-mqtt, tcpip, eth, event loop | IDF | IDF | IDLE vigiladas | — |
 
 **Concurrencia.** Los productores nunca bloquean al consumidor:
@@ -111,7 +113,7 @@ No se encontró esquemático publicado.
 | LED | WS2812 en GPIO38, **orden de bytes RGB** (no GRB) | Demo: `neopixelWrite(pin, green, red, blue)` (intercambia R y G); ESPHome: `rgb_order: RGB` | Media |
 | RS485 | UART1, TX 17, RX 18, RTS 21, modo `UART_MODE_RS485_HALF_DUPLEX` | Demo `WS_RS485.cpp`: `setPins(-1,-1,-1,21)` + `setMode(UART_MODE_RS485_HALF_DUPLEX)` | Alta |
 | W5500 | SPI 13/14/15, CS 16, INT 12, RST 39 | Wiki y `WS_ETH.h` | Alta |
-| Consola | USB-C → puente USB-UART CH34x en UART0 (GPIO 43/44) | La wiki enlaza el driver CH34XSER | Media. Si no hay logs, probar con `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG` |
+| Consola | USB-C → puente USB-UART CH34x en UART0 (GPIO 43/44) | La wiki enlaza el driver CH34XSER | Media. Si no hay logs, probar con `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG` (el shell también funciona ahí) |
 
 Todos estos datos están en un solo lugar, `components/gw_bsp/gw_bsp.c`. Las dos polaridades que solo se deducen de forma indirecta (DI y DO) se pueden invertir en `menuconfig` (menú `Gateway: board`); el resto es fijo. Arranque de las DO (`gw_dout`): el latch se carga con el nivel OFF de cada canal (0xFF con activa en bajo) **antes** de pasar los pines a salida; la escritura y la relectura se invierten según la máscara de polaridad.
 
@@ -137,15 +139,15 @@ idf.py size
 idf.py -p /dev/ttyUSB0 flash monitor # graba bootloader, tabla, app (ota_0) y la partición LittleFS
 ```
 
-Resultado de `idf.py size` (build limpia del 2026-11-03):
+Resultado de `idf.py size` (build limpia con `idf.py set-target esp32s3 build`, 1165/1165 objetivos, 0 warnings):
 
 | Región | Usado |
 |---|---|
-| Flash code (`.text`) | 474 192 B |
-| Flash data (`.rodata`, etc.) | 152 784 B |
-| DIRAM | 150 321 B de 341 760 (**44,0 %**): `.bss` 80 048, `.text` 53 895, `.data` 16 378 |
+| Flash code (`.text`) | 491 784 B |
+| Flash data (`.rodata`, etc.) | 156 400 B |
+| DIRAM | 153 121 B de 341 760 (**44,8 %**): `.bss` 82 768, `.text` 53 895, `.data` 16 458 |
 | IRAM | 16 384 B (100 %, lo normal en S3: el resto del código IRAM va en DIRAM) |
-| Imagen total | **713 669 B** (17 % de la partición `ota_0` de 4 MB) |
+| Imagen total | **734 957 B** (18 % de la partición `ota_0` de 4 MB) |
 
 Tabla de particiones (`partitions.csv`, 16 MB): `nvs` 24 KB, `otadata`, `phy_init`, `ota_0`/`ota_1` 4 MB cada una (reservadas para FW-1), `storage` LittleFS 1 MB y `coredump` 64 KB.
 
@@ -189,7 +191,7 @@ Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 cmake -S idf/test/host -B build-host && cmake --build build-host -j3 && ctest --test-dir build-host
 ```
 
-Resultado: **10/10 ejecutables y 67/67 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
+Resultado: **10/10 ejecutables y 68/68 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
 
 | Suite | Casos | Qué cubre |
 |---|---|---|
@@ -201,7 +203,7 @@ Resultado: **10/10 ejecutables y 67/67 casos OK**, compilados con `-Wall -Wextra
 | `test_plan` | 2 | Lecturas en bloque, solapes, huecos, límite de 125 registros |
 | `test_spb` | 7 | Ida y vuelta de todos los tipos, formato wire (Int16 con extensión de signo), NDEATH sin seq, peor caso de DBIRTH en el búfer |
 | `test_node` | 8 | NBIRTH y DBIRTH (nombre, alias, datatype, valor; alias únicos), DDEATH, DDATA por excepción, seq compartido con vuelta a 0, rebirth, NCMD DO/Reboot, DCMD por nombre y alias, descartes |
-| `test_poll` | 8 | Encuesta contra un esclavo simulado, fuera de línea tras N ciclos, excepción, un bloque sin respuesta (ciclo fallido, tags sin refrescar, DDEATH, sin vuelta a línea con el ciclo incompleto), planificación, escritura FC06 con relectura, FC15/FC16 forzadas |
+| `test_poll` | 9 | Encuesta contra un esclavo simulado, fuera de línea tras N ciclos, excepción, un bloque sin respuesta (ciclo fallido, tags sin refrescar, DDEATH, sin vuelta a línea con el ciclo incompleto), contadores por dispositivo, planificación, escritura FC06 con relectura, FC15/FC16 forzadas |
 | `test_dout` | 6 | Polaridad de 8 canales (activa en bajo, en alto y mixta), arranque del TCA9554 (latch OFF antes de CONFIG, también en arranque en caliente), DO/3 → pin bajo y relectura, errores de bus |
 
 Los tests de host descargan Unity y cJSON con `FetchContent`, desde GitHub y con tag fijo.
@@ -230,31 +232,32 @@ E2E_PYTHON=~/e2e/bin/python idf/tools/e2e/run_e2e.sh
 - QEMU `esp_develop_9.2.2`, máquina `esp32s3`, con el firmware compilado con el overlay `sdkconfig.qemu`.
 - Ethernet `open_eth` sobre slirp.
 - UART1 → socket → **pymodbus 3.8.6** como esclavo RTU, unidades 1 (`Meter1`, tags de §6) y 2 (`Bulk`, 60 registros).
-- UART0 → socket, para el log y para inyectar las DI.
+- UART0 → socket, para el log y el shell (las DI se inyectan con su comando `di`).
 - **mosquitto 2.0.18** privado (copia renombrada del binario, puerto 18831) y un respondedor SNTP. El harness solo envía señales a los procesos que arrancó él.
 - Para los arranques de configuración, el harness genera variantes de la imagen con otra partición `storage` (con `littlefs-python`, el mismo que usa la build) o con la partición borrada.
 
 Configuración usada: `tools/e2e/fs/config.json` (keepalive de 10 s).
 
-Resultado: **32/32 comprobaciones OK**.
+Resultado: **35/35 comprobaciones OK**.
 
 | Criterio | Resultado medido |
 |---|---|
 | CFG-1 / CFG-2: arranques con `config.json` de 131 073 B, vacío, con error de sintaxis, con error de esquema y con la partición borrada; y sin archivo | OK: en los cinco primeros no arranca nada (ni UART RS485, ni red, ni MQTT, 0 NBIRTH), el LED pasa a error y el log ERROR da el motivo (`… 131073 bytes; el máximo es 131072`, `línea 5, columna 3`, `devices[0].tags[0].type`, `no montable`). Sin archivo: configuración embebida |
 | §7.1 NBIRTH con seq = 0 y bdSeq; al matar la conexión TCP (SIGKILL a QEMU) el broker publica el NDEATH con el mismo bdSeq | OK: NBIRTH a 1,9 s del arranque; NDEATH con el bdSeq de la sesión |
-| Reinicio del broker (SIGTERM, 9 s parado) | OK: mosquitto publica el will (NDEATH, bdSeq de la sesión) al cerrarse; backoff 1000 → 1655 → 3209 → 6439 ms con bdSeq nuevo en cada intento; NBIRTH (seq 0, bdSeq nuevo) y DBIRTH de los dos equipos (seq 1 y 2) |
+| Reinicio del broker (SIGTERM, 9 s parado) | OK: mosquitto publica el will (NDEATH, bdSeq de la sesión) al cerrarse; backoff 1000 → 1851 → 3745 → 7181 ms con bdSeq nuevo en cada intento; NBIRTH (seq 0, bdSeq nuevo) y DBIRTH de los dos equipos (seq 1 y 2) |
 | Broker congelado (SIGSTOP 20 s > 1,5 × keepalive) | OK: el gateway declara muerta la sesión por keepalive a los 10,0 s (`No PING_RESP`); tras SIGCONT llegan los will de la sesión muerta y del intento hecho durante el congelamiento, y luego NBIRTH con bdSeq nuevo y los dos DBIRTH; la sesión nueva sigue viva |
-| §7.2 Esclavo apagado → DDEATH; encendido → DBIRTH | OK: DDEATH en 3,0 s (cota 5,8 s); DBIRTH 0,7 s después de volver |
-| §7.3 DI → NDATA en menos de 100 ms; NCMD DO/3 = true → NDATA | OK: 24 ms (incluye 20 ms de debounce); NDATA alias 22 = true (pines simulados con la polaridad de `gw_bsp`) |
+| §7.2 Esclavo apagado → DDEATH; encendido → DBIRTH | OK: DDEATH en 3,05 s (cota 5,8 s); DBIRTH 0,67 s después de volver |
+| §7.3 DI → NDATA en menos de 100 ms; NCMD DO/3 = true → NDATA | OK: 23 ms (incluye 20 ms de debounce); NDATA alias 22 = true (pines simulados con la polaridad de `gw_bsp`) |
 | §7.4 DCMD Setpoint = 12,3 → holding 10 = 123 por FC06 y DDATA | OK: el esclavo registró `(6, 10, [123])`; DDATA 12,3 |
 | §7.5 NCMD Rebirth → NBIRTH (seq 0, mismo bdSeq) y todos los DBIRTH | OK |
 | §7.6 Todos los payloads se decodifican con el proto oficial | OK: 36 mensajes, 0 errores |
+| CFG-6 shell en la consola; REL-5 | OK: `devices` da `Meter1 unit 1 online cycles 2 failed 0 \| ok 6 …` y, con el esclavo apagado, `offline … failed 3 \| … timeout 9`; `config` da el resumen; `status` responde también con la configuración rechazada. NBIRTH `Node Info/Reset Reason` = `power-on` en el primer arranque y `software` tras NCMD Reboot |
 | Extras | OK: DDATA solo por excepción, solo alias, deadband 0,1 respetada; DCMD por alias (FC05) y DCMD sobre métrica de solo lectura descartado con log; bdSeq persistido en NVS tras un corte de energía; NCMD Reboot publica NDEATH QoS 1 y **un solo** NDEATH (will descartado); DBIRTH de 2684 B (mayor que el búfer de 2 KB de esp-mqtt); 60 registros leídos con una sola FC03; timestamps UTC vía SNTP; continuidad de seq |
 
 **Lo que QEMU no cubre**, y por qué la build de emulador difiere (`sdkconfig.qemu`):
 
 - **W5500.** No está emulado; se usa `open_eth`.
-- **TCA9554, GPIO y RMT.** No están emulados; se usa `CONFIG_GW_IO_SIMULATED`: DO en RAM, DI por consola y LED solo en el log.
+- **TCA9554, GPIO y RMT.** No están emulados; se usa `CONFIG_GW_IO_SIMULATED`: DO en RAM, DI con el comando `di` del shell y LED solo en el log.
 - **Modo RS485 de la UART.** `uart_wait_tx_done` hace `assert` por `TX_DONE`; se usa UART normal.
 - **PSRAM octal.** QEMU da *segfault*; se deshabilita.
 - **Flash QIO.** Las lecturas de la app llegan desplazadas 2 bytes; se usa DIO.
@@ -312,13 +315,14 @@ Leyenda de **Evidencia**:
 | REL-1 | Implementado | `gw_bus.c`, `gw_edge.c`, `sdkconfig.defaults` | C/Q (configurado; sin inyección de fallos) |
 | REL-2 | **Parcial** | Todo `gw_*` | El código propio es estático y no asigna en el camino crítico; **lwIP y esp-mqtt asignan del heap internamente** (acotado, no estático) |
 | REL-3 | Implementado | `esp_log` en todos los módulos | Q |
-| QA-1 | Implementado | `test/host/` | 67 casos |
+| QA-1 | Implementado | `test/host/` | 68 casos |
 | QA-2 | Implementado | — | 0 warnings; tamaño en §3.2 |
 
 **Fuera del MVP**, implementado total o parcialmente:
 
 - **MB-11** Parcial: bloques con hueco máximo global por Kconfig, no por dispositivo.
-- **MB-13** Parcial: excepciones decodificadas y en el log; contadores globales, no por dispositivo.
+- **MB-13** Parcial: excepciones decodificadas y en el log; contadores por dispositivo (ciclos, ciclos fallidos e intentos ok / timeout / CRC / trama / excepción) en el shell y en el log de fuera de línea, no publicados por Sparkplug.
+- **CFG-6** Parcial: shell de diagnóstico de solo lectura en la consola (`status`, `devices`, `config`; `help` lista los comandos). Funciona también con la configuración rechazada. No cambia la configuración.
 - **MB-14** Parcial: escrituras antes del siguiente sondeo, no entre bloques.
 - **IO-3** Parcial: DO a OFF al reiniciar, sin el resto del modo seguro.
 - **REL-5** Implementado: `esp_reset_reason()` va al log de arranque y al NBIRTH como `Node Info/Reset Reason` (String, alias 6). H + Q (`power-on` en el primer arranque, `software` tras NCMD Reboot).
@@ -343,7 +347,7 @@ La build de QEMU difiere de la de placa en esos puntos (`sdkconfig.qemu`).
 
 ### 6.2 Configuración
 
-- **Configuración inválida o ilegible = nada arranca.** La SPEC pide "no arrancar la encuesta". Aquí tampoco arrancan la red ni MQTT, porque sin una configuración válida no hay a qué conectarse. Recuperarse requiere regrabar (no hay web en el MVP).
+- **Configuración inválida o ilegible = nada arranca.** La SPEC pide "no arrancar la encuesta". Aquí tampoco arrancan la red ni MQTT, porque sin una configuración válida no hay a qué conectarse. Recuperarse requiere regrabar (no hay web en el MVP); el comando `status` del shell muestra el motivo.
 - **Respaldo embebido solo si falta el archivo.** Un equipo grabado sin la partición `storage` (por ejemplo, solo la app) no monta LittleFS y queda detenido: es deliberado, para no arrancar nunca con la identidad Sparkplug del ejemplo.
 - **Validación estricta y decisiones propias:**
   - claves desconocidas o duplicadas = error;

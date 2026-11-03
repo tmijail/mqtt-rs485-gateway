@@ -426,6 +426,12 @@ def run_config_failsafe(args, work):
         time.sleep(6)  # long enough for DHCP + SNTP wait + a connection attempt
         started = gw.find(r"connecting to|rs485: UART|net: IPv4", t0)
         births = [m for m in CAPTURE if m[0] >= t0 and "/NBIRTH/" in m[1]]
+        if name == "oversized":
+            asked = time.monotonic()
+            gw.console("status")
+            shell = gw.wait_log(r"config\s+REJECTED .*131073 bytes", 3, asked)
+            check("CFG-6 console shell answers 'status' while the configuration is rejected",
+                  shell, (gw.find(r"config\s+REJECTED", asked) or ["no answer"])[0])
         gw.kill()
         check(f"CFG-1 {name} config file -> nothing starts, error LED, ERROR log with the reason",
               hit and led and not started and not births,
@@ -480,6 +486,17 @@ def run(args, log, slave, broker, conf, work):
     check("MB-11 60 contiguous registers read with one FC03 request per cycle",
           reqs and all(r[1:] == (3, 100, 60) for r in reqs),
           f"{len(reqs)} requests to unit 2 so far, first {reqs[0] if reqs else None}")
+
+    # CFG-6 diagnostic shell on the console UART
+    asked = time.monotonic()
+    gw.console("devices")
+    gw.console("config")
+    meter = gw.wait_log(r"Meter1\s+unit\s+1 online\s+cycles [1-9]\d* failed \d+ \| ok [1-9]", 3, asked)
+    bulk = gw.wait_log(r"Bulk\s+unit\s+2 online", 1, asked)
+    summary = gw.wait_log(r"sparkplug\s+group 'Plant1', edge node 'GW01'", 1, asked)
+    check("CFG-6 console shell: 'devices' (online state, counters) and 'config' summary",
+          meter and bulk and summary,
+          " | ".join(gw.find(r"Meter1\s+unit|Bulk\s+unit|sparkplug\s+group", asked)) or "no answer")
 
     # Report by exception and deadband
     obs.drain()
@@ -551,6 +568,12 @@ def run(args, log, slave, broker, conf, work):
     bound = 3 * 1.0 + 3 * (0.2 * 3) + 1.0  # offline_after*poll + per-cycle timeouts + 1 s margin
     check("2a. Slave powered off -> DDEATH within offline_after x poll_ms + timeouts",
           dd and dd[0] - off <= bound, f"{dd[0] - off:.2f} s (bound {bound:.1f} s)" if dd else "no DDEATH")
+    asked = time.monotonic()
+    gw.console("devices")
+    offline = gw.wait_log(r"Meter1\s+unit\s+1 offline\s+cycles \d+ failed [1-9]\d* \| ok \d+ timeout [1-9]",
+                          3, asked)
+    check("CFG-6 / MB-13 shell shows the device offline with its failed cycles and timeouts",
+          offline, (gw.find(r"Meter1\s+unit", asked) or ["no answer"])[0])
     on = time.monotonic()
     slave.start()
     db = obs.wait(dbirth_t, 10)

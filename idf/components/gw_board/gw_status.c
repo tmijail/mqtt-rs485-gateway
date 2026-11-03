@@ -25,6 +25,11 @@ void gw_status_set(uint32_t flag, bool on)
     }
 }
 
+uint32_t gw_status_get(void)
+{
+    return atomic_load(&s_flags);
+}
+
 typedef struct {
     uint8_t r, g, b;
 } rgb_t;

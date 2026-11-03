@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "sdkconfig.h"
 #include "gw_config.h"
 
 #ifdef __cplusplus
@@ -25,6 +26,11 @@ esp_err_t gw_io_init(const gw_config_t *cfg, void (*on_change)(void));
 /** Switch DO @p index (0-7) on or off and store the read-back state in gw_tagdb. Single caller.
  *  Returns false (and changes nothing) if gw_io_init() could not reach the expander. */
 bool gw_io_set_do(uint8_t index, bool on);
+
+#if CONFIG_GW_IO_SIMULATED
+/** Emulator only: set the logical level of DI @p index (0-7); used by the console shell. */
+void gw_io_sim_set_di(uint8_t index, bool active);
+#endif
 
 #ifdef __cplusplus
 }

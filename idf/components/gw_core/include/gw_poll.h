@@ -38,6 +38,7 @@ typedef struct {
     gw_poller_opts_t opts;
     gw_plan_t plan;
     gw_devstate_t state[GW_MAX_DEVICES];
+    gw_dev_stats_t stats[GW_MAX_DEVICES];   /* published to gw_tagdb after each cycle / write */
     uint32_t next_due_ms[GW_MAX_DEVICES];
     gw_tag_value_t work[GW_MAX_TAGS_PER_DEVICE];
 } gw_poller_t;
