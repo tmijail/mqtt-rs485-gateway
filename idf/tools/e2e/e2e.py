@@ -2055,6 +2055,8 @@ def run_ota(args, work):
         broker.wait()
         obs.close()
         trial = gw.wait_log(r"fw: firmware e2e-v3 \(ota_0\) on trial", 30, asked)
+        # the trial is logged before the shell starts (issue #101): the command waits for it
+        gw.wait_log(r"shell: console ready", 30, trial or asked)
         gw.console("panic")
         back = gw.wait_log(r"fw: firmware e2e-v3 \(ota_0\) was rejected or did not confirm itself; "
                            r"running e2e-v2 again", 60, trial or asked)
