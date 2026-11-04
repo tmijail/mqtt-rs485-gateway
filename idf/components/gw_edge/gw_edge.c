@@ -25,6 +25,7 @@ static const char *TAG = "edge";
 #define MAX_IDLE_MS      1000
 #define NET_TIMEOUT_MS   5000   /* esp-mqtt socket timeout (one socket write) */
 #define REBOOT_DELAY_MS  100    /* let the log drain */
+#define STABLE_MAX_MS    60000  /* a session is stable after one keepalive period, at most this */
 
 enum { EV_WAKE = 0, EV_CMD, EV_WRITE_DONE };
 
@@ -74,8 +75,9 @@ static uint8_t s_bdseq;
 static bool s_started;
 static bool s_prev_ip;
 static int64_t s_ip_since_us;
-static uint32_t s_attempt;
+static uint32_t s_attempt;      /* failed attempts since the last stable session (backoff) */
 static int64_t s_retry_at_us;   /* 0: no reconnect scheduled */
+static int64_t s_session_up_us; /* when the current session's NBIRTH went out */
 static unsigned s_handled_conn;
 static unsigned s_handled_disc;
 static bool s_births_timed;     /* the current session's births carried synchronised time */
@@ -254,12 +256,18 @@ static void prepare_attempt(void)
              s_cfg->mqtt.client_id, s_bdseq);
 }
 
-static void start_client(void)
+static void schedule_retry(int64_t now);
+
+static void start_client(int64_t now)
 {
     prepare_attempt();
+    s_retry_at_us = 0;
     s_client = esp_mqtt_client_init(&s_mqtt_cfg);
     if (s_client == NULL) {
+        /* Out of memory: retry with the same backoff as a failed connection (each attempt
+         * takes a bdSeq and writes NVS, so it must not run once per loop). */
         ESP_LOGE(TAG, "esp_mqtt_client_init failed");
+        schedule_retry(now);
         return;
     }
     ESP_ERROR_CHECK(esp_mqtt_client_register_event(s_client, ESP_EVENT_ANY_ID, on_mqtt_event, NULL));
@@ -290,7 +298,9 @@ static void on_connected(void)
 {
     esp_mqtt_client_subscribe(s_client, s_ncmd_topic, 1);
     esp_mqtt_client_subscribe(s_client, s_dcmd_topic, 1);
-    s_attempt = 0;
+    /* s_attempt is not reset here: a broker that accepts the connection and drops it at once
+     * (ACL, duplicate client_id, connection limit) must still see the backoff grow. It is
+     * reset once the session has stayed up for a while (reconcile). */
     s_retry_at_us = 0;
     atomic_store(&s_dev_dirty, 0);   /* the births carry the current state */
     atomic_store(&s_io_dirty, false);
@@ -299,10 +309,18 @@ static void on_connected(void)
     s_max_unfed_ms = 0;
     int64_t t0 = esp_timer_get_time();
     gw_node_session_up(&s_node, s_bdseq);
+    s_session_up_us = esp_timer_get_time();
     gw_status_set(GW_ST_MQTT_UP, true);
     ESP_LOGI(TAG, "Sparkplug session up (bdSeq=%u): births sent in %lu ms, longest stretch "
              "without feeding the watchdog %lu ms", s_bdseq,
              (unsigned long)((esp_timer_get_time() - t0) / 1000), (unsigned long)s_max_unfed_ms);
+}
+
+/* How long a session must last before the reconnect backoff starts again from the minimum. */
+static uint32_t stable_ms(void)
+{
+    uint32_t ms = (uint32_t)s_cfg->mqtt.keepalive_s * 1000u;
+    return ms < STABLE_MAX_MS ? ms : STABLE_MAX_MS;
 }
 
 /* Bring the Sparkplug state in line with the flags set by the other tasks. */
@@ -331,6 +349,12 @@ static void reconcile(void)
             on_connected();
         }
     }
+    if (s_node.online && connected && s_attempt != 0 &&
+        now - s_session_up_us >= stable_ms() * 1000LL) {
+        ESP_LOGI(TAG, "session stable for %lu ms: reconnect backoff reset",
+                 (unsigned long)stable_ms());
+        s_attempt = 0;
+    }
     if (s_node.online && !connected) {
         gw_node_session_down(&s_node);
         gw_status_set(GW_ST_MQTT_UP, false);
@@ -342,9 +366,9 @@ static void reconcile(void)
         }
     }
 
-    if (!s_started && ip &&
+    if (!s_started && ip && (s_retry_at_us == 0 || now >= s_retry_at_us) &&
         (atomic_load(&s_time_synced) || now - s_ip_since_us >= CONFIG_GW_SNTP_WAIT_MS * 1000LL)) {
-        start_client();
+        start_client(now);
     }
     if (s_started && s_retry_at_us != 0 && now >= s_retry_at_us && ip && !connected) {
         reconnect(now);
@@ -377,7 +401,7 @@ static TickType_t next_timeout(void)
         int64_t r = (s_retry_at_us - now) / 1000;
         ms = r < ms ? r : ms;
     }
-    if (!s_started && s_prev_ip) {
+    if (!s_started && s_prev_ip && s_retry_at_us == 0) {
         int64_t r = (s_ip_since_us + CONFIG_GW_SNTP_WAIT_MS * 1000LL - now) / 1000;
         ms = r < ms ? r : ms;
     }

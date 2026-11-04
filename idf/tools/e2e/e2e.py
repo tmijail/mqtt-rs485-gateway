@@ -149,6 +149,49 @@ def sntp_responder(stop):
         s.sendto(reply, addr)
 
 
+# ---------------------------------------------------------------- broker that drops at once
+
+class ConnackCutter:
+    """TCP proxy in front of the broker that closes every connection right after relaying the
+    broker's CONNACK: a broker that accepts the connection and drops it at once (ACL that
+    rejects the will, duplicate client_id, connection limit)."""
+
+    def __init__(self, port, upstream):
+        self.upstream, self.accepted = upstream, []
+        self.srv = socket.socket()
+        self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.srv.bind(("127.0.0.1", port))
+        self.srv.listen(8)
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self):
+        while True:
+            try:
+                c, _ = self.srv.accept()
+            except OSError:
+                return
+            self.accepted.append(time.monotonic())
+            threading.Thread(target=self._pipe, args=(c,), daemon=True).start()
+
+    def _pipe(self, c):
+        u = None
+        try:
+            c.settimeout(10)
+            u = socket.create_connection(("127.0.0.1", self.upstream), timeout=10)
+            u.sendall(c.recv(4096))   # CONNECT
+            c.sendall(u.recv(4096))   # CONNACK
+            time.sleep(0.1)
+        except OSError:
+            pass
+        finally:
+            for sock in (c, u):
+                if sock is not None:
+                    sock.close()
+
+    def close(self):
+        self.srv.close()
+
+
 # ---------------------------------------------------------------- MQTT observer
 
 class Observer:
@@ -361,10 +404,11 @@ def sdkconfig_int(path, name):
     return int(m.group(1))
 
 
-def config_json(**overrides):
-    """tools/e2e/fs/config.json with the harness' MQTT port and optional top-level overrides."""
+def config_json(mqtt_port=None, **overrides):
+    """tools/e2e/fs/config.json with the harness' MQTT port (or @mqtt_port) and optional
+    top-level overrides."""
     cfg = json.loads((HERE / "fs" / "config.json").read_text())
-    cfg["mqtt"]["port"] = MQTT_PORT
+    cfg["mqtt"]["port"] = mqtt_port or MQTT_PORT
     for k, v in overrides.items():
         cfg[k] = v
     return json.dumps(cfg, indent=2).encode() + b"\n"
@@ -806,6 +850,25 @@ def run(args, log, slave, broker, conf, work):
           and reason1.string_value == "software",
           f"first boot {reason0.string_value if reason0 else None!r}, after reboot "
           f"{reason1.string_value if reason1 else None!r}")
+
+    # Issue #5: a broker that accepts the connection and drops it right after the CONNACK.
+    # The backoff must keep growing (1, 2, 4, 8 s, -25 % jitter): it is reset only after a
+    # stable session, not on every CONNACK.
+    gw.kill()
+    cutter = ConnackCutter(MQTT_PORT + 1, MQTT_PORT)
+    gw = Gateway(args, work / "uart0-cutter.log",
+                 flash_variant(args, work, "cutter", {"config.json": config_json(MQTT_PORT + 1)}))
+    t_cut = time.monotonic()
+    gw.start()
+    gw.wait_log(r"reconnect attempt 4 in", 40, t_cut)
+    delays = [int(x) for x in re.findall(r"in (\d+) ms", " ".join(gw.find(r"reconnect attempt", t_cut)))]
+    gw.kill()
+    cutter.close()
+    grows = len(delays) >= 4 and all(0.75 * 1000 * 2 ** i <= d <= 1000 * 2 ** i
+                                     for i, d in enumerate(delays[:4]))
+    check("MQTT-2 / issue #5 broker that drops every connection after CONNACK: the backoff keeps "
+          "growing (1, 2, 4, 8 s with jitter)", grows,
+          f"delays {delays} ms over {len(cutter.accepted)} accepted connections")
     obs.close()
 
 
