@@ -100,7 +100,38 @@ function(gw_sdkconfig_mismatches sdkconfig defaults target result)
     set(${result} "${out}" PARENT_SCOPE)
 endfunction()
 
+# Issue #103: combinations of options that the sdkconfig in use must not have, whatever the
+# defaults say. NVS encryption (CFG-7) without flash encryption (FW-3), outside the emulator
+# build: the reset-safe copy of an NVS migration (#94, secrets included) is a LittleFS file, and
+# LittleFS is copy-on-write: once deleted (or overwritten) its blocks keep the plaintext in the
+# "storage" partition until they are reused. Under flash encryption they are ciphertext.
+function(gw_sdkconfig_forbidden sdkconfig result)
+    set(active_NAMES "")
+    __gw_sdkconfig_read("${sdkconfig}" active)
+    set(out "")
+    if("${active_NVS_ENCRYPTION}" STREQUAL "y" AND NOT "${active_SECURE_FLASH_ENC_ENABLED}" STREQUAL "y"
+       AND NOT "${active_GW_IO_SIMULATED}" STREQUAL "y")
+        list(APPEND out "CONFIG_NVS_ENCRYPTION=y without CONFIG_SECURE_FLASH_ENC_ENABLED: an NVS "
+                        "migration leaves its copy of the secrets in clear in the free blocks of "
+                        "LittleFS (issue #103); use sdkconfig.production, or the default build")
+    endif()
+    set(${result} "${out}" PARENT_SCOPE)
+endfunction()
+
 function(gw_sdkconfig_check sdkconfig defaults target mode)
+    gw_sdkconfig_forbidden("${sdkconfig}" forbidden)
+    if(forbidden)
+        list(JOIN forbidden "\n  " text)
+        set(msg "${sdkconfig} has a combination the firmware refuses:\n  ${text}\n"
+                "To build it anyway (a development board, knowingly), pass "
+                "-D GW_SDKCONFIG_CHECK=warn.")
+        string(CONCAT msg ${msg})
+        if(mode STREQUAL "warn")
+            message(WARNING "${msg}")
+        else()
+            message(FATAL_ERROR "${msg}")
+        endif()
+    endif()
     gw_sdkconfig_mismatches("${sdkconfig}" "${defaults}" "${target}" bad)
     if(NOT bad)
         return()

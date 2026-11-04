@@ -174,6 +174,9 @@ static void start_web(gw_web_mode_t mode, const gw_config_t *cfg, const char *so
  * run, not even the recovery network; the shell reports why. */
 static void halt_no_memory(void)
 {
+    /* issue #99: a new image on trial goes back to the previous one at once (no trial timer
+     * runs yet, nothing else would ever judge it) */
+    gw_fw_cannot_start("no memory for the configuration");
     snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg), "sin memoria para la configuración (%u B)",
              (unsigned)sizeof(gw_config_t));
     gw_status_set(GW_ST_CFG_ERROR, true);
@@ -340,6 +343,7 @@ void app_main(void)
     if (gw_bootbtn_start(on_button) != ESP_OK) {
         ESP_LOGE(TAG, "BOOT button unavailable: no factory reset");
     }
+    gw_fw_early_init();   /* FW-1: before the shell can ask for the update status (#101) */
     start_shell_early();
 
     const char *source;

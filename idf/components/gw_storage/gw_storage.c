@@ -50,6 +50,7 @@ static bool s_mounted;
 static volatile bool s_reset_done;    /* factory reset: no more state writes until the restart */
 static SemaphoreHandle_t s_save_lock;   /* one writer at a time: web, shell */
 static StaticSemaphore_t s_save_lock_buf;
+static gw_storage_commit_hook_t s_commit_hook;   /* issue #99: gw_fw, before a commit */
 
 /* Configuration buffers (the file and the parser's document tree, at boot and for every
  * save or export): PSRAM when the board has it, internal RAM otherwise (QEMU). */
@@ -84,8 +85,17 @@ static esp_err_t write_file_atomic(const char *path, const char *tmp, const void
                                    size_t len);
 
 static bool s_nvs_plain;     /* this boot runs on the unencrypted NVS (issue #94) */
+static bool s_plain_trial;   /* ... only because the image is on trial, LittleFS mounted (#104) */
 static bool s_nvs_failed;    /* a migration could not finish: no NVS this boot (issue #94) */
 static bool s_mig_pending;   /* no NVS this boot, with a copy the confirmed boot applies */
+#if CONFIG_NVS_ENCRYPTION
+/* issue #104: bdSeq values of a boot without NVS, reserved in LittleFS (MIG_BDSEQ) */
+static bool s_side_have;     /* MIG_BDSEQ was there at boot (s_side_value) */
+static uint8_t s_side_value;
+static bool s_side_ok;       /* this boot without NVS keeps its reservation (s_side_reserved) */
+static uint8_t s_side_reserved;
+static bool s_clear_markers; /* a normal encrypted boot: drop stale migration markers */
+#endif
 static const char *s_nvs_why;   /* why there is no NVS this boot (shell), NULL otherwise */
 
 /* Issue #94: the bdSeq straight from the raw pages of an unencrypted NVS (without initialising
@@ -184,6 +194,8 @@ static void bdseq_fallback(bool have, uint8_t old)
 #define MIG_COPY CFG_MOUNT "/.nvsmig"
 #define MIG_TMP  CFG_MOUNT "/.nvsmig.tmp"
 #define MIG_DONE "nvsmig_ok"          /* in NVS_GW */
+#define MIG_BUSY "nvsmig_busy"        /* in NVS_GW: written first, issue #104 */
+#define MIG_BDSEQ CFG_MOUNT "/.nvsmig-bdseq"   /* issue #104: bdSeq reserved without NVS */
 
 #if CONFIG_GW_IO_SIMULATED
 /* Emulator only: the E2E cuts the power at a point of the migration. MIG_CUT holds the points
@@ -266,7 +278,8 @@ static size_t nvs_read_all(uint8_t *buf, size_t cap, size_t used, size_t vcap, u
         nvs_entry_info_t info;
         nvs_entry_info(it, &info);
         e = nvs_entry_next(&it);
-        if (strcmp(info.namespace_name, NVS_GW) == 0 && strcmp(info.key, MIG_DONE) == 0) {
+        if (strcmp(info.namespace_name, NVS_GW) == 0 &&
+            (strcmp(info.key, MIG_DONE) == 0 || strcmp(info.key, MIG_BUSY) == 0)) {
             continue;   /* a stale marker would end a later migration early */
         }
         nvs_handle_t h;
@@ -415,19 +428,33 @@ static esp_err_t sec_cfg(nvs_sec_cfg_t *cfg)
 }
 
 /* MIG_DONE holds the CRC of the copy it finished: a leftover copy is recognised as that one,
- * never taken for another (issue #94). @p crc 0: erase the marker. */
-static esp_err_t done_marker(bool set, uint32_t crc)
+ * never taken for another (issue #94). Issue #104: MIG_BUSY (the same CRC) is written before any
+ * entry, so a boot that cannot reach the copy (LittleFS not mountable) recognises a partly
+ * written encrypted NVS. @p set false: erase both markers. */
+static esp_err_t mark(const char *key, bool set, uint32_t crc)
 {
     nvs_handle_t h;
     esp_err_t e = nvs_open_from_partition(NVS_DEFAULT_PART_NAME, NVS_GW, NVS_READWRITE, &h);
     if (e == ESP_OK) {
-        e = set ? nvs_set_u32(h, MIG_DONE, crc) : nvs_erase_key(h, MIG_DONE);
-        if (e == ESP_OK || (!set && e == ESP_ERR_NVS_NOT_FOUND)) {
+        e = set ? nvs_set_u32(h, key, crc) : nvs_erase_key(h, key);
+        if (!set && e == ESP_ERR_NVS_NOT_FOUND) {
+            e = ESP_OK;
+        }
+        if (!set) {
+            esp_err_t e2 = nvs_erase_key(h, MIG_BUSY);
+            e = e != ESP_OK ? e : e2 == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : e2;
+        }
+        if (e == ESP_OK) {
             e = nvs_commit(h);
         }
         nvs_close(h);
     }
     return e;
+}
+
+static esp_err_t done_marker(bool set, uint32_t crc)
+{
+    return mark(MIG_DONE, set, crc);
 }
 
 /* Step 3 and 4 (above) from the copy in @p buf. False: the copy stays, no NVS this boot. */
@@ -443,11 +470,13 @@ static bool nvs_apply(const nvs_sec_cfg_t *cfg, const uint8_t *buf, size_t size,
             memset(&c, 0, sizeof(c));
         }
         if (e == ESP_OK) {
-            unsigned failed = nvs_put_all(buf, size, count, false);
+            e = mark(MIG_BUSY, true, gw_nvsmig_crc(buf));   /* issue #104: before any entry */
+            unsigned failed = e != ESP_OK ? 1 : nvs_put_all(buf, size, count, false);
             if (failed == 0) {
                 failed = nvs_put_all(buf, size, count, true);
             }
-            e = failed == 0 ? done_marker(true, gw_nvsmig_crc(buf)) : ESP_ERR_NVS_INVALID_STATE;
+            e = e != ESP_OK ? e
+                : failed == 0 ? done_marker(true, gw_nvsmig_crc(buf)) : ESP_ERR_NVS_INVALID_STATE;
             if (e != ESP_OK) {
                 nvs_flash_deinit_partition(NVS_DEFAULT_PART_NAME);
             }
@@ -794,6 +823,80 @@ static gw_nvsmig_copy_t copy_load(uint8_t **out, size_t *size, size_t *cap, uint
     return GW_NVSMIG_COPY_VALID;
 }
 
+/* Issue #104: the LittleFS partition is erased (its superblock pair, blocks 0 and 1, all 0xFF):
+ * no copy can be in it, nor come back. Raw reads: the same answer under flash encryption. */
+static bool storage_blank(void)
+{
+    const esp_partition_t *p = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+                                                        ESP_PARTITION_SUBTYPE_ANY, "storage");
+    if (p == NULL) {
+        return true;
+    }
+    uint8_t *b = heap_caps_malloc(GW_NVSRAW_PAGE, MALLOC_CAP_8BIT);
+    bool blank = b != NULL;   /* no memory to look: a copy may be there */
+    for (uint32_t off = 0; blank && off < 2u * GW_NVSRAW_PAGE && off + GW_NVSRAW_PAGE <= p->size;
+         off += GW_NVSRAW_PAGE) {
+        blank = esp_partition_read_raw(p, off, b, GW_NVSRAW_PAGE) == ESP_OK;
+        for (size_t i = 0; blank && i < GW_NVSRAW_PAGE; i++) {
+            blank = b[i] == 0xFF;
+        }
+    }
+    heap_caps_free(b);
+    return blank;
+}
+
+/* Issue #104: the encrypted NVS holds a migration's start marker and not its end one: it was cut
+ * while writing. Read only with keys that already exist (never generated here). */
+static bool mig_started(const nvs_sec_cfg_t *cfg)
+{
+    nvs_sec_cfg_t c = *cfg;
+    esp_err_t e = nvs_flash_secure_init_partition(NVS_DEFAULT_PART_NAME, &c);
+    memset(&c, 0, sizeof(c));
+    if (e != ESP_OK) {
+        return false;   /* the normal start says why */
+    }
+    bool busy = false, done = false;
+    nvs_handle_t h;
+    uint32_t v;
+    if (nvs_open_from_partition(NVS_DEFAULT_PART_NAME, NVS_GW, NVS_READONLY, &h) == ESP_OK) {
+        busy = nvs_get_u32(h, MIG_BUSY, &v) == ESP_OK;
+        done = nvs_get_u32(h, MIG_DONE, &v) == ESP_OK;
+        nvs_close(h);
+    }
+    nvs_flash_deinit_partition(NVS_DEFAULT_PART_NAME);
+    return busy && !done;
+}
+
+/* Issue #104: the bdSeq reservation of boots without NVS (MIG_BDSEQ, one byte: the first value
+ * not handed out yet). */
+static bool side_read(uint8_t *v)
+{
+    FILE *f = fopen(MIG_BDSEQ, "rb");
+    if (f == NULL) {
+        return false;
+    }
+    int c = fgetc(f);
+    fclose(f);
+    if (c == EOF) {
+        return false;
+    }
+    *v = (uint8_t)c;
+    return true;
+}
+
+static void side_reserve(uint8_t from)
+{
+    s_side_reserved = (uint8_t)(from + GW_NVSMIG_BDSEQ_BLOCK);
+    s_side_ok = write_file_atomic(MIG_BDSEQ, MIG_BDSEQ ".tmp", &s_side_reserved, 1) == ESP_OK;
+    if (s_side_ok) {
+        ESP_LOGW(TAG, "no NVS: bdSeq values below %u reserved in " MIG_BDSEQ " (the next boot with "
+                      "NVS continues from %u)", s_side_reserved, s_side_reserved);
+    } else {
+        ESP_LOGE(TAG, "no NVS, and no bdSeq reservation in " MIG_BDSEQ ": the next boot with NVS "
+                      "may reuse values of this one");
+    }
+}
+
 /* Before the NVS is initialised in an encrypted build: what this boot does with it. */
 static void nvs_prepare(void)
 {
@@ -816,12 +919,23 @@ static void nvs_prepare(void)
     size_t size = 0, cap = 0;
     uint32_t count = 0;
     bool legacy = false;
+    bool unknown = false, keys = false, busy = false;
     if (fs) {
         unlink(MIG_TMP);   /* a copy cut short before its rename: never used */
         copy = copy_load(&buf, &size, &cap, &count, &legacy);
+        s_side_have = side_read(&s_side_value);
+    } else if ((kind == GW_NVSRAW_EMPTY || kind == GW_NVSRAW_ENCRYPTED) && !storage_blank()) {
+        /* issue #104: a copy may be in the LittleFS that does not mount this boot */
+        unknown = true;
+        nvs_sec_scheme_t *scheme = nvs_flash_get_default_security_scheme();
+        nvs_sec_cfg_t k;
+        keys = scheme != NULL && nvs_flash_read_security_cfg_v2(scheme, &k) == ESP_OK;
+        busy = keys && kind == GW_NVSRAW_ENCRYPTED && mig_started(&k);
+        memset(&k, 0, sizeof(k));
     }
     const gw_nvsmig_state_t state = {.kind = kind, .raw_ok = raw_ok, .copy = copy,
-                                     .on_trial = running_on_trial(), .can_copy = fs};
+                                     .on_trial = running_on_trial(), .can_copy = fs,
+                                     .copy_unknown = unknown, .keys = keys, .mig_busy = busy};
     switch (gw_nvsmig_decide(&state)) {
     case GW_NVSMIG_RESUME:
         nvs_resume(kind, buf, size, cap, count, legacy);
@@ -831,6 +945,7 @@ static void nvs_prepare(void)
         break;
     case GW_NVSMIG_STAY_PLAIN:
         s_nvs_plain = true;
+        s_plain_trial = state.on_trial && fs && raw_ok;
         ESP_LOGW(TAG, "NVS partition \"%s\" is %s and stays so this boot: %s", p->label,
                  kind_name(kind),
                  !raw_ok ? "a page could not be read, nothing is erased"
@@ -842,7 +957,11 @@ static void nvs_prepare(void)
     case GW_NVSMIG_NO_NVS:
         s_nvs_failed = true;
         s_mig_pending = copy == GW_NVSMIG_COPY_VALID;
-        s_nvs_why = copy == GW_NVSMIG_COPY_UNREADABLE
+        s_nvs_why = unknown && copy == GW_NVSMIG_COPY_NONE
+                        ? "LittleFS does not mount and the NVS looks like an interrupted migration "
+                          "whose copy (" MIG_COPY ") is in it: nothing is opened until LittleFS "
+                          "mounts again, so the migration can finish from the copy"
+                    : copy == GW_NVSMIG_COPY_UNREADABLE
                         ? "the copy of an NVS migration (" MIG_COPY ") cannot be read: kept, and "
                           "no NVS on any boot until it can, or until a factory reset (BOOT "
                           "pressed 10 s: erases it with the configuration, the secrets and the "
@@ -856,6 +975,7 @@ static void nvs_prepare(void)
         break;
     case GW_NVSMIG_OPEN_ENCRYPTED:
     default:
+        s_clear_markers = fs && copy == GW_NVSMIG_COPY_NONE;   /* no migration pending */
         if (!raw_ok) {
             ESP_LOGW(TAG, "NVS: a raw page could not be read; the readable ones are encrypted");
         }
@@ -867,13 +987,22 @@ static void nvs_prepare(void)
         uint8_t c = 0;
         bool have = copy == GW_NVSMIG_COPY_VALID && copy_bdseq(buf, size, &c);
         later_bdseq(&have, &c, raw_have, raw_value);
+        /* issue #104: and the reservation of earlier boots without NVS */
+        later_bdseq(&have, &c, s_side_have, s_side_value);
         s_bdseq_ram = have ? c : (uint8_t)(esp_random() & 0xFFu);
+        if (fs) {
+            side_reserve(s_bdseq_ram);
+        }
     }
     if (buf != NULL) {
         memset(buf, 0, cap);
         heap_caps_free(buf);
     }
 }
+#endif
+
+#if CONFIG_NVS_ENCRYPTION
+static void nvs_after_open(void);
 #endif
 
 esp_err_t gw_storage_init(void)
@@ -899,6 +1028,11 @@ esp_err_t gw_storage_init(void)
         err = nvs_open(NVS_NS, NVS_READWRITE, &s_nvs);
     }
     s_nvs_ok = err == ESP_OK;
+#if CONFIG_NVS_ENCRYPTION
+    if (s_nvs_ok) {
+        nvs_after_open();   /* issue #104 */
+    }
+#endif
     s_save_lock = xSemaphoreCreateMutexStatic(&s_save_lock_buf);
     gw_config_set_allocator(boot_alloc, heap_caps_free);
     if (!s_nvs_ok) {
@@ -912,10 +1046,56 @@ bool gw_storage_nvs_encryption_pending(void)
     return s_nvs_plain || s_mig_pending;
 }
 
+bool gw_storage_nvs_migrates_next_boot(void)
+{
+    return (s_nvs_plain && s_plain_trial) || s_mig_pending;
+}
+
 const char *gw_storage_nvs_unavailable_why(void)
 {
     return s_nvs_why;
 }
+
+#if CONFIG_NVS_ENCRYPTION
+/* Issue #104: the first boot with NVS after boots without it continues from their reservation;
+ * a normal encrypted boot drops migration markers that a failed cleanup left behind. */
+static void nvs_after_open(void)
+{
+    if (s_side_have) {
+        uint8_t v = 0;
+        bool have = nvs_get_u8(s_nvs, NVS_BDSEQ, &v) == ESP_OK;
+        uint8_t n = have ? gw_nvsmig_bdseq_later(v, s_side_value) : s_side_value;
+        esp_err_t e = ESP_OK;
+        if (!have || n != v) {
+            e = nvs_set_u8(s_nvs, NVS_BDSEQ, n);
+            if (e == ESP_OK) {
+                e = nvs_commit(s_nvs);
+            }
+            ESP_LOGW(TAG, "bdSeq %u -> %u: continues after the values a boot without NVS reserved "
+                          "(%s)", v, n, esp_err_to_name(e));
+        }
+        if (e == ESP_OK) {
+            unlink(MIG_BDSEQ);
+        }
+    }
+    if (s_clear_markers) {
+        done_marker(false, 0);
+    }
+}
+
+/* Issue #104: a boot without NVS reserves the next block before handing out its first value. */
+static void side_next(uint8_t next)
+{
+    if (s_side_ok && !s_reset_done && gw_nvsmig_bdseq_reached(next, s_side_reserved)) {
+        side_reserve(next);
+    }
+}
+#else
+static void side_next(uint8_t next)
+{
+    (void)next;
+}
+#endif
 
 uint8_t gw_storage_next_bdseq(void)
 {
@@ -933,6 +1113,9 @@ uint8_t gw_storage_next_bdseq(void)
         }
     }
     s_bdseq_ram = (uint8_t)(v + 1);
+    if (!s_nvs_ok) {
+        side_next(s_bdseq_ram);
+    }
     return v;
 }
 
@@ -1235,6 +1418,11 @@ static void set_factory_marker(bool on)
 esp_err_t gw_storage_factory_reset(void)
 {
     xSemaphoreTake(s_save_lock, portMAX_DELAY);   /* no save in the middle; never given back */
+    char why[120];
+    if (s_commit_hook != NULL && s_commit_hook(GW_STORAGE_COMMIT_FACTORY_RESET, why,
+                                               sizeof(why)) != ESP_OK) {
+        ESP_LOGE(TAG, "factory reset: %s; going on (the restart may roll it back)", why);
+    }
     ESP_LOGW(TAG, "factory reset: erasing LittleFS 'storage' and NVS");
     s_reset_done = true;
     esp_err_t fs = wipe_storage();
@@ -1253,6 +1441,20 @@ esp_err_t gw_storage_factory_reset(void)
     }
     ESP_LOGW(TAG, "factory reset: storage %s, NVS %s", esp_err_to_name(fs), esp_err_to_name(nv));
     return fs != ESP_OK ? fs : nv;
+}
+
+void gw_storage_set_commit_hook(gw_storage_commit_hook_t hook)
+{
+    s_commit_hook = hook;
+}
+
+bool gw_storage_nvs_encrypted_on_flash(void)
+{
+#if CONFIG_NVS_ENCRYPTION
+    return !s_nvs_plain;
+#else
+    return false;
+#endif
 }
 
 bool gw_storage_secrets_encrypted(void)
@@ -1642,8 +1844,14 @@ esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_
                  (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     }
 #endif
+    char hook_why[120];
     if (!applied) {
         ret = strstr(err->msg, "memoria insuficiente") ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_ARG;
+    } else if (!dry_run && s_commit_hook != NULL &&
+               s_commit_hook(GW_STORAGE_COMMIT_CONFIG, hook_why, sizeof(hook_why)) != ESP_OK) {
+        /* issue #99: the restart that applies it would roll the new firmware back */
+        ret = ESP_ERR_INVALID_STATE;
+        reject(err, "configuración no guardada: %s; reintentar", hook_why);
     } else if (!dry_run) {
         if (doc.new_web_password &&
             !hash_web_password(cfg, doc.secrets.web_password_hash,

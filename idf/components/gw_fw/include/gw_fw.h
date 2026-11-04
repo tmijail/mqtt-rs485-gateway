@@ -10,9 +10,11 @@
  *   - Either way the image must be an app of this project; esp_ota_end() checks it (and its
  *     signature when signed images are required, FW-2). On success the gateway restarts
  *     through hooks.restart (orderly: NDEATH first).
- *   - A new image is on trial until gw_fw_session_up() (its first Sparkplug session); the
- *     policy (gw_core gw_ota.h) rolls it back on timeout or when it rejects the
- *     configuration. A reset during the trial makes the bootloader roll it back.
+ *   - A new image is on trial until gw_fw_session_up() (its first complete Sparkplug session);
+ *     the policy (gw_core gw_ota.h) rolls it back on timeout or when it rejects the
+ *     configuration. A reset during the trial makes the bootloader roll it back, except the
+ *     restart after a saved configuration or a factory reset: gw_storage asks gw_fw to confirm
+ *     the image first (issue #99).
  * Progress and results: gw_fw_get_status(), hooks.changed on every change.
  */
 #pragma once
@@ -58,14 +60,25 @@ typedef struct {
     void (*restart)(void);  /* orderly restart into the new image */
 } gw_fw_hooks_t;
 
+/** First thing at boot, before the console shell starts (issue #101): the status lock, the
+ *  running and other slots, and whether the running image is on trial (its trial starts here).
+ *  Single task; gw_fw_init() calls it if it did not run. */
+void gw_fw_early_init(void);
+
 /** At boot, before anything judges the image. @p cfg: the running configuration (recovery
  *  and commissioning: the network-only one); @p enabled: updates accepted. */
 esp_err_t gw_fw_init(const gw_config_t *cfg, bool enabled, const gw_fw_hooks_t *hooks);
 
-/** Health signals for a new image on trial (gw_ota policy). */
-void gw_fw_session_up(void);
+/** Health signals for a new image on trial (gw_ota policy). @p births_missing: DBIRTHs of the
+ *  session that did not go out (too large for the broker, issue #99): only a complete session
+ *  confirms the image. */
+void gw_fw_session_up(unsigned births_missing);
 void gw_fw_config_rejected(void);
 void gw_fw_commissioning(void);
+/** Issue #99: the boot cannot go on (@p why, static text: no memory for the configuration). A
+ *  new image on trial is rolled back at once (does not return then); otherwise nothing. Works
+ *  after gw_fw_early_init() alone. */
+void gw_fw_cannot_start(const char *why);
 
 /** Start a download; ESP_OK if it started (the result comes later in the status). */
 esp_err_t gw_fw_start_url(const char *url, char *why, size_t cap);

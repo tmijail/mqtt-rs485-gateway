@@ -2362,7 +2362,7 @@ APP_DESC_MAGIC = 0xABCD5432
 def fw_image(src, version, dst, corrupt=False):
     """Copy of the app image @src with esp_app_desc_t.version = @version: checksum and the
     appended SHA-256 recomputed so the bootloader and esp_ota_end() accept it (@corrupt: the
-    checksum is left stale, so the image must be rejected). @src must be unsigned."""
+    checksum is wrong, so the image must be rejected). @src must be unsigned."""
     b = bytearray(pathlib.Path(src).read_bytes())
     if b[0] != 0xE9:
         raise SystemExit(f"{src}: not an ESP app image")
@@ -2380,8 +2380,9 @@ def fw_image(src, version, dst, corrupt=False):
     for o, n in zip(b[vo:vo + 32], new):
         x ^= o ^ n
     b[vo:vo + 32] = new
-    if not corrupt:
-        b[csum] ^= x
+    # the checksum of the new version; a corrupt image gets it off by one bit (the stale one
+    # matches whenever the old and new version strings XOR to 0, about one build in 256)
+    b[csum] ^= x ^ (0x01 if corrupt else 0)
     end = csum + 1
     if hashed:
         b[end:end + 32] = hashlib.sha256(bytes(b[:end])).digest()
@@ -2557,6 +2558,8 @@ def run_ota(args, work):
         update(f"https://10.0.2.2:{fw_port}/cut.bin")
         cut = obs.wait(ndata_t, 120, lambda p: (fw_state(p) or "").startswith("failed: download of "
                                                                              "e2e-v2 interrupted"))
+        # the console line may come after the NDATA (115200 baud, the reader thread): wait for it
+        gw.wait_log(r"fw: firmware update failed: download of e2e-v2 interrupted after", 10, asked)
         line = gw.find(r"fw: firmware update failed: download of e2e-v2 interrupted after (\d+) "
                        r"bytes", asked)
         got = int(re.search(r"after (\d+) bytes", line[0]).group(1)) if line else -1
@@ -2679,6 +2682,10 @@ def run_ota(args, work):
         broker.wait()
         obs.close()
         trial = gw.wait_log(r"fw: firmware e2e-v3 \(ota_0\) on trial", 30, asked)
+        # the trial is logged before the shell starts (issue #101): the panic comes where it came
+        # before, once gw_fw_init() ran (the shell is up, the configuration loaded; a panic in the
+        # middle of the configuration load once froze QEMU in the core dump write)
+        gw.wait_log(r"fw: firmware e2e-v3 in ota_0; updates by URL", 30, trial or asked)
         gw.console("panic")
         back = gw.wait_log(r"fw: firmware e2e-v3 \(ota_0\) was rejected or did not confirm itself; "
                            r"running e2e-v2 again", 60, trial or asked)
@@ -2811,6 +2818,132 @@ def run_ota_wiring(args, work):
         gw.kill()
 
 
+def signed_image(args, src, version, fwdir, name):
+    """fw_image() of @src with @version as @fwdir/@name.bin, signed with the build's test key
+    when the build requires signed images (FW-2)."""
+    fw_image(src, version, fwdir / f"{name}-unsigned.bin")
+    if args.signing_key:
+        subprocess.run([args.idf_python, "-m", "espsecure", "sign-data", "--version", "2",
+                        "--keyfile", args.signing_key, "--output", str(fwdir / f"{name}.bin"),
+                        str(fwdir / f"{name}-unsigned.bin")], check=True, capture_output=True)
+    else:
+        shutil.copy(fwdir / f"{name}-unsigned.bin", fwdir / f"{name}.bin")
+    return fwdir / f"{name}.bin"
+
+
+def run_ota_trial(args, work):
+    """Issues #99 and #101 (GW43, MQTT 5) against a broker whose Maximum Packet Size (2400) is
+    below the Bulk DBIRTH, as in run_max_packet: every session leaves that DBIRTH out.
+    (1) A new image uploaded through the web: its sessions are incomplete, so none confirms it,
+    and the timeout rolls it back (#99 item 2). (2) Another image, also on trial for that reason:
+    an NCMD update refused during the trial keeps the trial phase and its time left (#101), and a
+    configuration saved through the web confirms the image before the restart (#99 item 4): it
+    comes back as the new image, not rolled back."""
+    node, port = "GW43", MQTT_PORT + 25
+    app = pathlib.Path(args.elf).with_suffix(".bin")
+    unsigned = pathlib.Path(args.elf).with_name(app.stem + "-unsigned.bin")
+    src = unsigned if unsigned.exists() else app
+    fwdir = work / "fw-trial"
+    fwdir.mkdir(exist_ok=True)
+    images = {k: signed_image(args, src, f"e2e-{k}", fwdir, k) for k in ("t2", "t3")}
+    conf = work / "broker-trial.conf"
+    # 2400: the NBIRTH (about 2.1 KB with the longest update states) fits, the Bulk DBIRTH (about
+    # 2.7 KB) does not
+    conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\nmax_packet_size 2400\n")
+    broker = start_broker(conf, work / "mosquitto-trial.log")
+    obs = Observer(port)
+    cfg = node_config(node, port=port, protocol="5")
+    cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    timeout_s = sdkconfig_int(args.sdkconfig, "GW_FW_CONFIRM_TIMEOUT_S")
+    nbirth_t, ndata_t, ncmd_t = f"{T}/NBIRTH/{node}", f"{T}/NDATA/{node}", f"{T}/NCMD/{node}"
+
+    def fw(item):
+        return metric(item[2], name="Node Info/Firmware").string_value if item else None
+
+    def upload(name):
+        return http("POST", "/api/firmware", images[name].read_bytes(),
+                    headers={"Content-Type": "application/octet-stream"}, timeout=120)
+
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "trial", cfg)
+    try:
+        nb = obs.wait(nbirth_t, 40)
+        v1 = fw(nb)
+        if not check("Issue #99 GW43 runs on the broker with Maximum Packet Size 2400 (the Bulk "
+                     "DBIRTH does not fit)", nb and v1,
+                     f"NBIRTH {'yes' if nb else 'no'}"):
+            return
+
+        # 1. a session without every DBIRTH does not confirm a new image
+        wait_http("/api/firmware", 20)
+        asked = time.monotonic()
+        st, _, body = upload("t2")
+        trial = gw.wait_log(r"fw: firmware e2e-t2 \(ota_\d\) on trial", 60, asked)
+        partial = gw.wait_log(r"fw: firmware e2e-t2 on trial: a Sparkplug session came up without "
+                              r"\d+ DBIRTH\(s\) \(too large for the broker\): not confirmed by it",
+                              60, trial or asked)
+        back = gw.wait_log(r"fw: firmware e2e-t2 rejected \(no complete Sparkplug session \(every "
+                           r"DBIRTH\) before the timeout\)", timeout_s + 30, trial or asked)
+        nb_back = obs.wait(nbirth_t, 60, lambda p: metric(p, name="Node Info/Firmware").string_value
+                           == v1)
+        born_t2 = [m for m in CAPTURE if m[0] >= asked and m[1] == nbirth_t and fw(m) == "e2e-t2"]
+        confirmed = gw.find(r"fw: firmware e2e-t2 confirmed", asked)
+        check("Issue #99 a new image whose sessions leave a DBIRTH out (larger than the broker's "
+              "Maximum Packet Size) is not confirmed by them: the timeout rolls it back, and the "
+              "previous image says so",
+              st == 200 and trial and partial and born_t2 and back and not confirmed and nb_back
+              and fw_state(nb_back[2]) == "rolled back from e2e-t2",
+              f"POST {st} {body[:60]!r}; on trial {trial is not None}, session without every "
+              f"DBIRTH {partial is not None} ({len(born_t2)} NBIRTH of e2e-t2), confirmed "
+              f"{bool(confirmed)}, rolled back "
+              f"{f'{back - trial:.1f} s into the trial' if back and trial else back}; NBIRTH "
+              f"{fw(nb_back)!r} state {fw_state(nb_back[2]) if nb_back else None!r}")
+
+        # 2. during another trial: a refused update keeps the phase; a saved configuration
+        # confirms the image before its restart
+        gw.wait_log(r"edge: time synchronised", 10, nb_back[0] - 5 if nb_back else t0)
+        wait_http("/api/firmware", 20)
+        asked = time.monotonic()
+        st, _, body = upload("t3")
+        trial = gw.wait_log(r"fw: firmware e2e-t3 \(ota_\d\) on trial", 60, asked)
+        nb3 = obs.wait(nbirth_t, 30, lambda p: metric(p, name="Node Info/Firmware").string_value
+                       == "e2e-t3")
+        obs.publish_cmd(ncmd_t, [{"name": "Node Control/Firmware Update", "datatype": 12,
+                                  "string_value": "https://10.0.2.2:1/x.bin"}])
+        refused = obs.wait(ndata_t, 10, lambda p: fw_state(p) ==
+                           "refused: the running firmware is on trial (not confirmed yet)")
+        _, h = gw.shell("status", [r"^ota\s+e2e-t3 in ota_\d.*\| refused: the running firmware is "
+                                   r"on trial \(not confirmed yet\); firmware e2e-t3 on trial "
+                                   r"\(\d+ s left\)$"])
+        obs.drain()
+        saved_at = time.monotonic()
+        st_put, _, b_put = http("PUT", "/api/config", cfg, timeout=30)
+        conf_t = gw.wait_log(r"fw: firmware e2e-t3 confirmed: the operator saved a configuration; "
+                             r"the bootloader keeps it", 20, saved_at)
+        death = obs.wait(f"{T}/NDEATH/{node}", 20)
+        nb4 = obs.wait(nbirth_t, 60)
+        rolled = gw.find(r"fw: firmware e2e-t3 \(ota_\d\) was rejected|fw: firmware e2e-t3 rejected",
+                         asked)
+        again = gw.find(r"fw: firmware e2e-t3 \(ota_\d\) on trial", saved_at)
+        check("Issue #101 an update refused during a trial (NCMD) is reported without hiding the "
+              "trial: the phase and its time left stay (shell); issue #99 a configuration saved "
+              "through the web during the trial confirms the new image before the restart, which "
+              "comes back as the new image (not rolled back, not on trial again)",
+              st == 200 and trial and nb3 and refused and all(h.values()) and st_put == 200
+              and conf_t and death and nb4 and fw(nb4) == "e2e-t3" and not rolled and not again
+              and not (fw_state(nb4[2]) or "").startswith("rolled back"),
+              f"POST {st}; on trial {trial is not None}; refusal state "
+              f"{fw_state(refused[2]) if refused else None!r}; shell {list(h.values())}; PUT "
+              f"{st_put} {b_put[:60]!r}; confirmed {conf_t is not None}; NDEATH {death is not None}; "
+              f"after the restart {fw(nb4)!r} state {fw_state(nb4[2]) if nb4 else None!r}; rolled "
+              f"back {rolled[:1]}; on trial again {bool(again)}")
+    finally:
+        gw.kill()
+        obs.close()
+        broker.terminate()
+        broker.wait()
+
+
 # ---------------------------------------------------------------- issues #67/#94 NVS migration
 
 def auth_broker(work, name, port, users):
@@ -2846,9 +2979,12 @@ def run_nvs_migration(args, work):
     erased, then after half of the entries are written encrypted). The next boots finish it from
     the reset-safe copy: the bdSeq continues, the MQTT password still opens the broker (which
     requires it), the commissioning password is the old one, nothing stays in clear and the
-    migration does not run again."""
+    migration does not run again. Issue #104: after each cut, one boot whose LittleFS does not
+    mount (superblocks damaged, not erased: the copy is out of reach) opens no NVS at all, so
+    nothing it writes can be lost or win over the copy; then the partition comes back."""
     node, port = "GW41", MQTT_PORT + 24
     nvs_off, nvs_size = storage_partition("nvs")
+    st_off, _ = storage_partition("storage")
     csv = work / "nvs-plain.csv"
     csv.write_text("key,type,encoding,value\nspb,namespace,,\nbdseq,data,u8,41\n"
                    "secrets,namespace,,\ncommission,data,string,abcdefgh1234\n"
@@ -2875,7 +3011,7 @@ def run_nvs_migration(args, work):
     words = (b"abcdefgh1234", b"s3cret-mqtt-67", b"commission", b"bdseq")
     boots = []
     try:
-        cuts = []
+        cuts, out_of_reach = [], []
         for point in ("1", "2"):
             t = time.monotonic()
             gw = Gateway(args, log, flash, efuse=efuse)
@@ -2888,6 +3024,26 @@ def run_nvs_migration(args, work):
             region = flash.read_bytes()[nvs_off:nvs_off + nvs_size]
             cuts.append((held is not None, resumed[0].split("storage: ")[-1][:90] if resumed else None,
                          region.count(b"\xff") == len(region)))
+            # issue #104: LittleFS does not mount for one boot (the copy is in it)
+            img = bytearray(flash.read_bytes())
+            saved = bytes(img[st_off:st_off + 8192])
+            img[st_off:st_off + 8192] = b"\x55" * 8192
+            flash.write_bytes(img)
+            t = time.monotonic()
+            gw = Gateway(args, log, flash, efuse=efuse)
+            gw.start()
+            boots.append(gw)
+            left = gw.wait_log(r"storage: NVS left untouched this boot \(no NVS: .*\): LittleFS does "
+                               r"not mount and the NVS looks like an interrupted migration", 60, t)
+            _, h_out = gw.shell("status", [r"^secrets\s+NVS UNAVAILABLE this boot: LittleFS does not "
+                                           r"mount"], timeout=10)
+            gw.kill()
+            img = bytearray(flash.read_bytes())
+            same = img[nvs_off:nvs_off + nvs_size] == region
+            img[st_off:st_off + 8192] = saved
+            flash.write_bytes(img)
+            # cut 1 left the partition erased: that boot does not even initialise it
+            out_of_reach.append((left is not None, all(h_out.values()), same or point == "2"))
         burned = efuse.read_bytes() != blank
         t0 = time.monotonic()
         gw = Gateway(args, log, flash, efuse=efuse)
@@ -2935,10 +3091,16 @@ def run_nvs_migration(args, work):
         check("Issue #97 the NVS migration scenario starts on a device whose eFuse KEY5 is not "
               "burned (its own blank eFuse file, also in a full run): the first boot generates the "
               "NVS keys and burns KEY5 before it erases anything, no later boot does it again",
-              burned and keygen == [1, 0, 0, 0] and gen_t is not None and first_cut is not None
+              burned and keygen[:1] == [1] and not any(keygen[1:]) and gen_t is not None and first_cut is not None
               and gen_t <= first_cut,
               f"eFuse file changed by the interrupted boots: {burned}; key generations per boot "
               f"{keygen}; {(boots[0].find(r'storage: NVS keys not readable') or ['no log'])[0][:110]}")
+        check("Issue #104 after each cut, a boot whose LittleFS does not mount (the copy is in it) "
+              "opens no NVS at all (no empty or partial encrypted NVS: cut 1 leaves the erased "
+              "partition untouched) and the shell says why; the next boot with LittleFS still "
+              "finishes the migration (check above)",
+              len(out_of_reach) == 2 and all(all(x) for x in out_of_reach),
+              f"(logged, shell, NVS untouched) per cut: {out_of_reach}")
     finally:
         obs.close()
         broker.terminate()
@@ -2951,7 +3113,9 @@ def run_nvs_ota(args, work):
     NVS) is updated by OTA to the encrypted build under test. On trial, the new image keeps the
     NVS unencrypted; a reset during the trial (panic) rolls it back and the old image finds its
     bdSeq (continued by the trial) and its secrets. Updated again with the broker up: confirmed,
-    one restart, and that boot moves the NVS into the encrypted one."""
+    one restart, and that boot moves the NVS into the encrypted one. Issue #102: then the build
+    without NVS encryption, sent back by OTA, is refused before it is set to boot, and the NVS
+    (bdSeq, secrets) stays intact."""
     if not args.plain_flash:
         print("[SKIP] issue #94 OTA from a build without NVS encryption: no --plain-flash "
               "(run_e2e.sh builds it)", flush=True)
@@ -2986,11 +3150,21 @@ def run_nvs_ota(args, work):
     efuse = work / "efuse-nvsota.bin"
     shutil.copy(work / "efuse-blank.bin", efuse)
     nbirth_t, ncmd_t = f"{T}/NBIRTH/{node}", f"{T}/NCMD/{node}"
+    ndata_t = f"{T}/NDATA/{node}"
     words = (secret.encode(), b"commission", b"bdseq", b"mqtt_pw")
+    if args.plain_app:
+        # issue #102: the build without NVS encryption as an update, signed like the others
+        fw_image(args.plain_app, "e2e-plain", fwdir / "plain-unsigned.bin")
+        if args.signing_key:
+            subprocess.run([args.idf_python, "-m", "espsecure", "sign-data", "--version", "2",
+                            "--keyfile", args.signing_key, "--output", str(fwdir / "plain.bin"),
+                            str(fwdir / "plain-unsigned.bin")], check=True, capture_output=True)
+        else:
+            shutil.copy(fwdir / "plain-unsigned.bin", fwdir / "plain.bin")
 
-    def update():
+    def update(name="enc"):
         obs.publish_cmd(ncmd_t, [{"name": "Node Control/Firmware Update", "datatype": 12,
-                                  "string_value": f"https://10.0.2.2:{fw_port}/enc.bin"}])
+                                  "string_value": f"https://10.0.2.2:{fw_port}/{name}.bin"}])
 
     def fw(nb):
         return metric(nb[2], name="Node Info/Firmware").string_value if nb else None
@@ -3087,6 +3261,52 @@ def run_nvs_ota(args, work):
               f"confirmation {len(boots)}, restart requests {len(restarts)}, another NBIRTH in "
               f"20 s {later is not None}; NBIRTH firmware "
               f"{fw(nb3)!r} bdSeq {b1} -> {b3}; commissioning password {pw2!r}; in clear: {clear2}")
+
+        # 3. issue #102: the build without NVS encryption sent to the migrated device: refused
+        # once its head is in the slot (before esp_ota_set_boot_partition), no restart; the next
+        # boot still has the encrypted NVS (bdSeq continues, the password opens the broker)
+        if not args.plain_app:
+            print("[SKIP] issue #102 OTA back to the build without NVS encryption: no --plain-app",
+                  flush=True)
+            return
+        obs.drain()
+        t3 = time.monotonic()
+        gw = Gateway(args, log, flash)
+        gw.start()
+        nb4 = obs.wait(nbirth_t, 60)
+        gw.wait_log(r"edge: time synchronised", 20, t3)
+        asked = time.monotonic()
+        update("plain")
+        refused = obs.wait(ndata_t, 120, lambda p: (fw_state(p) or "").startswith(
+            "failed: image e2e-plain refused: built without NVS encryption"))
+        why = gw.find(r"fw: update refused: the image built without NVS encryption \(this device's "
+                      r"NVS is encrypted\)", asked)
+        time.sleep(3)
+        restarted = any(m[1] == f"{T}/NDEATH/{node}" for m in CAPTURE if m[0] >= asked)
+        gw.kill()
+        obs.wait(f"{T}/NDEATH/{node}", 5)
+        obs.drain()
+        t4 = time.monotonic()
+        gw = Gateway(args, log, flash)
+        gw.start()
+        nb5 = obs.wait(nbirth_t, 60)
+        pw3 = commissioning_password(gw, t4)
+        _, h3 = gw.shell("status", [r"^secrets\s+NVS encrypted \(HMAC key in eFuse KEY5\)",
+                                    r"^ota\s+e2e-enc in "])
+        gw.kill()
+        clear3 = nvs_clear(flash, words)
+        b4 = bdseq_of(nb4[2]) if nb4 else None
+        b5 = bdseq_of(nb5[2]) if nb5 else None
+        check("Issue #102 an OTA update to the build without NVS encryption, on a device whose NVS "
+              "is already encrypted, is refused with its reason before it is set to boot (no "
+              "restart); the next boot runs the same firmware with the NVS intact (bdSeq continues, "
+              "the MQTT password from the NVS opens the broker, same commissioning password)",
+              nb4 and refused and why and not restarted and nb5 and fw(nb5) == "e2e-enc"
+              and b4 is not None and b5 is not None and 1 <= (b5 - b4) % 256 <= 64
+              and pw3 == pw0 and all(h3.values()) and not clear3,
+              f"state {fw_state(refused[2]) if refused else None!r}; restarted {restarted}; NBIRTH "
+              f"firmware {fw(nb5)!r} bdSeq {b4} -> {b5}; commissioning password {pw3!r}; shell "
+              f"{h3}; in clear: {clear3}")
     finally:
         if not gw.killed:   # a second kill() would read as a QEMU death (#86)
             gw.kill()
@@ -3154,6 +3374,9 @@ def main():
     ap.add_argument("--plain-flash", default="",
                     help="issue #94: flash image of the QEMU build without NVS encryption "
                          "(sdkconfig.qemu-plain), the image before the OTA update")
+    ap.add_argument("--plain-app", default="",
+                    help="issue #102: the unsigned app image of that build (an OTA update the "
+                         "device must refuse once its NVS is encrypted)")
     ap.add_argument("--mqtt-port", type=int, default=MQTT_PORT)
     ap.add_argument("--modbus-port", type=int, default=MODBUS_PORT)
     ap.add_argument("--console-port", type=int, default=CONSOLE_PORT)
@@ -3244,6 +3467,7 @@ def main():
         if want("ota"):
             run_scenario("FW-1 OTA", lambda: run_ota(args, work))
             run_scenario("issue #97 OTA trial wiring", lambda: run_ota_wiring(args, work))
+            run_scenario("issues #99/#101 OTA trial", lambda: run_ota_trial(args, work))
         if want("nvs"):
             run_scenario("issues #67/#94 NVS migration", lambda: run_nvs_migration(args, work))
             run_scenario("issue #94 OTA to NVS encryption", lambda: run_nvs_ota(args, work))
