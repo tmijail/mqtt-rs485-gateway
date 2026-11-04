@@ -279,6 +279,69 @@ static void test_syslog_section(void)
     ASSERT_REJECTED(parse(doc), "syslog.host: se esperaba un texto");
 }
 
+/* CFG-3 / CFG-4: optional "web" section. */
+static void test_web_section(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                                   "\"edge_node_id\":\"E\"}}"),
+                             err.msg);
+    TEST_ASSERT_TRUE(cfg.web.enabled);
+    TEST_ASSERT_EQUAL(80, cfg.web.port);
+    TEST_ASSERT_EQUAL_STRING("admin", cfg.web.username);
+    TEST_ASSERT_EQUAL_STRING("", cfg.web.password);
+    TEST_ASSERT_EQUAL_STRING("", cfg.web.password_hash);
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":"
+              "\"E\"},\"web\":{\"enabled\":false,\"port\":8080,\"username\":\"ops\","
+              "\"password\":\"12345678\"}}"),
+        err.msg);
+    TEST_ASSERT_FALSE(cfg.web.enabled);
+    TEST_ASSERT_EQUAL(8080, cfg.web.port);
+    TEST_ASSERT_EQUAL_STRING("ops", cfg.web.username);
+    TEST_ASSERT_EQUAL_STRING("12345678", cfg.web.password);
+    static const char *const bad[][2] = {
+        {"{\"port\":0}", "web.port"},
+        {"{\"username\":\"\"}", "web.username: no puede estar vacío"},
+        {"{\"username\":\"a:b\"}", "web.username: solo caracteres ASCII visibles"},
+        {"{\"username\":\"a b\"}", "web.username"},
+        {"{\"password\":\"1234567\"}", "web.password: se esperaban al menos 8"},
+        {"{\"user\":\"x\"}", "web.user: clave desconocida"},
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char doc[256];
+        snprintf(doc, sizeof(doc),
+                 "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":"
+                 "\"E\"},\"web\":%s}",
+                 bad[i][0]);
+        ASSERT_REJECTED(parse(doc), bad[i][1]);
+    }
+}
+
+/* CFG-4: the REST API returns the error's JSON path, line and column as separate fields. */
+static void test_error_fields(void)
+{
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\",\"port\":0},\"sparkplug\":{\"group_id\":"
+                          "\"G\",\"edge_node_id\":\"E\"}}"),
+                    "mqtt.port");
+    TEST_ASSERT_EQUAL_STRING("mqtt.port", err.path);
+    TEST_ASSERT_EQUAL(0, err.line);
+    ASSERT_REJECTED(parse("{\n  \"mqtt\": {\"host\": \"b\"}\n  \"sparkplug\": {}\n}"), "línea 3");
+    TEST_ASSERT_EQUAL_STRING("", err.path);
+    TEST_ASSERT_EQUAL(3, err.line);
+    TEST_ASSERT_EQUAL(3, err.column);
+    ASSERT_REJECTED(parse("[]"), "$:");
+    TEST_ASSERT_EQUAL_STRING("$", err.path);
+    /* nesting is bounded before cJSON recurses (stack of the HTTP and console tasks) */
+    static char deep[4096];
+    size_t n = 0;
+    for (int i = 0; i < 2000; i++) {
+        deep[n++] = '[';
+    }
+    deep[n] = '\0';
+    ASSERT_REJECTED(parse(deep), "JSON anidado a más de 32 niveles");
+    TEST_ASSERT_EQUAL(4, gw_json_depth("{\"a\":[{\"b\":[1]}],\"s\":\"[[[[[\\\"[[\"}", 40));
+}
+
 static void test_schema_rules(void)
 {
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bool\"}"),
@@ -513,6 +576,8 @@ int main(void)
     RUN_TEST(test_ipv6_literals);
     RUN_TEST(test_ipv6_section);
     RUN_TEST(test_syslog_section);
+    RUN_TEST(test_web_section);
+    RUN_TEST(test_error_fields);
     RUN_TEST(test_schema_rules);
     RUN_TEST(test_section_errors);
     RUN_TEST(test_limits);

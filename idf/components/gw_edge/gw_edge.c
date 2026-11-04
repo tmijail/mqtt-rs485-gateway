@@ -52,6 +52,7 @@ static atomic_uint s_conn_gen;
 static atomic_uint s_disc_gen;
 static atomic_uint s_dev_dirty;
 static atomic_uint s_route_gen;
+static atomic_bool s_restart_req;
 
 /* ---- queues and buffers (static, REL-2 / MQTT-7) ---- */
 static QueueHandle_t s_q;
@@ -134,6 +135,12 @@ void gw_edge_notify_write_done(uint16_t tag, bool ok)
     if (xQueueSend(s_q, &ev, pdMS_TO_TICKS(50)) != pdTRUE) {
         ESP_LOGW(TAG, "write confirmation for tag %u dropped (queue full)", tag);
     }
+}
+
+void gw_edge_request_restart(void)
+{
+    atomic_store(&s_restart_req, true);
+    wake();
 }
 
 /* ---------- esp-mqtt glue (runs in the MQTT task) ---------- */
@@ -321,10 +328,26 @@ static void move_session(void)
     s_attempt = 0;
 }
 
+/* Requested restart: the same orderly end as NCMD Reboot (explicit NDEATH, DISCONNECT). */
+static void restart_now(void)
+{
+    ESP_LOGW(TAG, "restart requested%s", s_node.online ? ": publishing NDEATH" : "");
+    if (s_node.online) {
+        esp_mqtt_client_publish(s_client, s_death_topic, (const char *)s_will,
+                                s_mqtt_cfg.session.last_will.msg_len, 1, false);
+        op_reboot(NULL);
+    }
+    vTaskDelay(pdMS_TO_TICKS(REBOOT_DELAY_MS));
+    esp_restart();
+}
+
 /* Bring the Sparkplug state in line with the flags set by the other tasks. */
 static void reconcile(void)
 {
     int64_t now = esp_timer_get_time();
+    if (atomic_load(&s_restart_req)) {
+        restart_now();
+    }
     bool ip = atomic_load(&s_ip_up);
     bool connected = atomic_load(&s_mqtt_connected);
     if (ip && !s_prev_ip) {

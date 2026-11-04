@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "gw_config_priv.h"
 
 /* ---------- parser memory ---------- */
 
@@ -29,6 +30,30 @@ void gw_config_set_allocator(void *(*alloc)(size_t size), void (*release)(void *
     s_release = release;
 }
 
+void gw_config_json_hooks(void)
+{
+    cJSON_Hooks hooks = {.malloc_fn = tracked_alloc, .free_fn = s_release};
+    cJSON_InitHooks(&hooks);
+    s_alloc_failed = false;
+}
+
+bool gw_config_json_alloc_failed(void)
+{
+    return s_alloc_failed;
+}
+
+void *gw_config_alloc(size_t size)
+{
+    return s_alloc(size);
+}
+
+void gw_config_release(void *ptr)
+{
+    if (ptr != NULL) {
+        s_release(ptr);
+    }
+}
+
 /* ---------- error reporting ---------- */
 
 static bool fail(gw_cfg_err_t *err, const char *path, const char *fmt, ...)
@@ -36,6 +61,8 @@ static bool fail(gw_cfg_err_t *err, const char *path, const char *fmt, ...)
 
 static bool fail(gw_cfg_err_t *err, const char *path, const char *fmt, ...)
 {
+    snprintf(err->path, sizeof(err->path), "%s", path);
+    err->line = err->column = 0;
     int n = snprintf(err->msg, sizeof(err->msg), "%s: ", path);
     if (n < 0 || (size_t)n >= sizeof(err->msg)) {
         return false;
@@ -71,6 +98,9 @@ static bool fail_at(gw_cfg_err_t *err, const char *json, const char *at, const c
 {
     unsigned line, col;
     line_col(json, at, &line, &col);
+    err->path[0] = '\0';
+    err->line = line;
+    err->column = col;
     snprintf(err->msg, sizeof(err->msg), "JSON mal formado en la línea %u, columna %u: %s", line,
              col, what);
     return false;
@@ -637,6 +667,43 @@ static bool parse_syslog(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     return true;
 }
 
+/* CFG-3 / CFG-4: web UI and REST API. The password is a secret (CFG-7): it only appears
+ * here while a new one is being set; the stored document never holds it. */
+static bool parse_web(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"enabled", "port", "username", "password"};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "web");
+    static const cJSON empty = {.type = cJSON_Object};
+    long port;
+    if (o == NULL) {
+        o = &empty;
+    }
+    if (!check_keys(o, "web", keys, 4, err) ||
+        !get_bool(o, "enabled", "web", true, &cfg->web.enabled, err) ||
+        !get_int(o, "port", "web", false, 80, 1, 65535, &port, err) ||
+        !get_string(o, "username", "web", false, "admin", cfg->web.username,
+                    sizeof(cfg->web.username), err) ||
+        !get_string(o, "password", "web", false, "", cfg->web.password,
+                    sizeof(cfg->web.password), err)) {
+        return false;
+    }
+    cfg->web.port = (uint16_t)port;
+    if (cfg->web.username[0] == '\0') {
+        return fail(err, "web.username", "no puede estar vacío");
+    }
+    for (const unsigned char *c = (const unsigned char *)cfg->web.username; *c; c++) {
+        if (*c <= 0x20 || *c >= 0x7f || *c == ':') {
+            return fail(err, "web.username",
+                        "solo caracteres ASCII visibles, sin ':' (Basic auth)");
+        }
+    }
+    size_t pw = strlen(cfg->web.password);
+    if (pw != 0 && pw < 8) {
+        return fail(err, "web.password", "se esperaban al menos 8 caracteres (o vacío)");
+    }
+    return true;
+}
+
 static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"name",   "area",   "address",  "type",     "word_order",
@@ -786,20 +853,54 @@ static bool parse_devices(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err
     return true;
 }
 
+unsigned gw_json_depth(const char *json, size_t len)
+{
+    unsigned depth = 0, max = 0;
+    bool in_str = false, esc = false;
+    for (size_t i = 0; i < len && json[i] != '\0'; i++) {
+        char c = json[i];
+        if (in_str) {
+            if (esc) {
+                esc = false;
+            } else if (c == '\\') {
+                esc = true;
+            } else if (c == '"') {
+                in_str = false;
+            }
+        } else if (c == '"') {
+            in_str = true;
+        } else if (c == '{' || c == '[') {
+            if (++depth > max) {
+                max = depth;
+            }
+        } else if ((c == '}' || c == ']') && depth > 0) {
+            depth--;
+        }
+    }
+    return max;
+}
+
 bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"network", "ntp",      "mqtt",    "sparkplug",
-                                       "rs485",   "local_io", "devices", "syslog"};
+    static const char *const keys[] = {"network", "ntp",      "mqtt",    "sparkplug", "rs485",
+                                       "local_io", "devices", "syslog",  "web"};
     memset(cfg, 0, sizeof(*cfg));
     err->msg[0] = '\0';
+    err->path[0] = '\0';
+    err->line = err->column = 0;
 
-    cJSON_Hooks hooks = {.malloc_fn = tracked_alloc, .free_fn = s_release};
-    cJSON_InitHooks(&hooks);
-    s_alloc_failed = false;
+    /* cJSON recurses once per nesting level: bound it before parsing (the schema needs 4). */
+    if (gw_json_depth(json, len) > GW_JSON_MAX_DEPTH) {
+        snprintf(err->msg, sizeof(err->msg), "JSON anidado a más de %d niveles",
+                 GW_JSON_MAX_DEPTH);
+        return false;
+    }
+    gw_config_json_hooks();
     const char *end = NULL;
     cJSON *root = cJSON_ParseWithLengthOpts(json, len, &end, false);
     if (root == NULL && s_alloc_failed) {
-        fail(err, "$", "memoria insuficiente para analizar %zu bytes de JSON", len);
+        snprintf(err->msg, sizeof(err->msg), "memoria insuficiente para analizar %zu bytes de JSON",
+                 len);
         return false;
     }
     if (root == NULL) {
@@ -814,11 +915,11 @@ bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_
         cJSON_Delete(root);
         return fail_at(err, json, end, "contenido después del documento");
     }
-    bool ok = check_keys(root, "", keys, 8, err) && parse_network(root, cfg, err) &&
+    bool ok = check_keys(root, "", keys, 9, err) && parse_network(root, cfg, err) &&
               parse_ntp(root, cfg, err) && parse_mqtt(root, cfg, err) &&
               parse_sparkplug(root, cfg, err) && parse_rs485(root, cfg, err) &&
               parse_local_io(root, cfg, err) && parse_devices(root, cfg, err) &&
-              parse_syslog(root, cfg, err);
+              parse_syslog(root, cfg, err) && parse_web(root, cfg, err);
     cJSON_Delete(root);
 
     if (ok && cfg->mqtt.client_id[0] == '\0') {

@@ -7,6 +7,7 @@ Runs the ESP32-S3 image built with sdkconfig.qemu in Espressif's QEMU:
   * UART0 (console): socket used to read the log and to inject DI levels ("di <n> <0|1>")
   * MQTT: a private mosquitto; an SNTP responder answers on the host's UDP 123
   * Remote syslog (REL-4): a UDP listener on the host collects what the gateway forwards
+  * Web server (CFG-3/CFG-4): slirp forwards the host's 127.0.0.1:HTTP_PORT to the guest's port 80
 
 Isolation: by default the harness moves itself into a private network namespace (Linux,
 needs CAP_SYS_ADMIN, e.g. root in a container) with only a loopback interface. Every port,
@@ -18,6 +19,8 @@ Usage: tools/e2e/run_e2e.sh  (prepares the flash image and calls this script)
 """
 import argparse
 import asyncio
+import base64
+import http.client
 import json
 import os
 import pathlib
@@ -48,6 +51,8 @@ MQTT_PORT = int(os.environ.get("E2E_MQTT_PORT", 18831))
 MODBUS_PORT = int(os.environ.get("E2E_MODBUS_PORT", 15020))
 CONSOLE_PORT = int(os.environ.get("E2E_CONSOLE_PORT", 15555))
 SYSLOG_PORT = int(os.environ.get("E2E_SYSLOG_PORT", 15514))
+HTTP_PORT = int(os.environ.get("E2E_HTTP_PORT", 18080))
+WEB_PASSWORD = "e2e-pass-1"
 SYSLOG = []       # (t, datagram text) received by the syslog listener
 SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
 GROUP, NODE, DEVICE, BULK = "Plant1", "GW01", "Meter1", "Bulk"
@@ -277,7 +282,7 @@ class Gateway:
                "-drive", f"file={a.efuse},if=none,format=raw,id=efuse",
                "-global", "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
                "-global", "driver=timer.esp32s3.timg,property=wdt_disable,value=true",
-               "-nic", "user,model=open_eth",
+               "-nic", f"user,model=open_eth,hostfwd=tcp:127.0.0.1:{HTTP_PORT}-:80",
                "-chardev", f"socket,id=con,host=127.0.0.1,port={CONSOLE_PORT},server=on,wait=on",
                "-serial", "chardev:con",
                "-chardev", f"socket,id=rs485,host=127.0.0.1,port={MODBUS_PORT},reconnect-ms=500",
@@ -334,6 +339,45 @@ class Gateway:
             if time.monotonic() >= end:
                 return None
             time.sleep(0.05)
+
+
+# ---------------------------------------------------------------- HTTP (CFG-3, CFG-4)
+
+def http(method, path, body=None, auth=("admin", WEB_PASSWORD), timeout=15, headers=None):
+    """(status, headers dict, body bytes) of one request to the gateway's web server, or
+    (None, {}, error text) when it cannot be reached. @auth None = no Authorization header."""
+    h = dict(headers or {})
+    if auth is not None:
+        h["Authorization"] = "Basic " + base64.b64encode(f"{auth[0]}:{auth[1]}".encode()).decode()
+    if body is not None and not isinstance(body, bytes):
+        body = json.dumps(body).encode()
+        h.setdefault("Content-Type", "application/json")
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", HTTP_PORT, timeout=timeout)
+        c.request(method, path, body=body, headers=h)
+        r = c.getresponse()
+        data = r.read()
+        c.close()
+        return r.status, {k.lower(): v for k, v in r.getheaders()}, data
+    except (OSError, http.client.HTTPException) as e:
+        return None, {}, str(e).encode()
+
+
+def wait_http(path, timeout, auth=("admin", WEB_PASSWORD)):
+    """First answer to GET @path within @timeout (the server starts after the network)."""
+    end = time.monotonic() + timeout
+    while True:
+        r = http("GET", path, auth=auth, timeout=5)
+        if r[0] is not None or time.monotonic() >= end:
+            return r
+        time.sleep(0.5)
+
+
+def as_json(body):
+    try:
+        return json.loads(body)
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------- storage partition variants
@@ -423,7 +467,7 @@ def start_broker(conf, log):
 
 
 def main():
-    global MQTT_PORT, MODBUS_PORT, CONSOLE_PORT, SYSLOG_PORT
+    global MQTT_PORT, MODBUS_PORT, CONSOLE_PORT, SYSLOG_PORT, HTTP_PORT
     ap = argparse.ArgumentParser()
     ap.add_argument("--qemu", required=True)
     ap.add_argument("--flash", required=True)
@@ -436,14 +480,16 @@ def main():
     ap.add_argument("--modbus-port", type=int, default=MODBUS_PORT)
     ap.add_argument("--console-port", type=int, default=CONSOLE_PORT)
     ap.add_argument("--syslog-port", type=int, default=SYSLOG_PORT)
+    ap.add_argument("--http-port", type=int, default=HTTP_PORT)
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
     args = ap.parse_args()
     MQTT_PORT, MODBUS_PORT, CONSOLE_PORT = args.mqtt_port, args.modbus_port, args.console_port
-    SYSLOG_PORT = args.syslog_port
+    SYSLOG_PORT, HTTP_PORT = args.syslog_port, args.http_port
     isolated = False if args.no_isolate else isolate_network()
     print(f"network: {'private namespace' if isolated else 'host loopback'}; ports MQTT {MQTT_PORT}, "
-          f"Modbus {MODBUS_PORT}, console {CONSOLE_PORT}, syslog {SYSLOG_PORT}", flush=True)
+          f"Modbus {MODBUS_PORT}, console {CONSOLE_PORT}, syslog {SYSLOG_PORT}, HTTP {HTTP_PORT}",
+          flush=True)
     work = pathlib.Path(args.workdir)
     log = work / "uart0.log"
     # The image under test gets the harness' config.json (with its MQTT port).
@@ -463,6 +509,7 @@ def main():
     try:
         run_config_failsafe(args, work)
         run_network_variant(args, work)
+        run_web(args, work)
         run(args, log, slave, broker, conf, work)
     finally:
         stop.set()
@@ -635,6 +682,79 @@ def run_network_variant(args, work):
           lla and slaac and static and listed and cfg6 and replies,
           " | ".join(gw.find(r"net: ethernet: IPv6 ", t0)[:4]) + " | "
           + " | ".join(gw.find(r"^ipv6\s|reply from|sent, \d+ received", asked6)))
+
+
+def run_web(args, work):
+    """CFG-4 REST API (and the web UI, CFG-3), in boots of their own with separate edge node ids:
+    authentication, export with masked secrets, invalid import -> 400 with the JSON path,
+    dry run, oversized body, and a valid import -> orderly restart with the new configuration."""
+    node, node2 = "GW04", "GW05"
+    cfg = json.loads(config_json())
+    cfg["sparkplug"]["edge_node_id"] = node
+    cfg["mqtt"]["password"] = "mqtt-secret"      # the broker allows anonymous: ignored there
+    cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    flash = flash_variant(args, work, "web", {"config.json": json.dumps(cfg, indent=2).encode()})
+    obs = Observer()
+    gw = Gateway(args, work / "uart0-web.log", flash)
+    t0 = time.monotonic()
+    gw.start()
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    st0, hdr0, _ = wait_http("/api/config", 20, auth=None)
+    st1, _, _ = http("GET", "/api/config", auth=("admin", "wrong-pass"))
+    st2, hdr2, body = http("GET", "/api/config")
+    doc = as_json(body) or {}
+    check("CFG-4 REST API requires HTTP Basic auth (no credentials / wrong password -> 401)",
+          st0 == 401 and "basic" in hdr0.get("www-authenticate", "").lower() and st1 == 401,
+          f"no auth -> {st0} ({hdr0.get('www-authenticate')}); wrong password -> {st1}")
+    masked = doc.get("mqtt", {}).get("password") == "********" and \
+        doc.get("web", {}).get("password") == "********"
+    check("CFG-4 GET /api/config exports the configuration with every secret masked",
+          st2 == 200 and nb and doc.get("sparkplug", {}).get("edge_node_id") == node and masked
+          and b"mqtt-secret" not in body and WEB_PASSWORD.encode() not in body
+          and "json" in hdr2.get("content-type", ""),
+          f"status {st2}, {len(body)} bytes, node {doc.get('sparkplug', {}).get('edge_node_id')}, "
+          f"mqtt.password {doc.get('mqtt', {}).get('password')!r}, web.password "
+          f"{doc.get('web', {}).get('password')!r}")
+
+    bad = json.loads(json.dumps(doc))
+    bad["devices"][0]["tags"][0]["type"] = "float64"
+    st3, _, b3 = http("PUT", "/api/config", bad)
+    e3 = as_json(b3) or {}
+    syntax = json.dumps(doc, indent=2).replace('"ntp"', '"ntp" "x"', 1).encode()
+    st4, _, b4 = http("PUT", "/api/config", syntax)
+    e4 = as_json(b4) or {}
+    st5, _, b5 = http("PUT", "/api/config?dry_run=1", doc)
+    big = b"{" + b" " * (sdkconfig_int(args.sdkconfig, "GW_CONFIG_MAX_BYTES") + 1) + b"}"
+    st6, _, _ = http("PUT", "/api/config", big)
+    check("CFG-4 PUT invalid -> 400 with the JSON path; syntax error -> 400 with line and column; "
+          "dry run validates without saving; oversized body -> 413",
+          st3 == 400 and e3.get("path") == "devices[0].tags[0].type" and st4 == 400
+          and e4.get("line", 0) > 0 and e4.get("path") == "" and st5 == 200
+          and (as_json(b5) or {}).get("saved") is False and st6 == 413
+          and not gw.find(r"configuration saved", t0),
+          f"schema {st3} {e3.get('path')!r}: {e3.get('error')}; syntax {st4} line {e4.get('line')} "
+          f"column {e4.get('column')}; dry run {st5} {b5.decode().strip()}; oversized {st6}")
+
+    new = json.loads(json.dumps(doc))
+    new["sparkplug"]["edge_node_id"] = node2
+    obs.drain()
+    st7, _, b7 = http("PUT", "/api/config", new)
+    death = obs.wait(f"{T}/NDEATH/{node}", 10)
+    nb2 = obs.wait(f"{T}/NBIRTH/{node2}", 40)
+    st8, _, b8 = wait_http("/api/config", 20)
+    doc8 = as_json(b8) or {}
+    check("CFG-4 PUT valid -> saved atomically, orderly restart (NDEATH) and NBIRTH with the new "
+          "configuration; secrets kept through the mask",
+          st7 == 200 and (as_json(b7) or {}).get("saved") and death and nb2 and st8 == 200
+          and doc8.get("sparkplug", {}).get("edge_node_id") == node2
+          and doc8.get("mqtt", {}).get("password") == "********"
+          and gw.find(r"configuration saved to /cfg/config\.json", t0),
+          f"PUT {st7} {b7.decode().strip()}; NDEATH {node}: {bool(death)}; NBIRTH {node2}: "
+          f"{bool(nb2)}; GET after restart {st8} node {doc8.get('sparkplug', {}).get('edge_node_id')}"
+          f" (same password still accepted)")
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node2}", 5)
+    obs.close()
 
 
 def run(args, log, slave, broker, conf, work):

@@ -9,6 +9,7 @@
  *   status_led  (prio 2)           gw_status
  *   console     (prio 2)           gw_shell: diagnostic REPL on the console UART
  *   syslog      (prio 2)           gw_log:   copies the log to a syslog server (if configured)
+ *   httpd       (prio 3)           gw_web:   REST API (and web UI) for the configuration
  *   + IDF tasks: esp-mqtt, lwIP tcpip, esp_eth, Wi-Fi (if configured), event loop
  */
 #include <stdio.h>
@@ -34,6 +35,7 @@
 #include "gw_status.h"
 #include "gw_storage.h"
 #include "gw_tagdb.h"
+#include "gw_web.h"
 
 static const char *TAG = "main";
 
@@ -41,6 +43,7 @@ static gw_config_t s_cfg;   /* immutable after boot; shared read-only by every t
 static char s_hardware[64];
 static gw_node_info_t s_info;  /* NBIRTH "Node Info/..." */
 static gw_cfg_err_t s_cfg_err;
+static char s_commission_pw[GW_COMMISSION_PW_LEN + 1];
 
 static void on_ip_changed(bool up)
 {
@@ -59,6 +62,21 @@ static void start_shell(const gw_config_t *cfg, const char *source)
         .cfg = cfg, .config_source = source, .config_error = s_cfg_err.msg, .info = &s_info};
     if (gw_shell_start(&ctx) != ESP_OK) {
         ESP_LOGE(TAG, "console shell unavailable");
+    }
+}
+
+static void start_web(const gw_config_t *cfg)
+{
+    gw_storage_commissioning_password(s_commission_pw);
+    if (cfg->web.password_hash[0] == '\0') {
+        /* console only (not esp_log): it must not travel to a syslog server */
+        printf("web: no web password set; user 'admin', commissioning password '%s'\n",
+               s_commission_pw);
+    }
+    const gw_web_ctx_t ctx = {
+        .cfg = cfg, .commissioning_password = s_commission_pw, .restart = gw_edge_request_restart};
+    if (gw_web_start(&ctx) != ESP_OK) {
+        ESP_LOGE(TAG, "web server unavailable");
     }
 }
 
@@ -158,5 +176,8 @@ void app_main(void)
         .time_synced = gw_edge_notify_time_synced,
     };
     ESP_ERROR_CHECK(gw_net_start(&s_cfg, &net_cb));
+    if (s_cfg.web.enabled) {
+        start_web(&s_cfg);
+    }
     start_shell(&s_cfg, source);
 }

@@ -32,6 +32,10 @@ void gw_edge_notify_device(uint16_t dev);
 void gw_edge_notify_io(void);
 void gw_edge_notify_write_done(uint16_t tag, bool ok);
 
+/** Orderly restart from another task (new configuration, REST API, shell): the Sparkplug task
+ *  publishes NDEATH and disconnects first when a session is up, then restarts. */
+void gw_edge_request_restart(void);
+
 #ifdef __cplusplus
 }
 #endif

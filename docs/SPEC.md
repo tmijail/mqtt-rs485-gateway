@@ -303,6 +303,35 @@ El router por defecto IPv6 se aprende de los RA; no hay *gateway* IPv6 estático
 
 Formato: RFC 5424 sobre UDP (RFC 5426), un mensaje por datagrama, *facility* `local0`, HOSTNAME = `edge_node_id`, APP-NAME = módulo del log y `[meta sequenceId="n"]`. Ejemplo: `<134>1 2026-11-04T12:00:00.123Z GW01 edge - - [meta sequenceId="12"] Sparkplug session up (bdSeq=3)`.
 
+**`web` (CFG-3, CFG-4): interfaz web y API REST.**
+
+```json
+"web": { "enabled": true, "port": 80, "username": "admin", "password": "una-clave-larga" }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `enabled` | bool | `true` | `false` = sin servidor web con la configuración válida. Con la configuración rechazada o en puesta en marcha el servidor arranca igual (recuperación) |
+| `port` | entero | `80` | 1–65535, HTTP |
+| `username` | texto | `"admin"` | 1–32 caracteres ASCII visibles, sin `:` |
+| `password` | texto (secreto) | `""` | Vacío o al menos 8 caracteres. Vacío = el equipo acepta `admin` con su **contraseña de puesta en marcha** (aleatoria, se ve en la consola) |
+
+**Secretos** (`mqtt.password`, `network.wifi.password`, `web.password`): no se guardan en el JSON, sino en NVS (CFG-7); `web.password` solo como hash PBKDF2-HMAC-SHA256 con sal. Al exportar, un secreto definido vale `"********"`. Al importar (PUT):
+
+- `"********"` conserva el secreto guardado;
+- otro texto lo reemplaza (`""` lo borra);
+- la clave ausente lo borra: el documento reemplaza la configuración entera.
+
+En el archivo `/cfg/config.json` un secreto ausente, vacío o `"********"` toma el valor de NVS; uno en claro (archivo grabado a mano o de un firmware anterior) se usa, se mueve a NVS y el archivo se reescribe sin él.
+
+**API REST** (todas las rutas piden HTTP Basic con `web.username` y `web.password`; respuestas JSON):
+
+| Método y ruta | Qué hace |
+|---|---|
+| `GET /api/config` | Exporta la configuración guardada, con los secretos enmascarados. `?download=1` la entrega como archivo |
+| `PUT /api/config` (o `POST`) | Importa: valida, guarda de forma atómica (archivo temporal + `rename`) y reinicia de forma ordenada (NDEATH). `?dry_run=1` solo valida. Error: `400 {"ok":false,"error":"…","path":"devices[0].tags[1].type","line":0,"column":0}`; `413` si supera `CONFIG_GW_CONFIG_MAX_BYTES` |
+| `POST /api/restart` | Reinicio ordenado |
+
 ## 7. Criterios de aceptación del MVP
 
 1. `NBIRTH` con `seq`=0 y el `bdSeq` del LWT. Al matar la conexión TCP el broker publica `NDEATH` con ese mismo `bdSeq`.
