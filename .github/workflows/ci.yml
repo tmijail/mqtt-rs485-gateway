@@ -35,6 +35,8 @@ jobs:
           /tmp/venv/bin/python idf/tools/spb_decode.py --check /tmp/spb
       - name: E2E harness self-test (fault signatures and retry rule, issues #92 and #96)
         run: /tmp/venv/bin/python idf/tools/e2e/test_harness.py
+      - name: pyflakes on the Python tools (issue #107)
+        run: /tmp/venv/bin/python -m pyflakes idf/tools/e2e/*.py idf/tools/*.py
 
   firmware:
     name: ESP32-S3 firmware build (QA-2)

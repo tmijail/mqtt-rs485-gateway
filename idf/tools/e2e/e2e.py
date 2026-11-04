@@ -2078,7 +2078,6 @@ def run_stack_margin(args, work, slave):
         {"name": "Block", "area": "holding", "address": 240, "type": "bytes", "length": 4,
          "writable": True}]})
     slave.ctx.setValues(3, 240, [0x0001, 0x0203, 0x0405, 0x0607])
-    t0 = time.monotonic()
     gw = boot_variant(args, work, "stack", cfg)
     nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
     for d in ("PumpA", "Raw"):
@@ -2494,7 +2493,6 @@ def run_ota(args, work):
     app = pathlib.Path(args.elf).with_suffix(".bin")
     unsigned = pathlib.Path(args.elf).with_name(app.stem + "-unsigned.bin")
     src = unsigned if unsigned.exists() else app
-    v1 = None
     fw_image(src, "e2e-v2", fwdir / "v2.bin")
     fw_image(src, "e2e-v3", fwdir / "v3.bin")
     fw_image(src, "e2e-bad", fwdir / "bad.bin", corrupt=True)
@@ -2535,7 +2533,6 @@ def run_ota(args, work):
                      and metric(nb[2], alias=42) is not None,
                      f"state {fw_state(nb[2])!r}" if nb else "no NBIRTH"):
             return
-        v1 = metric(nb[2], name="Node Info/Firmware").string_value
         gw.wait_log(r"edge: time synchronised", 10, t0)   # the image server's certificate dates
 
         def update(url):
