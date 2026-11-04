@@ -74,6 +74,7 @@ static esp_err_t write_file_atomic(const char *path, const char *tmp, const void
                                    size_t len);
 
 static bool s_nvs_plain;     /* this boot runs on the unencrypted NVS (issue #94) */
+static bool s_plain_trial;   /* ... only because the image is on trial, LittleFS mounted (#104) */
 static bool s_nvs_failed;    /* a migration could not finish: no NVS this boot (issue #94) */
 static bool s_mig_pending;   /* no NVS this boot, with a copy the confirmed boot applies */
 static const char *s_nvs_why;   /* why there is no NVS this boot (shell), NULL otherwise */
@@ -821,6 +822,7 @@ static void nvs_prepare(void)
         break;
     case GW_NVSMIG_STAY_PLAIN:
         s_nvs_plain = true;
+        s_plain_trial = state.on_trial && fs && raw_ok;
         ESP_LOGW(TAG, "NVS partition \"%s\" is %s and stays so this boot: %s", p->label,
                  kind_name(kind),
                  !raw_ok ? "a page could not be read, nothing is erased"
@@ -900,6 +902,11 @@ esp_err_t gw_storage_init(void)
 bool gw_storage_nvs_encryption_pending(void)
 {
     return s_nvs_plain || s_mig_pending;
+}
+
+bool gw_storage_nvs_migrates_next_boot(void)
+{
+    return (s_nvs_plain && s_plain_trial) || s_mig_pending;
 }
 
 const char *gw_storage_nvs_unavailable_why(void)

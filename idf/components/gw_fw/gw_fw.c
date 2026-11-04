@@ -304,7 +304,10 @@ static void on_restart(void *arg)
 /* An orderly restart in RESTART_DELAY_MS: the state NDATA (or the HTTP answer) goes out first. */
 static void restart_soon(void)
 {
-    if (s_restart_timer == NULL) {   /* created when needed: no allocation in a normal boot */
+    /* created when needed: no allocation in a normal boot. Issue #104: a new image on trial has
+     * it from gw_fw_init(), so the restart after its confirmation (Sparkplug task) allocates
+     * nothing in the publish path (REL-2); here only for a finished transfer */
+    if (s_restart_timer == NULL) {
         const esp_timer_create_args_t rt = {.callback = on_restart, .name = "fw_restart"};
         if (esp_timer_create(&rt, &s_restart_timer) != ESP_OK) {
             ESP_LOGE(TAG, "no memory for the restart timer: restarting now");
@@ -385,12 +388,16 @@ static bool confirm(bool nvs_restart)
     snprintf(detail, sizeof(detail), "firmware %s confirmed: %s", s_st.running, why);
     ESP_LOGW(TAG, "%s; the bootloader keeps it", detail);
     set_status(GW_FW_CONFIRMED, 100, detail, "confirmed: %s", s_st.running);
-    if (nvs_restart && gw_storage_nvs_encryption_pending()) {
+    if (nvs_restart && gw_storage_nvs_migrates_next_boot()) {
         /* issue #94: the trial ran on the unencrypted NVS (a rollback had to find it as the
          * previous image left it); now no rollback can come, and the next boot moves it into
-         * the encrypted NVS */
+         * the encrypted NVS. Issue #104: not when that boot could not migrate either (no
+         * LittleFS for the reset-safe copy): the restart would be wasted */
         ESP_LOGW(TAG, "firmware %s confirmed: restarting once to encrypt the NVS", s_st.running);
         restart_soon();
+    } else if (nvs_restart && gw_storage_nvs_encryption_pending()) {
+        ESP_LOGW(TAG, "firmware %s confirmed: the NVS stays unencrypted (no LittleFS for the "
+                      "migration copy); no restart for it", s_st.running);
     }
     return true;
 }
@@ -945,6 +952,10 @@ esp_err_t gw_fw_init(const gw_config_t *cfg, bool enabled, const gw_fw_hooks_t *
         const esp_timer_create_args_t tt = {.callback = on_trial_timeout, .name = "fw_trial"};
         ESP_ERROR_CHECK(esp_timer_create(&tt, &s_trial_timer));
         esp_timer_start_once(s_trial_timer, (left ? left : 1) * 1000ULL);
+        /* issue #104: the restart after the confirmation (NVS encryption) must not allocate in
+         * the Sparkplug task, which confirms */
+        const esp_timer_create_args_t rt = {.callback = on_restart, .name = "fw_restart"};
+        ESP_ERROR_CHECK(esp_timer_create(&rt, &s_restart_timer));
     }
     gw_storage_set_commit_hook(on_commit);   /* issue #99 */
 

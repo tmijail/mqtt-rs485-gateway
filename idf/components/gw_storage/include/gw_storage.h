@@ -67,6 +67,12 @@ void gw_storage_commissioning_password(char out[GW_COMMISSION_PW_LEN + 1]);
  *  confirmed image migrates (gw_fw restarts once after confirming one). */
 bool gw_storage_nvs_encryption_pending(void);
 
+/** Issue #104: true when the next boot of a confirmed image will encrypt the NVS: this one stays
+ *  unencrypted only because the image is on trial (with LittleFS mounted for the reset-safe copy),
+ *  or a migration copy is pending. False when the next boot could not migrate either (no
+ *  LittleFS, an unreadable NVS page): a restart for it would be wasted. */
+bool gw_storage_nvs_migrates_next_boot(void);
+
 /** Issue #94: why this boot has no NVS at all (a migration copy pending or unreadable, an NVS
  *  page unreadable, ...), NULL when that is not the case. For the shell. */
 const char *gw_storage_nvs_unavailable_why(void);
