@@ -732,7 +732,7 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
     hc.server_port = ctx->cfg->web.port;
     hc.task_priority = 3;
     hc.stack_size = 8192;            /* configuration validation runs in this task */
-    hc.max_uri_handlers = 14;
+    hc.max_uri_handlers = 12;
     hc.max_open_sockets = 4;
     hc.lru_purge_enable = true;
     const char *cert = NULL, *key = NULL;

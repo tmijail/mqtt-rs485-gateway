@@ -8,6 +8,7 @@
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_idf_version.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_system.h"
@@ -615,7 +616,9 @@ static void op_firmware_update(void *ctx, const char *url)
 static void sync_firmware(void)
 {
     if (atomic_exchange(&s_fw_dirty, false)) {
-        static char text[GW_NODE_FW_STATE_MAX];   /* this task only, off its 6 KB stack */
+        /* this task only: off its 6 KB stack, and in RTC FAST memory, not in the DRAM heap's
+         * way (issue #80) */
+        static RTC_FAST_ATTR char text[GW_NODE_FW_STATE_MAX];
         uint8_t progress;
         gw_fw_get_state(text, sizeof(text), &progress);
         gw_node_set_firmware_status(s_node, text, progress);

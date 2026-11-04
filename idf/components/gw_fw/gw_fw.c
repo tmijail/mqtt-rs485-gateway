@@ -7,7 +7,9 @@
 
 #include "esp_app_desc.h"
 #include "esp_app_format.h"
+#include "esp_attr.h"
 #include "esp_crt_bundle.h"
+#include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
 #include "esp_log.h"
@@ -34,17 +36,20 @@ static const gw_config_t *s_cfg;
 static gw_fw_hooks_t s_hooks;
 static bool s_enabled;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
-static SemaphoreHandle_t s_fmt_lock;   /* set_status()'s formatting buffers */
+static SemaphoreHandle_t s_fmt_lock;   /* s_st.text and s_st.detail (formatted in place) */
 static StaticSemaphore_t s_fmt_lock_buf;
-static gw_fw_status_t s_st;            /* under s_mux */
-static gw_ota_trial_t s_trial;         /* under s_mux */
+/* Plain data in RTC FAST memory (8 KB, both cores, otherwise only a little-used heap region):
+ * the internal DRAM heap keeps these bytes (issue #80: no PSRAM, the configuration validation
+ * needs its large blocks). Locks stay in DRAM (atomic instructions). */
+static RTC_FAST_ATTR gw_fw_status_t s_st;   /* under s_mux; texts under s_fmt_lock */
+static RTC_FAST_ATTR gw_ota_trial_t s_trial;   /* under s_mux */
 static esp_timer_handle_t s_trial_timer;
 static esp_timer_handle_t s_restart_timer;
 static atomic_bool s_busy;             /* a transfer is running (download or upload) */
-static char s_url[GW_OTA_URL_MAX];
-static char *s_ca_pem;                 /* boot allocation, never freed */
-static char s_ca_error[160];           /* the configured CA file could not be read */
-static char s_project[32];
+static char *s_url;                    /* allocated for a download only (#80) */
+static char *s_ca_pem;                 /* read for a download only (#80), freed after it */
+static const char *s_ca_name;          /* CA file of the update server, NULL: public CAs */
+static const char *s_ca_key;           /* its configuration key, for the messages */
 
 /* upload state (web server task) */
 static esp_ota_handle_t s_up;
@@ -53,9 +58,9 @@ static size_t s_up_done;
 static size_t s_up_total;
 #define HEAD_LEN (sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + \
                   sizeof(esp_app_desc_t))
-static uint8_t s_up_head[HEAD_LEN];
+static uint8_t *s_up_head;             /* until the head is checked (#80: not in .bss) */
 static size_t s_up_head_len;
-static char s_up_version[32];
+static RTC_FAST_ATTR char s_up_version[32];
 static uint8_t s_up_pct;
 
 /* ---------- QEMU: keep the other core out of flash while images are verified ----------
@@ -152,32 +157,46 @@ static uint32_t now_ms(void)
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
+/* s_st's texts; nothing formats them before gw_fw_init(), which creates the mutex (the shell
+ * may read the status before) */
+static void text_lock(void)
+{
+    if (s_fmt_lock != NULL) {
+        xSemaphoreTake(s_fmt_lock, portMAX_DELAY);
+    }
+}
+
+static void text_unlock(void)
+{
+    if (s_fmt_lock != NULL) {
+        xSemaphoreGive(s_fmt_lock);
+    }
+}
+
 static void set_status(gw_fw_phase_t phase, uint8_t progress, const char *detail,
                        const char *fmt, ...) __attribute__((format(printf, 4, 5)));
 
 static void set_status(gw_fw_phase_t phase, uint8_t progress, const char *detail,
                        const char *fmt, ...)
 {
-    /* formatted into static buffers (callers include the esp_timer task, with a small stack)
-     * under a mutex, copied into the status under the spinlock */
-    static char text[sizeof(s_st.text)];
-    static char det[sizeof(s_st.detail)];
-    xSemaphoreTake(s_fmt_lock, portMAX_DELAY);
+    /* formatted in place under the mutex, which the readers take too: no copy buffers (on the
+     * stack of the callers, among them the esp_timer task, nor in .bss: issue #80) */
+    text_lock();
     va_list ap;
     va_start(ap, fmt);
-    if ((size_t)vsnprintf(text, sizeof(text), fmt, ap) >= sizeof(text)) {
-        ESP_LOGW(TAG, "update state cut to %u characters", (unsigned)(sizeof(text) - 1));
+    if ((size_t)vsnprintf(s_st.text, sizeof(s_st.text), fmt, ap) >= sizeof(s_st.text)) {
+        ESP_LOGW(TAG, "update state cut to %u characters", (unsigned)(sizeof(s_st.text) - 1));
     }
     va_end(ap);
-    snprintf(det, sizeof(det), "%s", detail != NULL ? detail : text);
+    if (detail != s_st.detail) {
+        snprintf(s_st.detail, sizeof(s_st.detail), "%s", detail != NULL ? detail : s_st.text);
+    }
     portENTER_CRITICAL(&s_mux);
     s_st.phase = phase;
     s_st.progress = progress;
-    memcpy(s_st.text, text, sizeof(text));
-    memcpy(s_st.detail, det, sizeof(det));
     s_st.gen++;
     portEXIT_CRITICAL(&s_mux);
-    xSemaphoreGive(s_fmt_lock);
+    text_unlock();
     if (s_hooks.changed != NULL) {
         s_hooks.changed();
     }
@@ -193,6 +212,7 @@ static void set_bytes(uint32_t bytes, uint32_t total)
 
 void gw_fw_get_state(char *text, size_t cap, uint8_t *progress)
 {
+    text_lock();
     portENTER_CRITICAL(&s_mux);
     size_t n = strnlen(s_st.text, sizeof(s_st.text));
     n = n < cap ? n : cap - 1;
@@ -200,14 +220,17 @@ void gw_fw_get_state(char *text, size_t cap, uint8_t *progress)
     text[n] = '\0';
     *progress = s_st.progress;
     portEXIT_CRITICAL(&s_mux);
+    text_unlock();
 }
 
 void gw_fw_get_status(gw_fw_status_t *out)
 {
+    text_lock();
     portENTER_CRITICAL(&s_mux);
     *out = s_st;
     out->trial_left_s = (gw_ota_trial_left_ms(&s_trial, now_ms()) + 999u) / 1000u;
     portEXIT_CRITICAL(&s_mux);
+    text_unlock();
 }
 
 static void fail(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -242,6 +265,14 @@ static void finished(const char *version)
                   "first Sparkplug session, at most %d s)",
              version, CONFIG_GW_FW_CONFIRM_TIMEOUT_S);
     set_status(GW_FW_REBOOTING, 100, NULL, "rebooting into %s", version);
+    if (s_restart_timer == NULL) {   /* created when needed: no allocation in a normal boot */
+        const esp_timer_create_args_t rt = {.callback = on_restart, .name = "fw_restart"};
+        if (esp_timer_create(&rt, &s_restart_timer) != ESP_OK) {
+            ESP_LOGE(TAG, "no memory for the restart timer: restarting now");
+            s_hooks.restart();
+            return;
+        }
+    }
     esp_timer_start_once(s_restart_timer, RESTART_DELAY_MS * 1000ULL);
 }
 
@@ -256,7 +287,9 @@ static void act(gw_ota_action_t a)
     portENTER_CRITICAL(&s_mux);
     snprintf(why, sizeof(why), "%s", s_trial.why);
     portEXIT_CRITICAL(&s_mux);
-    esp_timer_stop(s_trial_timer);
+    if (s_trial_timer != NULL) {
+        esp_timer_stop(s_trial_timer);
+    }
     if (a == GW_OTA_CONFIRM) {
         park(true);
         esp_err_t e = esp_ota_mark_app_valid_cancel_rollback();
@@ -340,6 +373,32 @@ static bool take(char *why, size_t cap)
     return true;
 }
 
+static const char *project(void)
+{
+    return esp_app_get_description()->project_name;
+}
+
+/* Buffers of a transfer: PSRAM when there is some, internal RAM otherwise; freed after it. */
+static void *xfer_alloc(size_t size)
+{
+    return heap_caps_malloc_prefer(size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT);
+}
+
+static void download_release(void)
+{
+    gw_storage_free(s_ca_pem);
+    s_ca_pem = NULL;
+    heap_caps_free(s_url);
+    s_url = NULL;
+}
+
+/* End of the download task: the URL and the CA copy go back to the heap. */
+static void end_download(void)
+{
+    download_release();
+    vTaskDelete(NULL);
+}
+
 static void download_task(void *arg)
 {
     (void)arg;
@@ -359,18 +418,18 @@ static void download_task(void *arg)
     esp_err_t e = esp_https_ota_begin(&oc, &h);
     if (e != ESP_OK) {
         fail("cannot download %s (%s)", s_url, esp_err_to_name(e));
-        vTaskDelete(NULL);
+        end_download();
     }
     esp_app_desc_t d;
     e = esp_https_ota_get_img_desc(h, &d);
-    if (e != ESP_OK || strncmp(d.project_name, s_project, sizeof(d.project_name)) != 0) {
+    if (e != ESP_OK || strncmp(d.project_name, project(), sizeof(d.project_name)) != 0) {
         esp_https_ota_abort(h);
         if (e != ESP_OK) {
             fail("not an application image (%s)", esp_err_to_name(e));
         } else {
-            fail("image of '%.32s', not of '%s'", d.project_name, s_project);
+            fail("image of '%.32s', not of '%s'", d.project_name, project());
         }
-        vTaskDelete(NULL);
+        end_download();
     }
     char version[sizeof(d.version) + 1];
     snprintf(version, sizeof(version), "%.32s", d.version);
@@ -396,7 +455,7 @@ static void download_task(void *arg)
         esp_https_ota_abort(h);
         fail("download of %s interrupted after %lu bytes (%s)", version,
              (unsigned long)esp_https_ota_get_image_len_read(h), esp_err_to_name(e));
-        vTaskDelete(NULL);
+        end_download();
     }
     park(true);
     e = esp_https_ota_finish(h);   /* verifies the image and sets it to boot */
@@ -409,7 +468,7 @@ static void download_task(void *arg)
         set_bytes(total ? total : p.done, total);
         finished(version);
     }
-    vTaskDelete(NULL);
+    end_download();
 }
 
 esp_err_t gw_fw_start_url(const char *url, char *why, size_t cap)
@@ -423,13 +482,6 @@ esp_err_t gw_fw_start_url(const char *url, char *why, size_t cap)
         }
         return ESP_ERR_INVALID_ARG;
     }
-    if (s_ca_error[0] != '\0') {
-        snprintf(why, cap, "%s", s_ca_error);
-        if (!atomic_load(&s_busy)) {
-            set_status(GW_FW_FAILED, 0, why, "refused: CA file unavailable");
-        }
-        return ESP_ERR_INVALID_STATE;
-    }
     if (!take(why, cap)) {
         ESP_LOGW(TAG, "firmware update refused: %s", why);
         if (!atomic_load(&s_busy)) {   /* a running update keeps its own state */
@@ -437,11 +489,33 @@ esp_err_t gw_fw_start_url(const char *url, char *why, size_t cap)
         }
         return ESP_ERR_INVALID_STATE;
     }
-    snprintf(s_url, sizeof(s_url), "%s", url);
+    s_url = xfer_alloc(GW_OTA_URL_MAX);
+    if (s_url == NULL) {
+        snprintf(why, cap, "no memory for the update");
+        atomic_store(&s_busy, false);
+        set_status(GW_FW_FAILED, 0, why, "refused: no memory");
+        return ESP_ERR_NO_MEM;
+    }
+    if (s_ca_name != NULL) {
+        /* read now, not at boot: nothing stays allocated while no update runs (#80) */
+        size_t len;
+        char err[120];
+        s_ca_pem = gw_storage_read_file(s_ca_name, &len, err, sizeof(err));
+        if (s_ca_pem == NULL) {
+            snprintf(why, cap, "%s: %s", s_ca_key, err);
+            ESP_LOGE(TAG, "firmware update refused: %s", why);
+            download_release();
+            atomic_store(&s_busy, false);
+            set_status(GW_FW_FAILED, 0, why, "refused: CA file unavailable");
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+    snprintf(s_url, GW_OTA_URL_MAX, "%s", url);
     set_bytes(0, 0);
     set_status(GW_FW_DOWNLOADING, 0, NULL, "connecting");
     if (xTaskCreatePinnedToCore(download_task, "fw_update", CONFIG_GW_FW_TASK_STACK, NULL,
                                 CONFIG_GW_FW_TASK_PRIORITY, NULL, 0) != pdPASS) {
+        download_release();
         fail("no memory for the update task");
         snprintf(why, cap, "no memory for the update task");
         return ESP_ERR_NO_MEM;
@@ -450,6 +524,12 @@ esp_err_t gw_fw_start_url(const char *url, char *why, size_t cap)
 }
 
 /* ---------- upload (web server task) ---------- */
+
+static void up_release(void)
+{
+    heap_caps_free(s_up_head);
+    s_up_head = NULL;
+}
 
 esp_err_t gw_fw_upload_begin(size_t size, char *why, size_t cap)
 {
@@ -468,8 +548,15 @@ esp_err_t gw_fw_upload_begin(size_t size, char *why, size_t cap)
                  (unsigned long)s_up_part->size);
         return ESP_ERR_INVALID_SIZE;
     }
+    s_up_head = xfer_alloc(HEAD_LEN);
+    if (s_up_head == NULL) {
+        atomic_store(&s_busy, false);
+        snprintf(why, cap, "no memory for the upload");
+        return ESP_ERR_NO_MEM;
+    }
     esp_err_t e = esp_ota_begin(s_up_part, OTA_WITH_SEQUENTIAL_WRITES, &s_up);
     if (e != ESP_OK) {
+        up_release();
         atomic_store(&s_busy, false);
         snprintf(why, cap, "cannot write %s (%s)", s_up_part->label, esp_err_to_name(e));
         return e;
@@ -496,6 +583,7 @@ static esp_err_t up_fail(char *why, size_t cap, const char *fmt, ...)
     vsnprintf(why, cap, fmt, ap);
     va_end(ap);
     esp_ota_abort(s_up);
+    up_release();
     fail("%s", why);
     return ESP_FAIL;
 }
@@ -510,12 +598,16 @@ static esp_err_t check_head(char *why, size_t cap)
     if (h->magic != ESP_IMAGE_HEADER_MAGIC || d->magic_word != ESP_APP_DESC_MAGIC_WORD) {
         return up_fail(why, cap, "not an application image");
     }
-    if (strncmp(d->project_name, s_project, sizeof(d->project_name)) != 0) {
-        return up_fail(why, cap, "image of '%.32s', not of '%s'", d->project_name, s_project);
+    if (strncmp(d->project_name, project(), sizeof(d->project_name)) != 0) {
+        return up_fail(why, cap, "image of '%.32s', not of '%s'", d->project_name, project());
     }
     snprintf(s_up_version, sizeof(s_up_version), "%.31s", d->version);
     esp_err_t e = esp_ota_write(s_up, s_up_head, s_up_head_len);
-    return e == ESP_OK ? ESP_OK : up_fail(why, cap, "flash write failed (%s)", esp_err_to_name(e));
+    if (e != ESP_OK) {
+        return up_fail(why, cap, "flash write failed (%s)", esp_err_to_name(e));
+    }
+    up_release();   /* written: the rest goes straight to the flash */
+    return ESP_OK;
 }
 
 esp_err_t gw_fw_upload_write(const void *data, size_t len, char *why, size_t cap)
@@ -573,6 +665,7 @@ esp_err_t gw_fw_upload_end(bool complete, char *why, size_t cap)
         snprintf(why, cap, complete ? "image too short" : "upload interrupted after %u bytes",
                  (unsigned)s_up_done);
         esp_ota_abort(s_up);
+        up_release();
         fail("%s", why);
         return ESP_FAIL;
     }
@@ -604,7 +697,6 @@ esp_err_t gw_fw_init(const gw_config_t *cfg, bool enabled, const gw_fw_hooks_t *
     s_hooks = *hooks;
     s_enabled = enabled;
     const esp_app_desc_t *app = esp_app_get_description();
-    snprintf(s_project, sizeof(s_project), "%s", app->project_name);
     const esp_partition_t *run = esp_ota_get_running_partition();
     esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
     if (run == NULL || esp_ota_get_state_partition(run, &state) != ESP_OK) {
@@ -625,10 +717,6 @@ esp_err_t gw_fw_init(const gw_config_t *cfg, bool enabled, const gw_fw_hooks_t *
     }
     s_st.enabled = enabled;
 
-    const esp_timer_create_args_t tt = {.callback = on_trial_timeout, .name = "fw_trial"};
-    const esp_timer_create_args_t rt = {.callback = on_restart, .name = "fw_restart"};
-    ESP_ERROR_CHECK(esp_timer_create(&tt, &s_trial_timer));
-    ESP_ERROR_CHECK(esp_timer_create(&rt, &s_restart_timer));
     bool pending = state == ESP_OTA_IMG_PENDING_VERIFY;
     gw_ota_trial_init(&s_trial, pending, now_ms(), CONFIG_GW_FW_CONFIRM_TIMEOUT_S * 1000u);
     if (pending) {
@@ -637,6 +725,9 @@ esp_err_t gw_fw_init(const gw_config_t *cfg, bool enabled, const gw_fw_hooks_t *
                  s_st.running, s_st.slot, CONFIG_GW_FW_CONFIRM_TIMEOUT_S,
                  s_st.other[0] ? s_st.other : "the previous image");
         set_status(GW_FW_TRIAL, 100, NULL, "on trial: %s", s_st.running);
+        /* only a new image on trial needs the timer (#80: nothing allocated otherwise) */
+        const esp_timer_create_args_t tt = {.callback = on_trial_timeout, .name = "fw_trial"};
+        ESP_ERROR_CHECK(esp_timer_create(&tt, &s_trial_timer));
         esp_timer_start_once(s_trial_timer, CONFIG_GW_FW_CONFIRM_TIMEOUT_S * 1000000ULL);
     } else {
         if (have_bad) {
@@ -654,19 +745,10 @@ esp_err_t gw_fw_init(const gw_config_t *cfg, bool enabled, const gw_fw_hooks_t *
         const char *ca = cfg->ota.ca_file[0] ? cfg->ota.ca_file
                          : cfg->mqtt.tls.enabled && cfg->mqtt.tls.ca_file[0] ? cfg->mqtt.tls.ca_file
                                                                               : NULL;
-        if (ca != NULL) {
-            size_t len;
-            char why[120];
-            s_ca_pem = gw_storage_read_file(ca, &len, why, sizeof(why));
-            if (s_ca_pem == NULL) {
-                snprintf(s_ca_error, sizeof(s_ca_error), "%s: %s",
-                         cfg->ota.ca_file[0] ? "ota.ca_file" : "mqtt.tls.ca_file", why);
-                ESP_LOGE(TAG, "%s: updates by URL refused", s_ca_error);
-            }
-        }
+        s_ca_name = ca;
+        s_ca_key = cfg->ota.ca_file[0] ? "ota.ca_file" : "mqtt.tls.ca_file";
         ESP_LOGI(TAG, "firmware %s in %s; updates by URL trust %s%s", s_st.running, s_st.slot,
-                 s_ca_pem != NULL ? "/cfg/" : "the public root CAs",
-                 s_ca_pem != NULL ? ca : "");
+                 ca != NULL ? "/cfg/" : "the public root CAs", ca != NULL ? ca : "");
     } else {
         ESP_LOGI(TAG, "firmware %s in %s; updates disabled (ota.enabled)", s_st.running, s_st.slot);
     }

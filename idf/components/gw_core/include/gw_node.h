@@ -88,7 +88,10 @@ extern "C" {
 #define GW_NODE_METRICS_MAX \
     (GW_MAX_TAGS_PER_DEVICE + 1 > GW_NODE_BIRTH_METRICS + GW_MAX_DEVICES \
          ? GW_MAX_TAGS_PER_DEVICE + 1 : GW_NODE_BIRTH_METRICS + GW_MAX_DEVICES)
-#define GW_NODE_FW_STATE_MAX    128  /* "Firmware Update/State" text (< SPB_STRING_MAX, #87) */
+/* "Firmware Update/State" text with its NUL (< SPB_STRING_MAX, #87); longer is cut with a log,
+ * the whole reason is in the shell and the web. 96, not more: the node (the Sparkplug engine,
+ * one allocation) stays under 21 504 B, a TLSF size class of 1 KB steps (issue #80) */
+#define GW_NODE_FW_STATE_MAX    96
 #define GW_SPB_PAYLOAD_MAX      16384  /* > worst-case DBIRTH (64 tags with 39-char names and
                                          * every SPB-16 property, about 10 KB, test_spb) and
                                          * NBIRTH (64 template tags and the SPB-17 DataSet of 16

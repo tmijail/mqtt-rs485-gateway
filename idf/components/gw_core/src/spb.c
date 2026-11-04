@@ -18,7 +18,8 @@ _Static_assert(sizeof(((Payload_DataSet_DataSetValue *)0)->value.string_value) =
                    SPB_SHORT_STRING_MAX + 1,
                "nanopb options drift");
 
-static char s_last_error[48];
+/* nanopb's messages are string literals: the pointer is enough */
+static const char *s_last_error = "";
 
 const char *spb_last_error(void)
 {
@@ -791,10 +792,10 @@ bool spb_decode_with(const uint8_t *buf, size_t len, spb_rx_header_t *hdr, const
 
     pb_istream_t is = pb_istream_from_buffer(buf, len);
     if (!pb_decode(&is, Payload_fields, &msg)) {
-        snprintf(s_last_error, sizeof(s_last_error), "%s", PB_GET_ERROR(&is));
+        s_last_error = PB_GET_ERROR(&is);
         return false;
     }
-    s_last_error[0] = '\0';
+    s_last_error = "";
     if (hdr != NULL) {
         hdr->has_timestamp = msg.has_timestamp;
         hdr->timestamp = msg.timestamp;

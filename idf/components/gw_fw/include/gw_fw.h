@@ -43,7 +43,7 @@ typedef struct {
     uint8_t progress;       /* % of the current (or last) transfer */
     uint32_t bytes;
     uint32_t total;         /* 0 = unknown */
-    char text[128];         /* "Firmware Update/State" (GW_NODE_FW_STATE_MAX, issue #87) */
+    char text[96];          /* "Firmware Update/State" (GW_NODE_FW_STATE_MAX, issue #87) */
     char detail[240];       /* longer reason (log, shell, web) */
     char running[32];       /* running version */
     char slot[17];          /* its partition label */
