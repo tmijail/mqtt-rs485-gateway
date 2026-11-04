@@ -55,6 +55,9 @@ int main(int argc, char **argv)
     const gw_config_t *cfg = support_spec_config();
     gw_tagdb_reset();
     recorder_clear();
+    recorder_default_diag();
+    g_rec.diag.rssi_valid = true;
+    g_rec.diag.rssi = -61;
     gw_node_ops_t ops = recorder_ops();
     static gw_node_t node;
     const gw_node_info_t info = {.firmware = "0.1.0+g0123456",

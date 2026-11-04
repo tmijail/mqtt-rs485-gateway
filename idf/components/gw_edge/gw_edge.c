@@ -3,6 +3,7 @@
 #include <stdatomic.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_system.h"
@@ -96,6 +97,7 @@ static bool s_births_timed;     /* the current session's births carried synchron
 static int64_t s_fed_us;        /* last time this task fed the task watchdog */
 static uint32_t s_max_unfed_ms; /* longest stretch without feeding since the last reset */
 static unsigned s_handled_route;
+static uint32_t s_diag_wait_ms = UINT32_MAX;   /* until the next diagnostics NDATA */
 static struct ifreq s_ifr;      /* interface the client is bound to (NET-4, two interfaces only) */
 
 static void wake(void)
@@ -286,6 +288,19 @@ static size_t op_write_room(void *ctx)
 {
     (void)ctx;
     return gw_bus_write_room();
+}
+
+/* SPB-17 */
+static void op_diagnostics(void *ctx, gw_node_diag_t *out)
+{
+    (void)ctx;
+    out->uptime_s = (uint64_t)(esp_timer_get_time() / 1000000);
+    out->free_heap = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    out->min_free_heap = (uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    out->has_rssi = gw_net_has_wifi();
+    int8_t rssi;
+    out->rssi_valid = out->has_rssi && gw_net_wifi_rssi(&rssi);
+    out->rssi = out->rssi_valid ? rssi : 0;
 }
 
 static void op_reboot(void *ctx)
@@ -557,6 +572,8 @@ static void reconcile(void)
             gw_node_io_changed(s_node);
         }
     }
+    /* SPB-17: periodic diagnostics NDATA (rate limited by sparkplug.diagnostics_s) */
+    s_diag_wait_ms = gw_node_diag_tick(s_node, (uint64_t)(esp_timer_get_time() / 1000));
 }
 
 static TickType_t next_timeout(void)
@@ -571,6 +588,7 @@ static TickType_t next_timeout(void)
         int64_t r = (s_retry_at_us - now) / 1000;
         ms = r < ms ? r : ms;
     }
+    ms = (int64_t)s_diag_wait_ms < ms ? (int64_t)s_diag_wait_ms : ms;
     if (!s_started && s_prev_ip && s_retry_at_us == 0) {
         int64_t r = (s_ip_since_us + CONFIG_GW_SNTP_WAIT_MS * 1000LL - now) / 1000;
         ms = r < ms ? r : ms;
@@ -615,6 +633,7 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         .write_room = op_write_room,
         .set_scan_rate = op_set_scan_rate,
         .reboot = op_reboot,
+        .diagnostics = op_diagnostics,
         .ctx = NULL,
     };
     gw_node_init(s_node, cfg, &ops, info);

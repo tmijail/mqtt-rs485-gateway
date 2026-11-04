@@ -23,6 +23,18 @@ static const char *const k_count_names[GW_NODE_IO_COUNT] = {
 #define NAME_HARDWARE "Node Info/Hardware"
 #define NAME_RESET_REASON "Node Info/Reset Reason"
 #define NAME_SCAN_RATE "Node Control/Scan Rate"
+#define NAME_UPTIME   "Node Info/Uptime"
+#define NAME_FREE_HEAP "Node Info/Free Heap"
+#define NAME_MIN_HEAP "Node Info/Min Free Heap"
+#define NAME_RSSI     "Node Info/RSSI"
+#define NAME_MODBUS   "Node Info/Modbus"
+
+/* SPB-17 / MB-13: "Node Info/Modbus", one row per device. */
+static const char *const k_mb_cols[] = {"Device", "Online", "Cycles", "Failed Cycles", "OK",
+                                        "Timeout", "CRC", "Frame", "Exception"};
+static const uint32_t k_mb_types[] = {SPB_DT_STRING, SPB_DT_BOOLEAN, SPB_DT_UINT32,
+                                      SPB_DT_UINT32, SPB_DT_UINT32,  SPB_DT_UINT32,
+                                      SPB_DT_UINT32, SPB_DT_UINT32,  SPB_DT_UINT32};
 
 /* ---------- helpers ---------- */
 
@@ -184,6 +196,103 @@ size_t gw_node_death_payload(uint64_t bdseq, uint8_t *out, size_t cap)
 
 static size_t template_definitions(gw_node_t *n, size_t i, uint64_t now);
 
+/* ---------- SPB-17 diagnostics ---------- */
+
+static void mb_cell(const void *ctx, uint32_t row, uint32_t col, spb_value_t *out)
+{
+    const gw_node_t *n = ctx;
+    const gw_dev_stats_t *st = &n->diag_stats[row];
+    const uint32_t counters[] = {st->cycles,      st->failed_cycles, st->bus.ok,
+                                 st->bus.timeout, st->bus.crc,       st->bus.frame,
+                                 st->bus.exception};
+    if (col == 0) {
+        out->str = n->cfg->devices[row].name;
+    } else if (col == 1) {
+            out->num = (n->diag_online >> row) & 1u;
+    } else {
+        out->num = counters[col - 2];
+    }
+}
+
+/* Snapshot the counters the DataSet publishes (the encoder reads each cell more than once:
+ * they must not change meanwhile). Returns a hash of the snapshot. */
+static uint64_t mb_snapshot(gw_node_t *n)
+{
+    n->diag_online = 0;
+    for (uint16_t d = 0; d < n->cfg->device_count; d++) {
+        gw_tagdb_get_stats(d, &n->diag_stats[d]);
+        if (gw_tagdb_device_online(d)) {
+            n->diag_online |= 1u << d;
+        }
+    }
+    uint64_t h = gw_rbe_hash_bytes(n->diag_stats, n->cfg->device_count * sizeof(n->diag_stats[0]));
+    return h ^ ((uint64_t)n->diag_online << 32);
+}
+
+/* Append the diagnostics to n->metrics from @p i (the Modbus DataSet only if @p modbus and the
+ * node has devices). Returns how many. */
+static size_t diag_metrics(gw_node_t *n, size_t i, uint64_t now, bool birth, bool modbus)
+{
+    if (n->ops.diagnostics == NULL) {
+        return 0;
+    }
+    gw_node_diag_t dg;
+    memset(&dg, 0, sizeof(dg));
+    n->ops.diagnostics(n->ops.ctx, &dg);
+    size_t k = i;
+    metric(n, k++, birth ? NAME_UPTIME : NULL, GW_ALIAS_UPTIME, SPB_DT_UINT64, now)->v.u64 =
+        dg.uptime_s;
+    metric(n, k++, birth ? NAME_FREE_HEAP : NULL, GW_ALIAS_FREE_HEAP, SPB_DT_UINT32, now)->v.num =
+        dg.free_heap;
+    metric(n, k++, birth ? NAME_MIN_HEAP : NULL, GW_ALIAS_MIN_HEAP, SPB_DT_UINT32, now)->v.num =
+        dg.min_free_heap;
+    if (birth) {
+        n->has_rssi = dg.has_rssi;
+    }
+    if (n->has_rssi) {
+        spb_metric_t *m = metric(n, k++, birth ? NAME_RSSI : NULL, GW_ALIAS_RSSI, SPB_DT_INT32, now);
+        m->v.num = dg.rssi;
+        m->is_null = !dg.rssi_valid;
+    }
+    if (modbus && n->cfg->device_count > 0) {
+        n->mb_ds = (spb_dataset_t){.columns = 9, .names = k_mb_cols, .types = k_mb_types,
+                                   .rows = n->cfg->device_count, .cell = mb_cell, .ctx = n};
+        metric(n, k++, birth ? NAME_MODBUS : NULL, GW_ALIAS_MODBUS, SPB_DT_DATASET, now)->v.ds =
+            &n->mb_ds;
+    }
+    return k - i;
+}
+
+static void diag_schedule(gw_node_t *n, uint64_t now)
+{
+    uint32_t s = n->cfg->sparkplug.diagnostics_s;
+    n->diag_due_ms = s == 0 ? 0 : now + (uint64_t)s * 1000u;
+}
+
+uint32_t gw_node_diag_tick(gw_node_t *n, uint64_t now_ms)
+{
+    if (n->diag_restart) {
+        n->diag_restart = false;
+        diag_schedule(n, now_ms);
+    }
+    if (!n->online || n->diag_due_ms == 0) {
+        return UINT32_MAX;
+    }
+    if (now_ms < n->diag_due_ms) {
+        uint64_t left = n->diag_due_ms - now_ms;
+        return left < UINT32_MAX ? (uint32_t)left : UINT32_MAX - 1u;
+    }
+    diag_schedule(n, now_ms);
+    uint64_t h = mb_snapshot(n);
+    bool modbus = h != n->diag_hash;   /* rate limited: the counters only when they changed */
+    n->diag_hash = h;
+    size_t count = diag_metrics(n, 0, gw_port_time_ms(), false, modbus);
+    if (count > 0) {
+        publish(n, "NDATA", NULL, count, 0);
+    }
+    return n->cfg->sparkplug.diagnostics_s * 1000u;
+}
+
 static void publish_nbirth(gw_node_t *n)
 {
     gw_local_io_t io;
@@ -220,6 +329,9 @@ static void publish_nbirth(gw_node_t *n)
     n->di_reported = io.di;
     n->do_reported = io.dout;
     n->do_unknown_reported = io.do_unknown;
+    n->diag_hash = mb_snapshot(n);
+    i += diag_metrics(n, i, now, true, true);
+    n->diag_restart = true;   /* the period starts again at the next tick */
     i += template_definitions(n, i, now);
     publish(n, "NBIRTH", NULL, i, 0);
 }

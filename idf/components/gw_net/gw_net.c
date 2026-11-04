@@ -115,6 +115,35 @@ bool gw_net_active_ifname(char *name, size_t cap)
     return fits && n > 0;
 }
 
+bool gw_net_has_wifi(void)
+{
+#if CONFIG_GW_WIFI
+    gw_net_if_status_t st[GW_NET_IF_COUNT];
+    gw_net_get_status(st);
+    return st[GW_NET_WIFI].configured;
+#else
+    return false;
+#endif
+}
+
+bool gw_net_wifi_rssi(int8_t *rssi)
+{
+#if CONFIG_GW_WIFI
+    gw_net_if_status_t st[GW_NET_IF_COUNT];
+    gw_net_get_status(st);
+    wifi_ap_record_t ap;
+    if (!st[GW_NET_WIFI].configured || !st[GW_NET_WIFI].link ||
+        esp_wifi_sta_get_ap_info(&ap) != ESP_OK) {
+        return false;
+    }
+    *rssi = ap.rssi;
+    return true;
+#else
+    (void)rssi;
+    return false;
+#endif
+}
+
 void gw_net_get_status(gw_net_if_status_t out[GW_NET_IF_COUNT])
 {
     portENTER_CRITICAL(&s_mux);

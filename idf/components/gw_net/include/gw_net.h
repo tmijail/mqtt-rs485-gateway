@@ -56,6 +56,12 @@ bool gw_net_active_ifname(char *name, size_t cap);
 /** Snapshot of every interface, for diagnostics (safe from any task). */
 void gw_net_get_status(gw_net_if_status_t out[GW_NET_IF_COUNT]);
 
+/** SPB-17: the node has a Wi-Fi station (built with CONFIG_GW_WIFI and network.wifi enabled). */
+bool gw_net_has_wifi(void);
+
+/** SPB-17: RSSI (dBm) of the associated access point; false while not associated. */
+bool gw_net_wifi_rssi(int8_t *rssi);
+
 #ifdef __cplusplus
 }
 #endif

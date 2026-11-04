@@ -69,7 +69,11 @@ typedef struct {
     int reboots;
     int scan_rate_calls;
     uint32_t scan_rate;
+    gw_node_diag_t diag;         /* SPB-17: what the diagnostics op reports */
 } recorder_t;
+
+/* SPB-17 defaults of the recorder: a node with Wi-Fi, not associated. */
+void recorder_default_diag(void);
 
 extern recorder_t g_rec;
 

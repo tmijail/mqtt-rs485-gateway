@@ -44,6 +44,8 @@ extern "C" {
 #define GW_FAILSAFE_MAX_S 86400     /* IO-3: local_io.failsafe_s */
 #define GW_COUNTER_SAVE_MIN_S 60    /* IO-4: local_io.counter_save_s (or 0) */
 #define GW_COUNTER_SAVE_MAX_S 86400
+#define GW_DIAG_MIN_S 10             /* SPB-17: sparkplug.diagnostics_s (or 0) */
+#define GW_DIAG_MAX_S 86400
 #define GW_MAX_TEMPLATE_TAGS 64     /* SPB-18: tags of all template definitions together (NBIRTH) */
 
 typedef enum {
@@ -211,6 +213,8 @@ typedef struct {
         char group_id[GW_ID_SIZE];
         char edge_node_id[GW_ID_SIZE];
         char primary_host_id[GW_ID_SIZE];  /* parsed only; SPB-13 is not part of the MVP */
+        uint32_t diagnostics_s;  /* SPB-17: NDATA with the node diagnostics this often (0 =
+                                  * births only) */
     } sparkplug;
     struct {
         uint32_t baud;

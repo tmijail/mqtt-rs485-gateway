@@ -268,6 +268,18 @@ static void rec_reboot(void *ctx)
     g_rec.reboots++;
 }
 
+void recorder_default_diag(void)
+{
+    g_rec.diag = (gw_node_diag_t){.uptime_s = 12, .free_heap = 150000, .min_free_heap = 140000,
+                                  .has_rssi = true, .rssi_valid = false};
+}
+
+static void rec_diagnostics(void *ctx, gw_node_diag_t *out)
+{
+    (void)ctx;
+    *out = g_rec.diag;
+}
+
 gw_node_ops_t recorder_ops(void)
 {
     gw_node_ops_t ops = {
@@ -277,6 +289,7 @@ gw_node_ops_t recorder_ops(void)
         .write_room = rec_write_room,
         .set_scan_rate = rec_set_scan_rate,
         .reboot = rec_reboot,
+        .diagnostics = rec_diagnostics,
         .ctx = NULL,
     };
     return ops;
@@ -284,7 +297,9 @@ gw_node_ops_t recorder_ops(void)
 
 void recorder_clear(void)
 {
+    gw_node_diag_t diag = g_rec.diag;
     memset(&g_rec, 0, sizeof(g_rec));
+    g_rec.diag = diag;   /* the node's conditions stay as the test set them */
 }
 
 /* ---------- decoding ---------- */

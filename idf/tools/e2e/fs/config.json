@@ -16,7 +16,8 @@
   "sparkplug": {
     "group_id": "Plant1",
     "edge_node_id": "GW01",
-    "primary_host_id": ""
+    "primary_host_id": "",
+    "diagnostics_s": 10
   },
   "rs485": {
     "baud": 9600,

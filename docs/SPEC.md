@@ -489,6 +489,29 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 - **Botón BOOT:** 1 pitido al soltarlo entre 2 y 10 s (punto de acceso, NET-5) y 2 pitidos al confirmar el reset de fábrica (CFG-5), haya alarmas o no.
 - No hay forma de silenciar una alarma mientras dura su condición.
 
+**Diagnóstico del nodo (SPB-17, MB-13), en `sparkplug`.**
+
+```json
+"sparkplug": { "group_id": "Plant1", "edge_node_id": "GW01", "diagnostics_s": 60 }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `diagnostics_s` | entero | `60` | 0 o 10–86400. Cada cuánto se publica un NDATA con el diagnóstico. 0 = solo en el NBIRTH |
+
+Métricas del nodo, en el NBIRTH y en ese NDATA periódico:
+
+| Métrica | Alias | Datatype | Qué es |
+|---|---|---|---|
+| `Node Info/Uptime` | 50 | UInt64 | Segundos desde el arranque |
+| `Node Info/Free Heap` | 51 | UInt32 | Bytes libres de RAM interna |
+| `Node Info/Min Free Heap` | 52 | UInt32 | Mínimo de RAM interna libre desde el arranque |
+| `Node Info/RSSI` | 53 | Int32 | dBm del punto de acceso Wi-Fi; solo si el equipo tiene Wi-Fi configurado, `null` mientras no está asociado |
+| `Node Info/Modbus` | 54 | DataSet | Una fila por dispositivo: `Device` (String), `Online` (Boolean), `Cycles`, `Failed Cycles`, `OK`, `Timeout`, `CRC`, `Frame`, `Exception` (UInt32; los tres últimos cuentan intentos, reintentos incluidos) |
+
+- La tabla Modbus va en el NDATA solo si algún contador o estado cambió desde la última vez; uptime y heap van siempre.
+- Los contadores son del nodo, no de cada dispositivo: así se publican también los de un dispositivo fuera de línea (sin DBIRTH), que es cuando más crecen.
+
 **`syslog` (REL-4): copia del log a un servidor syslog.**
 
 ```json

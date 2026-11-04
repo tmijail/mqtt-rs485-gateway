@@ -632,13 +632,23 @@ static bool parse_mqtt(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 
 static bool parse_sparkplug(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"group_id", "edge_node_id", "primary_host_id"};
+    static const char *const keys[] = {"group_id", "edge_node_id", "primary_host_id",
+                                       "diagnostics_s"};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "sparkplug");
     if (o == NULL) {
         return fail(err, "sparkplug", "sección obligatoria ausente");
     }
-    return check_keys(o, "sparkplug", keys, 3, err) &&
-           get_string(o, "group_id", "sparkplug", true, "", cfg->sparkplug.group_id,
+    long diag;
+    if (!check_keys(o, "sparkplug", keys, sizeof(keys) / sizeof(keys[0]), err) ||
+        !get_int(o, "diagnostics_s", "sparkplug", false, 60, 0, GW_DIAG_MAX_S, &diag, err)) {
+        return false;
+    }
+    if (diag != 0 && diag < GW_DIAG_MIN_S) {
+        return fail(err, "sparkplug.diagnostics_s", "0 (solo en el NBIRTH) o %d-%d s",
+                    GW_DIAG_MIN_S, GW_DIAG_MAX_S);
+    }
+    cfg->sparkplug.diagnostics_s = (uint32_t)diag;
+    return get_string(o, "group_id", "sparkplug", true, "", cfg->sparkplug.group_id,
                       sizeof(cfg->sparkplug.group_id), err) &&
            get_string(o, "edge_node_id", "sparkplug", true, "", cfg->sparkplug.edge_node_id,
                       sizeof(cfg->sparkplug.edge_node_id), err) &&

@@ -57,6 +57,8 @@ void gw_tagdb_put_device(const gw_config_t *cfg, uint16_t dev, const gw_tag_valu
 void gw_tagdb_get_device(const gw_config_t *cfg, uint16_t dev, gw_tag_value_t *vals, bool *online);
 
 void gw_tagdb_put_stats(uint16_t dev, const gw_dev_stats_t *stats);
+/** Online flag of @p dev, without copying its values. */
+bool gw_tagdb_device_online(uint16_t dev);
 void gw_tagdb_get_stats(uint16_t dev, gw_dev_stats_t *stats);
 
 /** Update one tag (write confirmation). */

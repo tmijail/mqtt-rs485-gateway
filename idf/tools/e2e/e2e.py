@@ -1117,6 +1117,50 @@ def check_properties_and_quality(obs, slave, db, ddata_t):
           f"after: {round(gm.float_value, 3) if gm else None} {props(gm) if gm else ''}")
 
 
+def modbus_rows(m):
+    """SPB-17: {device: {column: value}} of the 'Node Info/Modbus' DataSet."""
+    ds = m.dataset_value
+    return {row.elements[0].string_value: {c: spb_decode.value_of(e) for c, e in zip(ds.columns, row.elements)}
+            for row in ds.rows}
+
+
+def check_diagnostics(obs, nbirth, ndata_t):
+    """SPB-17 / MB-13: NBIRTH with Uptime, Free Heap, Min Free Heap (no RSSI: no Wi-Fi in QEMU) and
+    the Modbus DataSet (a row per device, counters of the dead units too); then, with
+    sparkplug.diagnostics_s = 10, an NDATA every 10 s with uptime and heap, and the DataSet
+    because the counters keep moving."""
+    up = metric(nbirth, name="Node Info/Uptime")
+    heap = metric(nbirth, name="Node Info/Free Heap")
+    low = metric(nbirth, name="Node Info/Min Free Heap")
+    mb = metric(nbirth, name="Node Info/Modbus")
+    rows = modbus_rows(mb) if mb is not None and mb.datatype == 16 else {}
+    birth_ok = up is not None and up.datatype == 8 and up.alias == 50 and heap is not None \
+        and heap.datatype == 7 and heap.int_value > 10000 and low is not None \
+        and low.int_value <= heap.int_value and metric(nbirth, name="Node Info/RSSI") is None \
+        and list(rows) == ["Meter1", "Bulk", "Dead3", "Dead4", "Dead5"] \
+        and list(mb.dataset_value.columns) == ["Device", "Online", "Cycles", "Failed Cycles", "OK",
+                                               "Timeout", "CRC", "Frame", "Exception"]
+    obs.drain()
+    is_diag = lambda q: metric(q, alias=50) is not None  # noqa: E731
+    first = obs.wait(ndata_t, 13, is_diag)
+    second = obs.wait(ndata_t, 13, is_diag)
+    gap = second[0] - first[0] if first and second else None
+    u1 = metric(first[2], alias=50).long_value if first else None
+    u2 = metric(second[2], alias=50).long_value if second else None
+    ds = metric(second[2], alias=54) if second else None
+    later = modbus_rows(ds) if ds is not None else {}
+    m1, d3 = later.get("Meter1", {}), later.get("Dead3", {})
+    ok = birth_ok and gap is not None and 9.0 <= gap <= 11.5 and u2 - u1 in (9, 10, 11) \
+        and m1.get("Online") is True and m1.get("OK", 0) > rows.get("Meter1", {}).get("OK", 0) \
+        and d3.get("Online") is False and d3.get("Timeout", 0) > 0
+    check("SPB-17 / MB-13 node diagnostics: NBIRTH Uptime/Free Heap/Min Free Heap and the 'Node "
+          "Info/Modbus' DataSet (one row per device, dead units too); NDATA every diagnostics_s (10 s), "
+          "uptime moving, counters updated", ok,
+          f"NBIRTH uptime {up.long_value if up else None} s, heap {heap.int_value if heap else None} B "
+          f"(min {low.int_value if low else None}), rows {list(rows)}; NDATA gap "
+          f"{round(gap, 2) if gap else None} s, uptime {u1} -> {u2}; Meter1 {m1}; Dead3 {d3}")
+
+
 def int64_of(m):
     """Int64 metric value: long_value carries the two's complement as an unsigned 64-bit int."""
     return m.long_value - 2 ** 64 if m.long_value >= 2 ** 63 else m.long_value
@@ -1189,7 +1233,8 @@ def run_network_variant(args, work, slave):
         host's ::1 and this container's kernel has no IPv6 (AF_INET6 is not supported).
       * SPB-19: a "bytes" tag (device Raw, unit 1 holding 220-222) is a Bytes metric with the raw
         register bytes, and a DCMD with Bytes writes them back (FC16).
-      * SPB-18: two devices of type "Pump" (PumpA on unit 1, PumpB on unit 2): one template
+      * SPB-18: two devices of type "Pump" (PumpA and PumpB, both on unit 1 so that unit 2 keeps
+        the single FC03 the main scenario checks, at holding 230 and 231): one template
         definition in the NBIRTH, an instance per DBIRTH, a DCMD member write and its DDATA."""
     node = "GW02"
     cfg = json.loads(config_json())
@@ -1203,14 +1248,14 @@ def run_network_variant(args, work, slave):
         {"name": "Block", "area": "holding", "address": 220, "type": "bytes", "length": 3,
          "writable": True}]})
     slave.ctx.setValues(3, 220, [0x00FF, 0x1000, 0x7F80])
-    for unit, ctx in ((1, slave.ctx), (2, slave.bulk)):
-        cfg["devices"].append({"name": f"Pump{'AB'[unit - 1]}", "unit_id": unit, "type": "Pump",
+    for k in (0, 1):
+        cfg["devices"].append({"name": f"Pump{'AB'[k]}", "unit_id": 1, "type": "Pump",
                                "poll_ms": 500, "tags": [
-            {"name": "Speed", "area": "holding", "address": 230, "type": "uint16", "units": "rpm",
+            {"name": "Speed", "area": "holding", "address": 230 + k, "type": "uint16", "units": "rpm",
              "writable": True},
-            {"name": "Run", "area": "coil", "address": 5, "type": "bool"}]})
-        ctx.setValues(3, 230, [1440 + 10 * unit])
-        ctx.setValues(1, 5, [True])
+            {"name": "Run", "area": "coil", "address": 5 + k, "type": "bool"}]})
+        slave.ctx.setValues(3, 230 + k, [1450 + 10 * k])
+        slave.ctx.setValues(1, 5 + k, [True])
     flash = flash_variant(args, work, "network", {"config.json": json.dumps(cfg, indent=2).encode()})
     obs = Observer()
     gw = Gateway(args, work / "uart0-network.log", flash)
@@ -1714,6 +1759,7 @@ def run(args, log, slave, broker, conf, work):
           f"0.05 V change -> {'DDATA' if quiet else 'nothing'}; 0.5 V change -> "
           f"{[(m.alias, round(m.float_value, 3)) for m in dd[2].metrics] if dd else 'nothing'}")
     check_properties_and_quality(obs, slave, db, ddata_t)
+    check_diagnostics(obs, p, ndata_t)
 
     # 3. DI -> NDATA < 100 ms; NCMD DO/3
     obs.drain()

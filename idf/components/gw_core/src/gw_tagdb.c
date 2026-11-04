@@ -45,6 +45,14 @@ void gw_tagdb_put_stats(uint16_t dev, const gw_dev_stats_t *stats)
     gw_port_unlock();
 }
 
+bool gw_tagdb_device_online(uint16_t dev)
+{
+    gw_port_lock();
+    bool online = s_online[dev];
+    gw_port_unlock();
+    return online;
+}
+
 void gw_tagdb_get_stats(uint16_t dev, gw_dev_stats_t *stats)
 {
     gw_port_lock();

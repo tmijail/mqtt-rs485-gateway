@@ -24,6 +24,7 @@ void setUp(void)
     cfg = support_spec_config();
     gw_tagdb_reset();
     recorder_clear();
+    recorder_default_diag();
     gw_node_ops_t ops = recorder_ops();
     const gw_node_info_t info = {
         .firmware = "0.1.0+gdeadbee", .hardware = "test-hw", .reset_reason = "task watchdog"};
@@ -884,7 +885,7 @@ static void test_worst_case_nbirth_fits(void)
                                 "{\"group_id\": \"G\", \"edge_node_id\": \"N\"}, \"devices\": [");
     const int types = 16, per = GW_MAX_TEMPLATE_TAGS / 16;
     for (int d = 0; d < types; d++) {
-        n += (size_t)snprintf(doc + n, sizeof(doc) - n, "%s{\"name\": \"D%02d\", \"unit_id\": 1, "
+        n += (size_t)snprintf(doc + n, sizeof(doc) - n, "%s{\"name\": \"%039d\", \"unit_id\": 1, "
                               "\"type\": \"%039d\", \"tags\": [", d ? "," : "", d, d);
         for (int k = 0; k < per; k++) {
             n += (size_t)snprintf(doc + n, sizeof(doc) - n,
@@ -905,6 +906,16 @@ static void test_worst_case_nbirth_fits(void)
                                  .hardware = "Waveshare ESP32-S3-POE-ETH-8DI-8DO (ESP32-S3 rev 0.2)",
                                  .reset_reason = "interrupt watchdog"};
     gw_node_init(&node, cfg, &ops, &info);
+    /* SPB-17: the widest diagnostics (RSSI, every counter of every device at its maximum) */
+    g_rec.diag = (gw_node_diag_t){.uptime_s = UINT64_MAX, .free_heap = UINT32_MAX,
+                                  .min_free_heap = UINT32_MAX, .has_rssi = true,
+                                  .rssi_valid = true, .rssi = -128};
+    const gw_dev_stats_t full = {UINT32_MAX, UINT32_MAX,
+                                 {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX},
+                                 {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX}};
+    for (uint16_t d = 0; d < 16; d++) {
+        gw_tagdb_put_stats(d, &full);
+    }
     gw_node_session_up(&node, 0);
     TEST_ASSERT_EQUAL(1, g_rec.count);   /* the NBIRTH went out (devices offline) */
     printf("worst-case NBIRTH with %d template tags: %u bytes of %u\n", GW_MAX_TEMPLATE_TAGS,
@@ -912,6 +923,103 @@ static void test_worst_case_nbirth_fits(void)
     TEST_ASSERT_LESS_THAN(GW_SPB_PAYLOAD_MAX, g_rec.msgs[0].len);
     msg(0);
     TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS + types, dec.count);
+}
+
+/* SPB-17 / MB-13: diagnostics in the NBIRTH; every diagnostics_s an NDATA with uptime and heap,
+ * and the Modbus DataSet only when a counter changed. */
+static int mb_rows, mb_cells;
+static uint32_t mb_ok_row0;
+static char mb_dev0[16];
+static bool mb_cell_cb(void *ctx, uint32_t row, uint32_t col, const spb_rx_value_t *v)
+{
+    (void)ctx;
+    mb_cells++;
+    if (row + 1 > (uint32_t)mb_rows) {
+        mb_rows = (int)row + 1;
+    }
+    if (row == 0 && col == 0) {
+        snprintf(mb_dev0, sizeof(mb_dev0), "%s", v->v.s);
+    }
+    if (row == 0 && col == 4) {
+        mb_ok_row0 = v->v.i;
+    }
+    return true;
+}
+
+static void test_diagnostics(void)
+{
+    set_meter(true, 230.5, 12.3, 1);
+    const gw_dev_stats_t st = {.cycles = 7, .failed_cycles = 1, .bus = {.ok = 20, .timeout = 3}};
+    gw_tagdb_put_stats(0, &st);
+    g_rec.diag.rssi_valid = false;
+    gw_node_session_up(&node, 0);
+    msg(0);
+    int i = decoded_find_name(&dec, "Node Info/Uptime");
+    TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_UPTIME, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_UINT64(12, dec.m[i].u64);
+    i = decoded_find_name(&dec, "Node Info/Free Heap");
+    TEST_ASSERT_EQUAL(SPB_DT_UINT32, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_DOUBLE(150000, dec.m[i].num);
+    TEST_ASSERT_TRUE(decoded_find_name(&dec, "Node Info/Min Free Heap") >= 0);
+    i = decoded_find_name(&dec, "Node Info/RSSI");
+    TEST_ASSERT_EQUAL(SPB_DT_INT32, dec.m[i].datatype);
+    TEST_ASSERT_TRUE(dec.m[i].is_null);                      /* Wi-Fi not associated */
+    i = decoded_find_name(&dec, "Node Info/Modbus");
+    TEST_ASSERT_EQUAL(SPB_DT_DATASET, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_MODBUS, dec.m[i].alias);
+    mb_rows = mb_cells = 0;
+    const spb_decoder_t d = {.cell = mb_cell_cb};
+    TEST_ASSERT_TRUE(spb_decode_with(g_rec.msgs[0].payload, g_rec.msgs[0].len, NULL, &d));
+    TEST_ASSERT_EQUAL(1, mb_rows);
+    TEST_ASSERT_EQUAL(9, mb_cells);
+    TEST_ASSERT_EQUAL_STRING("Meter1", mb_dev0);
+    TEST_ASSERT_EQUAL_UINT32(20, mb_ok_row0);
+
+    /* rate limited: nothing before diagnostics_s (60 s by default) */
+    recorder_clear();
+    TEST_ASSERT_EQUAL_UINT32(60000, gw_node_diag_tick(&node, 1000));   /* the period starts */
+    TEST_ASSERT_EQUAL_UINT32(30000, gw_node_diag_tick(&node, 31000));
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    g_rec.diag.uptime_s = 72;
+    g_rec.diag.rssi_valid = true;
+    g_rec.diag.rssi = -61;
+    gw_node_diag_tick(&node, 61000);                         /* counters unchanged */
+    msg(0);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", g_rec.msgs[0].topic);
+    TEST_ASSERT_EQUAL(4, dec.count);                         /* uptime, 2 x heap, RSSI */
+    TEST_ASSERT_EQUAL_UINT64(72, dec.m[decoded_find_alias(&dec, GW_ALIAS_UPTIME)].u64);
+    i = decoded_find_alias(&dec, GW_ALIAS_RSSI);
+    TEST_ASSERT_FALSE(dec.m[i].is_null);
+    TEST_ASSERT_EQUAL_DOUBLE(-61, dec.m[i].num);
+    TEST_ASSERT_EQUAL(-1, decoded_find_alias(&dec, GW_ALIAS_MODBUS));
+    recorder_clear();
+    const gw_dev_stats_t st2 = {.cycles = 70, .failed_cycles = 1, .bus = {.ok = 200, .timeout = 3}};
+    gw_tagdb_put_stats(0, &st2);
+    gw_node_diag_tick(&node, 121000);
+    msg(0);
+    TEST_ASSERT_EQUAL(5, dec.count);
+    TEST_ASSERT_TRUE(decoded_find_alias(&dec, GW_ALIAS_MODBUS) >= 0);
+    mb_rows = mb_cells = 0;
+    TEST_ASSERT_TRUE(spb_decode_with(g_rec.msgs[0].payload, g_rec.msgs[0].len, NULL, &d));
+    TEST_ASSERT_EQUAL_UINT32(200, mb_ok_row0);
+
+    /* session down: nothing; diagnostics_s 0 = births only */
+    gw_node_session_down(&node);
+    recorder_clear();
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, gw_node_diag_tick(&node, 500000));
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    static gw_config_t c;
+    c = *cfg;
+    c.sparkplug.diagnostics_s = 0;
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, &c, &ops, &info);
+    gw_node_session_up(&node, 0);
+    recorder_clear();
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, gw_node_diag_tick(&node, 1));
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, gw_node_diag_tick(&node, 10000000));
+    TEST_ASSERT_EQUAL(0, g_rec.count);
 }
 
 /* Issue #14: a command metric without an alias is not logged as "alias 0". */
@@ -1021,6 +1129,7 @@ int main(void)
     RUN_TEST(test_properties_and_quality);
     RUN_TEST(test_bytes_tag);
     RUN_TEST(test_templates);
+    RUN_TEST(test_diagnostics);
     RUN_TEST(test_worst_case_nbirth_fits);
     RUN_TEST(test_command_aborted_mid_payload_applies_nothing);
     return UNITY_END();

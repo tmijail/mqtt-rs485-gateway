@@ -12,7 +12,10 @@
  *   4 Node Info/Firmware, 5 Node Info/Hardware, 6 Node Info/Reset Reason,
  *   7 Node Control/Scan Rate,
  *   10..17 DI/1..DI/8, 20..27 DO/1..DO/8, 30..37 Counter/1..Counter/8 (IO-4, UInt64 pulse
- *   counters of the DIs), 100 + n device tag with global index n.
+ *   counters of the DIs), 100 + n device tag with global index n,
+ *   50..54 SPB-17 diagnostics: Node Info/Uptime (UInt64 s), Free Heap and Min Free Heap
+ *   (UInt32 B, internal RAM), RSSI (Int32 dBm, only with Wi-Fi), Modbus (DataSet, one row per
+ *   device with the MB-13 counters).
  *
  * SPB-18 device types: a device with a `type` is published as one Template instance metric
  * (named after the type, alias 100 + its first tag) whose members are its tags, by name; the
@@ -50,17 +53,36 @@ extern "C" {
 #define GW_ALIAS_DO_BASE   20u
 #define GW_ALIAS_COUNT_BASE 30u
 #define GW_ALIAS_TAG_BASE  100u
+#define GW_ALIAS_UPTIME    50u   /* SPB-17 */
+#define GW_ALIAS_FREE_HEAP 51u
+#define GW_ALIAS_MIN_HEAP  52u
+#define GW_ALIAS_RSSI      53u
+#define GW_ALIAS_MODBUS    54u
 
 #define GW_NODE_IO_COUNT        8
-#define GW_NODE_BIRTH_METRICS   (7 + 3 * GW_NODE_IO_COUNT)   /* without template definitions */
+#define GW_NODE_DIAG_METRICS    5   /* SPB-17, at most (RSSI only with Wi-Fi, Modbus with devices) */
+/* Node metrics of the NBIRTH, without template definitions */
+#define GW_NODE_BIRTH_METRICS   (7 + 3 * GW_NODE_IO_COUNT + GW_NODE_DIAG_METRICS)
 /* Scratch metrics: a whole device (+1 template instance), or the NBIRTH with one template
  * definition per device type. */
 #define GW_NODE_METRICS_MAX \
     (GW_MAX_TAGS_PER_DEVICE + 1 > GW_NODE_BIRTH_METRICS + GW_MAX_DEVICES \
          ? GW_MAX_TAGS_PER_DEVICE + 1 : GW_NODE_BIRTH_METRICS + GW_MAX_DEVICES)
-#define GW_SPB_PAYLOAD_MAX      12288  /* > worst-case DBIRTH: 64 tags with 39-char names and
-                                         * every SPB-16 property, about 10 KB (test_spb) */
+#define GW_SPB_PAYLOAD_MAX      16384  /* > worst-case DBIRTH (64 tags with 39-char names and
+                                         * every SPB-16 property, about 10 KB, test_spb) and
+                                         * NBIRTH (64 template tags and the SPB-17 DataSet of 16
+                                         * devices, about 12 KB, test_node) */
 #define GW_TOPIC_MAX            160
+
+/** SPB-17 node diagnostics, read when published. */
+typedef struct gw_node_diag {
+    uint64_t uptime_s;
+    uint32_t free_heap;        /* internal RAM, bytes */
+    uint32_t min_free_heap;    /* lowest since boot */
+    bool has_rssi;             /* the node has Wi-Fi (the metric exists) */
+    bool rssi_valid;           /* associated: rssi is meaningful (null otherwise) */
+    int32_t rssi;              /* dBm */
+} gw_node_diag_t;
 
 typedef struct {
     /** Publish; returns < 0 on failure. */
@@ -78,6 +100,8 @@ typedef struct {
     void (*set_scan_rate)(void *ctx, uint32_t ms);
     /** Restart the gateway (called after NDEATH has been published). */
     void (*reboot)(void *ctx);
+    /** SPB-17: current node diagnostics (NULL: none published). */
+    void (*diagnostics)(void *ctx, struct gw_node_diag *out);
     void *ctx;
 } gw_node_ops_t;
 
@@ -108,6 +132,14 @@ typedef struct {
     uint8_t do_reported;
     uint64_t count_reported[GW_NODE_IO_COUNT];   /* IO-4 */
     uint32_t scan_rate_ms;             /* SPB-15: current override, 0 = per-device poll_ms */
+    /* SPB-17 */
+    bool has_rssi;                     /* fixed by the NBIRTH */
+    uint64_t diag_due_ms;              /* next periodic NDATA (0: none scheduled) */
+    bool diag_restart;                 /* NBIRTH sent: the period restarts at the next tick */
+    uint64_t diag_hash;                /* of the Modbus counters last published */
+    gw_dev_stats_t diag_stats[GW_MAX_DEVICES];   /* snapshot being published */
+    uint32_t diag_online;              /* bit d: device d online, in the snapshot */
+    spb_dataset_t mb_ds;
     bool do_unknown_reported;          /* DOs last published as null (expander not answering) */
 
     /* Scratch, statically sized (REL-2). */
@@ -159,6 +191,13 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
 
 /** Re-publish NBIRTH and every DBIRTH with seq restarted (SPB-9). */
 void gw_node_rebirth(gw_node_t *n);
+
+/**
+ * SPB-17: call periodically (monotonic ms). Every sparkplug.diagnostics_s it publishes an NDATA
+ * with Uptime, Free Heap, Min Free Heap (and RSSI), plus the Modbus DataSet when a counter
+ * changed. Returns the ms until it needs to run again (UINT32_MAX: never).
+ */
+uint32_t gw_node_diag_tick(gw_node_t *n, uint64_t now_ms);
 
 #ifdef __cplusplus
 }
