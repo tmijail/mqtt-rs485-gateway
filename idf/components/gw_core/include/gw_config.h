@@ -34,6 +34,7 @@ extern "C" {
 #define GW_NO_BIT       (-1)
 #define GW_CFG_BUILD_DEFAULT (-1)   /* optional key absent: the build-time default applies */
 #define GW_MAX_GAP_LIMIT 1999       /* a block never spans more than 2000 bits */
+#define GW_MBTCP_MAX_ALLOWED 8      /* MB-15: entries of modbus_tcp.allowed_clients */
 
 typedef enum {
     GW_AREA_COIL = 0,
@@ -183,6 +184,17 @@ typedef struct {
         uint16_t port;
         gw_log_level_t level;
     } syslog;
+
+    struct {                     /* MB-15 Modbus TCP gateway; off unless enabled */
+        bool enabled;
+        uint16_t port;
+        uint16_t idle_timeout_s; /* 0 = never close an idle client */
+        uint8_t client_count;    /* 0 = any client may connect */
+        struct {
+            uint8_t ip[4];
+            uint8_t prefix;      /* 0..32 */
+        } clients[GW_MBTCP_MAX_ALLOWED];
+    } modbus_tcp;
 
     uint16_t device_count;
     uint16_t tag_count;

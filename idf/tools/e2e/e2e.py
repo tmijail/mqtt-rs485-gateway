@@ -36,6 +36,7 @@ import time
 import google.protobuf
 import paho.mqtt.client as mqtt
 from pymodbus import FramerType
+from pymodbus.client import ModbusTcpClient
 from pymodbus.datastore import ModbusSequentialDataBlock, ModbusServerContext, ModbusSlaveContext
 from pymodbus.server import ModbusTcpServer
 
@@ -49,6 +50,8 @@ MQTT_PORT = int(os.environ.get("E2E_MQTT_PORT", 18831))
 MODBUS_PORT = int(os.environ.get("E2E_MODBUS_PORT", 15020))
 CONSOLE_PORT = int(os.environ.get("E2E_CONSOLE_PORT", 15555))
 SYSLOG_PORT = int(os.environ.get("E2E_SYSLOG_PORT", 15514))
+# MB-15: QEMU forwards this host port to the gateway's Modbus TCP server (port 502)
+MBTCP_PORT = int(os.environ.get("E2E_MBTCP_PORT", 15502))
 SYSLOG = []       # (t, datagram text) received by the syslog listener
 SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
 PROBE_MAX_S = 10.0                # CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS / 1000, read in main()
@@ -388,7 +391,7 @@ class Gateway:
                "-drive", f"file={a.efuse},if=none,format=raw,id=efuse",
                "-global", "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
                "-global", "driver=timer.esp32s3.timg,property=wdt_disable,value=true",
-               "-nic", "user,model=open_eth",
+               "-nic", f"user,model=open_eth,hostfwd=tcp:127.0.0.1:{MBTCP_PORT}-:502",
                "-chardev", f"socket,id=con,host=127.0.0.1,port={CONSOLE_PORT},server=on,wait=on",
                "-serial", "chardev:con",
                "-chardev", f"socket,id=rs485,host=127.0.0.1,port={MODBUS_PORT},reconnect-ms=500",
@@ -535,7 +538,7 @@ def start_broker(conf, log):
 
 
 def main():
-    global MQTT_PORT, MODBUS_PORT, CONSOLE_PORT, SYSLOG_PORT
+    global MQTT_PORT, MODBUS_PORT, CONSOLE_PORT, SYSLOG_PORT, MBTCP_PORT
     ap = argparse.ArgumentParser()
     ap.add_argument("--qemu", required=True)
     ap.add_argument("--flash", required=True)
@@ -550,11 +553,14 @@ def main():
     ap.add_argument("--modbus-port", type=int, default=MODBUS_PORT)
     ap.add_argument("--console-port", type=int, default=CONSOLE_PORT)
     ap.add_argument("--syslog-port", type=int, default=SYSLOG_PORT)
+    ap.add_argument("--mbtcp-port", type=int, default=MBTCP_PORT,
+                    help="host port QEMU forwards to the gateway's Modbus TCP port 502")
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
     args = ap.parse_args()
     MQTT_PORT, MODBUS_PORT, CONSOLE_PORT = args.mqtt_port, args.modbus_port, args.console_port
     SYSLOG_PORT = args.syslog_port
+    MBTCP_PORT = args.mbtcp_port
     global PROBE_MAX_S
     PROBE_MAX_S = sdkconfig_int(args.sdkconfig, "GW_MB_OFFLINE_PROBE_MAX_MS") / 1000
     isolated = False if args.no_isolate else isolate_network()
@@ -734,6 +740,57 @@ def check_offline_backoff(slave, t0):
     return check("Issues #4 #61 healthy device keeps its 1 s period next to 3 dead ones, from boot",
                  ok, f"{len(starts)} Meter1 cycles in the first {span:.1f} s, longest interval "
                  f"{worst:.2f} s")
+
+
+def mbap_raw(pdu, unit=1, tid=0x4D42, timeout=5):
+    """Send one MBAP frame to the gateway (through QEMU's port forward); the answer's PDU, b"" if
+    the gateway closed the connection without answering, None on timeout."""
+    with socket.create_connection(("127.0.0.1", MBTCP_PORT), timeout=timeout) as c:
+        c.sendall(struct.pack(">HHHB", tid, 0, len(pdu) + 1, unit) + pdu)
+        data = b""
+        try:
+            while len(data) < 7 or len(data) < 6 + struct.unpack(">H", data[4:6])[0]:
+                chunk = c.recv(300)
+                if not chunk:
+                    return b""
+                data += chunk
+        except (socket.timeout, ConnectionResetError):
+            return b"" if not data else None
+        return data[7:]
+
+
+def check_modbus_tcp(gw, slave):
+    """MB-15: a Modbus TCP client (pymodbus) reads and writes an RTU slave through the gateway;
+    a unit that does not answer gives exception 0B; a function the gateway does not forward
+    gets 01 from the gateway itself, without reaching the RS485 bus."""
+    since = time.monotonic()
+    client = ModbusTcpClient("127.0.0.1", port=MBTCP_PORT, timeout=4, retries=0)
+    connected = client.connect()
+    rr = client.read_holding_registers(10, count=1, slave=1) if connected else None
+    read = None if rr is None or rr.isError() else list(rr.registers)
+    t_w = time.monotonic()
+    wr = client.write_register(200, 4242, slave=1) if connected else None
+    w_lat = time.monotonic() - t_w
+    written = slave.get(3, 200)[0]
+    dead = client.read_holding_registers(0, count=1, slave=3) if connected else None
+    dead_code = getattr(dead, "exception_code", None) if dead is not None and dead.isError() else None
+    client.close()
+    n0 = len(slave.reads)
+    unknown = mbap_raw(b"\x2b\x0e\x01\x00")
+    reached = [r for r in list(slave.reads)[n0:] if r[1] == 0x2B]
+    seen = [r for t, r in zip(list(slave.times), list(slave.reads)) if t >= since and r[0] == 1
+            and r[1:3] in ((3, 10), (6, 200))]
+    log = gw.find(r"mbtcp: client 10\.0\.2\.2 connected", 0)
+    ok = connected and read == [slave.get(3, 10)[0]] and wr is not None and not wr.isError() \
+        and written == 4242 and dead_code == 0x0B and unknown == b"\xab\x01" and not reached \
+        and len(seen) >= 2 and log
+    return check("MB-15 Modbus TCP gateway: pymodbus client reads holding 10 and writes holding 200 "
+                 "of unit 1 over TCP 502; dead unit -> exception 0B; FC 0x2B -> 01 from the gateway",
+                 ok, f"connected {connected}; read {read} (slave {slave.get(3, 10)[0]}); write "
+                 f"{'ok' if wr is not None and not wr.isError() else wr} in {w_lat:.2f} s, slave "
+                 f"holding 200 = {written}; unit 3 -> exception {dead_code}; FC 0x2B -> "
+                 f"{unknown!r}, reached the bus: {bool(reached)}; RTU requests {seen}; "
+                 f"{(log or ['no connect log'])[0]}")
 
 
 def check_scan_rate(obs, gw, slave, nbirth, ncmd_t, ndata_t):
@@ -918,6 +975,7 @@ def run_network_variant(args, work):
                       "ipv6": {"enabled": True, "slaac": True, "address": "fec0::1234"},
                       "wifi": {"enabled": True, "ssid": "Plant WLAN", "password": "12345678",
                                "role": "backup", "failback_s": 30}}
+    cfg["modbus_tcp"] = {"enabled": True, "allowed_clients": ["192.0.2.0/24"]}
     flash = flash_variant(args, work, "network", {"config.json": json.dumps(cfg, indent=2).encode()})
     obs = Observer()
     gw = Gateway(args, work / "uart0-network.log", flash)
@@ -952,6 +1010,15 @@ def run_network_variant(args, work):
     pinged = time.monotonic()
     gw.console("ping fec0::2")
     replies = gw.wait_log(r"3 sent, [1-3] received", 8, pinged)
+    # MB-15 allow-list: slirp's 10.0.2.2 is not in 192.0.2.0/24, so the connection is closed
+    # without an answer
+    asked_tcp = time.monotonic()
+    try:
+        denied = mbap_raw(b"\x03\x00\x0a\x00\x01")
+    except OSError as e:
+        denied = f"{e}"
+    refused = gw.wait_log(r"mbtcp: connection from 10\.0\.2\.2 refused: not in modbus_tcp\.allowed_clients",
+                          3, asked_tcp)
     gw.kill()
     obs.wait(f"{T}/NDEATH/{node}", 5)   # the will, before the main scenario starts
     obs.close()
@@ -960,6 +1027,9 @@ def run_network_variant(args, work):
           nb and ignored and iface and shown,
           f"NBIRTH {'yes' if nb else 'no'}; {(ignored or ['no warning'])[0]}; shell: "
           + " | ".join(gw.find(r"^iface\s|^wifi\s", asked)))
+    check("MB-15 Modbus TCP allow-list: a client outside modbus_tcp.allowed_clients is "
+          "disconnected without an answer", denied == b"" and refused,
+          f"answer {denied!r}; {(gw.find(r'mbtcp: connection from', asked_tcp) or ['no log'])[0]}")
     check("NET-7 IPv6 on Ethernet: link-local, SLAAC (fec0::/64 from slirp's RA) and static "
           "address, shown by the shell; ICMPv6 echo to fec0::2 answered",
           lla and slaac and static and listed and cfg6 and replies,
@@ -1172,6 +1242,7 @@ def run(args, log, slave, broker, conf, work):
     check_scan_classes(slave)
     check_write_between_blocks(obs, slave, dcmd_t, ddata_t)
     check_scan_rate(obs, gw, slave, p, ncmd_t, ndata_t)
+    check_modbus_tcp(gw, slave)
 
     # 2. Slave off -> DDEATH; back on -> DBIRTH
     obs.drain()

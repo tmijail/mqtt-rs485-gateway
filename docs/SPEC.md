@@ -346,6 +346,23 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 - Si un ciclo falla antes de leer los lentos, quedan pendientes para el ciclo siguiente.
 - Un dispositivo con solo tags lentos se encuesta cada `slow_poll_ms`.
 
+**`modbus_tcp` (MB-15): gateway Modbus TCP hacia los esclavos RTU.**
+
+```json
+"modbus_tcp": { "enabled": true, "port": 502, "allowed_clients": ["192.168.1.20", "10.0.5.0/24"],
+                "idle_timeout_s": 60 }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `enabled` | bool | `false` | Modbus TCP **no tiene autenticación**: el servidor solo arranca si se pide |
+| `port` | entero | `502` | 1–65535 |
+| `allowed_clients` | array de textos | `[]` | Hasta 8 direcciones IPv4 (`a.b.c.d`) o redes (`a.b.c.d/n`, n 0–32). Una conexión de otro origen se cierra sin respuesta. Vacío = cualquier cliente (el equipo lo advierte en el log) |
+| `idle_timeout_s` | entero | `60` | 0–3600. Una conexión sin peticiones en ese tiempo se cierra; 0 = nunca |
+
+- Se reenvían FC01–FC06, FC15 y FC16 a las unidades 1–247, tengan o no un dispositivo configurado. El gateway responde él mismo, con excepción, a cualquier otra función (01), a datos no válidos (03) y a las unidades 0 y 248–255 (0A). Si la unidad no responde tras los reintentos de `rs485`, la excepción es 0B.
+- **Arbitraje del bus (MB-16):** las peticiones TCP pasan por la tarea dueña del bus, una a la vez y con la misma granularidad que los DCMD: entre dos peticiones de la encuesta. Prioridad: escrituras DCMD, después Modbus TCP, después la encuesta.
+
 **`syslog` (REL-4): copia del log a un servidor syslog.**
 
 ```json

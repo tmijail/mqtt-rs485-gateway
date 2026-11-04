@@ -455,6 +455,48 @@ static void test_scan_classes(void)
                     "devices[0].tags[0].scan: valor no válido (se esperaba fast|slow)");
 }
 
+/* MB-15: Modbus TCP gateway section. */
+static void test_modbus_tcp_section(void)
+{
+    const char *base = "\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}";
+    char doc[512];
+    snprintf(doc, sizeof(doc), "{%s}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_FALSE(cfg.modbus_tcp.enabled);               /* off unless asked for */
+    TEST_ASSERT_EQUAL(502, cfg.modbus_tcp.port);
+    TEST_ASSERT_EQUAL(60, cfg.modbus_tcp.idle_timeout_s);
+    TEST_ASSERT_EQUAL(0, cfg.modbus_tcp.client_count);
+    snprintf(doc, sizeof(doc),
+             "{%s,\"modbus_tcp\":{\"enabled\":true,\"port\":1502,\"idle_timeout_s\":0,"
+             "\"allowed_clients\":[\"10.0.2.2\",\"192.168.7.0/24\",\"0.0.0.0/0\"]}}",
+             base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_TRUE(cfg.modbus_tcp.enabled);
+    TEST_ASSERT_EQUAL(1502, cfg.modbus_tcp.port);
+    TEST_ASSERT_EQUAL(0, cfg.modbus_tcp.idle_timeout_s);
+    TEST_ASSERT_EQUAL(3, cfg.modbus_tcp.client_count);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(((uint8_t[]){10, 0, 2, 2}), cfg.modbus_tcp.clients[0].ip, 4);
+    TEST_ASSERT_EQUAL(32, cfg.modbus_tcp.clients[0].prefix);
+    TEST_ASSERT_EQUAL(24, cfg.modbus_tcp.clients[1].prefix);
+    TEST_ASSERT_EQUAL(0, cfg.modbus_tcp.clients[2].prefix);
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"allowed_clients\":[\"10.0.0.0/33\"]}}", base);
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.allowed_clients[0]: prefijo no válido");
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"allowed_clients\":[\"x\",1]}}", base);
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.allowed_clients[0]: 'x' no es una dirección IPv4");
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"allowed_clients\":[\"1.2.3.4\",1]}}", base);
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.allowed_clients[1]: se esperaba un texto");
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"allowed_clients\":\"1.2.3.4\"}}", base);
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.allowed_clients: se esperaba un array");
+    snprintf(doc, sizeof(doc),
+             "{%s,\"modbus_tcp\":{\"allowed_clients\":[\"1.1.1.1\",\"1.1.1.2\",\"1.1.1.3\","
+             "\"1.1.1.4\",\"1.1.1.5\",\"1.1.1.6\",\"1.1.1.7\",\"1.1.1.8\",\"1.1.1.9\"]}}", base);
+    ASSERT_REJECTED(parse(doc), "9 entradas; el máximo es 8");
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"port\":0}}", base);
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.port: valor 0 fuera de rango");
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"enable\":true}}", base);
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.enable: clave desconocida");
+}
+
 static void test_section_errors(void)
 {
     ASSERT_REJECTED(parse("{\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}}"), "mqtt:");
@@ -654,6 +696,7 @@ int main(void)
     RUN_TEST(test_mb6_tags);
     RUN_TEST(test_device_block_reads);
     RUN_TEST(test_scan_classes);
+    RUN_TEST(test_modbus_tcp_section);
     RUN_TEST(test_section_errors);
     RUN_TEST(test_limits);
     RUN_TEST(test_syntax_errors_give_line_and_column);

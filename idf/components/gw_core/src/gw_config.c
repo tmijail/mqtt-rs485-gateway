@@ -642,6 +642,69 @@ static bool parse_syslog(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     return true;
 }
 
+/* MB-15. Modbus TCP has no authentication: off by default, and allowed_clients limits who may
+ * connect ("a.b.c.d" or "a.b.c.d/prefix"). */
+static bool parse_modbus_tcp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"enabled", "port", "allowed_clients", "idle_timeout_s"};
+    static const cJSON empty = {.type = cJSON_Object};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "modbus_tcp");
+    if (o == NULL) {
+        o = &empty;
+    }
+    long port, idle;
+    if (!check_keys(o, "modbus_tcp", keys, 4, err) ||
+        !get_bool(o, "enabled", "modbus_tcp", false, &cfg->modbus_tcp.enabled, err) ||
+        !get_int(o, "port", "modbus_tcp", false, 502, 1, 65535, &port, err) ||
+        !get_int(o, "idle_timeout_s", "modbus_tcp", false, 60, 0, 3600, &idle, err)) {
+        return false;
+    }
+    cfg->modbus_tcp.port = (uint16_t)port;
+    cfg->modbus_tcp.idle_timeout_s = (uint16_t)idle;
+    const cJSON *list = cJSON_GetObjectItemCaseSensitive(o, "allowed_clients");
+    if (list == NULL) {
+        return true;
+    }
+    if (!cJSON_IsArray(list)) {
+        return fail(err, "modbus_tcp.allowed_clients", "se esperaba un array");
+    }
+    int n = cJSON_GetArraySize(list);
+    if (n > GW_MBTCP_MAX_ALLOWED) {
+        return fail(err, "modbus_tcp.allowed_clients", "%d entradas; el máximo es %d", n,
+                    GW_MBTCP_MAX_ALLOWED);
+    }
+    int i = 0;
+    for (const cJSON *it = list->child; it != NULL; it = it->next, i++) {
+        char p[48];
+        snprintf(p, sizeof(p), "modbus_tcp.allowed_clients[%d]", i);
+        if (!cJSON_IsString(it)) {
+            return fail(err, p, "se esperaba un texto (\"a.b.c.d\" o \"a.b.c.d/n\")");
+        }
+        char buf[24];
+        size_t len = strlen(it->valuestring);
+        if (len >= sizeof(buf)) {
+            return fail(err, p, "'%s' no es una dirección IPv4 ni una red", it->valuestring);
+        }
+        memcpy(buf, it->valuestring, len + 1);
+        unsigned prefix = 32;
+        char *slash = strchr(buf, '/');
+        if (slash != NULL) {
+            char tail;
+            *slash = '\0';
+            if (sscanf(slash + 1, "%u%c", &prefix, &tail) != 1 || prefix > 32) {
+                return fail(err, p, "prefijo no válido en '%s' (0-32)", it->valuestring);
+            }
+        }
+        uint8_t *ip = cfg->modbus_tcp.clients[i].ip;
+        if (!parse_ipv4(buf, ip)) {
+            return fail(err, p, "'%s' no es una dirección IPv4 ni una red", it->valuestring);
+        }
+        cfg->modbus_tcp.clients[i].prefix = (uint8_t)prefix;
+    }
+    cfg->modbus_tcp.client_count = (uint8_t)n;
+    return true;
+}
+
 static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"name",   "area",     "address",  "type",  "word_order",
@@ -846,8 +909,8 @@ static bool parse_devices(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err
 
 bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"network", "ntp",      "mqtt",    "sparkplug",
-                                       "rs485",   "local_io", "devices", "syslog"};
+    static const char *const keys[] = {"network", "ntp",      "mqtt",    "sparkplug", "rs485",
+                                       "local_io", "devices", "syslog", "modbus_tcp"};
     memset(cfg, 0, sizeof(*cfg));
     err->msg[0] = '\0';
 
@@ -872,11 +935,12 @@ bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_
         cJSON_Delete(root);
         return fail_at(err, json, end, "contenido después del documento");
     }
-    bool ok = check_keys(root, "", keys, 8, err) && parse_network(root, cfg, err) &&
+    bool ok = check_keys(root, "", keys, sizeof(keys) / sizeof(keys[0]), err) &&
+              parse_network(root, cfg, err) &&
               parse_ntp(root, cfg, err) && parse_mqtt(root, cfg, err) &&
               parse_sparkplug(root, cfg, err) && parse_rs485(root, cfg, err) &&
               parse_local_io(root, cfg, err) && parse_devices(root, cfg, err) &&
-              parse_syslog(root, cfg, err);
+              parse_syslog(root, cfg, err) && parse_modbus_tcp(root, cfg, err);
     cJSON_Delete(root);
 
     if (ok && cfg->mqtt.client_id[0] == '\0') {

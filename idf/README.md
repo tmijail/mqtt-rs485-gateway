@@ -28,6 +28,7 @@ Firmware del MVP (`docs/SPEC.md` §5) para la Waveshare **ESP32-S3-POE-ETH-8DI-8
 | `gw_board` | 8 DI con muestreo a 1 kHz y debounce; 8 DO en el TCA9554 (sobre `gw_dout`, sin pulsos al arrancar); LED WS2812 de estado | Sí |
 | `gw_storage` | bdSeq en NVS; configuración desde LittleFS o embebida (solo si falta el archivo) | Sí |
 | `gw_log` | Syslog remoto (REL-4): engancha `esp_log_set_vprintf`, copia cada línea a un anillo acotado y una tarea la envía por UDP | Sí |
+| `gw_mbtcp` | Gateway Modbus TCP (MB-15): servidor TCP (lwIP) que pasa cada petición MBAP a la tarea dueña del bus y devuelve la respuesta del esclavo RTU. Solo con `modbus_tcp.enabled` | Sí |
 | `gw_shell` | Shell de diagnóstico `esp_console` en la consola: `status`, `devices`, `config`, `ping` (y `di` y `panic` en QEMU) | Sí |
 | `main` | `app_main`: carga la configuración y conecta los componentes | Sí |
 
@@ -65,6 +66,7 @@ Dependencias gestionadas, **con versión fija** (`==`) en cada `idf_component.ym
 | `status_led` | — / 2 | 2,5 KB | No (no crítica) | El RMT del LED |
 | `console` (`gw_shell`) | — / 2 | 4 KB | No (no crítica) | La UART de la consola (REPL `esp_console`); solo lee `gw_tagdb` y `gw_status` |
 | `syslog` (`gw_log`, solo con `syslog.host`) | — / 2 | 3,5 KB estática | No (no crítica) | El socket UDP y el lado consumidor del anillo |
+| `modbus_tcp` (`gw_mbtcp`, solo con `modbus_tcp.enabled`) | 0 / 3 | 4 KB estática | No (no crítica; toda espera acotada: `select` de 1 s, envío de 2 s, respuesta del bus de 8 s) | El socket de escucha, hasta 2 clientes (`CONFIG_GW_MBTCP_MAX_CLIENTS`) y la única transacción en curso, que ejecuta `rs485_bus` |
 | esp-mqtt (`mqtt_task`), lwIP (`tcpip`), RX de Ethernet (`w5500_tsk` / `emac_rx`), Wi-Fi (solo con `network.wifi`), event loop (`sys_evt`) | **0** / IDF | IDF | IDLE vigiladas | El event loop es dueño de `gw_netsel` (eventos de enlace e IP y el temporizador de *failback*) |
 
 **Afinidad.** Toda la pila de red corre en el núcleo 0, lejos del bus RS485 del núcleo 1: `CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0`, `CONFIG_MQTT_USE_CORE_0`, `ETH_MAC_FLAG_PIN_TO_CORE` en `gw_net` (el driver se instala desde `app_main`, en el núcleo 0) y el event loop por defecto y la tarea del Wi-Fi, que IDF ya fija al 0. El comando `status` del shell muestra el núcleo de cada tarea (`tasks rs485_bus 1 sparkplug 0 tcpip 0 …`); el E2E lo comprueba.
@@ -187,7 +189,7 @@ Tras actualizar, lo más simple es **borrar `idf/sdkconfig`** (o `idf.py set-tar
 
 1. El firmware embebe `components/gw_storage/default_config.json`, que es el ejemplo de §6.
 2. Para reemplazarla, copie el JSON a `idf/fs/config.json` y edítelo. `idf.py flash` graba la carpeta `fs/` en la partición `storage` y el firmware lee `/cfg/config.json` al arrancar.
-3. Las claves opcionales fuera del MVP (`network.wifi`, NET-4; `network.ipv6`, NET-7; `syslog`, REL-4; tipos de 64 bits, `string`, órdenes de bytes y `bit` en los tags, MB-6) están en `docs/SPEC.md` §6.1.
+3. Las claves opcionales fuera del MVP (`network.wifi`, NET-4; `network.ipv6`, NET-7; `syslog`, REL-4; `modbus_tcp`, MB-15; tipos de 64 bits, `string`, órdenes de bytes y `bit` en los tags, MB-6) están en `docs/SPEC.md` §6.1.
 4. **La configuración embebida se usa solo si `/cfg/config.json` no existe.** Cualquier otro problema detiene el equipo: la partición LittleFS no monta, el archivo está vacío, no se puede leer, supera el límite o es inválido. Entonces **no arranca nada** (ni encuesta, ni red, ni MQTT), el LED parpadea en rojo y el log repite cada 10 s, con nivel ERROR, el motivo, por ejemplo:
    - `/cfg/config.json: 140000 bytes; el máximo es 131072 (CONFIG_GW_CONFIG_MAX_BYTES)`;
    - `partición LittleFS 'storage' no montable (ESP_FAIL)`;
@@ -217,6 +219,7 @@ Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 - Wi-Fi compilado o no (`CONFIG_GW_WIFI`, menú `Gateway: network`; sin él, `network.wifi` se ignora con un warning);
 - espera de SNTP;
 - líneas que guarda el syslog remoto (`CONFIG_GW_SYSLOG_SLOTS`, 32 por defecto) y prioridad de su tarea;
+- gateway Modbus TCP: clientes simultáneos, prioridad y espera máxima de una respuesta del bus (menú `Gateway: Modbus TCP gateway`);
 - tamaños de cola.
 
 **LED de estado** (de mayor a menor prioridad):
@@ -397,6 +400,7 @@ Leyenda de **Evidencia**:
 - **MB-11** Implementado: los tags contiguos o cercanos del mismo área se leen en un bloque (hasta 125 registros o 2000 bits). Por dispositivo, `block_reads` (desactiva el agrupamiento) y `max_gap` (hueco máximo); sin ellas vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `CONFIG_GW_MB_BLOCK_MAX_GAP`, por defecto agrupar con hueco 0). Evidencia: H (tres dispositivos con huecos distintos y uno sin agrupar; esquema) + Q (Bulk: 60 registros en una FC03 con el hueco 0 del firmware; Meter1 con `max_gap: 10`: holding 10–37 en una sola lectura).
 - **MB-12** Implementado: `scan: slow` por tag y `slow_poll_ms` por dispositivo (por defecto 10 × `poll_ms`). El planificador arma bloques por clase y cada ciclo lee los rápidos, más los lentos cuando les toca. Con la detección de fuera de línea: los ciclos parciales cuentan para `offline_after`, y solo un ciclo completo (todos los bloques) pone el equipo en línea; fuera de línea, cada ciclo es completo. Evidencia: H (clases, bloques separados, ciclo completo al volver, lentos pendientes tras un fallo, equipo con solo tags lentos) + Q (Energy y Serial cada 3 s, el resto cada 1 s).
 - **SPB-15** Implementado: `Node Control/Scan Rate` (UInt32, ms, alias 7) en el NBIRTH, escribible por NCMD. **Semántica: pisa, no escala.** 0 (el valor al arrancar) = cada dispositivo con su `poll_ms`; un valor de 50 a 3 600 000 ms reemplaza el `poll_ms` de **todos** los dispositivos, y también su `slow_poll_ms` si este es menor (MB-12). Un periodo más corto rige enseguida; uno más largo, después del sondeo ya programado. Los fuera de línea hacen su backoff a partir del periodo vigente. Un valor fuera de rango o no entero se descarta con log; en los dos casos un NDATA confirma el valor vigente. **No se persiste:** tras un reinicio vuelve a 0 (la configuración es la fuente de verdad: un valor guardado aparte haría que el equipo no se comporte como dice `config.json`, y cada NCMD gastaría flash). Evidencia: H (métrica, rango, confirmación, Int64 por alias, rebirth; planificación con el valor, vuelta a 0, backoff y escaneo lento) + Q (NCMD 3000 → Meter1 cada 3 s y NDATA; valor inválido rechazado; 0 → 1 s otra vez).
+- **MB-15** Implementado: gateway Modbus TCP (`modbus_tcp`, **apagado por defecto**). Traduce MBAP → RTU (FC01–06, FC15, FC16) y pasa cada petición por la tarea dueña del bus: se atiende entre dos peticiones de la encuesta, después de las escrituras DCMD pendientes, una a la vez. El gateway responde él mismo las funciones que no reenvía (excepción 01), los datos no válidos (03), las unidades 0 y 248–255 (0A) y las unidades que no responden (0B). Control de acceso: `allowed_clients` (IPv4 o redes CIDR; vacío = cualquiera, con un warning al arrancar). Evidencia: H (tramas, excepciones, lecturas y escrituras contra el esclavo simulado, lista de clientes, esquema) + Q (un cliente pymodbus lee holding 10 y escribe holding 200 de la unidad 1 por el puerto 502, reenviado por slirp; la unidad 3 muerta da 0B; FC 0x2B da 01 sin tocar el bus; un cliente fuera de la lista se desconecta sin respuesta).
 - **MB-13** Parcial: excepciones decodificadas y en el log; contadores por dispositivo (ciclos, ciclos fallidos e intentos ok / timeout / CRC / trama / excepción) en el shell y en el log de fuera de línea, no publicados por Sparkplug.
 - **CFG-6** Parcial: shell de diagnóstico de solo lectura en la consola (`status` con interfaces y direcciones IPv6, `devices`, `config`, `ping <IPv4|IPv6>`; `help` lista los comandos). Funciona también con la configuración rechazada. No cambia la configuración.
 - **MB-14** Implementado: la cola de escrituras DCMD se atiende antes de cada ciclo **y entre dos peticiones de un ciclo** (gancho `between_requests` de `gw_poll`): una escritura espera como mucho la transacción en curso, no el resto del ciclo ni los de otros equipos. Si escribe un tag del equipo que se está encuestando, el valor confirmado también reemplaza la copia de trabajo del ciclo (no se publica después el valor viejo leído antes). Evidencia: H (ciclo de 10 peticiones: la escritura sale en el siguiente límite, latencia de una transacción, valor confirmado publicado) + Q (con respuestas de 120 ms, un DCMD a mitad de ciclo se escribe entre peticiones del mismo ciclo).
@@ -464,6 +468,14 @@ La build de QEMU difiere de la de placa en esos puntos (`sdkconfig.qemu`).
   - Los `string` llegan hasta 32 caracteres (16 registros) y solo ASCII imprimible (lo demás sale como `?`): no hay UTF-8 ni otras codificaciones. El texto viaja como String de Sparkplug; para el reporte por excepción se compara un hash FNV-1a de 64 bits (una colisión ocultaría un cambio; probabilidad despreciable).
   - Con `scale`/`offset`, un `int64`/`uint64` pasa a Double y pierde la exactitud por encima de 2^53, como cualquier valor escalado.
   - **Memoria:** el valor de cada tag ocupa ahora 56 B (antes 24) para alojar el texto. Son unos 12 KB más de `.bss` interna (imagen de proceso de 256 tags, copia de trabajo de la encuesta y la del shell) y 2 KB más en el motor Sparkplug (PSRAM si la hay).
+
+- **MB-15 (Modbus TCP):**
+  - **Sin autenticación ni cifrado:** cualquiera que llegue al puerto y esté en `allowed_clients` lee y escribe todos los esclavos del bus, también registros que el gateway no encuesta. La lista filtra por dirección de origen (falsificable en la misma red). Por eso viene apagado.
+  - Solo IPv4: con IPv6 activo (NET-7) el servidor no escucha en IPv6.
+  - Una transacción a la vez para todos los clientes; mientras tanto los demás esperan. Una petición espera como mucho la transacción en curso y las escrituras DCMD pendientes; si el bus no la ejecutó en 8 s (`CONFIG_GW_MBTCP_RESPONSE_WAIT_MS`), el cliente recibe 0B.
+  - Sin FC07, FC08, FC17, FC22, FC23 ni FC43: excepción 01. Tampoco *broadcast* (unidad 0).
+  - Las transacciones TCP no se cuentan en los contadores por dispositivo del shell (sí en los globales de `mb_master`).
+  - Memoria: unos 5 KB de `.bss` (pila de 4 KB, búferes de 2 clientes y la transacción), aunque esté apagado.
 
 ### 6.4 Reloj
 

@@ -11,6 +11,7 @@
 
 #include "esp_err.h"
 #include "gw_config.h"
+#include "gw_mbap.h"
 #include "gw_tagdb.h"
 #include "mb_master.h"
 
@@ -31,6 +32,17 @@ bool gw_bus_request_write(uint16_t tag, const gw_tag_value_t *value);
 
 /** SPB-15: poll every device every @p ms (0 = each at its poll_ms). Non-blocking. */
 void gw_bus_set_scan_rate(uint32_t ms);
+
+/**
+ * MB-15: run a Modbus TCP transaction on the bus (between the requests of a cycle, after the
+ * pending DCMD writes) and wait at most @p wait_ms for it. Single caller (the Modbus TCP
+ * server). On false the transaction may still run later: @p txn must not be reused until
+ * gw_bus_forward_idle() says so.
+ */
+bool gw_bus_forward(gw_mbap_txn_t *txn, uint32_t wait_ms);
+
+/** true once no forwarded transaction is pending (waits at most @p wait_ms for it). */
+bool gw_bus_forward_idle(uint32_t wait_ms);
 
 /** Free entries in the write queue (called by the only producer, the Sparkplug task). */
 size_t gw_bus_write_room(void);
