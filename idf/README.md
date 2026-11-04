@@ -361,7 +361,7 @@ E2E_PYTHON=~/e2e/bin/python idf/tools/e2e/run_e2e.sh
 
 Configuración usada: `tools/e2e/fs/config.json` (keepalive de 10 s, syslog hacia el receptor del harness). `run_e2e.sh` pasa además el ELF y el python de IDF, para decodificar el *core dump* con `esp_coredump`.
 
-Resultado: **134/134 comprobaciones OK** (sobre el commit final de `feature/sparkplug-metrics`, con `main` de `feature/mqtt` incluido); además, con `--panics 3`, los tres volcados decodificados (#62).
+Resultado: **135/135 comprobaciones OK** (sobre el commit final de `feature/sparkplug-metrics`, con `main` de `feature/mqtt` incluido); además, con `--panics 3`, los tres volcados decodificados (#62).
 
 | Criterio | Resultado medido |
 |---|---|
