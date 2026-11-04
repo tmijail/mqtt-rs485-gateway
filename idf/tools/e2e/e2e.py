@@ -512,7 +512,9 @@ class Gateway:
 
     def start(self):
         a = self.args
-        cmd = [a.qemu, "-M", "esp32s3", "-m", "32M", "-nographic",
+        # With the octal PSRAM, -m is its size (the board's 8 MB): with 32M QEMU maps 31 MB and
+        # leaves no virtual address space for the flash mmap (the partitions are not found).
+        cmd = [a.qemu, "-M", "esp32s3", "-m", "8M" if a.psram else "32M", "-nographic",
                "-drive", f"file={self.flash},if=mtd,format=raw",
                "-drive", f"file={a.efuse},if=none,format=raw,id=efuse",
                "-global", "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
