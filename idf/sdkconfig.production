@@ -1,11 +1,35 @@
 # Production overlay. BURNS eFuses (irreversible) on the board's first boot:
 #   idf.py -B build-prod -D SDKCONFIG=build-prod/sdkconfig \
 #          -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.production" build
-# Never use it on a development board you want to keep reusable (README 3.4).
-# Secure boot (FW-2) and flash encryption (FW-3) belong here too; they must not use KEY5.
+#   tools/sign_firmware.sh --keyfile <key> --build-dir build-prod   (FW-2: images are signed
+#   outside the build; README 3.5 has the whole factory procedure)
+# Never use it on a development board you want to keep reusable (README 3.4, 3.5).
+# eFuse key blocks: on the first boot the bootloader takes the first free one for the Secure
+# Boot key digest (FW-2); then the app burns KEY5 for NVS (CFG-7).
 
 # CFG-7: secrets in encrypted NVS. The NVS keys are derived with the HMAC peripheral from a key
 # in eFuse block KEY5: the first boot generates it and burns it with purpose HMAC_UP.
 CONFIG_NVS_ENCRYPTION=y
 CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC=y
 CONFIG_NVS_SEC_HMAC_EFUSE_KEY_ID=5
+
+# FW-2: Secure Boot V2 (RSA-3072 PSS, the only scheme the ESP32-S3 has). The ROM checks the
+# bootloader and the bootloader the app; esp_ota_end() checks every OTA image (FW-1) against
+# the key digest in eFuse. The first boot burns that digest, disables JTAG (pad and USB) and
+# write-protects the security eFuses.
+CONFIG_SECURE_BOOT=y
+CONFIG_SECURE_BOOT_V2_ENABLED=y
+CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME=y
+# The private key never sits on the build host: unsigned images out of the build, signed with
+# tools/sign_firmware.sh where the key is (offline machine or HSM).
+CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=n
+# No serial download mode at all once secured (no flash readout, no reflashing by UART): the
+# only way to change the firmware is a signed OTA image.
+CONFIG_SECURE_DISABLE_ROM_DL_MODE=y
+
+# Same layout as partitions.csv; the Secure Boot bootloader is larger (40 KB signed), so the
+# partition table moves to 0x10000.
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-production.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x10000
+# A smaller bootloader (it must fit below the partition table) that does not chatter
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y

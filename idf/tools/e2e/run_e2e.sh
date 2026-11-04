@@ -19,6 +19,11 @@ cd "$IDF_DIR"
 if [ sdkconfig.defaults -nt build-qemu/sdkconfig ] || [ sdkconfig.qemu -nt build-qemu/sdkconfig ]; then
     rm -f build-qemu/sdkconfig
 fi
+# FW-2: the QEMU build requires signed images (no eFuse involved); its throwaway test key lives
+# in the build directory, never in the repository
+mkdir -p build-qemu
+[ -f build-qemu/e2e_signing_key.pem ] ||
+    python -m espsecure generate-signing-key --version 2 --scheme rsa3072 build-qemu/e2e_signing_key.pem
 idf.py -B build-qemu -D SDKCONFIG=build-qemu/sdkconfig \
     -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.qemu" \
     -D GW_FS_DIR="$IDF_DIR/tools/e2e/fs" reconfigure build   # reconfigure: picks up new Kconfig files
@@ -35,4 +40,5 @@ PYEOF
 "$PY" tools/e2e/e2e.py --qemu "$(command -v qemu-system-xtensa)" \
     --flash "$WORK/flash.bin" --efuse "$WORK/efuse.bin" --workdir "$WORK" \
     --littlefs-python build-qemu/littlefs_py_venv/bin/python --sdkconfig build-qemu/sdkconfig \
-    --elf build-qemu/rs485_spb_gateway.elf --idf-python "$(command -v python)" "$@"
+    --elf build-qemu/rs485_spb_gateway.elf --idf-python "$(command -v python)" \
+    --signing-key build-qemu/e2e_signing_key.pem "$@"

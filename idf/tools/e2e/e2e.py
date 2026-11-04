@@ -1461,6 +1461,20 @@ def run_ota(args, work):
     fw_image(src, "e2e-v3", fwdir / "v3.bin")
     fw_image(src, "e2e-bad", fwdir / "bad.bin", corrupt=True)
     images = {k: fwdir / f"{k}.bin" for k in ("v2", "v3", "bad")}
+    signed = bool(args.signing_key)
+    if signed:
+        # FW-2: the build requires signed images; "foreign" is valid but signed with another key
+        fw_image(src, "e2e-foreign", fwdir / "foreign.bin")
+        other = work / "foreign_signing_key.pem"
+        if not other.exists():
+            subprocess.run([args.idf_python, "-m", "espsecure", "generate-signing-key", "--version",
+                            "2", "--scheme", "rsa3072", str(other)], check=True, capture_output=True)
+        for k, key in (("v2", args.signing_key), ("v3", args.signing_key),
+                       ("bad", args.signing_key), ("foreign", str(other))):
+            subprocess.run([args.idf_python, "-m", "espsecure", "sign-data", "--version", "2",
+                            "--keyfile", key, str(fwdir / f"{k}.bin")], check=True,
+                           capture_output=True)
+            images[k] = fwdir / f"{k}.bin"
     server = FirmwareServer(fw_port, fwdir, pki["server.crt"], pki["server.key"])
     conf = work / "broker-ota.conf"
     conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\n")
@@ -1499,12 +1513,22 @@ def run_ota(args, work):
         update(f"https://10.0.2.2:{fw_port}/bad.bin")
         bad = obs.wait(ndata_t, 120, lambda p: (fw_state(p) or "").startswith("failed: image e2e-bad "
                                                                              "rejected"))
+        foreign = True
+        if signed:
+            # FW-2: a valid image signed with a key other than the running firmware's
+            update(f"https://10.0.2.2:{fw_port}/foreign.bin")
+            foreign = obs.wait(ndata_t, 120, lambda p: (fw_state(p) or "").startswith(
+                "failed: image e2e-foreign rejected: invalid (checksum or signature)"))
         time.sleep(2)
         still = not any(m[1] == f"{T}/NDEATH/{node}" for m in CAPTURE if m[0] >= asked)
         check("FW-1 bad updates refused without a restart: http:// refused, an image that fails "
-              "verification rejected after the download (the running firmware stays)",
-              refused and bad and still,
-              " | ".join(dict.fromkeys(states(asked))) + f"; restarted: {not still}")
+              "verification rejected after the download (the running firmware stays)"
+              + ("; FW-2: an image signed with another key rejected (signature check of the OTA "
+                 "image, no eFuse)" if signed else ""),
+              refused and bad and still and foreign,
+              " | ".join(dict.fromkeys(states(asked))) + f"; restarted: {not still}"
+              + (f"; {(gw.find(r'secure_boot_v2|[Ss]ignature', asked) or ['no signature log'])[0][:120]}"
+                 if signed else ""))
 
         # NCMD with the URL: download with progress, restart into it, trial, confirmed
         asked = time.monotonic()
@@ -1618,6 +1642,8 @@ def main():
     ap.add_argument("--sdkconfig", required=True, help="sdkconfig of the QEMU build")
     ap.add_argument("--elf", required=True, help="ELF of the QEMU build (core dump decoding)")
     ap.add_argument("--idf-python", required=True, help="ESP-IDF python (has esp_coredump)")
+    ap.add_argument("--signing-key", default="",
+                    help="FW-2: the QEMU build's test signing key (signed images required)")
     ap.add_argument("--mqtt-port", type=int, default=MQTT_PORT)
     ap.add_argument("--modbus-port", type=int, default=MODBUS_PORT)
     ap.add_argument("--console-port", type=int, default=CONSOLE_PORT)

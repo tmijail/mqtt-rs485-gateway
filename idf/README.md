@@ -278,9 +278,9 @@ Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 | Build | Cómo | NVS | eFuses |
 |---|---|---|---|
 | **Por defecto** (desarrollo) | `idf.py set-target esp32s3 build` | **Sin cifrar**: los secretos quedan fuera del JSON, pero legibles con un volcado de la flash. El shell avisa `secrets  NVS NOT encrypted` | No toca ninguno: se puede grabar en cualquier placa |
-| **Producción** | `idf.py -B build-prod -D SDKCONFIG=build-prod/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.production" build` | Cifrada con el esquema HMAC (`CONFIG_NVS_ENCRYPTION`, `CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC`, clave en el bloque eFuse **KEY5**), sin exigir cifrado de flash. El shell dice `secrets  NVS encrypted (HMAC key in eFuse KEY5)` | **Quema KEY5 en el primer arranque** |
+| **Producción** | `idf.py -B build-prod -D SDKCONFIG=build-prod/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.production" build` | Cifrada con el esquema HMAC (`CONFIG_NVS_ENCRYPTION`, `CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC`, clave en el bloque eFuse **KEY5**), sin exigir cifrado de flash. El shell dice `secrets  NVS encrypted (HMAC key in eFuse KEY5)` | **Quema KEY5 en el primer arranque** (y, por FW-2/FW-3, KEY0, KEY1 y los de seguridad: §3.6) |
 
-`sdkconfig.production` es el overlay de producción: ahí irán también secure boot (FW-2) y cifrado de flash (FW-3). La build de QEMU (`sdkconfig.qemu`) activa el mismo cifrado sobre el eFuse emulado de cada corrida, así que el E2E lo ejercita sin quemar nada real.
+`sdkconfig.production` es el overlay de producción: también activa Secure Boot V2 (FW-2) y el cifrado de flash (FW-3), que queman más eFuses y exigen firmar las imágenes (§3.6). La build de QEMU (`sdkconfig.qemu`) activa el mismo cifrado sobre el eFuse emulado de cada corrida, así que el E2E lo ejercita sin quemar nada real.
 
 - **Proceso de fábrica (solo con la build de producción).** El primer arranque genera una clave HMAC aleatoria y la **quema en KEY5 con propósito `HMAC_UP`: es irreversible** y la clave no se puede leer después (las claves de NVS se derivan con el periférico HMAC). Ese bloque queda ocupado: secure boot (FW-2) y cifrado de flash (FW-3) deben usar otros. Si se prefiere quemarla en la línea de producción: `espefuse.py burn_key BLOCK_KEY5 clave.bin HMAC_UP` antes del primer arranque. Una placa con KEY5 ya usado para otra cosa no arranca NVS (el log lo dice y bdSeq queda en RAM).
 - **Placas de desarrollo.** Grabar siempre la build por defecto: no quema eFuses. Grabar una vez la de producción deja KEY5 ocupado para siempre en esa placa. Pasar de la build por defecto a la de producción en un mismo equipo borra NVS (ver Migración).
@@ -325,6 +325,61 @@ Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 - En puesta en marcha (tras un reset de fábrica) no hay con qué juzgarla: se confirma.
 - **Broker caído al arrancar el firmware nuevo:** vuelve a la anterior al vencer el plazo. Es la opción segura: no se puede distinguir un broker caído de un firmware que no sabe conectarse. La anterior ya estaba confirmada; la actualización se repite cuando el broker vuelve.
 - Mientras una imagen está a prueba no se acepta otra actualización.
+
+### 3.6 Producción: firma, secure boot y cifrado de flash (FW-2, FW-3)
+
+> **Irreversible.** La build de producción quema eFuses en el primer arranque: después la placa solo arranca imágenes firmadas con **esa** clave, su flash queda cifrada con una clave que nadie puede leer, no hay JTAG y el modo descarga por UART queda deshabilitado para siempre. Una placa así ya no sirve para desarrollo. **Nunca** grabar la build de producción en una placa de desarrollo. La build por defecto (`idf.py set-target esp32s3 build`) no firma, no cifra y no quema ningún eFuse.
+
+**Qué hace `sdkconfig.production`** (overlay sobre `sdkconfig.defaults`):
+
+| Función | Opciones | Qué pasa en el primer arranque |
+|---|---|---|
+| Secure Boot V2 (FW-2) | `CONFIG_SECURE_BOOT_V2_ENABLED`, RSA-3072 PSS (el único esquema del S3) | El bootloader calcula el SHA-256 de la clave pública de su bloque de firma y lo quema en un bloque eFuse (`SECURE_BOOT_DIGEST0`, el primero libre: KEY1). Desde ahí el ROM verifica el bootloader y el bootloader verifica la app en cada arranque |
+| Firma de las OTA (FW-1 + FW-2) | — (viene con Secure Boot) | `esp_ota_end()` rechaza toda imagen que no esté firmada con la clave de ese digest |
+| Imágenes sin firmar en la build | `CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=n` | La clave privada no está en la máquina de build: se firma aparte (`tools/sign_firmware.sh`) |
+| JTAG | (por defecto con Secure Boot y cifrado) | Se queman `DIS_PAD_JTAG`, `DIS_USB_JTAG` y `SOFT_DIS_JTAG` |
+| Modo descarga | `CONFIG_SECURE_DISABLE_ROM_DL_MODE` | Se deshabilita para siempre: ni lectura ni escritura de la flash por UART. La única forma de cambiar el firmware es una OTA firmada |
+| Cifrado de flash (FW-3) | `CONFIG_SECURE_FLASH_ENC_ENABLED`, modo *release*, XTS-AES-128 (clave de 256 bits) | El chip genera la clave, la quema en el primer bloque libre (KEY0) con lectura protegida y cifra en el lugar bootloader, tabla de particiones, `ota_0`, `ota_1` y las particiones marcadas `encrypted` |
+| Tabla de particiones | `partitions-production.csv`, `CONFIG_PARTITION_TABLE_OFFSET=0x10000` | Las mismas particiones, con `encrypted` en `storage` (LittleFS) y `coredump`. La tabla pasa a 0x10000: el bootloader con Secure Boot y cifrado ocupa 36 864 B, 40 960 B firmado, y no entra debajo de 0x8000. `nvs`, `otadata` y `phy_init` se corren a 0x11000–0x1A000; las apps, `storage` y `coredump` quedan donde estaban |
+| NVS cifrada (CFG-7) | `CONFIG_NVS_ENCRYPTION` con clave HMAC | La app quema KEY5 (`HMAC_UP`). El cifrado de flash no cubre NVS: NVS tiene su propio esquema |
+
+Bloques eFuse de clave usados: KEY0 (cifrado de flash), KEY1 (digest de Secure Boot), KEY5 (HMAC de NVS). KEY2 a KEY4 quedan libres (por ejemplo, para dos claves de firma de reserva o el periférico DS de §6.5.1).
+
+**Gestión de la clave de firma:**
+
+- Es **una clave RSA-3072 por producto** (o por lote), no por equipo. Quien la tiene puede publicar firmware para todos los equipos con su digest; quien la pierde no puede actualizar nunca más esos equipos.
+- Vive **fuera de la máquina de build**: en un HSM (PKCS#11, `--hsm-config` de `espsecure`) o en una máquina sin red. Copia de respaldo cifrada en otro lugar físico.
+- Se genera una vez: `espsecure generate-signing-key --version 2 --scheme rsa3072 gw_signing_key.pem` (o dentro del HSM).
+- Firman solo los responsables de liberar versiones. Cada firma se registra (versión, hash de la imagen, quién).
+- **Nunca** en el repositorio: `.gitignore` excluye `*signing_key*.pem` y `keys/`. Las claves de prueba (E2E, `--test-key`) se generan en `build-qemu/` y `build-prod/`, que tampoco se versionan, y no sirven para equipos.
+- **Revocación:** Secure Boot V2 admite hasta 3 digests. Para poder rotar la clave, firmar el bootloader también con una segunda clave de reserva (`--append-signatures` de `espsecure sign-data`); así el primer arranque quema los dos digests. Sin eso, una clave comprometida no se puede revocar.
+
+**Procedimiento de fábrica** (por equipo, con eFuses vírgenes):
+
+```bash
+cd idf
+idf.py -B build-prod -D SDKCONFIG=build-prod/sdkconfig \
+       -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.production" build
+# en la máquina de la clave (o con --hsm-config y --pub-key):
+tools/sign_firmware.sh --keyfile /ruta/segura/gw_signing_key.pem --build-dir build-prod
+# grabar en claro: el primer arranque cifra todo
+python -m esptool --chip esp32s3 -p /dev/ttyUSB0 write-flash \
+    0x0 build-prod/bootloader/bootloader-signed.bin \
+    0x10000 build-prod/partition_table/partition-table.bin \
+    0x17000 build-prod/ota_data_initial.bin \
+    0x20000 build-prod/rs485_spb_gateway-signed.bin \
+    0x820000 build-prod/storage.bin
+```
+
+1. El primer arranque tarda (cifra unos 9 MB) y se reinicia solo. **No cortar la energía** durante ese arranque.
+2. Después del primer arranque la flash ya no se puede regrabar por UART. La app informa en la consola `NVS partition "nvs" is encrypted`; el bootloader de producción solo escribe advertencias (`CONFIG_BOOTLOADER_LOG_LEVEL_WARN`).
+3. Cargar la configuración por la web o el shell (§3.4). Las actualizaciones siguientes van por OTA (§3.5) con `rs485_spb_gateway-signed.bin`.
+
+**Qué se verificó (sin placa):**
+
+- La build de producción compila con 0 warnings (§4.4). `tools/sign_firmware.sh --test-key` firma el bootloader (40 960 B) y la app (1 511 424 B) con una clave descartable y `espsecure verify-signature` acepta las dos firmas.
+- **La verificación de firma de las OTA sí se ejecuta en QEMU**: la build de emulador exige imágenes firmadas sin Secure Boot (`CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT`, sin eFuses): `esp_ota_end()` usa el mismo código de verificación RSA-PSS, con la clave pública tomada de la app en marcha en lugar del eFuse. El E2E rechaza una imagen firmada con otra clave (§4.3).
+- Secure Boot y el cifrado de flash propiamente dichos (ROM, bootloader, eFuses) **solo están compilados**: ver §6.12.
 
 ## 4. Verificación (evidencia real)
 
@@ -577,6 +632,7 @@ Leyenda de **Evidencia**:
 - **NET-4** Implementado, **sin probar con radio**: Wi-Fi STA como respaldo (`role: backup`, Ethernet gana la ruta) o primaria (`role: primary`), con *failback* por histéresis (`failback_s`) y sesión MQTT nueva (bdSeq nuevo, NBIRTH) al cambiar de interfaz. Además (issue #57) una interfaz que conserva enlace y dirección pero por la que no responde ningún broker de la lista queda "sin servicio" (60 s, duplicando hasta 30 min) y la sesión pasa a la otra. Evidencia: H (`gw_netsel`: failover, failback, rebotes, solo Ethernet, interfaz sin servicio con espera creciente y último recurso; esquema `network.wifi`) + Q (configuración con Wi-Fi en la build sin radio: aviso y Ethernet como antes; shell `status` con la interfaz activa) + C (driver Wi-Fi, conmutación real, atadura del socket).
 - **NET-7** Implementado: IPv6 opcional (`network.ipv6`) en todas las interfaces: link-local en cada subida del enlace, SLAAC con los RA (`CONFIG_LWIP_IPV6_AUTOCONFIG`, activada por interfaz solo si la configuración lo pide), dirección estática en Ethernet y DNS IPv6. Una interfaz con solo IPv6 global cuenta como utilizable. Evidencia: H (literales IPv6, esquema) + Q (link-local, SLAAC sobre `fec0::/64` de slirp, estática `fec0::1234`, `ping fec0::2` respondido) + C (MQTT, SNTP y DNS sobre IPv6; ver §6.6).
 - **FW-1** Implementado: OTA por HTTPS (`esp_https_ota`, CA de `ota.ca_file`, de `mqtt.tls.ca_file` o pública) o subida por la web a la otra partición, disparo por NCMD (`Node Control/Firmware Update`) o por la web (`POST /api/firmware`, tarjeta Firmware); estado y avance como métricas de nodo; la imagen nueva arranca a prueba y se confirma con su primera sesión Sparkplug; *rollback* por plazo, por configuración rechazada y por reinicio durante la prueba (§3.5). H (`test_ota`: política, URLs, avance, cuerpo de la petición; `test_node`: métricas y NCMD; `test_config`: sección `ota`) + Q (descarga, subida, rechazos, confirmación y los dos *rollback*, §4.3).
+- **FW-2** Implementado, **sin probar en placa**: Secure Boot V2 (RSA-3072) en `sdkconfig.production`, imágenes firmadas fuera de la máquina de build (`tools/sign_firmware.sh`: clave en archivo, HSM o de prueba; verifica cada firma), JTAG y modo descarga deshabilitados, procedimiento de fábrica y gestión de claves (§3.6). C (build de producción, 0 warnings; firma y verificación fuera de línea) + Q (la build de QEMU exige imágenes firmadas: una OTA firmada con otra clave se rechaza, §4.3).
 - **REL-4** Implementado (syslog; logs por MQTT no): cada línea de `esp_log` se copia, además de a la consola, a un servidor syslog RFC 5424 por UDP (`syslog.host`, `port`, `level`). Quien loguea nunca espera: la línea se formatea solo si el candado de formato está libre (*try-lock*) y entra en un anillo de `CONFIG_GW_SYSLOG_SLOTS` líneas (en PSRAM si hay); si no, se descarta y se cuenta, y el servidor recibe después un aviso con la cantidad. Las líneas de la propia tarea emisora no se reenvían (sin recursión). Evidencia: H (parseo de líneas de `esp_log`, formato RFC 5424, timestamps, anillo lleno, esquema) + Q (líneas con PRI, HOSTNAME, APP-NAME y timestamp SNTP; warning con el broker caído; `sequenceId` sin huecos en cada arranque; contadores en `status`).
 - **REL-5** Implementado: `esp_reset_reason()` va al log de arranque y al NBIRTH como `Node Info/Reset Reason` (String, alias 6). H + Q (`power-on` en el primer arranque, `software` tras NCMD Reboot).
 - **REL-6**: medido en QEMU.
@@ -745,6 +801,16 @@ Sin SNTP no hay hora válida: no hay RTC (TIME-2). Antes de la primera conexión
 - **Reglas locales (IO-7):** no hay más lógica que DO = DI, DO = no DI y conmutación por flanco: ni temporizadores, ni combinaciones de varias DI, ni reglas hacia los esclavos Modbus. Una DO con regla no se puede mandar por NCMD ni tiene estado seguro por pérdida de MQTT. La latencia es la del debounce más el despertar de la tarea `local_io` y una escritura I²C (unos milisegundos en la placa, sin medir); con el expansor caído las reglas esperan a que vuelva.
 - La polaridad de las DO (activa en bajo) se dedujo del demo y de ESPHome, sin esquemático ni placa. Si la medición dice lo contrario, basta con `CONFIG_GW_DO_ACTIVE_LOW=n`.
 
+### 6.10 Pruebas y entorno
+
+- La versión de firmware lleva `.dirty` hasta que el coordinador haga el commit.
+- `test_poll` (`test_unanswered_block_fails_the_cycle`) falló una vez en 7 corridas con `Expected …756 Was …757`: el timestamp de un tag no leído cambió 1 ms. Parece depender del reloj de pared del host (un cambio de milisegundo durante el ciclo); no es de esta rama y no se tocó.
+- Los tests de host necesitan red la primera vez (FetchContent de Unity y cJSON).
+- Mientras corría el E2E, otro proceso del host compartido ocupó el UDP 123 y terminó el mosquitto por nombre. Por eso el harness usa una copia renombrada del broker y corre en su propio *network namespace* (§4.3). Sin aislamiento, si el UDP 123 está ocupado el check TIME-1 falla: exige que haya respondido el SNTP del harness.
+- **pymodbus se fijó en 3.8.6**: la 3.16 cambió el API del datastore (SimDevice).
+- `idf.py` no acepta `-j`: la build usó el paralelismo por defecto de ninja.
+- Hay dos componentes de terceros: nanopb (vendorizado) y `joltwallet/littlefs`. El paquete `livekit/nanopb` del registro se descartó por un defecto de ABI. `espressif/esp_io_expander_tca9554` se descartó: carga el latch con 0xFF, que con las DO activas en bajo es justamente OFF, pero no permite probar en host la secuencia ni la polaridad (`gw_dout`). La viabilidad (`docs/feasibility-idf.md`, IO-2) lo descartaba suponiendo, por error, DO activas en alto.
+
 ### 6.11 Firmware (FW-1)
 
 - **Broker caído al arrancar el firmware nuevo:** vuelve al anterior a los `CONFIG_GW_FW_CONFIRM_TIMEOUT_S` (10 min). No se distingue de un firmware que no sabe conectarse. La actualización se repite a mano.
@@ -755,12 +821,11 @@ Sin SNTP no hay hora válida: no hay RTC (TIME-2). Antes de la primera conexión
 - Una subida por la web corre en la tarea `httpd` y bloquea la web hasta terminar.
 - Mientras una imagen está a prueba no se acepta otra actualización.
 
-### 6.10 Pruebas y entorno
+### 6.12 Secure Boot y cifrado de flash (FW-2, FW-3)
 
-- La versión de firmware lleva `.dirty` hasta que el coordinador haga el commit.
-- `test_poll` (`test_unanswered_block_fails_the_cycle`) falló una vez en 7 corridas con `Expected …756 Was …757`: el timestamp de un tag no leído cambió 1 ms. Parece depender del reloj de pared del host (un cambio de milisegundo durante el ciclo); no es de esta rama y no se tocó.
-- Los tests de host necesitan red la primera vez (FetchContent de Unity y cJSON).
-- Mientras corría el E2E, otro proceso del host compartido ocupó el UDP 123 y terminó el mosquitto por nombre. Por eso el harness usa una copia renombrada del broker y corre en su propio *network namespace* (§4.3). Sin aislamiento, si el UDP 123 está ocupado el check TIME-1 falla: exige que haya respondido el SNTP del harness.
-- **pymodbus se fijó en 3.8.6**: la 3.16 cambió el API del datastore (SimDevice).
-- `idf.py` no acepta `-j`: la build usó el paralelismo por defecto de ninja.
-- Hay dos componentes de terceros: nanopb (vendorizado) y `joltwallet/littlefs`. El paquete `livekit/nanopb` del registro se descartó por un defecto de ABI. `espressif/esp_io_expander_tca9554` se descartó: carga el latch con 0xFF, que con las DO activas en bajo es justamente OFF, pero no permite probar en host la secuencia ni la polaridad (`gw_dout`). La viabilidad (`docs/feasibility-idf.md`, IO-2) lo descartaba suponiendo, por error, DO activas en alto.
+- **Sin placa, Secure Boot solo está compilado.** El ROM, el bootloader y los eFuses de seguridad no se ejecutaron. Lo que sí corrió: la firma y su verificación fuera de línea (`tools/sign_firmware.sh --test-key`) y, en QEMU, la verificación RSA-PSS de cada imagen OTA (con la clave de la app en marcha en lugar del eFuse: `CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT`).
+- **Irreversible.** Un error en la clave o en el procedimiento deja equipos que no arrancan otra cosa. Probar primero en una placa sacrificable.
+- **Clave perdida = equipos sin actualizaciones.** Clave filtrada = cualquiera publica firmware para ellos. La revocación solo es posible si el bootloader se firmó desde el principio también con claves de reserva (`--append-signatures`); `tools/sign_firmware.sh` firma con una sola.
+- **Sin modo descarga** (`CONFIG_SECURE_DISABLE_ROM_DL_MODE`): un equipo con las dos particiones OTA inservibles no se recupera por UART. El *rollback* (FW-1) lo evita en los casos normales. Quien prefiera poder leer el chip (sin la flash) puede usar el modo descarga seguro (`CONFIG_SECURE_ENABLE_SECURE_ROM_DL_MODE`).
+- **Sin *anti-rollback*** (`CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK`): una imagen vieja firmada con la misma clave se acepta. Activarlo quema un contador en eFuse en cada versión de seguridad.
+- La build de producción no firma: `idf.py flash` con ella no sirve; se graba con `esptool` como en §3.6.
