@@ -161,17 +161,19 @@ idf.py size
 idf.py -p /dev/ttyUSB0 flash monitor # graba bootloader, tabla, app (ota_0) y la partición LittleFS
 ```
 
-Resultado de `idf.py size` (build limpia con `idf.py set-target esp32s3 build`, 1169/1169 objetivos, 0 warnings, `sdkconfig` regenerado desde `sdkconfig.defaults`; Wi-Fi compilado, `CONFIG_GW_WIFI=y`):
+Resultado de `idf.py size` (build con `sdkconfig` regenerado desde `sdkconfig.defaults`, 1179/1179 objetivos, 0 warnings; Wi-Fi compilado, `CONFIG_GW_WIFI=y`):
 
 | Región | Usado |
 |---|---|
-| Flash code (`.text`) | 879 188 B |
-| Flash data (`.rodata`, etc.) | 224 728 B |
-| DIRAM | 157 440 B de 341 760 (**46,1 %**): `.bss` 67 584, `.text` 65 527, `.data` 24 329 |
+| Flash code (`.text`) | 939 880 B |
+| Flash data (`.rodata`, etc.) | 254 132 B |
+| DIRAM | 161 504 B de 341 760 (**47,3 %**): `.bss` 71 648, `.text` 65 527, `.data` 24 329 |
 | IRAM | 16 384 B (100 %, lo normal en S3: el resto del código IRAM va en DIRAM) |
-| Imagen total | **1 210 192 B** (29 % de la partición `ota_0` de 4 MB) |
+| Imagen total | **1 300 288 B** (31 % de la partición `ota_0` de 4 MB) |
 
 La configuración y el motor Sparkplug (unos 53 KB) se asignan al arrancar, en PSRAM si la hay (§1.3), así que no figuran en `.bss`.
+
+**Costo de TLS, MQTT 5, lista de brokers, host primario, store & forward y HTTPS (MQTT-4 a MQTT-8, SPB-13, SPB-14, issues #57/#58/#59/#64):** +90 096 B de imagen (1 210 192 → 1 300 288: mbedTLS con TLS 1.3 y escritura X.509, el subconjunto común del paquete de CA, `esp_https_server`, el cliente MQTT 5) y +4 064 B de DIRAM (`.bss`: el certificado y la clave del servidor web, 2 KB; el estado de la conexión y del límite de accesos). En ejecución: una sesión TLS (MQTT o HTTPS) toma unos 40 KB de mbedTLS, en PSRAM si la hay; el anillo de store & forward 960 KB de PSRAM (o 12 KB internos), solo con `sparkplug.store_forward`; el motor Sparkplug crece 1,5 KB (lote de historial).
 
 **Costo de la configuración por web, shell, puesta en marcha y secretos (CFG-3 a CFG-7, NET-5, NET-6):** +113 116 B de imagen y +10 408 B de DIRAM (`.bss` +9 792: pila estática de 3 KB del botón, búfer de 1 KB de las respuestas del shell, búfer de estado de 1 KB y valores de tags de la web, mutex y semáforos). En ejecución, el servidor HTTP (pila de 8 KB y sockets), mDNS (pila de 4 KB) y los búferes de una configuración en validación (el documento, `gw_config_t` de 26 KB y el árbol cJSON) se asignan del heap, este último solo mientras se guarda y en PSRAM si hay.
 
@@ -277,7 +279,7 @@ Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 cmake -S idf/test/host -B build-host && cmake --build build-host -j3 && ctest --test-dir build-host
 ```
 
-Resultado: **15/15 ejecutables y 110/110 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
+Resultado: **20/20 tests de CTest (19 ejecutables con 135/135 casos y la comprobación `check_set_config` del issue #58) OK**, compilados con `-Wall -Wextra -Werror -Wconversion`. `test_poll` (`test_unanswered_block_fails_the_cycle`) sigue fallando de vez en cuando (1 de 7 corridas con la CPU cargada por QEMU, §6.10).
 
 | Suite | Casos | Qué cubre |
 |---|---|---|
@@ -285,12 +287,16 @@ Resultado: **15/15 ejecutables y 110/110 casos OK**, compilados con `-Wall -Wext
 | `test_mb_master` | 9 | t3,5 y retardo entre tramas, timeout y reintentos, CRC malo, unidad equivocada, excepción sin reintento, espera del fin de transmisión proporcional a la trama (FC16 de 13 B a 1200 baudios con paridad y la FC16 más larga) |
 | `test_conv` | 5 | Mapeo de datatypes §6, int16/uint16/int32/uint32/float32, ABCD/CDAB, escala inversa (12,3 → 123), rangos |
 | `test_logic` | 6 | RBE y deadband contra el último valor reportado (deriva), validez y NaN, debounce, backoff 1–60 s, fuera de línea |
-| `test_config` | 18 | Sección `web` (usuario, contraseña, puerto), `network.hostname` y `mdns` (validación y nombre derivado), campos del error (ruta, línea, columna) y anidamiento máximo; ejemplo §6 literal, sección `syslog`, sección `network.wifi` (valores por defecto, SSID, contraseña WPA2/PSK/abierta, rol, `failback_s`, IP estática), literales IPv6 (`::`, grupos de 4 dígitos, IPv4 embebida, 16 formas inválidas) y sección `network.ipv6`, JSON embebido, valores por defecto, reglas del esquema, errores con ruta (`devices[1].tags[2].type`), sintaxis con línea y columna (también con UTF-8 y contenido sobrante), claves duplicadas, límites 16/64/256, documento máximo (256 tags, > 40 KB), asignador del árbol y falta de memoria |
+| `test_config` | 24 | `mqtt.tls` (nombres de archivo, puerto 8883 por defecto, certificado y clave de cliente juntos), `mqtt.backup_brokers` / `failover_after` / `primary_return_s`, `mqtt.protocol`, `sparkplug.store_forward`, `web.https` / `https_port`; sección `web` (usuario, contraseña, puerto), `network.hostname` y `mdns` (validación y nombre derivado), campos del error (ruta, línea, columna) y anidamiento máximo; ejemplo §6 literal, sección `syslog`, sección `network.wifi` (valores por defecto, SSID, contraseña WPA2/PSK/abierta, rol, `failback_s`, IP estática), literales IPv6 (`::`, grupos de 4 dígitos, IPv4 embebida, 16 formas inválidas) y sección `network.ipv6`, JSON embebido, valores por defecto, reglas del esquema, errores con ruta (`devices[1].tags[2].type`), sintaxis con línea y columna (también con UTF-8 y contenido sobrante), claves duplicadas, límites 16/64/256, documento máximo (256 tags, > 40 KB), asignador del árbol y falta de memoria |
 | `test_plan` | 2 | Lecturas en bloque, solapes, huecos, límite de 125 registros |
 | `test_spb` | 7 | Ida y vuelta de todos los tipos, formato wire (Int16 con extensión de signo), NDEATH sin seq, peor caso de DBIRTH en el búfer |
-| `test_node` | 11 | NBIRTH y DBIRTH (nombre, alias, datatype, valor; alias únicos), DDEATH, DDATA por excepción, seq compartido con vuelta a 0, rebirth, NCMD DO/Reboot, DCMD por nombre y alias, descartes (el log muestra el alias solo si venía), comando abortado a mitad del payload sin aplicar nada, DO `is_null` sin expansor y NDATA al recuperarlo |
+| `test_node` | 14 | Store & forward (sin búfer se coalesce; con búfer: excepción y *deadband* sin sesión, historial tras los births con `is_historical`, timestamps de muestra y seq continuo, dispositivo sin DBIRTH descartado, publicación fallida que conserva el lote, nada antes del primer NBIRTH); NBIRTH y DBIRTH (nombre, alias, datatype, valor; alias únicos), DDEATH, DDATA por excepción, seq compartido con vuelta a 0, rebirth, NCMD DO/Reboot, DCMD por nombre y alias, descartes (el log muestra el alias solo si venía), comando abortado a mitad del payload sin aplicar nada, DO `is_null` sin expansor y NDATA al recuperarlo |
 | `test_poll` | 13 | Encuesta contra un esclavo simulado, fuera de línea tras N ciclos, excepción, un bloque sin respuesta (ciclo fallido, tags sin refrescar, DDEATH, sin vuelta a línea con el ciclo incompleto), contadores por dispositivo, planificación, escritura FC06 con relectura, FC15/FC16 forzadas, NaN e infinito rechazados en coils, tag fuera de rango, sondeo con backoff de los fuera de línea (un intento, 2–4–8–10 s, vuelta a línea) y un equipo sano que mantiene su periodo junto a tres muertos |
-| `test_netsel` | 5 | Selección de interfaz (NET-4): solo Ethernet (sin conmutaciones), Wi-Fi de respaldo (*failover* inmediato, *failback* tras `failback_s`), Wi-Fi primaria, enlace preferido que rebota (no roba la sesión), `failback_s` = 0 |
+| `test_netsel` | 7 | Selección de interfaz (NET-4): solo Ethernet (sin conmutaciones), Wi-Fi de respaldo (*failover* inmediato, *failback* tras `failback_s`), Wi-Fi primaria, enlace preferido que rebota (no roba la sesión), `failback_s` = 0; issue #57: interfaz sin camino al broker retenida (espera que se duplica hasta el tope y se reinicia con una sesión estable), retenida como último recurso |
+| `test_brokersel` | 5 | MQTT-6: un broker, orden y vuelta circular, sesión estable que conserva el broker, sin vuelta al primario por defecto, vuelta con un solo intento, límites |
+| `test_phost` | 3 | SPB-13: payloads STATE válidos (orden, espacios, claves extra), 17 inválidos (2.x, tipos, signo, decimales, desborde, duplicados, anidamiento, NUL), timestamps viejos ignorados y `online` por sesión |
+| `test_sf` | 4 | SPB-14: lotes en orden, desborde que conserva lo más nuevo, lote pisado en parte, sin memoria |
+| `test_authlimit` | 2 | Issue #64: bloqueo tras 5 fallos, duplicación hasta el tope, éxito que borra, direcciones independientes, tabla llena |
 | `test_syslog` | 5 | REL-4: severidad del formato de `esp_log`, parseo de líneas (colores, hora del sistema, `: ` en el mensaje, truncado), timestamps RFC 3339 (bisiesto, 2099), formato RFC 5424 (PRI, NILVALUE, saneado de HOSTNAME/APP-NAME, caracteres de control, truncado), anillo lleno sin esperar y conteo de descartes |
 | `test_auth` | 5 | SHA-256 (FIPS 180-4, bordes de relleno, un millón de `a` en trozos), HMAC (RFC 4231), PBKDF2 (RFC 7914 y vectores publicados), hash de contraseña con sal (igual que `hashlib`), Basic auth |
 | `test_cfgdoc` | 6 | Secretos: PUT nuevo (documento sin secretos), máscara que conserva, ausente o `""` que borra, archivo con secretos en claro (migración), errores con ruta, exportación enmascarada y reimportación, lector de JSON de la consola |
@@ -307,7 +313,7 @@ mkdir -p /tmp/spb && build-host/spb_dump /tmp/spb && python3 idf/tools/spb_decod
 
 `spb_dump` genera NDEATH, NBIRTH, DBIRTH, DDATA y NDATA reales del motor. `spb_decode.py` los compila con `grpc_tools.protoc` a partir del `sparkplug_b.proto` oficial de eclipse/tahu (copiado sin cambios en `components/gw_core/proto/`) y los decodifica con **Google protobuf 7.36**.
 
-Resultado: **5 payloads decodificados, 0 errores estructurales**. Además se decodificaron los 75 mensajes capturados en el E2E.
+Resultado: **5 payloads decodificados, 0 errores estructurales**. Además se decodificaron los 2345 mensajes capturados en el E2E.
 
 ### 4.3 QA-3: punta a punta con el firmware real en QEMU
 
@@ -329,11 +335,15 @@ E2E_PYTHON=~/e2e/bin/python idf/tools/e2e/run_e2e.sh
 - **Aislamiento de red.** El harness se mueve a un *network namespace* propio, con solo la interfaz de loopback (necesita `CAP_SYS_ADMIN`, por ejemplo root en un contenedor). Todos los puertos, también el UDP 123, son privados de la corrida, así que dos corridas en paralelo no chocan. Sin ese permiso (o con `--no-isolate`) usa el loopback del host con los puertos de `--mqtt-port`, `--modbus-port` y `--console-port` (o `E2E_MQTT_PORT`, `E2E_MODBUS_PORT`, `E2E_CONSOLE_PORT`); por defecto 18831, 15020 y 15555. Los argumentos extra de `run_e2e.sh` pasan a `e2e.py`.
 - El harness escribe en la imagen bajo prueba su propio `config.json`, con el puerto MQTT elegido. Para los arranques de configuración genera variantes de la imagen con otra partición `storage` (con `littlefs-python`, el mismo que usa la build) o con la partición borrada. El límite de tamaño se lee de `build-qemu/sdkconfig` (`CONFIG_GW_CONFIG_MAX_BYTES`).
 - "No arrancó nada" se comprueba con una señal positiva: la línea `nothing is started` y, 6 s después, la respuesta de `status` del shell (`nothing is running: no polling, no MQTT; recovery network and web UI only`). La ausencia de logs de arranque de la UART RS485 y de MQTT, de NBIRTH y de peticiones al esclavo Modbus queda como comprobación adicional.
-- HTTP: slirp reenvía `127.0.0.1:18080` del host al puerto 80 del equipo (`--http-port`). El shell se consulta con un helper común que repite la pregunta hasta ver todas las líneas esperadas (#56). `--only failsafe,network,web,reset,main` corre solo algunos escenarios.
+- **TLS (MQTT-4/5):** el harness genera con `openssl` una CA propia (EC P-256), un certificado de broker para `IP:10.0.2.2` y `DNS:broker.e2e` y uno de cliente, y levanta un mosquitto aparte con tres listeners: solo TLS 1.3, solo TLS 1.2 con certificado de cliente obligatorio y TCP plano para el observador. Los PEM van a la partición LittleFS de cada variante.
+- **Lista de brokers (MQTT-6):** el primario es un puerto donde al principio no escucha nadie; luego el harness levanta allí otro mosquitto y lo vuelve a parar. El respaldo es el mosquitto principal.
+- **Host primario (SPB-13):** el harness publica él mismo los STATE (JSON retenido de Sparkplug 3.0) del host `SCADA1`.
+- **Relay TCP** del harness entre el gateway y el mosquitto principal: cerrarlo le quita el broker al gateway sin que el observador se desconecte (store & forward, SPB-14), y leerlo a 700 B/s simula un enlace lento (issue #59).
+- HTTPS (issue #64): slirp reenvía `127.0.0.1:18443` del host al puerto 443 del equipo (`--https-port`) y `127.0.0.1:18080` al 80 (`--http-port`), que solo redirige. El harness habla HTTPS sin verificar el certificado (es autofirmado) y compara su huella con la de la consola. El shell se consulta con un helper común que repite la pregunta hasta ver todas las líneas esperadas (#56). `--only failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,slow,main` corre solo algunos escenarios.
 
 Configuración usada: `tools/e2e/fs/config.json` (keepalive de 10 s, syslog hacia el receptor del harness). `run_e2e.sh` pasa además el ELF y el python de IDF, para decodificar el *core dump* con `esp_coredump`.
 
-Resultado: **77/77 comprobaciones OK**.
+Resultado: **96/96 comprobaciones OK** (corrida completa sobre el último commit, unos 25 min).
 
 | Criterio | Resultado medido |
 |---|---|
@@ -349,7 +359,7 @@ Resultado: **77/77 comprobaciones OK**.
 | §7.3 DI → NDATA en menos de 100 ms; NCMD DO/3 = true → NDATA | OK: 23 ms (incluye 20 ms de debounce); NDATA alias 22 = true (pines simulados con la polaridad de `gw_bsp`) |
 | §7.4 DCMD Setpoint = 12,3 → holding 10 = 123 por FC06 y DDATA | OK: el esclavo registró `(6, 10, [123])`; DDATA 12,3. Float32 `Limit` = 1234,5: **una sola** FC16 de 2 registros y DDATA 1234,5 |
 | §7.5 NCMD Rebirth → NBIRTH (seq 0, mismo bdSeq) y todos los DBIRTH | OK |
-| §7.6 Todos los payloads se decodifican con el proto oficial | OK: 75 mensajes, 0 errores |
+| §7.6 Todos los payloads se decodifican con el proto oficial | OK: 2345 mensajes (la mayoría, *rebirths* del escenario del enlace lento), 0 errores; los STATE (JSON) del host primario no son Sparkplug protobuf y no se cuentan |
 | CFG-6 shell en la consola; REL-5 | OK: `devices` da `Meter1 unit 1 online cycles 2 failed 0 \| ok 6 …` y, con el esclavo apagado, `offline … failed 3 \| … timeout 9`; `config` da el resumen; `status` responde con la configuración válida (`config … ok`, `MQTT connected`, `Modbus 2/5 devices online`) y también con la configuración rechazada. NBIRTH `Node Info/Reset Reason` = `power-on` en el primer arranque y `software` tras NCMD Reboot |
 | NET-4 sin radio y NET-7: configuración con `network.wifi` y `network.ipv6` (nodo `GW02`, arranque aparte) en la build de QEMU | OK: arranca, avisa `network.wifi ignored: Wi-Fi is not available in this build` y publica NBIRTH por Ethernet; el shell muestra `iface ethernet up 10.0.2.15 (active) \| wifi not configured` y el resumen de `network.wifi`. Con la configuración normal, `status` muestra Ethernet como única interfaz activa. IPv6: `fe80::5054:ff:fe12:3456` (link-local), `fec0::5054:ff:fe12:3456` (SLAAC con el RA de slirp) y `fec0::1234` (estática); `ping fec0::2`: 3 enviados, 3 respondidos. MQTT sobre IPv6 no se puede probar aquí (§6.6) |
 | REL-4 syslog remoto (UDP al receptor del harness) | OK: `<134>1 2026-11-04T01:03:09.035Z GW01 edge - - [meta sequenceId="21"] Sparkplug session up (bdSeq=0)`: *facility* local0, HOSTNAME = nodo, APP-NAME = módulo, hora SNTP; 22 datagramas al primer NBIRTH, 0 mal formados; `status` da `syslog 10.0.2.2:15514 connected, sent 22, dropped 0, errors 0`. Con el broker caído llega `<132> … MQTT down; reconnect attempt 1 in 1000 ms`. 119 datagramas en 3 arranques, `sequenceId` sin huecos en cada uno |
@@ -359,7 +369,15 @@ Resultado: **77/77 comprobaciones OK**.
 | CFG-6 shell de configuración | OK: `config show` con 2 secretos enmascarados y ninguno en claro; `mbread 1 holding 10` = 50, `mbread 1 input 0 2` = 17254 32768 (230,5), unidad 9 → error; `rebirth` → NBIRTH seq 0 y DBIRTH seq 1 y 2; `config load` inválido → ruta; `config check` válido sin guardar; `config load` válido → NDEATH, NBIRTH de `GW06` |
 | CFG-7 secretos | OK: al primer arranque `secrets moved from /cfg/config.json to NVS`; `NVS partition "nvs" is encrypted` (QEMU emula HMAC y eFuse); el shell dice `NVS encrypted (HMAC key in eFuse KEY5)`; ni la contraseña MQTT ni la web aparecen en claro en ningún lugar de la imagen de flash |
 | CFG-5 reset de fábrica y NET-5 | OK: `boot 1` 3 s → gesto de punto de acceso (sin reset; la build de QEMU avisa que no hay radio); `boot 1` sostenido → aviso a los 2,1 s, reset a los 10,1 s, NDEATH ordenado, arranque en puesta en marcha (LED azul, 0 NBIRTH, ni la identidad de ejemplo); la contraseña web vieja → 401; la de puesta en marcha nueva abre `/api/status` (`commissioning`); una configuración cargada por la API arranca el equipo (`GW08`); en la partición no queda ningún bloque de la configuración vieja |
-| NET-6 | OK: `mdns: gw01.local, _http._tcp port 80 ('Plant1/GW01')` (nombre derivado de `edge_node_id`). Las respuestas no se pueden probar con `open_eth` (§6.2.1) |
+| NET-6 | OK: `mdns: gw01.local, _https._tcp port 443 ('Plant1/GW01')` (nombre derivado de `edge_node_id`; con HTTPS se anuncia el puerto HTTPS). Las respuestas no se pueden probar con `open_eth` (§6.2.1) |
+| MQTT-4 TLS (nodos `GW12`, `GW14`, `GW15`) | OK: listener solo TLS 1.3 con CA propia: NBIRTH a 3,7 s del arranque, `TLS: ca_file: 1 certificate(s) from /cfg/ca.pem`, nombre verificado contra el SAN `IP:10.0.2.2`; `server_name` que el certificado no lleva → `the broker certificate failed verification` (mbedTLS -0x2700), sin sesión; CA ausente → `mqtt.tls.ca_file: /cfg/missing.pem: no existe…: MQTT not started`, sin intentos. Pila libre tras el NBIRTH: sparkplug 3628 de 6144 B, `mqtt_task` 2360 B |
+| MQTT-5 TLS mutuo (`GW13`, `GW16`) | OK: listener solo TLS 1.2 con `require_certificate`: NBIRTH, mosquitto registra `as GW13 (p2, c1, k10, u'GW13')` (el CN del certificado como usuario), nombre verificado contra `tls.server_name` (`DNS:broker.e2e`); sin certificado de cliente el broker corta el handshake |
+| MQTT-6 lista de brokers (`GW17`) | OK: primario caído → 2 intentos y NBIRTH en el respaldo; primario de vuelta → NDEATH en el respaldo y NBIRTH en el primario 20,1 s después (keepalive de 10 s + `primary_return_s` 10 s); primario caído otra vez → 2 intentos y NBIRTH en el respaldo a 3,8 s; el shell muestra el broker actual y la lista |
+| MQTT-8 MQTT 5 (`GW18`) | OK: mosquitto registra `(p5, c1, k10)`; NBIRTH; NCMD Rebirth por la suscripción v5; NDEATH del *will* con el bdSeq de la sesión en cuanto muere la conexión |
+| SPB-13 host primario (`GW19`) | OK: STATE `false` retenido → suscripto y sin NBIRTH (el shell: `host primary 'SCADA1' offline, NBIRTH waits for it`); `true` → NBIRTH a 0,03 s; `false` con timestamp viejo → ignorado; `false` → NDEATH con el bdSeq de la sesión, desconexión y espera en la sesión siguiente; `true` → NBIRTH con bdSeq nuevo |
+| SPB-14 store & forward (`GW20`) | OK: con el broker quitado por el relay, Voltage 240/241/242 y DI/3 encendida y apagada; al volver: NBIRTH, DBIRTH con 242 y luego DDATA/NDATA históricos (`is_historical`) con 240, 241, 242 y DI/3 `true`, `false`, en orden de timestamp; anillo de 512 muestras en RAM interna (QEMU sin PSRAM); el shell cuenta lo pendiente y lo enviado |
+| Issue #59 enlace lento (`GW21`) | OK: relay a 700 B/s; tras llenar los búferes con *rebirths*, `publish of 2685 bytes to …/DBIRTH/GW21/Bulk still running after 2000 ms` y la publicación vuelve a los 2022 ms; la conexión se cierra, sin *panic*; con el enlace rápido, NBIRTH nuevo |
+| Issue #64 HTTPS (`GW22`) | OK: certificado generado en el primer arranque, huella SHA-256 de la consola igual a la del certificado presentado; HTTP → 301 (GET) y 308 (PUT) a `https://`; 5 fallos → 429 con `Retry-After` 29 s también con la contraseña correcta, log `10.0.2.2 blocked for 30 s after 5 failed logins in a row` y contadores en el shell; tras el bloqueo, 200. El resto de los escenarios web (recuperación, API, puesta en marcha) corre por HTTPS |
 | Extras | OK: DDATA solo por excepción, solo alias, deadband 0,1 respetada; DCMD por alias (FC05) y DCMD sobre métrica de solo lectura descartado con log (sin "alias 0" si el comando venía por nombre); NCMD con un nombre de 80 caracteres después de `DO/1` descartado entero (DO/1 no cambia); bdSeq persistido en NVS tras un corte de energía; NCMD Reboot publica NDEATH QoS 1 y **un solo** NDEATH (will descartado); DBIRTH de 2445 B (mayor que el búfer de 2 KB de esp-mqtt); 60 registros leídos con una sola FC03; timestamps UTC vía SNTP; continuidad de seq |
 
 **Lo que QEMU no cubre**, y por qué la build de emulador difiere (`sdkconfig.qemu`):
@@ -377,10 +395,14 @@ Resultado: **77/77 comprobaciones OK**.
 - **Wi-Fi.** QEMU no emula la radio; la build de emulador lleva `CONFIG_GW_WIFI=n` (y con eso `CONFIG_GW_SOFTAP=n`). El E2E comprueba solo que una configuración con `network.wifi` arranca, avisa que no hay Wi-Fi y sigue por Ethernet, y que los disparadores del punto de acceso llegan a `gw_ap`.
 - **mDNS.** `open_eth` no tiene filtro multicast: el responder arranca pero no atiende la interfaz.
 - **Botón BOOT.** No hay GPIO: `boot 1` / `boot 0` en el shell.
+- **TLS y store & forward con PSRAM.** Sin PSRAM en QEMU, mbedTLS y el anillo de store & forward usan RAM interna (el anillo de 512 muestras); el anillo de 40 000 en PSRAM y las sesiones TLS en PSRAM solo están compilados.
+- **Conmutación de interfaz por alcance del broker (issue #57).** Sin Wi-Fi no hay a dónde ir: solo tests de host.
+- **Presupuesto de una publicación (issue #59).** Se ejecuta con 2 s (`sdkconfig.qemu`); los 8 s de la build de placa y el disparo del TWDT, no.
+- **Paquete de CA públicas, periférico DS, microSD.** Sin ejecutar (§6.5, §6.5.1).
 
 ### 4.4 QA-2
 
-`idf.py set-target esp32s3 build`: **0 warnings en toda la build**. Los componentes propios compilan con `-Wall -Wextra -Werror`.
+`idf.py set-target esp32s3 build`: **0 warnings en toda la build** (1179 objetivos). La build de producción (`sdkconfig.defaults;sdkconfig.production`, §3.4) también: 1202 objetivos, 0 warnings, imagen de 1 310 416 B. Los componentes propios compilan con `-Wall -Wextra -Werror`.
 
 ### 4.5 QA-4: CI
 
@@ -441,7 +463,7 @@ Leyenda de **Evidencia**:
 | REL-1 | Implementado | `gw_bus.c`, `gw_edge.c`, `gw_io.c`, `sdkconfig.defaults` | Q: TWDT alimentado tras cada publicación (el log de los births informa el mayor intervalo sin alimentarlo), DI vigiladas como usuario del TWDT; un *panic* deja el *core dump* en flash, el equipo reinicia (`Node Info/Reset Reason` = `panic`) y el volcado se decodifica con `esp_coredump`. El disparo real del TWDT no se ejecutó: QEMU deshabilita el watchdog de los timers |
 | REL-2 | **Parcial** | Todo `gw_*` | El código propio es estático y no asigna en el camino crítico; **lwIP y esp-mqtt asignan del heap internamente** (acotado, no estático) |
 | REL-3 | Implementado | `esp_log` en todos los módulos | Q. Con REL-4 la consola sigue igual |
-| QA-1 | Implementado | `test/host/` | 110 casos |
+| QA-1 | Implementado | `test/host/` | 135 casos y `check_set_config` |
 | QA-2 | Implementado | — | 0 warnings; tamaño en §3.2 |
 
 **Fuera del MVP**, implementado total o parcialmente:
@@ -454,7 +476,7 @@ Leyenda de **Evidencia**:
 - **CFG-6** Implementado: shell con `status`, `devices`, `config` (resumen), `config show` (secretos enmascarados), `config load` / `config check` (pegar un JSON: validar, guardar de forma atómica y reiniciar), `restart`, `rebirth`, `mbread` (lectura Modbus por el dueño del bus) y `ping`; respuestas atómicas respecto del log (#56). Funciona con la configuración rechazada. Q (show, mbread de registro, float32 y equipo ausente, rebirth, load rechazado con ruta, check, load válido que reinicia). Sin contraseña (acceso físico); `CONFIG_GW_SHELL_WRITE_COMMANDS=n` lo deja de solo lectura.
 - **CFG-7** Implementado: secretos fuera del JSON, en NVS; cifrada con la clave HMAC en eFuse KEY5 en la build de producción (`sdkconfig.production`) y en QEMU, sin cifrar en la build por defecto; migración de un archivo con secretos en claro (con borrado de la partición). Q (QEMU emula HMAC y eFuse: NVS cifrada; ningún secreto en claro en toda la imagen de flash tras la migración). La build de producción en placa y el quemado del eFuse: C (irreversible, §3.4).
 - **NET-5** Implementado, **sin probar con radio**: punto de acceso `GW-Setup-XXXXXX` (WPA2, contraseña de puesta en marcha) sin configuración válida y con BOOT 2–10 s. Q (los dos disparadores llegan a `gw_ap`; la build de QEMU no tiene radio) + C (SoftAP, AP+STA).
-- **NET-6** Implementado: `network.hostname` (o derivado de `edge_node_id`) en DHCP y mDNS con `_http._tcp`. H (esquema, derivación) + Q (el responder arranca con el nombre derivado) + C (respuestas mDNS: `open_eth` no tiene filtro multicast, §6.2.1).
+- **NET-6** Implementado: `network.hostname` (o derivado de `edge_node_id`) en DHCP y mDNS con `_https._tcp` (o `_http._tcp` con `web.https: false`). H (esquema, derivación) + Q (el responder arranca con el nombre derivado) + C (respuestas mDNS: `open_eth` no tiene filtro multicast, §6.2.1).
 - **MQTT-4** Implementado: TLS 1.2 y 1.3 hacia el broker (`mqtt.tls`, SPEC §6.1) con la CA en un archivo PEM de LittleFS (`ca_file`) o el paquete de CA raíz públicas de ESP-IDF, verificación obligatoria del nombre (el `host`, también un literal IP contra un SAN IP, o `server_name`) y de las fechas (espera a SNTP). El archivo se valida al arrancar: uno ausente o que no es PEM se informa y no se intenta conectar. Memoria de mbedTLS en PSRAM si la hay. H (esquema) + Q (TLS 1.3 con la CA de LittleFS y el nombre contra el SAN IP; `server_name` que el certificado no lleva → rechazo; CA ausente → error sin intentos) + C (paquete de CA públicas).
 - **MQTT-5** Implementado: TLS mutuo con certificado y clave PEM del cliente en LittleFS (`mqtt.tls.cert_file`, `key_file`), validados al arrancar. H (esquema) + Q (listener TLS 1.2 que exige certificado de cliente: NBIRTH y mosquitto toma el CN del certificado como usuario; sin certificado, el broker rechaza). El periférico DS (clave fuera del alcance del firmware) no está implementado: ver §6.5.1.
 - **SPB-14** Parcial (sin microSD): con `sparkplug.store_forward`, los cambios sin sesión Sparkplug (broker caído u host primario fuera de línea) se guardan con las reglas de excepción y *deadband* en un búfer circular asignado al arrancar (40 000 muestras en PSRAM; 512 en RAM interna sin PSRAM) y, tras el NBIRTH y los DBIRTH, se publican del más viejo al más nuevo como DDATA/NDATA con `is_historical` y su timestamp, de a 4 mensajes por vuelta. Lógica en `gw_sf` y `gw_node`. H (anillo, desborde, lotes, historial tras los births, seq, dispositivo sin DBIRTH, publicación fallida) + Q (broker parado: tres valores de Voltage y DI/3 encendida y apagada llegan como históricos, en orden, tras el DBIRTH con el valor actual; anillo interno porque QEMU no tiene PSRAM). **El volcado a microSD no está implementado** (§6.5): ver el riesgo de GPIO45.

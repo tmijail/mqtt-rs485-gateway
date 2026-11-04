@@ -284,7 +284,7 @@ Las claves de IPv4 de `network` siguen siendo las de Ethernet.
 | Clave | Tipo | Defecto | Regla |
 |---|---|---|---|
 | `hostname` | texto | `""` | Una etiqueta DNS: 1–63 letras, dígitos y `-` (no al principio ni al final), sin puntos. Vacío = derivado de `edge_node_id` (minúsculas; lo que no es letra ni dígito pasa a `-`; `GW01` → `gw01`) |
-| `mdns` | bool | `true` | Responde `<hostname>.local` por mDNS y anuncia la web como servicio `_http._tcp` (instancia `<group_id>/<edge_node_id>`) |
+| `mdns` | bool | `true` | Responde `<hostname>.local` por mDNS y anuncia la web como servicio `_https._tcp` en `web.https_port` (`_http._tcp` en `web.port` con `web.https: false`; instancia `<group_id>/<edge_node_id>`) |
 
 El nombre va también en las peticiones DHCP de Ethernet y Wi-Fi.
 
