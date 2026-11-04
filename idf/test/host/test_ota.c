@@ -102,7 +102,7 @@ static void test_incomplete_births_do_not_confirm(void)
     TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_session_up(&t, 3));
     TEST_ASSERT_EQUAL(GW_OTA_ROLLBACK, gw_ota_trial_tick(&t, 30000));
     TEST_ASSERT_EQUAL_STRING("no complete Sparkplug session (every DBIRTH) before the timeout", t.why);
-    /* a later complete session (a rebirth, a new connection) confirms it in time */
+    /* a later complete session (a new connection: a rebirth does not count) confirms it in time */
     gw_ota_trial_init(&t, true, 0, 30000);
     TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_session_up(&t, 1));
     TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_session_up(&t, 0));

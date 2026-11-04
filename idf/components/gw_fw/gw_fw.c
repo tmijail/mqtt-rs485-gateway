@@ -813,9 +813,6 @@ static void download_task(void *arg)
         download_fail("download of %s interrupted after %lu bytes (%s)", version, got,
                       esp_err_to_name(e));
     }
-    if (e == ESP_OK && esp_https_ota_get_image_len_read(h) <= 1024) {
-        check_download_caps(h, version);   /* complete in the first call: not checked yet */
-    }
     park(true);
     e = esp_https_ota_finish(h);   /* verifies the image and sets it to boot; frees h always */
     h = NULL;
