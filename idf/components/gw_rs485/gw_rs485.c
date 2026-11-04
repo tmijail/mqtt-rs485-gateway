@@ -2,11 +2,14 @@
 
 #include "driver/uart.h"
 #include "esp_check.h"
+#include "esp_attr.h"
+#include "esp_system.h"
 #include "esp_rom_sys.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "gw_bsp.h"
+#include "hal/uart_ll.h"
 
 static const char *TAG = "rs485";
 
@@ -81,6 +84,47 @@ static void tr_on_attempt(void *ctx)
     esp_task_wdt_reset();  /* the calling task (bus owner) is subscribed to the TWDT */
 }
 
+/* QEMU keeps UART1's interrupt line across a restart (IDF resets UART0 on the way out, not
+ * UART1, and the chip clears it in uart_driver_install(); QEMU's model does not): with an RX
+ * interrupt pending at that moment (a slave answering while the gateway restarts), the next
+ * boot's uart_driver_install() unmasks a line that no register write lowers any more, and CPU0
+ * never leaves the interrupt dispatcher. So the port's interrupts are masked before every
+ * restart:
+ *  - esp_restart(): from a shutdown handler, through the driver (so it does not re-enable the
+ *    RX interrupts afterwards) and with interrupts still enabled;
+ *  - every restart, panics included (the panic handler runs with interrupts off and calls no
+ *    shutdown handler): esp_restart_noos() is wrapped (-Wl,--wrap, CMakeLists.txt) to mask
+ *    them and also reset the RX FIFO, which drops the RX condition itself.
+ * 40 restarts in a row in QEMU (20 NCMD Reboots, 20 panics), no hang; before, a hang within the
+ * first 1 to 7. Harmless on the chip, where the driver resets the UART at the next boot. */
+void __real_esp_restart_noos(void) __attribute__((noreturn));
+void __wrap_esp_restart_noos(void) __attribute__((noreturn));
+
+static uart_port_t s_port = UART_NUM_MAX;   /* set once the driver is installed */
+
+static void IRAM_ATTR mask_port(void)
+{
+    if (s_port < UART_NUM_MAX) {   /* driver installed: the UART is clocked */
+        uart_dev_t *hw = UART_LL_GET_HW(s_port);
+        uart_ll_disable_intr_mask(hw, UINT32_MAX);
+        uart_ll_rxfifo_rst(hw);   /* drop the RX condition itself, not only its mask */
+        uart_ll_clr_intsts_mask(hw, UINT32_MAX);
+    }
+}
+
+void IRAM_ATTR __wrap_esp_restart_noos(void)
+{
+    mask_port();
+    __real_esp_restart_noos();
+}
+
+static void mask_on_restart(void)
+{
+    /* the driver's own call: it also stops the driver from re-enabling the RX interrupts */
+    uart_disable_intr_mask(s_port, UINT32_MAX);
+    uart_clear_intr_status(s_port, UINT32_MAX);
+}
+
 esp_err_t gw_rs485_init(const gw_config_t *cfg, mb_transport_t *tr)
 {
     static const uart_parity_t parity[] = {UART_PARITY_DISABLE, UART_PARITY_EVEN, UART_PARITY_ODD};
@@ -113,6 +157,8 @@ esp_err_t gw_rs485_init(const gw_config_t *cfg, mb_transport_t *tr)
     ESP_RETURN_ON_ERROR(uart_set_mode(PORT, UART_MODE_RS485_HALF_DUPLEX), TAG, "rs485 mode");
 #endif
     ESP_RETURN_ON_ERROR(uart_set_rx_timeout(PORT, RX_TOUT_SYMBOLS), TAG, "rx timeout");
+    s_port = PORT;
+    ESP_RETURN_ON_ERROR(esp_register_shutdown_handler(mask_on_restart), TAG, "shutdown handler");
 
     *tr = (mb_transport_t){
         .write = tr_write,
