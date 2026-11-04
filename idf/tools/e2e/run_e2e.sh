@@ -34,4 +34,4 @@ PYEOF
 
 "$PY" tools/e2e/e2e.py --qemu "$(command -v qemu-system-xtensa)" \
     --flash "$WORK/flash.bin" --efuse "$WORK/efuse.bin" --workdir "$WORK" \
-    --littlefs-python build-qemu/littlefs_py_venv/bin/python
+    --littlefs-python build-qemu/littlefs_py_venv/bin/python --sdkconfig build-qemu/sdkconfig "$@"

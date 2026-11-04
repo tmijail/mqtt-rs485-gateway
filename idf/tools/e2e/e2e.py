@@ -7,11 +7,18 @@ Runs the ESP32-S3 image built with sdkconfig.qemu in Espressif's QEMU:
   * UART0 (console): socket used to read the log and to inject DI levels ("di <n> <0|1>")
   * MQTT: a private mosquitto; an SNTP responder answers on the host's UDP 123
 
+Isolation: by default the harness moves itself into a private network namespace (Linux,
+needs CAP_SYS_ADMIN, e.g. root in a container) with only a loopback interface. Every port,
+UDP 123 included, is then private to the run, so parallel runs never collide. Without that
+capability it falls back to the host's loopback with the ports given by --mqtt-port,
+--modbus-port and --console-port (or E2E_MQTT_PORT, E2E_MODBUS_PORT, E2E_CONSOLE_PORT).
+
 Usage: tools/e2e/run_e2e.sh  (prepares the flash image and calls this script)
 """
 import argparse
 import asyncio
 import json
+import os
 import pathlib
 import queue
 import re
@@ -34,9 +41,12 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import spb_decode  # noqa: E402  (official proto loader + structural checks)
 
-MQTT_PORT = 18831          # must match tools/e2e/fs/config.json
-MODBUS_PORT = 15020
-CONSOLE_PORT = 15555
+# Defaults; main() overrides them from the command line or the environment. The MQTT port
+# is written into the config.json of the flash image under test, so any free port works.
+MQTT_PORT = int(os.environ.get("E2E_MQTT_PORT", 18831))
+MODBUS_PORT = int(os.environ.get("E2E_MODBUS_PORT", 15020))
+CONSOLE_PORT = int(os.environ.get("E2E_CONSOLE_PORT", 15555))
+SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
 GROUP, NODE, DEVICE, BULK = "Plant1", "GW01", "Meter1", "Bulk"
 T = f"spBv1.0/{GROUP}"
 ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/3": 22, "Voltage": 100, "Setpoint": 101, "Run": 102}
@@ -118,6 +128,7 @@ def sntp_responder(stop):
     except OSError as e:
         print(f"SNTP responder disabled: {e}")
         return
+    SNTP_BOUND.set()
     s.settimeout(0.5)
     while not stop.is_set():
         try:
@@ -319,6 +330,41 @@ def flash_variant(args, work, name, files):
     return out
 
 
+# ---------------------------------------------------------------- isolation and build facts
+
+def isolate_network():
+    """Move this process into a new network namespace with loopback up. False if not allowed."""
+    if not hasattr(os, "unshare"):
+        return False
+    try:
+        os.unshare(os.CLONE_NEWNET)
+    except OSError as e:
+        print(f"network isolation unavailable ({e}); using the host loopback")
+        return False
+    import fcntl
+    s = socket.socket()
+    flags = struct.unpack("16sh", fcntl.ioctl(s, 0x8913, struct.pack("16sh", b"lo", 0)))[1]  # SIOCGIFFLAGS
+    fcntl.ioctl(s, 0x8914, struct.pack("16sh", b"lo", flags | 1))                          # SIOCSIFFLAGS IFF_UP
+    s.close()
+    return True
+
+
+def sdkconfig_int(path, name):
+    m = re.search(rf"^CONFIG_{name}=(\d+)$", pathlib.Path(path).read_text(), re.M)
+    if not m:
+        raise SystemExit(f"CONFIG_{name} not found in {path}")
+    return int(m.group(1))
+
+
+def config_json(**overrides):
+    """tools/e2e/fs/config.json with the harness' MQTT port and optional top-level overrides."""
+    cfg = json.loads((HERE / "fs" / "config.json").read_text())
+    cfg["mqtt"]["port"] = MQTT_PORT
+    for k, v in overrides.items():
+        cfg[k] = v
+    return json.dumps(cfg, indent=2).encode() + b"\n"
+
+
 # ---------------------------------------------------------------- scenario
 
 def start_broker(conf, log):
@@ -335,6 +381,7 @@ def start_broker(conf, log):
 
 
 def main():
+    global MQTT_PORT, MODBUS_PORT, CONSOLE_PORT
     ap = argparse.ArgumentParser()
     ap.add_argument("--qemu", required=True)
     ap.add_argument("--flash", required=True)
@@ -342,9 +389,21 @@ def main():
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--littlefs-python", required=True,
                     help="python with the littlefs-python package (build-qemu/littlefs_py_venv)")
+    ap.add_argument("--sdkconfig", required=True, help="sdkconfig of the QEMU build")
+    ap.add_argument("--mqtt-port", type=int, default=MQTT_PORT)
+    ap.add_argument("--modbus-port", type=int, default=MODBUS_PORT)
+    ap.add_argument("--console-port", type=int, default=CONSOLE_PORT)
+    ap.add_argument("--no-isolate", action="store_true",
+                    help="stay on the host loopback instead of a private network namespace")
     args = ap.parse_args()
+    MQTT_PORT, MODBUS_PORT, CONSOLE_PORT = args.mqtt_port, args.modbus_port, args.console_port
+    isolated = False if args.no_isolate else isolate_network()
+    print(f"network: {'private namespace' if isolated else 'host loopback'}; ports MQTT {MQTT_PORT}, "
+          f"Modbus {MODBUS_PORT}, console {CONSOLE_PORT}", flush=True)
     work = pathlib.Path(args.workdir)
     log = work / "uart0.log"
+    # The image under test gets the harness' config.json (with its MQTT port).
+    args.flash = str(flash_variant(args, work, "main", {"config.json": config_json()}))
 
     conf = work / "broker.conf"
     conf.write_text(f"listener {MQTT_PORT} 127.0.0.1\nallow_anonymous true\n")
@@ -401,11 +460,11 @@ def seq_continuity(msgs):
 def run_config_failsafe(args, work):
     """CFG-1: the embedded default is used only when /cfg/config.json does not exist; any
     other problem stops the gateway (no polling, no MQTT) with the error state and a log."""
-    good = (HERE / "fs" / "config.json").read_bytes()
-    limit = 128 * 1024  # CONFIG_GW_CONFIG_MAX_BYTES
+    good = config_json()
+    limit = sdkconfig_int(args.sdkconfig, "GW_CONFIG_MAX_BYTES")
     cases = [
         ("oversized", {"config.json": good + b" " * (limit + 1 - len(good))},
-         r"config\.json: 131073 bytes; el máximo es 131072"),
+         rf"config\.json: {limit + 1} bytes; el máximo es {limit}"),
         ("unmountable", None, r"partición LittleFS 'storage' no montable"),
         ("empty", {"config.json": b""}, r"config\.json: archivo vacío"),
         # without the ',' that closes "network" (line 4), the parser stops at the '"' of
@@ -422,24 +481,30 @@ def run_config_failsafe(args, work):
         t0 = time.monotonic()
         gw.start()
         hit = gw.wait_log(r"configuration rejected .*" + reason, 20, t0)
+        halted = gw.wait_log(r"nothing is started", 2, t0)
         led = gw.wait_log(r"status: config error", 2, t0)
         dos_off = gw.find(r"io: DO .*all outputs off", t0)
         time.sleep(6)  # long enough for DHCP + SNTP wait + a connection attempt
-        started = gw.find(r"connecting to|rs485: UART|net: IPv4", t0)
+        # Positive signal: 6 s later the shell still reports the halted state.
+        asked = time.monotonic()
+        gw.console("status")
+        still = gw.wait_log(r"nothing is running: no polling, no network, no MQTT", 3, asked)
+        shell = gw.find(r"config\s+REJECTED .*" + reason, asked)
+        # Supplementary negative signals: no component logged its start, no NBIRTH reached MQTT.
+        started = gw.find(r"configuration from|connecting to|rs485: UART|net: IPv4", t0)
         births = [m for m in CAPTURE if m[0] >= t0 and "/NBIRTH/" in m[1]]
-        if name == "oversized":
-            asked = time.monotonic()
-            gw.console("status")
-            shell = gw.wait_log(r"config\s+REJECTED .*131073 bytes", 3, asked)
-            check("CFG-6 console shell answers 'status' while the configuration is rejected",
-                  shell, (gw.find(r"config\s+REJECTED", asked) or ["no answer"])[0])
         gw.kill()
+        if name == "oversized":
+            check("CFG-6 console shell answers 'status' while the configuration is rejected",
+                  shell, shell[0] if shell else "no answer")
         check(f"IO-2 {name} config file -> DOs switched off before the configuration is loaded",
               bool(dos_off), (dos_off or ["no 'all outputs off' log"])[0])
-        check(f"CFG-1 {name} config file -> nothing starts, error LED, ERROR log with the reason",
-              hit and led and not started and not births,
+        check(f"CFG-1 {name} config file -> halted (shell 'status' after 6 s), error LED, ERROR log "
+              f"with the reason, nothing started",
+              hit and halted and still and shell and led and not started and not births,
               (gw.find(r"configuration rejected", t0) or ["no 'configuration rejected' log"])[0] +
-              f"; LED error={bool(led)}; started={started[:1]}; NBIRTHs={len(births)}")
+              f"; halted={bool(halted)}; shell still halted={bool(still)}; LED error={bool(led)}; "
+              f"started={started[:1]}; NBIRTHs={len(births)}")
 
     gw = Gateway(args, work / "uart0-absent.log", flash_variant(args, work, "absent", {}))
     t0 = time.monotonic()
@@ -470,8 +535,10 @@ def run(args, log, slave, broker, conf, work):
     reason0 = metric(p, name="Node Info/Reset Reason")
     check("1b. NBIRTH seq=0, bdSeq metric, timestamp", p.seq == 0 and p.timestamp > 0,
           f"seq={p.seq} bdSeq={b0} timestamp={p.timestamp}")
-    check("TIME-1 timestamps are UTC ms from SNTP", abs(p.timestamp / 1000 - time.time()) < 60,
-          f"NBIRTH timestamp {p.timestamp} vs host {int(time.time() * 1000)}")
+    check("TIME-1 timestamps are UTC ms from SNTP (the harness' own responder)",
+          SNTP_BOUND.is_set() and abs(p.timestamp / 1000 - time.time()) < 60,
+          f"NBIRTH timestamp {p.timestamp} vs host {int(time.time() * 1000)}; responder on UDP 123: "
+          f"{SNTP_BOUND.is_set()}")
     db = obs.wait(dbirth_t, 10)
     ok = db and abs(metric(db[2], name="Voltage").float_value - 230.5) < 1e-3 \
         and abs(metric(db[2], name="Setpoint").float_value - 5.0) < 1e-4
@@ -491,6 +558,13 @@ def run(args, log, slave, broker, conf, work):
           f"{len(reqs)} requests to unit 2 so far, first {reqs[0] if reqs else None}")
 
     # CFG-6 diagnostic shell on the console UART
+    asked = time.monotonic()
+    gw.console("status")
+    status_ok = gw.wait_log(r"config\s+\S+.*: ok", 3, asked)
+    status_net = gw.wait_log(r"network\s+.*MQTT \S+, Modbus 2/2 devices online", 1, asked)
+    check("CFG-6 console shell: 'status' with a valid configuration (config ok, MQTT, devices online)",
+          status_ok and status_net,
+          " | ".join(gw.find(r"^config\s|^network\s", asked)) or "no answer")
     asked = time.monotonic()
     gw.console("devices")
     gw.console("config")
@@ -622,7 +696,7 @@ def run(args, log, slave, broker, conf, work):
     # MQTT keepalive: a frozen broker (SIGSTOP for longer than 1.5 x keepalive) keeps the TCP
     # connection open but never answers PINGREQ. The gateway must declare the session dead on
     # its own and, once the broker runs again, start a new session.
-    keepalive = json.loads((HERE / "fs" / "config.json").read_text())["mqtt"]["keepalive_s"]
+    keepalive = json.loads(config_json())["mqtt"]["keepalive_s"]
     obs.drain()
     stopped = time.monotonic()
     broker.send_signal(signal.SIGSTOP)
