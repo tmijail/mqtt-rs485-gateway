@@ -613,31 +613,44 @@ def run_config_failsafe(args, work):
 def check_offline_backoff(slave, t0):
     """Issue #4: dead slaves (units 3..5, never answer) are probed with one attempt at 2, 4, 8 ...
     x poll_ms up to the cap, and do not delay the healthy device's 1 s polling."""
-    def probe_gaps():
+    def clusters():
+        """Requests to dead unit 3 grouped by proximity: a full cycle is a cluster of attempts
+        200 ms apart (some may be lost while QEMU's UART socket connects), a probe is alone."""
         ts = [t for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 3 and t >= t0]
-        return sum(1 for a, b in zip(ts, ts[1:]) if b - a > 1.5)
+        out = []
+        for t in ts:
+            if out and t - out[-1][-1] <= 0.5:
+                out[-1].append(t)
+            else:
+                out.append([t])
+        full = [i for i, c in enumerate(out) if len(c) > 1]
+        return out, (full[-1] if full else None)
 
-    # 3 full cycles, then probes 2, 4, 8 and 10 s apart: about 27 s after boot
-    end = t0 + 50
-    while time.monotonic() < end and probe_gaps() < 4:
+    # 3 full cycles (saturated bus: they overrun), then probes 2, 4, 8 and 10 s apart
+    end = t0 + 60
+    while time.monotonic() < end:
+        cl, last_full = clusters()
+        if last_full is not None and len(cl) - 1 - last_full >= 4:
+            break
         time.sleep(0.5)
     reads = list(zip(slave.times, slave.reads))
-    dead = [t for t, r in reads if r[0] == 3 and t >= t0]
-    # Full cycles: 3 attempts 200 ms apart, cycles 1 s apart. Probes: one attempt, >= 2 s apart.
-    # (The first requests may be lost while QEMU's UART socket connects, so count by gaps.)
-    allgaps = [b - a for a, b in zip(dead, dead[1:])]
-    first = next((i for i, g in enumerate(allgaps) if g > 1.5), None)
-    gaps = [round(g, 1) for g in allgaps[first:]] if first is not None else []
+    cl, last_full = clusters()
+    probes = cl[last_full + 1:] if last_full is not None else []
+    single = all(len(c) == 1 for c in probes)
+    marks = [cl[last_full][0]] + [c[0] for c in probes] if probes else []
+    gaps = [round(b - a, 1) for a, b in zip(marks, marks[1:])]
     expect = [min(2.0 * 2 ** i, PROBE_MAX_S) for i in range(len(gaps))]
-    probes_ok = len(gaps) >= 3 and all(abs(g - e) <= 0.6 for g, e in zip(gaps, expect))
+    # a due probe may wait for a cycle of another device in progress (up to ~0.6 s)
+    probes_ok = len(gaps) >= 4 and single and all(-0.2 <= g - e <= 0.7 for g, e in zip(gaps, expect))
     check("MB-9 / issue #4 offline device probed with a single attempt and an exponential "
           "backoff (2, 4, 8 ... s, cap)", probes_ok,
-          f"{len(dead)} requests to dead unit 3; gaps once offline {gaps} s (expected {expect})")
+          f"unit 3: {[len(c) for c in cl]} requests per burst; from the last full cycle, probes "
+          f"after {gaps} s (expected {expect}); single attempt each: {single}")
     # Healthy Meter1 while the three dead units back off: cycle starts = its first request kind
-    if first is None:
+    if not probes:
         return check("Issue #4 healthy device keeps its 1 s period next to 3 dead ones", False,
                      "dead devices never went offline")
-    since = dead[first]
+    since = probes[0][0] + 1.0
     meter = [(t, r) for t, r in reads if r[0] == 1 and t >= since]
     kind = meter[0][1][1:] if meter else None
     starts = [t for t, r in meter if r[1:] == kind]
