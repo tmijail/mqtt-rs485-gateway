@@ -23,6 +23,8 @@ extern "C" {
 #define GW_HOST_SIZE   128  /* broker and NTP host names */
 #define GW_CRED_SIZE   65   /* client_id, username, password */
 #define GW_UNITS_SIZE  16
+#define GW_SSID_SIZE   33   /* Wi-Fi SSID: 1..32 bytes */
+#define GW_PSK_SIZE    65   /* Wi-Fi passphrase (8..63) or raw PSK (64 hex digits) */
 #define GW_CFG_ERR_SIZE 192
 
 typedef enum {
@@ -52,6 +54,30 @@ typedef enum {
     GW_PARITY_ODD,
 } gw_parity_t;
 
+typedef enum {
+    GW_WIFI_BACKUP = 0,   /* Ethernet preferred; Wi-Fi carries the session while Ethernet is down */
+    GW_WIFI_PRIMARY,      /* Wi-Fi preferred; Ethernet is the backup */
+} gw_wifi_role_t;
+
+/* IPv4 settings of one interface (NET-2). */
+typedef struct {
+    bool dhcp;
+    uint8_t ip[4];
+    uint8_t netmask[4];
+    uint8_t gateway[4];
+    uint8_t dns[4];          /* 0.0.0.0 = not set */
+} gw_ipv4_cfg_t;
+
+/* NET-4: Wi-Fi station as an alternative or backup of Ethernet. */
+typedef struct {
+    bool enabled;
+    char ssid[GW_SSID_SIZE];
+    char password[GW_PSK_SIZE];
+    gw_wifi_role_t role;
+    uint16_t failback_s;     /* the preferred interface must stay up this long to win back */
+    gw_ipv4_cfg_t ipv4;
+} gw_wifi_cfg_t;
+
 typedef struct {
     char name[GW_NAME_SIZE];
     gw_area_t area;
@@ -76,11 +102,12 @@ typedef struct {
 
 typedef struct {
     struct {
-        bool dhcp;
+        bool dhcp;               /* Ethernet IPv4 (the SPEC example's keys) */
         uint8_t ip[4];
         uint8_t netmask[4];
         uint8_t gateway[4];
         uint8_t dns[4];          /* 0.0.0.0 = not set */
+        gw_wifi_cfg_t wifi;
     } network;
     struct {
         char server[GW_HOST_SIZE];

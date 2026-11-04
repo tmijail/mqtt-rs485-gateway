@@ -107,6 +107,77 @@ static void test_defaults_and_static_ip(void)
     TEST_ASSERT_EQUAL(0, cfg.device_count);
 }
 
+/* Document with @p network_json as the "network" section. */
+static bool parse_network(const char *network_json)
+{
+    char doc[1024];
+    snprintf(doc, sizeof(doc),
+             "{\"network\":%s,\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+             "\"edge_node_id\":\"E\"}}",
+             network_json);
+    return parse(doc);
+}
+
+/* NET-4: optional "network.wifi" section. */
+static void test_wifi_section(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(parse_network("{\"dhcp\":true}"), err.msg);
+    TEST_ASSERT_FALSE(cfg.network.wifi.enabled);   /* absent = Ethernet only, as in the MVP */
+    TEST_ASSERT_EQUAL(GW_WIFI_BACKUP, cfg.network.wifi.role);
+    TEST_ASSERT_EQUAL(30, cfg.network.wifi.failback_s);
+    TEST_ASSERT_TRUE(cfg.network.wifi.ipv4.dhcp);
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse_network("{\"wifi\":{\"enabled\":true,\"ssid\":\"Plant WLAN\",\"password\":"
+                      "\"12345678\",\"role\":\"primary\",\"failback_s\":0,\"dhcp\":false,"
+                      "\"ip\":\"10.1.0.5\",\"netmask\":\"255.255.0.0\",\"gateway\":\"10.1.0.1\","
+                      "\"dns\":\"10.1.0.2\"}}"),
+        err.msg);
+    TEST_ASSERT_TRUE(cfg.network.dhcp);   /* the Ethernet keys keep their defaults */
+    TEST_ASSERT_TRUE(cfg.network.wifi.enabled);
+    TEST_ASSERT_EQUAL_STRING("Plant WLAN", cfg.network.wifi.ssid);
+    TEST_ASSERT_EQUAL_STRING("12345678", cfg.network.wifi.password);
+    TEST_ASSERT_EQUAL(GW_WIFI_PRIMARY, cfg.network.wifi.role);
+    TEST_ASSERT_EQUAL(0, cfg.network.wifi.failback_s);
+    TEST_ASSERT_FALSE(cfg.network.wifi.ipv4.dhcp);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(((uint8_t[]){10, 1, 0, 5}), cfg.network.wifi.ipv4.ip, 4);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(((uint8_t[]){10, 1, 0, 2}), cfg.network.wifi.ipv4.dns, 4);
+
+    /* open network and a raw 64-hex-digit PSK */
+    TEST_ASSERT_TRUE_MESSAGE(parse_network("{\"wifi\":{\"enabled\":true,\"ssid\":\"open\"}}"),
+                             err.msg);
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse_network("{\"wifi\":{\"enabled\":true,\"ssid\":\"s\",\"password\":\"0123456789"
+                      "abcdef0123456789ABCDEF0123456789abcdef0123456789abcdef\"}}"),
+        err.msg);
+    /* disabled: an empty SSID is fine (the section can stay in the file) */
+    TEST_ASSERT_TRUE_MESSAGE(parse_network("{\"wifi\":{\"enabled\":false}}"), err.msg);
+
+    ASSERT_REJECTED(parse_network("{\"wifi\":{\"enabled\":true}}"),
+                    "network.wifi.ssid: obligatorio con enabled=true");
+    ASSERT_REJECTED(parse_network("{\"wifi\":{\"enabled\":true,\"ssid\":"
+                                  "\"123456789012345678901234567890123\"}}"),
+                    "network.wifi.ssid: texto demasiado largo (33 caracteres, máximo 32)");
+    ASSERT_REJECTED(parse_network("{\"wifi\":{\"enabled\":true,\"ssid\":\"s\",\"password\":"
+                                  "\"1234567\"}}"),
+                    "network.wifi.password");
+    ASSERT_REJECTED(parse_network("{\"wifi\":{\"enabled\":true,\"ssid\":\"s\",\"password\":\"0123456789"
+                                  "abcdef0123456789abcdef0123456789abcdef0123456789abcdeg\"}}"),
+                    "network.wifi.password");
+    ASSERT_REJECTED(parse_network("{\"wifi\":{\"role\":\"tertiary\"}}"),
+                    "network.wifi.role: valor no válido (se esperaba backup|primary)");
+    ASSERT_REJECTED(parse_network("{\"wifi\":{\"failback_s\":3601}}"),
+                    "network.wifi.failback_s: valor 3601 fuera de rango");
+    ASSERT_REJECTED(parse_network("{\"wifi\":{\"enabled\":true,\"ssid\":\"s\",\"dhcp\":false}}"),
+                    "network.wifi.ip: campo obligatorio");
+    ASSERT_REJECTED(parse_network("{\"wifi\":{\"enabled\":true,\"ssid\":\"s\",\"dhcp\":false,"
+                                  "\"ip\":\"10.0.0.2\",\"netmask\":\"255.0.0.0\",\"gateway\":\"10.0.0\"}}"),
+                    "network.wifi.gateway: '10.0.0' no es una dirección IPv4 válida");
+    ASSERT_REJECTED(parse_network("{\"wifi\":{\"sssid\":\"x\"}}"),
+                    "network.wifi.sssid: clave desconocida");
+    ASSERT_REJECTED(parse_network("{\"wifi\":true}"), "network.wifi: se esperaba un objeto JSON");
+}
+
 static void test_schema_rules(void)
 {
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bool\"}"),
@@ -337,6 +408,7 @@ int main(void)
     RUN_TEST(test_spec_example);
     RUN_TEST(test_embedded_default_is_valid);
     RUN_TEST(test_defaults_and_static_ip);
+    RUN_TEST(test_wifi_section);
     RUN_TEST(test_schema_rules);
     RUN_TEST(test_section_errors);
     RUN_TEST(test_limits);

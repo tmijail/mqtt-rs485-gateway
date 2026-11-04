@@ -8,7 +8,7 @@
  *   esp_timer                      gw_io:   1 kHz DI sampling and debounce
  *   status_led  (prio 2)           gw_status
  *   console     (prio 2)           gw_shell: diagnostic REPL on the console UART
- *   + IDF tasks: esp-mqtt, lwIP tcpip, esp_eth, event loop
+ *   + IDF tasks: esp-mqtt, lwIP tcpip, esp_eth, Wi-Fi (if configured), event loop
  */
 #include <stdio.h>
 
@@ -142,6 +142,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     const gw_net_callbacks_t net_cb = {
         .ip_changed = gw_edge_notify_ip,
+        .route_changed = gw_edge_notify_route,
         .time_synced = gw_edge_notify_time_synced,
     };
     ESP_ERROR_CHECK(gw_net_start(&s_cfg, &net_cb));

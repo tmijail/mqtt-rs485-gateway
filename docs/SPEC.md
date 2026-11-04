@@ -250,6 +250,29 @@ Encuesta N esclavos Modbus RTU por el RS485 integrado, con los tipos de 16 y 32 
 | `float32` | Float (9) |
 | Cualquier tipo con `scale` ≠ 1 u `offset` ≠ 0 | Float (9) |
 
+### 6.1 Claves opcionales fuera del MVP
+
+Todas son opcionales. Si faltan, el equipo se comporta como el MVP. Las claves desconocidas siguen siendo un error.
+
+**`network.wifi` (NET-4): Wi-Fi STA como alternativa o respaldo de Ethernet.**
+
+```json
+"network": { "dhcp": true,
+             "wifi": { "enabled": true, "ssid": "Planta", "password": "secreto123",
+                       "role": "backup", "failback_s": 30, "dhcp": true } }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `enabled` | bool | `false` | `false` = solo Ethernet |
+| `ssid` | texto | `""` | 1–32 bytes; obligatorio con `enabled=true` |
+| `password` | texto | `""` | vacío (red abierta), 8–63 caracteres (WPA2) o 64 dígitos hexadecimales (PSK) |
+| `role` | `backup` \| `primary` | `backup` | `backup`: Ethernet gana la ruta por defecto y Wi-Fi solo se usa sin Ethernet. `primary`: al revés |
+| `failback_s` | entero | `30` | 0–3600. Tiempo que la interfaz preferida debe estar arriba, sin cortes, para recuperar la sesión |
+| `dhcp`, `ip`, `netmask`, `gateway`, `dns` | como `network` | DHCP | IPv4 de la interfaz Wi-Fi; con `dhcp=false`, `ip`, `netmask` y `gateway` son obligatorias |
+
+Las claves de IPv4 de `network` siguen siendo las de Ethernet.
+
 ## 7. Criterios de aceptación del MVP
 
 1. `NBIRTH` con `seq`=0 y el `bdSeq` del LWT. Al matar la conexión TCP el broker publica `NDEATH` con ese mismo `bdSeq`.

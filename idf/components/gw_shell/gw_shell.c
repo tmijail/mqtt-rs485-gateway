@@ -8,6 +8,7 @@
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "gw_io.h"
+#include "gw_net.h"
 #include "gw_status.h"
 #include "gw_tagdb.h"
 
@@ -43,6 +44,26 @@ static int cmd_status(int argc, char **argv)
     printf("network  %s, MQTT %s, Modbus %u/%u devices online\n",
            (f & GW_ST_NET_UP) ? "up" : "down", (f & GW_ST_MQTT_UP) ? "connected" : "disconnected",
            s_ctx.cfg->device_count - offline, s_ctx.cfg->device_count);
+    gw_net_if_status_t ifs[GW_NET_IF_COUNT];
+    gw_net_get_status(ifs);
+    static const char *const names[GW_NET_IF_COUNT] = {"ethernet", "wifi"};
+    printf("iface    ");
+    for (int i = 0; i < GW_NET_IF_COUNT; i++) {
+        const gw_net_if_status_t *n = &ifs[i];
+        printf("%s%s", i ? " | " : "", names[i]);
+        if (!n->configured) {
+            printf(" not configured");
+            continue;
+        }
+        printf(" %s", !n->link ? "link down" : n->usable ? "up" : "link up, no address");
+        if (n->usable) {
+            printf(" %u.%u.%u.%u", n->ipv4[0], n->ipv4[1], n->ipv4[2], n->ipv4[3]);
+        }
+        if (n->active) {
+            printf(" (active)");
+        }
+    }
+    printf("\n");
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
     printf("local    DI 0x%02x, DO 0x%02x (bit n = channel n+1, 1 = active)\n", io.di, io.dout);
@@ -97,6 +118,14 @@ static int cmd_config(int argc, char **argv)
         const uint8_t *a = c->network.ip, *m = c->network.netmask, *g = c->network.gateway;
         printf("network    static %u.%u.%u.%u mask %u.%u.%u.%u gw %u.%u.%u.%u\n", a[0], a[1], a[2],
                a[3], m[0], m[1], m[2], m[3], g[0], g[1], g[2], g[3]);
+    }
+    const gw_wifi_cfg_t *w = &c->network.wifi;
+    if (w->enabled) {
+        printf("wifi       '%s', %s, failback %u s, %s\n", w->ssid,
+               w->role == GW_WIFI_PRIMARY ? "primary (Ethernet is the backup)" : "backup of Ethernet",
+               w->failback_s, w->ipv4.dhcp ? "DHCP" : "static IPv4");
+    } else {
+        printf("wifi       disabled\n");
     }
     printf("ntp        %s\n", c->ntp.server);
     printf("rs485      %lu baud, parity %s, %u stop bit(s), timeout %u ms, %u retries, "

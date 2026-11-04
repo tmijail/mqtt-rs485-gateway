@@ -417,6 +417,7 @@ def main():
     slave.start()
     try:
         run_config_failsafe(args, work)
+        run_network_variant(args, work)
         run(args, log, slave, broker, conf, work)
     finally:
         stop.set()
@@ -516,6 +517,39 @@ def run_config_failsafe(args, work):
     obs.close()
 
 
+def run_network_variant(args, work):
+    """Optional network keys on the emulator (no Wi-Fi radio, CONFIG_GW_WIFI=n): a configuration
+    that enables network.wifi still boots, says that Wi-Fi is not available and runs over
+    Ethernet exactly as before. A separate edge node id keeps its messages apart from the main
+    scenario's."""
+    node = "GW02"
+    cfg = json.loads(config_json())
+    cfg["sparkplug"]["edge_node_id"] = node
+    cfg["network"] = {"dhcp": True,
+                      "wifi": {"enabled": True, "ssid": "Plant WLAN", "password": "12345678",
+                               "role": "backup", "failback_s": 30}}
+    flash = flash_variant(args, work, "network", {"config.json": json.dumps(cfg, indent=2).encode()})
+    obs = Observer()
+    gw = Gateway(args, work / "uart0-network.log", flash)
+    t0 = time.monotonic()
+    gw.start()
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    ignored = gw.find(r"network\.wifi ignored: Wi-Fi is not available in this build", t0)
+    asked = time.monotonic()
+    gw.console("status")
+    iface = gw.wait_log(r"^iface\s+ethernet up \d+\.\d+\.\d+\.\d+ \(active\) \| wifi not configured", 3, asked)
+    gw.console("config")
+    shown = gw.wait_log(r"^wifi\s+'Plant WLAN', backup of Ethernet, failback 30 s, DHCP", 3, asked)
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node}", 5)   # the will, before the main scenario starts
+    obs.close()
+    check("NET-4 network.wifi on a build without the radio (QEMU): accepted, reported, Ethernet "
+          "carries the session as before",
+          nb and ignored and iface and shown,
+          f"NBIRTH {'yes' if nb else 'no'}; {(ignored or ['no warning'])[0]}; shell: "
+          + " | ".join(gw.find(r"^iface\s|^wifi\s", asked)))
+
+
 def run(args, log, slave, broker, conf, work):
     nbirth_t, dbirth_t = f"{T}/NBIRTH/{NODE}", f"{T}/DBIRTH/{NODE}/{DEVICE}"
     ndata_t, ddata_t = f"{T}/NDATA/{NODE}", f"{T}/DDATA/{NODE}/{DEVICE}"
@@ -562,9 +596,12 @@ def run(args, log, slave, broker, conf, work):
     gw.console("status")
     status_ok = gw.wait_log(r"config\s+\S+.*: ok", 3, asked)
     status_net = gw.wait_log(r"network\s+.*MQTT \S+, Modbus 2/2 devices online", 1, asked)
-    check("CFG-6 console shell: 'status' with a valid configuration (config ok, MQTT, devices online)",
-          status_ok and status_net,
-          " | ".join(gw.find(r"^config\s|^network\s", asked)) or "no answer")
+    status_if = gw.wait_log(r"^iface\s+ethernet up \d+\.\d+\.\d+\.\d+ \(active\) \| wifi not configured",
+                            1, asked)
+    check("CFG-6 console shell: 'status' with a valid configuration (config ok, MQTT, devices online, "
+          "Ethernet the only and active interface)",
+          status_ok and status_net and status_if,
+          " | ".join(gw.find(r"^config\s|^network\s|^iface\s", asked)) or "no answer")
     asked = time.monotonic()
     gw.console("devices")
     gw.console("config")

@@ -25,6 +25,8 @@ extern "C" {
 esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info);
 
 void gw_edge_notify_ip(bool up);
+/** NET-4: the active interface changed; the MQTT session moves to the new one. */
+void gw_edge_notify_route(void);
 void gw_edge_notify_time_synced(void);
 void gw_edge_notify_device(uint16_t dev);
 void gw_edge_notify_io(void);

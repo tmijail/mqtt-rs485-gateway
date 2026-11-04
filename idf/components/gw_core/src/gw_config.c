@@ -254,6 +254,20 @@ static bool get_ipv4(const cJSON *obj, const char *key, const char *path, bool r
     return true;
 }
 
+static int hex_digit(char c)
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
 /* Sparkplug identifiers become MQTT topic levels: no '/', '+', '#', no control chars. */
 static bool check_topic_id(const char *s, const char *path, bool allow_empty, gw_cfg_err_t *err)
 {
@@ -276,23 +290,86 @@ static const char *const k_type_names[] = {"bool", "uint16", "int16", "uint32", 
 static const char *const k_word_names[] = {"big", "little"};
 static const char *const k_parity_names[] = {"none", "even", "odd"};
 
-static bool parse_network(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+/* dhcp/ip/netmask/gateway/dns of one interface; the addresses are required with dhcp=false. */
+static bool parse_ipv4_keys(const cJSON *o, const char *path, bool *dhcp, uint8_t ip[4],
+                            uint8_t netmask[4], uint8_t gateway[4], uint8_t dns[4],
+                            gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"dhcp", "ip", "netmask", "gateway", "dns"};
-    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "network");
-    cfg->network.dhcp = true;
-    if (o == NULL) {
-        return true;
-    }
-    if (!check_keys(o, "network", keys, 5, err) ||
-        !get_bool(o, "dhcp", "network", true, &cfg->network.dhcp, err)) {
+    if (!get_bool(o, "dhcp", path, true, dhcp, err)) {
         return false;
     }
-    bool st = !cfg->network.dhcp;
-    return get_ipv4(o, "ip", "network", st, cfg->network.ip, err) &&
-           get_ipv4(o, "netmask", "network", st, cfg->network.netmask, err) &&
-           get_ipv4(o, "gateway", "network", st, cfg->network.gateway, err) &&
-           get_ipv4(o, "dns", "network", false, cfg->network.dns, err);
+    bool st = !*dhcp;
+    return get_ipv4(o, "ip", path, st, ip, err) && get_ipv4(o, "netmask", path, st, netmask, err) &&
+           get_ipv4(o, "gateway", path, st, gateway, err) &&
+           get_ipv4(o, "dns", path, false, dns, err);
+}
+
+static bool check_wifi_password(const char *pw)
+{
+    size_t n = strlen(pw);
+    if (n == 0 || (n >= 8 && n <= 63)) {
+        return true;
+    }
+    if (n != 64) {
+        return false;
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (hex_digit(pw[i]) < 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool parse_wifi_section(const cJSON *net, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"enabled", "ssid", "password", "role", "failback_s",
+                                       "dhcp", "ip", "netmask", "gateway", "dns"};
+    static const char *const roles[] = {"backup", "primary"};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(net, "wifi");
+    static const cJSON empty = {.type = cJSON_Object};
+    if (o == NULL) {
+        o = &empty;
+    }
+    gw_wifi_cfg_t *w = &cfg->network.wifi;
+    int role;
+    long failback;
+    if (!check_keys(o, "network.wifi", keys, 10, err) ||
+        !get_bool(o, "enabled", "network.wifi", false, &w->enabled, err) ||
+        !get_string(o, "ssid", "network.wifi", false, "", w->ssid, sizeof(w->ssid), err) ||
+        !get_string(o, "password", "network.wifi", false, "", w->password, sizeof(w->password),
+                    err) ||
+        !get_enum(o, "role", "network.wifi", false, GW_WIFI_BACKUP, roles, 2, &role, err) ||
+        !get_int(o, "failback_s", "network.wifi", false, 30, 0, 3600, &failback, err) ||
+        !parse_ipv4_keys(o, "network.wifi", &w->ipv4.dhcp, w->ipv4.ip, w->ipv4.netmask,
+                         w->ipv4.gateway, w->ipv4.dns, err)) {
+        return false;
+    }
+    w->role = (gw_wifi_role_t)role;
+    w->failback_s = (uint16_t)failback;
+    if (w->enabled && w->ssid[0] == '\0') {
+        return fail(err, "network.wifi.ssid", "obligatorio con enabled=true");
+    }
+    if (!check_wifi_password(w->password)) {
+        return fail(err, "network.wifi.password",
+                    "se esperaban 8 a 63 caracteres (WPA2), 64 dígitos hexadecimales o vacío "
+                    "(red abierta)");
+    }
+    return true;
+}
+
+static bool parse_network(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"dhcp", "ip", "netmask", "gateway", "dns", "wifi"};
+    static const cJSON empty = {.type = cJSON_Object};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "network");
+    if (o == NULL) {
+        o = &empty;
+    }
+    return check_keys(o, "network", keys, 6, err) &&
+           parse_ipv4_keys(o, "network", &cfg->network.dhcp, cfg->network.ip,
+                           cfg->network.netmask, cfg->network.gateway, cfg->network.dns, err) &&
+           parse_wifi_section(o, cfg, err);
 }
 
 static bool parse_ntp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
