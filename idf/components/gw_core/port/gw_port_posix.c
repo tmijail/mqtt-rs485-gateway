@@ -11,6 +11,12 @@
 static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
 static char *s_capture;
 static size_t s_capture_cap;
+static uint64_t s_fake_ms;   /* 0: real clock */
+
+void gw_port_fake_time(uint64_t ms)
+{
+    s_fake_ms = ms;
+}
 
 void gw_port_log_capture(char *buf, size_t cap)
 {
@@ -27,6 +33,9 @@ void gw_port_init(void)
 
 uint64_t gw_port_time_ms(void)
 {
+    if (s_fake_ms != 0) {
+        return s_fake_ms;
+    }
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (uint64_t)tv.tv_sec * 1000u + (uint64_t)(tv.tv_usec / 1000);

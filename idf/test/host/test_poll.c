@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "gw_poll.h"
+#include "gw_port.h"
 #include "gw_tagdb.h"
 #include "support.h"
 #include "unity.h"
@@ -37,7 +38,10 @@ void setUp(void)
 {
     setup_with(false);
 }
-void tearDown(void) {}
+void tearDown(void)
+{
+    gw_port_fake_time(0);
+}
 
 static bool online(void)
 {
@@ -95,15 +99,24 @@ static void test_exception_keeps_device_online(void)
  * tags are not refreshed, and the device goes offline after offline_after such cycles. */
 static void test_unanswered_block_fails_the_cycle(void)
 {
+    /* Issue #66: a fake clock that moves on every cycle, so a re-stamped unread tag is caught
+     * every time; the reference is read back from gw_tagdb after the first cycle (it used to
+     * be the copy left in vals by the previous test, equal only within the same millisecond). */
+    const uint64_t t0 = 1762171200000ull;
+    gw_port_fake_time(t0);
     TEST_ASSERT_EQUAL(GW_DEV_WENT_ONLINE, gw_poller_poll(&p, 0, 0));
+    TEST_ASSERT_TRUE(online());
     gw_tag_value_t voltage = vals[0];
+    TEST_ASSERT_EQUAL_UINT64(t0, voltage.ts_ms);
     s.mute_fc = MB_FC_READ_INPUT_REGISTERS;   /* Voltage's block (the last one) */
     s.holding[10] = 200;                      /* Setpoint, still answered */
     s.input[0] = 0x4300;                      /* Voltage changes to 128.0, but is never read */
     s.input[1] = 0x0000;
     for (int cycle = 1; cycle <= 2; cycle++) {
+        gw_port_fake_time(t0 + 1000u * (uint64_t)cycle);
         TEST_ASSERT_EQUAL(GW_DEV_NO_CHANGE, gw_poller_poll(&p, 0, (uint32_t)(1000 * cycle)));
         TEST_ASSERT_TRUE(online());
+        TEST_ASSERT_EQUAL_UINT64(t0 + 1000u * (uint64_t)cycle, vals[1].ts_ms);  /* re-read */
         TEST_ASSERT_DOUBLE_WITHIN(1e-9, 20.0, vals[1].value);   /* answered block refreshed */
         TEST_ASSERT_TRUE(vals[1].valid);
         /* not read: neither a new value nor a new timestamp */
