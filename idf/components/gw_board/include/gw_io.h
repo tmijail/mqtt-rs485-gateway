@@ -19,9 +19,17 @@ extern "C" {
  * become outputs, so there is no glitch (see gw_dout.h). Needs no configuration and runs
  * before it is loaded, so a rejected configuration never leaves an output energised from
  * before a warm reset (the TCA9554 keeps its latch across an ESP32 reset).
- * Returns the error if the expander does not answer; DO commands are then refused.
+ * Returns the error if the expander does not answer: the DOs are then unknown (null in
+ * gw_tagdb), DO commands are refused and gw_io_outputs_recover() retries.
  */
 esp_err_t gw_io_outputs_off(void);
+
+/**
+ * If gw_io_outputs_off() could not reach the expander, retry it with a backoff (1 s doubling
+ * to 60 s). Returns true when the outputs just became available (all off, state in gw_tagdb):
+ * the caller republishes the DOs. Called periodically by the DO owner (Sparkplug task).
+ */
+bool gw_io_outputs_recover(void);
 
 /**
  * Start sampling the DIs every CONFIG_GW_DI_SAMPLE_US with the configured debounce.

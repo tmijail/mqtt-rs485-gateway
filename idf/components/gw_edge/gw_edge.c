@@ -427,6 +427,9 @@ static void reconcile(void)
         reconnect(now);
     }
 
+    if (gw_io_outputs_recover()) {
+        atomic_store(&s_io_dirty, true);   /* NDATA: the DOs go from null to their state */
+    }
     if (s_node.online && !s_births_timed && atomic_load(&s_time_synced)) {
         /* Births went out before SNTP: re-issue them so hosts get valid timestamps. */
         s_births_timed = true;

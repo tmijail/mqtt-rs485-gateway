@@ -32,6 +32,7 @@ typedef struct {
 typedef struct {
     uint8_t di;          /* bit n = DI n+1 (debounced, true = active) */
     uint8_t dout;        /* bit n = DO n+1 (read back from the expander) */
+    bool do_unknown;     /* the expander does not answer: DO states unknown (published as null) */
     uint64_t di_ts_ms;
     uint64_t do_ts_ms;
 } gw_local_io_t;
@@ -54,7 +55,8 @@ void gw_tagdb_put_tag(uint16_t tag, const gw_tag_value_t *val);
 void gw_tagdb_get_tag(uint16_t tag, gw_tag_value_t *val);
 
 void gw_tagdb_set_di(uint8_t di, uint64_t ts_ms);
-void gw_tagdb_set_do(uint8_t dout, uint64_t ts_ms);
+void gw_tagdb_set_do(uint8_t dout, uint64_t ts_ms);   /* also clears do_unknown */
+void gw_tagdb_set_do_unknown(uint64_t ts_ms);
 void gw_tagdb_get_io(gw_local_io_t *io);
 
 #ifdef __cplusplus

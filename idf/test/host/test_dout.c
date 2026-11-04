@@ -14,6 +14,7 @@ typedef struct {
     } log[16];
     int writes;
     int fail_write_at;       /* 1-based index of the write that fails (0 = none) */
+    bool absent;             /* every write fails (expander not answering) */
     bool fail_read;
 } fake_tca_t;
 
@@ -22,7 +23,7 @@ static fake_tca_t f;
 static int fake_write(void *ctx, uint8_t reg, uint8_t val)
 {
     fake_tca_t *t = ctx;
-    if (++t->writes == t->fail_write_at) {
+    if (++t->writes == t->fail_write_at || t->absent) {
         return ERR_BUS;
     }
     t->log[t->writes - 1].reg = reg;
@@ -37,10 +38,12 @@ static int fake_read(void *ctx, uint8_t reg, uint8_t *val)
     if (t->fail_read) {
         return ERR_BUS;
     }
-    /* Output pins follow the latch; input pins float high. */
+    /* Output pins follow the latch; input pins float high; the input register is the pin
+     * level XOR the polarity-inversion register. */
     *val = reg == GW_TCA9554_REG_INPUT
-               ? (uint8_t)((t->reg[GW_TCA9554_REG_OUTPUT] & ~t->reg[GW_TCA9554_REG_CONFIG]) |
-                           t->reg[GW_TCA9554_REG_CONFIG])
+               ? (uint8_t)(((t->reg[GW_TCA9554_REG_OUTPUT] & ~t->reg[GW_TCA9554_REG_CONFIG]) |
+                            t->reg[GW_TCA9554_REG_CONFIG]) ^
+                           t->reg[GW_TCA9554_REG_POLARITY])
                : t->reg[reg];
     return 0;
 }
@@ -50,8 +53,8 @@ static const gw_dout_bus_t k_bus = {.write_reg = fake_write, .read_reg = fake_re
 /* Pin level of the expander pin of DO @p n (1-8) as seen by the load. */
 static int pin(int n)
 {
-    uint8_t v;
-    fake_read(&f, GW_TCA9554_REG_INPUT, &v);
+    uint8_t v = (uint8_t)((f.reg[GW_TCA9554_REG_OUTPUT] & ~f.reg[GW_TCA9554_REG_CONFIG]) |
+                          f.reg[GW_TCA9554_REG_CONFIG]);
     return (v >> (n - 1)) & 1;
 }
 
@@ -80,12 +83,15 @@ static void test_init_active_low_loads_off_level_before_outputs(void)
     gw_dout_t d;
     TEST_ASSERT_EQUAL(0, gw_dout_init(&d, &k_bus, 0xFF));
     TEST_ASSERT_TRUE(d.ready);
-    /* Exactly two writes, latch first: the pins never become outputs at an ON level. */
-    TEST_ASSERT_EQUAL(2, f.writes);
+    /* Exactly three writes, latch first, outputs last: the pins never become outputs at an
+     * ON level, and the polarity inversion is cleared in between. */
+    TEST_ASSERT_EQUAL(3, f.writes);
     TEST_ASSERT_EQUAL_HEX8(GW_TCA9554_REG_OUTPUT, f.log[0].reg);
     TEST_ASSERT_EQUAL_HEX8(0xFF, f.log[0].val);
-    TEST_ASSERT_EQUAL_HEX8(GW_TCA9554_REG_CONFIG, f.log[1].reg);
+    TEST_ASSERT_EQUAL_HEX8(GW_TCA9554_REG_POLARITY, f.log[1].reg);
     TEST_ASSERT_EQUAL_HEX8(0x00, f.log[1].val);
+    TEST_ASSERT_EQUAL_HEX8(GW_TCA9554_REG_CONFIG, f.log[2].reg);
+    TEST_ASSERT_EQUAL_HEX8(0x00, f.log[2].val);
     for (int n = 1; n <= 8; n++) {
         TEST_ASSERT_EQUAL(1, pin(n));  /* HIGH = off for an active-low output */
     }
@@ -162,6 +168,53 @@ static void test_bus_errors(void)
     TEST_ASSERT_FALSE(from_pins);
 }
 
+/* Issue #8: another firmware left the polarity inversion set and the expander kept it across
+ * the ESP32 reset; without clearing it the read-back would come out inverted. */
+static void test_init_clears_polarity_inversion(void)
+{
+    f.reg[GW_TCA9554_REG_POLARITY] = 0xFF;
+    gw_dout_t d;
+    TEST_ASSERT_EQUAL(0, gw_dout_init(&d, &k_bus, 0xFF));
+    TEST_ASSERT_EQUAL_HEX8(0x00, f.reg[GW_TCA9554_REG_POLARITY]);
+    bool from_pins;
+    TEST_ASSERT_EQUAL_HEX8(0x00, gw_dout_read(&d, &from_pins));   /* all off, not all on */
+    gw_dout_set(&d, 2, true);
+    TEST_ASSERT_EQUAL_HEX8(0x04, gw_dout_read(&d, &from_pins));
+}
+
+/* Issue #8: an expander that does not answer at boot is retried at 1, 2, 4 ... 60 s. */
+static void test_recovery_with_backoff(void)
+{
+    gw_dout_t d;
+    f.absent = true;
+    TEST_ASSERT_EQUAL(ERR_BUS, gw_dout_init(&d, &k_bus, 0xFF));
+    TEST_ASSERT_FALSE(d.ready);
+    uint32_t now = 5000;
+    TEST_ASSERT_FALSE(gw_dout_recover(&d, now));      /* schedules the first retry */
+    TEST_ASSERT_EQUAL(1, d.attempts);
+    const uint32_t delays[] = {1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000};
+    for (size_t i = 0; i < sizeof(delays) / sizeof(delays[0]); i++) {
+        TEST_ASSERT_FALSE(gw_dout_recover(&d, now + delays[i] - 1));   /* not due yet */
+        TEST_ASSERT_EQUAL(i + 1, d.attempts);
+        now += delays[i];
+        TEST_ASSERT_FALSE(gw_dout_recover(&d, now));                   /* due, fails */
+        TEST_ASSERT_EQUAL(i + 2, d.attempts);
+    }
+    /* it answers again: the next retry loads the latch OFF, clears POLARITY, makes outputs */
+    f.absent = false;
+    f.writes = 0;
+    f.reg[GW_TCA9554_REG_CONFIG] = 0x00;                 /* warm: outputs, DO1 left on */
+    f.reg[GW_TCA9554_REG_OUTPUT] = 0xFE;
+    TEST_ASSERT_TRUE(gw_dout_recover(&d, now + 60000));
+    TEST_ASSERT_TRUE(d.ready);
+    TEST_ASSERT_EQUAL(3, f.writes);
+    TEST_ASSERT_EQUAL_HEX8(0xFF, f.reg[GW_TCA9554_REG_OUTPUT]);
+    bool from_pins;
+    TEST_ASSERT_EQUAL_HEX8(0x00, gw_dout_read(&d, &from_pins));
+    TEST_ASSERT_FALSE(gw_dout_recover(&d, now + 120000));   /* ready: nothing to do */
+    TEST_ASSERT_EQUAL(3, f.writes);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -171,5 +224,7 @@ int main(void)
     RUN_TEST(test_set_active_low_drives_pin_low_and_reads_back);
     RUN_TEST(test_active_high_and_mixed_polarity);
     RUN_TEST(test_bus_errors);
+    RUN_TEST(test_init_clears_polarity_inversion);
+    RUN_TEST(test_recovery_with_backoff);
     return UNITY_END();
 }

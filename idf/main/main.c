@@ -103,7 +103,8 @@ void app_main(void)
     }
     /* Before the configuration: whatever happens next, no DO stays on from before a reset. */
     if (gw_io_outputs_off() != ESP_OK) {
-        ESP_LOGE(TAG, "digital outputs unavailable; DO commands will be refused");
+        ESP_LOGE(TAG, "digital outputs unavailable: published as null and DO commands refused "
+                      "until the expander answers");
     }
     gw_storage_init();  /* failure is logged; bdSeq then lives in RAM only */
 

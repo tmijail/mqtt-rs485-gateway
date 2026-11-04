@@ -117,12 +117,14 @@ static void publish_nbirth(gw_node_t *n)
             ->v.num = (io.di >> k) & 1u;
     }
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
-        metric(n, i++, k_do_names[k], GW_ALIAS_DO_BASE + k, SPB_DT_BOOLEAN,
-               io.do_ts_ms ? io.do_ts_ms : now)
-            ->v.num = (io.dout >> k) & 1u;
+        spb_metric_t *m = metric(n, i++, k_do_names[k], GW_ALIAS_DO_BASE + k, SPB_DT_BOOLEAN,
+                                 io.do_ts_ms ? io.do_ts_ms : now);
+        m->v.num = (io.dout >> k) & 1u;
+        m->is_null = io.do_unknown;   /* the latch may hold anything: never claim "off" */
     }
     n->di_reported = io.di;
     n->do_reported = io.dout;
+    n->do_unknown_reported = io.do_unknown;
     publish(n, "NBIRTH", NULL, i, 0);
 }
 
@@ -209,6 +211,9 @@ static void publish_io(gw_node_t *n, uint8_t force_do)
     gw_tagdb_get_io(&io);
     uint8_t di_changed = io.di ^ n->di_reported;
     uint8_t do_changed = (uint8_t)((io.dout ^ n->do_reported) | force_do);
+    if (io.do_unknown != n->do_unknown_reported) {
+        do_changed = 0xFF;   /* expander lost or recovered: every DO changes (null <-> value) */
+    }
     size_t count = 0;
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         if (di_changed & (1u << k)) {
@@ -218,12 +223,15 @@ static void publish_io(gw_node_t *n, uint8_t force_do)
     }
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         if (do_changed & (1u << k)) {
-            metric(n, count++, NULL, GW_ALIAS_DO_BASE + k, SPB_DT_BOOLEAN, io.do_ts_ms)->v.num =
-                (io.dout >> k) & 1u;
+            spb_metric_t *m = metric(n, count++, NULL, GW_ALIAS_DO_BASE + k, SPB_DT_BOOLEAN,
+                                     io.do_ts_ms);
+            m->v.num = (io.dout >> k) & 1u;
+            m->is_null = io.do_unknown;
         }
     }
     n->di_reported = io.di;
     n->do_reported = io.dout;
+    n->do_unknown_reported = io.do_unknown;
     if (count > 0) {
         publish(n, "NDATA", NULL, count, 0);
     }

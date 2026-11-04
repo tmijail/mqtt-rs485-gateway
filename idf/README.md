@@ -322,7 +322,7 @@ Leyenda de **Evidencia**:
 | MB-10 | Implementado | `gw_poll.c` (`gw_poller_next`) | H + Q |
 | MB-16 | Implementado | `components/gw_bus/gw_bus.c` | Diseño: una tarea y una cola |
 | IO-1 | Implementado | `components/gw_board/gw_io.c`, `gw_debounce.c`, `gw_bsp` | H (debounce y polaridad) + Q (pines simulados con la polaridad de `gw_bsp`); GPIO reales C |
-| IO-2 | Implementado | `gw_core/src/gw_dout.c`, `gw_io.c`, `gw_bsp` | H (secuencia de arranque, activa en bajo, mezclas, errores de bus) + Q (registros simulados); I²C real C |
+| IO-2 | Implementado | `gw_core/src/gw_dout.c`, `gw_io.c`, `gw_bsp` | H (secuencia de arranque con POLARITY = 0, activa en bajo, mezclas, errores de bus, reintento con backoff y DO `is_null` mientras falta el expansor) + Q (registros simulados); I²C real C |
 | IO-5 | Implementado | `components/gw_board/gw_status.c` | Q (estados en el log); RMT/WS2812 C; colores sin verificar |
 | CFG-1 | Implementado | `gw_core/src/gw_config.c`, `gw_storage/gw_storage.c`, `main/main.c` | H (documento máximo de 256 tags, falta de memoria, rutas JSON, línea y columna, claves duplicadas) + Q (archivo demasiado grande, vacío, con error de sintaxis o de esquema y partición sin montar: nada arranca, LED de error, log ERROR con el motivo) |
 | CFG-2 | Implementado | `gw_storage/gw_storage.c`, `main/CMakeLists.txt` | Q (LittleFS; respaldo embebido solo si falta el archivo) |
@@ -409,7 +409,8 @@ Sin SNTP no hay hora válida: no hay RTC (TIME-2). Antes de la primera conexión
 
 - Una DI que cambia más rápido que el debounce se pierde.
 - El timestamp de NDATA es el del lote de cambios, no el de cada bit.
-- Las DO pasan a OFF en cada arranque (en frío, en caliente, por watchdog o por panic) **antes de cargar la configuración**, así que también quedan en OFF si la configuración se rechaza. El TCA9554 no se reinicia con el ESP32 y conserva el latch; por eso el firmware lo reescribe con el nivel OFF antes de pasar los pines a salida.
+- Las DO pasan a OFF en cada arranque (en frío, en caliente, por watchdog o por panic) **antes de cargar la configuración**, así que también quedan en OFF si la configuración se rechaza. El TCA9554 no se reinicia con el ESP32 y conserva el latch; por eso el firmware lo reescribe con el nivel OFF antes de pasar los pines a salida. También pone a 0 el registro de polaridad (0x02), que el expansor conserva y que invertiría la relectura si otro firmware lo dejó distinto de 0.
+- **Expansor que no responde.** Si el TCA9554 no contesta al arrancar (por ejemplo, un glitch de I²C), las DO se publican como **`is_null`** en el NBIRTH (el latch puede conservar salidas encendidas de antes de un reinicio en caliente: nunca se informan como apagadas sin saberlo) y los NCMD sobre ellas se rechazan. La tarea Sparkplug reintenta la inicialización a 1, 2, 4… hasta 60 s; cuando el expansor responde, las DO quedan en OFF y un NDATA publica sus 8 valores. Solo compilado: QEMU no emula el TCA9554 (lógica con tests de host).
 - La polaridad de las DO (activa en bajo) se dedujo del demo y de ESPHome, sin esquemático ni placa. Si la medición dice lo contrario, basta con `CONFIG_GW_DO_ACTIVE_LOW=n`.
 
 ### 6.8 Pruebas y entorno

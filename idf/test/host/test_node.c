@@ -316,6 +316,47 @@ static void send_raw(const char *topic, const raw_metric_t *m, size_t n)
     gw_node_handle_message(&node, topic, strlen(topic), cmd, len);
 }
 
+/* Issue #8: while the expander does not answer, the DOs are published as null (the latch may
+ * hold outputs from before a warm reset), and NDATA carries their state once it answers. */
+static void test_do_unknown_published_as_null(void)
+{
+    gw_tagdb_set_do_unknown(500);
+    gw_node_session_up(&node, 0);
+    msg(0);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NBIRTH/GW01", g_rec.msgs[0].topic);
+    for (int k = 0; k < 8; k++) {
+        int i = decoded_find_alias(&dec, GW_ALIAS_DO_BASE + (uint64_t)k);
+        TEST_ASSERT_TRUE(i >= 0);
+        TEST_ASSERT_TRUE(dec.m[i].is_null);
+    }
+    TEST_ASSERT_FALSE(dec.m[decoded_find_alias(&dec, GW_ALIAS_DI_BASE)].is_null);
+
+    /* still unknown: nothing changed, nothing published */
+    recorder_clear();
+    gw_node_io_changed(&node);
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+
+    /* the expander answers (all off): one NDATA with the 8 DOs and their values */
+    gw_tagdb_set_do(0x00, 900);
+    gw_node_io_changed(&node);
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    msg(0);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", g_rec.msgs[0].topic);
+    TEST_ASSERT_EQUAL(8, dec.count);
+    for (size_t i = 0; i < dec.count; i++) {
+        TEST_ASSERT_FALSE(dec.m[i].is_null);
+        TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[i].num);
+    }
+
+    /* lost again: the 8 DOs go back to null */
+    recorder_clear();
+    gw_tagdb_set_do_unknown(1000);
+    gw_node_io_changed(&node);
+    msg(0);
+    TEST_ASSERT_EQUAL(8, dec.count);
+    TEST_ASSERT_TRUE(dec.m[0].is_null);
+}
+
 /* Issue #14: a command metric without an alias is not logged as "alias 0". */
 static void test_discard_log_shows_alias_only_if_present(void)
 {
@@ -414,6 +455,7 @@ int main(void)
     RUN_TEST(test_dcmd_writes);
     RUN_TEST(test_session_down_suppresses_publishing);
     RUN_TEST(test_discard_log_shows_alias_only_if_present);
+    RUN_TEST(test_do_unknown_published_as_null);
     RUN_TEST(test_command_aborted_mid_payload_applies_nothing);
     return UNITY_END();
 }
