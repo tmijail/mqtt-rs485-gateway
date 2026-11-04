@@ -11,7 +11,7 @@ Payload.Metric.properties          type:FT_CALLBACK
 Payload.Metric.string_value        max_size:64
 Payload.Metric.bytes_value         max_size:64
 Payload.Metric.dataset_value       submsg_callback:true
-Payload.Metric.template_value      type:FT_IGNORE
+Payload.Metric.template_value      submsg_callback:true
 Payload.Metric.extension_value     type:FT_IGNORE
 Payload.Metric.MetricValueExtension skip_message:true
 # SPB-16 metric properties
@@ -24,8 +24,6 @@ Payload.PropertyValue.extension_value    type:FT_IGNORE
 Payload.PropertyValue.PropertyValueExtension skip_message:true
 Payload.PropertySetList            skip_message:true
 Payload.MetaData                   skip_message:true
-Payload.Template                   skip_message:true
-Payload.Template.*                 skip_message:true
 # SPB-19 DataSet
 Payload.DataSet.columns            type:FT_CALLBACK
 Payload.DataSet.types              type:FT_CALLBACK
@@ -34,3 +32,10 @@ Payload.DataSet.Row.elements       type:FT_CALLBACK
 Payload.DataSet.DataSetValue.string_value    max_size:64
 Payload.DataSet.DataSetValue.extension_value type:FT_IGNORE
 Payload.DataSet.DataSetValue.DataSetValueExtension skip_message:true
+# SPB-18 Template (members are metrics: a callback breaks the recursion)
+Payload.Template.version           type:FT_IGNORE
+Payload.Template.metrics           type:FT_CALLBACK
+Payload.Template.parameters        type:FT_IGNORE
+Payload.Template.template_ref      max_size:40
+Payload.Template.Parameter         skip_message:true
+Payload.Template.Parameter.*       skip_message:true

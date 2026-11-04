@@ -21,8 +21,33 @@ DATATYPE_FIELD = {  # Sparkplug datatype -> oneof field that must carry the valu
     1: "int_value", 2: "int_value", 3: "int_value", 5: "int_value", 6: "int_value", 7: "int_value",
     4: "long_value", 8: "long_value", 13: "long_value",
     9: "float_value", 10: "double_value", 11: "boolean_value", 12: "string_value", 14: "string_value",
-    16: "dataset_value", 17: "bytes_value", 18: "bytes_value",
+    16: "dataset_value", 17: "bytes_value", 18: "bytes_value", 19: "template_value",
 }
+
+
+def check_template(kind, m):
+    """SPB-18: definitions only in NBIRTH, without alias or template_ref; instances name their
+    definition; members carry name and datatype and no alias, and are not templates."""
+    if m.datatype != 19 or m.is_null:
+        return []
+    t, errors = m.template_value, []
+    if t.is_definition:
+        if kind != "NBIRTH":
+            errors.append(f"{m.name}: template definition outside NBIRTH")
+        if m.HasField("alias") or t.HasField("template_ref"):
+            errors.append(f"{m.name}: a template definition has no alias and no template_ref")
+    elif not t.template_ref:
+        errors.append(f"alias {m.alias}: template instance without template_ref")
+    for mm in t.metrics:
+        if not (mm.HasField("name") and mm.HasField("datatype")) or mm.HasField("alias"):
+            errors.append(f"{m.name or m.alias}: member without name/datatype or with an alias")
+        if mm.datatype == 19:
+            errors.append(f"{m.name or m.alias}: nested template member {mm.name}")
+        expected = DATATYPE_FIELD.get(mm.datatype)
+        if not mm.is_null and not t.is_definition and expected and mm.WhichOneof("value") != expected:
+            errors.append(f"member {mm.name}: datatype {mm.datatype} in {mm.WhichOneof('value')}")
+        errors += check_properties(mm)
+    return errors
 CELL_FIELD = {k: v for k, v in DATATYPE_FIELD.items() if k <= 14}   # SPB-19 DataSet columns
 
 
@@ -93,6 +118,10 @@ def check_properties(m):
 
 def value_of(m):
     which = m.WhichOneof("value")
+    if which == "template_value":
+        t = m.template_value
+        head = "definition" if t.is_definition else f"instance of {t.template_ref}"
+        return {head: {mm.name: value_of(mm) for mm in t.metrics}}
     if which == "dataset_value":
         ds = m.dataset_value
         return {"columns": list(ds.columns), "types": list(ds.types),
@@ -132,18 +161,22 @@ def check(kind, p):
     births = kind in ("NBIRTH", "DBIRTH")
     aliases = set()
     for m in p.metrics:
-        if births and not (m.HasField("name") and m.HasField("alias") and m.HasField("datatype")):
+        definition = m.datatype == 19 and m.template_value.is_definition
+        if births and not (m.HasField("name") and (definition or m.HasField("alias"))
+                           and m.HasField("datatype")):
             errors.append(f"birth metric without name/alias/datatype: {m}")
         if not births and m.HasField("name"):
             errors.append(f"{kind} metric should use the alias only: {m.name}")
-        if m.alias in aliases:
-            errors.append(f"duplicate alias {m.alias}")
-        aliases.add(m.alias)
+        if m.HasField("alias"):
+            if m.alias in aliases:
+                errors.append(f"duplicate alias {m.alias}")
+            aliases.add(m.alias)
         expected = DATATYPE_FIELD.get(m.datatype)
         if not m.is_null and expected and m.WhichOneof("value") != expected:
             errors.append(f"alias {m.alias}: datatype {m.datatype} carried in {m.WhichOneof('value')}")
         errors += check_properties(m)
         errors += check_dataset(m)
+        errors += check_template(kind, m)
     if kind == "NBIRTH":
         names = {m.name for m in p.metrics}
         for required in ("bdSeq", "Node Control/Rebirth", "Node Control/Reboot",

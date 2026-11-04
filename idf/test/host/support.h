@@ -80,14 +80,10 @@ void recorder_clear(void);
 /* Decoded view of a recorded payload. */
 #define DEC_MAX 80
 typedef struct {
-    bool has_seq;
-    uint64_t seq;
-    uint64_t timestamp;
-    size_t count;
-    struct {
-        char name[64];
-        bool has_name;
-        uint64_t alias;
+    char name[64];
+    bool has_name;
+    bool has_alias;
+    uint64_t alias;
         uint32_t datatype;
         bool is_null;
         spb_val_kind_t kind;
@@ -104,7 +100,21 @@ typedef struct {
         char eng_unit[64];       /* "" when absent */
         bool has_eng_low, has_eng_high;
         double eng_low, eng_high;
-    } m[DEC_MAX];
+        /* SPB-18 Template */
+        bool has_ref;
+        char ref[40];
+        bool is_definition;
+        uint32_t members;
+} dec_metric_t;
+
+typedef struct {
+    bool has_seq;
+    uint64_t seq;
+    uint64_t timestamp;
+    size_t count;
+    dec_metric_t m[DEC_MAX];
+    size_t mem_count;            /* SPB-18: members of every template, in wire order */
+    dec_metric_t mem[DEC_MAX];
 } decoded_t;
 
 bool decode_payload(const uint8_t *buf, size_t len, decoded_t *out);

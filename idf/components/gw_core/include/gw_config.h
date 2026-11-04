@@ -44,6 +44,7 @@ extern "C" {
 #define GW_FAILSAFE_MAX_S 86400     /* IO-3: local_io.failsafe_s */
 #define GW_COUNTER_SAVE_MIN_S 60    /* IO-4: local_io.counter_save_s (or 0) */
 #define GW_COUNTER_SAVE_MAX_S 86400
+#define GW_MAX_TEMPLATE_TAGS 64     /* SPB-18: tags of all template definitions together (NBIRTH) */
 
 typedef enum {
     GW_AREA_COIL = 0,
@@ -170,6 +171,7 @@ typedef struct {
 
 typedef struct {
     char name[GW_NAME_SIZE];    /* also the Sparkplug device_id */
+    char type[GW_NAME_SIZE];    /* SPB-18: template (device type) name; "" = no template */
     uint8_t unit_id;
     uint32_t poll_ms;           /* fast scan period (MB-10) */
     uint32_t slow_poll_ms;      /* MB-12: period of the tags with "scan": "slow" */

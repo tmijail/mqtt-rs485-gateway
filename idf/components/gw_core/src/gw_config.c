@@ -1,4 +1,5 @@
 #include "gw_config.h"
+#include "gw_conv.h"
 
 #include <math.h>
 #include <stdarg.h>
@@ -1059,16 +1060,60 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
     return true;
 }
 
+/* SPB-18: every device of a type has the same tags (names and datatypes, in order): the type
+ * is one Sparkplug template definition. The definitions together describe at most
+ * GW_MAX_TEMPLATE_TAGS tags, so the NBIRTH that carries them stays bounded. */
+static bool check_device_type(const gw_config_t *cfg, const gw_device_cfg_t *d, const char *path,
+                              unsigned *template_tags, gw_cfg_err_t *err)
+{
+    if (d->type[0] == '\0') {
+        return true;
+    }
+    char p[48];
+    snprintf(p, sizeof(p), "%s.type", path);
+    if (!check_topic_id(d->type, p, false, err)) {
+        return false;
+    }
+    if (strcmp(d->type, "bdSeq") == 0) {
+        return fail(err, p, "'bdSeq' es una métrica del nodo");
+    }
+    for (uint16_t j = 0; j < cfg->device_count; j++) {
+        const gw_device_cfg_t *o = &cfg->devices[j];
+        if (strcmp(o->type, d->type) != 0) {
+            continue;
+        }
+        bool same = o->tag_count == d->tag_count;
+        for (uint16_t k = 0; same && k < d->tag_count; k++) {
+            const gw_tag_cfg_t *a = &cfg->tags[o->first_tag + k];
+            const gw_tag_cfg_t *b = &cfg->tags[d->first_tag + k];
+            same = strcmp(a->name, b->name) == 0 && gw_conv_datatype(a) == gw_conv_datatype(b);
+        }
+        if (!same) {
+            return fail(err, p, "el tipo '%s' ya lo define devices[%u] (%s) con otros tags: los "
+                                "dispositivos de un tipo deben tener los mismos nombres y "
+                                "datatypes, en el mismo orden", d->type, j, o->name);
+        }
+        return true;
+    }
+    if (*template_tags + d->tag_count > GW_MAX_TEMPLATE_TAGS) {
+        return fail(err, p, "los tipos de dispositivo describen más de %d tags en total (el "
+                            "NBIRTH lleva sus definiciones)", GW_MAX_TEMPLATE_TAGS);
+    }
+    *template_tags += d->tag_count;
+    return true;
+}
+
 static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_device_cfg_t *d,
                          gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"name",        "unit_id", "poll_ms", "slow_poll_ms",
-                                       "offline_after", "block_reads", "max_gap", "tags"};
+                                       "offline_after", "block_reads", "max_gap", "tags", "type"};
     long unit, poll, off, gap, slow;
     bool merge;
     char p[96];
     if (!check_keys(o, path, keys, sizeof(keys) / sizeof(keys[0]), err) ||
         !get_string(o, "name", path, true, "", d->name, sizeof(d->name), err) ||
+        !get_string(o, "type", path, false, "", d->type, sizeof(d->type), err) ||
         !get_int(o, "unit_id", path, true, 0, 1, 247, &unit, err) ||
         !get_int(o, "poll_ms", path, false, 1000, 50, 3600000, &poll, err) ||
         !get_int(o, "slow_poll_ms", path, false, poll * 10 < 3600000 ? poll * 10 : 3600000, 50,
@@ -1149,6 +1194,7 @@ static bool parse_devices(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err
     if (n > GW_MAX_DEVICES) {
         return fail(err, "devices", "%d dispositivos; el máximo es %d", n, GW_MAX_DEVICES);
     }
+    unsigned template_tags = 0;
     int i = 0;
     for (const cJSON *it = arr->child; it != NULL; it = it->next, i++) {
         char path[32];
@@ -1163,6 +1209,9 @@ static bool parse_devices(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err
                 snprintf(p, sizeof(p), "%s.name", path);
                 return fail(err, p, "nombre de dispositivo duplicado '%s'", d->name);
             }
+        }
+        if (!check_device_type(cfg, d, path, &template_tags, err)) {
+            return false;
         }
         cfg->device_count++;
     }

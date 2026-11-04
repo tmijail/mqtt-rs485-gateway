@@ -104,6 +104,36 @@ int main(int argc, char **argv)
         fprintf(stderr, "MB-6 configuration rejected: %s\n", err.msg);
         return 1;
     }
+    /* SPB-18: two devices of one type (template definition in NBIRTH, instances in DBIRTH and
+     * DDATA) and an untyped one */
+    static const char tmpl_json[] =
+        "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"Plant1\","
+        " \"edge_node_id\": \"GW08\"}, \"devices\": ["
+        " {\"name\": \"PumpA\", \"unit_id\": 1, \"type\": \"Pump\", \"tags\": ["
+        "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
+        "   \"units\": \"rpm\", \"eng_high\": 3000},"
+        "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]},"
+        " {\"name\": \"PumpB\", \"unit_id\": 2, \"type\": \"Pump\", \"tags\": ["
+        "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\"},"
+        "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]}]}";
+    static gw_config_t tc;
+    if (!gw_config_parse(tmpl_json, sizeof(tmpl_json) - 1, &tc, &err)) {
+        fprintf(stderr, "template configuration rejected: %s\n", err.msg);
+        return 1;
+    }
+    gw_tagdb_reset();
+    static gw_node_t node8;
+    gw_node_init(&node8, &tc, &ops, &info);
+    gw_tag_value_t pv[2] = {{.value = 1450, .ts_ms = 1762171200000ull, .valid = true},
+                            {.value = 1, .ts_ms = 1762171200000ull, .valid = true}};
+    gw_tagdb_put_device(&tc, 0, pv, true);
+    gw_tagdb_put_device(&tc, 1, pv, true);
+    gw_node_session_up(&node8, 5);
+    pv[0].value = 1500;
+    pv[1].valid = false;
+    gw_tagdb_put_device(&tc, 0, pv, true);
+    gw_node_device_changed(&node8, 0);
+
     gw_tagdb_reset();
     static gw_node_t node6;
     gw_node_init(&node6, &mb6, &ops, &info);

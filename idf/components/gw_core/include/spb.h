@@ -32,6 +32,7 @@ extern "C" {
 #define SPB_DT_DATASET  16u   /* SPB-19 */
 #define SPB_DT_BYTES    17u   /* SPB-19 */
 #define SPB_DT_FILE     18u   /* SPB-19: bytes_value, like Bytes (no metadata) */
+#define SPB_DT_TEMPLATE 19u   /* SPB-18 */
 
 #define SPB_NAME_MAX    63   /* longest metric name the codec accepts (nanopb max_size 64) */
 #define SPB_STRING_MAX  63
@@ -54,6 +55,8 @@ typedef struct {
 } spb_props_t;
 
 struct spb_dataset;
+struct spb_template;
+struct spb_metric;
 
 /** A value; the member in use follows the datatype it goes with. */
 typedef union {
@@ -66,6 +69,7 @@ typedef union {
         size_t len;
     } bytes;
     const struct spb_dataset *ds;   /* DataSet */
+    const struct spb_template *tmpl;  /* Template */
 } spb_value_t;
 
 /**
@@ -83,9 +87,25 @@ typedef struct spb_dataset {
     const void *ctx;
 } spb_dataset_t;
 
+/**
+ * SPB-18 outgoing Template: a definition (NBIRTH; @c ref NULL) or an instance of the definition
+ * named @c ref. Its @c count members are @c members[i], or produced on demand by @c get (which
+ * may be called more than once per member: it must be deterministic). Members name themselves
+ * and carry no alias (no_alias); a member is not itself a template.
+ */
+typedef struct spb_template {
+    const char *ref;
+    bool is_definition;
+    uint32_t count;
+    const struct spb_metric *members;
+    void (*get)(const void *ctx, uint32_t i, struct spb_metric *out);
+    const void *ctx;
+} spb_template_t;
+
 /** Outgoing metric. The oneof value field used on the wire follows @c datatype. */
-typedef struct {
+typedef struct spb_metric {
     const char *name;        /* NULL: omitted (DATA messages use the alias only) */
+    bool no_alias;           /* template definitions and members: no alias on the wire */
     uint64_t alias;
     uint32_t datatype;
     uint64_t timestamp;      /* 0: omitted */
@@ -116,6 +136,7 @@ typedef enum {
     SPB_VAL_STRING,
     SPB_VAL_BYTES,    /* bytes_value: Bytes or File */
     SPB_VAL_DATASET,  /* cells through spb_decoder_t.cell */
+    SPB_VAL_TEMPLATE, /* members through spb_decoder_t.member */
 } spb_val_kind_t;
 
 /** An incoming scalar value (DataSet cell). */
@@ -178,6 +199,12 @@ typedef struct {
         uint32_t types[16];          /* the first 16 column types */
         uint32_t type_count;
     } ds;
+    struct {                         /* SPB_VAL_TEMPLATE */
+        bool has_ref;
+        char ref[40];                /* template_ref (an instance's definition) */
+        bool is_definition;
+        uint32_t members;
+    } tmpl;
     uint8_t prop_count;              /* properties the metric carried (all of them counted) */
     spb_rx_prop_t props[SPB_RX_PROPS];
 } spb_rx_metric_t;
@@ -195,12 +222,15 @@ typedef struct {
 /** Return false to abort decoding. */
 typedef bool (*spb_metric_cb_t)(void *ctx, const spb_rx_metric_t *m);
 
-/** Decoder callbacks; any may be NULL. The DataSet callbacks run while its metric is being
- * decoded, before @c metric is called for it. */
+/** Decoder callbacks; any may be NULL. The DataSet and Template callbacks run while their
+ * metric is being decoded, before @c metric is called for it. */
 typedef struct {
     spb_metric_cb_t metric;
     bool (*column)(void *ctx, uint32_t col, const char *name);   /* name truncated to 63 */
     bool (*cell)(void *ctx, uint32_t row, uint32_t col, const spb_rx_value_t *v);
+    /** SPB-18: each member of a Template value, before the template's own @c metric call.
+     * Members of a member template are not descended into. */
+    spb_metric_cb_t member;
     void *ctx;
 } spb_decoder_t;
 

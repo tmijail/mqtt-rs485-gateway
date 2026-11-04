@@ -1188,7 +1188,9 @@ def run_network_variant(args, work, slave):
         fec0::2 over IPv6. MQTT over IPv6 cannot be tested here: slirp would relay it to the
         host's ::1 and this container's kernel has no IPv6 (AF_INET6 is not supported).
       * SPB-19: a "bytes" tag (device Raw, unit 1 holding 220-222) is a Bytes metric with the raw
-        register bytes, and a DCMD with Bytes writes them back (FC16)."""
+        register bytes, and a DCMD with Bytes writes them back (FC16).
+      * SPB-18: two devices of type "Pump" (PumpA on unit 1, PumpB on unit 2): one template
+        definition in the NBIRTH, an instance per DBIRTH, a DCMD member write and its DDATA."""
     node = "GW02"
     cfg = json.loads(config_json())
     cfg["sparkplug"]["edge_node_id"] = node
@@ -1201,6 +1203,14 @@ def run_network_variant(args, work, slave):
         {"name": "Block", "area": "holding", "address": 220, "type": "bytes", "length": 3,
          "writable": True}]})
     slave.ctx.setValues(3, 220, [0x00FF, 0x1000, 0x7F80])
+    for unit, ctx in ((1, slave.ctx), (2, slave.bulk)):
+        cfg["devices"].append({"name": f"Pump{'AB'[unit - 1]}", "unit_id": unit, "type": "Pump",
+                               "poll_ms": 500, "tags": [
+            {"name": "Speed", "area": "holding", "address": 230, "type": "uint16", "units": "rpm",
+             "writable": True},
+            {"name": "Run", "area": "coil", "address": 5, "type": "bool"}]})
+        ctx.setValues(3, 230, [1440 + 10 * unit])
+        ctx.setValues(1, 5, [True])
     flash = flash_variant(args, work, "network", {"config.json": json.dumps(cfg, indent=2).encode()})
     obs = Observer()
     gw = Gateway(args, work / "uart0-network.log", flash)
@@ -1243,6 +1253,7 @@ def run_network_variant(args, work, slave):
                                               "bytes_value": b"\xde\xad\xbe\xef\x01\x02"}])
     raw_data = obs.wait(f"{T}/DDATA/{node}/Raw", 5)
     writes = slave.ctx.writes[written_from:]
+    tmpl = check_templates_gw02(obs, slave, node, nb)
     gw.kill()
     obs.wait(f"{T}/NDEATH/{node}", 5)   # the will, before the main scenario starts
     obs.close()
@@ -1262,11 +1273,60 @@ def run_network_variant(args, work, slave):
           and writes == [(16, 220, [0xDEAD, 0xBEEF, 0x0102])] and got == b"\xde\xad\xbe\xef\x01\x02",
           f"DBIRTH {block.datatype if block else None} {block.bytes_value.hex() if block else None}; "
           f"writes {writes}; DDATA {got.hex() if got else None}")
+    check("SPB-18 device type 'Pump': one template definition in the NBIRTH (no alias, members "
+          "Speed UInt16 'rpm' and Run Boolean), an instance per DBIRTH (template_ref, values, "
+          "Quality), DCMD on a member -> FC06 and DDATA with the instance and that member only",
+          tmpl[0], tmpl[1])
     check("NET-7 IPv6 on Ethernet: link-local, SLAAC (fec0::/64 from slirp's RA) and static "
           "address, shown by the shell; ICMPv6 echo to fec0::2 answered",
           lla and slaac and static and listed and cfg6 and replies,
           " | ".join(gw.find(r"net: ethernet: IPv6 ", t0)[:4]) + " | "
           + " | ".join(gw.find(r"^ipv6\s|reply from|sent, \d+ received", asked6)))
+
+
+def check_templates_gw02(obs, slave, node, nb):
+    """SPB-18 on the GW02 boot (see run_network_variant). Returns (ok, detail)."""
+    defs = [m for m in nb[2].metrics if m.datatype == 19] if nb else []
+    d = defs[0] if defs else None
+    members = [(mm.name, mm.datatype, props(mm).get("engUnit")) for mm in d.template_value.metrics] if d else []
+    def_ok = len(defs) == 1 and d.name == "Pump" and not d.HasField("alias") \
+        and d.template_value.is_definition and not d.template_value.template_ref \
+        and members == [("Speed", 6, "rpm"), ("Run", 11, None)]
+    births = {}
+    for name in ("PumpA", "PumpB"):
+        b = next((m for m in CAPTURE if m[1] == f"{T}/DBIRTH/{node}/{name}"), None) \
+            or obs.wait(f"{T}/DBIRTH/{node}/{name}", 10)
+        births[name] = b
+    inst = {}
+    for name, b in births.items():
+        m = b[2].metrics[0] if b and len(b[2].metrics) == 1 else None
+        if m is not None and m.datatype == 19 and m.template_value.template_ref == "Pump" \
+                and not m.template_value.is_definition:
+            inst[name] = {mm.name: (spb_decode.value_of(mm), props(mm).get("Quality"))
+                          for mm in m.template_value.metrics}
+    inst_ok = inst.get("PumpA") == {"Speed": (1450, 192), "Run": (True, 192)} \
+        and inst.get("PumpB") == {"Speed": (1460, 192), "Run": (True, 192)}
+    # DCMD: the instance metric with one member, by name
+    p = spb.Payload()
+    p.timestamp = int(time.time() * 1000)
+    m = p.metrics.add()
+    m.name, m.datatype = "Pump", 19
+    m.template_value.template_ref = "Pump"
+    mm = m.template_value.metrics.add()
+    mm.name, mm.datatype, mm.int_value = "Speed", 6, 1234
+    obs.drain()
+    before = len(slave.ctx.writes)
+    obs.c.publish(f"{T}/DCMD/{node}/PumpA", p.SerializeToString(), qos=0)
+    dd = obs.wait(f"{T}/DDATA/{node}/PumpA", 5)
+    wrote = slave.ctx.writes[before:]
+    dm = dd[2].metrics[0] if dd and dd[2].metrics else None
+    alias = births["PumpA"][2].metrics[0].alias if births.get("PumpA") else None
+    data_ok = dm is not None and not dm.HasField("name") and dm.alias == alias and dm.datatype == 19 \
+        and [(x.name, x.int_value) for x in dm.template_value.metrics] == [("Speed", 1234)]
+    ok = def_ok and inst_ok and wrote == [(6, 230, [1234])] and data_ok
+    return ok, (f"definition {members} (alias {'yes' if d is not None and d.HasField('alias') else 'no'}); "
+                f"instances {inst}; DCMD writes {wrote}; DDATA "
+                f"{[(x.name, x.int_value) for x in dm.template_value.metrics] if dm else None}")
 
 
 def run_web(args, work):

@@ -104,14 +104,23 @@ static void set_quality(spb_metric_t *m, bool good)
     m->props.quality = good ? SPB_QUALITY_GOOD : SPB_QUALITY_BAD;
 }
 
+/* SPB-18: the device is published as a template instance. */
+static bool typed(const gw_node_t *n, uint16_t dev)
+{
+    return n->cfg->devices[dev].type[0] != '\0';
+}
+
 /* @p v must stay valid until the metric is published (strings are referenced, not copied).
  * Births carry the tag's properties (SPB-16: engUnit, engLow, engHigh, Quality); DATA messages
- * carry Quality only when it changes (a failed read, or the first good one after it). */
-static void tag_metric(gw_node_t *n, size_t i, uint16_t tag, const gw_tag_value_t *v, bool birth)
+ * carry Quality only when it changes (a failed read, or the first good one after it). A
+ * template member (@p member, SPB-18) always carries its name and no alias. */
+static void tag_metric(gw_node_t *n, size_t i, uint16_t tag, const gw_tag_value_t *v, bool birth,
+                       bool member)
 {
     const gw_tag_cfg_t *t = &n->cfg->tags[tag];
-    spb_metric_t *m = metric(n, i, birth ? t->name : NULL, GW_ALIAS_TAG_BASE + tag,
+    spb_metric_t *m = metric(n, i, birth || member ? t->name : NULL, GW_ALIAS_TAG_BASE + tag,
                              gw_conv_datatype(t), v->ts_ms);
+    m->no_alias = member;
     m->is_null = !v->valid;
     if (birth) {
         m->props.eng_unit = t->units;
@@ -173,6 +182,8 @@ size_t gw_node_death_payload(uint64_t bdseq, uint8_t *out, size_t cap)
     return spb_encode(&p, out, cap);
 }
 
+static size_t template_definitions(gw_node_t *n, size_t i, uint64_t now);
+
 static void publish_nbirth(gw_node_t *n)
 {
     gw_local_io_t io;
@@ -209,17 +220,81 @@ static void publish_nbirth(gw_node_t *n)
     n->di_reported = io.di;
     n->do_reported = io.dout;
     n->do_unknown_reported = io.do_unknown;
+    i += template_definitions(n, i, now);
     publish(n, "NBIRTH", NULL, i, 0);
+}
+
+/* Publish @p dev's metrics: n->metrics[0..count) for a plain device; for a typed one (SPB-18)
+ * the members are n->metrics[1..count] and n->metrics[0] becomes their template instance. */
+static void publish_device(gw_node_t *n, const char *type, uint16_t dev, size_t count, bool birth)
+{
+    const gw_device_cfg_t *d = &n->cfg->devices[dev];
+    if (!typed(n, dev)) {
+        publish(n, type, d->name, count, 0);
+        return;
+    }
+    n->tmpl = (spb_template_t){.ref = d->type, .is_definition = false, .count = (uint32_t)count,
+                               .members = &n->metrics[1]};
+    metric(n, 0, birth ? d->type : NULL, GW_ALIAS_TAG_BASE + d->first_tag, SPB_DT_TEMPLATE,
+           gw_port_time_ms())
+        ->v.tmpl = &n->tmpl;
+    publish(n, type, d->name, 1, 0);
 }
 
 static void publish_dbirth(gw_node_t *n, uint16_t dev)
 {
     const gw_device_cfg_t *d = &n->cfg->devices[dev];
+    size_t base = typed(n, dev) ? 1 : 0;
     for (uint16_t i = 0; i < d->tag_count; i++) {
-        tag_metric(n, i, (uint16_t)(d->first_tag + i), &n->vals[i], true);
+        tag_metric(n, base + i, (uint16_t)(d->first_tag + i), &n->vals[i], true, base != 0);
     }
-    publish(n, "DBIRTH", d->name, d->tag_count, 0);
+    publish_device(n, "DBIRTH", dev, d->tag_count, true);
     n->dev_born[dev] = true;
+}
+
+/* SPB-18 definition member @p i of a device type: name, datatype, a zero default value and
+ * the engineering properties; no Quality (a definition holds no reading). */
+static void def_member(const void *ctx, uint32_t i, spb_metric_t *out)
+{
+    const gw_node_def_ctx_t *c = ctx;
+    const gw_tag_cfg_t *t = &c->cfg->tags[c->cfg->devices[c->dev].first_tag + i];
+    memset(out, 0, sizeof(*out));
+    out->name = t->name;
+    out->no_alias = true;
+    out->datatype = gw_conv_datatype(t);
+    if (out->datatype == SPB_DT_STRING) {
+        out->v.str = "";
+    }
+    out->props.eng_unit = t->units;
+    out->props.has_eng_low = t->has_eng_low;
+    out->props.eng_low = t->eng_low;
+    out->props.has_eng_high = t->has_eng_high;
+    out->props.eng_high = t->eng_high;
+}
+
+/* SPB-18: one definition per device type, after the node's own metrics. Returns the count. */
+static size_t template_definitions(gw_node_t *n, size_t i, uint64_t now)
+{
+    size_t k = 0;
+    for (uint16_t dev = 0; dev < n->cfg->device_count; dev++) {
+        const gw_device_cfg_t *d = &n->cfg->devices[dev];
+        bool first = d->type[0] != '\0';
+        for (uint16_t j = 0; first && j < dev; j++) {
+            first = strcmp(n->cfg->devices[j].type, d->type) != 0;
+        }
+        if (!first) {
+            continue;
+        }
+        n->def_ctx[k].cfg = n->cfg;
+        n->def_ctx[k].dev = dev;
+        n->defs[k] = (spb_template_t){.ref = NULL, .is_definition = true, .count = d->tag_count,
+                                      .get = def_member, .ctx = &n->def_ctx[k]};
+        spb_metric_t *m = metric(n, i + k, d->type, 0, SPB_DT_TEMPLATE, now);
+        m->no_alias = true;
+        m->v.tmpl = &n->defs[k];
+        k++;
+    }
+    return k;
 }
 
 static void publish_ddeath(gw_node_t *n, uint16_t dev)
@@ -275,15 +350,16 @@ void gw_node_device_changed(gw_node_t *n, uint16_t dev)
         return;
     }
     const gw_device_cfg_t *d = &n->cfg->devices[dev];
+    size_t base = typed(n, dev) ? 1 : 0;
     size_t count = 0;
     for (uint16_t i = 0; i < d->tag_count; i++) {
         uint16_t tag = (uint16_t)(d->first_tag + i);
         if (tag_changed(n, tag, &n->vals[i])) {
-            tag_metric(n, count++, tag, &n->vals[i], false);
+            tag_metric(n, base + count++, tag, &n->vals[i], false, base != 0);
         }
     }
     if (count > 0) {
-        publish(n, "DDATA", d->name, count, 0);
+        publish_device(n, "DDATA", dev, count, false);
     }
 }
 
@@ -348,8 +424,9 @@ void gw_node_write_done(gw_node_t *n, uint16_t tag, bool ok)
     }
     gw_tag_value_t v;
     gw_tagdb_get_tag(tag, &v);
-    tag_metric(n, 0, tag, &v, false);
-    publish(n, "DDATA", n->cfg->devices[dev].name, 1, 0);
+    size_t base = typed(n, dev) ? 1 : 0;
+    tag_metric(n, base, tag, &v, false, base != 0);
+    publish_device(n, "DDATA", dev, 1, false);
 }
 
 /* ---------- commands ---------- */
@@ -424,6 +501,9 @@ static int resolve_tag(const gw_node_t *n, uint16_t dev, const spb_rx_metric_t *
     const gw_device_cfg_t *d = &n->cfg->devices[dev];
     if (m->name != NULL) {
         return gw_config_find_tag(n->cfg, dev, m->name);
+    }
+    if (typed(n, dev)) {
+        return -1;   /* SPB-18: members have no alias; this one would be the instance's */
     }
     if (m->has_alias && m->alias >= GW_ALIAS_TAG_BASE + d->first_tag &&
         m->alias < GW_ALIAS_TAG_BASE + d->first_tag + d->tag_count) {
@@ -559,6 +639,9 @@ static bool dcmd_resolve(const gw_node_t *n, const spb_rx_metric_t *m, bool quie
 static bool on_dcmd_metric(void *ctx, const spb_rx_metric_t *m)
 {
     gw_node_t *n = ctx;
+    if (m->kind == SPB_VAL_TEMPLATE) {
+        return true;   /* SPB-18: the instance; its members came through on_dcmd_metric */
+    }
     int tag;
     gw_tag_value_t v;
     if (!dcmd_resolve(n, m, n->cmd_count_only, &tag, &v)) {
@@ -653,7 +736,9 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
          * payload in full, so it also validates it. */
         n->cmd_count_only = true;
         n->cmd_writes = 0;
-        bool decoded = spb_decode(payload, len, NULL, on_dcmd_metric, n);
+        /* SPB-18: the members of a template instance are writes like top-level metrics */
+        const spb_decoder_t dec = {.metric = on_dcmd_metric, .member = on_dcmd_metric, .ctx = n};
+        bool decoded = spb_decode_with(payload, len, NULL, &dec);
         n->cmd_count_only = false;
         if (!decoded) {
             GW_LOGW(TAG, "DCMD: undecodable payload (%u bytes): nothing applied", (unsigned)len);
@@ -666,6 +751,6 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
                     (unsigned)room);
             return;
         }
-        spb_decode(payload, len, NULL, on_dcmd_metric, n);
+        spb_decode_with(payload, len, NULL, &dec);
     }
 }

@@ -368,6 +368,24 @@ El router por defecto IPv6 se aprende de los RA; no hay *gateway* IPv6 estático
 
 Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `CONFIG_GW_MB_BLOCK_MAX_GAP`), como en el MVP.
 
+**Tipos de dispositivo como plantillas Sparkplug (SPB-18), en cada dispositivo.**
+
+```json
+{ "name": "PumpA", "unit_id": 1, "type": "Pump", "tags": [ … ] },
+{ "name": "PumpB", "unit_id": 2, "type": "Pump", "tags": [ … ] }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `type` | texto | `""` | Hasta 39 caracteres, sin `/ + #` ni `bdSeq`. Vacío = sin plantilla (una métrica por tag, como el MVP) |
+
+- Todos los dispositivos de un mismo `type` tienen los mismos tags: mismos nombres y datatypes, en el mismo orden (área, dirección, escala y unidades pueden cambiar). Si no, la configuración se rechaza con la ruta `devices[i].type`.
+- Las definiciones juntas describen como mucho **64 tags** (cada tipo cuenta una vez): el NBIRTH las lleva todas.
+- **NBIRTH:** una métrica Template (19) por tipo, con su nombre, `is_definition = true`, sin alias ni `template_ref`. Sus miembros: nombre, datatype, un valor por defecto (0, falso o texto vacío) y las propiedades `engUnit`/`engLow`/`engHigh` del primer dispositivo del tipo.
+- **DBIRTH:** una sola métrica Template, la instancia: nombre = el tipo, alias 100 + el primer tag del dispositivo, `template_ref` = el tipo. Sus miembros son los tags, por nombre y sin alias, con valor y `Quality`.
+- **DDATA:** la instancia por alias, solo con los miembros que cambiaron (por nombre).
+- **DCMD:** la instancia con los miembros a escribir (por nombre); también se acepta el tag por nombre como métrica suelta. Por alias, no: los miembros no tienen alias.
+
 **Encuesta rápida y lenta (MB-12).**
 
 ```json

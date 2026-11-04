@@ -13,6 +13,11 @@
  *   7 Node Control/Scan Rate,
  *   10..17 DI/1..DI/8, 20..27 DO/1..DO/8, 30..37 Counter/1..Counter/8 (IO-4, UInt64 pulse
  *   counters of the DIs), 100 + n device tag with global index n.
+ *
+ * SPB-18 device types: a device with a `type` is published as one Template instance metric
+ * (named after the type, alias 100 + its first tag) whose members are its tags, by name; the
+ * NBIRTH carries one Template definition per type (no alias). DDATA carries the instance with
+ * the changed members only. Devices without a type keep one metric per tag.
  */
 #pragma once
 
@@ -47,7 +52,12 @@ extern "C" {
 #define GW_ALIAS_TAG_BASE  100u
 
 #define GW_NODE_IO_COUNT        8
-#define GW_NODE_BIRTH_METRICS   (7 + 3 * GW_NODE_IO_COUNT)
+#define GW_NODE_BIRTH_METRICS   (7 + 3 * GW_NODE_IO_COUNT)   /* without template definitions */
+/* Scratch metrics: a whole device (+1 template instance), or the NBIRTH with one template
+ * definition per device type. */
+#define GW_NODE_METRICS_MAX \
+    (GW_MAX_TAGS_PER_DEVICE + 1 > GW_NODE_BIRTH_METRICS + GW_MAX_DEVICES \
+         ? GW_MAX_TAGS_PER_DEVICE + 1 : GW_NODE_BIRTH_METRICS + GW_MAX_DEVICES)
 #define GW_SPB_PAYLOAD_MAX      12288  /* > worst-case DBIRTH: 64 tags with 39-char names and
                                          * every SPB-16 property, about 10 KB (test_spb) */
 #define GW_TOPIC_MAX            160
@@ -70,6 +80,12 @@ typedef struct {
     void (*reboot)(void *ctx);
     void *ctx;
 } gw_node_ops_t;
+
+/** SPB-18: what a template definition's members are produced from. */
+typedef struct {
+    const gw_config_t *cfg;
+    uint16_t dev;                      /* first device of the type */
+} gw_node_def_ctx_t;
 
 /** Static node description published in NBIRTH ("Node Info/..."); strings must outlive the node. */
 typedef struct {
@@ -96,8 +112,10 @@ typedef struct {
 
     /* Scratch, statically sized (REL-2). */
     gw_tag_value_t vals[GW_MAX_TAGS_PER_DEVICE];
-    spb_metric_t metrics[GW_MAX_TAGS_PER_DEVICE > GW_NODE_BIRTH_METRICS ? GW_MAX_TAGS_PER_DEVICE
-                                                                        : GW_NODE_BIRTH_METRICS];
+    spb_metric_t metrics[GW_NODE_METRICS_MAX];
+    spb_template_t tmpl;               /* SPB-18: the instance being published */
+    spb_template_t defs[GW_MAX_DEVICES];   /* SPB-18: NBIRTH definitions, one per type */
+    gw_node_def_ctx_t def_ctx[GW_MAX_DEVICES];
     uint8_t buf[GW_SPB_PAYLOAD_MAX];
     char topic[GW_TOPIC_MAX];
 

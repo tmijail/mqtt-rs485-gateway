@@ -268,6 +268,32 @@ static bool enc_ds_rows(pb_ostream_t *stream, const pb_field_iter_t *field, void
 
 /* ---------- metrics ---------- */
 
+static bool fill_metric(Payload_Metric *out, const spb_metric_t *m);
+
+/* SPB-18 template members: each one is a whole metric, encoded with its own properties. */
+static bool enc_tmpl_members(pb_ostream_t *stream, const pb_field_iter_t *field, void *const *arg)
+{
+    const spb_template_t *t = *arg;
+    for (uint32_t i = 0; i < t->count; i++) {
+        spb_metric_t mm;
+        if (t->members != NULL) {
+            mm = t->members[i];
+        } else {
+            memset(&mm, 0, sizeof(mm));
+            t->get(t->ctx, i, &mm);
+        }
+        if (mm.datatype == SPB_DT_TEMPLATE) {
+            return false;   /* one level only */
+        }
+        Payload_Metric pm;
+        if (!fill_metric(&pm, &mm) || !pb_encode_tag_for_field(stream, field) ||
+            !pb_encode_submessage(stream, Payload_Metric_fields, &pm)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool fill_metric(Payload_Metric *out, const spb_metric_t *m)
 {
     *out = (Payload_Metric)Payload_Metric_init_zero;
@@ -277,8 +303,8 @@ static bool fill_metric(Payload_Metric *out, const spb_metric_t *m)
         out->has_name = true;
         copy_str(out->name, sizeof(out->name), m->name);
     }
-    out->has_alias = true;
-    out->alias = m->alias;
+    out->has_alias = !m->no_alias;
+    out->alias = m->no_alias ? 0 : m->alias;
     out->has_datatype = true;
     out->datatype = m->datatype;
     if (m->timestamp != 0) {
@@ -315,6 +341,21 @@ static bool fill_metric(Payload_Metric *out, const spb_metric_t *m)
         pd->types.arg = (void *)ds;
         pd->rows.funcs.encode = enc_ds_rows;
         pd->rows.arg = (void *)ds;
+        return true;
+    }
+    case SPB_DT_TEMPLATE: {
+        const spb_template_t *t = m->v.tmpl;
+        out->which_value = Payload_Metric_template_value_tag;
+        Payload_Template *pt = &out->value.template_value;
+        *pt = (Payload_Template)Payload_Template_init_zero;
+        pt->metrics.funcs.encode = enc_tmpl_members;
+        pt->metrics.arg = (void *)t;
+        if (t->ref != NULL) {
+            pt->has_template_ref = true;
+            copy_str(pt->template_ref, sizeof(pt->template_ref), t->ref);
+        }
+        pt->has_is_definition = true;
+        pt->is_definition = t->is_definition;
         return true;
     }
     default:
@@ -488,6 +529,8 @@ typedef struct {
     uint32_t col;             /* next element of the current row */
 } dec_value_t;
 
+static bool decode_metric(pb_istream_t *stream, const spb_decoder_t *d, bool member);
+
 static bool dec_ds_column(pb_istream_t *stream, const pb_field_iter_t *field, void **arg)
 {
     (void)field;
@@ -579,12 +622,29 @@ static bool dec_ds_row(pb_istream_t *stream, const pb_field_iter_t *field, void 
     return true;
 }
 
+/* SPB-18: a template member, handed to the decoder's member callback. */
+static bool dec_tmpl_member(pb_istream_t *stream, const pb_field_iter_t *field, void **arg)
+{
+    (void)field;
+    dec_value_t *dv = *arg;
+    if (dv->rx->tmpl.members < UINT32_MAX) {
+        dv->rx->tmpl.members++;
+    }
+    return decode_metric(stream, dv->d, true);
+}
+
 /* nanopb calls this before it decodes a submessage of the value oneof: its callbacks are set
  * here (the union member was just cleared). */
 static bool dec_value_submsg(pb_istream_t *stream, const pb_field_t *field, void **arg)
 {
     (void)stream;
     dec_value_t *dv = *arg;
+    if (field->tag == Payload_Metric_template_value_tag) {
+        Payload_Template *t = field->pData;
+        t->metrics.funcs.decode = dec_tmpl_member;
+        t->metrics.arg = dv;
+        return true;
+    }
     if (field->tag == Payload_Metric_dataset_value_tag) {
         Payload_DataSet *ds = field->pData;
         ds->columns.funcs.decode = dec_ds_column;
@@ -597,19 +657,21 @@ static bool dec_value_submsg(pb_istream_t *stream, const pb_field_t *field, void
     return true;
 }
 
-static bool dec_metric(pb_istream_t *stream, const pb_field_iter_t *field, void **arg)
+/* Decode one metric and hand it to d->metric, or to d->member for a template member (@p member).
+ * A member gets no DataSet or Template callbacks: one level only. */
+static bool decode_metric(pb_istream_t *stream, const spb_decoder_t *d, bool member)
 {
-    (void)field;
-    const dec_ctx_t *dc = *arg;
     spb_rx_metric_t rx;
     memset(&rx, 0, sizeof(rx));
     dec_props_t dp = {.rx = &rx};
-    dec_value_t dv = {.d = dc->d, .rx = &rx};
+    dec_value_t dv = {.d = d, .rx = &rx};
     Payload_Metric m = Payload_Metric_init_zero;
     m.properties.funcs.decode = dec_props;
     m.properties.arg = &dp;
-    m.cb_value.funcs.decode = dec_value_submsg;
-    m.cb_value.arg = &dv;
+    if (!member) {
+        m.cb_value.funcs.decode = dec_value_submsg;
+        m.cb_value.arg = &dv;
+    }
     if (!pb_decode(stream, Payload_Metric_fields, &m)) {
         return false;
     }
@@ -654,12 +716,26 @@ static bool dec_metric(pb_istream_t *stream, const pb_field_iter_t *field, void 
         rx.kind = SPB_VAL_DATASET;
         rx.ds.num_of_columns = m.value.dataset_value.num_of_columns;
         break;
+    case Payload_Metric_template_value_tag:
+        rx.kind = SPB_VAL_TEMPLATE;
+        rx.tmpl.has_ref = m.value.template_value.has_template_ref;
+        memcpy(rx.tmpl.ref, m.value.template_value.template_ref, sizeof(rx.tmpl.ref));
+        rx.tmpl.is_definition = m.value.template_value.has_is_definition &&
+                                m.value.template_value.is_definition;
+        break;
     default:
         rx.kind = SPB_VAL_NONE;
         break;
     }
-    const spb_decoder_t *d = dc->d;
-    return d == NULL || d->metric == NULL || d->metric(d->ctx, &rx);
+    spb_metric_cb_t cb = d == NULL ? NULL : member ? d->member : d->metric;
+    return cb == NULL || cb(d->ctx, &rx);
+}
+
+static bool dec_metric(pb_istream_t *stream, const pb_field_iter_t *field, void **arg)
+{
+    (void)field;
+    const dec_ctx_t *dc = *arg;
+    return decode_metric(stream, dc->d, false);
 }
 
 bool spb_decode(const uint8_t *buf, size_t len, spb_rx_header_t *hdr, spb_metric_cb_t cb,

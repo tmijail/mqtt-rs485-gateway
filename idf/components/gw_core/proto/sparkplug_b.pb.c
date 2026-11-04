@@ -9,6 +9,9 @@
 PB_BIND(Payload, Payload, AUTO)
 
 
+PB_BIND(Payload_Template, Payload_Template, AUTO)
+
+
 PB_BIND(Payload_DataSet, Payload_DataSet, AUTO)
 
 

@@ -289,14 +289,14 @@ void recorder_clear(void)
 
 /* ---------- decoding ---------- */
 
-static bool dec_cb(void *ctx, const spb_rx_metric_t *m)
+static void fill_dec(dec_metric_t *o, const spb_rx_metric_t *m)
 {
-    decoded_t *d = ctx;
-    if (d->count >= DEC_MAX) {
-        return false;
-    }
-    __typeof__(d->m[0]) *o = &d->m[d->count++];
     memset(o, 0, sizeof(*o));
+    o->has_alias = m->has_alias;
+    o->has_ref = m->tmpl.has_ref;
+    memcpy(o->ref, m->tmpl.ref, sizeof(o->ref));
+    o->is_definition = m->tmpl.is_definition;
+    o->members = m->tmpl.members;
     if (m->name) {
         o->has_name = true;
         snprintf(o->name, sizeof(o->name), "%s", m->name);
@@ -334,6 +334,25 @@ static bool dec_cb(void *ctx, const spb_rx_metric_t *m)
         o->has_eng_high = true;
         o->eng_high = p->v.d;
     }
+}
+
+static bool dec_cb(void *ctx, const spb_rx_metric_t *m)
+{
+    decoded_t *d = ctx;
+    if (d->count >= DEC_MAX) {
+        return false;
+    }
+    fill_dec(&d->m[d->count++], m);
+    return true;
+}
+
+static bool dec_member_cb(void *ctx, const spb_rx_metric_t *m)
+{
+    decoded_t *d = ctx;
+    if (d->mem_count >= DEC_MAX) {
+        return false;
+    }
+    fill_dec(&d->mem[d->mem_count++], m);
     return true;
 }
 
@@ -341,7 +360,8 @@ bool decode_payload(const uint8_t *buf, size_t len, decoded_t *out)
 {
     memset(out, 0, sizeof(*out));
     spb_rx_header_t hdr;
-    if (!spb_decode(buf, len, &hdr, dec_cb, out)) {
+    const spb_decoder_t d = {.metric = dec_cb, .member = dec_member_cb, .ctx = out};
+    if (!spb_decode_with(buf, len, &hdr, &d)) {
         return false;
     }
     out->has_seq = hdr.has_seq;

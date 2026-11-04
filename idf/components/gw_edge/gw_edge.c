@@ -23,7 +23,7 @@
 
 static const char *TAG = "edge";
 
-#define STACK_BYTES      6144
+#define STACK_BYTES      8192   /* SPB-18: a DCMD decodes template members one level deep */
 #define MAX_IDLE_MS      1000
 #define NET_TIMEOUT_MS   5000   /* esp-mqtt socket timeout (one socket write) */
 #define REBOOT_DELAY_MS  100    /* let the log drain */

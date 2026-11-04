@@ -340,6 +340,62 @@ static void test_dataset_round_trip(void)
     TEST_ASSERT_EQUAL(0, spb_encode(&p, buf, sizeof(buf)));
 }
 
+/* SPB-18: a definition (no alias, is_definition, members by name) and an instance (template_ref),
+ * members from an array or from a generator; members decode through the member callback. */
+static void gen_member(const void *ctx, uint32_t i, spb_metric_t *out)
+{
+    (void)ctx;
+    static const char *const names[] = {"Voltage", "Run"};
+    out->name = names[i];
+    out->no_alias = true;
+    out->datatype = i == 0 ? SPB_DT_FLOAT : SPB_DT_BOOLEAN;
+    out->props.eng_unit = i == 0 ? "V" : NULL;
+}
+
+static void test_template_round_trip(void)
+{
+    const spb_template_t def = {.is_definition = true, .count = 2, .get = gen_member};
+    const spb_metric_t members[] = {
+        {.name = "Voltage", .no_alias = true, .datatype = SPB_DT_FLOAT, .v.num = 230.5,
+         .props = {.has_quality = true, .quality = SPB_QUALITY_GOOD}},
+        {.name = "Run", .no_alias = true, .datatype = SPB_DT_BOOLEAN, .is_null = true},
+    };
+    const spb_template_t inst = {.ref = "Meter", .count = 2, .members = members};
+    spb_metric_t m[] = {
+        {.name = "Meter", .no_alias = true, .datatype = SPB_DT_TEMPLATE, .v.tmpl = &def},
+        {.name = "Meter", .alias = 100, .datatype = SPB_DT_TEMPLATE, .v.tmpl = &inst},
+    };
+    spb_payload_t p = {.timestamp = 1, .has_seq = true, .seq = 0, .metrics = m, .metric_count = 2};
+    size_t len = spb_encode(&p, buf, sizeof(buf));
+    TEST_ASSERT_GREATER_THAN(0, len);
+    TEST_ASSERT_TRUE(decode_payload(buf, len, &dec));
+    TEST_ASSERT_EQUAL(2, dec.count);
+    TEST_ASSERT_EQUAL(SPB_VAL_TEMPLATE, dec.m[0].kind);
+    TEST_ASSERT_FALSE(dec.m[0].has_alias);
+    TEST_ASSERT_TRUE(dec.m[0].is_definition);
+    TEST_ASSERT_FALSE(dec.m[0].has_ref);
+    TEST_ASSERT_EQUAL(2, dec.m[0].members);
+    TEST_ASSERT_TRUE(dec.m[1].has_alias);
+    TEST_ASSERT_FALSE(dec.m[1].is_definition);
+    TEST_ASSERT_TRUE(dec.m[1].has_ref);
+    TEST_ASSERT_EQUAL_STRING("Meter", dec.m[1].ref);
+    TEST_ASSERT_EQUAL(4, dec.mem_count);
+    TEST_ASSERT_EQUAL_STRING("Voltage", dec.mem[0].name);
+    TEST_ASSERT_FALSE(dec.mem[0].has_alias);
+    TEST_ASSERT_EQUAL_STRING("V", dec.mem[0].eng_unit);
+    TEST_ASSERT_EQUAL(SPB_DT_BOOLEAN, dec.mem[1].datatype);
+    TEST_ASSERT_EQUAL_DOUBLE(230.5, dec.mem[2].num);
+    TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_GOOD, dec.mem[2].quality);
+    TEST_ASSERT_TRUE(dec.mem[3].is_null);
+
+    /* one level only: a member that is a template fails the encoding */
+    const spb_metric_t nested = {.name = "x", .no_alias = true, .datatype = SPB_DT_TEMPLATE,
+                                 .v.tmpl = &inst};
+    const spb_template_t outer = {.ref = "Meter", .count = 1, .members = &nested};
+    m[1].v.tmpl = &outer;
+    TEST_ASSERT_EQUAL(0, spb_encode(&p, buf, sizeof(buf)));
+}
+
 static void test_worst_case_birth_fits(void)
 {
     /* SPB-16: the widest DBIRTH metric carries every property; 64 of them, either numeric with
@@ -401,6 +457,7 @@ int main(void)
     RUN_TEST(test_property_decode_bounds);
     RUN_TEST(test_bytes_and_file);
     RUN_TEST(test_dataset_round_trip);
+    RUN_TEST(test_template_round_trip);
     RUN_TEST(test_worst_case_birth_fits);
     RUN_TEST(test_topics);
     return UNITY_END();

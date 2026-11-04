@@ -538,6 +538,49 @@ static void test_bytes_tags(void)
                     "las áreas coil/discrete solo admiten type=bool");
 }
 
+/* SPB-18: devices of a type have the same tags; the definitions stay bounded. */
+static void test_device_types(void)
+{
+    static const char ok[] =
+        "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+        "\"devices\":["
+        "{\"name\":\"A\",\"unit_id\":1,\"type\":\"Meter\",\"tags\":[{\"name\":\"v\",\"area\":\"input\","
+        "\"address\":0,\"type\":\"uint16\"}]},"
+        "{\"name\":\"B\",\"unit_id\":2,\"type\":\"Meter\",\"tags\":[{\"name\":\"v\",\"area\":\"holding\","
+        "\"address\":7,\"type\":\"uint16\",\"units\":\"V\"}]},"
+        "{\"name\":\"C\",\"unit_id\":3,\"tags\":[{\"name\":\"v\",\"area\":\"input\","
+        "\"address\":0,\"type\":\"int16\"}]}]}";
+    TEST_ASSERT_TRUE_MESSAGE(parse(ok), err.msg);   /* area, address and units may differ */
+    TEST_ASSERT_EQUAL_STRING("Meter", cfg.devices[1].type);
+    TEST_ASSERT_EQUAL_STRING("", cfg.devices[2].type);
+
+    char doc[1024];
+    snprintf(doc, sizeof(doc), "%s", ok);
+    char *t = strstr(doc, "\"address\":7,\"type\":\"uint16\"");
+    memcpy(t + strlen("\"address\":7,\"type\":\""), "uint32", 6);   /* other datatype */
+    ASSERT_REJECTED(parse(doc), "devices[1].type: el tipo 'Meter' ya lo define devices[0] (A)");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+                          "\"devices\":[{\"name\":\"A\",\"unit_id\":1,\"type\":\"M/1\",\"tags\":[{\"name\":\"v\","
+                          "\"area\":\"input\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+                    "devices[0].type: carácter no permitido '/'");
+
+    /* the definitions together: at most GW_MAX_TEMPLATE_TAGS tags */
+    static char big[16384];
+    size_t n = (size_t)snprintf(big, sizeof(big), "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":"
+                                "{\"group_id\":\"G\",\"edge_node_id\":\"E\"},\"devices\":[");
+    for (int d = 0; d < 3; d++) {
+        n += (size_t)snprintf(big + n, sizeof(big) - n, "%s{\"name\":\"D%d\",\"unit_id\":1,"
+                              "\"type\":\"T%d\",\"tags\":[", d ? "," : "", d, d);
+        for (int k = 0; k < 30; k++) {
+            n += (size_t)snprintf(big + n, sizeof(big) - n, "%s{\"name\":\"t%d\",\"area\":\"input\","
+                                  "\"address\":%d,\"type\":\"uint16\"}", k ? "," : "", k, k);
+        }
+        n += (size_t)snprintf(big + n, sizeof(big) - n, "]}");
+    }
+    snprintf(big + n, sizeof(big) - n, "]}");
+    ASSERT_REJECTED(parse(big), "devices[2].type: los tipos de dispositivo describen más de 64 tags");
+}
+
 /* Issue #38: block reads per device. */
 static void test_device_block_reads(void)
 {
@@ -942,6 +985,7 @@ int main(void)
     RUN_TEST(test_mb6_tags);
     RUN_TEST(test_eng_range);
     RUN_TEST(test_bytes_tags);
+    RUN_TEST(test_device_types);
     RUN_TEST(test_device_block_reads);
     RUN_TEST(test_scan_classes);
     RUN_TEST(test_modbus_tcp_section);

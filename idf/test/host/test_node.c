@@ -1,5 +1,6 @@
 /* QA-1: Sparkplug edge-node behaviour: births, deaths, seq, aliases, report by
  * exception, rebirth and NCMD/DCMD handling (SPB-2..SPB-12). */
+#include <stdio.h>
 #include <string.h>
 
 #include "gw_node.h"
@@ -766,6 +767,153 @@ static void test_bytes_tag(void)
     TEST_ASSERT_EQUAL(1, g_rec.writes);
 }
 
+/* SPB-18: devices of a type are template instances; the NBIRTH defines each type once. */
+static void test_templates(void)
+{
+    static const char json[] =
+        "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+        " \"devices\": ["
+        " {\"name\": \"P1\", \"unit_id\": 1, \"type\": \"Pump\", \"tags\": ["
+        "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
+        "   \"units\": \"rpm\", \"writable\": true},"
+        "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]},"
+        " {\"name\": \"P2\", \"unit_id\": 2, \"type\": \"Pump\", \"tags\": ["
+        "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
+        "   \"writable\": true},"
+        "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]},"
+        " {\"name\": \"Flat\", \"unit_id\": 3, \"tags\": ["
+        "  {\"name\": \"X\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\"}]}]}";
+    static gw_config_t c;
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(json, sizeof(json) - 1, &c, &err), err.msg);
+    cfg = &c;
+    gw_tagdb_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    gw_tag_value_t v[2] = {{.value = 1500, .ts_ms = 1000, .valid = true},
+                           {.value = 1, .ts_ms = 1000, .valid = true}};
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_tagdb_put_device(cfg, 2, v, true);
+    gw_node_session_up(&node, 0);
+    TEST_ASSERT_EQUAL(3, g_rec.count);             /* NBIRTH, DBIRTH P1, DBIRTH Flat */
+
+    msg(0);   /* NBIRTH: one definition for the two pumps, after the node's metrics */
+    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS + 1, dec.count);
+    int i = decoded_find_name(&dec, "Pump");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_TEMPLATE, dec.m[i].datatype);
+    TEST_ASSERT_FALSE(dec.m[i].has_alias);
+    TEST_ASSERT_TRUE(dec.m[i].is_definition);
+    TEST_ASSERT_FALSE(dec.m[i].has_ref);
+    TEST_ASSERT_EQUAL(2, dec.mem_count);
+    TEST_ASSERT_EQUAL_STRING("Speed", dec.mem[0].name);
+    TEST_ASSERT_EQUAL(SPB_DT_UINT16, dec.mem[0].datatype);
+    TEST_ASSERT_FALSE(dec.mem[0].has_alias);
+    TEST_ASSERT_EQUAL_STRING("rpm", dec.mem[0].eng_unit);   /* from the first device of the type */
+    TEST_ASSERT_FALSE(dec.mem[0].has_quality);
+    TEST_ASSERT_EQUAL_STRING("Run", dec.mem[1].name);
+
+    msg(1);   /* DBIRTH P1: one instance metric */
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DBIRTH/N/P1", g_rec.msgs[1].topic);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_EQUAL_STRING("Pump", dec.m[0].name);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TAG_BASE + 0, dec.m[0].alias);
+    TEST_ASSERT_EQUAL(SPB_DT_TEMPLATE, dec.m[0].datatype);
+    TEST_ASSERT_FALSE(dec.m[0].is_definition);
+    TEST_ASSERT_EQUAL_STRING("Pump", dec.m[0].ref);
+    TEST_ASSERT_EQUAL(2, dec.mem_count);
+    TEST_ASSERT_EQUAL_DOUBLE(1500, dec.mem[0].num);
+    TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_GOOD, dec.mem[0].quality);
+    TEST_ASSERT_EQUAL_STRING("rpm", dec.mem[0].eng_unit);
+    msg(2);   /* the untyped device as before */
+    TEST_ASSERT_EQUAL_STRING("X", dec.m[0].name);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TAG_BASE + 4, dec.m[0].alias);
+
+    /* DDATA: the instance by alias, with the changed member only (by name) */
+    recorder_clear();
+    v[0].value = 1600;
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_node_device_changed(&node, 0);
+    msg(0);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_FALSE(dec.m[0].has_name);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TAG_BASE + 0, dec.m[0].alias);
+    TEST_ASSERT_EQUAL(1, dec.mem_count);
+    TEST_ASSERT_EQUAL_STRING("Speed", dec.mem[0].name);
+    TEST_ASSERT_EQUAL_DOUBLE(1600, dec.mem[0].num);
+    TEST_ASSERT_FALSE(dec.mem[0].has_quality);
+
+    /* DCMD: a member of the instance, or the tag by name; never by alias */
+    recorder_clear();
+    const spb_metric_t member = {.name = "Speed", .no_alias = true, .datatype = SPB_DT_UINT16,
+                                 .v.num = 900};
+    const spb_template_t inst = {.ref = "Pump", .count = 1, .members = &member};
+    const spb_metric_t cmd_m = {.name = "Pump", .alias = GW_ALIAS_TAG_BASE, .datatype = SPB_DT_TEMPLATE,
+                                .v.tmpl = &inst};
+    send("spBv1.0/G/DCMD/N/P1", &cmd_m, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.writes);
+    TEST_ASSERT_EQUAL_UINT16(0, g_rec.last_write_tag);
+    TEST_ASSERT_EQUAL_DOUBLE(900, g_rec.last_write.value);
+    spb_metric_t flat = {.name = "Speed", .datatype = SPB_DT_UINT16, .v.num = 901};
+    send("spBv1.0/G/DCMD/N/P1", &flat, 1);
+    TEST_ASSERT_EQUAL(2, g_rec.writes);
+    flat.name = NULL;
+    flat.alias = GW_ALIAS_TAG_BASE + 0;
+    send("spBv1.0/G/DCMD/N/P1", &flat, 1);
+    TEST_ASSERT_EQUAL(2, g_rec.writes);
+
+    /* the write confirmation: the instance with that member */
+    gw_tag_value_t w = {.value = 900, .ts_ms = 2000, .valid = true};
+    gw_tagdb_put_tag(0, &w);
+    recorder_clear();
+    gw_node_write_done(&node, 0, true);
+    msg(0);
+    TEST_ASSERT_EQUAL(SPB_DT_TEMPLATE, dec.m[0].datatype);
+    TEST_ASSERT_EQUAL(1, dec.mem_count);
+    TEST_ASSERT_EQUAL_DOUBLE(900, dec.mem[0].num);
+}
+
+/* SPB-18 + SPB-16: the largest NBIRTH the configuration allows (GW_MAX_TEMPLATE_TAGS template
+ * tags with 39-character names, units and an engineering range) fits the payload buffer. */
+static void test_worst_case_nbirth_fits(void)
+{
+    static char doc[32768];
+    static gw_config_t c;
+    size_t n = (size_t)snprintf(doc, sizeof(doc), "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": "
+                                "{\"group_id\": \"G\", \"edge_node_id\": \"N\"}, \"devices\": [");
+    const int types = 16, per = GW_MAX_TEMPLATE_TAGS / 16;
+    for (int d = 0; d < types; d++) {
+        n += (size_t)snprintf(doc + n, sizeof(doc) - n, "%s{\"name\": \"D%02d\", \"unit_id\": 1, "
+                              "\"type\": \"%039d\", \"tags\": [", d ? "," : "", d, d);
+        for (int k = 0; k < per; k++) {
+            n += (size_t)snprintf(doc + n, sizeof(doc) - n,
+                                  "%s{\"name\": \"%038d%d\", \"area\": \"input\", \"address\": %d,"
+                                  " \"type\": \"float64\", \"units\": \"uuuuuuuuuuuuuuu\","
+                                  " \"eng_low\": -1e300, \"eng_high\": 1e300}",
+                                  k ? "," : "", 0, k, 4 * k);
+        }
+        n += (size_t)snprintf(doc + n, sizeof(doc) - n, "]}");
+    }
+    snprintf(doc + n, sizeof(doc) - n, "]}");
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(doc, strlen(doc), &c, &err), err.msg);
+    cfg = &c;
+    gw_tagdb_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "0.1.0+g0123456.dirty-xxxxxxxxxxxxxxxxxxxxxxxxx",
+                                 .hardware = "Waveshare ESP32-S3-POE-ETH-8DI-8DO (ESP32-S3 rev 0.2)",
+                                 .reset_reason = "interrupt watchdog"};
+    gw_node_init(&node, cfg, &ops, &info);
+    gw_node_session_up(&node, 0);
+    TEST_ASSERT_EQUAL(1, g_rec.count);   /* the NBIRTH went out (devices offline) */
+    printf("worst-case NBIRTH with %d template tags: %u bytes of %u\n", GW_MAX_TEMPLATE_TAGS,
+           (unsigned)g_rec.msgs[0].len, (unsigned)GW_SPB_PAYLOAD_MAX);
+    TEST_ASSERT_LESS_THAN(GW_SPB_PAYLOAD_MAX, g_rec.msgs[0].len);
+    msg(0);
+    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS + types, dec.count);
+}
+
 /* Issue #14: a command metric without an alias is not logged as "alias 0". */
 static void test_discard_log_shows_alias_only_if_present(void)
 {
@@ -872,6 +1020,8 @@ int main(void)
     RUN_TEST(test_do_unknown_published_as_null);
     RUN_TEST(test_properties_and_quality);
     RUN_TEST(test_bytes_tag);
+    RUN_TEST(test_templates);
+    RUN_TEST(test_worst_case_nbirth_fits);
     RUN_TEST(test_command_aborted_mid_payload_applies_nothing);
     return UNITY_END();
 }
