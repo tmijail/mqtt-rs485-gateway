@@ -43,7 +43,19 @@
         "device_offline"
       ],
       "alarm_after_s": 5
-    }
+    },
+    "rules": [
+      {
+        "di": 2,
+        "do": 5,
+        "mode": "follow"
+      },
+      {
+        "di": 3,
+        "do": 6,
+        "mode": "toggle"
+      }
+    ]
   },
   "devices": [
     {

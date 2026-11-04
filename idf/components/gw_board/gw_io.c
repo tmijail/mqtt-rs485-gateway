@@ -61,6 +61,7 @@ static StaticQueue_t s_req_buf, s_rep_buf;
 static uint8_t s_req_storage[2 * sizeof(do_req_t)];
 static uint8_t s_rep_storage[sizeof(do_rep_t)];
 static uint32_t s_req_id;   /* the requester's (single caller: the Sparkplug task) */
+static const char *const k_rule_modes[] = {"follow", "invert", "toggle"};   /* gw_rule_mode_t */
 
 /* ---- IO-4 pulse counters in NVS ---- */
 #define NVS_COUNTERS "di_count"
@@ -315,12 +316,34 @@ static void recover_outputs(uint32_t now)
 
 static bool command_do(uint8_t index, bool on)
 {
+    int rule = gw_lio_rule_of(&s_lio, index);
+    if (rule >= 0) {
+        ESP_LOGW(TAG, "DO%u is driven by local rule %d (%s DI%u): NCMD refused", index + 1, rule,
+                 k_rule_modes[s_lio.rules[rule].mode % 3], s_lio.rules[rule].di + 1);
+        return false;
+    }
     if (!s_do.ready) {
         ESP_LOGE(TAG, "DO%u: output expander not available", index + 1);
         return false;
     }
     uint8_t bit = (uint8_t)(1u << index);
     return write_outputs(bit, on ? bit : 0);
+}
+
+/* IO-7: apply the local rules to the current DIs (also without the network). */
+static void rules(void)
+{
+    if (s_lio.rule_count == 0 || !s_do.ready) {
+        return;
+    }
+    gw_local_io_t io;
+    gw_tagdb_get_io(&io);
+    uint8_t mask, value;
+    gw_lio_rules(&s_lio, io.di, io.count, gw_dout_state(&s_do), &mask, &value);
+    if (mask != 0) {
+        ESP_LOGD(TAG, "rules: DO mask 0x%02x -> 0x%02x", mask, value & mask);
+        write_outputs(mask, value);
+    }
 }
 
 static void failsafe(uint32_t now)
@@ -390,6 +413,7 @@ static void lio_task(void *arg)
             const do_rep_t rep = {.id = r.id, .ok = command_do(r.index, r.on)};
             xQueueOverwrite(s_rep_q, &rep);
         }
+        rules();
         failsafe(now);
         save_counters(false);
     }
@@ -403,10 +427,6 @@ esp_err_t gw_io_start(const gw_config_t *cfg, void (*on_change)(void))
     if (s_do.ready) {
         apply_boot_state();
     }
-    s_req_q = xQueueCreateStatic(2, sizeof(do_req_t), s_req_storage, &s_req_buf);
-    s_rep_q = xQueueCreateStatic(1, sizeof(do_rep_t), s_rep_storage, &s_rep_buf);
-    s_task = xTaskCreateStatic(lio_task, "local_io", STACK_WORDS, NULL,
-                               CONFIG_GW_LOCAL_IO_TASK_PRIORITY, s_stack, &s_task_buf);
     if (cfg->local_io.failsafe_s != 0) {
         ESP_LOGI(TAG, "failsafe after %lu s without a Sparkplug session: on 0x%02x, off 0x%02x, "
                       "hold 0x%02x", (unsigned long)cfg->local_io.failsafe_s, s_lio.safe_on,
@@ -429,11 +449,25 @@ esp_err_t gw_io_start(const gw_config_t *cfg, void (*on_change)(void))
              cfg->local_io.counter_save_s != 0 ? "saved every" : "never saved: counter_save_s",
              (unsigned long)cfg->local_io.counter_save_s);
 
-    ESP_RETURN_ON_ERROR(hw_init_inputs(), TAG, "DI gpio");
+    esp_err_t in_err = hw_init_inputs();
     uint32_t threshold = (uint32_t)cfg->local_io.di_debounce_ms * 1000u / CONFIG_GW_DI_SAMPLE_US;
-    uint8_t initial = read_di();
+    uint8_t initial = in_err == ESP_OK ? read_di() : 0;
     gw_debounce_init(&s_db, (uint16_t)threshold, initial);
     gw_tagdb_set_di(initial, gw_port_time_ms());
+    /* IO-7: the rules start from the boot's DIs and counters (restored pulses toggle nothing);
+     * the local_io task evaluates them on its first pass */
+    gw_lio_rules_start(&s_lio, count);
+    for (uint8_t i = 0; i < cfg->local_io.rule_count; i++) {
+        ESP_LOGI(TAG, "local rule %u: DO%u %s DI%u (NCMD on DO%u refused, no MQTT failsafe)", i,
+                 cfg->local_io.rules[i].dout + 1, k_rule_modes[cfg->local_io.rules[i].mode % 3],
+                 cfg->local_io.rules[i].di + 1, cfg->local_io.rules[i].dout + 1);
+    }
+
+    s_req_q = xQueueCreateStatic(2, sizeof(do_req_t), s_req_storage, &s_req_buf);
+    s_rep_q = xQueueCreateStatic(1, sizeof(do_rep_t), s_rep_storage, &s_rep_buf);
+    s_task = xTaskCreateStatic(lio_task, "local_io", STACK_WORDS, NULL,
+                               CONFIG_GW_LOCAL_IO_TASK_PRIORITY, s_stack, &s_task_buf);
+    ESP_RETURN_ON_ERROR(in_err, TAG, "DI gpio");
 
     const esp_timer_create_args_t ta = {
         .callback = sample_cb,

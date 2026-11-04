@@ -482,6 +482,12 @@ static int cmd_config(int argc, char **argv)
     } else {
         out(", DO safe state %s (o off, 1 on, h hold) at restart; no MQTT failsafe\n", modes);
     }
+    static const char *const rule_modes[] = {"follow", "invert", "toggle"};
+    for (uint8_t i = 0; i < c->local_io.rule_count; i++) {   /* IO-7 */
+        out("           rule %u: DO/%u %s DI/%u (local, NCMD refused)\n", i,
+            c->local_io.rules[i].dout + 1u, rule_modes[c->local_io.rules[i].mode % 3],
+            c->local_io.rules[i].di + 1u);
+    }
     if (c->local_io.buzzer.alarms != 0) {
         uint8_t a = c->local_io.buzzer.alarms;
         out("           buzzer alarms:%s%s%s (after %u s)\n",

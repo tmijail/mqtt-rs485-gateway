@@ -648,6 +648,37 @@ static void test_local_io_section(void)
     ASSERT_REJECTED(parse(doc), "local_io.buzzer.alarm_after_s: valor 3601 fuera de rango");
     snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"buzzer\":{\"volume\":1}}}", base);
     ASSERT_REJECTED(parse(doc), "local_io.buzzer.volume: clave desconocida");
+    /* IO-7 */
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"do_failsafe\":[\"hold\"],\"rules\":[{\"di\":2,\"do\":1},"
+             "{\"di\":2,\"do\":8,\"mode\":\"invert\"},{\"di\":3,\"do\":4,\"mode\":\"toggle\"}]}}",
+             base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL(3, cfg.local_io.rule_count);
+    TEST_ASSERT_EQUAL(1, cfg.local_io.rules[0].di);
+    TEST_ASSERT_EQUAL(0, cfg.local_io.rules[0].dout);
+    TEST_ASSERT_EQUAL(GW_RULE_FOLLOW, cfg.local_io.rules[0].mode);
+    TEST_ASSERT_EQUAL(7, cfg.local_io.rules[1].dout);
+    TEST_ASSERT_EQUAL(GW_RULE_INVERT, cfg.local_io.rules[1].mode);
+    TEST_ASSERT_EQUAL(GW_RULE_TOGGLE, cfg.local_io.rules[2].mode);
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"rules\":[{\"di\":1,\"do\":3},{\"di\":2,\"do\":3}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.rules[1].do: la DO/3 ya la maneja local_io.rules[0]");
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"do_failsafe\":[\"off\",\"on\"],\"rules\":[{\"di\":1,\"do\":2}]}}",
+             base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe[1]: la DO/2 la maneja local_io.rules[0]");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"rules\":[{\"di\":9,\"do\":1}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.rules[0].di: valor 9 fuera de rango [1, 8]");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"rules\":[{\"di\":1}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.rules[0].do: campo obligatorio ausente");
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"rules\":[{\"di\":1,\"do\":1,\"mode\":\"latch\"}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.rules[0].mode: valor no válido (se esperaba follow|invert|toggle)");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"rules\":[{\"di\":1,\"do\":1,\"when\":1}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.rules[0].when: clave desconocida");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"rules\":{}}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.rules: se esperaba un array");
 }
 
 static void test_section_errors(void)

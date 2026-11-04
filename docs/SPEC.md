@@ -376,7 +376,7 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 - Se reenvían FC01–FC06, FC15 y FC16 a las unidades 1–247, tengan o no un dispositivo configurado. El gateway responde él mismo, con excepción, a cualquier otra función (01), a datos no válidos (03) y a las unidades 0 y 248–255 (0A). Si la unidad no responde tras los reintentos de `rs485`, la excepción es 0B.
 - **Arbitraje del bus (MB-16):** las peticiones TCP pasan por la tarea dueña del bus, una a la vez y con la misma granularidad que los DCMD: entre dos peticiones de la encuesta. Prioridad: escrituras DCMD, después Modbus TCP, después la encuesta.
 
-**`local_io`: E/S local sin red. Estado seguro de las DO (IO-3).** Todas las claves de `local_io` son opcionales.
+**`local_io`: E/S local sin red. Estado seguro de las DO (IO-3).** Todas las claves de `local_io` son opcionales (IO-3, IO-4, IO-6 e IO-7).
 
 ```json
 "local_io": { "di_debounce_ms": 20, "failsafe_s": 30,
@@ -408,6 +408,24 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 - Métricas del nodo `Counter/1`…`Counter/8` (UInt64, alias 30–37), en el NBIRTH y por excepción en el mismo NDATA que el cambio de la DI.
 - Al arrancar se restauran del último guardado. Un reinicio ordenado (NCMD Reboot, configuración nueva, `restart` del shell o de la web) los guarda antes; un corte de alimentación, un *panic* o el watchdog pierden lo contado desde el último guardado (como mucho `counter_save_s`).
 - No se pueden escribir por NCMD. El reset de fábrica los pone a 0.
+
+**Enlaces locales DI→DO (IO-7), en `local_io.rules`.**
+
+```json
+"local_io": { "rules": [ { "di": 2, "do": 5, "mode": "follow" },
+                         { "di": 3, "do": 6, "mode": "toggle" } ] }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `rules` | array de objetos | `[]` | Hasta 8 reglas; cada DO en una sola regla |
+| `di` | entero | — | 1–8, obligatorio |
+| `do` | entero | — | 1–8, obligatorio |
+| `mode` | `follow` \| `invert` \| `toggle` | `follow` | `follow`: DO = DI. `invert`: DO = no DI. `toggle`: cada activación de la DI (flanco a activa, después del debounce) invierte la DO |
+
+- Las reglas se evalúan en el equipo, con o sin red ni broker: un cambio de DI llega a la DO en pocos milisegundos más el debounce.
+- **Prioridades:** una DO con regla es de la regla. Un NCMD sobre ella se rechaza (queda en el log y el NDATA confirma el estado real) y el estado seguro por pérdida de MQTT (IO-3) no la toca. Al reiniciar arranca como cualquier DO (`off` u `hold` en `do_failsafe`; `on` se rechaza para una DO con regla) hasta que la regla se evalúa con las DI del arranque: `follow` e `invert` toman enseguida el valor de su DI; `toggle` sigue desde ese estado de arranque.
+- Las DO sin regla se manejan como siempre: NCMD con sesión, estado seguro sin ella.
 
 **Buzzer (IO-6), en `local_io.buzzer`.**
 

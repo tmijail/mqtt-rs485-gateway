@@ -63,7 +63,7 @@ SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
 PROBE_MAX_S = 10.0                # CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS / 1000, read in main()
 GROUP, NODE, DEVICE, BULK = "Plant1", "GW01", "Meter1", "Bulk"
 T = f"spBv1.0/{GROUP}"
-ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/1": 20, "DO/2": 21, "DO/3": 22, "DO/4": 23, "Counter/1": 30, "Voltage": 100, "Setpoint": 101, "Run": 102,
+ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/1": 20, "DO/2": 21, "DO/3": 22, "DO/4": 23, "DO/5": 24, "DO/6": 25, "Counter/1": 30, "Voltage": 100, "Setpoint": 101, "Run": 102,
          "Limit": 103, "Energy": 104, "Counter": 105, "Flow": 106, "Temp": 107, "Serial": 108,
          "Alarm": 109, "Ready": 110}
 # MB-6 values served by unit 1, and the registers that hold them (see ModbusSlave.set_mb6)
@@ -1730,6 +1730,33 @@ def run(args, log, slave, broker, conf, work):
           "valid, 'off' and (after a power-up) 'hold' outputs off",
           boot_dos.get(2) is True and not any(boot_dos.get(n) for n in (1, 3, 4, 5, 6, 7, 8)),
           f"NBIRTH DO states {boot_dos}; {(gw.find(r'io: DO at restart', t0) or ['no log'])[0]}")
+    # IO-7 local rules: DO/5 follows DI/2, DO/6 toggles on every activation of DI/3
+    obs.drain()
+    sent = time.monotonic()
+    gw.console("di 2 1")
+    nd = obs.wait(ndata_t, 3, lambda q: do_states(q).get(5) is True)
+    lat = (nd[0] - sent) * 1000 if nd else None
+    since = time.monotonic()
+    refused = set_do(obs, ncmd_t, ndata_t, {5: False}) is None
+    confirm = [do_states(m[2])[5] for m in CAPTURE if m[0] >= since and m[1] == ndata_t
+               and 5 in do_states(m[2])]
+    log5 = gw.wait_log(r"io: DO5 is driven by local rule 0 \(follow DI2\): NCMD refused", 2, since)
+    check("IO-7 rule 'follow': DI/2 active -> DO/5 on (NDATA), with no command; NCMD on DO/5 "
+          "refused (the rule owns it) and the NDATA confirms the real state",
+          nd and refused and log5 and confirm == [True],
+          f"{lat:.0f} ms console->NDATA with DO/5 on; NCMD DO/5=false refused: {bool(log5)}"
+          if nd else "no NDATA with DO/5")
+    toggles = []
+    for _ in range(2):
+        obs.drain()
+        gw.console("di 3 1")
+        nd = obs.wait(ndata_t, 3, lambda q: 6 in do_states(q))
+        toggles.append(do_states(nd[2])[6] if nd else None)
+        gw.console("di 3 0")
+        time.sleep(0.3)
+    check("IO-7 rule 'toggle': each activation of DI/3 toggles DO/6", toggles == [True, False],
+          f"DO/6 after each activation: {toggles}")
+
     # IO-6: Dead3..Dead5 never answer: the "device offline" alarm sounds alarm_after_s (5 s)
     # after the boot (the QEMU build logs the patterns instead of driving GPIO46)
     dev_alarm = gw.find(r"buzzer: alarm 'device offline': 1 beep\(s\) every 10 s", t0)
@@ -1749,7 +1776,12 @@ def run(args, log, slave, broker, conf, work):
     broker.terminate()
     broker.wait()
     will = obs.wait(ndeath_t, 2)
-    time.sleep(9)
+    time.sleep(6.5)
+    # IO-7 without the network (and after the failsafe tripped): DI/3 toggles DO/6 on
+    gw.console("di 3 1")
+    time.sleep(0.5)
+    gw.console("di 3 0")
+    time.sleep(2)
     delays = [int(x) for x in re.findall(r"in (\d+) ms", " ".join(gw.find(r"reconnect attempt", since)))]
     attempts = gw.find(r"connecting to .* bdSeq=", since)
     obs.close()
@@ -1770,15 +1802,17 @@ def run(args, log, slave, broker, conf, work):
           f"first session bdSeq={b0}, attempts while down={len(attempts)}, new NBIRTH bdSeq={b1}")
     # IO-3: 9 s without a session > failsafe_s (5 s): DO/2 on, DO/1 and DO/3 off, DO/4 holds
     lost = gw.wait_log(r"edge: MQTT down; reconnect attempt 1 in", 0, since)
-    # DO/1, DO/3 and DO/5-8 (absent from do_failsafe) are "off", DO/2 "on", DO/4 "hold"
-    trip = gw.wait_log(r"io: failsafe: no Sparkplug session for 5 s: DO on 0x02, off 0xf5, the rest "
+    # DO/1, DO/3, DO/7 and DO/8 (absent from do_failsafe) are "off", DO/2 "on", DO/4 "hold";
+    # DO/5 and DO/6 belong to the rules (IO-7): the failsafe leaves them alone
+    trip = gw.wait_log(r"io: failsafe: no Sparkplug session for 5 s: DO on 0x02, off 0xc5, the rest "
                        r"hold", 0, since)
     dos = do_states(nb[2]) if nb else {}
     clear = gw.wait_log(r"io: failsafe: Sparkplug session back", 5, since)
-    check("IO-3 failsafe: after failsafe_s (5 s) without a Sparkplug session each DO takes its safe "
-          "state (on / off; 'hold' keeps it); the next NBIRTH shows it and the outputs stay so",
+    check("IO-3 / IO-7 failsafe: after failsafe_s (5 s) without a Sparkplug session each DO takes "
+          "its safe state (on / off; 'hold' keeps it), except the rule outputs: DO/5 stays on "
+          "(DI/2) and DO/6 toggled on by DI/3 without the network; the next NBIRTH shows it",
           pre and lost and trip and 4.5 <= trip - lost <= 6.5 and clear
-          and dos == {1: False, 2: True, 3: False, 4: True, 5: False, 6: False, 7: False, 8: False},
+          and dos == {1: False, 2: True, 3: False, 4: True, 5: True, 6: True, 7: False, 8: False},
           f"before {do_states(pre[2]) if pre else 'no NDATA'}; trip {trip - lost:.1f} s after the loss; "
           f"NBIRTH after the outage {dos}" if lost and trip else
           f"loss logged {bool(lost)}, trip logged {bool(trip)}: {gw.find(r'failsafe', since)[:2]}")
@@ -1860,7 +1894,8 @@ def run(args, log, slave, broker, conf, work):
     # its registers in RTC memory like the chip); DO/4 must come back on, DO/2 ('on') too.
     cold = do_states(nb[2]) if nb else {}
     # IO-4: the counter saved periodically (every 60 s) survives the power cycle
-    saved = gw.find(r"io: pulse counters saved$")
+    # (the whole console log: gw.find() only sees the current boot)
+    saved = re.findall(r"io: pulse counters saved\r?$", log.read_text(errors="replace"), re.M)
     check("IO-4 pulse counters saved to NVS every counter_save_s (60 s) and restored after a power "
           "cycle", saved and nb and counter_of(nb[2]) == 1,
           f"{len(saved)} periodic saves logged; Counter/1 after the power cycle "
@@ -1948,11 +1983,12 @@ def run(args, log, slave, broker, conf, work):
     t_err = time.monotonic()
     gw.start()
     cfg_alarm = gw.wait_log(r"buzzer: alarm 'configuration error': 3 beep\(s\) every 10 s", 30, t_err)
-    rejected = gw.find(r"main: configuration rejected", t_err)
+    rejected = gw.wait_log(r"main: configuration rejected", 30, t_err)
     gw.kill()
     check("IO-6 buzzer alarm 'configuration error' in recovery, as enabled by the last valid "
           "configuration (kept in NVS): 3 beeps every 10 s",
-          cfg_alarm and rejected, (gw.find(r"buzzer: |configuration rejected", t_err) or ["no log"])[0])
+          cfg_alarm and rejected,
+          " | ".join(gw.find(r"buzzer: alarm|configuration rejected", t_err)[:2]) or "no log")
 
     # Issue #11: a broker that refuses the NCMD/DCMD subscriptions (SUBACK 0x80). The node must
     # not announce itself (no NBIRTH: it could not receive commands); it disconnects with

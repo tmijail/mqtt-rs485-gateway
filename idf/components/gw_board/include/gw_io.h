@@ -1,12 +1,14 @@
 /* Local I/O: 8 debounced digital inputs (IO-1) and 8 digital outputs on the
- * TCA9554 I2C expander (IO-2) with their safe state (IO-3). Pins and active levels come
+ * TCA9554 I2C expander (IO-2) with their safe state (IO-3), the DI pulse counters (IO-4)
+ * and the local DI -> DO rules (IO-7). Pins and active levels come
  * from gw_bsp; the states published through gw_tagdb are logical (1 = input asserted /
  * output on).
  *
  * Single owner of the expander: before the configuration is loaded, app_main sets the
  * outputs up (gw_io_outputs_boot, gw_io_outputs_all_off); from gw_io_start() on, only the
- * local_io task writes them: DO commands (gw_io_set_do, from the Sparkplug task), the safe
- * state and the retries of an expander that does not answer. */
+ * local_io task writes them: DO commands (gw_io_set_do, from the Sparkplug task), the local
+ * rules (which own their DOs: NCMD on them is refused), the safe state and the retries of
+ * an expander that does not answer. */
 #pragma once
 
 #include <stdbool.h>
@@ -43,7 +45,8 @@ esp_err_t gw_io_start(const gw_config_t *cfg, void (*on_change)(void));
 
 /** Switch DO @p index (0-7) on or off through the local_io task and wait for it (at most
  *  500 ms). The read-back state is in gw_tagdb. Single caller (the Sparkplug task).
- *  Returns false (and changes nothing) if the expander is not available. */
+ *  Returns false (and changes nothing) if the expander is not available or a local rule
+ *  drives that DO (IO-7). */
 bool gw_io_set_do(uint8_t index, bool on);
 
 #if CONFIG_GW_IO_SIMULATED

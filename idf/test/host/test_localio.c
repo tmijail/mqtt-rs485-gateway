@@ -1,4 +1,5 @@
-/* QA-1: policy of the local outputs (IO-3 safe state) and of the pulse counters (IO-4). */
+/* QA-1: policy of the local outputs (IO-3 safe state, IO-7 rules) and of the pulse counters
+ * (IO-4). */
 #include <string.h>
 
 #include "gw_config.h"
@@ -108,6 +109,70 @@ static void test_counter_save_schedule(void)
     TEST_ASSERT_FALSE(gw_lio_save_due(&sv, c, 1, true));
 }
 
+static void rule(uint8_t di, uint8_t dout, gw_rule_mode_t mode)
+{
+    uint8_t i = cfg.local_io.rule_count++;
+    cfg.local_io.rules[i].di = (uint8_t)(di - 1);
+    cfg.local_io.rules[i].dout = (uint8_t)(dout - 1);
+    cfg.local_io.rules[i].mode = (uint8_t)mode;
+}
+
+/* IO-7: follow / invert are levels, toggle counts activations (none lost between two
+ * evaluations: an even number of them changes nothing) */
+static void test_rules(void)
+{
+    rule(2, 5, GW_RULE_FOLLOW);
+    rule(2, 6, GW_RULE_INVERT);
+    rule(3, 1, GW_RULE_TOGGLE);
+    gw_lio_t l;
+    gw_lio_init(&l, &cfg, 0);
+    uint64_t c[8] = {0, 0, 7};               /* DI3 restored with 7 activations */
+    gw_lio_rules_start(&l, c);
+    uint8_t mask, value;
+    gw_lio_rules(&l, 0x00, c, 0x00, &mask, &value);   /* boot: DI2 idle */
+    TEST_ASSERT_EQUAL_HEX8(0x20, mask);               /* DO6 on (invert), the restored 7 ignored */
+    TEST_ASSERT_EQUAL_HEX8(0x20, value);
+    uint8_t dos = 0x20 | 0x80;                        /* DO8 is someone else's: untouched */
+    gw_lio_rules(&l, 0x02, c, dos, &mask, &value);    /* DI2 active */
+    TEST_ASSERT_EQUAL_HEX8(0x30, mask);
+    TEST_ASSERT_EQUAL_HEX8(0x90, value & 0xB0);
+    dos = (uint8_t)((dos & ~mask) | (value & mask));
+    TEST_ASSERT_EQUAL_HEX8(0x90, dos);
+    gw_lio_rules(&l, 0x02, c, dos, &mask, &value);
+    TEST_ASSERT_EQUAL_HEX8(0x00, mask);               /* nothing changed */
+    c[2] = 8;                                         /* one activation of DI3 */
+    gw_lio_rules(&l, 0x06, c, dos, &mask, &value);
+    TEST_ASSERT_EQUAL_HEX8(0x01, mask);
+    TEST_ASSERT_EQUAL_HEX8(0x01, value & 0x01);
+    dos |= 0x01;
+    c[2] = 10;                                        /* two more before the next look */
+    gw_lio_rules(&l, 0x02, c, dos, &mask, &value);
+    TEST_ASSERT_EQUAL_HEX8(0x00, mask);
+    c[2] = 13;
+    gw_lio_rules(&l, 0x02, c, dos, &mask, &value);
+    TEST_ASSERT_EQUAL_HEX8(0x01, mask);
+    TEST_ASSERT_EQUAL_HEX8(0x00, value & 0x01);
+    TEST_ASSERT_EQUAL(0, gw_lio_rule_of(&l, 4));
+    TEST_ASSERT_EQUAL(2, gw_lio_rule_of(&l, 0));
+    TEST_ASSERT_EQUAL(-1, gw_lio_rule_of(&l, 7));
+}
+
+/* IO-7 vs IO-3: the MQTT failsafe leaves the rule outputs alone; the restart state not */
+static void test_failsafe_skips_rule_outputs(void)
+{
+    modes("1hoooooo");
+    rule(1, 1, GW_RULE_FOLLOW);   /* would be "on" for the restart: config validation forbids it */
+    rule(4, 3, GW_RULE_TOGGLE);
+    cfg.local_io.failsafe_s = 1;
+    gw_lio_t l;
+    gw_lio_init(&l, &cfg, 0);
+    uint8_t mask, value;
+    TEST_ASSERT_EQUAL(GW_LIO_FS_TRIP, gw_lio_failsafe(&l, false, 1000, &mask, &value));
+    TEST_ASSERT_EQUAL_HEX8(0xF8, mask);               /* DO4-8 off; DO1, DO3 rules, DO2 holds */
+    TEST_ASSERT_EQUAL_HEX8(0x00, value);
+    TEST_ASSERT_EQUAL_HEX8(0x00, gw_lio_boot_state(&l, 0x00) & 0x04);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -116,5 +181,7 @@ int main(void)
     RUN_TEST(test_failsafe_after_n_seconds_without_session);
     RUN_TEST(test_failsafe_all_hold_and_clock_wrap);
     RUN_TEST(test_counter_save_schedule);
+    RUN_TEST(test_rules);
+    RUN_TEST(test_failsafe_skips_rule_outputs);
     return UNITY_END();
 }
