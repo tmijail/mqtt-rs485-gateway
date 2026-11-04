@@ -33,6 +33,7 @@ typedef struct {
     uint32_t cycles;          /* poll cycles run */
     uint32_t failed_cycles;   /* cycles with a request unanswered after its retries */
     mb_stats_t bus;           /* outcome of every attempt (retries included) to this device */
+    mb_stats_t tcp;           /* MB-15: attempts of Modbus TCP requests forwarded to its unit */
 } gw_dev_stats_t;
 
 typedef struct {

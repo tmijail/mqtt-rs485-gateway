@@ -11,6 +11,7 @@
 
 #include "gw_config.h"
 #include "gw_devstate.h"
+#include "gw_mbap.h"
 #include "gw_plan.h"
 #include "gw_tagdb.h"
 #include "mb_master.h"
@@ -103,6 +104,13 @@ gw_write_status_t gw_poller_write(gw_poller_t *p, uint16_t tag, double value);
  * the new period. A shorter period applies at once, a longer one after the poll already due.
  */
 void gw_poller_set_scan_rate(gw_poller_t *p, uint32_t ms, uint32_t now_ms);
+
+/**
+ * MB-15: run a forwarded Modbus TCP transaction (called by the bus owner) and count its attempts
+ * (#69): in the stats of the device with that unit id (gw_dev_stats_t.tcp, published to
+ * gw_tagdb), or in the gateway's "other units" counter, plus one forwarded request.
+ */
+void gw_poller_forward(gw_poller_t *p, gw_mbap_txn_t *txn);
 
 /** Number of configured devices currently offline. */
 uint16_t gw_poller_offline_count(const gw_poller_t *p);

@@ -559,7 +559,7 @@ La build de QEMU difiere de la de placa en esos puntos (`sdkconfig.qemu`).
   - Solo IPv4: con IPv6 activo (NET-7) el servidor no escucha en IPv6.
   - Una transacción a la vez para todos los clientes; mientras tanto los demás esperan. Una petición espera como mucho la transacción en curso y las escrituras DCMD pendientes; si el bus no la ejecutó en 8 s (`CONFIG_GW_MBTCP_RESPONSE_WAIT_MS`), el cliente recibe 0B.
   - Sin FC07, FC08, FC17, FC22, FC23 ni FC43: excepción 01. Tampoco *broadcast* (unidad 0).
-  - Las transacciones TCP no se cuentan en los contadores por dispositivo del shell (sí en los globales de `mb_master`).
+  - **Contadores (#69):** cada dispositivo cuenta aparte los intentos de las peticiones TCP reenviadas a su unidad (`devices`: `| tcp ok … timeout … crc … frame … exception …`), y la pasarela cuenta conexiones aceptadas y rechazadas, peticiones reenviadas, las excepciones que respondió ella misma (01, 03, 0A, 0B) y los intentos hacia unidades sin dispositivo configurado (línea `modbus_tcp` de `devices`). No se publican por Sparkplug (SPB-17 no está).
   - Memoria: unos 5 KB de `.bss` (pila de 4 KB, búferes de 2 clientes y la transacción), aunque esté apagado.
 
 ### 6.4 Reloj

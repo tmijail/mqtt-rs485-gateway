@@ -765,6 +765,47 @@ static void test_scan_rate_and_slow_scan(void)
     TEST_ASSERT_EQUAL_UINT32(13000, p.slow_due_ms[0]);   /* due at 5 s + max(5 s, 8 s) */
 }
 
+/* Issue #69: forwarded Modbus TCP transactions are counted per unit and by the gateway. */
+static void test_forwarded_requests_counted(void)
+{
+    gw_mbap_stats_reset();
+    gw_mbap_txn_t txn;
+    memset(&txn, 0, sizeof(txn));
+    txn.rq = (mb_request_t){.unit = 1, .fc = MB_FC_READ_HOLDING_REGISTERS, .addr = 10, .qty = 1};
+    gw_poller_forward(&p, &txn);                  /* Meter1: answered */
+    TEST_ASSERT_EQUAL(MB_OK, txn.status);
+    s.exception = 2;
+    gw_poller_forward(&p, &txn);                  /* the slave's own exception: passed through */
+    s.exception = 0;
+    s.offline = true;
+    gw_poller_forward(&p, &txn);                  /* no answer: 1 + 2 retries, gateway 0B */
+    s.offline = false;
+    txn.rq.unit = 9;                              /* no device with unit 9 */
+    gw_poller_forward(&p, &txn);
+    gw_dev_stats_t st;
+    gw_tagdb_get_stats(0, &st);
+    TEST_ASSERT_EQUAL_UINT32(1, st.tcp.ok);
+    TEST_ASSERT_EQUAL_UINT32(1, st.tcp.exception);
+    TEST_ASSERT_EQUAL_UINT32(3, st.tcp.timeout);
+    TEST_ASSERT_EQUAL_UINT32(0, st.bus.ok + st.bus.timeout + st.bus.exception);   /* polls apart */
+    TEST_ASSERT_EQUAL_UINT32(0, st.cycles);
+    gw_mbap_stats_t g;
+    gw_mbap_stats_get(&g);
+    TEST_ASSERT_EQUAL_UINT32(4, g.forwarded);
+    TEST_ASSERT_EQUAL_UINT32(2, g.ex_no_answer);  /* the dead request and unit 9 */
+    TEST_ASSERT_EQUAL_UINT32(3, g.other_units.timeout);
+    TEST_ASSERT_EQUAL_UINT32(0, g.other_units.ok);
+    gw_mbap_count_exception(GW_MBAP_EX_ILLEGAL_FUNCTION);
+    gw_mbap_count_exception(GW_MBAP_EX_PATH_UNAVAILABLE);
+    gw_mbap_stats_add(&(const gw_mbap_stats_t){.accepted = 2, .rejected = 1});
+    gw_mbap_stats_get(&g);
+    TEST_ASSERT_EQUAL_UINT32(1, g.ex_function);
+    TEST_ASSERT_EQUAL_UINT32(1, g.ex_path);
+    TEST_ASSERT_EQUAL_UINT32(0, g.ex_value);
+    TEST_ASSERT_EQUAL_UINT32(2, g.accepted);
+    TEST_ASSERT_EQUAL_UINT32(1, g.rejected);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -790,5 +831,6 @@ int main(void)
     RUN_TEST(test_write_served_between_requests);
     RUN_TEST(test_scan_rate_override);
     RUN_TEST(test_scan_rate_and_slow_scan);
+    RUN_TEST(test_forwarded_requests_counted);
     return UNITY_END();
 }

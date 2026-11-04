@@ -374,6 +374,38 @@ gw_write_status_t gw_poller_write(gw_poller_t *p, uint16_t tag, double value)
     return gw_poller_write_value(p, tag, &v);
 }
 
+void gw_poller_forward(gw_poller_t *p, gw_mbap_txn_t *txn)
+{
+    const mb_stats_t before = p->mb->stats;
+    gw_mbap_execute(p->mb, txn);
+    const mb_stats_t *after = &p->mb->stats;
+    const mb_stats_t delta = {.ok = after->ok - before.ok,
+                              .timeout = after->timeout - before.timeout,
+                              .crc = after->crc - before.crc,
+                              .frame = after->frame - before.frame,
+                              .exception = after->exception - before.exception};
+    gw_mbap_stats_t g = {.forwarded = 1};
+    if (txn->status != MB_OK && txn->status != MB_ERR_EXCEPTION) {
+        g.ex_no_answer = 1;   /* the gateway answers 0B for the unit */
+    }
+    uint16_t dev = GW_NO_DEVICE;
+    for (uint16_t d = 0; d < p->cfg->device_count && dev == GW_NO_DEVICE; d++) {
+        dev = p->cfg->devices[d].unit_id == txn->rq.unit ? d : GW_NO_DEVICE;
+    }
+    if (dev != GW_NO_DEVICE) {
+        mb_stats_t *t = &p->stats[dev].tcp;
+        t->ok += delta.ok;
+        t->timeout += delta.timeout;
+        t->crc += delta.crc;
+        t->frame += delta.frame;
+        t->exception += delta.exception;
+        gw_tagdb_put_stats(dev, &p->stats[dev]);
+    } else {
+        g.other_units = delta;
+    }
+    gw_mbap_stats_add(&g);
+}
+
 uint16_t gw_poller_offline_count(const gw_poller_t *p)
 {
     uint16_t n = 0;

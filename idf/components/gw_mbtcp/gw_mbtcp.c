@@ -57,6 +57,7 @@ static bool handle_frame(client_t *c, const uint8_t *frame, size_t len)
 {
     /* A previous request that timed out may still be running on the bus: s_txn is shared. */
     if (!gw_bus_forward_idle(CONFIG_GW_MBTCP_RESPONSE_WAIT_MS)) {
+        gw_mbap_count_exception(GW_MBAP_EX_TARGET_NO_ANSWER);
         return reply(c, s_out, gw_mbap_exception(frame, GW_MBAP_EX_TARGET_NO_ANSWER, s_out,
                                                  sizeof(s_out)));
     }
@@ -64,11 +65,13 @@ static bool handle_frame(client_t *c, const uint8_t *frame, size_t len)
     if (code != 0) {
         ESP_LOGD(TAG, "unit %u fc %u: answered by the gateway with exception %u", frame[6],
                  frame[GW_MBAP_HDR_LEN], code);
+        gw_mbap_count_exception(code);
         return reply(c, s_out, gw_mbap_exception(frame, code, s_out, sizeof(s_out)));
     }
     if (!gw_bus_forward(&s_txn, CONFIG_GW_MBTCP_RESPONSE_WAIT_MS)) {
         ESP_LOGW(TAG, "unit %u fc %u: the bus owner did not run it within %d ms", s_txn.rq.unit,
                  s_txn.rq.fc, CONFIG_GW_MBTCP_RESPONSE_WAIT_MS);
+        gw_mbap_count_exception(GW_MBAP_EX_TARGET_NO_ANSWER);
         return reply(c, s_out, gw_mbap_exception(frame, GW_MBAP_EX_TARGET_NO_ANSWER, s_out,
                                                  sizeof(s_out)));
     }
@@ -115,6 +118,7 @@ static void on_accept(int lfd)
         ESP_LOGW(TAG, "connection from %u.%u.%u.%u refused: not in modbus_tcp.allowed_clients",
                  ip[0], ip[1], ip[2], ip[3]);
         close(fd);
+        gw_mbap_stats_add(&(const gw_mbap_stats_t){.rejected = 1});
         return;
     }
     client_t *c = NULL;
@@ -125,6 +129,7 @@ static void on_accept(int lfd)
         ESP_LOGW(TAG, "connection from %u.%u.%u.%u refused: %d clients already connected", ip[0],
                  ip[1], ip[2], ip[3], CONFIG_GW_MBTCP_MAX_CLIENTS);
         close(fd);
+        gw_mbap_stats_add(&(const gw_mbap_stats_t){.rejected = 1});
         return;
     }
     struct timeval tv = {.tv_sec = SEND_TIMEOUT_S};
@@ -135,6 +140,7 @@ static void on_accept(int lfd)
     memcpy(c->ip, ip, 4);
     c->have = 0;
     c->last_us = now_us();
+    gw_mbap_stats_add(&(const gw_mbap_stats_t){.accepted = 1});
     ESP_LOGI(TAG, "client %u.%u.%u.%u connected", ip[0], ip[1], ip[2], ip[3]);
 }
 

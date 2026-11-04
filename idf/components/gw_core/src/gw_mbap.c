@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include "gw_port.h"
+
 static uint16_t get16(const uint8_t *p)
 {
     return (uint16_t)((p[0] << 8) | p[1]);
@@ -194,4 +196,55 @@ bool gw_mbap_client_allowed(const gw_config_t *cfg, const uint8_t ip[4])
         }
     }
     return false;
+}
+
+/* ---------- counters (#69) ---------- */
+
+static gw_mbap_stats_t s_stats;
+
+static void add_mb(mb_stats_t *a, const mb_stats_t *b)
+{
+    a->ok += b->ok;
+    a->timeout += b->timeout;
+    a->crc += b->crc;
+    a->frame += b->frame;
+    a->exception += b->exception;
+}
+
+void gw_mbap_stats_add(const gw_mbap_stats_t *d)
+{
+    gw_port_lock();
+    s_stats.accepted += d->accepted;
+    s_stats.rejected += d->rejected;
+    s_stats.forwarded += d->forwarded;
+    s_stats.ex_function += d->ex_function;
+    s_stats.ex_value += d->ex_value;
+    s_stats.ex_path += d->ex_path;
+    s_stats.ex_no_answer += d->ex_no_answer;
+    add_mb(&s_stats.other_units, &d->other_units);
+    gw_port_unlock();
+}
+
+void gw_mbap_stats_get(gw_mbap_stats_t *out)
+{
+    gw_port_lock();
+    *out = s_stats;
+    gw_port_unlock();
+}
+
+void gw_mbap_stats_reset(void)
+{
+    gw_port_lock();
+    memset(&s_stats, 0, sizeof(s_stats));
+    gw_port_unlock();
+}
+
+void gw_mbap_count_exception(uint8_t code)
+{
+    gw_mbap_stats_t d = {0};
+    d.ex_function = code == GW_MBAP_EX_ILLEGAL_FUNCTION;
+    d.ex_value = code == GW_MBAP_EX_ILLEGAL_VALUE;
+    d.ex_path = code == GW_MBAP_EX_PATH_UNAVAILABLE;
+    d.ex_no_answer = code == GW_MBAP_EX_TARGET_NO_ANSWER;
+    gw_mbap_stats_add(&d);
 }

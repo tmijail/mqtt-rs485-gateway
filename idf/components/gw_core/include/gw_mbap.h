@@ -63,6 +63,26 @@ size_t gw_mbap_exception(const uint8_t *frame, uint8_t code, uint8_t *out, size_
 /** MBAP response for an executed @p txn (normal or exception). Returns its length. */
 size_t gw_mbap_response(const gw_mbap_txn_t *txn, uint8_t *out, size_t cap);
 
+/** MB-15 gateway counters (#69). Updated by the server task and the bus owner. */
+typedef struct {
+    uint32_t accepted;         /* connections accepted */
+    uint32_t rejected;         /* connections refused: not in allowed_clients, or no free slot */
+    uint32_t forwarded;        /* requests run on the RTU bus */
+    uint32_t ex_function;      /* answered by the gateway itself: 01 illegal function */
+    uint32_t ex_value;         /*   03 illegal data value */
+    uint32_t ex_path;          /*   0A gateway path unavailable (units 0, 248-255) */
+    uint32_t ex_no_answer;     /*   0B: the unit did not answer, or the bus owner not in time */
+    mb_stats_t other_units;    /* attempts of forwarded requests to units with no device */
+} gw_mbap_stats_t;
+
+/** Add @p delta to the gateway counters (under gw_port_lock). */
+void gw_mbap_stats_add(const gw_mbap_stats_t *delta);
+void gw_mbap_stats_get(gw_mbap_stats_t *out);
+void gw_mbap_stats_reset(void);
+
+/** Gateway counter for an exception code the gateway answered with. */
+void gw_mbap_count_exception(uint8_t code);
+
 /** Whether a client at IPv4 @p ip may connect (empty list: any client). */
 bool gw_mbap_client_allowed(const gw_config_t *cfg, const uint8_t ip[4]);
 

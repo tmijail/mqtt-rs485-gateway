@@ -1137,6 +1137,8 @@ def run_network_variant(args, work):
         denied = f"{e}"
     refused = gw.wait_log(r"mbtcp: connection from 10\.0\.2\.2 refused: not in modbus_tcp\.allowed_clients",
                           3, asked_tcp)
+    _, h = gw.shell("devices", [r"^modbus_tcp connections 0 accepted 1 rejected \| forwarded 0 "])
+    counted = all(h.values())
     gw.kill()
     obs.wait(f"{T}/NDEATH/{node}", 5)   # the will, before the main scenario starts
     obs.close()
@@ -1146,7 +1148,8 @@ def run_network_variant(args, work):
           f"NBIRTH {'yes' if nb else 'no'}; {(ignored or ['no warning'])[0]}; shell: "
           + " | ".join(gw.find(r"^iface\s|^wifi\s", asked)))
     check("MB-15 Modbus TCP allow-list: a client outside modbus_tcp.allowed_clients is "
-          "disconnected without an answer", denied == b"" and refused,
+          "disconnected without an answer and counted as rejected (#69)", denied == b"" and refused
+          and counted,
           f"answer {denied!r}; {(gw.find(r'mbtcp: connection from', asked_tcp) or ['no log'])[0]}")
     check("NET-7 IPv6 on Ethernet: link-local, SLAAC (fec0::/64 from slirp's RA) and static "
           "address, shown by the shell; ICMPv6 echo to fec0::2 answered",
@@ -1614,6 +1617,18 @@ def run(args, log, slave, broker, conf, work):
     check_write_between_blocks(obs, slave, dcmd_t, ddata_t)
     check_scan_rate(obs, gw, slave, p, ncmd_t, ndata_t)
     check_modbus_tcp(gw, slave)
+    # Issue #69: the forwarded transactions are counted per unit (apart from the polling) and
+    # the gateway counts connections, forwarded requests and the exceptions it made up: the
+    # pymodbus client and the raw frame (2 connections), read + write of unit 1, the read of the
+    # dead unit 3 (1 + 2 retries, 0B) and FC 0x2B (01)
+    asked, h = gw.shell("devices",
+                        [r"^Meter1\s+unit\s+1 online .*\| tcp ok 2 timeout 0 crc 0 frame 0 exception 0$",
+                         r"^Dead3\s+unit\s+3 offline .*\| tcp ok 0 timeout 3 crc 0 frame 0 exception 0$",
+                         r"^modbus_tcp connections 2 accepted 0 rejected \| forwarded 3 \| gateway exceptions "
+                         r"01 1 03 0 0A 0 0B 1 \| other units ok 0 timeout 0 crc 0 frame 0 exception 0$"])
+    check("Issue #69 Modbus TCP counters: forwarded transactions per unit, gateway connections, "
+          "forwarded requests and its own exceptions (shell 'devices')", all(h.values()),
+          " | ".join(gw.find(r"^(Meter1|Dead3)\s+unit|^modbus_tcp", asked)) or "no answer")
 
     # 2. Slave off -> DDEATH; back on -> DBIRTH
     obs.drain()

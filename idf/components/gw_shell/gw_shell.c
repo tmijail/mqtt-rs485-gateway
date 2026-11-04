@@ -20,6 +20,7 @@
 #include "gw_edge.h"
 #include "gw_io.h"
 #include "gw_log.h"
+#include "gw_mbap.h"
 #include "gw_net.h"
 #include "gw_status.h"
 #include "gw_storage.h"
@@ -262,11 +263,30 @@ static int cmd_devices(int argc, char **argv)
         gw_dev_stats_t st;
         gw_tagdb_get_stats(d, &st);
         out("%-16s unit %3u %-7s cycles %lu failed %lu | ok %lu timeout %lu crc %lu frame %lu "
-               "exception %lu\n",
+               "exception %lu",
                dev->name, dev->unit_id, device_online(d) ? "online" : "offline",
                (unsigned long)st.cycles, (unsigned long)st.failed_cycles, (unsigned long)st.bus.ok,
                (unsigned long)st.bus.timeout, (unsigned long)st.bus.crc,
                (unsigned long)st.bus.frame, (unsigned long)st.bus.exception);
+        const mb_stats_t *t = &st.tcp;   /* #69: Modbus TCP requests forwarded to this unit */
+        if (t->ok + t->timeout + t->crc + t->frame + t->exception > 0) {
+            out(" | tcp ok %lu timeout %lu crc %lu frame %lu exception %lu", (unsigned long)t->ok,
+                (unsigned long)t->timeout, (unsigned long)t->crc, (unsigned long)t->frame,
+                (unsigned long)t->exception);
+        }
+        out("\n");
+    }
+    if (s_ctx.cfg->modbus_tcp.enabled) {
+        gw_mbap_stats_t g;
+        gw_mbap_stats_get(&g);
+        const mb_stats_t *o = &g.other_units;
+        out("modbus_tcp connections %lu accepted %lu rejected | forwarded %lu | gateway "
+            "exceptions 01 %lu 03 %lu 0A %lu 0B %lu | other units ok %lu timeout %lu crc %lu "
+            "frame %lu exception %lu\n",
+            (unsigned long)g.accepted, (unsigned long)g.rejected, (unsigned long)g.forwarded,
+            (unsigned long)g.ex_function, (unsigned long)g.ex_value, (unsigned long)g.ex_path,
+            (unsigned long)g.ex_no_answer, (unsigned long)o->ok, (unsigned long)o->timeout,
+            (unsigned long)o->crc, (unsigned long)o->frame, (unsigned long)o->exception);
     }
     return 0;
 }

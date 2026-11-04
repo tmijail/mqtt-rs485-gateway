@@ -120,7 +120,7 @@ static void serve_pending(void *ctx)
     }
     gw_mbap_txn_t *txn;
     if (xQueueReceive(s_fwd, &txn, 0) == pdTRUE) {
-        gw_mbap_execute(&s_mb, txn);
+        gw_poller_forward(&s_poller, txn);   /* also counts it (#69) */
         atomic_store(&s_fwd_busy, false);
         xSemaphoreGive(s_fwd_done);
     }
