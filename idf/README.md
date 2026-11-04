@@ -454,6 +454,7 @@ Leyenda de **Evidencia**:
 - **CFG-7** Implementado: secretos fuera del JSON, en NVS; cifrada con la clave HMAC en eFuse KEY5 en la build de producción (`sdkconfig.production`) y en QEMU, sin cifrar en la build por defecto; migración de un archivo con secretos en claro (con borrado de la partición). Q (QEMU emula HMAC y eFuse: NVS cifrada; ningún secreto en claro en toda la imagen de flash tras la migración). La build de producción en placa y el quemado del eFuse: C (irreversible, §3.4).
 - **NET-5** Implementado, **sin probar con radio**: punto de acceso `GW-Setup-XXXXXX` (WPA2, contraseña de puesta en marcha) sin configuración válida y con BOOT 2–10 s. Q (los dos disparadores llegan a `gw_ap`; la build de QEMU no tiene radio) + C (SoftAP, AP+STA).
 - **NET-6** Implementado: `network.hostname` (o derivado de `edge_node_id`) en DHCP y mDNS con `_http._tcp`. H (esquema, derivación) + Q (el responder arranca con el nombre derivado) + C (respuestas mDNS: `open_eth` no tiene filtro multicast, §6.2.1).
+- **MQTT-4** Implementado: TLS 1.2 y 1.3 hacia el broker (`mqtt.tls`, SPEC §6.1) con la CA en un archivo PEM de LittleFS (`ca_file`) o el paquete de CA raíz públicas de ESP-IDF, verificación obligatoria del nombre (el `host`, también un literal IP contra un SAN IP, o `server_name`) y de las fechas (espera a SNTP). El archivo se valida al arrancar: uno ausente o que no es PEM se informa y no se intenta conectar. Memoria de mbedTLS en PSRAM si la hay. H (esquema) + Q (TLS 1.3 con la CA de LittleFS y el nombre contra el SAN IP; `server_name` que el certificado no lleva → rechazo; CA ausente → error sin intentos) + C (paquete de CA públicas).
 - **MB-14** Parcial: escrituras antes del siguiente sondeo, no entre bloques.
 - **IO-3** Parcial: DO a OFF al reiniciar, sin el resto del modo seguro.
 - **IO-6** Parcial: solo dos pitidos al confirmar el reset de fábrica (C).
@@ -536,6 +537,14 @@ Sin SNTP no hay hora válida: no hay RTC (TIME-2). Antes de la primera conexión
 - Los comandos de más de 1024 bytes, o fragmentados por esp-mqtt, se descartan con log.
 - Un NCMD o DCMD que nanopb no puede decodificar entero (por ejemplo, un nombre o un string de más de 63 caracteres) se descarta **completo**, con log: se decodifica una vez para validarlo y otra para aplicarlo.
 - Con 8 escrituras pendientes, las nuevas se descartan con log.
+
+### 6.5.1 TLS hacia el broker (MQTT-4)
+
+- **Sin reloj no hay TLS.** Con TLS la conexión espera a SNTP (`TLS: waiting for SNTP before connecting`), sin el plazo de 3 s del caso sin TLS: sin hora válida todo certificado sería "todavía no válido". No hay RTC (TIME-2): una planta sin servidor NTP alcanzable no conecta por TLS. Quien prefiera no comprobar fechas puede compilar con `CONFIG_MBEDTLS_HAVE_TIME_DATE=n` (entonces tampoco se rechazan certificados vencidos).
+- **Los archivos de certificados se cargan en LittleFS junto a `config.json`** (carpeta `fs/` al grabar, `idf.py flash`). Un cambio de archivo se aplica en el reinicio siguiente. La migración de secretos de CFG-7, que borra la partición entera, conserva estos archivos (se copian a RAM y se reescriben).
+- **Memoria.** Una sesión TLS toma unos 40 KB de heap de mbedTLS. El asignador propio (`CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC`, en `gw_storage_init`) usa PSRAM cuando la hay e interna si no (QEMU, PSRAM no detectada). En PSRAM sin cifrado de flash (FW-3) esos búferes quedan en claro fuera del chip.
+- El paquete de CA públicas es el subconjunto común de ESP-IDF (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN`), solo compilado: el E2E usa una CA propia.
+- El handshake corre en la tarea de esp-mqtt, no en la tarea Sparkplug: no afecta al TWDT de esta. Tras cada NBIRTH el log informa el margen de pila de las dos (`stack free (high-water mark): sparkplug … mqtt_task …`).
 
 ### 6.6 Red: Wi-Fi, conmutación (NET-4) e IPv6 (NET-7)
 

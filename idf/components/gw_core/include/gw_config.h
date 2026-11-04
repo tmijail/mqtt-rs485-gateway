@@ -28,6 +28,7 @@ extern "C" {
 #define GW_HOSTNAME_SIZE 64 /* NET-6: one DNS label, 1..63 characters */
 #define GW_USER_SIZE   33   /* web user name */
 #define GW_PWHASH_SIZE 128  /* "pbkdf2-sha256$<iterations>$<salt hex>$<hash hex>" (gw_auth.h) */
+#define GW_FILE_SIZE   33   /* name of a file next to config.json (TLS certificates, MQTT-4/5) */
 #define GW_CFG_ERR_SIZE 192
 #define GW_CFG_PATH_SIZE 96
 #define GW_JSON_MAX_DEPTH 32  /* deeper documents are rejected before cJSON recurses into them */
@@ -101,6 +102,14 @@ typedef struct {
     gw_ipv4_cfg_t ipv4;
 } gw_wifi_cfg_t;
 
+/* MQTT-4 / MQTT-5: TLS towards the broker. Certificates and keys are PEM files in the
+ * LittleFS partition, next to config.json (/cfg/<name>). */
+typedef struct {
+    bool enabled;
+    char ca_file[GW_FILE_SIZE];       /* "" = the ESP-IDF bundle of public root CAs */
+    char server_name[GW_HOST_SIZE];   /* name the broker certificate must carry; "" = its host */
+} gw_tls_cfg_t;
+
 typedef struct {
     char name[GW_NAME_SIZE];
     gw_area_t area;
@@ -146,6 +155,7 @@ typedef struct {
         char username[GW_CRED_SIZE];
         char password[GW_CRED_SIZE];
         uint16_t keepalive_s;
+        gw_tls_cfg_t tls;               /* MQTT-4 / MQTT-5 */
     } mqtt;
     struct {
         char group_id[GW_ID_SIZE];
@@ -223,6 +233,12 @@ unsigned gw_json_depth(const char *json, size_t len);
 /** Parse an IPv6 literal (RFC 4291 text form, "::" and a trailing dotted quad allowed, no
  * zone) into network byte order. */
 bool gw_parse_ipv6(const char *s, uint8_t out[16]);
+
+/**
+ * True if @p name can name a file next to config.json: 1 to GW_FILE_SIZE - 1 characters out
+ * of [A-Za-z0-9._-], not starting with '.', and not one of the configuration's own files.
+ */
+bool gw_config_file_name_ok(const char *name);
 
 /** Index of the device named @p name (length @p len), or -1. */
 int gw_config_find_device(const gw_config_t *cfg, const char *name, size_t len);

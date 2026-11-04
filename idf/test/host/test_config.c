@@ -283,6 +283,61 @@ static void test_syslog_section(void)
     ASSERT_REJECTED(parse(doc), "syslog.host: se esperaba un texto");
 }
 
+/* Document with "mqtt": {@p mqtt_body} and a minimal sparkplug section. */
+static bool parse_mqtt(const char *mqtt_body)
+{
+    char doc[2048];
+    snprintf(doc, sizeof(doc),
+             "{\"mqtt\":{%s},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}}",
+             mqtt_body);
+    return parse(doc);
+}
+
+/* MQTT-4: optional "mqtt.tls" section. */
+static void test_tls_section(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\""), err.msg);
+    TEST_ASSERT_FALSE(cfg.mqtt.tls.enabled);   /* absent = plain TCP, as in the MVP */
+    TEST_ASSERT_EQUAL(1883, cfg.mqtt.port);
+    TEST_ASSERT_EQUAL_STRING("", cfg.mqtt.tls.ca_file);
+
+    /* TLS on: the default port becomes 8883; an explicit port wins */
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\",\"tls\":{\"enabled\":true}"), err.msg);
+    TEST_ASSERT_TRUE(cfg.mqtt.tls.enabled);
+    TEST_ASSERT_EQUAL(8883, cfg.mqtt.port);
+    TEST_ASSERT_EQUAL_STRING("", cfg.mqtt.tls.ca_file);       /* the certificate bundle */
+    TEST_ASSERT_EQUAL_STRING("", cfg.mqtt.tls.server_name);   /* verified against the host */
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"10.0.0.5\",\"port\":9883,\"tls\":{"
+                                        "\"enabled\":true,\"ca_file\":\"plant-ca_2.pem\","
+                                        "\"server_name\":\"broker.plant.local\"}"),
+                             err.msg);
+    TEST_ASSERT_EQUAL(9883, cfg.mqtt.port);
+    TEST_ASSERT_EQUAL_STRING("plant-ca_2.pem", cfg.mqtt.tls.ca_file);
+    TEST_ASSERT_EQUAL_STRING("broker.plant.local", cfg.mqtt.tls.server_name);
+    /* the keys are validated also with TLS off (a disabled section stays consistent) */
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":{\"ca_file\":\"../ca.pem\"}"),
+                    "mqtt.tls.ca_file: '../ca.pem' no es un nombre de archivo válido");
+
+    static const char *const bad_names[] = {"/cfg/ca.pem", "a b.pem", ".hidden", "config.json",
+                                            "config.json.tmp", "ca\\\\x.pem",
+                                            "0123456789012345678901234567890123.pem"};
+    for (size_t i = 0; i < sizeof(bad_names) / sizeof(bad_names[0]); i++) {
+        char body[256];
+        snprintf(body, sizeof(body), "\"host\":\"b\",\"tls\":{\"enabled\":true,\"ca_file\":\"%s\"}",
+                 bad_names[i]);
+        ASSERT_REJECTED(parse_mqtt(body), "mqtt.tls.ca_file:");
+    }
+    TEST_ASSERT_TRUE(gw_config_file_name_ok("ca.pem"));
+    TEST_ASSERT_TRUE(gw_config_file_name_ok("A-z_0.9"));
+    TEST_ASSERT_FALSE(gw_config_file_name_ok(""));
+    TEST_ASSERT_FALSE(gw_config_file_name_ok("config.json"));
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":{\"enabled\":1}"),
+                    "mqtt.tls.enabled: se esperaba true o false");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":{\"verify\":false}"),
+                    "mqtt.tls.verify: clave desconocida");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":true"), "mqtt.tls: se esperaba un objeto JSON");
+}
+
 /* CFG-3 / CFG-4: optional "web" section. */
 static void test_web_section(void)
 {
@@ -606,6 +661,7 @@ int main(void)
     RUN_TEST(test_ipv6_literals);
     RUN_TEST(test_ipv6_section);
     RUN_TEST(test_syslog_section);
+    RUN_TEST(test_tls_section);
     RUN_TEST(test_web_section);
     RUN_TEST(test_hostname);
     RUN_TEST(test_error_fields);

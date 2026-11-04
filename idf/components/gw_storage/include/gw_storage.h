@@ -90,6 +90,16 @@ void gw_storage_save_last_good(const gw_config_t *cfg);
  */
 void gw_storage_recovery_config(gw_config_t *cfg);
 
+/** Largest file next to config.json that gw_storage_read_file() reads. */
+#define GW_STORAGE_FILE_MAX 16384
+
+/**
+ * Whole file /cfg/<@p name> (a TLS certificate or key, MQTT-4/5), NUL terminated, in PSRAM
+ * when present. NULL with the reason (Spanish, with the path) in @p why. Release with
+ * gw_storage_free(). The partition must have been mounted by gw_storage_load_config().
+ */
+char *gw_storage_read_file(const char *name, size_t *len, char *why, size_t why_cap);
+
 /**
  * Zeroed allocation for a large structure that lives for the whole run (configuration,
  * Sparkplug engine): PSRAM when the board has it, internal RAM otherwise. Logs where it

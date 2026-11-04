@@ -3,6 +3,7 @@
 #include <stdatomic.h>
 #include <string.h>
 
+#include "esp_crt_bundle.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_system.h"
@@ -19,7 +20,9 @@
 #include "gw_status.h"
 #include "gw_storage.h"
 #include "lwip/sockets.h"
+#include "mbedtls/x509_crt.h"
 #include "mqtt_client.h"
+#include "psa/crypto.h"
 
 static const char *TAG = "edge";
 
@@ -30,6 +33,7 @@ static const char *TAG = "edge";
 #define QUIESCE_MS       3000   /* longest wait for the bus task to finish its transaction */
 #define STABLE_MAX_MS    60000  /* a session is stable after one keepalive period, at most this */
 #define SUBACK_TIMEOUT_MS 5000  /* NBIRTH waits this long at most for the SUBACK */
+#define TLS_ERROR_LOG_MS 10000  /* a TLS setup that cannot work is logged this often */
 #define STR_(x) #x
 #define STR(x)  STR_(x)
 
@@ -97,6 +101,10 @@ static int64_t s_fed_us;        /* last time this task fed the task watchdog */
 static uint32_t s_max_unfed_ms; /* longest stretch without feeding since the last reset */
 static unsigned s_handled_route;
 static struct ifreq s_ifr;      /* interface the client is bound to (NET-4, two interfaces only) */
+static char *s_ca_pem;          /* MQTT-4: CA file, boot allocation (PSRAM if any), never freed */
+static char s_tls_error[200];   /* why the TLS settings cannot work: no connection is attempted */
+static int64_t s_tls_logged_us;
+static bool s_waiting_time_logged;
 
 static void wake(void)
 {
@@ -195,6 +203,31 @@ static void enqueue_cmd(const esp_mqtt_event_t *ev)
     }
 }
 
+/* MQTT-4: say why a TLS connection failed, in terms of the configuration. esp-tls reports the
+ * verification flags only when the peer certificate is still around after the failure (not
+ * with TLS 1.3): then only "verification failed" is known. */
+static void log_tls_error(const esp_mqtt_error_codes_t *e)
+{
+    unsigned flags = (unsigned)e->esp_tls_cert_verify_flags;
+    int stack = e->esp_tls_stack_err < 0 ? -e->esp_tls_stack_err : e->esp_tls_stack_err;
+    const char *what = (flags & MBEDTLS_X509_BADCERT_CN_MISMATCH)
+                           ? "the broker certificate does not carry the expected name "
+                             "(mqtt.host or mqtt.tls.server_name)"
+                       : (flags & MBEDTLS_X509_BADCERT_EXPIRED) ? "the broker certificate expired"
+                       : (flags & MBEDTLS_X509_BADCERT_FUTURE)
+                           ? "the broker certificate is not valid yet (check the clock)"
+                       : (flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED)
+                           ? "the broker certificate is not signed by the configured CA"
+                       : flags != 0 ? "the broker certificate was rejected"
+                       : stack == -MBEDTLS_ERR_X509_CERT_VERIFY_FAILED
+                           ? "the broker certificate failed verification (CA: mqtt.tls.ca_file; "
+                             "name: mqtt.host or mqtt.tls.server_name; dates)"
+                           : "TLS handshake failed";
+    ESP_LOGW(TAG, "TLS: %s (esp-tls %s, mbedTLS -0x%04x, verify flags 0x%x, errno %d)", what,
+             esp_err_to_name(e->esp_tls_last_esp_err), (unsigned)stack, flags,
+             e->esp_transport_sock_errno);
+}
+
 static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
@@ -224,6 +257,9 @@ static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *da
         if (ev->error_handle->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
             ESP_LOGW(TAG, "broker refused the connection (code %d)",
                      ev->error_handle->connect_return_code);
+        } else if (ev->error_handle->esp_tls_last_esp_err != ESP_OK ||
+                   ev->error_handle->esp_tls_cert_verify_flags != 0) {
+            log_tls_error(ev->error_handle);
         } else {
             ESP_LOGW(TAG, "MQTT transport error (errno %d)",
                      ev->error_handle->esp_transport_sock_errno);
@@ -296,8 +332,8 @@ static void prepare_attempt(void)
     size_t n = gw_node_death_payload(s_bdseq, s_will, sizeof(s_will));
     s_mqtt_cfg.session.last_will.msg = (const char *)s_will;
     s_mqtt_cfg.session.last_will.msg_len = (int)n;
-    ESP_LOGI(TAG, "connecting to %s:%u as '%s', bdSeq=%u", s_cfg->mqtt.host, s_cfg->mqtt.port,
-             s_cfg->mqtt.client_id, s_bdseq);
+    ESP_LOGI(TAG, "connecting to %s:%u%s as '%s', bdSeq=%u", s_cfg->mqtt.host, s_cfg->mqtt.port,
+             s_cfg->mqtt.tls.enabled ? " (TLS)" : "", s_cfg->mqtt.client_id, s_bdseq);
 }
 
 static void schedule_retry(int64_t now);
@@ -375,6 +411,15 @@ static void on_connected(void)
     s_sub_deadline_us = esp_timer_get_time() + SUBACK_TIMEOUT_MS * 1000LL;
 }
 
+/* Stack margins of the tasks the MQTT session runs on (TLS handshakes are deep in mqtt_task). */
+static void log_stacks(void)
+{
+    TaskHandle_t mqtt = xTaskGetHandle("mqtt_task");
+    ESP_LOGI(TAG, "stack free (high-water mark): sparkplug %u of %u B, mqtt_task %u B",
+             (unsigned)uxTaskGetStackHighWaterMark(NULL), (unsigned)STACK_BYTES,
+             mqtt != NULL ? (unsigned)uxTaskGetStackHighWaterMark(mqtt) : 0u);
+}
+
 /* SUBACK received for both topics: the Sparkplug session starts (NBIRTH and DBIRTHs). */
 static void on_subscribed(void)
 {
@@ -394,6 +439,7 @@ static void on_subscribed(void)
     ESP_LOGI(TAG, "Sparkplug session up (bdSeq=%u): births sent in %lu ms, longest stretch "
              "without feeding the watchdog %lu ms", s_bdseq,
              (unsigned long)((esp_timer_get_time() - t0) / 1000), (unsigned long)s_max_unfed_ms);
+    log_stacks();
 }
 
 /* How long a session must last before the reconnect backoff starts again from the minimum. */
@@ -441,6 +487,30 @@ static void restart_now(void)
     gw_bus_quiesce(QUIESCE_MS);
     vTaskDelay(pdMS_TO_TICKS(REBOOT_DELAY_MS));
     esp_restart();
+}
+
+/* MQTT-4: TLS settings that cannot work (a missing or unreadable certificate) never connect;
+ * and with certificate dates checked (CONFIG_MBEDTLS_HAVE_TIME_DATE) a TLS connection waits
+ * for SNTP: without a valid clock every certificate would be "not valid yet". */
+static bool tls_can_start(int64_t now)
+{
+    if (s_tls_error[0] != '\0') {
+        if (s_tls_logged_us == 0 || now - s_tls_logged_us >= TLS_ERROR_LOG_MS * 1000LL) {
+            s_tls_logged_us = now;
+            ESP_LOGE(TAG, "%s: MQTT not started", s_tls_error);
+        }
+        return false;
+    }
+#if CONFIG_MBEDTLS_HAVE_TIME_DATE
+    if (s_cfg->mqtt.tls.enabled && !atomic_load(&s_time_synced)) {
+        if (!s_waiting_time_logged) {
+            s_waiting_time_logged = true;
+            ESP_LOGW(TAG, "TLS: waiting for SNTP before connecting (certificate dates are checked)");
+        }
+        return false;
+    }
+#endif
+    return true;
 }
 
 /* Bring the Sparkplug state in line with the flags set by the other tasks. */
@@ -516,7 +586,7 @@ static void reconcile(void)
         }
     }
 
-    if (!s_started && ip && (s_retry_at_us == 0 || now >= s_retry_at_us) &&
+    if (!s_started && ip && (s_retry_at_us == 0 || now >= s_retry_at_us) && tls_can_start(now) &&
         (atomic_load(&s_time_synced) || now - s_ip_since_us >= CONFIG_GW_SNTP_WAIT_MS * 1000LL)) {
         start_client(now);
     }
@@ -592,6 +662,53 @@ static void edge_task(void *arg)
     }
 }
 
+/* A PEM file next to config.json, checked now so a bad file is reported as such and not as a
+ * handshake failure on every attempt. Records the problem in s_tls_error. */
+static char *load_pem_certs(const char *name, const char *key)
+{
+    size_t len;
+    char why[120];
+    char *pem = gw_storage_read_file(name, &len, why, sizeof(why));
+    if (pem == NULL) {
+        snprintf(s_tls_error, sizeof(s_tls_error), "mqtt.tls.%s: %s", key, why);
+        return NULL;
+    }
+    mbedtls_x509_crt crt;
+    mbedtls_x509_crt_init(&crt);
+    int r = mbedtls_x509_crt_parse(&crt, (const unsigned char *)pem, len + 1);
+    unsigned count = 0;
+    for (const mbedtls_x509_crt *c = &crt; c != NULL && c->raw.len > 0; c = c->next) {
+        count++;
+    }
+    mbedtls_x509_crt_free(&crt);
+    if (r != 0 || count == 0) {
+        snprintf(s_tls_error, sizeof(s_tls_error),
+                 "mqtt.tls.%s: /cfg/%s is not a PEM certificate file (mbedTLS %d)", key, name, r);
+        gw_storage_free(pem);
+        return NULL;
+    }
+    ESP_LOGI(TAG, "TLS: %s: %u certificate(s) from /cfg/%s", key, count, name);
+    return pem;
+}
+
+/* MQTT-4: TLS 1.2/1.3 with the broker certificate verified against the CA file (or the
+ * ESP-IDF bundle of public roots) and its name against the host (or tls.server_name). The
+ * PEM buffers are referenced, not copied, by esp-mqtt: they live for the whole run. */
+static void setup_tls(const gw_tls_cfg_t *tls)
+{
+    psa_crypto_init();   /* mbedTLS 4: certificate parsing goes through PSA; idempotent */
+    esp_mqtt_client_config_t *m = &s_mqtt_cfg;
+    if (tls->ca_file[0] != '\0') {
+        s_ca_pem = load_pem_certs(tls->ca_file, "ca_file");
+        m->broker.verification.certificate = s_ca_pem;   /* PEM: NUL terminated, length 0 */
+    } else {
+        m->broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
+        ESP_LOGI(TAG, "TLS: broker certificate checked against the ESP-IDF root CA bundle");
+    }
+    /* Never skip_cert_common_name_check: the name is always verified (MQTT-4). */
+    m->broker.verification.common_name = tls->server_name[0] ? tls->server_name : NULL;
+}
+
 esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
 {
     s_cfg = cfg;
@@ -617,7 +734,7 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         .broker.address = {
             .hostname = cfg->mqtt.host,       /* resolved by DNS on every attempt (NET-3) */
             .port = cfg->mqtt.port,
-            .transport = MQTT_TRANSPORT_OVER_TCP,
+            .transport = cfg->mqtt.tls.enabled ? MQTT_TRANSPORT_OVER_SSL : MQTT_TRANSPORT_OVER_TCP,
         },
         .credentials = {
             .client_id = cfg->mqtt.client_id,
@@ -636,6 +753,10 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         .buffer = {.size = CONFIG_GW_MQTT_BUFFER_SIZE, .out_size = CONFIG_GW_MQTT_BUFFER_SIZE},
         .outbox = {.limit = CONFIG_GW_MQTT_OUTBOX_LIMIT},
     };
+
+    if (cfg->mqtt.tls.enabled) {
+        setup_tls(&cfg->mqtt.tls);
+    }
 
     s_q = xQueueCreateStatic(CONFIG_GW_EDGE_QUEUE_LEN, sizeof(edge_ev_t), s_q_storage, &s_q_buf);
     s_free_slots = xQueueCreateStatic(CONFIG_GW_CMD_SLOTS, 1, s_free_storage, &s_free_buf);

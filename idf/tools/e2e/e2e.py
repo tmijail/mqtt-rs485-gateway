@@ -285,14 +285,14 @@ def wait_syslog(host, pattern, timeout, since=0.0):
 class Observer:
     """Subscribes to spBv1.0/#. A new instance is created after each broker restart."""
 
-    def __init__(self):
+    def __init__(self, port=None):
         self.q = queue.Queue()
         self.subscribed = threading.Event()
         self.c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"e2e-{time.monotonic()}")
         self.c.on_message = self._on_msg
         self.c.on_subscribe = lambda *a: self.subscribed.set()
         # Long keepalive: the observer must survive the frozen-broker scenario.
-        self.c.connect("127.0.0.1", MQTT_PORT, keepalive=120)
+        self.c.connect("127.0.0.1", port or MQTT_PORT, keepalive=120)
         self.c.subscribe("spBv1.0/#", qos=1)
         self.c.loop_start()
         if not self.subscribed.wait(5):
@@ -565,6 +565,131 @@ def config_json(mqtt_port=None, **overrides):
     return json.dumps(cfg, indent=2).encode() + b"\n"
 
 
+def boot_variant(args, work, name, cfg, files=None):
+    """Start the gateway on a copy of the image whose LittleFS holds @cfg as config.json plus
+    @files ({name: bytes}). Its console goes to uart0-<name>.log."""
+    files = dict(files or {})
+    files["config.json"] = json.dumps(cfg, indent=2).encode() + b"\n"
+    gw = Gateway(args, work / f"uart0-{name}.log", flash_variant(args, work, name, files))
+    gw.start()
+    return gw
+
+
+def node_config(node, **mqtt):
+    """The harness configuration with edge node id @node and the "mqtt" keys in @mqtt."""
+    cfg = json.loads(config_json())
+    cfg["sparkplug"]["edge_node_id"] = node
+    cfg["mqtt"].update(mqtt)
+    return cfg
+
+
+# ---------------------------------------------------------------- TLS (MQTT-4, MQTT-5)
+
+def make_pki(work):
+    """A private CA (EC P-256), a broker certificate for IP 10.0.2.2 and DNS broker.e2e, and a
+    client certificate for GW13. Returns {name: path}."""
+    d = work / "pki"
+    d.mkdir(exist_ok=True)
+
+    def ossl(*a):
+        subprocess.run(["openssl", *a], cwd=d, check=True, capture_output=True)
+
+    def key(name):
+        ossl("ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", f"{name}.key")
+
+    key("ca")
+    ossl("req", "-x509", "-new", "-key", "ca.key", "-sha256", "-days", "30", "-subj", "/CN=E2E test CA",
+         "-out", "ca.pem")
+    for name, cn, ext in (("server", "broker.e2e", "subjectAltName=IP:10.0.2.2,DNS:broker.e2e"),
+                          ("client", "GW13", "extendedKeyUsage=clientAuth")):
+        key(name)
+        ossl("req", "-new", "-key", f"{name}.key", "-subj", f"/CN={cn}", "-out", f"{name}.csr")
+        (d / f"{name}.ext").write_text(ext + "\n")
+        ossl("x509", "-req", "-in", f"{name}.csr", "-CA", "ca.pem", "-CAkey", "ca.key",
+             "-CAcreateserial", "-days", "30", "-sha256", "-extfile", f"{name}.ext",
+             "-out", f"{name}.crt")
+    return {n: d / n for n in ("ca.pem", "server.crt", "server.key", "client.crt", "client.key")}
+
+
+def run_tls(args, work):
+    """MQTT-4 / MQTT-5 against a mosquitto with three listeners: TLS 1.3 only (server
+    authentication), TLS 1.2 only with client certificates required (mutual TLS), and plain TCP
+    for the observer. Separate boots with their own edge node ids:
+      GW12  CA file in LittleFS, name checked against the IP literal (SAN IP:10.0.2.2), TLS 1.3
+      GW14  tls.server_name that the certificate does not carry -> rejected, never connects
+      GW15  ca_file that does not exist -> reported, no connection attempted"""
+    pki = make_pki(work)
+    p13, pm, plain = MQTT_PORT + 5, MQTT_PORT + 6, MQTT_PORT + 7
+    conf = work / "broker-tls.conf"
+    # "user root": started as root, mosquitto would drop to user "mosquitto", which cannot read
+    # the certificates in the work directory (no effect when not started as root)
+    conf.write_text(
+        "user root\nper_listener_settings true\n"
+        f"listener {p13} 127.0.0.1\nallow_anonymous true\ncafile {pki['ca.pem']}\n"
+        f"certfile {pki['server.crt']}\nkeyfile {pki['server.key']}\ntls_version tlsv1.3\n"
+        f"listener {pm} 127.0.0.1\nallow_anonymous true\ncafile {pki['ca.pem']}\n"
+        f"certfile {pki['server.crt']}\nkeyfile {pki['server.key']}\ntls_version tlsv1.2\n"
+        "require_certificate true\nuse_identity_as_username true\n"
+        f"listener {plain} 127.0.0.1\nallow_anonymous true\n")
+    blog = work / "mosquitto-tls.log"
+    broker = start_broker(conf, blog)
+    obs = Observer(plain)
+    ca = pki["ca.pem"].read_bytes()
+
+    # GW12: server authentication with the CA file; the name is the IP literal of mqtt.host
+    node = "GW12"
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "tls13", node_config(node, port=p13, tls={"enabled": True,
+                                                                            "ca_file": "ca.pem"}),
+                      {"ca.pem": ca})
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 60)
+    loaded = gw.find(r"TLS: ca_file: 1 certificate\(s\) from /cfg/ca\.pem", t0)
+    attempt = gw.find(r"connecting to 10\.0\.2\.2:%d \(TLS\) as 'GW12'" % p13, t0)
+    gw.wait_log(r"stack free \(high-water mark\)", 5, t0)
+    stacks = gw.find(r"stack free \(high-water mark\)", t0)
+    asked, h = gw.shell("config", [r"^tls\s+CA /cfg/ca\.pem, name checked against the broker host"])
+    shown = list(h.values())[0]
+    connected = re.search(r"New client connected from \S+ as GW12 ", blog.read_text())
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node}", 5)
+    check("MQTT-4 TLS 1.3 (TLS-1.3-only listener) with the CA file from LittleFS and the broker "
+          "name verified against the IP literal of mqtt.host (SAN IP:10.0.2.2): NBIRTH",
+          nb and loaded and attempt and connected and shown,
+          f"NBIRTH {f'{nb[0] - t0:.1f} s after boot' if nb else 'missing'}; "
+          f"{(loaded or ['CA not loaded'])[0]}; {(stacks or ['no stack log'])[0]}; "
+          + " | ".join(gw.find(r"^tls\s", asked)))
+
+    # GW14: the certificate does not carry tls.server_name -> the handshake fails, no session
+    node = "GW14"
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "tlsname", node_config(node, port=p13, tls={
+        "enabled": True, "ca_file": "ca.pem", "server_name": "wrong.e2e"}), {"ca.pem": ca})
+    rejected = gw.wait_log(r"TLS: the broker certificate (does not carry the expected name|failed "
+                           r"verification) .*mbedTLS -0x2700", 40, t0)
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 3)
+    lines = gw.find(r"TLS: the broker certificate", t0)
+    gw.kill()
+    check("MQTT-4 hostname verification: tls.server_name that the broker certificate does not carry "
+          "-> handshake rejected, no session",
+          rejected and not nb and not re.search(r"as GW14 ", blog.read_text()),
+          (lines or ["no TLS error logged"])[0])
+
+    # GW15: a CA file that is not in LittleFS: reported, nothing attempted
+    node = "GW15"
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "tlsmissing", node_config(node, port=p13, tls={
+        "enabled": True, "ca_file": "missing.pem"}))
+    missing = gw.wait_log(r"mqtt\.tls\.ca_file: /cfg/missing\.pem: no existe .*MQTT not started", 30, t0)
+    attempts = gw.find(r"connecting to .* as 'GW15'", t0)
+    gw.kill()
+    check("MQTT-4 a CA file missing from LittleFS is reported and no connection is attempted",
+          missing and not attempts,
+          (gw.find(r"mqtt\.tls\.ca_file", t0) or ["no error logged"])[0])
+    obs.close()
+    broker.terminate()
+    broker.wait()
+
+
 # ---------------------------------------------------------------- scenario
 
 def start_broker(conf, log):
@@ -598,7 +723,8 @@ def main():
     ap.add_argument("--syslog-port", type=int, default=SYSLOG_PORT)
     ap.add_argument("--http-port", type=int, default=HTTP_PORT)
     ap.add_argument("--only", default="",
-                    help="comma-separated scenarios to run (failsafe,network,web,reset,main); default all")
+                    help="comma-separated scenarios to run (failsafe,network,web,reset,tls,main); "
+                         "default all")
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
     args = ap.parse_args()
@@ -637,6 +763,8 @@ def main():
             run_web(args, work)
         if want("reset"):
             run_factory_reset(args, work)
+        if want("tls"):
+            run_tls(args, work)
         if want("main"):
             run(args, log, slave, broker, conf, work)
     except BaseException:

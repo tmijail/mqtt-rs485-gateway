@@ -302,6 +302,21 @@ El nombre va también en las peticiones DHCP de Ethernet y Wi-Fi.
 
 El router por defecto IPv6 se aprende de los RA; no hay *gateway* IPv6 estático. `mqtt.host`, `ntp.server` y `syslog.host` aceptan literales IPv6 (`fd00::10`) o nombres con registro AAAA.
 
+**`mqtt.tls` (MQTT-4): TLS hacia el broker.**
+
+```json
+"mqtt": { "host": "broker.planta.local", "port": 8883,
+          "tls": { "enabled": true, "ca_file": "ca.pem", "server_name": "" } }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `enabled` | bool | `false` | `false` = TCP sin cifrar, como en el MVP. Con `true`, el defecto de `mqtt.port` pasa a `8883` |
+| `ca_file` | texto | `""` | Archivo PEM con la o las CA que firman el certificado del broker, en la partición LittleFS junto a `config.json` (`/cfg/<nombre>`). Vacío = el paquete de CA raíz públicas de ESP-IDF. Nombre de 1–32 caracteres `A-Z a-z 0-9 . _ -`, sin `/`, que no empiece con `.` ni sea `config.json` |
+| `server_name` | texto | `""` | Nombre que debe llevar el certificado del broker (SAN o CN). Vacío = el `host` al que se conecta (también un literal IP, contra un SAN de tipo IP). La verificación del nombre no se puede desactivar |
+
+TLS 1.2 o 1.3, lo que negocie el broker. Las fechas de validez del certificado se comprueban: la conexión TLS espera a que SNTP fije el reloj. Las claves se validan aunque `enabled` sea `false`.
+
 **`syslog` (REL-4): copia del log a un servidor syslog.**
 
 ```json

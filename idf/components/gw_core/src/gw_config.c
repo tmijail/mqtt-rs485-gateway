@@ -594,18 +594,69 @@ static bool parse_ntp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     return cfg->ntp.server[0] != '\0' ? true : fail(err, "ntp.server", "no puede estar vacío");
 }
 
+bool gw_config_file_name_ok(const char *name)
+{
+    size_t n = strlen(name);
+    if (n == 0 || n >= GW_FILE_SIZE || name[0] == '.' || strncmp(name, "config.json", 11) == 0) {
+        return false;
+    }
+    for (size_t i = 0; i < n; i++) {
+        char c = name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+              c == '.' || c == '_' || c == '-')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool get_file_name(const cJSON *o, const char *key, const char *path, char *out,
+                          gw_cfg_err_t *err)
+{
+    if (!get_string(o, key, path, false, "", out, GW_FILE_SIZE, err)) {
+        return false;
+    }
+    if (out[0] != '\0' && !gw_config_file_name_ok(out)) {
+        char p[96];
+        join(p, sizeof(p), path, key);
+        return fail(err, p, "'%s' no es un nombre de archivo válido (1-%d caracteres A-Z a-z 0-9 . _ "
+                    "-, sin '/', no config.json)", out, GW_FILE_SIZE - 1);
+    }
+    return true;
+}
+
+/* MQTT-4 / MQTT-5 */
+static bool parse_tls(const cJSON *mqtt, gw_tls_cfg_t *t, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"enabled", "ca_file", "server_name"};
+    static const cJSON empty = {.type = cJSON_Object};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(mqtt, "tls");
+    if (o == NULL) {
+        o = &empty;
+    }
+    if (!check_keys(o, "mqtt.tls", keys, 3, err) ||
+        !get_bool(o, "enabled", "mqtt.tls", false, &t->enabled, err) ||
+        !get_file_name(o, "ca_file", "mqtt.tls", t->ca_file, err) ||
+        !get_string(o, "server_name", "mqtt.tls", false, "", t->server_name,
+                    sizeof(t->server_name), err)) {
+        return false;
+    }
+    return true;
+}
+
 static bool parse_mqtt(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"host", "port", "client_id", "username", "password",
-                                       "keepalive_s"};
+                                       "keepalive_s", "tls"};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "mqtt");
     if (o == NULL) {
         return fail(err, "mqtt", "sección obligatoria ausente");
     }
     long port, ka;
-    if (!check_keys(o, "mqtt", keys, 6, err) ||
+    if (!check_keys(o, "mqtt", keys, 7, err) || !parse_tls(o, &cfg->mqtt.tls, err) ||
         !get_string(o, "host", "mqtt", true, "", cfg->mqtt.host, sizeof(cfg->mqtt.host), err) ||
-        !get_int(o, "port", "mqtt", false, 1883, 1, 65535, &port, err) ||
+        !get_int(o, "port", "mqtt", false, cfg->mqtt.tls.enabled ? 8883 : 1883, 1, 65535, &port,
+                 err) ||
         !get_string(o, "client_id", "mqtt", false, "", cfg->mqtt.client_id,
                     sizeof(cfg->mqtt.client_id), err) ||
         !get_string(o, "username", "mqtt", false, "", cfg->mqtt.username,

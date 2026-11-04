@@ -392,6 +392,14 @@ static int cmd_config(int argc, char **argv)
     out("mqtt       %s:%u, client id '%s', keepalive %u s, user %s\n", c->mqtt.host,
            c->mqtt.port, c->mqtt.client_id, c->mqtt.keepalive_s,
            c->mqtt.username[0] ? c->mqtt.username : "(none)");
+    const gw_tls_cfg_t *tls = &c->mqtt.tls;
+    if (tls->enabled) {
+        out("tls        CA %s%s, name checked against %s\n",
+            tls->ca_file[0] ? "/cfg/" : "ESP-IDF root bundle", tls->ca_file,
+            tls->server_name[0] ? tls->server_name : "the broker host");
+    } else {
+        out("tls        off (plain TCP)\n");
+    }
     if (c->network.dhcp) {
         out("network    DHCP\n");
     } else {
