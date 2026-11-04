@@ -1,5 +1,6 @@
 #include "gw_edge.h"
 
+#include <assert.h>
 #include <stdatomic.h>
 #include <string.h>
 
@@ -538,11 +539,30 @@ static void schedule_retry(int64_t now)
              (unsigned long)delay);
 }
 
+/* Issue #58: esp-mqtt 1.1.0 (mqtt_client.c:633) callocs a new network.if_name on every
+ * esp_mqtt_set_config() without freeing the previous one (about 17 B per call, one call per
+ * connection attempt). The interface binding is therefore given to esp_mqtt_client_init()
+ * only, and every set_config goes through here: a configuration that still carries it is
+ * refused (and aborts debug builds) instead of leaking. test/host/check_set_config.cmake fails
+ * the host tests if esp_mqtt_set_config() is called anywhere else. Remove when an esp-mqtt
+ * release frees it (reported upstream; README 6.5). The same function also copies
+ * credentials.authentication.key_password every time without freeing it: never set. */
+static esp_err_t set_config(void)
+{
+    if (s_mqtt_cfg.network.if_name != NULL ||
+        s_mqtt_cfg.credentials.authentication.key_password != NULL) {
+        ESP_LOGE(TAG, "esp_mqtt_set_config with if_name/key_password would leak: refused");
+        assert(false);
+        return ESP_ERR_INVALID_STATE;
+    }
+    return esp_mqtt_set_config(s_client, &s_mqtt_cfg);
+}
+
 static void reconnect(int64_t now)
 {
     s_retry_at_us = 0;
     prepare_attempt();
-    if (esp_mqtt_set_config(s_client, &s_mqtt_cfg) != ESP_OK ||
+    if (set_config() != ESP_OK ||
         esp_mqtt_client_reconnect(s_client) != ESP_OK) {
         schedule_retry(now);
     }

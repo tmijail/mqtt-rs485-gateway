@@ -58,3 +58,9 @@ target_link_libraries(spb_dump PRIVATE gw_core unity)
 target_include_directories(spb_dump PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 target_compile_definitions(spb_dump PRIVATE
     GW_SPEC_EXAMPLE="${CMAKE_CURRENT_LIST_DIR}/spec_example.json")
+
+# Issue #58: esp-mqtt 1.1.0 leaks network.if_name in esp_mqtt_set_config(); gw_edge must call it
+# only through its guarded wrapper set_config().
+add_test(NAME check_set_config
+         COMMAND ${CMAKE_COMMAND} -DSRC=${IDF_PROJECT_DIR}/components/gw_edge/gw_edge.c
+                 -P ${CMAKE_CURRENT_LIST_DIR}/check_set_config.cmake)
