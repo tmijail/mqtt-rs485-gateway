@@ -18,6 +18,7 @@
 #include "gw_io.h"
 #include "gw_net.h"
 #include "gw_node.h"
+#include "gw_phost.h"
 #include "gw_status.h"
 #include "gw_storage.h"
 #include "lwip/sockets.h"
@@ -37,6 +38,7 @@ static const char *TAG = "edge";
 #define STABLE_MAX_MS    60000  /* a session is stable after one keepalive period, at most this */
 #define SUBACK_TIMEOUT_MS 5000  /* NBIRTH waits this long at most for the SUBACK */
 #define TLS_ERROR_LOG_MS 10000  /* a TLS setup that cannot work is logged this often */
+#define PHOST_WAIT_MS    30000  /* with backup brokers: no STATE online this long -> next broker */
 #define STR_(x) #x
 #define STR(x)  STR_(x)
 
@@ -87,6 +89,7 @@ static esp_mqtt_client_config_t s_mqtt_cfg;
 static char s_death_topic[GW_TOPIC_MAX];
 static char s_ncmd_topic[GW_TOPIC_MAX];
 static char s_dcmd_topic[GW_TOPIC_MAX];
+static char s_state_topic[GW_TOPIC_MAX];   /* SPB-13: "" without sparkplug.primary_host_id */
 static uint8_t s_will[64];
 static uint8_t s_bdseq;
 static bool s_started;
@@ -111,6 +114,10 @@ static char s_setup_error[200]; /* why the settings cannot work (TLS files): no 
 static int64_t s_tls_logged_us;
 static bool s_waiting_time_logged;
 static gw_brokersel_t s_bsel;   /* MQTT-6: which broker of the list the next attempt goes to */
+static gw_phost_t s_phost;      /* SPB-13: what the primary host last said */
+static bool s_waiting_host;     /* subscribed; NBIRTH waits for the host's STATE online */
+static int64_t s_host_wait_since_us;
+static bool s_host_disconnect;  /* the session ends because of the host, not the network */
 static bool s_stable;           /* the current session lasted stable_ms(): it counts as working */
 static char s_client_if[8];     /* interface the client was bound to ("" = one interface) */
 
@@ -357,6 +364,8 @@ static void publish_status(void)
     s_st.host = broker_host(s_bsel.current);
     s_st.port = broker_port(s_bsel.current);
     s_st.failures = s_bsel.failures;
+    s_st.host_state = !s_phost.have_ts ? -1 : s_phost.online ? 1 : 0;
+    s_st.waiting_host = s_waiting_host;
     portEXIT_CRITICAL(&s_st_mux);
 }
 
@@ -455,6 +464,14 @@ static void reconnect(int64_t now)
     }
 }
 
+/* Orderly end of a Sparkplug session: NDEATH with the session's bdSeq (the will's payload). */
+static void publish_ndeath(void)
+{
+    esp_mqtt_client_publish(s_client, s_death_topic, (const char *)s_will,
+                            s_mqtt_cfg.session.last_will.msg_len, 1, false);
+    feed_watchdog();
+}
+
 /* Close a session that cannot work; the DISCONNECTED event schedules the retry (backoff).
  * DISCONNECT makes the broker drop the will: no NBIRTH went out, so no NDEATH is owed. */
 static void abort_session(const char *why)
@@ -468,12 +485,17 @@ static void abort_session(const char *why)
  * so a node that is announced online always receives its commands. */
 static void on_connected(void)
 {
+    /* SPB-13: the host's STATE too, in the same SUBSCRIBE: its retained message comes right
+     * after the SUBACK */
     const esp_mqtt_topic_t topics[] = {
         {.filter = s_ncmd_topic, .qos = 1},
         {.filter = s_dcmd_topic, .qos = 1},
+        {.filter = s_state_topic, .qos = 1},
     };
     atomic_store(&s_suback, 0);
-    int id = esp_mqtt_client_subscribe_multiple(s_client, topics, 2);
+    gw_phost_session_start(&s_phost);
+    s_waiting_host = false;
+    int id = esp_mqtt_client_subscribe_multiple(s_client, topics, s_state_topic[0] ? 3 : 2);
     feed_watchdog();
     if (id < 0) {
         abort_session("SUBSCRIBE to NCMD/DCMD could not be sent");
@@ -492,8 +514,8 @@ static void log_stacks(void)
              mqtt != NULL ? (unsigned)uxTaskGetStackHighWaterMark(mqtt) : 0u);
 }
 
-/* SUBACK received for both topics: the Sparkplug session starts (NBIRTH and DBIRTHs). */
-static void on_subscribed(void)
+/* The Sparkplug session starts: NBIRTH and DBIRTHs. */
+static void start_births(void)
 {
     /* s_attempt is not reset here: a broker that accepts the connection and drops it at once
      * (ACL, duplicate client_id, connection limit) must still see the backoff grow. It is
@@ -514,6 +536,65 @@ static void on_subscribed(void)
     log_stacks();
 }
 
+/* SUBACK received for every topic: the session starts, once the primary host (if one is
+ * configured) has said it is online (SPB-13). */
+static void on_subscribed(void)
+{
+    if (s_state_topic[0] != '\0' && !s_phost.online) {
+        s_waiting_host = true;
+        s_host_wait_since_us = esp_timer_get_time();
+        ESP_LOGI(TAG, "waiting for the primary host '%s' (STATE online) before NBIRTH",
+                 s_cfg->sparkplug.primary_host_id);
+        publish_status();
+        return;
+    }
+    start_births();
+}
+
+/* SPB-13: a message on spBv1.0/STATE/<primary_host_id>. */
+static void on_host_state(const uint8_t *data, size_t len)
+{
+    if (!atomic_load(&s_mqtt_connected)) {
+        return;
+    }
+    uint64_t last = s_phost.last_ts;
+    const char *id = s_cfg->sparkplug.primary_host_id;
+    switch (gw_phost_on_state(&s_phost, data, len)) {
+    case GW_PHOST_INVALID:
+        ESP_LOGW(TAG, "STATE of '%s' ignored: not a Sparkplug 3.0 payload "
+                      "({\"online\":bool,\"timestamp\":ms})", id);
+        break;
+    case GW_PHOST_STALE:
+        ESP_LOGW(TAG, "STATE of '%s' ignored: older than the last one (timestamp %llu)", id,
+                 (unsigned long long)last);
+        break;
+    case GW_PHOST_ONLINE:
+        ESP_LOGI(TAG, "primary host '%s' online (timestamp %llu)", id,
+                 (unsigned long long)s_phost.last_ts);
+        if (s_waiting_host) {
+            s_waiting_host = false;
+            start_births();
+        }
+        break;
+    case GW_PHOST_OFFLINE:
+        ESP_LOGW(TAG, "primary host '%s' offline (timestamp %llu)", id,
+                 (unsigned long long)s_phost.last_ts);
+        if (s_node->online) {
+            /* Sparkplug 3.0: NDEATH and disconnect; the next session waits for it again */
+            publish_ndeath();
+            gw_node_session_down(s_node);
+            gw_status_set(GW_ST_MQTT_UP, false);
+            s_host_disconnect = true;
+            abort_session("the primary host went offline: NDEATH published");
+        } else if (s_waiting_host && s_bsel.count > 1) {
+            s_host_disconnect = true;
+            abort_session("the primary host is offline on this broker");
+        }
+        break;
+    }
+    publish_status();
+}
+
 /* How long a session must last before the reconnect backoff starts again from the minimum. */
 static uint32_t stable_ms(void)
 {
@@ -531,9 +612,7 @@ static void move_session(const char *why)
         /* Orderly end, as for a reboot: hosts learn it now and not after a keepalive. Over a
          * dead interface this is lost and the broker publishes the will later; the bdSeq of
          * the new session tells the two apart. */
-        esp_mqtt_client_publish(s_client, s_death_topic, (const char *)s_will,
-                                s_mqtt_cfg.session.last_will.msg_len, 1, false);
-        feed_watchdog();
+        publish_ndeath();
         gw_node_session_down(s_node);
         gw_status_set(GW_ST_MQTT_UP, false);
     }
@@ -547,12 +626,28 @@ static void move_session(const char *why)
     s_attempt = 0;   /* a new interface or broker starts a fresh backoff */
     s_sub_msg_id = 0;
     s_stable = false;
+    s_waiting_host = false;
 }
 
 /* An attempt ended without a session (or a session dropped): MQTT-6 failover, and issue #57
  * when no broker at all answers over this interface. */
 static void attempt_ended(void)
 {
+    s_waiting_host = false;
+    if (s_host_disconnect) {
+        /* SPB-13: the network works; with backups the host may be on another broker */
+        s_host_disconnect = false;
+        s_stable = false;
+        gw_brokersel_session_down(&s_bsel);
+        if (s_bsel.count > 1 && gw_brokersel_failed(&s_bsel)) {
+            ESP_LOGW(TAG, "primary host not online on broker: next attempt on broker %u/%u (%s:%u)",
+                     s_bsel.current + 1, s_bsel.count, broker_host(s_bsel.current),
+                     broker_port(s_bsel.current));
+            s_attempt = 0;
+        }
+        publish_status();
+        return;
+    }
     if (s_stable) {
         s_stable = false;
         gw_brokersel_session_down(&s_bsel);   /* a working broker: the next try goes there */
@@ -669,10 +764,16 @@ static void reconcile(void)
             s_sub_msg_id = 0;
             on_subscribed();
         } else if (ack == -s_sub_msg_id) {
-            abort_session("the broker refused the NCMD/DCMD subscriptions");
+            abort_session("the broker refused the NCMD/DCMD/STATE subscriptions");
         } else if (now >= s_sub_deadline_us) {
-            abort_session("no SUBACK for NCMD/DCMD within " STR(SUBACK_TIMEOUT_MS) " ms");
+            abort_session("no SUBACK for NCMD/DCMD/STATE within " STR(SUBACK_TIMEOUT_MS) " ms");
         }
+    }
+    if (s_waiting_host && connected && s_bsel.count > 1 &&
+        now - s_host_wait_since_us >= PHOST_WAIT_MS * 1000LL) {
+        s_host_disconnect = true;
+        s_waiting_host = false;
+        abort_session("no STATE online from the primary host within 30 s on this broker");
     }
     if (s_node->online && connected && !s_stable && now - s_session_up_us >= stable_ms() * 1000LL) {
         s_stable = true;
@@ -776,7 +877,12 @@ static void edge_task(void *arg)
         }
         if (ev.type == EV_CMD) {
             const cmd_slot_t *c = &s_slots[ev.arg];
-            gw_node_handle_message(s_node, c->topic, c->topic_len, c->data, c->len);
+            if (s_state_topic[0] != '\0' && c->topic_len == strlen(s_state_topic) &&
+                memcmp(c->topic, s_state_topic, c->topic_len) == 0) {
+                on_host_state(c->data, c->len);
+            } else {
+                gw_node_handle_message(s_node, c->topic, c->topic_len, c->data, c->len);
+            }
             uint8_t slot = (uint8_t)ev.arg;
             xQueueSend(s_free_slots, &slot, 0);
         } else if (ev.type == EV_WRITE_DONE) {
@@ -889,6 +995,13 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         !gw_node_topic(s_node, "NCMD", NULL, s_ncmd_topic, sizeof(s_ncmd_topic)) ||
         !gw_node_topic(s_node, "DCMD", "+", s_dcmd_topic, sizeof(s_dcmd_topic))) {
         return ESP_ERR_INVALID_SIZE;
+    }
+    gw_phost_init(&s_phost);
+    if (cfg->sparkplug.primary_host_id[0] != '\0') {
+        snprintf(s_state_topic, sizeof(s_state_topic), "spBv1.0/STATE/%s",
+                 cfg->sparkplug.primary_host_id);   /* fits: ids are at most 32 characters */
+        ESP_LOGI(TAG, "primary host '%s': NBIRTH only while it is online (%s)",
+                 cfg->sparkplug.primary_host_id, s_state_topic);
     }
 
     s_mqtt_cfg = (esp_mqtt_client_config_t){

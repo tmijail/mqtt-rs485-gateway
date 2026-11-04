@@ -177,6 +177,11 @@ static int cmd_status(int argc, char **argv)
                 es.broker_count, es.host, es.port, s_ctx.cfg->mqtt.tls.enabled ? " (TLS)" : "",
                 es.failures);
         }
+        if (s_ctx.cfg->sparkplug.primary_host_id[0] != '\0') {
+            out("host     primary '%s' %s%s\n", s_ctx.cfg->sparkplug.primary_host_id,
+                es.host_state < 0 ? "not seen yet" : es.host_state ? "online" : "offline",
+                es.waiting_host ? ", NBIRTH waits for it" : "");
+        }
     }
     gw_net_if_status_t ifs[GW_NET_IF_COUNT];
     gw_net_get_status(ifs);

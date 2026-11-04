@@ -345,6 +345,15 @@ TLS 1.2 o 1.3, lo que negocie el broker. Las fechas de validez del certificado s
 
 Un intento falla si no termina en una sesión estable: conexión TCP o TLS fallida, CONNACK rechazado, SUBSCRIBE rechazado o sin respuesta, o sesión que cae antes de durar un keepalive (como mucho 60 s) desde el NBIRTH. Una sesión estable vuelve a contar desde cero. Cada broker nuevo empieza con el *backoff* mínimo. Con dos interfaces (NET-4), si fallan todos los brokers de la lista (`failover_after` veces cada uno) por la interfaz activa, esa interfaz queda "sin servicio" y la sesión pasa a la otra (ver `network.wifi`).
 
+**`sparkplug.primary_host_id` (SPB-13): Primary Host Application.** Clave del MVP; vacía = sin host primario. Con un id, el nodo se suscribe a `spBv1.0/STATE/{id}` en el mismo SUBSCRIBE que NCMD y DCMD y espera un STATE de Sparkplug 3.0 (JSON `{"online": true|false, "timestamp": <ms>}`, retenido) antes del NBIRTH:
+
+- `online: true` → NBIRTH y DBIRTH;
+- `online: false` con la sesión arriba → NDEATH explícito (bdSeq de la sesión) y DISCONNECT; la sesión siguiente vuelve a esperar;
+- un STATE con `timestamp` menor que el último aceptado se ignora (mensaje retenido viejo); el último `timestamp` se recuerda entre sesiones, no entre arranques;
+- un payload que no es ese JSON (por ejemplo, el `ONLINE` de Sparkplug 2.x) se ignora con un aviso.
+
+Con brokers de respaldo (MQTT-6), un host fuera de línea en un broker (STATE `false`, o ningún STATE `true` en 30 s) cuenta como intento fallido en ese broker. Con un solo broker el nodo queda conectado esperando.
+
 **`syslog` (REL-4): copia del log a un servidor syslog.**
 
 ```json

@@ -296,11 +296,6 @@ void app_main(void)
     if (gw_log_start(s_cfg) != ESP_OK) {
         ESP_LOGE(TAG, "remote syslog unavailable");
     }
-    if (s_cfg->sparkplug.primary_host_id[0] != '\0') {
-        ESP_LOGW(TAG, "primary_host_id '%s' ignored: SPB-13 is not implemented in this build",
-                 s_cfg->sparkplug.primary_host_id);
-    }
-
     ESP_ERROR_CHECK(gw_edge_start(s_cfg, &s_info));
     if (gw_io_start_inputs(s_cfg, gw_edge_notify_io) != ESP_OK) {
         ESP_LOGE(TAG, "digital inputs unavailable");

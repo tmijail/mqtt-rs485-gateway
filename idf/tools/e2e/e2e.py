@@ -303,6 +303,8 @@ class Observer:
         self.c.disconnect()
 
     def _on_msg(self, client, userdata, msg):
+        if msg.topic.startswith("spBv1.0/STATE/"):
+            return   # SPB-13: the primary host's JSON STATE, published by the harness itself
         p = spb.Payload()
         p.ParseFromString(msg.payload)  # raises on anything the official proto cannot parse
         item = (time.monotonic(), msg.topic, p, bytes(msg.payload))
@@ -827,6 +829,80 @@ def run_mqtt5(args, work, mosquitto_log):
           f"{f'{will[0] - killed:.1f} s after the kill, bdSeq {bdseq_of(will[2])}' if will else 'missing'}")
 
 
+# ---------------------------------------------------------------- primary host (SPB-13)
+
+def host_state(obs, host, online, ts, retain=True):
+    """Publish a Sparkplug 3.0 STATE message for @host as its primary host application would."""
+    obs.c.publish(f"spBv1.0/STATE/{host}", json.dumps({"online": online, "timestamp": ts}),
+                  qos=1, retain=retain).wait_for_publish(5)
+
+
+def run_primary_host(args, work):
+    """SPB-13 in one boot (GW19, primary_host_id SCADA1) against the main mosquitto, with the
+    harness playing the host's STATE messages (retained, JSON, Sparkplug 3.0):
+      1. STATE offline retained before the boot: the node connects and subscribes, no NBIRTH
+      2. STATE online: NBIRTH
+      3. a stale STATE offline (older timestamp) is ignored: no NDEATH
+      4. STATE offline: NDEATH (published by the node, session bdSeq) and disconnect; the new
+         session waits (retained offline): no NBIRTH
+      5. STATE online again: NBIRTH with a new bdSeq"""
+    node, host = "GW19", "SCADA1"
+    nbirth_t, ndeath_t = f"{T}/NBIRTH/{node}", f"{T}/NDEATH/{node}"
+    obs = Observer()
+    ts = int(time.time() * 1000)
+    host_state(obs, host, False, ts)
+    t0 = time.monotonic()
+    cfg = node_config(node)
+    cfg["sparkplug"]["primary_host_id"] = host
+    gw = boot_variant(args, work, "phost", cfg)
+    waiting = gw.wait_log(r"waiting for the primary host 'SCADA1' \(STATE online\) before NBIRTH", 40, t0)
+    early = obs.wait(nbirth_t, 5)
+    asked, h = gw.shell("status", [r"^host\s+primary 'SCADA1' offline, NBIRTH waits for it"])
+    shown = list(h.values())[0]
+    check("SPB-13 STATE offline (retained) at connection: subscribed, no NBIRTH; the shell says why",
+          waiting and not early and shown,
+          f"{(gw.find(r'waiting for the primary host', t0) or ['no wait logged'])[0]}; NBIRTH "
+          f"{'published' if early else 'not published'} 5 s later; "
+          + " | ".join(gw.find(r"^host\s", asked)))
+
+    sent = time.monotonic()
+    host_state(obs, host, True, ts + 1000)
+    nb = obs.wait(nbirth_t, 10)
+    check("SPB-13 STATE online -> NBIRTH (and the DBIRTHs)", nb and nb[2].seq == 0,
+          f"NBIRTH {nb[0] - sent:.2f} s after STATE online" if nb else "no NBIRTH")
+
+    since = time.monotonic()
+    host_state(obs, host, False, ts + 500, retain=False)
+    stale = obs.wait(ndeath_t, 3)
+    ignored = gw.find(r"STATE of 'SCADA1' ignored: older than the last one", since)
+    check("SPB-13 a STATE offline older than the last one accepted is ignored (no NDEATH)",
+          not stale and ignored, (ignored or ["no 'ignored' log"])[0])
+
+    since = time.monotonic()
+    host_state(obs, host, False, ts + 2000)
+    nd = obs.wait(ndeath_t, 10)
+    explicit = gw.wait_log(r"the primary host went offline: NDEATH published", 5, since)
+    rewait = gw.wait_log(r"waiting for the primary host 'SCADA1'", 20, since)
+    nb2 = obs.wait(nbirth_t, 3)
+    check("SPB-13 STATE offline -> NDEATH (session bdSeq) and disconnect; the next session waits "
+          "for the host (no NBIRTH)",
+          nd and nb and bdseq_of(nd[2]) == bdseq_of(nb[2]) and explicit and rewait and not nb2,
+          f"NDEATH bdSeq {bdseq_of(nd[2]) if nd else None} (session {bdseq_of(nb[2]) if nb else None}); "
+          f"{(gw.find(r'the primary host went offline', since) or ['no log'])[0]}; waiting again: "
+          f"{bool(rewait)}")
+
+    sent = time.monotonic()
+    host_state(obs, host, True, ts + 3000)
+    nb3 = obs.wait(nbirth_t, 10)
+    check("SPB-13 the host back online -> NBIRTH with a new bdSeq",
+          nb3 and nb and bdseq_of(nb3[2]) != bdseq_of(nb[2]),
+          f"NBIRTH bdSeq {bdseq_of(nb3[2])} after {nb3[0] - sent:.2f} s" if nb3 else "no NBIRTH")
+    gw.kill()
+    obs.wait(ndeath_t, 5)
+    obs.c.publish(f"spBv1.0/STATE/{host}", b"", qos=1, retain=True).wait_for_publish(5)
+    obs.close()
+
+
 # ---------------------------------------------------------------- scenario
 
 def start_broker(conf, log):
@@ -861,7 +937,7 @@ def main():
     ap.add_argument("--http-port", type=int, default=HTTP_PORT)
     ap.add_argument("--only", default="",
                     help="comma-separated scenarios to run (failsafe,network,web,reset,tls,failover,"
-                         "mqtt5,main); "
+                         "mqtt5,phost,main); "
                          "default all")
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
@@ -907,6 +983,8 @@ def main():
             run_failover(args, work)
         if want("mqtt5"):
             run_mqtt5(args, work, work / "mosquitto.log")
+        if want("phost"):
+            run_primary_host(args, work)
         if want("main"):
             run(args, log, slave, broker, conf, work)
     except BaseException:

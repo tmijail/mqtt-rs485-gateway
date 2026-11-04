@@ -176,7 +176,7 @@ typedef struct {
     struct {
         char group_id[GW_ID_SIZE];
         char edge_node_id[GW_ID_SIZE];
-        char primary_host_id[GW_ID_SIZE];  /* parsed only; SPB-13 is not part of the MVP */
+        char primary_host_id[GW_ID_SIZE];  /* SPB-13: "" = no primary host application */
     } sparkplug;
     struct {
         uint32_t baud;

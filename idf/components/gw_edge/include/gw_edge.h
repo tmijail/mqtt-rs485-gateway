@@ -28,6 +28,8 @@ typedef struct {
     const char *host;        /* its host and port (points into the configuration) */
     uint16_t port;
     uint8_t failures;        /* consecutive failed attempts on it */
+    int8_t host_state;       /* SPB-13: -1 no STATE seen, 0 offline, 1 online */
+    bool waiting_host;       /* connected and subscribed, NBIRTH waits for the host */
 } gw_edge_status_t;
 
 void gw_edge_get_status(gw_edge_status_t *out);
