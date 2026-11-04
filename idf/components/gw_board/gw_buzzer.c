@@ -18,7 +18,8 @@
 
 static const char *TAG = "buzzer";
 
-#define TICK_MS     20
+#define TICK_MS     20      /* while a pattern plays */
+#define IDLE_MS     250     /* otherwise (alarm changes are seen within this; requests wake it) */
 #define STACK_WORDS (2560 / sizeof(StackType_t))
 
 static StaticTask_t s_task_buf;
@@ -29,6 +30,7 @@ static atomic_uint s_cfg_gen;
 static atomic_uint s_played;      /* requests the task has finished */
 static atomic_uint s_queued;      /* requests made */
 static bool s_ok;
+static TaskHandle_t s_task;
 #if CONFIG_GW_IO_SIMULATED
 #define SIM_NOTE " (simulated)"
 #else
@@ -123,10 +125,19 @@ static void buzzer_task(void *arg)
             tone = on;
             hw_tone(on);
         }
-        if (b.request == 0 && b.left == 0 && !b.tone) {
+        bool idle = b.request == 0 && b.left == 0 && !b.tone;
+        if (idle) {
             atomic_store(&s_played, playing);
         }
-        vTaskDelay(pdMS_TO_TICKS(TICK_MS));
+        /* idle: sleep longer (less work on a core that is otherwise quiet), unless the next
+         * alarm burst is closer */
+        uint32_t wait = TICK_MS;
+        if (idle) {
+            uint32_t to_burst = b.burst_at - now;
+            wait = b.alarm != GW_ALARM_NONE && to_burst < IDLE_MS ? to_burst : IDLE_MS;
+            wait = wait < TICK_MS ? TICK_MS : wait;
+        }
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait));
     }
 }
 
@@ -136,9 +147,8 @@ esp_err_t gw_buzzer_start(void)
     if (err != ESP_OK) {
         return err;
     }
-    TaskHandle_t t = xTaskCreateStatic(buzzer_task, "buzzer", STACK_WORDS, NULL, 2, s_stack,
-                                       &s_task_buf);
-    s_ok = t != NULL;
+    s_task = xTaskCreateStatic(buzzer_task, "buzzer", STACK_WORDS, NULL, 2, s_stack, &s_task_buf);
+    s_ok = s_task != NULL;
     return s_ok ? ESP_OK : ESP_FAIL;
 }
 
@@ -159,6 +169,9 @@ void gw_buzzer_beep(uint8_t beeps)
 {
     atomic_fetch_add(&s_queued, 1);   /* first: the task reads it after taking the request */
     atomic_store(&s_request, beeps);
+    if (s_task != NULL) {
+        xTaskNotifyGive(s_task);
+    }
 }
 
 void gw_buzzer_beep_wait(uint8_t beeps)

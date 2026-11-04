@@ -65,7 +65,7 @@ Dependencias gestionadas, **con versión fija** (`==`) en cada `idf_component.ym
 |---|---|---|---|---|
 | `rs485_bus` (`gw_bus`) | 1 / 10 | 4 KB estática | Sí; se alimenta en cada intento Modbus | `mb_master_t`, `gw_poller_t`, la UART1. **Única** tarea que toca el bus (MB-16) |
 | `sparkplug` (`gw_edge`) | 0 / 8 | 6 KB estática | Sí; se alimenta tras **cada publicación** y despierta como mínimo cada 1 s | Cliente MQTT, `gw_node_t` (seq, alias, estado RBE). Los NCMD sobre las DO se piden a `local_io` (`gw_io_set_do`, espera hasta 500 ms) |
-| `local_io` (`gw_io`) | — / 9 | 4 KB estática | Sí; despierta como mínimo cada 100 ms | El TCA9554 desde que arranca con la configuración válida: escrituras de los NCMD (cola de 2), reglas locales DI→DO (IO-7; el muestreo de las DI la despierta con una notificación), estado seguro tras `failsafe_s` sin sesión (IO-3, lee `GW_ST_MQTT_UP`) y reintentos del expansor que no responde. Guarda los contadores de pulsos (IO-4) cada `counter_save_s`. Antes, `app_main` deja las DO en su estado de arranque |
+| `local_io` (`gw_io`) | — / 9 | 4 KB estática | Sí; despierta como mínimo cada 250 ms, y enseguida con un cambio de DI o un NCMD | El TCA9554 desde que arranca con la configuración válida: escrituras de los NCMD (cola de 2), reglas locales DI→DO (IO-7; el muestreo de las DI la despierta con una notificación), estado seguro tras `failsafe_s` sin sesión (IO-3, lee `GW_ST_MQTT_UP`) y reintentos del expansor que no responde. Guarda los contadores de pulsos (IO-4) cada `counter_save_s`. Antes, `app_main` deja las DO en su estado de arranque |
 | `esp_timer` (IDF) | — | IDF | Sí, como usuario del TWDT (`di_sample`): el callback de muestreo lo alimenta cada 1 s | Muestreo de DI (callback de 1 ms) |
 | `status_led` | — / 2 | 2,5 KB | No (no crítica) | El RMT del LED |
 | `console` (`gw_shell`) | — / 2 | 4 KB | No (no crítica) | La UART de la consola (REPL `esp_console`); lee `gw_tagdb` y `gw_status`; las escrituras y la lectura Modbus pasan por `gw_storage`, `gw_edge` y la cola del bus |
@@ -73,7 +73,7 @@ Dependencias gestionadas, **con versión fija** (`==`) en cada `idf_component.ym
 | `modbus_tcp` (`gw_mbtcp`, solo con `modbus_tcp.enabled`) | 0 / 3 | 4 KB estática | No (no crítica; toda espera acotada: `select` de 1 s, envío de 2 s, respuesta del bus de 8 s) | El socket de escucha, hasta 2 clientes (`CONFIG_GW_MBTCP_MAX_CLIENTS`) y la única transacción en curso, que ejecuta `rs485_bus` |
 | `httpd` (`gw_web`) | — / 3 | 8 KB | No (no crítica) | El servidor HTTP; valida y guarda configuraciones (búferes en PSRAM si hay) |
 | `boot_button` (`gw_board`) | — / 2 | 3 KB estática | No (no crítica) | GPIO0 (muestreo cada 20 ms); pide los pitidos de confirmación al buzzer |
-| `buzzer` (`gw_board`) | — / 2 | 2,5 KB estática | No (no crítica) | GPIO46 y el canal 7 de LEDC (IO-6): cada 20 ms lee las banderas de `gw_status`, decide la alarma (`gw_buzz`) y prende o apaga el tono |
+| `buzzer` (`gw_board`) | — / 2 | 2,5 KB estática | No (no crítica) | GPIO46 y el canal 7 de LEDC (IO-6): lee las banderas de `gw_status`, decide la alarma (`gw_buzz`) y prende o apaga el tono; cada 20 ms mientras suena, cada 250 ms en silencio (un pedido de pitidos la despierta) |
 | `mdns` (componente) | 0 / 1 | 4 KB | No | El responder mDNS |
 | esp-mqtt (`mqtt_task`), lwIP (`tcpip`), RX de Ethernet (`w5500_tsk` / `emac_rx`), Wi-Fi (solo con `network.wifi`), event loop (`sys_evt`) | **0** / IDF | IDF | IDLE vigiladas | El event loop es dueño de `gw_netsel` (eventos de enlace e IP y el temporizador de *failback*) |
 

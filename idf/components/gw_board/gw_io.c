@@ -28,7 +28,8 @@ static const char *TAG = "io";
 
 #define I2C_TIMEOUT_MS 50
 #define WDT_FEED_SAMPLES (1000000 / CONFIG_GW_DI_SAMPLE_US)   /* feed about once per second */
-#define TICK_MS        100    /* the owner task runs at least this often (failsafe, recovery) */
+#define TICK_MS        250    /* the owner task runs at least this often (failsafe, recovery,
+                               * counters); DI changes and DO commands wake it at once */
 #define REQ_WAIT_MS    500    /* longest wait of a DO command for the owner task */
 #define STACK_WORDS    (4096 / sizeof(StackType_t))
 
