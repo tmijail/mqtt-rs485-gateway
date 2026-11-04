@@ -149,15 +149,18 @@ def sntp_responder(stop):
         s.sendto(reply, addr)
 
 
-# ---------------------------------------------------------------- broker that drops at once
+# ---------------------------------------------------------------- misbehaving brokers
 
-class ConnackCutter:
-    """TCP proxy in front of the broker that closes every connection right after relaying the
-    broker's CONNACK: a broker that accepts the connection and drops it at once (ACL that
-    rejects the will, duplicate client_id, connection limit)."""
+class FakeBroker:
+    """Minimal MQTT 3.1.1 server for the connection-management checks. Every CONNECT gets a
+    CONNACK (accepted); then, by @mode:
+      "cut":    the connection is closed at once (a broker that accepts and drops: ACL on the
+                will, duplicate client_id, connection limit);
+      "refuse": every SUBSCRIBE gets a SUBACK with 0x80 (failure) for each topic.
+    Records the connection times, the PUBLISH topics and whether the client sent DISCONNECT."""
 
-    def __init__(self, port, upstream):
-        self.upstream, self.accepted = upstream, []
+    def __init__(self, port, mode):
+        self.mode, self.accepted, self.published, self.disconnects = mode, [], [], 0
         self.srv = socket.socket()
         self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.srv.bind(("127.0.0.1", port))
@@ -171,22 +174,57 @@ class ConnackCutter:
             except OSError:
                 return
             self.accepted.append(time.monotonic())
-            threading.Thread(target=self._pipe, args=(c,), daemon=True).start()
+            threading.Thread(target=self._client, args=(c,), daemon=True).start()
 
-    def _pipe(self, c):
-        u = None
+    @staticmethod
+    def _read(c, n):
+        data = b""
+        while len(data) < n:
+            chunk = c.recv(n - len(data))
+            if not chunk:
+                raise OSError("closed")
+            data += chunk
+        return data
+
+    def _packet(self, c):
+        kind = self._read(c, 1)[0]
+        length, shift = 0, 0
+        while True:
+            b = self._read(c, 1)[0]
+            length |= (b & 0x7F) << shift
+            shift += 7
+            if not b & 0x80:
+                break
+        return kind, self._read(c, length)
+
+    def _client(self, c):
         try:
-            c.settimeout(10)
-            u = socket.create_connection(("127.0.0.1", self.upstream), timeout=10)
-            u.sendall(c.recv(4096))   # CONNECT
-            c.sendall(u.recv(4096))   # CONNACK
-            time.sleep(0.1)
+            c.settimeout(30)
+            while True:
+                kind, body = self._packet(c)
+                if kind >> 4 == 1:                       # CONNECT
+                    c.sendall(b"\x20\x02\x00\x00")
+                    if self.mode == "cut":
+                        time.sleep(0.1)
+                        return
+                elif kind >> 4 == 8:                     # SUBSCRIBE
+                    n, i = 0, 2
+                    while i < len(body):
+                        i += 2 + struct.unpack(">H", body[i:i + 2])[0] + 1
+                        n += 1
+                    c.sendall(bytes([0x90, 2 + n]) + body[:2] + b"\x80" * n)
+                elif kind >> 4 == 3:                     # PUBLISH
+                    tlen = struct.unpack(">H", body[:2])[0]
+                    self.published.append(body[2:2 + tlen].decode(errors="replace"))
+                elif kind >> 4 == 12:                    # PINGREQ
+                    c.sendall(b"\xd0\x00")
+                elif kind >> 4 == 14:                    # DISCONNECT
+                    self.disconnects += 1
+                    return
         except OSError:
             pass
         finally:
-            for sock in (c, u):
-                if sock is not None:
-                    sock.close()
+            c.close()
 
     def close(self):
         self.srv.close()
@@ -457,12 +495,7 @@ def main():
     args.flash = str(flash_variant(args, work, "main", {"config.json": config_json()}))
 
     conf = work / "broker.conf"
-    # Second listener (MQTT_PORT + 2) with an ACL that refuses the NCMD subscription (issue #11).
-    acl = work / "broker.acl"
-    acl.write_text(f"topic write spBv1.0/#\ntopic read {T}/DCMD/#\n")
-    conf.write_text(f"per_listener_settings true\n"
-                    f"listener {MQTT_PORT} 127.0.0.1\nallow_anonymous true\n"
-                    f"listener {MQTT_PORT + 2} 127.0.0.1\nallow_anonymous true\nacl_file {acl}\n")
+    conf.write_text(f"listener {MQTT_PORT} 127.0.0.1\nallow_anonymous true\n")
     broker = start_broker(conf, work / "mosquitto.log")
     stop = threading.Event()
     threading.Thread(target=sntp_responder, args=(stop,), daemon=True).start()
@@ -874,29 +907,30 @@ def run(args, log, slave, broker, conf, work):
           f"first boot {reason0.string_value if reason0 else None!r}, after reboot "
           f"{reason1.string_value if reason1 else None!r}")
 
-    # Issue #11: a broker that refuses the NCMD subscription (ACL, SUBACK 0x80). The node must
-    # not announce itself (no NBIRTH: it could not receive commands); it disconnects and
-    # retries with a growing backoff.
+    # Issue #11: a broker that refuses the NCMD/DCMD subscriptions (SUBACK 0x80). The node must
+    # not announce itself (no NBIRTH: it could not receive commands); it disconnects with
+    # DISCONNECT (the will is dropped) and retries with a growing backoff.
     gw.kill()
-    gw = Gateway(args, work / "uart0-acl.log",
-                 flash_variant(args, work, "acl", {"config.json": config_json(MQTT_PORT + 2)}))
-    obs.drain()
-    t_acl = time.monotonic()
+    refuser = FakeBroker(MQTT_PORT + 2, "refuse")
+    gw = Gateway(args, work / "uart0-refuse.log",
+                 flash_variant(args, work, "refuse", {"config.json": config_json(MQTT_PORT + 2)}))
+    t_ref = time.monotonic()
     gw.start()
-    gw.wait_log(r"reconnect attempt 3 in", 40, t_acl)
-    refused = gw.find(r"refused the NCMD/DCMD subscriptions", t_acl)
-    delays = [int(x) for x in re.findall(r"in (\d+) ms", " ".join(gw.find(r"reconnect attempt", t_acl)))]
-    births = [m for m in CAPTURE if m[0] >= t_acl and m[1] == nbirth_t]
+    gw.wait_log(r"reconnect attempt 3 in", 40, t_ref)
+    refused = gw.find(r"refused the NCMD/DCMD subscriptions", t_ref)
+    delays = [int(x) for x in re.findall(r"in (\d+) ms", " ".join(gw.find(r"reconnect attempt", t_ref)))]
     gw.kill()
-    check("MQTT-2 / issue #11 SUBACK refused -> no NBIRTH, disconnect and retry with growing backoff",
-          len(refused) >= 3 and not births and len(delays) >= 3 and delays[2] > delays[0],
-          f"{len(refused)} refusals logged, NBIRTHs {len(births)}, delays {delays} ms; "
-          f"{(refused or ['no refusal logged'])[0]}")
+    refuser.close()
+    check("MQTT-2 / issue #11 SUBACK refused -> no NBIRTH, DISCONNECT and retry with growing backoff",
+          len(refused) >= 3 and not refuser.published and refuser.disconnects >= 3
+          and len(delays) >= 3 and delays[2] > delays[0],
+          f"{len(refused)} refusals logged, {refuser.disconnects} DISCONNECTs, publishes "
+          f"{refuser.published}, delays {delays} ms; {(refused or ['no refusal logged'])[0]}")
 
     # Issue #5: a broker that accepts the connection and drops it right after the CONNACK.
     # The backoff must keep growing (1, 2, 4, 8 s, -25 % jitter): it is reset only after a
     # stable session, not on every CONNACK.
-    cutter = ConnackCutter(MQTT_PORT + 1, MQTT_PORT)
+    cutter = FakeBroker(MQTT_PORT + 1, "cut")
     gw = Gateway(args, work / "uart0-cutter.log",
                  flash_variant(args, work, "cutter", {"config.json": config_json(MQTT_PORT + 1)}))
     t_cut = time.monotonic()
