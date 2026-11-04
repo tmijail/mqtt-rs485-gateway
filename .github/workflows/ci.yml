@@ -99,4 +99,5 @@ jobs:
             /tmp/e2e-work/*.log
             /tmp/e2e-work/*.qemu
             /tmp/e2e-work/results.json
+            /tmp/e2e-work/coredump-info.txt
             /tmp/e2e-work/payloads/
