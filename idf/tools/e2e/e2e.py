@@ -1016,8 +1016,27 @@ def run_max_packet(args, work):
     broker = start_broker(conf, work / "mosquitto-maxpkt.log")
     obs = Observer(port)
     t0 = time.monotonic()
-    gw = boot_variant(args, work, "maxpkt", node_config(node, port=port, protocol="5"))
+    cfg = node_config(node, port=port, protocol="5")
+    gw = boot_variant(args, work, "maxpkt", cfg)
+    # Issue #78: an operator starts 'config check' as soon as the shell is there and pastes
+    # half of a document; the boot must go on (the shell context lock is not held while the
+    # paste is read): NBIRTH on time, then the rest of the paste is validated
+    ready = gw.wait_log(r"shell: console ready", 30, t0)
+    gw.console("config check")
+    gw.wait_log(r"^paste the JSON document", 5, ready or t0)
+    text = (json.dumps(cfg, indent=2) + "\n").splitlines(keepends=True)
+    half = len(text) // 2
+    gw.sock.sendall("".join(text[:half]).encode())
+    pasting = time.monotonic()
     nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    nb_during = nb and not gw.find(r"^config: ", t0)
+    gw.sock.sendall("".join(text[half:]).encode())
+    valid = gw.wait_log(r"^config: valid \(\d+ bytes\), nothing saved$", 15, pasting)
+    check("Issue #78 'config check' half pasted during the boot does not hold the boot back: "
+          "NBIRTH on time while the paste waits, then the document is validated",
+          ready and nb_during and nb[0] - t0 < 15 and valid,
+          (f"paste started {pasting - t0:.1f} s after QEMU started, NBIRTH at {nb[0] - t0:.1f} s"
+           if nb else "no NBIRTH") + "; " + (" | ".join(gw.find(r"^config: ", t0)) or "no answer"))
     db = obs.wait(f"{T}/DBIRTH/{node}/{DEVICE}", 10)
     err = gw.wait_log(r"spBv1\.0/Plant1/DBIRTH/GW26/Bulk: \d+ bytes, more than the broker's Maximum "
                       r"Packet Size of 2000 \(by \d+\): not published", 15, t0)
