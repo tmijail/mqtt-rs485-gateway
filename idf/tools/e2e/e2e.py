@@ -7,7 +7,8 @@ Runs the ESP32-S3 image built with sdkconfig.qemu in Espressif's QEMU:
   * UART0 (console): socket used to read the log and to inject DI levels ("di <n> <0|1>")
   * MQTT: a private mosquitto; an SNTP responder answers on the host's UDP 123
   * Remote syslog (REL-4): a UDP listener on the host collects what the gateway forwards
-  * Web server (CFG-3/CFG-4): slirp forwards the host's 127.0.0.1:HTTP_PORT to the guest's port 80
+  * Web server (CFG-3/CFG-4): slirp forwards the host's 127.0.0.1:HTTPS_PORT to the guest's port
+    443 (HTTPS with the device certificate, issue #64) and HTTP_PORT to port 80 (redirect only)
 
 Isolation: by default the harness moves itself into a private network namespace (Linux,
 needs CAP_SYS_ADMIN, e.g. root in a container) with only a loopback interface. Every port,
@@ -37,6 +38,9 @@ import threading
 import time
 import traceback
 
+import hashlib
+import ssl
+
 import google.protobuf
 import paho.mqtt.client as mqtt
 from pymodbus import FramerType
@@ -54,6 +58,8 @@ MODBUS_PORT = int(os.environ.get("E2E_MODBUS_PORT", 15020))
 CONSOLE_PORT = int(os.environ.get("E2E_CONSOLE_PORT", 15555))
 SYSLOG_PORT = int(os.environ.get("E2E_SYSLOG_PORT", 15514))
 HTTP_PORT = int(os.environ.get("E2E_HTTP_PORT", 18080))
+HTTPS_PORT = int(os.environ.get("E2E_HTTPS_PORT", 18443))
+PEER_CERT = {}    # DER of the certificate the gateway presented on the last HTTPS request
 WEB_PASSWORD = "e2e-pass-1"
 SYSLOG = []       # (t, datagram text) received by the syslog listener
 SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
@@ -449,7 +455,8 @@ class Gateway:
                "-drive", f"file={a.efuse},if=none,format=raw,id=efuse",
                "-global", "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
                "-global", "driver=timer.esp32s3.timg,property=wdt_disable,value=true",
-               "-nic", f"user,model=open_eth,hostfwd=tcp:127.0.0.1:{HTTP_PORT}-:80",
+               "-nic", f"user,model=open_eth,hostfwd=tcp:127.0.0.1:{HTTP_PORT}-:80,"
+                       f"hostfwd=tcp:127.0.0.1:{HTTPS_PORT}-:443",
                "-chardev", f"socket,id=con,host=127.0.0.1,port={CONSOLE_PORT},server=on,wait=on",
                "-serial", "chardev:con",
                "-chardev", f"socket,id=rs485,host=127.0.0.1,port={MODBUS_PORT},reconnect-ms=500",
@@ -533,9 +540,12 @@ class Gateway:
 
 # ---------------------------------------------------------------- HTTP (CFG-3, CFG-4)
 
-def http(method, path, body=None, auth=("admin", WEB_PASSWORD), timeout=15, headers=None):
+def http(method, path, body=None, auth=("admin", WEB_PASSWORD), timeout=15, headers=None,
+         plain=False):
     """(status, headers dict, body bytes) of one request to the gateway's web server, or
-    (None, {}, error text) when it cannot be reached. @auth None = no Authorization header."""
+    (None, {}, error text) when it cannot be reached. @auth None = no Authorization header.
+    HTTPS by default (issue #64): the device certificate is self-signed, so it is not verified
+    here; its DER goes to PEER_CERT["der"] for the fingerprint check. @plain: HTTP port."""
     h = dict(headers or {})
     if auth is not None:
         h["Authorization"] = "Basic " + base64.b64encode(f"{auth[0]}:{auth[1]}".encode()).decode()
@@ -543,13 +553,21 @@ def http(method, path, body=None, auth=("admin", WEB_PASSWORD), timeout=15, head
         body = json.dumps(body).encode()
         h.setdefault("Content-Type", "application/json")
     try:
-        c = httplib.HTTPConnection("127.0.0.1", HTTP_PORT, timeout=timeout)
+        if plain:
+            c = httplib.HTTPConnection("127.0.0.1", HTTP_PORT, timeout=timeout)
+        else:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            c = httplib.HTTPSConnection("127.0.0.1", HTTPS_PORT, timeout=timeout, context=ctx)
         c.request(method, path, body=body, headers=h)
+        if not plain:
+            PEER_CERT["der"] = c.sock.getpeercert(binary_form=True)
         r = c.getresponse()
         data = r.read()
         c.close()
         return r.status, {k.lower(): v for k, v in r.getheaders()}, data
-    except (OSError, httplib.HTTPException) as e:
+    except (OSError, httplib.HTTPException, ssl.SSLError) as e:
         return None, {}, str(e).encode()
 
 
@@ -1089,6 +1107,57 @@ def run_slow_link(args, work, budget_ms):
           f"panics {panics[:1]}")
 
 
+# ---------------------------------------------------------------- HTTPS and login limit (issue #64)
+
+def run_https(args, work):
+    """Issue #64 in one boot (GW22): the web UI and the REST API over HTTPS with the certificate
+    the device generated at its first boot (its SHA-256 fingerprint on the console matches the
+    one presented), plain HTTP only redirecting, and the login limit: after 5 failed logins in a
+    row the source address gets 429 (also with the right password) until the block ends."""
+    node = "GW22"
+    cfg = node_config(node)
+    cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "https", cfg)
+    st, _, _ = wait_http("/api/status", 40)
+    printed = gw.find(r"HTTPS certificate SHA-256 fingerprint ([0-9A-F:]{95})", t0)
+    der = PEER_CERT.get("der", b"")
+    fp = ":".join(f"{b:02X}" for b in hashlib.sha256(der).digest()) if der else ""
+    generated = gw.find(r"HTTPS: new device certificate for gw22 generated", t0)
+    check("Issue #64 HTTPS with the device certificate generated at the first boot; its SHA-256 "
+          "fingerprint on the console matches the certificate presented",
+          st == 200 and printed and fp and fp in printed[0] and generated,
+          f"/api/status over HTTPS -> {st}; presented {fp[:23]}...; console "
+          f"{(printed or ['no fingerprint'])[0][-60:]}")
+    st_r, hdr_r, _ = http("GET", "/api/status?x=1", auth=None, plain=True)
+    st_p, hdr_p, _ = http("PUT", "/api/config", b"{}", auth=None, plain=True)
+    loc = hdr_r.get("location", "")
+    check("Issue #64 plain HTTP only redirects to HTTPS (301 for GET, 308 for PUT; no API over HTTP)",
+          st_r == 301 and loc == "https://127.0.0.1/api/status?x=1" and st_p == 308
+          and hdr_p.get("location", "").startswith("https://"),
+          f"GET -> {st_r} {loc}; PUT -> {st_p} {hdr_p.get('location')}")
+
+    codes = [http("GET", "/api/status", auth=("admin", f"wrong-{i}"))[0] for i in range(5)]
+    st6, hdr6, _ = http("GET", "/api/status", auth=("admin", "wrong-6"))
+    st7, hdr7, _ = http("GET", "/api/status")   # the right password, while blocked
+    blocked = gw.wait_log(r"10\.0\.2\.2 blocked for 30 s after 5 failed logins in a row", 3, t0)
+    asked, h = gw.shell("status", [r"^web\s+HTTPS \(HTTP redirects\), logins failed 5, refused "
+                                   r"while blocked 2, blocks 1, addresses blocked now 1"])
+    counters = list(h.values())[0]
+    retry = int(hdr7.get("retry-after", "0") or 0)
+    time.sleep(retry + 1)
+    st8, _, _ = http("GET", "/api/status")
+    gw.kill()
+    check("Issue #64 login limit per source address: 5 failures -> 429 with Retry-After for 30 s, "
+          "also with the right password; logged and counted in the shell; then the right password "
+          "works again",
+          codes == [401] * 5 and st6 == 429 and st7 == 429 and 0 < retry <= 30
+          and blocked and counters and st8 == 200,
+          f"failures {codes}, then {st6} / right password {st7} (Retry-After {retry}); after the "
+          f"block {st8}; {(gw.find(r'blocked for', t0) or ['no log'])[0]}; "
+          + " | ".join(gw.find(r"^web\s", asked)))
+
+
 # ---------------------------------------------------------------- scenario
 
 def start_broker(conf, log):
@@ -1105,7 +1174,7 @@ def start_broker(conf, log):
 
 
 def main():
-    global MQTT_PORT, MODBUS_PORT, CONSOLE_PORT, SYSLOG_PORT, HTTP_PORT
+    global MQTT_PORT, MODBUS_PORT, CONSOLE_PORT, SYSLOG_PORT, HTTP_PORT, HTTPS_PORT
     ap = argparse.ArgumentParser()
     ap.add_argument("--qemu", required=True)
     ap.add_argument("--flash", required=True)
@@ -1121,20 +1190,22 @@ def main():
     ap.add_argument("--console-port", type=int, default=CONSOLE_PORT)
     ap.add_argument("--syslog-port", type=int, default=SYSLOG_PORT)
     ap.add_argument("--http-port", type=int, default=HTTP_PORT)
+    ap.add_argument("--https-port", type=int, default=HTTPS_PORT)
     ap.add_argument("--only", default="",
                     help="comma-separated scenarios to run (failsafe,network,web,reset,tls,failover,"
-                         "mqtt5,phost,sf,slow,main); "
+                         "mqtt5,phost,sf,https,slow,main); "
                          "default all")
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
     args = ap.parse_args()
     MQTT_PORT, MODBUS_PORT, CONSOLE_PORT = args.mqtt_port, args.modbus_port, args.console_port
-    SYSLOG_PORT, HTTP_PORT = args.syslog_port, args.http_port
+    SYSLOG_PORT, HTTP_PORT, HTTPS_PORT = args.syslog_port, args.http_port, args.https_port
     global PROBE_MAX_S
     PROBE_MAX_S = sdkconfig_int(args.sdkconfig, "GW_MB_OFFLINE_PROBE_MAX_MS") / 1000
     isolated = False if args.no_isolate else isolate_network()
     print(f"network: {'private namespace' if isolated else 'host loopback'}; ports MQTT {MQTT_PORT}, "
-          f"Modbus {MODBUS_PORT}, console {CONSOLE_PORT}, syslog {SYSLOG_PORT}, HTTP {HTTP_PORT}",
+          f"Modbus {MODBUS_PORT}, console {CONSOLE_PORT}, syslog {SYSLOG_PORT}, HTTP {HTTP_PORT}, "
+          f"HTTPS {HTTPS_PORT}",
           flush=True)
     work = pathlib.Path(args.workdir)
     log = work / "uart0.log"
@@ -1173,6 +1244,8 @@ def main():
             run_primary_host(args, work)
         if want("sf"):
             run_store_forward(args, work, slave)
+        if want("https"):
+            run_https(args, work)
         if want("slow"):
             run_slow_link(args, work, sdkconfig_int(args.sdkconfig, "GW_MQTT_PUBLISH_BUDGET_MS"))
         if want("main"):
@@ -1622,6 +1695,9 @@ def run_factory_reset(args, work):
     gw = Gateway(args, work / "uart0-reset.log", flash)
     gw.start()
     nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    # the shell starts after MQTT and the web server (HTTPS: the certificate is generated at the
+    # first boot): a 'boot 1' typed before the prompt is lost
+    gw.shell("status", [r"^config\s"])
     # short press (3 s): the commissioning access point gesture, no reset
     t_short = time.monotonic()
     gw.console("boot 1")
@@ -1731,8 +1807,8 @@ def run(args, log, slave, broker, conf, work):
     # NET-6: host name derived from edge_node_id; the mDNS responder starts with it. It cannot
     # answer here: open_eth has no multicast filter, so joining 224.0.0.251 fails and the
     # responder leaves the interface out (the W5500 has the filter).
-    announced = gw.find(r"mdns: gw01\.local, _http\._tcp port 80 \('Plant1/GW01'\)", t0)
-    check("NET-6 host name gw01 derived from edge_node_id; mDNS responder and _http._tcp service "
+    announced = gw.find(r"mdns: gw01\.local, _https\._tcp port 443 \('Plant1/GW01'\)", t0)
+    check("NET-6 host name gw01 derived from edge_node_id; mDNS responder and _https._tcp service "
           "started (answers not testable on QEMU's open_eth)",
           announced, (announced or ["no mdns log"])[0])
 

@@ -4,6 +4,7 @@
 # the host unit tests (test/host).
 set(GW_CORE_SRCS
     src/gw_auth.c
+    src/gw_authlimit.c
     src/gw_backoff.c
     src/gw_brokersel.c
     src/gw_button.c

@@ -211,12 +211,12 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
             ESP_LOGW(TAG, "commissioning: no configuration since the factory reset; nothing is "
                           "started (no polling, no MQTT); load one with the web UI on port %u or "
                           "the shell ('config load')",
-                     s_cfg->web.port);
+                     s_cfg->web.https ? s_cfg->web.https_port : s_cfg->web.port);
         } else {
             ESP_LOGE(TAG, "configuration rejected (%s): %s", source, s_cfg_err.msg);
             ESP_LOGE(TAG, "nothing is started (no polling, no MQTT); fix it with the web UI on "
                           "port %u, the shell ('config load') or by reflashing (see README)",
-                     s_cfg->web.port);
+                     s_cfg->web.https ? s_cfg->web.https_port : s_cfg->web.port);
         }
         vTaskDelay(pdMS_TO_TICKS(10000));
     }

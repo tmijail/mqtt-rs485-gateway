@@ -431,6 +431,31 @@ static void test_mqtt_protocol(void)
                     "mqtt.protocol: valor no válido (se esperaba 3.1.1|5)");
 }
 
+/* Issue #64: HTTPS keys of the web section. */
+static void test_web_https(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\""), err.msg);
+    TEST_ASSERT_TRUE(cfg.web.https);            /* on by default */
+    TEST_ASSERT_EQUAL(443, cfg.web.https_port);
+    TEST_ASSERT_EQUAL(80, cfg.web.port);
+    TEST_ASSERT_TRUE_MESSAGE(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                                   "\"edge_node_id\":\"E\"},\"web\":{\"https_port\":8443,"
+                                   "\"port\":8080}}"),
+                             err.msg);
+    TEST_ASSERT_EQUAL(8443, cfg.web.https_port);
+    TEST_ASSERT_TRUE_MESSAGE(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                                   "\"edge_node_id\":\"E\"},\"web\":{\"https\":false,"
+                                   "\"https_port\":80}}"),
+                             err.msg);   /* the HTTPS port does not matter without HTTPS */
+    TEST_ASSERT_FALSE(cfg.web.https);
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"web\":{\"https_port\":80}}"),
+                    "web.https_port: no puede ser igual a web.port (80)");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"web\":{\"https\":\"on\"}}"),
+                    "web.https: se esperaba true o false");
+}
+
 /* CFG-3 / CFG-4: optional "web" section. */
 static void test_web_section(void)
 {
@@ -760,6 +785,7 @@ int main(void)
     RUN_TEST(test_mqtt_protocol);
     RUN_TEST(test_store_forward_key);
     RUN_TEST(test_web_section);
+    RUN_TEST(test_web_https);
     RUN_TEST(test_hostname);
     RUN_TEST(test_error_fields);
     RUN_TEST(test_schema_rules);

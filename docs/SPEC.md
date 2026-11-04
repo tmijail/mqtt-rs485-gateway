@@ -385,7 +385,9 @@ Formato: RFC 5424 sobre UDP (RFC 5426), un mensaje por datagrama, *facility* `lo
 | Clave | Tipo | Defecto | Regla |
 |---|---|---|---|
 | `enabled` | bool | `true` | `false` = sin servidor web con la configuración válida. Con la configuración rechazada o en puesta en marcha el servidor arranca igual (recuperación) |
-| `port` | entero | `80` | 1–65535, HTTP |
+| `port` | entero | `80` | 1–65535, HTTP. Con `https` en `true` solo redirige (301/308) a HTTPS |
+| `https` | bool | `true` | HTTPS con el certificado propio del equipo (EC P-256 autofirmado, generado en el primer arranque y guardado con los secretos en NVS; su huella SHA-256 sale en la consola en cada arranque). `false` = HTTP plano como antes |
+| `https_port` | entero | `443` | 1–65535, distinto de `port` |
 | `username` | texto | `"admin"` | 1–32 caracteres ASCII visibles, sin `:` |
 | `password` | texto (secreto) | `""` | Vacío o al menos 8 caracteres. Vacío = el equipo acepta `admin` con su **contraseña de puesta en marcha** (aleatoria, se ve en la consola) |
 
@@ -397,7 +399,9 @@ Formato: RFC 5424 sobre UDP (RFC 5426), un mensaje por datagrama, *facility* `lo
 
 En el archivo `/cfg/config.json` un secreto ausente, vacío o `"********"` toma el valor de NVS; uno en claro (archivo grabado a mano o de un firmware anterior) se usa, se mueve a NVS y el archivo se reescribe sin él.
 
-**API REST** (todas las rutas piden HTTP Basic con `web.username` y `web.password`; respuestas JSON):
+**Límite de intentos:** tras 5 accesos fallidos seguidos desde una misma dirección, esa dirección recibe `429` con `Retry-After` durante 30 s, sin comprobar la contraseña (tampoco la correcta); cada bloqueo seguido duplica el tiempo, hasta 15 min; un acceso correcto lo borra (Kconfig `GW_WEB_LOGIN_*`).
+
+**API REST** (todas las rutas piden HTTP Basic con `web.username` y `web.password`, por HTTPS con `https`; respuestas JSON):
 
 | Método y ruta | Qué hace |
 |---|---|

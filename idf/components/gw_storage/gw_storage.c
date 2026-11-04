@@ -220,12 +220,49 @@ static esp_err_t put_secrets(const gw_secrets_t *in)
     return err;
 }
 
+/* ---------- device certificate of the web server (issue #64) ---------- */
+
+bool gw_storage_get_web_tls(char *cert, size_t cert_cap, char *key, size_t key_cap)
+{
+    nvs_handle_t h;
+    if (!s_nvs_ok || nvs_open(NVS_SECRETS, NVS_READONLY, &h) != ESP_OK) {
+        return false;
+    }
+    bool ok = nvs_get_str(h, "web_cert", cert, &cert_cap) == ESP_OK &&
+              nvs_get_str(h, "web_key", key, &key_cap) == ESP_OK;
+    nvs_close(h);
+    return ok;
+}
+
+esp_err_t gw_storage_set_web_tls(const char *cert, const char *key)
+{
+    nvs_handle_t h;
+    if (!s_nvs_ok) {
+        return ESP_ERR_NVS_NOT_INITIALIZED;
+    }
+    esp_err_t err = nvs_open(NVS_SECRETS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_set_str(h, "web_cert", cert);
+    if (err == ESP_OK) {
+        err = nvs_set_str(h, "web_key", key);
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    return err;
+}
+
 /* ---------- network of the last valid configuration (CFG-3 recovery) ---------- */
 
 typedef struct {
     uint32_t size;    /* sizeof(lkg_t): a blob from a firmware with another layout is ignored */
     __typeof__(((gw_config_t *)0)->network) network;
     uint16_t web_port;
+    uint16_t web_https_port;
+    bool web_https;
 } lkg_t;
 
 void gw_storage_save_last_good(const gw_config_t *cfg)
@@ -234,7 +271,8 @@ void gw_storage_save_last_good(const gw_config_t *cfg)
     if (!s_nvs_ok || nvs_open(NVS_GW, NVS_READWRITE, &h) != ESP_OK) {
         return;
     }
-    lkg_t now = {.size = sizeof(lkg_t), .web_port = cfg->web.port}, old;
+    lkg_t now = {.size = sizeof(lkg_t), .web_port = cfg->web.port,
+                 .web_https_port = cfg->web.https_port, .web_https = cfg->web.https}, old;
     now.network = cfg->network;
     size_t len = sizeof(old);
     /* written only when it changed: NVS wear */
@@ -264,12 +302,16 @@ void gw_storage_recovery_config(gw_config_t *cfg)
     if (found) {
         cfg->network = lkg.network;
         cfg->web.port = lkg.web_port;
+        cfg->web.https = lkg.web_https;
+        cfg->web.https_port = lkg.web_https_port;
         memset(&lkg, 0, sizeof(lkg));
     } else {
         cfg->network.dhcp = true;
         cfg->network.wifi.failback_s = 30;
         cfg->network.wifi.ipv4.dhcp = true;
         cfg->web.port = 80;
+        cfg->web.https = true;
+        cfg->web.https_port = 443;
     }
     if (cfg->network.hostname[0] == '\0') {
         gw_hostname_from("", cfg->network.hostname, sizeof(cfg->network.hostname));

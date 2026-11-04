@@ -63,6 +63,12 @@ void gw_storage_commissioning_password(char out[GW_COMMISSION_PW_LEN + 1]);
  *  HMAC key in eFuse). Development builds without it keep the secrets in plain NVS. */
 bool gw_storage_secrets_encrypted(void);
 
+/** Issue #64: the web server's certificate and private key (PEM), kept with the secrets in
+ *  NVS (encrypted in production). False if there is none yet. */
+bool gw_storage_get_web_tls(char *cert, size_t cert_cap, char *key, size_t key_cap);
+
+esp_err_t gw_storage_set_web_tls(const char *cert, const char *key);
+
 /** Secrets currently stored (empty strings when none). */
 void gw_storage_get_secrets(gw_secrets_t *out);
 

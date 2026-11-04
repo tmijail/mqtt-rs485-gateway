@@ -24,6 +24,7 @@
 #include "gw_status.h"
 #include "gw_storage.h"
 #include "gw_tagdb.h"
+#include "gw_web.h"
 #include "lwip/ip_addr.h"
 #include "ping/ping_sock.h"
 
@@ -221,6 +222,14 @@ static int cmd_status(int argc, char **argv)
     }
     if (any6) {
         out("\n");
+    }
+    gw_web_stats_t ws;
+    gw_web_get_stats(&ws);
+    if (ws.running) {
+        out("web      %s, logins failed %lu, refused while blocked %lu, blocks %lu, addresses "
+            "blocked now %u\n",
+            ws.https ? "HTTPS (HTTP redirects)" : "HTTP", (unsigned long)ws.failed,
+            (unsigned long)ws.refused, (unsigned long)ws.blocks, ws.blocked_now);
     }
     gw_log_stats_t ls;
     gw_log_get_stats(&ls);

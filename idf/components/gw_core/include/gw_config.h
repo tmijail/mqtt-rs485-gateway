@@ -197,7 +197,9 @@ typedef struct {
     } syslog;
     struct {                     /* CFG-3 / CFG-4: web UI and REST API */
         bool enabled;
-        uint16_t port;
+        uint16_t port;                     /* HTTP: only redirects to HTTPS when https is on */
+        bool https;                        /* issue #64: HTTPS with the device certificate */
+        uint16_t https_port;
         char username[GW_USER_SIZE];
         char password[GW_CRED_SIZE];       /* clear text only while a new password is being
                                             * stored (CFG-7); empty at run time */

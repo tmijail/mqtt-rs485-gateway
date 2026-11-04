@@ -825,16 +825,19 @@ static bool parse_syslog(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
  * here while a new one is being set; the stored document never holds it. */
 static bool parse_web(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"enabled", "port", "username", "password"};
+    static const char *const keys[] = {"enabled", "port", "username", "password", "https",
+                                       "https_port"};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "web");
     static const cJSON empty = {.type = cJSON_Object};
-    long port;
+    long port, sport;
     if (o == NULL) {
         o = &empty;
     }
-    if (!check_keys(o, "web", keys, 4, err) ||
+    if (!check_keys(o, "web", keys, 6, err) ||
         !get_bool(o, "enabled", "web", true, &cfg->web.enabled, err) ||
         !get_int(o, "port", "web", false, 80, 1, 65535, &port, err) ||
+        !get_bool(o, "https", "web", true, &cfg->web.https, err) ||
+        !get_int(o, "https_port", "web", false, 443, 1, 65535, &sport, err) ||
         !get_string(o, "username", "web", false, "admin", cfg->web.username,
                     sizeof(cfg->web.username), err) ||
         !get_string(o, "password", "web", false, "", cfg->web.password,
@@ -842,6 +845,10 @@ static bool parse_web(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
         return false;
     }
     cfg->web.port = (uint16_t)port;
+    cfg->web.https_port = (uint16_t)sport;
+    if (cfg->web.https && sport == port) {
+        return fail(err, "web.https_port", "no puede ser igual a web.port (%ld)", port);
+    }
     if (cfg->web.username[0] == '\0') {
         return fail(err, "web.username", "no puede estar vacío");
     }
