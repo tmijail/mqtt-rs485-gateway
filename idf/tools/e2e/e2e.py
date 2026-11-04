@@ -734,6 +734,53 @@ SCENARIO_BUDGET_S = {}
 DEFAULT_BUDGET_S = 900.0
 
 
+def allow_core_dumps():
+    """Issue #107: core dumps up to CORE_LIMIT_B for this process and so for every QEMU it starts
+    (QEMU maps a large translation buffer; a core is mostly holes, but the cap bounds the disk).
+    Returns the limit set, 0 if the hard limit allows none."""
+    import resource
+    hard = resource.getrlimit(resource.RLIMIT_CORE)[1]
+    want = CORE_LIMIT_B if hard == resource.RLIM_INFINITY else min(CORE_LIMIT_B, hard)
+    resource.setrlimit(resource.RLIMIT_CORE, (want, hard))
+    return want
+
+
+CORE_LIMIT_B = 4 << 30
+QEMU_VERSION = None  # qemu-system-xtensa --version (main)
+
+
+def core_backtrace(qemu, core):
+    """Issue #107: every thread's backtrace of a QEMU core dump (gdb, when the host has it),
+    written next to the core as core-bt.txt (the core itself is too big for a CI artefact).
+    Returns the file name relative to the work directory, or why there is none."""
+    gdb = shutil.which("gdb")
+    if gdb is None:
+        return "no gdb on this host"
+    out = pathlib.Path(core).with_name("core-bt.txt")
+    try:
+        r = subprocess.run([gdb, "-batch", "-nx", "-ex", "info sharedlibrary", "-ex",
+                            "thread apply all bt 30", str(qemu), str(core)],
+                           capture_output=True, text=True, timeout=120)
+        out.write_text(r.stdout + r.stderr)
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"gdb failed ({e})"
+    return str(out.relative_to(WORK))
+
+
+def host_qemus():
+    """Issue #107: pids of the qemu-system-xtensa processes running on the host (any user's run,
+    other namespaces included): the parallel load a crash came with."""
+    out = []
+    for d in pathlib.Path("/proc").iterdir():
+        if d.name.isdigit():
+            try:
+                if (d / "comm").read_text().strip().startswith("qemu-system-xt"):
+                    out.append(int(d.name))
+            except OSError:
+                pass
+    return out
+
+
 def load_symbols(nm, elfs):
     """{name: [(start, end)]} of the WAITING functions in @elfs (nm -S), {} if nm is missing (the
     hang dump's analysis then cannot tell a waiting core)."""
@@ -1021,8 +1068,8 @@ class Gateway:
         # With the octal PSRAM, -m is its size (the board's 8 MB): with 32M QEMU maps 31 MB and
         # leaves no virtual address space for the flash mmap (the partitions are not found).
         cmd = [a.qemu, "-M", "esp32s3", "-m", "8M" if a.psram else "32M", "-nographic",
-               "-drive", f"file={self.flash},if=mtd,format=raw",
-               "-drive", f"file={self.efuse},if=none,format=raw,id=efuse",
+               "-drive", f"file={pathlib.Path(self.flash).resolve()},if=mtd,format=raw",
+               "-drive", f"file={pathlib.Path(self.efuse).resolve()},if=none,format=raw,id=efuse",
                "-global", "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
                "-global", "driver=timer.esp32s3.timg,property=wdt_disable,value=true",
                *(["-global", "driver=ssi_psram,property=is_octal,value=true"] if a.psram else []),
@@ -1037,10 +1084,25 @@ class Gateway:
         self.mon_path = MON_DIR / f"q{len(GATEWAYS)}.sock"
         cmd += ["-monitor", f"unix:{self.mon_path},server=on,wait=off"]
         err = pathlib.Path(str(self.log_path) + ".qemu")
+        # issue #107: what a QEMU crash needs for its diagnosis. Each emulator runs in a directory
+        # of its own with core dumps allowed (the container's core_pattern is "core": the file
+        # lands in the process' working directory); its command line, the host's load and the
+        # other QEMU processes of the host head its part of the stderr file.
+        self.cwd = WORK / "qemu" / f"{len(GATEWAYS):03d}-{self.log_path.stem}" if WORK else None
+        if self.cwd is not None:
+            self.cwd.mkdir(parents=True, exist_ok=True)
+        others = host_qemus()
+        self.info = {"log": self.log_path.name, "cwd": str(self.cwd) if self.cwd else None,
+                     "cmd": cmd, "host_qemus_at_start": len(others),
+                     "loadavg_at_start": os.getloadavg()[0], "started": now_s()}
+        with open(err, "ab") as f:
+            f.write((f"# harness: {' '.join(cmd)}\n# harness: {len(others)} other QEMU process(es) "
+                     f"on the host, load average {os.getloadavg()[0]:.2f}\n").encode())
         self.err_offset = err.stat().st_size if err.exists() else 0   # this boot's stderr only
         self.started = time.monotonic()
         self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                     stderr=open(err, "ab"))
+                                     stderr=open(err, "ab"), cwd=self.cwd)
+        self.info["pid"] = self.proc.pid
         PROCS.append(self.proc)
         GATEWAYS.append(self)
         if a.simulate_qemu_death == "console" and not RETRIES and len(GATEWAYS) == 1:
@@ -1183,8 +1245,17 @@ class Gateway:
         tail = [ln.strip() for ln in lines if ln.strip() and "waiting for connection" not in ln
                 and ln.strip() != "Adding SPI flash device"][-3:]
         how = f"signal {-code}" if code < 0 else f"exit status {code}"
+        core = self.core_file()
         return (f"QEMU terminó ({how}, {self.log_path.name}); stderr: "
-                f"{' | '.join(tail) if tail else 'no error message'}")
+                f"{' | '.join(tail) if tail else 'no error message'}"
+                f"{f'; core dump {core}' if core else ''}")
+
+    def core_file(self):
+        """Issue #107: the core dump this emulator left (relative to the work directory)."""
+        if self.cwd is None:
+            return None
+        cores = sorted(self.cwd.glob("core*"))
+        return str(cores[0].relative_to(WORK)) if cores else None
 
     def shell(self, commands, patterns, timeout=3, tries=3):
         """Ask the console shell (read-only commands only: they are repeated) until every regex in
@@ -3441,6 +3512,18 @@ def main():
     args = ap.parse_args()
     ARGS, HANG_S = args, args.hang_timeout
     SYMBOLS.update(load_symbols(args.nm, [args.elf, args.plain_elf]))
+    global QEMU_VERSION
+    try:
+        QEMU_VERSION = subprocess.run([args.qemu, "--version"], capture_output=True, text=True,
+                                      timeout=10).stdout.splitlines()[0]
+    except (OSError, subprocess.SubprocessError, IndexError) as e:
+        QEMU_VERSION = f"unknown ({e})"
+    pattern = pathlib.Path("/proc/sys/kernel/core_pattern")
+    pattern = pattern.read_text().strip() if pattern.exists() else "?"
+    print(f"emulator: {QEMU_VERSION}; core dumps up to {allow_core_dumps() >> 20} MB, "
+          f"core_pattern {pattern!r}" + ("" if not pattern.startswith("|") else
+                                         " (piped to a handler: no core file in qemu/)"),
+          flush=True)
     print(f"fault monitor symbols: {', '.join(sorted(SYMBOLS)) or 'none'}", flush=True)
     MQTT_PORT, MODBUS_PORT, CONSOLE_PORT = args.mqtt_port, args.modbus_port, args.console_port
     SYSLOG_PORT, HTTP_PORT, HTTPS_PORT = args.syslog_port, args.http_port, args.https_port
@@ -3568,8 +3651,18 @@ def main():
         check("SPB-5 seq continuity per session", not seq_errors, "; ".join(seq_errors) or "ok")
         # issue #86: the retries next to the checks (their discarded checks included); #92:
         # every emulator fault (with its state dump file) and each attempt's duration
+        # issue #107: every emulator (command line, host load, how it ended, its core dump)
+        emus = []
+        for g in GATEWAYS:
+            e = dict(getattr(g, "info", {}))
+            e["ended"] = g.qemu_died() or "ended by the harness"
+            e["core"] = g.core_file() if g.proc is not None else None
+            if e["core"]:
+                e["backtrace"] = core_backtrace(args.qemu, WORK / e["core"])
+            emus.append(e)
         (work / "results.json").write_text(json.dumps({"checks": results, "retries": RETRIES,
-                                                       "faults": FAULTS, "durations": DURATIONS},
+                                                       "faults": FAULTS, "durations": DURATIONS,
+                                                       "qemu": QEMU_VERSION, "emulators": emus},
                                                       indent=2))
         failed = [r for r in results if not r["ok"]]
         # issue #90: every emulator that ended on its own, with its stderr tail, and the

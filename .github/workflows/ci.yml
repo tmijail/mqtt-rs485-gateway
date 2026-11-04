@@ -150,6 +150,7 @@ jobs:
             /tmp/e2e-work/coredump-info.txt
             /tmp/e2e-work/qemu-exits.txt
             /tmp/e2e-work/fault-*.txt
+            /tmp/e2e-work/qemu/*/core-bt.txt
             /tmp/e2e-work/payloads/
 
   # Issue #85: the same scenario on the board's memory path, with QEMU's octal PSRAM (the
@@ -193,6 +194,7 @@ jobs:
             /tmp/e2e-psram/coredump-info.txt
             /tmp/e2e-psram/qemu-exits.txt
             /tmp/e2e-psram/fault-*.txt
+            /tmp/e2e-psram/qemu/*/core-bt.txt
             /tmp/e2e-psram/payloads/
 
   # Issue #104 (item 3): the OTA scenarios on a build with comprehensive heap poisoning
@@ -235,3 +237,4 @@ jobs:
             /tmp/e2e-poison/results.json
             /tmp/e2e-poison/qemu-exits.txt
             /tmp/e2e-poison/fault-*.txt
+            /tmp/e2e-poison/qemu/*/core-bt.txt
