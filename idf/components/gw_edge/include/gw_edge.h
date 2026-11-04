@@ -36,6 +36,11 @@ typedef struct {
     uint32_t sf_cap;
     uint32_t sf_dropped;     /* overwritten before they could be sent */
     uint32_t sf_sent;        /* historical messages published */
+    bool spill_on;           /* SPB-14: the ring spills to the card */
+    uint32_t spill_count;    /* samples (records) on the card waiting */
+    uint32_t spilled;        /* records ever moved to the card */
+    uint32_t spill_dropped;  /* records deleted from the card unsent (space) */
+    bool spill_failed;       /* the card failed: spill stopped */
 } gw_edge_status_t;
 
 void gw_edge_get_status(gw_edge_status_t *out);

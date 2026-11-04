@@ -20,3 +20,5 @@ CONFIG_ESP_SYSTEM_PANIC_REBOOT_DELAY_SECONDS=1
 # Issue #59: the E2E slow link (700 B/s through a relay) must exceed the publish budget with
 # payloads of at most 6 KB once slirp's buffers are full; 2 s does, the default 8 s would not
 CONFIG_GW_MQTT_PUBLISH_BUDGET_MS=2000
+# SPB-14: QEMU has no SDMMC: the store & forward spill goes to a LittleFS directory instead
+CONFIG_GW_SF_SPILL_LITTLEFS=y

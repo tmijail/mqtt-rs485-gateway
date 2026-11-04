@@ -769,6 +769,39 @@ static void test_store_and_forward(void)
     TEST_ASSERT_EQUAL_UINT32(1, node.sf_discarded);
 }
 
+/* SPB-14 with MB-6 values: Int64/UInt64 above 2^53 exact, Double and strings come back from
+ * the store as they were sampled. */
+static void test_store_and_forward_mb6(void)
+{
+    setup_mb6();
+    static gw_sf_rec_t storage[32];
+    gw_sf_t sf;
+    gw_sf_init(&sf, storage, 32);
+    gw_node_set_store(&node, &sf);
+    put_mb6(1, 0, 1.0, "AB", false);
+    gw_node_session_up(&node, 0);
+    gw_node_session_down(&node);
+    put_mb6(9007199254740993ull, -9007199254740993ll, 2.5, "XY", true);
+    gw_node_device_changed(&node, 0);
+    TEST_ASSERT_EQUAL_size_t(6, gw_sf_count(&sf));   /* 4 values + 1 string continuation + Bit */
+    recorder_clear();
+    gw_node_session_up(&node, 1);
+    TEST_ASSERT_EQUAL_size_t(0, gw_node_flush_history(&node, 4));
+    msg(2);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DDATA/N/M", g_rec.msgs[2].topic);
+    TEST_ASSERT_EQUAL(5, dec.count);
+    for (size_t i = 0; i < dec.count; i++) {
+        TEST_ASSERT_TRUE(dec.m[i].is_historical);
+    }
+    TEST_ASSERT_EQUAL_UINT64(9007199254740993ull, dec.m[0].u64);
+    TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[0].datatype);
+    TEST_ASSERT_EQUAL_INT64(-9007199254740993ll, (int64_t)dec.m[1].u64);
+    TEST_ASSERT_EQUAL_DOUBLE(2.5, dec.m[2].num);
+    TEST_ASSERT_EQUAL(SPB_DT_STRING, dec.m[3].datatype);
+    TEST_ASSERT_EQUAL_STRING("XY", dec.m[3].str);
+    TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[4].num);
+}
+
 /* SPB-14: a publish that fails keeps the batch for the next attempt. */
 static void test_history_kept_when_publish_fails(void)
 {
@@ -813,5 +846,6 @@ int main(void)
     RUN_TEST(test_no_store_coalesces);
     RUN_TEST(test_store_and_forward);
     RUN_TEST(test_history_kept_when_publish_fails);
+    RUN_TEST(test_store_and_forward_mb6);
     return UNITY_END();
 }

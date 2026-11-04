@@ -92,6 +92,16 @@ static uint64_t rbe_key(const gw_tag_cfg_t *t, const gw_tag_value_t *v)
     }
 }
 
+static void rbe_commit(gw_node_t *n, uint16_t tag, const gw_tag_value_t *v)
+{
+    const gw_tag_cfg_t *t = &n->cfg->tags[tag];
+    if (gw_conv_kind(t) == GW_VK_DOUBLE) {
+        gw_rbe_commit(&n->tag_rbe[tag], v->value, v->valid);
+    } else {
+        gw_rbe_commit_key(&n->tag_rbe[tag], v->valid ? rbe_key(t, v) : 0, v->valid);
+    }
+}
+
 /* @p v must stay valid until the metric is published (strings are referenced, not copied). */
 static void tag_metric(gw_node_t *n, size_t i, uint16_t tag, const gw_tag_value_t *v, bool birth)
 {
@@ -114,11 +124,7 @@ static void tag_metric(gw_node_t *n, size_t i, uint16_t tag, const gw_tag_value_
         m->v.num = v->value;
         break;
     }
-    if (kind == GW_VK_DOUBLE) {
-        gw_rbe_commit(&n->tag_rbe[tag], v->value, v->valid);
-    } else {
-        gw_rbe_commit_key(&n->tag_rbe[tag], v->valid ? rbe_key(t, v) : 0, v->valid);
-    }
+    rbe_commit(n, tag, v);
 }
 
 static bool tag_changed(const gw_node_t *n, uint16_t tag, const gw_tag_value_t *v)
@@ -235,18 +241,30 @@ static void store_device(gw_node_t *n, uint16_t dev)
     bool begun = false;
     for (uint16_t i = 0; i < d->tag_count; i++) {
         uint16_t tag = (uint16_t)(d->first_tag + i);
-        if (gw_conv_kind(&n->cfg->tags[tag]) != GW_VK_DOUBLE) {
-            continue;   /* MB-6 64-bit and string tags: the store holds doubles only */
+        const gw_tag_value_t *v = &n->vals[i];
+        if (!tag_changed(n, tag, v)) {
+            continue;
         }
-        if (tag_changed(n, tag, &n->vals[i])) {
-            if (!begun) {
-                gw_sf_begin(n->sf);
-                begun = true;
-            }
-            gw_sf_push(n->sf, (uint8_t)dev, tag, n->vals[i].value, !n->vals[i].valid,
-                       n->vals[i].ts_ms);
-            gw_rbe_commit(&n->tag_rbe[tag], n->vals[i].value, n->vals[i].valid);
+        if (!begun) {
+            gw_sf_begin(n->sf);
+            begun = true;
         }
+        /* MB-6: 64-bit integers exact (their bits), strings in continuation records */
+        switch (gw_conv_kind(&n->cfg->tags[tag])) {
+        case GW_VK_INT64:
+            gw_sf_push_u64(n->sf, (uint8_t)dev, tag, (uint64_t)v->i64, !v->valid, v->ts_ms);
+            break;
+        case GW_VK_UINT64:
+            gw_sf_push_u64(n->sf, (uint8_t)dev, tag, v->u64, !v->valid, v->ts_ms);
+            break;
+        case GW_VK_STRING:
+            gw_sf_push_str(n->sf, (uint8_t)dev, tag, v->str, !v->valid, v->ts_ms);
+            break;
+        default:
+            gw_sf_push(n->sf, (uint8_t)dev, tag, v->value, !v->valid, v->ts_ms);
+            break;
+        }
+        rbe_commit(n, tag, v);
     }
 }
 
@@ -369,7 +387,10 @@ size_t gw_node_flush_history(gw_node_t *n, size_t max_msgs)
         return 0;
     }
     for (size_t sent = 0; n->online && sent < max_msgs && gw_sf_count(n->sf) > 0;) {
-        size_t cnt = gw_sf_peek(n->sf, n->hist, GW_MAX_TAGS_PER_DEVICE);
+        size_t cnt = gw_sf_peek(n->sf, n->hist, GW_NODE_HIST_RECS);
+        if (cnt == 0) {
+            break;   /* the spill cannot be read: the rest stays */
+        }
         uint8_t dev = n->hist[0].dev;
         bool node = dev == GW_SF_NODE;
         if (!node && (dev >= n->cfg->device_count || !n->dev_born[dev])) {
@@ -378,17 +399,39 @@ size_t gw_node_flush_history(gw_node_t *n, size_t max_msgs)
             gw_sf_pop(n->sf, cnt);
             continue;
         }
-        for (size_t i = 0; i < cnt; i++) {
+        size_t nm = 0;
+        for (size_t i = 0; i < cnt && nm < GW_MAX_TAGS_PER_DEVICE;) {
             const gw_sf_rec_t *r = &n->hist[i];
-            uint32_t dt = node ? SPB_DT_BOOLEAN : gw_conv_datatype(&n->cfg->tags[r->metric]);
-            spb_metric_t *m = metric(n, i, NULL, node ? r->metric : GW_ALIAS_TAG_BASE + r->metric,
+            size_t used = gw_sf_sample(r, cnt - i, n->hist_str[nm], sizeof(n->hist_str[nm]));
+            i += used;
+            if (!node && r->metric >= n->cfg->tag_count) {
+                n->sf_discarded++;
+                continue;
+            }
+            const gw_tag_cfg_t *t = node ? NULL : &n->cfg->tags[r->metric];
+            uint32_t dt = node ? SPB_DT_BOOLEAN : gw_conv_datatype(t);
+            spb_metric_t *m = metric(n, nm, NULL, node ? r->metric : GW_ALIAS_TAG_BASE + r->metric,
                                      dt, r->ts_ms);
-            m->v.num = r->value;
-            m->is_null = r->is_null != 0;
+            switch (node ? GW_VK_DOUBLE : gw_conv_kind(t)) {
+            case GW_VK_INT64:
+                m->v.i64 = r->v.i64;
+                break;
+            case GW_VK_UINT64:
+                m->v.u64 = r->v.u64;
+                break;
+            case GW_VK_STRING:
+                m->v.str = n->hist_str[nm];
+                break;
+            default:
+                m->v.num = r->v.num;
+                break;
+            }
+            m->is_null = (r->flags & GW_SF_NULL) != 0;
             m->is_historical = true;
+            nm++;
         }
-        if (!publish(n, node ? "NDATA" : "DDATA", node ? NULL : n->cfg->devices[dev].name, cnt,
-                     0)) {
+        if (nm > 0 && !publish(n, node ? "NDATA" : "DDATA", node ? NULL : n->cfg->devices[dev].name,
+                               nm, 0)) {
             break;   /* kept: retried on the next call (or the next session) */
         }
         gw_sf_pop(n->sf, cnt);

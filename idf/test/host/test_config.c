@@ -413,7 +413,29 @@ static void test_store_forward_key(void)
     TEST_ASSERT_TRUE(cfg.sparkplug.store_forward);
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
                           "\"edge_node_id\":\"E\",\"store_forward\":\"yes\"}}"),
-                    "sparkplug.store_forward: se esperaba true o false");
+                    "sparkplug.store_forward: se esperaba true, false o un objeto");
+    TEST_ASSERT_FALSE(cfg.sparkplug.sf_sd);
+    /* the object form, with the optional microSD spill (off by default) */
+    static const char head[] = "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                               "\"edge_node_id\":\"E\",\"store_forward\":";
+    char doc[512];
+    snprintf(doc, sizeof(doc), "%s{}}}", head);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_TRUE(cfg.sparkplug.store_forward);
+    TEST_ASSERT_FALSE(cfg.sparkplug.sf_sd);
+    TEST_ASSERT_EQUAL_UINT32(16384, cfg.sparkplug.sf_sd_max_kb);
+    snprintf(doc, sizeof(doc), "%s{\"sd\":{\"enabled\":true,\"max_kb\":1024}}}}", head);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_TRUE(cfg.sparkplug.sf_sd);
+    TEST_ASSERT_EQUAL_UINT32(1024, cfg.sparkplug.sf_sd_max_kb);
+    snprintf(doc, sizeof(doc), "%s{\"enabled\":false,\"sd\":{\"enabled\":true}}}}", head);
+    ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd.enabled: la tarjeta solo extiende");
+    snprintf(doc, sizeof(doc), "%s{\"sd\":{\"max_kb\":8}}}}", head);
+    ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd.max_kb: valor 8 fuera de rango");
+    snprintf(doc, sizeof(doc), "%s{\"sd\":{\"pins\":1}}}}", head);
+    ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd.pins: clave desconocida");
+    snprintf(doc, sizeof(doc), "%s{\"sd\":true}}}", head);
+    ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd: se esperaba un objeto JSON");
 }
 
 /* MQTT-8: protocol version. */

@@ -23,6 +23,8 @@
 #include "gw_node.h"
 #include "gw_phost.h"
 #include "gw_status.h"
+#include "gw_sfcard.h"
+#include "gw_sfspill.h"
 #include "gw_storage.h"
 #include "esp_transport.h"
 #include "lwip/sockets.h"
@@ -135,6 +137,8 @@ static int64_t s_host_wait_since_us;
 static bool s_host_disconnect;  /* the session ends because of the host, not the network */
 static gw_sf_t s_sf;            /* SPB-14: store & forward ring (storage allocated at boot) */
 static bool s_sf_psram;
+static gw_sfspill_t s_spill;    /* SPB-14: the ring's spill to the microSD card (optional) */
+static bool s_spill_on;
 static bool s_stable;           /* the current session lasted stable_ms(): it counts as working */
 static char s_client_if[8];     /* interface the client was bound to ("" = one interface) */
 
@@ -463,6 +467,11 @@ static void publish_status(void)
     s_st.sf_cap = (uint32_t)s_sf.cap;
     s_st.sf_dropped = s_sf.dropped;
     s_st.sf_sent = s_node != NULL ? s_node->sf_sent : 0;
+    s_st.spill_on = s_spill_on;
+    s_st.spill_count = (uint32_t)s_spill.count;
+    s_st.spilled = s_sf.spilled;
+    s_st.spill_dropped = s_spill.dropped;
+    s_st.spill_failed = s_spill_on && !s_spill.ok;
     portEXIT_CRITICAL(&s_st_mux);
 }
 
@@ -1103,6 +1112,41 @@ static void setup_tls(const gw_tls_cfg_t *tls)
     }
 }
 
+/* SPB-14: the optional spill of the full ring to the microSD card (gw_sfspill). */
+static void setup_spill(size_t ring)
+{
+#if CONFIG_GW_SF_SPILL_SDMMC
+    ESP_LOGW(TAG, "store & forward: microSD enabled. GPIO45 (its D0) is the VDD_SPI strapping "
+                  "pin: a card that holds it high at reset can select 1.8 V for the flash and "
+                  "stop the board from booting unless VDD_SPI is fixed in eFuse (README 6.5)");
+#endif
+    static gw_sfspill_io_t io;
+    char where[64], why[96];
+    if (!gw_sfcard_open(&io, where, sizeof(where), why, sizeof(why))) {
+        ESP_LOGE(TAG, "store & forward: %s: the RAM ring overwrites its oldest samples when full",
+                 why);
+        return;
+    }
+    /* segments: at least 8 of them within max_kb, 64..4096 records each (24 B) */
+    uint64_t bytes = (uint64_t)s_cfg->sparkplug.sf_sd_max_kb * 1024u;
+    uint64_t recs = bytes / (8u * sizeof(gw_sf_rec_t));
+    uint32_t seg = (uint32_t)(recs < 64 ? 64 : recs > 4096 ? 4096 : recs);
+    uint64_t segs = bytes / (seg * sizeof(gw_sf_rec_t) + sizeof(gw_sfspill_hdr_t));
+    segs = segs < 2 ? 2 : segs > GW_SFSPILL_MAX_SEGS ? GW_SFSPILL_MAX_SEGS : segs;
+    /* the tag indexes in the records only mean the same with the same devices and tags */
+    uint32_t hash = gw_sfspill_fnv(GW_SFSPILL_FNV_INIT, s_cfg->devices,
+                                   s_cfg->device_count * sizeof(s_cfg->devices[0]));
+    hash = gw_sfspill_fnv(hash, s_cfg->tags, s_cfg->tag_count * sizeof(s_cfg->tags[0]));
+    gw_sfspill_init(&s_spill, &io, seg, (uint32_t)segs, hash);
+    size_t chunk = ring / 4 < 512 ? ring / 4 : 512;
+    gw_sf_attach_spill(&s_sf, &s_spill, chunk);
+    s_spill_on = true;
+    ESP_LOGI(TAG, "store & forward: spill to %s: %lu segments of %lu samples, %u at a time; %lu "
+                  "samples kept from before this boot",
+             where, (unsigned long)segs, (unsigned long)seg, (unsigned)chunk,
+             (unsigned long)s_spill.kept_at_boot);
+}
+
 /* SPB-14: the ring, once at boot: large in PSRAM, small in internal RAM without it. */
 static void setup_store(void)
 {
@@ -1125,6 +1169,9 @@ static void setup_store(void)
     gw_node_set_store(s_node, &s_sf);
     ESP_LOGI(TAG, "store & forward: %u samples (%u B) in %s", (unsigned)n,
              (unsigned)(n * sizeof(gw_sf_rec_t)), s_sf_psram ? "PSRAM" : "internal RAM (no PSRAM)");
+    if (s_cfg->sparkplug.sf_sd) {
+        setup_spill(n);
+    }
 }
 
 esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)

@@ -22,6 +22,7 @@ set(GW_CORE_SRCS
     src/gw_poll.c
     src/gw_rbe.c
     src/gw_sf.c
+    src/gw_sfspill.c
     src/gw_syslog.c
     src/gw_tagdb.c
     src/mb_master.c

@@ -733,6 +733,41 @@ static bool parse_mqtt(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     return parse_backup_brokers(o, cfg, err);
 }
 
+/* SPB-14: true/false, or {"enabled": bool, "sd": {"enabled": bool, "max_kb": n}}. */
+static bool parse_store_forward(const cJSON *sp, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"enabled", "sd"};
+    static const char *const sd_keys[] = {"enabled", "max_kb"};
+    static const cJSON empty = {.type = cJSON_Object};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(sp, "store_forward");
+    cfg->sparkplug.sf_sd_max_kb = 16384;
+    if (o == NULL || cJSON_IsBool(o)) {
+        cfg->sparkplug.store_forward = cJSON_IsTrue(o);
+        return true;
+    }
+    if (!cJSON_IsObject(o)) {
+        return fail(err, "sparkplug.store_forward", "se esperaba true, false o un objeto");
+    }
+    const cJSON *sd = cJSON_GetObjectItemCaseSensitive(o, "sd");
+    long max_kb;
+    if (!check_keys(o, "sparkplug.store_forward", keys, 2, err) ||
+        !get_bool(o, "enabled", "sparkplug.store_forward", true, &cfg->sparkplug.store_forward,
+                  err) ||
+        !check_keys(sd != NULL ? sd : &empty, "sparkplug.store_forward.sd", sd_keys, 2, err) ||
+        !get_bool(sd != NULL ? sd : &empty, "enabled", "sparkplug.store_forward.sd", false,
+                  &cfg->sparkplug.sf_sd, err) ||
+        !get_int(sd != NULL ? sd : &empty, "max_kb", "sparkplug.store_forward.sd", false, 16384,
+                 64, 4194304, &max_kb, err)) {
+        return false;
+    }
+    cfg->sparkplug.sf_sd_max_kb = (uint32_t)max_kb;
+    if (cfg->sparkplug.sf_sd && !cfg->sparkplug.store_forward) {
+        return fail(err, "sparkplug.store_forward.sd.enabled",
+                    "la tarjeta solo extiende el búfer: requiere store_forward.enabled");
+    }
+    return true;
+}
+
 static bool parse_sparkplug(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"group_id", "edge_node_id", "primary_host_id",
@@ -742,7 +777,7 @@ static bool parse_sparkplug(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *e
         return fail(err, "sparkplug", "sección obligatoria ausente");
     }
     return check_keys(o, "sparkplug", keys, 4, err) &&
-           get_bool(o, "store_forward", "sparkplug", false, &cfg->sparkplug.store_forward, err) &&
+           parse_store_forward(o, cfg, err) &&
            get_string(o, "group_id", "sparkplug", true, "", cfg->sparkplug.group_id,
                       sizeof(cfg->sparkplug.group_id), err) &&
            get_string(o, "edge_node_id", "sparkplug", true, "", cfg->sparkplug.edge_node_id,

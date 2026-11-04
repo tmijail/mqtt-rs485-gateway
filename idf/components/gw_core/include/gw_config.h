@@ -202,6 +202,8 @@ typedef struct {
         char edge_node_id[GW_ID_SIZE];
         char primary_host_id[GW_ID_SIZE];  /* SPB-13: "" = no primary host application */
         bool store_forward;                /* SPB-14: keep changes made while offline */
+        bool sf_sd;                        /* SPB-14: spill the full ring to the microSD card */
+        uint32_t sf_sd_max_kb;             /* bound of the spill on the card */
     } sparkplug;
     struct {
         uint32_t baud;

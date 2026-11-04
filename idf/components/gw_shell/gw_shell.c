@@ -185,6 +185,11 @@ static int cmd_status(int argc, char **argv)
                 (unsigned long)es.sf_count, (unsigned long)es.sf_cap,
                 es.sf_psram ? "PSRAM" : "internal RAM", (unsigned long)es.sf_sent,
                 (unsigned long)es.sf_dropped);
+            if (es.spill_on) {
+                out("spill    %s: %lu samples on the card, %lu moved there, %lu deleted unsent\n",
+                    es.spill_failed ? "FAILED (the ring overwrites)" : "on", (unsigned long)es.spill_count,
+                    (unsigned long)es.spilled, (unsigned long)es.spill_dropped);
+            }
         }
         if (s_ctx.cfg->sparkplug.primary_host_id[0] != '\0') {
             out("host     primary '%s' %s%s\n", s_ctx.cfg->sparkplug.primary_host_id,

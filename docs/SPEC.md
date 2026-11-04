@@ -362,9 +362,24 @@ Con brokers de respaldo (MQTT-6), un host fuera de línea en un broker (STATE `f
 
 | Clave | Tipo | Defecto | Regla |
 |---|---|---|---|
-| `store_forward` | bool | `false` | `false` = sin sesión Sparkplug los cambios se coalescen y la sesión siguiente publica solo el valor actual (como el MVP). `true` = los cambios que se habrían publicado (mismas reglas de excepción y *deadband*) se guardan en un búfer circular y, tras el NBIRTH y los DBIRTH de la sesión siguiente, se publican del más viejo al más nuevo como DDATA/NDATA con `is_historical = true` y el timestamp de la muestra |
+| `store_forward` | bool u objeto | `false` | `false` = sin sesión Sparkplug los cambios se coalescen y la sesión siguiente publica solo el valor actual (como el MVP). `true` = los cambios que se habrían publicado (mismas reglas de excepción y *deadband*) se guardan en un búfer circular y, tras el NBIRTH y los DBIRTH de la sesión siguiente, se publican del más viejo al más nuevo como DDATA/NDATA con `is_historical = true` y el timestamp de la muestra |
 
-"Sin sesión" incluye broker caído y host primario (SPB-13) fuera de línea, desde el primer NBIRTH del arranque (antes no hay estado publicado con qué comparar). El búfer tiene 40 000 muestras en PSRAM (960 KB) o 512 en RAM interna si no hay PSRAM (Kconfig `GW_SF_PSRAM_SAMPLES` / `GW_SF_INTERNAL_SAMPLES`); lleno, se pisan las más viejas. Las muestras de un dispositivo sin DBIRTH en la sesión nueva (fuera de línea al volver) se descartan. Sin volcado a microSD.
+"Sin sesión" incluye broker caído y host primario (SPB-13) fuera de línea, desde el primer NBIRTH del arranque (antes no hay estado publicado con qué comparar). El búfer tiene 40 000 muestras en PSRAM (960 KB) o 512 en RAM interna si no hay PSRAM (Kconfig `GW_SF_PSRAM_SAMPLES` / `GW_SF_INTERNAL_SAMPLES`); lleno, se pisan las más viejas. Las muestras de un dispositivo sin DBIRTH en la sesión nueva (fuera de línea al volver) se descartan. Los enteros de 64 bits y los textos (MB-6) se guardan exactos.
+
+Forma de objeto, con el volcado opcional a microSD:
+
+```json
+"sparkplug": { "group_id": "Plant1", "edge_node_id": "GW01",
+               "store_forward": { "enabled": true, "sd": { "enabled": false, "max_kb": 16384 } } }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `enabled` | bool | `true` | Lo mismo que `store_forward: true` |
+| `sd.enabled` | bool | `false` | Con el búfer de RAM lleno, sus muestras más viejas pasan a la tarjeta microSD (de a bloques) en lugar de pisarse; al volver la sesión se publican primero las de la tarjeta. Requiere `enabled`. **GPIO45 (D0 de la tarjeta) es pin de *strapping*: ver la advertencia de `idf/README.md` §6.5 antes de activarlo** |
+| `sd.max_kb` | entero | `16384` | 64–4 194 304. Espacio máximo en la tarjeta; lleno, se borra el segmento más viejo (contado como perdido) |
+
+En la tarjeta: carpeta `/sf` de una tarjeta FAT (no se formatea nunca), segmentos numerados de solo escritura al final, que se borran enteros al publicarse. Sobreviven a un reinicio y se publican después si la lista de dispositivos y tags no cambió; si cambió, se borran.
 
 **Tipos de 64 bits, `string`, órdenes de bytes y bits de registro (MB-6), en cada tag.**
 

@@ -56,6 +56,7 @@ extern "C" {
 #define GW_NODE_BIRTH_METRICS   (7 + 2 * GW_NODE_IO_COUNT)
 #define GW_SPB_PAYLOAD_MAX      6144   /* > worst-case DBIRTH: 64 tags with 39-char names */
 #define GW_TOPIC_MAX            160
+#define GW_NODE_HIST_RECS       (2 * GW_MAX_TAGS_PER_DEVICE)   /* records per historical message */
 
 typedef struct {
     /** Publish; returns < 0 on failure. */
@@ -108,7 +109,8 @@ typedef struct {
     /* Store & forward (SPB-14); sf NULL = changes while offline are coalesced (the MVP). */
     gw_sf_t *sf;
     bool born_once;                    /* an NBIRTH went out since boot: from then on, store */
-    gw_sf_rec_t hist[GW_MAX_TAGS_PER_DEVICE];
+    gw_sf_rec_t hist[GW_NODE_HIST_RECS];
+    char hist_str[GW_MAX_TAGS_PER_DEVICE][GW_STR_MAX + 1];   /* strings of a historical message */
     uint32_t sf_discarded;             /* stored samples of devices without DBIRTH when sent */
     uint32_t sf_sent;                  /* historical messages published */
 

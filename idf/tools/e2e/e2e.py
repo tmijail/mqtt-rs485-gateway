@@ -71,7 +71,7 @@ GROUP, NODE, DEVICE, BULK = "Plant1", "GW01", "Meter1", "Bulk"
 T = f"spBv1.0/{GROUP}"
 ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/1": 20, "DO/3": 22, "Voltage": 100, "Setpoint": 101, "Run": 102,
          "Limit": 103, "Energy": 104, "Counter": 105, "Flow": 106, "Temp": 107, "Serial": 108,
-         "Alarm": 109, "Ready": 110}
+         "Alarm": 109, "Ready": 110, "Bulk0": 111}
 # MB-6 values served by unit 1, and the registers that hold them (see ModbusSlave.set_mb6)
 MB6 = {"Energy": 2 ** 53 + 1, "Counter": -(2 ** 53 + 1), "Flow": 1234.56789012345, "Temp": -123456,
        "Serial": "SN-0042-ABCD", "Alarm": True, "Ready": True}
@@ -1133,6 +1133,71 @@ def run_slow_link(args, work, budget_ms):
           f"panics {panics[:1]}")
 
 
+def run_store_forward_spill(args, work, slave):
+    """SPB-14 spill (GW23): store_forward with sd enabled; QEMU has no SDMMC, so the build puts
+    the "card" in a LittleFS directory (CONFIG_GW_SF_SPILL_LITTLEFS). While the relay keeps the
+    broker away, the harness changes all 60 Bulk registers twice a second: about 60 samples per
+    poll overflow the 512-sample RAM ring, which spills its oldest chunks to the card. After the
+    reconnection every stored sample comes back as historical DDATA, oldest first (spill, then
+    ring), with no sample lost (the shell: nothing overwritten, nothing deleted unsent)."""
+    node, port = "GW23", MQTT_PORT + 11
+    ddata_t = f"{T}/DDATA/{node}/{BULK}"
+    relay = Relay(port, MQTT_PORT)
+    obs = Observer()
+    cfg = node_config(node, port=port)
+    cfg["sparkplug"]["store_forward"] = {"enabled": True, "sd": {"enabled": True, "max_kb": 128}}
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "sfsd", cfg)
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    obs.wait(f"{T}/DBIRTH/{node}/{BULK}", 10)
+    spill_log = gw.find(r"store & forward: spill to LittleFS /cfg/sf .*: \d+ segments of \d+ samples", t0)
+    since = time.monotonic()
+    relay.stop()
+    gw.wait_log(r"MQTT down; reconnect attempt", 10, since)
+    value = 2000
+    end = time.monotonic() + 16
+    while time.monotonic() < end:
+        value += 1
+        slave.bulk.setValues(3, 100, [value] * 60)
+        time.sleep(0.5)
+    asked, h = gw.shell("status", [r"^spill\s+on: [1-9]\d* samples on the card, [1-9]\d* moved there, "
+                                   r"0 deleted unsent",
+                                   r"^store\s+[1-9]\d* of 512 samples waiting \(internal RAM\), .* 0 overwritten"])
+    spilled = all(h.values())
+    waiting = [int(x) for x in re.findall(r"^store\s+(\d+) of", "\n".join(gw.find(r"^store\s", asked)), re.M)]
+    relay.start()
+    nb2 = obs.wait(f"{T}/NBIRTH/{node}", 70)
+    deadline = time.monotonic() + 60
+    asked2 = time.monotonic()
+    done = None
+    while time.monotonic() < deadline and not done:
+        _, h = gw.shell("status", [r"^store\s+0 of 512 samples waiting"], timeout=2, tries=1)
+        done = list(h.values())[0]
+    time.sleep(1)
+    hist = [mm for m in CAPTURE if nb2 and m[0] >= nb2[0] and m[1] == ddata_t for mm in m[2].metrics
+            if mm.is_historical]
+    total = sum(1 for m in CAPTURE if nb2 and m[0] >= nb2[0] and m[1].split("/")[3:4] == [node]
+                for mm in m[2].metrics if mm.is_historical)
+    reg100 = [mm.int_value for mm in hist if mm.alias == ALIAS["Bulk0"]]
+    ts = [mm.timestamp for mm in hist if mm.alias == ALIAS["Bulk0"]]
+    final = gw.find(r"^store\s|^spill\s", asked2)[-2:]
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node}", 5)
+    obs.close()
+    relay.stop()
+    slave.bulk.setValues(3, 100, list(range(1000, 1060)))   # what the main scenario expects
+    check("SPB-14 spill to the card (LittleFS stand-in on QEMU): the full 512-sample ring spills "
+          "its oldest samples; after the reconnection all of them come back as historical DDATA, "
+          "oldest first, none overwritten or deleted",
+          nb and spill_log and spilled and waiting and waiting[0] > 512 and nb2 and done
+          and total >= waiting[0] and reg100 == sorted(reg100) and ts == sorted(ts)
+          and len(set(reg100)) == len(reg100),
+          f"{(spill_log or ['no spill log'])[0]}; waiting before the reconnection {waiting}; "
+          f"{total} historical metrics after it ({len(hist)} of Bulk), register 100: {reg100[:3]}..{reg100[-2:]} "
+          f"({len(reg100)} samples, in order {reg100 == sorted(reg100)}); "
+          + " | ".join(gw.find(r"^spill\s", asked) + final))
+
+
 # ---------------------------------------------------------------- HTTPS and login limit (issue #64)
 
 def run_https(args, work):
@@ -1274,6 +1339,7 @@ def main():
             run_primary_host(args, work)
         if want("sf"):
             run_store_forward(args, work, slave)
+            run_store_forward_spill(args, work, slave)
         if want("https"):
             run_https(args, work)
         if want("slow"):
