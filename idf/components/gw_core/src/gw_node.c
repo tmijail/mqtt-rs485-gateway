@@ -189,8 +189,9 @@ static void publish_dbirth(gw_node_t *n, uint16_t dev)
     for (uint16_t i = 0; i < d->tag_count; i++) {
         tag_metric(n, i, (uint16_t)(d->first_tag + i), &n->vals[i], true);
     }
-    publish(n, "DBIRTH", d->name, d->tag_count, 0);
-    n->dev_born[dev] = true;
+    /* born only if the DBIRTH went out (issue #73: it may be larger than the broker accepts):
+     * no DDATA without it; the next change tries the DBIRTH again */
+    n->dev_born[dev] = publish(n, "DBIRTH", d->name, d->tag_count, 0);
 }
 
 static void publish_ddeath(gw_node_t *n, uint16_t dev)

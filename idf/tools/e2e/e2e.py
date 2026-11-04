@@ -980,6 +980,42 @@ def run_mqtt5(args, work, mosquitto_log):
           f"rebirth {'yes' if rb else 'no'}; will "
           f"{f'{will[0] - killed:.1f} s after the kill, bdSeq {bdseq_of(will[2])}' if will else 'missing'}")
 
+
+def run_max_packet(args, work):
+    """Issue #73 (GW26, MQTT 5) against a mosquitto with max_packet_size 2000, which it
+    announces in the CONNACK: NBIRTH and the small DBIRTH of Meter1 go out; the DBIRTH of Bulk
+    (about 2.7 KB) is not sent, with a clear error and the shell showing it, and the session
+    stays up (no reconnection loop)."""
+    node, port = "GW26", MQTT_PORT + 14
+    conf = work / "broker-maxpkt.conf"
+    conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\nmax_packet_size 2000\n")
+    broker = start_broker(conf, work / "mosquitto-maxpkt.log")
+    obs = Observer(port)
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "maxpkt", node_config(node, port=port, protocol="5"))
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    db = obs.wait(f"{T}/DBIRTH/{node}/{DEVICE}", 10)
+    err = gw.wait_log(r"spBv1\.0/Plant1/DBIRTH/GW26/Bulk: \d+ bytes, more than the broker's Maximum "
+                      r"Packet Size of 2000 \(by \d+\): not published", 15, t0)
+    time.sleep(8)
+    asked, h = gw.shell("status", [r"^limit\s+broker Maximum Packet Size 2000 B; [1-9]\d* message\(s\) too "
+                                   r"large, not published \(last: spBv1\.0/Plant1/DBIRTH/GW26/Bulk\)"])
+    shown = list(h.values())[0]
+    bulk = [m for m in CAPTURE if m[1] == f"{T}/DBIRTH/{node}/{BULK}"]
+    attempts = gw.find(r"connecting to .* as 'GW26'", t0)
+    dropped = re.search(r"Client GW26 .*(disconnected|exceeded)", (work / "mosquitto-maxpkt.log").read_text())
+    gw.kill()
+    obs.close()
+    broker.terminate()
+    broker.wait()
+    check("Issue #73 MQTT 5 Maximum Packet Size from the CONNACK: a DBIRTH larger than it is not "
+          "published (clear error, shown in the shell); the rest goes out and the session stays",
+          nb and db and err and shown and not bulk and len(attempts) == 1 and not dropped,
+          f"NBIRTH {'yes' if nb else 'no'}, Meter1 DBIRTH {'yes' if db else 'no'}, Bulk DBIRTH "
+          f"{len(bulk)}; {(gw.find(r'Maximum Packet Size of 2000', t0) or ['no error'])[0][:150]}; "
+          f"{len(attempts)} connection(s); " + " | ".join(gw.find(r"^limit\s", asked)))
+
+
 # ---------------------------------------------------------------- primary host (SPB-13)
 
 def host_state(obs, host, online, ts, retain=True):
@@ -1367,6 +1403,7 @@ def main():
             run_failover(args, work)
         if want("mqtt5"):
             run_mqtt5(args, work, work / "mosquitto.log")
+            run_max_packet(args, work)
         if want("phost"):
             run_primary_host(args, work)
         if want("sf"):

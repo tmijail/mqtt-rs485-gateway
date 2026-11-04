@@ -210,6 +210,13 @@ static int cmd_status(int argc, char **argv)
                 es.broker_count, es.host, es.port, s_ctx.cfg->mqtt.tls.enabled ? " (TLS)" : "",
                 es.failures);
         }
+        if (es.max_packet != 0 || es.oversize != 0) {
+            out("limit    broker Maximum Packet Size %lu B; %lu message(s) too large, not "
+                "published%s%s%s\n",
+                (unsigned long)es.max_packet, (unsigned long)es.oversize,
+                es.oversize ? " (last: " : "", es.oversize ? es.oversize_topic : "",
+                es.oversize ? ")" : "");
+        }
         if (es.sf_enabled) {
             out("store    %lu of %lu samples waiting (%s), %lu historical messages sent, %lu "
                 "overwritten\n",

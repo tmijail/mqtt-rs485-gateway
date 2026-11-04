@@ -787,6 +787,26 @@ static void test_session_up_needs_the_nbirth(void)
     TEST_ASSERT_EQUAL_UINT64(0, dec.seq);
 }
 
+/* Issue #73: a DBIRTH that is not published (larger than the broker accepts) leaves its device
+ * unborn: no DDATA for it; the next change of the device tries the DBIRTH again. */
+static void test_dbirth_not_published_leaves_the_device_unborn(void)
+{
+    set_meter(false, 230.5, 12.3, 1);
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 1));
+    TEST_ASSERT_EQUAL(1, g_rec.count);          /* NBIRTH; the meter is offline */
+    recorder_clear();
+    set_meter(true, 230.5, 12.3, 1);
+    g_rec.publish_fails = true;
+    gw_node_device_changed(&node, 0);
+    TEST_ASSERT_FALSE(node.dev_born[0]);
+    g_rec.publish_fails = false;
+    set_meter(true, 231.5, 12.3, 1);
+    gw_node_device_changed(&node, 0);           /* a DBIRTH again, not a DDATA */
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/DBIRTH/GW01/Meter1", g_rec.msgs[0].topic);
+    TEST_ASSERT_TRUE(node.dev_born[0]);
+}
+
 /* SPB-14 with MB-6 values: Int64/UInt64 above 2^53 exact, Double and strings come back from
  * the store as they were sampled. */
 static void test_store_and_forward_mb6(void)
@@ -866,5 +886,6 @@ int main(void)
     RUN_TEST(test_history_kept_when_publish_fails);
     RUN_TEST(test_store_and_forward_mb6);
     RUN_TEST(test_session_up_needs_the_nbirth);
+    RUN_TEST(test_dbirth_not_published_leaves_the_device_unborn);
     return UNITY_END();
 }

@@ -83,6 +83,13 @@ static atomic_bool s_rebirth_req;
 static esp_timer_handle_t s_pub_timer;
 static SemaphoreHandle_t s_pub_lock;
 static StaticSemaphore_t s_pub_lock_buf;
+/* ---- issue #73: MQTT 5 Maximum Packet Size of the broker (CONNACK), 0 = no limit ---- */
+static atomic_uint s_max_packet;
+static uint32_t s_oversize;          /* messages not published because of it */
+static char s_oversize_topic[GW_TOPIC_MAX];
+static uint32_t s_oversize_bytes;
+static int64_t s_oversize_logged_us;
+#define PUBLISH_OVERSIZE (-2)        /* op_publish: not a connection failure */
 static int s_pub_fd = -1;            /* socket of the publish in progress, -1 = none */
 static uint16_t s_pub_port;          /* its local port: tells a reused descriptor apart */
 static const char *s_pub_topic;
@@ -365,6 +372,12 @@ static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *da
     const esp_mqtt_event_t *ev = data;
     switch ((esp_mqtt_event_id_t)id) {
     case MQTT_EVENT_CONNECTED:
+#if CONFIG_MQTT_PROTOCOL_5
+        /* issue #73: what the broker accepts at most (0: no limit, or MQTT 3.1.1) */
+        atomic_store(&s_max_packet, ev->protocol_ver == MQTT_PROTOCOL_V_5 && ev->property != NULL
+                                        ? ev->property->server.maximum_packet_size
+                                        : 0u);
+#endif
         atomic_store(&s_mqtt_connected, true);
         atomic_fetch_add(&s_conn_gen, 1);
         wake();
@@ -453,8 +466,35 @@ static void on_publish_budget(void *arg)
 
 /* Every publish of the Sparkplug task goes through here: at most the budget plus the socket
  * timeout of the write in progress (5 s), below the 15 s task watchdog. */
+/* Size of the MQTT PUBLISH packet (no MQTT 5 properties): fixed header, topic, packet id,
+ * property length, payload. */
+static uint32_t publish_packet_size(const char *topic, int len, int qos)
+{
+    uint32_t rem = 2u + (uint32_t)strlen(topic) + (qos > 0 ? 2u : 0u) +
+                   (s_cfg->mqtt.protocol == GW_MQTT_V5 ? 1u : 0u) + (uint32_t)len;
+    uint32_t hdr = 1u + (rem < 128u ? 1u : rem < 16384u ? 2u : rem < 2097152u ? 3u : 4u);
+    return hdr + rem;
+}
+
 static int bounded_publish(const char *topic, const char *data, int len, int qos, bool retain)
 {
+    uint32_t max = atomic_load(&s_max_packet);
+    uint32_t size = publish_packet_size(topic, len, qos);
+    if (max != 0 && size > max) {
+        /* issue #73: the broker would drop it (or the connection): never send it */
+        s_oversize++;
+        snprintf(s_oversize_topic, sizeof(s_oversize_topic), "%s", topic);
+        s_oversize_bytes = size;
+        int64_t now = esp_timer_get_time();
+        if (s_oversize_logged_us == 0 || now - s_oversize_logged_us >= 60000000LL) {
+            s_oversize_logged_us = now;
+            ESP_LOGE(TAG, "%s: %lu bytes, more than the broker's Maximum Packet Size of %lu "
+                          "(by %lu): not published (%lu so far)",
+                     topic, (unsigned long)size, (unsigned long)max, (unsigned long)(size - max),
+                     (unsigned long)s_oversize);
+        }
+        return PUBLISH_OVERSIZE;
+    }
     esp_transport_handle_t t =
         esp_mqtt_client_get_transport(s_client, s_cfg->mqtt.tls.enabled ? "mqtts" : "mqtt");
     int fd = t != NULL ? esp_transport_get_socket(t) : -1;
@@ -493,7 +533,7 @@ static int op_publish(void *ctx, const char *topic, const uint8_t *data, size_t 
 {
     (void)ctx;
     int r = bounded_publish(topic, (const char *)data, (int)len, qos, retain);
-    if (r < 0 && s_in_births) {
+    if (r == -1 && s_in_births) {   /* not PUBLISH_OVERSIZE: that one is not the connection */
         s_birth_failures++;
     }
     return r;
@@ -569,6 +609,10 @@ static void publish_status(void)
     s_st.spilled = s_sf.spilled;
     s_st.spill_dropped = s_spill.dropped;
     s_st.spill_failed = s_spill_on && !s_spill.ok;
+    s_st.max_packet = atomic_load(&s_max_packet);
+    s_st.oversize = s_oversize;
+    s_st.oversize_bytes = s_oversize_bytes;
+    snprintf(s_st.oversize_topic, sizeof(s_st.oversize_topic), "%s", s_oversize_topic);
     portEXIT_CRITICAL(&s_st_mux);
 }
 
@@ -758,8 +802,14 @@ static void start_births(void)
     int64_t t0 = esp_timer_get_time();
     s_in_births = true;
     s_birth_failures = 0;
+    uint32_t oversize_before = s_oversize;
     bool born = gw_node_session_up(s_node, s_bdseq);
     s_in_births = false;
+    if (!born && s_oversize != oversize_before) {
+        /* the NBIRTH itself is too large for this broker: no session can work here */
+        abort_session("NBIRTH larger than the broker's Maximum Packet Size");
+        return;
+    }
     if (!born) {
         ESP_LOGW(TAG, "NBIRTH not published (bdSeq=%u): the connection dropped, the session is "
                       "not up",
