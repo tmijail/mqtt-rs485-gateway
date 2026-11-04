@@ -13,8 +13,10 @@
 #include "esp_timer.h"
 #include "gw_auth.h"
 #include "gw_authlimit.h"
+#include "gw_fw.h"
 #include "gw_log.h"
 #include "gw_net.h"
+#include "gw_ota.h"
 #include "gw_status.h"
 #include "gw_storage.h"
 #include "gw_tagdb.h"
@@ -289,6 +291,111 @@ static esp_err_t restart_post(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ---------- FW-1: /api/firmware ---------- */
+
+static const char *const k_fw_phase[] = {"idle", "downloading", "rebooting", "failed", "trial",
+                                         "confirmed", "rolled_back"};
+
+static esp_err_t firmware_get(httpd_req_t *req)
+{
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
+    gw_fw_status_t f;
+    gw_fw_get_status(&f);
+    char text[2 * sizeof(f.text)], detail[2 * sizeof(f.detail)], run[2 * sizeof(f.running)],
+        other[2 * sizeof(f.other)], body[1100];
+    json_escape(text, sizeof(text), f.text);
+    json_escape(detail, sizeof(detail), f.detail);
+    json_escape(run, sizeof(run), f.running);
+    json_escape(other, sizeof(other), f.other);
+    snprintf(body, sizeof(body),
+             "{\"running\":\"%s\",\"slot\":\"%s\",\"other\":\"%s\",\"enabled\":%s,"
+             "\"phase\":\"%s\",\"state\":\"%s\",\"detail\":\"%s\",\"progress\":%u,"
+             "\"bytes\":%lu,\"total\":%lu,\"trial_left_s\":%lu}\n",
+             run, f.slot, other, f.enabled ? "true" : "false",
+             f.phase < sizeof(k_fw_phase) / sizeof(k_fw_phase[0]) ? k_fw_phase[f.phase] : "?", text,
+             detail, f.progress, (unsigned long)f.bytes, (unsigned long)f.total,
+             (unsigned long)f.trial_left_s);
+    return send_json(req, "200 OK", body);
+}
+
+/* {"url": "https://..."} (application/json): the gateway downloads it. Any other content
+ * type: the body is the image itself, written as it arrives. */
+static esp_err_t firmware_post(httpd_req_t *req)
+{
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
+    char ctype[48] = "";
+    httpd_req_get_hdr_value_str(req, "Content-Type", ctype, sizeof(ctype));
+    char why[160];
+    if (strncmp(ctype, "application/json", 16) == 0) {
+        size_t len;
+        const char *status;
+        char *body = req->content_len <= 1024 ? read_body(req, &len, &status) : NULL;
+        if (body == NULL) {
+            httpd_resp_set_hdr(req, "Connection", "close");
+            return send_error(req, "400 Bad Request", NULL, "se esperaba {\"url\": \"https://...\"}");
+        }
+        char url[GW_OTA_URL_MAX];
+        bool parsed = gw_ota_parse_request(body, len, url, why, sizeof(why));
+        heap_caps_free(body);
+        if (!parsed) {
+            return send_error(req, "400 Bad Request", NULL, why);
+        }
+        esp_err_t e = gw_fw_start_url(url, why, sizeof(why));
+        if (e != ESP_OK) {
+            return send_error(req, e == ESP_ERR_INVALID_ARG ? "400 Bad Request" : "409 Conflict",
+                              NULL, why);
+        }
+        ESP_LOGW(TAG, "firmware update from %s requested through the REST API", url);
+        return send_json(req, "202 Accepted", "{\"ok\":true,\"started\":true}\n");
+    }
+    if (req->content_len == 0) {
+        return send_error(req, "411 Length Required", NULL, "imagen sin Content-Length");
+    }
+    esp_err_t e = gw_fw_upload_begin(req->content_len, why, sizeof(why));
+    if (e != ESP_OK) {
+        httpd_resp_set_hdr(req, "Connection", "close");
+        return send_error(req, e == ESP_ERR_INVALID_SIZE ? "413 Content Too Large" : "409 Conflict",
+                          NULL, why);
+    }
+    ESP_LOGW(TAG, "firmware upload of %u bytes through the REST API", (unsigned)req->content_len);
+    const size_t chunk = 4096;
+    char *buf = heap_caps_malloc_prefer(chunk, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                        MALLOC_CAP_8BIT);
+    size_t got = 0;
+    int timeouts = 0;
+    bool ok = buf != NULL;
+    while (ok && got < req->content_len) {
+        size_t want = req->content_len - got < chunk ? req->content_len - got : chunk;
+        int r = httpd_req_recv(req, buf, want);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 3) {
+            continue;
+        }
+        if (r <= 0) {
+            break;
+        }
+        timeouts = 0;
+        if (gw_fw_upload_write(buf, (size_t)r, why, sizeof(why)) != ESP_OK) {
+            heap_caps_free(buf);
+            httpd_resp_set_hdr(req, "Connection", "close");
+            return send_error(req, "400 Bad Request", NULL, why);
+        }
+        got += (size_t)r;
+    }
+    heap_caps_free(buf);
+    e = gw_fw_upload_end(ok && got == req->content_len, why, sizeof(why));
+    if (e != ESP_OK) {
+        httpd_resp_set_hdr(req, "Connection", "close");
+        return send_error(req, !ok ? "503 Service Unavailable"
+                               : got < req->content_len ? "408 Request Timeout" : "400 Bad Request",
+                          NULL, why);
+    }
+    return send_json(req, "200 OK", "{\"ok\":true,\"restart\":true}\n");
+}
+
 /* ---------- / and /api/status ---------- */
 
 extern const char index_html_start[] asm("_binary_index_html_start");
@@ -546,7 +653,7 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
     hc.server_port = ctx->cfg->web.port;
     hc.task_priority = 3;
     hc.stack_size = 8192;            /* configuration validation runs in this task */
-    hc.max_uri_handlers = 12;
+    hc.max_uri_handlers = 14;
     hc.max_open_sockets = 4;
     hc.lru_purge_enable = true;
     const char *cert = NULL, *key = NULL;
@@ -585,6 +692,8 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         {.uri = "/api/config", .method = HTTP_PUT, .handler = config_put},
         {.uri = "/api/config", .method = HTTP_POST, .handler = config_put},
         {.uri = "/api/restart", .method = HTTP_POST, .handler = restart_post},
+        {.uri = "/api/firmware", .method = HTTP_GET, .handler = firmware_get},     /* FW-1 */
+        {.uri = "/api/firmware", .method = HTTP_POST, .handler = firmware_post},
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &uris[i]), TAG, "%s",

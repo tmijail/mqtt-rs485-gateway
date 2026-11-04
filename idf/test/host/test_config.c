@@ -283,6 +283,34 @@ static void test_syslog_section(void)
     ASSERT_REJECTED(parse(doc), "syslog.host: se esperaba un texto");
 }
 
+/* FW-1: "ota" section, optional; updates enabled by default. */
+static void test_ota_section(void)
+{
+    static const char base[] = "\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                               "\"edge_node_id\":\"E\"}";
+    char doc[512];
+    snprintf(doc, sizeof(doc), "{%s}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_TRUE(cfg.ota.enabled);
+    TEST_ASSERT_EQUAL_STRING("", cfg.ota.ca_file);
+    snprintf(doc, sizeof(doc), "{%s,\"ota\":{}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_TRUE(cfg.ota.enabled);
+    snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"enabled\":false,\"ca_file\":\"fw-ca.pem\"}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_FALSE(cfg.ota.enabled);
+    TEST_ASSERT_EQUAL_STRING("fw-ca.pem", cfg.ota.ca_file);
+    snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"ca_file\":\"../ca.pem\"}}", base);
+    ASSERT_REJECTED(parse(doc), "ota.ca_file: '../ca.pem' no es un nombre de archivo válido");
+    TEST_ASSERT_EQUAL_STRING("ota.ca_file", err.path);
+    snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"enabled\":1}}", base);
+    ASSERT_REJECTED(parse(doc), "ota.enabled: se esperaba true o false");
+    snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"url\":\"https://x/y\"}}", base);
+    ASSERT_REJECTED(parse(doc), "ota.url: clave desconocida");
+    snprintf(doc, sizeof(doc), "{%s,\"ota\":true}", base);
+    ASSERT_REJECTED(parse(doc), "ota: se esperaba un objeto JSON");
+}
+
 /* Document with "mqtt": {@p mqtt_body} and a minimal sparkplug section. */
 static bool parse_mqtt(const char *mqtt_body)
 {
@@ -1085,6 +1113,7 @@ int main(void)
     RUN_TEST(test_device_block_reads);
     RUN_TEST(test_scan_classes);
     RUN_TEST(test_modbus_tcp_section);
+    RUN_TEST(test_ota_section);
     RUN_TEST(test_local_io_section);
     RUN_TEST(test_section_errors);
     RUN_TEST(test_limits);

@@ -875,6 +875,60 @@ static void test_dbirth_not_published_leaves_the_device_unborn(void)
     TEST_ASSERT_TRUE(node.dev_born[0]);
 }
 
+/* FW-1: NBIRTH declares the update command and its state; an NCMD with the URL reaches the
+ * firmware_update op (only a non-empty string); state changes go out as NDATA. */
+static void test_firmware_update_metrics(void)
+{
+    gw_node_set_firmware_status(&node, "rolled back: 0.2.0", 0);   /* before the session */
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    gw_node_session_up(&node, 0);
+    msg(0);
+    int u = decoded_find_name(&dec, "Node Control/Firmware Update");
+    int st = decoded_find_name(&dec, "Firmware Update/State");
+    int pr = decoded_find_name(&dec, "Firmware Update/Progress");
+    TEST_ASSERT_TRUE(u >= 0 && st >= 0 && pr >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_STRING, dec.m[u].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_FW_UPDATE, dec.m[u].alias);
+    TEST_ASSERT_EQUAL_STRING("", dec.m[u].str);
+    TEST_ASSERT_EQUAL_STRING("rolled back: 0.2.0", dec.m[st].str);
+    TEST_ASSERT_EQUAL(SPB_DT_UINT32, dec.m[pr].datatype);
+    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[pr].num);
+
+    recorder_clear();
+    spb_metric_t m = {.name = "Node Control/Firmware Update", .datatype = SPB_DT_STRING,
+                      .v.str = "https://fw.example/gw-0.2.0.bin"};
+    send("spBv1.0/Plant1/NCMD/GW01", &m, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.fw_updates);
+    TEST_ASSERT_EQUAL_STRING("https://fw.example/gw-0.2.0.bin", g_rec.fw_url);
+    TEST_ASSERT_EQUAL(0, g_rec.count);          /* the result comes from the update itself */
+    /* by alias, but not a string / empty: discarded */
+    spb_metric_t b = {.alias = GW_ALIAS_FW_UPDATE, .datatype = SPB_DT_BOOLEAN, .v.num = 1};
+    send("spBv1.0/Plant1/NCMD/GW01", &b, 1);
+    spb_metric_t e = {.alias = GW_ALIAS_FW_UPDATE, .datatype = SPB_DT_STRING, .v.str = ""};
+    send("spBv1.0/Plant1/NCMD/GW01", &e, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.fw_updates);
+
+    gw_node_set_firmware_status(&node, "downloading", 10);
+    msg(0);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", g_rec.msgs[0].topic);
+    TEST_ASSERT_EQUAL(2, dec.count);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_FW_STATE, dec.m[0].alias);
+    TEST_ASSERT_EQUAL_STRING("downloading", dec.m[0].str);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_FW_PROGRESS, dec.m[1].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(10, dec.m[1].num);
+    gw_node_set_firmware_status(&node, "downloading", 10);   /* unchanged: nothing */
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    gw_node_set_firmware_status(&node, "downloading", 20);   /* only what changed */
+    msg(1);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_FW_PROGRESS, dec.m[0].alias);
+    /* longer than the codec's string limit: truncated, still published */
+    gw_node_set_firmware_status(&node, "failed: a very long reason that does not fit in sixty-three "
+                                       "characters at all", 20);
+    msg(2);
+    TEST_ASSERT_EQUAL(63, strlen(dec.m[0].str));
+}
+
 /* Issue #76: a DBIRTH too large for the broker is not rebuilt and rejected on every change of
  * its device: one attempt per session (and per rebirth), none in between. */
 static void test_dbirth_too_large_not_retried_on_every_change(void)
@@ -997,6 +1051,7 @@ int main(void)
     RUN_TEST(test_session_up_needs_the_nbirth);
     RUN_TEST(test_dbirth_not_published_leaves_the_device_unborn);
     RUN_TEST(test_dbirth_too_large_not_retried_on_every_change);
+    RUN_TEST(test_firmware_update_metrics);
     RUN_TEST(test_store_and_forward_counters);
     return UNITY_END();
 }

@@ -39,6 +39,9 @@ td input,td select{width:100%;margin:0;padding:3px 4px}
  <div class="card"><h2>Red y MQTT</h2><div id="st-net"></div></div>
  <div class="card"><h2>Dispositivos Modbus</h2><div id="st-mb" class="mut">sin dispositivos</div></div>
  <div class="card"><h2>E/S locales</h2><div id="st-io"></div></div>
+ <div class="card"><h2>Firmware</h2><div id="st-fw" class="mut"></div>
+  <div class="row"><input id="fw-url" placeholder="https://servidor/rs485_spb_gateway.bin" size="40"><button id="fw-get">Descargar e instalar</button></div>
+  <div class="row"><label class="row" style="flex-direction:row">Subir imagen <input type="file" id="fw-file" accept=".bin,application/octet-stream"></label></div></div>
 </section>
 
 <section id="tab-config" class="hidden">
@@ -153,7 +156,11 @@ async function poll(){
  $("#st-mb").innerHTML=s.devices.length?`<table><tr><th>Dispositivo</th><th>Unit</th><th>Estado</th><th>Ciclos / fallidos</th><th>OK / timeout / CRC / trama / excepción</th><th>Valores</th></tr>${s.devices.map(d=>`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td>${yes(d.online,"en línea","fuera de línea")}</td><td>${d.cycles} / ${d.failed}</td><td>${d.ok} / ${d.timeout} / ${d.crc} / ${d.frame} / ${d.exception}</td><td>${d.tags.map(t=>`${esc(t.name)}=${t.valid?t.value:"—"}`).join(", ")}</td></tr>`).join("")}</table>`:"sin dispositivos";
  const bits=(v)=>[...Array(8)].map((_,i)=>`<span class="${v>>i&1?"ok":"mut"}">${i+1}</span>`).join(" ");
  $("#st-io").innerHTML=`DI: ${bits(s.io.di)}<br>DO: ${bits(s.io.do)}`;
+ const f=await api("GET","/api/firmware");if(f.status!==200||!f.json)return;const w=f.json;
+ $("#st-fw").innerHTML=`${esc(w.running)} en ${esc(w.slot)} · otra partición: ${esc(w.other||"vacía")}${w.enabled?"":" · actualizaciones deshabilitadas (ota.enabled)"}<br>${esc(w.detail)}${w.phase==="downloading"?` (${w.progress} %)`:w.phase==="trial"?` (${w.trial_left_s} s)`:""}`;
 }
+$("#fw-get").onclick=async()=>{const u=$("#fw-url").value.trim();if(!u)return;const r=await api("POST","/api/firmware",JSON.stringify({url:u}));msg(r.status===202?"Descarga iniciada: el equipo se reinicia al terminar.":`No se inició (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};
+$("#fw-file").onchange=async e=>{const f=e.target.files[0];if(!f||!confirm(`¿Instalar ${f.name} (${f.size} B) y reiniciar?`))return;msg("Subiendo…");const r=await fetch("/api/firmware",{method:"POST",headers:{"Content-Type":"application/octet-stream"},body:f});let j=null;try{j=await r.json()}catch(x){}msg(r.status===200?"Imagen instalada: reiniciando en la nueva versión.":`Rechazada (${r.status}): ${(j||{}).error||""}`,r.status===200?"ok":"bad")};
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>show(b.dataset.tab));
 $("#b-check").onclick=()=>put(true);$("#b-save").onclick=()=>put(false);
 $("#b-export").onclick=()=>{location.href="/api/config?download=1"};

@@ -272,6 +272,13 @@ static void rec_reboot(void *ctx)
     g_rec.reboots++;
 }
 
+static void rec_firmware_update(void *ctx, const char *url)
+{
+    (void)ctx;
+    g_rec.fw_updates++;
+    snprintf(g_rec.fw_url, sizeof(g_rec.fw_url), "%s", url);
+}
+
 gw_node_ops_t recorder_ops(void)
 {
     gw_node_ops_t ops = {
@@ -281,6 +288,7 @@ gw_node_ops_t recorder_ops(void)
         .write_room = rec_write_room,
         .set_scan_rate = rec_set_scan_rate,
         .reboot = rec_reboot,
+        .firmware_update = rec_firmware_update,
         .ctx = NULL,
     };
     return ops;

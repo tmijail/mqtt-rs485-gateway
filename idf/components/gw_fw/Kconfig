@@ -1,0 +1,41 @@
+menu "Gateway: firmware updates (FW-1)"
+
+    config GW_FW_CONFIRM_TIMEOUT_S
+        int "Seconds a new firmware has to reach its first Sparkplug session"
+        range 10 86400
+        default 600
+        help
+            A new image boots on trial. Its first Sparkplug session (NBIRTH and every
+            DBIRTH published) confirms it; without one within this time it is rolled back
+            to the previous image, whatever the cause (also a broker that is down: the
+            update can then be repeated). A reset during the trial (crash, watchdog,
+            power cut) makes the bootloader roll it back, and an image that rejects the
+            stored configuration is rolled back at once.
+
+    config GW_FW_HTTP_TIMEOUT_MS
+        int "Network timeout of a firmware download (ms)"
+        range 1000 60000
+        default 10000
+
+    config GW_FW_TASK_STACK
+        int "Stack of the download task (bytes)"
+        range 6144 16384
+        default 8192
+        help
+            The task exists only while a download runs (TLS handshake included).
+
+    config GW_FW_TASK_PRIORITY
+        int "Priority of the download task"
+        range 1 7
+        default 2
+
+    config GW_FW_PARK_OTHER_CORE
+        bool "Park the other core while an image is verified (QEMU only)"
+        default n
+        help
+            Espressif's QEMU does not model the ESP32-S3 cache freeze that flash mappings
+            use: code the other core runs from flash during esp_image_verify() makes QEMU
+            abort. With this option a high-priority task spins in IRAM on the other core
+            for those calls. Not needed (and not wanted) on the chip.
+
+endmenu

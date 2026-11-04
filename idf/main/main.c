@@ -34,6 +34,7 @@
 #include "gw_buzzer.h"
 #include "gw_config.h"
 #include "gw_edge.h"
+#include "gw_fw.h"
 #include "gw_io.h"
 #include "gw_localio.h"
 #include "gw_log.h"
@@ -228,6 +229,15 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
     gw_status_set(mode == GW_WEB_COMMISSIONING ? GW_ST_COMMISSIONING : GW_ST_CFG_ERROR, true);
     start_shell(NULL, source, false);
     gw_storage_recovery_config(s_cfg);
+    /* FW-1: web uploads stay possible (the way out of a bad configuration); a new image on
+     * trial that rejects the configuration goes back to the previous one at once */
+    const gw_fw_hooks_t fw_hooks = {.changed = NULL, .restart = restart_soon};
+    gw_fw_init(s_cfg, true, &fw_hooks);
+    if (mode == GW_WEB_COMMISSIONING) {
+        gw_fw_commissioning();
+    } else {
+        gw_fw_config_rejected();
+    }
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     const gw_net_callbacks_t net_cb = {
@@ -347,6 +357,10 @@ void app_main(void)
     if (gw_log_start(s_cfg) != ESP_OK) {
         ESP_LOGE(TAG, "remote syslog unavailable");
     }
+    /* FW-1: before anything can judge a new image (its trial starts now) */
+    const gw_fw_hooks_t fw_hooks = {.changed = gw_edge_notify_firmware,
+                                    .restart = gw_edge_request_restart};
+    gw_fw_init(s_cfg, s_cfg->ota.enabled, &fw_hooks);
     ESP_ERROR_CHECK(gw_edge_start(s_cfg, &s_info));
     gw_shell_mark_up(GW_SHELL_UP_EDGE);
     if (gw_io_start(s_cfg, gw_edge_notify_io) != ESP_OK) {

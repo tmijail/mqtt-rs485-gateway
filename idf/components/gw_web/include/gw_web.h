@@ -9,6 +9,9 @@
  *   POST /api/config            same as PUT (for browsers and simple clients)
  *        ?dry_run=1             validate only
  *   POST /api/restart           orderly restart
+ *   GET  /api/firmware          FW-1: running version, slot, update state and progress
+ *   POST /api/firmware          FW-1: {"url": "https://..."} (application/json) downloads an
+ *                               image; any other content type uploads the body as the image
  *
  * Every request needs HTTP Basic auth: the configured web.username and web.password, or,
  * while no web password is set, user "admin" with the device's commissioning password.

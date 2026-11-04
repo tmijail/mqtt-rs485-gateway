@@ -39,3 +39,21 @@ Texto propuesto (en inglés):
 > **Steps:** connect with esp-tls (for example through esp-mqtt) to a TLS 1.3-only server whose certificate is expired, or carries another name; read the error handle after the failure.
 >
 > **Expected:** the verification flags of the failed handshake, for example by calling `mbedtls_ssl_get_verify_result()` regardless of the peer certificate, or by recording them in a verify callback set by esp-tls.
+
+## 3. espressif/qemu: el *cache freeze* del ESP32-S3 no está modelado (aborta con "Bad ram pointer")
+
+- **Repositorio:** https://github.com/espressif/qemu.
+- **Versión:** `esp_develop_9.2.2_20260417` (la que instala `idf_tools.py install qemu-xtensa` con IDF v6.1), máquina `esp32s3`.
+- **Arreglo provisorio aquí:** `CONFIG_GW_FW_PARK_OTHER_CORE` (solo en `sdkconfig.qemu`): mientras se verifica una imagen OTA, una tarea de prioridad alta deja al otro núcleo en `waiti` dentro de IRAM (`idf/components/gw_fw/gw_fw.c`, FW-1).
+
+Texto propuesto (en inglés):
+
+> **Title:** esp32s3: code fetched by the other core during a cache freeze aborts QEMU ("Bad ram pointer")
+>
+> **Version:** esp_develop_9.2.2_20260417, `-M esp32s3`, ESP-IDF v6.1
+>
+> On the ESP32-S3, `esp_mmu_map()`/`esp_mmu_unmap()` freeze the caches (`esp_cache_freeze_caches_disable_interrupts()`, `SOC_CACHE_FREEZE_SUPPORTED`) instead of stalling the other core: on the chip, a cache miss of the other core waits until the unfreeze. In QEMU, when the other core executes code from flash during that window, QEMU aborts with `qemu-system-xtensa: Bad ram pointer 0x42090f70` (the address is the code being executed, here `snprintf`). If the other core spins in IRAM instead, the freeze never completes (the caller hangs); only an other core halted in `waiti` lets it finish.
+>
+> **Steps:** an app with a task on core 1 that loops calling `snprintf()` (code in flash); on core 0, write an app image into the passive OTA slot, then call `esp_ota_end()` and `esp_ota_set_boot_partition()` (each maps every segment with `esp_image_verify()`). QEMU aborts within a few rounds (1 to 3 here); without the core 1 task it never does.
+>
+> **Expected:** accesses of the other core during a freeze wait until the unfreeze, as on the chip.

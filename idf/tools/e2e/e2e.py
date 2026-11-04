@@ -1375,6 +1375,224 @@ def run_https(args, work):
 
 # ---------------------------------------------------------------- scenario
 
+# ---------------------------------------------------------------- FW-1 firmware updates
+
+APP_DESC_MAGIC = 0xABCD5432
+
+
+def fw_image(src, version, dst, corrupt=False):
+    """Copy of the app image @src with esp_app_desc_t.version = @version: checksum and the
+    appended SHA-256 recomputed so the bootloader and esp_ota_end() accept it (@corrupt: the
+    checksum is left stale, so the image must be rejected). @src must be unsigned."""
+    b = bytearray(pathlib.Path(src).read_bytes())
+    if b[0] != 0xE9:
+        raise SystemExit(f"{src}: not an ESP app image")
+    nseg, hashed = b[1], b[23] == 1
+    pos = 24
+    first = pos + 8
+    for _ in range(nseg):
+        pos += 8 + struct.unpack_from("<I", b, pos + 4)[0]
+    csum = pos + (15 - pos % 16)
+    if struct.unpack_from("<I", b, first)[0] != APP_DESC_MAGIC:
+        raise SystemExit(f"{src}: no app description in the first segment")
+    vo = first + 16
+    new = version.encode().ljust(32, b"\0")
+    x = 0
+    for o, n in zip(b[vo:vo + 32], new):
+        x ^= o ^ n
+    b[vo:vo + 32] = new
+    if not corrupt:
+        b[csum] ^= x
+    end = csum + 1
+    if hashed:
+        b[end:end + 32] = hashlib.sha256(bytes(b[:end])).digest()
+        end += 32
+    pathlib.Path(dst).write_bytes(bytes(b[:end]))
+    return dst
+
+
+class FirmwareServer:
+    """HTTPS file server for the update images (FW-1), with the harness' CA (server.crt is for
+    IP 10.0.2.2, the host as QEMU's slirp sees it)."""
+
+    def __init__(self, port, root, cert, key):
+        import http.server
+        root = str(root)
+
+        class Handler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, directory=root, **kw)
+
+            def log_message(self, fmt, *a):
+                FirmwareServer.log.append(fmt % a)
+
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(str(cert), str(key))
+        self.srv.socket = ctx.wrap_socket(self.srv.socket, server_side=True)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    log = []
+
+    def close(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+def fw_state(p):
+    m = metric(p, alias=41)
+    return m.string_value if m is not None else None
+
+
+def run_ota(args, work):
+    """FW-1 in one gateway (GW30) with its own broker: updates by NCMD (HTTPS download with the
+    CA from ota.ca_file) and by web upload; bad images rejected without a restart; a new image
+    on trial confirmed by its first session; rolled back when no session comes up before the
+    timeout (broker stopped) and when it resets during its trial (panic)."""
+    node, port, fw_port = "GW30", MQTT_PORT + 16, MQTT_PORT + 17
+    pki = make_pki(work)
+    fwdir = work / "fw"
+    fwdir.mkdir(exist_ok=True)
+    app = pathlib.Path(args.elf).with_suffix(".bin")
+    unsigned = pathlib.Path(args.elf).with_name(app.stem + "-unsigned.bin")
+    src = unsigned if unsigned.exists() else app
+    v1 = None
+    fw_image(src, "e2e-v2", fwdir / "v2.bin")
+    fw_image(src, "e2e-v3", fwdir / "v3.bin")
+    fw_image(src, "e2e-bad", fwdir / "bad.bin", corrupt=True)
+    images = {k: fwdir / f"{k}.bin" for k in ("v2", "v3", "bad")}
+    server = FirmwareServer(fw_port, fwdir, pki["server.crt"], pki["server.key"])
+    conf = work / "broker-ota.conf"
+    conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\n")
+    broker = start_broker(conf, work / "mosquitto-ota.log")
+    obs = Observer(port)
+    cfg = node_config(node, port=port)
+    cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    cfg["ota"] = {"ca_file": "ca.pem"}
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "ota", cfg, {"ca.pem": pki["ca.pem"].read_bytes()})
+    nbirth_t, ndata_t, ncmd_t = f"{T}/NBIRTH/{node}", f"{T}/NDATA/{node}", f"{T}/NCMD/{node}"
+    try:
+        nb = obs.wait(nbirth_t, 40)
+        if not check("FW-1 NBIRTH declares Node Control/Firmware Update (String) and the update's "
+                     "state and progress", nb and metric(nb[2], alias=40) is not None
+                     and metric(nb[2], alias=40).datatype == 12 and fw_state(nb[2]) == "idle"
+                     and metric(nb[2], alias=42) is not None,
+                     f"state {fw_state(nb[2])!r}" if nb else "no NBIRTH"):
+            return
+        v1 = metric(nb[2], name="Node Info/Firmware").string_value
+        gw.wait_log(r"edge: time synchronised", 10, t0)   # the image server's certificate dates
+
+        def update(url):
+            obs.publish_cmd(ncmd_t, [{"name": "Node Control/Firmware Update", "datatype": 12,
+                                      "string_value": url}])
+
+        def states(since):
+            return [fw_state(m[2]) for m in CAPTURE
+                    if m[0] >= since and m[1] in (ndata_t, nbirth_t) and fw_state(m[2]) is not None]
+
+        # refused before any download: plain HTTP; an image with a stale checksum: rejected after
+        # the download, no restart
+        asked = time.monotonic()
+        update(f"http://10.0.2.2:{fw_port}/v2.bin")
+        refused = obs.wait(ndata_t, 10, lambda p: (fw_state(p) or "").startswith("refused: only https"))
+        update(f"https://10.0.2.2:{fw_port}/bad.bin")
+        bad = obs.wait(ndata_t, 120, lambda p: (fw_state(p) or "").startswith("failed: image e2e-bad "
+                                                                             "rejected"))
+        time.sleep(2)
+        still = not any(m[1] == f"{T}/NDEATH/{node}" for m in CAPTURE if m[0] >= asked)
+        check("FW-1 bad updates refused without a restart: http:// refused, an image that fails "
+              "verification rejected after the download (the running firmware stays)",
+              refused and bad and still,
+              " | ".join(dict.fromkeys(states(asked))) + f"; restarted: {not still}")
+
+        # NCMD with the URL: download with progress, restart into it, trial, confirmed
+        asked = time.monotonic()
+        update(f"https://10.0.2.2:{fw_port}/v2.bin")
+        nb2 = obs.wait(nbirth_t, 240, lambda p: metric(p, name="Node Info/Firmware").string_value
+                       == "e2e-v2")
+        conf2 = obs.wait(ndata_t, 20, lambda p: fw_state(p) == "confirmed: e2e-v2")
+        seen = states(asked)
+        prog = [int(metric(m[2], alias=42).long_value or metric(m[2], alias=42).int_value)
+                for m in CAPTURE if m[0] >= asked and m[1] == ndata_t and metric(m[2], alias=42)]
+        took = [ln for ln in gw.find(r"fw: downloading firmware e2e-v2", asked)]
+        check("FW-1 update by NCMD over HTTPS (CA from ota.ca_file): progress as NDATA, restart into "
+              "the new image, on trial until its first session, then confirmed",
+              nb2 and conf2 and "rebooting into e2e-v2" in seen and fw_state(nb2[2]) ==
+              "on trial: e2e-v2" and prog and max(prog) == 100 and len(prog) >= 5 and took,
+              f"states {list(dict.fromkeys(seen))}; progress {prog[:12]}; "
+              f"{nb2[0] - asked:.1f} s to the new NBIRTH" if nb2 else f"states {seen}")
+        _, h = gw.shell("status", [r"^ota\s+e2e-v2 in ota_1, other slot \S+ \| firmware e2e-v2 "
+                                   r"confirmed"])
+        # a power cut after the confirmation: still the new image
+        gw.kill()
+        obs.drain()
+        gw = Gateway(args, work / "uart0-ota.log", gw.flash)
+        gw.start()
+        nb3 = obs.wait(nbirth_t, 40)
+        check("FW-1 a confirmed image stays after a power cut (shell shows the slots)",
+              nb3 and metric(nb3[2], name="Node Info/Firmware").string_value == "e2e-v2"
+              and fw_state(nb3[2]) == "idle" and list(h.values())[0],
+              f"NBIRTH firmware {metric(nb3[2], name='Node Info/Firmware').string_value!r}, state "
+              f"{fw_state(nb3[2])!r}" if nb3 else "no NBIRTH")
+
+        # web upload of v3, then the broker goes away before the new image reaches a session:
+        # rolled back when the trial times out
+        timeout_s = sdkconfig_int(args.sdkconfig, "GW_FW_CONFIRM_TIMEOUT_S")
+        gw.wait_log(r"edge: time synchronised", 10, nb3[0] - 5 if nb3 else t0)
+        asked = time.monotonic()
+        st, _, body = http("POST", "/api/firmware", images["v3"].read_bytes(),
+                           headers={"Content-Type": "application/octet-stream"}, timeout=120)
+        death = obs.wait(f"{T}/NDEATH/{node}", 20)
+        broker.terminate()
+        broker.wait()
+        obs.close()
+        trial = gw.wait_log(r"fw: firmware e2e-v3 \(ota_0\) on trial", 30, asked)
+        back = gw.wait_log(r"fw: firmware e2e-v3 rejected \(no Sparkplug session before the timeout\)",
+                           timeout_s + 30, asked)
+        broker = start_broker(conf, work / "mosquitto-ota.log")
+        obs = Observer(port)
+        nb4 = obs.wait(nbirth_t, 60)
+        check(f"FW-1 web upload; a new image without a Sparkplug session for {timeout_s} s (broker "
+              "down) goes back to the previous one, which says so",
+              st == 200 and death and trial and back and nb4
+              and metric(nb4[2], name="Node Info/Firmware").string_value == "e2e-v2"
+              and fw_state(nb4[2]) == "rolled back from e2e-v3",
+              f"POST {st} {body[:60]!r}; on trial at {trial - asked:.1f} s, rolled back at "
+              f"{back - trial:.1f} s; NBIRTH {fw_state(nb4[2]) if nb4 else None!r}"
+              if trial and back else f"POST {st} {body[:80]!r}; trial {trial}, back {back}")
+
+        # NCMD v3 again; a reset during the trial (panic): the bootloader goes back
+        gw.wait_log(r"edge: time synchronised", 10, nb4[0] - 5 if nb4 else t0)
+        asked = time.monotonic()
+        update(f"https://10.0.2.2:{fw_port}/v3.bin")
+        death = obs.wait(f"{T}/NDEATH/{node}", 240)
+        broker.terminate()
+        broker.wait()
+        obs.close()
+        trial = gw.wait_log(r"fw: firmware e2e-v3 \(ota_0\) on trial", 30, asked)
+        gw.console("panic")
+        back = gw.wait_log(r"fw: firmware e2e-v3 \(ota_0\) was rejected or did not confirm itself; "
+                           r"running e2e-v2 again", 60, trial or asked)
+        broker = start_broker(conf, work / "mosquitto-ota.log")
+        obs = Observer(port)
+        nb5 = obs.wait(nbirth_t, 60)
+        check("FW-1 a reset during the trial (panic) makes the bootloader boot the previous image",
+              death and trial and back and nb5
+              and metric(nb5[2], name="Node Info/Firmware").string_value == "e2e-v2"
+              and metric(nb5[2], name="Node Info/Reset Reason").string_value == "panic"
+              and fw_state(nb5[2]) == "rolled back from e2e-v3",
+              f"NBIRTH firmware {metric(nb5[2], name='Node Info/Firmware').string_value!r}, reset "
+              f"{metric(nb5[2], name='Node Info/Reset Reason').string_value!r}, state "
+              f"{fw_state(nb5[2])!r}" if nb5 else f"trial {trial}, back {back}")
+    finally:
+        gw.kill()
+        obs.close()
+        server.close()
+        broker.terminate()
+        broker.wait()
+
+
 def start_broker(conf, log):
     # A renamed copy of the binary: other jobs on a shared host that clean up with
     # `pkill mosquitto` must not take this broker down in the middle of the scenario.
@@ -1410,7 +1628,7 @@ def main():
     ap.add_argument("--https-port", type=int, default=HTTPS_PORT)
     ap.add_argument("--only", default="",
                     help="comma-separated scenarios to run (failsafe,network,web,reset,tls,failover,"
-                         "mqtt5,phost,sf,https,slow,main); "
+                         "mqtt5,phost,sf,https,ota,slow,main); "
                          "default all")
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
@@ -1467,6 +1685,8 @@ def main():
             run_store_forward_spill(args, work, slave)
         if want("https"):
             run_https(args, work)
+        if want("ota"):
+            run_ota(args, work)
         if want("slow"):
             run_slow_link(args, work, sdkconfig_int(args.sdkconfig, "GW_MQTT_PUBLISH_BUDGET_MS"))
         if want("main"):

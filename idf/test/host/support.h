@@ -72,6 +72,8 @@ typedef struct {
     int too_large;               /* publishes answered GW_NODE_PUBLISH_TOO_LARGE */
     int scan_rate_calls;
     uint32_t scan_rate;
+    int fw_updates;              /* FW-1: firmware_update calls */
+    char fw_url[256];
 } recorder_t;
 
 extern recorder_t g_rec;

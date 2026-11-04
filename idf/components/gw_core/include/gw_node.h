@@ -12,7 +12,9 @@
  *   4 Node Info/Firmware, 5 Node Info/Hardware, 6 Node Info/Reset Reason,
  *   7 Node Control/Scan Rate,
  *   10..17 DI/1..DI/8, 20..27 DO/1..DO/8, 30..37 Counter/1..Counter/8 (IO-4, UInt64 pulse
- *   counters of the DIs), 100 + n device tag with global index n.
+ *   counters of the DIs), 40 Node Control/Firmware Update (FW-1, String URL), 41 Firmware
+ *   Update/State (String), 42 Firmware Update/Progress (UInt32 %), 100 + n device tag with
+ *   global index n.
  *
  * Store & forward (SPB-14, optional): with a gw_sf_t attached, changes that happen while the
  * node is not online (no session, or the primary host offline) are evaluated with the same
@@ -53,10 +55,14 @@ extern "C" {
 #define GW_ALIAS_DI_BASE   10u
 #define GW_ALIAS_DO_BASE   20u
 #define GW_ALIAS_COUNT_BASE 30u
+#define GW_ALIAS_FW_UPDATE 40u   /* FW-1: NCMD with the image URL */
+#define GW_ALIAS_FW_STATE  41u
+#define GW_ALIAS_FW_PROGRESS 42u
 #define GW_ALIAS_TAG_BASE  100u
 
 #define GW_NODE_IO_COUNT        8
-#define GW_NODE_BIRTH_METRICS   (7 + 3 * GW_NODE_IO_COUNT)
+#define GW_NODE_BIRTH_METRICS   (10 + 3 * GW_NODE_IO_COUNT)
+#define GW_NODE_FW_STATE_MAX    64   /* "Firmware Update/State" text (the codec's string limit) */
 #define GW_SPB_PAYLOAD_MAX      6144   /* > worst-case DBIRTH: 64 tags with 39-char names */
 #define GW_TOPIC_MAX            160
 #define GW_NODE_HIST_RECS       (2 * GW_MAX_TAGS_PER_DEVICE)   /* records per historical message */
@@ -81,6 +87,9 @@ typedef struct {
     void (*set_scan_rate)(void *ctx, uint32_t ms);
     /** Restart the gateway (called after NDEATH has been published). */
     void (*reboot)(void *ctx);
+    /** FW-1: start a firmware update from @p url (NCMD "Node Control/Firmware Update"); the
+     *  result comes back through gw_node_set_firmware_status(). NULL = not supported. */
+    void (*firmware_update)(void *ctx, const char *url);
     void *ctx;
 } gw_node_ops_t;
 
@@ -109,6 +118,8 @@ typedef struct {
     uint64_t count_reported[GW_NODE_IO_COUNT];   /* IO-4 */
     uint32_t scan_rate_ms;             /* SPB-15: current override, 0 = per-device poll_ms */
     bool do_unknown_reported;          /* DOs last published as null (expander not answering) */
+    char fw_state[GW_NODE_FW_STATE_MAX];   /* FW-1: "Firmware Update/State" */
+    uint32_t fw_progress;                  /* FW-1: "Firmware Update/Progress" (%) */
 
     /* Scratch, statically sized (REL-2). */
     gw_tag_value_t vals[GW_MAX_TAGS_PER_DEVICE];
@@ -170,6 +181,10 @@ void gw_node_set_store(gw_node_t *n, gw_sf_t *sf);
 /** SPB-14: publish up to @p max_msgs messages of stored history (only while online). Returns
  *  the samples still stored. */
 size_t gw_node_flush_history(gw_node_t *n, size_t max_msgs);
+
+/** FW-1: the update's state and progress, in the next NBIRTH and, when online and changed,
+ *  in an NDATA now. */
+void gw_node_set_firmware_status(gw_node_t *n, const char *state, uint32_t progress);
 
 /** Re-publish NBIRTH and every DBIRTH with seq restarted (SPB-9). False if the NBIRTH could
  *  not be published (then no DBIRTH is sent). */

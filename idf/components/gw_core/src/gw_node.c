@@ -2,6 +2,7 @@
 
 #include <inttypes.h>
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "gw_conv.h"
@@ -23,6 +24,9 @@ static const char *const k_count_names[GW_NODE_IO_COUNT] = {
 #define NAME_HARDWARE "Node Info/Hardware"
 #define NAME_RESET_REASON "Node Info/Reset Reason"
 #define NAME_SCAN_RATE "Node Control/Scan Rate"
+#define NAME_FW_UPDATE "Node Control/Firmware Update"
+#define NAME_FW_STATE "Firmware Update/State"
+#define NAME_FW_PROGRESS "Firmware Update/Progress"
 
 /* ---------- helpers ---------- */
 
@@ -33,6 +37,7 @@ void gw_node_init(gw_node_t *n, const gw_config_t *cfg, const gw_node_ops_t *ops
     n->cfg = cfg;
     n->ops = *ops;
     n->info = *info;
+    strcpy(n->fw_state, "idle");
 }
 
 bool gw_node_topic(const gw_node_t *n, const char *type, const char *device, char *out, size_t cap)
@@ -179,6 +184,10 @@ static bool publish_nbirth(gw_node_t *n)
         n->info.reset_reason;
     metric(n, i++, NAME_SCAN_RATE, GW_ALIAS_SCAN_RATE, SPB_DT_UINT32, now)->v.num =
         n->scan_rate_ms;
+    metric(n, i++, NAME_FW_UPDATE, GW_ALIAS_FW_UPDATE, SPB_DT_STRING, now)->v.str = "";
+    metric(n, i++, NAME_FW_STATE, GW_ALIAS_FW_STATE, SPB_DT_STRING, now)->v.str = n->fw_state;
+    metric(n, i++, NAME_FW_PROGRESS, GW_ALIAS_FW_PROGRESS, SPB_DT_UINT32, now)->v.num =
+        n->fw_progress;
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         metric(n, i++, k_di_names[k], GW_ALIAS_DI_BASE + k, SPB_DT_BOOLEAN,
                io.di_ts_ms ? io.di_ts_ms : now)
@@ -225,6 +234,31 @@ static void publish_ddeath(gw_node_t *n, uint16_t dev)
 {
     publish(n, "DDEATH", n->cfg->devices[dev].name, 0, 0);
     n->dev_born[dev] = false;
+}
+
+void gw_node_set_firmware_status(gw_node_t *n, const char *state, uint32_t progress)
+{
+    char s[GW_NODE_FW_STATE_MAX];
+    snprintf(s, sizeof(s), "%s", state);
+    bool st = strcmp(s, n->fw_state) != 0;
+    bool pr = progress != n->fw_progress;
+    if (!st && !pr) {
+        return;
+    }
+    memcpy(n->fw_state, s, sizeof(s));
+    n->fw_progress = progress;
+    if (!n->online) {
+        return;   /* the next NBIRTH carries it */
+    }
+    uint64_t now = gw_port_time_ms();
+    size_t i = 0;
+    if (st) {
+        metric(n, i++, NULL, GW_ALIAS_FW_STATE, SPB_DT_STRING, now)->v.str = n->fw_state;
+    }
+    if (pr) {
+        metric(n, i++, NULL, GW_ALIAS_FW_PROGRESS, SPB_DT_UINT32, now)->v.num = n->fw_progress;
+    }
+    publish(n, "NDATA", NULL, i, 0);
 }
 
 bool gw_node_rebirth(gw_node_t *n)
@@ -554,6 +588,18 @@ static bool on_ncmd_metric(void *ctx, const spb_rx_metric_t *m)
     }
     if (by_name ? strcmp(m->name, NAME_REBOOT) == 0 : m->alias == GW_ALIAS_REBOOT) {
         n->cmd_reboot |= rx_true(m);
+        return true;
+    }
+    if (by_name ? strcmp(m->name, NAME_FW_UPDATE) == 0 : m->alias == GW_ALIAS_FW_UPDATE) {
+        /* FW-1: the payload decoded in full before this pass: the URL is complete */
+        if (m->is_null || m->kind != SPB_VAL_STRING || m->v.s[0] == '\0') {
+            log_discard("NCMD", m, "Firmware Update needs the image URL as a string");
+        } else if (n->ops.firmware_update == NULL) {
+            log_discard("NCMD", m, "firmware updates not supported");
+        } else {
+            GW_LOGW(TAG, "NCMD Firmware Update from %s", m->v.s);
+            n->ops.firmware_update(n->ops.ctx, m->v.s);
+        }
         return true;
     }
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {

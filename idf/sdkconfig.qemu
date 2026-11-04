@@ -22,3 +22,8 @@ CONFIG_ESP_SYSTEM_PANIC_REBOOT_DELAY_SECONDS=1
 CONFIG_GW_MQTT_PUBLISH_BUDGET_MS=2000
 # SPB-14: QEMU has no SDMMC: the store & forward spill goes to a LittleFS directory instead
 CONFIG_GW_SF_SPILL_LITTLEFS=y
+# FW-1: the E2E waits for a new image's trial to time out (rollback without a Sparkplug session)
+CONFIG_GW_FW_CONFIRM_TIMEOUT_S=30
+# FW-1: QEMU does not model the S3 cache freeze of a flash mapping; code fetched by the other
+# core while an OTA image is verified makes it abort ("Bad ram pointer"): park that core
+CONFIG_GW_FW_PARK_OTHER_CORE=y

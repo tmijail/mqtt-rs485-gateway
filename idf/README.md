@@ -18,7 +18,7 @@ Firmware del MVP (`docs/SPEC.md` §5) para la Waveshare **ESP32-S3-POE-ETH-8DI-8
 
 | Componente | Responsabilidad | Depende de IDF |
 |---|---|---|
-| `gw_core` | **Lógica pura en C, sin IDF; se prueba en el host:**<br>• `gw_config`: parseo y validación JSON §6.<br>• `gw_dout`: secuencia de arranque del TCA9554 y polaridad de las E/S.<br>• `mb_rtu`: CRC y tramas FC01–06/15/16.<br>• `mb_master`: transacciones, t3,5, timeout y reintentos.<br>• `gw_conv`: tipos (hasta 64 bits, `string` y bits de registro), escala, orden de bytes y datatype Sparkplug.<br>• `gw_mbap`: tramas Modbus TCP ↔ RTU de la pasarela (MB-15).<br>• `gw_plan`: lecturas en bloque.<br>• `gw_poll`: encuesta, fuera de línea y escrituras.<br>• `gw_rbe`: reporte por excepción y deadband.<br>• `gw_debounce`, `gw_backoff`, `gw_devstate`.<br>• `gw_localio`: política de las DO sin red: estado seguro al reiniciar y sin MQTT (IO-3), reglas locales DI→DO (IO-7); cuándo guardar los contadores de pulsos (IO-4).<br>• `gw_netsel`: interfaz activa entre Ethernet y Wi-Fi (NET-4), con interfaces "sin servicio" cuando no llegan al broker (issue #57).<br>• `gw_syslog`: líneas de log a RFC 5424 y anillo acotado (REL-4).<br>• `gw_tagdb`: imagen de proceso compartida.<br>• `gw_cfgdoc`: documento de configuración con los secretos aparte (exportar enmascarado, importar, migrar) y lector de JSON pegado en la consola (CFG-4, CFG-6, CFG-7).<br>• `gw_auth`: SHA-256, HMAC, PBKDF2 y Basic auth para la web (CFG-3).<br>• `gw_button`: gestos del botón BOOT (CFG-5, NET-5).<br>• `gw_buzz`: patrones del buzzer y alarmas con su demora y prioridad (IO-6).<br>• `gw_brokersel`: lista de brokers con conmutación por falla y vuelta al primario (MQTT-6).<br>• `gw_phost`: STATE del host primario de Sparkplug 3.0 (SPB-13).<br>• `gw_sf`: búfer circular de store & forward (SPB-14).<br>• `gw_authlimit`: límite de intentos de acceso a la web por dirección (issue #64).<br>• `spb`: codec Sparkplug con nanopb.<br>• `gw_node`: motor del Edge Node con births, deaths, seq, alias, NCMD/DCMD y rebirth. | No (solo `port/gw_port_esp.c`) |
+| `gw_core` | **Lógica pura en C, sin IDF; se prueba en el host:**<br>• `gw_config`: parseo y validación JSON §6.<br>• `gw_dout`: secuencia de arranque del TCA9554 y polaridad de las E/S.<br>• `mb_rtu`: CRC y tramas FC01–06/15/16.<br>• `mb_master`: transacciones, t3,5, timeout y reintentos.<br>• `gw_conv`: tipos (hasta 64 bits, `string` y bits de registro), escala, orden de bytes y datatype Sparkplug.<br>• `gw_mbap`: tramas Modbus TCP ↔ RTU de la pasarela (MB-15).<br>• `gw_plan`: lecturas en bloque.<br>• `gw_poll`: encuesta, fuera de línea y escrituras.<br>• `gw_rbe`: reporte por excepción y deadband.<br>• `gw_debounce`, `gw_backoff`, `gw_devstate`.<br>• `gw_localio`: política de las DO sin red: estado seguro al reiniciar y sin MQTT (IO-3), reglas locales DI→DO (IO-7); cuándo guardar los contadores de pulsos (IO-4).<br>• `gw_netsel`: interfaz activa entre Ethernet y Wi-Fi (NET-4), con interfaces "sin servicio" cuando no llegan al broker (issue #57).<br>• `gw_syslog`: líneas de log a RFC 5424 y anillo acotado (REL-4).<br>• `gw_tagdb`: imagen de proceso compartida.<br>• `gw_cfgdoc`: documento de configuración con los secretos aparte (exportar enmascarado, importar, migrar) y lector de JSON pegado en la consola (CFG-4, CFG-6, CFG-7).<br>• `gw_auth`: SHA-256, HMAC, PBKDF2 y Basic auth para la web (CFG-3).<br>• `gw_button`: gestos del botón BOOT (CFG-5, NET-5).<br>• `gw_buzz`: patrones del buzzer y alarmas con su demora y prioridad (IO-6).<br>• `gw_brokersel`: lista de brokers con conmutación por falla y vuelta al primario (MQTT-6).<br>• `gw_phost`: STATE del host primario de Sparkplug 3.0 (SPB-13).<br>• `gw_sf`: búfer circular de store & forward (SPB-14).<br>• `gw_authlimit`: límite de intentos de acceso a la web por dirección (issue #64).<br>• `gw_ota`: criterio de salud de una imagen nueva y política de *rollback* (FW-1), URLs de actualización, avance.<br>• `spb`: codec Sparkplug con nanopb.<br>• `gw_node`: motor del Edge Node con births, deaths, seq, alias, NCMD/DCMD y rebirth. | No (solo `port/gw_port_esp.c`) |
 | `nanopb` | Runtime nanopb 0.4.9.1 vendorizado (Zlib) | No |
 | `gw_rs485` | UART1 en `UART_MODE_RS485_HALF_DUPLEX` (RTS = GPIO21), expuesta como `mb_transport_t` | Sí |
 | `gw_bus` | Tarea **dueña única del bus RS485**: encuesta y escrituras DCMD | Sí |
@@ -29,6 +29,7 @@ Firmware del MVP (`docs/SPEC.md` §5) para la Waveshare **ESP32-S3-POE-ETH-8DI-8
 | `gw_storage` | bdSeq en NVS; configuración desde LittleFS o embebida (solo si falta el archivo); escritura atómica de una configuración nueva; secretos en NVS cifrada (CFG-7); red de la última configuración válida para la recuperación; reset de fábrica y marca de puesta en marcha (CFG-5) | Sí |
 | `gw_web` | Servidor HTTPS con certificado propio del equipo y redirección desde HTTP (issue #64): interfaz web embebida (CFG-3), API REST JSON de configuración y estado (CFG-4), Basic auth con límite de intentos; mDNS y `_https._tcp` (NET-6) | Sí |
 | `gw_ap` | Punto de acceso Wi-Fi de puesta en marcha (NET-5), aparte de `gw_net` | Sí |
+| `gw_fw` | Actualizaciones de firmware (FW-1): descarga HTTPS (`esp_https_ota`) o subida por la web a la otra partición OTA, verificación, reinicio, prueba de la imagen nueva y *rollback* (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`) | Sí |
 | `gw_log` | Syslog remoto (REL-4): engancha `esp_log_set_vprintf`, copia cada línea a un anillo acotado y una tarea la envía por UDP | Sí |
 | `gw_mbtcp` | Gateway Modbus TCP (MB-15): servidor TCP (lwIP) que pasa cada petición MBAP a la tarea dueña del bus y devuelve la respuesta del esclavo RTU. Solo con `modbus_tcp.enabled` | Sí |
 | `gw_shell` | Shell `esp_console` en la consola: `status`, `devices`, `config [show\|load\|check]`, `restart`, `rebirth`, `mbread`, `ping` (y `di`, `boot`, `panic` en QEMU). Respuestas atómicas respecto del log | Sí |
@@ -72,6 +73,7 @@ Dependencias gestionadas, **con versión fija** (`==`) en cada `idf_component.ym
 | `syslog` (`gw_log`, solo con `syslog.host`) | — / 2 | 3,5 KB estática | No (no crítica) | El socket UDP y el lado consumidor del anillo |
 | `modbus_tcp` (`gw_mbtcp`, solo con `modbus_tcp.enabled`) | 0 / 3 | 4 KB estática | No (no crítica; toda espera acotada: `select` de 1 s, envío de 2 s, respuesta del bus de 8 s) | El socket de escucha, hasta 2 clientes (`CONFIG_GW_MBTCP_MAX_CLIENTS`) y la única transacción en curso, que ejecuta `rs485_bus` |
 | `httpd` (`gw_web`) | — / 3 | 10 KB (HTTPS) u 8 KB (HTTP) | No (no crítica) | El servidor HTTPS; valida y guarda configuraciones (búferes en PSRAM si hay). Con HTTPS, un segundo `httpd` de 3 KB solo redirige desde HTTP |
+| `fw_update` (`gw_fw`, solo mientras dura una descarga) | 0 / 2 | 8 KB (del heap, se libera al terminar) | No (no crítica; cada espera de red acotada a 10 s; cede la CPU en cada bloque, el TWDT vigila la tarea IDLE de su núcleo) | La descarga HTTPS y la escritura de la partición OTA pasiva. Una subida por la web escribe desde `httpd` |
 | `boot_button` (`gw_board`) | — / 2 | 3 KB estática | No (no crítica) | GPIO0 (muestreo cada 20 ms); pide los pitidos de confirmación al buzzer |
 | `buzzer` (`gw_board`) | — / 2 | 2,5 KB estática | No (no crítica) | GPIO46 y el canal 7 de LEDC (IO-6): lee las banderas de `gw_status`, decide la alarma (`gw_buzz`) y prende o apaga el tono; cada 20 ms mientras suena, cada 250 ms en silencio (un pedido de pitidos la despierta) |
 | `mdns` (componente) | 0 / 1 | 4 KB | No | El responder mDNS |
@@ -193,7 +195,7 @@ La configuración y el motor Sparkplug (unos 53 KB) se asignan al arrancar, en P
 
 **Costo del syslog remoto (REL-4):** 4,6 KB de `.bss` (pila estática de 3,5 KB de la tarea emisora y los búferes de una línea y un datagrama). El anillo (32 líneas de unos 240 B) se asigna al arrancar y solo si `syslog.host` está puesto, en PSRAM si la hay.
 
-Tabla de particiones (`partitions.csv`, 16 MB): `nvs` 24 KB, `otadata`, `phy_init`, `ota_0`/`ota_1` 4 MB cada una (reservadas para FW-1), `storage` LittleFS 1 MB y `coredump` 64 KB.
+Tabla de particiones (`partitions.csv`, 16 MB): `nvs` 24 KB, `otadata`, `phy_init`, `ota_0`/`ota_1` 4 MB cada una (FW-1, §3.5), `storage` LittleFS 1 MB y `coredump` 64 KB.
 
 **Core dump.** Un *panic* (o el TWDT) guarda un volcado ELF en la partición `coredump` (desde IDF 6.0 ELF es el único formato; la opción `CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF` ya no existe). Se lee con `idf.py coredump-info` (o `coredump-debug`) con la placa conectada. Verificado en QEMU: el comando `panic` del shell (solo en la build de emulador) provoca un `abort()`, el arranque siguiente informa `panic` y `esp_coredump info_corefile` decodifica el volcado de la partición con la traza a través de `cmd_panic` (con la salvedad de §4.3 sobre el otro núcleo en QEMU). En la placa no se probó.
 
@@ -284,6 +286,46 @@ Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 - **Placas de desarrollo.** Grabar siempre la build por defecto: no quema eFuses. Grabar una vez la de producción deja KEY5 ocupado para siempre en esa placa. Pasar de la build por defecto a la de producción en un mismo equipo borra NVS (ver Migración).
 - **Migración.** Un `config.json` con secretos en claro (grabado con `idf.py flash` o de un firmware anterior) se acepta: al arrancar, los secretos pasan a NVS, se **borra la partición LittleFS entera** (LittleFS es *copy-on-write* y los bloques viejos guardarían el texto) y se reescribe el archivo sin ellos. Durante esa ventana el equipo queda marcado para puesta en marcha: un corte de energía no lo deja con la identidad de ejemplo. Al activar el cifrado en un equipo que ya tenía NVS sin cifrar, NVS se borra (bdSeq y secretos): hay que volver a cargar los secretos (PUT con los valores).
 
+### 3.5 Actualizaciones de firmware (FW-1)
+
+**Cómo se dispara:**
+
+- **NCMD** `Node Control/Firmware Update` (String, alias 40) con la URL `https://…` de la imagen (`build/rs485_spb_gateway.bin`, o la firmada en producción, §3.6). El codec Sparkplug acepta textos de hasta 63 caracteres.
+- **Web:** tarjeta "Firmware" de la página de estado, o la API: `POST /api/firmware` con `{"url": "https://…"}` (`application/json`, hasta 255 caracteres) o con la imagen como cuerpo (`application/octet-stream`). `GET /api/firmware` da la versión, la partición, el estado y el avance.
+- `ota.enabled: false` (SPEC §6.1) rechaza las dos vías. En recuperación y en puesta en marcha la web siempre puede subir una imagen: es la salida si el firmware nuevo no entiende la configuración.
+
+**Cómo se descarga:**
+
+- La descarga corre en una tarea propia (`fw_update`, 8 KB, prioridad 2, núcleo 0) que existe solo mientras dura. La tarea Sparkplug no se bloquea. La flash se escribe por sectores a medida que llegan los datos (`esp_https_ota`, sin borrar los 4 MB de una vez).
+- Solo `https://`. La CA del servidor es `ota.ca_file`; si no está, `mqtt.tls.ca_file` (con TLS activo); si no, el paquete de CA públicas de ESP-IDF. Hace falta la hora (SNTP) para validar el certificado.
+- La imagen debe ser de este proyecto (`project_name` de su `esp_app_desc_t`, comprobado antes de escribir más allá de la cabecera). `esp_ota_end()` la verifica entera: checksum y SHA-256 y, con firma exigida (§3.6), la firma.
+- Si algo falla, el firmware en marcha sigue y el estado dice por qué. Si la imagen es válida, el equipo publica el estado `rebooting into <versión>` y se reinicia de forma ordenada (NDEATH).
+
+**Estado:** `Firmware Update/State` (String, alias 41) y `Firmware Update/Progress` (UInt32 %, alias 42), en el NBIRTH y por NDATA cuando cambian (cada 10 %). El shell (`status`, línea `ota`) y `GET /api/firmware` dan además el detalle.
+
+| Estado | Significado |
+|---|---|
+| `idle` | Sin actualización en este arranque |
+| `connecting`, `downloading <v>`, `receiving <v>` | Transferencia en curso |
+| `failed: …`, `refused: …` | La última actualización no se instaló (motivo) |
+| `rebooting into <v>` | Imagen escrita y verificada: reinicio |
+| `on trial: <v>` | Primer arranque de la imagen nueva: todavía no confirmada |
+| `confirmed: <v>` | La imagen nueva se confirmó en este arranque |
+| `rolling back: <v>` | La imagen nueva se rechazó: vuelve a la anterior |
+| `rolled back from <v>` | Corre la imagen anterior porque `<v>` no se confirmó |
+
+**Criterio de salud y *rollback*** (`gw_core/gw_ota.c`, con tests de host; `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`):
+
+- La imagen nueva arranca **a prueba** (`ESP_OTA_IMG_PENDING_VERIFY`).
+- **Se confirma** con su primera sesión Sparkplug: NBIRTH y todos los DBIRTH publicados.
+- **Vuelve a la anterior** si:
+  - no hubo sesión en `CONFIG_GW_FW_CONFIRM_TIMEOUT_S` (10 min por defecto; 30 s en QEMU), por la causa que sea;
+  - rechaza la configuración guardada (recuperación): enseguida;
+  - se reinicia antes de confirmarse (*panic*, watchdog, corte de energía): lo hace el bootloader.
+- En puesta en marcha (tras un reset de fábrica) no hay con qué juzgarla: se confirma.
+- **Broker caído al arrancar el firmware nuevo:** vuelve a la anterior al vencer el plazo. Es la opción segura: no se puede distinguir un broker caído de un firmware que no sabe conectarse. La anterior ya estaba confirmada; la actualización se repite cuando el broker vuelve.
+- Mientras una imagen está a prueba no se acepta otra actualización.
+
 ## 4. Verificación (evidencia real)
 
 ### 4.1 QA-1: tests de host (CMake + Unity v2.6.1 + CTest)
@@ -356,7 +398,7 @@ E2E_PYTHON=~/e2e/bin/python idf/tools/e2e/run_e2e.sh
 - **Lista de brokers (MQTT-6):** el primario es un puerto donde al principio no escucha nadie; luego el harness levanta allí otro mosquitto y lo vuelve a parar. El respaldo es el mosquitto principal.
 - **Host primario (SPB-13):** el harness publica él mismo los STATE (JSON retenido de Sparkplug 3.0) del host `SCADA1`.
 - **Relay TCP** del harness entre el gateway y el mosquitto principal: cerrarlo le quita el broker al gateway sin que el observador se desconecte (store & forward, SPB-14), y leerlo a 700 B/s simula un enlace lento (issue #59).
-- HTTPS (issue #64): slirp reenvía `127.0.0.1:18443` del host al puerto 443 del equipo (`--https-port`) y `127.0.0.1:18080` al 80 (`--http-port`), que solo redirige. El harness habla HTTPS sin verificar el certificado (es autofirmado) y compara su huella con la de la consola. El shell se consulta con un helper común que repite la pregunta hasta ver todas las líneas esperadas (#56). `--only failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,slow,main` corre solo algunos escenarios.
+- HTTPS (issue #64): slirp reenvía `127.0.0.1:18443` del host al puerto 443 del equipo (`--https-port`) y `127.0.0.1:18080` al 80 (`--http-port`), que solo redirige. El harness habla HTTPS sin verificar el certificado (es autofirmado) y compara su huella con la de la consola. El shell se consulta con un helper común que repite la pregunta hasta ver todas las líneas esperadas (#56). `--only failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,ota,slow,main` corre solo algunos escenarios.
 
 Configuración usada: `tools/e2e/fs/config.json` (keepalive de 10 s, syslog hacia el receptor del harness). `run_e2e.sh` pasa además el ELF y el python de IDF, para decodificar el *core dump* con `esp_coredump`.
 
@@ -410,9 +452,11 @@ Resultado: **125/125 comprobaciones OK** (sobre el commit final de `feature/mqtt
 | Issue #64 HTTPS (`GW22`) | OK: certificado generado en el primer arranque, huella SHA-256 de la consola igual a la del certificado presentado; HTTP → 301 (GET) y 308 (PUT) a `https://`; 5 fallos → 429 con `Retry-After` 29 s también con la contraseña correcta, log `10.0.2.2 blocked for 30 s after 5 failed logins in a row` y contadores en el shell; tras el bloqueo, 200. El resto de los escenarios web (recuperación, API, puesta en marcha) corre por HTTPS |
 | Issue #31 volcado a la tarjeta (`GW23`) | OK: anillo interno de 512 muestras y volcado al sustituto de LittleFS (`/cfg/sf`, 8 segmentos de 682 muestras, de a 128); con el broker quitado, 1020 muestras esperando, 512 en la tarjeta; al volver, las 1020 como DDATA históricos de `Bulk`, en orden (registro 100: 2001, 2003, 2005 … 2032), ninguna pisada ni borrada (`spill    on: 512 samples on the card, 512 moved there, 0 deleted unsent`) |
 | Issue #71 conexión cortada tras el SUBACK | OK: un broker del harness concede la suscripción y corta con RST: 4 intentos, ninguno con sesión (`NBIRTH not published (bdSeq=14): the connection dropped, the session is not`), `session up` 0 veces |
-| Issue #78 `config check` a medio pegar durante el arranque (`GW26`) | TODO78 |
+| Issue #78 `config check` a medio pegar durante el arranque (`GW26`) | OK: `config check` enviado en cuanto el shell está listo y la mitad del documento pegada a 1,7 s del arranque de QEMU; el NBIRTH sale igual a 3,1 s, sin respuesta de `config` todavía; con el resto del documento, `config: valid (13369 bytes), nothing saved` |
+| Issue #76 DBIRTH que no cabe (`GW26`, el mismo arranque del #73) | OK: `Bulk` se encuesta 10 veces en 8 s, pero el shell cuenta `1 message(s) too large` (antes 9); tras `rebirth`, 2 |
 | Issue #72 shell temprano | OK: `shell: console ready` a 1,48 s del arranque de QEMU; `status` contestado 0,05 s después (`config   loading: the gateway is starting`), antes del servidor web (1,88 s) y del primer NBIRTH (2,95 s); `mbread` → `not available yet: the configuration is loading` |
 | Issue #73 Maximum Packet Size (`GW26`, MQTT 5) | OK: mosquitto con `max_packet_size 2000`: NBIRTH y DBIRTH de `Meter1` publicados, DBIRTH de `Bulk` (2489 B) no (`more than the broker's Maximum Packet Size of 2000 (by 489): not published`), una sola conexión (mosquitto no la cortó) y el shell: `limit    broker Maximum Packet Size 2000 B; 9 message(s) too large` |
+| FW-1 OTA (`GW30`, broker y servidor HTTPS propios) | OK: NBIRTH con `Node Control/Firmware Update` (String, alias 40) y `Firmware Update/State` = `idle`. NCMD con `http://` → `refused: only https:// URLs are accepted`; imagen con el checksum roto → descargada y `failed: image e2e-bad rejected: invalid (checksum)`, sin reinicio. NCMD con la imagen `e2e-v2` (950 880 B, CA de `ota.ca_file`) → NDATA de avance 0, 10 … 100 %, `rebooting into e2e-v2`, NDEATH, NBIRTH con `Node Info/Firmware` = `e2e-v2` y `on trial: e2e-v2` a 10,2 s del NCMD, luego `confirmed: e2e-v2`; tras un corte (QEMU nuevo) sigue `e2e-v2`. Subida por la web de `e2e-v3` (200) y broker detenido: `on trial` y a los 30,0 s `rejected (no Sparkplug session before the timeout)`, vuelta a `e2e-v2` con `rolled back from e2e-v3`. NCMD `e2e-v3` otra vez y `panic` durante la prueba: el bootloader arranca `e2e-v2`, NBIRTH con `Reset Reason` = `panic` y `rolled back from e2e-v3` |
 | Extras | OK: DDATA solo por excepción, solo alias, deadband 0,1 respetada; DCMD por alias (FC05) y DCMD sobre métrica de solo lectura descartado con log (sin "alias 0" si el comando venía por nombre); NCMD con un nombre de 80 caracteres después de `DO/1` descartado entero (DO/1 no cambia); bdSeq persistido en NVS tras un corte de energía; NCMD Reboot publica NDEATH QoS 1 y **un solo** NDEATH (will descartado); DBIRTH de 2445 B (mayor que el búfer de 2 KB de esp-mqtt); 60 registros leídos con una sola FC03; timestamps UTC vía SNTP; continuidad de seq |
 
 **Lo que QEMU no cubre**, y por qué la build de emulador difiere (`sdkconfig.qemu`):
@@ -435,6 +479,7 @@ Resultado: **125/125 comprobaciones OK** (sobre el commit final de `feature/mqtt
 - **TLS y store & forward con PSRAM.** Sin PSRAM en QEMU, mbedTLS y el anillo de store & forward usan RAM interna (el anillo de 512 muestras); el anillo de 40 000 en PSRAM y las sesiones TLS en PSRAM solo están compilados.
 - **Conmutación de interfaz por alcance del broker (issue #57).** Sin Wi-Fi no hay a dónde ir: solo tests de host.
 - **Presupuesto de una publicación (issue #59).** Se ejecuta con 2 s (`sdkconfig.qemu`); los 8 s de la build de placa y el disparo del TWDT, no.
+- ***Cache freeze* del S3 (FW-1).** Una imagen OTA se verifica mapeando sus segmentos, y en el S3 un mapeo congela las cachés en lugar de detener el otro núcleo. QEMU no modela el congelamiento: si el otro núcleo ejecuta código de la flash en ese momento, QEMU aborta (`Bad ram pointer`; reproducido con una tarea en el núcleo 1 llamando a `snprintf` durante `esp_ota_end()`, en 1 a 3 rondas). La build de QEMU deja el otro núcleo en `waiti` mientras se verifica (`CONFIG_GW_FW_PARK_OTHER_CORE`). Reporte en `docs/upstream-reports.md` §3. En la placa no hace falta.
 - **Paquete de CA públicas, periférico DS, microSD.** Sin ejecutar (§6.5, §6.5.1).
 
 ### 4.4 QA-2
@@ -531,6 +576,7 @@ Leyenda de **Evidencia**:
 - **IO-7** Implementado: reglas locales DI→DO (`local_io.rules`, hasta 8, una por DO): `follow`, `invert` y `toggle` (cuenta las activaciones con los contadores de IO-4, así que no pierde ninguna entre dos evaluaciones). Las evalúa la tarea `local_io`, única dueña del TCA9554, despertada por el muestreo de las DI: funcionan sin red. **Prioridades:** la DO con regla es de la regla (NCMD rechazado con log y NDATA del estado real; el estado seguro por pérdida de MQTT no la toca); al reiniciar arranca en su `do_failsafe` (`on` se rechaza al validar) hasta la primera evaluación. Evidencia: H (`follow`/`invert`/`toggle`, pulsos restaurados que no invierten, número par de activaciones, estado seguro sin las DO de reglas; esquema: DO repetida, `on` con regla, rangos) + Q (`di 2 1` → DO/5 en NDATA sin comando, NCMD sobre DO/5 rechazado, dos activaciones de DI/3 → DO/6 encendida y apagada, con el broker caído DI/3 enciende DO/6 y el estado seguro deja DO/5 y DO/6 como están) + C (I²C real).
 - **NET-4** Implementado, **sin probar con radio**: Wi-Fi STA como respaldo (`role: backup`, Ethernet gana la ruta) o primaria (`role: primary`), con *failback* por histéresis (`failback_s`) y sesión MQTT nueva (bdSeq nuevo, NBIRTH) al cambiar de interfaz. Además (issue #57) una interfaz que conserva enlace y dirección pero por la que no responde ningún broker de la lista queda "sin servicio" (60 s, duplicando hasta 30 min) y la sesión pasa a la otra. Evidencia: H (`gw_netsel`: failover, failback, rebotes, solo Ethernet, interfaz sin servicio con espera creciente y último recurso; esquema `network.wifi`) + Q (configuración con Wi-Fi en la build sin radio: aviso y Ethernet como antes; shell `status` con la interfaz activa) + C (driver Wi-Fi, conmutación real, atadura del socket).
 - **NET-7** Implementado: IPv6 opcional (`network.ipv6`) en todas las interfaces: link-local en cada subida del enlace, SLAAC con los RA (`CONFIG_LWIP_IPV6_AUTOCONFIG`, activada por interfaz solo si la configuración lo pide), dirección estática en Ethernet y DNS IPv6. Una interfaz con solo IPv6 global cuenta como utilizable. Evidencia: H (literales IPv6, esquema) + Q (link-local, SLAAC sobre `fec0::/64` de slirp, estática `fec0::1234`, `ping fec0::2` respondido) + C (MQTT, SNTP y DNS sobre IPv6; ver §6.6).
+- **FW-1** Implementado: OTA por HTTPS (`esp_https_ota`, CA de `ota.ca_file`, de `mqtt.tls.ca_file` o pública) o subida por la web a la otra partición, disparo por NCMD (`Node Control/Firmware Update`) o por la web (`POST /api/firmware`, tarjeta Firmware); estado y avance como métricas de nodo; la imagen nueva arranca a prueba y se confirma con su primera sesión Sparkplug; *rollback* por plazo, por configuración rechazada y por reinicio durante la prueba (§3.5). H (`test_ota`: política, URLs, avance, cuerpo de la petición; `test_node`: métricas y NCMD; `test_config`: sección `ota`) + Q (descarga, subida, rechazos, confirmación y los dos *rollback*, §4.3).
 - **REL-4** Implementado (syslog; logs por MQTT no): cada línea de `esp_log` se copia, además de a la consola, a un servidor syslog RFC 5424 por UDP (`syslog.host`, `port`, `level`). Quien loguea nunca espera: la línea se formatea solo si el candado de formato está libre (*try-lock*) y entra en un anillo de `CONFIG_GW_SYSLOG_SLOTS` líneas (en PSRAM si hay); si no, se descarta y se cuenta, y el servidor recibe después un aviso con la cantidad. Las líneas de la propia tarea emisora no se reenvían (sin recursión). Evidencia: H (parseo de líneas de `esp_log`, formato RFC 5424, timestamps, anillo lleno, esquema) + Q (líneas con PRI, HOSTNAME, APP-NAME y timestamp SNTP; warning con el broker caído; `sequenceId` sin huecos en cada arranque; contadores en `status`).
 - **REL-5** Implementado: `esp_reset_reason()` va al log de arranque y al NBIRTH como `Node Info/Reset Reason` (String, alias 6). H + Q (`power-on` en el primer arranque, `software` tras NCMD Reboot).
 - **REL-6**: medido en QEMU.
@@ -698,6 +744,16 @@ Sin SNTP no hay hora válida: no hay RTC (TIME-2). Antes de la primera conexión
 - **Expansor que no responde.** Si el TCA9554 no contesta al arrancar (por ejemplo, un glitch de I²C), las DO se publican como **`is_null`** en el NBIRTH (el latch puede conservar salidas encendidas de antes de un reinicio en caliente: nunca se informan como apagadas sin saberlo) y los NCMD sobre ellas se rechazan. La tarea `local_io` reintenta la inicialización a 1, 2, 4… hasta 60 s; cuando el expansor responde, las DO toman su estado de arranque (IO-3) y un NDATA publica sus 8 valores. En recuperación (configuración rechazada) no hay reintentos. Solo compilado: QEMU no emula el TCA9554 (lógica con tests de host).
 - **Reglas locales (IO-7):** no hay más lógica que DO = DI, DO = no DI y conmutación por flanco: ni temporizadores, ni combinaciones de varias DI, ni reglas hacia los esclavos Modbus. Una DO con regla no se puede mandar por NCMD ni tiene estado seguro por pérdida de MQTT. La latencia es la del debounce más el despertar de la tarea `local_io` y una escritura I²C (unos milisegundos en la placa, sin medir); con el expansor caído las reglas esperan a que vuelva.
 - La polaridad de las DO (activa en bajo) se dedujo del demo y de ESPHome, sin esquemático ni placa. Si la medición dice lo contrario, basta con `CONFIG_GW_DO_ACTIVE_LOW=n`.
+
+### 6.11 Firmware (FW-1)
+
+- **Broker caído al arrancar el firmware nuevo:** vuelve al anterior a los `CONFIG_GW_FW_CONFIRM_TIMEOUT_S` (10 min). No se distingue de un firmware que no sabe conectarse. La actualización se repite a mano.
+- **Un corte de energía durante la prueba también vuelve al anterior** (el bootloader no distingue un corte de un *crash*).
+- **La URL por NCMD tiene hasta 63 caracteres** (límite de textos del codec Sparkplug, `SPB_STRING_MAX`); por la web, hasta 255.
+- **No hay *anti-rollback* de versión** (`CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK`): cualquier imagen válida (y firmada, FW-2) del proyecto se acepta, también una más vieja.
+- **No se reanuda una descarga cortada:** empieza de nuevo. Mientras se escribe la flash, las otras tareas pueden ver demoras cortas (cada sector borrado detiene la caché unos ms); la encuesta Modbus no se cortó en el E2E, pero en la placa no se midió.
+- Una subida por la web corre en la tarea `httpd` y bloquea la web hasta terminar.
+- Mientras una imagen está a prueba no se acepta otra actualización.
 
 ### 6.10 Pruebas y entorno
 

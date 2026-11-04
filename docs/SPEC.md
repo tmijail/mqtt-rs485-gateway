@@ -451,6 +451,21 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 - Se reenvían FC01–FC06, FC15 y FC16 a las unidades 1–247, tengan o no un dispositivo configurado. El gateway responde él mismo, con excepción, a cualquier otra función (01), a datos no válidos (03) y a las unidades 0 y 248–255 (0A). Si la unidad no responde tras los reintentos de `rs485`, la excepción es 0B.
 - **Arbitraje del bus (MB-16):** las peticiones TCP pasan por la tarea dueña del bus, una a la vez y con la misma granularidad que los DCMD: entre dos peticiones de la encuesta. Prioridad: escrituras DCMD, después Modbus TCP, después la encuesta.
 
+**`ota` (FW-1): actualizaciones de firmware por NCMD y por la web.**
+
+```json
+"ota": { "enabled": true, "ca_file": "fw-ca.pem" }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `enabled` | bool | `true` | `false` rechaza las actualizaciones por NCMD y por la web (en recuperación y puesta en marcha la web siempre puede subir una imagen) |
+| `ca_file` | texto | `""` | CA (PEM, en LittleFS junto a `config.json`, mismas reglas de nombre que `mqtt.tls.ca_file`) del servidor de las imágenes. Vacío: la de `mqtt.tls.ca_file` si TLS está activo; si no, las CA raíz públicas de ESP-IDF |
+
+- **Disparo:** NCMD con la métrica `Node Control/Firmware Update` (String, la URL `https://…`; el codec acepta hasta 63 caracteres) o `POST /api/firmware` de la web (`{"url": "…"}`, hasta 255 caracteres, o el cuerpo con la imagen). Solo `https://`; la imagen debe ser de este proyecto (y, con firma exigida, FW-2, firmada con la clave del equipo).
+- **Resultado:** métricas de nodo `Firmware Update/State` (String) y `Firmware Update/Progress` (UInt32, %), en el NBIRTH y por NDATA cuando cambian.
+- **Salud y *rollback*:** la imagen nueva arranca a prueba. Su primera sesión Sparkplug (NBIRTH y todos los DBIRTH publicados) la confirma. Sin sesión en `CONFIG_GW_FW_CONFIRM_TIMEOUT_S` (10 min por defecto), por la causa que sea (también un broker caído), vuelve a la anterior. También vuelve si rechaza la configuración guardada o si se reinicia antes de confirmarse.
+
 **`local_io`: E/S local sin red. Estado seguro de las DO (IO-3).** Todas las claves de `local_io` son opcionales (IO-3, IO-4, IO-6 e IO-7).
 
 ```json

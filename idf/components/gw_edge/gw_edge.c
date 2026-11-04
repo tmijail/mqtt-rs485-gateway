@@ -20,6 +20,7 @@
 #include "gw_backoff.h"
 #include "gw_brokersel.h"
 #include "gw_bus.h"
+#include "gw_fw.h"
 #include "gw_io.h"
 #include "gw_net.h"
 #include "gw_node.h"
@@ -79,6 +80,7 @@ static atomic_int s_suback;     /* msg_id of the last SUBACK, negated if a topic
 static atomic_uint s_route_gen;
 static atomic_bool s_restart_req;
 static atomic_bool s_rebirth_req;
+static atomic_bool s_fw_dirty;     /* FW-1: the update's state changed */
 
 /* ---- publish time bound (issue #59): shared with the esp_timer task ---- */
 static esp_timer_handle_t s_pub_timer;
@@ -170,7 +172,9 @@ static gw_edge_status_t s_st;
 static void wake(void)
 {
     const edge_ev_t ev = {.type = EV_WAKE};
-    xQueueSend(s_q, &ev, 0);  /* dropping is harmless: state lives in the flags */
+    if (s_q != NULL) {        /* gw_fw may report before gw_edge_start() */
+        xQueueSend(s_q, &ev, 0);  /* dropping is harmless: state lives in the flags */
+    }
 }
 
 /* ---------- producer API ---------- */
@@ -222,6 +226,13 @@ void gw_edge_request_restart(void)
 {
     atomic_store(&s_restart_req, true);
     wake();
+}
+
+void gw_edge_notify_firmware(void)
+{
+    if (!atomic_exchange(&s_fw_dirty, true)) {
+        wake();
+    }
 }
 
 bool gw_edge_request_rebirth(void)
@@ -579,6 +590,24 @@ static bool op_request_write(void *ctx, uint16_t tag, const gw_tag_value_t *valu
     return gw_bus_request_write(tag, value);
 }
 
+/* FW-1: NCMD "Node Control/Firmware Update"; the outcome arrives through gw_fw's status. */
+static void op_firmware_update(void *ctx, const char *url)
+{
+    (void)ctx;
+    char why[120];
+    gw_fw_start_url(url, why, sizeof(why));
+}
+
+/* FW-1: the update's state and progress into the node metrics (NDATA when online). */
+static void sync_firmware(void)
+{
+    if (atomic_exchange(&s_fw_dirty, false)) {
+        gw_fw_status_t f;
+        gw_fw_get_status(&f);
+        gw_node_set_firmware_status(s_node, f.text, f.progress);
+    }
+}
+
 static void op_set_scan_rate(void *ctx, uint32_t ms)
 {
     (void)ctx;
@@ -860,6 +889,7 @@ static void start_births(void)
              "without feeding the watchdog %lu ms", s_bdseq,
              (unsigned long)((esp_timer_get_time() - t0) / 1000), (unsigned long)s_max_unfed_ms);
     log_stacks();
+    gw_fw_session_up();   /* FW-1: a new image on trial is healthy */
     if (gw_sf_count(&s_sf) > 0) {
         ESP_LOGI(TAG, "store & forward: %u sample(s) stored while offline follow as historical "
                       "data (%lu overwritten)",
@@ -1157,6 +1187,7 @@ static void reconcile(void)
         ESP_LOGI(TAG, "clock now synchronised: rebirth");
         gw_node_rebirth(s_node);
     }
+    sync_firmware();
     if (atomic_exchange(&s_rebirth_req, false) && s_node->online) {
         ESP_LOGI(TAG, "rebirth requested from the console");
         gw_node_rebirth(s_node);
@@ -1399,9 +1430,11 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         .write_room = op_write_room,
         .set_scan_rate = op_set_scan_rate,
         .reboot = op_reboot,
+        .firmware_update = op_firmware_update,
         .ctx = NULL,
     };
     gw_node_init(s_node, cfg, &ops, info);
+    atomic_store(&s_fw_dirty, true);   /* the first NBIRTH carries the update's state */
     if (!gw_node_topic(s_node, "NDEATH", NULL, s_death_topic, sizeof(s_death_topic)) ||
         !gw_node_topic(s_node, "NCMD", NULL, s_ncmd_topic, sizeof(s_ncmd_topic)) ||
         !gw_node_topic(s_node, "DCMD", "+", s_dcmd_topic, sizeof(s_dcmd_topic))) {

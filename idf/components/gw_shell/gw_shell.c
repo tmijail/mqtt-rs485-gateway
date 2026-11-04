@@ -19,6 +19,7 @@
 #include "gw_bus.h"
 #include "gw_cfgdoc.h"
 #include "gw_edge.h"
+#include "gw_fw.h"
 #include "gw_io.h"
 #include "gw_log.h"
 #include "gw_mbap.h"
@@ -181,6 +182,19 @@ static int cmd_status(int argc, char **argv)
     uint32_t f = gw_status_get();
     out("firmware %s, reset reason %s, uptime %lld s\n", s_ctx.info->firmware,
            s_ctx.info->reset_reason, esp_timer_get_time() / 1000000);
+    gw_fw_status_t fw;   /* FW-1 */
+    gw_fw_get_status(&fw);
+    if (fw.running[0] != '\0') {
+        out("ota      %s in %s, other slot %s%s | %s", fw.running, fw.slot,
+            fw.other[0] ? fw.other : "empty", fw.enabled ? "" : " (updates disabled)", fw.detail);
+        if (fw.phase == GW_FW_TRIAL) {
+            out(" (%lu s left)", (unsigned long)fw.trial_left_s);
+        } else if (fw.phase == GW_FW_DOWNLOADING) {
+            out(" %u%% (%lu of %lu bytes)", fw.progress, (unsigned long)fw.bytes,
+                (unsigned long)fw.total);
+        }
+        out("\n");
+    }
     if (s_ctx.cfg == NULL && s_ctx.starting) {
         out("config   loading: the gateway is starting\n");
     } else if (s_ctx.cfg == NULL && s_ctx.commissioning) {
