@@ -58,6 +58,7 @@ typedef struct {
     uint32_t blocks;       /* times an address was blocked */
     unsigned blocked_now;
     uint32_t csrf_refused; /* issue #100: writes refused as cross-site (no header, other origin) */
+    uint32_t cut_bodies;   /* issue #106: refused requests whose body was cut, not drained */
 } gw_web_stats_t;
 
 void gw_web_get_stats(gw_web_stats_t *out);

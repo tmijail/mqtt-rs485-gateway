@@ -68,8 +68,16 @@ bool gw_auth_check_password(const char *password, const char *encoded);
  *   - carry GW_CSRF_HEADER (any value): a foreign page can only add a custom header after a CORS
  *     preflight, and the gateway answers none;
  *   - and, when the browser says where it comes from (Origin; without it, Referer), come from
- *     this same host: scheme, host and port of the request's Host header (default ports equal
- *     to none). "Origin: null" (sandboxed frames, file: pages) is refused.
+ *     this same host: scheme, host and port of the request's Host header. "Origin: null"
+ *     (sandboxed frames, file: pages) is refused.
+ * Issue #106: both sides are compared in canonical form: host lower-cased and without the
+ * trailing '.' of a fully qualified name, IPv6 literals in brackets, the port in decimal
+ * without leading zeros and left out when it is the scheme's default (or empty). Any name the
+ * device is reached by is accepted (an IP literal, <hostname>.local, <hostname>, a DNS name of
+ * the plant) as long as the page and the request use the same one: a page loaded from one name
+ * that writes to another is cross-origin for the browser too (a preflight for the custom
+ * header, which the gateway never answers). A Host or Origin that is not a valid authority
+ * (spaces, user information, a second ':', a port out of range) is refused.
  * Clients that are not browsers (curl, scripts) send neither Origin nor Referer: the header is
  * enough for them.
  */

@@ -23,6 +23,7 @@
 #include "freertos/task.h"
 #include "gw_auth.h"
 #include "gw_nvsraw.h"
+#include "gw_port.h"
 #include "mbedtls/platform.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -57,7 +58,8 @@ static gw_storage_commit_hook_t s_commit_hook;   /* issue #99: gw_fw, before a c
  * save or export): PSRAM when the board has it, internal RAM otherwise (QEMU). */
 /* Issue #91: the largest block a validation asks for after its gw_config_t (the printed
  * document, gw_cfgdoc) and the largest free internal block just before that request. Set
- * and read under the save lock; another task's cJSON (gw_ota) may slip in, only a log. */
+ * and read under the save lock and the JSON lock (issue #106: no other task's cJSON allocates
+ * in between). */
 static bool s_track;
 static size_t s_track_size;
 static size_t s_track_room;
@@ -1849,10 +1851,12 @@ esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_
     gw_storage_get_secrets(&stored);
     gw_cfgdoc_t doc;
     esp_err_t ret = ESP_OK;
+    gw_port_json_lock();   /* recursive: gw_cfgdoc_apply takes it too */
     s_track_size = s_track_room = 0;
     s_track = true;
     bool applied = gw_cfgdoc_apply(json, len, GW_CFGDOC_UPDATE, &stored, cfg, &doc, err);
     s_track = false;
+    gw_port_json_unlock();
     /* issue #80: the new configuration and its document are both allocated here: the deepest
      * point of a validation (the parser's tree is freed already, but its fragments remain) */
     size_t block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);

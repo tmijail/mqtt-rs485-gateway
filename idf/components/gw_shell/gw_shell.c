@@ -295,10 +295,10 @@ static int cmd_status(int argc, char **argv)
     gw_web_get_stats(&ws);
     if (ws.running) {
         out("web      %s, logins failed %lu, refused while blocked %lu, blocks %lu, addresses "
-            "blocked now %u, cross-site writes refused %lu\n",
+            "blocked now %u, cross-site writes refused %lu, bodies cut %lu\n",
             ws.https ? "HTTPS (HTTP redirects)" : "HTTP", (unsigned long)ws.failed,
             (unsigned long)ws.refused, (unsigned long)ws.blocks, ws.blocked_now,
-            (unsigned long)ws.csrf_refused);
+            (unsigned long)ws.csrf_refused, (unsigned long)ws.cut_bodies);
     }
     gw_log_stats_t ls;
     gw_log_get_stats(&ls);

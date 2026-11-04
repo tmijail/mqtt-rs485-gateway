@@ -1761,6 +1761,7 @@ def run_https(args, work):
           f"GET -> {st_r} {loc}; PUT -> {st_p} {hdr_p.get('location')}")
 
     check_csrf(gw, t0)
+    check_refused_bodies(gw, t0)
 
     codes = [http("GET", "/api/status", auth=("admin", f"wrong-{i}"))[0] for i in range(5)]
     st6, hdr6, _ = http("GET", "/api/status", auth=("admin", "wrong-6"))
@@ -1782,6 +1783,116 @@ def run_https(args, work):
           f"block {st8}; {(gw.find(r'blocked for', t0) or ['no log'])[0]}; "
           + " | ".join(gw.find(r"^web\s", asked)))
 
+
+def slow_upload(headers, total, rate, out, plain=False):
+    """Issue #106: one POST /api/firmware with a body of @total bytes sent at about @rate B/s
+    (a client uploading over a slow link), over HTTPS or, with @plain, the HTTP port; stops at
+    the first send error. Fills @out with the bytes sent, the reply's first line if one arrived,
+    the error and the duration."""
+    t0 = time.monotonic()
+    out.update(sent=0, status=None, error=None)
+    reply = b""
+    sock = None
+    try:
+        port = HTTP_PORT if plain else HTTPS_PORT
+        sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+        if not plain:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            sock = ctx.wrap_socket(sock)
+        head = (f"POST /api/firmware HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+                f"Content-Type: application/octet-stream\r\nContent-Length: {total}\r\n"
+                + "".join(f"{k}: {v}\r\n" for k, v in headers.items()) + "\r\n").encode()
+        sock.sendall(head)
+        chunk = b"\xe9" + b"\0" * 16383
+        while out["sent"] < total:
+            n = min(len(chunk), total - out["sent"])
+            sock.sendall(chunk[:n])
+            out["sent"] += n
+            sock.setblocking(False)
+            try:
+                reply += sock.recv(512)
+            except (ssl.SSLWantReadError, BlockingIOError):
+                pass
+            sock.setblocking(True)
+            sock.settimeout(10)
+            time.sleep(n / rate)
+    except (OSError, ssl.SSLError) as e:
+        out["error"] = type(e).__name__
+        try:
+            reply += sock.recv(512) if sock is not None else b""
+        except Exception:   # noqa: BLE001  (the reset may have taken the reply)
+            pass
+    out["status"] = reply.split(b"\r\n", 1)[0].decode(errors="replace") if reply else None
+    out["duration"] = time.monotonic() - t0
+
+
+def check_refused_bodies(gw, since):
+    """Issue #106 (GW22): a refused POST with a large body must not hold the web server.
+
+    HTTPS (the API): without credentials (401) and from another site with the right ones (403,
+    no X-Requested-With), a 1.5 MB image upload sent at about 150 KB/s (some 10 s); half a
+    second into it a GET /api/status, over an HTTPS session opened before (a new handshake takes
+    about as long as the bound in QEMU), must answer within 1 s, and the gateway must cut the
+    upload early (the client's send fails), not drain it. Over TLS esp_http_server's drain of
+    the unread body also ends at the first moment nothing is buffered (esp-tls sockets are
+    non-blocking), so in QEMU the GET is not held even without the fix: the cut is what shows
+    it there, and on a link the client keeps full the drain lasted as long as the upload.
+
+    Plain HTTP (the redirect port; also the API with web.https false): there the drain blocks
+    on the socket for as long as data keeps coming. The same slow upload, then a GET on that
+    port half a second into it: within 1 s, upload cut. Before the fix the GET waited for the
+    end of the upload."""
+    total, rate = 1536 * 1024, 150 * 1024
+    auth = "Basic " + base64.b64encode(f"admin:{WEB_PASSWORD}".encode()).decode()
+    cases = {"HTTPS 401 no credentials": ({"X-Requested-With": "e2e"}, False),
+             "HTTPS 403 cross-site, right credentials": ({"Authorization": auth}, False),
+             "HTTP port (redirect), 308": ({}, True)}
+    res = {}
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    session = httplib.HTTPSConnection("127.0.0.1", HTTPS_PORT, timeout=15, context=ctx)
+
+    def get_status(plain):
+        t = time.monotonic()
+        if plain:
+            st = http("GET", "/api/status", auth=None, plain=True, timeout=15)[0]
+            return st, time.monotonic() - t
+        try:
+            session.request("GET", "/api/status", headers={"Authorization": auth})
+            r = session.getresponse()
+            r.read()
+            st = r.status
+        except (OSError, httplib.HTTPException):
+            st = None
+        return st, time.monotonic() - t
+
+    base_st, base = get_status(False)
+    for name, (hdrs, plain) in cases.items():
+        up = {}
+        th = threading.Thread(target=slow_upload, args=(hdrs, total, rate, up, plain), daemon=True)
+        th.start()
+        time.sleep(0.5)
+        st, took = get_status(plain)
+        th.join(20)
+        res[name] = (st, took, dict(up), 301 if plain else 200)
+    session.close()
+    asked, h = gw.shell("status", [r"^web\s+HTTPS .*, bodies cut [1-9]\d*$"])
+    cut_line = (gw.find(r"^web\s", asked) or [""])[-1]
+    m = re.search(r"bodies cut (\d+)", cut_line)
+    ok = base_st == 200 and m is not None and all(
+        st == want and took < 1.0 and up.get("sent", total) < total and up.get("error")
+        and up.get("duration", 99) < 5 for st, took, up, want in res.values())
+    check("Issue #106 a refused 1.5 MB upload (HTTPS 401 without credentials, 403 from another "
+          "site; the HTTP port's redirect) is cut, not drained: a GET half a second into it "
+          "answers within 1 s",
+          ok, f"GET without an upload {base_st} in {base:.2f} s; " + "; ".join(
+              f"{k}: GET {st} in {took:.2f} s, upload stopped after {up.get('sent', 0)} of {total} "
+              f"B in {up.get('duration', 0):.1f} s ({up.get('error')}), reply seen "
+              f"{up.get('status')!r}" for k, (st, took, up, _) in res.items())
+          + f"; {cut_line.strip()}")
 
 def check_csrf(gw, since):
     """Issue #100 (GW22, before the login limit checks): every write needs X-Requested-With and,
@@ -1823,7 +1934,7 @@ def check_csrf(gw, since):
     wrong_type = http("POST", "/api/firmware", b"\xe9" + b"\0" * 255,
                       headers={"Content-Type": "text/plain", "Origin": me})[0]
     asked, h = gw.shell("status", [r"^web\s+HTTPS \(HTTP redirects\), logins failed 0, .*"
-                                   r"cross-site writes refused 9$"])
+                                   r"cross-site writes refused 9, bodies cut \d+$"])
     counted = list(h.values())[0]
     # the web UI: X-Requested-With and its own Origin (and Referer); a script: the header only
     st_ui, _, b_ui = http("PUT", dry, doc, headers={"Origin": me, "Referer": me + "/"})

@@ -10,6 +10,7 @@
 
 #include "cJSON.h"
 #include "gw_config_priv.h"
+#include "gw_port.h"
 
 /* ---------- parser memory ---------- */
 
@@ -1425,7 +1426,19 @@ unsigned gw_json_depth(const char *json, size_t len)
     return max;
 }
 
+static bool parse_locked(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_t *err);
+
+/* Issue #106: cJSON's hooks, its error pointer and s_alloc_failed are process-wide: the whole
+ * parse runs under the JSON lock (another task's parse could set or clear the flag). */
 bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    gw_port_json_lock();
+    bool ok = parse_locked(json, len, cfg, err);
+    gw_port_json_unlock();
+    return ok;
+}
+
+static bool parse_locked(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"network", "ntp",      "mqtt",    "sparkplug", "rs485",
                                        "local_io", "devices", "syslog",  "web",
