@@ -516,6 +516,28 @@ static void test_eng_range(void)
                     "devices[0].tags[0].units");
 }
 
+/* SPB-19: bytes tags are like strings without the text processing. */
+static void test_bytes_tags(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse_tag("{\"name\":\"raw\",\"area\":\"holding\",\"address\":0,\"type\":\"bytes\","
+                  "\"length\":16,\"writable\":true,\"word_order\":\"BADC\"}"),
+        err.msg);
+    TEST_ASSERT_EQUAL(GW_TYPE_BYTES, cfg.tags[0].type);
+    TEST_ASSERT_EQUAL(16, gw_tag_width(&cfg.tags[0]));
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"bytes\"}"),
+                    "devices[0].tags[0].length: obligatorio con type=bytes");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"bytes\","
+                              "\"length\":2,\"deadband\":1}"),
+                    "deadband: no se admite en tags bytes");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"bytes\","
+                              "\"length\":2,\"scale\":2}"),
+                    "scale/offset no se admiten en tags bytes");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"coil\",\"address\":0,\"type\":\"bytes\","
+                              "\"length\":2}"),
+                    "las áreas coil/discrete solo admiten type=bool");
+}
+
 /* Issue #38: block reads per device. */
 static void test_device_block_reads(void)
 {
@@ -919,6 +941,7 @@ int main(void)
     RUN_TEST(test_schema_rules);
     RUN_TEST(test_mb6_tags);
     RUN_TEST(test_eng_range);
+    RUN_TEST(test_bytes_tags);
     RUN_TEST(test_device_block_reads);
     RUN_TEST(test_scan_classes);
     RUN_TEST(test_modbus_tcp_section);

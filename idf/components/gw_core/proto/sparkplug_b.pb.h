@@ -63,6 +63,32 @@ typedef struct _Payload {
     pb_extension_t *extensions;
 } Payload;
 
+typedef struct _Payload_DataSet {
+    bool has_num_of_columns;
+    uint64_t num_of_columns;
+    pb_callback_t columns;
+    pb_callback_t types;
+    pb_callback_t rows;
+    pb_extension_t *extensions;
+} Payload_DataSet;
+
+typedef struct _Payload_DataSet_DataSetValue {
+    pb_size_t which_value;
+    union {
+        uint32_t int_value;
+        uint64_t long_value;
+        float float_value;
+        double double_value;
+        bool boolean_value;
+        char string_value[64];
+    } value;
+} Payload_DataSet_DataSetValue;
+
+typedef struct _Payload_DataSet_Row {
+    pb_callback_t elements;
+    pb_extension_t *extensions;
+} Payload_DataSet_Row;
+
 typedef struct _Payload_PropertyValue {
     bool has_type;
     uint32_t type;
@@ -85,6 +111,7 @@ typedef struct _Payload_PropertySet {
     pb_extension_t *extensions;
 } Payload_PropertySet;
 
+typedef PB_BYTES_ARRAY_T(64) Payload_Metric_bytes_value_t;
 typedef struct _Payload_Metric {
     bool has_name;
     char name[64]; /* Metric name - should only be included on birth */
@@ -101,6 +128,7 @@ typedef struct _Payload_Metric {
     bool has_is_null;
     bool is_null; /* If this is null - explicitly say so rather than using -1, false, etc for some datatypes. */
     pb_callback_t properties;
+    pb_callback_t cb_value;
     pb_size_t which_value;
     union {
         uint32_t int_value;
@@ -109,6 +137,8 @@ typedef struct _Payload_Metric {
         double double_value;
         bool boolean_value;
         char string_value[64];
+        Payload_Metric_bytes_value_t bytes_value; /* Bytes, File */
+        Payload_DataSet dataset_value;
     } value;
 } Payload_Metric;
 
@@ -127,20 +157,40 @@ extern "C" {
 
 
 
+
+
+
 /* Initializer values for message structs */
 #define Payload_init_default                     {false, 0, {{NULL}, NULL}, false, 0, NULL}
+#define Payload_DataSet_init_default             {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, NULL}
+#define Payload_DataSet_DataSetValue_init_default {0, {0}}
+#define Payload_DataSet_Row_init_default         {{{NULL}, NULL}, NULL}
 #define Payload_PropertyValue_init_default       {false, 0, false, 0, 0, {0}}
 #define Payload_PropertySet_init_default         {{{NULL}, NULL}, {{NULL}, NULL}, NULL}
-#define Payload_Metric_init_default              {false, "", false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, 0, {0}}
+#define Payload_Metric_init_default              {false, "", false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, 0, {0}}
 #define Payload_init_zero                        {false, 0, {{NULL}, NULL}, false, 0, NULL}
+#define Payload_DataSet_init_zero                {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, NULL}
+#define Payload_DataSet_DataSetValue_init_zero   {0, {0}}
+#define Payload_DataSet_Row_init_zero            {{{NULL}, NULL}, NULL}
 #define Payload_PropertyValue_init_zero          {false, 0, false, 0, 0, {0}}
 #define Payload_PropertySet_init_zero            {{{NULL}, NULL}, {{NULL}, NULL}, NULL}
-#define Payload_Metric_init_zero                 {false, "", false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, 0, {0}}
+#define Payload_Metric_init_zero                 {false, "", false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, 0, {0}}
 
 /* Field tags (for use in manual encoding/decoding) */
 #define Payload_timestamp_tag                    1
 #define Payload_metrics_tag                      2
 #define Payload_seq_tag                          3
+#define Payload_DataSet_num_of_columns_tag       1
+#define Payload_DataSet_columns_tag              2
+#define Payload_DataSet_types_tag                3
+#define Payload_DataSet_rows_tag                 4
+#define Payload_DataSet_DataSetValue_int_value_tag 1
+#define Payload_DataSet_DataSetValue_long_value_tag 2
+#define Payload_DataSet_DataSetValue_float_value_tag 3
+#define Payload_DataSet_DataSetValue_double_value_tag 4
+#define Payload_DataSet_DataSetValue_boolean_value_tag 5
+#define Payload_DataSet_DataSetValue_string_value_tag 6
+#define Payload_DataSet_Row_elements_tag         1
 #define Payload_PropertyValue_type_tag           1
 #define Payload_PropertyValue_is_null_tag        2
 #define Payload_PropertyValue_int_value_tag      3
@@ -165,6 +215,8 @@ extern "C" {
 #define Payload_Metric_double_value_tag          13
 #define Payload_Metric_boolean_value_tag         14
 #define Payload_Metric_string_value_tag          15
+#define Payload_Metric_bytes_value_tag           16
+#define Payload_Metric_dataset_value_tag         17
 
 /* Struct field encoding specification for nanopb */
 #define Payload_FIELDLIST(X, a) \
@@ -175,6 +227,33 @@ X(a, CALLBACK, OPTIONAL, EXTENSION, extensions,        6)
 #define Payload_CALLBACK pb_default_field_callback
 #define Payload_DEFAULT NULL
 #define Payload_metrics_MSGTYPE Payload_Metric
+
+#define Payload_DataSet_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT64,   num_of_columns,    1) \
+X(a, CALLBACK, REPEATED, STRING,   columns,           2) \
+X(a, CALLBACK, REPEATED, UINT32,   types,             3) \
+X(a, CALLBACK, REPEATED, MESSAGE,  rows,              4) \
+X(a, CALLBACK, OPTIONAL, EXTENSION, extensions,        5)
+#define Payload_DataSet_CALLBACK pb_default_field_callback
+#define Payload_DataSet_DEFAULT NULL
+#define Payload_DataSet_rows_MSGTYPE Payload_DataSet_Row
+
+#define Payload_DataSet_DataSetValue_FIELDLIST(X, a) \
+X(a, STATIC,   ONEOF,    UINT32,   (value,int_value,value.int_value),   1) \
+X(a, STATIC,   ONEOF,    UINT64,   (value,long_value,value.long_value),   2) \
+X(a, STATIC,   ONEOF,    FLOAT,    (value,float_value,value.float_value),   3) \
+X(a, STATIC,   ONEOF,    DOUBLE,   (value,double_value,value.double_value),   4) \
+X(a, STATIC,   ONEOF,    BOOL,     (value,boolean_value,value.boolean_value),   5) \
+X(a, STATIC,   ONEOF,    STRING,   (value,string_value,value.string_value),   6)
+#define Payload_DataSet_DataSetValue_CALLBACK NULL
+#define Payload_DataSet_DataSetValue_DEFAULT NULL
+
+#define Payload_DataSet_Row_FIELDLIST(X, a) \
+X(a, CALLBACK, REPEATED, MESSAGE,  elements,          1) \
+X(a, CALLBACK, OPTIONAL, EXTENSION, extensions,        2)
+#define Payload_DataSet_Row_CALLBACK pb_default_field_callback
+#define Payload_DataSet_Row_DEFAULT NULL
+#define Payload_DataSet_Row_elements_MSGTYPE Payload_DataSet_DataSetValue
 
 #define Payload_PropertyValue_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT32,   type,              1) \
@@ -210,27 +289,39 @@ X(a, STATIC,   ONEOF,    UINT64,   (value,long_value,value.long_value),  11) \
 X(a, STATIC,   ONEOF,    FLOAT,    (value,float_value,value.float_value),  12) \
 X(a, STATIC,   ONEOF,    DOUBLE,   (value,double_value,value.double_value),  13) \
 X(a, STATIC,   ONEOF,    BOOL,     (value,boolean_value,value.boolean_value),  14) \
-X(a, STATIC,   ONEOF,    STRING,   (value,string_value,value.string_value),  15)
+X(a, STATIC,   ONEOF,    STRING,   (value,string_value,value.string_value),  15) \
+X(a, STATIC,   ONEOF,    BYTES,    (value,bytes_value,value.bytes_value),  16) \
+X(a, STATIC,   ONEOF,    MSG_W_CB, (value,dataset_value,value.dataset_value),  17)
 #define Payload_Metric_CALLBACK pb_default_field_callback
 #define Payload_Metric_DEFAULT NULL
 #define Payload_Metric_properties_MSGTYPE Payload_PropertySet
+#define Payload_Metric_value_dataset_value_MSGTYPE Payload_DataSet
 
 extern const pb_msgdesc_t Payload_msg;
+extern const pb_msgdesc_t Payload_DataSet_msg;
+extern const pb_msgdesc_t Payload_DataSet_DataSetValue_msg;
+extern const pb_msgdesc_t Payload_DataSet_Row_msg;
 extern const pb_msgdesc_t Payload_PropertyValue_msg;
 extern const pb_msgdesc_t Payload_PropertySet_msg;
 extern const pb_msgdesc_t Payload_Metric_msg;
 
 /* Defines for backwards compatibility with code written before nanopb-0.4.0 */
 #define Payload_fields &Payload_msg
+#define Payload_DataSet_fields &Payload_DataSet_msg
+#define Payload_DataSet_DataSetValue_fields &Payload_DataSet_DataSetValue_msg
+#define Payload_DataSet_Row_fields &Payload_DataSet_Row_msg
 #define Payload_PropertyValue_fields &Payload_PropertyValue_msg
 #define Payload_PropertySet_fields &Payload_PropertySet_msg
 #define Payload_Metric_fields &Payload_Metric_msg
 
 /* Maximum encoded size of messages (where known) */
 /* Payload_size depends on runtime parameters */
+/* Payload_DataSet_size depends on runtime parameters */
+/* Payload_DataSet_Row_size depends on runtime parameters */
 /* Payload_PropertySet_size depends on runtime parameters */
 /* Payload_Metric_size depends on runtime parameters */
 #define ORG_ECLIPSE_TAHU_PROTOBUF_SPARKPLUG_B_PB_H_MAX_SIZE Payload_PropertyValue_size
+#define Payload_DataSet_DataSetValue_size        65
 #define Payload_PropertyValue_size               73
 
 /* Mapping from canonical names (mangle_names or overridden package name) */
@@ -254,10 +345,16 @@ extern const pb_msgdesc_t Payload_Metric_msg;
 #define _org_eclipse_tahu_protobuf_DataType_MAX _DataType_MAX
 #define _org_eclipse_tahu_protobuf_DataType_ARRAYSIZE _DataType_ARRAYSIZE
 #define org_eclipse_tahu_protobuf_Payload_init_default Payload_init_default
+#define org_eclipse_tahu_protobuf_Payload_DataSet_init_default Payload_DataSet_init_default
+#define org_eclipse_tahu_protobuf_Payload_DataSet_DataSetValue_init_default Payload_DataSet_DataSetValue_init_default
+#define org_eclipse_tahu_protobuf_Payload_DataSet_Row_init_default Payload_DataSet_Row_init_default
 #define org_eclipse_tahu_protobuf_Payload_PropertyValue_init_default Payload_PropertyValue_init_default
 #define org_eclipse_tahu_protobuf_Payload_PropertySet_init_default Payload_PropertySet_init_default
 #define org_eclipse_tahu_protobuf_Payload_Metric_init_default Payload_Metric_init_default
 #define org_eclipse_tahu_protobuf_Payload_init_zero Payload_init_zero
+#define org_eclipse_tahu_protobuf_Payload_DataSet_init_zero Payload_DataSet_init_zero
+#define org_eclipse_tahu_protobuf_Payload_DataSet_DataSetValue_init_zero Payload_DataSet_DataSetValue_init_zero
+#define org_eclipse_tahu_protobuf_Payload_DataSet_Row_init_zero Payload_DataSet_Row_init_zero
 #define org_eclipse_tahu_protobuf_Payload_PropertyValue_init_zero Payload_PropertyValue_init_zero
 #define org_eclipse_tahu_protobuf_Payload_PropertySet_init_zero Payload_PropertySet_init_zero
 #define org_eclipse_tahu_protobuf_Payload_Metric_init_zero Payload_Metric_init_zero

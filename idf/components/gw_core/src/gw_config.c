@@ -417,7 +417,8 @@ static bool check_topic_id(const char *s, const char *path, bool allow_empty, gw
 
 static const char *const k_area_names[] = {"coil", "discrete", "holding", "input"};
 static const char *const k_type_names[] = {"bool",  "uint16", "int16",   "uint32", "int32",
-                                           "float32", "uint64", "int64", "float64", "string"};
+                                           "float32", "uint64", "int64", "float64", "string",
+                                           "bytes"};
 #define TYPE_COUNT (sizeof(k_type_names) / sizeof(k_type_names[0]))
 /* "big"/"little" are the MVP names of ABCD/CDAB (MB-5); the four letter forms come with MB-6. */
 static const char *const k_word_names[] = {"big", "little", "ABCD", "CDAB", "BADC", "DCBA"};
@@ -1015,10 +1016,12 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
                             "registro tal como llega");
     }
     bool has_length = cJSON_GetObjectItemCaseSensitive(o, "length") != NULL;
-    if ((t->type == GW_TYPE_STRING) != has_length) {
+    bool blob = t->type == GW_TYPE_STRING || t->type == GW_TYPE_BYTES;
+    if (blob != has_length) {
         join(p, sizeof(p), path, "length");
-        return fail(err, p, has_length ? "solo vale con type=string"
-                                       : "obligatorio con type=string (registros, 1-16)");
+        return fail(err, p, has_length ? "solo vale con type=string o bytes"
+                                       : "obligatorio con type=%s (registros, 1-16)",
+                    k_type_names[t->type]);
     }
     if (t->writable && t->area != GW_AREA_COIL && t->area != GW_AREA_HOLDING) {
         join(p, sizeof(p), path, "writable");
@@ -1032,8 +1035,7 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
         join(p, sizeof(p), path, "scale");
         return fail(err, p, "no puede ser 0");
     }
-    if ((t->type == GW_TYPE_BOOL || t->type == GW_TYPE_STRING) &&
-        (t->scale != 1.0 || t->offset != 0.0)) {
+    if ((t->type == GW_TYPE_BOOL || blob) && (t->scale != 1.0 || t->offset != 0.0)) {
         join(p, sizeof(p), path, "scale");
         return fail(err, p, "scale/offset no se admiten en tags %s", k_type_names[t->type]);
     }
@@ -1041,13 +1043,12 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
         join(p, sizeof(p), path, "deadband");
         return fail(err, p, "no puede ser negativo");
     }
-    if (t->type == GW_TYPE_STRING && t->deadband != 0.0) {
+    if (blob && t->deadband != 0.0) {
         join(p, sizeof(p), path, "deadband");
-        return fail(err, p, "no se admite en tags string");
+        return fail(err, p, "no se admite en tags %s", k_type_names[t->type]);
     }
     /* SPB-16: the engineering range of a numeric value */
-    if ((t->has_eng_low || t->has_eng_high) &&
-        (t->type == GW_TYPE_BOOL || t->type == GW_TYPE_STRING)) {
+    if ((t->has_eng_low || t->has_eng_high) && (t->type == GW_TYPE_BOOL || blob)) {
         join(p, sizeof(p), path, t->has_eng_low ? "eng_low" : "eng_high");
         return fail(err, p, "no se admite en tags %s", k_type_names[t->type]);
     }
@@ -1296,6 +1297,7 @@ uint16_t gw_tag_width(const gw_tag_cfg_t *tag)
     case GW_TYPE_FLOAT64:
         return 4;
     case GW_TYPE_STRING:
+    case GW_TYPE_BYTES:
         return tag->length;
     default:
         return 1;   /* 16-bit types, coils, discrete inputs and register bits */

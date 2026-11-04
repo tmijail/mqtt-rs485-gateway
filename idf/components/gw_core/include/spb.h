@@ -29,9 +29,13 @@ extern "C" {
 #define SPB_DT_STRING   12u
 #define SPB_DT_DATETIME 13u
 #define SPB_DT_TEXT     14u
+#define SPB_DT_DATASET  16u   /* SPB-19 */
+#define SPB_DT_BYTES    17u   /* SPB-19 */
+#define SPB_DT_FILE     18u   /* SPB-19: bytes_value, like Bytes (no metadata) */
 
 #define SPB_NAME_MAX    63   /* longest metric name the codec accepts (nanopb max_size 64) */
 #define SPB_STRING_MAX  63
+#define SPB_BYTES_MAX   64   /* longest Bytes / File value (nanopb max_size 64) */
 
 /* SPB-16 Quality property (Int32), as used by Sparkplug hosts. */
 #define SPB_QUALITY_BAD   0
@@ -49,6 +53,36 @@ typedef struct {
     int32_t quality;              /* Quality (Int32): SPB_QUALITY_* */
 } spb_props_t;
 
+struct spb_dataset;
+
+/** A value; the member in use follows the datatype it goes with. */
+typedef union {
+    double num;              /* every numeric and Boolean datatype except the 64-bit integers */
+    int64_t i64;             /* Int64: exact (a double is not above 2^53) */
+    uint64_t u64;            /* UInt64 and DateTime */
+    const char *str;         /* String / Text */
+    struct {
+        const uint8_t *data; /* Bytes / File: at most SPB_BYTES_MAX bytes */
+        size_t len;
+    } bytes;
+    const struct spb_dataset *ds;   /* DataSet */
+} spb_value_t;
+
+/**
+ * SPB-19 outgoing DataSet: a table of @c rows x @c columns. The cells are produced on demand by
+ * @c cell (the encoder may call it more than once per cell: it must be deterministic), so a
+ * table needs no storage of its own. Column types: the numeric and Boolean datatypes, String
+ * and Text; a String cell must stay valid until the payload is encoded.
+ */
+typedef struct spb_dataset {
+    uint32_t columns;
+    const char *const *names;        /* @c columns names */
+    const uint32_t *types;           /* @c columns SPB_DT_* */
+    uint32_t rows;
+    void (*cell)(const void *ctx, uint32_t row, uint32_t col, spb_value_t *out);
+    const void *ctx;
+} spb_dataset_t;
+
 /** Outgoing metric. The oneof value field used on the wire follows @c datatype. */
 typedef struct {
     const char *name;        /* NULL: omitted (DATA messages use the alias only) */
@@ -57,12 +91,7 @@ typedef struct {
     uint64_t timestamp;      /* 0: omitted */
     bool is_null;
     spb_props_t props;       /* all absent when zeroed */
-    union {
-        double num;          /* every numeric and Boolean datatype except the 64-bit integers */
-        int64_t i64;         /* Int64: exact (a double is not above 2^53) */
-        uint64_t u64;        /* UInt64 and DateTime */
-        const char *str;     /* String / Text */
-    } v;
+    spb_value_t v;
 } spb_metric_t;
 
 typedef struct {
@@ -73,7 +102,8 @@ typedef struct {
     size_t metric_count;
 } spb_payload_t;
 
-/** Encode @p p into @p buf. Returns the encoded length, 0 on failure (buffer too small). */
+/** Encode @p p into @p buf. Returns the encoded length, 0 on failure (buffer too small, or a
+ * Bytes value longer than SPB_BYTES_MAX). */
 size_t spb_encode(const spb_payload_t *p, uint8_t *buf, size_t cap);
 
 typedef enum {
@@ -84,7 +114,22 @@ typedef enum {
     SPB_VAL_DOUBLE,
     SPB_VAL_BOOL,
     SPB_VAL_STRING,
+    SPB_VAL_BYTES,    /* bytes_value: Bytes or File */
+    SPB_VAL_DATASET,  /* cells through spb_decoder_t.cell */
 } spb_val_kind_t;
+
+/** An incoming scalar value (DataSet cell). */
+typedef struct {
+    spb_val_kind_t kind;
+    union {
+        uint32_t i;
+        uint64_t l;
+        float f;
+        double d;
+        bool b;
+        const char *s;
+    } v;
+} spb_rx_value_t;
 
 /** One incoming property (the first SPB_RX_PROPS of a metric are kept). */
 #define SPB_RX_PROPS     4
@@ -121,7 +166,18 @@ typedef struct {
         double d;
         bool b;
         const char *s;
+        struct {
+            const uint8_t *data;
+            size_t len;
+        } bytes;
     } v;
+    struct {                         /* SPB_VAL_DATASET */
+        uint64_t num_of_columns;     /* as declared by the sender */
+        uint32_t columns;            /* names received */
+        uint32_t rows;
+        uint32_t types[16];          /* the first 16 column types */
+        uint32_t type_count;
+    } ds;
     uint8_t prop_count;              /* properties the metric carried (all of them counted) */
     spb_rx_prop_t props[SPB_RX_PROPS];
 } spb_rx_metric_t;
@@ -138,6 +194,18 @@ typedef struct {
 
 /** Return false to abort decoding. */
 typedef bool (*spb_metric_cb_t)(void *ctx, const spb_rx_metric_t *m);
+
+/** Decoder callbacks; any may be NULL. The DataSet callbacks run while its metric is being
+ * decoded, before @c metric is called for it. */
+typedef struct {
+    spb_metric_cb_t metric;
+    bool (*column)(void *ctx, uint32_t col, const char *name);   /* name truncated to 63 */
+    bool (*cell)(void *ctx, uint32_t row, uint32_t col, const spb_rx_value_t *v);
+    void *ctx;
+} spb_decoder_t;
+
+/** spb_decode() with every callback; @p d NULL only validates. */
+bool spb_decode_with(const uint8_t *buf, size_t len, spb_rx_header_t *hdr, const spb_decoder_t *d);
 
 /**
  * Decode a payload, invoking @p cb once per metric in wire order. With @p cb NULL the

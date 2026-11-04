@@ -21,7 +21,29 @@ DATATYPE_FIELD = {  # Sparkplug datatype -> oneof field that must carry the valu
     1: "int_value", 2: "int_value", 3: "int_value", 5: "int_value", 6: "int_value", 7: "int_value",
     4: "long_value", 8: "long_value", 13: "long_value",
     9: "float_value", 10: "double_value", 11: "boolean_value", 12: "string_value", 14: "string_value",
+    16: "dataset_value", 17: "bytes_value", 18: "bytes_value",
 }
+CELL_FIELD = {k: v for k, v in DATATYPE_FIELD.items() if k <= 14}   # SPB-19 DataSet columns
+
+
+def check_dataset(m):
+    """SPB-19: num_of_columns, names and types agree; every row has one element per column,
+    in the field its column type asks for."""
+    if m.datatype != 16 or m.is_null:
+        return []
+    ds, errors = m.dataset_value, []
+    if not (ds.num_of_columns == len(ds.columns) == len(ds.types)):
+        errors.append(f"alias {m.alias}: DataSet num_of_columns {ds.num_of_columns}, "
+                      f"{len(ds.columns)} names, {len(ds.types)} types")
+    for r, row in enumerate(ds.rows):
+        if len(row.elements) != len(ds.types):
+            errors.append(f"alias {m.alias}: DataSet row {r} has {len(row.elements)} elements")
+            continue
+        for c, (e, t) in enumerate(zip(row.elements, ds.types)):
+            if e.WhichOneof("value") != CELL_FIELD.get(t):
+                errors.append(f"alias {m.alias}: DataSet cell [{r}][{c}] of type {t} in "
+                              f"{e.WhichOneof('value')}")
+    return errors
 
 
 def load_module():
@@ -71,6 +93,10 @@ def check_properties(m):
 
 def value_of(m):
     which = m.WhichOneof("value")
+    if which == "dataset_value":
+        ds = m.dataset_value
+        return {"columns": list(ds.columns), "types": list(ds.types),
+                "rows": [[value_of(e) for e in row.elements] for row in ds.rows]}
     return None if which is None else getattr(m, which)
 
 
@@ -117,6 +143,7 @@ def check(kind, p):
         if not m.is_null and expected and m.WhichOneof("value") != expected:
             errors.append(f"alias {m.alias}: datatype {m.datatype} carried in {m.WhichOneof('value')}")
         errors += check_properties(m)
+        errors += check_dataset(m)
     if kind == "NBIRTH":
         names = {m.name for m in p.metrics}
         for required in ("bdSeq", "Node Control/Rebirth", "Node Control/Reboot",

@@ -9,13 +9,22 @@
 PB_BIND(Payload, Payload, AUTO)
 
 
+PB_BIND(Payload_DataSet, Payload_DataSet, AUTO)
+
+
+PB_BIND(Payload_DataSet_DataSetValue, Payload_DataSet_DataSetValue, AUTO)
+
+
+PB_BIND(Payload_DataSet_Row, Payload_DataSet_Row, AUTO)
+
+
 PB_BIND(Payload_PropertyValue, Payload_PropertyValue, AUTO)
 
 
 PB_BIND(Payload_PropertySet, Payload_PropertySet, AUTO)
 
 
-PB_BIND(Payload_Metric, Payload_Metric, AUTO)
+PB_BIND(Payload_Metric, Payload_Metric, 2)
 
 
 

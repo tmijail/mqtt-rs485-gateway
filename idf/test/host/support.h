@@ -94,6 +94,8 @@ typedef struct {
         double num;
         uint64_t u64;            /* long_value, exact */
         char str[64];
+        uint8_t bytes[SPB_BYTES_MAX];   /* SPB-19 Bytes / File */
+        size_t bytes_len;
         uint64_t timestamp;
         /* SPB-16 properties */
         uint8_t prop_count;

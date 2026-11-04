@@ -214,6 +214,132 @@ static void test_property_decode_bounds(void)
     TEST_ASSERT_EQUAL(5, dec.m[0].prop_count);
 }
 
+/* SPB-19: Bytes and File travel in bytes_value (NUL and any byte included), up to 64 bytes. */
+static void test_bytes_and_file(void)
+{
+    static const uint8_t raw[5] = {0x00, 0xFF, 0x10, 0x00, 0x7F};
+    static uint8_t big[SPB_BYTES_MAX + 1];
+    spb_metric_t m[] = {
+        {.alias = 1, .datatype = SPB_DT_BYTES, .v.bytes = {raw, sizeof(raw)}},
+        {.alias = 2, .datatype = SPB_DT_FILE, .v.bytes = {big, SPB_BYTES_MAX}},
+        {.alias = 3, .datatype = SPB_DT_BYTES, .v.bytes = {NULL, 0}},
+    };
+    spb_payload_t p = {.timestamp = 1, .has_seq = true, .seq = 0, .metrics = m, .metric_count = 3};
+    size_t len = spb_encode(&p, buf, sizeof(buf));
+    TEST_ASSERT_GREATER_THAN(0, len);
+    TEST_ASSERT_TRUE(decode_payload(buf, len, &dec));
+    TEST_ASSERT_EQUAL(SPB_VAL_BYTES, dec.m[0].kind);
+    TEST_ASSERT_EQUAL(sizeof(raw), dec.m[0].bytes_len);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(raw, dec.m[0].bytes, sizeof(raw));
+    TEST_ASSERT_EQUAL(SPB_DT_FILE, dec.m[1].datatype);
+    TEST_ASSERT_EQUAL(SPB_BYTES_MAX, dec.m[1].bytes_len);
+    TEST_ASSERT_EQUAL(SPB_VAL_BYTES, dec.m[2].kind);
+    TEST_ASSERT_EQUAL(0, dec.m[2].bytes_len);
+    m[1].v.bytes.len = SPB_BYTES_MAX + 1;   /* too long: the payload is refused, not cut */
+    TEST_ASSERT_EQUAL(0, spb_encode(&p, buf, sizeof(buf)));
+}
+
+/* SPB-19 DataSet: names, types and rows produced by a cell callback; decoded with the column
+ * and cell callbacks of spb_decode_with. */
+static const char *const k_cols[] = {"Device", "Online", "OK", "Total", "Ratio", "Load"};
+static const uint32_t k_types[] = {SPB_DT_STRING, SPB_DT_BOOLEAN, SPB_DT_UINT32, SPB_DT_UINT64,
+                                   SPB_DT_DOUBLE, SPB_DT_FLOAT};
+
+static void ds_cell(const void *ctx, uint32_t row, uint32_t col, spb_value_t *out)
+{
+    (void)ctx;
+    static const char *const names[] = {"Meter1", "Pump2"};
+    switch (col) {
+    case 0: out->str = names[row]; break;
+    case 1: out->num = row == 0; break;
+    case 2: out->num = 4000000000.0 + row; break;
+    case 3: out->u64 = 9007199254740993ull + row; break;
+    case 4: out->num = 0.25 * (row + 1); break;
+    default: out->num = -1.5; break;
+    }
+}
+
+typedef struct {
+    char names[8][16];
+    uint32_t cols;
+    spb_rx_value_t cells[2][6];
+    char strs[2][16];
+    uint32_t cell_count;
+    spb_rx_metric_t m;
+} ds_rx_t;
+
+static bool on_column(void *ctx, uint32_t col, const char *name)
+{
+    ds_rx_t *r = ctx;
+    snprintf(r->names[col], sizeof(r->names[col]), "%s", name);
+    r->cols++;
+    return true;
+}
+
+static bool on_cell(void *ctx, uint32_t row, uint32_t col, const spb_rx_value_t *v)
+{
+    ds_rx_t *r = ctx;
+    r->cells[row][col] = *v;
+    if (v->kind == SPB_VAL_STRING) {
+        snprintf(r->strs[row], sizeof(r->strs[row]), "%s", v->v.s);
+    }
+    r->cell_count++;
+    return true;
+}
+
+static bool on_ds_metric(void *ctx, const spb_rx_metric_t *m)
+{
+    ds_rx_t *r = ctx;
+    r->m = *m;
+    return true;
+}
+
+static void test_dataset_round_trip(void)
+{
+    const spb_dataset_t ds = {.columns = 6, .names = k_cols, .types = k_types, .rows = 2,
+                              .cell = ds_cell};
+    spb_metric_t m = {.name = "Node Info/Modbus", .alias = 9, .datatype = SPB_DT_DATASET,
+                      .v.ds = &ds};
+    spb_payload_t p = {.timestamp = 1, .has_seq = true, .seq = 3, .metrics = &m, .metric_count = 1};
+    size_t len = spb_encode(&p, buf, sizeof(buf));
+    TEST_ASSERT_GREATER_THAN(0, len);
+    static ds_rx_t r;
+    memset(&r, 0, sizeof(r));
+    const spb_decoder_t d = {.metric = on_ds_metric, .column = on_column, .cell = on_cell, .ctx = &r};
+    TEST_ASSERT_TRUE(spb_decode_with(buf, len, NULL, &d));
+    TEST_ASSERT_EQUAL(SPB_VAL_DATASET, r.m.kind);
+    TEST_ASSERT_EQUAL_UINT64(6, r.m.ds.num_of_columns);
+    TEST_ASSERT_EQUAL(6, r.m.ds.columns);
+    TEST_ASSERT_EQUAL(2, r.m.ds.rows);
+    TEST_ASSERT_EQUAL(6, r.m.ds.type_count);
+    TEST_ASSERT_EQUAL_UINT32_ARRAY(k_types, r.m.ds.types, 6);
+    TEST_ASSERT_EQUAL_STRING("Device", r.names[0]);
+    TEST_ASSERT_EQUAL_STRING("Load", r.names[5]);
+    TEST_ASSERT_EQUAL(12, r.cell_count);
+    TEST_ASSERT_EQUAL_STRING("Pump2", r.strs[1]);
+    TEST_ASSERT_EQUAL(SPB_VAL_BOOL, r.cells[0][1].kind);
+    TEST_ASSERT_TRUE(r.cells[0][1].v.b);
+    TEST_ASSERT_FALSE(r.cells[1][1].v.b);
+    TEST_ASSERT_EQUAL(SPB_VAL_INT, r.cells[1][2].kind);
+    TEST_ASSERT_EQUAL_UINT32(4000000001u, r.cells[1][2].v.i);
+    TEST_ASSERT_EQUAL(SPB_VAL_LONG, r.cells[0][3].kind);
+    TEST_ASSERT_EQUAL_UINT64(9007199254740993ull, r.cells[0][3].v.l);
+    TEST_ASSERT_EQUAL_DOUBLE(0.5, r.cells[1][4].v.d);
+    TEST_ASSERT_EQUAL(SPB_VAL_FLOAT, r.cells[0][5].kind);
+    TEST_ASSERT_EQUAL_FLOAT(-1.5f, r.cells[0][5].v.f);
+    /* the plain decoder skips the cells but still validates them */
+    TEST_ASSERT_TRUE(decode_payload(buf, len, &dec));
+    TEST_ASSERT_EQUAL(SPB_VAL_DATASET, dec.m[0].kind);
+
+    /* a column type a DataSet cannot carry fails the encoding */
+    static const uint32_t bad[] = {SPB_DT_STRING, SPB_DT_BOOLEAN, SPB_DT_UINT32, SPB_DT_UINT64,
+                                   SPB_DT_DOUBLE, SPB_DT_BYTES};
+    const spb_dataset_t ds_bad = {.columns = 6, .names = k_cols, .types = bad, .rows = 1,
+                                  .cell = ds_cell};
+    m.v.ds = &ds_bad;
+    TEST_ASSERT_EQUAL(0, spb_encode(&p, buf, sizeof(buf)));
+}
+
 static void test_worst_case_birth_fits(void)
 {
     /* SPB-16: the widest DBIRTH metric carries every property; 64 of them, either numeric with
@@ -273,6 +399,8 @@ int main(void)
     RUN_TEST(test_decode_rejects_garbage);
     RUN_TEST(test_properties_round_trip);
     RUN_TEST(test_property_decode_bounds);
+    RUN_TEST(test_bytes_and_file);
+    RUN_TEST(test_dataset_round_trip);
     RUN_TEST(test_worst_case_birth_fits);
     RUN_TEST(test_topics);
     return UNITY_END();

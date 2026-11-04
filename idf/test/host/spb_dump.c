@@ -12,6 +12,40 @@
 #include "gw_tagdb.h"
 #include "support.h"
 
+/* SPB-19: a DataSet (every column kind) and a File metric, in a standalone NDATA, so the
+ * official proto checks the codec's wire format of both. */
+static const char *const k_ds_cols[] = {"Device", "Online", "OK", "Total", "Ratio", "Load", "Temp"};
+static const uint32_t k_ds_types[] = {SPB_DT_STRING, SPB_DT_BOOLEAN, SPB_DT_UINT32, SPB_DT_UINT64,
+                                      SPB_DT_DOUBLE, SPB_DT_FLOAT,   SPB_DT_INT16};
+
+static void ds_cell(const void *ctx, uint32_t row, uint32_t col, spb_value_t *out)
+{
+    (void)ctx;
+    switch (col) {
+    case 0: out->str = row == 0 ? "Meter1" : "Pump2"; break;
+    case 1: out->num = row == 0; break;
+    case 2: out->num = 4000000000.0; break;
+    case 3: out->u64 = 9007199254740993ull; break;
+    case 4: out->num = 0.25; break;
+    case 5: out->num = -1.5; break;
+    default: out->num = -5; break;
+    }
+}
+
+static size_t dataset_payload(uint8_t *out, size_t cap)
+{
+    static const spb_dataset_t ds = {.columns = 7, .names = k_ds_cols, .types = k_ds_types,
+                                     .rows = 2, .cell = ds_cell};
+    static const uint8_t file[] = "line 1\nline 2\n";
+    const spb_metric_t m[] = {
+        {.alias = 900, .datatype = SPB_DT_DATASET, .timestamp = 1762171203000ull, .v.ds = &ds},
+        {.alias = 901, .datatype = SPB_DT_FILE, .v.bytes = {file, sizeof(file) - 1}},
+    };
+    spb_payload_t p = {.timestamp = 1762171203000ull, .has_seq = true, .seq = 9, .metrics = m,
+                       .metric_count = 2};
+    return spb_encode(&p, out, cap);
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2) {
@@ -61,7 +95,9 @@ int main(int argc, char **argv)
         " {\"name\": \"Flow\", \"area\": \"input\", \"address\": 0, \"type\": \"float64\"},"
         " {\"name\": \"Serial\", \"area\": \"holding\", \"address\": 10, \"type\": \"string\","
         " \"length\": 8},"
-        " {\"name\": \"Alarm\", \"area\": \"holding\", \"address\": 20, \"type\": \"bool\", \"bit\": 3}]}]}";
+        " {\"name\": \"Alarm\", \"area\": \"holding\", \"address\": 20, \"type\": \"bool\", \"bit\": 3},"
+        " {\"name\": \"Raw\", \"area\": \"holding\", \"address\": 30, \"type\": \"bytes\","
+        " \"length\": 3}]}]}";
     static gw_config_t mb6;
     gw_cfg_err_t err;
     if (!gw_config_parse(mb6_json, sizeof(mb6_json) - 1, &mb6, &err)) {
@@ -71,14 +107,15 @@ int main(int argc, char **argv)
     gw_tagdb_reset();
     static gw_node_t node6;
     gw_node_init(&node6, &mb6, &ops, &info);
-    gw_tag_value_t w[5];
+    gw_tag_value_t w[6];
     memset(w, 0, sizeof(w));
+    memcpy(w[5].str, "\x00\xff\x10\x00\x7f\x80", 6);   /* SPB-19 Bytes */
     w[0].u64 = 9007199254740993ull;
     w[1].i64 = -9007199254740993ll;
     w[2].value = 1234.56789012345;
     strcpy(w[3].str, "SN-0042-ABCD");
     w[4].value = 1;
-    for (int k = 0; k < 5; k++) {
+    for (int k = 0; k < 6; k++) {
         w[k].ts_ms = 1762171200000ull;
         w[k].valid = true;
     }
@@ -93,6 +130,14 @@ int main(int argc, char **argv)
     snprintf(path, sizeof(path), "%s/0_NDEATH.bin", argv[1]);
     FILE *f = fopen(path, "wb");
     if (f == NULL || fwrite(death, 1, dl, f) != dl) {
+        return 1;
+    }
+    fclose(f);
+    static uint8_t ds_buf[1024];
+    size_t dsl = dataset_payload(ds_buf, sizeof(ds_buf));
+    snprintf(path, sizeof(path), "%s/99_NDATA.bin", argv[1]);
+    f = fopen(path, "wb");
+    if (dsl == 0 || f == NULL || fwrite(ds_buf, 1, dsl, f) != dsl) {
         return 1;
     }
     fclose(f);

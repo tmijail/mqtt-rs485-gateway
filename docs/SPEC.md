@@ -253,6 +253,7 @@ Encuesta N esclavos Modbus RTU por el RS485 integrado, con los tipos de 16 y 32 
 | `float64` (MB-6), o `uint64`/`int64`/`float64` con `scale` ≠ 1 u `offset` ≠ 0 | Double (10) |
 | `string` (MB-6) | String (12) |
 | `bool` con `bit` (MB-6) | Boolean (11) |
+| `bytes` (SPB-19) | Bytes (17) |
 
 ### 6.1 Claves opcionales fuera del MVP
 
@@ -326,6 +327,16 @@ El router por defecto IPv6 se aprende de los RA; no hay *gateway* IPv6 estático
 - **Exactitud.** `int64` y `uint64` sin escala se publican exactos (UInt64/Int64), también por encima de 2^53; con `scale`/`offset` pasan a Double.
 - **`string`:** se corta en el primer NUL y se quitan los espacios finales; lo que no es ASCII imprimible se publica como `?`. Al escribir se rellena con NUL; un texto más largo que `2 × length` se rechaza. No admite `scale`, `offset` ni `deadband`.
 - **Escritura de un bit:** lectura del registro (FC03) y escritura del registro completo con el bit cambiado (FC06, o FC16 con escrituras múltiples forzadas).
+
+**Bloque de registros crudo (SPB-19), `type: bytes`.**
+
+```json
+{ "name": "Block", "area": "holding", "address": 220, "type": "bytes", "length": 3, "writable": true }
+```
+
+- `length` registros (1–16, obligatorio) que se publican como métrica **Bytes** (17): dos bytes por registro, el alto primero (el bajo primero con `BADC`/`DCBA`; el orden de palabras no se aplica). Sin ningún otro proceso: un NUL o un byte no ASCII viajan tal cual.
+- No admite `scale`, `offset`, `deadband`, `eng_low` ni `eng_high`. El reporte por excepción compara todos los bytes.
+- Un DCMD debe traer un valor Bytes de exactamente `2 × length` bytes; se escribe con una FC16.
 
 **Propiedades de métrica (SPB-16), en cada tag.**
 

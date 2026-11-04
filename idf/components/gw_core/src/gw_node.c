@@ -89,6 +89,8 @@ static uint64_t rbe_key(const gw_tag_cfg_t *t, const gw_tag_value_t *v)
         return (uint64_t)v->i64;
     case GW_VK_UINT64:
         return v->u64;
+    case GW_VK_BYTES:
+        return gw_rbe_hash_bytes(v->str, 2u * t->length);
     default:
         return gw_rbe_hash(v->str);
     }
@@ -131,6 +133,10 @@ static void tag_metric(gw_node_t *n, size_t i, uint16_t tag, const gw_tag_value_
         break;
     case GW_VK_STRING:
         m->v.str = v->str;
+        break;
+    case GW_VK_BYTES:
+        m->v.bytes.data = (const uint8_t *)v->str;
+        m->v.bytes.len = 2u * t->length;
         break;
     default:
         m->v.num = v->value;
@@ -477,6 +483,17 @@ static bool rx_value(const gw_tag_cfg_t *t, const spb_rx_metric_t *m, gw_tag_val
             return false;
         }
         strcpy(out->str, m->v.s);
+        return true;
+    case GW_VK_BYTES:   /* SPB-19: exactly the tag's registers, nothing to pad */
+        if (m->is_null || m->kind != SPB_VAL_BYTES) {
+            *why = "no Bytes value";
+            return false;
+        }
+        if (m->v.bytes.len != 2u * t->length) {
+            *why = "Bytes value of another length than the tag";
+            return false;
+        }
+        memcpy(out->str, m->v.bytes.data, m->v.bytes.len);
         return true;
     case GW_VK_INT64:
         if (!rx_integer(m, dt, &neg, &mag)) {

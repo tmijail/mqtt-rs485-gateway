@@ -692,7 +692,7 @@ def main():
         if want("failsafe"):
             run_config_failsafe(args, work, slave)
         if want("network"):
-            run_network_variant(args, work)
+            run_network_variant(args, work, slave)
         if want("web"):
             run_web(args, work)
         if want("reset"):
@@ -1178,7 +1178,7 @@ def check_mb6_writes(obs, slave, dcmd_t, ddata_t):
           f"slave writes {slave.ctx.writes}, holding 60 = {reg60:#06x}, DDATA {seen}")
 
 
-def run_network_variant(args, work):
+def run_network_variant(args, work, slave):
     """Optional network keys on the emulator, in one boot with a separate edge node id (its
     messages stay apart from the main scenario's):
       * NET-4: no Wi-Fi radio (CONFIG_GW_WIFI=n): a configuration that enables network.wifi still
@@ -1186,7 +1186,9 @@ def run_network_variant(args, work):
       * NET-7: slirp announces fec0::/64 and answers ICMPv6 for its virtual host fec0::2. The
         gateway must get a link-local address, a SLAAC address and the static one, and reach
         fec0::2 over IPv6. MQTT over IPv6 cannot be tested here: slirp would relay it to the
-        host's ::1 and this container's kernel has no IPv6 (AF_INET6 is not supported)."""
+        host's ::1 and this container's kernel has no IPv6 (AF_INET6 is not supported).
+      * SPB-19: a "bytes" tag (device Raw, unit 1 holding 220-222) is a Bytes metric with the raw
+        register bytes, and a DCMD with Bytes writes them back (FC16)."""
     node = "GW02"
     cfg = json.loads(config_json())
     cfg["sparkplug"]["edge_node_id"] = node
@@ -1195,6 +1197,10 @@ def run_network_variant(args, work):
                       "wifi": {"enabled": True, "ssid": "Plant WLAN", "password": "12345678",
                                "role": "backup", "failback_s": 30}}
     cfg["modbus_tcp"] = {"enabled": True, "allowed_clients": ["192.0.2.0/24"]}
+    cfg["devices"].append({"name": "Raw", "unit_id": 1, "poll_ms": 500, "tags": [
+        {"name": "Block", "area": "holding", "address": 220, "type": "bytes", "length": 3,
+         "writable": True}]})
+    slave.ctx.setValues(3, 220, [0x00FF, 0x1000, 0x7F80])
     flash = flash_variant(args, work, "network", {"config.json": json.dumps(cfg, indent=2).encode()})
     obs = Observer()
     gw = Gateway(args, work / "uart0-network.log", flash)
@@ -1228,6 +1234,15 @@ def run_network_variant(args, work):
                           3, asked_tcp)
     _, h = gw.shell("devices", [r"^modbus_tcp connections 0 accepted 1 rejected \| forwarded 0 "])
     counted = all(h.values())
+    # SPB-19 Bytes
+    raw_birth = obs.wait(f"{T}/DBIRTH/{node}/Raw", 15)
+    block = metric(raw_birth[2], name="Block") if raw_birth else None
+    obs.drain()
+    written_from = len(slave.ctx.writes)
+    obs.publish_cmd(f"{T}/DCMD/{node}/Raw", [{"name": "Block", "datatype": 17,
+                                              "bytes_value": b"\xde\xad\xbe\xef\x01\x02"}])
+    raw_data = obs.wait(f"{T}/DDATA/{node}/Raw", 5)
+    writes = slave.ctx.writes[written_from:]
     gw.kill()
     obs.wait(f"{T}/NDEATH/{node}", 5)   # the will, before the main scenario starts
     obs.close()
@@ -1240,6 +1255,13 @@ def run_network_variant(args, work):
           "disconnected without an answer and counted as rejected (#69)", denied == b"" and refused
           and counted,
           f"answer {denied!r}; {(gw.find(r'mbtcp: connection from', asked_tcp) or ['no log'])[0]}")
+    got = raw_data[2].metrics[0].bytes_value if raw_data and raw_data[2].metrics else None
+    check("SPB-19 'bytes' tag: Bytes metric (17) with the raw register bytes (NUL included) in the "
+          "DBIRTH; DCMD with Bytes -> one FC16 of the 3 registers and DDATA with the new bytes",
+          block is not None and block.datatype == 17 and block.bytes_value == b"\x00\xff\x10\x00\x7f\x80"
+          and writes == [(16, 220, [0xDEAD, 0xBEEF, 0x0102])] and got == b"\xde\xad\xbe\xef\x01\x02",
+          f"DBIRTH {block.datatype if block else None} {block.bytes_value.hex() if block else None}; "
+          f"writes {writes}; DDATA {got.hex() if got else None}")
     check("NET-7 IPv6 on Ethernet: link-local, SLAAC (fec0::/64 from slirp's RA) and static "
           "address, shown by the shell; ICMPv6 echo to fec0::2 answered",
           lla and slaac and static and listed and cfg6 and replies,

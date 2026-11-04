@@ -309,7 +309,10 @@ static bool dec_cb(void *ctx, const spb_rx_metric_t *m)
     if (m->kind == SPB_VAL_LONG) {
         o->u64 = m->v.l;
     }
-    if (m->kind == SPB_VAL_STRING) {
+    if (m->kind == SPB_VAL_BYTES) {
+        o->bytes_len = m->v.bytes.len;
+        memcpy(o->bytes, m->v.bytes.data, m->v.bytes.len);
+    } else if (m->kind == SPB_VAL_STRING) {
         snprintf(o->str, sizeof(o->str), "%s", m->v.s);
     } else {
         spb_rx_number(m, m->datatype, &o->num);

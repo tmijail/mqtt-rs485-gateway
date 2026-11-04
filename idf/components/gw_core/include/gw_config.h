@@ -63,6 +63,7 @@ typedef enum {
     GW_TYPE_INT64,
     GW_TYPE_FLOAT64,
     GW_TYPE_STRING,     /* MB-6: `length` registers, two ASCII characters each */
+    GW_TYPE_BYTES,      /* SPB-19: `length` registers as raw bytes (Sparkplug Bytes) */
 } gw_type_t;
 
 /* Register and byte order of multi-byte values (MB-5, MB-6). Letters name the bytes of the value
@@ -153,7 +154,8 @@ typedef struct {
     gw_word_order_t word_order;
     uint16_t address;
     int8_t bit;                 /* MB-6: bit 0..15 of a holding/input register (bool), or GW_NO_BIT */
-    uint8_t length;             /* MB-6: registers of a string tag (1..GW_STR_MAX_REGS), else 0 */
+    uint8_t length;             /* MB-6: registers of a string or bytes tag (1..GW_STR_MAX_REGS),
+                                 * else 0 */
     bool slow;                  /* MB-12: read every slow_poll_ms of its device ("scan": "slow") */
     bool writable;
     double scale;

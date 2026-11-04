@@ -1,6 +1,6 @@
 # nanopb options for Eclipse Tahu sparkplug_b.proto (proto file kept unmodified).
 # Repeated and recursive parts are callbacks (streamed, nothing proportional to their size
-# is allocated); fixed-size strings bound what a command may carry.
+# is allocated); fixed-size strings and bytes bound what a command may carry.
 sparkplug_b.proto                    mangle_names:M_STRIP_PACKAGE
 Payload.uuid                       type:FT_IGNORE
 Payload.body                       type:FT_IGNORE
@@ -9,8 +9,8 @@ Payload.Metric.name                max_size:64
 Payload.Metric.metadata            type:FT_IGNORE
 Payload.Metric.properties          type:FT_CALLBACK
 Payload.Metric.string_value        max_size:64
-Payload.Metric.bytes_value         type:FT_IGNORE
-Payload.Metric.dataset_value       type:FT_IGNORE
+Payload.Metric.bytes_value         max_size:64
+Payload.Metric.dataset_value       submsg_callback:true
 Payload.Metric.template_value      type:FT_IGNORE
 Payload.Metric.extension_value     type:FT_IGNORE
 Payload.Metric.MetricValueExtension skip_message:true
@@ -26,5 +26,11 @@ Payload.PropertySetList            skip_message:true
 Payload.MetaData                   skip_message:true
 Payload.Template                   skip_message:true
 Payload.Template.*                 skip_message:true
-Payload.DataSet                    skip_message:true
-Payload.DataSet.*                  skip_message:true
+# SPB-19 DataSet
+Payload.DataSet.columns            type:FT_CALLBACK
+Payload.DataSet.types              type:FT_CALLBACK
+Payload.DataSet.rows               type:FT_CALLBACK
+Payload.DataSet.Row.elements       type:FT_CALLBACK
+Payload.DataSet.DataSetValue.string_value    max_size:64
+Payload.DataSet.DataSetValue.extension_value type:FT_IGNORE
+Payload.DataSet.DataSetValue.DataSetValueExtension skip_message:true

@@ -59,3 +59,13 @@ uint64_t gw_rbe_hash(const char *s)
     }
     return h;
 }
+
+uint64_t gw_rbe_hash_bytes(const void *data, size_t len)
+{
+    uint64_t h = 1469598103934665603ull;
+    const unsigned char *c = data;
+    for (size_t i = 0; i < len; i++) {
+        h = (h ^ c[i]) * 1099511628211ull;
+    }
+    return h;
+}

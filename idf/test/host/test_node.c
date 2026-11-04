@@ -717,6 +717,55 @@ static void test_properties_and_quality(void)
     TEST_ASSERT_FALSE(dec.m[0].has_quality);
 }
 
+/* SPB-19: a bytes tag is a Bytes metric (raw register bytes); report by exception over the
+ * bytes; DCMD with a Bytes value of exactly 2 x length bytes. */
+static void test_bytes_tag(void)
+{
+    static const char json[] =
+        "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+        " \"devices\": [{\"name\": \"M\", \"unit_id\": 1, \"tags\": ["
+        " {\"name\": \"Raw\", \"area\": \"holding\", \"address\": 0, \"type\": \"bytes\","
+        "  \"length\": 2, \"writable\": true}]}]}";
+    static gw_config_t c;
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(json, sizeof(json) - 1, &c, &err), err.msg);
+    cfg = &c;
+    gw_tagdb_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    gw_tag_value_t v = {.ts_ms = 1000, .valid = true};
+    memcpy(v.str, "\x00\x01\x00\x02", 4);   /* NUL first: not a C string */
+    gw_tagdb_put_device(cfg, 0, &v, true);
+    gw_node_session_up(&node, 0);
+    msg(1);
+    TEST_ASSERT_EQUAL(SPB_DT_BYTES, dec.m[0].datatype);
+    TEST_ASSERT_EQUAL(4, dec.m[0].bytes_len);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY("\x00\x01\x00\x02", dec.m[0].bytes, 4);
+
+    recorder_clear();
+    gw_node_device_changed(&node, 0);
+    TEST_ASSERT_EQUAL(0, g_rec.count);                /* unchanged */
+    v.str[3] = 0x03;                                  /* a change after the NUL is seen */
+    gw_tagdb_put_device(cfg, 0, &v, true);
+    gw_node_device_changed(&node, 0);
+    msg(0);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_EQUAL_HEX8(0x03, dec.m[0].bytes[3]);
+
+    recorder_clear();
+    static const uint8_t w[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+    spb_metric_t b = {.name = "Raw", .datatype = SPB_DT_BYTES, .v.bytes = {w, 4}};
+    send("spBv1.0/G/DCMD/N/M", &b, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.writes);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(w, g_rec.last_write.str, 4);
+    b.v.bytes.len = 3;                                /* not the tag's 4 bytes */
+    send("spBv1.0/G/DCMD/N/M", &b, 1);
+    spb_metric_t s = {.name = "Raw", .datatype = SPB_DT_STRING, .v.str = "ABCD"};
+    send("spBv1.0/G/DCMD/N/M", &s, 1);                /* a String is not Bytes */
+    TEST_ASSERT_EQUAL(1, g_rec.writes);
+}
+
 /* Issue #14: a command metric without an alias is not logged as "alias 0". */
 static void test_discard_log_shows_alias_only_if_present(void)
 {
@@ -822,6 +871,7 @@ int main(void)
     RUN_TEST(test_discard_log_shows_alias_only_if_present);
     RUN_TEST(test_do_unknown_published_as_null);
     RUN_TEST(test_properties_and_quality);
+    RUN_TEST(test_bytes_tag);
     RUN_TEST(test_command_aborted_mid_payload_applies_nothing);
     return UNITY_END();
 }
