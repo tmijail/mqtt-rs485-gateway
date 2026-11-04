@@ -1825,9 +1825,29 @@ def run_ota(args, work):
               + (f"; {(gw.find(r'secure_boot_v2|[Ss]ignature', asked) or ['no signature log'])[0][:120]}"
                  if signed else ""))
 
-        # NCMD with the URL: download with progress, restart into it, trial, confirmed
+        # Issue #87: URLs longer than 63 characters arrive whole (up to 255 for an update);
+        # longer ones are refused with a clear reason, never cut
+        def long_url(n):
+            base = f"https://10.0.2.2:{fw_port}/v2.bin?pad="
+            return base + "p" * (n - len(base))
+
         asked = time.monotonic()
-        update(f"https://10.0.2.2:{fw_port}/v2.bin")
+        update(long_url(300))   # over the codec's 256: the NCMD is undecodable, nothing applied
+        undecodable = gw.wait_log(r"NCMD: undecodable payload \(\d+ bytes: string overflow; strings up "
+                                  r"to 256 characters", 10, asked)
+        update(long_url(256))   # fits the codec, not an update URL (255 at most)
+        too_long = obs.wait(ndata_t, 10, lambda p: (fw_state(p) or "") ==
+                            "refused: URL longer than 255 characters")
+        check("Issue #87 a firmware URL over the limits is refused with its reason, never cut: 300 "
+              "characters (more than the codec's 256) -> NCMD undecodable, 256 -> refused (255 at "
+              "most)", undecodable and too_long,
+              f"{(gw.find(r'NCMD: undecodable payload', asked) or ['no log'])[0][:140]}; state "
+              f"{fw_state(too_long[2]) if too_long else None!r}")
+
+        # NCMD with the URL: download with progress, restart into it, trial, confirmed; a
+        # 250-character URL (issue #87: it must arrive whole)
+        asked = time.monotonic()
+        update(long_url(250))
         nb2 = obs.wait(nbirth_t, 240, lambda p: metric(p, name="Node Info/Firmware").string_value
                        == "e2e-v2")
         conf2 = obs.wait(ndata_t, 20, lambda p: fw_state(p) == "confirmed: e2e-v2")
@@ -1835,7 +1855,7 @@ def run_ota(args, work):
         prog = [int(metric(m[2], alias=42).long_value or metric(m[2], alias=42).int_value)
                 for m in CAPTURE if m[0] >= asked and m[1] == ndata_t and metric(m[2], alias=42)]
         took = [ln for ln in gw.find(r"fw: downloading firmware e2e-v2", asked)]
-        check("FW-1 update by NCMD over HTTPS (CA from ota.ca_file): progress as NDATA, restart into "
+        check("FW-1 update by NCMD over HTTPS (CA from ota.ca_file, a 250-character URL): progress as NDATA, restart into "
               "the new image, on trial until its first session, then confirmed",
               nb2 and conf2 and "rebooting into e2e-v2" in seen and fw_state(nb2[2]) ==
               "on trial: e2e-v2" and prog and max(prog) == 100 and len(prog) >= 5 and took,

@@ -299,7 +299,7 @@ Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 
 **Cómo se dispara:**
 
-- **NCMD** `Node Control/Firmware Update` (String, alias 40) con la URL `https://…` de la imagen (`build/rs485_spb_gateway.bin`, o la firmada en producción, §3.6). El codec Sparkplug acepta textos de hasta 63 caracteres.
+- **NCMD** `Node Control/Firmware Update` (String, alias 40) con la URL `https://…` de la imagen (`build/rs485_spb_gateway.bin`, o la firmada en producción, §3.6). El codec Sparkplug acepta textos de hasta 256 caracteres y una URL de actualización tiene hasta 255 (issue #87); más larga se rechaza con su motivo, nunca se corta.
 - **Web:** tarjeta "Firmware" de la página de estado, o la API: `POST /api/firmware` con `{"url": "https://…"}` (`application/json`, hasta 255 caracteres) o con la imagen como cuerpo (`application/octet-stream`). `GET /api/firmware` da la versión, la partición, el estado y el avance.
 - `ota.enabled: false` (SPEC §6.1) rechaza las dos vías. En recuperación y en puesta en marcha la web siempre puede subir una imagen: es la salida si el firmware nuevo no entiende la configuración.
 
@@ -772,7 +772,7 @@ La build de QEMU difiere de la de placa en esos puntos (`sdkconfig.qemu`).
 ### 6.3.2 DataSet, Bytes y File (SPB-19)
 
 - **Bytes y File: hasta 64 B** por valor (un búfer fijo en la pila del codec). Un valor más largo no se publica (el payload falla con log) y un comando que lo trae no se decodifica y se descarta entero. **File no lleva `metadata`** (nombre, tamaño, md5) ni se trocea: no hay transferencia de archivos (REL-2 exige memoria acotada).
-- DataSet: las columnas solo pueden ser numéricas, Boolean, String o Text (no Bytes, DataSet ni Template, que el proto tampoco admite en una celda); un texto de celda de más de 63 caracteres se corta al publicar. Al decodificar, nombres y celdas se entregan por callbacks y se guardan los primeros 16 tipos.
+- DataSet: las columnas solo pueden ser numéricas, Boolean, String o Text (no Bytes, DataSet ni Template, que el proto tampoco admite en una celda); un texto de celda de más de 63 caracteres no se corta: hace fallar la codificación de ese mensaje, con log (issue #87); la única fuente, los nombres de dispositivo, es más corta. Al decodificar, nombres y celdas se entregan por callbacks y se guardan los primeros 16 tipos.
 
 ### 6.4 Reloj
 
@@ -794,7 +794,7 @@ La build de QEMU difiere de la de placa en esos puntos (`sdkconfig.qemu`).
 - **E2E del enlace lento.** Un relay del harness lee lo que manda el gateway a 700 B/s. slirp y los sockets del host guardan más de 100 KB antes de que la escritura del gateway espere, así que el harness pide *rebirths* hasta llenarlos. Con 700 B/s y payloads de 6 KB como máximo el presupuesto de 8 s no se alcanza de forma fiable: la build de QEMU lo baja a 2 s (`sdkconfig.qemu`). Lo que se ejecuta es el corte por presupuesto, el cierre de la sesión y la vuelta con el enlace rápido; el disparo del TWDT en sí no (QEMU corre con `wdt_disable`).
 - **"Session up" solo con los births afuera (issue #71).** Si la conexión cae justo después del SUBACK, no se arrancan los births (`SUBACK received but the connection is already gone`) o, si el NBIRTH o algún DBIRTH no salen, la sesión no se da por arriba (`NBIRTH not published` / `births incomplete`) y la siguiente repite todos. Un NBIRTH que entró al socket justo antes del corte puede igual haberse perdido en la red: el host lo resuelve con el bdSeq de la sesión siguiente.
 - Los comandos de más de 1024 bytes, o fragmentados por esp-mqtt, se descartan con log.
-- Un NCMD o DCMD que nanopb no puede decodificar entero (por ejemplo, un nombre o un string de más de 63 caracteres) se descarta **completo**, con log: se decodifica una vez para validarlo y otra para aplicarlo.
+- Un NCMD o DCMD que nanopb no puede decodificar entero (por ejemplo, un nombre de más de 63 caracteres o un string de más de 256) se descarta **completo**, con log que dice por qué (`string overflow`) y los límites: se decodifica una vez para validarlo y otra para aplicarlo.
 - La cola de escrituras hacia el bus tiene 8 lugares (`CONFIG_GW_BUS_WRITE_QUEUE_LEN`). Un DCMD cuyas escrituras no entran **todas** se descarta **entero**, con log (`DCMD for 'Meter1': 3 writes but the bus queue has room for 2: nothing applied`): nunca queda aplicado a medias (#60). Las métricas desconocidas o de solo lectura no cuentan: se descartan solas, como antes.
 
 ### 6.5.1 TLS hacia el broker (MQTT-4, MQTT-5)
@@ -878,7 +878,7 @@ La build de QEMU difiere de la de placa en esos puntos (`sdkconfig.qemu`).
 
 - **Broker caído al arrancar el firmware nuevo:** vuelve al anterior a los `CONFIG_GW_FW_CONFIRM_TIMEOUT_S` (10 min). No se distingue de un firmware que no sabe conectarse. La actualización se repite a mano.
 - **Un corte de energía durante la prueba también vuelve al anterior** (el bootloader no distingue un corte de un *crash*).
-- **La URL por NCMD tiene hasta 63 caracteres** (límite de textos del codec Sparkplug, `SPB_STRING_MAX`); por la web, hasta 255.
+- **La URL de una actualización tiene hasta 255 caracteres**, por NCMD y por la web (issue #87). Los textos de las métricas Sparkplug llegan hasta 256 (`SPB_STRING_MAX`); los de las propiedades y las celdas de DataSet, hasta 63. Un texto más largo se rechaza con log, nunca se corta: un NCMD o DCMD queda sin aplicar, y un mensaje propio no se publica. Los tags `string` siguen limitados por su `length` (hasta 16 registros, 32 caracteres), validado en la configuración. Subir el límite costó 193 B de pila por métrica en el codificador y el decodificador (`Payload_Metric` de nanopb), medidos con el check de pila de la tarea Sparkplug (§4.3).
 - **No hay *anti-rollback* de versión** (`CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK`): cualquier imagen válida (y firmada, FW-2) del proyecto se acepta, también una más vieja.
 - **No se reanuda una descarga cortada:** empieza de nuevo. Mientras se escribe la flash, las otras tareas pueden ver demoras cortas (cada sector borrado detiene la caché unos ms); la encuesta Modbus no se cortó en el E2E, pero en la placa no se midió.
 - Una subida por la web corre en la tarea `httpd` y bloquea la web hasta terminar.

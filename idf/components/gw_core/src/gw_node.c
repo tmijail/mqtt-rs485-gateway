@@ -533,7 +533,10 @@ static void publish_ddeath(gw_node_t *n, uint16_t dev)
 void gw_node_set_firmware_status(gw_node_t *n, const char *state, uint32_t progress)
 {
     char s[GW_NODE_FW_STATE_MAX];
-    snprintf(s, sizeof(s), "%s", state);
+    if ((size_t)snprintf(s, sizeof(s), "%s", state) >= sizeof(s)) {
+        GW_LOGW(TAG, "Firmware Update/State: %u characters, published cut to %u",
+                (unsigned)strlen(state), (unsigned)(sizeof(s) - 1));   /* issue #87: not silent */
+    }
     bool st = strcmp(s, n->fw_state) != 0;
     bool pr = progress != n->fw_progress;
     if (!st && !pr) {
@@ -1135,7 +1138,9 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
         n->cmd_scan_rate = false;
         /* All or nothing: decode the whole payload first, then apply it. */
         if (!spb_decode(payload, len, NULL, NULL, NULL)) {
-            GW_LOGW(TAG, "NCMD: undecodable payload (%u bytes): nothing applied", (unsigned)len);
+            GW_LOGW(TAG, "NCMD: undecodable payload (%u bytes: %s; strings up to %d characters, names up "
+                         "to %d): nothing applied",
+                    (unsigned)len, spb_last_error(), SPB_STRING_MAX, SPB_NAME_MAX);
             return;
         }
         spb_decode(payload, len, NULL, on_ncmd_metric, n);
@@ -1188,7 +1193,9 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
         bool decoded = spb_decode_with(payload, len, NULL, &dec);
         n->cmd_count_only = false;
         if (!decoded) {
-            GW_LOGW(TAG, "DCMD: undecodable payload (%u bytes): nothing applied", (unsigned)len);
+            GW_LOGW(TAG, "DCMD: undecodable payload (%u bytes: %s; strings up to %d characters, names up "
+                         "to %d): nothing applied",
+                    (unsigned)len, spb_last_error(), SPB_STRING_MAX, SPB_NAME_MAX);
             return;
         }
         size_t room = n->ops.write_room(n->ops.ctx);

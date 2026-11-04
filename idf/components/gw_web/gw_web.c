@@ -308,10 +308,11 @@ static esp_err_t firmware_get(httpd_req_t *req)
     if (!authorized(req)) {
         return ESP_OK;
     }
-    gw_fw_status_t f;
+    /* the server task only: static, off its stack (#80 margins) */
+    static gw_fw_status_t f;
+    static char text[2 * sizeof(f.text)], detail[2 * sizeof(f.detail)], run[2 * sizeof(f.running)],
+        other[2 * sizeof(f.other)], body[1600];
     gw_fw_get_status(&f);
-    char text[2 * sizeof(f.text)], detail[2 * sizeof(f.detail)], run[2 * sizeof(f.running)],
-        other[2 * sizeof(f.other)], body[1100];
     json_escape(text, sizeof(text), f.text);
     json_escape(detail, sizeof(detail), f.detail);
     json_escape(run, sizeof(run), f.running);

@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "gw_port.h"
 #include "pb_decode.h"
 #include "pb_encode.h"
 #include "sparkplug_b.pb.h"
@@ -11,14 +12,32 @@ _Static_assert(sizeof(((Payload_Metric *)0)->name) == SPB_NAME_MAX + 1, "nanopb 
 _Static_assert(sizeof(((Payload_Metric *)0)->value.string_value) == SPB_STRING_MAX + 1,
                "nanopb options drift");
 
-static void copy_str(char *dst, size_t cap, const char *src)
+_Static_assert(sizeof(((Payload_PropertyValue *)0)->value.string_value) == SPB_SHORT_STRING_MAX + 1,
+               "nanopb options drift");
+_Static_assert(sizeof(((Payload_DataSet_DataSetValue *)0)->value.string_value) ==
+                   SPB_SHORT_STRING_MAX + 1,
+               "nanopb options drift");
+
+static char s_last_error[48];
+
+const char *spb_last_error(void)
+{
+    return s_last_error;
+}
+
+/* Issue #87: a string longer than its field is refused (the encoding fails, with a log), never
+ * cut. Returns false then. */
+static bool copy_str(char *dst, size_t cap, const char *src)
 {
     size_t n = strlen(src);
     if (n >= cap) {
-        n = cap - 1;
+        GW_LOGE("spb", "string of %u characters does not fit (at most %u): '%.24s...' refused",
+                (unsigned)n, (unsigned)(cap - 1), src);
+        dst[0] = '\0';
+        return false;
     }
-    memcpy(dst, src, n);
-    dst[n] = '\0';
+    memcpy(dst, src, n + 1);
+    return true;
 }
 
 /* ---------- SPB-16 properties ---------- */
@@ -55,7 +74,8 @@ static void prop_value(const spb_props_t *p, uint8_t id, Payload_PropertyValue *
     case PROP_UNIT:
         pv->type = SPB_DT_STRING;
         pv->which_value = Payload_PropertyValue_string_value_tag;
-        copy_str(pv->value.string_value, sizeof(pv->value.string_value), p->eng_unit);
+        /* engUnit fits: the configuration bounds it (GW_UNITS_SIZE) */
+        (void)copy_str(pv->value.string_value, sizeof(pv->value.string_value), p->eng_unit);
         break;
     case PROP_LOW:
     case PROP_HIGH:
@@ -241,7 +261,9 @@ static bool enc_ds_elements(pb_ostream_t *stream, const pb_field_iter_t *field, 
             break;
         case W_STRING:
             e.which_value = Payload_DataSet_DataSetValue_string_value_tag;
-            copy_str(e.value.string_value, sizeof(e.value.string_value), sc.s);
+            if (!copy_str(e.value.string_value, sizeof(e.value.string_value), sc.s)) {
+                return false;
+            }
             break;
         default:
             return false;   /* a column type a DataSet cannot carry */
@@ -305,7 +327,9 @@ static bool fill_metric(Payload_Metric *out, const spb_metric_t *m)
     out->properties.arg = (void *)&m->props;
     if (m->name != NULL) {
         out->has_name = true;
-        copy_str(out->name, sizeof(out->name), m->name);
+        if (!copy_str(out->name, sizeof(out->name), m->name)) {
+            return false;
+        }
     }
     out->has_alias = !m->no_alias;
     out->alias = m->no_alias ? 0 : m->alias;
@@ -360,7 +384,9 @@ static bool fill_metric(Payload_Metric *out, const spb_metric_t *m)
         pt->metrics.arg = (void *)t;
         if (t->ref != NULL) {
             pt->has_template_ref = true;
-            copy_str(pt->template_ref, sizeof(pt->template_ref), t->ref);
+            if (!copy_str(pt->template_ref, sizeof(pt->template_ref), t->ref)) {
+                return false;
+            }
         }
         pt->has_is_definition = true;
         pt->is_definition = t->is_definition;
@@ -393,7 +419,9 @@ static bool fill_metric(Payload_Metric *out, const spb_metric_t *m)
         break;
     case W_STRING:
         out->which_value = Payload_Metric_string_value_tag;
-        copy_str(out->value.string_value, sizeof(out->value.string_value), sc.s);
+        if (!copy_str(out->value.string_value, sizeof(out->value.string_value), sc.s)) {
+            return false;
+        }
         break;
     default:
         out->has_is_null = true;
@@ -763,8 +791,10 @@ bool spb_decode_with(const uint8_t *buf, size_t len, spb_rx_header_t *hdr, const
 
     pb_istream_t is = pb_istream_from_buffer(buf, len);
     if (!pb_decode(&is, Payload_fields, &msg)) {
+        snprintf(s_last_error, sizeof(s_last_error), "%s", PB_GET_ERROR(&is));
         return false;
     }
+    s_last_error[0] = '\0';
     if (hdr != NULL) {
         hdr->has_timestamp = msg.has_timestamp;
         hdr->timestamp = msg.timestamp;

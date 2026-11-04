@@ -43,7 +43,7 @@ typedef struct {
     uint8_t progress;       /* % of the current (or last) transfer */
     uint32_t bytes;
     uint32_t total;         /* 0 = unknown */
-    char text[64];          /* "Firmware Update/State": short, for Sparkplug */
+    char text[240];         /* "Firmware Update/State" (GW_NODE_FW_STATE_MAX, issue #87) */
     char detail[224];       /* longer reason (log, shell, web) */
     char running[32];       /* running version */
     char slot[17];          /* its partition label */

@@ -185,7 +185,7 @@ static int cmd_status(int argc, char **argv)
     uint32_t f = gw_status_get();
     out("firmware %s, reset reason %s, uptime %lld s\n", s_ctx.info->firmware,
            s_ctx.info->reset_reason, esp_timer_get_time() / 1000000);
-    gw_fw_status_t fw;   /* FW-1 */
+    static gw_fw_status_t fw;   /* FW-1; console task only, off its stack */
     gw_fw_get_status(&fw);
     if (fw.running[0] != '\0') {
         out("ota      %s in %s, other slot %s%s | %s", fw.running, fw.slot,

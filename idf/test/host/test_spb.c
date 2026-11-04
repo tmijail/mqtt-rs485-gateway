@@ -434,6 +434,57 @@ static void test_worst_case_birth_fits(void)
     }
 }
 
+/* Issue #87: a payload with one String metric "s" of @p n characters, built by hand (the
+ * encoder itself refuses what does not fit). */
+static size_t raw_string_payload(uint8_t *out, size_t n)
+{
+    uint8_t metric[400];
+    size_t k = 0;
+    metric[k++] = 0x0a;                 /* name */
+    metric[k++] = 1;
+    metric[k++] = 's';
+    metric[k++] = 0x20;                 /* datatype */
+    metric[k++] = SPB_DT_STRING;
+    metric[k++] = 0x7a;                 /* string_value (field 15, length-delimited) */
+    metric[k++] = (uint8_t)(0x80 | (n & 0x7f));
+    metric[k++] = (uint8_t)(n >> 7);
+    memset(metric + k, 'a', n);
+    k += n;
+    size_t j = 0;
+    out[j++] = 0x12;                    /* metrics */
+    out[j++] = (uint8_t)(0x80 | (k & 0x7f));
+    out[j++] = (uint8_t)(k >> 7);
+    memcpy(out + j, metric, k);
+    return j + k;
+}
+
+/* Issue #87: String values up to SPB_STRING_MAX (256) both ways; one more is refused: the
+ * encoder fails instead of cutting it, the decoder rejects the payload and says why. */
+static void test_string_limit(void)
+{
+    char s[SPB_STRING_MAX + 2];
+    memset(s, 'u', sizeof(s));
+    s[SPB_STRING_MAX] = '\0';
+    spb_metric_t m = {.name = "Node Control/Firmware Update", .alias = 40,
+                      .datatype = SPB_DT_STRING, .v.str = s};
+    spb_payload_t p = {.timestamp = 1, .metrics = &m, .metric_count = 1};
+    size_t len = spb_encode(&p, buf, sizeof(buf));
+    TEST_ASSERT_GREATER_THAN(0, len);
+    TEST_ASSERT_TRUE(decode_payload(buf, len, &dec));
+    TEST_ASSERT_EQUAL(SPB_STRING_MAX, strlen(dec.m[0].str));
+    TEST_ASSERT_EQUAL_STRING(s, dec.m[0].str);
+    s[SPB_STRING_MAX] = 'u';
+    s[SPB_STRING_MAX + 1] = '\0';
+    TEST_ASSERT_EQUAL(0, spb_encode(&p, buf, sizeof(buf)));   /* 257: refused, not cut */
+
+    len = raw_string_payload(buf, SPB_STRING_MAX);
+    TEST_ASSERT_TRUE(spb_decode(buf, len, NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL_STRING("", spb_last_error());
+    len = raw_string_payload(buf, SPB_STRING_MAX + 1);
+    TEST_ASSERT_FALSE(spb_decode(buf, len, NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL_STRING("string overflow", spb_last_error());
+}
+
 static void test_topics(void)
 {
     char t[GW_TOPIC_MAX];
@@ -459,6 +510,7 @@ int main(void)
     RUN_TEST(test_dataset_round_trip);
     RUN_TEST(test_template_round_trip);
     RUN_TEST(test_worst_case_birth_fits);
+    RUN_TEST(test_string_limit);
     RUN_TEST(test_topics);
     return UNITY_END();
 }

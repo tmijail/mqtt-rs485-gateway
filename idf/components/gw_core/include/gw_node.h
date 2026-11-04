@@ -88,7 +88,7 @@ extern "C" {
 #define GW_NODE_METRICS_MAX \
     (GW_MAX_TAGS_PER_DEVICE + 1 > GW_NODE_BIRTH_METRICS + GW_MAX_DEVICES \
          ? GW_MAX_TAGS_PER_DEVICE + 1 : GW_NODE_BIRTH_METRICS + GW_MAX_DEVICES)
-#define GW_NODE_FW_STATE_MAX    64   /* "Firmware Update/State" text (the codec's string limit) */
+#define GW_NODE_FW_STATE_MAX    240  /* "Firmware Update/State" text (< SPB_STRING_MAX, #87) */
 #define GW_SPB_PAYLOAD_MAX      16384  /* > worst-case DBIRTH (64 tags with 39-char names and
                                          * every SPB-16 property, about 10 KB, test_spb) and
                                          * NBIRTH (64 template tags and the SPB-17 DataSet of 16

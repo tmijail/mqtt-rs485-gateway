@@ -1168,14 +1168,16 @@ static void test_discard_log_shows_alias_only_if_present(void)
     TEST_ASSERT_EQUAL(0, g_rec.writes);
 }
 
-/* Issue #10: nanopb aborts on a name or string longer than 63 characters; the metrics
+/* Issue #10: nanopb aborts on a name longer than 63 or a string longer than 256 characters; the metrics
  * decoded before it must not be applied either. */
 static void test_command_aborted_mid_payload_applies_nothing(void)
 {
     static const char long_name[] =
         "A_metric_name_that_is_much_longer_than_the_sixty_three_characters_accepted";
-    static const char long_str[] =
-        "A string value that is much longer than the sixty three characters accepted";
+    /* issue #87: strings now go up to 256 characters: this one is longer */
+    static char long_str[SPB_STRING_MAX + 40];
+    memset(long_str, 'x', sizeof(long_str) - 1);
+    long_str[sizeof(long_str) - 1] = '\0';
     set_meter(true, 1, 2, 0);
     gw_node_session_up(&node, 0);
     recorder_clear();
@@ -1444,11 +1446,67 @@ static void test_firmware_update_metrics(void)
     msg(1);
     TEST_ASSERT_EQUAL(1, dec.count);
     TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_FW_PROGRESS, dec.m[0].alias);
-    /* longer than the codec's string limit: truncated, still published */
-    gw_node_set_firmware_status(&node, "failed: a very long reason that does not fit in sixty-three "
-                                       "characters at all", 20);
+    /* issue #87: a long state goes out whole (up to GW_NODE_FW_STATE_MAX - 1); longer is cut
+     * with a warning in the log */
+    char longs[GW_NODE_FW_STATE_MAX + 20];
+    memset(longs, 'r', sizeof(longs));
+    longs[200] = '\0';
+    gw_node_set_firmware_status(&node, longs, 20);
     msg(2);
-    TEST_ASSERT_EQUAL(63, strlen(dec.m[0].str));
+    TEST_ASSERT_EQUAL(200, strlen(dec.m[0].str));
+    longs[200] = 'r';
+    longs[sizeof(longs) - 1] = '\0';
+    gw_node_set_firmware_status(&node, longs, 20);
+    msg(3);
+    TEST_ASSERT_EQUAL(GW_NODE_FW_STATE_MAX - 1, strlen(dec.m[0].str));
+}
+
+/* Issue #87: an NCMD with a String metric of @p n characters named "Node Control/Firmware
+ * Update", built by hand (the encoder refuses strings longer than SPB_STRING_MAX). */
+static size_t raw_fw_ncmd(uint8_t *out, size_t n)
+{
+    static const char name[] = "Node Control/Firmware Update";
+    uint8_t m[400];
+    size_t k = 0;
+    m[k++] = 0x0a;
+    m[k++] = (uint8_t)(sizeof(name) - 1);
+    memcpy(m + k, name, sizeof(name) - 1);
+    k += sizeof(name) - 1;
+    m[k++] = 0x20;
+    m[k++] = SPB_DT_STRING;
+    m[k++] = 0x7a;
+    m[k++] = (uint8_t)(0x80 | (n & 0x7f));
+    m[k++] = (uint8_t)(n >> 7);
+    memcpy(m + k, "https://", 8);
+    memset(m + k + 8, 'a', n - 8);
+    k += n;
+    size_t j = 0;
+    out[j++] = 0x12;
+    out[j++] = (uint8_t)(0x80 | (k & 0x7f));
+    out[j++] = (uint8_t)(k >> 7);
+    memcpy(out + j, m, k);
+    return j + k;
+}
+
+/* Issue #87: the firmware URL of an NCMD arrives whole up to SPB_STRING_MAX (256) characters;
+ * a longer one makes the NCMD undecodable: nothing applied, nothing cut. */
+static void test_firmware_url_limit(void)
+{
+    gw_node_session_up(&node, 0);
+    recorder_clear();
+    static uint8_t raw[512];
+    size_t len = raw_fw_ncmd(raw, 255);
+    gw_node_handle_message(&node, "spBv1.0/Plant1/NCMD/GW01", 24, raw, len);
+    TEST_ASSERT_EQUAL(1, g_rec.fw_updates);
+    TEST_ASSERT_EQUAL(255, strlen(g_rec.fw_url));
+    len = raw_fw_ncmd(raw, SPB_STRING_MAX);
+    gw_node_handle_message(&node, "spBv1.0/Plant1/NCMD/GW01", 24, raw, len);
+    TEST_ASSERT_EQUAL(2, g_rec.fw_updates);
+    TEST_ASSERT_EQUAL(SPB_STRING_MAX, strlen(g_rec.fw_url));
+    len = raw_fw_ncmd(raw, SPB_STRING_MAX + 1);
+    gw_node_handle_message(&node, "spBv1.0/Plant1/NCMD/GW01", 24, raw, len);
+    TEST_ASSERT_EQUAL(2, g_rec.fw_updates);
+    TEST_ASSERT_EQUAL(0, g_rec.count);
 }
 
 /* Issue #76: a DBIRTH too large for the broker is not rebuilt and rejected on every change of
@@ -1636,6 +1694,7 @@ int main(void)
     RUN_TEST(test_dbirth_not_published_leaves_the_device_unborn);
     RUN_TEST(test_dbirth_too_large_not_retried_on_every_change);
     RUN_TEST(test_firmware_update_metrics);
+    RUN_TEST(test_firmware_url_limit);
     RUN_TEST(test_store_and_forward_counters);
     return UNITY_END();
 }

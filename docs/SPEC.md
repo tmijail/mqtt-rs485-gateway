@@ -507,7 +507,7 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 | `enabled` | bool | `true` | `false` rechaza las actualizaciones por NCMD y por la web (en recuperación y puesta en marcha la web siempre puede subir una imagen) |
 | `ca_file` | texto | `""` | CA (PEM, en LittleFS junto a `config.json`, mismas reglas de nombre que `mqtt.tls.ca_file`) del servidor de las imágenes. Vacío: la de `mqtt.tls.ca_file` si TLS está activo; si no, las CA raíz públicas de ESP-IDF |
 
-- **Disparo:** NCMD con la métrica `Node Control/Firmware Update` (String, la URL `https://…`; el codec acepta hasta 63 caracteres) o `POST /api/firmware` de la web (`{"url": "…"}`, hasta 255 caracteres, o el cuerpo con la imagen). Solo `https://`; la imagen debe ser de este proyecto (y, con firma exigida, FW-2, firmada con la clave del equipo).
+- **Disparo:** NCMD con la métrica `Node Control/Firmware Update` (String, la URL `https://…`) o `POST /api/firmware` de la web (`{"url": "…"}`, o el cuerpo con la imagen). La URL tiene hasta 255 caracteres; una más larga se rechaza con su motivo (issue #87). Solo `https://`; la imagen debe ser de este proyecto (y, con firma exigida, FW-2, firmada con la clave del equipo).
 - **Resultado:** métricas de nodo `Firmware Update/State` (String) y `Firmware Update/Progress` (UInt32, %), en el NBIRTH y por NDATA cuando cambian.
 - **Salud y *rollback*:** la imagen nueva arranca a prueba. Su primera sesión Sparkplug (NBIRTH y todos los DBIRTH publicados) la confirma. Sin sesión en `CONFIG_GW_FW_CONFIRM_TIMEOUT_S` (10 min por defecto), por la causa que sea (también un broker caído), vuelve a la anterior. También vuelve si rechaza la configuración guardada o si se reinicia antes de confirmarse.
 

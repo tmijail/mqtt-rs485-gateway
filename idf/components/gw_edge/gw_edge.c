@@ -615,7 +615,7 @@ static void op_firmware_update(void *ctx, const char *url)
 static void sync_firmware(void)
 {
     if (atomic_exchange(&s_fw_dirty, false)) {
-        gw_fw_status_t f;
+        static gw_fw_status_t f;   /* this task only; about 600 B, kept off its 6 KB stack */
         gw_fw_get_status(&f);
         gw_node_set_firmware_status(s_node, f.text, f.progress);
     }
