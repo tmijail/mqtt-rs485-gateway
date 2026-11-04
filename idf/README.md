@@ -296,7 +296,7 @@ Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 cmake -S idf/test/host -B build-host && cmake --build build-host -j3 && ctest --test-dir build-host
 ```
 
-Resultado: **24/24 pruebas de CTest (23 suites de Unity y `check_set_config`, issue #58) y 216/216 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
+Resultado: **29/29 pruebas de CTest (23 suites de Unity, `check_set_config` del issue #58 y los 5 `sdkconfig_check_*` del #83) y 216/216 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
 
 | Suite | Casos | Qué cubre |
 |---|---|---|
@@ -365,7 +365,7 @@ E2E_PYTHON=~/e2e/bin/python idf/tools/e2e/run_e2e.sh
 
 Configuración usada: `tools/e2e/fs/config.json` (keepalive de 10 s, syslog hacia el receptor del harness). `run_e2e.sh` pasa además el ELF y el python de IDF, para decodificar el *core dump* con `esp_coredump`.
 
-Resultado: **137/137 comprobaciones OK** (sobre `feature/diag-ram`, con #80 y #81); con la PSRAM octal (`E2E_PSRAM=1`, #85), **139/139** en `fix/mem-psram` (ver «PSRAM octal» más abajo); con `--panics 3`, en `feature/sparkplug-metrics`, los tres volcados decodificados (#62).
+Resultado: **138/138 comprobaciones OK** (sobre `fix/mem-psram`, con #80, #81 y #84); con la PSRAM octal (`E2E_PSRAM=1`, #85), **139/139** (ver «PSRAM octal» más abajo); con `--panics 3`, en `feature/sparkplug-metrics`, los tres volcados decodificados (#62).
 
 | Criterio | Resultado medido |
 |---|---|
