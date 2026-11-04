@@ -254,6 +254,120 @@ static bool get_ipv4(const cJSON *obj, const char *key, const char *path, bool r
     return true;
 }
 
+static int hex_digit(char c)
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
+bool gw_parse_ipv6(const char *s, uint8_t out[16])
+{
+    uint16_t head[8], tail[8];
+    unsigned nh = 0, nt = 0;
+    bool gap = false;   /* "::" seen; later groups go to tail[] */
+    const char *p = s;
+    if (p[0] == ':') {
+        if (p[1] != ':') {
+            return false;
+        }
+        gap = true;
+        p += 2;
+    }
+    while (*p != '\0') {
+        if (nh + nt >= 8) {
+            return false;
+        }
+        const char *colon = strchr(p, ':');
+        const char *dot = strchr(p, '.');
+        if (dot != NULL && (colon == NULL || dot < colon)) {
+            /* trailing dotted quad (::ffff:192.0.2.1): two groups, must be last */
+            uint8_t v4[4];
+            if (nh + nt > 6 || !parse_ipv4(p, v4)) {
+                return false;
+            }
+            uint16_t *g = gap ? tail : head;
+            unsigned *n = gap ? &nt : &nh;
+            g[(*n)++] = (uint16_t)(v4[0] << 8 | v4[1]);
+            g[(*n)++] = (uint16_t)(v4[2] << 8 | v4[3]);
+            p += strlen(p);
+            break;
+        }
+        unsigned v = 0, digits = 0;
+        for (int d; (d = hex_digit(*p)) >= 0; p++) {
+            if (++digits > 4) {
+                return false;
+            }
+            v = v * 16u + (unsigned)d;
+        }
+        if (digits == 0) {
+            return false;
+        }
+        if (gap) {
+            tail[nt++] = (uint16_t)v;
+        } else {
+            head[nh++] = (uint16_t)v;
+        }
+        if (*p == '\0') {
+            break;
+        }
+        if (*p++ != ':') {
+            return false;
+        }
+        if (*p == ':') {
+            if (gap) {
+                return false;   /* a second "::" */
+            }
+            gap = true;
+            p++;
+        } else if (*p == '\0') {
+            return false;       /* trailing single ':' */
+        }
+    }
+    if (gap ? nh + nt > 7 : nh != 8) {
+        return false;
+    }
+    uint16_t g[8] = {0};
+    for (unsigned i = 0; i < nh; i++) {
+        g[i] = head[i];
+    }
+    for (unsigned i = 0; i < nt; i++) {
+        g[8 - nt + i] = tail[i];
+    }
+    for (unsigned i = 0; i < 8; i++) {
+        out[2 * i] = (uint8_t)(g[i] >> 8);
+        out[2 * i + 1] = (uint8_t)g[i];
+    }
+    return true;
+}
+
+static bool get_ipv6(const cJSON *obj, const char *key, const char *path, uint8_t out[16],
+                     bool *present, gw_cfg_err_t *err)
+{
+    char p[96];
+    join(p, sizeof(p), path, key);
+    char buf[48];
+    if (!get_string(obj, key, path, false, "", buf, sizeof(buf), err)) {
+        return false;
+    }
+    *present = buf[0] != '\0';
+    if (!*present) {
+        memset(out, 0, 16);
+        return true;
+    }
+    if (!gw_parse_ipv6(buf, out)) {
+        return fail(err, p, "'%s' no es una dirección IPv6 válida", buf);
+    }
+    return true;
+}
+
 /* Sparkplug identifiers become MQTT topic levels: no '/', '+', '#', no control chars. */
 static bool check_topic_id(const char *s, const char *path, bool allow_empty, gw_cfg_err_t *err)
 {
@@ -276,23 +390,115 @@ static const char *const k_type_names[] = {"bool", "uint16", "int16", "uint32", 
 static const char *const k_word_names[] = {"big", "little"};
 static const char *const k_parity_names[] = {"none", "even", "odd"};
 
-static bool parse_network(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+/* dhcp/ip/netmask/gateway/dns of one interface; the addresses are required with dhcp=false. */
+static bool parse_ipv4_keys(const cJSON *o, const char *path, bool *dhcp, uint8_t ip[4],
+                            uint8_t netmask[4], uint8_t gateway[4], uint8_t dns[4],
+                            gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"dhcp", "ip", "netmask", "gateway", "dns"};
-    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "network");
-    cfg->network.dhcp = true;
-    if (o == NULL) {
-        return true;
-    }
-    if (!check_keys(o, "network", keys, 5, err) ||
-        !get_bool(o, "dhcp", "network", true, &cfg->network.dhcp, err)) {
+    if (!get_bool(o, "dhcp", path, true, dhcp, err)) {
         return false;
     }
-    bool st = !cfg->network.dhcp;
-    return get_ipv4(o, "ip", "network", st, cfg->network.ip, err) &&
-           get_ipv4(o, "netmask", "network", st, cfg->network.netmask, err) &&
-           get_ipv4(o, "gateway", "network", st, cfg->network.gateway, err) &&
-           get_ipv4(o, "dns", "network", false, cfg->network.dns, err);
+    bool st = !*dhcp;
+    return get_ipv4(o, "ip", path, st, ip, err) && get_ipv4(o, "netmask", path, st, netmask, err) &&
+           get_ipv4(o, "gateway", path, st, gateway, err) &&
+           get_ipv4(o, "dns", path, false, dns, err);
+}
+
+static bool parse_ipv6_section(const cJSON *net, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"enabled", "slaac", "address", "dns"};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(net, "ipv6");
+    static const cJSON empty = {.type = cJSON_Object};
+    if (o == NULL) {
+        o = &empty;
+    }
+    if (!check_keys(o, "network.ipv6", keys, 4, err) ||
+        !get_bool(o, "enabled", "network.ipv6", false, &cfg->network.ipv6.enabled, err) ||
+        !get_bool(o, "slaac", "network.ipv6", true, &cfg->network.ipv6.slaac, err) ||
+        !get_ipv6(o, "address", "network.ipv6", cfg->network.ipv6.address,
+                  &cfg->network.ipv6.has_address, err) ||
+        !get_ipv6(o, "dns", "network.ipv6", cfg->network.ipv6.dns, &cfg->network.ipv6.has_dns,
+                  err)) {
+        return false;
+    }
+    const uint8_t *a = cfg->network.ipv6.address;
+    if (cfg->network.ipv6.has_address) {
+        static const uint8_t zero[16];
+        if (a[0] == 0xff || (a[0] == 0xfe && (a[1] & 0xc0) == 0x80) || memcmp(a, zero, 15) == 0) {
+            return fail(err, "network.ipv6.address",
+                        "se esperaba una dirección unicast global o local única (no multicast, "
+                        "link-local, :: ni ::1)");
+        }
+    }
+    return true;
+}
+
+static bool check_wifi_password(const char *pw)
+{
+    size_t n = strlen(pw);
+    if (n == 0 || (n >= 8 && n <= 63)) {
+        return true;
+    }
+    if (n != 64) {
+        return false;
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (hex_digit(pw[i]) < 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool parse_wifi_section(const cJSON *net, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"enabled", "ssid", "password", "role", "failback_s",
+                                       "dhcp", "ip", "netmask", "gateway", "dns"};
+    static const char *const roles[] = {"backup", "primary"};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(net, "wifi");
+    static const cJSON empty = {.type = cJSON_Object};
+    if (o == NULL) {
+        o = &empty;
+    }
+    gw_wifi_cfg_t *w = &cfg->network.wifi;
+    int role;
+    long failback;
+    if (!check_keys(o, "network.wifi", keys, 10, err) ||
+        !get_bool(o, "enabled", "network.wifi", false, &w->enabled, err) ||
+        !get_string(o, "ssid", "network.wifi", false, "", w->ssid, sizeof(w->ssid), err) ||
+        !get_string(o, "password", "network.wifi", false, "", w->password, sizeof(w->password),
+                    err) ||
+        !get_enum(o, "role", "network.wifi", false, GW_WIFI_BACKUP, roles, 2, &role, err) ||
+        !get_int(o, "failback_s", "network.wifi", false, 30, 0, 3600, &failback, err) ||
+        !parse_ipv4_keys(o, "network.wifi", &w->ipv4.dhcp, w->ipv4.ip, w->ipv4.netmask,
+                         w->ipv4.gateway, w->ipv4.dns, err)) {
+        return false;
+    }
+    w->role = (gw_wifi_role_t)role;
+    w->failback_s = (uint16_t)failback;
+    if (w->enabled && w->ssid[0] == '\0') {
+        return fail(err, "network.wifi.ssid", "obligatorio con enabled=true");
+    }
+    if (!check_wifi_password(w->password)) {
+        return fail(err, "network.wifi.password",
+                    "se esperaban 8 a 63 caracteres (WPA2), 64 dígitos hexadecimales o vacío "
+                    "(red abierta)");
+    }
+    return true;
+}
+
+static bool parse_network(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"dhcp", "ip", "netmask", "gateway", "dns", "ipv6", "wifi"};
+    static const cJSON empty = {.type = cJSON_Object};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "network");
+    if (o == NULL) {
+        o = &empty;
+    }
+    return check_keys(o, "network", keys, 7, err) &&
+           parse_ipv4_keys(o, "network", &cfg->network.dhcp, cfg->network.ip,
+                           cfg->network.netmask, cfg->network.gateway, cfg->network.dns, err) &&
+           parse_ipv6_section(o, cfg, err) && parse_wifi_section(o, cfg, err);
 }
 
 static bool parse_ntp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
@@ -403,6 +609,31 @@ static bool parse_local_io(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *er
         return false;
     }
     cfg->local_io.di_debounce_ms = (uint16_t)db;
+    return true;
+}
+
+static bool parse_syslog(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"host", "port", "level"};
+    static const char *const levels[] = {"error", "warning", "info", "debug"};
+    static const gw_log_level_t level_values[] = {GW_LOG_ERROR, GW_LOG_WARNING, GW_LOG_INFO,
+                                                  GW_LOG_DEBUG};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "syslog");
+    static const cJSON empty = {.type = cJSON_Object};
+    long port;
+    int level;
+    if (o == NULL) {
+        o = &empty;
+    }
+    if (!check_keys(o, "syslog", keys, 3, err) ||
+        !get_string(o, "host", "syslog", false, "", cfg->syslog.host, sizeof(cfg->syslog.host),
+                    err) ||
+        !get_int(o, "port", "syslog", false, 514, 1, 65535, &port, err) ||
+        !get_enum(o, "level", "syslog", false, 2, levels, 4, &level, err)) {
+        return false;
+    }
+    cfg->syslog.port = (uint16_t)port;
+    cfg->syslog.level = level_values[level];
     return true;
 }
 
@@ -557,8 +788,8 @@ static bool parse_devices(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err
 
 bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"network", "ntp",   "mqtt",     "sparkplug",
-                                       "rs485",   "local_io", "devices"};
+    static const char *const keys[] = {"network", "ntp",      "mqtt",    "sparkplug",
+                                       "rs485",   "local_io", "devices", "syslog"};
     memset(cfg, 0, sizeof(*cfg));
     err->msg[0] = '\0';
 
@@ -583,10 +814,11 @@ bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_
         cJSON_Delete(root);
         return fail_at(err, json, end, "contenido después del documento");
     }
-    bool ok = check_keys(root, "", keys, 7, err) && parse_network(root, cfg, err) &&
+    bool ok = check_keys(root, "", keys, 8, err) && parse_network(root, cfg, err) &&
               parse_ntp(root, cfg, err) && parse_mqtt(root, cfg, err) &&
               parse_sparkplug(root, cfg, err) && parse_rs485(root, cfg, err) &&
-              parse_local_io(root, cfg, err) && parse_devices(root, cfg, err);
+              parse_local_io(root, cfg, err) && parse_devices(root, cfg, err) &&
+              parse_syslog(root, cfg, err);
     cJSON_Delete(root);
 
     if (ok && cfg->mqtt.client_id[0] == '\0') {

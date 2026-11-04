@@ -1,15 +1,23 @@
 #include "gw_shell.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "esp_check.h"
 #include "esp_console.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "gw_io.h"
+#include "gw_log.h"
+#include "gw_net.h"
 #include "gw_status.h"
 #include "gw_tagdb.h"
+#include "lwip/ip_addr.h"
+#include "ping/ping_sock.h"
 
 static const char *TAG = "shell";
 
@@ -43,6 +51,45 @@ static int cmd_status(int argc, char **argv)
     printf("network  %s, MQTT %s, Modbus %u/%u devices online\n",
            (f & GW_ST_NET_UP) ? "up" : "down", (f & GW_ST_MQTT_UP) ? "connected" : "disconnected",
            s_ctx.cfg->device_count - offline, s_ctx.cfg->device_count);
+    gw_net_if_status_t ifs[GW_NET_IF_COUNT];
+    gw_net_get_status(ifs);
+    static const char *const names[GW_NET_IF_COUNT] = {"ethernet", "wifi"};
+    printf("iface    ");
+    for (int i = 0; i < GW_NET_IF_COUNT; i++) {
+        const gw_net_if_status_t *n = &ifs[i];
+        printf("%s%s", i ? " | " : "", names[i]);
+        if (!n->configured) {
+            printf(" not configured");
+            continue;
+        }
+        printf(" %s", !n->link ? "link down" : n->usable ? "up" : "link up, no address");
+        if (n->usable) {
+            printf(" %u.%u.%u.%u", n->ipv4[0], n->ipv4[1], n->ipv4[2], n->ipv4[3]);
+        }
+        if (n->active) {
+            printf(" (active)");
+        }
+    }
+    printf("\n");
+    bool any6 = false;
+    for (int i = 0; i < GW_NET_IF_COUNT; i++) {
+        for (int k = 0; k < GW_NET_IPV6_MAX; k++) {
+            if (ifs[i].ipv6[k][0] != '\0') {
+                printf("%s%s %s", any6 ? ", " : "ipv6     ", names[i], ifs[i].ipv6[k]);
+                any6 = true;
+            }
+        }
+    }
+    if (any6) {
+        printf("\n");
+    }
+    gw_log_stats_t ls;
+    gw_log_get_stats(&ls);
+    if (ls.enabled) {
+        printf("syslog   %s:%u %s, sent %lu, dropped %lu, errors %lu\n", s_ctx.cfg->syslog.host,
+               s_ctx.cfg->syslog.port, ls.connected ? "connected" : "not reachable",
+               (unsigned long)ls.sent, (unsigned long)ls.dropped, (unsigned long)ls.send_errors);
+    }
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
     printf("local    DI 0x%02x, DO 0x%02x (bit n = channel n+1, 1 = active)\n", io.di, io.dout);
@@ -98,7 +145,45 @@ static int cmd_config(int argc, char **argv)
         printf("network    static %u.%u.%u.%u mask %u.%u.%u.%u gw %u.%u.%u.%u\n", a[0], a[1], a[2],
                a[3], m[0], m[1], m[2], m[3], g[0], g[1], g[2], g[3]);
     }
+    const gw_wifi_cfg_t *w = &c->network.wifi;
+    if (w->enabled) {
+        printf("wifi       '%s', %s, failback %u s, %s\n", w->ssid,
+               w->role == GW_WIFI_PRIMARY ? "primary (Ethernet is the backup)" : "backup of Ethernet",
+               w->failback_s, w->ipv4.dhcp ? "DHCP" : "static IPv4");
+    } else {
+        printf("wifi       disabled\n");
+    }
+    const gw_ipv6_cfg_t *v6 = &c->network.ipv6;
+    if (v6->enabled) {
+        char a[48] = "none", d[48] = "none";
+        ip6_addr_t t;
+        if (v6->has_address) {
+            memcpy(t.addr, v6->address, sizeof(t.addr));
+            ip6addr_ntoa_r(&t, a, sizeof(a));
+        }
+        if (v6->has_dns) {
+            memcpy(t.addr, v6->dns, sizeof(t.addr));
+            ip6addr_ntoa_r(&t, d, sizeof(d));
+        }
+        for (char *ch = a; *ch != '\0'; ch++) {   /* RFC 5952: lower case */
+            *ch = (char)tolower((unsigned char)*ch);
+        }
+        for (char *ch = d; *ch != '\0'; ch++) {
+            *ch = (char)tolower((unsigned char)*ch);
+        }
+        printf("ipv6       SLAAC %s, static address %s, DNS %s\n", v6->slaac ? "on" : "off", a, d);
+    } else {
+        printf("ipv6       disabled\n");
+    }
     printf("ntp        %s\n", c->ntp.server);
+    static const char *const levels[8] = {[3] = "error", [4] = "warning", [6] = "info",
+                                          [7] = "debug"};
+    if (c->syslog.host[0] != '\0') {
+        printf("syslog     %s:%u, level %s and above\n", c->syslog.host, c->syslog.port,
+               levels[c->syslog.level & 7]);
+    } else {
+        printf("syslog     disabled\n");
+    }
     printf("rs485      %lu baud, parity %s, %u stop bit(s), timeout %u ms, %u retries, "
            "inter-frame %u ms\n",
            (unsigned long)c->rs485.baud, parity[c->rs485.parity], c->rs485.stop_bits,
@@ -110,6 +195,66 @@ static int cmd_config(int argc, char **argv)
         printf("  %-16s unit %3u, poll %lu ms, offline after %u, %u tag(s)\n", dev->name,
                dev->unit_id, (unsigned long)dev->poll_ms, dev->offline_after, dev->tag_count);
     }
+    return 0;
+}
+
+/* ICMP echo to an IPv4 or IPv6 literal: reachability over the active interface. */
+static SemaphoreHandle_t s_ping_done;
+
+static void on_ping_reply(esp_ping_handle_t h, void *arg)
+{
+    (void)arg;
+    uint16_t seq;
+    uint32_t ms;
+    ip_addr_t from;
+    char text[48];
+    esp_ping_get_profile(h, ESP_PING_PROF_SEQNO, &seq, sizeof(seq));
+    esp_ping_get_profile(h, ESP_PING_PROF_TIMEGAP, &ms, sizeof(ms));
+    esp_ping_get_profile(h, ESP_PING_PROF_IPADDR, &from, sizeof(from));
+    printf("reply from %s: seq %u time %lu ms\n", ipaddr_ntoa_r(&from, text, sizeof(text)), seq,
+           (unsigned long)ms);
+}
+
+static void on_ping_timeout(esp_ping_handle_t h, void *arg)
+{
+    (void)arg;
+    uint16_t seq;
+    esp_ping_get_profile(h, ESP_PING_PROF_SEQNO, &seq, sizeof(seq));
+    printf("seq %u: timeout\n", seq);
+}
+
+static void on_ping_end(esp_ping_handle_t h, void *arg)
+{
+    (void)arg;
+    uint32_t sent, received;
+    esp_ping_get_profile(h, ESP_PING_PROF_REQUEST, &sent, sizeof(sent));
+    esp_ping_get_profile(h, ESP_PING_PROF_REPLY, &received, sizeof(received));
+    printf("%lu sent, %lu received\n", (unsigned long)sent, (unsigned long)received);
+    xSemaphoreGive(s_ping_done);
+}
+
+static int cmd_ping(int argc, char **argv)
+{
+    esp_ping_config_t pc = ESP_PING_DEFAULT_CONFIG();
+    if (argc != 2 || !ipaddr_aton(argv[1], &pc.target_addr)) {
+        printf("usage: ping <IPv4 or IPv6 address>\n");
+        return 1;
+    }
+    pc.count = 3;
+    if (s_ping_done == NULL) {
+        s_ping_done = xSemaphoreCreateBinary();
+    }
+    const esp_ping_callbacks_t cbs = {
+        .on_ping_success = on_ping_reply, .on_ping_timeout = on_ping_timeout, .on_ping_end = on_ping_end};
+    esp_ping_handle_t h;
+    if (s_ping_done == NULL || esp_ping_new_session(&pc, &cbs, &h) != ESP_OK) {
+        printf("ping: cannot start\n");
+        return 1;
+    }
+    esp_ping_start(h);
+    xSemaphoreTake(s_ping_done, pdMS_TO_TICKS(10000));
+    esp_ping_stop(h);
+    esp_ping_delete_session(h);
     return 0;
 }
 
@@ -157,6 +302,8 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
         {.command = "devices", .help = "Modbus devices: online state and counters",
          .func = cmd_devices},
         {.command = "config", .help = "Summary of the loaded configuration", .func = cmd_config},
+        {.command = "ping", .help = "ICMP echo (3 requests) to an IPv4 or IPv6 address",
+         .hint = "<address>", .func = cmd_ping},
 #if CONFIG_GW_IO_SIMULATED
         {.command = "di", .help = "Emulator only: set a simulated input", .hint = "<1-8> <0|1>",
          .func = cmd_di},
