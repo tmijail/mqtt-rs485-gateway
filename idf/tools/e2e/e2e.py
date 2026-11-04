@@ -3290,30 +3290,75 @@ def run(args, log, slave, broker, conf, work):
     # for, so a task running there could change the task list and stacks while the ELF writer
     # walks them (truncated dumps, wrong checksums, nested aborts). The emulator's 'panic'
     # parks the other core first, as the chip's stall does: one panic, and its dump must decode.
+    # Issue #88: a dump is valid when it decodes on the host AND the firmware's own check at the
+    # next boot (CONFIG_ESP_COREDUMP_CHECK_BOOT, what the device reads back from its flash) says
+    # its checksum is correct. An invalid dump whose UART log shows another task running inside
+    # the dump window (from "Save core dump to flash" to the ROM banner of the restart: on the
+    # chip the other core stays stalled through the reboot delay too), or a nested abort, is
+    # the emulator's missing stall: it is reported as such and the panic is repeated, at most
+    # twice per run. Any other invalid dump (the writer itself failing) fails the check at once.
     off, size = storage_partition("coredump")
-    attempts = []
-    for n in range(args.panics):
-        obs.drain()
-        since = time.monotonic()
-        gw.console("panic")
-        nb = obs.wait(nbirth_t, 40)
-        saved = gw.find(r"Core dump has been saved to flash", since)
-        reason = metric(nb[2], name="Node Info/Reset Reason") if nb else None
+    attempts, emulator_retries = [], 2
+    other_task = re.compile(r"^[IWE] \(\d+\) (?!esp_core_dump)[\w.-]+: |Re-entered core dump")
+
+    def decode(n):
         core = work / f"coredump-{n}.bin"
         core.write_bytes(pathlib.Path(args.flash).read_bytes()[off:off + size])
         info = subprocess.run([args.idf_python, "-m", "esp_coredump", "--chip", "esp32s3",
                                "info_corefile", "--core", str(core), "--core-format", "raw", args.elf],
                               capture_output=True, text=True, timeout=120)
-        decoded = info.returncode == 0 and "panic_task" in info.stdout and "abort" in info.stdout
+        (work / f"coredump-info-{n}.txt").write_text(info.stdout + info.stderr)
         (work / "coredump-info.txt").write_text(info.stdout + info.stderr)
-        err = (info.stderr.strip().splitlines() or [""])[-1][:90]
-        attempts.append((bool(saved), reason.string_value if reason else None, decoded, err))
+        ok = info.returncode == 0 and "panic_task" in info.stdout and "abort" in info.stdout
+        return ok, (info.stderr.strip().splitlines() or [""])[-1][:90]
+
+    n = 0
+    while sum(1 for a in attempts if a["kind"] != "emulator") < args.panics:
+        obs.drain()
+        since = time.monotonic()
+        gw.console("panic")
+        nb = obs.wait(nbirth_t, 40)
+        lines = [l for t, l in gw.lines if t >= since]
+        (work / f"uart0-panic-{n}.log").write_text("\n".join(lines))
+        saved = any("Core dump has been saved to flash" in l for l in lines)
+        boot_check = [l for l in lines if re.search(
+            r"esp_core_dump_flash: Core dump data (checksum is correct|check failed)", l)]
+        start = next((i for i, l in enumerate(lines) if "Save core dump to flash" in l), None)
+        end = next((i for i, l in enumerate(lines) if start is not None and i > start
+                    and re.search(r"^ESP-ROM:|rst:0x", l)), len(lines))
+        during = [l for l in lines[start + 1:end] if other_task.search(l)] if start is not None else []
+        reason = metric(nb[2], name="Node Info/Reset Reason") if nb else None
+        decoded, err = decode(n)
+        device_ok = bool(boot_check) and "checksum is correct" in boot_check[0]
+        good = saved and reason is not None and reason.string_value == "panic" and decoded and device_ok
+        kind = "valid" if good else "invalid"
+        if not good and during and emulator_retries > 0:
+            kind, emulator_retries = "emulator", emulator_retries - 1
+        attempts.append({"saved": saved, "reason": reason.string_value if reason else None,
+                         "decoded": decoded, "err": err, "kind": kind, "during": during[:2],
+                         "device": (boot_check or ["no boot check logged"])[0]})
+        n += 1
+        if kind == "invalid":
+            break
     gw.kill()
-    check("Issue #12 / #62 one panic -> core dump in flash, restart with 'panic' reset reason, the "
-          "dump decodes with esp_coredump (backtrace through panic_task/abort), deterministically",
-          all(a[0] and a[1] == "panic" and a[2] for a in attempts),
-          "; ".join(f"attempt {i + 1}: saved={a[0]} reset reason={a[1]!r} decoded={a[2]}"
-                    f"{'' if a[2] else ' (' + a[3] + ')'}" for i, a in enumerate(attempts)))
+
+    def describe(i, a):
+        text = (f"attempt {i + 1}: saved={a['saved']} reset reason={a['reason']!r} "
+                f"decoded={a['decoded']}")
+        if a["kind"] != "valid":
+            text += f" ({a['err']}; device: {a['device']}"
+            if a["kind"] == "emulator":
+                text += f"; emulator: another task ran during the dump: {a['during']}"
+            text += ")"
+        return text
+
+    check("Issue #12 / #62 / #88 one panic -> core dump in flash, restart with 'panic' reset reason, "
+          "the dump decodes with esp_coredump (backtrace through panic_task/abort) and the device's "
+          "own boot check finds it valid, deterministically (a dump spoilt by the emulator's missing "
+          "CPU stall is told apart and repeated, at most twice)",
+          all(a["kind"] != "invalid" for a in attempts)
+          and sum(1 for a in attempts if a["kind"] == "valid") == args.panics,
+          "; ".join(describe(i, a) for i, a in enumerate(attempts)))
 
     # IO-6 "config_error" alarm: a rejected configuration cannot enable it, so the last valid one
     # left the choice in NVS: a boot of this same flash with a broken config.json beeps 3 times
