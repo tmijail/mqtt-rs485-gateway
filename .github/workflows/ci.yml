@@ -33,6 +33,8 @@ jobs:
           mkdir -p /tmp/spb
           build-host/spb_dump /tmp/spb
           /tmp/venv/bin/python idf/tools/spb_decode.py --check /tmp/spb
+      - name: E2E harness self-test (fault signatures and retry rule, issues #92 and #96)
+        run: /tmp/venv/bin/python idf/tools/e2e/test_harness.py
 
   firmware:
     name: ESP32-S3 firmware build (QA-2)
@@ -144,6 +146,8 @@ jobs:
             /tmp/e2e-work/*.qemu
             /tmp/e2e-work/results.json
             /tmp/e2e-work/coredump-info.txt
+            /tmp/e2e-work/qemu-exits.txt
+            /tmp/e2e-work/fault-*.txt
             /tmp/e2e-work/payloads/
 
   # Issue #85: the same scenario on the board's memory path, with QEMU's octal PSRAM (the
@@ -185,4 +189,6 @@ jobs:
             /tmp/e2e-psram/*.qemu
             /tmp/e2e-psram/results.json
             /tmp/e2e-psram/coredump-info.txt
+            /tmp/e2e-psram/qemu-exits.txt
+            /tmp/e2e-psram/fault-*.txt
             /tmp/e2e-psram/payloads/
