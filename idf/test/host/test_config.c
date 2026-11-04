@@ -402,6 +402,20 @@ static void test_backup_brokers(void)
                     "mqtt.primary_return_s: valor -1 fuera de rango");
 }
 
+/* SPB-14: store & forward switch. */
+static void test_store_forward_key(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\""), err.msg);
+    TEST_ASSERT_FALSE(cfg.sparkplug.store_forward);   /* absent: coalescing, as in the MVP */
+    TEST_ASSERT_TRUE_MESSAGE(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                                   "\"edge_node_id\":\"E\",\"store_forward\":true}}"),
+                             err.msg);
+    TEST_ASSERT_TRUE(cfg.sparkplug.store_forward);
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\",\"store_forward\":\"yes\"}}"),
+                    "sparkplug.store_forward: se esperaba true o false");
+}
+
 /* MQTT-8: protocol version. */
 static void test_mqtt_protocol(void)
 {
@@ -744,6 +758,7 @@ int main(void)
     RUN_TEST(test_tls_client_certificate);
     RUN_TEST(test_backup_brokers);
     RUN_TEST(test_mqtt_protocol);
+    RUN_TEST(test_store_forward_key);
     RUN_TEST(test_web_section);
     RUN_TEST(test_hostname);
     RUN_TEST(test_error_fields);

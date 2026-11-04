@@ -443,6 +443,134 @@ static void test_session_down_suppresses_publishing(void)
     TEST_ASSERT_EQUAL_DOUBLE(5, dec.m[decoded_find_name(&dec, "Voltage")].num);
 }
 
+/* SPB-14: without a store (the MVP) changes while offline are coalesced: nothing is kept. */
+static void test_no_store_coalesces(void)
+{
+    set_meter(true, 230.5, 12.3, 1);
+    gw_node_session_up(&node, 1);
+    gw_node_session_down(&node);
+    set_meter(true, 231.0, 12.3, 1);
+    gw_node_device_changed(&node, 0);
+    TEST_ASSERT_EQUAL_size_t(0, gw_node_flush_history(&node, 10));
+    recorder_clear();
+    gw_node_session_up(&node, 2);
+    TEST_ASSERT_EQUAL(2, g_rec.count);   /* births only */
+}
+
+/* SPB-14: changes while offline are stored with the same exception and deadband rules, and
+ * after the births they come out, oldest first, as DDATA/NDATA with is_historical and their
+ * sample times; seq continues; a device without DBIRTH in the new session is dropped. */
+static void test_store_and_forward(void)
+{
+    static gw_sf_rec_t storage[64];
+    gw_sf_t sf;
+    gw_sf_init(&sf, storage, 64);
+    gw_node_set_store(&node, &sf);
+    set_meter(true, 230.5, 12.3, 1);
+    gw_node_session_up(&node, 1);
+    gw_node_session_down(&node);
+
+    /* offline: three polls; the second one is inside the 0.1 deadband of Voltage */
+    gw_tag_value_t v[3] = {{.value = 231.0, .ts_ms = 2000, .valid = true},
+                           {.value = 12.3, .ts_ms = 2000, .valid = true},
+                           {.value = 1, .ts_ms = 2000, .valid = true}};
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_node_device_changed(&node, 0);
+    v[0].value = 231.05;
+    v[0].ts_ms = 3000;
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_node_device_changed(&node, 0);
+    v[0].value = 232.0;
+    v[0].ts_ms = 4000;
+    v[2].value = 0;
+    v[2].ts_ms = 4000;
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_node_device_changed(&node, 0);
+    gw_tagdb_set_di(0x01, 4500);
+    gw_node_io_changed(&node);
+    gw_tagdb_set_di(0x00, 4600);
+    gw_node_io_changed(&node);
+    TEST_ASSERT_EQUAL_size_t(5, gw_sf_count(&sf));   /* 231, (232, Run), DI/1 on, DI/1 off */
+    TEST_ASSERT_EQUAL(0, g_rec.count - 2);           /* nothing published while offline */
+    /* flushing while offline publishes nothing */
+    TEST_ASSERT_EQUAL_size_t(5, gw_node_flush_history(&node, 10));
+
+    recorder_clear();
+    gw_node_session_up(&node, 2);
+    TEST_ASSERT_EQUAL(2, g_rec.count);               /* NBIRTH, DBIRTH with the current values */
+    msg(1);
+    TEST_ASSERT_EQUAL_DOUBLE(232.0, dec.m[decoded_find_alias(&dec, GW_ALIAS_TAG_BASE + VOLTAGE)].num);
+    /* one message per call: the caller paces the history */
+    TEST_ASSERT_EQUAL_size_t(4, gw_node_flush_history(&node, 1));   /* samples left */
+    TEST_ASSERT_EQUAL_size_t(0, gw_node_flush_history(&node, 10));
+    TEST_ASSERT_EQUAL(6, g_rec.count);
+    TEST_ASSERT_EQUAL_UINT32(4, node.sf_sent);
+
+    const rec_msg_t *m = msg(2);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/DDATA/GW01/Meter1", m->topic);
+    TEST_ASSERT_EQUAL_UINT64(2, dec.seq);            /* seq continues after the births */
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_TRUE(dec.m[0].is_historical);
+    TEST_ASSERT_FALSE(dec.m[0].has_name);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TAG_BASE + VOLTAGE, dec.m[0].alias);
+    TEST_ASSERT_EQUAL_UINT64(2000, dec.m[0].timestamp);
+    TEST_ASSERT_EQUAL_DOUBLE(231.0, dec.m[0].num);
+    msg(3);
+    TEST_ASSERT_EQUAL(2, dec.count);                 /* the batch of one poll stays together */
+    TEST_ASSERT_EQUAL_UINT64(4000, dec.m[0].timestamp);
+    TEST_ASSERT_EQUAL_DOUBLE(232.0, dec.m[0].num);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TAG_BASE + RUN, dec.m[1].alias);
+    TEST_ASSERT_EQUAL(11, dec.m[1].datatype);
+    TEST_ASSERT_TRUE(dec.m[1].is_historical);
+    m = msg(4);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", m->topic);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_DI_BASE, dec.m[0].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(1.0, dec.m[0].num);
+    TEST_ASSERT_EQUAL_UINT64(4500, dec.m[0].timestamp);
+    TEST_ASSERT_TRUE(dec.m[0].is_historical);
+    msg(5);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, dec.m[0].num);
+    TEST_ASSERT_EQUAL_UINT64(5, dec.seq);
+
+    /* a device that is offline when the session comes back has no DBIRTH: its samples go */
+    gw_node_session_down(&node);
+    v[0].value = 240.0;
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_node_device_changed(&node, 0);
+    gw_tagdb_put_device(cfg, 0, v, false);
+    gw_node_device_changed(&node, 0);   /* offline: nothing stored (no DDEATH in the store) */
+    TEST_ASSERT_EQUAL_size_t(1, gw_sf_count(&sf));
+    recorder_clear();
+    gw_node_session_up(&node, 3);
+    TEST_ASSERT_EQUAL(1, g_rec.count);  /* NBIRTH only */
+    TEST_ASSERT_EQUAL_size_t(0, gw_node_flush_history(&node, 10));
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    TEST_ASSERT_EQUAL_UINT32(1, node.sf_discarded);
+}
+
+/* SPB-14: a publish that fails keeps the batch for the next attempt. */
+static void test_history_kept_when_publish_fails(void)
+{
+    static gw_sf_rec_t storage[8];
+    gw_sf_t sf;
+    gw_sf_init(&sf, storage, 8);
+    gw_node_set_store(&node, &sf);
+    gw_tagdb_set_di(0x02, 100);
+    gw_node_io_changed(&node);   /* before the first NBIRTH: nothing to compare with */
+    TEST_ASSERT_EQUAL_size_t(0, gw_sf_count(&sf));
+    gw_node_session_up(&node, 1);
+    gw_node_session_down(&node);
+    gw_tagdb_set_di(0x00, 200);
+    gw_node_io_changed(&node);
+    TEST_ASSERT_EQUAL_size_t(1, gw_sf_count(&sf));
+    gw_node_session_up(&node, 2);
+    recorder_clear();
+    g_rec.publish_fails = true;
+    TEST_ASSERT_EQUAL_size_t(1, gw_node_flush_history(&node, 4));
+    g_rec.publish_fails = false;
+    TEST_ASSERT_EQUAL_size_t(0, gw_node_flush_history(&node, 4));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -457,5 +585,8 @@ int main(void)
     RUN_TEST(test_discard_log_shows_alias_only_if_present);
     RUN_TEST(test_do_unknown_published_as_null);
     RUN_TEST(test_command_aborted_mid_payload_applies_nothing);
+    RUN_TEST(test_no_store_coalesces);
+    RUN_TEST(test_store_and_forward);
+    RUN_TEST(test_history_kept_when_publish_fails);
     return UNITY_END();
 }

@@ -41,7 +41,7 @@ static uint8_t next_seq(gw_node_t *n)
     return n->seq++;  /* uint8_t wraps 255 -> 0 (SPB-5) */
 }
 
-static void publish(gw_node_t *n, const char *type, const char *device, size_t metric_count,
+static bool publish(gw_node_t *n, const char *type, const char *device, size_t metric_count,
                     int qos)
 {
     spb_payload_t p = {
@@ -54,14 +54,15 @@ static void publish(gw_node_t *n, const char *type, const char *device, size_t m
     size_t len = spb_encode(&p, n->buf, sizeof(n->buf));
     if (len == 0 || !gw_node_topic(n, type, device, n->topic, sizeof(n->topic))) {
         GW_LOGE(TAG, "%s%s%s: payload does not fit", type, device ? " " : "", device ? device : "");
-        return;
+        return false;
     }
     if (n->ops.publish(n->ops.ctx, n->topic, n->buf, len, qos, false) < 0) {
         GW_LOGW(TAG, "publish %s failed", n->topic);
-        return;
+        return false;
     }
     GW_LOGD(TAG, "%s seq=%" PRIu64 " metrics=%u bytes=%u", n->topic, p.seq, (unsigned)metric_count,
             (unsigned)len);
+    return true;
 }
 
 static spb_metric_t *metric(gw_node_t *n, size_t i, const char *name, uint64_t alias,
@@ -162,6 +163,7 @@ void gw_node_session_up(gw_node_t *n, uint64_t bdseq)
 {
     n->bdseq = bdseq;
     n->online = true;
+    n->born_once = true;
     gw_node_rebirth(n);
 }
 
@@ -173,9 +175,41 @@ void gw_node_session_down(gw_node_t *n)
 
 /* ---------- report by exception ---------- */
 
+/* SPB-14: what DDATA would have carried, into the store (same RBE and deadband rules). */
+static void store_device(gw_node_t *n, uint16_t dev)
+{
+    bool online;
+    gw_tagdb_get_device(n->cfg, dev, n->vals, &online);
+    if (!online) {
+        return;   /* a DDEATH is not stored: the DBIRTH of the next session tells the state */
+    }
+    const gw_device_cfg_t *d = &n->cfg->devices[dev];
+    bool begun = false;
+    for (uint16_t i = 0; i < d->tag_count; i++) {
+        uint16_t tag = (uint16_t)(d->first_tag + i);
+        const gw_tag_cfg_t *t = &n->cfg->tags[tag];
+        double deadband = t->type == GW_TYPE_BOOL ? 0.0 : t->deadband;
+        if (gw_rbe_changed(&n->tag_rbe[tag], n->vals[i].value, n->vals[i].valid, deadband)) {
+            if (!begun) {
+                gw_sf_begin(n->sf);
+                begun = true;
+            }
+            gw_sf_push(n->sf, (uint8_t)dev, tag, n->vals[i].value, !n->vals[i].valid,
+                       n->vals[i].ts_ms);
+            gw_rbe_commit(&n->tag_rbe[tag], n->vals[i].value, n->vals[i].valid);
+        }
+    }
+}
+
 void gw_node_device_changed(gw_node_t *n, uint16_t dev)
 {
-    if (!n->online || dev >= n->cfg->device_count) {
+    if (dev >= n->cfg->device_count) {
+        return;
+    }
+    if (!n->online) {
+        if (n->sf != NULL && n->born_once) {
+            store_device(n, dev);
+        }
         return;
     }
     bool online;
@@ -237,11 +271,84 @@ static void publish_io(gw_node_t *n, uint8_t force_do)
     }
 }
 
+/* SPB-14: what NDATA would have carried, into the store. */
+static void store_io(gw_node_t *n)
+{
+    gw_local_io_t io;
+    gw_tagdb_get_io(&io);
+    uint8_t di_changed = io.di ^ n->di_reported;
+    uint8_t do_changed = io.dout ^ n->do_reported;
+    if (io.do_unknown != n->do_unknown_reported) {
+        do_changed = 0xFF;
+    }
+    if ((di_changed | do_changed) == 0) {
+        return;
+    }
+    gw_sf_begin(n->sf);
+    for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
+        if (di_changed & (1u << k)) {
+            gw_sf_push(n->sf, GW_SF_NODE, (uint16_t)(GW_ALIAS_DI_BASE + k), (io.di >> k) & 1u,
+                       false, io.di_ts_ms);
+        }
+    }
+    for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
+        if (do_changed & (1u << k)) {
+            gw_sf_push(n->sf, GW_SF_NODE, (uint16_t)(GW_ALIAS_DO_BASE + k), (io.dout >> k) & 1u,
+                       io.do_unknown, io.do_ts_ms);
+        }
+    }
+    n->di_reported = io.di;
+    n->do_reported = io.dout;
+    n->do_unknown_reported = io.do_unknown;
+}
+
 void gw_node_io_changed(gw_node_t *n)
 {
     if (n->online) {
         publish_io(n, 0);
+    } else if (n->sf != NULL && n->born_once) {
+        store_io(n);
     }
+}
+
+void gw_node_set_store(gw_node_t *n, gw_sf_t *sf)
+{
+    n->sf = sf;
+}
+
+size_t gw_node_flush_history(gw_node_t *n, size_t max_msgs)
+{
+    if (n->sf == NULL) {
+        return 0;
+    }
+    for (size_t sent = 0; n->online && sent < max_msgs && gw_sf_count(n->sf) > 0;) {
+        size_t cnt = gw_sf_peek(n->sf, n->hist, GW_MAX_TAGS_PER_DEVICE);
+        uint8_t dev = n->hist[0].dev;
+        bool node = dev == GW_SF_NODE;
+        if (!node && (dev >= n->cfg->device_count || !n->dev_born[dev])) {
+            /* no DBIRTH in this session (offline now): DDATA would break the protocol */
+            n->sf_discarded += (uint32_t)cnt;
+            gw_sf_pop(n->sf, cnt);
+            continue;
+        }
+        for (size_t i = 0; i < cnt; i++) {
+            const gw_sf_rec_t *r = &n->hist[i];
+            uint32_t dt = node ? SPB_DT_BOOLEAN : gw_conv_datatype(&n->cfg->tags[r->metric]);
+            spb_metric_t *m = metric(n, i, NULL, node ? r->metric : GW_ALIAS_TAG_BASE + r->metric,
+                                     dt, r->ts_ms);
+            m->v.num = r->value;
+            m->is_null = r->is_null != 0;
+            m->is_historical = true;
+        }
+        if (!publish(n, node ? "NDATA" : "DDATA", node ? NULL : n->cfg->devices[dev].name, cnt,
+                     0)) {
+            break;   /* kept: retried on the next call (or the next session) */
+        }
+        gw_sf_pop(n->sf, cnt);
+        n->sf_sent++;
+        sent++;
+    }
+    return gw_sf_count(n->sf);
 }
 
 void gw_node_write_done(gw_node_t *n, uint16_t tag, bool ok)

@@ -36,6 +36,10 @@ static void fill_metric(Payload_Metric *out, const spb_metric_t *m)
         out->has_timestamp = true;
         out->timestamp = m->timestamp;
     }
+    if (m->is_historical) {
+        out->has_is_historical = true;
+        out->is_historical = true;
+    }
     if (m->is_null) {
         out->has_is_null = true;
         out->is_null = true;
@@ -141,6 +145,7 @@ static bool dec_metric(pb_istream_t *stream, const pb_field_iter_t *field, void 
         .datatype = m.datatype,
         .timestamp = m.has_timestamp ? m.timestamp : 0,
         .is_null = m.has_is_null && m.is_null,
+        .is_historical = m.has_is_historical && m.is_historical,
     };
     switch (m.which_value) {
     case Payload_Metric_int_value_tag:

@@ -30,6 +30,12 @@ typedef struct {
     uint8_t failures;        /* consecutive failed attempts on it */
     int8_t host_state;       /* SPB-13: -1 no STATE seen, 0 offline, 1 online */
     bool waiting_host;       /* connected and subscribed, NBIRTH waits for the host */
+    bool sf_enabled;         /* SPB-14 */
+    bool sf_psram;
+    uint32_t sf_count;       /* samples waiting to be sent */
+    uint32_t sf_cap;
+    uint32_t sf_dropped;     /* overwritten before they could be sent */
+    uint32_t sf_sent;        /* historical messages published */
 } gw_edge_status_t;
 
 void gw_edge_get_status(gw_edge_status_t *out);

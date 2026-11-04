@@ -11,6 +11,13 @@
  *   1 bdSeq, 2 Node Control/Rebirth, 3 Node Control/Reboot,
  *   4 Node Info/Firmware, 5 Node Info/Hardware, 6 Node Info/Reset Reason,
  *   10..17 DI/1..DI/8, 20..27 DO/1..DO/8, 100 + n device tag with global index n.
+ *
+ * Store & forward (SPB-14, optional): with a gw_sf_t attached, changes that happen while the
+ * node is not online (no session, or the primary host offline) are evaluated with the same
+ * report-by-exception rules and stored (from the first NBIRTH of the run on: before it there
+ * is no reported state to compare with, and the clock may not be set); once online, after NBIRTH and the DBIRTHs (which carry
+ * the current values), gw_node_flush_history() publishes them, oldest first, as DDATA/NDATA
+ * whose metrics have is_historical = true and the time they were sampled.
  */
 #pragma once
 
@@ -20,6 +27,7 @@
 
 #include "gw_config.h"
 #include "gw_rbe.h"
+#include "gw_sf.h"
 #include "gw_tagdb.h"
 #include "spb.h"
 
@@ -83,6 +91,13 @@ typedef struct {
     uint8_t buf[GW_SPB_PAYLOAD_MAX];
     char topic[GW_TOPIC_MAX];
 
+    /* Store & forward (SPB-14); sf NULL = changes while offline are coalesced (the MVP). */
+    gw_sf_t *sf;
+    bool born_once;                    /* an NBIRTH went out since boot: from then on, store */
+    gw_sf_rec_t hist[GW_MAX_TAGS_PER_DEVICE];
+    uint32_t sf_discarded;             /* stored samples of devices without DBIRTH when sent */
+    uint32_t sf_sent;                  /* historical messages published */
+
     /* Per-command state while decoding an NCMD/DCMD. */
     int cmd_dev;
     bool cmd_rebirth;
@@ -117,6 +132,13 @@ void gw_node_write_done(gw_node_t *n, uint16_t tag, bool ok);
 /** Incoming NCMD/DCMD (other topics are ignored). */
 void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
                             const uint8_t *payload, size_t len);
+
+/** SPB-14: store changes made while offline in @p sf (NULL: do not). */
+void gw_node_set_store(gw_node_t *n, gw_sf_t *sf);
+
+/** SPB-14: publish up to @p max_msgs messages of stored history (only while online). Returns
+ *  the samples still stored. */
+size_t gw_node_flush_history(gw_node_t *n, size_t max_msgs);
 
 /** Re-publish NBIRTH and every DBIRTH with seq restarted (SPB-9). */
 void gw_node_rebirth(gw_node_t *n);

@@ -177,6 +177,13 @@ static int cmd_status(int argc, char **argv)
                 es.broker_count, es.host, es.port, s_ctx.cfg->mqtt.tls.enabled ? " (TLS)" : "",
                 es.failures);
         }
+        if (es.sf_enabled) {
+            out("store    %lu of %lu samples waiting (%s), %lu historical messages sent, %lu "
+                "overwritten\n",
+                (unsigned long)es.sf_count, (unsigned long)es.sf_cap,
+                es.sf_psram ? "PSRAM" : "internal RAM", (unsigned long)es.sf_sent,
+                (unsigned long)es.sf_dropped);
+        }
         if (s_ctx.cfg->sparkplug.primary_host_id[0] != '\0') {
             out("host     primary '%s' %s%s\n", s_ctx.cfg->sparkplug.primary_host_id,
                 es.host_state < 0 ? "not seen yet" : es.host_state ? "online" : "offline",

@@ -354,6 +354,14 @@ Un intento falla si no termina en una sesión estable: conexión TCP o TLS falli
 
 Con brokers de respaldo (MQTT-6), un host fuera de línea en un broker (STATE `false`, o ningún STATE `true` en 30 s) cuenta como intento fallido en ese broker. Con un solo broker el nodo queda conectado esperando.
 
+**`sparkplug.store_forward` (SPB-14): store & forward.**
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `store_forward` | bool | `false` | `false` = sin sesión Sparkplug los cambios se coalescen y la sesión siguiente publica solo el valor actual (como el MVP). `true` = los cambios que se habrían publicado (mismas reglas de excepción y *deadband*) se guardan en un búfer circular y, tras el NBIRTH y los DBIRTH de la sesión siguiente, se publican del más viejo al más nuevo como DDATA/NDATA con `is_historical = true` y el timestamp de la muestra |
+
+"Sin sesión" incluye broker caído y host primario (SPB-13) fuera de línea, desde el primer NBIRTH del arranque (antes no hay estado publicado con qué comparar). El búfer tiene 40 000 muestras en PSRAM (960 KB) o 512 en RAM interna si no hay PSRAM (Kconfig `GW_SF_PSRAM_SAMPLES` / `GW_SF_INTERNAL_SAMPLES`); lleno, se pisan las más viejas. Las muestras de un dispositivo sin DBIRTH en la sesión nueva (fuera de línea al volver) se descartan. Sin volcado a microSD.
+
 **`syslog` (REL-4): copia del log a un servidor syslog.**
 
 ```json

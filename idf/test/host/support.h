@@ -63,6 +63,7 @@ typedef struct {
     double last_write_value;
     bool write_queue_full;
     int reboots;
+    bool publish_fails;          /* publish returns -1 (a broker that went away) */
 } recorder_t;
 
 extern recorder_t g_rec;
@@ -84,6 +85,7 @@ typedef struct {
         uint64_t alias;
         uint32_t datatype;
         bool is_null;
+        bool is_historical;
         spb_val_kind_t kind;
         double num;
         char str[64];

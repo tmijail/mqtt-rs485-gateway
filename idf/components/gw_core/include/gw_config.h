@@ -177,6 +177,7 @@ typedef struct {
         char group_id[GW_ID_SIZE];
         char edge_node_id[GW_ID_SIZE];
         char primary_host_id[GW_ID_SIZE];  /* SPB-13: "" = no primary host application */
+        bool store_forward;                /* SPB-14: keep changes made while offline */
     } sparkplug;
     struct {
         uint32_t baud;

@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "esp_crt_bundle.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_system.h"
@@ -39,6 +40,7 @@ static const char *TAG = "edge";
 #define SUBACK_TIMEOUT_MS 5000  /* NBIRTH waits this long at most for the SUBACK */
 #define TLS_ERROR_LOG_MS 10000  /* a TLS setup that cannot work is logged this often */
 #define PHOST_WAIT_MS    30000  /* with backup brokers: no STATE online this long -> next broker */
+#define SF_MSGS_PER_LOOP 4      /* historical messages per loop: live data is not held back */
 #define STR_(x) #x
 #define STR(x)  STR_(x)
 
@@ -118,6 +120,8 @@ static gw_phost_t s_phost;      /* SPB-13: what the primary host last said */
 static bool s_waiting_host;     /* subscribed; NBIRTH waits for the host's STATE online */
 static int64_t s_host_wait_since_us;
 static bool s_host_disconnect;  /* the session ends because of the host, not the network */
+static gw_sf_t s_sf;            /* SPB-14: store & forward ring (storage allocated at boot) */
+static bool s_sf_psram;
 static bool s_stable;           /* the current session lasted stable_ms(): it counts as working */
 static char s_client_if[8];     /* interface the client was bound to ("" = one interface) */
 
@@ -276,8 +280,9 @@ static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *da
         if (ev->error_handle->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
             ESP_LOGW(TAG, "broker refused the connection (code %d)",
                      ev->error_handle->connect_return_code);
-        } else if (ev->error_handle->esp_tls_last_esp_err != ESP_OK ||
-                   ev->error_handle->esp_tls_cert_verify_flags != 0) {
+        } else if (s_cfg->mqtt.tls.enabled &&
+                   (ev->error_handle->esp_tls_last_esp_err != ESP_OK ||
+                    ev->error_handle->esp_tls_cert_verify_flags != 0)) {
             log_tls_error(ev->error_handle);
         } else {
             ESP_LOGW(TAG, "MQTT transport error (errno %d)",
@@ -366,6 +371,12 @@ static void publish_status(void)
     s_st.failures = s_bsel.failures;
     s_st.host_state = !s_phost.have_ts ? -1 : s_phost.online ? 1 : 0;
     s_st.waiting_host = s_waiting_host;
+    s_st.sf_enabled = s_node != NULL && s_node->sf != NULL;
+    s_st.sf_psram = s_sf_psram;
+    s_st.sf_count = (uint32_t)gw_sf_count(&s_sf);
+    s_st.sf_cap = (uint32_t)s_sf.cap;
+    s_st.sf_dropped = s_sf.dropped;
+    s_st.sf_sent = s_node != NULL ? s_node->sf_sent : 0;
     portEXIT_CRITICAL(&s_st_mux);
 }
 
@@ -534,6 +545,11 @@ static void start_births(void)
              "without feeding the watchdog %lu ms", s_bdseq,
              (unsigned long)((esp_timer_get_time() - t0) / 1000), (unsigned long)s_max_unfed_ms);
     log_stacks();
+    if (gw_sf_count(&s_sf) > 0) {
+        ESP_LOGI(TAG, "store & forward: %u sample(s) stored while offline follow as historical "
+                      "data (%lu overwritten)",
+                 (unsigned)gw_sf_count(&s_sf), (unsigned long)s_sf.dropped);
+    }
 }
 
 /* SUBACK received for every topic: the session starts, once the primary host (if one is
@@ -831,7 +847,8 @@ static void reconcile(void)
         ESP_LOGI(TAG, "rebirth requested from the console");
         gw_node_rebirth(s_node);
     }
-    if (s_node->online) {
+    /* online: DDATA/NDATA; offline with store & forward: the same changes into the store */
+    if (s_node->online || s_node->sf != NULL) {
         unsigned dirty = atomic_exchange(&s_dev_dirty, 0);
         for (uint16_t d = 0; dirty != 0; d++, dirty >>= 1) {
             if (dirty & 1u) {
@@ -842,11 +859,20 @@ static void reconcile(void)
             gw_node_io_changed(s_node);
         }
     }
+    if (s_node->online && gw_sf_count(&s_sf) > 0) {
+        /* SPB-14: history after the births, a few messages per loop */
+        if (gw_node_flush_history(s_node, SF_MSGS_PER_LOOP) == 0) {
+            ESP_LOGI(TAG, "store & forward: history sent (%lu historical messages in total, %lu "
+                          "samples of devices without DBIRTH dropped)",
+                     (unsigned long)s_node->sf_sent, (unsigned long)s_node->sf_discarded);
+        }
+    }
+    publish_status();
 }
 
 static TickType_t next_timeout(void)
 {
-    int64_t ms = MAX_IDLE_MS;
+    int64_t ms = s_node->online && gw_sf_count(&s_sf) > 0 ? 10 : MAX_IDLE_MS;
     int64_t now = esp_timer_get_time();
     if (s_sub_msg_id > 0) {
         int64_t r = (s_sub_deadline_us - now) / 1000;
@@ -970,6 +996,30 @@ static void setup_tls(const gw_tls_cfg_t *tls)
     }
 }
 
+/* SPB-14: the ring, once at boot: large in PSRAM, small in internal RAM without it. */
+static void setup_store(void)
+{
+    size_t n = CONFIG_GW_SF_PSRAM_SAMPLES;
+    gw_sf_rec_t *buf = heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0
+                           ? heap_caps_calloc(n, sizeof(gw_sf_rec_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+                           : NULL;
+    s_sf_psram = buf != NULL;
+    if (buf == NULL) {
+        n = CONFIG_GW_SF_INTERNAL_SAMPLES;
+        buf = heap_caps_calloc(n, sizeof(gw_sf_rec_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+    if (buf == NULL) {
+        ESP_LOGE(TAG, "store & forward: no memory for %u samples: changes while offline are "
+                      "coalesced",
+                 (unsigned)n);
+        return;
+    }
+    gw_sf_init(&s_sf, buf, n);
+    gw_node_set_store(s_node, &s_sf);
+    ESP_LOGI(TAG, "store & forward: %u samples (%u B) in %s", (unsigned)n,
+             (unsigned)(n * sizeof(gw_sf_rec_t)), s_sf_psram ? "PSRAM" : "internal RAM (no PSRAM)");
+}
+
 esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
 {
     s_cfg = cfg;
@@ -997,6 +1047,9 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         return ESP_ERR_INVALID_SIZE;
     }
     gw_phost_init(&s_phost);
+    if (cfg->sparkplug.store_forward) {
+        setup_store();
+    }
     if (cfg->sparkplug.primary_host_id[0] != '\0') {
         snprintf(s_state_topic, sizeof(s_state_topic), "spBv1.0/STATE/%s",
                  cfg->sparkplug.primary_host_id);   /* fits: ids are at most 32 characters */

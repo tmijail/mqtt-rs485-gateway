@@ -242,6 +242,70 @@ class FakeBroker:
         self.srv.close()
 
 
+# ---------------------------------------------------------------- relay
+
+class Relay:
+    """TCP relay 127.0.0.1:@port -> a broker on 127.0.0.1:@target. stop() closes the listener and
+    every relayed connection (to the gateway the broker is gone: connections are refused) while
+    the broker and the observers keep running; start() opens it again."""
+
+    def __init__(self, port, target):
+        self.port, self.target, self.conns, self.srv = port, target, [], None
+        self.start()
+
+    def start(self):
+        self.srv = socket.socket()
+        self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.srv.bind(("127.0.0.1", self.port))
+        self.srv.listen(4)
+        threading.Thread(target=self._loop, args=(self.srv,), daemon=True).start()
+
+    def stop(self):
+        try:
+            self.srv.shutdown(socket.SHUT_RDWR)   # wakes the accept(); close() alone does not
+        except OSError:
+            pass
+        self.srv.close()
+        for s in self.conns:
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            s.close()
+        self.conns = []
+
+    def _loop(self, srv):
+        while True:
+            try:
+                c, _ = srv.accept()
+            except OSError:
+                return
+            try:
+                b = socket.create_connection(("127.0.0.1", self.target))
+            except OSError:
+                c.close()
+                continue
+            self.conns += [c, b]
+            threading.Thread(target=self._pump, args=(c, b), daemon=True).start()
+            threading.Thread(target=self._pump, args=(b, c), daemon=True).start()
+
+    def _pump(self, src, dst):
+        try:
+            while True:
+                data = src.recv(4096)
+                if not data:
+                    break
+                dst.sendall(data)
+        except OSError:
+            pass
+        finally:
+            for s in (src, dst):
+                try:
+                    s.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+
 # ---------------------------------------------------------------- syslog listener
 
 def syslog_listener(stop):
@@ -903,6 +967,69 @@ def run_primary_host(args, work):
     obs.close()
 
 
+# ---------------------------------------------------------------- store & forward (SPB-14)
+
+def run_store_forward(args, work, slave):
+    """SPB-14 in one boot (GW20, sparkplug.store_forward) connected through a Relay (port +9) to
+    the main mosquitto; stopping the relay takes the broker away from the gateway while the
+    observer stays subscribed. While it is away Voltage takes three values (each beyond the 0.1
+    deadband) and DI/3 goes on and off. Back: NBIRTH, DBIRTH with the current value, then the
+    stored changes as DDATA/NDATA with is_historical, in order and with their sample times.
+    QEMU has no PSRAM: the small internal-RAM ring is used."""
+    node, port = "GW20", MQTT_PORT + 9
+    ddata_t, ndata_t = f"{T}/DDATA/{node}/{DEVICE}", f"{T}/NDATA/{node}"
+    relay = Relay(port, MQTT_PORT)
+    obs = Observer()
+    cfg = node_config(node, port=port)
+    cfg["sparkplug"]["store_forward"] = True
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "sf", cfg)
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    obs.wait(f"{T}/DBIRTH/{node}/{BULK}", 10)
+    ring = gw.find(r"store & forward: \d+ samples \(\d+ B\) in internal RAM \(no PSRAM\)", t0)
+    since = time.monotonic()
+    relay.stop()
+    gw.wait_log(r"MQTT down; reconnect attempt", 10, since)
+    values = [240.0, 241.0, 242.0]
+    for v in values:
+        slave.set_float(4, 0, v)
+        time.sleep(1.6)   # poll_ms 1000: every value is read at least once
+    gw.console("di 3 1")
+    time.sleep(0.5)
+    gw.console("di 3 0")
+    time.sleep(0.5)
+    asked, h = gw.shell("status", [r"^store\s+[1-9]\d* of \d+ samples waiting \(internal RAM\)"])
+    waiting = list(h.values())[0]
+    relay.start()
+    nb2 = obs.wait(f"{T}/NBIRTH/{node}", 70)
+    time.sleep(3)
+    after = [m for m in CAPTURE if nb2 and m[0] >= nb2[0] and m[1].split("/")[3:4] == [node]]
+    db = next((m for m in after if m[1] == f"{T}/DBIRTH/{node}/{DEVICE}"), None)
+    hist = [(m[2].seq, mm) for m in after if m[1] == ddata_t for mm in m[2].metrics
+            if mm.is_historical and mm.alias == ALIAS["Voltage"]]
+    di = [mm for m in after if m[1] == ndata_t for mm in m[2].metrics
+          if mm.is_historical and mm.alias == ALIAS["DI/1"] + 2]
+    got = [round(mm.float_value, 1) for _, mm in hist]
+    ts = [mm.timestamp for _, mm in hist]
+    in_order = db and all(m[0] >= db[0] for m in after if m[1] in (ddata_t, ndata_t))
+    asked2, h = gw.shell("status", [r"^store\s+0 of \d+ samples waiting .*, [1-9]\d* historical messages sent"])
+    sent = list(h.values())[0]
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node}", 5)
+    obs.close()
+    relay.stop()
+    slave.set_float(4, 0, 230.5)   # what the main scenario expects
+    check("SPB-14 store & forward: changes while the broker is away come after NBIRTH and DBIRTH as "
+          "DDATA/NDATA with is_historical, oldest first, with their sample times (internal-RAM ring "
+          "without PSRAM)",
+          nb and ring and waiting and nb2 and db and got == values and ts == sorted(ts)
+          and [m.boolean_value for m in di] == [True, False] and in_order and sent,
+          f"{(ring or ['no ring log'])[0]}; DBIRTH Voltage "
+          f"{round(metric(db[2], name='Voltage').float_value, 1) if db else None}; historical Voltage "
+          f"{got} (seq {[s for s, _ in hist]}); historical DI/3 {[m.boolean_value for m in di]}; "
+          + " | ".join(gw.find(r"^store\s", asked) + gw.find(r"^store\s", asked2)))
+
+
 # ---------------------------------------------------------------- scenario
 
 def start_broker(conf, log):
@@ -937,7 +1064,7 @@ def main():
     ap.add_argument("--http-port", type=int, default=HTTP_PORT)
     ap.add_argument("--only", default="",
                     help="comma-separated scenarios to run (failsafe,network,web,reset,tls,failover,"
-                         "mqtt5,phost,main); "
+                         "mqtt5,phost,sf,main); "
                          "default all")
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
@@ -985,6 +1112,8 @@ def main():
             run_mqtt5(args, work, work / "mosquitto.log")
         if want("phost"):
             run_primary_host(args, work)
+        if want("sf"):
+            run_store_forward(args, work, slave)
         if want("main"):
             run(args, log, slave, broker, conf, work)
     except BaseException:

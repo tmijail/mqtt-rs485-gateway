@@ -730,12 +730,14 @@ static bool parse_mqtt(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 
 static bool parse_sparkplug(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"group_id", "edge_node_id", "primary_host_id"};
+    static const char *const keys[] = {"group_id", "edge_node_id", "primary_host_id",
+                                       "store_forward"};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "sparkplug");
     if (o == NULL) {
         return fail(err, "sparkplug", "sección obligatoria ausente");
     }
-    return check_keys(o, "sparkplug", keys, 3, err) &&
+    return check_keys(o, "sparkplug", keys, 4, err) &&
+           get_bool(o, "store_forward", "sparkplug", false, &cfg->sparkplug.store_forward, err) &&
            get_string(o, "group_id", "sparkplug", true, "", cfg->sparkplug.group_id,
                       sizeof(cfg->sparkplug.group_id), err) &&
            get_string(o, "edge_node_id", "sparkplug", true, "", cfg->sparkplug.edge_node_id,
