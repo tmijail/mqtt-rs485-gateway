@@ -103,7 +103,7 @@ Dependencias gestionadas, **con versión fija** (`==`) en cada `idf_component.ym
 - **Límites estáticos:** 16 dispositivos, 64 tags por dispositivo, 256 tags en total.
 - **Toda la memoria propia es de tamaño fijo**, estática o asignada una sola vez al arrancar:
   - **en PSRAM si la hay** (`gw_storage_big_alloc`, interna si no: QEMU o PSRAM no detectada): la configuración `gw_config_t` (unos 26 KB) y el motor `gw_node_t` (unos 27 KB, con su búfer de payload de 6 KB);
-  - `.bss` interna: `gw_edge` con la pila de 6 KB y 4 búferes de comando de 1,2 KB; `gw_bus` unos 10 KB (planificador, encuesta y pila de 4 KB); `gw_core` unos 6 KB (`gw_tagdb`).
+  - `.bss` interna: `gw_edge` con la pila de 6 KB y 4 búferes de comando de 1,2 KB; `gw_bus` unos 15 KB (planificador, encuesta y pila de 4 KB); `gw_core` unos 15 KB (`gw_tagdb`, 56 B por tag desde MB-6); `gw_mbtcp` unos 6 KB (pila de 4 KB y búferes, aunque esté apagado).
 - **Por qué no `EXT_RAM_BSS_ATTR`:** poner `.bss` en PSRAM exige `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY`, que en IDF es incompatible con `CONFIG_SPIRAM_IGNORE_NOTFOUND`: una placa cuya PSRAM no se detecte no arrancaría. Con la asignación al arrancar el equipo sigue funcionando con RAM interna (y la build de QEMU, sin PSRAM, es la misma).
 - Sin `malloc` en encuesta, codificación ni publicación.
 - Se asigna memoria solo al arrancar: esas dos estructuras, la lectura de LittleFS y el árbol de cJSON, todo en PSRAM si la hay (§3.4).
@@ -156,15 +156,17 @@ idf.py size
 idf.py -p /dev/ttyUSB0 flash monitor # graba bootloader, tabla, app (ota_0) y la partición LittleFS
 ```
 
-Resultado de `idf.py size` (build limpia con `idf.py set-target esp32s3 build`, 1169/1169 objetivos, 0 warnings, `sdkconfig` regenerado desde `sdkconfig.defaults`; Wi-Fi compilado, `CONFIG_GW_WIFI=y`):
+Resultado de `idf.py size` (build limpia con `idf.py set-target esp32s3 build`, 1172/1172 objetivos, 0 warnings, `sdkconfig` regenerado desde `sdkconfig.defaults`; Wi-Fi compilado, `CONFIG_GW_WIFI=y`):
 
 | Región | Usado |
 |---|---|
-| Flash code (`.text`) | 800 984 B |
-| Flash data (`.rodata`, etc.) | 190 432 B |
-| DIRAM | 147 032 B de 341 760 (**43,0 %**): `.bss` 57 792, `.text` 65 055, `.data` 24 185 |
+| Flash code (`.text`) | 811 872 B |
+| Flash data (`.rodata`, etc.) | 192 840 B |
+| DIRAM | 167 036 B de 341 760 (**48,9 %**): `.bss` 77 616, `.text` 65 235, `.data` 24 185 |
 | IRAM | 16 384 B (100 %, lo normal en S3: el resto del código IRAM va en DIRAM) |
-| Imagen total | **1 097 076 B** (26 % de la partición `ota_0` de 4 MB) |
+| Imagen total | **1 110 552 B** (26 % de la partición `ota_0` de 4 MB) |
+
+**Costo del trabajo Modbus (MB-6, MB-11, MB-12, MB-14, MB-15, SPB-15):** `.bss` +19 824 B (57 792 → 77 616). Unos 13 KB son el valor de tag de 56 B (antes 24) en la imagen de proceso (`gw_core` +8,9 KB), la copia de trabajo de la encuesta y la cola de escrituras (`gw_bus` +4,6 KB, también el planificador por clases) y la copia del shell (+2 KB); 5,8 KB son el servidor Modbus TCP (`gw_mbtcp`), reservado aunque esté apagado. Flash +13 KB.
 
 La configuración y el motor Sparkplug (unos 53 KB) se asignan al arrancar, en PSRAM si la hay (§1.3), así que no figuran en `.bss`.
 
@@ -240,21 +242,22 @@ Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 cmake -S idf/test/host -B build-host && cmake --build build-host -j3 && ctest --test-dir build-host
 ```
 
-Resultado: **12/12 ejecutables y 92/92 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
+Resultado: **13/13 ejecutables y 123/123 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
 
 | Suite | Casos | Qué cubre |
 |---|---|---|
 | `test_mb_rtu` | 6 | CRC (vectores de la especificación Modbus), tramas FC01–06/15/16, longitud de respuesta, excepciones, eco erróneo |
 | `test_mb_master` | 9 | t3,5 y retardo entre tramas, timeout y reintentos, CRC malo, unidad equivocada, excepción sin reintento, espera del fin de transmisión proporcional a la trama (FC16 de 13 B a 1200 baudios con paridad y la FC16 más larga) |
-| `test_conv` | 5 | Mapeo de datatypes §6, int16/uint16/int32/uint32/float32, ABCD/CDAB, escala inversa (12,3 → 123), rangos |
-| `test_logic` | 6 | RBE y deadband contra el último valor reportado (deriva), validez y NaN, debounce, backoff 1–60 s, fuera de línea |
-| `test_config` | 15 | Ejemplo §6 literal, sección `syslog`, sección `network.wifi` (valores por defecto, SSID, contraseña WPA2/PSK/abierta, rol, `failback_s`, IP estática), literales IPv6 (`::`, grupos de 4 dígitos, IPv4 embebida, 16 formas inválidas) y sección `network.ipv6`, JSON embebido, valores por defecto, reglas del esquema, errores con ruta (`devices[1].tags[2].type`), sintaxis con línea y columna (también con UTF-8 y contenido sobrante), claves duplicadas, límites 16/64/256, documento máximo (256 tags, > 40 KB), asignador del árbol y falta de memoria |
-| `test_plan` | 2 | Lecturas en bloque, solapes, huecos, límite de 125 registros |
-| `test_spb` | 7 | Ida y vuelta de todos los tipos, formato wire (Int16 con extensión de signo), NDEATH sin seq, peor caso de DBIRTH en el búfer |
-| `test_node` | 11 | NBIRTH y DBIRTH (nombre, alias, datatype, valor; alias únicos), DDEATH, DDATA por excepción, seq compartido con vuelta a 0, rebirth, NCMD DO/Reboot, DCMD por nombre y alias, descartes (el log muestra el alias solo si venía), comando abortado a mitad del payload sin aplicar nada, DO `is_null` sin expansor y NDATA al recuperarlo |
-| `test_poll` | 13 | Encuesta contra un esclavo simulado, fuera de línea tras N ciclos, excepción, un bloque sin respuesta (ciclo fallido, tags sin refrescar, DDEATH, sin vuelta a línea con el ciclo incompleto), contadores por dispositivo, planificación, escritura FC06 con relectura, FC15/FC16 forzadas, NaN e infinito rechazados en coils, tag fuera de rango, sondeo con backoff de los fuera de línea (un intento, 2–4–8–10 s, vuelta a línea) y un equipo sano que mantiene su periodo junto a tres muertos |
+| `test_conv` | 10 | Mapeo de datatypes §6 (también Int64/UInt64/Double/String y escalados de 64 bits a Double), int16/uint16/int32/uint32/float32, los cuatro órdenes ABCD/CDAB/BADC/DCBA en 32 y 64 bits, 2^53 + 1 exacto, INT64_MIN, float64, textos (relleno, NUL, no imprimibles, BADC, largo máximo), escala inversa (12,3 → 123), rangos |
+| `test_logic` | 7 | RBE y deadband contra el último valor reportado (deriva), RBE exacto de 64 bits y de textos (hash), validez y NaN, debounce, backoff 1–60 s, fuera de línea |
+| `test_config` | 19 | Ejemplo §6 literal, sección `syslog`, sección `network.wifi` (valores por defecto, SSID, contraseña WPA2/PSK/abierta, rol, `failback_s`, IP estática), literales IPv6 (`::`, grupos de 4 dígitos, IPv4 embebida, 16 formas inválidas) y sección `network.ipv6`, JSON embebido, valores por defecto, reglas del esquema, errores con ruta (`devices[1].tags[2].type`), sintaxis con línea y columna (también con UTF-8 y contenido sobrante), claves duplicadas, límites 16/64/256, documento máximo (256 tags, > 40 KB), asignador del árbol y falta de memoria, MB-6 (tipos, `bit`, `length`, órdenes), `block_reads`/`max_gap`, `scan`/`slow_poll_ms`, sección `modbus_tcp` |
+| `test_plan` | 3 | Lecturas en bloque, solapes, huecos, límite de 125 registros; `block_reads`/`max_gap` por dispositivo contra los valores por defecto de la build (#38) |
+| `test_spb` | 8 | Ida y vuelta de todos los tipos, enteros de 64 bits exactos, formato wire (Int16 con extensión de signo), NDEATH sin seq, peor caso de DBIRTH en el búfer |
+| `test_node` | 15 | NBIRTH y DBIRTH (nombre, alias, datatype, valor; alias únicos), DDEATH, DDATA por excepción, seq compartido con vuelta a 0, rebirth, NCMD DO/Reboot, DCMD por nombre y alias, descartes (el log muestra el alias solo si venía), comando abortado a mitad del payload sin aplicar nada, DCMD rechazado entero si la cola del bus no tiene lugar (#60), DO `is_null` sin expansor y NDATA al recuperarlo, `Node Control/Scan Rate` (SPB-15), métricas y DCMD MB-6 exactos |
+| `test_poll` | 22 | Encuesta contra un esclavo simulado, fuera de línea tras N ciclos, excepción, un bloque sin respuesta (ciclo fallido, tags sin refrescar, DDEATH, sin vuelta a línea con el ciclo incompleto), contadores por dispositivo, planificación, escritura FC06 con relectura, FC15/FC16 forzadas, NaN e infinito rechazados en coils, tag fuera de rango, sondeo con backoff de los fuera de línea (un intento, 2–4–8–10 s, vuelta a línea) y un equipo sano que mantiene su periodo junto a tres muertos; nunca respondió: sondeado desde el arranque (#61); MB-6 (decodificación en sus órdenes, escrituras exactas, bit por lectura-modificación-escritura); escaneo rápido y lento (MB-12); escritura entre peticiones de un ciclo con su latencia (MB-14); Scan Rate (SPB-15); reloj inyectado en el test del bloque sin respuesta (#66) |
 | `test_netsel` | 5 | Selección de interfaz (NET-4): solo Ethernet (sin conmutaciones), Wi-Fi de respaldo (*failover* inmediato, *failback* tras `failback_s`), Wi-Fi primaria, enlace preferido que rebota (no roba la sesión), `failback_s` = 0 |
 | `test_syslog` | 5 | REL-4: severidad del formato de `esp_log`, parseo de líneas (colores, hora del sistema, `: ` en el mensaje, truncado), timestamps RFC 3339 (bisiesto, 2099), formato RFC 5424 (PRI, NILVALUE, saneado de HOSTNAME/APP-NAME, caracteres de control, truncado), anillo lleno sin esperar y conteo de descartes |
+| `test_mbap` | 6 | MB-15: longitud de tramas MBAP, lecturas y escrituras reenviadas al esclavo simulado (FC01, 03, 05, 06, 15, 16), excepciones del propio gateway (01, 03, 0A) y del esclavo, unidad que no responde (0B), lista de clientes con redes CIDR |
 | `test_dout` | 8 | Polaridad de 8 canales (activa en bajo, en alto y mixta), arranque del TCA9554 (latch OFF, POLARITY = 0 y luego CONFIG, también en arranque en caliente), DO/3 → pin bajo y relectura, errores de bus, relectura con POLARITY heredado invertido, reintento con backoff |
 
 Los tests de host descargan Unity (v2.6.1) y cJSON (v1.7.19) con `FetchContent`, desde GitHub y **fijados por hash de commit**.
@@ -267,7 +270,7 @@ mkdir -p /tmp/spb && build-host/spb_dump /tmp/spb && python3 idf/tools/spb_decod
 
 `spb_dump` genera NDEATH, NBIRTH, DBIRTH, DDATA y NDATA reales del motor. `spb_decode.py` los compila con `grpc_tools.protoc` a partir del `sparkplug_b.proto` oficial de eclipse/tahu (copiado sin cambios en `components/gw_core/proto/`) y los decodifica con **Google protobuf 7.36**.
 
-Resultado: **5 payloads decodificados, 0 errores estructurales**. Además se decodificaron los 48 mensajes capturados en el E2E.
+Resultado: **8 payloads decodificados, 0 errores estructurales** (incluye un DBIRTH y un DDATA con UInt64, Int64, Double, String y un bit de registro). Además se decodificaron los 60 mensajes capturados en el E2E.
 
 ### 4.3 QA-3: punta a punta con el firmware real en QEMU
 
@@ -282,8 +285,9 @@ E2E_PYTHON=~/e2e/bin/python idf/tools/e2e/run_e2e.sh
 
 - QEMU `esp_develop_9.2.2`, máquina `esp32s3`, con el firmware compilado con el overlay `sdkconfig.qemu`.
 - Ethernet `open_eth` sobre slirp.
-- UART1 → socket → **pymodbus 3.8.6** como esclavo RTU, unidades 1 (`Meter1`, tags de §6 más `Limit`, float32 escribible) y 2 (`Bulk`, 60 registros). Las unidades 3 a 5 (`Dead3`–`Dead5`) están en la configuración pero no existen en el bus: nunca responden.
+- UART1 → socket → **pymodbus 3.8.6** como esclavo RTU, unidades 1 (`Meter1`: tags de §6, `Limit` float32 escribible y los tags MB-6 `Energy` uint64 ABCD, `Counter` int64 CDAB, `Flow` float64 DCBA, `Temp` int32 BADC, `Serial` string, `Alarm` y `Ready` bits de registro; `max_gap: 10`, `Energy` y `Serial` en escaneo lento de 3 s) y 2 (`Bulk`, 60 registros). Las unidades 3 a 5 (`Dead3`–`Dead5`) están en la configuración pero no existen en el bus: nunca responden.
 - UART0 → socket, para el log y el shell (las DI se inyectan con su comando `di`).
+- Modbus TCP (MB-15): slirp reenvía un puerto del host (`--mbtcp-port`, por defecto 15502) al 502 del gateway (`hostfwd`); un cliente pymodbus del harness lo usa. Las conexiones llegan desde 10.0.2.2, la única dirección de `allowed_clients` en la configuración del E2E.
 - **mosquitto 2.0.18** privado (copia renombrada del binario), un respondedor SNTP propio en el UDP 123 y un receptor syslog UDP (`--syslog-port`, por defecto 15514). El harness solo envía señales a los procesos que arrancó él.
 - **Brokers que se portan mal:** un servidor MQTT mínimo del harness en `--mqtt-port` + 1 acepta la conexión y la corta tras el CONNACK, y en `--mqtt-port` + 2 responde cada SUBSCRIBE con 0x80. (mosquitto no sirve para esto: su ACL nunca rechaza un SUBSCRIBE, solo filtra al entregar.)
 - **Aislamiento de red.** El harness se mueve a un *network namespace* propio, con solo la interfaz de loopback (necesita `CAP_SYS_ADMIN`, por ejemplo root en un contenedor). Todos los puertos, también el UDP 123, son privados de la corrida, así que dos corridas en paralelo no chocan. Sin ese permiso (o con `--no-isolate`) usa el loopback del host con los puertos de `--mqtt-port`, `--modbus-port` y `--console-port` (o `E2E_MQTT_PORT`, `E2E_MODBUS_PORT`, `E2E_CONSOLE_PORT`); por defecto 18831, 15020 y 15555. Los argumentos extra de `run_e2e.sh` pasan a `e2e.py`.
@@ -292,7 +296,7 @@ E2E_PYTHON=~/e2e/bin/python idf/tools/e2e/run_e2e.sh
 
 Configuración usada: `tools/e2e/fs/config.json` (keepalive de 10 s, syslog hacia el receptor del harness). `run_e2e.sh` pasa además el ELF y el python de IDF, para decodificar el *core dump* con `esp_coredump`.
 
-Resultado: **56/56 comprobaciones OK**.
+Resultado: **65/65 comprobaciones OK**.
 
 | Criterio | Resultado medido |
 |---|---|
@@ -301,14 +305,20 @@ Resultado: **56/56 comprobaciones OK**.
 | Reinicio del broker (SIGTERM, 9 s parado) | OK: mosquitto publica el will (NDEATH, bdSeq de la sesión) al cerrarse; backoff 1000 → 1866 → 3443 → 6860 ms con bdSeq nuevo en cada intento; NBIRTH (seq 0, bdSeq nuevo) y DBIRTH de los dos equipos (seq 1 y 2) |
 | Broker congelado (SIGSTOP 20 s > 1,5 × keepalive) | OK: el gateway declara muerta la sesión por keepalive a los 10,0 s (`No PING_RESP`); tras SIGCONT llegan los will de la sesión muerta y del intento hecho durante el congelamiento, y luego NBIRTH con bdSeq nuevo y los dos DBIRTH; la sesión nueva sigue viva |
 | §7.2 Esclavo apagado → DDEATH; encendido → DBIRTH | OK: DDEATH en 3,47 s (cota 5,8 s); DBIRTH 1,52 s después de volver (cota: tope de sondeo de 10 s más un ciclo) |
-| MB-9 sondeo con backoff de los fuera de línea (tres unidades que no existen en el bus) | OK: tras tres ciclos completos, la unidad 3 recibe un solo intento por sondeo, a 2,2 / 4,0 / 8,0 / 10,0 s; Meter1 hace 21 ciclos en 20 s, intervalo máximo 1,05 s |
+| MB-9 sondeo con backoff de los fuera de línea (tres unidades que no existen en el bus); #61 | OK: la unidad 3 recibe un solo intento por sondeo **desde el arranque**, sin ciclos completos, a 2,0 / 4,3 / 8,0 / 10,0 s; Meter1 hace 21 ciclos en sus primeros 19 s, intervalo máximo 1,68 s |
+| MB-6 tipos nuevos | OK: DBIRTH con `Energy` UInt64 = 2^53 + 1 exacto, `Counter` Int64 = −(2^53 + 1) (CDAB), `Flow` Double (DCBA), `Temp` Int32 −123 456 (BADC), `Serial` String `SN-0042-ABCD`, `Alarm`/`Ready` Boolean (bits 3 y 15). DCMD `Counter` = 2^62 + 3 → **una** FC16 de 4 registros en orden CDAB y DDATA exacto; DCMD `Alarm` = false → FC03 y FC06 con 0x0101 (los otros bits quedan); DCMD `Serial` = `HELLO` → FC16 de 8 registros |
+| MB-11 / #38 hueco por dispositivo | OK: Meter1 (`max_gap: 10`) pide exactamente coil 0, holding 10–21, 30–33, 34–37, 50–57, 60 e input 0–1, 40–46; Bulk (hueco 0 del firmware) sigue con una FC03 de 60 |
+| MB-12 escaneo lento | OK: en 12 s, 12 ciclos rápidos (cada 1 s) y 4 lecturas de `Energy` y `Serial` a 3,04 / 3,00 / 3,01 s |
+| MB-14 escritura entre bloques | OK: con respuestas de 120 ms, un DCMD enviado a mitad de un ciclo de Meter1 se escribe entre sus peticiones (1 antes, 4 después en el mismo ciclo), latencia 0,02–0,15 s desde la publicación |
+| SPB-15 Scan Rate | OK: NBIRTH `Node Control/Scan Rate` UInt32 = 0; NCMD 3000 → NDATA 3000 y Meter1 cada 3,0 s; NCMD 10 → descartado con log, NDATA 3000; NCMD 0 → NDATA 0 y otra vez cada 1,0 s |
+| MB-15 Modbus TCP | OK: cliente pymodbus por el puerto 502 lee holding 10 de la unidad 1 (= 123, el Setpoint) y escribe holding 200 = 4242 (0,11 s); unidad 3 muerta → excepción 0B; FC 0x2B → 01 del gateway sin pasar al bus. En el arranque de red aparte (`allowed_clients: ["192.0.2.0/24"]`), la conexión desde 10.0.2.2 se cierra sin respuesta y queda en el log |
 | MQTT-2: broker que corta tras el CONNACK; SUBACK rechazado (0x80) | OK: el backoff sigue creciendo (1000 → 1696 → 3492 → 7681 ms). Con el SUBACK rechazado no hay NBIRTH, el gateway envía DISCONNECT y reintenta (1000 → 1861 → 3703 ms). El backoff vuelve al mínimo 10,1 s (un keepalive) después del NBIRTH de una sesión estable |
 | REL-1: watchdog y *core dump* | OK: los births salen en 9 ms con 4 ms como máximo sin alimentar el TWDT; `panic` en el shell → "Core dump has been saved to flash", NBIRTH con `Reset Reason` = `panic` y `esp_coredump` decodifica el volcado (traza por `cmd_panic` y `abort`) |
 | Afinidad de núcleos | OK: `tasks rs485_bus 1 sparkplug 0 tcpip 0 mqtt_task 0 emac_rx 0 sys_evt 0` |
 | §7.3 DI → NDATA en menos de 100 ms; NCMD DO/3 = true → NDATA | OK: 23 ms (incluye 20 ms de debounce); NDATA alias 22 = true (pines simulados con la polaridad de `gw_bsp`) |
 | §7.4 DCMD Setpoint = 12,3 → holding 10 = 123 por FC06 y DDATA | OK: el esclavo registró `(6, 10, [123])`; DDATA 12,3. Float32 `Limit` = 1234,5: **una sola** FC16 de 2 registros y DDATA 1234,5 |
 | §7.5 NCMD Rebirth → NBIRTH (seq 0, mismo bdSeq) y todos los DBIRTH | OK |
-| §7.6 Todos los payloads se decodifican con el proto oficial | OK: 48 mensajes, 0 errores |
+| §7.6 Todos los payloads se decodifican con el proto oficial | OK: 60 mensajes, 0 errores |
 | CFG-6 shell en la consola; REL-5 | OK: `devices` da `Meter1 unit 1 online cycles 2 failed 0 \| ok 6 …` y, con el esclavo apagado, `offline … failed 3 \| … timeout 9`; `config` da el resumen; `status` responde con la configuración válida (`config … ok`, `MQTT connected`, `Modbus 2/5 devices online`) y también con la configuración rechazada. NBIRTH `Node Info/Reset Reason` = `power-on` en el primer arranque y `software` tras NCMD Reboot |
 | NET-4 sin radio y NET-7: configuración con `network.wifi` y `network.ipv6` (nodo `GW02`, arranque aparte) en la build de QEMU | OK: arranca, avisa `network.wifi ignored: Wi-Fi is not available in this build` y publica NBIRTH por Ethernet; el shell muestra `iface ethernet up 10.0.2.15 (active) \| wifi not configured` y el resumen de `network.wifi`. Con la configuración normal, `status` muestra Ethernet como única interfaz activa. IPv6: `fe80::5054:ff:fe12:3456` (link-local), `fec0::5054:ff:fe12:3456` (SLAAC con el RA de slirp) y `fec0::1234` (estática); `ping fec0::2`: 3 enviados, 3 respondidos. MQTT sobre IPv6 no se puede probar aquí (§6.6) |
 | REL-4 syslog remoto (UDP al receptor del harness) | OK: `<134>1 2026-11-04T01:03:09.035Z GW01 edge - - [meta sequenceId="21"] Sparkplug session up (bdSeq=0)`: *facility* local0, HOSTNAME = nodo, APP-NAME = módulo, hora SNTP; 22 datagramas al primer NBIRTH, 0 mal formados; `status` da `syslog 10.0.2.2:15514 connected, sent 22, dropped 0, errors 0`. Con el broker caído llega `<132> … MQTT down; reconnect attempt 1 in 1000 ms`. 119 datagramas en 3 arranques, `sequenceId` sin huecos en cada uno |
@@ -326,6 +336,7 @@ Resultado: **56/56 comprobaciones OK**.
 - **PSRAM octal.** QEMU da *segfault*; se deshabilita.
 - **Flash QIO.** Las lecturas de la app llegan desplazadas 2 bytes; se usa DIO.
 - **IPv6 hacia el host.** slirp entrega las conexiones a `fec0::2` al `::1` del host y el kernel del contenedor no tiene IPv6: solo se prueban direcciones e ICMPv6.
+- **UART1 tras un reinicio.** IDF reinicia la UART0 al salir pero no la UART1; el chip la limpia en `uart_driver_install()`, el modelo de QEMU no. Si un esclavo estaba respondiendo en el momento del reinicio, la línea de interrupción quedaba activa para siempre y el arranque siguiente se colgaba al instalar el driver (visto con gdb sobre el *gdbstub* de QEMU; 2 de 3 corridas del E2E tras NCMD Reboot o un *panic*). `gw_rs485` enmascara las interrupciones del puerto antes de todo reinicio: un *shutdown handler* para `esp_restart()` y un envoltorio de `esp_restart_noos()` (`-Wl,--wrap`) que cubre también el *panic*. 40 reinicios seguidos (20 NCMD Reboot, 20 *panic*) sin cuelgue. En la placa no hace falta, pero no molesta.
 - **Wi-Fi.** QEMU no emula la radio; la build de emulador lleva `CONFIG_GW_WIFI=n`. El E2E comprueba solo que una configuración con `network.wifi` arranca, avisa que no hay Wi-Fi y sigue por Ethernet.
 
 ### 4.4 QA-2
@@ -391,7 +402,7 @@ Leyenda de **Evidencia**:
 | REL-1 | Implementado | `gw_bus.c`, `gw_edge.c`, `gw_io.c`, `sdkconfig.defaults` | Q: TWDT alimentado tras cada publicación (el log de los births informa el mayor intervalo sin alimentarlo), DI vigiladas como usuario del TWDT; un *panic* deja el *core dump* en flash, el equipo reinicia (`Node Info/Reset Reason` = `panic`) y el volcado se decodifica con `esp_coredump`. El disparo real del TWDT no se ejecutó: QEMU deshabilita el watchdog de los timers |
 | REL-2 | **Parcial** | Todo `gw_*` | El código propio es estático y no asigna en el camino crítico; **lwIP y esp-mqtt asignan del heap internamente** (acotado, no estático) |
 | REL-3 | Implementado | `esp_log` en todos los módulos | Q. Con REL-4 la consola sigue igual |
-| QA-1 | Implementado | `test/host/` | 92 casos |
+| QA-1 | Implementado | `test/host/` | 123 casos |
 | QA-2 | Implementado | — | 0 warnings; tamaño en §3.2 |
 
 **Fuera del MVP**, implementado total o parcialmente:
@@ -467,7 +478,7 @@ La build de QEMU difiere de la de placa en esos puntos (`sdkconfig.qemu`).
   - La escritura de un `bit` lee el registro y lo reescribe entero. Nada del gateway se mete entre la lectura y la escritura (las dos pasan por la tarea dueña del bus), pero si el propio esclavo cambia otro bit de ese registro en ese intervalo, el cambio se pierde. Los esclavos con FC22 (*mask write*) no se aprovechan.
   - Los `string` llegan hasta 32 caracteres (16 registros) y solo ASCII imprimible (lo demás sale como `?`): no hay UTF-8 ni otras codificaciones. El texto viaja como String de Sparkplug; para el reporte por excepción se compara un hash FNV-1a de 64 bits (una colisión ocultaría un cambio; probabilidad despreciable).
   - Con `scale`/`offset`, un `int64`/`uint64` pasa a Double y pierde la exactitud por encima de 2^53, como cualquier valor escalado.
-  - **Memoria:** el valor de cada tag ocupa ahora 56 B (antes 24) para alojar el texto. Son unos 12 KB más de `.bss` interna (imagen de proceso de 256 tags, copia de trabajo de la encuesta y la del shell) y 2 KB más en el motor Sparkplug (PSRAM si la hay).
+  - **Memoria:** el valor de cada tag ocupa ahora 56 B (antes 24) para alojar el texto. Son unos 13 KB más de `.bss` interna (imagen de proceso de 256 tags, copia de trabajo de la encuesta y la del shell; §3.2) y 2 KB más en el motor Sparkplug (PSRAM si la hay).
 
 - **MB-15 (Modbus TCP):**
   - **Sin autenticación ni cifrado:** cualquiera que llegue al puerto y esté en `allowed_clients` lee y escribe todos los esclavos del bus, también registros que el gateway no encuesta. La lista filtra por dirección de origen (falsificable en la misma red). Por eso viene apagado.
