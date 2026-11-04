@@ -10,10 +10,14 @@
 
 #include "esp_heap_caps.h"
 #include "esp_littlefs.h"
+#include "esp_check.h"
 #include "esp_log.h"
+#include "esp_partition.h"
 #include "esp_random.h"
+#include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "gw_auth.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -250,6 +254,28 @@ void gw_storage_recovery_config(gw_config_t *cfg)
 
 static bool mount(bool format_if_needed, esp_err_t *why);
 
+/* Erase the whole LittleFS partition, then format it. esp_littlefs_format only rewrites the
+ * superblocks: the data blocks of old files (secrets in clear) would survive. Erased in 64 KiB
+ * steps so the other tasks (and the idle task watchdog) keep running. */
+static esp_err_t wipe_storage(void)
+{
+    if (s_mounted) {
+        esp_vfs_littlefs_unregister("storage");
+        s_mounted = false;
+    }
+    const esp_partition_t *p =
+        esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "storage");
+    if (p == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    for (size_t off = 0; off < p->size; off += 0x10000) {
+        size_t n = p->size - off < 0x10000 ? p->size - off : 0x10000;
+        ESP_RETURN_ON_ERROR(esp_partition_erase_range(p, off, n), TAG, "erase");
+        vTaskDelay(1);
+    }
+    return esp_littlefs_format("storage");
+}
+
 /* ---------- factory reset (CFG-5) ---------- */
 
 static void set_factory_marker(bool on)
@@ -267,12 +293,8 @@ static void set_factory_marker(bool on)
 esp_err_t gw_storage_factory_reset(void)
 {
     xSemaphoreTake(s_save_lock, portMAX_DELAY);   /* no save in the middle; never given back */
-    ESP_LOGW(TAG, "factory reset: formatting LittleFS 'storage' and erasing NVS");
-    if (s_mounted) {
-        esp_vfs_littlefs_unregister("storage");
-        s_mounted = false;
-    }
-    esp_err_t fs = esp_littlefs_format("storage");
+    ESP_LOGW(TAG, "factory reset: erasing LittleFS 'storage' and NVS");
+    esp_err_t fs = wipe_storage();
     if (s_nvs_ok) {
         nvs_close(s_nvs);
     }
@@ -288,6 +310,15 @@ esp_err_t gw_storage_factory_reset(void)
     }
     ESP_LOGW(TAG, "factory reset: storage %s, NVS %s", esp_err_to_name(fs), esp_err_to_name(nv));
     return fs != ESP_OK ? fs : nv;
+}
+
+bool gw_storage_secrets_encrypted(void)
+{
+#if CONFIG_NVS_ENCRYPTION
+    return s_nvs_ok;
+#else
+    return false;
+#endif
 }
 
 bool gw_storage_commissioning_pending(void)
@@ -464,10 +495,21 @@ bool gw_storage_load_config(gw_config_t *cfg, gw_cfg_err_t *err, const char **so
     }
     if (from_file && doc.had_clear_secrets) {
         /* Migration (CFG-7): a file written by hand or by an older firmware carries secrets
-         * in clear. They are used, moved to NVS and the file is rewritten without them. */
+         * in clear. They are used, moved to NVS and the file is rewritten without them.
+         * LittleFS is copy-on-write: the old blocks would keep the secrets until reused, so
+         * the partition (which only holds this file) is erased before the rewrite. A power
+         * cut in between leaves the device in commissioning mode, never on the example
+         * configuration. */
         esp_err_t e = put_secrets(&doc.secrets);
         if (e == ESP_OK) {
+            set_factory_marker(true);
+            e = wipe_storage();
+        }
+        if (e == ESP_OK) {
             e = write_atomic(doc.doc, doc.doc_len);
+        }
+        if (e == ESP_OK) {
+            set_factory_marker(false);
         }
         if (e == ESP_OK) {
             ESP_LOGW(TAG, "secrets moved from " CFG_PATH " to NVS; the file no longer holds them");

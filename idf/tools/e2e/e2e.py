@@ -383,13 +383,17 @@ def as_json(body):
 
 # ---------------------------------------------------------------- storage partition variants
 
-def storage_partition():
-    """(offset, size) of the "storage" partition in partitions.csv."""
+def partition(name):
+    """(offset, size) of partition @name in partitions.csv."""
     for line in (HERE.parent.parent / "partitions.csv").read_text().splitlines():
         cols = [c.strip() for c in line.split(",")]
-        if cols[0] == "storage":
+        if cols[0] == name:
             return int(cols[3], 0), int(cols[4], 0)
-    raise SystemExit("no storage partition in partitions.csv")
+    raise SystemExit(f"no {name} partition in partitions.csv")
+
+
+def storage_partition():
+    return partition("storage")
 
 
 def flash_variant(args, work, name, files):
@@ -894,9 +898,28 @@ def run_web(args, work):
           and (as_json(b9) or {}).get("mqtt", {}).get("password") == "********",
           " | ".join(gw.find(r"^config: ", asked)) + f"; NDEATH {node2}: {bool(death)}; NBIRTH "
           f"{node3}: {bool(nb3)}; GET {st9}")
+    asked = time.monotonic()
+    gw.console("status")
+    enc = gw.wait_log(r"^secrets\s+NVS encrypted \(HMAC key in eFuse KEY5\)", 5, asked)
     gw.kill()
     obs.wait(f"{T}/NDEATH/{node3}", 5)
     obs.close()
+    # CFG-7: the secrets left the file at the first boot, NVS is encrypted, the web password is
+    # only stored as a hash: none of them appears anywhere in the flash image in clear.
+    image = pathlib.Path(flash).read_bytes()
+    so, ss = storage_partition()
+    no, ns = partition("nvs")
+    leaks = [(what.decode(), where) for what in (b"mqtt-secret", WEB_PASSWORD.encode())
+             for where, (o, n) in (("storage", (so, ss)), ("nvs", (no, ns)), ("image", (0, len(image))))
+             if what in image[o:o + n]]
+    moved = gw.find(r"storage: secrets moved from /cfg/config\.json to NVS", t0)
+    encrypted = gw.find(r'nvs: NVS partition "nvs" is encrypted', t0)
+    check("CFG-7 secrets migrated out of config.json at the first boot (partition erased: no stale "
+          "copy), NVS encrypted with the HMAC key in eFuse, web password only as a hash: no secret "
+          "in clear anywhere in the flash image",
+          moved and encrypted and enc and not leaks,
+          f"{(moved or ['no migration log'])[0]}; {(encrypted or ['NVS not encrypted'])[0]}; "
+          f"shell {bool(enc)}; secrets found in clear: {leaks or 'none'}")
 
 
 def run_factory_reset(args, work):
@@ -965,6 +988,11 @@ def run_factory_reset(args, work):
     gw.kill()
     obs.wait(f"{T}/NDEATH/{node2}", 5)
     obs.close()
+    image = pathlib.Path(flash).read_bytes()
+    so, ss = storage_partition()
+    stale = [w for w in (b'"GW07"', WEB_PASSWORD.encode()) if w in image[so:so + ss]]
+    check("CFG-5 the factory reset erased the storage partition (no block of the old configuration "
+          "is left)", not stale and b'"GW08"' in image[so:so + ss], f"stale: {stale or 'none'}")
 
 
 def run(args, log, slave, broker, conf, work):

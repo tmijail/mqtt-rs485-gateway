@@ -104,6 +104,13 @@ static int cmd_status(int argc, char **argv)
                s_ctx.cfg->syslog.port, ls.connected ? "connected" : "not reachable",
                (unsigned long)ls.sent, (unsigned long)ls.dropped, (unsigned long)ls.send_errors);
     }
+#if CONFIG_NVS_ENCRYPTION && CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC
+    printf("secrets  NVS %s (HMAC key in eFuse KEY%d)\n",
+           gw_storage_secrets_encrypted() ? "encrypted" : "UNAVAILABLE",
+           CONFIG_NVS_SEC_HMAC_EFUSE_KEY_ID);
+#else
+    printf("secrets  NVS NOT encrypted (CONFIG_NVS_ENCRYPTION=n: development fallback)\n");
+#endif
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
     printf("local    DI 0x%02x, DO 0x%02x (bit n = channel n+1, 1 = active)\n", io.di, io.dout);

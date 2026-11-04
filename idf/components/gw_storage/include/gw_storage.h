@@ -59,6 +59,10 @@ char *gw_storage_export_config(size_t *len, gw_cfg_err_t *err);
  */
 void gw_storage_commissioning_password(char out[GW_COMMISSION_PW_LEN + 1]);
 
+/** CFG-7: true when NVS (and with it the secrets) is encrypted (CONFIG_NVS_ENCRYPTION,
+ *  HMAC key in eFuse). Development builds without it keep the secrets in plain NVS. */
+bool gw_storage_secrets_encrypted(void);
+
 /** Secrets currently stored (empty strings when none). */
 void gw_storage_get_secrets(gw_secrets_t *out);
 
