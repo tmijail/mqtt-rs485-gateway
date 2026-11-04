@@ -106,6 +106,7 @@ class ModbusSlave:
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
         self.server = None
         self.requests = 0
+        self.delay = 0.0   # extra response time of unit 1's reads (MB-14 check: a long cycle)
 
     def _trace(self, sending, pdu):
         if not sending:
@@ -113,6 +114,8 @@ class ModbusSlave:
             self.times.append(time.monotonic())
             self.reads.append((getattr(pdu, "dev_id", None), pdu.function_code,
                                getattr(pdu, "address", None), getattr(pdu, "count", None)))
+            if self.delay and self.reads[-1][0] == 1 and pdu.function_code <= 4:
+                time.sleep(self.delay)   # blocks the server loop: the answer leaves later
         return pdu
 
     def start(self):
@@ -733,6 +736,57 @@ def check_offline_backoff(slave, t0):
                  f"{worst:.2f} s")
 
 
+def check_write_between_blocks(obs, slave, dcmd_t, ddata_t):
+    """MB-14: with unit 1 answering 120 ms late, a Meter1 cycle (6 requests) takes about 1 s.
+    A DCMD sent in the middle of a cycle is written between two requests of that cycle (Meter1
+    reads before it, after the cycle start, and after it, before the next start), not once the
+    cycle is over, and its latency is about one transaction."""
+    start = (1, 0, 1)   # first request of every Meter1 cycle (coil 0)
+    slave.delay = 0.12
+    tries = []
+    try:
+        for attempt in range(3):
+            n0 = len(slave.reads)
+            end = time.monotonic() + 4
+            while time.monotonic() < end and not any(
+                    r[0] == 1 and r[1:] == start for r in list(slave.reads)[n0:]):
+                time.sleep(0.01)
+            time.sleep(0.25)   # well into the cycle
+            value = 2 ** 62 + 100 + attempt
+            obs.drain()
+            sent = time.monotonic()
+            obs.publish_cmd(dcmd_t, [{"name": "Counter", "datatype": 4, "long_value": value}])
+            dd = obs.wait(ddata_t, 6, lambda q: metric(q, alias=ALIAS["Counter"]) is not None)
+            time.sleep(1.5)    # let the cycle finish
+            reads = [(t, r) for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 1]
+            w = next((i for i, (t, r) in enumerate(reads) if t >= sent and r[1:3] == (16, 34)), None)
+            if w is None:
+                tries.append(f"attempt {attempt + 1}: no write seen")
+                continue
+            before = 0
+            for t, r in reversed(reads[:w]):
+                if r[1:] == start:
+                    break
+                before += 1
+            after = 0
+            for t, r in reads[w + 2:]:      # w + 1 is the read-back
+                if r[1:] == start:
+                    break
+                after += 1
+            latency = reads[w][0] - sent
+            exact = dd is not None and int64_of(metric(dd[2], alias=ALIAS["Counter"])) == value
+            tries.append((before, after, round(latency, 2), exact))
+            if after >= 1 and exact and latency <= 0.6:
+                break
+    finally:
+        slave.delay = 0.0
+    ok = any(isinstance(x, tuple) and x[1] >= 1 and x[3] and x[2] <= 0.6 for x in tries)
+    return check("MB-14 DCMD written between two requests of a running cycle (latency ~ one "
+                 "transaction, not the rest of the cycle)", ok,
+                 "(Meter1 requests of the cycle before the write, after it, latency s, DDATA exact): "
+                 f"{tries}")
+
+
 def check_scan_classes(slave):
     """MB-12: Meter1's slow-scan blocks (Energy at holding 30, Serial at 50; slow_poll_ms 3000)
     are read every third cycle, its fast ones (cycle start: coil 0) every second."""
@@ -1079,6 +1133,7 @@ def run(args, log, slave, broker, conf, work):
 
     check_offline_backoff(slave, t0)
     check_scan_classes(slave)
+    check_write_between_blocks(obs, slave, dcmd_t, ddata_t)
 
     # 2. Slave off -> DDEATH; back on -> DBIRTH
     obs.drain()

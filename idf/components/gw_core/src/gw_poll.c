@@ -76,6 +76,7 @@ void gw_poller_init(gw_poller_t *p, const gw_config_t *cfg, mb_master_t *mb,
     p->cfg = cfg;
     p->mb = mb;
     p->opts = *opts;
+    p->polling = -1;
     gw_plan_build(&p->plan, cfg, opts->merge_reads, opts->max_gap);
     for (uint16_t d = 0; d < cfg->device_count; d++) {
         p->next_due_ms[d] = now_ms;
@@ -125,7 +126,11 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
     uint16_t fast = p->plan.dev_fast_count[dev];
     bool full = !p->state[dev].online || fast == 0 || (int32_t)(now_ms - p->slow_due_ms[dev]) >= 0;
     uint16_t nblocks = full ? p->plan.dev_block_count[dev] : fast;
+    p->polling = dev;
     for (uint16_t b = 0; b < nblocks && !failed; b++) {
+        if (b > 0 && p->opts.between_requests != NULL) {
+            p->opts.between_requests(p->opts.ctx);   /* MB-14: pending writes go first */
+        }
         const gw_block_t *blk = &p->plan.blocks[p->plan.dev_first_block[dev] + b];
         mb_request_t rq = {
             .unit = d->unit_id, .fc = read_fc(blk->area), .addr = blk->start, .qty = blk->qty};
@@ -161,6 +166,7 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
             p->slow_due_ms[dev] = now_ms + d->slow_poll_ms;   /* overrun: re-anchor */
         }
     }
+    p->polling = -1;
     gw_dev_event_t ev = gw_devstate_cycle(&p->state[dev], !failed, d->offline_after);
     p->stats[dev].cycles++;
     p->stats[dev].failed_cycles += failed ? 1u : 0u;
@@ -318,6 +324,9 @@ gw_write_status_t gw_poller_write_value(gw_poller_t *p, uint16_t tag, const gw_t
     confirmed.ts_ms = gw_port_time_ms();
     confirmed.valid = true;
     gw_tagdb_put_tag(tag, &confirmed);
+    if (p->polling == (int)dev) {
+        p->work[tag - d->first_tag] = confirmed;   /* the cycle commits its copy at the end */
+    }
     gw_conv_format(t, &confirmed, text, sizeof(text));
     GW_LOGI(TAG, "%s/%s <- %s (fc %u)", d->name, t->name, text, rq.fc);
     return GW_WRITE_OK;

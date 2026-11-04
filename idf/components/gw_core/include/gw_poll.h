@@ -26,6 +26,10 @@ typedef struct {
     /* Offline devices are probed (first request of the cycle, a single attempt) at
      * 2, 4, 8 ... x poll_ms, up to max(poll_ms, offline_probe_max_ms). */
     uint32_t offline_probe_max_ms;
+    /* MB-14: called between two requests of a cycle, so the bus owner can serve pending
+     * writes (gw_poller_write_value) without waiting for the end of the cycle. May be NULL. */
+    void (*between_requests)(void *ctx);
+    void *ctx;
 } gw_poller_opts_t;
 
 typedef enum {
@@ -48,6 +52,7 @@ typedef struct {
     uint32_t probe_ms[GW_MAX_DEVICES];      /* current probe interval of an offline device, 0 = online */
     uint32_t slow_due_ms[GW_MAX_DEVICES];   /* MB-12: when the slow-scan blocks are due again */
     gw_tag_value_t work[GW_MAX_TAGS_PER_DEVICE];
+    int polling;                            /* device whose cycle is running, or -1 */
 } gw_poller_t;
 
 void gw_poller_init(gw_poller_t *p, const gw_config_t *cfg, mb_master_t *mb,
@@ -82,7 +87,8 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms);
 
 /**
  * Write @p value (member per gw_conv_kind) to tag @p tag, read it back and store the confirmed
- * value. A register bit (MB-6) is written by read-modify-write of its register (FC03, then
+ * value. May be called from the between_requests hook, also for the device being polled: the
+ * confirmed value then also replaces the cycle's working copy. A register bit (MB-6) is written by read-modify-write of its register (FC03, then
  * FC06 or FC16).
  */
 gw_write_status_t gw_poller_write_value(gw_poller_t *p, uint16_t tag, const gw_tag_value_t *value);

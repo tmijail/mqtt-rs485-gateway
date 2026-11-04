@@ -39,6 +39,17 @@ static void do_write(const write_req_t *w)
     s_cb.write_done(w->tag, st == GW_WRITE_OK);
 }
 
+/* Pending DCMD writes, served before the next cycle and between the requests of a cycle
+ * (MB-14): a write waits at most for the transaction in progress, not for a whole cycle. */
+static void serve_writes(void *ctx)
+{
+    (void)ctx;
+    write_req_t w;
+    while (xQueueReceive(s_writes, &w, 0) == pdTRUE) {
+        do_write(&w);
+    }
+}
+
 static void bus_task(void *arg)
 {
     (void)arg;
@@ -46,9 +57,7 @@ static void bus_task(void *arg)
     write_req_t w;
     for (;;) {
         esp_task_wdt_reset();
-        while (xQueueReceive(s_writes, &w, 0) == pdTRUE) {
-            do_write(&w);
-        }
+        serve_writes(NULL);
         uint32_t now = now_ms();
         uint32_t wait;
         int dev = gw_poller_next(&s_poller, now, &wait);
@@ -79,6 +88,7 @@ esp_err_t gw_bus_start(const gw_config_t *cfg, const mb_transport_t *tr, const g
     mb_master_init(&s_mb, tr, &mc);
     const gw_poller_opts_t opts = {
         .offline_probe_max_ms = CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS,
+        .between_requests = serve_writes,
 #if CONFIG_GW_MB_BLOCK_READS
         .merge_reads = true,
         .max_gap = CONFIG_GW_MB_BLOCK_MAX_GAP,

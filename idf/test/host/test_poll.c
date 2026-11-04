@@ -628,6 +628,88 @@ static void test_only_slow_tags(void)
     TEST_ASSERT_EQUAL_UINT32(12000, p.next_due_ms[1]);
 }
 
+/* ---- MB-14: writes served between the requests of a cycle ---- */
+
+static const char k_long[] =
+    "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+    " \"devices\": [{\"name\": \"Slow\", \"unit_id\": 1, \"block_reads\": false, \"tags\": ["
+    "  {\"name\": \"T0\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\", \"writable\": true},"
+    "  {\"name\": \"T1\", \"area\": \"holding\", \"address\": 1, \"type\": \"uint16\"},"
+    "  {\"name\": \"T2\", \"area\": \"holding\", \"address\": 2, \"type\": \"uint16\"},"
+    "  {\"name\": \"T3\", \"area\": \"holding\", \"address\": 3, \"type\": \"uint16\"},"
+    "  {\"name\": \"T4\", \"area\": \"holding\", \"address\": 4, \"type\": \"uint16\"},"
+    "  {\"name\": \"T5\", \"area\": \"holding\", \"address\": 5, \"type\": \"uint16\"},"
+    "  {\"name\": \"T6\", \"area\": \"holding\", \"address\": 6, \"type\": \"uint16\"},"
+    "  {\"name\": \"T7\", \"area\": \"holding\", \"address\": 7, \"type\": \"uint16\"},"
+    "  {\"name\": \"T8\", \"area\": \"holding\", \"address\": 8, \"type\": \"uint16\"},"
+    "  {\"name\": \"T9\", \"area\": \"holding\", \"address\": 9, \"type\": \"uint16\"}]}]}";
+
+static gw_config_t long_cfg;
+
+/* The bus owner's write queue, as seen by the hook: one pending write, queued while the cycle
+ * runs (after request @p at of the cycle). */
+static struct {
+    unsigned queue_after;    /* the write arrives once this many requests went out */
+    bool pending, done;
+    unsigned cycle_start, served_at;
+    uint64_t queued_us, written_us;
+} hook;
+
+static void serve(void *ctx)
+{
+    (void)ctx;
+    if (!hook.pending && !hook.done && s.requests - hook.cycle_start >= hook.queue_after) {
+        hook.pending = true;            /* a DCMD arrives during this request */
+        hook.queued_us = s.clock_us;
+        return;                         /* ... and is seen at the next boundary */
+    }
+    if (hook.pending) {
+        hook.pending = false;
+        hook.done = true;
+        hook.served_at = s.requests - hook.cycle_start;
+        hook.written_us = s.clock_us;
+        TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 0, 777));
+    }
+}
+
+static void test_write_served_between_requests(void)
+{
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(k_long, sizeof(k_long) - 1, &long_cfg, &err), err.msg);
+    cfg = &long_cfg;
+    gw_tagdb_reset();
+    sim_reset(&s, 1);
+    s.holding[0] = 1;
+    mb_transport_t t = sim_transport(&s);
+    mb_master_cfg_t mc = {.baud = 9600, .response_timeout_ms = 200, .retries = 2,
+                          .inter_frame_delay_ms = 5};
+    mb_master_init(&mb, &t, &mc);
+    gw_poller_opts_t o = {.merge_reads = true, .offline_probe_max_ms = 10000,
+                          .between_requests = serve};
+    gw_poller_init(&p, cfg, &mb, &o, 0);
+    TEST_ASSERT_EQUAL(10, p.plan.dev_block_count[0]);
+
+    memset(&hook, 0, sizeof(hook));
+    hook.queue_after = 2;               /* T0 (holding 0) was already read in this cycle */
+    hook.cycle_start = s.requests;
+    uint64_t start_us = s.clock_us;
+    TEST_ASSERT_EQUAL(GW_DEV_WENT_ONLINE, gw_poller_poll(&p, 0, 0));
+    uint64_t cycle_us = s.clock_us - start_us;
+    TEST_ASSERT_TRUE(hook.done);
+    /* served at the next request boundary, 8 requests before the end of the cycle */
+    TEST_ASSERT_EQUAL(3, hook.served_at);
+    TEST_ASSERT_EQUAL(10 + 2, s.requests - hook.cycle_start);   /* + write + read-back */
+    TEST_ASSERT_EQUAL(777, s.holding[0]);
+    /* latency: at most one transaction, not the rest of the cycle */
+    uint64_t latency = hook.written_us - hook.queued_us;
+    TEST_ASSERT_TRUE_MESSAGE(latency < cycle_us / 5, "write waited for the cycle");
+    TEST_ASSERT_LESS_OR_EQUAL_UINT64(40000, latency);      /* one FC03 at 9600 baud + t3.5 */
+    /* T0 was read before the write: the cycle publishes the confirmed value, not the stale one */
+    TEST_ASSERT_TRUE(online());
+    TEST_ASSERT_EQUAL_DOUBLE(777, vals[0].value);
+    TEST_ASSERT_EQUAL(-1, p.polling);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -650,5 +732,6 @@ int main(void)
     RUN_TEST(test_scan_classes);
     RUN_TEST(test_slow_blocks_stay_due_after_a_failure);
     RUN_TEST(test_only_slow_tags);
+    RUN_TEST(test_write_served_between_requests);
     return UNITY_END();
 }

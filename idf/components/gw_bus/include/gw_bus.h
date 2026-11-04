@@ -1,7 +1,8 @@
 /*
  * RS485 bus owner (MB-16): the only task that talks to the Modbus master. It
  * runs the poll schedule and executes DCMD writes, which are queued and served
- * before the next poll (MB-14 at transaction granularity).
+ * before the next poll and between the requests of a cycle (MB-14): a write waits
+ * at most for the transaction in progress.
  */
 #pragma once
 
