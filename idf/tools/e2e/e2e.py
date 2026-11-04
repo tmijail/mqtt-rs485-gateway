@@ -779,9 +779,10 @@ class QemuGone(ConnectionError):
 
 
 class Gateway:
-    def __init__(self, args, log_path, flash=None):
+    def __init__(self, args, log_path, flash=None, efuse=None):
         self.args, self.log_path = args, log_path
         self.flash = flash or args.flash
+        self.efuse = efuse or args.efuse   # issue #97: a scenario may bring its own eFuse file
         self.proc, self.sock, self.lines = None, None, []
         self.killed = False          # the harness ended it (kill())
         self.gone_before_kill = None  # returncode if QEMU had already exited when killed
@@ -800,7 +801,7 @@ class Gateway:
         # leaves no virtual address space for the flash mmap (the partitions are not found).
         cmd = [a.qemu, "-M", "esp32s3", "-m", "8M" if a.psram else "32M", "-nographic",
                "-drive", f"file={self.flash},if=mtd,format=raw",
-               "-drive", f"file={a.efuse},if=none,format=raw,id=efuse",
+               "-drive", f"file={self.efuse},if=none,format=raw,id=efuse",
                "-global", "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
                "-global", "driver=timer.esp32s3.timg,property=wdt_disable,value=true",
                *(["-global", "driver=ssi_psram,property=is_octal,value=true"] if a.psram else []),
@@ -2347,6 +2348,112 @@ def run_ota(args, work):
         broker.wait()
 
 
+def run_ota_wiring(args, work):
+    """Issue #97: how main.c wires two outcomes of a new image's trial, by web upload (no broker
+    or image server involved): an image that rejects the stored configuration goes back to the
+    previous one at once, without waiting for the trial's timeout (GW43: an invalid config.json,
+    recovery mode, gw_fw_config_rejected); an image that boots into commissioning is confirmed,
+    as nothing can judge it there (GW44: after a factory reset, gw_fw_commissioning)."""
+    fwdir = work / "fw-wiring"
+    fwdir.mkdir(exist_ok=True)
+    app = pathlib.Path(args.elf).with_suffix(".bin")
+    unsigned = pathlib.Path(args.elf).with_name(app.stem + "-unsigned.bin")
+    for v in ("e2e-rej", "e2e-com"):
+        fw_image(unsigned if unsigned.exists() else app, v, fwdir / f"{v}-unsigned.bin")
+        if args.signing_key:
+            subprocess.run([args.idf_python, "-m", "espsecure", "sign-data", "--version", "2",
+                            "--keyfile", args.signing_key, "--output", str(fwdir / f"{v}.bin"),
+                            str(fwdir / f"{v}-unsigned.bin")], check=True, capture_output=True)
+        else:
+            shutil.copy(fwdir / f"{v}-unsigned.bin", fwdir / f"{v}.bin")
+    timeout_s = sdkconfig_int(args.sdkconfig, "GW_FW_CONFIRM_TIMEOUT_S")
+
+    def upload(version, pw):
+        st, _, body = http("POST", "/api/firmware", (fwdir / f"{version}.bin").read_bytes(),
+                           auth=("admin", pw or "?"),
+                           headers={"Content-Type": "application/octet-stream"}, timeout=120)
+        return st, body
+
+    # 1. a stored configuration the new image rejects (a syntax error: the running image runs in
+    # recovery too, where web uploads stay possible)
+    t0 = time.monotonic()
+    gw = Gateway(args, work / "uart0-otarej.log",
+                 flash_variant(args, work, "otarej", {"config.json": b'{"sparkplug": \n'}))
+    gw.start()
+    try:
+        rec = gw.wait_log(r"main: configuration rejected", 60, t0)
+        pw = commissioning_password(gw, t0, 30)
+        wait_http("/api/status", 30, auth=("admin", pw or "?"))
+        asked = time.monotonic()
+        st, body = upload("e2e-rej", pw)
+        boot = gw.wait_log(r"main: rs485_spb_gateway e2e-rej .*reset reason", 120, asked)
+        trial = gw.wait_log(r"fw: firmware e2e-rej \(ota_\d\) on trial", 30, boot or asked)
+        back = gw.wait_log(r"fw: firmware e2e-rej rejected \(it rejected the stored "
+                           r"configuration\): back to", 30, boot or asked)
+        again = gw.wait_log(r"fw: firmware e2e-rej \(ota_\d\) was rejected or did not confirm "
+                            r"itself; running \S+ again", 60, back or asked)
+        rec2 = gw.wait_log(r"main: configuration rejected", 30, again or asked)
+        _, h = gw.shell("status", [r"^ota\s+\S+ in ota_\d.*\| firmware e2e-rej \(ota_\d\) was "
+                                   r"rejected or did not confirm itself"])
+        fast = boot is not None and back is not None and back - boot < timeout_s / 2
+        check("Issue #97 a new image that rejects the stored configuration (recovery mode) goes "
+              f"back to the previous image at once, well before the {timeout_s} s trial timeout, "
+              "and the previous image says so (main.c -> gw_fw_config_rejected)",
+              rec and pw and st == 200 and boot and trial and back and fast and again and rec2
+              and list(h.values())[0],
+              f"recovery {rec is not None}; POST {st} {body[:60]!r}; on trial {trial is not None}; "
+              f"rejected {f'{back - boot:.1f} s after its boot' if boot and back else 'no'}; "
+              f"previous image again {again is not None}, in recovery {rec2 is not None}; "
+              f"shell {bool(list(h.values())[0])}")
+    finally:
+        gw.kill()
+
+    # 2. commissioning (factory reset): the new image is confirmed and survives a power cut
+    cfg = node_config("GW44")
+    flash = flash_variant(args, work, "otacom", {"config.json": json.dumps(cfg, indent=2).encode()})
+    t0 = time.monotonic()
+    gw = Gateway(args, work / "uart0-otacom.log", flash)
+    gw.start()
+    try:
+        up = gw.wait_log(r"edge: Sparkplug session up", 60, t0)
+        gw.shell("status", [r"^config\s"])   # the shell is up: 'boot 1' is not lost
+        pressed = time.monotonic()
+        gw.console("boot 1")
+        fired = gw.wait_log(r"button: BOOT held 10 s: factory reset", 15, pressed)
+        comm = gw.wait_log(r"main: commissioning: no configuration since the factory reset", 40,
+                           pressed)
+        pw = commissioning_password(gw, pressed, 30)
+        wait_http("/api/status", 30, auth=("admin", pw or "?"))
+        asked = time.monotonic()
+        st, body = upload("e2e-com", pw)
+        boot = gw.wait_log(r"main: rs485_spb_gateway e2e-com .*reset reason", 120, asked)
+        conf = gw.wait_log(r"fw: firmware e2e-com confirmed: commissioning mode: nothing to judge "
+                           r"it by; the bootloader keeps it", 30, boot or asked)
+        comm2 = gw.wait_log(r"main: commissioning: no configuration since the factory reset", 30,
+                            boot or asked)
+        gw.kill()   # a power cut after the confirmation: the bootloader keeps the new image
+        t1 = time.monotonic()
+        gw = Gateway(args, work / "uart0-otacom.log", flash)
+        gw.start()
+        boot2 = gw.wait_log(r"main: rs485_spb_gateway e2e-com .*reset reason", 60, t1)
+        comm3 = gw.wait_log(r"main: commissioning: no configuration since the factory reset", 40,
+                            t1)
+        _, h = gw.shell("status", [r"^ota\s+e2e-com in ota_\d"])
+        rolled = gw.find(r"was rejected or did not confirm itself|rejected \(", t1)
+        check("Issue #97 a new image that boots into commissioning (after a factory reset) is "
+              "confirmed at once (nothing to judge it by: main.c -> gw_fw_commissioning) and the "
+              "bootloader keeps it after a power cut",
+              up and fired and comm and pw and st == 200 and boot and conf and comm2 and boot2
+              and comm3 and list(h.values())[0] and not rolled,
+              f"factory reset {fired is not None}, commissioning {comm is not None}; POST {st} "
+              f"{body[:60]!r}; new image booted {boot is not None}, confirmed "
+              f"{f'{conf - boot:.1f} s after its boot' if conf and boot else 'no'}; after the "
+              f"power cut: e2e-com {boot2 is not None}, commissioning {comm3 is not None}, "
+              f"rolled back {rolled[:1]}")
+    finally:
+        gw.kill()
+
+
 # ---------------------------------------------------------------- issues #67/#94 NVS migration
 
 def auth_broker(work, name, port, users):
@@ -2400,16 +2507,23 @@ def run_nvs_migration(args, work):
     img = bytearray(flash.read_bytes())
     img[nvs_off:nvs_off + nvs_size] = plain.read_bytes()
     flash.write_bytes(img)
+    # Issue #97: the real case is a device whose KEY5 is not burned yet; in a full run earlier
+    # scenarios burned it in the shared eFuse file: this one gets a blank copy of its own
+    efuse = work / "efuse-nvsmig.bin"
+    shutil.copy(work / "efuse-blank.bin", efuse)
+    blank = efuse.read_bytes()
     broker, _ = auth_broker(work, "nvsmig", port, {"gw41": "s3cret-mqtt-67"})
     obs = observer_retry(port, auth=OBS_AUTH)
     log = work / "uart0-nvsmig.log"
     words = (b"abcdefgh1234", b"s3cret-mqtt-67", b"commission", b"bdseq")
+    boots = []
     try:
         cuts = []
         for point in ("1", "2"):
             t = time.monotonic()
-            gw = Gateway(args, log, flash)
+            gw = Gateway(args, log, flash, efuse=efuse)
             gw.start()
+            boots.append(gw)
             held = gw.wait_log(rf"storage: NVS migration: emulated power cut {point} ", 60, t)
             time.sleep(2)   # QEMU writes the flash file behind: let the last writes land
             resumed = gw.find(r"storage: NVS migration was interrupted \((.*)\): writing its copy", t)
@@ -2417,9 +2531,11 @@ def run_nvs_migration(args, work):
             region = flash.read_bytes()[nvs_off:nvs_off + nvs_size]
             cuts.append((held is not None, resumed[0].split("storage: ")[-1][:90] if resumed else None,
                          region.count(b"\xff") == len(region)))
+        burned = efuse.read_bytes() != blank
         t0 = time.monotonic()
-        gw = Gateway(args, log, flash)
+        gw = Gateway(args, log, flash, efuse=efuse)
         gw.start()
+        boots.append(gw)
         nb = obs.wait(f"{T}/NBIRTH/{node}", 60)
         done = gw.find(r"storage: NVS migration resumed: \d+ entries moved into the encrypted NVS "
                        r"\(0 skipped\); bdSeq continues", t0)
@@ -2429,8 +2545,9 @@ def run_nvs_migration(args, work):
         clear = nvs_clear(flash, words)
         obs.drain()
         t1 = time.monotonic()
-        gw = Gateway(args, log, flash)
+        gw = Gateway(args, log, flash, efuse=efuse)
         gw.start()
+        boots.append(gw)
         nb2 = obs.wait(f"{T}/NBIRTH/{node}", 60)
         again = gw.find(r"NVS migration", t1)
         _, h = gw.shell("status", [r"^secrets\s+NVS encrypted \(HMAC key in eFuse KEY5\)"])
@@ -2452,6 +2569,19 @@ def run_nvs_migration(args, work):
               f"{bdseq_of(nb[2]) if nb else None} then {bdseq_of(nb2[2]) if nb2 else None}; "
               f"{(done or ['no resume log'])[0].split('storage: ')[-1][:90]}; commissioning "
               f"password {pw!r}; in clear: {clear}; migration on the next boot: {bool(again)}")
+        # issue #97: the first boot found KEY5 blank and burned it (its own eFuse file), before
+        # its first emulated cut; none of the later boots generated keys again
+        keygen = [len(b.find(r"storage: NVS keys not readable \(.*\): generating them"))
+                  for b in boots]
+        first_cut = boots[0].wait_log(r"storage: NVS migration: emulated power cut 1 ", 0)
+        gen_t = boots[0].wait_log(r"storage: NVS keys not readable", 0)
+        check("Issue #97 the NVS migration scenario starts on a device whose eFuse KEY5 is not "
+              "burned (its own blank eFuse file, also in a full run): the first boot generates the "
+              "NVS keys and burns KEY5 before it erases anything, no later boot does it again",
+              burned and keygen == [1, 0, 0, 0] and gen_t is not None and first_cut is not None
+              and gen_t <= first_cut,
+              f"eFuse file changed by the interrupted boots: {burned}; key generations per boot "
+              f"{keygen}; {(boots[0].find(r'storage: NVS keys not readable') or ['no log'])[0][:110]}")
     finally:
         obs.close()
         broker.terminate()
@@ -2691,6 +2821,8 @@ def main():
     # issue #92: the QEMU monitor sockets (a UNIX socket path has at most 107 characters)
     import tempfile
     MON_DIR = pathlib.Path(tempfile.mkdtemp(prefix="e2e-mon-"))
+    # issue #97: the eFuse file before any scenario burns a key (KEY5 for the NVS keys)
+    shutil.copy(args.efuse, work / "efuse-blank.bin")
     log = work / "uart0.log"
     # The image under test gets the harness' config.json (with its MQTT port).
     args.flash = str(flash_variant(args, work, "main", {"config.json": config_json()}))
@@ -2741,6 +2873,7 @@ def main():
             run_scenario("https", lambda: run_https(args, work))
         if want("ota"):
             run_scenario("FW-1 OTA", lambda: run_ota(args, work))
+            run_scenario("issue #97 OTA trial wiring", lambda: run_ota_wiring(args, work))
         if want("nvs"):
             run_scenario("issues #67/#94 NVS migration", lambda: run_nvs_migration(args, work))
             run_scenario("issue #94 OTA to NVS encryption", lambda: run_nvs_ota(args, work))
