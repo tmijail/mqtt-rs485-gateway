@@ -19,6 +19,20 @@ void mb_master_init(mb_master_t *m, const mb_transport_t *tr, const mb_master_cf
     m->t35_us = cfg->baud > 19200u ? 1750u : (m->char_us * 7u + 1u) / 2u;
 }
 
+/* Margin on top of the transmission time of a frame (tick granularity, task switches). */
+#define MB_TX_MARGIN_MS 20u
+
+uint32_t mb_char_bits(bool parity, uint8_t stop_bits)
+{
+    return 1u + 8u + (parity ? 1u : 0u) + (stop_bits >= 2 ? 2u : 1u);
+}
+
+uint32_t mb_tx_timeout_ms(uint32_t baud, uint32_t char_bits, size_t len)
+{
+    uint64_t us = ((uint64_t)len * char_bits * 1000000u + baud - 1u) / baud;
+    return (uint32_t)((us + 999u) / 1000u) + MB_TX_MARGIN_MS;
+}
+
 static uint32_t frame_timeout_ms(const mb_master_t *m, size_t nbytes)
 {
     return (uint32_t)((nbytes * m->char_us + m->t35_us) / 1000u) + MB_FRAME_MARGIN_MS;

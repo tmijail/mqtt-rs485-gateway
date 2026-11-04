@@ -6,6 +6,8 @@
  */
 #pragma once
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "mb_rtu.h"
@@ -57,6 +59,17 @@ typedef struct {
 } mb_master_t;
 
 void mb_master_init(mb_master_t *m, const mb_transport_t *tr, const mb_master_cfg_t *cfg);
+
+/** Bits on the wire per character: start + 8 data + parity (if any) + 1 or 2 stop bits. */
+uint32_t mb_char_bits(bool parity, uint8_t stop_bits);
+
+/**
+ * Upper bound, in ms, for shifting @p len bytes out at @p baud with @p char_bits bits per
+ * character, plus a fixed margin for scheduler latency. The transport waits at most this
+ * long for the end of a transmission, so the bound grows with the frame: a fixed limit
+ * cut long frames at low baud rates (a 13-byte FC16 takes 119 ms at 1200 baud with parity).
+ */
+uint32_t mb_tx_timeout_ms(uint32_t baud, uint32_t char_bits, size_t len);
 
 /**
  * Execute one transaction, retrying on timeout, CRC and framing errors.
