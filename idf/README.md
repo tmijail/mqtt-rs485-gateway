@@ -114,7 +114,7 @@ Dependencias gestionadas, **con versión fija** (`==`) en cada `idf_component.ym
   - store & forward (SPB-14, solo con `sparkplug.store_forward`): 40 000 muestras de 24 B (960 KB) en PSRAM, o 512 (12 KB) en RAM interna sin PSRAM;
   - `.bss` interna: `gw_edge` con la pila de 6 KB y 4 búferes de comando de 1,2 KB; `gw_bus` unos 15 KB (planificador, encuesta y pila de 4 KB); `gw_core` unos 15 KB (`gw_tagdb`, 56 B por tag desde MB-6); `gw_mbtcp` unos 6 KB (pila de 4 KB y búferes, aunque esté apagado).
 - **Por qué no `EXT_RAM_BSS_ATTR`:** poner `.bss` en PSRAM exige `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY`, que en IDF es incompatible con `CONFIG_SPIRAM_IGNORE_NOTFOUND`: una placa cuya PSRAM no se detecte no arrancaría. Con la asignación al arrancar el equipo sigue funcionando con RAM interna (y la build de QEMU, sin PSRAM, es la misma).
-- **Margen sin PSRAM (#80), medido en QEMU** en el peor caso (MQTT sobre TLS 1.3, births completos, una sesión HTTPS abierta y `PUT /api/config?dry_run=1` del documento completo por otra): **mínimo de RAM interna libre 14 304 B** desde el arranque y **bloque libre más grande en el pico de la validación 31 744 B** (la validación arma una segunda `gw_config_t` de 32 KB contigua). El E2E exige ≥ 8 KB y ≥ 17 KB (lo que tiene que poder llegar en ese momento: un comando MQTT con su registro TLS, los pbufs de lwIP y un registro TLS completo de 16 KB). El shell (`status`, líneas `heap` y `stack`) los muestra en cualquier equipo.
+- **Margen sin PSRAM (#80), medido en QEMU** en el peor caso (MQTT sobre TLS 1.3, births completos, una sesión HTTPS abierta y `PUT /api/config?dry_run=1` del documento completo por otra): **mínimo de RAM interna libre 14 304 a 14 372 B** desde el arranque y **bloque libre más grande en el pico de la validación 30 720 a 31 744 B** (dos corridas; la validación arma una segunda `gw_config_t` de 32 KB contigua). El E2E exige ≥ 8 KB y ≥ 17 KB (lo que tiene que poder llegar en ese momento: un comando MQTT con su registro TLS, los pbufs de lwIP y un registro TLS completo de 16 KB). El shell (`status`, líneas `heap` y `stack`) los muestra en cualquier equipo.
 - **mbedTLS con búferes dinámicos** (`CONFIG_MBEDTLS_DYNAMIC_BUFFER`, #80): cada sesión TLS reserva sus búferes de registro solo mientras hay un registro en curso. Con los búferes fijos (16 KB de entrada por sesión), MQTT sobre TLS y dos sesiones HTTPS fragmentaban la RAM interna hasta no dejar 32 KB contiguos: el `PUT` respondía 503 aunque había 92 KB libres.
 - Sin `malloc` en encuesta, codificación ni publicación.
 - Se asigna memoria solo al arrancar: esas dos estructuras, la lectura de LittleFS y el árbol de cJSON, todo en PSRAM si la hay (§3.4).
@@ -167,17 +167,17 @@ idf.py size
 idf.py -p /dev/ttyUSB0 flash monitor # graba bootloader, tabla, app (ota_0) y la partición LittleFS
 ```
 
-Resultado de `idf.py size` (build limpia con `idf.py set-target esp32s3 build`, 1211/1211 objetivos, 0 warnings, `sdkconfig` regenerado desde `sdkconfig.defaults`; Wi-Fi compilado, `CONFIG_GW_WIFI=y`):
+Resultado de `idf.py size` (build limpia con `idf.py set-target esp32s3 build`, 1192/1192 objetivos, 0 warnings, `sdkconfig` regenerado desde `sdkconfig.defaults`; Wi-Fi compilado, `CONFIG_GW_WIFI=y`):
 
 | Región | Usado |
 |---|---|
-| Flash code (`.text`) | 1 023 492 B |
-| Flash data (`.rodata`, etc.) | 281 684 B |
+| Flash code (`.text`) | 1 027 008 B |
+| Flash data (`.rodata`, etc.) | 282 388 B |
 | DIRAM | 194 360 B de 341 760 (**56,9 %**): `.bss` 104 192, `.text` 65 807, `.data` 24 361 |
 | IRAM | 16 384 B (100 %, lo normal en S3: el resto del código IRAM va en DIRAM) |
-| Imagen total | **1 396 160 B** (33 % de la partición `ota_0` de 4 MB) |
+| Imagen total | **1 415 984 B** (34 % de la partición `ota_0` de 4 MB) |
 
-Medido en `feature/mqtt` con `main` (E/S local) incluido. La build de producción (`sdkconfig.production`) compila con 0 warnings: 1 406 080 B.
+Medido en `feature/diag-ram` (sobre `main` 6bec093, con #80 y #81). La build de producción (`sdkconfig.production`) compila con 0 warnings: 1 425 024 B. Los búferes dinámicos de mbedTLS (#80) suman 3 304 B de imagen y nada de DIRAM estática; la tabla `Node Info/Modbus TCP` (#81) vive en el motor Sparkplug, que se asigna al arrancar.
 
 **Costo de la E/S local (IO-3, IO-4, IO-6, IO-7)**, medido en su rama: `.bss` +7 440 B (90 128 → 97 568): pilas estáticas de la tarea `local_io` (4 KB) y del buzzer (2,5 KB), colas de los NCMD, contadores y estado de las reglas. Imagen +9 444 B. El motor Sparkplug (PSRAM si hay) crece 64 B (contadores publicados).
 
@@ -294,7 +294,7 @@ Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 cmake -S idf/test/host -B build-host && cmake --build build-host -j3 && ctest --test-dir build-host
 ```
 
-Resultado: **24/24 pruebas de CTest (23 suites de Unity y `check_set_config`, issue #58) y 215/215 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
+Resultado: **24/24 pruebas de CTest (23 suites de Unity y `check_set_config`, issue #58) y 216/216 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
 
 | Suite | Casos | Qué cubre |
 |---|---|---|
@@ -363,7 +363,7 @@ E2E_PYTHON=~/e2e/bin/python idf/tools/e2e/run_e2e.sh
 
 Configuración usada: `tools/e2e/fs/config.json` (keepalive de 10 s, syslog hacia el receptor del harness). `run_e2e.sh` pasa además el ELF y el python de IDF, para decodificar el *core dump* con `esp_coredump`.
 
-Resultado: **135/135 comprobaciones OK** (sobre el commit final de `feature/sparkplug-metrics`, con `main` de `feature/mqtt` incluido); además, con `--panics 3`, los tres volcados decodificados (#62).
+Resultado: **137/137 comprobaciones OK** (sobre `feature/diag-ram`, con #80 y #81); con `--panics 3`, en `feature/sparkplug-metrics`, los tres volcados decodificados (#62).
 
 | Criterio | Resultado medido |
 |---|---|
@@ -425,7 +425,7 @@ Resultado: **135/135 comprobaciones OK** (sobre el commit final de `feature/spar
 | #75 `/api/status` (HTTPS) | OK: `counters` [2, 1, 2, 0…], `rule_do` 48 (DO/5 y DO/6), `failsafe` false, `buzzer.alarm` `device_offline` con las tres alarmas habilitadas, `time` SNTP con el RTC escrito, `Energy` = 2^53 + 1 exacto y `Serial` como texto |
 | Pila de la tarea Sparkplug (revisión de 2ea6ffd, nodo GW27) | OK: tras un DCMD sobre un miembro de plantilla, un DCMD con Bytes, un NDATA de diagnóstico con el DataSet y, con el broker fuera, la reproducción de una instancia de plantilla y de bytes como históricos, quedan **2 068 B libres** de 6 144 (mínimo ≥ 1 024 B: las interrupciones usan su propia pila en Xtensa; el margen cubre una línea de log sobre el marco más profundo y plantillas o tablas más largas) |
 | #81 tabla `Node Info/Modbus TCP` | OK: tras las peticiones TCP de MB-15, el NDATA de diagnóstico trae la tabla (alias 56) con `Meter1` (unidad 1, en línea, OK 2), `Dead3` (unidad 3, 3 timeouts), el resto de los dispositivos y `(other units)` en 0, igual que el shell (#69) |
-| #80 margen de RAM interna sin PSRAM (nodo GW29) | OK: MQTT sobre TLS 1.3, births completos (Bulk incluido), sesión HTTPS abierta y `PUT /api/config?dry_run=1` por otra → 200; mínimo libre 14 304 B (umbral 8 KB), bloque más grande en la validación 31 744 B (umbral 17 KB); pilas: `sparkplug` 2 916, `mqtt_task` 2 332, `rs485_bus` 2 328, `local_io` 2 332, `httpd` 6 248 B libres. Sin búferes dinámicos de mbedTLS el mismo caso daba 503 (bloque más grande 31 744 B < 32 272 B de la configuración) |
+| #80 margen de RAM interna sin PSRAM (nodo GW29) | OK: MQTT sobre TLS 1.3, births completos (Bulk incluido), sesión HTTPS abierta y `PUT /api/config?dry_run=1` por otra → 200; mínimo libre 14 372 B (umbral 8 KB), bloque más grande en la validación 30 720 B (umbral 17 KB; 14 304 y 31 744 B en una corrida anterior); pilas: `sparkplug` 2 916, `mqtt_task` 2 380, `rs485_bus` 2 328, `local_io` 2 332, `httpd` 6 248 B libres. Sin búferes dinámicos de mbedTLS el mismo caso daba 503 (bloque más grande 31 744 B < 32 272 B de la configuración) |
 | #62 *core dump* determinista | OK: con el otro núcleo estacionado, 3 de 3 *panic* (`--panics 3`) guardaron un volcado que `esp_coredump` decodifica (traza por `panic_task`/`abort`); el E2E normal hace uno y exige que decodifique |
 | Extras | OK: DDATA solo por excepción, solo alias, deadband 0,1 respetada; DCMD por alias (FC05) y DCMD sobre métrica de solo lectura descartado con log (sin "alias 0" si el comando venía por nombre); NCMD con un nombre de 80 caracteres después de `DO/1` descartado entero (DO/1 no cambia); bdSeq persistido en NVS tras un corte de energía; NCMD Reboot publica NDEATH QoS 1 y **un solo** NDEATH (will descartado); DBIRTH de 2445 B (mayor que el búfer de 2 KB de esp-mqtt); 60 registros leídos con una sola FC03; timestamps UTC vía SNTP; continuidad de seq |
 
@@ -514,7 +514,7 @@ Leyenda de **Evidencia**:
 | REL-1 | Implementado | `gw_bus.c`, `gw_edge.c`, `gw_io.c`, `sdkconfig.defaults` | Q: TWDT alimentado tras cada publicación (el log de los births informa el mayor intervalo sin alimentarlo), DI vigiladas como usuario del TWDT; un *panic* deja el *core dump* en flash, el equipo reinicia (`Node Info/Reset Reason` = `panic`) y el volcado se decodifica con `esp_coredump`. El disparo real del TWDT no se ejecutó: QEMU deshabilita el watchdog de los timers |
 | REL-2 | **Parcial** | Todo `gw_*` | El código propio es estático y no asigna en el camino crítico; **lwIP y esp-mqtt asignan del heap internamente** (acotado, no estático) |
 | REL-3 | Implementado | `esp_log` en todos los módulos | Q. Con REL-4 la consola sigue igual |
-| QA-1 | Implementado | `test/host/` | 215 casos |
+| QA-1 | Implementado | `test/host/` | 216 casos |
 | QA-2 | Implementado | — | 0 warnings; tamaño en §3.2 |
 
 **Fuera del MVP**, implementado total o parcialmente:
