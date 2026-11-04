@@ -1,0 +1,19 @@
+menu "Gateway: commissioning access point"
+
+    config GW_SOFTAP
+        bool "Wi-Fi access point for commissioning (NET-5)"
+        depends on GW_WIFI
+        default y
+        help
+            Starts a WPA2 access point "GW-Setup-XXXXXX" (last bytes of the MAC) with the
+            device's commissioning password when there is no valid configuration (rejected,
+            or after a factory reset) and on a 2-10 s press of BOOT. The web UI is then at
+            http://192.168.4.1/. Needs the Wi-Fi driver (CONFIG_GW_WIFI): QEMU has no radio.
+
+    config GW_SOFTAP_TIMEOUT_MIN
+        int "Minutes the access point stays up after a BOOT press (valid configuration)"
+        depends on GW_SOFTAP
+        range 1 1440
+        default 30
+
+endmenu

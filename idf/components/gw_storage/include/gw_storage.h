@@ -2,13 +2,18 @@
  * document (CFG-1, CFG-2): /cfg/config.json on the LittleFS "storage"
  * partition. The default embedded in the firmware is used only when that file
  * does not exist; an unmountable partition, an unreadable, empty or oversized
- * file, or an invalid document are errors. */
+ * file, or an invalid document are errors.
+ *
+ * The secrets of the document (mqtt.password, network.wifi.password and the hash of
+ * web.password) live in NVS, not in the file (gw_cfgdoc.h). New documents (CFG-4, CFG-6)
+ * are validated and written atomically (temporary file + rename). */
 #pragma once
 
 #include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "gw_cfgdoc.h"
 #include "gw_config.h"
 
 #ifdef __cplusplus
@@ -27,6 +32,63 @@ uint8_t gw_storage_next_bdseq(void);
  * cannot be used or the document is invalid: the caller must then not start.
  */
 bool gw_storage_load_config(gw_config_t *cfg, gw_cfg_err_t *err, const char **source);
+
+/**
+ * Validate a new configuration document (gw_cfgdoc update rules for the secrets) and,
+ * unless @p dry_run, store it: secrets to NVS, the document without them to
+ * /cfg/config.json, atomically. It takes effect at the next restart.
+ * Returns ESP_OK; ESP_ERR_INVALID_ARG (invalid document: @p err has the message and the
+ * JSON path or line and column), ESP_ERR_INVALID_SIZE (over CONFIG_GW_CONFIG_MAX_BYTES),
+ * ESP_ERR_NO_MEM, or another error if storing failed (@p err says what).
+ * Safe from any task; one save at a time.
+ */
+esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_cfg_err_t *err);
+
+/**
+ * The stored document (or the embedded default if there is no file) for export, with every
+ * secret masked. NULL with the reason in @p err. Release with gw_storage_free().
+ */
+char *gw_storage_export_config(size_t *len, gw_cfg_err_t *err);
+
+#define GW_COMMISSION_PW_LEN 12
+
+/**
+ * The device's commissioning password: random, created at the first boot (and after a
+ * factory reset), kept in NVS. It opens the web UI for user "admin" while no web password
+ * is configured and protects the commissioning access point (NET-5).
+ */
+void gw_storage_commissioning_password(char out[GW_COMMISSION_PW_LEN + 1]);
+
+/** CFG-7: true when NVS (and with it the secrets) is encrypted (CONFIG_NVS_ENCRYPTION,
+ *  HMAC key in eFuse). Development builds without it keep the secrets in plain NVS. */
+bool gw_storage_secrets_encrypted(void);
+
+/** Secrets currently stored (empty strings when none). */
+void gw_storage_get_secrets(gw_secrets_t *out);
+
+void gw_storage_free(void *ptr);
+
+/**
+ * CFG-5: format the LittleFS partition and erase NVS (configuration, secrets, bdSeq, the
+ * commissioning password), then mark the device for commissioning. The caller restarts.
+ */
+esp_err_t gw_storage_factory_reset(void);
+
+/**
+ * True after a factory reset until a configuration is saved (or flashed): the gateway then
+ * boots into commissioning mode instead of the embedded example configuration.
+ */
+bool gw_storage_commissioning_pending(void);
+
+/** Remember the network (and web port) of a configuration that was accepted, for recovery. */
+void gw_storage_save_last_good(const gw_config_t *cfg);
+
+/**
+ * Configuration to run the network and the web server with when the stored one was
+ * rejected or is absent (CFG-3 recovery, CFG-5 commissioning): the network and web port of
+ * the last valid configuration, or DHCP on Ethernet and port 80. Nothing else is set.
+ */
+void gw_storage_recovery_config(gw_config_t *cfg);
 
 /**
  * Zeroed allocation for a large structure that lives for the whole run (configuration,

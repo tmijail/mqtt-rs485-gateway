@@ -47,6 +47,26 @@ bool gw_bus_forward_idle(uint32_t wait_ms);
 /** Free entries in the write queue (called by the only producer, the Sparkplug task). */
 size_t gw_bus_write_room(void);
 
+/**
+ * Before a restart: let the transaction in progress finish and start no other, so the
+ * restart never cuts a frame on the wire (a write half sent) and leaves the UART idle.
+ * Waits at most @p timeout_ms; the bus stays quiet until the restart.
+ */
+void gw_bus_quiesce(uint32_t timeout_ms);
+
+#define GW_BUS_DIAG_MAX 16   /* registers or bits per diagnostic read */
+
+/**
+ * CFG-6 diagnostics: one Modbus read (FC01-FC04) executed by the bus task between two poll
+ * transactions, so the bus keeps a single owner (MB-16). Blocks the caller (never the bus)
+ * until the answer, at most @p timeout_ms. @p out receives @p count registers or bits (0/1).
+ * Returns MB_ERR_ARG if the bus is not running, another diagnostic read is pending, the
+ * queue is full or the wait timed out; MB_ERR_EXCEPTION with the code in @p exception.
+ */
+mb_status_t gw_bus_diag_read(uint8_t unit, mb_fc_t fc, uint16_t addr, uint16_t count,
+                             uint16_t out[GW_BUS_DIAG_MAX], uint8_t *exception,
+                             uint32_t timeout_ms);
+
 #ifdef __cplusplus
 }
 #endif

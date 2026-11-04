@@ -57,3 +57,6 @@ CONFIG_ESP_WIFI_RX_IRAM_OPT=n
 CONFIG_ESP_NETIF_SET_DNS_PER_DEFAULT_NETIF=y
 # NET-7: SLAAC compiled in; each interface turns it on only with network.ipv6 enabled
 CONFIG_LWIP_IPV6_AUTOCONFIG=y
+
+# CFG-7: NVS is NOT encrypted in this default build (no eFuse is ever burned by flashing it).
+# Secrets still live in NVS, outside config.json. Production units add sdkconfig.production.

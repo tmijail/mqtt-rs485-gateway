@@ -1,12 +1,20 @@
 /*
- * Diagnostic shell on the console (CFG-6 subset): esp_console REPL with
- *   status    firmware, reset reason, configuration state, network / MQTT /
- *             Modbus state, local I/O and heap
- *   devices   every Modbus device with its online state and counters
- *   config    summary of the loaded configuration
- *   di        (emulator builds only) set a simulated digital input
- * It only reads shared state (gw_tagdb, gw_status) and changes nothing on the
- * bus or the MQTT session. It also runs when the configuration was rejected.
+ * Shell on the console (CFG-6): esp_console REPL with
+ *   status        firmware, reset reason, configuration state, network / MQTT /
+ *                 Modbus state, local I/O and heap
+ *   devices       every Modbus device with its online state and counters
+ *   config        summary of the loaded configuration
+ *   config show   the stored document, secrets masked
+ *   config load   paste a JSON document: validated, saved atomically, restart
+ *   config check  paste a JSON document: validated only
+ *   restart       orderly restart (NDEATH first)
+ *   rebirth       re-issue NBIRTH and every DBIRTH
+ *   mbread        one Modbus read through the bus owner (MB-16)
+ *   ping          ICMP echo
+ *   di, boot      (emulator builds only) set a simulated digital input / the BOOT button
+ * The commands that change something can be compiled out (CONFIG_GW_SHELL_WRITE_COMMANDS).
+ * The shell also runs when the configuration was rejected: then it is a way to load a
+ * valid one without reflashing.
  */
 #pragma once
 
@@ -22,7 +30,9 @@ typedef struct {
     const gw_config_t *cfg;       /* NULL: the configuration was rejected */
     const char *config_source;
     const char *config_error;     /* reason when cfg is NULL */
+    bool commissioning;           /* cfg is NULL because of a factory reset (CFG-5) */
     const gw_node_info_t *info;
+    void (*restart)(void);        /* orderly restart (NDEATH first when a session is up) */
 } gw_shell_ctx_t;
 
 /** Start the REPL task. Everything @p ctx points to must outlive the gateway. */

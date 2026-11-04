@@ -7,6 +7,7 @@ Runs the ESP32-S3 image built with sdkconfig.qemu in Espressif's QEMU:
   * UART0 (console): socket used to read the log and to inject DI levels ("di <n> <0|1>")
   * MQTT: a private mosquitto; an SNTP responder answers on the host's UDP 123
   * Remote syslog (REL-4): a UDP listener on the host collects what the gateway forwards
+  * Web server (CFG-3/CFG-4): slirp forwards the host's 127.0.0.1:HTTP_PORT to the guest's port 80
 
 Isolation: by default the harness moves itself into a private network namespace (Linux,
 needs CAP_SYS_ADMIN, e.g. root in a container) with only a loopback interface. Every port,
@@ -18,6 +19,8 @@ Usage: tools/e2e/run_e2e.sh  (prepares the flash image and calls this script)
 """
 import argparse
 import asyncio
+import base64
+import http.client as httplib
 import json
 import logging
 import os
@@ -32,6 +35,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 
 import google.protobuf
 import paho.mqtt.client as mqtt
@@ -52,6 +56,8 @@ CONSOLE_PORT = int(os.environ.get("E2E_CONSOLE_PORT", 15555))
 SYSLOG_PORT = int(os.environ.get("E2E_SYSLOG_PORT", 15514))
 # MB-15: QEMU forwards this host port to the gateway's Modbus TCP server (port 502)
 MBTCP_PORT = int(os.environ.get("E2E_MBTCP_PORT", 15502))
+HTTP_PORT = int(os.environ.get("E2E_HTTP_PORT", 18080))
+WEB_PASSWORD = "e2e-pass-1"
 SYSLOG = []       # (t, datagram text) received by the syslog listener
 SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
 PROBE_MAX_S = 10.0                # CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS / 1000, read in main()
@@ -391,7 +397,8 @@ class Gateway:
                "-drive", f"file={a.efuse},if=none,format=raw,id=efuse",
                "-global", "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
                "-global", "driver=timer.esp32s3.timg,property=wdt_disable,value=true",
-               "-nic", f"user,model=open_eth,hostfwd=tcp:127.0.0.1:{MBTCP_PORT}-:502",
+               "-nic", f"user,model=open_eth,hostfwd=tcp:127.0.0.1:{HTTP_PORT}-:80,"
+                       f"hostfwd=tcp:127.0.0.1:{MBTCP_PORT}-:502",
                "-chardev", f"socket,id=con,host=127.0.0.1,port={CONSOLE_PORT},server=on,wait=on",
                "-serial", "chardev:con",
                "-chardev", f"socket,id=rs485,host=127.0.0.1,port={MODBUS_PORT},reconnect-ms=500",
@@ -433,6 +440,29 @@ class Gateway:
         self.proc.wait()
         self.sock.close()
 
+    def shell(self, commands, patterns, timeout=3, tries=3):
+        """Ask the console shell (read-only commands only: they are repeated) until every regex in
+        @patterns has matched a line of the answer. The firmware writes each answer atomically
+        with respect to the log (#56); asking again also covers a line lost on the way.
+        Returns (start time of the asking, {pattern: time of the first match or None})."""
+        if isinstance(commands, str):
+            commands = [commands]
+        start = time.monotonic()
+        hits = {p: None for p in patterns}
+        for _ in range(tries):
+            asked = time.monotonic()
+            for c in commands:
+                self.console(c)
+            end = asked + timeout
+            while time.monotonic() < end and None in hits.values():
+                for p in hits:
+                    if hits[p] is None:
+                        hits[p] = self.wait_log(p, 0, asked)
+                time.sleep(0.05)
+            if None not in hits.values():
+                break
+        return start, hits
+
     def find(self, pattern, since=0.0):
         rx = re.compile(pattern)
         return [l for t, l in self.lines if t >= since and rx.search(l)]
@@ -448,6 +478,45 @@ class Gateway:
             if time.monotonic() >= end:
                 return None
             time.sleep(0.05)
+
+
+# ---------------------------------------------------------------- HTTP (CFG-3, CFG-4)
+
+def http(method, path, body=None, auth=("admin", WEB_PASSWORD), timeout=15, headers=None):
+    """(status, headers dict, body bytes) of one request to the gateway's web server, or
+    (None, {}, error text) when it cannot be reached. @auth None = no Authorization header."""
+    h = dict(headers or {})
+    if auth is not None:
+        h["Authorization"] = "Basic " + base64.b64encode(f"{auth[0]}:{auth[1]}".encode()).decode()
+    if body is not None and not isinstance(body, bytes):
+        body = json.dumps(body).encode()
+        h.setdefault("Content-Type", "application/json")
+    try:
+        c = httplib.HTTPConnection("127.0.0.1", HTTP_PORT, timeout=timeout)
+        c.request(method, path, body=body, headers=h)
+        r = c.getresponse()
+        data = r.read()
+        c.close()
+        return r.status, {k.lower(): v for k, v in r.getheaders()}, data
+    except (OSError, httplib.HTTPException) as e:
+        return None, {}, str(e).encode()
+
+
+def wait_http(path, timeout, auth=("admin", WEB_PASSWORD)):
+    """First answer to GET @path within @timeout (the server starts after the network)."""
+    end = time.monotonic() + timeout
+    while True:
+        r = http("GET", path, auth=auth, timeout=5)
+        if r[0] is not None or time.monotonic() >= end:
+            return r
+        time.sleep(0.5)
+
+
+def as_json(body):
+    try:
+        return json.loads(body)
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------- storage partition variants
@@ -538,7 +607,7 @@ def start_broker(conf, log):
 
 
 def main():
-    global MQTT_PORT, MODBUS_PORT, CONSOLE_PORT, SYSLOG_PORT, MBTCP_PORT
+    global MQTT_PORT, MODBUS_PORT, CONSOLE_PORT, SYSLOG_PORT, HTTP_PORT, MBTCP_PORT
     ap = argparse.ArgumentParser()
     ap.add_argument("--qemu", required=True)
     ap.add_argument("--flash", required=True)
@@ -555,17 +624,21 @@ def main():
     ap.add_argument("--syslog-port", type=int, default=SYSLOG_PORT)
     ap.add_argument("--mbtcp-port", type=int, default=MBTCP_PORT,
                     help="host port QEMU forwards to the gateway's Modbus TCP port 502")
+    ap.add_argument("--http-port", type=int, default=HTTP_PORT)
+    ap.add_argument("--only", default="",
+                    help="comma-separated scenarios to run (failsafe,network,web,reset,main); default all")
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
     args = ap.parse_args()
     MQTT_PORT, MODBUS_PORT, CONSOLE_PORT = args.mqtt_port, args.modbus_port, args.console_port
-    SYSLOG_PORT = args.syslog_port
+    SYSLOG_PORT, HTTP_PORT = args.syslog_port, args.http_port
     MBTCP_PORT = args.mbtcp_port
     global PROBE_MAX_S
     PROBE_MAX_S = sdkconfig_int(args.sdkconfig, "GW_MB_OFFLINE_PROBE_MAX_MS") / 1000
     isolated = False if args.no_isolate else isolate_network()
     print(f"network: {'private namespace' if isolated else 'host loopback'}; ports MQTT {MQTT_PORT}, "
-          f"Modbus {MODBUS_PORT}, console {CONSOLE_PORT}, syslog {SYSLOG_PORT}", flush=True)
+          f"Modbus {MODBUS_PORT}, console {CONSOLE_PORT}, syslog {SYSLOG_PORT}, HTTP {HTTP_PORT}",
+          flush=True)
     work = pathlib.Path(args.workdir)
     log = work / "uart0.log"
     # The image under test gets the harness' config.json (with its MQTT port).
@@ -584,9 +657,22 @@ def main():
     slave.set_mb6()
     slave.start()
     try:
-        run_config_failsafe(args, work)
-        run_network_variant(args, work)
-        run(args, log, slave, broker, conf, work)
+        only = set(filter(None, args.only.split(",")))
+        want = lambda name: not only or name in only  # noqa: E731
+        if want("failsafe"):
+            run_config_failsafe(args, work, slave)
+        if want("network"):
+            run_network_variant(args, work)
+        if want("web"):
+            run_web(args, work)
+        if want("reset"):
+            run_factory_reset(args, work)
+        if want("main"):
+            run(args, log, slave, broker, conf, work)
+    except BaseException:
+        traceback.print_exc()   # the summary below exits: keep the reason visible
+        check("harness completed every scenario", False, traceback.format_exc().splitlines()[-1])
+        raise
     finally:
         stop.set()
         for proc in PROCS:
@@ -636,9 +722,18 @@ def seq_continuity(msgs):
     return errors
 
 
-def run_config_failsafe(args, work):
+def commissioning_password(gw, since, timeout=20):
+    """The password the gateway prints on its console while no web password is set."""
+    t = gw.wait_log(r"commissioning password '[a-z0-9]+'", timeout, since)
+    lines = gw.find(r"commissioning password '[a-z0-9]+'", since) if t else []
+    return re.search(r"commissioning password '([a-z0-9]+)'", lines[0]).group(1) if lines else None
+
+
+def run_config_failsafe(args, work, slave):
     """CFG-1: the embedded default is used only when /cfg/config.json does not exist; any
-    other problem stops the gateway (no polling, no MQTT) with the error state and a log."""
+    other problem stops the gateway (no polling, no MQTT) with the error state and a log.
+    CFG-3 recovery: the network still comes up (DHCP, no valid configuration was ever seen on
+    these images) with the web UI, so the configuration can be fixed without reflashing."""
     good = config_json()
     limit = sdkconfig_int(args.sdkconfig, "GW_CONFIG_MAX_BYTES")
     cases = [
@@ -657,6 +752,7 @@ def run_config_failsafe(args, work):
     for name, files, reason in cases:
         gw = Gateway(args, work / f"uart0-{name}.log", flash_variant(args, work, name, files))
         obs.drain()
+        polls = len(slave.reads)
         t0 = time.monotonic()
         gw.start()
         hit = gw.wait_log(r"configuration rejected .*" + reason, 20, t0)
@@ -665,14 +761,47 @@ def run_config_failsafe(args, work):
         dos_off = gw.find(r"io: DO .*all outputs off", t0)
         time.sleep(6)  # long enough for DHCP + SNTP wait + a connection attempt
         # Positive signal: 6 s later the shell still reports the halted state.
-        asked = time.monotonic()
-        gw.console("status")
-        still = gw.wait_log(r"nothing is running: no polling, no network, no MQTT", 3, asked)
+        asked, h = gw.shell("status", [r"nothing is running: no polling, no MQTT; recovery network and "
+                                       r"web UI only", r"config\s+REJECTED .*" + reason])
+        still = list(h.values())[0]
         shell = gw.find(r"config\s+REJECTED .*" + reason, asked)
-        # Supplementary negative signals: no component logged its start, no NBIRTH reached MQTT.
-        started = gw.find(r"configuration from|connecting to|rs485: UART|net: IPv4", t0)
+        # Supplementary negative signals: no component logged its start, no NBIRTH reached MQTT,
+        # no Modbus request reached the slave.
+        started = gw.find(r"configuration from|connecting to|rs485: UART", t0)
         births = [m for m in CAPTURE if m[0] >= t0 and "/NBIRTH/" in m[1]]
+        polled = len(slave.reads) - polls
+        # CFG-3 recovery: web UI and status over the recovery network, with the commissioning
+        # password (nothing stored on these images)
+        pw = commissioning_password(gw, t0, 1)
+        st, _, body = wait_http("/api/status", 20, auth=("admin", pw or "?"))
+        status = as_json(body) or {}
+        page = http("GET", "/", auth=("admin", pw or "?"))
+        check(f"CFG-3 {name} config file -> web UI and /api/status answer in recovery mode with the "
+              f"reason (commissioning password from the console)",
+              pw and st == 200 and status.get("mode") == "recovery"
+              and re.search(reason, status.get("config", {}).get("error", ""))
+              and page[0] == 200 and b"Gateway RS485" in page[2]
+              and gw.find(r"net: IPv4", t0) and not status.get("devices"),
+              f"password {'read' if pw else 'not found'}; /api/status {st} mode "
+              f"{status.get('mode')!r} error {status.get('config', {}).get('error')!r}; / {page[0]}")
+        if name == "semantic-error":
+            # the rejected document can be exported, fixed and saved: the gateway then starts
+            st2, _, b2 = http("GET", "/api/config", auth=("admin", pw or "?"))
+            fixed = as_json(b2) or {}
+            path = (status.get("config") or {}).get("path")
+            ok_export = st2 == 200 and fixed.get("devices", [{}])[0].get("tags", [{}])[0].get("type") == "float64"
+            if ok_export:
+                fixed["devices"][0]["tags"][0]["type"] = "float32"
+                fixed["sparkplug"]["edge_node_id"] = "GW03"
+            st3, _, b3 = http("PUT", "/api/config", fixed, auth=("admin", pw or "?"))
+            nb = obs.wait(f"{T}/NBIRTH/GW03", 40)
+            check("CFG-3/CFG-4 recovery: the rejected document is exported (path in /api/status), fixed "
+                  "and saved through the REST API; the gateway restarts and runs it",
+                  ok_export and path == "devices[0].tags[0].type" and st3 == 200 and nb,
+                  f"GET {st2} (path {path!r}); PUT {st3} {b3.decode().strip()}; NBIRTH GW03: {bool(nb)}")
         gw.kill()
+        if name == "semantic-error":
+            obs.wait(f"{T}/NDEATH/GW03", 5)
         if name == "oversized":
             check("CFG-6 console shell answers 'status' while the configuration is rejected",
                   shell, shell[0] if shell else "no answer")
@@ -680,10 +809,11 @@ def run_config_failsafe(args, work):
               bool(dos_off), (dos_off or ["no 'all outputs off' log"])[0])
         check(f"CFG-1 {name} config file -> halted (shell 'status' after 6 s), error LED, ERROR log "
               f"with the reason, nothing started",
-              hit and halted and still and shell and led and not started and not births,
+              hit and halted and still and shell and led and not started and not births
+              and polled == 0,
               (gw.find(r"configuration rejected", t0) or ["no 'configuration rejected' log"])[0] +
               f"; halted={bool(halted)}; shell still halted={bool(still)}; LED error={bool(led)}; "
-              f"started={started[:1]}; NBIRTHs={len(births)}")
+              f"started={started[:1]}; NBIRTHs={len(births)}; Modbus requests={polled}")
 
     gw = Gateway(args, work / "uart0-absent.log", flash_variant(args, work, "absent", {}))
     t0 = time.monotonic()
@@ -983,30 +1113,18 @@ def run_network_variant(args, work):
     gw.start()
     nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
     ignored = gw.find(r"network\.wifi ignored: Wi-Fi is not available in this build", t0)
-    asked = time.monotonic()
-    iface = shown = None
-    for _ in range(3):   # a log line from another task can split the shell's output: ask again
-        gw.console("status")
-        gw.console("config")
-        iface = iface or gw.wait_log(
-            r"^iface\s+ethernet up \d+\.\d+\.\d+\.\d+ \(active\) \| wifi not configured", 3, asked)
-        shown = shown or gw.wait_log(r"^wifi\s+'Plant WLAN', backup of Ethernet, failback 30 s, DHCP",
-                                     1, asked)
-        if iface and shown:
-            break
+    asked, h = gw.shell(["status", "config"],
+                        [r"^iface\s+ethernet up \d+\.\d+\.\d+\.\d+ \(active\) \| wifi not configured",
+                         r"^wifi\s+'Plant WLAN', backup of Ethernet, failback 30 s, DHCP"])
+    iface, shown = h.values()
     # NET-7
     lla = gw.wait_log(r"net: ethernet: IPv6 fe80:[0-9a-f:]+ \(link-local\)", 10, t0)
     slaac = gw.wait_log(r"net: ethernet: IPv6 fec0::(?!1234 )[0-9a-f:]+ \(site local\)", 10, t0)
     static = gw.wait_log(r"net: ethernet: IPv6 fec0::1234 \(site local\)", 1, t0)
-    asked6 = time.monotonic()
-    listed = cfg6 = None
-    for _ in range(3):
-        gw.console("status")
-        gw.console("config")
-        listed = listed or gw.wait_log(r"^ipv6\s+ethernet fe80:.*ethernet fec0::", 3, asked6)
-        cfg6 = cfg6 or gw.wait_log(r"^ipv6\s+SLAAC on, static address fec0::1234, DNS none", 1, asked6)
-        if listed and cfg6:
-            break
+    asked6, h = gw.shell(["status", "config"],
+                         [r"^ipv6\s+ethernet fe80:.*ethernet fec0::",
+                          r"^ipv6\s+SLAAC on, static address fec0::1234, DNS none"])
+    listed, cfg6 = h.values()
     pinged = time.monotonic()
     gw.console("ping fec0::2")
     replies = gw.wait_log(r"3 sent, [1-3] received", 8, pinged)
@@ -1035,6 +1153,249 @@ def run_network_variant(args, work):
           lla and slaac and static and listed and cfg6 and replies,
           " | ".join(gw.find(r"net: ethernet: IPv6 ", t0)[:4]) + " | "
           + " | ".join(gw.find(r"^ipv6\s|reply from|sent, \d+ received", asked6)))
+
+
+def run_web(args, work):
+    """CFG-4 REST API (and the web UI, CFG-3), in boots of their own with separate edge node ids:
+    authentication, export with masked secrets, invalid import -> 400 with the JSON path,
+    dry run, oversized body, and a valid import -> orderly restart with the new configuration."""
+    node, node2 = "GW04", "GW05"
+    cfg = json.loads(config_json())
+    cfg["sparkplug"]["edge_node_id"] = node
+    cfg["mqtt"]["password"] = "mqtt-secret"      # the broker allows anonymous: ignored there
+    cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    flash = flash_variant(args, work, "web", {"config.json": json.dumps(cfg, indent=2).encode()})
+    obs = Observer()
+    gw = Gateway(args, work / "uart0-web.log", flash)
+    t0 = time.monotonic()
+    gw.start()
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    st0, hdr0, _ = wait_http("/api/config", 20, auth=None)
+    st1, _, _ = http("GET", "/api/config", auth=("admin", "wrong-pass"))
+    st2, hdr2, body = http("GET", "/api/config")
+    doc = as_json(body) or {}
+    check("CFG-4 REST API requires HTTP Basic auth (no credentials / wrong password -> 401)",
+          st0 == 401 and "basic" in hdr0.get("www-authenticate", "").lower() and st1 == 401,
+          f"no auth -> {st0} ({hdr0.get('www-authenticate')}); wrong password -> {st1}")
+    masked = doc.get("mqtt", {}).get("password") == "********" and \
+        doc.get("web", {}).get("password") == "********"
+    check("CFG-4 GET /api/config exports the configuration with every secret masked",
+          st2 == 200 and nb and doc.get("sparkplug", {}).get("edge_node_id") == node and masked
+          and b"mqtt-secret" not in body and WEB_PASSWORD.encode() not in body
+          and "json" in hdr2.get("content-type", ""),
+          f"status {st2}, {len(body)} bytes, node {doc.get('sparkplug', {}).get('edge_node_id')}, "
+          f"mqtt.password {doc.get('mqtt', {}).get('password')!r}, web.password "
+          f"{doc.get('web', {}).get('password')!r}")
+
+    st_p, hdr_p, page = http("GET", "/")
+    st_s, _, b_s = http("GET", "/api/status")
+    status = as_json(b_s) or {}
+    devs = {d.get("name"): d for d in status.get("devices", [])}
+    volt = [t for t in devs.get(DEVICE, {}).get("tags", []) if t.get("name") == "Voltage"]
+    check("CFG-3 web UI page and live status (/api/status: mode, MQTT, devices with counters and "
+          "tag values, interfaces)",
+          st_p == 200 and "text/html" in hdr_p.get("content-type", "") and b"/api/status" in page
+          and st_s == 200 and status.get("mode") == "normal" and status.get("mqtt", {}).get("connected")
+          and devs.get(DEVICE, {}).get("online") and volt and volt[0].get("valid")
+          and status.get("network", {}).get("interfaces", [{}])[0].get("active"),
+          f"/ {st_p} {len(page)} B; /api/status {st_s}: mode {status.get('mode')}, MQTT "
+          f"{status.get('mqtt')}, {DEVICE} online {devs.get(DEVICE, {}).get('online')}, Voltage "
+          f"{volt[0] if volt else None}")
+
+    bad = json.loads(json.dumps(doc))
+    bad["devices"][0]["tags"][0]["type"] = "float64"
+    st3, _, b3 = http("PUT", "/api/config", bad)
+    e3 = as_json(b3) or {}
+    syntax = json.dumps(doc, indent=2).replace('"ntp"', '"ntp" "x"', 1).encode()
+    st4, _, b4 = http("PUT", "/api/config", syntax)
+    e4 = as_json(b4) or {}
+    st5, _, b5 = http("PUT", "/api/config?dry_run=1", doc)
+    big = b"{" + b" " * (sdkconfig_int(args.sdkconfig, "GW_CONFIG_MAX_BYTES") + 1) + b"}"
+    st6, _, _ = http("PUT", "/api/config", big)
+    check("CFG-4 PUT invalid -> 400 with the JSON path; syntax error -> 400 with line and column; "
+          "dry run validates without saving; oversized body -> 413",
+          st3 == 400 and e3.get("path") == "devices[0].tags[0].type" and st4 == 400
+          and e4.get("line", 0) > 0 and e4.get("path") == "" and st5 == 200
+          and (as_json(b5) or {}).get("saved") is False and st6 == 413
+          and not gw.find(r"configuration saved", t0),
+          f"schema {st3} {e3.get('path')!r}: {e3.get('error')}; syntax {st4} line {e4.get('line')} "
+          f"column {e4.get('column')}; dry run {st5} {b5.decode().strip()}; oversized {st6}")
+
+    new = json.loads(json.dumps(doc))
+    new["sparkplug"]["edge_node_id"] = node2
+    obs.drain()
+    st7, _, b7 = http("PUT", "/api/config", new)
+    death = obs.wait(f"{T}/NDEATH/{node}", 10)
+    nb2 = obs.wait(f"{T}/NBIRTH/{node2}", 40)
+    st8, _, b8 = wait_http("/api/config", 20)
+    doc8 = as_json(b8) or {}
+    check("CFG-4 PUT valid -> saved atomically, orderly restart (NDEATH) and NBIRTH with the new "
+          "configuration; secrets kept through the mask",
+          st7 == 200 and (as_json(b7) or {}).get("saved") and death and nb2 and st8 == 200
+          and doc8.get("sparkplug", {}).get("edge_node_id") == node2
+          and doc8.get("mqtt", {}).get("password") == "********"
+          and gw.find(r"configuration saved to /cfg/config\.json", t0),
+          f"PUT {st7} {b7.decode().strip()}; NDEATH {node}: {bool(death)}; NBIRTH {node2}: "
+          f"{bool(nb2)}; GET after restart {st8} node {doc8.get('sparkplug', {}).get('edge_node_id')}"
+          f" (same password still accepted)")
+    # CFG-6 shell: configuration and active diagnostics, on the same gateway (now GW05)
+    asked = time.monotonic()
+    gw.console("config show")
+    shown = gw.wait_log(r'^\s*"edge_node_id": "%s"' % node2, 5, asked)
+    end = time.monotonic() + 10   # about 10 KB at 115200 baud
+    while len(gw.find(r'^\s*"password": "\*{8}"', asked)) < 2 and time.monotonic() < end:
+        time.sleep(0.2)
+    masked_sh = gw.find(r'^\s*"password": "\*{8}"', asked)
+    leaked = gw.find(r"mqtt-secret|" + WEB_PASSWORD, asked)
+    asked, h = gw.shell(["mbread 1 holding 10 1", "mbread 1 input 0 2", "mbread 9 holding 0"],
+                        [r"^mbread: unit 1 holding 10: 50$",
+                         r"^mbread: unit 1 input 0: 17254 32768$",           # 230.5 as float32 ABCD
+                         r"^mbread: unit 9 holding 0: (timeout|framing error)$"], timeout=15)
+    reg, flt, absent = h.values()
+    check("CFG-6 shell 'config show' (secrets masked) and 'mbread' through the bus owner (register, "
+          "float32 words, unit without a slave -> error, not a value)",
+          shown and len(masked_sh) >= 2 and not leaked and reg and flt and absent,
+          f"show: node {bool(shown)}, {len(masked_sh)} masked secrets, leaks {len(leaked)}; "
+          + " | ".join(gw.find(r"^mbread: ", asked)))
+    obs.drain()
+    asked = time.monotonic()
+    gw.console("rebirth")
+    rb = obs.wait(f"{T}/NBIRTH/{node2}", 5)
+    said = gw.wait_log(r"^rebirth: NBIRTH and every DBIRTH requested", 3, asked)
+    obs.wait(f"{T}/DBIRTH/{node2}/{BULK}", 5)
+    dbs = sorted(m[2].seq for m in CAPTURE if m[0] >= asked and m[1].startswith(f"{T}/DBIRTH/{node2}/"))
+    check("CFG-6 shell 'rebirth' re-issues NBIRTH (seq 0, same session) and the DBIRTHs",
+          rb and rb[2].seq == 0 and dbs == [1, 2] and said,
+          f"NBIRTH {'seq %d' % rb[2].seq if rb else 'missing'}, DBIRTH seq {dbs}, shell answer "
+          f"{bool(said)}")
+
+    def paste(doc_obj):
+        gw.console("config load" if doc_obj.get("_save", True) else "config check")
+        time.sleep(0.5)
+        text = json.dumps({k: v for k, v in doc_obj.items() if k != "_save"}, indent=2)
+        gw.sock.sendall(text.encode() + b"\n")
+
+    bad = json.loads(json.dumps(doc8))
+    bad["devices"][0]["tags"][0]["type"] = "float64"
+    asked = time.monotonic()
+    paste(bad)
+    rej = gw.wait_log(r"^config: rejected: devices\[0\]\.tags\[0\]\.type: valor no válido", 15, asked)
+    rpath = gw.wait_log(r"^config: path devices\[0\]\.tags\[0\]\.type$", 2, asked)
+    good = json.loads(json.dumps(doc8))
+    good["_save"] = False
+    asked2 = time.monotonic()
+    paste(good)
+    valid = gw.wait_log(r"^config: valid \(\d+ bytes\), nothing saved$", 15, asked2)
+    still = gw.find(r"configuration saved|restart", asked)
+    good = json.loads(json.dumps(doc8))
+    good["sparkplug"]["edge_node_id"] = node3 = "GW06"
+    obs.drain()
+    asked3 = time.monotonic()
+    paste(good)
+    saved = gw.wait_log(r"^config: saved \(\d+ bytes\); restarting$", 15, asked3)
+    death = obs.wait(f"{T}/NDEATH/{node2}", 10)
+    nb3 = obs.wait(f"{T}/NBIRTH/{node3}", 40)
+    st9, _, b9 = wait_http("/api/config", 20)
+    check("CFG-6 shell 'config load': invalid document rejected with its JSON path; 'config check' "
+          "validates only; a valid document is saved atomically and the gateway restarts with it "
+          "(NDEATH, NBIRTH, secrets kept)",
+          rej and rpath and valid and not still and saved and death and nb3 and st9 == 200
+          and (as_json(b9) or {}).get("mqtt", {}).get("password") == "********",
+          " | ".join(gw.find(r"^config: ", asked)) + f"; NDEATH {node2}: {bool(death)}; NBIRTH "
+          f"{node3}: {bool(nb3)}; GET {st9}")
+    _, h = gw.shell("status", [r"^secrets\s+NVS encrypted \(HMAC key in eFuse KEY5\)"])
+    enc = list(h.values())[0]
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node3}", 5)
+    obs.close()
+    # CFG-7: the secrets left the file at the first boot, NVS is encrypted, the web password is
+    # only stored as a hash: none of them appears anywhere in the flash image in clear.
+    image = pathlib.Path(flash).read_bytes()
+    so, ss = storage_partition()
+    no, ns = storage_partition("nvs")
+    leaks = [(what.decode(), where) for what in (b"mqtt-secret", WEB_PASSWORD.encode())
+             for where, (o, n) in (("storage", (so, ss)), ("nvs", (no, ns)), ("image", (0, len(image))))
+             if what in image[o:o + n]]
+    moved = gw.find(r"storage: secrets moved from /cfg/config\.json to NVS", t0)
+    encrypted = gw.find(r'nvs: NVS partition "nvs" is encrypted', t0)
+    check("CFG-7 secrets migrated out of config.json at the first boot (partition erased: no stale "
+          "copy), NVS encrypted with the HMAC key in eFuse, web password only as a hash: no secret "
+          "in clear anywhere in the flash image",
+          moved and encrypted and enc and not leaks,
+          f"{(moved or ['no migration log'])[0]}; {(encrypted or ['NVS not encrypted'])[0]}; "
+          f"shell {bool(enc)}; secrets found in clear: {leaks or 'none'}")
+
+
+def run_factory_reset(args, work):
+    """CFG-5 factory reset with the BOOT button (simulated: shell 'boot 1'), then commissioning:
+    no configuration, no example identity, the web UI with a new commissioning password, and a
+    configuration loaded through the REST API that boots the gateway."""
+    node, node2 = "GW07", "GW08"
+    cfg = json.loads(config_json())
+    cfg["sparkplug"]["edge_node_id"] = node
+    cfg["web"] = {"password": WEB_PASSWORD}
+    flash = flash_variant(args, work, "reset", {"config.json": json.dumps(cfg, indent=2).encode()})
+    obs = Observer()
+    gw = Gateway(args, work / "uart0-reset.log", flash)
+    gw.start()
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    # short press (3 s): the commissioning access point gesture, no reset
+    t_short = time.monotonic()
+    gw.console("boot 1")
+    time.sleep(3)
+    gw.console("boot 0")
+    ap = gw.wait_log(r"button: BOOT pressed \d+ ms: commissioning access point", 3, t_short)
+    ap_try = gw.wait_log(r"ap: commissioning access point not available in this build", 3, t_short)
+    obs.drain()
+    pressed = time.monotonic()
+    gw.console("boot 1")
+    warn = gw.wait_log(r"button: BOOT held: factory reset at 10 s", 5, pressed)
+    fired = gw.wait_log(r"button: BOOT held 10 s: factory reset", 15, pressed)
+    death = obs.wait(f"{T}/NDEATH/{node}", 10)
+    commissioning = gw.wait_log(r"main: commissioning: no configuration since the factory reset", 30,
+                                pressed)
+    check("CFG-5 BOOT held 10 s -> factory reset (LED and log at 2 s, at 10 s), orderly NDEATH, "
+          "restart into commissioning; a 3 s press is the access point gesture, not a reset",
+          nb and ap and warn and fired and death and commissioning
+          and fired - pressed >= 9.5,
+          f"NBIRTH {node}: {bool(nb)}; 3 s press: {bool(ap)}; warning after "
+          f"{(warn - pressed) if warn else -1:.1f} s, reset after {(fired - pressed) if fired else -1:.1f} s; "
+          f"NDEATH: {bool(death)}; commissioning: {bool(commissioning)}")
+    t1 = commissioning or time.monotonic()
+    ap_comm = gw.wait_log(r"ap: commissioning access point not available in this build", 10, t1 - 5)
+    check("NET-5 commissioning access point requested on a 2-10 s BOOT press and when there is no "
+          "configuration (QEMU has no radio: the request is logged; the SoftAP itself is compiled only)",
+          ap_try and ap_comm, " | ".join(gw.find(r"ap: |BOOT pressed", t_short)[:3]))
+    pw = commissioning_password(gw, t1 - 5, 10)
+    st_old, _, _ = wait_http("/api/status", 20)                    # the old web password is gone
+    st, _, body = http("GET", "/api/status", auth=("admin", pw or "?"))
+    status = as_json(body) or {}
+    _, h = gw.shell("status", [r"^config\s+NONE: commissioning after a factory reset"])
+    shell = list(h.values())[0]
+    time.sleep(4)
+    births = [m for m in CAPTURE if m[0] >= t1 and "/NBIRTH/" in m[1]]
+    led = gw.find(r"led: status: commissioning", t1 - 5)
+    check("CFG-5 after the reset: commissioning mode (no polling, no MQTT, not even the example "
+          "identity), old web password rejected, new commissioning password, web and shell report it",
+          st_old == 401 and pw and st == 200 and status.get("mode") == "commissioning" and shell
+          and not births and led,
+          f"old password -> {st_old}; commissioning password {'read' if pw else 'missing'}; "
+          f"/api/status {st} mode {status.get('mode')!r}; shell {bool(shell)}; NBIRTHs {len(births)}; "
+          f"LED {bool(led)}")
+    new = json.loads(config_json())
+    new["sparkplug"]["edge_node_id"] = node2
+    st2, _, b2 = http("PUT", "/api/config", new, auth=("admin", pw or "?"))
+    nb2 = obs.wait(f"{T}/NBIRTH/{node2}", 40)
+    check("CFG-5 commissioning: a configuration loaded through the REST API starts the gateway",
+          st2 == 200 and nb2, f"PUT {st2} {b2.decode().strip()}; NBIRTH {node2}: {bool(nb2)}")
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node2}", 5)
+    obs.close()
+    image = pathlib.Path(flash).read_bytes()
+    so, ss = storage_partition()
+    stale = [w for w in (b'"GW07"', WEB_PASSWORD.encode()) if w in image[so:so + ss]]
+    check("CFG-5 the factory reset erased the storage partition (no block of the old configuration "
+          "is left)", not stale and b'"GW08"' in image[so:so + ss], f"stale: {stale or 'none'}")
 
 
 def run(args, log, slave, broker, conf, work):
@@ -1095,13 +1456,20 @@ def run(args, log, slave, broker, conf, work):
           "registers, Bulk keeps the build default", meter == want,
           f"Meter1 requests {sorted(meter)} (expected {sorted(want)})")
 
+    # NET-6: host name derived from edge_node_id; the mDNS responder starts with it. It cannot
+    # answer here: open_eth has no multicast filter, so joining 224.0.0.251 fails and the
+    # responder leaves the interface out (the W5500 has the filter).
+    announced = gw.find(r"mdns: gw01\.local, _http\._tcp port 80 \('Plant1/GW01'\)", t0)
+    check("NET-6 host name gw01 derived from edge_node_id; mDNS responder and _http._tcp service "
+          "started (answers not testable on QEMU's open_eth)",
+          announced, (announced or ["no mdns log"])[0])
+
     # CFG-6 diagnostic shell on the console UART
-    asked = time.monotonic()
-    gw.console("status")
-    status_ok = gw.wait_log(r"config\s+\S+.*: ok", 3, asked)
-    status_net = gw.wait_log(r"network\s+.*MQTT \S+, Modbus 2/5 devices online", 1, asked)
-    status_if = gw.wait_log(r"^iface\s+ethernet up \d+\.\d+\.\d+\.\d+ \(active\) \| wifi not configured",
-                            1, asked)
+    asked, h = gw.shell("status", [r"config\s+\S+.*: ok",
+                                   r"network\s+.*MQTT \S+, Modbus 2/5 devices online",
+                                   r"^iface\s+ethernet up \d+\.\d+\.\d+\.\d+ \(active\) \| wifi not configured",
+                                   r"^tasks\s"])
+    status_ok, status_net, status_if, _ = h.values()
     check("CFG-6 console shell: 'status' with a valid configuration (config ok, MQTT, devices online, "
           "Ethernet the only and active interface)",
           status_ok and status_net and status_if,
@@ -1111,12 +1479,10 @@ def run(args, log, slave, broker, conf, work):
     want = ["rs485_bus 1", "sparkplug 0", "tcpip 0", "mqtt_task 0", "emac_rx 0", "sys_evt 0"]
     check("Issue #15 task affinity: lwIP, esp-mqtt, Ethernet RX and event loop on core 0, bus on core 1",
           tasks and all(f" {w}" in tasks[0] for w in want), tasks[0] if tasks else "no 'tasks' line")
-    asked = time.monotonic()
-    gw.console("devices")
-    gw.console("config")
-    meter = gw.wait_log(r"Meter1\s+unit\s+1 online\s+cycles [1-9]\d* failed \d+ \| ok [1-9]", 3, asked)
-    bulk = gw.wait_log(r"Bulk\s+unit\s+2 online", 1, asked)
-    summary = gw.wait_log(r"sparkplug\s+group 'Plant1', edge node 'GW01'", 1, asked)
+    asked, h = gw.shell(["devices", "config"],
+                        [r"Meter1\s+unit\s+1 online\s+cycles [1-9]\d* failed \d+ \| ok [1-9]",
+                         r"Bulk\s+unit\s+2 online", r"sparkplug\s+group 'Plant1', edge node 'GW01'"])
+    meter, bulk, summary = h.values()
     check("CFG-6 console shell: 'devices' (online state, counters) and 'config' summary",
           meter and bulk and summary,
           " | ".join(gw.find(r"Meter1\s+unit|Bulk\s+unit|sparkplug\s+group", asked)) or "no answer")
@@ -1136,13 +1502,8 @@ def run(args, log, slave, broker, conf, work):
         except ValueError:
             pass
     bad = [text for t, text in SYSLOG if t >= t0 and not RFC5424.match(text)]
-    asked = time.monotonic()
-    stats = None
-    for _ in range(3):
-        gw.console("status")
-        stats = gw.wait_log(r"^syslog\s+10\.0\.2\.2:%d connected, sent [1-9]\d*, " % SYSLOG_PORT, 3, asked)
-        if stats:
-            break
+    asked, h = gw.shell("status", [r"^syslog\s+10\.0\.2\.2:%d connected, sent [1-9]\d*, " % SYSLOG_PORT])
+    stats = list(h.values())[0]
     check("REL-4 log lines reach the syslog server as RFC 5424 (local0, hostname GW01, app-name = "
           "tag, SNTP timestamp); the shell reports the counters",
           up and up[1] == 16 * 8 + 6 and up[3] == "edge" and ts_ok and not bad and stats,
@@ -1252,10 +1613,9 @@ def run(args, log, slave, broker, conf, work):
     bound = 3 * 1.0 + 3 * (0.2 * 3) + 1.0  # offline_after*poll + per-cycle timeouts + 1 s margin
     check("2a. Slave powered off -> DDEATH within offline_after x poll_ms + timeouts",
           dd and dd[0] - off <= bound, f"{dd[0] - off:.2f} s (bound {bound:.1f} s)" if dd else "no DDEATH")
-    asked = time.monotonic()
-    gw.console("devices")
-    offline = gw.wait_log(r"Meter1\s+unit\s+1 offline\s+cycles \d+ failed [1-9]\d* \| ok \d+ timeout [1-9]",
-                          3, asked)
+    asked, h = gw.shell("devices", [r"Meter1\s+unit\s+1 offline\s+cycles \d+ failed [1-9]\d* \| ok \d+ "
+                                    r"timeout [1-9]"])
+    offline = list(h.values())[0]
     check("CFG-6 / MB-13 shell shows the device offline with its failed cycles and timeouts",
           offline, (gw.find(r"Meter1\s+unit", asked) or ["no answer"])[0])
     on = time.monotonic()

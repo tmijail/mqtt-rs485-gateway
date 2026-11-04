@@ -25,7 +25,12 @@ extern "C" {
 #define GW_UNITS_SIZE  16
 #define GW_SSID_SIZE   33   /* Wi-Fi SSID: 1..32 bytes */
 #define GW_PSK_SIZE    65   /* Wi-Fi passphrase (8..63) or raw PSK (64 hex digits) */
+#define GW_HOSTNAME_SIZE 64 /* NET-6: one DNS label, 1..63 characters */
+#define GW_USER_SIZE   33   /* web user name */
+#define GW_PWHASH_SIZE 128  /* "pbkdf2-sha256$<iterations>$<salt hex>$<hash hex>" (gw_auth.h) */
 #define GW_CFG_ERR_SIZE 192
+#define GW_CFG_PATH_SIZE 96
+#define GW_JSON_MAX_DEPTH 32  /* deeper documents are rejected before cJSON recurses into them */
 
 /* MB-6 strings: up to 16 registers, two characters per register. */
 #define GW_STR_MAX_REGS 16
@@ -144,6 +149,9 @@ typedef struct {
 
 typedef struct {
     struct {
+        char hostname[GW_HOSTNAME_SIZE];  /* NET-6: DHCP and mDNS host name; derived from
+                                           * edge_node_id when the document leaves it empty */
+        bool mdns;               /* NET-6: answer <hostname>.local and announce _http._tcp */
         bool dhcp;               /* Ethernet IPv4 (the SPEC example's keys) */
         uint8_t ip[4];
         uint8_t netmask[4];
@@ -184,6 +192,14 @@ typedef struct {
         uint16_t port;
         gw_log_level_t level;
     } syslog;
+    struct {                     /* CFG-3 / CFG-4: web UI and REST API */
+        bool enabled;
+        uint16_t port;
+        char username[GW_USER_SIZE];
+        char password[GW_CRED_SIZE];       /* clear text only while a new password is being
+                                            * stored (CFG-7); empty at run time */
+        char password_hash[GW_PWHASH_SIZE]; /* "" = no password set: commissioning password */
+    } web;
 
     struct {                     /* MB-15 Modbus TCP gateway; off unless enabled */
         bool enabled;
@@ -204,6 +220,9 @@ typedef struct {
 
 typedef struct {
     char msg[GW_CFG_ERR_SIZE];  /* "<json path>: <reason>" or "... línea L, columna C: ..." */
+    char path[GW_CFG_PATH_SIZE]; /* JSON path of a semantic error ("devices[0].tags[1].type",
+                                  * "$" for the root); "" for syntax and other errors */
+    unsigned line, column;      /* 1-based position of a syntax error; 0 otherwise */
 } gw_cfg_err_t;
 
 /**
@@ -225,6 +244,16 @@ bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_
  * a syntax error.
  */
 void gw_config_set_allocator(void *(*alloc)(size_t size), void (*release)(void *ptr));
+
+/**
+ * NET-6 default host name from @p src (edge_node_id): lower case, every character outside
+ * [a-z0-9-] becomes '-', no leading, trailing or repeated '-', at most 63 characters;
+ * "gateway" if nothing is left.
+ */
+void gw_hostname_from(const char *src, char *out, size_t cap);
+
+/** Deepest nesting of objects and arrays in @p json (strings are skipped). */
+unsigned gw_json_depth(const char *json, size_t len);
 
 /** Parse an IPv6 literal (RFC 4291 text form, "::" and a trailing dotted quad allowed, no
  * zone) into network byte order. */
