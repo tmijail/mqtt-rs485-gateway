@@ -50,7 +50,7 @@ SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
 PROBE_MAX_S = 10.0                # CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS / 1000, read in main()
 GROUP, NODE, DEVICE, BULK = "Plant1", "GW01", "Meter1", "Bulk"
 T = f"spBv1.0/{GROUP}"
-ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/3": 22, "Voltage": 100, "Setpoint": 101, "Run": 102}
+ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/3": 22, "Voltage": 100, "Setpoint": 101, "Run": 102, "Limit": 103}
 
 spb = spb_decode.load_module()
 results = []
@@ -624,6 +624,12 @@ def run(args, log, slave, broker, conf, work):
           SNTP_BOUND.is_set() and abs(p.timestamp / 1000 - time.time()) < 60,
           f"NBIRTH timestamp {p.timestamp} vs host {int(time.time() * 1000)}; responder on UDP 123: "
           f"{SNTP_BOUND.is_set()}")
+    gw.wait_log(r"births sent in", 10)
+    births = gw.find(r"births sent in \d+ ms, longest stretch without feeding the watchdog")
+    nums = [int(x) for x in re.findall(r"(\d+) ms", births[0])] if births else []
+    check("REL-1 / issue #3 the Sparkplug task feeds the watchdog after every birth it publishes",
+          len(nums) == 2 and nums[1] <= nums[0] and nums[1] <= 1000,
+          births[0] if births else "no 'births sent' log")
     db = obs.wait(dbirth_t, 10)
     ok = db and abs(metric(db[2], name="Voltage").float_value - 230.5) < 1e-3 \
         and abs(metric(db[2], name="Setpoint").float_value - 5.0) < 1e-4
@@ -699,6 +705,18 @@ def run(args, log, slave, broker, conf, work):
           and abs(metric(dd[2], alias=ALIAS["Setpoint"]).float_value - 12.3) < 1e-4,
           f"slave writes {slave.ctx.writes}, register={reg}, DDATA "
           f"{metric(dd[2], alias=ALIAS['Setpoint']).float_value if dd else None}")
+    # MB-4 / issue #2: a 32-bit value is written with one FC16 of 2 registers (13 bytes, the
+    # frame that timed out at 1200 baud), executed exactly once and confirmed by DDATA.
+    obs.drain()
+    slave.ctx.writes.clear()
+    obs.publish_cmd(dcmd_t, [{"name": "Limit", "datatype": 9, "float_value": 1234.5}])
+    dd = obs.wait(ddata_t, 5, lambda q: metric(q, alias=ALIAS["Limit"]) is not None)
+    hi, lo = struct.unpack(">HH", struct.pack(">f", 1234.5))
+    check("MB-4 DCMD float32 -> a single FC16 of 2 registers, confirmed by DDATA",
+          dd and slave.ctx.writes == [(16, 20, [hi, lo])]
+          and abs(metric(dd[2], alias=ALIAS["Limit"]).float_value - 1234.5) < 1e-3,
+          f"slave writes {slave.ctx.writes}, DDATA "
+          f"{metric(dd[2], alias=ALIAS['Limit']).float_value if dd else None}")
     obs.drain()
     slave.ctx.writes.clear()
     obs.publish_cmd(dcmd_t, [{"alias": ALIAS["Run"], "datatype": 11, "boolean_value": True}])

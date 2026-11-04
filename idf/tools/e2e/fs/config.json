@@ -62,6 +62,14 @@
           "address": 0,
           "type": "bool",
           "writable": true
+        },
+        {
+          "name": "Limit",
+          "area": "holding",
+          "address": 20,
+          "type": "float32",
+          "word_order": "big",
+          "writable": true
         }
       ]
     },
