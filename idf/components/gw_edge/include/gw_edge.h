@@ -36,6 +36,10 @@ void gw_edge_notify_write_done(uint16_t tag, bool ok);
  *  publishes NDEATH and disconnects first when a session is up, then restarts. */
 void gw_edge_request_restart(void);
 
+/** CFG-6: re-issue NBIRTH and every DBIRTH (as NCMD Node Control/Rebirth). False if no
+ *  Sparkplug session is up. */
+bool gw_edge_request_rebirth(void);
+
 #ifdef __cplusplus
 }
 #endif

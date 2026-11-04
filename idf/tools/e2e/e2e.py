@@ -825,8 +825,75 @@ def run_web(args, work):
           f"PUT {st7} {b7.decode().strip()}; NDEATH {node}: {bool(death)}; NBIRTH {node2}: "
           f"{bool(nb2)}; GET after restart {st8} node {doc8.get('sparkplug', {}).get('edge_node_id')}"
           f" (same password still accepted)")
+    # CFG-6 shell: configuration and active diagnostics, on the same gateway (now GW05)
+    asked = time.monotonic()
+    gw.console("config show")
+    shown = gw.wait_log(r'^\s*"edge_node_id": "%s"' % node2, 5, asked)
+    end = time.monotonic() + 10   # about 10 KB at 115200 baud
+    while len(gw.find(r'^\s*"password": "\*{8}"', asked)) < 2 and time.monotonic() < end:
+        time.sleep(0.2)
+    masked_sh = gw.find(r'^\s*"password": "\*{8}"', asked)
+    leaked = gw.find(r"mqtt-secret|" + WEB_PASSWORD, asked)
+    asked = time.monotonic()
+    gw.console("mbread 1 holding 10 1")
+    gw.console("mbread 1 input 0 2")
+    gw.console("mbread 9 holding 0")
+    reg = gw.wait_log(r"^mbread: unit 1 holding 10: 50$", 8, asked)
+    flt = gw.wait_log(r"^mbread: unit 1 input 0: 17254 32768$", 8, asked)    # 230.5 as float32 ABCD
+    absent = gw.wait_log(r"^mbread: unit 9 holding 0: (timeout|framing error)$", 15, asked)
+    check("CFG-6 shell 'config show' (secrets masked) and 'mbread' through the bus owner (register, "
+          "float32 words, unit without a slave -> error, not a value)",
+          shown and len(masked_sh) >= 2 and not leaked and reg and flt and absent,
+          f"show: node {bool(shown)}, {len(masked_sh)} masked secrets, leaks {len(leaked)}; "
+          + " | ".join(gw.find(r"^mbread: ", asked)))
+    obs.drain()
+    asked = time.monotonic()
+    gw.console("rebirth")
+    rb = obs.wait(f"{T}/NBIRTH/{node2}", 5)
+    said = gw.wait_log(r"^rebirth: NBIRTH and every DBIRTH requested", 3, asked)
+    obs.wait(f"{T}/DBIRTH/{node2}/{BULK}", 5)
+    dbs = sorted(m[2].seq for m in CAPTURE if m[0] >= asked and m[1].startswith(f"{T}/DBIRTH/{node2}/"))
+    check("CFG-6 shell 'rebirth' re-issues NBIRTH (seq 0, same session) and the DBIRTHs",
+          rb and rb[2].seq == 0 and dbs == [1, 2] and said,
+          f"NBIRTH {'seq %d' % rb[2].seq if rb else 'missing'}, DBIRTH seq {dbs}, shell answer "
+          f"{bool(said)}")
+
+    def paste(doc_obj):
+        gw.console("config load" if doc_obj.get("_save", True) else "config check")
+        time.sleep(0.5)
+        text = json.dumps({k: v for k, v in doc_obj.items() if k != "_save"}, indent=2)
+        gw.sock.sendall(text.encode() + b"\n")
+
+    bad = json.loads(json.dumps(doc8))
+    bad["devices"][0]["tags"][0]["type"] = "float64"
+    asked = time.monotonic()
+    paste(bad)
+    rej = gw.wait_log(r"^config: rejected: devices\[0\]\.tags\[0\]\.type: valor no válido", 15, asked)
+    rpath = gw.wait_log(r"^config: path devices\[0\]\.tags\[0\]\.type$", 2, asked)
+    good = json.loads(json.dumps(doc8))
+    good["_save"] = False
+    asked2 = time.monotonic()
+    paste(good)
+    valid = gw.wait_log(r"^config: valid \(\d+ bytes\), nothing saved$", 15, asked2)
+    still = gw.find(r"configuration saved|restart", asked)
+    good = json.loads(json.dumps(doc8))
+    good["sparkplug"]["edge_node_id"] = node3 = "GW06"
+    obs.drain()
+    asked3 = time.monotonic()
+    paste(good)
+    saved = gw.wait_log(r"^config: saved \(\d+ bytes\); restarting$", 15, asked3)
+    death = obs.wait(f"{T}/NDEATH/{node2}", 10)
+    nb3 = obs.wait(f"{T}/NBIRTH/{node3}", 40)
+    st9, _, b9 = wait_http("/api/config", 20)
+    check("CFG-6 shell 'config load': invalid document rejected with its JSON path; 'config check' "
+          "validates only; a valid document is saved atomically and the gateway restarts with it "
+          "(NDEATH, NBIRTH, secrets kept)",
+          rej and rpath and valid and not still and saved and death and nb3 and st9 == 200
+          and (as_json(b9) or {}).get("mqtt", {}).get("password") == "********",
+          " | ".join(gw.find(r"^config: ", asked)) + f"; NDEATH {node2}: {bool(death)}; NBIRTH "
+          f"{node3}: {bool(nb3)}; GET {st9}")
     gw.kill()
-    obs.wait(f"{T}/NDEATH/{node2}", 5)
+    obs.wait(f"{T}/NDEATH/{node3}", 5)
     obs.close()
 
 

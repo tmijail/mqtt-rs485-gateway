@@ -224,3 +224,47 @@ void gw_cfgdoc_free_text(char *text)
 {
     gw_config_release(text);
 }
+
+void gw_jsonfeed_init(gw_jsonfeed_t *f, char *buf, size_t cap)
+{
+    memset(f, 0, sizeof(*f));
+    f->buf = buf;
+    f->cap = cap;
+    if (cap > 0) {
+        buf[0] = '\0';
+    }
+}
+
+bool gw_jsonfeed_add(gw_jsonfeed_t *f, const char *text)
+{
+    for (const char *c = text; *c != '\0' && !f->complete; c++) {
+        if (!f->started) {
+            if (*c != '{' && *c != '[') {
+                continue;
+            }
+            f->started = true;
+        }
+        if (f->len + 1 < f->cap) {
+            f->buf[f->len++] = *c;
+            f->buf[f->len] = '\0';
+        } else {
+            f->overflow = true;
+        }
+        if (f->in_str) {
+            if (f->esc) {
+                f->esc = false;
+            } else if (*c == '\\') {
+                f->esc = true;
+            } else if (*c == '"') {
+                f->in_str = false;
+            }
+        } else if (*c == '"') {
+            f->in_str = true;
+        } else if (*c == '{' || *c == '[') {
+            f->depth++;
+        } else if ((*c == '}' || *c == ']') && --f->depth == 0) {
+            f->complete = true;
+        }
+    }
+    return f->complete;
+}

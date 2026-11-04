@@ -72,6 +72,29 @@ char *gw_cfgdoc_export(const char *json, size_t len, const gw_secrets_t *stored,
 
 void gw_cfgdoc_free_text(char *text);
 
+/*
+ * Collector for a JSON document typed or pasted on a console (CFG-6), fed in pieces of any
+ * size: complete once the first top-level object or array is closed (brackets inside
+ * strings do not count). Text before the first '{' or '[' is ignored.
+ */
+typedef struct {
+    char *buf;
+    size_t cap;
+    size_t len;
+    unsigned depth;
+    bool started;
+    bool in_str;
+    bool esc;
+    bool complete;
+    bool overflow;     /* more than cap - 1 bytes: the rest was dropped */
+} gw_jsonfeed_t;
+
+void gw_jsonfeed_init(gw_jsonfeed_t *f, char *buf, size_t cap);
+
+/** Append @p text (NUL terminated). Returns true once the document is complete; anything
+ *  after the closing bracket is ignored. */
+bool gw_jsonfeed_add(gw_jsonfeed_t *f, const char *text);
+
 #ifdef __cplusplus
 }
 #endif

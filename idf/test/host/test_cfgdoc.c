@@ -212,6 +212,24 @@ static void test_export_masks(void)
     TEST_ASSERT_EQUAL_STRING("$", err.path);
 }
 
+/* CFG-6: a document pasted on the console, in pieces of any size. */
+static void test_jsonfeed(void)
+{
+    char buf[64];
+    gw_jsonfeed_t f;
+    gw_jsonfeed_init(&f, buf, sizeof(buf));
+    TEST_ASSERT_FALSE(gw_jsonfeed_add(&f, "paste it now\n"));   /* before the document */
+    TEST_ASSERT_FALSE(gw_jsonfeed_add(&f, "{\"a\": \"}{[\\\"\",\n"));
+    TEST_ASSERT_FALSE(gw_jsonfeed_add(&f, " \"b\": [1, {\"c\": 2}]"));
+    TEST_ASSERT_TRUE(gw_jsonfeed_add(&f, "}\ntrailing"));
+    TEST_ASSERT_EQUAL_STRING("{\"a\": \"}{[\\\"\",\n \"b\": [1, {\"c\": 2}]}", buf);
+    TEST_ASSERT_FALSE(f.overflow);
+    gw_jsonfeed_init(&f, buf, 8);
+    TEST_ASSERT_TRUE(gw_jsonfeed_add(&f, "{\"long\": 12345}"));
+    TEST_ASSERT_TRUE(f.overflow);
+    TEST_ASSERT_EQUAL(7, f.len);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -220,5 +238,6 @@ int main(void)
     RUN_TEST(test_file_mode);
     RUN_TEST(test_errors);
     RUN_TEST(test_export_masks);
+    RUN_TEST(test_jsonfeed);
     return UNITY_END();
 }

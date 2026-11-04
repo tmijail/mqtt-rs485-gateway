@@ -11,10 +11,15 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "gw_bus.h"
+#include "gw_cfgdoc.h"
+#include "gw_edge.h"
 #include "gw_io.h"
 #include "gw_log.h"
 #include "gw_net.h"
 #include "gw_status.h"
+#include "gw_storage.h"
 #include "gw_tagdb.h"
 #include "lwip/ip_addr.h"
 #include "ping/ping_sock.h"
@@ -125,10 +130,115 @@ static int cmd_devices(int argc, char **argv)
     return 0;
 }
 
+static int config_show(void)
+{
+    size_t len;
+    gw_cfg_err_t err;
+    char *doc = gw_storage_export_config(&len, &err);
+    if (doc == NULL) {
+        printf("cannot export: %s\n", err.msg);
+        return 1;
+    }
+    fwrite(doc, 1, len, stdout);
+    gw_storage_free(doc);
+    return 0;
+}
+
+#if CONFIG_GW_SHELL_WRITE_COMMANDS
+#define LOAD_IDLE_MS 60000   /* abandon a paste that stops arriving */
+
+/* CFG-6: read a JSON document from the console, validate it and (unless @p dry_run) save it
+ * and restart. The document ends when its outer object closes; a line with a single '.'
+ * aborts. */
+static int config_load(bool dry_run)
+{
+    /* grows with the document (up to the limit): without PSRAM 128 KiB at once may not exist */
+    const size_t max = CONFIG_GW_CONFIG_MAX_BYTES + 1;
+    size_t cap = 8192;
+    char *buf = heap_caps_malloc_prefer(cap, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                        MALLOC_CAP_8BIT);
+    if (buf == NULL) {
+        printf("config: no memory\n");
+        return 1;
+    }
+    gw_jsonfeed_t f;
+    gw_jsonfeed_init(&f, buf, cap);
+    printf("paste the JSON document; it ends when its outer object closes ('.' alone aborts)\n");
+    fflush(stdout);
+    char line[256];
+    int64_t last = esp_timer_get_time();
+    bool aborted = false;
+    while (!f.complete && !aborted) {
+        if (fgets(line, sizeof(line), stdin) == NULL) {
+            clearerr(stdin);
+            if (esp_timer_get_time() - last > LOAD_IDLE_MS * 1000LL) {
+                aborted = true;
+            }
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        last = esp_timer_get_time();
+        aborted = strcmp(line, ".\n") == 0 || strcmp(line, ".\r\n") == 0 || strcmp(line, ".") == 0;
+        size_t need = f.len + strlen(line) + 1;
+        if (!aborted && need > f.cap && f.cap < max) {
+            size_t ncap = 2 * f.cap > need ? 2 * f.cap : need;
+            ncap = ncap < max ? ncap : max;
+            char *nb = heap_caps_realloc_prefer(f.buf, ncap, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                                MALLOC_CAP_8BIT);
+            if (nb != NULL) {
+                f.buf = buf = nb;
+                f.cap = ncap;
+            }
+        }
+        if (!aborted) {
+            gw_jsonfeed_add(&f, line);
+        }
+    }
+    int rc = 1;
+    gw_cfg_err_t err;
+    if (aborted) {
+        printf("config: aborted, nothing changed\n");
+    } else if (f.overflow) {
+        printf("config: rejected: larger than %d bytes (CONFIG_GW_CONFIG_MAX_BYTES) or no memory\n",
+               CONFIG_GW_CONFIG_MAX_BYTES);
+    } else if (gw_storage_save_config(buf, f.len, dry_run, &err) != ESP_OK) {
+        printf("config: rejected: %s\n", err.msg);
+        if (err.path[0] != '\0') {
+            printf("config: path %s\n", err.path);
+        } else if (err.line != 0) {
+            printf("config: line %u, column %u\n", err.line, err.column);
+        }
+    } else {
+        printf(dry_run ? "config: valid (%u bytes), nothing saved\n"
+                       : "config: saved (%u bytes); restarting\n",
+               (unsigned)f.len);
+        rc = 0;
+    }
+    memset(buf, 0, f.len);   /* may hold secrets in clear */
+    heap_caps_free(buf);
+    if (rc == 0 && !dry_run) {
+        fflush(stdout);
+        s_ctx.restart();
+    }
+    return rc;
+}
+#endif
+
 static int cmd_config(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
+    if (argc == 2 && strcmp(argv[1], "show") == 0) {
+        return config_show();
+    }
+#if CONFIG_GW_SHELL_WRITE_COMMANDS
+    if (argc == 2 && (strcmp(argv[1], "load") == 0 || strcmp(argv[1], "check") == 0)) {
+        return config_load(strcmp(argv[1], "check") == 0);
+    }
+#endif
+    if (argc != 1) {
+        printf("usage: config [show%s]\n",
+               CONFIG_GW_SHELL_WRITE_COMMANDS ? "|load|check" : "");
+        return 1;
+    }
     static const char *const parity[] = {"none", "even", "odd"};
     const gw_config_t *c = s_ctx.cfg;
     if (c == NULL) {
@@ -261,6 +371,78 @@ static int cmd_ping(int argc, char **argv)
     return 0;
 }
 
+#if CONFIG_GW_SHELL_WRITE_COMMANDS
+static int cmd_restart(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    printf("restarting\n");
+    fflush(stdout);
+    s_ctx.restart();
+    return 0;
+}
+
+static int cmd_rebirth(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    if (s_ctx.cfg == NULL || !gw_edge_request_rebirth()) {
+        printf("rebirth: no Sparkplug session\n");
+        return 1;
+    }
+    printf("rebirth: NBIRTH and every DBIRTH requested\n");
+    return 0;
+}
+
+static int cmd_mbread(int argc, char **argv)
+{
+    static const char *const areas[] = {"coil", "discrete", "holding", "input"};
+    static const mb_fc_t fcs[] = {MB_FC_READ_COILS, MB_FC_READ_DISCRETE_INPUTS,
+                                  MB_FC_READ_HOLDING_REGISTERS, MB_FC_READ_INPUT_REGISTERS};
+    int area = -1;
+    for (int i = 0; argc >= 4 && i < 4; i++) {
+        area = strcmp(argv[2], areas[i]) == 0 ? i : area;
+    }
+    long unit = argc >= 4 ? strtol(argv[1], NULL, 10) : 0;
+    long addr = argc >= 4 ? strtol(argv[3], NULL, 10) : -1;
+    long count = argc == 5 ? strtol(argv[4], NULL, 10) : 1;
+    if (argc < 4 || argc > 5 || area < 0 || unit < 1 || unit > 247 || addr < 0 ||
+        addr > 65535 || count < 1 || count > GW_BUS_DIAG_MAX || addr + count > 65536) {
+        printf("usage: mbread <unit 1-247> <coil|discrete|holding|input> <address> [count 1-%d]\n",
+               GW_BUS_DIAG_MAX);
+        return 1;
+    }
+    if (s_ctx.cfg == NULL) {
+        printf("mbread: the bus is not running (no valid configuration)\n");
+        return 1;
+    }
+    uint16_t v[GW_BUS_DIAG_MAX];
+    uint8_t exc;
+    /* worst case: a poll cycle in progress plus every retry of this request */
+    uint32_t wait = 2000u + (uint32_t)s_ctx.cfg->rs485.response_timeout_ms *
+                                (s_ctx.cfg->rs485.retries + 1u) * 2u;
+    mb_status_t st = gw_bus_diag_read((uint8_t)unit, fcs[area], (uint16_t)addr, (uint16_t)count,
+                                      v, &exc, wait);
+    static const char *const status[] = {"ok", "timeout", "CRC error", "framing error",
+                                         "exception", "busy or bus not answering in time"};
+    if (st != MB_OK) {
+        if (st == MB_ERR_EXCEPTION) {
+            printf("mbread: unit %ld %s %ld: exception %u\n", unit, areas[area], addr, exc);
+        } else {
+            printf("mbread: unit %ld %s %ld: %s\n", unit, areas[area], addr,
+                   status[st <= MB_ERR_ARG ? st : MB_ERR_ARG]);
+        }
+        return 1;
+    }
+    printf("mbread: unit %ld %s %ld:", unit, areas[area], addr);
+    for (long i = 0; i < count; i++) {
+        printf(" %u", v[i]);
+    }
+    printf("\n");
+    return 0;
+}
+#endif
+
 #if CONFIG_GW_IO_SIMULATED
 static int cmd_di(int argc, char **argv)
 {
@@ -304,7 +486,21 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
          .func = cmd_status},
         {.command = "devices", .help = "Modbus devices: online state and counters",
          .func = cmd_devices},
-        {.command = "config", .help = "Summary of the loaded configuration", .func = cmd_config},
+        {.command = "config",
+         .help = "Summary of the loaded configuration; 'show' prints the stored document "
+                 "(secrets masked)"
+#if CONFIG_GW_SHELL_WRITE_COMMANDS
+                 ", 'load' reads a new one from the console, validates, saves and restarts, "
+                 "'check' only validates"
+#endif
+         ,
+         .hint = "[show|load|check]", .func = cmd_config},
+#if CONFIG_GW_SHELL_WRITE_COMMANDS
+        {.command = "restart", .help = "Orderly restart (NDEATH first)", .func = cmd_restart},
+        {.command = "rebirth", .help = "Re-issue NBIRTH and every DBIRTH", .func = cmd_rebirth},
+        {.command = "mbread", .help = "One Modbus read through the bus owner",
+         .hint = "<unit> <coil|discrete|holding|input> <address> [count]", .func = cmd_mbread},
+#endif
         {.command = "ping", .help = "ICMP echo (3 requests) to an IPv4 or IPv6 address",
          .hint = "<address>", .func = cmd_ping},
 #if CONFIG_GW_IO_SIMULATED

@@ -58,10 +58,15 @@ static void on_device_updated(uint16_t dev)
     gw_edge_notify_device(dev);
 }
 
+static void restart_soon(void);
+
 static void start_shell(const gw_config_t *cfg, const char *source)
 {
-    const gw_shell_ctx_t ctx = {
-        .cfg = cfg, .config_source = source, .config_error = s_cfg_err.msg, .info = &s_info};
+    const gw_shell_ctx_t ctx = {.cfg = cfg,
+                                .config_source = source,
+                                .config_error = s_cfg_err.msg,
+                                .info = &s_info,
+                                .restart = cfg != NULL ? gw_edge_request_restart : restart_soon};
     if (gw_shell_start(&ctx) != ESP_OK) {
         ESP_LOGE(TAG, "console shell unavailable");
     }
