@@ -317,6 +317,32 @@ static void test_web_section(void)
     }
 }
 
+/* NET-6: host name, explicit or derived from edge_node_id; mDNS on by default. */
+static void test_hostname(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(parse_network("{\"dhcp\":true}"), err.msg);
+    TEST_ASSERT_EQUAL_STRING("e", cfg.network.hostname);   /* edge_node_id "E" */
+    TEST_ASSERT_TRUE(cfg.network.mdns);
+    TEST_ASSERT_TRUE_MESSAGE(parse_network("{\"hostname\":\"Plant-GW-01\",\"mdns\":false}"),
+                             err.msg);
+    TEST_ASSERT_EQUAL_STRING("Plant-GW-01", cfg.network.hostname);
+    TEST_ASSERT_FALSE(cfg.network.mdns);
+    ASSERT_REJECTED(parse_network("{\"hostname\":\"gw.local\"}"), "network.hostname");
+    ASSERT_REJECTED(parse_network("{\"hostname\":\"-gw\"}"), "network.hostname");
+    ASSERT_REJECTED(parse_network("{\"hostname\":\"gw-\"}"), "network.hostname");
+    ASSERT_REJECTED(parse_network("{\"hostname\":\"g w\"}"), "network.hostname");
+    char h[GW_HOSTNAME_SIZE];
+    gw_hostname_from("GW_01 Línea/2", h, sizeof(h));
+    TEST_ASSERT_EQUAL_STRING("gw-01-l-nea-2", h);
+    gw_hostname_from("__", h, sizeof(h));
+    TEST_ASSERT_EQUAL_STRING("gateway", h);
+    char long_id[100];
+    memset(long_id, 'a', 99);
+    long_id[99] = '\0';
+    gw_hostname_from(long_id, h, sizeof(h));
+    TEST_ASSERT_EQUAL(63, strlen(h));
+}
+
 /* CFG-4: the REST API returns the error's JSON path, line and column as separate fields. */
 static void test_error_fields(void)
 {
@@ -577,6 +603,7 @@ int main(void)
     RUN_TEST(test_ipv6_section);
     RUN_TEST(test_syslog_section);
     RUN_TEST(test_web_section);
+    RUN_TEST(test_hostname);
     RUN_TEST(test_error_fields);
     RUN_TEST(test_schema_rules);
     RUN_TEST(test_section_errors);

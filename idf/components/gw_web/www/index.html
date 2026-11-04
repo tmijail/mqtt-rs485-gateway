@@ -86,7 +86,7 @@ function field(path,lbl,kind,opts){
  return `<label>${lbl}${h}</label>`;
 }
 function renderForms(){
- $("#f-net").innerHTML=field("network.dhcp","DHCP","bool")+field("network.ip","IP","str")+field("network.netmask","Máscara","str")+field("network.gateway","Gateway","str")+field("network.dns","DNS","str");
+ $("#f-net").innerHTML=field("network.dhcp","DHCP","bool")+field("network.ip","IP","str")+field("network.netmask","Máscara","str")+field("network.gateway","Gateway","str")+field("network.dns","DNS","str")+field("network.hostname","Hostname (vacío = edge node)","str")+field("network.mdns","mDNS (.local)","bool");
  $("#f-mqtt").innerHTML=field("mqtt.host","Broker","str")+field("mqtt.port","Puerto","int")+field("mqtt.client_id","Client ID (vacío = edge node)","str")+field("mqtt.username","Usuario","str")+field("mqtt.password","Contraseña","pw")+field("mqtt.keepalive_s","Keepalive (s)","int");
  $("#f-spb").innerHTML=field("sparkplug.group_id","Group ID","str")+field("sparkplug.edge_node_id","Edge node ID","str")+field("sparkplug.primary_host_id","Primary host ID","str");
  $("#f-rs485").innerHTML=field("rs485.baud","Baudios","int")+field("rs485.parity","Paridad","sel",PAR)+field("rs485.stop_bits","Bits de stop","int")+field("rs485.response_timeout_ms","Timeout (ms)","int")+field("rs485.retries","Reintentos","int")+field("rs485.inter_frame_delay_ms","Retardo entre tramas (ms)","int")+field("local_io.di_debounce_ms","Debounce DI (ms)","int");

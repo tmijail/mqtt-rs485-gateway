@@ -126,6 +126,9 @@ static void start_web(gw_web_mode_t mode, const gw_config_t *cfg, const char *so
     if (gw_web_start(&ctx) != ESP_OK) {
         ESP_LOGE(TAG, "web server unavailable");
     }
+    if (gw_web_mdns_start(cfg, mode == GW_WEB_NORMAL) != ESP_OK) {   /* NET-6 */
+        ESP_LOGE(TAG, "mDNS unavailable");
+    }
 }
 
 static void net_down_noop(bool up)

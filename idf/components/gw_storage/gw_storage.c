@@ -237,6 +237,10 @@ void gw_storage_recovery_config(gw_config_t *cfg)
         cfg->network.wifi.ipv4.dhcp = true;
         cfg->web.port = 80;
     }
+    if (cfg->network.hostname[0] == '\0') {
+        gw_hostname_from("", cfg->network.hostname, sizeof(cfg->network.hostname));
+        cfg->network.mdns = true;
+    }
     strcpy(cfg->ntp.server, "pool.ntp.org");
     cfg->web.enabled = true;
     strcpy(cfg->web.username, "admin");

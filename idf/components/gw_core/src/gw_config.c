@@ -517,15 +517,62 @@ static bool parse_wifi_section(const cJSON *net, gw_config_t *cfg, gw_cfg_err_t 
     return true;
 }
 
+void gw_hostname_from(const char *src, char *out, size_t cap)
+{
+    size_t n = 0;
+    size_t max = cap - 1 < 63 ? cap - 1 : 63;
+    for (const unsigned char *c = (const unsigned char *)src; *c && n < max; c++) {
+        char ch = (char)((*c >= 'A' && *c <= 'Z') ? *c - 'A' + 'a' : *c);
+        bool ok = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9');
+        if (ok) {
+            out[n++] = ch;
+        } else if (n > 0 && out[n - 1] != '-') {
+            out[n++] = '-';
+        }
+    }
+    while (n > 0 && out[n - 1] == '-') {
+        n--;
+    }
+    out[n] = '\0';
+    if (n == 0) {
+        snprintf(out, cap, "gateway");
+    }
+}
+
+/* RFC 1123 label: letters, digits and '-', not at either end. */
+static bool check_hostname(const char *h, gw_cfg_err_t *err)
+{
+    size_t n = strlen(h);
+    if (n == 0) {
+        return true;
+    }
+    for (size_t i = 0; i < n; i++) {
+        char c = h[i];
+        bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                  (c == '-' && i > 0 && i + 1 < n);
+        if (!ok) {
+            return fail(err, "network.hostname",
+                        "se esperaban letras, dígitos y '-' (no al principio ni al final), sin "
+                        "puntos: es un nombre de host, no un FQDN");
+        }
+    }
+    return true;
+}
+
 static bool parse_network(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"dhcp", "ip", "netmask", "gateway", "dns", "ipv6", "wifi"};
+    static const char *const keys[] = {"dhcp", "ip",   "netmask", "gateway", "dns",
+                                       "ipv6", "wifi", "hostname", "mdns"};
     static const cJSON empty = {.type = cJSON_Object};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "network");
     if (o == NULL) {
         o = &empty;
     }
-    return check_keys(o, "network", keys, 7, err) &&
+    return check_keys(o, "network", keys, 9, err) &&
+           get_string(o, "hostname", "network", false, "", cfg->network.hostname,
+                      sizeof(cfg->network.hostname), err) &&
+           check_hostname(cfg->network.hostname, err) &&
+           get_bool(o, "mdns", "network", true, &cfg->network.mdns, err) &&
            parse_ipv4_keys(o, "network", &cfg->network.dhcp, cfg->network.ip,
                            cfg->network.netmask, cfg->network.gateway, cfg->network.dns, err) &&
            parse_ipv6_section(o, cfg, err) && parse_wifi_section(o, cfg, err);
@@ -924,6 +971,10 @@ bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_
 
     if (ok && cfg->mqtt.client_id[0] == '\0') {
         strcpy(cfg->mqtt.client_id, cfg->sparkplug.edge_node_id);
+    }
+    if (ok && cfg->network.hostname[0] == '\0') {
+        gw_hostname_from(cfg->sparkplug.edge_node_id, cfg->network.hostname,
+                         sizeof(cfg->network.hostname));
     }
     if (!ok) {
         memset(cfg, 0, sizeof(*cfg));

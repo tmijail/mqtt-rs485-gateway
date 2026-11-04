@@ -49,6 +49,14 @@ typedef struct {
 /** Start the server on cfg->web.port. Everything @p ctx points to must outlive it. */
 esp_err_t gw_web_start(const gw_web_ctx_t *ctx);
 
+/**
+ * NET-6: answer <cfg->network.hostname>.local over mDNS and announce the web server as an
+ * _http._tcp service (instance "<group>/<edge node>" or "gateway setup"), on every interface
+ * (Ethernet, Wi-Fi station, access point). No-op with network.mdns false or without
+ * CONFIG_GW_MDNS.
+ */
+esp_err_t gw_web_mdns_start(const gw_config_t *cfg, bool configured);
+
 #ifdef __cplusplus
 }
 #endif

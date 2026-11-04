@@ -417,6 +417,8 @@ static esp_err_t start_ethernet(const gw_config_t *cfg)
     s_if[GW_NET_ETH].netif = esp_netif_new(&nc);
     esp_netif_t *netif = s_if[GW_NET_ETH].netif;
     ESP_RETURN_ON_FALSE(netif, ESP_FAIL, TAG, "netif");
+    /* NET-6: sent in DHCP requests (before the interface starts) */
+    ESP_RETURN_ON_ERROR(esp_netif_set_hostname(netif, cfg->network.hostname), TAG, "hostname");
     ESP_RETURN_ON_ERROR(configure_ipv4(netif, "ethernet", cfg->network.dhcp, cfg->network.ip,
                                        cfg->network.netmask, cfg->network.gateway,
                                        cfg->network.dns),
@@ -487,6 +489,7 @@ static esp_err_t start_wifi(const gw_config_t *cfg)
     s_if[GW_NET_WIFI].netif = esp_netif_new(&nc);
     esp_netif_t *netif = s_if[GW_NET_WIFI].netif;
     ESP_RETURN_ON_FALSE(netif, ESP_FAIL, TAG, "wifi netif");
+    ESP_RETURN_ON_ERROR(esp_netif_set_hostname(netif, cfg->network.hostname), TAG, "hostname");
     ESP_RETURN_ON_ERROR(esp_netif_attach_wifi_station(netif), TAG, "wifi attach");
     ESP_RETURN_ON_ERROR(esp_wifi_set_default_wifi_sta_handlers(), TAG, "wifi handlers");
     ESP_RETURN_ON_ERROR(configure_ipv4(netif, "wifi", w->ipv4.dhcp, w->ipv4.ip, w->ipv4.netmask,

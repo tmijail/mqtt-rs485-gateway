@@ -1008,6 +1008,14 @@ def run(args, log, slave, broker, conf, work):
           reqs and all(r[1:] == (3, 100, 60) for r in reqs),
           f"{len(reqs)} requests to unit 2 so far, first {reqs[0] if reqs else None}")
 
+    # NET-6: host name derived from edge_node_id; the mDNS responder starts with it. It cannot
+    # answer here: open_eth has no multicast filter, so joining 224.0.0.251 fails and the
+    # responder leaves the interface out (the W5500 has the filter).
+    announced = gw.find(r"mdns: gw01\.local, _http\._tcp port 80 \('Plant1/GW01'\)", t0)
+    check("NET-6 host name gw01 derived from edge_node_id; mDNS responder and _http._tcp service "
+          "started (answers not testable on QEMU's open_eth)",
+          announced, (announced or ["no mdns log"])[0])
+
     # CFG-6 diagnostic shell on the console UART
     asked = time.monotonic()
     gw.console("status")

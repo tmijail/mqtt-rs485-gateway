@@ -1,0 +1,10 @@
+menu "Gateway: web"
+
+    config GW_MDNS
+        bool "mDNS responder and _http._tcp announcement (NET-6)"
+        default y
+        help
+            Answers <network.hostname>.local and announces the web UI. Turned off per device
+            with network.mdns = false.
+
+endmenu
