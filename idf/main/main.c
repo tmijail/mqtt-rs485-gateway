@@ -174,6 +174,9 @@ static void start_web(gw_web_mode_t mode, const gw_config_t *cfg, const char *so
  * run, not even the recovery network; the shell reports why. */
 static void halt_no_memory(void)
 {
+    /* issue #99: a new image on trial goes back to the previous one at once (no trial timer
+     * runs yet, nothing else would ever judge it) */
+    gw_fw_cannot_start("no memory for the configuration");
     snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg), "sin memoria para la configuración (%u B)",
              (unsigned)sizeof(gw_config_t));
     gw_status_set(GW_ST_CFG_ERROR, true);

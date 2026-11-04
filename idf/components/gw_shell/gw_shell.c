@@ -195,7 +195,7 @@ static int cmd_status(int argc, char **argv)
         out("ota      %s in %s, other slot %s%s | %s", fw->running, fw->slot,
             fw->other[0] ? fw->other : "empty", fw->enabled ? "" : " (updates disabled)",
             fw->detail);
-        if (fw->phase == GW_FW_TRIAL) {
+        if (fw->phase == GW_FW_TRIAL && fw->trial_left_s > 0) {   /* 0: confirmation retried */
             out(" (%lu s left)", (unsigned long)fw->trial_left_s);
         } else if (fw->phase == GW_FW_DOWNLOADING) {
             out(" %u%% (%lu of %lu bytes)", fw->progress, (unsigned long)fw->bytes,

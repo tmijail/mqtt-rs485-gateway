@@ -14,6 +14,7 @@
 #include "esp_https_ota.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -38,6 +39,8 @@ static bool s_enabled;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t s_fmt_lock;   /* s_st.text and s_st.detail (formatted in place) */
 static StaticSemaphore_t s_fmt_lock_buf;
+static SemaphoreHandle_t s_ota_lock;   /* otadata writes: confirm, rollback (issue #99) */
+static StaticSemaphore_t s_ota_lock_buf;
 /* Plain data in RTC FAST memory (8 KB, both cores, otherwise only a little-used heap region):
  * the internal DRAM heap keeps these bytes (issue #80: no PSRAM, the configuration validation
  * needs its large blocks). Locks stay in DRAM (atomic instructions). */
@@ -327,50 +330,104 @@ static void finished(const char *version)
 
 /* ---------- trial of a new image (FW-1 health criterion, gw_ota policy) ---------- */
 
-static void act(gw_ota_action_t a)
+/* The trial timer at what the policy waits for next: the timeout, or the retry of a failed
+ * confirmation (issue #99). */
+static void arm_trial_timer(void)
 {
-    if (a == GW_OTA_KEEP) {
+    if (s_trial_timer == NULL) {
         return;
+    }
+    portENTER_CRITICAL(&s_mux);
+    uint32_t ms = gw_ota_trial_next_ms(&s_trial, now_ms());
+    portEXIT_CRITICAL(&s_mux);
+    esp_timer_stop(s_trial_timer);   /* ESP_ERR_INVALID_STATE when it is not running: fine */
+    if (ms != GW_OTA_NO_TICK) {
+        esp_timer_start_once(s_trial_timer, (uint64_t)(ms ? ms : 1u) * 1000ULL);
+    }
+}
+
+/* Mark the running image valid. Issue #99: the image is CONFIRMED only when the write succeeded;
+ * otherwise it stays on trial (no timeout: it was judged healthy) and the write is retried with
+ * a backoff, since any restart before it succeeds would roll it back. Serialised: the trial
+ * timer, the Sparkplug task and an operator's save may ask at once. @p nvs_restart: restart once
+ * for the NVS encryption (issue #94) when it is pending; not when the caller restarts anyway. */
+static bool confirm(bool nvs_restart)
+{
+    char why[96];
+    portENTER_CRITICAL(&s_mux);
+    snprintf(why, sizeof(why), "%s", s_trial.why);
+    portEXIT_CRITICAL(&s_mux);
+    xSemaphoreTake(s_ota_lock, portMAX_DELAY);
+    park(true);
+    esp_err_t e = esp_ota_mark_app_valid_cancel_rollback();
+    park(false);
+    xSemaphoreGive(s_ota_lock);
+    portENTER_CRITICAL(&s_mux);
+    bool mine = s_trial.state == GW_OTA_TRIAL_CONFIRMING;   /* not reported by another caller */
+    gw_ota_trial_confirm_result(&s_trial, e == ESP_OK, now_ms(), esp_random());
+    uint32_t attempts = s_trial.attempts;
+    uint32_t next = gw_ota_trial_next_ms(&s_trial, now_ms());
+    portEXIT_CRITICAL(&s_mux);
+    char detail[sizeof(s_st.detail)];
+    if (e != ESP_OK) {
+        snprintf(detail, sizeof(detail), "firmware %.31s healthy (%.60s), not marked valid "
+                 "(%.32s, attempt %lu): retry in %lu s; a restart first rolls it back",
+                 s_st.running, why, esp_err_to_name(e), (unsigned long)attempts,
+                 (unsigned long)((next == GW_OTA_NO_TICK ? 0 : next) + 999u) / 1000u);
+        ESP_LOGE(TAG, "%s", detail);
+        set_status(GW_FW_TRIAL, 100, detail, "on trial: %s (not confirmed yet)", s_st.running);
+        arm_trial_timer();
+        return false;
+    }
+    if (!mine) {
+        return true;
+    }
+    snprintf(detail, sizeof(detail), "firmware %s confirmed: %s", s_st.running, why);
+    ESP_LOGW(TAG, "%s; the bootloader keeps it", detail);
+    set_status(GW_FW_CONFIRMED, 100, detail, "confirmed: %s", s_st.running);
+    if (nvs_restart && gw_storage_nvs_encryption_pending()) {
+        /* issue #94: the trial ran on the unencrypted NVS (a rollback had to find it as the
+         * previous image left it); now no rollback can come, and the next boot moves it into
+         * the encrypted NVS */
+        ESP_LOGW(TAG, "firmware %s confirmed: restarting once to encrypt the NVS", s_st.running);
+        restart_soon();
+    }
+    return true;
+}
+
+static void rollback(void)
+{
+    if (s_trial_timer != NULL) {
+        esp_timer_stop(s_trial_timer);
     }
     char why[96];
     portENTER_CRITICAL(&s_mux);
     snprintf(why, sizeof(why), "%s", s_trial.why);
     portEXIT_CRITICAL(&s_mux);
-    if (s_trial_timer != NULL) {
-        esp_timer_stop(s_trial_timer);
-    }
-    if (a == GW_OTA_CONFIRM) {
-        park(true);
-        esp_err_t e = esp_ota_mark_app_valid_cancel_rollback();
-        park(false);
-        if (e != ESP_OK) {
-            ESP_LOGE(TAG, "firmware %s: cannot mark it valid (%s)", s_st.running, esp_err_to_name(e));
-            return;
-        }
-        char detail[sizeof(s_st.detail)];
-        snprintf(detail, sizeof(detail), "firmware %s confirmed: %s", s_st.running, why);
-        ESP_LOGW(TAG, "%s; the bootloader keeps it", detail);
-        set_status(GW_FW_CONFIRMED, 100, detail, "confirmed: %s", s_st.running);
-        if (gw_storage_nvs_encryption_pending()) {
-            /* issue #94: the trial ran on the unencrypted NVS (a rollback had to find it as
-             * the previous image left it); now no rollback can come, and the next boot
-             * moves it into the encrypted NVS */
-            ESP_LOGW(TAG, "firmware %s confirmed: restarting once to encrypt the NVS",
-                     s_st.running);
-            restart_soon();
-        }
-        return;
-    }
     char detail[sizeof(s_st.detail)];
     snprintf(detail, sizeof(detail), "firmware %s rejected (%s): back to %s", s_st.running, why,
              s_st.other[0] ? s_st.other : "the previous image");
     ESP_LOGE(TAG, "%s", detail);
     set_status(GW_FW_FAILED, 0, detail, "rolling back: %s", s_st.running);
     gw_bus_quiesce(1000);   /* no Modbus frame cut by the restart (no-op without the bus) */
+    xSemaphoreTake(s_ota_lock, portMAX_DELAY);
     park(true);
     esp_err_t e = esp_ota_mark_app_invalid_rollback_and_reboot();   /* returns only on error */
     park(false);
+    xSemaphoreGive(s_ota_lock);
     ESP_LOGE(TAG, "rollback impossible (%s): the new firmware stays", esp_err_to_name(e));
+}
+
+static void act(gw_ota_action_t a)
+{
+    if (a == GW_OTA_CONFIRM) {
+        if (s_trial_timer != NULL) {
+            esp_timer_stop(s_trial_timer);
+        }
+        confirm(true);
+    } else if (a == GW_OTA_ROLLBACK) {
+        rollback();
+    }
 }
 
 static void on_trial_timeout(void *arg)
@@ -379,14 +436,23 @@ static void on_trial_timeout(void *arg)
     portENTER_CRITICAL(&s_mux);
     gw_ota_action_t a = gw_ota_trial_tick(&s_trial, now_ms());
     portEXIT_CRITICAL(&s_mux);
+    if (a == GW_OTA_KEEP) {
+        arm_trial_timer();   /* early (timer granularity): wait for the rest */
+    }
     act(a);
 }
 
-void gw_fw_session_up(void)
+void gw_fw_session_up(unsigned births_missing)
 {
     portENTER_CRITICAL(&s_mux);
-    gw_ota_action_t a = gw_ota_trial_session_up(&s_trial);
+    bool open = s_trial.state == GW_OTA_TRIAL_PENDING;
+    gw_ota_action_t a = gw_ota_trial_session_up(&s_trial, births_missing);
     portEXIT_CRITICAL(&s_mux);
+    if (open && births_missing > 0) {
+        ESP_LOGW(TAG, "firmware %s on trial: a Sparkplug session came up without %u DBIRTH(s) "
+                      "(too large for the broker): not confirmed by it",
+                 s_st.running, births_missing);
+    }
     act(a);
 }
 
@@ -404,6 +470,51 @@ void gw_fw_commissioning(void)
     gw_ota_action_t a = gw_ota_trial_commissioning(&s_trial);
     portEXIT_CRITICAL(&s_mux);
     act(a);
+}
+
+void gw_fw_cannot_start(const char *why)
+{
+    portENTER_CRITICAL(&s_mux);
+    gw_ota_action_t a = gw_ota_trial_cannot_start(&s_trial, why);
+    portEXIT_CRITICAL(&s_mux);
+    act(a);
+}
+
+/* Issue #99: before a save or a factory reset restarts the gateway, a new image on trial is
+ * confirmed, synchronously: that restart would roll it back, and the previous image may not
+ * accept a configuration the new one saved (unknown keys). On core 0 (QEMU's parked core must
+ * be core 1). */
+typedef struct {
+    const char *reason;
+    bool ok;
+} commit_t;
+
+static void commit_on_core0(void *arg)
+{
+    commit_t *c = arg;
+    portENTER_CRITICAL(&s_mux);
+    gw_ota_action_t a = gw_ota_trial_operator(&s_trial, c->reason);
+    portEXIT_CRITICAL(&s_mux);
+    if (a == GW_OTA_CONFIRM) {
+        if (s_trial_timer != NULL) {
+            esp_timer_stop(s_trial_timer);
+        }
+        c->ok = confirm(false);   /* the caller restarts */
+    }
+}
+
+static esp_err_t on_commit(gw_storage_commit_t what, char *why, size_t cap)
+{
+    commit_t c = {.reason = what == GW_STORAGE_COMMIT_CONFIG
+                                ? "the operator saved a configuration"
+                                : "factory reset by the operator",
+                  .ok = true};
+    on_core0(commit_on_core0, &c);
+    if (!c.ok) {
+        snprintf(why, cap, "the new firmware %s, on trial, could not be marked valid", s_st.running);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
 }
 
 /* ---------- download (its own task) ---------- */
@@ -774,6 +885,7 @@ void gw_fw_early_init(void)
     }
     s_early = true;
     s_fmt_lock = xSemaphoreCreateMutexStatic(&s_fmt_lock_buf);
+    s_ota_lock = xSemaphoreCreateMutexStatic(&s_ota_lock_buf);
     const esp_app_desc_t *app = esp_app_get_description();
     const esp_partition_t *run = esp_ota_get_running_partition();
     esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
@@ -834,6 +946,7 @@ esp_err_t gw_fw_init(const gw_config_t *cfg, bool enabled, const gw_fw_hooks_t *
         ESP_ERROR_CHECK(esp_timer_create(&tt, &s_trial_timer));
         esp_timer_start_once(s_trial_timer, (left ? left : 1) * 1000ULL);
     }
+    gw_storage_set_commit_hook(on_commit);   /* issue #99 */
 
     if (enabled) {
         const char *ca = cfg->ota.ca_file[0] ? cfg->ota.ca_file

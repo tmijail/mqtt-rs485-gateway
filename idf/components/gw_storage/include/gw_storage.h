@@ -136,6 +136,19 @@ bool gw_storage_get_blob(const char *key, void *out, size_t len);
  */
 void *gw_storage_big_alloc(size_t size, const char *what);
 
+/** Issue #99: what a commit hook is asked about. */
+typedef enum {
+    GW_STORAGE_COMMIT_CONFIG = 0,    /* a new configuration is about to be stored (not dry run) */
+    GW_STORAGE_COMMIT_FACTORY_RESET, /* a factory reset is about to erase everything */
+} gw_storage_commit_t;
+
+/** Called before the change is made, which a restart then puts into effect; non-ESP_OK (with the
+ *  reason in English in @p why) refuses a configuration (a factory reset goes on anyway). */
+typedef esp_err_t (*gw_storage_commit_hook_t)(gw_storage_commit_t what, char *why, size_t cap);
+
+/** Issue #99: gw_fw confirms a new image on trial before such a restart. One hook. */
+void gw_storage_set_commit_hook(gw_storage_commit_hook_t hook);
+
 /** Issue #80: the smallest "largest free internal block" seen at the peak of a configuration
  *  validation (gw_storage_save_config), 0 if none ran yet. */
 size_t gw_storage_validation_min_block(void);

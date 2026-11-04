@@ -50,6 +50,7 @@ static bool s_mounted;
 static volatile bool s_reset_done;    /* factory reset: no more state writes until the restart */
 static SemaphoreHandle_t s_save_lock;   /* one writer at a time: web, shell */
 static StaticSemaphore_t s_save_lock_buf;
+static gw_storage_commit_hook_t s_commit_hook;   /* issue #99: gw_fw, before a commit */
 
 /* Configuration buffers (the file and the parser's document tree, at boot and for every
  * save or export): PSRAM when the board has it, internal RAM otherwise (QEMU). */
@@ -1224,6 +1225,11 @@ static void set_factory_marker(bool on)
 esp_err_t gw_storage_factory_reset(void)
 {
     xSemaphoreTake(s_save_lock, portMAX_DELAY);   /* no save in the middle; never given back */
+    char why[120];
+    if (s_commit_hook != NULL && s_commit_hook(GW_STORAGE_COMMIT_FACTORY_RESET, why,
+                                               sizeof(why)) != ESP_OK) {
+        ESP_LOGE(TAG, "factory reset: %s; going on (the restart may roll it back)", why);
+    }
     ESP_LOGW(TAG, "factory reset: erasing LittleFS 'storage' and NVS");
     s_reset_done = true;
     esp_err_t fs = wipe_storage();
@@ -1242,6 +1248,11 @@ esp_err_t gw_storage_factory_reset(void)
     }
     ESP_LOGW(TAG, "factory reset: storage %s, NVS %s", esp_err_to_name(fs), esp_err_to_name(nv));
     return fs != ESP_OK ? fs : nv;
+}
+
+void gw_storage_set_commit_hook(gw_storage_commit_hook_t hook)
+{
+    s_commit_hook = hook;
 }
 
 bool gw_storage_secrets_encrypted(void)
@@ -1624,8 +1635,14 @@ esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_
                  (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     }
 #endif
+    char hook_why[120];
     if (!applied) {
         ret = strstr(err->msg, "memoria insuficiente") ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_ARG;
+    } else if (!dry_run && s_commit_hook != NULL &&
+               s_commit_hook(GW_STORAGE_COMMIT_CONFIG, hook_why, sizeof(hook_why)) != ESP_OK) {
+        /* issue #99: the restart that applies it would roll the new firmware back */
+        ret = ESP_ERR_INVALID_STATE;
+        reject(err, "configuración no guardada: %s; reintentar", hook_why);
     } else if (!dry_run) {
         if (doc.new_web_password &&
             !hash_web_password(cfg, doc.secrets.web_password_hash,

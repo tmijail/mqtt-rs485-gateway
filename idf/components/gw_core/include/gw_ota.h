@@ -4,15 +4,21 @@
  * rolled back, which URLs are acceptable and when progress is worth reporting.
  *
  * Health criterion of a new image ("trial", ESP_OTA_IMG_PENDING_VERIFY on the first boot):
- *   - confirmed as soon as its first Sparkplug session is up (NBIRTH and every DBIRTH out);
+ *   - confirmed as soon as its first complete Sparkplug session is up (NBIRTH and every DBIRTH
+ *     out; issue #99: a session where a DBIRTH was too large for the broker does not count);
  *   - confirmed in commissioning mode (a factory reset left nothing to judge it by);
+ *   - confirmed before a restart the operator asks for by saving a configuration or by a
+ *     factory reset (issue #99: that restart would roll it back, and a configuration saved by
+ *     the new image may not be accepted by the previous one);
  *   - rolled back at once when it rejects the stored configuration (recovery mode: the
- *     previous firmware accepted it);
- *   - rolled back when no session came up within the timeout (whatever the cause, also a
- *     broker that is down: the previous firmware is the safe choice; the update can be
+ *     previous firmware accepted it) or cannot start at all (no memory for the configuration);
+ *   - rolled back when no complete session came up within the timeout (whatever the cause, also
+ *     a broker that is down: the previous firmware is the safe choice; the update can be
  *     repeated);
- *   - rolled back by the bootloader when it resets before any of the above (crash,
- *     watchdog, power cut).
+ *   - rolled back by the bootloader when it resets before any of the above (crash, watchdog,
+ *     power cut, a plain restart).
+ * Confirming is a write to otadata: when it fails the image stays on trial, without timeout
+ * (it was judged healthy), and the write is retried with a backoff of 1 s to 60 s (issue #99).
  */
 #pragma once
 
@@ -29,13 +35,14 @@ extern "C" {
 typedef enum {
     GW_OTA_TRIAL_NONE = 0,   /* the running image is not on trial (confirmed or flashed) */
     GW_OTA_TRIAL_PENDING,    /* first boot of a new image: waiting for its first session */
-    GW_OTA_TRIAL_CONFIRMED,  /* healthy: the bootloader keeps it */
+    GW_OTA_TRIAL_CONFIRMING, /* judged healthy; marking it valid did not succeed yet */
+    GW_OTA_TRIAL_CONFIRMED,  /* healthy and marked valid: the bootloader keeps it */
     GW_OTA_TRIAL_ROLLBACK,   /* rejected: back to the previous image */
 } gw_ota_trial_state_t;
 
 typedef enum {
     GW_OTA_KEEP = 0,         /* nothing to do now */
-    GW_OTA_CONFIRM,          /* mark the running image valid */
+    GW_OTA_CONFIRM,          /* mark the running image valid, then gw_ota_trial_confirm_result() */
     GW_OTA_ROLLBACK,         /* mark it invalid and restart into the previous one */
 } gw_ota_action_t;
 
@@ -44,15 +51,37 @@ typedef struct {
     uint32_t start_ms;       /* gw_port time of the boot (32-bit, wraps) */
     uint32_t timeout_ms;
     const char *why;         /* reason of the last decision (static text) */
+    bool partial;            /* a session came up without every DBIRTH */
+    bool in_flight;          /* CONFIRMING: a write to mark it valid is under way */
+    uint32_t attempts;       /* failed writes to mark it valid */
+    uint32_t retry_at_ms;    /* CONFIRMING: the next write */
 } gw_ota_trial_t;
+
+#define GW_OTA_NO_TICK UINT32_MAX   /* gw_ota_trial_next_ms(): nothing to wait for */
+#define GW_OTA_RETRY_MIN_MS 1000u
+#define GW_OTA_RETRY_MAX_MS 60000u
 
 /** @p pending: the running image is on trial. */
 void gw_ota_trial_init(gw_ota_trial_t *t, bool pending, uint32_t now_ms, uint32_t timeout_ms);
-gw_ota_action_t gw_ota_trial_session_up(gw_ota_trial_t *t);
+/** A Sparkplug session is up; @p births_missing: DBIRTHs that did not go out (too large for the
+ *  broker). Only a complete session (0) confirms. */
+gw_ota_action_t gw_ota_trial_session_up(gw_ota_trial_t *t, unsigned births_missing);
 gw_ota_action_t gw_ota_trial_config_rejected(gw_ota_trial_t *t);
 gw_ota_action_t gw_ota_trial_commissioning(gw_ota_trial_t *t);
-/** Call periodically (and when the timeout expires). */
+/** The image cannot start at all (@p why: static text): rolled back at once. */
+gw_ota_action_t gw_ota_trial_cannot_start(gw_ota_trial_t *t, const char *why);
+/** The operator asks for a restart that keeps a change the new image made (a saved
+ *  configuration, a factory reset; @p why: static text): CONFIRM while the trial is open (also
+ *  to retry a failed write at once), KEEP otherwise. */
+gw_ota_action_t gw_ota_trial_operator(gw_ota_trial_t *t, const char *why);
+/** Outcome of the write a CONFIRM asked for; on failure the next one is due after the backoff
+ *  (@p rnd: its jitter). */
+void gw_ota_trial_confirm_result(gw_ota_trial_t *t, bool ok, uint32_t now_ms, uint32_t rnd);
+/** Call when gw_ota_trial_next_ms() says: the timeout of a pending trial (ROLLBACK), the retry
+ *  of a failed confirmation (CONFIRM). */
 gw_ota_action_t gw_ota_trial_tick(gw_ota_trial_t *t, uint32_t now_ms);
+/** Milliseconds until gw_ota_trial_tick() has something to do (0: now), GW_OTA_NO_TICK if never. */
+uint32_t gw_ota_trial_next_ms(const gw_ota_trial_t *t, uint32_t now_ms);
 /** Milliseconds left before the timeout rolls the image back (0 if not pending). */
 uint32_t gw_ota_trial_left_ms(const gw_ota_trial_t *t, uint32_t now_ms);
 /** The trial is not decided yet: no other update is accepted meanwhile. */

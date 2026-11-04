@@ -4,9 +4,11 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "gw_backoff.h"
 
 void gw_ota_trial_init(gw_ota_trial_t *t, bool pending, uint32_t now_ms, uint32_t timeout_ms)
 {
+    memset(t, 0, sizeof(*t));
     t->state = pending ? GW_OTA_TRIAL_PENDING : GW_OTA_TRIAL_NONE;
     t->start_ms = now_ms;
     t->timeout_ms = timeout_ms;
@@ -18,13 +20,26 @@ static gw_ota_action_t decide(gw_ota_trial_t *t, gw_ota_trial_state_t to, const 
     if (t->state != GW_OTA_TRIAL_PENDING) {
         return GW_OTA_KEEP;   /* decided once */
     }
-    t->state = to;
     t->why = why;
-    return to == GW_OTA_TRIAL_CONFIRMED ? GW_OTA_CONFIRM : GW_OTA_ROLLBACK;
+    if (to == GW_OTA_TRIAL_CONFIRMED) {
+        t->state = GW_OTA_TRIAL_CONFIRMING;   /* confirmed once the write succeeds */
+        t->in_flight = true;
+        return GW_OTA_CONFIRM;
+    }
+    t->state = to;
+    return GW_OTA_ROLLBACK;
 }
 
-gw_ota_action_t gw_ota_trial_session_up(gw_ota_trial_t *t)
+gw_ota_action_t gw_ota_trial_session_up(gw_ota_trial_t *t, unsigned births_missing)
 {
+    if (births_missing > 0) {
+        /* issue #99: hosts see the node without some of its devices: not the health criterion */
+        if (t->state == GW_OTA_TRIAL_PENDING) {
+            t->partial = true;
+            t->why = "a Sparkplug session without every DBIRTH (too large for the broker)";
+        }
+        return GW_OTA_KEEP;
+    }
     return decide(t, GW_OTA_TRIAL_CONFIRMED, "first Sparkplug session up");
 }
 
@@ -38,12 +53,60 @@ gw_ota_action_t gw_ota_trial_commissioning(gw_ota_trial_t *t)
     return decide(t, GW_OTA_TRIAL_CONFIRMED, "commissioning mode: nothing to judge it by");
 }
 
+gw_ota_action_t gw_ota_trial_cannot_start(gw_ota_trial_t *t, const char *why)
+{
+    return decide(t, GW_OTA_TRIAL_ROLLBACK, why);
+}
+
+gw_ota_action_t gw_ota_trial_operator(gw_ota_trial_t *t, const char *why)
+{
+    if (t->state == GW_OTA_TRIAL_CONFIRMING) {
+        t->in_flight = true;   /* retried now: the restart must not roll it back */
+        return GW_OTA_CONFIRM;
+    }
+    return decide(t, GW_OTA_TRIAL_CONFIRMED, why);
+}
+
+void gw_ota_trial_confirm_result(gw_ota_trial_t *t, bool ok, uint32_t now_ms, uint32_t rnd)
+{
+    if (t->state != GW_OTA_TRIAL_CONFIRMING) {
+        return;   /* another caller's write succeeded first */
+    }
+    t->in_flight = false;
+    if (ok) {
+        t->state = GW_OTA_TRIAL_CONFIRMED;
+        return;
+    }
+    t->attempts++;
+    t->retry_at_ms = now_ms + gw_backoff_ms(t->attempts, GW_OTA_RETRY_MIN_MS, GW_OTA_RETRY_MAX_MS,
+                                            rnd);
+}
+
 gw_ota_action_t gw_ota_trial_tick(gw_ota_trial_t *t, uint32_t now_ms)
 {
     if (t->state == GW_OTA_TRIAL_PENDING && (uint32_t)(now_ms - t->start_ms) >= t->timeout_ms) {
-        return decide(t, GW_OTA_TRIAL_ROLLBACK, "no Sparkplug session before the timeout");
+        return decide(t, GW_OTA_TRIAL_ROLLBACK,
+                      t->partial ? "no complete Sparkplug session (every DBIRTH) before the timeout"
+                                 : "no Sparkplug session before the timeout");
+    }
+    if (t->state == GW_OTA_TRIAL_CONFIRMING && !t->in_flight &&
+        (int32_t)(now_ms - t->retry_at_ms) >= 0) {
+        t->in_flight = true;
+        return GW_OTA_CONFIRM;
     }
     return GW_OTA_KEEP;
+}
+
+uint32_t gw_ota_trial_next_ms(const gw_ota_trial_t *t, uint32_t now_ms)
+{
+    if (t->state == GW_OTA_TRIAL_PENDING) {
+        return gw_ota_trial_left_ms(t, now_ms);
+    }
+    if (t->state == GW_OTA_TRIAL_CONFIRMING && !t->in_flight) {
+        int32_t d = (int32_t)(t->retry_at_ms - now_ms);
+        return d > 0 ? (uint32_t)d : 0;
+    }
+    return GW_OTA_NO_TICK;
 }
 
 uint32_t gw_ota_trial_left_ms(const gw_ota_trial_t *t, uint32_t now_ms)
@@ -54,7 +117,7 @@ uint32_t gw_ota_trial_left_ms(const gw_ota_trial_t *t, uint32_t now_ms)
 
 bool gw_ota_trial_open(const gw_ota_trial_t *t)
 {
-    return t->state == GW_OTA_TRIAL_PENDING;
+    return t->state == GW_OTA_TRIAL_PENDING || t->state == GW_OTA_TRIAL_CONFIRMING;
 }
 
 gw_ota_refusal_t gw_ota_refusal(const gw_ota_trial_t *t, bool transfer_running)
