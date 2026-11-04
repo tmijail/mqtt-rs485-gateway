@@ -517,6 +517,7 @@ class Gateway:
                "-drive", f"file={a.efuse},if=none,format=raw,id=efuse",
                "-global", "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
                "-global", "driver=timer.esp32s3.timg,property=wdt_disable,value=true",
+               *(["-global", "driver=ssi_psram,property=is_octal,value=true"] if a.psram else []),
                "-nic", f"user,model=open_eth,hostfwd=tcp:127.0.0.1:{HTTP_PORT}-:80,"
                        f"hostfwd=tcp:127.0.0.1:{HTTPS_PORT}-:443,"
                        f"hostfwd=tcp:127.0.0.1:{MBTCP_PORT}-:502",
@@ -1387,6 +1388,10 @@ def main():
                     help="comma-separated scenarios to run (failsafe,network,web,reset,tls,failover,"
                          "mqtt5,phost,sf,https,slow,main); "
                          "default all")
+    ap.add_argument("--psram", action="store_true",
+                    help="issue #63: emulate the octal PSRAM (build with sdkconfig.qemu-psram)")
+    ap.add_argument("--panics", type=int, default=1,
+                    help="issue #62: panics in the core dump check (each dump must decode)")
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
     args = ap.parse_args()
@@ -1823,9 +1828,10 @@ def check_scan_classes(slave):
     reads = [(t, r[1:]) for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 1 and t >= since]
     fast = [t for t, k in reads if k == (1, 0, 1)]
     slow = [t for t, k in reads if k == (3, 30, 4)]
-    # a DCMD to Serial (check_mb6_writes) reads it back right after its FC16: not a scan read
-    wrote = [t for t, k in reads if k[:2] == (16, 50)]
-    serial = [t for t, k in reads if k == (3, 50, 8) and not any(0 <= t - w < 1.0 for w in wrote)]
+    # a DCMD to Serial (check_mb6_writes) is read back right after its FC16: that request is not
+    # a scan read (only the one that immediately follows each write)
+    serial = [t for i, (t, k) in enumerate(reads)
+              if k == (3, 50, 8) and not (i > 0 and reads[i - 1][1][:2] == (16, 50))]
     gaps = [round(b - a, 2) for a, b in zip(slow, slow[1:])]
     fgaps = [b - a for a, b in zip(fast, fast[1:])]
     ok = len(slow) >= 3 and len(serial) == len(slow) and all(2.8 <= g <= 3.6 for g in gaps) \
@@ -2970,13 +2976,13 @@ def run(args, log, slave, broker, conf, work):
 
     # Issue #12 / REL-1: a panic writes a core dump to the "coredump" partition, the gateway
     # restarts ("panic" in NBIRTH) and the dump decodes with esp_coredump against the ELF.
-    # QEMU does not seem to stall the other core during the panic handler as the chip does: a
-    # task on it (the 1 kHz DI sampling, for one) can change a stack between the two passes of
-    # the ELF writer, and the dump then fails its checksum. Up to 3 panics; every one must save
-    # a dump and restart with "panic", and at least one dump must decode.
+    # Issue #62: QEMU does not emulate the stall of the other core that the panic handler asks
+    # for, so a task running there could change the task list and stacks while the ELF writer
+    # walks them (truncated dumps, wrong checksums, nested aborts). The emulator's 'panic'
+    # parks the other core first, as the chip's stall does: one panic, and its dump must decode.
     off, size = storage_partition("coredump")
     attempts = []
-    for n in range(3):
+    for n in range(args.panics):
         obs.drain()
         since = time.monotonic()
         gw.console("panic")
@@ -2988,17 +2994,14 @@ def run(args, log, slave, broker, conf, work):
         info = subprocess.run([args.idf_python, "-m", "esp_coredump", "--chip", "esp32s3",
                                "info_corefile", "--core", str(core), "--core-format", "raw", args.elf],
                               capture_output=True, text=True, timeout=120)
-        decoded = info.returncode == 0 and "cmd_panic" in info.stdout and "abort" in info.stdout
-        if decoded or n == 0:
-            (work / "coredump-info.txt").write_text(info.stdout + info.stderr)
+        decoded = info.returncode == 0 and "panic_task" in info.stdout and "abort" in info.stdout
+        (work / "coredump-info.txt").write_text(info.stdout + info.stderr)
         err = (info.stderr.strip().splitlines() or [""])[-1][:90]
         attempts.append((bool(saved), reason.string_value if reason else None, decoded, err))
-        if decoded:
-            break
     gw.kill()
-    check("Issue #12 panic -> core dump in flash, restart with 'panic' reset reason, dump decodes "
-          "with esp_coredump (backtrace through cmd_panic/abort)",
-          all(a[0] and a[1] == "panic" for a in attempts) and attempts[-1][2],
+    check("Issue #12 / #62 one panic -> core dump in flash, restart with 'panic' reset reason, the "
+          "dump decodes with esp_coredump (backtrace through panic_task/abort), deterministically",
+          all(a[0] and a[1] == "panic" and a[2] for a in attempts),
           "; ".join(f"attempt {i + 1}: saved={a[0]} reset reason={a[1]!r} decoded={a[2]}"
                     f"{'' if a[2] else ' (' + a[3] + ')'}" for i, a in enumerate(attempts)))
 

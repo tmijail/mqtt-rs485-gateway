@@ -11,6 +11,7 @@
 #include "esp_check.h"
 #include "esp_console.h"
 #include "esp_heap_caps.h"
+#include "esp_ipc.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -859,13 +860,43 @@ static int cmd_boot(int argc, char **argv)
 }
 /* Emulator only: crash on purpose, so the E2E can check the core dump in flash and the
  * "panic" reset reason. */
+/* Issue #62: on the chip the panic handler stalls the other core (RTC_CNTL software stall)
+ * while it writes the core dump; QEMU does not emulate that stall, so the other core kept
+ * running tasks, changing their stacks and the task list between the two passes of the ELF
+ * writer (truncated or overflowing dumps, nested aborts, wrong checksums). The emulator-only
+ * 'panic' parks the other core first, as the hardware would, then aborts on a task pinned to
+ * this side (a migrating console task could otherwise park itself). */
+static void park_core(void *arg)
+{
+    (void)arg;
+    portDISABLE_INTERRUPTS();
+    for (;;) {
+    }
+}
+
+static void panic_task(void *arg)
+{
+    (void)arg;
+#if !CONFIG_FREERTOS_UNICORE
+    esp_ipc_call(1, park_core, NULL);   /* returns once core 1 runs it: it never comes back */
+#endif
+    printf("panic requested from the console\n");
+    fflush(stdout);
+    abort();
+}
+
 static int cmd_panic(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
-    printf("panic requested from the console\n");
-    fflush(stdout);
-    abort();
+    if (xTaskCreatePinnedToCore(panic_task, "panic", 3072, NULL, configMAX_PRIORITIES - 1, NULL,
+                                0) != pdPASS) {
+        printf("panic requested from the console (other core not parked)\n");
+        fflush(stdout);
+        abort();
+    }
+    vTaskDelay(portMAX_DELAY);
+    return 0;
 }
 #endif
 
