@@ -1,13 +1,17 @@
 #include "gw_io.h"
 
 #include <inttypes.h>
+#include <stdatomic.h>
 #include <string.h>
+#include <sys/time.h>
+#include <time.h>
 
 #include "driver/gpio.h"
 #include "esp_attr.h"
 #include "driver/i2c_master.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_rtc_time.h"
 #include "esp_system.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
@@ -20,6 +24,7 @@
 #include "gw_dout.h"
 #include "gw_localio.h"
 #include "gw_port.h"
+#include "gw_rtc.h"
 #include "gw_status.h"
 #include "gw_storage.h"
 #include "gw_tagdb.h"
@@ -55,6 +60,7 @@ typedef struct {
 
 static gw_lio_t s_lio;
 static TaskHandle_t s_task;
+static bool s_recovery;   /* issue #74: task started without a configuration */
 static StaticTask_t s_task_buf;
 static StackType_t s_stack[STACK_WORDS];
 static QueueHandle_t s_req_q, s_rep_q;
@@ -63,6 +69,11 @@ static uint8_t s_req_storage[2 * sizeof(do_req_t)];
 static uint8_t s_rep_storage[sizeof(do_rep_t)];
 static uint32_t s_req_id;   /* the requester's (single caller: the Sparkplug task) */
 static const char *const k_rule_modes[] = {"follow", "invert", "toggle"};   /* gw_rule_mode_t */
+
+/* ---- TIME-2 PCF85063 RTC, on the expander's I2C bus (the local_io task owns both) ---- */
+static gw_io_rtc_info_t s_rtc;
+static atomic_bool s_rtc_store_req;
+static uint32_t s_rtc_err_logged;
 
 /* ---- IO-4 pulse counters in NVS ---- */
 #define NVS_COUNTERS "di_count"
@@ -81,9 +92,42 @@ static volatile uint8_t s_sim_pins;
 static RTC_NOINIT_ATTR uint8_t s_sim_reg[4];
 static RTC_NOINIT_ATTR uint32_t s_sim_magic;
 
+/* Issue #74: 'expander absent <ms>' makes the simulated TCA9554 silent for the first <ms> of the
+ * next boot only (kept in RTC memory across the restart). */
+#define SIM_ABSENT_MAGIC 0x41425354u   /* "ABST" */
+static RTC_NOINIT_ATTR uint32_t s_sim_absent_magic;
+static RTC_NOINIT_ATTR uint32_t s_sim_absent_next_ms;
+static uint32_t s_sim_absent_ms;   /* this boot */
+
+void gw_io_sim_expander_absent(uint32_t ms)
+{
+    s_sim_absent_next_ms = ms;
+    s_sim_absent_magic = SIM_ABSENT_MAGIC;
+    ESP_LOGW(TAG, "sim: the output expander will not answer for %lu ms after the next boot",
+             (unsigned long)ms);
+}
+
+static int64_t s_sim_absent_from_us;   /* first expander access of this boot */
+
+static bool sim_absent(void)
+{
+    if (s_sim_absent_ms == 0) {
+        return false;
+    }
+    /* measured from this boot's first access: QEMU's timer is not reset by a software reset */
+    int64_t now = esp_timer_get_time();
+    if (s_sim_absent_from_us == 0) {
+        s_sim_absent_from_us = now;
+    }
+    return now - s_sim_absent_from_us < (int64_t)s_sim_absent_ms * 1000;
+}
+
 static int exp_write(void *ctx, uint8_t reg, uint8_t val)
 {
     (void)ctx;
+    if (sim_absent()) {
+        return ESP_ERR_TIMEOUT;
+    }
     s_sim_reg[reg] = val;
     return ESP_OK;
 }
@@ -91,6 +135,9 @@ static int exp_write(void *ctx, uint8_t reg, uint8_t val)
 static int exp_read(void *ctx, uint8_t reg, uint8_t *val)
 {
     (void)ctx;
+    if (sim_absent()) {
+        return ESP_ERR_TIMEOUT;
+    }
     /* Output pins read back their latch; input pins float high; POLARITY inverts the input
      * register. */
     *val = reg == GW_TCA9554_REG_INPUT
@@ -119,6 +166,12 @@ void gw_io_sim_set_di(uint8_t index, bool active)
 static esp_err_t hw_init_outputs(void)
 {
     bool kept = s_sim_magic == SIM_MAGIC && esp_reset_reason() != ESP_RST_POWERON;
+    if (s_sim_absent_magic == SIM_ABSENT_MAGIC && esp_reset_reason() != ESP_RST_POWERON) {
+        s_sim_absent_ms = s_sim_absent_next_ms;   /* this boot only */
+        ESP_LOGW(TAG, "SIMULATED I/O: expander silent for the first %lu ms of this boot",
+                 (unsigned long)s_sim_absent_ms);
+    }
+    s_sim_absent_magic = 0;
     if (!kept) {
         static const uint8_t power_on[4] = {0xFF, 0xFF, 0x00, 0xFF};
         memcpy(s_sim_reg, power_on, sizeof(s_sim_reg));
@@ -137,9 +190,55 @@ static esp_err_t hw_init_inputs(void)
     return ESP_OK;
 }
 
+/* Simulated PCF85063: like the chip, it keeps counting across a software reset or a panic
+ * (RTC memory the boot does not clear, plus the RTC timer of the ESP32-S3) and comes up with
+ * the OS bit set at a power-up (a new QEMU process). */
+#define SIM_RTC_MAGIC 0x50434638u   /* "PCF8" */
+static RTC_NOINIT_ATTR uint32_t s_sim_rtc_magic;
+static RTC_NOINIT_ATTR int64_t s_sim_rtc_epoch;    /* time written ... */
+static RTC_NOINIT_ATTR uint64_t s_sim_rtc_us;      /* ... at this RTC timer value */
+
+static esp_err_t hw_init_rtc(void)
+{
+    if (s_sim_rtc_magic != SIM_RTC_MAGIC || esp_reset_reason() == ESP_RST_POWERON) {
+        s_sim_rtc_magic = 0;
+    }
+    ESP_LOGW(TAG, "SIMULATED RTC: PCF85063 in RTC memory (%s)",
+             s_sim_rtc_magic == SIM_RTC_MAGIC ? "kept across the reset" : "power-up: OS bit set");
+    return ESP_OK;
+}
+
+static int rtc_read(uint8_t regs[GW_RTC_REGS])
+{
+    if (s_sim_rtc_magic != SIM_RTC_MAGIC) {
+        memset(regs, 0, GW_RTC_REGS);
+        regs[0] = GW_RTC_OS_BIT;
+        regs[3] = regs[5] = 1;
+        return ESP_OK;
+    }
+    uint64_t now = esp_rtc_get_time_us();
+    int64_t t = s_sim_rtc_epoch + (now >= s_sim_rtc_us ? (int64_t)((now - s_sim_rtc_us) / 1000000)
+                                                      : 0);
+    return gw_rtc_encode(t, regs) ? ESP_OK : ESP_FAIL;
+}
+
+static int rtc_write(const uint8_t regs[GW_RTC_REGS])
+{
+    int64_t t;
+    if (gw_rtc_decode(regs, &t) != GW_RTC_OK) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    s_sim_rtc_epoch = t;
+    s_sim_rtc_us = esp_rtc_get_time_us();
+    s_sim_rtc_magic = SIM_RTC_MAGIC;
+    return ESP_OK;
+}
+
 #else /* real board */
 
 static i2c_master_dev_handle_t s_exp;
+static i2c_master_bus_handle_t s_bus;
+static i2c_master_dev_handle_t s_rtc_dev;
 
 static int exp_write(void *ctx, uint8_t reg, uint8_t val)
 {
@@ -187,17 +286,122 @@ static esp_err_t hw_init_outputs(void)
         .glitch_ignore_cnt = 7,
         .flags.enable_internal_pullup = true,
     };
-    i2c_master_bus_handle_t bus;
-    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bc, &bus), TAG, "i2c bus");
+    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bc, &s_bus), TAG, "i2c bus");
     const i2c_device_config_t dc = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = gw_bsp.dout.i2c_addr,
         .scl_speed_hz = gw_bsp.i2c.clk_hz,
     };
-    return i2c_master_bus_add_device(bus, &dc, &s_exp);
+    return i2c_master_bus_add_device(s_bus, &dc, &s_exp);
+}
+
+/* TIME-2: the PCF85063 shares the bus created for the expander (gw_bsp: SDA 42, SCL 41). */
+static esp_err_t hw_init_rtc(void)
+{
+    if (s_bus == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const i2c_device_config_t dc = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = GW_PCF85063_ADDR,
+        .scl_speed_hz = gw_bsp.i2c.clk_hz,
+    };
+    return i2c_master_bus_add_device(s_bus, &dc, &s_rtc_dev);
+}
+
+static int rtc_read(uint8_t regs[GW_RTC_REGS])
+{
+    const uint8_t reg = GW_PCF85063_REG_TIME;
+    return i2c_master_transmit_receive(s_rtc_dev, &reg, 1, regs, GW_RTC_REGS, I2C_TIMEOUT_MS);
+}
+
+static int rtc_write(const uint8_t regs[GW_RTC_REGS])
+{
+    uint8_t buf[1 + GW_RTC_REGS] = {GW_PCF85063_REG_TIME};
+    memcpy(buf + 1, regs, GW_RTC_REGS);   /* writing the seconds clears the OS bit */
+    return i2c_master_transmit(s_rtc_dev, buf, sizeof(buf), I2C_TIMEOUT_MS);
 }
 
 #endif
+
+/* ---------- TIME-2 RTC ---------- */
+
+void gw_io_rtc_restore(void)
+{
+    esp_err_t err = hw_init_rtc();
+    s_rtc.present = err == ESP_OK;
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "RTC: no I2C bus (%s): no time before SNTP", esp_err_to_name(err));
+        return;
+    }
+    uint8_t regs[GW_RTC_REGS];
+    err = rtc_read(regs);
+    if (err != ESP_OK) {
+        s_rtc.present = false;
+        ESP_LOGE(TAG, "RTC: PCF85063 at 0x%02x not responding (%s): no time before SNTP",
+                 GW_PCF85063_ADDR, esp_err_to_name(err));
+        return;
+    }
+    int64_t t = 0;
+    s_rtc.status = gw_rtc_decode(regs, &t);
+    if (s_rtc.status != GW_RTC_OK) {
+        ESP_LOGW(TAG, "RTC: %s: system time not set (until SNTP)", gw_rtc_status_str(s_rtc.status));
+        return;
+    }
+    const struct timeval tv = {.tv_sec = (time_t)t, .tv_usec = 0};
+    settimeofday(&tv, NULL);
+    s_rtc.restored = true;
+    struct tm tm;
+    time_t tt = (time_t)t;
+    gmtime_r(&tt, &tm);
+    ESP_LOGI(TAG, "RTC: system time set from the RTC: %04d-%02d-%02dT%02d:%02d:%02dZ (not "
+                  "synchronised until SNTP)", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+             tm.tm_hour, tm.tm_min, tm.tm_sec);
+}
+
+/* Store the system time (just synchronised by SNTP) in the RTC. Owner of the bus only. */
+static void rtc_store_now(void)
+{
+    if (!s_rtc.present) {
+        return;
+    }
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    uint8_t regs[GW_RTC_REGS];
+    if (!gw_rtc_encode((int64_t)tv.tv_sec, regs)) {
+        ESP_LOGW(TAG, "RTC: system time %lld out of the RTC's range: not stored",
+                 (long long)tv.tv_sec);
+        return;
+    }
+    esp_err_t err = rtc_write(regs);
+    if (err != ESP_OK) {
+        s_rtc.store_errors++;
+        if (s_rtc_err_logged++ < 3) {
+            ESP_LOGE(TAG, "RTC: write failed (%s)", esp_err_to_name(err));
+        }
+        return;
+    }
+    s_rtc.stores++;
+    s_rtc.status = GW_RTC_OK;
+    if (s_rtc.stores == 1) {
+        ESP_LOGI(TAG, "RTC: time stored in the RTC after SNTP (again after every synchronisation)");
+    }
+}
+
+void gw_io_rtc_store(void)
+{
+    if (s_task == NULL) {
+        rtc_store_now();   /* no local_io task (yet): this caller is the only bus user */
+        return;
+    }
+    atomic_store(&s_rtc_store_req, true);
+    xTaskNotifyGive(s_task);
+}
+
+void gw_io_rtc_get(gw_io_rtc_info_t *out)
+{
+    *out = s_rtc;
+}
 
 static uint32_t now_ms(void)
 {
@@ -306,9 +510,12 @@ static void recover_outputs(uint32_t now)
 {
     uint16_t before = s_do.attempts;
     if (gw_dout_recover(&s_do, now)) {
-        ESP_LOGW(TAG, "TCA9554 answered on attempt %u: DOs available", s_do.attempts);
+        ESP_LOGW(TAG, "TCA9554 answered on attempt %u: DOs available%s", s_do.attempts,
+                 s_recovery ? ", all off (no valid configuration)" : "");
         publish_do();
-        apply_boot_state();
+        if (!s_recovery) {
+            apply_boot_state();
+        }
     } else if (s_do.attempts != before) {
         ESP_LOGW(TAG, "TCA9554 still not responding (attempt %u); next try in %lu ms",
                  s_do.attempts, (unsigned long)s_do.retry_delay_ms);
@@ -409,6 +616,17 @@ static void lio_task(void *arg)
         if (s_exp_bus && !s_do.ready) {
             recover_outputs(now);
         }
+        if (s_recovery) {
+            /* issue #74: no configuration: only the expander retry (target all off: the hold
+             * mask was cleared) and the RTC */
+            if (atomic_exchange(&s_rtc_store_req, false)) {
+                rtc_store_now();
+            }
+            continue;
+        }
+        if (atomic_exchange(&s_rtc_store_req, false)) {
+            rtc_store_now();   /* TIME-2: the bus has one user, this task */
+        }
         do_req_t r;
         while (xQueueReceive(s_req_q, &r, 0) == pdTRUE) {
             const do_rep_t rep = {.id = r.id, .ok = command_do(r.index, r.on)};
@@ -418,6 +636,30 @@ static void lio_task(void *arg)
         failsafe(now);
         save_counters(false);
     }
+}
+
+esp_err_t gw_io_start_recovery(void)
+{
+    s_recovery = true;
+    s_do.hold = 0;   /* target: every DO off, held ones too */
+    s_req_q = xQueueCreateStatic(2, sizeof(do_req_t), s_req_storage, &s_req_buf);
+    s_rep_q = xQueueCreateStatic(1, sizeof(do_rep_t), s_rep_storage, &s_rep_buf);
+    s_task = xTaskCreateStatic(lio_task, "local_io", STACK_WORDS, NULL,
+                               CONFIG_GW_LOCAL_IO_TASK_PRIORITY, s_stack, &s_task_buf);
+    if (s_task == NULL) {
+        return ESP_FAIL;
+    }
+    if (s_exp_bus && !s_do.ready) {
+        ESP_LOGW(TAG, "no valid configuration: retrying the output expander to switch every DO off");
+    }
+    return ESP_OK;
+}
+
+void gw_io_get_expander(gw_io_expander_t *out)
+{
+    out->ready = s_do.ready;
+    out->retrying = s_exp_bus && !s_do.ready && s_task != NULL;
+    out->attempts = s_do.attempts;
 }
 
 esp_err_t gw_io_start(const gw_config_t *cfg, void (*on_change)(void))

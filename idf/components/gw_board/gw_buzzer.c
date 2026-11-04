@@ -29,6 +29,7 @@ static atomic_uint s_cfg;         /* alarms | after_s << 8; bumped generation in
 static atomic_uint s_cfg_gen;
 static atomic_uint s_played;      /* requests the task has finished */
 static atomic_uint s_queued;      /* requests made */
+static atomic_uint s_alarm;       /* gw_alarm_t sounding now (issue #75) */
 static bool s_ok;
 static TaskHandle_t s_task;
 #if CONFIG_GW_IO_SIMULATED
@@ -112,6 +113,7 @@ static void buzzer_task(void *arg)
         gw_alarm_t now_alarm = gw_buzz_update(&b, (f & GW_ST_CFG_ERROR) != 0,
                                               (f & GW_ST_MQTT_UP) == 0,
                                               (f & GW_ST_MB_FAULT) != 0, now);
+        atomic_store(&s_alarm, (unsigned)now_alarm);
         if (now_alarm != before) {
             if (now_alarm == GW_ALARM_NONE) {
                 ESP_LOGI(TAG, "alarm '%s' over: silent", gw_alarm_name(before));
@@ -150,6 +152,16 @@ esp_err_t gw_buzzer_start(void)
     s_task = xTaskCreateStatic(buzzer_task, "buzzer", STACK_WORDS, NULL, 2, s_stack, &s_task_buf);
     s_ok = s_task != NULL;
     return s_ok ? ESP_OK : ESP_FAIL;
+}
+
+gw_alarm_t gw_buzzer_alarm(void)
+{
+    return (gw_alarm_t)atomic_load(&s_alarm);
+}
+
+uint8_t gw_buzzer_alarms(void)
+{
+    return (uint8_t)(atomic_load(&s_cfg) & 0xFFu);
 }
 
 void gw_buzzer_configure(uint8_t alarms, uint32_t after_s)

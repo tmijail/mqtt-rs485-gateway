@@ -7,6 +7,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -38,6 +39,9 @@ void gw_rbe_commit_key(gw_rbe_t *state, uint64_t key, bool valid);
 
 /** 64-bit FNV-1a of a NUL-terminated string. */
 uint64_t gw_rbe_hash(const char *s);
+
+/** 64-bit FNV-1a of @p len bytes (raw byte values, SPB-19). */
+uint64_t gw_rbe_hash_bytes(const void *data, size_t len);
 
 #ifdef __cplusplus
 }

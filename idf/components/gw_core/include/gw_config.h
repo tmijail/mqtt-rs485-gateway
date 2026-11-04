@@ -46,6 +46,9 @@ extern "C" {
 #define GW_FAILSAFE_MAX_S 86400     /* IO-3: local_io.failsafe_s */
 #define GW_COUNTER_SAVE_MIN_S 60    /* IO-4: local_io.counter_save_s (or 0) */
 #define GW_COUNTER_SAVE_MAX_S 86400
+#define GW_DIAG_MIN_S 10             /* SPB-17: sparkplug.diagnostics_s (or 0) */
+#define GW_DIAG_MAX_S 86400
+#define GW_MAX_TEMPLATE_TAGS 64     /* SPB-18: tags of all template definitions together (NBIRTH) */
 
 typedef enum {
     GW_AREA_COIL = 0,
@@ -65,6 +68,7 @@ typedef enum {
     GW_TYPE_INT64,
     GW_TYPE_FLOAT64,
     GW_TYPE_STRING,     /* MB-6: `length` registers, two ASCII characters each */
+    GW_TYPE_BYTES,      /* SPB-19: `length` registers as raw bytes (Sparkplug Bytes) */
 } gw_type_t;
 
 /* Register and byte order of multi-byte values (MB-5, MB-6). Letters name the bytes of the value
@@ -170,17 +174,23 @@ typedef struct {
     gw_word_order_t word_order;
     uint16_t address;
     int8_t bit;                 /* MB-6: bit 0..15 of a holding/input register (bool), or GW_NO_BIT */
-    uint8_t length;             /* MB-6: registers of a string tag (1..GW_STR_MAX_REGS), else 0 */
+    uint8_t length;             /* MB-6: registers of a string or bytes tag (1..GW_STR_MAX_REGS),
+                                 * else 0 */
     bool slow;                  /* MB-12: read every slow_poll_ms of its device ("scan": "slow") */
     bool writable;
+    bool has_eng_low;           /* SPB-16: engLow / engHigh properties (optional); in the */
+    bool has_eng_high;          /* padding before the doubles: no growth of the structure */
     double scale;
     double offset;
     double deadband;
-    char units[GW_UNITS_SIZE];  /* validated and kept; not published by the MVP (SPB-16) */
+    char units[GW_UNITS_SIZE];  /* SPB-16: property engUnit in the birth ("" = none) */
+    float eng_low;              /* published as Float: 8 B per tag instead of 16 (256 tags) */
+    float eng_high;
 } gw_tag_cfg_t;
 
 typedef struct {
     char name[GW_NAME_SIZE];    /* also the Sparkplug device_id */
+    char type[GW_NAME_SIZE];    /* SPB-18: template (device type) name; "" = no template */
     uint8_t unit_id;
     uint32_t poll_ms;           /* fast scan period (MB-10) */
     uint32_t slow_poll_ms;      /* MB-12: period of the tags with "scan": "slow" */
@@ -232,6 +242,8 @@ typedef struct {
         bool store_forward;                /* SPB-14: keep changes made while offline */
         bool sf_sd;                        /* SPB-14: spill the full ring to the microSD card */
         uint32_t sf_sd_max_kb;             /* bound of the spill on the card */
+        uint32_t diagnostics_s;  /* SPB-17: NDATA with the node diagnostics this often (0 =
+                                  * births only) */
     } sparkplug;
     struct {
         uint32_t baud;

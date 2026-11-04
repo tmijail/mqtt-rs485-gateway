@@ -23,6 +23,7 @@ set(GW_CORE_SRCS
     src/gw_plan.c
     src/gw_poll.c
     src/gw_rbe.c
+    src/gw_rtc.c
     src/gw_sf.c
     src/gw_sfspill.c
     src/gw_syslog.c

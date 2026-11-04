@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_check.h"
 #include "esp_heap_caps.h"
@@ -13,6 +14,12 @@
 #include "esp_timer.h"
 #include "gw_auth.h"
 #include "gw_authlimit.h"
+#include "gw_buzz.h"
+#include "gw_buzzer.h"
+#include "gw_conv.h"
+#include "gw_edge.h"
+#include "gw_io.h"
+#include "gw_rtc.h"
 #include "gw_log.h"
 #include "gw_net.h"
 #include "gw_status.h"
@@ -404,7 +411,7 @@ static esp_err_t status_get(httpd_req_t *req)
         out_str(&o, c->sparkplug.group_id);
         outf(&o, ",\"edge_node_id\":");
         out_str(&o, c->sparkplug.edge_node_id);
-        outf(&o, "}");
+        outf(&o, ",\"diagnostics_s\":%lu}", (unsigned long)c->sparkplug.diagnostics_s);
         gw_log_stats_t ls;
         gw_log_get_stats(&ls);
         if (ls.enabled) {
@@ -437,22 +444,80 @@ static esp_err_t status_get(httpd_req_t *req)
             const gw_tag_value_t *v = &s_vals[t];
             outf(&o, "%s{\"name\":", t ? "," : "");
             out_str(&o, c->tags[dev->first_tag + t].name);
-            /* %.9g: enough for float32 and integers up to 32 bits; NaN is not JSON */
-            bool valid = v->valid && v->value == v->value;
-            if (valid) {
-                outf(&o, ",\"valid\":true,\"value\":%.9g}", v->value);
-            } else {
+            const gw_tag_cfg_t *tc = &c->tags[dev->first_tag + t];
+            gw_val_kind_t kind = gw_conv_kind(tc);
+            /* NaN is not JSON */
+            bool valid = v->valid && (kind != GW_VK_DOUBLE || v->value == v->value);
+            if (!valid) {
                 outf(&o, ",\"valid\":false,\"value\":null}");
+            } else if (kind == GW_VK_STRING) {
+                outf(&o, ",\"valid\":true,\"value\":");
+                out_str(&o, v->str);
+                outf(&o, "}");
+            } else if (kind == GW_VK_BYTES) {   /* SPB-19: hex */
+                char hex[2 * GW_STR_MAX + 1];
+                gw_conv_format(tc, v, hex, sizeof(hex));
+                outf(&o, ",\"valid\":true,\"value\":\"%s\"}", hex);
+            } else if (kind == GW_VK_INT64) {   /* exact (a JSON reader may round above 2^53) */
+                outf(&o, ",\"valid\":true,\"value\":%lld}", (long long)v->i64);
+            } else if (kind == GW_VK_UINT64) {
+                outf(&o, ",\"valid\":true,\"value\":%llu}", (unsigned long long)v->u64);
+            } else {
+                /* %.9g: enough for float32 and integers up to 32 bits */
+                outf(&o, ",\"valid\":true,\"value\":%.9g}", v->value);
             }
         }
         outf(&o, "]}");
     }
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
+    gw_io_expander_t exp;
+    gw_io_get_expander(&exp);
+    /* issue #74: unknown DOs (expander not answering) are null, never "off" */
+    outf(&o, "],\"io\":{\"di\":%u,\"do\":", io.di);
+    if (io.do_unknown) {
+        outf(&o, "null");
+    } else {
+        outf(&o, "%u", io.dout);
+    }
+    outf(&o, ",\"do_unknown\":%s,\"expander\":{\"ready\":%s,\"retrying\":%s,\"attempts\":%u}",
+         io.do_unknown ? "true" : "false", exp.ready ? "true" : "false",
+         exp.retrying ? "true" : "false", exp.attempts);
+    /* issue #75: what IO-3, IO-4, IO-6 and IO-7 added */
+    outf(&o, ",\"failsafe\":%s,\"counters\":[", io.failsafe ? "true" : "false");
+    for (int k = 0; k < GW_LOCAL_IO_CHANNELS; k++) {
+        outf(&o, "%s%llu", k ? "," : "", (unsigned long long)io.count[k]);
+    }
+    uint8_t rule_do = 0;
+    for (uint8_t r = 0; s_ctx.mode == GW_WEB_NORMAL && r < c->local_io.rule_count; r++) {
+        rule_do |= (uint8_t)(1u << c->local_io.rules[r].dout);
+    }
+    outf(&o, "],\"rule_do\":%u}", rule_do);
+    static const char *const alarm_keys[] = {"none", "device_offline", "mqtt_down", "config_error"};
+    gw_alarm_t alarm = gw_buzzer_alarm();
+    uint8_t enabled = gw_buzzer_alarms();
+    outf(&o, ",\"buzzer\":{\"alarm\":\"%s\",\"enabled\":[", alarm_keys[alarm & 3]);
+    bool first_alarm = true;
+    for (int a = GW_ALARM_DEVICE_OFFLINE; a <= GW_ALARM_CONFIG_ERROR; a++) {
+        if (enabled & GW_ALARM_BIT(a)) {
+            outf(&o, "%s\"%s\"", first_alarm ? "" : ",", alarm_keys[a]);
+            first_alarm = false;
+        }
+    }
+    /* TIME-1..3 */
+    gw_io_rtc_info_t rtc;
+    gw_io_rtc_get(&rtc);
+    bool synced = gw_edge_time_synced();
+    outf(&o, "]},\"time\":{\"utc_s\":%lld,\"synced\":%s,\"source\":\"%s\",\"rtc\":{"
+             "\"present\":%s,\"status\":",
+         (long long)time(NULL), synced ? "true" : "false",
+         synced ? "sntp" : rtc.restored ? "rtc" : "none", rtc.present ? "true" : "false");
+    out_str(&o, rtc.present ? gw_rtc_status_str((gw_rtc_status_t)rtc.status) : "not answering");
+    outf(&o, ",\"stores\":%lu}", (unsigned long)rtc.stores);
     outf(&o,
-         "],\"io\":{\"di\":%u,\"do\":%u},\"heap\":{\"internal_free\":%u,\"internal_min\":%u,"
+         "},\"heap\":{\"internal_free\":%u,\"internal_min\":%u,"
          "\"psram_free\":%u}}\n",
-         io.di, io.dout, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
          (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     out_flush(&o);

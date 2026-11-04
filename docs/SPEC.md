@@ -253,6 +253,7 @@ Encuesta N esclavos Modbus RTU por el RS485 integrado, con los tipos de 16 y 32 
 | `float64` (MB-6), o `uint64`/`int64`/`float64` con `scale` ≠ 1 u `offset` ≠ 0 | Double (10) |
 | `string` (MB-6) | String (12) |
 | `bool` con `bit` (MB-6) | Boolean (11) |
+| `bytes` (SPB-19) | Bytes (17) |
 
 ### 6.1 Claves opcionales fuera del MVP
 
@@ -402,6 +403,32 @@ En la tarjeta: carpeta `/sf` de una tarjeta FAT (no se formatea nunca), segmento
 - **`string`:** se corta en el primer NUL y se quitan los espacios finales; lo que no es ASCII imprimible se publica como `?`. Al escribir se rellena con NUL; un texto más largo que `2 × length` se rechaza. No admite `scale`, `offset` ni `deadband`.
 - **Escritura de un bit:** lectura del registro (FC03) y escritura del registro completo con el bit cambiado (FC06, o FC16 con escrituras múltiples forzadas).
 
+**Bloque de registros crudo (SPB-19), `type: bytes`.**
+
+```json
+{ "name": "Block", "area": "holding", "address": 220, "type": "bytes", "length": 3, "writable": true }
+```
+
+- `length` registros (1–16, obligatorio) que se publican como métrica **Bytes** (17): dos bytes por registro, el alto primero (el bajo primero con `BADC`/`DCBA`; el orden de palabras no se aplica). Sin ningún otro proceso: un NUL o un byte no ASCII viajan tal cual.
+- No admite `scale`, `offset`, `deadband`, `eng_low` ni `eng_high`. El reporte por excepción compara todos los bytes.
+- Un DCMD debe traer un valor Bytes de exactamente `2 × length` bytes; se escribe con una FC16.
+
+**Propiedades de métrica (SPB-16), en cada tag.**
+
+```json
+{ "name": "Voltage", "area": "input", "address": 0, "type": "float32", "units": "V",
+  "eng_low": 0, "eng_high": 400 }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `units` | texto | `""` | Hasta 15 caracteres. Se publica como la propiedad `engUnit` (String) en el DBIRTH; vacío = sin propiedad |
+| `eng_low` | número | — | Propiedad `engLow` (Float) en el DBIRTH. Dentro del rango de un Float (±3,4e38). No vale en tags `bool`, `string` ni `bytes` |
+| `eng_high` | número | — | Propiedad `engHigh` (Float) en el DBIRTH. Con las dos claves, `eng_high` > `eng_low` |
+
+- **Calidad (`Quality`, Int32):** 192 (GOOD) cuando la lectura respondió, 0 (BAD) cuando falló (excepción Modbus) o el tag nunca se leyó; con BAD el valor va además como `is_null`. Todo DBIRTH la lleva en cada métrica; un DDATA, solo cuando cambia. Las DO del nodo usan la misma regla: BAD mientras el expansor no responde.
+- Las propiedades viajan en el `PropertySet` de la métrica (claves y valores en el mismo orden). Un comando (NCMD/DCMD) con propiedades se acepta; sus propiedades se ignoran.
+
 **Lecturas en bloque por dispositivo (MB-11), en cada dispositivo.**
 
 ```json
@@ -415,6 +442,24 @@ En la tarjeta: carpeta `/sf` de una tarjeta FAT (no se formatea nunca), segmento
 | `max_gap` | entero | el del firmware (`0`) | 0–1999. Registros o bits sin usar que un bloque puede saltar para unir dos tags del mismo área. No se admite con `block_reads: false`. Un bloque nunca pasa de 125 registros ni de 2000 bits |
 
 Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `CONFIG_GW_MB_BLOCK_MAX_GAP`), como en el MVP.
+
+**Tipos de dispositivo como plantillas Sparkplug (SPB-18), en cada dispositivo.**
+
+```json
+{ "name": "PumpA", "unit_id": 1, "type": "Pump", "tags": [ … ] },
+{ "name": "PumpB", "unit_id": 2, "type": "Pump", "tags": [ … ] }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `type` | texto | `""` | Hasta 39 caracteres, sin `/ + #` ni `bdSeq`. Vacío = sin plantilla (una métrica por tag, como el MVP) |
+
+- Todos los dispositivos de un mismo `type` tienen los mismos tags: mismos nombres y datatypes, en el mismo orden (área, dirección, escala y unidades pueden cambiar). Si no, la configuración se rechaza con la ruta `devices[i].type`.
+- Las definiciones juntas describen como mucho **64 tags** (cada tipo cuenta una vez): el NBIRTH las lleva todas.
+- **NBIRTH:** una métrica Template (19) por tipo, con su nombre, `is_definition = true`, sin alias ni `template_ref`. Sus miembros: nombre, datatype, un valor por defecto (0, falso o texto vacío) y las propiedades `engUnit`/`engLow`/`engHigh` del primer dispositivo del tipo.
+- **DBIRTH:** una sola métrica Template, la instancia: nombre = el tipo, alias 100 + el primer tag del dispositivo, `template_ref` = el tipo. Sus miembros son los tags, por nombre y sin alias, con valor y `Quality`.
+- **DDATA:** la instancia por alias, solo con los miembros que cambiaron (por nombre).
+- **DCMD:** la instancia con los miembros a escribir (por nombre); también se acepta el tag por nombre como métrica suelta. Por alias, no: los miembros no tienen alias.
 
 **Encuesta rápida y lenta (MB-12).**
 
@@ -465,7 +510,7 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 
 - **Al reiniciar** (encendido, reinicio por software, *panic* o watchdog): `off` y `on` toman ese estado en cuanto la configuración es válida; `hold` conserva el estado que el expansor TCA9554 mantuvo durante el reinicio. Tras un corte de alimentación el expansor también se apaga: `hold` arranca en OFF.
 - **Antes de cargar la configuración** todas las DO pasan a OFF, salvo las `hold` de la última configuración válida (guardadas en NVS), que no se tocan. Las `on` se encienden recién con la configuración validada.
-- **Configuración rechazada** (recuperación) o puesta en marcha: todas a OFF, también las `hold`.
+- **Configuración rechazada** (recuperación) o puesta en marcha: todas a OFF, también las `hold`. Si el expansor no respondía al arrancar, se lo sigue reintentando con el mismo backoff y se apagan todas cuando responde.
 - **Sin sesión durante `failsafe_s`** (contados desde el arranque o desde la pérdida): las `off` y las `on` toman ese estado, una vez; las `hold` no cambian. Al volver la sesión, las DO quedan como están hasta el próximo NCMD; el NBIRTH informa su estado real.
 - Sin estas claves el equipo se comporta como el MVP: todas a OFF al reiniciar y sin reacción a la pérdida de MQTT.
 
@@ -519,6 +564,30 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 - **Botón BOOT:** 1 pitido al soltarlo entre 2 y 10 s (punto de acceso, NET-5) y 2 pitidos al confirmar el reset de fábrica (CFG-5), haya alarmas o no.
 - No hay forma de silenciar una alarma mientras dura su condición.
 
+**Diagnóstico del nodo (SPB-17, MB-13), en `sparkplug`.**
+
+```json
+"sparkplug": { "group_id": "Plant1", "edge_node_id": "GW01", "diagnostics_s": 60 }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `diagnostics_s` | entero | `60` | 0 o 10–86400. Cada cuánto se publica un NDATA con el diagnóstico. 0 = solo en el NBIRTH |
+
+Métricas del nodo, en el NBIRTH y en ese NDATA periódico:
+
+| Métrica | Alias | Datatype | Qué es |
+|---|---|---|---|
+| `Node Info/Uptime` | 50 | UInt64 | Segundos desde el arranque |
+| `Node Info/Free Heap` | 51 | UInt32 | Bytes libres de RAM interna |
+| `Node Info/Min Free Heap` | 52 | UInt32 | Mínimo de RAM interna libre desde el arranque |
+| `Node Info/RSSI` | 53 | Int32 | dBm del punto de acceso Wi-Fi; solo si el equipo tiene Wi-Fi configurado, `null` mientras no está asociado |
+| `Node Info/Modbus` | 54 | DataSet | Una fila por dispositivo: `Device` (String), `Online` (Boolean), `Cycles`, `Failed Cycles`, `OK`, `Timeout`, `CRC`, `Frame`, `Exception` (UInt32; los tres últimos cuentan intentos, reintentos incluidos) |
+
+- La tabla Modbus va en el NDATA solo si algún contador o estado cambió desde la última vez; uptime y heap van siempre.
+- **`Node Info/Time Synced`** (TIME-3, alias 55, Boolean): `true` cuando SNTP sincronizó el reloj al menos una vez desde el arranque. Una hora tomada del RTC al arrancar (TIME-2) es válida pero **no** cuenta como sincronizada. Va en el NBIRTH y en un NDATA propio cada vez que cambia (no en el periódico).
+- Los contadores son del nodo, no de cada dispositivo: así se publican también los de un dispositivo fuera de línea (sin DBIRTH), que es cuando más crecen.
+
 **`syslog` (REL-4): copia del log a un servidor syslog.**
 
 ```json
@@ -565,6 +634,20 @@ En el archivo `/cfg/config.json` un secreto ausente, vacío o `"********"` toma 
 | `GET /api/config` | Exporta la configuración guardada, con los secretos enmascarados. `?download=1` la entrega como archivo |
 | `PUT /api/config` (o `POST`) | Importa: valida, guarda de forma atómica (archivo temporal + `rename`) y reinicia de forma ordenada (NDEATH). `?dry_run=1` solo valida. Error: `400 {"ok":false,"error":"…","path":"devices[0].tags[1].type","line":0,"column":0}`; `413` si supera `CONFIG_GW_CONFIG_MAX_BYTES` |
 | `POST /api/restart` | Reinicio ordenado |
+| `GET /api/status` | Estado en vivo (también en recuperación y puesta en marcha). Ver abajo |
+
+**`GET /api/status`** devuelve un objeto con: `mode` (`normal`, `recovery`, `commissioning`), `firmware`, `reset_reason`, `uptime_s`, `config` (`ok`, `source`, `error`, `path`), `network` (`up`, `interfaces`), `mqtt` (`connected`), `sparkplug` (`group_id`, `edge_node_id`, `diagnostics_s`; solo con configuración válida), `syslog`, `devices` (por dispositivo: `online`, `cycles`, `failed`, `ok`, `timeout`, `crc`, `frame`, `exception` y `tags` con `name`, `valid` y `value`: número, entero exacto para `int64`/`uint64`, texto para `string`, hexadecimal para `bytes`), `heap` y:
+
+| Campo | Qué es |
+|---|---|
+| `io.di`, `io.do` | Bits de las DI y DO (bit n = canal n+1). `io.do` es `null` mientras el expansor no responde |
+| `io.do_unknown`, `io.expander` | El expansor no responde; `ready`, `retrying` (se reintenta con backoff) y `attempts` |
+| `io.failsafe` | IO-3: las DO tomaron su estado seguro por falta de sesión Sparkplug |
+| `io.rule_do` | IO-7: máscara de las DO que maneja una regla local (no aceptan NCMD) |
+| `io.counters` | IO-4: los 8 contadores de pulsos |
+| `buzzer.alarm`, `buzzer.enabled` | IO-6: alarma que suena ahora (`none`, `device_offline`, `mqtt_down`, `config_error`) y las habilitadas |
+| `time.utc_s`, `time.synced`, `time.source` | Hora del equipo (s UTC), si SNTP la sincronizó (TIME-3) y de dónde viene: `sntp`, `rtc` (TIME-2) o `none` |
+| `time.rtc` | `present`, `status` de la última lectura o escritura del RTC y `stores` (veces que se escribió tras SNTP) |
 
 ## 7. Criterios de aceptación del MVP
 

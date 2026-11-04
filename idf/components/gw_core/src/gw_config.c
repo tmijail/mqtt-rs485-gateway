@@ -1,9 +1,11 @@
 #include "gw_config.h"
+#include "gw_conv.h"
 
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <float.h>
 #include <string.h>
 
 #include "cJSON.h"
@@ -417,7 +419,8 @@ static bool check_topic_id(const char *s, const char *path, bool allow_empty, gw
 
 static const char *const k_area_names[] = {"coil", "discrete", "holding", "input"};
 static const char *const k_type_names[] = {"bool",  "uint16", "int16",   "uint32", "int32",
-                                           "float32", "uint64", "int64", "float64", "string"};
+                                           "float32", "uint64", "int64", "float64", "string",
+                                           "bytes"};
 #define TYPE_COUNT (sizeof(k_type_names) / sizeof(k_type_names[0]))
 /* "big"/"little" are the MVP names of ABCD/CDAB (MB-5); the four letter forms come with MB-6. */
 static const char *const k_word_names[] = {"big", "little", "ABCD", "CDAB", "BADC", "DCBA"};
@@ -771,13 +774,22 @@ static bool parse_store_forward(const cJSON *sp, gw_config_t *cfg, gw_cfg_err_t 
 static bool parse_sparkplug(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"group_id", "edge_node_id", "primary_host_id",
-                                       "store_forward"};
+                                       "store_forward", "diagnostics_s"};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "sparkplug");
     if (o == NULL) {
         return fail(err, "sparkplug", "sección obligatoria ausente");
     }
-    return check_keys(o, "sparkplug", keys, 4, err) &&
-           parse_store_forward(o, cfg, err) &&
+    long diag;
+    if (!check_keys(o, "sparkplug", keys, sizeof(keys) / sizeof(keys[0]), err) ||
+        !get_int(o, "diagnostics_s", "sparkplug", false, 60, 0, GW_DIAG_MAX_S, &diag, err)) {
+        return false;
+    }
+    if (diag != 0 && diag < GW_DIAG_MIN_S) {
+        return fail(err, "sparkplug.diagnostics_s", "0 (solo en el NBIRTH) o %d-%d s",
+                    GW_DIAG_MIN_S, GW_DIAG_MAX_S);
+    }
+    cfg->sparkplug.diagnostics_s = (uint32_t)diag;
+    return parse_store_forward(o, cfg, err) &&
            get_string(o, "group_id", "sparkplug", true, "", cfg->sparkplug.group_id,
                       sizeof(cfg->sparkplug.group_id), err) &&
            get_string(o, "edge_node_id", "sparkplug", true, "", cfg->sparkplug.edge_node_id,
@@ -1105,10 +1117,11 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
 {
     static const char *const keys[] = {"name",   "area",     "address",  "type",  "word_order",
                                        "scale",  "offset",   "deadband", "writable", "units",
-                                       "bit",    "length",   "scan"};
+                                       "bit",    "length",   "scan",  "eng_low", "eng_high"};
     static const char *const scans[] = {"fast", "slow"};
     int area, type, word, scan;
     long addr, bit, length;
+    double eng_low, eng_high;
     char p[96];
     if (!check_keys(o, path, keys, sizeof(keys) / sizeof(keys[0]), err) ||
         !get_string(o, "name", path, true, "", t->name, sizeof(t->name), err) ||
@@ -1123,9 +1136,19 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
         !get_string(o, "units", path, false, "", t->units, sizeof(t->units), err) ||
         !get_int(o, "bit", path, false, GW_NO_BIT, 0, 15, &bit, err) ||
         !get_int(o, "length", path, false, 0, 1, GW_STR_MAX_REGS, &length, err) ||
-        !get_enum(o, "scan", path, false, 0, scans, 2, &scan, err)) {
+        !get_enum(o, "scan", path, false, 0, scans, 2, &scan, err) ||
+        !get_double(o, "eng_low", path, 0.0, &eng_low, err) ||
+        !get_double(o, "eng_high", path, 0.0, &eng_high, err)) {
         return false;
     }
+    if (fabs(eng_low) > FLT_MAX || fabs(eng_high) > FLT_MAX) {
+        join(p, sizeof(p), path, fabs(eng_low) > FLT_MAX ? "eng_low" : "eng_high");
+        return fail(err, p, "fuera del rango de un Float (±3.4e38)");
+    }
+    t->eng_low = (float)eng_low;
+    t->eng_high = (float)eng_high;
+    t->has_eng_low = cJSON_GetObjectItemCaseSensitive(o, "eng_low") != NULL;
+    t->has_eng_high = cJSON_GetObjectItemCaseSensitive(o, "eng_high") != NULL;
     t->slow = scan == 1;
     t->area = (gw_area_t)area;
     t->type = (gw_type_t)type;
@@ -1160,10 +1183,12 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
                             "registro tal como llega");
     }
     bool has_length = cJSON_GetObjectItemCaseSensitive(o, "length") != NULL;
-    if ((t->type == GW_TYPE_STRING) != has_length) {
+    bool blob = t->type == GW_TYPE_STRING || t->type == GW_TYPE_BYTES;
+    if (blob != has_length) {
         join(p, sizeof(p), path, "length");
-        return fail(err, p, has_length ? "solo vale con type=string"
-                                       : "obligatorio con type=string (registros, 1-16)");
+        return fail(err, p, has_length ? "solo vale con type=string o bytes"
+                                       : "obligatorio con type=%s (registros, 1-16)",
+                    k_type_names[t->type]);
     }
     if (t->writable && t->area != GW_AREA_COIL && t->area != GW_AREA_HOLDING) {
         join(p, sizeof(p), path, "writable");
@@ -1177,8 +1202,7 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
         join(p, sizeof(p), path, "scale");
         return fail(err, p, "no puede ser 0");
     }
-    if ((t->type == GW_TYPE_BOOL || t->type == GW_TYPE_STRING) &&
-        (t->scale != 1.0 || t->offset != 0.0)) {
+    if ((t->type == GW_TYPE_BOOL || blob) && (t->scale != 1.0 || t->offset != 0.0)) {
         join(p, sizeof(p), path, "scale");
         return fail(err, p, "scale/offset no se admiten en tags %s", k_type_names[t->type]);
     }
@@ -1186,10 +1210,62 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
         join(p, sizeof(p), path, "deadband");
         return fail(err, p, "no puede ser negativo");
     }
-    if (t->type == GW_TYPE_STRING && t->deadband != 0.0) {
+    if (blob && t->deadband != 0.0) {
         join(p, sizeof(p), path, "deadband");
-        return fail(err, p, "no se admite en tags string");
+        return fail(err, p, "no se admite en tags %s", k_type_names[t->type]);
     }
+    /* SPB-16: the engineering range of a numeric value */
+    if ((t->has_eng_low || t->has_eng_high) && (t->type == GW_TYPE_BOOL || blob)) {
+        join(p, sizeof(p), path, t->has_eng_low ? "eng_low" : "eng_high");
+        return fail(err, p, "no se admite en tags %s", k_type_names[t->type]);
+    }
+    if (t->has_eng_low && t->has_eng_high && t->eng_low >= t->eng_high) {
+        join(p, sizeof(p), path, "eng_high");
+        return fail(err, p, "debe ser mayor que eng_low (%g)", t->eng_low);
+    }
+    return true;
+}
+
+/* SPB-18: every device of a type has the same tags (names and datatypes, in order): the type
+ * is one Sparkplug template definition. The definitions together describe at most
+ * GW_MAX_TEMPLATE_TAGS tags, so the NBIRTH that carries them stays bounded. */
+static bool check_device_type(const gw_config_t *cfg, const gw_device_cfg_t *d, const char *path,
+                              unsigned *template_tags, gw_cfg_err_t *err)
+{
+    if (d->type[0] == '\0') {
+        return true;
+    }
+    char p[48];
+    snprintf(p, sizeof(p), "%s.type", path);
+    if (!check_topic_id(d->type, p, false, err)) {
+        return false;
+    }
+    if (strcmp(d->type, "bdSeq") == 0) {
+        return fail(err, p, "'bdSeq' es una métrica del nodo");
+    }
+    for (uint16_t j = 0; j < cfg->device_count; j++) {
+        const gw_device_cfg_t *o = &cfg->devices[j];
+        if (strcmp(o->type, d->type) != 0) {
+            continue;
+        }
+        bool same = o->tag_count == d->tag_count;
+        for (uint16_t k = 0; same && k < d->tag_count; k++) {
+            const gw_tag_cfg_t *a = &cfg->tags[o->first_tag + k];
+            const gw_tag_cfg_t *b = &cfg->tags[d->first_tag + k];
+            same = strcmp(a->name, b->name) == 0 && gw_conv_datatype(a) == gw_conv_datatype(b);
+        }
+        if (!same) {
+            return fail(err, p, "el tipo '%s' ya lo define devices[%u] (%s) con otros tags: los "
+                                "dispositivos de un tipo deben tener los mismos nombres y "
+                                "datatypes, en el mismo orden", d->type, j, o->name);
+        }
+        return true;
+    }
+    if (*template_tags + d->tag_count > GW_MAX_TEMPLATE_TAGS) {
+        return fail(err, p, "los tipos de dispositivo describen más de %d tags en total (el "
+                            "NBIRTH lleva sus definiciones)", GW_MAX_TEMPLATE_TAGS);
+    }
+    *template_tags += d->tag_count;
     return true;
 }
 
@@ -1197,12 +1273,13 @@ static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_
                          gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"name",        "unit_id", "poll_ms", "slow_poll_ms",
-                                       "offline_after", "block_reads", "max_gap", "tags"};
+                                       "offline_after", "block_reads", "max_gap", "tags", "type"};
     long unit, poll, off, gap, slow;
     bool merge;
     char p[96];
     if (!check_keys(o, path, keys, sizeof(keys) / sizeof(keys[0]), err) ||
         !get_string(o, "name", path, true, "", d->name, sizeof(d->name), err) ||
+        !get_string(o, "type", path, false, "", d->type, sizeof(d->type), err) ||
         !get_int(o, "unit_id", path, true, 0, 1, 247, &unit, err) ||
         !get_int(o, "poll_ms", path, false, 1000, 50, 3600000, &poll, err) ||
         !get_int(o, "slow_poll_ms", path, false, poll * 10 < 3600000 ? poll * 10 : 3600000, 50,
@@ -1283,6 +1360,7 @@ static bool parse_devices(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err
     if (n > GW_MAX_DEVICES) {
         return fail(err, "devices", "%d dispositivos; el máximo es %d", n, GW_MAX_DEVICES);
     }
+    unsigned template_tags = 0;
     int i = 0;
     for (const cJSON *it = arr->child; it != NULL; it = it->next, i++) {
         char path[32];
@@ -1297,6 +1375,9 @@ static bool parse_devices(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err
                 snprintf(p, sizeof(p), "%s.name", path);
                 return fail(err, p, "nombre de dispositivo duplicado '%s'", d->name);
             }
+        }
+        if (!check_device_type(cfg, d, path, &template_tags, err)) {
+            return false;
         }
         cfg->device_count++;
     }
@@ -1431,6 +1512,7 @@ uint16_t gw_tag_width(const gw_tag_cfg_t *tag)
     case GW_TYPE_FLOAT64:
         return 4;
     case GW_TYPE_STRING:
+    case GW_TYPE_BYTES:
         return tag->length;
     default:
         return 1;   /* 16-bit types, coils, discrete inputs and register bits */

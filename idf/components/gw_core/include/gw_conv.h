@@ -32,6 +32,7 @@ typedef enum {
     GW_VK_INT64,        /* .i64: unscaled int64 */
     GW_VK_UINT64,       /* .u64: unscaled uint64 */
     GW_VK_STRING,       /* .str */
+    GW_VK_BYTES,        /* .str holds exactly 2 x length raw bytes (SPB-19) */
 } gw_val_kind_t;
 
 /** true when scale/offset alter the raw value (the metric is then published as Float/Double). */

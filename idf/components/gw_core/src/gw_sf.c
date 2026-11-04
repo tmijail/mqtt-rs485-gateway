@@ -106,7 +106,15 @@ void gw_sf_push_u64(gw_sf_t *sf, uint8_t dev, uint16_t metric, uint64_t bits, bo
 void gw_sf_push_str(gw_sf_t *sf, uint8_t dev, uint16_t metric, const char *s, bool is_null,
                     uint64_t ts_ms)
 {
-    size_t len = is_null || s == NULL ? 0 : strnlen(s, 255);
+    gw_sf_push_bytes(sf, dev, metric, s, is_null || s == NULL ? 0 : strnlen(s, 255), is_null,
+                     ts_ms);
+}
+
+void gw_sf_push_bytes(gw_sf_t *sf, uint8_t dev, uint16_t metric, const void *data, size_t len,
+                      bool is_null, uint64_t ts_ms)
+{
+    const char *s = data;
+    len = is_null || s == NULL ? 0 : (len > 255 ? 255 : len);
     push(sf, dev, metric, len, 0, false, (uint8_t)(GW_SF_STR | (is_null ? GW_SF_NULL : 0)),
          ts_ms);
     for (size_t off = 0; off < len; off += 8) {

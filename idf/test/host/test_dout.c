@@ -236,6 +236,32 @@ static void test_write_mask_in_one_transaction(void)
 }
 
 /* Issue #8: an expander that does not answer at boot is retried at 1, 2, 4 ... 60 s. */
+/* Issue #74: the boot step kept a "hold" output, the expander did not answer, and the
+ * configuration was then rejected (recovery): the hold mask is cleared (gw_io_outputs_all_off)
+ * and the retry switches every output off, the held one too, although the latch kept it on. */
+static void test_recovery_without_configuration_switches_held_outputs_off(void)
+{
+    gw_dout_t d;
+    f.absent = true;
+    TEST_ASSERT_EQUAL(ERR_BUS, gw_dout_init(&d, &k_bus, 0xFF, 0x08));   /* DO4 "hold" */
+    d.hold = 0;                                                        /* no valid config */
+    TEST_ASSERT_FALSE(gw_dout_recover(&d, 1000));
+    f.absent = false;
+    f.reg[GW_TCA9554_REG_CONFIG] = 0x00;                 /* warm: outputs, DO4 and DO1 on */
+    f.reg[GW_TCA9554_REG_OUTPUT] = 0xF6;
+    TEST_ASSERT_TRUE(gw_dout_recover(&d, 2000));
+    TEST_ASSERT_EQUAL_HEX8(0xFF, f.reg[GW_TCA9554_REG_OUTPUT]);   /* every DO off */
+    TEST_ASSERT_EQUAL_HEX8(0x00, gw_dout_state(&d));
+    /* the same retry with the hold mask still set would have kept DO4 */
+    f.absent = true;
+    TEST_ASSERT_EQUAL(ERR_BUS, gw_dout_init(&d, &k_bus, 0xFF, 0x08));
+    TEST_ASSERT_FALSE(gw_dout_recover(&d, 1000));
+    f.absent = false;
+    f.reg[GW_TCA9554_REG_OUTPUT] = 0xF6;
+    TEST_ASSERT_TRUE(gw_dout_recover(&d, 2000));
+    TEST_ASSERT_EQUAL_HEX8(0x08, gw_dout_state(&d));
+}
+
 static void test_recovery_with_backoff(void)
 {
     gw_dout_t d;
@@ -282,5 +308,6 @@ int main(void)
     RUN_TEST(test_power_up_hold_starts_off);
     RUN_TEST(test_write_mask_in_one_transaction);
     RUN_TEST(test_recovery_with_backoff);
+    RUN_TEST(test_recovery_without_configuration_switches_held_outputs_off);
     return UNITY_END();
 }

@@ -6,10 +6,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_check.h"
 #include "esp_console.h"
 #include "esp_heap_caps.h"
+#include "esp_ipc.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -23,6 +25,7 @@
 #include "gw_log.h"
 #include "gw_mbap.h"
 #include "gw_net.h"
+#include "gw_rtc.h"
 #include "gw_status.h"
 #include "gw_storage.h"
 #include "gw_tagdb.h"
@@ -292,11 +295,31 @@ static int cmd_status(int argc, char **argv)
 #endif
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
+    gw_io_expander_t exp;
+    gw_io_get_expander(&exp);
     if (io.do_unknown) {
-        out("local    DI 0x%02x, DO unknown: output expander not answering (retrying)\n", io.di);
+        out("local    DI 0x%02x, DO unknown: output expander not answering (%s, %u attempt(s))\n",
+            io.di, exp.retrying ? "retrying" : "not retried", exp.attempts);
     } else {
         out("local    DI 0x%02x, DO 0x%02x (bit n = channel n+1, 1 = active)%s\n", io.di, io.dout,
             io.failsafe ? ", failsafe: safe state applied (no Sparkplug session)" : "");
+    }
+    /* TIME-1/TIME-2: the clock and where it came from */
+    gw_io_rtc_info_t rtc;
+    gw_io_rtc_get(&rtc);
+    time_t now = time(NULL);
+    struct tm tm;
+    gmtime_r(&now, &tm);
+    bool synced = gw_edge_time_synced();
+    out("time     %04d-%02d-%02dT%02d:%02d:%02dZ, %s; RTC ", tm.tm_year + 1900, tm.tm_mon + 1,
+        tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
+        synced ? "SNTP synchronised" : rtc.restored ? "from the RTC (not synchronised)"
+                                                    : "not set (no SNTP yet)");
+    if (!rtc.present) {
+        out("not answering\n");
+    } else {
+        out("%s, stored %lu time(s)%s\n", gw_rtc_status_str((gw_rtc_status_t)rtc.status),
+            (unsigned long)rtc.stores, rtc.store_errors ? ", write errors" : "");
     }
     out("counters");   /* IO-4: activations of each DI */
     for (int i = 0; i < 8; i++) {
@@ -321,6 +344,17 @@ static int cmd_status(int argc, char **argv)
         }
     }
     out(" (core)\n");
+    /* Lowest free stack since boot of the tasks of ours whose depth depends on the traffic
+     * (Sparkplug: births, nested template/DataSet coding, history replay; Modbus) */
+    static const char *const deep[] = {"sparkplug", "mqtt_task", "rs485_bus", "local_io", "httpd"};
+    out("stack   ");
+    for (size_t i = 0; i < sizeof(deep) / sizeof(deep[0]); i++) {
+        TaskHandle_t h = xTaskGetHandle(deep[i]);
+        if (h != NULL) {
+            out(" %s %u", deep[i], (unsigned)uxTaskGetStackHighWaterMark(h));
+        }
+    }
+    out(" (B free, high-water mark)\n");
     out("heap     internal %u B free (minimum %u B), PSRAM %u B free\n",
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
@@ -837,13 +871,43 @@ static int cmd_boot(int argc, char **argv)
 }
 /* Emulator only: crash on purpose, so the E2E can check the core dump in flash and the
  * "panic" reset reason. */
+/* Issue #62: on the chip the panic handler stalls the other core (RTC_CNTL software stall)
+ * while it writes the core dump; QEMU does not emulate that stall, so the other core kept
+ * running tasks, changing their stacks and the task list between the two passes of the ELF
+ * writer (truncated or overflowing dumps, nested aborts, wrong checksums). The emulator-only
+ * 'panic' parks the other core first, as the hardware would, then aborts on a task pinned to
+ * this side (a migrating console task could otherwise park itself). */
+static void park_core(void *arg)
+{
+    (void)arg;
+    portDISABLE_INTERRUPTS();
+    for (;;) {
+    }
+}
+
+static void panic_task(void *arg)
+{
+    (void)arg;
+#if !CONFIG_FREERTOS_UNICORE
+    esp_ipc_call(1, park_core, NULL);   /* returns once core 1 runs it: it never comes back */
+#endif
+    printf("panic requested from the console\n");
+    fflush(stdout);
+    abort();
+}
+
 static int cmd_panic(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
-    printf("panic requested from the console\n");
-    fflush(stdout);
-    abort();
+    if (xTaskCreatePinnedToCore(panic_task, "panic", 3072, NULL, configMAX_PRIORITIES - 1, NULL,
+                                0) != pdPASS) {
+        printf("panic requested from the console (other core not parked)\n");
+        fflush(stdout);
+        abort();
+    }
+    vTaskDelay(portMAX_DELAY);
+    return 0;
 }
 #endif
 
@@ -858,6 +922,21 @@ ATOMIC(cmd_mbread)
 #endif
 #if CONFIG_GW_IO_SIMULATED
 ATOMIC(cmd_di)
+
+/* Issue #74: the simulated expander stays silent for a while after the next boot. */
+static int cmd_expander(int argc, char **argv)
+{
+    long ms = argc == 3 && strcmp(argv[1], "absent") == 0 ? strtol(argv[2], NULL, 10) : -1;
+    if (ms < 1 || ms > 600000) {
+        out("usage: expander absent <1-600000 ms>\n");
+        return 1;
+    }
+    gw_io_sim_expander_absent((uint32_t)ms);
+    out("expander silent for %ld ms after the next boot\n", ms);
+    return 0;
+}
+
+ATOMIC(cmd_expander)
 ATOMIC(cmd_boot)
 #endif
 
@@ -913,6 +992,8 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
 #if CONFIG_GW_IO_SIMULATED
         {.command = "di", .help = "Emulator only: set a simulated input", .hint = "<1-8> <0|1>",
          .func = cmd_di_atomic},
+        {.command = "expander", .help = "Emulator only: the DO expander does not answer for a "
+         "while after the next boot (issue #74)", .hint = "absent <ms>", .func = cmd_expander_atomic},
         {.command = "boot", .help = "Emulator only: press (1) or release (0) the BOOT button",
          .hint = "<0|1>", .func = cmd_boot_atomic},
         {.command = "panic", .help = "Emulator only: abort() (core dump test)", .func = cmd_panic},

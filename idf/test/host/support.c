@@ -268,6 +268,18 @@ static void rec_reboot(void *ctx)
     g_rec.reboots++;
 }
 
+void recorder_default_diag(void)
+{
+    g_rec.diag = (gw_node_diag_t){.uptime_s = 12, .free_heap = 150000, .min_free_heap = 140000,
+                                  .has_rssi = true, .rssi_valid = false};
+}
+
+static void rec_diagnostics(void *ctx, gw_node_diag_t *out)
+{
+    (void)ctx;
+    *out = g_rec.diag;
+}
+
 gw_node_ops_t recorder_ops(void)
 {
     gw_node_ops_t ops = {
@@ -277,26 +289,37 @@ gw_node_ops_t recorder_ops(void)
         .write_room = rec_write_room,
         .set_scan_rate = rec_set_scan_rate,
         .reboot = rec_reboot,
+        .diagnostics = rec_diagnostics,
         .ctx = NULL,
     };
     return ops;
 }
 
+void support_node_buffer(gw_node_t *n)
+{
+    /* a few nodes may live at once (spb_dump): one buffer each, from a small pool */
+    static uint8_t pool[4][GW_SPB_PAYLOAD_MAX];
+    static size_t next;
+    gw_node_set_buffer(n, pool[next++ % 4], GW_SPB_PAYLOAD_MAX);
+}
+
 void recorder_clear(void)
 {
+    gw_node_diag_t diag = g_rec.diag;
     memset(&g_rec, 0, sizeof(g_rec));
+    g_rec.diag = diag;   /* the node's conditions stay as the test set them */
 }
 
 /* ---------- decoding ---------- */
 
-static bool dec_cb(void *ctx, const spb_rx_metric_t *m)
+static void fill_dec(dec_metric_t *o, const spb_rx_metric_t *m)
 {
-    decoded_t *d = ctx;
-    if (d->count >= DEC_MAX) {
-        return false;
-    }
-    __typeof__(d->m[0]) *o = &d->m[d->count++];
     memset(o, 0, sizeof(*o));
+    o->has_alias = m->has_alias;
+    o->has_ref = m->tmpl.has_ref;
+    memcpy(o->ref, m->tmpl.ref, sizeof(o->ref));
+    o->is_definition = m->tmpl.is_definition;
+    o->members = m->tmpl.members;
     if (m->name) {
         o->has_name = true;
         snprintf(o->name, sizeof(o->name), "%s", m->name);
@@ -310,11 +333,50 @@ static bool dec_cb(void *ctx, const spb_rx_metric_t *m)
     if (m->kind == SPB_VAL_LONG) {
         o->u64 = m->v.l;
     }
-    if (m->kind == SPB_VAL_STRING) {
+    if (m->kind == SPB_VAL_BYTES) {
+        o->bytes_len = m->v.bytes.len;
+        memcpy(o->bytes, m->v.bytes.data, m->v.bytes.len);
+    } else if (m->kind == SPB_VAL_STRING) {
         snprintf(o->str, sizeof(o->str), "%s", m->v.s);
     } else {
         spb_rx_number(m, m->datatype, &o->num);
     }
+    o->prop_count = m->prop_count;
+    const spb_rx_prop_t *p = spb_rx_prop(m, "Quality");
+    if (p != NULL && p->kind == SPB_VAL_INT) {
+        o->has_quality = true;
+        o->quality = (int32_t)p->v.i;
+    }
+    if ((p = spb_rx_prop(m, "engUnit")) != NULL && p->kind == SPB_VAL_STRING) {
+        snprintf(o->eng_unit, sizeof(o->eng_unit), "%s", p->s);
+    }
+    if ((p = spb_rx_prop(m, "engLow")) != NULL && p->kind == SPB_VAL_FLOAT) {
+        o->has_eng_low = true;
+        o->eng_low = p->v.f;
+    }
+    if ((p = spb_rx_prop(m, "engHigh")) != NULL && p->kind == SPB_VAL_FLOAT) {
+        o->has_eng_high = true;
+        o->eng_high = p->v.f;
+    }
+}
+
+static bool dec_cb(void *ctx, const spb_rx_metric_t *m)
+{
+    decoded_t *d = ctx;
+    if (d->count >= DEC_MAX) {
+        return false;
+    }
+    fill_dec(&d->m[d->count++], m);
+    return true;
+}
+
+static bool dec_member_cb(void *ctx, const spb_rx_metric_t *m)
+{
+    decoded_t *d = ctx;
+    if (d->mem_count >= DEC_MAX) {
+        return false;
+    }
+    fill_dec(&d->mem[d->mem_count++], m);
     return true;
 }
 
@@ -322,7 +384,8 @@ bool decode_payload(const uint8_t *buf, size_t len, decoded_t *out)
 {
     memset(out, 0, sizeof(*out));
     spb_rx_header_t hdr;
-    if (!spb_decode(buf, len, &hdr, dec_cb, out)) {
+    const spb_decoder_t d = {.metric = dec_cb, .member = dec_member_cb, .ctx = out};
+    if (!spb_decode_with(buf, len, &hdr, &d)) {
         return false;
     }
     out->has_seq = hdr.has_seq;

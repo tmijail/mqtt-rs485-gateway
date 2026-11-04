@@ -92,10 +92,10 @@ function renderForms(){
  $("#f-rs485").innerHTML=field("rs485.baud","Baudios","int")+field("rs485.parity","Paridad","sel",PAR)+field("rs485.stop_bits","Bits de stop","int")+field("rs485.response_timeout_ms","Timeout (ms)","int")+field("rs485.retries","Reintentos","int")+field("rs485.inter_frame_delay_ms","Retardo entre tramas (ms)","int")+field("local_io.di_debounce_ms","Debounce DI (ms)","int");
  $("#f-web").innerHTML=field("web.username","Usuario","str")+field("web.password","Contraseña (mín. 8)","pw")+field("web.port","Puerto","int");
  const devs=cfg.devices||[];
- $("#f-dev").innerHTML=devs.map((d,i)=>`<div class="card"><div class="grid">${field(`devices.${i}.name`,"Nombre","str")+field(`devices.${i}.unit_id`,"Unit ID","int")+field(`devices.${i}.poll_ms`,"Encuesta (ms)","int")+field(`devices.${i}.offline_after`,"Fuera de línea tras","int")}</div>
- <table><tr><th>Tag</th><th>Área</th><th>Dirección</th><th>Tipo</th><th>Orden</th><th>Escala</th><th>Offset</th><th>Banda</th><th>Escr.</th><th>Unid.</th><th></th></tr>
+ $("#f-dev").innerHTML=devs.map((d,i)=>`<div class="card"><div class="grid">${field(`devices.${i}.name`,"Nombre","str")+field(`devices.${i}.unit_id`,"Unit ID","int")+field(`devices.${i}.poll_ms`,"Encuesta (ms)","int")+field(`devices.${i}.offline_after`,"Fuera de línea tras","int")+field(`devices.${i}.type`,"Tipo (plantilla)","str")}</div>
+ <table><tr><th>Tag</th><th>Área</th><th>Dirección</th><th>Tipo</th><th>Orden</th><th>Escala</th><th>Offset</th><th>Banda</th><th>Escr.</th><th>Unid.</th><th>Mín. ing.</th><th>Máx. ing.</th><th></th></tr>
  ${(d.tags||[]).map((t,k)=>{const p=`devices.${i}.tags.${k}`;const c=(f,kind,o)=>`<td>${field(p+"."+f,"",kind,o).replace(/^<label>|<\/label>$/g,"")}</td>`;
-  return `<tr>${c("name","str")}${c("area","sel",AREA)}${c("address","int")}${c("type","sel",TYPE)}${c("word_order","sel",WO)}${c("scale","num")}${c("offset","num")}${c("deadband","num")}${c("writable","bool")}${c("units","str")}<td><button data-del-tag="${i}.${k}">x</button></td></tr>`}).join("")}
+  return `<tr>${c("name","str")}${c("area","sel",AREA)}${c("address","int")}${c("type","sel",TYPE)}${c("word_order","sel",WO)}${c("scale","num")}${c("offset","num")}${c("deadband","num")}${c("writable","bool")}${c("units","str")}${c("eng_low","num")}${c("eng_high","num")}<td><button data-del-tag="${i}.${k}">x</button></td></tr>`}).join("")}
  </table><div class="row"><button data-add-tag="${i}">+ tag</button><button data-del-dev="${i}">Quitar dispositivo</button></div></div>`).join("");
 }
 function readForms(){
@@ -152,7 +152,13 @@ async function poll(){
  $("#st-net").innerHTML=`<p>Red ${yes(s.network.up,"arriba","sin IP")} · MQTT ${yes(s.mqtt.connected,"conectado","desconectado")}${s.syslog?` · syslog ${esc(s.syslog)}`:""}</p><table><tr><th>Interfaz</th><th>Estado</th><th>IPv4</th><th>IPv6</th></tr>${s.network.interfaces.map(i=>`<tr><td>${i.name}${i.active?" (activa)":""}</td><td>${!i.configured?"no configurada":!i.link?"sin enlace":i.usable?"arriba":"sin dirección"}</td><td>${i.ipv4||""}</td><td>${(i.ipv6||[]).join("<br>")}</td></tr>`).join("")}</table>`;
  $("#st-mb").innerHTML=s.devices.length?`<table><tr><th>Dispositivo</th><th>Unit</th><th>Estado</th><th>Ciclos / fallidos</th><th>OK / timeout / CRC / trama / excepción</th><th>Valores</th></tr>${s.devices.map(d=>`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td>${yes(d.online,"en línea","fuera de línea")}</td><td>${d.cycles} / ${d.failed}</td><td>${d.ok} / ${d.timeout} / ${d.crc} / ${d.frame} / ${d.exception}</td><td>${d.tags.map(t=>`${esc(t.name)}=${t.valid?t.value:"—"}`).join(", ")}</td></tr>`).join("")}</table>`:"sin dispositivos";
  const bits=(v)=>[...Array(8)].map((_,i)=>`<span class="${v>>i&1?"ok":"mut"}">${i+1}</span>`).join(" ");
- $("#st-io").innerHTML=`DI: ${bits(s.io.di)}<br>DO: ${bits(s.io.do)}`;
+ const AL={none:"en silencio",device_offline:"dispositivo fuera de línea",mqtt_down:"sin sesión MQTT",config_error:"configuración rechazada"};
+ const io=s.io,rules=io.rule_do?[...Array(8)].map((_,i)=>io.rule_do>>i&1?`DO/${i+1}`:"").filter(x=>x).join(", "):"ninguna";
+ $("#st-io").innerHTML=`DI: ${bits(io.di)}<br>DO: ${io.do==null?`<span class="bad">desconocidas: el expansor no responde</span> (${io.expander.retrying?"reintentando, ":""}${io.expander.attempts} intentos)`:bits(io.do)}`+
+  `<br>Estado seguro (failsafe): ${io.failsafe?`<span class="bad">aplicado (sin sesión Sparkplug)</span>`:"no"} · DO con regla local: ${rules}`+
+  `<br>Contadores: ${io.counters.map((c,i)=>`${i+1}: ${c}`).join(" · ")}`+
+  `<br>Buzzer: ${s.buzzer.alarm==="none"?"en silencio":`<span class="bad">${AL[s.buzzer.alarm]}</span>`} (alarmas: ${s.buzzer.enabled.map(a=>AL[a]).join(", ")||"ninguna"})`+
+  `<br>Hora: ${new Date(s.time.utc_s*1000).toISOString()} · ${s.time.synced?yes(true,"sincronizada por SNTP",""):s.time.source==="rtc"?"del RTC (sin sincronizar)":`<span class="bad">sin hora válida</span>`} · RTC ${esc(s.time.rtc.status)}`;
 }
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>show(b.dataset.tab));
 $("#b-check").onclick=()=>put(true);$("#b-save").onclick=()=>put(false);

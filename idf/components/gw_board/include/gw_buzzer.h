@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "gw_config.h"
 #include "sdkconfig.h"
 
 #ifdef __cplusplus
@@ -20,6 +21,10 @@ esp_err_t gw_buzzer_start(void);
 /** Alarms that may sound (GW_ALARM_BIT() mask) and how long MQTT down / device offline
  *  must last first. Callable at any time. */
 void gw_buzzer_configure(uint8_t alarms, uint32_t after_s);
+
+/** Issue #75: the alarm sounding now (GW_ALARM_NONE: silent) and the enabled ones. */
+gw_alarm_t gw_buzzer_alarm(void);
+uint8_t gw_buzzer_alarms(void);
 
 /** Play @p beeps beeps (asynchronous). */
 void gw_buzzer_beep(uint8_t beeps);
