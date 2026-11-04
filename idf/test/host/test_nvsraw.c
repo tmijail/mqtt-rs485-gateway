@@ -503,16 +503,41 @@ static void test_decide_copy_out_of_reach(void)
     st.kind = GW_NVSRAW_ENCRYPTED;
     st.mig_busy = true;
     TEST_ASSERT_EQUAL(GW_NVSMIG_OPEN_ENCRYPTED, gw_nvsmig_decide(&st));
-    /* issue #108 B2: an unencrypted partition with the keys present may be partly erased (cut
-     * during the erase): no NVS either; without the keys no migration ever started */
+    /* issue #108 B2, #109: an unencrypted partition with the keys present is partly erased only
+     * when it has the "erase in progress" entry (cut during the erase): no NVS; without it the
+     * migration stopped before the erase and the partition is intact: it stays unencrypted */
     st.copy_unknown = true;
     for (int t = 0; t < 2; t++) {
         st.on_trial = t;
+        st.erase_marker = true;
         st.kind = GW_NVSRAW_PLAIN;
         TEST_ASSERT_EQUAL(GW_NVSMIG_NO_NVS, gw_nvsmig_decide(&st));
         st.kind = GW_NVSRAW_MIXED;
         TEST_ASSERT_EQUAL(GW_NVSMIG_NO_NVS, gw_nvsmig_decide(&st));
+        st.erase_marker = false;
+        st.kind = GW_NVSRAW_PLAIN;
+        TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(&st));
+        st.kind = GW_NVSRAW_MIXED;
+        TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(&st));
     }
+    /* the entry without the keys (it cannot happen: the keys come first): as without the keys */
+    st.on_trial = false;
+    st.erase_marker = true;
+    st.keys = false;
+    st.kind = GW_NVSRAW_PLAIN;
+    TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(&st));
+    st.keys = true;
+    st.erase_marker = false;
+    /* with the copy within reach the entry changes nothing: the copy completes the partition */
+    st.copy_unknown = false;
+    st.can_copy = true;
+    st.copy = GW_NVSMIG_COPY_VALID;
+    st.erase_marker = true;
+    TEST_ASSERT_EQUAL(GW_NVSMIG_MIGRATE, gw_nvsmig_decide(&st));
+    st.copy = GW_NVSMIG_COPY_NONE;
+    st.can_copy = false;
+    st.erase_marker = false;
+    st.copy_unknown = true;
     st.on_trial = false;
     st.keys = false;
     st.kind = GW_NVSRAW_PLAIN;

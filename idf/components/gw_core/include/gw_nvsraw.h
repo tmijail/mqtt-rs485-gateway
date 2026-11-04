@@ -201,7 +201,11 @@ typedef struct {
      * (copy is then NONE: nothing could be looked at) */
     bool copy_unknown;
     bool keys;               /* the NVS keys can be read (an encrypted NVS was used here before) */
-    bool mig_busy;           /* the encrypted NVS has a migration's start marker, not its end */
+    bool mig_busy;           /* the encrypted NVS has a migration's start marker, not its end, or
+                              * it does not even start (issue #109 B-d) */
+    bool erase_marker;       /* issue #109: the plain NVS has the "erase in progress" entry a
+                              * migration writes just before it erases the partition (the erase
+                              * removes that entry last) */
 } gw_nvsmig_state_t;
 
 /**
@@ -209,9 +213,11 @@ typedef struct {
  *  - a copy that exists but cannot be read: NO_NVS (it may hold the only copy of the entries);
  *  - issue #104: LittleFS not mountable (a copy may be there, copy_unknown) and the partition
  *    looks like an interrupted migration: EMPTY with the NVS keys present (cut right after the
- *    erase), PLAIN or MIXED with the keys present (cut during the erase, issue #108 B2), or
- *    ENCRYPTED with the start marker and not the end one (cut while writing): NO_NVS, not an
- *    empty, partly erased or partial NVS whose new entries the resume would then drop;
+ *    erase), PLAIN or MIXED with the keys present and the "erase in progress" entry (cut during
+ *    the erase, issues #108 B2 and #109: without that entry the erase never started and the
+ *    partition is intact), or ENCRYPTED with the start marker and not the end one (cut while
+ *    writing): NO_NVS, not an empty, partly erased or partial NVS whose new entries the resume
+ *    would then drop;
  *  - a raw page that cannot be read: no migration. With a valid copy NO_NVS; readable pages
  *    all encrypted OPEN_ENCRYPTED (staying unencrypted would make NVS discard their entries);
  *    readable pages all plain STAY_PLAIN (an unread page holds plain or encrypted entries; the

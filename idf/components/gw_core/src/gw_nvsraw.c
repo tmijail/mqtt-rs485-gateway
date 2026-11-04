@@ -467,7 +467,9 @@ gw_nvsmig_action_t gw_nvsmig_decide(const gw_nvsmig_state_t *s)
     if (s->copy == GW_NVSMIG_COPY_UNREADABLE) {
         return GW_NVSMIG_NO_NVS;
     }
-    if (s->copy_unknown && ((s->kind != GW_NVSRAW_ENCRYPTED && s->keys) ||
+    if (s->copy_unknown && ((s->kind == GW_NVSRAW_EMPTY && s->keys) ||
+                            ((s->kind == GW_NVSRAW_PLAIN || s->kind == GW_NVSRAW_MIXED) && s->keys &&
+                             s->erase_marker) ||
                             (s->kind == GW_NVSRAW_ENCRYPTED && s->mig_busy))) {
         return GW_NVSMIG_NO_NVS;   /* issue #104: the copy that would finish it is out of reach */
     }
