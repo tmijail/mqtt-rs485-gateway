@@ -250,6 +250,59 @@ Encuesta N esclavos Modbus RTU por el RS485 integrado, con los tipos de 16 y 32 
 | `float32` | Float (9) |
 | Cualquier tipo con `scale` ≠ 1 u `offset` ≠ 0 | Float (9) |
 
+### 6.1 Claves opcionales fuera del MVP
+
+Todas son opcionales. Si faltan, el equipo se comporta como el MVP. Las claves desconocidas siguen siendo un error.
+
+**`network.wifi` (NET-4): Wi-Fi STA como alternativa o respaldo de Ethernet.**
+
+```json
+"network": { "dhcp": true,
+             "wifi": { "enabled": true, "ssid": "Planta", "password": "secreto123",
+                       "role": "backup", "failback_s": 30, "dhcp": true } }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `enabled` | bool | `false` | `false` = solo Ethernet |
+| `ssid` | texto | `""` | 1–32 bytes; obligatorio con `enabled=true` |
+| `password` | texto | `""` | vacío (red abierta), 8–63 caracteres (WPA2) o 64 dígitos hexadecimales (PSK) |
+| `role` | `backup` \| `primary` | `backup` | `backup`: Ethernet gana la ruta por defecto y Wi-Fi solo se usa sin Ethernet. `primary`: al revés |
+| `failback_s` | entero | `30` | 0–3600. Tiempo que la interfaz preferida debe estar arriba, sin cortes, para recuperar la sesión |
+| `dhcp`, `ip`, `netmask`, `gateway`, `dns` | como `network` | DHCP | IPv4 de la interfaz Wi-Fi; con `dhcp=false`, `ip`, `netmask` y `gateway` son obligatorias |
+
+Las claves de IPv4 de `network` siguen siendo las de Ethernet.
+
+**`network.ipv6` (NET-7): IPv6 además de IPv4.**
+
+```json
+"network": { "dhcp": true,
+             "ipv6": { "enabled": true, "slaac": true, "address": "fd00:1::50", "dns": "" } }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `enabled` | bool | `false` | `false` = solo IPv4. Con `true`, cada interfaz tiene dirección link-local |
+| `slaac` | bool | `true` | Autoconfiguración sin estado con los anuncios del router (RA) |
+| `address` | texto | `""` | Dirección estática de Ethernet, en forma de texto RFC 4291. Prefijo /64 en el enlace. No se admiten multicast, link-local, `::` ni `::1` |
+| `dns` | texto | `""` | Servidor DNS IPv6 (tercera posición; DHCPv4 llena las dos primeras) |
+
+El router por defecto IPv6 se aprende de los RA; no hay *gateway* IPv6 estático. `mqtt.host`, `ntp.server` y `syslog.host` aceptan literales IPv6 (`fd00::10`) o nombres con registro AAAA.
+
+**`syslog` (REL-4): copia del log a un servidor syslog.**
+
+```json
+"syslog": { "host": "192.168.1.20", "port": 514, "level": "info" }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `host` | texto | `""` | Nombre, IPv4 o IPv6 del servidor. Vacío = sin syslog remoto |
+| `port` | entero | `514` | 1–65535, UDP |
+| `level` | `error` \| `warning` \| `info` \| `debug` | `info` | Severidad mínima que se envía |
+
+Formato: RFC 5424 sobre UDP (RFC 5426), un mensaje por datagrama, *facility* `local0`, HOSTNAME = `edge_node_id`, APP-NAME = módulo del log y `[meta sequenceId="n"]`. Ejemplo: `<134>1 2026-11-04T12:00:00.123Z GW01 edge - - [meta sequenceId="12"] Sparkplug session up (bdSeq=3)`.
+
 ## 7. Criterios de aceptación del MVP
 
 1. `NBIRTH` con `seq`=0 y el `bdSeq` del LWT. Al matar la conexión TCP el broker publica `NDEATH` con ese mismo `bdSeq`.

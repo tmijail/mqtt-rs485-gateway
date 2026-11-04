@@ -9,10 +9,12 @@ set(GW_CORE_SRCS
     src/gw_debounce.c
     src/gw_devstate.c
     src/gw_dout.c
+    src/gw_netsel.c
     src/gw_node.c
     src/gw_plan.c
     src/gw_poll.c
     src/gw_rbe.c
+    src/gw_syslog.c
     src/gw_tagdb.c
     src/mb_master.c
     src/mb_rtu.c

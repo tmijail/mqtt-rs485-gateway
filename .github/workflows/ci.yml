@@ -30,6 +30,7 @@ jobs:
         run: |
           python3 -m venv /tmp/venv
           /tmp/venv/bin/pip install -q -r idf/tools/e2e/requirements.txt
+          mkdir -p /tmp/spb
           build-host/spb_dump /tmp/spb
           /tmp/venv/bin/python idf/tools/spb_decode.py --check /tmp/spb
 

@@ -12,4 +12,13 @@ menu "Gateway: network"
             select ETH_USE_OPENETH
     endchoice
 
+    config GW_WIFI
+        bool "Wi-Fi station as alternative or backup of Ethernet (NET-4)"
+        depends on SOC_WIFI_SUPPORTED
+        default y
+        help
+            Compiles the Wi-Fi station driver. It is only started when the configuration
+            enables network.wifi; Ethernet-only configurations behave as without it.
+            QEMU does not emulate the radio: the emulator build disables this.
+
 endmenu

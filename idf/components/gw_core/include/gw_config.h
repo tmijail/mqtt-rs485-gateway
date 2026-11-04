@@ -23,6 +23,8 @@ extern "C" {
 #define GW_HOST_SIZE   128  /* broker and NTP host names */
 #define GW_CRED_SIZE   65   /* client_id, username, password */
 #define GW_UNITS_SIZE  16
+#define GW_SSID_SIZE   33   /* Wi-Fi SSID: 1..32 bytes */
+#define GW_PSK_SIZE    65   /* Wi-Fi passphrase (8..63) or raw PSK (64 hex digits) */
 #define GW_CFG_ERR_SIZE 192
 
 typedef enum {
@@ -52,6 +54,48 @@ typedef enum {
     GW_PARITY_ODD,
 } gw_parity_t;
 
+typedef enum {
+    GW_WIFI_BACKUP = 0,   /* Ethernet preferred; Wi-Fi carries the session while Ethernet is down */
+    GW_WIFI_PRIMARY,      /* Wi-Fi preferred; Ethernet is the backup */
+} gw_wifi_role_t;
+
+/* Minimum severity forwarded to the remote syslog server (RFC 5424 severities). */
+typedef enum {
+    GW_LOG_ERROR = 3,
+    GW_LOG_WARNING = 4,
+    GW_LOG_INFO = 6,
+    GW_LOG_DEBUG = 7,
+} gw_log_level_t;
+
+/* IPv4 settings of one interface (NET-2). */
+typedef struct {
+    bool dhcp;
+    uint8_t ip[4];
+    uint8_t netmask[4];
+    uint8_t gateway[4];
+    uint8_t dns[4];          /* 0.0.0.0 = not set */
+} gw_ipv4_cfg_t;
+
+/* NET-7, applied to every interface. */
+typedef struct {
+    bool enabled;
+    bool slaac;              /* stateless autoconfiguration from router advertisements */
+    bool has_address;
+    uint8_t address[16];     /* static address (Ethernet only), network byte order, /64 on-link */
+    bool has_dns;
+    uint8_t dns[16];
+} gw_ipv6_cfg_t;
+
+/* NET-4: Wi-Fi station as an alternative or backup of Ethernet. */
+typedef struct {
+    bool enabled;
+    char ssid[GW_SSID_SIZE];
+    char password[GW_PSK_SIZE];
+    gw_wifi_role_t role;
+    uint16_t failback_s;     /* the preferred interface must stay up this long to win back */
+    gw_ipv4_cfg_t ipv4;
+} gw_wifi_cfg_t;
+
 typedef struct {
     char name[GW_NAME_SIZE];
     gw_area_t area;
@@ -76,11 +120,13 @@ typedef struct {
 
 typedef struct {
     struct {
-        bool dhcp;
+        bool dhcp;               /* Ethernet IPv4 (the SPEC example's keys) */
         uint8_t ip[4];
         uint8_t netmask[4];
         uint8_t gateway[4];
         uint8_t dns[4];          /* 0.0.0.0 = not set */
+        gw_ipv6_cfg_t ipv6;
+        gw_wifi_cfg_t wifi;
     } network;
     struct {
         char server[GW_HOST_SIZE];
@@ -109,6 +155,11 @@ typedef struct {
     struct {
         uint16_t di_debounce_ms;
     } local_io;
+    struct {                     /* REL-4; disabled when host is empty */
+        char host[GW_HOST_SIZE];
+        uint16_t port;
+        gw_log_level_t level;
+    } syslog;
 
     uint16_t device_count;
     uint16_t tag_count;
@@ -139,6 +190,10 @@ bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_
  * a syntax error.
  */
 void gw_config_set_allocator(void *(*alloc)(size_t size), void (*release)(void *ptr));
+
+/** Parse an IPv6 literal (RFC 4291 text form, "::" and a trailing dotted quad allowed, no
+ * zone) into network byte order. */
+bool gw_parse_ipv6(const char *s, uint8_t out[16]);
 
 /** Index of the device named @p name (length @p len), or -1. */
 int gw_config_find_device(const gw_config_t *cfg, const char *name, size_t len);

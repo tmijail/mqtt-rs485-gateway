@@ -14,9 +14,11 @@
 #include "gw_backoff.h"
 #include "gw_bus.h"
 #include "gw_io.h"
+#include "gw_net.h"
 #include "gw_node.h"
 #include "gw_status.h"
 #include "gw_storage.h"
+#include "lwip/sockets.h"
 #include "mqtt_client.h"
 
 static const char *TAG = "edge";
@@ -54,6 +56,7 @@ static atomic_uint s_conn_gen;
 static atomic_uint s_disc_gen;
 static atomic_uint s_dev_dirty;
 static atomic_int s_suback;     /* msg_id of the last SUBACK, negated if a topic was refused */
+static atomic_uint s_route_gen;
 
 /* ---- queues and buffers (static, REL-2 / MQTT-7) ---- */
 static QueueHandle_t s_q;
@@ -89,6 +92,8 @@ static unsigned s_handled_disc;
 static bool s_births_timed;     /* the current session's births carried synchronised time */
 static int64_t s_fed_us;        /* last time this task fed the task watchdog */
 static uint32_t s_max_unfed_ms; /* longest stretch without feeding since the last reset */
+static unsigned s_handled_route;
+static struct ifreq s_ifr;      /* interface the client is bound to (NET-4, two interfaces only) */
 
 static void wake(void)
 {
@@ -101,6 +106,12 @@ static void wake(void)
 void gw_edge_notify_ip(bool up)
 {
     atomic_store(&s_ip_up, up);
+    wake();
+}
+
+void gw_edge_notify_route(void)
+{
+    atomic_fetch_add(&s_route_gen, 1);
     wake();
 }
 
@@ -274,7 +285,16 @@ static void start_client(int64_t now)
 {
     prepare_attempt();
     s_retry_at_us = 0;
+    /* NET-4: with two interfaces the socket is bound to the active one, so the session really
+     * runs where gw_net says (both may reach the broker). The binding is copied by
+     * esp_mqtt_client_init and only changes with a new client (move_session). */
+    s_mqtt_cfg.network.if_name = gw_net_active_ifname(s_ifr.ifr_name, sizeof(s_ifr.ifr_name)) ? &s_ifr
+                                                                                    : NULL;
+    if (s_mqtt_cfg.network.if_name != NULL) {
+        ESP_LOGI(TAG, "MQTT bound to interface %s", s_ifr.ifr_name);
+    }
     s_client = esp_mqtt_client_init(&s_mqtt_cfg);
+    s_mqtt_cfg.network.if_name = NULL;   /* esp_mqtt_set_config would allocate it again */
     if (s_client == NULL) {
         /* Out of memory: retry with the same backoff as a failed connection (each attempt
          * takes a bdSeq and writes NVS, so it must not run once per loop). */
@@ -362,6 +382,32 @@ static uint32_t stable_ms(void)
     return ms < STABLE_MAX_MS ? ms : STABLE_MAX_MS;
 }
 
+/* NET-4: the active interface changed. A TCP connection cannot migrate, so the session ends
+ * here and a new one (new bdSeq, NBIRTH, DBIRTHs) starts over the new interface at once. */
+static void move_session(void)
+{
+    ESP_LOGW(TAG, "active network interface changed: new MQTT session");
+    if (s_node->online) {
+        /* Orderly end, as for a reboot: hosts learn it now and not after a keepalive. Over a
+         * dead interface this is lost and the broker publishes the will later; the bdSeq of
+         * the new session tells the two apart. */
+        esp_mqtt_client_publish(s_client, s_death_topic, (const char *)s_will,
+                                s_mqtt_cfg.session.last_will.msg_len, 1, false);
+        feed_watchdog();
+        gw_node_session_down(s_node);
+        gw_status_set(GW_ST_MQTT_UP, false);
+    }
+    esp_mqtt_client_destroy(s_client);   /* DISCONNECT if connected; drops the old binding */
+    s_client = NULL;
+    s_started = false;
+    atomic_store(&s_mqtt_connected, false);
+    s_handled_conn = atomic_load(&s_conn_gen);
+    s_handled_disc = atomic_load(&s_disc_gen);
+    s_retry_at_us = 0;
+    s_attempt = 0;   /* a new interface starts a fresh backoff */
+    s_sub_msg_id = 0;
+}
+
 /* Bring the Sparkplug state in line with the flags set by the other tasks. */
 static void reconcile(void)
 {
@@ -381,6 +427,19 @@ static void reconcile(void)
     }
     s_prev_ip = ip;
     gw_status_set(GW_ST_NET_UP, ip);
+
+    unsigned rg = atomic_load(&s_route_gen);
+    if (rg != s_handled_route) {
+        s_handled_route = rg;
+        if (s_started) {
+            move_session();
+            /* move_session consumed the generations of the old client: nothing of it is
+             * handled below (no on_connected, no retry: the new client starts at once). */
+            connected = false;
+            cg = s_handled_conn;
+            dg = s_handled_disc;
+        }
+    }
 
     if (cg != s_handled_conn) {
         s_handled_conn = cg;
