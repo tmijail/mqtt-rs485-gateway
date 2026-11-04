@@ -138,7 +138,19 @@ class Signatures(unittest.TestCase):
         g = FakeGateway()
         g.feed([APP] + FLAKE[:5] + ["abort() was called at PC 0x42001234 on core 0"])
         self.assertIsNone(g.signature)
-        self.assertEqual([], g.unknown_panics())   # an abort() is not a Guru Meditation
+        self.assertEqual(1, len(g.unknown_panics()))   # an abort() nobody asked for
+
+    def test_other_firmware_failures(self):
+        # a stack overflow and an abort() not requested by the shell are firmware failures; the
+        # shell's 'panic' (it prints its marker first) is not
+        g = FakeGateway()
+        g.feed([APP, "panic requested from the console",
+                "abort() was called at PC 0x42001234 on core 0"])
+        self.assertEqual([], g.unknown_panics())
+        g.feed(["***ERROR*** A stack overflow in task esp_timer has been detected.",
+                "abort() was called at PC 0x4037a1b2 on core 0"])
+        self.assertEqual(["stack overflow in task esp_timer", "abort() not requested by the harness"],
+                         [p[1] for p in g.unknown_panics()])
 
     def test_phases(self):
         g = FakeGateway()
@@ -165,7 +177,13 @@ class HangDecision(unittest.TestCase):
     def test_stalled_core(self):
         ok, why = e2e.hang_decision([regs(0x40012345, 0x40380010), regs(0x40012345, 0x40380010)])
         self.assertTrue(ok)
-        self.assertIn("core 0 stalled at 0x40012345 (ROM", why)
+        self.assertIn("core 0 stalled in the ROM at 0x40012345", why)
+
+    def test_stall_outside_the_rom_is_not_retried(self):
+        # the one dumped occurrence: core 0 still in esp_cpu_compare_and_set (IRAM), core 1 parked
+        ok, why = e2e.hang_decision([regs(0x40379b8f, 0x40380010), regs(0x40379b8f, 0x40380010)])
+        self.assertFalse(ok)
+        self.assertIn("outside the ROM", why)
 
     def test_no_evidence(self):
         self.assertFalse(e2e.hang_decision([None, None])[0])

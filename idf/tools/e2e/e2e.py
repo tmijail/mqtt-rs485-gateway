@@ -677,6 +677,12 @@ APP_RX = re.compile(r"main: rs485_spb_gateway .* reset reason")
 TRUSTED_RX = re.compile(r"secure_boot_v2: Take trusted digest key\(s\)")
 VERIFY_RX = re.compile(r"esp_image: Verifying image signature|secure_boot_v2: |esp_image: segment")
 GURU_RX = re.compile(r"Guru Meditation Error: Core\s+\d panic'ed \((\w+)\)")
+# Other firmware failures that forbid a retry (issue #96 round 2): a stack overflow (the hang
+# after 'Take trusted digest key(s)' was the esp_timer task's stack, fix/ota-trial e09b7b4) and
+# an abort() that is not the shell's deliberate 'panic' (it prints DELIBERATE_RX first)
+OVERFLOW_RX = re.compile(r"stack overflow in task (\S+)")
+ABORT_RX = re.compile(r"abort\(\) was called")
+DELIBERATE_RX = re.compile(r"panic requested from the console")
 EXCVADDR_RX = re.compile(r"EXCVADDR\s*:\s*0x([0-9a-fA-F]{8})")
 PC_RX = re.compile(r"^PC\s*:\s*0x([0-9a-fA-F]{8})")
 # An image being written or verified by the app (download, upload, esp_ota_end, a rollback's
@@ -762,19 +768,29 @@ def known_panic(exception, excvaddr, before, pc=None, fw_init=False):
 def hang_decision(regs):
     """Issue #92 round 2: (retry, reason) for the hang after 'Take trusted digest key(s)', from
     the two register dumps. Retried only if the monitor answered both times and a core that is
-    not in a wait loop (park_loop, the idle task's waiti) kept exactly the same PC for the
-    second between them: the image check stalled. A moving PC is the firmware running; a
-    monitor that does not answer, or only waiting cores standing still, is no evidence."""
+    not in a wait loop (park_loop, the idle task's waiti) kept exactly the same PC, in the ROM,
+    for the second between them: the emulator stopped inside the ROM's code. The one dumped
+    occurrence stood still in IRAM, in a spinlock with a bogus pointer, which fits the esp_timer
+    stack overflow found later (fix/ota-trial e09b7b4): a stall in IRAM or flash code may be the
+    firmware's (QEMU reports the PC at the start of a translated block, so a short loop also
+    looks still) and is not retried. A moving PC is the firmware running; a monitor that does
+    not answer, or only waiting cores standing still, is no evidence."""
     if any(r is None for r in regs):
         return False, "the QEMU monitor did not answer: no evidence of where it stopped"
     pcs = [dict(re.findall(r"CPU#(\d+)\s+PC=([0-9a-f]{8})", r)) for r in regs]
     if not pcs[0] or pcs[0].keys() != pcs[1].keys():
         return False, "the register dumps have no PC for every core"
+    still = []
     for cpu, pc in pcs[0].items():
         name = symbol_at(int(pc, 16))
         if pcs[1][cpu] == pc and name not in WAITING:
-            return True, (f"core {cpu} stalled at 0x{pc} ({pc_region(int(pc, 16))}"
-                          f"{', ' + name if name else ''}) for the second between the dumps")
+            where = f"0x{pc} ({pc_region(int(pc, 16))}{', ' + name if name else ''})"
+            if pc_region(int(pc, 16)) == "ROM":
+                return True, f"core {cpu} stalled in the ROM at {where} for the second between the dumps"
+            still.append(f"core {cpu} at {where}")
+    if still:
+        return False, (f"{', '.join(still)} stood still outside the ROM: possibly the firmware "
+                       "(a short loop, or a corrupt lock as in the esp_timer stack overflow)")
     moving = [c for c, pc in pcs[0].items() if pcs[1][c] != pc]
     if moving:
         return False, f"core(s) {', '.join(moving)} still running (PC moved): the firmware, not QEMU"
@@ -1067,6 +1083,12 @@ class Gateway:
             # (time, exception, line index, PC, gw_fw_init reading the other slot then)
             self._panic = (t, m.group(1), i, None, self.fw_init)
             self.panics.append([t, m.group(1), None])   # known signature or None (#96 M3)
+        m = OVERFLOW_RX.search(text)
+        if m:
+            self.panics.append([t, f"stack overflow in task {m.group(1)}", None])
+        if ABORT_RX.search(text) and not any(DELIBERATE_RX.search(ln)
+                                             for _, ln in self.lines[max(0, i - 2):i]):
+            self.panics.append([t, "abort() not requested by the harness", None])
         m = PC_RX.search(text)
         if m and self._panic and self._panic[3] is None:
             self._panic = self._panic[:3] + (int(m.group(1), 16),) + self._panic[4:]
@@ -1096,8 +1118,9 @@ class Gateway:
                 self.proc.send_signal(signal.SIGSTOP)
 
     def unknown_panics(self):
-        """Issue #96 M3: the Guru Meditation panics of this emulator that matched no known
-        emulator signature (an abort() is not one: the shell's 'panic' test uses it)."""
+        """Issue #96 M3: the firmware failures seen on this emulator's console that matched no
+        known emulator signature: a Guru Meditation panic, a stack overflow, an abort() other
+        than the shell's deliberate 'panic'."""
         return [p for p in self.panics if p[2] is None]
 
     def console(self, text):
@@ -2678,12 +2701,16 @@ def run_ota(args, work):
         broker.wait()
 
 
+WIRING_NODE = "GW46"   # issue #97: the commissioning gateway's edge node id (unique in this file)
+
+
 def run_ota_wiring(args, work):
     """Issue #97: how main.c wires two outcomes of a new image's trial, by web upload (no broker
     or image server involved): an image that rejects the stored configuration goes back to the
-    previous one at once, without waiting for the trial's timeout (GW43: an invalid config.json,
-    recovery mode, gw_fw_config_rejected); an image that boots into commissioning is confirmed,
-    as nothing can judge it there (GW44: after a factory reset, gw_fw_commissioning)."""
+    previous one at once, without waiting for the trial's timeout (an invalid config.json, so no
+    node id: recovery mode, gw_fw_config_rejected); an image that boots into commissioning is
+    confirmed, as nothing can judge it there (WIRING_NODE: after a factory reset,
+    gw_fw_commissioning). Only the main broker and the web server: no port of its own."""
     fwdir = work / "fw-wiring"
     fwdir.mkdir(exist_ok=True)
     app = pathlib.Path(args.elf).with_suffix(".bin")
@@ -2739,7 +2766,7 @@ def run_ota_wiring(args, work):
         gw.kill()
 
     # 2. commissioning (factory reset): the new image is confirmed and survives a power cut
-    cfg = node_config("GW44")
+    cfg = node_config(WIRING_NODE)
     flash = flash_variant(args, work, "otacom", {"config.json": json.dumps(cfg, indent=2).encode()})
     t0 = time.monotonic()
     gw = Gateway(args, work / "uart0-otacom.log", flash)
@@ -3438,6 +3465,9 @@ def run_scenario(name, fn, retry_on_qemu_death=True):
         failed = [c for c in results[first_check:] if not c["ok"]]
         unknown = [f"{g.log_path.name}: {p[1]}" for g in GATEWAYS[first_gw:]
                    for p in g.unknown_panics()]
+        if unknown:   # visible even when nothing else went wrong
+            print(f"[PANIC] {name}: firmware failure(s) on the console: {'; '.join(unknown[:5])}",
+                  flush=True)
         refusal = retry_refusal(first, failed, unknown, attempt, retry_on_qemu_death) if first \
             else None
         if first and refusal is None:
