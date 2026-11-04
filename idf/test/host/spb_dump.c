@@ -108,6 +108,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "MB-6 configuration rejected: %s\n", err.msg);
         return 1;
     }
+    mb6.modbus_tcp.enabled = true;   /* issue #81: the NBIRTH carries "Node Info/Modbus TCP" too */
     /* SPB-18: two devices of one type (template definition in NBIRTH, instances in DBIRTH and
      * DDATA) and an untyped one */
     static const char tmpl_json[] =

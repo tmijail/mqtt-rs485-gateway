@@ -584,7 +584,10 @@ Métricas del nodo, en el NBIRTH y en ese NDATA periódico:
 | `Node Info/RSSI` | 53 | Int32 | dBm del punto de acceso Wi-Fi; solo si el equipo tiene Wi-Fi configurado, `null` mientras no está asociado |
 | `Node Info/Modbus` | 54 | DataSet | Una fila por dispositivo: `Device` (String), `Online` (Boolean), `Cycles`, `Failed Cycles`, `OK`, `Timeout`, `CRC`, `Frame`, `Exception` (UInt32; los tres últimos cuentan intentos, reintentos incluidos) |
 
-- La tabla Modbus va en el NDATA solo si algún contador o estado cambió desde la última vez; uptime y heap van siempre.
+| `Node Info/Modbus TCP` | 56 | DataSet | Solo con `modbus_tcp.enabled`. Las peticiones Modbus TCP reenviadas a cada unidad (MB-15): una fila por dispositivo, `Device` (String), `Unit`, `Online` (Boolean), `OK`, `Timeout`, `CRC`, `Frame`, `Exception` (UInt32, intentos), y una última fila `(other units)` (unidad 0) para las unidades que no tienen dispositivo |
+
+- Las tablas Modbus van en el NDATA solo si algún contador o estado cambió desde la última vez (las dos juntas); uptime y heap van siempre.
+- La de Modbus TCP es una tabla aparte, no una columna más de `Node Info/Modbus`: esa conserva sus columnas para los hosts que ya la leen, los ciclos de encuesta no tienen sentido para las peticiones reenviadas y la de TCP existe solo con el gateway encendido.
 - **`Node Info/Time Synced`** (TIME-3, alias 55, Boolean): `true` cuando SNTP sincronizó el reloj al menos una vez desde el arranque. Una hora tomada del RTC al arrancar (TIME-2) es válida pero **no** cuenta como sincronizada. Va en el NBIRTH y en un NDATA propio cada vez que cambia (no en el periódico).
 - Los contadores son del nodo, no de cada dispositivo: así se publican también los de un dispositivo fuera de línea (sin DBIRTH), que es cuando más crecen.
 

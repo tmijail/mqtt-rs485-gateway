@@ -2097,6 +2097,29 @@ def modbus_rows(m):
             for row in ds.rows}
 
 
+def check_modbus_tcp_table(obs, ndata_t):
+    """Issue #81: the next diagnostics NDATA carries "Node Info/Modbus TCP" (alias 56) with the
+    same per-unit counters the shell shows after check_modbus_tcp (#69): Meter1 2 OK, Dead3 3
+    timeouts, units without a device none, and the poll table unchanged in its columns."""
+    obs.drain()
+    nd = obs.wait(ndata_t, 13, lambda q: metric(q, alias=56) is not None)
+    m = metric(nd[2], alias=56) if nd else None
+    ds = m.dataset_value if m is not None else None
+    rows = {r.elements[0].string_value: {c: spb_decode.value_of(e) for c, e in zip(ds.columns, r.elements)}
+            for r in ds.rows} if ds is not None else {}
+    meter, dead, other = rows.get("Meter1", {}), rows.get("Dead3", {}), rows.get("(other units)", {})
+    ok = ds is not None and list(ds.columns) == ["Device", "Unit", "Online", "OK", "Timeout", "CRC",
+                                                 "Frame", "Exception"] \
+        and list(rows) == ["Meter1", "Bulk", "Dead3", "Dead4", "Dead5", "(other units)"] \
+        and meter.get("Unit") == 1 and meter.get("Online") is True and meter.get("OK", 0) >= 2 \
+        and meter.get("Timeout") == 0 and dead.get("Unit") == 3 and dead.get("Online") is False \
+        and dead.get("OK") == 0 and dead.get("Timeout") == 3 and other.get("OK") == 0 \
+        and other.get("Timeout") == 0
+    check("Issue #81 'Node Info/Modbus TCP' DataSet (alias 56): a row per device with the Modbus TCP "
+          "requests forwarded to its unit and one for units without a device, as in the shell (#69)",
+          ok, f"Meter1 {meter}; Dead3 {dead}; other {other}; rows {list(rows)}")
+
+
 def check_diagnostics(obs, nbirth, ndata_t):
     """SPB-17 / MB-13: NBIRTH with Uptime, Free Heap, Min Free Heap (no RSSI: no Wi-Fi in QEMU) and
     the Modbus DataSet (a row per device, counters of the dead units too); then, with
@@ -2877,6 +2900,7 @@ def run(args, log, slave, broker, conf, work):
     check("Issue #69 Modbus TCP counters: forwarded transactions per unit, gateway connections, "
           "forwarded requests and its own exceptions (shell 'devices')", all(h.values()),
           " | ".join(gw.find(r"^(Meter1|Dead3)\s+unit|^modbus_tcp", asked)) or "no answer")
+    check_modbus_tcp_table(obs, ndata_t)
 
     # 2. Slave off -> DDEATH; back on -> DBIRTH
     obs.drain()
