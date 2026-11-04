@@ -108,6 +108,12 @@ static bool load_file(const struct stat *st, gw_config_t *cfg, gw_cfg_err_t *err
                       (long)st->st_size, CFG_MAX);
     }
     size_t size = (size_t)st->st_size;
+    /* Without PSRAM the file and the parser's tree (several times the file) come from the
+     * internal heap: log what is available, so a "memoria insuficiente" can be put in context. */
+    ESP_LOGI(TAG, CFG_PATH ": %zu bytes; free heap: internal %u B (largest block %u B), PSRAM %u B",
+             size, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     char *buf = boot_alloc(size);
     if (buf == NULL) {
         return reject(err, CFG_PATH ": sin memoria para leer %zu bytes", size);

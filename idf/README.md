@@ -92,7 +92,7 @@ Dependencias gestionadas, **con versión fija** (`==`) en cada `idf_component.ym
   - `.bss` interna: `gw_edge` con la pila de 6 KB y 4 búferes de comando de 1,2 KB; `gw_bus` unos 10 KB (planificador, encuesta y pila de 4 KB); `gw_core` unos 6 KB (`gw_tagdb`).
 - **Por qué no `EXT_RAM_BSS_ATTR`:** poner `.bss` en PSRAM exige `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY`, que en IDF es incompatible con `CONFIG_SPIRAM_IGNORE_NOTFOUND`: una placa cuya PSRAM no se detecte no arrancaría. Con la asignación al arrancar el equipo sigue funcionando con RAM interna (y la build de QEMU, sin PSRAM, es la misma).
 - Sin `malloc` en encuesta, codificación ni publicación.
-- Se asigna memoria solo al arrancar: esas dos estructuras, la lectura de LittleFS y el árbol de cJSON, todo en PSRAM si la hay (§3.3).
+- Se asigna memoria solo al arrancar: esas dos estructuras, la lectura de LittleFS y el árbol de cJSON, todo en PSRAM si la hay (§3.4).
 - lwIP y esp-mqtt asignan internamente (ver §6).
 
 ## 2. Datos de la placa marcados "verificar"
@@ -156,7 +156,16 @@ Tabla de particiones (`partitions.csv`, 16 MB): `nvs` 24 KB, `otadata`, `phy_ini
 
 **Core dump.** Un *panic* (o el TWDT) guarda un volcado ELF en la partición `coredump` (desde IDF 6.0 ELF es el único formato; la opción `CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF` ya no existe). Se lee con `idf.py coredump-info` (o `coredump-debug`) con la placa conectada. Verificado en QEMU: el comando `panic` del shell (solo en la build de emulador) provoca un `abort()`, el arranque siguiente informa `panic` y `esp_coredump info_corefile` decodifica el volcado de la partición con la traza a través de `cmd_panic`.
 
-### 3.3 Configuración
+### 3.3 Actualizar un `sdkconfig` existente (nota de migración)
+
+`sdkconfig.defaults` solo se aplica al **crear** el `sdkconfig`. Con un `sdkconfig` de una versión anterior:
+
+- **Antes de la descripción declarativa de la placa (`gw_bsp`):** `reconfigure` descarta **sin aviso** 17 opciones de pines (6 de `gw_board`, 7 de `gw_net` y 4 de `gw_rs485`; los pines ahora son fijos en `gw_bsp.c`) y aparece `CONFIG_GW_DO_ACTIVE_LOW=y`, que **invierte la polaridad de las DO** respecto de una build ya probada.
+- **Opciones agregadas después** no llegan a un `sdkconfig` existente: `CONFIG_UART_ISR_IN_IRAM`, la afinidad de lwIP y esp-mqtt al núcleo 0 (`CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0`, `CONFIG_MQTT_USE_CORE_0`).
+
+Tras actualizar, lo más simple es **borrar `idf/sdkconfig`** (o `idf.py set-target esp32s3`, que lo regenera). Si se conserva, revisar en `menuconfig` al menos `CONFIG_GW_DO_ACTIVE_LOW` y las opciones de arriba. No hay equipos desplegados, así que no se agregó una migración automática.
+
+### 3.4 Configuración
 
 1. El firmware embebe `components/gw_storage/default_config.json`, que es el ejemplo de §6.
 2. Para reemplazarla, copie el JSON a `idf/fs/config.json` y edítelo. `idf.py flash` graba la carpeta `fs/` en la partición `storage` y el firmware lee `/cfg/config.json` al arrancar.
@@ -166,7 +175,17 @@ Tabla de particiones (`partitions.csv`, 16 MB): `nvs` 24 KB, `otadata`, `phy_ini
    - `devices[0].tags[1].writable: solo las áreas coil y holding son escribibles`.
 
    Los errores semánticos llevan la **ruta JSON** del valor (`devices[1].tags[2].type: valor no válido (se esperaba bool|uint16|…)`, `devices[0].tags[0].scal: clave desconocida`). Los de sintaxis llevan **línea y columna**, contadas en caracteres a partir del puntero de error de cJSON (`JSON mal formado en la línea 5, columna 3: sintaxis no válida`); también se rechaza el contenido que sobra después del documento. Las **claves duplicadas** en cualquier objeto se rechazan (`mqtt.host: clave duplicada`): cJSON las acepta y sus búsquedas solo ven la primera.
-4. **Límite de tamaño: 128 KiB** (`CONFIG_GW_CONFIG_MAX_BYTES`, menú `Gateway: storage`). El máximo del esquema (16 dispositivos, 256 tags con todos los campos) ocupa unos 46 KB en JSON compacto y 82 KB con sangría de 2 espacios. Al arrancar se asignan el búfer del archivo y el árbol de cJSON (unos 200 KB para 256 tags), **en PSRAM** si la hay; se liberan antes de arrancar las tareas. Sin PSRAM (QEMU) el límite real es el heap interno libre, y quedarse sin memoria se informa como tal.
+4. **Límite de tamaño: 128 KiB** (`CONFIG_GW_CONFIG_MAX_BYTES`, menú `Gateway: storage`). El máximo del esquema (16 dispositivos, 256 tags con todos los campos) ocupa unos 46 KB en JSON compacto y 82 KB con sangría de 2 espacios. Al arrancar se asignan el búfer del archivo y el árbol de cJSON (unos 200 KB para 256 tags), **en PSRAM** si la hay; se liberan antes de arrancar las tareas. El log informa el heap libre antes de analizar (`/cfg/config.json: N bytes; free heap: internal … (largest block …), PSRAM …`).
+5. **Sin PSRAM** (QEMU, o una placa cuya PSRAM no se detecte: `SPIRAM_IGNORE_NOTFOUND`) todo sale del heap interno. Medido en QEMU, con unos 315 KB de heap interno libre al cargar:
+
+   | Configuración (16 dispositivos, tags con todos los campos) | Archivo | Resultado |
+   |---|---|---|
+   | 256 tags (máximo del esquema), JSON compacto | 46 052 B | Carga |
+   | 256 tags, sangría de 2 espacios | 82 450 B | Carga |
+   | 256 tags, con espacios de relleno | hasta 115 877 B | Carga |
+   | 256 tags, con espacios de relleno | desde 117 396 B | Se rechaza: `memoria insuficiente para analizar … bytes de JSON` |
+
+   Es decir: sin PSRAM entra cualquier configuración legal, **siempre que el archivo no pase de unos 110 KB** (menos tags dejan algo más de margen). Con PSRAM el límite es solo `CONFIG_GW_CONFIG_MAX_BYTES`. En la placa sin PSRAM el heap libre puede diferir del de QEMU; el log de arranque lo informa.
 
 Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 
