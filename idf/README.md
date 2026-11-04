@@ -153,6 +153,8 @@ Resultado de `idf.py size` (build limpia con `idf.py set-target esp32s3 build`, 
 
 Tabla de particiones (`partitions.csv`, 16 MB): `nvs` 24 KB, `otadata`, `phy_init`, `ota_0`/`ota_1` 4 MB cada una (reservadas para FW-1), `storage` LittleFS 1 MB y `coredump` 64 KB.
 
+**Core dump.** Un *panic* (o el TWDT) guarda un volcado ELF en la partición `coredump` (desde IDF 6.0 ELF es el único formato; la opción `CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF` ya no existe). Se lee con `idf.py coredump-info` (o `coredump-debug`) con la placa conectada. Verificado en QEMU: el comando `panic` del shell (solo en la build de emulador) provoca un `abort()`, el arranque siguiente informa `panic` y `esp_coredump info_corefile` decodifica el volcado de la partición con la traza a través de `cmd_panic`.
+
 ### 3.3 Configuración
 
 1. El firmware embebe `components/gw_storage/default_config.json`, que es el ejemplo de §6.
@@ -327,7 +329,7 @@ Leyenda de **Evidencia**:
 | CFG-1 | Implementado | `gw_core/src/gw_config.c`, `gw_storage/gw_storage.c`, `main/main.c` | H (documento máximo de 256 tags, falta de memoria, rutas JSON, línea y columna, claves duplicadas) + Q (archivo demasiado grande, vacío, con error de sintaxis o de esquema y partición sin montar: nada arranca, LED de error, log ERROR con el motivo) |
 | CFG-2 | Implementado | `gw_storage/gw_storage.c`, `main/CMakeLists.txt` | Q (LittleFS; respaldo embebido solo si falta el archivo) |
 | FW-4 | Implementado | `idf/CMakeLists.txt` (`PROJECT_VER`) | Q (`0.1.0+g<hash>[.dirty]` en NBIRTH) |
-| REL-1 | Implementado | `gw_bus.c`, `gw_edge.c`, `sdkconfig.defaults` | C/Q (configurado; sin inyección de fallos) |
+| REL-1 | Implementado | `gw_bus.c`, `gw_edge.c`, `gw_io.c`, `sdkconfig.defaults` | Q: TWDT alimentado tras cada publicación (el log de los births informa el mayor intervalo sin alimentarlo), DI vigiladas como usuario del TWDT; un *panic* deja el *core dump* en flash, el equipo reinicia (`Node Info/Reset Reason` = `panic`) y el volcado se decodifica con `esp_coredump`. El disparo real del TWDT no se ejecutó: QEMU deshabilita el watchdog de los timers |
 | REL-2 | **Parcial** | Todo `gw_*` | El código propio es estático y no asigna en el camino crítico; **lwIP y esp-mqtt asignan del heap internamente** (acotado, no estático) |
 | REL-3 | Implementado | `esp_log` en todos los módulos | Q |
 | QA-1 | Implementado | `test/host/` | 68 casos |

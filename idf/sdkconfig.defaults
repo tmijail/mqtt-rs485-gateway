@@ -20,8 +20,10 @@ CONFIG_ESP_TASK_WDT_TIMEOUT_S=15
 CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y
+# Core dump to the "coredump" partition, read with `idf.py coredump-info`. ELF is the only
+# format since IDF 6.0 (CONFIG_ESP_COREDUMP_DATA_FORMAT_* no longer exist; see the 6.0
+# migration guide, system.rst).
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
-CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 
 # TIME-1: query the NTP server as soon as an address is available (the default RFC 4330
 # random start-up delay of up to 5 s regularly pushes the first sync past the first NBIRTH)

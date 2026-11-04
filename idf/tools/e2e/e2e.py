@@ -386,13 +386,13 @@ class Gateway:
 
 # ---------------------------------------------------------------- storage partition variants
 
-def storage_partition():
-    """(offset, size) of the "storage" partition in partitions.csv."""
+def storage_partition(name="storage"):
+    """(offset, size) of partition @name in partitions.csv."""
     for line in (HERE.parent.parent / "partitions.csv").read_text().splitlines():
         cols = [c.strip() for c in line.split(",")]
-        if cols[0] == "storage":
+        if cols[0] == name:
             return int(cols[3], 0), int(cols[4], 0)
-    raise SystemExit("no storage partition in partitions.csv")
+    raise SystemExit(f"no {name} partition in partitions.csv")
 
 
 def flash_variant(args, work, name, files):
@@ -480,6 +480,8 @@ def main():
     ap.add_argument("--littlefs-python", required=True,
                     help="python with the littlefs-python package (build-qemu/littlefs_py_venv)")
     ap.add_argument("--sdkconfig", required=True, help="sdkconfig of the QEMU build")
+    ap.add_argument("--elf", required=True, help="ELF of the QEMU build (core dump decoding)")
+    ap.add_argument("--idf-python", required=True, help="ESP-IDF python (has esp_coredump)")
     ap.add_argument("--mqtt-port", type=int, default=MQTT_PORT)
     ap.add_argument("--modbus-port", type=int, default=MODBUS_PORT)
     ap.add_argument("--console-port", type=int, default=CONSOLE_PORT)
@@ -933,10 +935,33 @@ def run(args, log, slave, broker, conf, work):
           f"first boot {reason0.string_value if reason0 else None!r}, after reboot "
           f"{reason1.string_value if reason1 else None!r}")
 
+    # Issue #12 / REL-1: a panic writes a core dump to the "coredump" partition, the gateway
+    # restarts ("panic" in NBIRTH) and the dump decodes with esp_coredump against the ELF.
+    obs.drain()
+    since = time.monotonic()
+    gw.console("panic")
+    nb = obs.wait(nbirth_t, 40)
+    saved = gw.find(r"[Cc]ore dump.*(saved|[Ww]rit|[Dd]one)", since)
+    reason2 = metric(nb[2], name="Node Info/Reset Reason") if nb else None
+    gw.kill()
+    off, size = storage_partition("coredump")
+    core = work / "coredump.bin"
+    core.write_bytes(pathlib.Path(args.flash).read_bytes()[off:off + size])
+    info = subprocess.run([args.idf_python, "-m", "esp_coredump", "--chip", "esp32s3", "info_corefile",
+                           "--core", str(core), "--core-format", "raw", args.elf],
+                          capture_output=True, text=True, timeout=120)
+    (work / "coredump-info.txt").write_text(info.stdout + info.stderr)
+    decoded = info.returncode == 0 and "cmd_panic" in info.stdout and "abort" in info.stdout
+    check("Issue #12 panic -> core dump in flash, restart with 'panic' reset reason, dump decodes "
+          "with esp_coredump (backtrace through cmd_panic/abort)",
+          decoded and reason2 is not None and reason2.string_value == "panic",
+          f"log: {(saved or ['no core dump log'])[0]}; NBIRTH reset reason "
+          f"{reason2.string_value if reason2 else None!r}; esp_coredump exit {info.returncode}, "
+          f"cmd_panic in backtrace: {'cmd_panic' in info.stdout} (coredump-info.txt)")
+
     # Issue #11: a broker that refuses the NCMD/DCMD subscriptions (SUBACK 0x80). The node must
     # not announce itself (no NBIRTH: it could not receive commands); it disconnects with
     # DISCONNECT (the will is dropped) and retries with a growing backoff.
-    gw.kill()
     refuser = FakeBroker(MQTT_PORT + 2, "refuse")
     gw = Gateway(args, work / "uart0-refuse.log",
                  flash_variant(args, work, "refuse", {"config.json": config_json(MQTT_PORT + 2)}))
