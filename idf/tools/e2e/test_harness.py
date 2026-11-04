@@ -84,7 +84,8 @@ class RetryRule(unittest.TestCase):
 
     def setUp(self):
         e2e.ARGS = argparse.Namespace(scenario_timeout=0, timeout_scale=1)
-        for lst in (e2e.results, e2e.RETRIES, e2e.FAULTS, e2e.GATEWAYS):
+        e2e.PROCS.clear()
+        for lst in (e2e.results, e2e.RETRIES, e2e.FAULTS, e2e.GATEWAYS, e2e.RESOURCES):
             lst.clear()
         self.attempts = 0
 
@@ -144,6 +145,34 @@ class RetryRule(unittest.TestCase):
         self.assertEqual(1, len(e2e.RETRIES))
         self.assertEqual([("s scenario completed", False)], self.names())
         self.assertIn("second attempt", e2e.results[0]["detail"])
+
+    def test_resources_of_an_attempt_are_closed(self):
+        """Issue #105: what an exception left open is closed after the attempt, once."""
+        closed = []
+
+        class Res:
+            def __init__(self, name):
+                self.name, self.closed = name, False
+                e2e.track(self, self.close)
+
+            def close(self):
+                closed.append(self.name)
+                self.closed = True
+
+        def fn():
+            self.attempts += 1
+            Res(f"left {self.attempts}")
+            done = Res(f"closed {self.attempts}")
+            done.close()
+            if self.attempts == 1:
+                e2e.record_fault(None, "qemu exit", time.monotonic(), signature="x", detail="x")
+                raise ConnectionError("simulated")
+        outside = Res("outside")
+        e2e.run_scenario("s", fn)
+        self.assertEqual(2, self.attempts)
+        self.assertEqual(["closed 1", "left 1", "closed 2", "left 2"], closed)
+        self.assertFalse(outside.closed)   # created outside any scenario: not the attempt's
+        self.assertEqual(0, e2e.ATTEMPTS[0])
 
     def test_waits_return_at_once_after_a_fault(self):
         e2e.FAULT.set()

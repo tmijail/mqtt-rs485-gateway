@@ -93,6 +93,36 @@ DURATIONS = {}    # issue #92: seconds each scenario attempt took ("name #attemp
 # Issue #92: set while the current scenario attempt has an emulator fault or ran out of time:
 # every wait of the harness then returns at once (see wait_left), so a hung QEMU costs seconds
 FAULT = threading.Event()
+# Issue #105: per-scenario resources that must not outlive their attempt when an exception skips
+# the scenario's own clean-up: [object, close function, attempt key, closed]. An observer left
+# subscribed after a retried attempt doubled every message of the rest of the run.
+RESOURCES = []
+STALE = []        # issue #105: messages delivered to an observer of an attempt that had ended
+ATTEMPTS = [0, 0]  # issue #105: key of the current attempt (0 outside any scenario), last key
+
+
+def track(obj, closer):
+    """Issue #105: @closer (idempotent) runs after the current attempt if the scenario did not
+    run it. Returns @obj."""
+    RESOURCES.append([obj, closer, ATTEMPTS[0], False])
+    return obj
+
+
+def close_attempt_resources(key):
+    """Issue #105: close what attempt @key left open (observers, relays, fake brokers, image
+    servers); returns the type names of those it had to close."""
+    left = []
+    for r in RESOURCES:
+        if r[2] == key and not r[3]:
+            r[3] = True
+            if getattr(r[0], "closed", False):
+                continue   # the scenario closed it
+            left.append(type(r[0]).__name__)
+            try:
+                r[1]()
+            except Exception:   # noqa: BLE001 (a clean-up must not end the run)
+                traceback.print_exc()
+    return left
 
 
 def now_s():
@@ -242,6 +272,7 @@ class FakeBroker:
         self.srv.bind(("127.0.0.1", port))
         self.srv.listen(8)
         threading.Thread(target=self._loop, daemon=True).start()
+        track(self, self.close)   # issue #105
 
     def _loop(self):
         while True:
@@ -312,6 +343,7 @@ class FakeBroker:
             rec["closed"] = True
 
     def close(self):
+        self.closed = True
         self.srv.close()
 
 
@@ -376,8 +408,10 @@ class Relay:
         self.port, self.target, self.conns, self.srv = port, target, [], None
         self.rate, self.up_bytes = rate, 0
         self.start()
+        track(self, self.stop)   # issue #105
 
     def start(self):
+        self.closed = False
         self.srv = socket.socket()
         self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if self.rate:
@@ -387,6 +421,7 @@ class Relay:
         threading.Thread(target=self._loop, args=(self.srv,), daemon=True).start()
 
     def stop(self):
+        self.closed = True
         try:
             self.srv.shutdown(socket.SHUT_RDWR)   # wakes the accept(); close() alone does not
         except OSError:
@@ -482,6 +517,8 @@ class Observer:
 
     def __init__(self, port=None, auth=None):
         self.q = queue.Queue()
+        self.closed = False
+        self.attempt = ATTEMPTS[0]   # issue #105
         self.subscribed = threading.Event()
         self.c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"e2e-{time.monotonic()}")
         if auth:
@@ -492,16 +529,26 @@ class Observer:
         self.c.connect("127.0.0.1", port or MQTT_PORT, keepalive=120)
         self.c.subscribe("spBv1.0/#", qos=1)
         self.c.loop_start()
+        track(self, self.close)
         if not self.subscribed.wait(5):
             raise SystemExit("observer: no SUBACK from the broker")
 
     def close(self):
+        if self.closed:   # issue #105: the scenario and run_scenario may both close it
+            return
+        self.closed = True
         self.c.loop_stop()
         self.c.disconnect()
 
     def _on_msg(self, client, userdata, msg):
         if msg.topic.startswith("spBv1.0/STATE/"):
             return   # SPB-13: the primary host's JSON STATE, published by the harness itself
+        if self.closed:
+            return
+        if self.attempt and self.attempt != ATTEMPTS[0]:
+            # issue #105: never counted twice; reported by the check at the end of the run
+            STALE.append((time.monotonic(), msg.topic, self.attempt))
+            return
         p = spb.Payload()
         p.ParseFromString(msg.payload)  # raises on anything the official proto cannot parse
         item = (time.monotonic(), msg.topic, p, bytes(msg.payload))
@@ -2093,11 +2140,16 @@ class FirmwareServer:
         ctx.load_cert_chain(str(cert), str(key))
         self.srv.socket = ctx.wrap_socket(self.srv.socket, server_side=True)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.closed = False
+        track(self, self.close)   # issue #105
 
     log = []
     cuts = {}   # path -> (file in root, bytes of it sent before the connection is closed)
 
     def close(self):
+        if self.closed:
+            return
+        self.closed = True
         self.srv.shutdown()
         self.srv.server_close()
 
@@ -2243,6 +2295,10 @@ def run_ota(args, work):
             check("issue #96 self-test: a check that fails before QEMU dies (expected FAIL)", False,
                   "simulated firmware failure")
         if args.simulate_qemu_death in ("ota", "ota-failed") and not RETRIES:
+            # issue #105 self-test: an observer on the main broker that the exception below
+            # leaves subscribed (run_scenario must close it, or every later scenario on that
+            # broker sees each message twice)
+            Observer()
             # issue #86 self-test: the emulator dies as it did in the real aborts (SIGABRT)
             gw.proc.send_signal(signal.SIGABRT)
             gw.proc.wait()
@@ -2916,6 +2972,11 @@ def main():
         check("REL-4 syslog sequenceId continuous within each boot (UDP over the emulator's NAT, "
               "nothing lost)", runs >= 1 and not errs,
               f"{len(syslog_from(NODE))} datagrams in {runs} boot(s); gaps {errs[:5]}")
+        check("Issue #105 no message reached an observer of a scenario attempt that had ended "
+              "(run_scenario closes what an attempt leaves open: observers, relays, fake brokers, "
+              "image servers, private brokers)", not STALE,
+              f"{len(STALE)} stale deliveries" + (f", first {STALE[0][1]} for attempt {STALE[0][2]}"
+                                                  if STALE else ""))
         seq_errors = seq_continuity(CAPTURE)
         check("SPB-5 seq continuity per session", not seq_errors, "; ".join(seq_errors) or "ok")
         # issue #86: the retries next to the checks (their discarded checks included); #92:
@@ -2967,6 +3028,8 @@ def run_scenario(name, fn, retry_on_qemu_death=True):
         budget = (SCENARIO_BUDGET_S.get(name, DEFAULT_BUDGET_S) if not ARGS.scenario_timeout
                   else ARGS.scenario_timeout) * ARGS.timeout_scale
         started = time.monotonic()
+        ATTEMPTS[1] += 1
+        ATTEMPTS[0] = key = ATTEMPTS[1]
         FAULT.clear()
         ATTEMPT.clear()
         ATTEMPT.update(name=name, attempt=attempt, first_gw=first_gw, faults=[], budget=budget,
@@ -2984,6 +3047,18 @@ def run_scenario(name, fn, retry_on_qemu_death=True):
                 g.kill()
             except OSError:
                 pass
+        # issue #105: nor an observer still subscribed, a relay, a fake broker, an image server
+        # or a private broker (an exception skipped the scenario's own clean-up)
+        left = close_attempt_resources(key)
+        for proc in PROCS[first_proc:]:
+            if proc.poll() is None:
+                left.append("broker")
+                proc.kill()
+                proc.wait()
+        ATTEMPTS[0] = 0
+        if left:
+            print(f"[CLEANUP] {name}: closed what the attempt left open: {', '.join(left)}",
+                  flush=True)
         faults = list(ATTEMPT["faults"])
         for g in GATEWAYS[first_gw:]:   # a death after the monitor's last look
             d = g.qemu_died()
@@ -3004,10 +3079,6 @@ def run_scenario(name, fn, retry_on_qemu_death=True):
                   f"failed after the fault)", flush=True)
             for c in lost:
                 print(f"[RETRY]   discarded: {c['criterion']}: {c['detail'][:300]}", flush=True)
-            for proc in PROCS[first_proc:]:   # brokers of the first attempt (its ports)
-                if proc.poll() is None:
-                    proc.kill()
-                    proc.wait()
             continue
         if error is not None or first:
             why = [error] if error else []
