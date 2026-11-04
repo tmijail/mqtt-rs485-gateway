@@ -3271,7 +3271,7 @@ def run_nvs_ota(args, work):
             return
         obs.drain()
         t3 = time.monotonic()
-        gw = Gateway(args, log, flash)
+        gw = Gateway(args, log, flash, efuse=efuse)
         gw.start()
         nb4 = obs.wait(nbirth_t, 60)
         gw.wait_log(r"edge: time synchronised", 20, t3)
@@ -3287,7 +3287,7 @@ def run_nvs_ota(args, work):
         obs.wait(f"{T}/NDEATH/{node}", 5)
         obs.drain()
         t4 = time.monotonic()
-        gw = Gateway(args, log, flash)
+        gw = Gateway(args, log, flash, efuse=efuse)
         gw.start()
         nb5 = obs.wait(nbirth_t, 60)
         pw3 = commissioning_password(gw, t4)
