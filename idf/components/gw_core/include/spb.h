@@ -40,6 +40,7 @@ typedef struct {
     uint32_t datatype;
     uint64_t timestamp;      /* 0: omitted */
     bool is_null;
+    bool is_historical;      /* SPB-14: stored while offline, sent later */
     union {
         double num;          /* every numeric and Boolean datatype except the 64-bit integers */
         int64_t i64;         /* Int64: exact (a double is not above 2^53) */
@@ -78,6 +79,7 @@ typedef struct {
     uint32_t datatype;
     uint64_t timestamp;
     bool is_null;
+    bool is_historical;
     spb_val_kind_t kind;
     union {
         uint32_t i;

@@ -46,7 +46,20 @@ typedef struct {
     void (*restart)(void);               /* orderly restart, after the response went out */
 } gw_web_ctx_t;
 
-/** Start the server on cfg->web.port. Everything @p ctx points to must outlive it. */
+/** Issue #64: login counters for the shell. */
+typedef struct {
+    bool running;
+    bool https;            /* HTTPS with the device certificate (HTTP only redirects) */
+    uint32_t failed;       /* failed logins */
+    uint32_t refused;      /* requests refused while their address was blocked */
+    uint32_t blocks;       /* times an address was blocked */
+    unsigned blocked_now;
+} gw_web_stats_t;
+
+void gw_web_get_stats(gw_web_stats_t *out);
+
+/** Start the server: HTTPS on cfg->web.https_port (and a redirect on cfg->web.port) with
+ *  cfg->web.https, else HTTP on cfg->web.port. Everything @p ctx points to must outlive it. */
 esp_err_t gw_web_start(const gw_web_ctx_t *ctx);
 
 /**

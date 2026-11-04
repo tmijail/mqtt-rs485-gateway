@@ -4,7 +4,9 @@
 # the host unit tests (test/host).
 set(GW_CORE_SRCS
     src/gw_auth.c
+    src/gw_authlimit.c
     src/gw_backoff.c
+    src/gw_brokersel.c
     src/gw_button.c
     src/gw_buzz.c
     src/gw_cfgdoc.c
@@ -17,9 +19,12 @@ set(GW_CORE_SRCS
     src/gw_localio.c
     src/gw_netsel.c
     src/gw_node.c
+    src/gw_phost.c
     src/gw_plan.c
     src/gw_poll.c
     src/gw_rbe.c
+    src/gw_sf.c
+    src/gw_sfspill.c
     src/gw_syslog.c
     src/gw_tagdb.c
     src/mb_master.c

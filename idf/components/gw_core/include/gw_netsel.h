@@ -17,6 +17,15 @@
  *     flapping link does not tear the MQTT session down on every flap).
  *   - Any change from one interface to another requires a new MQTT session:
  *     a TCP connection cannot migrate between interfaces.
+ *   - Broker reachability (issue #57): an interface can keep its link and address while
+ *     the path to the broker is broken (upstream router down). When the MQTT layer reports
+ *     that every broker failed over the active interface, that interface is held "without
+ *     service" for a while: another usable interface takes over at once, whatever its rank.
+ *     The hold starts at hold_min_ms and doubles on every report in a row, up to hold_max_ms;
+ *     a working session over the interface (gw_netsel_reachable) resets it. When the hold of
+ *     the preferred interface ends it wins the session back as usual (failback): that is the
+ *     retry, and a still broken path is reported again after one round of attempts.
+ *     A held interface is still used when nothing else is usable (availability first).
  */
 #pragma once
 
@@ -50,10 +59,29 @@ typedef struct {
     bool usable[GW_NETSEL_MAX_IF];
     uint64_t usable_since_ms[GW_NETSEL_MAX_IF];
     int active;
+    uint32_t hold_min_ms, hold_max_ms;
+    uint32_t hold_ms[GW_NETSEL_MAX_IF];       /* next hold if reported again */
+    uint64_t held_until_ms[GW_NETSEL_MAX_IF]; /* 0 = not held */
 } gw_netsel_t;
 
-/** @p rank[i] is the preference of interface i (0 = most preferred). */
+#define GW_NETSEL_HOLD_MIN_MS 60000u
+#define GW_NETSEL_HOLD_MAX_MS 1800000u
+
+/** @p rank[i] is the preference of interface i (0 = most preferred). Hold times default to
+ *  GW_NETSEL_HOLD_MIN_MS / GW_NETSEL_HOLD_MAX_MS. */
 void gw_netsel_init(gw_netsel_t *s, uint8_t count, const uint8_t *rank, uint32_t failback_ms);
+
+/** Hold time of an interface without service: first @p min_ms, doubling up to @p max_ms. */
+void gw_netsel_set_hold(gw_netsel_t *s, uint32_t min_ms, uint32_t max_ms);
+
+/** Issue #57: every broker failed over interface @p ifc; hold it and move away if possible. */
+gw_netsel_change_t gw_netsel_unreachable(gw_netsel_t *s, uint8_t ifc, uint64_t now_ms);
+
+/** A session works over @p ifc: end its hold and reset the hold time. */
+void gw_netsel_reachable(gw_netsel_t *s, uint8_t ifc);
+
+/** True while @p ifc is held without service at @p now_ms. */
+bool gw_netsel_held(const gw_netsel_t *s, uint8_t ifc, uint64_t now_ms);
 
 /** Interface @p ifc became usable or unusable at @p now_ms (repeats are ignored). */
 gw_netsel_change_t gw_netsel_set(gw_netsel_t *s, uint8_t ifc, bool usable, uint64_t now_ms);

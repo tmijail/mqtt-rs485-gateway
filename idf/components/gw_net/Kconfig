@@ -21,4 +21,19 @@ menu "Gateway: network"
             enables network.wifi; Ethernet-only configurations behave as without it.
             QEMU does not emulate the radio: the emulator build disables this.
 
+    config GW_NET_NO_SERVICE_MIN_S
+        int "Hold of an interface without a path to the broker, first time (s)"
+        range 10 3600
+        default 60
+        help
+            Issue #57, with Ethernet and Wi-Fi: when every broker failed over the active
+            interface although it has link and an address, the session moves to the other
+            one and this interface is not chosen again for this long. Each report in a row
+            doubles it, up to GW_NET_NO_SERVICE_MAX_S; a stable session resets it.
+
+    config GW_NET_NO_SERVICE_MAX_S
+        int "Hold of an interface without a path to the broker, maximum (s)"
+        range 10 86400
+        default 1800
+
 endmenu

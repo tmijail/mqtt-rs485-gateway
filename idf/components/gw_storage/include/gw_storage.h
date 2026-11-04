@@ -64,6 +64,12 @@ void gw_storage_commissioning_password(char out[GW_COMMISSION_PW_LEN + 1]);
  *  HMAC key in eFuse). Development builds without it keep the secrets in plain NVS. */
 bool gw_storage_secrets_encrypted(void);
 
+/** Issue #64: the web server's certificate and private key (PEM), kept with the secrets in
+ *  NVS (encrypted in production). False if there is none yet. */
+bool gw_storage_get_web_tls(char *cert, size_t cert_cap, char *key, size_t key_cap);
+
+esp_err_t gw_storage_set_web_tls(const char *cert, const char *key);
+
 /** Secrets currently stored (empty strings when none). */
 void gw_storage_get_secrets(gw_secrets_t *out);
 
@@ -90,6 +96,16 @@ void gw_storage_save_last_good(const gw_config_t *cfg);
  * the last valid configuration, or DHCP on Ethernet and port 80. Nothing else is set.
  */
 void gw_storage_recovery_config(gw_config_t *cfg);
+
+/** Largest file next to config.json that gw_storage_read_file() reads. */
+#define GW_STORAGE_FILE_MAX 16384
+
+/**
+ * Whole file /cfg/<@p name> (a TLS certificate or key, MQTT-4/5), NUL terminated, in PSRAM
+ * when present. NULL with the reason (Spanish, with the path) in @p why. Release with
+ * gw_storage_free(). The partition must have been mounted by gw_storage_load_config().
+ */
+char *gw_storage_read_file(const char *name, size_t *len, char *why, size_t why_cap);
 
 /**
  * Small state of the local I/O kept in NVS (IO-3 outputs to hold across a restart, IO-4 pulse

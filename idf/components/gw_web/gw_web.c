@@ -8,14 +8,18 @@
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
+#include "esp_https_server.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "gw_auth.h"
+#include "gw_authlimit.h"
 #include "gw_log.h"
 #include "gw_net.h"
 #include "gw_status.h"
 #include "gw_storage.h"
 #include "gw_tagdb.h"
+#include "gw_webcert.h"
+#include "lwip/sockets.h"
 
 static const char *TAG = "web";
 
@@ -23,6 +27,9 @@ static const char *TAG = "web";
 
 static gw_web_ctx_t s_ctx;
 static httpd_handle_t s_server;
+static httpd_handle_t s_redirect;    /* issue #64: plain HTTP that only redirects to HTTPS */
+static bool s_https;
+static gw_authlimit_t s_limit;       /* issue #64: login attempts per source address */
 
 /* Credentials checked by the server task only (single task: no lock needed). */
 static char s_user[GW_USER_SIZE];           /* "" = any user name (recovery) */
@@ -91,24 +98,71 @@ static bool check_credentials(const char *header)
     return ok;
 }
 
+/* Source address of the request: IPv4 in the first 4 bytes (also when mapped into IPv6). */
+static void peer_addr(httpd_req_t *req, uint8_t out[16], char *text, size_t cap)
+{
+    memset(out, 0, 16);
+    snprintf(text, cap, "?");
+    struct sockaddr_storage a;
+    socklen_t n = sizeof(a);
+    if (getpeername(httpd_req_to_sockfd(req), (struct sockaddr *)&a, &n) != 0) {
+        return;
+    }
+    if (a.ss_family == AF_INET) {
+        memcpy(out, &((struct sockaddr_in *)&a)->sin_addr, 4);
+        inet_ntop(AF_INET, out, text, cap);
+        return;
+    }
+    const uint8_t *v6 = (const uint8_t *)&((struct sockaddr_in6 *)&a)->sin6_addr;
+    static const uint8_t mapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+    if (memcmp(v6, mapped, sizeof(mapped)) == 0) {
+        memcpy(out, v6 + 12, 4);
+        inet_ntop(AF_INET, out, text, cap);
+    } else {
+        memcpy(out, v6, 16);
+        inet_ntop(AF_INET6, out, text, cap);
+    }
+}
+
 static bool authorized(httpd_req_t *req)
 {
     char hdr[192];
+    uint8_t ip[16];
+    char who[48];
+    peer_addr(req, ip, who, sizeof(who));
+    uint64_t now = (uint64_t)(esp_timer_get_time() / 1000);
+    uint32_t left = gw_authlimit_check(&s_limit, ip, now);
+    if (left != 0) {
+        /* issue #64: a blocked address gets no password check at all, right or wrong */
+        static char retry[12];   /* server task only; must outlive the response */
+        snprintf(retry, sizeof(retry), "%lu", (unsigned long)((left + 999) / 1000));
+        httpd_resp_set_hdr(req, "Retry-After", retry);
+        send_error(req, "429 Too Many Requests", NULL,
+                   "demasiados intentos de acceso fallidos: espere y vuelva a intentar");
+        return false;
+    }
     if (httpd_req_get_hdr_value_str(req, "Authorization", hdr, sizeof(hdr)) == ESP_OK) {
         /* PBKDF2 costs tens of ms: a browser repeats the same header on every request, so the
          * digest of the last accepted one is remembered. */
         uint8_t digest[GW_SHA256_LEN];
         gw_sha256(hdr, strlen(hdr), digest);
         if (s_ok_cached && gw_auth_equal(digest, s_ok_digest, sizeof(digest))) {
+            gw_authlimit_succeeded(&s_limit, ip);
             return true;
         }
         if (check_credentials(hdr)) {
             memcpy(s_ok_digest, digest, sizeof(digest));
             s_ok_cached = true;
+            gw_authlimit_succeeded(&s_limit, ip);
             return true;
         }
-        ESP_LOGW(TAG, "%s %s: wrong credentials", req->method == HTTP_GET ? "GET" : "write",
-                 req->uri);
+        uint32_t blocked = gw_authlimit_failed(&s_limit, ip, now);
+        ESP_LOGW(TAG, "%s %s from %s: wrong credentials", req->method == HTTP_GET ? "GET" : "write",
+                 req->uri, who);
+        if (blocked != 0) {
+            ESP_LOGW(TAG, "%s blocked for %lu s after %d failed logins in a row", who,
+                     (unsigned long)(blocked / 1000), CONFIG_GW_WEB_LOGIN_MAX_FAILS);
+        }
     }
     httpd_resp_set_hdr(req, "WWW-Authenticate", REALM_HDR);
     send_error(req, "401 Unauthorized", NULL, "autenticación requerida");
@@ -411,6 +465,64 @@ static esp_err_t favicon_get(httpd_req_t *req)
     return httpd_resp_send(req, NULL, 0);
 }
 
+/* ---------- plain HTTP with HTTPS on: redirect only (issue #64) ---------- */
+
+static esp_err_t redirect_any(httpd_req_t *req)
+{
+    char host[72] = "";
+    if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK || host[0] == '\0') {
+        snprintf(host, sizeof(host), "%s.local", s_ctx.cfg->network.hostname);
+    }
+    /* drop the port of the Host header ("[v6]:port" or "name:port") */
+    char *colon = strrchr(host, ':');
+    if (colon != NULL && (host[0] != '[' || colon > strchr(host, ']'))) {
+        *colon = '\0';
+    }
+    /* redirect task only; "https://" + host + ":port" + the URI */
+    static char loc[8 + sizeof(host) + 8 + CONFIG_HTTPD_MAX_URI_LEN + 1];
+    char port[8] = "";
+    if (s_ctx.cfg->web.https_port != 443) {
+        snprintf(port, sizeof(port), ":%u", s_ctx.cfg->web.https_port);
+    }
+    snprintf(loc, sizeof(loc), "https://%s%s%s", host, port, req->uri);
+    /* 301 for GET; 308 keeps the method and body of a PUT/POST */
+    httpd_resp_set_status(req, req->method == HTTP_GET ? "301 Moved Permanently"
+                                                       : "308 Permanent Redirect");
+    httpd_resp_set_hdr(req, "Location", loc);
+    httpd_resp_set_hdr(req, "Connection", "close");
+    return httpd_resp_send(req, NULL, 0);
+}
+
+static esp_err_t start_redirect(uint16_t port)
+{
+    httpd_config_t hc = HTTPD_DEFAULT_CONFIG();
+    hc.server_port = port;
+    hc.ctrl_port = ESP_HTTPD_DEF_CTRL_PORT + 2;
+    hc.task_priority = 3;
+    hc.stack_size = 3072;
+    hc.max_open_sockets = 2;
+    hc.lru_purge_enable = true;
+    hc.max_uri_handlers = 3;
+    hc.uri_match_fn = httpd_uri_match_wildcard;
+    ESP_RETURN_ON_ERROR(httpd_start(&s_redirect, &hc), TAG, "redirect server");
+    static const httpd_method_t methods[] = {HTTP_GET, HTTP_PUT, HTTP_POST};
+    for (size_t i = 0; i < sizeof(methods) / sizeof(methods[0]); i++) {
+        const httpd_uri_t u = {.uri = "/*", .method = methods[i], .handler = redirect_any};
+        ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_redirect, &u), TAG, "redirect uri");
+    }
+    return ESP_OK;
+}
+
+void gw_web_get_stats(gw_web_stats_t *out)
+{
+    out->running = s_server != NULL;
+    out->https = s_https;
+    out->failed = s_limit.failed_total;
+    out->refused = s_limit.refused_total;
+    out->blocks = s_limit.blocks_total;
+    out->blocked_now = gw_authlimit_blocked(&s_limit, (uint64_t)(esp_timer_get_time() / 1000));
+}
+
 /* ---------- start ---------- */
 
 esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
@@ -428,6 +540,8 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         memset(&sec, 0, sizeof(sec));
     }
 
+    gw_authlimit_init(&s_limit, CONFIG_GW_WEB_LOGIN_MAX_FAILS, CONFIG_GW_WEB_LOGIN_BLOCK_S * 1000u,
+                      CONFIG_GW_WEB_LOGIN_BLOCK_MAX_S * 1000u);
     httpd_config_t hc = HTTPD_DEFAULT_CONFIG();
     hc.server_port = ctx->cfg->web.port;
     hc.task_priority = 3;
@@ -435,7 +549,33 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
     hc.max_uri_handlers = 12;
     hc.max_open_sockets = 4;
     hc.lru_purge_enable = true;
-    ESP_RETURN_ON_ERROR(httpd_start(&s_server, &hc), TAG, "httpd_start");
+    const char *cert = NULL, *key = NULL;
+    if (ctx->cfg->web.https && !gw_webcert_load(ctx->cfg->network.hostname, &cert, &key)) {
+        ESP_LOGE(TAG, "HTTPS unavailable (no device certificate): plain HTTP on port %u",
+                 ctx->cfg->web.port);
+    }
+    s_https = cert != NULL;
+    if (s_https) {
+        /* issue #64: HTTPS with the device certificate; a TLS session's mbedTLS buffers come
+         * from PSRAM when the board has it (gw_storage_init) */
+        httpd_ssl_config_t sc = HTTPD_SSL_CONFIG_DEFAULT();
+        sc.httpd = hc;
+        sc.httpd.server_port = 0;
+        sc.httpd.ctrl_port = ESP_HTTPD_DEF_CTRL_PORT + 1;
+        sc.httpd.stack_size = 10240;   /* handshake + configuration validation */
+        sc.httpd.max_open_sockets = 3;
+        sc.port_secure = ctx->cfg->web.https_port;
+        sc.servercert = (const uint8_t *)cert;
+        sc.servercert_len = strlen(cert) + 1;
+        sc.prvtkey_pem = (const uint8_t *)key;
+        sc.prvtkey_len = strlen(key) + 1;
+        ESP_RETURN_ON_ERROR(httpd_ssl_start(&s_server, &sc), TAG, "httpd_ssl_start");
+        if (start_redirect(ctx->cfg->web.port) != ESP_OK) {
+            ESP_LOGE(TAG, "no HTTP redirect on port %u", ctx->cfg->web.port);
+        }
+    } else {
+        ESP_RETURN_ON_ERROR(httpd_start(&s_server, &hc), TAG, "httpd_start");
+    }
 
     static const httpd_uri_t uris[] = {
         {.uri = "/", .method = HTTP_GET, .handler = index_get},
@@ -450,7 +590,12 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &uris[i]), TAG, "%s",
                             uris[i].uri);
     }
-    ESP_LOGI(TAG, "web UI and REST API on port %u (%s)", hc.server_port,
+    if (s_https) {
+        ESP_LOGI(TAG, "HTTPS on port %u; HTTP on port %u only redirects to it",
+                 ctx->cfg->web.https_port, ctx->cfg->web.port);
+    }
+    ESP_LOGI(TAG, "web UI and REST API on port %u (%s)",
+             s_https ? ctx->cfg->web.https_port : hc.server_port,
              s_hash[0] == '\0' ? "user 'admin' with the commissioning password: no web password set"
              : s_user[0] != '\0' ? "web.username and web.password"
                                 : "stored web password, any user name");

@@ -283,6 +283,201 @@ static void test_syslog_section(void)
     ASSERT_REJECTED(parse(doc), "syslog.host: se esperaba un texto");
 }
 
+/* Document with "mqtt": {@p mqtt_body} and a minimal sparkplug section. */
+static bool parse_mqtt(const char *mqtt_body)
+{
+    char doc[2048];
+    snprintf(doc, sizeof(doc),
+             "{\"mqtt\":{%s},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}}",
+             mqtt_body);
+    return parse(doc);
+}
+
+/* MQTT-4: optional "mqtt.tls" section. */
+static void test_tls_section(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\""), err.msg);
+    TEST_ASSERT_FALSE(cfg.mqtt.tls.enabled);   /* absent = plain TCP, as in the MVP */
+    TEST_ASSERT_EQUAL(1883, cfg.mqtt.port);
+    TEST_ASSERT_EQUAL_STRING("", cfg.mqtt.tls.ca_file);
+
+    /* TLS on: the default port becomes 8883; an explicit port wins */
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\",\"tls\":{\"enabled\":true}"), err.msg);
+    TEST_ASSERT_TRUE(cfg.mqtt.tls.enabled);
+    TEST_ASSERT_EQUAL(8883, cfg.mqtt.port);
+    TEST_ASSERT_EQUAL_STRING("", cfg.mqtt.tls.ca_file);       /* the certificate bundle */
+    TEST_ASSERT_EQUAL_STRING("", cfg.mqtt.tls.server_name);   /* verified against the host */
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"10.0.0.5\",\"port\":9883,\"tls\":{"
+                                        "\"enabled\":true,\"ca_file\":\"plant-ca_2.pem\","
+                                        "\"server_name\":\"broker.plant.local\"}"),
+                             err.msg);
+    TEST_ASSERT_EQUAL(9883, cfg.mqtt.port);
+    TEST_ASSERT_EQUAL_STRING("plant-ca_2.pem", cfg.mqtt.tls.ca_file);
+    TEST_ASSERT_EQUAL_STRING("broker.plant.local", cfg.mqtt.tls.server_name);
+    /* the keys are validated also with TLS off (a disabled section stays consistent) */
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":{\"ca_file\":\"../ca.pem\"}"),
+                    "mqtt.tls.ca_file: '../ca.pem' no es un nombre de archivo válido");
+
+    static const char *const bad_names[] = {"/cfg/ca.pem", "a b.pem", ".hidden", "config.json",
+                                            "config.json.tmp", "ca\\\\x.pem",
+                                            "0123456789012345678901234567890123.pem"};
+    for (size_t i = 0; i < sizeof(bad_names) / sizeof(bad_names[0]); i++) {
+        char body[256];
+        snprintf(body, sizeof(body), "\"host\":\"b\",\"tls\":{\"enabled\":true,\"ca_file\":\"%s\"}",
+                 bad_names[i]);
+        ASSERT_REJECTED(parse_mqtt(body), "mqtt.tls.ca_file:");
+    }
+    TEST_ASSERT_TRUE(gw_config_file_name_ok("ca.pem"));
+    TEST_ASSERT_TRUE(gw_config_file_name_ok("A-z_0.9"));
+    TEST_ASSERT_FALSE(gw_config_file_name_ok(""));
+    TEST_ASSERT_FALSE(gw_config_file_name_ok("config.json"));
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":{\"enabled\":1}"),
+                    "mqtt.tls.enabled: se esperaba true o false");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":{\"verify\":false}"),
+                    "mqtt.tls.verify: clave desconocida");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":true"), "mqtt.tls: se esperaba un objeto JSON");
+}
+
+/* MQTT-5: client certificate and key (mutual TLS), both or neither. */
+static void test_tls_client_certificate(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\",\"tls\":{\"enabled\":true}"), err.msg);
+    TEST_ASSERT_EQUAL_STRING("", cfg.mqtt.tls.cert_file);
+    TEST_ASSERT_EQUAL_STRING("", cfg.mqtt.tls.key_file);
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\",\"tls\":{\"enabled\":true,"
+                                        "\"cert_file\":\"gw01.crt\",\"key_file\":\"gw01.key\"}"),
+                             err.msg);
+    TEST_ASSERT_EQUAL_STRING("gw01.crt", cfg.mqtt.tls.cert_file);
+    TEST_ASSERT_EQUAL_STRING("gw01.key", cfg.mqtt.tls.key_file);
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":{\"enabled\":true,\"cert_file\":\"gw01.crt\"}"),
+                    "mqtt.tls.key_file: cert_file y key_file van juntos");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":{\"enabled\":true,\"key_file\":\"gw01.key\"}"),
+                    "mqtt.tls.cert_file: cert_file y key_file van juntos");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":{\"cert_file\":\"a/b.crt\","
+                               "\"key_file\":\"k\"}"),
+                    "mqtt.tls.cert_file: 'a/b.crt' no es un nombre de archivo válido");
+}
+
+/* MQTT-6: ordered backup brokers, failover count and return-to-primary policy. */
+static void test_backup_brokers(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\""), err.msg);
+    TEST_ASSERT_EQUAL(0, cfg.mqtt.backup_count);   /* absent: one broker, as in the MVP */
+    TEST_ASSERT_EQUAL(3, cfg.mqtt.failover_after);
+    TEST_ASSERT_EQUAL(0, cfg.mqtt.primary_return_s);
+
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"a\",\"port\":1884,\"backup_brokers\":["
+                                        "{\"host\":\"b\"},{\"host\":\"fd00::2\",\"port\":2883}],"
+                                        "\"failover_after\":1,\"primary_return_s\":600"),
+                             err.msg);
+    TEST_ASSERT_EQUAL(2, cfg.mqtt.backup_count);
+    TEST_ASSERT_EQUAL_STRING("b", cfg.mqtt.backup[0].host);
+    TEST_ASSERT_EQUAL(1884, cfg.mqtt.backup[0].port);   /* the primary's port */
+    TEST_ASSERT_EQUAL_STRING("fd00::2", cfg.mqtt.backup[1].host);
+    TEST_ASSERT_EQUAL(2883, cfg.mqtt.backup[1].port);
+    TEST_ASSERT_EQUAL(1, cfg.mqtt.failover_after);
+    TEST_ASSERT_EQUAL(600, cfg.mqtt.primary_return_s);
+    /* with TLS the backups default to 8883 as well */
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"a\",\"tls\":{\"enabled\":true},"
+                                        "\"backup_brokers\":[{\"host\":\"b\"}]"),
+                             err.msg);
+    TEST_ASSERT_EQUAL(8883, cfg.mqtt.backup[0].port);
+
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"backup_brokers\":[{\"host\":\"b\"},{\"host\":\"c\"},"
+                               "{\"host\":\"d\"},{\"host\":\"e\"}]"),
+                    "mqtt.backup_brokers: 4 brokers; el máximo es 3");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"backup_brokers\":[{\"port\":1}]"),
+                    "mqtt.backup_brokers[0].host: campo obligatorio ausente");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"backup_brokers\":[{\"host\":\"b\"},{\"host\":\"\"}]"),
+                    "mqtt.backup_brokers[1].host: no puede estar vacío");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"backup_brokers\":[{\"host\":\"b\",\"port\":0}]"),
+                    "mqtt.backup_brokers[0].port: valor 0 fuera de rango");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"backup_brokers\":[{\"host\":\"b\",\"tls\":true}]"),
+                    "mqtt.backup_brokers[0].tls: clave desconocida");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"backup_brokers\":{\"host\":\"b\"}"),
+                    "mqtt.backup_brokers: se esperaba un array");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"failover_after\":0"),
+                    "mqtt.failover_after: valor 0 fuera de rango [1, 20]");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"primary_return_s\":-1"),
+                    "mqtt.primary_return_s: valor -1 fuera de rango");
+}
+
+/* SPB-14: store & forward switch. */
+static void test_store_forward_key(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\""), err.msg);
+    TEST_ASSERT_FALSE(cfg.sparkplug.store_forward);   /* absent: coalescing, as in the MVP */
+    TEST_ASSERT_TRUE_MESSAGE(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                                   "\"edge_node_id\":\"E\",\"store_forward\":true}}"),
+                             err.msg);
+    TEST_ASSERT_TRUE(cfg.sparkplug.store_forward);
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\",\"store_forward\":\"yes\"}}"),
+                    "sparkplug.store_forward: se esperaba true, false o un objeto");
+    TEST_ASSERT_FALSE(cfg.sparkplug.sf_sd);
+    /* the object form, with the optional microSD spill (off by default) */
+    static const char head[] = "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                               "\"edge_node_id\":\"E\",\"store_forward\":";
+    char doc[512];
+    snprintf(doc, sizeof(doc), "%s{}}}", head);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_TRUE(cfg.sparkplug.store_forward);
+    TEST_ASSERT_FALSE(cfg.sparkplug.sf_sd);
+    TEST_ASSERT_EQUAL_UINT32(16384, cfg.sparkplug.sf_sd_max_kb);
+    snprintf(doc, sizeof(doc), "%s{\"sd\":{\"enabled\":true,\"max_kb\":1024}}}}", head);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_TRUE(cfg.sparkplug.sf_sd);
+    TEST_ASSERT_EQUAL_UINT32(1024, cfg.sparkplug.sf_sd_max_kb);
+    snprintf(doc, sizeof(doc), "%s{\"enabled\":false,\"sd\":{\"enabled\":true}}}}", head);
+    ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd.enabled: la tarjeta solo extiende");
+    snprintf(doc, sizeof(doc), "%s{\"sd\":{\"max_kb\":8}}}}", head);
+    ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd.max_kb: valor 8 fuera de rango");
+    snprintf(doc, sizeof(doc), "%s{\"sd\":{\"pins\":1}}}}", head);
+    ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd.pins: clave desconocida");
+    snprintf(doc, sizeof(doc), "%s{\"sd\":true}}}", head);
+    ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd: se esperaba un objeto JSON");
+}
+
+/* MQTT-8: protocol version. */
+static void test_mqtt_protocol(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\""), err.msg);
+    TEST_ASSERT_EQUAL(GW_MQTT_V311, cfg.mqtt.protocol);   /* absent: 3.1.1, as in the MVP */
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\",\"protocol\":\"5\""), err.msg);
+    TEST_ASSERT_EQUAL(GW_MQTT_V5, cfg.mqtt.protocol);
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\",\"protocol\":\"3.1.1\""), err.msg);
+    TEST_ASSERT_EQUAL(GW_MQTT_V311, cfg.mqtt.protocol);
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"protocol\":5"),
+                    "mqtt.protocol: valor no válido (se esperaba 3.1.1|5)");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"protocol\":\"3.1\""),
+                    "mqtt.protocol: valor no válido (se esperaba 3.1.1|5)");
+}
+
+/* Issue #64: HTTPS keys of the web section. */
+static void test_web_https(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\""), err.msg);
+    TEST_ASSERT_TRUE(cfg.web.https);            /* on by default */
+    TEST_ASSERT_EQUAL(443, cfg.web.https_port);
+    TEST_ASSERT_EQUAL(80, cfg.web.port);
+    TEST_ASSERT_TRUE_MESSAGE(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                                   "\"edge_node_id\":\"E\"},\"web\":{\"https_port\":8443,"
+                                   "\"port\":8080}}"),
+                             err.msg);
+    TEST_ASSERT_EQUAL(8443, cfg.web.https_port);
+    TEST_ASSERT_TRUE_MESSAGE(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                                   "\"edge_node_id\":\"E\"},\"web\":{\"https\":false,"
+                                   "\"https_port\":80}}"),
+                             err.msg);   /* the HTTPS port does not matter without HTTPS */
+    TEST_ASSERT_FALSE(cfg.web.https);
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"web\":{\"https_port\":80}}"),
+                    "web.https_port: no puede ser igual a web.port (80)");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"web\":{\"https\":\"on\"}}"),
+                    "web.https: se esperaba true o false");
+}
+
 /* CFG-3 / CFG-4: optional "web" section. */
 static void test_web_section(void)
 {
@@ -876,7 +1071,13 @@ int main(void)
     RUN_TEST(test_ipv6_literals);
     RUN_TEST(test_ipv6_section);
     RUN_TEST(test_syslog_section);
+    RUN_TEST(test_tls_section);
+    RUN_TEST(test_tls_client_certificate);
+    RUN_TEST(test_backup_brokers);
+    RUN_TEST(test_mqtt_protocol);
+    RUN_TEST(test_store_forward_key);
     RUN_TEST(test_web_section);
+    RUN_TEST(test_web_https);
     RUN_TEST(test_hostname);
     RUN_TEST(test_error_fields);
     RUN_TEST(test_schema_rules);

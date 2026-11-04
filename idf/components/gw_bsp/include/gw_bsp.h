@@ -71,6 +71,11 @@ typedef struct {
         gpio_num_t gpio;
         bool passive;                          /* needs a PWM tone (factory reset beeps) */
     } buzzer;
+    struct {                                   /* SPB-14 microSD, SDMMC 1-bit */
+        gpio_num_t clk;
+        gpio_num_t cmd;
+        gpio_num_t d0;                         /* GPIO45: strapping pin (VDD_SPI) */
+    } sd;
     struct {
         gpio_num_t gpio;                       /* CFG-5 factory reset, NET-5 access point */
         bool active_low;

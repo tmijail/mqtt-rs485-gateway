@@ -94,6 +94,67 @@ static void test_zero_failback_switches_at_once(void)
     ASSERT_CHANGE(gw_netsel_set(&s, ETH, true, 10), GW_NETSEL_SWITCHED, WIFI, ETH);
 }
 
+/* Issue #57: Ethernet keeps its link but the path to the broker is broken. The MQTT layer
+ * reports it; Ethernet is held without service and Wi-Fi takes over at once. When the hold
+ * ends, Ethernet wins the session back (the retry); reported again, the hold doubles; a
+ * working session resets it. */
+static void test_unreachable_broker_moves_the_session(void)
+{
+    gw_netsel_init(&s, 2, (const uint8_t[]){0, 1}, 30000);
+    gw_netsel_set_hold(&s, 60000, 200000);
+    gw_netsel_set(&s, ETH, true, 0);
+    gw_netsel_set(&s, WIFI, true, 1000);
+    UNCHANGED(gw_netsel_poll(&s, 100000), ETH);
+    TEST_ASSERT_FALSE(gw_netsel_held(&s, ETH, 100000));
+
+    ASSERT_CHANGE(gw_netsel_unreachable(&s, ETH, 100000), GW_NETSEL_SWITCHED, ETH, WIFI);
+    TEST_ASSERT_TRUE(gw_netsel_held(&s, ETH, 100000));
+    /* Ethernet still has link and address: it does not take the session back while held */
+    UNCHANGED(gw_netsel_poll(&s, 159999), WIFI);
+    TEST_ASSERT_EQUAL_UINT32(60000, gw_netsel_next_poll_ms(&s, 100000));
+    /* the hold ends: failback to Ethernet (usable for far more than failback_ms) */
+    ASSERT_CHANGE(gw_netsel_poll(&s, 160000), GW_NETSEL_SWITCHED, WIFI, ETH);
+    /* still broken: held twice as long */
+    ASSERT_CHANGE(gw_netsel_unreachable(&s, ETH, 170000), GW_NETSEL_SWITCHED, ETH, WIFI);
+    UNCHANGED(gw_netsel_poll(&s, 289999), WIFI);
+    ASSERT_CHANGE(gw_netsel_poll(&s, 290000), GW_NETSEL_SWITCHED, WIFI, ETH);
+    /* and capped at the maximum */
+    gw_netsel_unreachable(&s, ETH, 300000);
+    UNCHANGED(gw_netsel_poll(&s, 499999), WIFI);
+    ASSERT_CHANGE(gw_netsel_poll(&s, 500000), GW_NETSEL_SWITCHED, WIFI, ETH);
+    gw_netsel_unreachable(&s, ETH, 510000);
+    ASSERT_CHANGE(gw_netsel_poll(&s, 710000), GW_NETSEL_SWITCHED, WIFI, ETH);
+    /* the path is back: a working session resets the hold to the minimum */
+    gw_netsel_reachable(&s, ETH);
+    TEST_ASSERT_FALSE(gw_netsel_held(&s, ETH, 710000));
+    gw_netsel_unreachable(&s, ETH, 800000);
+    ASSERT_CHANGE(gw_netsel_poll(&s, 860000), GW_NETSEL_SWITCHED, WIFI, ETH);
+}
+
+/* A held interface is still used when nothing else is usable; a cable pull or a held backup
+ * never leaves the gateway without an interface. */
+static void test_held_interface_is_the_last_resort(void)
+{
+    gw_netsel_init(&s, 2, (const uint8_t[]){0, 1}, 30000);
+    gw_netsel_set(&s, ETH, true, 0);
+    /* no Wi-Fi: the report changes nothing */
+    UNCHANGED(gw_netsel_unreachable(&s, ETH, 1000), ETH);
+    /* Wi-Fi comes up while Ethernet is held: it takes over at once, whatever its rank */
+    ASSERT_CHANGE(gw_netsel_set(&s, WIFI, true, 2000), GW_NETSEL_SWITCHED, ETH, WIFI);
+    /* Wi-Fi without service too: both held, stay where the session is */
+    UNCHANGED(gw_netsel_unreachable(&s, WIFI, 3000), WIFI);
+    /* Wi-Fi drops: back to the held Ethernet rather than nothing */
+    ASSERT_CHANGE(gw_netsel_set(&s, WIFI, false, 4000), GW_NETSEL_SWITCHED, WIFI, ETH);
+    /* Ethernet-only gateway (the MVP): reports never matter */
+    gw_netsel_init(&s, 1, (const uint8_t[]){0}, 30000);
+    gw_netsel_set(&s, ETH, true, 0);
+    UNCHANGED(gw_netsel_unreachable(&s, ETH, 10), ETH);
+    UNCHANGED(gw_netsel_poll(&s, 100), ETH);
+    /* an index beyond the interfaces is ignored */
+    UNCHANGED(gw_netsel_unreachable(&s, WIFI, 200), ETH);
+    gw_netsel_reachable(&s, WIFI);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -102,5 +163,7 @@ int main(void)
     RUN_TEST(test_wifi_primary);
     RUN_TEST(test_flapping_preferred_link_does_not_steal_the_session);
     RUN_TEST(test_zero_failback_switches_at_once);
+    RUN_TEST(test_unreachable_broker_moves_the_session);
+    RUN_TEST(test_held_interface_is_the_last_resort);
     return UNITY_END();
 }
