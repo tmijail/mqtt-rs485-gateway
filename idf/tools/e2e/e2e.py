@@ -923,6 +923,34 @@ def check_modbus_tcp(gw, slave):
                  f"{(log or ['no connect log'])[0]}")
 
 
+def check_panic_during_traffic(gw, obs, slave, nbirth_t):
+    """Issue #65: QEMU keeps UART1's interrupt line across a restart; a Modbus answer arriving
+    while the gateway restarts used to hang the next boot in uart_driver_install(). Unit 1
+    answers 120 ms late, and the panic is sent right after one of its requests reached the
+    slave, so the answer lands during the panic handler. Every boot must come back (NBIRTH with
+    reset reason "panic"); a panic restart does not quiesce the bus."""
+    outcomes = []
+    slave.delay = 0.12
+    try:
+        for _ in range(3):
+            n0 = len(slave.reads)
+            end = time.monotonic() + 5
+            while time.monotonic() < end and not any(r[0] == 1 for r in list(slave.reads)[n0:]):
+                time.sleep(0.002)
+            obs.drain()
+            gw.console("panic")
+            nb = obs.wait(nbirth_t, 40)
+            reason = metric(nb[2], name="Node Info/Reset Reason") if nb else None
+            outcomes.append(reason.string_value if reason else None)
+            if nb is None:
+                break
+    finally:
+        slave.delay = 0.0
+    return check("Issue #65 panic while a Modbus answer is on its way: the next boot does not hang "
+                 "(3 times, NBIRTH with reset reason 'panic')", outcomes == ["panic"] * 3,
+                 f"reset reasons after each panic: {outcomes}")
+
+
 def check_scan_rate(obs, gw, slave, nbirth, ncmd_t, ndata_t):
     """SPB-15: writable Node Control/Scan Rate (UInt32 ms, 0 = each device at its poll_ms).
     3000 makes Meter1 poll every 3 s, an invalid value is refused (NDATA keeps 3000), 0 brings
@@ -1772,6 +1800,7 @@ def run(args, log, slave, broker, conf, work):
           and reason1.string_value == "software",
           f"first boot {reason0.string_value if reason0 else None!r}, after reboot "
           f"{reason1.string_value if reason1 else None!r}")
+    check_panic_during_traffic(gw, obs, slave, nbirth_t)
 
     # Issue #12 / REL-1: a panic writes a core dump to the "coredump" partition, the gateway
     # restarts ("panic" in NBIRTH) and the dump decodes with esp_coredump against the ELF.
