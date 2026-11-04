@@ -914,6 +914,7 @@ def run_tls(args, work):
           missing and not attempts,
           (gw.find(r"mqtt\.tls\.ca_file", t0) or ["no error logged"])[0])
     check_ram_margin(args, work, obs, p13, pki["ca.pem"].read_bytes())
+    check_tls_during_validation(args, work, obs, p13, pki["ca.pem"].read_bytes())
     obs.close()
     broker.terminate()
     broker.wait()
@@ -941,7 +942,7 @@ def check_ram_margin(args, work, obs, port, ca):
       * largest block at the validation >= RAM_MIN_BLOCK_B (17 KB): one full TLS input record
         (16 KB, CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN) plus its header and MAC, so a large record on
         either session is still received in one piece.
-    A new TLS handshake during the validation (about 30 KB) is not covered: it is retried."""
+    A new TLS handshake during the validation is check_tls_during_validation (issue #84)."""
     node = "GW29"
     cfg = node_config(node, port=port, tls={"enabled": True, "ca_file": "ca.pem"})
     cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
@@ -983,6 +984,91 @@ def check_ram_margin(args, work, obs, port, ca):
           and minimum >= RAM_MIN_FREE_B and valid_block >= RAM_MIN_BLOCK_B,
           f"NBIRTH {'yes' if nb else 'no'}, Bulk DBIRTH {'yes' if bulk else 'no'}; PUT dry run {st} "
           f"{body[:80]!r}; session kept {kept}; {heap}; {stack}")
+
+
+VALIDATION_HOLD_MS = 12000
+
+
+def check_tls_during_validation(args, work, obs, port, ca):
+    """Issue #84 in one boot (GW30, no PSRAM): an MQTT over TLS reconnection, with its handshake,
+    while a configuration is being validated. The emulator-only shell command 'validation hold'
+    keeps the validation's buffers (a second gw_config_t and its document) at their peak for
+    VALIDATION_HOLD_MS; meanwhile the harness drops the broker connection (a relay between the
+    gateway and the TLS broker), so the gateway reconnects inside the hold. Expected: the PUT
+    answers, the handshake either completes inside the hold or fails cleanly and is retried after
+    it (NBIRTH again), and nothing hangs, panics or trips the task watchdog. As in #80, a web
+    session stays open over HTTPS (keep-alive) through the whole case."""
+    node, rport = "GW30", MQTT_PORT + 17
+    relay = Relay(rport, port)
+    cfg = node_config(node, port=rport, tls={"enabled": True, "ca_file": "ca.pem"})
+    cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "tlsvalid", cfg, {"ca.pem": ca})
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 60)
+    bulk = obs.wait(f"{T}/DBIRTH/{node}/{BULK}", 15)
+    st0, _, _ = wait_http("/api/status", 40)
+    # as in #80, a second web session stays open (keep-alive) through the whole case
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    auth = {"Authorization": "Basic " + base64.b64encode(f"admin:{WEB_PASSWORD}".encode()).decode()}
+    session = httplib.HTTPSConnection("127.0.0.1", HTTPS_PORT, timeout=VALIDATION_HOLD_MS / 1000 + 30,
+                                      context=ctx)
+    try:
+        session.request("GET", "/api/status", headers=auth)
+        opened = session.getresponse().read() is not None
+    except (OSError, httplib.HTTPException):
+        opened = False
+    _, h = gw.shell("validation hold %d" % VALIDATION_HOLD_MS,
+                    [r"next configuration validation is held for %d ms" % VALIDATION_HOLD_MS])
+    armed = all(h.values())
+    res = {}
+
+    def put():
+        res["r"] = http("PUT", "/api/config?dry_run=1", cfg, timeout=VALIDATION_HOLD_MS / 1000 + 30)
+
+    th = threading.Thread(target=put, daemon=True)
+    th.start()
+    held = gw.wait_log(r"emulator: validation held for", 20, t0)
+    cut = time.monotonic()
+    if held:
+        relay.stop()
+        relay.start()
+    nb2 = obs.wait(f"{T}/NBIRTH/{node}", VALIDATION_HOLD_MS / 1000 + 40)
+    th.join(VALIDATION_HOLD_MS / 1000 + 35)
+    released = gw.wait_log(r"emulator: validation released", 1, cut)
+    try:
+        session.request("GET", "/api/status", headers=auth)   # the session is still served
+        kept = session.getresponse().status == 200
+    except (OSError, httplib.HTTPException):
+        kept = False
+    session.close()
+    st = res.get("r", (None, {}, b"no answer"))[0]
+    body = res.get("r", (None, {}, b"no answer"))[2]
+    tries = gw.find(r"connecting to 10\.0\.2\.2:%d \(TLS\) as 'GW30'" % rport, cut)
+    tls_err = gw.find(r"(?i)(esp-tls|mbedtls|TLS: |SSL).*(fail|error|alloc|memory)|"
+                      r"MQTT down; reconnect attempt", cut)
+    during = nb2 is not None and released is not None and nb2[0] < released
+    alive, _ = gw.shell("status", [r"^heap\s+internal"])
+    heap = (gw.find(r"^heap\s+internal", alive) or [""])[0]
+    rel_line = (gw.find(r"emulator: validation released", cut) or [""])[0]
+    bad = gw.find(r"Guru Meditation|task_wdt|Task watchdog|abort\(\) was called|rst:0x(?!1 )", t0)
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node}", 5)
+    relay.stop()
+    print(f"TLS during validation: PUT {st}; handshake inside the hold {during}; attempts "
+          f"{len(tries)}; {' | '.join(tls_err[:6])}; {rel_line}; {heap}", flush=True)
+    check(f"Issue #84 an MQTT over TLS reconnection (new handshake) while a configuration is being "
+          f"validated, with a second web session open, no PSRAM: the PUT answers (200, or 503 with the "
+          f"reason), MQTT comes back (NBIRTH), the session is still served, no hang, panic or "
+          f"watchdog",
+          nb and bulk and st0 == 200 and opened and armed and held and st in (200, 503)
+          and nb2 is not None and kept and heap and not bad,
+          f"NBIRTH {'yes' if nb else 'no'}; web session open {opened}, kept {kept}; armed {armed}; "
+          f"held {held is not None}; PUT {st} "
+          f"{body[:90]!r}; NBIRTH again {'yes' if nb2 else 'no'} "
+          f"({'inside' if during else 'after'} the hold); {len(tries)} attempt(s); "
+          f"{' | '.join(tls_err[:4])}; {rel_line}; {bad[:2]}")
 
 
 # ---------------------------------------------------------------- broker failover (MQTT-6)

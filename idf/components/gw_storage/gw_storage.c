@@ -755,6 +755,15 @@ size_t gw_storage_validation_min_block(void)
     return s_validation_min_block;
 }
 
+#if CONFIG_GW_IO_SIMULATED
+static volatile uint32_t s_sim_hold_ms;
+
+void gw_storage_sim_hold_validation(uint32_t ms)
+{
+    s_sim_hold_ms = ms;
+}
+#endif
+
 esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_cfg_err_t *err)
 {
     memset(err, 0, sizeof(*err));
@@ -783,6 +792,23 @@ esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_
                   "boot %u B)", applied ? "validated" : "rejected",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT), (unsigned)block,
              (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+#if CONFIG_GW_IO_SIMULATED
+    uint32_t hold = s_sim_hold_ms;
+    s_sim_hold_ms = 0;
+    if (hold > 0) {
+        ESP_LOGW(TAG, "emulator: validation held for %u ms with its buffers", (unsigned)hold);
+        vTaskDelay(pdMS_TO_TICKS(hold));
+        block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (block < s_validation_min_block) {
+            s_validation_min_block = block;
+        }
+        ESP_LOGW(TAG, "emulator: validation released: free heap: internal %u B (largest block %u B, "
+                      "minimum since boot %u B)",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)block,
+                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    }
+#endif
     if (!applied) {
         ret = strstr(err->msg, "memoria insuficiente") ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_ARG;
     } else if (!dry_run) {

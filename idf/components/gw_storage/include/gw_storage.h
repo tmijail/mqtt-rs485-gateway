@@ -14,6 +14,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "sdkconfig.h"
 #include "gw_cfgdoc.h"
 #include "gw_config.h"
 
@@ -128,6 +129,12 @@ void *gw_storage_big_alloc(size_t size, const char *what);
 /** Issue #80: the smallest "largest free internal block" seen at the peak of a configuration
  *  validation (gw_storage_save_config), 0 if none ran yet. */
 size_t gw_storage_validation_min_block(void);
+
+#if CONFIG_GW_IO_SIMULATED
+/** Emulator only (issue #84): the next configuration validation keeps its buffers for @p ms at
+ *  its peak, so the E2E can make a TLS handshake happen during it. */
+void gw_storage_sim_hold_validation(uint32_t ms);
+#endif
 
 #ifdef __cplusplus
 }
