@@ -310,6 +310,14 @@ static void reconcile(void)
 {
     int64_t now = esp_timer_get_time();
     bool ip = atomic_load(&s_ip_up);
+    /* The MQTT task stores the flag before it bumps a generation, so the generations must be
+     * read before the flag: then a generation is only ever consumed with a flag at least as
+     * recent as the event that bumped it. Read the other way round, a CONNECTED landing
+     * between the two loads was consumed with connected == false and the session stayed up
+     * forever without subscriptions or NBIRTH (and a DISCONNECTED, symmetrically, without a
+     * reconnect). An event that lands after these loads is handled on the next loop. */
+    unsigned cg = atomic_load(&s_conn_gen);
+    unsigned dg = atomic_load(&s_disc_gen);
     bool connected = atomic_load(&s_mqtt_connected);
     if (ip && !s_prev_ip) {
         s_ip_since_us = now;
@@ -317,7 +325,6 @@ static void reconcile(void)
     s_prev_ip = ip;
     gw_status_set(GW_ST_NET_UP, ip);
 
-    unsigned cg = atomic_load(&s_conn_gen);
     if (cg != s_handled_conn) {
         s_handled_conn = cg;
         if (connected) {
@@ -328,7 +335,6 @@ static void reconcile(void)
         gw_node_session_down(&s_node);
         gw_status_set(GW_ST_MQTT_UP, false);
     }
-    unsigned dg = atomic_load(&s_disc_gen);
     if (dg != s_handled_disc) {
         s_handled_disc = dg;
         if (!connected) {
