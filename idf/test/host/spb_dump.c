@@ -21,7 +21,10 @@ int main(int argc, char **argv)
     recorder_clear();
     gw_node_ops_t ops = recorder_ops();
     static gw_node_t node;
-    gw_node_init(&node, cfg, &ops, "0.1.0+g0123456", "Waveshare ESP32-S3-POE-ETH-8DI-8DO");
+    const gw_node_info_t info = {.firmware = "0.1.0+g0123456",
+                                 .hardware = "Waveshare ESP32-S3-POE-ETH-8DI-8DO",
+                                 .reset_reason = "power-on"};
+    gw_node_init(&node, cfg, &ops, &info);
 
     gw_tag_value_t v[3] = {{.value = 230.5, .ts_ms = 1762171200000ull, .valid = true},
                            {.value = -12.3, .ts_ms = 1762171200000ull, .valid = true},

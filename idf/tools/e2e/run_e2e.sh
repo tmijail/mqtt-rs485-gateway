@@ -21,7 +21,7 @@ if [ sdkconfig.defaults -nt build-qemu/sdkconfig ] || [ sdkconfig.qemu -nt build
 fi
 idf.py -B build-qemu -D SDKCONFIG=build-qemu/sdkconfig \
     -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.qemu" \
-    -D GW_FS_DIR="$IDF_DIR/tools/e2e/fs" build
+    -D GW_FS_DIR="$IDF_DIR/tools/e2e/fs" reconfigure build   # reconfigure: picks up new Kconfig files
 
 (cd build-qemu && python -m esptool --chip esp32s3 merge-bin --output "$WORK/flash.bin" \
     --pad-to-size 16MB @flash_args)
@@ -33,4 +33,5 @@ open(sys.argv[1], "wb").write(QEMU_TARGETS["esp32s3"].default_efuse)
 PYEOF
 
 "$PY" tools/e2e/e2e.py --qemu "$(command -v qemu-system-xtensa)" \
-    --flash "$WORK/flash.bin" --efuse "$WORK/efuse.bin" --workdir "$WORK"
+    --flash "$WORK/flash.bin" --efuse "$WORK/efuse.bin" --workdir "$WORK" \
+    --littlefs-python build-qemu/littlefs_py_venv/bin/python

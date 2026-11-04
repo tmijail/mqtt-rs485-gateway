@@ -16,6 +16,7 @@
 #include "driver/spi_master.h"
 #include "esp_eth_mac_w5500.h"
 #include "esp_eth_phy_w5500.h"
+#include "gw_bsp.h"
 #endif
 
 static const char *TAG = "net";
@@ -102,22 +103,23 @@ static esp_err_t new_driver(esp_eth_handle_t *eth)
 #if CONFIG_GW_ETH_W5500
     ESP_RETURN_ON_ERROR(gpio_install_isr_service(0), TAG, "isr service");
     const spi_bus_config_t bus = {
-        .mosi_io_num = CONFIG_GW_ETH_SPI_MOSI_GPIO,
-        .miso_io_num = CONFIG_GW_ETH_SPI_MISO_GPIO,
-        .sclk_io_num = CONFIG_GW_ETH_SPI_SCLK_GPIO,
+        .mosi_io_num = gw_bsp.w5500.mosi,
+        .miso_io_num = gw_bsp.w5500.miso,
+        .sclk_io_num = gw_bsp.w5500.sclk,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
     };
-    ESP_RETURN_ON_ERROR(spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_CH_AUTO), TAG, "spi bus");
+    ESP_RETURN_ON_ERROR(spi_bus_initialize(gw_bsp.w5500.host, &bus, SPI_DMA_CH_AUTO), TAG,
+                        "spi bus");
     spi_device_interface_config_t dev = {
         .mode = 0,
-        .clock_speed_hz = CONFIG_GW_ETH_SPI_MHZ * 1000 * 1000,
-        .spics_io_num = CONFIG_GW_ETH_SPI_CS_GPIO,
+        .clock_speed_hz = (int)gw_bsp.w5500.clk_hz,
+        .spics_io_num = gw_bsp.w5500.cs,
         .queue_size = 20,
     };
-    eth_w5500_config_t w5500 = ETH_W5500_DEFAULT_CONFIG(SPI2_HOST, &dev);
-    w5500.base.int_gpio_num = CONFIG_GW_ETH_INT_GPIO;
-    phy_cfg.reset_gpio_num = CONFIG_GW_ETH_RST_GPIO;
+    eth_w5500_config_t w5500 = ETH_W5500_DEFAULT_CONFIG(gw_bsp.w5500.host, &dev);
+    w5500.base.int_gpio_num = gw_bsp.w5500.irq;
+    phy_cfg.reset_gpio_num = gw_bsp.w5500.rst;
     esp_eth_mac_t *mac = esp_eth_mac_new_w5500(&w5500, &mac_cfg);
     esp_eth_phy_t *phy = esp_eth_phy_new_w5500(&phy_cfg);
 #else

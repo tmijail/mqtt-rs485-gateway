@@ -1,5 +1,6 @@
 /* QA-1: configuration parsing and validation (CFG-1, SPEC section 6). */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "gw_config.h"
@@ -133,7 +134,7 @@ static void test_schema_rules(void)
                               "\"word_order\":\"middle\"}"),
                     "big|little");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"adress\":0,\"type\":\"int16\"}"),
-                    "clave desconocida 'adress'");
+                    "devices[0].tags[0].adress: clave desconocida");
     ASSERT_REJECTED(parse_tag("{\"area\":\"input\",\"address\":0,\"type\":\"int16\"}"),
                     "devices[0].tags[0].name: campo obligatorio");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\"},"
@@ -169,8 +170,7 @@ static void test_section_errors(void)
                     "rs485.baud");
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
                           "\"edge_node_id\":\"E\"},\"extra\":1}"),
-                    "clave desconocida 'extra'");
-    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\",}"), "JSON mal formado");
+                    "extra: clave desconocida");
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
                           "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"D\",\"unit_id\":248,"
                           "\"tags\":[]}]}"),
@@ -224,6 +224,113 @@ static void test_limits(void)
     TEST_ASSERT_EQUAL(0, cfg.tag_count);  /* zeroed on failure */
 }
 
+static void test_syntax_errors_give_line_and_column(void)
+{
+    ASSERT_REJECTED(parse("{\n  \"mqtt\": {\"host\": \"b\"}\n  \"sparkplug\": {}\n}"),
+                    "JSON mal formado en la línea 3, columna 3");  /* missing ',' */
+    ASSERT_REJECTED(parse("{\"mqtt\": {\"host\": tru}}"), "línea 1, columna 19");
+    /* columns count characters, not UTF-8 bytes */
+    ASSERT_REJECTED(parse("{\"mqtt\": {\"host\": \"\xc3\xa1\" x}}"), "línea 1, columna 23");
+    ASSERT_REJECTED(parse("{\"mqtt\": {\"host\": \"b\"}, \"devices\": [\n"), "línea 1");
+    ASSERT_REJECTED(parse("{\"mqtt\": {\"host\": \"b\"}}\n\n  x"),
+                    "línea 3, columna 3: contenido después del documento");
+    TEST_ASSERT_NULL(strstr(err.msg, "$"));
+}
+
+static void test_semantic_errors_give_json_path(void)
+{
+    static const char doc[] =
+        "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+        "\"devices\":[{\"name\":\"A\",\"unit_id\":1,\"tags\":[{\"name\":\"t\",\"area\":\"coil\","
+        "\"address\":0,\"type\":\"bool\"}]},"
+        "{\"name\":\"B\",\"unit_id\":2,\"tags\":["
+        "{\"name\":\"a\",\"area\":\"input\",\"address\":0,\"type\":\"int16\"},"
+        "{\"name\":\"b\",\"area\":\"input\",\"address\":1,\"type\":\"int16\"},"
+        "{\"name\":\"c\",\"area\":\"input\",\"address\":2,\"type\":\"int8\"}]}]}";
+    ASSERT_REJECTED(parse(doc), "devices[1].tags[2].type: valor no válido");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":[]}"),
+                    "sparkplug: se esperaba un objeto JSON");
+    ASSERT_REJECTED(parse("[]"), "$: se esperaba un objeto JSON");
+}
+
+static void test_duplicate_keys_rejected(void)
+{
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"a\",\"port\":1883,\"host\":\"b\"},"
+                          "\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}}"),
+                    "mqtt.host: clave duplicada");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
+                              "\"address\":4}"),
+                    "devices[0].tags[0].address: clave duplicada");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[],\"devices\":[]}"),
+                    "devices: clave duplicada");
+}
+
+/* SPEC maximum: 16 devices x 16 tags carrying every optional field (CFG-1 with H1 of the
+ * IDF review: a legal document larger than the old 32 KB file limit). */
+static size_t build_spec_maximum(char *doc, size_t cap)
+{
+    int n = snprintf(doc, cap,
+                     "{\"network\":{\"dhcp\":true},\"ntp\":{\"server\":\"pool.ntp.org\"},"
+                     "\"mqtt\":{\"host\":\"192.168.1.10\",\"port\":1883,\"client_id\":\"\","
+                     "\"username\":\"\",\"password\":\"\",\"keepalive_s\":30},"
+                     "\"sparkplug\":{\"group_id\":\"Plant1\",\"edge_node_id\":\"GW01\"},"
+                     "\"devices\":[");
+    for (int d = 0; d < GW_MAX_DEVICES; d++) {
+        n += snprintf(doc + n, cap - (size_t)n,
+                      "%s{\"name\":\"Device%02d\",\"unit_id\":%d,\"poll_ms\":1000,"
+                      "\"offline_after\":3,\"tags\":[",
+                      d ? "," : "", d, d + 1);
+        for (int t = 0; t < GW_MAX_TAGS / GW_MAX_DEVICES; t++) {
+            n += snprintf(doc + n, cap - (size_t)n,
+                          "%s{\"name\":\"Tag_%02d_%02d_ActivePowerPhaseL1\",\"area\":\"input\","
+                          "\"address\":%d,\"type\":\"float32\",\"word_order\":\"big\","
+                          "\"scale\":1.0,\"offset\":0.0,\"deadband\":0.1,\"writable\":false,"
+                          "\"units\":\"kW\"}",
+                          t ? "," : "", d, t, 2 * t);
+        }
+        n += snprintf(doc + n, cap - (size_t)n, "]}");
+    }
+    n += snprintf(doc + n, cap - (size_t)n, "]}");
+    return (size_t)n;
+}
+
+static void test_spec_maximum_document(void)
+{
+    static char doc[96 * 1024];
+    size_t len = build_spec_maximum(doc, sizeof(doc));
+    TEST_ASSERT_GREATER_THAN(40 * 1024, len);
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(doc, len, &cfg, &err), err.msg);
+    TEST_ASSERT_EQUAL(GW_MAX_DEVICES, cfg.device_count);
+    TEST_ASSERT_EQUAL(GW_MAX_TAGS, cfg.tag_count);
+}
+
+static size_t s_allocs;
+static size_t s_fail_after;
+
+static void *counting_alloc(size_t size)
+{
+    return ++s_allocs > s_fail_after ? NULL : malloc(size);
+}
+
+static void test_allocator_and_out_of_memory(void)
+{
+    gw_config_set_allocator(counting_alloc, free);
+    s_allocs = 0;
+    s_fail_after = SIZE_MAX;
+    TEST_ASSERT_TRUE_MESSAGE(parse_tag("{\"name\":\"t\",\"area\":\"coil\",\"address\":0,"
+                                       "\"type\":\"bool\"}"),
+                             err.msg);
+    TEST_ASSERT_GREATER_THAN(10, s_allocs);  /* the document tree went through the hook */
+    s_allocs = 0;
+    s_fail_after = 5;
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"coil\",\"address\":0,"
+                              "\"type\":\"bool\"}"),
+                    "memoria insuficiente");
+    TEST_ASSERT_NULL(strstr(err.msg, "mal formado"));
+    gw_config_set_allocator(malloc, free);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -233,5 +340,10 @@ int main(void)
     RUN_TEST(test_schema_rules);
     RUN_TEST(test_section_errors);
     RUN_TEST(test_limits);
+    RUN_TEST(test_syntax_errors_give_line_and_column);
+    RUN_TEST(test_semantic_errors_give_json_path);
+    RUN_TEST(test_duplicate_keys_rejected);
+    RUN_TEST(test_spec_maximum_document);
+    RUN_TEST(test_allocator_and_out_of_memory);
     return UNITY_END();
 }

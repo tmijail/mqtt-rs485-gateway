@@ -140,11 +140,16 @@ class Observer:
 
     def __init__(self):
         self.q = queue.Queue()
+        self.subscribed = threading.Event()
         self.c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"e2e-{time.monotonic()}")
         self.c.on_message = self._on_msg
-        self.c.connect("127.0.0.1", MQTT_PORT)
+        self.c.on_subscribe = lambda *a: self.subscribed.set()
+        # Long keepalive: the observer must survive the frozen-broker scenario.
+        self.c.connect("127.0.0.1", MQTT_PORT, keepalive=120)
         self.c.subscribe("spBv1.0/#", qos=1)
         self.c.loop_start()
+        if not self.subscribed.wait(5):
+            raise SystemExit("observer: no SUBACK from the broker")
 
     def close(self):
         self.c.loop_stop()
@@ -160,6 +165,18 @@ class Observer:
     def drain(self):
         while not self.q.empty():
             self.q.get_nowait()
+
+    def wait_all(self, topics, timeout):
+        """{topic: first message} for every topic in @topics seen within @timeout."""
+        found, end = {}, time.monotonic() + timeout
+        while len(found) < len(topics) and time.monotonic() < end:
+            try:
+                item = self.q.get(timeout=max(0.01, end - time.monotonic()))
+            except queue.Empty:
+                break
+            if item[1] in topics and item[1] not in found:
+                found[item[1]] = item
+        return found
 
     def wait(self, topic, timeout, pred=lambda p: True):
         end = time.monotonic() + timeout
@@ -196,14 +213,15 @@ def bdseq_of(p):
 # ---------------------------------------------------------------- QEMU
 
 class Gateway:
-    def __init__(self, args, log_path):
+    def __init__(self, args, log_path, flash=None):
         self.args, self.log_path = args, log_path
+        self.flash = flash or args.flash
         self.proc, self.sock, self.lines = None, None, []
 
     def start(self):
         a = self.args
         cmd = [a.qemu, "-M", "esp32s3", "-m", "32M", "-nographic",
-               "-drive", f"file={a.flash},if=mtd,format=raw",
+               "-drive", f"file={self.flash},if=mtd,format=raw",
                "-drive", f"file={a.efuse},if=none,format=raw,id=efuse",
                "-global", "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
                "-global", "driver=timer.esp32s3.timg,property=wdt_disable,value=true",
@@ -253,6 +271,53 @@ class Gateway:
         rx = re.compile(pattern)
         return [l for t, l in self.lines if t >= since and rx.search(l)]
 
+    def wait_log(self, pattern, timeout, since=0.0):
+        """Time of the first log line matching @pattern, or None."""
+        rx = re.compile(pattern)
+        end = time.monotonic() + timeout
+        while True:
+            for t, line in list(self.lines):
+                if t >= since and rx.search(line):
+                    return t
+            if time.monotonic() >= end:
+                return None
+            time.sleep(0.05)
+
+
+# ---------------------------------------------------------------- storage partition variants
+
+def storage_partition():
+    """(offset, size) of the "storage" partition in partitions.csv."""
+    for line in (HERE.parent.parent / "partitions.csv").read_text().splitlines():
+        cols = [c.strip() for c in line.split(",")]
+        if cols[0] == "storage":
+            return int(cols[3], 0), int(cols[4], 0)
+    raise SystemExit("no storage partition in partitions.csv")
+
+
+def flash_variant(args, work, name, files):
+    """Copy of the flash image whose LittleFS partition holds @files ({name: bytes});
+    files=None leaves the partition erased (not mountable)."""
+    offset, size = storage_partition()
+    if files is None:
+        image = b"\xff" * size
+    else:
+        src = work / f"fs-{name}"
+        shutil.rmtree(src, ignore_errors=True)
+        src.mkdir()
+        for fname, data in files.items():
+            (src / fname).write_bytes(data)
+        img = work / f"storage-{name}.bin"
+        subprocess.run([args.littlefs_python, "-m", "littlefs", "create", str(src), str(img),
+                        f"--fs-size={size}", "--name-max=64", "--block-size=4096"],
+                       check=True, stdout=subprocess.DEVNULL)
+        image = img.read_bytes()
+    flash = bytearray(pathlib.Path(args.flash).read_bytes())
+    flash[offset:offset + len(image)] = image
+    out = work / f"flash-{name}.bin"
+    out.write_bytes(flash)
+    return out
+
 
 # ---------------------------------------------------------------- scenario
 
@@ -275,6 +340,8 @@ def main():
     ap.add_argument("--flash", required=True)
     ap.add_argument("--efuse", required=True)
     ap.add_argument("--workdir", required=True)
+    ap.add_argument("--littlefs-python", required=True,
+                    help="python with the littlefs-python package (build-qemu/littlefs_py_venv)")
     args = ap.parse_args()
     work = pathlib.Path(args.workdir)
     log = work / "uart0.log"
@@ -290,6 +357,7 @@ def main():
     slave.ctx.setValues(3, 10, [50])   # Setpoint raw 50 -> 5.0
     slave.start()
     try:
+        run_config_failsafe(args, work)
         run(args, log, slave, broker, conf, work)
     finally:
         stop.set()
@@ -330,6 +398,59 @@ def seq_continuity(msgs):
     return errors
 
 
+def run_config_failsafe(args, work):
+    """CFG-1: the embedded default is used only when /cfg/config.json does not exist; any
+    other problem stops the gateway (no polling, no MQTT) with the error state and a log."""
+    good = (HERE / "fs" / "config.json").read_bytes()
+    limit = 128 * 1024  # CONFIG_GW_CONFIG_MAX_BYTES
+    cases = [
+        ("oversized", {"config.json": good + b" " * (limit + 1 - len(good))},
+         r"config\.json: 131073 bytes; el máximo es 131072"),
+        ("unmountable", None, r"partición LittleFS 'storage' no montable"),
+        ("empty", {"config.json": b""}, r"config\.json: archivo vacío"),
+        # without the ',' that closes "network" (line 4), the parser stops at the '"' of
+        # "ntp": line 5, column 3
+        ("syntax-error", {"config.json": good.replace(b'"dhcp": true\n  },', b'"dhcp": true\n  }', 1)},
+         r"JSON mal formado en la línea 5, columna 3"),
+        ("semantic-error", {"config.json": good.replace(b'"type": "float32"', b'"type": "float64"', 1)},
+         r"devices\[0\]\.tags\[0\]\.type: valor no válido"),
+    ]
+    obs = Observer()
+    for name, files, reason in cases:
+        gw = Gateway(args, work / f"uart0-{name}.log", flash_variant(args, work, name, files))
+        obs.drain()
+        t0 = time.monotonic()
+        gw.start()
+        hit = gw.wait_log(r"configuration rejected .*" + reason, 20, t0)
+        led = gw.wait_log(r"status: config error", 2, t0)
+        dos_off = gw.find(r"io: DO .*all outputs off", t0)
+        time.sleep(6)  # long enough for DHCP + SNTP wait + a connection attempt
+        started = gw.find(r"connecting to|rs485: UART|net: IPv4", t0)
+        births = [m for m in CAPTURE if m[0] >= t0 and "/NBIRTH/" in m[1]]
+        if name == "oversized":
+            asked = time.monotonic()
+            gw.console("status")
+            shell = gw.wait_log(r"config\s+REJECTED .*131073 bytes", 3, asked)
+            check("CFG-6 console shell answers 'status' while the configuration is rejected",
+                  shell, (gw.find(r"config\s+REJECTED", asked) or ["no answer"])[0])
+        gw.kill()
+        check(f"IO-2 {name} config file -> DOs switched off before the configuration is loaded",
+              bool(dos_off), (dos_off or ["no 'all outputs off' log"])[0])
+        check(f"CFG-1 {name} config file -> nothing starts, error LED, ERROR log with the reason",
+              hit and led and not started and not births,
+              (gw.find(r"configuration rejected", t0) or ["no 'configuration rejected' log"])[0] +
+              f"; LED error={bool(led)}; started={started[:1]}; NBIRTHs={len(births)}")
+
+    gw = Gateway(args, work / "uart0-absent.log", flash_variant(args, work, "absent", {}))
+    t0 = time.monotonic()
+    gw.start()
+    hit = gw.wait_log(r"configuration from embedded default", 20, t0)
+    gw.kill()
+    check("CFG-2 missing config file -> embedded default", hit,
+          (gw.find(r"configuration from", t0) or ["no 'configuration from' log"])[0])
+    obs.close()
+
+
 def run(args, log, slave, broker, conf, work):
     nbirth_t, dbirth_t = f"{T}/NBIRTH/{NODE}", f"{T}/DBIRTH/{NODE}/{DEVICE}"
     ndata_t, ddata_t = f"{T}/NDATA/{NODE}", f"{T}/DDATA/{NODE}/{DEVICE}"
@@ -346,6 +467,7 @@ def run(args, log, slave, broker, conf, work):
         return
     p = nb[2]
     b0 = bdseq_of(p)
+    reason0 = metric(p, name="Node Info/Reset Reason")
     check("1b. NBIRTH seq=0, bdSeq metric, timestamp", p.seq == 0 and p.timestamp > 0,
           f"seq={p.seq} bdSeq={b0} timestamp={p.timestamp}")
     check("TIME-1 timestamps are UTC ms from SNTP", abs(p.timestamp / 1000 - time.time()) < 60,
@@ -367,6 +489,17 @@ def run(args, log, slave, broker, conf, work):
     check("MB-11 60 contiguous registers read with one FC03 request per cycle",
           reqs and all(r[1:] == (3, 100, 60) for r in reqs),
           f"{len(reqs)} requests to unit 2 so far, first {reqs[0] if reqs else None}")
+
+    # CFG-6 diagnostic shell on the console UART
+    asked = time.monotonic()
+    gw.console("devices")
+    gw.console("config")
+    meter = gw.wait_log(r"Meter1\s+unit\s+1 online\s+cycles [1-9]\d* failed \d+ \| ok [1-9]", 3, asked)
+    bulk = gw.wait_log(r"Bulk\s+unit\s+2 online", 1, asked)
+    summary = gw.wait_log(r"sparkplug\s+group 'Plant1', edge node 'GW01'", 1, asked)
+    check("CFG-6 console shell: 'devices' (online state, counters) and 'config' summary",
+          meter and bulk and summary,
+          " | ".join(gw.find(r"Meter1\s+unit|Bulk\s+unit|sparkplug\s+group", asked)) or "no answer")
 
     # Report by exception and deadband
     obs.drain()
@@ -438,22 +571,40 @@ def run(args, log, slave, broker, conf, work):
     bound = 3 * 1.0 + 3 * (0.2 * 3) + 1.0  # offline_after*poll + per-cycle timeouts + 1 s margin
     check("2a. Slave powered off -> DDEATH within offline_after x poll_ms + timeouts",
           dd and dd[0] - off <= bound, f"{dd[0] - off:.2f} s (bound {bound:.1f} s)" if dd else "no DDEATH")
+    asked = time.monotonic()
+    gw.console("devices")
+    offline = gw.wait_log(r"Meter1\s+unit\s+1 offline\s+cycles \d+ failed [1-9]\d* \| ok \d+ timeout [1-9]",
+                          3, asked)
+    check("CFG-6 / MB-13 shell shows the device offline with its failed cycles and timeouts",
+          offline, (gw.find(r"Meter1\s+unit", asked) or ["no answer"])[0])
     on = time.monotonic()
     slave.start()
     db = obs.wait(dbirth_t, 10)
     check("2b. Slave back -> DBIRTH", db, f"{db[0] - on:.2f} s after restart" if db else "no DBIRTH")
 
-    # MQTT-2: broker down -> exponential backoff, new bdSeq on every attempt
+    dbirth_topics = [f"{T}/DBIRTH/{NODE}/{d}" for d in (DEVICE, BULK)]
+
+    def births_ok(nb, dbs):
+        """NBIRTH with seq 0 followed by one DBIRTH per device with seq 1, 2."""
+        return nb and nb[2].seq == 0 and sorted(m[2].seq for m in dbs.values()) == [1, 2] \
+            and all(m[0] >= nb[0] for m in dbs.values())
+
+    # MQTT-2 broker restart: the broker publishes the session's will (NDEATH) while shutting
+    # down; the gateway retries with exponential backoff and a new bdSeq per attempt, and the
+    # new session starts with NBIRTH and every DBIRTH.
+    obs.drain()
     since = time.monotonic()
     broker.terminate()
     broker.wait()
+    will = obs.wait(ndeath_t, 2)
     time.sleep(9)
     delays = [int(x) for x in re.findall(r"in (\d+) ms", " ".join(gw.find(r"reconnect attempt", since)))]
     attempts = gw.find(r"connecting to .* bdSeq=", since)
     obs.close()
-    start_broker(conf, work / "mosquitto2.log")
+    broker = start_broker(conf, work / "mosquitto2.log")
     obs = Observer()
     nb = obs.wait(nbirth_t, 70)
+    dbs = obs.wait_all(dbirth_topics, 10)
     growing = len(delays) >= 3 and all(1000 <= d <= 60000 for d in delays) and delays[2] > delays[0]
     check("MQTT-2 reconnect with exponential backoff and jitter (1 s..60 s)", growing and nb,
           f"delays {delays} ms, {len(attempts)} attempts while down, NBIRTH after restart: {bool(nb)}")
@@ -461,14 +612,53 @@ def run(args, log, slave, broker, conf, work):
     check("SPB-3 bdSeq incremented on every connection attempt",
           nb and b1 == (b0 + len(attempts) + 1) % 256,
           f"first session bdSeq={b0}, attempts while down={len(attempts)}, new NBIRTH bdSeq={b1}")
+    check("Broker restart: NDEATH (will, session bdSeq) at shutdown, then NBIRTH (new bdSeq, "
+          "seq 0) and every DBIRTH",
+          will and bdseq_of(will[2]) == b0 and b1 != b0 and births_ok(nb, dbs),
+          f"NDEATH bdSeq={bdseq_of(will[2]) if will else None} (session {b0}); NBIRTH bdSeq={b1} "
+          f"seq={nb[2].seq if nb else None}; DBIRTH seq "
+          f"{ {t.split('/')[-1]: m[2].seq for t, m in dbs.items()} }")
+
+    # MQTT keepalive: a frozen broker (SIGSTOP for longer than 1.5 x keepalive) keeps the TCP
+    # connection open but never answers PINGREQ. The gateway must declare the session dead on
+    # its own and, once the broker runs again, start a new session.
+    keepalive = json.loads((HERE / "fs" / "config.json").read_text())["mqtt"]["keepalive_s"]
+    obs.drain()
+    stopped = time.monotonic()
+    broker.send_signal(signal.SIGSTOP)
+    time.sleep(1.5 * keepalive + 5)
+    lost = gw.wait_log(r"No PING_RESP|MQTT down; reconnect attempt", 0, stopped)
+    broker.send_signal(signal.SIGCONT)
+    resumed = time.monotonic()
+    check(f"MQTT keepalive: frozen broker ({1.5 * keepalive + 5:.0f} s SIGSTOP, keepalive "
+          f"{keepalive} s) detected by the gateway within 1.5 x keepalive",
+          lost and lost - stopped <= 1.5 * keepalive,
+          f"session declared dead {lost - stopped:.1f} s after SIGSTOP: "
+          f"{gw.find(r'No PING_RESP|MQTT down', stopped)[:2]}" if lost else "never detected")
+    nb = obs.wait(nbirth_t, 70)
+    time.sleep(3)  # let stale connections queued while frozen play out
+    nbs = [m for m in CAPTURE if m[0] >= resumed and m[1] == nbirth_t]
+    nb = nbs[-1] if nbs else None
+    dbs = {t: m for t in dbirth_topics for m in CAPTURE if nb and m[1] == t and m[0] >= nb[0]}
+    b2 = bdseq_of(nb[2]) if nb else None
+    deaths = [bdseq_of(m[2]) for m in CAPTURE if m[0] >= resumed and m[1] == ndeath_t]
+    attempts = gw.find(r"connecting to .* bdSeq=", stopped)
+    check("Frozen broker resumed: NDEATH (will) of the dead session, then NBIRTH with a new "
+          "bdSeq and every DBIRTH; the new session stays up",
+          b1 in deaths and nb and b2 == (b1 + len(attempts)) % 256 and b2 != b1
+          and b2 not in deaths and births_ok(nb, dbs),
+          f"NDEATH bdSeqs after SIGCONT {deaths} (dead session {b1}); {len(attempts)} attempts; "
+          f"NBIRTH bdSeq={b2} seq={nb[2].seq if nb else None}; DBIRTH seq "
+          f"{ {t.split('/')[-1]: m[2].seq for t, m in dbs.items()} }")
 
     # 1c. Kill the TCP connection (QEMU process) -> broker publishes the will
     obs.drain()
     gw.kill()
     nd = obs.wait(ndeath_t, 10)
     check("1c. TCP connection killed -> broker publishes NDEATH with the same bdSeq",
-          nd and bdseq_of(nd[2]) == b1 and not nd[2].HasField("seq"),
-          f"NDEATH bdSeq={bdseq_of(nd[2]) if nd else None} (NBIRTH had {b1})")
+          nd and bdseq_of(nd[2]) == b2 and not nd[2].HasField("seq"),
+          f"NDEATH bdSeq={bdseq_of(nd[2]) if nd else None} (NBIRTH had {b2})")
+    b1 = b2
 
     # Restart on the same flash: bdSeq persisted in NVS
     gw = Gateway(args, log)
@@ -493,6 +683,12 @@ def run(args, log, slave, broker, conf, work):
           f"NDEATH bdSeq={bdseq_of(nd[2]) if nd else None} sent by the node={explicit}, "
           f"NDEATHs with that bdSeq={len(deaths)} (will discarded if 1), "
           f"NBIRTH after reboot bdSeq={bdseq_of(nb[2]) if nb else None}")
+    reason1 = metric(nb[2], name="Node Info/Reset Reason") if nb else None
+    check("REL-5 NBIRTH 'Node Info/Reset Reason': power-on at first boot, software after NCMD Reboot",
+          reason0 and reason1 and reason0.string_value == "power-on"
+          and reason1.string_value == "software",
+          f"first boot {reason0.string_value if reason0 else None!r}, after reboot "
+          f"{reason1.string_value if reason1 else None!r}")
     obs.close()
 
 

@@ -5,36 +5,11 @@ menu "Gateway: network"
         default GW_ETH_W5500
 
         config GW_ETH_W5500
-            bool "WIZnet W5500 over SPI (board)"
+            bool "WIZnet W5500 over SPI (board; pins in gw_bsp)"
 
         config GW_ETH_OPENETH
             bool "OpenCores Ethernet (QEMU only)"
             select ETH_USE_OPENETH
     endchoice
-
-    if GW_ETH_W5500
-        config GW_ETH_SPI_MOSI_GPIO
-            int "W5500 MOSI GPIO"
-            default 13
-        config GW_ETH_SPI_MISO_GPIO
-            int "W5500 MISO GPIO"
-            default 14
-        config GW_ETH_SPI_SCLK_GPIO
-            int "W5500 SCLK GPIO"
-            default 15
-        config GW_ETH_SPI_CS_GPIO
-            int "W5500 CS GPIO"
-            default 16
-        config GW_ETH_INT_GPIO
-            int "W5500 INT GPIO"
-            default 12
-        config GW_ETH_RST_GPIO
-            int "W5500 RST GPIO"
-            default 39
-        config GW_ETH_SPI_MHZ
-            int "W5500 SPI clock (MHz)"
-            range 1 40
-            default 20
-    endif
 
 endmenu

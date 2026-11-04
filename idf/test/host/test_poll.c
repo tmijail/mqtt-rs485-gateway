@@ -89,6 +89,71 @@ static void test_exception_keeps_device_online(void)
     TEST_ASSERT_EQUAL(15, mb.stats.exception);
 }
 
+/* Review M1: one block unanswered while the others answer. The cycle fails, the unread
+ * tags are not refreshed, and the device goes offline after offline_after such cycles. */
+static void test_unanswered_block_fails_the_cycle(void)
+{
+    TEST_ASSERT_EQUAL(GW_DEV_WENT_ONLINE, gw_poller_poll(&p, 0, 0));
+    gw_tag_value_t voltage = vals[0];
+    s.mute_fc = MB_FC_READ_INPUT_REGISTERS;   /* Voltage's block (the last one) */
+    s.holding[10] = 200;                      /* Setpoint, still answered */
+    s.input[0] = 0x4300;                      /* Voltage changes to 128.0, but is never read */
+    s.input[1] = 0x0000;
+    for (int cycle = 1; cycle <= 2; cycle++) {
+        TEST_ASSERT_EQUAL(GW_DEV_NO_CHANGE, gw_poller_poll(&p, 0, (uint32_t)(1000 * cycle)));
+        TEST_ASSERT_TRUE(online());
+        TEST_ASSERT_DOUBLE_WITHIN(1e-9, 20.0, vals[1].value);   /* answered block refreshed */
+        TEST_ASSERT_TRUE(vals[1].valid);
+        /* not read: neither a new value nor a new timestamp */
+        TEST_ASSERT_EQUAL_DOUBLE(voltage.value, vals[0].value);
+        TEST_ASSERT_EQUAL_UINT64(voltage.ts_ms, vals[0].ts_ms);
+    }
+    TEST_ASSERT_EQUAL(GW_DEV_WENT_OFFLINE, gw_poller_poll(&p, 0, 3000));  /* offline_after = 3 */
+    TEST_ASSERT_FALSE(online());
+    for (int i = 0; i < 3; i++) {
+        TEST_ASSERT_FALSE(vals[i].valid);
+    }
+    /* still one block short: no way back online */
+    TEST_ASSERT_EQUAL(GW_DEV_NO_CHANGE, gw_poller_poll(&p, 0, 4000));
+    TEST_ASSERT_FALSE(online());
+    s.mute_fc = 0;
+    TEST_ASSERT_EQUAL(GW_DEV_WENT_ONLINE, gw_poller_poll(&p, 0, 5000));
+    TEST_ASSERT_TRUE(online());
+    TEST_ASSERT_TRUE(vals[0].valid);
+    TEST_ASSERT_EQUAL_DOUBLE(128.0, vals[0].value);
+}
+
+static void test_unanswered_block_skips_the_rest_of_the_cycle(void)
+{
+    gw_poller_poll(&p, 0, 0);
+    s.mute_fc = MB_FC_READ_HOLDING_REGISTERS;  /* middle block: coil, holding, input */
+    unsigned before = s.requests;
+    gw_poller_poll(&p, 0, 1000);
+    TEST_ASSERT_EQUAL(before + 1 + 3, s.requests);  /* coil once, holding 1 + 2 retries, no input */
+}
+
+static void test_device_counters(void)
+{
+    gw_dev_stats_t st;
+    gw_poller_poll(&p, 0, 0);                 /* 3 blocks answered */
+    s.mute_fc = MB_FC_READ_INPUT_REGISTERS;
+    gw_poller_poll(&p, 0, 1000);              /* 2 answered, 1 x (1 + 2 retries) timeouts */
+    s.mute_fc = 0;
+    s.exception = 2;
+    gw_poller_poll(&p, 0, 2000);              /* 3 exceptions, not retried */
+    gw_tagdb_get_stats(0, &st);
+    TEST_ASSERT_EQUAL_UINT32(3, st.cycles);
+    TEST_ASSERT_EQUAL_UINT32(1, st.failed_cycles);
+    TEST_ASSERT_EQUAL_UINT32(5, st.bus.ok);
+    TEST_ASSERT_EQUAL_UINT32(3, st.bus.timeout);
+    TEST_ASSERT_EQUAL_UINT32(3, st.bus.exception);
+    s.exception = 0;
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 1, 1.0));  /* write + read-back */
+    gw_tagdb_get_stats(0, &st);
+    TEST_ASSERT_EQUAL_UINT32(7, st.bus.ok);
+    TEST_ASSERT_EQUAL_UINT32(3, st.cycles);
+}
+
 static void test_scheduling(void)
 {
     uint32_t wait;
@@ -146,6 +211,9 @@ int main(void)
     RUN_TEST(test_poll_decodes_values);
     RUN_TEST(test_offline_after_n_cycles_and_back);
     RUN_TEST(test_exception_keeps_device_online);
+    RUN_TEST(test_unanswered_block_fails_the_cycle);
+    RUN_TEST(test_unanswered_block_skips_the_rest_of_the_cycle);
+    RUN_TEST(test_device_counters);
     RUN_TEST(test_scheduling);
     RUN_TEST(test_write_setpoint_fc06);
     RUN_TEST(test_write_forced_multi);

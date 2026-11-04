@@ -25,6 +25,9 @@ extern "C" {
 
 void gw_status_set(uint32_t flag, bool on);
 
+/** Current GW_ST_* flags. */
+uint32_t gw_status_get(void);
+
 /** Start the LED task (low priority). */
 esp_err_t gw_status_led_start(void);
 

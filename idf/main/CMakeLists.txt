@@ -1,5 +1,5 @@
 idf_component_register(SRCS "main.c"
-                       PRIV_REQUIRES gw_core gw_board gw_bus gw_edge gw_net gw_rs485 gw_storage
+                       PRIV_REQUIRES gw_core gw_board gw_bsp gw_bus gw_edge gw_net gw_rs485 gw_shell gw_storage
                                      esp_app_format esp_event esp_netif esp_system freertos)
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)
 

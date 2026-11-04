@@ -6,10 +6,11 @@
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "gw_bsp.h"
 
 static const char *TAG = "rs485";
 
-#define PORT ((uart_port_t)CONFIG_GW_RS485_UART_PORT)
+#define PORT (gw_bsp.rs485.uart)
 #define RX_BUF_SIZE 512          /* > MB_ADU_MAX; the driver needs > SOC_UART_FIFO_LEN */
 #define RX_TOUT_SYMBOLS 3        /* hand bytes to the ring buffer after ~3 idle characters */
 
@@ -84,9 +85,13 @@ esp_err_t gw_rs485_init(const gw_config_t *cfg, mb_transport_t *tr)
     };
     ESP_RETURN_ON_ERROR(uart_driver_install(PORT, RX_BUF_SIZE, 0, 0, NULL, 0), TAG, "install");
     ESP_RETURN_ON_ERROR(uart_param_config(PORT, &uc), TAG, "param");
-    ESP_RETURN_ON_ERROR(uart_set_pin(PORT, CONFIG_GW_RS485_TX_GPIO, CONFIG_GW_RS485_RX_GPIO,
-                                     CONFIG_GW_RS485_RTS_GPIO, UART_PIN_NO_CHANGE),
+    ESP_RETURN_ON_ERROR(uart_set_pin(PORT, gw_bsp.rs485.tx, gw_bsp.rs485.rx, gw_bsp.rs485.de,
+                                     UART_PIN_NO_CHANGE),
                         TAG, "pins");
+    /* In RS485 half-duplex mode the driver raises RTS while sending: DE active high. */
+    if (gw_bsp.rs485.de_active_low) {
+        ESP_RETURN_ON_ERROR(uart_set_line_inverse(PORT, UART_SIGNAL_RTS_INV), TAG, "DE polarity");
+    }
 #if CONFIG_GW_RS485_HW_HALF_DUPLEX
     ESP_RETURN_ON_ERROR(uart_set_mode(PORT, UART_MODE_RS485_HALF_DUPLEX), TAG, "rs485 mode");
 #endif
@@ -101,8 +106,9 @@ esp_err_t gw_rs485_init(const gw_config_t *cfg, mb_transport_t *tr)
         .on_attempt = tr_on_attempt,
         .ctx = NULL,
     };
-    ESP_LOGI(TAG, "UART%d %lu baud, parity %d, %u stop bit(s), TX %d RX %d RTS %d" MODE_NOTE, PORT,
-             (unsigned long)cfg->rs485.baud, cfg->rs485.parity, cfg->rs485.stop_bits,
-             CONFIG_GW_RS485_TX_GPIO, CONFIG_GW_RS485_RX_GPIO, CONFIG_GW_RS485_RTS_GPIO);
+    ESP_LOGI(TAG, "UART%d %lu baud, parity %d, %u stop bit(s), TX %d RX %d DE %d (active %s)" MODE_NOTE,
+             PORT, (unsigned long)cfg->rs485.baud, cfg->rs485.parity, cfg->rs485.stop_bits,
+             gw_bsp.rs485.tx, gw_bsp.rs485.rx, gw_bsp.rs485.de,
+             gw_bsp.rs485.de_active_low ? "low" : "high");
     return ESP_OK;
 }

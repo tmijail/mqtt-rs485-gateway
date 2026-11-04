@@ -1,10 +1,12 @@
 #include "gw_storage.h"
 
+#include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
+#include "esp_heap_caps.h"
 #include "esp_littlefs.h"
 #include "esp_log.h"
 #include "nvs.h"
@@ -14,7 +16,7 @@ static const char *TAG = "storage";
 
 #define CFG_MOUNT   "/cfg"
 #define CFG_PATH    CFG_MOUNT "/config.json"
-#define CFG_MAX     (32 * 1024)
+#define CFG_MAX     CONFIG_GW_CONFIG_MAX_BYTES
 #define NVS_NS      "spb"
 #define NVS_BDSEQ   "bdseq"
 
@@ -62,57 +64,79 @@ uint8_t gw_storage_next_bdseq(void)
     return v;
 }
 
-/* Returns a malloc'ed NUL-terminated copy of the override file, or NULL if absent. */
-static char *read_override(size_t *len)
+/* Boot-time buffers (the file and the parser's document tree): PSRAM when the
+ * board has it, internal RAM otherwise (QEMU). Freed before anything else runs. */
+static void *boot_alloc(size_t size)
 {
+    return heap_caps_malloc_prefer(size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT);
+}
+
+static bool reject(gw_cfg_err_t *err, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+
+static bool reject(gw_cfg_err_t *err, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(err->msg, sizeof(err->msg), fmt, ap);
+    va_end(ap);
+    return false;
+}
+
+/* Parse the override file, which exists: any problem reading it is an error. */
+static bool load_file(const struct stat *st, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    if (st->st_size <= 0) {
+        return reject(err, CFG_PATH ": archivo vacío");
+    }
+    if (st->st_size > CFG_MAX) {
+        return reject(err, CFG_PATH ": %ld bytes; el máximo es %d (CONFIG_GW_CONFIG_MAX_BYTES)",
+                      (long)st->st_size, CFG_MAX);
+    }
+    size_t size = (size_t)st->st_size;
+    char *buf = boot_alloc(size);
+    if (buf == NULL) {
+        return reject(err, CFG_PATH ": sin memoria para leer %zu bytes", size);
+    }
+    FILE *f = fopen(CFG_PATH, "rb");
+    size_t got = f != NULL ? fread(buf, 1, size, f) : 0;
+    int read_errno = errno;
+    if (f != NULL) {
+        fclose(f);
+    }
+    bool ok = got == size ? gw_config_parse(buf, size, cfg, err)
+                          : reject(err, CFG_PATH ": error de lectura (%zu de %zu bytes, errno %d)",
+                                   got, size, read_errno);
+    heap_caps_free(buf);
+    return ok;
+}
+
+bool gw_storage_load_config(gw_config_t *cfg, gw_cfg_err_t *err, const char **source)
+{
+    *source = CFG_PATH " (LittleFS)";
+    gw_config_set_allocator(boot_alloc, heap_caps_free);
+
     const esp_vfs_littlefs_conf_t conf = {
         .base_path = CFG_MOUNT,
         .partition_label = "storage",
         .format_if_mount_failed = false,
     };
-    esp_err_t err = esp_vfs_littlefs_register(&conf);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "LittleFS 'storage' not mounted (%s)", esp_err_to_name(err));
-        return NULL;
+    esp_err_t mount = esp_vfs_littlefs_register(&conf);
+    if (mount != ESP_OK) {
+        return reject(err, "partición LittleFS 'storage' no montable (%s)", esp_err_to_name(mount));
     }
-    struct stat st;
-    if (stat(CFG_PATH, &st) != 0) {
-        return NULL;
-    }
-    if (st.st_size <= 0 || st.st_size > CFG_MAX) {
-        ESP_LOGE(TAG, "%s: size %ld outside 1..%d bytes", CFG_PATH, (long)st.st_size, CFG_MAX);
-        return NULL;
-    }
-    FILE *f = fopen(CFG_PATH, "rb");
-    char *buf = f ? malloc((size_t)st.st_size + 1) : NULL;
-    *len = (f && buf) ? fread(buf, 1, (size_t)st.st_size, f) : 0;
-    if (f) {
-        fclose(f);
-    }
-    if (buf == NULL || *len != (size_t)st.st_size) {
-        ESP_LOGE(TAG, "%s: read failed", CFG_PATH);
-        free(buf);
-        return NULL;
-    }
-    buf[*len] = '\0';
-    return buf;
-}
 
-bool gw_storage_load_config(gw_config_t *cfg, gw_cfg_err_t *err, const char **source)
-{
-    size_t len = 0;
-    char *file = read_override(&len);
-    bool ok;
-    if (file != NULL) {
-        *source = CFG_PATH " (LittleFS)";
-        ok = gw_config_parse(file, len, cfg, err);
-        free(file);
-    } else {
-        *source = "embedded default";
-        /* EMBED_TXTFILES appends a NUL; strnlen excludes it. */
-        size_t n = strnlen(default_config_json_start,
-                           (size_t)(default_config_json_end - default_config_json_start));
-        ok = gw_config_parse(default_config_json_start, n, cfg, err);
+    struct stat st;
+    if (stat(CFG_PATH, &st) == 0) {
+        return load_file(&st, cfg, err);
     }
-    return ok;
+    if (errno != ENOENT) {
+        return reject(err, CFG_PATH ": no se puede consultar (errno %d)", errno);
+    }
+
+    /* Only a missing file selects the embedded default (CFG-2). */
+    *source = "embedded default (no " CFG_PATH ")";
+    /* EMBED_TXTFILES appends a NUL; strnlen excludes it. */
+    size_t n = strnlen(default_config_json_start,
+                       (size_t)(default_config_json_end - default_config_json_start));
+    return gw_config_parse(default_config_json_start, n, cfg, err);
 }

@@ -83,7 +83,7 @@ static int sim_write(void *ctx, const uint8_t *d, size_t len)
         fprintf(stderr, "sim: master sent a bad CRC\n");
         abort();
     }
-    if (s->offline || d[0] != s->unit) {
+    if (s->offline || d[0] != s->unit || (s->mute_fc != 0 && d[1] == s->mute_fc)) {
         return 0;
     }
     uint8_t fc = d[1];

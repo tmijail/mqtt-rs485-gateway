@@ -1,0 +1,14 @@
+menu "Gateway: storage"
+
+    config GW_CONFIG_MAX_BYTES
+        int "Largest accepted /cfg/config.json (bytes)"
+        range 4096 1048576
+        default 131072
+        help
+            The spec maximum (16 devices, 256 tags with every field) is about 46 KB of
+            compact JSON and 82 KB indented with 2 spaces. The file and the parser's
+            document tree (about 200 KB for 256 tags) are allocated at boot, in PSRAM
+            when present, and freed before the gateway starts. A larger file is
+            rejected: the gateway then stays stopped with the configuration error state.
+
+endmenu
