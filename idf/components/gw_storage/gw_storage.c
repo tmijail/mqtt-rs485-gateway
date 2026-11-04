@@ -1262,6 +1262,15 @@ void gw_storage_set_commit_hook(gw_storage_commit_hook_t hook)
     s_commit_hook = hook;
 }
 
+bool gw_storage_nvs_encrypted_on_flash(void)
+{
+#if CONFIG_NVS_ENCRYPTION
+    return !s_nvs_plain;
+#else
+    return false;
+#endif
+}
+
 bool gw_storage_secrets_encrypted(void)
 {
 #if CONFIG_NVS_ENCRYPTION

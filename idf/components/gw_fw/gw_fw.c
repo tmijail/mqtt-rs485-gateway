@@ -26,6 +26,25 @@
 
 static const char *TAG = "fw";
 
+/* Issue #102: what this image declares about itself, right after its esp_app_desc_t (see
+ * gw_ota.h); an update reads the same block of the incoming image. */
+const __attribute__((section(".rodata_custom_desc"), used)) gw_ota_caps_t gw_app_caps = {
+    .magic = GW_OTA_CAPS_MAGIC,
+    .version = GW_OTA_CAPS_VERSION,
+    .size = sizeof(gw_ota_caps_t),
+    .flags = 0
+#if CONFIG_NVS_ENCRYPTION
+             | GW_OTA_CAP_NVS_ENCRYPTION
+#endif
+#if CONFIG_SECURE_FLASH_ENC_ENABLED
+             | GW_OTA_CAP_FLASH_ENCRYPTION
+#endif
+    ,
+};
+_Static_assert(sizeof(gw_ota_caps_t) == GW_OTA_CAPS_SIZE, "gw_ota_caps_t layout");
+_Static_assert(GW_OTA_CAPS_OFFSET == sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) +
+                                         sizeof(esp_app_desc_t), "caps offset");
+
 #define RESTART_DELAY_MS 1500   /* the state NDATA (or the HTTP answer) goes out first */
 #if CONFIG_SECURE_SIGNED_APPS
 #define WHY_INVALID "checksum or signature"   /* FW-2: signed images required */
@@ -59,8 +78,7 @@ static esp_ota_handle_t s_up;
 static const esp_partition_t *s_up_part;
 static size_t s_up_done;
 static size_t s_up_total;
-#define HEAD_LEN (sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + \
-                  sizeof(esp_app_desc_t))
+#define HEAD_LEN (GW_OTA_CAPS_OFFSET + GW_OTA_CAPS_SIZE)   /* up to the capabilities (#102) */
 static uint8_t *s_up_head;             /* until the head is checked (#80: not in .bss) */
 static size_t s_up_head_len;
 static RTC_FAST_ATTR char s_up_version[32];
@@ -526,6 +544,20 @@ static esp_err_t on_commit(gw_storage_commit_t what, char *why, size_t cap)
 
 /* ---------- download (its own task) ---------- */
 
+/* Issue #102: the capabilities block of an incoming image (GW_OTA_CAPS_SIZE bytes) against this
+ * device. Before esp_ota_set_boot_partition(), in fact before the rest of the image is written. */
+static bool caps_fit(const uint8_t *block, char *why, size_t cap)
+{
+    uint32_t flags = 0;
+    bool declared = gw_ota_caps_read(block, GW_OTA_CAPS_SIZE, &flags);
+    bool ok = gw_ota_caps_accept(declared, flags, gw_storage_nvs_encrypted_on_flash(), why, cap);
+    if (!ok) {
+        ESP_LOGE(TAG, "update refused: the image %s; installing it would lose the NVS (bdSeq, "
+                      "secrets)", why);
+    }
+    return ok;
+}
+
 static bool take(char *why, size_t cap)
 {
     if (!s_enabled) {
@@ -583,6 +615,25 @@ static void download_fail(const char *fmt, ...)
     vTaskDelete(NULL);
 }
 
+/* Issue #102: the head of the image is in the update slot; the download ends (task deleted) if
+ * this device must not install it. */
+static void check_download_caps(esp_https_ota_handle_t h, const char *version)
+{
+    uint8_t caps[GW_OTA_CAPS_SIZE];
+    char reason[96];
+    const esp_partition_t *slot = esp_ota_get_next_update_partition(NULL);
+    esp_err_t r = slot != NULL ? esp_partition_read(slot, GW_OTA_CAPS_OFFSET, caps, sizeof(caps))
+                               : ESP_ERR_NOT_FOUND;
+    if (r != ESP_OK) {
+        esp_https_ota_abort(h);
+        download_fail("image %s: its head could not be read back (%s)", version, esp_err_to_name(r));
+    }
+    if (!caps_fit(caps, reason, sizeof(reason))) {
+        esp_https_ota_abort(h);
+        download_fail("image %s refused: %s", version, reason);
+    }
+}
+
 static void download_task(void *arg)
 {
     (void)arg;
@@ -627,6 +678,9 @@ static void download_task(void *arg)
     park(true);
     e = esp_https_ota_perform(h);
     park(false);
+    if (e == ESP_ERR_HTTPS_OTA_IN_PROGRESS) {
+        check_download_caps(h, version);   /* the first call wrote the head (1 KB) to the slot */
+    }
     for (; e == ESP_ERR_HTTPS_OTA_IN_PROGRESS; e = esp_https_ota_perform(h)) {
         uint32_t done = (uint32_t)esp_https_ota_get_image_len_read(h);
         set_bytes(done, total);
@@ -645,6 +699,9 @@ static void download_task(void *arg)
         h = NULL;
         download_fail("download of %s interrupted after %lu bytes (%s)", version, got,
                       esp_err_to_name(e));
+    }
+    if (e == ESP_OK && esp_https_ota_get_image_len_read(h) <= 1024) {
+        check_download_caps(h, version);   /* complete in the first call: not checked yet */
     }
     park(true);
     e = esp_https_ota_finish(h);   /* verifies the image and sets it to boot; frees h always */
@@ -782,7 +839,7 @@ static esp_err_t up_fail(char *why, size_t cap, const char *fmt, ...)
 }
 
 /* The image starts with this project's app description (checked before anything is
- * written past it, like esp_https_ota does). */
+ * written past it, like esp_https_ota does), and its capabilities fit this device (#102). */
 static esp_err_t check_head(char *why, size_t cap)
 {
     const esp_image_header_t *h = (const esp_image_header_t *)s_up_head;
@@ -795,6 +852,10 @@ static esp_err_t check_head(char *why, size_t cap)
         return up_fail(why, cap, "image of '%.32s', not of '%s'", d->project_name, project());
     }
     snprintf(s_up_version, sizeof(s_up_version), "%.31s", d->version);
+    char reason[96];
+    if (!caps_fit(s_up_head + GW_OTA_CAPS_OFFSET, reason, sizeof(reason))) {
+        return up_fail(why, cap, "image %s refused: %s", s_up_version, reason);
+    }
     esp_err_t e = esp_ota_write(s_up, s_up_head, s_up_head_len);
     if (e != ESP_OK) {
         return up_fail(why, cap, "flash write failed (%s)", esp_err_to_name(e));

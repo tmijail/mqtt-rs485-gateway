@@ -179,6 +179,46 @@ static void test_operator_commit_and_cannot_start(void)
     TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_operator(&t, "x"));   /* rolling back already */
 }
 
+/* Issue #102: the capabilities block after esp_app_desc_t, and when an image may replace the
+ * running one */
+static void test_image_capabilities(void)
+{
+    uint8_t b[GW_OTA_CAPS_SIZE] = {0x47, 0x57, 0x43, 0x50, 1, 0, 32, 0, 0x01, 0, 0, 0};
+    uint32_t flags = 0;
+    TEST_ASSERT_TRUE(gw_ota_caps_read(b, sizeof(b), &flags));
+    TEST_ASSERT_EQUAL_HEX32(GW_OTA_CAP_NVS_ENCRYPTION, flags);
+    b[8] = 0x02;
+    TEST_ASSERT_TRUE(gw_ota_caps_read(b, sizeof(b), &flags));
+    TEST_ASSERT_EQUAL_HEX32(GW_OTA_CAP_FLASH_ENCRYPTION, flags);
+    /* a newer version with a larger block still says what the first 12 bytes say */
+    b[4] = 7;
+    b[6] = 24;
+    TEST_ASSERT_TRUE(gw_ota_caps_read(b, sizeof(b), &flags));
+    b[6] = 33;   /* larger than what was read */
+    TEST_ASSERT_FALSE(gw_ota_caps_read(b, sizeof(b), &flags));
+    b[6] = 11;
+    TEST_ASSERT_FALSE(gw_ota_caps_read(b, sizeof(b), &flags));
+    b[6] = 32;
+    b[4] = 0;
+    TEST_ASSERT_FALSE(gw_ota_caps_read(b, sizeof(b), &flags));
+    b[4] = 1;
+    b[0] = 0x48;   /* other magic: an image built before #102 (its .rodata goes on there) */
+    TEST_ASSERT_FALSE(gw_ota_caps_read(b, sizeof(b), &flags));
+    b[0] = 0x47;
+    TEST_ASSERT_FALSE(gw_ota_caps_read(b, 11, &flags));
+    /* the layout the firmware compiles */
+    TEST_ASSERT_EQUAL(GW_OTA_CAPS_SIZE, sizeof(gw_ota_caps_t));
+
+    char why[96] = "";
+    TEST_ASSERT_TRUE(gw_ota_caps_accept(true, GW_OTA_CAP_NVS_ENCRYPTION, true, why, sizeof(why)));
+    TEST_ASSERT_TRUE(gw_ota_caps_accept(true, 0, false, why, sizeof(why)));    /* NVS not encrypted */
+    TEST_ASSERT_TRUE(gw_ota_caps_accept(false, 0, false, why, sizeof(why)));   /* an older image */
+    TEST_ASSERT_FALSE(gw_ota_caps_accept(true, GW_OTA_CAP_FLASH_ENCRYPTION, true, why, sizeof(why)));
+    TEST_ASSERT_EQUAL_STRING("built without NVS encryption (this device's NVS is encrypted)", why);
+    TEST_ASSERT_FALSE(gw_ota_caps_accept(false, GW_OTA_CAP_NVS_ENCRYPTION, true, why, sizeof(why)));
+    TEST_ASSERT_EQUAL_STRING("declares no NVS encryption (this device's NVS is encrypted)", why);
+}
+
 static void test_urls(void)
 {
     char why[96];
@@ -276,6 +316,7 @@ int main(void)
     RUN_TEST(test_incomplete_births_do_not_confirm);
     RUN_TEST(test_failed_confirmation_is_retried);
     RUN_TEST(test_operator_commit_and_cannot_start);
+    RUN_TEST(test_image_capabilities);
     RUN_TEST(test_urls);
     RUN_TEST(test_progress_every_ten_percent);
     RUN_TEST(test_progress_unknown_size_by_time);

@@ -181,6 +181,35 @@ bool gw_ota_url_ok(const char *url, bool allow_http, char *why, size_t cap)
     return true;
 }
 
+static uint32_t le32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+bool gw_ota_caps_read(const uint8_t *block, size_t len, uint32_t *flags)
+{
+    if (len < 12u || le32(block) != GW_OTA_CAPS_MAGIC) {
+        return false;
+    }
+    uint16_t version = (uint16_t)(block[4] | block[5] << 8);
+    uint16_t size = (uint16_t)(block[6] | block[7] << 8);
+    if (version == 0 || size < 12u || size > len) {
+        return false;
+    }
+    *flags = le32(block + 8);
+    return true;
+}
+
+bool gw_ota_caps_accept(bool declared, uint32_t flags, bool nvs_encrypted, char *why, size_t cap)
+{
+    if (!nvs_encrypted || (declared && (flags & GW_OTA_CAP_NVS_ENCRYPTION) != 0)) {
+        return true;
+    }
+    snprintf(why, cap, "%s (this device's NVS is encrypted)",
+             declared ? "built without NVS encryption" : "declares no NVS encryption");
+    return false;
+}
+
 void gw_ota_progress_init(gw_ota_progress_t *p, uint32_t total, uint32_t now_ms)
 {
     memset(p, 0, sizeof(*p));

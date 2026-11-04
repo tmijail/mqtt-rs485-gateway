@@ -2194,7 +2194,9 @@ def run_nvs_ota(args, work):
     NVS) is updated by OTA to the encrypted build under test. On trial, the new image keeps the
     NVS unencrypted; a reset during the trial (panic) rolls it back and the old image finds its
     bdSeq (continued by the trial) and its secrets. Updated again with the broker up: confirmed,
-    one restart, and that boot moves the NVS into the encrypted one."""
+    one restart, and that boot moves the NVS into the encrypted one. Issue #102: then the build
+    without NVS encryption, sent back by OTA, is refused before it is set to boot, and the NVS
+    (bdSeq, secrets) stays intact."""
     if not args.plain_flash:
         print("[SKIP] issue #94 OTA from a build without NVS encryption: no --plain-flash "
               "(run_e2e.sh builds it)", flush=True)
@@ -2226,11 +2228,21 @@ def run_nvs_ota(args, work):
         write_otadata(flash)
     log = work / "uart0-nvsota.log"
     nbirth_t, ncmd_t = f"{T}/NBIRTH/{node}", f"{T}/NCMD/{node}"
+    ndata_t = f"{T}/NDATA/{node}"
     words = (secret.encode(), b"commission", b"bdseq", b"mqtt_pw")
+    if args.plain_app:
+        # issue #102: the build without NVS encryption as an update, signed like the others
+        fw_image(args.plain_app, "e2e-plain", fwdir / "plain-unsigned.bin")
+        if args.signing_key:
+            subprocess.run([args.idf_python, "-m", "espsecure", "sign-data", "--version", "2",
+                            "--keyfile", args.signing_key, "--output", str(fwdir / "plain.bin"),
+                            str(fwdir / "plain-unsigned.bin")], check=True, capture_output=True)
+        else:
+            shutil.copy(fwdir / "plain-unsigned.bin", fwdir / "plain.bin")
 
-    def update():
+    def update(name="enc"):
         obs.publish_cmd(ncmd_t, [{"name": "Node Control/Firmware Update", "datatype": 12,
-                                  "string_value": f"https://10.0.2.2:{fw_port}/enc.bin"}])
+                                  "string_value": f"https://10.0.2.2:{fw_port}/{name}.bin"}])
 
     def fw(nb):
         return metric(nb[2], name="Node Info/Firmware").string_value if nb else None
@@ -2327,6 +2339,52 @@ def run_nvs_ota(args, work):
               f"confirmation {len(boots)}, restart requests {len(restarts)}, another NBIRTH in "
               f"20 s {later is not None}; NBIRTH firmware "
               f"{fw(nb3)!r} bdSeq {b1} -> {b3}; commissioning password {pw2!r}; in clear: {clear2}")
+
+        # 3. issue #102: the build without NVS encryption sent to the migrated device: refused
+        # once its head is in the slot (before esp_ota_set_boot_partition), no restart; the next
+        # boot still has the encrypted NVS (bdSeq continues, the password opens the broker)
+        if not args.plain_app:
+            print("[SKIP] issue #102 OTA back to the build without NVS encryption: no --plain-app",
+                  flush=True)
+            return
+        obs.drain()
+        t3 = time.monotonic()
+        gw = Gateway(args, log, flash)
+        gw.start()
+        nb4 = obs.wait(nbirth_t, 60)
+        gw.wait_log(r"edge: time synchronised", 20, t3)
+        asked = time.monotonic()
+        update("plain")
+        refused = obs.wait(ndata_t, 120, lambda p: (fw_state(p) or "").startswith(
+            "failed: image e2e-plain refused: built without NVS encryption"))
+        why = gw.find(r"fw: update refused: the image built without NVS encryption \(this device's "
+                      r"NVS is encrypted\)", asked)
+        time.sleep(3)
+        restarted = any(m[1] == f"{T}/NDEATH/{node}" for m in CAPTURE if m[0] >= asked)
+        gw.kill()
+        obs.wait(f"{T}/NDEATH/{node}", 5)
+        obs.drain()
+        t4 = time.monotonic()
+        gw = Gateway(args, log, flash)
+        gw.start()
+        nb5 = obs.wait(nbirth_t, 60)
+        pw3 = commissioning_password(gw, t4)
+        _, h3 = gw.shell("status", [r"^secrets\s+NVS encrypted \(HMAC key in eFuse KEY5\)",
+                                    r"^ota\s+e2e-enc in "])
+        gw.kill()
+        clear3 = nvs_clear(flash, words)
+        b4 = bdseq_of(nb4[2]) if nb4 else None
+        b5 = bdseq_of(nb5[2]) if nb5 else None
+        check("Issue #102 an OTA update to the build without NVS encryption, on a device whose NVS "
+              "is already encrypted, is refused with its reason before it is set to boot (no "
+              "restart); the next boot runs the same firmware with the NVS intact (bdSeq continues, "
+              "the MQTT password from the NVS opens the broker, same commissioning password)",
+              nb4 and refused and why and not restarted and nb5 and fw(nb5) == "e2e-enc"
+              and b4 is not None and b5 is not None and 1 <= (b5 - b4) % 256 <= 64
+              and pw3 == pw0 and all(h3.values()) and not clear3,
+              f"state {fw_state(refused[2]) if refused else None!r}; restarted {restarted}; NBIRTH "
+              f"firmware {fw(nb5)!r} bdSeq {b4} -> {b5}; commissioning password {pw3!r}; shell "
+              f"{h3}; in clear: {clear3}")
     finally:
         if not gw.killed:   # a second kill() would read as a QEMU death (#86)
             gw.kill()
@@ -2370,6 +2428,9 @@ def main():
     ap.add_argument("--plain-flash", default="",
                     help="issue #94: flash image of the QEMU build without NVS encryption "
                          "(sdkconfig.qemu-plain), the image before the OTA update")
+    ap.add_argument("--plain-app", default="",
+                    help="issue #102: the unsigned app image of that build (an OTA update the "
+                         "device must refuse once its NVS is encrypted)")
     ap.add_argument("--mqtt-port", type=int, default=MQTT_PORT)
     ap.add_argument("--modbus-port", type=int, default=MODBUS_PORT)
     ap.add_argument("--console-port", type=int, default=CONSOLE_PORT)

@@ -66,7 +66,9 @@ if [ "${E2E_PLAIN:-1}" = 1 ]; then
     grep -q '^# CONFIG_NVS_ENCRYPTION is not set' "$PLAIN/sdkconfig"
     (cd "$PLAIN" && python -m esptool --chip esp32s3 merge-bin --output "$WORK/flash-plain.bin" \
         --pad-to-size 16MB @flash_args)
-    PLAIN_ARGS=(--plain-flash "$WORK/flash-plain.bin")
+    # issue #102: its app image too, the update a migrated device must refuse
+    PLAIN_ARGS=(--plain-flash "$WORK/flash-plain.bin"
+                --plain-app "$IDF_DIR/$PLAIN/rs485_spb_gateway-unsigned.bin")
 fi
 python - "$WORK/efuse.bin" <<'PYEOF'
 import os, sys

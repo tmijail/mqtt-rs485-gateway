@@ -104,6 +104,36 @@ bool gw_ota_url_ok(const char *url, bool allow_http, char *why, size_t cap);
  *  URL to @p out (GW_OTA_URL_MAX); on false @p why says why. Does not validate the URL. */
 bool gw_ota_parse_request(const char *body, size_t len, char *out, char *why, size_t cap);
 
+/* ---------- issue #102: what an image declares about itself ----------
+ * A block right after the image's esp_app_desc_t (section .rodata_custom_desc, at
+ * GW_OTA_CAPS_OFFSET from the start of the image: image header 24 B, first segment header 8 B,
+ * esp_app_desc_t 256 B), little endian: magic "GWCP", version, size, flags. Newer versions may
+ * grow it; the first 12 bytes keep their meaning. Images built before it have none. */
+#define GW_OTA_CAPS_OFFSET 288u
+#define GW_OTA_CAPS_SIZE 32u
+#define GW_OTA_CAPS_MAGIC 0x50435747u   /* "GWCP" */
+#define GW_OTA_CAPS_VERSION 1u
+#define GW_OTA_CAP_NVS_ENCRYPTION 0x1u     /* built with CONFIG_NVS_ENCRYPTION (CFG-7) */
+#define GW_OTA_CAP_FLASH_ENCRYPTION 0x2u   /* built with flash encryption (FW-3); informative */
+
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t size;           /* of the block */
+    uint32_t flags;          /* GW_OTA_CAP_* */
+    uint32_t reserved[5];
+} gw_ota_caps_t;
+
+/** The flags of the block at @p block (@p len bytes from GW_OTA_CAPS_OFFSET of an image); false
+ *  when there is none (no magic, an unknown version 0, a size below 12 or above @p len). */
+bool gw_ota_caps_read(const uint8_t *block, size_t len, uint32_t *flags);
+
+/** Issue #102: may the image replace the running one? @p declared, @p flags: from
+ *  gw_ota_caps_read(); @p nvs_encrypted: this device's NVS partition is encrypted (or may be: a
+ *  migration pending). An image without NVS encryption cannot read it: it would erase it
+ *  (bdSeq, secrets). On false @p why says why. */
+bool gw_ota_caps_accept(bool declared, uint32_t flags, bool nvs_encrypted, char *why, size_t cap);
+
 /* Progress of a download, reported every 10 % (or every 5 s when the size is unknown). */
 typedef struct {
     uint32_t total;          /* image size, 0 = unknown */

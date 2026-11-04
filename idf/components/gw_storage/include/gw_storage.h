@@ -77,6 +77,11 @@ bool gw_storage_nvs_migrates_next_boot(void);
  *  page unreadable, ...), NULL when that is not the case. For the shell. */
 const char *gw_storage_nvs_unavailable_why(void);
 
+/** Issue #102: the NVS partition holds (or may hold, with a migration pending) encrypted NVS: an
+ *  image without NVS encryption would erase it. False in a build without NVS encryption and
+ *  while this boot keeps the unencrypted NVS (a new image on trial, no LittleFS). */
+bool gw_storage_nvs_encrypted_on_flash(void);
+
 /** CFG-7: true when NVS (and with it the secrets) is encrypted (CONFIG_NVS_ENCRYPTION,
  *  HMAC key in eFuse). Development builds without it keep the secrets in plain NVS. */
 bool gw_storage_secrets_encrypted(void);
