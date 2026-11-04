@@ -325,6 +325,29 @@ class Gateway:
         self.proc.wait()
         self.sock.close()
 
+    def shell(self, commands, patterns, timeout=3, tries=3):
+        """Ask the console shell (read-only commands only: they are repeated) until every regex in
+        @patterns has matched a line of the answer. The firmware writes each answer atomically
+        with respect to the log (#56); asking again also covers a line lost on the way.
+        Returns (start time of the asking, {pattern: time of the first match or None})."""
+        if isinstance(commands, str):
+            commands = [commands]
+        start = time.monotonic()
+        hits = {p: None for p in patterns}
+        for _ in range(tries):
+            asked = time.monotonic()
+            for c in commands:
+                self.console(c)
+            end = asked + timeout
+            while time.monotonic() < end and None in hits.values():
+                for p in hits:
+                    if hits[p] is None:
+                        hits[p] = self.wait_log(p, 0, asked)
+                time.sleep(0.05)
+            if None not in hits.values():
+                break
+        return start, hits
+
     def find(self, pattern, since=0.0):
         rx = re.compile(pattern)
         return [l for t, l in self.lines if t >= since and rx.search(l)]
@@ -618,10 +641,9 @@ def run_config_failsafe(args, work, slave):
         dos_off = gw.find(r"io: DO .*all outputs off", t0)
         time.sleep(6)  # long enough for DHCP + SNTP wait + a connection attempt
         # Positive signal: 6 s later the shell still reports the halted state.
-        asked = time.monotonic()
-        gw.console("status")
-        still = gw.wait_log(r"nothing is running: no polling, no MQTT; recovery network and web UI only",
-                            3, asked)
+        asked, h = gw.shell("status", [r"nothing is running: no polling, no MQTT; recovery network and "
+                                       r"web UI only", r"config\s+REJECTED .*" + reason])
+        still = list(h.values())[0]
         shell = gw.find(r"config\s+REJECTED .*" + reason, asked)
         # Supplementary negative signals: no component logged its start, no NBIRTH reached MQTT,
         # no Modbus request reached the slave.
@@ -706,30 +728,18 @@ def run_network_variant(args, work):
     gw.start()
     nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
     ignored = gw.find(r"network\.wifi ignored: Wi-Fi is not available in this build", t0)
-    asked = time.monotonic()
-    iface = shown = None
-    for _ in range(3):   # a log line from another task can split the shell's output: ask again
-        gw.console("status")
-        gw.console("config")
-        iface = iface or gw.wait_log(
-            r"^iface\s+ethernet up \d+\.\d+\.\d+\.\d+ \(active\) \| wifi not configured", 3, asked)
-        shown = shown or gw.wait_log(r"^wifi\s+'Plant WLAN', backup of Ethernet, failback 30 s, DHCP",
-                                     1, asked)
-        if iface and shown:
-            break
+    asked, h = gw.shell(["status", "config"],
+                        [r"^iface\s+ethernet up \d+\.\d+\.\d+\.\d+ \(active\) \| wifi not configured",
+                         r"^wifi\s+'Plant WLAN', backup of Ethernet, failback 30 s, DHCP"])
+    iface, shown = h.values()
     # NET-7
     lla = gw.wait_log(r"net: ethernet: IPv6 fe80:[0-9a-f:]+ \(link-local\)", 10, t0)
     slaac = gw.wait_log(r"net: ethernet: IPv6 fec0::(?!1234 )[0-9a-f:]+ \(site local\)", 10, t0)
     static = gw.wait_log(r"net: ethernet: IPv6 fec0::1234 \(site local\)", 1, t0)
-    asked6 = time.monotonic()
-    listed = cfg6 = None
-    for _ in range(3):
-        gw.console("status")
-        gw.console("config")
-        listed = listed or gw.wait_log(r"^ipv6\s+ethernet fe80:.*ethernet fec0::", 3, asked6)
-        cfg6 = cfg6 or gw.wait_log(r"^ipv6\s+SLAAC on, static address fec0::1234, DNS none", 1, asked6)
-        if listed and cfg6:
-            break
+    asked6, h = gw.shell(["status", "config"],
+                         [r"^ipv6\s+ethernet fe80:.*ethernet fec0::",
+                          r"^ipv6\s+SLAAC on, static address fec0::1234, DNS none"])
+    listed, cfg6 = h.values()
     pinged = time.monotonic()
     gw.console("ping fec0::2")
     replies = gw.wait_log(r"3 sent, [1-3] received", 8, pinged)
@@ -840,13 +850,11 @@ def run_web(args, work):
         time.sleep(0.2)
     masked_sh = gw.find(r'^\s*"password": "\*{8}"', asked)
     leaked = gw.find(r"mqtt-secret|" + WEB_PASSWORD, asked)
-    asked = time.monotonic()
-    gw.console("mbread 1 holding 10 1")
-    gw.console("mbread 1 input 0 2")
-    gw.console("mbread 9 holding 0")
-    reg = gw.wait_log(r"^mbread: unit 1 holding 10: 50$", 8, asked)
-    flt = gw.wait_log(r"^mbread: unit 1 input 0: 17254 32768$", 8, asked)    # 230.5 as float32 ABCD
-    absent = gw.wait_log(r"^mbread: unit 9 holding 0: (timeout|framing error)$", 15, asked)
+    asked, h = gw.shell(["mbread 1 holding 10 1", "mbread 1 input 0 2", "mbread 9 holding 0"],
+                        [r"^mbread: unit 1 holding 10: 50$",
+                         r"^mbread: unit 1 input 0: 17254 32768$",           # 230.5 as float32 ABCD
+                         r"^mbread: unit 9 holding 0: (timeout|framing error)$"], timeout=15)
+    reg, flt, absent = h.values()
     check("CFG-6 shell 'config show' (secrets masked) and 'mbread' through the bus owner (register, "
           "float32 words, unit without a slave -> error, not a value)",
           shown and len(masked_sh) >= 2 and not leaked and reg and flt and absent,
@@ -898,9 +906,8 @@ def run_web(args, work):
           and (as_json(b9) or {}).get("mqtt", {}).get("password") == "********",
           " | ".join(gw.find(r"^config: ", asked)) + f"; NDEATH {node2}: {bool(death)}; NBIRTH "
           f"{node3}: {bool(nb3)}; GET {st9}")
-    asked = time.monotonic()
-    gw.console("status")
-    enc = gw.wait_log(r"^secrets\s+NVS encrypted \(HMAC key in eFuse KEY5\)", 5, asked)
+    _, h = gw.shell("status", [r"^secrets\s+NVS encrypted \(HMAC key in eFuse KEY5\)"])
+    enc = list(h.values())[0]
     gw.kill()
     obs.wait(f"{T}/NDEATH/{node3}", 5)
     obs.close()
@@ -966,9 +973,8 @@ def run_factory_reset(args, work):
     st_old, _, _ = wait_http("/api/status", 20)                    # the old web password is gone
     st, _, body = http("GET", "/api/status", auth=("admin", pw or "?"))
     status = as_json(body) or {}
-    asked = time.monotonic()
-    gw.console("status")
-    shell = gw.wait_log(r"^config\s+NONE: commissioning after a factory reset", 3, asked)
+    _, h = gw.shell("status", [r"^config\s+NONE: commissioning after a factory reset"])
+    shell = list(h.values())[0]
     time.sleep(4)
     births = [m for m in CAPTURE if m[0] >= t1 and "/NBIRTH/" in m[1]]
     led = gw.find(r"led: status: commissioning", t1 - 5)
@@ -1045,22 +1051,18 @@ def run(args, log, slave, broker, conf, work):
           announced, (announced or ["no mdns log"])[0])
 
     # CFG-6 diagnostic shell on the console UART
-    asked = time.monotonic()
-    gw.console("status")
-    status_ok = gw.wait_log(r"config\s+\S+.*: ok", 3, asked)
-    status_net = gw.wait_log(r"network\s+.*MQTT \S+, Modbus 2/2 devices online", 1, asked)
-    status_if = gw.wait_log(r"^iface\s+ethernet up \d+\.\d+\.\d+\.\d+ \(active\) \| wifi not configured",
-                            1, asked)
+    asked, h = gw.shell("status", [r"config\s+\S+.*: ok",
+                                   r"network\s+.*MQTT \S+, Modbus 2/2 devices online",
+                                   r"^iface\s+ethernet up \d+\.\d+\.\d+\.\d+ \(active\) \| wifi not configured"])
+    status_ok, status_net, status_if = h.values()
     check("CFG-6 console shell: 'status' with a valid configuration (config ok, MQTT, devices online, "
           "Ethernet the only and active interface)",
           status_ok and status_net and status_if,
           " | ".join(gw.find(r"^config\s|^network\s|^iface\s", asked)) or "no answer")
-    asked = time.monotonic()
-    gw.console("devices")
-    gw.console("config")
-    meter = gw.wait_log(r"Meter1\s+unit\s+1 online\s+cycles [1-9]\d* failed \d+ \| ok [1-9]", 3, asked)
-    bulk = gw.wait_log(r"Bulk\s+unit\s+2 online", 1, asked)
-    summary = gw.wait_log(r"sparkplug\s+group 'Plant1', edge node 'GW01'", 1, asked)
+    asked, h = gw.shell(["devices", "config"],
+                        [r"Meter1\s+unit\s+1 online\s+cycles [1-9]\d* failed \d+ \| ok [1-9]",
+                         r"Bulk\s+unit\s+2 online", r"sparkplug\s+group 'Plant1', edge node 'GW01'"])
+    meter, bulk, summary = h.values()
     check("CFG-6 console shell: 'devices' (online state, counters) and 'config' summary",
           meter and bulk and summary,
           " | ".join(gw.find(r"Meter1\s+unit|Bulk\s+unit|sparkplug\s+group", asked)) or "no answer")
@@ -1079,13 +1081,8 @@ def run(args, log, slave, broker, conf, work):
         except ValueError:
             pass
     bad = [text for t, text in SYSLOG if t >= t0 and not RFC5424.match(text)]
-    asked = time.monotonic()
-    stats = None
-    for _ in range(3):
-        gw.console("status")
-        stats = gw.wait_log(r"^syslog\s+10\.0\.2\.2:%d connected, sent [1-9]\d*, " % SYSLOG_PORT, 3, asked)
-        if stats:
-            break
+    asked, h = gw.shell("status", [r"^syslog\s+10\.0\.2\.2:%d connected, sent [1-9]\d*, " % SYSLOG_PORT])
+    stats = list(h.values())[0]
     check("REL-4 log lines reach the syslog server as RFC 5424 (local0, hostname GW01, app-name = "
           "tag, SNTP timestamp); the shell reports the counters",
           up and up[1] == 16 * 8 + 6 and up[3] == "edge" and ts_ok and not bad and stats,
@@ -1163,10 +1160,9 @@ def run(args, log, slave, broker, conf, work):
     bound = 3 * 1.0 + 3 * (0.2 * 3) + 1.0  # offline_after*poll + per-cycle timeouts + 1 s margin
     check("2a. Slave powered off -> DDEATH within offline_after x poll_ms + timeouts",
           dd and dd[0] - off <= bound, f"{dd[0] - off:.2f} s (bound {bound:.1f} s)" if dd else "no DDEATH")
-    asked = time.monotonic()
-    gw.console("devices")
-    offline = gw.wait_log(r"Meter1\s+unit\s+1 offline\s+cycles \d+ failed [1-9]\d* \| ok \d+ timeout [1-9]",
-                          3, asked)
+    asked, h = gw.shell("devices", [r"Meter1\s+unit\s+1 offline\s+cycles \d+ failed [1-9]\d* \| ok \d+ "
+                                    r"timeout [1-9]"])
+    offline = list(h.values())[0]
     check("CFG-6 / MB-13 shell shows the device offline with its failed cycles and timeouts",
           offline, (gw.find(r"Meter1\s+unit", asked) or ["no answer"])[0])
     on = time.monotonic()
