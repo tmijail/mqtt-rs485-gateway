@@ -1632,6 +1632,58 @@ def run_ota(args, work):
         broker.wait()
 
 
+# ---------------------------------------------------------------- issue #67 NVS migration
+
+def run_nvs_migration(args, work):
+    """Issue #67 (GW31): a flash whose NVS was written without NVS encryption (the format of
+    the default build, generated here with ESP-IDF's nvs_partition_gen.py: bdSeq 41, the
+    commissioning password, an MQTT password) boots the encrypted build: every entry is moved
+    into the encrypted NVS, the bdSeq continues and nothing stays in clear."""
+    node = "GW31"
+    nvs_off, nvs_size = storage_partition("nvs")
+    csv = work / "nvs-plain.csv"
+    csv.write_text("key,type,encoding,value\nspb,namespace,,\nbdseq,data,u8,41\n"
+                   "secrets,namespace,,\ncommission,data,string,abcdefgh1234\n"
+                   "mqtt_pw,data,string,s3cret-mqtt-67\ngw,namespace,,\ndo_hold,data,u8,0\n")
+    gen = pathlib.Path(os.environ["IDF_PATH"]) / "components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py"
+    plain = work / "nvs-plain.bin"
+    subprocess.run([args.idf_python, str(gen), "generate", str(csv), str(plain), hex(nvs_size)],
+                   check=True, capture_output=True)
+    flash = flash_variant(args, work, "nvsmig", {"config.json": json.dumps(node_config(node)).encode()})
+    img = bytearray(flash.read_bytes())
+    img[nvs_off:nvs_off + nvs_size] = plain.read_bytes()
+    flash.write_bytes(img)
+    obs = Observer()
+    t0 = time.monotonic()
+    gw = Gateway(args, work / "uart0-nvsmig.log", flash)
+    gw.start()
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    moved = gw.find(r"storage: NVS migration: \d+ entries moved into the encrypted NVS \(0 skipped\); "
+                    r"bdSeq continues", t0)
+    found = gw.find(r'storage: NVS partition "nvs" is NOT encrypted', t0)
+    pw = commissioning_password(gw, t0)
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node}", 5)
+    region = flash.read_bytes()[nvs_off:nvs_off + nvs_size]
+    clear = [w for w in (b"abcdefgh1234", b"s3cret-mqtt-67", b"commission", b"bdseq") if w in region]
+    obs.drain()
+    t1 = time.monotonic()
+    gw = Gateway(args, work / "uart0-nvsmig.log", flash)
+    gw.start()
+    nb2 = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    again = gw.find(r"NVS migration", t1)
+    gw.kill()
+    obs.close()
+    check("Issue #67 an unencrypted NVS meets the encrypted build: its entries are moved (bdSeq "
+          "continues, the commissioning password is the old one), nothing is left in clear, and "
+          "the next boot does not migrate again",
+          nb and bdseq_of(nb[2]) == 41 and moved and found and pw == "abcdefgh1234" and not clear
+          and nb2 and bdseq_of(nb2[2]) == 42 and not again,
+          f"NBIRTH bdSeq {bdseq_of(nb[2]) if nb else None} then {bdseq_of(nb2[2]) if nb2 else None}; "
+          f"{(moved or found or ['no migration log'])[0][:110]}; commissioning password {pw!r}; "
+          f"in clear in the NVS partition: {clear}; migration on the second boot: {bool(again)}")
+
+
 def start_broker(conf, log):
     # A renamed copy of the binary: other jobs on a shared host that clean up with
     # `pkill mosquitto` must not take this broker down in the middle of the scenario.
@@ -1669,7 +1721,7 @@ def main():
     ap.add_argument("--https-port", type=int, default=HTTPS_PORT)
     ap.add_argument("--only", default="",
                     help="comma-separated scenarios to run (failsafe,network,web,reset,tls,failover,"
-                         "mqtt5,phost,sf,https,ota,slow,main); "
+                         "mqtt5,phost,sf,https,ota,nvs,slow,main); "
                          "default all")
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
@@ -1728,6 +1780,8 @@ def main():
             run_https(args, work)
         if want("ota"):
             run_ota(args, work)
+        if want("nvs"):
+            run_nvs_migration(args, work)
         if want("slow"):
             run_slow_link(args, work, sdkconfig_int(args.sdkconfig, "GW_MQTT_PUBLISH_BUDGET_MS"))
         if want("main"):

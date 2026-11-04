@@ -21,6 +21,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "gw_auth.h"
+#include "gw_nvsraw.h"
 #include "mbedtls/platform.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -66,10 +67,208 @@ static void *tls_calloc(size_t n, size_t size)
 }
 #endif
 
+#if CONFIG_NVS_ENCRYPTION
+/* ---------- issue #67: unencrypted NVS -> encrypted NVS on the first encrypted boot ----------
+ * Initialising the encrypted NVS over an unencrypted one loses every entry (bdSeq, secrets,
+ * commissioning password, web certificate, I/O state). Before that, the raw pages tell which
+ * kind is there (gw_nvsraw, without initialising anything); an unencrypted one is read in
+ * full (every namespace, every key), erased and written back encrypted. */
+typedef struct {
+    char ns[NVS_NS_NAME_MAX_SIZE];
+    char key[NVS_KEY_NAME_MAX_SIZE];
+    uint8_t type;            /* nvs_type_t */
+    uint16_t len;            /* bytes that follow (integers: 8) */
+} mig_rec_t;
+
+static gw_nvsraw_kind_t nvs_raw_kind(const esp_partition_t *p)
+{
+    gw_nvsraw_scan_t sc;
+    gw_nvsraw_scan_init(&sc);
+    uint8_t *page = heap_caps_malloc(GW_NVSRAW_PAGE, MALLOC_CAP_8BIT);
+    if (page == NULL) {
+        return GW_NVSRAW_ENCRYPTED;   /* cannot tell: leave it to the normal initialisation */
+    }
+    for (uint32_t off = 0; off + GW_NVSRAW_PAGE <= p->size; off += GW_NVSRAW_PAGE) {
+        if (esp_partition_read_raw(p, off, page, GW_NVSRAW_PAGE) == ESP_OK) {
+            gw_nvsraw_scan_page(&sc, page);
+        }
+    }
+    heap_caps_free(page);
+    ESP_LOGD(TAG, "NVS raw scan: %lu pages, %lu written entries, %lu plain items, %lu other",
+             (unsigned long)sc.pages, (unsigned long)sc.written, (unsigned long)sc.plain_ok,
+             (unsigned long)sc.bad);
+    return gw_nvsraw_verdict(&sc);
+}
+
+/* Every entry of the open, unencrypted NVS into @p buf (records back to back). */
+static size_t nvs_read_all(uint8_t *buf, size_t cap, unsigned *count, unsigned *skipped)
+{
+    size_t used = 0;
+    nvs_iterator_t it = NULL;
+    esp_err_t e = nvs_entry_find(NVS_DEFAULT_PART_NAME, NULL, NVS_TYPE_ANY, &it);
+    while (e == ESP_OK) {
+        nvs_entry_info_t info;
+        nvs_entry_info(it, &info);
+        nvs_handle_t h;
+        mig_rec_t r = {.type = (uint8_t)info.type};
+        snprintf(r.ns, sizeof(r.ns), "%s", info.namespace_name);
+        snprintf(r.key, sizeof(r.key), "%s", info.key);
+        bool opened = nvs_open_from_partition(NVS_DEFAULT_PART_NAME, r.ns, NVS_READONLY, &h) ==
+                      ESP_OK;
+        bool ok = opened;
+        uint8_t *data = buf + used + sizeof(r);
+        size_t room = cap > used + sizeof(r) ? cap - used - sizeof(r) : 0;
+        size_t len = 0;
+        if (ok && info.type == NVS_TYPE_STR) {
+            len = room;
+            ok = nvs_get_str(h, r.key, (char *)data, &len) == ESP_OK;
+        } else if (ok && info.type == NVS_TYPE_BLOB) {
+            len = room;
+            ok = nvs_get_blob(h, r.key, data, &len) == ESP_OK;
+        } else if (ok && room >= 8) {
+            uint64_t v = 0;
+            len = 8;
+            switch (info.type) {
+            case NVS_TYPE_U8: ok = nvs_get_u8(h, r.key, (uint8_t *)&v) == ESP_OK; break;
+            case NVS_TYPE_I8: ok = nvs_get_i8(h, r.key, (int8_t *)&v) == ESP_OK; break;
+            case NVS_TYPE_U16: ok = nvs_get_u16(h, r.key, (uint16_t *)&v) == ESP_OK; break;
+            case NVS_TYPE_I16: ok = nvs_get_i16(h, r.key, (int16_t *)&v) == ESP_OK; break;
+            case NVS_TYPE_U32: ok = nvs_get_u32(h, r.key, (uint32_t *)&v) == ESP_OK; break;
+            case NVS_TYPE_I32: ok = nvs_get_i32(h, r.key, (int32_t *)&v) == ESP_OK; break;
+            case NVS_TYPE_U64: ok = nvs_get_u64(h, r.key, &v) == ESP_OK; break;
+            case NVS_TYPE_I64: ok = nvs_get_i64(h, r.key, (int64_t *)&v) == ESP_OK; break;
+            default: ok = false; break;
+            }
+            memcpy(data, &v, 8);
+        } else {
+            ok = false;
+        }
+        if (opened) {
+            nvs_close(h);
+        }
+        if (ok && len <= UINT16_MAX) {
+            r.len = (uint16_t)len;
+            memcpy(buf + used, &r, sizeof(r));
+            used += sizeof(r) + len;
+            (*count)++;
+        } else {
+            (*skipped)++;
+            ESP_LOGW(TAG, "NVS migration: %s/%s (type 0x%02x) not copied", r.ns, r.key, r.type);
+        }
+        e = nvs_entry_next(&it);
+    }
+    nvs_release_iterator(it);
+    return used;
+}
+
+static unsigned nvs_write_all(const uint8_t *buf, size_t used)
+{
+    unsigned failed = 0;
+    for (size_t off = 0; off < used;) {
+        mig_rec_t r;
+        memcpy(&r, buf + off, sizeof(r));
+        const uint8_t *d = buf + off + sizeof(r);
+        off += sizeof(r) + r.len;
+        nvs_handle_t h;
+        esp_err_t e = nvs_open_from_partition(NVS_DEFAULT_PART_NAME, r.ns, NVS_READWRITE, &h);
+        if (e == ESP_OK) {
+            uint64_t v;
+            memcpy(&v, d, sizeof(v) <= r.len ? sizeof(v) : r.len);
+            switch (r.type) {
+            case NVS_TYPE_STR: e = nvs_set_str(h, r.key, (const char *)d); break;
+            case NVS_TYPE_BLOB: e = nvs_set_blob(h, r.key, d, r.len); break;
+            case NVS_TYPE_U8: e = nvs_set_u8(h, r.key, (uint8_t)v); break;
+            case NVS_TYPE_I8: e = nvs_set_i8(h, r.key, (int8_t)v); break;
+            case NVS_TYPE_U16: e = nvs_set_u16(h, r.key, (uint16_t)v); break;
+            case NVS_TYPE_I16: e = nvs_set_i16(h, r.key, (int16_t)v); break;
+            case NVS_TYPE_U32: e = nvs_set_u32(h, r.key, (uint32_t)v); break;
+            case NVS_TYPE_I32: e = nvs_set_i32(h, r.key, (int32_t)v); break;
+            case NVS_TYPE_U64: e = nvs_set_u64(h, r.key, v); break;
+            case NVS_TYPE_I64: e = nvs_set_i64(h, r.key, (int64_t)v); break;
+            default: e = ESP_ERR_NVS_TYPE_MISMATCH; break;
+            }
+            if (e == ESP_OK) {
+                e = nvs_commit(h);
+            }
+            nvs_close(h);
+        }
+        if (e != ESP_OK) {
+            failed++;
+            ESP_LOGE(TAG, "NVS migration: %s/%s not written (%s)", r.ns, r.key, esp_err_to_name(e));
+        }
+    }
+    return failed;
+}
+
+/* Called before nvs_flash_init() of an encrypted build. */
+static void nvs_migrate_plain(void)
+{
+    const esp_partition_t *p = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+                                                        ESP_PARTITION_SUBTYPE_DATA_NVS,
+                                                        NVS_DEFAULT_PART_NAME);
+    if (p == NULL || nvs_raw_kind(p) != GW_NVSRAW_PLAIN) {
+        return;   /* empty or already encrypted: the normal initialisation */
+    }
+    ESP_LOGW(TAG, "NVS partition \"%s\" is NOT encrypted (written by a build without NVS "
+                  "encryption): moving its entries into the encrypted NVS",
+             p->label);
+    uint8_t *buf = heap_caps_malloc_prefer(p->size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                           MALLOC_CAP_8BIT);
+    unsigned count = 0, skipped = 0;
+    size_t used = 0;
+    uint8_t bdseq = 0;
+    bool have_bdseq = false;
+    if (nvs_flash_init_partition(NVS_DEFAULT_PART_NAME) == ESP_OK) {
+        nvs_handle_t h;
+        if (nvs_open_from_partition(NVS_DEFAULT_PART_NAME, NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+            have_bdseq = nvs_get_u8(h, NVS_BDSEQ, &bdseq) == ESP_OK;
+            nvs_close(h);
+        }
+        if (buf != NULL) {
+            used = nvs_read_all(buf, p->size, &count, &skipped);
+        }
+        nvs_flash_deinit_partition(NVS_DEFAULT_PART_NAME);
+    }
+    esp_err_t e = nvs_flash_erase_partition(NVS_DEFAULT_PART_NAME);
+    if (e == ESP_OK) {
+        e = nvs_flash_init();   /* encrypted (creates the HMAC-derived keys on the first boot) */
+    }
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "NVS migration: the encrypted NVS does not start (%s): %u entries lost",
+                 esp_err_to_name(e), count);
+    } else {
+        unsigned failed = buf != NULL ? nvs_write_all(buf, used) : 0;
+        if (buf == NULL || failed > 0) {
+            /* at least the bdSeq must not go back to a recent value (Sparkplug hosts) */
+            nvs_handle_t h;
+            uint8_t v = have_bdseq ? bdseq : (uint8_t)(esp_random() & 0xFFu);
+            if (nvs_open_from_partition(NVS_DEFAULT_PART_NAME, NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+                nvs_set_u8(h, NVS_BDSEQ, v);
+                nvs_commit(h);
+                nvs_close(h);
+            }
+            ESP_LOGE(TAG, "NVS migration incomplete (%s, %u entries not written): bdSeq set to %u",
+                     buf == NULL ? "no memory" : "write errors", failed, v);
+        }
+        ESP_LOGW(TAG, "NVS migration: %u entries moved into the encrypted NVS (%u skipped)%s",
+                 count - failed, skipped,
+                 have_bdseq ? "; bdSeq continues" : "");
+        nvs_flash_deinit();   /* gw_storage_init() opens it the normal way */
+    }
+    if (buf != NULL) {
+        memset(buf, 0, p->size);   /* held secrets in clear */
+        heap_caps_free(buf);
+    }
+}
+#endif
+
 esp_err_t gw_storage_init(void)
 {
 #if CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC
     mbedtls_platform_set_calloc_free(tls_calloc, heap_caps_free);
+#endif
+#if CONFIG_NVS_ENCRYPTION
+    nvs_migrate_plain();   /* issue #67 */
 #endif
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
