@@ -1939,6 +1939,12 @@ void gw_storage_sim_hold_validation(uint32_t ms)
 
 esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_cfg_err_t *err)
 {
+    return gw_storage_save_config_ex(json, len, dry_run, false, err);
+}
+
+esp_err_t gw_storage_save_config_ex(const char *json, size_t len, bool dry_run, bool discard_copy,
+                                    gw_cfg_err_t *err)
+{
     memset(err, 0, sizeof(*err));
     if (len > CFG_MAX) {
         reject(err, "%zu bytes; el máximo es %d (CONFIG_GW_CONFIG_MAX_BYTES)", len, CFG_MAX);
@@ -1992,17 +1998,25 @@ esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_
     char hook_why[120];
     if (!applied) {
         ret = strstr(err->msg, "memoria insuficiente") ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_ARG;
-    } else if (!dry_run && s_copy_unknown && !s_mounted) {
+    } else if (!dry_run && s_copy_unknown && !s_mounted && !discard_copy) {
         /* issue #108 M1: formatting LittleFS to save would destroy the only copy */
         ret = ESP_ERR_INVALID_STATE;
         reject(err, "configuración no guardada: LittleFS no monta y puede tener la copia de una "
-                    "migración de NVS (" MIG_COPY_NAME "); formatearlo la perdería (README 6.2.1)");
+                    "migración de NVS; formatearlo la perdería (para descartarla: README 6.2.1)");
     } else if (!dry_run && s_commit_hook != NULL &&
                s_commit_hook(GW_STORAGE_COMMIT_CONFIG, hook_why, sizeof(hook_why)) != ESP_OK) {
         /* issue #99: the restart that applies it would roll the new firmware back */
         ret = ESP_ERR_INVALID_STATE;
         reject(err, "configuración no guardada: %s", hook_why);
     } else if (!dry_run) {
+        bool discarded = false;
+        if (discard_copy && s_copy_unknown && !s_mounted) {
+            /* issue #109: the operator's explicit way out: LittleFS is formatted, the copy is lost */
+            ESP_LOGW(TAG, "configuration saved discarding the unreachable NVS migration copy: "
+                          "formatting LittleFS (what only the copy had is lost)");
+            s_copy_unknown = false;
+            discarded = true;
+        }
         if (doc.new_web_password &&
             !hash_web_password(cfg, doc.secrets.web_password_hash,
                                sizeof(doc.secrets.web_password_hash))) {
@@ -2022,6 +2036,15 @@ esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_
             set_factory_marker(false);
             ESP_LOGI(TAG, "configuration saved to " CFG_PATH " (%zu bytes)%s", doc.doc_len,
                      doc.secrets_changed ? "; secrets updated in NVS" : "");
+#if CONFIG_NVS_ENCRYPTION
+            if (discarded) {
+                /* the bdSeq of the copy is gone: the next boot continues after this boot's */
+                side_reserve(s_bdseq_ram);
+            }
+#endif
+        }
+        if (ret != ESP_OK && discarded && !s_mounted) {
+            s_copy_unknown = true;   /* nothing was formatted after all */
         }
     }
     gw_cfgdoc_free(&doc);

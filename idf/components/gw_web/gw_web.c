@@ -305,8 +305,11 @@ static esp_err_t config_put(httpd_req_t *req)
         return send_error(req, status, NULL, msg);
     }
     bool dry_run = query_flag(req, "dry_run");
+    /* issue #109: ?discard_nvs_copy=1, the explicit way out when LittleFS may hold an unreachable
+     * NVS migration copy (README 6.2.1): formats LittleFS, the copy is lost */
+    bool discard = query_flag(req, "discard_nvs_copy");
     gw_cfg_err_t err;
-    esp_err_t r = gw_storage_save_config(body, len, dry_run, &err);
+    esp_err_t r = gw_storage_save_config_ex(body, len, dry_run, discard, &err);
     memset(body, 0, len);   /* may hold secrets in clear */
     heap_caps_free(body);
     switch (r) {
