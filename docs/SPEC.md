@@ -634,6 +634,20 @@ En el archivo `/cfg/config.json` un secreto ausente, vacío o `"********"` toma 
 | `GET /api/config` | Exporta la configuración guardada, con los secretos enmascarados. `?download=1` la entrega como archivo |
 | `PUT /api/config` (o `POST`) | Importa: valida, guarda de forma atómica (archivo temporal + `rename`) y reinicia de forma ordenada (NDEATH). `?dry_run=1` solo valida. Error: `400 {"ok":false,"error":"…","path":"devices[0].tags[1].type","line":0,"column":0}`; `413` si supera `CONFIG_GW_CONFIG_MAX_BYTES` |
 | `POST /api/restart` | Reinicio ordenado |
+| `GET /api/status` | Estado en vivo (también en recuperación y puesta en marcha). Ver abajo |
+
+**`GET /api/status`** devuelve un objeto con: `mode` (`normal`, `recovery`, `commissioning`), `firmware`, `reset_reason`, `uptime_s`, `config` (`ok`, `source`, `error`, `path`), `network` (`up`, `interfaces`), `mqtt` (`connected`), `sparkplug` (`group_id`, `edge_node_id`, `diagnostics_s`; solo con configuración válida), `syslog`, `devices` (por dispositivo: `online`, `cycles`, `failed`, `ok`, `timeout`, `crc`, `frame`, `exception` y `tags` con `name`, `valid` y `value`: número, entero exacto para `int64`/`uint64`, texto para `string`, hexadecimal para `bytes`), `heap` y:
+
+| Campo | Qué es |
+|---|---|
+| `io.di`, `io.do` | Bits de las DI y DO (bit n = canal n+1). `io.do` es `null` mientras el expansor no responde |
+| `io.do_unknown`, `io.expander` | El expansor no responde; `ready`, `retrying` (se reintenta con backoff) y `attempts` |
+| `io.failsafe` | IO-3: las DO tomaron su estado seguro por falta de sesión Sparkplug |
+| `io.rule_do` | IO-7: máscara de las DO que maneja una regla local (no aceptan NCMD) |
+| `io.counters` | IO-4: los 8 contadores de pulsos |
+| `buzzer.alarm`, `buzzer.enabled` | IO-6: alarma que suena ahora (`none`, `device_offline`, `mqtt_down`, `config_error`) y las habilitadas |
+| `time.utc_s`, `time.synced`, `time.source` | Hora del equipo (s UTC), si SNTP la sincronizó (TIME-3) y de dónde viene: `sntp`, `rtc` (TIME-2) o `none` |
+| `time.rtc` | `present`, `status` de la última lectura o escritura del RTC y `stores` (veces que se escribió tras SNTP) |
 
 ## 7. Criterios de aceptación del MVP
 

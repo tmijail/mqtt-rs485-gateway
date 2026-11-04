@@ -1866,6 +1866,29 @@ def check_properties_and_quality(obs, slave, db, ddata_t):
           f"after: {round(gm.float_value, 3) if gm else None} {props(gm) if gm else ''}")
 
 
+def check_status_api(gw, since):
+    """Issue #75: /api/status (HTTPS) reports what IO-3/4/6/7, SPB-17 and TIME-1..3 added: pulse
+    counters, failsafe, DOs owned by a local rule, unknown DOs, the buzzer alarm, the clock and
+    the RTC, exact 64-bit values and strings of the tags."""
+    pw = commissioning_password(gw, since, 5)
+    st, _, body = http("GET", "/api/status", auth=("admin", pw or "?"))
+    s = as_json(body) or {}
+    io, bz, tm = s.get("io", {}), s.get("buzzer", {}), s.get("time", {})
+    meter = next((d for d in s.get("devices", []) if d.get("name") == DEVICE), {})
+    tags = {t["name"]: t["value"] for t in meter.get("tags", [])}
+    ok = st == 200 and io.get("counters", [None])[0] == 2 and len(io.get("counters", [])) == 8 \
+        and io.get("rule_do") == 0x30 and io.get("failsafe") is False and io.get("do_unknown") is False \
+        and isinstance(io.get("do"), int) and bz.get("enabled") == ["device_offline", "mqtt_down", "config_error"] \
+        and bz.get("alarm") == "device_offline" and tm.get("synced") is True and tm.get("source") == "sntp" \
+        and tm.get("rtc", {}).get("present") is True and tm.get("rtc", {}).get("stores", 0) >= 1 \
+        and abs(tm.get("utc_s", 0) - time.time()) < 60 and s.get("sparkplug", {}).get("diagnostics_s") == 10 \
+        and tags.get("Energy") == MB6["Energy"] and isinstance(tags.get("Serial"), str)
+    check("Issue #75 /api/status over HTTPS: pulse counters, failsafe, DOs of local rules, unknown "
+          "DOs, buzzer alarm, clock (SNTP/RTC), diagnostics period, exact UInt64 and string values",
+          ok, f"HTTP {st}; io {io}; buzzer {bz}; time {tm}; Energy {tags.get('Energy')!r} "
+              f"Serial {tags.get('Serial')!r}")
+
+
 def check_rtc(gw, obs, nb, t0, since_reboot, ndata_t, first_nbirth):
     """TIME-2: the first boot (power-on: the simulated PCF85063 has its OS bit set) gets no time
     from it, and stores the SNTP time in it; the boot after NCMD Reboot, with SNTP silent, sets
@@ -2942,6 +2965,7 @@ def run(args, log, slave, broker, conf, work):
           f"first boot {reason0.string_value if reason0 else None!r}, after reboot "
           f"{reason1.string_value if reason1 else None!r}")
     check_rtc(gw, obs, nb, t0, since_reboot, ndata_t, nb0[0][2])
+    check_status_api(gw, since_reboot)
     check_panic_during_traffic(gw, obs, slave, nbirth_t)
 
     # Issue #12 / REL-1: a panic writes a core dump to the "coredump" partition, the gateway
