@@ -1,0 +1,2 @@
+# An overlay that sets a required option on purpose
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=5
