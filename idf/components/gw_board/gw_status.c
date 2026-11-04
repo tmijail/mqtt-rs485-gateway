@@ -39,10 +39,24 @@ typedef struct {
 #define GREEN  ((rgb_t){0, 255, 0})
 #define AMBER  ((rgb_t){255, 140, 0})
 #define ORANGE ((rgb_t){255, 60, 0})
+#define WHITE  ((rgb_t){255, 255, 255})
+#define BLUE   ((rgb_t){0, 60, 255})
 
 /* Pattern for the current flags; @p tick advances every 125 ms. */
 static rgb_t pattern(uint32_t f, uint32_t tick, const char **name)
 {
+    if (f & GW_ST_RESETTING) {
+        *name = "factory reset";
+        return WHITE;
+    }
+    if (f & GW_ST_BUTTON) {
+        *name = "BOOT held";
+        return (tick & 1) ? OFF : WHITE;
+    }
+    if (f & GW_ST_COMMISSIONING) {
+        *name = "commissioning";
+        return (tick & 4) ? OFF : BLUE;
+    }
     if (f & GW_ST_CFG_ERROR) {
         *name = "config error";
         return (tick & 1) ? OFF : RED;

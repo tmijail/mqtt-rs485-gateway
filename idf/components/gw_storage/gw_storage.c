@@ -29,6 +29,7 @@ static const char *TAG = "storage";
 #define NVS_SECRETS "secrets"     /* CFG-7: never in the JSON document */
 #define NVS_GW      "gw"
 #define NVS_LKG     "lkg_net"     /* network of the last valid configuration (recovery) */
+#define NVS_FACTORY "factory"     /* set by a factory reset, cleared by the first save (CFG-5) */
 
 extern const char default_config_json_start[] asm("_binary_default_config_json_start");
 extern const char default_config_json_end[] asm("_binary_default_config_json_end");
@@ -243,6 +244,67 @@ void gw_storage_recovery_config(gw_config_t *cfg)
                                                : "defaults (DHCP on Ethernet)");
 }
 
+static bool mount(bool format_if_needed, esp_err_t *why);
+
+/* ---------- factory reset (CFG-5) ---------- */
+
+static void set_factory_marker(bool on)
+{
+    nvs_handle_t h;
+    if (s_nvs_ok && nvs_open(NVS_GW, NVS_READWRITE, &h) == ESP_OK) {
+        esp_err_t e = on ? nvs_set_u8(h, NVS_FACTORY, 1) : nvs_erase_key(h, NVS_FACTORY);
+        if (e == ESP_OK) {
+            nvs_commit(h);
+        }
+        nvs_close(h);
+    }
+}
+
+esp_err_t gw_storage_factory_reset(void)
+{
+    xSemaphoreTake(s_save_lock, portMAX_DELAY);   /* no save in the middle; never given back */
+    ESP_LOGW(TAG, "factory reset: formatting LittleFS 'storage' and erasing NVS");
+    if (s_mounted) {
+        esp_vfs_littlefs_unregister("storage");
+        s_mounted = false;
+    }
+    esp_err_t fs = esp_littlefs_format("storage");
+    if (s_nvs_ok) {
+        nvs_close(s_nvs);
+    }
+    nvs_flash_deinit();
+    esp_err_t nv = nvs_flash_erase();
+    if (nv == ESP_OK) {
+        nv = nvs_flash_init();
+    }
+    s_nvs_ok = false;
+    if (nv == ESP_OK) {
+        s_nvs_ok = nvs_open(NVS_NS, NVS_READWRITE, &s_nvs) == ESP_OK;
+        set_factory_marker(true);   /* next boot: commissioning, not the embedded example */
+    }
+    ESP_LOGW(TAG, "factory reset: storage %s, NVS %s", esp_err_to_name(fs), esp_err_to_name(nv));
+    return fs != ESP_OK ? fs : nv;
+}
+
+bool gw_storage_commissioning_pending(void)
+{
+    nvs_handle_t h;
+    uint8_t v = 0;
+    if (s_nvs_ok && nvs_open(NVS_GW, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, NVS_FACTORY, &v);
+        nvs_close(h);
+    }
+    if (v == 0) {
+        return false;
+    }
+    struct stat st;
+    if (mount(false, NULL) && stat(CFG_PATH, &st) == 0) {
+        set_factory_marker(false);   /* a configuration was flashed since the reset */
+        return false;
+    }
+    return true;
+}
+
 /* ---------- configuration file ---------- */
 
 static bool mount(bool format_if_needed, esp_err_t *why)
@@ -451,6 +513,7 @@ esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_
             }
         }
         if (ret == ESP_OK) {
+            set_factory_marker(false);
             ESP_LOGI(TAG, "configuration saved to " CFG_PATH " (%zu bytes)%s", doc.doc_len,
                      doc.secrets_changed ? "; secrets updated in NVS" : "");
         }

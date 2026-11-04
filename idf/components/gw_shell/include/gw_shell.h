@@ -11,7 +11,7 @@
  *   rebirth       re-issue NBIRTH and every DBIRTH
  *   mbread        one Modbus read through the bus owner (MB-16)
  *   ping          ICMP echo
- *   di            (emulator builds only) set a simulated digital input
+ *   di, boot      (emulator builds only) set a simulated digital input / the BOOT button
  * The commands that change something can be compiled out (CONFIG_GW_SHELL_WRITE_COMMANDS).
  * The shell also runs when the configuration was rejected: then it is a way to load a
  * valid one without reflashing.
@@ -30,6 +30,7 @@ typedef struct {
     const gw_config_t *cfg;       /* NULL: the configuration was rejected */
     const char *config_source;
     const char *config_error;     /* reason when cfg is NULL */
+    bool commissioning;           /* cfg is NULL because of a factory reset (CFG-5) */
     const gw_node_info_t *info;
     void (*restart)(void);        /* orderly restart (NDEATH first when a session is up) */
 } gw_shell_ctx_t;

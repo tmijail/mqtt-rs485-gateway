@@ -483,7 +483,7 @@ def main():
     ap.add_argument("--syslog-port", type=int, default=SYSLOG_PORT)
     ap.add_argument("--http-port", type=int, default=HTTP_PORT)
     ap.add_argument("--only", default="",
-                    help="comma-separated scenarios to run (failsafe,network,web,main); default all")
+                    help="comma-separated scenarios to run (failsafe,network,web,reset,main); default all")
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
     args = ap.parse_args()
@@ -518,6 +518,8 @@ def main():
             run_network_variant(args, work)
         if want("web"):
             run_web(args, work)
+        if want("reset"):
+            run_factory_reset(args, work)
         if want("main"):
             run(args, log, slave, broker, conf, work)
     except BaseException:
@@ -894,6 +896,69 @@ def run_web(args, work):
           f"{node3}: {bool(nb3)}; GET {st9}")
     gw.kill()
     obs.wait(f"{T}/NDEATH/{node3}", 5)
+    obs.close()
+
+
+def run_factory_reset(args, work):
+    """CFG-5 factory reset with the BOOT button (simulated: shell 'boot 1'), then commissioning:
+    no configuration, no example identity, the web UI with a new commissioning password, and a
+    configuration loaded through the REST API that boots the gateway."""
+    node, node2 = "GW07", "GW08"
+    cfg = json.loads(config_json())
+    cfg["sparkplug"]["edge_node_id"] = node
+    cfg["web"] = {"password": WEB_PASSWORD}
+    flash = flash_variant(args, work, "reset", {"config.json": json.dumps(cfg, indent=2).encode()})
+    obs = Observer()
+    gw = Gateway(args, work / "uart0-reset.log", flash)
+    gw.start()
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    # short press (3 s): the commissioning access point gesture, no reset
+    t_short = time.monotonic()
+    gw.console("boot 1")
+    time.sleep(3)
+    gw.console("boot 0")
+    ap = gw.wait_log(r"button: BOOT pressed \d+ ms: commissioning access point", 3, t_short)
+    obs.drain()
+    pressed = time.monotonic()
+    gw.console("boot 1")
+    warn = gw.wait_log(r"button: BOOT held: factory reset at 10 s", 5, pressed)
+    fired = gw.wait_log(r"button: BOOT held 10 s: factory reset", 15, pressed)
+    death = obs.wait(f"{T}/NDEATH/{node}", 10)
+    commissioning = gw.wait_log(r"main: commissioning: no configuration since the factory reset", 30,
+                                pressed)
+    check("CFG-5 BOOT held 10 s -> factory reset (LED and log at 2 s, at 10 s), orderly NDEATH, "
+          "restart into commissioning; a 3 s press is the access point gesture, not a reset",
+          nb and ap and warn and fired and death and commissioning
+          and fired - pressed >= 9.5,
+          f"NBIRTH {node}: {bool(nb)}; 3 s press: {bool(ap)}; warning after "
+          f"{(warn - pressed) if warn else -1:.1f} s, reset after {(fired - pressed) if fired else -1:.1f} s; "
+          f"NDEATH: {bool(death)}; commissioning: {bool(commissioning)}")
+    t1 = commissioning or time.monotonic()
+    pw = commissioning_password(gw, t1 - 5, 10)
+    st_old, _, _ = wait_http("/api/status", 20)                    # the old web password is gone
+    st, _, body = http("GET", "/api/status", auth=("admin", pw or "?"))
+    status = as_json(body) or {}
+    asked = time.monotonic()
+    gw.console("status")
+    shell = gw.wait_log(r"^config\s+NONE: commissioning after a factory reset", 3, asked)
+    time.sleep(4)
+    births = [m for m in CAPTURE if m[0] >= t1 and "/NBIRTH/" in m[1]]
+    led = gw.find(r"led: status: commissioning", t1 - 5)
+    check("CFG-5 after the reset: commissioning mode (no polling, no MQTT, not even the example "
+          "identity), old web password rejected, new commissioning password, web and shell report it",
+          st_old == 401 and pw and st == 200 and status.get("mode") == "commissioning" and shell
+          and not births and led,
+          f"old password -> {st_old}; commissioning password {'read' if pw else 'missing'}; "
+          f"/api/status {st} mode {status.get('mode')!r}; shell {bool(shell)}; NBIRTHs {len(births)}; "
+          f"LED {bool(led)}")
+    new = json.loads(config_json())
+    new["sparkplug"]["edge_node_id"] = node2
+    st2, _, b2 = http("PUT", "/api/config", new, auth=("admin", pw or "?"))
+    nb2 = obs.wait(f"{T}/NBIRTH/{node2}", 40)
+    check("CFG-5 commissioning: a configuration loaded through the REST API starts the gateway",
+          st2 == 200 and nb2, f"PUT {st2} {b2.decode().strip()}; NBIRTH {node2}: {bool(nb2)}")
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node2}", 5)
     obs.close()
 
 

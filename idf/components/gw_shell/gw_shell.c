@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "gw_bootbtn.h"
 #include "gw_bus.h"
 #include "gw_cfgdoc.h"
 #include "gw_edge.h"
@@ -43,7 +44,12 @@ static int cmd_status(int argc, char **argv)
     uint32_t f = gw_status_get();
     printf("firmware %s, reset reason %s, uptime %lld s\n", s_ctx.info->firmware,
            s_ctx.info->reset_reason, esp_timer_get_time() / 1000000);
-    if (s_ctx.cfg == NULL) {
+    if (s_ctx.cfg == NULL && s_ctx.commissioning) {
+        printf("config   NONE: commissioning after a factory reset; load one with the web UI or "
+               "'config load'\n");
+        printf("         nothing is running: no polling, no MQTT; network and web UI only\n");
+        printf("network  %s\n", (f & GW_ST_NET_UP) ? "up" : "down");
+    } else if (s_ctx.cfg == NULL) {
         printf("config   REJECTED (%s): %s\n", s_ctx.config_source, s_ctx.config_error);
         printf("         nothing is running: no polling, no MQTT; recovery network and web UI "
                "only\n");
@@ -455,6 +461,16 @@ static int cmd_di(int argc, char **argv)
     gw_io_sim_set_di((uint8_t)(ch - 1), level == 1);
     return 0;
 }
+
+static int cmd_boot(int argc, char **argv)
+{
+    if (argc != 2 || (strcmp(argv[1], "0") != 0 && strcmp(argv[1], "1") != 0)) {
+        printf("usage: boot <1 = press | 0 = release>\n");
+        return 1;
+    }
+    gw_bootbtn_sim_set(argv[1][0] == '1');
+    return 0;
+}
 #endif
 
 static esp_err_t new_repl(const esp_console_repl_config_t *rc, esp_console_repl_t **repl)
@@ -506,6 +522,8 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
 #if CONFIG_GW_IO_SIMULATED
         {.command = "di", .help = "Emulator only: set a simulated input", .hint = "<1-8> <0|1>",
          .func = cmd_di},
+        {.command = "boot", .help = "Emulator only: press (1) or release (0) the BOOT button",
+         .hint = "<0|1>", .func = cmd_boot},
 #endif
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {

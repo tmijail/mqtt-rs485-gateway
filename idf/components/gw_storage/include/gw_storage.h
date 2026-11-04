@@ -64,6 +64,18 @@ void gw_storage_get_secrets(gw_secrets_t *out);
 
 void gw_storage_free(void *ptr);
 
+/**
+ * CFG-5: format the LittleFS partition and erase NVS (configuration, secrets, bdSeq, the
+ * commissioning password), then mark the device for commissioning. The caller restarts.
+ */
+esp_err_t gw_storage_factory_reset(void);
+
+/**
+ * True after a factory reset until a configuration is saved (or flashed): the gateway then
+ * boots into commissioning mode instead of the embedded example configuration.
+ */
+bool gw_storage_commissioning_pending(void);
+
 /** Remember the network (and web port) of a configuration that was accepted, for recovery. */
 void gw_storage_save_last_good(const gw_config_t *cfg);
 

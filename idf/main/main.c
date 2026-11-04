@@ -24,6 +24,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "gw_bootbtn.h"
 #include "gw_bsp.h"
 #include "gw_bus.h"
 #include "gw_config.h"
@@ -46,6 +47,7 @@ static char s_hardware[64];
 static gw_node_info_t s_info;  /* NBIRTH "Node Info/..." */
 static gw_cfg_err_t s_cfg_err;
 static char s_commission_pw[GW_COMMISSION_PW_LEN + 1];
+static gw_web_mode_t s_mode = GW_WEB_NORMAL;
 
 static void on_ip_changed(bool up)
 {
@@ -63,6 +65,7 @@ static void restart_soon(void);
 static void start_shell(const gw_config_t *cfg, const char *source)
 {
     const gw_shell_ctx_t ctx = {.cfg = cfg,
+                                .commissioning = s_mode == GW_WEB_COMMISSIONING,
                                 .config_source = source,
                                 .config_error = s_cfg_err.msg,
                                 .info = &s_info,
@@ -107,7 +110,7 @@ static void start_web(gw_web_mode_t mode, const gw_config_t *cfg, const char *so
         .mode = mode,
         .cfg = cfg,
         .config_source = source,
-        .config_error = mode == GW_WEB_RECOVERY ? &s_cfg_err : NULL,
+        .config_error = mode != GW_WEB_NORMAL ? &s_cfg_err : NULL,
         .info = &s_info,
         .commissioning_password = s_commission_pw,
         .restart = mode == GW_WEB_NORMAL ? gw_edge_request_restart : restart_soon,
@@ -126,12 +129,29 @@ static void net_noop(void)
 {
 }
 
+/* CFG-5 / NET-5: BOOT gestures, in every mode. */
+static void on_button(gw_btn_event_t ev)
+{
+    if (ev == GW_BTN_FACTORY_RESET) {
+        gw_storage_factory_reset();
+        /* orderly when a session is up (NDEATH): the device leaves the Sparkplug namespace */
+        if (s_mode == GW_WEB_NORMAL) {
+            gw_edge_request_restart();
+        } else {
+            restart_soon();
+        }
+    } else if (ev == GW_BTN_COMMISSIONING) {
+        ESP_LOGW(TAG, "commissioning access point requested with BOOT");
+    }
+}
+
 /* CFG-3 recovery: without a valid configuration nothing that needs one runs (no polling, no
  * MQTT), but the network comes up with the last valid configuration's settings (or DHCP on
  * Ethernet) so the web UI, the REST API and the shell can fix it without reflashing. */
 static void run_without_config(gw_web_mode_t mode, const char *source)
 {
-    gw_status_set(GW_ST_CFG_ERROR, true);
+    s_mode = mode;
+    gw_status_set(mode == GW_WEB_COMMISSIONING ? GW_ST_COMMISSIONING : GW_ST_CFG_ERROR, true);
     start_shell(NULL, source);
     gw_storage_recovery_config(&s_cfg);
     ESP_ERROR_CHECK(esp_netif_init());
@@ -143,10 +163,17 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
     }
     start_web(mode, &s_cfg, source);
     for (;;) {
-        ESP_LOGE(TAG, "configuration rejected (%s): %s", source, s_cfg_err.msg);
-        ESP_LOGE(TAG, "nothing is started (no polling, no MQTT); fix it with the web UI on port "
-                      "%u, the shell ('config load') or by reflashing (see README)",
-                 s_cfg.web.port);
+        if (mode == GW_WEB_COMMISSIONING) {
+            ESP_LOGW(TAG, "commissioning: no configuration since the factory reset; nothing is "
+                          "started (no polling, no MQTT); load one with the web UI on port %u or "
+                          "the shell ('config load')",
+                     s_cfg.web.port);
+        } else {
+            ESP_LOGE(TAG, "configuration rejected (%s): %s", source, s_cfg_err.msg);
+            ESP_LOGE(TAG, "nothing is started (no polling, no MQTT); fix it with the web UI on "
+                          "port %u, the shell ('config load') or by reflashing (see README)",
+                     s_cfg.web.port);
+        }
         vTaskDelay(pdMS_TO_TICKS(10000));
     }
 }
@@ -199,7 +226,16 @@ void app_main(void)
              chip.revision / 100, chip.revision % 100);
     s_info.hardware = s_hardware;
 
+    if (gw_bootbtn_start(on_button) != ESP_OK) {
+        ESP_LOGE(TAG, "BOOT button unavailable: no factory reset");
+    }
+
     const char *source;
+    if (gw_storage_commissioning_pending()) {
+        snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg),
+                 "sin configuración: puesta en marcha tras un reset de fábrica");
+        run_without_config(GW_WEB_COMMISSIONING, "commissioning (factory reset)");
+    }
     if (!gw_storage_load_config(&s_cfg, &s_cfg_err, &source)) {
         run_without_config(GW_WEB_RECOVERY, source);
     }
