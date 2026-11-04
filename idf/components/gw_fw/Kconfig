@@ -31,11 +31,14 @@ menu "Gateway: firmware updates (FW-1)"
 
     config GW_FW_PARK_OTHER_CORE
         bool "Park the other core while an image is verified (QEMU only)"
+        depends on GW_IO_SIMULATED
         default n
         help
             Espressif's QEMU does not model the ESP32-S3 cache freeze that flash mappings
             use: code the other core runs from flash during esp_image_verify() makes QEMU
             abort. With this option a high-priority task spins in IRAM on the other core
-            for those calls. Not needed (and not wanted) on the chip.
+            for those calls. Not needed (and not wanted) on the chip: there it would stop
+            core 1, where the RS485 bus owner runs, during a real update. So it is only
+            offered in the emulator build (GW_IO_SIMULATED).
 
 endmenu
