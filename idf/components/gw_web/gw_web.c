@@ -308,24 +308,37 @@ static esp_err_t firmware_get(httpd_req_t *req)
     if (!authorized(req)) {
         return ESP_OK;
     }
-    /* the server task only: static, off its stack (#80 margins) */
-    static gw_fw_status_t f;
-    static char text[2 * sizeof(f.text)], detail[2 * sizeof(f.detail)], run[2 * sizeof(f.running)],
-        other[2 * sizeof(f.other)], body[1600];
-    gw_fw_get_status(&f);
-    json_escape(text, sizeof(text), f.text);
-    json_escape(detail, sizeof(detail), f.detail);
-    json_escape(run, sizeof(run), f.running);
-    json_escape(other, sizeof(other), f.other);
-    snprintf(body, sizeof(body),
+    /* about 3 KB for one request: from the heap (PSRAM when present), not the server task's
+     * stack nor .bss (issue #80: internal RAM is tight without PSRAM) */
+    typedef struct {
+        gw_fw_status_t f;
+        char text[2 * sizeof(((gw_fw_status_t *)0)->text)];
+        char detail[2 * sizeof(((gw_fw_status_t *)0)->detail)];
+        char run[2 * sizeof(((gw_fw_status_t *)0)->running)];
+        char other[2 * sizeof(((gw_fw_status_t *)0)->other)];
+        char body[1400];
+    } fw_json_t;
+    fw_json_t *j = heap_caps_malloc_prefer(sizeof(*j), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                           MALLOC_CAP_8BIT);
+    if (j == NULL) {
+        return send_error(req, "503 Service Unavailable", NULL, "sin memoria");
+    }
+    gw_fw_get_status(&j->f);
+    json_escape(j->text, sizeof(j->text), j->f.text);
+    json_escape(j->detail, sizeof(j->detail), j->f.detail);
+    json_escape(j->run, sizeof(j->run), j->f.running);
+    json_escape(j->other, sizeof(j->other), j->f.other);
+    snprintf(j->body, sizeof(j->body),
              "{\"running\":\"%s\",\"slot\":\"%s\",\"other\":\"%s\",\"enabled\":%s,"
              "\"phase\":\"%s\",\"state\":\"%s\",\"detail\":\"%s\",\"progress\":%u,"
              "\"bytes\":%lu,\"total\":%lu,\"trial_left_s\":%lu}\n",
-             run, f.slot, other, f.enabled ? "true" : "false",
-             f.phase < sizeof(k_fw_phase) / sizeof(k_fw_phase[0]) ? k_fw_phase[f.phase] : "?", text,
-             detail, f.progress, (unsigned long)f.bytes, (unsigned long)f.total,
-             (unsigned long)f.trial_left_s);
-    return send_json(req, "200 OK", body);
+             j->run, j->f.slot, j->other, j->f.enabled ? "true" : "false",
+             j->f.phase < sizeof(k_fw_phase) / sizeof(k_fw_phase[0]) ? k_fw_phase[j->f.phase] : "?",
+             j->text, j->detail, j->f.progress, (unsigned long)j->f.bytes,
+             (unsigned long)j->f.total, (unsigned long)j->f.trial_left_s);
+    esp_err_t r = send_json(req, "200 OK", j->body);
+    heap_caps_free(j);
+    return r;
 }
 
 /* {"url": "https://..."} (application/json): the gateway downloads it. Any other content

@@ -191,6 +191,17 @@ static void set_bytes(uint32_t bytes, uint32_t total)
     portEXIT_CRITICAL(&s_mux);
 }
 
+void gw_fw_get_state(char *text, size_t cap, uint8_t *progress)
+{
+    portENTER_CRITICAL(&s_mux);
+    size_t n = strnlen(s_st.text, sizeof(s_st.text));
+    n = n < cap ? n : cap - 1;
+    memcpy(text, s_st.text, n);
+    text[n] = '\0';
+    *progress = s_st.progress;
+    portEXIT_CRITICAL(&s_mux);
+}
+
 void gw_fw_get_status(gw_fw_status_t *out)
 {
     portENTER_CRITICAL(&s_mux);

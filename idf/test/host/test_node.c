@@ -1450,11 +1450,11 @@ static void test_firmware_update_metrics(void)
      * with a warning in the log */
     char longs[GW_NODE_FW_STATE_MAX + 20];
     memset(longs, 'r', sizeof(longs));
-    longs[200] = '\0';
+    longs[100] = '\0';
     gw_node_set_firmware_status(&node, longs, 20);
     msg(2);
-    TEST_ASSERT_EQUAL(200, strlen(dec.m[0].str));
-    longs[200] = 'r';
+    TEST_ASSERT_EQUAL(100, strlen(dec.m[0].str));
+    longs[100] = 'r';
     longs[sizeof(longs) - 1] = '\0';
     gw_node_set_firmware_status(&node, longs, 20);
     msg(3);

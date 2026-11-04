@@ -185,19 +185,25 @@ static int cmd_status(int argc, char **argv)
     uint32_t f = gw_status_get();
     out("firmware %s, reset reason %s, uptime %lld s\n", s_ctx.info->firmware,
            s_ctx.info->reset_reason, esp_timer_get_time() / 1000000);
-    static gw_fw_status_t fw;   /* FW-1; console task only, off its stack */
-    gw_fw_get_status(&fw);
-    if (fw.running[0] != '\0') {
-        out("ota      %s in %s, other slot %s%s | %s", fw.running, fw.slot,
-            fw.other[0] ? fw.other : "empty", fw.enabled ? "" : " (updates disabled)", fw.detail);
-        if (fw.phase == GW_FW_TRIAL) {
-            out(" (%lu s left)", (unsigned long)fw.trial_left_s);
-        } else if (fw.phase == GW_FW_DOWNLOADING) {
-            out(" %u%% (%lu of %lu bytes)", fw.progress, (unsigned long)fw.bytes,
-                (unsigned long)fw.total);
+    /* FW-1: from the heap for the command (not the console task's stack nor .bss, #80) */
+    gw_fw_status_t *fw = heap_caps_malloc_prefer(sizeof(*fw), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                                 MALLOC_CAP_8BIT);
+    if (fw != NULL) {
+        gw_fw_get_status(fw);
+    }
+    if (fw != NULL && fw->running[0] != '\0') {
+        out("ota      %s in %s, other slot %s%s | %s", fw->running, fw->slot,
+            fw->other[0] ? fw->other : "empty", fw->enabled ? "" : " (updates disabled)",
+            fw->detail);
+        if (fw->phase == GW_FW_TRIAL) {
+            out(" (%lu s left)", (unsigned long)fw->trial_left_s);
+        } else if (fw->phase == GW_FW_DOWNLOADING) {
+            out(" %u%% (%lu of %lu bytes)", fw->progress, (unsigned long)fw->bytes,
+                (unsigned long)fw->total);
         }
         out("\n");
     }
+    heap_caps_free(fw);
     if (s_ctx.cfg == NULL && s_ctx.starting) {
         out("config   loading: the gateway is starting\n");
     } else if (s_ctx.cfg == NULL && s_ctx.commissioning) {

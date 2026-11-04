@@ -43,7 +43,7 @@ typedef struct {
     uint8_t progress;       /* % of the current (or last) transfer */
     uint32_t bytes;
     uint32_t total;         /* 0 = unknown */
-    char text[240];         /* "Firmware Update/State" (GW_NODE_FW_STATE_MAX, issue #87) */
+    char text[128];         /* "Firmware Update/State" (GW_NODE_FW_STATE_MAX, issue #87) */
     char detail[240];       /* longer reason (log, shell, web) */
     char running[32];       /* running version */
     char slot[17];          /* its partition label */
@@ -77,6 +77,9 @@ esp_err_t gw_fw_upload_write(const void *data, size_t len, char *why, size_t cap
 esp_err_t gw_fw_upload_end(bool complete, char *why, size_t cap);
 
 void gw_fw_get_status(gw_fw_status_t *out);
+
+/** Only the state text and progress (what the Sparkplug metrics carry). */
+void gw_fw_get_state(char *text, size_t cap, uint8_t *progress);
 
 #ifdef __cplusplus
 }
