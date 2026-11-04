@@ -789,7 +789,7 @@ def run_config_failsafe(args, work, slave):
             st2, _, b2 = http("GET", "/api/config", auth=("admin", pw or "?"))
             fixed = as_json(b2) or {}
             path = (status.get("config") or {}).get("path")
-            ok_export = st2 == 200 and fixed.get("devices", [{}])[0].get("tags", [{}])[0].get("type") == "float64"
+            ok_export = st2 == 200 and fixed.get("devices", [{}])[0].get("tags", [{}])[0].get("type") == "float16"
             if ok_export:
                 fixed["devices"][0]["tags"][0]["type"] = "float32"
                 fixed["sparkplug"]["edge_node_id"] = "GW03"
@@ -1234,7 +1234,7 @@ def run_web(args, work):
           f"{volt[0] if volt else None}")
 
     bad = json.loads(json.dumps(doc))
-    bad["devices"][0]["tags"][0]["type"] = "float64"
+    bad["devices"][0]["tags"][0]["type"] = "float16"   # invalid (float64 is a type since MB-6)
     st3, _, b3 = http("PUT", "/api/config", bad)
     e3 = as_json(b3) or {}
     syntax = json.dumps(doc, indent=2).replace('"ntp"', '"ntp" "x"', 1).encode()
@@ -1307,7 +1307,7 @@ def run_web(args, work):
         gw.sock.sendall(text.encode() + b"\n")
 
     bad = json.loads(json.dumps(doc8))
-    bad["devices"][0]["tags"][0]["type"] = "float64"
+    bad["devices"][0]["tags"][0]["type"] = "float16"   # invalid (float64 is a type since MB-6)
     asked = time.monotonic()
     paste(bad)
     rej = gw.wait_log(r"^config: rejected: devices\[0\]\.tags\[0\]\.type: valor no válido", 15, asked)
@@ -1480,7 +1480,8 @@ def run(args, log, slave, broker, conf, work):
     # 10 and 20-21 (gap 9) are one FC03, Counter 34-37 another (gap 12 from 21), Alarm 60 a third;
     # slow scan (MB-12, never merged with fast tags): Energy 30-33 and Serial 50-57 (gap 16).
     # Input 0-1 alone and 40-46 contiguous. No DCMD has run yet: only cycle reads so far.
-    meter = {r[1:] for r in slave.reads if r[0] == 1}
+    # this boot only: the earlier scenarios (web: diagnostic reads) share the slave
+    meter = {r[1:] for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 1 and t >= t0}
     want = {(1, 0, 1), (3, 10, 12), (3, 34, 4), (3, 60, 1), (3, 30, 4), (3, 50, 8), (4, 0, 2),
             (4, 40, 7)}
     check("MB-11 / issue #38 per-device max_gap: Meter1 (max_gap 10) bridges holes up to 10 "
