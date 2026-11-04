@@ -27,6 +27,8 @@ static const char *TAG = "storage";
 #define NVS_NS      "spb"
 #define NVS_BDSEQ   "bdseq"
 #define NVS_SECRETS "secrets"     /* CFG-7: never in the JSON document */
+#define NVS_GW      "gw"
+#define NVS_LKG     "lkg_net"     /* network of the last valid configuration (recovery) */
 
 extern const char default_config_json_start[] asm("_binary_default_config_json_start");
 extern const char default_config_json_end[] asm("_binary_default_config_json_end");
@@ -181,6 +183,64 @@ static esp_err_t put_secrets(const gw_secrets_t *in)
     }
     nvs_close(h);
     return err;
+}
+
+/* ---------- network of the last valid configuration (CFG-3 recovery) ---------- */
+
+typedef struct {
+    uint32_t size;    /* sizeof(lkg_t): a blob from a firmware with another layout is ignored */
+    __typeof__(((gw_config_t *)0)->network) network;
+    uint16_t web_port;
+} lkg_t;
+
+void gw_storage_save_last_good(const gw_config_t *cfg)
+{
+    nvs_handle_t h;
+    if (!s_nvs_ok || nvs_open(NVS_GW, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    lkg_t now = {.size = sizeof(lkg_t), .web_port = cfg->web.port}, old;
+    now.network = cfg->network;
+    size_t len = sizeof(old);
+    /* written only when it changed: NVS wear */
+    if (nvs_get_blob(h, NVS_LKG, &old, &len) != ESP_OK || len != sizeof(old) ||
+        memcmp(&old, &now, sizeof(now)) != 0) {
+        if (nvs_set_blob(h, NVS_LKG, &now, sizeof(now)) != ESP_OK || nvs_commit(h) != ESP_OK) {
+            ESP_LOGW(TAG, "network of the valid configuration not kept for recovery");
+        }
+    }
+    nvs_close(h);
+    memset(&now, 0, sizeof(now));
+    memset(&old, 0, sizeof(old));
+}
+
+void gw_storage_recovery_config(gw_config_t *cfg)
+{
+    memset(cfg, 0, sizeof(*cfg));
+    lkg_t lkg;
+    size_t len = sizeof(lkg);
+    nvs_handle_t h;
+    bool found = false;
+    if (s_nvs_ok && nvs_open(NVS_GW, NVS_READONLY, &h) == ESP_OK) {
+        found = nvs_get_blob(h, NVS_LKG, &lkg, &len) == ESP_OK && len == sizeof(lkg) &&
+                lkg.size == sizeof(lkg);
+        nvs_close(h);
+    }
+    if (found) {
+        cfg->network = lkg.network;
+        cfg->web.port = lkg.web_port;
+        memset(&lkg, 0, sizeof(lkg));
+    } else {
+        cfg->network.dhcp = true;
+        cfg->network.wifi.failback_s = 30;
+        cfg->network.wifi.ipv4.dhcp = true;
+        cfg->web.port = 80;
+    }
+    strcpy(cfg->ntp.server, "pool.ntp.org");
+    cfg->web.enabled = true;
+    strcpy(cfg->web.username, "admin");
+    ESP_LOGW(TAG, "recovery network: %s", found ? "the last valid configuration's"
+                                               : "defaults (DHCP on Ethernet)");
 }
 
 /* ---------- configuration file ---------- */

@@ -64,6 +64,16 @@ void gw_storage_get_secrets(gw_secrets_t *out);
 
 void gw_storage_free(void *ptr);
 
+/** Remember the network (and web port) of a configuration that was accepted, for recovery. */
+void gw_storage_save_last_good(const gw_config_t *cfg);
+
+/**
+ * Configuration to run the network and the web server with when the stored one was
+ * rejected or is absent (CFG-3 recovery, CFG-5 commissioning): the network and web port of
+ * the last valid configuration, or DHCP on Ethernet and port 80. Nothing else is set.
+ */
+void gw_storage_recovery_config(gw_config_t *cfg);
+
 #ifdef __cplusplus
 }
 #endif

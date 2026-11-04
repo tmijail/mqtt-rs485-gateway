@@ -40,17 +40,20 @@ static int cmd_status(int argc, char **argv)
            s_ctx.info->reset_reason, esp_timer_get_time() / 1000000);
     if (s_ctx.cfg == NULL) {
         printf("config   REJECTED (%s): %s\n", s_ctx.config_source, s_ctx.config_error);
-        printf("         nothing is running: no polling, no network, no MQTT\n");
-        return 0;
+        printf("         nothing is running: no polling, no MQTT; recovery network and web UI "
+               "only\n");
+        printf("network  %s\n", (f & GW_ST_NET_UP) ? "up" : "down");
+    } else {
+        uint16_t offline = 0;
+        for (uint16_t d = 0; d < s_ctx.cfg->device_count; d++) {
+            offline = (uint16_t)(offline + (device_online(d) ? 0u : 1u));
+        }
+        printf("config   %s: ok\n", s_ctx.config_source);
+        printf("network  %s, MQTT %s, Modbus %u/%u devices online\n",
+               (f & GW_ST_NET_UP) ? "up" : "down",
+               (f & GW_ST_MQTT_UP) ? "connected" : "disconnected",
+               s_ctx.cfg->device_count - offline, s_ctx.cfg->device_count);
     }
-    uint16_t offline = 0;
-    for (uint16_t d = 0; d < s_ctx.cfg->device_count; d++) {
-        offline = (uint16_t)(offline + (device_online(d) ? 0u : 1u));
-    }
-    printf("config   %s: ok\n", s_ctx.config_source);
-    printf("network  %s, MQTT %s, Modbus %u/%u devices online\n",
-           (f & GW_ST_NET_UP) ? "up" : "down", (f & GW_ST_MQTT_UP) ? "connected" : "disconnected",
-           s_ctx.cfg->device_count - offline, s_ctx.cfg->device_count);
     gw_net_if_status_t ifs[GW_NET_IF_COUNT];
     gw_net_get_status(ifs);
     static const char *const names[GW_NET_IF_COUNT] = {"ethernet", "wifi"};
@@ -85,7 +88,7 @@ static int cmd_status(int argc, char **argv)
     }
     gw_log_stats_t ls;
     gw_log_get_stats(&ls);
-    if (ls.enabled) {
+    if (ls.enabled && s_ctx.cfg != NULL) {
         printf("syslog   %s:%u %s, sent %lu, dropped %lu, errors %lu\n", s_ctx.cfg->syslog.host,
                s_ctx.cfg->syslog.port, ls.connected ? "connected" : "not reachable",
                (unsigned long)ls.sent, (unsigned long)ls.dropped, (unsigned long)ls.send_errors);

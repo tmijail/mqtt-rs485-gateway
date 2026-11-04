@@ -20,7 +20,7 @@ Usage: tools/e2e/run_e2e.sh  (prepares the flash image and calls this script)
 import argparse
 import asyncio
 import base64
-import http.client
+import http.client as httplib
 import json
 import os
 import pathlib
@@ -34,6 +34,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 
 import google.protobuf
 import paho.mqtt.client as mqtt
@@ -353,13 +354,13 @@ def http(method, path, body=None, auth=("admin", WEB_PASSWORD), timeout=15, head
         body = json.dumps(body).encode()
         h.setdefault("Content-Type", "application/json")
     try:
-        c = http.client.HTTPConnection("127.0.0.1", HTTP_PORT, timeout=timeout)
+        c = httplib.HTTPConnection("127.0.0.1", HTTP_PORT, timeout=timeout)
         c.request(method, path, body=body, headers=h)
         r = c.getresponse()
         data = r.read()
         c.close()
         return r.status, {k.lower(): v for k, v in r.getheaders()}, data
-    except (OSError, http.client.HTTPException) as e:
+    except (OSError, httplib.HTTPException) as e:
         return None, {}, str(e).encode()
 
 
@@ -481,6 +482,8 @@ def main():
     ap.add_argument("--console-port", type=int, default=CONSOLE_PORT)
     ap.add_argument("--syslog-port", type=int, default=SYSLOG_PORT)
     ap.add_argument("--http-port", type=int, default=HTTP_PORT)
+    ap.add_argument("--only", default="",
+                    help="comma-separated scenarios to run (failsafe,network,web,main); default all")
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
     args = ap.parse_args()
@@ -507,10 +510,20 @@ def main():
     slave.ctx.setValues(3, 10, [50])   # Setpoint raw 50 -> 5.0
     slave.start()
     try:
-        run_config_failsafe(args, work)
-        run_network_variant(args, work)
-        run_web(args, work)
-        run(args, log, slave, broker, conf, work)
+        only = set(filter(None, args.only.split(",")))
+        want = lambda name: not only or name in only  # noqa: E731
+        if want("failsafe"):
+            run_config_failsafe(args, work, slave)
+        if want("network"):
+            run_network_variant(args, work)
+        if want("web"):
+            run_web(args, work)
+        if want("main"):
+            run(args, log, slave, broker, conf, work)
+    except BaseException:
+        traceback.print_exc()   # the summary below exits: keep the reason visible
+        check("harness completed every scenario", False, traceback.format_exc().splitlines()[-1])
+        raise
     finally:
         stop.set()
         for proc in PROCS:
@@ -560,9 +573,18 @@ def seq_continuity(msgs):
     return errors
 
 
-def run_config_failsafe(args, work):
+def commissioning_password(gw, since, timeout=20):
+    """The password the gateway prints on its console while no web password is set."""
+    t = gw.wait_log(r"commissioning password '[a-z0-9]+'", timeout, since)
+    lines = gw.find(r"commissioning password '[a-z0-9]+'", since) if t else []
+    return re.search(r"commissioning password '([a-z0-9]+)'", lines[0]).group(1) if lines else None
+
+
+def run_config_failsafe(args, work, slave):
     """CFG-1: the embedded default is used only when /cfg/config.json does not exist; any
-    other problem stops the gateway (no polling, no MQTT) with the error state and a log."""
+    other problem stops the gateway (no polling, no MQTT) with the error state and a log.
+    CFG-3 recovery: the network still comes up (DHCP, no valid configuration was ever seen on
+    these images) with the web UI, so the configuration can be fixed without reflashing."""
     good = config_json()
     limit = sdkconfig_int(args.sdkconfig, "GW_CONFIG_MAX_BYTES")
     cases = [
@@ -581,6 +603,7 @@ def run_config_failsafe(args, work):
     for name, files, reason in cases:
         gw = Gateway(args, work / f"uart0-{name}.log", flash_variant(args, work, name, files))
         obs.drain()
+        polls = len(slave.reads)
         t0 = time.monotonic()
         gw.start()
         hit = gw.wait_log(r"configuration rejected .*" + reason, 20, t0)
@@ -591,12 +614,46 @@ def run_config_failsafe(args, work):
         # Positive signal: 6 s later the shell still reports the halted state.
         asked = time.monotonic()
         gw.console("status")
-        still = gw.wait_log(r"nothing is running: no polling, no network, no MQTT", 3, asked)
+        still = gw.wait_log(r"nothing is running: no polling, no MQTT; recovery network and web UI only",
+                            3, asked)
         shell = gw.find(r"config\s+REJECTED .*" + reason, asked)
-        # Supplementary negative signals: no component logged its start, no NBIRTH reached MQTT.
-        started = gw.find(r"configuration from|connecting to|rs485: UART|net: IPv4", t0)
+        # Supplementary negative signals: no component logged its start, no NBIRTH reached MQTT,
+        # no Modbus request reached the slave.
+        started = gw.find(r"configuration from|connecting to|rs485: UART", t0)
         births = [m for m in CAPTURE if m[0] >= t0 and "/NBIRTH/" in m[1]]
+        polled = len(slave.reads) - polls
+        # CFG-3 recovery: web UI and status over the recovery network, with the commissioning
+        # password (nothing stored on these images)
+        pw = commissioning_password(gw, t0, 1)
+        st, _, body = wait_http("/api/status", 20, auth=("admin", pw or "?"))
+        status = as_json(body) or {}
+        page = http("GET", "/", auth=("admin", pw or "?"))
+        check(f"CFG-3 {name} config file -> web UI and /api/status answer in recovery mode with the "
+              f"reason (commissioning password from the console)",
+              pw and st == 200 and status.get("mode") == "recovery"
+              and re.search(reason, status.get("config", {}).get("error", ""))
+              and page[0] == 200 and b"Gateway RS485" in page[2]
+              and gw.find(r"net: IPv4", t0) and not status.get("devices"),
+              f"password {'read' if pw else 'not found'}; /api/status {st} mode "
+              f"{status.get('mode')!r} error {status.get('config', {}).get('error')!r}; / {page[0]}")
+        if name == "semantic-error":
+            # the rejected document can be exported, fixed and saved: the gateway then starts
+            st2, _, b2 = http("GET", "/api/config", auth=("admin", pw or "?"))
+            fixed = as_json(b2) or {}
+            path = (status.get("config") or {}).get("path")
+            ok_export = st2 == 200 and fixed.get("devices", [{}])[0].get("tags", [{}])[0].get("type") == "float64"
+            if ok_export:
+                fixed["devices"][0]["tags"][0]["type"] = "float32"
+                fixed["sparkplug"]["edge_node_id"] = "GW03"
+            st3, _, b3 = http("PUT", "/api/config", fixed, auth=("admin", pw or "?"))
+            nb = obs.wait(f"{T}/NBIRTH/GW03", 40)
+            check("CFG-3/CFG-4 recovery: the rejected document is exported (path in /api/status), fixed "
+                  "and saved through the REST API; the gateway restarts and runs it",
+                  ok_export and path == "devices[0].tags[0].type" and st3 == 200 and nb,
+                  f"GET {st2} (path {path!r}); PUT {st3} {b3.decode().strip()}; NBIRTH GW03: {bool(nb)}")
         gw.kill()
+        if name == "semantic-error":
+            obs.wait(f"{T}/NDEATH/GW03", 5)
         if name == "oversized":
             check("CFG-6 console shell answers 'status' while the configuration is rejected",
                   shell, shell[0] if shell else "no answer")
@@ -604,10 +661,11 @@ def run_config_failsafe(args, work):
               bool(dos_off), (dos_off or ["no 'all outputs off' log"])[0])
         check(f"CFG-1 {name} config file -> halted (shell 'status' after 6 s), error LED, ERROR log "
               f"with the reason, nothing started",
-              hit and halted and still and shell and led and not started and not births,
+              hit and halted and still and shell and led and not started and not births
+              and polled == 0,
               (gw.find(r"configuration rejected", t0) or ["no 'configuration rejected' log"])[0] +
               f"; halted={bool(halted)}; shell still halted={bool(still)}; LED error={bool(led)}; "
-              f"started={started[:1]}; NBIRTHs={len(births)}")
+              f"started={started[:1]}; NBIRTHs={len(births)}; Modbus requests={polled}")
 
     gw = Gateway(args, work / "uart0-absent.log", flash_variant(args, work, "absent", {}))
     t0 = time.monotonic()
@@ -715,6 +773,21 @@ def run_web(args, work):
           f"status {st2}, {len(body)} bytes, node {doc.get('sparkplug', {}).get('edge_node_id')}, "
           f"mqtt.password {doc.get('mqtt', {}).get('password')!r}, web.password "
           f"{doc.get('web', {}).get('password')!r}")
+
+    st_p, hdr_p, page = http("GET", "/")
+    st_s, _, b_s = http("GET", "/api/status")
+    status = as_json(b_s) or {}
+    devs = {d.get("name"): d for d in status.get("devices", [])}
+    volt = [t for t in devs.get(DEVICE, {}).get("tags", []) if t.get("name") == "Voltage"]
+    check("CFG-3 web UI page and live status (/api/status: mode, MQTT, devices with counters and "
+          "tag values, interfaces)",
+          st_p == 200 and "text/html" in hdr_p.get("content-type", "") and b"/api/status" in page
+          and st_s == 200 and status.get("mode") == "normal" and status.get("mqtt", {}).get("connected")
+          and devs.get(DEVICE, {}).get("online") and volt and volt[0].get("valid")
+          and status.get("network", {}).get("interfaces", [{}])[0].get("active"),
+          f"/ {st_p} {len(page)} B; /api/status {st_s}: mode {status.get('mode')}, MQTT "
+          f"{status.get('mqtt')}, {DEVICE} online {devs.get(DEVICE, {}).get('online')}, Voltage "
+          f"{volt[0] if volt else None}")
 
     bad = json.loads(json.dumps(doc))
     bad["devices"][0]["tags"][0]["type"] = "float64"
