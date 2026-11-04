@@ -182,8 +182,12 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
 gw_write_status_t gw_poller_write(gw_poller_t *p, uint16_t tag, double value)
 {
     const gw_config_t *cfg = p->cfg;
-    const gw_tag_cfg_t *t = &cfg->tags[tag];
     uint16_t dev = gw_config_tag_device(cfg, tag);
+    if (dev == GW_NO_DEVICE) {
+        GW_LOGE(TAG, "write to tag %u: no such tag", tag);
+        return GW_WRITE_UNKNOWN_TAG;
+    }
+    const gw_tag_cfg_t *t = &cfg->tags[tag];
     const gw_device_cfg_t *d = &cfg->devices[dev];
     if (!t->writable) {
         return GW_WRITE_NOT_WRITABLE;

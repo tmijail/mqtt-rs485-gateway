@@ -34,6 +34,7 @@ typedef enum {
     GW_WRITE_BAD_VALUE,       /* NaN or infinite, or out of the register type's range after
                                  inverse scaling */
     GW_WRITE_BUS_ERROR,       /* timeout, CRC/framing error or exception response */
+    GW_WRITE_UNKNOWN_TAG,     /* tag index outside the configuration */
 } gw_write_status_t;
 
 typedef struct {

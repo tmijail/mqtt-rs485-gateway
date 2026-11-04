@@ -191,6 +191,9 @@ static void test_write_setpoint_fc06(void)
     TEST_ASSERT_EQUAL(MB_FC_WRITE_SINGLE_COIL, s.last_write_fc);
 
     TEST_ASSERT_EQUAL(GW_WRITE_NOT_WRITABLE, gw_poller_write(&p, 0, 1));
+    unsigned before = s.requests;
+    TEST_ASSERT_EQUAL(GW_WRITE_UNKNOWN_TAG, gw_poller_write(&p, 3, 1));   /* issue #13 */
+    TEST_ASSERT_EQUAL(before, s.requests);
     TEST_ASSERT_EQUAL(GW_WRITE_BAD_VALUE, gw_poller_write(&p, 1, 4000));  /* raw 40000 > int16 */
     s.offline = true;
     TEST_ASSERT_EQUAL(GW_WRITE_BUS_ERROR, gw_poller_write(&p, 1, 1));

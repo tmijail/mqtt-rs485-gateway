@@ -242,7 +242,7 @@ void gw_node_write_done(gw_node_t *n, uint16_t tag, bool ok)
         return;
     }
     uint16_t dev = gw_config_tag_device(n->cfg, tag);
-    if (!n->dev_born[dev]) {
+    if (dev == GW_NO_DEVICE || !n->dev_born[dev]) {
         return;
     }
     gw_tag_value_t v;

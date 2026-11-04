@@ -299,6 +299,8 @@ static void test_dcmd_writes(void)
     TEST_ASSERT_DOUBLE_WITHIN(1e-5, 12.3, dec.m[0].num);
     gw_node_write_done(&node, SETPOINT, false);
     TEST_ASSERT_EQUAL(1, g_rec.count);
+    gw_node_write_done(&node, 3, true);   /* no such tag: nothing is attributed to Meter1 */
+    TEST_ASSERT_EQUAL(1, g_rec.count);
 
     /* offline device: DCMD discarded */
     set_meter(false, 0, 0, 0);

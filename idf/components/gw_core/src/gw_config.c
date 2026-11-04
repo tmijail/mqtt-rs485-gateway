@@ -627,7 +627,7 @@ uint16_t gw_config_tag_device(const gw_config_t *cfg, uint16_t tag)
             return i;
         }
     }
-    return 0;
+    return GW_NO_DEVICE;   /* not 0: that is a valid device and would hide the error */
 }
 
 uint16_t gw_tag_width(const gw_tag_cfg_t *tag)
