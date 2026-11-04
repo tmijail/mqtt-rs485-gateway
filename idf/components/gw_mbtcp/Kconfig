@@ -1,0 +1,25 @@
+menu "Gateway: Modbus TCP gateway"
+
+    config GW_MBTCP_MAX_CLIENTS
+        int "Simultaneous Modbus TCP clients"
+        range 1 4
+        default 2
+        help
+            Further connections are closed at once. Requests of every client are served one
+            at a time, like everything else on the RS485 bus.
+
+    config GW_MBTCP_TASK_PRIORITY
+        int "Modbus TCP server task priority"
+        range 1 10
+        default 3
+
+    config GW_MBTCP_RESPONSE_WAIT_MS
+        int "Longest wait for the bus owner to run a forwarded request (ms)"
+        range 500 12000
+        default 8000
+        help
+            The request waits for the transaction in progress and the pending DCMD writes.
+            If the bus owner has not run it in this time the client gets exception 0x0B
+            (gateway target device failed to respond).
+
+endmenu

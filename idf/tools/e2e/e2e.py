@@ -40,6 +40,7 @@ import traceback
 import google.protobuf
 import paho.mqtt.client as mqtt
 from pymodbus import FramerType
+from pymodbus.client import ModbusTcpClient
 from pymodbus.datastore import ModbusSequentialDataBlock, ModbusServerContext, ModbusSlaveContext
 from pymodbus.server import ModbusTcpServer
 
@@ -53,6 +54,8 @@ MQTT_PORT = int(os.environ.get("E2E_MQTT_PORT", 18831))
 MODBUS_PORT = int(os.environ.get("E2E_MODBUS_PORT", 15020))
 CONSOLE_PORT = int(os.environ.get("E2E_CONSOLE_PORT", 15555))
 SYSLOG_PORT = int(os.environ.get("E2E_SYSLOG_PORT", 15514))
+# MB-15: QEMU forwards this host port to the gateway's Modbus TCP server (port 502)
+MBTCP_PORT = int(os.environ.get("E2E_MBTCP_PORT", 15502))
 HTTP_PORT = int(os.environ.get("E2E_HTTP_PORT", 18080))
 WEB_PASSWORD = "e2e-pass-1"
 SYSLOG = []       # (t, datagram text) received by the syslog listener
@@ -60,7 +63,12 @@ SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
 PROBE_MAX_S = 10.0                # CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS / 1000, read in main()
 GROUP, NODE, DEVICE, BULK = "Plant1", "GW01", "Meter1", "Bulk"
 T = f"spBv1.0/{GROUP}"
-ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/1": 20, "DO/3": 22, "Voltage": 100, "Setpoint": 101, "Run": 102, "Limit": 103}
+ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/1": 20, "DO/3": 22, "Voltage": 100, "Setpoint": 101, "Run": 102,
+         "Limit": 103, "Energy": 104, "Counter": 105, "Flow": 106, "Temp": 107, "Serial": 108,
+         "Alarm": 109, "Ready": 110}
+# MB-6 values served by unit 1, and the registers that hold them (see ModbusSlave.set_mb6)
+MB6 = {"Energy": 2 ** 53 + 1, "Counter": -(2 ** 53 + 1), "Flow": 1234.56789012345, "Temp": -123456,
+       "Serial": "SN-0042-ABCD", "Alarm": True, "Ready": True}
 
 spb = spb_decode.load_module()
 # The dead units (Dead3..Dead5) get no answer by design; pymodbus would log every request.
@@ -107,6 +115,7 @@ class ModbusSlave:
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
         self.server = None
         self.requests = 0
+        self.delay = 0.0   # extra response time of unit 1's reads (MB-14 check: a long cycle)
 
     def _trace(self, sending, pdu):
         if not sending:
@@ -114,6 +123,8 @@ class ModbusSlave:
             self.times.append(time.monotonic())
             self.reads.append((getattr(pdu, "dev_id", None), pdu.function_code,
                                getattr(pdu, "address", None), getattr(pdu, "count", None)))
+            if self.delay and self.reads[-1][0] == 1 and pdu.function_code <= 4:
+                time.sleep(self.delay)   # blocks the server loop: the answer leaves later
         return pdu
 
     def start(self):
@@ -133,6 +144,20 @@ class ModbusSlave:
 
     def get(self, fc, addr, count=1):
         return self.ctx.getValues(fc, addr, count)
+
+    def set_mb6(self):
+        """MB-6 tags of Meter1 (tools/e2e/fs/config.json), each in its byte order."""
+        words = lambda v, n: [(v >> (16 * (n - 1 - i))) & 0xFFFF for i in range(n)]  # noqa: E731
+        swap = lambda w: ((w & 0xFF) << 8) | (w >> 8)  # noqa: E731
+        self.ctx.setValues(3, 30, words(MB6["Energy"], 4))                              # ABCD
+        self.ctx.setValues(3, 34, words(MB6["Counter"] & (2 ** 64 - 1), 4)[::-1])       # CDAB
+        flow = struct.unpack(">Q", struct.pack(">d", MB6["Flow"]))[0]
+        self.ctx.setValues(4, 40, [swap(w) for w in words(flow, 4)[::-1]])              # DCBA
+        self.ctx.setValues(4, 44, [swap(w) for w in words(MB6["Temp"] & 0xFFFFFFFF, 2)])  # BADC
+        text = MB6["Serial"].encode().ljust(16, b"\0")
+        self.ctx.setValues(3, 50, list(struct.unpack(">8H", text)))
+        self.ctx.setValues(3, 60, [0x0109])     # Alarm = bit 3; bits 0 and 8 must survive writes
+        self.ctx.setValues(4, 46, [0x8000])     # Ready = bit 15
 
 
 # ---------------------------------------------------------------- SNTP responder
@@ -372,7 +397,8 @@ class Gateway:
                "-drive", f"file={a.efuse},if=none,format=raw,id=efuse",
                "-global", "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
                "-global", "driver=timer.esp32s3.timg,property=wdt_disable,value=true",
-               "-nic", f"user,model=open_eth,hostfwd=tcp:127.0.0.1:{HTTP_PORT}-:80",
+               "-nic", f"user,model=open_eth,hostfwd=tcp:127.0.0.1:{HTTP_PORT}-:80,"
+                       f"hostfwd=tcp:127.0.0.1:{MBTCP_PORT}-:502",
                "-chardev", f"socket,id=con,host=127.0.0.1,port={CONSOLE_PORT},server=on,wait=on",
                "-serial", "chardev:con",
                "-chardev", f"socket,id=rs485,host=127.0.0.1,port={MODBUS_PORT},reconnect-ms=500",
@@ -581,7 +607,7 @@ def start_broker(conf, log):
 
 
 def main():
-    global MQTT_PORT, MODBUS_PORT, CONSOLE_PORT, SYSLOG_PORT, HTTP_PORT
+    global MQTT_PORT, MODBUS_PORT, CONSOLE_PORT, SYSLOG_PORT, HTTP_PORT, MBTCP_PORT
     ap = argparse.ArgumentParser()
     ap.add_argument("--qemu", required=True)
     ap.add_argument("--flash", required=True)
@@ -596,6 +622,8 @@ def main():
     ap.add_argument("--modbus-port", type=int, default=MODBUS_PORT)
     ap.add_argument("--console-port", type=int, default=CONSOLE_PORT)
     ap.add_argument("--syslog-port", type=int, default=SYSLOG_PORT)
+    ap.add_argument("--mbtcp-port", type=int, default=MBTCP_PORT,
+                    help="host port QEMU forwards to the gateway's Modbus TCP port 502")
     ap.add_argument("--http-port", type=int, default=HTTP_PORT)
     ap.add_argument("--only", default="",
                     help="comma-separated scenarios to run (failsafe,network,web,reset,main); default all")
@@ -604,6 +632,7 @@ def main():
     args = ap.parse_args()
     MQTT_PORT, MODBUS_PORT, CONSOLE_PORT = args.mqtt_port, args.modbus_port, args.console_port
     SYSLOG_PORT, HTTP_PORT = args.syslog_port, args.http_port
+    MBTCP_PORT = args.mbtcp_port
     global PROBE_MAX_S
     PROBE_MAX_S = sdkconfig_int(args.sdkconfig, "GW_MB_OFFLINE_PROBE_MAX_MS") / 1000
     isolated = False if args.no_isolate else isolate_network()
@@ -625,6 +654,7 @@ def main():
     slave = ModbusSlave()
     slave.set_float(4, 0, 230.5)       # Voltage, input 0..1, float32 ABCD
     slave.ctx.setValues(3, 10, [50])   # Setpoint raw 50 -> 5.0
+    slave.set_mb6()
     slave.start()
     try:
         only = set(filter(None, args.only.split(",")))
@@ -715,7 +745,7 @@ def run_config_failsafe(args, work, slave):
         # "ntp": line 5, column 3
         ("syntax-error", {"config.json": good.replace(b'"dhcp": true\n  },', b'"dhcp": true\n  }', 1)},
          r"JSON mal formado en la línea 5, columna 3"),
-        ("semantic-error", {"config.json": good.replace(b'"type": "float32"', b'"type": "float64"', 1)},
+        ("semantic-error", {"config.json": good.replace(b'"type": "float32"', b'"type": "float16"', 1)},
          r"devices\[0\]\.tags\[0\]\.type: valor no válido"),
     ]
     obs = Observer()
@@ -759,7 +789,7 @@ def run_config_failsafe(args, work, slave):
             st2, _, b2 = http("GET", "/api/config", auth=("admin", pw or "?"))
             fixed = as_json(b2) or {}
             path = (status.get("config") or {}).get("path")
-            ok_export = st2 == 200 and fixed.get("devices", [{}])[0].get("tags", [{}])[0].get("type") == "float64"
+            ok_export = st2 == 200 and fixed.get("devices", [{}])[0].get("tags", [{}])[0].get("type") == "float16"
             if ok_export:
                 fixed["devices"][0]["tags"][0]["type"] = "float32"
                 fixed["sparkplug"]["edge_node_id"] = "GW03"
@@ -796,11 +826,12 @@ def run_config_failsafe(args, work, slave):
 
 
 def check_offline_backoff(slave, t0):
-    """Issue #4: dead slaves (units 3..5, never answer) are probed with one attempt at 2, 4, 8 ...
-    x poll_ms up to the cap, and do not delay the healthy device's 1 s polling."""
-    def clusters():
-        """Requests to dead unit 3 grouped by proximity: a full cycle is a cluster of attempts
-        200 ms apart (some may be lost while QEMU's UART socket connects), a probe is alone."""
+    """Issues #4 and #61: dead slaves (units 3..5, never answered since boot) are offline from the
+    start: one attempt per probe from their first cycle on, at 2, 4, 8 ... x poll_ms up to the
+    cap, and they never delay the healthy device's 1 s polling, not even right after boot."""
+    def bursts():
+        """Requests to dead unit 3 grouped by proximity: a full cycle would be a burst of
+        attempts 200 ms apart, a probe is alone."""
         ts = [t for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 3 and t >= t0]
         out = []
         for t in ts:
@@ -808,43 +839,282 @@ def check_offline_backoff(slave, t0):
                 out[-1].append(t)
             else:
                 out.append([t])
-        full = [i for i, c in enumerate(out) if len(c) > 1]
-        return out, (full[-1] if full else None)
+        return out
 
-    # 3 full cycles (saturated bus: they overrun), then probes 2, 4, 8 and 10 s apart
     end = t0 + 60
-    while time.monotonic() < end:
-        cl, last_full = clusters()
-        if last_full is not None and len(cl) - 1 - last_full >= 4:
-            break
+    while time.monotonic() < end and len(bursts()) < 5:
         time.sleep(0.5)
     reads = list(zip(slave.times, slave.reads))
-    cl, last_full = clusters()
-    probes = cl[last_full + 1:] if last_full is not None else []
-    single = all(len(c) == 1 for c in probes)
-    marks = [cl[last_full][0]] + [c[0] for c in probes] if probes else []
-    gaps = [round(b - a, 1) for a, b in zip(marks, marks[1:])]
-    expect = [min(2.0 * 2 ** i, PROBE_MAX_S) for i in range(len(gaps))]
-    # a due probe may wait for a cycle of another device in progress (up to ~0.6 s)
-    probes_ok = len(gaps) >= 4 and single and all(-0.2 <= g - e <= 0.7 for g, e in zip(gaps, expect))
-    check("MB-9 / issue #4 offline device probed with a single attempt and an exponential "
-          "backoff (2, 4, 8 ... s, cap)", probes_ok,
-          f"unit 3: {[len(c) for c in cl]} requests per burst; from the last full cycle, probes "
-          f"after {gaps} s (expected {expect}); single attempt each: {single}")
-    # Healthy Meter1 while the three dead units back off: cycle starts = its first request kind
-    if not probes:
-        return check("Issue #4 healthy device keeps its 1 s period next to 3 dead ones", False,
-                     "dead devices never went offline")
-    since = probes[0][0] + 1.0
-    meter = [(t, r) for t, r in reads if r[0] == 1 and t >= since]
+    cl = bursts()
+    single = bool(cl) and all(len(c) == 1 for c in cl)
+    gaps = [round(b[0] - a[0], 1) for a, b in zip(cl, cl[1:])]
+    full = [min(2.0 * 2 ** i, PROBE_MAX_S) for i in range(len(gaps) + 1)]
+    # The very first request may be lost while QEMU's UART socket connects: then the series
+    # starts one step later. A due probe may also wait for another device's cycle (~0.6 s).
+    def fits(k):
+        return all(-0.2 <= g - e <= 0.7 for g, e in zip(gaps, full[k:]))
+    offset = next((k for k in (0, 1) if fits(k)), None)
+    probes_ok = len(gaps) >= 4 and single and offset is not None
+    check("MB-9 / issues #4 #61 never-answered device probed from boot with a single attempt and an "
+          "exponential backoff (2, 4, 8 ... s, cap), no full cycles", probes_ok,
+          f"unit 3: {[len(c) for c in cl]} requests per burst; probes after {gaps} s (expected "
+          f"{full[offset or 0:][:len(gaps)]}, offset {offset}); single attempt each: {single}")
+    # Healthy Meter1 from its very first request: cycle starts = its first request kind
+    meter = [(t, r) for t, r in reads if r[0] == 1 and t >= t0]
     kind = meter[0][1][1:] if meter else None
-    starts = [t for t, r in meter if r[1:] == kind]
+    starts = [t for t, r in meter if r[1:] == kind and t <= meter[0][0] + 20]
     span = starts[-1] - starts[0] if len(starts) > 1 else 0
     worst = max((b - a for a, b in zip(starts, starts[1:])), default=0)
     # 1 s period; at worst one probe of each dead unit (200 ms timeout) in between + jitter
-    ok = len(starts) >= 8 and (len(starts) - 1) / span >= 0.9 and worst <= 1.0 + 3 * 0.2 + 0.4
-    return check("Issue #4 healthy device keeps its 1 s period next to 3 dead ones", ok,
-                 f"{len(starts)} Meter1 cycles in {span:.1f} s, longest interval {worst:.2f} s")
+    ok = len(starts) >= 8 and span and (len(starts) - 1) / span >= 0.9 and worst <= 1.0 + 3 * 0.2 + 0.4
+    return check("Issues #4 #61 healthy device keeps its 1 s period next to 3 dead ones, from boot",
+                 ok, f"{len(starts)} Meter1 cycles in the first {span:.1f} s, longest interval "
+                 f"{worst:.2f} s")
+
+
+def mbap_raw(pdu, unit=1, tid=0x4D42, timeout=5):
+    """Send one MBAP frame to the gateway (through QEMU's port forward); the answer's PDU, b"" if
+    the gateway closed the connection without answering, None on timeout."""
+    with socket.create_connection(("127.0.0.1", MBTCP_PORT), timeout=timeout) as c:
+        c.sendall(struct.pack(">HHHB", tid, 0, len(pdu) + 1, unit) + pdu)
+        data = b""
+        try:
+            while len(data) < 7 or len(data) < 6 + struct.unpack(">H", data[4:6])[0]:
+                chunk = c.recv(300)
+                if not chunk:
+                    return b""
+                data += chunk
+        except (socket.timeout, ConnectionResetError):
+            return b"" if not data else None
+        return data[7:]
+
+
+def check_modbus_tcp(gw, slave):
+    """MB-15: a Modbus TCP client (pymodbus) reads and writes an RTU slave through the gateway;
+    a unit that does not answer gives exception 0B; a function the gateway does not forward
+    gets 01 from the gateway itself, without reaching the RS485 bus."""
+    since = time.monotonic()
+    client = ModbusTcpClient("127.0.0.1", port=MBTCP_PORT, timeout=4, retries=0)
+    connected = client.connect()
+    rr = client.read_holding_registers(10, count=1, slave=1) if connected else None
+    read = None if rr is None or rr.isError() else list(rr.registers)
+    t_w = time.monotonic()
+    wr = client.write_register(200, 4242, slave=1) if connected else None
+    w_lat = time.monotonic() - t_w
+    written = slave.get(3, 200)[0]
+    dead = client.read_holding_registers(0, count=1, slave=3) if connected else None
+    dead_code = getattr(dead, "exception_code", None) if dead is not None and dead.isError() else None
+    client.close()
+    n0 = len(slave.reads)
+    unknown = mbap_raw(b"\x2b\x0e\x01\x00")
+    reached = [r for r in list(slave.reads)[n0:] if r[1] == 0x2B]
+    seen = [r for t, r in zip(list(slave.times), list(slave.reads)) if t >= since and r[0] == 1
+            and r[1:3] in ((3, 10), (6, 200))]
+    log = gw.find(r"mbtcp: client 10\.0\.2\.2 connected", 0)
+    ok = connected and read == [slave.get(3, 10)[0]] and wr is not None and not wr.isError() \
+        and written == 4242 and dead_code == 0x0B and unknown == b"\xab\x01" and not reached \
+        and len(seen) >= 2 and log
+    return check("MB-15 Modbus TCP gateway: pymodbus client reads holding 10 and writes holding 200 "
+                 "of unit 1 over TCP 502; dead unit -> exception 0B; FC 0x2B -> 01 from the gateway",
+                 ok, f"connected {connected}; read {read} (slave {slave.get(3, 10)[0]}); write "
+                 f"{'ok' if wr is not None and not wr.isError() else wr} in {w_lat:.2f} s, slave "
+                 f"holding 200 = {written}; unit 3 -> exception {dead_code}; FC 0x2B -> "
+                 f"{unknown!r}, reached the bus: {bool(reached)}; RTU requests {seen}; "
+                 f"{(log or ['no connect log'])[0]}")
+
+
+def check_panic_during_traffic(gw, obs, slave, nbirth_t):
+    """Issue #65: QEMU keeps UART1's interrupt line across a restart; a Modbus answer arriving
+    while the gateway restarts used to hang the next boot in uart_driver_install(). Unit 1
+    answers 120 ms late, and the panic is sent right after one of its requests reached the
+    slave, so the answer lands during the panic handler. Every boot must come back (NBIRTH with
+    reset reason "panic"); a panic restart does not quiesce the bus."""
+    outcomes = []
+    slave.delay = 0.12
+    try:
+        for _ in range(3):
+            n0 = len(slave.reads)
+            end = time.monotonic() + 5
+            while time.monotonic() < end and not any(r[0] == 1 for r in list(slave.reads)[n0:]):
+                time.sleep(0.002)
+            obs.drain()
+            gw.console("panic")
+            nb = obs.wait(nbirth_t, 40)
+            reason = metric(nb[2], name="Node Info/Reset Reason") if nb else None
+            outcomes.append(reason.string_value if reason else None)
+            if nb is None:
+                break
+    finally:
+        slave.delay = 0.0
+    return check("Issue #65 panic while a Modbus answer is on its way: the next boot does not hang "
+                 "(3 times, NBIRTH with reset reason 'panic')", outcomes == ["panic"] * 3,
+                 f"reset reasons after each panic: {outcomes}")
+
+
+def check_scan_rate(obs, gw, slave, nbirth, ncmd_t, ndata_t):
+    """SPB-15: writable Node Control/Scan Rate (UInt32 ms, 0 = each device at its poll_ms).
+    3000 makes Meter1 poll every 3 s, an invalid value is refused (NDATA keeps 3000), 0 brings
+    back its 1 s."""
+    name = "Node Control/Scan Rate"
+    birth = metric(nbirth, name=name)
+    def set_rate(value, datatype=7):
+        obs.drain()
+        obs.publish_cmd(ncmd_t, [{"name": name, "datatype": datatype, "int_value": value}])
+        nd = obs.wait(ndata_t, 3, lambda q: metric(q, alias=7) is not None)
+        return metric(nd[2], alias=7).int_value if nd else None
+    def starts(since, until):
+        return [t for t, r in zip(list(slave.times), list(slave.reads))
+                if since <= t <= until and r[0] == 1 and r[1:] == (1, 0, 1)]
+    t_set = time.monotonic()
+    confirmed = set_rate(3000)
+    time.sleep(11)
+    slow = starts(t_set + 1.5, time.monotonic())
+    gaps3 = [round(b - a, 2) for a, b in zip(slow, slow[1:])]
+    since = time.monotonic()
+    refused = set_rate(10)
+    logged = gw.wait_log(r"NCMD: metric 'Node Control/Scan Rate' .*discarded: Scan Rate must be", 2, since)
+    t_back = time.monotonic()
+    back = set_rate(0)
+    time.sleep(5)
+    fast = starts(t_back + 1.5, time.monotonic())
+    gaps1 = [round(b - a, 2) for a, b in zip(fast, fast[1:])]
+    ok = birth is not None and birth.datatype == 7 and birth.int_value == 0 and confirmed == 3000 \
+        and len(gaps3) >= 2 and all(2.7 <= g <= 3.6 for g in gaps3) and refused == 3000 and logged \
+        and back == 0 and len(gaps1) >= 2 and all(g <= 1.6 for g in gaps1)
+    return check("SPB-15 NCMD Node Control/Scan Rate: NBIRTH UInt32 0, 3000 -> Meter1 every 3 s "
+                 "(NDATA), invalid 10 refused, 0 -> back to its poll_ms", ok,
+                 f"NBIRTH {(birth.datatype, birth.int_value) if birth else None}; NDATA {confirmed}, "
+                 f"cycles {gaps3} s apart; 10 -> NDATA {refused}, logged {bool(logged)}; 0 -> NDATA "
+                 f"{back}, cycles {gaps1} s apart")
+
+
+def check_write_between_blocks(obs, slave, dcmd_t, ddata_t):
+    """MB-14: with unit 1 answering 120 ms late, a Meter1 cycle (6 requests) takes about 1 s.
+    A DCMD sent in the middle of a cycle is written between two requests of that cycle (Meter1
+    reads before it, after the cycle start, and after it, before the next start), not once the
+    cycle is over, and its latency is about one transaction."""
+    start = (1, 0, 1)   # first request of every Meter1 cycle (coil 0)
+    slave.delay = 0.12
+    tries = []
+    try:
+        for attempt in range(3):
+            n0 = len(slave.reads)
+            end = time.monotonic() + 4
+            while time.monotonic() < end and not any(
+                    r[0] == 1 and r[1:] == start for r in list(slave.reads)[n0:]):
+                time.sleep(0.01)
+            time.sleep(0.25)   # well into the cycle
+            value = 2 ** 62 + 100 + attempt
+            obs.drain()
+            sent = time.monotonic()
+            obs.publish_cmd(dcmd_t, [{"name": "Counter", "datatype": 4, "long_value": value}])
+            dd = obs.wait(ddata_t, 6, lambda q: metric(q, alias=ALIAS["Counter"]) is not None)
+            time.sleep(1.5)    # let the cycle finish
+            reads = [(t, r) for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 1]
+            w = next((i for i, (t, r) in enumerate(reads) if t >= sent and r[1:3] == (16, 34)), None)
+            if w is None:
+                tries.append(f"attempt {attempt + 1}: no write seen")
+                continue
+            before = 0
+            for t, r in reversed(reads[:w]):
+                if r[1:] == start:
+                    break
+                before += 1
+            after = 0
+            for t, r in reads[w + 2:]:      # w + 1 is the read-back
+                if r[1:] == start:
+                    break
+                after += 1
+            latency = reads[w][0] - sent
+            exact = dd is not None and int64_of(metric(dd[2], alias=ALIAS["Counter"])) == value
+            tries.append((before, after, round(latency, 2), exact))
+            if after >= 1 and exact and latency <= 0.6:
+                break
+    finally:
+        slave.delay = 0.0
+    ok = any(isinstance(x, tuple) and x[1] >= 1 and x[3] and x[2] <= 0.6 for x in tries)
+    return check("MB-14 DCMD written between two requests of a running cycle (latency ~ one "
+                 "transaction, not the rest of the cycle)", ok,
+                 "(Meter1 requests of the cycle before the write, after it, latency s, DDATA exact): "
+                 f"{tries}")
+
+
+def check_scan_classes(slave):
+    """MB-12: Meter1's slow-scan blocks (Energy at holding 30, Serial at 50; slow_poll_ms 3000)
+    are read every third cycle, its fast ones (cycle start: coil 0) every second."""
+    since = time.monotonic() - 12
+    reads = [(t, r[1:]) for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 1 and t >= since]
+    fast = [t for t, k in reads if k == (1, 0, 1)]
+    slow = [t for t, k in reads if k == (3, 30, 4)]
+    serial = [t for t, k in reads if k == (3, 50, 8)]
+    gaps = [round(b - a, 2) for a, b in zip(slow, slow[1:])]
+    fgaps = [b - a for a, b in zip(fast, fast[1:])]
+    ok = len(slow) >= 3 and len(serial) == len(slow) and all(2.8 <= g <= 3.6 for g in gaps) \
+        and len(fast) >= 10 and max(fgaps) <= 1.6
+    return check("MB-12 slow-scan tags read every slow_poll_ms (3 s), fast ones every poll_ms (1 s)",
+                 ok, f"last 12 s: {len(fast)} fast cycles (longest gap {max(fgaps, default=0):.2f} s), "
+                 f"{len(slow)} slow reads {gaps} s apart, Serial read {len(serial)} times")
+
+
+def int64_of(m):
+    """Int64 metric value: long_value carries the two's complement as an unsigned 64-bit int."""
+    return m.long_value - 2 ** 64 if m.long_value >= 2 ** 63 else m.long_value
+
+
+def check_mb6_birth(db):
+    """MB-6: each new type and byte order, decoded with the right Sparkplug datatype."""
+    if not db:
+        return check("MB-6 DBIRTH with 64-bit, string and bit tags", False, "no DBIRTH")
+    p = db[2]
+    got = {}
+    want = {"Energy": (8, MB6["Energy"]), "Counter": (4, MB6["Counter"]), "Flow": (10, MB6["Flow"]),
+            "Temp": (3, MB6["Temp"]), "Serial": (12, MB6["Serial"]), "Alarm": (11, True),
+            "Ready": (11, True)}
+    for name in want:
+        m = metric(p, name=name)
+        if m is None:
+            got[name] = None
+            continue
+        value = {8: lambda: m.long_value, 4: lambda: int64_of(m), 10: lambda: m.double_value,
+                 3: lambda: m.int_value - 2 ** 32 if m.int_value >= 2 ** 31 else m.int_value,
+                 12: lambda: m.string_value, 11: lambda: m.boolean_value}[m.datatype]()
+        got[name] = (m.datatype, value)
+    return check("MB-6 DBIRTH: uint64 ABCD (2^53+1 exact), int64 CDAB, float64 DCBA, int32 BADC, "
+                 "string and register bits, with datatypes UInt64/Int64/Double/Int32/String/Boolean",
+                 got == want, f"got {got}")
+
+
+def check_mb6_writes(obs, slave, dcmd_t, ddata_t):
+    """MB-6 DCMD: a 64-bit value beyond 2^53 written exactly with one FC16 of 4 registers, a
+    string, and a register bit by read-modify-write (the register's other bits survive)."""
+    value = 2 ** 62 + 3
+    obs.drain()
+    slave.ctx.writes.clear()
+    obs.publish_cmd(dcmd_t, [{"name": "Counter", "datatype": 4, "long_value": value}])
+    dd = obs.wait(ddata_t, 5, lambda q: metric(q, alias=ALIAS["Counter"]) is not None)
+    regs = [(value >> (16 * i)) & 0xFFFF for i in range(4)]   # CDAB: least significant word first
+    back = int64_of(metric(dd[2], alias=ALIAS["Counter"])) if dd else None
+    check("MB-6 DCMD int64 2^62+3 -> one FC16 of 4 registers (CDAB), DDATA exact",
+          dd and slave.ctx.writes == [(16, 34, regs)] and back == value,
+          f"slave writes {slave.ctx.writes} (expected {[(16, 34, regs)]}), DDATA {back}")
+    obs.drain()
+    slave.ctx.writes.clear()
+    obs.publish_cmd(dcmd_t, [{"name": "Alarm", "datatype": 11, "boolean_value": False},
+                             {"name": "Serial", "datatype": 12, "string_value": "HELLO"}])
+    seen = {}
+    end = time.monotonic() + 5
+    while len(seen) < 2 and time.monotonic() < end:
+        dd = obs.wait(ddata_t, max(0.1, end - time.monotonic()))
+        for a in ("Alarm", "Serial"):
+            m = metric(dd[2], alias=ALIAS[a]) if dd else None
+            if m is not None:
+                seen[a] = m.boolean_value if a == "Alarm" else m.string_value
+    hello = list(struct.unpack(">8H", b"HELLO".ljust(16, b"\0")))
+    reg60 = slave.get(3, 60)[0]
+    check("MB-6 DCMD register bit (read-modify-write keeps the other bits) and string",
+          (6, 60, [0x0101]) in slave.ctx.writes and (16, 50, hello) in slave.ctx.writes
+          and reg60 == 0x0101 and seen == {"Alarm": False, "Serial": "HELLO"},
+          f"slave writes {slave.ctx.writes}, holding 60 = {reg60:#06x}, DDATA {seen}")
 
 
 def run_network_variant(args, work):
@@ -863,6 +1133,7 @@ def run_network_variant(args, work):
                       "ipv6": {"enabled": True, "slaac": True, "address": "fec0::1234"},
                       "wifi": {"enabled": True, "ssid": "Plant WLAN", "password": "12345678",
                                "role": "backup", "failback_s": 30}}
+    cfg["modbus_tcp"] = {"enabled": True, "allowed_clients": ["192.0.2.0/24"]}
     flash = flash_variant(args, work, "network", {"config.json": json.dumps(cfg, indent=2).encode()})
     obs = Observer()
     gw = Gateway(args, work / "uart0-network.log", flash)
@@ -885,6 +1156,17 @@ def run_network_variant(args, work):
     pinged = time.monotonic()
     gw.console("ping fec0::2")
     replies = gw.wait_log(r"3 sent, [1-3] received", 8, pinged)
+    # MB-15 allow-list: slirp's 10.0.2.2 is not in 192.0.2.0/24, so the connection is closed
+    # without an answer
+    asked_tcp = time.monotonic()
+    try:
+        denied = mbap_raw(b"\x03\x00\x0a\x00\x01")
+    except OSError as e:
+        denied = f"{e}"
+    refused = gw.wait_log(r"mbtcp: connection from 10\.0\.2\.2 refused: not in modbus_tcp\.allowed_clients",
+                          3, asked_tcp)
+    _, h = gw.shell("devices", [r"^modbus_tcp connections 0 accepted 1 rejected \| forwarded 0 "])
+    counted = all(h.values())
     gw.kill()
     obs.wait(f"{T}/NDEATH/{node}", 5)   # the will, before the main scenario starts
     obs.close()
@@ -893,6 +1175,10 @@ def run_network_variant(args, work):
           nb and ignored and iface and shown,
           f"NBIRTH {'yes' if nb else 'no'}; {(ignored or ['no warning'])[0]}; shell: "
           + " | ".join(gw.find(r"^iface\s|^wifi\s", asked)))
+    check("MB-15 Modbus TCP allow-list: a client outside modbus_tcp.allowed_clients is "
+          "disconnected without an answer and counted as rejected (#69)", denied == b"" and refused
+          and counted,
+          f"answer {denied!r}; {(gw.find(r'mbtcp: connection from', asked_tcp) or ['no log'])[0]}")
     check("NET-7 IPv6 on Ethernet: link-local, SLAAC (fec0::/64 from slirp's RA) and static "
           "address, shown by the shell; ICMPv6 echo to fec0::2 answered",
           lla and slaac and static and listed and cfg6 and replies,
@@ -948,7 +1234,7 @@ def run_web(args, work):
           f"{volt[0] if volt else None}")
 
     bad = json.loads(json.dumps(doc))
-    bad["devices"][0]["tags"][0]["type"] = "float64"
+    bad["devices"][0]["tags"][0]["type"] = "float16"   # invalid (float64 is a type since MB-6)
     st3, _, b3 = http("PUT", "/api/config", bad)
     e3 = as_json(b3) or {}
     syntax = json.dumps(doc, indent=2).replace('"ntp"', '"ntp" "x"', 1).encode()
@@ -1021,7 +1307,7 @@ def run_web(args, work):
         gw.sock.sendall(text.encode() + b"\n")
 
     bad = json.loads(json.dumps(doc8))
-    bad["devices"][0]["tags"][0]["type"] = "float64"
+    bad["devices"][0]["tags"][0]["type"] = "float16"   # invalid (float64 is a type since MB-6)
     asked = time.monotonic()
     paste(bad)
     rej = gw.wait_log(r"^config: rejected: devices\[0\]\.tags\[0\]\.type: valor no válido", 15, asked)
@@ -1177,6 +1463,7 @@ def run(args, log, slave, broker, conf, work):
         and abs(metric(db[2], name="Setpoint").float_value - 5.0) < 1e-4
     check("SPB-6 DBIRTH with current values", ok,
           spb_decode.describe("DBIRTH", db[2]).replace("\n", " |") if db else "no DBIRTH")
+    check_mb6_birth(db)
     if not any(m[1] == f"{T}/DBIRTH/{NODE}/{BULK}" for m in CAPTURE):
         obs.wait(f"{T}/DBIRTH/{NODE}/{BULK}", 10)
     bulk = [m for m in CAPTURE if m[1] == f"{T}/DBIRTH/{NODE}/{BULK}"]
@@ -1189,6 +1476,17 @@ def run(args, log, slave, broker, conf, work):
     check("MB-11 60 contiguous registers read with one FC03 request per cycle",
           reqs and all(r[1:] == (3, 100, 60) for r in reqs),
           f"{len(reqs)} requests to unit 2 so far, first {reqs[0] if reqs else None}")
+    # Issue #38: Meter1 sets max_gap 10, Bulk keeps the build default (0). Fast scan: holding
+    # 10 and 20-21 (gap 9) are one FC03, Counter 34-37 another (gap 12 from 21), Alarm 60 a third;
+    # slow scan (MB-12, never merged with fast tags): Energy 30-33 and Serial 50-57 (gap 16).
+    # Input 0-1 alone and 40-46 contiguous. No DCMD has run yet: only cycle reads so far.
+    # this boot only: the earlier scenarios (web: diagnostic reads) share the slave
+    meter = {r[1:] for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 1 and t >= t0}
+    want = {(1, 0, 1), (3, 10, 12), (3, 34, 4), (3, 60, 1), (3, 30, 4), (3, 50, 8), (4, 0, 2),
+            (4, 40, 7)}
+    check("MB-11 / issue #38 per-device max_gap: Meter1 (max_gap 10) bridges holes up to 10 "
+          "registers, Bulk keeps the build default", meter == want,
+          f"Meter1 requests {sorted(meter)} (expected {sorted(want)})")
 
     # NET-6: host name derived from edge_node_id; the mDNS responder starts with it. It cannot
     # answer here: open_eth has no multicast filter, so joining 224.0.0.251 fails and the
@@ -1220,6 +1518,16 @@ def run(args, log, slave, broker, conf, work):
     check("CFG-6 console shell: 'devices' (online state, counters) and 'config' summary",
           meter and bulk and summary,
           " | ".join(gw.find(r"Meter1\s+unit|Bulk\s+unit|sparkplug\s+group", asked)) or "no answer")
+    # Issue #68: the summary shows what the poll engine runs with (MB-11, MB-12) and MB-15
+    asked, h = gw.shell("config",
+                        [r"^\s+Meter1\s+unit\s+1, poll 1000 ms, slow 3000 ms, offline after 3, 11 tag\(s\) "
+                         r"\(9 fast, 2 slow\), blocks max_gap 10$",
+                         r"^\s+Bulk\s+unit\s+2, poll 1000 ms, slow 10000 ms, offline after 3, 60 tag\(s\) "
+                         r"\(60 fast, 0 slow\), blocks max_gap 0 \(default\)$",
+                         r"^modbus_tcp enabled, port 502, idle timeout 60 s, clients 10\.0\.2\.2/32$"])
+    check("Issue #68 shell 'config': per-device periods, scan classes and block reads, modbus_tcp line",
+          all(h.values()), " | ".join(gw.find(r"^\s+(Meter1|Bulk)\s+unit\s+\d+, poll|^modbus_tcp", asked))
+          or "no answer")
 
     # REL-4 remote syslog: RFC 5424 over UDP, hostname = edge node id, app-name = esp_log tag,
     # facility local0, timestamp from SNTP
@@ -1308,6 +1616,7 @@ def run(args, log, slave, broker, conf, work):
           and abs(metric(dd[2], alias=ALIAS["Limit"]).float_value - 1234.5) < 1e-3,
           f"slave writes {slave.ctx.writes}, DDATA "
           f"{metric(dd[2], alias=ALIAS['Limit']).float_value if dd else None}")
+    check_mb6_writes(obs, slave, dcmd_t, ddata_t)
     obs.drain()
     slave.ctx.writes.clear()
     obs.publish_cmd(dcmd_t, [{"alias": ALIAS["Run"], "datatype": 11, "boolean_value": True}])
@@ -1333,6 +1642,22 @@ def run(args, log, slave, broker, conf, work):
           f"DBIRTH seq={db[2].seq if db else None}")
 
     check_offline_backoff(slave, t0)
+    check_scan_classes(slave)
+    check_write_between_blocks(obs, slave, dcmd_t, ddata_t)
+    check_scan_rate(obs, gw, slave, p, ncmd_t, ndata_t)
+    check_modbus_tcp(gw, slave)
+    # Issue #69: the forwarded transactions are counted per unit (apart from the polling) and
+    # the gateway counts connections, forwarded requests and the exceptions it made up: the
+    # pymodbus client and the raw frame (2 connections), read + write of unit 1, the read of the
+    # dead unit 3 (1 + 2 retries, 0B) and FC 0x2B (01)
+    asked, h = gw.shell("devices",
+                        [r"^Meter1\s+unit\s+1 online .*\| tcp ok 2 timeout 0 crc 0 frame 0 exception 0$",
+                         r"^Dead3\s+unit\s+3 offline .*\| tcp ok 0 timeout 3 crc 0 frame 0 exception 0$",
+                         r"^modbus_tcp connections 2 accepted 0 rejected \| forwarded 3 \| gateway exceptions "
+                         r"01 1 03 0 0A 0 0B 1 \| other units ok 0 timeout 0 crc 0 frame 0 exception 0$"])
+    check("Issue #69 Modbus TCP counters: forwarded transactions per unit, gateway connections, "
+          "forwarded requests and its own exceptions (shell 'devices')", all(h.values()),
+          " | ".join(gw.find(r"^(Meter1|Dead3)\s+unit|^modbus_tcp", asked)) or "no answer")
 
     # 2. Slave off -> DDEATH; back on -> DBIRTH
     obs.drain()
@@ -1476,6 +1801,7 @@ def run(args, log, slave, broker, conf, work):
           and reason1.string_value == "software",
           f"first boot {reason0.string_value if reason0 else None!r}, after reboot "
           f"{reason1.string_value if reason1 else None!r}")
+    check_panic_during_traffic(gw, obs, slave, nbirth_t)
 
     # Issue #12 / REL-1: a panic writes a core dump to the "coredump" partition, the gateway
     # restarts ("panic" in NBIRTH) and the dump decodes with esp_coredump against the ELF.

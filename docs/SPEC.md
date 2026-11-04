@@ -231,8 +231,8 @@ Encuesta N esclavos Modbus RTU por el RS485 integrado, con los tipos de 16 y 32 
 **Reglas del esquema:**
 
 - `area` ∈ {`coil`, `discrete`, `holding`, `input`}.
-- `type` ∈ {`bool`, `uint16`, `int16`, `uint32`, `int32`, `float32`}.
-- `bool` solo vale en `coil` y `discrete`.
+- `type` ∈ {`bool`, `uint16`, `int16`, `uint32`, `int32`, `float32`}; fuera del MVP también `uint64`, `int64`, `float64` y `string` (§6.1, MB-6).
+- `bool` solo vale en `coil` y `discrete`; fuera del MVP, también como bit de un registro `holding` o `input` (clave `bit`, §6.1).
 - `writable` solo vale en `coil` y `holding`.
 - Si `client_id` está vacío se usa `edge_node_id`.
 
@@ -249,6 +249,10 @@ Encuesta N esclavos Modbus RTU por el RS485 integrado, con los tipos de 16 y 32 
 | `uint32` | UInt32 (7) |
 | `float32` | Float (9) |
 | Cualquier tipo con `scale` ≠ 1 u `offset` ≠ 0 | Float (9) |
+| `uint64` / `int64` (MB-6) | UInt64 (8) / Int64 (4), exactos en `long_value` |
+| `float64` (MB-6), o `uint64`/`int64`/`float64` con `scale` ≠ 1 u `offset` ≠ 0 | Double (10) |
+| `string` (MB-6) | String (12) |
+| `bool` con `bit` (MB-6) | Boolean (11) |
 
 ### 6.1 Claves opcionales fuera del MVP
 
@@ -301,6 +305,76 @@ El nombre va también en las peticiones DHCP de Ethernet y Wi-Fi.
 | `dns` | texto | `""` | Servidor DNS IPv6 (tercera posición; DHCPv4 llena las dos primeras) |
 
 El router por defecto IPv6 se aprende de los RA; no hay *gateway* IPv6 estático. `mqtt.host`, `ntp.server` y `syslog.host` aceptan literales IPv6 (`fd00::10`) o nombres con registro AAAA.
+
+**Tipos de 64 bits, `string`, órdenes de bytes y bits de registro (MB-6), en cada tag.**
+
+```json
+{ "name": "Energy",  "area": "holding", "address": 30, "type": "uint64" },
+{ "name": "Counter", "area": "holding", "address": 34, "type": "int64", "word_order": "CDAB", "writable": true },
+{ "name": "Flow",    "area": "input",   "address": 40, "type": "float64", "word_order": "DCBA" },
+{ "name": "Serial",  "area": "holding", "address": 50, "type": "string", "length": 8 },
+{ "name": "Alarm",   "area": "holding", "address": 60, "type": "bool", "bit": 3, "writable": true }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `type` | + `uint64` \| `int64` \| `float64` \| `string` | — | 64 bits = 4 registros; `string` = `length` registros |
+| `word_order` | `big` \| `little` \| `ABCD` \| `CDAB` \| `BADC` \| `DCBA` | `big` | Letras = bytes del valor, del más significativo (A) al menos, en el orden en que llegan. `big` = `ABCD`, `little` = `CDAB` (palabra menos significativa primero), `BADC` = bytes invertidos en cada registro, `DCBA` = todo invertido. Vale igual para 32 y 64 bits; en 16 bits solo cuenta la inversión de bytes |
+| `length` | entero | — | 1–16 registros; obligatorio con `type: string` y solo con él. Dos caracteres ASCII por registro, el primero en el byte alto (en el bajo con `BADC`/`DCBA`; el orden de palabras no se aplica) |
+| `bit` | entero | — | 0–15, con `type: bool` en `holding` o `input` (obligatorio ahí). 0 = bit menos significativo del registro tal como llega; no admite `word_order` distinto de `big` |
+
+- **Exactitud.** `int64` y `uint64` sin escala se publican exactos (UInt64/Int64), también por encima de 2^53; con `scale`/`offset` pasan a Double.
+- **`string`:** se corta en el primer NUL y se quitan los espacios finales; lo que no es ASCII imprimible se publica como `?`. Al escribir se rellena con NUL; un texto más largo que `2 × length` se rechaza. No admite `scale`, `offset` ni `deadband`.
+- **Escritura de un bit:** lectura del registro (FC03) y escritura del registro completo con el bit cambiado (FC06, o FC16 con escrituras múltiples forzadas).
+
+**Lecturas en bloque por dispositivo (MB-11), en cada dispositivo.**
+
+```json
+{ "name": "Meter1", "unit_id": 1, "max_gap": 10, "tags": [ … ] },
+{ "name": "Picky",  "unit_id": 7, "block_reads": false, "tags": [ … ] }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `block_reads` | bool | el del firmware (`true`) | `false` = una petición por tag, para esclavos que responden excepción si un bloque incluye registros no mapeados |
+| `max_gap` | entero | el del firmware (`0`) | 0–1999. Registros o bits sin usar que un bloque puede saltar para unir dos tags del mismo área. No se admite con `block_reads: false`. Un bloque nunca pasa de 125 registros ni de 2000 bits |
+
+Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `CONFIG_GW_MB_BLOCK_MAX_GAP`), como en el MVP.
+
+**Encuesta rápida y lenta (MB-12).**
+
+```json
+{ "name": "Meter1", "unit_id": 1, "poll_ms": 1000, "slow_poll_ms": 30000, "tags": [
+    { "name": "Voltage", "area": "input",   "address": 0,  "type": "float32" },
+    { "name": "Serial",  "area": "holding", "address": 50, "type": "string", "length": 8, "scan": "slow" } ] }
+```
+
+| Clave | Dónde | Tipo | Defecto | Regla |
+|---|---|---|---|---|
+| `scan` | tag | `fast` \| `slow` | `fast` | `fast` se lee cada `poll_ms`; `slow`, cada `slow_poll_ms` |
+| `slow_poll_ms` | dispositivo | entero | 10 × `poll_ms` (tope 3 600 000) | 50–3 600 000 y nunca menor que `poll_ms` |
+
+- Los tags rápidos y los lentos nunca comparten un bloque de lectura.
+- **Fuera de línea (MB-9):** un ciclo que solo lee los tags rápidos cuenta como cualquier otro: falla si una petición queda sin respuesta. Pero un dispositivo pasa (o vuelve) a en línea solo con un ciclo que leyó **todos** sus bloques, así que su DBIRTH lleva todos los tags. Mientras está fuera de línea, cada ciclo incluye los lentos.
+- Si un ciclo falla antes de leer los lentos, quedan pendientes para el ciclo siguiente.
+- Un dispositivo con solo tags lentos se encuesta cada `slow_poll_ms`.
+
+**`modbus_tcp` (MB-15): gateway Modbus TCP hacia los esclavos RTU.**
+
+```json
+"modbus_tcp": { "enabled": true, "port": 502, "allowed_clients": ["192.168.1.20", "10.0.5.0/24"],
+                "idle_timeout_s": 60 }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `enabled` | bool | `false` | Modbus TCP **no tiene autenticación**: el servidor solo arranca si se pide |
+| `port` | entero | `502` | 1–65535 |
+| `allowed_clients` | array de textos | `[]` | Hasta 8 direcciones IPv4 (`a.b.c.d`) o redes (`a.b.c.d/n`, n 0–32). Una conexión de otro origen se cierra sin respuesta. Vacío = cualquier cliente (el equipo lo advierte en el log) |
+| `idle_timeout_s` | entero | `60` | 0–3600. Una conexión sin peticiones en ese tiempo se cierra; 0 = nunca |
+
+- Se reenvían FC01–FC06, FC15 y FC16 a las unidades 1–247, tengan o no un dispositivo configurado. El gateway responde él mismo, con excepción, a cualquier otra función (01), a datos no válidos (03) y a las unidades 0 y 248–255 (0A). Si la unidad no responde tras los reintentos de `rs485`, la excepción es 0B.
+- **Arbitraje del bus (MB-16):** las peticiones TCP pasan por la tarea dueña del bus, una a la vez y con la misma granularidad que los DCMD: entre dos peticiones de la encuesta. Prioridad: escrituras DCMD, después Modbus TCP, después la encuesta.
 
 **`syslog` (REL-4): copia del log a un servidor syslog.**
 

@@ -33,6 +33,9 @@ void gw_port_unlock(void);
 void gw_port_log(char level, const char *tag, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 /** Host tests: append every log line ("<level> (<tag>) <text>\n") to @p buf; NULL stops. */
 void gw_port_log_capture(char *buf, size_t cap);
+/** Host tests: gw_port_time_ms() returns @p ms from now on (deterministic timestamps);
+ * 0 goes back to the real clock. */
+void gw_port_fake_time(uint64_t ms);
 #define GW_LOGE(tag, fmt, ...) gw_port_log('E', tag, fmt, ##__VA_ARGS__)
 #define GW_LOGW(tag, fmt, ...) gw_port_log('W', tag, fmt, ##__VA_ARGS__)
 #define GW_LOGI(tag, fmt, ...) gw_port_log('I', tag, fmt, ##__VA_ARGS__)

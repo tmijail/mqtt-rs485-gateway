@@ -32,6 +32,15 @@ extern "C" {
 #define GW_CFG_PATH_SIZE 96
 #define GW_JSON_MAX_DEPTH 32  /* deeper documents are rejected before cJSON recurses into them */
 
+/* MB-6 strings: up to 16 registers, two characters per register. */
+#define GW_STR_MAX_REGS 16
+#define GW_STR_MAX      (2 * GW_STR_MAX_REGS)
+#define GW_TAG_MAX_REGS GW_STR_MAX_REGS     /* widest tag: a string of 16 registers */
+#define GW_NO_BIT       (-1)
+#define GW_CFG_BUILD_DEFAULT (-1)   /* optional key absent: the build-time default applies */
+#define GW_MAX_GAP_LIMIT 1999       /* a block never spans more than 2000 bits */
+#define GW_MBTCP_MAX_ALLOWED 8      /* MB-15: entries of modbus_tcp.allowed_clients */
+
 typedef enum {
     GW_AREA_COIL = 0,
     GW_AREA_DISCRETE,
@@ -46,11 +55,19 @@ typedef enum {
     GW_TYPE_UINT32,
     GW_TYPE_INT32,
     GW_TYPE_FLOAT32,
+    GW_TYPE_UINT64,     /* MB-6: 4 registers */
+    GW_TYPE_INT64,
+    GW_TYPE_FLOAT64,
+    GW_TYPE_STRING,     /* MB-6: `length` registers, two ASCII characters each */
 } gw_type_t;
 
+/* Register and byte order of multi-byte values (MB-5, MB-6). Letters name the bytes of the value
+ * from the most significant (A) down, in the order they arrive on the wire. */
 typedef enum {
-    GW_WORD_BIG = 0,    /* ABCD: high word in the lower register address */
-    GW_WORD_LITTLE,     /* CDAB: low word in the lower register address */
+    GW_WORD_BIG = 0,    /* ABCD ("big"): most significant word first, bytes big-endian */
+    GW_WORD_LITTLE,     /* CDAB ("little"): least significant word first */
+    GW_WORD_BADC,       /* BADC: most significant word first, bytes swapped in each register */
+    GW_WORD_DCBA,       /* DCBA: fully little-endian */
 } gw_word_order_t;
 
 typedef enum {
@@ -107,6 +124,9 @@ typedef struct {
     gw_type_t type;
     gw_word_order_t word_order;
     uint16_t address;
+    int8_t bit;                 /* MB-6: bit 0..15 of a holding/input register (bool), or GW_NO_BIT */
+    uint8_t length;             /* MB-6: registers of a string tag (1..GW_STR_MAX_REGS), else 0 */
+    bool slow;                  /* MB-12: read every slow_poll_ms of its device ("scan": "slow") */
     bool writable;
     double scale;
     double offset;
@@ -117,8 +137,12 @@ typedef struct {
 typedef struct {
     char name[GW_NAME_SIZE];    /* also the Sparkplug device_id */
     uint8_t unit_id;
-    uint32_t poll_ms;
+    uint32_t poll_ms;           /* fast scan period (MB-10) */
+    uint32_t slow_poll_ms;      /* MB-12: period of the tags with "scan": "slow" */
     uint16_t offline_after;
+    /* MB-11 block reads of this device; GW_CFG_BUILD_DEFAULT = the build's setting (Kconfig) */
+    int8_t block_reads;         /* 0 = one request per tag, 1 = merge, or build default */
+    int16_t max_gap;            /* largest unused register/bit hole bridged, or build default */
     uint16_t first_tag;         /* index into gw_config_t.tags */
     uint16_t tag_count;
 } gw_device_cfg_t;
@@ -176,6 +200,17 @@ typedef struct {
                                             * stored (CFG-7); empty at run time */
         char password_hash[GW_PWHASH_SIZE]; /* "" = no password set: commissioning password */
     } web;
+
+    struct {                     /* MB-15 Modbus TCP gateway; off unless enabled */
+        bool enabled;
+        uint16_t port;
+        uint16_t idle_timeout_s; /* 0 = never close an idle client */
+        uint8_t client_count;    /* 0 = any client may connect */
+        struct {
+            uint8_t ip[4];
+            uint8_t prefix;      /* 0..32 */
+        } clients[GW_MBTCP_MAX_ALLOWED];
+    } modbus_tcp;
 
     uint16_t device_count;
     uint16_t tag_count;

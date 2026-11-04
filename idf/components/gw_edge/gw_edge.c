@@ -270,10 +270,22 @@ static bool op_set_do(void *ctx, uint8_t index, bool on)
     return gw_io_set_do(index, on);
 }
 
-static bool op_request_write(void *ctx, uint16_t tag, double value)
+static bool op_request_write(void *ctx, uint16_t tag, const gw_tag_value_t *value)
 {
     (void)ctx;
     return gw_bus_request_write(tag, value);
+}
+
+static void op_set_scan_rate(void *ctx, uint32_t ms)
+{
+    (void)ctx;
+    gw_bus_set_scan_rate(ms);
+}
+
+static size_t op_write_room(void *ctx)
+{
+    (void)ctx;
+    return gw_bus_write_room();
 }
 
 static void op_reboot(void *ctx)
@@ -603,6 +615,8 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         .publish = op_publish,
         .set_do = op_set_do,
         .request_write = op_request_write,
+        .write_room = op_write_room,
+        .set_scan_rate = op_set_scan_rate,
         .reboot = op_reboot,
         .ctx = NULL,
     };

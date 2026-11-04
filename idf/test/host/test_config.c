@@ -386,8 +386,8 @@ static void test_schema_rules(void)
                     "writable");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"inputs\",\"address\":0,\"type\":\"int16\"}"),
                     "coil|discrete|holding|input");
-    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int64\"}"),
-                    "bool|uint16|int16|uint32|int32|float32");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int128\"}"),
+                    "bool|uint16|int16|uint32|int32|float32|uint64|int64|float64|string");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":65535,\"type\":\"int32\"}"),
                     "65535");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":1.5,\"type\":\"int16\"}"),
@@ -397,7 +397,7 @@ static void test_schema_rules(void)
                     "scale");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
                               "\"word_order\":\"middle\"}"),
-                    "big|little");
+                    "big|little|ABCD|CDAB|BADC|DCBA");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"adress\":0,\"type\":\"int16\"}"),
                     "devices[0].tags[0].adress: clave desconocida");
     ASSERT_REJECTED(parse_tag("{\"area\":\"input\",\"address\":0,\"type\":\"int16\"}"),
@@ -409,6 +409,181 @@ static void test_schema_rules(void)
         parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":65534,\"type\":\"float32\","
                   "\"word_order\":\"little\",\"deadband\":0.5,\"units\":\"kWh\"}"),
         err.msg);
+}
+
+/* MB-6: 64-bit types, strings, byte orders and register bits. */
+static void test_mb6_tags(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse_tag("{\"name\":\"a\",\"area\":\"holding\",\"address\":0,\"type\":\"uint64\"},"
+                  "{\"name\":\"b\",\"area\":\"input\",\"address\":4,\"type\":\"int64\","
+                  "\"word_order\":\"CDAB\",\"deadband\":10},"
+                  "{\"name\":\"c\",\"area\":\"input\",\"address\":8,\"type\":\"float64\","
+                  "\"word_order\":\"DCBA\",\"scale\":2},"
+                  "{\"name\":\"d\",\"area\":\"holding\",\"address\":12,\"type\":\"string\","
+                  "\"length\":16,\"word_order\":\"BADC\",\"writable\":true},"
+                  "{\"name\":\"e\",\"area\":\"holding\",\"address\":40,\"type\":\"bool\","
+                  "\"bit\":15,\"writable\":true},"
+                  "{\"name\":\"f\",\"area\":\"input\",\"address\":40,\"type\":\"bool\",\"bit\":0},"
+                  "{\"name\":\"g\",\"area\":\"input\",\"address\":41,\"type\":\"int32\","
+                  "\"word_order\":\"ABCD\"}"),
+        err.msg);
+    TEST_ASSERT_EQUAL(GW_TYPE_UINT64, cfg.tags[0].type);
+    TEST_ASSERT_EQUAL(4, gw_tag_width(&cfg.tags[0]));
+    TEST_ASSERT_EQUAL(GW_NO_BIT, cfg.tags[0].bit);
+    TEST_ASSERT_EQUAL(0, cfg.tags[0].length);
+    TEST_ASSERT_EQUAL(GW_WORD_LITTLE, cfg.tags[1].word_order);
+    TEST_ASSERT_EQUAL(GW_WORD_DCBA, cfg.tags[2].word_order);
+    TEST_ASSERT_EQUAL(GW_TYPE_STRING, cfg.tags[3].type);
+    TEST_ASSERT_EQUAL(16, cfg.tags[3].length);
+    TEST_ASSERT_EQUAL(16, gw_tag_width(&cfg.tags[3]));
+    TEST_ASSERT_EQUAL(GW_WORD_BADC, cfg.tags[3].word_order);
+    TEST_ASSERT_EQUAL(15, cfg.tags[4].bit);
+    TEST_ASSERT_EQUAL(1, gw_tag_width(&cfg.tags[4]));
+    TEST_ASSERT_EQUAL(0, cfg.tags[5].bit);
+    TEST_ASSERT_EQUAL(GW_WORD_BIG, cfg.tags[6].word_order);
+
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"string\"}"),
+                    "devices[0].tags[0].length: obligatorio con type=string");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"string\","
+                              "\"length\":17}"),
+                    "devices[0].tags[0].length: valor 17 fuera de rango [1, 16]");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"int16\","
+                              "\"length\":2}"),
+                    "length: solo vale con type=string");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"string\","
+                              "\"length\":2,\"scale\":2}"),
+                    "scale/offset no se admiten en tags string");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"string\","
+                              "\"length\":2,\"deadband\":1}"),
+                    "deadband: no se admite en tags string");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":65533,\"type\":\"int64\"}"),
+                    "65535");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bool\","
+                              "\"bit\":16}"),
+                    "devices[0].tags[0].bit: valor 16 fuera de rango [0, 15]");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"coil\",\"address\":0,\"type\":\"bool\","
+                              "\"bit\":1}"),
+                    "bit: solo vale con type=bool en las áreas holding e input");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\","
+                              "\"bit\":1}"),
+                    "bit: solo vale con type=bool");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bool\","
+                              "\"bit\":1,\"word_order\":\"BADC\"}"),
+                    "word_order: no se admite en un tag bit");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"bool\","
+                              "\"bit\":1,\"writable\":true}"),
+                    "writable: solo las áreas coil y holding");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bool\","
+                              "\"bit\":1,\"scale\":2}"),
+                    "scale/offset no se admiten en tags bool");
+}
+
+/* Issue #38: block reads per device. */
+static void test_device_block_reads(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+              "\"devices\":[{\"name\":\"A\",\"unit_id\":1,\"max_gap\":10,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]},"
+              "{\"name\":\"B\",\"unit_id\":2,\"block_reads\":false,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]},"
+              "{\"name\":\"C\",\"unit_id\":3,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+        err.msg);
+    TEST_ASSERT_EQUAL(GW_CFG_BUILD_DEFAULT, cfg.devices[0].block_reads);
+    TEST_ASSERT_EQUAL(10, cfg.devices[0].max_gap);
+    TEST_ASSERT_EQUAL(0, cfg.devices[1].block_reads);
+    TEST_ASSERT_EQUAL(GW_CFG_BUILD_DEFAULT, cfg.devices[1].max_gap);
+    TEST_ASSERT_EQUAL(GW_CFG_BUILD_DEFAULT, cfg.devices[2].block_reads);
+    TEST_ASSERT_EQUAL(GW_CFG_BUILD_DEFAULT, cfg.devices[2].max_gap);
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"block_reads\":false,\"max_gap\":3,\"tags\":[{\"name\":\"t\","
+                          "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+                    "devices[0].max_gap: no tiene efecto con block_reads=false");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"max_gap\":2000,\"tags\":[{\"name\":\"t\","
+                          "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+                    "devices[0].max_gap: valor 2000 fuera de rango [0, 1999]");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"block_reads\":1,\"tags\":[{\"name\":\"t\","
+                          "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+                    "devices[0].block_reads: se esperaba true o false");
+}
+
+/* MB-12: scan classes. */
+static void test_scan_classes(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+              "\"devices\":[{\"name\":\"A\",\"unit_id\":1,\"poll_ms\":500,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\",\"scan\":\"slow\"},"
+              "{\"name\":\"u\",\"area\":\"holding\",\"address\":1,\"type\":\"uint16\"}]},"
+              "{\"name\":\"B\",\"unit_id\":2,\"poll_ms\":1000000,\"slow_poll_ms\":3600000,"
+              "\"tags\":[{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\","
+              "\"scan\":\"fast\"}]},"
+              "{\"name\":\"C\",\"unit_id\":3,\"poll_ms\":1000000,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+        err.msg);
+    TEST_ASSERT_TRUE(cfg.tags[0].slow);
+    TEST_ASSERT_FALSE(cfg.tags[1].slow);
+    TEST_ASSERT_FALSE(cfg.tags[2].slow);
+    TEST_ASSERT_EQUAL_UINT32(5000, cfg.devices[0].slow_poll_ms);     /* default 10 x poll_ms */
+    TEST_ASSERT_EQUAL_UINT32(3600000, cfg.devices[1].slow_poll_ms);
+    TEST_ASSERT_EQUAL_UINT32(3600000, cfg.devices[2].slow_poll_ms);  /* default capped */
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"poll_ms\":1000,\"slow_poll_ms\":999,\"tags\":[{\"name\":\"t\","
+                          "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+                    "devices[0].slow_poll_ms: no puede ser menor que poll_ms (1000)");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
+                              "\"scan\":\"medium\"}"),
+                    "devices[0].tags[0].scan: valor no válido (se esperaba fast|slow)");
+}
+
+/* MB-15: Modbus TCP gateway section. */
+static void test_modbus_tcp_section(void)
+{
+    const char *base = "\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}";
+    char doc[512];
+    snprintf(doc, sizeof(doc), "{%s}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_FALSE(cfg.modbus_tcp.enabled);               /* off unless asked for */
+    TEST_ASSERT_EQUAL(502, cfg.modbus_tcp.port);
+    TEST_ASSERT_EQUAL(60, cfg.modbus_tcp.idle_timeout_s);
+    TEST_ASSERT_EQUAL(0, cfg.modbus_tcp.client_count);
+    snprintf(doc, sizeof(doc),
+             "{%s,\"modbus_tcp\":{\"enabled\":true,\"port\":1502,\"idle_timeout_s\":0,"
+             "\"allowed_clients\":[\"10.0.2.2\",\"192.168.7.0/24\",\"0.0.0.0/0\"]}}",
+             base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_TRUE(cfg.modbus_tcp.enabled);
+    TEST_ASSERT_EQUAL(1502, cfg.modbus_tcp.port);
+    TEST_ASSERT_EQUAL(0, cfg.modbus_tcp.idle_timeout_s);
+    TEST_ASSERT_EQUAL(3, cfg.modbus_tcp.client_count);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(((uint8_t[]){10, 0, 2, 2}), cfg.modbus_tcp.clients[0].ip, 4);
+    TEST_ASSERT_EQUAL(32, cfg.modbus_tcp.clients[0].prefix);
+    TEST_ASSERT_EQUAL(24, cfg.modbus_tcp.clients[1].prefix);
+    TEST_ASSERT_EQUAL(0, cfg.modbus_tcp.clients[2].prefix);
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"allowed_clients\":[\"10.0.0.0/33\"]}}", base);
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.allowed_clients[0]: prefijo no válido");
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"allowed_clients\":[\"x\",1]}}", base);
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.allowed_clients[0]: 'x' no es una dirección IPv4");
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"allowed_clients\":[\"1.2.3.4\",1]}}", base);
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.allowed_clients[1]: se esperaba un texto");
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"allowed_clients\":\"1.2.3.4\"}}", base);
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.allowed_clients: se esperaba un array");
+    snprintf(doc, sizeof(doc),
+             "{%s,\"modbus_tcp\":{\"allowed_clients\":[\"1.1.1.1\",\"1.1.1.2\",\"1.1.1.3\","
+             "\"1.1.1.4\",\"1.1.1.5\",\"1.1.1.6\",\"1.1.1.7\",\"1.1.1.8\",\"1.1.1.9\"]}}", base);
+    ASSERT_REJECTED(parse(doc), "9 entradas; el máximo es 8");
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"port\":0}}", base);
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.port: valor 0 fuera de rango");
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"enable\":true}}", base);
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.enable: clave desconocida");
 }
 
 static void test_section_errors(void)
@@ -610,6 +785,10 @@ int main(void)
     RUN_TEST(test_hostname);
     RUN_TEST(test_error_fields);
     RUN_TEST(test_schema_rules);
+    RUN_TEST(test_mb6_tags);
+    RUN_TEST(test_device_block_reads);
+    RUN_TEST(test_scan_classes);
+    RUN_TEST(test_modbus_tcp_section);
     RUN_TEST(test_section_errors);
     RUN_TEST(test_limits);
     RUN_TEST(test_syntax_errors_give_line_and_column);

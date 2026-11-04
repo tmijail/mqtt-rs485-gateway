@@ -416,8 +416,13 @@ static bool check_topic_id(const char *s, const char *path, bool allow_empty, gw
 /* ---------- sections ---------- */
 
 static const char *const k_area_names[] = {"coil", "discrete", "holding", "input"};
-static const char *const k_type_names[] = {"bool", "uint16", "int16", "uint32", "int32", "float32"};
-static const char *const k_word_names[] = {"big", "little"};
+static const char *const k_type_names[] = {"bool",  "uint16", "int16",   "uint32", "int32",
+                                           "float32", "uint64", "int64", "float64", "string"};
+#define TYPE_COUNT (sizeof(k_type_names) / sizeof(k_type_names[0]))
+/* "big"/"little" are the MVP names of ABCD/CDAB (MB-5); the four letter forms come with MB-6. */
+static const char *const k_word_names[] = {"big", "little", "ABCD", "CDAB", "BADC", "DCBA"};
+static const gw_word_order_t k_word_values[] = {GW_WORD_BIG,    GW_WORD_LITTLE, GW_WORD_BIG,
+                                                GW_WORD_LITTLE, GW_WORD_BADC,   GW_WORD_DCBA};
 static const char *const k_parity_names[] = {"none", "even", "odd"};
 
 /* dhcp/ip/netmask/gateway/dns of one interface; the addresses are required with dhcp=false. */
@@ -714,6 +719,69 @@ static bool parse_syslog(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     return true;
 }
 
+/* MB-15. Modbus TCP has no authentication: off by default, and allowed_clients limits who may
+ * connect ("a.b.c.d" or "a.b.c.d/prefix"). */
+static bool parse_modbus_tcp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"enabled", "port", "allowed_clients", "idle_timeout_s"};
+    static const cJSON empty = {.type = cJSON_Object};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "modbus_tcp");
+    if (o == NULL) {
+        o = &empty;
+    }
+    long port, idle;
+    if (!check_keys(o, "modbus_tcp", keys, 4, err) ||
+        !get_bool(o, "enabled", "modbus_tcp", false, &cfg->modbus_tcp.enabled, err) ||
+        !get_int(o, "port", "modbus_tcp", false, 502, 1, 65535, &port, err) ||
+        !get_int(o, "idle_timeout_s", "modbus_tcp", false, 60, 0, 3600, &idle, err)) {
+        return false;
+    }
+    cfg->modbus_tcp.port = (uint16_t)port;
+    cfg->modbus_tcp.idle_timeout_s = (uint16_t)idle;
+    const cJSON *list = cJSON_GetObjectItemCaseSensitive(o, "allowed_clients");
+    if (list == NULL) {
+        return true;
+    }
+    if (!cJSON_IsArray(list)) {
+        return fail(err, "modbus_tcp.allowed_clients", "se esperaba un array");
+    }
+    int n = cJSON_GetArraySize(list);
+    if (n > GW_MBTCP_MAX_ALLOWED) {
+        return fail(err, "modbus_tcp.allowed_clients", "%d entradas; el máximo es %d", n,
+                    GW_MBTCP_MAX_ALLOWED);
+    }
+    int i = 0;
+    for (const cJSON *it = list->child; it != NULL; it = it->next, i++) {
+        char p[48];
+        snprintf(p, sizeof(p), "modbus_tcp.allowed_clients[%d]", i);
+        if (!cJSON_IsString(it)) {
+            return fail(err, p, "se esperaba un texto (\"a.b.c.d\" o \"a.b.c.d/n\")");
+        }
+        char buf[24];
+        size_t len = strlen(it->valuestring);
+        if (len >= sizeof(buf)) {
+            return fail(err, p, "'%s' no es una dirección IPv4 ni una red", it->valuestring);
+        }
+        memcpy(buf, it->valuestring, len + 1);
+        unsigned prefix = 32;
+        char *slash = strchr(buf, '/');
+        if (slash != NULL) {
+            char tail;
+            *slash = '\0';
+            if (sscanf(slash + 1, "%u%c", &prefix, &tail) != 1 || prefix > 32) {
+                return fail(err, p, "prefijo no válido en '%s' (0-32)", it->valuestring);
+            }
+        }
+        uint8_t *ip = cfg->modbus_tcp.clients[i].ip;
+        if (!parse_ipv4(buf, ip)) {
+            return fail(err, p, "'%s' no es una dirección IPv4 ni una red", it->valuestring);
+        }
+        cfg->modbus_tcp.clients[i].prefix = (uint8_t)prefix;
+    }
+    cfg->modbus_tcp.client_count = (uint8_t)n;
+    return true;
+}
+
 /* CFG-3 / CFG-4: web UI and REST API. The password is a secret (CFG-7): it only appears
  * here while a new one is being set; the stored document never holds it. */
 static bool parse_web(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
@@ -753,38 +821,67 @@ static bool parse_web(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 
 static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"name",   "area",   "address",  "type",     "word_order",
-                                       "scale",  "offset", "deadband", "writable", "units"};
-    int area, type, word;
-    long addr;
+    static const char *const keys[] = {"name",   "area",     "address",  "type",  "word_order",
+                                       "scale",  "offset",   "deadband", "writable", "units",
+                                       "bit",    "length",   "scan"};
+    static const char *const scans[] = {"fast", "slow"};
+    int area, type, word, scan;
+    long addr, bit, length;
     char p[96];
-    if (!check_keys(o, path, keys, 10, err) ||
+    if (!check_keys(o, path, keys, sizeof(keys) / sizeof(keys[0]), err) ||
         !get_string(o, "name", path, true, "", t->name, sizeof(t->name), err) ||
         !get_enum(o, "area", path, true, 0, k_area_names, 4, &area, err) ||
         !get_int(o, "address", path, true, 0, 0, 65535, &addr, err) ||
-        !get_enum(o, "type", path, true, 0, k_type_names, 6, &type, err) ||
-        !get_enum(o, "word_order", path, false, GW_WORD_BIG, k_word_names, 2, &word, err) ||
+        !get_enum(o, "type", path, true, 0, k_type_names, TYPE_COUNT, &type, err) ||
+        !get_enum(o, "word_order", path, false, 0, k_word_names, 6, &word, err) ||
         !get_double(o, "scale", path, 1.0, &t->scale, err) ||
         !get_double(o, "offset", path, 0.0, &t->offset, err) ||
         !get_double(o, "deadband", path, 0.0, &t->deadband, err) ||
         !get_bool(o, "writable", path, false, &t->writable, err) ||
-        !get_string(o, "units", path, false, "", t->units, sizeof(t->units), err)) {
+        !get_string(o, "units", path, false, "", t->units, sizeof(t->units), err) ||
+        !get_int(o, "bit", path, false, GW_NO_BIT, 0, 15, &bit, err) ||
+        !get_int(o, "length", path, false, 0, 1, GW_STR_MAX_REGS, &length, err) ||
+        !get_enum(o, "scan", path, false, 0, scans, 2, &scan, err)) {
         return false;
     }
+    t->slow = scan == 1;
     t->area = (gw_area_t)area;
     t->type = (gw_type_t)type;
-    t->word_order = (gw_word_order_t)word;
+    t->word_order = k_word_values[word];
     t->address = (uint16_t)addr;
+    t->bit = (int8_t)bit;
+    t->length = (uint8_t)length;
 
     if (t->name[0] == '\0') {
         join(p, sizeof(p), path, "name");
         return fail(err, p, "no puede estar vacío");
     }
     bool bit_area = t->area == GW_AREA_COIL || t->area == GW_AREA_DISCRETE;
-    if (bit_area != (t->type == GW_TYPE_BOOL)) {
+    if (bit_area && t->type != GW_TYPE_BOOL) {
         join(p, sizeof(p), path, "type");
-        return fail(err, p, bit_area ? "las áreas coil/discrete solo admiten type=bool"
-                                     : "type=bool solo vale en las áreas coil y discrete");
+        return fail(err, p, "las áreas coil/discrete solo admiten type=bool");
+    }
+    bool has_bit = cJSON_GetObjectItemCaseSensitive(o, "bit") != NULL;
+    if (!bit_area && t->type == GW_TYPE_BOOL && !has_bit) {
+        join(p, sizeof(p), path, "type");
+        return fail(err, p, "type=bool en holding/input requiere la clave bit (0-15); sin bit, "
+                            "solo vale en las áreas coil y discrete");
+    }
+    if (has_bit && (bit_area || t->type != GW_TYPE_BOOL)) {
+        join(p, sizeof(p), path, "bit");
+        return fail(err, p, "solo vale con type=bool en las áreas holding e input");
+    }
+    if (has_bit && cJSON_GetObjectItemCaseSensitive(o, "word_order") != NULL &&
+        t->word_order != GW_WORD_BIG) {
+        join(p, sizeof(p), path, "word_order");
+        return fail(err, p, "no se admite en un tag bit: el bit 0 es el menos significativo del "
+                            "registro tal como llega");
+    }
+    bool has_length = cJSON_GetObjectItemCaseSensitive(o, "length") != NULL;
+    if ((t->type == GW_TYPE_STRING) != has_length) {
+        join(p, sizeof(p), path, "length");
+        return fail(err, p, has_length ? "solo vale con type=string"
+                                       : "obligatorio con type=string (registros, 1-16)");
     }
     if (t->writable && t->area != GW_AREA_COIL && t->area != GW_AREA_HOLDING) {
         join(p, sizeof(p), path, "writable");
@@ -798,13 +895,18 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
         join(p, sizeof(p), path, "scale");
         return fail(err, p, "no puede ser 0");
     }
-    if (t->type == GW_TYPE_BOOL && (t->scale != 1.0 || t->offset != 0.0)) {
+    if ((t->type == GW_TYPE_BOOL || t->type == GW_TYPE_STRING) &&
+        (t->scale != 1.0 || t->offset != 0.0)) {
         join(p, sizeof(p), path, "scale");
-        return fail(err, p, "scale/offset no se admiten en tags bool");
+        return fail(err, p, "scale/offset no se admiten en tags %s", k_type_names[t->type]);
     }
     if (t->deadband < 0.0) {
         join(p, sizeof(p), path, "deadband");
         return fail(err, p, "no puede ser negativo");
+    }
+    if (t->type == GW_TYPE_STRING && t->deadband != 0.0) {
+        join(p, sizeof(p), path, "deadband");
+        return fail(err, p, "no se admite en tags string");
     }
     return true;
 }
@@ -812,22 +914,41 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
 static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_device_cfg_t *d,
                          gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"name", "unit_id", "poll_ms", "offline_after", "tags"};
-    long unit, poll, off;
+    static const char *const keys[] = {"name",        "unit_id", "poll_ms", "slow_poll_ms",
+                                       "offline_after", "block_reads", "max_gap", "tags"};
+    long unit, poll, off, gap, slow;
+    bool merge;
     char p[96];
-    if (!check_keys(o, path, keys, 5, err) ||
+    if (!check_keys(o, path, keys, sizeof(keys) / sizeof(keys[0]), err) ||
         !get_string(o, "name", path, true, "", d->name, sizeof(d->name), err) ||
         !get_int(o, "unit_id", path, true, 0, 1, 247, &unit, err) ||
         !get_int(o, "poll_ms", path, false, 1000, 50, 3600000, &poll, err) ||
-        !get_int(o, "offline_after", path, false, 3, 1, 1000, &off, err)) {
+        !get_int(o, "slow_poll_ms", path, false, poll * 10 < 3600000 ? poll * 10 : 3600000, 50,
+                 3600000, &slow, err) ||
+        !get_int(o, "offline_after", path, false, 3, 1, 1000, &off, err) ||
+        !get_bool(o, "block_reads", path, true, &merge, err) ||
+        !get_int(o, "max_gap", path, false, GW_CFG_BUILD_DEFAULT, 0, GW_MAX_GAP_LIMIT, &gap, err)) {
         return false;
+    }
+    /* MB-11: absent keys keep the build's setting (CONFIG_GW_MB_BLOCK_READS / _MAX_GAP) */
+    bool has_merge = cJSON_GetObjectItemCaseSensitive(o, "block_reads") != NULL;
+    d->block_reads = has_merge ? (int8_t)merge : (int8_t)GW_CFG_BUILD_DEFAULT;
+    d->max_gap = (int16_t)gap;
+    if (has_merge && !merge && gap != GW_CFG_BUILD_DEFAULT) {
+        join(p, sizeof(p), path, "max_gap");
+        return fail(err, p, "no tiene efecto con block_reads=false");
     }
     join(p, sizeof(p), path, "name");
     if (!check_topic_id(d->name, p, false, err)) {
         return false;
     }
+    if (slow < poll) {
+        join(p, sizeof(p), path, "slow_poll_ms");
+        return fail(err, p, "no puede ser menor que poll_ms (%ld)", poll);
+    }
     d->unit_id = (uint8_t)unit;
     d->poll_ms = (uint32_t)poll;
+    d->slow_poll_ms = (uint32_t)slow;
     d->offline_after = (uint16_t)off;
 
     const cJSON *tags = cJSON_GetObjectItemCaseSensitive(o, "tags");
@@ -930,7 +1051,8 @@ unsigned gw_json_depth(const char *json, size_t len)
 bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"network", "ntp",      "mqtt",    "sparkplug", "rs485",
-                                       "local_io", "devices", "syslog",  "web"};
+                                       "local_io", "devices", "syslog",  "web",
+                                       "modbus_tcp"};
     memset(cfg, 0, sizeof(*cfg));
     err->msg[0] = '\0';
     err->path[0] = '\0';
@@ -962,11 +1084,12 @@ bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_
         cJSON_Delete(root);
         return fail_at(err, json, end, "contenido después del documento");
     }
-    bool ok = check_keys(root, "", keys, 9, err) && parse_network(root, cfg, err) &&
+    bool ok = check_keys(root, "", keys, sizeof(keys) / sizeof(keys[0]), err) && parse_network(root, cfg, err) &&
               parse_ntp(root, cfg, err) && parse_mqtt(root, cfg, err) &&
               parse_sparkplug(root, cfg, err) && parse_rs485(root, cfg, err) &&
               parse_local_io(root, cfg, err) && parse_devices(root, cfg, err) &&
-              parse_syslog(root, cfg, err) && parse_web(root, cfg, err);
+              parse_syslog(root, cfg, err) && parse_web(root, cfg, err) &&
+              parse_modbus_tcp(root, cfg, err);
     cJSON_Delete(root);
 
     if (ok && cfg->mqtt.client_id[0] == '\0') {
@@ -1021,7 +1144,13 @@ uint16_t gw_tag_width(const gw_tag_cfg_t *tag)
     case GW_TYPE_INT32:
     case GW_TYPE_FLOAT32:
         return 2;
+    case GW_TYPE_UINT64:
+    case GW_TYPE_INT64:
+    case GW_TYPE_FLOAT64:
+        return 4;
+    case GW_TYPE_STRING:
+        return tag->length;
     default:
-        return 1;
+        return 1;   /* 16-bit types, coils, discrete inputs and register bits */
     }
 }
