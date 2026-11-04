@@ -58,6 +58,11 @@ typedef struct {
     void (*restart)(void);  /* orderly restart into the new image */
 } gw_fw_hooks_t;
 
+/** First thing at boot, before the console shell starts (issue #101): the status lock, the
+ *  running and other slots, and whether the running image is on trial (its trial starts here).
+ *  Single task; gw_fw_init() calls it if it did not run. */
+void gw_fw_early_init(void);
+
 /** At boot, before anything judges the image. @p cfg: the running configuration (recovery
  *  and commissioning: the network-only one); @p enabled: updates accepted. */
 esp_err_t gw_fw_init(const gw_config_t *cfg, bool enabled, const gw_fw_hooks_t *hooks);

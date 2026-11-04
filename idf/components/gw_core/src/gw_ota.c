@@ -52,6 +52,19 @@ uint32_t gw_ota_trial_left_ms(const gw_ota_trial_t *t, uint32_t now_ms)
     return t->state == GW_OTA_TRIAL_PENDING && el < t->timeout_ms ? t->timeout_ms - el : 0;
 }
 
+bool gw_ota_trial_open(const gw_ota_trial_t *t)
+{
+    return t->state == GW_OTA_TRIAL_PENDING;
+}
+
+gw_ota_refusal_t gw_ota_refusal(const gw_ota_trial_t *t, bool transfer_running)
+{
+    if (transfer_running) {
+        return GW_OTA_REFUSAL_QUIET;
+    }
+    return gw_ota_trial_open(t) ? GW_OTA_REFUSAL_IN_TRIAL : GW_OTA_REFUSAL_REPORT;
+}
+
 static bool lower_prefix(const char *s, const char *p)
 {
     for (; *p; s++, p++) {

@@ -340,6 +340,7 @@ void app_main(void)
     if (gw_bootbtn_start(on_button) != ESP_OK) {
         ESP_LOGE(TAG, "BOOT button unavailable: no factory reset");
     }
+    gw_fw_early_init();   /* FW-1: before the shell can ask for the update status (#101) */
     start_shell_early();
 
     const char *source;

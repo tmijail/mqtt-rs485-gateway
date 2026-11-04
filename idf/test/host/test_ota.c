@@ -65,6 +65,26 @@ static void test_rejected_configuration_and_commissioning(void)
     TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_tick(&t, 60000));
 }
 
+/* Issue #101: a refusal never hides a running transfer's state, nor the trial of a new image */
+static void test_refusal_keeps_transfer_and_trial(void)
+{
+    gw_ota_trial_t t;
+    gw_ota_trial_init(&t, true, 0, 30000);
+    TEST_ASSERT_TRUE(gw_ota_trial_open(&t));
+    TEST_ASSERT_EQUAL(GW_OTA_REFUSAL_IN_TRIAL, gw_ota_refusal(&t, false));
+    TEST_ASSERT_EQUAL(GW_OTA_REFUSAL_QUIET, gw_ota_refusal(&t, true));
+    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_session_up(&t));
+    TEST_ASSERT_FALSE(gw_ota_trial_open(&t));
+    TEST_ASSERT_EQUAL(GW_OTA_REFUSAL_REPORT, gw_ota_refusal(&t, false));
+    TEST_ASSERT_EQUAL(GW_OTA_REFUSAL_QUIET, gw_ota_refusal(&t, true));
+    gw_ota_trial_init(&t, false, 0, 30000);
+    TEST_ASSERT_FALSE(gw_ota_trial_open(&t));
+    TEST_ASSERT_EQUAL(GW_OTA_REFUSAL_REPORT, gw_ota_refusal(&t, false));
+    gw_ota_trial_init(&t, true, 0, 30000);
+    TEST_ASSERT_EQUAL(GW_OTA_ROLLBACK, gw_ota_trial_tick(&t, 30000));
+    TEST_ASSERT_EQUAL(GW_OTA_REFUSAL_REPORT, gw_ota_refusal(&t, false));
+}
+
 static void test_urls(void)
 {
     char why[96];
@@ -158,6 +178,7 @@ int main(void)
     RUN_TEST(test_timeout_rolls_back);
     RUN_TEST(test_timeout_across_the_32bit_wrap);
     RUN_TEST(test_rejected_configuration_and_commissioning);
+    RUN_TEST(test_refusal_keeps_transfer_and_trial);
     RUN_TEST(test_urls);
     RUN_TEST(test_progress_every_ten_percent);
     RUN_TEST(test_progress_unknown_size_by_time);

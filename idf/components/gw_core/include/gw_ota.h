@@ -55,6 +55,17 @@ gw_ota_action_t gw_ota_trial_commissioning(gw_ota_trial_t *t);
 gw_ota_action_t gw_ota_trial_tick(gw_ota_trial_t *t, uint32_t now_ms);
 /** Milliseconds left before the timeout rolls the image back (0 if not pending). */
 uint32_t gw_ota_trial_left_ms(const gw_ota_trial_t *t, uint32_t now_ms);
+/** The trial is not decided yet: no other update is accepted meanwhile. */
+bool gw_ota_trial_open(const gw_ota_trial_t *t);
+
+/* Issue #101: what a refused update request does to the status (shell, web, Sparkplug). */
+typedef enum {
+    GW_OTA_REFUSAL_QUIET = 0,    /* a transfer is running: it keeps its own state */
+    GW_OTA_REFUSAL_REPORT,       /* the refusal becomes the state ("refused: ...") */
+    GW_OTA_REFUSAL_IN_TRIAL,     /* reported, but the trial phase stays (time left, outcome) */
+} gw_ota_refusal_t;
+
+gw_ota_refusal_t gw_ota_refusal(const gw_ota_trial_t *t, bool transfer_running);
 
 /** An update URL: https:// (http:// only with @p allow_http), a host, printable ASCII without
  *  spaces, shorter than GW_OTA_URL_MAX. On false @p why says why. */
