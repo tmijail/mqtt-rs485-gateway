@@ -878,8 +878,8 @@ static void side_reserve(uint8_t from)
     s_side_reserved = (uint8_t)(from + GW_NVSMIG_BDSEQ_BLOCK);
     s_side_ok = write_file_atomic(MIG_BDSEQ, MIG_BDSEQ ".tmp", &s_side_reserved, 1) == ESP_OK;
     if (s_side_ok) {
-        ESP_LOGW(TAG, "no NVS: bdSeq values up to %u reserved in " MIG_BDSEQ " (the next boot with "
-                      "NVS continues from there)", s_side_reserved);
+        ESP_LOGW(TAG, "no NVS: bdSeq values below %u reserved in " MIG_BDSEQ " (the next boot with "
+                      "NVS continues from %u)", s_side_reserved, s_side_reserved);
     } else {
         ESP_LOGE(TAG, "no NVS, and no bdSeq reservation in " MIG_BDSEQ ": the next boot with NVS "
                       "may reuse values of this one");
