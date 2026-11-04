@@ -57,3 +57,5 @@ Texto propuesto (en inglés):
 > **Steps:** an app with a task on core 1 that loops calling `snprintf()` (code in flash); on core 0, write an app image into the passive OTA slot, then call `esp_ota_end()` and `esp_ota_set_boot_partition()` (each maps every segment with `esp_image_verify()`). QEMU aborts within a few rounds (1 to 3 here); without the core 1 task it never does.
 >
 > **Expected:** accesses of the other core during a freeze wait until the unfreeze, as on the chip.
+>
+> A related abort, less frequent, happens during plain flash erases and writes (an OTA download writing about 1 MB): `../system/physmem.c:2517: iotlb_to_section: Assertion 'section_index < d->map.sections_nb' failed.` There IDF stalls the other core in IRAM (`spi_flash_disable_interrupts_caches_and_other_cpu`), so it may be a race of the memory map update between the vCPUs.

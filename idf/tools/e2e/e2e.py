@@ -1779,7 +1779,16 @@ def main():
         if want("https"):
             run_https(args, work)
         if want("ota"):
-            run_ota(args, work)
+            # FW-1: hundreds of flash erases and writes per image; Espressif's QEMU sometimes
+            # aborts in one (README 4.3). That is a failed check, not the end of the run.
+            try:
+                run_ota(args, work)
+            except Exception:
+                traceback.print_exc()
+                qemu = (work / "uart0-ota.log.qemu")
+                tail = qemu.read_text(errors="replace").strip().splitlines()[-1:] if qemu.exists() else []
+                check("FW-1 OTA scenario completed", False,
+                      traceback.format_exc().splitlines()[-1] + f"; QEMU: {tail}")
         if want("nvs"):
             run_nvs_migration(args, work)
         if want("slow"):
