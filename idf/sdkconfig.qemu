@@ -7,3 +7,6 @@ CONFIG_GW_IO_SIMULATED=y
 CONFIG_GW_RS485_HW_HALF_DUPLEX=n
 CONFIG_SPIRAM=n
 CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+# QEMU writes the flash image asynchronously: a reset right after the panic handler saved the
+# core dump can drop its last write (the checksum) from the image. One second lets it land.
+CONFIG_ESP_SYSTEM_PANIC_REBOOT_DELAY_SECONDS=1
