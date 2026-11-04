@@ -432,7 +432,7 @@ mkdir -p /tmp/spb && build-host/spb_dump /tmp/spb && python3 idf/tools/spb_decod
 
 `spb_dump` genera NDEATH, NBIRTH, DBIRTH, DDATA y NDATA reales del motor. `spb_decode.py` los compila con `grpc_tools.protoc` a partir del `sparkplug_b.proto` oficial de eclipse/tahu (copiado sin cambios en `components/gw_core/proto/`) y los decodifica con **Google protobuf 7.36**.
 
-Resultado: **8 payloads decodificados, 0 errores estructurales** (incluye un DBIRTH y un DDATA con UInt64, Int64, Double, String y un bit de registro, y NBIRTH con los contadores `Counter/n` UInt64 de IO-4). Además se decodificaron los 2209 mensajes capturados en el E2E.
+Resultado: **8 payloads decodificados, 0 errores estructurales** (incluye un DBIRTH y un DDATA con UInt64, Int64, Double, String y un bit de registro, y NBIRTH con los contadores `Counter/n` UInt64 de IO-4). Además se decodificaron los 2211 mensajes capturados en el E2E.
 
 ### 4.3 QA-3: punta a punta con el firmware real en QEMU
 
@@ -463,13 +463,13 @@ E2E_PYTHON=~/e2e/bin/python idf/tools/e2e/run_e2e.sh
 
 Configuración usada: `tools/e2e/fs/config.json` (keepalive de 10 s, syslog hacia el receptor del harness). `run_e2e.sh` pasa además el ELF y el python de IDF, para decodificar el *core dump* con `esp_coredump`.
 
-Resultado en `feature/firmware`: **134 comprobaciones**, ninguna corrida completa en verde. Ocho corridas completas durante la verificación; cada comprobación pasó en al menos una corrida con el código final o casi final, pero siempre falló alguna, por tres causas:
+Resultado: **134/134 comprobaciones OK** sobre el commit final de `feature/firmware` (novena corrida completa). Las ocho anteriores, durante la verificación, fallaron siempre en alguna, por tres causas:
 
 - **QEMU aborta durante una OTA** (ver *cache freeze* en «Lo que QEMU no cubre», abajo): corridas 1, 6 y 7 (una vez `iotlb_to_section` en medio de la descarga, dos veces QEMU termina sin mensaje mientras verifica la firma de una imagen). Las corridas 4 y 5 encontraron dos defectos reales que se corrigieron (la consola USB secundaria y una carrera del estado de la actualización).
 - **Issue #71 con un DISCONNECTED duplicado** de esp-mqtt (corridas 3 y 5): se corrigió en `gw_edge` (un intento se contaba dos veces); no volvió a fallar en las corridas 6 a 8.
 - **Fallas de tiempo con el host cargado** (otro agente corría su E2E en paralelo): los tres volcados del *panic* inválidos (Issue #12, corridas 4 y 7, ya descrito abajo) y un *handshake* HTTPS de más de 15 s en `CFG-4 PUT` (corrida 8, con tres fallas en cascada del mismo escenario).
 
-La corrida 3 dio 133/134 (solo #71, corregido después); la 8, con el código final, 130/134 (solo el *handshake* HTTPS y su cascada; toda la OTA y #67 pasaron).
+La corrida 3 dio 133/134 (solo #71, corregido después); la 8, 130/134 (el *handshake* HTTPS y su cascada). El escenario OTA sigue expuesto a los abortos de QEMU: es probable que alguna corrida futura vuelva a fallar ahí sin que el firmware tenga la culpa.
 
 | Criterio | Resultado medido |
 |---|---|
