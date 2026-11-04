@@ -341,7 +341,7 @@ static void download_task(void *arg)
     e = esp_https_ota_finish(h);   /* verifies the image and sets it to boot */
     park(false);
     if (e == ESP_ERR_OTA_VALIDATE_FAILED) {
-        fail("image %s rejected: invalid (%s)", version, WHY_INVALID);
+        fail("image %s rejected (%s)", version, WHY_INVALID);
     } else if (e != ESP_OK) {
         fail("image %s not installed (%s)", version, esp_err_to_name(e));
     } else {
@@ -499,7 +499,7 @@ esp_err_t gw_fw_upload_end(bool complete, char *why, size_t cap)
     }
     park(false);
     if (!verified && e == ESP_ERR_OTA_VALIDATE_FAILED) {
-        snprintf(why, cap, "image %s rejected: invalid (%s)", s_up_version, WHY_INVALID);
+        snprintf(why, cap, "image %s rejected (%s)", s_up_version, WHY_INVALID);
     } else if (!verified) {
         snprintf(why, cap, "image %s not installed (%s)", s_up_version, esp_err_to_name(e));
     } else if (e != ESP_OK) {

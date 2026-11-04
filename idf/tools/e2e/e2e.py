@@ -1439,6 +1439,18 @@ class FirmwareServer:
         self.srv.server_close()
 
 
+def observer_retry(port, timeout=10):
+    """Observer on a broker that was just (re)started: it may not listen yet."""
+    end = time.monotonic() + timeout
+    while True:
+        try:
+            return Observer(port)
+        except OSError:
+            if time.monotonic() >= end:
+                raise
+            time.sleep(0.3)
+
+
 def fw_state(p):
     m = metric(p, alias=41)
     return m.string_value if m is not None else None
@@ -1471,9 +1483,12 @@ def run_ota(args, work):
                             "2", "--scheme", "rsa3072", str(other)], check=True, capture_output=True)
         for k, key in (("v2", args.signing_key), ("v3", args.signing_key),
                        ("bad", args.signing_key), ("foreign", str(other))):
+            # --keyfile takes several values: an explicit --output keeps the data file apart
+            unsigned_k = fwdir / f"{k}-unsigned.bin"
+            (fwdir / f"{k}.bin").rename(unsigned_k)
             subprocess.run([args.idf_python, "-m", "espsecure", "sign-data", "--version", "2",
-                            "--keyfile", key, str(fwdir / f"{k}.bin")], check=True,
-                           capture_output=True)
+                            "--keyfile", key, "--output", str(fwdir / f"{k}.bin"),
+                            str(unsigned_k)], check=True, capture_output=True)
             images[k] = fwdir / f"{k}.bin"
     server = FirmwareServer(fw_port, fwdir, pki["server.crt"], pki["server.key"])
     conf = work / "broker-ota.conf"
@@ -1518,7 +1533,7 @@ def run_ota(args, work):
             # FW-2: a valid image signed with a key other than the running firmware's
             update(f"https://10.0.2.2:{fw_port}/foreign.bin")
             foreign = obs.wait(ndata_t, 120, lambda p: (fw_state(p) or "").startswith(
-                "failed: image e2e-foreign rejected: invalid (checksum or signature)"))
+                "failed: image e2e-foreign rejected (checksum or signature)"))
         time.sleep(2)
         still = not any(m[1] == f"{T}/NDEATH/{node}" for m in CAPTURE if m[0] >= asked)
         check("FW-1 bad updates refused without a restart: http:// refused, an image that fails "
@@ -1575,7 +1590,7 @@ def run_ota(args, work):
         back = gw.wait_log(r"fw: firmware e2e-v3 rejected \(no Sparkplug session before the timeout\)",
                            timeout_s + 30, asked)
         broker = start_broker(conf, work / "mosquitto-ota.log")
-        obs = Observer(port)
+        obs = observer_retry(port)
         nb4 = obs.wait(nbirth_t, 60)
         check(f"FW-1 web upload; a new image without a Sparkplug session for {timeout_s} s (broker "
               "down) goes back to the previous one, which says so",
@@ -1599,7 +1614,7 @@ def run_ota(args, work):
         back = gw.wait_log(r"fw: firmware e2e-v3 \(ota_0\) was rejected or did not confirm itself; "
                            r"running e2e-v2 again", 60, trial or asked)
         broker = start_broker(conf, work / "mosquitto-ota.log")
-        obs = Observer(port)
+        obs = observer_retry(port)
         nb5 = obs.wait(nbirth_t, 60)
         check("FW-1 a reset during the trial (panic) makes the bootloader boot the previous image",
               death and trial and back and nb5
