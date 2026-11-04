@@ -1185,6 +1185,94 @@ def run_store_forward(args, work, slave):
           + " | ".join(gw.find(r"^store\s", asked) + gw.find(r"^store\s", asked2)))
 
 
+STACK_MARGIN_B = 1024   # see run_stack_margin
+
+
+def run_stack_margin(args, work, slave):
+    """SPB-16..19 and the 6 KB Sparkplug stack (review of 2ea6ffd), in one boot (GW27) with
+    store & forward, diagnostics every 10 s, two template devices (Pump) and a bytes tag. Through
+    a Relay (port +16) it runs the deepest paths of the Sparkplug task: a DCMD on a template
+    member (members decoded one level deep), a DCMD with Bytes, a diagnostics NDATA with the
+    Modbus DataSet, and, after the broker was away, the replay of a template instance and raw
+    bytes as historical data. Then the shell reports the task's lowest free stack since boot.
+
+    Margin: at least STACK_MARGIN_B (1 KB) free. Interrupts run on their own stack on Xtensa,
+    so the task stack only has to absorb paths the scenario did not hit at their deepest: a log
+    line formatted on top of the deepest frame (esp_log and the syslog hook, a few hundred bytes)
+    and a longer template or DataSet than these. The TLS write path (mbedTLS in this task) is
+    measured separately by the MQTT-4 boot after the births (log_stacks) and is not nested in a
+    decode: commands are decoded first and their confirmations published afterwards."""
+    node, port = "GW27", MQTT_PORT + 16
+    relay = Relay(port, MQTT_PORT)
+    obs = Observer()
+    cfg = node_config(node, port=port)
+    cfg["sparkplug"]["store_forward"] = True
+    cfg["sparkplug"]["diagnostics_s"] = 10
+    for k in (0, 1):
+        cfg["devices"].append({"name": f"Pump{'AB'[k]}", "unit_id": 1, "type": "Pump", "poll_ms": 500,
+                               "tags": [{"name": "Speed", "area": "holding", "address": 232 + k,
+                                         "type": "uint16", "units": "rpm", "eng_high": 3000,
+                                         "writable": True},
+                                        {"name": "Run", "area": "coil", "address": 7 + k, "type": "bool"}]})
+        slave.ctx.setValues(3, 232 + k, [1000 + k])
+    cfg["devices"].append({"name": "Raw", "unit_id": 1, "poll_ms": 500, "tags": [
+        {"name": "Block", "area": "holding", "address": 240, "type": "bytes", "length": 4,
+         "writable": True}]})
+    slave.ctx.setValues(3, 240, [0x0001, 0x0203, 0x0405, 0x0607])
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "stack", cfg)
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    for d in ("PumpA", "Raw"):
+        if not any(m[1] == f"{T}/DBIRTH/{node}/{d}" for m in CAPTURE):
+            obs.wait(f"{T}/DBIRTH/{node}/{d}", 10)
+    # DCMD on a template member
+    p = spb.Payload()
+    p.timestamp = int(time.time() * 1000)
+    m = p.metrics.add()
+    m.name, m.datatype = "Pump", 19
+    m.template_value.template_ref = "Pump"
+    mm = m.template_value.metrics.add()
+    mm.name, mm.datatype, mm.int_value = "Speed", 6, 1500
+    obs.drain()
+    obs.c.publish(f"{T}/DCMD/{node}/PumpA", p.SerializeToString(), qos=0)
+    tmpl_dd = obs.wait(f"{T}/DDATA/{node}/PumpA", 5)
+    # DCMD with Bytes
+    obs.publish_cmd(f"{T}/DCMD/{node}/Raw", [{"name": "Block", "datatype": 17,
+                                             "bytes_value": bytes(range(0x10, 0x18))}])
+    raw_dd = obs.wait(f"{T}/DDATA/{node}/Raw", 5)
+    # diagnostics NDATA with the DataSet (the counters move every cycle)
+    diag = obs.wait(f"{T}/NDATA/{node}", 13, lambda q: metric(q, alias=54) is not None)
+    # store & forward of a template instance and raw bytes
+    relay.stop()
+    gw.wait_log(r"MQTT down; reconnect attempt", 10, time.monotonic() - 1)
+    slave.ctx.setValues(3, 233, [1777])
+    slave.ctx.setValues(3, 240, [0x00FF, 0x00FE, 0x00FD, 0x00FC])
+    time.sleep(2.5)
+    relay.start()
+    nb2 = obs.wait(f"{T}/NBIRTH/{node}", 70)
+    time.sleep(3)
+    after = [x for x in CAPTURE if nb2 and x[0] >= nb2[0] and x[1].split("/")[3:4] == [node]]
+    hist_pump = [x for x in after if x[1] == f"{T}/DDATA/{node}/PumpB" and x[2].metrics
+                 and x[2].metrics[0].is_historical and x[2].metrics[0].datatype == 19]
+    hist_raw = [x for x in after if x[1] == f"{T}/DDATA/{node}/Raw"
+                and any(y.is_historical and y.datatype == 17 for y in x[2].metrics)]
+    asked, h = gw.shell("status", [r"^stack\s+sparkplug \d+ "])
+    line = (gw.find(r"^stack\s+sparkplug \d+ ", asked) or [""])[0]
+    free = int(re.search(r"sparkplug (\d+)", line).group(1)) if line else None
+    print(f"stack after the deep paths: {line}", flush=True)
+    gw.kill()
+    relay.stop()
+    obs.wait(f"{T}/NDEATH/{node}", 5)
+    obs.close()
+    paths = {"template DCMD": bool(tmpl_dd), "bytes DCMD": bool(raw_dd), "DataSet NDATA": bool(diag),
+             "replayed instance": bool(hist_pump), "replayed bytes": bool(hist_raw)}
+    check(f"Review of 2ea6ffd: the Sparkplug task keeps >= {STACK_MARGIN_B} B of its 6 KB stack free "
+          f"after a template-member DCMD, a Bytes DCMD, a diagnostics DataSet NDATA and the "
+          f"store & forward replay of a template instance and raw bytes",
+          nb and all(paths.values()) and free is not None and free >= STACK_MARGIN_B,
+          f"paths run {paths}; {line or 'no stack line'}")
+
+
 # ---------------------------------------------------------------- slow link (issue #59)
 
 def run_slow_link(args, work, budget_ms):
@@ -1445,6 +1533,7 @@ def main():
         if want("sf"):
             run_store_forward(args, work, slave)
             run_store_forward_spill(args, work, slave)
+            run_stack_margin(args, work, slave)
         if want("https"):
             run_https(args, work)
         if want("slow"):
