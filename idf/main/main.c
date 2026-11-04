@@ -35,7 +35,9 @@
 
 static const char *TAG = "main";
 
-static gw_config_t s_cfg;   /* immutable after boot; shared read-only by every task */
+/* Immutable after boot; shared read-only by every task. About 26 KB: allocated at boot in
+ * PSRAM when the board has it (internal RAM otherwise, e.g. QEMU), see big_alloc(). */
+static gw_config_t *s_cfg;
 static char s_hardware[64];
 static gw_node_info_t s_info;  /* NBIRTH "Node Info/..." */
 static gw_cfg_err_t s_cfg_err;
@@ -115,29 +117,35 @@ void app_main(void)
     s_info.hardware = s_hardware;
 
     const char *source;
-    if (!gw_storage_load_config(&s_cfg, &s_cfg_err, &source)) {
+    s_cfg = gw_storage_big_alloc(sizeof(*s_cfg), "configuration");
+    if (s_cfg == NULL) {
+        snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg), "sin memoria para la configuración (%u B)",
+                 (unsigned)sizeof(*s_cfg));
+        halt_with_config_error(&s_cfg_err, "RAM");
+    }
+    if (!gw_storage_load_config(s_cfg, &s_cfg_err, &source)) {
         halt_with_config_error(&s_cfg_err, source);
     }
     ESP_LOGI(TAG, "configuration from %s: group '%s', node '%s', %u devices, %u tags", source,
-             s_cfg.sparkplug.group_id, s_cfg.sparkplug.edge_node_id, s_cfg.device_count,
-             s_cfg.tag_count);
-    if (s_cfg.sparkplug.primary_host_id[0] != '\0') {
+             s_cfg->sparkplug.group_id, s_cfg->sparkplug.edge_node_id, s_cfg->device_count,
+             s_cfg->tag_count);
+    if (s_cfg->sparkplug.primary_host_id[0] != '\0') {
         ESP_LOGW(TAG, "primary_host_id '%s' ignored: SPB-13 is not implemented in this build",
-                 s_cfg.sparkplug.primary_host_id);
+                 s_cfg->sparkplug.primary_host_id);
     }
 
-    ESP_ERROR_CHECK(gw_edge_start(&s_cfg, &s_info));
-    if (gw_io_start_inputs(&s_cfg, gw_edge_notify_io) != ESP_OK) {
+    ESP_ERROR_CHECK(gw_edge_start(s_cfg, &s_info));
+    if (gw_io_start_inputs(s_cfg, gw_edge_notify_io) != ESP_OK) {
         ESP_LOGE(TAG, "digital inputs unavailable");
     }
 
     mb_transport_t tr;
-    ESP_ERROR_CHECK(gw_rs485_init(&s_cfg, &tr));
+    ESP_ERROR_CHECK(gw_rs485_init(s_cfg, &tr));
     const gw_bus_callbacks_t bus_cb = {
         .device_updated = on_device_updated,
         .write_done = gw_edge_notify_write_done,
     };
-    ESP_ERROR_CHECK(gw_bus_start(&s_cfg, &tr, &bus_cb));
+    ESP_ERROR_CHECK(gw_bus_start(s_cfg, &tr, &bus_cb));
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -145,6 +153,6 @@ void app_main(void)
         .ip_changed = gw_edge_notify_ip,
         .time_synced = gw_edge_notify_time_synced,
     };
-    ESP_ERROR_CHECK(gw_net_start(&s_cfg, &net_cb));
-    start_shell(&s_cfg, source);
+    ESP_ERROR_CHECK(gw_net_start(s_cfg, &net_cb));
+    start_shell(s_cfg, source);
 }

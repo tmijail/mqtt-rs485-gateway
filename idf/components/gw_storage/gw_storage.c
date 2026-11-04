@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 
 #include "esp_heap_caps.h"
+#include "esp_memory_utils.h"
 #include "esp_littlefs.h"
 #include "esp_log.h"
 #include "nvs.h"
@@ -69,6 +70,20 @@ uint8_t gw_storage_next_bdseq(void)
 static void *boot_alloc(size_t size)
 {
     return heap_caps_malloc_prefer(size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT);
+}
+
+void *gw_storage_big_alloc(size_t size, const char *what)
+{
+    /* Not with EXT_RAM_BSS_ATTR: .bss in PSRAM (SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY) excludes
+     * SPIRAM_IGNORE_NOTFOUND, so a board whose PSRAM is not detected would not boot at all;
+     * this way it still runs from internal RAM. */
+    void *p = heap_caps_calloc_prefer(1, size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (p != NULL) {
+        ESP_LOGI(TAG, "%s: %u B in %s", what, (unsigned)size,
+                 esp_ptr_external_ram(p) ? "PSRAM" : "internal RAM");
+    }
+    return p;
 }
 
 static bool reject(gw_cfg_err_t *err, const char *fmt, ...) __attribute__((format(printf, 2, 3)));

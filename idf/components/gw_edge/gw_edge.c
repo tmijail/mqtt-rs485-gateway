@@ -68,7 +68,7 @@ static StackType_t s_stack[STACK_BYTES / sizeof(StackType_t)];
 
 /* ---- owned by the Sparkplug task ---- */
 static const gw_config_t *s_cfg;
-static gw_node_t s_node;
+static gw_node_t *s_node;   /* ~27 KB, in PSRAM when present (gw_storage_big_alloc) */
 static esp_mqtt_client_handle_t s_client;
 static esp_mqtt_client_config_t s_mqtt_cfg;
 static char s_death_topic[GW_TOPIC_MAX];
@@ -347,7 +347,7 @@ static void on_subscribed(void)
     feed_watchdog();
     s_max_unfed_ms = 0;
     int64_t t0 = esp_timer_get_time();
-    gw_node_session_up(&s_node, s_bdseq);
+    gw_node_session_up(s_node, s_bdseq);
     s_session_up_us = esp_timer_get_time();
     gw_status_set(GW_ST_MQTT_UP, true);
     ESP_LOGI(TAG, "Sparkplug session up (bdSeq=%u): births sent in %lu ms, longest stretch "
@@ -402,14 +402,14 @@ static void reconcile(void)
             abort_session("no SUBACK for NCMD/DCMD within " STR(SUBACK_TIMEOUT_MS) " ms");
         }
     }
-    if (s_node.online && connected && s_attempt != 0 &&
+    if (s_node->online && connected && s_attempt != 0 &&
         now - s_session_up_us >= stable_ms() * 1000LL) {
         ESP_LOGI(TAG, "session stable for %lu ms: reconnect backoff reset",
                  (unsigned long)stable_ms());
         s_attempt = 0;
     }
-    if (s_node.online && !connected) {
-        gw_node_session_down(&s_node);
+    if (s_node->online && !connected) {
+        gw_node_session_down(s_node);
         gw_status_set(GW_ST_MQTT_UP, false);
     }
     if (dg != s_handled_disc) {
@@ -430,21 +430,21 @@ static void reconcile(void)
     if (gw_io_outputs_recover()) {
         atomic_store(&s_io_dirty, true);   /* NDATA: the DOs go from null to their state */
     }
-    if (s_node.online && !s_births_timed && atomic_load(&s_time_synced)) {
+    if (s_node->online && !s_births_timed && atomic_load(&s_time_synced)) {
         /* Births went out before SNTP: re-issue them so hosts get valid timestamps. */
         s_births_timed = true;
         ESP_LOGI(TAG, "clock now synchronised: rebirth");
-        gw_node_rebirth(&s_node);
+        gw_node_rebirth(s_node);
     }
-    if (s_node.online) {
+    if (s_node->online) {
         unsigned dirty = atomic_exchange(&s_dev_dirty, 0);
         for (uint16_t d = 0; dirty != 0; d++, dirty >>= 1) {
             if (dirty & 1u) {
-                gw_node_device_changed(&s_node, d);
+                gw_node_device_changed(s_node, d);
             }
         }
         if (atomic_exchange(&s_io_dirty, false)) {
-            gw_node_io_changed(&s_node);
+            gw_node_io_changed(s_node);
         }
     }
 }
@@ -482,11 +482,11 @@ static void edge_task(void *arg)
         }
         if (ev.type == EV_CMD) {
             const cmd_slot_t *c = &s_slots[ev.arg];
-            gw_node_handle_message(&s_node, c->topic, c->topic_len, c->data, c->len);
+            gw_node_handle_message(s_node, c->topic, c->topic_len, c->data, c->len);
             uint8_t slot = (uint8_t)ev.arg;
             xQueueSend(s_free_slots, &slot, 0);
         } else if (ev.type == EV_WRITE_DONE) {
-            gw_node_write_done(&s_node, ev.arg, ev.ok);
+            gw_node_write_done(s_node, ev.arg, ev.ok);
         }
     }
 }
@@ -494,6 +494,10 @@ static void edge_task(void *arg)
 esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
 {
     s_cfg = cfg;
+    s_node = gw_storage_big_alloc(sizeof(*s_node), "Sparkplug engine");
+    if (s_node == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
     const gw_node_ops_t ops = {
         .publish = op_publish,
         .set_do = op_set_do,
@@ -501,10 +505,10 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         .reboot = op_reboot,
         .ctx = NULL,
     };
-    gw_node_init(&s_node, cfg, &ops, info);
-    if (!gw_node_topic(&s_node, "NDEATH", NULL, s_death_topic, sizeof(s_death_topic)) ||
-        !gw_node_topic(&s_node, "NCMD", NULL, s_ncmd_topic, sizeof(s_ncmd_topic)) ||
-        !gw_node_topic(&s_node, "DCMD", "+", s_dcmd_topic, sizeof(s_dcmd_topic))) {
+    gw_node_init(s_node, cfg, &ops, info);
+    if (!gw_node_topic(s_node, "NDEATH", NULL, s_death_topic, sizeof(s_death_topic)) ||
+        !gw_node_topic(s_node, "NCMD", NULL, s_ncmd_topic, sizeof(s_ncmd_topic)) ||
+        !gw_node_topic(s_node, "DCMD", "+", s_dcmd_topic, sizeof(s_dcmd_topic))) {
         return ESP_ERR_INVALID_SIZE;
     }
 

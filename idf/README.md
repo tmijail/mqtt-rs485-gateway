@@ -87,13 +87,12 @@ Dependencias gestionadas, **con versión fija** (`==`) en cada `idf_component.ym
 ### 1.3 Memoria (REL-2)
 
 - **Límites estáticos:** 16 dispositivos, 64 tags por dispositivo, 256 tags en total.
-- **Toda la memoria propia es estática** (`.bss` medido con `idf.py size-components`):
-  - `main` unos 26 KB (`gw_config_t`);
-  - `gw_edge` unos 27 KB: el motor `gw_node_t` con su búfer de payload de 6 KB, la pila de 6 KB y 4 búferes de comando de 1,2 KB;
-  - `gw_bus` unos 10 KB: planificador, encuesta y pila de 4 KB;
-  - `gw_core` unos 6 KB (`gw_tagdb`).
+- **Toda la memoria propia es de tamaño fijo**, estática o asignada una sola vez al arrancar:
+  - **en PSRAM si la hay** (`gw_storage_big_alloc`, interna si no: QEMU o PSRAM no detectada): la configuración `gw_config_t` (unos 26 KB) y el motor `gw_node_t` (unos 27 KB, con su búfer de payload de 6 KB);
+  - `.bss` interna: `gw_edge` con la pila de 6 KB y 4 búferes de comando de 1,2 KB; `gw_bus` unos 10 KB (planificador, encuesta y pila de 4 KB); `gw_core` unos 6 KB (`gw_tagdb`).
+- **Por qué no `EXT_RAM_BSS_ATTR`:** poner `.bss` en PSRAM exige `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY`, que en IDF es incompatible con `CONFIG_SPIRAM_IGNORE_NOTFOUND`: una placa cuya PSRAM no se detecte no arrancaría. Con la asignación al arrancar el equipo sigue funcionando con RAM interna (y la build de QEMU, sin PSRAM, es la misma).
 - Sin `malloc` en encuesta, codificación ni publicación.
-- Se asigna memoria solo al arrancar: lectura de LittleFS y árbol de cJSON, ambos en PSRAM si la hay (§3.3).
+- Se asigna memoria solo al arrancar: esas dos estructuras, la lectura de LittleFS y el árbol de cJSON, todo en PSRAM si la hay (§3.3).
 - lwIP y esp-mqtt asignan internamente (ver §6).
 
 ## 2. Datos de la placa marcados "verificar"
@@ -149,7 +148,7 @@ Resultado de `idf.py size` (build limpia con `idf.py set-target esp32s3 build`, 
 |---|---|
 | Flash code (`.text`) | 491 784 B |
 | Flash data (`.rodata`, etc.) | 156 400 B |
-| DIRAM | 153 121 B de 341 760 (**44,8 %**): `.bss` 82 768, `.text` 53 895, `.data` 16 458 |
+| DIRAM | 115 025 B de 341 760 (**33,7 %**): `.bss` 41 744, `.text` 56 823, `.data` 16 458 |
 | IRAM | 16 384 B (100 %, lo normal en S3: el resto del código IRAM va en DIRAM) |
 | Imagen total | **734 957 B** (18 % de la partición `ota_0` de 4 MB) |
 

@@ -28,6 +28,13 @@ uint8_t gw_storage_next_bdseq(void);
  */
 bool gw_storage_load_config(gw_config_t *cfg, gw_cfg_err_t *err, const char **source);
 
+/**
+ * Zeroed allocation for a large structure that lives for the whole run (configuration,
+ * Sparkplug engine): PSRAM when the board has it, internal RAM otherwise. Logs where it
+ * landed under @p what. NULL if neither has room. Boot time only (REL-2).
+ */
+void *gw_storage_big_alloc(size_t size, const char *what);
+
 #ifdef __cplusplus
 }
 #endif
