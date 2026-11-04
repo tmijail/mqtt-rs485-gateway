@@ -67,6 +67,20 @@ gw_ota_action_t gw_ota_trial_operator(gw_ota_trial_t *t, const char *why)
     return decide(t, GW_OTA_TRIAL_CONFIRMED, why);
 }
 
+bool gw_ota_trial_commit_allowed(const gw_ota_trial_t *t)
+{
+    return t->state != GW_OTA_TRIAL_ROLLBACK;
+}
+
+gw_ota_action_t gw_ota_trial_restart_requested(gw_ota_trial_t *t)
+{
+    if (t->state != GW_OTA_TRIAL_CONFIRMING) {
+        return GW_OTA_KEEP;
+    }
+    t->in_flight = true;
+    return GW_OTA_CONFIRM;
+}
+
 void gw_ota_trial_confirm_result(gw_ota_trial_t *t, bool ok, uint32_t now_ms, uint32_t rnd)
 {
     if (t->state != GW_OTA_TRIAL_CONFIRMING) {

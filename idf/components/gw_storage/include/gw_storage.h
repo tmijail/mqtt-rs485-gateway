@@ -100,6 +100,8 @@ void gw_storage_free(void *ptr);
 /**
  * CFG-5: format the LittleFS partition and erase NVS (configuration, secrets, bdSeq, the
  * commissioning password), then mark the device for commissioning. The caller restarts.
+ * ESP_ERR_INVALID_STATE: refused by the commit hook (a firmware rollback is under way), nothing
+ * erased; the caller's restart finishes the rollback.
  */
 esp_err_t gw_storage_factory_reset(void);
 
@@ -154,7 +156,8 @@ typedef enum {
 } gw_storage_commit_t;
 
 /** Called before the change is made, which a restart then puts into effect; non-ESP_OK (with the
- *  reason in English in @p why) refuses a configuration (a factory reset goes on anyway). */
+ *  reason in English in @p why) refuses a configuration. A factory reset is refused only on
+ *  ESP_ERR_INVALID_STATE (issue #108 B1: a rollback is decided) and goes on otherwise. */
 typedef esp_err_t (*gw_storage_commit_hook_t)(gw_storage_commit_t what, char *why, size_t cap);
 
 /** Issue #99: gw_fw confirms a new image on trial before such a restart. One hook. */

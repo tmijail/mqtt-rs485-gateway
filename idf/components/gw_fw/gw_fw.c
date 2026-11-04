@@ -521,6 +521,38 @@ void gw_fw_cannot_start(const char *why)
     gw_ota_action_t a = gw_ota_trial_cannot_start(&s_trial, why);
     portEXIT_CRITICAL(&s_mux);
     act(a);
+    if (a == GW_OTA_ROLLBACK) {
+        /* issue #108 B6: the rollback call failed (likely here: its verification allocates); any
+         * reset of an image still PENDING_VERIFY makes the bootloader boot the previous one */
+        ESP_LOGE(TAG, "restarting: the bootloader goes back to the previous image");
+        esp_restart();
+    }
+}
+
+/* Issue #108 B5: a healthy image whose confirmation keeps failing is not rolled back by a plain
+ * restart the operator asked for: one more synchronous try first. */
+static void restart_confirm_on_core0(void *arg)
+{
+    bool *tried = arg;
+    portENTER_CRITICAL(&s_mux);
+    gw_ota_action_t a = gw_ota_trial_restart_requested(&s_trial);
+    portEXIT_CRITICAL(&s_mux);
+    *tried = a == GW_OTA_CONFIRM;
+    if (*tried) {
+        if (s_trial_timer != NULL) {
+            esp_timer_stop(s_trial_timer);
+        }
+        if (!confirm(false)) {   /* the caller restarts */
+            ESP_LOGE(TAG, "firmware %s still not marked valid: the restart rolls it back",
+                     s_st.running);
+        }
+    }
+}
+
+void gw_fw_restart_requested(void)
+{
+    bool tried = false;
+    on_core0(restart_confirm_on_core0, &tried);
 }
 
 /* Issue #99: before a save or a factory reset restarts the gateway, a new image on trial is
@@ -530,13 +562,15 @@ void gw_fw_cannot_start(const char *why)
 typedef struct {
     const char *reason;
     bool ok;
+    bool refused;   /* issue #108 B1: a rollback is decided */
 } commit_t;
 
 static void commit_on_core0(void *arg)
 {
     commit_t *c = arg;
     portENTER_CRITICAL(&s_mux);
-    gw_ota_action_t a = gw_ota_trial_operator(&s_trial, c->reason);
+    c->refused = !gw_ota_trial_commit_allowed(&s_trial);
+    gw_ota_action_t a = c->refused ? GW_OTA_KEEP : gw_ota_trial_operator(&s_trial, c->reason);
     portEXIT_CRITICAL(&s_mux);
     if (a == GW_OTA_CONFIRM) {
         if (s_trial_timer != NULL) {
@@ -553,8 +587,16 @@ static esp_err_t on_commit(gw_storage_commit_t what, char *why, size_t cap)
                                 : "factory reset by the operator",
                   .ok = true};
     on_core0(commit_on_core0, &c);
+    if (c.refused) {
+        /* issue #108 B1: the previous image would come back with what this one stored; when the
+         * rollback call failed, a restart still rolls the image back (PENDING_VERIFY) */
+        snprintf(why, cap, "the new firmware %s is being rolled back to %s", s_st.running,
+                 s_st.other[0] ? s_st.other : "the previous image");
+        return ESP_ERR_INVALID_STATE;
+    }
     if (!c.ok) {
-        snprintf(why, cap, "the new firmware %s, on trial, could not be marked valid", s_st.running);
+        snprintf(why, cap, "the new firmware %s, on trial, could not be marked valid; retry",
+                 s_st.running);
         return ESP_FAIL;
     }
     return ESP_OK;

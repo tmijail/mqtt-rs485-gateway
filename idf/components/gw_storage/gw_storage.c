@@ -1443,12 +1443,19 @@ static void set_factory_marker(bool on)
 
 esp_err_t gw_storage_factory_reset(void)
 {
-    xSemaphoreTake(s_save_lock, portMAX_DELAY);   /* no save in the middle; never given back */
     char why[120];
-    if (s_commit_hook != NULL && s_commit_hook(GW_STORAGE_COMMIT_FACTORY_RESET, why,
-                                               sizeof(why)) != ESP_OK) {
+    esp_err_t h = s_commit_hook != NULL
+                      ? s_commit_hook(GW_STORAGE_COMMIT_FACTORY_RESET, why, sizeof(why))
+                      : ESP_OK;
+    if (h == ESP_ERR_INVALID_STATE) {
+        /* issue #108 B1: refused, nothing erased; the caller's restart finishes the rollback */
+        ESP_LOGE(TAG, "factory reset refused: %s", why);
+        return h;
+    }
+    if (h != ESP_OK) {
         ESP_LOGE(TAG, "factory reset: %s; going on (the restart may roll it back)", why);
     }
+    xSemaphoreTake(s_save_lock, portMAX_DELAY);   /* no save in the middle; never given back */
     ESP_LOGW(TAG, "factory reset: erasing LittleFS 'storage' and NVS");
     s_reset_done = true;
     esp_err_t fs = wipe_storage();
