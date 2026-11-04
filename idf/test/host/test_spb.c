@@ -416,8 +416,8 @@ static void test_worst_case_birth_fits(void)
                 m[i].datatype = SPB_DT_DOUBLE;
                 m[i].v.num = -1.0 / 3.0;
                 m[i].props.has_eng_low = m[i].props.has_eng_high = true;
-                m[i].props.eng_low = -1e300;
-                m[i].props.eng_high = 1e300;
+                m[i].props.eng_low = -3e38f;
+                m[i].props.eng_high = 3e38f;
             } else {
                 m[i].datatype = SPB_DT_STRING;
                 m[i].v.str = text;

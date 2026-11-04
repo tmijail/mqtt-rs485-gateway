@@ -47,15 +47,15 @@ static size_t list_props(const spb_props_t *p, prop_t out[PROP_MAX])
     const struct {
         bool has;
         const char *key;
-        double v;
-    } dbl[] = {{p->has_eng_low, "engLow", p->eng_low}, {p->has_eng_high, "engHigh", p->eng_high}};
+        float v;
+    } rng[] = {{p->has_eng_low, "engLow", p->eng_low}, {p->has_eng_high, "engHigh", p->eng_high}};
     for (size_t i = 0; i < 2; i++) {
-        if (dbl[i].has) {
-            out[n] = (prop_t){.key = dbl[i].key, .val = Payload_PropertyValue_init_zero};
+        if (rng[i].has) {
+            out[n] = (prop_t){.key = rng[i].key, .val = Payload_PropertyValue_init_zero};
             out[n].val.has_type = true;
-            out[n].val.type = SPB_DT_DOUBLE;
-            out[n].val.which_value = Payload_PropertyValue_double_value_tag;
-            out[n].val.value.double_value = dbl[i].v;
+            out[n].val.type = SPB_DT_FLOAT;
+            out[n].val.which_value = Payload_PropertyValue_float_value_tag;
+            out[n].val.value.float_value = rng[i].v;
             n++;
         }
     }

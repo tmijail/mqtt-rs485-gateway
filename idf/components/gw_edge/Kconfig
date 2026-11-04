@@ -27,7 +27,7 @@ menu "Gateway: Sparkplug / MQTT"
     config GW_SPB_PAYLOAD_INTERNAL
         int "Sparkplug payload buffer without PSRAM (bytes)"
         range 4096 16384
-        default 8192
+        default 6144
         help
             With PSRAM the payload buffer holds the largest birth the configuration allows
             (16 KB: templates, diagnostics and every property). Without PSRAM it is this size,

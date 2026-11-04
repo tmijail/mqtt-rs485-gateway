@@ -896,7 +896,7 @@ static void test_worst_case_nbirth_fits(void)
             n += (size_t)snprintf(doc + n, sizeof(doc) - n,
                                   "%s{\"name\": \"%038d%d\", \"area\": \"input\", \"address\": %d,"
                                   " \"type\": \"float64\", \"units\": \"uuuuuuuuuuuuuuu\","
-                                  " \"eng_low\": -1e300, \"eng_high\": 1e300}",
+                                  " \"eng_low\": -3e38, \"eng_high\": 3e38}",
                                   k ? "," : "", 0, k, 4 * k);
         }
         n += (size_t)snprintf(doc + n, sizeof(doc) - n, "]}");

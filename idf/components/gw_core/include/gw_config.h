@@ -178,14 +178,14 @@ typedef struct {
                                  * else 0 */
     bool slow;                  /* MB-12: read every slow_poll_ms of its device ("scan": "slow") */
     bool writable;
+    bool has_eng_low;           /* SPB-16: engLow / engHigh properties (optional); in the */
+    bool has_eng_high;          /* padding before the doubles: no growth of the structure */
     double scale;
     double offset;
     double deadband;
     char units[GW_UNITS_SIZE];  /* SPB-16: property engUnit in the birth ("" = none) */
-    bool has_eng_low;           /* SPB-16: engLow / engHigh properties (optional) */
-    bool has_eng_high;
-    double eng_low;
-    double eng_high;
+    float eng_low;              /* published as Float: 8 B per tag instead of 16 (256 tags) */
+    float eng_high;
 } gw_tag_cfg_t;
 
 typedef struct {

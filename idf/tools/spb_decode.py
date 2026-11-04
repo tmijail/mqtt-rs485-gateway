@@ -82,8 +82,8 @@ def load_module():
     return importlib.import_module("sparkplug_b_pb2")
 
 
-PROPERTY_TYPES = {"engUnit": (12, "string_value"), "engLow": (10, "double_value"),
-                  "engHigh": (10, "double_value"), "Quality": (3, "int_value")}
+PROPERTY_TYPES = {"engUnit": (12, "string_value"), "engLow": (9, "float_value"),
+                  "engHigh": (9, "float_value"), "Quality": (3, "int_value")}
 QUALITY_CODES = (0, 192, 500)
 
 

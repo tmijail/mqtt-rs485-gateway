@@ -423,8 +423,8 @@ En la tarjeta: carpeta `/sf` de una tarjeta FAT (no se formatea nunca), segmento
 | Clave | Tipo | Defecto | Regla |
 |---|---|---|---|
 | `units` | texto | `""` | Hasta 15 caracteres. Se publica como la propiedad `engUnit` (String) en el DBIRTH; vacío = sin propiedad |
-| `eng_low` | número | — | Propiedad `engLow` (Double) en el DBIRTH. No vale en tags `bool` ni `string` |
-| `eng_high` | número | — | Propiedad `engHigh` (Double) en el DBIRTH. Con las dos claves, `eng_high` > `eng_low` |
+| `eng_low` | número | — | Propiedad `engLow` (Float) en el DBIRTH. Dentro del rango de un Float (±3,4e38). No vale en tags `bool`, `string` ni `bytes` |
+| `eng_high` | número | — | Propiedad `engHigh` (Float) en el DBIRTH. Con las dos claves, `eng_high` > `eng_low` |
 
 - **Calidad (`Quality`, Int32):** 192 (GOOD) cuando la lectura respondió, 0 (BAD) cuando falló (excepción Modbus) o el tag nunca se leyó; con BAD el valor va además como `is_null`. Todo DBIRTH la lleva en cada métrica; un DDATA, solo cuando cambia. Las DO del nodo usan la misma regla: BAD mientras el expansor no responde.
 - Las propiedades viajan en el `PropertySet` de la métrica (claves y valores en el mismo orden). Un comando (NCMD/DCMD) con propiedades se acepta; sus propiedades se ignoran.

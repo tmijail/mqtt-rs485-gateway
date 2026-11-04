@@ -350,13 +350,13 @@ static void fill_dec(dec_metric_t *o, const spb_rx_metric_t *m)
     if ((p = spb_rx_prop(m, "engUnit")) != NULL && p->kind == SPB_VAL_STRING) {
         snprintf(o->eng_unit, sizeof(o->eng_unit), "%s", p->s);
     }
-    if ((p = spb_rx_prop(m, "engLow")) != NULL && p->kind == SPB_VAL_DOUBLE) {
+    if ((p = spb_rx_prop(m, "engLow")) != NULL && p->kind == SPB_VAL_FLOAT) {
         o->has_eng_low = true;
-        o->eng_low = p->v.d;
+        o->eng_low = p->v.f;
     }
-    if ((p = spb_rx_prop(m, "engHigh")) != NULL && p->kind == SPB_VAL_DOUBLE) {
+    if ((p = spb_rx_prop(m, "engHigh")) != NULL && p->kind == SPB_VAL_FLOAT) {
         o->has_eng_high = true;
-        o->eng_high = p->v.d;
+        o->eng_high = p->v.f;
     }
 }
 

@@ -5,6 +5,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <float.h>
 #include <string.h>
 
 #include "cJSON.h"
@@ -1120,6 +1121,7 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
     static const char *const scans[] = {"fast", "slow"};
     int area, type, word, scan;
     long addr, bit, length;
+    double eng_low, eng_high;
     char p[96];
     if (!check_keys(o, path, keys, sizeof(keys) / sizeof(keys[0]), err) ||
         !get_string(o, "name", path, true, "", t->name, sizeof(t->name), err) ||
@@ -1135,10 +1137,16 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
         !get_int(o, "bit", path, false, GW_NO_BIT, 0, 15, &bit, err) ||
         !get_int(o, "length", path, false, 0, 1, GW_STR_MAX_REGS, &length, err) ||
         !get_enum(o, "scan", path, false, 0, scans, 2, &scan, err) ||
-        !get_double(o, "eng_low", path, 0.0, &t->eng_low, err) ||
-        !get_double(o, "eng_high", path, 0.0, &t->eng_high, err)) {
+        !get_double(o, "eng_low", path, 0.0, &eng_low, err) ||
+        !get_double(o, "eng_high", path, 0.0, &eng_high, err)) {
         return false;
     }
+    if (fabs(eng_low) > FLT_MAX || fabs(eng_high) > FLT_MAX) {
+        join(p, sizeof(p), path, fabs(eng_low) > FLT_MAX ? "eng_low" : "eng_high");
+        return fail(err, p, "fuera del rango de un Float (±3.4e38)");
+    }
+    t->eng_low = (float)eng_low;
+    t->eng_high = (float)eng_high;
     t->has_eng_low = cJSON_GetObjectItemCaseSensitive(o, "eng_low") != NULL;
     t->has_eng_high = cJSON_GetObjectItemCaseSensitive(o, "eng_high") != NULL;
     t->slow = scan == 1;

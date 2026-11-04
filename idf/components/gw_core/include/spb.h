@@ -48,8 +48,8 @@ typedef struct {
     const char *eng_unit;         /* engUnit (String); NULL or "": omitted */
     bool has_eng_low;
     bool has_eng_high;
-    double eng_low;               /* engLow (Double) */
-    double eng_high;              /* engHigh (Double) */
+    float eng_low;                /* engLow (Float) */
+    float eng_high;               /* engHigh (Float) */
     bool has_quality;
     int32_t quality;              /* Quality (Int32): SPB_QUALITY_* */
 } spb_props_t;

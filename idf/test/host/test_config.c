@@ -707,6 +707,9 @@ static void test_eng_range(void)
                               "\"length\":2,\"eng_low\":1}"),
                     "devices[0].tags[0].eng_low: no se admite en tags string");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
+                              "\"eng_high\":1e39}"),
+                    "devices[0].tags[0].eng_high: fuera del rango de un Float");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
                               "\"units\":\"0123456789abcdef\"}"),
                     "devices[0].tags[0].units");
 }
