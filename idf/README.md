@@ -212,7 +212,7 @@ Los tests de host descargan Unity y cJSON con `FetchContent`, desde GitHub y con
 ### 4.2 Interoperabilidad Sparkplug
 
 ```bash
-build-host/spb_dump /tmp/spb && python3 idf/tools/spb_decode.py --check /tmp/spb
+mkdir -p /tmp/spb && build-host/spb_dump /tmp/spb && python3 idf/tools/spb_decode.py --check /tmp/spb
 ```
 
 `spb_dump` genera NDEATH, NBIRTH, DBIRTH, DDATA y NDATA reales del motor. `spb_decode.py` los compila con `grpc_tools.protoc` a partir del `sparkplug_b.proto` oficial de eclipse/tahu (copiado sin cambios en `components/gw_core/proto/`) y los decodifica con **Google protobuf 7.36**.
@@ -234,12 +234,14 @@ E2E_PYTHON=~/e2e/bin/python idf/tools/e2e/run_e2e.sh
 - Ethernet `open_eth` sobre slirp.
 - UART1 → socket → **pymodbus 3.8.6** como esclavo RTU, unidades 1 (`Meter1`, tags de §6) y 2 (`Bulk`, 60 registros).
 - UART0 → socket, para el log y el shell (las DI se inyectan con su comando `di`).
-- **mosquitto 2.0.18** privado (copia renombrada del binario, puerto 18831) y un respondedor SNTP. El harness solo envía señales a los procesos que arrancó él.
-- Para los arranques de configuración, el harness genera variantes de la imagen con otra partición `storage` (con `littlefs-python`, el mismo que usa la build) o con la partición borrada.
+- **mosquitto 2.0.18** privado (copia renombrada del binario) y un respondedor SNTP propio en el UDP 123. El harness solo envía señales a los procesos que arrancó él.
+- **Aislamiento de red.** El harness se mueve a un *network namespace* propio, con solo la interfaz de loopback (necesita `CAP_SYS_ADMIN`, por ejemplo root en un contenedor). Todos los puertos, también el UDP 123, son privados de la corrida, así que dos corridas en paralelo no chocan. Sin ese permiso (o con `--no-isolate`) usa el loopback del host con los puertos de `--mqtt-port`, `--modbus-port` y `--console-port` (o `E2E_MQTT_PORT`, `E2E_MODBUS_PORT`, `E2E_CONSOLE_PORT`); por defecto 18831, 15020 y 15555. Los argumentos extra de `run_e2e.sh` pasan a `e2e.py`.
+- El harness escribe en la imagen bajo prueba su propio `config.json`, con el puerto MQTT elegido. Para los arranques de configuración genera variantes de la imagen con otra partición `storage` (con `littlefs-python`, el mismo que usa la build) o con la partición borrada. El límite de tamaño se lee de `build-qemu/sdkconfig` (`CONFIG_GW_CONFIG_MAX_BYTES`).
+- "No arrancó nada" se comprueba con una señal positiva: la línea `nothing is started` y, 6 s después, la respuesta de `status` del shell (`nothing is running`). La ausencia de logs de arranque y de NBIRTH queda como comprobación adicional.
 
 Configuración usada: `tools/e2e/fs/config.json` (keepalive de 10 s).
 
-Resultado: **40/40 comprobaciones OK**.
+Resultado: **41/41 comprobaciones OK**.
 
 | Criterio | Resultado medido |
 |---|---|
@@ -252,7 +254,7 @@ Resultado: **40/40 comprobaciones OK**.
 | §7.4 DCMD Setpoint = 12,3 → holding 10 = 123 por FC06 y DDATA | OK: el esclavo registró `(6, 10, [123])`; DDATA 12,3 |
 | §7.5 NCMD Rebirth → NBIRTH (seq 0, mismo bdSeq) y todos los DBIRTH | OK |
 | §7.6 Todos los payloads se decodifican con el proto oficial | OK: 36 mensajes, 0 errores |
-| CFG-6 shell en la consola; REL-5 | OK: `devices` da `Meter1 unit 1 online cycles 2 failed 0 \| ok 6 …` y, con el esclavo apagado, `offline … failed 3 \| … timeout 9`; `config` da el resumen; `status` responde también con la configuración rechazada. NBIRTH `Node Info/Reset Reason` = `power-on` en el primer arranque y `software` tras NCMD Reboot |
+| CFG-6 shell en la consola; REL-5 | OK: `devices` da `Meter1 unit 1 online cycles 2 failed 0 \| ok 6 …` y, con el esclavo apagado, `offline … failed 3 \| … timeout 9`; `config` da el resumen; `status` responde con la configuración válida (`config … ok`, `MQTT connected`, `Modbus 2/2 devices online`) y también con la configuración rechazada. NBIRTH `Node Info/Reset Reason` = `power-on` en el primer arranque y `software` tras NCMD Reboot |
 | Extras | OK: DDATA solo por excepción, solo alias, deadband 0,1 respetada; DCMD por alias (FC05) y DCMD sobre métrica de solo lectura descartado con log; bdSeq persistido en NVS tras un corte de energía; NCMD Reboot publica NDEATH QoS 1 y **un solo** NDEATH (will descartado); DBIRTH de 2684 B (mayor que el búfer de 2 KB de esp-mqtt); 60 registros leídos con una sola FC03; timestamps UTC vía SNTP; continuidad de seq |
 
 **Lo que QEMU no cubre**, y por qué la build de emulador difiere (`sdkconfig.qemu`):
@@ -266,6 +268,16 @@ Resultado: **40/40 comprobaciones OK**.
 ### 4.4 QA-2
 
 `idf.py set-target esp32s3 build`: **0 warnings en toda la build**. Los componentes propios compilan con `-Wall -Wextra -Werror`.
+
+### 4.5 QA-4: CI
+
+`.github/workflows/ci.yml` corre en cada push y pull request, con tres jobs:
+
+| Job | Qué hace |
+|---|---|
+| `host-tests` | Tests de host (CTest) y decodificación de los payloads de `spb_dump` con el proto oficial |
+| `firmware` | `idf.py set-target esp32s3 build` en la imagen `espressif/idf:v6.1` fijada por digest; falla si aparece un `warning:`; publica los binarios y `idf.py size` como artefactos |
+| `e2e` | Instala QEMU, mosquitto y los paquetes del harness y corre `run_e2e.sh`. Los contenedores de GitHub no permiten `unshare`, así que corre sobre el loopback del contenedor. Publica logs y payloads como artefactos |
 
 ## 5. Estado de los IDs del MVP
 
@@ -329,6 +341,7 @@ Leyenda de **Evidencia**:
 - **REL-5** Implementado: `esp_reset_reason()` va al log de arranque y al NBIRTH como `Node Info/Reset Reason` (String, alias 6). H + Q (`power-on` en el primer arranque, `software` tras NCMD Reboot).
 - **REL-6**: medido en QEMU.
 - **QA-3** Parcial: QEMU, sin hardware.
+- **QA-4** Implementado: `.github/workflows/ci.yml` (§4.5).
 
 ## 6. Desvíos y limitaciones conocidas (sin maquillaje)
 
@@ -399,9 +412,7 @@ Sin SNTP no hay hora válida: no hay RTC (TIME-2). Antes de la primera conexión
 
 - La versión de firmware lleva `.dirty` hasta que el coordinador haga el commit.
 - Los tests de host necesitan red la primera vez (FetchContent de Unity y cJSON).
-- Mientras corría el E2E, otro proceso del host compartido ocupó el UDP 123 y terminó el mosquitto por nombre. Por eso:
-  - el harness usa una copia renombrada del broker y puertos propios (18831, 15020, 15555);
-  - si el 123 está ocupado, el check TIME-1 depende del servidor NTP que responda.
+- Mientras corría el E2E, otro proceso del host compartido ocupó el UDP 123 y terminó el mosquitto por nombre. Por eso el harness usa una copia renombrada del broker y corre en su propio *network namespace* (§4.3). Sin aislamiento, si el UDP 123 está ocupado el check TIME-1 falla: exige que haya respondido el SNTP del harness.
 - **pymodbus se fijó en 3.8.6**: la 3.16 cambió el API del datastore (SimDevice).
 - `idf.py` no acepta `-j`: la build usó el paralelismo por defecto de ninja.
 - Hay dos componentes de terceros: nanopb (vendorizado) y `joltwallet/littlefs`. El paquete `livekit/nanopb` del registro se descartó por un defecto de ABI. `espressif/esp_io_expander_tca9554` se descartó: carga el latch con 0xFF, que con las DO activas en bajo es justamente OFF, pero no permite probar en host la secuencia ni la polaridad (`gw_dout`). La viabilidad (`docs/feasibility-idf.md`, IO-2) lo descartaba suponiendo, por error, DO activas en alto.
