@@ -2912,9 +2912,9 @@ def main():
     slave.ctx.setValues(3, 10, [50])   # Setpoint raw 50 -> 5.0
     slave.set_mb6()
     slave.start()
+    only = set(filter(None, args.only.split(",")))
+    want = lambda name: not only or name in only  # noqa: E731
     try:
-        only = set(filter(None, args.only.split(",")))
-        want = lambda name: not only or name in only  # noqa: E731
         # Issues #86/#90: every scenario through run_scenario: a QEMU that dies under one (at any
         # boot) is reported as such and the scenario runs once more; firmware failures are not
         # retried. The OTA scenario is the one where it happens most (README 4.3).
@@ -2983,9 +2983,13 @@ def main():
             elif prev is None or d[4] != prev + 1:
                 errs.append(f"{prev}->{d[4]}")
             prev = d[4]
-        check("REL-4 syslog sequenceId continuous within each boot (UDP over the emulator's NAT, "
-              "nothing lost)", runs >= 1 and not errs,
-              f"{len(syslog_from(NODE))} datagrams in {runs} boot(s); gaps {errs[:5]}")
+        if want("main"):   # GW01's syslog: only the main scenario has it (--only ota: E2E_POISON)
+            check("REL-4 syslog sequenceId continuous within each boot (UDP over the emulator's "
+                  "NAT, nothing lost)", runs >= 1 and not errs,
+                  f"{len(syslog_from(NODE))} datagrams in {runs} boot(s); gaps {errs[:5]}")
+        else:
+            print("[SKIP] REL-4 syslog sequenceId continuity: the main scenario did not run",
+                  flush=True)
         check("Issue #105 no message reached an observer of a scenario attempt that had ended "
               "(run_scenario closes what an attempt leaves open: observers, relays, fake brokers, "
               "image servers, private brokers)", not STALE,

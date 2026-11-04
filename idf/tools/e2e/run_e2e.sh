@@ -10,6 +10,13 @@
 # engine and its full payload buffer live in PSRAM as on the board. e2e.py writes otadata into
 # the image first (issue #85: QEMU crashes on the bootloader's first otadata write).
 #
+# E2E_POISON=1 (issue #104): the same build with comprehensive heap poisoning on top
+# (sdkconfig.qemu-poison, build dir build-qemu-poison or build-qemu-psram-poison): freed memory is
+# overwritten, so a use after free changes what the firmware reports. Meant for --only ota (the
+# issue #98 check); its memory cost is in README 4.3.
+#
+# JOBS: parallel jobs of the builds (default: every CPU).
+#
 # E2E_PYTHON needs: paho-mqtt>=2, pymodbus==3.8.6, protobuf, grpcio-tools (tools/e2e/requirements.txt).
 # Host tools: mosquitto, qemu-system-xtensa (idf_tools.py install qemu-xtensa; needs libslirp0).
 set -euo pipefail
@@ -28,6 +35,10 @@ if [ "${E2E_PSRAM:-0}" = 1 ]; then
     DEFAULTS="$DEFAULTS;sdkconfig.qemu-psram"
     EXTRA=(--psram)
 fi
+if [ "${E2E_POISON:-0}" = 1 ]; then
+    BUILD="$BUILD-poison"
+    DEFAULTS="$DEFAULTS;sdkconfig.qemu-poison"
+fi
 
 # FW-2: the QEMU builds require signed images (no eFuse involved). Their throwaway test key
 # (CONFIG_SECURE_BOOT_SIGNING_KEY in sdkconfig.qemu, shared by the PSRAM variant) lives in a
@@ -43,7 +54,11 @@ for f in ${DEFAULTS//;/ }; do
 done
 idf.py -B "$BUILD" -D SDKCONFIG="$BUILD/sdkconfig" \
     -D "SDKCONFIG_DEFAULTS=$DEFAULTS" \
-    -D GW_FS_DIR="$IDF_DIR/tools/e2e/fs" reconfigure build   # reconfigure: picks up new Kconfig files
+    -D GW_FS_DIR="$IDF_DIR/tools/e2e/fs" reconfigure   # reconfigure: picks up new Kconfig files
+cmake --build "$BUILD" -j "${JOBS:-$(nproc)}"
+if [ "${E2E_POISON:-0}" = 1 ]; then
+    grep -q '^CONFIG_HEAP_POISONING_COMPREHENSIVE=y' "$BUILD/sdkconfig"
+fi
 
 (cd "$BUILD" && python -m esptool --chip esp32s3 merge-bin --output "$WORK/flash.bin" \
     --pad-to-size 16MB @flash_args)
