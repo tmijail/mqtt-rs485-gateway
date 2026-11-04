@@ -283,3 +283,9 @@ Texto propuesto (en inglés):
 > A related abort, less frequent, happens during plain flash erases and writes (an OTA download writing about 1 MB): `../system/physmem.c:2517: iotlb_to_section: Assertion 'section_index < d->map.sections_nb' failed.` There IDF stalls the other core in IRAM (`spi_flash_disable_interrupts_caches_and_other_cpu`), so it may be a race of the memory map update between the vCPUs.
 >
 > With the other core halted in `waiti`, its tick interrupt still runs: the USB-Serial-JTAG connection monitor (`usb_serial_jtag_sof_tick_hook`, IRAM, a tick hook) then faults reading the peripheral at 0x60038014 during the freeze (`LoadStorePIFAddrError`), which never happens outside a freeze.
+>
+> The FreeRTOS tick itself does the same: `SysTickIsrHandler` (`freertos/port_systick.c:137`, `systimer_ll_clear_alarm_int()`) on the idle core faults with `LoadStorePIFAddrError` at 0x6002306c (SYSTIMER) while the other core has flash mapped, both during `esp_ota_end()` and when an app reads the other slot's `esp_app_desc_t` through `esp_ota_get_partition_description()`.
+>
+> Possibly related, not isolated: QEMU sometimes stops making progress (process alive, no output, for good) right after `secure_boot_v2: Take trusted digest key(s) from running app` in `esp_ota_mark_app_invalid_rollback_and_reboot()`, which verifies the previous image with the same mappings.
+
+Seguimiento en este repositorio (issue #92): el harness del E2E reconoce estas dos fallas, vuelca el estado del emulador (`info registers -a` por el monitor de QEMU, dos veces) en `fault-*.txt` y repite el escenario una vez (`idf/README.md` §4.3). Si el cuelgue vuelve a aparecer, ese volcado dirá si el PC queda quieto (emulador) o avanza (firmware), y conviene sumarlo a este reporte.
