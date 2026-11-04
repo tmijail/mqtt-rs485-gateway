@@ -1,0 +1,11 @@
+# Production overlay. BURNS eFuses (irreversible) on the board's first boot:
+#   idf.py -B build-prod -D SDKCONFIG=build-prod/sdkconfig \
+#          -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.production" build
+# Never use it on a development board you want to keep reusable (README 3.4).
+# Secure boot (FW-2) and flash encryption (FW-3) belong here too; they must not use KEY5.
+
+# CFG-7: secrets in encrypted NVS. The NVS keys are derived with the HMAC peripheral from a key
+# in eFuse block KEY5: the first boot generates it and burns it with purpose HMAC_UP.
+CONFIG_NVS_ENCRYPTION=y
+CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC=y
+CONFIG_NVS_SEC_HMAC_EFUSE_KEY_ID=5

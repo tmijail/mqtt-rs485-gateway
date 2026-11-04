@@ -215,7 +215,7 @@ static int cmd_status(int argc, char **argv)
            gw_storage_secrets_encrypted() ? "encrypted" : "UNAVAILABLE",
            CONFIG_NVS_SEC_HMAC_EFUSE_KEY_ID);
 #else
-    out("secrets  NVS NOT encrypted (CONFIG_NVS_ENCRYPTION=n: development fallback)\n");
+    out("secrets  NVS NOT encrypted (default build; sdkconfig.production encrypts it)\n");
 #endif
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
