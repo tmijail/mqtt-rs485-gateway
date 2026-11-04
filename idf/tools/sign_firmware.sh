@@ -7,16 +7,26 @@
 # This script signs them where the key is (offline machine or HSM), verifies every signature
 # and prints the public key digest that the first boot burns into eFuse.
 #
-#   tools/sign_firmware.sh --keyfile /secure/gw_signing_key.pem [--build-dir build-prod] [--expect-digest D]
-#   tools/sign_firmware.sh --hsm-config hsm.ini --pub-key gw_signing_pub.pem [--build-dir ...] [--expect-digest D]
-#   tools/sign_firmware.sh --check --expect-digest D [--build-dir ...]   # factory, before flashing
+#   tools/sign_firmware.sh --keyfile /secure/gw_signing_key.pem --expect-digest D [--build-dir build-prod]
+#   tools/sign_firmware.sh --hsm-config hsm.ini --pub-key gw_signing_pub.pem --expect-digest D [--build-dir ...]
+#   tools/sign_firmware.sh --check --pub-key gw_signing_pub.pem --expect-digest D [--build-dir ...]   # factory
 #   tools/sign_firmware.sh --test-key [--build-dir ...]   # throwaway key, never for devices
 #
 # D is the SHA-256 digest of the real signing key's public key, published apart from the build
-# (64 hex digits, spaces or colons allowed, or a file with the 32 bytes or the hex text). Give it
-# once per key when the images carry reserve signatures. --check (and --expect-digest when
-# signing) fails unless every signature block of both signed images is from one of those keys:
-# the first boot burns the digest of every valid block into eFuse, for good.
+# (64 hex digits, spaces or colons allowed, or a file with the 32 bytes or the hex text). It is
+# required by every mode but --test-key (issue #103): it is what tells the real key from any
+# other, whatever test keys exist on this machine. Give it once per key when the images carry
+# reserve signatures. Every signature block of both signed images must be from one of those keys
+# (the first boot burns the digest of every valid block into eFuse, for good).
+#
+# --check (issue #103), before flashing, fails unless for both signed images:
+#   - every signature block is from a key with an expected digest, and its RSA-PSS signature
+#     verifies (espsecure verify-signature --version 2) with that key's PUBLIC key, given with
+#     --pub-key (once per key; it can be kept under version control: its digest is checked
+#     against D, which comes from elsewhere);
+#   - the signed content is the current build: the unsigned image of the build directory,
+#     padded with 0xFF to 4 KB, then the signature sector. A signed image of an older build
+#     is refused, also if the real key signed it.
 #
 # Outputs with --keyfile/--hsm-config, next to the inputs in the build directory (issue #93: the
 # only files the factory procedure flashes, README 3.6):
@@ -27,7 +37,10 @@
 #   bootloader-TESTKEY-signed.bin, rs485_spb_gateway-TESTKEY-signed.bin,
 #   signing_key_digest-TESTKEY.bin, test_signing_key.pem
 # Every run first deletes the outputs it is about to write, and deletes them again if it fails:
-# a failed signature never leaves older images behind.
+# a failed signature never leaves older images behind. --test-key also deletes images under the
+# production names that do not form one consistent set (both images and the digest file, every
+# signature block from the key of that digest file) or carry a known test key: what an
+# interrupted run of the script before issue #93 left (issue #103).
 #
 # The build must be a complete production one: Secure Boot V2, flash encryption in release mode,
 # ROM download mode disabled and NVS encryption (issue #93); anything else is refused.
@@ -37,13 +50,13 @@ set -euo pipefail
 : "${IDF_PATH:?source the ESP-IDF export.sh first}"
 IDF_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$IDF_DIR/build-prod"
-KEY="" HSM="" PUB="" TEST=0 CHECK=0
-EXPECT=()
+KEY="" HSM="" TEST=0 CHECK=0
+EXPECT=() PUBS=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --keyfile) KEY="$2"; shift 2 ;;
         --hsm-config) HSM="$2"; shift 2 ;;
-        --pub-key) PUB="$2"; shift 2 ;;
+        --pub-key) PUBS+=("$2"); shift 2 ;;
         --test-key) TEST=1; shift ;;
         --check) CHECK=1; shift ;;
         --expect-digest) EXPECT+=("$2"); shift 2 ;;
@@ -53,8 +66,14 @@ while [ $# -gt 0 ]; do
 done
 modes=$(( TEST + CHECK + (${#KEY} > 0 ? 1 : 0) + (${#HSM} > 0 ? 1 : 0) ))
 [ "$modes" = 1 ] || { echo "give exactly one of --keyfile, --hsm-config (with --pub-key), --test-key or --check" >&2; exit 2; }
-[ "$CHECK" = 0 ] || [ ${#EXPECT[@]} -gt 0 ] || { echo "--check needs --expect-digest" >&2; exit 2; }
+[ "$TEST" = 1 ] || [ ${#EXPECT[@]} -gt 0 ] ||
+    { echo "--expect-digest is required (the published digest of the real key; issue #103)" >&2; exit 2; }
 [ "$TEST" = 0 ] || [ ${#EXPECT[@]} = 0 ] || { echo "--expect-digest is for the real key, not --test-key" >&2; exit 2; }
+[ "$CHECK" = 0 ] || [ ${#PUBS[@]} -gt 0 ] ||
+    { echo "--check needs --pub-key (the public key of each expected digest, to verify the signatures)" >&2; exit 2; }
+[ -n "$HSM" ] || [ "$CHECK" = 1 ] || [ ${#PUBS[@]} = 0 ] ||
+    { echo "--pub-key goes with --hsm-config or --check" >&2; exit 2; }
+[ -z "$HSM" ] || [ ${#PUBS[@]} = 1 ] || { echo "--hsm-config needs one --pub-key (to verify and digest)" >&2; exit 2; }
 
 SDK="$BUILD/sdkconfig"
 [ -f "$SDK" ] || { echo "$SDK: no such file (configure the production build first)" >&2; exit 1; }
@@ -116,40 +135,116 @@ is_test_digest() {
     return 1
 }
 
-# Every valid signature block of @1 must be from a key in WANT (and from no known test key).
+# Public keys given with --pub-key, by digest: each must be one of the expected keys
+PUB_DIGESTS=()
+for k in ${PUBS[@]+"${PUBS[@]}"}; do
+    [ -f "$k" ] || { echo "--pub-key $k: no such file" >&2; exit 2; }
+    d="$(key_digest "$k")" || { echo "--pub-key $k: not an RSA-3072 key" >&2; exit 2; }
+    [[ " ${WANT[*]} " == *" $d "* ]] ||
+        { echo "--pub-key $k: digest $d is none of the expected ones (--expect-digest)" >&2; exit 1; }
+    PUB_DIGESTS+=("$d")
+done
+pub_for() {   # digest -> the --pub-key file with it, or nothing
+    local i
+    for i in "${!PUB_DIGESTS[@]}"; do
+        [ "${PUB_DIGESTS[$i]}" = "$1" ] && { printf '%s' "${PUBS[$i]}"; return 0; }
+    done
+    return 1
+}
+
+block_digests() {   # signed image -> the key digest of each valid signature block, one per line
+    local info
+    info="$(python -m espsecure signature-info-v2 "$1" 2>&1)" || return 1
+    printf '%s\n' "$info" | sed -n 's/^Public key digest for block [0-9]*: //p' | tr -d ' '
+}
+
+# Issue #103: the signed image @2 is the unsigned image @1 of the current build, padded with
+# 0xFF to 4 KB, plus one signature sector (what espsecure sign-data --version 2 writes).
+same_build() {
+    python - "$1" "$2" <<'PYEOF'
+import sys
+u = open(sys.argv[1], "rb").read()
+s = open(sys.argv[2], "rb").read()
+body = len(u) + (-len(u)) % 4096
+sys.exit(0 if len(s) == body + 4096 and s[:len(u)] == u and
+         s[len(u):body] == b"\xff" * (body - len(u)) else 1)
+PYEOF
+}
+
+# Every valid signature block of signed image @2 must be from a key in WANT (and from no known
+# test key); with @3 = verify, its RSA signature must verify with the --pub-key of that digest,
+# and the signed content must be the unsigned image @1 of this build.
 check_image() {
-    local info n=0 bad=0 d
-    [ -f "$1" ] || { echo "MISSING: $1" >&2; return 1; }
-    info="$(python -m espsecure signature-info-v2 "$1" 2>&1)" || { echo "NO VALID SIGNATURE: $1" >&2; return 1; }
+    local n=0 bad=0 d k
+    [ -f "$2" ] || { echo "MISSING: $2" >&2; return 1; }
+    local digests
+    digests="$(block_digests "$2")" || { echo "NO VALID SIGNATURE: $2" >&2; return 1; }
     while read -r d; do
+        [ -n "$d" ] || continue
         n=$((n + 1))
         if is_test_digest "$d"; then
-            echo "TEST KEY: $1 is signed with a throwaway test key ($d)" >&2; bad=1
+            echo "TEST KEY: $2 is signed with a throwaway test key ($d)" >&2; bad=1
         elif [[ " ${WANT[*]} " != *" $d "* ]]; then
-            echo "WRONG KEY: $1 is signed with key digest $d, not the expected one" >&2; bad=1
+            echo "WRONG KEY: $2 is signed with key digest $d, not the expected one" >&2; bad=1
+        elif [ "${3:-}" = verify ]; then
+            if ! k="$(pub_for "$d")"; then
+                echo "NO PUBLIC KEY: $2 has a block from key digest $d and no --pub-key has it" >&2; bad=1
+            elif ! python -m espsecure verify-signature --version 2 --keyfile "$k" "$2" >/dev/null 2>&1; then
+                echo "BAD SIGNATURE: $2 does not verify with $k" >&2; bad=1
+            fi
         fi
-    done < <(printf '%s\n' "$info" | sed -n 's/^Public key digest for block [0-9]*: //p' | tr -d ' ')
-    [ "$n" -gt 0 ] || { echo "NO VALID SIGNATURE: $1" >&2; return 1; }
-    [ "$bad" = 0 ] && echo "digest OK ($n signature block(s)): $1"
+    done <<<"$digests"
+    [ "$n" -gt 0 ] || { echo "NO VALID SIGNATURE: $2" >&2; return 1; }
+    if [ "${3:-}" = verify ]; then
+        [ -f "$1" ] || { echo "MISSING: $1 (the unsigned image of this build)" >&2; return 1; }
+        same_build "$1" "$2" || { echo "STALE: $2 is not the signed $1 of the current build" >&2; bad=1; }
+    fi
+    [ "$bad" = 0 ] && echo "OK ($n signature block(s)${3:+, RSA verified, current build}): $2"
     return "$bad"
 }
-check_outputs() {   # bootloader, app
+UNSIGNED=("$BUILD/bootloader/bootloader.bin" "$BUILD/rs485_spb_gateway.bin")
+check_outputs() {   # bootloader, app [verify]
     local ok=0
-    check_image "$1" || ok=1
-    check_image "$2" || ok=1
+    check_image "${UNSIGNED[0]}" "$1" "${3:-}" || ok=1
+    check_image "${UNSIGNED[1]}" "$2" "${3:-}" || ok=1
     return "$ok"
 }
 
 PROD_OUT=("$BUILD/bootloader/bootloader-signed.bin" "$BUILD/rs485_spb_gateway-signed.bin"
           "$BUILD/signing_key_digest.bin")
 if [ "$CHECK" = 1 ]; then
-    if check_outputs "${PROD_OUT[0]}" "${PROD_OUT[1]}"; then
-        echo "the signed images in $BUILD carry only the expected key: ready to flash"
+    if check_outputs "${PROD_OUT[0]}" "${PROD_OUT[1]}" verify; then
+        echo "the signed images in $BUILD are this build, signed only by the expected key(s): ready to flash"
         exit 0
     fi
-    echo "DO NOT FLASH: the signed images in $BUILD do not match the expected key digest" >&2
+    echo "DO NOT FLASH: the signed images in $BUILD are not this build signed by the expected key(s)" >&2
     exit 1
 fi
+
+# True if images under the production names exist and do not form one consistent set: both
+# signed images and the digest file, every signature block from the key of that digest file and
+# none from a known test key.
+prod_leftover() {
+    local f any=0 want d digests
+    for f in "${PROD_OUT[@]}"; do
+        [ -e "$f" ] && any=1
+    done
+    [ "$any" = 1 ] || return 1
+    for f in "${PROD_OUT[@]}"; do
+        [ -f "$f" ] || return 0
+    done
+    [ "$(wc -c <"${PROD_OUT[2]}")" -eq 32 ] || return 0
+    want="$(hexdigest "${PROD_OUT[2]}")"
+    is_test_digest "$want" && return 0
+    for f in "${PROD_OUT[0]}" "${PROD_OUT[1]}"; do
+        digests="$(block_digests "$f")" || return 0
+        [ -n "$digests" ] || return 0
+        while read -r d; do
+            [ "$d" = "$want" ] || return 0
+        done <<<"$digests"
+    done
+    return 1
+}
 
 if [ "$TEST" = 1 ]; then
     mkdir -p "$TESTDIR"
@@ -158,26 +253,33 @@ if [ "$TEST" = 1 ]; then
     TEST_DIGESTS+=("$(key_digest "$KEY")")
     OUT=("$TESTDIR/bootloader-TESTKEY-signed.bin" "$TESTDIR/rs485_spb_gateway-TESTKEY-signed.bin"
          "$TESTDIR/signing_key_digest-TESTKEY.bin")
-    # Before issue #93 --test-key wrote the production names: drop such leftovers
-    if [ -f "${PROD_OUT[2]}" ] && is_test_digest "$(hexdigest "${PROD_OUT[2]}")"; then
+    # Before issue #93 --test-key wrote the production names: drop such leftovers, also a run
+    # left half done (issue #103), whatever test keys this machine still has
+    if prod_leftover; then
         rm -f "${PROD_OUT[@]}"
-        echo "removed test-signed images left under the production names in $BUILD" >&2
+        echo "removed signed images under the production names in $BUILD that were not one" \
+             "consistent set (an interrupted or test-key run): sign them again" >&2
     fi
     echo "WARNING: throwaway test key $KEY: never flash images signed with it on a device" >&2
 else
     OUT=("${PROD_OUT[@]}")
 fi
 if [ -n "$HSM" ]; then
-    [ -n "$PUB" ] || { echo "--hsm-config needs --pub-key (to verify and digest)" >&2; exit 2; }
     SIGN=(--hsm --hsm-config "$HSM")
-    VERIFY_KEY="$PUB"
+    VERIFY_KEY="${PUBS[0]}"
 else
     SIGN=(--keyfile "$KEY")
     VERIFY_KEY="$KEY"
 fi
-if [ "$TEST" = 0 ] && is_test_digest "$(key_digest "$VERIFY_KEY")"; then
-    echo "$VERIFY_KEY is a throwaway test key: use --test-key for that (separate outputs)" >&2
-    exit 1
+if [ "$TEST" = 0 ]; then
+    vd="$(key_digest "$VERIFY_KEY")"
+    if is_test_digest "$vd"; then
+        echo "$VERIFY_KEY is a throwaway test key: use --test-key for that (separate outputs)" >&2
+        exit 1
+    fi
+    # issue #103: any key whose digest is not the published one is refused before signing
+    [[ " ${WANT[*]} " == *" $vd "* ]] ||
+        { echo "$VERIFY_KEY: digest $vd is not the expected one (--expect-digest): not the real key" >&2; exit 1; }
 fi
 
 done_ok=0
@@ -198,12 +300,15 @@ python -m espsecure digest-sbv2-public-key --keyfile "$VERIFY_KEY" --output "${O
 if [ ${#WANT[@]} -gt 0 ]; then
     check_outputs "${OUT[0]}" "${OUT[1]}"
 fi
+for i in 0 1; do   # what --check will compare: the signed content is this build
+    same_build "${UNSIGNED[$i]}" "${OUT[$i]}" || { echo "${OUT[$i]}: not the signed ${UNSIGNED[$i]}" >&2; exit 1; }
+done
 done_ok=1
 echo "public key digest (eFuse KEY_PURPOSE SECURE_BOOT_DIGEST0 after the first boot):"
 hexdigest "${OUT[2]}"
 echo
 if [ "$TEST" = 1 ]; then
     echo "TEST-KEY images in $TESTDIR: for checking the signing only; the factory never flashes them" >&2
-elif [ ${#WANT[@]} = 0 ]; then
-    echo "next: compare that digest with the published one: $0 --check --expect-digest <digest> --build-dir $BUILD" >&2
+else
+    echo "next, at the factory: $0 --check --pub-key <public key> --expect-digest <digest> --build-dir $BUILD" >&2
 fi
