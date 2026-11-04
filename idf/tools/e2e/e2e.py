@@ -914,6 +914,14 @@ def run(args, log, slave, broker, conf, work):
           f"NBIRTH bdSeq={b2} seq={nb[2].seq if nb else None}; DBIRTH seq "
           f"{ {t.split('/')[-1]: m[2].seq for t, m in dbs.items()} }")
 
+    # Issue #5: the backoff restarts from the minimum only once a session has lasted one keepalive
+    # period (this one began after 5 failed attempts)
+    stable = gw.wait_log(r"session stable for \d+ ms: reconnect backoff reset", keepalive + 5, resumed)
+    check("MQTT-2 / issue #5 reconnect backoff reset only after the session lasted one keepalive",
+          stable and nb and stable - nb[0] >= keepalive - 0.5,
+          f"reset {stable - nb[0]:.1f} s after the NBIRTH (keepalive {keepalive} s): "
+          f"{gw.find(r'session stable', resumed)[:1]}" if stable and nb else "no backoff reset logged")
+
     # 1c. Kill the TCP connection (QEMU process) -> broker publishes the will
     obs.drain()
     gw.kill()
