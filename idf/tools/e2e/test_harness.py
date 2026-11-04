@@ -35,8 +35,8 @@ A14     : 0x3fcc52cc  A15     : 0x00000001  SAR     : 0x0000001f  EXCCAUSE: 0x00
 EXCVADDR: 0x6002306c  LBEG    : 0x00000000  LEND    : 0x00000000  LCOUNT  : 0x00000000
 """.splitlines()
 PANIC = FLAKE[5:]
-# the tick ISR (SysTickIsrHandler) holds 0x4037c267 in these tests; park_loop and the idle wait
-SYMS = {"SysTickIsrHandler": [(0x4037c200, 0x4037c2c0)], "park_loop": [(0x40380000, 0x40380040)],
+# park_loop and the idle wait, for the hang dump's analysis
+SYMS = {"park_loop": [(0x40380000, 0x40380040)],
         "esp_cpu_wait_for_intr": [(0x40379c90, 0x40379cc0)]}
 BOOTLOADER = ["ESP-ROM:esp32s3-20210327", "rst:0xc (RTC_SW_CPU_RST),boot:0x4 (SPI_FLASH_BOOT)",
               "I (100) esp_image: segment 0: paddr=00020020 vaddr=3c0b0020 size=39fe0h map",
@@ -82,35 +82,19 @@ class Signatures(unittest.TestCase):
         self.assertIn("LoadStorePIFAddrError at 0x6002306c", g.signature[1])
         self.assertEqual([], g.unknown_panics())
 
-    def test_known_panic_at_a_trial_start(self):
-        # issue #92 round 2 (A1): the same fault while gw_fw_init reads the other slot, after
-        # the configuration is loaded and before gw_fw_init's own line: the tick ISR's PC
-        g = FakeGateway()
-        g.feed(BOOTLOADER + [APP, "I (18925) main: configuration from /cfg/config.json "
-                             "(LittleFS): group 'Plant1'", "I (18929) syslog: forwarding logs "
-                             "to 10.0.2.2:15514"] + PANIC)
-        self.assertIsNotNone(g.signature)
-        self.assertIn("in the tick ISR (PC 0x4037c267) while gw_fw_init", g.signature[1])
-
-    def test_iram_panic_in_steady_state_is_not_known(self):
-        # A1: the same PC and address once gw_fw_init is done (only syslog context): the
-        # firmware's (an ISR in IRAM writing a peripheral at any moment is not the emulator's)
-        g = FakeGateway()
-        g.feed([APP, "I (18925) main: configuration from /cfg/config.json (LittleFS)",
-                "I (18930) fw: firmware e2e-v2 in ota_1; updates by URL trust /cfg/ca.pem",
-                "I (18929) syslog: forwarding logs to 10.0.2.2:15514"] + PANIC)
-        self.assertIsNone(g.signature)
-        self.assertEqual(1, len(g.unknown_panics()))
-        # in the window but another IRAM function (mask_port, the RS485 ISR): not known either
-        g = FakeGateway()
-        g.feed([APP, "I (18925) main: configuration from /cfg/config.json (LittleFS)"]
-               + [ln.replace("0x4037c267", "0x40378888") for ln in PANIC])
-        self.assertIsNone(g.signature)
-        # without the ELF's symbols nothing in IRAM is known
-        e2e.SYMBOLS.clear()
-        g = FakeGateway()
-        g.feed([APP, "I (18925) main: configuration from /cfg/config.json (LittleFS)"] + PANIC)
-        self.assertIsNone(g.signature)
+    def test_iram_panic_without_an_image_check_is_the_firmwares(self):
+        # round 3: the PIF fault with an IRAM PC (the tick ISR at a trial image's start, or the
+        # RS485 ISR, mask_port) and no image write or check before it is a firmware failure
+        for context in (["I (18925) main: configuration from /cfg/config.json (LittleFS)",
+                         "I (18929) syslog: forwarding logs to 10.0.2.2:15514"],
+                        ["I (18929) syslog: forwarding logs to 10.0.2.2:15514"]):
+            g = FakeGateway()
+            g.feed(BOOTLOADER + [APP] + context + PANIC
+                   + ["", "Backtrace: 0x4037c264:0x3fc935f0 0x40377acf:0x3fc93610"])
+            self.assertIsNone(g.signature)
+            whats = [p[1] for p in g.unknown_panics()]
+            self.assertIn("Guru Meditation (LoadStorePIFAddrError)", whats)
+            self.assertIn("backtrace without a known emulator signature", whats)
 
     def test_bootloader_lines_are_not_an_image_check(self):
         # M1: the bootloader's esp_image lines (every boot) do not count as an image check of
@@ -140,17 +124,55 @@ class Signatures(unittest.TestCase):
         self.assertIsNone(g.signature)
         self.assertEqual(1, len(g.unknown_panics()))   # an abort() nobody asked for
 
-    def test_other_firmware_failures(self):
-        # a stack overflow and an abort() not requested by the shell are firmware failures; the
-        # shell's 'panic' (it prints its marker first) is not
+    def test_every_firmware_failure_is_seen(self):
+        # round 3: each of these on the console forbids a retry
+        cases = {
+            "Guru Meditation Error: Core  0 panic'ed (Interrupt wdt timeout on CPU0).":
+                "Guru Meditation (Interrupt wdt timeout on CPU0)",
+            "Guru Meditation Error: Core  1 panic'ed (Unhandled debug exception).":
+                "Guru Meditation (Unhandled debug exception)",
+            "Guru Meditation Error: Core  0 panic'ed (Double exception).":
+                "Guru Meditation (Double exception)",
+            "Guru Meditation Error: Core  0 panic'ed (Cache error).": "Guru Meditation (Cache error)",
+            "Guru Meditation Error: Core  0 panic'ed (StoreProhibited). Exception was unhandled.":
+                "Guru Meditation (StoreProhibited)",
+            "assert failed: xQueueGenericSend queue.c:832 (pxQueue)": "assert failed",
+            "E (5000) task_wdt: Aborting.": "task watchdog",
+            "E (5000) task_wdt: Task watchdog got triggered. The following tasks/users did not "
+            "reset the watchdog in time:": "task watchdog",
+            "ESP_ERROR_CHECK failed: esp_err_t 0x101 (ESP_ERR_NO_MEM) at 0x42001234":
+                "ESP_ERROR_CHECK failed",
+            "CORRUPT HEAP: Bad head at 0x3fc9a000. Expected 0xabba1234 got 0xfefefefe":
+                "corrupt heap",
+            "***ERROR*** A stack overflow in task esp_timer has been detected.": "stack overflow",
+            "abort() was called at PC 0x4037a1b2 on core 0": "abort() not requested by the harness",
+            "Backtrace: 0x4037c264:0x3fc935f0 0x40377acf:0x3fc93610":
+                "backtrace without a known emulator signature",
+        }
+        for line, what in cases.items():
+            g = FakeGateway()
+            g.feed([APP, "I (1) edge: Sparkplug session up", line])
+            self.assertIn(what, [p[1] for p in g.unknown_panics()], line)
+
+    def test_the_shells_panic_is_not_a_failure(self):
+        # the shell's 'panic': its marker, then (up to DELIBERATE_LINES later, other tasks'
+        # lines in between) the abort and its backtrace
         g = FakeGateway()
-        g.feed([APP, "panic requested from the console",
-                "abort() was called at PC 0x42001234 on core 0"])
+        g.feed([APP, "panic requested from the console"] + [f"I ({n}) edge: noise" for n in range(15)]
+               + ["abort() was called at PC 0x42001234 on core 0", "",
+                  "Backtrace: 0x40375c4e:0x3fcf2a30 0x4037a1b5:0x3fcf2a50"])
         self.assertEqual([], g.unknown_panics())
-        g.feed(["***ERROR*** A stack overflow in task esp_timer has been detected.",
-                "abort() was called at PC 0x4037a1b2 on core 0"])
-        self.assertEqual(["stack overflow in task esp_timer", "abort() not requested by the harness"],
-                         [p[1] for p in g.unknown_panics()])
+        # but not once the marker is further back than that
+        g = FakeGateway()
+        g.feed([APP, "panic requested from the console"]
+               + [f"I ({n}) edge: noise" for n in range(e2e.DELIBERATE_LINES + 1)]
+               + ["abort() was called at PC 0x42001234 on core 0"])
+        self.assertEqual(1, len(g.unknown_panics()))
+        # the backtrace of the known emulator panic is not a failure either
+        g = FakeGateway()
+        g.feed([APP] + FLAKE + ["", "Backtrace: 0x4037c264:0x3fc935f0 0x40377acf:0x3fc93610"])
+        self.assertIsNotNone(g.signature)
+        self.assertEqual([], g.unknown_panics())
 
     def test_phases(self):
         g = FakeGateway()
@@ -168,34 +190,47 @@ def regs(*pcs):
 
 
 class HangDecision(unittest.TestCase):
-    """M2: the hang after 'Take trusted digest key(s)' is retried only on a dump that shows it."""
+    """Round 3: a silence is never repeated; the dumps' analysis stays as a diagnostic."""
 
     def setUp(self):
         e2e.SYMBOLS.clear()
         e2e.SYMBOLS.update(SYMS)
 
-    def test_stalled_core(self):
+    def test_analysis(self):
         ok, why = e2e.hang_decision([regs(0x40012345, 0x40380010), regs(0x40012345, 0x40380010)])
         self.assertTrue(ok)
         self.assertIn("core 0 stalled in the ROM at 0x40012345", why)
-
-    def test_stall_outside_the_rom_is_not_retried(self):
-        # the one dumped occurrence: core 0 still in esp_cpu_compare_and_set (IRAM), core 1 parked
         ok, why = e2e.hang_decision([regs(0x40379b8f, 0x40380010), regs(0x40379b8f, 0x40380010)])
-        self.assertFalse(ok)
         self.assertIn("outside the ROM", why)
-
-    def test_no_evidence(self):
         self.assertFalse(e2e.hang_decision([None, None])[0])
-        self.assertFalse(e2e.hang_decision([regs(0x40012345), None])[0])
-        # every core moves: the firmware runs
         ok, why = e2e.hang_decision([regs(0x42001000, 0x40380010), regs(0x42001100, 0x40380020)])
-        self.assertFalse(ok)
         self.assertIn("still running", why)
-        # only the parked core and the idle core stand still
-        ok, why = e2e.hang_decision([regs(0x40379ca0, 0x40380010), regs(0x40379ca0, 0x40380010)])
-        self.assertFalse(ok)
-        self.assertIn("wait loop", why)
+
+    def test_a_silence_is_never_repeated(self):
+        RetryRule.setUp(self)
+        dump = e2e.dump_state
+
+        def stalled_in_rom(g, why):   # even the strongest stall the dump could show
+            return "fault-x.txt", {}, [regs(0x40012345, 0x40380010), regs(0x40012345, 0x40380010)]
+        e2e.dump_state = stalled_in_rom
+        try:
+            def fn():
+                self.attempts += 1
+                g = FakeGateway()
+                g.proc, g.started, g.last_rx = FakeProc(), time.monotonic(), time.monotonic()
+                e2e.GATEWAYS.append(g)
+                e2e.record_fault(g, "qemu hang", time.monotonic(),
+                                 signature="QEMU silent after 'Take trusted digest key(s)'",
+                                 detail="simulated")
+            e2e.run_scenario("s", fn)
+        finally:
+            e2e.dump_state = dump
+        self.assertEqual(1, self.attempts)
+        self.assertEqual([], e2e.RETRIES)
+        f = e2e.FAULTS[-1]
+        self.assertFalse(f["retry"])
+        self.assertIn("never repeated", f["decision"])
+        self.assertIn("stalled in the ROM", f["analysis"])
 
 
 class RetryRule(unittest.TestCase):
@@ -320,6 +355,26 @@ class RetryRule(unittest.TestCase):
         self.assertEqual(["closed 1", "left 1", "closed 2", "left 2"], closed)
         self.assertFalse(outside.closed)   # created outside any scenario: not the attempt's
         self.assertEqual(0, e2e.ATTEMPTS[0])
+
+    def test_slave_is_put_back_after_a_faulted_attempt(self):
+        """Issue #105 round 3: to the values at the attempt's start, retried or not."""
+        slave = e2e.ModbusSlave()
+        slave.reset()
+        slave.set_float(4, 0, 777.0)          # not an initial value: the scenario-start state
+        e2e.MAIN_BROKER["slave"] = slave
+        start = slave.snapshot()
+
+        def fn():
+            self.attempts += 1
+            slave.set_float(4, 0, 240.0)
+            slave.bulk.setValues(3, 100, [2001] * 60)
+            slave.ctx.refuse.add((4, 0))
+            slave.delay = 0.12
+            self.fault(known=False)
+            raise ConnectionError("simulated")
+        e2e.run_scenario("s", fn)
+        self.assertEqual(start, slave.snapshot())
+        e2e.MAIN_BROKER.clear()
 
     def test_waits_raise_after_a_fault(self):
         e2e.FAULT.set()

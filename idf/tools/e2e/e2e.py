@@ -231,6 +231,23 @@ class ModbusSlave:
         self.ctx.setValues(3, 10, [50])   # Setpoint raw 50 -> 5.0
         self.set_mb6()
 
+    def snapshot(self):
+        """Issue #105 round 3: every register and bit of both units, the refused addresses and
+        the response delay, as a scenario attempt starts."""
+        return {"values": [[ctx.getValues(fc, 0, 300) for fc in (1, 2, 3, 4)]
+                           for ctx in (self.ctx, self.bulk)],
+                "refuse": [set(self.ctx.refuse), set(self.bulk.refuse)], "delay": self.delay}
+
+    def restore(self, snap):
+        """Back to @snap (snapshot()): after an attempt that a fault or an exception ended
+        before the scenario put back what it changed (a Voltage, the Bulk registers, a delay)."""
+        for ctx, vals, ref in zip((self.ctx, self.bulk), snap["values"], snap["refuse"]):
+            for fc, v in zip((1, 2, 3, 4), vals):
+                ctx.setValues(fc, 0, list(v))
+            ctx.refuse.clear()
+            ctx.refuse.update(ref)
+        self.delay = snap["delay"]
+
     def set_mb6(self):
         """MB-6 tags of Meter1 (tools/e2e/fs/config.json), each in its byte order."""
         words = lambda v, n: [(v >> (16 * (n - 1 - i))) & 0xFFFF for i in range(n)]  # noqa: E731
@@ -676,27 +693,29 @@ BOOT_RX = re.compile(r"^ESP-ROM:|^rst:0x")
 APP_RX = re.compile(r"main: rs485_spb_gateway .* reset reason")
 TRUSTED_RX = re.compile(r"secure_boot_v2: Take trusted digest key\(s\)")
 VERIFY_RX = re.compile(r"esp_image: Verifying image signature|secure_boot_v2: |esp_image: segment")
-GURU_RX = re.compile(r"Guru Meditation Error: Core\s+\d panic'ed \((\w+)\)")
-# Other firmware failures that forbid a retry (issue #96 round 2): a stack overflow (the hang
-# after 'Take trusted digest key(s)' was the esp_timer task's stack, fix/ota-trial e09b7b4) and
-# an abort() that is not the shell's deliberate 'panic' (it prints DELIBERATE_RX first)
-OVERFLOW_RX = re.compile(r"stack overflow in task (\S+)")
-ABORT_RX = re.compile(r"abort\(\) was called")
-DELIBERATE_RX = re.compile(r"panic requested from the console")
+GURU_RX = re.compile(r"Guru Meditation Error: Core\s+\d panic'ed \((.*)\)")
 EXCVADDR_RX = re.compile(r"EXCVADDR\s*:\s*0x([0-9a-fA-F]{8})")
-PC_RX = re.compile(r"^PC\s*:\s*0x([0-9a-fA-F]{8})")
+# Issue #96 round 3: firmware failures on the console; any of them in an attempt forbids its
+# retry (a Guru Meditation panic is one unless it matches the known emulator signature, and a
+# backtrace is one unless it belongs to such a panic or to the shell's deliberate 'panic')
+FAILURE_RX = [(re.compile(p), what) for p, what in (
+    (r"assert failed:", "assert failed"),
+    (r"task_wdt: Aborting|Task watchdog got triggered", "task watchdog"),
+    (r"ESP_ERROR_CHECK failed", "ESP_ERROR_CHECK failed"),
+    (r"CORRUPT HEAP", "corrupt heap"),
+    (r"stack overflow", "stack overflow"),
+)]
+ABORT_RX = re.compile(r"abort\(\) was called")
+BACKTRACE_RX = re.compile(r"^Backtrace:")
+DELIBERATE_RX = re.compile(r"panic requested from the console")   # the shell's 'panic' command
+DELIBERATE_LINES = 20   # how far back an abort()/backtrace looks for it, on the same gateway
 # An image being written or verified by the app (download, upload, esp_ota_end, a rollback's
 # check). Only lines after app_main's first line count (the bootloader prints esp_image too).
 OTA_RX = re.compile(r"esp_https_ota: |fw: downloading firmware|fw: receiving a firmware upload|"
                     r"esp_image: |secure_boot_v2|esp_ota_ops: |fw: firmware .* rejected .*: back to")
-# Issue #92 round 2: gw_fw_init reads the other slot's description through a flash mapping (the
-# cache freeze) right after the configuration is loaded and before it logs its own line
-FW_INIT_OPEN_RX = re.compile(r"main: configuration from ")
-FW_INIT_DONE_RX = re.compile(r"fw: firmware \S+ in \S+; updates")
 PERIPHERALS = (0x60000000, 0x600FFFFF)   # ESP32-S3 peripheral address space
-# Functions resolved from the ELF (load_symbols): the FreeRTOS tick ISR, the only IRAM code a
-# PIF fault may come from to count as the emulator's, and the loops where a core waits (waiti)
-TICK_ISR = ("SysTickIsrHandler",)
+# Functions resolved from the ELF (load_symbols): the loops where a core waits (waiti), for the
+# hang dump's analysis (diagnostic only: a silence is never repeated)
 WAITING = ("park_loop", "esp_cpu_wait_for_intr")
 SYMBOLS = {}         # name -> [(start, end)], from every ELF given (main)
 HANG_S = 60.0        # --hang-timeout
@@ -716,8 +735,8 @@ DEFAULT_BUDGET_S = 900.0
 
 
 def load_symbols(nm, elfs):
-    """{name: [(start, end)]} of the TICK_ISR and WAITING functions in @elfs (nm -S), {} if nm is
-    missing: without it no IRAM-PC panic is known and no hang dump can show a stall."""
+    """{name: [(start, end)]} of the WAITING functions in @elfs (nm -S), {} if nm is missing (the
+    hang dump's analysis then cannot tell a waiting core)."""
     out = {}
     for elf in elfs:
         if not elf or not pathlib.Path(elf).exists():
@@ -726,12 +745,12 @@ def load_symbols(nm, elfs):
             r = subprocess.run([nm, "-S", "--defined-only", str(elf)], capture_output=True,
                                text=True, check=True)
         except (OSError, subprocess.CalledProcessError) as e:
-            print(f"[FAULT] no symbols from {elf} ({e}): IRAM-PC panics and hang dumps stay "
-                  "unknown", flush=True)
+            print(f"[FAULT] no symbols from {elf} ({e}): the hang dumps name no function",
+                  flush=True)
             continue
         for ln in r.stdout.splitlines():
             cols = ln.split()
-            if len(cols) == 4 and cols[3] in TICK_ISR + WAITING:
+            if len(cols) == 4 and cols[3] in WAITING:
                 start = int(cols[0], 16)
                 out.setdefault(cols[3], []).append((start, start + int(cols[1], 16)))
     return out
@@ -744,30 +763,27 @@ def symbol_at(pc):
     return None
 
 
-def known_panic(exception, excvaddr, before, pc=None, fw_init=False):
+def known_panic(exception, excvaddr, before):
     """Issue #92: the known emulator panic, or None. QEMU does not model the S3 cache freeze
-    while flash is mapped (an image checked, written or its description read): IDF's tick on
-    the other core then faults on SYSTIMER with LoadStorePIFAddrError (docs/upstream-reports.md
-    section 6). Only that exception, at a peripheral address, and with positive evidence of a
-    mapping at that moment: an image being written or checked by the app in @before (the lines
-    since app_main started, at most 40), or the faulting PC in the tick ISR (resolved from the
-    ELF) while gw_fw_init reads the other slot (@fw_init: after 'main: configuration from', before
-    gw_fw_init's own line). A PIF fault anywhere else (the RS485 ISR, mask_port at a restart,
-    this firmware's code) is the firmware's."""
+    while an image is mapped for its write or check: an access of the other core to a
+    peripheral then faults with LoadStorePIFAddrError (docs/upstream-reports.md section 6).
+    Only that exception, at a peripheral address, with an image being written or checked by the
+    app in @before (the lines since app_main started, at most 40). Round 3: the fault with the
+    PC in IRAM and no such line (the tick ISR at a trial image's start, seen only with heap
+    poisoning) is a firmware failure, like any other PIF fault (the RS485 ISR and mask_port are
+    IRAM code that writes peripherals)."""
     if exception != "LoadStorePIFAddrError" or not PERIPHERALS[0] <= excvaddr <= PERIPHERALS[1]:
         return None
-    if any(OTA_RX.search(ln) for ln in before):
-        where = "during an image write or check"
-    elif pc is not None and fw_init and symbol_at(pc) in TICK_ISR:
-        where = f"in the tick ISR (PC 0x{pc:08x}) while gw_fw_init reads the other slot"
-    else:
+    if not any(OTA_RX.search(ln) for ln in before):
         return None
-    return f"LoadStorePIFAddrError at 0x{excvaddr:08x} (peripheral) {where}"
+    return f"LoadStorePIFAddrError at 0x{excvaddr:08x} (peripheral) during an image write or check"
 
 
 def hang_decision(regs):
-    """Issue #92 round 2: (retry, reason) for the hang after 'Take trusted digest key(s)', from
-    the two register dumps. Retried only if the monitor answered both times and a core that is
+    """Issue #92: (stalled, analysis) of a silent emulator's two register dumps, recorded as
+    diagnostics only (round 3: no silence is ever repeated; the one dumped instance was the
+    firmware's esp_timer stack overflow). "stalled" is what this analysis would have called an
+    emulator stall: Retried only if the monitor answered both times and a core that is
     not in a wait loop (park_loop, the idle task's waiti) kept exactly the same PC, in the ROM,
     for the second between them: the emulator stopped inside the ROM's code. The one dumped
     occurrence stood still in IRAM, in a spinlock with a bogus pointer, which fits the esp_timer
@@ -876,15 +892,17 @@ def dump_state(g, why):
 def record_fault(g, kind, t, signature=None, detail="", end_it=True, key=None):
     """Issue #92: a fault of attempt @key (default: the current one). The attempt is stopped
     first (FAULT: every wait raises), then the state is dumped while the scenario cannot end
-    the emulator (Gateway.kill waits for the dump), then the emulator is ended. A hang after
-    'Take trusted digest key(s)' is a known fault only if its dump shows the stall
-    (hang_decision); the decision and its reason are recorded."""
+    the emulator (Gateway.kill waits for the dump), then the emulator is ended. Only a QEMU
+    exit and the known emulator panic are repeatable (@signature); a silence never is (round 3),
+    its dump's analysis (hang_decision) is kept as a diagnostic."""
     key = ATTEMPTS[0] if key is None else key
     f = {"scenario": ATTEMPT.get("name"), "attempt": ATTEMPT.get("attempt"), "attempt_key": key,
          "kind": kind, "gateway": g.log_path.name if g is not None else None,
          "gateway_id": id(g) if g is not None else None, "t": round(t - T0, 2),
-         "signature": signature, "retry": signature is not None, "detail": detail,
-         "dump": None, "pc": {}, "monitor_answered": None, "decision": None}
+         "signature": signature,
+         "retry": signature is not None and kind in ("qemu exit", "emulator panic"),
+         "detail": detail,
+         "dump": None, "pc": {}, "monitor_answered": None, "decision": None, "analysis": None}
     FAULTS.append(f)
     if key == ATTEMPTS[0]:
         ATTEMPT.setdefault("abort_reason", f"{kind}: {signature or detail}")
@@ -894,16 +912,17 @@ def record_fault(g, kind, t, signature=None, detail="", end_it=True, key=None):
         with g._kill_lock:   # the scenario's kill() waits for the dump
             f["dump"], f["pc"], regs = dump_state(g, f"{kind}: {signature or detail}")
             f["monitor_answered"] = all(r is not None for r in regs)
-            if kind == "qemu hang":
-                ok, why = hang_decision(regs)
-                f["retry"], f["decision"] = ok, why
+            if kind in ("qemu hang", "silent emulator"):
+                f["analysis"] = hang_decision(regs)[1]   # diagnostic only: never repeated
             if end_it:
                 g.kill()
-    elif kind == "qemu hang":
-        f["retry"], f["decision"] = False, "the emulator was gone before its state was dumped"
+    if kind in ("qemu hang", "silent emulator"):
+        f["decision"] = ("a silence is never repeated (it may be the firmware: the one dumped "
+                         "case was the esp_timer stack overflow)")
     print(f"[FAULT] {f['scenario']}: {kind} ({f['gateway']}): {signature or detail}"
           f"{'; state in ' + f['dump'] if f['dump'] else ''}"
           f"{'; ' + f['decision'] if f['decision'] else ''}"
+          f"{'; dump: ' + f['analysis'] if f['analysis'] else ''}"
           f"{'; known emulator fault, the scenario may run once more' if f['retry'] else ''}",
           flush=True)
     return f
@@ -992,10 +1011,9 @@ class Gateway:
         self.last_rx = None          # time of the last byte from the console
         self.phase = "boot"          # "boot" from a reset until app_main logs, then "run"
         self.signature = None        # (time, text) of a known emulator panic seen on the console
-        self._panic = None           # (time, exception, line index, PC, fw_init) being read
-        self.panics = []             # [time, exception, known signature or None] (#96 M3)
+        self._panic = None           # (time, exception, line index) of a panic being read
+        self.panics = []             # [time, what, known signature or None, line] (#96)
         self.app_line = None         # index of this boot's app_main line (#92 M1)
-        self.fw_init = False         # between 'main: configuration from' and gw_fw_init's line
         self.mon_path = None         # QEMU monitor (HMP) socket, for the state dump
 
     def start(self):
@@ -1071,37 +1089,31 @@ class Gateway:
         self.lines.append((t, text))
         i = len(self.lines) - 1
         if BOOT_RX.search(text):
-            self.phase, self.app_line, self.fw_init = "boot", None, False
+            self.phase, self.app_line = "boot", None
         elif APP_RX.search(text):
             self.phase, self.app_line = "run", i
-        if FW_INIT_OPEN_RX.search(text) and self.app_line is not None:
-            self.fw_init = True
-        elif FW_INIT_DONE_RX.search(text):
-            self.fw_init = False
+        # issue #96 round 3: every firmware failure the console shows (see FAILURE_RX)
         m = GURU_RX.search(text)
         if m:
-            # (time, exception, line index, PC, gw_fw_init reading the other slot then)
-            self._panic = (t, m.group(1), i, None, self.fw_init)
-            self.panics.append([t, m.group(1), None])   # known signature or None (#96 M3)
-        m = OVERFLOW_RX.search(text)
-        if m:
-            self.panics.append([t, f"stack overflow in task {m.group(1)}", None])
-        if ABORT_RX.search(text) and not any(DELIBERATE_RX.search(ln)
-                                             for _, ln in self.lines[max(0, i - 2):i]):
-            self.panics.append([t, "abort() not requested by the harness", None])
-        m = PC_RX.search(text)
-        if m and self._panic and self._panic[3] is None:
-            self._panic = self._panic[:3] + (int(m.group(1), 16),) + self._panic[4:]
+            self._panic = (t, m.group(1), i)
+            self.panics.append([t, f"Guru Meditation ({m.group(1)})", None, i])
+        for rx, what in FAILURE_RX:
+            if rx.search(text):
+                self.panics.append([t, what, None, i])
+        if (ABORT_RX.search(text) or BACKTRACE_RX.search(text)) and not self._excused(i):
+            self.panics.append([t, "abort() not requested by the harness" if ABORT_RX.search(text)
+                                else "backtrace without a known emulator signature", None, i])
         m = EXCVADDR_RX.search(text)
         if m and self._panic and i - self._panic[2] <= 12:
             # issue #92 M1: only the app's lines of this boot (the bootloader prints esp_image)
             lo = max(self._panic[2] - 40, (self.app_line + 1) if self.app_line is not None
                      else self._panic[2])
             sig = known_panic(self._panic[1], int(m.group(1), 16),
-                              [ln for _, ln in self.lines[lo:self._panic[2]]],
-                              self._panic[3], self._panic[4])
+                              [ln for _, ln in self.lines[lo:self._panic[2]]])
             if sig:
-                self.panics[-1][2] = sig
+                for p in self.panics:
+                    if p[3] == self._panic[2]:
+                        p[2] = sig
                 if self.signature is None:
                     self.signature = (self._panic[0], sig)
             self._panic = None
@@ -1117,10 +1129,19 @@ class Gateway:
             else:
                 self.proc.send_signal(signal.SIGSTOP)
 
+    def _excused(self, i):
+        """An abort() or a backtrace at line @i that is not a firmware failure: the shell's
+        deliberate 'panic' (its marker in the DELIBERATE_LINES before, on this gateway), or the
+        backtrace of a known emulator panic (its Guru line in the 30 before)."""
+        if any(DELIBERATE_RX.search(ln) for _, ln in self.lines[max(0, i - DELIBERATE_LINES):i]):
+            return True
+        return any(p[2] is not None and 0 < i - p[3] <= 30 for p in self.panics)
+
     def unknown_panics(self):
-        """Issue #96 M3: the firmware failures seen on this emulator's console that matched no
-        known emulator signature: a Guru Meditation panic, a stack overflow, an abort() other
-        than the shell's deliberate 'panic'."""
+        """Issue #96: the firmware failures seen on this emulator's console that matched no
+        known emulator signature: a Guru Meditation panic of any reason, an assert, the task
+        watchdog, ESP_ERROR_CHECK, a corrupt heap, a stack overflow, an abort() or a backtrace
+        other than the shell's deliberate 'panic'."""
         return [p for p in self.panics if p[2] is None]
 
     def console(self, text):
@@ -3370,16 +3391,16 @@ def main():
     ap.add_argument("--simulate-qemu-death", nargs="?", const="ota",
                     choices=("ota", "boot", "console", "hang", "hang-mute", "ota-failed",
                              "ota-panic", "main"),
-                    help="issues #86/#90/#92/#96 self-tests: 'ota' (the default) SIGABRTs the "
-                         "emulator once in the OTA scenario; 'boot' SIGSEGVs the second emulator "
-                         "started, 3 s into its boot; 'console' SIGSEGVs the first one before its "
-                         "console connects; 'hang' SIGSTOPs an emulator right after its first "
-                         "'Take trusted digest key(s)' (the known hang, paused through the QEMU "
-                         "monitor); 'main' SIGABRTs the emulator in the main scenario after its "
-                         "broker swap: each must be repeated once and pass. Not repeated (the run "
-                         "fails): 'hang-mute' (the same hang with the whole QEMU SIGSTOPped: no "
-                         "dump), 'ota-failed' (a failed check, then the death), 'ota-panic' (an "
-                         "unknown firmware panic on the console, then the death)")
+                    help="issues #86/#90/#92/#96/#105 self-tests. Repeated once, then pass: 'ota' "
+                         "(the default: SIGABRTs the emulator in the OTA scenario, leaving an "
+                         "observer subscribed), 'boot' (SIGSEGVs the second emulator 3 s into its "
+                         "boot), 'console' (SIGSEGVs the first one before its console connects), "
+                         "'main' (SIGABRTs it in the main scenario after its broker swap). Not "
+                         "repeated (the run fails): 'hang' (the guest paused through the QEMU "
+                         "monitor right after 'Take trusted digest key(s)': detected, dumped, never "
+                         "repeated), 'hang-mute' (the same with the QEMU process SIGSTOPped), "
+                         "'ota-failed' (a failed check, then the death), 'ota-panic' (an unknown "
+                         "firmware panic on the console, then the death)")
     ap.add_argument("--plain-elf", default="",
                     help="ELF of the --plain-flash build (symbols for the fault monitor)")
     ap.add_argument("--nm", default="xtensa-esp32s3-elf-nm",
@@ -3615,10 +3636,8 @@ def restore_device():
     for dst, name in ((ARGS.flash, "retry-flash.bin"), (ARGS.efuse, "retry-efuse.bin")):
         if dst and (WORK / name).exists():
             shutil.copy(WORK / name, dst)
-    if MAIN_BROKER.get("slave") is not None:
-        MAIN_BROKER["slave"].reset()
     print("[CLEANUP] the retry starts from the device of the first attempt (image under test, "
-          "eFuse file, Modbus slave values)", flush=True)
+          "eFuse file; the Modbus slave was put back after the attempt)", flush=True)
 
 
 def retry_refusal(first, failed, unknown, attempt, retry_on_qemu_death):
@@ -3663,6 +3682,8 @@ def run_scenario(name, fn, retry_on_qemu_death=True):
             snapshot_device()
         else:
             restore_device()
+        slave = MAIN_BROKER.get("slave")
+        slave_snap = slave.snapshot() if slave is not None else None
         first_check, first_gw, first_proc = len(results), len(GATEWAYS), len(PROCS)
         budget = (SCENARIO_BUDGET_S.get(name, DEFAULT_BUDGET_S) if not ARGS.scenario_timeout
                   else ARGS.scenario_timeout) * ARGS.timeout_scale
@@ -3707,6 +3728,11 @@ def run_scenario(name, fn, retry_on_qemu_death=True):
                 proc.wait()
         ATTEMPTS[0] = 0
         FAULT.clear()
+        if slave_snap is not None and (error is not None or faults):
+            # issue #105 round 3: retried or not, the next attempt or scenario finds the slave
+            # as this attempt found it
+            slave.restore(slave_snap)
+            left.append("Modbus slave values")
         if left:
             print(f"[CLEANUP] {name}: closed what the attempt left open: {', '.join(left)}",
                   flush=True)
