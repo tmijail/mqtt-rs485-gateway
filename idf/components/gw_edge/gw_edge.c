@@ -111,6 +111,7 @@ static int64_t s_tls_logged_us;
 static bool s_waiting_time_logged;
 static gw_brokersel_t s_bsel;   /* MQTT-6: which broker of the list the next attempt goes to */
 static bool s_stable;           /* the current session lasted stable_ms(): it counts as working */
+static char s_client_if[8];     /* interface the client was bound to ("" = one interface) */
 
 /* ---- read by other tasks (gw_edge_get_status) ---- */
 static portMUX_TYPE s_st_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -398,8 +399,11 @@ static void start_client(int64_t now)
      * esp_mqtt_client_init and only changes with a new client (move_session). */
     s_mqtt_cfg.network.if_name = gw_net_active_ifname(s_ifr.ifr_name, sizeof(s_ifr.ifr_name)) ? &s_ifr
                                                                                     : NULL;
+    s_client_if[0] = '\0';
     if (s_mqtt_cfg.network.if_name != NULL) {
         ESP_LOGI(TAG, "MQTT bound to interface %s", s_ifr.ifr_name);
+        snprintf(s_client_if, sizeof(s_client_if), "%.*s", (int)sizeof(s_client_if) - 1,
+                 s_ifr.ifr_name);
     }
     s_client = esp_mqtt_client_init(&s_mqtt_cfg);
     s_mqtt_cfg.network.if_name = NULL;   /* esp_mqtt_set_config would allocate it again */
@@ -528,7 +532,8 @@ static void move_session(const char *why)
     s_stable = false;
 }
 
-/* An attempt ended without a session (or a session dropped): MQTT-6 failover. */
+/* An attempt ended without a session (or a session dropped): MQTT-6 failover, and issue #57
+ * when no broker at all answers over this interface. */
 static void attempt_ended(void)
 {
     if (s_stable) {
@@ -545,6 +550,13 @@ static void attempt_ended(void)
                  s_bsel.current + 1, s_bsel.count, broker_host(s_bsel.current),
                  broker_port(s_bsel.current));
         s_attempt = 0;   /* another broker: fresh backoff */
+    }
+    uint32_t round = (uint32_t)s_bsel.count * s_bsel.failover_after;
+    if (gw_brokersel_round_failed(&s_bsel) && s_bsel.round_failures % round == 0 &&
+        s_client_if[0] != '\0') {
+        ESP_LOGW(TAG, "no broker reachable over %s (%u failed attempts)", s_client_if,
+                 (unsigned)s_bsel.round_failures);
+        gw_net_report_broker(s_client_if, false);
     }
     publish_status();
 }
@@ -657,6 +669,7 @@ static void reconcile(void)
             ESP_LOGI(TAG, "broker %u/%u: session stable, the broker is kept", s_bsel.current + 1,
                      s_bsel.count);
         }
+        gw_net_report_broker(s_client_if, true);
         publish_status();
     }
     if (s_stable && connected && gw_brokersel_should_return(&s_bsel, (uint64_t)(now / 1000))) {

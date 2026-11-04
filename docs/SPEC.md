@@ -273,6 +273,8 @@ Todas son opcionales. Si faltan, el equipo se comporta como el MVP. Las claves d
 
 Las claves de IPv4 de `network` siguen siendo las de Ethernet.
 
+**Alcance del broker (issue #57).** Una interfaz con enlace y dirección puede no llegar al broker (router o switch aguas arriba caído). Si fallan todos los brokers de la lista (MQTT-6) por la interfaz activa, esta queda "sin servicio": la sesión pasa en el acto a la otra, si es utilizable, sea cual sea su rango. La espera empieza en 60 s y se duplica en cada nuevo fallo seguido, hasta 30 min (`CONFIG_GW_NET_NO_SERVICE_MIN_S` / `_MAX_S`); una sesión estable por esa interfaz la vuelve al mínimo. Al vencer, la preferida recupera la sesión como en el *failback* normal: ese es el reintento. Una interfaz sin servicio se sigue usando si no hay otra.
+
 **`network.hostname` y `network.mdns` (NET-6): nombre del equipo.**
 
 ```json
@@ -335,7 +337,7 @@ TLS 1.2 o 1.3, lo que negocie el broker. Las fechas de validez del certificado s
 | `failover_after` | entero | `3` | 1–20. Intentos fallidos seguidos en un broker antes de pasar al siguiente (tras el último, el primero) |
 | `primary_return_s` | entero | `0` | 0–86400. `0` = un respaldo que funciona se conserva hasta que falle. Con N > 0, tras N s de sesión estable en un respaldo se cierra en orden (NDEATH) y se prueba **una vez** el primario; si falla, se sigue por el primer respaldo |
 
-Un intento falla si no termina en una sesión estable: conexión TCP o TLS fallida, CONNACK rechazado, SUBSCRIBE rechazado o sin respuesta, o sesión que cae antes de durar un keepalive (como mucho 60 s) desde el NBIRTH. Una sesión estable vuelve a contar desde cero. Cada broker nuevo empieza con el *backoff* mínimo.
+Un intento falla si no termina en una sesión estable: conexión TCP o TLS fallida, CONNACK rechazado, SUBSCRIBE rechazado o sin respuesta, o sesión que cae antes de durar un keepalive (como mucho 60 s) desde el NBIRTH. Una sesión estable vuelve a contar desde cero. Cada broker nuevo empieza con el *backoff* mínimo. Con dos interfaces (NET-4), si fallan todos los brokers de la lista (`failover_after` veces cada uno) por la interfaz activa, esa interfaz queda "sin servicio" y la sesión pasa a la otra (ver `network.wifi`).
 
 **`syslog` (REL-4): copia del log a un servidor syslog.**
 
