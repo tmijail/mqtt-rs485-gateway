@@ -1801,6 +1801,25 @@ class FirmwareServer:
             def log_message(self, fmt, *a):
                 FirmwareServer.log.append(fmt % a)
 
+            def do_GET(self):  # noqa: N802 (http.server API)
+                cut = FirmwareServer.cuts.get(self.path)
+                if cut is None:
+                    return super().do_GET()
+                # issue #98: the whole Content-Length announced, the connection closed after
+                # @n bytes of the body (a server or a network that goes away mid-transfer)
+                data, n = pathlib.Path(root, cut[0]).read_bytes(), cut[1]
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data[:n])
+                self.wfile.flush()
+                self.close_connection = True
+                try:
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
         self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(str(cert), str(key))
@@ -1808,6 +1827,7 @@ class FirmwareServer:
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
 
     log = []
+    cuts = {}   # path -> (file in root, bytes of it sent before the connection is closed)
 
     def close(self):
         self.srv.shutdown()
@@ -1919,6 +1939,29 @@ def run_ota(args, work):
               " | ".join(dict.fromkeys(states(asked))) + f"; restarted: {not still}"
               + (f"; {(gw.find(r'secure_boot_v2|[Ss]ignature', asked) or ['no signature log'])[0][:120]}"
                  if signed else ""))
+
+        # Issue #98: a download cut in the middle (the server closes after CUT bytes of the
+        # announced image): failed with the bytes actually received, no panic, no restart
+        cut_n = 300_000
+        FirmwareServer.cuts["/cut.bin"] = ("v2.bin", cut_n)
+        asked = time.monotonic()
+        update(f"https://10.0.2.2:{fw_port}/cut.bin")
+        cut = obs.wait(ndata_t, 120, lambda p: (fw_state(p) or "").startswith("failed: download of "
+                                                                             "e2e-v2 interrupted"))
+        line = gw.find(r"fw: firmware update failed: download of e2e-v2 interrupted after (\d+) "
+                       r"bytes", asked)
+        got = int(re.search(r"after (\d+) bytes", line[0]).group(1)) if line else -1
+        time.sleep(2)
+        crashed = gw.find(r"Guru Meditation|abort\(\)|task_wdt|rst:0x(?!1 )", asked)
+        restarted = any(m[1] == f"{T}/NDEATH/{node}" for m in CAPTURE if m[0] >= asked)
+        _, st_cut = gw.shell("status", [r"^ota\s+.*\| download of e2e-v2 interrupted after \d+ bytes"])
+        check("Issue #98 a download cut mid-transfer (the server closes after "
+              f"{cut_n} bytes): state failed with a plausible byte count (read before "
+              "esp_https_ota_abort() frees the handle), no panic, no restart",
+              cut and 0 < got <= cut_n and got >= cut_n - 65536 and not crashed and not restarted
+              and list(st_cut.values())[0],
+              f"state {fw_state(cut[2]) if cut else None!r}; {got} bytes counted of {cut_n} sent; "
+              f"crash {crashed[:1]}; restarted {restarted}")
 
         # Issue #87: URLs longer than 63 characters arrive whole (up to 255 for an update);
         # longer ones are refused with a clear reason, never cut

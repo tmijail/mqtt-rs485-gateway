@@ -433,7 +433,8 @@ static void download_task(void *arg)
     esp_app_desc_t d;
     e = esp_https_ota_get_img_desc(h, &d);
     if (e != ESP_OK || strncmp(d.project_name, project(), sizeof(d.project_name)) != 0) {
-        esp_https_ota_abort(h);
+        esp_https_ota_abort(h);   /* frees h: only the local copies are used below */
+        h = NULL;
         if (e != ESP_OK) {
             download_fail("not an application image (%s)", esp_err_to_name(e));
         }
@@ -465,12 +466,16 @@ static void download_task(void *arg)
         e = ESP_ERR_INVALID_SIZE;
     }
     if (e != ESP_OK) {
+        /* issue #98: esp_https_ota_abort() frees the handle; read what it holds before */
+        unsigned long got = (unsigned long)esp_https_ota_get_image_len_read(h);
         esp_https_ota_abort(h);
-        download_fail("download of %s interrupted after %lu bytes (%s)", version,
-                      (unsigned long)esp_https_ota_get_image_len_read(h), esp_err_to_name(e));
+        h = NULL;
+        download_fail("download of %s interrupted after %lu bytes (%s)", version, got,
+                      esp_err_to_name(e));
     }
     park(true);
-    e = esp_https_ota_finish(h);   /* verifies the image and sets it to boot */
+    e = esp_https_ota_finish(h);   /* verifies the image and sets it to boot; frees h always */
+    h = NULL;
     park(false);
     if (e == ESP_ERR_OTA_VALIDATE_FAILED) {
         download_fail("image %s rejected (%s)", version, WHY_INVALID);
