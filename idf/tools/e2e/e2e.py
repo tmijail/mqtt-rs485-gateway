@@ -2055,8 +2055,10 @@ def run_ota(args, work):
         broker.wait()
         obs.close()
         trial = gw.wait_log(r"fw: firmware e2e-v3 \(ota_0\) on trial", 30, asked)
-        # the trial is logged before the shell starts (issue #101): the command waits for it
-        gw.wait_log(r"shell: console ready", 30, trial or asked)
+        # the trial is logged before the shell starts (issue #101): the panic comes where it came
+        # before, once gw_fw_init() ran (the shell is up, the configuration loaded; a panic in the
+        # middle of the configuration load once froze QEMU in the core dump write)
+        gw.wait_log(r"fw: firmware e2e-v3 in ota_0; updates by URL", 30, trial or asked)
         gw.console("panic")
         back = gw.wait_log(r"fw: firmware e2e-v3 \(ota_0\) was rejected or did not confirm itself; "
                            r"running e2e-v2 again", 60, trial or asked)
