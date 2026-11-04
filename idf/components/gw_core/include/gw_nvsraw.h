@@ -34,7 +34,8 @@ typedef struct {
     uint32_t pages;          /* pages in use (active, full or freeing, header CRC valid) */
     uint32_t written;        /* entries marked written (first entries and data spans) */
     uint32_t plain_ok;       /* items whose plain CRC32 matches */
-    uint32_t bad;            /* written entries that do not parse as plain items */
+    uint32_t bad;            /* written entries that do not parse as plain items (a damaged string
+                              * or blob that still reads as one counts once, issue #107) */
     uint32_t plain_pages;    /* pages with written entries, mostly plain items */
     uint32_t enc_pages;      /* pages with written entries, mostly not plain (encrypted) */
 } gw_nvsraw_scan_t;

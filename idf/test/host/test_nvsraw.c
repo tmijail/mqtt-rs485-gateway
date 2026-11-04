@@ -146,6 +146,29 @@ static void test_one_corrupt_entry_keeps_plain(void)
     TEST_ASSERT_EQUAL_UINT32(1, s.bad);
 }
 
+/* Issue #107: three damaged strings or blobs (header CRC) on a page of 8 items: three bad items,
+ * not one per entry they take, so the page stays plain (5 good items) */
+static void test_damaged_multi_entry_items_count_once(void)
+{
+    gw_nvsraw_scan_t s;
+    load(k_plain);
+    page[64 + 32 * 3 + 4] ^= 0x5A;   /* "commission" (string, 2 entries) */
+    page[64 + 32 * 5 + 4] ^= 0x5A;   /* "mqtt_pw" (string, 2 entries) */
+    page[64 + 32 * 8 + 4] ^= 0x5A;   /* "lkg_net" (blob data, 2 entries) */
+    TEST_ASSERT_EQUAL(GW_NVSRAW_PLAIN, scan(page, &s));
+    TEST_ASSERT_EQUAL_UINT32(5, s.plain_ok);
+    TEST_ASSERT_EQUAL_UINT32(3, s.bad);
+    TEST_ASSERT_EQUAL_UINT32(11, s.written);   /* every entry still counted as written */
+    /* a damaged size no longer matches the span: one bad per entry, as before */
+    load(k_plain);
+    page[64 + 32 * 3 + 24] = 0x7F;   /* commission: 127 bytes would take 5 entries, not 2 */
+    TEST_ASSERT_EQUAL(GW_NVSRAW_PLAIN, scan(page, &s));
+    TEST_ASSERT_EQUAL_UINT32(2, s.bad);   /* the header and its data entry */
+    /* the encrypted image: no entry reads as a plain string or blob, all bad */
+    TEST_ASSERT_EQUAL(GW_NVSRAW_ENCRYPTED, scan(load(k_enc), &s));
+    TEST_ASSERT_EQUAL_UINT32(s.written, s.bad);
+}
+
 static void test_several_pages_accumulate(void)
 {
     gw_nvsraw_scan_t s;
@@ -660,6 +683,7 @@ int main(void)
     RUN_TEST(test_encrypted_image);
     RUN_TEST(test_erased_or_empty);
     RUN_TEST(test_one_corrupt_entry_keeps_plain);
+    RUN_TEST(test_damaged_multi_entry_items_count_once);
     RUN_TEST(test_several_pages_accumulate);
     RUN_TEST(test_mixed_pages);
     RUN_TEST(test_raw_u8_bdseq);
