@@ -12,7 +12,9 @@
  *   4 Node Info/Firmware, 5 Node Info/Hardware, 6 Node Info/Reset Reason,
  *   7 Node Control/Scan Rate,
  *   10..17 DI/1..DI/8, 20..27 DO/1..DO/8, 30..37 Counter/1..Counter/8 (IO-4, UInt64 pulse
- *   counters of the DIs), 100 + n device tag with global index n,
+ *   counters of the DIs), 40 Node Control/Firmware Update (FW-1, String URL), 41 Firmware
+ *   Update/State (String), 42 Firmware Update/Progress (UInt32 %), 100 + n device tag with
+ *   global index n,
  *   50..54 SPB-17 diagnostics: Node Info/Uptime (UInt64 s), Free Heap and Min Free Heap
  *   (UInt32 B, internal RAM), RSSI (Int32 dBm, only with Wi-Fi), Modbus (DataSet, one row per
  *   device with the MB-13 counters), 55 Node Info/Time Synced (TIME-3, Boolean: SNTP),
@@ -64,6 +66,9 @@ extern "C" {
 #define GW_ALIAS_DI_BASE   10u
 #define GW_ALIAS_DO_BASE   20u
 #define GW_ALIAS_COUNT_BASE 30u
+#define GW_ALIAS_FW_UPDATE 40u   /* FW-1: NCMD with the image URL */
+#define GW_ALIAS_FW_STATE  41u
+#define GW_ALIAS_FW_PROGRESS 42u
 #define GW_ALIAS_TAG_BASE  100u
 #define GW_ALIAS_UPTIME    50u   /* SPB-17 */
 #define GW_ALIAS_FREE_HEAP 51u
@@ -76,19 +81,27 @@ extern "C" {
 #define GW_NODE_IO_COUNT        8
 #define GW_NODE_DIAG_METRICS    6   /* SPB-17, at most (RSSI only with Wi-Fi, Modbus with devices,
                                      * Modbus TCP with the gateway enabled) */
-/* Node metrics of the NBIRTH, without template definitions */
-#define GW_NODE_BIRTH_METRICS   (7 + 3 * GW_NODE_IO_COUNT + GW_NODE_DIAG_METRICS + 1)
+/* Node metrics of the NBIRTH, without template definitions (3 of them FW-1) */
+#define GW_NODE_BIRTH_METRICS   (10 + 3 * GW_NODE_IO_COUNT + GW_NODE_DIAG_METRICS + 1)
 /* Scratch metrics: a whole device (+1 template instance), or the NBIRTH with one template
  * definition per device type. */
 #define GW_NODE_METRICS_MAX \
     (GW_MAX_TAGS_PER_DEVICE + 1 > GW_NODE_BIRTH_METRICS + GW_MAX_DEVICES \
          ? GW_MAX_TAGS_PER_DEVICE + 1 : GW_NODE_BIRTH_METRICS + GW_MAX_DEVICES)
+/* "Firmware Update/State" text with its NUL (< SPB_STRING_MAX, #87); longer is cut with a log,
+ * the whole reason is in the shell and the web. 96, not more: the node (the Sparkplug engine,
+ * one allocation) stays under 21 504 B, a TLSF size class of 1 KB steps (issue #80) */
+#define GW_NODE_FW_STATE_MAX    96
 #define GW_SPB_PAYLOAD_MAX      16384  /* > worst-case DBIRTH (64 tags with 39-char names and
                                          * every SPB-16 property, about 10 KB, test_spb) and
                                          * NBIRTH (64 template tags and the SPB-17 DataSet of 16
                                          * devices, about 12 KB, test_node) */
 #define GW_TOPIC_MAX            160
 #define GW_NODE_HIST_RECS       (2 * GW_MAX_TAGS_PER_DEVICE)   /* records per historical message */
+
+/** ops.publish result: the broker cannot take a message this large in the current session
+ *  (MQTT 5 Maximum Packet Size, issue #73). Not a connection failure. */
+#define GW_NODE_PUBLISH_TOO_LARGE (-2)
 
 /** SPB-17 node diagnostics, read when published. */
 typedef struct gw_node_diag {
@@ -102,7 +115,7 @@ typedef struct gw_node_diag {
 } gw_node_diag_t;
 
 typedef struct {
-    /** Publish; returns < 0 on failure. */
+    /** Publish; returns < 0 on failure (GW_NODE_PUBLISH_TOO_LARGE: too large for the broker). */
     int (*publish)(void *ctx, const char *topic, const uint8_t *data, size_t len, int qos,
                    bool retain);
     /** Drive DO @p index (0-7); the implementation stores the read-back in gw_tagdb. */
@@ -117,6 +130,9 @@ typedef struct {
     void (*set_scan_rate)(void *ctx, uint32_t ms);
     /** Restart the gateway (called after NDEATH has been published). */
     void (*reboot)(void *ctx);
+    /** FW-1: start a firmware update from @p url (NCMD "Node Control/Firmware Update"); the
+     *  result comes back through gw_node_set_firmware_status(). NULL = not supported. */
+    void (*firmware_update)(void *ctx, const char *url);
     /** SPB-17: current node diagnostics (NULL: none published). */
     void (*diagnostics)(void *ctx, struct gw_node_diag *out);
     void *ctx;
@@ -144,6 +160,9 @@ typedef struct {
     uint64_t bdseq;                    /* bdSeq of the current session (SPB-3) */
     uint8_t seq;                       /* next seq to send (SPB-5) */
     bool dev_born[GW_MAX_DEVICES];
+    /* Issue #76: the device's DBIRTH was too large for this session's broker: not rebuilt on
+     * every change, only on the next session or rebirth (the limit may differ then) */
+    bool dev_too_large[GW_MAX_DEVICES];
     gw_rbe_t tag_rbe[GW_MAX_TAGS];
     uint8_t di_reported;
     uint8_t do_reported;
@@ -161,6 +180,8 @@ typedef struct {
     spb_dataset_t mb_ds;
     spb_dataset_t mbtcp_ds;
     bool do_unknown_reported;          /* DOs last published as null (expander not answering) */
+    char fw_state[GW_NODE_FW_STATE_MAX];   /* FW-1: "Firmware Update/State" */
+    uint32_t fw_progress;                  /* FW-1: "Firmware Update/Progress" (%) */
 
     /* Scratch, statically sized (REL-2). */
     gw_tag_value_t vals[GW_MAX_TAGS_PER_DEVICE];
@@ -232,6 +253,10 @@ void gw_node_set_store(gw_node_t *n, gw_sf_t *sf);
 /** SPB-14: publish up to @p max_msgs messages of stored history (only while online). Returns
  *  the samples still stored. */
 size_t gw_node_flush_history(gw_node_t *n, size_t max_msgs);
+
+/** FW-1: the update's state and progress, in the next NBIRTH and, when online and changed,
+ *  in an NDATA now. */
+void gw_node_set_firmware_status(gw_node_t *n, const char *state, uint32_t progress);
 
 /** Re-publish NBIRTH and every DBIRTH with seq restarted (SPB-9). False if the NBIRTH could
  *  not be published (then no DBIRTH is sent). */

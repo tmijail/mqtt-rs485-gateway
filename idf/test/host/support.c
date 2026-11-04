@@ -212,6 +212,10 @@ static int rec_publish(void *ctx, const char *topic, const uint8_t *data, size_t
     if (g_rec.count >= REC_MAX || g_rec.publish_fails) {
         return -1;
     }
+    if (g_rec.too_large_topic != NULL && strstr(topic, g_rec.too_large_topic) != NULL) {
+        g_rec.too_large++;
+        return GW_NODE_PUBLISH_TOO_LARGE;
+    }
     rec_msg_t *m = &g_rec.msgs[g_rec.count++];
     snprintf(m->topic, sizeof(m->topic), "%s", topic);
     memcpy(m->payload, data, len);
@@ -268,6 +272,13 @@ static void rec_reboot(void *ctx)
     g_rec.reboots++;
 }
 
+static void rec_firmware_update(void *ctx, const char *url)
+{
+    (void)ctx;
+    g_rec.fw_updates++;
+    snprintf(g_rec.fw_url, sizeof(g_rec.fw_url), "%s", url);
+}
+
 void recorder_default_diag(void)
 {
     g_rec.diag = (gw_node_diag_t){.uptime_s = 12, .free_heap = 150000, .min_free_heap = 140000,
@@ -289,6 +300,7 @@ gw_node_ops_t recorder_ops(void)
         .write_room = rec_write_room,
         .set_scan_rate = rec_set_scan_rate,
         .reboot = rec_reboot,
+        .firmware_update = rec_firmware_update,
         .diagnostics = rec_diagnostics,
         .ctx = NULL,
     };

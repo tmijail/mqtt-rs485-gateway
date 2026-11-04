@@ -83,6 +83,8 @@ spb = spb_decode.load_module()
 logging.getLogger("pymodbus").setLevel(logging.CRITICAL)
 results = []
 CAPTURE = []      # every message seen by any observer: (t, topic, Payload, raw bytes)
+GATEWAYS = []     # every QEMU the harness started (issue #86: did one die on its own?)
+RETRIES = []      # issue #86: scenarios repeated once because QEMU died under them
 PROCS = []        # brokers and QEMU instances to clean up
 
 
@@ -460,10 +462,12 @@ def wait_syslog(host, pattern, timeout, since=0.0):
 class Observer:
     """Subscribes to spBv1.0/#. A new instance is created after each broker restart."""
 
-    def __init__(self, port=None):
+    def __init__(self, port=None, auth=None):
         self.q = queue.Queue()
         self.subscribed = threading.Event()
         self.c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"e2e-{time.monotonic()}")
+        if auth:
+            self.c.username_pw_set(*auth)
         self.c.on_message = self._on_msg
         self.c.on_subscribe = lambda *a: self.subscribed.set()
         # Long keepalive: the observer must survive the frozen-broker scenario.
@@ -560,11 +564,17 @@ def set_do(obs, ncmd_t, ndata_t, states):
 
 # ---------------------------------------------------------------- QEMU
 
+class QemuGone(ConnectionError):
+    """Issue #90: the emulator is gone (its console write failed)."""
+
+
 class Gateway:
     def __init__(self, args, log_path, flash=None):
         self.args, self.log_path = args, log_path
         self.flash = flash or args.flash
         self.proc, self.sock, self.lines = None, None, []
+        self.killed = False          # the harness ended it (kill())
+        self.gone_before_kill = None  # returncode if QEMU had already exited when killed
 
     def start(self):
         a = self.args
@@ -584,9 +594,12 @@ class Gateway:
                "-chardev", f"socket,id=rs485,host=127.0.0.1,port={MODBUS_PORT},reconnect-ms=500",
                "-serial", "chardev:rs485",
                "-monitor", "none"]
+        err = pathlib.Path(str(self.log_path) + ".qemu")
+        self.err_offset = err.stat().st_size if err.exists() else 0   # this boot's stderr only
         self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                     stderr=open(str(self.log_path) + ".qemu", "ab"))
+                                     stderr=open(err, "ab"))
         PROCS.append(self.proc)
+        GATEWAYS.append(self)
         for _ in range(100):
             try:
                 self.sock = socket.create_connection(("127.0.0.1", CONSOLE_PORT))
@@ -594,6 +607,9 @@ class Gateway:
             except OSError:
                 time.sleep(0.1)
         threading.Thread(target=self._reader, args=(self.sock,), daemon=True).start()
+        if a.simulate_qemu_death == "boot" and not RETRIES and len(GATEWAYS) == 2:
+            # issue #90 self-test: the emulator dies during a boot that is not the first
+            threading.Timer(3, self.proc.send_signal, (signal.SIGSEGV,)).start()
 
     def _reader(self, sock):
         buf = b""
@@ -613,12 +629,38 @@ class Gateway:
                     self.lines.append((time.monotonic(), line.decode(errors="replace").rstrip()))
 
     def console(self, text):
-        self.sock.sendall(text.encode() + b"\n")
+        try:
+            self.sock.sendall(text.encode() + b"\n")
+        except OSError as e:   # issue #90: BrokenPipeError when the emulator is gone
+            time.sleep(0.5)    # let the process be reaped so its exit status is known
+            raise QemuGone(self.qemu_died() or f"QEMU console closed ({e})") from e
 
     def kill(self):
+        self.gone_before_kill = self.proc.poll()
+        self.killed = True
         self.proc.send_signal(signal.SIGKILL)
         self.proc.wait()
         self.sock.close()
+
+    def qemu_died(self):
+        """Issue #86: why the emulator process ended on its own (signal, or an exit while the
+        harness still used it, with QEMU's own error such as 'Bad ram pointer' or
+        'iotlb_to_section' from its stderr), or None if it ran until the harness ended it.
+        A firmware crash is not this: the chip resets and QEMU keeps running."""
+        code = self.gone_before_kill if self.killed else self.proc.poll() if self.proc else None
+        if code is None:
+            return None
+        err = pathlib.Path(str(self.log_path) + ".qemu")
+        lines = []
+        if err.exists():
+            with open(err, "rb") as f:
+                f.seek(getattr(self, "err_offset", 0))
+                lines = f.read().decode(errors="replace").splitlines()
+        tail = [ln.strip() for ln in lines if ln.strip() and "waiting for connection" not in ln
+                and ln.strip() != "Adding SPI flash device"][-3:]
+        how = f"signal {-code}" if code < 0 else f"exit status {code}"
+        return (f"QEMU terminó ({how}, {self.log_path.name}); stderr: "
+                f"{' | '.join(tail) if tail else 'no error message'}")
 
     def shell(self, commands, patterns, timeout=3, tries=3):
         """Ask the console shell (read-only commands only: they are repeated) until every regex in
@@ -721,9 +763,9 @@ def storage_partition(name="storage"):
     raise SystemExit(f"no {name} partition in partitions.csv")
 
 
-def flash_variant(args, work, name, files):
-    """Copy of the flash image whose LittleFS partition holds @files ({name: bytes});
-    files=None leaves the partition erased (not mountable)."""
+def flash_variant(args, work, name, files, base=None):
+    """Copy of the flash image (@base, default the image under test) whose LittleFS partition
+    holds @files ({name: bytes}); files=None leaves the partition erased (not mountable)."""
     offset, size = storage_partition()
     if files is None:
         image = b"\xff" * size
@@ -738,7 +780,7 @@ def flash_variant(args, work, name, files):
                         f"--fs-size={size}", "--name-max=64", "--block-size=4096"],
                        check=True, stdout=subprocess.DEVNULL)
         image = img.read_bytes()
-    flash = bytearray(pathlib.Path(args.flash).read_bytes())
+    flash = bytearray(pathlib.Path(base or args.flash).read_bytes())
     flash[offset:offset + len(image)] = image
     out = work / f"flash-{name}.bin"
     out.write_bytes(flash)
@@ -1240,7 +1282,7 @@ def run_mqtt5(args, work, mosquitto_log):
           f"{f'{will[0] - killed:.1f} s after the kill, bdSeq {bdseq_of(will[2])}' if will else 'missing'}")
 
 
-def run_max_packet(args, work):
+def run_max_packet(args, work, slave):
     """Issue #73 (GW26, MQTT 5) against a mosquitto with max_packet_size 2000, which it
     announces in the CONNACK: NBIRTH and the small DBIRTH of Meter1 go out; the DBIRTH of Bulk
     (about 2.7 KB) is not sent, with a clear error and the shell showing it, and the session
@@ -1251,15 +1293,47 @@ def run_max_packet(args, work):
     broker = start_broker(conf, work / "mosquitto-maxpkt.log")
     obs = Observer(port)
     t0 = time.monotonic()
-    gw = boot_variant(args, work, "maxpkt", node_config(node, port=port, protocol="5"))
+    cfg = node_config(node, port=port, protocol="5")
+    gw = boot_variant(args, work, "maxpkt", cfg)
+    # Issue #78: an operator starts 'config check' as soon as the shell is there and pastes
+    # half of a document; the boot must go on (the shell context lock is not held while the
+    # paste is read): NBIRTH on time, then the rest of the paste is validated
+    ready = gw.wait_log(r"shell: console ready", 30, t0)
+    gw.console("config check")
+    gw.wait_log(r"^paste the JSON document", 5, ready or t0)
+    text = (json.dumps(cfg, indent=2) + "\n").splitlines(keepends=True)
+    half = len(text) // 2
+    gw.sock.sendall("".join(text[:half]).encode())
+    pasting = time.monotonic()
     nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    nb_during = nb and not gw.find(r"^config: ", t0)
+    gw.sock.sendall("".join(text[half:]).encode())
+    valid = gw.wait_log(r"^config: valid \(\d+ bytes\), nothing saved$", 15, pasting)
+    check("Issue #78 'config check' half pasted during the boot does not hold the boot back: "
+          "NBIRTH on time while the paste waits, then the document is validated",
+          ready and nb_during and nb[0] - t0 < 15 and valid,
+          (f"paste started {pasting - t0:.1f} s after QEMU started, NBIRTH at {nb[0] - t0:.1f} s"
+           if nb else "no NBIRTH") + "; " + (" | ".join(gw.find(r"^config: ", t0)) or "no answer"))
     db = obs.wait(f"{T}/DBIRTH/{node}/{DEVICE}", 10)
     err = gw.wait_log(r"spBv1\.0/Plant1/DBIRTH/GW26/Bulk: \d+ bytes, more than the broker's Maximum "
                       r"Packet Size of 2000 \(by \d+\): not published", 15, t0)
     time.sleep(8)
-    asked, h = gw.shell("status", [r"^limit\s+broker Maximum Packet Size 2000 B; [1-9]\d* message\(s\) too "
+    # Issue #76: Bulk is polled (and reported to the Sparkplug task) every cycle, but its DBIRTH
+    # is tried once per session, not rebuilt and rejected each time: the count stays at 1; a
+    # rebirth tries it once more
+    asked, h = gw.shell("status", [r"^limit\s+broker Maximum Packet Size 2000 B; 1 message\(s\) too "
                                    r"large, not published \(last: spBv1\.0/Plant1/DBIRTH/GW26/Bulk\)"])
     shown = list(h.values())[0]
+    bulk_cycles = len([r for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 2 and t >= t0])
+    gw.console("rebirth")
+    gw.wait_log(r"^rebirth: NBIRTH and every DBIRTH requested", 5, asked)
+    time.sleep(3)
+    _, h2 = gw.shell("status", [r"^limit\s+broker Maximum Packet Size 2000 B; 2 message\(s\) too large"])
+    once = list(h2.values())[0]
+    check("Issue #76 a DBIRTH larger than the broker's limit is not rebuilt on every change of its "
+          "device: one attempt per session, one more per rebirth",
+          shown and once and bulk_cycles > 3,
+          f"{bulk_cycles} Bulk poll cycles; " + " | ".join(gw.find(r"^limit\s", asked)))
     bulk = [m for m in CAPTURE if m[1] == f"{T}/DBIRTH/{node}/{BULK}"]
     attempts = gw.find(r"connecting to .* as 'GW26'", t0)
     dropped = re.search(r"Client GW26 .*(disconnected|exceeded)", (work / "mosquitto-maxpkt.log").read_text())
@@ -1678,6 +1752,590 @@ def run_https(args, work):
 
 # ---------------------------------------------------------------- scenario
 
+# ---------------------------------------------------------------- FW-1 firmware updates
+
+APP_DESC_MAGIC = 0xABCD5432
+
+
+def fw_image(src, version, dst, corrupt=False):
+    """Copy of the app image @src with esp_app_desc_t.version = @version: checksum and the
+    appended SHA-256 recomputed so the bootloader and esp_ota_end() accept it (@corrupt: the
+    checksum is left stale, so the image must be rejected). @src must be unsigned."""
+    b = bytearray(pathlib.Path(src).read_bytes())
+    if b[0] != 0xE9:
+        raise SystemExit(f"{src}: not an ESP app image")
+    nseg, hashed = b[1], b[23] == 1
+    pos = 24
+    first = pos + 8
+    for _ in range(nseg):
+        pos += 8 + struct.unpack_from("<I", b, pos + 4)[0]
+    csum = pos + (15 - pos % 16)
+    if struct.unpack_from("<I", b, first)[0] != APP_DESC_MAGIC:
+        raise SystemExit(f"{src}: no app description in the first segment")
+    vo = first + 16
+    new = version.encode().ljust(32, b"\0")
+    x = 0
+    for o, n in zip(b[vo:vo + 32], new):
+        x ^= o ^ n
+    b[vo:vo + 32] = new
+    if not corrupt:
+        b[csum] ^= x
+    end = csum + 1
+    if hashed:
+        b[end:end + 32] = hashlib.sha256(bytes(b[:end])).digest()
+        end += 32
+    pathlib.Path(dst).write_bytes(bytes(b[:end]))
+    return dst
+
+
+class FirmwareServer:
+    """HTTPS file server for the update images (FW-1), with the harness' CA (server.crt is for
+    IP 10.0.2.2, the host as QEMU's slirp sees it)."""
+
+    def __init__(self, port, root, cert, key):
+        import http.server
+        root = str(root)
+
+        class Handler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, directory=root, **kw)
+
+            def log_message(self, fmt, *a):
+                FirmwareServer.log.append(fmt % a)
+
+            def do_GET(self):  # noqa: N802 (http.server API)
+                cut = FirmwareServer.cuts.get(self.path)
+                if cut is None:
+                    return super().do_GET()
+                # issue #98: the whole Content-Length announced, the connection closed after
+                # @n bytes of the body (a server or a network that goes away mid-transfer)
+                data, n = pathlib.Path(root, cut[0]).read_bytes(), cut[1]
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data[:n])
+                self.wfile.flush()
+                self.close_connection = True
+                try:
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(str(cert), str(key))
+        self.srv.socket = ctx.wrap_socket(self.srv.socket, server_side=True)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    log = []
+    cuts = {}   # path -> (file in root, bytes of it sent before the connection is closed)
+
+    def close(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+def observer_retry(port, timeout=10, auth=None):
+    """Observer on a broker that was just (re)started: it may not listen yet."""
+    end = time.monotonic() + timeout
+    while True:
+        try:
+            return Observer(port, auth)
+        except OSError:
+            if time.monotonic() >= end:
+                raise
+            time.sleep(0.3)
+
+
+def fw_state(p):
+    m = metric(p, alias=41)
+    return m.string_value if m is not None else None
+
+
+def run_ota(args, work):
+    """FW-1 in one gateway (GW40) with its own broker: updates by NCMD (HTTPS download with the
+    CA from ota.ca_file) and by web upload; bad images rejected without a restart; a new image
+    on trial confirmed by its first session; rolled back when no session comes up before the
+    timeout (broker stopped) and when it resets during its trial (panic)."""
+    node, port, fw_port = "GW40", MQTT_PORT + 20, MQTT_PORT + 21
+    pki = make_pki(work)
+    fwdir = work / "fw"
+    fwdir.mkdir(exist_ok=True)
+    app = pathlib.Path(args.elf).with_suffix(".bin")
+    unsigned = pathlib.Path(args.elf).with_name(app.stem + "-unsigned.bin")
+    src = unsigned if unsigned.exists() else app
+    v1 = None
+    fw_image(src, "e2e-v2", fwdir / "v2.bin")
+    fw_image(src, "e2e-v3", fwdir / "v3.bin")
+    fw_image(src, "e2e-bad", fwdir / "bad.bin", corrupt=True)
+    images = {k: fwdir / f"{k}.bin" for k in ("v2", "v3", "bad")}
+    signed = bool(args.signing_key)
+    if signed:
+        # FW-2: the build requires signed images; "foreign" is valid but signed with another key
+        fw_image(src, "e2e-foreign", fwdir / "foreign.bin")
+        other = work / "foreign_signing_key.pem"
+        if not other.exists():
+            subprocess.run([args.idf_python, "-m", "espsecure", "generate-signing-key", "--version",
+                            "2", "--scheme", "rsa3072", str(other)], check=True, capture_output=True)
+        for k, key in (("v2", args.signing_key), ("v3", args.signing_key),
+                       ("bad", args.signing_key), ("foreign", str(other))):
+            # --keyfile takes several values: an explicit --output keeps the data file apart
+            unsigned_k = fwdir / f"{k}-unsigned.bin"
+            (fwdir / f"{k}.bin").rename(unsigned_k)
+            subprocess.run([args.idf_python, "-m", "espsecure", "sign-data", "--version", "2",
+                            "--keyfile", key, "--output", str(fwdir / f"{k}.bin"),
+                            str(unsigned_k)], check=True, capture_output=True)
+            images[k] = fwdir / f"{k}.bin"
+    server = FirmwareServer(fw_port, fwdir, pki["server.crt"], pki["server.key"])
+    conf = work / "broker-ota.conf"
+    conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\n")
+    broker = start_broker(conf, work / "mosquitto-ota.log")
+    obs = Observer(port)
+    cfg = node_config(node, port=port)
+    cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    cfg["ota"] = {"ca_file": "ca.pem"}
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "ota", cfg, {"ca.pem": pki["ca.pem"].read_bytes()})
+    nbirth_t, ndata_t, ncmd_t = f"{T}/NBIRTH/{node}", f"{T}/NDATA/{node}", f"{T}/NCMD/{node}"
+    try:
+        nb = obs.wait(nbirth_t, 40)
+        if not check("FW-1 NBIRTH declares Node Control/Firmware Update (String) and the update's "
+                     "state and progress", nb and metric(nb[2], alias=40) is not None
+                     and metric(nb[2], alias=40).datatype == 12 and fw_state(nb[2]) == "idle"
+                     and metric(nb[2], alias=42) is not None,
+                     f"state {fw_state(nb[2])!r}" if nb else "no NBIRTH"):
+            return
+        v1 = metric(nb[2], name="Node Info/Firmware").string_value
+        gw.wait_log(r"edge: time synchronised", 10, t0)   # the image server's certificate dates
+
+        def update(url):
+            obs.publish_cmd(ncmd_t, [{"name": "Node Control/Firmware Update", "datatype": 12,
+                                      "string_value": url}])
+
+        def states(since):
+            return [fw_state(m[2]) for m in CAPTURE
+                    if m[0] >= since and m[1] in (ndata_t, nbirth_t) and fw_state(m[2]) is not None]
+
+        # refused before any download: plain HTTP; an image with a stale checksum: rejected after
+        # the download, no restart
+        asked = time.monotonic()
+        update(f"http://10.0.2.2:{fw_port}/v2.bin")
+        refused = obs.wait(ndata_t, 10, lambda p: (fw_state(p) or "").startswith("refused: only https"))
+        update(f"https://10.0.2.2:{fw_port}/bad.bin")
+        bad = obs.wait(ndata_t, 120, lambda p: (fw_state(p) or "").startswith("failed: image e2e-bad "
+                                                                             "rejected"))
+        foreign = True
+        if signed:
+            # FW-2: a valid image signed with a key other than the running firmware's
+            update(f"https://10.0.2.2:{fw_port}/foreign.bin")
+            foreign = obs.wait(ndata_t, 120, lambda p: (fw_state(p) or "").startswith(
+                "failed: image e2e-foreign rejected (checksum or signature)"))
+        time.sleep(2)
+        still = not any(m[1] == f"{T}/NDEATH/{node}" for m in CAPTURE if m[0] >= asked)
+        check("FW-1 bad updates refused without a restart: http:// refused, an image that fails "
+              "verification rejected after the download (the running firmware stays)"
+              + ("; FW-2: an image signed with another key rejected (signature check of the OTA "
+                 "image, no eFuse)" if signed else ""),
+              refused and bad and still and foreign,
+              " | ".join(dict.fromkeys(states(asked))) + f"; restarted: {not still}"
+              + (f"; {(gw.find(r'secure_boot_v2|[Ss]ignature', asked) or ['no signature log'])[0][:120]}"
+                 if signed else ""))
+
+        # Issue #98: a download cut in the middle (the server closes after CUT bytes of the
+        # announced image): failed with the bytes actually received, no panic, no restart
+        cut_n = 300_000
+        FirmwareServer.cuts["/cut.bin"] = ("v2.bin", cut_n)
+        asked = time.monotonic()
+        update(f"https://10.0.2.2:{fw_port}/cut.bin")
+        cut = obs.wait(ndata_t, 120, lambda p: (fw_state(p) or "").startswith("failed: download of "
+                                                                             "e2e-v2 interrupted"))
+        line = gw.find(r"fw: firmware update failed: download of e2e-v2 interrupted after (\d+) "
+                       r"bytes", asked)
+        got = int(re.search(r"after (\d+) bytes", line[0]).group(1)) if line else -1
+        time.sleep(2)
+        crashed = gw.find(r"Guru Meditation|abort\(\)|task_wdt|rst:0x(?!1 )", asked)
+        restarted = any(m[1] == f"{T}/NDEATH/{node}" for m in CAPTURE if m[0] >= asked)
+        _, st_cut = gw.shell("status", [r"^ota\s+.*\| download of e2e-v2 interrupted after \d+ bytes"])
+        check("Issue #98 a download cut mid-transfer (the server closes after "
+              f"{cut_n} bytes): state failed with a plausible byte count (read before "
+              "esp_https_ota_abort() frees the handle), no panic, no restart",
+              cut and 0 < got <= cut_n and got >= cut_n - 65536 and not crashed and not restarted
+              and list(st_cut.values())[0],
+              f"state {fw_state(cut[2]) if cut else None!r}; {got} bytes counted of {cut_n} sent; "
+              f"crash {crashed[:1]}; restarted {restarted}")
+
+        # Issue #87: URLs longer than 63 characters arrive whole (up to 255 for an update);
+        # longer ones are refused with a clear reason, never cut
+        def long_url(n):
+            base = f"https://10.0.2.2:{fw_port}/v2.bin?pad="
+            return base + "p" * (n - len(base))
+
+        if args.simulate_qemu_death == "ota" and not RETRIES:
+            # issue #86 self-test: the emulator dies as it did in the real aborts (SIGABRT)
+            gw.proc.send_signal(signal.SIGABRT)
+            gw.proc.wait()
+            raise ConnectionError("simulated QEMU death")
+        asked = time.monotonic()
+        update(long_url(300))   # over the codec's 256: the NCMD is undecodable, nothing applied
+        undecodable = gw.wait_log(r"NCMD: undecodable payload \(\d+ bytes: string overflow; strings up "
+                                  r"to 256 characters", 10, asked)
+        update(long_url(256))   # fits the codec, not an update URL (255 at most)
+        too_long = obs.wait(ndata_t, 10, lambda p: (fw_state(p) or "") ==
+                            "refused: URL longer than 255 characters")
+        check("Issue #87 a firmware URL over the limits is refused with its reason, never cut: 300 "
+              "characters (more than the codec's 256) -> NCMD undecodable, 256 -> refused (255 at "
+              "most)", undecodable and too_long,
+              f"{(gw.find(r'NCMD: undecodable payload', asked) or ['no log'])[0][:140]}; state "
+              f"{fw_state(too_long[2]) if too_long else None!r}")
+
+        # NCMD with the URL: download with progress, restart into it, trial, confirmed; a
+        # 250-character URL (issue #87: it must arrive whole)
+        asked = time.monotonic()
+        update(long_url(250))
+        nb2 = obs.wait(nbirth_t, 240, lambda p: metric(p, name="Node Info/Firmware").string_value
+                       == "e2e-v2")
+        conf2 = obs.wait(ndata_t, 20, lambda p: fw_state(p) == "confirmed: e2e-v2")
+        seen = states(asked)
+        prog = [int(metric(m[2], alias=42).long_value or metric(m[2], alias=42).int_value)
+                for m in CAPTURE if m[0] >= asked and m[1] == ndata_t and metric(m[2], alias=42)]
+        took = [ln for ln in gw.find(r"fw: downloading firmware e2e-v2", asked)]
+        check("FW-1 update by NCMD over HTTPS (CA from ota.ca_file, a 250-character URL): progress as NDATA, restart into "
+              "the new image, on trial until its first session, then confirmed",
+              nb2 and conf2 and "rebooting into e2e-v2" in seen and fw_state(nb2[2]) ==
+              "on trial: e2e-v2" and prog and max(prog) == 100 and len(prog) >= 5 and took,
+              f"states {list(dict.fromkeys(seen))}; progress {prog[:12]}; "
+              f"{nb2[0] - asked:.1f} s to the new NBIRTH" if nb2 else f"states {seen}")
+        _, h = gw.shell("status", [r"^ota\s+e2e-v2 in ota_1, other slot \S+ \| firmware e2e-v2 "
+                                   r"confirmed"])
+        # a power cut after the confirmation: still the new image
+        gw.kill()
+        obs.drain()
+        gw = Gateway(args, work / "uart0-ota.log", gw.flash)
+        gw.start()
+        nb3 = obs.wait(nbirth_t, 40)
+        check("FW-1 a confirmed image stays after a power cut (shell shows the slots)",
+              nb3 and metric(nb3[2], name="Node Info/Firmware").string_value == "e2e-v2"
+              and fw_state(nb3[2]) == "idle" and list(h.values())[0],
+              f"NBIRTH firmware {metric(nb3[2], name='Node Info/Firmware').string_value!r}, state "
+              f"{fw_state(nb3[2])!r}" if nb3 else "no NBIRTH")
+
+        # web upload of v3, then the broker goes away before the new image reaches a session:
+        # rolled back when the trial times out
+        timeout_s = sdkconfig_int(args.sdkconfig, "GW_FW_CONFIRM_TIMEOUT_S")
+        gw.wait_log(r"edge: time synchronised", 10, nb3[0] - 5 if nb3 else t0)
+        asked = time.monotonic()
+        st, _, body = http("POST", "/api/firmware", images["v3"].read_bytes(),
+                           headers={"Content-Type": "application/octet-stream"}, timeout=120)
+        death = obs.wait(f"{T}/NDEATH/{node}", 20)
+        broker.terminate()
+        broker.wait()
+        obs.close()
+        trial = gw.wait_log(r"fw: firmware e2e-v3 \(ota_0\) on trial", 30, asked)
+        back = gw.wait_log(r"fw: firmware e2e-v3 rejected \(no Sparkplug session before the timeout\)",
+                           timeout_s + 30, asked)
+        broker = start_broker(conf, work / "mosquitto-ota.log")
+        obs = observer_retry(port)
+        nb4 = obs.wait(nbirth_t, 60)
+        check(f"FW-1 web upload; a new image without a Sparkplug session for {timeout_s} s (broker "
+              "down) goes back to the previous one, which says so",
+              st == 200 and death and trial and back and nb4
+              and metric(nb4[2], name="Node Info/Firmware").string_value == "e2e-v2"
+              and fw_state(nb4[2]) == "rolled back from e2e-v3",
+              f"POST {st} {body[:60]!r}; on trial at {trial - asked:.1f} s, rolled back at "
+              f"{back - trial:.1f} s; NBIRTH {fw_state(nb4[2]) if nb4 else None!r}"
+              if trial and back else f"POST {st} {body[:80]!r}; trial {trial}, back {back}")
+
+        # NCMD v3 again; a reset during the trial (panic): the bootloader goes back
+        gw.wait_log(r"edge: time synchronised", 10, nb4[0] - 5 if nb4 else t0)
+        asked = time.monotonic()
+        update(f"https://10.0.2.2:{fw_port}/v3.bin")
+        death = obs.wait(f"{T}/NDEATH/{node}", 240)
+        broker.terminate()
+        broker.wait()
+        obs.close()
+        trial = gw.wait_log(r"fw: firmware e2e-v3 \(ota_0\) on trial", 30, asked)
+        gw.console("panic")
+        back = gw.wait_log(r"fw: firmware e2e-v3 \(ota_0\) was rejected or did not confirm itself; "
+                           r"running e2e-v2 again", 60, trial or asked)
+        broker = start_broker(conf, work / "mosquitto-ota.log")
+        obs = observer_retry(port)
+        nb5 = obs.wait(nbirth_t, 60)
+        check("FW-1 a reset during the trial (panic) makes the bootloader boot the previous image",
+              death and trial and back and nb5
+              and metric(nb5[2], name="Node Info/Firmware").string_value == "e2e-v2"
+              and metric(nb5[2], name="Node Info/Reset Reason").string_value == "panic"
+              and fw_state(nb5[2]) == "rolled back from e2e-v3",
+              f"NBIRTH firmware {metric(nb5[2], name='Node Info/Firmware').string_value!r}, reset "
+              f"{metric(nb5[2], name='Node Info/Reset Reason').string_value!r}, state "
+              f"{fw_state(nb5[2])!r}" if nb5 else f"trial {trial}, back {back}")
+    finally:
+        gw.kill()
+        obs.close()
+        server.close()
+        broker.terminate()
+        broker.wait()
+
+
+# ---------------------------------------------------------------- issues #67/#94 NVS migration
+
+def auth_broker(work, name, port, users):
+    """A broker on @port that only accepts the @users ({name: password}) and the harness'
+    observer ("e2e"). Returns (process, conf path)."""
+    pw = work / f"passwd-{name}"
+    pw.unlink(missing_ok=True)
+    for i, (u, p) in enumerate({**users, "e2e": "e2e-observer"}.items()):
+        subprocess.run(["mosquitto_passwd", "-b", *(["-c"] if i == 0 else []), str(pw), u, p],
+                       check=True, capture_output=True)
+    conf = work / f"broker-{name}.conf"
+    # "user root": as in run_tls, user "mosquitto" could not reach a file in the work directory
+    conf.write_text(f"user root\nlistener {port} 127.0.0.1\nallow_anonymous false\n"
+                    f"password_file {pw}\n")
+    return start_broker(conf, work / f"mosquitto-{name}.log"), conf
+
+
+OBS_AUTH = ("e2e", "e2e-observer")
+
+
+def nvs_clear(flash, words):
+    """The @words found in clear in the NVS partition of the image @flash."""
+    off, size = storage_partition("nvs")
+    region = pathlib.Path(flash).read_bytes()[off:off + size]
+    return [w for w in words if w in region]
+
+
+def run_nvs_migration(args, work):
+    """Issues #67 and #94 (GW41): a flash whose NVS was written without NVS encryption (the
+    format of the default build, generated here with ESP-IDF's nvs_partition_gen.py: bdSeq 41,
+    the commissioning password, the MQTT password) boots the encrypted build, and the power is
+    cut twice in the middle of the migration (emulated cut points: right after the partition is
+    erased, then after half of the entries are written encrypted). The next boots finish it from
+    the reset-safe copy: the bdSeq continues, the MQTT password still opens the broker (which
+    requires it), the commissioning password is the old one, nothing stays in clear and the
+    migration does not run again."""
+    node, port = "GW41", MQTT_PORT + 24
+    nvs_off, nvs_size = storage_partition("nvs")
+    csv = work / "nvs-plain.csv"
+    csv.write_text("key,type,encoding,value\nspb,namespace,,\nbdseq,data,u8,41\n"
+                   "secrets,namespace,,\ncommission,data,string,abcdefgh1234\n"
+                   "mqtt_pw,data,string,s3cret-mqtt-67\ngw,namespace,,\ndo_hold,data,u8,0\n")
+    gen = pathlib.Path(os.environ["IDF_PATH"]) / "components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py"
+    plain = work / "nvs-plain.bin"
+    subprocess.run([args.idf_python, str(gen), "generate", str(csv), str(plain), hex(nvs_size)],
+                   check=True, capture_output=True)
+    # the password is only in the NVS (CFG-7); the broker refuses the gateway without it
+    cfg = node_config(node, port=port, username="gw41")
+    flash = flash_variant(args, work, "nvsmig", {"config.json": json.dumps(cfg).encode(),
+                                                  ".nvsmig-cut": b"12"})
+    img = bytearray(flash.read_bytes())
+    img[nvs_off:nvs_off + nvs_size] = plain.read_bytes()
+    flash.write_bytes(img)
+    broker, _ = auth_broker(work, "nvsmig", port, {"gw41": "s3cret-mqtt-67"})
+    obs = observer_retry(port, auth=OBS_AUTH)
+    log = work / "uart0-nvsmig.log"
+    words = (b"abcdefgh1234", b"s3cret-mqtt-67", b"commission", b"bdseq")
+    try:
+        cuts = []
+        for point in ("1", "2"):
+            t = time.monotonic()
+            gw = Gateway(args, log, flash)
+            gw.start()
+            held = gw.wait_log(rf"storage: NVS migration: emulated power cut {point} ", 60, t)
+            time.sleep(2)   # QEMU writes the flash file behind: let the last writes land
+            resumed = gw.find(r"storage: NVS migration was interrupted \((.*)\): writing its copy", t)
+            gw.kill()
+            region = flash.read_bytes()[nvs_off:nvs_off + nvs_size]
+            cuts.append((held is not None, resumed[0].split("storage: ")[-1][:90] if resumed else None,
+                         region.count(b"\xff") == len(region)))
+        t0 = time.monotonic()
+        gw = Gateway(args, log, flash)
+        gw.start()
+        nb = obs.wait(f"{T}/NBIRTH/{node}", 60)
+        done = gw.find(r"storage: NVS migration resumed: \d+ entries moved into the encrypted NVS "
+                       r"\(0 skipped\); bdSeq continues", t0)
+        pw = commissioning_password(gw, t0)
+        gw.kill()
+        obs.wait(f"{T}/NDEATH/{node}", 5)
+        clear = nvs_clear(flash, words)
+        obs.drain()
+        t1 = time.monotonic()
+        gw = Gateway(args, log, flash)
+        gw.start()
+        nb2 = obs.wait(f"{T}/NBIRTH/{node}", 60)
+        again = gw.find(r"NVS migration", t1)
+        _, h = gw.shell("status", [r"^secrets\s+NVS encrypted \(HMAC key in eFuse KEY5\)"])
+        gw.kill()
+        # cut 1: held right after the erase (partition all 0xFF), first boot (nothing resumed);
+        # cut 2: the second boot resumed from the copy and held halfway through the writes
+        cut_ok = (len(cuts) == 2 and cuts[0][0] and cuts[0][1] is None and cuts[0][2]
+                  and cuts[1][0] and cuts[1][1] is not None and not cuts[1][2])
+        check("Issue #94 an unencrypted NVS meets the encrypted build and the power is cut twice "
+              "during the migration (after the erase, then halfway through the encrypted writes): "
+              "the next boot finishes it from the reset-safe copy (0 skipped); bdSeq continues, the MQTT "
+              "password from the NVS opens the broker that requires it, the commissioning "
+              "password is the old one, nothing in clear, no migration on the next boot "
+              "(issue #67)",
+              cut_ok and nb and bdseq_of(nb[2]) == 41 and done and pw == "abcdefgh1234"
+              and not clear and nb2 and bdseq_of(nb2[2]) == 42 and not again
+              and list(h.values())[0],
+              f"cuts (held, resumed, erased): {cuts}; NBIRTH bdSeq "
+              f"{bdseq_of(nb[2]) if nb else None} then {bdseq_of(nb2[2]) if nb2 else None}; "
+              f"{(done or ['no resume log'])[0].split('storage: ')[-1][:90]}; commissioning "
+              f"password {pw!r}; in clear: {clear}; migration on the next boot: {bool(again)}")
+    finally:
+        obs.close()
+        broker.terminate()
+        broker.wait()
+
+
+def run_nvs_ota(args, work):
+    """Issue #94 (GW42): a device on the build WITHOUT NVS encryption (QEMU variant
+    sdkconfig.qemu-plain; bdSeq, commissioning password and MQTT password in its unencrypted
+    NVS) is updated by OTA to the encrypted build under test. On trial, the new image keeps the
+    NVS unencrypted; a reset during the trial (panic) rolls it back and the old image finds its
+    bdSeq (continued by the trial) and its secrets. Updated again with the broker up: confirmed,
+    one restart, and that boot moves the NVS into the encrypted one."""
+    if not args.plain_flash:
+        print("[SKIP] issue #94 OTA from a build without NVS encryption: no --plain-flash "
+              "(run_e2e.sh builds it)", flush=True)
+        return
+    node, port, fw_port = "GW42", MQTT_PORT + 22, MQTT_PORT + 23
+    secret = "s3cret-mqtt-94"
+    pki = make_pki(work)
+    fwdir = work / "fw-nvs"
+    fwdir.mkdir(exist_ok=True)
+    app = pathlib.Path(args.elf).with_suffix(".bin")
+    unsigned = pathlib.Path(args.elf).with_name(app.stem + "-unsigned.bin")
+    fw_image(unsigned if unsigned.exists() else app, "e2e-enc", fwdir / "enc-unsigned.bin")
+    if args.signing_key:
+        subprocess.run([args.idf_python, "-m", "espsecure", "sign-data", "--version", "2",
+                        "--keyfile", args.signing_key, "--output", str(fwdir / "enc.bin"),
+                        str(fwdir / "enc-unsigned.bin")], check=True, capture_output=True)
+    else:
+        shutil.copy(fwdir / "enc-unsigned.bin", fwdir / "enc.bin")
+    server = FirmwareServer(fw_port, fwdir, pki["server.crt"], pki["server.key"])
+    broker, conf = auth_broker(work, "nvsota", port, {"gw42": secret})
+    obs = observer_retry(port, auth=OBS_AUTH)
+    # the password in clear in config.json: the plain build moves it to its (unencrypted) NVS
+    cfg = node_config(node, port=port, username="gw42", password=secret)
+    cfg["ota"] = {"ca_file": "ca.pem"}
+    base = pathlib.Path(args.plain_flash)
+    files = {"config.json": json.dumps(cfg, indent=2).encode(), "ca.pem": pki["ca.pem"].read_bytes()}
+    flash = flash_variant(args, work, "nvsota", files, base=base)
+    if args.psram:
+        write_otadata(flash)
+    log = work / "uart0-nvsota.log"
+    nbirth_t, ncmd_t = f"{T}/NBIRTH/{node}", f"{T}/NCMD/{node}"
+    words = (secret.encode(), b"commission", b"bdseq", b"mqtt_pw")
+
+    def update():
+        obs.publish_cmd(ncmd_t, [{"name": "Node Control/Firmware Update", "datatype": 12,
+                                  "string_value": f"https://10.0.2.2:{fw_port}/enc.bin"}])
+
+    def fw(nb):
+        return metric(nb[2], name="Node Info/Firmware").string_value if nb else None
+
+    t0 = time.monotonic()
+    gw = Gateway(args, log, flash)
+    gw.start()
+    try:
+        nb0 = obs.wait(nbirth_t, 60)
+        pw0 = commissioning_password(gw, t0)
+        v1 = fw(nb0)
+        clear0 = nvs_clear(flash, words)
+        if not check("Issue #94 the build without NVS encryption runs (its secrets and bdSeq in "
+                     "an unencrypted NVS) and reaches the broker that requires its password",
+                     nb0 and pw0 and v1 != "e2e-enc" and secret.encode() in clear0,
+                     f"firmware {v1!r}, bdSeq {bdseq_of(nb0[2]) if nb0 else None}, commissioning "
+                     f"password {pw0!r}; in clear in its NVS: {clear0}"):
+            return
+        b0 = bdseq_of(nb0[2])
+        gw.wait_log(r"edge: time synchronised", 20, t0)
+
+        # 1. update; the broker goes away before the new image reaches a session; a reset (panic)
+        # during the trial rolls it back
+        asked = time.monotonic()
+        update()
+        death = obs.wait(f"{T}/NDEATH/{node}", 240)
+        broker.terminate()
+        broker.wait()
+        obs.close()
+        trial = gw.wait_log(r"fw: firmware e2e-enc \(ota_1\) on trial", 60, asked)
+        kept = gw.find(r'storage: NVS partition "nvs" is not encrypted and stays so this boot: '
+                       r"this firmware is on trial", asked)
+        # a connection attempt of the trial image takes (and stores) the next bdSeq
+        attempt = gw.wait_log(r"edge: connecting to .* bdSeq=\d+", 60, trial or asked)
+        time.sleep(1)
+        _, h_trial = gw.shell("status", [r"^secrets\s+NVS NOT encrypted yet \(new firmware on trial"])
+        gw.console("panic")
+        back = gw.wait_log(r"fw: firmware e2e-enc \(ota_1\) was rejected or did not confirm itself; "
+                           r"running \S+ again", 90, trial or asked)
+        erased = gw.find(r"NVS layout changed, erasing|NVS unavailable", asked)
+        broker = start_broker(conf, work / "mosquitto-nvsota.log")
+        obs = observer_retry(port, auth=OBS_AUTH)
+        nb1 = obs.wait(nbirth_t, 90)
+        pw1 = commissioning_password(gw, back or asked) if back else None
+        clear1 = nvs_clear(flash, words)
+        b1 = bdseq_of(nb1[2]) if nb1 else None
+        grew = b1 is not None and 2 <= (b1 - b0) % 256 <= 64
+        check("Issue #94 OTA from the build without NVS encryption to the encrypted one, rolled back "
+              "by a reset during the trial: the new image kept the NVS unencrypted while on trial, "
+              "and the old image finds its bdSeq (continued by the trial) and its secrets (the MQTT "
+              "password opens the broker, the commissioning password is the same)",
+              death and trial and kept and attempt and list(h_trial.values())[0] and back
+              and not erased
+              and nb1 and fw(nb1) == v1 and grew and pw1 == pw0 and secret.encode() in clear1,
+              f"trial {trial is not None}, kept unencrypted {bool(kept)}, rolled back "
+              f"{back is not None}; NVS erased by the old image: {erased[:1]}; NBIRTH firmware "
+              f"{fw(nb1)!r} bdSeq {b0} -> {b1}; commissioning password {pw1!r}; in clear: {clear1}")
+
+        # 2. update again with the broker up: confirmed by the session, one restart, migrated
+        gw.wait_log(r"edge: time synchronised", 20, nb1[0] - 5 if nb1 else t0)
+        asked = time.monotonic()
+        update()
+        conf_t = gw.wait_log(r"fw: firmware e2e-enc confirmed: restarting once to encrypt the NVS",
+                             300, asked)
+        moved_t = gw.wait_log(r"storage: NVS migration: \d+ entries moved into the encrypted NVS "
+                              r"\(0 skipped\); bdSeq continues", 90, conf_t or asked)
+        # the NBIRTH of the boot that migrated (the trial's own session came before it)
+        nb3, end = None, time.monotonic() + 90
+        while moved_t is not None and nb3 is None and time.monotonic() < end:
+            item = obs.wait(nbirth_t, end - time.monotonic())
+            if item is None:
+                break
+            nb3 = item if item[0] > moved_t else None
+        pw2 = commissioning_password(gw, moved_t) if moved_t else None
+        _, h_enc = gw.shell("status", [r"^secrets\s+NVS encrypted \(HMAC key in eFuse KEY5\)"])
+        # exactly one restart after the confirmation: the migrated boot stays up
+        quiet_from = nb3[0] if nb3 else time.monotonic()
+        later = obs.wait(nbirth_t, 20)
+        boots = gw.find(r"main: rs485_spb_gateway .* reset reason", conf_t) if conf_t else []
+        restarts = gw.find(r"restarting once to encrypt the NVS", conf_t) if conf_t else []
+        one_restart = (later is None and len(boots) == 1 and len(restarts) == 1
+                       and not any(m[1] == f"{T}/NDEATH/{node}" for m in CAPTURE
+                                   if m[0] > quiet_from))
+        gw.kill()
+        clear2 = nvs_clear(flash, words)
+        b3 = bdseq_of(nb3[2]) if nb3 else None
+        check("Issue #94 the same update with the broker up: confirmed by its first session, one "
+              "restart (and no second one), and that boot moves the NVS into the encrypted one (bdSeq continues, the "
+              "MQTT password still opens the broker, same commissioning password, nothing in clear)",
+              conf_t and moved_t and nb3 and fw(nb3) == "e2e-enc" and b1 is not None
+              and b3 is not None and 1 <= (b3 - b1) % 256 <= 64 and pw2 == pw0 and not clear2
+              and list(h_enc.values())[0] and one_restart,
+              f"confirmed {conf_t is not None}, migrated {moved_t is not None}; boots after the "
+              f"confirmation {len(boots)}, restart requests {len(restarts)}, another NBIRTH in "
+              f"20 s {later is not None}; NBIRTH firmware "
+              f"{fw(nb3)!r} bdSeq {b1} -> {b3}; commissioning password {pw2!r}; in clear: {clear2}")
+    finally:
+        if not gw.killed:   # a second kill() would read as a QEMU death (#86)
+            gw.kill()
+        obs.close()
+        server.close()
+        broker.terminate()
+        broker.wait()
+
+
 def start_broker(conf, log):
     # A renamed copy of the binary: other jobs on a shared host that clean up with
     # `pkill mosquitto` must not take this broker down in the middle of the scenario.
@@ -1703,6 +2361,15 @@ def main():
     ap.add_argument("--sdkconfig", required=True, help="sdkconfig of the QEMU build")
     ap.add_argument("--elf", required=True, help="ELF of the QEMU build (core dump decoding)")
     ap.add_argument("--idf-python", required=True, help="ESP-IDF python (has esp_coredump)")
+    ap.add_argument("--simulate-qemu-death", nargs="?", const="ota", choices=("ota", "boot"),
+                    help="issues #86/#90 self-test: 'ota' (the default) SIGABRTs the emulator "
+                         "once in the OTA scenario; 'boot' SIGSEGVs the second emulator started, "
+                         "3 s into its boot, whatever the scenario; either must be repeated")
+    ap.add_argument("--signing-key", default="",
+                    help="FW-2: the QEMU build's test signing key (signed images required)")
+    ap.add_argument("--plain-flash", default="",
+                    help="issue #94: flash image of the QEMU build without NVS encryption "
+                         "(sdkconfig.qemu-plain), the image before the OTA update")
     ap.add_argument("--mqtt-port", type=int, default=MQTT_PORT)
     ap.add_argument("--modbus-port", type=int, default=MODBUS_PORT)
     ap.add_argument("--console-port", type=int, default=CONSOLE_PORT)
@@ -1713,7 +2380,7 @@ def main():
     ap.add_argument("--https-port", type=int, default=HTTPS_PORT)
     ap.add_argument("--only", default="",
                     help="comma-separated scenarios to run (failsafe,network,web,reset,tls,failover,"
-                         "mqtt5,phost,sf,https,slow,refuse,main); "
+                         "mqtt5,phost,sf,https,ota,nvs,slow,refuse,main); "
                          "default all")
     ap.add_argument("--psram", action="store_true",
                     help="issue #63: emulate the octal PSRAM (build with sdkconfig.qemu-psram)")
@@ -1754,35 +2421,45 @@ def main():
     try:
         only = set(filter(None, args.only.split(",")))
         want = lambda name: not only or name in only  # noqa: E731
+        # Issues #86/#90: every scenario through run_scenario: a QEMU that dies under one (at any
+        # boot) is reported as such and the scenario runs once more; firmware failures are not
+        # retried. The OTA scenario is the one where it happens most (README 4.3).
         if want("failsafe"):
-            run_config_failsafe(args, work, slave)
+            run_scenario("failsafe", lambda: run_config_failsafe(args, work, slave))
         if want("network"):
-            run_network_variant(args, work, slave)
+            run_scenario("network", lambda: run_network_variant(args, work, slave))
         if want("web"):
-            run_web(args, work)
+            run_scenario("web", lambda: run_web(args, work))
         if want("reset"):
-            run_factory_reset(args, work)
+            run_scenario("reset", lambda: run_factory_reset(args, work))
         if want("tls"):
-            run_tls(args, work)
+            run_scenario("tls", lambda: run_tls(args, work))
         if want("failover"):
-            run_failover(args, work)
+            run_scenario("failover", lambda: run_failover(args, work))
         if want("mqtt5"):
-            run_mqtt5(args, work, work / "mosquitto.log")
-            run_max_packet(args, work)
+            run_scenario("mqtt5", lambda: run_mqtt5(args, work, work / "mosquitto.log"))
+            run_scenario("max_packet", lambda: run_max_packet(args, work, slave))
         if want("phost"):
-            run_primary_host(args, work)
+            run_scenario("phost", lambda: run_primary_host(args, work))
         if want("sf"):
-            run_store_forward(args, work, slave)
-            run_store_forward_spill(args, work, slave)
-            run_stack_margin(args, work, slave)
+            run_scenario("sf", lambda: run_store_forward(args, work, slave))
+            run_scenario("sf spill", lambda: run_store_forward_spill(args, work, slave))
+            run_scenario("stack margin", lambda: run_stack_margin(args, work, slave))
         if want("https"):
-            run_https(args, work)
+            run_scenario("https", lambda: run_https(args, work))
+        if want("ota"):
+            run_scenario("FW-1 OTA", lambda: run_ota(args, work))
+        if want("nvs"):
+            run_scenario("issues #67/#94 NVS migration", lambda: run_nvs_migration(args, work))
+            run_scenario("issue #94 OTA to NVS encryption", lambda: run_nvs_ota(args, work))
         if want("slow"):
-            run_slow_link(args, work, sdkconfig_int(args.sdkconfig, "GW_MQTT_PUBLISH_BUDGET_MS"))
+            run_scenario("slow", lambda: run_slow_link(
+                args, work, sdkconfig_int(args.sdkconfig, "GW_MQTT_PUBLISH_BUDGET_MS")))
         if "refuse" in only and "main" not in only:
-            check_suback_refused(args, work)   # part of "main"; alone only on request (#89)
+            # part of "main"; alone only on request (#89)
+            run_scenario("refuse", lambda: check_suback_refused(args, work))
         if want("main"):
-            run(args, log, slave, broker, conf, work)
+            run_scenario("main", lambda: run(args, log, slave, broker, conf, work))
     except BaseException:
         traceback.print_exc()   # the summary below exits: keep the reason visible
         check("harness completed every scenario", False, traceback.format_exc().splitlines()[-1])
@@ -1816,10 +2493,57 @@ def main():
               f"{len(syslog_from(NODE))} datagrams in {runs} boot(s); gaps {errs[:5]}")
         seq_errors = seq_continuity(CAPTURE)
         check("SPB-5 seq continuity per session", not seq_errors, "; ".join(seq_errors) or "ok")
-        (work / "results.json").write_text(json.dumps(results, indent=2))
+        # issue #86: the retries next to the checks (their discarded checks included)
+        (work / "results.json").write_text(json.dumps({"checks": results, "retries": RETRIES},
+                                                      indent=2))
         failed = [r for r in results if not r["ok"]]
-        print(f"\n{len(results) - len(failed)}/{len(results)} checks passed; artefacts in {work}")
+        # issue #90: every emulator that ended on its own, with its stderr tail, and the
+        # artefacts left in place (the harness deletes nothing)
+        exits = [d for d in (g.qemu_died() for g in GATEWAYS) if d]
+        (work / "qemu-exits.txt").write_text("".join(f"{d}\n" for d in exits) or "none\n")
+        if failed or exits:
+            print(f"artefacts kept for the diagnosis: {work} (uart0-*.log, uart0-*.log.qemu, "
+                  f"qemu-exits.txt: {len(exits)} QEMU exit(s) not requested by the harness)")
+        retried = (f"; {len(RETRIES)} scenario(s) repeated after QEMU died: " +
+                   ", ".join(f"{r['scenario']} ({r['qemu']})" for r in RETRIES)) if RETRIES else ""
+        print(f"\n{len(results) - len(failed)}/{len(results)} checks passed{retried}; artefacts "
+              f"in {work}")
         sys.exit(1 if failed else 0)
+
+
+def run_scenario(name, fn, retry_on_qemu_death=True):
+    """Issue #86: run scenario @name; if QEMU died under it (the emulator, not the firmware:
+    Gateway.qemu_died), discard its checks and run it once more, recording the retry in the
+    summary and results.json. A failed check with QEMU alive is never retried, nor a second
+    death. An exception that ends the scenario is a failed check, not the end of the run."""
+    for attempt in (1, 2):
+        first_check, first_gw = len(results), len(GATEWAYS)
+        error = None
+        try:
+            fn()
+        except Exception:
+            traceback.print_exc()
+            error = traceback.format_exc().splitlines()[-1]
+        for g in GATEWAYS[first_gw:]:   # leave no emulator of this attempt running
+            if not g.killed and g.proc is not None:
+                try:
+                    g.kill()
+                except OSError:
+                    pass
+        deaths = [d for d in (g.qemu_died() for g in GATEWAYS[first_gw:]) if d]
+        if deaths and retry_on_qemu_death and attempt == 1:
+            discarded = results[first_check:]
+            del results[first_check:]
+            RETRIES.append({"scenario": name, "qemu": deaths[0], "error": error,
+                            "discarded_checks": discarded})
+            print(f"[RETRY] {name}: {deaths[0]}; the scenario runs once more ({len(discarded)} "
+                  f"check(s) of the first attempt discarded)", flush=True)
+            continue
+        if error is not None or deaths:
+            check(f"{name} scenario completed", False,
+                  (error or "") + (f"; {deaths[0]}" if deaths else "") +
+                  ("; second attempt after a QEMU death" if attempt == 2 else ""))
+        return
 
 
 def seq_continuity(msgs):

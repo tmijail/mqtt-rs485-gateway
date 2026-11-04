@@ -260,3 +260,26 @@ Texto propuesto (en inglés):
 > ```
 >
 > The bootloader's own log timestamps (`I (1874) boot:` instead of about `I (25)`) suggest that the CPU cycle counter it uses is not reset by the CPU reset either. Code that measures time windows from boot with `esp_timer` (timeouts, "N seconds after boot" logic) behaves differently in QEMU after a software reset than on the chip.
+
+## 6. espressif/qemu: el *cache freeze* del ESP32-S3 no está modelado (aborta con "Bad ram pointer")
+
+- **Repositorio:** https://github.com/espressif/qemu.
+- **Versión:** `esp_develop_9.2.2_20260417` (la que instala `idf_tools.py install qemu-xtensa` con IDF v6.1), máquina `esp32s3`.
+- **Ya reportado arriba:** no. [espressif/qemu#189](https://github.com/espressif/qemu/issues/189) (§3) es otra causa: `esp32s3_cpu_stall()` vacía, que usan el *panic* y el reinicio. El *cache freeze* no detiene el otro núcleo con `esp_cpu_stall()`: `esp_cache_freeze_caches_disable_interrupts()` (`esp_mm/esp_cache_utils.c`) solo congela la caché y cuenta con que el hardware haga esperar los accesos del otro núcleo. Las escrituras de flash sí lo detienen, pero por software (una tarea IPC que gira en IRAM), tampoco con `esp_cpu_stall()`. El PR [#190](https://github.com/espressif/qemu/pull/190) no debería cambiar esto: conviene un issue nuevo.
+- **Arreglo provisorio aquí:** `CONFIG_GW_FW_PARK_OTHER_CORE` (solo en `sdkconfig.qemu`): mientras se verifica una imagen OTA, una tarea de prioridad alta deja al otro núcleo en `waiti` dentro de IRAM (`idf/components/gw_fw/gw_fw.c`, FW-1).
+
+Texto propuesto (en inglés):
+
+> **Title:** esp32s3: code fetched by the other core during a cache freeze aborts QEMU ("Bad ram pointer")
+>
+> **Version:** esp_develop_9.2.2_20260417, `-M esp32s3`, ESP-IDF v6.1
+>
+> On the ESP32-S3, `esp_mmu_map()`/`esp_mmu_unmap()` freeze the caches (`esp_cache_freeze_caches_disable_interrupts()`, `SOC_CACHE_FREEZE_SUPPORTED`) instead of stalling the other core: on the chip, a cache miss of the other core waits until the unfreeze. In QEMU, when the other core executes code from flash during that window, QEMU aborts with `qemu-system-xtensa: Bad ram pointer 0x42090f70` (the address is the code being executed, here `snprintf`). If the other core spins in IRAM instead, the freeze never completes (the caller hangs); only an other core halted in `waiti` lets it finish.
+>
+> **Steps:** an app with a task on core 1 that loops calling `snprintf()` (code in flash); on core 0, write an app image into the passive OTA slot, then call `esp_ota_end()` and `esp_ota_set_boot_partition()` (each maps every segment with `esp_image_verify()`). QEMU aborts within a few rounds (1 to 3 here); without the core 1 task it never does.
+>
+> **Expected:** accesses of the other core during a freeze wait until the unfreeze, as on the chip.
+>
+> A related abort, less frequent, happens during plain flash erases and writes (an OTA download writing about 1 MB): `../system/physmem.c:2517: iotlb_to_section: Assertion 'section_index < d->map.sections_nb' failed.` There IDF stalls the other core in IRAM (`spi_flash_disable_interrupts_caches_and_other_cpu`), so it may be a race of the memory map update between the vCPUs.
+>
+> With the other core halted in `waiti`, its tick interrupt still runs: the USB-Serial-JTAG connection monitor (`usb_serial_jtag_sof_tick_hook`, IRAM, a tick hook) then faults reading the peripheral at 0x60038014 during the freeze (`LoadStorePIFAddrError`), which never happens outside a freeze.

@@ -1168,14 +1168,16 @@ static void test_discard_log_shows_alias_only_if_present(void)
     TEST_ASSERT_EQUAL(0, g_rec.writes);
 }
 
-/* Issue #10: nanopb aborts on a name or string longer than 63 characters; the metrics
+/* Issue #10: nanopb aborts on a name longer than 63 or a string longer than 256 characters; the metrics
  * decoded before it must not be applied either. */
 static void test_command_aborted_mid_payload_applies_nothing(void)
 {
     static const char long_name[] =
         "A_metric_name_that_is_much_longer_than_the_sixty_three_characters_accepted";
-    static const char long_str[] =
-        "A string value that is much longer than the sixty three characters accepted";
+    /* issue #87: strings now go up to 256 characters: this one is longer */
+    static char long_str[SPB_STRING_MAX + 40];
+    memset(long_str, 'x', sizeof(long_str) - 1);
+    long_str[sizeof(long_str) - 1] = '\0';
     set_meter(true, 1, 2, 0);
     gw_node_session_up(&node, 0);
     recorder_clear();
@@ -1397,6 +1399,157 @@ static void test_dbirth_not_published_leaves_the_device_unborn(void)
     TEST_ASSERT_TRUE(node.dev_born[0]);
 }
 
+/* FW-1: NBIRTH declares the update command and its state; an NCMD with the URL reaches the
+ * firmware_update op (only a non-empty string); state changes go out as NDATA. */
+static void test_firmware_update_metrics(void)
+{
+    gw_node_set_firmware_status(&node, "rolled back: 0.2.0", 0);   /* before the session */
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    gw_node_session_up(&node, 0);
+    msg(0);
+    int u = decoded_find_name(&dec, "Node Control/Firmware Update");
+    int st = decoded_find_name(&dec, "Firmware Update/State");
+    int pr = decoded_find_name(&dec, "Firmware Update/Progress");
+    TEST_ASSERT_TRUE(u >= 0 && st >= 0 && pr >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_STRING, dec.m[u].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_FW_UPDATE, dec.m[u].alias);
+    TEST_ASSERT_EQUAL_STRING("", dec.m[u].str);
+    TEST_ASSERT_EQUAL_STRING("rolled back: 0.2.0", dec.m[st].str);
+    TEST_ASSERT_EQUAL(SPB_DT_UINT32, dec.m[pr].datatype);
+    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[pr].num);
+
+    recorder_clear();
+    spb_metric_t m = {.name = "Node Control/Firmware Update", .datatype = SPB_DT_STRING,
+                      .v.str = "https://fw.example/gw-0.2.0.bin"};
+    send("spBv1.0/Plant1/NCMD/GW01", &m, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.fw_updates);
+    TEST_ASSERT_EQUAL_STRING("https://fw.example/gw-0.2.0.bin", g_rec.fw_url);
+    TEST_ASSERT_EQUAL(0, g_rec.count);          /* the result comes from the update itself */
+    /* by alias, but not a string / empty: discarded */
+    spb_metric_t b = {.alias = GW_ALIAS_FW_UPDATE, .datatype = SPB_DT_BOOLEAN, .v.num = 1};
+    send("spBv1.0/Plant1/NCMD/GW01", &b, 1);
+    spb_metric_t e = {.alias = GW_ALIAS_FW_UPDATE, .datatype = SPB_DT_STRING, .v.str = ""};
+    send("spBv1.0/Plant1/NCMD/GW01", &e, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.fw_updates);
+
+    gw_node_set_firmware_status(&node, "downloading", 10);
+    msg(0);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", g_rec.msgs[0].topic);
+    TEST_ASSERT_EQUAL(2, dec.count);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_FW_STATE, dec.m[0].alias);
+    TEST_ASSERT_EQUAL_STRING("downloading", dec.m[0].str);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_FW_PROGRESS, dec.m[1].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(10, dec.m[1].num);
+    gw_node_set_firmware_status(&node, "downloading", 10);   /* unchanged: nothing */
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    gw_node_set_firmware_status(&node, "downloading", 20);   /* only what changed */
+    msg(1);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_FW_PROGRESS, dec.m[0].alias);
+    /* issue #87: a long state goes out whole (up to GW_NODE_FW_STATE_MAX - 1); longer is cut
+     * with a warning in the log */
+    char longs[GW_NODE_FW_STATE_MAX + 20];
+    memset(longs, 'r', sizeof(longs));
+    longs[GW_NODE_FW_STATE_MAX - 1] = '\0';
+    gw_node_set_firmware_status(&node, longs, 20);
+    msg(2);
+    TEST_ASSERT_EQUAL(GW_NODE_FW_STATE_MAX - 1, strlen(dec.m[0].str));
+    longs[GW_NODE_FW_STATE_MAX - 1] = 'r';
+    longs[0] = 's';   /* a different state, longer than the limit */
+    longs[sizeof(longs) - 1] = '\0';
+    gw_node_set_firmware_status(&node, longs, 20);
+    msg(3);
+    TEST_ASSERT_EQUAL(GW_NODE_FW_STATE_MAX - 1, strlen(dec.m[0].str));
+}
+
+/* Issue #87: an NCMD with a String metric of @p n characters named "Node Control/Firmware
+ * Update", built by hand (the encoder refuses strings longer than SPB_STRING_MAX). */
+static size_t raw_fw_ncmd(uint8_t *out, size_t n)
+{
+    static const char name[] = "Node Control/Firmware Update";
+    uint8_t m[400];
+    size_t k = 0;
+    m[k++] = 0x0a;
+    m[k++] = (uint8_t)(sizeof(name) - 1);
+    memcpy(m + k, name, sizeof(name) - 1);
+    k += sizeof(name) - 1;
+    m[k++] = 0x20;
+    m[k++] = SPB_DT_STRING;
+    m[k++] = 0x7a;
+    m[k++] = (uint8_t)(0x80 | (n & 0x7f));
+    m[k++] = (uint8_t)(n >> 7);
+    memcpy(m + k, "https://", 8);
+    memset(m + k + 8, 'a', n - 8);
+    k += n;
+    size_t j = 0;
+    out[j++] = 0x12;
+    out[j++] = (uint8_t)(0x80 | (k & 0x7f));
+    out[j++] = (uint8_t)(k >> 7);
+    memcpy(out + j, m, k);
+    return j + k;
+}
+
+/* Issue #87: the firmware URL of an NCMD arrives whole up to SPB_STRING_MAX (256) characters;
+ * a longer one makes the NCMD undecodable: nothing applied, nothing cut. */
+static void test_firmware_url_limit(void)
+{
+    gw_node_session_up(&node, 0);
+    recorder_clear();
+    static uint8_t raw[512];
+    size_t len = raw_fw_ncmd(raw, 255);
+    gw_node_handle_message(&node, "spBv1.0/Plant1/NCMD/GW01", 24, raw, len);
+    TEST_ASSERT_EQUAL(1, g_rec.fw_updates);
+    TEST_ASSERT_EQUAL(255, strlen(g_rec.fw_url));
+    len = raw_fw_ncmd(raw, SPB_STRING_MAX);
+    gw_node_handle_message(&node, "spBv1.0/Plant1/NCMD/GW01", 24, raw, len);
+    TEST_ASSERT_EQUAL(2, g_rec.fw_updates);
+    TEST_ASSERT_EQUAL(SPB_STRING_MAX, strlen(g_rec.fw_url));
+    len = raw_fw_ncmd(raw, SPB_STRING_MAX + 1);
+    gw_node_handle_message(&node, "spBv1.0/Plant1/NCMD/GW01", 24, raw, len);
+    TEST_ASSERT_EQUAL(2, g_rec.fw_updates);
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+}
+
+/* Issue #76: a DBIRTH too large for the broker is not rebuilt and rejected on every change of
+ * its device: one attempt per session (and per rebirth), none in between. */
+static void test_dbirth_too_large_not_retried_on_every_change(void)
+{
+    set_meter(true, 230.5, 12.3, 1);
+    g_rec.too_large_topic = "/DBIRTH/";
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 1));
+    TEST_ASSERT_EQUAL(1, g_rec.count);          /* NBIRTH only */
+    TEST_ASSERT_EQUAL(1, g_rec.too_large);      /* the DBIRTH was tried once */
+    TEST_ASSERT_FALSE(node.dev_born[0]);
+    for (int i = 0; i < 5; i++) {               /* changes: no DBIRTH rebuilt, no DDATA */
+        set_meter(true, 231.5 + i, 12.3, 1);
+        gw_node_device_changed(&node, 0);
+    }
+    TEST_ASSERT_EQUAL(1, g_rec.too_large);
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    /* offline and back within the session: still not retried (and no DDEATH: never born) */
+    set_meter(false, 231.5, 12.3, 1);
+    gw_node_device_changed(&node, 0);
+    set_meter(true, 231.5, 12.3, 1);
+    gw_node_device_changed(&node, 0);
+    TEST_ASSERT_EQUAL(1, g_rec.too_large);
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    /* a rebirth repeats every birth: one attempt */
+    TEST_ASSERT_TRUE(gw_node_rebirth(&node));
+    TEST_ASSERT_EQUAL(2, g_rec.too_large);
+    TEST_ASSERT_EQUAL(2, g_rec.count);          /* the second NBIRTH */
+    /* a new session where the broker takes it: DBIRTH, then DDATA */
+    gw_node_session_down(&node);
+    g_rec.too_large_topic = NULL;
+    recorder_clear();
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 2));
+    TEST_ASSERT_EQUAL(2, g_rec.count);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/DBIRTH/GW01/Meter1", g_rec.msgs[1].topic);
+    TEST_ASSERT_TRUE(node.dev_born[0]);
+    set_meter(true, 240.5, 12.3, 1);
+    gw_node_device_changed(&node, 0);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/DDATA/GW01/Meter1", g_rec.msgs[2].topic);
+}
+
 /* SPB-14 with MB-6 values: Int64/UInt64 above 2^53 exact, Double and strings come back from
  * the store as they were sampled. */
 static void test_store_and_forward_mb6(void)
@@ -1540,6 +1693,9 @@ int main(void)
     RUN_TEST(test_store_and_forward_mb6);
     RUN_TEST(test_session_up_needs_the_nbirth);
     RUN_TEST(test_dbirth_not_published_leaves_the_device_unborn);
+    RUN_TEST(test_dbirth_too_large_not_retried_on_every_change);
+    RUN_TEST(test_firmware_update_metrics);
+    RUN_TEST(test_firmware_url_limit);
     RUN_TEST(test_store_and_forward_counters);
     return UNITY_END();
 }

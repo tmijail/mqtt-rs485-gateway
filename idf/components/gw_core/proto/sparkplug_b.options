@@ -8,7 +8,7 @@ Payload.metrics                    type:FT_CALLBACK
 Payload.Metric.name                max_size:64
 Payload.Metric.metadata            type:FT_IGNORE
 Payload.Metric.properties          type:FT_CALLBACK
-Payload.Metric.string_value        max_size:64
+Payload.Metric.string_value        max_size:257   # issue #87: 256 characters
 Payload.Metric.bytes_value         max_size:64
 Payload.Metric.dataset_value       submsg_callback:true
 Payload.Metric.template_value      submsg_callback:true

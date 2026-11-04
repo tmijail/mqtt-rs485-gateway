@@ -19,6 +19,8 @@ set(GW_CORE_SRCS
     src/gw_localio.c
     src/gw_netsel.c
     src/gw_node.c
+    src/gw_nvsraw.c
+    src/gw_ota.c
     src/gw_phost.c
     src/gw_plan.c
     src/gw_poll.c

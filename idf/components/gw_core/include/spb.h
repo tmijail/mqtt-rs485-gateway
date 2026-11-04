@@ -35,7 +35,12 @@ extern "C" {
 #define SPB_DT_TEMPLATE 19u   /* SPB-18 */
 
 #define SPB_NAME_MAX    63   /* longest metric name the codec accepts (nanopb max_size 64) */
-#define SPB_STRING_MAX  63
+/* Issue #87: String metric values (NCMD "Node Control/Firmware Update" carries a URL of up to
+ * 255 characters, FW-1). Longer strings are refused, never cut: an incoming one makes the whole
+ * payload undecodable (spb_last_error() says why), an outgoing one fails the encoding. Strings
+ * of properties and DataSet cells (SPB-16, SPB-19) keep 63. */
+#define SPB_STRING_MAX  256
+#define SPB_SHORT_STRING_MAX 63
 #define SPB_BYTES_MAX   64   /* longest Bytes / File value (nanopb max_size 64) */
 
 /* SPB-16 Quality property (Int32), as used by Sparkplug hosts. */
@@ -168,7 +173,7 @@ typedef struct {
         double d;
         bool b;
     } v;
-    char s[SPB_STRING_MAX + 1];  /* String value */
+    char s[SPB_SHORT_STRING_MAX + 1];  /* String value */
 } spb_rx_prop_t;
 
 /** Incoming metric, valid only for the duration of the callback. */
@@ -247,6 +252,10 @@ bool spb_decode_with(const uint8_t *buf, size_t len, spb_rx_header_t *hdr, const
  */
 bool spb_decode(const uint8_t *buf, size_t len, spb_rx_header_t *hdr, spb_metric_cb_t cb,
                 void *ctx);
+
+/** Why the last spb_decode()/spb_decode_with() of this task failed (nanopb's reason, e.g.
+ *  "string overflow"); "" after a success. Not thread-safe: one decoding task. */
+const char *spb_last_error(void);
 
 /**
  * Numeric value of an incoming metric as a double. Signed 8/16/32-bit values

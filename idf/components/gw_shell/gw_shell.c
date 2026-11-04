@@ -21,6 +21,7 @@
 #include "gw_bus.h"
 #include "gw_cfgdoc.h"
 #include "gw_edge.h"
+#include "gw_fw.h"
 #include "gw_io.h"
 #include "gw_log.h"
 #include "gw_mbap.h"
@@ -184,6 +185,25 @@ static int cmd_status(int argc, char **argv)
     uint32_t f = gw_status_get();
     out("firmware %s, reset reason %s, uptime %lld s\n", s_ctx.info->firmware,
            s_ctx.info->reset_reason, esp_timer_get_time() / 1000000);
+    /* FW-1: from the heap for the command (not the console task's stack nor .bss, #80) */
+    gw_fw_status_t *fw = heap_caps_malloc_prefer(sizeof(*fw), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                                 MALLOC_CAP_8BIT);
+    if (fw != NULL) {
+        gw_fw_get_status(fw);
+    }
+    if (fw != NULL && fw->running[0] != '\0') {
+        out("ota      %s in %s, other slot %s%s | %s", fw->running, fw->slot,
+            fw->other[0] ? fw->other : "empty", fw->enabled ? "" : " (updates disabled)",
+            fw->detail);
+        if (fw->phase == GW_FW_TRIAL) {
+            out(" (%lu s left)", (unsigned long)fw->trial_left_s);
+        } else if (fw->phase == GW_FW_DOWNLOADING) {
+            out(" %u%% (%lu of %lu bytes)", fw->progress, (unsigned long)fw->bytes,
+                (unsigned long)fw->total);
+        }
+        out("\n");
+    }
+    heap_caps_free(fw);
     if (s_ctx.cfg == NULL && s_ctx.starting) {
         out("config   loading: the gateway is starting\n");
     } else if (s_ctx.cfg == NULL && s_ctx.commissioning) {
@@ -287,9 +307,17 @@ static int cmd_status(int argc, char **argv)
                (unsigned long)ls.sent, (unsigned long)ls.dropped, (unsigned long)ls.send_errors);
     }
 #if CONFIG_NVS_ENCRYPTION && CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC
-    out("secrets  NVS %s (HMAC key in eFuse KEY%d)\n",
-           gw_storage_secrets_encrypted() ? "encrypted" : "UNAVAILABLE",
-           CONFIG_NVS_SEC_HMAC_EFUSE_KEY_ID);
+    const char *no_nvs = gw_storage_nvs_unavailable_why();
+    if (no_nvs != NULL) {   /* issue #94 */
+        out("secrets  NVS UNAVAILABLE this boot: %s\n", no_nvs);
+    } else if (gw_storage_nvs_encryption_pending()) {   /* issue #94 */
+        out("secrets  NVS NOT encrypted yet (new firmware on trial, or no LittleFS for the "
+            "migration): encrypted at the next boot of a confirmed firmware\n");
+    } else {
+        out("secrets  NVS %s (HMAC key in eFuse KEY%d)\n",
+            gw_storage_secrets_encrypted() ? "encrypted" : "UNAVAILABLE",
+            CONFIG_NVS_SEC_HMAC_EFUSE_KEY_ID);
+    }
 #else
     out("secrets  NVS NOT encrypted (default build; sdkconfig.production encrypts it)\n");
 #endif
@@ -428,8 +456,18 @@ static int config_show(void)
 
 /* CFG-6: read a JSON document from the console, validate it and (unless @p dry_run) save it
  * and restart. The document ends when its outer object closes; a line with a single '.'
- * aborts. */
-static int config_load(bool dry_run)
+ * aborts.
+ * Issue #78: the paste can take up to LOAD_IDLE_MS. It is read WITHOUT s_ctx_lock (it only
+ * touches this task's buffers), so gw_shell_set_ctx() from app_main never waits for an
+ * operator; the lock is taken only to validate, save and restart, with the current context. */
+typedef struct {
+    char *buf;
+    size_t len;
+    bool aborted;
+    bool overflow;
+} pasted_t;
+
+static bool config_read(pasted_t *p)
 {
     /* grows with the document (up to the limit): without PSRAM 128 KiB at once may not exist */
     const size_t max = CONFIG_GW_CONFIG_MAX_BYTES + 1;
@@ -438,7 +476,7 @@ static int config_load(bool dry_run)
                                         MALLOC_CAP_8BIT);
     if (buf == NULL) {
         out("config: no memory\n");
-        return 1;
+        return false;
     }
     gw_jsonfeed_t f;
     gw_jsonfeed_init(&f, buf, cap);
@@ -473,14 +511,24 @@ static int config_load(bool dry_run)
             gw_jsonfeed_add(&f, line);
         }
     }
+    p->buf = buf;
+    p->len = f.len;
+    p->aborted = aborted;
+    p->overflow = f.overflow;
+    return true;
+}
+
+/* Runs with s_ctx_lock held: validate, save, restart. Frees the pasted buffer. */
+static int config_apply(pasted_t *p, bool dry_run)
+{
     int rc = 1;
     gw_cfg_err_t err;
-    if (aborted) {
+    if (p->aborted) {
         out("config: aborted, nothing changed\n");
-    } else if (f.overflow) {
+    } else if (p->overflow) {
         out("config: rejected: larger than %d bytes (CONFIG_GW_CONFIG_MAX_BYTES) or no memory\n",
                CONFIG_GW_CONFIG_MAX_BYTES);
-    } else if (gw_storage_save_config(buf, f.len, dry_run, &err) != ESP_OK) {
+    } else if (gw_storage_save_config(p->buf, p->len, dry_run, &err) != ESP_OK) {
         out("config: rejected: %s\n", err.msg);
         if (err.path[0] != '\0') {
             out("config: path %s\n", err.path);
@@ -490,15 +538,32 @@ static int config_load(bool dry_run)
     } else {
         out(dry_run ? "config: valid (%u bytes), nothing saved\n"
                        : "config: saved (%u bytes); restarting\n",
-               (unsigned)f.len);
+               (unsigned)p->len);
         rc = 0;
     }
-    memset(buf, 0, f.len);   /* may hold secrets in clear */
-    heap_caps_free(buf);
+    memset(p->buf, 0, p->len);   /* may hold secrets in clear */
+    heap_caps_free(p->buf);
+    p->buf = NULL;
     if (rc == 0 && !dry_run) {
         out_flush();
         s_ctx.restart();
     }
+    return rc;
+}
+
+/* 'config load' / 'config check': registered without the ATOMIC wrapper (issue #78). */
+static int cmd_config_load(bool dry_run)
+{
+    s_out_len = 0;
+    pasted_t p;
+    if (!config_read(&p)) {
+        out_flush();
+        return 1;
+    }
+    xSemaphoreTake(s_ctx_lock, portMAX_DELAY);
+    int rc = config_apply(&p, dry_run);
+    out_flush();
+    xSemaphoreGive(s_ctx_lock);
     return rc;
 }
 #endif
@@ -508,11 +573,6 @@ static int cmd_config(int argc, char **argv)
     if (argc == 2 && strcmp(argv[1], "show") == 0) {
         return config_show();
     }
-#if CONFIG_GW_SHELL_WRITE_COMMANDS
-    if (argc == 2 && (strcmp(argv[1], "load") == 0 || strcmp(argv[1], "check") == 0)) {
-        return config_load(strcmp(argv[1], "check") == 0);
-    }
-#endif
     if (argc != 1) {
         out("usage: config [show%s]\n",
                CONFIG_GW_SHELL_WRITE_COMMANDS ? "|load|check" : "");
@@ -919,6 +979,17 @@ static int cmd_panic(int argc, char **argv)
 ATOMIC(cmd_status)
 ATOMIC(cmd_devices)
 ATOMIC(cmd_config)
+
+/* Issue #78: 'config load|check' reads the paste without s_ctx_lock; the rest is atomic. */
+static int cmd_config_entry(int argc, char **argv)
+{
+#if CONFIG_GW_SHELL_WRITE_COMMANDS
+    if (argc == 2 && (strcmp(argv[1], "load") == 0 || strcmp(argv[1], "check") == 0)) {
+        return cmd_config_load(strcmp(argv[1], "check") == 0);
+    }
+#endif
+    return cmd_config_atomic(argc, argv);
+}
 ATOMIC(cmd_ping)
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
 ATOMIC(cmd_restart)
@@ -999,7 +1070,7 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
                  "'check' only validates"
 #endif
          ,
-         .hint = "[show|load|check]", .func = cmd_config_atomic},
+         .hint = "[show|load|check]", .func = cmd_config_entry},
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
         {.command = "restart", .help = "Orderly restart (NDEATH first)", .func = cmd_restart_atomic},
         {.command = "rebirth", .help = "Re-issue NBIRTH and every DBIRTH", .func = cmd_rebirth_atomic},

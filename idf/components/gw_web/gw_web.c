@@ -14,6 +14,7 @@
 #include "esp_timer.h"
 #include "gw_auth.h"
 #include "gw_authlimit.h"
+#include "gw_fw.h"
 #include "gw_buzz.h"
 #include "gw_buzzer.h"
 #include "gw_conv.h"
@@ -22,6 +23,7 @@
 #include "gw_rtc.h"
 #include "gw_log.h"
 #include "gw_net.h"
+#include "gw_ota.h"
 #include "gw_status.h"
 #include "gw_storage.h"
 #include "gw_tagdb.h"
@@ -294,6 +296,125 @@ static esp_err_t restart_post(httpd_req_t *req)
     send_json(req, "202 Accepted", "{\"ok\":true,\"restart\":true}\n");
     s_ctx.restart();
     return ESP_OK;
+}
+
+/* ---------- FW-1: /api/firmware ---------- */
+
+static const char *const k_fw_phase[] = {"idle", "downloading", "rebooting", "failed", "trial",
+                                         "confirmed", "rolled_back"};
+
+static esp_err_t firmware_get(httpd_req_t *req)
+{
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
+    /* about 3 KB for one request: from the heap (PSRAM when present), not the server task's
+     * stack nor .bss (issue #80: internal RAM is tight without PSRAM) */
+    typedef struct {
+        gw_fw_status_t f;
+        char text[2 * sizeof(((gw_fw_status_t *)0)->text)];
+        char detail[2 * sizeof(((gw_fw_status_t *)0)->detail)];
+        char run[2 * sizeof(((gw_fw_status_t *)0)->running)];
+        char other[2 * sizeof(((gw_fw_status_t *)0)->other)];
+        char body[1400];
+    } fw_json_t;
+    fw_json_t *j = heap_caps_malloc_prefer(sizeof(*j), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                           MALLOC_CAP_8BIT);
+    if (j == NULL) {
+        return send_error(req, "503 Service Unavailable", NULL, "sin memoria");
+    }
+    gw_fw_get_status(&j->f);
+    json_escape(j->text, sizeof(j->text), j->f.text);
+    json_escape(j->detail, sizeof(j->detail), j->f.detail);
+    json_escape(j->run, sizeof(j->run), j->f.running);
+    json_escape(j->other, sizeof(j->other), j->f.other);
+    snprintf(j->body, sizeof(j->body),
+             "{\"running\":\"%s\",\"slot\":\"%s\",\"other\":\"%s\",\"enabled\":%s,"
+             "\"phase\":\"%s\",\"state\":\"%s\",\"detail\":\"%s\",\"progress\":%u,"
+             "\"bytes\":%lu,\"total\":%lu,\"trial_left_s\":%lu}\n",
+             j->run, j->f.slot, j->other, j->f.enabled ? "true" : "false",
+             j->f.phase < sizeof(k_fw_phase) / sizeof(k_fw_phase[0]) ? k_fw_phase[j->f.phase] : "?",
+             j->text, j->detail, j->f.progress, (unsigned long)j->f.bytes,
+             (unsigned long)j->f.total, (unsigned long)j->f.trial_left_s);
+    esp_err_t r = send_json(req, "200 OK", j->body);
+    heap_caps_free(j);
+    return r;
+}
+
+/* {"url": "https://..."} (application/json): the gateway downloads it. Any other content
+ * type: the body is the image itself, written as it arrives. */
+static esp_err_t firmware_post(httpd_req_t *req)
+{
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
+    char ctype[48] = "";
+    httpd_req_get_hdr_value_str(req, "Content-Type", ctype, sizeof(ctype));
+    char why[160];
+    if (strncmp(ctype, "application/json", 16) == 0) {
+        size_t len;
+        const char *status;
+        char *body = req->content_len <= 1024 ? read_body(req, &len, &status) : NULL;
+        if (body == NULL) {
+            httpd_resp_set_hdr(req, "Connection", "close");
+            return send_error(req, "400 Bad Request", NULL, "se esperaba {\"url\": \"https://...\"}");
+        }
+        char url[GW_OTA_URL_MAX];
+        bool parsed = gw_ota_parse_request(body, len, url, why, sizeof(why));
+        heap_caps_free(body);
+        if (!parsed) {
+            return send_error(req, "400 Bad Request", NULL, why);
+        }
+        esp_err_t e = gw_fw_start_url(url, why, sizeof(why));
+        if (e != ESP_OK) {
+            return send_error(req, e == ESP_ERR_INVALID_ARG ? "400 Bad Request" : "409 Conflict",
+                              NULL, why);
+        }
+        ESP_LOGW(TAG, "firmware update from %s requested through the REST API", url);
+        return send_json(req, "202 Accepted", "{\"ok\":true,\"started\":true}\n");
+    }
+    if (req->content_len == 0) {
+        return send_error(req, "411 Length Required", NULL, "imagen sin Content-Length");
+    }
+    esp_err_t e = gw_fw_upload_begin(req->content_len, why, sizeof(why));
+    if (e != ESP_OK) {
+        httpd_resp_set_hdr(req, "Connection", "close");
+        return send_error(req, e == ESP_ERR_INVALID_SIZE ? "413 Content Too Large" : "409 Conflict",
+                          NULL, why);
+    }
+    ESP_LOGW(TAG, "firmware upload of %u bytes through the REST API", (unsigned)req->content_len);
+    const size_t chunk = 4096;
+    char *buf = heap_caps_malloc_prefer(chunk, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                        MALLOC_CAP_8BIT);
+    size_t got = 0;
+    int timeouts = 0;
+    bool ok = buf != NULL;
+    while (ok && got < req->content_len) {
+        size_t want = req->content_len - got < chunk ? req->content_len - got : chunk;
+        int r = httpd_req_recv(req, buf, want);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 3) {
+            continue;
+        }
+        if (r <= 0) {
+            break;
+        }
+        timeouts = 0;
+        if (gw_fw_upload_write(buf, (size_t)r, why, sizeof(why)) != ESP_OK) {
+            heap_caps_free(buf);
+            httpd_resp_set_hdr(req, "Connection", "close");
+            return send_error(req, "400 Bad Request", NULL, why);
+        }
+        got += (size_t)r;
+    }
+    heap_caps_free(buf);
+    e = gw_fw_upload_end(ok && got == req->content_len, why, sizeof(why));
+    if (e != ESP_OK) {
+        httpd_resp_set_hdr(req, "Connection", "close");
+        return send_error(req, !ok ? "503 Service Unavailable"
+                               : got < req->content_len ? "408 Request Timeout" : "400 Bad Request",
+                          NULL, why);
+    }
+    return send_json(req, "200 OK", "{\"ok\":true,\"restart\":true}\n");
 }
 
 /* ---------- / and /api/status ---------- */
@@ -650,6 +771,8 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         {.uri = "/api/config", .method = HTTP_PUT, .handler = config_put},
         {.uri = "/api/config", .method = HTTP_POST, .handler = config_put},
         {.uri = "/api/restart", .method = HTTP_POST, .handler = restart_post},
+        {.uri = "/api/firmware", .method = HTTP_GET, .handler = firmware_get},     /* FW-1 */
+        {.uri = "/api/firmware", .method = HTTP_POST, .handler = firmware_post},
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &uris[i]), TAG, "%s",

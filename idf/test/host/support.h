@@ -68,8 +68,12 @@ typedef struct {
     size_t room;
     int reboots;
     bool publish_fails;          /* publish returns -1 (a broker that went away) */
+    const char *too_large_topic; /* issue #76: publishes to topics containing it are "too large" */
+    int too_large;               /* publishes answered GW_NODE_PUBLISH_TOO_LARGE */
     int scan_rate_calls;
     uint32_t scan_rate;
+    int fw_updates;              /* FW-1: firmware_update calls */
+    char fw_url[SPB_STRING_MAX + 1];
     gw_node_diag_t diag;         /* SPB-17: what the diagnostics op reports */
 } recorder_t;
 
@@ -98,7 +102,7 @@ typedef struct {
         spb_val_kind_t kind;
         double num;
         uint64_t u64;            /* long_value, exact */
-        char str[64];
+        char str[SPB_STRING_MAX + 1];
         uint8_t bytes[SPB_BYTES_MAX];   /* SPB-19 Bytes / File */
         size_t bytes_len;
         uint64_t timestamp;

@@ -2,6 +2,7 @@
 
 #include <inttypes.h>
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "gw_conv.h"
@@ -24,6 +25,9 @@ static const char *const k_count_names[GW_NODE_IO_COUNT] = {
 #define NAME_HARDWARE "Node Info/Hardware"
 #define NAME_RESET_REASON "Node Info/Reset Reason"
 #define NAME_SCAN_RATE "Node Control/Scan Rate"
+#define NAME_FW_UPDATE "Node Control/Firmware Update"
+#define NAME_FW_STATE "Firmware Update/State"
+#define NAME_FW_PROGRESS "Firmware Update/Progress"
 #define NAME_UPTIME   "Node Info/Uptime"
 #define NAME_FREE_HEAP "Node Info/Free Heap"
 #define NAME_MIN_HEAP "Node Info/Min Free Heap"
@@ -60,6 +64,7 @@ void gw_node_init(gw_node_t *n, const gw_config_t *cfg, const gw_node_ops_t *ops
     n->cfg = cfg;
     n->ops = *ops;
     n->info = *info;
+    strcpy(n->fw_state, "idle");
 }
 
 void gw_node_set_buffer(gw_node_t *n, uint8_t *buf, size_t cap)
@@ -79,8 +84,9 @@ static uint8_t next_seq(gw_node_t *n)
     return n->seq++;  /* uint8_t wraps 255 -> 0 (SPB-5) */
 }
 
-static bool publish(gw_node_t *n, const char *type, const char *device, size_t metric_count,
-                    int qos)
+/* Returns 0, GW_NODE_PUBLISH_TOO_LARGE or -1 (any other failure). */
+static int publish_rc(gw_node_t *n, const char *type, const char *device, size_t metric_count,
+                      int qos)
 {
     spb_payload_t p = {
         .timestamp = gw_port_time_ms(),
@@ -92,15 +98,24 @@ static bool publish(gw_node_t *n, const char *type, const char *device, size_t m
     size_t len = n->buf != NULL ? spb_encode(&p, n->buf, n->buf_cap) : 0;
     if (len == 0 || !gw_node_topic(n, type, device, n->topic, sizeof(n->topic))) {
         GW_LOGE(TAG, "%s%s%s: payload does not fit", type, device ? " " : "", device ? device : "");
-        return false;
+        return -1;
     }
-    if (n->ops.publish(n->ops.ctx, n->topic, n->buf, len, qos, false) < 0) {
-        GW_LOGW(TAG, "publish %s failed", n->topic);
-        return false;
+    int r = n->ops.publish(n->ops.ctx, n->topic, n->buf, len, qos, false);
+    if (r < 0) {
+        if (r != GW_NODE_PUBLISH_TOO_LARGE) {
+            GW_LOGW(TAG, "publish %s failed", n->topic);
+        }
+        return r == GW_NODE_PUBLISH_TOO_LARGE ? r : -1;
     }
     GW_LOGD(TAG, "%s seq=%" PRIu64 " metrics=%u bytes=%u", n->topic, p.seq, (unsigned)metric_count,
             (unsigned)len);
-    return true;
+    return 0;
+}
+
+static bool publish(gw_node_t *n, const char *type, const char *device, size_t metric_count,
+                    int qos)
+{
+    return publish_rc(n, type, device, metric_count, qos) == 0;
 }
 
 static spb_metric_t *metric(gw_node_t *n, size_t i, const char *name, uint64_t alias,
@@ -379,6 +394,10 @@ static bool publish_nbirth(gw_node_t *n)
         n->info.reset_reason;
     metric(n, i++, NAME_SCAN_RATE, GW_ALIAS_SCAN_RATE, SPB_DT_UINT32, now)->v.num =
         n->scan_rate_ms;
+    metric(n, i++, NAME_FW_UPDATE, GW_ALIAS_FW_UPDATE, SPB_DT_STRING, now)->v.str = "";
+    metric(n, i++, NAME_FW_STATE, GW_ALIAS_FW_STATE, SPB_DT_STRING, now)->v.str = n->fw_state;
+    metric(n, i++, NAME_FW_PROGRESS, GW_ALIAS_FW_PROGRESS, SPB_DT_UINT32, now)->v.num =
+        n->fw_progress;
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         metric(n, i++, k_di_names[k], GW_ALIAS_DI_BASE + k, SPB_DT_BOOLEAN,
                io.di_ts_ms ? io.di_ts_ms : now)
@@ -417,12 +436,13 @@ static bool publish_nbirth(gw_node_t *n)
 
 /* Publish @p dev's metrics: n->metrics[0..count) for a plain device; for a typed one (SPB-18)
  * the members are n->metrics[1..count] and n->metrics[0] becomes their template instance. */
-static bool publish_device(gw_node_t *n, const char *type, uint16_t dev, size_t count, bool birth,
-                           bool historical)
+/* Returns 0, GW_NODE_PUBLISH_TOO_LARGE or -1 (publish_rc). */
+static int publish_device_rc(gw_node_t *n, const char *type, uint16_t dev, size_t count,
+                             bool birth, bool historical)
 {
     const gw_device_cfg_t *d = &n->cfg->devices[dev];
     if (!typed(n, dev)) {
-        return publish(n, type, d->name, count, 0);
+        return publish_rc(n, type, d->name, count, 0);
     }
     n->tmpl = (spb_template_t){.ref = d->type, .is_definition = false, .count = (uint32_t)count,
                                .members = &n->metrics[1]};
@@ -430,7 +450,13 @@ static bool publish_device(gw_node_t *n, const char *type, uint16_t dev, size_t 
            gw_port_time_ms())
         ->v.tmpl = &n->tmpl;
     n->metrics[0].is_historical = historical;   /* SPB-14: the instance of replayed members */
-    return publish(n, type, d->name, 1, 0);
+    return publish_rc(n, type, d->name, 1, 0);
+}
+
+static bool publish_device(gw_node_t *n, const char *type, uint16_t dev, size_t count, bool birth,
+                           bool historical)
+{
+    return publish_device_rc(n, type, dev, count, birth, historical) == 0;
 }
 
 static void publish_dbirth(gw_node_t *n, uint16_t dev)
@@ -441,8 +467,16 @@ static void publish_dbirth(gw_node_t *n, uint16_t dev)
         tag_metric(n, base + i, (uint16_t)(d->first_tag + i), &n->vals[i], true, base != 0);
     }
     /* born only if the DBIRTH went out (issue #73: it may be larger than the broker accepts):
-     * no DDATA without it; the next change tries the DBIRTH again */
-    n->dev_born[dev] = publish_device(n, "DBIRTH", dev, d->tag_count, true, false);
+     * no DDATA without it. Issue #76: one that is too large is not rebuilt on every change of
+     * the device; the next session or rebirth tries again */
+    int r = publish_device_rc(n, "DBIRTH", dev, d->tag_count, true, false);
+    n->dev_born[dev] = r == 0;
+    if (r == GW_NODE_PUBLISH_TOO_LARGE) {
+        n->dev_too_large[dev] = true;
+        GW_LOGW(TAG, "DBIRTH %s too large for the broker: device not born, not retried until "
+                     "the next session or rebirth",
+                d->name);
+    }
 }
 
 /* SPB-18 definition member @p i of a device type: name, datatype, a zero default value and
@@ -496,12 +530,41 @@ static void publish_ddeath(gw_node_t *n, uint16_t dev)
     n->dev_born[dev] = false;
 }
 
+void gw_node_set_firmware_status(gw_node_t *n, const char *state, uint32_t progress)
+{
+    char s[GW_NODE_FW_STATE_MAX];
+    if ((size_t)snprintf(s, sizeof(s), "%s", state) >= sizeof(s)) {
+        GW_LOGW(TAG, "Firmware Update/State: %u characters, published cut to %u",
+                (unsigned)strlen(state), (unsigned)(sizeof(s) - 1));   /* issue #87: not silent */
+    }
+    bool st = strcmp(s, n->fw_state) != 0;
+    bool pr = progress != n->fw_progress;
+    if (!st && !pr) {
+        return;
+    }
+    memcpy(n->fw_state, s, sizeof(s));
+    n->fw_progress = progress;
+    if (!n->online) {
+        return;   /* the next NBIRTH carries it */
+    }
+    uint64_t now = gw_port_time_ms();
+    size_t i = 0;
+    if (st) {
+        metric(n, i++, NULL, GW_ALIAS_FW_STATE, SPB_DT_STRING, now)->v.str = n->fw_state;
+    }
+    if (pr) {
+        metric(n, i++, NULL, GW_ALIAS_FW_PROGRESS, SPB_DT_UINT32, now)->v.num = n->fw_progress;
+    }
+    publish(n, "NDATA", NULL, i, 0);
+}
+
 bool gw_node_rebirth(gw_node_t *n)
 {
     n->seq = 0;
     if (!publish_nbirth(n)) {
         return false;   /* no DBIRTH without the NBIRTH they belong to */
     }
+    memset(n->dev_too_large, 0, sizeof(n->dev_too_large));   /* issue #76: try once more */
     for (uint16_t dev = 0; dev < n->cfg->device_count; dev++) {
         bool online;
         n->dev_born[dev] = false;
@@ -590,7 +653,9 @@ void gw_node_device_changed(gw_node_t *n, uint16_t dev)
     bool online;
     gw_tagdb_get_device(n->cfg, dev, n->vals, &online);
     if (online && !n->dev_born[dev]) {
-        publish_dbirth(n, dev);
+        if (!n->dev_too_large[dev]) {   /* issue #76 */
+            publish_dbirth(n, dev);
+        }
         return;
     }
     if (!online) {
@@ -847,6 +912,18 @@ static bool on_ncmd_metric(void *ctx, const spb_rx_metric_t *m)
         n->cmd_reboot |= rx_true(m);
         return true;
     }
+    if (by_name ? strcmp(m->name, NAME_FW_UPDATE) == 0 : m->alias == GW_ALIAS_FW_UPDATE) {
+        /* FW-1: the payload decoded in full before this pass: the URL is complete */
+        if (m->is_null || m->kind != SPB_VAL_STRING || m->v.s[0] == '\0') {
+            log_discard("NCMD", m, "Firmware Update needs the image URL as a string");
+        } else if (n->ops.firmware_update == NULL) {
+            log_discard("NCMD", m, "firmware updates not supported");
+        } else {
+            GW_LOGW(TAG, "NCMD Firmware Update from %s", m->v.s);
+            n->ops.firmware_update(n->ops.ctx, m->v.s);
+        }
+        return true;
+    }
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         if (by_name ? strcmp(m->name, k_do_names[k]) == 0 : m->alias == GW_ALIAS_DO_BASE + k) {
             double v;
@@ -1061,7 +1138,9 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
         n->cmd_scan_rate = false;
         /* All or nothing: decode the whole payload first, then apply it. */
         if (!spb_decode(payload, len, NULL, NULL, NULL)) {
-            GW_LOGW(TAG, "NCMD: undecodable payload (%u bytes): nothing applied", (unsigned)len);
+            GW_LOGW(TAG, "NCMD: undecodable payload (%u bytes: %s; strings up to %d characters, names up "
+                         "to %d): nothing applied",
+                    (unsigned)len, spb_last_error(), SPB_STRING_MAX, SPB_NAME_MAX);
             return;
         }
         spb_decode(payload, len, NULL, on_ncmd_metric, n);
@@ -1114,7 +1193,9 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
         bool decoded = spb_decode_with(payload, len, NULL, &dec);
         n->cmd_count_only = false;
         if (!decoded) {
-            GW_LOGW(TAG, "DCMD: undecodable payload (%u bytes): nothing applied", (unsigned)len);
+            GW_LOGW(TAG, "DCMD: undecodable payload (%u bytes: %s; strings up to %d characters, names up "
+                         "to %d): nothing applied",
+                    (unsigned)len, spb_last_error(), SPB_STRING_MAX, SPB_NAME_MAX);
             return;
         }
         size_t room = n->ops.write_room(n->ops.ctx);

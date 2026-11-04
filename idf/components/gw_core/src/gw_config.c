@@ -1006,6 +1006,20 @@ static bool parse_syslog(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     return true;
 }
 
+/* FW-1: "ota": {"enabled": true, "ca_file": ""}. */
+static bool parse_ota(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"enabled", "ca_file"};
+    static const cJSON empty = {.type = cJSON_Object};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "ota");
+    if (o == NULL) {
+        o = &empty;
+    }
+    return check_keys(o, "ota", keys, 2, err) &&
+           get_bool(o, "enabled", "ota", true, &cfg->ota.enabled, err) &&
+           get_file_name(o, "ca_file", "ota", cfg->ota.ca_file, err);
+}
+
 /* MB-15. Modbus TCP has no authentication: off by default, and allowed_clients limits who may
  * connect ("a.b.c.d" or "a.b.c.d/prefix"). */
 static bool parse_modbus_tcp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
@@ -1415,7 +1429,7 @@ bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_
 {
     static const char *const keys[] = {"network", "ntp",      "mqtt",    "sparkplug", "rs485",
                                        "local_io", "devices", "syslog",  "web",
-                                       "modbus_tcp"};
+                                       "modbus_tcp", "ota"};
     memset(cfg, 0, sizeof(*cfg));
     err->msg[0] = '\0';
     err->path[0] = '\0';
@@ -1452,7 +1466,7 @@ bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_
               parse_sparkplug(root, cfg, err) && parse_rs485(root, cfg, err) &&
               parse_local_io(root, cfg, err) && parse_devices(root, cfg, err) &&
               parse_syslog(root, cfg, err) && parse_web(root, cfg, err) &&
-              parse_modbus_tcp(root, cfg, err);
+              parse_modbus_tcp(root, cfg, err) && parse_ota(root, cfg, err);
     cJSON_Delete(root);
 
     if (ok && cfg->mqtt.client_id[0] == '\0') {

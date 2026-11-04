@@ -7,6 +7,8 @@
 
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
+#include "esp_idf_version.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_system.h"
@@ -19,6 +21,7 @@
 #include "gw_backoff.h"
 #include "gw_brokersel.h"
 #include "gw_bus.h"
+#include "gw_fw.h"
 #include "gw_io.h"
 #include "gw_net.h"
 #include "gw_node.h"
@@ -79,6 +82,7 @@ static atomic_int s_suback;     /* msg_id of the last SUBACK, negated if a topic
 static atomic_uint s_route_gen;
 static atomic_bool s_restart_req;
 static atomic_bool s_rebirth_req;
+static atomic_bool s_fw_dirty;     /* FW-1: the update's state changed */
 
 /* ---- publish time bound (issue #59): shared with the esp_timer task ---- */
 static esp_timer_handle_t s_pub_timer;
@@ -90,7 +94,7 @@ static uint32_t s_oversize;          /* messages not published because of it */
 static char s_oversize_topic[GW_TOPIC_MAX];
 static uint32_t s_oversize_bytes;
 static int64_t s_oversize_logged_us;
-#define PUBLISH_OVERSIZE (-2)        /* op_publish: not a connection failure */
+#define PUBLISH_OVERSIZE GW_NODE_PUBLISH_TOO_LARGE   /* not a connection failure (issue #76) */
 static int s_pub_fd = -1;            /* socket of the publish in progress, -1 = none */
 static uint16_t s_pub_port;          /* its local port: tells a reused descriptor apart */
 static const char *s_pub_topic;
@@ -171,7 +175,9 @@ static gw_edge_status_t s_st;
 static void wake(void)
 {
     const edge_ev_t ev = {.type = EV_WAKE};
-    xQueueSend(s_q, &ev, 0);  /* dropping is harmless: state lives in the flags */
+    if (s_q != NULL) {        /* gw_fw may report before gw_edge_start() */
+        xQueueSend(s_q, &ev, 0);  /* dropping is harmless: state lives in the flags */
+    }
 }
 
 /* ---------- producer API ---------- */
@@ -236,6 +242,13 @@ void gw_edge_request_restart(void)
     wake();
 }
 
+void gw_edge_notify_firmware(void)
+{
+    if (!atomic_exchange(&s_fw_dirty, true)) {
+        wake();
+    }
+}
+
 bool gw_edge_request_rebirth(void)
 {
     if (!atomic_load(&s_mqtt_connected)) {
@@ -278,9 +291,25 @@ static void enqueue_cmd(const esp_mqtt_event_t *ev)
 
 static const char *broker_host(unsigned i);
 
-/* The bundle's own verify callback: global in esp_crt_bundle.c, not in its header. */
-extern int esp_crt_verify_callback(void *buf, mbedtls_x509_crt *const crt, const int depth,
-                                   uint32_t *const flags);
+/* Issue #77: the CA bundle checks the broker certificate in a verify callback that
+ * esp_crt_bundle_attach() installs and that no public header declares. Instead of naming it,
+ * tls_attach() lets the public esp_crt_bundle_attach() install it and keeps whatever callback
+ * it installed (the mbedTLS configuration field, type-checked below), then chains it from
+ * tls_verify(). A future IDF that renames the bundle's function changes nothing here; one that
+ * changes the callback's signature or the field fails the build with the messages below.
+ * Verified with ESP-IDF 6.1 (mbedTLS 4.1); see README 3.1 for the supported versions. */
+typedef int (*tls_vrfy_fn)(void *, mbedtls_x509_crt *, int, uint32_t *);
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(6, 0, 0) || ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(7, 0, 0)
+#error "gw_edge: TLS verify chaining (issue #77) is verified with ESP-IDF 6.x only: check that " \
+       "esp_crt_bundle_attach() still installs its check with mbedtls_ssl_conf_verify(), then " \
+       "extend this range (README 3.1)"
+#endif
+_Static_assert(__builtin_types_compatible_p(
+                   __typeof__(((mbedtls_ssl_config *)0)->MBEDTLS_PRIVATE(f_vrfy)), tls_vrfy_fn),
+               "gw_edge (issue #77): mbedtls_ssl_config's verify callback changed type; the CA "
+               "bundle chaining in tls_attach() must be revisited");
+static tls_vrfy_fn s_bundle_vrfy;   /* the bundle's check, chained by tls_verify() */
+static void *s_bundle_vrfy_ctx;
 
 /* Issue #70: X.509 verify callback (mqtt_task, during the handshake). esp-tls reports the
  * verification flags only while the peer certificate is still around after a failure, which
@@ -289,8 +318,8 @@ static int tls_verify(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *fla
 {
     (void)ctx;
     int r = 0;
-    if (s_cfg->mqtt.tls.ca_file[0] == '\0') {
-        r = esp_crt_verify_callback(NULL, crt, depth, flags);   /* bundle: it finds the CA */
+    if (s_cfg->mqtt.tls.ca_file[0] == '\0' && s_bundle_vrfy != NULL) {
+        r = s_bundle_vrfy(s_bundle_vrfy_ctx, crt, depth, flags);   /* bundle: it finds the CA */
     }
     s_vf.flags |= *flags;
     if (depth == 0) {
@@ -325,6 +354,17 @@ static esp_err_t tls_attach(void *conf)
         esp_err_t e = esp_crt_bundle_attach(conf);
         if (e != ESP_OK) {
             return e;
+        }
+        /* issue #77: keep the check the bundle installed and chain it */
+        const mbedtls_ssl_config *c = conf;
+        s_bundle_vrfy = c->MBEDTLS_PRIVATE(f_vrfy);
+        s_bundle_vrfy_ctx = c->MBEDTLS_PRIVATE(p_vrfy);
+        if (s_bundle_vrfy == NULL) {
+            /* this IDF verifies the bundle some other way: replacing its callback would
+             * accept any certificate, so the attempt fails instead */
+            ESP_LOGE(TAG, "TLS: the CA bundle installed no verify callback (unsupported ESP-IDF, "
+                          "issue #77): connection refused");
+            return ESP_ERR_NOT_SUPPORTED;
         }
     }
     mbedtls_ssl_conf_verify(conf, tls_verify, NULL);
@@ -562,6 +602,27 @@ static bool op_request_write(void *ctx, uint16_t tag, const gw_tag_value_t *valu
 {
     (void)ctx;
     return gw_bus_request_write(tag, value);
+}
+
+/* FW-1: NCMD "Node Control/Firmware Update"; the outcome arrives through gw_fw's status. */
+static void op_firmware_update(void *ctx, const char *url)
+{
+    (void)ctx;
+    char why[120];
+    gw_fw_start_url(url, why, sizeof(why));
+}
+
+/* FW-1: the update's state and progress into the node metrics (NDATA when online). */
+static void sync_firmware(void)
+{
+    if (atomic_exchange(&s_fw_dirty, false)) {
+        /* this task only: off its 6 KB stack, and in RTC FAST memory, not in the DRAM heap's
+         * way (issue #80) */
+        static RTC_FAST_ATTR char text[GW_NODE_FW_STATE_MAX];
+        uint8_t progress;
+        gw_fw_get_state(text, sizeof(text), &progress);
+        gw_node_set_firmware_status(s_node, text, progress);
+    }
 }
 
 static void op_set_scan_rate(void *ctx, uint32_t ms)
@@ -859,6 +920,7 @@ static void start_births(void)
              "without feeding the watchdog %lu ms", s_bdseq,
              (unsigned long)((esp_timer_get_time() - t0) / 1000), (unsigned long)s_max_unfed_ms);
     log_stacks();
+    gw_fw_session_up();   /* FW-1: a new image on trial is healthy */
     if (gw_sf_count(&s_sf) > 0) {
         ESP_LOGI(TAG, "store & forward: %u sample(s) stored while offline follow as historical "
                       "data (%lu overwritten)",
@@ -1162,6 +1224,7 @@ static void reconcile(void)
     /* TIME-3: NDATA Time Synced when SNTP synchronises after births timed by the RTC (the
      * rebirth above already carried it otherwise) */
     gw_node_set_time_synced(s_node, atomic_load(&s_time_synced));
+    sync_firmware();
     if (atomic_exchange(&s_rebirth_req, false) && s_node->online) {
         ESP_LOGI(TAG, "rebirth requested from the console");
         gw_node_rebirth(s_node);
@@ -1410,10 +1473,12 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         .write_room = op_write_room,
         .set_scan_rate = op_set_scan_rate,
         .reboot = op_reboot,
+        .firmware_update = op_firmware_update,
         .diagnostics = op_diagnostics,
         .ctx = NULL,
     };
     gw_node_init(s_node, cfg, &ops, info);
+    atomic_store(&s_fw_dirty, true);   /* the first NBIRTH carries the update's state */
     /* The largest births (SPB-16/17/18) need GW_SPB_PAYLOAD_MAX: in PSRAM when the board has
      * it; without PSRAM a smaller buffer leaves internal RAM for TLS and the web server. */
     size_t cap = heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0 ? GW_SPB_PAYLOAD_MAX

@@ -286,6 +286,12 @@ typedef struct {
         char password_hash[GW_PWHASH_SIZE]; /* "" = no password set: commissioning password */
     } web;
 
+    struct {                     /* FW-1: firmware updates (NCMD and web) */
+        bool enabled;            /* default true */
+        char ca_file[GW_FILE_SIZE];  /* CA of the update server; "" = mqtt.tls.ca_file if
+                                      * set, else the ESP-IDF bundle of public root CAs */
+    } ota;
+
     struct {                     /* MB-15 Modbus TCP gateway; off unless enabled */
         bool enabled;
         uint16_t port;

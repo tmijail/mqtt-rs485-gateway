@@ -39,6 +39,9 @@ td input,td select{width:100%;margin:0;padding:3px 4px}
  <div class="card"><h2>Red y MQTT</h2><div id="st-net"></div></div>
  <div class="card"><h2>Dispositivos Modbus</h2><div id="st-mb" class="mut">sin dispositivos</div></div>
  <div class="card"><h2>E/S locales</h2><div id="st-io"></div></div>
+ <div class="card"><h2>Firmware</h2><div id="st-fw" class="mut"></div>
+  <div class="row"><input id="fw-url" placeholder="https://servidor/rs485_spb_gateway.bin" size="40"><button id="fw-get">Descargar e instalar</button></div>
+  <div class="row"><label class="row" style="flex-direction:row">Subir imagen <input type="file" id="fw-file" accept=".bin,application/octet-stream"></label></div></div>
 </section>
 
 <section id="tab-config" class="hidden">
@@ -159,7 +162,11 @@ async function poll(){
   `<br>Contadores: ${io.counters.map((c,i)=>`${i+1}: ${c}`).join(" · ")}`+
   `<br>Buzzer: ${s.buzzer.alarm==="none"?"en silencio":`<span class="bad">${AL[s.buzzer.alarm]}</span>`} (alarmas: ${s.buzzer.enabled.map(a=>AL[a]).join(", ")||"ninguna"})`+
   `<br>Hora: ${new Date(s.time.utc_s*1000).toISOString()} · ${s.time.synced?yes(true,"sincronizada por SNTP",""):s.time.source==="rtc"?"del RTC (sin sincronizar)":`<span class="bad">sin hora válida</span>`} · RTC ${esc(s.time.rtc.status)}`;
+ const f=await api("GET","/api/firmware");if(f.status!==200||!f.json)return;const w=f.json;
+ $("#st-fw").innerHTML=`${esc(w.running)} en ${esc(w.slot)} · otra partición: ${esc(w.other||"vacía")}${w.enabled?"":" · actualizaciones deshabilitadas (ota.enabled)"}<br>${esc(w.detail)}${w.phase==="downloading"?` (${w.progress} %)`:w.phase==="trial"?` (${w.trial_left_s} s)`:""}`;
 }
+$("#fw-get").onclick=async()=>{const u=$("#fw-url").value.trim();if(!u)return;const r=await api("POST","/api/firmware",JSON.stringify({url:u}));msg(r.status===202?"Descarga iniciada: el equipo se reinicia al terminar.":`No se inició (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};
+$("#fw-file").onchange=async e=>{const f=e.target.files[0];if(!f||!confirm(`¿Instalar ${f.name} (${f.size} B) y reiniciar?`))return;msg("Subiendo…");const r=await fetch("/api/firmware",{method:"POST",headers:{"Content-Type":"application/octet-stream"},body:f});let j=null;try{j=await r.json()}catch(x){}msg(r.status===200?"Imagen instalada: reiniciando en la nueva versión.":`Rechazada (${r.status}): ${(j||{}).error||""}`,r.status===200?"ok":"bad")};
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>show(b.dataset.tab));
 $("#b-check").onclick=()=>put(true);$("#b-save").onclick=()=>put(false);
 $("#b-export").onclick=()=>{location.href="/api/config?download=1"};

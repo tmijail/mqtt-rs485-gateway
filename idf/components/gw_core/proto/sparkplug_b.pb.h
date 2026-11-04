@@ -145,7 +145,7 @@ typedef struct _Payload_Metric {
         float float_value;
         double double_value;
         bool boolean_value;
-        char string_value[64];
+        char string_value[257];
         Payload_Metric_bytes_value_t bytes_value; /* Bytes, File */
         Payload_DataSet dataset_value;
         Payload_Template template_value;
