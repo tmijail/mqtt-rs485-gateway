@@ -23,3 +23,23 @@ set(GW_FS_DIR "${CMAKE_CURRENT_LIST_DIR}/fs" CACHE PATH "LittleFS image source d
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(rs485_spb_gateway)
+
+# Issue #83: IDF does not re-run the configuration when sdkconfig.defaults (or an overlay)
+# changes, so an existing build kept the sdkconfig it had; kconfgen applies a new default to a
+# value that it marked "# default:" only when it runs. The defaults files are now configure
+# dependencies, and the configuration fails when the sdkconfig in use still contradicts them in
+# an option the firmware requires (a value set by hand, or a file written without the markers);
+# -D GW_SDKCONFIG_CHECK=warn only reports it.
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/gw_sdkconfig_check.cmake)
+idf_build_get_property(gw_sdkconfig SDKCONFIG)
+idf_build_get_property(gw_sdkconfig_defaults SDKCONFIG_DEFAULTS)
+idf_build_get_property(gw_idf_target IDF_TARGET)
+foreach(f IN LISTS gw_sdkconfig_defaults)
+    foreach(g "${f}" "${f}.${gw_idf_target}")
+        if(EXISTS "${g}")
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${g}")
+        endif()
+    endforeach()
+endforeach()
+gw_sdkconfig_check("${gw_sdkconfig}" "${gw_sdkconfig_defaults}" "${gw_idf_target}"
+                   "${GW_SDKCONFIG_CHECK}")

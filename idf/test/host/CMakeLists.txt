@@ -65,3 +65,32 @@ target_compile_definitions(spb_dump PRIVATE
 add_test(NAME check_set_config
          COMMAND ${CMAKE_COMMAND} -DSRC=${IDF_PROJECT_DIR}/components/gw_edge/gw_edge.c
                  -P ${CMAKE_CURRENT_LIST_DIR}/check_set_config.cmake)
+
+# Issue #83: the build's check of the sdkconfig against sdkconfig.defaults and its overlays.
+# fresh: matches; stale: DYNAMIC_BUFFER "is not set" from before #80 (fails, and only warns with
+# MODE=warn); wdt5: a different watchdog timeout fails, unless an overlay of the build sets it;
+# absent options (SPIRAM_IGNORE_NOTFOUND with SPIRAM off, as in the QEMU build) are skipped.
+set(GW_CFGCHK ${IDF_PROJECT_DIR}/cmake/gw_sdkconfig_check.cmake)
+set(GW_CFGCHK_DIR ${CMAKE_CURRENT_LIST_DIR}/sdkconfig_check)
+set(GW_CFGCHK_DEFAULTS ${IDF_PROJECT_DIR}/sdkconfig.defaults)
+foreach(c "fresh;fresh;;;0" "stale;stale;;;1" "stale_warn;stale;;warn;0" "wdt5;wdt5;;;1"
+          "wdt5_overlay;wdt5;wdt5.defaults;;0")
+    list(GET c 0 name)
+    list(GET c 1 cfg)
+    list(GET c 2 overlay)
+    list(GET c 3 mode)
+    list(GET c 4 fails)
+    set(defaults ${GW_CFGCHK_DEFAULTS})
+    if(overlay)
+        string(APPEND defaults "\;${GW_CFGCHK_DIR}/${overlay}")
+    endif()
+    add_test(NAME sdkconfig_check_${name}
+             COMMAND ${CMAKE_COMMAND} -DSDKCONFIG=${GW_CFGCHK_DIR}/${cfg}.sdkconfig
+                     "-DDEFAULTS=${defaults}" -DMODE=${mode} -P ${GW_CFGCHK})
+    if(fails)
+        set_tests_properties(sdkconfig_check_${name} PROPERTIES WILL_FAIL TRUE)
+    elseif(mode STREQUAL "warn")
+        set_tests_properties(sdkconfig_check_${name} PROPERTIES
+                             PASS_REGULAR_EXPRESSION "CMake Warning.*CONFIG_MBEDTLS_DYNAMIC_BUFFER")
+    endif()
+endforeach()

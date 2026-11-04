@@ -1,0 +1,4 @@
+# An sdkconfig generated before #80 added the option to sdkconfig.defaults
+# CONFIG_MBEDTLS_DYNAMIC_BUFFER is not set
+CONFIG_UART_ISR_IN_IRAM=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=15

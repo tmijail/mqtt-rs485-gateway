@@ -7,7 +7,8 @@
 #
 # E2E_PSRAM=1 (issue #63): the variant with the board's octal PSRAM (sdkconfig.qemu-psram, build
 # dir build-qemu-psram, QEMU's ssi_psram in octal mode), so the configuration, the Sparkplug
-# engine and its full payload buffer live in PSRAM as on the board.
+# engine and its full payload buffer live in PSRAM as on the board. e2e.py writes otadata into
+# the image first (issue #85: QEMU crashes on the bootloader's first otadata write).
 #
 # E2E_PYTHON needs: paho-mqtt>=2, pymodbus==3.8.6, protobuf, grpcio-tools (tools/e2e/requirements.txt).
 # Host tools: mosquitto, qemu-system-xtensa (idf_tools.py install qemu-xtensa; needs libslirp0).
