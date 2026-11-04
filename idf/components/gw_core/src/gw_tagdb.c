@@ -92,6 +92,13 @@ void gw_tagdb_set_do_unknown(uint64_t ts_ms)
     gw_port_unlock();
 }
 
+void gw_tagdb_set_failsafe(bool on)
+{
+    gw_port_lock();
+    s_io.failsafe = on;
+    gw_port_unlock();
+}
+
 void gw_tagdb_get_io(gw_local_io_t *io)
 {
     gw_port_lock();

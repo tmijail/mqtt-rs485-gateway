@@ -6,6 +6,7 @@
  *   rs485_bus   (core 1, prio 10)  gw_bus:  sole owner of the RS485 port, polls and writes
  *   sparkplug   (core 0, prio 8)   gw_edge: MQTT session, Sparkplug engine, NCMD/DCMD
  *   esp_timer                      gw_io:   1 kHz DI sampling and debounce
+ *   local_io    (prio 9)           gw_io:   sole writer of the DO expander (NCMD, safe state)
  *   status_led  (prio 2)           gw_status
  *   console     (prio 2)           gw_shell: diagnostic REPL on the console UART
  *   syslog      (prio 2)           gw_log:   copies the log to a syslog server (if configured)
@@ -32,6 +33,7 @@
 #include "gw_config.h"
 #include "gw_edge.h"
 #include "gw_io.h"
+#include "gw_localio.h"
 #include "gw_log.h"
 #include "gw_mbtcp.h"
 #include "gw_net.h"
@@ -44,6 +46,8 @@
 #include "gw_web.h"
 
 static const char *TAG = "main";
+
+#define NVS_DO_HOLD "do_hold"   /* IO-3: outputs the last valid configuration holds */
 
 /* Immutable after boot; shared read-only by every task. About 26 KB: allocated at boot in
  * PSRAM when the board has it (internal RAM otherwise, e.g. QEMU), see big_alloc(). */
@@ -194,6 +198,7 @@ static void on_button(gw_btn_event_t ev)
 static void run_without_config(gw_web_mode_t mode, const char *source)
 {
     s_mode = mode;
+    gw_io_outputs_all_off();   /* IO-3: "hold" belonged to a configuration that is not valid */
     gw_status_set(mode == GW_WEB_COMMISSIONING ? GW_ST_COMMISSIONING : GW_ST_CFG_ERROR, true);
     start_shell(NULL, source);
     gw_storage_recovery_config(s_cfg);
@@ -260,12 +265,15 @@ void app_main(void)
     if (gw_status_led_start() != ESP_OK) {
         ESP_LOGE(TAG, "status LED unavailable");
     }
-    /* Before the configuration: whatever happens next, no DO stays on from before a reset. */
-    if (gw_io_outputs_off() != ESP_OK) {
+    gw_storage_init();  /* failure is logged; bdSeq then lives in RAM only */
+    /* Before the configuration: whatever happens next, no DO stays on from before a reset,
+     * except those the last valid configuration holds across a restart (IO-3, kept in NVS). */
+    uint8_t hold = 0;
+    gw_storage_get_blob(NVS_DO_HOLD, &hold, sizeof(hold));
+    if (gw_io_outputs_boot(hold) != ESP_OK) {
         ESP_LOGE(TAG, "digital outputs unavailable: published as null and DO commands refused "
                       "until the expander answers");
     }
-    gw_storage_init();  /* failure is logged; bdSeq then lives in RAM only */
 
     esp_chip_info_t chip;
     esp_chip_info(&chip);
@@ -291,6 +299,10 @@ void app_main(void)
         run_without_config(GW_WEB_RECOVERY, source);
     }
     gw_storage_save_last_good(s_cfg);
+    hold = gw_lio_hold_mask(s_cfg);   /* for the next restart's first step */
+    if (gw_storage_set_blob(NVS_DO_HOLD, &hold, sizeof(hold)) != ESP_OK) {
+        ESP_LOGW(TAG, "DO hold mask not stored: the next restart switches every DO off first");
+    }
     ESP_LOGI(TAG, "configuration from %s: group '%s', node '%s', %u devices, %u tags", source,
              s_cfg->sparkplug.group_id, s_cfg->sparkplug.edge_node_id, s_cfg->device_count,
              s_cfg->tag_count);
@@ -304,7 +316,7 @@ void app_main(void)
     }
 
     ESP_ERROR_CHECK(gw_edge_start(s_cfg, &s_info));
-    if (gw_io_start_inputs(s_cfg, gw_edge_notify_io) != ESP_OK) {
+    if (gw_io_start(s_cfg, gw_edge_notify_io) != ESP_OK) {
         ESP_LOGE(TAG, "digital inputs unavailable");
     }
 

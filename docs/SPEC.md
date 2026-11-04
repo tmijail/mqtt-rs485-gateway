@@ -376,6 +376,24 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 - Se reenvían FC01–FC06, FC15 y FC16 a las unidades 1–247, tengan o no un dispositivo configurado. El gateway responde él mismo, con excepción, a cualquier otra función (01), a datos no válidos (03) y a las unidades 0 y 248–255 (0A). Si la unidad no responde tras los reintentos de `rs485`, la excepción es 0B.
 - **Arbitraje del bus (MB-16):** las peticiones TCP pasan por la tarea dueña del bus, una a la vez y con la misma granularidad que los DCMD: entre dos peticiones de la encuesta. Prioridad: escrituras DCMD, después Modbus TCP, después la encuesta.
 
+**`local_io`: E/S local sin red. Estado seguro de las DO (IO-3).**
+
+```json
+"local_io": { "di_debounce_ms": 20, "failsafe_s": 30,
+              "do_failsafe": ["off", "on", "hold", "off", "off", "off", "off", "off"] }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `failsafe_s` | entero | `0` | 0–86400. Segundos sin sesión Sparkplug (sin un NBIRTH vigente) tras los que cada DO toma su estado seguro. 0 = la pérdida de MQTT no cambia las DO |
+| `do_failsafe` | array de textos | todas `off` | Hasta 8 entradas, `DO/1` primero; cada una `off`, `on` u `hold`. Las que faltan son `off` |
+
+- **Al reiniciar** (encendido, reinicio por software, *panic* o watchdog): `off` y `on` toman ese estado en cuanto la configuración es válida; `hold` conserva el estado que el expansor TCA9554 mantuvo durante el reinicio. Tras un corte de alimentación el expansor también se apaga: `hold` arranca en OFF.
+- **Antes de cargar la configuración** todas las DO pasan a OFF, salvo las `hold` de la última configuración válida (guardadas en NVS), que no se tocan. Las `on` se encienden recién con la configuración validada.
+- **Configuración rechazada** (recuperación) o puesta en marcha: todas a OFF, también las `hold`.
+- **Sin sesión durante `failsafe_s`** (contados desde el arranque o desde la pérdida): las `off` y las `on` toman ese estado, una vez; las `hold` no cambian. Al volver la sesión, las DO quedan como están hasta el próximo NCMD; el NBIRTH informa su estado real.
+- Sin estas claves el equipo se comporta como el MVP: todas a OFF al reiniciar y sin reacción a la pérdida de MQTT.
+
 **`syslog` (REL-4): copia del log a un servidor syslog.**
 
 ```json

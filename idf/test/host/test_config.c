@@ -586,6 +586,41 @@ static void test_modbus_tcp_section(void)
     ASSERT_REJECTED(parse(doc), "modbus_tcp.enable: clave desconocida");
 }
 
+/* IO-3 (and the other optional local_io keys): defaults keep the MVP behaviour. */
+static void test_local_io_section(void)
+{
+    const char *base = "\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}";
+    char doc[768];
+    snprintf(doc, sizeof(doc), "{%s}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL(0, cfg.local_io.failsafe_s);        /* no reaction to an MQTT loss */
+    for (int i = 0; i < GW_LOCAL_IO_CHANNELS; i++) {
+        TEST_ASSERT_EQUAL(GW_DO_SAFE_OFF, cfg.local_io.do_failsafe[i]);
+    }
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"di_debounce_ms\":10,\"failsafe_s\":30,"
+             "\"do_failsafe\":[\"hold\",\"on\",\"off\",\"hold\"]}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL(30, cfg.local_io.failsafe_s);
+    TEST_ASSERT_EQUAL(GW_DO_SAFE_HOLD, cfg.local_io.do_failsafe[0]);
+    TEST_ASSERT_EQUAL(GW_DO_SAFE_ON, cfg.local_io.do_failsafe[1]);
+    TEST_ASSERT_EQUAL(GW_DO_SAFE_OFF, cfg.local_io.do_failsafe[2]);
+    TEST_ASSERT_EQUAL(GW_DO_SAFE_HOLD, cfg.local_io.do_failsafe[3]);
+    TEST_ASSERT_EQUAL(GW_DO_SAFE_OFF, cfg.local_io.do_failsafe[4]);   /* missing: off */
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"failsafe_s\":86401}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.failsafe_s: valor 86401 fuera de rango [0, 86400]");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"do_failsafe\":[\"off\",\"keep\"]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe[1]: valor no válido (se esperaba off|on|hold)");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"do_failsafe\":[true]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe[0]: valor no válido");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"do_failsafe\":\"off\"}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe: se esperaba un array");
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"do_failsafe\":[\"off\",\"off\",\"off\",\"off\",\"off\","
+             "\"off\",\"off\",\"off\",\"off\"]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe: 9 entradas; hay 8 salidas");
+}
+
 static void test_section_errors(void)
 {
     ASSERT_REJECTED(parse("{\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}}"), "mqtt:");
@@ -789,6 +824,7 @@ int main(void)
     RUN_TEST(test_device_block_reads);
     RUN_TEST(test_scan_classes);
     RUN_TEST(test_modbus_tcp_section);
+    RUN_TEST(test_local_io_section);
     RUN_TEST(test_section_errors);
     RUN_TEST(test_limits);
     RUN_TEST(test_syntax_errors_give_line_and_column);

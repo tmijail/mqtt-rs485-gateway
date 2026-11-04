@@ -13,6 +13,7 @@ set(GW_CORE_SRCS
     src/gw_mbap.c
     src/gw_devstate.c
     src/gw_dout.c
+    src/gw_localio.c
     src/gw_netsel.c
     src/gw_node.c
     src/gw_plan.c

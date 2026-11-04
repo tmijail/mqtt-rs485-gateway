@@ -63,7 +63,7 @@ SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
 PROBE_MAX_S = 10.0                # CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS / 1000, read in main()
 GROUP, NODE, DEVICE, BULK = "Plant1", "GW01", "Meter1", "Bulk"
 T = f"spBv1.0/{GROUP}"
-ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/1": 20, "DO/3": 22, "Voltage": 100, "Setpoint": 101, "Run": 102,
+ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/1": 20, "DO/2": 21, "DO/3": 22, "DO/4": 23, "Voltage": 100, "Setpoint": 101, "Run": 102,
          "Limit": 103, "Energy": 104, "Counter": 105, "Flow": 106, "Temp": 107, "Serial": 108,
          "Alarm": 109, "Ready": 110}
 # MB-6 values served by unit 1, and the registers that hold them (see ModbusSlave.set_mb6)
@@ -380,6 +380,24 @@ def metric(p, alias=None, name=None):
 
 def bdseq_of(p):
     return metric(p, name="bdSeq").long_value
+
+
+def do_states(p):
+    """{n: bool} of the DO/n metrics of an NBIRTH (by name) or NDATA (by alias)."""
+    out = {}
+    for n in range(1, 9):
+        m = metric(p, name=f"DO/{n}") or metric(p, alias=20 + n - 1)
+        if m is not None and not m.is_null:
+            out[n] = m.boolean_value
+    return out
+
+
+def set_do(obs, ncmd_t, ndata_t, states):
+    """NCMD DO/n = v for every {n: v}; the NDATA that confirms them (or None)."""
+    obs.drain()
+    obs.publish_cmd(ncmd_t, [{"name": f"DO/{n}", "datatype": 11, "boolean_value": v}
+                             for n, v in states.items()])
+    return obs.wait(ndata_t, 3, lambda q: all(do_states(q).get(n) == v for n, v in states.items()))
 
 
 # ---------------------------------------------------------------- QEMU
@@ -1689,6 +1707,16 @@ def run(args, log, slave, broker, conf, work):
         return nb and nb[2].seq == 0 and sorted(m[2].seq for m in dbs.values()) == [1, 2] \
             and all(m[0] >= nb[0] for m in dbs.values())
 
+    # IO-3 safe state at a restart: DO/2 "on", DO/1 and DO/3 "off", DO/4 "hold" (power-up: off)
+    nb0 = [m for m in CAPTURE if m[1] == nbirth_t and m[0] >= t0][:1]
+    boot_dos = do_states(nb0[0][2]) if nb0 else {}
+    check("IO-3 restart state per output: do_failsafe 'on' outputs on once the configuration is "
+          "valid, 'off' and (after a power-up) 'hold' outputs off",
+          boot_dos.get(2) is True and not any(boot_dos.get(n) for n in (1, 3, 4, 5, 6, 7, 8)),
+          f"NBIRTH DO states {boot_dos}; {(gw.find(r'io: DO at restart', t0) or ['no log'])[0]}")
+    # Before the outage: DO/2 off, DO/3 on (3b) and DO/4 on by NCMD
+    pre = set_do(obs, ncmd_t, ndata_t, {2: False, 3: True, 4: True})
+
     # MQTT-2 broker restart: the broker publishes the session's will (NDEATH) while shutting
     # down; the gateway retries with exponential backoff and a new bdSeq per attempt, and the
     # new session starts with NBIRTH and every DBIRTH.
@@ -1716,6 +1744,20 @@ def run(args, log, slave, broker, conf, work):
     check("SPB-3 bdSeq incremented on every connection attempt",
           nb and b1 == (b0 + len(attempts) + 1) % 256,
           f"first session bdSeq={b0}, attempts while down={len(attempts)}, new NBIRTH bdSeq={b1}")
+    # IO-3: 9 s without a session > failsafe_s (5 s): DO/2 on, DO/1 and DO/3 off, DO/4 holds
+    lost = gw.wait_log(r"edge: MQTT down; reconnect attempt 1 in", 0, since)
+    # DO/1, DO/3 and DO/5-8 (absent from do_failsafe) are "off", DO/2 "on", DO/4 "hold"
+    trip = gw.wait_log(r"io: failsafe: no Sparkplug session for 5 s: DO on 0x02, off 0xf5, the rest "
+                       r"hold", 0, since)
+    dos = do_states(nb[2]) if nb else {}
+    clear = gw.wait_log(r"io: failsafe: Sparkplug session back", 5, since)
+    check("IO-3 failsafe: after failsafe_s (5 s) without a Sparkplug session each DO takes its safe "
+          "state (on / off; 'hold' keeps it); the next NBIRTH shows it and the outputs stay so",
+          pre and lost and trip and 4.5 <= trip - lost <= 6.5 and clear
+          and dos == {1: False, 2: True, 3: False, 4: True, 5: False, 6: False, 7: False, 8: False},
+          f"before {do_states(pre[2]) if pre else 'no NDATA'}; trip {trip - lost:.1f} s after the loss; "
+          f"NBIRTH after the outage {dos}" if lost and trip else
+          f"loss logged {bool(lost)}, trip logged {bool(trip)}: {gw.find(r'failsafe', since)[:2]}")
     check("Broker restart: NDEATH (will, session bdSeq) at shutdown, then NBIRTH (new bdSeq, "
           "seq 0) and every DBIRTH",
           will and bdseq_of(will[2]) == b0 and b1 != b0 and births_ok(nb, dbs),
@@ -1780,6 +1822,12 @@ def run(args, log, slave, broker, conf, work):
     check("SPB-3 bdSeq persisted across reboot (NVS)", nb and b2 == (b1 + 1) % 256,
           f"after power cycle NBIRTH bdSeq={b2}, previous {b1}")
 
+    # IO-3 'hold' across a software restart: the expander keeps its latch (the QEMU model keeps
+    # its registers in RTC memory like the chip); DO/4 must come back on, DO/2 ('on') too.
+    cold = do_states(nb[2]) if nb else {}
+    held = set_do(obs, ncmd_t, ndata_t, {4: True})
+    since_reboot = time.monotonic()
+
     # SPB-2 orderly disconnect: NCMD Reboot -> explicit NDEATH, then reboot
     obs.drain()
     obs.publish_cmd(ncmd_t, [{"name": "Node Control/Reboot", "datatype": 11, "boolean_value": True}])
@@ -1795,6 +1843,14 @@ def run(args, log, slave, broker, conf, work):
           f"NDEATH bdSeq={bdseq_of(nd[2]) if nd else None} sent by the node={explicit}, "
           f"NDEATHs with that bdSeq={len(deaths)} (will discarded if 1), "
           f"NBIRTH after reboot bdSeq={bdseq_of(nb[2]) if nb else None}")
+    warm = do_states(nb[2]) if nb else {}
+    check("IO-3 'hold' output kept across a software restart (TCA9554 latch read back before the "
+          "configuration), off after a power cycle; 'on' output on after both",
+          cold.get(4) is False and cold.get(2) is True and held and warm.get(4) is True
+          and warm.get(2) is True and warm.get(3) is False
+          and gw.find(r"io: DO active-low mask 0x\w+: held across the restart 0x08 of 0x08", since_reboot),
+          f"after the power cycle {cold}; after NCMD Reboot {warm}; "
+          f"{(gw.find(r'io: DO active-low mask', since_reboot) or ['no log'])[0]}")
     reason1 = metric(nb[2], name="Node Info/Reset Reason") if nb else None
     check("REL-5 NBIRTH 'Node Info/Reset Reason': power-on at first boot, software after NCMD Reboot",
           reason0 and reason1 and reason0.string_value == "power-on"

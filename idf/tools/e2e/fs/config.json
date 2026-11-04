@@ -27,7 +27,14 @@
     "inter_frame_delay_ms": 5
   },
   "local_io": {
-    "di_debounce_ms": 20
+    "di_debounce_ms": 20,
+    "failsafe_s": 5,
+    "do_failsafe": [
+      "off",
+      "on",
+      "off",
+      "hold"
+    ]
   },
   "devices": [
     {

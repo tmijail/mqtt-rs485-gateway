@@ -40,6 +40,8 @@ extern "C" {
 #define GW_CFG_BUILD_DEFAULT (-1)   /* optional key absent: the build-time default applies */
 #define GW_MAX_GAP_LIMIT 1999       /* a block never spans more than 2000 bits */
 #define GW_MBTCP_MAX_ALLOWED 8      /* MB-15: entries of modbus_tcp.allowed_clients */
+#define GW_LOCAL_IO_CHANNELS 8      /* DI/1..8 and DO/1..8 */
+#define GW_FAILSAFE_MAX_S 86400     /* IO-3: local_io.failsafe_s */
 
 typedef enum {
     GW_AREA_COIL = 0,
@@ -69,6 +71,13 @@ typedef enum {
     GW_WORD_BADC,       /* BADC: most significant word first, bytes swapped in each register */
     GW_WORD_DCBA,       /* DCBA: fully little-endian */
 } gw_word_order_t;
+
+/* IO-3: state of a DO at a restart and after local_io.failsafe_s without a Sparkplug session. */
+typedef enum {
+    GW_DO_SAFE_OFF = 0,   /* default */
+    GW_DO_SAFE_ON,
+    GW_DO_SAFE_HOLD,      /* keep the state it had (the expander's latch across a restart) */
+} gw_do_safe_t;
 
 typedef enum {
     GW_PARITY_NONE = 0,
@@ -186,6 +195,9 @@ typedef struct {
     } rs485;
     struct {
         uint16_t di_debounce_ms;
+        uint32_t failsafe_s;     /* IO-3: seconds without a Sparkplug session before the DOs
+                                  * take their safe state; 0 = no reaction to an MQTT loss */
+        uint8_t do_failsafe[GW_LOCAL_IO_CHANNELS];   /* gw_do_safe_t of DO/1..8 */
     } local_io;
     struct {                     /* REL-4; disabled when host is empty */
         char host[GW_HOST_SIZE];

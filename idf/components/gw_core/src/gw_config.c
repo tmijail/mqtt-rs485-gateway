@@ -679,18 +679,49 @@ static bool parse_rs485(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 
 static bool parse_local_io(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"di_debounce_ms"};
+    static const char *const keys[] = {"di_debounce_ms", "failsafe_s", "do_failsafe"};
+    static const char *const safe_names[] = {"off", "on", "hold"};   /* gw_do_safe_t order */
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "local_io");
     static const cJSON empty = {.type = cJSON_Object};
-    long db;
+    long db, fs;
     if (o == NULL) {
         o = &empty;
     }
-    if (!check_keys(o, "local_io", keys, 1, err) ||
-        !get_int(o, "di_debounce_ms", "local_io", false, 20, 0, 1000, &db, err)) {
+    if (!check_keys(o, "local_io", keys, sizeof(keys) / sizeof(keys[0]), err) ||
+        !get_int(o, "di_debounce_ms", "local_io", false, 20, 0, 1000, &db, err) ||
+        !get_int(o, "failsafe_s", "local_io", false, 0, 0, GW_FAILSAFE_MAX_S, &fs, err)) {
         return false;
     }
     cfg->local_io.di_debounce_ms = (uint16_t)db;
+    cfg->local_io.failsafe_s = (uint32_t)fs;
+    /* IO-3: one safe state per DO, in order (DO/1 first); missing entries are "off" */
+    const cJSON *list = cJSON_GetObjectItemCaseSensitive(o, "do_failsafe");
+    if (list == NULL) {
+        return true;
+    }
+    if (!cJSON_IsArray(list)) {
+        return fail(err, "local_io.do_failsafe", "se esperaba un array (DO/1 primero)");
+    }
+    int n = cJSON_GetArraySize(list);
+    if (n > GW_LOCAL_IO_CHANNELS) {
+        return fail(err, "local_io.do_failsafe", "%d entradas; hay %d salidas", n,
+                    GW_LOCAL_IO_CHANNELS);
+    }
+    int i = 0;
+    for (const cJSON *it = list->child; it != NULL; it = it->next, i++) {
+        char p[40];
+        snprintf(p, sizeof(p), "local_io.do_failsafe[%d]", i);
+        int mode = -1;
+        for (int k = 0; cJSON_IsString(it) && k < 3; k++) {
+            if (strcmp(it->valuestring, safe_names[k]) == 0) {
+                mode = k;
+            }
+        }
+        if (mode < 0) {
+            return fail(err, p, "valor no válido (se esperaba off|on|hold)");
+        }
+        cfg->local_io.do_failsafe[i] = (uint8_t)mode;
+    }
     return true;
 }
 

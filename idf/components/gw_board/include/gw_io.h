@@ -1,6 +1,12 @@
 /* Local I/O: 8 debounced digital inputs (IO-1) and 8 digital outputs on the
- * TCA9554 I2C expander (IO-2). Pins and active levels come from gw_bsp; the
- * states published through gw_tagdb are logical (1 = input asserted / output on). */
+ * TCA9554 I2C expander (IO-2) with their safe state (IO-3). Pins and active levels come
+ * from gw_bsp; the states published through gw_tagdb are logical (1 = input asserted /
+ * output on).
+ *
+ * Single owner of the expander: before the configuration is loaded, app_main sets the
+ * outputs up (gw_io_outputs_boot, gw_io_outputs_all_off); from gw_io_start() on, only the
+ * local_io task writes them: DO commands (gw_io_set_do, from the Sparkplug task), the safe
+ * state and the retries of an expander that does not answer. */
 #pragma once
 
 #include <stdbool.h>
@@ -15,30 +21,29 @@ extern "C" {
 #endif
 
 /**
- * Switch every DO off: the latch is loaded with each channel's OFF level before the pins
- * become outputs, so there is no glitch (see gw_dout.h). Needs no configuration and runs
- * before it is loaded, so a rejected configuration never leaves an output energised from
- * before a warm reset (the TCA9554 keeps its latch across an ESP32 reset).
+ * First step of a restart, before the configuration is loaded: every DO off, except the
+ * outputs of @p hold (IO-3 "hold" of the last valid configuration, kept in NVS) whose pin
+ * the expander still drives from before a warm reset: they keep their state. The latch is
+ * loaded before the pins become outputs, so there is no glitch (see gw_dout.h).
  * Returns the error if the expander does not answer: the DOs are then unknown (null in
- * gw_tagdb), DO commands are refused and gw_io_outputs_recover() retries.
+ * gw_tagdb), DO commands are refused and the local_io task retries with a backoff.
  */
-esp_err_t gw_io_outputs_off(void);
+esp_err_t gw_io_outputs_boot(uint8_t hold);
+
+/** No valid configuration (recovery, commissioning): held outputs are switched off too. */
+void gw_io_outputs_all_off(void);
 
 /**
- * If gw_io_outputs_off() could not reach the expander, retry it with a backoff (1 s doubling
- * to 60 s). Returns true when the outputs just became available (all off, state in gw_tagdb):
- * the caller republishes the DOs. Called periodically by the DO owner (Sparkplug task).
+ * With a valid configuration: put the DOs in their restart state (do_failsafe "on" / "off",
+ * "hold" kept), start the local_io task and the DI sampling every CONFIG_GW_DI_SAMPLE_US
+ * with the configured debounce. @p on_change is called whenever a debounced DI or a DO
+ * changed (from the esp_timer task or the local_io task).
  */
-bool gw_io_outputs_recover(void);
+esp_err_t gw_io_start(const gw_config_t *cfg, void (*on_change)(void));
 
-/**
- * Start sampling the DIs every CONFIG_GW_DI_SAMPLE_US with the configured debounce.
- * @p on_change is called from the esp_timer task whenever a debounced DI changes.
- */
-esp_err_t gw_io_start_inputs(const gw_config_t *cfg, void (*on_change)(void));
-
-/** Switch DO @p index (0-7) on or off and store the read-back state in gw_tagdb. Single caller.
- *  Returns false (and changes nothing) if gw_io_outputs_off() could not reach the expander. */
+/** Switch DO @p index (0-7) on or off through the local_io task and wait for it (at most
+ *  500 ms). The read-back state is in gw_tagdb. Single caller (the Sparkplug task).
+ *  Returns false (and changes nothing) if the expander is not available. */
 bool gw_io_set_do(uint8_t index, bool on);
 
 #if CONFIG_GW_IO_SIMULATED
