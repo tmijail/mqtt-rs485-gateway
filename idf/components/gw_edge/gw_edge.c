@@ -27,6 +27,7 @@ static const char *TAG = "edge";
 #define MAX_IDLE_MS      1000
 #define NET_TIMEOUT_MS   5000   /* esp-mqtt socket timeout (one socket write) */
 #define REBOOT_DELAY_MS  100    /* let the log drain */
+#define QUIESCE_MS       3000   /* longest wait for the bus task to finish its transaction */
 #define STABLE_MAX_MS    60000  /* a session is stable after one keepalive period, at most this */
 #define SUBACK_TIMEOUT_MS 5000  /* NBIRTH waits this long at most for the SUBACK */
 #define STR_(x) #x
@@ -57,6 +58,8 @@ static atomic_uint s_disc_gen;
 static atomic_uint s_dev_dirty;
 static atomic_int s_suback;     /* msg_id of the last SUBACK, negated if a topic was refused */
 static atomic_uint s_route_gen;
+static atomic_bool s_restart_req;
+static atomic_bool s_rebirth_req;
 
 /* ---- queues and buffers (static, REL-2 / MQTT-7) ---- */
 static QueueHandle_t s_q;
@@ -144,6 +147,22 @@ void gw_edge_notify_write_done(uint16_t tag, bool ok)
     if (xQueueSend(s_q, &ev, pdMS_TO_TICKS(50)) != pdTRUE) {
         ESP_LOGW(TAG, "write confirmation for tag %u dropped (queue full)", tag);
     }
+}
+
+void gw_edge_request_restart(void)
+{
+    atomic_store(&s_restart_req, true);
+    wake();
+}
+
+bool gw_edge_request_rebirth(void)
+{
+    if (!atomic_load(&s_mqtt_connected)) {
+        return false;
+    }
+    atomic_store(&s_rebirth_req, true);
+    wake();
+    return true;
 }
 
 /* ---------- esp-mqtt glue (runs in the MQTT task) ---------- */
@@ -263,6 +282,8 @@ static void op_reboot(void *ctx)
     /* Orderly shutdown: NDEATH was just published; stop() sends DISCONNECT synchronously so
      * the broker discards the will instead of publishing a second NDEATH. */
     esp_mqtt_client_stop(s_client);
+    /* No Modbus frame cut by the restart (bounded by the slowest transaction with retries). */
+    gw_bus_quiesce(QUIESCE_MS);
     vTaskDelay(pdMS_TO_TICKS(REBOOT_DELAY_MS));
     esp_restart();
 }
@@ -408,10 +429,27 @@ static void move_session(void)
     s_sub_msg_id = 0;
 }
 
+/* Requested restart: the same orderly end as NCMD Reboot (explicit NDEATH, DISCONNECT). */
+static void restart_now(void)
+{
+    ESP_LOGW(TAG, "restart requested%s", s_node->online ? ": publishing NDEATH" : "");
+    if (s_node->online) {
+        esp_mqtt_client_publish(s_client, s_death_topic, (const char *)s_will,
+                                s_mqtt_cfg.session.last_will.msg_len, 1, false);
+        op_reboot(NULL);
+    }
+    gw_bus_quiesce(QUIESCE_MS);
+    vTaskDelay(pdMS_TO_TICKS(REBOOT_DELAY_MS));
+    esp_restart();
+}
+
 /* Bring the Sparkplug state in line with the flags set by the other tasks. */
 static void reconcile(void)
 {
     int64_t now = esp_timer_get_time();
+    if (atomic_load(&s_restart_req)) {
+        restart_now();
+    }
     bool ip = atomic_load(&s_ip_up);
     /* The MQTT task stores the flag before it bumps a generation, so the generations must be
      * read before the flag: then a generation is only ever consumed with a flag at least as
@@ -493,6 +531,10 @@ static void reconcile(void)
         /* Births went out before SNTP: re-issue them so hosts get valid timestamps. */
         s_births_timed = true;
         ESP_LOGI(TAG, "clock now synchronised: rebirth");
+        gw_node_rebirth(s_node);
+    }
+    if (atomic_exchange(&s_rebirth_req, false) && s_node->online) {
+        ESP_LOGI(TAG, "rebirth requested from the console");
         gw_node_rebirth(s_node);
     }
     if (s_node->online) {

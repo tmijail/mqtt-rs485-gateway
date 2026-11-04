@@ -69,8 +69,12 @@ typedef struct {
     } status_led;
     struct {
         gpio_num_t gpio;
-        bool passive;                          /* needs a PWM tone; not used by the MVP */
+        bool passive;                          /* needs a PWM tone (factory reset beeps) */
     } buzzer;
+    struct {
+        gpio_num_t gpio;                       /* CFG-5 factory reset, NET-5 access point */
+        bool active_low;
+    } boot_button;
 } gw_bsp_t;
 
 extern const gw_bsp_t gw_bsp;

@@ -37,4 +37,6 @@ const gw_bsp_t gw_bsp = {
     /* The demo swaps the arguments of neopixelWrite(): the LED takes R, G, B. */
     .status_led = {.gpio = GPIO_NUM_38, .order = GW_BSP_LED_ORDER_RGB},
     .buzzer = {.gpio = GPIO_NUM_46, .passive = true},
+    /* BOOT, a strapping pin: pulled up on the board, low while pressed; read only after boot */
+    .boot_button = {.gpio = GPIO_NUM_0, .active_low = true},
 };
