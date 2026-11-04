@@ -338,6 +338,26 @@ static void test_tls_section(void)
     ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":true"), "mqtt.tls: se esperaba un objeto JSON");
 }
 
+/* MQTT-5: client certificate and key (mutual TLS), both or neither. */
+static void test_tls_client_certificate(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\",\"tls\":{\"enabled\":true}"), err.msg);
+    TEST_ASSERT_EQUAL_STRING("", cfg.mqtt.tls.cert_file);
+    TEST_ASSERT_EQUAL_STRING("", cfg.mqtt.tls.key_file);
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\",\"tls\":{\"enabled\":true,"
+                                        "\"cert_file\":\"gw01.crt\",\"key_file\":\"gw01.key\"}"),
+                             err.msg);
+    TEST_ASSERT_EQUAL_STRING("gw01.crt", cfg.mqtt.tls.cert_file);
+    TEST_ASSERT_EQUAL_STRING("gw01.key", cfg.mqtt.tls.key_file);
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":{\"enabled\":true,\"cert_file\":\"gw01.crt\"}"),
+                    "mqtt.tls.key_file: cert_file y key_file van juntos");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":{\"enabled\":true,\"key_file\":\"gw01.key\"}"),
+                    "mqtt.tls.cert_file: cert_file y key_file van juntos");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":{\"cert_file\":\"a/b.crt\","
+                               "\"key_file\":\"k\"}"),
+                    "mqtt.tls.cert_file: 'a/b.crt' no es un nombre de archivo válido");
+}
+
 /* CFG-3 / CFG-4: optional "web" section. */
 static void test_web_section(void)
 {
@@ -662,6 +682,7 @@ int main(void)
     RUN_TEST(test_ipv6_section);
     RUN_TEST(test_syslog_section);
     RUN_TEST(test_tls_section);
+    RUN_TEST(test_tls_client_certificate);
     RUN_TEST(test_web_section);
     RUN_TEST(test_hostname);
     RUN_TEST(test_error_fields);

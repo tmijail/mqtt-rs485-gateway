@@ -394,9 +394,10 @@ static int cmd_config(int argc, char **argv)
            c->mqtt.username[0] ? c->mqtt.username : "(none)");
     const gw_tls_cfg_t *tls = &c->mqtt.tls;
     if (tls->enabled) {
-        out("tls        CA %s%s, name checked against %s\n",
+        out("tls        CA %s%s, name checked against %s, client certificate %s%s\n",
             tls->ca_file[0] ? "/cfg/" : "ESP-IDF root bundle", tls->ca_file,
-            tls->server_name[0] ? tls->server_name : "the broker host");
+            tls->server_name[0] ? tls->server_name : "the broker host",
+            tls->cert_file[0] ? "/cfg/" : "none", tls->cert_file);
     } else {
         out("tls        off (plain TCP)\n");
     }

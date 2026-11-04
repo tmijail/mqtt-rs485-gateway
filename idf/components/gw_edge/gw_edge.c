@@ -20,6 +20,7 @@
 #include "gw_status.h"
 #include "gw_storage.h"
 #include "lwip/sockets.h"
+#include "mbedtls/pk.h"
 #include "mbedtls/x509_crt.h"
 #include "mqtt_client.h"
 #include "psa/crypto.h"
@@ -102,6 +103,8 @@ static uint32_t s_max_unfed_ms; /* longest stretch without feeding since the las
 static unsigned s_handled_route;
 static struct ifreq s_ifr;      /* interface the client is bound to (NET-4, two interfaces only) */
 static char *s_ca_pem;          /* MQTT-4: CA file, boot allocation (PSRAM if any), never freed */
+static char *s_cert_pem;        /* MQTT-5: client certificate and key, the same way */
+static char *s_key_pem;
 static char s_tls_error[200];   /* why the TLS settings cannot work: no connection is attempted */
 static int64_t s_tls_logged_us;
 static bool s_waiting_time_logged;
@@ -691,6 +694,31 @@ static char *load_pem_certs(const char *name, const char *key)
     return pem;
 }
 
+/* MQTT-5: the client's private key, checked now like the certificates. */
+static char *load_pem_key(const char *name)
+{
+    size_t len;
+    char why[120];
+    char *pem = gw_storage_read_file(name, &len, why, sizeof(why));
+    if (pem == NULL) {
+        snprintf(s_tls_error, sizeof(s_tls_error), "mqtt.tls.key_file: %s", why);
+        return NULL;
+    }
+    mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+    int r = mbedtls_pk_parse_key(&pk, (const unsigned char *)pem, len + 1, NULL, 0);
+    mbedtls_pk_free(&pk);
+    if (r != 0) {
+        snprintf(s_tls_error, sizeof(s_tls_error),
+                 "mqtt.tls.key_file: /cfg/%s is not an unencrypted PEM private key (mbedTLS -0x%04x)",
+                 name, (unsigned)-r);
+        gw_storage_free(pem);
+        return NULL;
+    }
+    ESP_LOGI(TAG, "TLS: client key from /cfg/%s", name);
+    return pem;
+}
+
 /* MQTT-4: TLS 1.2/1.3 with the broker certificate verified against the CA file (or the
  * ESP-IDF bundle of public roots) and its name against the host (or tls.server_name). The
  * PEM buffers are referenced, not copied, by esp-mqtt: they live for the whole run. */
@@ -707,6 +735,13 @@ static void setup_tls(const gw_tls_cfg_t *tls)
     }
     /* Never skip_cert_common_name_check: the name is always verified (MQTT-4). */
     m->broker.verification.common_name = tls->server_name[0] ? tls->server_name : NULL;
+    if (tls->cert_file[0] != '\0' && s_tls_error[0] == '\0') {
+        /* MQTT-5: mutual TLS; the broker checks this certificate against its own CA */
+        s_cert_pem = load_pem_certs(tls->cert_file, "cert_file");
+        s_key_pem = s_cert_pem != NULL ? load_pem_key(tls->key_file) : NULL;
+        m->credentials.authentication.certificate = s_cert_pem;
+        m->credentials.authentication.key = s_key_pem;
+    }
 }
 
 esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)

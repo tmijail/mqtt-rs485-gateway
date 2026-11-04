@@ -108,6 +108,8 @@ typedef struct {
     bool enabled;
     char ca_file[GW_FILE_SIZE];       /* "" = the ESP-IDF bundle of public root CAs */
     char server_name[GW_HOST_SIZE];   /* name the broker certificate must carry; "" = its host */
+    char cert_file[GW_FILE_SIZE];     /* MQTT-5: client certificate (mutual TLS); "" = none */
+    char key_file[GW_FILE_SIZE];      /* its private key (PEM, unencrypted); with cert_file */
 } gw_tls_cfg_t;
 
 typedef struct {

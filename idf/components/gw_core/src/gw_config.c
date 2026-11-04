@@ -628,18 +628,25 @@ static bool get_file_name(const cJSON *o, const char *key, const char *path, cha
 /* MQTT-4 / MQTT-5 */
 static bool parse_tls(const cJSON *mqtt, gw_tls_cfg_t *t, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"enabled", "ca_file", "server_name"};
+    static const char *const keys[] = {"enabled", "ca_file", "server_name", "cert_file",
+                                       "key_file"};
     static const cJSON empty = {.type = cJSON_Object};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(mqtt, "tls");
     if (o == NULL) {
         o = &empty;
     }
-    if (!check_keys(o, "mqtt.tls", keys, 3, err) ||
+    if (!check_keys(o, "mqtt.tls", keys, 5, err) ||
         !get_bool(o, "enabled", "mqtt.tls", false, &t->enabled, err) ||
         !get_file_name(o, "ca_file", "mqtt.tls", t->ca_file, err) ||
         !get_string(o, "server_name", "mqtt.tls", false, "", t->server_name,
-                    sizeof(t->server_name), err)) {
+                    sizeof(t->server_name), err) ||
+        !get_file_name(o, "cert_file", "mqtt.tls", t->cert_file, err) ||
+        !get_file_name(o, "key_file", "mqtt.tls", t->key_file, err)) {
         return false;
+    }
+    if ((t->cert_file[0] == '\0') != (t->key_file[0] == '\0')) {
+        return fail(err, t->cert_file[0] ? "mqtt.tls.key_file" : "mqtt.tls.cert_file",
+                    "cert_file y key_file van juntos (TLS mutuo)");
     }
     return true;
 }

@@ -616,6 +616,10 @@ def run_tls(args, work):
     authentication), TLS 1.2 only with client certificates required (mutual TLS), and plain TCP
     for the observer. Separate boots with their own edge node ids:
       GW12  CA file in LittleFS, name checked against the IP literal (SAN IP:10.0.2.2), TLS 1.3
+      GW13  mutual TLS (MQTT-5): client certificate and key from LittleFS, TLS 1.2, the broker name
+            checked against tls.server_name (SAN DNS:broker.e2e); mosquitto takes the certificate's
+            CN as the user name
+      GW16  the same listener without a client certificate -> refused by the broker
       GW14  tls.server_name that the certificate does not carry -> rejected, never connects
       GW15  ca_file that does not exist -> reported, no connection attempted"""
     pki = make_pki(work)
@@ -647,7 +651,8 @@ def run_tls(args, work):
     attempt = gw.find(r"connecting to 10\.0\.2\.2:%d \(TLS\) as 'GW12'" % p13, t0)
     gw.wait_log(r"stack free \(high-water mark\)", 5, t0)
     stacks = gw.find(r"stack free \(high-water mark\)", t0)
-    asked, h = gw.shell("config", [r"^tls\s+CA /cfg/ca\.pem, name checked against the broker host"])
+    asked, h = gw.shell("config", [r"^tls\s+CA /cfg/ca\.pem, name checked against the broker host, "
+                                   r"client certificate none"])
     shown = list(h.values())[0]
     connected = re.search(r"New client connected from \S+ as GW12 ", blog.read_text())
     gw.kill()
@@ -658,6 +663,41 @@ def run_tls(args, work):
           f"NBIRTH {f'{nb[0] - t0:.1f} s after boot' if nb else 'missing'}; "
           f"{(loaded or ['CA not loaded'])[0]}; {(stacks or ['no stack log'])[0]}; "
           + " | ".join(gw.find(r"^tls\s", asked)))
+
+    # GW13: mutual TLS (MQTT-5) on the TLS-1.2-only listener that requires a client certificate
+    node = "GW13"
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "mtls", node_config(node, port=pm, tls={
+        "enabled": True, "ca_file": "ca.pem", "server_name": "broker.e2e",
+        "cert_file": "gw13.crt", "key_file": "gw13.key"}),
+        {"ca.pem": ca, "gw13.crt": pki["client.crt"].read_bytes(),
+         "gw13.key": pki["client.key"].read_bytes()})
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 60)
+    loaded = gw.find(r"TLS: (cert_file: 1 certificate\(s\) from /cfg/gw13\.crt|client key from "
+                     r"/cfg/gw13\.key)", t0)
+    identity = re.search(r"New client connected from \S+ as GW13 \(p\d, c1, k\d+, u'GW13'\)",
+                         blog.read_text())
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node}", 5)
+    check("MQTT-5 mutual TLS (TLS 1.2 listener requiring a client certificate): certificate and key "
+          "from LittleFS, broker name checked against tls.server_name; the broker sees the "
+          "certificate's identity",
+          nb and len(loaded) == 2 and identity,
+          f"NBIRTH {'yes' if nb else 'no'}; {' | '.join(loaded)}; mosquitto: "
+          f"{identity.group(0) if identity else 'no connection with user GW13'}")
+
+    # GW16: the same listener without a client certificate: the broker refuses the handshake
+    node = "GW16"
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "mtlsnocert", node_config(node, port=pm, tls={
+        "enabled": True, "ca_file": "ca.pem", "server_name": "broker.e2e"}), {"ca.pem": ca})
+    failed = gw.wait_log(r"TLS: (TLS handshake failed|the broker certificate)", 40, t0)
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 3)
+    gw.kill()
+    check("MQTT-5 a broker that requires a client certificate refuses a gateway without one",
+          failed and not nb and not re.search(r"as GW16 ", blog.read_text()),
+          (gw.find(r"TLS: (TLS handshake failed|the broker certificate)", t0)
+           or ["no TLS error logged"])[0])
 
     # GW14: the certificate does not carry tls.server_name -> the handshake fails, no session
     node = "GW14"
