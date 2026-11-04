@@ -457,7 +457,12 @@ def main():
     args.flash = str(flash_variant(args, work, "main", {"config.json": config_json()}))
 
     conf = work / "broker.conf"
-    conf.write_text(f"listener {MQTT_PORT} 127.0.0.1\nallow_anonymous true\n")
+    # Second listener (MQTT_PORT + 2) with an ACL that refuses the NCMD subscription (issue #11).
+    acl = work / "broker.acl"
+    acl.write_text(f"topic write spBv1.0/#\ntopic read {T}/DCMD/#\n")
+    conf.write_text(f"per_listener_settings true\n"
+                    f"listener {MQTT_PORT} 127.0.0.1\nallow_anonymous true\n"
+                    f"listener {MQTT_PORT + 2} 127.0.0.1\nallow_anonymous true\nacl_file {acl}\n")
     broker = start_broker(conf, work / "mosquitto.log")
     stop = threading.Event()
     threading.Thread(target=sntp_responder, args=(stop,), daemon=True).start()
@@ -851,10 +856,28 @@ def run(args, log, slave, broker, conf, work):
           f"first boot {reason0.string_value if reason0 else None!r}, after reboot "
           f"{reason1.string_value if reason1 else None!r}")
 
+    # Issue #11: a broker that refuses the NCMD subscription (ACL, SUBACK 0x80). The node must
+    # not announce itself (no NBIRTH: it could not receive commands); it disconnects and
+    # retries with a growing backoff.
+    gw.kill()
+    gw = Gateway(args, work / "uart0-acl.log",
+                 flash_variant(args, work, "acl", {"config.json": config_json(MQTT_PORT + 2)}))
+    obs.drain()
+    t_acl = time.monotonic()
+    gw.start()
+    gw.wait_log(r"reconnect attempt 3 in", 40, t_acl)
+    refused = gw.find(r"refused the NCMD/DCMD subscriptions", t_acl)
+    delays = [int(x) for x in re.findall(r"in (\d+) ms", " ".join(gw.find(r"reconnect attempt", t_acl)))]
+    births = [m for m in CAPTURE if m[0] >= t_acl and m[1] == nbirth_t]
+    gw.kill()
+    check("MQTT-2 / issue #11 SUBACK refused -> no NBIRTH, disconnect and retry with growing backoff",
+          len(refused) >= 3 and not births and len(delays) >= 3 and delays[2] > delays[0],
+          f"{len(refused)} refusals logged, NBIRTHs {len(births)}, delays {delays} ms; "
+          f"{(refused or ['no refusal logged'])[0]}")
+
     # Issue #5: a broker that accepts the connection and drops it right after the CONNACK.
     # The backoff must keep growing (1, 2, 4, 8 s, -25 % jitter): it is reset only after a
     # stable session, not on every CONNACK.
-    gw.kill()
     cutter = ConnackCutter(MQTT_PORT + 1, MQTT_PORT)
     gw = Gateway(args, work / "uart0-cutter.log",
                  flash_variant(args, work, "cutter", {"config.json": config_json(MQTT_PORT + 1)}))

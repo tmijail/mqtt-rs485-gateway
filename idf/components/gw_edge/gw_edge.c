@@ -26,6 +26,9 @@ static const char *TAG = "edge";
 #define NET_TIMEOUT_MS   5000   /* esp-mqtt socket timeout (one socket write) */
 #define REBOOT_DELAY_MS  100    /* let the log drain */
 #define STABLE_MAX_MS    60000  /* a session is stable after one keepalive period, at most this */
+#define SUBACK_TIMEOUT_MS 5000  /* NBIRTH waits this long at most for the SUBACK */
+#define STR_(x) #x
+#define STR(x)  STR_(x)
 
 enum { EV_WAKE = 0, EV_CMD, EV_WRITE_DONE };
 
@@ -50,6 +53,7 @@ static atomic_bool s_io_dirty;
 static atomic_uint s_conn_gen;
 static atomic_uint s_disc_gen;
 static atomic_uint s_dev_dirty;
+static atomic_int s_suback;     /* msg_id of the last SUBACK, negated if a topic was refused */
 
 /* ---- queues and buffers (static, REL-2 / MQTT-7) ---- */
 static QueueHandle_t s_q;
@@ -78,6 +82,8 @@ static int64_t s_ip_since_us;
 static uint32_t s_attempt;      /* failed attempts since the last stable session (backoff) */
 static int64_t s_retry_at_us;   /* 0: no reconnect scheduled */
 static int64_t s_session_up_us; /* when the current session's NBIRTH went out */
+static int s_sub_msg_id;        /* > 0: SUBSCRIBE sent, NBIRTH waits for its SUBACK */
+static int64_t s_sub_deadline_us;
 static unsigned s_handled_conn;
 static unsigned s_handled_disc;
 static bool s_births_timed;     /* the current session's births carried synchronised time */
@@ -173,6 +179,12 @@ static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *da
     case MQTT_EVENT_DISCONNECTED:
         atomic_store(&s_mqtt_connected, false);
         atomic_fetch_add(&s_disc_gen, 1);
+        wake();
+        break;
+    case MQTT_EVENT_SUBSCRIBED:
+        atomic_store(&s_suback, ev->error_handle->error_type == MQTT_ERROR_TYPE_SUBSCRIBE_FAILED
+                                    ? -ev->msg_id
+                                    : ev->msg_id);
         wake();
         break;
     case MQTT_EVENT_DATA:
@@ -294,10 +306,37 @@ static void reconnect(int64_t now)
     }
 }
 
+/* Close a session that cannot work; the DISCONNECTED event schedules the retry (backoff).
+ * DISCONNECT makes the broker drop the will: no NBIRTH went out, so no NDEATH is owed. */
+static void abort_session(const char *why)
+{
+    ESP_LOGW(TAG, "%s: closing the connection", why);
+    s_sub_msg_id = 0;
+    esp_mqtt_client_disconnect(s_client);
+}
+
+/* CONNACK received: subscribe to NCMD and DCMD; the births wait for the SUBACK (on_subscribed),
+ * so a node that is announced online always receives its commands. */
 static void on_connected(void)
 {
-    esp_mqtt_client_subscribe(s_client, s_ncmd_topic, 1);
-    esp_mqtt_client_subscribe(s_client, s_dcmd_topic, 1);
+    const esp_mqtt_topic_t topics[] = {
+        {.filter = s_ncmd_topic, .qos = 1},
+        {.filter = s_dcmd_topic, .qos = 1},
+    };
+    atomic_store(&s_suback, 0);
+    int id = esp_mqtt_client_subscribe_multiple(s_client, topics, 2);
+    feed_watchdog();
+    if (id < 0) {
+        abort_session("SUBSCRIBE to NCMD/DCMD could not be sent");
+        return;
+    }
+    s_sub_msg_id = id;
+    s_sub_deadline_us = esp_timer_get_time() + SUBACK_TIMEOUT_MS * 1000LL;
+}
+
+/* SUBACK received for both topics: the Sparkplug session starts (NBIRTH and DBIRTHs). */
+static void on_subscribed(void)
+{
     /* s_attempt is not reset here: a broker that accepts the connection and drops it at once
      * (ACL, duplicate client_id, connection limit) must still see the backoff grow. It is
      * reset once the session has stayed up for a while (reconcile). */
@@ -345,8 +384,22 @@ static void reconcile(void)
 
     if (cg != s_handled_conn) {
         s_handled_conn = cg;
+        s_sub_msg_id = 0;
         if (connected) {
             on_connected();
+        }
+    }
+    if (s_sub_msg_id > 0) {
+        int ack = atomic_load(&s_suback);
+        if (!connected) {
+            s_sub_msg_id = 0;
+        } else if (ack == s_sub_msg_id) {
+            s_sub_msg_id = 0;
+            on_subscribed();
+        } else if (ack == -s_sub_msg_id) {
+            abort_session("the broker refused the NCMD/DCMD subscriptions");
+        } else if (now >= s_sub_deadline_us) {
+            abort_session("no SUBACK for NCMD/DCMD within " STR(SUBACK_TIMEOUT_MS) " ms");
         }
     }
     if (s_node.online && connected && s_attempt != 0 &&
@@ -397,6 +450,10 @@ static TickType_t next_timeout(void)
 {
     int64_t ms = MAX_IDLE_MS;
     int64_t now = esp_timer_get_time();
+    if (s_sub_msg_id > 0) {
+        int64_t r = (s_sub_deadline_us - now) / 1000;
+        ms = r < ms ? r : ms;
+    }
     if (s_retry_at_us != 0) {
         int64_t r = (s_retry_at_us - now) / 1000;
         ms = r < ms ? r : ms;
