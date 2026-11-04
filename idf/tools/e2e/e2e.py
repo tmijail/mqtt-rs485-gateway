@@ -2151,7 +2151,26 @@ def run(args, log, slave, broker, conf, work):
     gw = Gateway(args, log)
     t0 = time.monotonic()
     gw.start()
+    # Issue #72: the shell starts first; a command sent as soon as it is there, before MQTT,
+    # the bus and the web server are up, gets an answer (sent once: nothing repeats it)
+    ready = gw.wait_log(r"shell: console ready", 30, t0)
+    early = time.monotonic()
+    gw.console("status")
+    answered = gw.wait_log(r"^firmware \S+, reset reason", 5, early)
+    gw.console("mbread 1 holding 10")
+    mb = gw.wait_log(r"^mbread: (not available yet: .* (is starting|is loading)|unit 1 holding 10: )", 5,
+                     early)
     nb = obs.wait(nbirth_t, 40)
+    later = [ln for ln in gw.find(r"edge: Sparkplug session up|web: HTTPS on port", t0)]
+    first_up = gw.wait_log(r"edge: Sparkplug session up", 0, t0)
+    check("Issue #72 the console shell answers a command sent right after it starts, before the "
+          "MQTT session and the web server (a command whose subsystem is not up says so)",
+          ready and answered and mb and first_up and answered < first_up,
+          f"shell ready {ready - t0:.2f} s after QEMU started, 'status' answered "
+          f"{answered - early:.2f} s later, first NBIRTH log {first_up - t0:.2f} s; "
+          f"{(gw.find(r'^mbread: ', early) or ['no mbread answer'])[0]}; {later[:2]}"
+          if ready and answered and first_up else
+          f"ready {ready}, answered {answered}; {gw.find(r'^config |^firmware ', t0)[:2]}")
     if not check("1a. NBIRTH published", nb, "no NBIRTH within 40 s" if not nb else
                  f"{nb[0] - t0:.1f} s after QEMU start (REL-6 asks < 10 s)"):
         return

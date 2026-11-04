@@ -70,16 +70,34 @@ static void on_device_updated(uint16_t dev)
 
 static void restart_soon(void);
 
-static void start_shell(const gw_config_t *cfg, const char *source)
+static bool s_shell_ok;
+
+/* Issue #72: the shell starts first thing, so whatever is typed during the boot gets an
+ * answer; commands that need a subsystem not running yet say so (gw_shell_mark_up). */
+static void start_shell_early(void)
+{
+    const gw_shell_ctx_t ctx = {.starting = true, .config_source = "", .config_error = "",
+                                .info = &s_info, .restart = restart_soon};
+    s_shell_ok = gw_shell_start(&ctx) == ESP_OK;
+    if (!s_shell_ok) {
+        ESP_LOGE(TAG, "console shell unavailable");
+    }
+}
+
+/* The shell's view of the gateway: the configuration (NULL if rejected), and whether the
+ * Sparkplug task runs (until then a restart needs no NDEATH). */
+static void start_shell(const gw_config_t *cfg, const char *source, bool running)
 {
     const gw_shell_ctx_t ctx = {.cfg = cfg,
+                                .starting = cfg != NULL && !running,
                                 .commissioning = s_mode == GW_WEB_COMMISSIONING,
                                 .config_source = source,
                                 .config_error = s_cfg_err.msg,
                                 .info = &s_info,
-                                .restart = cfg != NULL ? gw_edge_request_restart : restart_soon};
-    if (gw_shell_start(&ctx) != ESP_OK) {
-        ESP_LOGE(TAG, "console shell unavailable");
+                                .restart = cfg != NULL && running ? gw_edge_request_restart
+                                                                  : restart_soon};
+    if (s_shell_ok) {
+        gw_shell_set_ctx(&ctx);
     }
 }
 
@@ -143,7 +161,7 @@ static void halt_no_memory(void)
     snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg), "sin memoria para la configuración (%u B)",
              (unsigned)sizeof(gw_config_t));
     gw_status_set(GW_ST_CFG_ERROR, true);
-    start_shell(NULL, "RAM");
+    start_shell(NULL, "RAM", false);
     for (;;) {
         ESP_LOGE(TAG, "%s: nothing is started", s_cfg_err.msg);
         vTaskDelay(pdMS_TO_TICKS(10000));
@@ -195,7 +213,7 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
 {
     s_mode = mode;
     gw_status_set(mode == GW_WEB_COMMISSIONING ? GW_ST_COMMISSIONING : GW_ST_CFG_ERROR, true);
-    start_shell(NULL, source);
+    start_shell(NULL, source, false);
     gw_storage_recovery_config(s_cfg);
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -203,6 +221,8 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
         .ip_changed = net_down_noop, .route_changed = net_noop, .time_synced = net_noop};
     if (gw_net_start(s_cfg, &net_cb) != ESP_OK) {
         ESP_LOGE(TAG, "recovery network unavailable: only the console shell is left");
+    } else {
+        gw_shell_mark_up(GW_SHELL_UP_NET);
     }
     start_web(mode, s_cfg, source);
     s_source = source;
@@ -276,6 +296,7 @@ void app_main(void)
     if (gw_bootbtn_start(on_button) != ESP_OK) {
         ESP_LOGE(TAG, "BOOT button unavailable: no factory reset");
     }
+    start_shell_early();
 
     const char *source;
     s_cfg = gw_storage_big_alloc(sizeof(*s_cfg), "configuration");
@@ -291,6 +312,7 @@ void app_main(void)
         run_without_config(GW_WEB_RECOVERY, source);
     }
     gw_storage_save_last_good(s_cfg);
+    start_shell(s_cfg, source, false);
     ESP_LOGI(TAG, "configuration from %s: group '%s', node '%s', %u devices, %u tags", source,
              s_cfg->sparkplug.group_id, s_cfg->sparkplug.edge_node_id, s_cfg->device_count,
              s_cfg->tag_count);
@@ -299,8 +321,11 @@ void app_main(void)
         ESP_LOGE(TAG, "remote syslog unavailable");
     }
     ESP_ERROR_CHECK(gw_edge_start(s_cfg, &s_info));
+    gw_shell_mark_up(GW_SHELL_UP_EDGE);
     if (gw_io_start_inputs(s_cfg, gw_edge_notify_io) != ESP_OK) {
         ESP_LOGE(TAG, "digital inputs unavailable");
+    } else {
+        gw_shell_mark_up(GW_SHELL_UP_IO);
     }
 
     mb_transport_t tr;
@@ -310,6 +335,7 @@ void app_main(void)
         .write_done = gw_edge_notify_write_done,
     };
     ESP_ERROR_CHECK(gw_bus_start(s_cfg, &tr, &bus_cb));
+    gw_shell_mark_up(GW_SHELL_UP_BUS);
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -319,6 +345,7 @@ void app_main(void)
         .time_synced = gw_edge_notify_time_synced,
     };
     ESP_ERROR_CHECK(gw_net_start(s_cfg, &net_cb));
+    gw_shell_mark_up(GW_SHELL_UP_NET);
     if (gw_mbtcp_start(s_cfg) != ESP_OK) {   /* MB-15, only with modbus_tcp.enabled */
         ESP_LOGE(TAG, "Modbus TCP gateway unavailable");
     }
@@ -327,5 +354,5 @@ void app_main(void)
     }
     s_source = source;
     s_ready = true;
-    start_shell(s_cfg, source);
+    start_shell(s_cfg, source, true);
 }

@@ -32,6 +32,21 @@
 static const char *TAG = "shell";
 
 static gw_shell_ctx_t s_ctx;
+static SemaphoreHandle_t s_ctx_lock;   /* a command runs with the context it started with */
+static StaticSemaphore_t s_ctx_lock_buf;
+static volatile unsigned s_up;         /* GW_SHELL_UP_* */
+
+void gw_shell_mark_up(unsigned what)
+{
+    __atomic_fetch_or(&s_up, what, __ATOMIC_SEQ_CST);
+}
+
+void gw_shell_set_ctx(const gw_shell_ctx_t *ctx)
+{
+    xSemaphoreTake(s_ctx_lock, portMAX_DELAY);
+    s_ctx = *ctx;
+    xSemaphoreGive(s_ctx_lock);
+}
 static gw_tag_value_t s_vals[GW_MAX_TAGS_PER_DEVICE];   /* scratch for gw_tagdb_get_device */
 
 /* ---------- answers atomic with respect to the log (#56) ----------
@@ -129,12 +144,25 @@ static void out_raw(const char *data, size_t len)
 }
 
 /* Every command runs through here: its answer leaves in one piece when it returns. */
+/* Issue #72: commands typed while the gateway starts are answered, not lost: one whose
+ * subsystem is not running yet says so. */
+static bool up(unsigned what, const char *cmd, const char *name)
+{
+    if ((__atomic_load_n(&s_up, __ATOMIC_SEQ_CST) & what) == what) {
+        return true;
+    }
+    out("%s: not available yet: %s is starting\n", cmd, name);
+    return false;
+}
+
 #define ATOMIC(fn)                                    \
     static int fn##_atomic(int argc, char **argv)     \
     {                                                 \
+        xSemaphoreTake(s_ctx_lock, portMAX_DELAY);    \
         s_out_len = 0;                                \
         int rc = fn(argc, argv);                      \
         out_flush();                                  \
+        xSemaphoreGive(s_ctx_lock);                   \
         return rc;                                    \
     }
 
@@ -152,7 +180,9 @@ static int cmd_status(int argc, char **argv)
     uint32_t f = gw_status_get();
     out("firmware %s, reset reason %s, uptime %lld s\n", s_ctx.info->firmware,
            s_ctx.info->reset_reason, esp_timer_get_time() / 1000000);
-    if (s_ctx.cfg == NULL && s_ctx.commissioning) {
+    if (s_ctx.cfg == NULL && s_ctx.starting) {
+        out("config   loading: the gateway is starting\n");
+    } else if (s_ctx.cfg == NULL && s_ctx.commissioning) {
         out("config   NONE: commissioning after a factory reset; load one with the web UI or "
                "'config load'\n");
         out("         nothing is running: no polling, no MQTT; network and web UI only\n");
@@ -167,7 +197,8 @@ static int cmd_status(int argc, char **argv)
         for (uint16_t d = 0; d < s_ctx.cfg->device_count; d++) {
             offline = (uint16_t)(offline + (device_online(d) ? 0u : 1u));
         }
-        out("config   %s: ok\n", s_ctx.config_source);
+        out("config   %s: ok%s\n", s_ctx.config_source,
+            s_ctx.starting ? " (the gateway is still starting)" : "");
         out("network  %s, MQTT %s, Modbus %u/%u devices online\n",
                (f & GW_ST_NET_UP) ? "up" : "down",
                (f & GW_ST_MQTT_UP) ? "connected" : "disconnected",
@@ -288,7 +319,8 @@ static int cmd_devices(int argc, char **argv)
     (void)argc;
     (void)argv;
     if (s_ctx.cfg == NULL) {
-        out("no configuration\n");
+        out(s_ctx.starting ? "devices: not available yet: the configuration is loading\n"
+                           : "no configuration\n");
         return 1;
     }
     for (uint16_t d = 0; d < s_ctx.cfg->device_count; d++) {
@@ -435,6 +467,10 @@ static int cmd_config(int argc, char **argv)
     }
     static const char *const parity[] = {"none", "even", "odd"};
     const gw_config_t *c = s_ctx.cfg;
+    if (c == NULL && s_ctx.starting) {
+        out("config: not available yet: the configuration is loading\n");
+        return 1;
+    }
     if (c == NULL) {
         out("REJECTED (%s): %s\n", s_ctx.config_source, s_ctx.config_error);
         return 1;
@@ -618,6 +654,9 @@ static void on_ping_end(esp_ping_handle_t h, void *arg)
 
 static int cmd_ping(int argc, char **argv)
 {
+    if (!up(GW_SHELL_UP_NET, "ping", "the network")) {
+        return 1;
+    }
     esp_ping_config_t pc = ESP_PING_DEFAULT_CONFIG();
     if (argc != 2 || !ipaddr_aton(argv[1], &pc.target_addr)) {
         out("usage: ping <IPv4 or IPv6 address>\n");
@@ -656,6 +695,9 @@ static int cmd_rebirth(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
+    if (s_ctx.cfg != NULL && !up(GW_SHELL_UP_EDGE, "rebirth", "MQTT")) {
+        return 1;
+    }
     if (s_ctx.cfg == NULL || !gw_edge_request_rebirth()) {
         out("rebirth: no Sparkplug session\n");
         return 1;
@@ -682,8 +724,15 @@ static int cmd_mbread(int argc, char **argv)
                GW_BUS_DIAG_MAX);
         return 1;
     }
+    if (s_ctx.cfg == NULL && s_ctx.starting) {
+        out("mbread: not available yet: the configuration is loading\n");
+        return 1;
+    }
     if (s_ctx.cfg == NULL) {
         out("mbread: the bus is not running (no valid configuration)\n");
+        return 1;
+    }
+    if (!up(GW_SHELL_UP_BUS, "mbread", "the RS485 bus")) {
         return 1;
     }
     uint16_t v[GW_BUS_DIAG_MAX];
@@ -720,6 +769,9 @@ static int cmd_di(int argc, char **argv)
     long level = argc == 3 ? strtol(argv[2], NULL, 10) : -1;
     if (ch < 1 || ch > 8 || (level != 0 && level != 1)) {
         out("usage: di <1-8> <0|1>\n");
+        return 1;
+    }
+    if (!up(GW_SHELL_UP_IO, "di", "the local I/O")) {
         return 1;
     }
     gw_io_sim_set_di((uint8_t)(ch - 1), level == 1);
@@ -780,6 +832,7 @@ static esp_err_t new_repl(const esp_console_repl_config_t *rc, esp_console_repl_
 esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
 {
     s_ctx = *ctx;
+    s_ctx_lock = xSemaphoreCreateMutexStatic(&s_ctx_lock_buf);
     s_console = xSemaphoreCreateRecursiveMutexStatic(&s_console_buf);
     s_prev_vprintf = esp_log_set_vprintf(log_vprintf);
     esp_console_repl_config_t rc = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
@@ -821,5 +874,7 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
         ESP_RETURN_ON_ERROR(esp_console_cmd_register(&cmds[i]), TAG, "%s", cmds[i].command);
     }
     ESP_RETURN_ON_ERROR(esp_console_register_help_command(), TAG, "help");
-    return esp_console_start_repl(repl);
+    ESP_RETURN_ON_ERROR(esp_console_start_repl(repl), TAG, "REPL");
+    ESP_LOGI(TAG, "console ready");
+    return ESP_OK;
 }
