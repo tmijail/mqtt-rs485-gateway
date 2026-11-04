@@ -18,7 +18,7 @@ Firmware del MVP (`docs/SPEC.md` §5) para la Waveshare **ESP32-S3-POE-ETH-8DI-8
 
 | Componente | Responsabilidad | Depende de IDF |
 |---|---|---|
-| `gw_core` | **Lógica pura en C, sin IDF; se prueba en el host:**<br>• `gw_config`: parseo y validación JSON §6.<br>• `gw_dout`: secuencia de arranque del TCA9554 y polaridad de las E/S.<br>• `mb_rtu`: CRC y tramas FC01–06/15/16.<br>• `mb_master`: transacciones, t3,5, timeout y reintentos.<br>• `gw_conv`: tipos, escala, orden de palabras y datatype Sparkplug.<br>• `gw_plan`: lecturas en bloque.<br>• `gw_poll`: encuesta, fuera de línea y escrituras.<br>• `gw_rbe`: reporte por excepción y deadband.<br>• `gw_debounce`, `gw_backoff`, `gw_devstate`.<br>• `gw_netsel`: interfaz activa entre Ethernet y Wi-Fi (NET-4).<br>• `gw_syslog`: líneas de log a RFC 5424 y anillo acotado (REL-4).<br>• `gw_tagdb`: imagen de proceso compartida.<br>• `spb`: codec Sparkplug con nanopb.<br>• `gw_node`: motor del Edge Node con births, deaths, seq, alias, NCMD/DCMD y rebirth. | No (solo `port/gw_port_esp.c`) |
+| `gw_core` | **Lógica pura en C, sin IDF; se prueba en el host:**<br>• `gw_config`: parseo y validación JSON §6.<br>• `gw_dout`: secuencia de arranque del TCA9554 y polaridad de las E/S.<br>• `mb_rtu`: CRC y tramas FC01–06/15/16.<br>• `mb_master`: transacciones, t3,5, timeout y reintentos.<br>• `gw_conv`: tipos (hasta 64 bits, `string` y bits de registro), escala, orden de bytes y datatype Sparkplug.<br>• `gw_plan`: lecturas en bloque.<br>• `gw_poll`: encuesta, fuera de línea y escrituras.<br>• `gw_rbe`: reporte por excepción y deadband.<br>• `gw_debounce`, `gw_backoff`, `gw_devstate`.<br>• `gw_netsel`: interfaz activa entre Ethernet y Wi-Fi (NET-4).<br>• `gw_syslog`: líneas de log a RFC 5424 y anillo acotado (REL-4).<br>• `gw_tagdb`: imagen de proceso compartida.<br>• `spb`: codec Sparkplug con nanopb.<br>• `gw_node`: motor del Edge Node con births, deaths, seq, alias, NCMD/DCMD y rebirth. | No (solo `port/gw_port_esp.c`) |
 | `nanopb` | Runtime nanopb 0.4.9.1 vendorizado (Zlib) | No |
 | `gw_rs485` | UART1 en `UART_MODE_RS485_HALF_DUPLEX` (RTS = GPIO21), expuesta como `mb_transport_t` | Sí |
 | `gw_bus` | Tarea **dueña única del bus RS485**: encuesta y escrituras DCMD | Sí |
@@ -187,7 +187,7 @@ Tras actualizar, lo más simple es **borrar `idf/sdkconfig`** (o `idf.py set-tar
 
 1. El firmware embebe `components/gw_storage/default_config.json`, que es el ejemplo de §6.
 2. Para reemplazarla, copie el JSON a `idf/fs/config.json` y edítelo. `idf.py flash` graba la carpeta `fs/` en la partición `storage` y el firmware lee `/cfg/config.json` al arrancar.
-3. Las claves opcionales fuera del MVP (`network.wifi`, NET-4; `network.ipv6`, NET-7; `syslog`, REL-4) están en `docs/SPEC.md` §6.1.
+3. Las claves opcionales fuera del MVP (`network.wifi`, NET-4; `network.ipv6`, NET-7; `syslog`, REL-4; tipos de 64 bits, `string`, órdenes de bytes y `bit` en los tags, MB-6) están en `docs/SPEC.md` §6.1.
 4. **La configuración embebida se usa solo si `/cfg/config.json` no existe.** Cualquier otro problema detiene el equipo: la partición LittleFS no monta, el archivo está vacío, no se puede leer, supera el límite o es inválido. Entonces **no arranca nada** (ni encuesta, ni red, ni MQTT), el LED parpadea en rojo y el log repite cada 10 s, con nivel ERROR, el motivo, por ejemplo:
    - `/cfg/config.json: 140000 bytes; el máximo es 131072 (CONFIG_GW_CONFIG_MAX_BYTES)`;
    - `partición LittleFS 'storage' no montable (ESP_FAIL)`;
@@ -373,7 +373,7 @@ Leyenda de **Evidencia**:
 | MB-2 | Implementado | `gw_rs485.c` (`UART_MODE_RS485_HALF_DUPLEX`) | **C**: QEMU no soporta el modo; la temporización de RTS/DE no está verificada. ISR de la UART en IRAM (`CONFIG_UART_ISR_IN_IRAM`) |
 | MB-3 | Implementado | `gw_core/src/mb_rtu.c`, `gw_poll.c` | H (FC01–04) + Q (FC01, FC03, FC04) |
 | MB-4 | Implementado | `mb_rtu.c`, `gw_poll.c` | H (las cuatro) + Q (FC05, FC06 y FC16 de 32 bits: una sola escritura y DDATA). FC15/FC16 de 16 bits con `CONFIG_GW_MB_FORCE_MULTI_WRITE`. NaN e infinitos rechazados también en coils |
-| MB-5 | Implementado | `gw_core/src/gw_conv.c` | H + Q (float32, int16, uint16, bool) |
+| MB-5 | Implementado | `gw_core/src/gw_conv.c` | H + Q (float32, int16, uint16, bool; con MB-6 también int32 en `BADC`) |
 | MB-7 | Implementado | `gw_conv.c` | H + Q |
 | MB-8 | Implementado | `gw_core/src/mb_master.c` | H + Q |
 | MB-9 | Implementado | `gw_devstate.c`, `gw_poll.c` | H (también un bloque sin respuesta mientras otro responde; sondeo con backoff de los fuera de línea y un equipo sano que mantiene su periodo junto a tres muertos) + Q (tres esclavos muertos sondeados a 2, 4, 8, 10 s sin atrasar al sano) |
@@ -393,6 +393,7 @@ Leyenda de **Evidencia**:
 
 **Fuera del MVP**, implementado total o parcialmente:
 
+- **MB-6** Implementado: `uint64`, `int64`, `float64` y `string` (1–16 registros), órdenes `ABCD`/`CDAB`/`BADC`/`DCBA` (además de `big`/`little`) y `bit` 0–15 dentro de un registro `holding`/`input`, también escribible (lectura, modificación y escritura del registro). Los enteros de 64 bits viajan **exactos** de punta a punta: el valor interno es una unión (double, int64, uint64 o texto, según el tag), no un `double`; en Sparkplug van como UInt64/Int64 en `long_value`, `float64` como Double y `string` como String. El reporte por excepción compara los 64 bits (o un hash del texto). Evidencia: H (conversión en los cuatro órdenes, 2^53 + 1, límites, textos, esquema, encuesta, escritura de bit con relectura, DCMD exacto, DBIRTH/DDATA) + interoperabilidad Python + Q (DBIRTH con los siete tags nuevos en sus órdenes; DCMD int64 2^62 + 3 con una FC16 de 4 registros; bit y texto escritos).
 - **MB-11** Parcial: bloques con hueco máximo global por Kconfig, no por dispositivo.
 - **MB-13** Parcial: excepciones decodificadas y en el log; contadores por dispositivo (ciclos, ciclos fallidos e intentos ok / timeout / CRC / trama / excepción) en el shell y en el log de fuera de línea, no publicados por Sparkplug.
 - **CFG-6** Parcial: shell de diagnóstico de solo lectura en la consola (`status` con interfaces y direcciones IPv6, `devices`, `config`, `ping <IPv4|IPv6>`; `help` lista los comandos). Funciona también con la configuración rechazada. No cambia la configuración.
@@ -434,7 +435,8 @@ La build de QEMU difiere de la de placa en esos puntos (`sdkconfig.qemu`).
   - `bool` sin `scale`/`offset`;
   - nombres de tag y dispositivo ≤ 39 caracteres;
   - `group_id`/`edge_node_id` ≤ 32 caracteres, sin `/ + #`;
-  - rangos elegidos aquí: `response_timeout_ms` 10–5000, `retries` 0–5, `poll_ms` ≥ 50, `keepalive_s` 5–3600, `inter_frame_delay_ms` ≤ 1000.
+  - rangos elegidos aquí: `response_timeout_ms` 10–5000, `retries` 0–5, `poll_ms` ≥ 50, `keepalive_s` 5–3600, `inter_frame_delay_ms` ≤ 1000;
+  - MB-6: `bool` en `holding`/`input` exige `bit`; `bit` no admite otro `word_order`; `length` solo con `string`; `string` sin `scale`, `offset` ni `deadband`.
 
   La implementación Zephyr puede ser más laxa: hay que acordarlo.
 - **`primary_host_id`** se valida y se ignora con un warning (SPB-13 no está en el MVP).
@@ -454,6 +456,12 @@ La build de QEMU difiere de la de placa en esos puntos (`sdkconfig.qemu`).
 - Un DCMD a un dispositivo fuera de línea se descarta, no se encola.
 - Las escrituras se reintentan como cualquier transacción. FC05/06/15/16 son idempotentes, pero un esclavo que ejecuta y no responde recibe la escritura dos veces.
 - **Rebirth espontáneo:** si el primer NBIRTH salió antes de que sincronizara SNTP (timestamps de 1970), se reemite al sincronizar. Esta rama no se ejercitó en el E2E.
+
+- **MB-6:**
+  - La escritura de un `bit` lee el registro y lo reescribe entero. Nada del gateway se mete entre la lectura y la escritura (las dos pasan por la tarea dueña del bus), pero si el propio esclavo cambia otro bit de ese registro en ese intervalo, el cambio se pierde. Los esclavos con FC22 (*mask write*) no se aprovechan.
+  - Los `string` llegan hasta 32 caracteres (16 registros) y solo ASCII imprimible (lo demás sale como `?`): no hay UTF-8 ni otras codificaciones. El texto viaja como String de Sparkplug; para el reporte por excepción se compara un hash FNV-1a de 64 bits (una colisión ocultaría un cambio; probabilidad despreciable).
+  - Con `scale`/`offset`, un `int64`/`uint64` pasa a Double y pierde la exactitud por encima de 2^53, como cualquier valor escalado.
+  - **Memoria:** el valor de cada tag ocupa ahora 56 B (antes 24) para alojar el texto. Son unos 12 KB más de `.bss` interna (imagen de proceso de 256 tags, copia de trabajo de la encuesta y la del shell) y 2 KB más en el motor Sparkplug (PSRAM si la hay).
 
 ### 6.4 Reloj
 

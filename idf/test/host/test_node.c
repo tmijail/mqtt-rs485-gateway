@@ -337,6 +337,155 @@ static void test_dcmd_rejected_whole_when_queue_lacks_room(void)
     TEST_ASSERT_EQUAL(0, g_rec.count);
 }
 
+/* ---- MB-6: Int64 / UInt64 / Double / String metrics ---- */
+
+static const char k_mb6[] =
+    "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+    " \"devices\": [{\"name\": \"M\", \"unit_id\": 1, \"tags\": ["
+    "  {\"name\": \"U64\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint64\","
+    "   \"writable\": true},"
+    "  {\"name\": \"I64\", \"area\": \"holding\", \"address\": 4, \"type\": \"int64\","
+    "   \"writable\": true, \"deadband\": 5},"
+    "  {\"name\": \"F64\", \"area\": \"input\", \"address\": 0, \"type\": \"float64\"},"
+    "  {\"name\": \"Str\", \"area\": \"holding\", \"address\": 10, \"type\": \"string\","
+    "   \"length\": 2, \"writable\": true},"
+    "  {\"name\": \"Bit\", \"area\": \"holding\", \"address\": 20, \"type\": \"bool\", \"bit\": 2,"
+    "   \"writable\": true}"
+    "]}]}";
+
+static gw_config_t mb6;
+
+static void put_mb6(uint64_t u64, int64_t i64, double f64, const char *str, bool bit)
+{
+    gw_tag_value_t v[5];
+    memset(v, 0, sizeof(v));
+    v[0].u64 = u64;
+    v[1].i64 = i64;
+    v[2].value = f64;
+    strcpy(v[3].str, str);
+    v[4].value = bit ? 1.0 : 0.0;
+    for (int i = 0; i < 5; i++) {
+        v[i].ts_ms = 1000;
+        v[i].valid = true;
+    }
+    gw_tagdb_put_device(&mb6, 0, v, true);
+}
+
+static void setup_mb6(void)
+{
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(k_mb6, sizeof(k_mb6) - 1, &mb6, &err), err.msg);
+    cfg = &mb6;
+    gw_tagdb_reset();
+    recorder_clear();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+}
+
+static void test_mb6_birth_and_data(void)
+{
+    setup_mb6();
+    put_mb6(9007199254740993ull, -9007199254740993ll, 1234.56789012345, "AB", true);
+    gw_node_session_up(&node, 0);
+    msg(1);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DBIRTH/N/M", g_rec.msgs[1].topic);
+    int i = decoded_find_name(&dec, "U64");
+    TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_LONG, dec.m[i].kind);
+    TEST_ASSERT_EQUAL_UINT64(9007199254740993ull, dec.m[i].u64);
+    i = decoded_find_name(&dec, "I64");
+    TEST_ASSERT_EQUAL(SPB_DT_INT64, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_INT64(-9007199254740993ll, (int64_t)dec.m[i].u64);   /* two's complement */
+    i = decoded_find_name(&dec, "F64");
+    TEST_ASSERT_EQUAL(SPB_DT_DOUBLE, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_DOUBLE, dec.m[i].kind);
+    TEST_ASSERT_EQUAL_DOUBLE(1234.56789012345, dec.m[i].num);
+    i = decoded_find_name(&dec, "Str");
+    TEST_ASSERT_EQUAL(SPB_DT_STRING, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_STRING("AB", dec.m[i].str);
+    i = decoded_find_name(&dec, "Bit");
+    TEST_ASSERT_EQUAL(SPB_DT_BOOLEAN, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[i].num);
+
+    /* +1 above 2^53: invisible to a double, reported exactly; deadband 5 on I64 */
+    recorder_clear();
+    put_mb6(9007199254740994ull, -9007199254740990ll, 1234.56789012345, "AB", true);
+    gw_node_device_changed(&node, 0);
+    msg(0);
+    TEST_ASSERT_EQUAL(1, dec.count);                  /* I64 moved 3 < deadband 5 */
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TAG_BASE + 0, dec.m[0].alias);
+    TEST_ASSERT_EQUAL_UINT64(9007199254740994ull, dec.m[0].u64);
+    recorder_clear();
+    put_mb6(9007199254740994ull, -9007199254740987ll, 1234.56789012345, "AC", false);
+    gw_node_device_changed(&node, 0);
+    msg(0);
+    TEST_ASSERT_EQUAL(3, dec.count);                  /* I64 (6 > 5), Str, Bit */
+    TEST_ASSERT_EQUAL_INT64(-9007199254740987ll, (int64_t)dec.m[0].u64);
+    TEST_ASSERT_EQUAL_STRING("AC", dec.m[1].str);
+    recorder_clear();
+    gw_node_device_changed(&node, 0);
+    TEST_ASSERT_EQUAL(0, g_rec.count);                /* nothing changed */
+}
+
+static void test_mb6_dcmd(void)
+{
+    setup_mb6();
+    put_mb6(0, 0, 0, "", false);
+    gw_node_session_up(&node, 0);
+    recorder_clear();
+    const char *topic = "spBv1.0/G/DCMD/N/M";
+    spb_metric_t i64 = {.name = "I64", .datatype = SPB_DT_INT64, .v.i64 = 4611686018427387907ll};
+    send(topic, &i64, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.writes);
+    TEST_ASSERT_EQUAL_INT64(4611686018427387907ll, g_rec.last_write.i64);
+    i64.v.i64 = INT64_MIN;
+    send(topic, &i64, 1);
+    TEST_ASSERT_EQUAL_INT64(INT64_MIN, g_rec.last_write.i64);
+    spb_metric_t u64 = {.alias = GW_ALIAS_TAG_BASE + 0, .datatype = SPB_DT_UINT64,
+                        .v.u64 = UINT64_MAX};
+    send(topic, &u64, 1);
+    TEST_ASSERT_EQUAL(3, g_rec.writes);
+    TEST_ASSERT_EQUAL_UINT64(UINT64_MAX, g_rec.last_write.u64);
+    /* a Float/Double/Int32 command for a 64-bit tag: integral values only */
+    spb_metric_t f = {.name = "U64", .datatype = SPB_DT_DOUBLE, .v.num = 42.0};
+    send(topic, &f, 1);
+    TEST_ASSERT_EQUAL_UINT64(42, g_rec.last_write.u64);
+    f.v.num = 1.5;
+    send(topic, &f, 1);
+    f.v.num = -1.0;                                   /* negative for a uint64 */
+    send(topic, &f, 1);
+    spb_metric_t neg = {.name = "I64", .datatype = SPB_DT_INT32, .v.num = -7};
+    send(topic, &neg, 1);
+    TEST_ASSERT_EQUAL(5, g_rec.writes);
+    TEST_ASSERT_EQUAL_INT64(-7, g_rec.last_write.i64);
+    spb_metric_t big = {.name = "I64", .datatype = SPB_DT_UINT64, .v.u64 = UINT64_MAX};
+    send(topic, &big, 1);                             /* above INT64_MAX: rejected */
+    TEST_ASSERT_EQUAL(5, g_rec.writes);
+    /* strings: up to 2 x length characters */
+    spb_metric_t str = {.name = "Str", .datatype = SPB_DT_STRING, .v.str = "OK"};
+    send(topic, &str, 1);
+    TEST_ASSERT_EQUAL(6, g_rec.writes);
+    TEST_ASSERT_EQUAL_STRING("OK", g_rec.last_write.str);
+    str.v.str = "LONG!";                             /* 5 > 2 registers x 2 */
+    send(topic, &str, 1);
+    spb_metric_t num = {.name = "Str", .datatype = SPB_DT_FLOAT, .v.num = 1};
+    send(topic, &num, 1);
+    TEST_ASSERT_EQUAL(6, g_rec.writes);
+    /* register bit: a Boolean */
+    spb_metric_t bit = {.name = "Bit", .datatype = SPB_DT_BOOLEAN, .v.num = 1};
+    send(topic, &bit, 1);
+    TEST_ASSERT_EQUAL(7, g_rec.writes);
+    TEST_ASSERT_EQUAL_DOUBLE(1, g_rec.last_write.value);
+
+    /* write confirmation of a 64-bit value: DDATA carries it exactly */
+    gw_tag_value_t v = {.i64 = 4611686018427387907ll, .ts_ms = 5000, .valid = true};
+    gw_tagdb_put_tag(1, &v);
+    gw_node_write_done(&node, 1, true);
+    msg(0);
+    TEST_ASSERT_EQUAL_INT64(4611686018427387907ll, (int64_t)dec.m[0].u64);
+}
+
 static void send_raw(const char *topic, const raw_metric_t *m, size_t n)
 {
     size_t len = raw_payload(cmd, sizeof(cmd), m, n);
@@ -481,6 +630,8 @@ int main(void)
     RUN_TEST(test_ncmd_do_and_reboot);
     RUN_TEST(test_dcmd_writes);
     RUN_TEST(test_dcmd_rejected_whole_when_queue_lacks_room);
+    RUN_TEST(test_mb6_birth_and_data);
+    RUN_TEST(test_mb6_dcmd);
     RUN_TEST(test_session_down_suppresses_publishing);
     RUN_TEST(test_discard_log_shows_alias_only_if_present);
     RUN_TEST(test_do_unknown_published_as_null);

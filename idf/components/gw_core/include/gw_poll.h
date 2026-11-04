@@ -72,7 +72,14 @@ int gw_poller_next(const gw_poller_t *p, uint32_t now_ms, uint32_t *wait_ms);
  */
 gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms);
 
-/** Write engineering @p value to tag @p tag, read it back and store the confirmed value. */
+/**
+ * Write @p value (member per gw_conv_kind) to tag @p tag, read it back and store the confirmed
+ * value. A register bit (MB-6) is written by read-modify-write of its register (FC03, then
+ * FC06 or FC16).
+ */
+gw_write_status_t gw_poller_write_value(gw_poller_t *p, uint16_t tag, const gw_tag_value_t *value);
+
+/** gw_poller_write_value() from a double (see gw_conv_from_double). */
 gw_write_status_t gw_poller_write(gw_poller_t *p, uint16_t tag, double value);
 
 /** Number of configured devices currently offline. */

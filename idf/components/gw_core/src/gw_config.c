@@ -386,8 +386,13 @@ static bool check_topic_id(const char *s, const char *path, bool allow_empty, gw
 /* ---------- sections ---------- */
 
 static const char *const k_area_names[] = {"coil", "discrete", "holding", "input"};
-static const char *const k_type_names[] = {"bool", "uint16", "int16", "uint32", "int32", "float32"};
-static const char *const k_word_names[] = {"big", "little"};
+static const char *const k_type_names[] = {"bool",  "uint16", "int16",   "uint32", "int32",
+                                           "float32", "uint64", "int64", "float64", "string"};
+#define TYPE_COUNT (sizeof(k_type_names) / sizeof(k_type_names[0]))
+/* "big"/"little" are the MVP names of ABCD/CDAB (MB-5); the four letter forms come with MB-6. */
+static const char *const k_word_names[] = {"big", "little", "ABCD", "CDAB", "BADC", "DCBA"};
+static const gw_word_order_t k_word_values[] = {GW_WORD_BIG,    GW_WORD_LITTLE, GW_WORD_BIG,
+                                                GW_WORD_LITTLE, GW_WORD_BADC,   GW_WORD_DCBA};
 static const char *const k_parity_names[] = {"none", "even", "odd"};
 
 /* dhcp/ip/netmask/gateway/dns of one interface; the addresses are required with dhcp=false. */
@@ -639,38 +644,64 @@ static bool parse_syslog(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 
 static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"name",   "area",   "address",  "type",     "word_order",
-                                       "scale",  "offset", "deadband", "writable", "units"};
+    static const char *const keys[] = {"name",   "area",     "address",  "type",  "word_order",
+                                       "scale",  "offset",   "deadband", "writable", "units",
+                                       "bit",    "length"};
     int area, type, word;
-    long addr;
+    long addr, bit, length;
     char p[96];
-    if (!check_keys(o, path, keys, 10, err) ||
+    if (!check_keys(o, path, keys, sizeof(keys) / sizeof(keys[0]), err) ||
         !get_string(o, "name", path, true, "", t->name, sizeof(t->name), err) ||
         !get_enum(o, "area", path, true, 0, k_area_names, 4, &area, err) ||
         !get_int(o, "address", path, true, 0, 0, 65535, &addr, err) ||
-        !get_enum(o, "type", path, true, 0, k_type_names, 6, &type, err) ||
-        !get_enum(o, "word_order", path, false, GW_WORD_BIG, k_word_names, 2, &word, err) ||
+        !get_enum(o, "type", path, true, 0, k_type_names, TYPE_COUNT, &type, err) ||
+        !get_enum(o, "word_order", path, false, 0, k_word_names, 6, &word, err) ||
         !get_double(o, "scale", path, 1.0, &t->scale, err) ||
         !get_double(o, "offset", path, 0.0, &t->offset, err) ||
         !get_double(o, "deadband", path, 0.0, &t->deadband, err) ||
         !get_bool(o, "writable", path, false, &t->writable, err) ||
-        !get_string(o, "units", path, false, "", t->units, sizeof(t->units), err)) {
+        !get_string(o, "units", path, false, "", t->units, sizeof(t->units), err) ||
+        !get_int(o, "bit", path, false, GW_NO_BIT, 0, 15, &bit, err) ||
+        !get_int(o, "length", path, false, 0, 1, GW_STR_MAX_REGS, &length, err)) {
         return false;
     }
     t->area = (gw_area_t)area;
     t->type = (gw_type_t)type;
-    t->word_order = (gw_word_order_t)word;
+    t->word_order = k_word_values[word];
     t->address = (uint16_t)addr;
+    t->bit = (int8_t)bit;
+    t->length = (uint8_t)length;
 
     if (t->name[0] == '\0') {
         join(p, sizeof(p), path, "name");
         return fail(err, p, "no puede estar vacío");
     }
     bool bit_area = t->area == GW_AREA_COIL || t->area == GW_AREA_DISCRETE;
-    if (bit_area != (t->type == GW_TYPE_BOOL)) {
+    if (bit_area && t->type != GW_TYPE_BOOL) {
         join(p, sizeof(p), path, "type");
-        return fail(err, p, bit_area ? "las áreas coil/discrete solo admiten type=bool"
-                                     : "type=bool solo vale en las áreas coil y discrete");
+        return fail(err, p, "las áreas coil/discrete solo admiten type=bool");
+    }
+    bool has_bit = cJSON_GetObjectItemCaseSensitive(o, "bit") != NULL;
+    if (!bit_area && t->type == GW_TYPE_BOOL && !has_bit) {
+        join(p, sizeof(p), path, "type");
+        return fail(err, p, "type=bool en holding/input requiere la clave bit (0-15); sin bit, "
+                            "solo vale en las áreas coil y discrete");
+    }
+    if (has_bit && (bit_area || t->type != GW_TYPE_BOOL)) {
+        join(p, sizeof(p), path, "bit");
+        return fail(err, p, "solo vale con type=bool en las áreas holding e input");
+    }
+    if (has_bit && cJSON_GetObjectItemCaseSensitive(o, "word_order") != NULL &&
+        t->word_order != GW_WORD_BIG) {
+        join(p, sizeof(p), path, "word_order");
+        return fail(err, p, "no se admite en un tag bit: el bit 0 es el menos significativo del "
+                            "registro tal como llega");
+    }
+    bool has_length = cJSON_GetObjectItemCaseSensitive(o, "length") != NULL;
+    if ((t->type == GW_TYPE_STRING) != has_length) {
+        join(p, sizeof(p), path, "length");
+        return fail(err, p, has_length ? "solo vale con type=string"
+                                       : "obligatorio con type=string (registros, 1-16)");
     }
     if (t->writable && t->area != GW_AREA_COIL && t->area != GW_AREA_HOLDING) {
         join(p, sizeof(p), path, "writable");
@@ -684,13 +715,18 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
         join(p, sizeof(p), path, "scale");
         return fail(err, p, "no puede ser 0");
     }
-    if (t->type == GW_TYPE_BOOL && (t->scale != 1.0 || t->offset != 0.0)) {
+    if ((t->type == GW_TYPE_BOOL || t->type == GW_TYPE_STRING) &&
+        (t->scale != 1.0 || t->offset != 0.0)) {
         join(p, sizeof(p), path, "scale");
-        return fail(err, p, "scale/offset no se admiten en tags bool");
+        return fail(err, p, "scale/offset no se admiten en tags %s", k_type_names[t->type]);
     }
     if (t->deadband < 0.0) {
         join(p, sizeof(p), path, "deadband");
         return fail(err, p, "no puede ser negativo");
+    }
+    if (t->type == GW_TYPE_STRING && t->deadband != 0.0) {
+        join(p, sizeof(p), path, "deadband");
+        return fail(err, p, "no se admite en tags string");
     }
     return true;
 }
@@ -869,7 +905,13 @@ uint16_t gw_tag_width(const gw_tag_cfg_t *tag)
     case GW_TYPE_INT32:
     case GW_TYPE_FLOAT32:
         return 2;
+    case GW_TYPE_UINT64:
+    case GW_TYPE_INT64:
+    case GW_TYPE_FLOAT64:
+        return 4;
+    case GW_TYPE_STRING:
+        return tag->length;
     default:
-        return 1;
+        return 1;   /* 16-bit types, coils, discrete inputs and register bits */
     }
 }

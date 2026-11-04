@@ -1,6 +1,7 @@
 #include "gw_node.h"
 
 #include <inttypes.h>
+#include <math.h>
 #include <string.h>
 
 #include "gw_conv.h"
@@ -76,14 +77,58 @@ static spb_metric_t *metric(gw_node_t *n, size_t i, const char *name, uint64_t a
     return m;
 }
 
+/* Exact report-by-exception key of 64-bit integers and strings (MB-6). */
+static uint64_t rbe_key(const gw_tag_cfg_t *t, const gw_tag_value_t *v)
+{
+    switch (gw_conv_kind(t)) {
+    case GW_VK_INT64:
+        return (uint64_t)v->i64;
+    case GW_VK_UINT64:
+        return v->u64;
+    default:
+        return gw_rbe_hash(v->str);
+    }
+}
+
+/* @p v must stay valid until the metric is published (strings are referenced, not copied). */
 static void tag_metric(gw_node_t *n, size_t i, uint16_t tag, const gw_tag_value_t *v, bool birth)
 {
     const gw_tag_cfg_t *t = &n->cfg->tags[tag];
     spb_metric_t *m = metric(n, i, birth ? t->name : NULL, GW_ALIAS_TAG_BASE + tag,
                              gw_conv_datatype(t), v->ts_ms);
     m->is_null = !v->valid;
-    m->v.num = v->value;
-    gw_rbe_commit(&n->tag_rbe[tag], v->value, v->valid);
+    gw_val_kind_t kind = gw_conv_kind(t);
+    switch (kind) {
+    case GW_VK_INT64:
+        m->v.i64 = v->i64;
+        break;
+    case GW_VK_UINT64:
+        m->v.u64 = v->u64;
+        break;
+    case GW_VK_STRING:
+        m->v.str = v->str;
+        break;
+    default:
+        m->v.num = v->value;
+        break;
+    }
+    if (kind == GW_VK_DOUBLE) {
+        gw_rbe_commit(&n->tag_rbe[tag], v->value, v->valid);
+    } else {
+        gw_rbe_commit_key(&n->tag_rbe[tag], v->valid ? rbe_key(t, v) : 0, v->valid);
+    }
+}
+
+static bool tag_changed(const gw_node_t *n, uint16_t tag, const gw_tag_value_t *v)
+{
+    const gw_tag_cfg_t *t = &n->cfg->tags[tag];
+    double deadband = t->type == GW_TYPE_BOOL ? 0.0 : t->deadband;
+    gw_val_kind_t kind = gw_conv_kind(t);
+    if (kind == GW_VK_DOUBLE) {
+        return gw_rbe_changed(&n->tag_rbe[tag], v->value, v->valid, deadband);
+    }
+    return gw_rbe_changed_key(&n->tag_rbe[tag], v->valid ? rbe_key(t, v) : 0,
+                              kind == GW_VK_INT64, v->valid, deadband);
 }
 
 /* ---------- births and deaths ---------- */
@@ -92,7 +137,7 @@ size_t gw_node_death_payload(uint64_t bdseq, uint8_t *out, size_t cap)
 {
     spb_metric_t m = {
         .name = NAME_BDSEQ, .alias = GW_ALIAS_BDSEQ, .datatype = SPB_DT_UINT64,
-        .v.num = (double)bdseq};
+        .v.u64 = bdseq};
     spb_payload_t p = {.timestamp = gw_port_time_ms(), .has_seq = false, .metrics = &m,
                        .metric_count = 1};
     return spb_encode(&p, out, cap);
@@ -104,7 +149,7 @@ static void publish_nbirth(gw_node_t *n)
     gw_tagdb_get_io(&io);
     uint64_t now = gw_port_time_ms();
     size_t i = 0;
-    metric(n, i++, NAME_BDSEQ, GW_ALIAS_BDSEQ, SPB_DT_UINT64, now)->v.num = (double)n->bdseq;
+    metric(n, i++, NAME_BDSEQ, GW_ALIAS_BDSEQ, SPB_DT_UINT64, now)->v.u64 = n->bdseq;
     metric(n, i++, NAME_REBIRTH, GW_ALIAS_REBIRTH, SPB_DT_BOOLEAN, now)->v.num = 0;
     metric(n, i++, NAME_REBOOT, GW_ALIAS_REBOOT, SPB_DT_BOOLEAN, now)->v.num = 0;
     metric(n, i++, NAME_FIRMWARE, GW_ALIAS_FIRMWARE, SPB_DT_STRING, now)->v.str = n->info.firmware;
@@ -194,9 +239,7 @@ void gw_node_device_changed(gw_node_t *n, uint16_t dev)
     size_t count = 0;
     for (uint16_t i = 0; i < d->tag_count; i++) {
         uint16_t tag = (uint16_t)(d->first_tag + i);
-        const gw_tag_cfg_t *t = &n->cfg->tags[tag];
-        double deadband = t->type == GW_TYPE_BOOL ? 0.0 : t->deadband;
-        if (gw_rbe_changed(&n->tag_rbe[tag], n->vals[i].value, n->vals[i].valid, deadband)) {
+        if (tag_changed(n, tag, &n->vals[i])) {
             tag_metric(n, count++, tag, &n->vals[i], false);
         }
     }
@@ -325,10 +368,93 @@ static int resolve_tag(const gw_node_t *n, uint16_t dev, const spb_rx_metric_t *
     return -1;
 }
 
+/* 2^63 as a double: the first value out of the int64 range. */
+#define TWO63 9223372036854775808.0
+
+/* Integral value of an incoming metric for a 64-bit tag, exactly (a double is not above 2^53):
+ * *neg and *mag give the sign and the magnitude. */
+static bool rx_integer(const spb_rx_metric_t *m, uint32_t dt, bool *neg, uint64_t *mag)
+{
+    if (m->is_null) {
+        return false;
+    }
+    switch (m->kind) {
+    case SPB_VAL_LONG:
+        *neg = dt == SPB_DT_INT64 && (int64_t)m->v.l < 0;
+        *mag = *neg ? 0u - m->v.l : m->v.l;
+        return true;
+    case SPB_VAL_INT:
+    case SPB_VAL_BOOL:
+    case SPB_VAL_FLOAT:
+    case SPB_VAL_DOUBLE: {
+        double d;
+        if (!spb_rx_number(m, dt, &d) || d != floor(d) || d <= -TWO63 * 2.0 || d >= TWO63 * 2.0) {
+            return false;
+        }
+        *neg = d < 0.0;
+        *mag = (uint64_t)fabs(d);
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
+/* Value of a DCMD metric for tag @p t, in the member the tag uses; @p why on failure. */
+static bool rx_value(const gw_tag_cfg_t *t, const spb_rx_metric_t *m, gw_tag_value_t *out,
+                     const char **why)
+{
+    uint32_t dt = m->has_datatype ? m->datatype : gw_conv_datatype(t);
+    memset(out, 0, sizeof(*out));
+    bool neg;
+    uint64_t mag;
+    switch (gw_conv_kind(t)) {
+    case GW_VK_STRING:
+        if (m->is_null || m->kind != SPB_VAL_STRING) {
+            *why = "no string value";
+            return false;
+        }
+        if (strlen(m->v.s) > 2u * t->length) {
+            *why = "string longer than the tag";
+            return false;
+        }
+        strcpy(out->str, m->v.s);
+        return true;
+    case GW_VK_INT64:
+        if (!rx_integer(m, dt, &neg, &mag)) {
+            *why = "no integer value";
+            return false;
+        }
+        if (neg ? mag > (uint64_t)INT64_MAX + 1u : mag > (uint64_t)INT64_MAX) {
+            *why = "value out of the int64 range";
+            return false;
+        }
+        out->i64 = neg ? (int64_t)(0u - mag) : (int64_t)mag;
+        return true;
+    case GW_VK_UINT64:
+        if (!rx_integer(m, dt, &neg, &mag)) {
+            *why = "no integer value";
+            return false;
+        }
+        if (neg && mag != 0) {
+            *why = "negative value for a uint64 tag";
+            return false;
+        }
+        out->u64 = mag;
+        return true;
+    default:
+        if (!spb_rx_number(m, dt, &out->value)) {
+            *why = "no numeric value";
+            return false;
+        }
+        return true;
+    }
+}
+
 /* Resolve one DCMD metric to a writable tag and its value; logs the reason of a discard
  * unless @p quiet (the counting pass must not log everything twice). */
 static bool dcmd_resolve(const gw_node_t *n, const spb_rx_metric_t *m, bool quiet, int *tag_out,
-                         double *value)
+                         gw_tag_value_t *value)
 {
     int tag = resolve_tag(n, (uint16_t)n->cmd_dev, m);
     if (tag < 0) {
@@ -344,9 +470,10 @@ static bool dcmd_resolve(const gw_node_t *n, const spb_rx_metric_t *m, bool quie
         }
         return false;
     }
-    if (!spb_rx_number(m, m->has_datatype ? m->datatype : gw_conv_datatype(t), value)) {
+    const char *why = "";
+    if (!rx_value(t, m, value, &why)) {
         if (!quiet) {
-            log_discard("DCMD", m, "no numeric value");
+            log_discard("DCMD", m, why);
         }
         return false;
     }
@@ -358,7 +485,7 @@ static bool on_dcmd_metric(void *ctx, const spb_rx_metric_t *m)
 {
     gw_node_t *n = ctx;
     int tag;
-    double v;
+    gw_tag_value_t v;
     if (!dcmd_resolve(n, m, n->cmd_count_only, &tag, &v)) {
         return true;
     }
@@ -366,7 +493,7 @@ static bool on_dcmd_metric(void *ctx, const spb_rx_metric_t *m)
         n->cmd_writes++;
         return true;
     }
-    if (!n->ops.request_write(n->ops.ctx, (uint16_t)tag, v)) {
+    if (!n->ops.request_write(n->ops.ctx, (uint16_t)tag, &v)) {
         log_discard("DCMD", m, "write queue full");   /* not expected: room was checked */
     }
     return true;

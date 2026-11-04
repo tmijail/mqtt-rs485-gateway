@@ -8,6 +8,7 @@
 
 #include "gw_config.h"
 #include "gw_node.h"
+#include "gw_tagdb.h"
 #include "mb_master.h"
 
 /* Read a whole file into a static buffer (NUL terminated). Aborts on error. */
@@ -60,7 +61,8 @@ typedef struct {
     uint8_t dout;                /* state driven by set_do */
     int writes;                  /* request_write calls */
     uint16_t last_write_tag;
-    double last_write_value;
+    double last_write_value;     /* .value of last_write */
+    gw_tag_value_t last_write;
     bool write_queue_full;
     bool room_limited;           /* write_room returns room (otherwise plenty) */
     size_t room;
@@ -88,6 +90,7 @@ typedef struct {
         bool is_null;
         spb_val_kind_t kind;
         double num;
+        uint64_t u64;            /* long_value, exact */
         char str[64];
         uint64_t timestamp;
     } m[DEC_MAX];

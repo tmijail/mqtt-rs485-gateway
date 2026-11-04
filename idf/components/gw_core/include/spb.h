@@ -41,7 +41,9 @@ typedef struct {
     uint64_t timestamp;      /* 0: omitted */
     bool is_null;
     union {
-        double num;          /* all numeric and Boolean datatypes */
+        double num;          /* every numeric and Boolean datatype except the 64-bit integers */
+        int64_t i64;         /* Int64: exact (a double is not above 2^53) */
+        uint64_t u64;        /* UInt64 and DateTime */
         const char *str;     /* String / Text */
     } v;
 } spb_metric_t;

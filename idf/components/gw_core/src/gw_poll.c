@@ -22,17 +22,25 @@ static mb_fc_t read_fc(gw_area_t area)
     }
 }
 
-static double decode_member(const gw_tag_cfg_t *t, const mb_response_t *rsp, uint16_t start)
+/* Value of tag @p t from a read response that starts at address @p start. */
+static void decode_member(const gw_tag_cfg_t *t, const mb_response_t *rsp, uint16_t start,
+                          gw_tag_value_t *out)
 {
     uint16_t off = (uint16_t)(t->address - start);
-    if (t->type == GW_TYPE_BOOL) {
-        return mb_rsp_bit(rsp, off) ? 1.0 : 0.0;
+    if (t->area == GW_AREA_COIL || t->area == GW_AREA_DISCRETE) {
+        out->value = mb_rsp_bit(rsp, off) ? 1.0 : 0.0;
+        return;
     }
-    uint16_t regs[2] = {mb_rsp_reg(rsp, off), 0};
-    if (gw_tag_width(t) == 2) {
-        regs[1] = mb_rsp_reg(rsp, (uint16_t)(off + 1));
+    if (t->bit != GW_NO_BIT) {   /* MB-6: one bit of a holding/input register */
+        out->value = (mb_rsp_reg(rsp, off) >> t->bit) & 1u ? 1.0 : 0.0;
+        return;
     }
-    return gw_conv_from_regs(t, regs);
+    uint16_t regs[GW_TAG_MAX_REGS];
+    uint16_t width = gw_tag_width(t);
+    for (uint16_t i = 0; i < width; i++) {
+        regs[i] = mb_rsp_reg(rsp, (uint16_t)(off + i));
+    }
+    gw_conv_decode(t, regs, out);
 }
 
 /* One transaction to @p dev; the attempts it took are added to the device's counters. */
@@ -135,7 +143,7 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
             v->ts_ms = ts;
             v->valid = st == MB_OK;
             if (v->valid) {
-                v->value = decode_member(&cfg->tags[tag], &rsp, blk->start);
+                decode_member(&cfg->tags[tag], &rsp, blk->start, v);
             }
         }
     }
@@ -179,7 +187,37 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
     return ev;
 }
 
-gw_write_status_t gw_poller_write(gw_poller_t *p, uint16_t tag, double value)
+/* Request for a register bit (MB-6): read-modify-write of the whole register. The read and the
+ * write go back to back through this task, so no other gateway traffic comes in between, but
+ * the device itself may change the other bits in that window (documented limitation). */
+static gw_write_status_t bit_request(gw_poller_t *p, uint16_t dev, const gw_tag_cfg_t *t, bool on,
+                                     mb_request_t *rq, uint16_t *reg)
+{
+    const gw_device_cfg_t *d = &p->cfg->devices[dev];
+    mb_request_t rd = {.unit = d->unit_id, .fc = MB_FC_READ_HOLDING_REGISTERS, .addr = t->address,
+                       .qty = 1};
+    mb_response_t rsp;
+    mb_status_t st = execute(p, dev, &rd, &rsp);
+    if (st != MB_OK) {
+        GW_LOGW(TAG, "%s/%s: read of register %u for the bit write failed (status %d)", d->name,
+                t->name, t->address, st);
+        return GW_WRITE_BUS_ERROR;
+    }
+    uint16_t mask = (uint16_t)(1u << t->bit);
+    uint16_t old = mb_rsp_reg(&rsp, 0);
+    *reg = on ? (uint16_t)(old | mask) : (uint16_t)(old & ~mask);
+    if (p->opts.force_multi_write) {
+        rq->fc = MB_FC_WRITE_MULTIPLE_REGISTERS;
+        rq->qty = 1;
+        rq->regs = reg;
+    } else {
+        rq->fc = MB_FC_WRITE_SINGLE_REGISTER;
+        rq->value = *reg;
+    }
+    return GW_WRITE_OK;
+}
+
+gw_write_status_t gw_poller_write_value(gw_poller_t *p, uint16_t tag, const gw_tag_value_t *value)
 {
     const gw_config_t *cfg = p->cfg;
     uint16_t dev = gw_config_tag_device(cfg, tag);
@@ -193,21 +231,29 @@ gw_write_status_t gw_poller_write(gw_poller_t *p, uint16_t tag, double value)
         return GW_WRITE_NOT_WRITABLE;
     }
     uint16_t width = gw_tag_width(t);
-    uint16_t regs[2] = {0, 0};
+    uint16_t regs[GW_TAG_MAX_REGS] = {0};
     uint8_t bits[1] = {0};
     mb_request_t rq = {.unit = d->unit_id, .addr = t->address};
-    double confirmed;
+    gw_tag_value_t confirmed;
+    memset(&confirmed, 0, sizeof(confirmed));
+    char text[48];
 
-    if (t->area == GW_AREA_COIL) {
+    if (t->type == GW_TYPE_BOOL) {
         /* NaN != 0.0 is true: without this check a NaN command would switch the coil ON. */
-        if (!isfinite(value)) {
+        if (!isfinite(value->value)) {
             GW_LOGW(TAG, "%s/%s: value %g not representable (not a finite number)", d->name,
-                    t->name, value);
+                    t->name, value->value);
             return GW_WRITE_BAD_VALUE;
         }
-        bool on = value != 0.0;
-        confirmed = on ? 1.0 : 0.0;
-        if (p->opts.force_multi_write) {
+        bool on = value->value != 0.0;
+        confirmed.value = on ? 1.0 : 0.0;
+        if (t->area == GW_AREA_HOLDING) {
+            gw_write_status_t ws = bit_request(p, dev, t, on, &rq, &regs[0]);
+            if (ws != GW_WRITE_OK) {
+                gw_tagdb_put_stats(dev, &p->stats[dev]);
+                return ws;
+            }
+        } else if (p->opts.force_multi_write) {
             bits[0] = on ? 1u : 0u;
             rq.fc = MB_FC_WRITE_MULTIPLE_COILS;
             rq.qty = 1;
@@ -217,12 +263,13 @@ gw_write_status_t gw_poller_write(gw_poller_t *p, uint16_t tag, double value)
             rq.value = on;
         }
     } else {
-        gw_conv_status_t cs = gw_conv_to_regs(t, value, regs);
+        gw_conv_status_t cs = gw_conv_encode(t, value, regs);
         if (cs != GW_CONV_OK) {
-            GW_LOGW(TAG, "%s/%s: value %g not representable (%d)", d->name, t->name, value, cs);
+            gw_conv_format(t, value, text, sizeof(text));
+            GW_LOGW(TAG, "%s/%s: value %s not representable (%d)", d->name, t->name, text, cs);
             return GW_WRITE_BAD_VALUE;
         }
-        confirmed = gw_conv_from_regs(t, regs);
+        gw_conv_decode(t, regs, &confirmed);
         if (width == 1 && !p->opts.force_multi_write) {
             rq.fc = MB_FC_WRITE_SINGLE_REGISTER;
             rq.value = regs[0];
@@ -247,14 +294,30 @@ gw_write_status_t gw_poller_write(gw_poller_t *p, uint16_t tag, double value)
     bool read_back = execute(p, dev, &rd, &rsp) == MB_OK;
     gw_tagdb_put_stats(dev, &p->stats[dev]);
     if (read_back) {
-        confirmed = decode_member(t, &rsp, t->address);
+        decode_member(t, &rsp, t->address, &confirmed);
     } else {
         GW_LOGW(TAG, "%s/%s: read-back failed, reporting the acknowledged value", d->name, t->name);
     }
-    gw_tag_value_t v = {.value = confirmed, .ts_ms = gw_port_time_ms(), .valid = true};
-    gw_tagdb_put_tag(tag, &v);
-    GW_LOGI(TAG, "%s/%s <- %g (fc %u)", d->name, t->name, confirmed, rq.fc);
+    confirmed.ts_ms = gw_port_time_ms();
+    confirmed.valid = true;
+    gw_tagdb_put_tag(tag, &confirmed);
+    gw_conv_format(t, &confirmed, text, sizeof(text));
+    GW_LOGI(TAG, "%s/%s <- %s (fc %u)", d->name, t->name, text, rq.fc);
     return GW_WRITE_OK;
+}
+
+gw_write_status_t gw_poller_write(gw_poller_t *p, uint16_t tag, double value)
+{
+    uint16_t dev = gw_config_tag_device(p->cfg, tag);
+    if (dev == GW_NO_DEVICE) {
+        GW_LOGE(TAG, "write to tag %u: no such tag", tag);
+        return GW_WRITE_UNKNOWN_TAG;
+    }
+    gw_tag_value_t v;
+    if (!gw_conv_from_double(&p->cfg->tags[tag], value, &v)) {
+        return GW_WRITE_BAD_VALUE;
+    }
+    return gw_poller_write_value(p, tag, &v);
 }
 
 uint16_t gw_poller_offline_count(const gw_poller_t *p)

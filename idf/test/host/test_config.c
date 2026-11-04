@@ -297,8 +297,8 @@ static void test_schema_rules(void)
                     "writable");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"inputs\",\"address\":0,\"type\":\"int16\"}"),
                     "coil|discrete|holding|input");
-    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int64\"}"),
-                    "bool|uint16|int16|uint32|int32|float32");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int128\"}"),
+                    "bool|uint16|int16|uint32|int32|float32|uint64|int64|float64|string");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":65535,\"type\":\"int32\"}"),
                     "65535");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":1.5,\"type\":\"int16\"}"),
@@ -308,7 +308,7 @@ static void test_schema_rules(void)
                     "scale");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
                               "\"word_order\":\"middle\"}"),
-                    "big|little");
+                    "big|little|ABCD|CDAB|BADC|DCBA");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"adress\":0,\"type\":\"int16\"}"),
                     "devices[0].tags[0].adress: clave desconocida");
     ASSERT_REJECTED(parse_tag("{\"area\":\"input\",\"address\":0,\"type\":\"int16\"}"),
@@ -320,6 +320,74 @@ static void test_schema_rules(void)
         parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":65534,\"type\":\"float32\","
                   "\"word_order\":\"little\",\"deadband\":0.5,\"units\":\"kWh\"}"),
         err.msg);
+}
+
+/* MB-6: 64-bit types, strings, byte orders and register bits. */
+static void test_mb6_tags(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse_tag("{\"name\":\"a\",\"area\":\"holding\",\"address\":0,\"type\":\"uint64\"},"
+                  "{\"name\":\"b\",\"area\":\"input\",\"address\":4,\"type\":\"int64\","
+                  "\"word_order\":\"CDAB\",\"deadband\":10},"
+                  "{\"name\":\"c\",\"area\":\"input\",\"address\":8,\"type\":\"float64\","
+                  "\"word_order\":\"DCBA\",\"scale\":2},"
+                  "{\"name\":\"d\",\"area\":\"holding\",\"address\":12,\"type\":\"string\","
+                  "\"length\":16,\"word_order\":\"BADC\",\"writable\":true},"
+                  "{\"name\":\"e\",\"area\":\"holding\",\"address\":40,\"type\":\"bool\","
+                  "\"bit\":15,\"writable\":true},"
+                  "{\"name\":\"f\",\"area\":\"input\",\"address\":40,\"type\":\"bool\",\"bit\":0},"
+                  "{\"name\":\"g\",\"area\":\"input\",\"address\":41,\"type\":\"int32\","
+                  "\"word_order\":\"ABCD\"}"),
+        err.msg);
+    TEST_ASSERT_EQUAL(GW_TYPE_UINT64, cfg.tags[0].type);
+    TEST_ASSERT_EQUAL(4, gw_tag_width(&cfg.tags[0]));
+    TEST_ASSERT_EQUAL(GW_NO_BIT, cfg.tags[0].bit);
+    TEST_ASSERT_EQUAL(0, cfg.tags[0].length);
+    TEST_ASSERT_EQUAL(GW_WORD_LITTLE, cfg.tags[1].word_order);
+    TEST_ASSERT_EQUAL(GW_WORD_DCBA, cfg.tags[2].word_order);
+    TEST_ASSERT_EQUAL(GW_TYPE_STRING, cfg.tags[3].type);
+    TEST_ASSERT_EQUAL(16, cfg.tags[3].length);
+    TEST_ASSERT_EQUAL(16, gw_tag_width(&cfg.tags[3]));
+    TEST_ASSERT_EQUAL(GW_WORD_BADC, cfg.tags[3].word_order);
+    TEST_ASSERT_EQUAL(15, cfg.tags[4].bit);
+    TEST_ASSERT_EQUAL(1, gw_tag_width(&cfg.tags[4]));
+    TEST_ASSERT_EQUAL(0, cfg.tags[5].bit);
+    TEST_ASSERT_EQUAL(GW_WORD_BIG, cfg.tags[6].word_order);
+
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"string\"}"),
+                    "devices[0].tags[0].length: obligatorio con type=string");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"string\","
+                              "\"length\":17}"),
+                    "devices[0].tags[0].length: valor 17 fuera de rango [1, 16]");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"int16\","
+                              "\"length\":2}"),
+                    "length: solo vale con type=string");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"string\","
+                              "\"length\":2,\"scale\":2}"),
+                    "scale/offset no se admiten en tags string");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"string\","
+                              "\"length\":2,\"deadband\":1}"),
+                    "deadband: no se admite en tags string");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":65533,\"type\":\"int64\"}"),
+                    "65535");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bool\","
+                              "\"bit\":16}"),
+                    "devices[0].tags[0].bit: valor 16 fuera de rango [0, 15]");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"coil\",\"address\":0,\"type\":\"bool\","
+                              "\"bit\":1}"),
+                    "bit: solo vale con type=bool en las áreas holding e input");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\","
+                              "\"bit\":1}"),
+                    "bit: solo vale con type=bool");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bool\","
+                              "\"bit\":1,\"word_order\":\"BADC\"}"),
+                    "word_order: no se admite en un tag bit");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"bool\","
+                              "\"bit\":1,\"writable\":true}"),
+                    "writable: solo las áreas coil y holding");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bool\","
+                              "\"bit\":1,\"scale\":2}"),
+                    "scale/offset no se admiten en tags bool");
 }
 
 static void test_section_errors(void)
@@ -518,6 +586,7 @@ int main(void)
     RUN_TEST(test_ipv6_section);
     RUN_TEST(test_syslog_section);
     RUN_TEST(test_schema_rules);
+    RUN_TEST(test_mb6_tags);
     RUN_TEST(test_section_errors);
     RUN_TEST(test_limits);
     RUN_TEST(test_syntax_errors_give_line_and_column);

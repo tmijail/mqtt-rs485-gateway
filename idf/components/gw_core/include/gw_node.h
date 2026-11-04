@@ -48,8 +48,9 @@ typedef struct {
                    bool retain);
     /** Drive DO @p index (0-7); the implementation stores the read-back in gw_tagdb. */
     bool (*set_do)(void *ctx, uint8_t index, bool on);
-    /** Hand a write to the RS485 owner; false if its queue is full. */
-    bool (*request_write)(void *ctx, uint16_t tag, double value);
+    /** Hand a write to the RS485 owner; false if its queue is full. @p value carries the
+     * member the tag uses (gw_conv_kind). */
+    bool (*request_write)(void *ctx, uint16_t tag, const gw_tag_value_t *value);
     /** Free entries in the RS485 owner's write queue. Only this task adds entries, so the
      * room can only grow until the next request_write (a DCMD is queued whole or not at all). */
     size_t (*write_room)(void *ctx);

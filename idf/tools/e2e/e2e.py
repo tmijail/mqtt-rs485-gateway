@@ -54,7 +54,12 @@ SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
 PROBE_MAX_S = 10.0                # CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS / 1000, read in main()
 GROUP, NODE, DEVICE, BULK = "Plant1", "GW01", "Meter1", "Bulk"
 T = f"spBv1.0/{GROUP}"
-ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/1": 20, "DO/3": 22, "Voltage": 100, "Setpoint": 101, "Run": 102, "Limit": 103}
+ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/1": 20, "DO/3": 22, "Voltage": 100, "Setpoint": 101, "Run": 102,
+         "Limit": 103, "Energy": 104, "Counter": 105, "Flow": 106, "Temp": 107, "Serial": 108,
+         "Alarm": 109, "Ready": 110}
+# MB-6 values served by unit 1, and the registers that hold them (see ModbusSlave.set_mb6)
+MB6 = {"Energy": 2 ** 53 + 1, "Counter": -(2 ** 53 + 1), "Flow": 1234.56789012345, "Temp": -123456,
+       "Serial": "SN-0042-ABCD", "Alarm": True, "Ready": True}
 
 spb = spb_decode.load_module()
 # The dead units (Dead3..Dead5) get no answer by design; pymodbus would log every request.
@@ -127,6 +132,20 @@ class ModbusSlave:
 
     def get(self, fc, addr, count=1):
         return self.ctx.getValues(fc, addr, count)
+
+    def set_mb6(self):
+        """MB-6 tags of Meter1 (tools/e2e/fs/config.json), each in its byte order."""
+        words = lambda v, n: [(v >> (16 * (n - 1 - i))) & 0xFFFF for i in range(n)]  # noqa: E731
+        swap = lambda w: ((w & 0xFF) << 8) | (w >> 8)  # noqa: E731
+        self.ctx.setValues(3, 30, words(MB6["Energy"], 4))                              # ABCD
+        self.ctx.setValues(3, 34, words(MB6["Counter"] & (2 ** 64 - 1), 4)[::-1])       # CDAB
+        flow = struct.unpack(">Q", struct.pack(">d", MB6["Flow"]))[0]
+        self.ctx.setValues(4, 40, [swap(w) for w in words(flow, 4)[::-1]])              # DCBA
+        self.ctx.setValues(4, 44, [swap(w) for w in words(MB6["Temp"] & 0xFFFFFFFF, 2)])  # BADC
+        text = MB6["Serial"].encode().ljust(16, b"\0")
+        self.ctx.setValues(3, 50, list(struct.unpack(">8H", text)))
+        self.ctx.setValues(3, 60, [0x0109])     # Alarm = bit 3; bits 0 and 8 must survive writes
+        self.ctx.setValues(4, 46, [0x8000])     # Ready = bit 15
 
 
 # ---------------------------------------------------------------- SNTP responder
@@ -553,6 +572,7 @@ def main():
     slave = ModbusSlave()
     slave.set_float(4, 0, 230.5)       # Voltage, input 0..1, float32 ABCD
     slave.ctx.setValues(3, 10, [50])   # Setpoint raw 50 -> 5.0
+    slave.set_mb6()
     slave.start()
     try:
         run_config_failsafe(args, work)
@@ -621,7 +641,7 @@ def run_config_failsafe(args, work):
         # "ntp": line 5, column 3
         ("syntax-error", {"config.json": good.replace(b'"dhcp": true\n  },', b'"dhcp": true\n  }', 1)},
          r"JSON mal formado en la línea 5, columna 3"),
-        ("semantic-error", {"config.json": good.replace(b'"type": "float32"', b'"type": "float64"', 1)},
+        ("semantic-error", {"config.json": good.replace(b'"type": "float32"', b'"type": "float16"', 1)},
          r"devices\[0\]\.tags\[0\]\.type: valor no válido"),
     ]
     obs = Observer()
@@ -711,6 +731,67 @@ def check_offline_backoff(slave, t0):
     return check("Issues #4 #61 healthy device keeps its 1 s period next to 3 dead ones, from boot",
                  ok, f"{len(starts)} Meter1 cycles in the first {span:.1f} s, longest interval "
                  f"{worst:.2f} s")
+
+
+def int64_of(m):
+    """Int64 metric value: long_value carries the two's complement as an unsigned 64-bit int."""
+    return m.long_value - 2 ** 64 if m.long_value >= 2 ** 63 else m.long_value
+
+
+def check_mb6_birth(db):
+    """MB-6: each new type and byte order, decoded with the right Sparkplug datatype."""
+    if not db:
+        return check("MB-6 DBIRTH with 64-bit, string and bit tags", False, "no DBIRTH")
+    p = db[2]
+    got = {}
+    want = {"Energy": (8, MB6["Energy"]), "Counter": (4, MB6["Counter"]), "Flow": (10, MB6["Flow"]),
+            "Temp": (3, MB6["Temp"]), "Serial": (12, MB6["Serial"]), "Alarm": (11, True),
+            "Ready": (11, True)}
+    for name in want:
+        m = metric(p, name=name)
+        if m is None:
+            got[name] = None
+            continue
+        value = {8: lambda: m.long_value, 4: lambda: int64_of(m), 10: lambda: m.double_value,
+                 3: lambda: m.int_value - 2 ** 32 if m.int_value >= 2 ** 31 else m.int_value,
+                 12: lambda: m.string_value, 11: lambda: m.boolean_value}[m.datatype]()
+        got[name] = (m.datatype, value)
+    return check("MB-6 DBIRTH: uint64 ABCD (2^53+1 exact), int64 CDAB, float64 DCBA, int32 BADC, "
+                 "string and register bits, with datatypes UInt64/Int64/Double/Int32/String/Boolean",
+                 got == want, f"got {got}")
+
+
+def check_mb6_writes(obs, slave, dcmd_t, ddata_t):
+    """MB-6 DCMD: a 64-bit value beyond 2^53 written exactly with one FC16 of 4 registers, a
+    string, and a register bit by read-modify-write (the register's other bits survive)."""
+    value = 2 ** 62 + 3
+    obs.drain()
+    slave.ctx.writes.clear()
+    obs.publish_cmd(dcmd_t, [{"name": "Counter", "datatype": 4, "long_value": value}])
+    dd = obs.wait(ddata_t, 5, lambda q: metric(q, alias=ALIAS["Counter"]) is not None)
+    regs = [(value >> (16 * i)) & 0xFFFF for i in range(4)]   # CDAB: least significant word first
+    back = int64_of(metric(dd[2], alias=ALIAS["Counter"])) if dd else None
+    check("MB-6 DCMD int64 2^62+3 -> one FC16 of 4 registers (CDAB), DDATA exact",
+          dd and slave.ctx.writes == [(16, 34, regs)] and back == value,
+          f"slave writes {slave.ctx.writes} (expected {[(16, 34, regs)]}), DDATA {back}")
+    obs.drain()
+    slave.ctx.writes.clear()
+    obs.publish_cmd(dcmd_t, [{"name": "Alarm", "datatype": 11, "boolean_value": False},
+                             {"name": "Serial", "datatype": 12, "string_value": "HELLO"}])
+    seen = {}
+    end = time.monotonic() + 5
+    while len(seen) < 2 and time.monotonic() < end:
+        dd = obs.wait(ddata_t, max(0.1, end - time.monotonic()))
+        for a in ("Alarm", "Serial"):
+            m = metric(dd[2], alias=ALIAS[a]) if dd else None
+            if m is not None:
+                seen[a] = m.boolean_value if a == "Alarm" else m.string_value
+    hello = list(struct.unpack(">8H", b"HELLO".ljust(16, b"\0")))
+    reg60 = slave.get(3, 60)[0]
+    check("MB-6 DCMD register bit (read-modify-write keeps the other bits) and string",
+          (6, 60, [0x0101]) in slave.ctx.writes and (16, 50, hello) in slave.ctx.writes
+          and reg60 == 0x0101 and seen == {"Alarm": False, "Serial": "HELLO"},
+          f"slave writes {slave.ctx.writes}, holding 60 = {reg60:#06x}, DDATA {seen}")
 
 
 def run_network_variant(args, work):
@@ -812,6 +893,7 @@ def run(args, log, slave, broker, conf, work):
         and abs(metric(db[2], name="Setpoint").float_value - 5.0) < 1e-4
     check("SPB-6 DBIRTH with current values", ok,
           spb_decode.describe("DBIRTH", db[2]).replace("\n", " |") if db else "no DBIRTH")
+    check_mb6_birth(db)
     if not any(m[1] == f"{T}/DBIRTH/{NODE}/{BULK}" for m in CAPTURE):
         obs.wait(f"{T}/DBIRTH/{NODE}/{BULK}", 10)
     bulk = [m for m in CAPTURE if m[1] == f"{T}/DBIRTH/{NODE}/{BULK}"]
@@ -943,6 +1025,7 @@ def run(args, log, slave, broker, conf, work):
           and abs(metric(dd[2], alias=ALIAS["Limit"]).float_value - 1234.5) < 1e-3,
           f"slave writes {slave.ctx.writes}, DDATA "
           f"{metric(dd[2], alias=ALIAS['Limit']).float_value if dd else None}")
+    check_mb6_writes(obs, slave, dcmd_t, ddata_t)
     obs.drain()
     slave.ctx.writes.clear()
     obs.publish_cmd(dcmd_t, [{"alias": ALIAS["Run"], "datatype": 11, "boolean_value": True}])

@@ -394,6 +394,123 @@ static void test_dead_devices_do_not_delay_the_healthy_one(void)
     TEST_ASSERT_EQUAL_UINT32(10000, p.probe_ms[1]);
 }
 
+/* ---- MB-6: 64-bit types, strings, byte orders and register bits ---- */
+
+static const char k_mb6[] =
+    "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+    " \"devices\": [{\"name\": \"M\", \"unit_id\": 1, \"tags\": ["
+    "  {\"name\": \"U64\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint64\"},"
+    "  {\"name\": \"I64\", \"area\": \"holding\", \"address\": 4, \"type\": \"int64\","
+    "   \"word_order\": \"CDAB\", \"writable\": true},"
+    "  {\"name\": \"F64\", \"area\": \"input\", \"address\": 0, \"type\": \"float64\","
+    "   \"word_order\": \"DCBA\"},"
+    "  {\"name\": \"I32\", \"area\": \"input\", \"address\": 4, \"type\": \"int32\","
+    "   \"word_order\": \"BADC\"},"
+    "  {\"name\": \"Str\", \"area\": \"holding\", \"address\": 10, \"type\": \"string\","
+    "   \"length\": 4, \"writable\": true},"
+    "  {\"name\": \"B3\", \"area\": \"holding\", \"address\": 20, \"type\": \"bool\","
+    "   \"bit\": 3, \"writable\": true},"
+    "  {\"name\": \"B15\", \"area\": \"input\", \"address\": 6, \"type\": \"bool\", \"bit\": 15}"
+    "]}]}";
+
+static gw_config_t mb6;
+
+static void setup_mb6(bool force_multi)
+{
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(k_mb6, sizeof(k_mb6) - 1, &mb6, &err), err.msg);
+    cfg = &mb6;
+    gw_tagdb_reset();
+    sim_reset(&s, 1);
+    /* U64 = 2^53 + 1 (not exact in a double), ABCD */
+    s.holding[0] = 0x0020;
+    s.holding[3] = 0x0001;
+    /* I64 = -2, CDAB: least significant word first */
+    s.holding[4] = 0xFFFE;
+    s.holding[5] = s.holding[6] = s.holding[7] = 0xFFFF;
+    /* F64 = -0.5 = 0xBFE0000000000000, DCBA */
+    s.input[3] = 0xE0BF;
+    /* I32 = -123456 = 0xFFFE1DC0, BADC */
+    s.input[4] = 0xFEFF;
+    s.input[5] = 0xC01D;
+    /* B15: bit 15 of input 6 */
+    s.input[6] = 0x8000;
+    memcpy(&s.holding[10], ((const uint16_t[]){0x4142, 0x4300, 0, 0}), 4 * sizeof(uint16_t));
+    s.holding[20] = 0x0109;   /* bit 3 set, other bits must survive writes */
+    mb_transport_t t = sim_transport(&s);
+    mb_master_cfg_t mc = {.baud = 9600, .response_timeout_ms = 200, .retries = 2,
+                          .inter_frame_delay_ms = 5};
+    mb_master_init(&mb, &t, &mc);
+    gw_poller_opts_t o = {.merge_reads = true, .force_multi_write = force_multi,
+                          .offline_probe_max_ms = 10000};
+    gw_poller_init(&p, cfg, &mb, &o, 0);
+}
+
+static void test_mb6_decode(void)
+{
+    setup_mb6(false);
+    TEST_ASSERT_EQUAL(GW_DEV_WENT_ONLINE, gw_poller_poll(&p, 0, 0));
+    TEST_ASSERT_TRUE(online());
+    TEST_ASSERT_EQUAL_UINT64(9007199254740993ull, vals[0].u64);
+    TEST_ASSERT_EQUAL_INT64(-2, vals[1].i64);
+    TEST_ASSERT_EQUAL_DOUBLE(-0.5, vals[2].value);
+    TEST_ASSERT_EQUAL_DOUBLE(-123456.0, vals[3].value);
+    TEST_ASSERT_EQUAL_STRING("ABC", vals[4].str);
+    TEST_ASSERT_EQUAL_DOUBLE(1.0, vals[5].value);
+    TEST_ASSERT_EQUAL_DOUBLE(1.0, vals[6].value);
+    s.input[6] = 0x7FFF;   /* every bit but 15 */
+    gw_poller_poll(&p, 0, 1000);
+    TEST_ASSERT_TRUE(online());
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, vals[6].value);
+}
+
+static void test_mb6_writes(void)
+{
+    setup_mb6(false);
+    gw_poller_poll(&p, 0, 0);
+    /* int64 beyond 2^53, exact, as one FC16 of 4 registers in CDAB order */
+    gw_tag_value_t v = {.i64 = 4611686018427387907ll};   /* 2^62 + 3 */
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write_value(&p, 1, &v));
+    TEST_ASSERT_EQUAL(MB_FC_WRITE_MULTIPLE_REGISTERS, s.last_write_fc);
+    TEST_ASSERT_EQUAL_HEX16_ARRAY(((const uint16_t[]){0x0003, 0x0000, 0x0000, 0x4000}),
+                                  &s.holding[4], 4);
+    gw_tag_value_t got;
+    gw_tagdb_get_tag(1, &got);
+    TEST_ASSERT_TRUE(got.valid);
+    TEST_ASSERT_EQUAL_INT64(4611686018427387907ll, got.i64);
+    /* string: NUL padded, too long rejected */
+    strcpy(v.str, "XYZ12");
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write_value(&p, 4, &v));
+    TEST_ASSERT_EQUAL_HEX16_ARRAY(((const uint16_t[]){0x5859, 0x5A31, 0x3200, 0x0000}),
+                                  &s.holding[10], 4);
+    gw_tagdb_get_tag(4, &got);
+    TEST_ASSERT_EQUAL_STRING("XYZ12", got.str);
+    strcpy(v.str, "123456789");
+    unsigned before = s.requests;
+    TEST_ASSERT_EQUAL(GW_WRITE_BAD_VALUE, gw_poller_write_value(&p, 4, &v));
+    TEST_ASSERT_EQUAL(before, s.requests);
+    /* register bit: read-modify-write, the other bits are kept */
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 5, 0));
+    TEST_ASSERT_EQUAL_HEX16(0x0101, s.holding[20]);
+    TEST_ASSERT_EQUAL(MB_FC_WRITE_SINGLE_REGISTER, s.last_write_fc);
+    gw_tagdb_get_tag(5, &got);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, got.value);
+    s.holding[20] = 0xF000;          /* the device changed other bits meanwhile */
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 5, 1));
+    TEST_ASSERT_EQUAL_HEX16(0xF008, s.holding[20]);
+    TEST_ASSERT_EQUAL(GW_WRITE_BAD_VALUE, gw_poller_write(&p, 5, NAN));
+    /* the read of a bit write fails: nothing is written */
+    s.offline = true;
+    TEST_ASSERT_EQUAL(GW_WRITE_BUS_ERROR, gw_poller_write(&p, 5, 0));
+    TEST_ASSERT_EQUAL_HEX16(0xF008, s.holding[20]);
+    s.offline = false;
+    /* FC16 forced: the bit write goes as FC16 of one register */
+    setup_mb6(true);
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 5, 0));
+    TEST_ASSERT_EQUAL(MB_FC_WRITE_MULTIPLE_REGISTERS, s.last_write_fc);
+    TEST_ASSERT_EQUAL_HEX16(0x0101, s.holding[20]);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -411,5 +528,7 @@ int main(void)
     RUN_TEST(test_never_seen_device_is_probed_from_the_start);
     RUN_TEST(test_probe_answered_but_cycle_incomplete_stays_offline);
     RUN_TEST(test_dead_devices_do_not_delay_the_healthy_one);
+    RUN_TEST(test_mb6_decode);
+    RUN_TEST(test_mb6_writes);
     return UNITY_END();
 }

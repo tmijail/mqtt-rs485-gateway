@@ -27,6 +27,12 @@ extern "C" {
 #define GW_PSK_SIZE    65   /* Wi-Fi passphrase (8..63) or raw PSK (64 hex digits) */
 #define GW_CFG_ERR_SIZE 192
 
+/* MB-6 strings: up to 16 registers, two characters per register. */
+#define GW_STR_MAX_REGS 16
+#define GW_STR_MAX      (2 * GW_STR_MAX_REGS)
+#define GW_TAG_MAX_REGS GW_STR_MAX_REGS     /* widest tag: a string of 16 registers */
+#define GW_NO_BIT       (-1)
+
 typedef enum {
     GW_AREA_COIL = 0,
     GW_AREA_DISCRETE,
@@ -41,11 +47,19 @@ typedef enum {
     GW_TYPE_UINT32,
     GW_TYPE_INT32,
     GW_TYPE_FLOAT32,
+    GW_TYPE_UINT64,     /* MB-6: 4 registers */
+    GW_TYPE_INT64,
+    GW_TYPE_FLOAT64,
+    GW_TYPE_STRING,     /* MB-6: `length` registers, two ASCII characters each */
 } gw_type_t;
 
+/* Register and byte order of multi-byte values (MB-5, MB-6). Letters name the bytes of the value
+ * from the most significant (A) down, in the order they arrive on the wire. */
 typedef enum {
-    GW_WORD_BIG = 0,    /* ABCD: high word in the lower register address */
-    GW_WORD_LITTLE,     /* CDAB: low word in the lower register address */
+    GW_WORD_BIG = 0,    /* ABCD ("big"): most significant word first, bytes big-endian */
+    GW_WORD_LITTLE,     /* CDAB ("little"): least significant word first */
+    GW_WORD_BADC,       /* BADC: most significant word first, bytes swapped in each register */
+    GW_WORD_DCBA,       /* DCBA: fully little-endian */
 } gw_word_order_t;
 
 typedef enum {
@@ -102,6 +116,8 @@ typedef struct {
     gw_type_t type;
     gw_word_order_t word_order;
     uint16_t address;
+    int8_t bit;                 /* MB-6: bit 0..15 of a holding/input register (bool), or GW_NO_BIT */
+    uint8_t length;             /* MB-6: registers of a string tag (1..GW_STR_MAX_REGS), else 0 */
     bool writable;
     double scale;
     double offset;

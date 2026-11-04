@@ -16,7 +16,7 @@ static const char *TAG = "bus";
 
 typedef struct {
     uint16_t tag;
-    double value;
+    gw_tag_value_t value;   /* member per gw_conv_kind (MB-6: exact 64-bit integers, strings) */
 } write_req_t;
 
 static gw_bus_callbacks_t s_cb;
@@ -35,7 +35,7 @@ static uint32_t now_ms(void)
 
 static void do_write(const write_req_t *w)
 {
-    gw_write_status_t st = gw_poller_write(&s_poller, w->tag, w->value);
+    gw_write_status_t st = gw_poller_write_value(&s_poller, w->tag, &w->value);
     s_cb.write_done(w->tag, st == GW_WRITE_OK);
 }
 
@@ -100,9 +100,9 @@ esp_err_t gw_bus_start(const gw_config_t *cfg, const mb_transport_t *tr, const g
     return t != NULL ? ESP_OK : ESP_FAIL;
 }
 
-bool gw_bus_request_write(uint16_t tag, double value)
+bool gw_bus_request_write(uint16_t tag, const gw_tag_value_t *value)
 {
-    const write_req_t w = {.tag = tag, .value = value};
+    const write_req_t w = {.tag = tag, .value = *value};
     return xQueueSend(s_writes, &w, 0) == pdTRUE;
 }
 

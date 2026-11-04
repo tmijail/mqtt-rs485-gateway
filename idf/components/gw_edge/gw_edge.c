@@ -251,7 +251,7 @@ static bool op_set_do(void *ctx, uint8_t index, bool on)
     return gw_io_set_do(index, on);
 }
 
-static bool op_request_write(void *ctx, uint16_t tag, double value)
+static bool op_request_write(void *ctx, uint16_t tag, const gw_tag_value_t *value)
 {
     (void)ctx;
     return gw_bus_request_write(tag, value);

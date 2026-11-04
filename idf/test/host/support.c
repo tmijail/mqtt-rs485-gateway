@@ -233,7 +233,7 @@ static bool rec_set_do(void *ctx, uint8_t index, bool on)
     return true;
 }
 
-static bool rec_request_write(void *ctx, uint16_t tag, double value)
+static bool rec_request_write(void *ctx, uint16_t tag, const gw_tag_value_t *value)
 {
     (void)ctx;
     if (g_rec.write_queue_full) {
@@ -244,7 +244,8 @@ static bool rec_request_write(void *ctx, uint16_t tag, double value)
         g_rec.room--;
     }
     g_rec.last_write_tag = tag;
-    g_rec.last_write_value = value;
+    g_rec.last_write_value = value->value;
+    g_rec.last_write = *value;
     return true;
 }
 
@@ -297,6 +298,9 @@ static bool dec_cb(void *ctx, const spb_rx_metric_t *m)
     o->is_null = m->is_null;
     o->kind = m->kind;
     o->timestamp = m->timestamp;
+    if (m->kind == SPB_VAL_LONG) {
+        o->u64 = m->v.l;
+    }
     if (m->kind == SPB_VAL_STRING) {
         snprintf(o->str, sizeof(o->str), "%s", m->v.s);
     } else {
