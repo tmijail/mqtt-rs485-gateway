@@ -29,6 +29,22 @@ menu "Gateway: firmware updates (FW-1)"
         range 1 7
         default 2
 
+    config GW_FW_TRIAL_TASK_STACK
+        int "Stack of the trial task of a new image (bytes)"
+        range 4096 16384
+        default 6144
+        help
+            Issue #108: a new image on trial has a task (core 0) for what its trial timer
+            asks for: the rollback at the timeout, which verifies the previous image (its
+            signature too, with signed images), and the retries of a failed confirmation.
+            The esp_timer task (3.5 KB) overflowed with it. The task exists only while the
+            image is on trial; the emulator build logs the stack the verification leaves.
+
+    config GW_FW_TRIAL_TASK_PRIORITY
+        int "Priority of the trial task"
+        range 1 20
+        default 5
+
     config GW_FW_PARK_OTHER_CORE
         bool "Park the other core while an image is verified (QEMU only)"
         depends on GW_IO_SIMULATED

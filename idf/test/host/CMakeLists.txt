@@ -114,3 +114,20 @@ foreach(c "fresh;fresh;;;0" "stale;stale;;warn;0;MBEDTLS_DYNAMIC_BUFFER" "stale;
                              PASS_REGULAR_EXPRESSION "CMake Warning.*CONFIG_${expect}")
     endif()
 endforeach()
+
+# Issue #108 B7: with flash and NVS encryption, the partition table of the sdkconfig must flag
+# storage and coredump "encrypted": the project's partitions-production.csv passes, a table
+# without the flag on either fails (fixtures resolved against sdkconfig_check/).
+foreach(c "prodpart_ok;${IDF_PROJECT_DIR};0" "prodpart_plain;${GW_CFGCHK_DIR};1"
+          "prodpart_coredump;${GW_CFGCHK_DIR};1")
+    list(GET c 0 name)
+    list(GET c 1 dir)
+    list(GET c 2 fails)
+    add_test(NAME sdkconfig_check_${name}
+             COMMAND ${CMAKE_COMMAND} -DSDKCONFIG=${GW_CFGCHK_DIR}/${name}.sdkconfig
+                     "-DDEFAULTS=${GW_CFGCHK_DEFAULTS}$<SEMICOLON>${IDF_PROJECT_DIR}/sdkconfig.production"
+                     -DPROJECT_DIR=${dir} -P ${GW_CFGCHK})
+    if(fails)
+        set_tests_properties(sdkconfig_check_${name} PROPERTIES WILL_FAIL TRUE)
+    endif()
+endforeach()

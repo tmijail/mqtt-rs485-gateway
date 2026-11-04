@@ -120,6 +120,7 @@ static void start_shell(const gw_config_t *cfg, const char *source, bool running
 static void restart_now(void *arg)
 {
     (void)arg;
+    gw_fw_restart_requested();   /* issue #108 B5 */
     gw_bus_quiesce(1000);   /* no-op unless the bus runs */
     esp_restart();
 }

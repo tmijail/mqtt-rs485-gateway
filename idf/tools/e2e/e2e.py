@@ -2661,16 +2661,25 @@ def run_ota(args, work):
         trial = gw.wait_log(r"fw: firmware e2e-v3 \(ota_0\) on trial", 30, asked)
         back = gw.wait_log(r"fw: firmware e2e-v3 rejected \(no Sparkplug session before the timeout\)",
                            timeout_s + 30, asked)
+        # issue #108 B4: the rollback runs in the trial task, not esp_timer; the emulator build
+        # logs the stack the verification of the previous image leaves (margin >= 1 KB)
+        gw.wait_log(r"fw: rollback stack: \d+ B free", 20, back or asked)
+        st_line = gw.find(r"fw: rollback stack: \d+ B free in task \S+", back or asked)
+        st_m = re.search(r"rollback stack: (\d+) B free in task (\S+)", st_line[0]) if st_line else None
         broker = start_broker(conf, work / "mosquitto-ota.log")
         obs = observer_retry(port)
         nb4 = obs.wait(nbirth_t, 60)
         check(f"FW-1 web upload; a new image without a Sparkplug session for {timeout_s} s (broker "
-              "down) goes back to the previous one, which says so",
+              "down) goes back to the previous one, which says so; issue #108 B4: the rollback "
+              "(verification of the previous image) runs in the trial task with at least 1 KB of "
+              "stack left",
               st == 200 and death and trial and back and nb4
               and metric(nb4[2], name="Node Info/Firmware").string_value == "e2e-v2"
-              and fw_state(nb4[2]) == "rolled back from e2e-v3",
+              and fw_state(nb4[2]) == "rolled back from e2e-v3"
+              and st_m and st_m.group(2) == "fw_trial" and int(st_m.group(1)) >= 1024,
               f"POST {st} {body[:60]!r}; on trial at {trial - asked:.1f} s, rolled back at "
-              f"{back - trial:.1f} s; NBIRTH {fw_state(nb4[2]) if nb4 else None!r}"
+              f"{back - trial:.1f} s; NBIRTH {fw_state(nb4[2]) if nb4 else None!r}; "
+              f"{st_m.group(0) if st_m else 'no stack line'}"
               if trial and back else f"POST {st} {body[:80]!r}; trial {trial}, back {back}")
 
         # NCMD v3 again; a reset during the trial (panic): the bootloader goes back
@@ -2984,7 +2993,7 @@ def run_nvs_migration(args, work):
     nothing it writes can be lost or win over the copy; then the partition comes back."""
     node, port = "GW41", MQTT_PORT + 24
     nvs_off, nvs_size = storage_partition("nvs")
-    st_off, _ = storage_partition("storage")
+    st_off, st_size = storage_partition("storage")
     csv = work / "nvs-plain.csv"
     csv.write_text("key,type,encoding,value\nspb,namespace,,\nbdseq,data,u8,41\n"
                    "secrets,namespace,,\ncommission,data,string,abcdefgh1234\n"
@@ -3029,6 +3038,7 @@ def run_nvs_migration(args, work):
             saved = bytes(img[st_off:st_off + 8192])
             img[st_off:st_off + 8192] = b"\x55" * 8192
             flash.write_bytes(img)
+            storage_before = bytes(img[st_off:st_off + st_size])
             t = time.monotonic()
             gw = Gateway(args, log, flash, efuse=efuse)
             gw.start()
@@ -3037,13 +3047,26 @@ def run_nvs_migration(args, work):
                                r"not mount and the NVS looks like an interrupted migration", 60, t)
             _, h_out = gw.shell("status", [r"^secrets\s+NVS UNAVAILABLE this boot: LittleFS does not "
                                            r"mount"], timeout=10)
+            # issue #108 M1: a configuration saved in that boot is refused (formatting LittleFS
+            # would destroy the copy); the partition stays as it was
+            asked = time.monotonic()
+            gw.console("config load")
+            gw.wait_log(r"^paste the JSON document", 10, asked)
+            gw.sock.sendall((json.dumps(cfg, indent=2) + "\n").encode())
+            refused = gw.wait_log(r"^config: rejected: configuración no guardada: LittleFS no monta y "
+                                  r"puede tener la copia de una migración de NVS", 30, asked)
+            formatted = gw.find(r"formatting it to save", asked)
+            time.sleep(1)
             gw.kill()
             img = bytearray(flash.read_bytes())
             same = img[nvs_off:nvs_off + nvs_size] == region
+            kept = bytes(img[st_off:st_off + st_size]) == storage_before
             img[st_off:st_off + 8192] = saved
             flash.write_bytes(img)
-            # cut 1 left the partition erased: that boot does not even initialise it
-            out_of_reach.append((left is not None, all(h_out.values()), same or point == "2"))
+            # issue #108 B9: the boot does not change the NVS either (cut 1: not even initialised;
+            # cut 2: only read for the migration's markers)
+            out_of_reach.append((left is not None, all(h_out.values()), same,
+                                 refused is not None and not formatted and kept))
         burned = efuse.read_bytes() != blank
         t0 = time.monotonic()
         gw = Gateway(args, log, flash, efuse=efuse)
@@ -3096,11 +3119,13 @@ def run_nvs_migration(args, work):
               f"eFuse file changed by the interrupted boots: {burned}; key generations per boot "
               f"{keygen}; {(boots[0].find(r'storage: NVS keys not readable') or ['no log'])[0][:110]}")
         check("Issue #104 after each cut, a boot whose LittleFS does not mount (the copy is in it) "
-              "opens no NVS at all (no empty or partial encrypted NVS: cut 1 leaves the erased "
-              "partition untouched) and the shell says why; the next boot with LittleFS still "
-              "finishes the migration (check above)",
+              "opens no NVS at all and leaves the NVS partition as it was (no empty or partial "
+              "encrypted NVS), the shell says why; issue #108 M1: a configuration saved in that "
+              "boot is refused and LittleFS is not formatted, so the next boot with LittleFS "
+              "still finishes the migration from the copy (check above)",
               len(out_of_reach) == 2 and all(all(x) for x in out_of_reach),
-              f"(logged, shell, NVS untouched) per cut: {out_of_reach}")
+              f"(logged, shell, NVS untouched, save refused and LittleFS kept) per cut: "
+              f"{out_of_reach}")
     finally:
         obs.close()
         broker.terminate()
