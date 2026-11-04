@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "gw_node.h"
+#include "gw_port.h"
 #include "gw_tagdb.h"
 #include "spb.h"
 #include "support.h"
@@ -309,6 +310,37 @@ static void test_dcmd_writes(void)
     TEST_ASSERT_EQUAL(2, g_rec.writes);
 }
 
+static void send_raw(const char *topic, const raw_metric_t *m, size_t n)
+{
+    size_t len = raw_payload(cmd, sizeof(cmd), m, n);
+    gw_node_handle_message(&node, topic, strlen(topic), cmd, len);
+}
+
+/* Issue #14: a command metric without an alias is not logged as "alias 0". */
+static void test_discard_log_shows_alias_only_if_present(void)
+{
+    static char log[2048];
+    set_meter(true, 1, 2, 0);
+    gw_node_session_up(&node, 0);
+    gw_port_log_capture(log, sizeof(log));
+    raw_metric_t by_name = {.name = "Voltage", .datatype = SPB_DT_FLOAT, .kind = RAW_FLOAT, .num = 1};
+    send_raw("spBv1.0/Plant1/DCMD/GW01/Meter1", &by_name, 1);
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Voltage' discarded: read-only metric"));
+    TEST_ASSERT_NULL(strstr(log, "alias"));
+    log[0] = '\0';
+    raw_metric_t by_alias = {.has_alias = true, .alias = GW_ALIAS_TAG_BASE + VOLTAGE,
+                             .datatype = SPB_DT_FLOAT, .kind = RAW_FLOAT, .num = 1};
+    send_raw("spBv1.0/Plant1/DCMD/GW01/Meter1", &by_alias, 1);
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric '' (alias 100) discarded: read-only metric"));
+    log[0] = '\0';
+    raw_metric_t alias0 = {.name = "Nope", .has_alias = true, .alias = 0,
+                           .datatype = SPB_DT_BOOLEAN, .kind = RAW_BOOL, .num = 1};
+    send_raw("spBv1.0/Plant1/NCMD/GW01", &alias0, 1);   /* an explicit alias 0 is shown */
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Nope' (alias 0) discarded"));
+    gw_port_log_capture(NULL, 0);
+    TEST_ASSERT_EQUAL(0, g_rec.writes);
+}
+
 static void test_session_down_suppresses_publishing(void)
 {
     set_meter(true, 1, 2, 0);
@@ -338,5 +370,6 @@ int main(void)
     RUN_TEST(test_ncmd_do_and_reboot);
     RUN_TEST(test_dcmd_writes);
     RUN_TEST(test_session_down_suppresses_publishing);
+    RUN_TEST(test_discard_log_shows_alias_only_if_present);
     return UNITY_END();
 }

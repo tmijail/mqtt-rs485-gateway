@@ -261,8 +261,13 @@ static bool rx_true(const spb_rx_metric_t *m)
 
 static void log_discard(const char *kind, const spb_rx_metric_t *m, const char *why)
 {
-    GW_LOGW(TAG, "%s: metric '%s' (alias %" PRIu64 ") discarded: %s", kind,
-            m->name ? m->name : "", m->has_alias ? m->alias : 0, why);
+    /* Show only what the command carried: a missing alias is not "alias 0". */
+    if (m->has_alias) {
+        GW_LOGW(TAG, "%s: metric '%s' (alias %" PRIu64 ") discarded: %s", kind,
+                m->name ? m->name : "", m->alias, why);
+    } else {
+        GW_LOGW(TAG, "%s: metric '%s' discarded: %s", kind, m->name ? m->name : "", why);
+    }
 }
 
 static bool on_ncmd_metric(void *ctx, const spb_rx_metric_t *m)

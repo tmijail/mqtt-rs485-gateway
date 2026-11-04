@@ -6,6 +6,7 @@
  */
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -30,6 +31,8 @@ void gw_port_unlock(void);
 #define GW_LOGD(tag, fmt, ...) ESP_LOGD(tag, fmt, ##__VA_ARGS__)
 #else
 void gw_port_log(char level, const char *tag, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+/** Host tests: append every log line ("<level> (<tag>) <text>\n") to @p buf; NULL stops. */
+void gw_port_log_capture(char *buf, size_t cap);
 #define GW_LOGE(tag, fmt, ...) gw_port_log('E', tag, fmt, ##__VA_ARGS__)
 #define GW_LOGW(tag, fmt, ...) gw_port_log('W', tag, fmt, ##__VA_ARGS__)
 #define GW_LOGI(tag, fmt, ...) gw_port_log('I', tag, fmt, ##__VA_ARGS__)
