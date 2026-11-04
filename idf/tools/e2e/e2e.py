@@ -2091,7 +2091,7 @@ def signed_image(args, src, version, fwdir, name):
 
 
 def run_ota_trial(args, work):
-    """Issues #99 and #101 (GW43, MQTT 5) against a broker whose Maximum Packet Size (2000) is
+    """Issues #99 and #101 (GW43, MQTT 5) against a broker whose Maximum Packet Size (2400) is
     below the Bulk DBIRTH, as in run_max_packet: every session leaves that DBIRTH out.
     (1) A new image uploaded through the web: its sessions are incomplete, so none confirms it,
     and the timeout rolls it back (#99 item 2). (2) Another image, also on trial for that reason:
@@ -2106,7 +2106,9 @@ def run_ota_trial(args, work):
     fwdir.mkdir(exist_ok=True)
     images = {k: signed_image(args, src, f"e2e-{k}", fwdir, k) for k in ("t2", "t3")}
     conf = work / "broker-trial.conf"
-    conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\nmax_packet_size 2000\n")
+    # 2400: the NBIRTH (about 2.1 KB with the longest update states) fits, the Bulk DBIRTH (about
+    # 2.7 KB) does not
+    conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\nmax_packet_size 2400\n")
     broker = start_broker(conf, work / "mosquitto-trial.log")
     obs = Observer(port)
     cfg = node_config(node, port=port, protocol="5")
@@ -2126,7 +2128,7 @@ def run_ota_trial(args, work):
     try:
         nb = obs.wait(nbirth_t, 40)
         v1 = fw(nb)
-        if not check("Issue #99 GW43 runs on the broker with Maximum Packet Size 2000 (the Bulk "
+        if not check("Issue #99 GW43 runs on the broker with Maximum Packet Size 2400 (the Bulk "
                      "DBIRTH does not fit)", nb and v1,
                      f"NBIRTH {'yes' if nb else 'no'}"):
             return

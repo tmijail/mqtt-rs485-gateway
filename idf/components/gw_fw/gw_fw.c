@@ -367,25 +367,13 @@ static void arm_trial_timer(void)
     }
 }
 
-/* Mark the running image valid. Issue #99: the image is CONFIRMED only when the write succeeded;
- * otherwise it stays on trial (no timeout: it was judged healthy) and the write is retried with
- * a backoff, since any restart before it succeeds would roll it back. Serialised: the trial
- * timer, the Sparkplug task and an operator's save may ask at once. @p nvs_restart: restart once
- * for the NVS encryption (issue #94) when it is pending; not when the caller restarts anyway. */
-static bool confirm(bool nvs_restart)
+/* The texts of a confirmation (or of its failure), in their own frame (see rollback_report()
+ * below). */
+static void __attribute__((noinline)) confirm_report(esp_err_t e, bool mine, bool nvs_restart)
 {
     char why[96];
     portENTER_CRITICAL(&s_mux);
     snprintf(why, sizeof(why), "%s", s_trial.why);
-    portEXIT_CRITICAL(&s_mux);
-    xSemaphoreTake(s_ota_lock, portMAX_DELAY);
-    park(true);
-    esp_err_t e = esp_ota_mark_app_valid_cancel_rollback();
-    park(false);
-    xSemaphoreGive(s_ota_lock);
-    portENTER_CRITICAL(&s_mux);
-    bool mine = s_trial.state == GW_OTA_TRIAL_CONFIRMING;   /* not reported by another caller */
-    gw_ota_trial_confirm_result(&s_trial, e == ESP_OK, now_ms(), esp_random());
     uint32_t attempts = s_trial.attempts;
     uint32_t next = gw_ota_trial_next_ms(&s_trial, now_ms());
     portEXIT_CRITICAL(&s_mux);
@@ -397,11 +385,10 @@ static bool confirm(bool nvs_restart)
                  (unsigned long)((next == GW_OTA_NO_TICK ? 0 : next) + 999u) / 1000u);
         ESP_LOGE(TAG, "%s", detail);
         set_status(GW_FW_TRIAL, 100, detail, "on trial: %s (not confirmed yet)", s_st.running);
-        arm_trial_timer();
-        return false;
+        return;
     }
     if (!mine) {
-        return true;
+        return;
     }
     snprintf(detail, sizeof(detail), "firmware %s confirmed: %s", s_st.running, why);
     ESP_LOGW(TAG, "%s; the bootloader keeps it", detail);
@@ -417,14 +404,37 @@ static bool confirm(bool nvs_restart)
         ESP_LOGW(TAG, "firmware %s confirmed: the NVS stays unencrypted (no LittleFS for the "
                       "migration copy); no restart for it", s_st.running);
     }
+}
+
+/* Mark the running image valid. Issue #99: the image is CONFIRMED only when the write succeeded;
+ * otherwise it stays on trial (no timeout: it was judged healthy) and the write is retried with
+ * a backoff, since any restart before it succeeds would roll it back. Serialised: the trial
+ * timer, the Sparkplug task and an operator's save may ask at once. @p nvs_restart: restart once
+ * for the NVS encryption (issue #94) when it is pending; not when the caller restarts anyway. */
+static bool confirm(bool nvs_restart)
+{
+    xSemaphoreTake(s_ota_lock, portMAX_DELAY);
+    park(true);
+    esp_err_t e = esp_ota_mark_app_valid_cancel_rollback();
+    park(false);
+    xSemaphoreGive(s_ota_lock);
+    portENTER_CRITICAL(&s_mux);
+    bool mine = s_trial.state == GW_OTA_TRIAL_CONFIRMING;   /* not reported by another caller */
+    gw_ota_trial_confirm_result(&s_trial, e == ESP_OK, now_ms(), esp_random());
+    portEXIT_CRITICAL(&s_mux);
+    confirm_report(e, mine, nvs_restart);
+    if (e != ESP_OK) {
+        arm_trial_timer();
+        return false;
+    }
     return true;
 }
 
-static void rollback(void)
+/* The texts of a rollback, in their own frame: it is gone before the verification of the previous
+ * image (RSA-PSS with signed images), which runs deep in the caller's stack, the esp_timer task's
+ * 3.5 KB on a timeout (E2E: "stack overflow in task esp_timer" with the texts still on it). */
+static void __attribute__((noinline)) rollback_report(void)
 {
-    if (s_trial_timer != NULL) {
-        esp_timer_stop(s_trial_timer);
-    }
     char why[96];
     portENTER_CRITICAL(&s_mux);
     snprintf(why, sizeof(why), "%s", s_trial.why);
@@ -434,6 +444,14 @@ static void rollback(void)
              s_st.other[0] ? s_st.other : "the previous image");
     ESP_LOGE(TAG, "%s", detail);
     set_status(GW_FW_FAILED, 0, detail, "rolling back: %s", s_st.running);
+}
+
+static void rollback(void)
+{
+    if (s_trial_timer != NULL) {
+        esp_timer_stop(s_trial_timer);
+    }
+    rollback_report();
     gw_bus_quiesce(1000);   /* no Modbus frame cut by the restart (no-op without the bus) */
     xSemaphoreTake(s_ota_lock, portMAX_DELAY);
     park(true);
