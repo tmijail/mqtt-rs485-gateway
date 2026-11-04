@@ -62,6 +62,8 @@ typedef struct {
     uint16_t last_write_tag;
     double last_write_value;
     bool write_queue_full;
+    bool room_limited;           /* write_room returns room (otherwise plenty) */
+    size_t room;
     int reboots;
 } recorder_t;
 

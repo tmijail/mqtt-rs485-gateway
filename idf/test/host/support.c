@@ -240,9 +240,18 @@ static bool rec_request_write(void *ctx, uint16_t tag, double value)
         return false;
     }
     g_rec.writes++;
+    if (g_rec.room_limited && g_rec.room > 0) {
+        g_rec.room--;
+    }
     g_rec.last_write_tag = tag;
     g_rec.last_write_value = value;
     return true;
+}
+
+static size_t rec_write_room(void *ctx)
+{
+    (void)ctx;
+    return g_rec.room_limited ? g_rec.room : 64;
 }
 
 static void rec_reboot(void *ctx)
@@ -257,6 +266,7 @@ gw_node_ops_t recorder_ops(void)
         .publish = rec_publish,
         .set_do = rec_set_do,
         .request_write = rec_request_write,
+        .write_room = rec_write_room,
         .reboot = rec_reboot,
         .ctx = NULL,
     };

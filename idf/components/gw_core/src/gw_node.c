@@ -325,26 +325,49 @@ static int resolve_tag(const gw_node_t *n, uint16_t dev, const spb_rx_metric_t *
     return -1;
 }
 
-static bool on_dcmd_metric(void *ctx, const spb_rx_metric_t *m)
+/* Resolve one DCMD metric to a writable tag and its value; logs the reason of a discard
+ * unless @p quiet (the counting pass must not log everything twice). */
+static bool dcmd_resolve(const gw_node_t *n, const spb_rx_metric_t *m, bool quiet, int *tag_out,
+                         double *value)
 {
-    gw_node_t *n = ctx;
     int tag = resolve_tag(n, (uint16_t)n->cmd_dev, m);
     if (tag < 0) {
-        log_discard("DCMD", m, "unknown metric");
-        return true;
+        if (!quiet) {
+            log_discard("DCMD", m, "unknown metric");
+        }
+        return false;
     }
     const gw_tag_cfg_t *t = &n->cfg->tags[tag];
     if (!t->writable) {
-        log_discard("DCMD", m, "read-only metric");
+        if (!quiet) {
+            log_discard("DCMD", m, "read-only metric");
+        }
+        return false;
+    }
+    if (!spb_rx_number(m, m->has_datatype ? m->datatype : gw_conv_datatype(t), value)) {
+        if (!quiet) {
+            log_discard("DCMD", m, "no numeric value");
+        }
+        return false;
+    }
+    *tag_out = tag;
+    return true;
+}
+
+static bool on_dcmd_metric(void *ctx, const spb_rx_metric_t *m)
+{
+    gw_node_t *n = ctx;
+    int tag;
+    double v;
+    if (!dcmd_resolve(n, m, n->cmd_count_only, &tag, &v)) {
         return true;
     }
-    double v;
-    if (!spb_rx_number(m, m->has_datatype ? m->datatype : gw_conv_datatype(t), &v)) {
-        log_discard("DCMD", m, "no numeric value");
+    if (n->cmd_count_only) {
+        n->cmd_writes++;
         return true;
     }
     if (!n->ops.request_write(n->ops.ctx, (uint16_t)tag, v)) {
-        log_discard("DCMD", m, "write queue full");
+        log_discard("DCMD", m, "write queue full");   /* not expected: room was checked */
     }
     return true;
 }
@@ -417,8 +440,22 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
             return;
         }
         n->cmd_dev = dev;
-        if (!spb_decode(payload, len, NULL, NULL, NULL)) {
+        /* All or nothing: the whole payload must decode, and every write it carries must fit in
+         * the bus queue; otherwise nothing is queued (issue #60). The counting pass decodes the
+         * payload in full, so it also validates it. */
+        n->cmd_count_only = true;
+        n->cmd_writes = 0;
+        bool decoded = spb_decode(payload, len, NULL, on_dcmd_metric, n);
+        n->cmd_count_only = false;
+        if (!decoded) {
             GW_LOGW(TAG, "DCMD: undecodable payload (%u bytes): nothing applied", (unsigned)len);
+            return;
+        }
+        size_t room = n->ops.write_room(n->ops.ctx);
+        if (n->cmd_writes > room) {
+            GW_LOGW(TAG, "DCMD for '%s': %u writes but the bus queue has room for %u: nothing "
+                         "applied", n->cfg->devices[dev].name, (unsigned)n->cmd_writes,
+                    (unsigned)room);
             return;
         }
         spb_decode(payload, len, NULL, on_dcmd_metric, n);

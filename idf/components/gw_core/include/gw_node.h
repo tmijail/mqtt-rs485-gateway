@@ -50,6 +50,9 @@ typedef struct {
     bool (*set_do)(void *ctx, uint8_t index, bool on);
     /** Hand a write to the RS485 owner; false if its queue is full. */
     bool (*request_write)(void *ctx, uint16_t tag, double value);
+    /** Free entries in the RS485 owner's write queue. Only this task adds entries, so the
+     * room can only grow until the next request_write (a DCMD is queued whole or not at all). */
+    size_t (*write_room)(void *ctx);
     /** Restart the gateway (called after NDEATH has been published). */
     void (*reboot)(void *ctx);
     void *ctx;
@@ -85,6 +88,8 @@ typedef struct {
 
     /* Per-command state while decoding an NCMD/DCMD. */
     int cmd_dev;
+    bool cmd_count_only;               /* DCMD first pass: count the writes, apply nothing */
+    size_t cmd_writes;
     bool cmd_rebirth;
     bool cmd_reboot;
     uint8_t cmd_do_mask;

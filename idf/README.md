@@ -366,7 +366,7 @@ Leyenda de **Evidencia**:
 | SPB-7 | Implementado | `gw_node.c`, `gw_rbe.c` | H + Q |
 | SPB-8 | Implementado | `gw_node.h` (mapa de alias) | H + Q |
 | SPB-9 | Implementado | `gw_node.c` (`gw_node_rebirth`) | H + Q |
-| SPB-10 | Implementado | `gw_node.c`, `gw_poll.c` (`gw_poller_write`) | H + Q. Comandos todo o nada: un NCMD/DCMD que no se decodifica entero no aplica ninguna métrica (H + Q) |
+| SPB-10 | Implementado | `gw_node.c`, `gw_poll.c` (`gw_poller_write`) | H + Q. Comandos todo o nada: un NCMD/DCMD que no se decodifica entero no aplica ninguna métrica (H + Q); un DCMD cuyas escrituras no entran todas en la cola del bus tampoco (H) |
 | SPB-11 | Implementado | `gw_node.c`, `gw_board/gw_io.c` | H + Q (DO simulada con la polaridad de la placa; TCA9554 C) |
 | SPB-12 | Implementado | `gw_rbe.c` | H + Q |
 | MB-1 | Implementado | `components/gw_rs485/gw_rs485.c` | Q a 9600 8N1; otras paridades C. La espera del fin de transmisión es proporcional a la trama (bits por carácter de la configuración + 20 ms): H a 1200 baudios con paridad |
@@ -465,7 +465,7 @@ Sin SNTP no hay hora válida: no hay RTC (TIME-2). Antes de la primera conexión
 - **Watchdog con un enlace lento.** La tarea Sparkplug alimenta el TWDT después de cada publicación, así que un rebirth (NBIRTH y hasta 16 DBIRTH) puede durar más de 15 s sin reiniciar el equipo. Lo que debe entrar en los 15 s es **una** publicación: el DBIRTH más grande (unos 6 KB) en un enlace de menos de unos 400 B/s todavía dispararía el watchdog. Tras cada NBIRTH el log informa cuánto tardaron los births y el mayor intervalo sin alimentar el watchdog. QEMU deshabilita el watchdog de los timers (`wdt_disable`), así que el caso del enlace lento no se ejecutó.
 - Los comandos de más de 1024 bytes, o fragmentados por esp-mqtt, se descartan con log.
 - Un NCMD o DCMD que nanopb no puede decodificar entero (por ejemplo, un nombre o un string de más de 63 caracteres) se descarta **completo**, con log: se decodifica una vez para validarlo y otra para aplicarlo.
-- Con 8 escrituras pendientes, las nuevas se descartan con log.
+- La cola de escrituras hacia el bus tiene 8 lugares (`CONFIG_GW_BUS_WRITE_QUEUE_LEN`). Un DCMD cuyas escrituras no entran **todas** se descarta **entero**, con log (`DCMD for 'Meter1': 3 writes but the bus queue has room for 2: nothing applied`): nunca queda aplicado a medias (#60). Las métricas desconocidas o de solo lectura no cuentan: se descartan solas, como antes.
 
 ### 6.6 Red: Wi-Fi, conmutación (NET-4) e IPv6 (NET-7)
 

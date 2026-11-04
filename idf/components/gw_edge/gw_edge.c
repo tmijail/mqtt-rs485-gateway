@@ -257,6 +257,12 @@ static bool op_request_write(void *ctx, uint16_t tag, double value)
     return gw_bus_request_write(tag, value);
 }
 
+static size_t op_write_room(void *ctx)
+{
+    (void)ctx;
+    return gw_bus_write_room();
+}
+
 static void op_reboot(void *ctx)
 {
     (void)ctx;
@@ -561,6 +567,7 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         .publish = op_publish,
         .set_do = op_set_do,
         .request_write = op_request_write,
+        .write_room = op_write_room,
         .reboot = op_reboot,
         .ctx = NULL,
     };

@@ -105,3 +105,8 @@ bool gw_bus_request_write(uint16_t tag, double value)
     const write_req_t w = {.tag = tag, .value = value};
     return xQueueSend(s_writes, &w, 0) == pdTRUE;
 }
+
+size_t gw_bus_write_room(void)
+{
+    return (size_t)uxQueueSpacesAvailable(s_writes);
+}

@@ -310,6 +310,33 @@ static void test_dcmd_writes(void)
     TEST_ASSERT_EQUAL(2, g_rec.writes);
 }
 
+/* Issue #60: a DCMD whose writes do not all fit in the bus queue is rejected whole. */
+static void test_dcmd_rejected_whole_when_queue_lacks_room(void)
+{
+    set_meter(true, 1, 2, 0);
+    gw_node_session_up(&node, 0);
+    recorder_clear();
+    spb_metric_t two[3] = {
+        {.name = "Setpoint", .datatype = SPB_DT_FLOAT, .v.num = 12.3},
+        {.name = "Voltage", .datatype = SPB_DT_FLOAT, .v.num = 1},   /* read-only: not counted */
+        {.alias = GW_ALIAS_TAG_BASE + RUN, .datatype = SPB_DT_BOOLEAN, .v.num = 1},
+    };
+    g_rec.room_limited = true;
+    g_rec.room = 1;
+    send("spBv1.0/Plant1/DCMD/GW01/Meter1", two, 3);
+    TEST_ASSERT_EQUAL(0, g_rec.writes);      /* 2 writes, room for 1: nothing queued */
+    TEST_ASSERT_EQUAL(1, g_rec.room);
+    g_rec.room = 2;                          /* exactly enough */
+    send("spBv1.0/Plant1/DCMD/GW01/Meter1", two, 3);
+    TEST_ASSERT_EQUAL(2, g_rec.writes);
+    TEST_ASSERT_EQUAL(RUN, g_rec.last_write_tag);
+    TEST_ASSERT_EQUAL(0, g_rec.room);
+    /* a single write with no room left is rejected too */
+    send("spBv1.0/Plant1/DCMD/GW01/Meter1", &two[0], 1);
+    TEST_ASSERT_EQUAL(2, g_rec.writes);
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+}
+
 static void send_raw(const char *topic, const raw_metric_t *m, size_t n)
 {
     size_t len = raw_payload(cmd, sizeof(cmd), m, n);
@@ -453,6 +480,7 @@ int main(void)
     RUN_TEST(test_ncmd_rebirth);
     RUN_TEST(test_ncmd_do_and_reboot);
     RUN_TEST(test_dcmd_writes);
+    RUN_TEST(test_dcmd_rejected_whole_when_queue_lacks_room);
     RUN_TEST(test_session_down_suppresses_publishing);
     RUN_TEST(test_discard_log_shows_alias_only_if_present);
     RUN_TEST(test_do_unknown_published_as_null);

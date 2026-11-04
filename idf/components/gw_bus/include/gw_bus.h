@@ -26,6 +26,9 @@ esp_err_t gw_bus_start(const gw_config_t *cfg, const mb_transport_t *tr, const g
 /** Queue a write of engineering @p value to @p tag. Non-blocking; false if the queue is full. */
 bool gw_bus_request_write(uint16_t tag, double value);
 
+/** Free entries in the write queue (called by the only producer, the Sparkplug task). */
+size_t gw_bus_write_room(void);
+
 #ifdef __cplusplus
 }
 #endif
