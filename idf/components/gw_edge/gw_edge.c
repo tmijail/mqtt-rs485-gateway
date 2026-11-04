@@ -7,6 +7,7 @@
 
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
+#include "esp_idf_version.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_system.h"
@@ -265,9 +266,25 @@ static void enqueue_cmd(const esp_mqtt_event_t *ev)
 
 static const char *broker_host(unsigned i);
 
-/* The bundle's own verify callback: global in esp_crt_bundle.c, not in its header. */
-extern int esp_crt_verify_callback(void *buf, mbedtls_x509_crt *const crt, const int depth,
-                                   uint32_t *const flags);
+/* Issue #77: the CA bundle checks the broker certificate in a verify callback that
+ * esp_crt_bundle_attach() installs and that no public header declares. Instead of naming it,
+ * tls_attach() lets the public esp_crt_bundle_attach() install it and keeps whatever callback
+ * it installed (the mbedTLS configuration field, type-checked below), then chains it from
+ * tls_verify(). A future IDF that renames the bundle's function changes nothing here; one that
+ * changes the callback's signature or the field fails the build with the messages below.
+ * Verified with ESP-IDF 6.1 (mbedTLS 4.1); see README 3.1 for the supported versions. */
+typedef int (*tls_vrfy_fn)(void *, mbedtls_x509_crt *, int, uint32_t *);
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(6, 0, 0) || ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(7, 0, 0)
+#error "gw_edge: TLS verify chaining (issue #77) is verified with ESP-IDF 6.x only: check that " \
+       "esp_crt_bundle_attach() still installs its check with mbedtls_ssl_conf_verify(), then " \
+       "extend this range (README 3.1)"
+#endif
+_Static_assert(__builtin_types_compatible_p(
+                   __typeof__(((mbedtls_ssl_config *)0)->MBEDTLS_PRIVATE(f_vrfy)), tls_vrfy_fn),
+               "gw_edge (issue #77): mbedtls_ssl_config's verify callback changed type; the CA "
+               "bundle chaining in tls_attach() must be revisited");
+static tls_vrfy_fn s_bundle_vrfy;   /* the bundle's check, chained by tls_verify() */
+static void *s_bundle_vrfy_ctx;
 
 /* Issue #70: X.509 verify callback (mqtt_task, during the handshake). esp-tls reports the
  * verification flags only while the peer certificate is still around after a failure, which
@@ -276,8 +293,8 @@ static int tls_verify(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *fla
 {
     (void)ctx;
     int r = 0;
-    if (s_cfg->mqtt.tls.ca_file[0] == '\0') {
-        r = esp_crt_verify_callback(NULL, crt, depth, flags);   /* bundle: it finds the CA */
+    if (s_cfg->mqtt.tls.ca_file[0] == '\0' && s_bundle_vrfy != NULL) {
+        r = s_bundle_vrfy(s_bundle_vrfy_ctx, crt, depth, flags);   /* bundle: it finds the CA */
     }
     s_vf.flags |= *flags;
     if (depth == 0) {
@@ -312,6 +329,17 @@ static esp_err_t tls_attach(void *conf)
         esp_err_t e = esp_crt_bundle_attach(conf);
         if (e != ESP_OK) {
             return e;
+        }
+        /* issue #77: keep the check the bundle installed and chain it */
+        const mbedtls_ssl_config *c = conf;
+        s_bundle_vrfy = c->MBEDTLS_PRIVATE(f_vrfy);
+        s_bundle_vrfy_ctx = c->MBEDTLS_PRIVATE(p_vrfy);
+        if (s_bundle_vrfy == NULL) {
+            /* this IDF verifies the bundle some other way: replacing its callback would
+             * accept any certificate, so the attempt fails instead */
+            ESP_LOGE(TAG, "TLS: the CA bundle installed no verify callback (unsupported ESP-IDF, "
+                          "issue #77): connection refused");
+            return ESP_ERR_NOT_SUPPORTED;
         }
     }
     mbedtls_ssl_conf_verify(conf, tls_verify, NULL);
