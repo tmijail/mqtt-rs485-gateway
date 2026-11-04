@@ -485,11 +485,18 @@ static int bounded_publish(const char *topic, const char *data, int len, int qos
 
 /* ---------- node ops (run in the Sparkplug task) ---------- */
 
+static bool s_in_births;        /* issue #71: start_births() is publishing */
+static unsigned s_birth_failures;
+
 static int op_publish(void *ctx, const char *topic, const uint8_t *data, size_t len, int qos,
                       bool retain)
 {
     (void)ctx;
-    return bounded_publish(topic, (const char *)data, (int)len, qos, retain);
+    int r = bounded_publish(topic, (const char *)data, (int)len, qos, retain);
+    if (r < 0 && s_in_births) {
+        s_birth_failures++;
+    }
+    return r;
 }
 
 static bool op_set_do(void *ctx, uint8_t index, bool on)
@@ -736,6 +743,12 @@ static void start_births(void)
     /* s_attempt is not reset here: a broker that accepts the connection and drops it at once
      * (ACL, duplicate client_id, connection limit) must still see the backoff grow. It is
      * reset once the session has stayed up for a while (reconcile). */
+    /* Issue #71: the SUBACK can be handled just before the transport error behind it: births
+     * on a connection that is gone are lost, and "session up" would be a lie. */
+    if (!atomic_load(&s_mqtt_connected) || atomic_load(&s_disc_gen) != s_handled_disc) {
+        ESP_LOGW(TAG, "SUBACK received but the connection is already gone: no births");
+        return;
+    }
     s_retry_at_us = 0;
     atomic_store(&s_dev_dirty, 0);   /* the births carry the current state */
     atomic_store(&s_io_dirty, false);
@@ -743,7 +756,26 @@ static void start_births(void)
     feed_watchdog();
     s_max_unfed_ms = 0;
     int64_t t0 = esp_timer_get_time();
-    gw_node_session_up(s_node, s_bdseq);
+    s_in_births = true;
+    s_birth_failures = 0;
+    bool born = gw_node_session_up(s_node, s_bdseq);
+    s_in_births = false;
+    if (!born) {
+        ESP_LOGW(TAG, "NBIRTH not published (bdSeq=%u): the connection dropped, the session is "
+                      "not up",
+                 s_bdseq);
+        return;   /* the DISCONNECTED event schedules the retry */
+    }
+    if (s_birth_failures > 0 || !atomic_load(&s_mqtt_connected) ||
+        atomic_load(&s_disc_gen) != s_handled_disc) {
+        /* the NBIRTH went out but the connection died under the DBIRTHs: hosts would see a
+         * node without its devices; the new session repeats every birth */
+        gw_node_session_down(s_node);
+        ESP_LOGW(TAG, "births incomplete (bdSeq=%u, %u publish(es) failed): the connection "
+                      "dropped, the session is not up",
+                 s_bdseq, s_birth_failures);
+        return;
+    }
     s_session_up_us = esp_timer_get_time();
     gw_status_set(GW_ST_MQTT_UP, true);
     ESP_LOGI(TAG, "Sparkplug session up (bdSeq=%u): births sent in %lu ms, longest stretch "

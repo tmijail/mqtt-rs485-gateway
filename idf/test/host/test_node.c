@@ -769,6 +769,24 @@ static void test_store_and_forward(void)
     TEST_ASSERT_EQUAL_UINT32(1, node.sf_discarded);
 }
 
+/* Issue #71: an NBIRTH that cannot be published (the connection dropped right after the SUBACK)
+ * leaves the node offline, sends no DBIRTH, and lets the next session start cleanly. */
+static void test_session_up_needs_the_nbirth(void)
+{
+    set_meter(true, 230.5, 12.3, 1);
+    g_rec.publish_fails = true;
+    TEST_ASSERT_FALSE(gw_node_session_up(&node, 3));
+    TEST_ASSERT_FALSE(node.online);
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    gw_node_device_changed(&node, 0);   /* offline: nothing is attempted */
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    g_rec.publish_fails = false;
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 4));
+    TEST_ASSERT_EQUAL(2, g_rec.count);   /* NBIRTH and DBIRTH */
+    msg(0);
+    TEST_ASSERT_EQUAL_UINT64(0, dec.seq);
+}
+
 /* SPB-14 with MB-6 values: Int64/UInt64 above 2^53 exact, Double and strings come back from
  * the store as they were sampled. */
 static void test_store_and_forward_mb6(void)
@@ -847,5 +865,6 @@ int main(void)
     RUN_TEST(test_store_and_forward);
     RUN_TEST(test_history_kept_when_publish_fails);
     RUN_TEST(test_store_and_forward_mb6);
+    RUN_TEST(test_session_up_needs_the_nbirth);
     return UNITY_END();
 }

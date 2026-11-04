@@ -199,7 +199,9 @@ class FakeBroker:
     CONNACK (accepted); then, by @mode:
       "cut":    the connection is closed at once (a broker that accepts and drops: ACL on the
                 will, duplicate client_id, connection limit);
-      "refuse": every SUBSCRIBE gets a SUBACK with 0x80 (failure) for each topic.
+      "refuse": every SUBSCRIBE gets a SUBACK with 0x80 (failure) for each topic;
+      "cutsub": every SUBSCRIBE is granted and the connection is reset (RST) right after the SUBACK
+                (issue #71: a SUBACK handled just before the transport error behind it).
     Records the connection times, the PUBLISH topics and whether the client sent DISCONNECT."""
 
     def __init__(self, port, mode):
@@ -255,6 +257,10 @@ class FakeBroker:
                     while i < len(body):
                         i += 2 + struct.unpack(">H", body[i:i + 2])[0] + 1
                         n += 1
+                    if self.mode == "cutsub":
+                        c.sendall(bytes([0x90, 2 + n]) + body[:2] + b"\x01" * n)
+                        c.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                        return
                     c.sendall(bytes([0x90, 2 + n]) + body[:2] + b"\x80" * n)
                 elif kind >> 4 == 3:                     # PUBLISH
                     tlen = struct.unpack(">H", body[:2])[0]
@@ -973,7 +979,6 @@ def run_mqtt5(args, work, mosquitto_log):
           f"NBIRTH {'yes' if nb else 'no'}; mosquitto: {v5.group(0) if v5 else 'no p5 connection'}; "
           f"rebirth {'yes' if rb else 'no'}; will "
           f"{f'{will[0] - killed:.1f} s after the kill, bdSeq {bdseq_of(will[2])}' if will else 'missing'}")
-
 
 # ---------------------------------------------------------------- primary host (SPB-13)
 
@@ -2580,6 +2585,42 @@ def run(args, log, slave, broker, conf, work):
     check("MQTT-2 / issue #5 broker that drops every connection after CONNACK: the backoff keeps "
           "growing (1, 2, 4, 8 s with jitter)", grows,
           f"delays {delays} ms over {len(cutter.accepted)} accepted connections")
+
+    # Issue #71: a broker that grants the subscriptions and resets the connection right after
+    # the SUBACK. Each attempt ends without a session; whenever the births ran into the dead
+    # connection the gateway says so, and it never claims "session up" for an NBIRTH that did
+    # not go out (the esp-mqtt write error comes before it).
+    resetter = FakeBroker(MQTT_PORT + 13, "cutsub")
+    gw = Gateway(args, work / "uart0-cutsub.log",
+                 flash_variant(args, work, "cutsub", {"config.json": config_json(MQTT_PORT + 13)}))
+    t_cs = time.monotonic()
+    gw.start()
+    gw.wait_log(r"reconnect attempt 4 in", 60, t_cs)
+    gw.kill()
+    resetter.close()
+    segments, cur = [], None
+    for t, line in gw.lines:
+        if t < t_cs:
+            continue
+        if re.search(r"edge: connecting to ", line):
+            cur = []
+            segments.append(cur)
+        elif cur is not None:
+            cur.append(line)
+    lying = sum(1 for seg in segments
+                if any(re.search(r"Writing failed|Losing qos0|transport error", ln) for ln in seg)
+                and any("Sparkplug session up" in ln for ln in seg)
+                and [i for i, ln in enumerate(seg) if re.search(r"Writing failed|Losing qos0", ln)][:1]
+                < [i for i, ln in enumerate(seg) if "Sparkplug session up" in ln][:1])
+    caught = gw.find(r"NBIRTH not published|SUBACK received but the connection is already gone|"
+                     r"births incomplete", t_cs)
+    ups = gw.find(r"Sparkplug session up", t_cs)
+    check("Issue #71 connection reset right after the SUBACK: no 'session up' for births that did "
+          "not go out; the gateway says the session did not start and retries",
+          len(segments) >= 4 and caught and lying == 0,
+          f"{len(segments)} attempts, {len(caught)} without a session "
+          f"({(caught or ['none'])[0][:90]}), 'session up' {len(ups)} time(s), with a write error "
+          f"before it {lying}")
     obs.close()
 
 

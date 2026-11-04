@@ -151,7 +151,7 @@ size_t gw_node_death_payload(uint64_t bdseq, uint8_t *out, size_t cap)
     return spb_encode(&p, out, cap);
 }
 
-static void publish_nbirth(gw_node_t *n)
+static bool publish_nbirth(gw_node_t *n)
 {
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
@@ -180,7 +180,7 @@ static void publish_nbirth(gw_node_t *n)
     n->di_reported = io.di;
     n->do_reported = io.dout;
     n->do_unknown_reported = io.do_unknown;
-    publish(n, "NBIRTH", NULL, i, 0);
+    return publish(n, "NBIRTH", NULL, i, 0);
 }
 
 static void publish_dbirth(gw_node_t *n, uint16_t dev)
@@ -199,10 +199,12 @@ static void publish_ddeath(gw_node_t *n, uint16_t dev)
     n->dev_born[dev] = false;
 }
 
-void gw_node_rebirth(gw_node_t *n)
+bool gw_node_rebirth(gw_node_t *n)
 {
     n->seq = 0;
-    publish_nbirth(n);
+    if (!publish_nbirth(n)) {
+        return false;   /* no DBIRTH without the NBIRTH they belong to */
+    }
     for (uint16_t dev = 0; dev < n->cfg->device_count; dev++) {
         bool online;
         n->dev_born[dev] = false;
@@ -211,14 +213,19 @@ void gw_node_rebirth(gw_node_t *n)
             publish_dbirth(n, dev);
         }
     }
+    return true;
 }
 
-void gw_node_session_up(gw_node_t *n, uint64_t bdseq)
+bool gw_node_session_up(gw_node_t *n, uint64_t bdseq)
 {
     n->bdseq = bdseq;
     n->online = true;
+    if (!gw_node_rebirth(n)) {
+        gw_node_session_down(n);   /* issue #71: nothing went out: the node is not online */
+        return false;
+    }
     n->born_once = true;
-    gw_node_rebirth(n);
+    return true;
 }
 
 void gw_node_session_down(gw_node_t *n)

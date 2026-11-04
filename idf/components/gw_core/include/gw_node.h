@@ -133,8 +133,9 @@ bool gw_node_topic(const gw_node_t *n, const char *type, const char *device, cha
 /** NDEATH payload for @p bdseq (used for the MQTT will and the orderly disconnect). */
 size_t gw_node_death_payload(uint64_t bdseq, uint8_t *out, size_t cap);
 
-/** MQTT session established (subscriptions already sent): publish NBIRTH and DBIRTHs. */
-void gw_node_session_up(gw_node_t *n, uint64_t bdseq);
+/** MQTT session established (subscriptions already sent): publish NBIRTH and DBIRTHs. False
+ *  if the NBIRTH could not be published (the connection dropped): the node stays offline. */
+bool gw_node_session_up(gw_node_t *n, uint64_t bdseq);
 
 /** MQTT session lost: forget births; nothing is published. */
 void gw_node_session_down(gw_node_t *n);
@@ -159,8 +160,9 @@ void gw_node_set_store(gw_node_t *n, gw_sf_t *sf);
  *  the samples still stored. */
 size_t gw_node_flush_history(gw_node_t *n, size_t max_msgs);
 
-/** Re-publish NBIRTH and every DBIRTH with seq restarted (SPB-9). */
-void gw_node_rebirth(gw_node_t *n);
+/** Re-publish NBIRTH and every DBIRTH with seq restarted (SPB-9). False if the NBIRTH could
+ *  not be published (then no DBIRTH is sent). */
+bool gw_node_rebirth(gw_node_t *n);
 
 #ifdef __cplusplus
 }
