@@ -61,6 +61,30 @@ bool gw_auth_hash_password(const char *password, const uint8_t salt[GW_AUTH_SALT
 /** True if @p password matches @p encoded (gw_auth_hash_password format). */
 bool gw_auth_check_password(const char *password, const char *encoded);
 
+/*
+ * Issue #100: cross-site request forgery. A browser that has the Basic credentials cached sends
+ * them with any request, also one a foreign page makes (a form, or a "simple" fetch without a
+ * CORS preflight). Every state-changing request must therefore:
+ *   - carry GW_CSRF_HEADER (any value): a foreign page can only add a custom header after a CORS
+ *     preflight, and the gateway answers none;
+ *   - and, when the browser says where it comes from (Origin; without it, Referer), come from
+ *     this same host: scheme, host and port of the request's Host header (default ports equal
+ *     to none). "Origin: null" (sandboxed frames, file: pages) is refused.
+ * Clients that are not browsers (curl, scripts) send neither Origin nor Referer: the header is
+ * enough for them.
+ */
+#define GW_CSRF_HEADER "X-Requested-With"
+
+typedef enum {
+    GW_CSRF_OK = 0,
+    GW_CSRF_NO_HEADER,      /* GW_CSRF_HEADER missing or empty */
+    GW_CSRF_CROSS_ORIGIN,   /* Origin or Referer of another site, or no Host to compare with */
+} gw_csrf_t;
+
+/** @p https: the scheme the request came in by. NULL or "" = header absent. */
+gw_csrf_t gw_auth_csrf_check(bool https, const char *host, const char *origin,
+                             const char *referer, const char *requested_with);
+
 #ifdef __cplusplus
 }
 #endif

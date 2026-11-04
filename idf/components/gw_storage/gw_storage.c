@@ -53,8 +53,19 @@ static StaticSemaphore_t s_save_lock_buf;
 
 /* Configuration buffers (the file and the parser's document tree, at boot and for every
  * save or export): PSRAM when the board has it, internal RAM otherwise (QEMU). */
+/* Issue #91: the largest block a validation asks for after its gw_config_t (the printed
+ * document, gw_cfgdoc) and the largest free internal block just before that request. Set
+ * and read under the save lock; another task's cJSON (gw_ota) may slip in, only a log. */
+static bool s_track;
+static size_t s_track_size;
+static size_t s_track_room;
+
 static void *boot_alloc(size_t size)
 {
+    if (s_track && size > s_track_size && size >= 256) {
+        s_track_size = size;
+        s_track_room = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
     return heap_caps_malloc_prefer(size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT);
 }
 
@@ -1596,7 +1607,10 @@ esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_
     gw_storage_get_secrets(&stored);
     gw_cfgdoc_t doc;
     esp_err_t ret = ESP_OK;
+    s_track_size = s_track_room = 0;
+    s_track = true;
     bool applied = gw_cfgdoc_apply(json, len, GW_CFGDOC_UPDATE, &stored, cfg, &doc, err);
+    s_track = false;
     /* issue #80: the new configuration and its document are both allocated here: the deepest
      * point of a validation (the parser's tree is freed already, but its fragments remain) */
     size_t block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -1607,6 +1621,10 @@ esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_
                   "boot %u B)", applied ? "validated" : "rejected",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT), (unsigned)block,
              (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    /* issue #91: the print asks for one block of the document's size (twice it before) */
+    ESP_LOGI(TAG, "validation: document %u B, largest request %u B, largest internal block "
+                  "before it %u B", (unsigned)doc.doc_len, (unsigned)s_track_size,
+             (unsigned)s_track_room);
 #if CONFIG_GW_IO_SIMULATED
     uint32_t hold = s_sim_hold_ms;
     s_sim_hold_ms = 0;
