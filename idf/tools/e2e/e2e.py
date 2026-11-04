@@ -2112,9 +2112,12 @@ def run_nvs_migration(args, work):
     erased, then after half of the entries are written encrypted). The next boots finish it from
     the reset-safe copy: the bdSeq continues, the MQTT password still opens the broker (which
     requires it), the commissioning password is the old one, nothing stays in clear and the
-    migration does not run again."""
+    migration does not run again. Issue #104: after each cut, one boot whose LittleFS does not
+    mount (superblocks damaged, not erased: the copy is out of reach) opens no NVS at all, so
+    nothing it writes can be lost or win over the copy; then the partition comes back."""
     node, port = "GW41", MQTT_PORT + 24
     nvs_off, nvs_size = storage_partition("nvs")
+    st_off, _ = storage_partition("storage")
     csv = work / "nvs-plain.csv"
     csv.write_text("key,type,encoding,value\nspb,namespace,,\nbdseq,data,u8,41\n"
                    "secrets,namespace,,\ncommission,data,string,abcdefgh1234\n"
@@ -2135,7 +2138,7 @@ def run_nvs_migration(args, work):
     log = work / "uart0-nvsmig.log"
     words = (b"abcdefgh1234", b"s3cret-mqtt-67", b"commission", b"bdseq")
     try:
-        cuts = []
+        cuts, out_of_reach = [], []
         for point in ("1", "2"):
             t = time.monotonic()
             gw = Gateway(args, log, flash)
@@ -2147,6 +2150,25 @@ def run_nvs_migration(args, work):
             region = flash.read_bytes()[nvs_off:nvs_off + nvs_size]
             cuts.append((held is not None, resumed[0].split("storage: ")[-1][:90] if resumed else None,
                          region.count(b"\xff") == len(region)))
+            # issue #104: LittleFS does not mount for one boot (the copy is in it)
+            img = bytearray(flash.read_bytes())
+            saved = bytes(img[st_off:st_off + 8192])
+            img[st_off:st_off + 8192] = b"\x55" * 8192
+            flash.write_bytes(img)
+            t = time.monotonic()
+            gw = Gateway(args, log, flash)
+            gw.start()
+            left = gw.wait_log(r"storage: NVS left untouched this boot \(no NVS: .*\): LittleFS does "
+                               r"not mount and the NVS looks like an interrupted migration", 60, t)
+            _, h_out = gw.shell("status", [r"^secrets\s+NVS UNAVAILABLE this boot: LittleFS does not "
+                                           r"mount"], timeout=10)
+            gw.kill()
+            img = bytearray(flash.read_bytes())
+            same = img[nvs_off:nvs_off + nvs_size] == region
+            img[st_off:st_off + 8192] = saved
+            flash.write_bytes(img)
+            # cut 1 left the partition erased: that boot does not even initialise it
+            out_of_reach.append((left is not None, all(h_out.values()), same or point == "2"))
         t0 = time.monotonic()
         gw = Gateway(args, log, flash)
         gw.start()
@@ -2182,6 +2204,12 @@ def run_nvs_migration(args, work):
               f"{bdseq_of(nb[2]) if nb else None} then {bdseq_of(nb2[2]) if nb2 else None}; "
               f"{(done or ['no resume log'])[0].split('storage: ')[-1][:90]}; commissioning "
               f"password {pw!r}; in clear: {clear}; migration on the next boot: {bool(again)}")
+        check("Issue #104 after each cut, a boot whose LittleFS does not mount (the copy is in it) "
+              "opens no NVS at all (no empty or partial encrypted NVS: cut 1 leaves the erased "
+              "partition untouched) and the shell says why; the next boot with LittleFS still "
+              "finishes the migration (check above)",
+              len(out_of_reach) == 2 and all(all(x) for x in out_of_reach),
+              f"(logged, shell, NVS untouched) per cut: {out_of_reach}")
     finally:
         obs.close()
         broker.terminate()

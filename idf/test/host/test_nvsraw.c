@@ -449,6 +449,65 @@ static void test_may_erase(void)
     TEST_ASSERT_TRUE(gw_nvsmig_may_erase(&f));
 }
 
+/* Issue #104: LittleFS does not mount (a copy may be in it) and the partition looks like an
+ * interrupted migration: no NVS, rather than an empty or partial encrypted one */
+static void test_decide_copy_out_of_reach(void)
+{
+    gw_nvsmig_state_t st = {.kind = GW_NVSRAW_EMPTY, .raw_ok = true, .copy = GW_NVSMIG_COPY_NONE,
+                            .can_copy = false, .copy_unknown = true, .keys = true};
+    for (int t = 0; t < 2; t++) {
+        st.on_trial = t;
+        st.kind = GW_NVSRAW_EMPTY;   /* cut right after the erase: the keys were made before */
+        TEST_ASSERT_EQUAL(GW_NVSMIG_NO_NVS, gw_nvsmig_decide(&st));
+        st.kind = GW_NVSRAW_ENCRYPTED;   /* cut while writing: started, not finished */
+        st.mig_busy = true;
+        TEST_ASSERT_EQUAL(GW_NVSMIG_NO_NVS, gw_nvsmig_decide(&st));
+        st.raw_ok = false;
+        TEST_ASSERT_EQUAL(GW_NVSMIG_NO_NVS, gw_nvsmig_decide(&st));
+        st.raw_ok = true;
+        st.mig_busy = false;   /* a finished (or no) migration: the encrypted NVS opens */
+        TEST_ASSERT_EQUAL(GW_NVSMIG_OPEN_ENCRYPTED, gw_nvsmig_decide(&st));
+    }
+    /* EMPTY without the keys: a device that never had an encrypted NVS (no migration started) */
+    st.on_trial = false;
+    st.kind = GW_NVSRAW_EMPTY;
+    st.keys = false;
+    TEST_ASSERT_EQUAL(GW_NVSMIG_OPEN_ENCRYPTED, gw_nvsmig_decide(&st));
+    /* a blank LittleFS partition (erased: no copy can be there) is not out of reach */
+    st.keys = true;
+    st.copy_unknown = false;
+    TEST_ASSERT_EQUAL(GW_NVSMIG_OPEN_ENCRYPTED, gw_nvsmig_decide(&st));
+    st.kind = GW_NVSRAW_ENCRYPTED;
+    st.mig_busy = true;
+    TEST_ASSERT_EQUAL(GW_NVSMIG_OPEN_ENCRYPTED, gw_nvsmig_decide(&st));
+    /* an unencrypted partition was never erased: it stays as before */
+    st.copy_unknown = true;
+    st.kind = GW_NVSRAW_PLAIN;
+    TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(&st));
+}
+
+/* Issue #104: the reservation of bdSeq values of a boot without NVS */
+static void test_bdseq_reservation(void)
+{
+    TEST_ASSERT_FALSE(gw_nvsmig_bdseq_reached(41, 57));
+    TEST_ASSERT_TRUE(gw_nvsmig_bdseq_reached(57, 57));
+    TEST_ASSERT_TRUE(gw_nvsmig_bdseq_reached(58, 57));   /* never skipped past unnoticed */
+    TEST_ASSERT_FALSE(gw_nvsmig_bdseq_reached(250, 10));   /* across the wrap */
+    TEST_ASSERT_TRUE(gw_nvsmig_bdseq_reached(10, 10));
+    TEST_ASSERT_TRUE(gw_nvsmig_bdseq_reached(12, 250));
+    /* the next boot with NVS continues from the reservation, never below what was handed out */
+    for (unsigned start = 0; start < 256; start++) {
+        uint8_t reserved = (uint8_t)(start + GW_NVSMIG_BDSEQ_BLOCK), v = (uint8_t)start;
+        for (unsigned i = 0; i < 3 * GW_NVSMIG_BDSEQ_BLOCK; i++) {
+            v++;   /* handed out */
+            if (gw_nvsmig_bdseq_reached(v, reserved)) {
+                reserved = (uint8_t)(v + GW_NVSMIG_BDSEQ_BLOCK);
+            }
+            TEST_ASSERT_EQUAL_UINT8(reserved, gw_nvsmig_bdseq_later(v, reserved));
+        }
+    }
+}
+
 static void test_bdseq_later(void)
 {
     TEST_ASSERT_EQUAL_UINT8(42, gw_nvsmig_bdseq_later(41, 42));
@@ -544,6 +603,8 @@ int main(void)
     RUN_TEST(test_decide_with_copy);
     RUN_TEST(test_may_erase);
     RUN_TEST(test_bdseq_later);
+    RUN_TEST(test_decide_copy_out_of_reach);
+    RUN_TEST(test_bdseq_reservation);
     RUN_TEST(test_copy_load);
     return UNITY_END();
 }
