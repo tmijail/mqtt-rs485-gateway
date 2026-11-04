@@ -19,6 +19,7 @@ static const char *const k_do_names[GW_NODE_IO_COUNT] = {"DO/1", "DO/2", "DO/3",
 #define NAME_FIRMWARE "Node Info/Firmware"
 #define NAME_HARDWARE "Node Info/Hardware"
 #define NAME_RESET_REASON "Node Info/Reset Reason"
+#define NAME_SCAN_RATE "Node Control/Scan Rate"
 
 /* ---------- helpers ---------- */
 
@@ -156,6 +157,8 @@ static void publish_nbirth(gw_node_t *n)
     metric(n, i++, NAME_HARDWARE, GW_ALIAS_HARDWARE, SPB_DT_STRING, now)->v.str = n->info.hardware;
     metric(n, i++, NAME_RESET_REASON, GW_ALIAS_RESET_REASON, SPB_DT_STRING, now)->v.str =
         n->info.reset_reason;
+    metric(n, i++, NAME_SCAN_RATE, GW_ALIAS_SCAN_RATE, SPB_DT_UINT32, now)->v.num =
+        n->scan_rate_ms;
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         metric(n, i++, k_di_names[k], GW_ALIAS_DI_BASE + k, SPB_DT_BOOLEAN,
                io.di_ts_ms ? io.di_ts_ms : now)
@@ -327,6 +330,20 @@ static bool on_ncmd_metric(void *ctx, const spb_rx_metric_t *m)
     bool by_name = m->name != NULL;
     if (by_name ? strcmp(m->name, NAME_REBIRTH) == 0 : m->alias == GW_ALIAS_REBIRTH) {
         n->cmd_rebirth |= rx_true(m);
+        return true;
+    }
+    if (by_name ? strcmp(m->name, NAME_SCAN_RATE) == 0 : m->alias == GW_ALIAS_SCAN_RATE) {
+        double v;
+        n->cmd_scan_rate = true;   /* NDATA confirms the rate in force, applied or not */
+        if (!spb_rx_number(m, m->has_datatype ? m->datatype : SPB_DT_UINT32, &v) ||
+            v != floor(v) || (v != 0.0 && (v < GW_SCAN_RATE_MIN_MS || v > GW_SCAN_RATE_MAX_MS))) {
+            log_discard("NCMD", m, "Scan Rate must be 0 (per-device poll_ms) or 50..3600000 ms");
+            return true;
+        }
+        n->scan_rate_ms = (uint32_t)v;
+        n->ops.set_scan_rate(n->ops.ctx, n->scan_rate_ms);
+        GW_LOGI(TAG, "NCMD Scan Rate %" PRIu32 " ms%s", n->scan_rate_ms,
+                n->scan_rate_ms == 0 ? " (each device at its own poll_ms)" : "");
         return true;
     }
     if (by_name ? strcmp(m->name, NAME_REBOOT) == 0 : m->alias == GW_ALIAS_REBOOT) {
@@ -527,6 +544,7 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
         }
         n->cmd_rebirth = n->cmd_reboot = false;
         n->cmd_do_mask = 0;
+        n->cmd_scan_rate = false;
         /* All or nothing: decode the whole payload first, then apply it. */
         if (!spb_decode(payload, len, NULL, NULL, NULL)) {
             GW_LOGW(TAG, "NCMD: undecodable payload (%u bytes): nothing applied", (unsigned)len);
@@ -535,6 +553,11 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
         spb_decode(payload, len, NULL, on_ncmd_metric, n);
         if (n->cmd_do_mask) {
             publish_io(n, n->cmd_do_mask);
+        }
+        if (n->cmd_scan_rate) {
+            metric(n, 0, NULL, GW_ALIAS_SCAN_RATE, SPB_DT_UINT32, gw_port_time_ms())->v.num =
+                n->scan_rate_ms;
+            publish(n, "NDATA", NULL, 1, 0);
         }
         if (n->cmd_rebirth) {
             GW_LOGI(TAG, "NCMD rebirth");

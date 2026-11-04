@@ -710,6 +710,48 @@ static void test_write_served_between_requests(void)
     TEST_ASSERT_EQUAL(-1, p.polling);
 }
 
+/* SPB-15: the node's Scan Rate replaces every poll_ms; 0 goes back to them. */
+static void test_scan_rate_override(void)
+{
+    uint32_t wait;
+    gw_poller_poll(&p, 0, 0);
+    TEST_ASSERT_EQUAL_UINT32(1000, p.next_due_ms[0]);
+    gw_poller_set_scan_rate(&p, 3000, 100);              /* longer: after the poll already due */
+    TEST_ASSERT_EQUAL_UINT32(1000, p.next_due_ms[0]);
+    gw_poller_poll(&p, 0, 1000);
+    TEST_ASSERT_EQUAL(-1, gw_poller_next(&p, 1000, &wait));
+    TEST_ASSERT_EQUAL_UINT32(3000, wait);
+    gw_poller_set_scan_rate(&p, 200, 1500);              /* shorter: at once */
+    TEST_ASSERT_EQUAL_UINT32(1700, p.next_due_ms[0]);
+    gw_poller_poll(&p, 0, 1700);
+    TEST_ASSERT_EQUAL_UINT32(1900, p.next_due_ms[0]);
+    gw_poller_set_scan_rate(&p, 0, 1800);                /* back to poll_ms (1 s) */
+    gw_poller_poll(&p, 0, 1900);
+    TEST_ASSERT_EQUAL_UINT32(2900, p.next_due_ms[0]);
+    /* offline probes back off from the rate in force */
+    gw_poller_set_scan_rate(&p, 4000, 2000);
+    s.offline = true;
+    for (uint32_t t = 2900; t < 2900 + 3 * 4000; t += 4000) {
+        gw_poller_poll(&p, 0, t);
+    }
+    TEST_ASSERT_FALSE(online());
+    TEST_ASSERT_EQUAL_UINT32(8000, p.probe_ms[0]);       /* 2 x 4000 */
+}
+
+/* The slow scan is never faster than the Scan Rate. */
+static void test_scan_rate_and_slow_scan(void)
+{
+    setup_scan();                                        /* poll 1 s, slow 5 s */
+    gw_poller_poll(&p, 0, 0);
+    gw_poller_set_scan_rate(&p, 8000, 0);
+    gw_poller_poll(&p, 0, 1000);                         /* fast only, next in 8 s */
+    TEST_ASSERT_EQUAL_UINT32(9000, p.next_due_ms[0]);
+    unsigned before = s.requests;
+    gw_poller_poll(&p, 0, 9000);                         /* slow due at 5 s: read now */
+    TEST_ASSERT_EQUAL(before + 3, s.requests);
+    TEST_ASSERT_EQUAL_UINT32(13000, p.slow_due_ms[0]);   /* due at 5 s + max(5 s, 8 s) */
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -733,5 +775,7 @@ int main(void)
     RUN_TEST(test_slow_blocks_stay_due_after_a_failure);
     RUN_TEST(test_only_slow_tags);
     RUN_TEST(test_write_served_between_requests);
+    RUN_TEST(test_scan_rate_override);
+    RUN_TEST(test_scan_rate_and_slow_scan);
     return UNITY_END();
 }

@@ -486,6 +486,51 @@ static void test_mb6_dcmd(void)
     TEST_ASSERT_EQUAL_INT64(4611686018427387907ll, (int64_t)dec.m[0].u64);
 }
 
+/* SPB-15: writable Node Control/Scan Rate. */
+static void test_scan_rate(void)
+{
+    gw_node_session_up(&node, 0);
+    msg(0);
+    int i = decoded_find_name(&dec, "Node Control/Scan Rate");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_UINT32, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_SCAN_RATE, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[i].num);           /* each device at its poll_ms */
+    recorder_clear();
+    spb_metric_t m = {.name = "Node Control/Scan Rate", .datatype = SPB_DT_UINT32, .v.num = 3000};
+    send("spBv1.0/Plant1/NCMD/GW01", &m, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.scan_rate_calls);
+    TEST_ASSERT_EQUAL_UINT32(3000, g_rec.scan_rate);
+    msg(0);                                              /* confirmed by NDATA */
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", g_rec.msgs[0].topic);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_SCAN_RATE, dec.m[0].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(3000, dec.m[0].num);
+    /* out of range or not integral: not applied, NDATA repeats the rate in force */
+    const double bad[] = {10, 3600001, 1000.5, -1};
+    for (size_t k = 0; k < sizeof(bad) / sizeof(bad[0]); k++) {
+        recorder_clear();
+        spb_metric_t b = {.alias = GW_ALIAS_SCAN_RATE, .datatype = SPB_DT_DOUBLE, .v.num = bad[k]};
+        send("spBv1.0/Plant1/NCMD/GW01", &b, 1);
+        TEST_ASSERT_EQUAL(0, g_rec.scan_rate_calls);
+        msg(0);
+        TEST_ASSERT_EQUAL_DOUBLE(3000, dec.m[0].num);
+    }
+    /* an Int64 sender (long_value), by alias; 0 goes back to the per-device periods */
+    recorder_clear();
+    spb_metric_t z = {.alias = GW_ALIAS_SCAN_RATE, .datatype = SPB_DT_INT64, .v.i64 = 0};
+    send("spBv1.0/Plant1/NCMD/GW01", &z, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.scan_rate_calls);
+    TEST_ASSERT_EQUAL_UINT32(0, g_rec.scan_rate);
+    /* a rebirth reports the rate in force */
+    z.v.i64 = 500;
+    send("spBv1.0/Plant1/NCMD/GW01", &z, 1);
+    recorder_clear();
+    gw_node_rebirth(&node);
+    msg(0);
+    TEST_ASSERT_EQUAL_DOUBLE(500, dec.m[decoded_find_name(&dec, "Node Control/Scan Rate")].num);
+}
+
 static void send_raw(const char *topic, const raw_metric_t *m, size_t n)
 {
     size_t len = raw_payload(cmd, sizeof(cmd), m, n);
@@ -630,6 +675,7 @@ int main(void)
     RUN_TEST(test_ncmd_do_and_reboot);
     RUN_TEST(test_dcmd_writes);
     RUN_TEST(test_dcmd_rejected_whole_when_queue_lacks_room);
+    RUN_TEST(test_scan_rate);
     RUN_TEST(test_mb6_birth_and_data);
     RUN_TEST(test_mb6_dcmd);
     RUN_TEST(test_session_down_suppresses_publishing);

@@ -249,6 +249,13 @@ static bool rec_request_write(void *ctx, uint16_t tag, const gw_tag_value_t *val
     return true;
 }
 
+static void rec_set_scan_rate(void *ctx, uint32_t ms)
+{
+    (void)ctx;
+    g_rec.scan_rate_calls++;
+    g_rec.scan_rate = ms;
+}
+
 static size_t rec_write_room(void *ctx)
 {
     (void)ctx;
@@ -268,6 +275,7 @@ gw_node_ops_t recorder_ops(void)
         .set_do = rec_set_do,
         .request_write = rec_request_write,
         .write_room = rec_write_room,
+        .set_scan_rate = rec_set_scan_rate,
         .reboot = rec_reboot,
         .ctx = NULL,
     };

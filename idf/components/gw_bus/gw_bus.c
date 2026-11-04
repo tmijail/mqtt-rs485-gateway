@@ -1,5 +1,7 @@
 #include "gw_bus.h"
 
+#include <stdatomic.h>
+
 #include "esp_log.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
@@ -20,6 +22,8 @@ typedef struct {
 } write_req_t;
 
 static gw_bus_callbacks_t s_cb;
+static _Atomic uint32_t s_scan_rate;          /* SPB-15: latest request from the Sparkplug task */
+static uint32_t s_scan_rate_applied;
 static mb_master_t s_mb;
 static gw_poller_t s_poller;
 static QueueHandle_t s_writes;
@@ -59,6 +63,13 @@ static void bus_task(void *arg)
         esp_task_wdt_reset();
         serve_writes(NULL);
         uint32_t now = now_ms();
+        uint32_t rate = atomic_load(&s_scan_rate);
+        if (rate != s_scan_rate_applied) {
+            s_scan_rate_applied = rate;
+            gw_poller_set_scan_rate(&s_poller, rate, now);
+            ESP_LOGI(TAG, "scan rate %lu ms%s", (unsigned long)rate,
+                     rate == 0 ? ": each device at its poll_ms" : " for every device");
+        }
         uint32_t wait;
         int dev = gw_poller_next(&s_poller, now, &wait);
         if (dev >= 0) {
@@ -119,4 +130,9 @@ bool gw_bus_request_write(uint16_t tag, const gw_tag_value_t *value)
 size_t gw_bus_write_room(void)
 {
     return (size_t)uxQueueSpacesAvailable(s_writes);
+}
+
+void gw_bus_set_scan_rate(uint32_t ms)
+{
+    atomic_store(&s_scan_rate, ms);   /* applied by the bus owner at the top of its loop */
 }

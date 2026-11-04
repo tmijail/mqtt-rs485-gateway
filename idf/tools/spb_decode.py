@@ -84,6 +84,7 @@ def check(kind, p):
         names = {m.name for m in p.metrics}
         for required in ("bdSeq", "Node Control/Rebirth", "Node Control/Reboot",
                          "Node Info/Firmware", "Node Info/Hardware", "Node Info/Reset Reason",
+                         "Node Control/Scan Rate",
                          *(f"DI/{i}" for i in range(1, 9)), *(f"DO/{i}" for i in range(1, 9))):
             if required not in names:
                 errors.append(f"NBIRTH lacks {required}")

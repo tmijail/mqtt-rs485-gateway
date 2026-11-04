@@ -64,6 +64,33 @@ static mb_status_t execute(gw_poller_t *p, uint16_t dev, const mb_request_t *rq,
     return execute_n(p, dev, rq, rsp, p->mb->cfg.retries);
 }
 
+/* SPB-15: the node's Scan Rate, when set, replaces every device's poll_ms. */
+static uint32_t poll_ms(const gw_poller_t *p, const gw_device_cfg_t *d)
+{
+    return p->scan_rate_ms != 0 ? p->scan_rate_ms : d->poll_ms;
+}
+
+/* The slow scan is never faster than the fast one. */
+static uint32_t slow_ms(const gw_poller_t *p, const gw_device_cfg_t *d)
+{
+    uint32_t fast = poll_ms(p, d);
+    return d->slow_poll_ms > fast ? d->slow_poll_ms : fast;
+}
+
+void gw_poller_set_scan_rate(gw_poller_t *p, uint32_t ms, uint32_t now_ms)
+{
+    p->scan_rate_ms = ms;
+    for (uint16_t d = 0; d < p->cfg->device_count; d++) {
+        /* a shorter period takes effect now, not after the old one; a longer one after the
+         * poll already scheduled. Offline devices keep their probe schedule. */
+        uint32_t limit = now_ms + poll_ms(p, &p->cfg->devices[d]);
+        if (p->state[d].online && p->plan.dev_fast_count[d] > 0 &&
+            (int32_t)(p->next_due_ms[d] - limit) > 0) {
+            p->next_due_ms[d] = limit;
+        }
+    }
+}
+
 static bool is_offline(const gw_poller_t *p, uint16_t dev)
 {
     return gw_devstate_probing(&p->state[dev], p->cfg->devices[dev].offline_after);
@@ -161,9 +188,9 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
     /* Slow blocks done: due again in slow_poll_ms. After a failure they stay due for the next
      * (fast) cycle, unless there are no fast ones: the device then waits its slow period. */
     if (full && (!failed || fast == 0) && fast < p->plan.dev_block_count[dev]) {
-        p->slow_due_ms[dev] += d->slow_poll_ms;
+        p->slow_due_ms[dev] += slow_ms(p, d);
         if ((int32_t)(p->slow_due_ms[dev] - now_ms) <= 0) {
-            p->slow_due_ms[dev] = now_ms + d->slow_poll_ms;   /* overrun: re-anchor */
+            p->slow_due_ms[dev] = now_ms + slow_ms(p, d);     /* overrun: re-anchor */
         }
     }
     p->polling = -1;
@@ -189,9 +216,10 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
 
     if (is_offline(p, dev)) {
         /* Offline: probe again after an exponential backoff, measured from this cycle. */
-        uint32_t cap = d->poll_ms > p->opts.offline_probe_max_ms ? d->poll_ms
+        uint32_t period = poll_ms(p, d);
+        uint32_t cap = period > p->opts.offline_probe_max_ms ? period
                                                                  : p->opts.offline_probe_max_ms;
-        uint32_t next = p->probe_ms[dev] == 0 ? d->poll_ms : p->probe_ms[dev];
+        uint32_t next = p->probe_ms[dev] == 0 ? period : p->probe_ms[dev];
         next = next > cap / 2 ? cap : next * 2;
         p->probe_ms[dev] = next;
         p->next_due_ms[dev] = now_ms + next;
@@ -203,9 +231,9 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
         p->next_due_ms[dev] = p->slow_due_ms[dev];  /* only slow tags: nothing to read before */
         return ev;
     }
-    p->next_due_ms[dev] += d->poll_ms;
+    p->next_due_ms[dev] += poll_ms(p, d);
     if ((int32_t)(p->next_due_ms[dev] - now_ms) <= 0) {
-        p->next_due_ms[dev] = now_ms + d->poll_ms;  /* overrun: skip, never burst to catch up */
+        p->next_due_ms[dev] = now_ms + poll_ms(p, d);  /* overrun: skip, never burst to catch up */
     }
     return ev;
 }

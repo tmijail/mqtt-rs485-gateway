@@ -53,6 +53,7 @@ typedef struct {
     uint32_t slow_due_ms[GW_MAX_DEVICES];   /* MB-12: when the slow-scan blocks are due again */
     gw_tag_value_t work[GW_MAX_TAGS_PER_DEVICE];
     int polling;                            /* device whose cycle is running, or -1 */
+    uint32_t scan_rate_ms;                  /* SPB-15 override of every poll_ms, 0 = none */
 } gw_poller_t;
 
 void gw_poller_init(gw_poller_t *p, const gw_config_t *cfg, mb_master_t *mb,
@@ -95,6 +96,13 @@ gw_write_status_t gw_poller_write_value(gw_poller_t *p, uint16_t tag, const gw_t
 
 /** gw_poller_write_value() from a double (see gw_conv_from_double). */
 gw_write_status_t gw_poller_write(gw_poller_t *p, uint16_t tag, double value);
+
+/**
+ * SPB-15: poll every device every @p ms instead of its poll_ms (0 = back to each poll_ms). The
+ * slow scan keeps slow_poll_ms unless that is shorter than @p ms; offline probes back off from
+ * the new period. A shorter period applies at once, a longer one after the poll already due.
+ */
+void gw_poller_set_scan_rate(gw_poller_t *p, uint32_t ms, uint32_t now_ms);
 
 /** Number of configured devices currently offline. */
 uint16_t gw_poller_offline_count(const gw_poller_t *p);

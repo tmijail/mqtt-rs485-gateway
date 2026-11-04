@@ -736,6 +736,43 @@ def check_offline_backoff(slave, t0):
                  f"{worst:.2f} s")
 
 
+def check_scan_rate(obs, gw, slave, nbirth, ncmd_t, ndata_t):
+    """SPB-15: writable Node Control/Scan Rate (UInt32 ms, 0 = each device at its poll_ms).
+    3000 makes Meter1 poll every 3 s, an invalid value is refused (NDATA keeps 3000), 0 brings
+    back its 1 s."""
+    name = "Node Control/Scan Rate"
+    birth = metric(nbirth, name=name)
+    def set_rate(value, datatype=7):
+        obs.drain()
+        obs.publish_cmd(ncmd_t, [{"name": name, "datatype": datatype, "int_value": value}])
+        nd = obs.wait(ndata_t, 3, lambda q: metric(q, alias=7) is not None)
+        return metric(nd[2], alias=7).int_value if nd else None
+    def starts(since, until):
+        return [t for t, r in zip(list(slave.times), list(slave.reads))
+                if since <= t <= until and r[0] == 1 and r[1:] == (1, 0, 1)]
+    t_set = time.monotonic()
+    confirmed = set_rate(3000)
+    time.sleep(11)
+    slow = starts(t_set + 1.5, time.monotonic())
+    gaps3 = [round(b - a, 2) for a, b in zip(slow, slow[1:])]
+    since = time.monotonic()
+    refused = set_rate(10)
+    logged = gw.wait_log(r"NCMD: metric 'Node Control/Scan Rate' .*discarded: Scan Rate must be", 2, since)
+    t_back = time.monotonic()
+    back = set_rate(0)
+    time.sleep(5)
+    fast = starts(t_back + 1.5, time.monotonic())
+    gaps1 = [round(b - a, 2) for a, b in zip(fast, fast[1:])]
+    ok = birth is not None and birth.datatype == 7 and birth.int_value == 0 and confirmed == 3000 \
+        and len(gaps3) >= 2 and all(2.7 <= g <= 3.6 for g in gaps3) and refused == 3000 and logged \
+        and back == 0 and len(gaps1) >= 2 and all(g <= 1.6 for g in gaps1)
+    return check("SPB-15 NCMD Node Control/Scan Rate: NBIRTH UInt32 0, 3000 -> Meter1 every 3 s "
+                 "(NDATA), invalid 10 refused, 0 -> back to its poll_ms", ok,
+                 f"NBIRTH {(birth.datatype, birth.int_value) if birth else None}; NDATA {confirmed}, "
+                 f"cycles {gaps3} s apart; 10 -> NDATA {refused}, logged {bool(logged)}; 0 -> NDATA "
+                 f"{back}, cycles {gaps1} s apart")
+
+
 def check_write_between_blocks(obs, slave, dcmd_t, ddata_t):
     """MB-14: with unit 1 answering 120 ms late, a Meter1 cycle (6 requests) takes about 1 s.
     A DCMD sent in the middle of a cycle is written between two requests of that cycle (Meter1
@@ -1134,6 +1171,7 @@ def run(args, log, slave, broker, conf, work):
     check_offline_backoff(slave, t0)
     check_scan_classes(slave)
     check_write_between_blocks(obs, slave, dcmd_t, ddata_t)
+    check_scan_rate(obs, gw, slave, p, ncmd_t, ndata_t)
 
     # 2. Slave off -> DDEATH; back on -> DBIRTH
     obs.drain()

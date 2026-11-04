@@ -29,6 +29,9 @@ esp_err_t gw_bus_start(const gw_config_t *cfg, const mb_transport_t *tr, const g
  * queue is full. */
 bool gw_bus_request_write(uint16_t tag, const gw_tag_value_t *value);
 
+/** SPB-15: poll every device every @p ms (0 = each at its poll_ms). Non-blocking. */
+void gw_bus_set_scan_rate(uint32_t ms);
+
 /** Free entries in the write queue (called by the only producer, the Sparkplug task). */
 size_t gw_bus_write_room(void);
 

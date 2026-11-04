@@ -67,6 +67,8 @@ typedef struct {
     bool room_limited;           /* write_room returns room (otherwise plenty) */
     size_t room;
     int reboots;
+    int scan_rate_calls;
+    uint32_t scan_rate;
 } recorder_t;
 
 extern recorder_t g_rec;
