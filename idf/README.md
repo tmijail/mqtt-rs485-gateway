@@ -352,7 +352,7 @@ Leyenda de **Evidencia**:
 Nunca se ejecutaron:
 
 - el driver W5500 y su SPI;
-- el modo RS485 por hardware (temporización de RTS/DE a 115200 incluida);
+- el modo RS485 por hardware (temporización de RTS/DE a 115200 incluida). La ISR de la UART está en IRAM (`CONFIG_UART_ISR_IN_IRAM`) para que el DE se libere a tiempo aunque la caché esté deshabilitada (por ejemplo, durante el `nvs_commit` del bdSeq); falta verificarlo con osciloscopio;
 - el TCA9554 real;
 - la polaridad real de las DI;
 - el orden de color del LED;

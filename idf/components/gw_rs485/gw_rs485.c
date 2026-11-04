@@ -94,7 +94,13 @@ esp_err_t gw_rs485_init(const gw_config_t *cfg, mb_transport_t *tr)
     };
     s_baud = cfg->rs485.baud;
     s_char_bits = mb_char_bits(cfg->rs485.parity != GW_PARITY_NONE, cfg->rs485.stop_bits);
-    ESP_RETURN_ON_ERROR(uart_driver_install(PORT, RX_BUF_SIZE, 0, 0, NULL, 0), TAG, "install");
+#if CONFIG_UART_ISR_IN_IRAM
+    const int intr_flags = ESP_INTR_FLAG_IRAM;   /* DE is released in the ISR (see sdkconfig) */
+#else
+    const int intr_flags = 0;
+#endif
+    ESP_RETURN_ON_ERROR(uart_driver_install(PORT, RX_BUF_SIZE, 0, 0, NULL, intr_flags), TAG,
+                        "install");
     ESP_RETURN_ON_ERROR(uart_param_config(PORT, &uc), TAG, "param");
     ESP_RETURN_ON_ERROR(uart_set_pin(PORT, gw_bsp.rs485.tx, gw_bsp.rs485.rx, gw_bsp.rs485.de,
                                      UART_PIN_NO_CHANGE),

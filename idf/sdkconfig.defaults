@@ -27,6 +27,12 @@ CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 # random start-up delay of up to 5 s regularly pushes the first sync past the first NBIRTH)
 CONFIG_LWIP_SNTP_STARTUP_DELAY=n
 
+# MB-2: in RS485 half-duplex mode the UART driver releases RTS (the transceiver's DE) in the
+# TX_DONE interrupt. With the ISR in flash it is deferred while the cache is disabled (the NVS
+# commit of the bdSeq on every MQTT attempt), DE stays active while the slave answers and the
+# response is lost.
+CONFIG_UART_ISR_IN_IRAM=y
+
 # REL-3
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 
