@@ -21,6 +21,34 @@
 extern "C" {
 #endif
 
+/** Connection state for the shell and the web UI (written by the Sparkplug task). */
+typedef struct {
+    uint8_t broker;          /* MQTT-6: index of the current broker (0 = mqtt.host) */
+    uint8_t broker_count;
+    const char *host;        /* its host and port (points into the configuration) */
+    uint16_t port;
+    uint8_t failures;        /* consecutive failed attempts on it */
+    int8_t host_state;       /* SPB-13: -1 no STATE seen, 0 offline, 1 online */
+    bool waiting_host;       /* connected and subscribed, NBIRTH waits for the host */
+    bool sf_enabled;         /* SPB-14 */
+    bool sf_psram;
+    uint32_t sf_count;       /* samples waiting to be sent */
+    uint32_t sf_cap;
+    uint32_t sf_dropped;     /* overwritten before they could be sent */
+    uint32_t sf_sent;        /* historical messages published */
+    bool spill_on;           /* SPB-14: the ring spills to the card */
+    uint32_t spill_count;    /* samples (records) on the card waiting */
+    uint32_t spilled;        /* records ever moved to the card */
+    uint32_t spill_dropped;  /* records deleted from the card unsent (space) */
+    bool spill_failed;       /* the card failed: spill stopped */
+    uint32_t max_packet;     /* issue #73: broker's MQTT 5 Maximum Packet Size, 0 = none */
+    uint32_t oversize;       /* messages not published because they exceed it */
+    uint32_t oversize_bytes; /* size of the last one */
+    char oversize_topic[GW_TOPIC_MAX];
+} gw_edge_status_t;
+
+void gw_edge_get_status(gw_edge_status_t *out);
+
 /** @p info (and its strings) must outlive the gateway. */
 esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info);
 

@@ -32,6 +32,17 @@ menu "Gateway: Sparkplug / MQTT"
         int "esp-mqtt outbox limit (bytes, QoS>0 messages awaiting ACK)"
         default 8192
 
+    config GW_MQTT_PUBLISH_BUDGET_MS
+        int "Longest a single MQTT publish may take (ms)"
+        range 1000 9000
+        default 8000
+        help
+            Issue #59: esp-mqtt keeps writing a message while every socket write makes
+            progress, so on a very slow link one publish (a DBIRTH of up to 6 KB) could
+            outlast the task watchdog. After this long the connection is closed (the
+            Sparkplug session restarts with backoff). The write in progress may still take
+            up to the 5 s socket timeout: keep budget + 5 s below the 15 s watchdog.
+
     config GW_MQTT_BACKOFF_MIN_MS
         int "Reconnect backoff minimum (ms)"
         default 1000
@@ -47,5 +58,22 @@ menu "Gateway: Sparkplug / MQTT"
         help
             Births carry better timestamps if the clock is set first. The connection
             proceeds without synchronised time once this expires.
+
+    config GW_SF_PSRAM_SAMPLES
+        int "Store & forward: samples kept in PSRAM (24 B each)"
+        range 1000 400000
+        default 40000
+        help
+            SPB-14, with sparkplug.store_forward: changes made while there is no Sparkplug
+            session are kept in a ring of this many metric samples, allocated once at boot
+            in PSRAM (40000 = 960 KB). When full, the oldest samples are overwritten.
+
+    config GW_SF_INTERNAL_SAMPLES
+        int "Store & forward: samples kept without PSRAM (24 B each)"
+        range 64 8192
+        default 512
+        help
+            The same ring in internal RAM when the board has no PSRAM (or it was not
+            detected, or QEMU): 512 samples = 12 KB.
 
 endmenu

@@ -1,8 +1,11 @@
 #include "gw_edge.h"
 
+#include <assert.h>
 #include <stdatomic.h>
 #include <string.h>
+#include <time.h>
 
+#include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_random.h"
@@ -11,16 +14,27 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "gw_backoff.h"
+#include "gw_brokersel.h"
 #include "gw_bus.h"
 #include "gw_io.h"
 #include "gw_net.h"
 #include "gw_node.h"
+#include "gw_phost.h"
 #include "gw_status.h"
+#include "gw_sfcard.h"
+#include "gw_sfspill.h"
 #include "gw_storage.h"
+#include "esp_transport.h"
 #include "lwip/sockets.h"
+#include "mbedtls/asn1.h"
+#include "mbedtls/pk.h"
+#include "mbedtls/x509_crt.h"
 #include "mqtt_client.h"
+#include "mqtt5_client.h"   /* after mqtt_client.h: it needs its types */
+#include "psa/crypto.h"
 
 static const char *TAG = "edge";
 
@@ -31,6 +45,9 @@ static const char *TAG = "edge";
 #define QUIESCE_MS       3000   /* longest wait for the bus task to finish its transaction */
 #define STABLE_MAX_MS    60000  /* a session is stable after one keepalive period, at most this */
 #define SUBACK_TIMEOUT_MS 5000  /* NBIRTH waits this long at most for the SUBACK */
+#define TLS_ERROR_LOG_MS 10000  /* a TLS setup that cannot work is logged this often */
+#define PHOST_WAIT_MS    30000  /* with backup brokers: no STATE online this long -> next broker */
+#define SF_MSGS_PER_LOOP 4      /* historical messages per loop: live data is not held back */
 #define STR_(x) #x
 #define STR(x)  STR_(x)
 
@@ -62,6 +79,23 @@ static atomic_uint s_route_gen;
 static atomic_bool s_restart_req;
 static atomic_bool s_rebirth_req;
 
+/* ---- publish time bound (issue #59): shared with the esp_timer task ---- */
+static esp_timer_handle_t s_pub_timer;
+static SemaphoreHandle_t s_pub_lock;
+static StaticSemaphore_t s_pub_lock_buf;
+/* ---- issue #73: MQTT 5 Maximum Packet Size of the broker (CONNACK), 0 = no limit ---- */
+static atomic_uint s_max_packet;
+static uint32_t s_oversize;          /* messages not published because of it */
+static char s_oversize_topic[GW_TOPIC_MAX];
+static uint32_t s_oversize_bytes;
+static int64_t s_oversize_logged_us;
+#define PUBLISH_OVERSIZE (-2)        /* op_publish: not a connection failure */
+static int s_pub_fd = -1;            /* socket of the publish in progress, -1 = none */
+static uint16_t s_pub_port;          /* its local port: tells a reused descriptor apart */
+static const char *s_pub_topic;
+static size_t s_pub_len;
+static atomic_bool s_pub_cut;
+
 /* ---- queues and buffers (static, REL-2 / MQTT-7) ---- */
 static QueueHandle_t s_q;
 static StaticQueue_t s_q_buf;
@@ -81,6 +115,7 @@ static esp_mqtt_client_config_t s_mqtt_cfg;
 static char s_death_topic[GW_TOPIC_MAX];
 static char s_ncmd_topic[GW_TOPIC_MAX];
 static char s_dcmd_topic[GW_TOPIC_MAX];
+static char s_state_topic[GW_TOPIC_MAX];   /* SPB-13: "" without sparkplug.primary_host_id */
 static uint8_t s_will[64];
 static uint8_t s_bdseq;
 static bool s_started;
@@ -99,6 +134,38 @@ static uint32_t s_max_unfed_ms; /* longest stretch without feeding since the las
 static unsigned s_handled_route;
 static uint32_t s_diag_wait_ms = UINT32_MAX;   /* until the next diagnostics NDATA */
 static struct ifreq s_ifr;      /* interface the client is bound to (NET-4, two interfaces only) */
+static char *s_ca_pem;          /* MQTT-4: CA file, boot allocation (PSRAM if any), never freed */
+static char *s_cert_pem;        /* MQTT-5: client certificate and key, the same way */
+static char *s_key_pem;
+/* Issue #70: what the X.509 verify callback (mqtt_task) saw in the current attempt; read when
+ * the same task reports the failure. */
+typedef struct {
+    uint32_t flags;          /* OR of every certificate's verify flags */
+    bool seen;               /* the broker presented a certificate */
+    char subject[96];        /* of the broker certificate (depth 0) */
+    char sans[96];           /* its DNS and IP names */
+    mbedtls_x509_time valid_from, valid_to;
+} tls_verify_t;
+static tls_verify_t s_vf;
+static mbedtls_x509_crt s_ca_chain;   /* mqtt.tls.ca_file, parsed once at boot */
+static char s_setup_error[200]; /* why the settings cannot work (TLS files): no connection attempted */
+static int64_t s_tls_logged_us;
+static bool s_waiting_time_logged;
+static gw_brokersel_t s_bsel;   /* MQTT-6: which broker of the list the next attempt goes to */
+static gw_phost_t s_phost;      /* SPB-13: what the primary host last said */
+static bool s_waiting_host;     /* subscribed; NBIRTH waits for the host's STATE online */
+static int64_t s_host_wait_since_us;
+static bool s_host_disconnect;  /* the session ends because of the host, not the network */
+static gw_sf_t s_sf;            /* SPB-14: store & forward ring (storage allocated at boot) */
+static bool s_sf_psram;
+static gw_sfspill_t s_spill;    /* SPB-14: the ring's spill to the microSD card (optional) */
+static bool s_spill_on;
+static bool s_stable;           /* the current session lasted stable_ms(): it counts as working */
+static char s_client_if[8];     /* interface the client was bound to ("" = one interface) */
+
+/* ---- read by other tasks (gw_edge_get_status) ---- */
+static portMUX_TYPE s_st_mux = portMUX_INITIALIZER_UNLOCKED;
+static gw_edge_status_t s_st;
 
 static void wake(void)
 {
@@ -197,6 +264,108 @@ static void enqueue_cmd(const esp_mqtt_event_t *ev)
     }
 }
 
+static const char *broker_host(unsigned i);
+
+/* The bundle's own verify callback: global in esp_crt_bundle.c, not in its header. */
+extern int esp_crt_verify_callback(void *buf, mbedtls_x509_crt *const crt, const int depth,
+                                   uint32_t *const flags);
+
+/* Issue #70: X.509 verify callback (mqtt_task, during the handshake). esp-tls reports the
+ * verification flags only while the peer certificate is still around after a failure, which
+ * TLS 1.3 does not keep: they are recorded here instead, with what the certificate says. */
+static int tls_verify(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags)
+{
+    (void)ctx;
+    int r = 0;
+    if (s_cfg->mqtt.tls.ca_file[0] == '\0') {
+        r = esp_crt_verify_callback(NULL, crt, depth, flags);   /* bundle: it finds the CA */
+    }
+    s_vf.flags |= *flags;
+    if (depth == 0) {
+        s_vf.seen = true;
+        mbedtls_x509_dn_gets(s_vf.subject, sizeof(s_vf.subject), &crt->subject);
+        s_vf.valid_from = crt->valid_from;
+        s_vf.valid_to = crt->valid_to;
+        size_t n = 0;
+        s_vf.sans[0] = '\0';
+        for (const mbedtls_x509_sequence *c = &crt->subject_alt_names; c != NULL && c->buf.p;
+             c = c->next) {
+            uint8_t tag = (uint8_t)(c->buf.tag & ~(MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED));
+            if (tag == MBEDTLS_X509_SAN_DNS_NAME) {
+                n += (size_t)snprintf(s_vf.sans + n, n < sizeof(s_vf.sans) ? sizeof(s_vf.sans) - n : 0,
+                                      "%sDNS:%.*s", n ? "," : "", (int)c->buf.len, c->buf.p);
+            } else if (tag == MBEDTLS_X509_SAN_IP_ADDRESS && c->buf.len == 4) {
+                n += (size_t)snprintf(s_vf.sans + n, n < sizeof(s_vf.sans) ? sizeof(s_vf.sans) - n : 0,
+                                      "%sIP:%u.%u.%u.%u", n ? "," : "", c->buf.p[0], c->buf.p[1],
+                                      c->buf.p[2], c->buf.p[3]);
+            }
+        }
+    }
+    return r;
+}
+
+/* crt_bundle_attach hook of esp-tls: the CA (file or bundle) and the verify callback above. */
+static esp_err_t tls_attach(void *conf)
+{
+    if (s_cfg->mqtt.tls.ca_file[0] != '\0') {
+        mbedtls_ssl_conf_ca_chain(conf, &s_ca_chain, NULL);
+    } else {
+        esp_err_t e = esp_crt_bundle_attach(conf);
+        if (e != ESP_OK) {
+            return e;
+        }
+    }
+    mbedtls_ssl_conf_verify(conf, tls_verify, NULL);
+    return ESP_OK;
+}
+
+static void fmt_time(char *out, size_t cap, const mbedtls_x509_time *t)
+{
+    snprintf(out, cap, "%04d-%02d-%02d %02d:%02d:%02d UTC", t->year, t->mon, t->day, t->hour,
+             t->min, t->sec);
+}
+
+/* MQTT-4 / issue #70: say why a TLS connection failed, in terms of the configuration, with the
+ * certificate's names and dates, the expected name and the clock. */
+static void log_tls_error(const esp_mqtt_error_codes_t *e)
+{
+    unsigned flags = (unsigned)e->esp_tls_cert_verify_flags | s_vf.flags;
+    int stack = e->esp_tls_stack_err < 0 ? -e->esp_tls_stack_err : e->esp_tls_stack_err;
+    const char *expected = s_cfg->mqtt.tls.server_name[0] ? s_cfg->mqtt.tls.server_name
+                                                          : broker_host(s_bsel.current);
+    time_t now = time(NULL);
+    struct tm tm;
+    gmtime_r(&now, &tm);
+    char clock[112], from[72], to[72];
+    snprintf(clock, sizeof(clock), "clock %04d-%02d-%02d %02d:%02d:%02d UTC, SNTP %s",
+             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
+             atomic_load(&s_time_synced) ? "synchronised" : "NOT synchronised");
+    fmt_time(from, sizeof(from), &s_vf.valid_from);
+    fmt_time(to, sizeof(to), &s_vf.valid_to);
+    const char *what = (flags & MBEDTLS_X509_BADCERT_EXPIRED)  ? "the broker certificate expired"
+                       : (flags & MBEDTLS_X509_BADCERT_FUTURE) ? "the broker certificate is not valid yet"
+                       : (flags & MBEDTLS_X509_BADCERT_CN_MISMATCH)
+                           ? "the broker certificate does not carry the expected name"
+                       : (flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED)
+                           ? "the broker certificate is not signed by the configured CA"
+                       : flags != 0 ? "the broker certificate was rejected"
+                       : stack == -MBEDTLS_ERR_X509_CERT_VERIFY_FAILED
+                           ? "the broker certificate failed verification"
+                           : "TLS handshake failed";
+    ESP_LOGW(TAG, "TLS: %s (esp-tls %s, mbedTLS -0x%04x, verify flags 0x%x, errno %d)", what,
+             esp_err_to_name(e->esp_tls_last_esp_err), (unsigned)stack, flags,
+             e->esp_transport_sock_errno);
+    if (s_vf.seen) {
+        ESP_LOGW(TAG, "TLS: certificate %s [%s], valid %s to %s; expected name '%s' (%s); %s",
+                 s_vf.subject, s_vf.sans, from, to, expected,
+                 s_cfg->mqtt.tls.server_name[0] ? "mqtt.tls.server_name" : "the broker host",
+                 clock);
+    } else {
+        ESP_LOGW(TAG, "TLS: no broker certificate checked; expected name '%s'; %s", expected,
+                 clock);
+    }
+}
+
 static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
@@ -204,6 +373,12 @@ static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *da
     const esp_mqtt_event_t *ev = data;
     switch ((esp_mqtt_event_id_t)id) {
     case MQTT_EVENT_CONNECTED:
+#if CONFIG_MQTT_PROTOCOL_5
+        /* issue #73: what the broker accepts at most (0: no limit, or MQTT 3.1.1) */
+        atomic_store(&s_max_packet, ev->protocol_ver == MQTT_PROTOCOL_V_5 && ev->property != NULL
+                                        ? ev->property->server.maximum_packet_size
+                                        : 0u);
+#endif
         atomic_store(&s_mqtt_connected, true);
         atomic_fetch_add(&s_conn_gen, 1);
         wake();
@@ -226,6 +401,10 @@ static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *da
         if (ev->error_handle->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
             ESP_LOGW(TAG, "broker refused the connection (code %d)",
                      ev->error_handle->connect_return_code);
+        } else if (s_cfg->mqtt.tls.enabled &&
+                   (ev->error_handle->esp_tls_last_esp_err != ESP_OK ||
+                    ev->error_handle->esp_tls_cert_verify_flags != 0)) {
+            log_tls_error(ev->error_handle);
         } else {
             ESP_LOGW(TAG, "MQTT transport error (errno %d)",
                      ev->error_handle->esp_transport_sock_errno);
@@ -255,14 +434,109 @@ static void feed_watchdog(void)
     esp_task_wdt_reset();
 }
 
+/* ---------- publish time bound (issue #59) ---------- */
+
+static uint16_t local_port(int fd)
+{
+    struct sockaddr_storage a;
+    socklen_t n = sizeof(a);
+    if (getsockname(fd, (struct sockaddr *)&a, &n) != 0) {
+        return 0;
+    }
+    return a.ss_family == AF_INET6 ? ntohs(((struct sockaddr_in6 *)&a)->sin6_port)
+                                   : ntohs(((struct sockaddr_in *)&a)->sin_port);
+}
+
+/* esp_timer task: the publish has run for the whole budget. esp-mqtt goes on writing while
+ * every write makes progress, so on a slow link one publish has no bound of its own: shut the
+ * socket down, the blocked write fails and esp-mqtt closes the connection. The lock and the
+ * local port make sure the descriptor is still that of the publish in progress. */
+static void on_publish_budget(void *arg)
+{
+    (void)arg;
+    xSemaphoreTake(s_pub_lock, portMAX_DELAY);
+    if (s_pub_fd >= 0 && local_port(s_pub_fd) == s_pub_port) {
+        atomic_store(&s_pub_cut, true);
+        ESP_LOGW(TAG, "publish of %u bytes to %s still running after %d ms: link too slow for a "
+                      "Sparkplug session, closing the connection",
+                 (unsigned)s_pub_len, s_pub_topic, CONFIG_GW_MQTT_PUBLISH_BUDGET_MS);
+        shutdown(s_pub_fd, SHUT_RDWR);
+    }
+    xSemaphoreGive(s_pub_lock);
+}
+
+/* Every publish of the Sparkplug task goes through here: at most the budget plus the socket
+ * timeout of the write in progress (5 s), below the 15 s task watchdog. */
+/* Size of the MQTT PUBLISH packet (no MQTT 5 properties): fixed header, topic, packet id,
+ * property length, payload. */
+static uint32_t publish_packet_size(const char *topic, int len, int qos)
+{
+    uint32_t rem = 2u + (uint32_t)strlen(topic) + (qos > 0 ? 2u : 0u) +
+                   (s_cfg->mqtt.protocol == GW_MQTT_V5 ? 1u : 0u) + (uint32_t)len;
+    uint32_t hdr = 1u + (rem < 128u ? 1u : rem < 16384u ? 2u : rem < 2097152u ? 3u : 4u);
+    return hdr + rem;
+}
+
+static int bounded_publish(const char *topic, const char *data, int len, int qos, bool retain)
+{
+    uint32_t max = atomic_load(&s_max_packet);
+    uint32_t size = publish_packet_size(topic, len, qos);
+    if (max != 0 && size > max) {
+        /* issue #73: the broker would drop it (or the connection): never send it */
+        s_oversize++;
+        snprintf(s_oversize_topic, sizeof(s_oversize_topic), "%s", topic);
+        s_oversize_bytes = size;
+        int64_t now = esp_timer_get_time();
+        if (s_oversize_logged_us == 0 || now - s_oversize_logged_us >= 60000000LL) {
+            s_oversize_logged_us = now;
+            ESP_LOGE(TAG, "%s: %lu bytes, more than the broker's Maximum Packet Size of %lu "
+                          "(by %lu): not published (%lu so far)",
+                     topic, (unsigned long)size, (unsigned long)max, (unsigned long)(size - max),
+                     (unsigned long)s_oversize);
+        }
+        return PUBLISH_OVERSIZE;
+    }
+    esp_transport_handle_t t =
+        esp_mqtt_client_get_transport(s_client, s_cfg->mqtt.tls.enabled ? "mqtts" : "mqtt");
+    int fd = t != NULL ? esp_transport_get_socket(t) : -1;
+    xSemaphoreTake(s_pub_lock, portMAX_DELAY);
+    s_pub_fd = fd;
+    s_pub_port = fd >= 0 ? local_port(fd) : 0;
+    s_pub_topic = topic;
+    s_pub_len = (size_t)len;
+    xSemaphoreGive(s_pub_lock);
+    int64_t t0 = esp_timer_get_time();
+    if (fd >= 0) {
+        esp_timer_start_once(s_pub_timer, CONFIG_GW_MQTT_PUBLISH_BUDGET_MS * 1000ULL);
+    }
+    int r = esp_mqtt_client_publish(s_client, topic, data, len, qos, retain);
+    esp_timer_stop(s_pub_timer);
+    xSemaphoreTake(s_pub_lock, portMAX_DELAY);
+    s_pub_fd = -1;
+    xSemaphoreGive(s_pub_lock);
+    if (atomic_exchange(&s_pub_cut, false)) {
+        ESP_LOGW(TAG, "publish of %d bytes to %s aborted: returned after %lu ms (budget %d ms)",
+                 len, topic, (unsigned long)((esp_timer_get_time() - t0) / 1000),
+                 CONFIG_GW_MQTT_PUBLISH_BUDGET_MS);
+        r = -1;
+    }
+    feed_watchdog();
+    return r;
+}
+
 /* ---------- node ops (run in the Sparkplug task) ---------- */
+
+static bool s_in_births;        /* issue #71: start_births() is publishing */
+static unsigned s_birth_failures;
 
 static int op_publish(void *ctx, const char *topic, const uint8_t *data, size_t len, int qos,
                       bool retain)
 {
     (void)ctx;
-    int r = esp_mqtt_client_publish(s_client, topic, (const char *)data, (int)len, qos, retain);
-    feed_watchdog();
+    int r = bounded_publish(topic, (const char *)data, (int)len, qos, retain);
+    if (r == -1 && s_in_births) {   /* not PUBLISH_OVERSIZE: that one is not the connection */
+        s_birth_failures++;
+    }
     return r;
 }
 
@@ -317,14 +591,74 @@ static void op_reboot(void *ctx)
 
 /* ---------- connection management ---------- */
 
+/* MQTT-6: broker @p i of the list (0 = mqtt.host, then mqtt.backup_brokers in order). */
+static const char *broker_host(unsigned i)
+{
+    return i == 0 ? s_cfg->mqtt.host : s_cfg->mqtt.backup[i - 1].host;
+}
+
+static uint16_t broker_port(unsigned i)
+{
+    return i == 0 ? s_cfg->mqtt.port : s_cfg->mqtt.backup[i - 1].port;
+}
+
+static void publish_status(void)
+{
+    portENTER_CRITICAL(&s_st_mux);
+    s_st.broker = s_bsel.current;
+    s_st.broker_count = s_bsel.count;
+    s_st.host = broker_host(s_bsel.current);
+    s_st.port = broker_port(s_bsel.current);
+    s_st.failures = s_bsel.failures;
+    s_st.host_state = !s_phost.have_ts ? -1 : s_phost.online ? 1 : 0;
+    s_st.waiting_host = s_waiting_host;
+    s_st.sf_enabled = s_node != NULL && s_node->sf != NULL;
+    s_st.sf_psram = s_sf_psram;
+    s_st.sf_count = (uint32_t)gw_sf_count(&s_sf);
+    s_st.sf_cap = (uint32_t)s_sf.cap;
+    s_st.sf_dropped = s_sf.dropped;
+    s_st.sf_sent = s_node != NULL ? s_node->sf_sent : 0;
+    s_st.spill_on = s_spill_on;
+    s_st.spill_count = (uint32_t)s_spill.count;
+    s_st.spilled = s_sf.spilled;
+    s_st.spill_dropped = s_spill.dropped;
+    s_st.spill_failed = s_spill_on && !s_spill.ok;
+    s_st.max_packet = atomic_load(&s_max_packet);
+    s_st.oversize = s_oversize;
+    s_st.oversize_bytes = s_oversize_bytes;
+    snprintf(s_st.oversize_topic, sizeof(s_st.oversize_topic), "%s", s_oversize_topic);
+    portEXIT_CRITICAL(&s_st_mux);
+}
+
+void gw_edge_get_status(gw_edge_status_t *out)
+{
+    portENTER_CRITICAL(&s_st_mux);
+    *out = s_st;
+    portEXIT_CRITICAL(&s_st_mux);
+}
+
 static void prepare_attempt(void)
 {
+    memset(&s_vf, 0, sizeof(s_vf));   /* issue #70: what the next handshake will see */
     s_bdseq = gw_storage_next_bdseq();
     size_t n = gw_node_death_payload(s_bdseq, s_will, sizeof(s_will));
     s_mqtt_cfg.session.last_will.msg = (const char *)s_will;
     s_mqtt_cfg.session.last_will.msg_len = (int)n;
-    ESP_LOGI(TAG, "connecting to %s:%u as '%s', bdSeq=%u", s_cfg->mqtt.host, s_cfg->mqtt.port,
-             s_cfg->mqtt.client_id, s_bdseq);
+    /* MQTT-6: set_config (reconnect) or init (start_client) takes the current broker */
+    s_mqtt_cfg.broker.address.hostname = broker_host(s_bsel.current);
+    s_mqtt_cfg.broker.address.port = broker_port(s_bsel.current);
+    publish_status();
+    const char *v5 = s_cfg->mqtt.protocol == GW_MQTT_V5 ? " MQTT 5" : "";
+    if (s_bsel.count > 1) {
+        ESP_LOGI(TAG, "connecting to %s:%u%s%s (broker %u/%u) as '%s', bdSeq=%u",
+                 broker_host(s_bsel.current), broker_port(s_bsel.current),
+                 s_cfg->mqtt.tls.enabled ? " (TLS)" : "", v5, s_bsel.current + 1, s_bsel.count,
+                 s_cfg->mqtt.client_id, s_bdseq);
+    } else {
+        ESP_LOGI(TAG, "connecting to %s:%u%s%s as '%s', bdSeq=%u", s_cfg->mqtt.host,
+                 s_cfg->mqtt.port, s_cfg->mqtt.tls.enabled ? " (TLS)" : "", v5,
+                 s_cfg->mqtt.client_id, s_bdseq);
+    }
 }
 
 static void schedule_retry(int64_t now);
@@ -338,8 +672,11 @@ static void start_client(int64_t now)
      * esp_mqtt_client_init and only changes with a new client (move_session). */
     s_mqtt_cfg.network.if_name = gw_net_active_ifname(s_ifr.ifr_name, sizeof(s_ifr.ifr_name)) ? &s_ifr
                                                                                     : NULL;
+    s_client_if[0] = '\0';
     if (s_mqtt_cfg.network.if_name != NULL) {
         ESP_LOGI(TAG, "MQTT bound to interface %s", s_ifr.ifr_name);
+        snprintf(s_client_if, sizeof(s_client_if), "%.*s", (int)sizeof(s_client_if) - 1,
+                 s_ifr.ifr_name);
     }
     s_client = esp_mqtt_client_init(&s_mqtt_cfg);
     s_mqtt_cfg.network.if_name = NULL;   /* esp_mqtt_set_config would allocate it again */
@@ -350,6 +687,21 @@ static void start_client(int64_t now)
         schedule_retry(now);
         return;
     }
+#if CONFIG_MQTT_PROTOCOL_5
+    if (s_cfg->mqtt.protocol == GW_MQTT_V5) {
+        /* MQTT-8, Sparkplug 3.0 over MQTT 5: Clean Start (esp-mqtt's clean session, on by
+         * default) and Session Expiry Interval 0, so the broker keeps no session state between
+         * connections, as with clean session in 3.1.1; Will Delay Interval 0, so the NDEATH will
+         * is published as soon as the connection is lost. Problem information is requested so
+         * a refusal comes with its reason string. */
+        const esp_mqtt5_connection_property_config_t props = {
+            .session_expiry_interval = 0,
+            .will_delay_interval = 0,
+            .request_problem_info = true,
+        };
+        ESP_ERROR_CHECK(esp_mqtt5_client_set_connect_property(s_client, &props));
+    }
+#endif
     ESP_ERROR_CHECK(esp_mqtt_client_register_event(s_client, ESP_EVENT_ANY_ID, on_mqtt_event, NULL));
     ESP_ERROR_CHECK(esp_mqtt_client_start(s_client));
     s_started = true;
@@ -364,14 +716,40 @@ static void schedule_retry(int64_t now)
              (unsigned long)delay);
 }
 
+/* Issue #58: esp-mqtt 1.1.0 (mqtt_client.c:633) callocs a new network.if_name on every
+ * esp_mqtt_set_config() without freeing the previous one (about 17 B per call, one call per
+ * connection attempt). The interface binding is therefore given to esp_mqtt_client_init()
+ * only, and every set_config goes through here: a configuration that still carries it is
+ * refused (and aborts debug builds) instead of leaking. test/host/check_set_config.cmake fails
+ * the host tests if esp_mqtt_set_config() is called anywhere else. Remove when an esp-mqtt
+ * release frees it (reported upstream; README 6.5). The same function also copies
+ * credentials.authentication.key_password every time without freeing it: never set. */
+static esp_err_t set_config(void)
+{
+    if (s_mqtt_cfg.network.if_name != NULL ||
+        s_mqtt_cfg.credentials.authentication.key_password != NULL) {
+        ESP_LOGE(TAG, "esp_mqtt_set_config with if_name/key_password would leak: refused");
+        assert(false);
+        return ESP_ERR_INVALID_STATE;
+    }
+    return esp_mqtt_set_config(s_client, &s_mqtt_cfg);
+}
+
 static void reconnect(int64_t now)
 {
     s_retry_at_us = 0;
     prepare_attempt();
-    if (esp_mqtt_set_config(s_client, &s_mqtt_cfg) != ESP_OK ||
+    if (set_config() != ESP_OK ||
         esp_mqtt_client_reconnect(s_client) != ESP_OK) {
         schedule_retry(now);
     }
+}
+
+/* Orderly end of a Sparkplug session: NDEATH with the session's bdSeq (the will's payload). */
+static void publish_ndeath(void)
+{
+    bounded_publish(s_death_topic, (const char *)s_will, s_mqtt_cfg.session.last_will.msg_len, 1,
+                    false);
 }
 
 /* Close a session that cannot work; the DISCONNECTED event schedules the retry (backoff).
@@ -387,27 +765,48 @@ static void abort_session(const char *why)
  * so a node that is announced online always receives its commands. */
 static void on_connected(void)
 {
+    /* SPB-13: the host's STATE too, in the same SUBSCRIBE: its retained message comes right
+     * after the SUBACK */
     const esp_mqtt_topic_t topics[] = {
         {.filter = s_ncmd_topic, .qos = 1},
         {.filter = s_dcmd_topic, .qos = 1},
+        {.filter = s_state_topic, .qos = 1},
     };
     atomic_store(&s_suback, 0);
-    int id = esp_mqtt_client_subscribe_multiple(s_client, topics, 2);
+    gw_phost_session_start(&s_phost);
+    s_waiting_host = false;
+    int id = esp_mqtt_client_subscribe_multiple(s_client, topics, s_state_topic[0] ? 3 : 2);
     feed_watchdog();
     if (id < 0) {
-        abort_session("SUBSCRIBE to NCMD/DCMD could not be sent");
+        abort_session(s_state_topic[0] ? "SUBSCRIBE to NCMD/DCMD/STATE could not be sent"
+                                       : "SUBSCRIBE to NCMD/DCMD could not be sent");
         return;
     }
     s_sub_msg_id = id;
     s_sub_deadline_us = esp_timer_get_time() + SUBACK_TIMEOUT_MS * 1000LL;
 }
 
-/* SUBACK received for both topics: the Sparkplug session starts (NBIRTH and DBIRTHs). */
-static void on_subscribed(void)
+/* Stack margins of the tasks the MQTT session runs on (TLS handshakes are deep in mqtt_task). */
+static void log_stacks(void)
+{
+    TaskHandle_t mqtt = xTaskGetHandle("mqtt_task");
+    ESP_LOGI(TAG, "stack free (high-water mark): sparkplug %u of %u B, mqtt_task %u B",
+             (unsigned)uxTaskGetStackHighWaterMark(NULL), (unsigned)STACK_BYTES,
+             mqtt != NULL ? (unsigned)uxTaskGetStackHighWaterMark(mqtt) : 0u);
+}
+
+/* The Sparkplug session starts: NBIRTH and DBIRTHs. */
+static void start_births(void)
 {
     /* s_attempt is not reset here: a broker that accepts the connection and drops it at once
      * (ACL, duplicate client_id, connection limit) must still see the backoff grow. It is
      * reset once the session has stayed up for a while (reconcile). */
+    /* Issue #71: the SUBACK can be handled just before the transport error behind it: births
+     * on a connection that is gone are lost, and "session up" would be a lie. */
+    if (!atomic_load(&s_mqtt_connected) || atomic_load(&s_disc_gen) != s_handled_disc) {
+        ESP_LOGW(TAG, "SUBACK received but the connection is already gone: no births");
+        return;
+    }
     s_retry_at_us = 0;
     atomic_store(&s_dev_dirty, 0);   /* the births carry the current state */
     atomic_store(&s_io_dirty, false);
@@ -415,12 +814,102 @@ static void on_subscribed(void)
     feed_watchdog();
     s_max_unfed_ms = 0;
     int64_t t0 = esp_timer_get_time();
-    gw_node_session_up(s_node, s_bdseq);
+    s_in_births = true;
+    s_birth_failures = 0;
+    uint32_t oversize_before = s_oversize;
+    bool born = gw_node_session_up(s_node, s_bdseq);
+    s_in_births = false;
+    if (!born && s_oversize != oversize_before) {
+        /* the NBIRTH itself is too large for this broker: no session can work here */
+        abort_session("NBIRTH larger than the broker's Maximum Packet Size");
+        return;
+    }
+    if (!born) {
+        ESP_LOGW(TAG, "NBIRTH not published (bdSeq=%u): the connection dropped, the session is "
+                      "not up",
+                 s_bdseq);
+        return;   /* the DISCONNECTED event schedules the retry */
+    }
+    if (s_birth_failures > 0 || !atomic_load(&s_mqtt_connected) ||
+        atomic_load(&s_disc_gen) != s_handled_disc) {
+        /* the NBIRTH went out but the connection died under the DBIRTHs: hosts would see a
+         * node without its devices; the new session repeats every birth */
+        gw_node_session_down(s_node);
+        ESP_LOGW(TAG, "births incomplete (bdSeq=%u, %u publish(es) failed): the connection "
+                      "dropped, the session is not up",
+                 s_bdseq, s_birth_failures);
+        return;
+    }
     s_session_up_us = esp_timer_get_time();
     gw_status_set(GW_ST_MQTT_UP, true);
     ESP_LOGI(TAG, "Sparkplug session up (bdSeq=%u): births sent in %lu ms, longest stretch "
              "without feeding the watchdog %lu ms", s_bdseq,
              (unsigned long)((esp_timer_get_time() - t0) / 1000), (unsigned long)s_max_unfed_ms);
+    log_stacks();
+    if (gw_sf_count(&s_sf) > 0) {
+        ESP_LOGI(TAG, "store & forward: %u sample(s) stored while offline follow as historical "
+                      "data (%lu overwritten)",
+                 (unsigned)gw_sf_count(&s_sf), (unsigned long)s_sf.dropped);
+    }
+}
+
+/* SUBACK received for every topic: the session starts, once the primary host (if one is
+ * configured) has said it is online (SPB-13). */
+static void on_subscribed(void)
+{
+    if (s_state_topic[0] != '\0' && !s_phost.online) {
+        s_waiting_host = true;
+        s_host_wait_since_us = esp_timer_get_time();
+        ESP_LOGI(TAG, "waiting for the primary host '%s' (STATE online) before NBIRTH",
+                 s_cfg->sparkplug.primary_host_id);
+        publish_status();
+        return;
+    }
+    start_births();
+}
+
+/* SPB-13: a message on spBv1.0/STATE/<primary_host_id>. */
+static void on_host_state(const uint8_t *data, size_t len)
+{
+    if (!atomic_load(&s_mqtt_connected)) {
+        return;
+    }
+    uint64_t last = s_phost.last_ts;
+    const char *id = s_cfg->sparkplug.primary_host_id;
+    switch (gw_phost_on_state(&s_phost, data, len)) {
+    case GW_PHOST_INVALID:
+        ESP_LOGW(TAG, "STATE of '%s' ignored: not a Sparkplug 3.0 payload "
+                      "({\"online\":bool,\"timestamp\":ms})", id);
+        break;
+    case GW_PHOST_STALE:
+        ESP_LOGW(TAG, "STATE of '%s' ignored: older than the last one (timestamp %llu)", id,
+                 (unsigned long long)last);
+        break;
+    case GW_PHOST_ONLINE:
+        ESP_LOGI(TAG, "primary host '%s' online (timestamp %llu)", id,
+                 (unsigned long long)s_phost.last_ts);
+        if (s_waiting_host) {
+            s_waiting_host = false;
+            start_births();
+        }
+        break;
+    case GW_PHOST_OFFLINE:
+        ESP_LOGW(TAG, "primary host '%s' offline (timestamp %llu)", id,
+                 (unsigned long long)s_phost.last_ts);
+        if (s_node->online) {
+            /* Sparkplug 3.0: NDEATH and disconnect; the next session waits for it again */
+            publish_ndeath();
+            gw_node_session_down(s_node);
+            gw_status_set(GW_ST_MQTT_UP, false);
+            s_host_disconnect = true;
+            abort_session("the primary host went offline: NDEATH published");
+        } else if (s_waiting_host && s_bsel.count > 1) {
+            s_host_disconnect = true;
+            abort_session("the primary host is offline on this broker");
+        }
+        break;
+    }
+    publish_status();
 }
 
 /* How long a session must last before the reconnect backoff starts again from the minimum. */
@@ -431,17 +920,16 @@ static uint32_t stable_ms(void)
 }
 
 /* NET-4: the active interface changed. A TCP connection cannot migrate, so the session ends
- * here and a new one (new bdSeq, NBIRTH, DBIRTHs) starts over the new interface at once. */
-static void move_session(void)
+ * here and a new one (new bdSeq, NBIRTH, DBIRTHs) starts over the new interface at once.
+ * MQTT-6 uses the same orderly end to return to the primary broker. */
+static void move_session(const char *why)
 {
-    ESP_LOGW(TAG, "active network interface changed: new MQTT session");
+    ESP_LOGW(TAG, "%s: new MQTT session", why);
     if (s_node->online) {
         /* Orderly end, as for a reboot: hosts learn it now and not after a keepalive. Over a
          * dead interface this is lost and the broker publishes the will later; the bdSeq of
          * the new session tells the two apart. */
-        esp_mqtt_client_publish(s_client, s_death_topic, (const char *)s_will,
-                                s_mqtt_cfg.session.last_will.msg_len, 1, false);
-        feed_watchdog();
+        publish_ndeath();
         gw_node_session_down(s_node);
         gw_status_set(GW_ST_MQTT_UP, false);
     }
@@ -452,8 +940,54 @@ static void move_session(void)
     s_handled_conn = atomic_load(&s_conn_gen);
     s_handled_disc = atomic_load(&s_disc_gen);
     s_retry_at_us = 0;
-    s_attempt = 0;   /* a new interface starts a fresh backoff */
+    s_attempt = 0;   /* a new interface or broker starts a fresh backoff */
     s_sub_msg_id = 0;
+    s_stable = false;
+    s_waiting_host = false;
+}
+
+/* An attempt ended without a session (or a session dropped): MQTT-6 failover, and issue #57
+ * when no broker at all answers over this interface. */
+static void attempt_ended(void)
+{
+    s_waiting_host = false;
+    if (s_host_disconnect) {
+        /* SPB-13: the network works; with backups the host may be on another broker */
+        s_host_disconnect = false;
+        s_stable = false;
+        gw_brokersel_session_down(&s_bsel);
+        if (s_bsel.count > 1 && gw_brokersel_failed(&s_bsel)) {
+            ESP_LOGW(TAG, "primary host not online on broker: next attempt on broker %u/%u (%s:%u)",
+                     s_bsel.current + 1, s_bsel.count, broker_host(s_bsel.current),
+                     broker_port(s_bsel.current));
+            s_attempt = 0;
+        }
+        publish_status();
+        return;
+    }
+    if (s_stable) {
+        s_stable = false;
+        gw_brokersel_session_down(&s_bsel);   /* a working broker: the next try goes there */
+        return;
+    }
+    unsigned from = s_bsel.current;
+    unsigned fails = s_bsel.failures + 1u;
+    if (gw_brokersel_failed(&s_bsel)) {
+        ESP_LOGW(TAG, "broker %u/%u (%s:%u) failed %u time(s) in a row: next attempt on broker "
+                      "%u/%u (%s:%u)",
+                 from + 1, s_bsel.count, broker_host(from), broker_port(from), fails,
+                 s_bsel.current + 1, s_bsel.count, broker_host(s_bsel.current),
+                 broker_port(s_bsel.current));
+        s_attempt = 0;   /* another broker: fresh backoff */
+    }
+    uint32_t round = (uint32_t)s_bsel.count * s_bsel.failover_after;
+    if (gw_brokersel_round_failed(&s_bsel) && s_bsel.round_failures % round == 0 &&
+        s_client_if[0] != '\0') {
+        ESP_LOGW(TAG, "no broker reachable over %s (%u failed attempts)", s_client_if,
+                 (unsigned)s_bsel.round_failures);
+        gw_net_report_broker(s_client_if, false);
+    }
+    publish_status();
 }
 
 /* Requested restart: the same orderly end as NCMD Reboot (explicit NDEATH, DISCONNECT). */
@@ -461,13 +995,36 @@ static void restart_now(void)
 {
     ESP_LOGW(TAG, "restart requested%s", s_node->online ? ": publishing NDEATH" : "");
     if (s_node->online) {
-        esp_mqtt_client_publish(s_client, s_death_topic, (const char *)s_will,
-                                s_mqtt_cfg.session.last_will.msg_len, 1, false);
+        publish_ndeath();
         op_reboot(NULL);
     }
     gw_bus_quiesce(QUIESCE_MS);
     vTaskDelay(pdMS_TO_TICKS(REBOOT_DELAY_MS));
     esp_restart();
+}
+
+/* MQTT-4: TLS settings that cannot work (a missing or unreadable certificate) never connect;
+ * and with certificate dates checked (CONFIG_MBEDTLS_HAVE_TIME_DATE) a TLS connection waits
+ * for SNTP: without a valid clock every certificate would be "not valid yet". */
+static bool tls_can_start(int64_t now)
+{
+    if (s_setup_error[0] != '\0') {
+        if (s_tls_logged_us == 0 || now - s_tls_logged_us >= TLS_ERROR_LOG_MS * 1000LL) {
+            s_tls_logged_us = now;
+            ESP_LOGE(TAG, "%s: MQTT not started", s_setup_error);
+        }
+        return false;
+    }
+#if CONFIG_MBEDTLS_HAVE_TIME_DATE
+    if (s_cfg->mqtt.tls.enabled && !atomic_load(&s_time_synced)) {
+        if (!s_waiting_time_logged) {
+            s_waiting_time_logged = true;
+            ESP_LOGW(TAG, "TLS: waiting for SNTP before connecting (certificate dates are checked)");
+        }
+        return false;
+    }
+#endif
+    return true;
 }
 
 /* Bring the Sparkplug state in line with the flags set by the other tasks. */
@@ -497,7 +1054,9 @@ static void reconcile(void)
     if (rg != s_handled_route) {
         s_handled_route = rg;
         if (s_started) {
-            move_session();
+            move_session("active network interface changed");
+            gw_brokersel_init(&s_bsel, s_bsel.count, s_bsel.failover_after,
+                              s_bsel.primary_return_ms);   /* a new path: the primary first */
             /* move_session consumed the generations of the old client: nothing of it is
              * handled below (no on_connected, no retry: the new client starts at once). */
             connected = false;
@@ -521,16 +1080,42 @@ static void reconcile(void)
             s_sub_msg_id = 0;
             on_subscribed();
         } else if (ack == -s_sub_msg_id) {
-            abort_session("the broker refused the NCMD/DCMD subscriptions");
+            abort_session(s_state_topic[0] ? "the broker refused the NCMD/DCMD/STATE subscriptions"
+                                           : "the broker refused the NCMD/DCMD subscriptions");
         } else if (now >= s_sub_deadline_us) {
-            abort_session("no SUBACK for NCMD/DCMD within " STR(SUBACK_TIMEOUT_MS) " ms");
+            abort_session(s_state_topic[0]
+                              ? "no SUBACK for NCMD/DCMD/STATE within " STR(SUBACK_TIMEOUT_MS) " ms"
+                              : "no SUBACK for NCMD/DCMD within " STR(SUBACK_TIMEOUT_MS) " ms");
         }
     }
-    if (s_node->online && connected && s_attempt != 0 &&
-        now - s_session_up_us >= stable_ms() * 1000LL) {
-        ESP_LOGI(TAG, "session stable for %lu ms: reconnect backoff reset",
-                 (unsigned long)stable_ms());
-        s_attempt = 0;
+    if (s_waiting_host && connected && s_bsel.count > 1 &&
+        now - s_host_wait_since_us >= PHOST_WAIT_MS * 1000LL) {
+        s_host_disconnect = true;
+        s_waiting_host = false;
+        abort_session("no STATE online from the primary host within 30 s on this broker");
+    }
+    if (s_node->online && connected && !s_stable && now - s_session_up_us >= stable_ms() * 1000LL) {
+        s_stable = true;
+        if (s_attempt != 0) {
+            ESP_LOGI(TAG, "session stable for %lu ms: reconnect backoff reset",
+                     (unsigned long)stable_ms());
+            s_attempt = 0;
+        }
+        gw_brokersel_stable(&s_bsel, (uint64_t)(now / 1000));
+        if (s_bsel.count > 1) {
+            ESP_LOGI(TAG, "broker %u/%u: session stable, the broker is kept", s_bsel.current + 1,
+                     s_bsel.count);
+        }
+        gw_net_report_broker(s_client_if, true);
+        publish_status();
+    }
+    if (s_stable && connected && gw_brokersel_should_return(&s_bsel, (uint64_t)(now / 1000))) {
+        /* MQTT-6: back to the primary after primary_return_s on a backup (one attempt) */
+        gw_brokersel_return_to_primary(&s_bsel);
+        move_session("returning to the primary broker");
+        connected = false;
+        cg = s_handled_conn;
+        dg = s_handled_disc;
     }
     if (s_node->online && !connected) {
         gw_node_session_down(s_node);
@@ -539,11 +1124,12 @@ static void reconcile(void)
     if (dg != s_handled_disc) {
         s_handled_disc = dg;
         if (!connected) {
+            attempt_ended();
             schedule_retry(now);
         }
     }
 
-    if (!s_started && ip && (s_retry_at_us == 0 || now >= s_retry_at_us) &&
+    if (!s_started && ip && (s_retry_at_us == 0 || now >= s_retry_at_us) && tls_can_start(now) &&
         (atomic_load(&s_time_synced) || now - s_ip_since_us >= CONFIG_GW_SNTP_WAIT_MS * 1000LL)) {
         start_client(now);
     }
@@ -561,7 +1147,8 @@ static void reconcile(void)
         ESP_LOGI(TAG, "rebirth requested from the console");
         gw_node_rebirth(s_node);
     }
-    if (s_node->online) {
+    /* online: DDATA/NDATA; offline with store & forward: the same changes into the store */
+    if (s_node->online || s_node->sf != NULL) {
         unsigned dirty = atomic_exchange(&s_dev_dirty, 0);
         for (uint16_t d = 0; dirty != 0; d++, dirty >>= 1) {
             if (dirty & 1u) {
@@ -572,13 +1159,22 @@ static void reconcile(void)
             gw_node_io_changed(s_node);
         }
     }
+    if (s_node->online && gw_sf_count(&s_sf) > 0) {
+        /* SPB-14: history after the births, a few messages per loop */
+        if (gw_node_flush_history(s_node, SF_MSGS_PER_LOOP) == 0) {
+            ESP_LOGI(TAG, "store & forward: history sent (%lu historical messages in total, %lu "
+                          "samples of devices without DBIRTH dropped)",
+                     (unsigned long)s_node->sf_sent, (unsigned long)s_node->sf_discarded);
+        }
+    }
     /* SPB-17: periodic diagnostics NDATA (rate limited by sparkplug.diagnostics_s) */
     s_diag_wait_ms = gw_node_diag_tick(s_node, (uint64_t)(esp_timer_get_time() / 1000));
+    publish_status();
 }
 
 static TickType_t next_timeout(void)
 {
-    int64_t ms = MAX_IDLE_MS;
+    int64_t ms = s_node->online && gw_sf_count(&s_sf) > 0 ? 10 : MAX_IDLE_MS;
     int64_t now = esp_timer_get_time();
     if (s_sub_msg_id > 0) {
         int64_t r = (s_sub_deadline_us - now) / 1000;
@@ -610,7 +1206,12 @@ static void edge_task(void *arg)
         }
         if (ev.type == EV_CMD) {
             const cmd_slot_t *c = &s_slots[ev.arg];
-            gw_node_handle_message(s_node, c->topic, c->topic_len, c->data, c->len);
+            if (s_state_topic[0] != '\0' && c->topic_len == strlen(s_state_topic) &&
+                memcmp(c->topic, s_state_topic, c->topic_len) == 0) {
+                on_host_state(c->data, c->len);
+            } else {
+                gw_node_handle_message(s_node, c->topic, c->topic_len, c->data, c->len);
+            }
             uint8_t slot = (uint8_t)ev.arg;
             xQueueSend(s_free_slots, &slot, 0);
         } else if (ev.type == EV_WRITE_DONE) {
@@ -619,9 +1220,163 @@ static void edge_task(void *arg)
     }
 }
 
+/* A PEM file next to config.json, checked now so a bad file is reported as such and not as a
+ * handshake failure on every attempt. Records the problem in s_setup_error. */
+static char *load_pem_certs(const char *name, const char *key)
+{
+    size_t len;
+    char why[120];
+    char *pem = gw_storage_read_file(name, &len, why, sizeof(why));
+    if (pem == NULL) {
+        snprintf(s_setup_error, sizeof(s_setup_error), "mqtt.tls.%s: %s", key, why);
+        return NULL;
+    }
+    mbedtls_x509_crt crt;
+    mbedtls_x509_crt_init(&crt);
+    int r = mbedtls_x509_crt_parse(&crt, (const unsigned char *)pem, len + 1);
+    unsigned count = 0;
+    for (const mbedtls_x509_crt *c = &crt; c != NULL && c->raw.len > 0; c = c->next) {
+        count++;
+    }
+    mbedtls_x509_crt_free(&crt);
+    if (r != 0 || count == 0) {
+        snprintf(s_setup_error, sizeof(s_setup_error),
+                 "mqtt.tls.%s: /cfg/%s is not a PEM certificate file (mbedTLS %d)", key, name, r);
+        gw_storage_free(pem);
+        return NULL;
+    }
+    ESP_LOGI(TAG, "TLS: %s: %u certificate(s) from /cfg/%s", key, count, name);
+    return pem;
+}
+
+/* MQTT-5: the client's private key, checked now like the certificates. */
+static char *load_pem_key(const char *name)
+{
+    size_t len;
+    char why[120];
+    char *pem = gw_storage_read_file(name, &len, why, sizeof(why));
+    if (pem == NULL) {
+        snprintf(s_setup_error, sizeof(s_setup_error), "mqtt.tls.key_file: %s", why);
+        return NULL;
+    }
+    mbedtls_pk_context pk;
+    mbedtls_pk_init(&pk);
+    int r = mbedtls_pk_parse_key(&pk, (const unsigned char *)pem, len + 1, NULL, 0);
+    mbedtls_pk_free(&pk);
+    if (r != 0) {
+        snprintf(s_setup_error, sizeof(s_setup_error),
+                 "mqtt.tls.key_file: /cfg/%s is not an unencrypted PEM private key (mbedTLS -0x%04x)",
+                 name, (unsigned)-r);
+        gw_storage_free(pem);
+        return NULL;
+    }
+    ESP_LOGI(TAG, "TLS: client key from /cfg/%s", name);
+    return pem;
+}
+
+/* MQTT-4: TLS 1.2/1.3 with the broker certificate verified against the CA file (or the
+ * ESP-IDF bundle of public roots) and its name against the host (or tls.server_name). The
+ * PEM buffers are referenced, not copied, by esp-mqtt: they live for the whole run. */
+static void setup_tls(const gw_tls_cfg_t *tls)
+{
+    psa_crypto_init();   /* mbedTLS 4: certificate parsing goes through PSA; idempotent */
+    esp_mqtt_client_config_t *m = &s_mqtt_cfg;
+    if (tls->ca_file[0] != '\0') {
+        s_ca_pem = load_pem_certs(tls->ca_file, "ca_file");
+        /* parsed once and handed to mbedTLS by tls_attach(), with the verify callback */
+        mbedtls_x509_crt_init(&s_ca_chain);
+        if (s_ca_pem != NULL) {
+            mbedtls_x509_crt_parse(&s_ca_chain, (const unsigned char *)s_ca_pem,
+                                   strlen(s_ca_pem) + 1);
+        }
+    } else {
+        ESP_LOGI(TAG, "TLS: broker certificate checked against the ESP-IDF root CA bundle");
+    }
+    /* esp-tls takes the CA from this hook before cacert_buf or the global store: both cases go
+     * through it to install the verify callback of issue #70 */
+    m->broker.verification.crt_bundle_attach = tls_attach;
+    /* Never skip_cert_common_name_check: the name is always verified (MQTT-4). */
+    m->broker.verification.common_name = tls->server_name[0] ? tls->server_name : NULL;
+    if (tls->cert_file[0] != '\0' && s_setup_error[0] == '\0') {
+        /* MQTT-5: mutual TLS; the broker checks this certificate against its own CA */
+        s_cert_pem = load_pem_certs(tls->cert_file, "cert_file");
+        s_key_pem = s_cert_pem != NULL ? load_pem_key(tls->key_file) : NULL;
+        m->credentials.authentication.certificate = s_cert_pem;
+        m->credentials.authentication.key = s_key_pem;
+    }
+}
+
+/* SPB-14: the optional spill of the full ring to the microSD card (gw_sfspill). */
+static void setup_spill(size_t ring)
+{
+#if CONFIG_GW_SF_SPILL_SDMMC
+    ESP_LOGW(TAG, "store & forward: microSD enabled. GPIO45 (its D0) is the VDD_SPI strapping "
+                  "pin: a card that holds it high at reset can select 1.8 V for the flash and "
+                  "stop the board from booting unless VDD_SPI is fixed in eFuse (README 6.5)");
+#endif
+    static gw_sfspill_io_t io;
+    char where[64], why[96];
+    if (!gw_sfcard_open(&io, where, sizeof(where), why, sizeof(why))) {
+        ESP_LOGE(TAG, "store & forward: %s: the RAM ring overwrites its oldest samples when full",
+                 why);
+        return;
+    }
+    /* segments: at least 8 of them within max_kb, 64..4096 records each (24 B) */
+    uint64_t bytes = (uint64_t)s_cfg->sparkplug.sf_sd_max_kb * 1024u;
+    uint64_t recs = bytes / (8u * sizeof(gw_sf_rec_t));
+    uint32_t seg = (uint32_t)(recs < 64 ? 64 : recs > 4096 ? 4096 : recs);
+    uint64_t segs = bytes / (seg * sizeof(gw_sf_rec_t) + sizeof(gw_sfspill_hdr_t));
+    segs = segs < 2 ? 2 : segs > GW_SFSPILL_MAX_SEGS ? GW_SFSPILL_MAX_SEGS : segs;
+    /* the tag indexes in the records only mean the same with the same devices and tags */
+    uint32_t hash = gw_sfspill_fnv(GW_SFSPILL_FNV_INIT, s_cfg->devices,
+                                   s_cfg->device_count * sizeof(s_cfg->devices[0]));
+    hash = gw_sfspill_fnv(hash, s_cfg->tags, s_cfg->tag_count * sizeof(s_cfg->tags[0]));
+    gw_sfspill_init(&s_spill, &io, seg, (uint32_t)segs, hash);
+    size_t chunk = ring / 4 < 512 ? ring / 4 : 512;
+    gw_sf_attach_spill(&s_sf, &s_spill, chunk);
+    s_spill_on = true;
+    ESP_LOGI(TAG, "store & forward: spill to %s: %lu segments of %lu samples, %u at a time; %lu "
+                  "samples kept from before this boot",
+             where, (unsigned long)segs, (unsigned long)seg, (unsigned)chunk,
+             (unsigned long)s_spill.kept_at_boot);
+}
+
+/* SPB-14: the ring, once at boot: large in PSRAM, small in internal RAM without it. */
+static void setup_store(void)
+{
+    size_t n = CONFIG_GW_SF_PSRAM_SAMPLES;
+    gw_sf_rec_t *buf = heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0
+                           ? heap_caps_calloc(n, sizeof(gw_sf_rec_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+                           : NULL;
+    s_sf_psram = buf != NULL;
+    if (buf == NULL) {
+        n = CONFIG_GW_SF_INTERNAL_SAMPLES;
+        buf = heap_caps_calloc(n, sizeof(gw_sf_rec_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+    if (buf == NULL) {
+        ESP_LOGE(TAG, "store & forward: no memory for %u samples: changes while offline are "
+                      "coalesced",
+                 (unsigned)n);
+        return;
+    }
+    gw_sf_init(&s_sf, buf, n);
+    gw_node_set_store(s_node, &s_sf);
+    ESP_LOGI(TAG, "store & forward: %u samples (%u B) in %s", (unsigned)n,
+             (unsigned)(n * sizeof(gw_sf_rec_t)), s_sf_psram ? "PSRAM" : "internal RAM (no PSRAM)");
+    if (s_cfg->sparkplug.sf_sd) {
+        setup_spill(n);
+    }
+}
+
 esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
 {
     s_cfg = cfg;
+#if !CONFIG_MQTT_PROTOCOL_5
+    if (cfg->mqtt.protocol == GW_MQTT_V5) {
+        ESP_LOGE(TAG, "mqtt.protocol 5 needs CONFIG_MQTT_PROTOCOL_5: MQTT not started");
+        snprintf(s_setup_error, sizeof(s_setup_error), "mqtt.protocol: MQTT 5 not in this build");
+    }
+#endif
     s_node = gw_storage_big_alloc(sizeof(*s_node), "Sparkplug engine");
     if (s_node == NULL) {
         return ESP_ERR_NO_MEM;
@@ -642,12 +1397,22 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         !gw_node_topic(s_node, "DCMD", "+", s_dcmd_topic, sizeof(s_dcmd_topic))) {
         return ESP_ERR_INVALID_SIZE;
     }
+    gw_phost_init(&s_phost);
+    if (cfg->sparkplug.store_forward) {
+        setup_store();
+    }
+    if (cfg->sparkplug.primary_host_id[0] != '\0') {
+        snprintf(s_state_topic, sizeof(s_state_topic), "spBv1.0/STATE/%s",
+                 cfg->sparkplug.primary_host_id);   /* fits: ids are at most 32 characters */
+        ESP_LOGI(TAG, "primary host '%s': NBIRTH only while it is online (%s)",
+                 cfg->sparkplug.primary_host_id, s_state_topic);
+    }
 
     s_mqtt_cfg = (esp_mqtt_client_config_t){
         .broker.address = {
             .hostname = cfg->mqtt.host,       /* resolved by DNS on every attempt (NET-3) */
             .port = cfg->mqtt.port,
-            .transport = MQTT_TRANSPORT_OVER_TCP,
+            .transport = cfg->mqtt.tls.enabled ? MQTT_TRANSPORT_OVER_SSL : MQTT_TRANSPORT_OVER_TCP,
         },
         .credentials = {
             .client_id = cfg->mqtt.client_id,
@@ -655,7 +1420,7 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
             .authentication.password = cfg->mqtt.password[0] ? cfg->mqtt.password : NULL,
         },
         .session = {
-            .protocol_ver = MQTT_PROTOCOL_V_3_1_1,
+            .protocol_ver = cfg->mqtt.protocol == GW_MQTT_V5 ? MQTT_PROTOCOL_V_5 : MQTT_PROTOCOL_V_3_1_1,
             .keepalive = cfg->mqtt.keepalive_s,
             .last_will = {.topic = s_death_topic, .qos = 1, .retain = 0},
         },
@@ -667,6 +1432,16 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         .outbox = {.limit = CONFIG_GW_MQTT_OUTBOX_LIMIT},
     };
 
+    if (cfg->mqtt.tls.enabled) {
+        setup_tls(&cfg->mqtt.tls);
+    }
+    gw_brokersel_init(&s_bsel, (uint8_t)(1 + cfg->mqtt.backup_count), cfg->mqtt.failover_after,
+                      cfg->mqtt.primary_return_s * 1000u);
+    publish_status();
+
+    s_pub_lock = xSemaphoreCreateMutexStatic(&s_pub_lock_buf);
+    const esp_timer_create_args_t pt = {.callback = on_publish_budget, .name = "pub_budget"};
+    ESP_ERROR_CHECK(esp_timer_create(&pt, &s_pub_timer));
     s_q = xQueueCreateStatic(CONFIG_GW_EDGE_QUEUE_LEN, sizeof(edge_ev_t), s_q_storage, &s_q_buf);
     s_free_slots = xQueueCreateStatic(CONFIG_GW_CMD_SLOTS, 1, s_free_storage, &s_free_buf);
     for (uint8_t i = 0; i < CONFIG_GW_CMD_SLOTS; i++) {

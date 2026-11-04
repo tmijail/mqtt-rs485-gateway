@@ -7,7 +7,8 @@ Runs the ESP32-S3 image built with sdkconfig.qemu in Espressif's QEMU:
   * UART0 (console): socket used to read the log and to inject DI levels ("di <n> <0|1>")
   * MQTT: a private mosquitto; an SNTP responder answers on the host's UDP 123
   * Remote syslog (REL-4): a UDP listener on the host collects what the gateway forwards
-  * Web server (CFG-3/CFG-4): slirp forwards the host's 127.0.0.1:HTTP_PORT to the guest's port 80
+  * Web server (CFG-3/CFG-4): slirp forwards the host's 127.0.0.1:HTTPS_PORT to the guest's port
+    443 (HTTPS with the device certificate, issue #64) and HTTP_PORT to port 80 (redirect only)
 
 Isolation: by default the harness moves itself into a private network namespace (Linux,
 needs CAP_SYS_ADMIN, e.g. root in a container) with only a loopback interface. Every port,
@@ -37,6 +38,9 @@ import threading
 import time
 import traceback
 
+import hashlib
+import ssl
+
 import google.protobuf
 import paho.mqtt.client as mqtt
 from pymodbus import FramerType
@@ -57,6 +61,8 @@ SYSLOG_PORT = int(os.environ.get("E2E_SYSLOG_PORT", 15514))
 # MB-15: QEMU forwards this host port to the gateway's Modbus TCP server (port 502)
 MBTCP_PORT = int(os.environ.get("E2E_MBTCP_PORT", 15502))
 HTTP_PORT = int(os.environ.get("E2E_HTTP_PORT", 18080))
+HTTPS_PORT = int(os.environ.get("E2E_HTTPS_PORT", 18443))
+PEER_CERT = {}    # DER of the certificate the gateway presented on the last HTTPS request
 WEB_PASSWORD = "e2e-pass-1"
 SYSLOG = []       # (t, datagram text) received by the syslog listener
 SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
@@ -65,7 +71,7 @@ GROUP, NODE, DEVICE, BULK = "Plant1", "GW01", "Meter1", "Bulk"
 T = f"spBv1.0/{GROUP}"
 ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/1": 20, "DO/2": 21, "DO/3": 22, "DO/4": 23, "DO/5": 24, "DO/6": 25, "Counter/1": 30, "Voltage": 100, "Setpoint": 101, "Run": 102,
          "Limit": 103, "Energy": 104, "Counter": 105, "Flow": 106, "Temp": 107, "Serial": 108,
-         "Alarm": 109, "Ready": 110}
+         "Alarm": 109, "Ready": 110, "Bulk0": 111}
 # MB-6 values served by unit 1, and the registers that hold them (see ModbusSlave.set_mb6)
 MB6 = {"Energy": 2 ** 53 + 1, "Counter": -(2 ** 53 + 1), "Flow": 1234.56789012345, "Temp": -123456,
        "Serial": "SN-0042-ABCD", "Alarm": True, "Ready": True}
@@ -199,7 +205,9 @@ class FakeBroker:
     CONNACK (accepted); then, by @mode:
       "cut":    the connection is closed at once (a broker that accepts and drops: ACL on the
                 will, duplicate client_id, connection limit);
-      "refuse": every SUBSCRIBE gets a SUBACK with 0x80 (failure) for each topic.
+      "refuse": every SUBSCRIBE gets a SUBACK with 0x80 (failure) for each topic;
+      "cutsub": every SUBSCRIBE is granted and the connection is reset (RST) right after the SUBACK
+                (issue #71: a SUBACK handled just before the transport error behind it).
     Records the connection times, the PUBLISH topics and whether the client sent DISCONNECT."""
 
     def __init__(self, port, mode):
@@ -255,6 +263,10 @@ class FakeBroker:
                     while i < len(body):
                         i += 2 + struct.unpack(">H", body[i:i + 2])[0] + 1
                         n += 1
+                    if self.mode == "cutsub":
+                        c.sendall(bytes([0x90, 2 + n]) + body[:2] + b"\x01" * n)
+                        c.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                        return
                     c.sendall(bytes([0x90, 2 + n]) + body[:2] + b"\x80" * n)
                 elif kind >> 4 == 3:                     # PUBLISH
                     tlen = struct.unpack(">H", body[:2])[0]
@@ -271,6 +283,81 @@ class FakeBroker:
 
     def close(self):
         self.srv.close()
+
+
+# ---------------------------------------------------------------- relay
+
+class Relay:
+    """TCP relay 127.0.0.1:@port -> a broker on 127.0.0.1:@target. stop() closes the listener and
+    every relayed connection (to the gateway the broker is gone: connections are refused) while
+    the broker and the observers keep running; start() opens it again.
+    Issue #59: with @rate (bytes/s) the gateway -> broker direction is read at that rate while
+    self.rate is set (None = unlimited), with the smallest receive buffer, so the gateway's TCP
+    sees a slow reader once slirp's own buffering is full."""
+
+    def __init__(self, port, target, rate=None):
+        self.port, self.target, self.conns, self.srv = port, target, [], None
+        self.rate, self.up_bytes = rate, 0
+        self.start()
+
+    def start(self):
+        self.srv = socket.socket()
+        self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if self.rate:
+            self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)   # inherited
+        self.srv.bind(("127.0.0.1", self.port))
+        self.srv.listen(4)
+        threading.Thread(target=self._loop, args=(self.srv,), daemon=True).start()
+
+    def stop(self):
+        try:
+            self.srv.shutdown(socket.SHUT_RDWR)   # wakes the accept(); close() alone does not
+        except OSError:
+            pass
+        self.srv.close()
+        for s in self.conns:
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            s.close()
+        self.conns = []
+
+    def _loop(self, srv):
+        while True:
+            try:
+                c, _ = srv.accept()
+            except OSError:
+                return
+            try:
+                b = socket.create_connection(("127.0.0.1", self.target))
+            except OSError:
+                c.close()
+                continue
+            self.conns += [c, b]
+            threading.Thread(target=self._pump, args=(c, b, True), daemon=True).start()
+            threading.Thread(target=self._pump, args=(b, c, False), daemon=True).start()
+
+    def _pump(self, src, dst, up):
+        try:
+            while True:
+                rate = self.rate if up else None
+                data = src.recv(max(1, rate // 10) if rate else 4096)
+                if not data:
+                    break
+                dst.sendall(data)
+                if up:
+                    self.up_bytes += len(data)
+                if rate:
+                    time.sleep(len(data) / rate)
+        except OSError:
+            pass
+        finally:
+            for s in (src, dst):
+                try:
+                    s.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
 
 
 # ---------------------------------------------------------------- syslog listener
@@ -316,14 +403,14 @@ def wait_syslog(host, pattern, timeout, since=0.0):
 class Observer:
     """Subscribes to spBv1.0/#. A new instance is created after each broker restart."""
 
-    def __init__(self):
+    def __init__(self, port=None):
         self.q = queue.Queue()
         self.subscribed = threading.Event()
         self.c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"e2e-{time.monotonic()}")
         self.c.on_message = self._on_msg
         self.c.on_subscribe = lambda *a: self.subscribed.set()
         # Long keepalive: the observer must survive the frozen-broker scenario.
-        self.c.connect("127.0.0.1", MQTT_PORT, keepalive=120)
+        self.c.connect("127.0.0.1", port or MQTT_PORT, keepalive=120)
         self.c.subscribe("spBv1.0/#", qos=1)
         self.c.loop_start()
         if not self.subscribed.wait(5):
@@ -334,6 +421,8 @@ class Observer:
         self.c.disconnect()
 
     def _on_msg(self, client, userdata, msg):
+        if msg.topic.startswith("spBv1.0/STATE/"):
+            return   # SPB-13: the primary host's JSON STATE, published by the harness itself
         p = spb.Payload()
         p.ParseFromString(msg.payload)  # raises on anything the official proto cannot parse
         item = (time.monotonic(), msg.topic, p, bytes(msg.payload))
@@ -428,6 +517,7 @@ class Gateway:
                "-global", "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
                "-global", "driver=timer.esp32s3.timg,property=wdt_disable,value=true",
                "-nic", f"user,model=open_eth,hostfwd=tcp:127.0.0.1:{HTTP_PORT}-:80,"
+                       f"hostfwd=tcp:127.0.0.1:{HTTPS_PORT}-:443,"
                        f"hostfwd=tcp:127.0.0.1:{MBTCP_PORT}-:502",
                "-chardev", f"socket,id=con,host=127.0.0.1,port={CONSOLE_PORT},server=on,wait=on",
                "-serial", "chardev:con",
@@ -512,9 +602,12 @@ class Gateway:
 
 # ---------------------------------------------------------------- HTTP (CFG-3, CFG-4)
 
-def http(method, path, body=None, auth=("admin", WEB_PASSWORD), timeout=15, headers=None):
+def http(method, path, body=None, auth=("admin", WEB_PASSWORD), timeout=15, headers=None,
+         plain=False):
     """(status, headers dict, body bytes) of one request to the gateway's web server, or
-    (None, {}, error text) when it cannot be reached. @auth None = no Authorization header."""
+    (None, {}, error text) when it cannot be reached. @auth None = no Authorization header.
+    HTTPS by default (issue #64): the device certificate is self-signed, so it is not verified
+    here; its DER goes to PEER_CERT["der"] for the fingerprint check. @plain: HTTP port."""
     h = dict(headers or {})
     if auth is not None:
         h["Authorization"] = "Basic " + base64.b64encode(f"{auth[0]}:{auth[1]}".encode()).decode()
@@ -522,13 +615,21 @@ def http(method, path, body=None, auth=("admin", WEB_PASSWORD), timeout=15, head
         body = json.dumps(body).encode()
         h.setdefault("Content-Type", "application/json")
     try:
-        c = httplib.HTTPConnection("127.0.0.1", HTTP_PORT, timeout=timeout)
+        if plain:
+            c = httplib.HTTPConnection("127.0.0.1", HTTP_PORT, timeout=timeout)
+        else:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            c = httplib.HTTPSConnection("127.0.0.1", HTTPS_PORT, timeout=timeout, context=ctx)
         c.request(method, path, body=body, headers=h)
+        if not plain:
+            PEER_CERT["der"] = c.sock.getpeercert(binary_form=True)
         r = c.getresponse()
         data = r.read()
         c.close()
         return r.status, {k.lower(): v for k, v in r.getheaders()}, data
-    except (OSError, httplib.HTTPException) as e:
+    except (OSError, httplib.HTTPException, ssl.SSLError) as e:
         return None, {}, str(e).encode()
 
 
@@ -621,6 +722,631 @@ def config_json(mqtt_port=None, **overrides):
     return json.dumps(cfg, indent=2).encode() + b"\n"
 
 
+def boot_variant(args, work, name, cfg, files=None):
+    """Start the gateway on a copy of the image whose LittleFS holds @cfg as config.json plus
+    @files ({name: bytes}). Its console goes to uart0-<name>.log."""
+    files = dict(files or {})
+    files["config.json"] = json.dumps(cfg, indent=2).encode() + b"\n"
+    gw = Gateway(args, work / f"uart0-{name}.log", flash_variant(args, work, name, files))
+    gw.start()
+    return gw
+
+
+def node_config(node, **mqtt):
+    """The harness configuration with edge node id @node and the "mqtt" keys in @mqtt."""
+    cfg = json.loads(config_json())
+    cfg["sparkplug"]["edge_node_id"] = node
+    cfg["mqtt"].update(mqtt)
+    return cfg
+
+
+# ---------------------------------------------------------------- TLS (MQTT-4, MQTT-5)
+
+def make_pki(work):
+    """A private CA (EC P-256), a broker certificate for IP 10.0.2.2 and DNS broker.e2e, and a
+    client certificate for GW13. Returns {name: path}."""
+    d = work / "pki"
+    d.mkdir(exist_ok=True)
+
+    def ossl(*a):
+        subprocess.run(["openssl", *a], cwd=d, check=True, capture_output=True)
+
+    def key(name):
+        ossl("ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", f"{name}.key")
+
+    key("ca")
+    ossl("req", "-x509", "-new", "-key", "ca.key", "-sha256", "-days", "30", "-subj", "/CN=E2E test CA",
+         "-out", "ca.pem")
+    for name, cn, ext, days in (("server", "broker.e2e", "subjectAltName=IP:10.0.2.2,DNS:broker.e2e", "30"),
+                                ("client", "GW13", "extendedKeyUsage=clientAuth", "30"),
+                                # issue #70: expired yesterday (openssl takes a negative validity)
+                                ("expired", "broker.e2e", "subjectAltName=IP:10.0.2.2,DNS:broker.e2e",
+                                 "-1")):
+        key(name)
+        ossl("req", "-new", "-key", f"{name}.key", "-subj", f"/CN={cn}", "-out", f"{name}.csr")
+        (d / f"{name}.ext").write_text(ext + "\n")
+        ossl("x509", "-req", "-in", f"{name}.csr", "-CA", "ca.pem", "-CAkey", "ca.key",
+             "-CAcreateserial", "-days", days, "-sha256", "-extfile", f"{name}.ext",
+             "-out", f"{name}.crt")
+    return {n: d / n for n in ("ca.pem", "server.crt", "server.key", "client.crt", "client.key",
+                               "expired.crt", "expired.key")}
+
+
+def run_tls(args, work):
+    """MQTT-4 / MQTT-5 against a mosquitto with three listeners: TLS 1.3 only (server
+    authentication), TLS 1.2 only with client certificates required (mutual TLS), and plain TCP
+    for the observer. Separate boots with their own edge node ids:
+      GW12  CA file in LittleFS, name checked against the IP literal (SAN IP:10.0.2.2), TLS 1.3
+      GW13  mutual TLS (MQTT-5): client certificate and key from LittleFS, TLS 1.2, the broker name
+            checked against tls.server_name (SAN DNS:broker.e2e); mosquitto takes the certificate's
+            CN as the user name
+      GW16  the same listener without a client certificate -> refused by the broker
+      GW14  tls.server_name that the certificate does not carry -> rejected, never connects
+      GW15  ca_file that does not exist -> reported, no connection attempted"""
+    pki = make_pki(work)
+    p13, pm, plain, pexp = MQTT_PORT + 5, MQTT_PORT + 6, MQTT_PORT + 7, MQTT_PORT + 12
+    conf = work / "broker-tls.conf"
+    # "user root": started as root, mosquitto would drop to user "mosquitto", which cannot read
+    # the certificates in the work directory (no effect when not started as root)
+    conf.write_text(
+        "user root\nper_listener_settings true\n"
+        f"listener {p13} 127.0.0.1\nallow_anonymous true\ncafile {pki['ca.pem']}\n"
+        f"certfile {pki['server.crt']}\nkeyfile {pki['server.key']}\ntls_version tlsv1.3\n"
+        f"listener {pm} 127.0.0.1\nallow_anonymous true\ncafile {pki['ca.pem']}\n"
+        f"certfile {pki['server.crt']}\nkeyfile {pki['server.key']}\ntls_version tlsv1.2\n"
+        "require_certificate true\nuse_identity_as_username true\n"
+        f"listener {plain} 127.0.0.1\nallow_anonymous true\n"
+        f"listener {pexp} 127.0.0.1\nallow_anonymous true\ncafile {pki['ca.pem']}\n"
+        f"certfile {pki['expired.crt']}\nkeyfile {pki['expired.key']}\ntls_version tlsv1.3\n")
+    blog = work / "mosquitto-tls.log"
+    broker = start_broker(conf, blog)
+    obs = Observer(plain)
+    ca = pki["ca.pem"].read_bytes()
+
+    # GW12: server authentication with the CA file; the name is the IP literal of mqtt.host
+    node = "GW12"
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "tls13", node_config(node, port=p13, tls={"enabled": True,
+                                                                            "ca_file": "ca.pem"}),
+                      {"ca.pem": ca})
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 60)
+    loaded = gw.find(r"TLS: ca_file: 1 certificate\(s\) from /cfg/ca\.pem", t0)
+    attempt = gw.find(r"connecting to 10\.0\.2\.2:%d \(TLS\) as 'GW12'" % p13, t0)
+    gw.wait_log(r"stack free \(high-water mark\)", 5, t0)
+    stacks = gw.find(r"stack free \(high-water mark\)", t0)
+    asked, h = gw.shell("config", [r"^tls\s+CA /cfg/ca\.pem, name checked against the broker host, "
+                                   r"client certificate none"])
+    shown = list(h.values())[0]
+    connected = re.search(r"New client connected from \S+ as GW12 ", blog.read_text())
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node}", 5)
+    check("MQTT-4 TLS 1.3 (TLS-1.3-only listener) with the CA file from LittleFS and the broker "
+          "name verified against the IP literal of mqtt.host (SAN IP:10.0.2.2): NBIRTH",
+          nb and loaded and attempt and connected and shown,
+          f"NBIRTH {f'{nb[0] - t0:.1f} s after boot' if nb else 'missing'}; "
+          f"{(loaded or ['CA not loaded'])[0]}; {(stacks or ['no stack log'])[0]}; "
+          + " | ".join(gw.find(r"^tls\s", asked)))
+
+    # GW13: mutual TLS (MQTT-5) on the TLS-1.2-only listener that requires a client certificate
+    node = "GW13"
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "mtls", node_config(node, port=pm, tls={
+        "enabled": True, "ca_file": "ca.pem", "server_name": "broker.e2e",
+        "cert_file": "gw13.crt", "key_file": "gw13.key"}),
+        {"ca.pem": ca, "gw13.crt": pki["client.crt"].read_bytes(),
+         "gw13.key": pki["client.key"].read_bytes()})
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 60)
+    loaded = gw.find(r"TLS: (cert_file: 1 certificate\(s\) from /cfg/gw13\.crt|client key from "
+                     r"/cfg/gw13\.key)", t0)
+    identity = re.search(r"New client connected from \S+ as GW13 \(p\d, c1, k\d+, u'GW13'\)",
+                         blog.read_text())
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node}", 5)
+    check("MQTT-5 mutual TLS (TLS 1.2 listener requiring a client certificate): certificate and key "
+          "from LittleFS, broker name checked against tls.server_name; the broker sees the "
+          "certificate's identity",
+          nb and len(loaded) == 2 and identity,
+          f"NBIRTH {'yes' if nb else 'no'}; {' | '.join(loaded)}; mosquitto: "
+          f"{identity.group(0) if identity else 'no connection with user GW13'}")
+
+    # GW16: the same listener without a client certificate: the broker refuses the handshake
+    node = "GW16"
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "mtlsnocert", node_config(node, port=pm, tls={
+        "enabled": True, "ca_file": "ca.pem", "server_name": "broker.e2e"}), {"ca.pem": ca})
+    failed = gw.wait_log(r"TLS: (TLS handshake failed|the broker certificate)", 40, t0)
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 3)
+    gw.kill()
+    check("MQTT-5 a broker that requires a client certificate refuses a gateway without one",
+          failed and not nb and not re.search(r"as GW16 ", blog.read_text()),
+          (gw.find(r"TLS: (TLS handshake failed|the broker certificate)", t0)
+           or ["no TLS error logged"])[0])
+
+    # GW14: the certificate does not carry tls.server_name -> the handshake fails, no session
+    node = "GW14"
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "tlsname", node_config(node, port=p13, tls={
+        "enabled": True, "ca_file": "ca.pem", "server_name": "wrong.e2e"}), {"ca.pem": ca})
+    # issue #70: the cause is named (also with TLS 1.3), with the certificate's names
+    rejected = gw.wait_log(r"TLS: the broker certificate does not carry the expected name .*"
+                           r"mbedTLS -0x2700", 40, t0)
+    detail = gw.wait_log(r"TLS: certificate CN=broker\.e2e \[IP:10\.0\.2\.2,DNS:broker\.e2e\], valid .*"
+                         r"expected name 'wrong\.e2e' \(mqtt\.tls\.server_name\); clock .* SNTP "
+                         r"synchronised", 5, t0)
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 3)
+    lines = gw.find(r"TLS: (the broker certificate|certificate CN)", t0)[:2]
+    gw.kill()
+    check("MQTT-4 / issue #70 hostname verification: tls.server_name that the broker certificate "
+          "does not carry -> handshake rejected, no session; the log names the cause (TLS 1.3), "
+          "the certificate's names and the expected one",
+          rejected and detail and not nb and not re.search(r"as GW14 ", blog.read_text()),
+          " | ".join(lines) or "no TLS error logged")
+
+    # GW25 (issue #70): a broker certificate that expired yesterday, TLS 1.3
+    node = "GW25"
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "tlsexpired", node_config(node, port=pexp, tls={
+        "enabled": True, "ca_file": "ca.pem"}), {"ca.pem": ca})
+    expired = gw.wait_log(r"TLS: the broker certificate expired \(", 40, t0)
+    detail = gw.wait_log(r"TLS: certificate CN=broker\.e2e .* to \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC; "
+                         r"expected name '10\.0\.2\.2' \(the broker host\); clock \d{4}-.* SNTP "
+                         r"synchronised", 5, t0)
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 3)
+    lines = gw.find(r"TLS: (the broker certificate|certificate CN)", t0)[:2]
+    gw.kill()
+    check("Issue #70 an expired broker certificate (TLS 1.3) is reported as expired, with its "
+          "validity, the clock and the SNTP state; no session",
+          expired and detail and not nb, " | ".join(lines) or "no TLS error logged")
+
+    # GW15: a CA file that is not in LittleFS: reported, nothing attempted
+    node = "GW15"
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "tlsmissing", node_config(node, port=p13, tls={
+        "enabled": True, "ca_file": "missing.pem"}))
+    missing = gw.wait_log(r"mqtt\.tls\.ca_file: /cfg/missing\.pem: no existe .*MQTT not started", 30, t0)
+    attempts = gw.find(r"connecting to .* as 'GW15'", t0)
+    gw.kill()
+    check("MQTT-4 a CA file missing from LittleFS is reported and no connection is attempted",
+          missing and not attempts,
+          (gw.find(r"mqtt\.tls\.ca_file", t0) or ["no error logged"])[0])
+    obs.close()
+    broker.terminate()
+    broker.wait()
+
+
+# ---------------------------------------------------------------- broker failover (MQTT-6)
+
+def run_failover(args, work):
+    """MQTT-6 in one boot (GW17): the primary broker (mqtt.host, port +8) is down at boot, the
+    backup is the harness' main mosquitto; failover_after 2, primary_return_s 10.
+      1. two failed attempts on the primary, then the backup: NBIRTH there
+      2. the primary comes up: once the session on the backup has been stable (one keepalive)
+         for primary_return_s, NDEATH on the backup and NBIRTH on the primary
+      3. the primary goes down again: two failed attempts, back to the backup"""
+    node, prim = "GW17", MQTT_PORT + 8
+    nbirth_t, ndeath_t = f"{T}/NBIRTH/{node}", f"{T}/NDEATH/{node}"
+    keepalive = json.loads(config_json())["mqtt"]["keepalive_s"]
+    cfg = node_config(node, port=prim, backup_brokers=[{"host": "10.0.2.2", "port": MQTT_PORT}],
+                      failover_after=2, primary_return_s=10)
+    obs = Observer()
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "failover", cfg)
+    nb = obs.wait(nbirth_t, 60)
+    moved = gw.find(r"broker 1/2 \(10\.0\.2\.2:%d\) failed 2 time\(s\) in a row: next attempt on "
+                    r"broker 2/2 \(10\.0\.2\.2:%d\)" % (prim, MQTT_PORT), t0)
+    tries = gw.find(r"connecting to 10\.0\.2\.2:%d \(broker 1/2\)" % prim, t0)
+    asked, h = gw.shell(["status", "config"],
+                        [r"^mqtt\s+broker 2/2 10\.0\.2\.2:%d, 0 failed" % MQTT_PORT,
+                         r"^backup 1\s+10\.0\.2\.2:%d" % MQTT_PORT,
+                         r"^failover\s+after 2 failed attempt\(s\); back to the primary after 10 s"])
+    shown = all(h.values())
+    check("MQTT-6 primary broker down at boot: two failed attempts, then the backup (NBIRTH there); "
+          "the shell shows the current broker and the list",
+          nb and moved and len(tries) == 2 and shown,
+          f"{len(tries)} attempts on the primary; {(moved or ['no switch logged'])[0]}; "
+          + " | ".join(gw.find(r"^mqtt\s|^backup 1|^failover", asked)))
+
+    pconf = work / "broker-primary.conf"
+    pconf.write_text(f"listener {prim} 127.0.0.1\nallow_anonymous true\n")
+    pb = start_broker(pconf, work / "mosquitto-primary.log")
+    pobs = Observer(prim)
+    back = pobs.wait(nbirth_t, 60)
+    death = [m for m in CAPTURE if m[1] == ndeath_t and nb and m[0] > nb[0] and m[2].metrics
+             and bdseq_of(m[2]) == bdseq_of(nb[2])]
+    waited = back[0] - nb[0] if back and nb else None
+    check(f"MQTT-6 return to the primary: after a stable session on the backup (keepalive {keepalive} s) "
+          "plus primary_return_s (10 s), orderly NDEATH on the backup and NBIRTH on the primary",
+          back and death and waited >= keepalive + 10 - 1 and bdseq_of(back[2]) != bdseq_of(nb[2]),
+          f"NBIRTH on the primary {waited:.1f} s after the one on the backup; NDEATH on the backup "
+          f"with the session's bdSeq: {bool(death)}; "
+          f"{(gw.find(r'returning to the primary broker', t0) or ['no log'])[0]}" if back and nb
+          else "no NBIRTH on the primary")
+
+    # the session on the primary must be stable first: until then it is the single return try
+    stable = gw.wait_log(r"broker 1/2: session stable", keepalive + 5, back[0] if back else 0)
+    pobs.close()
+    since = time.monotonic()
+    pb.terminate()
+    pb.wait()
+    nb2 = obs.wait(nbirth_t, 60)
+    moved = gw.find(r"broker 1/2 .* failed 2 time\(s\) in a row: next attempt on broker 2/2", since)
+    gw.kill()
+    obs.wait(ndeath_t, 5)
+    obs.close()
+    check("MQTT-6 the primary fails again: the stable session is lost, two failed attempts, back to "
+          "the backup", stable and nb2 and moved,
+          f"NBIRTH on the backup {nb2[0] - since:.1f} s after stopping the primary; {moved[0]}"
+          if nb2 and moved else f"NBIRTH {bool(nb2)}, switch {bool(moved)}")
+
+
+# ---------------------------------------------------------------- MQTT 5 (MQTT-8)
+
+def run_mqtt5(args, work, mosquitto_log):
+    """MQTT-8 in one boot (GW18) against the harness' main mosquitto: CONNECT with protocol
+    level 5 and Clean Start, NBIRTH, the NCMD subscription working (rebirth), and the NDEATH will
+    published as soon as the TCP connection dies (Will Delay Interval 0)."""
+    node = "GW18"
+    obs = Observer()
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "mqtt5", node_config(node, protocol="5"))
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    attempt = gw.find(r"connecting to 10\.0\.2\.2:%d MQTT 5 as 'GW18'" % MQTT_PORT, t0)
+    v5 = re.search(r"New client connected from \S+ as GW18 \(p5, c1, k10\)",
+                   pathlib.Path(mosquitto_log).read_text())
+    obs.drain()
+    obs.publish_cmd(f"{T}/NCMD/{node}", [{"name": "Node Control/Rebirth", "datatype": 11,
+                                          "boolean_value": True}])
+    rb = obs.wait(f"{T}/NBIRTH/{node}", 5)
+    killed = time.monotonic()
+    gw.kill()
+    will = obs.wait(f"{T}/NDEATH/{node}", 10)
+    obs.close()
+    check("MQTT-8 MQTT 5.0 (mqtt.protocol \"5\"): CONNECT protocol level 5 with Clean Start, NBIRTH, "
+          "NCMD rebirth received over the v5 subscription, NDEATH will with the session's bdSeq "
+          "right after the connection dies (Will Delay 0)",
+          nb and attempt and v5 and rb and will and bdseq_of(will[2]) == bdseq_of(nb[2])
+          and will[0] - killed < 5,
+          f"NBIRTH {'yes' if nb else 'no'}; mosquitto: {v5.group(0) if v5 else 'no p5 connection'}; "
+          f"rebirth {'yes' if rb else 'no'}; will "
+          f"{f'{will[0] - killed:.1f} s after the kill, bdSeq {bdseq_of(will[2])}' if will else 'missing'}")
+
+
+def run_max_packet(args, work):
+    """Issue #73 (GW26, MQTT 5) against a mosquitto with max_packet_size 2000, which it
+    announces in the CONNACK: NBIRTH and the small DBIRTH of Meter1 go out; the DBIRTH of Bulk
+    (about 2.7 KB) is not sent, with a clear error and the shell showing it, and the session
+    stays up (no reconnection loop)."""
+    node, port = "GW26", MQTT_PORT + 14
+    conf = work / "broker-maxpkt.conf"
+    conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\nmax_packet_size 2000\n")
+    broker = start_broker(conf, work / "mosquitto-maxpkt.log")
+    obs = Observer(port)
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "maxpkt", node_config(node, port=port, protocol="5"))
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    db = obs.wait(f"{T}/DBIRTH/{node}/{DEVICE}", 10)
+    err = gw.wait_log(r"spBv1\.0/Plant1/DBIRTH/GW26/Bulk: \d+ bytes, more than the broker's Maximum "
+                      r"Packet Size of 2000 \(by \d+\): not published", 15, t0)
+    time.sleep(8)
+    asked, h = gw.shell("status", [r"^limit\s+broker Maximum Packet Size 2000 B; [1-9]\d* message\(s\) too "
+                                   r"large, not published \(last: spBv1\.0/Plant1/DBIRTH/GW26/Bulk\)"])
+    shown = list(h.values())[0]
+    bulk = [m for m in CAPTURE if m[1] == f"{T}/DBIRTH/{node}/{BULK}"]
+    attempts = gw.find(r"connecting to .* as 'GW26'", t0)
+    dropped = re.search(r"Client GW26 .*(disconnected|exceeded)", (work / "mosquitto-maxpkt.log").read_text())
+    gw.kill()
+    obs.close()
+    broker.terminate()
+    broker.wait()
+    check("Issue #73 MQTT 5 Maximum Packet Size from the CONNACK: a DBIRTH larger than it is not "
+          "published (clear error, shown in the shell); the rest goes out and the session stays",
+          nb and db and err and shown and not bulk and len(attempts) == 1 and not dropped,
+          f"NBIRTH {'yes' if nb else 'no'}, Meter1 DBIRTH {'yes' if db else 'no'}, Bulk DBIRTH "
+          f"{len(bulk)}; {(gw.find(r'Maximum Packet Size of 2000', t0) or ['no error'])[0][:150]}; "
+          f"{len(attempts)} connection(s); " + " | ".join(gw.find(r"^limit\s", asked)))
+
+
+# ---------------------------------------------------------------- primary host (SPB-13)
+
+def host_state(obs, host, online, ts, retain=True):
+    """Publish a Sparkplug 3.0 STATE message for @host as its primary host application would."""
+    obs.c.publish(f"spBv1.0/STATE/{host}", json.dumps({"online": online, "timestamp": ts}),
+                  qos=1, retain=retain).wait_for_publish(5)
+
+
+def run_primary_host(args, work):
+    """SPB-13 in one boot (GW19, primary_host_id SCADA1) against the main mosquitto, with the
+    harness playing the host's STATE messages (retained, JSON, Sparkplug 3.0):
+      1. STATE offline retained before the boot: the node connects and subscribes, no NBIRTH
+      2. STATE online: NBIRTH
+      3. a stale STATE offline (older timestamp) is ignored: no NDEATH
+      4. STATE offline: NDEATH (published by the node, session bdSeq) and disconnect; the new
+         session waits (retained offline): no NBIRTH
+      5. STATE online again: NBIRTH with a new bdSeq"""
+    node, host = "GW19", "SCADA1"
+    nbirth_t, ndeath_t = f"{T}/NBIRTH/{node}", f"{T}/NDEATH/{node}"
+    obs = Observer()
+    ts = int(time.time() * 1000)
+    host_state(obs, host, False, ts)
+    t0 = time.monotonic()
+    cfg = node_config(node)
+    cfg["sparkplug"]["primary_host_id"] = host
+    gw = boot_variant(args, work, "phost", cfg)
+    waiting = gw.wait_log(r"waiting for the primary host 'SCADA1' \(STATE online\) before NBIRTH", 40, t0)
+    early = obs.wait(nbirth_t, 5)
+    asked, h = gw.shell("status", [r"^host\s+primary 'SCADA1' offline, NBIRTH waits for it"])
+    shown = list(h.values())[0]
+    check("SPB-13 STATE offline (retained) at connection: subscribed, no NBIRTH; the shell says why",
+          waiting and not early and shown,
+          f"{(gw.find(r'waiting for the primary host', t0) or ['no wait logged'])[0]}; NBIRTH "
+          f"{'published' if early else 'not published'} 5 s later; "
+          + " | ".join(gw.find(r"^host\s", asked)))
+
+    sent = time.monotonic()
+    host_state(obs, host, True, ts + 1000)
+    nb = obs.wait(nbirth_t, 10)
+    check("SPB-13 STATE online -> NBIRTH (and the DBIRTHs)", nb and nb[2].seq == 0,
+          f"NBIRTH {nb[0] - sent:.2f} s after STATE online" if nb else "no NBIRTH")
+
+    since = time.monotonic()
+    host_state(obs, host, False, ts + 500, retain=False)
+    stale = obs.wait(ndeath_t, 3)
+    ignored = gw.find(r"STATE of 'SCADA1' ignored: older than the last one", since)
+    check("SPB-13 a STATE offline older than the last one accepted is ignored (no NDEATH)",
+          not stale and ignored, (ignored or ["no 'ignored' log"])[0])
+
+    since = time.monotonic()
+    host_state(obs, host, False, ts + 2000)
+    nd = obs.wait(ndeath_t, 10)
+    explicit = gw.wait_log(r"the primary host went offline: NDEATH published", 5, since)
+    rewait = gw.wait_log(r"waiting for the primary host 'SCADA1'", 20, since)
+    nb2 = obs.wait(nbirth_t, 3)
+    check("SPB-13 STATE offline -> NDEATH (session bdSeq) and disconnect; the next session waits "
+          "for the host (no NBIRTH)",
+          nd and nb and bdseq_of(nd[2]) == bdseq_of(nb[2]) and explicit and rewait and not nb2,
+          f"NDEATH bdSeq {bdseq_of(nd[2]) if nd else None} (session {bdseq_of(nb[2]) if nb else None}); "
+          f"{(gw.find(r'the primary host went offline', since) or ['no log'])[0]}; waiting again: "
+          f"{bool(rewait)}")
+
+    sent = time.monotonic()
+    host_state(obs, host, True, ts + 3000)
+    nb3 = obs.wait(nbirth_t, 10)
+    check("SPB-13 the host back online -> NBIRTH with a new bdSeq",
+          nb3 and nb and bdseq_of(nb3[2]) != bdseq_of(nb[2]),
+          f"NBIRTH bdSeq {bdseq_of(nb3[2])} after {nb3[0] - sent:.2f} s" if nb3 else "no NBIRTH")
+    gw.kill()
+    obs.wait(ndeath_t, 5)
+    obs.c.publish(f"spBv1.0/STATE/{host}", b"", qos=1, retain=True).wait_for_publish(5)
+    obs.close()
+
+
+# ---------------------------------------------------------------- store & forward (SPB-14)
+
+def run_store_forward(args, work, slave):
+    """SPB-14 in one boot (GW20, sparkplug.store_forward) connected through a Relay (port +9) to
+    the main mosquitto; stopping the relay takes the broker away from the gateway while the
+    observer stays subscribed. While it is away Voltage takes three values (each beyond the 0.1
+    deadband) and DI/3 goes on and off. Back: NBIRTH, DBIRTH with the current value, then the
+    stored changes as DDATA/NDATA with is_historical, in order and with their sample times.
+    QEMU has no PSRAM: the small internal-RAM ring is used."""
+    node, port = "GW20", MQTT_PORT + 9
+    ddata_t, ndata_t = f"{T}/DDATA/{node}/{DEVICE}", f"{T}/NDATA/{node}"
+    relay = Relay(port, MQTT_PORT)
+    obs = Observer()
+    cfg = node_config(node, port=port)
+    cfg["sparkplug"]["store_forward"] = True
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "sf", cfg)
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    obs.wait(f"{T}/DBIRTH/{node}/{BULK}", 10)
+    ring = gw.find(r"store & forward: \d+ samples \(\d+ B\) in internal RAM \(no PSRAM\)", t0)
+    since = time.monotonic()
+    relay.stop()
+    gw.wait_log(r"MQTT down; reconnect attempt", 10, since)
+    values = [240.0, 241.0, 242.0]
+    for v in values:
+        slave.set_float(4, 0, v)
+        time.sleep(1.6)   # poll_ms 1000: every value is read at least once
+    gw.console("di 3 1")
+    time.sleep(0.5)
+    gw.console("di 3 0")
+    time.sleep(0.5)
+    asked, h = gw.shell("status", [r"^store\s+[1-9]\d* of \d+ samples waiting \(internal RAM\)"])
+    waiting = list(h.values())[0]
+    relay.start()
+    nb2 = obs.wait(f"{T}/NBIRTH/{node}", 70)
+    time.sleep(3)
+    after = [m for m in CAPTURE if nb2 and m[0] >= nb2[0] and m[1].split("/")[3:4] == [node]]
+    db = next((m for m in after if m[1] == f"{T}/DBIRTH/{node}/{DEVICE}"), None)
+    hist = [(m[2].seq, mm) for m in after if m[1] == ddata_t for mm in m[2].metrics
+            if mm.is_historical and mm.alias == ALIAS["Voltage"]]
+    di = [mm for m in after if m[1] == ndata_t for mm in m[2].metrics
+          if mm.is_historical and mm.alias == ALIAS["DI/1"] + 2]
+    got = [round(mm.float_value, 1) for _, mm in hist]
+    ts = [mm.timestamp for _, mm in hist]
+    in_order = db and all(m[0] >= db[0] for m in after if m[1] in (ddata_t, ndata_t))
+    asked2, h = gw.shell("status", [r"^store\s+0 of \d+ samples waiting .*, [1-9]\d* historical messages sent"])
+    sent = list(h.values())[0]
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node}", 5)
+    obs.close()
+    relay.stop()
+    slave.set_float(4, 0, 230.5)   # what the main scenario expects
+    check("SPB-14 store & forward: changes while the broker is away come after NBIRTH and DBIRTH as "
+          "DDATA/NDATA with is_historical, oldest first, with their sample times (internal-RAM ring "
+          "without PSRAM)",
+          nb and ring and waiting and nb2 and db and got == values and ts == sorted(ts)
+          and [m.boolean_value for m in di] == [True, False] and in_order and sent,
+          f"{(ring or ['no ring log'])[0]}; DBIRTH Voltage "
+          f"{round(metric(db[2], name='Voltage').float_value, 1) if db else None}; historical Voltage "
+          f"{got} (seq {[s for s, _ in hist]}); historical DI/3 {[m.boolean_value for m in di]}; "
+          + " | ".join(gw.find(r"^store\s", asked) + gw.find(r"^store\s", asked2)))
+
+
+# ---------------------------------------------------------------- slow link (issue #59)
+
+def run_slow_link(args, work, budget_ms):
+    """Issue #59 in one boot (GW21) through a Relay (port +10 -> the main mosquitto) that reads
+    the gateway's data at 700 B/s. The harness asks for rebirths until slirp's and the sockets'
+    buffers are full and a publish has to wait for the slow reader: it must be cut at the
+    publish budget (CONFIG_GW_MQTT_PUBLISH_BUDGET_MS, lowered in the QEMU build so payloads of at
+    most 6 KB exceed it) with the connection closed, instead of running on past the task
+    watchdog. Then the link is fast again and the gateway comes back with a new session."""
+    node, port = "GW21", MQTT_PORT + 10
+    relay = Relay(port, MQTT_PORT, 700)
+    obs = Observer()
+    t0 = time.monotonic()
+    # keepalive 180 s: with 10 s the PINGREQ, queued behind the slow data, ends the session
+    # before the buffers (about 1 MB between slirp and the host sockets) fill; a slow link fails
+    # that way too, but here the bound of a single publish is what is tested
+    gw = boot_variant(args, work, "slow", node_config(node, port=port, keepalive_s=180))
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 60)
+    cut = None
+    end = time.monotonic() + 170
+    while time.monotonic() < end:
+        obs.publish_cmd(f"{T}/NCMD/{node}", [{"name": "Node Control/Rebirth", "datatype": 11,
+                                              "boolean_value": True}])
+        cut = gw.wait_log(r"publish of \d+ bytes to \S+ still running after \d+ ms", 0.05, t0)
+        if cut or gw.find(r"No PING_RESP", t0):
+            break
+    aborted = gw.wait_log(r"aborted: returned after \d+ ms", 10, cut or t0)
+    lines = gw.find(r"publish of \d+ bytes to \S+ (still running|aborted)", t0)
+    took = [int(x) for x in re.findall(r"returned after (\d+) ms", " ".join(lines))]
+    down = gw.wait_log(r"MQTT down; reconnect attempt", 10, cut or t0)
+    relay.rate = None
+    back = obs.wait(f"{T}/NBIRTH/{node}", 90,
+                    lambda p: nb is None or bdseq_of(p) != bdseq_of(nb[2]))
+    panics = gw.find(r"Guru Meditation|task_wdt|abort\(\)", t0)
+    gw.kill()
+    relay.stop()
+    obs.wait(f"{T}/NDEATH/{node}", 5)
+    obs.close()
+    check(f"Issue #59 a publish on a slow link (700 B/s once the buffers are full) is cut at the "
+          f"{budget_ms} ms budget: connection closed, no watchdog, a new session once the link is "
+          f"fast again",
+          nb and cut and aborted and took and max(took) < budget_ms + 6000 and down and back
+          and not panics,
+          f"{' | '.join(lines[:2]) or 'no publish cut'}; {relay.up_bytes} B through the relay; "
+          f"reconnect {'logged' if down else 'missing'}; new NBIRTH {'yes' if back else 'no'}; "
+          f"panics {panics[:1]}")
+
+
+def run_store_forward_spill(args, work, slave):
+    """SPB-14 spill (GW23): store_forward with sd enabled; QEMU has no SDMMC, so the build puts
+    the "card" in a LittleFS directory (CONFIG_GW_SF_SPILL_LITTLEFS). While the relay keeps the
+    broker away, the harness changes all 60 Bulk registers twice a second: about 60 samples per
+    poll overflow the 512-sample RAM ring, which spills its oldest chunks to the card. After the
+    reconnection every stored sample comes back as historical DDATA, oldest first (spill, then
+    ring), with no sample lost (the shell: nothing overwritten, nothing deleted unsent)."""
+    node, port = "GW23", MQTT_PORT + 11
+    ddata_t = f"{T}/DDATA/{node}/{BULK}"
+    relay = Relay(port, MQTT_PORT)
+    obs = Observer()
+    cfg = node_config(node, port=port)
+    cfg["sparkplug"]["store_forward"] = {"enabled": True, "sd": {"enabled": True, "max_kb": 128}}
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "sfsd", cfg)
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    obs.wait(f"{T}/DBIRTH/{node}/{BULK}", 10)
+    spill_log = gw.find(r"store & forward: spill to LittleFS /cfg/sf .*: \d+ segments of \d+ samples", t0)
+    since = time.monotonic()
+    relay.stop()
+    gw.wait_log(r"MQTT down; reconnect attempt", 10, since)
+    value = 2000
+    end = time.monotonic() + 16
+    while time.monotonic() < end:
+        value += 1
+        slave.bulk.setValues(3, 100, [value] * 60)
+        time.sleep(0.5)
+    asked, h = gw.shell("status", [r"^spill\s+on: [1-9]\d* samples on the card, [1-9]\d* moved there, "
+                                   r"0 deleted unsent",
+                                   r"^store\s+[1-9]\d* of 512 samples waiting \(internal RAM\), .* 0 overwritten"])
+    spilled = all(h.values())
+    waiting = [int(x) for x in re.findall(r"^store\s+(\d+) of", "\n".join(gw.find(r"^store\s", asked)), re.M)]
+    relay.start()
+    nb2 = obs.wait(f"{T}/NBIRTH/{node}", 70)
+    deadline = time.monotonic() + 60
+    asked2 = time.monotonic()
+    done = None
+    while time.monotonic() < deadline and not done:
+        _, h = gw.shell("status", [r"^store\s+0 of 512 samples waiting"], timeout=2, tries=1)
+        done = list(h.values())[0]
+    time.sleep(1)
+    hist = [mm for m in CAPTURE if nb2 and m[0] >= nb2[0] and m[1] == ddata_t for mm in m[2].metrics
+            if mm.is_historical]
+    total = sum(1 for m in CAPTURE if nb2 and m[0] >= nb2[0] and m[1].split("/")[3:4] == [node]
+                for mm in m[2].metrics if mm.is_historical)
+    reg100 = [mm.int_value for mm in hist if mm.alias == ALIAS["Bulk0"]]
+    ts = [mm.timestamp for mm in hist if mm.alias == ALIAS["Bulk0"]]
+    final = gw.find(r"^store\s|^spill\s", asked2)[-2:]
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node}", 5)
+    obs.close()
+    relay.stop()
+    slave.bulk.setValues(3, 100, list(range(1000, 1060)))   # what the main scenario expects
+    check("SPB-14 spill to the card (LittleFS stand-in on QEMU): the full 512-sample ring spills "
+          "its oldest samples; after the reconnection all of them come back as historical DDATA, "
+          "oldest first, none overwritten or deleted",
+          nb and spill_log and spilled and waiting and waiting[0] > 512 and nb2 and done
+          and total >= waiting[0] and reg100 == sorted(reg100) and ts == sorted(ts)
+          and len(set(reg100)) == len(reg100),
+          f"{(spill_log or ['no spill log'])[0]}; waiting before the reconnection {waiting}; "
+          f"{total} historical metrics after it ({len(hist)} of Bulk), register 100: {reg100[:3]}..{reg100[-2:]} "
+          f"({len(reg100)} samples, in order {reg100 == sorted(reg100)}); "
+          + " | ".join(gw.find(r"^spill\s", asked) + final))
+
+
+# ---------------------------------------------------------------- HTTPS and login limit (issue #64)
+
+def run_https(args, work):
+    """Issue #64 in one boot (GW22): the web UI and the REST API over HTTPS with the certificate
+    the device generated at its first boot (its SHA-256 fingerprint on the console matches the
+    one presented), plain HTTP only redirecting, and the login limit: after 5 failed logins in a
+    row the source address gets 429 (also with the right password) until the block ends."""
+    node = "GW22"
+    cfg = node_config(node)
+    cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "https", cfg)
+    st, _, _ = wait_http("/api/status", 40)
+    printed = gw.find(r"HTTPS certificate SHA-256 fingerprint ([0-9A-F:]{95})", t0)
+    der = PEER_CERT.get("der", b"")
+    fp = ":".join(f"{b:02X}" for b in hashlib.sha256(der).digest()) if der else ""
+    generated = gw.find(r"HTTPS: new device certificate for gw22 generated", t0)
+    check("Issue #64 HTTPS with the device certificate generated at the first boot; its SHA-256 "
+          "fingerprint on the console matches the certificate presented",
+          st == 200 and printed and fp and fp in printed[0] and generated,
+          f"/api/status over HTTPS -> {st}; presented {fp[:23]}...; console "
+          f"{(printed or ['no fingerprint'])[0][-60:]}")
+    st_r, hdr_r, _ = http("GET", "/api/status?x=1", auth=None, plain=True)
+    st_p, hdr_p, _ = http("PUT", "/api/config", b"{}", auth=None, plain=True)
+    loc = hdr_r.get("location", "")
+    check("Issue #64 plain HTTP only redirects to HTTPS (301 for GET, 308 for PUT; no API over HTTP)",
+          st_r == 301 and loc == "https://127.0.0.1/api/status?x=1" and st_p == 308
+          and hdr_p.get("location", "").startswith("https://"),
+          f"GET -> {st_r} {loc}; PUT -> {st_p} {hdr_p.get('location')}")
+
+    codes = [http("GET", "/api/status", auth=("admin", f"wrong-{i}"))[0] for i in range(5)]
+    st6, hdr6, _ = http("GET", "/api/status", auth=("admin", "wrong-6"))
+    st7, hdr7, _ = http("GET", "/api/status")   # the right password, while blocked
+    blocked = gw.wait_log(r"10\.0\.2\.2 blocked for 30 s after 5 failed logins in a row", 3, t0)
+    asked, h = gw.shell("status", [r"^web\s+HTTPS \(HTTP redirects\), logins failed 5, refused "
+                                   r"while blocked 2, blocks 1, addresses blocked now 1"])
+    counters = list(h.values())[0]
+    retry = int(hdr7.get("retry-after", "0") or 0)
+    time.sleep(retry + 1)
+    st8, _, _ = http("GET", "/api/status")
+    gw.kill()
+    check("Issue #64 login limit per source address: 5 failures -> 429 with Retry-After for 30 s, "
+          "also with the right password; logged and counted in the shell; then the right password "
+          "works again",
+          codes == [401] * 5 and st6 == 429 and st7 == 429 and 0 < retry <= 30
+          and blocked and counters and st8 == 200,
+          f"failures {codes}, then {st6} / right password {st7} (Retry-After {retry}); after the "
+          f"block {st8}; {(gw.find(r'blocked for', t0) or ['no log'])[0]}; "
+          + " | ".join(gw.find(r"^web\s", asked)))
+
+
 # ---------------------------------------------------------------- scenario
 
 def start_broker(conf, log):
@@ -637,7 +1363,7 @@ def start_broker(conf, log):
 
 
 def main():
-    global MQTT_PORT, MODBUS_PORT, CONSOLE_PORT, SYSLOG_PORT, HTTP_PORT, MBTCP_PORT
+    global MQTT_PORT, MODBUS_PORT, CONSOLE_PORT, SYSLOG_PORT, HTTP_PORT, HTTPS_PORT, MBTCP_PORT
     ap = argparse.ArgumentParser()
     ap.add_argument("--qemu", required=True)
     ap.add_argument("--flash", required=True)
@@ -655,19 +1381,23 @@ def main():
     ap.add_argument("--mbtcp-port", type=int, default=MBTCP_PORT,
                     help="host port QEMU forwards to the gateway's Modbus TCP port 502")
     ap.add_argument("--http-port", type=int, default=HTTP_PORT)
+    ap.add_argument("--https-port", type=int, default=HTTPS_PORT)
     ap.add_argument("--only", default="",
-                    help="comma-separated scenarios to run (failsafe,network,web,reset,main); default all")
+                    help="comma-separated scenarios to run (failsafe,network,web,reset,tls,failover,"
+                         "mqtt5,phost,sf,https,slow,main); "
+                         "default all")
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
     args = ap.parse_args()
     MQTT_PORT, MODBUS_PORT, CONSOLE_PORT = args.mqtt_port, args.modbus_port, args.console_port
-    SYSLOG_PORT, HTTP_PORT = args.syslog_port, args.http_port
+    SYSLOG_PORT, HTTP_PORT, HTTPS_PORT = args.syslog_port, args.http_port, args.https_port
     MBTCP_PORT = args.mbtcp_port
     global PROBE_MAX_S
     PROBE_MAX_S = sdkconfig_int(args.sdkconfig, "GW_MB_OFFLINE_PROBE_MAX_MS") / 1000
     isolated = False if args.no_isolate else isolate_network()
     print(f"network: {'private namespace' if isolated else 'host loopback'}; ports MQTT {MQTT_PORT}, "
-          f"Modbus {MODBUS_PORT}, console {CONSOLE_PORT}, syslog {SYSLOG_PORT}, HTTP {HTTP_PORT}",
+          f"Modbus {MODBUS_PORT}, console {CONSOLE_PORT}, syslog {SYSLOG_PORT}, HTTP {HTTP_PORT}, "
+          f"HTTPS {HTTPS_PORT}",
           flush=True)
     work = pathlib.Path(args.workdir)
     log = work / "uart0.log"
@@ -697,6 +1427,22 @@ def main():
             run_web(args, work)
         if want("reset"):
             run_factory_reset(args, work)
+        if want("tls"):
+            run_tls(args, work)
+        if want("failover"):
+            run_failover(args, work)
+        if want("mqtt5"):
+            run_mqtt5(args, work, work / "mosquitto.log")
+            run_max_packet(args, work)
+        if want("phost"):
+            run_primary_host(args, work)
+        if want("sf"):
+            run_store_forward(args, work, slave)
+            run_store_forward_spill(args, work, slave)
+        if want("https"):
+            run_https(args, work)
+        if want("slow"):
+            run_slow_link(args, work, sdkconfig_int(args.sdkconfig, "GW_MQTT_PUBLISH_BUDGET_MS"))
         if want("main"):
             run(args, log, slave, broker, conf, work)
     except BaseException:
@@ -1558,6 +2304,9 @@ def run_factory_reset(args, work):
     gw = Gateway(args, work / "uart0-reset.log", flash)
     gw.start()
     nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    # the shell starts after MQTT and the web server (HTTPS: the certificate is generated at the
+    # first boot): a 'boot 1' typed before the prompt is lost
+    gw.shell("status", [r"^config\s"])
     # short press (3 s): the commissioning access point gesture, no reset
     t_short = time.monotonic()
     gw.console("boot 1")
@@ -1632,7 +2381,26 @@ def run(args, log, slave, broker, conf, work):
     gw = Gateway(args, log)
     t0 = time.monotonic()
     gw.start()
+    # Issue #72: the shell starts first; a command sent as soon as it is there, before MQTT,
+    # the bus and the web server are up, gets an answer (sent once: nothing repeats it)
+    ready = gw.wait_log(r"shell: console ready", 30, t0)
+    early = time.monotonic()
+    gw.console("status")
+    answered = gw.wait_log(r"^firmware \S+, reset reason", 5, early)
+    gw.console("mbread 1 holding 10")
+    mb = gw.wait_log(r"^mbread: (not available yet: .* (is starting|is loading)|unit 1 holding 10: )", 5,
+                     early)
     nb = obs.wait(nbirth_t, 40)
+    later = [ln for ln in gw.find(r"edge: Sparkplug session up|web: HTTPS on port", t0)]
+    first_up = gw.wait_log(r"edge: Sparkplug session up", 5, t0)   # the console lags MQTT
+    check("Issue #72 the console shell answers a command sent right after it starts, before the "
+          "MQTT session and the web server (a command whose subsystem is not up says so)",
+          ready and answered and mb and first_up and answered < first_up,
+          f"shell ready {ready - t0:.2f} s after QEMU started, 'status' answered "
+          f"{answered - early:.2f} s later, first NBIRTH log {first_up - t0:.2f} s; "
+          f"{(gw.find(r'^mbread: ', early) or ['no mbread answer'])[0]}; {later[:2]}"
+          if ready and answered and first_up else
+          f"ready {ready}, answered {answered}; {gw.find(r'^config |^firmware ', t0)[:2]}")
     if not check("1a. NBIRTH published", nb, "no NBIRTH within 40 s" if not nb else
                  f"{nb[0] - t0:.1f} s after QEMU start (REL-6 asks < 10 s)"):
         return
@@ -1685,8 +2453,8 @@ def run(args, log, slave, broker, conf, work):
     # NET-6: host name derived from edge_node_id; the mDNS responder starts with it. It cannot
     # answer here: open_eth has no multicast filter, so joining 224.0.0.251 fails and the
     # responder leaves the interface out (the W5500 has the filter).
-    announced = gw.find(r"mdns: gw01\.local, _http\._tcp port 80 \('Plant1/GW01'\)", t0)
-    check("NET-6 host name gw01 derived from edge_node_id; mDNS responder and _http._tcp service "
+    announced = gw.find(r"mdns: gw01\.local, _https\._tcp port 443 \('Plant1/GW01'\)", t0)
+    check("NET-6 host name gw01 derived from edge_node_id; mDNS responder and _https._tcp service "
           "started (answers not testable on QEMU's open_eth)",
           announced, (announced or ["no mdns log"])[0])
 
@@ -2192,6 +2960,42 @@ def run(args, log, slave, broker, conf, work):
     check("MQTT-2 / issue #5 broker that drops every connection after CONNACK: the backoff keeps "
           "growing (1, 2, 4, 8 s with jitter)", grows,
           f"delays {delays} ms over {len(cutter.accepted)} accepted connections")
+
+    # Issue #71: a broker that grants the subscriptions and resets the connection right after
+    # the SUBACK. Each attempt ends without a session; whenever the births ran into the dead
+    # connection the gateway says so, and it never claims "session up" for an NBIRTH that did
+    # not go out (the esp-mqtt write error comes before it).
+    resetter = FakeBroker(MQTT_PORT + 13, "cutsub")
+    gw = Gateway(args, work / "uart0-cutsub.log",
+                 flash_variant(args, work, "cutsub", {"config.json": config_json(MQTT_PORT + 13)}))
+    t_cs = time.monotonic()
+    gw.start()
+    gw.wait_log(r"reconnect attempt 4 in", 60, t_cs)
+    gw.kill()
+    resetter.close()
+    segments, cur = [], None
+    for t, line in gw.lines:
+        if t < t_cs:
+            continue
+        if re.search(r"edge: connecting to ", line):
+            cur = []
+            segments.append(cur)
+        elif cur is not None:
+            cur.append(line)
+    lying = sum(1 for seg in segments
+                if any(re.search(r"Writing failed|Losing qos0|transport error", ln) for ln in seg)
+                and any("Sparkplug session up" in ln for ln in seg)
+                and [i for i, ln in enumerate(seg) if re.search(r"Writing failed|Losing qos0", ln)][:1]
+                < [i for i, ln in enumerate(seg) if "Sparkplug session up" in ln][:1])
+    caught = gw.find(r"NBIRTH not published|SUBACK received but the connection is already gone|"
+                     r"births incomplete", t_cs)
+    ups = gw.find(r"Sparkplug session up", t_cs)
+    check("Issue #71 connection reset right after the SUBACK: no 'session up' for births that did "
+          "not go out; the gateway says the session did not start and retries",
+          len(segments) >= 4 and caught and lying == 0,
+          f"{len(segments)} attempts, {len(caught)} without a session "
+          f"({(caught or ['none'])[0][:90]}), 'session up' {len(ups)} time(s), with a write error "
+          f"before it {lying}")
     obs.close()
 
 

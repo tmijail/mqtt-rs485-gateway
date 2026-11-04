@@ -7,4 +7,23 @@ menu "Gateway: web"
             Answers <network.hostname>.local and announces the web UI. Turned off per device
             with network.mdns = false.
 
+    config GW_WEB_LOGIN_MAX_FAILS
+        int "Failed logins in a row before a source address is blocked"
+        range 1 100
+        default 5
+
+    config GW_WEB_LOGIN_BLOCK_S
+        int "First block of a source address (s)"
+        range 1 3600
+        default 30
+        help
+            Issue #64: after GW_WEB_LOGIN_MAX_FAILS failed logins in a row an address gets
+            429 for this long, without any password check; every further block in a row
+            doubles it, up to GW_WEB_LOGIN_BLOCK_MAX_S. A successful login resets it.
+
+    config GW_WEB_LOGIN_BLOCK_MAX_S
+        int "Longest block of a source address (s)"
+        range 1 86400
+        default 900
+
 endmenu

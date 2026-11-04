@@ -29,11 +29,13 @@ esp_err_t gw_web_mdns_start(const gw_config_t *cfg, bool configured)
     }
     ESP_RETURN_ON_ERROR(mdns_instance_name_set(instance), TAG, "instance");
     mdns_txt_item_t txt[] = {{"path", "/"}, {"product", "rs485-sparkplug-gateway"}};
-    ESP_RETURN_ON_ERROR(mdns_service_add(instance, "_http", "_tcp", cfg->web.port, txt,
+    /* issue #64: with HTTPS the plain port only redirects: announce the HTTPS one */
+    const char *svc = cfg->web.https ? "_https" : "_http";
+    uint16_t port = cfg->web.https ? cfg->web.https_port : cfg->web.port;
+    ESP_RETURN_ON_ERROR(mdns_service_add(instance, svc, "_tcp", port, txt,
                                          sizeof(txt) / sizeof(txt[0])),
                         TAG, "service");
-    ESP_LOGI(TAG, "%s.local, _http._tcp port %u ('%s')", cfg->network.hostname, cfg->web.port,
-             instance);
+    ESP_LOGI(TAG, "%s.local, %s._tcp port %u ('%s')", cfg->network.hostname, svc, port, instance);
     return ESP_OK;
 #else
     (void)configured;

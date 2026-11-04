@@ -110,6 +110,7 @@ typedef struct spb_metric {
     uint32_t datatype;
     uint64_t timestamp;      /* 0: omitted */
     bool is_null;
+    bool is_historical;      /* SPB-14: stored while offline, sent later */
     spb_props_t props;       /* all absent when zeroed */
     spb_value_t v;
 } spb_metric_t;
@@ -179,6 +180,7 @@ typedef struct {
     uint32_t datatype;
     uint64_t timestamp;
     bool is_null;
+    bool is_historical;
     spb_val_kind_t kind;
     union {
         uint32_t i;

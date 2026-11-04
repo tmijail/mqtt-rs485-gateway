@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -20,6 +21,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "gw_auth.h"
+#include "mbedtls/platform.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -54,8 +56,21 @@ static void *boot_alloc(size_t size)
     return heap_caps_malloc_prefer(size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT);
 }
 
+#if CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC
+/* MQTT-4: a TLS session takes some 40 KB of heap. In PSRAM when the board has it, internal
+ * RAM otherwise (QEMU, PSRAM not detected): TLS must keep working without PSRAM. */
+static void *tls_calloc(size_t n, size_t size)
+{
+    return heap_caps_calloc_prefer(n, size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+#endif
+
 esp_err_t gw_storage_init(void)
 {
+#if CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC
+    mbedtls_platform_set_calloc_free(tls_calloc, heap_caps_free);
+#endif
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_LOGW(TAG, "NVS layout changed, erasing");
@@ -206,12 +221,49 @@ static esp_err_t put_secrets(const gw_secrets_t *in)
     return err;
 }
 
+/* ---------- device certificate of the web server (issue #64) ---------- */
+
+bool gw_storage_get_web_tls(char *cert, size_t cert_cap, char *key, size_t key_cap)
+{
+    nvs_handle_t h;
+    if (!s_nvs_ok || nvs_open(NVS_SECRETS, NVS_READONLY, &h) != ESP_OK) {
+        return false;
+    }
+    bool ok = nvs_get_str(h, "web_cert", cert, &cert_cap) == ESP_OK &&
+              nvs_get_str(h, "web_key", key, &key_cap) == ESP_OK;
+    nvs_close(h);
+    return ok;
+}
+
+esp_err_t gw_storage_set_web_tls(const char *cert, const char *key)
+{
+    nvs_handle_t h;
+    if (!s_nvs_ok) {
+        return ESP_ERR_NVS_NOT_INITIALIZED;
+    }
+    esp_err_t err = nvs_open(NVS_SECRETS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_set_str(h, "web_cert", cert);
+    if (err == ESP_OK) {
+        err = nvs_set_str(h, "web_key", key);
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    return err;
+}
+
 /* ---------- network of the last valid configuration (CFG-3 recovery) ---------- */
 
 typedef struct {
     uint32_t size;    /* sizeof(lkg_t): a blob from a firmware with another layout is ignored */
     __typeof__(((gw_config_t *)0)->network) network;
     uint16_t web_port;
+    uint16_t web_https_port;
+    bool web_https;
 } lkg_t;
 
 void gw_storage_save_last_good(const gw_config_t *cfg)
@@ -220,7 +272,8 @@ void gw_storage_save_last_good(const gw_config_t *cfg)
     if (!s_nvs_ok || nvs_open(NVS_GW, NVS_READWRITE, &h) != ESP_OK) {
         return;
     }
-    lkg_t now = {.size = sizeof(lkg_t), .web_port = cfg->web.port}, old;
+    lkg_t now = {.size = sizeof(lkg_t), .web_port = cfg->web.port,
+                 .web_https_port = cfg->web.https_port, .web_https = cfg->web.https}, old;
     now.network = cfg->network;
     size_t len = sizeof(old);
     /* written only when it changed: NVS wear */
@@ -250,12 +303,16 @@ void gw_storage_recovery_config(gw_config_t *cfg)
     if (found) {
         cfg->network = lkg.network;
         cfg->web.port = lkg.web_port;
+        cfg->web.https = lkg.web_https;
+        cfg->web.https_port = lkg.web_https_port;
         memset(&lkg, 0, sizeof(lkg));
     } else {
         cfg->network.dhcp = true;
         cfg->network.wifi.failback_s = 30;
         cfg->network.wifi.ipv4.dhcp = true;
         cfg->web.port = 80;
+        cfg->web.https = true;
+        cfg->web.https_port = 443;
     }
     if (cfg->network.hostname[0] == '\0') {
         gw_hostname_from("", cfg->network.hostname, sizeof(cfg->network.hostname));
@@ -463,33 +520,131 @@ static char *read_file(const struct stat *st, size_t *len, gw_cfg_err_t *err)
     return buf;
 }
 
-/* Temporary file + fsync + rename: a power cut leaves the old or the new document, never a
- * mix (LittleFS renames atomically, replacing the destination). */
-static esp_err_t write_atomic(const char *text, size_t len)
+static bool ensure_mounted(esp_err_t *why)
 {
-    esp_err_t why = ESP_OK;
-    if (!s_mounted && !mount(false, &why)) {
+    if (!s_mounted && !mount(false, why)) {
         /* nothing usable in the partition: saving is the way out of that state */
         ESP_LOGW(TAG, "LittleFS 'storage' not mountable (%s): formatting it to save",
-                 esp_err_to_name(why));
-        if (!mount(true, &why)) {
-            ESP_LOGE(TAG, "LittleFS 'storage' unusable: %s", esp_err_to_name(why));
-            return why;
+                 esp_err_to_name(*why));
+        if (!mount(true, why)) {
+            ESP_LOGE(TAG, "LittleFS 'storage' unusable: %s", esp_err_to_name(*why));
+            return false;
         }
     }
-    FILE *f = fopen(CFG_TMP, "wb");
+    return true;
+}
+
+/* Temporary file + fsync + rename: a power cut leaves the old or the new file, never a mix
+ * (LittleFS renames atomically, replacing the destination). */
+static esp_err_t write_file_atomic(const char *path, const char *tmp, const void *data,
+                                   size_t len)
+{
+    esp_err_t why = ESP_OK;
+    if (!ensure_mounted(&why)) {
+        return why;
+    }
+    FILE *f = fopen(tmp, "wb");
     if (f == NULL) {
-        ESP_LOGE(TAG, CFG_TMP ": errno %d", errno);
+        ESP_LOGE(TAG, "%s: errno %d", tmp, errno);
         return ESP_FAIL;
     }
-    bool ok = fwrite(text, 1, len, f) == len && fflush(f) == 0 && fsync(fileno(f)) == 0;
+    bool ok = fwrite(data, 1, len, f) == len && fflush(f) == 0 && fsync(fileno(f)) == 0;
     ok = fclose(f) == 0 && ok;
-    if (!ok || rename(CFG_TMP, CFG_PATH) != 0) {
-        ESP_LOGE(TAG, "writing " CFG_PATH " failed (errno %d)", errno);
-        unlink(CFG_TMP);
+    if (!ok || rename(tmp, path) != 0) {
+        ESP_LOGE(TAG, "writing %s failed (errno %d)", path, errno);
+        unlink(tmp);
         return ESP_FAIL;
     }
     return ESP_OK;
+}
+
+static esp_err_t write_atomic(const char *text, size_t len)
+{
+    return write_file_atomic(CFG_PATH, CFG_TMP, text, len);
+}
+
+/* ---------- other files next to config.json (TLS certificates, MQTT-4/5) ---------- */
+
+char *gw_storage_read_file(const char *name, size_t *len, char *why, size_t why_cap)
+{
+    char path[sizeof(CFG_MOUNT) + GW_FILE_SIZE + 1];
+    struct stat st;
+    if (!gw_config_file_name_ok(name) ||
+        snprintf(path, sizeof(path), CFG_MOUNT "/%s", name) >= (int)sizeof(path)) {
+        snprintf(why, why_cap, "%s: nombre no válido", name);
+        return NULL;
+    }
+    if (!s_mounted || stat(path, &st) != 0) {
+        snprintf(why, why_cap, "%s: no existe en la partición LittleFS", path);
+        return NULL;
+    }
+    if (st.st_size <= 0 || st.st_size > GW_STORAGE_FILE_MAX) {
+        snprintf(why, why_cap, "%s: %ld bytes (de 1 a %d)", path, (long)st.st_size,
+                 GW_STORAGE_FILE_MAX);
+        return NULL;
+    }
+    size_t size = (size_t)st.st_size;
+    char *buf = boot_alloc(size + 1);
+    FILE *f = buf != NULL ? fopen(path, "rb") : NULL;
+    size_t got = f != NULL ? fread(buf, 1, size, f) : 0;
+    if (f != NULL) {
+        fclose(f);
+    }
+    if (got != size) {
+        snprintf(why, why_cap, "%s: %s", path, buf == NULL ? "sin memoria" : "error de lectura");
+        heap_caps_free(buf);
+        return NULL;
+    }
+    buf[size] = '\0';
+    *len = size;
+    return buf;
+}
+
+/* The files next to config.json, kept in RAM across a wipe of the partition (CFG-7 migration):
+ * only config.json carried secrets in clear; the certificates must survive. */
+#define KEEP_MAX 8
+
+typedef struct {
+    char name[GW_FILE_SIZE];
+    char *data;
+    size_t len;
+} kept_file_t;
+
+static size_t keep_files(kept_file_t *kept)
+{
+    size_t n = 0;
+    DIR *d = opendir(CFG_MOUNT);
+    for (struct dirent *e; d != NULL && (e = readdir(d)) != NULL && n < KEEP_MAX;) {
+        if (!gw_config_file_name_ok(e->d_name)) {
+            continue;   /* config.json, its temporary file */
+        }
+        char why[96];
+        kept[n].data = gw_storage_read_file(e->d_name, &kept[n].len, why, sizeof(why));
+        if (kept[n].data == NULL) {
+            ESP_LOGE(TAG, "%s: not kept across the wipe", why);
+            continue;
+        }
+        memcpy(kept[n].name, e->d_name, strlen(e->d_name) + 1);   /* < GW_FILE_SIZE: checked */
+        n++;
+    }
+    if (d != NULL) {
+        closedir(d);
+    }
+    return n;
+}
+
+static void restore_files(kept_file_t *kept, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        char path[sizeof(CFG_MOUNT) + GW_FILE_SIZE + 1];
+        char tmp[sizeof(path) + 4];
+        bool fits = snprintf(path, sizeof(path), CFG_MOUNT "/%s", kept[i].name) < (int)sizeof(path) &&
+                    snprintf(tmp, sizeof(tmp), "%s.tmp", path) < (int)sizeof(tmp);
+        if (!fits || write_file_atomic(path, tmp, kept[i].data, kept[i].len) != ESP_OK) {
+            ESP_LOGE(TAG, "%s lost in the wipe", path);
+        }
+        heap_caps_free(kept[i].data);
+    }
 }
 
 /* The current document: the file, or a copy of the embedded default only when the file does
@@ -567,13 +722,17 @@ bool gw_storage_load_config(gw_config_t *cfg, gw_cfg_err_t *err, const char **so
          * cut in between leaves the device in commissioning mode, never on the example
          * configuration. */
         esp_err_t e = put_secrets(&doc.secrets);
+        kept_file_t kept[KEEP_MAX];
+        size_t nkept = 0;
         if (e == ESP_OK) {
             set_factory_marker(true);
+            nkept = keep_files(kept);
             e = wipe_storage();
         }
         if (e == ESP_OK) {
             e = write_atomic(doc.doc, doc.doc_len);
         }
+        restore_files(kept, nkept);
         if (e == ESP_OK) {
             set_factory_marker(false);
         }

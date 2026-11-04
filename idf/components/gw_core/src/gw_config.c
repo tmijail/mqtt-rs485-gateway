@@ -601,25 +601,127 @@ static bool parse_ntp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     return cfg->ntp.server[0] != '\0' ? true : fail(err, "ntp.server", "no puede estar vacío");
 }
 
+bool gw_config_file_name_ok(const char *name)
+{
+    size_t n = strlen(name);
+    if (n == 0 || n >= GW_FILE_SIZE || name[0] == '.' || strncmp(name, "config.json", 11) == 0) {
+        return false;
+    }
+    for (size_t i = 0; i < n; i++) {
+        char c = name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+              c == '.' || c == '_' || c == '-')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool get_file_name(const cJSON *o, const char *key, const char *path, char *out,
+                          gw_cfg_err_t *err)
+{
+    if (!get_string(o, key, path, false, "", out, GW_FILE_SIZE, err)) {
+        return false;
+    }
+    if (out[0] != '\0' && !gw_config_file_name_ok(out)) {
+        char p[96];
+        join(p, sizeof(p), path, key);
+        return fail(err, p, "'%s' no es un nombre de archivo válido (1-%d caracteres A-Z a-z 0-9 . _ "
+                    "-, sin '/', no config.json)", out, GW_FILE_SIZE - 1);
+    }
+    return true;
+}
+
+/* MQTT-4 / MQTT-5 */
+static bool parse_tls(const cJSON *mqtt, gw_tls_cfg_t *t, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"enabled", "ca_file", "server_name", "cert_file",
+                                       "key_file"};
+    static const cJSON empty = {.type = cJSON_Object};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(mqtt, "tls");
+    if (o == NULL) {
+        o = &empty;
+    }
+    if (!check_keys(o, "mqtt.tls", keys, 5, err) ||
+        !get_bool(o, "enabled", "mqtt.tls", false, &t->enabled, err) ||
+        !get_file_name(o, "ca_file", "mqtt.tls", t->ca_file, err) ||
+        !get_string(o, "server_name", "mqtt.tls", false, "", t->server_name,
+                    sizeof(t->server_name), err) ||
+        !get_file_name(o, "cert_file", "mqtt.tls", t->cert_file, err) ||
+        !get_file_name(o, "key_file", "mqtt.tls", t->key_file, err)) {
+        return false;
+    }
+    if ((t->cert_file[0] == '\0') != (t->key_file[0] == '\0')) {
+        return fail(err, t->cert_file[0] ? "mqtt.tls.key_file" : "mqtt.tls.cert_file",
+                    "cert_file y key_file van juntos (TLS mutuo)");
+    }
+    return true;
+}
+
+/* MQTT-6: [{"host": "...", "port": n}, ...], tried in order after mqtt.host. */
+static bool parse_backup_brokers(const cJSON *mqtt, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"host", "port"};
+    const cJSON *arr = cJSON_GetObjectItemCaseSensitive(mqtt, "backup_brokers");
+    if (arr == NULL) {
+        return true;
+    }
+    if (!cJSON_IsArray(arr)) {
+        return fail(err, "mqtt.backup_brokers", "se esperaba un array");
+    }
+    int n = cJSON_GetArraySize(arr);
+    if (n > GW_MAX_BACKUP_BROKERS) {
+        return fail(err, "mqtt.backup_brokers", "%d brokers; el máximo es %d", n,
+                    GW_MAX_BACKUP_BROKERS);
+    }
+    int i = 0;
+    for (const cJSON *it = arr->child; it != NULL; it = it->next, i++) {
+        char path[40];
+        snprintf(path, sizeof(path), "mqtt.backup_brokers[%d]", i);
+        long port;
+        if (!check_keys(it, path, keys, 2, err) ||
+            !get_string(it, "host", path, true, "", cfg->mqtt.backup[i].host,
+                        sizeof(cfg->mqtt.backup[i].host), err) ||
+            !get_int(it, "port", path, false, cfg->mqtt.port, 1, 65535, &port, err)) {
+            return false;
+        }
+        if (cfg->mqtt.backup[i].host[0] == '\0') {
+            char p[56];
+            snprintf(p, sizeof(p), "%s.host", path);
+            return fail(err, p, "no puede estar vacío");
+        }
+        cfg->mqtt.backup[i].port = (uint16_t)port;
+    }
+    cfg->mqtt.backup_count = (uint8_t)n;
+    return true;
+}
+
 static bool parse_mqtt(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"host", "port", "client_id", "username", "password",
-                                       "keepalive_s"};
+                                       "keepalive_s", "tls", "backup_brokers", "failover_after",
+                                       "primary_return_s", "protocol"};
+    static const char *const protocols[] = {"3.1.1", "5"};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "mqtt");
     if (o == NULL) {
         return fail(err, "mqtt", "sección obligatoria ausente");
     }
-    long port, ka;
-    if (!check_keys(o, "mqtt", keys, 6, err) ||
+    long port, ka, failover, back;
+    int proto;
+    if (!check_keys(o, "mqtt", keys, 11, err) || !parse_tls(o, &cfg->mqtt.tls, err) ||
         !get_string(o, "host", "mqtt", true, "", cfg->mqtt.host, sizeof(cfg->mqtt.host), err) ||
-        !get_int(o, "port", "mqtt", false, 1883, 1, 65535, &port, err) ||
+        !get_int(o, "port", "mqtt", false, cfg->mqtt.tls.enabled ? 8883 : 1883, 1, 65535, &port,
+                 err) ||
         !get_string(o, "client_id", "mqtt", false, "", cfg->mqtt.client_id,
                     sizeof(cfg->mqtt.client_id), err) ||
         !get_string(o, "username", "mqtt", false, "", cfg->mqtt.username,
                     sizeof(cfg->mqtt.username), err) ||
         !get_string(o, "password", "mqtt", false, "", cfg->mqtt.password,
                     sizeof(cfg->mqtt.password), err) ||
-        !get_int(o, "keepalive_s", "mqtt", false, 30, 5, 3600, &ka, err)) {
+        !get_int(o, "keepalive_s", "mqtt", false, 30, 5, 3600, &ka, err) ||
+        !get_int(o, "failover_after", "mqtt", false, 3, 1, 20, &failover, err) ||
+        !get_int(o, "primary_return_s", "mqtt", false, 0, 0, 86400, &back, err) ||
+        !get_enum(o, "protocol", "mqtt", false, GW_MQTT_V311, protocols, 2, &proto, err)) {
         return false;
     }
     if (cfg->mqtt.host[0] == '\0') {
@@ -627,13 +729,51 @@ static bool parse_mqtt(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     }
     cfg->mqtt.port = (uint16_t)port;
     cfg->mqtt.keepalive_s = (uint16_t)ka;
+    cfg->mqtt.failover_after = (uint8_t)failover;
+    cfg->mqtt.primary_return_s = (uint32_t)back;
+    cfg->mqtt.protocol = (gw_mqtt_protocol_t)proto;
+    return parse_backup_brokers(o, cfg, err);
+}
+
+/* SPB-14: true/false, or {"enabled": bool, "sd": {"enabled": bool, "max_kb": n}}. */
+static bool parse_store_forward(const cJSON *sp, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"enabled", "sd"};
+    static const char *const sd_keys[] = {"enabled", "max_kb"};
+    static const cJSON empty = {.type = cJSON_Object};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(sp, "store_forward");
+    cfg->sparkplug.sf_sd_max_kb = 16384;
+    if (o == NULL || cJSON_IsBool(o)) {
+        cfg->sparkplug.store_forward = cJSON_IsTrue(o);
+        return true;
+    }
+    if (!cJSON_IsObject(o)) {
+        return fail(err, "sparkplug.store_forward", "se esperaba true, false o un objeto");
+    }
+    const cJSON *sd = cJSON_GetObjectItemCaseSensitive(o, "sd");
+    long max_kb;
+    if (!check_keys(o, "sparkplug.store_forward", keys, 2, err) ||
+        !get_bool(o, "enabled", "sparkplug.store_forward", true, &cfg->sparkplug.store_forward,
+                  err) ||
+        !check_keys(sd != NULL ? sd : &empty, "sparkplug.store_forward.sd", sd_keys, 2, err) ||
+        !get_bool(sd != NULL ? sd : &empty, "enabled", "sparkplug.store_forward.sd", false,
+                  &cfg->sparkplug.sf_sd, err) ||
+        !get_int(sd != NULL ? sd : &empty, "max_kb", "sparkplug.store_forward.sd", false, 16384,
+                 64, 4194304, &max_kb, err)) {
+        return false;
+    }
+    cfg->sparkplug.sf_sd_max_kb = (uint32_t)max_kb;
+    if (cfg->sparkplug.sf_sd && !cfg->sparkplug.store_forward) {
+        return fail(err, "sparkplug.store_forward.sd.enabled",
+                    "la tarjeta solo extiende el búfer: requiere store_forward.enabled");
+    }
     return true;
 }
 
 static bool parse_sparkplug(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"group_id", "edge_node_id", "primary_host_id",
-                                       "diagnostics_s"};
+                                       "store_forward", "diagnostics_s"};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "sparkplug");
     if (o == NULL) {
         return fail(err, "sparkplug", "sección obligatoria ausente");
@@ -648,7 +788,8 @@ static bool parse_sparkplug(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *e
                     GW_DIAG_MIN_S, GW_DIAG_MAX_S);
     }
     cfg->sparkplug.diagnostics_s = (uint32_t)diag;
-    return get_string(o, "group_id", "sparkplug", true, "", cfg->sparkplug.group_id,
+    return parse_store_forward(o, cfg, err) &&
+           get_string(o, "group_id", "sparkplug", true, "", cfg->sparkplug.group_id,
                       sizeof(cfg->sparkplug.group_id), err) &&
            get_string(o, "edge_node_id", "sparkplug", true, "", cfg->sparkplug.edge_node_id,
                       sizeof(cfg->sparkplug.edge_node_id), err) &&
@@ -931,16 +1072,19 @@ static bool parse_modbus_tcp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *
  * here while a new one is being set; the stored document never holds it. */
 static bool parse_web(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"enabled", "port", "username", "password"};
+    static const char *const keys[] = {"enabled", "port", "username", "password", "https",
+                                       "https_port"};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "web");
     static const cJSON empty = {.type = cJSON_Object};
-    long port;
+    long port, sport;
     if (o == NULL) {
         o = &empty;
     }
-    if (!check_keys(o, "web", keys, 4, err) ||
+    if (!check_keys(o, "web", keys, 6, err) ||
         !get_bool(o, "enabled", "web", true, &cfg->web.enabled, err) ||
         !get_int(o, "port", "web", false, 80, 1, 65535, &port, err) ||
+        !get_bool(o, "https", "web", true, &cfg->web.https, err) ||
+        !get_int(o, "https_port", "web", false, 443, 1, 65535, &sport, err) ||
         !get_string(o, "username", "web", false, "admin", cfg->web.username,
                     sizeof(cfg->web.username), err) ||
         !get_string(o, "password", "web", false, "", cfg->web.password,
@@ -948,6 +1092,10 @@ static bool parse_web(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
         return false;
     }
     cfg->web.port = (uint16_t)port;
+    cfg->web.https_port = (uint16_t)sport;
+    if (cfg->web.https && sport == port) {
+        return fail(err, "web.https_port", "no puede ser igual a web.port (%ld)", port);
+    }
     if (cfg->web.username[0] == '\0') {
         return fail(err, "web.username", "no puede estar vacío");
     }

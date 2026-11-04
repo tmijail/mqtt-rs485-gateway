@@ -62,6 +62,16 @@ bool gw_net_has_wifi(void);
 /** SPB-17: RSSI (dBm) of the associated access point; false while not associated. */
 bool gw_net_wifi_rssi(int8_t *rssi);
 
+/**
+ * Issue #57: what the MQTT session found over interface @p ifname (the name given by
+ * gw_net_active_ifname() when its client was created). @p reachable false: every broker
+ * failed over it, so it is held without service (CONFIG_GW_NET_NO_SERVICE_MIN_S, doubling up
+ * to _MAX_S) and the session moves to the other interface if that one is usable. true: a
+ * session is stable over it (the hold time is reset). No effect with a single interface.
+ * Safe from any task.
+ */
+void gw_net_report_broker(const char *ifname, bool reachable);
+
 #ifdef __cplusplus
 }
 #endif

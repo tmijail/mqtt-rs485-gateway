@@ -40,7 +40,7 @@ add_subdirectory(${IDF_PROJECT_DIR}/components/gw_core gw_core)
 enable_testing()
 foreach(t test_mb_rtu test_mb_master test_conv test_logic test_config test_plan test_spb test_node
           test_poll test_dout test_netsel test_syslog test_auth test_cfgdoc test_button
-          test_mbap test_localio test_buzz)
+          test_brokersel test_phost test_sf test_authlimit test_mbap test_localio test_buzz)
     add_executable(${t} ${t}.c support.c)
     target_link_libraries(${t} PRIVATE gw_core unity)
     target_include_directories(${t} PRIVATE ${CMAKE_CURRENT_LIST_DIR})
@@ -58,3 +58,9 @@ target_link_libraries(spb_dump PRIVATE gw_core unity)
 target_include_directories(spb_dump PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 target_compile_definitions(spb_dump PRIVATE
     GW_SPEC_EXAMPLE="${CMAKE_CURRENT_LIST_DIR}/spec_example.json")
+
+# Issue #58: esp-mqtt 1.1.0 leaks network.if_name in esp_mqtt_set_config(); gw_edge must call it
+# only through its guarded wrapper set_config().
+add_test(NAME check_set_config
+         COMMAND ${CMAKE_COMMAND} -DSRC=${IDF_PROJECT_DIR}/components/gw_edge/gw_edge.c
+                 -P ${CMAKE_CURRENT_LIST_DIR}/check_set_config.cmake)

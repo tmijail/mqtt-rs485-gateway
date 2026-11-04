@@ -278,6 +278,8 @@ Todas son opcionales. Si faltan, el equipo se comporta como el MVP. Las claves d
 
 Las claves de IPv4 de `network` siguen siendo las de Ethernet.
 
+**Alcance del broker (issue #57).** Una interfaz con enlace y dirección puede no llegar al broker (router o switch aguas arriba caído). Si fallan todos los brokers de la lista (MQTT-6) por la interfaz activa, esta queda "sin servicio": la sesión pasa en el acto a la otra, si es utilizable, sea cual sea su rango. La espera empieza en 60 s y se duplica en cada nuevo fallo seguido, hasta 30 min (`CONFIG_GW_NET_NO_SERVICE_MIN_S` / `_MAX_S`); una sesión estable por esa interfaz la vuelve al mínimo. Al vencer, la preferida recupera la sesión como en el *failback* normal: ese es el reintento. Una interfaz sin servicio se sigue usando si no hay otra.
+
 **`network.hostname` y `network.mdns` (NET-6): nombre del equipo.**
 
 ```json
@@ -287,7 +289,7 @@ Las claves de IPv4 de `network` siguen siendo las de Ethernet.
 | Clave | Tipo | Defecto | Regla |
 |---|---|---|---|
 | `hostname` | texto | `""` | Una etiqueta DNS: 1–63 letras, dígitos y `-` (no al principio ni al final), sin puntos. Vacío = derivado de `edge_node_id` (minúsculas; lo que no es letra ni dígito pasa a `-`; `GW01` → `gw01`) |
-| `mdns` | bool | `true` | Responde `<hostname>.local` por mDNS y anuncia la web como servicio `_http._tcp` (instancia `<group_id>/<edge_node_id>`) |
+| `mdns` | bool | `true` | Responde `<hostname>.local` por mDNS y anuncia la web como servicio `_https._tcp` en `web.https_port` (`_http._tcp` en `web.port` con `web.https: false`; instancia `<group_id>/<edge_node_id>`) |
 
 El nombre va también en las peticiones DHCP de Ethernet y Wi-Fi.
 
@@ -306,6 +308,79 @@ El nombre va también en las peticiones DHCP de Ethernet y Wi-Fi.
 | `dns` | texto | `""` | Servidor DNS IPv6 (tercera posición; DHCPv4 llena las dos primeras) |
 
 El router por defecto IPv6 se aprende de los RA; no hay *gateway* IPv6 estático. `mqtt.host`, `ntp.server` y `syslog.host` aceptan literales IPv6 (`fd00::10`) o nombres con registro AAAA.
+
+**`mqtt.tls` (MQTT-4, MQTT-5): TLS hacia el broker, opcionalmente mutuo.**
+
+```json
+"mqtt": { "host": "broker.planta.local", "port": 8883,
+          "tls": { "enabled": true, "ca_file": "ca.pem", "server_name": "",
+                   "cert_file": "gw01.crt", "key_file": "gw01.key" } }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `enabled` | bool | `false` | `false` = TCP sin cifrar, como en el MVP. Con `true`, el defecto de `mqtt.port` pasa a `8883` |
+| `ca_file` | texto | `""` | Archivo PEM con la o las CA que firman el certificado del broker, en la partición LittleFS junto a `config.json` (`/cfg/<nombre>`). Vacío = el paquete de CA raíz públicas de ESP-IDF. Nombre de 1–32 caracteres `A-Z a-z 0-9 . _ -`, sin `/`, que no empiece con `.` ni sea `config.json` |
+| `server_name` | texto | `""` | Nombre que debe llevar el certificado del broker (SAN o CN). Vacío = el `host` al que se conecta (también un literal IP, contra un SAN de tipo IP). La verificación del nombre no se puede desactivar |
+| `cert_file` | texto | `""` | MQTT-5: certificado PEM del cliente (TLS mutuo), en LittleFS como `ca_file`. Vacío = sin certificado de cliente |
+| `key_file` | texto | `""` | Su clave privada PEM, **sin cifrar** (PKCS#1, SEC1 o PKCS#8). Obligatoria con `cert_file` y prohibida sin él |
+
+TLS 1.2 o 1.3, lo que negocie el broker. Las fechas de validez del certificado se comprueban: la conexión TLS espera a que SNTP fije el reloj. Las claves se validan aunque `enabled` sea `false`.
+
+**`mqtt.protocol` (MQTT-8): versión del protocolo.**
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `protocol` | `"3.1.1"` \| `"5"` | `"3.1.1"` | Versión de MQTT para todos los brokers de la lista. Con `"5"`, como pide Sparkplug 3.0: *Clean Start* = 1 y *Session Expiry Interval* = 0 (el broker no guarda la sesión entre conexiones, igual que *clean session* en 3.1.1) y *Will Delay Interval* = 0 (el NDEATH se publica en cuanto se pierde la conexión). Los temas, QoS, retención y payloads no cambian |
+
+**`mqtt.backup_brokers`, `failover_after`, `primary_return_s` (MQTT-6): lista de brokers.**
+
+```json
+"mqtt": { "host": "broker1.planta.local", "port": 1883,
+          "backup_brokers": [ { "host": "broker2.planta.local" },
+                              { "host": "10.0.0.20", "port": 1884 } ],
+          "failover_after": 3, "primary_return_s": 0 }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `backup_brokers` | array | `[]` | Hasta 3 brokers de respaldo, en orden, después de `mqtt.host` (el primario). Cada uno: `host` (obligatorio, no vacío) y `port` (defecto: `mqtt.port`). Credenciales, `client_id`, keepalive y `tls` son los mismos para todos; con TLS el nombre se verifica contra el `host` de cada uno (o `tls.server_name`) |
+| `failover_after` | entero | `3` | 1–20. Intentos fallidos seguidos en un broker antes de pasar al siguiente (tras el último, el primero) |
+| `primary_return_s` | entero | `0` | 0–86400. `0` = un respaldo que funciona se conserva hasta que falle. Con N > 0, tras N s de sesión estable en un respaldo se cierra en orden (NDEATH) y se prueba **una vez** el primario; si falla, se sigue por el primer respaldo |
+
+Un intento falla si no termina en una sesión estable: conexión TCP o TLS fallida, CONNACK rechazado, SUBSCRIBE rechazado o sin respuesta, o sesión que cae antes de durar un keepalive (como mucho 60 s) desde el NBIRTH. Una sesión estable vuelve a contar desde cero. Cada broker nuevo empieza con el *backoff* mínimo. Con dos interfaces (NET-4), si fallan todos los brokers de la lista (`failover_after` veces cada uno) por la interfaz activa, esa interfaz queda "sin servicio" y la sesión pasa a la otra (ver `network.wifi`).
+
+**`sparkplug.primary_host_id` (SPB-13): Primary Host Application.** Clave del MVP; vacía = sin host primario. Con un id, el nodo se suscribe a `spBv1.0/STATE/{id}` en el mismo SUBSCRIBE que NCMD y DCMD y espera un STATE de Sparkplug 3.0 (JSON `{"online": true|false, "timestamp": <ms>}`, retenido) antes del NBIRTH:
+
+- `online: true` → NBIRTH y DBIRTH;
+- `online: false` con la sesión arriba → NDEATH explícito (bdSeq de la sesión) y DISCONNECT; la sesión siguiente vuelve a esperar;
+- un STATE con `timestamp` menor que el último aceptado se ignora (mensaje retenido viejo); el último `timestamp` se recuerda entre sesiones, no entre arranques;
+- un payload que no es ese JSON (por ejemplo, el `ONLINE` de Sparkplug 2.x) se ignora con un aviso.
+
+Con brokers de respaldo (MQTT-6), un host fuera de línea en un broker (STATE `false`, o ningún STATE `true` en 30 s) cuenta como intento fallido en ese broker. Con un solo broker el nodo queda conectado esperando.
+
+**`sparkplug.store_forward` (SPB-14): store & forward.**
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `store_forward` | bool u objeto | `false` | `false` = sin sesión Sparkplug los cambios se coalescen y la sesión siguiente publica solo el valor actual (como el MVP). `true` = los cambios que se habrían publicado (mismas reglas de excepción y *deadband*) se guardan en un búfer circular y, tras el NBIRTH y los DBIRTH de la sesión siguiente, se publican del más viejo al más nuevo como DDATA/NDATA con `is_historical = true` y el timestamp de la muestra |
+
+"Sin sesión" incluye broker caído y host primario (SPB-13) fuera de línea, desde el primer NBIRTH del arranque (antes no hay estado publicado con qué comparar). El búfer tiene 40 000 muestras en PSRAM (960 KB) o 512 en RAM interna si no hay PSRAM (Kconfig `GW_SF_PSRAM_SAMPLES` / `GW_SF_INTERNAL_SAMPLES`); lleno, se pisan las más viejas. Las muestras de un dispositivo sin DBIRTH en la sesión nueva (fuera de línea al volver) se descartan. Los enteros de 64 bits y los textos (MB-6) se guardan exactos.
+
+Forma de objeto, con el volcado opcional a microSD:
+
+```json
+"sparkplug": { "group_id": "Plant1", "edge_node_id": "GW01",
+               "store_forward": { "enabled": true, "sd": { "enabled": false, "max_kb": 16384 } } }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `enabled` | bool | `true` | Lo mismo que `store_forward: true` |
+| `sd.enabled` | bool | `false` | Con el búfer de RAM lleno, sus muestras más viejas pasan a la tarjeta microSD (de a bloques) en lugar de pisarse; al volver la sesión se publican primero las de la tarjeta. Requiere `enabled`. **GPIO45 (D0 de la tarjeta) es pin de *strapping*: ver la advertencia de `idf/README.md` §6.5 antes de activarlo** |
+| `sd.max_kb` | entero | `16384` | 64–4 194 304. Espacio máximo en la tarjeta; lleno, se borra el segmento más viejo (contado como perdido) |
+
+En la tarjeta: carpeta `/sf` de una tarjeta FAT (no se formatea nunca), segmentos numerados de solo escritura al final, que se borran enteros al publicarse. Sobreviven a un reinicio y se publican después si la lista de dispositivos y tags no cambió; si cambió, se borran.
 
 **Tipos de 64 bits, `string`, órdenes de bytes y bits de registro (MB-6), en cada tag.**
 
@@ -535,7 +610,9 @@ Formato: RFC 5424 sobre UDP (RFC 5426), un mensaje por datagrama, *facility* `lo
 | Clave | Tipo | Defecto | Regla |
 |---|---|---|---|
 | `enabled` | bool | `true` | `false` = sin servidor web con la configuración válida. Con la configuración rechazada o en puesta en marcha el servidor arranca igual (recuperación) |
-| `port` | entero | `80` | 1–65535, HTTP |
+| `port` | entero | `80` | 1–65535, HTTP. Con `https` en `true` solo redirige (301/308) a HTTPS |
+| `https` | bool | `true` | HTTPS con el certificado propio del equipo (EC P-256 autofirmado, generado en el primer arranque y guardado con los secretos en NVS; su huella SHA-256 sale en la consola en cada arranque). `false` = HTTP plano como antes |
+| `https_port` | entero | `443` | 1–65535, distinto de `port` |
 | `username` | texto | `"admin"` | 1–32 caracteres ASCII visibles, sin `:` |
 | `password` | texto (secreto) | `""` | Vacío o al menos 8 caracteres. Vacío = el equipo acepta `admin` con su **contraseña de puesta en marcha** (aleatoria, se ve en la consola) |
 
@@ -547,7 +624,9 @@ Formato: RFC 5424 sobre UDP (RFC 5426), un mensaje por datagrama, *facility* `lo
 
 En el archivo `/cfg/config.json` un secreto ausente, vacío o `"********"` toma el valor de NVS; uno en claro (archivo grabado a mano o de un firmware anterior) se usa, se mueve a NVS y el archivo se reescribe sin él.
 
-**API REST** (todas las rutas piden HTTP Basic con `web.username` y `web.password`; respuestas JSON):
+**Límite de intentos:** tras 5 accesos fallidos seguidos desde una misma dirección, esa dirección recibe `429` con `Retry-After` durante 30 s, sin comprobar la contraseña (tampoco la correcta); cada bloqueo seguido duplica el tiempo, hasta 15 min; un acceso correcto lo borra (Kconfig `GW_WEB_LOGIN_*`).
+
+**API REST** (todas las rutas piden HTTP Basic con `web.username` y `web.password`, por HTTPS con `https`; respuestas JSON):
 
 | Método y ruta | Qué hace |
 |---|---|

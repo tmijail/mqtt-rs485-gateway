@@ -41,7 +41,7 @@ static const char *TAG = "net";
 #define WIFI_RETRY_MAX_MS       30000
 
 ESP_EVENT_DEFINE_BASE(GW_NET_EVENT);
-enum { GW_NET_EV_POLL };
+enum { GW_NET_EV_POLL, GW_NET_EV_UNREACHABLE, GW_NET_EV_REACHABLE };
 
 typedef struct {
     esp_netif_t *netif;
@@ -207,9 +207,39 @@ static void on_gw_net_event(void *arg, esp_event_base_t base, int32_t id, void *
 {
     (void)arg;
     (void)base;
-    (void)data;
     if (id == GW_NET_EV_POLL) {
         apply(gw_netsel_poll(&s_sel, now_ms()));
+        return;
+    }
+    int i = *(const int *)data;
+    if (id == GW_NET_EV_UNREACHABLE) {
+        uint32_t hold = s_sel.hold_ms[i];
+        ESP_LOGW(TAG, "%s: no broker reachable over it (link and address are up): without service "
+                      "for %lu s", s_if[i].name, (unsigned long)(hold / 1000));
+        apply(gw_netsel_unreachable(&s_sel, (uint8_t)i, now_ms()));
+    } else if (id == GW_NET_EV_REACHABLE) {
+        if (s_sel.held_until_ms[i] != 0 || s_sel.hold_ms[i] != s_sel.hold_min_ms) {
+            ESP_LOGI(TAG, "%s: the broker is reachable again", s_if[i].name);
+        }
+        gw_netsel_reachable(&s_sel, (uint8_t)i);
+        apply(gw_netsel_poll(&s_sel, now_ms()));
+    }
+}
+
+void gw_net_report_broker(const char *ifname, bool reachable)
+{
+    if (s_if_count < 2 || ifname == NULL || ifname[0] == '\0') {
+        return;   /* one interface: nowhere to move the session to */
+    }
+    for (int i = 0; i < s_if_count; i++) {
+        char name[8] = "";
+        esp_netif_get_netif_impl_name(s_if[i].netif, name);
+        if (strcmp(name, ifname) == 0) {
+            /* hand over to the event loop, the owner of the selection */
+            esp_event_post(GW_NET_EVENT, reachable ? GW_NET_EV_REACHABLE : GW_NET_EV_UNREACHABLE,
+                           &i, sizeof(i), 0);
+            return;
+        }
     }
 }
 
@@ -579,6 +609,8 @@ esp_err_t gw_net_start(const gw_config_t *cfg, const gw_net_callbacks_t *cb)
         [GW_NET_WIFI] = cfg->network.wifi.role == GW_WIFI_PRIMARY ? 0 : 1,
     };
     gw_netsel_init(&s_sel, s_if_count, rank, (uint32_t)cfg->network.wifi.failback_s * 1000u);
+    gw_netsel_set_hold(&s_sel, CONFIG_GW_NET_NO_SERVICE_MIN_S * 1000u,
+                       CONFIG_GW_NET_NO_SERVICE_MAX_S * 1000u);
     if (cfg->network.ipv6.enabled) {
         ESP_LOGI(TAG, "IPv6 enabled (SLAAC %s%s)", cfg->network.ipv6.slaac ? "on" : "off",
                  cfg->network.ipv6.has_address ? ", static address on ethernet" : "");

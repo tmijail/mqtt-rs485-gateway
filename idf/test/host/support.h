@@ -67,6 +67,7 @@ typedef struct {
     bool room_limited;           /* write_room returns room (otherwise plenty) */
     size_t room;
     int reboots;
+    bool publish_fails;          /* publish returns -1 (a broker that went away) */
     int scan_rate_calls;
     uint32_t scan_rate;
     gw_node_diag_t diag;         /* SPB-17: what the diagnostics op reports */
@@ -90,6 +91,7 @@ typedef struct {
     uint64_t alias;
         uint32_t datatype;
         bool is_null;
+        bool is_historical;
         spb_val_kind_t kind;
         double num;
         uint64_t u64;            /* long_value, exact */

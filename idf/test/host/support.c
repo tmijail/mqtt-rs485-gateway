@@ -209,7 +209,7 @@ static int rec_publish(void *ctx, const char *topic, const uint8_t *data, size_t
                        bool retain)
 {
     (void)ctx;
-    if (g_rec.count >= REC_MAX) {
+    if (g_rec.count >= REC_MAX || g_rec.publish_fails) {
         return -1;
     }
     rec_msg_t *m = &g_rec.msgs[g_rec.count++];
@@ -319,6 +319,7 @@ static void fill_dec(dec_metric_t *o, const spb_rx_metric_t *m)
     o->alias = m->alias;
     o->datatype = m->datatype;
     o->is_null = m->is_null;
+    o->is_historical = m->is_historical;
     o->kind = m->kind;
     o->timestamp = m->timestamp;
     if (m->kind == SPB_VAL_LONG) {
