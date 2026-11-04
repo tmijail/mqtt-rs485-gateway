@@ -941,7 +941,21 @@ static int cmd_expander(int argc, char **argv)
     return 0;
 }
 
+/* Issue #84: the next configuration validation keeps its buffers for a while at its peak. */
+static int cmd_validation(int argc, char **argv)
+{
+    long ms = argc == 3 && strcmp(argv[1], "hold") == 0 ? strtol(argv[2], NULL, 10) : -1;
+    if (ms < 1 || ms > 60000) {
+        out("usage: validation hold <1-60000 ms>\n");
+        return 1;
+    }
+    gw_storage_sim_hold_validation((uint32_t)ms);
+    out("the next configuration validation is held for %ld ms\n", ms);
+    return 0;
+}
+
 ATOMIC(cmd_expander)
+ATOMIC(cmd_validation)
 ATOMIC(cmd_boot)
 #endif
 
@@ -999,6 +1013,8 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
          .func = cmd_di_atomic},
         {.command = "expander", .help = "Emulator only: the DO expander does not answer for a "
          "while after the next boot (issue #74)", .hint = "absent <ms>", .func = cmd_expander_atomic},
+        {.command = "validation", .help = "Emulator only: the next configuration validation "
+         "keeps its buffers for a while (issue #84)", .hint = "hold <ms>", .func = cmd_validation_atomic},
         {.command = "boot", .help = "Emulator only: press (1) or release (0) the BOOT button",
          .hint = "<0|1>", .func = cmd_boot_atomic},
         {.command = "panic", .help = "Emulator only: abort() (core dump test)", .func = cmd_panic},
