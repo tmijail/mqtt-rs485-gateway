@@ -19,14 +19,20 @@
 # reserve signatures. Every signature block of both signed images must be from one of those keys
 # (the first boot burns the digest of every valid block into eFuse, for good).
 #
-# --check (issue #103), before flashing, fails unless for both signed images:
-#   - every signature block is from a key with an expected digest, and its RSA-PSS signature
-#     verifies (espsecure verify-signature --version 2) with that key's PUBLIC key, given with
-#     --pub-key (once per key; it can be kept under version control: its digest is checked
-#     against D, which comes from elsewhere);
+# --check (issue #103), before flashing, fails unless:
+#   - in both signed images, every signature block is from a key with an expected digest, and
+#     its RSA-PSS signature verifies on its own (espsecure verify-signature --version 2 on a copy
+#     holding only that block) with that key's PUBLIC key, given with --pub-key (once per key;
+#     it can be kept under version control: its digest is checked against D, which comes from
+#     elsewhere);
+#   - the bootloader's blocks are from exactly the expected keys (all the D given, no more: the
+#     first boot burns those digests and revokes the other slots), and every app block is from
+#     one of the bootloader's keys (the only ones trusted after that boot);
 #   - the signed content is the current build: the unsigned image of the build directory,
 #     padded with 0xFF to 4 KB, then the signature sector. A signed image of an older build
 #     is refused, also if the real key signed it.
+# Signing writes one block, with the key given; reserve signatures are added afterwards
+# (espsecure sign-data --append-signatures) and --check then takes every digest.
 #
 # Outputs with --keyfile/--hsm-config, next to the inputs in the build directory (issue #93: the
 # only files the factory procedure flashes, README 3.6):
@@ -93,12 +99,21 @@ grep -q '^CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=y' "$SDK" &&
 hexdigest() {   # file with 32 bytes -> 64 lowercase hex digits
     od -An -tx1 -v "$1" | tr -d ' \n'
 }
-key_digest() {   # key file (private or public PEM) -> hex digest of its public key
-    local out
+# Key file (private or public PEM) -> hex digest of its public key. Fails (and prints nothing)
+# if espsecure cannot read it: callers run it inside $(...), where set -e does not apply, so
+# every failure is returned explicitly (issue #103).
+key_digest() {
+    local out d
     out="$(mktemp)"
-    python -m espsecure digest-sbv2-public-key --keyfile "$1" --output "$out" >/dev/null
-    hexdigest "$out"
+    if ! python -m espsecure digest-sbv2-public-key --keyfile "$1" --output "$out" >/dev/null 2>&1 ||
+       [ "$(wc -c <"$out")" -ne 32 ]; then
+        rm -f "$out"
+        return 1
+    fi
+    d="$(hexdigest "$out")"
     rm -f "$out"
+    [[ "$d" =~ ^[0-9a-f]{64}$ ]] || return 1
+    printf '%s' "$d"
 }
 norm_digest() {   # --expect-digest argument -> 64 lowercase hex digits, or nothing
     local d="$1"
@@ -125,7 +140,13 @@ TEST_KEYS=("$TESTDIR/test_signing_key.pem" "$BUILD/test_signing_key.pem"
            "$IDF_DIR/build-qemu/e2e_signing_key.pem")
 TEST_DIGESTS=()
 for k in "${TEST_KEYS[@]}"; do
-    [ -f "$k" ] && TEST_DIGESTS+=("$(key_digest "$k")")
+    [ -f "$k" ] || continue
+    if d="$(key_digest "$k")"; then
+        TEST_DIGESTS+=("$d")
+    else   # no empty entry: the real protection is the expected digest, not this list
+        echo "warning: test key $k cannot be read: images signed with it are not recognised as" \
+             "test-signed here" >&2
+    fi
 done
 is_test_digest() {
     local t
@@ -139,7 +160,7 @@ is_test_digest() {
 PUB_DIGESTS=()
 for k in ${PUBS[@]+"${PUBS[@]}"}; do
     [ -f "$k" ] || { echo "--pub-key $k: no such file" >&2; exit 2; }
-    d="$(key_digest "$k")" || { echo "--pub-key $k: not an RSA-3072 key" >&2; exit 2; }
+    d="$(key_digest "$k")" || { echo "--pub-key $k: espsecure cannot read it as an RSA-3072 key" >&2; exit 2; }
     [[ " ${WANT[*]} " == *" $d "* ]] ||
         { echo "--pub-key $k: digest $d is none of the expected ones (--expect-digest)" >&2; exit 1; }
     PUB_DIGESTS+=("$d")
@@ -156,6 +177,28 @@ block_digests() {   # signed image -> the key digest of each valid signature blo
     local info
     info="$(python -m espsecure signature-info-v2 "$1" 2>&1)" || return 1
     printf '%s\n' "$info" | sed -n 's/^Public key digest for block [0-9]*: //p' | tr -d ' '
+}
+
+# Issue #103: verify block @2 (0-based) of signed image @1 on its own with public key @3.
+# espsecure verify-signature passes when ANY block verifies with the key, so a block that carries
+# that key with a bad signature would hide behind a good one: the check runs on a copy of the
+# image whose signature sector holds only that block (the other slots erased, 0xFF).
+verify_block() {
+    local tmp rc=0
+    tmp="$(mktemp)"
+    python - "$1" "$2" "$tmp" <<'PYEOF' || { rm -f "$tmp"; return 1; }
+import sys
+img = open(sys.argv[1], "rb").read()
+i = int(sys.argv[2])
+if len(img) < 4096 or len(img) % 4096 or not 0 <= i < 3:
+    sys.exit(1)
+sector = img[-4096:]
+block = sector[i * 1216:(i + 1) * 1216]
+open(sys.argv[3], "wb").write(img[:-4096] + block + b"\xff" * (4096 - 1216))
+PYEOF
+    python -m espsecure verify-signature --version 2 --keyfile "$3" "$tmp" >/dev/null 2>&1 || rc=1
+    rm -f "$tmp"
+    return "$rc"
 }
 
 # Issue #103: the signed image @2 is the unsigned image @1 of the current build, padded with
@@ -175,12 +218,13 @@ PYEOF
 # test key); with @3 = verify, its RSA signature must verify with the --pub-key of that digest,
 # and the signed content must be the unsigned image @1 of this build.
 check_image() {
-    local n=0 bad=0 d k
+    local n=0 bad=0 d k i=0
     [ -f "$2" ] || { echo "MISSING: $2" >&2; return 1; }
     local digests
     digests="$(block_digests "$2")" || { echo "NO VALID SIGNATURE: $2" >&2; return 1; }
     while read -r d; do
         [ -n "$d" ] || continue
+        i=$n   # signature-info-v2 lists the valid blocks from block 0, without gaps
         n=$((n + 1))
         if is_test_digest "$d"; then
             echo "TEST KEY: $2 is signed with a throwaway test key ($d)" >&2; bad=1
@@ -189,8 +233,8 @@ check_image() {
         elif [ "${3:-}" = verify ]; then
             if ! k="$(pub_for "$d")"; then
                 echo "NO PUBLIC KEY: $2 has a block from key digest $d and no --pub-key has it" >&2; bad=1
-            elif ! python -m espsecure verify-signature --version 2 --keyfile "$k" "$2" >/dev/null 2>&1; then
-                echo "BAD SIGNATURE: $2 does not verify with $k" >&2; bad=1
+            elif ! verify_block "$2" "$i" "$k"; then
+                echo "BAD SIGNATURE: block $i of $2 (key digest $d) does not verify with $k" >&2; bad=1
             fi
         fi
     done <<<"$digests"
@@ -202,11 +246,41 @@ check_image() {
     [ "$bad" = 0 ] && echo "OK ($n signature block(s)${3:+, RSA verified, current build}): $2"
     return "$bad"
 }
+# Issue #103, the two images together (--check): the first boot burns the digest of every valid
+# block of the BOOTLOADER and revokes the unused digest slots, and from then on the bootloader
+# accepts an app only if one of its blocks is from a burned key. So the set of the bootloader's
+# block digests must be exactly the expected set (a reserve key missing there is lost for good),
+# and every app block must be from one of the bootloader's keys (otherwise the eFuses get burned
+# and the app is refused, with ROM download disabled).
+check_key_sets() {   # bootloader, app
+    local bl app want d bad=0
+    bl="$(block_digests "$1" | sort -u)" || return 1
+    app="$(block_digests "$2" | sort -u)" || return 1
+    want="$(printf '%s\n' "${WANT[@]}" | sort -u)"
+    if [ "$bl" != "$want" ]; then
+        echo "KEY SET: $1 is signed by key digest(s) [$(echo $bl)], the expected set is" \
+             "[$(echo $want)]: the first boot would burn only the bootloader's keys and revoke the" \
+             "other slots" >&2
+        bad=1
+    fi
+    while read -r d; do
+        [ -n "$d" ] || continue
+        if ! grep -qx "$d" <<<"$bl"; then
+            echo "KEY SET: $2 has a block from key digest $d that the bootloader does not carry:" \
+                 "after the first boot that key is not trusted" >&2
+            bad=1
+        fi
+    done <<<"$app"
+    return "$bad"
+}
 UNSIGNED=("$BUILD/bootloader/bootloader.bin" "$BUILD/rs485_spb_gateway.bin")
 check_outputs() {   # bootloader, app [verify]
     local ok=0
     check_image "${UNSIGNED[0]}" "$1" "${3:-}" || ok=1
     check_image "${UNSIGNED[1]}" "$2" "${3:-}" || ok=1
+    if [ "$ok" = 0 ] && [ "${3:-}" = verify ]; then
+        check_key_sets "$1" "$2" || ok=1
+    fi
     return "$ok"
 }
 
@@ -221,11 +295,13 @@ if [ "$CHECK" = 1 ]; then
     exit 1
 fi
 
-# True if images under the production names exist and do not form one consistent set: both
-# signed images and the digest file, every signature block from the key of that digest file and
-# none from a known test key.
+# True if images under the production names exist and are a leftover: not one consistent set
+# (both signed images and the digest file; the key of the digest file signs both images; every
+# app block is from a key that also signs the bootloader), or any block or the digest file from
+# a known test key. A valid set with reserve signatures (more blocks than the digest file names)
+# is kept.
 prod_leftover() {
-    local f any=0 want d digests
+    local f any=0 want d bl app
     for f in "${PROD_OUT[@]}"; do
         [ -e "$f" ] && any=1
     done
@@ -236,13 +312,16 @@ prod_leftover() {
     [ "$(wc -c <"${PROD_OUT[2]}")" -eq 32 ] || return 0
     want="$(hexdigest "${PROD_OUT[2]}")"
     is_test_digest "$want" && return 0
-    for f in "${PROD_OUT[0]}" "${PROD_OUT[1]}"; do
-        digests="$(block_digests "$f")" || return 0
-        [ -n "$digests" ] || return 0
-        while read -r d; do
-            [ "$d" = "$want" ] || return 0
-        done <<<"$digests"
-    done
+    bl="$(block_digests "${PROD_OUT[0]}")" || return 0
+    app="$(block_digests "${PROD_OUT[1]}")" || return 0
+    [ -n "$bl" ] && [ -n "$app" ] || return 0
+    while read -r d; do
+        is_test_digest "$d" && return 0
+    done <<<"$bl"$'\n'"$app"
+    grep -qx "$want" <<<"$bl" && grep -qx "$want" <<<"$app" || return 0
+    while read -r d; do
+        grep -qx "$d" <<<"$bl" || return 0
+    done <<<"$app"
     return 1
 }
 
@@ -250,7 +329,8 @@ if [ "$TEST" = 1 ]; then
     mkdir -p "$TESTDIR"
     KEY="$TESTDIR/test_signing_key.pem"
     [ -f "$KEY" ] || python -m espsecure generate-signing-key --version 2 --scheme rsa3072 "$KEY" >/dev/null
-    TEST_DIGESTS+=("$(key_digest "$KEY")")
+    d="$(key_digest "$KEY")" || { echo "$KEY: test key cannot be read" >&2; exit 1; }
+    TEST_DIGESTS+=("$d")
     OUT=("$TESTDIR/bootloader-TESTKEY-signed.bin" "$TESTDIR/rs485_spb_gateway-TESTKEY-signed.bin"
          "$TESTDIR/signing_key_digest-TESTKEY.bin")
     # Before issue #93 --test-key wrote the production names: drop such leftovers, also a run
@@ -272,7 +352,8 @@ else
     VERIFY_KEY="$KEY"
 fi
 if [ "$TEST" = 0 ]; then
-    vd="$(key_digest "$VERIFY_KEY")"
+    vd="$(key_digest "$VERIFY_KEY")" ||
+        { echo "$VERIFY_KEY: espsecure cannot read it as an RSA-3072 key" >&2; exit 1; }
     if is_test_digest "$vd"; then
         echo "$VERIFY_KEY is a throwaway test key: use --test-key for that (separate outputs)" >&2
         exit 1
