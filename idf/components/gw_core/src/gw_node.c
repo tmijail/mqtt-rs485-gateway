@@ -13,6 +13,9 @@ static const char *const k_di_names[GW_NODE_IO_COUNT] = {"DI/1", "DI/2", "DI/3",
                                                          "DI/5", "DI/6", "DI/7", "DI/8"};
 static const char *const k_do_names[GW_NODE_IO_COUNT] = {"DO/1", "DO/2", "DO/3", "DO/4",
                                                          "DO/5", "DO/6", "DO/7", "DO/8"};
+static const char *const k_count_names[GW_NODE_IO_COUNT] = {
+    "Counter/1", "Counter/2", "Counter/3", "Counter/4",
+    "Counter/5", "Counter/6", "Counter/7", "Counter/8"};
 #define NAME_BDSEQ    "bdSeq"
 #define NAME_REBIRTH  "Node Control/Rebirth"
 #define NAME_REBOOT   "Node Control/Reboot"
@@ -177,6 +180,12 @@ static bool publish_nbirth(gw_node_t *n)
         m->v.num = (io.dout >> k) & 1u;
         m->is_null = io.do_unknown;   /* the latch may hold anything: never claim "off" */
     }
+    for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
+        metric(n, i++, k_count_names[k], GW_ALIAS_COUNT_BASE + k, SPB_DT_UINT64,
+               io.di_ts_ms ? io.di_ts_ms : now)
+            ->v.u64 = io.count[k];
+    }
+    memcpy(n->count_reported, io.count, sizeof(n->count_reported));
     n->di_reported = io.di;
     n->do_reported = io.dout;
     n->do_unknown_reported = io.do_unknown;
@@ -336,6 +345,13 @@ static void publish_io(gw_node_t *n, uint8_t force_do)
             m->is_null = io.do_unknown;
         }
     }
+    for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {   /* IO-4: with the DI change that made it */
+        if (io.count[k] != n->count_reported[k]) {
+            metric(n, count++, NULL, GW_ALIAS_COUNT_BASE + k, SPB_DT_UINT64, io.di_ts_ms)->v.u64 =
+                io.count[k];
+        }
+    }
+    memcpy(n->count_reported, io.count, sizeof(n->count_reported));
     n->di_reported = io.di;
     n->do_reported = io.dout;
     n->do_unknown_reported = io.do_unknown;
@@ -354,7 +370,8 @@ static void store_io(gw_node_t *n)
     if (io.do_unknown != n->do_unknown_reported) {
         do_changed = 0xFF;
     }
-    if ((di_changed | do_changed) == 0) {
+    bool counts = memcmp(io.count, n->count_reported, sizeof(io.count)) != 0;
+    if ((di_changed | do_changed) == 0 && !counts) {
         return;
     }
     gw_sf_begin(n->sf);
@@ -370,9 +387,16 @@ static void store_io(gw_node_t *n)
                        io.do_unknown, io.do_ts_ms);
         }
     }
+    for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {   /* IO-4 pulse counters, UInt64 */
+        if (io.count[k] != n->count_reported[k]) {
+            gw_sf_push_u64(n->sf, GW_SF_NODE, (uint16_t)(GW_ALIAS_COUNT_BASE + k), io.count[k],
+                           false, io.di_ts_ms);
+        }
+    }
     n->di_reported = io.di;
     n->do_reported = io.dout;
     n->do_unknown_reported = io.do_unknown;
+    memcpy(n->count_reported, io.count, sizeof(n->count_reported));
 }
 
 void gw_node_io_changed(gw_node_t *n)
@@ -417,10 +441,12 @@ size_t gw_node_flush_history(gw_node_t *n, size_t max_msgs)
                 continue;
             }
             const gw_tag_cfg_t *t = node ? NULL : &n->cfg->tags[r->metric];
-            uint32_t dt = node ? SPB_DT_BOOLEAN : gw_conv_datatype(t);
+            bool counter = node && r->metric >= GW_ALIAS_COUNT_BASE &&
+                           r->metric < GW_ALIAS_COUNT_BASE + GW_NODE_IO_COUNT;
+            uint32_t dt = counter ? SPB_DT_UINT64 : node ? SPB_DT_BOOLEAN : gw_conv_datatype(t);
             spb_metric_t *m = metric(n, nm, NULL, node ? r->metric : GW_ALIAS_TAG_BASE + r->metric,
                                      dt, r->ts_ms);
-            switch (node ? GW_VK_DOUBLE : gw_conv_kind(t)) {
+            switch (counter ? GW_VK_UINT64 : node ? GW_VK_DOUBLE : gw_conv_kind(t)) {
             case GW_VK_INT64:
                 m->v.i64 = r->v.i64;
                 break;

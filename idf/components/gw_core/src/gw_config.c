@@ -819,21 +819,154 @@ static bool parse_rs485(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     return true;
 }
 
-static bool parse_local_io(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+/* IO-6: local_io.buzzer {"alarms": [...], "alarm_after_s": n} */
+static bool parse_buzzer(const cJSON *local_io, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"di_debounce_ms"};
-    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "local_io");
+    static const char *const keys[] = {"alarms", "alarm_after_s"};
+    static const char *const names[] = {"device_offline", "mqtt_down", "config_error"};
     static const cJSON empty = {.type = cJSON_Object};
-    long db;
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(local_io, "buzzer");
+    long after;
     if (o == NULL) {
         o = &empty;
     }
-    if (!check_keys(o, "local_io", keys, 1, err) ||
-        !get_int(o, "di_debounce_ms", "local_io", false, 20, 0, 1000, &db, err)) {
+    if (!check_keys(o, "local_io.buzzer", keys, 2, err) ||
+        !get_int(o, "alarm_after_s", "local_io.buzzer", false, 30, 0, GW_ALARM_AFTER_MAX_S, &after,
+                 err)) {
         return false;
     }
-    cfg->local_io.di_debounce_ms = (uint16_t)db;
+    cfg->local_io.buzzer.alarm_after_s = (uint16_t)after;
+    const cJSON *list = cJSON_GetObjectItemCaseSensitive(o, "alarms");
+    if (list == NULL) {
+        return true;
+    }
+    if (!cJSON_IsArray(list)) {
+        return fail(err, "local_io.buzzer.alarms", "se esperaba un array");
+    }
+    int i = 0;
+    for (const cJSON *it = list->child; it != NULL; it = it->next, i++) {
+        char p[40];
+        snprintf(p, sizeof(p), "local_io.buzzer.alarms[%d]", i);
+        int a = -1;
+        for (int k = 0; cJSON_IsString(it) && k < 3; k++) {
+            if (strcmp(it->valuestring, names[k]) == 0) {
+                a = k + 1;   /* gw_alarm_t */
+            }
+        }
+        if (a < 0) {
+            return fail(err, p, "valor no válido (se esperaba device_offline|mqtt_down|config_error)");
+        }
+        if (cfg->local_io.buzzer.alarms & GW_ALARM_BIT(a)) {
+            return fail(err, p, "alarma repetida");
+        }
+        cfg->local_io.buzzer.alarms |= (uint8_t)GW_ALARM_BIT(a);
+    }
     return true;
+}
+
+/* IO-7: local_io.rules [{"di": 1-8, "do": 1-8, "mode": "follow|invert|toggle"}], one per DO.
+ * Called once do_failsafe is parsed: a rule's DO cannot have the safe state "on". */
+static bool parse_rules(const cJSON *local_io, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"di", "do", "mode"};
+    static const char *const modes[] = {"follow", "invert", "toggle"};   /* gw_rule_mode_t */
+    const cJSON *list = cJSON_GetObjectItemCaseSensitive(local_io, "rules");
+    if (list == NULL) {
+        return true;
+    }
+    if (!cJSON_IsArray(list)) {
+        return fail(err, "local_io.rules", "se esperaba un array");
+    }
+    int n = cJSON_GetArraySize(list);
+    if (n > GW_LOCAL_IO_CHANNELS) {
+        return fail(err, "local_io.rules", "%d reglas; el máximo es %d (una por DO)", n,
+                    GW_LOCAL_IO_CHANNELS);
+    }
+    int i = 0;
+    for (const cJSON *it = list->child; it != NULL; it = it->next, i++) {
+        char p[40];
+        snprintf(p, sizeof(p), "local_io.rules[%d]", i);
+        long di, dout;
+        int mode;
+        if (!check_keys(it, p, keys, 3, err) ||
+            !get_int(it, "di", p, true, 0, 1, GW_LOCAL_IO_CHANNELS, &di, err) ||
+            !get_int(it, "do", p, true, 0, 1, GW_LOCAL_IO_CHANNELS, &dout, err) ||
+            !get_enum(it, "mode", p, false, GW_RULE_FOLLOW, modes, 3, &mode, err)) {
+            return false;
+        }
+        for (int k = 0; k < i; k++) {
+            if (cfg->local_io.rules[k].dout == dout - 1) {
+                char q[48];
+                snprintf(q, sizeof(q), "%s.do", p);
+                return fail(err, q, "la DO/%ld ya la maneja local_io.rules[%d]", dout, k);
+            }
+        }
+        if (cfg->local_io.do_failsafe[dout - 1] == GW_DO_SAFE_ON) {
+            char q[48];
+            snprintf(q, sizeof(q), "local_io.do_failsafe[%ld]", dout - 1);
+            return fail(err, q, "la DO/%ld la maneja local_io.rules[%d]: el estado seguro no se "
+                                "le aplica (use off u hold)", dout, i);
+        }
+        cfg->local_io.rules[i].di = (uint8_t)(di - 1);
+        cfg->local_io.rules[i].dout = (uint8_t)(dout - 1);
+        cfg->local_io.rules[i].mode = (uint8_t)mode;
+    }
+    cfg->local_io.rule_count = (uint8_t)n;
+    return true;
+}
+
+static bool parse_local_io(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"di_debounce_ms", "failsafe_s", "do_failsafe",
+                                       "counter_save_s", "buzzer", "rules"};
+    static const char *const safe_names[] = {"off", "on", "hold"};   /* gw_do_safe_t order */
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "local_io");
+    static const cJSON empty = {.type = cJSON_Object};
+    long db, fs, save;
+    if (o == NULL) {
+        o = &empty;
+    }
+    if (!check_keys(o, "local_io", keys, sizeof(keys) / sizeof(keys[0]), err) ||
+        !get_int(o, "di_debounce_ms", "local_io", false, 20, 0, 1000, &db, err) ||
+        !get_int(o, "failsafe_s", "local_io", false, 0, 0, GW_FAILSAFE_MAX_S, &fs, err) ||
+        !get_int(o, "counter_save_s", "local_io", false, 600, 0, GW_COUNTER_SAVE_MAX_S, &save,
+                 err)) {
+        return false;
+    }
+    if (save != 0 && save < GW_COUNTER_SAVE_MIN_S) {
+        return fail(err, "local_io.counter_save_s",
+                    "valor %ld: 0 (no guardar) o al menos %d s (desgaste de la flash)", save,
+                    GW_COUNTER_SAVE_MIN_S);
+    }
+    cfg->local_io.di_debounce_ms = (uint16_t)db;
+    cfg->local_io.failsafe_s = (uint32_t)fs;
+    cfg->local_io.counter_save_s = (uint32_t)save;
+    /* IO-3: one safe state per DO, in order (DO/1 first); missing entries are "off" */
+    const cJSON *list = cJSON_GetObjectItemCaseSensitive(o, "do_failsafe");
+    if (list != NULL && !cJSON_IsArray(list)) {
+        return fail(err, "local_io.do_failsafe", "se esperaba un array (DO/1 primero)");
+    }
+    int n = list != NULL ? cJSON_GetArraySize(list) : 0;
+    if (n > GW_LOCAL_IO_CHANNELS) {
+        return fail(err, "local_io.do_failsafe", "%d entradas; hay %d salidas", n,
+                    GW_LOCAL_IO_CHANNELS);
+    }
+    int i = 0;
+    for (const cJSON *it = list != NULL ? list->child : NULL; it != NULL; it = it->next, i++) {
+        char p[40];
+        snprintf(p, sizeof(p), "local_io.do_failsafe[%d]", i);
+        int mode = -1;
+        for (int k = 0; cJSON_IsString(it) && k < 3; k++) {
+            if (strcmp(it->valuestring, safe_names[k]) == 0) {
+                mode = k;
+            }
+        }
+        if (mode < 0) {
+            return fail(err, p, "valor no válido (se esperaba off|on|hold)");
+        }
+        cfg->local_io.do_failsafe[i] = (uint8_t)mode;
+    }
+    return parse_buzzer(o, cfg, err) && parse_rules(o, cfg, err);
 }
 
 static bool parse_syslog(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)

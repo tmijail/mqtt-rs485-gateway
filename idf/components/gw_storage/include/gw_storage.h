@@ -10,6 +10,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -105,6 +106,17 @@ void gw_storage_recovery_config(gw_config_t *cfg);
  * gw_storage_free(). The partition must have been mounted by gw_storage_load_config().
  */
 char *gw_storage_read_file(const char *name, size_t *len, char *why, size_t why_cap);
+
+/**
+ * Small state of the local I/O kept in NVS (IO-3 outputs to hold across a restart, IO-4 pulse
+ * counters, ...): blob @p key of @p len bytes. Written only when it changed (flash wear).
+ * Refused (ESP_ERR_INVALID_STATE) after gw_storage_factory_reset(), so nothing of the old
+ * device survives the reset through a late write (for example at the restart).
+ */
+esp_err_t gw_storage_set_blob(const char *key, const void *data, size_t len);
+
+/** Read blob @p key of exactly @p len bytes into @p out; false (out untouched) if absent. */
+bool gw_storage_get_blob(const char *key, void *out, size_t len);
 
 /**
  * Zeroed allocation for a large structure that lives for the whole run (configuration,

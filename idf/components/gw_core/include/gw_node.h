@@ -11,14 +11,16 @@
  *   1 bdSeq, 2 Node Control/Rebirth, 3 Node Control/Reboot,
  *   4 Node Info/Firmware, 5 Node Info/Hardware, 6 Node Info/Reset Reason,
  *   7 Node Control/Scan Rate,
- *   10..17 DI/1..DI/8, 20..27 DO/1..DO/8, 100 + n device tag with global index n.
+ *   10..17 DI/1..DI/8, 20..27 DO/1..DO/8, 30..37 Counter/1..Counter/8 (IO-4, UInt64 pulse
+ *   counters of the DIs), 100 + n device tag with global index n.
  *
  * Store & forward (SPB-14, optional): with a gw_sf_t attached, changes that happen while the
  * node is not online (no session, or the primary host offline) are evaluated with the same
  * report-by-exception rules and stored (from the first NBIRTH of the run on: before it there
- * is no reported state to compare with, and the clock may not be set); once online, after NBIRTH and the DBIRTHs (which carry
- * the current values), gw_node_flush_history() publishes them, oldest first, as DDATA/NDATA
- * whose metrics have is_historical = true and the time they were sampled.
+ * is no reported state to compare with, and the clock may not be set); once online, after
+ * NBIRTH and the DBIRTHs (which carry the current values), gw_node_flush_history() publishes
+ * them, oldest first, as DDATA/NDATA whose metrics have is_historical = true and the time
+ * they were sampled.
  */
 #pragma once
 
@@ -50,10 +52,11 @@ extern "C" {
 #define GW_SCAN_RATE_MAX_MS 3600000u
 #define GW_ALIAS_DI_BASE   10u
 #define GW_ALIAS_DO_BASE   20u
+#define GW_ALIAS_COUNT_BASE 30u
 #define GW_ALIAS_TAG_BASE  100u
 
 #define GW_NODE_IO_COUNT        8
-#define GW_NODE_BIRTH_METRICS   (7 + 2 * GW_NODE_IO_COUNT)
+#define GW_NODE_BIRTH_METRICS   (7 + 3 * GW_NODE_IO_COUNT)
 #define GW_SPB_PAYLOAD_MAX      6144   /* > worst-case DBIRTH: 64 tags with 39-char names */
 #define GW_TOPIC_MAX            160
 #define GW_NODE_HIST_RECS       (2 * GW_MAX_TAGS_PER_DEVICE)   /* records per historical message */
@@ -96,6 +99,7 @@ typedef struct {
     gw_rbe_t tag_rbe[GW_MAX_TAGS];
     uint8_t di_reported;
     uint8_t do_reported;
+    uint64_t count_reported[GW_NODE_IO_COUNT];   /* IO-4 */
     uint32_t scan_rate_ms;             /* SPB-15: current override, 0 = per-device poll_ms */
     bool do_unknown_reported;          /* DOs last published as null (expander not answering) */
 

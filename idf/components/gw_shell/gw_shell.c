@@ -1,6 +1,7 @@
 #include "gw_shell.h"
 
 #include <ctype.h>
+#include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -294,8 +295,14 @@ static int cmd_status(int argc, char **argv)
     if (io.do_unknown) {
         out("local    DI 0x%02x, DO unknown: output expander not answering (retrying)\n", io.di);
     } else {
-        out("local    DI 0x%02x, DO 0x%02x (bit n = channel n+1, 1 = active)\n", io.di, io.dout);
+        out("local    DI 0x%02x, DO 0x%02x (bit n = channel n+1, 1 = active)%s\n", io.di, io.dout,
+            io.failsafe ? ", failsafe: safe state applied (no Sparkplug session)" : "");
     }
+    out("counters");   /* IO-4: activations of each DI */
+    for (int i = 0; i < 8; i++) {
+        out(" %d:%" PRIu64, i + 1, io.count[i]);
+    }
+    out("\n");
     /* Core of each task that matters for timing ("-" = no affinity; tasks not running, such as
      * the Ethernet RX task of the other MAC, are omitted). */
     static const char *const tasks[] = {"rs485_bus", "sparkplug", "tcpip", "mqtt_task",
@@ -557,7 +564,41 @@ static int cmd_config(int argc, char **argv)
            "inter-frame %u ms\n",
            (unsigned long)c->rs485.baud, parity[c->rs485.parity], c->rs485.stop_bits,
            c->rs485.response_timeout_ms, c->rs485.retries, c->rs485.inter_frame_delay_ms);
-    out("local_io   DI debounce %u ms\n", c->local_io.di_debounce_ms);
+    out("local_io   DI debounce %u ms", c->local_io.di_debounce_ms);
+    /* IO-3: one letter per DO, DO/1 first: o = off, 1 = on, h = hold */
+    char modes[GW_LOCAL_IO_CHANNELS + 1];
+    for (int i = 0; i < GW_LOCAL_IO_CHANNELS; i++) {
+        modes[i] = "o1h"[c->local_io.do_failsafe[i] % 3];
+    }
+    modes[GW_LOCAL_IO_CHANNELS] = '\0';
+    if (c->local_io.failsafe_s != 0) {
+        out(", DO safe state %s (o off, 1 on, h hold) at restart and after %lu s without "
+            "MQTT\n", modes, (unsigned long)c->local_io.failsafe_s);
+    } else {
+        out(", DO safe state %s (o off, 1 on, h hold) at restart; no MQTT failsafe\n", modes);
+    }
+    static const char *const rule_modes[] = {"follow", "invert", "toggle"};
+    for (uint8_t i = 0; i < c->local_io.rule_count; i++) {   /* IO-7 */
+        out("           rule %u: DO/%u %s DI/%u (local, NCMD refused)\n", i,
+            c->local_io.rules[i].dout + 1u, rule_modes[c->local_io.rules[i].mode % 3],
+            c->local_io.rules[i].di + 1u);
+    }
+    if (c->local_io.buzzer.alarms != 0) {
+        uint8_t a = c->local_io.buzzer.alarms;
+        out("           buzzer alarms:%s%s%s (after %u s)\n",
+            a & GW_ALARM_BIT(GW_ALARM_CONFIG_ERROR) ? " config_error" : "",
+            a & GW_ALARM_BIT(GW_ALARM_MQTT_DOWN) ? " mqtt_down" : "",
+            a & GW_ALARM_BIT(GW_ALARM_DEVICE_OFFLINE) ? " device_offline" : "",
+            c->local_io.buzzer.alarm_after_s);
+    } else {
+        out("           buzzer alarms: none\n");
+    }
+    if (c->local_io.counter_save_s != 0) {
+        out("           DI pulse counters saved every %lu s\n",
+            (unsigned long)c->local_io.counter_save_s);
+    } else {
+        out("           DI pulse counters not saved (lost at every restart)\n");
+    }
     out("devices    %u device(s), %u tag(s)\n", c->device_count, c->tag_count);
     for (uint16_t d = 0; d < c->device_count; d++) {
         const gw_device_cfg_t *dev = &c->devices[d];

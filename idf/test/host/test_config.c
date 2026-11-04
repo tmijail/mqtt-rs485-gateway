@@ -781,6 +781,101 @@ static void test_modbus_tcp_section(void)
     ASSERT_REJECTED(parse(doc), "modbus_tcp.enable: clave desconocida");
 }
 
+/* IO-3 (and the other optional local_io keys): defaults keep the MVP behaviour. */
+static void test_local_io_section(void)
+{
+    const char *base = "\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}";
+    char doc[768];
+    snprintf(doc, sizeof(doc), "{%s}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL(0, cfg.local_io.failsafe_s);        /* no reaction to an MQTT loss */
+    TEST_ASSERT_EQUAL(600, cfg.local_io.counter_save_s);  /* IO-4 */
+    for (int i = 0; i < GW_LOCAL_IO_CHANNELS; i++) {
+        TEST_ASSERT_EQUAL(GW_DO_SAFE_OFF, cfg.local_io.do_failsafe[i]);
+    }
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"di_debounce_ms\":10,\"failsafe_s\":30,"
+             "\"do_failsafe\":[\"hold\",\"on\",\"off\",\"hold\"]}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL(30, cfg.local_io.failsafe_s);
+    TEST_ASSERT_EQUAL(GW_DO_SAFE_HOLD, cfg.local_io.do_failsafe[0]);
+    TEST_ASSERT_EQUAL(GW_DO_SAFE_ON, cfg.local_io.do_failsafe[1]);
+    TEST_ASSERT_EQUAL(GW_DO_SAFE_OFF, cfg.local_io.do_failsafe[2]);
+    TEST_ASSERT_EQUAL(GW_DO_SAFE_HOLD, cfg.local_io.do_failsafe[3]);
+    TEST_ASSERT_EQUAL(GW_DO_SAFE_OFF, cfg.local_io.do_failsafe[4]);   /* missing: off */
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"failsafe_s\":86401}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.failsafe_s: valor 86401 fuera de rango [0, 86400]");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"do_failsafe\":[\"off\",\"keep\"]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe[1]: valor no válido (se esperaba off|on|hold)");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"do_failsafe\":[true]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe[0]: valor no válido");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"do_failsafe\":\"off\"}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe: se esperaba un array");
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"do_failsafe\":[\"off\",\"off\",\"off\",\"off\",\"off\","
+             "\"off\",\"off\",\"off\",\"off\"]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe: 9 entradas; hay 8 salidas");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"counter_save_s\":0}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL(0, cfg.local_io.counter_save_s);
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"counter_save_s\":59}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.counter_save_s: valor 59: 0 (no guardar) o al menos 60 s");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"counter_save_s\":86401}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.counter_save_s: valor 86401 fuera de rango");
+    /* IO-6 */
+    snprintf(doc, sizeof(doc), "{%s}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL(0, cfg.local_io.buzzer.alarms);              /* silent */
+    TEST_ASSERT_EQUAL(30, cfg.local_io.buzzer.alarm_after_s);
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"buzzer\":{\"alarms\":[\"mqtt_down\",\"config_error\"],"
+             "\"alarm_after_s\":5}}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_HEX8(GW_ALARM_BIT(GW_ALARM_MQTT_DOWN) | GW_ALARM_BIT(GW_ALARM_CONFIG_ERROR),
+                           cfg.local_io.buzzer.alarms);
+    TEST_ASSERT_EQUAL(5, cfg.local_io.buzzer.alarm_after_s);
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"buzzer\":{\"alarms\":[\"fire\"]}}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.buzzer.alarms[0]: valor no válido");
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"buzzer\":{\"alarms\":[\"mqtt_down\",\"mqtt_down\"]}}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.buzzer.alarms[1]: alarma repetida");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"buzzer\":{\"alarm_after_s\":3601}}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.buzzer.alarm_after_s: valor 3601 fuera de rango");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"buzzer\":{\"volume\":1}}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.buzzer.volume: clave desconocida");
+    /* IO-7 */
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"do_failsafe\":[\"hold\"],\"rules\":[{\"di\":2,\"do\":1},"
+             "{\"di\":2,\"do\":8,\"mode\":\"invert\"},{\"di\":3,\"do\":4,\"mode\":\"toggle\"}]}}",
+             base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL(3, cfg.local_io.rule_count);
+    TEST_ASSERT_EQUAL(1, cfg.local_io.rules[0].di);
+    TEST_ASSERT_EQUAL(0, cfg.local_io.rules[0].dout);
+    TEST_ASSERT_EQUAL(GW_RULE_FOLLOW, cfg.local_io.rules[0].mode);
+    TEST_ASSERT_EQUAL(7, cfg.local_io.rules[1].dout);
+    TEST_ASSERT_EQUAL(GW_RULE_INVERT, cfg.local_io.rules[1].mode);
+    TEST_ASSERT_EQUAL(GW_RULE_TOGGLE, cfg.local_io.rules[2].mode);
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"rules\":[{\"di\":1,\"do\":3},{\"di\":2,\"do\":3}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.rules[1].do: la DO/3 ya la maneja local_io.rules[0]");
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"do_failsafe\":[\"off\",\"on\"],\"rules\":[{\"di\":1,\"do\":2}]}}",
+             base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe[1]: la DO/2 la maneja local_io.rules[0]");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"rules\":[{\"di\":9,\"do\":1}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.rules[0].di: valor 9 fuera de rango [1, 8]");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"rules\":[{\"di\":1}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.rules[0].do: campo obligatorio ausente");
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"rules\":[{\"di\":1,\"do\":1,\"mode\":\"latch\"}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.rules[0].mode: valor no válido (se esperaba follow|invert|toggle)");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"rules\":[{\"di\":1,\"do\":1,\"when\":1}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.rules[0].when: clave desconocida");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"rules\":{}}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.rules: se esperaba un array");
+}
+
 static void test_section_errors(void)
 {
     ASSERT_REJECTED(parse("{\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}}"), "mqtt:");
@@ -990,6 +1085,7 @@ int main(void)
     RUN_TEST(test_device_block_reads);
     RUN_TEST(test_scan_classes);
     RUN_TEST(test_modbus_tcp_section);
+    RUN_TEST(test_local_io_section);
     RUN_TEST(test_section_errors);
     RUN_TEST(test_limits);
     RUN_TEST(test_syntax_errors_give_line_and_column);

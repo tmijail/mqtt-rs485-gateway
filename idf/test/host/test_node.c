@@ -261,6 +261,49 @@ static void test_ncmd_do_and_reboot(void)
     TEST_ASSERT_EQUAL_DOUBLE(9, dec.m[0].num);
 }
 
+/* IO-4: each DI activation counts one pulse; the counters are UInt64 metrics in NBIRTH and
+ * go in the same NDATA as the DI change that made them. */
+static void test_pulse_counters(void)
+{
+    const uint64_t restored[8] = {0, 5, 0, 0, 0, 0, 0, (1ull << 53) + 1};
+    gw_tagdb_set_counters(restored);
+    gw_tagdb_set_di(0x01, 100);                 /* start-up state: not a pulse */
+    gw_node_session_up(&node, 0);
+    msg(0);
+    int i = decoded_find_name(&dec, "Counter/2");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_COUNT_BASE + 1, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_UINT64(5, dec.m[i].u64);
+    i = decoded_find_name(&dec, "Counter/1");
+    TEST_ASSERT_EQUAL_UINT64(0, dec.m[i].u64);
+    i = decoded_find_name(&dec, "Counter/8");
+    TEST_ASSERT_EQUAL_UINT64((1ull << 53) + 1, dec.m[i].u64);   /* exact */
+
+    recorder_clear();
+    gw_tagdb_update_di(0x03, 200);              /* DI/2 activated */
+    gw_node_io_changed(&node);
+    msg(0);
+    TEST_ASSERT_EQUAL(2, dec.count);           /* DI/2 and Counter/2 */
+    i = decoded_find_alias(&dec, GW_ALIAS_COUNT_BASE + 1);
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL_UINT64(6, dec.m[i].u64);
+    TEST_ASSERT_EQUAL_UINT64(200, dec.m[i].timestamp);
+    TEST_ASSERT_FALSE(dec.m[i].has_name);
+
+    recorder_clear();
+    gw_tagdb_update_di(0x00, 300);              /* releases do not count */
+    gw_node_io_changed(&node);
+    msg(0);
+    TEST_ASSERT_EQUAL(2, dec.count);           /* DI/1 and DI/2 only */
+    TEST_ASSERT_EQUAL(-1, decoded_find_alias(&dec, GW_ALIAS_COUNT_BASE));
+    gw_tagdb_update_di(0x81, 400);
+    gw_local_io_t io;
+    gw_tagdb_get_io(&io);
+    TEST_ASSERT_EQUAL_UINT64(1, io.count[0]);
+    TEST_ASSERT_EQUAL_UINT64((1ull << 53) + 2, io.count[7]);
+}
+
 static void test_dcmd_writes(void)
 {
     set_meter(true, 1, 2, 0);
@@ -787,6 +830,31 @@ static void test_session_up_needs_the_nbirth(void)
     TEST_ASSERT_EQUAL_UINT64(0, dec.seq);
 }
 
+/* SPB-14 with IO-4: pulse counters changed while offline come back as historical UInt64. */
+static void test_store_and_forward_counters(void)
+{
+    static gw_sf_rec_t storage[16];
+    gw_sf_t sf;
+    gw_sf_init(&sf, storage, 16);
+    gw_node_set_store(&node, &sf);
+    gw_node_session_up(&node, 1);
+    gw_node_session_down(&node);
+    uint64_t c[8] = {0};
+    c[2] = 0x100000000ull + 5;   /* above 32 bits: exact */
+    gw_tagdb_set_counters(c);
+    gw_node_io_changed(&node);
+    TEST_ASSERT_EQUAL_size_t(1, gw_sf_count(&sf));
+    recorder_clear();
+    gw_node_session_up(&node, 2);
+    gw_node_flush_history(&node, 4);
+    const rec_msg_t *m = msg(g_rec.count - 1);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", m->topic);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_COUNT_BASE + 2, dec.m[0].alias);
+    TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[0].datatype);
+    TEST_ASSERT_EQUAL_UINT64(0x100000000ull + 5, dec.m[0].u64);
+    TEST_ASSERT_TRUE(dec.m[0].is_historical);
+}
+
 /* Issue #73: a DBIRTH that is not published (larger than the broker accepts) leaves its device
  * unborn: no DDATA for it; the next change of the device tries the DBIRTH again. */
 static void test_dbirth_not_published_leaves_the_device_unborn(void)
@@ -872,6 +940,7 @@ int main(void)
     RUN_TEST(test_seq_wraps_and_is_shared);
     RUN_TEST(test_ncmd_rebirth);
     RUN_TEST(test_ncmd_do_and_reboot);
+    RUN_TEST(test_pulse_counters);
     RUN_TEST(test_dcmd_writes);
     RUN_TEST(test_dcmd_rejected_whole_when_queue_lacks_room);
     RUN_TEST(test_scan_rate);
@@ -887,5 +956,6 @@ int main(void)
     RUN_TEST(test_store_and_forward_mb6);
     RUN_TEST(test_session_up_needs_the_nbirth);
     RUN_TEST(test_dbirth_not_published_leaves_the_device_unborn);
+    RUN_TEST(test_store_and_forward_counters);
     return UNITY_END();
 }

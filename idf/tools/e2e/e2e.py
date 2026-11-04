@@ -69,7 +69,7 @@ SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
 PROBE_MAX_S = 10.0                # CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS / 1000, read in main()
 GROUP, NODE, DEVICE, BULK = "Plant1", "GW01", "Meter1", "Bulk"
 T = f"spBv1.0/{GROUP}"
-ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/1": 20, "DO/3": 22, "Voltage": 100, "Setpoint": 101, "Run": 102,
+ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/1": 20, "DO/2": 21, "DO/3": 22, "DO/4": 23, "DO/5": 24, "DO/6": 25, "Counter/1": 30, "Voltage": 100, "Setpoint": 101, "Run": 102,
          "Limit": 103, "Energy": 104, "Counter": 105, "Flow": 106, "Temp": 107, "Serial": 108,
          "Alarm": 109, "Ready": 110, "Bulk0": 111}
 # MB-6 values served by unit 1, and the registers that hold them (see ModbusSlave.set_mb6)
@@ -469,6 +469,30 @@ def metric(p, alias=None, name=None):
 
 def bdseq_of(p):
     return metric(p, name="bdSeq").long_value
+
+
+def do_states(p):
+    """{n: bool} of the DO/n metrics of an NBIRTH (by name) or NDATA (by alias)."""
+    out = {}
+    for n in range(1, 9):
+        m = metric(p, name=f"DO/{n}") or metric(p, alias=20 + n - 1)
+        if m is not None and not m.is_null:
+            out[n] = m.boolean_value
+    return out
+
+
+def counter_of(p, n=1):
+    """Value of Counter/n (IO-4, UInt64) in an NBIRTH (by name) or NDATA (by alias), or None."""
+    m = metric(p, name=f"Counter/{n}") or metric(p, alias=30 + n - 1)
+    return m.long_value if m is not None and m.datatype == 8 else None
+
+
+def set_do(obs, ncmd_t, ndata_t, states):
+    """NCMD DO/n = v for every {n: v}; the NDATA that confirms them (or None)."""
+    obs.drain()
+    obs.publish_cmd(ncmd_t, [{"name": f"DO/{n}", "datatype": 11, "boolean_value": v}
+                             for n, v in states.items()])
+    return obs.wait(ndata_t, 3, lambda q: all(do_states(q).get(n) == v for n, v in states.items()))
 
 
 # ---------------------------------------------------------------- QEMU
@@ -2134,6 +2158,11 @@ def run_factory_reset(args, work):
     death = obs.wait(f"{T}/NDEATH/{node}", 10)
     commissioning = gw.wait_log(r"main: commissioning: no configuration since the factory reset", 30,
                                 pressed)
+    beep1 = gw.find(r"buzzer: 1 beep\(s\) \(simulated\)", t_short)
+    beep2 = gw.find(r"buzzer: 2 beep\(s\) \(simulated\)", pressed)
+    check("IO-6 / CFG-5 buzzer: 1 beep for the access point gesture, 2 beeps confirm the factory "
+          "reset (patterns logged by the QEMU build)", beep1 and beep2,
+          " | ".join(gw.find(r"buzzer: \d beep", t_short)) or "no beep logged")
     check("CFG-5 BOOT held 10 s -> factory reset (LED and log at 2 s, at 10 s), orderly NDEATH, "
           "restart into commissioning; a 3 s press is the access point gesture, not a reset",
           nb and ap and warn and fired and death and commissioning
@@ -2212,6 +2241,7 @@ def run(args, log, slave, broker, conf, work):
                  f"{nb[0] - t0:.1f} s after QEMU start (REL-6 asks < 10 s)"):
         return
     p = nb[2]
+    nb0 = [nb]
     b0 = bdseq_of(p)
     reason0 = metric(p, name="Node Info/Reset Reason")
     check("1b. NBIRTH seq=0, bdSeq metric, timestamp", p.seq == 0 and p.timestamp > 0,
@@ -2342,6 +2372,11 @@ def run(args, log, slave, broker, conf, work):
     check("3a. DI change visible in NDATA < 100 ms", nd and lat < 100 and
           metric(nd[2], alias=ALIAS["DI/1"]).boolean_value,
           f"{lat:.0f} ms console->NDATA (includes 20 ms debounce and emulator latency)" if nd else "no NDATA")
+    births = [counter_of(nb0[0][2], n) for n in range(1, 9)] if nb0 else []
+    check("IO-4 pulse counters: NBIRTH carries Counter/1..8 (UInt64, 0 on a fresh device); the DI "
+          "activation counts one pulse, in the same NDATA as the DI change",
+          births == [0] * 8 and nd and counter_of(nd[2]) == 1,
+          f"NBIRTH counters {births}; NDATA {[(m.alias, m.long_value if m.datatype == 8 else m.boolean_value) for m in nd[2].metrics] if nd else None}")
     obs.drain()
     obs.publish_cmd(ncmd_t, [{"name": "DO/3", "datatype": 11, "boolean_value": True}])
     nd = obs.wait(ndata_t, 3, lambda q: metric(q, alias=ALIAS["DO/3"]) is not None)
@@ -2457,6 +2492,50 @@ def run(args, log, slave, broker, conf, work):
         return nb and nb[2].seq == 0 and sorted(m[2].seq for m in dbs.values()) == [1, 2] \
             and all(m[0] >= nb[0] for m in dbs.values())
 
+    # IO-3 safe state at a restart: DO/2 "on", DO/1 and DO/3 "off", DO/4 "hold" (power-up: off)
+    boot_dos = do_states(nb0[0][2]) if nb0 else {}
+    check("IO-3 restart state per output: do_failsafe 'on' outputs on once the configuration is "
+          "valid, 'off' and (after a power-up) 'hold' outputs off",
+          boot_dos.get(2) is True and not any(boot_dos.get(n) for n in (1, 3, 4, 5, 6, 7, 8)),
+          f"NBIRTH DO states {boot_dos}; {(gw.find(r'io: DO at restart', t0) or ['no log'])[0]}")
+    # IO-7 local rules: DO/5 follows DI/2, DO/6 toggles on every activation of DI/3
+    obs.drain()
+    sent = time.monotonic()
+    gw.console("di 2 1")
+    nd = obs.wait(ndata_t, 3, lambda q: do_states(q).get(5) is True)
+    lat = (nd[0] - sent) * 1000 if nd else None
+    since = time.monotonic()
+    refused = set_do(obs, ncmd_t, ndata_t, {5: False}) is None
+    confirm = [do_states(m[2])[5] for m in CAPTURE if m[0] >= since and m[1] == ndata_t
+               and 5 in do_states(m[2])]
+    log5 = gw.wait_log(r"io: DO5 is driven by local rule 0 \(follow DI2\): NCMD refused", 2, since)
+    check("IO-7 rule 'follow': DI/2 active -> DO/5 on (NDATA), with no command; NCMD on DO/5 "
+          "refused (the rule owns it) and the NDATA confirms the real state",
+          nd and refused and log5 and confirm == [True],
+          f"{lat:.0f} ms console->NDATA with DO/5 on; NCMD DO/5=false refused: {bool(log5)}"
+          if nd else "no NDATA with DO/5")
+    toggles = []
+    for _ in range(2):
+        obs.drain()
+        gw.console("di 3 1")
+        nd = obs.wait(ndata_t, 3, lambda q: 6 in do_states(q))
+        toggles.append(do_states(nd[2])[6] if nd else None)
+        gw.console("di 3 0")
+        time.sleep(0.3)
+    check("IO-7 rule 'toggle': each activation of DI/3 toggles DO/6", toggles == [True, False],
+          f"DO/6 after each activation: {toggles}")
+
+    # IO-6: Dead3..Dead5 never answer: the "device offline" alarm sounds alarm_after_s (5 s)
+    # after the boot (the QEMU build logs the patterns instead of driving GPIO46)
+    dev_alarm = gw.find(r"buzzer: alarm 'device offline': 1 beep\(s\) every 10 s", t0)
+    check("IO-6 buzzer alarm 'device offline' (enabled in local_io.buzzer.alarms) after "
+          "alarm_after_s with a Modbus device offline: 1 beep every 10 s",
+          dev_alarm and gw.find(r"buzzer: alarms: configuration error MQTT down device offline "
+                                r"\(MQTT down / device offline after 5 s\)", t0),
+          (dev_alarm or gw.find(r"buzzer: ", t0) or ["no buzzer log"])[0])
+    # Before the outage: DO/2 off, DO/3 on (3b) and DO/4 on by NCMD
+    pre = set_do(obs, ncmd_t, ndata_t, {2: False, 3: True, 4: True})
+
     # MQTT-2 broker restart: the broker publishes the session's will (NDEATH) while shutting
     # down; the gateway retries with exponential backoff and a new bdSeq per attempt, and the
     # new session starts with NBIRTH and every DBIRTH.
@@ -2465,7 +2544,12 @@ def run(args, log, slave, broker, conf, work):
     broker.terminate()
     broker.wait()
     will = obs.wait(ndeath_t, 2)
-    time.sleep(9)
+    time.sleep(6.5)
+    # IO-7 without the network (and after the failsafe tripped): DI/3 toggles DO/6 on
+    gw.console("di 3 1")
+    time.sleep(0.5)
+    gw.console("di 3 0")
+    time.sleep(2)
     delays = [int(x) for x in re.findall(r"in (\d+) ms", " ".join(gw.find(r"reconnect attempt", since)))]
     attempts = gw.find(r"connecting to .* bdSeq=", since)
     obs.close()
@@ -2484,6 +2568,32 @@ def run(args, log, slave, broker, conf, work):
     check("SPB-3 bdSeq incremented on every connection attempt",
           nb and b1 == (b0 + len(attempts) + 1) % 256,
           f"first session bdSeq={b0}, attempts while down={len(attempts)}, new NBIRTH bdSeq={b1}")
+    # IO-3: 9 s without a session > failsafe_s (5 s): DO/2 on, DO/1 and DO/3 off, DO/4 holds
+    lost = gw.wait_log(r"edge: MQTT down; reconnect attempt 1 in", 0, since)
+    # DO/1, DO/3, DO/7 and DO/8 (absent from do_failsafe) are "off", DO/2 "on", DO/4 "hold";
+    # DO/5 and DO/6 belong to the rules (IO-7): the failsafe leaves them alone
+    trip = gw.wait_log(r"io: failsafe: no Sparkplug session for 5 s: DO on 0x02, off 0xc5, the rest "
+                       r"hold", 0, since)
+    dos = do_states(nb[2]) if nb else {}
+    clear = gw.wait_log(r"io: failsafe: Sparkplug session back", 5, since)
+    check("IO-3 / IO-7 failsafe: after failsafe_s (5 s) without a Sparkplug session each DO takes "
+          "its safe state (on / off; 'hold' keeps it), except the rule outputs: DO/5 stays on "
+          "(DI/2) and DO/6 toggled on by DI/3 without the network; the next NBIRTH shows it",
+          pre and lost and trip and 4.5 <= trip - lost <= 6.5 and clear
+          and dos == {1: False, 2: True, 3: False, 4: True, 5: True, 6: True, 7: False, 8: False},
+          f"before {do_states(pre[2]) if pre else 'no NDATA'}; trip {trip - lost:.1f} s after the loss; "
+          f"NBIRTH after the outage {dos}" if lost and trip else
+          f"loss logged {bool(lost)}, trip logged {bool(trip)}: {gw.find(r'failsafe', since)[:2]}")
+    mqtt_alarm = gw.wait_log(r"buzzer: alarm 'MQTT down': 2 beep\(s\) every 10 s", 0, since)
+    back_alarm = gw.wait_log(r"buzzer: alarm 'device offline': 1 beep\(s\)", 5,
+                             mqtt_alarm or time.monotonic())
+    check("IO-6 buzzer alarm 'MQTT down' (higher priority) after alarm_after_s (5 s) without a "
+          "session; back to 'device offline' once the session is up",
+          lost and mqtt_alarm and 4.5 <= mqtt_alarm - lost <= 6.5 and back_alarm and nb
+          and back_alarm >= nb[0] - 1,
+          f"MQTT down alarm {mqtt_alarm - lost:.1f} s after the loss; device offline again "
+          f"{back_alarm - nb[0]:+.1f} s from the NBIRTH" if lost and mqtt_alarm and back_alarm and nb
+          else " | ".join(gw.find(r"buzzer: ", since)[:3]) or "no buzzer log")
     check("Broker restart: NDEATH (will, session bdSeq) at shutdown, then NBIRTH (new bdSeq, "
           "seq 0) and every DBIRTH",
           will and bdseq_of(will[2]) == b0 and b1 != b0 and births_ok(nb, dbs),
@@ -2548,6 +2658,22 @@ def run(args, log, slave, broker, conf, work):
     check("SPB-3 bdSeq persisted across reboot (NVS)", nb and b2 == (b1 + 1) % 256,
           f"after power cycle NBIRTH bdSeq={b2}, previous {b1}")
 
+    # IO-3 'hold' across a software restart: the expander keeps its latch (the QEMU model keeps
+    # its registers in RTC memory like the chip); DO/4 must come back on, DO/2 ('on') too.
+    cold = do_states(nb[2]) if nb else {}
+    # IO-4: the counter saved periodically (every 60 s) survives the power cycle
+    # (the whole console log: gw.find() only sees the current boot)
+    saved = re.findall(r"io: pulse counters saved\r?$", log.read_text(errors="replace"), re.M)
+    check("IO-4 pulse counters saved to NVS every counter_save_s (60 s) and restored after a power "
+          "cycle", saved and nb and counter_of(nb[2]) == 1,
+          f"{len(saved)} periodic saves logged; Counter/1 after the power cycle "
+          f"{counter_of(nb[2]) if nb else None} (1 expected)")
+    held = set_do(obs, ncmd_t, ndata_t, {4: True})
+    obs.drain()
+    gw.console("di 1 1")   # DI/1 idle after the power cycle: one more pulse
+    pulse = obs.wait(ndata_t, 3, lambda q: counter_of(q) is not None)
+    since_reboot = time.monotonic()
+
     # SPB-2 orderly disconnect: NCMD Reboot -> explicit NDEATH, then reboot
     obs.drain()
     obs.publish_cmd(ncmd_t, [{"name": "Node Control/Reboot", "datatype": 11, "boolean_value": True}])
@@ -2563,6 +2689,19 @@ def run(args, log, slave, broker, conf, work):
           f"NDEATH bdSeq={bdseq_of(nd[2]) if nd else None} sent by the node={explicit}, "
           f"NDEATHs with that bdSeq={len(deaths)} (will discarded if 1), "
           f"NBIRTH after reboot bdSeq={bdseq_of(nb[2]) if nb else None}")
+    warm = do_states(nb[2]) if nb else {}
+    check("IO-4 pulse counters saved at an orderly restart (NCMD Reboot) and restored",
+          pulse and counter_of(pulse[2]) == 2 and nb and counter_of(nb[2]) == 2
+          and gw.find(r"io: pulse counters saved before the restart", since_reboot),
+          f"Counter/1 before {counter_of(pulse[2]) if pulse else None}, after the reboot "
+          f"{counter_of(nb[2]) if nb else None}")
+    check("IO-3 'hold' output kept across a software restart (TCA9554 latch read back before the "
+          "configuration), off after a power cycle; 'on' output on after both",
+          cold.get(4) is False and cold.get(2) is True and held and warm.get(4) is True
+          and warm.get(2) is True and warm.get(3) is False
+          and gw.find(r"io: DO active-low mask 0x\w+: held across the restart 0x08 of 0x08", since_reboot),
+          f"after the power cycle {cold}; after NCMD Reboot {warm}; "
+          f"{(gw.find(r'io: DO active-low mask', since_reboot) or ['no log'])[0]}")
     reason1 = metric(nb[2], name="Node Info/Reset Reason") if nb else None
     check("REL-5 NBIRTH 'Node Info/Reset Reason': power-on at first boot, software after NCMD Reboot",
           reason0 and reason1 and reason0.string_value == "power-on"
@@ -2604,6 +2743,20 @@ def run(args, log, slave, broker, conf, work):
           all(a[0] and a[1] == "panic" for a in attempts) and attempts[-1][2],
           "; ".join(f"attempt {i + 1}: saved={a[0]} reset reason={a[1]!r} decoded={a[2]}"
                     f"{'' if a[2] else ' (' + a[3] + ')'}" for i, a in enumerate(attempts)))
+
+    # IO-6 "config_error" alarm: a rejected configuration cannot enable it, so the last valid one
+    # left the choice in NVS: a boot of this same flash with a broken config.json beeps 3 times
+    gw = Gateway(args, work / "uart0-cfgerr.log",
+                 flash_variant(args, work, "cfgerr", {"config.json": b'{"mqtt": '}))
+    t_err = time.monotonic()
+    gw.start()
+    cfg_alarm = gw.wait_log(r"buzzer: alarm 'configuration error': 3 beep\(s\) every 10 s", 30, t_err)
+    rejected = gw.wait_log(r"main: configuration rejected", 30, t_err)
+    gw.kill()
+    check("IO-6 buzzer alarm 'configuration error' in recovery, as enabled by the last valid "
+          "configuration (kept in NVS): 3 beeps every 10 s",
+          cfg_alarm and rejected,
+          " | ".join(gw.find(r"buzzer: alarm|configuration rejected", t_err)[:2]) or "no log")
 
     # Issue #11: a broker that refuses the NCMD/DCMD subscriptions (SUBACK 0x80). The node must
     # not announce itself (no NBIRTH: it could not receive commands); it disconnects with
