@@ -50,7 +50,7 @@ SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
 PROBE_MAX_S = 10.0                # CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS / 1000, read in main()
 GROUP, NODE, DEVICE, BULK = "Plant1", "GW01", "Meter1", "Bulk"
 T = f"spBv1.0/{GROUP}"
-ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/3": 22, "Voltage": 100, "Setpoint": 101, "Run": 102, "Limit": 103}
+ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/1": 20, "DO/3": 22, "Voltage": 100, "Setpoint": 101, "Run": 102, "Limit": 103}
 
 spb = spb_decode.load_module()
 results = []
@@ -731,6 +731,18 @@ def run(args, log, slave, broker, conf, work):
           nd and metric(nd[2], alias=ALIAS["DO/3"]).boolean_value,
           f"NDATA {[(m.alias, m.boolean_value) for m in nd[2].metrics]}" if nd else "no NDATA")
 
+    # Issue #10: a metric name longer than the codec accepts aborts the decode; the DO/1 before
+    # it must not be applied either (all or nothing), so no NDATA for DO/1.
+    obs.drain()
+    since = time.monotonic()
+    obs.publish_cmd(ncmd_t, [{"name": "DO/1", "datatype": 11, "boolean_value": True},
+                             {"name": "X" * 80, "datatype": 11, "boolean_value": True}])
+    nd = obs.wait(ndata_t, 2, lambda q: metric(q, alias=ALIAS["DO/1"]) is not None)
+    dropped = gw.wait_log(r"NCMD: undecodable payload .*nothing applied", 1, since)
+    check("SPB-11 / issue #10 NCMD aborted mid-payload (80-character name) applies nothing",
+          dropped and nd is None,
+          f"log: {(gw.find(r'NCMD: undecodable', since) or ['none'])[0]}; NDATA for DO/1: {nd is not None}")
+
     # 4. DCMD Setpoint=12.3 -> holding 10 = 123 via FC06, confirmed by DDATA
     obs.drain()
     slave.ctx.writes.clear()
@@ -763,8 +775,9 @@ def run(args, log, slave, broker, conf, work):
     since = time.monotonic()
     obs.publish_cmd(dcmd_t, [{"name": "Voltage", "datatype": 9, "float_value": 1.0}])
     time.sleep(1.5)
+    # the command came by name only: the log must not invent an "alias 0" (issue #14)
     check("SPB-10 DCMD on read-only metric discarded and logged",
-          gw.find(r"DCMD: metric 'Voltage'.*read-only", since) and not slave.ctx.writes[1:],
+          gw.find(r"DCMD: metric 'Voltage' discarded: read-only", since) and not slave.ctx.writes[1:],
           (gw.find(r"DCMD: metric 'Voltage'", since) or ["no log line"])[0])
 
     # 5. Rebirth
