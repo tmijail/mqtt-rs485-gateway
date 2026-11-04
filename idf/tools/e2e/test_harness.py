@@ -50,10 +50,20 @@ class Signatures(unittest.TestCase):
         self.assertIsNotNone(g.signature)
         self.assertIn("LoadStorePIFAddrError at 0x6002306c", g.signature[1])
 
-    def test_other_panics_are_not_known(self):
-        # the same exception outside an image write or check (only the 4 lines before it)
+    def test_known_panic_at_a_trial_start(self):
+        # the same fault at the start of a trial image (gw_fw_init maps the other slot): no OTA
+        # line before it, but the PC is the tick ISR in IRAM (seen with heap poisoning, #104)
         g = FakeGateway()
-        g.feed(["I (1) edge: Sparkplug session up"] + FLAKE[5:])
+        g.feed(["I (18929) syslog: forwarding logs to 10.0.2.2:15514"] + FLAKE[5:])
+        self.assertIsNotNone(g.signature)
+        self.assertIn("in IRAM code (PC 0x4037c267)", g.signature[1])
+
+    def test_other_panics_are_not_known(self):
+        # the same exception outside an image write or check, with the PC in flash (code of
+        # this firmware)
+        g = FakeGateway()
+        g.feed(["I (1) edge: Sparkplug session up"]
+               + [ln.replace("PC      : 0x4037c267", "PC      : 0x4209e706") for ln in FLAKE[5:]])
         self.assertIsNone(g.signature)
         # another exception during the image check
         g = FakeGateway()

@@ -645,10 +645,12 @@ TRUSTED_RX = re.compile(r"secure_boot_v2: Take trusted digest key\(s\)")
 VERIFY_RX = re.compile(r"esp_image: Verifying image signature|secure_boot_v2: |esp_image: segment")
 GURU_RX = re.compile(r"Guru Meditation Error: Core\s+\d panic'ed \((\w+)\)")
 EXCVADDR_RX = re.compile(r"EXCVADDR\s*:\s*0x([0-9a-fA-F]{8})")
+PC_RX = re.compile(r"^PC\s*:\s*0x([0-9a-fA-F]{8})")
 # An image being written or verified (download, upload, esp_ota_end, a rollback's check)
 OTA_RX = re.compile(r"esp_https_ota: |fw: downloading firmware|fw: receiving a firmware upload|"
                     r"esp_image: |secure_boot_v2|esp_ota_ops: |fw: firmware .* rejected .*: back to")
 PERIPHERALS = (0x60000000, 0x600FFFFF)   # ESP32-S3 peripheral address space
+IRAM = (0x40370000, 0x403DFFFF)          # internal instruction RAM (ISRs, IDF's IRAM code)
 HANG_S = 60.0        # --hang-timeout
 MON_DIR = None       # short directory for the monitor sockets (main)
 SIMULATED = []       # self-tests that already happened
@@ -660,16 +662,24 @@ SCENARIO_BUDGET_S = {}
 DEFAULT_BUDGET_S = 900.0
 
 
-def known_panic(exception, excvaddr, before):
+def known_panic(exception, excvaddr, before, pc=None):
     """Issue #92: the known emulator panic, or None. QEMU does not model the S3 cache freeze
-    while an image is mapped for its check: the other core's access to a peripheral faults with
-    LoadStorePIFAddrError (docs/upstream-reports.md section 6). Only that exception, at a
-    peripheral address, with an image being written or verified in the 40 lines before it."""
+    while flash is mapped (an image checked, written or its description read): IDF's own IRAM
+    code on the other core, the FreeRTOS tick clearing its SYSTIMER alarm above all, then faults
+    on a peripheral with LoadStorePIFAddrError (docs/upstream-reports.md section 6). Only that
+    exception, at a peripheral address, and either with an image being written or checked in
+    the 40 lines before it or with the faulting PC in IRAM (where no code of this firmware
+    touches a peripheral; at a trial image's start-up, gw_fw_init reads the other slot's
+    description through such a mapping without logging it)."""
     if exception != "LoadStorePIFAddrError" or not PERIPHERALS[0] <= excvaddr <= PERIPHERALS[1]:
         return None
-    if not any(OTA_RX.search(ln) for ln in before):
+    if any(OTA_RX.search(ln) for ln in before):
+        where = "during an image write or check"
+    elif pc is not None and IRAM[0] <= pc <= IRAM[1]:
+        where = f"in IRAM code (PC 0x{pc:08x}) during a flash mapping"
+    else:
         return None
-    return f"LoadStorePIFAddrError at 0x{excvaddr:08x} (peripheral) during an image write or check"
+    return f"LoadStorePIFAddrError at 0x{excvaddr:08x} (peripheral) {where}"
 
 
 def monitor_cmd(path, command, timeout=3.0):
@@ -919,11 +929,15 @@ class Gateway:
             self.phase = "run"
         m = GURU_RX.search(text)
         if m:
-            self._panic = (t, m.group(1), len(self.lines) - 1)
+            self._panic = (t, m.group(1), len(self.lines) - 1, None)
+        m = PC_RX.search(text)
+        if m and self._panic and self._panic[3] is None:
+            self._panic = self._panic[:3] + (int(m.group(1), 16),)
         m = EXCVADDR_RX.search(text)
         if m and self._panic and len(self.lines) - 1 - self._panic[2] <= 12:
             sig = known_panic(self._panic[1], int(m.group(1), 16),
-                              [ln for _, ln in self.lines[max(0, self._panic[2] - 40):self._panic[2]]])
+                              [ln for _, ln in self.lines[max(0, self._panic[2] - 40):self._panic[2]]],
+                              self._panic[3])
             if sig and self.signature is None:
                 self.signature = (self._panic[0], sig)
             self._panic = None
