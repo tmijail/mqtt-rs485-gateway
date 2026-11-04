@@ -423,6 +423,7 @@ def run_config_failsafe(args, work):
         gw.start()
         hit = gw.wait_log(r"configuration rejected .*" + reason, 20, t0)
         led = gw.wait_log(r"status: config error", 2, t0)
+        dos_off = gw.find(r"io: DO .*all outputs off", t0)
         time.sleep(6)  # long enough for DHCP + SNTP wait + a connection attempt
         started = gw.find(r"connecting to|rs485: UART|net: IPv4", t0)
         births = [m for m in CAPTURE if m[0] >= t0 and "/NBIRTH/" in m[1]]
@@ -433,6 +434,8 @@ def run_config_failsafe(args, work):
             check("CFG-6 console shell answers 'status' while the configuration is rejected",
                   shell, (gw.find(r"config\s+REJECTED", asked) or ["no answer"])[0])
         gw.kill()
+        check(f"IO-2 {name} config file -> DOs switched off before the configuration is loaded",
+              bool(dos_off), (dos_off or ["no 'all outputs off' log"])[0])
         check(f"CFG-1 {name} config file -> nothing starts, error LED, ERROR log with the reason",
               hit and led and not started and not births,
               (gw.find(r"configuration rejected", t0) or ["no 'configuration rejected' log"])[0] +

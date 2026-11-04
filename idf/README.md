@@ -99,14 +99,15 @@ Dependencias gestionadas, **con versión fija** (`==`) en cada `idf_component.ym
 
 - El demo oficial `ESP32-S3-POE-ETH-8DI-8DO-Demo.zip` (Arduino, `files.waveshare.com/wiki/ESP32-S3-POE-ETH-8DI-8DO/`).
 - La wiki de Waveshare.
-- La definición ESPHome de la placa hermana `Waveshare-ESP32-S3-ETH-8DI-8RO` (mismos GPIO de DI, I²C, RTC, LED y buzzer).
+- La definición ESPHome de esta misma placa, `Waveshare-ESP32-S3-ETH-8DI-8DO` (`esphome-devices`, `config.yaml`).
+- La definición ESPHome de la placa hermana `Waveshare-ESP32-S3-ETH-8DI-8RO` (mismos GPIO de DI, I²C, RTC, LED y buzzer; sus relés **no** están invertidos, así que no sirve como evidencia de la polaridad de las DO).
 
 No se encontró esquemático publicado.
 
 | Dato | Hallazgo | Evidencia | Confianza |
 |---|---|---|---|
 | Expansor de las DO | **TCA9554 en 0x20** | Demo: `TCA9554_ADDRESS 0x20` (`WS_TCA9554PWR.h`). ESPHome de la hermana: `pca9554 address: 0x20` | Alta |
-| Polaridad de las DO | **Nivel bajo en el pin del expansor = DO activa** (salida Darlington) | Demo: `Dout_Init()` → `TCA9554PWR_Init(0x00, 0xFF)`, es decir, todas en alto al arrancar (un demo no energiza 8 cargas al encender), y el modo DI→DO de `WS_DIN.cpp` copia el nivel crudo (DI en reposo = 1 → DO = 1 = apagada). ESPHome: `inverted: true` en las 8 DO. Zephyr llegó a lo mismo (`GPIO_ACTIVE_LOW`) | Media-alta. Configurable: `CONFIG_GW_DO_ACTIVE_LOW` (por defecto `y`). **Medir con un multímetro antes de conectar cargas** |
+| Polaridad de las DO | **Nivel bajo en el pin del expansor = DO activa** (salida Darlington) | **A favor:** el demo arranca con `Dout_Init()` → `TCA9554PWR_Init(0x00, 0xFF)`, todas en alto (un demo no energiza 8 cargas al encender), y su modo DI→DO (`WS_DIN.cpp`, `DIN_Inverse_Enable = 0`) copia el nivel crudo (DI en reposo = 1 → DO = 1 = apagada). El ESPHome de esta placa (8DI-8DO) declara `inverted: true` en las 8 DO. La implementación Zephyr llegó a lo mismo (`GPIO_ACTIVE_LOW`). **En contra:** el demo llama `Dout_Open()` al nivel ALTO, `"CH1":1` por MQTT pone el pin en alto y la wiki (copiada de la de relés) dice "ALL_ON … high level (on state)" | **Media.** Configurable: `CONFIG_GW_DO_ACTIVE_LOW` (por defecto `y`, la hipótesis más probable). **Medir con un multímetro antes de conectar cargas** |
 | RTC | **PCF85063 en 0x51** (SDA 42, SCL 41, INT 40) | Demo: `PCF85063_ADDRESS (0x51)` (`WS_PCF85063.h`); ESPHome: `platform: pcf85063` | Alta (no se usa en el MVP) |
 | Polaridad de las DI | GPIO con pull-up; **entrada activa = nivel 0** (se invierte) | Demo: `pinMode(DIN_PIN_CHx, INPUT_PULLUP)` y estado de reposo `0xFF`; ESPHome: `INPUT_PULLUP` + `inverted: true` | Media-alta. Configurable: `CONFIG_GW_DI_ACTIVE_LOW` |
 | Buzzer | **Pasivo** (necesita PWM) | Demo: `ledcAttach(46, 1000 Hz, 8 bits)` con duty 200/255; ESPHome usa `rtttl` sobre `ledc` | Media (no se usa en el MVP) |
@@ -238,7 +239,7 @@ E2E_PYTHON=~/e2e/bin/python idf/tools/e2e/run_e2e.sh
 
 Configuración usada: `tools/e2e/fs/config.json` (keepalive de 10 s).
 
-Resultado: **35/35 comprobaciones OK**.
+Resultado: **40/40 comprobaciones OK**.
 
 | Criterio | Resultado medido |
 |---|---|
@@ -391,7 +392,7 @@ Sin SNTP no hay hora válida: no hay RTC (TIME-2). Antes de la primera conexión
 
 - Una DI que cambia más rápido que el debounce se pierde.
 - El timestamp de NDATA es el del lote de cambios, no el de cada bit.
-- Las DO arrancan en OFF siempre, también tras un reset por watchdog: el latch se reescribe con el nivel OFF.
+- Las DO pasan a OFF en cada arranque (en frío, en caliente, por watchdog o por panic) **antes de cargar la configuración**, así que también quedan en OFF si la configuración se rechaza. El TCA9554 no se reinicia con el ESP32 y conserva el latch; por eso el firmware lo reescribe con el nivel OFF antes de pasar los pines a salida.
 - La polaridad de las DO (activa en bajo) se dedujo del demo y de ESPHome, sin esquemático ni placa. Si la medición dice lo contrario, basta con `CONFIG_GW_DO_ACTIVE_LOW=n`.
 
 ### 6.8 Pruebas y entorno

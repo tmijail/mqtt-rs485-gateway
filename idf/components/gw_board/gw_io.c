@@ -61,10 +61,16 @@ void gw_io_sim_set_di(uint8_t index, bool active)
     ESP_LOGI(TAG, "sim: DI%u <- %u", index + 1, active ? 1 : 0);
 }
 
-static esp_err_t hw_init(void)
+static esp_err_t hw_init_outputs(void)
+{
+    ESP_LOGW(TAG, "SIMULATED I/O: DOs in RAM");
+    return ESP_OK;
+}
+
+static esp_err_t hw_init_inputs(void)
 {
     s_sim_pins = gw_active_to_pins(0, gw_bsp.di.active_low);  /* all inputs idle */
-    ESP_LOGW(TAG, "SIMULATED I/O: DIs from the console shell ('di <1-8> <0|1>'), DOs in RAM");
+    ESP_LOGW(TAG, "SIMULATED I/O: DIs from the console shell ('di <1-8> <0|1>')");
     return ESP_OK;
 }
 
@@ -94,7 +100,7 @@ static uint8_t read_pins(void)
     return v;
 }
 
-static esp_err_t hw_init(void)
+static esp_err_t hw_init_inputs(void)
 {
     gpio_config_t gc = {
         .mode = GPIO_MODE_INPUT,
@@ -105,8 +111,11 @@ static esp_err_t hw_init(void)
     for (int i = 0; i < GW_BSP_IO_CHANNELS; i++) {
         gc.pin_bit_mask |= 1ull << gw_bsp.di.gpio[i];
     }
-    ESP_RETURN_ON_ERROR(gpio_config(&gc), TAG, "DI gpio");
+    return gpio_config(&gc);
+}
 
+static esp_err_t hw_init_outputs(void)
+{
     const i2c_master_bus_config_t bc = {
         .i2c_port = gw_bsp.i2c.port,
         .sda_io_num = gw_bsp.i2c.sda,
@@ -151,19 +160,27 @@ static void sample_cb(void *arg)
     }
 }
 
-esp_err_t gw_io_init(const gw_config_t *cfg, void (*on_change)(void))
+esp_err_t gw_io_outputs_off(void)
+{
+    esp_err_t err = hw_init_outputs();
+    if (err == ESP_OK) {
+        const gw_dout_bus_t bus = {.write_reg = exp_write, .read_reg = exp_read, .ctx = NULL};
+        err = gw_dout_init(&s_do, &bus, gw_bsp.dout.active_low);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "TCA9554 at 0x%02x not responding (%s): DOs disabled", gw_bsp.dout.i2c_addr,
+                 esp_err_to_name(err));
+        return err;
+    }
+    publish_do();
+    ESP_LOGI(TAG, "DO active-low mask 0x%02x: all outputs off", gw_bsp.dout.active_low);
+    return ESP_OK;
+}
+
+esp_err_t gw_io_start_inputs(const gw_config_t *cfg, void (*on_change)(void))
 {
     s_on_change = on_change;
-    ESP_RETURN_ON_ERROR(hw_init(), TAG, "hw init");
-
-    const gw_dout_bus_t bus = {.write_reg = exp_write, .read_reg = exp_read, .ctx = NULL};
-    esp_err_t do_err = gw_dout_init(&s_do, &bus, gw_bsp.dout.active_low);
-    if (do_err == ESP_OK) {
-        publish_do();
-    } else {
-        ESP_LOGE(TAG, "TCA9554 at 0x%02x not responding (%s): DOs disabled", gw_bsp.dout.i2c_addr,
-                 esp_err_to_name(do_err));
-    }
+    ESP_RETURN_ON_ERROR(hw_init_inputs(), TAG, "DI gpio");
 
     uint32_t threshold = (uint32_t)cfg->local_io.di_debounce_ms * 1000u / CONFIG_GW_DI_SAMPLE_US;
     uint8_t initial = read_di();
@@ -178,10 +195,9 @@ esp_err_t gw_io_init(const gw_config_t *cfg, void (*on_change)(void))
     };
     ESP_RETURN_ON_ERROR(esp_timer_create(&ta, &s_timer), TAG, "timer");
     ESP_RETURN_ON_ERROR(esp_timer_start_periodic(s_timer, CONFIG_GW_DI_SAMPLE_US), TAG, "timer");
-    ESP_LOGI(TAG, "DI sampled every %d us, debounce %u ms, active-low mask 0x%02x; DO active-low "
-             "mask 0x%02x%s", CONFIG_GW_DI_SAMPLE_US, cfg->local_io.di_debounce_ms,
-             gw_bsp.di.active_low, gw_bsp.dout.active_low, s_do.ready ? ", all off" : "");
-    return do_err;
+    ESP_LOGI(TAG, "DI sampled every %d us, debounce %u ms, active-low mask 0x%02x",
+             CONFIG_GW_DI_SAMPLE_US, cfg->local_io.di_debounce_ms, gw_bsp.di.active_low);
+    return ESP_OK;
 }
 
 bool gw_io_set_do(uint8_t index, bool on)

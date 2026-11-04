@@ -101,6 +101,10 @@ void app_main(void)
     if (gw_status_led_start() != ESP_OK) {
         ESP_LOGE(TAG, "status LED unavailable");
     }
+    /* Before the configuration: whatever happens next, no DO stays on from before a reset. */
+    if (gw_io_outputs_off() != ESP_OK) {
+        ESP_LOGE(TAG, "digital outputs unavailable; DO commands will be refused");
+    }
     gw_storage_init();  /* failure is logged; bdSeq then lives in RAM only */
 
     esp_chip_info_t chip;
@@ -122,9 +126,8 @@ void app_main(void)
     }
 
     ESP_ERROR_CHECK(gw_edge_start(&s_cfg, &s_info));
-    if (gw_io_init(&s_cfg, gw_edge_notify_io) != ESP_OK) {
-        /* Keep the gateway running: DIs are still published, DO commands are refused. */
-        ESP_LOGE(TAG, "digital outputs unavailable");
+    if (gw_io_start_inputs(&s_cfg, gw_edge_notify_io) != ESP_OK) {
+        ESP_LOGE(TAG, "digital inputs unavailable");
     }
 
     mb_transport_t tr;
