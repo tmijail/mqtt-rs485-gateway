@@ -24,6 +24,7 @@
 #include "mbedtls/pk.h"
 #include "mbedtls/x509_crt.h"
 #include "mqtt_client.h"
+#include "mqtt5_client.h"   /* after mqtt_client.h: it needs its types */
 #include "psa/crypto.h"
 
 static const char *TAG = "edge";
@@ -106,7 +107,7 @@ static struct ifreq s_ifr;      /* interface the client is bound to (NET-4, two 
 static char *s_ca_pem;          /* MQTT-4: CA file, boot allocation (PSRAM if any), never freed */
 static char *s_cert_pem;        /* MQTT-5: client certificate and key, the same way */
 static char *s_key_pem;
-static char s_tls_error[200];   /* why the TLS settings cannot work: no connection is attempted */
+static char s_setup_error[200]; /* why the settings cannot work (TLS files): no connection attempted */
 static int64_t s_tls_logged_us;
 static bool s_waiting_time_logged;
 static gw_brokersel_t s_bsel;   /* MQTT-6: which broker of the list the next attempt goes to */
@@ -376,15 +377,16 @@ static void prepare_attempt(void)
     s_mqtt_cfg.broker.address.hostname = broker_host(s_bsel.current);
     s_mqtt_cfg.broker.address.port = broker_port(s_bsel.current);
     publish_status();
+    const char *v5 = s_cfg->mqtt.protocol == GW_MQTT_V5 ? " MQTT 5" : "";
     if (s_bsel.count > 1) {
-        ESP_LOGI(TAG, "connecting to %s:%u%s (broker %u/%u) as '%s', bdSeq=%u",
+        ESP_LOGI(TAG, "connecting to %s:%u%s%s (broker %u/%u) as '%s', bdSeq=%u",
                  broker_host(s_bsel.current), broker_port(s_bsel.current),
-                 s_cfg->mqtt.tls.enabled ? " (TLS)" : "", s_bsel.current + 1, s_bsel.count,
+                 s_cfg->mqtt.tls.enabled ? " (TLS)" : "", v5, s_bsel.current + 1, s_bsel.count,
                  s_cfg->mqtt.client_id, s_bdseq);
     } else {
-        ESP_LOGI(TAG, "connecting to %s:%u%s as '%s', bdSeq=%u", s_cfg->mqtt.host,
-                 s_cfg->mqtt.port, s_cfg->mqtt.tls.enabled ? " (TLS)" : "", s_cfg->mqtt.client_id,
-                 s_bdseq);
+        ESP_LOGI(TAG, "connecting to %s:%u%s%s as '%s', bdSeq=%u", s_cfg->mqtt.host,
+                 s_cfg->mqtt.port, s_cfg->mqtt.tls.enabled ? " (TLS)" : "", v5,
+                 s_cfg->mqtt.client_id, s_bdseq);
     }
 }
 
@@ -414,6 +416,21 @@ static void start_client(int64_t now)
         schedule_retry(now);
         return;
     }
+#if CONFIG_MQTT_PROTOCOL_5
+    if (s_cfg->mqtt.protocol == GW_MQTT_V5) {
+        /* MQTT-8, Sparkplug 3.0 over MQTT 5: Clean Start (esp-mqtt's clean session, on by
+         * default) and Session Expiry Interval 0, so the broker keeps no session state between
+         * connections, as with clean session in 3.1.1; Will Delay Interval 0, so the NDEATH will
+         * is published as soon as the connection is lost. Problem information is requested so
+         * a refusal comes with its reason string. */
+        const esp_mqtt5_connection_property_config_t props = {
+            .session_expiry_interval = 0,
+            .will_delay_interval = 0,
+            .request_problem_info = true,
+        };
+        ESP_ERROR_CHECK(esp_mqtt5_client_set_connect_property(s_client, &props));
+    }
+#endif
     ESP_ERROR_CHECK(esp_mqtt_client_register_event(s_client, ESP_EVENT_ANY_ID, on_mqtt_event, NULL));
     ESP_ERROR_CHECK(esp_mqtt_client_start(s_client));
     s_started = true;
@@ -580,10 +597,10 @@ static void restart_now(void)
  * for SNTP: without a valid clock every certificate would be "not valid yet". */
 static bool tls_can_start(int64_t now)
 {
-    if (s_tls_error[0] != '\0') {
+    if (s_setup_error[0] != '\0') {
         if (s_tls_logged_us == 0 || now - s_tls_logged_us >= TLS_ERROR_LOG_MS * 1000LL) {
             s_tls_logged_us = now;
-            ESP_LOGE(TAG, "%s: MQTT not started", s_tls_error);
+            ESP_LOGE(TAG, "%s: MQTT not started", s_setup_error);
         }
         return false;
     }
@@ -769,14 +786,14 @@ static void edge_task(void *arg)
 }
 
 /* A PEM file next to config.json, checked now so a bad file is reported as such and not as a
- * handshake failure on every attempt. Records the problem in s_tls_error. */
+ * handshake failure on every attempt. Records the problem in s_setup_error. */
 static char *load_pem_certs(const char *name, const char *key)
 {
     size_t len;
     char why[120];
     char *pem = gw_storage_read_file(name, &len, why, sizeof(why));
     if (pem == NULL) {
-        snprintf(s_tls_error, sizeof(s_tls_error), "mqtt.tls.%s: %s", key, why);
+        snprintf(s_setup_error, sizeof(s_setup_error), "mqtt.tls.%s: %s", key, why);
         return NULL;
     }
     mbedtls_x509_crt crt;
@@ -788,7 +805,7 @@ static char *load_pem_certs(const char *name, const char *key)
     }
     mbedtls_x509_crt_free(&crt);
     if (r != 0 || count == 0) {
-        snprintf(s_tls_error, sizeof(s_tls_error),
+        snprintf(s_setup_error, sizeof(s_setup_error),
                  "mqtt.tls.%s: /cfg/%s is not a PEM certificate file (mbedTLS %d)", key, name, r);
         gw_storage_free(pem);
         return NULL;
@@ -804,7 +821,7 @@ static char *load_pem_key(const char *name)
     char why[120];
     char *pem = gw_storage_read_file(name, &len, why, sizeof(why));
     if (pem == NULL) {
-        snprintf(s_tls_error, sizeof(s_tls_error), "mqtt.tls.key_file: %s", why);
+        snprintf(s_setup_error, sizeof(s_setup_error), "mqtt.tls.key_file: %s", why);
         return NULL;
     }
     mbedtls_pk_context pk;
@@ -812,7 +829,7 @@ static char *load_pem_key(const char *name)
     int r = mbedtls_pk_parse_key(&pk, (const unsigned char *)pem, len + 1, NULL, 0);
     mbedtls_pk_free(&pk);
     if (r != 0) {
-        snprintf(s_tls_error, sizeof(s_tls_error),
+        snprintf(s_setup_error, sizeof(s_setup_error),
                  "mqtt.tls.key_file: /cfg/%s is not an unencrypted PEM private key (mbedTLS -0x%04x)",
                  name, (unsigned)-r);
         gw_storage_free(pem);
@@ -838,7 +855,7 @@ static void setup_tls(const gw_tls_cfg_t *tls)
     }
     /* Never skip_cert_common_name_check: the name is always verified (MQTT-4). */
     m->broker.verification.common_name = tls->server_name[0] ? tls->server_name : NULL;
-    if (tls->cert_file[0] != '\0' && s_tls_error[0] == '\0') {
+    if (tls->cert_file[0] != '\0' && s_setup_error[0] == '\0') {
         /* MQTT-5: mutual TLS; the broker checks this certificate against its own CA */
         s_cert_pem = load_pem_certs(tls->cert_file, "cert_file");
         s_key_pem = s_cert_pem != NULL ? load_pem_key(tls->key_file) : NULL;
@@ -850,6 +867,12 @@ static void setup_tls(const gw_tls_cfg_t *tls)
 esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
 {
     s_cfg = cfg;
+#if !CONFIG_MQTT_PROTOCOL_5
+    if (cfg->mqtt.protocol == GW_MQTT_V5) {
+        ESP_LOGE(TAG, "mqtt.protocol 5 needs CONFIG_MQTT_PROTOCOL_5: MQTT not started");
+        snprintf(s_setup_error, sizeof(s_setup_error), "mqtt.protocol: MQTT 5 not in this build");
+    }
+#endif
     s_node = gw_storage_big_alloc(sizeof(*s_node), "Sparkplug engine");
     if (s_node == NULL) {
         return ESP_ERR_NO_MEM;
@@ -880,7 +903,7 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
             .authentication.password = cfg->mqtt.password[0] ? cfg->mqtt.password : NULL,
         },
         .session = {
-            .protocol_ver = MQTT_PROTOCOL_V_3_1_1,
+            .protocol_ver = cfg->mqtt.protocol == GW_MQTT_V5 ? MQTT_PROTOCOL_V_5 : MQTT_PROTOCOL_V_3_1_1,
             .keepalive = cfg->mqtt.keepalive_s,
             .last_will = {.topic = s_death_topic, .qos = 1, .retain = 0},
         },

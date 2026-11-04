@@ -693,13 +693,15 @@ static bool parse_mqtt(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"host", "port", "client_id", "username", "password",
                                        "keepalive_s", "tls", "backup_brokers", "failover_after",
-                                       "primary_return_s"};
+                                       "primary_return_s", "protocol"};
+    static const char *const protocols[] = {"3.1.1", "5"};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "mqtt");
     if (o == NULL) {
         return fail(err, "mqtt", "sección obligatoria ausente");
     }
     long port, ka, failover, back;
-    if (!check_keys(o, "mqtt", keys, 10, err) || !parse_tls(o, &cfg->mqtt.tls, err) ||
+    int proto;
+    if (!check_keys(o, "mqtt", keys, 11, err) || !parse_tls(o, &cfg->mqtt.tls, err) ||
         !get_string(o, "host", "mqtt", true, "", cfg->mqtt.host, sizeof(cfg->mqtt.host), err) ||
         !get_int(o, "port", "mqtt", false, cfg->mqtt.tls.enabled ? 8883 : 1883, 1, 65535, &port,
                  err) ||
@@ -711,7 +713,8 @@ static bool parse_mqtt(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
                     sizeof(cfg->mqtt.password), err) ||
         !get_int(o, "keepalive_s", "mqtt", false, 30, 5, 3600, &ka, err) ||
         !get_int(o, "failover_after", "mqtt", false, 3, 1, 20, &failover, err) ||
-        !get_int(o, "primary_return_s", "mqtt", false, 0, 0, 86400, &back, err)) {
+        !get_int(o, "primary_return_s", "mqtt", false, 0, 0, 86400, &back, err) ||
+        !get_enum(o, "protocol", "mqtt", false, GW_MQTT_V311, protocols, 2, &proto, err)) {
         return false;
     }
     if (cfg->mqtt.host[0] == '\0') {
@@ -721,6 +724,7 @@ static bool parse_mqtt(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     cfg->mqtt.keepalive_s = (uint16_t)ka;
     cfg->mqtt.failover_after = (uint8_t)failover;
     cfg->mqtt.primary_return_s = (uint32_t)back;
+    cfg->mqtt.protocol = (gw_mqtt_protocol_t)proto;
     return parse_backup_brokers(o, cfg, err);
 }
 

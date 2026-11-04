@@ -795,6 +795,38 @@ def run_failover(args, work):
           if nb2 and moved else f"NBIRTH {bool(nb2)}, switch {bool(moved)}")
 
 
+# ---------------------------------------------------------------- MQTT 5 (MQTT-8)
+
+def run_mqtt5(args, work, mosquitto_log):
+    """MQTT-8 in one boot (GW18) against the harness' main mosquitto: CONNECT with protocol
+    level 5 and Clean Start, NBIRTH, the NCMD subscription working (rebirth), and the NDEATH will
+    published as soon as the TCP connection dies (Will Delay Interval 0)."""
+    node = "GW18"
+    obs = Observer()
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "mqtt5", node_config(node, protocol="5"))
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    attempt = gw.find(r"connecting to 10\.0\.2\.2:%d MQTT 5 as 'GW18'" % MQTT_PORT, t0)
+    v5 = re.search(r"New client connected from \S+ as GW18 \(p5, c1, k10\)",
+                   pathlib.Path(mosquitto_log).read_text())
+    obs.drain()
+    obs.publish_cmd(f"{T}/NCMD/{node}", [{"name": "Node Control/Rebirth", "datatype": 11,
+                                          "boolean_value": True}])
+    rb = obs.wait(f"{T}/NBIRTH/{node}", 5)
+    killed = time.monotonic()
+    gw.kill()
+    will = obs.wait(f"{T}/NDEATH/{node}", 10)
+    obs.close()
+    check("MQTT-8 MQTT 5.0 (mqtt.protocol \"5\"): CONNECT protocol level 5 with Clean Start, NBIRTH, "
+          "NCMD rebirth received over the v5 subscription, NDEATH will with the session's bdSeq "
+          "right after the connection dies (Will Delay 0)",
+          nb and attempt and v5 and rb and will and bdseq_of(will[2]) == bdseq_of(nb[2])
+          and will[0] - killed < 5,
+          f"NBIRTH {'yes' if nb else 'no'}; mosquitto: {v5.group(0) if v5 else 'no p5 connection'}; "
+          f"rebirth {'yes' if rb else 'no'}; will "
+          f"{f'{will[0] - killed:.1f} s after the kill, bdSeq {bdseq_of(will[2])}' if will else 'missing'}")
+
+
 # ---------------------------------------------------------------- scenario
 
 def start_broker(conf, log):
@@ -829,7 +861,7 @@ def main():
     ap.add_argument("--http-port", type=int, default=HTTP_PORT)
     ap.add_argument("--only", default="",
                     help="comma-separated scenarios to run (failsafe,network,web,reset,tls,failover,"
-                         "main); "
+                         "mqtt5,main); "
                          "default all")
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
@@ -873,6 +905,8 @@ def main():
             run_tls(args, work)
         if want("failover"):
             run_failover(args, work)
+        if want("mqtt5"):
+            run_mqtt5(args, work, work / "mosquitto.log")
         if want("main"):
             run(args, log, slave, broker, conf, work)
     except BaseException:

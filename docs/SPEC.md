@@ -322,6 +322,12 @@ El router por defecto IPv6 se aprende de los RA; no hay *gateway* IPv6 estático
 
 TLS 1.2 o 1.3, lo que negocie el broker. Las fechas de validez del certificado se comprueban: la conexión TLS espera a que SNTP fije el reloj. Las claves se validan aunque `enabled` sea `false`.
 
+**`mqtt.protocol` (MQTT-8): versión del protocolo.**
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `protocol` | `"3.1.1"` \| `"5"` | `"3.1.1"` | Versión de MQTT para todos los brokers de la lista. Con `"5"`, como pide Sparkplug 3.0: *Clean Start* = 1 y *Session Expiry Interval* = 0 (el broker no guarda la sesión entre conexiones, igual que *clean session* en 3.1.1) y *Will Delay Interval* = 0 (el NDEATH se publica en cuanto se pierde la conexión). Los temas, QoS, retención y payloads no cambian |
+
 **`mqtt.backup_brokers`, `failover_after`, `primary_return_s` (MQTT-6): lista de brokers.**
 
 ```json

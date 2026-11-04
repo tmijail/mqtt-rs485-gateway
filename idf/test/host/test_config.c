@@ -402,6 +402,21 @@ static void test_backup_brokers(void)
                     "mqtt.primary_return_s: valor -1 fuera de rango");
 }
 
+/* MQTT-8: protocol version. */
+static void test_mqtt_protocol(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\""), err.msg);
+    TEST_ASSERT_EQUAL(GW_MQTT_V311, cfg.mqtt.protocol);   /* absent: 3.1.1, as in the MVP */
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\",\"protocol\":\"5\""), err.msg);
+    TEST_ASSERT_EQUAL(GW_MQTT_V5, cfg.mqtt.protocol);
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\",\"protocol\":\"3.1.1\""), err.msg);
+    TEST_ASSERT_EQUAL(GW_MQTT_V311, cfg.mqtt.protocol);
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"protocol\":5"),
+                    "mqtt.protocol: valor no válido (se esperaba 3.1.1|5)");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"protocol\":\"3.1\""),
+                    "mqtt.protocol: valor no válido (se esperaba 3.1.1|5)");
+}
+
 /* CFG-3 / CFG-4: optional "web" section. */
 static void test_web_section(void)
 {
@@ -728,6 +743,7 @@ int main(void)
     RUN_TEST(test_tls_section);
     RUN_TEST(test_tls_client_certificate);
     RUN_TEST(test_backup_brokers);
+    RUN_TEST(test_mqtt_protocol);
     RUN_TEST(test_web_section);
     RUN_TEST(test_hostname);
     RUN_TEST(test_error_fields);

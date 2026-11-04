@@ -456,6 +456,7 @@ Leyenda de **Evidencia**:
 - **NET-6** Implementado: `network.hostname` (o derivado de `edge_node_id`) en DHCP y mDNS con `_http._tcp`. H (esquema, derivación) + Q (el responder arranca con el nombre derivado) + C (respuestas mDNS: `open_eth` no tiene filtro multicast, §6.2.1).
 - **MQTT-4** Implementado: TLS 1.2 y 1.3 hacia el broker (`mqtt.tls`, SPEC §6.1) con la CA en un archivo PEM de LittleFS (`ca_file`) o el paquete de CA raíz públicas de ESP-IDF, verificación obligatoria del nombre (el `host`, también un literal IP contra un SAN IP, o `server_name`) y de las fechas (espera a SNTP). El archivo se valida al arrancar: uno ausente o que no es PEM se informa y no se intenta conectar. Memoria de mbedTLS en PSRAM si la hay. H (esquema) + Q (TLS 1.3 con la CA de LittleFS y el nombre contra el SAN IP; `server_name` que el certificado no lleva → rechazo; CA ausente → error sin intentos) + C (paquete de CA públicas).
 - **MQTT-5** Implementado: TLS mutuo con certificado y clave PEM del cliente en LittleFS (`mqtt.tls.cert_file`, `key_file`), validados al arrancar. H (esquema) + Q (listener TLS 1.2 que exige certificado de cliente: NBIRTH y mosquitto toma el CN del certificado como usuario; sin certificado, el broker rechaza). El periférico DS (clave fuera del alcance del firmware) no está implementado: ver §6.5.1.
+- **MQTT-8** Implementado: MQTT 5.0 por configuración (`mqtt.protocol: "5"`; 3.1.1 por defecto), con la semántica de Sparkplug 3.0 sobre MQTT 5 (*Clean Start*, *Session Expiry Interval* 0, *Will Delay Interval* 0). H (esquema) + Q (CONNECT con nivel de protocolo 5 y *Clean Start* según mosquitto, NBIRTH, NCMD Rebirth por la suscripción v5, NDEATH del *will* en cuanto muere la conexión). Ver §6.5.3.
 - **MQTT-6** Implementado: lista ordenada de brokers (`mqtt.backup_brokers`, hasta 3 además de `mqtt.host`), paso al siguiente tras `failover_after` intentos fallidos seguidos y vuelta opcional al primario (`primary_return_s`: un intento tras N s de sesión estable en un respaldo). Lógica en `gw_brokersel` (sin IDF). H (orden, vuelta circular, sesión estable que conserva el broker, vuelta al primario con un solo intento, esquema) + Q (primario caído al arrancar → respaldo; primario de vuelta → NDEATH en el respaldo y NBIRTH en el primario tras keepalive + 10 s; primario caído otra vez → respaldo).
 - **MB-14** Parcial: escrituras antes del siguiente sondeo, no entre bloques.
 - **IO-3** Parcial: DO a OFF al reiniciar, sin el resto del modo seguro.
@@ -556,6 +557,12 @@ Sin SNTP no hay hora válida: no hay RTC (TIME-2). Antes de la primera conexión
 - Las credenciales, el `client_id`, TLS y la CA son los mismos para todos los brokers.
 - Los brokers no comparten estado: un comando en vuelo en el broker viejo se pierde. Un host primario (SPB-13) debe estar conectado a todos.
 - Un host con varios registros DNS (por ejemplo, un clúster) sigue siendo un broker: esp-mqtt usa la primera dirección que resuelve.
+
+### 6.5.3 MQTT 5 (MQTT-8)
+
+- Solo se usa lo que Sparkplug necesita: las propiedades de conexión que fija la especificación (arriba) y los códigos de motivo de CONNACK y SUBACK (≥ 0x80 = rechazo, igual que en 3.1.1). No se usan alias de tema, expiración de mensajes, propiedades de usuario ni suscripciones compartidas.
+- `CONFIG_MQTT_PROTOCOL_5` agrega código a la imagen aunque la configuración use 3.1.1 (medido en §3.2). Sin esa opción, una configuración con `"5"` se informa y no se conecta.
+- El *Maximum Packet Size* y el *Receive Maximum* del broker no se consultan: un DBIRTH de 6 KB contra un broker que anuncie un máximo menor sería rechazado por el broker (como un broker 3.1.1 con `message_size_limit`).
 
 ### 6.6 Red: Wi-Fi, conmutación (NET-4) e IPv6 (NET-7)
 

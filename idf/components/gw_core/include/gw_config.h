@@ -62,6 +62,11 @@ typedef enum {
 } gw_parity_t;
 
 typedef enum {
+    GW_MQTT_V311 = 0,     /* MQTT 3.1.1 (the MVP) */
+    GW_MQTT_V5,           /* MQTT 5.0 (MQTT-8) */
+} gw_mqtt_protocol_t;
+
+typedef enum {
     GW_WIFI_BACKUP = 0,   /* Ethernet preferred; Wi-Fi carries the session while Ethernet is down */
     GW_WIFI_PRIMARY,      /* Wi-Fi preferred; Ethernet is the backup */
 } gw_wifi_role_t;
@@ -166,6 +171,7 @@ typedef struct {
         uint8_t backup_count;
         uint8_t failover_after;         /* failed attempts on one broker before the next */
         uint32_t primary_return_s;      /* 0 = keep a working backup */
+        gw_mqtt_protocol_t protocol;    /* MQTT-8 */
     } mqtt;
     struct {
         char group_id[GW_ID_SIZE];

@@ -396,9 +396,9 @@ static int cmd_config(int argc, char **argv)
     out("source     %s\n", s_ctx.config_source);
     out("sparkplug  group '%s', edge node '%s'\n", c->sparkplug.group_id,
            c->sparkplug.edge_node_id);
-    out("mqtt       %s:%u, client id '%s', keepalive %u s, user %s\n", c->mqtt.host,
-           c->mqtt.port, c->mqtt.client_id, c->mqtt.keepalive_s,
-           c->mqtt.username[0] ? c->mqtt.username : "(none)");
+    out("mqtt       %s:%u, MQTT %s, client id '%s', keepalive %u s, user %s\n", c->mqtt.host,
+           c->mqtt.port, c->mqtt.protocol == GW_MQTT_V5 ? "5" : "3.1.1", c->mqtt.client_id,
+           c->mqtt.keepalive_s, c->mqtt.username[0] ? c->mqtt.username : "(none)");
     for (uint8_t i = 0; i < c->mqtt.backup_count; i++) {
         out("backup %u   %s:%u\n", i + 1u, c->mqtt.backup[i].host, c->mqtt.backup[i].port);
     }

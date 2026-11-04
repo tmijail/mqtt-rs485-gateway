@@ -67,5 +67,8 @@ CONFIG_MBEDTLS_HAVE_TIME_DATE=y
 CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
 
+# MQTT-8: MQTT 5.0 compiled in; mqtt.protocol chooses it per device (3.1.1 by default)
+CONFIG_MQTT_PROTOCOL_5=y
+
 # CFG-7: NVS is NOT encrypted in this default build (no eFuse is ever burned by flashing it).
 # Secrets still live in NVS, outside config.json. Production units add sdkconfig.production.
