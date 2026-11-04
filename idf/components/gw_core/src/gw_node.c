@@ -369,9 +369,12 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
         }
         n->cmd_rebirth = n->cmd_reboot = false;
         n->cmd_do_mask = 0;
-        if (!spb_decode(payload, len, NULL, on_ncmd_metric, n)) {
-            GW_LOGW(TAG, "NCMD: undecodable payload (%u bytes)", (unsigned)len);
+        /* All or nothing: decode the whole payload first, then apply it. */
+        if (!spb_decode(payload, len, NULL, NULL, NULL)) {
+            GW_LOGW(TAG, "NCMD: undecodable payload (%u bytes): nothing applied", (unsigned)len);
+            return;
         }
+        spb_decode(payload, len, NULL, on_ncmd_metric, n);
         if (n->cmd_do_mask) {
             publish_io(n, n->cmd_do_mask);
         }
@@ -406,8 +409,10 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
             return;
         }
         n->cmd_dev = dev;
-        if (!spb_decode(payload, len, NULL, on_dcmd_metric, n)) {
-            GW_LOGW(TAG, "DCMD: undecodable payload (%u bytes)", (unsigned)len);
+        if (!spb_decode(payload, len, NULL, NULL, NULL)) {
+            GW_LOGW(TAG, "DCMD: undecodable payload (%u bytes): nothing applied", (unsigned)len);
+            return;
         }
+        spb_decode(payload, len, NULL, on_dcmd_metric, n);
     }
 }

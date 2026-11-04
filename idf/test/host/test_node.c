@@ -341,6 +341,49 @@ static void test_discard_log_shows_alias_only_if_present(void)
     TEST_ASSERT_EQUAL(0, g_rec.writes);
 }
 
+/* Issue #10: nanopb aborts on a name or string longer than 63 characters; the metrics
+ * decoded before it must not be applied either. */
+static void test_command_aborted_mid_payload_applies_nothing(void)
+{
+    static const char long_name[] =
+        "A_metric_name_that_is_much_longer_than_the_sixty_three_characters_accepted";
+    static const char long_str[] =
+        "A string value that is much longer than the sixty three characters accepted";
+    set_meter(true, 1, 2, 0);
+    gw_node_session_up(&node, 0);
+    recorder_clear();
+
+    raw_metric_t ncmd[3] = {
+        {.name = "DO/1", .datatype = SPB_DT_BOOLEAN, .kind = RAW_BOOL, .num = 1},
+        {.name = long_name, .datatype = SPB_DT_BOOLEAN, .kind = RAW_BOOL, .num = 1},
+        {.name = "DO/2", .datatype = SPB_DT_BOOLEAN, .kind = RAW_BOOL, .num = 1},
+    };
+    send_raw("spBv1.0/Plant1/NCMD/GW01", ncmd, 3);
+    TEST_ASSERT_EQUAL_HEX8(0, g_rec.dout);   /* DO/1 untouched */
+    TEST_ASSERT_EQUAL(0, g_rec.count);       /* and no NDATA */
+
+    ncmd[1] = (raw_metric_t){.name = "Note", .datatype = SPB_DT_STRING, .kind = RAW_STRING,
+                             .str = long_str};
+    send_raw("spBv1.0/Plant1/NCMD/GW01", ncmd, 3);
+    TEST_ASSERT_EQUAL_HEX8(0, g_rec.dout);
+
+    raw_metric_t dcmd[2] = {
+        {.name = "Setpoint", .datatype = SPB_DT_FLOAT, .kind = RAW_FLOAT, .num = 12.3},
+        {.name = long_name, .datatype = SPB_DT_FLOAT, .kind = RAW_FLOAT, .num = 1},
+    };
+    send_raw("spBv1.0/Plant1/DCMD/GW01/Meter1", dcmd, 2);
+    TEST_ASSERT_EQUAL(0, g_rec.writes);
+
+    /* the same commands without the offending metric are applied in full */
+    ncmd[1] = (raw_metric_t){.name = "Nope", .datatype = SPB_DT_BOOLEAN, .kind = RAW_BOOL, .num = 1};
+    send_raw("spBv1.0/Plant1/NCMD/GW01", ncmd, 3);
+    TEST_ASSERT_EQUAL_HEX8(0x03, g_rec.dout);
+    TEST_ASSERT_EQUAL(1, g_rec.count);       /* one NDATA confirming DO/1 and DO/2 */
+    send_raw("spBv1.0/Plant1/DCMD/GW01/Meter1", dcmd, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.writes);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-5, 12.3, g_rec.last_write_value);
+}
+
 static void test_session_down_suppresses_publishing(void)
 {
     set_meter(true, 1, 2, 0);
@@ -371,5 +414,6 @@ int main(void)
     RUN_TEST(test_dcmd_writes);
     RUN_TEST(test_session_down_suppresses_publishing);
     RUN_TEST(test_discard_log_shows_alias_only_if_present);
+    RUN_TEST(test_command_aborted_mid_payload_applies_nothing);
     return UNITY_END();
 }

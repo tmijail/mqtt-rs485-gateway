@@ -97,7 +97,12 @@ typedef struct {
 /** Return false to abort decoding. */
 typedef bool (*spb_metric_cb_t)(void *ctx, const spb_rx_metric_t *m);
 
-/** Decode a payload, invoking @p cb once per metric in wire order. */
+/**
+ * Decode a payload, invoking @p cb once per metric in wire order. With @p cb NULL the
+ * payload is only validated: a command can then be decoded in full before any metric is
+ * applied, since nanopb may fail half-way (for example on a name or string longer than
+ * SPB_NAME_MAX / SPB_STRING_MAX) after earlier metrics went through the callback.
+ */
 bool spb_decode(const uint8_t *buf, size_t len, spb_rx_header_t *hdr, spb_metric_cb_t cb,
                 void *ctx);
 
