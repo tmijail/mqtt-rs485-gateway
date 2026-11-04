@@ -656,8 +656,9 @@ MON_DIR = None       # short directory for the monitor sockets (main)
 SIMULATED = []       # self-tests that already happened
 WORK = None          # the work directory (main)
 ATTEMPT = {"active": False}
-# Seconds a scenario attempt may take (measured on a loaded 4-CPU host, then about x3; scaled by
-# --timeout-scale). Unknown names get DEFAULT_BUDGET_S.
+# Seconds a scenario attempt may take, scaled by --timeout-scale: DEFAULT_BUDGET_S unless a name
+# is listed here. 900 s is over four times the longest attempt measured on a loaded 4-CPU host
+# (main, about 200 s, results.json "durations"), so no scenario needs its own yet.
 SCENARIO_BUDGET_S = {}
 DEFAULT_BUDGET_S = 900.0
 
