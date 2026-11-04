@@ -307,9 +307,14 @@ static int cmd_status(int argc, char **argv)
                (unsigned long)ls.sent, (unsigned long)ls.dropped, (unsigned long)ls.send_errors);
     }
 #if CONFIG_NVS_ENCRYPTION && CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC
-    out("secrets  NVS %s (HMAC key in eFuse KEY%d)\n",
-           gw_storage_secrets_encrypted() ? "encrypted" : "UNAVAILABLE",
-           CONFIG_NVS_SEC_HMAC_EFUSE_KEY_ID);
+    if (gw_storage_nvs_encryption_pending()) {   /* issue #94 */
+        out("secrets  NVS NOT encrypted yet (new firmware on trial, or no LittleFS for the "
+            "migration): encrypted at the next boot of a confirmed firmware\n");
+    } else {
+        out("secrets  NVS %s (HMAC key in eFuse KEY%d)\n",
+            gw_storage_secrets_encrypted() ? "encrypted" : "UNAVAILABLE",
+            CONFIG_NVS_SEC_HMAC_EFUSE_KEY_ID);
+    }
 #else
     out("secrets  NVS NOT encrypted (default build; sdkconfig.production encrypts it)\n");
 #endif

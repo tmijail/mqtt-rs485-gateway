@@ -47,6 +47,27 @@ idf.py -B "$BUILD" -D SDKCONFIG="$BUILD/sdkconfig" \
 
 (cd "$BUILD" && python -m esptool --chip esp32s3 merge-bin --output "$WORK/flash.bin" \
     --pad-to-size 16MB @flash_args)
+
+# Issue #94: the firmware before an OTA update to NVS encryption, the same QEMU build without it
+# (sdkconfig.qemu-plain, build dir build-qemu-plain; without PSRAM in both runs). E2E_PLAIN=0 skips
+# it (and the scenario that needs it). JOBS: its build's parallel jobs.
+PLAIN_ARGS=()
+if [ "${E2E_PLAIN:-1}" = 1 ]; then
+    PLAIN=build-qemu-plain
+    PDEFAULTS="sdkconfig.defaults;sdkconfig.qemu;sdkconfig.qemu-plain"
+    for f in ${PDEFAULTS//;/ }; do
+        if [ "$f" -nt "$PLAIN/sdkconfig" ]; then
+            rm -f "$PLAIN/sdkconfig"
+        fi
+    done
+    idf.py -B "$PLAIN" -D SDKCONFIG="$PLAIN/sdkconfig" -D "SDKCONFIG_DEFAULTS=$PDEFAULTS" \
+        -D GW_FS_DIR="$IDF_DIR/tools/e2e/fs" reconfigure
+    cmake --build "$PLAIN" -j "${JOBS:-$(nproc)}"
+    grep -q '^# CONFIG_NVS_ENCRYPTION is not set' "$PLAIN/sdkconfig"
+    (cd "$PLAIN" && python -m esptool --chip esp32s3 merge-bin --output "$WORK/flash-plain.bin" \
+        --pad-to-size 16MB @flash_args)
+    PLAIN_ARGS=(--plain-flash "$WORK/flash-plain.bin")
+fi
 python - "$WORK/efuse.bin" <<'PYEOF'
 import os, sys
 sys.path.insert(0, os.path.join(os.environ["IDF_PATH"], "tools"))
@@ -58,4 +79,4 @@ PYEOF
     --flash "$WORK/flash.bin" --efuse "$WORK/efuse.bin" --workdir "$WORK" \
     --littlefs-python "$BUILD/littlefs_py_venv/bin/python" --sdkconfig "$BUILD/sdkconfig" \
     --elf "$BUILD/rs485_spb_gateway.elf" --idf-python "$(command -v python)" \
-    --signing-key "$KEY" ${EXTRA[@]+"${EXTRA[@]}"} "$@"
+    --signing-key "$KEY" ${PLAIN_ARGS[@]+"${PLAIN_ARGS[@]}"} ${EXTRA[@]+"${EXTRA[@]}"} "$@"

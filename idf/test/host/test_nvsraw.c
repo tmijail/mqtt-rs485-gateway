@@ -158,6 +158,229 @@ static void test_several_pages_accumulate(void)
     TEST_ASSERT_EQUAL(GW_NVSRAW_ENCRYPTED, gw_nvsraw_verdict(&s));
 }
 
+/* ---------- issue #94 ---------- */
+
+static uint32_t rd32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+static void wr32(uint8_t *p, uint32_t v)
+{
+    for (int i = 0; i < 4; i++) {
+        p[i] = (uint8_t)(v >> (8 * i));
+    }
+}
+
+/* page sequence number, with the header CRC fixed */
+static void set_seq(uint8_t *pg, uint32_t seq)
+{
+    wr32(pg + 4, seq);
+    wr32(pg + 28, gw_nvsraw_crc32(0xFFFFFFFFu, pg + 4, 24));
+}
+
+/* first data byte of entry @p i, with the item CRC fixed */
+static void set_u8(uint8_t *pg, unsigned i, uint8_t v)
+{
+    uint8_t *e = pg + 64 + 32 * i;
+    e[24] = v;
+    uint32_t c = gw_nvsraw_crc32(0xFFFFFFFFu, e, 4);
+    c = gw_nvsraw_crc32(c, e + 8, 16);
+    wr32(e + 4, gw_nvsraw_crc32(c, e + 24, 8));
+}
+
+static void test_mixed_pages(void)
+{
+    static uint8_t enc[GW_NVSRAW_PAGE];
+    memcpy(enc, load(k_enc), sizeof(enc));
+    gw_nvsraw_scan_t s;
+    gw_nvsraw_scan_init(&s);
+    gw_nvsraw_scan_page(&s, enc);
+    gw_nvsraw_scan_page(&s, load(k_plain));
+    TEST_ASSERT_EQUAL_UINT32(1, s.plain_pages);
+    TEST_ASSERT_EQUAL_UINT32(1, s.enc_pages);
+    TEST_ASSERT_EQUAL(GW_NVSRAW_MIXED, gw_nvsraw_verdict(&s));
+    /* the order of the pages does not matter */
+    gw_nvsraw_scan_init(&s);
+    gw_nvsraw_scan_page(&s, load(k_plain));
+    gw_nvsraw_scan_page(&s, enc);
+    TEST_ASSERT_EQUAL(GW_NVSRAW_MIXED, gw_nvsraw_verdict(&s));
+    /* a plain page whose entries all fail their CRC counts as encrypted: with a plain one, mixed */
+    static uint8_t broken[GW_NVSRAW_PAGE];
+    memcpy(broken, load(k_plain), sizeof(broken));
+    for (unsigned i = 0; i < 12; i++) {
+        broken[64 + 32 * i + 4] ^= 0x5A;
+    }
+    gw_nvsraw_scan_init(&s);
+    gw_nvsraw_scan_page(&s, broken);
+    TEST_ASSERT_EQUAL(GW_NVSRAW_ENCRYPTED, gw_nvsraw_verdict(&s));
+    gw_nvsraw_scan_page(&s, load(k_plain));
+    TEST_ASSERT_EQUAL(GW_NVSRAW_MIXED, gw_nvsraw_verdict(&s));
+    /* plain pages only (one with a corrupt entry): plain */
+    gw_nvsraw_scan_init(&s);
+    gw_nvsraw_scan_page(&s, load(k_plain));
+    page[64 + 32 + 10] ^= 0x40;
+    gw_nvsraw_scan_page(&s, page);
+    TEST_ASSERT_EQUAL_UINT32(2, s.plain_pages);
+    TEST_ASSERT_EQUAL(GW_NVSRAW_PLAIN, gw_nvsraw_verdict(&s));
+}
+
+static void test_raw_u8_bdseq(void)
+{
+    gw_nvsraw_u8_t f;
+    gw_nvsraw_u8_init(&f, "spb", "bdseq");
+    gw_nvsraw_u8_ns(&f, load(k_plain));
+    TEST_ASSERT_EQUAL_INT(1, f.ns_index);
+    gw_nvsraw_u8_item(&f, page);
+    TEST_ASSERT_TRUE(f.found);
+    TEST_ASSERT_EQUAL_UINT8(41, f.value);
+    /* another namespace's key of the same name is not it; a missing key is not found */
+    gw_nvsraw_u8_t g;
+    gw_nvsraw_u8_init(&g, "gw", "bdseq");
+    gw_nvsraw_u8_ns(&g, page);
+    gw_nvsraw_u8_item(&g, page);
+    TEST_ASSERT_EQUAL_INT(3, g.ns_index);
+    TEST_ASSERT_FALSE(g.found);
+    /* nothing in an encrypted page */
+    gw_nvsraw_u8_init(&g, "spb", "bdseq");
+    gw_nvsraw_u8_ns(&g, load(k_enc));
+    gw_nvsraw_u8_item(&g, page);
+    TEST_ASSERT_EQUAL_INT(-1, g.ns_index);
+    TEST_ASSERT_FALSE(g.found);
+    /* two written copies (a reset mid-update): the page with the higher sequence wins, in
+     * either order */
+    static uint8_t newer[GW_NVSRAW_PAGE];
+    memcpy(newer, load(k_plain), sizeof(newer));
+    set_seq(newer, 7);
+    set_u8(newer, 1, 42);
+    static uint8_t old[GW_NVSRAW_PAGE];
+    memcpy(old, load(k_plain), sizeof(old));
+    for (int order = 0; order < 2; order++) {
+        gw_nvsraw_u8_init(&f, "spb", "bdseq");
+        const uint8_t *first = order ? newer : old;
+        const uint8_t *second = order ? old : newer;
+        gw_nvsraw_u8_ns(&f, first);
+        gw_nvsraw_u8_ns(&f, second);
+        gw_nvsraw_u8_item(&f, first);
+        gw_nvsraw_u8_item(&f, second);
+        TEST_ASSERT_TRUE(f.found);
+        TEST_ASSERT_EQUAL_UINT8(42, f.value);
+        TEST_ASSERT_EQUAL_UINT32(7, f.seq);
+    }
+    /* a value whose CRC does not match is not taken */
+    set_u8(newer, 1, 43);
+    newer[64 + 32 + 24] = 44;
+    gw_nvsraw_u8_init(&f, "spb", "bdseq");
+    gw_nvsraw_u8_ns(&f, newer);
+    gw_nvsraw_u8_item(&f, newer);
+    TEST_ASSERT_FALSE(f.found);
+    TEST_ASSERT_EQUAL_UINT32(7, rd32(newer + 4));
+}
+
+static void test_copy_round_trip(void)
+{
+    static uint8_t buf[512];
+    size_t n = gw_nvsmig_begin(buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_size_t(GW_NVSMIG_HDR, n);
+    uint8_t b = 41;
+    const char *pw = "s3cret-mqtt-67";
+    uint8_t blob[32];
+    for (unsigned i = 0; i < sizeof(blob); i++) {
+        blob[i] = (uint8_t)i;
+    }
+    n = gw_nvsmig_add(buf, sizeof(buf), n, "spb", "bdseq", 0x01, &b, 1);
+    n = gw_nvsmig_add(buf, sizeof(buf), n, "secrets", "mqtt_pw", 0x21, pw, strlen(pw) + 1);
+    n = gw_nvsmig_add(buf, sizeof(buf), n, "gw", "lkg_net", 0x42, blob, sizeof(blob));
+    TEST_ASSERT_EQUAL_size_t(GW_NVSMIG_HDR + 3 * GW_NVSMIG_REC_HDR + 1 + 15 + 32, n);
+    /* found before it is sealed (the bdSeq fallback looks for it) */
+    gw_nvsmig_rec_t r;
+    TEST_ASSERT_TRUE(gw_nvsmig_find(buf, n, "spb", "bdseq", &r));
+    TEST_ASSERT_FALSE(gw_nvsmig_check(buf, n, NULL));   /* not sealed yet */
+    size_t size = gw_nvsmig_seal(buf, n);
+    uint32_t count = 0;
+    TEST_ASSERT_TRUE(gw_nvsmig_check(buf, size, &count));
+    TEST_ASSERT_EQUAL_UINT32(3, count);
+    size_t off = 0;
+    TEST_ASSERT_TRUE(gw_nvsmig_next(buf, size, &off, &r));
+    TEST_ASSERT_EQUAL_STRING("spb", r.ns);
+    TEST_ASSERT_EQUAL_STRING("bdseq", r.key);
+    TEST_ASSERT_EQUAL_UINT8(0x01, r.type);
+    TEST_ASSERT_EQUAL_UINT16(1, r.len);
+    TEST_ASSERT_EQUAL_UINT8(41, r.data[0]);
+    TEST_ASSERT_TRUE(gw_nvsmig_next(buf, size, &off, &r));
+    TEST_ASSERT_EQUAL_STRING("mqtt_pw", r.key);
+    TEST_ASSERT_EQUAL_STRING(pw, (const char *)r.data);
+    TEST_ASSERT_TRUE(gw_nvsmig_next(buf, size, &off, &r));
+    TEST_ASSERT_EQUAL_UINT8(0x42, r.type);
+    TEST_ASSERT_EQUAL_MEMORY(blob, r.data, sizeof(blob));
+    TEST_ASSERT_FALSE(gw_nvsmig_next(buf, size, &off, &r));
+    TEST_ASSERT_FALSE(gw_nvsmig_find(buf, size, "spb", "nope", &r));
+
+    /* damaged copies are refused: a flipped byte, cut short, longer, another magic */
+    buf[GW_NVSMIG_HDR + 40] ^= 1;
+    TEST_ASSERT_FALSE(gw_nvsmig_check(buf, size, NULL));
+    buf[GW_NVSMIG_HDR + 40] ^= 1;
+    TEST_ASSERT_TRUE(gw_nvsmig_check(buf, size, NULL));
+    TEST_ASSERT_FALSE(gw_nvsmig_check(buf, size - 1, NULL));
+    TEST_ASSERT_FALSE(gw_nvsmig_check(buf, size + 1, NULL));
+    TEST_ASSERT_FALSE(gw_nvsmig_check(buf, 3, NULL));
+    buf[0] ^= 1;
+    TEST_ASSERT_FALSE(gw_nvsmig_check(buf, size, NULL));
+    buf[0] ^= 1;
+
+    /* an empty copy is valid */
+    static uint8_t e[GW_NVSMIG_HDR];
+    TEST_ASSERT_EQUAL_size_t(0, gw_nvsmig_begin(e, sizeof(e) - 1));
+    size = gw_nvsmig_seal(e, gw_nvsmig_begin(e, sizeof(e)));
+    TEST_ASSERT_TRUE(gw_nvsmig_check(e, size, &count));
+    TEST_ASSERT_EQUAL_UINT32(0, count);
+
+    /* no room, names too long or empty: nothing appended */
+    n = gw_nvsmig_begin(buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_size_t(0, gw_nvsmig_add(buf, GW_NVSMIG_HDR + GW_NVSMIG_REC_HDR, n, "spb",
+                                              "bdseq", 0x01, &b, 1));
+    TEST_ASSERT_EQUAL_size_t(0, gw_nvsmig_add(buf, sizeof(buf), n, "spb",
+                                              "a-key-of-16-char", 0x01, &b, 1));
+    TEST_ASSERT_EQUAL_size_t(0, gw_nvsmig_add(buf, sizeof(buf), n, "", "bdseq", 0x01, &b, 1));
+    TEST_ASSERT_NOT_EQUAL(0, gw_nvsmig_add(buf, sizeof(buf), n, "spb", "a-key-of-15-chr", 0x01,
+                                           &b, 1));
+}
+
+static void test_decide(void)
+{
+    const gw_nvsraw_kind_t kinds[] = {GW_NVSRAW_EMPTY, GW_NVSRAW_PLAIN, GW_NVSRAW_ENCRYPTED,
+                                      GW_NVSRAW_MIXED};
+    /* a valid copy of an interrupted migration is always finished, whatever the pages hold */
+    for (unsigned k = 0; k < 4; k++) {
+        for (int t = 0; t < 2; t++) {
+            TEST_ASSERT_EQUAL(GW_NVSMIG_RESUME,
+                              gw_nvsmig_decide(kinds[k], GW_NVSMIG_COPY_VALID, t, true));
+        }
+    }
+    for (int c = 0; c < 2; c++) {   /* no copy, or a damaged one (discarded) */
+        gw_nvsmig_copy_t copy = c ? GW_NVSMIG_COPY_BAD : GW_NVSMIG_COPY_NONE;
+        /* unencrypted (or mixed: the plain entries are the newer ones) on a confirmed image */
+        TEST_ASSERT_EQUAL(GW_NVSMIG_MIGRATE, gw_nvsmig_decide(GW_NVSRAW_PLAIN, copy, false, true));
+        TEST_ASSERT_EQUAL(GW_NVSMIG_MIGRATE, gw_nvsmig_decide(GW_NVSRAW_MIXED, copy, false, true));
+        /* on trial: a rollback must find what the previous image can read */
+        TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(GW_NVSRAW_PLAIN, copy, true, true));
+        TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(GW_NVSRAW_MIXED, copy, true, true));
+        TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(GW_NVSRAW_EMPTY, copy, true, true));
+        /* nowhere to keep the copy: nothing is erased */
+        TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(GW_NVSRAW_PLAIN, copy, false, false));
+        TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(GW_NVSRAW_MIXED, copy, false, false));
+        /* already encrypted (also on trial), or empty on a confirmed image */
+        for (int t = 0; t < 2; t++) {
+            for (int f = 0; f < 2; f++) {
+                TEST_ASSERT_EQUAL(GW_NVSMIG_OPEN_ENCRYPTED,
+                                  gw_nvsmig_decide(GW_NVSRAW_ENCRYPTED, copy, t, f));
+            }
+        }
+        TEST_ASSERT_EQUAL(GW_NVSMIG_OPEN_ENCRYPTED, gw_nvsmig_decide(GW_NVSRAW_EMPTY, copy, false, true));
+        TEST_ASSERT_EQUAL(GW_NVSMIG_OPEN_ENCRYPTED, gw_nvsmig_decide(GW_NVSRAW_EMPTY, copy, false, false));
+    }
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -167,5 +390,9 @@ int main(void)
     RUN_TEST(test_erased_or_empty);
     RUN_TEST(test_one_corrupt_entry_keeps_plain);
     RUN_TEST(test_several_pages_accumulate);
+    RUN_TEST(test_mixed_pages);
+    RUN_TEST(test_raw_u8_bdseq);
+    RUN_TEST(test_copy_round_trip);
+    RUN_TEST(test_decide);
     return UNITY_END();
 }

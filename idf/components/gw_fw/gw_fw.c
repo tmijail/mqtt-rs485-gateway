@@ -257,6 +257,20 @@ static void on_restart(void *arg)
     s_hooks.restart();
 }
 
+/* An orderly restart in RESTART_DELAY_MS: the state NDATA (or the HTTP answer) goes out first. */
+static void restart_soon(void)
+{
+    if (s_restart_timer == NULL) {   /* created when needed: no allocation in a normal boot */
+        const esp_timer_create_args_t rt = {.callback = on_restart, .name = "fw_restart"};
+        if (esp_timer_create(&rt, &s_restart_timer) != ESP_OK) {
+            ESP_LOGE(TAG, "no memory for the restart timer: restarting now");
+            s_hooks.restart();
+            return;
+        }
+    }
+    esp_timer_start_once(s_restart_timer, RESTART_DELAY_MS * 1000ULL);
+}
+
 /* The new image is written, verified and set to boot: restart into it. */
 static void finished(const char *version)
 {
@@ -267,15 +281,7 @@ static void finished(const char *version)
                   "first Sparkplug session, at most %d s)",
              version, CONFIG_GW_FW_CONFIRM_TIMEOUT_S);
     set_status(GW_FW_REBOOTING, 100, NULL, "rebooting into %s", version);
-    if (s_restart_timer == NULL) {   /* created when needed: no allocation in a normal boot */
-        const esp_timer_create_args_t rt = {.callback = on_restart, .name = "fw_restart"};
-        if (esp_timer_create(&rt, &s_restart_timer) != ESP_OK) {
-            ESP_LOGE(TAG, "no memory for the restart timer: restarting now");
-            s_hooks.restart();
-            return;
-        }
-    }
-    esp_timer_start_once(s_restart_timer, RESTART_DELAY_MS * 1000ULL);
+    restart_soon();
 }
 
 /* ---------- trial of a new image (FW-1 health criterion, gw_ota policy) ---------- */
@@ -304,6 +310,14 @@ static void act(gw_ota_action_t a)
         snprintf(detail, sizeof(detail), "firmware %s confirmed: %s", s_st.running, why);
         ESP_LOGW(TAG, "%s; the bootloader keeps it", detail);
         set_status(GW_FW_CONFIRMED, 100, detail, "confirmed: %s", s_st.running);
+        if (gw_storage_nvs_encryption_pending()) {
+            /* issue #94: the trial ran on the unencrypted NVS (a rollback had to find it as
+             * the previous image left it); now no rollback can come, and the next boot
+             * moves it into the encrypted NVS */
+            ESP_LOGW(TAG, "firmware %s confirmed: restarting once to encrypt the NVS",
+                     s_st.running);
+            restart_soon();
+        }
         return;
     }
     char detail[sizeof(s_st.detail)];
