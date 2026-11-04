@@ -212,7 +212,7 @@ Los tests de host descargan Unity y cJSON con `FetchContent`, desde GitHub y con
 ### 4.2 Interoperabilidad Sparkplug
 
 ```bash
-build-host/spb_dump /tmp/spb && python3 idf/tools/spb_decode.py --check /tmp/spb
+mkdir -p /tmp/spb && build-host/spb_dump /tmp/spb && python3 idf/tools/spb_decode.py --check /tmp/spb
 ```
 
 `spb_dump` genera NDEATH, NBIRTH, DBIRTH, DDATA y NDATA reales del motor. `spb_decode.py` los compila con `grpc_tools.protoc` a partir del `sparkplug_b.proto` oficial de eclipse/tahu (copiado sin cambios en `components/gw_core/proto/`) y los decodifica con **Google protobuf 7.36**.
