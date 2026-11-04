@@ -70,19 +70,35 @@ add_test(NAME check_set_config
 # fresh: matches; stale: DYNAMIC_BUFFER "is not set" from before #80 (fails, and only warns with
 # MODE=warn); wdt5: a different watchdog timeout fails, unless an overlay of the build sets it;
 # absent options (SPIRAM_IGNORE_NOTFOUND with SPIRAM off, as in the QEMU build) are skipped.
+# Issue #93, with sdkconfig.production in the chain ("@" = a file of the project): prod_fresh
+# matches; prod_stale lacks SECURE_DISABLE_ROM_DL_MODE (fails; reported with MODE=warn), which a
+# build without the production overlay does not check.
 set(GW_CFGCHK ${IDF_PROJECT_DIR}/cmake/gw_sdkconfig_check.cmake)
 set(GW_CFGCHK_DIR ${CMAKE_CURRENT_LIST_DIR}/sdkconfig_check)
 set(GW_CFGCHK_DEFAULTS ${IDF_PROJECT_DIR}/sdkconfig.defaults)
-foreach(c "fresh;fresh;;;0" "stale;stale;;;1" "stale_warn;stale;;warn;0" "wdt5;wdt5;;;1"
-          "wdt5_overlay;wdt5;wdt5.defaults;;0")
+foreach(c "fresh;fresh;;;0" "stale;stale;;warn;0;MBEDTLS_DYNAMIC_BUFFER" "stale;stale;;;1"
+          "wdt5;wdt5;;;1" "wdt5_overlay;wdt5;wdt5.defaults;;0"
+          "prod_fresh;prod_fresh;@sdkconfig.production;;0"
+          "prod_stale;prod_stale;@sdkconfig.production;;1"
+          "prod_stale;prod_stale;@sdkconfig.production;warn;0;SECURE_DISABLE_ROM_DL_MODE"
+          "prod_stale_default;prod_stale;;;0")
     list(GET c 0 name)
     list(GET c 1 cfg)
     list(GET c 2 overlay)
     list(GET c 3 mode)
     list(GET c 4 fails)
+    set(expect "")
+    if(mode STREQUAL "warn")
+        list(GET c 5 expect)
+        string(APPEND name "_warn")
+    endif()
     set(defaults ${GW_CFGCHK_DEFAULTS})
-    if(overlay)
-        string(APPEND defaults "\;${GW_CFGCHK_DIR}/${overlay}")
+    # $<SEMICOLON>: one argument with a list in it ("\;" kept its backslash, so before issue #93
+    # an overlay was never read and wdt5_overlay passed without checking anything)
+    if(overlay MATCHES "^@(.*)")
+        string(APPEND defaults "$<SEMICOLON>${IDF_PROJECT_DIR}/${CMAKE_MATCH_1}")
+    elseif(overlay)
+        string(APPEND defaults "$<SEMICOLON>${GW_CFGCHK_DIR}/${overlay}")
     endif()
     add_test(NAME sdkconfig_check_${name}
              COMMAND ${CMAKE_COMMAND} -DSDKCONFIG=${GW_CFGCHK_DIR}/${cfg}.sdkconfig
@@ -91,6 +107,6 @@ foreach(c "fresh;fresh;;;0" "stale;stale;;;1" "stale_warn;stale;;warn;0" "wdt5;w
         set_tests_properties(sdkconfig_check_${name} PROPERTIES WILL_FAIL TRUE)
     elseif(mode STREQUAL "warn")
         set_tests_properties(sdkconfig_check_${name} PROPERTIES
-                             PASS_REGULAR_EXPRESSION "CMake Warning.*CONFIG_MBEDTLS_DYNAMIC_BUFFER")
+                             PASS_REGULAR_EXPRESSION "CMake Warning.*CONFIG_${expect}")
     endif()
 endforeach()

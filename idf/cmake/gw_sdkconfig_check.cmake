@@ -35,6 +35,20 @@ set(GW_SDKCONFIG_REQUIRED
     # The board boots without PSRAM when it is not detected
     SPIRAM_IGNORE_NOTFOUND)
 
+# Issue #93: checked only when sdkconfig.production is in the defaults chain. A production
+# sdkconfig generated before one of these was set (or edited by hand) would build an image that
+# burns eFuses without the protection the overlay promises (FW-2, FW-3, CFG-7). An option whose
+# parent is off is absent and skipped (the QEMU Secure Boot run turns flash encryption off in its
+# own overlay, so the release mode is absent); the parents are in the list.
+set(GW_SDKCONFIG_REQUIRED_PRODUCTION
+    SECURE_BOOT
+    SECURE_BOOT_V2_ENABLED
+    SECURE_FLASH_ENC_ENABLED
+    SECURE_FLASH_ENCRYPTION_MODE_RELEASE
+    SECURE_DISABLE_ROM_DL_MODE
+    NVS_ENCRYPTION
+    NVS_SEC_KEY_PROTECT_USING_HMAC)
+
 # Reads CONFIG_ assignments of <file> into <prefix>_<NAME> variables (value "n" for "is not set",
 # and for "=n" in a defaults file) and appends the names to <prefix>_NAMES.
 function(__gw_sdkconfig_read file prefix)
@@ -60,7 +74,12 @@ endfunction()
 # Sets <result> to the list of "NAME: sdkconfig has X, the defaults Y" mismatches.
 function(gw_sdkconfig_mismatches sdkconfig defaults target result)
     set(expected_NAMES "")
+    set(required ${GW_SDKCONFIG_REQUIRED})
     foreach(f IN LISTS defaults)
+        get_filename_component(base "${f}" NAME)
+        if(base STREQUAL "sdkconfig.production")
+            list(APPEND required ${GW_SDKCONFIG_REQUIRED_PRODUCTION})
+        endif()
         foreach(g "${f}" "${f}.${target}")
             if(EXISTS "${g}")
                 __gw_sdkconfig_read("${g}" expected)
@@ -70,7 +89,7 @@ function(gw_sdkconfig_mismatches sdkconfig defaults target result)
     set(active_NAMES "")
     __gw_sdkconfig_read("${sdkconfig}" active)
     set(out "")
-    foreach(name IN LISTS GW_SDKCONFIG_REQUIRED)
+    foreach(name IN LISTS required)
         if(NOT DEFINED expected_${name} OR NOT DEFINED active_${name})
             continue()
         endif()
