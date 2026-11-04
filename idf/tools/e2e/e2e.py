@@ -562,6 +562,10 @@ def set_do(obs, ncmd_t, ndata_t, states):
 
 # ---------------------------------------------------------------- QEMU
 
+class QemuGone(ConnectionError):
+    """Issue #90: the emulator is gone (its console write failed)."""
+
+
 class Gateway:
     def __init__(self, args, log_path, flash=None):
         self.args, self.log_path = args, log_path
@@ -588,8 +592,10 @@ class Gateway:
                "-chardev", f"socket,id=rs485,host=127.0.0.1,port={MODBUS_PORT},reconnect-ms=500",
                "-serial", "chardev:rs485",
                "-monitor", "none"]
+        err = pathlib.Path(str(self.log_path) + ".qemu")
+        self.err_offset = err.stat().st_size if err.exists() else 0   # this boot's stderr only
         self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                     stderr=open(str(self.log_path) + ".qemu", "ab"))
+                                     stderr=open(err, "ab"))
         PROCS.append(self.proc)
         GATEWAYS.append(self)
         for _ in range(100):
@@ -599,6 +605,9 @@ class Gateway:
             except OSError:
                 time.sleep(0.1)
         threading.Thread(target=self._reader, args=(self.sock,), daemon=True).start()
+        if a.simulate_qemu_death == "boot" and not RETRIES and len(GATEWAYS) == 2:
+            # issue #90 self-test: the emulator dies during a boot that is not the first
+            threading.Timer(3, self.proc.send_signal, (signal.SIGSEGV,)).start()
 
     def _reader(self, sock):
         buf = b""
@@ -618,7 +627,11 @@ class Gateway:
                     self.lines.append((time.monotonic(), line.decode(errors="replace").rstrip()))
 
     def console(self, text):
-        self.sock.sendall(text.encode() + b"\n")
+        try:
+            self.sock.sendall(text.encode() + b"\n")
+        except OSError as e:   # issue #90: BrokenPipeError when the emulator is gone
+            time.sleep(0.5)    # let the process be reaped so its exit status is known
+            raise QemuGone(self.qemu_died() or f"QEMU console closed ({e})") from e
 
     def kill(self):
         self.gone_before_kill = self.proc.poll()
@@ -636,12 +649,16 @@ class Gateway:
         if code is None:
             return None
         err = pathlib.Path(str(self.log_path) + ".qemu")
-        lines = err.read_text(errors="replace").splitlines() if err.exists() else []
-        known = [ln for ln in lines if re.search(r"Bad ram pointer|iotlb_to_section|Assertion|"
-                                                 r"Segmentation|core dumped|qemu-system-xtensa: ", ln)
-                 and "waiting for connection" not in ln]
+        lines = []
+        if err.exists():
+            with open(err, "rb") as f:
+                f.seek(getattr(self, "err_offset", 0))
+                lines = f.read().decode(errors="replace").splitlines()
+        tail = [ln.strip() for ln in lines if ln.strip() and "waiting for connection" not in ln
+                and ln.strip() != "Adding SPI flash device"][-3:]
         how = f"signal {-code}" if code < 0 else f"exit status {code}"
-        return f"QEMU {how} ({self.log_path.name}): {(known or ['no error message'])[-1].strip()}"
+        return (f"QEMU terminó ({how}, {self.log_path.name}); stderr: "
+                f"{' | '.join(tail) if tail else 'no error message'}")
 
     def shell(self, commands, patterns, timeout=3, tries=3):
         """Ask the console shell (read-only commands only: they are repeated) until every regex in
@@ -1909,7 +1926,7 @@ def run_ota(args, work):
             base = f"https://10.0.2.2:{fw_port}/v2.bin?pad="
             return base + "p" * (n - len(base))
 
-        if args.simulate_qemu_death and not RETRIES:
+        if args.simulate_qemu_death == "ota" and not RETRIES:
             # issue #86 self-test: the emulator dies as it did in the real aborts (SIGABRT)
             gw.proc.send_signal(signal.SIGABRT)
             gw.proc.wait()
@@ -2092,9 +2109,10 @@ def main():
     ap.add_argument("--sdkconfig", required=True, help="sdkconfig of the QEMU build")
     ap.add_argument("--elf", required=True, help="ELF of the QEMU build (core dump decoding)")
     ap.add_argument("--idf-python", required=True, help="ESP-IDF python (has esp_coredump)")
-    ap.add_argument("--simulate-qemu-death", action="store_true",
-                    help="issue #86 self-test: SIGABRT the emulator once in the OTA scenario, "
-                         "which must then be repeated")
+    ap.add_argument("--simulate-qemu-death", nargs="?", const="ota", choices=("ota", "boot"),
+                    help="issues #86/#90 self-test: 'ota' (the default) SIGABRTs the emulator "
+                         "once in the OTA scenario; 'boot' SIGSEGVs the second emulator started, "
+                         "3 s into its boot, whatever the scenario; either must be repeated")
     ap.add_argument("--signing-key", default="",
                     help="FW-2: the QEMU build's test signing key (signed images required)")
     ap.add_argument("--mqtt-port", type=int, default=MQTT_PORT)
@@ -2148,41 +2166,44 @@ def main():
     try:
         only = set(filter(None, args.only.split(",")))
         want = lambda name: not only or name in only  # noqa: E731
+        # Issues #86/#90: every scenario through run_scenario: a QEMU that dies under one (at any
+        # boot) is reported as such and the scenario runs once more; firmware failures are not
+        # retried. The OTA scenario is the one where it happens most (README 4.3).
         if want("failsafe"):
-            run_config_failsafe(args, work, slave)
+            run_scenario("failsafe", lambda: run_config_failsafe(args, work, slave))
         if want("network"):
-            run_network_variant(args, work, slave)
+            run_scenario("network", lambda: run_network_variant(args, work, slave))
         if want("web"):
-            run_web(args, work)
+            run_scenario("web", lambda: run_web(args, work))
         if want("reset"):
-            run_factory_reset(args, work)
+            run_scenario("reset", lambda: run_factory_reset(args, work))
         if want("tls"):
-            run_tls(args, work)
+            run_scenario("tls", lambda: run_tls(args, work))
         if want("failover"):
-            run_failover(args, work)
+            run_scenario("failover", lambda: run_failover(args, work))
         if want("mqtt5"):
-            run_mqtt5(args, work, work / "mosquitto.log")
-            run_max_packet(args, work, slave)
+            run_scenario("mqtt5", lambda: run_mqtt5(args, work, work / "mosquitto.log"))
+            run_scenario("max_packet", lambda: run_max_packet(args, work, slave))
         if want("phost"):
-            run_primary_host(args, work)
+            run_scenario("phost", lambda: run_primary_host(args, work))
         if want("sf"):
-            run_store_forward(args, work, slave)
-            run_store_forward_spill(args, work, slave)
-            run_stack_margin(args, work, slave)
+            run_scenario("sf", lambda: run_store_forward(args, work, slave))
+            run_scenario("sf spill", lambda: run_store_forward_spill(args, work, slave))
+            run_scenario("stack margin", lambda: run_stack_margin(args, work, slave))
         if want("https"):
-            run_https(args, work)
+            run_scenario("https", lambda: run_https(args, work))
         if want("ota"):
-            # FW-1: hundreds of flash erases and writes and several image verifications; the
-            # emulator sometimes dies in one (README 4.3, issue #86): retried once then
             run_scenario("FW-1 OTA", lambda: run_ota(args, work))
         if want("nvs"):
             run_scenario("issue #67 NVS migration", lambda: run_nvs_migration(args, work))
         if want("slow"):
-            run_slow_link(args, work, sdkconfig_int(args.sdkconfig, "GW_MQTT_PUBLISH_BUDGET_MS"))
+            run_scenario("slow", lambda: run_slow_link(
+                args, work, sdkconfig_int(args.sdkconfig, "GW_MQTT_PUBLISH_BUDGET_MS")))
         if "refuse" in only and "main" not in only:
-            check_suback_refused(args, work)   # part of "main"; alone only on request (#89)
+            # part of "main"; alone only on request (#89)
+            run_scenario("refuse", lambda: check_suback_refused(args, work))
         if want("main"):
-            run(args, log, slave, broker, conf, work)
+            run_scenario("main", lambda: run(args, log, slave, broker, conf, work))
     except BaseException:
         traceback.print_exc()   # the summary below exits: keep the reason visible
         check("harness completed every scenario", False, traceback.format_exc().splitlines()[-1])
@@ -2220,6 +2241,13 @@ def main():
         (work / "results.json").write_text(json.dumps({"checks": results, "retries": RETRIES},
                                                       indent=2))
         failed = [r for r in results if not r["ok"]]
+        # issue #90: every emulator that ended on its own, with its stderr tail, and the
+        # artefacts left in place (the harness deletes nothing)
+        exits = [d for d in (g.qemu_died() for g in GATEWAYS) if d]
+        (work / "qemu-exits.txt").write_text("".join(f"{d}\n" for d in exits) or "none\n")
+        if failed or exits:
+            print(f"artefacts kept for the diagnosis: {work} (uart0-*.log, uart0-*.log.qemu, "
+                  f"qemu-exits.txt: {len(exits)} QEMU exit(s) not requested by the harness)")
         retried = (f"; {len(RETRIES)} scenario(s) repeated after QEMU died: " +
                    ", ".join(f"{r['scenario']} ({r['qemu']})" for r in RETRIES)) if RETRIES else ""
         print(f"\n{len(results) - len(failed)}/{len(results)} checks passed{retried}; artefacts "
