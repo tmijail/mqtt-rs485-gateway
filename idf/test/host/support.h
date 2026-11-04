@@ -68,6 +68,8 @@ typedef struct {
     size_t room;
     int reboots;
     bool publish_fails;          /* publish returns -1 (a broker that went away) */
+    const char *too_large_topic; /* issue #76: publishes to topics containing it are "too large" */
+    int too_large;               /* publishes answered GW_NODE_PUBLISH_TOO_LARGE */
     int scan_rate_calls;
     uint32_t scan_rate;
 } recorder_t;

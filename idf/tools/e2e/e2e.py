@@ -1005,7 +1005,7 @@ def run_mqtt5(args, work, mosquitto_log):
           f"{f'{will[0] - killed:.1f} s after the kill, bdSeq {bdseq_of(will[2])}' if will else 'missing'}")
 
 
-def run_max_packet(args, work):
+def run_max_packet(args, work, slave):
     """Issue #73 (GW26, MQTT 5) against a mosquitto with max_packet_size 2000, which it
     announces in the CONNACK: NBIRTH and the small DBIRTH of Meter1 go out; the DBIRTH of Bulk
     (about 2.7 KB) is not sent, with a clear error and the shell showing it, and the session
@@ -1041,9 +1041,22 @@ def run_max_packet(args, work):
     err = gw.wait_log(r"spBv1\.0/Plant1/DBIRTH/GW26/Bulk: \d+ bytes, more than the broker's Maximum "
                       r"Packet Size of 2000 \(by \d+\): not published", 15, t0)
     time.sleep(8)
-    asked, h = gw.shell("status", [r"^limit\s+broker Maximum Packet Size 2000 B; [1-9]\d* message\(s\) too "
+    # Issue #76: Bulk is polled (and reported to the Sparkplug task) every cycle, but its DBIRTH
+    # is tried once per session, not rebuilt and rejected each time: the count stays at 1; a
+    # rebirth tries it once more
+    asked, h = gw.shell("status", [r"^limit\s+broker Maximum Packet Size 2000 B; 1 message\(s\) too "
                                    r"large, not published \(last: spBv1\.0/Plant1/DBIRTH/GW26/Bulk\)"])
     shown = list(h.values())[0]
+    bulk_cycles = len([r for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 2 and t >= t0])
+    gw.console("rebirth")
+    gw.wait_log(r"^rebirth: NBIRTH and every DBIRTH requested", 5, asked)
+    time.sleep(3)
+    _, h2 = gw.shell("status", [r"^limit\s+broker Maximum Packet Size 2000 B; 2 message\(s\) too large"])
+    once = list(h2.values())[0]
+    check("Issue #76 a DBIRTH larger than the broker's limit is not rebuilt on every change of its "
+          "device: one attempt per session, one more per rebirth",
+          shown and once and bulk_cycles > 3,
+          f"{bulk_cycles} Bulk poll cycles; " + " | ".join(gw.find(r"^limit\s", asked)))
     bulk = [m for m in CAPTURE if m[1] == f"{T}/DBIRTH/{node}/{BULK}"]
     attempts = gw.find(r"connecting to .* as 'GW26'", t0)
     dropped = re.search(r"Client GW26 .*(disconnected|exceeded)", (work / "mosquitto-maxpkt.log").read_text())
@@ -1446,7 +1459,7 @@ def main():
             run_failover(args, work)
         if want("mqtt5"):
             run_mqtt5(args, work, work / "mosquitto.log")
-            run_max_packet(args, work)
+            run_max_packet(args, work, slave)
         if want("phost"):
             run_primary_host(args, work)
         if want("sf"):

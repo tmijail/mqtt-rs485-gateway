@@ -90,7 +90,7 @@ static uint32_t s_oversize;          /* messages not published because of it */
 static char s_oversize_topic[GW_TOPIC_MAX];
 static uint32_t s_oversize_bytes;
 static int64_t s_oversize_logged_us;
-#define PUBLISH_OVERSIZE (-2)        /* op_publish: not a connection failure */
+#define PUBLISH_OVERSIZE GW_NODE_PUBLISH_TOO_LARGE   /* not a connection failure (issue #76) */
 static int s_pub_fd = -1;            /* socket of the publish in progress, -1 = none */
 static uint16_t s_pub_port;          /* its local port: tells a reused descriptor apart */
 static const char *s_pub_topic;

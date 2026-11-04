@@ -46,8 +46,9 @@ static uint8_t next_seq(gw_node_t *n)
     return n->seq++;  /* uint8_t wraps 255 -> 0 (SPB-5) */
 }
 
-static bool publish(gw_node_t *n, const char *type, const char *device, size_t metric_count,
-                    int qos)
+/* Returns 0, GW_NODE_PUBLISH_TOO_LARGE or -1 (any other failure). */
+static int publish_rc(gw_node_t *n, const char *type, const char *device, size_t metric_count,
+                      int qos)
 {
     spb_payload_t p = {
         .timestamp = gw_port_time_ms(),
@@ -59,15 +60,24 @@ static bool publish(gw_node_t *n, const char *type, const char *device, size_t m
     size_t len = spb_encode(&p, n->buf, sizeof(n->buf));
     if (len == 0 || !gw_node_topic(n, type, device, n->topic, sizeof(n->topic))) {
         GW_LOGE(TAG, "%s%s%s: payload does not fit", type, device ? " " : "", device ? device : "");
-        return false;
+        return -1;
     }
-    if (n->ops.publish(n->ops.ctx, n->topic, n->buf, len, qos, false) < 0) {
-        GW_LOGW(TAG, "publish %s failed", n->topic);
-        return false;
+    int r = n->ops.publish(n->ops.ctx, n->topic, n->buf, len, qos, false);
+    if (r < 0) {
+        if (r != GW_NODE_PUBLISH_TOO_LARGE) {
+            GW_LOGW(TAG, "publish %s failed", n->topic);
+        }
+        return r == GW_NODE_PUBLISH_TOO_LARGE ? r : -1;
     }
     GW_LOGD(TAG, "%s seq=%" PRIu64 " metrics=%u bytes=%u", n->topic, p.seq, (unsigned)metric_count,
             (unsigned)len);
-    return true;
+    return 0;
+}
+
+static bool publish(gw_node_t *n, const char *type, const char *device, size_t metric_count,
+                    int qos)
+{
+    return publish_rc(n, type, device, metric_count, qos) == 0;
 }
 
 static spb_metric_t *metric(gw_node_t *n, size_t i, const char *name, uint64_t alias,
@@ -199,8 +209,16 @@ static void publish_dbirth(gw_node_t *n, uint16_t dev)
         tag_metric(n, i, (uint16_t)(d->first_tag + i), &n->vals[i], true);
     }
     /* born only if the DBIRTH went out (issue #73: it may be larger than the broker accepts):
-     * no DDATA without it; the next change tries the DBIRTH again */
-    n->dev_born[dev] = publish(n, "DBIRTH", d->name, d->tag_count, 0);
+     * no DDATA without it. Issue #76: one that is too large is not rebuilt on every change of
+     * the device; the next session or rebirth tries again */
+    int r = publish_rc(n, "DBIRTH", d->name, d->tag_count, 0);
+    n->dev_born[dev] = r == 0;
+    if (r == GW_NODE_PUBLISH_TOO_LARGE) {
+        n->dev_too_large[dev] = true;
+        GW_LOGW(TAG, "DBIRTH %s too large for the broker: device not born, not retried until "
+                     "the next session or rebirth",
+                d->name);
+    }
 }
 
 static void publish_ddeath(gw_node_t *n, uint16_t dev)
@@ -215,6 +233,7 @@ bool gw_node_rebirth(gw_node_t *n)
     if (!publish_nbirth(n)) {
         return false;   /* no DBIRTH without the NBIRTH they belong to */
     }
+    memset(n->dev_too_large, 0, sizeof(n->dev_too_large));   /* issue #76: try once more */
     for (uint16_t dev = 0; dev < n->cfg->device_count; dev++) {
         bool online;
         n->dev_born[dev] = false;
@@ -299,7 +318,9 @@ void gw_node_device_changed(gw_node_t *n, uint16_t dev)
     bool online;
     gw_tagdb_get_device(n->cfg, dev, n->vals, &online);
     if (online && !n->dev_born[dev]) {
-        publish_dbirth(n, dev);
+        if (!n->dev_too_large[dev]) {   /* issue #76 */
+            publish_dbirth(n, dev);
+        }
         return;
     }
     if (!online) {

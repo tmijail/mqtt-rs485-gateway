@@ -61,8 +61,12 @@ extern "C" {
 #define GW_TOPIC_MAX            160
 #define GW_NODE_HIST_RECS       (2 * GW_MAX_TAGS_PER_DEVICE)   /* records per historical message */
 
+/** ops.publish result: the broker cannot take a message this large in the current session
+ *  (MQTT 5 Maximum Packet Size, issue #73). Not a connection failure. */
+#define GW_NODE_PUBLISH_TOO_LARGE (-2)
+
 typedef struct {
-    /** Publish; returns < 0 on failure. */
+    /** Publish; returns < 0 on failure (GW_NODE_PUBLISH_TOO_LARGE: too large for the broker). */
     int (*publish)(void *ctx, const char *topic, const uint8_t *data, size_t len, int qos,
                    bool retain);
     /** Drive DO @p index (0-7); the implementation stores the read-back in gw_tagdb. */
@@ -96,6 +100,9 @@ typedef struct {
     uint64_t bdseq;                    /* bdSeq of the current session (SPB-3) */
     uint8_t seq;                       /* next seq to send (SPB-5) */
     bool dev_born[GW_MAX_DEVICES];
+    /* Issue #76: the device's DBIRTH was too large for this session's broker: not rebuilt on
+     * every change, only on the next session or rebirth (the limit may differ then) */
+    bool dev_too_large[GW_MAX_DEVICES];
     gw_rbe_t tag_rbe[GW_MAX_TAGS];
     uint8_t di_reported;
     uint8_t do_reported;

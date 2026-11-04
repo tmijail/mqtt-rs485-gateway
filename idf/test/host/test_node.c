@@ -875,6 +875,46 @@ static void test_dbirth_not_published_leaves_the_device_unborn(void)
     TEST_ASSERT_TRUE(node.dev_born[0]);
 }
 
+/* Issue #76: a DBIRTH too large for the broker is not rebuilt and rejected on every change of
+ * its device: one attempt per session (and per rebirth), none in between. */
+static void test_dbirth_too_large_not_retried_on_every_change(void)
+{
+    set_meter(true, 230.5, 12.3, 1);
+    g_rec.too_large_topic = "/DBIRTH/";
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 1));
+    TEST_ASSERT_EQUAL(1, g_rec.count);          /* NBIRTH only */
+    TEST_ASSERT_EQUAL(1, g_rec.too_large);      /* the DBIRTH was tried once */
+    TEST_ASSERT_FALSE(node.dev_born[0]);
+    for (int i = 0; i < 5; i++) {               /* changes: no DBIRTH rebuilt, no DDATA */
+        set_meter(true, 231.5 + i, 12.3, 1);
+        gw_node_device_changed(&node, 0);
+    }
+    TEST_ASSERT_EQUAL(1, g_rec.too_large);
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    /* offline and back within the session: still not retried (and no DDEATH: never born) */
+    set_meter(false, 231.5, 12.3, 1);
+    gw_node_device_changed(&node, 0);
+    set_meter(true, 231.5, 12.3, 1);
+    gw_node_device_changed(&node, 0);
+    TEST_ASSERT_EQUAL(1, g_rec.too_large);
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    /* a rebirth repeats every birth: one attempt */
+    TEST_ASSERT_TRUE(gw_node_rebirth(&node));
+    TEST_ASSERT_EQUAL(2, g_rec.too_large);
+    TEST_ASSERT_EQUAL(2, g_rec.count);          /* the second NBIRTH */
+    /* a new session where the broker takes it: DBIRTH, then DDATA */
+    gw_node_session_down(&node);
+    g_rec.too_large_topic = NULL;
+    recorder_clear();
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 2));
+    TEST_ASSERT_EQUAL(2, g_rec.count);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/DBIRTH/GW01/Meter1", g_rec.msgs[1].topic);
+    TEST_ASSERT_TRUE(node.dev_born[0]);
+    set_meter(true, 240.5, 12.3, 1);
+    gw_node_device_changed(&node, 0);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/DDATA/GW01/Meter1", g_rec.msgs[2].topic);
+}
+
 /* SPB-14 with MB-6 values: Int64/UInt64 above 2^53 exact, Double and strings come back from
  * the store as they were sampled. */
 static void test_store_and_forward_mb6(void)
@@ -956,6 +996,7 @@ int main(void)
     RUN_TEST(test_store_and_forward_mb6);
     RUN_TEST(test_session_up_needs_the_nbirth);
     RUN_TEST(test_dbirth_not_published_leaves_the_device_unborn);
+    RUN_TEST(test_dbirth_too_large_not_retried_on_every_change);
     RUN_TEST(test_store_and_forward_counters);
     return UNITY_END();
 }

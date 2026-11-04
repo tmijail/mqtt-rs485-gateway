@@ -212,6 +212,10 @@ static int rec_publish(void *ctx, const char *topic, const uint8_t *data, size_t
     if (g_rec.count >= REC_MAX || g_rec.publish_fails) {
         return -1;
     }
+    if (g_rec.too_large_topic != NULL && strstr(topic, g_rec.too_large_topic) != NULL) {
+        g_rec.too_large++;
+        return GW_NODE_PUBLISH_TOO_LARGE;
+    }
     rec_msg_t *m = &g_rec.msgs[g_rec.count++];
     snprintf(m->topic, sizeof(m->topic), "%s", topic);
     memcpy(m->payload, data, len);
