@@ -107,9 +107,19 @@ void gw_io_sim_expander_absent(uint32_t ms)
              (unsigned long)ms);
 }
 
+static int64_t s_sim_absent_from_us;   /* first expander access of this boot */
+
 static bool sim_absent(void)
 {
-    return s_sim_absent_ms != 0 && esp_timer_get_time() / 1000 < (int64_t)s_sim_absent_ms;
+    if (s_sim_absent_ms == 0) {
+        return false;
+    }
+    /* measured from this boot's first access: QEMU's timer is not reset by a software reset */
+    int64_t now = esp_timer_get_time();
+    if (s_sim_absent_from_us == 0) {
+        s_sim_absent_from_us = now;
+    }
+    return now - s_sim_absent_from_us < (int64_t)s_sim_absent_ms * 1000;
 }
 
 static int exp_write(void *ctx, uint8_t reg, uint8_t val)
