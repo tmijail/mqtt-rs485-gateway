@@ -1864,7 +1864,7 @@ def check_properties_and_quality(obs, slave, db, ddata_t):
           f"after: {round(gm.float_value, 3) if gm else None} {props(gm) if gm else ''}")
 
 
-def check_rtc(gw, obs, nb, t0, since_reboot, ndata_t):
+def check_rtc(gw, obs, nb, t0, since_reboot, ndata_t, first_nbirth):
     """TIME-2: the first boot (power-on: the simulated PCF85063 has its OS bit set) gets no time
     from it, and stores the SNTP time in it; the boot after NCMD Reboot, with SNTP silent, sets
     the system clock from the RTC, publishes its NBIRTH with valid timestamps at once, and when
@@ -1876,8 +1876,20 @@ def check_rtc(gw, obs, nb, t0, since_reboot, ndata_t):
     skew = abs(nb[2].timestamp / 1000 - time.time()) if nb else None
     asked, h = gw.shell("status", [r"^time\s+\d{4}-.*Z, from the RTC \(not synchronised\); RTC ok"])
     shown = list(h.values())[0]
+    obs.drain()
     SNTP_PAUSED.clear()
     synced = gw.wait_log(r"edge: time synchronised", 45, since_reboot)
+    ts_ndata = obs.wait(ndata_t, 5, lambda q: metric(q, alias=55) is not None)
+    first_ts = metric(first_nbirth, name="Node Info/Time Synced")
+    reboot_ts = metric(nb[2], name="Node Info/Time Synced") if nb else None
+    check("TIME-3 'Node Info/Time Synced' (Boolean, alias 55): true in the NBIRTH after SNTP, false "
+          "in the NBIRTH timed by the RTC, NDATA true when SNTP synchronises later",
+          first_ts is not None and first_ts.boolean_value and reboot_ts is not None
+          and not reboot_ts.boolean_value and ts_ndata is not None
+          and metric(ts_ndata[2], alias=55).boolean_value,
+          f"first NBIRTH {first_ts.boolean_value if first_ts else None}; NBIRTH after the reboot "
+          f"{reboot_ts.boolean_value if reboot_ts else None}; NDATA "
+          f"{metric(ts_ndata[2], alias=55).boolean_value if ts_ndata else None}")
     restore_store = gw.wait_log(r"edge: time synchronised", 0, since_reboot) and \
         gw.find(r"clock now synchronised: rebirth", since_reboot) == []
     check("TIME-2 RTC: OS bit at power-on (no time from it), SNTP time stored in it; after a "
@@ -2904,7 +2916,7 @@ def run(args, log, slave, broker, conf, work):
           and reason1.string_value == "software",
           f"first boot {reason0.string_value if reason0 else None!r}, after reboot "
           f"{reason1.string_value if reason1 else None!r}")
-    check_rtc(gw, obs, nb, t0, since_reboot, ndata_t)
+    check_rtc(gw, obs, nb, t0, since_reboot, ndata_t, nb0[0][2])
     check_panic_during_traffic(gw, obs, slave, nbirth_t)
 
     # Issue #12 / REL-1: a panic writes a core dump to the "coredump" partition, the gateway

@@ -15,7 +15,7 @@
  *   counters of the DIs), 100 + n device tag with global index n,
  *   50..54 SPB-17 diagnostics: Node Info/Uptime (UInt64 s), Free Heap and Min Free Heap
  *   (UInt32 B, internal RAM), RSSI (Int32 dBm, only with Wi-Fi), Modbus (DataSet, one row per
- *   device with the MB-13 counters).
+ *   device with the MB-13 counters), 55 Node Info/Time Synced (TIME-3, Boolean: SNTP).
  *
  * SPB-18 device types: a device with a `type` is published as one Template instance metric
  * (named after the type, alias 100 + its first tag) whose members are its tags, by name; the
@@ -67,11 +67,12 @@ extern "C" {
 #define GW_ALIAS_MIN_HEAP  52u
 #define GW_ALIAS_RSSI      53u
 #define GW_ALIAS_MODBUS    54u
+#define GW_ALIAS_TIME_SYNCED 55u  /* TIME-3 */
 
 #define GW_NODE_IO_COUNT        8
 #define GW_NODE_DIAG_METRICS    5   /* SPB-17, at most (RSSI only with Wi-Fi, Modbus with devices) */
 /* Node metrics of the NBIRTH, without template definitions */
-#define GW_NODE_BIRTH_METRICS   (7 + 3 * GW_NODE_IO_COUNT + GW_NODE_DIAG_METRICS)
+#define GW_NODE_BIRTH_METRICS   (7 + 3 * GW_NODE_IO_COUNT + GW_NODE_DIAG_METRICS + 1)
 /* Scratch metrics: a whole device (+1 template instance), or the NBIRTH with one template
  * definition per device type. */
 #define GW_NODE_METRICS_MAX \
@@ -92,6 +93,7 @@ typedef struct gw_node_diag {
     bool has_rssi;             /* the node has Wi-Fi (the metric exists) */
     bool rssi_valid;           /* associated: rssi is meaningful (null otherwise) */
     int32_t rssi;              /* dBm */
+    bool time_synced;          /* TIME-3: the clock was synchronised by SNTP */
 } gw_node_diag_t;
 
 typedef struct {
@@ -144,6 +146,7 @@ typedef struct {
     uint32_t scan_rate_ms;             /* SPB-15: current override, 0 = per-device poll_ms */
     /* SPB-17 */
     bool has_rssi;                     /* fixed by the NBIRTH */
+    bool time_synced_reported;         /* TIME-3: last published Time Synced */
     uint64_t diag_due_ms;              /* next periodic NDATA (0: none scheduled) */
     bool diag_restart;                 /* NBIRTH sent: the period restarts at the next tick */
     uint64_t diag_hash;                /* of the Modbus counters last published */
@@ -233,6 +236,10 @@ bool gw_node_rebirth(gw_node_t *n);
  * changed. Returns the ms until it needs to run again (UINT32_MAX: never).
  */
 uint32_t gw_node_diag_tick(gw_node_t *n, uint64_t now_ms);
+
+/** TIME-3: the clock's SNTP state; an NDATA with Node Info/Time Synced when it changed. The
+ *  NBIRTH takes it from the diagnostics op. */
+void gw_node_set_time_synced(gw_node_t *n, bool synced);
 
 #ifdef __cplusplus
 }

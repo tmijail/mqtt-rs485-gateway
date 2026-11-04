@@ -587,6 +587,7 @@ static void op_diagnostics(void *ctx, gw_node_diag_t *out)
     int8_t rssi;
     out->rssi_valid = out->has_rssi && gw_net_wifi_rssi(&rssi);
     out->rssi = out->rssi_valid ? rssi : 0;
+    out->time_synced = atomic_load(&s_time_synced);   /* TIME-3: SNTP only, not the RTC */
 }
 
 static void op_reboot(void *ctx)
@@ -1156,6 +1157,9 @@ static void reconcile(void)
         ESP_LOGI(TAG, "clock now synchronised: rebirth");
         gw_node_rebirth(s_node);
     }
+    /* TIME-3: NDATA Time Synced when SNTP synchronises after births timed by the RTC (the
+     * rebirth above already carried it otherwise) */
+    gw_node_set_time_synced(s_node, atomic_load(&s_time_synced));
     if (atomic_exchange(&s_rebirth_req, false) && s_node->online) {
         ESP_LOGI(TAG, "rebirth requested from the console");
         gw_node_rebirth(s_node);

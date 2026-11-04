@@ -1036,6 +1036,42 @@ static void test_diagnostics(void)
     TEST_ASSERT_EQUAL(0, g_rec.count);
 }
 
+/* TIME-3: Node Info/Time Synced in the NBIRTH, and an NDATA each time it changes. */
+static void test_time_synced(void)
+{
+    g_rec.diag.time_synced = false;   /* e.g. the clock came from the RTC */
+    gw_node_session_up(&node, 0);
+    msg(0);
+    int i = decoded_find_name(&dec, "Node Info/Time Synced");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_BOOLEAN, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TIME_SYNCED, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[i].num);
+    recorder_clear();
+    gw_node_set_time_synced(&node, false);           /* unchanged */
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    gw_node_set_time_synced(&node, true);            /* SNTP answered */
+    msg(0);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", g_rec.msgs[0].topic);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TIME_SYNCED, dec.m[0].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[0].num);
+    gw_node_set_time_synced(&node, true);
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    /* a rebirth takes the state from the diagnostics op, without a second NDATA */
+    g_rec.diag.time_synced = true;
+    recorder_clear();
+    gw_node_rebirth(&node);
+    msg(0);
+    TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[decoded_find_name(&dec, "Node Info/Time Synced")].num);
+    size_t births = g_rec.count;
+    gw_node_set_time_synced(&node, true);
+    TEST_ASSERT_EQUAL(births, g_rec.count);
+    gw_node_session_down(&node);
+    gw_node_set_time_synced(&node, false);           /* offline: nothing */
+    TEST_ASSERT_EQUAL(births, g_rec.count);
+}
+
 /* Issue #14: a command metric without an alias is not logged as "alias 0". */
 static void test_discard_log_shows_alias_only_if_present(void)
 {
@@ -1423,6 +1459,7 @@ int main(void)
     RUN_TEST(test_templates);
     RUN_TEST(test_store_and_forward_templates_bytes);
     RUN_TEST(test_diagnostics);
+    RUN_TEST(test_time_synced);
     RUN_TEST(test_worst_case_nbirth_fits);
     RUN_TEST(test_command_aborted_mid_payload_applies_nothing);
     RUN_TEST(test_no_store_coalesces);

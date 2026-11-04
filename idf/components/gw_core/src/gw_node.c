@@ -28,6 +28,7 @@ static const char *const k_count_names[GW_NODE_IO_COUNT] = {
 #define NAME_MIN_HEAP "Node Info/Min Free Heap"
 #define NAME_RSSI     "Node Info/RSSI"
 #define NAME_MODBUS   "Node Info/Modbus"
+#define NAME_TIME_SYNCED "Node Info/Time Synced"
 
 /* SPB-17 / MB-13: "Node Info/Modbus", one row per device. */
 static const char *const k_mb_cols[] = {"Device", "Online", "Cycles", "Failed Cycles", "OK",
@@ -276,6 +277,16 @@ static size_t diag_metrics(gw_node_t *n, size_t i, uint64_t now, bool birth, boo
     return k - i;
 }
 
+void gw_node_set_time_synced(gw_node_t *n, bool synced)
+{
+    if (!n->online || synced == n->time_synced_reported) {
+        return;
+    }
+    n->time_synced_reported = synced;
+    metric(n, 0, NULL, GW_ALIAS_TIME_SYNCED, SPB_DT_BOOLEAN, gw_port_time_ms())->v.num = synced;
+    publish(n, "NDATA", NULL, 1, 0);
+}
+
 static void diag_schedule(gw_node_t *n, uint64_t now)
 {
     uint32_t s = n->cfg->sparkplug.diagnostics_s;
@@ -344,6 +355,14 @@ static bool publish_nbirth(gw_node_t *n)
     n->do_unknown_reported = io.do_unknown;
     n->diag_hash = mb_snapshot(n);
     i += diag_metrics(n, i, now, true, true);
+    if (n->ops.diagnostics != NULL) {   /* TIME-3 */
+        gw_node_diag_t dg;
+        memset(&dg, 0, sizeof(dg));
+        n->ops.diagnostics(n->ops.ctx, &dg);
+        n->time_synced_reported = dg.time_synced;
+        metric(n, i++, NAME_TIME_SYNCED, GW_ALIAS_TIME_SYNCED, SPB_DT_BOOLEAN, now)->v.num =
+            dg.time_synced;
+    }
     n->diag_restart = true;   /* the period starts again at the next tick */
     i += template_definitions(n, i, now);
     return publish(n, "NBIRTH", NULL, i, 0);
