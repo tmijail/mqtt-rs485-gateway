@@ -141,7 +141,7 @@ Texto común (en inglés):
 - **Repositorio:** https://github.com/espressif/qemu
 - **Versión:** QEMU 9.2.2 `esp_develop_9.2.2_20260417`, máquina `esp32s3`, ESP-IDF v6.1.
 - **Ya reportado arriba (la causa):** [espressif/qemu#189](https://github.com/espressif/qemu/issues/189) (abierto: "a restart from the APP CPU boots the PRO CPU two or three times (CPU stall not modelled, CPU reset is a machine reset)") explica que `esp32s3_cpu_stall()` está vacía, con el arreglo en el PR [espressif/qemu#190](https://github.com/espressif/qemu/pull/190) (abierto). Ese issue muestra el síntoma en el reinicio; no menciona el volcado de memoria. **Conviene enviar este texto como comentario en #189** (otro síntoma de la misma causa, que sirve para probar el PR), no como un issue nuevo.
-- **Arreglo provisorio aquí:** `cmd_panic()` en `idf/components/gw_shell/gw_shell.c` (issue #62): el comando `panic` del emulador estaciona el otro núcleo (`esp_ipc_call` con las interrupciones apagadas) antes de `abort()`, como haría el hardware. Sin eso, 2 o 3 de cada 3 volcados del E2E salían inválidos.
+- **Arreglo provisorio aquí:** `cmd_panic()` en `idf/components/gw_shell/gw_shell.c` (issue #62): el comando `panic` del emulador estaciona el otro núcleo (`esp_ipc_call` con las interrupciones apagadas) antes de `abort()`, como haría el hardware. Sin eso, 2 o 3 de cada 3 volcados del E2E salían inválidos. El check del E2E (issue #88) exige además que el propio equipo dé el volcado por válido al arrancar, y distingue el síntoma del emulador (otra tarea escribiendo en el log durante el volcado) de un volcado que el firmware escribió mal.
 
 Texto propuesto (en inglés, como comentario en #189):
 
@@ -179,6 +179,8 @@ Texto propuesto (en inglés, como comentario en #189):
 > ```
 >
 > Core 0's log lines also get interleaved into core 1's panic backtrace. In a larger application we also saw `Invalid core dump SHA256` and `stream read less than specified amount` when reading the dump back. Parking core 0 from the application before the `abort()` (a busy loop with interrupts disabled, entered through `esp_ipc_call`) makes every dump valid, which points at the stall. A `xtensa_runstall()`-based `esp32s3_cpu_stall()`, as in PR #190, should fix this too.
+>
+> The same happens under host CPU load, with another symptom: in a gateway firmware that aborts from its console task (nothing parked), with two busy loops on a 4-CPU host, 1 dump in 6 was left without its final checksum although the writer logged `Write end offset 0x91e0, check sum length 32` and `Core dump has been saved to flash.`. The device itself then reads the checksum back as the erased pattern (`Core dump data check failed`; `esp_coredump`: `Invalid core dump SHA256 "b94e…", should be "a5a5…a5"`), and a task of the other core logged inside the dump window (`W (7398) buzzer: alarm …`, between `Save core dump to flash...` and the restart). Our guess, not verified in the QEMU sources: the running core's flash-cache fetches interleave with the SPI1 page program of the panic handler, which on silicon cannot happen because that core is stalled. With the other core parked, 21 of 21 dumps under the same load were valid.
 
 ## 4. espressif/qemu: con `ssi_psram` en modo octal, QEMU se cae (SIGSEGV en `psram_quad_read`) cuando el bootloader escribe la flash
 
