@@ -94,6 +94,7 @@ Dependencias gestionadas, **con versión fija** (`==`) en cada `idf_component.ym
 
 - La auto-reconexión de esp-mqtt está desactivada.
 - Antes de **cada** intento se toma un bdSeq nuevo de NVS, se arma el NDEATH correspondiente como *will* (`esp_mqtt_set_config`) y se reconecta tras un backoff exponencial con jitter (1–60 s).
+- esp-mqtt puede informar dos veces la misma conexión caída (una escritura fallida y luego el error de lectura): con un reintento ya agendado, la segunda no cuenta como otro intento.
 - El backoff vuelve al mínimo **solo cuando la sesión se mantuvo estable** un keepalive completo (como mucho 60 s) después del NBIRTH, no con cada CONNACK: un broker que acepta la conexión y la corta enseguida (ACL, client_id duplicado, límite de conexiones) ve crecer los intentos hasta el tope. Un fallo de `esp_mqtt_client_init` (falta de memoria) espera el mismo backoff.
 - Al conectar se envía un SUBSCRIBE (NCMD y DCMD/+) y **se espera su SUBACK** (hasta 5 s) antes del NBIRTH y los DBIRTH: un nodo anunciado en línea siempre recibe sus comandos. Si el SUBSCRIBE no se puede enviar, el broker rechaza un tema (código 0x80) o el SUBACK no llega, se cierra la conexión con DISCONNECT (el broker descarta el *will*: no hubo NBIRTH) y se reintenta con backoff.
 - Si el reloj se sincroniza después del NBIRTH, se hace un *rebirth* para que los timestamps sean válidos.
@@ -173,15 +174,15 @@ Resultado de `idf.py size` (build limpia con `idf.py set-target esp32s3 build`, 
 
 | Región | Usado |
 |---|---|
-| Flash code (`.text`) | 1 036 952 B |
+| Flash code (`.text`) | 1 036 972 B |
 | Flash data (`.rodata`, etc.) | 291 180 B |
 | DIRAM | 195 744 B de 341 760 (**57,3 %**): `.bss` 105 408, `.text` 65 975, `.data` 24 361 |
 | IRAM | 16 384 B (100 %, lo normal en S3: el resto del código IRAM va en DIRAM) |
-| Imagen total | **1 434 888 B** (34 % de una partición OTA de 4 MB) |
+| Imagen total | **1 434 908 B** (34 % de una partición OTA de 4 MB) |
 
-Medido en `feature/firmware`. La build de producción (`sdkconfig.production`, con Secure Boot y cifrado de flash) compila con 0 warnings: 1 455 236 B sin firmar, 1 511 424 B firmada (§3.6).
+Medido en `feature/firmware`. La build de producción (`sdkconfig.production`, con Secure Boot y cifrado de flash) compila con 0 warnings: 1 455 256 B sin firmar, 1 511 424 B firmada (§3.6).
 
-**Costo de FW-1 a FW-3 y de los issues #67, #76, #77 y #78** (sobre `main` 0ca43df, 1 396 040 B): imagen +38 848 B (`esp_https_ota` y el cliente HTTP, verificación de imágenes, `gw_fw`, la migración de NVS, la tarjeta web) y DIRAM +1 432 B (`.bss` +1 264: estado de la actualización, de la prueba y de la subida). La tarea de descarga (8 KB) y la sesión TLS (unos 40 KB) existen solo mientras dura una descarga; el bootloader con *rollback* crece unos cientos de bytes.
+**Costo de FW-1 a FW-3 y de los issues #67, #76, #77 y #78** (sobre `main` 0ca43df, 1 396 040 B): imagen +38 868 B (`esp_https_ota` y el cliente HTTP, verificación de imágenes, `gw_fw`, la migración de NVS, la tarjeta web) y DIRAM +1 432 B (`.bss` +1 264: estado de la actualización, de la prueba y de la subida). La tarea de descarga (8 KB) y la sesión TLS (unos 40 KB) existen solo mientras dura una descarga; el bootloader con *rollback* crece unos cientos de bytes.
 
 **Costo de la E/S local (IO-3, IO-4, IO-6, IO-7)**, medido en su rama: `.bss` +7 440 B (90 128 → 97 568): pilas estáticas de la tarea `local_io` (4 KB) y del buzzer (2,5 KB), colas de los NCMD, contadores y estado de las reglas. Imagen +9 444 B. El motor Sparkplug (PSRAM si hay) crece 64 B (contadores publicados).
 
@@ -431,7 +432,7 @@ mkdir -p /tmp/spb && build-host/spb_dump /tmp/spb && python3 idf/tools/spb_decod
 
 `spb_dump` genera NDEATH, NBIRTH, DBIRTH, DDATA y NDATA reales del motor. `spb_decode.py` los compila con `grpc_tools.protoc` a partir del `sparkplug_b.proto` oficial de eclipse/tahu (copiado sin cambios en `components/gw_core/proto/`) y los decodifica con **Google protobuf 7.36**.
 
-Resultado: **8 payloads decodificados, 0 errores estructurales** (incluye un DBIRTH y un DDATA con UInt64, Int64, Double, String y un bit de registro, y NBIRTH con los contadores `Counter/n` UInt64 de IO-4). Además se decodificaron los 2065 mensajes capturados en el E2E.
+Resultado: **8 payloads decodificados, 0 errores estructurales** (incluye un DBIRTH y un DDATA con UInt64, Int64, Double, String y un bit de registro, y NBIRTH con los contadores `Counter/n` UInt64 de IO-4). Además se decodificaron los 2209 mensajes capturados en el E2E.
 
 ### 4.3 QA-3: punta a punta con el firmware real en QEMU
 
@@ -462,7 +463,13 @@ E2E_PYTHON=~/e2e/bin/python idf/tools/e2e/run_e2e.sh
 
 Configuración usada: `tools/e2e/fs/config.json` (keepalive de 10 s, syslog hacia el receptor del harness). `run_e2e.sh` pasa además el ELF y el python de IDF, para decodificar el *core dump* con `esp_coredump`.
 
-Resultado: **125/125 comprobaciones OK** (sobre el commit final de `feature/mqtt`, con `main` incluido).
+Resultado en `feature/firmware`: **134 comprobaciones**, ninguna corrida completa en verde. Ocho corridas completas durante la verificación; cada comprobación pasó en al menos una corrida con el código final o casi final, pero siempre falló alguna, por tres causas:
+
+- **QEMU aborta durante una OTA** (ver *cache freeze* en «Lo que QEMU no cubre», abajo): corridas 1, 6 y 7 (una vez `iotlb_to_section` en medio de la descarga, dos veces QEMU termina sin mensaje mientras verifica la firma de una imagen). Las corridas 4 y 5 encontraron dos defectos reales que se corrigieron (la consola USB secundaria y una carrera del estado de la actualización).
+- **Issue #71 con un DISCONNECTED duplicado** de esp-mqtt (corridas 3 y 5): se corrigió en `gw_edge` (un intento se contaba dos veces); no volvió a fallar en las corridas 6 a 8.
+- **Fallas de tiempo con el host cargado** (otro agente corría su E2E en paralelo): los tres volcados del *panic* inválidos (Issue #12, corridas 4 y 7, ya descrito abajo) y un *handshake* HTTPS de más de 15 s en `CFG-4 PUT` (corrida 8, con tres fallas en cascada del mismo escenario).
+
+La corrida 3 dio 133/134 (solo #71, corregido después); la 8, con el código final, 130/134 (solo el *handshake* HTTPS y su cascada; toda la OTA y #67 pasaron).
 
 | Criterio | Resultado medido |
 |---|---|
@@ -517,7 +524,7 @@ Resultado: **125/125 comprobaciones OK** (sobre el commit final de `feature/mqtt
 | Issue #76 DBIRTH que no cabe (`GW26`, el mismo arranque del #73) | OK: `Bulk` se encuesta 10 veces en 8 s, pero el shell cuenta `1 message(s) too large` (antes 9); tras `rebirth`, 2 |
 | Issue #72 shell temprano | OK: `shell: console ready` a 1,48 s del arranque de QEMU; `status` contestado 0,05 s después (`config   loading: the gateway is starting`), antes del servidor web (1,88 s) y del primer NBIRTH (2,95 s); `mbread` → `not available yet: the configuration is loading` |
 | Issue #73 Maximum Packet Size (`GW26`, MQTT 5) | OK: mosquitto con `max_packet_size 2000`: NBIRTH y DBIRTH de `Meter1` publicados, DBIRTH de `Bulk` (2489 B) no (`more than the broker's Maximum Packet Size of 2000 (by 489): not published`), una sola conexión (mosquitto no la cortó) y el shell: `limit    broker Maximum Packet Size 2000 B; 9 message(s) too large` |
-| FW-1 OTA (`GW30`, broker y servidor HTTPS propios) | OK: NBIRTH con `Node Control/Firmware Update` (String, alias 40) y `Firmware Update/State` = `idle`. NCMD con `http://` → `refused: only https:// URLs are accepted`; imagen con el checksum roto → descargada y `failed: image e2e-bad rejected: invalid (checksum)`, sin reinicio. NCMD con la imagen `e2e-v2` (950 880 B, CA de `ota.ca_file`) → NDATA de avance 0, 10 … 100 %, `rebooting into e2e-v2`, NDEATH, NBIRTH con `Node Info/Firmware` = `e2e-v2` y `on trial: e2e-v2` a 10,2 s del NCMD, luego `confirmed: e2e-v2`; tras un corte (QEMU nuevo) sigue `e2e-v2`. Subida por la web de `e2e-v3` (200) y broker detenido: `on trial` y a los 30,0 s `rejected (no Sparkplug session before the timeout)`, vuelta a `e2e-v2` con `rolled back from e2e-v3`. NCMD `e2e-v3` otra vez y `panic` durante la prueba: el bootloader arranca `e2e-v2`, NBIRTH con `Reset Reason` = `panic` y `rolled back from e2e-v3` |
+| FW-1 OTA (`GW30`, broker y servidor HTTPS propios) | OK: NBIRTH con `Node Control/Firmware Update` (String, alias 40) y `Firmware Update/State` = `idle`. NCMD con `http://` → `refused: only https:// URLs are accepted`; imagen con el checksum roto → descargada y `failed: image e2e-bad rejected: invalid (checksum)`, sin reinicio. NCMD con la imagen `e2e-v2` (950 880 B, CA de `ota.ca_file`) → NDATA de avance 0, 10 … 100 %, `rebooting into e2e-v2`, NDEATH, NBIRTH con `Node Info/Firmware` = `e2e-v2` y `on trial: e2e-v2` a 10,2 s del NCMD, luego `confirmed: e2e-v2`; tras un corte (QEMU nuevo) sigue `e2e-v2`. Con la build de QEMU que exige firma (FW-2): una imagen válida firmada con otra clave → `failed: image e2e-foreign rejected (checksum or signature)` (log: `image valid, signature bad`), sin reinicio. Subida por la web de `e2e-v3` (200) y broker detenido: `on trial` y a los 30,0 s `rejected (no Sparkplug session before the timeout)`, vuelta a `e2e-v2` con `rolled back from e2e-v3`. NCMD `e2e-v3` otra vez y `panic` durante la prueba: el bootloader arranca `e2e-v2`, NBIRTH con `Reset Reason` = `panic` y `rolled back from e2e-v3` |
 | Extras | OK: DDATA solo por excepción, solo alias, deadband 0,1 respetada; DCMD por alias (FC05) y DCMD sobre métrica de solo lectura descartado con log (sin "alias 0" si el comando venía por nombre); NCMD con un nombre de 80 caracteres después de `DO/1` descartado entero (DO/1 no cambia); bdSeq persistido en NVS tras un corte de energía; NCMD Reboot publica NDEATH QoS 1 y **un solo** NDEATH (will descartado); DBIRTH de 2445 B (mayor que el búfer de 2 KB de esp-mqtt); 60 registros leídos con una sola FC03; timestamps UTC vía SNTP; continuidad de seq |
 
 **Lo que QEMU no cubre**, y por qué la build de emulador difiere (`sdkconfig.qemu`):
@@ -545,7 +552,7 @@ Resultado: **125/125 comprobaciones OK** (sobre el commit final de `feature/mqtt
 
 ### 4.4 QA-2
 
-`idf.py set-target esp32s3 build`: **0 warnings en toda la build** (1214 objetivos). La build de producción (`sdkconfig.defaults;sdkconfig.production`, §3.4 y §3.6) también: 1217 objetivos, 0 warnings, imagen de 1 455 236 B (sin firmar); `tools/sign_firmware.sh --test-key` firma y verifica el bootloader y la app. Los componentes propios compilan con `-Wall -Wextra -Werror`.
+`idf.py set-target esp32s3 build`: **0 warnings en toda la build** (1214 objetivos). La build de producción (`sdkconfig.defaults;sdkconfig.production`, §3.4 y §3.6) también: 1217 objetivos, 0 warnings, imagen de 1 455 256 B (sin firmar); `tools/sign_firmware.sh --test-key` firma y verifica el bootloader y la app. Los componentes propios compilan con `-Wall -Wextra -Werror`.
 
 ### 4.5 QA-4: CI
 
