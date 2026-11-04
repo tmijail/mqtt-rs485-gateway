@@ -357,17 +357,23 @@ esp_err_t gw_fw_start_url(const char *url, char *why, size_t cap)
     if (!gw_ota_url_ok(url, false, reason, sizeof(reason))) {
         snprintf(why, cap, "%s", reason);
         ESP_LOGW(TAG, "firmware update refused: %s", why);
-        set_status(GW_FW_FAILED, 0, why, "refused: %s", why);
+        if (!atomic_load(&s_busy)) {
+            set_status(GW_FW_FAILED, 0, why, "refused: %s", why);
+        }
         return ESP_ERR_INVALID_ARG;
     }
     if (s_ca_error[0] != '\0') {
         snprintf(why, cap, "%s", s_ca_error);
-        set_status(GW_FW_FAILED, 0, why, "refused: CA file unavailable");
+        if (!atomic_load(&s_busy)) {
+            set_status(GW_FW_FAILED, 0, why, "refused: CA file unavailable");
+        }
         return ESP_ERR_INVALID_STATE;
     }
     if (!take(why, cap)) {
         ESP_LOGW(TAG, "firmware update refused: %s", why);
-        set_status(GW_FW_FAILED, 0, why, "refused: %s", why);
+        if (!atomic_load(&s_busy)) {   /* a running update keeps its own state */
+            set_status(GW_FW_FAILED, 0, why, "refused: %s", why);
+        }
         return ESP_ERR_INVALID_STATE;
     }
     snprintf(s_url, sizeof(s_url), "%s", url);
