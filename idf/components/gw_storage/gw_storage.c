@@ -748,6 +748,13 @@ bool gw_storage_load_config(gw_config_t *cfg, gw_cfg_err_t *err, const char **so
     return true;
 }
 
+static size_t s_validation_min_block;
+
+size_t gw_storage_validation_min_block(void)
+{
+    return s_validation_min_block;
+}
+
 esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_cfg_err_t *err)
 {
     memset(err, 0, sizeof(*err));
@@ -765,7 +772,18 @@ esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_
     gw_storage_get_secrets(&stored);
     gw_cfgdoc_t doc;
     esp_err_t ret = ESP_OK;
-    if (!gw_cfgdoc_apply(json, len, GW_CFGDOC_UPDATE, &stored, cfg, &doc, err)) {
+    bool applied = gw_cfgdoc_apply(json, len, GW_CFGDOC_UPDATE, &stored, cfg, &doc, err);
+    /* issue #80: the new configuration and its document are both allocated here: the deepest
+     * point of a validation (the parser's tree is freed already, but its fragments remain) */
+    size_t block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (s_validation_min_block == 0 || block < s_validation_min_block) {
+        s_validation_min_block = block;
+    }
+    ESP_LOGI(TAG, "configuration %s: free heap: internal %u B (largest block %u B, minimum since "
+                  "boot %u B)", applied ? "validated" : "rejected",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT), (unsigned)block,
+             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (!applied) {
         ret = strstr(err->msg, "memoria insuficiente") ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_ARG;
     } else if (!dry_run) {
         if (doc.new_web_password &&

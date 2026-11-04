@@ -355,10 +355,15 @@ static int cmd_status(int argc, char **argv)
         }
     }
     out(" (B free, high-water mark)\n");
-    out("heap     internal %u B free (minimum %u B), PSRAM %u B free\n",
-           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-           (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
-           (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    /* issue #80: the minimum since boot, and the largest block (now and the lowest seen when a
+     * configuration was validated, the deepest point of the worst case without PSRAM) */
+    out("heap     internal %u B free (minimum %u B, largest block %u B, lowest at a validation "
+        "%u B), PSRAM %u B free\n",
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+        (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+        (unsigned)gw_storage_validation_min_block(),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     return 0;
 }
 

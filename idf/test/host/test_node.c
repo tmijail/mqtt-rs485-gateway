@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "gw_mbap.h"
 #include "gw_node.h"
 #include "gw_port.h"
 #include "gw_tagdb.h"
@@ -78,7 +79,7 @@ static void test_nbirth_and_dbirth(void)
     TEST_ASSERT_FALSE(nb->retain);
     TEST_ASSERT_TRUE(dec.has_seq);
     TEST_ASSERT_EQUAL_UINT64(0, dec.seq);
-    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS, dec.count);
+    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS - 1, dec.count);   /* no Modbus TCP table */
     int i = decoded_find_name(&dec, "bdSeq");
     TEST_ASSERT_TRUE(i >= 0);
     TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[i].datatype);
@@ -805,7 +806,7 @@ static void test_templates(void)
     TEST_ASSERT_EQUAL(3, g_rec.count);             /* NBIRTH, DBIRTH P1, DBIRTH Flat */
 
     msg(0);   /* NBIRTH: one definition for the two pumps, after the node's metrics */
-    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS + 1, dec.count);
+    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS - 1 + 1, dec.count);
     int i = decoded_find_name(&dec, "Pump");
     TEST_ASSERT_TRUE(i >= 0);
     TEST_ASSERT_EQUAL(SPB_DT_TEMPLATE, dec.m[i].datatype);
@@ -905,6 +906,7 @@ static void test_worst_case_nbirth_fits(void)
     gw_cfg_err_t err;
     TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(doc, strlen(doc), &c, &err), err.msg);
     cfg = &c;
+    c.modbus_tcp.enabled = true;   /* #81: the Modbus TCP table too */
     gw_tagdb_reset();
     gw_node_ops_t ops = recorder_ops();
     const gw_node_info_t info = {.firmware = "0.1.0+g0123456.dirty-xxxxxxxxxxxxxxxxxxxxxxxxx",
@@ -922,6 +924,9 @@ static void test_worst_case_nbirth_fits(void)
     for (uint16_t d = 0; d < 16; d++) {
         gw_tagdb_put_stats(d, &full);
     }
+    const gw_mbap_stats_t gfull = {.other_units = full.tcp};
+    gw_mbap_stats_reset();
+    gw_mbap_stats_add(&gfull);
     gw_node_session_up(&node, 0);
     TEST_ASSERT_EQUAL(1, g_rec.count);   /* the NBIRTH went out (devices offline) */
     printf("worst-case NBIRTH with %d template tags: %u bytes of %u\n", GW_MAX_TEMPLATE_TAGS,
@@ -1034,6 +1039,72 @@ static void test_diagnostics(void)
     TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, gw_node_diag_tick(&node, 1));
     TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, gw_node_diag_tick(&node, 10000000));
     TEST_ASSERT_EQUAL(0, g_rec.count);
+}
+
+/* Issue #81: with the Modbus TCP gateway enabled, "Node Info/Modbus TCP" has a row per device
+ * with the forwarded requests to its unit, and one for units without a device. */
+static uint32_t tcp_rows, tcp_cells, tcp_unit0, tcp_timeout_other, tcp_ok0;
+static bool tcp_online0;
+static char tcp_dev[2][16];
+static bool tcp_cell_cb(void *ctx, uint32_t row, uint32_t col, const spb_rx_value_t *v)
+{
+    (void)ctx;
+    tcp_cells++;
+    tcp_rows = row + 1 > tcp_rows ? row + 1 : tcp_rows;
+    if (col == 0 && row < 2) {
+        snprintf(tcp_dev[row], sizeof(tcp_dev[row]), "%s", v->v.s);
+    }
+    if (row == 0 && col == 1) tcp_unit0 = v->v.i;
+    if (row == 0 && col == 2) tcp_online0 = v->v.b;
+    if (row == 0 && col == 3) tcp_ok0 = v->v.i;
+    if (row == 1 && col == 4) tcp_timeout_other = v->v.i;
+    return true;
+}
+
+static void test_modbus_tcp_table(void)
+{
+    static gw_config_t c;
+    c = *cfg;
+    c.modbus_tcp.enabled = true;
+    cfg = &c;
+    gw_tagdb_reset();
+    gw_mbap_stats_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    set_meter(true, 230.5, 12.3, 1);
+    const gw_dev_stats_t st = {.cycles = 5, .bus = {.ok = 9}, .tcp = {.ok = 3, .exception = 1}};
+    gw_tagdb_put_stats(0, &st);
+    const gw_mbap_stats_t g = {.other_units = {.timeout = 2}};
+    gw_mbap_stats_add(&g);
+    gw_node_session_up(&node, 0);
+    msg(0);
+    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS, dec.count);
+    int i = decoded_find_name(&dec, "Node Info/Modbus TCP");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_DATASET, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_MODBUS_TCP, dec.m[i].alias);
+    /* the periodic NDATA after only a TCP counter moved carries both tables */
+    recorder_clear();
+    gw_node_diag_tick(&node, 1000);
+    const gw_mbap_stats_t g2 = {.other_units = {.timeout = 1}};
+    gw_mbap_stats_add(&g2);                                    /* only a TCP counter moves */
+    gw_node_diag_tick(&node, 61000);
+    msg(0);
+    TEST_ASSERT_TRUE(decoded_find_alias(&dec, GW_ALIAS_MODBUS_TCP) >= 0);
+    TEST_ASSERT_TRUE(decoded_find_alias(&dec, GW_ALIAS_MODBUS) >= 0);   /* published together */
+    /* the cells of both tables reach the callback, the TCP table's last (alias order) */
+    tcp_rows = tcp_cells = 0;
+    const spb_decoder_t d = {.cell = tcp_cell_cb};
+    TEST_ASSERT_TRUE(spb_decode_with(g_rec.msgs[0].payload, g_rec.msgs[0].len, NULL, &d));
+    TEST_ASSERT_EQUAL(9 + 2 * 8, tcp_cells);   /* RTU table (1 row x 9) + TCP table (2 x 8) */
+    TEST_ASSERT_EQUAL_STRING("(other units)", tcp_dev[1]);
+    TEST_ASSERT_EQUAL_UINT32(3, tcp_timeout_other);           /* 2 + 1 */
+    TEST_ASSERT_EQUAL_UINT32(1, tcp_unit0);                   /* Meter1 is unit 1 */
+    TEST_ASSERT_TRUE(tcp_online0);
+    TEST_ASSERT_EQUAL_UINT32(3, tcp_ok0);
+    gw_mbap_stats_reset();
 }
 
 /* TIME-3: Node Info/Time Synced in the NBIRTH, and an NDATA each time it changes. */
@@ -1460,6 +1531,7 @@ int main(void)
     RUN_TEST(test_store_and_forward_templates_bytes);
     RUN_TEST(test_diagnostics);
     RUN_TEST(test_time_synced);
+    RUN_TEST(test_modbus_tcp_table);
     RUN_TEST(test_worst_case_nbirth_fits);
     RUN_TEST(test_command_aborted_mid_payload_applies_nothing);
     RUN_TEST(test_no_store_coalesces);

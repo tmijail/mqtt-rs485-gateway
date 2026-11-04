@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "gw_conv.h"
+#include "gw_mbap.h"
 #include "gw_port.h"
 
 static const char *TAG = "spb";
@@ -29,6 +30,19 @@ static const char *const k_count_names[GW_NODE_IO_COUNT] = {
 #define NAME_RSSI     "Node Info/RSSI"
 #define NAME_MODBUS   "Node Info/Modbus"
 #define NAME_TIME_SYNCED "Node Info/Time Synced"
+#define NAME_MODBUS_TCP "Node Info/Modbus TCP"
+
+/* Issue #81: "Node Info/Modbus TCP", the Modbus TCP gateway's forwarded requests per device
+ * (gw_dev_stats_t.tcp, #69) and a last row for units with no device. A table of its own rather
+ * than a transport column in "Node Info/Modbus": that table keeps its columns for the hosts
+ * that read it, the poll columns (cycles) mean nothing for forwarded requests, and this one
+ * exists only when the gateway is enabled. */
+static const char *const k_tcp_cols[] = {"Device", "Unit", "Online", "OK", "Timeout", "CRC",
+                                         "Frame", "Exception"};
+static const uint32_t k_tcp_types[] = {SPB_DT_STRING, SPB_DT_UINT32, SPB_DT_BOOLEAN,
+                                       SPB_DT_UINT32, SPB_DT_UINT32,  SPB_DT_UINT32,
+                                       SPB_DT_UINT32, SPB_DT_UINT32};
+#define OTHER_UNITS "(other units)"
 
 /* SPB-17 / MB-13: "Node Info/Modbus", one row per device. */
 static const char *const k_mb_cols[] = {"Device", "Online", "Cycles", "Failed Cycles", "OK",
@@ -228,6 +242,28 @@ static void mb_cell(const void *ctx, uint32_t row, uint32_t col, spb_value_t *ou
     }
 }
 
+static void tcp_cell(const void *ctx, uint32_t row, uint32_t col, spb_value_t *out)
+{
+    const gw_node_t *n = ctx;
+    bool other = row >= n->cfg->device_count;
+    const mb_stats_t *st = other ? &n->diag_tcp_other : &n->diag_stats[row].tcp;
+    const uint32_t counters[] = {st->ok, st->timeout, st->crc, st->frame, st->exception};
+    switch (col) {
+    case 0:
+        out->str = other ? OTHER_UNITS : n->cfg->devices[row].name;
+        break;
+    case 1:
+        out->num = other ? 0 : n->cfg->devices[row].unit_id;
+        break;
+    case 2:
+        out->num = other ? 0 : (n->diag_online >> row) & 1u;
+        break;
+    default:
+        out->num = counters[col - 3];
+        break;
+    }
+}
+
 /* Snapshot the counters the DataSet publishes (the encoder reads each cell more than once:
  * they must not change meanwhile). Returns a hash of the snapshot. */
 static uint64_t mb_snapshot(gw_node_t *n)
@@ -239,7 +275,11 @@ static uint64_t mb_snapshot(gw_node_t *n)
             n->diag_online |= 1u << d;
         }
     }
+    gw_mbap_stats_t g;
+    gw_mbap_stats_get(&g);
+    n->diag_tcp_other = g.other_units;
     uint64_t h = gw_rbe_hash_bytes(n->diag_stats, n->cfg->device_count * sizeof(n->diag_stats[0]));
+    h ^= gw_rbe_hash_bytes(&n->diag_tcp_other, sizeof(n->diag_tcp_other)) * 31u;
     return h ^ ((uint64_t)n->diag_online << 32);
 }
 
@@ -273,6 +313,13 @@ static size_t diag_metrics(gw_node_t *n, size_t i, uint64_t now, bool birth, boo
                                    .rows = n->cfg->device_count, .cell = mb_cell, .ctx = n};
         metric(n, k++, birth ? NAME_MODBUS : NULL, GW_ALIAS_MODBUS, SPB_DT_DATASET, now)->v.ds =
             &n->mb_ds;
+    }
+    if (modbus && n->cfg->modbus_tcp.enabled) {   /* #81 */
+        n->mbtcp_ds = (spb_dataset_t){.columns = 8, .names = k_tcp_cols, .types = k_tcp_types,
+                                      .rows = (uint32_t)n->cfg->device_count + 1u,
+                                      .cell = tcp_cell, .ctx = n};
+        metric(n, k++, birth ? NAME_MODBUS_TCP : NULL, GW_ALIAS_MODBUS_TCP, SPB_DT_DATASET, now)
+            ->v.ds = &n->mbtcp_ds;
     }
     return k - i;
 }

@@ -15,7 +15,10 @@
  *   counters of the DIs), 100 + n device tag with global index n,
  *   50..54 SPB-17 diagnostics: Node Info/Uptime (UInt64 s), Free Heap and Min Free Heap
  *   (UInt32 B, internal RAM), RSSI (Int32 dBm, only with Wi-Fi), Modbus (DataSet, one row per
- *   device with the MB-13 counters), 55 Node Info/Time Synced (TIME-3, Boolean: SNTP).
+ *   device with the MB-13 counters), 55 Node Info/Time Synced (TIME-3, Boolean: SNTP),
+ *   56 Node Info/Modbus TCP (issue #81, DataSet: per device, the attempts of the Modbus TCP
+ *   requests forwarded to its unit, plus one row for units without a device; only with
+ *   modbus_tcp.enabled).
  *
  * SPB-18 device types: a device with a `type` is published as one Template instance metric
  * (named after the type, alias 100 + its first tag) whose members are its tags, by name; the
@@ -68,9 +71,11 @@ extern "C" {
 #define GW_ALIAS_RSSI      53u
 #define GW_ALIAS_MODBUS    54u
 #define GW_ALIAS_TIME_SYNCED 55u  /* TIME-3 */
+#define GW_ALIAS_MODBUS_TCP 56u   /* issue #81 */
 
 #define GW_NODE_IO_COUNT        8
-#define GW_NODE_DIAG_METRICS    5   /* SPB-17, at most (RSSI only with Wi-Fi, Modbus with devices) */
+#define GW_NODE_DIAG_METRICS    6   /* SPB-17, at most (RSSI only with Wi-Fi, Modbus with devices,
+                                     * Modbus TCP with the gateway enabled) */
 /* Node metrics of the NBIRTH, without template definitions */
 #define GW_NODE_BIRTH_METRICS   (7 + 3 * GW_NODE_IO_COUNT + GW_NODE_DIAG_METRICS + 1)
 /* Scratch metrics: a whole device (+1 template instance), or the NBIRTH with one template
@@ -152,7 +157,9 @@ typedef struct {
     uint64_t diag_hash;                /* of the Modbus counters last published */
     gw_dev_stats_t diag_stats[GW_MAX_DEVICES];   /* snapshot being published */
     uint32_t diag_online;              /* bit d: device d online, in the snapshot */
+    mb_stats_t diag_tcp_other;         /* #81: Modbus TCP attempts to units without a device */
     spb_dataset_t mb_ds;
+    spb_dataset_t mbtcp_ds;
     bool do_unknown_reported;          /* DOs last published as null (expander not answering) */
 
     /* Scratch, statically sized (REL-2). */

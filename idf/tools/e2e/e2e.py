@@ -512,7 +512,9 @@ class Gateway:
 
     def start(self):
         a = self.args
-        cmd = [a.qemu, "-M", "esp32s3", "-m", "32M", "-nographic",
+        # With the octal PSRAM, -m is its size (the board's 8 MB): with 32M QEMU maps 31 MB and
+        # leaves no virtual address space for the flash mmap (the partitions are not found).
+        cmd = [a.qemu, "-M", "esp32s3", "-m", "8M" if a.psram else "32M", "-nographic",
                "-drive", f"file={self.flash},if=mtd,format=raw",
                "-drive", f"file={a.efuse},if=none,format=raw,id=efuse",
                "-global", "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
@@ -911,9 +913,76 @@ def run_tls(args, work):
     check("MQTT-4 a CA file missing from LittleFS is reported and no connection is attempted",
           missing and not attempts,
           (gw.find(r"mqtt\.tls\.ca_file", t0) or ["no error logged"])[0])
+    check_ram_margin(args, work, obs, p13, pki["ca.pem"].read_bytes())
     obs.close()
     broker.terminate()
     broker.wait()
+
+
+# Issue #80: internal RAM without PSRAM (see check_ram_margin for the reasoning)
+RAM_MIN_FREE_B = 8 * 1024
+RAM_MIN_BLOCK_B = 17 * 1024
+
+
+def check_ram_margin(args, work, obs, port, ca):
+    """Issue #80 in one boot (GW29) on the QEMU path, which has no PSRAM: MQTT over TLS 1.3, the
+    full births of the harness configuration (Bulk's 60-tag DBIRTH among them, diagnostics with
+    the DataSets), a web session open over HTTPS (keep-alive) and, on a second HTTPS connection,
+    PUT /api/config?dry_run=1 of the whole document (the validation holds a second
+    configuration, its document and, before them, the parser's tree). Then the shell gives the
+    minimum free internal heap since boot, the largest free block left at the peak of the
+    validation and the stacks' high-water marks.
+
+    Thresholds, for what must still work at that lowest point (mbedTLS allocates its record
+    buffers per record, CONFIG_MBEDTLS_DYNAMIC_BUFFER):
+      * minimum free >= RAM_MIN_FREE_B (8 KB): the traffic that can arrive meanwhile, an MQTT
+        command (at most CONFIG_GW_CMD_MAX_PAYLOAD, 1 KB, plus its TLS record), the lwIP pbufs of
+        a few full segments and the esp-mqtt outbox of a QoS 1 message;
+      * largest block at the validation >= RAM_MIN_BLOCK_B (17 KB): one full TLS input record
+        (16 KB, CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN) plus its header and MAC, so a large record on
+        either session is still received in one piece.
+    A new TLS handshake during the validation (about 30 KB) is not covered: it is retried."""
+    node = "GW29"
+    cfg = node_config(node, port=port, tls={"enabled": True, "ca_file": "ca.pem"})
+    cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "ram", cfg, {"ca.pem": ca})
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 60)
+    bulk = obs.wait(f"{T}/DBIRTH/{node}/{BULK}", 15)
+    st0, _, _ = wait_http("/api/status", 40)
+    session, kept = None, False
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        session = httplib.HTTPSConnection("127.0.0.1", HTTPS_PORT, timeout=15, context=ctx)
+        auth = {"Authorization": "Basic " + base64.b64encode(f"admin:{WEB_PASSWORD}".encode()).decode()}
+        session.request("GET", "/api/status", headers=auth)
+        session.getresponse().read()
+        st, _, body = http("PUT", "/api/config?dry_run=1", cfg)
+        session.request("GET", "/api/status", headers=auth)   # the session is still served
+        kept = session.getresponse().status == 200
+    except (OSError, httplib.HTTPException) as e:
+        st, body = None, str(e).encode()
+    finally:
+        if session is not None:
+            session.close()
+    asked, h = gw.shell("status", [r"^heap\s+internal \d+ B free \(minimum \d+ B, largest block \d+ B, "
+                                   r"lowest at a validation [1-9]\d* B\)", r"^stack\s+sparkplug \d+ "])
+    heap = (gw.find(r"^heap\s+internal", asked) or [""])[0]
+    stack = (gw.find(r"^stack\s+sparkplug", asked) or [""])[0]
+    nums = [int(x) for x in re.findall(r"(\d+) B", heap)]
+    minimum, valid_block = (nums[1], nums[3]) if len(nums) >= 4 else (None, None)
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node}", 5)
+    print(f"RAM margin: {heap} | {stack}", flush=True)
+    check(f"Issue #80 internal RAM without PSRAM after the worst case (MQTT over TLS, full births, an "
+          f"HTTPS session open and PUT /api/config?dry_run=1 over HTTPS): minimum free >= "
+          f"{RAM_MIN_FREE_B} B and largest block at the validation >= {RAM_MIN_BLOCK_B} B",
+          nb and bulk and st0 == 200 and st == 200 and kept and minimum is not None
+          and minimum >= RAM_MIN_FREE_B and valid_block >= RAM_MIN_BLOCK_B,
+          f"NBIRTH {'yes' if nb else 'no'}, Bulk DBIRTH {'yes' if bulk else 'no'}; PUT dry run {st} "
+          f"{body[:80]!r}; session kept {kept}; {heap}; {stack}")
 
 
 # ---------------------------------------------------------------- broker failover (MQTT-6)
@@ -2030,6 +2099,29 @@ def modbus_rows(m):
             for row in ds.rows}
 
 
+def check_modbus_tcp_table(obs, ndata_t):
+    """Issue #81: the next diagnostics NDATA carries "Node Info/Modbus TCP" (alias 56) with the
+    same per-unit counters the shell shows after check_modbus_tcp (#69): Meter1 2 OK, Dead3 3
+    timeouts, units without a device none, and the poll table unchanged in its columns."""
+    obs.drain()
+    nd = obs.wait(ndata_t, 13, lambda q: metric(q, alias=56) is not None)
+    m = metric(nd[2], alias=56) if nd else None
+    ds = m.dataset_value if m is not None else None
+    rows = {r.elements[0].string_value: {c: spb_decode.value_of(e) for c, e in zip(ds.columns, r.elements)}
+            for r in ds.rows} if ds is not None else {}
+    meter, dead, other = rows.get("Meter1", {}), rows.get("Dead3", {}), rows.get("(other units)", {})
+    ok = ds is not None and list(ds.columns) == ["Device", "Unit", "Online", "OK", "Timeout", "CRC",
+                                                 "Frame", "Exception"] \
+        and list(rows) == ["Meter1", "Bulk", "Dead3", "Dead4", "Dead5", "(other units)"] \
+        and meter.get("Unit") == 1 and meter.get("Online") is True and meter.get("OK", 0) >= 2 \
+        and meter.get("Timeout") == 0 and dead.get("Unit") == 3 and dead.get("Online") is False \
+        and dead.get("OK") == 0 and dead.get("Timeout") == 3 and other.get("OK") == 0 \
+        and other.get("Timeout") == 0
+    check("Issue #81 'Node Info/Modbus TCP' DataSet (alias 56): a row per device with the Modbus TCP "
+          "requests forwarded to its unit and one for units without a device, as in the shell (#69)",
+          ok, f"Meter1 {meter}; Dead3 {dead}; other {other}; rows {list(rows)}")
+
+
 def check_diagnostics(obs, nbirth, ndata_t):
     """SPB-17 / MB-13: NBIRTH with Uptime, Free Heap, Min Free Heap (no RSSI: no Wi-Fi in QEMU) and
     the Modbus DataSet (a row per device, counters of the dead units too); then, with
@@ -2810,6 +2902,7 @@ def run(args, log, slave, broker, conf, work):
     check("Issue #69 Modbus TCP counters: forwarded transactions per unit, gateway connections, "
           "forwarded requests and its own exceptions (shell 'devices')", all(h.values()),
           " | ".join(gw.find(r"^(Meter1|Dead3)\s+unit|^modbus_tcp", asked)) or "no answer")
+    check_modbus_tcp_table(obs, ndata_t)
 
     # 2. Slave off -> DDEATH; back on -> DBIRTH
     obs.drain()
