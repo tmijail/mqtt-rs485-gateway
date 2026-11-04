@@ -1760,7 +1760,7 @@ APP_DESC_MAGIC = 0xABCD5432
 def fw_image(src, version, dst, corrupt=False):
     """Copy of the app image @src with esp_app_desc_t.version = @version: checksum and the
     appended SHA-256 recomputed so the bootloader and esp_ota_end() accept it (@corrupt: the
-    checksum is left stale, so the image must be rejected). @src must be unsigned."""
+    checksum is wrong, so the image must be rejected). @src must be unsigned."""
     b = bytearray(pathlib.Path(src).read_bytes())
     if b[0] != 0xE9:
         raise SystemExit(f"{src}: not an ESP app image")
@@ -1778,8 +1778,9 @@ def fw_image(src, version, dst, corrupt=False):
     for o, n in zip(b[vo:vo + 32], new):
         x ^= o ^ n
     b[vo:vo + 32] = new
-    if not corrupt:
-        b[csum] ^= x
+    # the checksum of the new version; a corrupt image gets it off by one bit (the stale one
+    # matches whenever the old and new version strings XOR to 0, about one build in 256)
+    b[csum] ^= x ^ (0x01 if corrupt else 0)
     end = csum + 1
     if hashed:
         b[end:end + 32] = hashlib.sha256(bytes(b[:end])).digest()
