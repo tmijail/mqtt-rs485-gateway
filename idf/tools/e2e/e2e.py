@@ -709,8 +709,12 @@ def http(method, path, body=None, auth=("admin", WEB_PASSWORD), timeout=15, head
     """(status, headers dict, body bytes) of one request to the gateway's web server, or
     (None, {}, error text) when it cannot be reached. @auth None = no Authorization header.
     HTTPS by default (issue #64): the device certificate is self-signed, so it is not verified
-    here; its DER goes to PEER_CERT["der"] for the fingerprint check. @plain: HTTP port."""
-    h = dict(headers or {})
+    here; its DER goes to PEER_CERT["der"] for the fingerprint check. @plain: HTTP port.
+    Issue #100: a write (not GET) carries X-Requested-With, as the web UI's do; a header given
+    as None in @headers is left out (the CSRF checks)."""
+    h = {} if method == "GET" else {"X-Requested-With": "e2e"}
+    h.update(headers or {})
+    h = {k: v for k, v in h.items() if v is not None}
     if auth is not None:
         h["Authorization"] = "Basic " + base64.b64encode(f"{auth[0]}:{auth[1]}".encode()).decode()
     if body is not None and not isinstance(body, bytes):
@@ -1097,7 +1101,6 @@ def check_ram_margin(args, work, obs, port, ca):
           and minimum >= RAM_MIN_FREE_B and valid_block >= RAM_MIN_BLOCK_B,
           f"NBIRTH {'yes' if nb else 'no'}, Bulk DBIRTH {'yes' if bulk else 'no'}; PUT dry run {st} "
           f"{body[:80]!r}; session kept {kept}; {heap}; {stack}")
-
     check_print_block(gw, args, t0)
 
 
@@ -1757,6 +1760,8 @@ def run_https(args, work):
           and hdr_p.get("location", "").startswith("https://"),
           f"GET -> {st_r} {loc}; PUT -> {st_p} {hdr_p.get('location')}")
 
+    check_csrf(gw, t0)
+
     codes = [http("GET", "/api/status", auth=("admin", f"wrong-{i}"))[0] for i in range(5)]
     st6, hdr6, _ = http("GET", "/api/status", auth=("admin", "wrong-6"))
     st7, hdr7, _ = http("GET", "/api/status")   # the right password, while blocked
@@ -1776,6 +1781,67 @@ def run_https(args, work):
           f"failures {codes}, then {st6} / right password {st7} (Retry-After {retry}); after the "
           f"block {st8}; {(gw.find(r'blocked for', t0) or ['no log'])[0]}; "
           + " | ".join(gw.find(r"^web\s", asked)))
+
+
+def check_csrf(gw, since):
+    """Issue #100 (GW22, before the login limit checks): every write needs X-Requested-With and,
+    from a browser (Origin, or Referer without it), this same origin. Each forged request comes
+    with the right credentials, as a browser that has them cached would send them, and must be
+    refused before the password check (403, not counted as a failed login). The web UI's own
+    requests (the header, same Origin) still work; /api/firmware takes only its two media
+    types."""
+    me = f"https://127.0.0.1:{HTTPS_PORT}"   # the Host header http.client sends
+    doc = node_config("GW22")
+    doc["web"] = {"username": "admin", "password": "********"}
+    dry = "/api/config?dry_run=1"
+    forged = {
+        "PUT config, no header": http("PUT", dry, doc, headers={"X-Requested-With": None})[0],
+        "PUT config, other Origin": http("PUT", dry, doc, headers={"Origin": "https://evil.e2e"})[0],
+        "PUT config, Origin null": http("PUT", dry, doc, headers={"Origin": "null"})[0],
+        "PUT config, other Referer": http("PUT", dry, doc,
+                                          headers={"Referer": "https://evil.e2e/127.0.0.1"})[0],
+        "PUT config, http Origin": http("PUT", dry, doc,
+                                        headers={"Origin": f"http://127.0.0.1:{HTTPS_PORT}"})[0],
+        "POST restart, no header": http("POST", "/api/restart", b"",
+                                        headers={"X-Requested-With": None})[0],
+        # the no-cors fetch of the issue: text/plain, no custom header
+        "POST firmware text/plain, no header": http(
+            "POST", "/api/firmware", b"\xe9" + b"\0" * 255,
+            headers={"Content-Type": "text/plain", "X-Requested-With": None,
+                     "Origin": "https://evil.e2e"})[0],
+        "POST firmware, other Origin": http(
+            "POST", "/api/firmware", {"url": "https://evil.e2e/fw.bin"},
+            headers={"Origin": "https://evil.e2e"})[0],
+    }
+    refused_log = gw.wait_log(r"PUT /api/config\?dry_run=1 from 10\.0\.2\.2 refused: "
+                              r"cross-origin request", 3, since)
+    wrong_type = http("POST", "/api/firmware", b"\xe9" + b"\0" * 255,
+                      headers={"Content-Type": "text/plain", "Origin": me})[0]
+    asked, h = gw.shell("status", [r"^web\s+HTTPS \(HTTP redirects\), logins failed 0, .*"
+                                   r"cross-site writes refused 8$"])
+    counted = list(h.values())[0]
+    # the web UI: X-Requested-With and its own Origin (and Referer); a script: the header only
+    st_ui, _, b_ui = http("PUT", dry, doc, headers={"Origin": me, "Referer": me + "/"})
+    st_ref, _, _ = http("PUT", dry, doc, headers={"Referer": me + "/"})
+    st_cli, _, _ = http("PUT", dry, doc)
+    st_page, _, page = http("GET", "/")
+    ui_sends = page.count(b'"X-Requested-With":"gateway"')
+    up = gw.wait_log(r"restart requested through the REST API", 0.5, since) is None
+    check("Issue #100 CSRF: writes without X-Requested-With or from another origin (Origin, "
+          "Referer, 'null', http) -> 403 before the password check (not a failed login, counted "
+          "in the shell), nothing restarted; /api/firmware only application/json or "
+          "application/octet-stream (text/plain -> 415)",
+          all(v == 403 for v in forged.values()) and refused_log and wrong_type == 415
+          and counted and up,
+          ", ".join(f"{k} -> {v}" for k, v in forged.items()) + f"; same origin text/plain -> "
+          f"{wrong_type}; still up {up}; " + " | ".join(gw.find(r"^web\s", asked)))
+    check("Issue #100 the web UI still works: its requests (X-Requested-With, same Origin and "
+          "Referer) are accepted, the page sends the header on every write (API helper and image "
+          "upload), and a script with the header and no Origin is accepted",
+          st_ui == 200 and (as_json(b_ui) or {}).get("saved") is False and st_ref == 200
+          and st_cli == 200 and st_page == 200 and ui_sends == 2,
+          f"UI PUT dry run {st_ui} {b_ui[:60]!r}; Referer only {st_ref}; no Origin {st_cli}; page "
+          f"{st_page} with the header in {ui_sends} request(s)")
 
 
 # ---------------------------------------------------------------- scenario
