@@ -141,6 +141,65 @@ static void test_basic_auth_header(void)
     TEST_ASSERT_FALSE(gw_auth_equal("abc", "abd", 3));
 }
 
+/* Issue #100: state-changing requests need the custom header and, from a browser, the same
+ * origin as the Host header. */
+static void test_csrf_check(void)
+{
+    const char *xrw = "XMLHttpRequest";
+    /* not a browser: the header is enough */
+    TEST_ASSERT_EQUAL(GW_CSRF_OK, gw_auth_csrf_check(true, "10.0.0.5", NULL, NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_OK, gw_auth_csrf_check(true, NULL, "", "", xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_NO_HEADER, gw_auth_csrf_check(true, "10.0.0.5", NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL(GW_CSRF_NO_HEADER, gw_auth_csrf_check(true, "10.0.0.5", NULL, NULL, ""));
+    /* the header is required even from the same origin */
+    TEST_ASSERT_EQUAL(GW_CSRF_NO_HEADER,
+                      gw_auth_csrf_check(true, "10.0.0.5", "https://10.0.0.5", NULL, NULL));
+    /* same origin: scheme, host and port; default ports, case */
+    TEST_ASSERT_EQUAL(GW_CSRF_OK, gw_auth_csrf_check(true, "10.0.0.5", "https://10.0.0.5", NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_OK,
+                      gw_auth_csrf_check(true, "10.0.0.5:443", "https://10.0.0.5", NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_OK,
+                      gw_auth_csrf_check(true, "GW01.local", "HTTPS://gw01.LOCAL:443", NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_OK,
+                      gw_auth_csrf_check(true, "127.0.0.1:8443", "https://127.0.0.1:8443", NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_OK, gw_auth_csrf_check(false, "gw:80", "http://gw", NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_OK,
+                      gw_auth_csrf_check(true, "[fe80::1]:8443", "https://[fe80::1]:8443", NULL, xrw));
+    /* another site, port or scheme */
+    TEST_ASSERT_EQUAL(GW_CSRF_CROSS_ORIGIN,
+                      gw_auth_csrf_check(true, "10.0.0.5", "https://evil.example", NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_CROSS_ORIGIN,
+                      gw_auth_csrf_check(true, "10.0.0.5", "https://10.0.0.5:8443", NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_CROSS_ORIGIN,
+                      gw_auth_csrf_check(true, "10.0.0.5", "http://10.0.0.5", NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_CROSS_ORIGIN,
+                      gw_auth_csrf_check(true, "10.0.0.5", "https://10.0.0.5.evil.example", NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_CROSS_ORIGIN, gw_auth_csrf_check(true, "10.0.0.5", "null", NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_CROSS_ORIGIN,
+                      gw_auth_csrf_check(true, "10.0.0.5", "https://user@10.0.0.5", NULL, xrw));
+    /* no Host to compare with */
+    TEST_ASSERT_EQUAL(GW_CSRF_CROSS_ORIGIN,
+                      gw_auth_csrf_check(true, NULL, "https://10.0.0.5", NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_CROSS_ORIGIN,
+                      gw_auth_csrf_check(true, "10.0.0.5/x", "https://10.0.0.5", NULL, xrw));
+    /* Referer only when there is no Origin; its path does not matter */
+    TEST_ASSERT_EQUAL(GW_CSRF_OK,
+                      gw_auth_csrf_check(true, "10.0.0.5", NULL, "https://10.0.0.5/?tab=cfg", xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_CROSS_ORIGIN,
+                      gw_auth_csrf_check(true, "10.0.0.5", NULL, "https://evil.example/10.0.0.5", xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_CROSS_ORIGIN,
+                      gw_auth_csrf_check(true, "10.0.0.5", "https://evil.example",
+                                         "https://10.0.0.5/", xrw));
+    /* an authority longer than the buffer is refused, not cut */
+    char longhost[200];
+    memset(longhost, 'a', sizeof(longhost) - 1);
+    longhost[sizeof(longhost) - 1] = '\0';
+    char longorigin[220];
+    snprintf(longorigin, sizeof(longorigin), "https://%s", longhost);
+    TEST_ASSERT_EQUAL(GW_CSRF_CROSS_ORIGIN,
+                      gw_auth_csrf_check(true, longhost, longorigin, NULL, xrw));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -149,5 +208,6 @@ int main(void)
     RUN_TEST(test_pbkdf2_vectors);
     RUN_TEST(test_password_hash_roundtrip);
     RUN_TEST(test_basic_auth_header);
+    RUN_TEST(test_csrf_check);
     return UNITY_END();
 }

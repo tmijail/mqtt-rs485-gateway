@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 
 #include "esp_check.h"
@@ -45,6 +46,7 @@ static char s_user[GW_USER_SIZE];           /* "" = any user name (recovery) */
 static char s_hash[GW_PWHASH_SIZE];
 static uint8_t s_ok_digest[GW_SHA256_LEN];   /* SHA-256 of the last accepted Authorization */
 static bool s_ok_cached;
+static uint32_t s_csrf_refused;              /* issue #100: writes refused as cross-site */
 
 /* ---------- JSON helpers ---------- */
 
@@ -178,6 +180,48 @@ static bool authorized(httpd_req_t *req)
     return false;
 }
 
+/* Value of header @p name in @p buf ("" when absent). False if it does not fit. */
+static bool header(httpd_req_t *req, const char *name, char *buf, size_t cap)
+{
+    buf[0] = '\0';
+    size_t n = httpd_req_get_hdr_value_len(req, name);
+    return n == 0 || (n < cap && httpd_req_get_hdr_value_str(req, name, buf, cap) == ESP_OK);
+}
+
+/* Issue #100: a state-changing request (PUT, POST) must carry GW_CSRF_HEADER and, from a
+ * browser, come from this same origin (gw_auth_csrf_check). Checked before the credentials:
+ * a forged request is refused without a password check, so it neither succeeds with the
+ * browser's cached credentials nor counts as a failed login against the operator's address. */
+static bool same_origin(httpd_req_t *req)
+{
+    /* on the server task's stack, released before the handler validates anything */
+    char host[96], origin[128], referer[256];
+    bool fits = header(req, "Host", host, sizeof(host)) &&
+                header(req, "Origin", origin, sizeof(origin)) &&
+                header(req, "Referer", referer, sizeof(referer));
+    bool marked = httpd_req_get_hdr_value_len(req, GW_CSRF_HEADER) > 0;
+    gw_csrf_t r = !marked ? GW_CSRF_NO_HEADER
+                  : !fits ? GW_CSRF_CROSS_ORIGIN
+                          : gw_auth_csrf_check(s_https, host, origin, referer, "1");
+    if (r == GW_CSRF_OK) {
+        return true;
+    }
+    uint8_t ip[16];
+    char who[48];
+    peer_addr(req, ip, who, sizeof(who));
+    s_csrf_refused++;
+    ESP_LOGW(TAG, "%s %s from %s refused: %s", req->method == HTTP_PUT ? "PUT" : "POST", req->uri,
+             who, r == GW_CSRF_NO_HEADER ? "no " GW_CSRF_HEADER " header" : "cross-origin request");
+    /* Tells the client the connection ends here. It does not spare reading the body: httpd
+     * still drains the unread body (an image?) before closing (issue #106). */
+    httpd_resp_set_hdr(req, "Connection", "close");
+    send_error(req, "403 Forbidden", NULL,
+               r == GW_CSRF_NO_HEADER
+                   ? "falta la cabecera " GW_CSRF_HEADER ": las escrituras la necesitan (CSRF)"
+                   : "solicitud de otro origen rechazada (Origin o Referer no es este equipo)");
+    return false;
+}
+
 static bool query_flag(httpd_req_t *req, const char *key)
 {
     char q[64], v[8];
@@ -247,7 +291,7 @@ static char *read_body(httpd_req_t *req, size_t *len, const char **status)
 
 static esp_err_t config_put(httpd_req_t *req)
 {
-    if (!authorized(req)) {
+    if (!same_origin(req) || !authorized(req)) {
         return ESP_OK;
     }
     size_t len;
@@ -289,7 +333,7 @@ static esp_err_t config_put(httpd_req_t *req)
 
 static esp_err_t restart_post(httpd_req_t *req)
 {
-    if (!authorized(req)) {
+    if (!same_origin(req) || !authorized(req)) {
         return ESP_OK;
     }
     ESP_LOGW(TAG, "restart requested through the REST API");
@@ -341,17 +385,32 @@ static esp_err_t firmware_get(httpd_req_t *req)
     return r;
 }
 
-/* {"url": "https://..."} (application/json): the gateway downloads it. Any other content
- * type: the body is the image itself, written as it arrives. */
+/* "application/json" or "application/octet-stream", with or without parameters. */
+static bool media_type_is(const char *ctype, const char *type)
+{
+    size_t n = strlen(type);
+    return strncasecmp(ctype, type, n) == 0 && (ctype[n] == '\0' || ctype[n] == ';' || ctype[n] == ' ');
+}
+
+/* {"url": "https://..."} (application/json): the gateway downloads it.
+ * application/octet-stream: the body is the image itself, written as it arrives. Any other
+ * content type is refused (issue #100: text/plain is what a foreign page can send). */
 static esp_err_t firmware_post(httpd_req_t *req)
 {
-    if (!authorized(req)) {
+    if (!same_origin(req) || !authorized(req)) {
         return ESP_OK;
     }
     char ctype[48] = "";
     httpd_req_get_hdr_value_str(req, "Content-Type", ctype, sizeof(ctype));
     char why[160];
-    if (strncmp(ctype, "application/json", 16) == 0) {
+    bool json = media_type_is(ctype, "application/json");
+    if (!json && !media_type_is(ctype, "application/octet-stream")) {
+        httpd_resp_set_hdr(req, "Connection", "close");
+        return send_error(req, "415 Unsupported Media Type", NULL,
+                          "Content-Type: application/json ({\"url\": ...}) o "
+                          "application/octet-stream (la imagen)");
+    }
+    if (json) {
         size_t len;
         const char *status;
         char *body = req->content_len <= 1024 ? read_body(req, &len, &status) : NULL;
@@ -706,6 +765,7 @@ void gw_web_get_stats(gw_web_stats_t *out)
     out->failed = s_limit.failed_total;
     out->refused = s_limit.refused_total;
     out->blocks = s_limit.blocks_total;
+    out->csrf_refused = s_csrf_refused;
     out->blocked_now = gw_authlimit_blocked(&s_limit, (uint64_t)(esp_timer_get_time() / 1000));
 }
 

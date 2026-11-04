@@ -355,3 +355,64 @@ bool gw_auth_check_password(const char *password, const char *encoded)
                      (uint32_t)iterations, got, sizeof(got));
     return gw_auth_equal(got, want, sizeof(got));
 }
+
+/* ---------- issue #100: same-origin check of state-changing requests ---------- */
+
+/* Lower-case "host[:port]" of @p in (up to its end, '/', '?' or '#'), without the default port
+ * of the scheme. False if empty, with user information ('@') or longer than @p cap - 1. */
+static bool authority(const char *in, bool https, char *out, size_t cap)
+{
+    size_t n = strcspn(in, "/?#");
+    if (n == 0 || n >= cap || memchr(in, '@', n) != NULL) {
+        return false;
+    }
+    for (size_t i = 0; i < n; i++) {
+        char c = in[i];
+        out[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+    }
+    out[n] = '\0';
+    const char *def = https ? ":443" : ":80";
+    size_t d = strlen(def);
+    if (n > d && strcmp(out + n - d, def) == 0) {
+        out[n - d] = '\0';
+    }
+    return true;
+}
+
+/* True if @p url is "<scheme>://<host>..." with the scheme of the request and the authority
+ * of @p host (already normalised). */
+static bool same_site(const char *url, bool https, const char *host)
+{
+    const char *scheme = https ? "https://" : "http://";
+    size_t s = strlen(scheme);
+    if (strlen(url) < s) {
+        return false;
+    }
+    for (size_t i = 0; i < s; i++) {
+        char c = url[i];
+        if (((c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c) != scheme[i]) {
+            return false;
+        }
+    }
+    char a[96];
+    return authority(url + s, https, a, sizeof(a)) && strcmp(a, host) == 0;
+}
+
+gw_csrf_t gw_auth_csrf_check(bool https, const char *host, const char *origin,
+                             const char *referer, const char *requested_with)
+{
+    if (requested_with == NULL || requested_with[0] == '\0') {
+        return GW_CSRF_NO_HEADER;
+    }
+    const char *from = origin != NULL && origin[0] != '\0'     ? origin
+                       : referer != NULL && referer[0] != '\0' ? referer
+                                                               : NULL;
+    if (from == NULL) {
+        return GW_CSRF_OK;   /* not a browser */
+    }
+    char h[96];
+    if (host == NULL || !authority(host, https, h, sizeof(h)) || strchr(host, '/') != NULL) {
+        return GW_CSRF_CROSS_ORIGIN;
+    }
+    return same_site(from, https, h) ? GW_CSRF_OK : GW_CSRF_CROSS_ORIGIN;
+}
