@@ -23,60 +23,62 @@ static void copy_str(char *dst, size_t cap, const char *src)
 
 /* ---------- SPB-16 properties ---------- */
 
-#define PROP_MAX 4
+/* The properties of @p p that are present, in a fixed order: keys[] of them, and on request
+ * the value of property @p want (keys and values are encoded by two callbacks that must agree;
+ * one PropertyValue at a time keeps the encoder's stack small). */
+enum { PROP_UNIT, PROP_LOW, PROP_HIGH, PROP_QUALITY, PROP_MAX };
+static const char *const k_prop_keys[PROP_MAX] = {"engUnit", "engLow", "engHigh", "Quality"};
 
-typedef struct {
-    const char *key;
-    Payload_PropertyValue val;
-} prop_t;
-
-/* The properties of @p p that are present, in a fixed order (keys and values are encoded by
- * two callbacks that must agree). */
-static size_t list_props(const spb_props_t *p, prop_t out[PROP_MAX])
+static size_t list_props(const spb_props_t *p, uint8_t ids[PROP_MAX])
 {
     size_t n = 0;
     if (p->eng_unit != NULL && p->eng_unit[0] != '\0') {
-        out[n] = (prop_t){.key = "engUnit", .val = Payload_PropertyValue_init_zero};
-        out[n].val.has_type = true;
-        out[n].val.type = SPB_DT_STRING;
-        out[n].val.which_value = Payload_PropertyValue_string_value_tag;
-        copy_str(out[n].val.value.string_value, sizeof(out[n].val.value.string_value),
-                 p->eng_unit);
-        n++;
+        ids[n++] = PROP_UNIT;
     }
-    const struct {
-        bool has;
-        const char *key;
-        float v;
-    } rng[] = {{p->has_eng_low, "engLow", p->eng_low}, {p->has_eng_high, "engHigh", p->eng_high}};
-    for (size_t i = 0; i < 2; i++) {
-        if (rng[i].has) {
-            out[n] = (prop_t){.key = rng[i].key, .val = Payload_PropertyValue_init_zero};
-            out[n].val.has_type = true;
-            out[n].val.type = SPB_DT_FLOAT;
-            out[n].val.which_value = Payload_PropertyValue_float_value_tag;
-            out[n].val.value.float_value = rng[i].v;
-            n++;
-        }
+    if (p->has_eng_low) {
+        ids[n++] = PROP_LOW;
+    }
+    if (p->has_eng_high) {
+        ids[n++] = PROP_HIGH;
     }
     if (p->has_quality) {
-        out[n] = (prop_t){.key = "Quality", .val = Payload_PropertyValue_init_zero};
-        out[n].val.has_type = true;
-        out[n].val.type = SPB_DT_INT32;
-        out[n].val.which_value = Payload_PropertyValue_int_value_tag;
-        out[n].val.value.int_value = (uint32_t)p->quality;
-        n++;
+        ids[n++] = PROP_QUALITY;
     }
     return n;
 }
 
+static void prop_value(const spb_props_t *p, uint8_t id, Payload_PropertyValue *pv)
+{
+    *pv = (Payload_PropertyValue)Payload_PropertyValue_init_zero;
+    pv->has_type = true;
+    switch (id) {
+    case PROP_UNIT:
+        pv->type = SPB_DT_STRING;
+        pv->which_value = Payload_PropertyValue_string_value_tag;
+        copy_str(pv->value.string_value, sizeof(pv->value.string_value), p->eng_unit);
+        break;
+    case PROP_LOW:
+    case PROP_HIGH:
+        pv->type = SPB_DT_FLOAT;
+        pv->which_value = Payload_PropertyValue_float_value_tag;
+        pv->value.float_value = id == PROP_LOW ? p->eng_low : p->eng_high;
+        break;
+    default:
+        pv->type = SPB_DT_INT32;
+        pv->which_value = Payload_PropertyValue_int_value_tag;
+        pv->value.int_value = (uint32_t)p->quality;
+        break;
+    }
+}
+
 static bool enc_prop_keys(pb_ostream_t *stream, const pb_field_iter_t *field, void *const *arg)
 {
-    prop_t props[PROP_MAX];
-    size_t n = list_props(*arg, props);
+    uint8_t ids[PROP_MAX];
+    size_t n = list_props(*arg, ids);
     for (size_t i = 0; i < n; i++) {
+        const char *key = k_prop_keys[ids[i]];
         if (!pb_encode_tag_for_field(stream, field) ||
-            !pb_encode_string(stream, (const pb_byte_t *)props[i].key, strlen(props[i].key))) {
+            !pb_encode_string(stream, (const pb_byte_t *)key, strlen(key))) {
             return false;
         }
     }
@@ -85,11 +87,13 @@ static bool enc_prop_keys(pb_ostream_t *stream, const pb_field_iter_t *field, vo
 
 static bool enc_prop_values(pb_ostream_t *stream, const pb_field_iter_t *field, void *const *arg)
 {
-    prop_t props[PROP_MAX];
-    size_t n = list_props(*arg, props);
+    uint8_t ids[PROP_MAX];
+    size_t n = list_props(*arg, ids);
     for (size_t i = 0; i < n; i++) {
+        Payload_PropertyValue pv;
+        prop_value(*arg, ids[i], &pv);
         if (!pb_encode_tag_for_field(stream, field) ||
-            !pb_encode_submessage(stream, Payload_PropertyValue_fields, &props[i].val)) {
+            !pb_encode_submessage(stream, Payload_PropertyValue_fields, &pv)) {
             return false;
         }
     }
@@ -99,8 +103,8 @@ static bool enc_prop_values(pb_ostream_t *stream, const pb_field_iter_t *field, 
 static bool enc_props(pb_ostream_t *stream, const pb_field_iter_t *field, void *const *arg)
 {
     const spb_props_t *p = *arg;
-    prop_t props[PROP_MAX];
-    if (list_props(p, props) == 0) {
+    uint8_t ids[PROP_MAX];
+    if (list_props(p, ids) == 0) {
         return true;   /* no PropertySet at all */
     }
     Payload_PropertySet ps = Payload_PropertySet_init_zero;

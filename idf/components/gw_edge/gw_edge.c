@@ -38,7 +38,7 @@
 
 static const char *TAG = "edge";
 
-#define STACK_BYTES      8192   /* SPB-18: a DCMD decodes template members one level deep */
+#define STACK_BYTES      6144   /* about 2.5 KB free at the births (log_stacks), templates included */
 #define MAX_IDLE_MS      1000
 #define NET_TIMEOUT_MS   5000   /* esp-mqtt socket timeout (one socket write) */
 #define REBOOT_DELAY_MS  100    /* let the log drain */
@@ -1136,7 +1136,9 @@ static void reconcile(void)
     }
     if (dg != s_handled_disc) {
         s_handled_disc = dg;
-        if (!connected) {
+        /* esp-mqtt may report one dead connection twice (the failed write of a DBIRTH, then the
+         * reader): one attempt ends once, so the backoff and the broker failover count it once */
+        if (!connected && s_retry_at_us == 0) {
             attempt_ended();
             schedule_retry(now);
         }
