@@ -1520,23 +1520,33 @@ static void test_dbirth_too_large_not_retried_on_every_change(void)
     TEST_ASSERT_EQUAL(1, g_rec.count);          /* NBIRTH only */
     TEST_ASSERT_EQUAL(1, g_rec.too_large);      /* the DBIRTH was tried once */
     TEST_ASSERT_FALSE(node.dev_born[0]);
+    /* the DBIRTH that was not sent left no gap: the next message has seq 1 (SPB-5) */
+    gw_node_set_firmware_status(&node, "refused: x", 0);
+    TEST_ASSERT_EQUAL(2, g_rec.count);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", msg(1)->topic);
+    TEST_ASSERT_EQUAL_UINT64(1, dec.seq);
+    gw_node_set_firmware_status(&node, "idle", 0);
+    TEST_ASSERT_EQUAL_UINT8(3, node.seq);
+    recorder_clear();
+    g_rec.too_large_topic = "/DBIRTH/";
+    g_rec.too_large = 1;
     for (int i = 0; i < 5; i++) {               /* changes: no DBIRTH rebuilt, no DDATA */
         set_meter(true, 231.5 + i, 12.3, 1);
         gw_node_device_changed(&node, 0);
     }
     TEST_ASSERT_EQUAL(1, g_rec.too_large);
-    TEST_ASSERT_EQUAL(1, g_rec.count);
+    TEST_ASSERT_EQUAL(0, g_rec.count);
     /* offline and back within the session: still not retried (and no DDEATH: never born) */
     set_meter(false, 231.5, 12.3, 1);
     gw_node_device_changed(&node, 0);
     set_meter(true, 231.5, 12.3, 1);
     gw_node_device_changed(&node, 0);
     TEST_ASSERT_EQUAL(1, g_rec.too_large);
-    TEST_ASSERT_EQUAL(1, g_rec.count);
+    TEST_ASSERT_EQUAL(0, g_rec.count);
     /* a rebirth repeats every birth: one attempt */
     TEST_ASSERT_TRUE(gw_node_rebirth(&node));
     TEST_ASSERT_EQUAL(2, g_rec.too_large);
-    TEST_ASSERT_EQUAL(2, g_rec.count);          /* the second NBIRTH */
+    TEST_ASSERT_EQUAL(1, g_rec.count);          /* the second NBIRTH */
     /* a new session where the broker takes it: DBIRTH, then DDATA */
     gw_node_session_down(&node);
     g_rec.too_large_topic = NULL;
