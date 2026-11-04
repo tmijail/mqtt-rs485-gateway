@@ -92,6 +92,12 @@ class RecordingContext(ModbusSlaveContext):
     def __init__(self, **kw):
         super().__init__(**kw)
         self.writes = []
+        self.refuse = set()   # (function code, address) answered with exception 02 (SPB-16)
+
+    def validate(self, fc_as_hex, address, count=1):
+        if (fc_as_hex, address) in self.refuse:
+            return False
+        return super().validate(fc_as_hex, address, count)
 
     def setValues(self, fc_as_hex, address, values):  # noqa: N802 (pymodbus API)
         if fc_as_hex in (5, 6, 15, 16):
@@ -1080,6 +1086,37 @@ def check_scan_classes(slave):
                  f"{len(slow)} slow reads {gaps} s apart, Serial read {len(serial)} times")
 
 
+def props(m):
+    """SPB-16: {key: value} of a metric's PropertySet."""
+    return {k: spb_decode.value_of(v) for k, v in spb_decode.props_of(m).items()}
+
+
+def check_properties_and_quality(obs, slave, db, ddata_t):
+    """SPB-16: the DBIRTH carries engUnit/engLow/engHigh from the configuration and Quality GOOD;
+    a read answered with an exception is null with Quality BAD, and the next good read brings
+    the value back with Quality GOOD."""
+    v = metric(db[2], name="Voltage") if db else None
+    birth = props(v) if v is not None else {}
+    others = [props(m).get("Quality") for m in db[2].metrics] if db else []
+    check("SPB-16 DBIRTH properties: Voltage engUnit 'V', engLow 0, engHigh 400 and Quality 192 "
+          "(GOOD) on every metric", birth == {"engUnit": "V", "engLow": 0.0, "engHigh": 400.0,
+                                              "Quality": 192} and others and
+          all(q == 192 for q in others), f"Voltage {birth}; Quality of all: {sorted(set(others))}")
+    obs.drain()
+    slave.ctx.refuse.add((4, 0))          # Voltage alone in its block (input 0-1): exception 02
+    bad = obs.wait(ddata_t, 5, lambda p: any(m.alias == ALIAS["Voltage"] for m in p.metrics))
+    slave.ctx.refuse.clear()
+    good = obs.wait(ddata_t, 5, lambda p: any(m.alias == ALIAS["Voltage"] for m in p.metrics))
+    bm = metric(bad[2], alias=ALIAS["Voltage"]) if bad else None
+    gm = metric(good[2], alias=ALIAS["Voltage"]) if good else None
+    check("SPB-16 failed read (exception 02) -> DDATA Voltage null with Quality 0 (BAD); next read "
+          "-> value with Quality 192 (GOOD), the device stays online",
+          bm is not None and bm.is_null and props(bm) == {"Quality": 0} and gm is not None
+          and not gm.is_null and abs(gm.float_value - 231.0) < 1e-3 and props(gm) == {"Quality": 192},
+          f"failed: {'null' if bm is not None and bm.is_null else bm} {props(bm) if bm else ''}; "
+          f"after: {round(gm.float_value, 3) if gm else None} {props(gm) if gm else ''}")
+
+
 def int64_of(m):
     """Int64 metric value: long_value carries the two's complement as an unsigned 64-bit int."""
     return m.long_value - 2 ** 64 if m.long_value >= 2 ** 63 else m.long_value
@@ -1594,6 +1631,7 @@ def run(args, log, slave, broker, conf, work):
     check("SPB-7/SPB-12 DDATA by exception, alias only, deadband 0.1 respected", ok,
           f"0.05 V change -> {'DDATA' if quiet else 'nothing'}; 0.5 V change -> "
           f"{[(m.alias, round(m.float_value, 3)) for m in dd[2].metrics] if dd else 'nothing'}")
+    check_properties_and_quality(obs, slave, db, ddata_t)
 
     # 3. DI -> NDATA < 100 ms; NCMD DO/3
     obs.drain()

@@ -327,6 +327,22 @@ El router por defecto IPv6 se aprende de los RA; no hay *gateway* IPv6 estático
 - **`string`:** se corta en el primer NUL y se quitan los espacios finales; lo que no es ASCII imprimible se publica como `?`. Al escribir se rellena con NUL; un texto más largo que `2 × length` se rechaza. No admite `scale`, `offset` ni `deadband`.
 - **Escritura de un bit:** lectura del registro (FC03) y escritura del registro completo con el bit cambiado (FC06, o FC16 con escrituras múltiples forzadas).
 
+**Propiedades de métrica (SPB-16), en cada tag.**
+
+```json
+{ "name": "Voltage", "area": "input", "address": 0, "type": "float32", "units": "V",
+  "eng_low": 0, "eng_high": 400 }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `units` | texto | `""` | Hasta 15 caracteres. Se publica como la propiedad `engUnit` (String) en el DBIRTH; vacío = sin propiedad |
+| `eng_low` | número | — | Propiedad `engLow` (Double) en el DBIRTH. No vale en tags `bool` ni `string` |
+| `eng_high` | número | — | Propiedad `engHigh` (Double) en el DBIRTH. Con las dos claves, `eng_high` > `eng_low` |
+
+- **Calidad (`Quality`, Int32):** 192 (GOOD) cuando la lectura respondió, 0 (BAD) cuando falló (excepción Modbus) o el tag nunca se leyó; con BAD el valor va además como `is_null`. Todo DBIRTH la lleva en cada métrica; un DDATA, solo cuando cambia. Las DO del nodo usan la misma regla: BAD mientras el expansor no responde.
+- Las propiedades viajan en el `PropertySet` de la métrica (claves y valores en el mismo orden). Un comando (NCMD/DCMD) con propiedades se acepta; sus propiedades se ignoran.
+
 **Lecturas en bloque por dispositivo (MB-11), en cada dispositivo.**
 
 ```json

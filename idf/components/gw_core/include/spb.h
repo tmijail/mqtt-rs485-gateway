@@ -33,6 +33,22 @@ extern "C" {
 #define SPB_NAME_MAX    63   /* longest metric name the codec accepts (nanopb max_size 64) */
 #define SPB_STRING_MAX  63
 
+/* SPB-16 Quality property (Int32), as used by Sparkplug hosts. */
+#define SPB_QUALITY_BAD   0
+#define SPB_QUALITY_GOOD  192
+#define SPB_QUALITY_STALE 500
+
+/** Standard metric properties (SPB-16), published as the metric's PropertySet. */
+typedef struct {
+    const char *eng_unit;         /* engUnit (String); NULL or "": omitted */
+    bool has_eng_low;
+    bool has_eng_high;
+    double eng_low;               /* engLow (Double) */
+    double eng_high;              /* engHigh (Double) */
+    bool has_quality;
+    int32_t quality;              /* Quality (Int32): SPB_QUALITY_* */
+} spb_props_t;
+
 /** Outgoing metric. The oneof value field used on the wire follows @c datatype. */
 typedef struct {
     const char *name;        /* NULL: omitted (DATA messages use the alias only) */
@@ -40,6 +56,7 @@ typedef struct {
     uint32_t datatype;
     uint64_t timestamp;      /* 0: omitted */
     bool is_null;
+    spb_props_t props;       /* all absent when zeroed */
     union {
         double num;          /* every numeric and Boolean datatype except the 64-bit integers */
         int64_t i64;         /* Int64: exact (a double is not above 2^53) */
@@ -69,6 +86,24 @@ typedef enum {
     SPB_VAL_STRING,
 } spb_val_kind_t;
 
+/** One incoming property (the first SPB_RX_PROPS of a metric are kept). */
+#define SPB_RX_PROPS     4
+#define SPB_RX_KEY_MAX   23   /* longer keys are truncated */
+typedef struct {
+    char key[SPB_RX_KEY_MAX + 1];
+    uint32_t type;
+    bool is_null;
+    spb_val_kind_t kind;
+    union {
+        uint32_t i;
+        uint64_t l;
+        float f;
+        double d;
+        bool b;
+    } v;
+    char s[SPB_STRING_MAX + 1];  /* String value */
+} spb_rx_prop_t;
+
 /** Incoming metric, valid only for the duration of the callback. */
 typedef struct {
     const char *name;        /* NULL when absent */
@@ -87,7 +122,12 @@ typedef struct {
         bool b;
         const char *s;
     } v;
+    uint8_t prop_count;              /* properties the metric carried (all of them counted) */
+    spb_rx_prop_t props[SPB_RX_PROPS];
 } spb_rx_metric_t;
+
+/** Property @p key of an incoming metric, or NULL. */
+const spb_rx_prop_t *spb_rx_prop(const spb_rx_metric_t *m, const char *key);
 
 typedef struct {
     bool has_timestamp;

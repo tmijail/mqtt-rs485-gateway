@@ -621,6 +621,102 @@ static void test_do_unknown_published_as_null(void)
     TEST_ASSERT_TRUE(dec.m[0].is_null);
 }
 
+/* SPB-16: births carry engUnit/engLow/engHigh from the configuration and Quality; DDATA carries
+ * Quality only when it changes (BAD with the null of a failed read, GOOD with the next value). */
+static void test_properties_and_quality(void)
+{
+    static const char json[] =
+        "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+        " \"devices\": [{\"name\": \"M\", \"unit_id\": 1, \"tags\": ["
+        " {\"name\": \"Level\", \"area\": \"input\", \"address\": 0, \"type\": \"uint16\","
+        "  \"units\": \"m\", \"eng_low\": 0, \"eng_high\": 12.5},"
+        " {\"name\": \"Temp\", \"area\": \"input\", \"address\": 1, \"type\": \"int16\","
+        "  \"eng_low\": -40},"
+        " {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]}]}";
+    static gw_config_t c;
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(json, sizeof(json) - 1, &c, &err), err.msg);
+    cfg = &c;
+    gw_tagdb_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    gw_tag_value_t v[3] = {{.value = 5, .ts_ms = 1000, .valid = true},
+                           {.value = 21, .ts_ms = 1000, .valid = true},
+                           {.value = 0, .ts_ms = 1000, .valid = false}};   /* never read yet */
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_tagdb_set_do_unknown(500);
+    gw_node_session_up(&node, 0);
+
+    msg(0);   /* NBIRTH: the DOs are unknown (expander absent): null and BAD */
+    int i = decoded_find_name(&dec, "DO/1");
+    TEST_ASSERT_TRUE(dec.m[i].has_quality);
+    TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_BAD, dec.m[i].quality);
+    TEST_ASSERT_FALSE(dec.m[decoded_find_name(&dec, "DI/1")].has_quality);
+
+    msg(1);   /* DBIRTH */
+    i = decoded_find_name(&dec, "Level");
+    TEST_ASSERT_EQUAL_STRING("m", dec.m[i].eng_unit);
+    TEST_ASSERT_TRUE(dec.m[i].has_eng_low);
+    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[i].eng_low);
+    TEST_ASSERT_TRUE(dec.m[i].has_eng_high);
+    TEST_ASSERT_EQUAL_DOUBLE(12.5, dec.m[i].eng_high);
+    TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_GOOD, dec.m[i].quality);
+    TEST_ASSERT_EQUAL(4, dec.m[i].prop_count);
+    i = decoded_find_name(&dec, "Temp");
+    TEST_ASSERT_EQUAL_STRING("", dec.m[i].eng_unit);
+    TEST_ASSERT_TRUE(dec.m[i].has_eng_low);
+    TEST_ASSERT_FALSE(dec.m[i].has_eng_high);
+    TEST_ASSERT_EQUAL(2, dec.m[i].prop_count);
+    i = decoded_find_name(&dec, "Run");
+    TEST_ASSERT_TRUE(dec.m[i].is_null);
+    TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_BAD, dec.m[i].quality);
+    TEST_ASSERT_EQUAL(1, dec.m[i].prop_count);
+
+    /* Level changes (still good): no Quality; Run read for the first time: GOOD */
+    recorder_clear();
+    v[0].value = 6;
+    v[2].valid = true;
+    v[2].value = 1;
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_node_device_changed(&node, 0);
+    msg(0);
+    TEST_ASSERT_EQUAL(2, dec.count);
+    i = decoded_find_alias(&dec, GW_ALIAS_TAG_BASE + 0);
+    TEST_ASSERT_EQUAL(0, dec.m[i].prop_count);
+    i = decoded_find_alias(&dec, GW_ALIAS_TAG_BASE + 2);
+    TEST_ASSERT_TRUE(dec.m[i].has_quality);
+    TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_GOOD, dec.m[i].quality);
+    TEST_ASSERT_EQUAL_STRING("", dec.m[i].eng_unit);   /* engUnit only in the birth */
+
+    /* a failed read (exception): null with BAD, once */
+    recorder_clear();
+    v[1].valid = false;
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_node_device_changed(&node, 0);
+    gw_node_device_changed(&node, 0);
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    msg(0);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_TRUE(dec.m[0].is_null);
+    TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_BAD, dec.m[0].quality);
+
+    /* the expander answers: the 8 DOs with GOOD */
+    recorder_clear();
+    gw_tagdb_set_do(0x00, 900);
+    gw_node_io_changed(&node);
+    msg(0);
+    TEST_ASSERT_EQUAL(8, dec.count);
+    TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_GOOD, dec.m[0].quality);
+    /* a DO change afterwards: no Quality */
+    recorder_clear();
+    gw_tagdb_set_do(0x01, 950);
+    gw_node_io_changed(&node);
+    msg(0);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_FALSE(dec.m[0].has_quality);
+}
+
 /* Issue #14: a command metric without an alias is not logged as "alias 0". */
 static void test_discard_log_shows_alias_only_if_present(void)
 {
@@ -725,6 +821,7 @@ int main(void)
     RUN_TEST(test_session_down_suppresses_publishing);
     RUN_TEST(test_discard_log_shows_alias_only_if_present);
     RUN_TEST(test_do_unknown_published_as_null);
+    RUN_TEST(test_properties_and_quality);
     RUN_TEST(test_command_aborted_mid_payload_applies_nothing);
     return UNITY_END();
 }

@@ -35,6 +35,40 @@ def load_module():
     return importlib.import_module("sparkplug_b_pb2")
 
 
+PROPERTY_TYPES = {"engUnit": (12, "string_value"), "engLow": (10, "double_value"),
+                  "engHigh": (10, "double_value"), "Quality": (3, "int_value")}
+QUALITY_CODES = (0, 192, 500)
+
+
+def props_of(m):
+    """SPB-16: the metric's properties as {key: PropertyValue}."""
+    if not m.HasField("properties"):
+        return {}
+    return dict(zip(m.properties.keys, m.properties.values))
+
+
+def check_properties(m):
+    errors = []
+    if not m.HasField("properties"):
+        return errors
+    ps = m.properties
+    if len(ps.keys) != len(ps.values):
+        errors.append(f"alias {m.alias}: {len(ps.keys)} property keys but {len(ps.values)} values")
+    if len(set(ps.keys)) != len(ps.keys):
+        errors.append(f"alias {m.alias}: duplicated property keys {list(ps.keys)}")
+    for key, pv in props_of(m).items():
+        if key in PROPERTY_TYPES:
+            dt, field = PROPERTY_TYPES[key]
+            if pv.type != dt or pv.WhichOneof("value") != field:
+                errors.append(f"alias {m.alias}: property {key} must be type {dt} in {field}")
+        if key == "Quality" and pv.int_value not in QUALITY_CODES:
+            errors.append(f"alias {m.alias}: Quality {pv.int_value} is not 0, 192 or 500")
+    q = props_of(m).get("Quality")
+    if q is not None and q.int_value == 0 and not m.is_null and m.datatype != 19:
+        errors.append(f"alias {m.alias}: Quality BAD with a value (a failed read is null)")
+    return errors
+
+
 def value_of(m):
     which = m.WhichOneof("value")
     return None if which is None else getattr(m, which)
@@ -46,7 +80,9 @@ def describe(kind, p):
     for m in p.metrics:
         name = m.name if m.HasField("name") else "<alias only>"
         null = " is_null" if m.is_null else ""
-        lines.append(f"    alias={m.alias:<4} dt={m.datatype:<2} {name} = {value_of(m)!r}{null}")
+        props = props_of(m)
+        extra = (" {" + ", ".join(f"{k}={value_of(v)!r}" for k, v in props.items()) + "}") if props else ""
+        lines.append(f"    alias={m.alias:<4} dt={m.datatype:<2} {name} = {value_of(m)!r}{null}{extra}")
     return "\n".join(lines)
 
 
@@ -80,6 +116,7 @@ def check(kind, p):
         expected = DATATYPE_FIELD.get(m.datatype)
         if not m.is_null and expected and m.WhichOneof("value") != expected:
             errors.append(f"alias {m.alias}: datatype {m.datatype} carried in {m.WhichOneof('value')}")
+        errors += check_properties(m)
     if kind == "NBIRTH":
         names = {m.name for m in p.metrics}
         for required in ("bdSeq", "Node Control/Rebirth", "Node Control/Reboot",

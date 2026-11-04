@@ -94,13 +94,33 @@ static uint64_t rbe_key(const gw_tag_cfg_t *t, const gw_tag_value_t *v)
     }
 }
 
-/* @p v must stay valid until the metric is published (strings are referenced, not copied). */
+/* SPB-16 Quality of a value: GOOD when read, BAD when the read failed or the source is gone
+ * (the value is then also null). */
+static void set_quality(spb_metric_t *m, bool good)
+{
+    m->props.has_quality = true;
+    m->props.quality = good ? SPB_QUALITY_GOOD : SPB_QUALITY_BAD;
+}
+
+/* @p v must stay valid until the metric is published (strings are referenced, not copied).
+ * Births carry the tag's properties (SPB-16: engUnit, engLow, engHigh, Quality); DATA messages
+ * carry Quality only when it changes (a failed read, or the first good one after it). */
 static void tag_metric(gw_node_t *n, size_t i, uint16_t tag, const gw_tag_value_t *v, bool birth)
 {
     const gw_tag_cfg_t *t = &n->cfg->tags[tag];
     spb_metric_t *m = metric(n, i, birth ? t->name : NULL, GW_ALIAS_TAG_BASE + tag,
                              gw_conv_datatype(t), v->ts_ms);
     m->is_null = !v->valid;
+    if (birth) {
+        m->props.eng_unit = t->units;
+        m->props.has_eng_low = t->has_eng_low;
+        m->props.eng_low = t->eng_low;
+        m->props.has_eng_high = t->has_eng_high;
+        m->props.eng_high = t->eng_high;
+    }
+    if (birth || !n->tag_rbe[tag].reported || n->tag_rbe[tag].valid != v->valid) {
+        set_quality(m, v->valid);
+    }
     gw_val_kind_t kind = gw_conv_kind(t);
     switch (kind) {
     case GW_VK_INT64:
@@ -172,6 +192,7 @@ static void publish_nbirth(gw_node_t *n)
                                  io.do_ts_ms ? io.do_ts_ms : now);
         m->v.num = (io.dout >> k) & 1u;
         m->is_null = io.do_unknown;   /* the latch may hold anything: never claim "off" */
+        set_quality(m, !io.do_unknown);
     }
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         metric(n, i++, k_count_names[k], GW_ALIAS_COUNT_BASE + k, SPB_DT_UINT64,
@@ -266,7 +287,8 @@ static void publish_io(gw_node_t *n, uint8_t force_do)
     gw_tagdb_get_io(&io);
     uint8_t di_changed = io.di ^ n->di_reported;
     uint8_t do_changed = (uint8_t)((io.dout ^ n->do_reported) | force_do);
-    if (io.do_unknown != n->do_unknown_reported) {
+    bool do_quality = io.do_unknown != n->do_unknown_reported;
+    if (do_quality) {
         do_changed = 0xFF;   /* expander lost or recovered: every DO changes (null <-> value) */
     }
     size_t count = 0;
@@ -282,6 +304,9 @@ static void publish_io(gw_node_t *n, uint8_t force_do)
                                      io.do_ts_ms);
             m->v.num = (io.dout >> k) & 1u;
             m->is_null = io.do_unknown;
+            if (do_quality) {
+                set_quality(m, !io.do_unknown);
+            }
         }
     }
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {   /* IO-4: with the DI change that made it */

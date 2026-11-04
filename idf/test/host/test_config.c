@@ -479,6 +479,43 @@ static void test_mb6_tags(void)
                     "scale/offset no se admiten en tags bool");
 }
 
+/* SPB-16: engineering range of a tag (units already existed). */
+static void test_eng_range(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse_tag("{\"name\":\"a\",\"area\":\"input\",\"address\":0,\"type\":\"float32\","
+                  "\"units\":\"degC\",\"eng_low\":-40,\"eng_high\":125.5},"
+                  "{\"name\":\"b\",\"area\":\"input\",\"address\":2,\"type\":\"uint16\","
+                  "\"eng_high\":100},"
+                  "{\"name\":\"c\",\"area\":\"input\",\"address\":3,\"type\":\"uint16\"}"),
+        err.msg);
+    TEST_ASSERT_EQUAL_STRING("degC", cfg.tags[0].units);
+    TEST_ASSERT_TRUE(cfg.tags[0].has_eng_low);
+    TEST_ASSERT_EQUAL_DOUBLE(-40, cfg.tags[0].eng_low);
+    TEST_ASSERT_TRUE(cfg.tags[0].has_eng_high);
+    TEST_ASSERT_EQUAL_DOUBLE(125.5, cfg.tags[0].eng_high);
+    TEST_ASSERT_FALSE(cfg.tags[1].has_eng_low);
+    TEST_ASSERT_TRUE(cfg.tags[1].has_eng_high);
+    TEST_ASSERT_FALSE(cfg.tags[2].has_eng_low);
+    TEST_ASSERT_FALSE(cfg.tags[2].has_eng_high);
+
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
+                              "\"eng_low\":10,\"eng_high\":10}"),
+                    "devices[0].tags[0].eng_high: debe ser mayor que eng_low (10)");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
+                              "\"eng_low\":\"0\"}"),
+                    "devices[0].tags[0].eng_low: se esperaba un número");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"coil\",\"address\":0,\"type\":\"bool\","
+                              "\"eng_high\":1}"),
+                    "devices[0].tags[0].eng_high: no se admite en tags bool");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"string\","
+                              "\"length\":2,\"eng_low\":1}"),
+                    "devices[0].tags[0].eng_low: no se admite en tags string");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
+                              "\"units\":\"0123456789abcdef\"}"),
+                    "devices[0].tags[0].units");
+}
+
 /* Issue #38: block reads per device. */
 static void test_device_block_reads(void)
 {
@@ -881,6 +918,7 @@ int main(void)
     RUN_TEST(test_error_fields);
     RUN_TEST(test_schema_rules);
     RUN_TEST(test_mb6_tags);
+    RUN_TEST(test_eng_range);
     RUN_TEST(test_device_block_reads);
     RUN_TEST(test_scan_classes);
     RUN_TEST(test_modbus_tcp_section);

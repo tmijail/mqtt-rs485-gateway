@@ -76,7 +76,9 @@
           "offset": 0.0,
           "deadband": 0.1,
           "writable": false,
-          "units": "V"
+          "units": "V",
+          "eng_low": 0,
+          "eng_high": 400
         },
         {
           "name": "Setpoint",

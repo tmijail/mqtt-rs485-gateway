@@ -314,6 +314,23 @@ static bool dec_cb(void *ctx, const spb_rx_metric_t *m)
     } else {
         spb_rx_number(m, m->datatype, &o->num);
     }
+    o->prop_count = m->prop_count;
+    const spb_rx_prop_t *p = spb_rx_prop(m, "Quality");
+    if (p != NULL && p->kind == SPB_VAL_INT) {
+        o->has_quality = true;
+        o->quality = (int32_t)p->v.i;
+    }
+    if ((p = spb_rx_prop(m, "engUnit")) != NULL && p->kind == SPB_VAL_STRING) {
+        snprintf(o->eng_unit, sizeof(o->eng_unit), "%s", p->s);
+    }
+    if ((p = spb_rx_prop(m, "engLow")) != NULL && p->kind == SPB_VAL_DOUBLE) {
+        o->has_eng_low = true;
+        o->eng_low = p->v.d;
+    }
+    if ((p = spb_rx_prop(m, "engHigh")) != NULL && p->kind == SPB_VAL_DOUBLE) {
+        o->has_eng_high = true;
+        o->eng_high = p->v.d;
+    }
     return true;
 }
 

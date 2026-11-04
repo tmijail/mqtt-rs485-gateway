@@ -95,6 +95,13 @@ typedef struct {
         uint64_t u64;            /* long_value, exact */
         char str[64];
         uint64_t timestamp;
+        /* SPB-16 properties */
+        uint8_t prop_count;
+        bool has_quality;
+        int32_t quality;
+        char eng_unit[64];       /* "" when absent */
+        bool has_eng_low, has_eng_high;
+        double eng_low, eng_high;
     } m[DEC_MAX];
 } decoded_t;
 

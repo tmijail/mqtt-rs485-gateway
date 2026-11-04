@@ -48,7 +48,8 @@ extern "C" {
 
 #define GW_NODE_IO_COUNT        8
 #define GW_NODE_BIRTH_METRICS   (7 + 3 * GW_NODE_IO_COUNT)
-#define GW_SPB_PAYLOAD_MAX      6144   /* > worst-case DBIRTH: 64 tags with 39-char names */
+#define GW_SPB_PAYLOAD_MAX      12288  /* > worst-case DBIRTH: 64 tags with 39-char names and
+                                         * every SPB-16 property, about 10 KB (test_spb) */
 #define GW_TOPIC_MAX            160
 
 typedef struct {

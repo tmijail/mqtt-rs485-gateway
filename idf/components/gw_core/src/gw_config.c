@@ -956,7 +956,7 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
 {
     static const char *const keys[] = {"name",   "area",     "address",  "type",  "word_order",
                                        "scale",  "offset",   "deadband", "writable", "units",
-                                       "bit",    "length",   "scan"};
+                                       "bit",    "length",   "scan",  "eng_low", "eng_high"};
     static const char *const scans[] = {"fast", "slow"};
     int area, type, word, scan;
     long addr, bit, length;
@@ -974,9 +974,13 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
         !get_string(o, "units", path, false, "", t->units, sizeof(t->units), err) ||
         !get_int(o, "bit", path, false, GW_NO_BIT, 0, 15, &bit, err) ||
         !get_int(o, "length", path, false, 0, 1, GW_STR_MAX_REGS, &length, err) ||
-        !get_enum(o, "scan", path, false, 0, scans, 2, &scan, err)) {
+        !get_enum(o, "scan", path, false, 0, scans, 2, &scan, err) ||
+        !get_double(o, "eng_low", path, 0.0, &t->eng_low, err) ||
+        !get_double(o, "eng_high", path, 0.0, &t->eng_high, err)) {
         return false;
     }
+    t->has_eng_low = cJSON_GetObjectItemCaseSensitive(o, "eng_low") != NULL;
+    t->has_eng_high = cJSON_GetObjectItemCaseSensitive(o, "eng_high") != NULL;
     t->slow = scan == 1;
     t->area = (gw_area_t)area;
     t->type = (gw_type_t)type;
@@ -1040,6 +1044,16 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
     if (t->type == GW_TYPE_STRING && t->deadband != 0.0) {
         join(p, sizeof(p), path, "deadband");
         return fail(err, p, "no se admite en tags string");
+    }
+    /* SPB-16: the engineering range of a numeric value */
+    if ((t->has_eng_low || t->has_eng_high) &&
+        (t->type == GW_TYPE_BOOL || t->type == GW_TYPE_STRING)) {
+        join(p, sizeof(p), path, t->has_eng_low ? "eng_low" : "eng_high");
+        return fail(err, p, "no se admite en tags %s", k_type_names[t->type]);
+    }
+    if (t->has_eng_low && t->has_eng_high && t->eng_low >= t->eng_high) {
+        join(p, sizeof(p), path, "eng_high");
+        return fail(err, p, "debe ser mayor que eng_low (%g)", t->eng_low);
     }
     return true;
 }

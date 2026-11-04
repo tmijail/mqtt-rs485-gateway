@@ -43,13 +43,19 @@ int main(int argc, char **argv)
     gw_node_device_changed(&node, 0);
     gw_tagdb_set_di(0x04, 1762171201000ull);
     gw_node_io_changed(&node);
+    /* SPB-16: a failed read is null with Quality BAD */
+    v[1].valid = false;
+    v[1].ts_ms += 2000;
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_node_device_changed(&node, 0);
 
     /* MB-6 metrics (Int64, UInt64, Double, String, register bit) in a second node's DBIRTH and
      * DDATA, so the official proto checks their wire fields too. */
     static const char mb6_json[] =
         "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"Plant1\","
         " \"edge_node_id\": \"GW09\"}, \"devices\": [{\"name\": \"Meter6\", \"unit_id\": 1,"
-        " \"tags\": [{\"name\": \"Energy\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint64\"},"
+        " \"tags\": [{\"name\": \"Energy\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint64\","
+        " \"units\": \"Wh\", \"eng_low\": 0, \"eng_high\": 1e12},"
         " {\"name\": \"Counter\", \"area\": \"holding\", \"address\": 4, \"type\": \"int64\","
         " \"word_order\": \"CDAB\"},"
         " {\"name\": \"Flow\", \"area\": \"input\", \"address\": 0, \"type\": \"float64\"},"

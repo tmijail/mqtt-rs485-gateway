@@ -93,9 +93,9 @@ function renderForms(){
  $("#f-web").innerHTML=field("web.username","Usuario","str")+field("web.password","Contraseña (mín. 8)","pw")+field("web.port","Puerto","int");
  const devs=cfg.devices||[];
  $("#f-dev").innerHTML=devs.map((d,i)=>`<div class="card"><div class="grid">${field(`devices.${i}.name`,"Nombre","str")+field(`devices.${i}.unit_id`,"Unit ID","int")+field(`devices.${i}.poll_ms`,"Encuesta (ms)","int")+field(`devices.${i}.offline_after`,"Fuera de línea tras","int")}</div>
- <table><tr><th>Tag</th><th>Área</th><th>Dirección</th><th>Tipo</th><th>Orden</th><th>Escala</th><th>Offset</th><th>Banda</th><th>Escr.</th><th>Unid.</th><th></th></tr>
+ <table><tr><th>Tag</th><th>Área</th><th>Dirección</th><th>Tipo</th><th>Orden</th><th>Escala</th><th>Offset</th><th>Banda</th><th>Escr.</th><th>Unid.</th><th>Mín. ing.</th><th>Máx. ing.</th><th></th></tr>
  ${(d.tags||[]).map((t,k)=>{const p=`devices.${i}.tags.${k}`;const c=(f,kind,o)=>`<td>${field(p+"."+f,"",kind,o).replace(/^<label>|<\/label>$/g,"")}</td>`;
-  return `<tr>${c("name","str")}${c("area","sel",AREA)}${c("address","int")}${c("type","sel",TYPE)}${c("word_order","sel",WO)}${c("scale","num")}${c("offset","num")}${c("deadband","num")}${c("writable","bool")}${c("units","str")}<td><button data-del-tag="${i}.${k}">x</button></td></tr>`}).join("")}
+  return `<tr>${c("name","str")}${c("area","sel",AREA)}${c("address","int")}${c("type","sel",TYPE)}${c("word_order","sel",WO)}${c("scale","num")}${c("offset","num")}${c("deadband","num")}${c("writable","bool")}${c("units","str")}${c("eng_low","num")}${c("eng_high","num")}<td><button data-del-tag="${i}.${k}">x</button></td></tr>`}).join("")}
  </table><div class="row"><button data-add-tag="${i}">+ tag</button><button data-del-dev="${i}">Quitar dispositivo</button></div></div>`).join("");
 }
 function readForms(){
