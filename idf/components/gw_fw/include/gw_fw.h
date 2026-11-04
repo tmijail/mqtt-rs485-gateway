@@ -44,7 +44,7 @@ typedef struct {
     uint32_t bytes;
     uint32_t total;         /* 0 = unknown */
     char text[240];         /* "Firmware Update/State" (GW_NODE_FW_STATE_MAX, issue #87) */
-    char detail[224];       /* longer reason (log, shell, web) */
+    char detail[240];       /* longer reason (log, shell, web) */
     char running[32];       /* running version */
     char slot[17];          /* its partition label */
     char other[32];         /* version in the other slot ("" if none) */

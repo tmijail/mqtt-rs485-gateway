@@ -14,6 +14,7 @@
 #include "esp_ota_ops.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "gw_bus.h"
 #include "gw_ota.h"
@@ -33,6 +34,8 @@ static const gw_config_t *s_cfg;
 static gw_fw_hooks_t s_hooks;
 static bool s_enabled;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
+static SemaphoreHandle_t s_fmt_lock;   /* set_status()'s formatting buffers */
+static StaticSemaphore_t s_fmt_lock_buf;
 static gw_fw_status_t s_st;            /* under s_mux */
 static gw_ota_trial_t s_trial;         /* under s_mux */
 static esp_timer_handle_t s_trial_timer;
@@ -117,18 +120,26 @@ static void set_status(gw_fw_phase_t phase, uint8_t progress, const char *detail
 static void set_status(gw_fw_phase_t phase, uint8_t progress, const char *detail,
                        const char *fmt, ...)
 {
-    char text[sizeof(s_st.text)];
+    /* formatted into static buffers (callers include the esp_timer task, with a small stack)
+     * under a mutex, copied into the status under the spinlock */
+    static char text[sizeof(s_st.text)];
+    static char det[sizeof(s_st.detail)];
+    xSemaphoreTake(s_fmt_lock, portMAX_DELAY);
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(text, sizeof(text), fmt, ap);
+    if ((size_t)vsnprintf(text, sizeof(text), fmt, ap) >= sizeof(text)) {
+        ESP_LOGW(TAG, "update state cut to %u characters", (unsigned)(sizeof(text) - 1));
+    }
     va_end(ap);
+    snprintf(det, sizeof(det), "%s", detail != NULL ? detail : text);
     portENTER_CRITICAL(&s_mux);
     s_st.phase = phase;
     s_st.progress = progress;
     memcpy(s_st.text, text, sizeof(text));
-    snprintf(s_st.detail, sizeof(s_st.detail), "%s", detail != NULL ? detail : text);
+    memcpy(s_st.detail, det, sizeof(det));
     s_st.gen++;
     portEXIT_CRITICAL(&s_mux);
+    xSemaphoreGive(s_fmt_lock);
     if (s_hooks.changed != NULL) {
         s_hooks.changed();
     }
@@ -524,6 +535,7 @@ esp_err_t gw_fw_upload_end(bool complete, char *why, size_t cap)
 
 esp_err_t gw_fw_init(const gw_config_t *cfg, bool enabled, const gw_fw_hooks_t *hooks)
 {
+    s_fmt_lock = xSemaphoreCreateMutexStatic(&s_fmt_lock_buf);
     s_cfg = cfg;
     s_hooks = *hooks;
     s_enabled = enabled;
