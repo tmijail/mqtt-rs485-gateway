@@ -2077,6 +2077,130 @@ def run_ota(args, work):
         broker.wait()
 
 
+def signed_image(args, src, version, fwdir, name):
+    """fw_image() of @src with @version as @fwdir/@name.bin, signed with the build's test key
+    when the build requires signed images (FW-2)."""
+    fw_image(src, version, fwdir / f"{name}-unsigned.bin")
+    if args.signing_key:
+        subprocess.run([args.idf_python, "-m", "espsecure", "sign-data", "--version", "2",
+                        "--keyfile", args.signing_key, "--output", str(fwdir / f"{name}.bin"),
+                        str(fwdir / f"{name}-unsigned.bin")], check=True, capture_output=True)
+    else:
+        shutil.copy(fwdir / f"{name}-unsigned.bin", fwdir / f"{name}.bin")
+    return fwdir / f"{name}.bin"
+
+
+def run_ota_trial(args, work):
+    """Issues #99 and #101 (GW43, MQTT 5) against a broker whose Maximum Packet Size (2000) is
+    below the Bulk DBIRTH, as in run_max_packet: every session leaves that DBIRTH out.
+    (1) A new image uploaded through the web: its sessions are incomplete, so none confirms it,
+    and the timeout rolls it back (#99 item 2). (2) Another image, also on trial for that reason:
+    an NCMD update refused during the trial keeps the trial phase and its time left (#101), and a
+    configuration saved through the web confirms the image before the restart (#99 item 4): it
+    comes back as the new image, not rolled back."""
+    node, port = "GW43", MQTT_PORT + 25
+    app = pathlib.Path(args.elf).with_suffix(".bin")
+    unsigned = pathlib.Path(args.elf).with_name(app.stem + "-unsigned.bin")
+    src = unsigned if unsigned.exists() else app
+    fwdir = work / "fw-trial"
+    fwdir.mkdir(exist_ok=True)
+    images = {k: signed_image(args, src, f"e2e-{k}", fwdir, k) for k in ("t2", "t3")}
+    conf = work / "broker-trial.conf"
+    conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\nmax_packet_size 2000\n")
+    broker = start_broker(conf, work / "mosquitto-trial.log")
+    obs = Observer(port)
+    cfg = node_config(node, port=port, protocol="5")
+    cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    timeout_s = sdkconfig_int(args.sdkconfig, "GW_FW_CONFIRM_TIMEOUT_S")
+    nbirth_t, ndata_t, ncmd_t = f"{T}/NBIRTH/{node}", f"{T}/NDATA/{node}", f"{T}/NCMD/{node}"
+
+    def fw(item):
+        return metric(item[2], name="Node Info/Firmware").string_value if item else None
+
+    def upload(name):
+        return http("POST", "/api/firmware", images[name].read_bytes(),
+                    headers={"Content-Type": "application/octet-stream"}, timeout=120)
+
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "trial", cfg)
+    try:
+        nb = obs.wait(nbirth_t, 40)
+        v1 = fw(nb)
+        if not check("Issue #99 GW43 runs on the broker with Maximum Packet Size 2000 (the Bulk "
+                     "DBIRTH does not fit)", nb and v1,
+                     f"NBIRTH {'yes' if nb else 'no'}"):
+            return
+
+        # 1. a session without every DBIRTH does not confirm a new image
+        wait_http("/api/firmware", 20)
+        asked = time.monotonic()
+        st, _, body = upload("t2")
+        trial = gw.wait_log(r"fw: firmware e2e-t2 \(ota_\d\) on trial", 60, asked)
+        partial = gw.wait_log(r"fw: firmware e2e-t2 on trial: a Sparkplug session came up without "
+                              r"\d+ DBIRTH\(s\) \(too large for the broker\): not confirmed by it",
+                              60, trial or asked)
+        back = gw.wait_log(r"fw: firmware e2e-t2 rejected \(no complete Sparkplug session \(every "
+                           r"DBIRTH\) before the timeout\)", timeout_s + 30, trial or asked)
+        nb_back = obs.wait(nbirth_t, 60, lambda p: metric(p, name="Node Info/Firmware").string_value
+                           == v1)
+        born_t2 = [m for m in CAPTURE if m[0] >= asked and m[1] == nbirth_t and fw(m) == "e2e-t2"]
+        confirmed = gw.find(r"fw: firmware e2e-t2 confirmed", asked)
+        check("Issue #99 a new image whose sessions leave a DBIRTH out (larger than the broker's "
+              "Maximum Packet Size) is not confirmed by them: the timeout rolls it back, and the "
+              "previous image says so",
+              st == 200 and trial and partial and born_t2 and back and not confirmed and nb_back
+              and fw_state(nb_back[2]) == "rolled back from e2e-t2",
+              f"POST {st} {body[:60]!r}; on trial {trial is not None}, session without every "
+              f"DBIRTH {partial is not None} ({len(born_t2)} NBIRTH of e2e-t2), confirmed "
+              f"{bool(confirmed)}, rolled back "
+              f"{f'{back - trial:.1f} s into the trial' if back and trial else back}; NBIRTH "
+              f"{fw(nb_back)!r} state {fw_state(nb_back[2]) if nb_back else None!r}")
+
+        # 2. during another trial: a refused update keeps the phase; a saved configuration
+        # confirms the image before its restart
+        gw.wait_log(r"edge: time synchronised", 10, nb_back[0] - 5 if nb_back else t0)
+        wait_http("/api/firmware", 20)
+        asked = time.monotonic()
+        st, _, body = upload("t3")
+        trial = gw.wait_log(r"fw: firmware e2e-t3 \(ota_\d\) on trial", 60, asked)
+        nb3 = obs.wait(nbirth_t, 30, lambda p: metric(p, name="Node Info/Firmware").string_value
+                       == "e2e-t3")
+        obs.publish_cmd(ncmd_t, [{"name": "Node Control/Firmware Update", "datatype": 12,
+                                  "string_value": "https://10.0.2.2:1/x.bin"}])
+        refused = obs.wait(ndata_t, 10, lambda p: fw_state(p) ==
+                           "refused: the running firmware is on trial (not confirmed yet)")
+        _, h = gw.shell("status", [r"^ota\s+e2e-t3 in ota_\d.*\| refused: the running firmware is "
+                                   r"on trial \(not confirmed yet\); firmware e2e-t3 on trial "
+                                   r"\(\d+ s left\)$"])
+        obs.drain()
+        saved_at = time.monotonic()
+        st_put, _, b_put = http("PUT", "/api/config", cfg, timeout=30)
+        conf_t = gw.wait_log(r"fw: firmware e2e-t3 confirmed: the operator saved a configuration; "
+                             r"the bootloader keeps it", 20, saved_at)
+        death = obs.wait(f"{T}/NDEATH/{node}", 20)
+        nb4 = obs.wait(nbirth_t, 60)
+        rolled = gw.find(r"fw: firmware e2e-t3 \(ota_\d\) was rejected|fw: firmware e2e-t3 rejected",
+                         asked)
+        again = gw.find(r"fw: firmware e2e-t3 \(ota_\d\) on trial", saved_at)
+        check("Issue #101 an update refused during a trial (NCMD) is reported without hiding the "
+              "trial: the phase and its time left stay (shell); issue #99 a configuration saved "
+              "through the web during the trial confirms the new image before the restart, which "
+              "comes back as the new image (not rolled back, not on trial again)",
+              st == 200 and trial and nb3 and refused and all(h.values()) and st_put == 200
+              and conf_t and death and nb4 and fw(nb4) == "e2e-t3" and not rolled and not again
+              and not (fw_state(nb4[2]) or "").startswith("rolled back"),
+              f"POST {st}; on trial {trial is not None}; refusal state "
+              f"{fw_state(refused[2]) if refused else None!r}; shell {list(h.values())}; PUT "
+              f"{st_put} {b_put[:60]!r}; confirmed {conf_t is not None}; NDEATH {death is not None}; "
+              f"after the restart {fw(nb4)!r} state {fw_state(nb4[2]) if nb4 else None!r}; rolled "
+              f"back {rolled[:1]}; on trial again {bool(again)}")
+    finally:
+        gw.kill()
+        obs.close()
+        broker.terminate()
+        broker.wait()
+
+
 # ---------------------------------------------------------------- issues #67/#94 NVS migration
 
 def auth_broker(work, name, port, users):
@@ -2538,6 +2662,7 @@ def main():
             run_scenario("https", lambda: run_https(args, work))
         if want("ota"):
             run_scenario("FW-1 OTA", lambda: run_ota(args, work))
+            run_scenario("issues #99/#101 OTA trial", lambda: run_ota_trial(args, work))
         if want("nvs"):
             run_scenario("issues #67/#94 NVS migration", lambda: run_nvs_migration(args, work))
             run_scenario("issue #94 OTA to NVS encryption", lambda: run_nvs_ota(args, work))
