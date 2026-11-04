@@ -120,6 +120,16 @@ bool gw_nvsmig_find(const uint8_t *buf, size_t size, const char *ns, const char 
  */
 uint8_t gw_nvsmig_bdseq_later(uint8_t a, uint8_t b);
 
+/* Issue #104: a boot without NVS hands out bdSeq values from RAM. It first reserves a block of
+ * them in a small LittleFS file (the first value not handed out yet); the next boot with NVS
+ * continues from the later of its own and the reservation, so the bdSeq never goes back to a
+ * value the hosts already saw. */
+#define GW_NVSMIG_BDSEQ_BLOCK 16u
+
+/** True when @p next (the next value to hand out) reached the reservation @p reserved: a new
+ *  block must be reserved before it is used. */
+bool gw_nvsmig_bdseq_reached(uint8_t next, uint8_t reserved);
+
 /* What the read of the unencrypted NVS achieved before a migration may erase it. */
 typedef struct {
     bool init_ok;            /* nvs_flash_init_partition() succeeded */
@@ -167,11 +177,20 @@ typedef struct {
     gw_nvsmig_copy_t copy;   /* the copy of an earlier, unfinished migration */
     bool on_trial;           /* the running image is a new OTA image not confirmed yet */
     bool can_copy;           /* there is a place for the copy (LittleFS mounted) */
+    /* issue #104: LittleFS does not mount but its partition is not blank, so a copy may be in it
+     * (copy is then NONE: nothing could be looked at) */
+    bool copy_unknown;
+    bool keys;               /* the NVS keys can be read (an encrypted NVS was used here before) */
+    bool mig_busy;           /* the encrypted NVS has a migration's start marker, not its end */
 } gw_nvsmig_state_t;
 
 /**
  * What an encrypted build does with the NVS at boot (issue #94):
  *  - a copy that exists but cannot be read: NO_NVS (it may hold the only copy of the entries);
+ *  - issue #104: LittleFS not mountable (a copy may be there, copy_unknown) and the partition
+ *    looks like an interrupted migration: EMPTY with the NVS keys present (cut right after the
+ *    erase), or ENCRYPTED with the start marker and not the end one (cut while writing): NO_NVS,
+ *    not an empty or partial encrypted NVS whose new entries the resume would then drop;
  *  - a raw page that cannot be read: no migration. With a valid copy NO_NVS; readable pages
  *    all encrypted OPEN_ENCRYPTED (staying unencrypted would make NVS discard their entries);
  *    readable pages all plain STAY_PLAIN (an unread page holds plain or encrypted entries; the

@@ -402,10 +402,19 @@ bool gw_nvsmig_may_erase(const gw_nvsmig_read_t *r)
     return r->listed_all && r->skipped == 0;
 }
 
+bool gw_nvsmig_bdseq_reached(uint8_t next, uint8_t reserved)
+{
+    return (uint8_t)(next - reserved) < 128u;
+}
+
 gw_nvsmig_action_t gw_nvsmig_decide(const gw_nvsmig_state_t *s)
 {
     if (s->copy == GW_NVSMIG_COPY_UNREADABLE) {
         return GW_NVSMIG_NO_NVS;
+    }
+    if (s->copy_unknown && ((s->kind == GW_NVSRAW_EMPTY && s->keys) ||
+                            (s->kind == GW_NVSRAW_ENCRYPTED && s->mig_busy))) {
+        return GW_NVSMIG_NO_NVS;   /* issue #104: the copy that would finish it is out of reach */
     }
     bool copy = s->copy == GW_NVSMIG_COPY_VALID;
     if (!s->raw_ok) {

@@ -914,13 +914,16 @@ static void start_births(void)
                  s_bdseq, s_birth_failures);
         return;
     }
+    /* born: the NBIRTH fitted, so whatever was too large since was a DBIRTH (issue #76: the
+     * session stays without those devices) */
+    unsigned not_born = (unsigned)(s_oversize - oversize_before);
     s_session_up_us = esp_timer_get_time();
     gw_status_set(GW_ST_MQTT_UP, true);
     ESP_LOGI(TAG, "Sparkplug session up (bdSeq=%u): births sent in %lu ms, longest stretch "
              "without feeding the watchdog %lu ms", s_bdseq,
              (unsigned long)((esp_timer_get_time() - t0) / 1000), (unsigned long)s_max_unfed_ms);
     log_stacks();
-    gw_fw_session_up();   /* FW-1: a new image on trial is healthy */
+    gw_fw_session_up(not_born);   /* FW-1: a new image on trial is healthy if every birth went out */
     if (gw_sf_count(&s_sf) > 0) {
         ESP_LOGI(TAG, "store & forward: %u sample(s) stored while offline follow as historical "
                       "data (%lu overwritten)",

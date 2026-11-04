@@ -67,9 +67,20 @@ void gw_storage_commissioning_password(char out[GW_COMMISSION_PW_LEN + 1]);
  *  confirmed image migrates (gw_fw restarts once after confirming one). */
 bool gw_storage_nvs_encryption_pending(void);
 
+/** Issue #104: true when the next boot of a confirmed image will encrypt the NVS: this one stays
+ *  unencrypted only because the image is on trial (with LittleFS mounted for the reset-safe copy),
+ *  or a migration copy is pending. False when the next boot could not migrate either (no
+ *  LittleFS, an unreadable NVS page): a restart for it would be wasted. */
+bool gw_storage_nvs_migrates_next_boot(void);
+
 /** Issue #94: why this boot has no NVS at all (a migration copy pending or unreadable, an NVS
  *  page unreadable, ...), NULL when that is not the case. For the shell. */
 const char *gw_storage_nvs_unavailable_why(void);
+
+/** Issue #102: the NVS partition holds (or may hold, with a migration pending) encrypted NVS: an
+ *  image without NVS encryption would erase it. False in a build without NVS encryption and
+ *  while this boot keeps the unencrypted NVS (a new image on trial, no LittleFS). */
+bool gw_storage_nvs_encrypted_on_flash(void);
 
 /** CFG-7: true when NVS (and with it the secrets) is encrypted (CONFIG_NVS_ENCRYPTION,
  *  HMAC key in eFuse). Development builds without it keep the secrets in plain NVS. */
@@ -135,6 +146,19 @@ bool gw_storage_get_blob(const char *key, void *out, size_t len);
  * landed under @p what. NULL if neither has room. Boot time only (REL-2).
  */
 void *gw_storage_big_alloc(size_t size, const char *what);
+
+/** Issue #99: what a commit hook is asked about. */
+typedef enum {
+    GW_STORAGE_COMMIT_CONFIG = 0,    /* a new configuration is about to be stored (not dry run) */
+    GW_STORAGE_COMMIT_FACTORY_RESET, /* a factory reset is about to erase everything */
+} gw_storage_commit_t;
+
+/** Called before the change is made, which a restart then puts into effect; non-ESP_OK (with the
+ *  reason in English in @p why) refuses a configuration (a factory reset goes on anyway). */
+typedef esp_err_t (*gw_storage_commit_hook_t)(gw_storage_commit_t what, char *why, size_t cap);
+
+/** Issue #99: gw_fw confirms a new image on trial before such a restart. One hook. */
+void gw_storage_set_commit_hook(gw_storage_commit_hook_t hook);
 
 /** Issue #80: the smallest "largest free internal block" seen at the peak of a configuration
  *  validation (gw_storage_save_config), 0 if none ran yet. */

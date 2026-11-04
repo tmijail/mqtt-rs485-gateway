@@ -104,8 +104,12 @@ static int publish_rc(gw_node_t *n, const char *type, const char *device, size_t
     if (r < 0) {
         if (r != GW_NODE_PUBLISH_TOO_LARGE) {
             GW_LOGW(TAG, "publish %s failed", n->topic);
+            return -1;
         }
-        return r == GW_NODE_PUBLISH_TOO_LARGE ? r : -1;
+        /* never sent (too large for the broker, #73): its seq goes to the next message, or
+         * hosts would see a gap in a session that lost nothing (SPB-5) */
+        n->seq = (uint8_t)p.seq;
+        return r;
     }
     GW_LOGD(TAG, "%s seq=%" PRIu64 " metrics=%u bytes=%u", n->topic, p.seq, (unsigned)metric_count,
             (unsigned)len);
