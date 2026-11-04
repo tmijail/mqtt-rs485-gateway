@@ -721,15 +721,19 @@ def make_pki(work):
     key("ca")
     ossl("req", "-x509", "-new", "-key", "ca.key", "-sha256", "-days", "30", "-subj", "/CN=E2E test CA",
          "-out", "ca.pem")
-    for name, cn, ext in (("server", "broker.e2e", "subjectAltName=IP:10.0.2.2,DNS:broker.e2e"),
-                          ("client", "GW13", "extendedKeyUsage=clientAuth")):
+    for name, cn, ext, days in (("server", "broker.e2e", "subjectAltName=IP:10.0.2.2,DNS:broker.e2e", "30"),
+                                ("client", "GW13", "extendedKeyUsage=clientAuth", "30"),
+                                # issue #70: expired yesterday (openssl takes a negative validity)
+                                ("expired", "broker.e2e", "subjectAltName=IP:10.0.2.2,DNS:broker.e2e",
+                                 "-1")):
         key(name)
         ossl("req", "-new", "-key", f"{name}.key", "-subj", f"/CN={cn}", "-out", f"{name}.csr")
         (d / f"{name}.ext").write_text(ext + "\n")
         ossl("x509", "-req", "-in", f"{name}.csr", "-CA", "ca.pem", "-CAkey", "ca.key",
-             "-CAcreateserial", "-days", "30", "-sha256", "-extfile", f"{name}.ext",
+             "-CAcreateserial", "-days", days, "-sha256", "-extfile", f"{name}.ext",
              "-out", f"{name}.crt")
-    return {n: d / n for n in ("ca.pem", "server.crt", "server.key", "client.crt", "client.key")}
+    return {n: d / n for n in ("ca.pem", "server.crt", "server.key", "client.crt", "client.key",
+                               "expired.crt", "expired.key")}
 
 
 def run_tls(args, work):
@@ -744,7 +748,7 @@ def run_tls(args, work):
       GW14  tls.server_name that the certificate does not carry -> rejected, never connects
       GW15  ca_file that does not exist -> reported, no connection attempted"""
     pki = make_pki(work)
-    p13, pm, plain = MQTT_PORT + 5, MQTT_PORT + 6, MQTT_PORT + 7
+    p13, pm, plain, pexp = MQTT_PORT + 5, MQTT_PORT + 6, MQTT_PORT + 7, MQTT_PORT + 12
     conf = work / "broker-tls.conf"
     # "user root": started as root, mosquitto would drop to user "mosquitto", which cannot read
     # the certificates in the work directory (no effect when not started as root)
@@ -755,7 +759,9 @@ def run_tls(args, work):
         f"listener {pm} 127.0.0.1\nallow_anonymous true\ncafile {pki['ca.pem']}\n"
         f"certfile {pki['server.crt']}\nkeyfile {pki['server.key']}\ntls_version tlsv1.2\n"
         "require_certificate true\nuse_identity_as_username true\n"
-        f"listener {plain} 127.0.0.1\nallow_anonymous true\n")
+        f"listener {plain} 127.0.0.1\nallow_anonymous true\n"
+        f"listener {pexp} 127.0.0.1\nallow_anonymous true\ncafile {pki['ca.pem']}\n"
+        f"certfile {pki['expired.crt']}\nkeyfile {pki['expired.key']}\ntls_version tlsv1.3\n")
     blog = work / "mosquitto-tls.log"
     broker = start_broker(conf, blog)
     obs = Observer(plain)
@@ -825,15 +831,36 @@ def run_tls(args, work):
     t0 = time.monotonic()
     gw = boot_variant(args, work, "tlsname", node_config(node, port=p13, tls={
         "enabled": True, "ca_file": "ca.pem", "server_name": "wrong.e2e"}), {"ca.pem": ca})
-    rejected = gw.wait_log(r"TLS: the broker certificate (does not carry the expected name|failed "
-                           r"verification) .*mbedTLS -0x2700", 40, t0)
+    # issue #70: the cause is named (also with TLS 1.3), with the certificate's names
+    rejected = gw.wait_log(r"TLS: the broker certificate does not carry the expected name .*"
+                           r"mbedTLS -0x2700", 40, t0)
+    detail = gw.wait_log(r"TLS: certificate CN=broker\.e2e \[IP:10\.0\.2\.2,DNS:broker\.e2e\], valid .*"
+                         r"expected name 'wrong\.e2e' \(mqtt\.tls\.server_name\); clock .* SNTP "
+                         r"synchronised", 5, t0)
     nb = obs.wait(f"{T}/NBIRTH/{node}", 3)
-    lines = gw.find(r"TLS: the broker certificate", t0)
+    lines = gw.find(r"TLS: (the broker certificate|certificate CN)", t0)[:2]
     gw.kill()
-    check("MQTT-4 hostname verification: tls.server_name that the broker certificate does not carry "
-          "-> handshake rejected, no session",
-          rejected and not nb and not re.search(r"as GW14 ", blog.read_text()),
-          (lines or ["no TLS error logged"])[0])
+    check("MQTT-4 / issue #70 hostname verification: tls.server_name that the broker certificate "
+          "does not carry -> handshake rejected, no session; the log names the cause (TLS 1.3), "
+          "the certificate's names and the expected one",
+          rejected and detail and not nb and not re.search(r"as GW14 ", blog.read_text()),
+          " | ".join(lines) or "no TLS error logged")
+
+    # GW25 (issue #70): a broker certificate that expired yesterday, TLS 1.3
+    node = "GW25"
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "tlsexpired", node_config(node, port=pexp, tls={
+        "enabled": True, "ca_file": "ca.pem"}), {"ca.pem": ca})
+    expired = gw.wait_log(r"TLS: the broker certificate expired \(", 40, t0)
+    detail = gw.wait_log(r"TLS: certificate CN=broker\.e2e .* to \d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC; "
+                         r"expected name '10\.0\.2\.2' \(the broker host\); clock \d{4}-.* SNTP "
+                         r"synchronised", 5, t0)
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 3)
+    lines = gw.find(r"TLS: (the broker certificate|certificate CN)", t0)[:2]
+    gw.kill()
+    check("Issue #70 an expired broker certificate (TLS 1.3) is reported as expired, with its "
+          "validity, the clock and the SNTP state; no session",
+          expired and detail and not nb, " | ".join(lines) or "no TLS error logged")
 
     # GW15: a CA file that is not in LittleFS: reported, nothing attempted
     node = "GW15"

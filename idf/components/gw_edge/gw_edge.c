@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <stdatomic.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
@@ -28,6 +29,7 @@
 #include "gw_storage.h"
 #include "esp_transport.h"
 #include "lwip/sockets.h"
+#include "mbedtls/asn1.h"
 #include "mbedtls/pk.h"
 #include "mbedtls/x509_crt.h"
 #include "mqtt_client.h"
@@ -127,6 +129,17 @@ static struct ifreq s_ifr;      /* interface the client is bound to (NET-4, two 
 static char *s_ca_pem;          /* MQTT-4: CA file, boot allocation (PSRAM if any), never freed */
 static char *s_cert_pem;        /* MQTT-5: client certificate and key, the same way */
 static char *s_key_pem;
+/* Issue #70: what the X.509 verify callback (mqtt_task) saw in the current attempt; read when
+ * the same task reports the failure. */
+typedef struct {
+    uint32_t flags;          /* OR of every certificate's verify flags */
+    bool seen;               /* the broker presented a certificate */
+    char subject[96];        /* of the broker certificate (depth 0) */
+    char sans[96];           /* its DNS and IP names */
+    mbedtls_x509_time valid_from, valid_to;
+} tls_verify_t;
+static tls_verify_t s_vf;
+static mbedtls_x509_crt s_ca_chain;   /* mqtt.tls.ca_file, parsed once at boot */
 static char s_setup_error[200]; /* why the settings cannot work (TLS files): no connection attempted */
 static int64_t s_tls_logged_us;
 static bool s_waiting_time_logged;
@@ -243,29 +256,106 @@ static void enqueue_cmd(const esp_mqtt_event_t *ev)
     }
 }
 
-/* MQTT-4: say why a TLS connection failed, in terms of the configuration. esp-tls reports the
- * verification flags only when the peer certificate is still around after the failure (not
- * with TLS 1.3): then only "verification failed" is known. */
+static const char *broker_host(unsigned i);
+
+/* The bundle's own verify callback: global in esp_crt_bundle.c, not in its header. */
+extern int esp_crt_verify_callback(void *buf, mbedtls_x509_crt *const crt, const int depth,
+                                   uint32_t *const flags);
+
+/* Issue #70: X.509 verify callback (mqtt_task, during the handshake). esp-tls reports the
+ * verification flags only while the peer certificate is still around after a failure, which
+ * TLS 1.3 does not keep: they are recorded here instead, with what the certificate says. */
+static int tls_verify(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags)
+{
+    (void)ctx;
+    int r = 0;
+    if (s_cfg->mqtt.tls.ca_file[0] == '\0') {
+        r = esp_crt_verify_callback(NULL, crt, depth, flags);   /* bundle: it finds the CA */
+    }
+    s_vf.flags |= *flags;
+    if (depth == 0) {
+        s_vf.seen = true;
+        mbedtls_x509_dn_gets(s_vf.subject, sizeof(s_vf.subject), &crt->subject);
+        s_vf.valid_from = crt->valid_from;
+        s_vf.valid_to = crt->valid_to;
+        size_t n = 0;
+        s_vf.sans[0] = '\0';
+        for (const mbedtls_x509_sequence *c = &crt->subject_alt_names; c != NULL && c->buf.p;
+             c = c->next) {
+            uint8_t tag = (uint8_t)(c->buf.tag & ~(MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED));
+            if (tag == MBEDTLS_X509_SAN_DNS_NAME) {
+                n += (size_t)snprintf(s_vf.sans + n, n < sizeof(s_vf.sans) ? sizeof(s_vf.sans) - n : 0,
+                                      "%sDNS:%.*s", n ? "," : "", (int)c->buf.len, c->buf.p);
+            } else if (tag == MBEDTLS_X509_SAN_IP_ADDRESS && c->buf.len == 4) {
+                n += (size_t)snprintf(s_vf.sans + n, n < sizeof(s_vf.sans) ? sizeof(s_vf.sans) - n : 0,
+                                      "%sIP:%u.%u.%u.%u", n ? "," : "", c->buf.p[0], c->buf.p[1],
+                                      c->buf.p[2], c->buf.p[3]);
+            }
+        }
+    }
+    return r;
+}
+
+/* crt_bundle_attach hook of esp-tls: the CA (file or bundle) and the verify callback above. */
+static esp_err_t tls_attach(void *conf)
+{
+    if (s_cfg->mqtt.tls.ca_file[0] != '\0') {
+        mbedtls_ssl_conf_ca_chain(conf, &s_ca_chain, NULL);
+    } else {
+        esp_err_t e = esp_crt_bundle_attach(conf);
+        if (e != ESP_OK) {
+            return e;
+        }
+    }
+    mbedtls_ssl_conf_verify(conf, tls_verify, NULL);
+    return ESP_OK;
+}
+
+static void fmt_time(char *out, size_t cap, const mbedtls_x509_time *t)
+{
+    snprintf(out, cap, "%04d-%02d-%02d %02d:%02d:%02d UTC", t->year, t->mon, t->day, t->hour,
+             t->min, t->sec);
+}
+
+/* MQTT-4 / issue #70: say why a TLS connection failed, in terms of the configuration, with the
+ * certificate's names and dates, the expected name and the clock. */
 static void log_tls_error(const esp_mqtt_error_codes_t *e)
 {
-    unsigned flags = (unsigned)e->esp_tls_cert_verify_flags;
+    unsigned flags = (unsigned)e->esp_tls_cert_verify_flags | s_vf.flags;
     int stack = e->esp_tls_stack_err < 0 ? -e->esp_tls_stack_err : e->esp_tls_stack_err;
-    const char *what = (flags & MBEDTLS_X509_BADCERT_CN_MISMATCH)
-                           ? "the broker certificate does not carry the expected name "
-                             "(mqtt.host or mqtt.tls.server_name)"
-                       : (flags & MBEDTLS_X509_BADCERT_EXPIRED) ? "the broker certificate expired"
-                       : (flags & MBEDTLS_X509_BADCERT_FUTURE)
-                           ? "the broker certificate is not valid yet (check the clock)"
+    const char *expected = s_cfg->mqtt.tls.server_name[0] ? s_cfg->mqtt.tls.server_name
+                                                          : broker_host(s_bsel.current);
+    time_t now = time(NULL);
+    struct tm tm;
+    gmtime_r(&now, &tm);
+    char clock[112], from[72], to[72];
+    snprintf(clock, sizeof(clock), "clock %04d-%02d-%02d %02d:%02d:%02d UTC, SNTP %s",
+             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
+             atomic_load(&s_time_synced) ? "synchronised" : "NOT synchronised");
+    fmt_time(from, sizeof(from), &s_vf.valid_from);
+    fmt_time(to, sizeof(to), &s_vf.valid_to);
+    const char *what = (flags & MBEDTLS_X509_BADCERT_EXPIRED)  ? "the broker certificate expired"
+                       : (flags & MBEDTLS_X509_BADCERT_FUTURE) ? "the broker certificate is not valid yet"
+                       : (flags & MBEDTLS_X509_BADCERT_CN_MISMATCH)
+                           ? "the broker certificate does not carry the expected name"
                        : (flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED)
                            ? "the broker certificate is not signed by the configured CA"
                        : flags != 0 ? "the broker certificate was rejected"
                        : stack == -MBEDTLS_ERR_X509_CERT_VERIFY_FAILED
-                           ? "the broker certificate failed verification (CA: mqtt.tls.ca_file; "
-                             "name: mqtt.host or mqtt.tls.server_name; dates)"
+                           ? "the broker certificate failed verification"
                            : "TLS handshake failed";
     ESP_LOGW(TAG, "TLS: %s (esp-tls %s, mbedTLS -0x%04x, verify flags 0x%x, errno %d)", what,
              esp_err_to_name(e->esp_tls_last_esp_err), (unsigned)stack, flags,
              e->esp_transport_sock_errno);
+    if (s_vf.seen) {
+        ESP_LOGW(TAG, "TLS: certificate %s [%s], valid %s to %s; expected name '%s' (%s); %s",
+                 s_vf.subject, s_vf.sans, from, to, expected,
+                 s_cfg->mqtt.tls.server_name[0] ? "mqtt.tls.server_name" : "the broker host",
+                 clock);
+    } else {
+        ESP_LOGW(TAG, "TLS: no broker certificate checked; expected name '%s'; %s", expected,
+                 clock);
+    }
 }
 
 static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -484,6 +574,7 @@ void gw_edge_get_status(gw_edge_status_t *out)
 
 static void prepare_attempt(void)
 {
+    memset(&s_vf, 0, sizeof(s_vf));   /* issue #70: what the next handshake will see */
     s_bdseq = gw_storage_next_bdseq();
     size_t n = gw_node_death_payload(s_bdseq, s_will, sizeof(s_will));
     s_mqtt_cfg.session.last_will.msg = (const char *)s_will;
@@ -1096,11 +1187,18 @@ static void setup_tls(const gw_tls_cfg_t *tls)
     esp_mqtt_client_config_t *m = &s_mqtt_cfg;
     if (tls->ca_file[0] != '\0') {
         s_ca_pem = load_pem_certs(tls->ca_file, "ca_file");
-        m->broker.verification.certificate = s_ca_pem;   /* PEM: NUL terminated, length 0 */
+        /* parsed once and handed to mbedTLS by tls_attach(), with the verify callback */
+        mbedtls_x509_crt_init(&s_ca_chain);
+        if (s_ca_pem != NULL) {
+            mbedtls_x509_crt_parse(&s_ca_chain, (const unsigned char *)s_ca_pem,
+                                   strlen(s_ca_pem) + 1);
+        }
     } else {
-        m->broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
         ESP_LOGI(TAG, "TLS: broker certificate checked against the ESP-IDF root CA bundle");
     }
+    /* esp-tls takes the CA from this hook before cacert_buf or the global store: both cases go
+     * through it to install the verify callback of issue #70 */
+    m->broker.verification.crt_bundle_attach = tls_attach;
     /* Never skip_cert_common_name_check: the name is always verified (MQTT-4). */
     m->broker.verification.common_name = tls->server_name[0] ? tls->server_name : NULL;
     if (tls->cert_file[0] != '\0' && s_setup_error[0] == '\0') {
