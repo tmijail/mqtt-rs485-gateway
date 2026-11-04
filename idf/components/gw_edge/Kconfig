@@ -32,6 +32,17 @@ menu "Gateway: Sparkplug / MQTT"
         int "esp-mqtt outbox limit (bytes, QoS>0 messages awaiting ACK)"
         default 8192
 
+    config GW_MQTT_PUBLISH_BUDGET_MS
+        int "Longest a single MQTT publish may take (ms)"
+        range 1000 9000
+        default 8000
+        help
+            Issue #59: esp-mqtt keeps writing a message while every socket write makes
+            progress, so on a very slow link one publish (a DBIRTH of up to 6 KB) could
+            outlast the task watchdog. After this long the connection is closed (the
+            Sparkplug session restarts with backoff). The write in progress may still take
+            up to the 5 s socket timeout: keep budget + 5 s below the 15 s watchdog.
+
     config GW_MQTT_BACKOFF_MIN_MS
         int "Reconnect backoff minimum (ms)"
         default 1000

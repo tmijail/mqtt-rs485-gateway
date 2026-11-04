@@ -247,15 +247,21 @@ class FakeBroker:
 class Relay:
     """TCP relay 127.0.0.1:@port -> a broker on 127.0.0.1:@target. stop() closes the listener and
     every relayed connection (to the gateway the broker is gone: connections are refused) while
-    the broker and the observers keep running; start() opens it again."""
+    the broker and the observers keep running; start() opens it again.
+    Issue #59: with @rate (bytes/s) the gateway -> broker direction is read at that rate while
+    self.rate is set (None = unlimited), with the smallest receive buffer, so the gateway's TCP
+    sees a slow reader once slirp's own buffering is full."""
 
-    def __init__(self, port, target):
+    def __init__(self, port, target, rate=None):
         self.port, self.target, self.conns, self.srv = port, target, [], None
+        self.rate, self.up_bytes = rate, 0
         self.start()
 
     def start(self):
         self.srv = socket.socket()
         self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if self.rate:
+            self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)   # inherited
         self.srv.bind(("127.0.0.1", self.port))
         self.srv.listen(4)
         threading.Thread(target=self._loop, args=(self.srv,), daemon=True).start()
@@ -286,16 +292,21 @@ class Relay:
                 c.close()
                 continue
             self.conns += [c, b]
-            threading.Thread(target=self._pump, args=(c, b), daemon=True).start()
-            threading.Thread(target=self._pump, args=(b, c), daemon=True).start()
+            threading.Thread(target=self._pump, args=(c, b, True), daemon=True).start()
+            threading.Thread(target=self._pump, args=(b, c, False), daemon=True).start()
 
-    def _pump(self, src, dst):
+    def _pump(self, src, dst, up):
         try:
             while True:
-                data = src.recv(4096)
+                rate = self.rate if up else None
+                data = src.recv(max(1, rate // 10) if rate else 4096)
                 if not data:
                     break
                 dst.sendall(data)
+                if up:
+                    self.up_bytes += len(data)
+                if rate:
+                    time.sleep(len(data) / rate)
         except OSError:
             pass
         finally:
@@ -1030,6 +1041,54 @@ def run_store_forward(args, work, slave):
           + " | ".join(gw.find(r"^store\s", asked) + gw.find(r"^store\s", asked2)))
 
 
+# ---------------------------------------------------------------- slow link (issue #59)
+
+def run_slow_link(args, work, budget_ms):
+    """Issue #59 in one boot (GW21) through a Relay (port +10 -> the main mosquitto) that reads
+    the gateway's data at 700 B/s. The harness asks for rebirths until slirp's and the sockets'
+    buffers are full and a publish has to wait for the slow reader: it must be cut at the
+    publish budget (CONFIG_GW_MQTT_PUBLISH_BUDGET_MS, lowered in the QEMU build so payloads of at
+    most 6 KB exceed it) with the connection closed, instead of running on past the task
+    watchdog. Then the link is fast again and the gateway comes back with a new session."""
+    node, port = "GW21", MQTT_PORT + 10
+    relay = Relay(port, MQTT_PORT, 700)
+    obs = Observer()
+    t0 = time.monotonic()
+    # keepalive 180 s: with 10 s the PINGREQ, queued behind the slow data, ends the session
+    # before the buffers (about 1 MB between slirp and the host sockets) fill; a slow link fails
+    # that way too, but here the bound of a single publish is what is tested
+    gw = boot_variant(args, work, "slow", node_config(node, port=port, keepalive_s=180))
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 60)
+    cut = None
+    end = time.monotonic() + 170
+    while time.monotonic() < end:
+        obs.publish_cmd(f"{T}/NCMD/{node}", [{"name": "Node Control/Rebirth", "datatype": 11,
+                                              "boolean_value": True}])
+        cut = gw.wait_log(r"publish of \d+ bytes to \S+ still running after \d+ ms", 0.05, t0)
+        if cut or gw.find(r"No PING_RESP", t0):
+            break
+    aborted = gw.wait_log(r"aborted: returned after \d+ ms", 10, cut or t0)
+    lines = gw.find(r"publish of \d+ bytes to \S+ (still running|aborted)", t0)
+    took = [int(x) for x in re.findall(r"returned after (\d+) ms", " ".join(lines))]
+    down = gw.wait_log(r"MQTT down; reconnect attempt", 10, cut or t0)
+    relay.rate = None
+    back = obs.wait(f"{T}/NBIRTH/{node}", 90,
+                    lambda p: nb is None or bdseq_of(p) != bdseq_of(nb[2]))
+    panics = gw.find(r"Guru Meditation|task_wdt|abort\(\)", t0)
+    gw.kill()
+    relay.stop()
+    obs.wait(f"{T}/NDEATH/{node}", 5)
+    obs.close()
+    check(f"Issue #59 a publish on a slow link (700 B/s once the buffers are full) is cut at the "
+          f"{budget_ms} ms budget: connection closed, no watchdog, a new session once the link is "
+          f"fast again",
+          nb and cut and aborted and took and max(took) < budget_ms + 6000 and down and back
+          and not panics,
+          f"{' | '.join(lines[:2]) or 'no publish cut'}; {relay.up_bytes} B through the relay; "
+          f"reconnect {'logged' if down else 'missing'}; new NBIRTH {'yes' if back else 'no'}; "
+          f"panics {panics[:1]}")
+
+
 # ---------------------------------------------------------------- scenario
 
 def start_broker(conf, log):
@@ -1064,7 +1123,7 @@ def main():
     ap.add_argument("--http-port", type=int, default=HTTP_PORT)
     ap.add_argument("--only", default="",
                     help="comma-separated scenarios to run (failsafe,network,web,reset,tls,failover,"
-                         "mqtt5,phost,sf,main); "
+                         "mqtt5,phost,sf,slow,main); "
                          "default all")
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
@@ -1114,6 +1173,8 @@ def main():
             run_primary_host(args, work)
         if want("sf"):
             run_store_forward(args, work, slave)
+        if want("slow"):
+            run_slow_link(args, work, sdkconfig_int(args.sdkconfig, "GW_MQTT_PUBLISH_BUDGET_MS"))
         if want("main"):
             run(args, log, slave, broker, conf, work)
     except BaseException:

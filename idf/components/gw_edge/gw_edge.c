@@ -12,6 +12,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "gw_backoff.h"
 #include "gw_brokersel.h"
@@ -22,6 +23,7 @@
 #include "gw_phost.h"
 #include "gw_status.h"
 #include "gw_storage.h"
+#include "esp_transport.h"
 #include "lwip/sockets.h"
 #include "mbedtls/pk.h"
 #include "mbedtls/x509_crt.h"
@@ -71,6 +73,16 @@ static atomic_int s_suback;     /* msg_id of the last SUBACK, negated if a topic
 static atomic_uint s_route_gen;
 static atomic_bool s_restart_req;
 static atomic_bool s_rebirth_req;
+
+/* ---- publish time bound (issue #59): shared with the esp_timer task ---- */
+static esp_timer_handle_t s_pub_timer;
+static SemaphoreHandle_t s_pub_lock;
+static StaticSemaphore_t s_pub_lock_buf;
+static int s_pub_fd = -1;            /* socket of the publish in progress, -1 = none */
+static uint16_t s_pub_port;          /* its local port: tells a reused descriptor apart */
+static const char *s_pub_topic;
+static size_t s_pub_len;
+static atomic_bool s_pub_cut;
 
 /* ---- queues and buffers (static, REL-2 / MQTT-7) ---- */
 static QueueHandle_t s_q;
@@ -313,15 +325,76 @@ static void feed_watchdog(void)
     esp_task_wdt_reset();
 }
 
+/* ---------- publish time bound (issue #59) ---------- */
+
+static uint16_t local_port(int fd)
+{
+    struct sockaddr_storage a;
+    socklen_t n = sizeof(a);
+    if (getsockname(fd, (struct sockaddr *)&a, &n) != 0) {
+        return 0;
+    }
+    return a.ss_family == AF_INET6 ? ntohs(((struct sockaddr_in6 *)&a)->sin6_port)
+                                   : ntohs(((struct sockaddr_in *)&a)->sin_port);
+}
+
+/* esp_timer task: the publish has run for the whole budget. esp-mqtt goes on writing while
+ * every write makes progress, so on a slow link one publish has no bound of its own: shut the
+ * socket down, the blocked write fails and esp-mqtt closes the connection. The lock and the
+ * local port make sure the descriptor is still that of the publish in progress. */
+static void on_publish_budget(void *arg)
+{
+    (void)arg;
+    xSemaphoreTake(s_pub_lock, portMAX_DELAY);
+    if (s_pub_fd >= 0 && local_port(s_pub_fd) == s_pub_port) {
+        atomic_store(&s_pub_cut, true);
+        ESP_LOGW(TAG, "publish of %u bytes to %s still running after %d ms: link too slow for a "
+                      "Sparkplug session, closing the connection",
+                 (unsigned)s_pub_len, s_pub_topic, CONFIG_GW_MQTT_PUBLISH_BUDGET_MS);
+        shutdown(s_pub_fd, SHUT_RDWR);
+    }
+    xSemaphoreGive(s_pub_lock);
+}
+
+/* Every publish of the Sparkplug task goes through here: at most the budget plus the socket
+ * timeout of the write in progress (5 s), below the 15 s task watchdog. */
+static int bounded_publish(const char *topic, const char *data, int len, int qos, bool retain)
+{
+    esp_transport_handle_t t =
+        esp_mqtt_client_get_transport(s_client, s_cfg->mqtt.tls.enabled ? "mqtts" : "mqtt");
+    int fd = t != NULL ? esp_transport_get_socket(t) : -1;
+    xSemaphoreTake(s_pub_lock, portMAX_DELAY);
+    s_pub_fd = fd;
+    s_pub_port = fd >= 0 ? local_port(fd) : 0;
+    s_pub_topic = topic;
+    s_pub_len = (size_t)len;
+    xSemaphoreGive(s_pub_lock);
+    int64_t t0 = esp_timer_get_time();
+    if (fd >= 0) {
+        esp_timer_start_once(s_pub_timer, CONFIG_GW_MQTT_PUBLISH_BUDGET_MS * 1000ULL);
+    }
+    int r = esp_mqtt_client_publish(s_client, topic, data, len, qos, retain);
+    esp_timer_stop(s_pub_timer);
+    xSemaphoreTake(s_pub_lock, portMAX_DELAY);
+    s_pub_fd = -1;
+    xSemaphoreGive(s_pub_lock);
+    if (atomic_exchange(&s_pub_cut, false)) {
+        ESP_LOGW(TAG, "publish of %d bytes to %s aborted: returned after %lu ms (budget %d ms)",
+                 len, topic, (unsigned long)((esp_timer_get_time() - t0) / 1000),
+                 CONFIG_GW_MQTT_PUBLISH_BUDGET_MS);
+        r = -1;
+    }
+    feed_watchdog();
+    return r;
+}
+
 /* ---------- node ops (run in the Sparkplug task) ---------- */
 
 static int op_publish(void *ctx, const char *topic, const uint8_t *data, size_t len, int qos,
                       bool retain)
 {
     (void)ctx;
-    int r = esp_mqtt_client_publish(s_client, topic, (const char *)data, (int)len, qos, retain);
-    feed_watchdog();
-    return r;
+    return bounded_publish(topic, (const char *)data, (int)len, qos, retain);
 }
 
 static bool op_set_do(void *ctx, uint8_t index, bool on)
@@ -478,9 +551,8 @@ static void reconnect(int64_t now)
 /* Orderly end of a Sparkplug session: NDEATH with the session's bdSeq (the will's payload). */
 static void publish_ndeath(void)
 {
-    esp_mqtt_client_publish(s_client, s_death_topic, (const char *)s_will,
-                            s_mqtt_cfg.session.last_will.msg_len, 1, false);
-    feed_watchdog();
+    bounded_publish(s_death_topic, (const char *)s_will, s_mqtt_cfg.session.last_will.msg_len, 1,
+                    false);
 }
 
 /* Close a session that cannot work; the DISCONNECTED event schedules the retry (backoff).
@@ -694,8 +766,7 @@ static void restart_now(void)
 {
     ESP_LOGW(TAG, "restart requested%s", s_node->online ? ": publishing NDEATH" : "");
     if (s_node->online) {
-        esp_mqtt_client_publish(s_client, s_death_topic, (const char *)s_will,
-                                s_mqtt_cfg.session.last_will.msg_len, 1, false);
+        publish_ndeath();
         op_reboot(NULL);
     }
     gw_bus_quiesce(QUIESCE_MS);
@@ -1088,6 +1159,9 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
                       cfg->mqtt.primary_return_s * 1000u);
     publish_status();
 
+    s_pub_lock = xSemaphoreCreateMutexStatic(&s_pub_lock_buf);
+    const esp_timer_create_args_t pt = {.callback = on_publish_budget, .name = "pub_budget"};
+    ESP_ERROR_CHECK(esp_timer_create(&pt, &s_pub_timer));
     s_q = xQueueCreateStatic(CONFIG_GW_EDGE_QUEUE_LEN, sizeof(edge_ev_t), s_q_storage, &s_q_buf);
     s_free_slots = xQueueCreateStatic(CONFIG_GW_CMD_SLOTS, 1, s_free_storage, &s_free_buf);
     for (uint8_t i = 0; i < CONFIG_GW_CMD_SLOTS; i++) {
