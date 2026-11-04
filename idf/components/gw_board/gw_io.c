@@ -4,6 +4,7 @@
 #include "driver/i2c_master.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "gw_bsp.h"
@@ -15,11 +16,14 @@
 static const char *TAG = "io";
 
 #define I2C_TIMEOUT_MS 50
+#define WDT_FEED_SAMPLES (1000000 / CONFIG_GW_DI_SAMPLE_US)   /* feed about once per second */
 
 static gw_debounce_t s_db;
 static void (*s_on_change)(void);
 static esp_timer_handle_t s_timer;
 static gw_dout_t s_do;
+static esp_task_wdt_user_handle_t s_wdt;
+static uint32_t s_wdt_count;
 
 #if CONFIG_GW_IO_SIMULATED
 
@@ -154,6 +158,12 @@ static void publish_do(void)
 static void sample_cb(void *arg)
 {
     (void)arg;
+    /* REL-1: the esp_timer task is not a task of ours; a TWDT user entry fed from the sampling
+     * callback makes a stalled esp_timer task (no DI sampling) trip the watchdog. */
+    if (s_wdt != NULL && ++s_wdt_count >= WDT_FEED_SAMPLES) {
+        s_wdt_count = 0;
+        esp_task_wdt_reset_user(s_wdt);
+    }
     if (gw_debounce_sample(&s_db, read_di()) != 0) {
         gw_tagdb_set_di(s_db.stable, gw_port_time_ms());
         s_on_change();
@@ -193,6 +203,7 @@ esp_err_t gw_io_start_inputs(const gw_config_t *cfg, void (*on_change)(void))
         .name = "di_sample",
         .skip_unhandled_events = true,
     };
+    ESP_RETURN_ON_ERROR(esp_task_wdt_add_user("di_sample", &s_wdt), TAG, "watchdog");
     ESP_RETURN_ON_ERROR(esp_timer_create(&ta, &s_timer), TAG, "timer");
     ESP_RETURN_ON_ERROR(esp_timer_start_periodic(s_timer, CONFIG_GW_DI_SAMPLE_US), TAG, "timer");
     ESP_LOGI(TAG, "DI sampled every %d us, debounce %u ms, active-low mask 0x%02x",

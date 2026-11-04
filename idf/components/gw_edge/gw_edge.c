@@ -23,7 +23,7 @@ static const char *TAG = "edge";
 
 #define STACK_BYTES      6144
 #define MAX_IDLE_MS      1000
-#define NET_TIMEOUT_MS   5000   /* esp-mqtt socket timeout; bounded below the task watchdog */
+#define NET_TIMEOUT_MS   5000   /* esp-mqtt socket timeout (one socket write) */
 #define REBOOT_DELAY_MS  100    /* let the log drain */
 
 enum { EV_WAKE = 0, EV_CMD, EV_WRITE_DONE };
@@ -79,6 +79,8 @@ static int64_t s_retry_at_us;   /* 0: no reconnect scheduled */
 static unsigned s_handled_conn;
 static unsigned s_handled_disc;
 static bool s_births_timed;     /* the current session's births carried synchronised time */
+static int64_t s_fed_us;        /* last time this task fed the task watchdog */
+static uint32_t s_max_unfed_ms; /* longest stretch without feeding since the last reset */
 
 static void wake(void)
 {
@@ -188,13 +190,34 @@ static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *da
     }
 }
 
+/* ---------- task watchdog ---------- */
+
+/* Feed the TWDT and keep the longest stretch without feeding (logged after the births). A
+ * single loop can publish NBIRTH and up to 16 DBIRTHs (and then 16 DDATAs); on a slow but
+ * live link each publish may take seconds, so the watchdog is fed after every publish, not
+ * once per loop: only one publish has to fit in the watchdog period. */
+static void feed_watchdog(void)
+{
+    int64_t now = esp_timer_get_time();
+    if (s_fed_us != 0) {
+        uint32_t gap = (uint32_t)((now - s_fed_us) / 1000);
+        if (gap > s_max_unfed_ms) {
+            s_max_unfed_ms = gap;
+        }
+    }
+    s_fed_us = now;
+    esp_task_wdt_reset();
+}
+
 /* ---------- node ops (run in the Sparkplug task) ---------- */
 
 static int op_publish(void *ctx, const char *topic, const uint8_t *data, size_t len, int qos,
                       bool retain)
 {
     (void)ctx;
-    return esp_mqtt_client_publish(s_client, topic, (const char *)data, (int)len, qos, retain);
+    int r = esp_mqtt_client_publish(s_client, topic, (const char *)data, (int)len, qos, retain);
+    feed_watchdog();
+    return r;
 }
 
 static bool op_set_do(void *ctx, uint8_t index, bool on)
@@ -272,9 +295,14 @@ static void on_connected(void)
     atomic_store(&s_dev_dirty, 0);   /* the births carry the current state */
     atomic_store(&s_io_dirty, false);
     s_births_timed = atomic_load(&s_time_synced);
+    feed_watchdog();
+    s_max_unfed_ms = 0;
+    int64_t t0 = esp_timer_get_time();
     gw_node_session_up(&s_node, s_bdseq);
     gw_status_set(GW_ST_MQTT_UP, true);
-    ESP_LOGI(TAG, "Sparkplug session up (bdSeq=%u)", s_bdseq);
+    ESP_LOGI(TAG, "Sparkplug session up (bdSeq=%u): births sent in %lu ms, longest stretch "
+             "without feeding the watchdog %lu ms", s_bdseq,
+             (unsigned long)((esp_timer_get_time() - t0) / 1000), (unsigned long)s_max_unfed_ms);
 }
 
 /* Bring the Sparkplug state in line with the flags set by the other tasks. */
@@ -357,7 +385,7 @@ static void edge_task(void *arg)
     for (;;) {
         edge_ev_t ev;
         bool got = xQueueReceive(s_q, &ev, next_timeout()) == pdTRUE;
-        esp_task_wdt_reset();
+        feed_watchdog();
         reconcile();
         if (!got) {
             continue;

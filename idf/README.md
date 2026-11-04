@@ -59,8 +59,8 @@ Dependencias gestionadas, **con versión fija** (`==`) en cada `idf_component.ym
 | Tarea | Núcleo / prio | Pila | Vigilada por TWDT | Qué posee |
 |---|---|---|---|---|
 | `rs485_bus` (`gw_bus`) | 1 / 10 | 4 KB estática | Sí; se alimenta en cada intento Modbus | `mb_master_t`, `gw_poller_t`, la UART1. **Única** tarea que toca el bus (MB-16) |
-| `sparkplug` (`gw_edge`) | 0 / 8 | 6 KB estática | Sí; despierta como mínimo cada 1 s | Cliente MQTT, `gw_node_t` (seq, alias, estado RBE), las DO (llamadas a `gw_io_set_do`) |
-| `esp_timer` (IDF) | — | IDF | — | Muestreo de DI (callback de 1 ms) |
+| `sparkplug` (`gw_edge`) | 0 / 8 | 6 KB estática | Sí; se alimenta tras **cada publicación** y despierta como mínimo cada 1 s | Cliente MQTT, `gw_node_t` (seq, alias, estado RBE), las DO (llamadas a `gw_io_set_do`) |
+| `esp_timer` (IDF) | — | IDF | Sí, como usuario del TWDT (`di_sample`): el callback de muestreo lo alimenta cada 1 s | Muestreo de DI (callback de 1 ms) |
 | `status_led` | — / 2 | 2,5 KB | No (no crítica) | El RMT del LED |
 | `console` (`gw_shell`) | — / 2 | 4 KB | No (no crítica) | La UART de la consola (REPL `esp_console`); solo lee `gw_tagdb` y `gw_status` |
 | esp-mqtt, tcpip, eth, event loop | IDF | IDF | IDLE vigiladas | — |
@@ -392,7 +392,8 @@ Sin SNTP no hay hora válida: no hay RTC (TIME-2). Antes de la primera conexión
 
 ### 6.5 Broker lento y límites de comandos
 
-- Un broker lento bloquea la tarea Sparkplug hasta 5 s por publicación (`network.timeout_ms`). La memoria no crece: los cambios se **coalescen** y se publica el último valor; los intermedios se pierden. No es store & forward.
+- Un broker lento bloquea la tarea Sparkplug mientras dura cada publicación (cada escritura de socket espera hasta 5 s, `network.timeout_ms`). La memoria no crece: los cambios se **coalescen** y se publica el último valor; los intermedios se pierden. No es store & forward.
+- **Watchdog con un enlace lento.** La tarea Sparkplug alimenta el TWDT después de cada publicación, así que un rebirth (NBIRTH y hasta 16 DBIRTH) puede durar más de 15 s sin reiniciar el equipo. Lo que debe entrar en los 15 s es **una** publicación: el DBIRTH más grande (unos 6 KB) en un enlace de menos de unos 400 B/s todavía dispararía el watchdog. Tras cada NBIRTH el log informa cuánto tardaron los births y el mayor intervalo sin alimentar el watchdog. QEMU deshabilita el watchdog de los timers (`wdt_disable`), así que el caso del enlace lento no se ejecutó.
 - Los comandos de más de 1024 bytes, o fragmentados por esp-mqtt, se descartan con log.
 - Con 8 escrituras pendientes, las nuevas se descartan con log.
 
