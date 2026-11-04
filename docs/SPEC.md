@@ -287,7 +287,21 @@ Las claves de IPv4 de `network` siguen siendo las de Ethernet.
 | `address` | texto | `""` | Dirección estática de Ethernet, en forma de texto RFC 4291. Prefijo /64 en el enlace. No se admiten multicast, link-local, `::` ni `::1` |
 | `dns` | texto | `""` | Servidor DNS IPv6 (tercera posición; DHCPv4 llena las dos primeras) |
 
-El router por defecto IPv6 se aprende de los RA; no hay *gateway* IPv6 estático. `mqtt.host` y `ntp.server` aceptan literales IPv6 (`fd00::10`) o nombres con registro AAAA.
+El router por defecto IPv6 se aprende de los RA; no hay *gateway* IPv6 estático. `mqtt.host`, `ntp.server` y `syslog.host` aceptan literales IPv6 (`fd00::10`) o nombres con registro AAAA.
+
+**`syslog` (REL-4): copia del log a un servidor syslog.**
+
+```json
+"syslog": { "host": "192.168.1.20", "port": 514, "level": "info" }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `host` | texto | `""` | Nombre, IPv4 o IPv6 del servidor. Vacío = sin syslog remoto |
+| `port` | entero | `514` | 1–65535, UDP |
+| `level` | `error` \| `warning` \| `info` \| `debug` | `info` | Severidad mínima que se envía |
+
+Formato: RFC 5424 sobre UDP (RFC 5426), un mensaje por datagrama, *facility* `local0`, HOSTNAME = `edge_node_id`, APP-NAME = módulo del log y `[meta sequenceId="n"]`. Ejemplo: `<134>1 2026-11-04T12:00:00.123Z GW01 edge - - [meta sequenceId="12"] Sparkplug session up (bdSeq=3)`.
 
 ## 7. Criterios de aceptación del MVP
 

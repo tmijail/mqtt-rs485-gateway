@@ -612,6 +612,31 @@ static bool parse_local_io(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *er
     return true;
 }
 
+static bool parse_syslog(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"host", "port", "level"};
+    static const char *const levels[] = {"error", "warning", "info", "debug"};
+    static const gw_log_level_t level_values[] = {GW_LOG_ERROR, GW_LOG_WARNING, GW_LOG_INFO,
+                                                  GW_LOG_DEBUG};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "syslog");
+    static const cJSON empty = {.type = cJSON_Object};
+    long port;
+    int level;
+    if (o == NULL) {
+        o = &empty;
+    }
+    if (!check_keys(o, "syslog", keys, 3, err) ||
+        !get_string(o, "host", "syslog", false, "", cfg->syslog.host, sizeof(cfg->syslog.host),
+                    err) ||
+        !get_int(o, "port", "syslog", false, 514, 1, 65535, &port, err) ||
+        !get_enum(o, "level", "syslog", false, 2, levels, 4, &level, err)) {
+        return false;
+    }
+    cfg->syslog.port = (uint16_t)port;
+    cfg->syslog.level = level_values[level];
+    return true;
+}
+
 static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"name",   "area",   "address",  "type",     "word_order",
@@ -763,8 +788,8 @@ static bool parse_devices(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err
 
 bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"network", "ntp",   "mqtt",     "sparkplug",
-                                       "rs485",   "local_io", "devices"};
+    static const char *const keys[] = {"network", "ntp",      "mqtt",    "sparkplug",
+                                       "rs485",   "local_io", "devices", "syslog"};
     memset(cfg, 0, sizeof(*cfg));
     err->msg[0] = '\0';
 
@@ -789,10 +814,11 @@ bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_
         cJSON_Delete(root);
         return fail_at(err, json, end, "contenido después del documento");
     }
-    bool ok = check_keys(root, "", keys, 7, err) && parse_network(root, cfg, err) &&
+    bool ok = check_keys(root, "", keys, 8, err) && parse_network(root, cfg, err) &&
               parse_ntp(root, cfg, err) && parse_mqtt(root, cfg, err) &&
               parse_sparkplug(root, cfg, err) && parse_rs485(root, cfg, err) &&
-              parse_local_io(root, cfg, err) && parse_devices(root, cfg, err);
+              parse_local_io(root, cfg, err) && parse_devices(root, cfg, err) &&
+              parse_syslog(root, cfg, err);
     cJSON_Delete(root);
 
     if (ok && cfg->mqtt.client_id[0] == '\0') {

@@ -6,6 +6,7 @@ Runs the ESP32-S3 image built with sdkconfig.qemu in Espressif's QEMU:
   * UART1 (the RS485 port): QEMU chardev socket -> pymodbus RTU slave (RTU framing over TCP)
   * UART0 (console): socket used to read the log and to inject DI levels ("di <n> <0|1>")
   * MQTT: a private mosquitto; an SNTP responder answers on the host's UDP 123
+  * Remote syslog (REL-4): a UDP listener on the host collects what the gateway forwards
 
 Isolation: by default the harness moves itself into a private network namespace (Linux,
 needs CAP_SYS_ADMIN, e.g. root in a container) with only a loopback interface. Every port,
@@ -46,6 +47,8 @@ import spb_decode  # noqa: E402  (official proto loader + structural checks)
 MQTT_PORT = int(os.environ.get("E2E_MQTT_PORT", 18831))
 MODBUS_PORT = int(os.environ.get("E2E_MODBUS_PORT", 15020))
 CONSOLE_PORT = int(os.environ.get("E2E_CONSOLE_PORT", 15555))
+SYSLOG_PORT = int(os.environ.get("E2E_SYSLOG_PORT", 15514))
+SYSLOG = []       # (t, datagram text) received by the syslog listener
 SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
 GROUP, NODE, DEVICE, BULK = "Plant1", "GW01", "Meter1", "Bulk"
 T = f"spBv1.0/{GROUP}"
@@ -142,6 +145,44 @@ def sntp_responder(stop):
         reply = struct.pack("!BBbb11I", 0x24, 1, 0, -20, 0, 0, 0x4C4F434C, sec, frac,
                             *struct.unpack("!II", data[40:48]), sec, frac, sec, frac)
         s.sendto(reply, addr)
+
+
+# ---------------------------------------------------------------- syslog listener
+
+def syslog_listener(stop):
+    """UDP syslog collector (REL-4); the guest sends to 10.0.2.2:SYSLOG_PORT."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("127.0.0.1", SYSLOG_PORT))
+    s.settimeout(0.5)
+    while not stop.is_set():
+        try:
+            data, _ = s.recvfrom(2048)
+        except socket.timeout:
+            continue
+        SYSLOG.append((time.monotonic(), data.decode(errors="replace")))
+
+
+RFC5424 = re.compile(r'^<(\d{1,3})>1 (\S+) (\S+) (\S+) - - \[meta sequenceId="(\d+)"\] (.*)$', re.S)
+
+
+def syslog_from(host, since=0.0):
+    """Parsed datagrams from @host: (t, pri, timestamp, app, sequence, msg)."""
+    out = []
+    for t, text in list(SYSLOG):
+        m = RFC5424.match(text)
+        if t >= since and m and m.group(3) == host:
+            out.append((t, int(m.group(1)), m.group(2), m.group(4), int(m.group(5)), m.group(6)))
+    return out
+
+
+def wait_syslog(host, pattern, timeout, since=0.0):
+    rx = re.compile(pattern)
+    end = time.monotonic() + timeout
+    while True:
+        hits = [d for d in syslog_from(host, since) if rx.search(d[5])]
+        if hits or time.monotonic() >= end:
+            return hits[0] if hits else None
+        time.sleep(0.1)
 
 
 # ---------------------------------------------------------------- MQTT observer
@@ -360,6 +401,7 @@ def config_json(**overrides):
     """tools/e2e/fs/config.json with the harness' MQTT port and optional top-level overrides."""
     cfg = json.loads((HERE / "fs" / "config.json").read_text())
     cfg["mqtt"]["port"] = MQTT_PORT
+    cfg["syslog"]["port"] = SYSLOG_PORT
     for k, v in overrides.items():
         cfg[k] = v
     return json.dumps(cfg, indent=2).encode() + b"\n"
@@ -381,7 +423,7 @@ def start_broker(conf, log):
 
 
 def main():
-    global MQTT_PORT, MODBUS_PORT, CONSOLE_PORT
+    global MQTT_PORT, MODBUS_PORT, CONSOLE_PORT, SYSLOG_PORT
     ap = argparse.ArgumentParser()
     ap.add_argument("--qemu", required=True)
     ap.add_argument("--flash", required=True)
@@ -393,13 +435,15 @@ def main():
     ap.add_argument("--mqtt-port", type=int, default=MQTT_PORT)
     ap.add_argument("--modbus-port", type=int, default=MODBUS_PORT)
     ap.add_argument("--console-port", type=int, default=CONSOLE_PORT)
+    ap.add_argument("--syslog-port", type=int, default=SYSLOG_PORT)
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
     args = ap.parse_args()
     MQTT_PORT, MODBUS_PORT, CONSOLE_PORT = args.mqtt_port, args.modbus_port, args.console_port
+    SYSLOG_PORT = args.syslog_port
     isolated = False if args.no_isolate else isolate_network()
     print(f"network: {'private namespace' if isolated else 'host loopback'}; ports MQTT {MQTT_PORT}, "
-          f"Modbus {MODBUS_PORT}, console {CONSOLE_PORT}", flush=True)
+          f"Modbus {MODBUS_PORT}, console {CONSOLE_PORT}, syslog {SYSLOG_PORT}", flush=True)
     work = pathlib.Path(args.workdir)
     log = work / "uart0.log"
     # The image under test gets the harness' config.json (with its MQTT port).
@@ -410,6 +454,7 @@ def main():
     broker = start_broker(conf, work / "mosquitto.log")
     stop = threading.Event()
     threading.Thread(target=sntp_responder, args=(stop,), daemon=True).start()
+    threading.Thread(target=syslog_listener, args=(stop,), daemon=True).start()
 
     slave = ModbusSlave()
     slave.set_float(4, 0, 230.5)       # Voltage, input 0..1, float32 ABCD
@@ -436,6 +481,16 @@ def main():
         check(f"6. payloads decode with the official sparkplug_b.proto (Python protobuf "
               f"{google.protobuf.__version__})",
               CAPTURE and bad == 0, f"{len(CAPTURE)} messages decoded, {bad} structural errors")
+        runs, errs, prev = 0, [], None
+        for d in syslog_from(NODE):
+            if d[4] == 1:
+                runs += 1
+            elif prev is None or d[4] != prev + 1:
+                errs.append(f"{prev}->{d[4]}")
+            prev = d[4]
+        check("REL-4 syslog sequenceId continuous within each boot (UDP over the emulator's NAT, "
+              "nothing lost)", runs >= 1 and not errs,
+              f"{len(syslog_from(NODE))} datagrams in {runs} boot(s); gaps {errs[:5]}")
         seq_errors = seq_continuity(CAPTURE)
         check("SPB-5 seq continuity per session", not seq_errors, "; ".join(seq_errors) or "ok")
         (work / "results.json").write_text(json.dumps(results, indent=2))
@@ -644,6 +699,34 @@ def run(args, log, slave, broker, conf, work):
           meter and bulk and summary,
           " | ".join(gw.find(r"Meter1\s+unit|Bulk\s+unit|sparkplug\s+group", asked)) or "no answer")
 
+    # REL-4 remote syslog: RFC 5424 over UDP, hostname = edge node id, app-name = esp_log tag,
+    # facility local0, timestamp from SNTP
+    up = wait_syslog(NODE, r"^Sparkplug session up \(bdSeq=%d\)$" % b0, 5, t0)
+    host_now = time.time()
+    ts_ok = False
+    if up:
+        try:
+            import datetime
+            ts = datetime.datetime.strptime(up[2], "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+                tzinfo=datetime.timezone.utc).timestamp()
+            ts_ok = abs(ts - host_now) < 60
+        except ValueError:
+            pass
+    bad = [text for t, text in SYSLOG if t >= t0 and not RFC5424.match(text)]
+    asked = time.monotonic()
+    stats = None
+    for _ in range(3):
+        gw.console("status")
+        stats = gw.wait_log(r"^syslog\s+10\.0\.2\.2:%d connected, sent [1-9]\d*, " % SYSLOG_PORT, 3, asked)
+        if stats:
+            break
+    check("REL-4 log lines reach the syslog server as RFC 5424 (local0, hostname GW01, app-name = "
+          "tag, SNTP timestamp); the shell reports the counters",
+          up and up[1] == 16 * 8 + 6 and up[3] == "edge" and ts_ok and not bad and stats,
+          (f"<{up[1]}>1 {up[2]} {NODE} {up[3]} seq {up[4]}: {up[5]}" if up else "no 'session up' line")
+          + f"; {len(syslog_from(NODE, t0))} datagrams, {len(bad)} malformed; "
+          + " | ".join(gw.find(r"^syslog\s", asked)[:1]))
+
     # Report by exception and deadband
     obs.drain()
     slave.set_float(4, 0, 230.55)
@@ -744,6 +827,10 @@ def run(args, log, slave, broker, conf, work):
     delays = [int(x) for x in re.findall(r"in (\d+) ms", " ".join(gw.find(r"reconnect attempt", since)))]
     attempts = gw.find(r"connecting to .* bdSeq=", since)
     obs.close()
+    warn = wait_syslog(NODE, r"^MQTT down; reconnect attempt \d+ in \d+ ms$", 1, since)
+    check("REL-4 warnings are forwarded with their severity while the broker is down (UDP, no "
+          "MQTT needed)", warn and warn[1] == 16 * 8 + 4 and warn[3] == "edge",
+          f"<{warn[1]}> {warn[3]}: {warn[5]}" if warn else "no warning datagram")
     broker = start_broker(conf, work / "mosquitto2.log")
     obs = Observer()
     nb = obs.wait(nbirth_t, 70)

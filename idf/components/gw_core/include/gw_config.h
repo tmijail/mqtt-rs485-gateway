@@ -59,6 +59,14 @@ typedef enum {
     GW_WIFI_PRIMARY,      /* Wi-Fi preferred; Ethernet is the backup */
 } gw_wifi_role_t;
 
+/* Minimum severity forwarded to the remote syslog server (RFC 5424 severities). */
+typedef enum {
+    GW_LOG_ERROR = 3,
+    GW_LOG_WARNING = 4,
+    GW_LOG_INFO = 6,
+    GW_LOG_DEBUG = 7,
+} gw_log_level_t;
+
 /* IPv4 settings of one interface (NET-2). */
 typedef struct {
     bool dhcp;
@@ -147,6 +155,11 @@ typedef struct {
     struct {
         uint16_t di_debounce_ms;
     } local_io;
+    struct {                     /* REL-4; disabled when host is empty */
+        char host[GW_HOST_SIZE];
+        uint16_t port;
+        gw_log_level_t level;
+    } syslog;
 
     uint16_t device_count;
     uint16_t tag_count;

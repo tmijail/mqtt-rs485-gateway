@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "gw_io.h"
+#include "gw_log.h"
 #include "gw_net.h"
 #include "gw_status.h"
 #include "gw_tagdb.h"
@@ -81,6 +82,13 @@ static int cmd_status(int argc, char **argv)
     }
     if (any6) {
         printf("\n");
+    }
+    gw_log_stats_t ls;
+    gw_log_get_stats(&ls);
+    if (ls.enabled) {
+        printf("syslog   %s:%u %s, sent %lu, dropped %lu, errors %lu\n", s_ctx.cfg->syslog.host,
+               s_ctx.cfg->syslog.port, ls.connected ? "connected" : "not reachable",
+               (unsigned long)ls.sent, (unsigned long)ls.dropped, (unsigned long)ls.send_errors);
     }
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
@@ -168,6 +176,14 @@ static int cmd_config(int argc, char **argv)
         printf("ipv6       disabled\n");
     }
     printf("ntp        %s\n", c->ntp.server);
+    static const char *const levels[8] = {[3] = "error", [4] = "warning", [6] = "info",
+                                          [7] = "debug"};
+    if (c->syslog.host[0] != '\0') {
+        printf("syslog     %s:%u, level %s and above\n", c->syslog.host, c->syslog.port,
+               levels[c->syslog.level & 7]);
+    } else {
+        printf("syslog     disabled\n");
+    }
     printf("rs485      %lu baud, parity %s, %u stop bit(s), timeout %u ms, %u retries, "
            "inter-frame %u ms\n",
            (unsigned long)c->rs485.baud, parity[c->rs485.parity], c->rs485.stop_bits,

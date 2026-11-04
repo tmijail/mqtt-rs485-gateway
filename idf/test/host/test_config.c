@@ -243,6 +243,42 @@ static void test_ipv6_section(void)
                     "network.ipv6.prefix_len: clave desconocida");
 }
 
+/* REL-4: optional "syslog" section. */
+static void test_syslog_section(void)
+{
+    static const char base[] = "\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                               "\"edge_node_id\":\"E\"}";
+    char doc[512];
+    snprintf(doc, sizeof(doc), "{%s}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_STRING("", cfg.syslog.host);   /* absent = disabled */
+    TEST_ASSERT_EQUAL(514, cfg.syslog.port);
+    TEST_ASSERT_EQUAL(GW_LOG_INFO, cfg.syslog.level);
+
+    snprintf(doc, sizeof(doc),
+             "{%s,\"syslog\":{\"host\":\"logs.plant.local\",\"port\":5514,\"level\":\"warning\"}}",
+             base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_STRING("logs.plant.local", cfg.syslog.host);
+    TEST_ASSERT_EQUAL(5514, cfg.syslog.port);
+    TEST_ASSERT_EQUAL(GW_LOG_WARNING, cfg.syslog.level);
+    snprintf(doc, sizeof(doc), "{%s,\"syslog\":{\"host\":\"fd00::10\",\"level\":\"debug\"}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL(GW_LOG_DEBUG, cfg.syslog.level);
+    snprintf(doc, sizeof(doc), "{%s,\"syslog\":{\"level\":\"error\"}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL(GW_LOG_ERROR, cfg.syslog.level);
+
+    snprintf(doc, sizeof(doc), "{%s,\"syslog\":{\"host\":\"h\",\"port\":0}}", base);
+    ASSERT_REJECTED(parse(doc), "syslog.port: valor 0 fuera de rango");
+    snprintf(doc, sizeof(doc), "{%s,\"syslog\":{\"level\":\"notice\"}}", base);
+    ASSERT_REJECTED(parse(doc), "syslog.level: valor no válido (se esperaba error|warning|info|debug)");
+    snprintf(doc, sizeof(doc), "{%s,\"syslog\":{\"facility\":16}}", base);
+    ASSERT_REJECTED(parse(doc), "syslog.facility: clave desconocida");
+    snprintf(doc, sizeof(doc), "{%s,\"syslog\":{\"host\":5}}", base);
+    ASSERT_REJECTED(parse(doc), "syslog.host: se esperaba un texto");
+}
+
 static void test_schema_rules(void)
 {
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bool\"}"),
@@ -476,6 +512,7 @@ int main(void)
     RUN_TEST(test_wifi_section);
     RUN_TEST(test_ipv6_literals);
     RUN_TEST(test_ipv6_section);
+    RUN_TEST(test_syslog_section);
     RUN_TEST(test_schema_rules);
     RUN_TEST(test_section_errors);
     RUN_TEST(test_limits);

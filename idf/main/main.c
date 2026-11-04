@@ -8,6 +8,7 @@
  *   esp_timer                      gw_io:   1 kHz DI sampling and debounce
  *   status_led  (prio 2)           gw_status
  *   console     (prio 2)           gw_shell: diagnostic REPL on the console UART
+ *   syslog      (prio 2)           gw_log:   copies the log to a syslog server (if configured)
  *   + IDF tasks: esp-mqtt, lwIP tcpip, esp_eth, Wi-Fi (if configured), event loop
  */
 #include <stdio.h>
@@ -25,6 +26,7 @@
 #include "gw_config.h"
 #include "gw_edge.h"
 #include "gw_io.h"
+#include "gw_log.h"
 #include "gw_net.h"
 #include "gw_port.h"
 #include "gw_rs485.h"
@@ -39,6 +41,12 @@ static gw_config_t s_cfg;   /* immutable after boot; shared read-only by every t
 static char s_hardware[64];
 static gw_node_info_t s_info;  /* NBIRTH "Node Info/..." */
 static gw_cfg_err_t s_cfg_err;
+
+static void on_ip_changed(bool up)
+{
+    gw_edge_notify_ip(up);
+    gw_log_notify_network(up);
+}
 
 static void on_device_updated(uint16_t dev)
 {
@@ -120,6 +128,10 @@ void app_main(void)
     ESP_LOGI(TAG, "configuration from %s: group '%s', node '%s', %u devices, %u tags", source,
              s_cfg.sparkplug.group_id, s_cfg.sparkplug.edge_node_id, s_cfg.device_count,
              s_cfg.tag_count);
+    /* REL-4: from here on the log also goes to the syslog server (buffered until reachable) */
+    if (gw_log_start(&s_cfg) != ESP_OK) {
+        ESP_LOGE(TAG, "remote syslog unavailable");
+    }
     if (s_cfg.sparkplug.primary_host_id[0] != '\0') {
         ESP_LOGW(TAG, "primary_host_id '%s' ignored: SPB-13 is not implemented in this build",
                  s_cfg.sparkplug.primary_host_id);
@@ -141,7 +153,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     const gw_net_callbacks_t net_cb = {
-        .ip_changed = gw_edge_notify_ip,
+        .ip_changed = on_ip_changed,
         .route_changed = gw_edge_notify_route,
         .time_synced = gw_edge_notify_time_synced,
     };
