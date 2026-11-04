@@ -608,6 +608,10 @@ def run_config_failsafe(args, work):
 def check_offline_backoff(slave, t0):
     """Issue #4: dead slaves (units 3..5, never answer) are probed with one attempt at 2, 4, 8 ...
     x poll_ms up to the cap, and do not delay the healthy device's 1 s polling."""
+    # 3 full cycles (9 requests), then probes 2, 4, 8 and 10 s apart: about 27 s after boot
+    end = t0 + 45
+    while time.monotonic() < end and sum(1 for r in list(slave.reads) if r[0] == 3) < 14:
+        time.sleep(0.5)
     reads = list(zip(slave.times, slave.reads))
     dead = [t for t, r in reads if r[0] == 3 and t >= t0]
     # the first 3 cycles are full (1 try + 2 retries each); then one request per probe
