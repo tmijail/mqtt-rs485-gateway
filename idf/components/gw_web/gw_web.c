@@ -194,7 +194,8 @@ static bool header(httpd_req_t *req, const char *name, char *buf, size_t cap)
  * browser's cached credentials nor counts as a failed login against the operator's address. */
 static bool same_origin(httpd_req_t *req)
 {
-    static char host[96], origin[128], referer[256];   /* server task only */
+    /* on the server task's stack, released before the handler validates anything */
+    char host[96], origin[128], referer[256];
     bool fits = header(req, "Host", host, sizeof(host)) &&
                 header(req, "Origin", origin, sizeof(origin)) &&
                 header(req, "Referer", referer, sizeof(referer));
