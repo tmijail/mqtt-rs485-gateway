@@ -12,6 +12,7 @@
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
+#include "esp_image_format.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_random.h"
@@ -66,6 +67,7 @@ static StaticSemaphore_t s_ota_lock_buf;
 static RTC_FAST_ATTR gw_fw_status_t s_st;   /* under s_mux; texts under s_fmt_lock */
 static RTC_FAST_ATTR gw_ota_trial_t s_trial;   /* under s_mux */
 static esp_timer_handle_t s_trial_timer;
+static TaskHandle_t s_trial_task;      /* issue #108 B4: runs what the trial timer asks for */
 static esp_timer_handle_t s_restart_timer;
 static atomic_bool s_busy;             /* a transfer is running (download or upload) */
 static char *s_url;                    /* allocated for a download only (#80) */
@@ -427,6 +429,10 @@ static bool confirm(bool nvs_restart)
         arm_trial_timer();
         return false;
     }
+    TaskHandle_t t = s_trial_task;
+    if (t != NULL && t != xTaskGetCurrentTaskHandle()) {
+        xTaskNotifyGive(t);   /* decided: the trial task ends */
+    }
     return true;
 }
 
@@ -455,6 +461,19 @@ static void rollback(void)
     gw_bus_quiesce(1000);   /* no Modbus frame cut by the restart (no-op without the bus) */
     xSemaphoreTake(s_ota_lock, portMAX_DELAY);
     park(true);
+#if CONFIG_GW_IO_SIMULATED
+    /* issue #108 B4, emulator only: the verification of the previous image that the rollback runs
+     * (signature included), once more beforehand, to log how much stack it leaves */
+    const esp_partition_t *prev = esp_ota_get_next_update_partition(NULL);
+    if (prev != NULL) {
+        const esp_partition_pos_t pos = {.offset = prev->address, .size = prev->size};
+        esp_image_metadata_t md;
+        esp_err_t v = esp_image_verify(ESP_IMAGE_VERIFY, &pos, &md);
+        ESP_LOGW(TAG, "rollback stack: %u B free in task %s after verifying %s (%s), emulator check",
+                 (unsigned)uxTaskGetStackHighWaterMark(NULL), pcTaskGetName(NULL), prev->label,
+                 esp_err_to_name(v));
+    }
+#endif
     esp_err_t e = esp_ota_mark_app_invalid_rollback_and_reboot();   /* returns only on error */
     park(false);
     xSemaphoreGive(s_ota_lock);
@@ -473,9 +492,16 @@ static void act(gw_ota_action_t a)
     }
 }
 
-static void on_trial_timeout(void *arg)
+static bool trial_decided(void)
 {
-    (void)arg;
+    portENTER_CRITICAL(&s_mux);
+    bool d = s_trial.state == GW_OTA_TRIAL_CONFIRMED || s_trial.state == GW_OTA_TRIAL_NONE;
+    portEXIT_CRITICAL(&s_mux);
+    return d;
+}
+
+static void trial_tick(void)
+{
     portENTER_CRITICAL(&s_mux);
     gw_ota_action_t a = gw_ota_trial_tick(&s_trial, now_ms());
     portEXIT_CRITICAL(&s_mux);
@@ -483,6 +509,33 @@ static void on_trial_timeout(void *arg)
         arm_trial_timer();   /* early (timer granularity): wait for the rest */
     }
     act(a);
+}
+
+/* Issue #108 B4: the timeout's rollback (with the verification of the previous image, deep with
+ * signed images) and the confirmation retries run here, not in the esp_timer task (3.5 KB). Only
+ * for a new image on trial, created at boot; it ends once the image is confirmed. */
+static void trial_task(void *arg)
+{
+    (void)arg;
+    while (!trial_decided()) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (!trial_decided()) {
+            trial_tick();
+        }
+    }
+    s_trial_task = NULL;
+    vTaskDelete(NULL);
+}
+
+static void on_trial_timeout(void *arg)
+{
+    (void)arg;
+    TaskHandle_t t = s_trial_task;
+    if (t != NULL) {
+        xTaskNotifyGive(t);
+    } else {
+        trial_tick();   /* no task (no memory at boot): as before #108, in the timer task */
+    }
 }
 
 void gw_fw_session_up(unsigned births_missing)
@@ -521,6 +574,38 @@ void gw_fw_cannot_start(const char *why)
     gw_ota_action_t a = gw_ota_trial_cannot_start(&s_trial, why);
     portEXIT_CRITICAL(&s_mux);
     act(a);
+    if (a == GW_OTA_ROLLBACK) {
+        /* issue #108 B6: the rollback call failed (likely here: its verification allocates); any
+         * reset of an image still PENDING_VERIFY makes the bootloader boot the previous one */
+        ESP_LOGE(TAG, "restarting: the bootloader goes back to the previous image");
+        esp_restart();
+    }
+}
+
+/* Issue #108 B5: a healthy image whose confirmation keeps failing is not rolled back by a plain
+ * restart the operator asked for: one more synchronous try first. */
+static void restart_confirm_on_core0(void *arg)
+{
+    bool *tried = arg;
+    portENTER_CRITICAL(&s_mux);
+    gw_ota_action_t a = gw_ota_trial_restart_requested(&s_trial);
+    portEXIT_CRITICAL(&s_mux);
+    *tried = a == GW_OTA_CONFIRM;
+    if (*tried) {
+        if (s_trial_timer != NULL) {
+            esp_timer_stop(s_trial_timer);
+        }
+        if (!confirm(false)) {   /* the caller restarts */
+            ESP_LOGE(TAG, "firmware %s still not marked valid: the restart rolls it back",
+                     s_st.running);
+        }
+    }
+}
+
+void gw_fw_restart_requested(void)
+{
+    bool tried = false;
+    on_core0(restart_confirm_on_core0, &tried);
 }
 
 /* Issue #99: before a save or a factory reset restarts the gateway, a new image on trial is
@@ -530,13 +615,15 @@ void gw_fw_cannot_start(const char *why)
 typedef struct {
     const char *reason;
     bool ok;
+    bool refused;   /* issue #108 B1: a rollback is decided */
 } commit_t;
 
 static void commit_on_core0(void *arg)
 {
     commit_t *c = arg;
     portENTER_CRITICAL(&s_mux);
-    gw_ota_action_t a = gw_ota_trial_operator(&s_trial, c->reason);
+    c->refused = !gw_ota_trial_commit_allowed(&s_trial);
+    gw_ota_action_t a = c->refused ? GW_OTA_KEEP : gw_ota_trial_operator(&s_trial, c->reason);
     portEXIT_CRITICAL(&s_mux);
     if (a == GW_OTA_CONFIRM) {
         if (s_trial_timer != NULL) {
@@ -553,8 +640,16 @@ static esp_err_t on_commit(gw_storage_commit_t what, char *why, size_t cap)
                                 : "factory reset by the operator",
                   .ok = true};
     on_core0(commit_on_core0, &c);
+    if (c.refused) {
+        /* issue #108 B1: the previous image would come back with what this one stored; when the
+         * rollback call failed, a restart still rolls the image back (PENDING_VERIFY) */
+        snprintf(why, cap, "the new firmware %s is being rolled back to %s", s_st.running,
+                 s_st.other[0] ? s_st.other : "the previous image");
+        return ESP_ERR_INVALID_STATE;
+    }
     if (!c.ok) {
-        snprintf(why, cap, "the new firmware %s, on trial, could not be marked valid", s_st.running);
+        snprintf(why, cap, "the new firmware %s, on trial, could not be marked valid; retry",
+                 s_st.running);
         return ESP_FAIL;
     }
     return ESP_OK;
@@ -717,9 +812,6 @@ static void download_task(void *arg)
         h = NULL;
         download_fail("download of %s interrupted after %lu bytes (%s)", version, got,
                       esp_err_to_name(e));
-    }
-    if (e == ESP_OK && esp_https_ota_get_image_len_read(h) <= 1024) {
-        check_download_caps(h, version);   /* complete in the first call: not checked yet */
     }
     park(true);
     e = esp_https_ota_finish(h);   /* verifies the image and sets it to boot; frees h always */
@@ -1035,6 +1127,12 @@ esp_err_t gw_fw_init(const gw_config_t *cfg, bool enabled, const gw_fw_hooks_t *
          * the Sparkplug task, which confirms */
         const esp_timer_create_args_t rt = {.callback = on_restart, .name = "fw_restart"};
         ESP_ERROR_CHECK(esp_timer_create(&rt, &s_restart_timer));
+        /* issue #108 B4: core 0, where the rollback ran before (QEMU parks core 1) */
+        if (xTaskCreatePinnedToCore(trial_task, "fw_trial", CONFIG_GW_FW_TRIAL_TASK_STACK, NULL,
+                                    CONFIG_GW_FW_TRIAL_TASK_PRIORITY, &s_trial_task, 0) != pdPASS) {
+            s_trial_task = NULL;
+            ESP_LOGE(TAG, "no memory for the trial task: the timeout runs in the timer task");
+        }
     }
     gw_storage_set_commit_hook(on_commit);   /* issue #99 */
 

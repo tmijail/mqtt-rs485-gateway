@@ -74,6 +74,15 @@ gw_ota_action_t gw_ota_trial_cannot_start(gw_ota_trial_t *t, const char *why);
  *  configuration, a factory reset; @p why: static text): CONFIRM while the trial is open (also
  *  to retry a failed write at once), KEEP otherwise. */
 gw_ota_action_t gw_ota_trial_operator(gw_ota_trial_t *t, const char *why);
+/** Issue #108 B1: a change that a restart puts into effect (a saved configuration, a factory
+ *  reset) is refused once a rollback is decided (also when the rollback call failed and the image
+ *  goes on running): the previous image would come back with what the new one stored. */
+bool gw_ota_trial_commit_allowed(const gw_ota_trial_t *t);
+/** Issue #108 B5: a plain restart asked by the operator (NCMD Reboot, shell, web) of an image
+ *  judged healthy whose confirmation is still failing: CONFIRM (retry it now, so the restart does
+ *  not roll back a healthy image); KEEP otherwise (a pending trial is rejected by the restart, the
+ *  way to reject it by hand). */
+gw_ota_action_t gw_ota_trial_restart_requested(gw_ota_trial_t *t);
 /** Outcome of the write a CONFIRM asked for; on failure the next one is due after the backoff
  *  (@p rnd: its jitter). */
 void gw_ota_trial_confirm_result(gw_ota_trial_t *t, bool ok, uint32_t now_ms, uint32_t rnd);

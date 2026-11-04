@@ -407,12 +407,42 @@ bool gw_nvsmig_bdseq_reached(uint8_t next, uint8_t reserved)
     return (uint8_t)(next - reserved) < 128u;
 }
 
+bool gw_nvsmig_bdseq_start(bool have_known, uint8_t known, const gw_nvsmig_side_t *side,
+                           uint8_t *start, uint8_t *base)
+{
+    if (!side->have) {
+        *start = *base = known;
+        return have_known;
+    }
+    if (!have_known) {
+        *start = side->next;
+        *base = side->base_known ? side->base : side->next;
+        return true;
+    }
+    /* the same base: the chain continues, however far it went; another one: the later */
+    *start = side->base_known && side->base == known ? side->next
+                                                     : gw_nvsmig_bdseq_later(known, side->next);
+    *base = known;
+    return true;
+}
+
+uint8_t gw_nvsmig_bdseq_fold(bool have_nvs, uint8_t nvs, const gw_nvsmig_side_t *side)
+{
+    if (!side->have) {
+        return nvs;
+    }
+    if (!have_nvs || (side->base_known && side->base == nvs)) {
+        return side->next;
+    }
+    return gw_nvsmig_bdseq_later(nvs, side->next);
+}
+
 gw_nvsmig_action_t gw_nvsmig_decide(const gw_nvsmig_state_t *s)
 {
     if (s->copy == GW_NVSMIG_COPY_UNREADABLE) {
         return GW_NVSMIG_NO_NVS;
     }
-    if (s->copy_unknown && ((s->kind == GW_NVSRAW_EMPTY && s->keys) ||
+    if (s->copy_unknown && ((s->kind != GW_NVSRAW_ENCRYPTED && s->keys) ||
                             (s->kind == GW_NVSRAW_ENCRYPTED && s->mig_busy))) {
         return GW_NVSMIG_NO_NVS;   /* issue #104: the copy that would finish it is out of reach */
     }

@@ -102,7 +102,7 @@ static void test_incomplete_births_do_not_confirm(void)
     TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_session_up(&t, 3));
     TEST_ASSERT_EQUAL(GW_OTA_ROLLBACK, gw_ota_trial_tick(&t, 30000));
     TEST_ASSERT_EQUAL_STRING("no complete Sparkplug session (every DBIRTH) before the timeout", t.why);
-    /* a later complete session (a rebirth, a new connection) confirms it in time */
+    /* a later complete session (a new connection: a rebirth does not count) confirms it in time */
     gw_ota_trial_init(&t, true, 0, 30000);
     TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_session_up(&t, 1));
     TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_session_up(&t, 0));
@@ -219,6 +219,37 @@ static void test_image_capabilities(void)
     TEST_ASSERT_EQUAL_STRING("declares no NVS encryption (this device's NVS is encrypted)", why);
 }
 
+/* Issue #108 B1: no save nor factory reset once a rollback is decided (also when the rollback
+ * call failed); B5: a plain restart retries a failing confirmation first, and only then */
+static void test_commit_after_rollback_and_restart_while_confirming(void)
+{
+    gw_ota_trial_t t;
+    gw_ota_trial_init(&t, true, 0, 30000);
+    TEST_ASSERT_TRUE(gw_ota_trial_commit_allowed(&t));           /* pending: confirmed by it */
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_restart_requested(&t));   /* rejects it */
+    TEST_ASSERT_EQUAL(GW_OTA_ROLLBACK, gw_ota_trial_tick(&t, 30000));
+    TEST_ASSERT_FALSE(gw_ota_trial_commit_allowed(&t));
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_operator(&t, "x"));   /* stays refused */
+    TEST_ASSERT_FALSE(gw_ota_trial_commit_allowed(&t));
+    gw_ota_trial_init(&t, true, 0, 30000);
+    TEST_ASSERT_EQUAL(GW_OTA_ROLLBACK, gw_ota_trial_config_rejected(&t));
+    TEST_ASSERT_FALSE(gw_ota_trial_commit_allowed(&t));
+    gw_ota_trial_init(&t, false, 0, 30000);
+    TEST_ASSERT_TRUE(gw_ota_trial_commit_allowed(&t));
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_restart_requested(&t));
+    /* healthy, its write failing: the restart retries it now */
+    gw_ota_trial_init(&t, true, 0, 30000);
+    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_session_up(&t, 0));
+    TEST_ASSERT_TRUE(gw_ota_trial_commit_allowed(&t));
+    gw_ota_trial_confirm_result(&t, false, 100, 0);
+    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_restart_requested(&t));
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_tick(&t, 100000));   /* that write is in flight */
+    gw_ota_trial_confirm_result(&t, true, 200, 0);
+    TEST_ASSERT_EQUAL(GW_OTA_TRIAL_CONFIRMED, t.state);
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_restart_requested(&t));
+    TEST_ASSERT_TRUE(gw_ota_trial_commit_allowed(&t));
+}
+
 static void test_urls(void)
 {
     char why[96];
@@ -316,6 +347,7 @@ int main(void)
     RUN_TEST(test_incomplete_births_do_not_confirm);
     RUN_TEST(test_failed_confirmation_is_retried);
     RUN_TEST(test_operator_commit_and_cannot_start);
+    RUN_TEST(test_commit_after_rollback_and_restart_while_confirming);
     RUN_TEST(test_image_capabilities);
     RUN_TEST(test_urls);
     RUN_TEST(test_progress_every_ten_percent);

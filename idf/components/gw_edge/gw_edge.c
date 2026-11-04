@@ -654,6 +654,7 @@ static void op_diagnostics(void *ctx, gw_node_diag_t *out)
 static void op_reboot(void *ctx)
 {
     (void)ctx;
+    gw_fw_restart_requested();   /* issue #108 B5 (a no-op unless a confirmation keeps failing) */
     /* Orderly shutdown: NDEATH was just published; stop() sends DISCONNECT synchronously so
      * the broker discards the will instead of publishing a second NDEATH. */
     esp_mqtt_client_stop(s_client);
@@ -1072,6 +1073,7 @@ static void attempt_ended(void)
 static void restart_now(void)
 {
     ESP_LOGW(TAG, "restart requested%s", s_node->online ? ": publishing NDEATH" : "");
+    gw_fw_restart_requested();   /* issue #108 B5 */
     if (s_node->online) {
         publish_ndeath();
         op_reboot(NULL);

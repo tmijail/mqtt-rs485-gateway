@@ -480,10 +480,27 @@ static void test_decide_copy_out_of_reach(void)
     st.kind = GW_NVSRAW_ENCRYPTED;
     st.mig_busy = true;
     TEST_ASSERT_EQUAL(GW_NVSMIG_OPEN_ENCRYPTED, gw_nvsmig_decide(&st));
-    /* an unencrypted partition was never erased: it stays as before */
+    /* issue #108 B2: an unencrypted partition with the keys present may be partly erased (cut
+     * during the erase): no NVS either; without the keys no migration ever started */
     st.copy_unknown = true;
+    for (int t = 0; t < 2; t++) {
+        st.on_trial = t;
+        st.kind = GW_NVSRAW_PLAIN;
+        TEST_ASSERT_EQUAL(GW_NVSMIG_NO_NVS, gw_nvsmig_decide(&st));
+        st.kind = GW_NVSRAW_MIXED;
+        TEST_ASSERT_EQUAL(GW_NVSMIG_NO_NVS, gw_nvsmig_decide(&st));
+    }
+    st.on_trial = false;
+    st.keys = false;
     st.kind = GW_NVSRAW_PLAIN;
     TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(&st));
+    st.on_trial = true;
+    TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(&st));
+    /* the same, LittleFS blank: nothing to protect, as before */
+    st.keys = true;
+    st.copy_unknown = false;
+    st.on_trial = false;
+    TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(&st));   /* no place for a copy */
 }
 
 /* Issue #104: the reservation of bdSeq values of a boot without NVS */
@@ -506,6 +523,54 @@ static void test_bdseq_reservation(void)
             TEST_ASSERT_EQUAL_UINT8(reserved, gw_nvsmig_bdseq_later(v, reserved));
         }
     }
+}
+
+/* Issue #108 B3, the review's simulation against the code: boots without NVS whose pending copy
+ * (bdSeq 10) never gets applied, one session each. The chain of reservations continues from its
+ * base however far it went (it went back to 10 at the tenth boot before); the first boot with NVS
+ * continues after it. */
+static void test_bdseq_reservation_chain(void)
+{
+    const uint8_t c = 10;
+    gw_nvsmig_side_t side = {0};
+    uint8_t prev = 0;
+    for (int boot = 1; boot <= 40; boot++) {
+        uint8_t start, base;
+        TEST_ASSERT_TRUE(gw_nvsmig_bdseq_start(true, c, &side, &start, &base));
+        if (boot > 1) {   /* one value per boot, then the next block */
+            TEST_ASSERT_EQUAL_UINT8((uint8_t)(prev + GW_NVSMIG_BDSEQ_BLOCK), start);
+        }
+        TEST_ASSERT_EQUAL_UINT8(c, base);
+        prev = start;
+        side = (gw_nvsmig_side_t){.have = true, .base_known = true, .base = base,
+                                  .next = (uint8_t)(start + GW_NVSMIG_BDSEQ_BLOCK)};
+    }
+    /* the migration finally writes the copy (10): the NVS goes on from the reservation */
+    TEST_ASSERT_EQUAL_UINT8(side.next, gw_nvsmig_bdseq_fold(true, c, &side));
+    /* an NVS that moved on by itself (another base): the later of both */
+    TEST_ASSERT_EQUAL_UINT8(side.next, gw_nvsmig_bdseq_fold(true, (uint8_t)(side.next - 3), &side));
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)(side.next + 5),
+                            gw_nvsmig_bdseq_fold(true, (uint8_t)(side.next + 5), &side));
+    TEST_ASSERT_EQUAL_UINT8(side.next, gw_nvsmig_bdseq_fold(false, 0, &side));
+    /* no reservation: the NVS's own; nothing known and no reservation: random (false) */
+    gw_nvsmig_side_t none = {0};
+    TEST_ASSERT_EQUAL_UINT8(77, gw_nvsmig_bdseq_fold(true, 77, &none));
+    uint8_t start, base;
+    TEST_ASSERT_FALSE(gw_nvsmig_bdseq_start(false, 0, &none, &start, &base));
+    TEST_ASSERT_TRUE(gw_nvsmig_bdseq_start(true, 42, &none, &start, &base));
+    TEST_ASSERT_EQUAL_UINT8(42, start);
+    /* a one-byte reservation of #104 (no base): the later, as before */
+    gw_nvsmig_side_t old = {.have = true, .base_known = false, .next = 60};
+    TEST_ASSERT_TRUE(gw_nvsmig_bdseq_start(true, 50, &old, &start, &base));
+    TEST_ASSERT_EQUAL_UINT8(60, start);
+    TEST_ASSERT_EQUAL_UINT8(50, base);
+    TEST_ASSERT_TRUE(gw_nvsmig_bdseq_start(false, 0, &old, &start, &base));
+    TEST_ASSERT_EQUAL_UINT8(60, start);
+    /* a known value newer than the reservation's chain (a resume moved the copy on) */
+    gw_nvsmig_side_t s2 = {.have = true, .base_known = true, .base = 10, .next = 40};
+    TEST_ASSERT_TRUE(gw_nvsmig_bdseq_start(true, 45, &s2, &start, &base));
+    TEST_ASSERT_EQUAL_UINT8(45, start);
+    TEST_ASSERT_EQUAL_UINT8(45, base);
 }
 
 static void test_bdseq_later(void)
@@ -605,6 +670,7 @@ int main(void)
     RUN_TEST(test_bdseq_later);
     RUN_TEST(test_decide_copy_out_of_reach);
     RUN_TEST(test_bdseq_reservation);
+    RUN_TEST(test_bdseq_reservation_chain);
     RUN_TEST(test_copy_load);
     return UNITY_END();
 }

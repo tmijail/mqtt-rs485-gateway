@@ -80,6 +80,11 @@ void gw_fw_commissioning(void);
  *  after gw_fw_early_init() alone. */
 void gw_fw_cannot_start(const char *why);
 
+/** Issue #108 B5: before a plain restart the operator asked for (NCMD Reboot, shell, web): an image
+ *  judged healthy whose confirmation keeps failing gets one more synchronous try, so the restart
+ *  does not roll it back. Logs when it still fails; the caller restarts anyway. */
+void gw_fw_restart_requested(void);
+
 /** Start a download; ESP_OK if it started (the result comes later in the status). */
 esp_err_t gw_fw_start_url(const char *url, char *why, size_t cap);
 
