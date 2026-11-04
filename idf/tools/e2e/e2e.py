@@ -1737,11 +1737,11 @@ def fw_state(p):
 
 
 def run_ota(args, work):
-    """FW-1 in one gateway (GW30) with its own broker: updates by NCMD (HTTPS download with the
+    """FW-1 in one gateway (GW40) with its own broker: updates by NCMD (HTTPS download with the
     CA from ota.ca_file) and by web upload; bad images rejected without a restart; a new image
     on trial confirmed by its first session; rolled back when no session comes up before the
     timeout (broker stopped) and when it resets during its trial (panic)."""
-    node, port, fw_port = "GW30", MQTT_PORT + 16, MQTT_PORT + 17
+    node, port, fw_port = "GW40", MQTT_PORT + 20, MQTT_PORT + 21
     pki = make_pki(work)
     fwdir = work / "fw"
     fwdir.mkdir(exist_ok=True)
@@ -1915,11 +1915,11 @@ def run_ota(args, work):
 # ---------------------------------------------------------------- issue #67 NVS migration
 
 def run_nvs_migration(args, work):
-    """Issue #67 (GW31): a flash whose NVS was written without NVS encryption (the format of
+    """Issue #67 (GW41): a flash whose NVS was written without NVS encryption (the format of
     the default build, generated here with ESP-IDF's nvs_partition_gen.py: bdSeq 41, the
     commissioning password, an MQTT password) boots the encrypted build: every entry is moved
     into the encrypted NVS, the bdSeq continues and nothing stays in clear."""
-    node = "GW31"
+    node = "GW41"
     nvs_off, nvs_size = storage_partition("nvs")
     csv = work / "nvs-plain.csv"
     csv.write_text("key,type,encoding,value\nspb,namespace,,\nbdseq,data,u8,41\n"

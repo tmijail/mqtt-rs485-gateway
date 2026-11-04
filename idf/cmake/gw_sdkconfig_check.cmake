@@ -28,6 +28,8 @@ set(GW_SDKCONFIG_REQUIRED
     ESP_TASK_WDT_PANIC
     ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0
     ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1
+    # FW-1: a new image that never confirms itself goes back to the previous one
+    BOOTLOADER_APP_ROLLBACK_ENABLE
     # Core dump to the "coredump" partition
     ESP_COREDUMP_ENABLE_TO_FLASH
     # The board boots without PSRAM when it is not detected
