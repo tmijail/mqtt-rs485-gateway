@@ -76,11 +76,12 @@ void gw_nvsraw_u8_item(gw_nvsraw_u8_t *f, const uint8_t *page);
 /* ---------- issue #94: the copy of the NVS entries that makes the migration reset-safe ----------
  * The entries of the unencrypted NVS are written to a persistent copy (a LittleFS file) before
  * the partition is erased, and that copy is deleted only after the encrypted NVS was written
- * and read back. Layout: 16-byte header (magic "GWNM", version 1, record count, body length,
- * CRC32 of the body), then the records: namespace[16], key[16], type (nvs_type_t), length
- * (16-bit little endian), data (integers little endian, 1 to 8 bytes; strings with their NUL). */
+ * and read back. Layout: 20-byte header (magic "GWNM", version 2, record count, body length,
+ * CRC32 of the body, entries the migration could not copy, reserved), then the records:
+ * namespace[16], key[16], type (nvs_type_t), length (16-bit little endian), data (integers
+ * little endian, 1 to 8 bytes; strings with their NUL). */
 #define GW_NVSMIG_MAGIC 0x4D4E5747u
-#define GW_NVSMIG_HDR 16u
+#define GW_NVSMIG_HDR 20u
 #define GW_NVSMIG_REC_HDR 35u
 
 typedef struct {
@@ -97,43 +98,83 @@ size_t gw_nvsmig_begin(uint8_t *buf, size_t cap);
  *  empty or too long. */
 size_t gw_nvsmig_add(uint8_t *buf, size_t cap, size_t used, const char *ns, const char *key,
                      uint8_t type, const void *data, size_t len);
-/** Write the header (count, length, CRC); returns @p used. */
-size_t gw_nvsmig_seal(uint8_t *buf, size_t used);
+/** Write the header (count, length, CRC, @p skipped); returns @p used. */
+size_t gw_nvsmig_seal(uint8_t *buf, size_t used, uint16_t skipped);
 /** A complete, sealed copy of exactly @p size bytes (magic, version, CRC, every record whole). */
 bool gw_nvsmig_check(const uint8_t *buf, size_t size, uint32_t *count);
+/** The CRC32 of a sealed copy's body: what identifies it (the "migration done" marker). */
+uint32_t gw_nvsmig_crc(const uint8_t *buf);
+/** Entries the migration that wrote the sealed copy could not copy. */
+uint16_t gw_nvsmig_skipped(const uint8_t *buf);
 /** Next record after offset @p off (0: the first one); false at the end or on a broken record.
  *  Works on a copy that is not sealed yet. */
 bool gw_nvsmig_next(const uint8_t *buf, size_t size, size_t *off, gw_nvsmig_rec_t *r);
 bool gw_nvsmig_find(const uint8_t *buf, size_t size, const char *ns, const char *key,
                     gw_nvsmig_rec_t *r);
 
+/**
+ * Issue #94: the later of two bdSeq values (0..255, wrapping), by serial-number arithmetic: @p b
+ * is later when it is 1 to 127 steps after @p a. Used so that no path of the migration takes
+ * the bdSeq back (an older copy against a newer NVS, the raw pages, ...).
+ */
+uint8_t gw_nvsmig_bdseq_later(uint8_t a, uint8_t b);
+
+/* What the read of the unencrypted NVS achieved before a migration may erase it. */
+typedef struct {
+    bool init_ok;            /* nvs_flash_init_partition() succeeded */
+    bool init_layout_error;  /* it failed with NO_FREE_PAGES or NEW_VERSION_FOUND: IDF would erase
+                              * this partition anyway, nothing can be read from it */
+    bool listed_all;         /* the entry iteration ran to its end (ESP_ERR_NVS_NOT_FOUND) */
+    unsigned skipped;        /* entries listed but not copied (no memory, read error, no room) */
+} gw_nvsmig_read_t;
+
+/** Issue #94: true only when every entry is in the copy (or the partition is unreadable by
+ *  layout, as IDF itself would erase it). Anything else (no memory, a flash read error, an
+ *  iteration that stopped early, one skipped entry) erases nothing: the boot stays unencrypted. */
+bool gw_nvsmig_may_erase(const gw_nvsmig_read_t *r);
+
 typedef enum {
     GW_NVSMIG_COPY_NONE = 0,     /* no copy */
-    GW_NVSMIG_COPY_VALID,        /* a sealed copy that passes gw_nvsmig_check() */
-    GW_NVSMIG_COPY_BAD,          /* a copy that does not: discarded */
+    GW_NVSMIG_COPY_VALID,        /* read whole, and it passes gw_nvsmig_check() */
+    GW_NVSMIG_COPY_BAD,          /* read whole, and it does not: the only case it is deleted */
+    GW_NVSMIG_COPY_UNREADABLE,   /* it exists but could not be read whole (no memory, open or read
+                                  * error): kept, it may be the only copy of the entries */
 } gw_nvsmig_copy_t;
 
 typedef enum {
     GW_NVSMIG_OPEN_ENCRYPTED = 0,  /* the normal start of the encrypted NVS */
     GW_NVSMIG_STAY_PLAIN,          /* this boot runs on the unencrypted NVS, nothing is erased */
-    GW_NVSMIG_MIGRATE,             /* copy the entries, erase, write them encrypted */
-    GW_NVSMIG_RESUME,              /* a migration was interrupted: write its copy encrypted */
+    GW_NVSMIG_MIGRATE,             /* copy the entries (with those of an earlier copy that the
+                                    * partition no longer has), erase, write them encrypted */
+    GW_NVSMIG_RESUME,              /* the partition was erased: write the copy encrypted */
+    GW_NVSMIG_NO_NVS,              /* no NVS this boot: nothing is erased, opened or initialised */
 } gw_nvsmig_action_t;
 
+typedef struct {
+    gw_nvsraw_kind_t kind;   /* the raw pages that could be read */
+    bool raw_ok;             /* every raw page was read */
+    gw_nvsmig_copy_t copy;   /* the copy of an earlier, unfinished migration */
+    bool on_trial;           /* the running image is a new OTA image not confirmed yet */
+    bool can_copy;           /* there is a place for the copy (LittleFS mounted) */
+} gw_nvsmig_state_t;
+
 /**
- * What an encrypted build does with the NVS at boot. @p kind: the raw pages; @p copy: the copy
- * of an interrupted migration; @p on_trial: the running image is a new OTA image not confirmed
- * yet (a rollback goes back to an image that may not read an encrypted NVS: no migration until
- * it is confirmed); @p can_copy: there is a place for the copy (LittleFS mounted).
- *  - a valid copy: RESUME (only a confirmed image starts a migration);
- *  - PLAIN or MIXED: MIGRATE, or STAY_PLAIN on trial or without a place for the copy. In a MIXED
- *    partition the plain entries are the newer ones: only a build without encryption writes
- *    them, and its initialisation erases the encrypted entries it cannot read;
+ * What an encrypted build does with the NVS at boot (issue #94):
+ *  - a copy that exists but cannot be read: NO_NVS (it may hold the only copy of the entries);
+ *  - a raw page that cannot be read: no migration. With a valid copy NO_NVS; pages that look
+ *    encrypted OPEN_ENCRYPTED (staying unencrypted would make NVS discard their entries); else
+ *    STAY_PLAIN;
+ *  - PLAIN or MIXED: STAY_PLAIN on trial (a rollback must find the NVS as the previous image
+ *    left it; a valid copy is kept for the boot that migrates) or without a place for the copy;
+ *    else MIGRATE. A valid copy here means the erase had not finished: the partition's entries
+ *    are taken first (they are the newer ones) and the copy fills in what it no longer has. In
+ *    a MIXED partition the plain entries are the newer ones: only a build without encryption
+ *    writes them, and its initialisation erases the encrypted entries it cannot read;
+ *  - EMPTY or ENCRYPTED with a valid copy: RESUME (the erase was done, the copy is all there is);
  *  - EMPTY on trial: STAY_PLAIN (what the previous image would write is unencrypted);
  *  - otherwise OPEN_ENCRYPTED.
  */
-gw_nvsmig_action_t gw_nvsmig_decide(gw_nvsraw_kind_t kind, gw_nvsmig_copy_t copy, bool on_trial,
-                                    bool can_copy);
+gw_nvsmig_action_t gw_nvsmig_decide(const gw_nvsmig_state_t *s);
 
 #ifdef __cplusplus
 }

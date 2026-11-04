@@ -296,10 +296,13 @@ static void test_copy_round_trip(void)
     gw_nvsmig_rec_t r;
     TEST_ASSERT_TRUE(gw_nvsmig_find(buf, n, "spb", "bdseq", &r));
     TEST_ASSERT_FALSE(gw_nvsmig_check(buf, n, NULL));   /* not sealed yet */
-    size_t size = gw_nvsmig_seal(buf, n);
+    size_t size = gw_nvsmig_seal(buf, n, 2);
     uint32_t count = 0;
     TEST_ASSERT_TRUE(gw_nvsmig_check(buf, size, &count));
     TEST_ASSERT_EQUAL_UINT32(3, count);
+    TEST_ASSERT_EQUAL_UINT16(2, gw_nvsmig_skipped(buf));   /* what the migration could not copy */
+    TEST_ASSERT_EQUAL_HEX32(gw_nvsraw_crc32(0, buf + GW_NVSMIG_HDR, size - GW_NVSMIG_HDR),
+                            gw_nvsmig_crc(buf));
     size_t off = 0;
     TEST_ASSERT_TRUE(gw_nvsmig_next(buf, size, &off, &r));
     TEST_ASSERT_EQUAL_STRING("spb", r.ns);
@@ -331,7 +334,7 @@ static void test_copy_round_trip(void)
     /* an empty copy is valid */
     static uint8_t e[GW_NVSMIG_HDR];
     TEST_ASSERT_EQUAL_size_t(0, gw_nvsmig_begin(e, sizeof(e) - 1));
-    size = gw_nvsmig_seal(e, gw_nvsmig_begin(e, sizeof(e)));
+    size = gw_nvsmig_seal(e, gw_nvsmig_begin(e, sizeof(e)), 0);
     TEST_ASSERT_TRUE(gw_nvsmig_check(e, size, &count));
     TEST_ASSERT_EQUAL_UINT32(0, count);
 
@@ -346,39 +349,107 @@ static void test_copy_round_trip(void)
                                            &b, 1));
 }
 
+static gw_nvsmig_action_t decide(gw_nvsraw_kind_t kind, gw_nvsmig_copy_t copy, bool trial,
+                                 bool can_copy, bool raw_ok)
+{
+    const gw_nvsmig_state_t st = {.kind = kind, .raw_ok = raw_ok, .copy = copy,
+                                  .on_trial = trial, .can_copy = can_copy};
+    return gw_nvsmig_decide(&st);
+}
+
+static const gw_nvsraw_kind_t kKinds[] = {GW_NVSRAW_EMPTY, GW_NVSRAW_PLAIN, GW_NVSRAW_ENCRYPTED,
+                                          GW_NVSRAW_MIXED};
+
 static void test_decide(void)
 {
-    const gw_nvsraw_kind_t kinds[] = {GW_NVSRAW_EMPTY, GW_NVSRAW_PLAIN, GW_NVSRAW_ENCRYPTED,
-                                      GW_NVSRAW_MIXED};
-    /* a valid copy of an interrupted migration is always finished, whatever the pages hold */
-    for (unsigned k = 0; k < 4; k++) {
-        for (int t = 0; t < 2; t++) {
-            TEST_ASSERT_EQUAL(GW_NVSMIG_RESUME,
-                              gw_nvsmig_decide(kinds[k], GW_NVSMIG_COPY_VALID, t, true));
-        }
-    }
-    for (int c = 0; c < 2; c++) {   /* no copy, or a damaged one (discarded) */
+    for (int c = 0; c < 2; c++) {   /* no copy, or a damaged one (read whole, deleted) */
         gw_nvsmig_copy_t copy = c ? GW_NVSMIG_COPY_BAD : GW_NVSMIG_COPY_NONE;
         /* unencrypted (or mixed: the plain entries are the newer ones) on a confirmed image */
-        TEST_ASSERT_EQUAL(GW_NVSMIG_MIGRATE, gw_nvsmig_decide(GW_NVSRAW_PLAIN, copy, false, true));
-        TEST_ASSERT_EQUAL(GW_NVSMIG_MIGRATE, gw_nvsmig_decide(GW_NVSRAW_MIXED, copy, false, true));
+        TEST_ASSERT_EQUAL(GW_NVSMIG_MIGRATE, decide(GW_NVSRAW_PLAIN, copy, false, true, true));
+        TEST_ASSERT_EQUAL(GW_NVSMIG_MIGRATE, decide(GW_NVSRAW_MIXED, copy, false, true, true));
         /* on trial: a rollback must find what the previous image can read */
-        TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(GW_NVSRAW_PLAIN, copy, true, true));
-        TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(GW_NVSRAW_MIXED, copy, true, true));
-        TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(GW_NVSRAW_EMPTY, copy, true, true));
+        TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, decide(GW_NVSRAW_PLAIN, copy, true, true, true));
+        TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, decide(GW_NVSRAW_MIXED, copy, true, true, true));
+        TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, decide(GW_NVSRAW_EMPTY, copy, true, true, true));
         /* nowhere to keep the copy: nothing is erased */
-        TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(GW_NVSRAW_PLAIN, copy, false, false));
-        TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(GW_NVSRAW_MIXED, copy, false, false));
+        TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, decide(GW_NVSRAW_PLAIN, copy, false, false, true));
+        TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, decide(GW_NVSRAW_MIXED, copy, false, false, true));
         /* already encrypted (also on trial), or empty on a confirmed image */
         for (int t = 0; t < 2; t++) {
             for (int f = 0; f < 2; f++) {
                 TEST_ASSERT_EQUAL(GW_NVSMIG_OPEN_ENCRYPTED,
-                                  gw_nvsmig_decide(GW_NVSRAW_ENCRYPTED, copy, t, f));
+                                  decide(GW_NVSRAW_ENCRYPTED, copy, t, f, true));
             }
         }
-        TEST_ASSERT_EQUAL(GW_NVSMIG_OPEN_ENCRYPTED, gw_nvsmig_decide(GW_NVSRAW_EMPTY, copy, false, true));
-        TEST_ASSERT_EQUAL(GW_NVSMIG_OPEN_ENCRYPTED, gw_nvsmig_decide(GW_NVSRAW_EMPTY, copy, false, false));
+        TEST_ASSERT_EQUAL(GW_NVSMIG_OPEN_ENCRYPTED, decide(GW_NVSRAW_EMPTY, copy, false, true, true));
+        TEST_ASSERT_EQUAL(GW_NVSMIG_OPEN_ENCRYPTED, decide(GW_NVSRAW_EMPTY, copy, false, false, true));
     }
+}
+
+/* Round 2 of issue #94: a valid copy, an unreadable copy, unreadable raw pages. */
+static void test_decide_with_copy(void)
+{
+    const gw_nvsmig_copy_t V = GW_NVSMIG_COPY_VALID;
+    /* the erase was done (empty or encrypted pages): the copy is all there is, also on trial */
+    for (int t = 0; t < 2; t++) {
+        TEST_ASSERT_EQUAL(GW_NVSMIG_RESUME, decide(GW_NVSRAW_EMPTY, V, t, true, true));
+        TEST_ASSERT_EQUAL(GW_NVSMIG_RESUME, decide(GW_NVSRAW_ENCRYPTED, V, t, true, true));
+    }
+    /* the erase had not finished: the partition's entries first, the copy fills in */
+    TEST_ASSERT_EQUAL(GW_NVSMIG_MIGRATE, decide(GW_NVSRAW_PLAIN, V, false, true, true));
+    TEST_ASSERT_EQUAL(GW_NVSMIG_MIGRATE, decide(GW_NVSRAW_MIXED, V, false, true, true));
+    /* B1(a): a new image on trial never migrates, not even from a valid copy */
+    TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, decide(GW_NVSRAW_PLAIN, V, true, true, true));
+    TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, decide(GW_NVSRAW_MIXED, V, true, true, true));
+    /* M2: a copy that exists but could not be read whole: no NVS this boot, whatever else */
+    for (unsigned k = 0; k < 4; k++) {
+        for (int t = 0; t < 2; t++) {
+            for (int r = 0; r < 2; r++) {
+                TEST_ASSERT_EQUAL(GW_NVSMIG_NO_NVS,
+                                  decide(kKinds[k], GW_NVSMIG_COPY_UNREADABLE, t, true, r));
+            }
+        }
+    }
+    /* B2: a raw page not read: never a migration nor a resume */
+    for (unsigned k = 0; k < 4; k++) {
+        for (int t = 0; t < 2; t++) {
+            TEST_ASSERT_EQUAL(GW_NVSMIG_NO_NVS, decide(kKinds[k], V, t, true, false));
+            for (int c = 0; c < 2; c++) {
+                gw_nvsmig_copy_t copy = c ? GW_NVSMIG_COPY_BAD : GW_NVSMIG_COPY_NONE;
+                gw_nvsmig_action_t a = decide(kKinds[k], copy, t, true, false);
+                TEST_ASSERT_EQUAL(kKinds[k] == GW_NVSRAW_ENCRYPTED ? GW_NVSMIG_OPEN_ENCRYPTED
+                                                                   : GW_NVSMIG_STAY_PLAIN, a);
+            }
+        }
+    }
+}
+
+/* M1: the partition is erased only when every entry is in the copy */
+static void test_may_erase(void)
+{
+    gw_nvsmig_read_t r = {.init_ok = true, .listed_all = true, .skipped = 0};
+    TEST_ASSERT_TRUE(gw_nvsmig_may_erase(&r));
+    r.skipped = 1;                          /* one entry not copied (no memory for its value) */
+    TEST_ASSERT_FALSE(gw_nvsmig_may_erase(&r));
+    r.skipped = 0;
+    r.listed_all = false;                   /* the iteration stopped with another error */
+    TEST_ASSERT_FALSE(gw_nvsmig_may_erase(&r));
+    /* the unencrypted NVS does not start: only for a layout error (IDF erases it anyway) */
+    gw_nvsmig_read_t f = {.init_ok = false, .init_layout_error = false};
+    TEST_ASSERT_FALSE(gw_nvsmig_may_erase(&f));   /* ESP_ERR_NO_MEM, a flash read error, ... */
+    f.init_layout_error = true;                   /* NO_FREE_PAGES, NEW_VERSION_FOUND */
+    TEST_ASSERT_TRUE(gw_nvsmig_may_erase(&f));
+}
+
+static void test_bdseq_later(void)
+{
+    TEST_ASSERT_EQUAL_UINT8(42, gw_nvsmig_bdseq_later(41, 42));
+    TEST_ASSERT_EQUAL_UINT8(42, gw_nvsmig_bdseq_later(42, 41));
+    TEST_ASSERT_EQUAL_UINT8(7, gw_nvsmig_bdseq_later(7, 7));
+    TEST_ASSERT_EQUAL_UINT8(2, gw_nvsmig_bdseq_later(250, 2));    /* across the wrap */
+    TEST_ASSERT_EQUAL_UINT8(2, gw_nvsmig_bdseq_later(2, 250));
+    TEST_ASSERT_EQUAL_UINT8(127, gw_nvsmig_bdseq_later(0, 127));
+    TEST_ASSERT_EQUAL_UINT8(0, gw_nvsmig_bdseq_later(0, 128));    /* half the ring: the first */
 }
 
 int main(void)
@@ -394,5 +465,8 @@ int main(void)
     RUN_TEST(test_raw_u8_bdseq);
     RUN_TEST(test_copy_round_trip);
     RUN_TEST(test_decide);
+    RUN_TEST(test_decide_with_copy);
+    RUN_TEST(test_may_erase);
+    RUN_TEST(test_bdseq_later);
     return UNITY_END();
 }

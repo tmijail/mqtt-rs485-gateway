@@ -191,7 +191,7 @@ void gw_nvsraw_u8_item(gw_nvsraw_u8_t *f, const uint8_t *page)
 
 /* ---------- the persistent copy of a migration (issue #94) ---------- */
 
-#define MIG_VERSION 1u
+#define MIG_VERSION 2u
 
 static void put16(uint8_t *p, uint32_t v)
 {
@@ -265,7 +265,7 @@ bool gw_nvsmig_next(const uint8_t *buf, size_t size, size_t *off, gw_nvsmig_rec_
     return true;
 }
 
-size_t gw_nvsmig_seal(uint8_t *buf, size_t used)
+size_t gw_nvsmig_seal(uint8_t *buf, size_t used, uint16_t skipped)
 {
     uint32_t count = 0;
     gw_nvsmig_rec_t r;
@@ -277,7 +277,19 @@ size_t gw_nvsmig_seal(uint8_t *buf, size_t used)
     put16(buf + 6, count);
     put32(buf + 8, (uint32_t)(used - GW_NVSMIG_HDR));
     put32(buf + 12, gw_nvsraw_crc32(0, buf + GW_NVSMIG_HDR, used - GW_NVSMIG_HDR));
+    put16(buf + 16, skipped);
+    put16(buf + 18, 0);
     return used;
+}
+
+uint32_t gw_nvsmig_crc(const uint8_t *buf)
+{
+    return le32(buf + 12);
+}
+
+uint16_t gw_nvsmig_skipped(const uint8_t *buf)
+{
+    return (uint16_t)le16(buf + 16);
 }
 
 bool gw_nvsmig_check(const uint8_t *buf, size_t size, uint32_t *count)
@@ -313,20 +325,43 @@ bool gw_nvsmig_find(const uint8_t *buf, size_t size, const char *ns, const char 
     return false;
 }
 
-gw_nvsmig_action_t gw_nvsmig_decide(gw_nvsraw_kind_t kind, gw_nvsmig_copy_t copy, bool on_trial,
-                                    bool can_copy)
+uint8_t gw_nvsmig_bdseq_later(uint8_t a, uint8_t b)
 {
-    if (copy == GW_NVSMIG_COPY_VALID) {
-        return GW_NVSMIG_RESUME;
+    uint8_t d = (uint8_t)(b - a);
+    return d >= 1 && d <= 127 ? b : a;
+}
+
+bool gw_nvsmig_may_erase(const gw_nvsmig_read_t *r)
+{
+    if (!r->init_ok) {
+        return r->init_layout_error;
     }
-    switch (kind) {
+    return r->listed_all && r->skipped == 0;
+}
+
+gw_nvsmig_action_t gw_nvsmig_decide(const gw_nvsmig_state_t *s)
+{
+    if (s->copy == GW_NVSMIG_COPY_UNREADABLE) {
+        return GW_NVSMIG_NO_NVS;
+    }
+    bool copy = s->copy == GW_NVSMIG_COPY_VALID;
+    if (!s->raw_ok) {
+        if (copy) {
+            return GW_NVSMIG_NO_NVS;
+        }
+        return s->kind == GW_NVSRAW_ENCRYPTED ? GW_NVSMIG_OPEN_ENCRYPTED : GW_NVSMIG_STAY_PLAIN;
+    }
+    switch (s->kind) {
     case GW_NVSRAW_PLAIN:
     case GW_NVSRAW_MIXED:
-        return on_trial || !can_copy ? GW_NVSMIG_STAY_PLAIN : GW_NVSMIG_MIGRATE;
+        return s->on_trial || !s->can_copy ? GW_NVSMIG_STAY_PLAIN : GW_NVSMIG_MIGRATE;
     case GW_NVSRAW_EMPTY:
-        return on_trial ? GW_NVSMIG_STAY_PLAIN : GW_NVSMIG_OPEN_ENCRYPTED;
+        if (copy) {
+            return GW_NVSMIG_RESUME;
+        }
+        return s->on_trial ? GW_NVSMIG_STAY_PLAIN : GW_NVSMIG_OPEN_ENCRYPTED;
     case GW_NVSRAW_ENCRYPTED:
     default:
-        return GW_NVSMIG_OPEN_ENCRYPTED;
+        return copy ? GW_NVSMIG_RESUME : GW_NVSMIG_OPEN_ENCRYPTED;
     }
 }

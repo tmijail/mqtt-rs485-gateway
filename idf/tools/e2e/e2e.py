@@ -2151,8 +2151,8 @@ def run_nvs_migration(args, work):
         gw = Gateway(args, log, flash)
         gw.start()
         nb = obs.wait(f"{T}/NBIRTH/{node}", 60)
-        done = gw.find(r"storage: NVS migration resumed: \d+ entries moved into the encrypted NVS; "
-                       r"bdSeq continues", t0)
+        done = gw.find(r"storage: NVS migration resumed: \d+ entries moved into the encrypted NVS "
+                       r"\(0 skipped\); bdSeq continues", t0)
         pw = commissioning_password(gw, t0)
         gw.kill()
         obs.wait(f"{T}/NDEATH/{node}", 5)
@@ -2171,7 +2171,7 @@ def run_nvs_migration(args, work):
                   and cuts[1][0] and cuts[1][1] is not None and not cuts[1][2])
         check("Issue #94 an unencrypted NVS meets the encrypted build and the power is cut twice "
               "during the migration (after the erase, then halfway through the encrypted writes): "
-              "the next boot finishes it from the reset-safe copy; bdSeq continues, the MQTT "
+              "the next boot finishes it from the reset-safe copy (0 skipped); bdSeq continues, the MQTT "
               "password from the NVS opens the broker that requires it, the commissioning "
               "password is the old one, nothing in clear, no migration on the next boot "
               "(issue #67)",
@@ -2306,16 +2306,26 @@ def run_nvs_ota(args, work):
             nb3 = item if item[0] > moved_t else None
         pw2 = commissioning_password(gw, moved_t) if moved_t else None
         _, h_enc = gw.shell("status", [r"^secrets\s+NVS encrypted \(HMAC key in eFuse KEY5\)"])
+        # exactly one restart after the confirmation: the migrated boot stays up
+        quiet_from = nb3[0] if nb3 else time.monotonic()
+        later = obs.wait(nbirth_t, 20)
+        boots = gw.find(r"main: rs485_spb_gateway .* reset reason", conf_t) if conf_t else []
+        restarts = gw.find(r"restarting once to encrypt the NVS", conf_t) if conf_t else []
+        one_restart = (later is None and len(boots) == 1 and len(restarts) == 1
+                       and not any(m[1] == f"{T}/NDEATH/{node}" for m in CAPTURE
+                                   if m[0] > quiet_from))
         gw.kill()
         clear2 = nvs_clear(flash, words)
         b3 = bdseq_of(nb3[2]) if nb3 else None
         check("Issue #94 the same update with the broker up: confirmed by its first session, one "
-              "restart, and that boot moves the NVS into the encrypted one (bdSeq continues, the "
+              "restart (and no second one), and that boot moves the NVS into the encrypted one (bdSeq continues, the "
               "MQTT password still opens the broker, same commissioning password, nothing in clear)",
               conf_t and moved_t and nb3 and fw(nb3) == "e2e-enc" and b1 is not None
               and b3 is not None and 1 <= (b3 - b1) % 256 <= 64 and pw2 == pw0 and not clear2
-              and list(h_enc.values())[0],
-              f"confirmed {conf_t is not None}, migrated {moved_t is not None}; NBIRTH firmware "
+              and list(h_enc.values())[0] and one_restart,
+              f"confirmed {conf_t is not None}, migrated {moved_t is not None}; boots after the "
+              f"confirmation {len(boots)}, restart requests {len(restarts)}, another NBIRTH in "
+              f"20 s {later is not None}; NBIRTH firmware "
               f"{fw(nb3)!r} bdSeq {b1} -> {b3}; commissioning password {pw2!r}; in clear: {clear2}")
     finally:
         if not gw.killed:   # a second kill() would read as a QEMU death (#86)
