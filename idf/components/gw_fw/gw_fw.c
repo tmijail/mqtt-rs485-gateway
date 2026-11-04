@@ -161,8 +161,9 @@ static void fail(const char *fmt, ...)
     vsnprintf(why, sizeof(why), fmt, ap);
     va_end(ap);
     ESP_LOGE(TAG, "firmware update failed: %s", why);
-    set_status(GW_FW_FAILED, s_st.progress, why, "failed: %s", why);
+    /* free first: whoever sees the failed state may start the next update right away */
     atomic_store(&s_busy, false);
+    set_status(GW_FW_FAILED, s_st.progress, why, "failed: %s", why);
 }
 
 static void on_restart(void *arg)
