@@ -34,7 +34,8 @@
       "on",
       "off",
       "hold"
-    ]
+    ],
+    "counter_save_s": 60
   },
   "devices": [
     {

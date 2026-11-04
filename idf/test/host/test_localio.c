@@ -1,4 +1,4 @@
-/* QA-1: policy of the local outputs (IO-3 safe state). */
+/* QA-1: policy of the local outputs (IO-3 safe state) and of the pulse counters (IO-4). */
 #include <string.h>
 
 #include "gw_config.h"
@@ -83,6 +83,31 @@ static void test_failsafe_all_hold_and_clock_wrap(void)
     TEST_ASSERT_EQUAL_HEX8(0, value);
 }
 
+/* IO-4: the counters are saved every counter_save_s, only when they changed */
+static void test_counter_save_schedule(void)
+{
+    cfg.local_io.counter_save_s = 600;
+    gw_lio_save_t sv;
+    uint64_t c[8] = {3};
+    gw_lio_save_init(&sv, &cfg, c, 1000);
+    TEST_ASSERT_FALSE(gw_lio_save_due(&sv, c, 1000 + 700000, false));   /* unchanged */
+    TEST_ASSERT_FALSE(gw_lio_save_due(&sv, c, 1000, true));
+    c[0] = 4;
+    TEST_ASSERT_FALSE(gw_lio_save_due(&sv, c, 1000 + 599999, false));
+    TEST_ASSERT_TRUE(gw_lio_save_due(&sv, c, 1000 + 599999, true));     /* orderly restart */
+    TEST_ASSERT_TRUE(gw_lio_save_due(&sv, c, 1000 + 600000, false));
+    gw_lio_saved(&sv, c, 601000);
+    TEST_ASSERT_FALSE(gw_lio_save_due(&sv, c, 2000000, false));
+    c[7] = 1;
+    TEST_ASSERT_FALSE(gw_lio_save_due(&sv, c, 1200999, false));
+    TEST_ASSERT_TRUE(gw_lio_save_due(&sv, c, 1201000, false));
+
+    cfg.local_io.counter_save_s = 0;                                    /* never */
+    gw_lio_save_init(&sv, &cfg, (const uint64_t[8]){0}, 0);
+    TEST_ASSERT_FALSE(gw_lio_save_due(&sv, c, 4000000000u, false));
+    TEST_ASSERT_FALSE(gw_lio_save_due(&sv, c, 1, true));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -90,5 +115,6 @@ int main(void)
     RUN_TEST(test_defaults_off_and_no_failsafe);
     RUN_TEST(test_failsafe_after_n_seconds_without_session);
     RUN_TEST(test_failsafe_all_hold_and_clock_wrap);
+    RUN_TEST(test_counter_save_schedule);
     return UNITY_END();
 }

@@ -63,7 +63,7 @@ SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
 PROBE_MAX_S = 10.0                # CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS / 1000, read in main()
 GROUP, NODE, DEVICE, BULK = "Plant1", "GW01", "Meter1", "Bulk"
 T = f"spBv1.0/{GROUP}"
-ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/1": 20, "DO/2": 21, "DO/3": 22, "DO/4": 23, "Voltage": 100, "Setpoint": 101, "Run": 102,
+ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/1": 20, "DO/2": 21, "DO/3": 22, "DO/4": 23, "Counter/1": 30, "Voltage": 100, "Setpoint": 101, "Run": 102,
          "Limit": 103, "Energy": 104, "Counter": 105, "Flow": 106, "Temp": 107, "Serial": 108,
          "Alarm": 109, "Ready": 110}
 # MB-6 values served by unit 1, and the registers that hold them (see ModbusSlave.set_mb6)
@@ -390,6 +390,12 @@ def do_states(p):
         if m is not None and not m.is_null:
             out[n] = m.boolean_value
     return out
+
+
+def counter_of(p, n=1):
+    """Value of Counter/n (IO-4, UInt64) in an NBIRTH (by name) or NDATA (by alias), or None."""
+    m = metric(p, name=f"Counter/{n}") or metric(p, alias=30 + n - 1)
+    return m.long_value if m is not None and m.datatype == 8 else None
 
 
 def set_do(obs, ncmd_t, ndata_t, states):
@@ -1462,6 +1468,7 @@ def run(args, log, slave, broker, conf, work):
                  f"{nb[0] - t0:.1f} s after QEMU start (REL-6 asks < 10 s)"):
         return
     p = nb[2]
+    nb0 = [nb]
     b0 = bdseq_of(p)
     reason0 = metric(p, name="Node Info/Reset Reason")
     check("1b. NBIRTH seq=0, bdSeq metric, timestamp", p.seq == 0 and p.timestamp > 0,
@@ -1592,6 +1599,11 @@ def run(args, log, slave, broker, conf, work):
     check("3a. DI change visible in NDATA < 100 ms", nd and lat < 100 and
           metric(nd[2], alias=ALIAS["DI/1"]).boolean_value,
           f"{lat:.0f} ms console->NDATA (includes 20 ms debounce and emulator latency)" if nd else "no NDATA")
+    births = [counter_of(nb0[0][2], n) for n in range(1, 9)] if nb0 else []
+    check("IO-4 pulse counters: NBIRTH carries Counter/1..8 (UInt64, 0 on a fresh device); the DI "
+          "activation counts one pulse, in the same NDATA as the DI change",
+          births == [0] * 8 and nd and counter_of(nd[2]) == 1,
+          f"NBIRTH counters {births}; NDATA {[(m.alias, m.long_value if m.datatype == 8 else m.boolean_value) for m in nd[2].metrics] if nd else None}")
     obs.drain()
     obs.publish_cmd(ncmd_t, [{"name": "DO/3", "datatype": 11, "boolean_value": True}])
     nd = obs.wait(ndata_t, 3, lambda q: metric(q, alias=ALIAS["DO/3"]) is not None)
@@ -1708,7 +1720,6 @@ def run(args, log, slave, broker, conf, work):
             and all(m[0] >= nb[0] for m in dbs.values())
 
     # IO-3 safe state at a restart: DO/2 "on", DO/1 and DO/3 "off", DO/4 "hold" (power-up: off)
-    nb0 = [m for m in CAPTURE if m[1] == nbirth_t and m[0] >= t0][:1]
     boot_dos = do_states(nb0[0][2]) if nb0 else {}
     check("IO-3 restart state per output: do_failsafe 'on' outputs on once the configuration is "
           "valid, 'off' and (after a power-up) 'hold' outputs off",
@@ -1825,7 +1836,16 @@ def run(args, log, slave, broker, conf, work):
     # IO-3 'hold' across a software restart: the expander keeps its latch (the QEMU model keeps
     # its registers in RTC memory like the chip); DO/4 must come back on, DO/2 ('on') too.
     cold = do_states(nb[2]) if nb else {}
+    # IO-4: the counter saved periodically (every 60 s) survives the power cycle
+    saved = gw.find(r"io: pulse counters saved$")
+    check("IO-4 pulse counters saved to NVS every counter_save_s (60 s) and restored after a power "
+          "cycle", saved and nb and counter_of(nb[2]) == 1,
+          f"{len(saved)} periodic saves logged; Counter/1 after the power cycle "
+          f"{counter_of(nb[2]) if nb else None} (1 expected)")
     held = set_do(obs, ncmd_t, ndata_t, {4: True})
+    obs.drain()
+    gw.console("di 1 1")   # DI/1 idle after the power cycle: one more pulse
+    pulse = obs.wait(ndata_t, 3, lambda q: counter_of(q) is not None)
     since_reboot = time.monotonic()
 
     # SPB-2 orderly disconnect: NCMD Reboot -> explicit NDEATH, then reboot
@@ -1844,6 +1864,11 @@ def run(args, log, slave, broker, conf, work):
           f"NDEATHs with that bdSeq={len(deaths)} (will discarded if 1), "
           f"NBIRTH after reboot bdSeq={bdseq_of(nb[2]) if nb else None}")
     warm = do_states(nb[2]) if nb else {}
+    check("IO-4 pulse counters saved at an orderly restart (NCMD Reboot) and restored",
+          pulse and counter_of(pulse[2]) == 2 and nb and counter_of(nb[2]) == 2
+          and gw.find(r"io: pulse counters saved before the restart", since_reboot),
+          f"Counter/1 before {counter_of(pulse[2]) if pulse else None}, after the reboot "
+          f"{counter_of(nb[2]) if nb else None}")
     check("IO-3 'hold' output kept across a software restart (TCA9554 latch read back before the "
           "configuration), off after a power cycle; 'on' output on after both",
           cold.get(4) is False and cold.get(2) is True and held and warm.get(4) is True

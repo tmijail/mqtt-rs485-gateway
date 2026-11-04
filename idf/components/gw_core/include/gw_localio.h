@@ -9,6 +9,9 @@
  *   - after local_io.failsafe_s seconds without a Sparkplug session (counted from the boot
  *     or from the loss): "off" and "on" outputs take that state, once; "hold" outputs do not
  *     change. When the session is back the outputs stay as they are until commanded again.
+ *
+ * IO-4 pulse counters: saved every local_io.counter_save_s, only if they changed since the
+ * last save (flash wear); gw_lio_save_due() decides when.
  */
 #pragma once
 
@@ -52,6 +55,24 @@ uint8_t gw_lio_boot_state(const gw_lio_t *l, uint8_t held);
  */
 gw_lio_fs_event_t gw_lio_failsafe(gw_lio_t *l, bool session_up, uint32_t now_ms, uint8_t *mask,
                                   uint8_t *value);
+
+typedef struct {
+    uint32_t period_ms;       /* 0: never saved */
+    uint32_t last_ms;         /* last save (or the boot) */
+    uint64_t saved[GW_LOCAL_IO_CHANNELS];
+} gw_lio_save_t;
+
+/** Counters @p restored (from NVS, or zeros) at @p now_ms. */
+void gw_lio_save_init(gw_lio_save_t *s, const gw_config_t *cfg, const uint64_t *restored,
+                      uint32_t now_ms);
+
+/** True when @p count must be saved now: saving is enabled, it changed, and the period has
+ *  run since the last save or @p force (orderly restart). The caller saves, then calls
+ *  gw_lio_saved(). */
+bool gw_lio_save_due(const gw_lio_save_t *s, const uint64_t *count, uint32_t now_ms, bool force);
+
+/** @p count was saved at @p now_ms. */
+void gw_lio_saved(gw_lio_save_t *s, const uint64_t *count, uint32_t now_ms);
 
 #ifdef __cplusplus
 }

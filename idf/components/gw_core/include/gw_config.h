@@ -42,6 +42,8 @@ extern "C" {
 #define GW_MBTCP_MAX_ALLOWED 8      /* MB-15: entries of modbus_tcp.allowed_clients */
 #define GW_LOCAL_IO_CHANNELS 8      /* DI/1..8 and DO/1..8 */
 #define GW_FAILSAFE_MAX_S 86400     /* IO-3: local_io.failsafe_s */
+#define GW_COUNTER_SAVE_MIN_S 60    /* IO-4: local_io.counter_save_s (or 0) */
+#define GW_COUNTER_SAVE_MAX_S 86400
 
 typedef enum {
     GW_AREA_COIL = 0,
@@ -198,6 +200,7 @@ typedef struct {
         uint32_t failsafe_s;     /* IO-3: seconds without a Sparkplug session before the DOs
                                   * take their safe state; 0 = no reaction to an MQTT loss */
         uint8_t do_failsafe[GW_LOCAL_IO_CHANNELS];   /* gw_do_safe_t of DO/1..8 */
+        uint32_t counter_save_s; /* IO-4: pulse counters saved to NVS this often (0 = never) */
     } local_io;
     struct {                     /* REL-4; disabled when host is empty */
         char host[GW_HOST_SIZE];

@@ -43,6 +43,7 @@ typedef struct {
     bool failsafe;       /* IO-3: the DOs took their safe state (no Sparkplug session) */
     uint64_t di_ts_ms;
     uint64_t do_ts_ms;
+    uint64_t count[8];   /* IO-4: activations (inactive -> active) of DI n+1 */
 } gw_local_io_t;
 
 /** Clear everything (all devices offline, all values invalid). */
@@ -62,7 +63,12 @@ void gw_tagdb_get_stats(uint16_t dev, gw_dev_stats_t *stats);
 void gw_tagdb_put_tag(uint16_t tag, const gw_tag_value_t *val);
 void gw_tagdb_get_tag(uint16_t tag, gw_tag_value_t *val);
 
+/** DI states without counting (start-up). */
 void gw_tagdb_set_di(uint8_t di, uint64_t ts_ms);
+/** New debounced DI states: every input that became active counts one pulse (IO-4). */
+void gw_tagdb_update_di(uint8_t di, uint64_t ts_ms);
+/** IO-4: counters restored at boot. */
+void gw_tagdb_set_counters(const uint64_t count[8]);
 void gw_tagdb_set_do(uint8_t dout, uint64_t ts_ms);   /* also clears do_unknown */
 void gw_tagdb_set_do_unknown(uint64_t ts_ms);
 void gw_tagdb_set_failsafe(bool on);

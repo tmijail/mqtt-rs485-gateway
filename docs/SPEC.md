@@ -376,7 +376,7 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 - Se reenvían FC01–FC06, FC15 y FC16 a las unidades 1–247, tengan o no un dispositivo configurado. El gateway responde él mismo, con excepción, a cualquier otra función (01), a datos no válidos (03) y a las unidades 0 y 248–255 (0A). Si la unidad no responde tras los reintentos de `rs485`, la excepción es 0B.
 - **Arbitraje del bus (MB-16):** las peticiones TCP pasan por la tarea dueña del bus, una a la vez y con la misma granularidad que los DCMD: entre dos peticiones de la encuesta. Prioridad: escrituras DCMD, después Modbus TCP, después la encuesta.
 
-**`local_io`: E/S local sin red. Estado seguro de las DO (IO-3).**
+**`local_io`: E/S local sin red. Estado seguro de las DO (IO-3).** Todas las claves de `local_io` son opcionales.
 
 ```json
 "local_io": { "di_debounce_ms": 20, "failsafe_s": 30,
@@ -393,6 +393,21 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 - **Configuración rechazada** (recuperación) o puesta en marcha: todas a OFF, también las `hold`.
 - **Sin sesión durante `failsafe_s`** (contados desde el arranque o desde la pérdida): las `off` y las `on` toman ese estado, una vez; las `hold` no cambian. Al volver la sesión, las DO quedan como están hasta el próximo NCMD; el NBIRTH informa su estado real.
 - Sin estas claves el equipo se comporta como el MVP: todas a OFF al reiniciar y sin reacción a la pérdida de MQTT.
+
+**Contadores de pulsos de las DI (IO-4), en `local_io`.**
+
+```json
+"local_io": { "di_debounce_ms": 20, "counter_save_s": 600 }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `counter_save_s` | entero | `600` | 0 o 60–86400. Cada cuánto se guardan los contadores en NVS, solo si cambiaron. 0 = no se guardan (vuelven a 0 en cada arranque) |
+
+- Cada DI cuenta sus **activaciones** (paso de inactiva a activa, después del debounce): con 20 ms de debounce, hasta unos 25 Hz. Un pulso más corto que el debounce no cuenta.
+- Métricas del nodo `Counter/1`…`Counter/8` (UInt64, alias 30–37), en el NBIRTH y por excepción en el mismo NDATA que el cambio de la DI.
+- Al arrancar se restauran del último guardado. Un reinicio ordenado (NCMD Reboot, configuración nueva, `restart` del shell o de la web) los guarda antes; un corte de alimentación, un *panic* o el watchdog pierden lo contado desde el último guardado (como mucho `counter_save_s`).
+- No se pueden escribir por NCMD. El reset de fábrica los pone a 0.
 
 **`syslog` (REL-4): copia del log a un servidor syslog.**
 

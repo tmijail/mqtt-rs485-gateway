@@ -594,6 +594,7 @@ static void test_local_io_section(void)
     snprintf(doc, sizeof(doc), "{%s}", base);
     TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
     TEST_ASSERT_EQUAL(0, cfg.local_io.failsafe_s);        /* no reaction to an MQTT loss */
+    TEST_ASSERT_EQUAL(600, cfg.local_io.counter_save_s);  /* IO-4 */
     for (int i = 0; i < GW_LOCAL_IO_CHANNELS; i++) {
         TEST_ASSERT_EQUAL(GW_DO_SAFE_OFF, cfg.local_io.do_failsafe[i]);
     }
@@ -619,6 +620,13 @@ static void test_local_io_section(void)
              "{%s,\"local_io\":{\"do_failsafe\":[\"off\",\"off\",\"off\",\"off\",\"off\","
              "\"off\",\"off\",\"off\",\"off\"]}}", base);
     ASSERT_REJECTED(parse(doc), "local_io.do_failsafe: 9 entradas; hay 8 salidas");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"counter_save_s\":0}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL(0, cfg.local_io.counter_save_s);
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"counter_save_s\":59}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.counter_save_s: valor 59: 0 (no guardar) o al menos 60 s");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"counter_save_s\":86401}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.counter_save_s: valor 86401 fuera de rango");
 }
 
 static void test_section_errors(void)

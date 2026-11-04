@@ -1,6 +1,7 @@
 #include "gw_shell.h"
 
 #include <ctype.h>
+#include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -226,6 +227,11 @@ static int cmd_status(int argc, char **argv)
         out("local    DI 0x%02x, DO 0x%02x (bit n = channel n+1, 1 = active)%s\n", io.di, io.dout,
             io.failsafe ? ", failsafe: safe state applied (no Sparkplug session)" : "");
     }
+    out("counters");   /* IO-4: activations of each DI */
+    for (int i = 0; i < 8; i++) {
+        out(" %d:%" PRIu64, i + 1, io.count[i]);
+    }
+    out("\n");
     /* Core of each task that matters for timing ("-" = no affinity; tasks not running, such as
      * the Ethernet RX task of the other MAC, are omitted). */
     static const char *const tasks[] = {"rs485_bus", "sparkplug", "tcpip", "mqtt_task",
@@ -475,6 +481,12 @@ static int cmd_config(int argc, char **argv)
             "MQTT\n", modes, (unsigned long)c->local_io.failsafe_s);
     } else {
         out(", DO safe state %s (o off, 1 on, h hold) at restart; no MQTT failsafe\n", modes);
+    }
+    if (c->local_io.counter_save_s != 0) {
+        out("           DI pulse counters saved every %lu s\n",
+            (unsigned long)c->local_io.counter_save_s);
+    } else {
+        out("           DI pulse counters not saved (lost at every restart)\n");
     }
     out("devices    %u device(s), %u tag(s)\n", c->device_count, c->tag_count);
     for (uint16_t d = 0; d < c->device_count; d++) {

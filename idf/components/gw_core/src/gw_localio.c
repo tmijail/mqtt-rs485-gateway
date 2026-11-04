@@ -54,3 +54,24 @@ gw_lio_fs_event_t gw_lio_failsafe(gw_lio_t *l, bool session_up, uint32_t now_ms,
     *value = l->safe_on;
     return GW_LIO_FS_TRIP;
 }
+
+void gw_lio_save_init(gw_lio_save_t *s, const gw_config_t *cfg, const uint64_t *restored,
+                      uint32_t now_ms)
+{
+    s->period_ms = cfg->local_io.counter_save_s * 1000u;
+    gw_lio_saved(s, restored, now_ms);
+}
+
+bool gw_lio_save_due(const gw_lio_save_t *s, const uint64_t *count, uint32_t now_ms, bool force)
+{
+    if (memcmp(s->saved, count, sizeof(s->saved)) == 0) {
+        return false;
+    }
+    return s->period_ms != 0 && (force || now_ms - s->last_ms >= s->period_ms);
+}
+
+void gw_lio_saved(gw_lio_save_t *s, const uint64_t *count, uint32_t now_ms)
+{
+    memcpy(s->saved, count, sizeof(s->saved));
+    s->last_ms = now_ms;
+}

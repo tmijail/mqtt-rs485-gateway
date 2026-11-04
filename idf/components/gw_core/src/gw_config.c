@@ -679,21 +679,30 @@ static bool parse_rs485(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 
 static bool parse_local_io(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"di_debounce_ms", "failsafe_s", "do_failsafe"};
+    static const char *const keys[] = {"di_debounce_ms", "failsafe_s", "do_failsafe",
+                                       "counter_save_s"};
     static const char *const safe_names[] = {"off", "on", "hold"};   /* gw_do_safe_t order */
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "local_io");
     static const cJSON empty = {.type = cJSON_Object};
-    long db, fs;
+    long db, fs, save;
     if (o == NULL) {
         o = &empty;
     }
     if (!check_keys(o, "local_io", keys, sizeof(keys) / sizeof(keys[0]), err) ||
         !get_int(o, "di_debounce_ms", "local_io", false, 20, 0, 1000, &db, err) ||
-        !get_int(o, "failsafe_s", "local_io", false, 0, 0, GW_FAILSAFE_MAX_S, &fs, err)) {
+        !get_int(o, "failsafe_s", "local_io", false, 0, 0, GW_FAILSAFE_MAX_S, &fs, err) ||
+        !get_int(o, "counter_save_s", "local_io", false, 600, 0, GW_COUNTER_SAVE_MAX_S, &save,
+                 err)) {
         return false;
+    }
+    if (save != 0 && save < GW_COUNTER_SAVE_MIN_S) {
+        return fail(err, "local_io.counter_save_s",
+                    "valor %ld: 0 (no guardar) o al menos %d s (desgaste de la flash)", save,
+                    GW_COUNTER_SAVE_MIN_S);
     }
     cfg->local_io.di_debounce_ms = (uint16_t)db;
     cfg->local_io.failsafe_s = (uint32_t)fs;
+    cfg->local_io.counter_save_s = (uint32_t)save;
     /* IO-3: one safe state per DO, in order (DO/1 first); missing entries are "off" */
     const cJSON *list = cJSON_GetObjectItemCaseSensitive(o, "do_failsafe");
     if (list == NULL) {

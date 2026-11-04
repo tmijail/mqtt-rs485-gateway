@@ -13,6 +13,9 @@ static const char *const k_di_names[GW_NODE_IO_COUNT] = {"DI/1", "DI/2", "DI/3",
                                                          "DI/5", "DI/6", "DI/7", "DI/8"};
 static const char *const k_do_names[GW_NODE_IO_COUNT] = {"DO/1", "DO/2", "DO/3", "DO/4",
                                                          "DO/5", "DO/6", "DO/7", "DO/8"};
+static const char *const k_count_names[GW_NODE_IO_COUNT] = {
+    "Counter/1", "Counter/2", "Counter/3", "Counter/4",
+    "Counter/5", "Counter/6", "Counter/7", "Counter/8"};
 #define NAME_BDSEQ    "bdSeq"
 #define NAME_REBIRTH  "Node Control/Rebirth"
 #define NAME_REBOOT   "Node Control/Reboot"
@@ -170,6 +173,12 @@ static void publish_nbirth(gw_node_t *n)
         m->v.num = (io.dout >> k) & 1u;
         m->is_null = io.do_unknown;   /* the latch may hold anything: never claim "off" */
     }
+    for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
+        metric(n, i++, k_count_names[k], GW_ALIAS_COUNT_BASE + k, SPB_DT_UINT64,
+               io.di_ts_ms ? io.di_ts_ms : now)
+            ->v.u64 = io.count[k];
+    }
+    memcpy(n->count_reported, io.count, sizeof(n->count_reported));
     n->di_reported = io.di;
     n->do_reported = io.dout;
     n->do_unknown_reported = io.do_unknown;
@@ -275,6 +284,13 @@ static void publish_io(gw_node_t *n, uint8_t force_do)
             m->is_null = io.do_unknown;
         }
     }
+    for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {   /* IO-4: with the DI change that made it */
+        if (io.count[k] != n->count_reported[k]) {
+            metric(n, count++, NULL, GW_ALIAS_COUNT_BASE + k, SPB_DT_UINT64, io.di_ts_ms)->v.u64 =
+                io.count[k];
+        }
+    }
+    memcpy(n->count_reported, io.count, sizeof(n->count_reported));
     n->di_reported = io.di;
     n->do_reported = io.dout;
     n->do_unknown_reported = io.do_unknown;

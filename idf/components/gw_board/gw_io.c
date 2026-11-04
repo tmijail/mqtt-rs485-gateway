@@ -1,5 +1,6 @@
 #include "gw_io.h"
 
+#include <inttypes.h>
 #include <string.h>
 
 #include "driver/gpio.h"
@@ -12,6 +13,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "gw_bsp.h"
 #include "gw_debounce.h"
@@ -19,6 +21,7 @@
 #include "gw_localio.h"
 #include "gw_port.h"
 #include "gw_status.h"
+#include "gw_storage.h"
 #include "gw_tagdb.h"
 
 static const char *TAG = "io";
@@ -58,6 +61,12 @@ static StaticQueue_t s_req_buf, s_rep_buf;
 static uint8_t s_req_storage[2 * sizeof(do_req_t)];
 static uint8_t s_rep_storage[sizeof(do_rep_t)];
 static uint32_t s_req_id;   /* the requester's (single caller: the Sparkplug task) */
+
+/* ---- IO-4 pulse counters in NVS ---- */
+#define NVS_COUNTERS "di_count"
+static gw_lio_save_t s_save;
+static SemaphoreHandle_t s_save_lock;   /* the local_io task and the restart */
+static StaticSemaphore_t s_save_lock_buf;
 
 #if CONFIG_GW_IO_SIMULATED
 
@@ -235,7 +244,7 @@ static void sample_cb(void *arg)
         esp_task_wdt_reset_user(s_wdt);
     }
     if (gw_debounce_sample(&s_db, read_di()) != 0) {
-        gw_tagdb_set_di(s_db.stable, gw_port_time_ms());
+        gw_tagdb_update_di(s_db.stable, gw_port_time_ms());   /* counts the activations */
         s_on_change();
         xTaskNotifyGive(s_task);
     }
@@ -338,6 +347,33 @@ static void failsafe(uint32_t now)
     }
 }
 
+/* IO-4: save the counters if they changed and it is time (or @p force: orderly restart). */
+static void save_counters(bool force)
+{
+    if (xSemaphoreTake(s_save_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        return;
+    }
+    gw_local_io_t io;
+    gw_tagdb_get_io(&io);
+    uint32_t now = now_ms();
+    if (gw_lio_save_due(&s_save, io.count, now, force)) {
+        esp_err_t err = gw_storage_set_blob(NVS_COUNTERS, io.count, sizeof(io.count));
+        if (err == ESP_OK) {
+            gw_lio_saved(&s_save, io.count, now);
+            ESP_LOGI(TAG, "pulse counters saved%s", force ? " before the restart" : "");
+        } else if (err != ESP_ERR_INVALID_STATE || !force) {
+            ESP_LOGW(TAG, "pulse counters not saved: %s", esp_err_to_name(err));
+            gw_lio_saved(&s_save, s_save.saved, now);   /* retry after one period */
+        }
+    }
+    xSemaphoreGive(s_save_lock);
+}
+
+static void on_shutdown(void)
+{
+    save_counters(true);   /* esp_restart(): NCMD Reboot, new configuration, shell, web */
+}
+
 static void lio_task(void *arg)
 {
     (void)arg;
@@ -355,6 +391,7 @@ static void lio_task(void *arg)
             xQueueOverwrite(s_rep_q, &rep);
         }
         failsafe(now);
+        save_counters(false);
     }
 }
 
@@ -375,6 +412,22 @@ esp_err_t gw_io_start(const gw_config_t *cfg, void (*on_change)(void))
                       "hold 0x%02x", (unsigned long)cfg->local_io.failsafe_s, s_lio.safe_on,
                  s_lio.safe_off, gw_lio_hold_mask(cfg));
     }
+
+    /* IO-4: counters from the last save (lost since then after a power cut or a panic) */
+    uint64_t count[GW_LOCAL_IO_CHANNELS] = {0};
+    bool restored = gw_storage_get_blob(NVS_COUNTERS, count, sizeof(count));
+    gw_tagdb_set_counters(count);
+    s_save_lock = xSemaphoreCreateMutexStatic(&s_save_lock_buf);
+    gw_lio_save_init(&s_save, cfg, count, now_ms());
+    if (cfg->local_io.counter_save_s != 0) {
+        esp_register_shutdown_handler(on_shutdown);
+    }
+    ESP_LOGI(TAG, "pulse counters %s (%" PRIu64 " %" PRIu64 " %" PRIu64 " %" PRIu64 " %" PRIu64
+                  " %" PRIu64 " %" PRIu64 " %" PRIu64 "), %s %lu s",
+             restored ? "restored" : "start at 0", count[0], count[1], count[2], count[3],
+             count[4], count[5], count[6], count[7],
+             cfg->local_io.counter_save_s != 0 ? "saved every" : "never saved: counter_save_s",
+             (unsigned long)cfg->local_io.counter_save_s);
 
     ESP_RETURN_ON_ERROR(hw_init_inputs(), TAG, "DI gpio");
     uint32_t threshold = (uint32_t)cfg->local_io.di_debounce_ms * 1000u / CONFIG_GW_DI_SAMPLE_US;
