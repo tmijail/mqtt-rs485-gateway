@@ -733,6 +733,23 @@ def check_offline_backoff(slave, t0):
                  f"{worst:.2f} s")
 
 
+def check_scan_classes(slave):
+    """MB-12: Meter1's slow-scan blocks (Energy at holding 30, Serial at 50; slow_poll_ms 3000)
+    are read every third cycle, its fast ones (cycle start: coil 0) every second."""
+    since = time.monotonic() - 12
+    reads = [(t, r[1:]) for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 1 and t >= since]
+    fast = [t for t, k in reads if k == (1, 0, 1)]
+    slow = [t for t, k in reads if k == (3, 30, 4)]
+    serial = [t for t, k in reads if k == (3, 50, 8)]
+    gaps = [round(b - a, 2) for a, b in zip(slow, slow[1:])]
+    fgaps = [b - a for a, b in zip(fast, fast[1:])]
+    ok = len(slow) >= 3 and len(serial) == len(slow) and all(2.8 <= g <= 3.6 for g in gaps) \
+        and len(fast) >= 10 and max(fgaps) <= 1.6
+    return check("MB-12 slow-scan tags read every slow_poll_ms (3 s), fast ones every poll_ms (1 s)",
+                 ok, f"last 12 s: {len(fast)} fast cycles (longest gap {max(fgaps, default=0):.2f} s), "
+                 f"{len(slow)} slow reads {gaps} s apart, Serial read {len(serial)} times")
+
+
 def int64_of(m):
     """Int64 metric value: long_value carries the two's complement as an unsigned 64-bit int."""
     return m.long_value - 2 ** 64 if m.long_value >= 2 ** 63 else m.long_value
@@ -906,11 +923,13 @@ def run(args, log, slave, broker, conf, work):
     check("MB-11 60 contiguous registers read with one FC03 request per cycle",
           reqs and all(r[1:] == (3, 100, 60) for r in reqs),
           f"{len(reqs)} requests to unit 2 so far, first {reqs[0] if reqs else None}")
-    # Issue #38: Meter1 sets max_gap 10, Bulk keeps the build default (0): holding 10, 20-21,
-    # 30-37 (gaps 9 and 8) are one FC03, 50-57 and 60 another (gap 12 > 10 between them);
-    # input 0-1 alone and 40-46 contiguous. No DCMD has run yet: only cycle reads so far.
+    # Issue #38: Meter1 sets max_gap 10, Bulk keeps the build default (0). Fast scan: holding
+    # 10 and 20-21 (gap 9) are one FC03, Counter 34-37 another (gap 12 from 21), Alarm 60 a third;
+    # slow scan (MB-12, never merged with fast tags): Energy 30-33 and Serial 50-57 (gap 16).
+    # Input 0-1 alone and 40-46 contiguous. No DCMD has run yet: only cycle reads so far.
     meter = {r[1:] for r in slave.reads if r[0] == 1}
-    want = {(1, 0, 1), (3, 10, 28), (3, 50, 11), (4, 0, 2), (4, 40, 7)}
+    want = {(1, 0, 1), (3, 10, 12), (3, 34, 4), (3, 60, 1), (3, 30, 4), (3, 50, 8), (4, 0, 2),
+            (4, 40, 7)}
     check("MB-11 / issue #38 per-device max_gap: Meter1 (max_gap 10) bridges holes up to 10 "
           "registers, Bulk keeps the build default", meter == want,
           f"Meter1 requests {sorted(meter)} (expected {sorted(want)})")
@@ -1059,6 +1078,7 @@ def run(args, log, slave, broker, conf, work):
           f"DBIRTH seq={db[2].seq if db else None}")
 
     check_offline_backoff(slave, t0)
+    check_scan_classes(slave)
 
     # 2. Slave off -> DDEATH; back on -> DBIRTH
     obs.drain()

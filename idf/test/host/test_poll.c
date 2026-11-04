@@ -511,6 +511,123 @@ static void test_mb6_writes(void)
     TEST_ASSERT_EQUAL_HEX16(0x0101, s.holding[20]);
 }
 
+/* ---- MB-12: fast and slow scan ---- */
+
+static const char k_scan[] =
+    "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+    " \"devices\": [{\"name\": \"M\", \"unit_id\": 1, \"poll_ms\": 1000, \"slow_poll_ms\": 5000,"
+    "  \"tags\": ["
+    "  {\"name\": \"Fast\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\"},"
+    "  {\"name\": \"Slow\", \"area\": \"holding\", \"address\": 1, \"type\": \"uint16\","
+    "   \"scan\": \"slow\"},"
+    "  {\"name\": \"Slow2\", \"area\": \"input\", \"address\": 0, \"type\": \"uint16\","
+    "   \"scan\": \"slow\"}]},"
+    " {\"name\": \"OnlySlow\", \"unit_id\": 2, \"poll_ms\": 1000, \"slow_poll_ms\": 4000,"
+    "  \"tags\": [{\"name\": \"S\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
+    "   \"scan\": \"slow\"}]}]}";
+
+static gw_config_t scan_cfg;
+
+static void setup_scan(void)
+{
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(k_scan, sizeof(k_scan) - 1, &scan_cfg, &err), err.msg);
+    cfg = &scan_cfg;
+    gw_tagdb_reset();
+    sim_reset(&s, 1);
+    s.holding[0] = 10;
+    s.holding[1] = 20;
+    s.input[0] = 30;
+    mb_transport_t t = sim_transport(&s);
+    mb_master_cfg_t mc = {.baud = 9600, .response_timeout_ms = 200, .retries = 2,
+                          .inter_frame_delay_ms = 5};
+    mb_master_init(&mb, &t, &mc);
+    gw_poller_opts_t o = {.merge_reads = true, .offline_probe_max_ms = 10000};
+    gw_poller_init(&p, cfg, &mb, &o, 0);
+}
+
+static void test_scan_classes(void)
+{
+    setup_scan();
+    /* fast and slow tags never share a block, even when contiguous */
+    TEST_ASSERT_EQUAL(3, p.plan.dev_block_count[0]);
+    TEST_ASSERT_EQUAL(1, p.plan.dev_fast_count[0]);
+    TEST_ASSERT_FALSE(p.plan.blocks[0].slow);
+    TEST_ASSERT_TRUE(p.plan.blocks[1].slow);
+    /* first cycle (offline, never seen): every block, so the DBIRTH has every tag */
+    TEST_ASSERT_EQUAL(GW_DEV_WENT_ONLINE, gw_poller_poll(&p, 0, 0));
+    TEST_ASSERT_EQUAL(3, s.requests);
+    TEST_ASSERT_TRUE(online());
+    TEST_ASSERT_EQUAL_DOUBLE(20, vals[1].value);
+    uint64_t slow_ts = vals[1].ts_ms;
+    /* 1..4 s: fast only */
+    s.holding[1] = 21;
+    for (uint32_t t = 1000; t <= 4000; t += 1000) {
+        unsigned before = s.requests;
+        gw_poller_poll(&p, 0, t);
+        TEST_ASSERT_EQUAL(before + 1, s.requests);
+    }
+    TEST_ASSERT_TRUE(online());
+    TEST_ASSERT_EQUAL_DOUBLE(20, vals[1].value);         /* not refreshed */
+    TEST_ASSERT_EQUAL_UINT64(slow_ts, vals[1].ts_ms);
+    /* 5 s: the slow ones are due */
+    unsigned before = s.requests;
+    gw_poller_poll(&p, 0, 5000);
+    TEST_ASSERT_EQUAL(before + 3, s.requests);
+    TEST_ASSERT_TRUE(online());
+    TEST_ASSERT_EQUAL_DOUBLE(21, vals[1].value);
+    /* a fast-only cycle that fails counts for offline detection (MB-9) */
+    s.offline = true;
+    gw_poller_poll(&p, 0, 6000);
+    gw_poller_poll(&p, 0, 7000);
+    TEST_ASSERT_EQUAL(GW_DEV_WENT_OFFLINE, gw_poller_poll(&p, 0, 8000));
+    /* back: the cycle that brings it online reads the slow blocks too, though not due yet */
+    s.offline = false;
+    s.input[0] = 31;
+    before = s.requests;
+    TEST_ASSERT_EQUAL(GW_DEV_WENT_ONLINE, gw_poller_poll(&p, 0, 10000));
+    TEST_ASSERT_EQUAL(before + 3, s.requests);
+    TEST_ASSERT_TRUE(online());
+    TEST_ASSERT_EQUAL_DOUBLE(31, vals[2].value);
+}
+
+/* A cycle that fails before the slow blocks leaves them due for the next cycle. */
+static void test_slow_blocks_stay_due_after_a_failure(void)
+{
+    setup_scan();
+    gw_poller_poll(&p, 0, 0);
+    for (uint32_t t = 1000; t <= 4000; t += 1000) {
+        gw_poller_poll(&p, 0, t);
+    }
+    s.mute_fc = MB_FC_READ_INPUT_REGISTERS;   /* the last slow block */
+    unsigned before = s.requests;
+    gw_poller_poll(&p, 0, 5000);
+    TEST_ASSERT_EQUAL(before + 2 + 3, s.requests);
+    s.mute_fc = 0;
+    before = s.requests;
+    gw_poller_poll(&p, 0, 6000);
+    TEST_ASSERT_EQUAL(before + 3, s.requests);  /* still due */
+    before = s.requests;
+    gw_poller_poll(&p, 0, 7000);
+    TEST_ASSERT_EQUAL(before + 1, s.requests);  /* due in 5 s again */
+}
+
+/* A device with only slow tags is polled every slow_poll_ms, also when its cycles fail. */
+static void test_only_slow_tags(void)
+{
+    setup_scan();
+    sim_reset(&s, 2);
+    TEST_ASSERT_EQUAL(GW_DEV_WENT_ONLINE, gw_poller_poll(&p, 1, 0));
+    TEST_ASSERT_EQUAL_UINT32(4000, p.next_due_ms[1]);   /* not poll_ms (1 s) */
+    TEST_ASSERT_EQUAL(GW_DEV_NO_CHANGE, gw_poller_poll(&p, 1, 4000));
+    TEST_ASSERT_EQUAL_UINT32(8000, p.next_due_ms[1]);
+    s.offline = true;                                   /* failed while online: no busy loop */
+    unsigned before = s.requests;
+    TEST_ASSERT_EQUAL(GW_DEV_NO_CHANGE, gw_poller_poll(&p, 1, 8000));
+    TEST_ASSERT_EQUAL(before + 3, s.requests);
+    TEST_ASSERT_EQUAL_UINT32(12000, p.next_due_ms[1]);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -530,5 +647,8 @@ int main(void)
     RUN_TEST(test_dead_devices_do_not_delay_the_healthy_one);
     RUN_TEST(test_mb6_decode);
     RUN_TEST(test_mb6_writes);
+    RUN_TEST(test_scan_classes);
+    RUN_TEST(test_slow_blocks_stay_due_after_a_failure);
+    RUN_TEST(test_only_slow_tags);
     return UNITY_END();
 }

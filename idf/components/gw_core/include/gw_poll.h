@@ -46,6 +46,7 @@ typedef struct {
     gw_dev_stats_t stats[GW_MAX_DEVICES];   /* published to gw_tagdb after each cycle / write */
     uint32_t next_due_ms[GW_MAX_DEVICES];
     uint32_t probe_ms[GW_MAX_DEVICES];      /* current probe interval of an offline device, 0 = online */
+    uint32_t slow_due_ms[GW_MAX_DEVICES];   /* MB-12: when the slow-scan blocks are due again */
     gw_tag_value_t work[GW_MAX_TAGS_PER_DEVICE];
 } gw_poller_t;
 
@@ -69,6 +70,13 @@ int gw_poller_next(const gw_poller_t *p, uint32_t now_ms, uint32_t *wait_ms);
  * first cycle on, with the backoff starting at its first failure. If the probe is answered
  * the cycle continues normally, so the device comes (back) online (DBIRTH) at most one
  * capped interval plus one cycle after it starts answering.
+ *
+ * Scan classes (MB-12): a cycle reads the fast-scan blocks, plus the slow-scan ones when they are
+ * due (every slow_poll_ms) or the device is offline. A fast-only cycle counts for offline
+ * detection like any other (it fails if a request stays unanswered), but only a cycle that
+ * read every block brings a device (back) online, so its DBIRTH carries every tag. Slow blocks
+ * not reached in a failed cycle stay due. A device with only slow tags is polled every
+ * slow_poll_ms.
  */
 gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms);
 

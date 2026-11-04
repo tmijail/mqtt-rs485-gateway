@@ -120,6 +120,7 @@ typedef struct {
     uint16_t address;
     int8_t bit;                 /* MB-6: bit 0..15 of a holding/input register (bool), or GW_NO_BIT */
     uint8_t length;             /* MB-6: registers of a string tag (1..GW_STR_MAX_REGS), else 0 */
+    bool slow;                  /* MB-12: read every slow_poll_ms of its device ("scan": "slow") */
     bool writable;
     double scale;
     double offset;
@@ -130,7 +131,8 @@ typedef struct {
 typedef struct {
     char name[GW_NAME_SIZE];    /* also the Sparkplug device_id */
     uint8_t unit_id;
-    uint32_t poll_ms;
+    uint32_t poll_ms;           /* fast scan period (MB-10) */
+    uint32_t slow_poll_ms;      /* MB-12: period of the tags with "scan": "slow" */
     uint16_t offline_after;
     /* MB-11 block reads of this device; GW_CFG_BUILD_DEFAULT = the build's setting (Kconfig) */
     int8_t block_reads;         /* 0 = one request per tag, 1 = merge, or build default */

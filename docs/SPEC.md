@@ -328,6 +328,24 @@ El router por defecto IPv6 se aprende de los RA; no hay *gateway* IPv6 estático
 
 Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `CONFIG_GW_MB_BLOCK_MAX_GAP`), como en el MVP.
 
+**Encuesta rápida y lenta (MB-12).**
+
+```json
+{ "name": "Meter1", "unit_id": 1, "poll_ms": 1000, "slow_poll_ms": 30000, "tags": [
+    { "name": "Voltage", "area": "input",   "address": 0,  "type": "float32" },
+    { "name": "Serial",  "area": "holding", "address": 50, "type": "string", "length": 8, "scan": "slow" } ] }
+```
+
+| Clave | Dónde | Tipo | Defecto | Regla |
+|---|---|---|---|---|
+| `scan` | tag | `fast` \| `slow` | `fast` | `fast` se lee cada `poll_ms`; `slow`, cada `slow_poll_ms` |
+| `slow_poll_ms` | dispositivo | entero | 10 × `poll_ms` (tope 3 600 000) | 50–3 600 000 y nunca menor que `poll_ms` |
+
+- Los tags rápidos y los lentos nunca comparten un bloque de lectura.
+- **Fuera de línea (MB-9):** un ciclo que solo lee los tags rápidos cuenta como cualquier otro: falla si una petición queda sin respuesta. Pero un dispositivo pasa (o vuelve) a en línea solo con un ciclo que leyó **todos** sus bloques, así que su DBIRTH lleva todos los tags. Mientras está fuera de línea, cada ciclo incluye los lentos.
+- Si un ciclo falla antes de leer los lentos, quedan pendientes para el ciclo siguiente.
+- Un dispositivo con solo tags lentos se encuesta cada `slow_poll_ms`.
+
 **`syslog` (REL-4): copia del log a un servidor syslog.**
 
 ```json

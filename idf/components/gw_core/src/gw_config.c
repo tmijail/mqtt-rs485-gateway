@@ -646,8 +646,9 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
 {
     static const char *const keys[] = {"name",   "area",     "address",  "type",  "word_order",
                                        "scale",  "offset",   "deadband", "writable", "units",
-                                       "bit",    "length"};
-    int area, type, word;
+                                       "bit",    "length",   "scan"};
+    static const char *const scans[] = {"fast", "slow"};
+    int area, type, word, scan;
     long addr, bit, length;
     char p[96];
     if (!check_keys(o, path, keys, sizeof(keys) / sizeof(keys[0]), err) ||
@@ -662,9 +663,11 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
         !get_bool(o, "writable", path, false, &t->writable, err) ||
         !get_string(o, "units", path, false, "", t->units, sizeof(t->units), err) ||
         !get_int(o, "bit", path, false, GW_NO_BIT, 0, 15, &bit, err) ||
-        !get_int(o, "length", path, false, 0, 1, GW_STR_MAX_REGS, &length, err)) {
+        !get_int(o, "length", path, false, 0, 1, GW_STR_MAX_REGS, &length, err) ||
+        !get_enum(o, "scan", path, false, 0, scans, 2, &scan, err)) {
         return false;
     }
+    t->slow = scan == 1;
     t->area = (gw_area_t)area;
     t->type = (gw_type_t)type;
     t->word_order = k_word_values[word];
@@ -734,15 +737,17 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
 static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_device_cfg_t *d,
                          gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"name",        "unit_id", "poll_ms", "offline_after",
-                                       "block_reads", "max_gap", "tags"};
-    long unit, poll, off, gap;
+    static const char *const keys[] = {"name",        "unit_id", "poll_ms", "slow_poll_ms",
+                                       "offline_after", "block_reads", "max_gap", "tags"};
+    long unit, poll, off, gap, slow;
     bool merge;
     char p[96];
     if (!check_keys(o, path, keys, sizeof(keys) / sizeof(keys[0]), err) ||
         !get_string(o, "name", path, true, "", d->name, sizeof(d->name), err) ||
         !get_int(o, "unit_id", path, true, 0, 1, 247, &unit, err) ||
         !get_int(o, "poll_ms", path, false, 1000, 50, 3600000, &poll, err) ||
+        !get_int(o, "slow_poll_ms", path, false, poll * 10 < 3600000 ? poll * 10 : 3600000, 50,
+                 3600000, &slow, err) ||
         !get_int(o, "offline_after", path, false, 3, 1, 1000, &off, err) ||
         !get_bool(o, "block_reads", path, true, &merge, err) ||
         !get_int(o, "max_gap", path, false, GW_CFG_BUILD_DEFAULT, 0, GW_MAX_GAP_LIMIT, &gap, err)) {
@@ -760,8 +765,13 @@ static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_
     if (!check_topic_id(d->name, p, false, err)) {
         return false;
     }
+    if (slow < poll) {
+        join(p, sizeof(p), path, "slow_poll_ms");
+        return fail(err, p, "no puede ser menor que poll_ms (%ld)", poll);
+    }
     d->unit_id = (uint8_t)unit;
     d->poll_ms = (uint32_t)poll;
+    d->slow_poll_ms = (uint32_t)slow;
     d->offline_after = (uint16_t)off;
 
     const cJSON *tags = cJSON_GetObjectItemCaseSensitive(o, "tags");

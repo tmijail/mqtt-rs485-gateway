@@ -79,6 +79,7 @@ void gw_poller_init(gw_poller_t *p, const gw_config_t *cfg, mb_master_t *mb,
     gw_plan_build(&p->plan, cfg, opts->merge_reads, opts->max_gap);
     for (uint16_t d = 0; d < cfg->device_count; d++) {
         p->next_due_ms[d] = now_ms;
+        p->slow_due_ms[d] = now_ms;
     }
 }
 
@@ -120,7 +121,11 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
      * cycle brings it (back) online, so a DBIRTH never carries a value that was not read. */
     bool failed = false;
     bool probe = is_offline(p, dev);   /* first request: a single attempt (see gw_poll.h) */
-    for (uint16_t b = 0; b < p->plan.dev_block_count[dev] && !failed; b++) {
+    /* MB-12: the slow blocks (after the fast ones) when due, and always while offline */
+    uint16_t fast = p->plan.dev_fast_count[dev];
+    bool full = !p->state[dev].online || fast == 0 || (int32_t)(now_ms - p->slow_due_ms[dev]) >= 0;
+    uint16_t nblocks = full ? p->plan.dev_block_count[dev] : fast;
+    for (uint16_t b = 0; b < nblocks && !failed; b++) {
         const gw_block_t *blk = &p->plan.blocks[p->plan.dev_first_block[dev] + b];
         mb_request_t rq = {
             .unit = d->unit_id, .fc = read_fc(blk->area), .addr = blk->start, .qty = blk->qty};
@@ -148,6 +153,14 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
         }
     }
 
+    /* Slow blocks done: due again in slow_poll_ms. After a failure they stay due for the next
+     * (fast) cycle, unless there are no fast ones: the device then waits its slow period. */
+    if (full && (!failed || fast == 0) && fast < p->plan.dev_block_count[dev]) {
+        p->slow_due_ms[dev] += d->slow_poll_ms;
+        if ((int32_t)(p->slow_due_ms[dev] - now_ms) <= 0) {
+            p->slow_due_ms[dev] = now_ms + d->slow_poll_ms;   /* overrun: re-anchor */
+        }
+    }
     gw_dev_event_t ev = gw_devstate_cycle(&p->state[dev], !failed, d->offline_after);
     p->stats[dev].cycles++;
     p->stats[dev].failed_cycles += failed ? 1u : 0u;
@@ -180,6 +193,10 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
         return ev;
     }
     p->probe_ms[dev] = 0;
+    if (fast == 0) {
+        p->next_due_ms[dev] = p->slow_due_ms[dev];  /* only slow tags: nothing to read before */
+        return ev;
+    }
     p->next_due_ms[dev] += d->poll_ms;
     if ((int32_t)(p->next_due_ms[dev] - now_ms) <= 0) {
         p->next_due_ms[dev] = now_ms + d->poll_ms;  /* overrun: skip, never burst to catch up */

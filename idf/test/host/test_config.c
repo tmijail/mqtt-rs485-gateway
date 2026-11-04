@@ -425,6 +425,36 @@ static void test_device_block_reads(void)
                     "devices[0].block_reads: se esperaba true o false");
 }
 
+/* MB-12: scan classes. */
+static void test_scan_classes(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+              "\"devices\":[{\"name\":\"A\",\"unit_id\":1,\"poll_ms\":500,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\",\"scan\":\"slow\"},"
+              "{\"name\":\"u\",\"area\":\"holding\",\"address\":1,\"type\":\"uint16\"}]},"
+              "{\"name\":\"B\",\"unit_id\":2,\"poll_ms\":1000000,\"slow_poll_ms\":3600000,"
+              "\"tags\":[{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\","
+              "\"scan\":\"fast\"}]},"
+              "{\"name\":\"C\",\"unit_id\":3,\"poll_ms\":1000000,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+        err.msg);
+    TEST_ASSERT_TRUE(cfg.tags[0].slow);
+    TEST_ASSERT_FALSE(cfg.tags[1].slow);
+    TEST_ASSERT_FALSE(cfg.tags[2].slow);
+    TEST_ASSERT_EQUAL_UINT32(5000, cfg.devices[0].slow_poll_ms);     /* default 10 x poll_ms */
+    TEST_ASSERT_EQUAL_UINT32(3600000, cfg.devices[1].slow_poll_ms);
+    TEST_ASSERT_EQUAL_UINT32(3600000, cfg.devices[2].slow_poll_ms);  /* default capped */
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"poll_ms\":1000,\"slow_poll_ms\":999,\"tags\":[{\"name\":\"t\","
+                          "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+                    "devices[0].slow_poll_ms: no puede ser menor que poll_ms (1000)");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
+                              "\"scan\":\"medium\"}"),
+                    "devices[0].tags[0].scan: valor no válido (se esperaba fast|slow)");
+}
+
 static void test_section_errors(void)
 {
     ASSERT_REJECTED(parse("{\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}}"), "mqtt:");
@@ -623,6 +653,7 @@ int main(void)
     RUN_TEST(test_schema_rules);
     RUN_TEST(test_mb6_tags);
     RUN_TEST(test_device_block_reads);
+    RUN_TEST(test_scan_classes);
     RUN_TEST(test_section_errors);
     RUN_TEST(test_limits);
     RUN_TEST(test_syntax_errors_give_line_and_column);
