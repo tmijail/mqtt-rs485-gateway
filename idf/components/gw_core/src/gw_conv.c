@@ -22,6 +22,9 @@ gw_val_kind_t gw_conv_kind(const gw_tag_cfg_t *tag)
     if (tag->type == GW_TYPE_STRING) {
         return GW_VK_STRING;
     }
+    if (tag->type == GW_TYPE_BYTES) {
+        return GW_VK_BYTES;
+    }
     if (!gw_conv_is_scaled(tag)) {
         if (tag->type == GW_TYPE_INT64) {
             return GW_VK_INT64;
@@ -40,6 +43,9 @@ uint32_t gw_conv_datatype(const gw_tag_cfg_t *tag)
     }
     if (tag->type == GW_TYPE_STRING) {
         return SPB_DT_STRING;
+    }
+    if (tag->type == GW_TYPE_BYTES) {
+        return SPB_DT_BYTES;
     }
     if (gw_conv_is_scaled(tag)) {
         /* Float keeps the MVP mapping; 64-bit sources need a Double to keep their precision */
@@ -141,6 +147,26 @@ static gw_conv_status_t encode_string(const gw_tag_cfg_t *tag, const char *s, ui
     return GW_CONV_OK;
 }
 
+/* SPB-19 raw bytes: the bytes of each register as they arrive, high byte first (low byte first
+ * with BADC/DCBA); no other processing. */
+static void decode_bytes(const gw_tag_cfg_t *tag, const uint16_t *regs, char *out)
+{
+    for (unsigned i = 0; i < tag->length; i++) {
+        uint16_t r = byte_swapped(tag) ? swap16(regs[i]) : regs[i];
+        out[2u * i] = (char)(r >> 8);
+        out[2u * i + 1u] = (char)(r & 0xFFu);
+    }
+    out[2u * tag->length] = '\0';
+}
+
+static void encode_bytes(const gw_tag_cfg_t *tag, const char *b, uint16_t *regs)
+{
+    for (unsigned i = 0; i < tag->length; i++) {
+        uint16_t r = (uint16_t)(((uint8_t)b[2u * i] << 8) | (uint8_t)b[2u * i + 1u]);
+        regs[i] = byte_swapped(tag) ? swap16(r) : r;
+    }
+}
+
 /* ---------- decode ---------- */
 
 void gw_conv_decode(const gw_tag_cfg_t *tag, const uint16_t *regs, gw_tag_value_t *out)
@@ -149,6 +175,9 @@ void gw_conv_decode(const gw_tag_cfg_t *tag, const uint16_t *regs, gw_tag_value_
     switch (tag->type) {
     case GW_TYPE_STRING:
         decode_string(tag, regs, out->str);
+        return;
+    case GW_TYPE_BYTES:
+        decode_bytes(tag, regs, out->str);
         return;
     case GW_TYPE_INT16:
         raw = (int16_t)join(tag, regs, 1);
@@ -215,6 +244,9 @@ gw_conv_status_t gw_conv_encode(const gw_tag_cfg_t *tag, const gw_tag_value_t *i
     switch (gw_conv_kind(tag)) {
     case GW_VK_STRING:
         return encode_string(tag, in->str, regs);
+    case GW_VK_BYTES:
+        encode_bytes(tag, in->str, regs);
+        return GW_CONV_OK;
     case GW_VK_INT64:
         split(tag, (uint64_t)in->i64, regs, 4);
         return GW_CONV_OK;
@@ -296,6 +328,7 @@ bool gw_conv_from_double(const gw_tag_cfg_t *tag, double value, gw_tag_value_t *
     memset(out, 0, sizeof(*out));
     switch (gw_conv_kind(tag)) {
     case GW_VK_STRING:
+    case GW_VK_BYTES:
         return false;
     case GW_VK_INT64:
         if (!isfinite(value) || value != floor(value) || value < -TWO63 || value >= TWO63) {
@@ -335,6 +368,7 @@ double gw_conv_as_double(const gw_tag_cfg_t *tag, const gw_tag_value_t *v)
     case GW_VK_UINT64:
         return (double)v->u64;
     case GW_VK_STRING:
+    case GW_VK_BYTES:
         return 0.0;
     default:
         return v->value;
@@ -353,6 +387,16 @@ void gw_conv_format(const gw_tag_cfg_t *tag, const gw_tag_value_t *v, char *buf,
     case GW_VK_STRING:
         snprintf(buf, cap, "'%s'", v->str);
         break;
+    case GW_VK_BYTES: {   /* hex, two digits per byte */
+        size_t n = 0;
+        for (unsigned i = 0; i < 2u * tag->length && n + 3 <= cap; i++) {
+            n += (size_t)snprintf(buf + n, cap - n, "%02x", (uint8_t)v->str[i]);
+        }
+        if (cap > 0) {
+            buf[n < cap ? n : cap - 1] = '\0';
+        }
+        break;
+    }
     default:
         snprintf(buf, cap, "%.10g", v->value);
         break;

@@ -5,6 +5,10 @@
 #   . $IDF_PATH/export.sh
 #   E2E_PYTHON=/path/to/venv/bin/python tools/e2e/run_e2e.sh
 #
+# E2E_PSRAM=1 (issue #63): the variant with the board's octal PSRAM (sdkconfig.qemu-psram, build
+# dir build-qemu-psram, QEMU's ssi_psram in octal mode), so the configuration, the Sparkplug
+# engine and its full payload buffer live in PSRAM as on the board.
+#
 # E2E_PYTHON needs: paho-mqtt>=2, pymodbus==3.8.6, protobuf, grpcio-tools (tools/e2e/requirements.txt).
 # Host tools: mosquitto, qemu-system-xtensa (idf_tools.py install qemu-xtensa; needs libslirp0).
 set -euo pipefail
@@ -15,20 +19,32 @@ PY="${E2E_PYTHON:-python3}"
 mkdir -p "$WORK"
 cd "$IDF_DIR"
 
-# sdkconfig.defaults/sdkconfig.qemu only apply to a fresh sdkconfig
-if [ sdkconfig.defaults -nt build-qemu/sdkconfig ] || [ sdkconfig.qemu -nt build-qemu/sdkconfig ]; then
-    rm -f build-qemu/sdkconfig
+BUILD=build-qemu
+DEFAULTS="sdkconfig.defaults;sdkconfig.qemu"
+EXTRA=()
+if [ "${E2E_PSRAM:-0}" = 1 ]; then
+    BUILD=build-qemu-psram
+    DEFAULTS="$DEFAULTS;sdkconfig.qemu-psram"
+    EXTRA=(--psram)
 fi
-# FW-2: the QEMU build requires signed images (no eFuse involved); its throwaway test key lives
-# in the build directory, never in the repository
+
+# FW-2: the QEMU builds require signed images (no eFuse involved). Their throwaway test key
+# (CONFIG_SECURE_BOOT_SIGNING_KEY in sdkconfig.qemu, shared by the PSRAM variant) lives in a
+# build directory, never in the repository
+KEY=build-qemu/e2e_signing_key.pem
 mkdir -p build-qemu
-[ -f build-qemu/e2e_signing_key.pem ] ||
-    python -m espsecure generate-signing-key --version 2 --scheme rsa3072 build-qemu/e2e_signing_key.pem
-idf.py -B build-qemu -D SDKCONFIG=build-qemu/sdkconfig \
-    -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.qemu" \
+[ -f "$KEY" ] || python -m espsecure generate-signing-key --version 2 --scheme rsa3072 "$KEY"
+# sdkconfig.defaults/sdkconfig.qemu only apply to a fresh sdkconfig
+for f in ${DEFAULTS//;/ }; do
+    if [ "$f" -nt "$BUILD/sdkconfig" ]; then
+        rm -f "$BUILD/sdkconfig"
+    fi
+done
+idf.py -B "$BUILD" -D SDKCONFIG="$BUILD/sdkconfig" \
+    -D "SDKCONFIG_DEFAULTS=$DEFAULTS" \
     -D GW_FS_DIR="$IDF_DIR/tools/e2e/fs" reconfigure build   # reconfigure: picks up new Kconfig files
 
-(cd build-qemu && python -m esptool --chip esp32s3 merge-bin --output "$WORK/flash.bin" \
+(cd "$BUILD" && python -m esptool --chip esp32s3 merge-bin --output "$WORK/flash.bin" \
     --pad-to-size 16MB @flash_args)
 python - "$WORK/efuse.bin" <<'PYEOF'
 import os, sys
@@ -39,6 +55,6 @@ PYEOF
 
 "$PY" tools/e2e/e2e.py --qemu "$(command -v qemu-system-xtensa)" \
     --flash "$WORK/flash.bin" --efuse "$WORK/efuse.bin" --workdir "$WORK" \
-    --littlefs-python build-qemu/littlefs_py_venv/bin/python --sdkconfig build-qemu/sdkconfig \
-    --elf build-qemu/rs485_spb_gateway.elf --idf-python "$(command -v python)" \
-    --signing-key build-qemu/e2e_signing_key.pem "$@"
+    --littlefs-python "$BUILD/littlefs_py_venv/bin/python" --sdkconfig "$BUILD/sdkconfig" \
+    --elf "$BUILD/rs485_spb_gateway.elf" --idf-python "$(command -v python)" \
+    --signing-key "$KEY" ${EXTRA[@]+"${EXTRA[@]}"} "$@"

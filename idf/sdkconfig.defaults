@@ -65,6 +65,10 @@ CONFIG_LWIP_IPV6_AUTOCONFIG=y
 CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y
 CONFIG_MBEDTLS_HAVE_TIME_DATE=y
 CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC=y
+# Issue #80: TX/RX record buffers allocated while a record is in flight, not for the whole
+# session (an idle TLS session no longer holds its 16 KB input buffer). Without PSRAM, MQTT over
+# TLS plus two HTTPS sessions left no 32 KB block to validate a configuration (PUT: 503).
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
 
 # MQTT-8: MQTT 5.0 compiled in; mqtt.protocol chooses it per device (3.1.1 by default)

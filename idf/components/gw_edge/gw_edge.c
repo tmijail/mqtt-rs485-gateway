@@ -40,7 +40,7 @@
 
 static const char *TAG = "edge";
 
-#define STACK_BYTES      6144
+#define STACK_BYTES      6144   /* about 2.5 KB free at the births (log_stacks), templates included */
 #define MAX_IDLE_MS      1000
 #define NET_TIMEOUT_MS   5000   /* esp-mqtt socket timeout (one socket write) */
 #define REBOOT_DELAY_MS  100    /* let the log drain */
@@ -71,6 +71,7 @@ typedef struct {
 /* ---- written by other tasks ---- */
 static atomic_bool s_ip_up;
 static atomic_bool s_time_synced;
+static atomic_bool s_time_valid;    /* TIME-2: the clock came from the RTC at boot */
 static atomic_bool s_mqtt_connected;
 static atomic_bool s_io_dirty;
 static atomic_uint s_conn_gen;
@@ -135,6 +136,7 @@ static bool s_births_timed;     /* the current session's births carried synchron
 static int64_t s_fed_us;        /* last time this task fed the task watchdog */
 static uint32_t s_max_unfed_ms; /* longest stretch without feeding since the last reset */
 static unsigned s_handled_route;
+static uint32_t s_diag_wait_ms = UINT32_MAX;   /* until the next diagnostics NDATA */
 static struct ifreq s_ifr;      /* interface the client is bound to (NET-4, two interfaces only) */
 static char *s_ca_pem;          /* MQTT-4: CA file, boot allocation (PSRAM if any), never freed */
 static char *s_cert_pem;        /* MQTT-5: client certificate and key, the same way */
@@ -189,6 +191,17 @@ void gw_edge_notify_route(void)
 {
     atomic_fetch_add(&s_route_gen, 1);
     wake();
+}
+
+/* TIME-2: a time worth timestamping with, from SNTP or from the RTC at boot. */
+static bool time_ok(void)
+{
+    return atomic_load(&s_time_synced) || atomic_load(&s_time_valid);
+}
+
+bool gw_edge_time_synced(void)
+{
+    return atomic_load(&s_time_synced);
 }
 
 void gw_edge_notify_time_synced(void)
@@ -620,6 +633,20 @@ static size_t op_write_room(void *ctx)
     return gw_bus_write_room();
 }
 
+/* SPB-17 */
+static void op_diagnostics(void *ctx, gw_node_diag_t *out)
+{
+    (void)ctx;
+    out->uptime_s = (uint64_t)(esp_timer_get_time() / 1000000);
+    out->free_heap = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    out->min_free_heap = (uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    out->has_rssi = gw_net_has_wifi();
+    int8_t rssi;
+    out->rssi_valid = out->has_rssi && gw_net_wifi_rssi(&rssi);
+    out->rssi = out->rssi_valid ? rssi : 0;
+    out->time_synced = atomic_load(&s_time_synced);   /* TIME-3: SNTP only, not the RTC */
+}
+
 static void op_reboot(void *ctx)
 {
     (void)ctx;
@@ -853,7 +880,7 @@ static void start_births(void)
     s_retry_at_us = 0;
     atomic_store(&s_dev_dirty, 0);   /* the births carry the current state */
     atomic_store(&s_io_dirty, false);
-    s_births_timed = atomic_load(&s_time_synced);
+    s_births_timed = time_ok();
     feed_watchdog();
     s_max_unfed_ms = 0;
     int64_t t0 = esp_timer_get_time();
@@ -1060,7 +1087,7 @@ static bool tls_can_start(int64_t now)
         return false;
     }
 #if CONFIG_MBEDTLS_HAVE_TIME_DATE
-    if (s_cfg->mqtt.tls.enabled && !atomic_load(&s_time_synced)) {
+    if (s_cfg->mqtt.tls.enabled && !time_ok()) {
         if (!s_waiting_time_logged) {
             s_waiting_time_logged = true;
             ESP_LOGW(TAG, "TLS: waiting for SNTP before connecting (certificate dates are checked)");
@@ -1167,8 +1194,8 @@ static void reconcile(void)
     }
     if (dg != s_handled_disc) {
         s_handled_disc = dg;
-        /* esp-mqtt can report one dead connection twice (a failed write, then the poll read
-         * error): with a retry already scheduled the second one is the same attempt */
+        /* esp-mqtt may report one dead connection twice (the failed write of a DBIRTH, then the
+         * reader): one attempt ends once, so the backoff and the broker failover count it once */
         if (!connected && s_retry_at_us == 0) {
             attempt_ended();
             schedule_retry(now);
@@ -1176,7 +1203,7 @@ static void reconcile(void)
     }
 
     if (!s_started && ip && (s_retry_at_us == 0 || now >= s_retry_at_us) && tls_can_start(now) &&
-        (atomic_load(&s_time_synced) || now - s_ip_since_us >= CONFIG_GW_SNTP_WAIT_MS * 1000LL)) {
+        (time_ok() || now - s_ip_since_us >= CONFIG_GW_SNTP_WAIT_MS * 1000LL)) {
         start_client(now);
     }
     if (s_started && s_retry_at_us != 0 && now >= s_retry_at_us && ip && !connected) {
@@ -1184,11 +1211,15 @@ static void reconcile(void)
     }
 
     if (s_node->online && !s_births_timed && atomic_load(&s_time_synced)) {
+        /* (births with the RTC's time were valid: no rebirth for those) */
         /* Births went out before SNTP: re-issue them so hosts get valid timestamps. */
         s_births_timed = true;
         ESP_LOGI(TAG, "clock now synchronised: rebirth");
         gw_node_rebirth(s_node);
     }
+    /* TIME-3: NDATA Time Synced when SNTP synchronises after births timed by the RTC (the
+     * rebirth above already carried it otherwise) */
+    gw_node_set_time_synced(s_node, atomic_load(&s_time_synced));
     sync_firmware();
     if (atomic_exchange(&s_rebirth_req, false) && s_node->online) {
         ESP_LOGI(TAG, "rebirth requested from the console");
@@ -1214,6 +1245,8 @@ static void reconcile(void)
                      (unsigned long)s_node->sf_sent, (unsigned long)s_node->sf_discarded);
         }
     }
+    /* SPB-17: periodic diagnostics NDATA (rate limited by sparkplug.diagnostics_s) */
+    s_diag_wait_ms = gw_node_diag_tick(s_node, (uint64_t)(esp_timer_get_time() / 1000));
     publish_status();
 }
 
@@ -1229,6 +1262,7 @@ static TickType_t next_timeout(void)
         int64_t r = (s_retry_at_us - now) / 1000;
         ms = r < ms ? r : ms;
     }
+    ms = (int64_t)s_diag_wait_ms < ms ? (int64_t)s_diag_wait_ms : ms;
     if (!s_started && s_prev_ip && s_retry_at_us == 0) {
         int64_t r = (s_ip_since_us + CONFIG_GW_SNTP_WAIT_MS * 1000LL - now) / 1000;
         ms = r < ms ? r : ms;
@@ -1415,6 +1449,9 @@ static void setup_store(void)
 esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
 {
     s_cfg = cfg;
+    gw_io_rtc_info_t rtc;
+    gw_io_rtc_get(&rtc);
+    atomic_store(&s_time_valid, rtc.restored);   /* TIME-2: no SNTP wait with the RTC's time */
 #if !CONFIG_MQTT_PROTOCOL_5
     if (cfg->mqtt.protocol == GW_MQTT_V5) {
         ESP_LOGE(TAG, "mqtt.protocol 5 needs CONFIG_MQTT_PROTOCOL_5: MQTT not started");
@@ -1433,10 +1470,20 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         .set_scan_rate = op_set_scan_rate,
         .reboot = op_reboot,
         .firmware_update = op_firmware_update,
+        .diagnostics = op_diagnostics,
         .ctx = NULL,
     };
     gw_node_init(s_node, cfg, &ops, info);
     atomic_store(&s_fw_dirty, true);   /* the first NBIRTH carries the update's state */
+    /* The largest births (SPB-16/17/18) need GW_SPB_PAYLOAD_MAX: in PSRAM when the board has
+     * it; without PSRAM a smaller buffer leaves internal RAM for TLS and the web server. */
+    size_t cap = heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0 ? GW_SPB_PAYLOAD_MAX
+                                                                 : CONFIG_GW_SPB_PAYLOAD_INTERNAL;
+    uint8_t *buf = gw_storage_big_alloc(cap, "Sparkplug payload buffer");
+    if (buf == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    gw_node_set_buffer(s_node, buf, cap);
     if (!gw_node_topic(s_node, "NDEATH", NULL, s_death_topic, sizeof(s_death_topic)) ||
         !gw_node_topic(s_node, "NCMD", NULL, s_ncmd_topic, sizeof(s_ncmd_topic)) ||
         !gw_node_topic(s_node, "DCMD", "+", s_dcmd_topic, sizeof(s_dcmd_topic))) {

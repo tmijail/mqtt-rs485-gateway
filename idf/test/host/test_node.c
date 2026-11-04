@@ -1,7 +1,9 @@
 /* QA-1: Sparkplug edge-node behaviour: births, deaths, seq, aliases, report by
  * exception, rebirth and NCMD/DCMD handling (SPB-2..SPB-12). */
+#include <stdio.h>
 #include <string.h>
 
+#include "gw_mbap.h"
 #include "gw_node.h"
 #include "gw_port.h"
 #include "gw_tagdb.h"
@@ -23,10 +25,12 @@ void setUp(void)
     cfg = support_spec_config();
     gw_tagdb_reset();
     recorder_clear();
+    recorder_default_diag();
     gw_node_ops_t ops = recorder_ops();
     const gw_node_info_t info = {
         .firmware = "0.1.0+gdeadbee", .hardware = "test-hw", .reset_reason = "task watchdog"};
     gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
 }
 void tearDown(void) {}
 
@@ -75,7 +79,7 @@ static void test_nbirth_and_dbirth(void)
     TEST_ASSERT_FALSE(nb->retain);
     TEST_ASSERT_TRUE(dec.has_seq);
     TEST_ASSERT_EQUAL_UINT64(0, dec.seq);
-    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS, dec.count);
+    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS - 1, dec.count);   /* no Modbus TCP table */
     int i = decoded_find_name(&dec, "bdSeq");
     TEST_ASSERT_TRUE(i >= 0);
     TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[i].datatype);
@@ -424,6 +428,7 @@ static void setup_mb6(void)
     gw_node_ops_t ops = recorder_ops();
     const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
     gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
 }
 
 static void test_mb6_birth_and_data(void)
@@ -619,6 +624,523 @@ static void test_do_unknown_published_as_null(void)
     msg(0);
     TEST_ASSERT_EQUAL(8, dec.count);
     TEST_ASSERT_TRUE(dec.m[0].is_null);
+}
+
+/* SPB-16: births carry engUnit/engLow/engHigh from the configuration and Quality; DDATA carries
+ * Quality only when it changes (BAD with the null of a failed read, GOOD with the next value). */
+static void test_properties_and_quality(void)
+{
+    static const char json[] =
+        "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+        " \"devices\": [{\"name\": \"M\", \"unit_id\": 1, \"tags\": ["
+        " {\"name\": \"Level\", \"area\": \"input\", \"address\": 0, \"type\": \"uint16\","
+        "  \"units\": \"m\", \"eng_low\": 0, \"eng_high\": 12.5},"
+        " {\"name\": \"Temp\", \"area\": \"input\", \"address\": 1, \"type\": \"int16\","
+        "  \"eng_low\": -40},"
+        " {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]}]}";
+    static gw_config_t c;
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(json, sizeof(json) - 1, &c, &err), err.msg);
+    cfg = &c;
+    gw_tagdb_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    gw_tag_value_t v[3] = {{.value = 5, .ts_ms = 1000, .valid = true},
+                           {.value = 21, .ts_ms = 1000, .valid = true},
+                           {.value = 0, .ts_ms = 1000, .valid = false}};   /* never read yet */
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_tagdb_set_do_unknown(500);
+    gw_node_session_up(&node, 0);
+
+    msg(0);   /* NBIRTH: the DOs are unknown (expander absent): null and BAD */
+    int i = decoded_find_name(&dec, "DO/1");
+    TEST_ASSERT_TRUE(dec.m[i].has_quality);
+    TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_BAD, dec.m[i].quality);
+    TEST_ASSERT_FALSE(dec.m[decoded_find_name(&dec, "DI/1")].has_quality);
+
+    msg(1);   /* DBIRTH */
+    i = decoded_find_name(&dec, "Level");
+    TEST_ASSERT_EQUAL_STRING("m", dec.m[i].eng_unit);
+    TEST_ASSERT_TRUE(dec.m[i].has_eng_low);
+    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[i].eng_low);
+    TEST_ASSERT_TRUE(dec.m[i].has_eng_high);
+    TEST_ASSERT_EQUAL_DOUBLE(12.5, dec.m[i].eng_high);
+    TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_GOOD, dec.m[i].quality);
+    TEST_ASSERT_EQUAL(4, dec.m[i].prop_count);
+    i = decoded_find_name(&dec, "Temp");
+    TEST_ASSERT_EQUAL_STRING("", dec.m[i].eng_unit);
+    TEST_ASSERT_TRUE(dec.m[i].has_eng_low);
+    TEST_ASSERT_FALSE(dec.m[i].has_eng_high);
+    TEST_ASSERT_EQUAL(2, dec.m[i].prop_count);
+    i = decoded_find_name(&dec, "Run");
+    TEST_ASSERT_TRUE(dec.m[i].is_null);
+    TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_BAD, dec.m[i].quality);
+    TEST_ASSERT_EQUAL(1, dec.m[i].prop_count);
+
+    /* Level changes (still good): no Quality; Run read for the first time: GOOD */
+    recorder_clear();
+    v[0].value = 6;
+    v[2].valid = true;
+    v[2].value = 1;
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_node_device_changed(&node, 0);
+    msg(0);
+    TEST_ASSERT_EQUAL(2, dec.count);
+    i = decoded_find_alias(&dec, GW_ALIAS_TAG_BASE + 0);
+    TEST_ASSERT_EQUAL(0, dec.m[i].prop_count);
+    i = decoded_find_alias(&dec, GW_ALIAS_TAG_BASE + 2);
+    TEST_ASSERT_TRUE(dec.m[i].has_quality);
+    TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_GOOD, dec.m[i].quality);
+    TEST_ASSERT_EQUAL_STRING("", dec.m[i].eng_unit);   /* engUnit only in the birth */
+
+    /* a failed read (exception): null with BAD, once */
+    recorder_clear();
+    v[1].valid = false;
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_node_device_changed(&node, 0);
+    gw_node_device_changed(&node, 0);
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    msg(0);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_TRUE(dec.m[0].is_null);
+    TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_BAD, dec.m[0].quality);
+
+    /* the expander answers: the 8 DOs with GOOD */
+    recorder_clear();
+    gw_tagdb_set_do(0x00, 900);
+    gw_node_io_changed(&node);
+    msg(0);
+    TEST_ASSERT_EQUAL(8, dec.count);
+    TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_GOOD, dec.m[0].quality);
+    /* a DO change afterwards: no Quality */
+    recorder_clear();
+    gw_tagdb_set_do(0x01, 950);
+    gw_node_io_changed(&node);
+    msg(0);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_FALSE(dec.m[0].has_quality);
+}
+
+/* SPB-19: a bytes tag is a Bytes metric (raw register bytes); report by exception over the
+ * bytes; DCMD with a Bytes value of exactly 2 x length bytes. */
+static void test_bytes_tag(void)
+{
+    static const char json[] =
+        "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+        " \"devices\": [{\"name\": \"M\", \"unit_id\": 1, \"tags\": ["
+        " {\"name\": \"Raw\", \"area\": \"holding\", \"address\": 0, \"type\": \"bytes\","
+        "  \"length\": 2, \"writable\": true}]}]}";
+    static gw_config_t c;
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(json, sizeof(json) - 1, &c, &err), err.msg);
+    cfg = &c;
+    gw_tagdb_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    gw_tag_value_t v = {.ts_ms = 1000, .valid = true};
+    memcpy(v.str, "\x00\x01\x00\x02", 4);   /* NUL first: not a C string */
+    gw_tagdb_put_device(cfg, 0, &v, true);
+    gw_node_session_up(&node, 0);
+    msg(1);
+    TEST_ASSERT_EQUAL(SPB_DT_BYTES, dec.m[0].datatype);
+    TEST_ASSERT_EQUAL(4, dec.m[0].bytes_len);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY("\x00\x01\x00\x02", dec.m[0].bytes, 4);
+
+    recorder_clear();
+    gw_node_device_changed(&node, 0);
+    TEST_ASSERT_EQUAL(0, g_rec.count);                /* unchanged */
+    v.str[3] = 0x03;                                  /* a change after the NUL is seen */
+    gw_tagdb_put_device(cfg, 0, &v, true);
+    gw_node_device_changed(&node, 0);
+    msg(0);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_EQUAL_HEX8(0x03, dec.m[0].bytes[3]);
+
+    recorder_clear();
+    static const uint8_t w[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+    spb_metric_t b = {.name = "Raw", .datatype = SPB_DT_BYTES, .v.bytes = {w, 4}};
+    send("spBv1.0/G/DCMD/N/M", &b, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.writes);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(w, g_rec.last_write.str, 4);
+    b.v.bytes.len = 3;                                /* not the tag's 4 bytes */
+    send("spBv1.0/G/DCMD/N/M", &b, 1);
+    spb_metric_t s = {.name = "Raw", .datatype = SPB_DT_STRING, .v.str = "ABCD"};
+    send("spBv1.0/G/DCMD/N/M", &s, 1);                /* a String is not Bytes */
+    TEST_ASSERT_EQUAL(1, g_rec.writes);
+}
+
+/* SPB-18: devices of a type are template instances; the NBIRTH defines each type once. */
+static void test_templates(void)
+{
+    static const char json[] =
+        "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+        " \"devices\": ["
+        " {\"name\": \"P1\", \"unit_id\": 1, \"type\": \"Pump\", \"tags\": ["
+        "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
+        "   \"units\": \"rpm\", \"writable\": true},"
+        "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]},"
+        " {\"name\": \"P2\", \"unit_id\": 2, \"type\": \"Pump\", \"tags\": ["
+        "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
+        "   \"writable\": true},"
+        "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]},"
+        " {\"name\": \"Flat\", \"unit_id\": 3, \"tags\": ["
+        "  {\"name\": \"X\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\"}]}]}";
+    static gw_config_t c;
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(json, sizeof(json) - 1, &c, &err), err.msg);
+    cfg = &c;
+    gw_tagdb_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    gw_tag_value_t v[2] = {{.value = 1500, .ts_ms = 1000, .valid = true},
+                           {.value = 1, .ts_ms = 1000, .valid = true}};
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_tagdb_put_device(cfg, 2, v, true);
+    gw_node_session_up(&node, 0);
+    TEST_ASSERT_EQUAL(3, g_rec.count);             /* NBIRTH, DBIRTH P1, DBIRTH Flat */
+
+    msg(0);   /* NBIRTH: one definition for the two pumps, after the node's metrics */
+    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS - 1 + 1, dec.count);
+    int i = decoded_find_name(&dec, "Pump");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_TEMPLATE, dec.m[i].datatype);
+    TEST_ASSERT_FALSE(dec.m[i].has_alias);
+    TEST_ASSERT_TRUE(dec.m[i].is_definition);
+    TEST_ASSERT_FALSE(dec.m[i].has_ref);
+    TEST_ASSERT_EQUAL(2, dec.mem_count);
+    TEST_ASSERT_EQUAL_STRING("Speed", dec.mem[0].name);
+    TEST_ASSERT_EQUAL(SPB_DT_UINT16, dec.mem[0].datatype);
+    TEST_ASSERT_FALSE(dec.mem[0].has_alias);
+    TEST_ASSERT_EQUAL_STRING("rpm", dec.mem[0].eng_unit);   /* from the first device of the type */
+    TEST_ASSERT_FALSE(dec.mem[0].has_quality);
+    TEST_ASSERT_EQUAL_STRING("Run", dec.mem[1].name);
+
+    msg(1);   /* DBIRTH P1: one instance metric */
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DBIRTH/N/P1", g_rec.msgs[1].topic);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_EQUAL_STRING("Pump", dec.m[0].name);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TAG_BASE + 0, dec.m[0].alias);
+    TEST_ASSERT_EQUAL(SPB_DT_TEMPLATE, dec.m[0].datatype);
+    TEST_ASSERT_FALSE(dec.m[0].is_definition);
+    TEST_ASSERT_EQUAL_STRING("Pump", dec.m[0].ref);
+    TEST_ASSERT_EQUAL(2, dec.mem_count);
+    TEST_ASSERT_EQUAL_DOUBLE(1500, dec.mem[0].num);
+    TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_GOOD, dec.mem[0].quality);
+    TEST_ASSERT_EQUAL_STRING("rpm", dec.mem[0].eng_unit);
+    msg(2);   /* the untyped device as before */
+    TEST_ASSERT_EQUAL_STRING("X", dec.m[0].name);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TAG_BASE + 4, dec.m[0].alias);
+
+    /* DDATA: the instance by alias, with the changed member only (by name) */
+    recorder_clear();
+    v[0].value = 1600;
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_node_device_changed(&node, 0);
+    msg(0);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_FALSE(dec.m[0].has_name);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TAG_BASE + 0, dec.m[0].alias);
+    TEST_ASSERT_EQUAL(1, dec.mem_count);
+    TEST_ASSERT_EQUAL_STRING("Speed", dec.mem[0].name);
+    TEST_ASSERT_EQUAL_DOUBLE(1600, dec.mem[0].num);
+    TEST_ASSERT_FALSE(dec.mem[0].has_quality);
+
+    /* DCMD: a member of the instance, or the tag by name; never by alias */
+    recorder_clear();
+    const spb_metric_t member = {.name = "Speed", .no_alias = true, .datatype = SPB_DT_UINT16,
+                                 .v.num = 900};
+    const spb_template_t inst = {.ref = "Pump", .count = 1, .members = &member};
+    const spb_metric_t cmd_m = {.name = "Pump", .alias = GW_ALIAS_TAG_BASE, .datatype = SPB_DT_TEMPLATE,
+                                .v.tmpl = &inst};
+    send("spBv1.0/G/DCMD/N/P1", &cmd_m, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.writes);
+    TEST_ASSERT_EQUAL_UINT16(0, g_rec.last_write_tag);
+    TEST_ASSERT_EQUAL_DOUBLE(900, g_rec.last_write.value);
+    spb_metric_t flat = {.name = "Speed", .datatype = SPB_DT_UINT16, .v.num = 901};
+    send("spBv1.0/G/DCMD/N/P1", &flat, 1);
+    TEST_ASSERT_EQUAL(2, g_rec.writes);
+    flat.name = NULL;
+    flat.alias = GW_ALIAS_TAG_BASE + 0;
+    send("spBv1.0/G/DCMD/N/P1", &flat, 1);
+    TEST_ASSERT_EQUAL(2, g_rec.writes);
+
+    /* the write confirmation: the instance with that member */
+    gw_tag_value_t w = {.value = 900, .ts_ms = 2000, .valid = true};
+    gw_tagdb_put_tag(0, &w);
+    recorder_clear();
+    gw_node_write_done(&node, 0, true);
+    msg(0);
+    TEST_ASSERT_EQUAL(SPB_DT_TEMPLATE, dec.m[0].datatype);
+    TEST_ASSERT_EQUAL(1, dec.mem_count);
+    TEST_ASSERT_EQUAL_DOUBLE(900, dec.mem[0].num);
+}
+
+/* SPB-18 + SPB-16: the largest NBIRTH the configuration allows (GW_MAX_TEMPLATE_TAGS template
+ * tags with 39-character names, units and an engineering range) fits the payload buffer. */
+static void test_worst_case_nbirth_fits(void)
+{
+    static char doc[32768];
+    static gw_config_t c;
+    size_t n = (size_t)snprintf(doc, sizeof(doc), "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": "
+                                "{\"group_id\": \"G\", \"edge_node_id\": \"N\"}, \"devices\": [");
+    const int types = 16, per = GW_MAX_TEMPLATE_TAGS / 16;
+    for (int d = 0; d < types; d++) {
+        n += (size_t)snprintf(doc + n, sizeof(doc) - n, "%s{\"name\": \"%039d\", \"unit_id\": 1, "
+                              "\"type\": \"%039d\", \"tags\": [", d ? "," : "", d, d);
+        for (int k = 0; k < per; k++) {
+            n += (size_t)snprintf(doc + n, sizeof(doc) - n,
+                                  "%s{\"name\": \"%038d%d\", \"area\": \"input\", \"address\": %d,"
+                                  " \"type\": \"float64\", \"units\": \"uuuuuuuuuuuuuuu\","
+                                  " \"eng_low\": -3e38, \"eng_high\": 3e38}",
+                                  k ? "," : "", 0, k, 4 * k);
+        }
+        n += (size_t)snprintf(doc + n, sizeof(doc) - n, "]}");
+    }
+    snprintf(doc + n, sizeof(doc) - n, "]}");
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(doc, strlen(doc), &c, &err), err.msg);
+    cfg = &c;
+    c.modbus_tcp.enabled = true;   /* #81: the Modbus TCP table too */
+    gw_tagdb_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "0.1.0+g0123456.dirty-xxxxxxxxxxxxxxxxxxxxxxxxx",
+                                 .hardware = "Waveshare ESP32-S3-POE-ETH-8DI-8DO (ESP32-S3 rev 0.2)",
+                                 .reset_reason = "interrupt watchdog"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    /* SPB-17: the widest diagnostics (RSSI, every counter of every device at its maximum) */
+    g_rec.diag = (gw_node_diag_t){.uptime_s = UINT64_MAX, .free_heap = UINT32_MAX,
+                                  .min_free_heap = UINT32_MAX, .has_rssi = true,
+                                  .rssi_valid = true, .rssi = -128};
+    const gw_dev_stats_t full = {UINT32_MAX, UINT32_MAX,
+                                 {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX},
+                                 {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX}};
+    for (uint16_t d = 0; d < 16; d++) {
+        gw_tagdb_put_stats(d, &full);
+    }
+    const gw_mbap_stats_t gfull = {.other_units = full.tcp};
+    gw_mbap_stats_reset();
+    gw_mbap_stats_add(&gfull);
+    gw_node_session_up(&node, 0);
+    TEST_ASSERT_EQUAL(1, g_rec.count);   /* the NBIRTH went out (devices offline) */
+    printf("worst-case NBIRTH with %d template tags: %u bytes of %u\n", GW_MAX_TEMPLATE_TAGS,
+           (unsigned)g_rec.msgs[0].len, (unsigned)GW_SPB_PAYLOAD_MAX);
+    TEST_ASSERT_LESS_THAN(GW_SPB_PAYLOAD_MAX, g_rec.msgs[0].len);
+    msg(0);
+    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS + types, dec.count);
+    /* without PSRAM the buffer is smaller (CONFIG_GW_SPB_PAYLOAD_INTERNAL): such a birth is
+     * not published (and logged), never cut */
+    static uint8_t small[8192];
+    gw_node_set_buffer(&node, small, sizeof(small));
+    recorder_clear();
+    TEST_ASSERT_FALSE(gw_node_rebirth(&node));
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+}
+
+/* SPB-17 / MB-13: diagnostics in the NBIRTH; every diagnostics_s an NDATA with uptime and heap,
+ * and the Modbus DataSet only when a counter changed. */
+static int mb_rows, mb_cells;
+static uint32_t mb_ok_row0;
+static char mb_dev0[16];
+static bool mb_cell_cb(void *ctx, uint32_t row, uint32_t col, const spb_rx_value_t *v)
+{
+    (void)ctx;
+    mb_cells++;
+    if (row + 1 > (uint32_t)mb_rows) {
+        mb_rows = (int)row + 1;
+    }
+    if (row == 0 && col == 0) {
+        snprintf(mb_dev0, sizeof(mb_dev0), "%s", v->v.s);
+    }
+    if (row == 0 && col == 4) {
+        mb_ok_row0 = v->v.i;
+    }
+    return true;
+}
+
+static void test_diagnostics(void)
+{
+    set_meter(true, 230.5, 12.3, 1);
+    const gw_dev_stats_t st = {.cycles = 7, .failed_cycles = 1, .bus = {.ok = 20, .timeout = 3}};
+    gw_tagdb_put_stats(0, &st);
+    g_rec.diag.rssi_valid = false;
+    gw_node_session_up(&node, 0);
+    msg(0);
+    int i = decoded_find_name(&dec, "Node Info/Uptime");
+    TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_UPTIME, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_UINT64(12, dec.m[i].u64);
+    i = decoded_find_name(&dec, "Node Info/Free Heap");
+    TEST_ASSERT_EQUAL(SPB_DT_UINT32, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_DOUBLE(150000, dec.m[i].num);
+    TEST_ASSERT_TRUE(decoded_find_name(&dec, "Node Info/Min Free Heap") >= 0);
+    i = decoded_find_name(&dec, "Node Info/RSSI");
+    TEST_ASSERT_EQUAL(SPB_DT_INT32, dec.m[i].datatype);
+    TEST_ASSERT_TRUE(dec.m[i].is_null);                      /* Wi-Fi not associated */
+    i = decoded_find_name(&dec, "Node Info/Modbus");
+    TEST_ASSERT_EQUAL(SPB_DT_DATASET, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_MODBUS, dec.m[i].alias);
+    mb_rows = mb_cells = 0;
+    const spb_decoder_t d = {.cell = mb_cell_cb};
+    TEST_ASSERT_TRUE(spb_decode_with(g_rec.msgs[0].payload, g_rec.msgs[0].len, NULL, &d));
+    TEST_ASSERT_EQUAL(1, mb_rows);
+    TEST_ASSERT_EQUAL(9, mb_cells);
+    TEST_ASSERT_EQUAL_STRING("Meter1", mb_dev0);
+    TEST_ASSERT_EQUAL_UINT32(20, mb_ok_row0);
+
+    /* rate limited: nothing before diagnostics_s (60 s by default) */
+    recorder_clear();
+    TEST_ASSERT_EQUAL_UINT32(60000, gw_node_diag_tick(&node, 1000));   /* the period starts */
+    TEST_ASSERT_EQUAL_UINT32(30000, gw_node_diag_tick(&node, 31000));
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    g_rec.diag.uptime_s = 72;
+    g_rec.diag.rssi_valid = true;
+    g_rec.diag.rssi = -61;
+    gw_node_diag_tick(&node, 61000);                         /* counters unchanged */
+    msg(0);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", g_rec.msgs[0].topic);
+    TEST_ASSERT_EQUAL(4, dec.count);                         /* uptime, 2 x heap, RSSI */
+    TEST_ASSERT_EQUAL_UINT64(72, dec.m[decoded_find_alias(&dec, GW_ALIAS_UPTIME)].u64);
+    i = decoded_find_alias(&dec, GW_ALIAS_RSSI);
+    TEST_ASSERT_FALSE(dec.m[i].is_null);
+    TEST_ASSERT_EQUAL_DOUBLE(-61, dec.m[i].num);
+    TEST_ASSERT_EQUAL(-1, decoded_find_alias(&dec, GW_ALIAS_MODBUS));
+    recorder_clear();
+    const gw_dev_stats_t st2 = {.cycles = 70, .failed_cycles = 1, .bus = {.ok = 200, .timeout = 3}};
+    gw_tagdb_put_stats(0, &st2);
+    gw_node_diag_tick(&node, 121000);
+    msg(0);
+    TEST_ASSERT_EQUAL(5, dec.count);
+    TEST_ASSERT_TRUE(decoded_find_alias(&dec, GW_ALIAS_MODBUS) >= 0);
+    mb_rows = mb_cells = 0;
+    TEST_ASSERT_TRUE(spb_decode_with(g_rec.msgs[0].payload, g_rec.msgs[0].len, NULL, &d));
+    TEST_ASSERT_EQUAL_UINT32(200, mb_ok_row0);
+
+    /* session down: nothing; diagnostics_s 0 = births only */
+    gw_node_session_down(&node);
+    recorder_clear();
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, gw_node_diag_tick(&node, 500000));
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    static gw_config_t c;
+    c = *cfg;
+    c.sparkplug.diagnostics_s = 0;
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, &c, &ops, &info);
+    support_node_buffer(&node);
+    gw_node_session_up(&node, 0);
+    recorder_clear();
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, gw_node_diag_tick(&node, 1));
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, gw_node_diag_tick(&node, 10000000));
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+}
+
+/* Issue #81: with the Modbus TCP gateway enabled, "Node Info/Modbus TCP" has a row per device
+ * with the forwarded requests to its unit, and one for units without a device. */
+static uint32_t tcp_rows, tcp_cells, tcp_unit0, tcp_timeout_other, tcp_ok0;
+static bool tcp_online0;
+static char tcp_dev[2][16];
+static bool tcp_cell_cb(void *ctx, uint32_t row, uint32_t col, const spb_rx_value_t *v)
+{
+    (void)ctx;
+    tcp_cells++;
+    tcp_rows = row + 1 > tcp_rows ? row + 1 : tcp_rows;
+    if (col == 0 && row < 2) {
+        snprintf(tcp_dev[row], sizeof(tcp_dev[row]), "%s", v->v.s);
+    }
+    if (row == 0 && col == 1) tcp_unit0 = v->v.i;
+    if (row == 0 && col == 2) tcp_online0 = v->v.b;
+    if (row == 0 && col == 3) tcp_ok0 = v->v.i;
+    if (row == 1 && col == 4) tcp_timeout_other = v->v.i;
+    return true;
+}
+
+static void test_modbus_tcp_table(void)
+{
+    static gw_config_t c;
+    c = *cfg;
+    c.modbus_tcp.enabled = true;
+    cfg = &c;
+    gw_tagdb_reset();
+    gw_mbap_stats_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    set_meter(true, 230.5, 12.3, 1);
+    const gw_dev_stats_t st = {.cycles = 5, .bus = {.ok = 9}, .tcp = {.ok = 3, .exception = 1}};
+    gw_tagdb_put_stats(0, &st);
+    const gw_mbap_stats_t g = {.other_units = {.timeout = 2}};
+    gw_mbap_stats_add(&g);
+    gw_node_session_up(&node, 0);
+    msg(0);
+    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS, dec.count);
+    int i = decoded_find_name(&dec, "Node Info/Modbus TCP");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_DATASET, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_MODBUS_TCP, dec.m[i].alias);
+    /* the periodic NDATA after only a TCP counter moved carries both tables */
+    recorder_clear();
+    gw_node_diag_tick(&node, 1000);
+    const gw_mbap_stats_t g2 = {.other_units = {.timeout = 1}};
+    gw_mbap_stats_add(&g2);                                    /* only a TCP counter moves */
+    gw_node_diag_tick(&node, 61000);
+    msg(0);
+    TEST_ASSERT_TRUE(decoded_find_alias(&dec, GW_ALIAS_MODBUS_TCP) >= 0);
+    TEST_ASSERT_TRUE(decoded_find_alias(&dec, GW_ALIAS_MODBUS) >= 0);   /* published together */
+    /* the cells of both tables reach the callback, the TCP table's last (alias order) */
+    tcp_rows = tcp_cells = 0;
+    const spb_decoder_t d = {.cell = tcp_cell_cb};
+    TEST_ASSERT_TRUE(spb_decode_with(g_rec.msgs[0].payload, g_rec.msgs[0].len, NULL, &d));
+    TEST_ASSERT_EQUAL(9 + 2 * 8, tcp_cells);   /* RTU table (1 row x 9) + TCP table (2 x 8) */
+    TEST_ASSERT_EQUAL_STRING("(other units)", tcp_dev[1]);
+    TEST_ASSERT_EQUAL_UINT32(3, tcp_timeout_other);           /* 2 + 1 */
+    TEST_ASSERT_EQUAL_UINT32(1, tcp_unit0);                   /* Meter1 is unit 1 */
+    TEST_ASSERT_TRUE(tcp_online0);
+    TEST_ASSERT_EQUAL_UINT32(3, tcp_ok0);
+    gw_mbap_stats_reset();
+}
+
+/* TIME-3: Node Info/Time Synced in the NBIRTH, and an NDATA each time it changes. */
+static void test_time_synced(void)
+{
+    g_rec.diag.time_synced = false;   /* e.g. the clock came from the RTC */
+    gw_node_session_up(&node, 0);
+    msg(0);
+    int i = decoded_find_name(&dec, "Node Info/Time Synced");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_BOOLEAN, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TIME_SYNCED, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[i].num);
+    recorder_clear();
+    gw_node_set_time_synced(&node, false);           /* unchanged */
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    gw_node_set_time_synced(&node, true);            /* SNTP answered */
+    msg(0);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", g_rec.msgs[0].topic);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TIME_SYNCED, dec.m[0].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[0].num);
+    gw_node_set_time_synced(&node, true);
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    /* a rebirth takes the state from the diagnostics op, without a second NDATA */
+    g_rec.diag.time_synced = true;
+    recorder_clear();
+    gw_node_rebirth(&node);
+    msg(0);
+    TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[decoded_find_name(&dec, "Node Info/Time Synced")].num);
+    size_t births = g_rec.count;
+    gw_node_set_time_synced(&node, true);
+    TEST_ASSERT_EQUAL(births, g_rec.count);
+    gw_node_session_down(&node);
+    gw_node_set_time_synced(&node, false);           /* offline: nothing */
+    TEST_ASSERT_EQUAL(births, g_rec.count);
 }
 
 /* Issue #14: a command metric without an alias is not logged as "alias 0". */
@@ -1002,6 +1524,60 @@ static void test_store_and_forward_mb6(void)
     TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[4].num);
 }
 
+/* SPB-14 with SPB-16/18/19: a replayed template device comes back as its instance (historical)
+ * with historical members by name and their Quality; raw bytes (NUL included) come back whole. */
+static void test_store_and_forward_templates_bytes(void)
+{
+    static const char json[] =
+        "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+        " \"devices\": [{\"name\": \"P\", \"unit_id\": 1, \"type\": \"Pump\", \"tags\": ["
+        "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\"},"
+        "  {\"name\": \"Raw\", \"area\": \"holding\", \"address\": 1, \"type\": \"bytes\","
+        "   \"length\": 2}]}]}";
+    static gw_config_t c;
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(json, sizeof(json) - 1, &c, &err), err.msg);
+    cfg = &c;
+    gw_tagdb_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    static gw_sf_rec_t storage[16];
+    gw_sf_t sf;
+    gw_sf_init(&sf, storage, 16);
+    gw_node_set_store(&node, &sf);
+    gw_tag_value_t v[2] = {{.value = 10, .ts_ms = 1000, .valid = true},
+                           {.ts_ms = 1000, .valid = true}};
+    memcpy(v[1].str, "\x00\x01\x02\x03", 4);
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_node_session_up(&node, 0);
+    gw_node_session_down(&node);
+    v[0].valid = false;                              /* a failed read while offline */
+    v[0].ts_ms = v[1].ts_ms = 2000;
+    memcpy(v[1].str, "\x00\xff\x00\xee", 4);
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_node_device_changed(&node, 0);
+    recorder_clear();
+    gw_node_session_up(&node, 1);
+    TEST_ASSERT_EQUAL_size_t(0, gw_node_flush_history(&node, 4));
+    msg(g_rec.count - 1);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DDATA/N/P", g_rec.msgs[g_rec.count - 1].topic);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_EQUAL(SPB_DT_TEMPLATE, dec.m[0].datatype);
+    TEST_ASSERT_TRUE(dec.m[0].is_historical);
+    TEST_ASSERT_EQUAL(2, dec.mem_count);
+    TEST_ASSERT_EQUAL_STRING("Speed", dec.mem[0].name);
+    TEST_ASSERT_FALSE(dec.mem[0].has_alias);
+    TEST_ASSERT_TRUE(dec.mem[0].is_historical);
+    TEST_ASSERT_TRUE(dec.mem[0].is_null);
+    TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_BAD, dec.mem[0].quality);
+    TEST_ASSERT_EQUAL(SPB_DT_BYTES, dec.mem[1].datatype);
+    TEST_ASSERT_EQUAL(4, dec.mem[1].bytes_len);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY("\x00\xff\x00\xee", dec.mem[1].bytes, 4);
+    TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_GOOD, dec.mem[1].quality);
+}
+
 /* SPB-14: a publish that fails keeps the batch for the next attempt. */
 static void test_history_kept_when_publish_fails(void)
 {
@@ -1043,6 +1619,14 @@ int main(void)
     RUN_TEST(test_session_down_suppresses_publishing);
     RUN_TEST(test_discard_log_shows_alias_only_if_present);
     RUN_TEST(test_do_unknown_published_as_null);
+    RUN_TEST(test_properties_and_quality);
+    RUN_TEST(test_bytes_tag);
+    RUN_TEST(test_templates);
+    RUN_TEST(test_store_and_forward_templates_bytes);
+    RUN_TEST(test_diagnostics);
+    RUN_TEST(test_time_synced);
+    RUN_TEST(test_modbus_tcp_table);
+    RUN_TEST(test_worst_case_nbirth_fits);
     RUN_TEST(test_command_aborted_mid_payload_applies_nothing);
     RUN_TEST(test_no_store_coalesces);
     RUN_TEST(test_store_and_forward);

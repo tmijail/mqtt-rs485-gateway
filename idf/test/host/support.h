@@ -74,9 +74,16 @@ typedef struct {
     uint32_t scan_rate;
     int fw_updates;              /* FW-1: firmware_update calls */
     char fw_url[256];
+    gw_node_diag_t diag;         /* SPB-17: what the diagnostics op reports */
 } recorder_t;
 
+/* SPB-17 defaults of the recorder: a node with Wi-Fi, not associated. */
+void recorder_default_diag(void);
+
 extern recorder_t g_rec;
+
+/* Attach a full-size (GW_SPB_PAYLOAD_MAX) payload buffer of its own to @p n. */
+void support_node_buffer(gw_node_t *n);
 
 /* Ops that record into g_rec. set_do updates gw_tagdb like the real driver. */
 gw_node_ops_t recorder_ops(void);
@@ -85,14 +92,10 @@ void recorder_clear(void);
 /* Decoded view of a recorded payload. */
 #define DEC_MAX 80
 typedef struct {
-    bool has_seq;
-    uint64_t seq;
-    uint64_t timestamp;
-    size_t count;
-    struct {
-        char name[64];
-        bool has_name;
-        uint64_t alias;
+    char name[64];
+    bool has_name;
+    bool has_alias;
+    uint64_t alias;
         uint32_t datatype;
         bool is_null;
         bool is_historical;
@@ -100,8 +103,31 @@ typedef struct {
         double num;
         uint64_t u64;            /* long_value, exact */
         char str[64];
+        uint8_t bytes[SPB_BYTES_MAX];   /* SPB-19 Bytes / File */
+        size_t bytes_len;
         uint64_t timestamp;
-    } m[DEC_MAX];
+        /* SPB-16 properties */
+        uint8_t prop_count;
+        bool has_quality;
+        int32_t quality;
+        char eng_unit[64];       /* "" when absent */
+        bool has_eng_low, has_eng_high;
+        double eng_low, eng_high;
+        /* SPB-18 Template */
+        bool has_ref;
+        char ref[40];
+        bool is_definition;
+        uint32_t members;
+} dec_metric_t;
+
+typedef struct {
+    bool has_seq;
+    uint64_t seq;
+    uint64_t timestamp;
+    size_t count;
+    dec_metric_t m[DEC_MAX];
+    size_t mem_count;            /* SPB-18: members of every template, in wire order */
+    dec_metric_t mem[DEC_MAX];
 } decoded_t;
 
 bool decode_payload(const uint8_t *buf, size_t len, decoded_t *out);

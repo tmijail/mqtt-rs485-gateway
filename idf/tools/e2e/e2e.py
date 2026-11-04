@@ -66,6 +66,7 @@ PEER_CERT = {}    # DER of the certificate the gateway presented on the last HTT
 WEB_PASSWORD = "e2e-pass-1"
 SYSLOG = []       # (t, datagram text) received by the syslog listener
 SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
+SNTP_PAUSED = threading.Event()  # TIME-2: while set, the responder stays silent
 PROBE_MAX_S = 10.0                # CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS / 1000, read in main()
 GROUP, NODE, DEVICE, BULK = "Plant1", "GW01", "Meter1", "Bulk"
 T = f"spBv1.0/{GROUP}"
@@ -98,6 +99,12 @@ class RecordingContext(ModbusSlaveContext):
     def __init__(self, **kw):
         super().__init__(**kw)
         self.writes = []
+        self.refuse = set()   # (function code, address) answered with exception 02 (SPB-16)
+
+    def validate(self, fc_as_hex, address, count=1):
+        if (fc_as_hex, address) in self.refuse:
+            return False
+        return super().validate(fc_as_hex, address, count)
 
     def setValues(self, fc_as_hex, address, values):  # noqa: N802 (pymodbus API)
         if fc_as_hex in (5, 6, 15, 16):
@@ -183,7 +190,7 @@ def sntp_responder(stop):
             data, addr = s.recvfrom(512)
         except socket.timeout:
             continue
-        if len(data) < 48:
+        if len(data) < 48 or SNTP_PAUSED.is_set():
             continue
         now = time.time() + 2208988800
         sec, frac = int(now), int((now % 1) * 2**32)
@@ -505,11 +512,14 @@ class Gateway:
 
     def start(self):
         a = self.args
-        cmd = [a.qemu, "-M", "esp32s3", "-m", "32M", "-nographic",
+        # With the octal PSRAM, -m is its size (the board's 8 MB): with 32M QEMU maps 31 MB and
+        # leaves no virtual address space for the flash mmap (the partitions are not found).
+        cmd = [a.qemu, "-M", "esp32s3", "-m", "8M" if a.psram else "32M", "-nographic",
                "-drive", f"file={self.flash},if=mtd,format=raw",
                "-drive", f"file={a.efuse},if=none,format=raw,id=efuse",
                "-global", "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
                "-global", "driver=timer.esp32s3.timg,property=wdt_disable,value=true",
+               *(["-global", "driver=ssi_psram,property=is_octal,value=true"] if a.psram else []),
                "-nic", f"user,model=open_eth,hostfwd=tcp:127.0.0.1:{HTTP_PORT}-:80,"
                        f"hostfwd=tcp:127.0.0.1:{HTTPS_PORT}-:443,"
                        f"hostfwd=tcp:127.0.0.1:{MBTCP_PORT}-:502",
@@ -903,9 +913,76 @@ def run_tls(args, work):
     check("MQTT-4 a CA file missing from LittleFS is reported and no connection is attempted",
           missing and not attempts,
           (gw.find(r"mqtt\.tls\.ca_file", t0) or ["no error logged"])[0])
+    check_ram_margin(args, work, obs, p13, pki["ca.pem"].read_bytes())
     obs.close()
     broker.terminate()
     broker.wait()
+
+
+# Issue #80: internal RAM without PSRAM (see check_ram_margin for the reasoning)
+RAM_MIN_FREE_B = 8 * 1024
+RAM_MIN_BLOCK_B = 17 * 1024
+
+
+def check_ram_margin(args, work, obs, port, ca):
+    """Issue #80 in one boot (GW29) on the QEMU path, which has no PSRAM: MQTT over TLS 1.3, the
+    full births of the harness configuration (Bulk's 60-tag DBIRTH among them, diagnostics with
+    the DataSets), a web session open over HTTPS (keep-alive) and, on a second HTTPS connection,
+    PUT /api/config?dry_run=1 of the whole document (the validation holds a second
+    configuration, its document and, before them, the parser's tree). Then the shell gives the
+    minimum free internal heap since boot, the largest free block left at the peak of the
+    validation and the stacks' high-water marks.
+
+    Thresholds, for what must still work at that lowest point (mbedTLS allocates its record
+    buffers per record, CONFIG_MBEDTLS_DYNAMIC_BUFFER):
+      * minimum free >= RAM_MIN_FREE_B (8 KB): the traffic that can arrive meanwhile, an MQTT
+        command (at most CONFIG_GW_CMD_MAX_PAYLOAD, 1 KB, plus its TLS record), the lwIP pbufs of
+        a few full segments and the esp-mqtt outbox of a QoS 1 message;
+      * largest block at the validation >= RAM_MIN_BLOCK_B (17 KB): one full TLS input record
+        (16 KB, CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN) plus its header and MAC, so a large record on
+        either session is still received in one piece.
+    A new TLS handshake during the validation (about 30 KB) is not covered: it is retried."""
+    node = "GW29"
+    cfg = node_config(node, port=port, tls={"enabled": True, "ca_file": "ca.pem"})
+    cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "ram", cfg, {"ca.pem": ca})
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 60)
+    bulk = obs.wait(f"{T}/DBIRTH/{node}/{BULK}", 15)
+    st0, _, _ = wait_http("/api/status", 40)
+    session, kept = None, False
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        session = httplib.HTTPSConnection("127.0.0.1", HTTPS_PORT, timeout=15, context=ctx)
+        auth = {"Authorization": "Basic " + base64.b64encode(f"admin:{WEB_PASSWORD}".encode()).decode()}
+        session.request("GET", "/api/status", headers=auth)
+        session.getresponse().read()
+        st, _, body = http("PUT", "/api/config?dry_run=1", cfg)
+        session.request("GET", "/api/status", headers=auth)   # the session is still served
+        kept = session.getresponse().status == 200
+    except (OSError, httplib.HTTPException) as e:
+        st, body = None, str(e).encode()
+    finally:
+        if session is not None:
+            session.close()
+    asked, h = gw.shell("status", [r"^heap\s+internal \d+ B free \(minimum \d+ B, largest block \d+ B, "
+                                   r"lowest at a validation [1-9]\d* B\)", r"^stack\s+sparkplug \d+ "])
+    heap = (gw.find(r"^heap\s+internal", asked) or [""])[0]
+    stack = (gw.find(r"^stack\s+sparkplug", asked) or [""])[0]
+    nums = [int(x) for x in re.findall(r"(\d+) B", heap)]
+    minimum, valid_block = (nums[1], nums[3]) if len(nums) >= 4 else (None, None)
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node}", 5)
+    print(f"RAM margin: {heap} | {stack}", flush=True)
+    check(f"Issue #80 internal RAM without PSRAM after the worst case (MQTT over TLS, full births, an "
+          f"HTTPS session open and PUT /api/config?dry_run=1 over HTTPS): minimum free >= "
+          f"{RAM_MIN_FREE_B} B and largest block at the validation >= {RAM_MIN_BLOCK_B} B",
+          nb and bulk and st0 == 200 and st == 200 and kept and minimum is not None
+          and minimum >= RAM_MIN_FREE_B and valid_block >= RAM_MIN_BLOCK_B,
+          f"NBIRTH {'yes' if nb else 'no'}, Bulk DBIRTH {'yes' if bulk else 'no'}; PUT dry run {st} "
+          f"{body[:80]!r}; session kept {kept}; {heap}; {stack}")
 
 
 # ---------------------------------------------------------------- broker failover (MQTT-6)
@@ -1207,6 +1284,94 @@ def run_store_forward(args, work, slave):
           f"{round(metric(db[2], name='Voltage').float_value, 1) if db else None}; historical Voltage "
           f"{got} (seq {[s for s, _ in hist]}); historical DI/3 {[m.boolean_value for m in di]}; "
           + " | ".join(gw.find(r"^store\s", asked) + gw.find(r"^store\s", asked2)))
+
+
+STACK_MARGIN_B = 1024   # see run_stack_margin
+
+
+def run_stack_margin(args, work, slave):
+    """SPB-16..19 and the 6 KB Sparkplug stack (review of 2ea6ffd), in one boot (GW27) with
+    store & forward, diagnostics every 10 s, two template devices (Pump) and a bytes tag. Through
+    a Relay (port +16) it runs the deepest paths of the Sparkplug task: a DCMD on a template
+    member (members decoded one level deep), a DCMD with Bytes, a diagnostics NDATA with the
+    Modbus DataSet, and, after the broker was away, the replay of a template instance and raw
+    bytes as historical data. Then the shell reports the task's lowest free stack since boot.
+
+    Margin: at least STACK_MARGIN_B (1 KB) free. Interrupts run on their own stack on Xtensa,
+    so the task stack only has to absorb paths the scenario did not hit at their deepest: a log
+    line formatted on top of the deepest frame (esp_log and the syslog hook, a few hundred bytes)
+    and a longer template or DataSet than these. The TLS write path (mbedTLS in this task) is
+    measured separately by the MQTT-4 boot after the births (log_stacks) and is not nested in a
+    decode: commands are decoded first and their confirmations published afterwards."""
+    node, port = "GW27", MQTT_PORT + 16
+    relay = Relay(port, MQTT_PORT)
+    obs = Observer()
+    cfg = node_config(node, port=port)
+    cfg["sparkplug"]["store_forward"] = True
+    cfg["sparkplug"]["diagnostics_s"] = 10
+    for k in (0, 1):
+        cfg["devices"].append({"name": f"Pump{'AB'[k]}", "unit_id": 1, "type": "Pump", "poll_ms": 500,
+                               "tags": [{"name": "Speed", "area": "holding", "address": 232 + k,
+                                         "type": "uint16", "units": "rpm", "eng_high": 3000,
+                                         "writable": True},
+                                        {"name": "Run", "area": "coil", "address": 7 + k, "type": "bool"}]})
+        slave.ctx.setValues(3, 232 + k, [1000 + k])
+    cfg["devices"].append({"name": "Raw", "unit_id": 1, "poll_ms": 500, "tags": [
+        {"name": "Block", "area": "holding", "address": 240, "type": "bytes", "length": 4,
+         "writable": True}]})
+    slave.ctx.setValues(3, 240, [0x0001, 0x0203, 0x0405, 0x0607])
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "stack", cfg)
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    for d in ("PumpA", "Raw"):
+        if not any(m[1] == f"{T}/DBIRTH/{node}/{d}" for m in CAPTURE):
+            obs.wait(f"{T}/DBIRTH/{node}/{d}", 10)
+    # DCMD on a template member
+    p = spb.Payload()
+    p.timestamp = int(time.time() * 1000)
+    m = p.metrics.add()
+    m.name, m.datatype = "Pump", 19
+    m.template_value.template_ref = "Pump"
+    mm = m.template_value.metrics.add()
+    mm.name, mm.datatype, mm.int_value = "Speed", 6, 1500
+    obs.drain()
+    obs.c.publish(f"{T}/DCMD/{node}/PumpA", p.SerializeToString(), qos=0)
+    tmpl_dd = obs.wait(f"{T}/DDATA/{node}/PumpA", 5)
+    # DCMD with Bytes
+    obs.publish_cmd(f"{T}/DCMD/{node}/Raw", [{"name": "Block", "datatype": 17,
+                                             "bytes_value": bytes(range(0x10, 0x18))}])
+    raw_dd = obs.wait(f"{T}/DDATA/{node}/Raw", 5)
+    # diagnostics NDATA with the DataSet (the counters move every cycle)
+    diag = obs.wait(f"{T}/NDATA/{node}", 13, lambda q: metric(q, alias=54) is not None)
+    # store & forward of a template instance and raw bytes
+    relay.stop()
+    gw.wait_log(r"MQTT down; reconnect attempt", 10, time.monotonic() - 1)
+    slave.ctx.setValues(3, 233, [1777])
+    slave.ctx.setValues(3, 240, [0x00FF, 0x00FE, 0x00FD, 0x00FC])
+    time.sleep(2.5)
+    relay.start()
+    nb2 = obs.wait(f"{T}/NBIRTH/{node}", 70)
+    time.sleep(3)
+    after = [x for x in CAPTURE if nb2 and x[0] >= nb2[0] and x[1].split("/")[3:4] == [node]]
+    hist_pump = [x for x in after if x[1] == f"{T}/DDATA/{node}/PumpB" and x[2].metrics
+                 and x[2].metrics[0].is_historical and x[2].metrics[0].datatype == 19]
+    hist_raw = [x for x in after if x[1] == f"{T}/DDATA/{node}/Raw"
+                and any(y.is_historical and y.datatype == 17 for y in x[2].metrics)]
+    asked, h = gw.shell("status", [r"^stack\s+sparkplug \d+ "])
+    line = (gw.find(r"^stack\s+sparkplug \d+ ", asked) or [""])[0]
+    free = int(re.search(r"sparkplug (\d+)", line).group(1)) if line else None
+    print(f"stack after the deep paths: {line}", flush=True)
+    gw.kill()
+    relay.stop()
+    obs.wait(f"{T}/NDEATH/{node}", 5)
+    obs.close()
+    paths = {"template DCMD": bool(tmpl_dd), "bytes DCMD": bool(raw_dd), "DataSet NDATA": bool(diag),
+             "replayed instance": bool(hist_pump), "replayed bytes": bool(hist_raw)}
+    check(f"Review of 2ea6ffd: the Sparkplug task keeps >= {STACK_MARGIN_B} B of its 6 KB stack free "
+          f"after a template-member DCMD, a Bytes DCMD, a diagnostics DataSet NDATA and the "
+          f"store & forward replay of a template instance and raw bytes",
+          nb and all(paths.values()) and free is not None and free >= STACK_MARGIN_B,
+          f"paths run {paths}; {line or 'no stack line'}")
 
 
 # ---------------------------------------------------------------- slow link (issue #59)
@@ -1723,6 +1888,10 @@ def main():
                     help="comma-separated scenarios to run (failsafe,network,web,reset,tls,failover,"
                          "mqtt5,phost,sf,https,ota,nvs,slow,main); "
                          "default all")
+    ap.add_argument("--psram", action="store_true",
+                    help="issue #63: emulate the octal PSRAM (build with sdkconfig.qemu-psram)")
+    ap.add_argument("--panics", type=int, default=1,
+                    help="issue #62: panics in the core dump check (each dump must decode)")
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
     args = ap.parse_args()
@@ -1759,7 +1928,7 @@ def main():
         if want("failsafe"):
             run_config_failsafe(args, work, slave)
         if want("network"):
-            run_network_variant(args, work)
+            run_network_variant(args, work, slave)
         if want("web"):
             run_web(args, work)
         if want("reset"):
@@ -1776,6 +1945,7 @@ def main():
         if want("sf"):
             run_store_forward(args, work, slave)
             run_store_forward_spill(args, work, slave)
+            run_stack_margin(args, work, slave)
         if want("https"):
             run_https(args, work)
         if want("ota"):
@@ -2172,7 +2342,10 @@ def check_scan_classes(slave):
     reads = [(t, r[1:]) for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 1 and t >= since]
     fast = [t for t, k in reads if k == (1, 0, 1)]
     slow = [t for t, k in reads if k == (3, 30, 4)]
-    serial = [t for t, k in reads if k == (3, 50, 8)]
+    # a DCMD to Serial (check_mb6_writes) is read back right after its FC16: that request is not
+    # a scan read (only the one that immediately follows each write)
+    serial = [t for i, (t, k) in enumerate(reads)
+              if k == (3, 50, 8) and not (i > 0 and reads[i - 1][1][:2] == (16, 50))]
     gaps = [round(b - a, 2) for a, b in zip(slow, slow[1:])]
     fgaps = [b - a for a, b in zip(fast, fast[1:])]
     ok = len(slow) >= 3 and len(serial) == len(slow) and all(2.8 <= g <= 3.6 for g in gaps) \
@@ -2180,6 +2353,166 @@ def check_scan_classes(slave):
     return check("MB-12 slow-scan tags read every slow_poll_ms (3 s), fast ones every poll_ms (1 s)",
                  ok, f"last 12 s: {len(fast)} fast cycles (longest gap {max(fgaps, default=0):.2f} s), "
                  f"{len(slow)} slow reads {gaps} s apart, Serial read {len(serial)} times")
+
+
+def props(m):
+    """SPB-16: {key: value} of a metric's PropertySet."""
+    return {k: spb_decode.value_of(v) for k, v in spb_decode.props_of(m).items()}
+
+
+def check_properties_and_quality(obs, slave, db, ddata_t):
+    """SPB-16: the DBIRTH carries engUnit/engLow/engHigh from the configuration and Quality GOOD;
+    a read answered with an exception is null with Quality BAD, and the next good read brings
+    the value back with Quality GOOD."""
+    v = metric(db[2], name="Voltage") if db else None
+    birth = props(v) if v is not None else {}
+    others = [props(m).get("Quality") for m in db[2].metrics] if db else []
+    check("SPB-16 DBIRTH properties: Voltage engUnit 'V', engLow 0, engHigh 400 and Quality 192 "
+          "(GOOD) on every metric", birth == {"engUnit": "V", "engLow": 0.0, "engHigh": 400.0,
+                                              "Quality": 192} and others and
+          all(q == 192 for q in others), f"Voltage {birth}; Quality of all: {sorted(set(others))}")
+    obs.drain()
+    slave.ctx.refuse.add((4, 0))          # Voltage alone in its block (input 0-1): exception 02
+    bad = obs.wait(ddata_t, 5, lambda p: any(m.alias == ALIAS["Voltage"] for m in p.metrics))
+    slave.ctx.refuse.clear()
+    good = obs.wait(ddata_t, 5, lambda p: any(m.alias == ALIAS["Voltage"] for m in p.metrics))
+    bm = metric(bad[2], alias=ALIAS["Voltage"]) if bad else None
+    gm = metric(good[2], alias=ALIAS["Voltage"]) if good else None
+    check("SPB-16 failed read (exception 02) -> DDATA Voltage null with Quality 0 (BAD); next read "
+          "-> value with Quality 192 (GOOD), the device stays online",
+          bm is not None and bm.is_null and props(bm) == {"Quality": 0} and gm is not None
+          and not gm.is_null and abs(gm.float_value - 231.0) < 1e-3 and props(gm) == {"Quality": 192},
+          f"failed: {'null' if bm is not None and bm.is_null else bm} {props(bm) if bm else ''}; "
+          f"after: {round(gm.float_value, 3) if gm else None} {props(gm) if gm else ''}")
+
+
+def check_status_api(gw, since):
+    """Issue #75: /api/status (HTTPS) reports what IO-3/4/6/7, SPB-17 and TIME-1..3 added: pulse
+    counters, failsafe, DOs owned by a local rule, unknown DOs, the buzzer alarm, the clock and
+    the RTC, exact 64-bit values and strings of the tags."""
+    pw = commissioning_password(gw, since, 5)
+    st, _, body = http("GET", "/api/status", auth=("admin", pw or "?"))
+    s = as_json(body) or {}
+    io, bz, tm = s.get("io", {}), s.get("buzzer", {}), s.get("time", {})
+    meter = next((d for d in s.get("devices", []) if d.get("name") == DEVICE), {})
+    tags = {t["name"]: t["value"] for t in meter.get("tags", [])}
+    ok = st == 200 and io.get("counters", [None])[0] == 2 and len(io.get("counters", [])) == 8 \
+        and io.get("rule_do") == 0x30 and io.get("failsafe") is False and io.get("do_unknown") is False \
+        and isinstance(io.get("do"), int) and bz.get("enabled") == ["device_offline", "mqtt_down", "config_error"] \
+        and bz.get("alarm") == "device_offline" and tm.get("synced") is True and tm.get("source") == "sntp" \
+        and tm.get("rtc", {}).get("present") is True and tm.get("rtc", {}).get("stores", 0) >= 1 \
+        and abs(tm.get("utc_s", 0) - time.time()) < 60 and s.get("sparkplug", {}).get("diagnostics_s") == 10 \
+        and tags.get("Energy") == MB6["Energy"] and isinstance(tags.get("Serial"), str)
+    check("Issue #75 /api/status over HTTPS: pulse counters, failsafe, DOs of local rules, unknown "
+          "DOs, buzzer alarm, clock (SNTP/RTC), diagnostics period, exact UInt64 and string values",
+          ok, f"HTTP {st}; io {io}; buzzer {bz}; time {tm}; Energy {tags.get('Energy')!r} "
+              f"Serial {tags.get('Serial')!r}")
+
+
+def check_rtc(gw, obs, nb, t0, since_reboot, ndata_t, first_nbirth):
+    """TIME-2: the first boot (power-on: the simulated PCF85063 has its OS bit set) gets no time
+    from it, and stores the SNTP time in it; the boot after NCMD Reboot, with SNTP silent, sets
+    the system clock from the RTC, publishes its NBIRTH with valid timestamps at once, and when
+    SNTP answers again there is no rebirth (the births were already timed)."""
+    stopped = gw.find(r"io: RTC: oscillator stopped \(OS bit\): time lost: system time not set", t0)
+    stored = gw.find(r"io: RTC: time stored in the RTC after SNTP", t0)
+    restored = gw.find(r"io: RTC: system time set from the RTC: \d{4}-\d\d-\d\dT", since_reboot)
+    synced_early = gw.find(r"edge: time synchronised", since_reboot)
+    skew = abs(nb[2].timestamp / 1000 - time.time()) if nb else None
+    asked, h = gw.shell("status", [r"^time\s+\d{4}-.*Z, from the RTC \(not synchronised\); RTC ok"])
+    shown = list(h.values())[0]
+    obs.drain()
+    SNTP_PAUSED.clear()
+    synced = gw.wait_log(r"edge: time synchronised", 45, since_reboot)
+    ts_ndata = obs.wait(ndata_t, 5, lambda q: metric(q, alias=55) is not None)
+    first_ts = metric(first_nbirth, name="Node Info/Time Synced")
+    reboot_ts = metric(nb[2], name="Node Info/Time Synced") if nb else None
+    check("TIME-3 'Node Info/Time Synced' (Boolean, alias 55): true in the NBIRTH after SNTP, false "
+          "in the NBIRTH timed by the RTC, NDATA true when SNTP synchronises later",
+          first_ts is not None and first_ts.boolean_value and reboot_ts is not None
+          and not reboot_ts.boolean_value and ts_ndata is not None
+          and metric(ts_ndata[2], alias=55).boolean_value,
+          f"first NBIRTH {first_ts.boolean_value if first_ts else None}; NBIRTH after the reboot "
+          f"{reboot_ts.boolean_value if reboot_ts else None}; NDATA "
+          f"{metric(ts_ndata[2], alias=55).boolean_value if ts_ndata else None}")
+    restore_store = gw.wait_log(r"edge: time synchronised", 0, since_reboot) and \
+        gw.find(r"clock now synchronised: rebirth", since_reboot) == []
+    check("TIME-2 RTC: OS bit at power-on (no time from it), SNTP time stored in it; after a "
+          "reboot with SNTP silent the clock comes from the RTC, NBIRTH timestamps valid at once, "
+          "no rebirth when SNTP answers later",
+          stopped and stored and restored and not synced_early and skew is not None and skew < 60
+          and shown and synced and restore_store,
+          f"{(stopped or ['no OS-bit log'])[0]} | {(stored or ['no store log'])[0]} | "
+          f"{(restored or ['no restore log'])[0]} | NBIRTH skew {round(skew, 1) if skew else None} s; "
+          f"SNTP before the NBIRTH: {bool(synced_early)}; shell {'ok' if shown else 'no'}; "
+          f"SNTP later {'yes' if synced else 'no'}")
+
+
+def modbus_rows(m):
+    """SPB-17: {device: {column: value}} of the 'Node Info/Modbus' DataSet."""
+    ds = m.dataset_value
+    return {row.elements[0].string_value: {c: spb_decode.value_of(e) for c, e in zip(ds.columns, row.elements)}
+            for row in ds.rows}
+
+
+def check_modbus_tcp_table(obs, ndata_t):
+    """Issue #81: the next diagnostics NDATA carries "Node Info/Modbus TCP" (alias 56) with the
+    same per-unit counters the shell shows after check_modbus_tcp (#69): Meter1 2 OK, Dead3 3
+    timeouts, units without a device none, and the poll table unchanged in its columns."""
+    obs.drain()
+    nd = obs.wait(ndata_t, 13, lambda q: metric(q, alias=56) is not None)
+    m = metric(nd[2], alias=56) if nd else None
+    ds = m.dataset_value if m is not None else None
+    rows = {r.elements[0].string_value: {c: spb_decode.value_of(e) for c, e in zip(ds.columns, r.elements)}
+            for r in ds.rows} if ds is not None else {}
+    meter, dead, other = rows.get("Meter1", {}), rows.get("Dead3", {}), rows.get("(other units)", {})
+    ok = ds is not None and list(ds.columns) == ["Device", "Unit", "Online", "OK", "Timeout", "CRC",
+                                                 "Frame", "Exception"] \
+        and list(rows) == ["Meter1", "Bulk", "Dead3", "Dead4", "Dead5", "(other units)"] \
+        and meter.get("Unit") == 1 and meter.get("Online") is True and meter.get("OK", 0) >= 2 \
+        and meter.get("Timeout") == 0 and dead.get("Unit") == 3 and dead.get("Online") is False \
+        and dead.get("OK") == 0 and dead.get("Timeout") == 3 and other.get("OK") == 0 \
+        and other.get("Timeout") == 0
+    check("Issue #81 'Node Info/Modbus TCP' DataSet (alias 56): a row per device with the Modbus TCP "
+          "requests forwarded to its unit and one for units without a device, as in the shell (#69)",
+          ok, f"Meter1 {meter}; Dead3 {dead}; other {other}; rows {list(rows)}")
+
+
+def check_diagnostics(obs, nbirth, ndata_t):
+    """SPB-17 / MB-13: NBIRTH with Uptime, Free Heap, Min Free Heap (no RSSI: no Wi-Fi in QEMU) and
+    the Modbus DataSet (a row per device, counters of the dead units too); then, with
+    sparkplug.diagnostics_s = 10, an NDATA every 10 s with uptime and heap, and the DataSet
+    because the counters keep moving."""
+    up = metric(nbirth, name="Node Info/Uptime")
+    heap = metric(nbirth, name="Node Info/Free Heap")
+    low = metric(nbirth, name="Node Info/Min Free Heap")
+    mb = metric(nbirth, name="Node Info/Modbus")
+    rows = modbus_rows(mb) if mb is not None and mb.datatype == 16 else {}
+    birth_ok = up is not None and up.datatype == 8 and up.alias == 50 and heap is not None \
+        and heap.datatype == 7 and heap.int_value > 10000 and low is not None \
+        and low.int_value <= heap.int_value and metric(nbirth, name="Node Info/RSSI") is None \
+        and list(rows) == ["Meter1", "Bulk", "Dead3", "Dead4", "Dead5"] \
+        and list(mb.dataset_value.columns) == ["Device", "Online", "Cycles", "Failed Cycles", "OK",
+                                               "Timeout", "CRC", "Frame", "Exception"]
+    obs.drain()
+    is_diag = lambda q: metric(q, alias=50) is not None  # noqa: E731
+    first = obs.wait(ndata_t, 13, is_diag)
+    second = obs.wait(ndata_t, 13, is_diag)
+    gap = second[0] - first[0] if first and second else None
+    u1 = metric(first[2], alias=50).long_value if first else None
+    u2 = metric(second[2], alias=50).long_value if second else None
+    ds = metric(second[2], alias=54) if second else None
+    later = modbus_rows(ds) if ds is not None else {}
+    m1, d3 = later.get("Meter1", {}), later.get("Dead3", {})
+    ok = birth_ok and gap is not None and 9.0 <= gap <= 11.5 and u2 - u1 in (9, 10, 11) \
+        and m1.get("Online") is True and m1.get("OK", 0) > rows.get("Meter1", {}).get("OK", 0) \
+        and d3.get("Online") is False and d3.get("Timeout", 0) > 0
+    check("SPB-17 / MB-13 node diagnostics: NBIRTH Uptime/Free Heap/Min Free Heap and the 'Node "
+          "Info/Modbus' DataSet (one row per device, dead units too); NDATA every diagnostics_s (10 s), "
+          "uptime moving, counters updated", ok,
+          f"NBIRTH uptime {up.long_value if up else None} s, heap {heap.int_value if heap else None} B "
+          f"(min {low.int_value if low else None}), rows {list(rows)}; NDATA gap "
+          f"{round(gap, 2) if gap else None} s, uptime {u1} -> {u2}; Meter1 {m1}; Dead3 {d3}")
 
 
 def int64_of(m):
@@ -2243,7 +2576,7 @@ def check_mb6_writes(obs, slave, dcmd_t, ddata_t):
           f"slave writes {slave.ctx.writes}, holding 60 = {reg60:#06x}, DDATA {seen}")
 
 
-def run_network_variant(args, work):
+def run_network_variant(args, work, slave):
     """Optional network keys on the emulator, in one boot with a separate edge node id (its
     messages stay apart from the main scenario's):
       * NET-4: no Wi-Fi radio (CONFIG_GW_WIFI=n): a configuration that enables network.wifi still
@@ -2251,7 +2584,12 @@ def run_network_variant(args, work):
       * NET-7: slirp announces fec0::/64 and answers ICMPv6 for its virtual host fec0::2. The
         gateway must get a link-local address, a SLAAC address and the static one, and reach
         fec0::2 over IPv6. MQTT over IPv6 cannot be tested here: slirp would relay it to the
-        host's ::1 and this container's kernel has no IPv6 (AF_INET6 is not supported)."""
+        host's ::1 and this container's kernel has no IPv6 (AF_INET6 is not supported).
+      * SPB-19: a "bytes" tag (device Raw, unit 1 holding 220-222) is a Bytes metric with the raw
+        register bytes, and a DCMD with Bytes writes them back (FC16).
+      * SPB-18: two devices of type "Pump" (PumpA and PumpB, both on unit 1 so that unit 2 keeps
+        the single FC03 the main scenario checks, at holding 230 and 231): one template
+        definition in the NBIRTH, an instance per DBIRTH, a DCMD member write and its DDATA."""
     node = "GW02"
     cfg = json.loads(config_json())
     cfg["sparkplug"]["edge_node_id"] = node
@@ -2260,6 +2598,18 @@ def run_network_variant(args, work):
                       "wifi": {"enabled": True, "ssid": "Plant WLAN", "password": "12345678",
                                "role": "backup", "failback_s": 30}}
     cfg["modbus_tcp"] = {"enabled": True, "allowed_clients": ["192.0.2.0/24"]}
+    cfg["devices"].append({"name": "Raw", "unit_id": 1, "poll_ms": 500, "tags": [
+        {"name": "Block", "area": "holding", "address": 220, "type": "bytes", "length": 3,
+         "writable": True}]})
+    slave.ctx.setValues(3, 220, [0x00FF, 0x1000, 0x7F80])
+    for k in (0, 1):
+        cfg["devices"].append({"name": f"Pump{'AB'[k]}", "unit_id": 1, "type": "Pump",
+                               "poll_ms": 500, "tags": [
+            {"name": "Speed", "area": "holding", "address": 230 + k, "type": "uint16", "units": "rpm",
+             "writable": True},
+            {"name": "Run", "area": "coil", "address": 5 + k, "type": "bool"}]})
+        slave.ctx.setValues(3, 230 + k, [1450 + 10 * k])
+        slave.ctx.setValues(1, 5 + k, [True])
     flash = flash_variant(args, work, "network", {"config.json": json.dumps(cfg, indent=2).encode()})
     obs = Observer()
     gw = Gateway(args, work / "uart0-network.log", flash)
@@ -2293,6 +2643,16 @@ def run_network_variant(args, work):
                           3, asked_tcp)
     _, h = gw.shell("devices", [r"^modbus_tcp connections 0 accepted 1 rejected \| forwarded 0 "])
     counted = all(h.values())
+    # SPB-19 Bytes
+    raw_birth = obs.wait(f"{T}/DBIRTH/{node}/Raw", 15)
+    block = metric(raw_birth[2], name="Block") if raw_birth else None
+    obs.drain()
+    written_from = len(slave.ctx.writes)
+    obs.publish_cmd(f"{T}/DCMD/{node}/Raw", [{"name": "Block", "datatype": 17,
+                                              "bytes_value": b"\xde\xad\xbe\xef\x01\x02"}])
+    raw_data = obs.wait(f"{T}/DDATA/{node}/Raw", 5)
+    writes = slave.ctx.writes[written_from:]
+    tmpl = check_templates_gw02(obs, slave, node, nb)
     gw.kill()
     obs.wait(f"{T}/NDEATH/{node}", 5)   # the will, before the main scenario starts
     obs.close()
@@ -2305,11 +2665,67 @@ def run_network_variant(args, work):
           "disconnected without an answer and counted as rejected (#69)", denied == b"" and refused
           and counted,
           f"answer {denied!r}; {(gw.find(r'mbtcp: connection from', asked_tcp) or ['no log'])[0]}")
+    got = raw_data[2].metrics[0].bytes_value if raw_data and raw_data[2].metrics else None
+    check("SPB-19 'bytes' tag: Bytes metric (17) with the raw register bytes (NUL included) in the "
+          "DBIRTH; DCMD with Bytes -> one FC16 of the 3 registers and DDATA with the new bytes",
+          block is not None and block.datatype == 17 and block.bytes_value == b"\x00\xff\x10\x00\x7f\x80"
+          and writes == [(16, 220, [0xDEAD, 0xBEEF, 0x0102])] and got == b"\xde\xad\xbe\xef\x01\x02",
+          f"DBIRTH {block.datatype if block else None} {block.bytes_value.hex() if block else None}; "
+          f"writes {writes}; DDATA {got.hex() if got else None}")
+    check("SPB-18 device type 'Pump': one template definition in the NBIRTH (no alias, members "
+          "Speed UInt16 'rpm' and Run Boolean), an instance per DBIRTH (template_ref, values, "
+          "Quality), DCMD on a member -> FC06 and DDATA with the instance and that member only",
+          tmpl[0], tmpl[1])
     check("NET-7 IPv6 on Ethernet: link-local, SLAAC (fec0::/64 from slirp's RA) and static "
           "address, shown by the shell; ICMPv6 echo to fec0::2 answered",
           lla and slaac and static and listed and cfg6 and replies,
           " | ".join(gw.find(r"net: ethernet: IPv6 ", t0)[:4]) + " | "
           + " | ".join(gw.find(r"^ipv6\s|reply from|sent, \d+ received", asked6)))
+
+
+def check_templates_gw02(obs, slave, node, nb):
+    """SPB-18 on the GW02 boot (see run_network_variant). Returns (ok, detail)."""
+    defs = [m for m in nb[2].metrics if m.datatype == 19] if nb else []
+    d = defs[0] if defs else None
+    members = [(mm.name, mm.datatype, props(mm).get("engUnit")) for mm in d.template_value.metrics] if d else []
+    def_ok = len(defs) == 1 and d.name == "Pump" and not d.HasField("alias") \
+        and d.template_value.is_definition and not d.template_value.template_ref \
+        and members == [("Speed", 6, "rpm"), ("Run", 11, None)]
+    births = {}
+    for name in ("PumpA", "PumpB"):
+        b = next((m for m in CAPTURE if m[1] == f"{T}/DBIRTH/{node}/{name}"), None) \
+            or obs.wait(f"{T}/DBIRTH/{node}/{name}", 10)
+        births[name] = b
+    inst = {}
+    for name, b in births.items():
+        m = b[2].metrics[0] if b and len(b[2].metrics) == 1 else None
+        if m is not None and m.datatype == 19 and m.template_value.template_ref == "Pump" \
+                and not m.template_value.is_definition:
+            inst[name] = {mm.name: (spb_decode.value_of(mm), props(mm).get("Quality"))
+                          for mm in m.template_value.metrics}
+    inst_ok = inst.get("PumpA") == {"Speed": (1450, 192), "Run": (True, 192)} \
+        and inst.get("PumpB") == {"Speed": (1460, 192), "Run": (True, 192)}
+    # DCMD: the instance metric with one member, by name
+    p = spb.Payload()
+    p.timestamp = int(time.time() * 1000)
+    m = p.metrics.add()
+    m.name, m.datatype = "Pump", 19
+    m.template_value.template_ref = "Pump"
+    mm = m.template_value.metrics.add()
+    mm.name, mm.datatype, mm.int_value = "Speed", 6, 1234
+    obs.drain()
+    before = len(slave.ctx.writes)
+    obs.c.publish(f"{T}/DCMD/{node}/PumpA", p.SerializeToString(), qos=0)
+    dd = obs.wait(f"{T}/DDATA/{node}/PumpA", 5)
+    wrote = slave.ctx.writes[before:]
+    dm = dd[2].metrics[0] if dd and dd[2].metrics else None
+    alias = births["PumpA"][2].metrics[0].alias if births.get("PumpA") else None
+    data_ok = dm is not None and not dm.HasField("name") and dm.alias == alias and dm.datatype == 19 \
+        and [(x.name, x.int_value) for x in dm.template_value.metrics] == [("Speed", 1234)]
+    ok = def_ok and inst_ok and wrote == [(6, 230, [1234])] and data_ok
+    return ok, (f"definition {members} (alias {'yes' if d is not None and d.HasField('alias') else 'no'}); "
+                f"instances {inst}; DCMD writes {wrote}; DDATA "
+                f"{[(x.name, x.int_value) for x in dm.template_value.metrics] if dm else None}")
 
 
 def run_web(args, work):
@@ -2506,6 +2922,10 @@ def run_factory_reset(args, work):
     gw.console("boot 0")
     ap = gw.wait_log(r"button: BOOT pressed \d+ ms: commissioning access point", 3, t_short)
     ap_try = gw.wait_log(r"ap: commissioning access point not available in this build", 3, t_short)
+    # Issue #74: DO/1 on before the reset (the simulated TCA9554 keeps its latch across the warm
+    # restart), and the expander silent for the first 13 s of the next boot
+    lit = set_do(obs, f"{T}/NCMD/{node}", f"{T}/NDATA/{node}", {1: True})
+    gw.shell("expander absent 13000", [r"expander silent for 13000 ms after the next boot"])
     obs.drain()
     pressed = time.monotonic()
     gw.console("boot 1")
@@ -2535,8 +2955,10 @@ def run_factory_reset(args, work):
     st_old, _, _ = wait_http("/api/status", 20)                    # the old web password is gone
     st, _, body = http("GET", "/api/status", auth=("admin", pw or "?"))
     status = as_json(body) or {}
-    _, h = gw.shell("status", [r"^config\s+NONE: commissioning after a factory reset"])
-    shell = list(h.values())[0]
+    _, h = gw.shell("status", [r"^config\s+NONE: commissioning after a factory reset",
+                               r"^local\s+DI 0x00, DO unknown: output expander not answering \(retrying"])
+    shell, shell_unknown = h.values()
+    io0 = status.get("io", {})
     time.sleep(4)
     births = [m for m in CAPTURE if m[0] >= t1 and "/NBIRTH/" in m[1]]
     led = gw.find(r"led: status: commissioning", t1 - 5)
@@ -2547,6 +2969,23 @@ def run_factory_reset(args, work):
           f"old password -> {st_old}; commissioning password {'read' if pw else 'missing'}; "
           f"/api/status {st} mode {status.get('mode')!r}; shell {bool(shell)}; NBIRTHs {len(births)}; "
           f"LED {bool(led)}")
+    # Issue #74: retried in commissioning too, with every DO off as the target
+    answered = gw.wait_log(r"io: TCA9554 answered on attempt \d+: DOs available, all off \(no valid "
+                           r"configuration\)", 25, t1 - 5)
+    _, h = gw.shell("status", [r"^local\s+DI 0x00, DO 0x00 "])
+    shell_off = list(h.values())[0]
+    st3, _, body3 = http("GET", "/api/status", auth=("admin", pw or "?"))
+    io1 = (as_json(body3) or {}).get("io", {})
+    absent = gw.find(r"io: TCA9554 at 0x20 not responding", t1 - 5)
+    check("Issue #74 commissioning / recovery boot with the DO expander absent: DOs unknown "
+          "(shell, /api/status do null), the expander is retried and, once it answers, every DO "
+          "is switched off (DO/1 was on before the reset, the latch kept it)",
+          lit and absent and shell_unknown and io0.get("do") is None and io0.get("do_unknown") is True
+          and io0.get("expander", {}).get("retrying") is True and answered and shell_off
+          and st3 == 200 and io1.get("do") == 0 and io1.get("do_unknown") is False,
+          f"DO/1 on before: {bool(lit)}; {(absent or ['no absent log'])[0]}; shell unknown "
+          f"{bool(shell_unknown)}; /api/status before {io0}; "
+          f"{(gw.find(r'io: TCA9554 answered', t1 - 5) or ['never answered'])[0]}; after {io1}")
     new = json.loads(config_json())
     new["sparkplug"]["edge_node_id"] = node2
     st2, _, b2 = http("PUT", "/api/config", new, auth=("admin", pw or "?"))
@@ -2718,6 +3157,8 @@ def run(args, log, slave, broker, conf, work):
     check("SPB-7/SPB-12 DDATA by exception, alias only, deadband 0.1 respected", ok,
           f"0.05 V change -> {'DDATA' if quiet else 'nothing'}; 0.5 V change -> "
           f"{[(m.alias, round(m.float_value, 3)) for m in dd[2].metrics] if dd else 'nothing'}")
+    check_properties_and_quality(obs, slave, db, ddata_t)
+    check_diagnostics(obs, p, ndata_t)
 
     # 3. DI -> NDATA < 100 ms; NCMD DO/3
     obs.drain()
@@ -2817,6 +3258,7 @@ def run(args, log, slave, broker, conf, work):
     check("Issue #69 Modbus TCP counters: forwarded transactions per unit, gateway connections, "
           "forwarded requests and its own exceptions (shell 'devices')", all(h.values()),
           " | ".join(gw.find(r"^(Meter1|Dead3)\s+unit|^modbus_tcp", asked)) or "no answer")
+    check_modbus_tcp_table(obs, ndata_t)
 
     # 2. Slave off -> DDEATH; back on -> DBIRTH
     obs.drain()
@@ -3030,8 +3472,10 @@ def run(args, log, slave, broker, conf, work):
     pulse = obs.wait(ndata_t, 3, lambda q: counter_of(q) is not None)
     since_reboot = time.monotonic()
 
-    # SPB-2 orderly disconnect: NCMD Reboot -> explicit NDEATH, then reboot
+    # SPB-2 orderly disconnect: NCMD Reboot -> explicit NDEATH, then reboot. TIME-2: with SNTP
+    # silent from here on, the next boot takes its time from the RTC.
     obs.drain()
+    SNTP_PAUSED.set()
     obs.publish_cmd(ncmd_t, [{"name": "Node Control/Reboot", "datatype": 11, "boolean_value": True}])
     nd = obs.wait(ndeath_t, 10)
     time.sleep(0.5)
@@ -3064,17 +3508,19 @@ def run(args, log, slave, broker, conf, work):
           and reason1.string_value == "software",
           f"first boot {reason0.string_value if reason0 else None!r}, after reboot "
           f"{reason1.string_value if reason1 else None!r}")
+    check_rtc(gw, obs, nb, t0, since_reboot, ndata_t, nb0[0][2])
+    check_status_api(gw, since_reboot)
     check_panic_during_traffic(gw, obs, slave, nbirth_t)
 
     # Issue #12 / REL-1: a panic writes a core dump to the "coredump" partition, the gateway
     # restarts ("panic" in NBIRTH) and the dump decodes with esp_coredump against the ELF.
-    # QEMU does not seem to stall the other core during the panic handler as the chip does: a
-    # task on it (the 1 kHz DI sampling, for one) can change a stack between the two passes of
-    # the ELF writer, and the dump then fails its checksum. Up to 3 panics; every one must save
-    # a dump and restart with "panic", and at least one dump must decode.
+    # Issue #62: QEMU does not emulate the stall of the other core that the panic handler asks
+    # for, so a task running there could change the task list and stacks while the ELF writer
+    # walks them (truncated dumps, wrong checksums, nested aborts). The emulator's 'panic'
+    # parks the other core first, as the chip's stall does: one panic, and its dump must decode.
     off, size = storage_partition("coredump")
     attempts = []
-    for n in range(3):
+    for n in range(args.panics):
         obs.drain()
         since = time.monotonic()
         gw.console("panic")
@@ -3086,17 +3532,14 @@ def run(args, log, slave, broker, conf, work):
         info = subprocess.run([args.idf_python, "-m", "esp_coredump", "--chip", "esp32s3",
                                "info_corefile", "--core", str(core), "--core-format", "raw", args.elf],
                               capture_output=True, text=True, timeout=120)
-        decoded = info.returncode == 0 and "cmd_panic" in info.stdout and "abort" in info.stdout
-        if decoded or n == 0:
-            (work / "coredump-info.txt").write_text(info.stdout + info.stderr)
+        decoded = info.returncode == 0 and "panic_task" in info.stdout and "abort" in info.stdout
+        (work / "coredump-info.txt").write_text(info.stdout + info.stderr)
         err = (info.stderr.strip().splitlines() or [""])[-1][:90]
         attempts.append((bool(saved), reason.string_value if reason else None, decoded, err))
-        if decoded:
-            break
     gw.kill()
-    check("Issue #12 panic -> core dump in flash, restart with 'panic' reset reason, dump decodes "
-          "with esp_coredump (backtrace through cmd_panic/abort)",
-          all(a[0] and a[1] == "panic" for a in attempts) and attempts[-1][2],
+    check("Issue #12 / #62 one panic -> core dump in flash, restart with 'panic' reset reason, the "
+          "dump decodes with esp_coredump (backtrace through panic_task/abort), deterministically",
+          all(a[0] and a[1] == "panic" and a[2] for a in attempts),
           "; ".join(f"attempt {i + 1}: saved={a[0]} reset reason={a[1]!r} decoded={a[2]}"
                     f"{'' if a[2] else ' (' + a[3] + ')'}" for i, a in enumerate(attempts)))
 

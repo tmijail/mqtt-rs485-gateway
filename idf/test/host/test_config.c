@@ -702,6 +702,111 @@ static void test_mb6_tags(void)
                     "scale/offset no se admiten en tags bool");
 }
 
+/* SPB-16: engineering range of a tag (units already existed). */
+static void test_eng_range(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse_tag("{\"name\":\"a\",\"area\":\"input\",\"address\":0,\"type\":\"float32\","
+                  "\"units\":\"degC\",\"eng_low\":-40,\"eng_high\":125.5},"
+                  "{\"name\":\"b\",\"area\":\"input\",\"address\":2,\"type\":\"uint16\","
+                  "\"eng_high\":100},"
+                  "{\"name\":\"c\",\"area\":\"input\",\"address\":3,\"type\":\"uint16\"}"),
+        err.msg);
+    TEST_ASSERT_EQUAL_STRING("degC", cfg.tags[0].units);
+    TEST_ASSERT_TRUE(cfg.tags[0].has_eng_low);
+    TEST_ASSERT_EQUAL_DOUBLE(-40, cfg.tags[0].eng_low);
+    TEST_ASSERT_TRUE(cfg.tags[0].has_eng_high);
+    TEST_ASSERT_EQUAL_DOUBLE(125.5, cfg.tags[0].eng_high);
+    TEST_ASSERT_FALSE(cfg.tags[1].has_eng_low);
+    TEST_ASSERT_TRUE(cfg.tags[1].has_eng_high);
+    TEST_ASSERT_FALSE(cfg.tags[2].has_eng_low);
+    TEST_ASSERT_FALSE(cfg.tags[2].has_eng_high);
+
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
+                              "\"eng_low\":10,\"eng_high\":10}"),
+                    "devices[0].tags[0].eng_high: debe ser mayor que eng_low (10)");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
+                              "\"eng_low\":\"0\"}"),
+                    "devices[0].tags[0].eng_low: se esperaba un número");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"coil\",\"address\":0,\"type\":\"bool\","
+                              "\"eng_high\":1}"),
+                    "devices[0].tags[0].eng_high: no se admite en tags bool");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"string\","
+                              "\"length\":2,\"eng_low\":1}"),
+                    "devices[0].tags[0].eng_low: no se admite en tags string");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
+                              "\"eng_high\":1e39}"),
+                    "devices[0].tags[0].eng_high: fuera del rango de un Float");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
+                              "\"units\":\"0123456789abcdef\"}"),
+                    "devices[0].tags[0].units");
+}
+
+/* SPB-19: bytes tags are like strings without the text processing. */
+static void test_bytes_tags(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse_tag("{\"name\":\"raw\",\"area\":\"holding\",\"address\":0,\"type\":\"bytes\","
+                  "\"length\":16,\"writable\":true,\"word_order\":\"BADC\"}"),
+        err.msg);
+    TEST_ASSERT_EQUAL(GW_TYPE_BYTES, cfg.tags[0].type);
+    TEST_ASSERT_EQUAL(16, gw_tag_width(&cfg.tags[0]));
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"bytes\"}"),
+                    "devices[0].tags[0].length: obligatorio con type=bytes");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"bytes\","
+                              "\"length\":2,\"deadband\":1}"),
+                    "deadband: no se admite en tags bytes");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"bytes\","
+                              "\"length\":2,\"scale\":2}"),
+                    "scale/offset no se admiten en tags bytes");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"coil\",\"address\":0,\"type\":\"bytes\","
+                              "\"length\":2}"),
+                    "las áreas coil/discrete solo admiten type=bool");
+}
+
+/* SPB-18: devices of a type have the same tags; the definitions stay bounded. */
+static void test_device_types(void)
+{
+    static const char ok[] =
+        "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+        "\"devices\":["
+        "{\"name\":\"A\",\"unit_id\":1,\"type\":\"Meter\",\"tags\":[{\"name\":\"v\",\"area\":\"input\","
+        "\"address\":0,\"type\":\"uint16\"}]},"
+        "{\"name\":\"B\",\"unit_id\":2,\"type\":\"Meter\",\"tags\":[{\"name\":\"v\",\"area\":\"holding\","
+        "\"address\":7,\"type\":\"uint16\",\"units\":\"V\"}]},"
+        "{\"name\":\"C\",\"unit_id\":3,\"tags\":[{\"name\":\"v\",\"area\":\"input\","
+        "\"address\":0,\"type\":\"int16\"}]}]}";
+    TEST_ASSERT_TRUE_MESSAGE(parse(ok), err.msg);   /* area, address and units may differ */
+    TEST_ASSERT_EQUAL_STRING("Meter", cfg.devices[1].type);
+    TEST_ASSERT_EQUAL_STRING("", cfg.devices[2].type);
+
+    char doc[1024];
+    snprintf(doc, sizeof(doc), "%s", ok);
+    char *t = strstr(doc, "\"address\":7,\"type\":\"uint16\"");
+    memcpy(t + strlen("\"address\":7,\"type\":\""), "uint32", 6);   /* other datatype */
+    ASSERT_REJECTED(parse(doc), "devices[1].type: el tipo 'Meter' ya lo define devices[0] (A)");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+                          "\"devices\":[{\"name\":\"A\",\"unit_id\":1,\"type\":\"M/1\",\"tags\":[{\"name\":\"v\","
+                          "\"area\":\"input\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+                    "devices[0].type: carácter no permitido '/'");
+
+    /* the definitions together: at most GW_MAX_TEMPLATE_TAGS tags */
+    static char big[16384];
+    size_t n = (size_t)snprintf(big, sizeof(big), "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":"
+                                "{\"group_id\":\"G\",\"edge_node_id\":\"E\"},\"devices\":[");
+    for (int d = 0; d < 3; d++) {
+        n += (size_t)snprintf(big + n, sizeof(big) - n, "%s{\"name\":\"D%d\",\"unit_id\":1,"
+                              "\"type\":\"T%d\",\"tags\":[", d ? "," : "", d, d);
+        for (int k = 0; k < 30; k++) {
+            n += (size_t)snprintf(big + n, sizeof(big) - n, "%s{\"name\":\"t%d\",\"area\":\"input\","
+                                  "\"address\":%d,\"type\":\"uint16\"}", k ? "," : "", k, k);
+        }
+        n += (size_t)snprintf(big + n, sizeof(big) - n, "]}");
+    }
+    snprintf(big + n, sizeof(big) - n, "]}");
+    ASSERT_REJECTED(parse(big), "devices[2].type: los tipos de dispositivo describen más de 64 tags");
+}
+
 /* Issue #38: block reads per device. */
 static void test_device_block_reads(void)
 {
@@ -1110,6 +1215,9 @@ int main(void)
     RUN_TEST(test_error_fields);
     RUN_TEST(test_schema_rules);
     RUN_TEST(test_mb6_tags);
+    RUN_TEST(test_eng_range);
+    RUN_TEST(test_bytes_tags);
+    RUN_TEST(test_device_types);
     RUN_TEST(test_device_block_reads);
     RUN_TEST(test_scan_classes);
     RUN_TEST(test_modbus_tcp_section);

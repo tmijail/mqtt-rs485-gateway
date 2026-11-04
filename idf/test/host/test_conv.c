@@ -280,6 +280,32 @@ static void test_strings(void)
     TEST_ASSERT_EQUAL(GW_STR_MAX, strlen(v.str));
 }
 
+/* SPB-19: a bytes tag carries its registers as raw bytes (NUL and non-ASCII included). */
+static void test_bytes(void)
+{
+    gw_tag_cfg_t t = tag(GW_TYPE_BYTES, GW_WORD_BIG, 1, 0);
+    t.length = 3;
+    TEST_ASSERT_EQUAL(SPB_DT_BYTES, gw_conv_datatype(&t));
+    TEST_ASSERT_EQUAL(GW_VK_BYTES, gw_conv_kind(&t));
+    TEST_ASSERT_EQUAL(3, gw_tag_width(&t));
+    uint16_t r[3] = {0x00FF, 0x1234, 0x8000};
+    gw_tag_value_t v;
+    gw_conv_decode(&t, r, &v);
+    const uint8_t big[6] = {0x00, 0xFF, 0x12, 0x34, 0x80, 0x00};
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(big, v.str, 6);
+    char text[16];
+    gw_conv_format(&t, &v, text, sizeof(text));
+    TEST_ASSERT_EQUAL_STRING("00ff12348000", text);
+    t.word_order = GW_WORD_DCBA;                  /* bytes swapped in each register only */
+    gw_conv_decode(&t, r, &v);
+    const uint8_t swapped[6] = {0xFF, 0x00, 0x34, 0x12, 0x00, 0x80};
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(swapped, v.str, 6);
+    uint16_t out[3];
+    TEST_ASSERT_EQUAL(GW_CONV_OK, gw_conv_encode(&t, &v, out));
+    TEST_ASSERT_EQUAL_HEX16_ARRAY(r, out, 3);    /* round trip */
+    TEST_ASSERT_FALSE(gw_conv_from_double(&t, 1.0, &v));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -293,5 +319,6 @@ int main(void)
     RUN_TEST(test_64bit_exact_and_orders);
     RUN_TEST(test_float64);
     RUN_TEST(test_strings);
+    RUN_TEST(test_bytes);
     return UNITY_END();
 }

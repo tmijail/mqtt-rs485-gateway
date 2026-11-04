@@ -72,6 +72,13 @@ static void on_ip_changed(bool up)
     gw_log_notify_network(up);
 }
 
+/* TIME-1/TIME-2: every SNTP synchronisation also sets the RTC. */
+static void on_time_synced(void)
+{
+    gw_edge_notify_time_synced();
+    gw_io_rtc_store();
+}
+
 static void on_device_updated(uint16_t dev)
 {
     gw_edge_notify_device(dev);
@@ -222,6 +229,11 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
 {
     s_mode = mode;
     gw_io_outputs_all_off();   /* IO-3: "hold" belonged to a configuration that is not valid */
+    /* issue #74: an expander that did not answer at boot is retried here too, to switch off
+     * whatever its latch kept from before a warm reset */
+    if (gw_io_start_recovery() != ESP_OK) {
+        ESP_LOGE(TAG, "local I/O task unavailable: the output expander is not retried");
+    }
     uint8_t alarm = 0;
     if (mode == GW_WEB_RECOVERY && gw_storage_get_blob(NVS_ALARM_CFG, &alarm, 1) && alarm) {
         gw_buzzer_configure(GW_ALARM_BIT(GW_ALARM_CONFIG_ERROR), 0);   /* IO-6 */
@@ -241,7 +253,8 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     const gw_net_callbacks_t net_cb = {
-        .ip_changed = net_down_noop, .route_changed = net_noop, .time_synced = net_noop};
+        .ip_changed = net_down_noop, .route_changed = net_noop,
+        .time_synced = gw_io_rtc_store};   /* TIME-2: the RTC follows SNTP here too */
     if (gw_net_start(s_cfg, &net_cb) != ESP_OK) {
         ESP_LOGE(TAG, "recovery network unavailable: only the console shell is left");
     } else {
@@ -312,6 +325,7 @@ void app_main(void)
         ESP_LOGE(TAG, "digital outputs unavailable: published as null and DO commands refused "
                       "until the expander answers");
     }
+    gw_io_rtc_restore();   /* TIME-2: a valid time before the network, if the RTC kept it */
 
     esp_chip_info_t chip;
     esp_chip_info(&chip);
@@ -383,7 +397,7 @@ void app_main(void)
     const gw_net_callbacks_t net_cb = {
         .ip_changed = on_ip_changed,
         .route_changed = gw_edge_notify_route,
-        .time_synced = gw_edge_notify_time_synced,
+        .time_synced = on_time_synced,
     };
     ESP_ERROR_CHECK(gw_net_start(s_cfg, &net_cb));
     gw_shell_mark_up(GW_SHELL_UP_NET);

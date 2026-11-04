@@ -77,6 +77,10 @@ void gw_sf_push(gw_sf_t *sf, uint8_t dev, uint16_t metric, double value, bool is
 void gw_sf_push_u64(gw_sf_t *sf, uint8_t dev, uint16_t metric, uint64_t bits, bool is_null,
                     uint64_t ts_ms);
 
+/** Append @p len raw bytes (SPB-19 Bytes; NUL included, at most 255 kept). */
+void gw_sf_push_bytes(gw_sf_t *sf, uint8_t dev, uint16_t metric, const void *data, size_t len,
+                      bool is_null, uint64_t ts_ms);
+
 /** Append a string sample (at most 255 bytes are kept). */
 void gw_sf_push_str(gw_sf_t *sf, uint8_t dev, uint16_t metric, const char *s, bool is_null,
                     uint64_t ts_ms);

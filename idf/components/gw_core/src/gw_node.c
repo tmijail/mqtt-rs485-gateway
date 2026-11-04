@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "gw_conv.h"
+#include "gw_mbap.h"
 #include "gw_port.h"
 
 static const char *TAG = "spb";
@@ -27,6 +28,32 @@ static const char *const k_count_names[GW_NODE_IO_COUNT] = {
 #define NAME_FW_UPDATE "Node Control/Firmware Update"
 #define NAME_FW_STATE "Firmware Update/State"
 #define NAME_FW_PROGRESS "Firmware Update/Progress"
+#define NAME_UPTIME   "Node Info/Uptime"
+#define NAME_FREE_HEAP "Node Info/Free Heap"
+#define NAME_MIN_HEAP "Node Info/Min Free Heap"
+#define NAME_RSSI     "Node Info/RSSI"
+#define NAME_MODBUS   "Node Info/Modbus"
+#define NAME_TIME_SYNCED "Node Info/Time Synced"
+#define NAME_MODBUS_TCP "Node Info/Modbus TCP"
+
+/* Issue #81: "Node Info/Modbus TCP", the Modbus TCP gateway's forwarded requests per device
+ * (gw_dev_stats_t.tcp, #69) and a last row for units with no device. A table of its own rather
+ * than a transport column in "Node Info/Modbus": that table keeps its columns for the hosts
+ * that read it, the poll columns (cycles) mean nothing for forwarded requests, and this one
+ * exists only when the gateway is enabled. */
+static const char *const k_tcp_cols[] = {"Device", "Unit", "Online", "OK", "Timeout", "CRC",
+                                         "Frame", "Exception"};
+static const uint32_t k_tcp_types[] = {SPB_DT_STRING, SPB_DT_UINT32, SPB_DT_BOOLEAN,
+                                       SPB_DT_UINT32, SPB_DT_UINT32,  SPB_DT_UINT32,
+                                       SPB_DT_UINT32, SPB_DT_UINT32};
+#define OTHER_UNITS "(other units)"
+
+/* SPB-17 / MB-13: "Node Info/Modbus", one row per device. */
+static const char *const k_mb_cols[] = {"Device", "Online", "Cycles", "Failed Cycles", "OK",
+                                        "Timeout", "CRC", "Frame", "Exception"};
+static const uint32_t k_mb_types[] = {SPB_DT_STRING, SPB_DT_BOOLEAN, SPB_DT_UINT32,
+                                      SPB_DT_UINT32, SPB_DT_UINT32,  SPB_DT_UINT32,
+                                      SPB_DT_UINT32, SPB_DT_UINT32,  SPB_DT_UINT32};
 
 /* ---------- helpers ---------- */
 
@@ -38,6 +65,12 @@ void gw_node_init(gw_node_t *n, const gw_config_t *cfg, const gw_node_ops_t *ops
     n->ops = *ops;
     n->info = *info;
     strcpy(n->fw_state, "idle");
+}
+
+void gw_node_set_buffer(gw_node_t *n, uint8_t *buf, size_t cap)
+{
+    n->buf = buf;
+    n->buf_cap = cap;
 }
 
 bool gw_node_topic(const gw_node_t *n, const char *type, const char *device, char *out, size_t cap)
@@ -62,7 +95,7 @@ static int publish_rc(gw_node_t *n, const char *type, const char *device, size_t
         .metrics = n->metrics,
         .metric_count = metric_count,
     };
-    size_t len = spb_encode(&p, n->buf, sizeof(n->buf));
+    size_t len = n->buf != NULL ? spb_encode(&p, n->buf, n->buf_cap) : 0;
     if (len == 0 || !gw_node_topic(n, type, device, n->topic, sizeof(n->topic))) {
         GW_LOGE(TAG, "%s%s%s: payload does not fit", type, device ? " " : "", device ? device : "");
         return -1;
@@ -105,6 +138,8 @@ static uint64_t rbe_key(const gw_tag_cfg_t *t, const gw_tag_value_t *v)
         return (uint64_t)v->i64;
     case GW_VK_UINT64:
         return v->u64;
+    case GW_VK_BYTES:
+        return gw_rbe_hash_bytes(v->str, 2u * t->length);
     default:
         return gw_rbe_hash(v->str);
     }
@@ -120,13 +155,42 @@ static void rbe_commit(gw_node_t *n, uint16_t tag, const gw_tag_value_t *v)
     }
 }
 
-/* @p v must stay valid until the metric is published (strings are referenced, not copied). */
-static void tag_metric(gw_node_t *n, size_t i, uint16_t tag, const gw_tag_value_t *v, bool birth)
+/* SPB-16 Quality of a value: GOOD when read, BAD when the read failed or the source is gone
+ * (the value is then also null). */
+static void set_quality(spb_metric_t *m, bool good)
+{
+    m->props.has_quality = true;
+    m->props.quality = good ? SPB_QUALITY_GOOD : SPB_QUALITY_BAD;
+}
+
+/* SPB-18: the device is published as a template instance. */
+static bool typed(const gw_node_t *n, uint16_t dev)
+{
+    return n->cfg->devices[dev].type[0] != '\0';
+}
+
+/* @p v must stay valid until the metric is published (strings are referenced, not copied).
+ * Births carry the tag's properties (SPB-16: engUnit, engLow, engHigh, Quality); DATA messages
+ * carry Quality only when it changes (a failed read, or the first good one after it). A
+ * template member (@p member, SPB-18) always carries its name and no alias. */
+static void tag_metric(gw_node_t *n, size_t i, uint16_t tag, const gw_tag_value_t *v, bool birth,
+                       bool member)
 {
     const gw_tag_cfg_t *t = &n->cfg->tags[tag];
-    spb_metric_t *m = metric(n, i, birth ? t->name : NULL, GW_ALIAS_TAG_BASE + tag,
+    spb_metric_t *m = metric(n, i, birth || member ? t->name : NULL, GW_ALIAS_TAG_BASE + tag,
                              gw_conv_datatype(t), v->ts_ms);
+    m->no_alias = member;
     m->is_null = !v->valid;
+    if (birth) {
+        m->props.eng_unit = t->units;
+        m->props.has_eng_low = t->has_eng_low;
+        m->props.eng_low = t->eng_low;
+        m->props.has_eng_high = t->has_eng_high;
+        m->props.eng_high = t->eng_high;
+    }
+    if (birth || !n->tag_rbe[tag].reported || n->tag_rbe[tag].valid != v->valid) {
+        set_quality(m, v->valid);
+    }
     gw_val_kind_t kind = gw_conv_kind(t);
     switch (kind) {
     case GW_VK_INT64:
@@ -137,6 +201,10 @@ static void tag_metric(gw_node_t *n, size_t i, uint16_t tag, const gw_tag_value_
         break;
     case GW_VK_STRING:
         m->v.str = v->str;
+        break;
+    case GW_VK_BYTES:
+        m->v.bytes.data = (const uint8_t *)v->str;
+        m->v.bytes.len = 2u * t->length;
         break;
     default:
         m->v.num = v->value;
@@ -169,6 +237,148 @@ size_t gw_node_death_payload(uint64_t bdseq, uint8_t *out, size_t cap)
     return spb_encode(&p, out, cap);
 }
 
+static size_t template_definitions(gw_node_t *n, size_t i, uint64_t now);
+
+/* ---------- SPB-17 diagnostics ---------- */
+
+static void mb_cell(const void *ctx, uint32_t row, uint32_t col, spb_value_t *out)
+{
+    const gw_node_t *n = ctx;
+    const gw_dev_stats_t *st = &n->diag_stats[row];
+    const uint32_t counters[] = {st->cycles,      st->failed_cycles, st->bus.ok,
+                                 st->bus.timeout, st->bus.crc,       st->bus.frame,
+                                 st->bus.exception};
+    if (col == 0) {
+        out->str = n->cfg->devices[row].name;
+    } else if (col == 1) {
+            out->num = (n->diag_online >> row) & 1u;
+    } else {
+        out->num = counters[col - 2];
+    }
+}
+
+static void tcp_cell(const void *ctx, uint32_t row, uint32_t col, spb_value_t *out)
+{
+    const gw_node_t *n = ctx;
+    bool other = row >= n->cfg->device_count;
+    const mb_stats_t *st = other ? &n->diag_tcp_other : &n->diag_stats[row].tcp;
+    const uint32_t counters[] = {st->ok, st->timeout, st->crc, st->frame, st->exception};
+    switch (col) {
+    case 0:
+        out->str = other ? OTHER_UNITS : n->cfg->devices[row].name;
+        break;
+    case 1:
+        out->num = other ? 0 : n->cfg->devices[row].unit_id;
+        break;
+    case 2:
+        out->num = other ? 0 : (n->diag_online >> row) & 1u;
+        break;
+    default:
+        out->num = counters[col - 3];
+        break;
+    }
+}
+
+/* Snapshot the counters the DataSet publishes (the encoder reads each cell more than once:
+ * they must not change meanwhile). Returns a hash of the snapshot. */
+static uint64_t mb_snapshot(gw_node_t *n)
+{
+    n->diag_online = 0;
+    for (uint16_t d = 0; d < n->cfg->device_count; d++) {
+        gw_tagdb_get_stats(d, &n->diag_stats[d]);
+        if (gw_tagdb_device_online(d)) {
+            n->diag_online |= 1u << d;
+        }
+    }
+    gw_mbap_stats_t g;
+    gw_mbap_stats_get(&g);
+    n->diag_tcp_other = g.other_units;
+    uint64_t h = gw_rbe_hash_bytes(n->diag_stats, n->cfg->device_count * sizeof(n->diag_stats[0]));
+    h ^= gw_rbe_hash_bytes(&n->diag_tcp_other, sizeof(n->diag_tcp_other)) * 31u;
+    return h ^ ((uint64_t)n->diag_online << 32);
+}
+
+/* Append the diagnostics to n->metrics from @p i (the Modbus DataSet only if @p modbus and the
+ * node has devices). Returns how many. */
+static size_t diag_metrics(gw_node_t *n, size_t i, uint64_t now, bool birth, bool modbus)
+{
+    if (n->ops.diagnostics == NULL) {
+        return 0;
+    }
+    gw_node_diag_t dg;
+    memset(&dg, 0, sizeof(dg));
+    n->ops.diagnostics(n->ops.ctx, &dg);
+    size_t k = i;
+    metric(n, k++, birth ? NAME_UPTIME : NULL, GW_ALIAS_UPTIME, SPB_DT_UINT64, now)->v.u64 =
+        dg.uptime_s;
+    metric(n, k++, birth ? NAME_FREE_HEAP : NULL, GW_ALIAS_FREE_HEAP, SPB_DT_UINT32, now)->v.num =
+        dg.free_heap;
+    metric(n, k++, birth ? NAME_MIN_HEAP : NULL, GW_ALIAS_MIN_HEAP, SPB_DT_UINT32, now)->v.num =
+        dg.min_free_heap;
+    if (birth) {
+        n->has_rssi = dg.has_rssi;
+    }
+    if (n->has_rssi) {
+        spb_metric_t *m = metric(n, k++, birth ? NAME_RSSI : NULL, GW_ALIAS_RSSI, SPB_DT_INT32, now);
+        m->v.num = dg.rssi;
+        m->is_null = !dg.rssi_valid;
+    }
+    if (modbus && n->cfg->device_count > 0) {
+        n->mb_ds = (spb_dataset_t){.columns = 9, .names = k_mb_cols, .types = k_mb_types,
+                                   .rows = n->cfg->device_count, .cell = mb_cell, .ctx = n};
+        metric(n, k++, birth ? NAME_MODBUS : NULL, GW_ALIAS_MODBUS, SPB_DT_DATASET, now)->v.ds =
+            &n->mb_ds;
+    }
+    if (modbus && n->cfg->modbus_tcp.enabled) {   /* #81 */
+        n->mbtcp_ds = (spb_dataset_t){.columns = 8, .names = k_tcp_cols, .types = k_tcp_types,
+                                      .rows = (uint32_t)n->cfg->device_count + 1u,
+                                      .cell = tcp_cell, .ctx = n};
+        metric(n, k++, birth ? NAME_MODBUS_TCP : NULL, GW_ALIAS_MODBUS_TCP, SPB_DT_DATASET, now)
+            ->v.ds = &n->mbtcp_ds;
+    }
+    return k - i;
+}
+
+void gw_node_set_time_synced(gw_node_t *n, bool synced)
+{
+    if (!n->online || synced == n->time_synced_reported) {
+        return;
+    }
+    n->time_synced_reported = synced;
+    metric(n, 0, NULL, GW_ALIAS_TIME_SYNCED, SPB_DT_BOOLEAN, gw_port_time_ms())->v.num = synced;
+    publish(n, "NDATA", NULL, 1, 0);
+}
+
+static void diag_schedule(gw_node_t *n, uint64_t now)
+{
+    uint32_t s = n->cfg->sparkplug.diagnostics_s;
+    n->diag_due_ms = s == 0 ? 0 : now + (uint64_t)s * 1000u;
+}
+
+uint32_t gw_node_diag_tick(gw_node_t *n, uint64_t now_ms)
+{
+    if (n->diag_restart) {
+        n->diag_restart = false;
+        diag_schedule(n, now_ms);
+    }
+    if (!n->online || n->diag_due_ms == 0) {
+        return UINT32_MAX;
+    }
+    if (now_ms < n->diag_due_ms) {
+        uint64_t left = n->diag_due_ms - now_ms;
+        return left < UINT32_MAX ? (uint32_t)left : UINT32_MAX - 1u;
+    }
+    diag_schedule(n, now_ms);
+    uint64_t h = mb_snapshot(n);
+    bool modbus = h != n->diag_hash;   /* rate limited: the counters only when they changed */
+    n->diag_hash = h;
+    size_t count = diag_metrics(n, 0, gw_port_time_ms(), false, modbus);
+    if (count > 0) {
+        publish(n, "NDATA", NULL, count, 0);
+    }
+    return n->cfg->sparkplug.diagnostics_s * 1000u;
+}
+
 static bool publish_nbirth(gw_node_t *n)
 {
     gw_local_io_t io;
@@ -198,6 +408,7 @@ static bool publish_nbirth(gw_node_t *n)
                                  io.do_ts_ms ? io.do_ts_ms : now);
         m->v.num = (io.dout >> k) & 1u;
         m->is_null = io.do_unknown;   /* the latch may hold anything: never claim "off" */
+        set_quality(m, !io.do_unknown);
     }
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         metric(n, i++, k_count_names[k], GW_ALIAS_COUNT_BASE + k, SPB_DT_UINT64,
@@ -208,19 +419,57 @@ static bool publish_nbirth(gw_node_t *n)
     n->di_reported = io.di;
     n->do_reported = io.dout;
     n->do_unknown_reported = io.do_unknown;
+    n->diag_hash = mb_snapshot(n);
+    i += diag_metrics(n, i, now, true, true);
+    if (n->ops.diagnostics != NULL) {   /* TIME-3 */
+        gw_node_diag_t dg;
+        memset(&dg, 0, sizeof(dg));
+        n->ops.diagnostics(n->ops.ctx, &dg);
+        n->time_synced_reported = dg.time_synced;
+        metric(n, i++, NAME_TIME_SYNCED, GW_ALIAS_TIME_SYNCED, SPB_DT_BOOLEAN, now)->v.num =
+            dg.time_synced;
+    }
+    n->diag_restart = true;   /* the period starts again at the next tick */
+    i += template_definitions(n, i, now);
     return publish(n, "NBIRTH", NULL, i, 0);
+}
+
+/* Publish @p dev's metrics: n->metrics[0..count) for a plain device; for a typed one (SPB-18)
+ * the members are n->metrics[1..count] and n->metrics[0] becomes their template instance. */
+/* Returns 0, GW_NODE_PUBLISH_TOO_LARGE or -1 (publish_rc). */
+static int publish_device_rc(gw_node_t *n, const char *type, uint16_t dev, size_t count,
+                             bool birth, bool historical)
+{
+    const gw_device_cfg_t *d = &n->cfg->devices[dev];
+    if (!typed(n, dev)) {
+        return publish_rc(n, type, d->name, count, 0);
+    }
+    n->tmpl = (spb_template_t){.ref = d->type, .is_definition = false, .count = (uint32_t)count,
+                               .members = &n->metrics[1]};
+    metric(n, 0, birth ? d->type : NULL, GW_ALIAS_TAG_BASE + d->first_tag, SPB_DT_TEMPLATE,
+           gw_port_time_ms())
+        ->v.tmpl = &n->tmpl;
+    n->metrics[0].is_historical = historical;   /* SPB-14: the instance of replayed members */
+    return publish_rc(n, type, d->name, 1, 0);
+}
+
+static bool publish_device(gw_node_t *n, const char *type, uint16_t dev, size_t count, bool birth,
+                           bool historical)
+{
+    return publish_device_rc(n, type, dev, count, birth, historical) == 0;
 }
 
 static void publish_dbirth(gw_node_t *n, uint16_t dev)
 {
     const gw_device_cfg_t *d = &n->cfg->devices[dev];
+    size_t base = typed(n, dev) ? 1 : 0;
     for (uint16_t i = 0; i < d->tag_count; i++) {
-        tag_metric(n, i, (uint16_t)(d->first_tag + i), &n->vals[i], true);
+        tag_metric(n, base + i, (uint16_t)(d->first_tag + i), &n->vals[i], true, base != 0);
     }
     /* born only if the DBIRTH went out (issue #73: it may be larger than the broker accepts):
      * no DDATA without it. Issue #76: one that is too large is not rebuilt on every change of
      * the device; the next session or rebirth tries again */
-    int r = publish_rc(n, "DBIRTH", d->name, d->tag_count, 0);
+    int r = publish_device_rc(n, "DBIRTH", dev, d->tag_count, true, false);
     n->dev_born[dev] = r == 0;
     if (r == GW_NODE_PUBLISH_TOO_LARGE) {
         n->dev_too_large[dev] = true;
@@ -228,6 +477,51 @@ static void publish_dbirth(gw_node_t *n, uint16_t dev)
                      "the next session or rebirth",
                 d->name);
     }
+}
+
+/* SPB-18 definition member @p i of a device type: name, datatype, a zero default value and
+ * the engineering properties; no Quality (a definition holds no reading). */
+static void def_member(const void *ctx, uint32_t i, spb_metric_t *out)
+{
+    const gw_node_def_ctx_t *c = ctx;
+    const gw_tag_cfg_t *t = &c->cfg->tags[c->cfg->devices[c->dev].first_tag + i];
+    memset(out, 0, sizeof(*out));
+    out->name = t->name;
+    out->no_alias = true;
+    out->datatype = gw_conv_datatype(t);
+    if (out->datatype == SPB_DT_STRING) {
+        out->v.str = "";
+    }
+    out->props.eng_unit = t->units;
+    out->props.has_eng_low = t->has_eng_low;
+    out->props.eng_low = t->eng_low;
+    out->props.has_eng_high = t->has_eng_high;
+    out->props.eng_high = t->eng_high;
+}
+
+/* SPB-18: one definition per device type, after the node's own metrics. Returns the count. */
+static size_t template_definitions(gw_node_t *n, size_t i, uint64_t now)
+{
+    size_t k = 0;
+    for (uint16_t dev = 0; dev < n->cfg->device_count; dev++) {
+        const gw_device_cfg_t *d = &n->cfg->devices[dev];
+        bool first = d->type[0] != '\0';
+        for (uint16_t j = 0; first && j < dev; j++) {
+            first = strcmp(n->cfg->devices[j].type, d->type) != 0;
+        }
+        if (!first) {
+            continue;
+        }
+        n->def_ctx[k].cfg = n->cfg;
+        n->def_ctx[k].dev = dev;
+        n->defs[k] = (spb_template_t){.ref = NULL, .is_definition = true, .count = d->tag_count,
+                                      .get = def_member, .ctx = &n->def_ctx[k]};
+        spb_metric_t *m = metric(n, i + k, d->type, 0, SPB_DT_TEMPLATE, now);
+        m->no_alias = true;
+        m->v.tmpl = &n->defs[k];
+        k++;
+    }
+    return k;
 }
 
 static void publish_ddeath(gw_node_t *n, uint16_t dev)
@@ -330,6 +624,10 @@ static void store_device(gw_node_t *n, uint16_t dev)
         case GW_VK_STRING:
             gw_sf_push_str(n->sf, (uint8_t)dev, tag, v->str, !v->valid, v->ts_ms);
             break;
+        case GW_VK_BYTES:   /* SPB-19: raw bytes, NUL included */
+            gw_sf_push_bytes(n->sf, (uint8_t)dev, tag, v->str, 2u * n->cfg->tags[tag].length,
+                             !v->valid, v->ts_ms);
+            break;
         default:
             gw_sf_push(n->sf, (uint8_t)dev, tag, v->value, !v->valid, v->ts_ms);
             break;
@@ -364,15 +662,16 @@ void gw_node_device_changed(gw_node_t *n, uint16_t dev)
         return;
     }
     const gw_device_cfg_t *d = &n->cfg->devices[dev];
+    size_t base = typed(n, dev) ? 1 : 0;
     size_t count = 0;
     for (uint16_t i = 0; i < d->tag_count; i++) {
         uint16_t tag = (uint16_t)(d->first_tag + i);
         if (tag_changed(n, tag, &n->vals[i])) {
-            tag_metric(n, count++, tag, &n->vals[i], false);
+            tag_metric(n, base + count++, tag, &n->vals[i], false, base != 0);
         }
     }
     if (count > 0) {
-        publish(n, "DDATA", d->name, count, 0);
+        publish_device(n, "DDATA", dev, count, false, false);
     }
 }
 
@@ -382,7 +681,8 @@ static void publish_io(gw_node_t *n, uint8_t force_do)
     gw_tagdb_get_io(&io);
     uint8_t di_changed = io.di ^ n->di_reported;
     uint8_t do_changed = (uint8_t)((io.dout ^ n->do_reported) | force_do);
-    if (io.do_unknown != n->do_unknown_reported) {
+    bool do_quality = io.do_unknown != n->do_unknown_reported;
+    if (do_quality) {
         do_changed = 0xFF;   /* expander lost or recovered: every DO changes (null <-> value) */
     }
     size_t count = 0;
@@ -398,6 +698,9 @@ static void publish_io(gw_node_t *n, uint8_t force_do)
                                      io.do_ts_ms);
             m->v.num = (io.dout >> k) & 1u;
             m->is_null = io.do_unknown;
+            if (do_quality) {
+                set_quality(m, !io.do_unknown);
+            }
         }
     }
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {   /* IO-4: with the DI change that made it */
@@ -487,6 +790,7 @@ size_t gw_node_flush_history(gw_node_t *n, size_t max_msgs)
             continue;
         }
         size_t nm = 0;
+        size_t base = !node && typed(n, dev) ? 1 : 0;   /* SPB-18: members of the instance */
         for (size_t i = 0; i < cnt && nm < GW_MAX_TAGS_PER_DEVICE;) {
             const gw_sf_rec_t *r = &n->hist[i];
             size_t used = gw_sf_sample(r, cnt - i, n->hist_str[nm], sizeof(n->hist_str[nm]));
@@ -499,8 +803,9 @@ size_t gw_node_flush_history(gw_node_t *n, size_t max_msgs)
             bool counter = node && r->metric >= GW_ALIAS_COUNT_BASE &&
                            r->metric < GW_ALIAS_COUNT_BASE + GW_NODE_IO_COUNT;
             uint32_t dt = counter ? SPB_DT_UINT64 : node ? SPB_DT_BOOLEAN : gw_conv_datatype(t);
-            spb_metric_t *m = metric(n, nm, NULL, node ? r->metric : GW_ALIAS_TAG_BASE + r->metric,
-                                     dt, r->ts_ms);
+            spb_metric_t *m = metric(n, base + nm, base ? t->name : NULL,
+                                     node ? r->metric : GW_ALIAS_TAG_BASE + r->metric, dt, r->ts_ms);
+            m->no_alias = base != 0;
             switch (counter ? GW_VK_UINT64 : node ? GW_VK_DOUBLE : gw_conv_kind(t)) {
             case GW_VK_INT64:
                 m->v.i64 = r->v.i64;
@@ -511,16 +816,29 @@ size_t gw_node_flush_history(gw_node_t *n, size_t max_msgs)
             case GW_VK_STRING:
                 m->v.str = n->hist_str[nm];
                 break;
+            case GW_VK_BYTES:
+                m->v.bytes.data = (const uint8_t *)n->hist_str[nm];
+                m->v.bytes.len = 2u * t->length;
+                break;
             default:
                 m->v.num = r->v.num;
                 break;
             }
             m->is_null = (r->flags & GW_SF_NULL) != 0;
             m->is_historical = true;
+            /* SPB-16: a replayed value always says its quality (the live ones only on a change,
+             * which the replay cannot tell apart): tags and DOs */
+            bool is_do = node && r->metric >= GW_ALIAS_DO_BASE &&
+                         r->metric < GW_ALIAS_DO_BASE + GW_NODE_IO_COUNT;
+            if (!node || is_do) {
+                set_quality(m, !m->is_null);
+            }
             nm++;
         }
-        if (nm > 0 && !publish(n, node ? "NDATA" : "DDATA", node ? NULL : n->cfg->devices[dev].name,
-                               nm, 0)) {
+        bool sent_ok = nm == 0 ||
+                       (node ? publish(n, "NDATA", NULL, nm, 0)
+                             : publish_device(n, "DDATA", dev, nm, false, true));
+        if (!sent_ok) {
             break;   /* kept: retried on the next call (or the next session) */
         }
         gw_sf_pop(n->sf, cnt);
@@ -541,8 +859,9 @@ void gw_node_write_done(gw_node_t *n, uint16_t tag, bool ok)
     }
     gw_tag_value_t v;
     gw_tagdb_get_tag(tag, &v);
-    tag_metric(n, 0, tag, &v, false);
-    publish(n, "DDATA", n->cfg->devices[dev].name, 1, 0);
+    size_t base = typed(n, dev) ? 1 : 0;
+    tag_metric(n, base, tag, &v, false, base != 0);
+    publish_device(n, "DDATA", dev, 1, false, false);
 }
 
 /* ---------- commands ---------- */
@@ -630,6 +949,9 @@ static int resolve_tag(const gw_node_t *n, uint16_t dev, const spb_rx_metric_t *
     if (m->name != NULL) {
         return gw_config_find_tag(n->cfg, dev, m->name);
     }
+    if (typed(n, dev)) {
+        return -1;   /* SPB-18: members have no alias; this one would be the instance's */
+    }
     if (m->has_alias && m->alias >= GW_ALIAS_TAG_BASE + d->first_tag &&
         m->alias < GW_ALIAS_TAG_BASE + d->first_tag + d->tag_count) {
         return (int)(m->alias - GW_ALIAS_TAG_BASE);
@@ -688,6 +1010,17 @@ static bool rx_value(const gw_tag_cfg_t *t, const spb_rx_metric_t *m, gw_tag_val
             return false;
         }
         strcpy(out->str, m->v.s);
+        return true;
+    case GW_VK_BYTES:   /* SPB-19: exactly the tag's registers, nothing to pad */
+        if (m->is_null || m->kind != SPB_VAL_BYTES) {
+            *why = "no Bytes value";
+            return false;
+        }
+        if (m->v.bytes.len != 2u * t->length) {
+            *why = "Bytes value of another length than the tag";
+            return false;
+        }
+        memcpy(out->str, m->v.bytes.data, m->v.bytes.len);
         return true;
     case GW_VK_INT64:
         if (!rx_integer(m, dt, &neg, &mag)) {
@@ -753,6 +1086,9 @@ static bool dcmd_resolve(const gw_node_t *n, const spb_rx_metric_t *m, bool quie
 static bool on_dcmd_metric(void *ctx, const spb_rx_metric_t *m)
 {
     gw_node_t *n = ctx;
+    if (m->kind == SPB_VAL_TEMPLATE) {
+        return true;   /* SPB-18: the instance; its members came through on_dcmd_metric */
+    }
     int tag;
     gw_tag_value_t v;
     if (!dcmd_resolve(n, m, n->cmd_count_only, &tag, &v)) {
@@ -817,7 +1153,7 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
         }
         if (n->cmd_reboot) {
             GW_LOGW(TAG, "NCMD reboot: publishing NDEATH and restarting");
-            size_t dl = gw_node_death_payload(n->bdseq, n->buf, sizeof(n->buf));
+            size_t dl = gw_node_death_payload(n->bdseq, n->buf, n->buf_cap);
             if (gw_node_topic(n, "NDEATH", NULL, n->topic, sizeof(n->topic))) {
                 n->ops.publish(n->ops.ctx, n->topic, n->buf, dl, 1, false);
             }
@@ -847,7 +1183,9 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
          * payload in full, so it also validates it. */
         n->cmd_count_only = true;
         n->cmd_writes = 0;
-        bool decoded = spb_decode(payload, len, NULL, on_dcmd_metric, n);
+        /* SPB-18: the members of a template instance are writes like top-level metrics */
+        const spb_decoder_t dec = {.metric = on_dcmd_metric, .member = on_dcmd_metric, .ctx = n};
+        bool decoded = spb_decode_with(payload, len, NULL, &dec);
         n->cmd_count_only = false;
         if (!decoded) {
             GW_LOGW(TAG, "DCMD: undecodable payload (%u bytes): nothing applied", (unsigned)len);
@@ -860,6 +1198,6 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
                     (unsigned)room);
             return;
         }
-        spb_decode(payload, len, NULL, on_dcmd_metric, n);
+        spb_decode_with(payload, len, NULL, &dec);
     }
 }
