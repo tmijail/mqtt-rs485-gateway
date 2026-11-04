@@ -72,7 +72,8 @@ add_test(NAME check_set_config
 # absent options (SPIRAM_IGNORE_NOTFOUND with SPIRAM off, as in the QEMU build) are skipped.
 # Issue #93, with sdkconfig.production in the chain ("@" = a file of the project): prod_fresh
 # matches; prod_stale lacks SECURE_DISABLE_ROM_DL_MODE (fails; reported with MODE=warn), which a
-# build without the production overlay does not check.
+# build without the production overlay does not check. Issue #103: NVS encryption without flash
+# encryption fails (reported with MODE=warn), except in the emulator build (GW_IO_SIMULATED).
 set(GW_CFGCHK ${IDF_PROJECT_DIR}/cmake/gw_sdkconfig_check.cmake)
 set(GW_CFGCHK_DIR ${CMAKE_CURRENT_LIST_DIR}/sdkconfig_check)
 set(GW_CFGCHK_DEFAULTS ${IDF_PROJECT_DIR}/sdkconfig.defaults)
@@ -81,7 +82,10 @@ foreach(c "fresh;fresh;;;0" "stale;stale;;warn;0;MBEDTLS_DYNAMIC_BUFFER" "stale;
           "prod_fresh;prod_fresh;@sdkconfig.production;;0"
           "prod_stale;prod_stale;@sdkconfig.production;;1"
           "prod_stale;prod_stale;@sdkconfig.production;warn;0;SECURE_DISABLE_ROM_DL_MODE"
-          "prod_stale_default;prod_stale;;;0")
+          "prod_stale_default;prod_stale;;;0"
+          "nvsenc_noflash;nvsenc_noflash;;;1"
+          "nvsenc_noflash;nvsenc_noflash;;warn;0;NVS_ENCRYPTION"
+          "nvsenc_sim;nvsenc_sim;;;0")
     list(GET c 0 name)
     list(GET c 1 cfg)
     list(GET c 2 overlay)
