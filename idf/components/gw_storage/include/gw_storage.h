@@ -125,6 +125,10 @@ bool gw_storage_get_blob(const char *key, void *out, size_t len);
  */
 void *gw_storage_big_alloc(size_t size, const char *what);
 
+/** Issue #80: the smallest "largest free internal block" seen at the peak of a configuration
+ *  validation (gw_storage_save_config), 0 if none ran yet. */
+size_t gw_storage_validation_min_block(void);
+
 #ifdef __cplusplus
 }
 #endif
