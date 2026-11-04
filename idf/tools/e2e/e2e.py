@@ -730,6 +730,71 @@ def run_tls(args, work):
     broker.wait()
 
 
+# ---------------------------------------------------------------- broker failover (MQTT-6)
+
+def run_failover(args, work):
+    """MQTT-6 in one boot (GW17): the primary broker (mqtt.host, port +8) is down at boot, the
+    backup is the harness' main mosquitto; failover_after 2, primary_return_s 10.
+      1. two failed attempts on the primary, then the backup: NBIRTH there
+      2. the primary comes up: once the session on the backup has been stable (one keepalive)
+         for primary_return_s, NDEATH on the backup and NBIRTH on the primary
+      3. the primary goes down again: two failed attempts, back to the backup"""
+    node, prim = "GW17", MQTT_PORT + 8
+    nbirth_t, ndeath_t = f"{T}/NBIRTH/{node}", f"{T}/NDEATH/{node}"
+    keepalive = json.loads(config_json())["mqtt"]["keepalive_s"]
+    cfg = node_config(node, port=prim, backup_brokers=[{"host": "10.0.2.2", "port": MQTT_PORT}],
+                      failover_after=2, primary_return_s=10)
+    obs = Observer()
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "failover", cfg)
+    nb = obs.wait(nbirth_t, 60)
+    moved = gw.find(r"broker 1/2 \(10\.0\.2\.2:%d\) failed 2 time\(s\) in a row: next attempt on "
+                    r"broker 2/2 \(10\.0\.2\.2:%d\)" % (prim, MQTT_PORT), t0)
+    tries = gw.find(r"connecting to 10\.0\.2\.2:%d \(broker 1/2\)" % prim, t0)
+    asked, h = gw.shell(["status", "config"],
+                        [r"^mqtt\s+broker 2/2 10\.0\.2\.2:%d, 0 failed" % MQTT_PORT,
+                         r"^backup 1\s+10\.0\.2\.2:%d" % MQTT_PORT,
+                         r"^failover\s+after 2 failed attempt\(s\); back to the primary after 10 s"])
+    shown = all(h.values())
+    check("MQTT-6 primary broker down at boot: two failed attempts, then the backup (NBIRTH there); "
+          "the shell shows the current broker and the list",
+          nb and moved and len(tries) == 2 and shown,
+          f"{len(tries)} attempts on the primary; {(moved or ['no switch logged'])[0]}; "
+          + " | ".join(gw.find(r"^mqtt\s|^backup 1|^failover", asked)))
+
+    pconf = work / "broker-primary.conf"
+    pconf.write_text(f"listener {prim} 127.0.0.1\nallow_anonymous true\n")
+    pb = start_broker(pconf, work / "mosquitto-primary.log")
+    pobs = Observer(prim)
+    back = pobs.wait(nbirth_t, 60)
+    death = [m for m in CAPTURE if m[1] == ndeath_t and nb and m[0] > nb[0] and m[2].metrics
+             and bdseq_of(m[2]) == bdseq_of(nb[2])]
+    waited = back[0] - nb[0] if back and nb else None
+    check(f"MQTT-6 return to the primary: after a stable session on the backup (keepalive {keepalive} s) "
+          "plus primary_return_s (10 s), orderly NDEATH on the backup and NBIRTH on the primary",
+          back and death and waited >= keepalive + 10 - 1 and bdseq_of(back[2]) != bdseq_of(nb[2]),
+          f"NBIRTH on the primary {waited:.1f} s after the one on the backup; NDEATH on the backup "
+          f"with the session's bdSeq: {bool(death)}; "
+          f"{(gw.find(r'returning to the primary broker', t0) or ['no log'])[0]}" if back and nb
+          else "no NBIRTH on the primary")
+
+    # the session on the primary must be stable first: until then it is the single return try
+    stable = gw.wait_log(r"broker 1/2: session stable", keepalive + 5, back[0] if back else 0)
+    pobs.close()
+    since = time.monotonic()
+    pb.terminate()
+    pb.wait()
+    nb2 = obs.wait(nbirth_t, 60)
+    moved = gw.find(r"broker 1/2 .* failed 2 time\(s\) in a row: next attempt on broker 2/2", since)
+    gw.kill()
+    obs.wait(ndeath_t, 5)
+    obs.close()
+    check("MQTT-6 the primary fails again: the stable session is lost, two failed attempts, back to "
+          "the backup", stable and nb2 and moved,
+          f"NBIRTH on the backup {nb2[0] - since:.1f} s after stopping the primary; {moved[0]}"
+          if nb2 and moved else f"NBIRTH {bool(nb2)}, switch {bool(moved)}")
+
+
 # ---------------------------------------------------------------- scenario
 
 def start_broker(conf, log):
@@ -763,7 +828,8 @@ def main():
     ap.add_argument("--syslog-port", type=int, default=SYSLOG_PORT)
     ap.add_argument("--http-port", type=int, default=HTTP_PORT)
     ap.add_argument("--only", default="",
-                    help="comma-separated scenarios to run (failsafe,network,web,reset,tls,main); "
+                    help="comma-separated scenarios to run (failsafe,network,web,reset,tls,failover,"
+                         "main); "
                          "default all")
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
@@ -805,6 +871,8 @@ def main():
             run_factory_reset(args, work)
         if want("tls"):
             run_tls(args, work)
+        if want("failover"):
+            run_failover(args, work)
         if want("main"):
             run(args, log, slave, broker, conf, work)
     except BaseException:

@@ -13,6 +13,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "gw_backoff.h"
+#include "gw_brokersel.h"
 #include "gw_bus.h"
 #include "gw_io.h"
 #include "gw_net.h"
@@ -108,6 +109,12 @@ static char *s_key_pem;
 static char s_tls_error[200];   /* why the TLS settings cannot work: no connection is attempted */
 static int64_t s_tls_logged_us;
 static bool s_waiting_time_logged;
+static gw_brokersel_t s_bsel;   /* MQTT-6: which broker of the list the next attempt goes to */
+static bool s_stable;           /* the current session lasted stable_ms(): it counts as working */
+
+/* ---- read by other tasks (gw_edge_get_status) ---- */
+static portMUX_TYPE s_st_mux = portMUX_INITIALIZER_UNLOCKED;
+static gw_edge_status_t s_st;
 
 static void wake(void)
 {
@@ -329,14 +336,55 @@ static void op_reboot(void *ctx)
 
 /* ---------- connection management ---------- */
 
+/* MQTT-6: broker @p i of the list (0 = mqtt.host, then mqtt.backup_brokers in order). */
+static const char *broker_host(unsigned i)
+{
+    return i == 0 ? s_cfg->mqtt.host : s_cfg->mqtt.backup[i - 1].host;
+}
+
+static uint16_t broker_port(unsigned i)
+{
+    return i == 0 ? s_cfg->mqtt.port : s_cfg->mqtt.backup[i - 1].port;
+}
+
+static void publish_status(void)
+{
+    portENTER_CRITICAL(&s_st_mux);
+    s_st.broker = s_bsel.current;
+    s_st.broker_count = s_bsel.count;
+    s_st.host = broker_host(s_bsel.current);
+    s_st.port = broker_port(s_bsel.current);
+    s_st.failures = s_bsel.failures;
+    portEXIT_CRITICAL(&s_st_mux);
+}
+
+void gw_edge_get_status(gw_edge_status_t *out)
+{
+    portENTER_CRITICAL(&s_st_mux);
+    *out = s_st;
+    portEXIT_CRITICAL(&s_st_mux);
+}
+
 static void prepare_attempt(void)
 {
     s_bdseq = gw_storage_next_bdseq();
     size_t n = gw_node_death_payload(s_bdseq, s_will, sizeof(s_will));
     s_mqtt_cfg.session.last_will.msg = (const char *)s_will;
     s_mqtt_cfg.session.last_will.msg_len = (int)n;
-    ESP_LOGI(TAG, "connecting to %s:%u%s as '%s', bdSeq=%u", s_cfg->mqtt.host, s_cfg->mqtt.port,
-             s_cfg->mqtt.tls.enabled ? " (TLS)" : "", s_cfg->mqtt.client_id, s_bdseq);
+    /* MQTT-6: set_config (reconnect) or init (start_client) takes the current broker */
+    s_mqtt_cfg.broker.address.hostname = broker_host(s_bsel.current);
+    s_mqtt_cfg.broker.address.port = broker_port(s_bsel.current);
+    publish_status();
+    if (s_bsel.count > 1) {
+        ESP_LOGI(TAG, "connecting to %s:%u%s (broker %u/%u) as '%s', bdSeq=%u",
+                 broker_host(s_bsel.current), broker_port(s_bsel.current),
+                 s_cfg->mqtt.tls.enabled ? " (TLS)" : "", s_bsel.current + 1, s_bsel.count,
+                 s_cfg->mqtt.client_id, s_bdseq);
+    } else {
+        ESP_LOGI(TAG, "connecting to %s:%u%s as '%s', bdSeq=%u", s_cfg->mqtt.host,
+                 s_cfg->mqtt.port, s_cfg->mqtt.tls.enabled ? " (TLS)" : "", s_cfg->mqtt.client_id,
+                 s_bdseq);
+    }
 }
 
 static void schedule_retry(int64_t now);
@@ -453,10 +501,11 @@ static uint32_t stable_ms(void)
 }
 
 /* NET-4: the active interface changed. A TCP connection cannot migrate, so the session ends
- * here and a new one (new bdSeq, NBIRTH, DBIRTHs) starts over the new interface at once. */
-static void move_session(void)
+ * here and a new one (new bdSeq, NBIRTH, DBIRTHs) starts over the new interface at once.
+ * MQTT-6 uses the same orderly end to return to the primary broker. */
+static void move_session(const char *why)
 {
-    ESP_LOGW(TAG, "active network interface changed: new MQTT session");
+    ESP_LOGW(TAG, "%s: new MQTT session", why);
     if (s_node->online) {
         /* Orderly end, as for a reboot: hosts learn it now and not after a keepalive. Over a
          * dead interface this is lost and the broker publishes the will later; the bdSeq of
@@ -474,8 +523,30 @@ static void move_session(void)
     s_handled_conn = atomic_load(&s_conn_gen);
     s_handled_disc = atomic_load(&s_disc_gen);
     s_retry_at_us = 0;
-    s_attempt = 0;   /* a new interface starts a fresh backoff */
+    s_attempt = 0;   /* a new interface or broker starts a fresh backoff */
     s_sub_msg_id = 0;
+    s_stable = false;
+}
+
+/* An attempt ended without a session (or a session dropped): MQTT-6 failover. */
+static void attempt_ended(void)
+{
+    if (s_stable) {
+        s_stable = false;
+        gw_brokersel_session_down(&s_bsel);   /* a working broker: the next try goes there */
+        return;
+    }
+    unsigned from = s_bsel.current;
+    unsigned fails = s_bsel.failures + 1u;
+    if (gw_brokersel_failed(&s_bsel)) {
+        ESP_LOGW(TAG, "broker %u/%u (%s:%u) failed %u time(s) in a row: next attempt on broker "
+                      "%u/%u (%s:%u)",
+                 from + 1, s_bsel.count, broker_host(from), broker_port(from), fails,
+                 s_bsel.current + 1, s_bsel.count, broker_host(s_bsel.current),
+                 broker_port(s_bsel.current));
+        s_attempt = 0;   /* another broker: fresh backoff */
+    }
+    publish_status();
 }
 
 /* Requested restart: the same orderly end as NCMD Reboot (explicit NDEATH, DISCONNECT). */
@@ -543,7 +614,9 @@ static void reconcile(void)
     if (rg != s_handled_route) {
         s_handled_route = rg;
         if (s_started) {
-            move_session();
+            move_session("active network interface changed");
+            gw_brokersel_init(&s_bsel, s_bsel.count, s_bsel.failover_after,
+                              s_bsel.primary_return_ms);   /* a new path: the primary first */
             /* move_session consumed the generations of the old client: nothing of it is
              * handled below (no on_connected, no retry: the new client starts at once). */
             connected = false;
@@ -572,11 +645,27 @@ static void reconcile(void)
             abort_session("no SUBACK for NCMD/DCMD within " STR(SUBACK_TIMEOUT_MS) " ms");
         }
     }
-    if (s_node->online && connected && s_attempt != 0 &&
-        now - s_session_up_us >= stable_ms() * 1000LL) {
-        ESP_LOGI(TAG, "session stable for %lu ms: reconnect backoff reset",
-                 (unsigned long)stable_ms());
-        s_attempt = 0;
+    if (s_node->online && connected && !s_stable && now - s_session_up_us >= stable_ms() * 1000LL) {
+        s_stable = true;
+        if (s_attempt != 0) {
+            ESP_LOGI(TAG, "session stable for %lu ms: reconnect backoff reset",
+                     (unsigned long)stable_ms());
+            s_attempt = 0;
+        }
+        gw_brokersel_stable(&s_bsel, (uint64_t)(now / 1000));
+        if (s_bsel.count > 1) {
+            ESP_LOGI(TAG, "broker %u/%u: session stable, the broker is kept", s_bsel.current + 1,
+                     s_bsel.count);
+        }
+        publish_status();
+    }
+    if (s_stable && connected && gw_brokersel_should_return(&s_bsel, (uint64_t)(now / 1000))) {
+        /* MQTT-6: back to the primary after primary_return_s on a backup (one attempt) */
+        gw_brokersel_return_to_primary(&s_bsel);
+        move_session("returning to the primary broker");
+        connected = false;
+        cg = s_handled_conn;
+        dg = s_handled_disc;
     }
     if (s_node->online && !connected) {
         gw_node_session_down(s_node);
@@ -585,6 +674,7 @@ static void reconcile(void)
     if (dg != s_handled_disc) {
         s_handled_disc = dg;
         if (!connected) {
+            attempt_ended();
             schedule_retry(now);
         }
     }
@@ -792,6 +882,9 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
     if (cfg->mqtt.tls.enabled) {
         setup_tls(&cfg->mqtt.tls);
     }
+    gw_brokersel_init(&s_bsel, (uint8_t)(1 + cfg->mqtt.backup_count), cfg->mqtt.failover_after,
+                      cfg->mqtt.primary_return_s * 1000u);
+    publish_status();
 
     s_q = xQueueCreateStatic(CONFIG_GW_EDGE_QUEUE_LEN, sizeof(edge_ev_t), s_q_storage, &s_q_buf);
     s_free_slots = xQueueCreateStatic(CONFIG_GW_CMD_SLOTS, 1, s_free_storage, &s_free_buf);

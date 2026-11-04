@@ -170,6 +170,13 @@ static int cmd_status(int argc, char **argv)
                (f & GW_ST_NET_UP) ? "up" : "down",
                (f & GW_ST_MQTT_UP) ? "connected" : "disconnected",
                s_ctx.cfg->device_count - offline, s_ctx.cfg->device_count);
+        gw_edge_status_t es;
+        gw_edge_get_status(&es);
+        if (es.host != NULL) {
+            out("mqtt     broker %u/%u %s:%u%s, %u failed attempt(s) in a row\n", es.broker + 1u,
+                es.broker_count, es.host, es.port, s_ctx.cfg->mqtt.tls.enabled ? " (TLS)" : "",
+                es.failures);
+        }
     }
     gw_net_if_status_t ifs[GW_NET_IF_COUNT];
     gw_net_get_status(ifs);
@@ -392,6 +399,16 @@ static int cmd_config(int argc, char **argv)
     out("mqtt       %s:%u, client id '%s', keepalive %u s, user %s\n", c->mqtt.host,
            c->mqtt.port, c->mqtt.client_id, c->mqtt.keepalive_s,
            c->mqtt.username[0] ? c->mqtt.username : "(none)");
+    for (uint8_t i = 0; i < c->mqtt.backup_count; i++) {
+        out("backup %u   %s:%u\n", i + 1u, c->mqtt.backup[i].host, c->mqtt.backup[i].port);
+    }
+    if (c->mqtt.backup_count > 0 && c->mqtt.primary_return_s > 0) {
+        out("failover   after %u failed attempt(s); back to the primary after %lu s on a backup\n",
+            c->mqtt.failover_after, (unsigned long)c->mqtt.primary_return_s);
+    } else if (c->mqtt.backup_count > 0) {
+        out("failover   after %u failed attempt(s); a working backup is kept\n",
+            c->mqtt.failover_after);
+    }
     const gw_tls_cfg_t *tls = &c->mqtt.tls;
     if (tls->enabled) {
         out("tls        CA %s%s, name checked against %s, client certificate %s%s\n",

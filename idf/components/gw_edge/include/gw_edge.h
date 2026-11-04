@@ -21,6 +21,17 @@
 extern "C" {
 #endif
 
+/** Connection state for the shell and the web UI (written by the Sparkplug task). */
+typedef struct {
+    uint8_t broker;          /* MQTT-6: index of the current broker (0 = mqtt.host) */
+    uint8_t broker_count;
+    const char *host;        /* its host and port (points into the configuration) */
+    uint16_t port;
+    uint8_t failures;        /* consecutive failed attempts on it */
+} gw_edge_status_t;
+
+void gw_edge_get_status(gw_edge_status_t *out);
+
 /** @p info (and its strings) must outlive the gateway. */
 esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info);
 

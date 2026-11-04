@@ -320,6 +320,23 @@ El router por defecto IPv6 se aprende de los RA; no hay *gateway* IPv6 estático
 
 TLS 1.2 o 1.3, lo que negocie el broker. Las fechas de validez del certificado se comprueban: la conexión TLS espera a que SNTP fije el reloj. Las claves se validan aunque `enabled` sea `false`.
 
+**`mqtt.backup_brokers`, `failover_after`, `primary_return_s` (MQTT-6): lista de brokers.**
+
+```json
+"mqtt": { "host": "broker1.planta.local", "port": 1883,
+          "backup_brokers": [ { "host": "broker2.planta.local" },
+                              { "host": "10.0.0.20", "port": 1884 } ],
+          "failover_after": 3, "primary_return_s": 0 }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `backup_brokers` | array | `[]` | Hasta 3 brokers de respaldo, en orden, después de `mqtt.host` (el primario). Cada uno: `host` (obligatorio, no vacío) y `port` (defecto: `mqtt.port`). Credenciales, `client_id`, keepalive y `tls` son los mismos para todos; con TLS el nombre se verifica contra el `host` de cada uno (o `tls.server_name`) |
+| `failover_after` | entero | `3` | 1–20. Intentos fallidos seguidos en un broker antes de pasar al siguiente (tras el último, el primero) |
+| `primary_return_s` | entero | `0` | 0–86400. `0` = un respaldo que funciona se conserva hasta que falle. Con N > 0, tras N s de sesión estable en un respaldo se cierra en orden (NDEATH) y se prueba **una vez** el primario; si falla, se sigue por el primer respaldo |
+
+Un intento falla si no termina en una sesión estable: conexión TCP o TLS fallida, CONNACK rechazado, SUBSCRIBE rechazado o sin respuesta, o sesión que cae antes de durar un keepalive (como mucho 60 s) desde el NBIRTH. Una sesión estable vuelve a contar desde cero. Cada broker nuevo empieza con el *backoff* mínimo.
+
 **`syslog` (REL-4): copia del log a un servidor syslog.**
 
 ```json

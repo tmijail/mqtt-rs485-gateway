@@ -651,16 +651,55 @@ static bool parse_tls(const cJSON *mqtt, gw_tls_cfg_t *t, gw_cfg_err_t *err)
     return true;
 }
 
+/* MQTT-6: [{"host": "...", "port": n}, ...], tried in order after mqtt.host. */
+static bool parse_backup_brokers(const cJSON *mqtt, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"host", "port"};
+    const cJSON *arr = cJSON_GetObjectItemCaseSensitive(mqtt, "backup_brokers");
+    if (arr == NULL) {
+        return true;
+    }
+    if (!cJSON_IsArray(arr)) {
+        return fail(err, "mqtt.backup_brokers", "se esperaba un array");
+    }
+    int n = cJSON_GetArraySize(arr);
+    if (n > GW_MAX_BACKUP_BROKERS) {
+        return fail(err, "mqtt.backup_brokers", "%d brokers; el máximo es %d", n,
+                    GW_MAX_BACKUP_BROKERS);
+    }
+    int i = 0;
+    for (const cJSON *it = arr->child; it != NULL; it = it->next, i++) {
+        char path[40];
+        snprintf(path, sizeof(path), "mqtt.backup_brokers[%d]", i);
+        long port;
+        if (!check_keys(it, path, keys, 2, err) ||
+            !get_string(it, "host", path, true, "", cfg->mqtt.backup[i].host,
+                        sizeof(cfg->mqtt.backup[i].host), err) ||
+            !get_int(it, "port", path, false, cfg->mqtt.port, 1, 65535, &port, err)) {
+            return false;
+        }
+        if (cfg->mqtt.backup[i].host[0] == '\0') {
+            char p[56];
+            snprintf(p, sizeof(p), "%s.host", path);
+            return fail(err, p, "no puede estar vacío");
+        }
+        cfg->mqtt.backup[i].port = (uint16_t)port;
+    }
+    cfg->mqtt.backup_count = (uint8_t)n;
+    return true;
+}
+
 static bool parse_mqtt(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"host", "port", "client_id", "username", "password",
-                                       "keepalive_s", "tls"};
+                                       "keepalive_s", "tls", "backup_brokers", "failover_after",
+                                       "primary_return_s"};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "mqtt");
     if (o == NULL) {
         return fail(err, "mqtt", "sección obligatoria ausente");
     }
-    long port, ka;
-    if (!check_keys(o, "mqtt", keys, 7, err) || !parse_tls(o, &cfg->mqtt.tls, err) ||
+    long port, ka, failover, back;
+    if (!check_keys(o, "mqtt", keys, 10, err) || !parse_tls(o, &cfg->mqtt.tls, err) ||
         !get_string(o, "host", "mqtt", true, "", cfg->mqtt.host, sizeof(cfg->mqtt.host), err) ||
         !get_int(o, "port", "mqtt", false, cfg->mqtt.tls.enabled ? 8883 : 1883, 1, 65535, &port,
                  err) ||
@@ -670,7 +709,9 @@ static bool parse_mqtt(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
                     sizeof(cfg->mqtt.username), err) ||
         !get_string(o, "password", "mqtt", false, "", cfg->mqtt.password,
                     sizeof(cfg->mqtt.password), err) ||
-        !get_int(o, "keepalive_s", "mqtt", false, 30, 5, 3600, &ka, err)) {
+        !get_int(o, "keepalive_s", "mqtt", false, 30, 5, 3600, &ka, err) ||
+        !get_int(o, "failover_after", "mqtt", false, 3, 1, 20, &failover, err) ||
+        !get_int(o, "primary_return_s", "mqtt", false, 0, 0, 86400, &back, err)) {
         return false;
     }
     if (cfg->mqtt.host[0] == '\0') {
@@ -678,7 +719,9 @@ static bool parse_mqtt(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     }
     cfg->mqtt.port = (uint16_t)port;
     cfg->mqtt.keepalive_s = (uint16_t)ka;
-    return true;
+    cfg->mqtt.failover_after = (uint8_t)failover;
+    cfg->mqtt.primary_return_s = (uint32_t)back;
+    return parse_backup_brokers(o, cfg, err);
 }
 
 static bool parse_sparkplug(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)

@@ -29,6 +29,7 @@ extern "C" {
 #define GW_USER_SIZE   33   /* web user name */
 #define GW_PWHASH_SIZE 128  /* "pbkdf2-sha256$<iterations>$<salt hex>$<hash hex>" (gw_auth.h) */
 #define GW_FILE_SIZE   33   /* name of a file next to config.json (TLS certificates, MQTT-4/5) */
+#define GW_MAX_BACKUP_BROKERS 3  /* MQTT-6: besides mqtt.host */
 #define GW_CFG_ERR_SIZE 192
 #define GW_CFG_PATH_SIZE 96
 #define GW_JSON_MAX_DEPTH 32  /* deeper documents are rejected before cJSON recurses into them */
@@ -158,6 +159,13 @@ typedef struct {
         char password[GW_CRED_SIZE];
         uint16_t keepalive_s;
         gw_tls_cfg_t tls;               /* MQTT-4 / MQTT-5 */
+        struct {                        /* MQTT-6: tried in order after mqtt.host */
+            char host[GW_HOST_SIZE];
+            uint16_t port;              /* defaults to mqtt.port */
+        } backup[GW_MAX_BACKUP_BROKERS];
+        uint8_t backup_count;
+        uint8_t failover_after;         /* failed attempts on one broker before the next */
+        uint32_t primary_return_s;      /* 0 = keep a working backup */
     } mqtt;
     struct {
         char group_id[GW_ID_SIZE];

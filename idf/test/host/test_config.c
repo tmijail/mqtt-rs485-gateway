@@ -358,6 +358,50 @@ static void test_tls_client_certificate(void)
                     "mqtt.tls.cert_file: 'a/b.crt' no es un nombre de archivo válido");
 }
 
+/* MQTT-6: ordered backup brokers, failover count and return-to-primary policy. */
+static void test_backup_brokers(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\""), err.msg);
+    TEST_ASSERT_EQUAL(0, cfg.mqtt.backup_count);   /* absent: one broker, as in the MVP */
+    TEST_ASSERT_EQUAL(3, cfg.mqtt.failover_after);
+    TEST_ASSERT_EQUAL(0, cfg.mqtt.primary_return_s);
+
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"a\",\"port\":1884,\"backup_brokers\":["
+                                        "{\"host\":\"b\"},{\"host\":\"fd00::2\",\"port\":2883}],"
+                                        "\"failover_after\":1,\"primary_return_s\":600"),
+                             err.msg);
+    TEST_ASSERT_EQUAL(2, cfg.mqtt.backup_count);
+    TEST_ASSERT_EQUAL_STRING("b", cfg.mqtt.backup[0].host);
+    TEST_ASSERT_EQUAL(1884, cfg.mqtt.backup[0].port);   /* the primary's port */
+    TEST_ASSERT_EQUAL_STRING("fd00::2", cfg.mqtt.backup[1].host);
+    TEST_ASSERT_EQUAL(2883, cfg.mqtt.backup[1].port);
+    TEST_ASSERT_EQUAL(1, cfg.mqtt.failover_after);
+    TEST_ASSERT_EQUAL(600, cfg.mqtt.primary_return_s);
+    /* with TLS the backups default to 8883 as well */
+    TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"a\",\"tls\":{\"enabled\":true},"
+                                        "\"backup_brokers\":[{\"host\":\"b\"}]"),
+                             err.msg);
+    TEST_ASSERT_EQUAL(8883, cfg.mqtt.backup[0].port);
+
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"backup_brokers\":[{\"host\":\"b\"},{\"host\":\"c\"},"
+                               "{\"host\":\"d\"},{\"host\":\"e\"}]"),
+                    "mqtt.backup_brokers: 4 brokers; el máximo es 3");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"backup_brokers\":[{\"port\":1}]"),
+                    "mqtt.backup_brokers[0].host: campo obligatorio ausente");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"backup_brokers\":[{\"host\":\"b\"},{\"host\":\"\"}]"),
+                    "mqtt.backup_brokers[1].host: no puede estar vacío");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"backup_brokers\":[{\"host\":\"b\",\"port\":0}]"),
+                    "mqtt.backup_brokers[0].port: valor 0 fuera de rango");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"backup_brokers\":[{\"host\":\"b\",\"tls\":true}]"),
+                    "mqtt.backup_brokers[0].tls: clave desconocida");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"backup_brokers\":{\"host\":\"b\"}"),
+                    "mqtt.backup_brokers: se esperaba un array");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"failover_after\":0"),
+                    "mqtt.failover_after: valor 0 fuera de rango [1, 20]");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"primary_return_s\":-1"),
+                    "mqtt.primary_return_s: valor -1 fuera de rango");
+}
+
 /* CFG-3 / CFG-4: optional "web" section. */
 static void test_web_section(void)
 {
@@ -683,6 +727,7 @@ int main(void)
     RUN_TEST(test_syslog_section);
     RUN_TEST(test_tls_section);
     RUN_TEST(test_tls_client_certificate);
+    RUN_TEST(test_backup_brokers);
     RUN_TEST(test_web_section);
     RUN_TEST(test_hostname);
     RUN_TEST(test_error_fields);
