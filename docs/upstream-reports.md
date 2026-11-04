@@ -59,3 +59,5 @@ Texto propuesto (en inglés):
 > **Expected:** accesses of the other core during a freeze wait until the unfreeze, as on the chip.
 >
 > A related abort, less frequent, happens during plain flash erases and writes (an OTA download writing about 1 MB): `../system/physmem.c:2517: iotlb_to_section: Assertion 'section_index < d->map.sections_nb' failed.` There IDF stalls the other core in IRAM (`spi_flash_disable_interrupts_caches_and_other_cpu`), so it may be a race of the memory map update between the vCPUs.
+>
+> With the other core halted in `waiti`, its tick interrupt still runs: the USB-Serial-JTAG connection monitor (`usb_serial_jtag_sof_tick_hook`, IRAM, a tick hook) then faults reading the peripheral at 0x60038014 during the freeze (`LoadStorePIFAddrError`), which never happens outside a freeze.

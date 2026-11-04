@@ -36,3 +36,7 @@ CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME=y
 CONFIG_SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT=y
 CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=y
 CONFIG_SECURE_BOOT_SIGNING_KEY="build-qemu/e2e_signing_key.pem"
+# FW-1: no USB-Serial-JTAG secondary console (QEMU has no USB host anyway). Its connection
+# monitor runs in every tick interrupt and reads the USB peripheral; on the core parked during
+# an image verification that read faulted under QEMU's cache freeze (LoadStorePIFAddrError)
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
