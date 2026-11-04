@@ -447,7 +447,7 @@ python -m esptool --chip esp32s3 -p /dev/ttyUSB0 write-flash \
 cmake -S idf/test/host -B build-host && cmake --build build-host -j3 && ctest --test-dir build-host
 ```
 
-Resultado: **38/38 pruebas de CTest (25 suites de Unity, `check_set_config` del issue #58 y los 12 `sdkconfig_check_*` de los #83, #93 y #103) y 251/251 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
+Resultado: **38/38 pruebas de CTest (25 suites de Unity, `check_set_config` del issue #58 y los 12 `sdkconfig_check_*` de los #83, #93 y #103) y 254/254 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
 
 | Suite | Casos | Qué cubre |
 |---|---|---|
