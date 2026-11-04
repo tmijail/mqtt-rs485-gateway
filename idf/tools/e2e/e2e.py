@@ -1823,7 +1823,9 @@ def check_scan_classes(slave):
     reads = [(t, r[1:]) for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 1 and t >= since]
     fast = [t for t, k in reads if k == (1, 0, 1)]
     slow = [t for t, k in reads if k == (3, 30, 4)]
-    serial = [t for t, k in reads if k == (3, 50, 8)]
+    # a DCMD to Serial (check_mb6_writes) reads it back right after its FC16: not a scan read
+    wrote = [t for t, k in reads if k[:2] == (16, 50)]
+    serial = [t for t, k in reads if k == (3, 50, 8) and not any(0 <= t - w < 1.0 for w in wrote)]
     gaps = [round(b - a, 2) for a, b in zip(slow, slow[1:])]
     fgaps = [b - a for a, b in zip(fast, fast[1:])]
     ok = len(slow) >= 3 and len(serial) == len(slow) and all(2.8 <= g <= 3.6 for g in gaps) \
@@ -2354,6 +2356,10 @@ def run_factory_reset(args, work):
     gw.console("boot 0")
     ap = gw.wait_log(r"button: BOOT pressed \d+ ms: commissioning access point", 3, t_short)
     ap_try = gw.wait_log(r"ap: commissioning access point not available in this build", 3, t_short)
+    # Issue #74: DO/1 on before the reset (the simulated TCA9554 keeps its latch across the warm
+    # restart), and the expander silent for the first 13 s of the next boot
+    lit = set_do(obs, f"{T}/NCMD/{node}", f"{T}/NDATA/{node}", {1: True})
+    gw.shell("expander absent 13000", [r"expander silent for 13000 ms after the next boot"])
     obs.drain()
     pressed = time.monotonic()
     gw.console("boot 1")
@@ -2383,8 +2389,10 @@ def run_factory_reset(args, work):
     st_old, _, _ = wait_http("/api/status", 20)                    # the old web password is gone
     st, _, body = http("GET", "/api/status", auth=("admin", pw or "?"))
     status = as_json(body) or {}
-    _, h = gw.shell("status", [r"^config\s+NONE: commissioning after a factory reset"])
-    shell = list(h.values())[0]
+    _, h = gw.shell("status", [r"^config\s+NONE: commissioning after a factory reset",
+                               r"^local\s+DI 0x00, DO unknown: output expander not answering \(retrying"])
+    shell, shell_unknown = h.values()
+    io0 = status.get("io", {})
     time.sleep(4)
     births = [m for m in CAPTURE if m[0] >= t1 and "/NBIRTH/" in m[1]]
     led = gw.find(r"led: status: commissioning", t1 - 5)
@@ -2395,6 +2403,23 @@ def run_factory_reset(args, work):
           f"old password -> {st_old}; commissioning password {'read' if pw else 'missing'}; "
           f"/api/status {st} mode {status.get('mode')!r}; shell {bool(shell)}; NBIRTHs {len(births)}; "
           f"LED {bool(led)}")
+    # Issue #74: retried in commissioning too, with every DO off as the target
+    answered = gw.wait_log(r"io: TCA9554 answered on attempt \d+: DOs available, all off \(no valid "
+                           r"configuration\)", 25, t1 - 5)
+    _, h = gw.shell("status", [r"^local\s+DI 0x00, DO 0x00 "])
+    shell_off = list(h.values())[0]
+    st3, _, body3 = http("GET", "/api/status", auth=("admin", pw or "?"))
+    io1 = (as_json(body3) or {}).get("io", {})
+    absent = gw.find(r"io: TCA9554 at 0x20 not responding", t1 - 5)
+    check("Issue #74 commissioning / recovery boot with the DO expander absent: DOs unknown "
+          "(shell, /api/status do null), the expander is retried and, once it answers, every DO "
+          "is switched off (DO/1 was on before the reset, the latch kept it)",
+          lit and absent and shell_unknown and io0.get("do") is None and io0.get("do_unknown") is True
+          and io0.get("expander", {}).get("retrying") is True and answered and shell_off
+          and st3 == 200 and io1.get("do") == 0 and io1.get("do_unknown") is False,
+          f"DO/1 on before: {bool(lit)}; {(absent or ['no absent log'])[0]}; shell unknown "
+          f"{bool(shell_unknown)}; /api/status before {io0}; "
+          f"{(gw.find(r'io: TCA9554 answered', t1 - 5) or ['never answered'])[0]}; after {io1}")
     new = json.loads(config_json())
     new["sparkplug"]["edge_node_id"] = node2
     st2, _, b2 = http("PUT", "/api/config", new, auth=("admin", pw or "?"))

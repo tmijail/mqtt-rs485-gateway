@@ -152,7 +152,7 @@ async function poll(){
  $("#st-net").innerHTML=`<p>Red ${yes(s.network.up,"arriba","sin IP")} · MQTT ${yes(s.mqtt.connected,"conectado","desconectado")}${s.syslog?` · syslog ${esc(s.syslog)}`:""}</p><table><tr><th>Interfaz</th><th>Estado</th><th>IPv4</th><th>IPv6</th></tr>${s.network.interfaces.map(i=>`<tr><td>${i.name}${i.active?" (activa)":""}</td><td>${!i.configured?"no configurada":!i.link?"sin enlace":i.usable?"arriba":"sin dirección"}</td><td>${i.ipv4||""}</td><td>${(i.ipv6||[]).join("<br>")}</td></tr>`).join("")}</table>`;
  $("#st-mb").innerHTML=s.devices.length?`<table><tr><th>Dispositivo</th><th>Unit</th><th>Estado</th><th>Ciclos / fallidos</th><th>OK / timeout / CRC / trama / excepción</th><th>Valores</th></tr>${s.devices.map(d=>`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td>${yes(d.online,"en línea","fuera de línea")}</td><td>${d.cycles} / ${d.failed}</td><td>${d.ok} / ${d.timeout} / ${d.crc} / ${d.frame} / ${d.exception}</td><td>${d.tags.map(t=>`${esc(t.name)}=${t.valid?t.value:"—"}`).join(", ")}</td></tr>`).join("")}</table>`:"sin dispositivos";
  const bits=(v)=>[...Array(8)].map((_,i)=>`<span class="${v>>i&1?"ok":"mut"}">${i+1}</span>`).join(" ");
- $("#st-io").innerHTML=`DI: ${bits(s.io.di)}<br>DO: ${bits(s.io.do)}`;
+ $("#st-io").innerHTML=`DI: ${bits(s.io.di)}<br>DO: ${s.io.do==null?`desconocidas: el expansor no responde (${s.io.expander.retrying?"reintentando, ":""}${s.io.expander.attempts} intentos)`:bits(s.io.do)}`;
 }
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>show(b.dataset.tab));
 $("#b-check").onclick=()=>put(true);$("#b-save").onclick=()=>put(false);

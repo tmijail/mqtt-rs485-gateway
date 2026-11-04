@@ -13,6 +13,7 @@
 #include "esp_timer.h"
 #include "gw_auth.h"
 #include "gw_authlimit.h"
+#include "gw_io.h"
 #include "gw_log.h"
 #include "gw_net.h"
 #include "gw_status.h"
@@ -449,10 +450,22 @@ static esp_err_t status_get(httpd_req_t *req)
     }
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
+    gw_io_expander_t exp;
+    gw_io_get_expander(&exp);
+    /* issue #74: unknown DOs (expander not answering) are null, never "off" */
+    outf(&o, "],\"io\":{\"di\":%u,\"do\":", io.di);
+    if (io.do_unknown) {
+        outf(&o, "null");
+    } else {
+        outf(&o, "%u", io.dout);
+    }
+    outf(&o, ",\"do_unknown\":%s,\"expander\":{\"ready\":%s,\"retrying\":%s,\"attempts\":%u}",
+         io.do_unknown ? "true" : "false", exp.ready ? "true" : "false",
+         exp.retrying ? "true" : "false", exp.attempts);
     outf(&o,
-         "],\"io\":{\"di\":%u,\"do\":%u},\"heap\":{\"internal_free\":%u,\"internal_min\":%u,"
+         "},\"heap\":{\"internal_free\":%u,\"internal_min\":%u,"
          "\"psram_free\":%u}}\n",
-         io.di, io.dout, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
          (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     out_flush(&o);

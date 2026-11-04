@@ -36,6 +36,22 @@ esp_err_t gw_io_outputs_boot(uint8_t hold);
 void gw_io_outputs_all_off(void);
 
 /**
+ * Issue #74: without a valid configuration, start the local_io task anyway, for the only work
+ * left: retrying an expander that did not answer at boot, with every DO off as the target (the
+ * latch may still hold outputs on from before a warm reset), and the RTC writes. No DI
+ * sampling, rules, failsafe or DO commands.
+ */
+esp_err_t gw_io_start_recovery(void);
+
+/** State of the DO expander, for the shell and /api/status. */
+typedef struct {
+    bool ready;            /* answered: the DOs are known */
+    bool retrying;         /* not answering; the local_io task retries with a backoff */
+    uint16_t attempts;     /* initialisation attempts so far */
+} gw_io_expander_t;
+void gw_io_get_expander(gw_io_expander_t *out);
+
+/**
  * With a valid configuration: put the DOs in their restart state (do_failsafe "on" / "off",
  * "hold" kept), start the local_io task and the DI sampling every CONFIG_GW_DI_SAMPLE_US
  * with the configured debounce. @p on_change is called whenever a debounced DI or a DO
@@ -72,6 +88,9 @@ void gw_io_rtc_get(gw_io_rtc_info_t *out);
 #if CONFIG_GW_IO_SIMULATED
 /** Emulator only: set the logical level of DI @p index (0-7); used by the console shell. */
 void gw_io_sim_set_di(uint8_t index, bool active);
+/** Emulator only (issue #74): the expander does not answer during the first @p ms of the next
+ *  boot. */
+void gw_io_sim_expander_absent(uint32_t ms);
 #endif
 
 #ifdef __cplusplus

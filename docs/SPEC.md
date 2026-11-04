@@ -510,7 +510,7 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 
 - **Al reiniciar** (encendido, reinicio por software, *panic* o watchdog): `off` y `on` toman ese estado en cuanto la configuración es válida; `hold` conserva el estado que el expansor TCA9554 mantuvo durante el reinicio. Tras un corte de alimentación el expansor también se apaga: `hold` arranca en OFF.
 - **Antes de cargar la configuración** todas las DO pasan a OFF, salvo las `hold` de la última configuración válida (guardadas en NVS), que no se tocan. Las `on` se encienden recién con la configuración validada.
-- **Configuración rechazada** (recuperación) o puesta en marcha: todas a OFF, también las `hold`.
+- **Configuración rechazada** (recuperación) o puesta en marcha: todas a OFF, también las `hold`. Si el expansor no respondía al arrancar, se lo sigue reintentando con el mismo backoff y se apagan todas cuando responde.
 - **Sin sesión durante `failsafe_s`** (contados desde el arranque o desde la pérdida): las `off` y las `on` toman ese estado, una vez; las `hold` no cambian. Al volver la sesión, las DO quedan como están hasta el próximo NCMD; el NBIRTH informa su estado real.
 - Sin estas claves el equipo se comporta como el MVP: todas a OFF al reiniciar y sin reacción a la pérdida de MQTT.
 

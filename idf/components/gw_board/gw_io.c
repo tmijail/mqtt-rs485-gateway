@@ -60,6 +60,7 @@ typedef struct {
 
 static gw_lio_t s_lio;
 static TaskHandle_t s_task;
+static bool s_recovery;   /* issue #74: task started without a configuration */
 static StaticTask_t s_task_buf;
 static StackType_t s_stack[STACK_WORDS];
 static QueueHandle_t s_req_q, s_rep_q;
@@ -91,9 +92,32 @@ static volatile uint8_t s_sim_pins;
 static RTC_NOINIT_ATTR uint8_t s_sim_reg[4];
 static RTC_NOINIT_ATTR uint32_t s_sim_magic;
 
+/* Issue #74: 'expander absent <ms>' makes the simulated TCA9554 silent for the first <ms> of the
+ * next boot only (kept in RTC memory across the restart). */
+#define SIM_ABSENT_MAGIC 0x41425354u   /* "ABST" */
+static RTC_NOINIT_ATTR uint32_t s_sim_absent_magic;
+static RTC_NOINIT_ATTR uint32_t s_sim_absent_next_ms;
+static uint32_t s_sim_absent_ms;   /* this boot */
+
+void gw_io_sim_expander_absent(uint32_t ms)
+{
+    s_sim_absent_next_ms = ms;
+    s_sim_absent_magic = SIM_ABSENT_MAGIC;
+    ESP_LOGW(TAG, "sim: the output expander will not answer for %lu ms after the next boot",
+             (unsigned long)ms);
+}
+
+static bool sim_absent(void)
+{
+    return s_sim_absent_ms != 0 && esp_timer_get_time() / 1000 < (int64_t)s_sim_absent_ms;
+}
+
 static int exp_write(void *ctx, uint8_t reg, uint8_t val)
 {
     (void)ctx;
+    if (sim_absent()) {
+        return ESP_ERR_TIMEOUT;
+    }
     s_sim_reg[reg] = val;
     return ESP_OK;
 }
@@ -101,6 +125,9 @@ static int exp_write(void *ctx, uint8_t reg, uint8_t val)
 static int exp_read(void *ctx, uint8_t reg, uint8_t *val)
 {
     (void)ctx;
+    if (sim_absent()) {
+        return ESP_ERR_TIMEOUT;
+    }
     /* Output pins read back their latch; input pins float high; POLARITY inverts the input
      * register. */
     *val = reg == GW_TCA9554_REG_INPUT
@@ -129,6 +156,12 @@ void gw_io_sim_set_di(uint8_t index, bool active)
 static esp_err_t hw_init_outputs(void)
 {
     bool kept = s_sim_magic == SIM_MAGIC && esp_reset_reason() != ESP_RST_POWERON;
+    if (s_sim_absent_magic == SIM_ABSENT_MAGIC && esp_reset_reason() != ESP_RST_POWERON) {
+        s_sim_absent_ms = s_sim_absent_next_ms;   /* this boot only */
+        ESP_LOGW(TAG, "SIMULATED I/O: expander silent for the first %lu ms of this boot",
+                 (unsigned long)s_sim_absent_ms);
+    }
+    s_sim_absent_magic = 0;
     if (!kept) {
         static const uint8_t power_on[4] = {0xFF, 0xFF, 0x00, 0xFF};
         memcpy(s_sim_reg, power_on, sizeof(s_sim_reg));
@@ -467,9 +500,12 @@ static void recover_outputs(uint32_t now)
 {
     uint16_t before = s_do.attempts;
     if (gw_dout_recover(&s_do, now)) {
-        ESP_LOGW(TAG, "TCA9554 answered on attempt %u: DOs available", s_do.attempts);
+        ESP_LOGW(TAG, "TCA9554 answered on attempt %u: DOs available%s", s_do.attempts,
+                 s_recovery ? ", all off (no valid configuration)" : "");
         publish_do();
-        apply_boot_state();
+        if (!s_recovery) {
+            apply_boot_state();
+        }
     } else if (s_do.attempts != before) {
         ESP_LOGW(TAG, "TCA9554 still not responding (attempt %u); next try in %lu ms",
                  s_do.attempts, (unsigned long)s_do.retry_delay_ms);
@@ -570,6 +606,14 @@ static void lio_task(void *arg)
         if (s_exp_bus && !s_do.ready) {
             recover_outputs(now);
         }
+        if (s_recovery) {
+            /* issue #74: no configuration: only the expander retry (target all off: the hold
+             * mask was cleared) and the RTC */
+            if (atomic_exchange(&s_rtc_store_req, false)) {
+                rtc_store_now();
+            }
+            continue;
+        }
         if (atomic_exchange(&s_rtc_store_req, false)) {
             rtc_store_now();   /* TIME-2: the bus has one user, this task */
         }
@@ -582,6 +626,30 @@ static void lio_task(void *arg)
         failsafe(now);
         save_counters(false);
     }
+}
+
+esp_err_t gw_io_start_recovery(void)
+{
+    s_recovery = true;
+    s_do.hold = 0;   /* target: every DO off, held ones too */
+    s_req_q = xQueueCreateStatic(2, sizeof(do_req_t), s_req_storage, &s_req_buf);
+    s_rep_q = xQueueCreateStatic(1, sizeof(do_rep_t), s_rep_storage, &s_rep_buf);
+    s_task = xTaskCreateStatic(lio_task, "local_io", STACK_WORDS, NULL,
+                               CONFIG_GW_LOCAL_IO_TASK_PRIORITY, s_stack, &s_task_buf);
+    if (s_task == NULL) {
+        return ESP_FAIL;
+    }
+    if (s_exp_bus && !s_do.ready) {
+        ESP_LOGW(TAG, "no valid configuration: retrying the output expander to switch every DO off");
+    }
+    return ESP_OK;
+}
+
+void gw_io_get_expander(gw_io_expander_t *out)
+{
+    out->ready = s_do.ready;
+    out->retrying = s_exp_bus && !s_do.ready && s_task != NULL;
+    out->attempts = s_do.attempts;
 }
 
 esp_err_t gw_io_start(const gw_config_t *cfg, void (*on_change)(void))

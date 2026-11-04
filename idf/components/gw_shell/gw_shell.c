@@ -294,8 +294,11 @@ static int cmd_status(int argc, char **argv)
 #endif
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
+    gw_io_expander_t exp;
+    gw_io_get_expander(&exp);
     if (io.do_unknown) {
-        out("local    DI 0x%02x, DO unknown: output expander not answering (retrying)\n", io.di);
+        out("local    DI 0x%02x, DO unknown: output expander not answering (%s, %u attempt(s))\n",
+            io.di, exp.retrying ? "retrying" : "not retried", exp.attempts);
     } else {
         out("local    DI 0x%02x, DO 0x%02x (bit n = channel n+1, 1 = active)%s\n", io.di, io.dout,
             io.failsafe ? ", failsafe: safe state applied (no Sparkplug session)" : "");
@@ -877,6 +880,21 @@ ATOMIC(cmd_mbread)
 #endif
 #if CONFIG_GW_IO_SIMULATED
 ATOMIC(cmd_di)
+
+/* Issue #74: the simulated expander stays silent for a while after the next boot. */
+static int cmd_expander(int argc, char **argv)
+{
+    long ms = argc == 3 && strcmp(argv[1], "absent") == 0 ? strtol(argv[2], NULL, 10) : -1;
+    if (ms < 1 || ms > 600000) {
+        out("usage: expander absent <1-600000 ms>\n");
+        return 1;
+    }
+    gw_io_sim_expander_absent((uint32_t)ms);
+    out("expander silent for %ld ms after the next boot\n", ms);
+    return 0;
+}
+
+ATOMIC(cmd_expander)
 ATOMIC(cmd_boot)
 #endif
 
@@ -932,6 +950,8 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
 #if CONFIG_GW_IO_SIMULATED
         {.command = "di", .help = "Emulator only: set a simulated input", .hint = "<1-8> <0|1>",
          .func = cmd_di_atomic},
+        {.command = "expander", .help = "Emulator only: the DO expander does not answer for a "
+         "while after the next boot (issue #74)", .hint = "absent <ms>", .func = cmd_expander_atomic},
         {.command = "boot", .help = "Emulator only: press (1) or release (0) the BOOT button",
          .hint = "<0|1>", .func = cmd_boot_atomic},
         {.command = "panic", .help = "Emulator only: abort() (core dump test)", .func = cmd_panic},
