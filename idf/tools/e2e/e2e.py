@@ -918,6 +918,7 @@ def run_factory_reset(args, work):
     time.sleep(3)
     gw.console("boot 0")
     ap = gw.wait_log(r"button: BOOT pressed \d+ ms: commissioning access point", 3, t_short)
+    ap_try = gw.wait_log(r"ap: commissioning access point not available in this build", 3, t_short)
     obs.drain()
     pressed = time.monotonic()
     gw.console("boot 1")
@@ -934,6 +935,10 @@ def run_factory_reset(args, work):
           f"{(warn - pressed) if warn else -1:.1f} s, reset after {(fired - pressed) if fired else -1:.1f} s; "
           f"NDEATH: {bool(death)}; commissioning: {bool(commissioning)}")
     t1 = commissioning or time.monotonic()
+    ap_comm = gw.wait_log(r"ap: commissioning access point not available in this build", 10, t1 - 5)
+    check("NET-5 commissioning access point requested on a 2-10 s BOOT press and when there is no "
+          "configuration (QEMU has no radio: the request is logged; the SoftAP itself is compiled only)",
+          ap_try and ap_comm, " | ".join(gw.find(r"ap: |BOOT pressed", t_short)[:3]))
     pw = commissioning_password(gw, t1 - 5, 10)
     st_old, _, _ = wait_http("/api/status", 20)                    # the old web password is gone
     st, _, body = http("GET", "/api/status", auth=("admin", pw or "?"))

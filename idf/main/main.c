@@ -24,6 +24,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "gw_ap.h"
 #include "gw_bootbtn.h"
 #include "gw_bsp.h"
 #include "gw_bus.h"
@@ -48,6 +49,9 @@ static gw_node_info_t s_info;  /* NBIRTH "Node Info/..." */
 static gw_cfg_err_t s_cfg_err;
 static char s_commission_pw[GW_COMMISSION_PW_LEN + 1];
 static gw_web_mode_t s_mode = GW_WEB_NORMAL;
+static bool s_web_started;
+static const char *s_source = "";
+static volatile bool s_ready;   /* the mode is settled: BOOT gestures may act on it */
 
 static void on_ip_changed(bool up)
 {
@@ -95,6 +99,10 @@ static void restart_soon(void)
 
 static void start_web(gw_web_mode_t mode, const gw_config_t *cfg, const char *source)
 {
+    if (s_web_started) {
+        return;
+    }
+    s_web_started = true;
     gw_storage_commissioning_password(s_commission_pw);
     gw_secrets_t sec;
     gw_storage_get_secrets(&sec);
@@ -141,7 +149,20 @@ static void on_button(gw_btn_event_t ev)
             restart_soon();
         }
     } else if (ev == GW_BTN_COMMISSIONING) {
+        if (!s_ready) {
+            ESP_LOGW(TAG, "BOOT gesture ignored: still starting");
+            return;
+        }
         ESP_LOGW(TAG, "commissioning access point requested with BOOT");
+        /* NET-5: the web UI over the access point, also when web.enabled is false */
+        start_web(s_mode, &s_cfg, s_source);
+        gw_storage_commissioning_password(s_commission_pw);
+        printf("ap: password = commissioning password '%s'\n", s_commission_pw);
+#if CONFIG_GW_SOFTAP
+        gw_ap_start(s_commission_pw, s_mode == GW_WEB_NORMAL ? CONFIG_GW_SOFTAP_TIMEOUT_MIN * 60 : 0);
+#else
+        gw_ap_start(s_commission_pw, 0);
+#endif
     }
 }
 
@@ -162,6 +183,9 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
         ESP_LOGE(TAG, "recovery network unavailable: only the console shell is left");
     }
     start_web(mode, &s_cfg, source);
+    s_source = source;
+    s_ready = true;
+    gw_ap_start(s_commission_pw, 0);   /* NET-5: no valid configuration */
     for (;;) {
         if (mode == GW_WEB_COMMISSIONING) {
             ESP_LOGW(TAG, "commissioning: no configuration since the factory reset; nothing is "
@@ -276,5 +300,7 @@ void app_main(void)
     if (s_cfg.web.enabled) {
         start_web(GW_WEB_NORMAL, &s_cfg, source);
     }
+    s_source = source;
+    s_ready = true;
     start_shell(&s_cfg, source);
 }

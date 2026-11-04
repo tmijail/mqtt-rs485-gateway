@@ -100,6 +100,7 @@ static void button_task(void *arg)
     bool warned = false;
     for (;;) {
         uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+        uint32_t before = gw_button_held_ms(&b, now);   /* length of a press that just ended */
         gw_btn_event_t ev = gw_button_update(&b, hw_pressed(), now);
         uint32_t held = gw_button_held_ms(&b, now);
         bool long_press = held >= GW_BTN_AP_MS;
@@ -114,7 +115,7 @@ static void button_task(void *arg)
             gw_status_set(GW_ST_RESETTING, true);
             beep(2);
         } else if (ev == GW_BTN_COMMISSIONING) {
-            ESP_LOGW(TAG, "BOOT pressed %lu ms: commissioning access point", (unsigned long)held);
+            ESP_LOGW(TAG, "BOOT pressed %lu ms: commissioning access point", (unsigned long)before);
             beep(1);
         }
         if (ev != GW_BTN_NONE) {
