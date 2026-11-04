@@ -1098,6 +1098,34 @@ def check_ram_margin(args, work, obs, port, ca):
           f"NBIRTH {'yes' if nb else 'no'}, Bulk DBIRTH {'yes' if bulk else 'no'}; PUT dry run {st} "
           f"{body[:80]!r}; session kept {kept}; {heap}; {stack}")
 
+    check_print_block(gw, args, t0)
+
+
+# Issue #91: what must stay contiguous beside the printed document at the validation without
+# PSRAM: the largest free block just before the print asks for it, minus the document
+PRINT_MIN_SPARE_B = 4 * 1024
+
+
+def check_print_block(gw, args, since):
+    """Issue #91 on the #80 validation: the print of the validated document asks for one block
+    of exactly its size (+ NUL), not about twice it (cJSON_Print's doubling buffer and the tab
+    conversion), and without PSRAM the largest internal block just before it leaves
+    PRINT_MIN_SPARE_B to spare."""
+    line = (gw.find(r"validation: document \d+ B, largest request \d+ B", since) or [""])[-1]
+    m = re.search(r"document (\d+) B, largest request (\d+) B, largest internal block before it "
+                  r"(\d+) B", line)
+    doc, req, room = (int(x) for x in m.groups()) if m else (0, 0, 0)
+    spare = room - req
+    ok = m is not None and doc > 1024 and req == doc + 1
+    if not args.psram:   # with PSRAM the document goes there: the internal block does not matter
+        ok = ok and spare >= PRINT_MIN_SPARE_B
+    print(f"print block: {line.strip()}", flush=True)
+    check(f"Issue #91 the validated document is printed into one block of its size"
+          f"{'' if args.psram else f' with >= {PRINT_MIN_SPARE_B} B of the largest internal block to spare'}",
+          ok, f"document {doc} B, largest request {req} B, largest internal block before it {room} B "
+              f"(spare {spare} B; before #91 the print asked for up to twice the tab-indented text "
+              f"in one block, about 21 KB for this document)")
+
 
 VALIDATION_HOLD_MS = 12000
 
