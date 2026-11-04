@@ -58,7 +58,7 @@ static mb_status_t execute(gw_poller_t *p, uint16_t dev, const mb_request_t *rq,
 
 static bool is_offline(const gw_poller_t *p, uint16_t dev)
 {
-    return !p->state[dev].online && p->state[dev].fail_streak >= p->cfg->devices[dev].offline_after;
+    return gw_devstate_probing(&p->state[dev], p->cfg->devices[dev].offline_after);
 }
 
 void gw_poller_init(gw_poller_t *p, const gw_config_t *cfg, mb_master_t *mb,

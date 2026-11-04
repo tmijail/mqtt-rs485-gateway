@@ -239,12 +239,13 @@ static uint32_t sim_now_ms(void)
  * and is back online with the first probe it answers. */
 static void test_offline_device_is_probed_with_backoff(void)
 {
+    gw_poller_poll(&p, 0, 0);          /* answered: online, then the slave goes away */
     s.offline = true;
-    uint32_t now = 0;
+    uint32_t now = 1000;
     for (int i = 0; i < 3; i++, now += 1000) {
-        gw_poller_poll(&p, 0, now);   /* never answered: 3 full cycles (1 try + 2 retries) */
+        gw_poller_poll(&p, 0, now);   /* was online: 3 full cycles (1 try + 2 retries) */
     }
-    TEST_ASSERT_EQUAL(9, s.requests);
+    TEST_ASSERT_EQUAL(3 + 9, s.requests);
     TEST_ASSERT_FALSE(online());
     uint32_t wait;
     const uint32_t expect[] = {2000, 4000, 8000, 10000, 10000, 10000};
@@ -273,20 +274,50 @@ static void test_offline_device_is_probed_with_backoff(void)
     TEST_ASSERT_EQUAL_UINT32(1000, wait);
 }
 
+/* Issue #61: a device that never answered since boot is offline from the start: one attempt
+ * per probe from its very first cycle, with the backoff starting at the first failure. */
+static void test_never_seen_device_is_probed_from_the_start(void)
+{
+    s.offline = true;
+    uint32_t now = 0, wait;
+    const uint32_t expect[] = {2000, 4000, 8000, 10000, 10000};
+    TEST_ASSERT_EQUAL(0, gw_poller_next(&p, now, &wait));
+    TEST_ASSERT_EQUAL(GW_DEV_NO_CHANGE, gw_poller_poll(&p, 0, now));
+    TEST_ASSERT_EQUAL(1, s.requests);                /* no retries, not 3 full cycles */
+    for (size_t i = 0; i < sizeof(expect) / sizeof(expect[0]); i++) {
+        TEST_ASSERT_EQUAL(-1, gw_poller_next(&p, now, &wait));
+        TEST_ASSERT_EQUAL_UINT32(expect[i], wait);
+        now += wait;
+        unsigned before = s.requests;
+        TEST_ASSERT_EQUAL(GW_DEV_NO_CHANGE, gw_poller_poll(&p, 0, now));
+        TEST_ASSERT_EQUAL(before + 1, s.requests);
+    }
+    TEST_ASSERT_FALSE(online());
+    TEST_ASSERT_EQUAL(1, gw_poller_offline_count(&p));
+    /* first answer: complete cycle, online (DBIRTH) */
+    s.offline = false;
+    now += 10000;
+    TEST_ASSERT_EQUAL(GW_DEV_WENT_ONLINE, gw_poller_poll(&p, 0, now));
+    TEST_ASSERT_TRUE(online());
+    /* once seen, losing it again takes offline_after full cycles (MB-9) */
+    s.offline = true;
+    unsigned before = s.requests;
+    TEST_ASSERT_EQUAL(GW_DEV_NO_CHANGE, gw_poller_poll(&p, 0, now + 1000));
+    TEST_ASSERT_EQUAL(before + 3, s.requests);
+}
+
 /* An answered probe continues the cycle; if a later block stays unanswered the device
  * (here one that never was online) stays offline and keeps backing off. */
 static void test_probe_answered_but_cycle_incomplete_stays_offline(void)
 {
     s.offline = true;
-    for (uint32_t t = 0; t < 3000; t += 1000) {
-        gw_poller_poll(&p, 0, t);
-    }
+    gw_poller_poll(&p, 0, 0);                 /* never seen: probed, next in 2 s */
     s.offline = false;
     s.mute_fc = MB_FC_READ_INPUT_REGISTERS;   /* probe (coils) answered, a later block is not */
-    TEST_ASSERT_EQUAL(GW_DEV_NO_CHANGE, gw_poller_poll(&p, 0, 5000));
+    TEST_ASSERT_EQUAL(GW_DEV_NO_CHANGE, gw_poller_poll(&p, 0, 2000));
     TEST_ASSERT_FALSE(online());
     uint32_t wait;
-    TEST_ASSERT_EQUAL(-1, gw_poller_next(&p, 5000, &wait));
+    TEST_ASSERT_EQUAL(-1, gw_poller_next(&p, 2000, &wait));
     TEST_ASSERT_EQUAL_UINT32(4000, wait);     /* still backing off */
 }
 
@@ -349,16 +380,17 @@ static void test_dead_devices_do_not_delay_the_healthy_one(void)
     gw_poller_init(&p, cfg, &mb, &o, 0);
 
     unsigned polls;
-    /* the dead ones need offline_after full cycles (3 x 3 x 200 ms each) before backing off */
-    uint32_t worst = run_bus(130000, 10000, &polls);
+    /* issue #61: never answered, so probed from the start (one attempt, 2, 4, 8, 10 s): the
+     * healthy device keeps its period from the first second, no warm-up needed */
+    uint32_t worst = run_bus(130000, 0, &polls);
     TEST_ASSERT_EQUAL(3, gw_poller_offline_count(&p));
-    /* 120 s after the warm-up: one poll per second, delayed at most by the three probes */
-    TEST_ASSERT_GREATER_OR_EQUAL_UINT(119, polls);
+    /* one poll per second, delayed at most by the three probes */
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT(129, polls);
     TEST_ASSERT_LESS_OR_EQUAL_UINT32(1000 + 3 * (200 + 20), worst);
     gw_dev_stats_t st;
     gw_tagdb_get_stats(1, &st);
-    /* 9 attempts to declare it offline, then one attempt per probe (2, 4, 8, then every 10 s) */
-    TEST_ASSERT_LESS_OR_EQUAL_UINT32(9 + 16, st.bus.timeout);
+    /* one attempt per probe: at 0, 2, 6, 14 s, then every 10 s */
+    TEST_ASSERT_LESS_OR_EQUAL_UINT32(4 + 12, st.bus.timeout);
     TEST_ASSERT_EQUAL_UINT32(10000, p.probe_ms[1]);
 }
 
@@ -376,6 +408,7 @@ int main(void)
     RUN_TEST(test_write_coil_rejects_nan_and_inf);
     RUN_TEST(test_write_forced_multi);
     RUN_TEST(test_offline_device_is_probed_with_backoff);
+    RUN_TEST(test_never_seen_device_is_probed_from_the_start);
     RUN_TEST(test_probe_answered_but_cycle_incomplete_stays_offline);
     RUN_TEST(test_dead_devices_do_not_delay_the_healthy_one);
     return UNITY_END();

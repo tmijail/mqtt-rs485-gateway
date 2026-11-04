@@ -61,13 +61,14 @@ int gw_poller_next(const gw_poller_t *p, uint32_t now_ms, uint32_t *wait_ms);
 /**
  * Run one poll cycle of @p dev (started at @p now_ms) and publish it to gw_tagdb.
  *
- * A device that is offline (offline_after failed cycles in a row, also before its first
- * answer) is only probed so it does not take the bus from the healthy ones: the first
+ * A device that is offline (offline_after failed cycles in a row, or never online since
+ * boot) is only probed so it does not take the bus from the healthy ones: the first
  * request of its cycle gets a single attempt, without retries, and the next cycle is
  * scheduled with an exponential backoff (2, 4, 8 ... x poll_ms, capped at
- * max(poll_ms, offline_probe_max_ms)). If the probe is answered the cycle continues
- * normally, so the device comes back online (DBIRTH) at most one capped interval plus one
- * cycle after it starts answering again.
+ * max(poll_ms, offline_probe_max_ms)). A device that never answered is probed from its
+ * first cycle on, with the backoff starting at its first failure. If the probe is answered
+ * the cycle continues normally, so the device comes (back) online (DBIRTH) at most one
+ * capped interval plus one cycle after it starts answering.
  */
 gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms);
 
