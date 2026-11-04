@@ -142,19 +142,19 @@ idf.py size
 idf.py -p /dev/ttyUSB0 flash monitor # graba bootloader, tabla, app (ota_0) y la partición LittleFS
 ```
 
-Resultado de `idf.py size` (build limpia con `idf.py set-target esp32s3 build`, 1165/1165 objetivos, 0 warnings):
+Resultado de `idf.py size` (build limpia con `idf.py set-target esp32s3 build`, 1165/1165 objetivos, 0 warnings, `sdkconfig` regenerado desde `sdkconfig.defaults`):
 
 | Región | Usado |
 |---|---|
-| Flash code (`.text`) | 491 784 B |
-| Flash data (`.rodata`, etc.) | 156 400 B |
+| Flash code (`.text`) | 491 616 B |
+| Flash data (`.rodata`, etc.) | 157 696 B |
 | DIRAM | 115 025 B de 341 760 (**33,7 %**): `.bss` 41 744, `.text` 56 823, `.data` 16 458 |
 | IRAM | 16 384 B (100 %, lo normal en S3: el resto del código IRAM va en DIRAM) |
-| Imagen total | **734 957 B** (18 % de la partición `ota_0` de 4 MB) |
+| Imagen total | **739 013 B** (18 % de la partición `ota_0` de 4 MB) |
 
 Tabla de particiones (`partitions.csv`, 16 MB): `nvs` 24 KB, `otadata`, `phy_init`, `ota_0`/`ota_1` 4 MB cada una (reservadas para FW-1), `storage` LittleFS 1 MB y `coredump` 64 KB.
 
-**Core dump.** Un *panic* (o el TWDT) guarda un volcado ELF en la partición `coredump` (desde IDF 6.0 ELF es el único formato; la opción `CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF` ya no existe). Se lee con `idf.py coredump-info` (o `coredump-debug`) con la placa conectada. Verificado en QEMU: el comando `panic` del shell (solo en la build de emulador) provoca un `abort()`, el arranque siguiente informa `panic` y `esp_coredump info_corefile` decodifica el volcado de la partición con la traza a través de `cmd_panic`.
+**Core dump.** Un *panic* (o el TWDT) guarda un volcado ELF en la partición `coredump` (desde IDF 6.0 ELF es el único formato; la opción `CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF` ya no existe). Se lee con `idf.py coredump-info` (o `coredump-debug`) con la placa conectada. Verificado en QEMU: el comando `panic` del shell (solo en la build de emulador) provoca un `abort()`, el arranque siguiente informa `panic` y `esp_coredump info_corefile` decodifica el volcado de la partición con la traza a través de `cmd_panic` (con la salvedad de §4.3 sobre el otro núcleo en QEMU). En la placa no se probó.
 
 ### 3.3 Actualizar un `sdkconfig` existente (nota de migración)
 
@@ -216,22 +216,22 @@ Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 cmake -S idf/test/host -B build-host && cmake --build build-host -j3 && ctest --test-dir build-host
 ```
 
-Resultado: **10/10 ejecutables y 68/68 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
+Resultado: **10/10 ejecutables y 78/78 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
 
 | Suite | Casos | Qué cubre |
 |---|---|---|
 | `test_mb_rtu` | 6 | CRC (vectores de la especificación Modbus), tramas FC01–06/15/16, longitud de respuesta, excepciones, eco erróneo |
-| `test_mb_master` | 8 | t3,5 y retardo entre tramas, timeout y reintentos, CRC malo, unidad equivocada, excepción sin reintento |
+| `test_mb_master` | 9 | t3,5 y retardo entre tramas, timeout y reintentos, CRC malo, unidad equivocada, excepción sin reintento, espera del fin de transmisión proporcional a la trama (FC16 de 13 B a 1200 baudios con paridad y la FC16 más larga) |
 | `test_conv` | 5 | Mapeo de datatypes §6, int16/uint16/int32/uint32/float32, ABCD/CDAB, escala inversa (12,3 → 123), rangos |
 | `test_logic` | 6 | RBE y deadband contra el último valor reportado (deriva), validez y NaN, debounce, backoff 1–60 s, fuera de línea |
 | `test_config` | 11 | Ejemplo §6 literal, JSON embebido, valores por defecto, reglas del esquema, errores con ruta (`devices[1].tags[2].type`), sintaxis con línea y columna (también con UTF-8 y contenido sobrante), claves duplicadas, límites 16/64/256, documento máximo (256 tags, > 40 KB), asignador del árbol y falta de memoria |
 | `test_plan` | 2 | Lecturas en bloque, solapes, huecos, límite de 125 registros |
 | `test_spb` | 7 | Ida y vuelta de todos los tipos, formato wire (Int16 con extensión de signo), NDEATH sin seq, peor caso de DBIRTH en el búfer |
-| `test_node` | 8 | NBIRTH y DBIRTH (nombre, alias, datatype, valor; alias únicos), DDEATH, DDATA por excepción, seq compartido con vuelta a 0, rebirth, NCMD DO/Reboot, DCMD por nombre y alias, descartes |
-| `test_poll` | 9 | Encuesta contra un esclavo simulado, fuera de línea tras N ciclos, excepción, un bloque sin respuesta (ciclo fallido, tags sin refrescar, DDEATH, sin vuelta a línea con el ciclo incompleto), contadores por dispositivo, planificación, escritura FC06 con relectura, FC15/FC16 forzadas |
-| `test_dout` | 6 | Polaridad de 8 canales (activa en bajo, en alto y mixta), arranque del TCA9554 (latch OFF antes de CONFIG, también en arranque en caliente), DO/3 → pin bajo y relectura, errores de bus |
+| `test_node` | 11 | NBIRTH y DBIRTH (nombre, alias, datatype, valor; alias únicos), DDEATH, DDATA por excepción, seq compartido con vuelta a 0, rebirth, NCMD DO/Reboot, DCMD por nombre y alias, descartes (el log muestra el alias solo si venía), comando abortado a mitad del payload sin aplicar nada, DO `is_null` sin expansor y NDATA al recuperarlo |
+| `test_poll` | 13 | Encuesta contra un esclavo simulado, fuera de línea tras N ciclos, excepción, un bloque sin respuesta (ciclo fallido, tags sin refrescar, DDEATH, sin vuelta a línea con el ciclo incompleto), contadores por dispositivo, planificación, escritura FC06 con relectura, FC15/FC16 forzadas, NaN e infinito rechazados en coils, tag fuera de rango, sondeo con backoff de los fuera de línea (un intento, 2–4–8–10 s, vuelta a línea) y un equipo sano que mantiene su periodo junto a tres muertos |
+| `test_dout` | 8 | Polaridad de 8 canales (activa en bajo, en alto y mixta), arranque del TCA9554 (latch OFF, POLARITY = 0 y luego CONFIG, también en arranque en caliente), DO/3 → pin bajo y relectura, errores de bus, relectura con POLARITY heredado invertido, reintento con backoff |
 
-Los tests de host descargan Unity y cJSON con `FetchContent`, desde GitHub y con tag fijo.
+Los tests de host descargan Unity (v2.6.1) y cJSON (v1.7.19) con `FetchContent`, desde GitHub y **fijados por hash de commit**.
 
 ### 4.2 Interoperabilidad Sparkplug
 
@@ -241,7 +241,7 @@ build-host/spb_dump /tmp/spb && python3 idf/tools/spb_decode.py --check /tmp/spb
 
 `spb_dump` genera NDEATH, NBIRTH, DBIRTH, DDATA y NDATA reales del motor. `spb_decode.py` los compila con `grpc_tools.protoc` a partir del `sparkplug_b.proto` oficial de eclipse/tahu (copiado sin cambios en `components/gw_core/proto/`) y los decodifica con **Google protobuf 7.36**.
 
-Resultado: **5 payloads decodificados, 0 errores estructurales**. Además se decodificaron los 36 mensajes capturados en el E2E.
+Resultado: **5 payloads decodificados, 0 errores estructurales**. Además se decodificaron los 44 mensajes capturados en el E2E.
 
 ### 4.3 QA-3: punta a punta con el firmware real en QEMU
 
@@ -256,36 +256,45 @@ E2E_PYTHON=~/e2e/bin/python idf/tools/e2e/run_e2e.sh
 
 - QEMU `esp_develop_9.2.2`, máquina `esp32s3`, con el firmware compilado con el overlay `sdkconfig.qemu`.
 - Ethernet `open_eth` sobre slirp.
-- UART1 → socket → **pymodbus 3.8.6** como esclavo RTU, unidades 1 (`Meter1`, tags de §6) y 2 (`Bulk`, 60 registros).
+- UART1 → socket → **pymodbus 3.8.6** como esclavo RTU, unidades 1 (`Meter1`, tags de §6 más `Limit`, float32 escribible) y 2 (`Bulk`, 60 registros). Las unidades 3 a 5 (`Dead3`–`Dead5`) están en la configuración pero no existen en el bus: nunca responden.
 - UART0 → socket, para el log y el shell (las DI se inyectan con su comando `di`).
 - **mosquitto 2.0.18** privado (copia renombrada del binario) y un respondedor SNTP propio en el UDP 123. El harness solo envía señales a los procesos que arrancó él.
+- **Brokers que se portan mal:** un servidor MQTT mínimo del harness en `--mqtt-port` + 1 acepta la conexión y la corta tras el CONNACK, y en `--mqtt-port` + 2 responde cada SUBSCRIBE con 0x80. (mosquitto no sirve para esto: su ACL nunca rechaza un SUBSCRIBE, solo filtra al entregar.)
 - **Aislamiento de red.** El harness se mueve a un *network namespace* propio, con solo la interfaz de loopback (necesita `CAP_SYS_ADMIN`, por ejemplo root en un contenedor). Todos los puertos, también el UDP 123, son privados de la corrida, así que dos corridas en paralelo no chocan. Sin ese permiso (o con `--no-isolate`) usa el loopback del host con los puertos de `--mqtt-port`, `--modbus-port` y `--console-port` (o `E2E_MQTT_PORT`, `E2E_MODBUS_PORT`, `E2E_CONSOLE_PORT`); por defecto 18831, 15020 y 15555. Los argumentos extra de `run_e2e.sh` pasan a `e2e.py`.
 - El harness escribe en la imagen bajo prueba su propio `config.json`, con el puerto MQTT elegido. Para los arranques de configuración genera variantes de la imagen con otra partición `storage` (con `littlefs-python`, el mismo que usa la build) o con la partición borrada. El límite de tamaño se lee de `build-qemu/sdkconfig` (`CONFIG_GW_CONFIG_MAX_BYTES`).
 - "No arrancó nada" se comprueba con una señal positiva: la línea `nothing is started` y, 6 s después, la respuesta de `status` del shell (`nothing is running`). La ausencia de logs de arranque y de NBIRTH queda como comprobación adicional.
 
-Configuración usada: `tools/e2e/fs/config.json` (keepalive de 10 s).
+Configuración usada: `tools/e2e/fs/config.json` (keepalive de 10 s). `run_e2e.sh` pasa además el ELF y el python de IDF, para decodificar el *core dump* con `esp_coredump`.
 
-Resultado: **41/41 comprobaciones OK**.
+Resultado: **51/51 comprobaciones OK**.
 
 | Criterio | Resultado medido |
 |---|---|
 | CFG-1 / CFG-2: arranques con `config.json` de 131 073 B, vacío, con error de sintaxis, con error de esquema y con la partición borrada; y sin archivo | OK: en los cinco primeros no arranca nada (ni UART RS485, ni red, ni MQTT, 0 NBIRTH), el LED pasa a error y el log ERROR da el motivo (`… 131073 bytes; el máximo es 131072`, `línea 5, columna 3`, `devices[0].tags[0].type`, `no montable`). Sin archivo: configuración embebida |
 | §7.1 NBIRTH con seq = 0 y bdSeq; al matar la conexión TCP (SIGKILL a QEMU) el broker publica el NDEATH con el mismo bdSeq | OK: NBIRTH a 1,9 s del arranque; NDEATH con el bdSeq de la sesión |
-| Reinicio del broker (SIGTERM, 9 s parado) | OK: mosquitto publica el will (NDEATH, bdSeq de la sesión) al cerrarse; backoff 1000 → 1851 → 3745 → 7181 ms con bdSeq nuevo en cada intento; NBIRTH (seq 0, bdSeq nuevo) y DBIRTH de los dos equipos (seq 1 y 2) |
+| Reinicio del broker (SIGTERM, 9 s parado) | OK: mosquitto publica el will (NDEATH, bdSeq de la sesión) al cerrarse; backoff 1000 → 1866 → 3443 → 6860 ms con bdSeq nuevo en cada intento; NBIRTH (seq 0, bdSeq nuevo) y DBIRTH de los dos equipos (seq 1 y 2) |
 | Broker congelado (SIGSTOP 20 s > 1,5 × keepalive) | OK: el gateway declara muerta la sesión por keepalive a los 10,0 s (`No PING_RESP`); tras SIGCONT llegan los will de la sesión muerta y del intento hecho durante el congelamiento, y luego NBIRTH con bdSeq nuevo y los dos DBIRTH; la sesión nueva sigue viva |
-| §7.2 Esclavo apagado → DDEATH; encendido → DBIRTH | OK: DDEATH en 3,05 s (cota 5,8 s); DBIRTH 0,67 s después de volver |
+| §7.2 Esclavo apagado → DDEATH; encendido → DBIRTH | OK: DDEATH en 3,47 s (cota 5,8 s); DBIRTH 1,52 s después de volver (cota: tope de sondeo de 10 s más un ciclo) |
+| MB-9 sondeo con backoff de los fuera de línea (tres unidades que no existen en el bus) | OK: tras tres ciclos completos, la unidad 3 recibe un solo intento por sondeo, a 2,2 / 4,0 / 8,0 / 10,0 s; Meter1 hace 21 ciclos en 20 s, intervalo máximo 1,05 s |
+| MQTT-2: broker que corta tras el CONNACK; SUBACK rechazado (0x80) | OK: el backoff sigue creciendo (1000 → 1696 → 3492 → 7681 ms). Con el SUBACK rechazado no hay NBIRTH, el gateway envía DISCONNECT y reintenta (1000 → 1861 → 3703 ms). El backoff vuelve al mínimo 10,1 s (un keepalive) después del NBIRTH de una sesión estable |
+| REL-1: watchdog y *core dump* | OK: los births salen en 9 ms con 4 ms como máximo sin alimentar el TWDT; `panic` en el shell → "Core dump has been saved to flash", NBIRTH con `Reset Reason` = `panic` y `esp_coredump` decodifica el volcado (traza por `cmd_panic` y `abort`) |
+| Afinidad de núcleos | OK: `tasks rs485_bus 1 sparkplug 0 tcpip 0 mqtt_task 0 emac_rx 0 sys_evt 0` |
 | §7.3 DI → NDATA en menos de 100 ms; NCMD DO/3 = true → NDATA | OK: 23 ms (incluye 20 ms de debounce); NDATA alias 22 = true (pines simulados con la polaridad de `gw_bsp`) |
-| §7.4 DCMD Setpoint = 12,3 → holding 10 = 123 por FC06 y DDATA | OK: el esclavo registró `(6, 10, [123])`; DDATA 12,3 |
+| §7.4 DCMD Setpoint = 12,3 → holding 10 = 123 por FC06 y DDATA | OK: el esclavo registró `(6, 10, [123])`; DDATA 12,3. Float32 `Limit` = 1234,5: **una sola** FC16 de 2 registros y DDATA 1234,5 |
 | §7.5 NCMD Rebirth → NBIRTH (seq 0, mismo bdSeq) y todos los DBIRTH | OK |
-| §7.6 Todos los payloads se decodifican con el proto oficial | OK: 36 mensajes, 0 errores |
-| CFG-6 shell en la consola; REL-5 | OK: `devices` da `Meter1 unit 1 online cycles 2 failed 0 \| ok 6 …` y, con el esclavo apagado, `offline … failed 3 \| … timeout 9`; `config` da el resumen; `status` responde con la configuración válida (`config … ok`, `MQTT connected`, `Modbus 2/2 devices online`) y también con la configuración rechazada. NBIRTH `Node Info/Reset Reason` = `power-on` en el primer arranque y `software` tras NCMD Reboot |
-| Extras | OK: DDATA solo por excepción, solo alias, deadband 0,1 respetada; DCMD por alias (FC05) y DCMD sobre métrica de solo lectura descartado con log; bdSeq persistido en NVS tras un corte de energía; NCMD Reboot publica NDEATH QoS 1 y **un solo** NDEATH (will descartado); DBIRTH de 2684 B (mayor que el búfer de 2 KB de esp-mqtt); 60 registros leídos con una sola FC03; timestamps UTC vía SNTP; continuidad de seq |
+| §7.6 Todos los payloads se decodifican con el proto oficial | OK: 44 mensajes, 0 errores |
+| CFG-6 shell en la consola; REL-5 | OK: `devices` da `Meter1 unit 1 online cycles 2 failed 0 \| ok 6 …` y, con el esclavo apagado, `offline … failed 3 \| … timeout 9`; `config` da el resumen; `status` responde con la configuración válida (`config … ok`, `MQTT connected`, `Modbus 2/5 devices online`) y también con la configuración rechazada. NBIRTH `Node Info/Reset Reason` = `power-on` en el primer arranque y `software` tras NCMD Reboot |
+| Extras | OK: DDATA solo por excepción, solo alias, deadband 0,1 respetada; DCMD por alias (FC05) y DCMD sobre métrica de solo lectura descartado con log (sin "alias 0" si el comando venía por nombre); NCMD con un nombre de 80 caracteres después de `DO/1` descartado entero (DO/1 no cambia); bdSeq persistido en NVS tras un corte de energía; NCMD Reboot publica NDEATH QoS 1 y **un solo** NDEATH (will descartado); DBIRTH de 2445 B (mayor que el búfer de 2 KB de esp-mqtt); 60 registros leídos con una sola FC03; timestamps UTC vía SNTP; continuidad de seq |
 
 **Lo que QEMU no cubre**, y por qué la build de emulador difiere (`sdkconfig.qemu`):
 
 - **W5500.** No está emulado; se usa `open_eth`.
 - **TCA9554, GPIO y RMT.** No están emulados; se usa `CONFIG_GW_IO_SIMULATED`: DO en RAM, DI con el comando `di` del shell y LED solo en el log.
 - **Modo RS485 de la UART.** `uart_wait_tx_done` hace `assert` por `TX_DONE`; se usa UART normal.
+- **Velocidades bajas.** El E2E corre a 9600 baudios; la espera del fin de transmisión a 1200 baudios solo tiene el test de host.
+- **Watchdog de tareas.** QEMU corre con `wdt_disable` en los timers: el TWDT no puede dispararse. Se comprueba que la tarea Sparkplug lo alimenta entre publicaciones (log), no un enlace lento real.
+- **TCA9554 ausente.** El expansor simulado siempre responde: el reintento y las DO `is_null` solo tienen tests de host.
+- ***Core dump* y el otro núcleo.** La build de QEMU espera 1 s antes de reiniciar tras un *panic* (`CONFIG_ESP_SYSTEM_PANIC_REBOOT_DELAY_SECONDS`): un reinicio inmediato llegó a perder el final del volcado en la imagen de flash. Además, QEMU no parece detener el otro núcleo mientras corre el *panic handler*, como hace el chip: una tarea suya (el muestreo de DI a 1 kHz, por ejemplo) puede mover su pila entre las dos pasadas del volcado ELF, y entonces el checksum no cierra (2 de 5 corridas; en una, cabecera de 52 640 B y 21 088 B escritos). El E2E provoca hasta tres *panic*: todos deben guardar el volcado y reiniciar con `panic`, y al menos uno debe decodificarse.
 - **PSRAM octal.** QEMU da *segfault*; se deshabilita.
 - **Flash QIO.** Las lecturas de la app llegan desplazadas 2 bytes; se usa DIO.
 
@@ -330,13 +339,13 @@ Leyenda de **Evidencia**:
 | SPB-7 | Implementado | `gw_node.c`, `gw_rbe.c` | H + Q |
 | SPB-8 | Implementado | `gw_node.h` (mapa de alias) | H + Q |
 | SPB-9 | Implementado | `gw_node.c` (`gw_node_rebirth`) | H + Q |
-| SPB-10 | Implementado | `gw_node.c`, `gw_poll.c` (`gw_poller_write`) | H + Q |
+| SPB-10 | Implementado | `gw_node.c`, `gw_poll.c` (`gw_poller_write`) | H + Q. Comandos todo o nada: un NCMD/DCMD que no se decodifica entero no aplica ninguna métrica (H + Q) |
 | SPB-11 | Implementado | `gw_node.c`, `gw_board/gw_io.c` | H + Q (DO simulada con la polaridad de la placa; TCA9554 C) |
 | SPB-12 | Implementado | `gw_rbe.c` | H + Q |
-| MB-1 | Implementado | `components/gw_rs485/gw_rs485.c` | Q a 9600 8N1; otras paridades C |
-| MB-2 | Implementado | `gw_rs485.c` (`UART_MODE_RS485_HALF_DUPLEX`) | **C**: QEMU no soporta el modo; la temporización de RTS/DE no está verificada |
+| MB-1 | Implementado | `components/gw_rs485/gw_rs485.c` | Q a 9600 8N1; otras paridades C. La espera del fin de transmisión es proporcional a la trama (bits por carácter de la configuración + 20 ms): H a 1200 baudios con paridad |
+| MB-2 | Implementado | `gw_rs485.c` (`UART_MODE_RS485_HALF_DUPLEX`) | **C**: QEMU no soporta el modo; la temporización de RTS/DE no está verificada. ISR de la UART en IRAM (`CONFIG_UART_ISR_IN_IRAM`) |
 | MB-3 | Implementado | `gw_core/src/mb_rtu.c`, `gw_poll.c` | H (FC01–04) + Q (FC01, FC03, FC04) |
-| MB-4 | Implementado | `mb_rtu.c`, `gw_poll.c` | H (las cuatro) + Q (FC05, FC06). FC15/FC16 de 16 bits con `CONFIG_GW_MB_FORCE_MULTI_WRITE` |
+| MB-4 | Implementado | `mb_rtu.c`, `gw_poll.c` | H (las cuatro) + Q (FC05, FC06 y FC16 de 32 bits: una sola escritura y DDATA). FC15/FC16 de 16 bits con `CONFIG_GW_MB_FORCE_MULTI_WRITE`. NaN e infinitos rechazados también en coils |
 | MB-5 | Implementado | `gw_core/src/gw_conv.c` | H + Q (float32, int16, uint16, bool) |
 | MB-7 | Implementado | `gw_conv.c` | H + Q |
 | MB-8 | Implementado | `gw_core/src/mb_master.c` | H + Q |
@@ -352,7 +361,7 @@ Leyenda de **Evidencia**:
 | REL-1 | Implementado | `gw_bus.c`, `gw_edge.c`, `gw_io.c`, `sdkconfig.defaults` | Q: TWDT alimentado tras cada publicación (el log de los births informa el mayor intervalo sin alimentarlo), DI vigiladas como usuario del TWDT; un *panic* deja el *core dump* en flash, el equipo reinicia (`Node Info/Reset Reason` = `panic`) y el volcado se decodifica con `esp_coredump`. El disparo real del TWDT no se ejecutó: QEMU deshabilita el watchdog de los timers |
 | REL-2 | **Parcial** | Todo `gw_*` | El código propio es estático y no asigna en el camino crítico; **lwIP y esp-mqtt asignan del heap internamente** (acotado, no estático) |
 | REL-3 | Implementado | `esp_log` en todos los módulos | Q |
-| QA-1 | Implementado | `test/host/` | 68 casos |
+| QA-1 | Implementado | `test/host/` | 78 casos |
 | QA-2 | Implementado | — | 0 warnings; tamaño en §3.2 |
 
 **Fuera del MVP**, implementado total o parcialmente:
@@ -406,7 +415,7 @@ La build de QEMU difiere de la de placa en esos puntos (`sdkconfig.qemu`).
 - Un dispositivo arranca fuera de línea y solo se publica su DBIRTH tras la primera respuesta.
 - **Un ciclo falla si alguna petición queda sin respuesta tras los reintentos** (una excepción Modbus cuenta como respuesta). El ciclo se corta ahí, sin gastar el timeout en los bloques restantes, y los ciclos fallidos cuentan para `offline_after`. Así el DDEATH llega en `offline_after` ciclos aunque los demás bloques del equipo respondan.
 - Los tags de los bloques no leídos **conservan el valor y el timestamp de su última lectura**: no se reportan como frescos. Si la falta persiste, el DDEATH los invalida a todos. Un equipo pasa (o vuelve) a estar en línea solo tras un ciclo completo, así que su DBIRTH nunca lleva valores que no se leyeron.
-- **Sondeo con backoff de los dispositivos fuera de línea.** Un equipo fuera de línea (tras `offline_after` ciclos fallidos, también si nunca respondió) ya no ocupa el bus como uno sano: cada sondeo manda **solo la primera petición del ciclo, con un único intento** (sin reintentos), y el siguiente se programa a 2, 4, 8… × `poll_ms`, con tope en `CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS` (10 s por defecto; nunca menos que `poll_ms`). Si responde, el ciclo sigue completo en esa misma vuelta. **Vuelta a línea acotada:** el DBIRTH llega como mucho un intervalo tope más un ciclo después de que el equipo vuelve a responder (≤ 10 s + ciclo por defecto). Con los valores por defecto un equipo muerto ocupa el bus 200 ms cada 10 s, en lugar de 600 ms por segundo.
+- **Sondeo con backoff de los dispositivos fuera de línea.** Un equipo fuera de línea (tras `offline_after` ciclos fallidos, también si nunca respondió) ya no ocupa el bus como uno sano: cada sondeo manda **solo la primera petición del ciclo, con un único intento** (sin reintentos), y el siguiente se programa a 2, 4, 8… × `poll_ms`, con tope en `CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS` (10 s por defecto; nunca menos que `poll_ms`). Si responde, el ciclo sigue completo en esa misma vuelta. Un equipo que nunca respondió recibe igual sus `offline_after` ciclos completos al arrancar: con varios equipos muertos, los primeros segundos el bus va saturado (en el E2E, Meter1 llegó a 2 s de intervalo) hasta que entran en backoff. **Vuelta a línea acotada:** el DBIRTH llega como mucho un intervalo tope más un ciclo después de que el equipo vuelve a responder (≤ 10 s + ciclo por defecto). Con los valores por defecto un equipo muerto ocupa el bus 200 ms cada 10 s, en lugar de 600 ms por segundo.
 - Un DCMD a un dispositivo fuera de línea se descarta, no se encola.
 - Las escrituras se reintentan como cualquier transacción. FC05/06/15/16 son idempotentes, pero un esclavo que ejecuta y no responde recibe la escritura dos veces.
 - **Rebirth espontáneo:** si el primer NBIRTH salió antes de que sincronizara SNTP (timestamps de 1970), se reemite al sincronizar. Esta rama no se ejercitó en el E2E.
@@ -420,6 +429,7 @@ Sin SNTP no hay hora válida: no hay RTC (TIME-2). Antes de la primera conexión
 - Un broker lento bloquea la tarea Sparkplug mientras dura cada publicación (cada escritura de socket espera hasta 5 s, `network.timeout_ms`). La memoria no crece: los cambios se **coalescen** y se publica el último valor; los intermedios se pierden. No es store & forward.
 - **Watchdog con un enlace lento.** La tarea Sparkplug alimenta el TWDT después de cada publicación, así que un rebirth (NBIRTH y hasta 16 DBIRTH) puede durar más de 15 s sin reiniciar el equipo. Lo que debe entrar en los 15 s es **una** publicación: el DBIRTH más grande (unos 6 KB) en un enlace de menos de unos 400 B/s todavía dispararía el watchdog. Tras cada NBIRTH el log informa cuánto tardaron los births y el mayor intervalo sin alimentar el watchdog. QEMU deshabilita el watchdog de los timers (`wdt_disable`), así que el caso del enlace lento no se ejecutó.
 - Los comandos de más de 1024 bytes, o fragmentados por esp-mqtt, se descartan con log.
+- Un NCMD o DCMD que nanopb no puede decodificar entero (por ejemplo, un nombre o un string de más de 63 caracteres) se descarta **completo**, con log: se decodifica una vez para validarlo y otra para aplicarlo.
 - Con 8 escrituras pendientes, las nuevas se descartan con log.
 
 ### 6.6 Persistencia y alias
