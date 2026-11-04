@@ -37,6 +37,29 @@ if grep -hE "warning:" "$B/configure.log" "$B/build.log"; then
     echo "FAIL: the production build produced warnings" >&2
     exit 1
 fi
+# CMake warnings too. Allowed (README 4.4): only IDF's own component_validation notes about IDF's
+# own components (esp_wifi private directories used by wpa_supplicant), never one about a
+# directory outside $IDF_PATH/components or from any other CMake file.
+python - "$B/configure.log" <<'PYEOF'
+import os, re, sys
+idf = os.path.realpath(os.environ["IDF_PATH"])
+text = open(sys.argv[1], errors="replace").read()
+bad, allowed = [], 0
+for m in re.finditer(r"^CMake (?:Deprecation )?Warning[^\n]*\n(?:.+\n)*", text, re.M):
+    block = m.group(0)
+    head = block.splitlines()[0]
+    dirs = re.findall(r"'(/[^']+)'", block.replace("\n  ", ""))
+    if (f"{idf}/tools/cmake/component_validation.cmake" in head and dirs
+            and all(d.startswith(f"{idf}/components/") for d in dirs)):
+        allowed += 1
+    else:
+        bad.append(block.strip())
+for b in bad:
+    print(b, file=sys.stderr)
+print(f"CMake warnings: {allowed} allowed (IDF component_validation on IDF components), "
+      f"{len(bad)} not allowed")
+sys.exit(1 if bad else 0)
+PYEOF
 idf.py -B "$B" -D SDKCONFIG="$B/sdkconfig" size | tee "$B/size.txt"
 
 tools/sign_firmware.sh --test-key --build-dir "$B"
