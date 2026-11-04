@@ -1,5 +1,6 @@
 /* Ethernet (NET-1), optional Wi-Fi station as alternative or backup (NET-4), IPv4 by
- * DHCP or static (NET-2) and SNTP (TIME-1).
+ * DHCP or static (NET-2), optional IPv6 with SLAAC and a static address (NET-7) and SNTP
+ * (TIME-1).
  *
  * Link and IP changes are handled by esp_eth/esp_wifi/esp_netif; the choice of the
  * active interface (default route, MQTT session) follows gw_netsel. Callbacks run in
@@ -30,12 +31,16 @@ typedef struct {
     void (*time_synced)(void);     /* first and every later SNTP synchronisation */
 } gw_net_callbacks_t;
 
+#define GW_NET_IPV6_MAX 3      /* CONFIG_LWIP_IPV6_NUM_ADDRESSES */
+#define GW_NET_IPV6_STR 40
+
 typedef struct {
     bool configured;
     bool link;                     /* Ethernet link / Wi-Fi associated */
     bool usable;                   /* link and an address */
     bool active;                   /* carries the default route and the MQTT session */
     uint8_t ipv4[4];               /* 0.0.0.0 = none */
+    char ipv6[GW_NET_IPV6_MAX][GW_NET_IPV6_STR];   /* "" = none (NET-7) */
 } gw_net_if_status_t;
 
 /** Requires esp_netif_init() and the default event loop. */

@@ -268,6 +268,106 @@ static int hex_digit(char c)
     return -1;
 }
 
+bool gw_parse_ipv6(const char *s, uint8_t out[16])
+{
+    uint16_t head[8], tail[8];
+    unsigned nh = 0, nt = 0;
+    bool gap = false;   /* "::" seen; later groups go to tail[] */
+    const char *p = s;
+    if (p[0] == ':') {
+        if (p[1] != ':') {
+            return false;
+        }
+        gap = true;
+        p += 2;
+    }
+    while (*p != '\0') {
+        if (nh + nt >= 8) {
+            return false;
+        }
+        const char *colon = strchr(p, ':');
+        const char *dot = strchr(p, '.');
+        if (dot != NULL && (colon == NULL || dot < colon)) {
+            /* trailing dotted quad (::ffff:192.0.2.1): two groups, must be last */
+            uint8_t v4[4];
+            if (nh + nt > 6 || !parse_ipv4(p, v4)) {
+                return false;
+            }
+            uint16_t *g = gap ? tail : head;
+            unsigned *n = gap ? &nt : &nh;
+            g[(*n)++] = (uint16_t)(v4[0] << 8 | v4[1]);
+            g[(*n)++] = (uint16_t)(v4[2] << 8 | v4[3]);
+            p += strlen(p);
+            break;
+        }
+        unsigned v = 0, digits = 0;
+        for (int d; (d = hex_digit(*p)) >= 0; p++) {
+            if (++digits > 4) {
+                return false;
+            }
+            v = v * 16u + (unsigned)d;
+        }
+        if (digits == 0) {
+            return false;
+        }
+        if (gap) {
+            tail[nt++] = (uint16_t)v;
+        } else {
+            head[nh++] = (uint16_t)v;
+        }
+        if (*p == '\0') {
+            break;
+        }
+        if (*p++ != ':') {
+            return false;
+        }
+        if (*p == ':') {
+            if (gap) {
+                return false;   /* a second "::" */
+            }
+            gap = true;
+            p++;
+        } else if (*p == '\0') {
+            return false;       /* trailing single ':' */
+        }
+    }
+    if (gap ? nh + nt > 7 : nh != 8) {
+        return false;
+    }
+    uint16_t g[8] = {0};
+    for (unsigned i = 0; i < nh; i++) {
+        g[i] = head[i];
+    }
+    for (unsigned i = 0; i < nt; i++) {
+        g[8 - nt + i] = tail[i];
+    }
+    for (unsigned i = 0; i < 8; i++) {
+        out[2 * i] = (uint8_t)(g[i] >> 8);
+        out[2 * i + 1] = (uint8_t)g[i];
+    }
+    return true;
+}
+
+static bool get_ipv6(const cJSON *obj, const char *key, const char *path, uint8_t out[16],
+                     bool *present, gw_cfg_err_t *err)
+{
+    char p[96];
+    join(p, sizeof(p), path, key);
+    char buf[48];
+    if (!get_string(obj, key, path, false, "", buf, sizeof(buf), err)) {
+        return false;
+    }
+    *present = buf[0] != '\0';
+    if (!*present) {
+        memset(out, 0, 16);
+        return true;
+    }
+    if (!gw_parse_ipv6(buf, out)) {
+        return fail(err, p, "'%s' no es una dirección IPv6 válida", buf);
+    }
+    return true;
+}
+
 /* Sparkplug identifiers become MQTT topic levels: no '/', '+', '#', no control chars. */
 static bool check_topic_id(const char *s, const char *path, bool allow_empty, gw_cfg_err_t *err)
 {
@@ -302,6 +402,35 @@ static bool parse_ipv4_keys(const cJSON *o, const char *path, bool *dhcp, uint8_
     return get_ipv4(o, "ip", path, st, ip, err) && get_ipv4(o, "netmask", path, st, netmask, err) &&
            get_ipv4(o, "gateway", path, st, gateway, err) &&
            get_ipv4(o, "dns", path, false, dns, err);
+}
+
+static bool parse_ipv6_section(const cJSON *net, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"enabled", "slaac", "address", "dns"};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(net, "ipv6");
+    static const cJSON empty = {.type = cJSON_Object};
+    if (o == NULL) {
+        o = &empty;
+    }
+    if (!check_keys(o, "network.ipv6", keys, 4, err) ||
+        !get_bool(o, "enabled", "network.ipv6", false, &cfg->network.ipv6.enabled, err) ||
+        !get_bool(o, "slaac", "network.ipv6", true, &cfg->network.ipv6.slaac, err) ||
+        !get_ipv6(o, "address", "network.ipv6", cfg->network.ipv6.address,
+                  &cfg->network.ipv6.has_address, err) ||
+        !get_ipv6(o, "dns", "network.ipv6", cfg->network.ipv6.dns, &cfg->network.ipv6.has_dns,
+                  err)) {
+        return false;
+    }
+    const uint8_t *a = cfg->network.ipv6.address;
+    if (cfg->network.ipv6.has_address) {
+        static const uint8_t zero[16];
+        if (a[0] == 0xff || (a[0] == 0xfe && (a[1] & 0xc0) == 0x80) || memcmp(a, zero, 15) == 0) {
+            return fail(err, "network.ipv6.address",
+                        "se esperaba una dirección unicast global o local única (no multicast, "
+                        "link-local, :: ni ::1)");
+        }
+    }
+    return true;
 }
 
 static bool check_wifi_password(const char *pw)
@@ -360,16 +489,16 @@ static bool parse_wifi_section(const cJSON *net, gw_config_t *cfg, gw_cfg_err_t 
 
 static bool parse_network(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"dhcp", "ip", "netmask", "gateway", "dns", "wifi"};
+    static const char *const keys[] = {"dhcp", "ip", "netmask", "gateway", "dns", "ipv6", "wifi"};
     static const cJSON empty = {.type = cJSON_Object};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "network");
     if (o == NULL) {
         o = &empty;
     }
-    return check_keys(o, "network", keys, 6, err) &&
+    return check_keys(o, "network", keys, 7, err) &&
            parse_ipv4_keys(o, "network", &cfg->network.dhcp, cfg->network.ip,
                            cfg->network.netmask, cfg->network.gateway, cfg->network.dns, err) &&
-           parse_wifi_section(o, cfg, err);
+           parse_ipv6_section(o, cfg, err) && parse_wifi_section(o, cfg, err);
 }
 
 static bool parse_ntp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)

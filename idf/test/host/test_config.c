@@ -178,6 +178,71 @@ static void test_wifi_section(void)
     ASSERT_REJECTED(parse_network("{\"wifi\":true}"), "network.wifi: se esperaba un objeto JSON");
 }
 
+static void assert_ipv6(const char *text, const uint8_t expected[16])
+{
+    uint8_t a[16];
+    TEST_ASSERT_TRUE_MESSAGE(gw_parse_ipv6(text, a), text);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY_MESSAGE(expected, a, 16, text);
+}
+
+static void test_ipv6_literals(void)
+{
+    assert_ipv6("2001:db8::1", (const uint8_t[16]){0x20, 0x01, 0x0d, 0xb8, [15] = 1});
+    assert_ipv6("2001:0DB8:0000:0000:0000:0000:0000:0001",
+                (const uint8_t[16]){0x20, 0x01, 0x0d, 0xb8, [15] = 1});
+    assert_ipv6("::", (const uint8_t[16]){0});
+    assert_ipv6("::1", (const uint8_t[16]){[15] = 1});
+    assert_ipv6("fe80::", (const uint8_t[16]){0xfe, 0x80});
+    assert_ipv6("1:2:3:4:5:6:7::", (const uint8_t[16]){0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0, 7});
+    assert_ipv6("::ffff:192.0.2.1",
+                (const uint8_t[16]){[10] = 0xff, [11] = 0xff, [12] = 192, [13] = 0, [14] = 2, [15] = 1});
+    assert_ipv6("fec0::1234", (const uint8_t[16]){0xfe, 0xc0, [14] = 0x12, [15] = 0x34});
+    static const char *const bad[] = {
+        "", ":", ":::", "1::2::3", "2001:db8::1:", ":2001:db8::1", "12345::1", "g::1",
+        "1:2:3:4:5:6:7:8:9", "1:2:3:4:5:6:7", "1:2:3:4:5:6:7:8::", "::1.2.3", "::1.2.3.256",
+        "1:2:3:4:5:6:7:1.2.3.4", "fe80::1%eth0", "2001:db8::1 ",
+    };
+    uint8_t a[16];
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        TEST_ASSERT_FALSE_MESSAGE(gw_parse_ipv6(bad[i], a), bad[i]);
+    }
+}
+
+/* NET-7: optional "network.ipv6" section. */
+static void test_ipv6_section(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(parse_network("{\"dhcp\":true}"), err.msg);
+    TEST_ASSERT_FALSE(cfg.network.ipv6.enabled);   /* absent = IPv4 only, as in the MVP */
+    TEST_ASSERT_TRUE(cfg.network.ipv6.slaac);
+    TEST_ASSERT_FALSE(cfg.network.ipv6.has_address);
+    TEST_ASSERT_FALSE(cfg.network.ipv6.has_dns);
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse_network("{\"ipv6\":{\"enabled\":true,\"slaac\":false,\"address\":"
+                      "\"fd00:1::50\",\"dns\":\"2001:4860:4860::8888\"}}"),
+        err.msg);
+    TEST_ASSERT_TRUE(cfg.network.ipv6.enabled);
+    TEST_ASSERT_FALSE(cfg.network.ipv6.slaac);
+    TEST_ASSERT_TRUE(cfg.network.ipv6.has_address);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(((uint8_t[16]){0xfd, 0, 0, 1, [15] = 0x50}),
+                                  cfg.network.ipv6.address, 16);
+    TEST_ASSERT_TRUE(cfg.network.ipv6.has_dns);
+    TEST_ASSERT_EQUAL_HEX8(0x88, cfg.network.ipv6.dns[15]);
+
+    ASSERT_REJECTED(parse_network("{\"ipv6\":{\"enabled\":true,\"address\":\"2001:db8::g\"}}"),
+                    "network.ipv6.address: '2001:db8::g' no es una dirección IPv6 válida");
+    ASSERT_REJECTED(parse_network("{\"ipv6\":{\"address\":\"fe80::1\"}}"),
+                    "network.ipv6.address: se esperaba una dirección unicast");
+    ASSERT_REJECTED(parse_network("{\"ipv6\":{\"address\":\"ff02::1\"}}"), "network.ipv6.address");
+    ASSERT_REJECTED(parse_network("{\"ipv6\":{\"address\":\"::1\"}}"), "network.ipv6.address");
+    ASSERT_REJECTED(parse_network("{\"ipv6\":{\"dns\":\"8.8.8.8\"}}"),
+                    "network.ipv6.dns: '8.8.8.8' no es una dirección IPv6 válida");
+    ASSERT_REJECTED(parse_network("{\"ipv6\":{\"enabled\":1}}"),
+                    "network.ipv6.enabled: se esperaba true o false");
+    ASSERT_REJECTED(parse_network("{\"ipv6\":{\"prefix_len\":64}}"),
+                    "network.ipv6.prefix_len: clave desconocida");
+}
+
 static void test_schema_rules(void)
 {
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bool\"}"),
@@ -409,6 +474,8 @@ int main(void)
     RUN_TEST(test_embedded_default_is_valid);
     RUN_TEST(test_defaults_and_static_ip);
     RUN_TEST(test_wifi_section);
+    RUN_TEST(test_ipv6_literals);
+    RUN_TEST(test_ipv6_section);
     RUN_TEST(test_schema_rules);
     RUN_TEST(test_section_errors);
     RUN_TEST(test_limits);

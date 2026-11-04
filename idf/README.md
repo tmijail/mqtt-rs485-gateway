@@ -23,11 +23,11 @@ Firmware del MVP (`docs/SPEC.md` §5) para la Waveshare **ESP32-S3-POE-ETH-8DI-8
 | `gw_rs485` | UART1 en `UART_MODE_RS485_HALF_DUPLEX` (RTS = GPIO21), expuesta como `mb_transport_t` | Sí |
 | `gw_bus` | Tarea **dueña única del bus RS485**: encuesta y escrituras DCMD | Sí |
 | `gw_edge` | Tarea Sparkplug: cliente esp-mqtt, bdSeq, will, backoff, motor `gw_node` | Sí |
-| `gw_net` | W5500 por SPI (u openeth en QEMU), Wi-Fi STA opcional como alternativa o respaldo (NET-4), DHCP o IP estática por interfaz, ruta por defecto según `gw_netsel`, SNTP | Sí |
+| `gw_net` | W5500 por SPI (u openeth en QEMU), Wi-Fi STA opcional como alternativa o respaldo (NET-4), DHCP o IP estática por interfaz, IPv6 opcional con SLAAC y dirección estática (NET-7), ruta por defecto según `gw_netsel`, SNTP | Sí |
 | `gw_bsp` | **Descripción declarativa de la placa** (`gw_bsp.c`): todos los pines, direcciones I²C y niveles activos (DI, DO, DE del RS485, I²C, LED y orden de color, buzzer, W5500). Los drivers la leen y no contienen datos de la placa | Sí (tipos) |
 | `gw_board` | 8 DI con muestreo a 1 kHz y debounce; 8 DO en el TCA9554 (sobre `gw_dout`, sin pulsos al arrancar); LED WS2812 de estado | Sí |
 | `gw_storage` | bdSeq en NVS; configuración desde LittleFS o embebida (solo si falta el archivo) | Sí |
-| `gw_shell` | Shell de diagnóstico `esp_console` en la consola: `status`, `devices`, `config` (y `di` en QEMU) | Sí |
+| `gw_shell` | Shell de diagnóstico `esp_console` en la consola: `status`, `devices`, `config`, `ping` (y `di` en QEMU) | Sí |
 | `main` | `app_main`: carga la configuración y conecta los componentes | Sí |
 
 Dependencias gestionadas, **con versión fija** (`==`) en cada `idf_component.yml` y hash en `dependencies.lock`:
@@ -154,13 +154,13 @@ Resultado de `idf.py size` (build limpia con `idf.py set-target esp32s3 build`, 
 
 | Región | Usado |
 |---|---|
-| Flash code (`.text`) | 792 852 B |
-| Flash data (`.rodata`, etc.) | 186 560 B |
-| DIRAM | 180 448 B de 341 760 (**52,8 %**): `.bss` 94 272, `.text` 62 247, `.data` 23 929 |
+| Flash code (`.text`) | 797 644 B |
+| Flash data (`.rodata`, etc.) | 188 464 B |
+| DIRAM | 180 960 B de 341 760 (**52,9 %**): `.bss` 94 544, `.text` 62 247, `.data` 24 169 |
 | IRAM | 16 384 B (100 %, lo normal en S3: el resto del código IRAM va en DIRAM) |
-| Imagen total | **1 082 008 B** (26 % de la partición `ota_0` de 4 MB) |
+| Imagen total | **1 088 944 B** (26 % de la partición `ota_0` de 4 MB) |
 
-**Costo del Wi-Fi (NET-4).** Antes: DIRAM 153 121 B (44,8 %) e imagen de 735 029 B. El driver Wi-Fi suma **27 327 B de DIRAM estática** (`.bss` +11 504, `.text` +8 352, `.data` +7 471) aunque la configuración no lo active, y 347 KB de flash. Ya se sacó de IRAM lo que IDF permite (`CONFIG_ESP_WIFI_IRAM_OPT=n`, `CONFIG_ESP_WIFI_RX_IRAM_OPT=n`). Al arrancarlo, sus búferes dinámicos y los de lwIP van a PSRAM cuando se puede (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`); el heap interno que consume en ejecución no se midió (no hay placa). Quien no lo necesite recupera todo con `CONFIG_GW_WIFI=n`.
+**Costo del Wi-Fi (NET-4).** Antes: DIRAM 153 121 B (44,8 %) e imagen de 735 029 B. El driver Wi-Fi suma **27 327 B de DIRAM estática** (medido en su commit) (`.bss` +11 504, `.text` +8 352, `.data` +7 471) aunque la configuración no lo active, y 347 KB de flash. Ya se sacó de IRAM lo que IDF permite (`CONFIG_ESP_WIFI_IRAM_OPT=n`, `CONFIG_ESP_WIFI_RX_IRAM_OPT=n`). Al arrancarlo, sus búferes dinámicos y los de lwIP van a PSRAM cuando se puede (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`); el heap interno que consume en ejecución no se midió (no hay placa). Quien no lo necesite recupera todo con `CONFIG_GW_WIFI=n`.
 
 Tabla de particiones (`partitions.csv`, 16 MB): `nvs` 24 KB, `otadata`, `phy_init`, `ota_0`/`ota_1` 4 MB cada una (reservadas para FW-1), `storage` LittleFS 1 MB y `coredump` 64 KB.
 
@@ -168,7 +168,7 @@ Tabla de particiones (`partitions.csv`, 16 MB): `nvs` 24 KB, `otadata`, `phy_ini
 
 1. El firmware embebe `components/gw_storage/default_config.json`, que es el ejemplo de §6.
 2. Para reemplazarla, copie el JSON a `idf/fs/config.json` y edítelo. `idf.py flash` graba la carpeta `fs/` en la partición `storage` y el firmware lee `/cfg/config.json` al arrancar.
-3. Las claves opcionales fuera del MVP (`network.wifi`, NET-4) están en `docs/SPEC.md` §6.1.
+3. Las claves opcionales fuera del MVP (`network.wifi`, NET-4; `network.ipv6`, NET-7) están en `docs/SPEC.md` §6.1.
 4. **La configuración embebida se usa solo si `/cfg/config.json` no existe.** Cualquier otro problema detiene el equipo: la partición LittleFS no monta, el archivo está vacío, no se puede leer, supera el límite o es inválido. Entonces **no arranca nada** (ni encuesta, ni red, ni MQTT), el LED parpadea en rojo y el log repite cada 10 s, con nivel ERROR, el motivo, por ejemplo:
    - `/cfg/config.json: 140000 bytes; el máximo es 131072 (CONFIG_GW_CONFIG_MAX_BYTES)`;
    - `partición LittleFS 'storage' no montable (ESP_FAIL)`;
@@ -206,7 +206,7 @@ Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 cmake -S idf/test/host -B build-host && cmake --build build-host -j3 && ctest --test-dir build-host
 ```
 
-Resultado: **11/11 ejecutables y 74/74 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
+Resultado: **11/11 ejecutables y 76/76 casos OK**, compilados con `-Wall -Wextra -Werror -Wconversion`.
 
 | Suite | Casos | Qué cubre |
 |---|---|---|
@@ -214,7 +214,7 @@ Resultado: **11/11 ejecutables y 74/74 casos OK**, compilados con `-Wall -Wextra
 | `test_mb_master` | 8 | t3,5 y retardo entre tramas, timeout y reintentos, CRC malo, unidad equivocada, excepción sin reintento |
 | `test_conv` | 5 | Mapeo de datatypes §6, int16/uint16/int32/uint32/float32, ABCD/CDAB, escala inversa (12,3 → 123), rangos |
 | `test_logic` | 6 | RBE y deadband contra el último valor reportado (deriva), validez y NaN, debounce, backoff 1–60 s, fuera de línea |
-| `test_config` | 12 | Ejemplo §6 literal, sección `network.wifi` (valores por defecto, SSID, contraseña WPA2/PSK/abierta, rol, `failback_s`, IP estática), JSON embebido, valores por defecto, reglas del esquema, errores con ruta (`devices[1].tags[2].type`), sintaxis con línea y columna (también con UTF-8 y contenido sobrante), claves duplicadas, límites 16/64/256, documento máximo (256 tags, > 40 KB), asignador del árbol y falta de memoria |
+| `test_config` | 14 | Ejemplo §6 literal, sección `network.wifi` (valores por defecto, SSID, contraseña WPA2/PSK/abierta, rol, `failback_s`, IP estática), literales IPv6 (`::`, grupos de 4 dígitos, IPv4 embebida, 16 formas inválidas) y sección `network.ipv6`, JSON embebido, valores por defecto, reglas del esquema, errores con ruta (`devices[1].tags[2].type`), sintaxis con línea y columna (también con UTF-8 y contenido sobrante), claves duplicadas, límites 16/64/256, documento máximo (256 tags, > 40 KB), asignador del árbol y falta de memoria |
 | `test_plan` | 2 | Lecturas en bloque, solapes, huecos, límite de 125 registros |
 | `test_spb` | 7 | Ida y vuelta de todos los tipos, formato wire (Int16 con extensión de signo), NDEATH sin seq, peor caso de DBIRTH en el búfer |
 | `test_node` | 8 | NBIRTH y DBIRTH (nombre, alias, datatype, valor; alias únicos), DDEATH, DDATA por excepción, seq compartido con vuelta a 0, rebirth, NCMD DO/Reboot, DCMD por nombre y alias, descartes |
@@ -256,7 +256,7 @@ E2E_PYTHON=~/e2e/bin/python idf/tools/e2e/run_e2e.sh
 
 Configuración usada: `tools/e2e/fs/config.json` (keepalive de 10 s).
 
-Resultado: **42/42 comprobaciones OK**.
+Resultado: **43/43 comprobaciones OK**.
 
 | Criterio | Resultado medido |
 |---|---|
@@ -270,7 +270,7 @@ Resultado: **42/42 comprobaciones OK**.
 | §7.5 NCMD Rebirth → NBIRTH (seq 0, mismo bdSeq) y todos los DBIRTH | OK |
 | §7.6 Todos los payloads se decodifican con el proto oficial | OK: 36 mensajes, 0 errores |
 | CFG-6 shell en la consola; REL-5 | OK: `devices` da `Meter1 unit 1 online cycles 2 failed 0 \| ok 6 …` y, con el esclavo apagado, `offline … failed 3 \| … timeout 9`; `config` da el resumen; `status` responde con la configuración válida (`config … ok`, `MQTT connected`, `Modbus 2/2 devices online`) y también con la configuración rechazada. NBIRTH `Node Info/Reset Reason` = `power-on` en el primer arranque y `software` tras NCMD Reboot |
-| NET-4 sin radio: configuración con `network.wifi` (nodo `GW02`, arranque aparte) en la build de QEMU | OK: arranca, avisa `network.wifi ignored: Wi-Fi is not available in this build` y publica NBIRTH por Ethernet; el shell muestra `iface ethernet up 10.0.2.15 (active) \| wifi not configured` y el resumen de `network.wifi`. Con la configuración normal, `status` muestra Ethernet como única interfaz activa |
+| NET-4 sin radio y NET-7: configuración con `network.wifi` y `network.ipv6` (nodo `GW02`, arranque aparte) en la build de QEMU | OK: arranca, avisa `network.wifi ignored: Wi-Fi is not available in this build` y publica NBIRTH por Ethernet; el shell muestra `iface ethernet up 10.0.2.15 (active) \| wifi not configured` y el resumen de `network.wifi`. Con la configuración normal, `status` muestra Ethernet como única interfaz activa. IPv6: `fe80::5054:ff:fe12:3456` (link-local), `fec0::5054:ff:fe12:3456` (SLAAC con el RA de slirp) y `fec0::1234` (estática); `ping fec0::2`: 3 enviados, 3 respondidos. MQTT sobre IPv6 no se puede probar aquí (§6.6) |
 | Extras | OK: DDATA solo por excepción, solo alias, deadband 0,1 respetada; DCMD por alias (FC05) y DCMD sobre métrica de solo lectura descartado con log; bdSeq persistido en NVS tras un corte de energía; NCMD Reboot publica NDEATH QoS 1 y **un solo** NDEATH (will descartado); DBIRTH de 2684 B (mayor que el búfer de 2 KB de esp-mqtt); 60 registros leídos con una sola FC03; timestamps UTC vía SNTP; continuidad de seq |
 
 **Lo que QEMU no cubre**, y por qué la build de emulador difiere (`sdkconfig.qemu`):
@@ -280,6 +280,7 @@ Resultado: **42/42 comprobaciones OK**.
 - **Modo RS485 de la UART.** `uart_wait_tx_done` hace `assert` por `TX_DONE`; se usa UART normal.
 - **PSRAM octal.** QEMU da *segfault*; se deshabilita.
 - **Flash QIO.** Las lecturas de la app llegan desplazadas 2 bytes; se usa DIO.
+- **IPv6 hacia el host.** slirp entrega las conexiones a `fec0::2` al `::1` del host y el kernel del contenedor no tiene IPv6: solo se prueban direcciones e ICMPv6.
 - **Wi-Fi.** QEMU no emula la radio; la build de emulador lleva `CONFIG_GW_WIFI=n`. El E2E comprueba solo que una configuración con `network.wifi` arranca, avisa que no hay Wi-Fi y sigue por Ethernet.
 
 ### 4.4 QA-2
@@ -345,17 +346,18 @@ Leyenda de **Evidencia**:
 | REL-1 | Implementado | `gw_bus.c`, `gw_edge.c`, `sdkconfig.defaults` | C/Q (configurado; sin inyección de fallos) |
 | REL-2 | **Parcial** | Todo `gw_*` | El código propio es estático y no asigna en el camino crítico; **lwIP y esp-mqtt asignan del heap internamente** (acotado, no estático) |
 | REL-3 | Implementado | `esp_log` en todos los módulos | Q |
-| QA-1 | Implementado | `test/host/` | 74 casos |
+| QA-1 | Implementado | `test/host/` | 76 casos |
 | QA-2 | Implementado | — | 0 warnings; tamaño en §3.2 |
 
 **Fuera del MVP**, implementado total o parcialmente:
 
 - **MB-11** Parcial: bloques con hueco máximo global por Kconfig, no por dispositivo.
 - **MB-13** Parcial: excepciones decodificadas y en el log; contadores por dispositivo (ciclos, ciclos fallidos e intentos ok / timeout / CRC / trama / excepción) en el shell y en el log de fuera de línea, no publicados por Sparkplug.
-- **CFG-6** Parcial: shell de diagnóstico de solo lectura en la consola (`status`, `devices`, `config`; `help` lista los comandos). Funciona también con la configuración rechazada. No cambia la configuración.
+- **CFG-6** Parcial: shell de diagnóstico de solo lectura en la consola (`status` con interfaces y direcciones IPv6, `devices`, `config`, `ping <IPv4|IPv6>`; `help` lista los comandos). Funciona también con la configuración rechazada. No cambia la configuración.
 - **MB-14** Parcial: escrituras antes del siguiente sondeo, no entre bloques.
 - **IO-3** Parcial: DO a OFF al reiniciar, sin el resto del modo seguro.
 - **NET-4** Implementado, **sin probar con radio**: Wi-Fi STA como respaldo (`role: backup`, Ethernet gana la ruta) o primaria (`role: primary`), con *failback* por histéresis (`failback_s`) y sesión MQTT nueva (bdSeq nuevo, NBIRTH) al cambiar de interfaz. Evidencia: H (`gw_netsel`: failover, failback, rebotes, solo Ethernet; esquema `network.wifi`) + Q (configuración con Wi-Fi en la build sin radio: aviso y Ethernet como antes; shell `status` con la interfaz activa) + C (driver Wi-Fi, conmutación real, atadura del socket).
+- **NET-7** Implementado: IPv6 opcional (`network.ipv6`) en todas las interfaces: link-local en cada subida del enlace, SLAAC con los RA (`CONFIG_LWIP_IPV6_AUTOCONFIG`, activada por interfaz solo si la configuración lo pide), dirección estática en Ethernet y DNS IPv6. Una interfaz con solo IPv6 global cuenta como utilizable. Evidencia: H (literales IPv6, esquema) + Q (link-local, SLAAC sobre `fec0::/64` de slirp, estática `fec0::1234`, `ping fec0::2` respondido) + C (MQTT, SNTP y DNS sobre IPv6; ver §6.6).
 - **REL-5** Implementado: `esp_reset_reason()` va al log de arranque y al NBIRTH como `Node Info/Reset Reason` (String, alias 6). H + Q (`power-on` en el primer arranque, `software` tras NCMD Reboot).
 - **REL-6**: medido en QEMU.
 - **QA-3** Parcial: QEMU, sin hardware.
@@ -415,7 +417,7 @@ Sin SNTP no hay hora válida: no hay RTC (TIME-2). Antes de la primera conexión
 - Los comandos de más de 1024 bytes, o fragmentados por esp-mqtt, se descartan con log.
 - Con 8 escrituras pendientes, las nuevas se descartan con log.
 
-### 6.6 Red: Wi-Fi y conmutación (NET-4)
+### 6.6 Red: Wi-Fi, conmutación (NET-4) e IPv6 (NET-7)
 
 - **La falla se detecta por enlace o dirección, no por alcance.** Si el cable sigue enchufado pero el switch o el router de Ethernet dejan de llevar al broker, no hay conmutación: la sesión cae por keepalive y se reintenta por la misma interfaz. No hay sondeo del broker por cada interfaz.
 - **Arranque con las dos interfaces:** si Wi-Fi obtiene IP antes que Ethernet (el W5500 tarda 1–3 s en negociar), la primera sesión va por Wi-Fi y vuelve a Ethernet a los `failback_s`: hay una sesión extra (un NDEATH y otro NBIRTH) en el arranque.
@@ -423,6 +425,8 @@ Sin SNTP no hay hora válida: no hay RTC (TIME-2). Antes de la primera conexión
 - `esp_mqtt_client_destroy` puede bloquear la tarea Sparkplug hasta el timeout de red (5 s) si el cliente estaba conectando; queda por debajo del watchdog de 15 s.
 - Las credenciales Wi-Fi se leen de `config.json` y no se copian a NVS (`WIFI_STORAGE_RAM`). Siguen en claro en LittleFS (CFG-7 no está).
 - La reconexión Wi-Fi usa backoff con jitter de 1 a 30 s. Ahorro de energía del radio desactivado (`WIFI_PS_NONE`) por la latencia de los comandos.
+- **MQTT sobre IPv6 no se probó de punta a punta.** slirp reenvía las conexiones a `fec0::2` al `::1` del host, y el kernel del contenedor de prueba no tiene IPv6 (`AF_INET6` no soportado). El E2E prueba direcciones (link-local, SLAAC, estática) y alcance ICMPv6 al host virtual de slirp. esp-mqtt resuelve el host con `getaddrinfo` y acepta literales IPv6; SNTP y DNS sobre IPv6 quedan solo compilados.
+- IPv6: sin DHCPv6 ni *gateway* estático (el router sale de los RA; sin RA, una dirección estática solo alcanza su /64). La dirección SLAAC usa EUI-64 (deja ver la MAC; lwIP no tiene direcciones temporales). La dirección estática es solo de Ethernet. El shell muestra las direcciones vistas desde la última subida del enlace; lwIP no avisa cuando una vence.
 - La IP estática de Wi-Fi tiene las mismas reglas que la de Ethernet. Con las dos interfaces en la misma subred, el tráfico que no es MQTT (SNTP, DNS) sale por la que elija lwIP; MQTT va atado a la activa.
 
 ### 6.7 Persistencia y alias

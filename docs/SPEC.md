@@ -273,6 +273,22 @@ Todas son opcionales. Si faltan, el equipo se comporta como el MVP. Las claves d
 
 Las claves de IPv4 de `network` siguen siendo las de Ethernet.
 
+**`network.ipv6` (NET-7): IPv6 además de IPv4.**
+
+```json
+"network": { "dhcp": true,
+             "ipv6": { "enabled": true, "slaac": true, "address": "fd00:1::50", "dns": "" } }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `enabled` | bool | `false` | `false` = solo IPv4. Con `true`, cada interfaz tiene dirección link-local |
+| `slaac` | bool | `true` | Autoconfiguración sin estado con los anuncios del router (RA) |
+| `address` | texto | `""` | Dirección estática de Ethernet, en forma de texto RFC 4291. Prefijo /64 en el enlace. No se admiten multicast, link-local, `::` ni `::1` |
+| `dns` | texto | `""` | Servidor DNS IPv6 (tercera posición; DHCPv4 llena las dos primeras) |
+
+El router por defecto IPv6 se aprende de los RA; no hay *gateway* IPv6 estático. `mqtt.host` y `ntp.server` aceptan literales IPv6 (`fd00::10`) o nombres con registro AAAA.
+
 ## 7. Criterios de aceptación del MVP
 
 1. `NBIRTH` con `seq`=0 y el `bdSeq` del LWT. Al matar la conexión TCP el broker publica `NDEATH` con ese mismo `bdSeq`.

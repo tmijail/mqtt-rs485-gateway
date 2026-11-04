@@ -518,14 +518,19 @@ def run_config_failsafe(args, work):
 
 
 def run_network_variant(args, work):
-    """Optional network keys on the emulator (no Wi-Fi radio, CONFIG_GW_WIFI=n): a configuration
-    that enables network.wifi still boots, says that Wi-Fi is not available and runs over
-    Ethernet exactly as before. A separate edge node id keeps its messages apart from the main
-    scenario's."""
+    """Optional network keys on the emulator, in one boot with a separate edge node id (its
+    messages stay apart from the main scenario's):
+      * NET-4: no Wi-Fi radio (CONFIG_GW_WIFI=n): a configuration that enables network.wifi still
+        boots, says that Wi-Fi is not available and runs over Ethernet exactly as before.
+      * NET-7: slirp announces fec0::/64 and answers ICMPv6 for its virtual host fec0::2. The
+        gateway must get a link-local address, a SLAAC address and the static one, and reach
+        fec0::2 over IPv6. MQTT over IPv6 cannot be tested here: slirp would relay it to the
+        host's ::1 and this container's kernel has no IPv6 (AF_INET6 is not supported)."""
     node = "GW02"
     cfg = json.loads(config_json())
     cfg["sparkplug"]["edge_node_id"] = node
     cfg["network"] = {"dhcp": True,
+                      "ipv6": {"enabled": True, "slaac": True, "address": "fec0::1234"},
                       "wifi": {"enabled": True, "ssid": "Plant WLAN", "password": "12345678",
                                "role": "backup", "failback_s": 30}}
     flash = flash_variant(args, work, "network", {"config.json": json.dumps(cfg, indent=2).encode()})
@@ -536,10 +541,32 @@ def run_network_variant(args, work):
     nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
     ignored = gw.find(r"network\.wifi ignored: Wi-Fi is not available in this build", t0)
     asked = time.monotonic()
-    gw.console("status")
-    iface = gw.wait_log(r"^iface\s+ethernet up \d+\.\d+\.\d+\.\d+ \(active\) \| wifi not configured", 3, asked)
-    gw.console("config")
-    shown = gw.wait_log(r"^wifi\s+'Plant WLAN', backup of Ethernet, failback 30 s, DHCP", 3, asked)
+    iface = shown = None
+    for _ in range(3):   # a log line from another task can split the shell's output: ask again
+        gw.console("status")
+        gw.console("config")
+        iface = iface or gw.wait_log(
+            r"^iface\s+ethernet up \d+\.\d+\.\d+\.\d+ \(active\) \| wifi not configured", 3, asked)
+        shown = shown or gw.wait_log(r"^wifi\s+'Plant WLAN', backup of Ethernet, failback 30 s, DHCP",
+                                     1, asked)
+        if iface and shown:
+            break
+    # NET-7
+    lla = gw.wait_log(r"net: ethernet: IPv6 fe80:[0-9a-f:]+ \(link-local\)", 10, t0)
+    slaac = gw.wait_log(r"net: ethernet: IPv6 fec0::(?!1234 )[0-9a-f:]+ \(site local\)", 10, t0)
+    static = gw.wait_log(r"net: ethernet: IPv6 fec0::1234 \(site local\)", 1, t0)
+    asked6 = time.monotonic()
+    listed = cfg6 = None
+    for _ in range(3):
+        gw.console("status")
+        gw.console("config")
+        listed = listed or gw.wait_log(r"^ipv6\s+ethernet fe80:.*ethernet fec0::", 3, asked6)
+        cfg6 = cfg6 or gw.wait_log(r"^ipv6\s+SLAAC on, static address fec0::1234, DNS none", 1, asked6)
+        if listed and cfg6:
+            break
+    pinged = time.monotonic()
+    gw.console("ping fec0::2")
+    replies = gw.wait_log(r"3 sent, [1-3] received", 8, pinged)
     gw.kill()
     obs.wait(f"{T}/NDEATH/{node}", 5)   # the will, before the main scenario starts
     obs.close()
@@ -548,6 +575,11 @@ def run_network_variant(args, work):
           nb and ignored and iface and shown,
           f"NBIRTH {'yes' if nb else 'no'}; {(ignored or ['no warning'])[0]}; shell: "
           + " | ".join(gw.find(r"^iface\s|^wifi\s", asked)))
+    check("NET-7 IPv6 on Ethernet: link-local, SLAAC (fec0::/64 from slirp's RA) and static "
+          "address, shown by the shell; ICMPv6 echo to fec0::2 answered",
+          lla and slaac and static and listed and cfg6 and replies,
+          " | ".join(gw.find(r"net: ethernet: IPv6 ", t0)[:4]) + " | "
+          + " | ".join(gw.find(r"^ipv6\s|reply from|sent, \d+ received", asked6)))
 
 
 def run(args, log, slave, broker, conf, work):

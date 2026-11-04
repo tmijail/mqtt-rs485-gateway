@@ -1,5 +1,6 @@
 #include "gw_net.h"
 
+#include <ctype.h>
 #include <string.h>
 
 #include "esp_check.h"
@@ -15,6 +16,7 @@
 #include "gw_backoff.h"
 #include "gw_netsel.h"
 #include "lwip/ip4_addr.h"
+#include "lwip/ip6_addr.h"
 
 #if CONFIG_GW_ETH_W5500
 #include "driver/gpio.h"
@@ -46,7 +48,9 @@ typedef struct {
     const char *name;
     bool link;
     bool v4;
+    bool v6;                    /* a global or unique-local IPv6 address (NET-7) */
     esp_ip4_addr_t ip;
+    char ip6[GW_NET_IPV6_MAX][GW_NET_IPV6_STR];
 } iface_t;
 
 /* ---- owned by the default event loop task ---- */
@@ -91,6 +95,7 @@ static void publish_status(void)
         st->usable = s_sel.usable[i];
         st->active = s_sel.active == i;
         memcpy(st->ipv4, &s_if[i].ip.addr, 4);
+        memcpy(st->ipv6, s_if[i].ip6, sizeof(st->ipv6));
     }
     memcpy(s_active_name, name, sizeof(s_active_name));
     portEXIT_CRITICAL(&s_mux);
@@ -158,7 +163,7 @@ static void apply(gw_netsel_change_t c)
 static void update(gw_net_if_t i)
 {
     iface_t *f = &s_if[i];
-    apply(gw_netsel_set(&s_sel, (uint8_t)i, f->link && f->v4, now_ms()));
+    apply(gw_netsel_set(&s_sel, (uint8_t)i, f->link && (f->v4 || f->v6), now_ms()));
     publish_status();
 }
 
@@ -179,13 +184,40 @@ static void on_gw_net_event(void *arg, esp_event_base_t base, int32_t id, void *
     }
 }
 
+/* NET-7: link-local address (and with it router solicitation and SLAAC) on every link-up,
+ * plus the static address on Ethernet. lwIP keeps addresses across a link flap; adding an
+ * existing one again is harmless. */
+static void start_ipv6(gw_net_if_t i)
+{
+    const gw_ipv6_cfg_t *v6 = &s_cfg->network.ipv6;
+    if (!v6->enabled) {
+        return;
+    }
+    esp_err_t err = esp_netif_create_ip6_linklocal(s_if[i].netif);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "%s: IPv6 link-local: %s", s_if[i].name, esp_err_to_name(err));
+    }
+    if (i == GW_NET_ETH && v6->has_address) {
+        esp_ip6_addr_t a = {0};
+        memcpy(a.addr, v6->address, sizeof(a.addr));
+        err = esp_netif_add_ip6_address(s_if[i].netif, a, true);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "%s: static IPv6 address: %s", s_if[i].name, esp_err_to_name(err));
+        }
+    }
+}
+
 static void link_changed(gw_net_if_t i, bool up)
 {
     s_if[i].link = up;
     if (!up) {
         /* a new address is needed after the link comes back (DHCP or the static one) */
         s_if[i].v4 = false;
+        s_if[i].v6 = false;
         s_if[i].ip.addr = 0;
+        memset(s_if[i].ip6, 0, sizeof(s_if[i].ip6));
+    } else {
+        start_ipv6(i);
     }
     update(i);
 }
@@ -230,11 +262,46 @@ static void lost_ipv4(gw_net_if_t i)
     update(i);
 }
 
+static void got_ipv6(const ip_event_got_ip6_t *ev)
+{
+    int i = ev->esp_netif == s_if[GW_NET_ETH].netif    ? GW_NET_ETH
+            : ev->esp_netif == s_if[GW_NET_WIFI].netif ? GW_NET_WIFI
+                                                       : -1;
+    if (i < 0) {
+        return;
+    }
+    char text[GW_NET_IPV6_STR];
+    ip6addr_ntoa_r((const ip6_addr_t *)&ev->ip6_info.ip, text, sizeof(text));
+    for (char *c = text; *c != '\0'; c++) {   /* RFC 5952: lower case */
+        *c = (char)tolower((unsigned char)*c);
+    }
+    esp_ip6_addr_type_t type = esp_netif_ip6_get_addr_type((esp_ip6_addr_t *)&ev->ip6_info.ip);
+    const char *kind = type == ESP_IP6_ADDR_IS_LINK_LOCAL     ? "link-local"
+                       : type == ESP_IP6_ADDR_IS_GLOBAL       ? "global"
+                       : type == ESP_IP6_ADDR_IS_UNIQUE_LOCAL ? "unique local"
+                       : type == ESP_IP6_ADDR_IS_SITE_LOCAL   ? "site local"
+                                                              : "other";
+    ESP_LOGI(TAG, "%s: IPv6 %s (%s)", s_if[i].name, text, kind);
+    if (ev->ip_index >= 0 && ev->ip_index < GW_NET_IPV6_MAX) {
+        memcpy(s_if[i].ip6[ev->ip_index], text, sizeof(text));
+    }
+    if (type != ESP_IP6_ADDR_IS_LINK_LOCAL && !s_if[i].v6) {
+        if (!s_sntp_started) {
+            s_sntp_started = esp_netif_sntp_start() == ESP_OK;
+        }
+        s_if[i].v6 = true;
+    }
+    update((gw_net_if_t)i);
+}
+
 static void on_ip_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
     (void)base;
     switch (id) {
+    case IP_EVENT_GOT_IP6:
+        got_ipv6(data);
+        break;
     case IP_EVENT_ETH_GOT_IP:
         got_ipv4(GW_NET_ETH, data);
         break;
@@ -273,6 +340,27 @@ static esp_err_t configure_ipv4(esp_netif_t *netif, const char *name, bool dhcp,
     }
     ESP_LOGI(TAG, "%s: static IPv4 %u.%u.%u.%u", name, ip[0], ip[1], ip[2], ip[3]);
     return ESP_OK;
+}
+
+/* SLAAC per interface (CONFIG_LWIP_IPV6_AUTOCONFIG compiles it in; the flag turns it on). */
+static esp_netif_flags_t ipv6_flags(esp_netif_flags_t flags, const gw_ipv6_cfg_t *v6)
+{
+    if (v6->enabled && v6->slaac) {
+        return (esp_netif_flags_t)(flags | ESP_NETIF_FLAG_IPV6_AUTOCONFIG_ENABLED);
+    }
+    return (esp_netif_flags_t)(flags & ~ESP_NETIF_FLAG_IPV6_AUTOCONFIG_ENABLED);
+}
+
+/* IPv6 DNS server in the third slot: DHCPv4 only fills the first two. */
+static esp_err_t configure_ipv6_dns(esp_netif_t *netif, const gw_ipv6_cfg_t *v6)
+{
+    if (!v6->enabled || !v6->has_dns) {
+        return ESP_OK;
+    }
+    esp_netif_dns_info_t d = {0};
+    d.ip.type = ESP_IPADDR_TYPE_V6;
+    memcpy(d.ip.u_addr.ip6.addr, v6->dns, sizeof(d.ip.u_addr.ip6.addr));
+    return esp_netif_set_dns_info(netif, ESP_NETIF_DNS_FALLBACK, &d);
 }
 
 /* ---------------------------------------------------------------- Ethernet */
@@ -324,6 +412,7 @@ static esp_err_t start_ethernet(const gw_config_t *cfg)
 {
     esp_netif_inherent_config_t base = ESP_NETIF_INHERENT_DEFAULT_ETH();
     base.route_prio = ROUTE_PRIO_ETH;
+    base.flags = ipv6_flags(base.flags, &cfg->network.ipv6);
     const esp_netif_config_t nc = {.base = &base, .stack = ESP_NETIF_NETSTACK_DEFAULT_ETH};
     s_if[GW_NET_ETH].netif = esp_netif_new(&nc);
     esp_netif_t *netif = s_if[GW_NET_ETH].netif;
@@ -332,6 +421,7 @@ static esp_err_t start_ethernet(const gw_config_t *cfg)
                                        cfg->network.netmask, cfg->network.gateway,
                                        cfg->network.dns),
                         TAG, "ip config");
+    ESP_RETURN_ON_ERROR(configure_ipv6_dns(netif, &cfg->network.ipv6), TAG, "ipv6 dns");
     esp_eth_handle_t eth;
     ESP_RETURN_ON_ERROR(new_eth_driver(&eth), TAG, "driver");
     ESP_RETURN_ON_ERROR(esp_netif_attach(netif, esp_eth_new_netif_glue(eth)), TAG, "attach");
@@ -392,6 +482,7 @@ static esp_err_t start_wifi(const gw_config_t *cfg)
     const gw_wifi_cfg_t *w = &cfg->network.wifi;
     esp_netif_inherent_config_t base = ESP_NETIF_INHERENT_DEFAULT_WIFI_STA();
     base.route_prio = w->role == GW_WIFI_PRIMARY ? ROUTE_PRIO_WIFI_PRIMARY : ROUTE_PRIO_WIFI_BACKUP;
+    base.flags = ipv6_flags(base.flags, &cfg->network.ipv6);
     const esp_netif_config_t nc = {.base = &base, .stack = ESP_NETIF_NETSTACK_DEFAULT_WIFI_STA};
     s_if[GW_NET_WIFI].netif = esp_netif_new(&nc);
     esp_netif_t *netif = s_if[GW_NET_WIFI].netif;
@@ -401,6 +492,7 @@ static esp_err_t start_wifi(const gw_config_t *cfg)
     ESP_RETURN_ON_ERROR(configure_ipv4(netif, "wifi", w->ipv4.dhcp, w->ipv4.ip, w->ipv4.netmask,
                                        w->ipv4.gateway, w->ipv4.dns),
                         TAG, "wifi ip config");
+    ESP_RETURN_ON_ERROR(configure_ipv6_dns(netif, &cfg->network.ipv6), TAG, "wifi ipv6 dns");
 
     const wifi_init_config_t wc = WIFI_INIT_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_wifi_init(&wc), TAG, "wifi init");
@@ -452,6 +544,10 @@ esp_err_t gw_net_start(const gw_config_t *cfg, const gw_net_callbacks_t *cb)
         [GW_NET_WIFI] = cfg->network.wifi.role == GW_WIFI_PRIMARY ? 0 : 1,
     };
     gw_netsel_init(&s_sel, s_if_count, rank, (uint32_t)cfg->network.wifi.failback_s * 1000u);
+    if (cfg->network.ipv6.enabled) {
+        ESP_LOGI(TAG, "IPv6 enabled (SLAAC %s%s)", cfg->network.ipv6.slaac ? "on" : "off",
+                 cfg->network.ipv6.has_address ? ", static address on ethernet" : "");
+    }
     publish_status();
 
     ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, ESP_EVENT_ANY_ID, on_ip_event, NULL),

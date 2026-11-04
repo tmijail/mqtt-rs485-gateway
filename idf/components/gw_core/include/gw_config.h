@@ -68,6 +68,16 @@ typedef struct {
     uint8_t dns[4];          /* 0.0.0.0 = not set */
 } gw_ipv4_cfg_t;
 
+/* NET-7, applied to every interface. */
+typedef struct {
+    bool enabled;
+    bool slaac;              /* stateless autoconfiguration from router advertisements */
+    bool has_address;
+    uint8_t address[16];     /* static address (Ethernet only), network byte order, /64 on-link */
+    bool has_dns;
+    uint8_t dns[16];
+} gw_ipv6_cfg_t;
+
 /* NET-4: Wi-Fi station as an alternative or backup of Ethernet. */
 typedef struct {
     bool enabled;
@@ -107,6 +117,7 @@ typedef struct {
         uint8_t netmask[4];
         uint8_t gateway[4];
         uint8_t dns[4];          /* 0.0.0.0 = not set */
+        gw_ipv6_cfg_t ipv6;
         gw_wifi_cfg_t wifi;
     } network;
     struct {
@@ -166,6 +177,10 @@ bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_
  * a syntax error.
  */
 void gw_config_set_allocator(void *(*alloc)(size_t size), void (*release)(void *ptr));
+
+/** Parse an IPv6 literal (RFC 4291 text form, "::" and a trailing dotted quad allowed, no
+ * zone) into network byte order. */
+bool gw_parse_ipv6(const char *s, uint8_t out[16]);
 
 /** Index of the device named @p name (length @p len), or -1. */
 int gw_config_find_device(const gw_config_t *cfg, const char *name, size_t len);

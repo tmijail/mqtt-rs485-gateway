@@ -40,3 +40,5 @@ CONFIG_ESP_WIFI_IRAM_OPT=n
 CONFIG_ESP_WIFI_RX_IRAM_OPT=n
 # DNS servers follow the interface that carries the default route (lwIP keeps one global list)
 CONFIG_ESP_NETIF_SET_DNS_PER_DEFAULT_NETIF=y
+# NET-7: SLAAC compiled in; each interface turns it on only with network.ipv6 enabled
+CONFIG_LWIP_IPV6_AUTOCONFIG=y
