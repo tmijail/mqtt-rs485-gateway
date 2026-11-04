@@ -29,6 +29,7 @@ void setUp(void)
     const gw_node_info_t info = {
         .firmware = "0.1.0+gdeadbee", .hardware = "test-hw", .reset_reason = "task watchdog"};
     gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
 }
 void tearDown(void) {}
 
@@ -426,6 +427,7 @@ static void setup_mb6(void)
     gw_node_ops_t ops = recorder_ops();
     const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
     gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
 }
 
 static void test_mb6_birth_and_data(void)
@@ -643,6 +645,7 @@ static void test_properties_and_quality(void)
     gw_node_ops_t ops = recorder_ops();
     const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
     gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
     gw_tag_value_t v[3] = {{.value = 5, .ts_ms = 1000, .valid = true},
                            {.value = 21, .ts_ms = 1000, .valid = true},
                            {.value = 0, .ts_ms = 1000, .valid = false}};   /* never read yet */
@@ -736,6 +739,7 @@ static void test_bytes_tag(void)
     gw_node_ops_t ops = recorder_ops();
     const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
     gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
     gw_tag_value_t v = {.ts_ms = 1000, .valid = true};
     memcpy(v.str, "\x00\x01\x00\x02", 4);   /* NUL first: not a C string */
     gw_tagdb_put_device(cfg, 0, &v, true);
@@ -792,6 +796,7 @@ static void test_templates(void)
     gw_node_ops_t ops = recorder_ops();
     const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
     gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
     gw_tag_value_t v[2] = {{.value = 1500, .ts_ms = 1000, .valid = true},
                            {.value = 1, .ts_ms = 1000, .valid = true}};
     gw_tagdb_put_device(cfg, 0, v, true);
@@ -906,6 +911,7 @@ static void test_worst_case_nbirth_fits(void)
                                  .hardware = "Waveshare ESP32-S3-POE-ETH-8DI-8DO (ESP32-S3 rev 0.2)",
                                  .reset_reason = "interrupt watchdog"};
     gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
     /* SPB-17: the widest diagnostics (RSSI, every counter of every device at its maximum) */
     g_rec.diag = (gw_node_diag_t){.uptime_s = UINT64_MAX, .free_heap = UINT32_MAX,
                                   .min_free_heap = UINT32_MAX, .has_rssi = true,
@@ -923,6 +929,13 @@ static void test_worst_case_nbirth_fits(void)
     TEST_ASSERT_LESS_THAN(GW_SPB_PAYLOAD_MAX, g_rec.msgs[0].len);
     msg(0);
     TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS + types, dec.count);
+    /* without PSRAM the buffer is smaller (CONFIG_GW_SPB_PAYLOAD_INTERNAL): such a birth is
+     * not published (and logged), never cut */
+    static uint8_t small[8192];
+    gw_node_set_buffer(&node, small, sizeof(small));
+    recorder_clear();
+    TEST_ASSERT_FALSE(gw_node_rebirth(&node));
+    TEST_ASSERT_EQUAL(0, g_rec.count);
 }
 
 /* SPB-17 / MB-13: diagnostics in the NBIRTH; every diagnostics_s an NDATA with uptime and heap,
@@ -1015,6 +1028,7 @@ static void test_diagnostics(void)
     gw_node_ops_t ops = recorder_ops();
     const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
     gw_node_init(&node, &c, &ops, &info);
+    support_node_buffer(&node);
     gw_node_session_up(&node, 0);
     recorder_clear();
     TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, gw_node_diag_tick(&node, 1));
@@ -1327,6 +1341,7 @@ static void test_store_and_forward_templates_bytes(void)
     gw_node_ops_t ops = recorder_ops();
     const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
     gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
     static gw_sf_rec_t storage[16];
     gw_sf_t sf;
     gw_sf_init(&sf, storage, 16);

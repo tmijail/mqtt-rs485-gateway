@@ -64,6 +64,7 @@ int main(int argc, char **argv)
                                  .hardware = "Waveshare ESP32-S3-POE-ETH-8DI-8DO",
                                  .reset_reason = "power-on"};
     gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
 
     gw_tag_value_t v[3] = {{.value = 230.5, .ts_ms = 1762171200000ull, .valid = true},
                            {.value = -12.3, .ts_ms = 1762171200000ull, .valid = true},
@@ -127,6 +128,7 @@ int main(int argc, char **argv)
     gw_tagdb_reset();
     static gw_node_t node8;
     gw_node_init(&node8, &tc, &ops, &info);
+    support_node_buffer(&node8);
     gw_tag_value_t pv[2] = {{.value = 1450, .ts_ms = 1762171200000ull, .valid = true},
                             {.value = 1, .ts_ms = 1762171200000ull, .valid = true}};
     gw_tagdb_put_device(&tc, 0, pv, true);
@@ -140,6 +142,7 @@ int main(int argc, char **argv)
     gw_tagdb_reset();
     static gw_node_t node6;
     gw_node_init(&node6, &mb6, &ops, &info);
+    support_node_buffer(&node6);
     gw_tag_value_t w[6];
     memset(w, 0, sizeof(w));
     memcpy(w[5].str, "\x00\xff\x10\x00\x7f\x80", 6);   /* SPB-19 Bytes */

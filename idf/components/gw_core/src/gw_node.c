@@ -47,6 +47,12 @@ void gw_node_init(gw_node_t *n, const gw_config_t *cfg, const gw_node_ops_t *ops
     n->info = *info;
 }
 
+void gw_node_set_buffer(gw_node_t *n, uint8_t *buf, size_t cap)
+{
+    n->buf = buf;
+    n->buf_cap = cap;
+}
+
 bool gw_node_topic(const gw_node_t *n, const char *type, const char *device, char *out, size_t cap)
 {
     return spb_topic(out, cap, n->cfg->sparkplug.group_id, type, n->cfg->sparkplug.edge_node_id,
@@ -68,7 +74,7 @@ static bool publish(gw_node_t *n, const char *type, const char *device, size_t m
         .metrics = n->metrics,
         .metric_count = metric_count,
     };
-    size_t len = spb_encode(&p, n->buf, sizeof(n->buf));
+    size_t len = n->buf != NULL ? spb_encode(&p, n->buf, n->buf_cap) : 0;
     if (len == 0 || !gw_node_topic(n, type, device, n->topic, sizeof(n->topic))) {
         GW_LOGE(TAG, "%s%s%s: payload does not fit", type, device ? " " : "", device ? device : "");
         return false;
@@ -1007,7 +1013,7 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
         }
         if (n->cmd_reboot) {
             GW_LOGW(TAG, "NCMD reboot: publishing NDEATH and restarting");
-            size_t dl = gw_node_death_payload(n->bdseq, n->buf, sizeof(n->buf));
+            size_t dl = gw_node_death_payload(n->bdseq, n->buf, n->buf_cap);
             if (gw_node_topic(n, "NDEATH", NULL, n->topic, sizeof(n->topic))) {
                 n->ops.publish(n->ops.ctx, n->topic, n->buf, dl, 1, false);
             }

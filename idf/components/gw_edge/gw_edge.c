@@ -1408,6 +1408,15 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         .ctx = NULL,
     };
     gw_node_init(s_node, cfg, &ops, info);
+    /* The largest births (SPB-16/17/18) need GW_SPB_PAYLOAD_MAX: in PSRAM when the board has
+     * it; without PSRAM a smaller buffer leaves internal RAM for TLS and the web server. */
+    size_t cap = heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0 ? GW_SPB_PAYLOAD_MAX
+                                                                 : CONFIG_GW_SPB_PAYLOAD_INTERNAL;
+    uint8_t *buf = gw_storage_big_alloc(cap, "Sparkplug payload buffer");
+    if (buf == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    gw_node_set_buffer(s_node, buf, cap);
     if (!gw_node_topic(s_node, "NDEATH", NULL, s_death_topic, sizeof(s_death_topic)) ||
         !gw_node_topic(s_node, "NCMD", NULL, s_ncmd_topic, sizeof(s_ncmd_topic)) ||
         !gw_node_topic(s_node, "DCMD", "+", s_dcmd_topic, sizeof(s_dcmd_topic))) {

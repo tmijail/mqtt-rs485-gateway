@@ -78,6 +78,9 @@ void recorder_default_diag(void);
 
 extern recorder_t g_rec;
 
+/* Attach a full-size (GW_SPB_PAYLOAD_MAX) payload buffer of its own to @p n. */
+void support_node_buffer(gw_node_t *n);
+
 /* Ops that record into g_rec. set_do updates gw_tagdb like the real driver. */
 gw_node_ops_t recorder_ops(void);
 void recorder_clear(void);

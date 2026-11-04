@@ -158,7 +158,8 @@ typedef struct {
     spb_template_t tmpl;               /* SPB-18: the instance being published */
     spb_template_t defs[GW_MAX_DEVICES];   /* SPB-18: NBIRTH definitions, one per type */
     gw_node_def_ctx_t def_ctx[GW_MAX_DEVICES];
-    uint8_t buf[GW_SPB_PAYLOAD_MAX];
+    uint8_t *buf;                      /* payload buffer (gw_node_set_buffer) */
+    size_t buf_cap;
     char topic[GW_TOPIC_MAX];
 
     /* Store & forward (SPB-14); sf NULL = changes while offline are coalesced (the MVP). */
@@ -181,6 +182,13 @@ typedef struct {
 
 void gw_node_init(gw_node_t *n, const gw_config_t *cfg, const gw_node_ops_t *ops,
                   const gw_node_info_t *info);
+
+/**
+ * The buffer payloads are encoded into (required before the first publication). GW_SPB_PAYLOAD_MAX
+ * holds the largest message the configuration allows; a smaller one (no PSRAM) makes an
+ * oversized birth fail like one the broker refuses: logged, and the device stays unborn.
+ */
+void gw_node_set_buffer(gw_node_t *n, uint8_t *buf, size_t cap);
 
 /** Build "spBv1.0/<group>/<type>/<edge>[/<device>]" for this node. */
 bool gw_node_topic(const gw_node_t *n, const char *type, const char *device, char *out, size_t cap);

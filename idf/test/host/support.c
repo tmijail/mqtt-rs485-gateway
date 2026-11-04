@@ -295,6 +295,14 @@ gw_node_ops_t recorder_ops(void)
     return ops;
 }
 
+void support_node_buffer(gw_node_t *n)
+{
+    /* a few nodes may live at once (spb_dump): one buffer each, from a small pool */
+    static uint8_t pool[4][GW_SPB_PAYLOAD_MAX];
+    static size_t next;
+    gw_node_set_buffer(n, pool[next++ % 4], GW_SPB_PAYLOAD_MAX);
+}
+
 void recorder_clear(void)
 {
     gw_node_diag_t diag = g_rec.diag;
