@@ -20,12 +20,27 @@ CONFIG_ESP_TASK_WDT_TIMEOUT_S=15
 CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y
+# Core dump to the "coredump" partition, read with `idf.py coredump-info`. ELF is the only
+# format since IDF 6.0 (CONFIG_ESP_COREDUMP_DATA_FORMAT_* no longer exist; see the 6.0
+# migration guide, system.rst).
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
-CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 
 # TIME-1: query the NTP server as soon as an address is available (the default RFC 4330
 # random start-up delay of up to 5 s regularly pushes the first sync past the first NBIRTH)
 CONFIG_LWIP_SNTP_STARTUP_DELAY=n
+
+# MB-2: in RS485 half-duplex mode the UART driver releases RTS (the transceiver's DE) in the
+# TX_DONE interrupt. With the ISR in flash it is deferred while the cache is disabled (the NVS
+# commit of the bdSeq on every MQTT attempt), DE stays active while the slave answers and the
+# response is lost.
+CONFIG_UART_ISR_IN_IRAM=y
+
+# Network stack on core 0, away from the RS485 bus owner on core 1 (gw_bus): lwIP's tcpip
+# task and the esp-mqtt task (the Ethernet RX task is pinned by gw_net, the default event
+# loop already runs on core 0).
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+CONFIG_MQTT_TASK_CORE_SELECTION_ENABLED=y
+CONFIG_MQTT_USE_CORE_0=y
 
 # REL-3
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y

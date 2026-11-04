@@ -171,7 +171,7 @@ static bool dec_metric(pb_istream_t *stream, const pb_field_iter_t *field, void 
         rx.kind = SPB_VAL_NONE;
         break;
     }
-    return dc->cb(dc->ctx, &rx);
+    return dc->cb != NULL ? dc->cb(dc->ctx, &rx) : true;
 }
 
 bool spb_decode(const uint8_t *buf, size_t len, spb_rx_header_t *hdr, spb_metric_cb_t cb,

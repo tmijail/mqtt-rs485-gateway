@@ -43,7 +43,9 @@
 
 static const char *TAG = "main";
 
-static gw_config_t s_cfg;   /* immutable after boot; shared read-only by every task */
+/* Immutable after boot; shared read-only by every task. About 26 KB: allocated at boot in
+ * PSRAM when the board has it (internal RAM otherwise, e.g. QEMU), see big_alloc(). */
+static gw_config_t *s_cfg;
 static char s_hardware[64];
 static gw_node_info_t s_info;  /* NBIRTH "Node Info/..." */
 static gw_cfg_err_t s_cfg_err;
@@ -82,6 +84,7 @@ static void start_shell(const gw_config_t *cfg, const char *source)
 static void restart_now(void *arg)
 {
     (void)arg;
+    gw_bus_quiesce(1000);   /* no-op unless the bus runs */
     esp_restart();
 }
 
@@ -131,6 +134,20 @@ static void start_web(gw_web_mode_t mode, const gw_config_t *cfg, const char *so
     }
 }
 
+/* Not even the configuration structure fits (no PSRAM, internal heap exhausted): nothing can
+ * run, not even the recovery network; the shell reports why. */
+static void halt_no_memory(void)
+{
+    snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg), "sin memoria para la configuración (%u B)",
+             (unsigned)sizeof(gw_config_t));
+    gw_status_set(GW_ST_CFG_ERROR, true);
+    start_shell(NULL, "RAM");
+    for (;;) {
+        ESP_LOGE(TAG, "%s: nothing is started", s_cfg_err.msg);
+        vTaskDelay(pdMS_TO_TICKS(10000));
+    }
+}
+
 static void net_down_noop(bool up)
 {
     gw_status_set(GW_ST_NET_UP, up);
@@ -158,7 +175,7 @@ static void on_button(gw_btn_event_t ev)
         }
         ESP_LOGW(TAG, "commissioning access point requested with BOOT");
         /* NET-5: the web UI over the access point, also when web.enabled is false */
-        start_web(s_mode, &s_cfg, s_source);
+        start_web(s_mode, s_cfg, s_source);
         gw_storage_commissioning_password(s_commission_pw);
         printf("ap: password = commissioning password '%s'\n", s_commission_pw);
 #if CONFIG_GW_SOFTAP
@@ -177,15 +194,15 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
     s_mode = mode;
     gw_status_set(mode == GW_WEB_COMMISSIONING ? GW_ST_COMMISSIONING : GW_ST_CFG_ERROR, true);
     start_shell(NULL, source);
-    gw_storage_recovery_config(&s_cfg);
+    gw_storage_recovery_config(s_cfg);
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     const gw_net_callbacks_t net_cb = {
         .ip_changed = net_down_noop, .route_changed = net_noop, .time_synced = net_noop};
-    if (gw_net_start(&s_cfg, &net_cb) != ESP_OK) {
+    if (gw_net_start(s_cfg, &net_cb) != ESP_OK) {
         ESP_LOGE(TAG, "recovery network unavailable: only the console shell is left");
     }
-    start_web(mode, &s_cfg, source);
+    start_web(mode, s_cfg, source);
     s_source = source;
     s_ready = true;
     gw_ap_start(s_commission_pw, 0);   /* NET-5: no valid configuration */
@@ -194,12 +211,12 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
             ESP_LOGW(TAG, "commissioning: no configuration since the factory reset; nothing is "
                           "started (no polling, no MQTT); load one with the web UI on port %u or "
                           "the shell ('config load')",
-                     s_cfg.web.port);
+                     s_cfg->web.port);
         } else {
             ESP_LOGE(TAG, "configuration rejected (%s): %s", source, s_cfg_err.msg);
             ESP_LOGE(TAG, "nothing is started (no polling, no MQTT); fix it with the web UI on "
                           "port %u, the shell ('config load') or by reflashing (see README)",
-                     s_cfg.web.port);
+                     s_cfg->web.port);
         }
         vTaskDelay(pdMS_TO_TICKS(10000));
     }
@@ -243,7 +260,8 @@ void app_main(void)
     }
     /* Before the configuration: whatever happens next, no DO stays on from before a reset. */
     if (gw_io_outputs_off() != ESP_OK) {
-        ESP_LOGE(TAG, "digital outputs unavailable; DO commands will be refused");
+        ESP_LOGE(TAG, "digital outputs unavailable: published as null and DO commands refused "
+                      "until the expander answers");
     }
     gw_storage_init();  /* failure is logged; bdSeq then lives in RAM only */
 
@@ -258,39 +276,43 @@ void app_main(void)
     }
 
     const char *source;
+    s_cfg = gw_storage_big_alloc(sizeof(*s_cfg), "configuration");
+    if (s_cfg == NULL) {
+        halt_no_memory();
+    }
     if (gw_storage_commissioning_pending()) {
         snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg),
                  "sin configuración: puesta en marcha tras un reset de fábrica");
         run_without_config(GW_WEB_COMMISSIONING, "commissioning (factory reset)");
     }
-    if (!gw_storage_load_config(&s_cfg, &s_cfg_err, &source)) {
+    if (!gw_storage_load_config(s_cfg, &s_cfg_err, &source)) {
         run_without_config(GW_WEB_RECOVERY, source);
     }
-    gw_storage_save_last_good(&s_cfg);
+    gw_storage_save_last_good(s_cfg);
     ESP_LOGI(TAG, "configuration from %s: group '%s', node '%s', %u devices, %u tags", source,
-             s_cfg.sparkplug.group_id, s_cfg.sparkplug.edge_node_id, s_cfg.device_count,
-             s_cfg.tag_count);
+             s_cfg->sparkplug.group_id, s_cfg->sparkplug.edge_node_id, s_cfg->device_count,
+             s_cfg->tag_count);
     /* REL-4: from here on the log also goes to the syslog server (buffered until reachable) */
-    if (gw_log_start(&s_cfg) != ESP_OK) {
+    if (gw_log_start(s_cfg) != ESP_OK) {
         ESP_LOGE(TAG, "remote syslog unavailable");
     }
-    if (s_cfg.sparkplug.primary_host_id[0] != '\0') {
+    if (s_cfg->sparkplug.primary_host_id[0] != '\0') {
         ESP_LOGW(TAG, "primary_host_id '%s' ignored: SPB-13 is not implemented in this build",
-                 s_cfg.sparkplug.primary_host_id);
+                 s_cfg->sparkplug.primary_host_id);
     }
 
-    ESP_ERROR_CHECK(gw_edge_start(&s_cfg, &s_info));
-    if (gw_io_start_inputs(&s_cfg, gw_edge_notify_io) != ESP_OK) {
+    ESP_ERROR_CHECK(gw_edge_start(s_cfg, &s_info));
+    if (gw_io_start_inputs(s_cfg, gw_edge_notify_io) != ESP_OK) {
         ESP_LOGE(TAG, "digital inputs unavailable");
     }
 
     mb_transport_t tr;
-    ESP_ERROR_CHECK(gw_rs485_init(&s_cfg, &tr));
+    ESP_ERROR_CHECK(gw_rs485_init(s_cfg, &tr));
     const gw_bus_callbacks_t bus_cb = {
         .device_updated = on_device_updated,
         .write_done = gw_edge_notify_write_done,
     };
-    ESP_ERROR_CHECK(gw_bus_start(&s_cfg, &tr, &bus_cb));
+    ESP_ERROR_CHECK(gw_bus_start(s_cfg, &tr, &bus_cb));
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -299,11 +321,11 @@ void app_main(void)
         .route_changed = gw_edge_notify_route,
         .time_synced = gw_edge_notify_time_synced,
     };
-    ESP_ERROR_CHECK(gw_net_start(&s_cfg, &net_cb));
-    if (s_cfg.web.enabled) {
-        start_web(GW_WEB_NORMAL, &s_cfg, source);
+    ESP_ERROR_CHECK(gw_net_start(s_cfg, &net_cb));
+    if (s_cfg->web.enabled) {
+        start_web(GW_WEB_NORMAL, s_cfg, source);
     }
     s_source = source;
     s_ready = true;
-    start_shell(&s_cfg, source);
+    start_shell(s_cfg, source);
 }

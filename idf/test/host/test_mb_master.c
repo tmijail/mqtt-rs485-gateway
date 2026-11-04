@@ -29,6 +29,44 @@ static void test_timing_constants(void)
     TEST_ASSERT_EQUAL(1750, m.t35_us);           /* fixed above 19200 baud */
 }
 
+/* Issue #2: the wait for the end of a transmission must cover the whole frame. */
+static void test_tx_timeout_covers_the_frame(void)
+{
+    TEST_ASSERT_EQUAL(10, mb_char_bits(false, 1));   /* 8N1 */
+    TEST_ASSERT_EQUAL(11, mb_char_bits(true, 1));    /* 8E1 / 8O1 */
+    TEST_ASSERT_EQUAL(11, mb_char_bits(false, 2));   /* 8N2 */
+    TEST_ASSERT_EQUAL(12, mb_char_bits(true, 2));    /* 8E2 */
+
+    /* FC16 of 2 registers (one 32-bit value): 7 + 4 data + 2 CRC = 13 bytes */
+    mb_request_t rq = {.unit = 1, .fc = MB_FC_WRITE_MULTIPLE_REGISTERS, .addr = 0, .qty = 2,
+                       .regs = (const uint16_t[]){1, 2}};
+    uint8_t adu[MB_ADU_MAX];
+    size_t len = mb_build_request(&rq, adu, sizeof(adu));
+    TEST_ASSERT_EQUAL(13, len);
+    /* 1200 baud with parity: 13 x 11 bits = 119.2 ms on the wire, more than the old fixed 100 ms */
+    uint32_t wire_us = (uint32_t)(len * 11u * 1000000u / 1200u);
+    TEST_ASSERT_EQUAL(119166, wire_us);
+    uint32_t t = mb_tx_timeout_ms(1200, mb_char_bits(true, 1), len);
+    TEST_ASSERT_GREATER_THAN_UINT32(wire_us / 1000u + 1u, t);
+    TEST_ASSERT_LESS_OR_EQUAL_UINT32(wire_us / 1000u + 1u + 20u, t);
+    /* 2 stop bits too: 13 x 12 bits = 130 ms */
+    TEST_ASSERT_GREATER_THAN_UINT32(130, mb_tx_timeout_ms(1200, mb_char_bits(true, 2), len));
+
+    /* longest FC16 the protocol allows (123 registers, 255 bytes) at the slowest setting:
+     * covered, and still far below the 15 s task watchdog */
+    uint16_t regs[MB_MAX_WRITE_REGS] = {0};
+    rq.qty = MB_MAX_WRITE_REGS;
+    rq.regs = regs;
+    len = mb_build_request(&rq, adu, sizeof(adu));
+    TEST_ASSERT_EQUAL(255, len);
+    t = mb_tx_timeout_ms(1200, mb_char_bits(true, 2), len);
+    TEST_ASSERT_GREATER_THAN_UINT32(2550, t);         /* 255 x 12 bits = 2550 ms */
+    TEST_ASSERT_LESS_THAN_UINT32(3000, t);
+
+    /* fast links keep a short bound */
+    TEST_ASSERT_LESS_OR_EQUAL_UINT32(22, mb_tx_timeout_ms(115200, 10, 13));
+}
+
 static void test_read_ok_and_silence(void)
 {
     s.holding[10] = 0xBEEF;
@@ -122,6 +160,7 @@ int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(test_timing_constants);
+    RUN_TEST(test_tx_timeout_covers_the_frame);
     RUN_TEST(test_read_ok_and_silence);
     RUN_TEST(test_timeout_with_retries);
     RUN_TEST(test_crc_error_is_retried);

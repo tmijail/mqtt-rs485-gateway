@@ -2,7 +2,8 @@
 #
 #   cmake -S idf/test/host -B build-host && cmake --build build-host -j3 && ctest --test-dir build-host
 #
-# Unity and cJSON are fetched at the versions used on target (pinned tags).
+# Unity and cJSON are fetched at the versions used on target, pinned by commit hash (a tag
+# can be moved; the hash cannot): Unity v2.6.1, cJSON v1.7.19.
 cmake_minimum_required(VERSION 3.16)
 project(gw_host_tests C)
 
@@ -12,12 +13,10 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 include(FetchContent)
 FetchContent_Declare(unity
     GIT_REPOSITORY https://github.com/ThrowTheSwitch/Unity.git
-    GIT_TAG v2.6.1
-    GIT_SHALLOW TRUE)
+    GIT_TAG cbcd08fa7de711053a3deec6339ee89cad5d2697)   # v2.6.1
 FetchContent_Declare(cjson
     GIT_REPOSITORY https://github.com/DaveGamble/cJSON.git
-    GIT_TAG v1.7.19
-    GIT_SHALLOW TRUE)
+    GIT_TAG c859b25da02955fef659d658b8f324b5cde87be3)   # v1.7.19
 FetchContent_GetProperties(unity)
 if(NOT unity_POPULATED)
     FetchContent_Populate(unity)

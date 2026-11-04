@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "gw_node.h"
+#include "gw_port.h"
 #include "gw_tagdb.h"
 #include "spb.h"
 #include "support.h"
@@ -299,12 +300,129 @@ static void test_dcmd_writes(void)
     TEST_ASSERT_DOUBLE_WITHIN(1e-5, 12.3, dec.m[0].num);
     gw_node_write_done(&node, SETPOINT, false);
     TEST_ASSERT_EQUAL(1, g_rec.count);
+    gw_node_write_done(&node, 3, true);   /* no such tag: nothing is attributed to Meter1 */
+    TEST_ASSERT_EQUAL(1, g_rec.count);
 
     /* offline device: DCMD discarded */
     set_meter(false, 0, 0, 0);
     gw_node_device_changed(&node, 0);
     send("spBv1.0/Plant1/DCMD/GW01/Meter1", &sp, 1);
     TEST_ASSERT_EQUAL(2, g_rec.writes);
+}
+
+static void send_raw(const char *topic, const raw_metric_t *m, size_t n)
+{
+    size_t len = raw_payload(cmd, sizeof(cmd), m, n);
+    gw_node_handle_message(&node, topic, strlen(topic), cmd, len);
+}
+
+/* Issue #8: while the expander does not answer, the DOs are published as null (the latch may
+ * hold outputs from before a warm reset), and NDATA carries their state once it answers. */
+static void test_do_unknown_published_as_null(void)
+{
+    gw_tagdb_set_do_unknown(500);
+    gw_node_session_up(&node, 0);
+    msg(0);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NBIRTH/GW01", g_rec.msgs[0].topic);
+    for (int k = 0; k < 8; k++) {
+        int i = decoded_find_alias(&dec, GW_ALIAS_DO_BASE + (uint64_t)k);
+        TEST_ASSERT_TRUE(i >= 0);
+        TEST_ASSERT_TRUE(dec.m[i].is_null);
+    }
+    TEST_ASSERT_FALSE(dec.m[decoded_find_alias(&dec, GW_ALIAS_DI_BASE)].is_null);
+
+    /* still unknown: nothing changed, nothing published */
+    recorder_clear();
+    gw_node_io_changed(&node);
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+
+    /* the expander answers (all off): one NDATA with the 8 DOs and their values */
+    gw_tagdb_set_do(0x00, 900);
+    gw_node_io_changed(&node);
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    msg(0);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", g_rec.msgs[0].topic);
+    TEST_ASSERT_EQUAL(8, dec.count);
+    for (size_t i = 0; i < dec.count; i++) {
+        TEST_ASSERT_FALSE(dec.m[i].is_null);
+        TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[i].num);
+    }
+
+    /* lost again: the 8 DOs go back to null */
+    recorder_clear();
+    gw_tagdb_set_do_unknown(1000);
+    gw_node_io_changed(&node);
+    msg(0);
+    TEST_ASSERT_EQUAL(8, dec.count);
+    TEST_ASSERT_TRUE(dec.m[0].is_null);
+}
+
+/* Issue #14: a command metric without an alias is not logged as "alias 0". */
+static void test_discard_log_shows_alias_only_if_present(void)
+{
+    static char log[2048];
+    set_meter(true, 1, 2, 0);
+    gw_node_session_up(&node, 0);
+    gw_port_log_capture(log, sizeof(log));
+    raw_metric_t by_name = {.name = "Voltage", .datatype = SPB_DT_FLOAT, .kind = RAW_FLOAT, .num = 1};
+    send_raw("spBv1.0/Plant1/DCMD/GW01/Meter1", &by_name, 1);
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Voltage' discarded: read-only metric"));
+    TEST_ASSERT_NULL(strstr(log, "alias"));
+    log[0] = '\0';
+    raw_metric_t by_alias = {.has_alias = true, .alias = GW_ALIAS_TAG_BASE + VOLTAGE,
+                             .datatype = SPB_DT_FLOAT, .kind = RAW_FLOAT, .num = 1};
+    send_raw("spBv1.0/Plant1/DCMD/GW01/Meter1", &by_alias, 1);
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric '' (alias 100) discarded: read-only metric"));
+    log[0] = '\0';
+    raw_metric_t alias0 = {.name = "Nope", .has_alias = true, .alias = 0,
+                           .datatype = SPB_DT_BOOLEAN, .kind = RAW_BOOL, .num = 1};
+    send_raw("spBv1.0/Plant1/NCMD/GW01", &alias0, 1);   /* an explicit alias 0 is shown */
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Nope' (alias 0) discarded"));
+    gw_port_log_capture(NULL, 0);
+    TEST_ASSERT_EQUAL(0, g_rec.writes);
+}
+
+/* Issue #10: nanopb aborts on a name or string longer than 63 characters; the metrics
+ * decoded before it must not be applied either. */
+static void test_command_aborted_mid_payload_applies_nothing(void)
+{
+    static const char long_name[] =
+        "A_metric_name_that_is_much_longer_than_the_sixty_three_characters_accepted";
+    static const char long_str[] =
+        "A string value that is much longer than the sixty three characters accepted";
+    set_meter(true, 1, 2, 0);
+    gw_node_session_up(&node, 0);
+    recorder_clear();
+
+    raw_metric_t ncmd[3] = {
+        {.name = "DO/1", .datatype = SPB_DT_BOOLEAN, .kind = RAW_BOOL, .num = 1},
+        {.name = long_name, .datatype = SPB_DT_BOOLEAN, .kind = RAW_BOOL, .num = 1},
+        {.name = "DO/2", .datatype = SPB_DT_BOOLEAN, .kind = RAW_BOOL, .num = 1},
+    };
+    send_raw("spBv1.0/Plant1/NCMD/GW01", ncmd, 3);
+    TEST_ASSERT_EQUAL_HEX8(0, g_rec.dout);   /* DO/1 untouched */
+    TEST_ASSERT_EQUAL(0, g_rec.count);       /* and no NDATA */
+
+    ncmd[1] = (raw_metric_t){.name = "Note", .datatype = SPB_DT_STRING, .kind = RAW_STRING,
+                             .str = long_str};
+    send_raw("spBv1.0/Plant1/NCMD/GW01", ncmd, 3);
+    TEST_ASSERT_EQUAL_HEX8(0, g_rec.dout);
+
+    raw_metric_t dcmd[2] = {
+        {.name = "Setpoint", .datatype = SPB_DT_FLOAT, .kind = RAW_FLOAT, .num = 12.3},
+        {.name = long_name, .datatype = SPB_DT_FLOAT, .kind = RAW_FLOAT, .num = 1},
+    };
+    send_raw("spBv1.0/Plant1/DCMD/GW01/Meter1", dcmd, 2);
+    TEST_ASSERT_EQUAL(0, g_rec.writes);
+
+    /* the same commands without the offending metric are applied in full */
+    ncmd[1] = (raw_metric_t){.name = "Nope", .datatype = SPB_DT_BOOLEAN, .kind = RAW_BOOL, .num = 1};
+    send_raw("spBv1.0/Plant1/NCMD/GW01", ncmd, 3);
+    TEST_ASSERT_EQUAL_HEX8(0x03, g_rec.dout);
+    TEST_ASSERT_EQUAL(1, g_rec.count);       /* one NDATA confirming DO/1 and DO/2 */
+    send_raw("spBv1.0/Plant1/DCMD/GW01/Meter1", dcmd, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.writes);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-5, 12.3, g_rec.last_write_value);
 }
 
 static void test_session_down_suppresses_publishing(void)
@@ -336,5 +454,8 @@ int main(void)
     RUN_TEST(test_ncmd_do_and_reboot);
     RUN_TEST(test_dcmd_writes);
     RUN_TEST(test_session_down_suppresses_publishing);
+    RUN_TEST(test_discard_log_shows_alias_only_if_present);
+    RUN_TEST(test_do_unknown_published_as_null);
+    RUN_TEST(test_command_aborted_mid_payload_applies_nothing);
     return UNITY_END();
 }

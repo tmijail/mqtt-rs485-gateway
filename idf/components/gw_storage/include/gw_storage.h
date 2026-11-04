@@ -90,6 +90,13 @@ void gw_storage_save_last_good(const gw_config_t *cfg);
  */
 void gw_storage_recovery_config(gw_config_t *cfg);
 
+/**
+ * Zeroed allocation for a large structure that lives for the whole run (configuration,
+ * Sparkplug engine): PSRAM when the board has it, internal RAM otherwise. Logs where it
+ * landed under @p what. NULL if neither has room. Boot time only (REL-2).
+ */
+void *gw_storage_big_alloc(size_t size, const char *what);
+
 #ifdef __cplusplus
 }
 #endif

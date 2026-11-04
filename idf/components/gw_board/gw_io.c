@@ -4,6 +4,7 @@
 #include "driver/i2c_master.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "gw_bsp.h"
@@ -15,11 +16,15 @@
 static const char *TAG = "io";
 
 #define I2C_TIMEOUT_MS 50
+#define WDT_FEED_SAMPLES (1000000 / CONFIG_GW_DI_SAMPLE_US)   /* feed about once per second */
 
 static gw_debounce_t s_db;
 static void (*s_on_change)(void);
 static esp_timer_handle_t s_timer;
 static gw_dout_t s_do;
+static bool s_exp_bus;   /* I2C bus and device created: the expander itself can be retried */
+static esp_task_wdt_user_handle_t s_wdt;
+static uint32_t s_wdt_count;
 
 #if CONFIG_GW_IO_SIMULATED
 
@@ -38,10 +43,12 @@ static int exp_write(void *ctx, uint8_t reg, uint8_t val)
 static int exp_read(void *ctx, uint8_t reg, uint8_t *val)
 {
     (void)ctx;
-    /* Output pins read back their latch; input pins float high. */
+    /* Output pins read back their latch; input pins float high; POLARITY inverts the input
+     * register. */
     *val = reg == GW_TCA9554_REG_INPUT
-               ? (uint8_t)((s_sim_reg[GW_TCA9554_REG_OUTPUT] & ~s_sim_reg[GW_TCA9554_REG_CONFIG]) |
-                           s_sim_reg[GW_TCA9554_REG_CONFIG])
+               ? (uint8_t)(((s_sim_reg[GW_TCA9554_REG_OUTPUT] & ~s_sim_reg[GW_TCA9554_REG_CONFIG]) |
+                            s_sim_reg[GW_TCA9554_REG_CONFIG]) ^
+                           s_sim_reg[GW_TCA9554_REG_POLARITY])
                : s_sim_reg[reg];
     return ESP_OK;
 }
@@ -154,6 +161,12 @@ static void publish_do(void)
 static void sample_cb(void *arg)
 {
     (void)arg;
+    /* REL-1: the esp_timer task is not a task of ours; a TWDT user entry fed from the sampling
+     * callback makes a stalled esp_timer task (no DI sampling) trip the watchdog. */
+    if (s_wdt != NULL && ++s_wdt_count >= WDT_FEED_SAMPLES) {
+        s_wdt_count = 0;
+        esp_task_wdt_reset_user(s_wdt);
+    }
     if (gw_debounce_sample(&s_db, read_di()) != 0) {
         gw_tagdb_set_di(s_db.stable, gw_port_time_ms());
         s_on_change();
@@ -164,17 +177,40 @@ esp_err_t gw_io_outputs_off(void)
 {
     esp_err_t err = hw_init_outputs();
     if (err == ESP_OK) {
+        s_exp_bus = true;
         const gw_dout_bus_t bus = {.write_reg = exp_write, .read_reg = exp_read, .ctx = NULL};
         err = gw_dout_init(&s_do, &bus, gw_bsp.dout.active_low);
     }
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "TCA9554 at 0x%02x not responding (%s): DOs disabled", gw_bsp.dout.i2c_addr,
-                 esp_err_to_name(err));
+        /* The latch may still hold outputs from before a warm reset: publish them as unknown
+         * (null), never as off, until the expander answers. */
+        gw_tagdb_set_do_unknown(gw_port_time_ms());
+        ESP_LOGE(TAG, "TCA9554 at 0x%02x not responding (%s): DOs disabled%s",
+                 gw_bsp.dout.i2c_addr, esp_err_to_name(err),
+                 s_exp_bus ? ", retrying with backoff" : "");
         return err;
     }
     publish_do();
     ESP_LOGI(TAG, "DO active-low mask 0x%02x: all outputs off", gw_bsp.dout.active_low);
     return ESP_OK;
+}
+
+bool gw_io_outputs_recover(void)
+{
+    if (!s_exp_bus || s_do.ready) {
+        return false;
+    }
+    uint16_t before = s_do.attempts;
+    bool ok = gw_dout_recover(&s_do, (uint32_t)(esp_timer_get_time() / 1000));
+    if (ok) {
+        publish_do();
+        ESP_LOGW(TAG, "TCA9554 answered on attempt %u: DOs available, all outputs off",
+                 s_do.attempts);
+    } else if (s_do.attempts != before) {
+        ESP_LOGW(TAG, "TCA9554 still not responding (attempt %u); next try in %lu ms",
+                 s_do.attempts, (unsigned long)s_do.retry_delay_ms);
+    }
+    return ok;
 }
 
 esp_err_t gw_io_start_inputs(const gw_config_t *cfg, void (*on_change)(void))
@@ -193,6 +229,7 @@ esp_err_t gw_io_start_inputs(const gw_config_t *cfg, void (*on_change)(void))
         .name = "di_sample",
         .skip_unhandled_events = true,
     };
+    ESP_RETURN_ON_ERROR(esp_task_wdt_add_user("di_sample", &s_wdt), TAG, "watchdog");
     ESP_RETURN_ON_ERROR(esp_timer_create(&ta, &s_timer), TAG, "timer");
     ESP_RETURN_ON_ERROR(esp_timer_start_periodic(s_timer, CONFIG_GW_DI_SAMPLE_US), TAG, "timer");
     ESP_LOGI(TAG, "DI sampled every %d us, debounce %u ms, active-low mask 0x%02x",

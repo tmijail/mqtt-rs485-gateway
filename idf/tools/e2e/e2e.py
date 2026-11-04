@@ -22,6 +22,7 @@ import asyncio
 import base64
 import http.client as httplib
 import json
+import logging
 import os
 import pathlib
 import queue
@@ -56,11 +57,14 @@ HTTP_PORT = int(os.environ.get("E2E_HTTP_PORT", 18080))
 WEB_PASSWORD = "e2e-pass-1"
 SYSLOG = []       # (t, datagram text) received by the syslog listener
 SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
+PROBE_MAX_S = 10.0                # CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS / 1000, read in main()
 GROUP, NODE, DEVICE, BULK = "Plant1", "GW01", "Meter1", "Bulk"
 T = f"spBv1.0/{GROUP}"
-ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/3": 22, "Voltage": 100, "Setpoint": 101, "Run": 102}
+ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/1": 20, "DO/3": 22, "Voltage": 100, "Setpoint": 101, "Run": 102, "Limit": 103}
 
 spb = spb_decode.load_module()
+# The dead units (Dead3..Dead5) get no answer by design; pymodbus would log every request.
+logging.getLogger("pymodbus").setLevel(logging.CRITICAL)
 results = []
 CAPTURE = []      # every message seen by any observer: (t, topic, Payload, raw bytes)
 PROCS = []        # brokers and QEMU instances to clean up
@@ -88,7 +92,8 @@ class RecordingContext(ModbusSlaveContext):
 
 
 class ModbusSlave:
-    """Unit 1 = Meter1 (SPEC example tags), unit 2 = Bulk (60 holding registers 100..159)."""
+    """Unit 1 = Meter1 (SPEC example tags), unit 2 = Bulk (60 holding registers 100..159).
+    Units 3..5 (Dead3..Dead5 in the configuration) do not exist: requests to them get no answer."""
 
     def __init__(self):
         block = lambda: ModbusSequentialDataBlock(0, [0] * 300)  # noqa: E731
@@ -97,6 +102,7 @@ class ModbusSlave:
         self.bulk.setValues(3, 100, list(range(1000, 1060)))
         self.server_ctx = ModbusServerContext(slaves={1: self.ctx, 2: self.bulk}, single=False)
         self.reads = []  # (unit, function code, address, count) of every request received
+        self.times = []  # monotonic arrival time of each entry of self.reads
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
         self.server = None
@@ -105,6 +111,7 @@ class ModbusSlave:
     def _trace(self, sending, pdu):
         if not sending:
             self.requests += 1
+            self.times.append(time.monotonic())
             self.reads.append((getattr(pdu, "dev_id", None), pdu.function_code,
                                getattr(pdu, "address", None), getattr(pdu, "count", None)))
         return pdu
@@ -112,7 +119,8 @@ class ModbusSlave:
     def start(self):
         async def run():
             self.server = ModbusTcpServer(self.server_ctx, framer=FramerType.RTU,
-                                          address=("127.0.0.1", MODBUS_PORT), trace_pdu=self._trace)
+                                          address=("127.0.0.1", MODBUS_PORT), trace_pdu=self._trace,
+                                          ignore_missing_slaves=True)
             await self.server.listen()
         asyncio.run_coroutine_threadsafe(run(), self.loop).result(5)
 
@@ -151,6 +159,87 @@ def sntp_responder(stop):
         reply = struct.pack("!BBbb11I", 0x24, 1, 0, -20, 0, 0, 0x4C4F434C, sec, frac,
                             *struct.unpack("!II", data[40:48]), sec, frac, sec, frac)
         s.sendto(reply, addr)
+
+
+# ---------------------------------------------------------------- misbehaving brokers
+
+class FakeBroker:
+    """Minimal MQTT 3.1.1 server for the connection-management checks. Every CONNECT gets a
+    CONNACK (accepted); then, by @mode:
+      "cut":    the connection is closed at once (a broker that accepts and drops: ACL on the
+                will, duplicate client_id, connection limit);
+      "refuse": every SUBSCRIBE gets a SUBACK with 0x80 (failure) for each topic.
+    Records the connection times, the PUBLISH topics and whether the client sent DISCONNECT."""
+
+    def __init__(self, port, mode):
+        self.mode, self.accepted, self.published, self.disconnects = mode, [], [], 0
+        self.srv = socket.socket()
+        self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.srv.bind(("127.0.0.1", port))
+        self.srv.listen(8)
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self):
+        while True:
+            try:
+                c, _ = self.srv.accept()
+            except OSError:
+                return
+            self.accepted.append(time.monotonic())
+            threading.Thread(target=self._client, args=(c,), daemon=True).start()
+
+    @staticmethod
+    def _read(c, n):
+        data = b""
+        while len(data) < n:
+            chunk = c.recv(n - len(data))
+            if not chunk:
+                raise OSError("closed")
+            data += chunk
+        return data
+
+    def _packet(self, c):
+        kind = self._read(c, 1)[0]
+        length, shift = 0, 0
+        while True:
+            b = self._read(c, 1)[0]
+            length |= (b & 0x7F) << shift
+            shift += 7
+            if not b & 0x80:
+                break
+        return kind, self._read(c, length)
+
+    def _client(self, c):
+        try:
+            c.settimeout(30)
+            while True:
+                kind, body = self._packet(c)
+                if kind >> 4 == 1:                       # CONNECT
+                    c.sendall(b"\x20\x02\x00\x00")
+                    if self.mode == "cut":
+                        time.sleep(0.1)
+                        return
+                elif kind >> 4 == 8:                     # SUBSCRIBE
+                    n, i = 0, 2
+                    while i < len(body):
+                        i += 2 + struct.unpack(">H", body[i:i + 2])[0] + 1
+                        n += 1
+                    c.sendall(bytes([0x90, 2 + n]) + body[:2] + b"\x80" * n)
+                elif kind >> 4 == 3:                     # PUBLISH
+                    tlen = struct.unpack(">H", body[:2])[0]
+                    self.published.append(body[2:2 + tlen].decode(errors="replace"))
+                elif kind >> 4 == 12:                    # PINGREQ
+                    c.sendall(b"\xd0\x00")
+                elif kind >> 4 == 14:                    # DISCONNECT
+                    self.disconnects += 1
+                    return
+        except OSError:
+            pass
+        finally:
+            c.close()
+
+    def close(self):
+        self.srv.close()
 
 
 # ---------------------------------------------------------------- syslog listener
@@ -406,17 +495,13 @@ def as_json(body):
 
 # ---------------------------------------------------------------- storage partition variants
 
-def partition(name):
+def storage_partition(name="storage"):
     """(offset, size) of partition @name in partitions.csv."""
     for line in (HERE.parent.parent / "partitions.csv").read_text().splitlines():
         cols = [c.strip() for c in line.split(",")]
         if cols[0] == name:
             return int(cols[3], 0), int(cols[4], 0)
     raise SystemExit(f"no {name} partition in partitions.csv")
-
-
-def storage_partition():
-    return partition("storage")
 
 
 def flash_variant(args, work, name, files):
@@ -469,10 +554,11 @@ def sdkconfig_int(path, name):
     return int(m.group(1))
 
 
-def config_json(**overrides):
-    """tools/e2e/fs/config.json with the harness' MQTT port and optional top-level overrides."""
+def config_json(mqtt_port=None, **overrides):
+    """tools/e2e/fs/config.json with the harness' MQTT port (or @mqtt_port) and optional
+    top-level overrides."""
     cfg = json.loads((HERE / "fs" / "config.json").read_text())
-    cfg["mqtt"]["port"] = MQTT_PORT
+    cfg["mqtt"]["port"] = mqtt_port or MQTT_PORT
     cfg["syslog"]["port"] = SYSLOG_PORT
     for k, v in overrides.items():
         cfg[k] = v
@@ -504,6 +590,8 @@ def main():
     ap.add_argument("--littlefs-python", required=True,
                     help="python with the littlefs-python package (build-qemu/littlefs_py_venv)")
     ap.add_argument("--sdkconfig", required=True, help="sdkconfig of the QEMU build")
+    ap.add_argument("--elf", required=True, help="ELF of the QEMU build (core dump decoding)")
+    ap.add_argument("--idf-python", required=True, help="ESP-IDF python (has esp_coredump)")
     ap.add_argument("--mqtt-port", type=int, default=MQTT_PORT)
     ap.add_argument("--modbus-port", type=int, default=MODBUS_PORT)
     ap.add_argument("--console-port", type=int, default=CONSOLE_PORT)
@@ -516,6 +604,8 @@ def main():
     args = ap.parse_args()
     MQTT_PORT, MODBUS_PORT, CONSOLE_PORT = args.mqtt_port, args.modbus_port, args.console_port
     SYSLOG_PORT, HTTP_PORT = args.syslog_port, args.http_port
+    global PROBE_MAX_S
+    PROBE_MAX_S = sdkconfig_int(args.sdkconfig, "GW_MB_OFFLINE_PROBE_MAX_MS") / 1000
     isolated = False if args.no_isolate else isolate_network()
     print(f"network: {'private namespace' if isolated else 'host loopback'}; ports MQTT {MQTT_PORT}, "
           f"Modbus {MODBUS_PORT}, console {CONSOLE_PORT}, syslog {SYSLOG_PORT}, HTTP {HTTP_PORT}",
@@ -703,6 +793,58 @@ def run_config_failsafe(args, work, slave):
     check("CFG-2 missing config file -> embedded default", hit,
           (gw.find(r"configuration from", t0) or ["no 'configuration from' log"])[0])
     obs.close()
+
+
+def check_offline_backoff(slave, t0):
+    """Issue #4: dead slaves (units 3..5, never answer) are probed with one attempt at 2, 4, 8 ...
+    x poll_ms up to the cap, and do not delay the healthy device's 1 s polling."""
+    def clusters():
+        """Requests to dead unit 3 grouped by proximity: a full cycle is a cluster of attempts
+        200 ms apart (some may be lost while QEMU's UART socket connects), a probe is alone."""
+        ts = [t for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 3 and t >= t0]
+        out = []
+        for t in ts:
+            if out and t - out[-1][-1] <= 0.5:
+                out[-1].append(t)
+            else:
+                out.append([t])
+        full = [i for i, c in enumerate(out) if len(c) > 1]
+        return out, (full[-1] if full else None)
+
+    # 3 full cycles (saturated bus: they overrun), then probes 2, 4, 8 and 10 s apart
+    end = t0 + 60
+    while time.monotonic() < end:
+        cl, last_full = clusters()
+        if last_full is not None and len(cl) - 1 - last_full >= 4:
+            break
+        time.sleep(0.5)
+    reads = list(zip(slave.times, slave.reads))
+    cl, last_full = clusters()
+    probes = cl[last_full + 1:] if last_full is not None else []
+    single = all(len(c) == 1 for c in probes)
+    marks = [cl[last_full][0]] + [c[0] for c in probes] if probes else []
+    gaps = [round(b - a, 1) for a, b in zip(marks, marks[1:])]
+    expect = [min(2.0 * 2 ** i, PROBE_MAX_S) for i in range(len(gaps))]
+    # a due probe may wait for a cycle of another device in progress (up to ~0.6 s)
+    probes_ok = len(gaps) >= 4 and single and all(-0.2 <= g - e <= 0.7 for g, e in zip(gaps, expect))
+    check("MB-9 / issue #4 offline device probed with a single attempt and an exponential "
+          "backoff (2, 4, 8 ... s, cap)", probes_ok,
+          f"unit 3: {[len(c) for c in cl]} requests per burst; from the last full cycle, probes "
+          f"after {gaps} s (expected {expect}); single attempt each: {single}")
+    # Healthy Meter1 while the three dead units back off: cycle starts = its first request kind
+    if not probes:
+        return check("Issue #4 healthy device keeps its 1 s period next to 3 dead ones", False,
+                     "dead devices never went offline")
+    since = probes[0][0] + 1.0
+    meter = [(t, r) for t, r in reads if r[0] == 1 and t >= since]
+    kind = meter[0][1][1:] if meter else None
+    starts = [t for t, r in meter if r[1:] == kind]
+    span = starts[-1] - starts[0] if len(starts) > 1 else 0
+    worst = max((b - a for a, b in zip(starts, starts[1:])), default=0)
+    # 1 s period; at worst one probe of each dead unit (200 ms timeout) in between + jitter
+    ok = len(starts) >= 8 and (len(starts) - 1) / span >= 0.9 and worst <= 1.0 + 3 * 0.2 + 0.4
+    return check("Issue #4 healthy device keeps its 1 s period next to 3 dead ones", ok,
+                 f"{len(starts)} Meter1 cycles in {span:.1f} s, longest interval {worst:.2f} s")
 
 
 def run_network_variant(args, work):
@@ -915,7 +1057,7 @@ def run_web(args, work):
     # only stored as a hash: none of them appears anywhere in the flash image in clear.
     image = pathlib.Path(flash).read_bytes()
     so, ss = storage_partition()
-    no, ns = partition("nvs")
+    no, ns = storage_partition("nvs")
     leaks = [(what.decode(), where) for what in (b"mqtt-secret", WEB_PASSWORD.encode())
              for where, (o, n) in (("storage", (so, ss)), ("nvs", (no, ns)), ("image", (0, len(image))))
              if what in image[o:o + n]]
@@ -1024,6 +1166,12 @@ def run(args, log, slave, broker, conf, work):
           SNTP_BOUND.is_set() and abs(p.timestamp / 1000 - time.time()) < 60,
           f"NBIRTH timestamp {p.timestamp} vs host {int(time.time() * 1000)}; responder on UDP 123: "
           f"{SNTP_BOUND.is_set()}")
+    gw.wait_log(r"births sent in", 10)
+    births = gw.find(r"births sent in \d+ ms, longest stretch without feeding the watchdog")
+    nums = [int(x) for x in re.findall(r"(\d+) ms", births[0])] if births else []
+    check("REL-1 / issue #3 the Sparkplug task feeds the watchdog after every birth it publishes",
+          len(nums) == 2 and nums[1] <= nums[0] and nums[1] <= 1000,
+          births[0] if births else "no 'births sent' log")
     db = obs.wait(dbirth_t, 10)
     ok = db and abs(metric(db[2], name="Voltage").float_value - 230.5) < 1e-3 \
         and abs(metric(db[2], name="Setpoint").float_value - 5.0) < 1e-4
@@ -1052,13 +1200,19 @@ def run(args, log, slave, broker, conf, work):
 
     # CFG-6 diagnostic shell on the console UART
     asked, h = gw.shell("status", [r"config\s+\S+.*: ok",
-                                   r"network\s+.*MQTT \S+, Modbus 2/2 devices online",
-                                   r"^iface\s+ethernet up \d+\.\d+\.\d+\.\d+ \(active\) \| wifi not configured"])
-    status_ok, status_net, status_if = h.values()
+                                   r"network\s+.*MQTT \S+, Modbus 2/5 devices online",
+                                   r"^iface\s+ethernet up \d+\.\d+\.\d+\.\d+ \(active\) \| wifi not configured",
+                                   r"^tasks\s"])
+    status_ok, status_net, status_if, _ = h.values()
     check("CFG-6 console shell: 'status' with a valid configuration (config ok, MQTT, devices online, "
           "Ethernet the only and active interface)",
           status_ok and status_net and status_if,
           " | ".join(gw.find(r"^config\s|^network\s|^iface\s", asked)) or "no answer")
+    # Issue #15: the network stack runs on core 0, the RS485 bus owner on core 1
+    tasks = gw.find(r"^tasks\s", asked)
+    want = ["rs485_bus 1", "sparkplug 0", "tcpip 0", "mqtt_task 0", "emac_rx 0", "sys_evt 0"]
+    check("Issue #15 task affinity: lwIP, esp-mqtt, Ethernet RX and event loop on core 0, bus on core 1",
+          tasks and all(f" {w}" in tasks[0] for w in want), tasks[0] if tasks else "no 'tasks' line")
     asked, h = gw.shell(["devices", "config"],
                         [r"Meter1\s+unit\s+1 online\s+cycles [1-9]\d* failed \d+ \| ok [1-9]",
                          r"Bulk\s+unit\s+2 online", r"sparkplug\s+group 'Plant1', edge node 'GW01'"])
@@ -1069,7 +1223,8 @@ def run(args, log, slave, broker, conf, work):
 
     # REL-4 remote syslog: RFC 5424 over UDP, hostname = edge node id, app-name = esp_log tag,
     # facility local0, timestamp from SNTP
-    up = wait_syslog(NODE, r"^Sparkplug session up \(bdSeq=%d\)$" % b0, 5, t0)
+    # the line goes on with the births' duration and watchdog margin (issue #3)
+    up = wait_syslog(NODE, r"^Sparkplug session up \(bdSeq=%d\): births sent in \d+ ms, .*$" % b0, 5, t0)
     host_now = time.time()
     ts_ok = False
     if up:
@@ -1118,6 +1273,18 @@ def run(args, log, slave, broker, conf, work):
           nd and metric(nd[2], alias=ALIAS["DO/3"]).boolean_value,
           f"NDATA {[(m.alias, m.boolean_value) for m in nd[2].metrics]}" if nd else "no NDATA")
 
+    # Issue #10: a metric name longer than the codec accepts aborts the decode; the DO/1 before
+    # it must not be applied either (all or nothing), so no NDATA for DO/1.
+    obs.drain()
+    since = time.monotonic()
+    obs.publish_cmd(ncmd_t, [{"name": "DO/1", "datatype": 11, "boolean_value": True},
+                             {"name": "X" * 80, "datatype": 11, "boolean_value": True}])
+    nd = obs.wait(ndata_t, 2, lambda q: metric(q, alias=ALIAS["DO/1"]) is not None)
+    dropped = gw.wait_log(r"NCMD: undecodable payload .*nothing applied", 1, since)
+    check("SPB-11 / issue #10 NCMD aborted mid-payload (80-character name) applies nothing",
+          dropped and nd is None,
+          f"log: {(gw.find(r'NCMD: undecodable', since) or ['none'])[0]}; NDATA for DO/1: {nd is not None}")
+
     # 4. DCMD Setpoint=12.3 -> holding 10 = 123 via FC06, confirmed by DDATA
     obs.drain()
     slave.ctx.writes.clear()
@@ -1129,6 +1296,18 @@ def run(args, log, slave, broker, conf, work):
           and abs(metric(dd[2], alias=ALIAS["Setpoint"]).float_value - 12.3) < 1e-4,
           f"slave writes {slave.ctx.writes}, register={reg}, DDATA "
           f"{metric(dd[2], alias=ALIAS['Setpoint']).float_value if dd else None}")
+    # MB-4 / issue #2: a 32-bit value is written with one FC16 of 2 registers (13 bytes, the
+    # frame that timed out at 1200 baud), executed exactly once and confirmed by DDATA.
+    obs.drain()
+    slave.ctx.writes.clear()
+    obs.publish_cmd(dcmd_t, [{"name": "Limit", "datatype": 9, "float_value": 1234.5}])
+    dd = obs.wait(ddata_t, 5, lambda q: metric(q, alias=ALIAS["Limit"]) is not None)
+    hi, lo = struct.unpack(">HH", struct.pack(">f", 1234.5))
+    check("MB-4 DCMD float32 -> a single FC16 of 2 registers, confirmed by DDATA",
+          dd and slave.ctx.writes == [(16, 20, [hi, lo])]
+          and abs(metric(dd[2], alias=ALIAS["Limit"]).float_value - 1234.5) < 1e-3,
+          f"slave writes {slave.ctx.writes}, DDATA "
+          f"{metric(dd[2], alias=ALIAS['Limit']).float_value if dd else None}")
     obs.drain()
     slave.ctx.writes.clear()
     obs.publish_cmd(dcmd_t, [{"alias": ALIAS["Run"], "datatype": 11, "boolean_value": True}])
@@ -1138,8 +1317,9 @@ def run(args, log, slave, broker, conf, work):
     since = time.monotonic()
     obs.publish_cmd(dcmd_t, [{"name": "Voltage", "datatype": 9, "float_value": 1.0}])
     time.sleep(1.5)
+    # the command came by name only: the log must not invent an "alias 0" (issue #14)
     check("SPB-10 DCMD on read-only metric discarded and logged",
-          gw.find(r"DCMD: metric 'Voltage'.*read-only", since) and not slave.ctx.writes[1:],
+          gw.find(r"DCMD: metric 'Voltage' discarded: read-only", since) and not slave.ctx.writes[1:],
           (gw.find(r"DCMD: metric 'Voltage'", since) or ["no log line"])[0])
 
     # 5. Rebirth
@@ -1151,6 +1331,8 @@ def run(args, log, slave, broker, conf, work):
           nb and db and nb[2].seq == 0 and bdseq_of(nb[2]) == b0 and db[2].seq == 1,
           f"NBIRTH seq={nb[2].seq if nb else None} bdSeq={bdseq_of(nb[2]) if nb else None}, "
           f"DBIRTH seq={db[2].seq if db else None}")
+
+    check_offline_backoff(slave, t0)
 
     # 2. Slave off -> DDEATH; back on -> DBIRTH
     obs.drain()
@@ -1167,8 +1349,13 @@ def run(args, log, slave, broker, conf, work):
           offline, (gw.find(r"Meter1\s+unit", asked) or ["no answer"])[0])
     on = time.monotonic()
     slave.start()
-    db = obs.wait(dbirth_t, 10)
-    check("2b. Slave back -> DBIRTH", db, f"{db[0] - on:.2f} s after restart" if db else "no DBIRTH")
+    # Offline devices are probed with a backoff capped at GW_MB_OFFLINE_PROBE_MAX_MS: the
+    # DBIRTH comes at most one capped interval plus one poll cycle after the slave is back.
+    back = PROBE_MAX_S + 1.0 + 1.0
+    db = obs.wait(dbirth_t, back + 5)
+    check("2b. Slave back -> DBIRTH within the offline probe interval (cap) + one cycle",
+          db and db[0] - on <= back,
+          f"{db[0] - on:.2f} s after restart (bound {back:.1f} s)" if db else "no DBIRTH")
 
     dbirth_topics = [f"{T}/DBIRTH/{NODE}/{d}" for d in (DEVICE, BULK)]
 
@@ -1243,6 +1430,14 @@ def run(args, log, slave, broker, conf, work):
           f"NBIRTH bdSeq={b2} seq={nb[2].seq if nb else None}; DBIRTH seq "
           f"{ {t.split('/')[-1]: m[2].seq for t, m in dbs.items()} }")
 
+    # Issue #5: the backoff restarts from the minimum only once a session has lasted one keepalive
+    # period (this one began after 5 failed attempts)
+    stable = gw.wait_log(r"session stable for \d+ ms: reconnect backoff reset", keepalive + 5, resumed)
+    check("MQTT-2 / issue #5 reconnect backoff reset only after the session lasted one keepalive",
+          stable and nb and stable - nb[0] >= keepalive - 0.5,
+          f"reset {stable - nb[0]:.1f} s after the NBIRTH (keepalive {keepalive} s): "
+          f"{gw.find(r'session stable', resumed)[:1]}" if stable and nb else "no backoff reset logged")
+
     # 1c. Kill the TCP connection (QEMU process) -> broker publishes the will
     obs.drain()
     gw.kill()
@@ -1281,6 +1476,77 @@ def run(args, log, slave, broker, conf, work):
           and reason1.string_value == "software",
           f"first boot {reason0.string_value if reason0 else None!r}, after reboot "
           f"{reason1.string_value if reason1 else None!r}")
+
+    # Issue #12 / REL-1: a panic writes a core dump to the "coredump" partition, the gateway
+    # restarts ("panic" in NBIRTH) and the dump decodes with esp_coredump against the ELF.
+    # QEMU does not seem to stall the other core during the panic handler as the chip does: a
+    # task on it (the 1 kHz DI sampling, for one) can change a stack between the two passes of
+    # the ELF writer, and the dump then fails its checksum. Up to 3 panics; every one must save
+    # a dump and restart with "panic", and at least one dump must decode.
+    off, size = storage_partition("coredump")
+    attempts = []
+    for n in range(3):
+        obs.drain()
+        since = time.monotonic()
+        gw.console("panic")
+        nb = obs.wait(nbirth_t, 40)
+        saved = gw.find(r"Core dump has been saved to flash", since)
+        reason = metric(nb[2], name="Node Info/Reset Reason") if nb else None
+        core = work / f"coredump-{n}.bin"
+        core.write_bytes(pathlib.Path(args.flash).read_bytes()[off:off + size])
+        info = subprocess.run([args.idf_python, "-m", "esp_coredump", "--chip", "esp32s3",
+                               "info_corefile", "--core", str(core), "--core-format", "raw", args.elf],
+                              capture_output=True, text=True, timeout=120)
+        decoded = info.returncode == 0 and "cmd_panic" in info.stdout and "abort" in info.stdout
+        if decoded or n == 0:
+            (work / "coredump-info.txt").write_text(info.stdout + info.stderr)
+        err = (info.stderr.strip().splitlines() or [""])[-1][:90]
+        attempts.append((bool(saved), reason.string_value if reason else None, decoded, err))
+        if decoded:
+            break
+    gw.kill()
+    check("Issue #12 panic -> core dump in flash, restart with 'panic' reset reason, dump decodes "
+          "with esp_coredump (backtrace through cmd_panic/abort)",
+          all(a[0] and a[1] == "panic" for a in attempts) and attempts[-1][2],
+          "; ".join(f"attempt {i + 1}: saved={a[0]} reset reason={a[1]!r} decoded={a[2]}"
+                    f"{'' if a[2] else ' (' + a[3] + ')'}" for i, a in enumerate(attempts)))
+
+    # Issue #11: a broker that refuses the NCMD/DCMD subscriptions (SUBACK 0x80). The node must
+    # not announce itself (no NBIRTH: it could not receive commands); it disconnects with
+    # DISCONNECT (the will is dropped) and retries with a growing backoff.
+    refuser = FakeBroker(MQTT_PORT + 2, "refuse")
+    gw = Gateway(args, work / "uart0-refuse.log",
+                 flash_variant(args, work, "refuse", {"config.json": config_json(MQTT_PORT + 2)}))
+    t_ref = time.monotonic()
+    gw.start()
+    gw.wait_log(r"reconnect attempt 3 in", 40, t_ref)
+    refused = gw.find(r"refused the NCMD/DCMD subscriptions", t_ref)
+    delays = [int(x) for x in re.findall(r"in (\d+) ms", " ".join(gw.find(r"reconnect attempt", t_ref)))]
+    gw.kill()
+    refuser.close()
+    check("MQTT-2 / issue #11 SUBACK refused -> no NBIRTH, DISCONNECT and retry with growing backoff",
+          len(refused) >= 3 and not refuser.published and refuser.disconnects >= 3
+          and len(delays) >= 3 and delays[2] > delays[0],
+          f"{len(refused)} refusals logged, {refuser.disconnects} DISCONNECTs, publishes "
+          f"{refuser.published}, delays {delays} ms; {(refused or ['no refusal logged'])[0]}")
+
+    # Issue #5: a broker that accepts the connection and drops it right after the CONNACK.
+    # The backoff must keep growing (1, 2, 4, 8 s, -25 % jitter): it is reset only after a
+    # stable session, not on every CONNACK.
+    cutter = FakeBroker(MQTT_PORT + 1, "cut")
+    gw = Gateway(args, work / "uart0-cutter.log",
+                 flash_variant(args, work, "cutter", {"config.json": config_json(MQTT_PORT + 1)}))
+    t_cut = time.monotonic()
+    gw.start()
+    gw.wait_log(r"reconnect attempt 4 in", 40, t_cut)
+    delays = [int(x) for x in re.findall(r"in (\d+) ms", " ".join(gw.find(r"reconnect attempt", t_cut)))]
+    gw.kill()
+    cutter.close()
+    grows = len(delays) >= 4 and all(0.75 * 1000 * 2 ** i <= d <= 1000 * 2 ** i
+                                     for i, d in enumerate(delays[:4]))
+    check("MQTT-2 / issue #5 broker that drops every connection after CONNACK: the backoff keeps "
+          "growing (1, 2, 4, 8 s with jitter)", grows,
+          f"delays {delays} ms over {len(cutter.accepted)} accepted connections")
     obs.close()
 
 

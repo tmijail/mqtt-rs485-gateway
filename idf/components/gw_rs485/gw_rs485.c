@@ -10,6 +10,8 @@
 
 static const char *TAG = "rs485";
 
+#include "mb_master.h"
+
 #define PORT (gw_bsp.rs485.uart)
 #define RX_BUF_SIZE 512          /* > MB_ADU_MAX; the driver needs > SOC_UART_FIFO_LEN */
 #define RX_TOUT_SYMBOLS 3        /* hand bytes to the ring buffer after ~3 idle characters */
@@ -19,6 +21,9 @@ static const char *TAG = "rs485";
 #else
 #define MODE_NOTE ", plain UART (RTS not driven)"
 #endif
+
+static uint32_t s_baud;
+static uint32_t s_char_bits;
 
 static TickType_t ms_to_ticks(uint32_t ms)
 {
@@ -32,8 +37,12 @@ static int tr_write(void *ctx, const uint8_t *data, size_t len)
     if (uart_write_bytes(PORT, data, len) != (int)len) {
         return -1;
     }
-    /* Returns once the shift register is empty; RTS is released by the driver on TX_DONE. */
-    return uart_wait_tx_done(PORT, ms_to_ticks(100)) == ESP_OK ? 0 : -1;
+    /* With no TX ring buffer uart_write_bytes() returns once the frame is in the FIFO, so the
+     * wait covers the whole frame: its timeout grows with the length and the character time
+     * (an FC16 of 13 bytes takes 119 ms at 1200 baud with parity). Returns once the shift
+     * register is empty; RTS is released by the driver on TX_DONE. */
+    uint32_t ms = mb_tx_timeout_ms(s_baud, s_char_bits, len);
+    return uart_wait_tx_done(PORT, ms_to_ticks(ms) + 1) == ESP_OK ? 0 : -1;
 }
 
 static int tr_read(void *ctx, uint8_t *data, size_t len, uint32_t timeout_ms)
@@ -83,7 +92,15 @@ esp_err_t gw_rs485_init(const gw_config_t *cfg, mb_transport_t *tr)
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .source_clk = UART_SCLK_DEFAULT,
     };
-    ESP_RETURN_ON_ERROR(uart_driver_install(PORT, RX_BUF_SIZE, 0, 0, NULL, 0), TAG, "install");
+    s_baud = cfg->rs485.baud;
+    s_char_bits = mb_char_bits(cfg->rs485.parity != GW_PARITY_NONE, cfg->rs485.stop_bits);
+#if CONFIG_UART_ISR_IN_IRAM
+    const int intr_flags = ESP_INTR_FLAG_IRAM;   /* DE is released in the ISR (see sdkconfig) */
+#else
+    const int intr_flags = 0;
+#endif
+    ESP_RETURN_ON_ERROR(uart_driver_install(PORT, RX_BUF_SIZE, 0, 0, NULL, intr_flags), TAG,
+                        "install");
     ESP_RETURN_ON_ERROR(uart_param_config(PORT, &uc), TAG, "param");
     ESP_RETURN_ON_ERROR(uart_set_pin(PORT, gw_bsp.rs485.tx, gw_bsp.rs485.rx, gw_bsp.rs485.de,
                                      UART_PIN_NO_CHANGE),

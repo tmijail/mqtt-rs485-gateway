@@ -135,6 +135,7 @@ esp_err_t gw_bus_start(const gw_config_t *cfg, const mb_transport_t *tr, const g
     };
     mb_master_init(&s_mb, tr, &mc);
     const gw_poller_opts_t opts = {
+        .offline_probe_max_ms = CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS,
 #if CONFIG_GW_MB_BLOCK_READS
         .merge_reads = true,
         .max_gap = CONFIG_GW_MB_BLOCK_MAX_GAP,

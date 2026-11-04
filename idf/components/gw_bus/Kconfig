@@ -26,6 +26,16 @@ menu "Gateway: Modbus bus task"
         default 0
         depends on GW_MB_BLOCK_READS
 
+    config GW_MB_OFFLINE_PROBE_MAX_MS
+        int "Longest interval between probes of an offline device (ms)"
+        range 0 600000
+        default 10000
+        help
+            An offline device is probed with a single attempt (no retries) at 2, 4, 8 ...
+            times its poll_ms, up to this value (never less often than poll_ms), so a
+            dead slave does not take the bus from the healthy ones. A device that answers
+            again is back online (DBIRTH) at most this long plus one poll cycle later.
+
     config GW_MB_FORCE_MULTI_WRITE
         bool "Always write with FC15/FC16 (for slaves without FC05/FC06)"
         default n

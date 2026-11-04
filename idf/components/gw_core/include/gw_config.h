@@ -230,7 +230,10 @@ int gw_config_find_device(const gw_config_t *cfg, const char *name, size_t len);
 /** Global tag index of the tag named @p name inside device @p dev, or -1. */
 int gw_config_find_tag(const gw_config_t *cfg, uint16_t dev, const char *name);
 
-/** Device that owns global tag index @p tag. */
+/** Returned by gw_config_tag_device() for a tag index that belongs to no device. */
+#define GW_NO_DEVICE UINT16_MAX
+
+/** Device that owns global tag index @p tag, or GW_NO_DEVICE (callers must check). */
 uint16_t gw_config_tag_device(const gw_config_t *cfg, uint16_t tag);
 
 /** Number of Modbus registers (or bits, for coil/discrete) a tag occupies. */
