@@ -1,0 +1,7 @@
+# Issue #63: the QEMU build with the board's octal PSRAM (applied after sdkconfig.qemu, which
+# turns it off). QEMU emulates it with -global driver=ssi_psram,property=is_octal,value=true
+# (tools/e2e/run_e2e.sh with E2E_PSRAM=1 passes it, like IDF's qemu_ext.py does).
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
