@@ -1167,7 +1167,9 @@ static void reconcile(void)
     }
     if (dg != s_handled_disc) {
         s_handled_disc = dg;
-        if (!connected) {
+        /* esp-mqtt can report one dead connection twice (a failed write, then the poll read
+         * error): with a retry already scheduled the second one is the same attempt */
+        if (!connected && s_retry_at_us == 0) {
             attempt_ended();
             schedule_retry(now);
         }
