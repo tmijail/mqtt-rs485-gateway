@@ -210,10 +210,13 @@ class FakeBroker:
       "refuse": every SUBSCRIBE gets a SUBACK with 0x80 (failure) for each topic;
       "cutsub": every SUBSCRIBE is granted and the connection is reset (RST) right after the SUBACK
                 (issue #71: a SUBACK handled just before the transport error behind it).
-    Records the connection times, the PUBLISH topics and whether the client sent DISCONNECT."""
+    Records the connection times, the PUBLISH topics and whether the client sent DISCONNECT;
+    issue #89: also one record per connection in self.sessions (its SUBSCRIBE refused, a
+    DISCONNECT received, the connection over), so a check can wait for each one to end."""
 
     def __init__(self, port, mode):
         self.mode, self.accepted, self.published, self.disconnects = mode, [], [], 0
+        self.sessions = []
         self.srv = socket.socket()
         self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.srv.bind(("127.0.0.1", port))
@@ -251,6 +254,8 @@ class FakeBroker:
         return kind, self._read(c, length)
 
     def _client(self, c):
+        rec = {"refused": False, "disconnect": False, "closed": False}
+        self.sessions.append(rec)
         try:
             c.settimeout(30)
             while True:
@@ -270,6 +275,7 @@ class FakeBroker:
                         c.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
                         return
                     c.sendall(bytes([0x90, 2 + n]) + body[:2] + b"\x80" * n)
+                    rec["refused"] = True
                 elif kind >> 4 == 3:                     # PUBLISH
                     tlen = struct.unpack(">H", body[:2])[0]
                     self.published.append(body[2:2 + tlen].decode(errors="replace"))
@@ -277,14 +283,63 @@ class FakeBroker:
                     c.sendall(b"\xd0\x00")
                 elif kind >> 4 == 14:                    # DISCONNECT
                     self.disconnects += 1
+                    rec["disconnect"] = True
                     return
         except OSError:
             pass
         finally:
             c.close()
+            rec["closed"] = True
 
     def close(self):
         self.srv.close()
+
+
+REFUSED_SESSIONS = 3
+REFUSED_END_S = 15   # bound for the end of each refused connection (issue #89)
+
+
+def check_suback_refused(args, work):
+    """Issue #11: a broker that refuses the NCMD/DCMD subscriptions (SUBACK 0x80). The node must
+    not announce itself (no NBIRTH: it could not receive commands); it disconnects with
+    DISCONNECT (the will is dropped) and retries with a growing backoff.
+    Issue #89: each of the first REFUSED_SESSIONS refused connections must end with the client's
+    DISCONNECT. The firmware sends it before it logs the next reconnect attempt, but the packet
+    crosses slirp and the fake broker's thread while the log line crosses the console: on a
+    loaded host the line can come first. So the check no longer counts DISCONNECTs at the moment
+    of a log line: it waits, up to REFUSED_END_S, for each of those connections to end, then
+    requires a DISCONNECT on every one (a connection closed without it fails, as does one that
+    has not ended in time)."""
+    refuser = FakeBroker(MQTT_PORT + 2, "refuse")
+    gw = Gateway(args, work / "uart0-refuse.log",
+                 flash_variant(args, work, "refuse", {"config.json": config_json(MQTT_PORT + 2)}))
+    t_ref = time.monotonic()
+    gw.start()
+    gw.wait_log(r"reconnect attempt %d in" % REFUSED_SESSIONS, 40, t_ref)
+    at_log = refuser.disconnects
+    end = time.monotonic() + REFUSED_END_S
+    while (time.monotonic() < end and
+           sum(1 for r in refuser.sessions if r["refused"] and r["closed"]) < REFUSED_SESSIONS):
+        time.sleep(0.05)
+    sessions = [dict(r) for r in refuser.sessions if r["refused"]][:REFUSED_SESSIONS]
+    refused = gw.find(r"refused the NCMD/DCMD subscriptions", t_ref)
+    delays = [int(x) for x in re.findall(r"in (\d+) ms", " ".join(gw.find(r"reconnect attempt", t_ref)))]
+    # the firmware's side of a missing DISCONNECT (esp-mqtt could not build or send it)
+    send_err = gw.find(r"Error sending disconnect message|Disconnect message cannot be created", t_ref)
+    gw.kill()
+    refuser.close()
+    ended = ["DISCONNECT" if r["disconnect"] else "closed without DISCONNECT" if r["closed"]
+             else "still open" for r in sessions]
+    check("MQTT-2 / issue #11 SUBACK refused -> no NBIRTH, DISCONNECT and retry with growing backoff "
+          "(each refused connection ends with DISCONNECT, waited for with a bound: issue #89)",
+          len(refused) >= REFUSED_SESSIONS and len(sessions) == REFUSED_SESSIONS
+          and all(r["disconnect"] for r in sessions) and not refuser.published
+          and len(delays) >= REFUSED_SESSIONS and delays[2] > delays[1] > delays[0],
+          f"{len(refused)} refusals logged; refused connections: {ended}; DISCONNECTs received when "
+          f"'reconnect attempt {REFUSED_SESSIONS}' was logged {at_log}, in the end "
+          f"{refuser.disconnects}; publishes {refuser.published}, delays {delays} ms; "
+          f"{(refused or ['no refusal logged'])[0]}"
+          + (f"; esp-mqtt: {send_err[:2]}" if send_err else ""))
 
 
 # ---------------------------------------------------------------- relay
@@ -1658,7 +1713,7 @@ def main():
     ap.add_argument("--https-port", type=int, default=HTTPS_PORT)
     ap.add_argument("--only", default="",
                     help="comma-separated scenarios to run (failsafe,network,web,reset,tls,failover,"
-                         "mqtt5,phost,sf,https,slow,main); "
+                         "mqtt5,phost,sf,https,slow,refuse,main); "
                          "default all")
     ap.add_argument("--psram", action="store_true",
                     help="issue #63: emulate the octal PSRAM (build with sdkconfig.qemu-psram)")
@@ -1724,6 +1779,8 @@ def main():
             run_https(args, work)
         if want("slow"):
             run_slow_link(args, work, sdkconfig_int(args.sdkconfig, "GW_MQTT_PUBLISH_BUDGET_MS"))
+        if "refuse" in only and "main" not in only:
+            check_suback_refused(args, work)   # part of "main"; alone only on request (#89)
         if want("main"):
             run(args, log, slave, broker, conf, work)
     except BaseException:
@@ -3374,24 +3431,7 @@ def run(args, log, slave, broker, conf, work):
           cfg_alarm and rejected,
           " | ".join(gw.find(r"buzzer: alarm|configuration rejected", t_err)[:2]) or "no log")
 
-    # Issue #11: a broker that refuses the NCMD/DCMD subscriptions (SUBACK 0x80). The node must
-    # not announce itself (no NBIRTH: it could not receive commands); it disconnects with
-    # DISCONNECT (the will is dropped) and retries with a growing backoff.
-    refuser = FakeBroker(MQTT_PORT + 2, "refuse")
-    gw = Gateway(args, work / "uart0-refuse.log",
-                 flash_variant(args, work, "refuse", {"config.json": config_json(MQTT_PORT + 2)}))
-    t_ref = time.monotonic()
-    gw.start()
-    gw.wait_log(r"reconnect attempt 3 in", 40, t_ref)
-    refused = gw.find(r"refused the NCMD/DCMD subscriptions", t_ref)
-    delays = [int(x) for x in re.findall(r"in (\d+) ms", " ".join(gw.find(r"reconnect attempt", t_ref)))]
-    gw.kill()
-    refuser.close()
-    check("MQTT-2 / issue #11 SUBACK refused -> no NBIRTH, DISCONNECT and retry with growing backoff",
-          len(refused) >= 3 and not refuser.published and refuser.disconnects >= 3
-          and len(delays) >= 3 and delays[2] > delays[0],
-          f"{len(refused)} refusals logged, {refuser.disconnects} DISCONNECTs, publishes "
-          f"{refuser.published}, delays {delays} ms; {(refused or ['no refusal logged'])[0]}")
+    check_suback_refused(args, work)
 
     # Issue #5: a broker that accepts the connection and drops it right after the CONNACK.
     # The backoff must keep growing (1, 2, 4, 8 s, -25 % jitter): it is reset only after a
