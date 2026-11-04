@@ -1,6 +1,7 @@
 #include "gw_node.h"
 
 #include <inttypes.h>
+#include <math.h>
 #include <string.h>
 
 #include "gw_conv.h"
@@ -18,6 +19,7 @@ static const char *const k_do_names[GW_NODE_IO_COUNT] = {"DO/1", "DO/2", "DO/3",
 #define NAME_FIRMWARE "Node Info/Firmware"
 #define NAME_HARDWARE "Node Info/Hardware"
 #define NAME_RESET_REASON "Node Info/Reset Reason"
+#define NAME_SCAN_RATE "Node Control/Scan Rate"
 
 /* ---------- helpers ---------- */
 
@@ -77,14 +79,58 @@ static spb_metric_t *metric(gw_node_t *n, size_t i, const char *name, uint64_t a
     return m;
 }
 
+/* Exact report-by-exception key of 64-bit integers and strings (MB-6). */
+static uint64_t rbe_key(const gw_tag_cfg_t *t, const gw_tag_value_t *v)
+{
+    switch (gw_conv_kind(t)) {
+    case GW_VK_INT64:
+        return (uint64_t)v->i64;
+    case GW_VK_UINT64:
+        return v->u64;
+    default:
+        return gw_rbe_hash(v->str);
+    }
+}
+
+/* @p v must stay valid until the metric is published (strings are referenced, not copied). */
 static void tag_metric(gw_node_t *n, size_t i, uint16_t tag, const gw_tag_value_t *v, bool birth)
 {
     const gw_tag_cfg_t *t = &n->cfg->tags[tag];
     spb_metric_t *m = metric(n, i, birth ? t->name : NULL, GW_ALIAS_TAG_BASE + tag,
                              gw_conv_datatype(t), v->ts_ms);
     m->is_null = !v->valid;
-    m->v.num = v->value;
-    gw_rbe_commit(&n->tag_rbe[tag], v->value, v->valid);
+    gw_val_kind_t kind = gw_conv_kind(t);
+    switch (kind) {
+    case GW_VK_INT64:
+        m->v.i64 = v->i64;
+        break;
+    case GW_VK_UINT64:
+        m->v.u64 = v->u64;
+        break;
+    case GW_VK_STRING:
+        m->v.str = v->str;
+        break;
+    default:
+        m->v.num = v->value;
+        break;
+    }
+    if (kind == GW_VK_DOUBLE) {
+        gw_rbe_commit(&n->tag_rbe[tag], v->value, v->valid);
+    } else {
+        gw_rbe_commit_key(&n->tag_rbe[tag], v->valid ? rbe_key(t, v) : 0, v->valid);
+    }
+}
+
+static bool tag_changed(const gw_node_t *n, uint16_t tag, const gw_tag_value_t *v)
+{
+    const gw_tag_cfg_t *t = &n->cfg->tags[tag];
+    double deadband = t->type == GW_TYPE_BOOL ? 0.0 : t->deadband;
+    gw_val_kind_t kind = gw_conv_kind(t);
+    if (kind == GW_VK_DOUBLE) {
+        return gw_rbe_changed(&n->tag_rbe[tag], v->value, v->valid, deadband);
+    }
+    return gw_rbe_changed_key(&n->tag_rbe[tag], v->valid ? rbe_key(t, v) : 0,
+                              kind == GW_VK_INT64, v->valid, deadband);
 }
 
 /* ---------- births and deaths ---------- */
@@ -93,7 +139,7 @@ size_t gw_node_death_payload(uint64_t bdseq, uint8_t *out, size_t cap)
 {
     spb_metric_t m = {
         .name = NAME_BDSEQ, .alias = GW_ALIAS_BDSEQ, .datatype = SPB_DT_UINT64,
-        .v.num = (double)bdseq};
+        .v.u64 = bdseq};
     spb_payload_t p = {.timestamp = gw_port_time_ms(), .has_seq = false, .metrics = &m,
                        .metric_count = 1};
     return spb_encode(&p, out, cap);
@@ -105,13 +151,15 @@ static void publish_nbirth(gw_node_t *n)
     gw_tagdb_get_io(&io);
     uint64_t now = gw_port_time_ms();
     size_t i = 0;
-    metric(n, i++, NAME_BDSEQ, GW_ALIAS_BDSEQ, SPB_DT_UINT64, now)->v.num = (double)n->bdseq;
+    metric(n, i++, NAME_BDSEQ, GW_ALIAS_BDSEQ, SPB_DT_UINT64, now)->v.u64 = n->bdseq;
     metric(n, i++, NAME_REBIRTH, GW_ALIAS_REBIRTH, SPB_DT_BOOLEAN, now)->v.num = 0;
     metric(n, i++, NAME_REBOOT, GW_ALIAS_REBOOT, SPB_DT_BOOLEAN, now)->v.num = 0;
     metric(n, i++, NAME_FIRMWARE, GW_ALIAS_FIRMWARE, SPB_DT_STRING, now)->v.str = n->info.firmware;
     metric(n, i++, NAME_HARDWARE, GW_ALIAS_HARDWARE, SPB_DT_STRING, now)->v.str = n->info.hardware;
     metric(n, i++, NAME_RESET_REASON, GW_ALIAS_RESET_REASON, SPB_DT_STRING, now)->v.str =
         n->info.reset_reason;
+    metric(n, i++, NAME_SCAN_RATE, GW_ALIAS_SCAN_RATE, SPB_DT_UINT32, now)->v.num =
+        n->scan_rate_ms;
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         metric(n, i++, k_di_names[k], GW_ALIAS_DI_BASE + k, SPB_DT_BOOLEAN,
                io.di_ts_ms ? io.di_ts_ms : now)
@@ -187,9 +235,10 @@ static void store_device(gw_node_t *n, uint16_t dev)
     bool begun = false;
     for (uint16_t i = 0; i < d->tag_count; i++) {
         uint16_t tag = (uint16_t)(d->first_tag + i);
-        const gw_tag_cfg_t *t = &n->cfg->tags[tag];
-        double deadband = t->type == GW_TYPE_BOOL ? 0.0 : t->deadband;
-        if (gw_rbe_changed(&n->tag_rbe[tag], n->vals[i].value, n->vals[i].valid, deadband)) {
+        if (gw_conv_kind(&n->cfg->tags[tag]) != GW_VK_DOUBLE) {
+            continue;   /* MB-6 64-bit and string tags: the store holds doubles only */
+        }
+        if (tag_changed(n, tag, &n->vals[i])) {
             if (!begun) {
                 gw_sf_begin(n->sf);
                 begun = true;
@@ -228,9 +277,7 @@ void gw_node_device_changed(gw_node_t *n, uint16_t dev)
     size_t count = 0;
     for (uint16_t i = 0; i < d->tag_count; i++) {
         uint16_t tag = (uint16_t)(d->first_tag + i);
-        const gw_tag_cfg_t *t = &n->cfg->tags[tag];
-        double deadband = t->type == GW_TYPE_BOOL ? 0.0 : t->deadband;
-        if (gw_rbe_changed(&n->tag_rbe[tag], n->vals[i].value, n->vals[i].valid, deadband)) {
+        if (tag_changed(n, tag, &n->vals[i])) {
             tag_metric(n, count++, tag, &n->vals[i], false);
         }
     }
@@ -393,6 +440,20 @@ static bool on_ncmd_metric(void *ctx, const spb_rx_metric_t *m)
         n->cmd_rebirth |= rx_true(m);
         return true;
     }
+    if (by_name ? strcmp(m->name, NAME_SCAN_RATE) == 0 : m->alias == GW_ALIAS_SCAN_RATE) {
+        double v;
+        n->cmd_scan_rate = true;   /* NDATA confirms the rate in force, applied or not */
+        if (!spb_rx_number(m, m->has_datatype ? m->datatype : SPB_DT_UINT32, &v) ||
+            v != floor(v) || (v != 0.0 && (v < GW_SCAN_RATE_MIN_MS || v > GW_SCAN_RATE_MAX_MS))) {
+            log_discard("NCMD", m, "Scan Rate must be 0 (per-device poll_ms) or 50..3600000 ms");
+            return true;
+        }
+        n->scan_rate_ms = (uint32_t)v;
+        n->ops.set_scan_rate(n->ops.ctx, n->scan_rate_ms);
+        GW_LOGI(TAG, "NCMD Scan Rate %" PRIu32 " ms%s", n->scan_rate_ms,
+                n->scan_rate_ms == 0 ? " (each device at its own poll_ms)" : "");
+        return true;
+    }
     if (by_name ? strcmp(m->name, NAME_REBOOT) == 0 : m->alias == GW_ALIAS_REBOOT) {
         n->cmd_reboot |= rx_true(m);
         return true;
@@ -432,26 +493,133 @@ static int resolve_tag(const gw_node_t *n, uint16_t dev, const spb_rx_metric_t *
     return -1;
 }
 
-static bool on_dcmd_metric(void *ctx, const spb_rx_metric_t *m)
+/* 2^63 as a double: the first value out of the int64 range. */
+#define TWO63 9223372036854775808.0
+
+/* Integral value of an incoming metric for a 64-bit tag, exactly (a double is not above 2^53):
+ * *neg and *mag give the sign and the magnitude. */
+static bool rx_integer(const spb_rx_metric_t *m, uint32_t dt, bool *neg, uint64_t *mag)
 {
-    gw_node_t *n = ctx;
+    if (m->is_null) {
+        return false;
+    }
+    switch (m->kind) {
+    case SPB_VAL_LONG:
+        *neg = dt == SPB_DT_INT64 && (int64_t)m->v.l < 0;
+        *mag = *neg ? 0u - m->v.l : m->v.l;
+        return true;
+    case SPB_VAL_INT:
+    case SPB_VAL_BOOL:
+    case SPB_VAL_FLOAT:
+    case SPB_VAL_DOUBLE: {
+        double d;
+        if (!spb_rx_number(m, dt, &d) || d != floor(d) || d <= -TWO63 * 2.0 || d >= TWO63 * 2.0) {
+            return false;
+        }
+        *neg = d < 0.0;
+        *mag = (uint64_t)fabs(d);
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
+/* Value of a DCMD metric for tag @p t, in the member the tag uses; @p why on failure. */
+static bool rx_value(const gw_tag_cfg_t *t, const spb_rx_metric_t *m, gw_tag_value_t *out,
+                     const char **why)
+{
+    uint32_t dt = m->has_datatype ? m->datatype : gw_conv_datatype(t);
+    memset(out, 0, sizeof(*out));
+    bool neg;
+    uint64_t mag;
+    switch (gw_conv_kind(t)) {
+    case GW_VK_STRING:
+        if (m->is_null || m->kind != SPB_VAL_STRING) {
+            *why = "no string value";
+            return false;
+        }
+        if (strlen(m->v.s) > 2u * t->length) {
+            *why = "string longer than the tag";
+            return false;
+        }
+        strcpy(out->str, m->v.s);
+        return true;
+    case GW_VK_INT64:
+        if (!rx_integer(m, dt, &neg, &mag)) {
+            *why = "no integer value";
+            return false;
+        }
+        if (neg ? mag > (uint64_t)INT64_MAX + 1u : mag > (uint64_t)INT64_MAX) {
+            *why = "value out of the int64 range";
+            return false;
+        }
+        out->i64 = neg ? (int64_t)(0u - mag) : (int64_t)mag;
+        return true;
+    case GW_VK_UINT64:
+        if (!rx_integer(m, dt, &neg, &mag)) {
+            *why = "no integer value";
+            return false;
+        }
+        if (neg && mag != 0) {
+            *why = "negative value for a uint64 tag";
+            return false;
+        }
+        out->u64 = mag;
+        return true;
+    default:
+        if (!spb_rx_number(m, dt, &out->value)) {
+            *why = "no numeric value";
+            return false;
+        }
+        return true;
+    }
+}
+
+/* Resolve one DCMD metric to a writable tag and its value; logs the reason of a discard
+ * unless @p quiet (the counting pass must not log everything twice). */
+static bool dcmd_resolve(const gw_node_t *n, const spb_rx_metric_t *m, bool quiet, int *tag_out,
+                         gw_tag_value_t *value)
+{
     int tag = resolve_tag(n, (uint16_t)n->cmd_dev, m);
     if (tag < 0) {
-        log_discard("DCMD", m, "unknown metric");
-        return true;
+        if (!quiet) {
+            log_discard("DCMD", m, "unknown metric");
+        }
+        return false;
     }
     const gw_tag_cfg_t *t = &n->cfg->tags[tag];
     if (!t->writable) {
-        log_discard("DCMD", m, "read-only metric");
+        if (!quiet) {
+            log_discard("DCMD", m, "read-only metric");
+        }
+        return false;
+    }
+    const char *why = "";
+    if (!rx_value(t, m, value, &why)) {
+        if (!quiet) {
+            log_discard("DCMD", m, why);
+        }
+        return false;
+    }
+    *tag_out = tag;
+    return true;
+}
+
+static bool on_dcmd_metric(void *ctx, const spb_rx_metric_t *m)
+{
+    gw_node_t *n = ctx;
+    int tag;
+    gw_tag_value_t v;
+    if (!dcmd_resolve(n, m, n->cmd_count_only, &tag, &v)) {
         return true;
     }
-    double v;
-    if (!spb_rx_number(m, m->has_datatype ? m->datatype : gw_conv_datatype(t), &v)) {
-        log_discard("DCMD", m, "no numeric value");
+    if (n->cmd_count_only) {
+        n->cmd_writes++;
         return true;
     }
-    if (!n->ops.request_write(n->ops.ctx, (uint16_t)tag, v)) {
-        log_discard("DCMD", m, "write queue full");
+    if (!n->ops.request_write(n->ops.ctx, (uint16_t)tag, &v)) {
+        log_discard("DCMD", m, "write queue full");   /* not expected: room was checked */
     }
     return true;
 }
@@ -484,6 +652,7 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
         }
         n->cmd_rebirth = n->cmd_reboot = false;
         n->cmd_do_mask = 0;
+        n->cmd_scan_rate = false;
         /* All or nothing: decode the whole payload first, then apply it. */
         if (!spb_decode(payload, len, NULL, NULL, NULL)) {
             GW_LOGW(TAG, "NCMD: undecodable payload (%u bytes): nothing applied", (unsigned)len);
@@ -492,6 +661,11 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
         spb_decode(payload, len, NULL, on_ncmd_metric, n);
         if (n->cmd_do_mask) {
             publish_io(n, n->cmd_do_mask);
+        }
+        if (n->cmd_scan_rate) {
+            metric(n, 0, NULL, GW_ALIAS_SCAN_RATE, SPB_DT_UINT32, gw_port_time_ms())->v.num =
+                n->scan_rate_ms;
+            publish(n, "NDATA", NULL, 1, 0);
         }
         if (n->cmd_rebirth) {
             GW_LOGI(TAG, "NCMD rebirth");
@@ -524,8 +698,22 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
             return;
         }
         n->cmd_dev = dev;
-        if (!spb_decode(payload, len, NULL, NULL, NULL)) {
+        /* All or nothing: the whole payload must decode, and every write it carries must fit in
+         * the bus queue; otherwise nothing is queued (issue #60). The counting pass decodes the
+         * payload in full, so it also validates it. */
+        n->cmd_count_only = true;
+        n->cmd_writes = 0;
+        bool decoded = spb_decode(payload, len, NULL, on_dcmd_metric, n);
+        n->cmd_count_only = false;
+        if (!decoded) {
             GW_LOGW(TAG, "DCMD: undecodable payload (%u bytes): nothing applied", (unsigned)len);
+            return;
+        }
+        size_t room = n->ops.write_room(n->ops.ctx);
+        if (n->cmd_writes > room) {
+            GW_LOGW(TAG, "DCMD for '%s': %u writes but the bus queue has room for %u: nothing "
+                         "applied", n->cfg->devices[dev].name, (unsigned)n->cmd_writes,
+                    (unsigned)room);
             return;
         }
         spb_decode(payload, len, NULL, on_dcmd_metric, n);

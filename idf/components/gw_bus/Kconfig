@@ -19,12 +19,16 @@ menu "Gateway: Modbus bus task"
     config GW_MB_BLOCK_READS
         bool "Merge adjacent tags into block reads (MB-11)"
         default y
+        help
+            Default for devices without "block_reads" in the configuration.
 
     config GW_MB_BLOCK_MAX_GAP
         int "Largest unused register/bit gap bridged by a block read"
         range 0 32
         default 0
         depends on GW_MB_BLOCK_READS
+        help
+            Default for devices without "max_gap" in the configuration.
 
     config GW_MB_OFFLINE_PROBE_MAX_MS
         int "Longest interval between probes of an offline device (ms)"

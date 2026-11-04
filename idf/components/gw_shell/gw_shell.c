@@ -20,6 +20,7 @@
 #include "gw_edge.h"
 #include "gw_io.h"
 #include "gw_log.h"
+#include "gw_mbap.h"
 #include "gw_net.h"
 #include "gw_status.h"
 #include "gw_storage.h"
@@ -290,11 +291,30 @@ static int cmd_devices(int argc, char **argv)
         gw_dev_stats_t st;
         gw_tagdb_get_stats(d, &st);
         out("%-16s unit %3u %-7s cycles %lu failed %lu | ok %lu timeout %lu crc %lu frame %lu "
-               "exception %lu\n",
+               "exception %lu",
                dev->name, dev->unit_id, device_online(d) ? "online" : "offline",
                (unsigned long)st.cycles, (unsigned long)st.failed_cycles, (unsigned long)st.bus.ok,
                (unsigned long)st.bus.timeout, (unsigned long)st.bus.crc,
                (unsigned long)st.bus.frame, (unsigned long)st.bus.exception);
+        const mb_stats_t *t = &st.tcp;   /* #69: Modbus TCP requests forwarded to this unit */
+        if (t->ok + t->timeout + t->crc + t->frame + t->exception > 0) {
+            out(" | tcp ok %lu timeout %lu crc %lu frame %lu exception %lu", (unsigned long)t->ok,
+                (unsigned long)t->timeout, (unsigned long)t->crc, (unsigned long)t->frame,
+                (unsigned long)t->exception);
+        }
+        out("\n");
+    }
+    if (s_ctx.cfg->modbus_tcp.enabled) {
+        gw_mbap_stats_t g;
+        gw_mbap_stats_get(&g);
+        const mb_stats_t *o = &g.other_units;
+        out("modbus_tcp connections %lu accepted %lu rejected | forwarded %lu | gateway "
+            "exceptions 01 %lu 03 %lu 0A %lu 0B %lu | other units ok %lu timeout %lu crc %lu "
+            "frame %lu exception %lu\n",
+            (unsigned long)g.accepted, (unsigned long)g.rejected, (unsigned long)g.forwarded,
+            (unsigned long)g.ex_function, (unsigned long)g.ex_value, (unsigned long)g.ex_path,
+            (unsigned long)g.ex_no_answer, (unsigned long)o->ok, (unsigned long)o->timeout,
+            (unsigned long)o->crc, (unsigned long)o->frame, (unsigned long)o->exception);
     }
     return 0;
 }
@@ -493,8 +513,50 @@ static int cmd_config(int argc, char **argv)
     out("devices    %u device(s), %u tag(s)\n", c->device_count, c->tag_count);
     for (uint16_t d = 0; d < c->device_count; d++) {
         const gw_device_cfg_t *dev = &c->devices[d];
-        out("  %-16s unit %3u, poll %lu ms, offline after %u, %u tag(s)\n", dev->name,
-               dev->unit_id, (unsigned long)dev->poll_ms, dev->offline_after, dev->tag_count);
+        unsigned slow = 0;
+        for (uint16_t t = dev->first_tag; t < dev->first_tag + dev->tag_count; t++) {
+            slow += c->tags[t].slow ? 1u : 0u;
+        }
+        /* #68: what the poll engine runs with. Block reads and gap: the device's keys, or the
+         * build's defaults (CONFIG_GW_MB_BLOCK_READS / _MAX_GAP) when it has none. */
+#if CONFIG_GW_MB_BLOCK_READS
+        const bool build_merge = true;
+        const int build_gap = CONFIG_GW_MB_BLOCK_MAX_GAP;
+#else
+        const bool build_merge = false;
+        const int build_gap = 0;
+#endif
+        bool merge = dev->block_reads == GW_CFG_BUILD_DEFAULT ? build_merge : dev->block_reads != 0;
+        int gap = dev->max_gap == GW_CFG_BUILD_DEFAULT ? build_gap : dev->max_gap;
+        char blocks[48];
+        if (merge) {
+            snprintf(blocks, sizeof(blocks), "blocks max_gap %d%s", gap,
+                     dev->max_gap == GW_CFG_BUILD_DEFAULT ? " (default)" : "");
+        } else {
+            snprintf(blocks, sizeof(blocks), "one request per tag%s",
+                     dev->block_reads == GW_CFG_BUILD_DEFAULT ? " (default)" : "");
+        }
+        out("  %-16s unit %3u, poll %lu ms, slow %lu ms, offline after %u, %u tag(s) "
+            "(%u fast, %u slow), %s\n",
+            dev->name, dev->unit_id, (unsigned long)dev->poll_ms,
+            (unsigned long)dev->slow_poll_ms, dev->offline_after, dev->tag_count,
+            dev->tag_count - slow, slow, blocks);
+    }
+    if (c->modbus_tcp.enabled) {
+        char clients[GW_MBTCP_MAX_ALLOWED * 20] = "";
+        size_t used = 0;
+        for (uint8_t i = 0; i < c->modbus_tcp.client_count && used < sizeof(clients); i++) {
+            const uint8_t *ip = c->modbus_tcp.clients[i].ip;
+            int n = snprintf(clients + used, sizeof(clients) - used, "%s%u.%u.%u.%u/%u",
+                             i ? " " : "", ip[0], ip[1], ip[2], ip[3],
+                             c->modbus_tcp.clients[i].prefix);
+            used += n > 0 ? (size_t)n : 0;
+        }
+        out("modbus_tcp enabled, port %u, idle timeout %u s, clients %s\n", c->modbus_tcp.port,
+            c->modbus_tcp.idle_timeout_s,
+            c->modbus_tcp.client_count ? clients : "any (no authentication)");
+    } else {
+        out("modbus_tcp disabled\n");
     }
     return 0;
 }

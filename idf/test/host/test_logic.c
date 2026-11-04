@@ -1,5 +1,6 @@
 /* QA-1: report by exception / deadband, debounce, reconnect backoff, offline detection. */
 #include <math.h>
+#include <stdint.h>
 
 #include "gw_backoff.h"
 #include "gw_debounce.h"
@@ -109,10 +110,32 @@ static void test_devstate(void)
     TEST_ASSERT_EQUAL(GW_DEV_WENT_ONLINE, gw_devstate_cycle(&s, true, 3));
 }
 
+/* MB-6: exact report by exception for 64-bit integers and strings. */
+static void test_rbe_exact_keys(void)
+{
+    gw_rbe_t s = {0};
+    const uint64_t big = 9007199254740993ull;   /* 2^53 + 1 */
+    TEST_ASSERT_TRUE(gw_rbe_changed_key(&s, big, false, true, 0));
+    gw_rbe_commit_key(&s, big, true);
+    TEST_ASSERT_FALSE(gw_rbe_changed_key(&s, big, false, true, 0));
+    TEST_ASSERT_TRUE(gw_rbe_changed_key(&s, big + 1, false, true, 0));  /* same double */
+    TEST_ASSERT_TRUE(gw_rbe_changed_key(&s, big, false, false, 0));     /* validity */
+    /* signed distance across zero and the deadband */
+    gw_rbe_commit_key(&s, (uint64_t)(int64_t)-3, true);
+    TEST_ASSERT_FALSE(gw_rbe_changed_key(&s, 2, true, true, 5));
+    TEST_ASSERT_TRUE(gw_rbe_changed_key(&s, 3, true, true, 5));
+    TEST_ASSERT_TRUE(gw_rbe_changed_key(&s, (uint64_t)INT64_MIN, true, true, 5));
+    /* unsigned: 2 vs 2^64 - 3 is far apart */
+    TEST_ASSERT_TRUE(gw_rbe_changed_key(&s, 2, false, true, 5));
+    TEST_ASSERT_NOT_EQUAL(gw_rbe_hash("AB"), gw_rbe_hash("BA"));
+    TEST_ASSERT_EQUAL_UINT64(gw_rbe_hash(""), 1469598103934665603ull);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(test_rbe_first_report_and_exact_change);
+    RUN_TEST(test_rbe_exact_keys);
     RUN_TEST(test_rbe_deadband_against_last_reported);
     RUN_TEST(test_rbe_validity_and_nan);
     RUN_TEST(test_debounce);

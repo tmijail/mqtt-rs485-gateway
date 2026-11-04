@@ -16,8 +16,14 @@
 extern "C" {
 #endif
 
+/** One tag's value. The member in use follows the tag's configuration (gw_conv_kind). */
 typedef struct {
-    double value;
+    union {
+        double value;              /* every type up to 32 bits, float32/float64, scaled tags */
+        int64_t i64;               /* unscaled int64: exact (a double is not above 2^53) */
+        uint64_t u64;              /* unscaled uint64 */
+        char str[GW_STR_MAX + 1];  /* string, NUL terminated */
+    };
     uint64_t ts_ms;      /* acquisition time, UTC ms */
     bool valid;          /* false: never read, read failed with an exception, or device offline */
 } gw_tag_value_t;
@@ -27,6 +33,7 @@ typedef struct {
     uint32_t cycles;          /* poll cycles run */
     uint32_t failed_cycles;   /* cycles with a request unanswered after its retries */
     mb_stats_t bus;           /* outcome of every attempt (retries included) to this device */
+    mb_stats_t tcp;           /* MB-15: attempts of Modbus TCP requests forwarded to its unit */
 } gw_dev_stats_t;
 
 typedef struct {

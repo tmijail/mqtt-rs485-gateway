@@ -61,12 +61,12 @@ static void fill_metric(Payload_Metric *out, const spb_metric_t *m)
         break;
     case SPB_DT_INT64:
         out->which_value = Payload_Metric_long_value_tag;
-        out->value.long_value = (uint64_t)(int64_t)v;
+        out->value.long_value = (uint64_t)m->v.i64;   /* two's complement */
         break;
     case SPB_DT_UINT64:
     case SPB_DT_DATETIME:
         out->which_value = Payload_Metric_long_value_tag;
-        out->value.long_value = (uint64_t)v;
+        out->value.long_value = m->v.u64;
         break;
     case SPB_DT_FLOAT:
         out->which_value = Payload_Metric_float_value_tag;

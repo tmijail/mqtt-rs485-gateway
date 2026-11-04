@@ -213,6 +213,43 @@ static void test_export_masks(void)
 }
 
 /* CFG-6: a document pasted on the console, in pieces of any size. */
+/* The Modbus keys (MB-6, MB-11, MB-12, MB-15) survive export and re-import unchanged. */
+static void test_modbus_keys_round_trip(void)
+{
+    const char *in = docf(",\"password\":\"mq-secret\"",
+        ",\"modbus_tcp\":{\"enabled\":true,\"port\":1502,\"allowed_clients\":[\"10.0.0.0/8\"]},"
+        "\"devices\":[{\"name\":\"M\",\"unit_id\":1,\"max_gap\":7,\"slow_poll_ms\":9000,"
+        "\"tags\":[{\"name\":\"E\",\"area\":\"holding\",\"address\":0,\"type\":\"uint64\","
+        "\"word_order\":\"DCBA\",\"scan\":\"slow\"},"
+        "{\"name\":\"S\",\"area\":\"holding\",\"address\":4,\"type\":\"string\",\"length\":3},"
+        "{\"name\":\"B\",\"area\":\"input\",\"address\":9,\"type\":\"bool\",\"bit\":12}]},"
+        "{\"name\":\"N\",\"unit_id\":2,\"block_reads\":false,\"tags\":[{\"name\":\"T\","
+        "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]");
+    TEST_ASSERT_TRUE_MESSAGE(apply(in, GW_CFGDOC_UPDATE), err.msg);
+    static gw_config_t first;
+    first = cfg;
+    stored = doc.secrets;
+    size_t n;
+    char *out = gw_cfgdoc_export(doc.doc, doc.doc_len, &stored, &n, &err);
+    TEST_ASSERT_NOT_NULL_MESSAGE(out, err.msg);
+    TEST_ASSERT_TRUE_MESSAGE(apply(out, GW_CFGDOC_UPDATE), err.msg);
+    gw_cfgdoc_free_text(out);
+    TEST_ASSERT_FALSE(doc.secrets_changed);
+    TEST_ASSERT_TRUE(cfg.modbus_tcp.enabled);
+    TEST_ASSERT_EQUAL(1502, cfg.modbus_tcp.port);
+    TEST_ASSERT_EQUAL(8, cfg.modbus_tcp.clients[0].prefix);
+    TEST_ASSERT_EQUAL(7, cfg.devices[0].max_gap);
+    TEST_ASSERT_EQUAL_UINT32(9000, cfg.devices[0].slow_poll_ms);
+    TEST_ASSERT_EQUAL(0, cfg.devices[1].block_reads);
+    TEST_ASSERT_TRUE(cfg.tags[0].slow);
+    TEST_ASSERT_EQUAL(GW_WORD_DCBA, cfg.tags[0].word_order);
+    TEST_ASSERT_EQUAL(3, cfg.tags[1].length);
+    TEST_ASSERT_EQUAL(12, cfg.tags[2].bit);
+    TEST_ASSERT_EQUAL_MEMORY(&first.devices, &cfg.devices, sizeof(cfg.devices));
+    TEST_ASSERT_EQUAL_MEMORY(&first.tags, &cfg.tags, sizeof(cfg.tags));
+    TEST_ASSERT_EQUAL_MEMORY(&first.modbus_tcp, &cfg.modbus_tcp, sizeof(cfg.modbus_tcp));
+}
+
 static void test_jsonfeed(void)
 {
     char buf[64];
@@ -239,5 +276,6 @@ int main(void)
     RUN_TEST(test_errors);
     RUN_TEST(test_export_masks);
     RUN_TEST(test_jsonfeed);
+    RUN_TEST(test_modbus_keys_round_trip);
     return UNITY_END();
 }

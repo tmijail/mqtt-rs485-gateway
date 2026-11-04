@@ -74,9 +74,10 @@ CONFIG_MQTT_PROTOCOL_5=y
 # at its first boot (X.509 writing); plain HTTP only redirects
 CONFIG_ESP_HTTPS_SERVER_ENABLE=y
 CONFIG_MBEDTLS_X509_CREATE_C=y
-# two web servers (HTTPS and the HTTP redirect), MQTT, syslog, SNTP, mDNS, DNS: 10 sockets are
+# two web servers (HTTPS and the HTTP redirect, each with a control socket), Modbus TCP (listener
+# and clients), MQTT, syslog, SNTP, mDNS, DNS: 10 sockets are
 # not enough (accept fails with ENFILE)
-CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_LWIP_MAX_SOCKETS=24
 
 # CFG-7: NVS is NOT encrypted in this default build (no eFuse is ever burned by flashing it).
 # Secrets still live in NVS, outside config.json. Production units add sdkconfig.production.

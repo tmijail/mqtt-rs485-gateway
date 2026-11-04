@@ -10,6 +10,7 @@
  * Alias map (SPB-8, unique per node, stable for a given configuration):
  *   1 bdSeq, 2 Node Control/Rebirth, 3 Node Control/Reboot,
  *   4 Node Info/Firmware, 5 Node Info/Hardware, 6 Node Info/Reset Reason,
+ *   7 Node Control/Scan Rate,
  *   10..17 DI/1..DI/8, 20..27 DO/1..DO/8, 100 + n device tag with global index n.
  *
  * Store & forward (SPB-14, optional): with a gw_sf_t attached, changes that happen while the
@@ -41,12 +42,18 @@ extern "C" {
 #define GW_ALIAS_FIRMWARE  4u
 #define GW_ALIAS_HARDWARE  5u
 #define GW_ALIAS_RESET_REASON 6u
+#define GW_ALIAS_SCAN_RATE 7u
+
+/* SPB-15 "Node Control/Scan Rate" (UInt32, ms): 0 = every device polls at its own poll_ms;
+ * otherwise this period replaces every device's poll_ms (and slow_poll_ms when shorter). */
+#define GW_SCAN_RATE_MIN_MS 50u
+#define GW_SCAN_RATE_MAX_MS 3600000u
 #define GW_ALIAS_DI_BASE   10u
 #define GW_ALIAS_DO_BASE   20u
 #define GW_ALIAS_TAG_BASE  100u
 
 #define GW_NODE_IO_COUNT        8
-#define GW_NODE_BIRTH_METRICS   (6 + 2 * GW_NODE_IO_COUNT)
+#define GW_NODE_BIRTH_METRICS   (7 + 2 * GW_NODE_IO_COUNT)
 #define GW_SPB_PAYLOAD_MAX      6144   /* > worst-case DBIRTH: 64 tags with 39-char names */
 #define GW_TOPIC_MAX            160
 
@@ -56,8 +63,14 @@ typedef struct {
                    bool retain);
     /** Drive DO @p index (0-7); the implementation stores the read-back in gw_tagdb. */
     bool (*set_do)(void *ctx, uint8_t index, bool on);
-    /** Hand a write to the RS485 owner; false if its queue is full. */
-    bool (*request_write)(void *ctx, uint16_t tag, double value);
+    /** Hand a write to the RS485 owner; false if its queue is full. @p value carries the
+     * member the tag uses (gw_conv_kind). */
+    bool (*request_write)(void *ctx, uint16_t tag, const gw_tag_value_t *value);
+    /** Free entries in the RS485 owner's write queue. Only this task adds entries, so the
+     * room can only grow until the next request_write (a DCMD is queued whole or not at all). */
+    size_t (*write_room)(void *ctx);
+    /** SPB-15: poll every device every @p ms (0 = each its own poll_ms). Not persisted. */
+    void (*set_scan_rate)(void *ctx, uint32_t ms);
     /** Restart the gateway (called after NDEATH has been published). */
     void (*reboot)(void *ctx);
     void *ctx;
@@ -82,6 +95,7 @@ typedef struct {
     gw_rbe_t tag_rbe[GW_MAX_TAGS];
     uint8_t di_reported;
     uint8_t do_reported;
+    uint32_t scan_rate_ms;             /* SPB-15: current override, 0 = per-device poll_ms */
     bool do_unknown_reported;          /* DOs last published as null (expander not answering) */
 
     /* Scratch, statically sized (REL-2). */
@@ -100,9 +114,12 @@ typedef struct {
 
     /* Per-command state while decoding an NCMD/DCMD. */
     int cmd_dev;
+    bool cmd_count_only;               /* DCMD first pass: count the writes, apply nothing */
+    size_t cmd_writes;
     bool cmd_rebirth;
     bool cmd_reboot;
     uint8_t cmd_do_mask;
+    bool cmd_scan_rate;                /* NCMD carried Scan Rate: confirm it with NDATA */
 } gw_node_t;
 
 void gw_node_init(gw_node_t *n, const gw_config_t *cfg, const gw_node_ops_t *ops,

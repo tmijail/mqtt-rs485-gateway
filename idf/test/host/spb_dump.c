@@ -3,9 +3,11 @@
  * (NDEATH, NBIRTH, DBIRTH, DDATA, NDATA) as <dir>/<n>_<TYPE>.bin, so that
  * tools/spb_decode.py can check them with the official proto and Python protobuf.
  */
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "gw_config.h"
 #include "gw_node.h"
 #include "gw_tagdb.h"
 #include "support.h"
@@ -41,6 +43,45 @@ int main(int argc, char **argv)
     gw_node_device_changed(&node, 0);
     gw_tagdb_set_di(0x04, 1762171201000ull);
     gw_node_io_changed(&node);
+
+    /* MB-6 metrics (Int64, UInt64, Double, String, register bit) in a second node's DBIRTH and
+     * DDATA, so the official proto checks their wire fields too. */
+    static const char mb6_json[] =
+        "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"Plant1\","
+        " \"edge_node_id\": \"GW09\"}, \"devices\": [{\"name\": \"Meter6\", \"unit_id\": 1,"
+        " \"tags\": [{\"name\": \"Energy\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint64\"},"
+        " {\"name\": \"Counter\", \"area\": \"holding\", \"address\": 4, \"type\": \"int64\","
+        " \"word_order\": \"CDAB\"},"
+        " {\"name\": \"Flow\", \"area\": \"input\", \"address\": 0, \"type\": \"float64\"},"
+        " {\"name\": \"Serial\", \"area\": \"holding\", \"address\": 10, \"type\": \"string\","
+        " \"length\": 8},"
+        " {\"name\": \"Alarm\", \"area\": \"holding\", \"address\": 20, \"type\": \"bool\", \"bit\": 3}]}]}";
+    static gw_config_t mb6;
+    gw_cfg_err_t err;
+    if (!gw_config_parse(mb6_json, sizeof(mb6_json) - 1, &mb6, &err)) {
+        fprintf(stderr, "MB-6 configuration rejected: %s\n", err.msg);
+        return 1;
+    }
+    gw_tagdb_reset();
+    static gw_node_t node6;
+    gw_node_init(&node6, &mb6, &ops, &info);
+    gw_tag_value_t w[5];
+    memset(w, 0, sizeof(w));
+    w[0].u64 = 9007199254740993ull;
+    w[1].i64 = -9007199254740993ll;
+    w[2].value = 1234.56789012345;
+    strcpy(w[3].str, "SN-0042-ABCD");
+    w[4].value = 1;
+    for (int k = 0; k < 5; k++) {
+        w[k].ts_ms = 1762171200000ull;
+        w[k].valid = true;
+    }
+    gw_tagdb_put_device(&mb6, 0, w, true);
+    gw_node_session_up(&node6, 3);
+    w[1].i64 = INT64_MIN;
+    strcpy(w[3].str, "SN-0043");
+    gw_tagdb_put_device(&mb6, 0, w, true);
+    gw_node_device_changed(&node6, 0);
 
     char path[512];
     snprintf(path, sizeof(path), "%s/0_NDEATH.bin", argv[1]);

@@ -9,6 +9,7 @@
  *   status_led  (prio 2)           gw_status
  *   console     (prio 2)           gw_shell: diagnostic REPL on the console UART
  *   syslog      (prio 2)           gw_log:   copies the log to a syslog server (if configured)
+ *   modbus_tcp  (core 0, prio 3)   gw_mbtcp: Modbus TCP gateway to the RTU slaves (if enabled)
  *   httpd       (prio 3)           gw_web:   REST API (and web UI) for the configuration
  *   + IDF tasks: esp-mqtt, lwIP tcpip, esp_eth, Wi-Fi (if configured), event loop
  */
@@ -32,6 +33,7 @@
 #include "gw_edge.h"
 #include "gw_io.h"
 #include "gw_log.h"
+#include "gw_mbtcp.h"
 #include "gw_net.h"
 #include "gw_port.h"
 #include "gw_rs485.h"
@@ -317,6 +319,9 @@ void app_main(void)
         .time_synced = gw_edge_notify_time_synced,
     };
     ESP_ERROR_CHECK(gw_net_start(s_cfg, &net_cb));
+    if (gw_mbtcp_start(s_cfg) != ESP_OK) {   /* MB-15, only with modbus_tcp.enabled */
+        ESP_LOGE(TAG, "Modbus TCP gateway unavailable");
+    }
     if (s_cfg->web.enabled) {
         start_web(GW_WEB_NORMAL, s_cfg, source);
     }

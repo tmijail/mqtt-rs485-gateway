@@ -42,7 +42,9 @@ typedef struct {
     bool is_null;
     bool is_historical;      /* SPB-14: stored while offline, sent later */
     union {
-        double num;          /* all numeric and Boolean datatypes */
+        double num;          /* every numeric and Boolean datatype except the 64-bit integers */
+        int64_t i64;         /* Int64: exact (a double is not above 2^53) */
+        uint64_t u64;        /* UInt64 and DateTime */
         const char *str;     /* String / Text */
     } v;
 } spb_metric_t;

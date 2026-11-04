@@ -12,6 +12,7 @@ set(GW_CORE_SRCS
     src/gw_config.c
     src/gw_conv.c
     src/gw_debounce.c
+    src/gw_mbap.c
     src/gw_devstate.c
     src/gw_dout.c
     src/gw_netsel.c

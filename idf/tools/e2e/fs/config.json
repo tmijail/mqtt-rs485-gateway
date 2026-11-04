@@ -34,7 +34,9 @@
       "name": "Meter1",
       "unit_id": 1,
       "poll_ms": 1000,
+      "slow_poll_ms": 3000,
       "offline_after": 3,
+      "max_gap": 10,
       "tags": [
         {
           "name": "Voltage",
@@ -70,6 +72,60 @@
           "type": "float32",
           "word_order": "big",
           "writable": true
+        },
+        {
+          "name": "Energy",
+          "area": "holding",
+          "address": 30,
+          "type": "uint64",
+          "word_order": "ABCD",
+          "scan": "slow"
+        },
+        {
+          "name": "Counter",
+          "area": "holding",
+          "address": 34,
+          "type": "int64",
+          "word_order": "CDAB",
+          "writable": true
+        },
+        {
+          "name": "Flow",
+          "area": "input",
+          "address": 40,
+          "type": "float64",
+          "word_order": "DCBA"
+        },
+        {
+          "name": "Temp",
+          "area": "input",
+          "address": 44,
+          "type": "int32",
+          "word_order": "BADC"
+        },
+        {
+          "name": "Serial",
+          "area": "holding",
+          "address": 50,
+          "type": "string",
+          "length": 8,
+          "writable": true,
+          "scan": "slow"
+        },
+        {
+          "name": "Alarm",
+          "area": "holding",
+          "address": 60,
+          "type": "bool",
+          "bit": 3,
+          "writable": true
+        },
+        {
+          "name": "Ready",
+          "area": "input",
+          "address": 46,
+          "type": "bool",
+          "bit": 15
         }
       ]
     },
@@ -488,5 +544,12 @@
     "host": "10.0.2.2",
     "port": 15514,
     "level": "info"
+  },
+  "modbus_tcp": {
+    "enabled": true,
+    "port": 502,
+    "allowed_clients": [
+      "10.0.2.2"
+    ]
   }
 }

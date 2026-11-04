@@ -121,6 +121,165 @@ static void test_encode_32bit_round_trip(void)
     }
 }
 
+/* ---- MB-6 ---- */
+
+static void test_datatype_mapping_mb6(void)
+{
+    gw_tag_cfg_t t = tag(GW_TYPE_INT64, GW_WORD_BIG, 1, 0);
+    TEST_ASSERT_EQUAL(SPB_DT_INT64, gw_conv_datatype(&t));
+    TEST_ASSERT_EQUAL(GW_VK_INT64, gw_conv_kind(&t));
+    t = tag(GW_TYPE_UINT64, GW_WORD_BIG, 1, 0);
+    TEST_ASSERT_EQUAL(SPB_DT_UINT64, gw_conv_datatype(&t));
+    TEST_ASSERT_EQUAL(GW_VK_UINT64, gw_conv_kind(&t));
+    t = tag(GW_TYPE_FLOAT64, GW_WORD_BIG, 1, 0);
+    TEST_ASSERT_EQUAL(SPB_DT_DOUBLE, gw_conv_datatype(&t));
+    TEST_ASSERT_EQUAL(GW_VK_DOUBLE, gw_conv_kind(&t));
+    t = tag(GW_TYPE_STRING, GW_WORD_BIG, 1, 0);
+    TEST_ASSERT_EQUAL(SPB_DT_STRING, gw_conv_datatype(&t));
+    TEST_ASSERT_EQUAL(GW_VK_STRING, gw_conv_kind(&t));
+    /* scaled 64-bit sources: Double, not Float, to keep their precision */
+    t = tag(GW_TYPE_INT64, GW_WORD_BIG, 0.001, 0);
+    TEST_ASSERT_EQUAL(SPB_DT_DOUBLE, gw_conv_datatype(&t));
+    TEST_ASSERT_EQUAL(GW_VK_DOUBLE, gw_conv_kind(&t));
+    t = tag(GW_TYPE_UINT64, GW_WORD_BIG, 1, 1);
+    TEST_ASSERT_EQUAL(SPB_DT_DOUBLE, gw_conv_datatype(&t));
+    t = tag(GW_TYPE_INT32, GW_WORD_BIG, 2, 0);   /* the MVP rule stays: Float */
+    TEST_ASSERT_EQUAL(SPB_DT_FLOAT, gw_conv_datatype(&t));
+}
+
+static void test_byte_orders_32bit(void)
+{
+    /* 0x11223344 in each order: ABCD 1122 3344, CDAB 3344 1122, BADC 2211 4433, DCBA 4433 2211 */
+    const struct {
+        gw_word_order_t o;
+        uint16_t r[2];
+    } cases[] = {{GW_WORD_BIG, {0x1122, 0x3344}},
+                 {GW_WORD_LITTLE, {0x3344, 0x1122}},
+                 {GW_WORD_BADC, {0x2211, 0x4433}},
+                 {GW_WORD_DCBA, {0x4433, 0x2211}}};
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        gw_tag_cfg_t t = tag(GW_TYPE_UINT32, cases[i].o, 1, 0);
+        TEST_ASSERT_EQUAL_DOUBLE((double)0x11223344u, gw_conv_from_regs(&t, cases[i].r));
+        uint16_t r[2];
+        TEST_ASSERT_EQUAL(GW_CONV_OK, gw_conv_to_regs(&t, (double)0x11223344u, r));
+        TEST_ASSERT_EQUAL_HEX16_ARRAY(cases[i].r, r, 2);
+    }
+    /* 16-bit: only the byte swap matters */
+    gw_tag_cfg_t t = tag(GW_TYPE_INT16, GW_WORD_DCBA, 1, 0);
+    uint16_t r[1] = {0xFEFF};   /* 0xFFFE byte swapped */
+    TEST_ASSERT_EQUAL_DOUBLE(-2.0, gw_conv_from_regs(&t, r));
+    t.word_order = GW_WORD_LITTLE;
+    r[0] = 0xFFFE;
+    TEST_ASSERT_EQUAL_DOUBLE(-2.0, gw_conv_from_regs(&t, r));
+}
+
+static void test_64bit_exact_and_orders(void)
+{
+    /* 2^53 + 1 is not representable in a double: it must survive exactly */
+    const uint64_t big = 9007199254740993ull;   /* 0x0020000000000001 */
+    const struct {
+        gw_word_order_t o;
+        uint16_t r[4];
+    } cases[] = {{GW_WORD_BIG, {0x0020, 0x0000, 0x0000, 0x0001}},
+                 {GW_WORD_LITTLE, {0x0001, 0x0000, 0x0000, 0x0020}},
+                 {GW_WORD_BADC, {0x2000, 0x0000, 0x0000, 0x0100}},
+                 {GW_WORD_DCBA, {0x0100, 0x0000, 0x0000, 0x2000}}};
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        gw_tag_cfg_t t = tag(GW_TYPE_UINT64, cases[i].o, 1, 0);
+        gw_tag_value_t v;
+        gw_conv_decode(&t, cases[i].r, &v);
+        TEST_ASSERT_EQUAL_UINT64(big, v.u64);
+        uint16_t r[4];
+        TEST_ASSERT_EQUAL(GW_CONV_OK, gw_conv_encode(&t, &v, r));
+        TEST_ASSERT_EQUAL_HEX16_ARRAY(cases[i].r, r, 4);
+    }
+    gw_tag_cfg_t t = tag(GW_TYPE_INT64, GW_WORD_LITTLE, 1, 0);
+    gw_tag_value_t v = {.i64 = -9007199254740993ll};
+    uint16_t r[4];
+    TEST_ASSERT_EQUAL(GW_CONV_OK, gw_conv_encode(&t, &v, r));
+    gw_tag_value_t back;
+    gw_conv_decode(&t, r, &back);
+    TEST_ASSERT_EQUAL_INT64(-9007199254740993ll, back.i64);
+    v.i64 = INT64_MIN;
+    gw_conv_encode(&t, &v, r);
+    gw_conv_decode(&t, r, &back);
+    TEST_ASSERT_EQUAL_INT64(INT64_MIN, back.i64);
+    /* from a double: only integral, in-range values */
+    TEST_ASSERT_TRUE(gw_conv_from_double(&t, -5.0, &v));
+    TEST_ASSERT_EQUAL_INT64(-5, v.i64);
+    TEST_ASSERT_FALSE(gw_conv_from_double(&t, 1.5, &v));
+    TEST_ASSERT_FALSE(gw_conv_from_double(&t, 9223372036854775808.0, &v));
+    t.type = GW_TYPE_UINT64;
+    TEST_ASSERT_FALSE(gw_conv_from_double(&t, -1.0, &v));
+    TEST_ASSERT_EQUAL(GW_CONV_RANGE, gw_conv_to_regs(&t, 18446744073709551616.0, r));
+    /* scaled int64: a double, range-checked after the inverse scale */
+    t = tag(GW_TYPE_INT64, GW_WORD_BIG, 0.5, 0);
+    TEST_ASSERT_EQUAL(GW_CONV_OK, gw_conv_to_regs(&t, -3.5, r));
+    TEST_ASSERT_EQUAL_DOUBLE(-3.5, gw_conv_from_regs(&t, r));
+    TEST_ASSERT_EQUAL(GW_CONV_RANGE, gw_conv_to_regs(&t, 1e19, r));
+}
+
+static void test_float64(void)
+{
+    /* 1234.56789012345 as IEEE 754 binary64, in DCBA (fully little-endian) order */
+    double d = 1234.56789012345;
+    uint64_t bits;
+    memcpy(&bits, &d, sizeof(bits));
+    gw_tag_cfg_t t = tag(GW_TYPE_FLOAT64, GW_WORD_DCBA, 1, 0);
+    uint16_t r[4];
+    TEST_ASSERT_EQUAL(GW_CONV_OK, gw_conv_to_regs(&t, d, r));
+    for (int i = 0; i < 4; i++) {
+        uint16_t w = (uint16_t)(bits >> (16 * i));          /* least significant word first */
+        TEST_ASSERT_EQUAL_HEX16((uint16_t)((w << 8) | (w >> 8)), r[i]);   /* bytes swapped */
+    }
+    TEST_ASSERT_EQUAL_DOUBLE(d, gw_conv_from_regs(&t, r));
+    TEST_ASSERT_EQUAL(GW_CONV_NOT_FINITE, gw_conv_to_regs(&t, INFINITY, r));
+    t.scale = 1e300;
+    TEST_ASSERT_EQUAL(GW_CONV_OK, gw_conv_to_regs(&t, 1e300, r));
+    t.scale = 1e-300;
+    TEST_ASSERT_EQUAL(GW_CONV_RANGE, gw_conv_to_regs(&t, 1e300, r));   /* raw overflows */
+}
+
+static void test_strings(void)
+{
+    gw_tag_cfg_t t = tag(GW_TYPE_STRING, GW_WORD_BIG, 1, 0);
+    t.length = 4;
+    uint16_t r[4] = {0x534E, 0x2D34, 0x3220, 0x2020};   /* "SN-42   " */
+    gw_tag_value_t v;
+    gw_conv_decode(&t, r, &v);
+    TEST_ASSERT_EQUAL_STRING("SN-42", v.str);           /* padding dropped */
+    r[1] = 0x2D00;                                      /* NUL ends the text */
+    gw_conv_decode(&t, r, &v);
+    TEST_ASSERT_EQUAL_STRING("SN-", v.str);
+    r[1] = 0x01FF;                                      /* not printable ASCII */
+    gw_conv_decode(&t, r, &v);
+    TEST_ASSERT_EQUAL_STRING("SN??2", v.str);
+    t.word_order = GW_WORD_BADC;                        /* first character in the low byte */
+    uint16_t sw[4] = {0x4E53, 0x342D, 0x2032, 0x0000};
+    gw_conv_decode(&t, sw, &v);
+    TEST_ASSERT_EQUAL_STRING("SN-42", v.str);
+    strcpy(v.str, "HELLO");
+    uint16_t out[4];
+    TEST_ASSERT_EQUAL(GW_CONV_OK, gw_conv_encode(&t, &v, out));
+    const uint16_t hello_badc[4] = {0x4548, 0x4C4C, 0x004F, 0x0000};
+    TEST_ASSERT_EQUAL_HEX16_ARRAY(hello_badc, out, 4);
+    t.word_order = GW_WORD_BIG;
+    strcpy(v.str, "12345678");                          /* exactly 2 x length */
+    TEST_ASSERT_EQUAL(GW_CONV_OK, gw_conv_encode(&t, &v, out));
+    TEST_ASSERT_EQUAL_HEX16(0x3738, out[3]);
+    strcpy(v.str, "123456789");
+    TEST_ASSERT_EQUAL(GW_CONV_RANGE, gw_conv_encode(&t, &v, out));
+    TEST_ASSERT_FALSE(gw_conv_from_double(&t, 1.0, &v));
+    /* the longest string: 16 registers, 32 characters */
+    t.length = GW_STR_MAX_REGS;
+    uint16_t full[GW_STR_MAX_REGS];
+    for (int i = 0; i < GW_STR_MAX_REGS; i++) {
+        full[i] = 0x4142;
+    }
+    gw_conv_decode(&t, full, &v);
+    TEST_ASSERT_EQUAL(GW_STR_MAX, strlen(v.str));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -129,5 +288,10 @@ int main(void)
     RUN_TEST(test_decode_32bit_word_order);
     RUN_TEST(test_encode_inverse_scale);
     RUN_TEST(test_encode_32bit_round_trip);
+    RUN_TEST(test_datatype_mapping_mb6);
+    RUN_TEST(test_byte_orders_32bit);
+    RUN_TEST(test_64bit_exact_and_orders);
+    RUN_TEST(test_float64);
+    RUN_TEST(test_strings);
     return UNITY_END();
 }

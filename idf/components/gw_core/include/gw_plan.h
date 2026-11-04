@@ -3,6 +3,9 @@
  * Tags of the same area whose addresses are contiguous, overlapping or separated
  * by at most `max_gap` unused registers/bits are read with one request, up to 125
  * registers or 2000 bits. With merging disabled every tag gets its own request.
+ * Merging and the gap are per device (block_reads, max_gap); @p merge and @p max_gap of
+ * gw_plan_build() are the build defaults for devices that do not set them.
+ * MB-12: fast- and slow-scan tags never share a block; a device's fast blocks come first.
  */
 #pragma once
 
@@ -17,6 +20,7 @@ extern "C" {
 
 typedef struct {
     gw_area_t area;
+    bool slow;               /* MB-12: holds slow-scan tags only */
     uint16_t start;
     uint16_t qty;
     uint16_t first_member;   /* index into gw_plan_t.members */
@@ -28,6 +32,7 @@ typedef struct {
     uint16_t members[GW_MAX_TAGS];   /* global tag indices, grouped per block */
     uint16_t dev_first_block[GW_MAX_DEVICES];
     uint16_t dev_block_count[GW_MAX_DEVICES];
+    uint16_t dev_fast_count[GW_MAX_DEVICES];   /* fast-scan blocks, first in the device's list */
     uint16_t block_count;
 } gw_plan_t;
 

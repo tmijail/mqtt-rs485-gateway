@@ -233,16 +233,33 @@ static bool rec_set_do(void *ctx, uint8_t index, bool on)
     return true;
 }
 
-static bool rec_request_write(void *ctx, uint16_t tag, double value)
+static bool rec_request_write(void *ctx, uint16_t tag, const gw_tag_value_t *value)
 {
     (void)ctx;
     if (g_rec.write_queue_full) {
         return false;
     }
     g_rec.writes++;
+    if (g_rec.room_limited && g_rec.room > 0) {
+        g_rec.room--;
+    }
     g_rec.last_write_tag = tag;
-    g_rec.last_write_value = value;
+    g_rec.last_write_value = value->value;
+    g_rec.last_write = *value;
     return true;
+}
+
+static void rec_set_scan_rate(void *ctx, uint32_t ms)
+{
+    (void)ctx;
+    g_rec.scan_rate_calls++;
+    g_rec.scan_rate = ms;
+}
+
+static size_t rec_write_room(void *ctx)
+{
+    (void)ctx;
+    return g_rec.room_limited ? g_rec.room : 64;
 }
 
 static void rec_reboot(void *ctx)
@@ -257,6 +274,8 @@ gw_node_ops_t recorder_ops(void)
         .publish = rec_publish,
         .set_do = rec_set_do,
         .request_write = rec_request_write,
+        .write_room = rec_write_room,
+        .set_scan_rate = rec_set_scan_rate,
         .reboot = rec_reboot,
         .ctx = NULL,
     };
@@ -288,6 +307,9 @@ static bool dec_cb(void *ctx, const spb_rx_metric_t *m)
     o->is_historical = m->is_historical;
     o->kind = m->kind;
     o->timestamp = m->timestamp;
+    if (m->kind == SPB_VAL_LONG) {
+        o->u64 = m->v.l;
+    }
     if (m->kind == SPB_VAL_STRING) {
         snprintf(o->str, sizeof(o->str), "%s", m->v.s);
     } else {

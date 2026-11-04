@@ -1,4 +1,5 @@
 /* QA-1: Sparkplug B payload encoding/decoding (SPB-1). */
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -21,7 +22,7 @@ static void test_round_trip_all_types(void)
         {.name = "i32", .alias = 4, .datatype = SPB_DT_INT32, .v.num = -2147483648.0},
         {.name = "u32", .alias = 5, .datatype = SPB_DT_UINT32, .v.num = 4294967295.0},
         {.name = "f", .alias = 6, .datatype = SPB_DT_FLOAT, .v.num = 230.5},
-        {.name = "u64", .alias = 7, .datatype = SPB_DT_UINT64, .v.num = 255},
+        {.name = "u64", .alias = 7, .datatype = SPB_DT_UINT64, .v.u64 = 255},
         {.name = "s", .alias = 8, .datatype = SPB_DT_STRING, .v.str = "1.2.3+gabc"},
         {.name = NULL, .alias = 9, .datatype = SPB_DT_FLOAT, .is_null = true},
     };
@@ -50,6 +51,27 @@ static void test_round_trip_all_types(void)
     TEST_ASSERT_TRUE(dec.m[8].is_null);
     TEST_ASSERT_EQUAL(SPB_VAL_NONE, dec.m[8].kind);
     TEST_ASSERT_EQUAL_UINT64(9, dec.m[8].alias);
+}
+
+/* MB-6: 64-bit integers travel exactly in long_value (two's complement for Int64), Double in
+ * double_value. */
+static void test_round_trip_64bit_exact(void)
+{
+    spb_metric_t m[] = {
+        {.alias = 1, .datatype = SPB_DT_INT64, .v.i64 = -9007199254740993ll},
+        {.alias = 2, .datatype = SPB_DT_UINT64, .v.u64 = UINT64_MAX},
+        {.alias = 3, .datatype = SPB_DT_DOUBLE, .v.num = 1234.56789012345},
+        {.alias = 4, .datatype = SPB_DT_INT64, .v.i64 = INT64_MIN},
+    };
+    spb_payload_t p = {.timestamp = 1, .has_seq = true, .seq = 0, .metrics = m, .metric_count = 4};
+    size_t len = spb_encode(&p, buf, sizeof(buf));
+    TEST_ASSERT_TRUE(decode_payload(buf, len, &dec));
+    TEST_ASSERT_EQUAL(SPB_VAL_LONG, dec.m[0].kind);
+    TEST_ASSERT_EQUAL_INT64(-9007199254740993ll, (int64_t)dec.m[0].u64);
+    TEST_ASSERT_EQUAL_UINT64(UINT64_MAX, dec.m[1].u64);
+    TEST_ASSERT_EQUAL(SPB_VAL_DOUBLE, dec.m[2].kind);
+    TEST_ASSERT_EQUAL_DOUBLE(1234.56789012345, dec.m[2].num);
+    TEST_ASSERT_EQUAL_UINT64(0x8000000000000000ull, dec.m[3].u64);
 }
 
 static void test_wire_format_int16_sign_extension(void)
@@ -143,6 +165,7 @@ int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(test_round_trip_all_types);
+    RUN_TEST(test_round_trip_64bit_exact);
     RUN_TEST(test_wire_format_int16_sign_extension);
     RUN_TEST(test_ndeath_has_no_seq);
     RUN_TEST(test_rx_number_variants);
