@@ -47,7 +47,11 @@ static int cmd_status(int argc, char **argv)
            s_ctx.cfg->device_count - offline, s_ctx.cfg->device_count);
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
-    printf("local    DI 0x%02x, DO 0x%02x (bit n = channel n+1, 1 = active)\n", io.di, io.dout);
+    if (io.do_unknown) {
+        printf("local    DI 0x%02x, DO unknown: output expander not answering (retrying)\n", io.di);
+    } else {
+        printf("local    DI 0x%02x, DO 0x%02x (bit n = channel n+1, 1 = active)\n", io.di, io.dout);
+    }
     /* Core of each task that matters for timing ("-" = no affinity; tasks not running, such as
      * the Ethernet RX task of the other MAC, are omitted). */
     static const char *const tasks[] = {"rs485_bus", "sparkplug", "tcpip", "mqtt_task",
