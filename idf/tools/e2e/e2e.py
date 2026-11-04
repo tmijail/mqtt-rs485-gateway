@@ -704,6 +704,11 @@ def run(args, log, slave, broker, conf, work):
     check("CFG-6 console shell: 'status' with a valid configuration (config ok, MQTT, devices online)",
           status_ok and status_net,
           " | ".join(gw.find(r"^config\s|^network\s", asked)) or "no answer")
+    # Issue #15: the network stack runs on core 0, the RS485 bus owner on core 1
+    tasks = gw.find(r"^tasks\s", asked)
+    want = ["rs485_bus 1", "sparkplug 0", "tcpip 0", "mqtt_task 0", "emac_rx 0", "sys_evt 0"]
+    check("Issue #15 task affinity: lwIP, esp-mqtt, Ethernet RX and event loop on core 0, bus on core 1",
+          tasks and all(f" {w}" in tasks[0] for w in want), tasks[0] if tasks else "no 'tasks' line")
     asked = time.monotonic()
     gw.console("devices")
     gw.console("config")

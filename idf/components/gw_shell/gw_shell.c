@@ -7,6 +7,8 @@
 #include "esp_console.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "gw_io.h"
 #include "gw_status.h"
 #include "gw_tagdb.h"
@@ -46,6 +48,24 @@ static int cmd_status(int argc, char **argv)
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
     printf("local    DI 0x%02x, DO 0x%02x (bit n = channel n+1, 1 = active)\n", io.di, io.dout);
+    /* Core of each task that matters for timing ("-" = no affinity; tasks not running, such as
+     * the Ethernet RX task of the other MAC, are omitted). */
+    static const char *const tasks[] = {"rs485_bus", "sparkplug", "tcpip", "mqtt_task",
+                                        "w5500_tsk", "emac_rx",   "sys_evt"};
+    printf("tasks   ");
+    for (size_t i = 0; i < sizeof(tasks) / sizeof(tasks[0]); i++) {
+        TaskHandle_t h = xTaskGetHandle(tasks[i]);
+        if (h == NULL) {
+            continue;
+        }
+        BaseType_t core = xTaskGetCoreID(h);
+        if (core == tskNO_AFFINITY) {
+            printf(" %s -", tasks[i]);
+        } else {
+            printf(" %s %d", tasks[i], (int)core);
+        }
+    }
+    printf(" (core)\n");
     printf("heap     internal %u B free (minimum %u B), PSRAM %u B free\n",
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),

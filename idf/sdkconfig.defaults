@@ -35,6 +35,13 @@ CONFIG_LWIP_SNTP_STARTUP_DELAY=n
 # response is lost.
 CONFIG_UART_ISR_IN_IRAM=y
 
+# Network stack on core 0, away from the RS485 bus owner on core 1 (gw_bus): lwIP's tcpip
+# task and the esp-mqtt task (the Ethernet RX task is pinned by gw_net, the default event
+# loop already runs on core 0).
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+CONFIG_MQTT_TASK_CORE_SELECTION_ENABLED=y
+CONFIG_MQTT_USE_CORE_0=y
+
 # REL-3
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 

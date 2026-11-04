@@ -99,6 +99,9 @@ static esp_err_t configure_ip(const gw_config_t *cfg)
 static esp_err_t new_driver(esp_eth_handle_t *eth)
 {
     eth_mac_config_t mac_cfg = ETH_MAC_DEFAULT_CONFIG();
+    /* Pin the RX task to the installing core: app_main runs on core 0, with the rest of the
+     * network stack (sdkconfig.defaults), away from the RS485 bus on core 1. */
+    mac_cfg.flags |= ETH_MAC_FLAG_PIN_TO_CORE;
     eth_phy_config_t phy_cfg = ETH_PHY_DEFAULT_CONFIG();
 #if CONFIG_GW_ETH_W5500
     ESP_RETURN_ON_ERROR(gpio_install_isr_service(0), TAG, "isr service");

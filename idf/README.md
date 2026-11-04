@@ -27,7 +27,7 @@ Firmware del MVP (`docs/SPEC.md` §5) para la Waveshare **ESP32-S3-POE-ETH-8DI-8
 | `gw_bsp` | **Descripción declarativa de la placa** (`gw_bsp.c`): todos los pines, direcciones I²C y niveles activos (DI, DO, DE del RS485, I²C, LED y orden de color, buzzer, W5500). Los drivers la leen y no contienen datos de la placa | Sí (tipos) |
 | `gw_board` | 8 DI con muestreo a 1 kHz y debounce; 8 DO en el TCA9554 (sobre `gw_dout`, sin pulsos al arrancar); LED WS2812 de estado | Sí |
 | `gw_storage` | bdSeq en NVS; configuración desde LittleFS o embebida (solo si falta el archivo) | Sí |
-| `gw_shell` | Shell de diagnóstico `esp_console` en la consola: `status`, `devices`, `config` (y `di` en QEMU) | Sí |
+| `gw_shell` | Shell de diagnóstico `esp_console` en la consola: `status`, `devices`, `config` (y `di` y `panic` en QEMU) | Sí |
 | `main` | `app_main`: carga la configuración y conecta los componentes | Sí |
 
 Dependencias gestionadas, **con versión fija** (`==`) en cada `idf_component.yml` y hash en `dependencies.lock`:
@@ -63,7 +63,9 @@ Dependencias gestionadas, **con versión fija** (`==`) en cada `idf_component.ym
 | `esp_timer` (IDF) | — | IDF | Sí, como usuario del TWDT (`di_sample`): el callback de muestreo lo alimenta cada 1 s | Muestreo de DI (callback de 1 ms) |
 | `status_led` | — / 2 | 2,5 KB | No (no crítica) | El RMT del LED |
 | `console` (`gw_shell`) | — / 2 | 4 KB | No (no crítica) | La UART de la consola (REPL `esp_console`); solo lee `gw_tagdb` y `gw_status` |
-| esp-mqtt, tcpip, eth, event loop | IDF | IDF | IDLE vigiladas | — |
+| esp-mqtt (`mqtt_task`), lwIP (`tcpip`), RX de Ethernet (`w5500_tsk` / `emac_rx`), event loop (`sys_evt`) | **0** / IDF | IDF | IDLE vigiladas | — |
+
+**Afinidad.** Toda la pila de red corre en el núcleo 0, lejos del bus RS485 del núcleo 1: `CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0`, `CONFIG_MQTT_USE_CORE_0`, `ETH_MAC_FLAG_PIN_TO_CORE` en `gw_net` (el driver se instala desde `app_main`, en el núcleo 0) y el event loop por defecto, que IDF ya fija al 0. El comando `status` del shell muestra el núcleo de cada tarea (`tasks rs485_bus 1 sparkplug 0 tcpip 0 …`); el E2E lo comprueba.
 
 **Concurrencia.** Los productores nunca bloquean al consumidor:
 
