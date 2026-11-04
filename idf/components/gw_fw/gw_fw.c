@@ -69,9 +69,11 @@ static uint8_t s_up_pct;
  * waits on a cache miss. Espressif's QEMU (esp_develop_9.2.2) does not model the freeze: code
  * the other core fetches from flash meanwhile faults and QEMU aborts ("Bad ram pointer",
  * reproduced with a task calling snprintf on core 1 during esp_ota_end() and
- * esp_ota_set_boot_partition()). CONFIG_GW_FW_PARK_OTHER_CORE (QEMU build only) parks the
- * other core in an IRAM loop for those calls; a task, not an ISR stall, so IPC calls (the
- * otadata write) still reach that core. */
+ * esp_ota_set_boot_partition()). esp_ota_begin() maps otadata too (the running image's rollback
+ * state): core 1 then faulted on a peripheral write (LoadStorePIFAddrError in
+ * esp_crosscore_int_send, from the syslog task) at the start of a download.
+ * CONFIG_GW_FW_PARK_OTHER_CORE (QEMU build only) parks the other core in an IRAM loop for those
+ * calls; a task, not an ISR stall, so IPC calls (the otadata write) still reach that core. */
 #if CONFIG_GW_FW_PARK_OTHER_CORE
 static volatile bool s_park;
 static volatile bool s_parked;
@@ -392,10 +394,19 @@ static void download_release(void)
     s_url = NULL;
 }
 
-/* End of the download task: the URL and the CA copy go back to the heap. */
-static void end_download(void)
+static void download_fail(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
+/* A failed download ends its task. The URL and the CA copy go back to the heap first: the
+ * failed state lets the next update start at once, and it allocates its own. */
+static void download_fail(const char *fmt, ...)
 {
+    char why[sizeof(s_st.detail)];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(why, sizeof(why), fmt, ap);
+    va_end(ap);
     download_release();
+    fail("%s", why);
     vTaskDelete(NULL);
 }
 
@@ -417,19 +428,16 @@ static void download_task(void *arg)
     esp_https_ota_handle_t h = NULL;
     esp_err_t e = esp_https_ota_begin(&oc, &h);
     if (e != ESP_OK) {
-        fail("cannot download %s (%s)", s_url, esp_err_to_name(e));
-        end_download();
+        download_fail("cannot download %s (%s)", s_url, esp_err_to_name(e));
     }
     esp_app_desc_t d;
     e = esp_https_ota_get_img_desc(h, &d);
     if (e != ESP_OK || strncmp(d.project_name, project(), sizeof(d.project_name)) != 0) {
         esp_https_ota_abort(h);
         if (e != ESP_OK) {
-            fail("not an application image (%s)", esp_err_to_name(e));
-        } else {
-            fail("image of '%.32s', not of '%s'", d.project_name, project());
+            download_fail("not an application image (%s)", esp_err_to_name(e));
         }
-        end_download();
+        download_fail("image of '%.32s', not of '%s'", d.project_name, project());
     }
     char version[sizeof(d.version) + 1];
     snprintf(version, sizeof(version), "%.32s", d.version);
@@ -440,7 +448,12 @@ static void download_task(void *arg)
     gw_ota_progress_t p;
     gw_ota_progress_init(&p, total, now_ms());
     uint8_t pct;
-    while ((e = esp_https_ota_perform(h)) == ESP_ERR_HTTPS_OTA_IN_PROGRESS) {
+    /* the first call runs esp_ota_begin(), which reads otadata through a mapping (rollback
+     * state of the running image): the other core is parked for it too (QEMU) */
+    park(true);
+    e = esp_https_ota_perform(h);
+    park(false);
+    for (; e == ESP_ERR_HTTPS_OTA_IN_PROGRESS; e = esp_https_ota_perform(h)) {
         uint32_t done = (uint32_t)esp_https_ota_get_image_len_read(h);
         set_bytes(done, total);
         if (gw_ota_progress_update(&p, done, now_ms(), &pct)) {
@@ -453,22 +466,21 @@ static void download_task(void *arg)
     }
     if (e != ESP_OK) {
         esp_https_ota_abort(h);
-        fail("download of %s interrupted after %lu bytes (%s)", version,
-             (unsigned long)esp_https_ota_get_image_len_read(h), esp_err_to_name(e));
-        end_download();
+        download_fail("download of %s interrupted after %lu bytes (%s)", version,
+                      (unsigned long)esp_https_ota_get_image_len_read(h), esp_err_to_name(e));
     }
     park(true);
     e = esp_https_ota_finish(h);   /* verifies the image and sets it to boot */
     park(false);
     if (e == ESP_ERR_OTA_VALIDATE_FAILED) {
-        fail("image %s rejected (%s)", version, WHY_INVALID);
+        download_fail("image %s rejected (%s)", version, WHY_INVALID);
     } else if (e != ESP_OK) {
-        fail("image %s not installed (%s)", version, esp_err_to_name(e));
-    } else {
-        set_bytes(total ? total : p.done, total);
-        finished(version);
+        download_fail("image %s not installed (%s)", version, esp_err_to_name(e));
     }
-    end_download();
+    download_release();
+    set_bytes(total ? total : p.done, total);
+    finished(version);
+    vTaskDelete(NULL);
 }
 
 esp_err_t gw_fw_start_url(const char *url, char *why, size_t cap)
@@ -525,6 +537,15 @@ esp_err_t gw_fw_start_url(const char *url, char *why, size_t cap)
 
 /* ---------- upload (web server task) ---------- */
 
+/* esp_ota_begin() reads otadata through a mapping: like an install, on core 0 with the other
+ * core parked (QEMU) */
+static void begin_upload(void *arg)
+{
+    park(true);
+    *(esp_err_t *)arg = esp_ota_begin(s_up_part, OTA_WITH_SEQUENTIAL_WRITES, &s_up);
+    park(false);
+}
+
 static void up_release(void)
 {
     heap_caps_free(s_up_head);
@@ -554,7 +575,8 @@ esp_err_t gw_fw_upload_begin(size_t size, char *why, size_t cap)
         snprintf(why, cap, "no memory for the upload");
         return ESP_ERR_NO_MEM;
     }
-    esp_err_t e = esp_ota_begin(s_up_part, OTA_WITH_SEQUENTIAL_WRITES, &s_up);
+    esp_err_t e = ESP_OK;
+    on_core0(begin_upload, &e);
     if (e != ESP_OK) {
         up_release();
         atomic_store(&s_busy, false);
