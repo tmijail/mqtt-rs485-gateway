@@ -212,7 +212,9 @@ static bool same_origin(httpd_req_t *req)
     s_csrf_refused++;
     ESP_LOGW(TAG, "%s %s from %s refused: %s", req->method == HTTP_PUT ? "PUT" : "POST", req->uri,
              who, r == GW_CSRF_NO_HEADER ? "no " GW_CSRF_HEADER " header" : "cross-origin request");
-    httpd_resp_set_hdr(req, "Connection", "close");   /* its body (an image?) is not read */
+    /* Tells the client the connection ends here. It does not spare reading the body: httpd
+     * still drains the unread body (an image?) before closing (issue #106). */
+    httpd_resp_set_hdr(req, "Connection", "close");
     send_error(req, "403 Forbidden", NULL,
                r == GW_CSRF_NO_HEADER
                    ? "falta la cabecera " GW_CSRF_HEADER ": las escrituras la necesitan (CSRF)"

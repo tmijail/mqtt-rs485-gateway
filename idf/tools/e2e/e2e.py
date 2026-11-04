@@ -1785,9 +1785,10 @@ def run_https(args, work):
 
 def check_csrf(gw, since):
     """Issue #100 (GW22, before the login limit checks): every write needs X-Requested-With and,
-    from a browser (Origin, or Referer without it), this same origin. Each forged request comes
-    with the right credentials, as a browser that has them cached would send them, and must be
-    refused before the password check (403, not counted as a failed login). The web UI's own
+    from a browser (Origin, or Referer without it), this same origin. Every forged request but one
+    comes with the right credentials, as a browser that has them cached would send them, and must be
+    refused before the password check (403, not counted as a failed login); one of them carries a
+    wrong password, and still gets 403, not 401, with the counter at 0. The web UI's own
     requests (the header, same Origin) still work; /api/firmware takes only its two media
     types."""
     me = f"https://127.0.0.1:{HTTPS_PORT}"   # the Host header http.client sends
@@ -1812,13 +1813,17 @@ def check_csrf(gw, since):
         "POST firmware, other Origin": http(
             "POST", "/api/firmware", {"url": "https://evil.e2e/fw.bin"},
             headers={"Origin": "https://evil.e2e"})[0],
+        # wrong credentials: 403, not 401, shows the origin check runs before the password
+        # check (and the failed-login counter below stays at 0)
+        "PUT config, other Origin, wrong password": http(
+            "PUT", dry, doc, auth=("admin", "wrong-csrf"), headers={"Origin": "https://evil.e2e"})[0],
     }
     refused_log = gw.wait_log(r"PUT /api/config\?dry_run=1 from 10\.0\.2\.2 refused: "
                               r"cross-origin request", 3, since)
     wrong_type = http("POST", "/api/firmware", b"\xe9" + b"\0" * 255,
                       headers={"Content-Type": "text/plain", "Origin": me})[0]
     asked, h = gw.shell("status", [r"^web\s+HTTPS \(HTTP redirects\), logins failed 0, .*"
-                                   r"cross-site writes refused 8$"])
+                                   r"cross-site writes refused 9$"])
     counted = list(h.values())[0]
     # the web UI: X-Requested-With and its own Origin (and Referer); a script: the header only
     st_ui, _, b_ui = http("PUT", dry, doc, headers={"Origin": me, "Referer": me + "/"})
@@ -1828,8 +1833,8 @@ def check_csrf(gw, since):
     ui_sends = page.count(b'"X-Requested-With":"gateway"')
     up = gw.wait_log(r"restart requested through the REST API", 0.5, since) is None
     check("Issue #100 CSRF: writes without X-Requested-With or from another origin (Origin, "
-          "Referer, 'null', http) -> 403 before the password check (not a failed login, counted "
-          "in the shell), nothing restarted; /api/firmware only application/json or "
+          "Referer, 'null', http) -> 403 before the password check (also with a wrong password: "
+          "403, not 401, and not a failed login; counted in the shell), nothing restarted; /api/firmware only application/json or "
           "application/octet-stream (text/plain -> 415)",
           all(v == 403 for v in forged.values()) and refused_log and wrong_type == 415
           and counted and up,
