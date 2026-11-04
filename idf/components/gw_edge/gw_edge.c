@@ -601,7 +601,8 @@ static void on_connected(void)
     int id = esp_mqtt_client_subscribe_multiple(s_client, topics, s_state_topic[0] ? 3 : 2);
     feed_watchdog();
     if (id < 0) {
-        abort_session("SUBSCRIBE to NCMD/DCMD could not be sent");
+        abort_session(s_state_topic[0] ? "SUBSCRIBE to NCMD/DCMD/STATE could not be sent"
+                                       : "SUBSCRIBE to NCMD/DCMD could not be sent");
         return;
     }
     s_sub_msg_id = id;
@@ -871,9 +872,12 @@ static void reconcile(void)
             s_sub_msg_id = 0;
             on_subscribed();
         } else if (ack == -s_sub_msg_id) {
-            abort_session("the broker refused the NCMD/DCMD/STATE subscriptions");
+            abort_session(s_state_topic[0] ? "the broker refused the NCMD/DCMD/STATE subscriptions"
+                                           : "the broker refused the NCMD/DCMD subscriptions");
         } else if (now >= s_sub_deadline_us) {
-            abort_session("no SUBACK for NCMD/DCMD/STATE within " STR(SUBACK_TIMEOUT_MS) " ms");
+            abort_session(s_state_topic[0]
+                              ? "no SUBACK for NCMD/DCMD/STATE within " STR(SUBACK_TIMEOUT_MS) " ms"
+                              : "no SUBACK for NCMD/DCMD within " STR(SUBACK_TIMEOUT_MS) " ms");
         }
     }
     if (s_waiting_host && connected && s_bsel.count > 1 &&
