@@ -18,6 +18,7 @@ Usage: tools/e2e/run_e2e.sh  (prepares the flash image and calls this script)
 import argparse
 import asyncio
 import json
+import logging
 import os
 import pathlib
 import queue
@@ -53,6 +54,8 @@ T = f"spBv1.0/{GROUP}"
 ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/1": 20, "DO/3": 22, "Voltage": 100, "Setpoint": 101, "Run": 102, "Limit": 103}
 
 spb = spb_decode.load_module()
+# The dead units (Dead3..Dead5) get no answer by design; pymodbus would log every request.
+logging.getLogger("pymodbus").setLevel(logging.CRITICAL)
 results = []
 CAPTURE = []      # every message seen by any observer: (t, topic, Payload, raw bytes)
 PROCS = []        # brokers and QEMU instances to clean up
@@ -608,28 +611,34 @@ def run_config_failsafe(args, work):
 def check_offline_backoff(slave, t0):
     """Issue #4: dead slaves (units 3..5, never answer) are probed with one attempt at 2, 4, 8 ...
     x poll_ms up to the cap, and do not delay the healthy device's 1 s polling."""
-    # 3 full cycles (9 requests), then probes 2, 4, 8 and 10 s apart: about 27 s after boot
-    end = t0 + 45
-    while time.monotonic() < end and sum(1 for r in list(slave.reads) if r[0] == 3) < 14:
+    def probe_gaps():
+        ts = [t for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 3 and t >= t0]
+        return sum(1 for a, b in zip(ts, ts[1:]) if b - a > 1.5)
+
+    # 3 full cycles, then probes 2, 4, 8 and 10 s apart: about 27 s after boot
+    end = t0 + 50
+    while time.monotonic() < end and probe_gaps() < 4:
         time.sleep(0.5)
     reads = list(zip(slave.times, slave.reads))
     dead = [t for t, r in reads if r[0] == 3 and t >= t0]
-    # the first 3 cycles are full (1 try + 2 retries each); then one request per probe
-    gaps = [round(b - a, 1) for a, b in zip(dead[9:], dead[10:])]
+    # Full cycles: 3 attempts 200 ms apart, cycles 1 s apart. Probes: one attempt, >= 2 s apart.
+    # (The first requests may be lost while QEMU's UART socket connects, so count by gaps.)
+    allgaps = [b - a for a, b in zip(dead, dead[1:])]
+    first = next((i for i, g in enumerate(allgaps) if g > 1.5), None)
+    gaps = [round(g, 1) for g in allgaps[first:]] if first is not None else []
     expect = [min(2.0 * 2 ** i, PROBE_MAX_S) for i in range(len(gaps))]
     probes_ok = len(gaps) >= 3 and all(abs(g - e) <= 0.6 for g, e in zip(gaps, expect))
     check("MB-9 / issue #4 offline device probed with a single attempt and an exponential "
           "backoff (2, 4, 8 ... s, cap)", probes_ok,
-          f"{len(dead)} requests to dead unit 3; gaps after the first 3 cycles {gaps} s "
-          f"(expected {expect})")
+          f"{len(dead)} requests to dead unit 3; gaps once offline {gaps} s (expected {expect})")
     # Healthy Meter1 while the three dead units back off: cycle starts = its first request kind
-    if len(dead) < 10:
-        return check("Issue #4 healthy device keeps its period next to 3 dead ones", False,
+    if first is None:
+        return check("Issue #4 healthy device keeps its 1 s period next to 3 dead ones", False,
                      "dead devices never went offline")
-    since = dead[9]
+    since = dead[first]
     meter = [(t, r) for t, r in reads if r[0] == 1 and t >= since]
-    first = meter[0][1][1:] if meter else None
-    starts = [t for t, r in meter if r[1:] == first]
+    kind = meter[0][1][1:] if meter else None
+    starts = [t for t, r in meter if r[1:] == kind]
     span = starts[-1] - starts[0] if len(starts) > 1 else 0
     worst = max((b - a for a, b in zip(starts, starts[1:])), default=0)
     # 1 s period; at worst one probe of each dead unit (200 ms timeout) in between + jitter
