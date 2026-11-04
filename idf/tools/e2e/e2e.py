@@ -1951,6 +1951,8 @@ def run_ota(args, work):
         update(f"https://10.0.2.2:{fw_port}/cut.bin")
         cut = obs.wait(ndata_t, 120, lambda p: (fw_state(p) or "").startswith("failed: download of "
                                                                              "e2e-v2 interrupted"))
+        # the console line may come after the NDATA (115200 baud, the reader thread): wait for it
+        gw.wait_log(r"fw: firmware update failed: download of e2e-v2 interrupted after", 10, asked)
         line = gw.find(r"fw: firmware update failed: download of e2e-v2 interrupted after (\d+) "
                        r"bytes", asked)
         got = int(re.search(r"after (\d+) bytes", line[0]).group(1)) if line else -1
