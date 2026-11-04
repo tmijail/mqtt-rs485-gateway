@@ -83,6 +83,8 @@ spb = spb_decode.load_module()
 logging.getLogger("pymodbus").setLevel(logging.CRITICAL)
 results = []
 CAPTURE = []      # every message seen by any observer: (t, topic, Payload, raw bytes)
+GATEWAYS = []     # every QEMU the harness started (issue #86: did one die on its own?)
+RETRIES = []      # issue #86: scenarios repeated once because QEMU died under them
 PROCS = []        # brokers and QEMU instances to clean up
 
 
@@ -510,6 +512,8 @@ class Gateway:
         self.args, self.log_path = args, log_path
         self.flash = flash or args.flash
         self.proc, self.sock, self.lines = None, None, []
+        self.killed = False          # the harness ended it (kill())
+        self.gone_before_kill = None  # returncode if QEMU had already exited when killed
 
     def start(self):
         a = self.args
@@ -532,6 +536,7 @@ class Gateway:
         self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                      stderr=open(str(self.log_path) + ".qemu", "ab"))
         PROCS.append(self.proc)
+        GATEWAYS.append(self)
         for _ in range(100):
             try:
                 self.sock = socket.create_connection(("127.0.0.1", CONSOLE_PORT))
@@ -561,9 +566,27 @@ class Gateway:
         self.sock.sendall(text.encode() + b"\n")
 
     def kill(self):
+        self.gone_before_kill = self.proc.poll()
+        self.killed = True
         self.proc.send_signal(signal.SIGKILL)
         self.proc.wait()
         self.sock.close()
+
+    def qemu_died(self):
+        """Issue #86: why the emulator process ended on its own (signal, or an exit while the
+        harness still used it, with QEMU's own error such as 'Bad ram pointer' or
+        'iotlb_to_section' from its stderr), or None if it ran until the harness ended it.
+        A firmware crash is not this: the chip resets and QEMU keeps running."""
+        code = self.gone_before_kill if self.killed else self.proc.poll() if self.proc else None
+        if code is None:
+            return None
+        err = pathlib.Path(str(self.log_path) + ".qemu")
+        lines = err.read_text(errors="replace").splitlines() if err.exists() else []
+        known = [ln for ln in lines if re.search(r"Bad ram pointer|iotlb_to_section|Assertion|"
+                                                 r"Segmentation|core dumped|qemu-system-xtensa: ", ln)
+                 and "waiting for connection" not in ln]
+        how = f"signal {-code}" if code < 0 else f"exit status {code}"
+        return f"QEMU {how} ({self.log_path.name}): {(known or ['no error message'])[-1].strip()}"
 
     def shell(self, commands, patterns, timeout=3, tries=3):
         """Ask the console shell (read-only commands only: they are repeated) until every regex in
@@ -1831,6 +1854,11 @@ def run_ota(args, work):
             base = f"https://10.0.2.2:{fw_port}/v2.bin?pad="
             return base + "p" * (n - len(base))
 
+        if args.simulate_qemu_death and not RETRIES:
+            # issue #86 self-test: the emulator dies as it did in the real aborts (SIGABRT)
+            gw.proc.send_signal(signal.SIGABRT)
+            gw.proc.wait()
+            raise ConnectionError("simulated QEMU death")
         asked = time.monotonic()
         update(long_url(300))   # over the codec's 256: the NCMD is undecodable, nothing applied
         undecodable = gw.wait_log(r"NCMD: undecodable payload \(\d+ bytes: string overflow; strings up "
@@ -2009,6 +2037,9 @@ def main():
     ap.add_argument("--sdkconfig", required=True, help="sdkconfig of the QEMU build")
     ap.add_argument("--elf", required=True, help="ELF of the QEMU build (core dump decoding)")
     ap.add_argument("--idf-python", required=True, help="ESP-IDF python (has esp_coredump)")
+    ap.add_argument("--simulate-qemu-death", action="store_true",
+                    help="issue #86 self-test: SIGABRT the emulator once in the OTA scenario, "
+                         "which must then be repeated")
     ap.add_argument("--signing-key", default="",
                     help="FW-2: the QEMU build's test signing key (signed images required)")
     ap.add_argument("--mqtt-port", type=int, default=MQTT_PORT)
@@ -2086,18 +2117,11 @@ def main():
         if want("https"):
             run_https(args, work)
         if want("ota"):
-            # FW-1: hundreds of flash erases and writes per image; Espressif's QEMU sometimes
-            # aborts in one (README 4.3). That is a failed check, not the end of the run.
-            try:
-                run_ota(args, work)
-            except Exception:
-                traceback.print_exc()
-                qemu = (work / "uart0-ota.log.qemu")
-                tail = qemu.read_text(errors="replace").strip().splitlines()[-1:] if qemu.exists() else []
-                check("FW-1 OTA scenario completed", False,
-                      traceback.format_exc().splitlines()[-1] + f"; QEMU: {tail}")
+            # FW-1: hundreds of flash erases and writes and several image verifications; the
+            # emulator sometimes dies in one (README 4.3, issue #86): retried once then
+            run_scenario("FW-1 OTA", lambda: run_ota(args, work))
         if want("nvs"):
-            run_nvs_migration(args, work)
+            run_scenario("issue #67 NVS migration", lambda: run_nvs_migration(args, work))
         if want("slow"):
             run_slow_link(args, work, sdkconfig_int(args.sdkconfig, "GW_MQTT_PUBLISH_BUDGET_MS"))
         if want("main"):
@@ -2135,10 +2159,50 @@ def main():
               f"{len(syslog_from(NODE))} datagrams in {runs} boot(s); gaps {errs[:5]}")
         seq_errors = seq_continuity(CAPTURE)
         check("SPB-5 seq continuity per session", not seq_errors, "; ".join(seq_errors) or "ok")
-        (work / "results.json").write_text(json.dumps(results, indent=2))
+        # issue #86: the retries next to the checks (their discarded checks included)
+        (work / "results.json").write_text(json.dumps({"checks": results, "retries": RETRIES},
+                                                      indent=2))
         failed = [r for r in results if not r["ok"]]
-        print(f"\n{len(results) - len(failed)}/{len(results)} checks passed; artefacts in {work}")
+        retried = (f"; {len(RETRIES)} scenario(s) repeated after QEMU died: " +
+                   ", ".join(f"{r['scenario']} ({r['qemu']})" for r in RETRIES)) if RETRIES else ""
+        print(f"\n{len(results) - len(failed)}/{len(results)} checks passed{retried}; artefacts "
+              f"in {work}")
         sys.exit(1 if failed else 0)
+
+
+def run_scenario(name, fn, retry_on_qemu_death=True):
+    """Issue #86: run scenario @name; if QEMU died under it (the emulator, not the firmware:
+    Gateway.qemu_died), discard its checks and run it once more, recording the retry in the
+    summary and results.json. A failed check with QEMU alive is never retried, nor a second
+    death. An exception that ends the scenario is a failed check, not the end of the run."""
+    for attempt in (1, 2):
+        first_check, first_gw = len(results), len(GATEWAYS)
+        error = None
+        try:
+            fn()
+        except Exception:
+            traceback.print_exc()
+            error = traceback.format_exc().splitlines()[-1]
+        for g in GATEWAYS[first_gw:]:   # leave no emulator of this attempt running
+            if not g.killed and g.proc is not None:
+                try:
+                    g.kill()
+                except OSError:
+                    pass
+        deaths = [d for d in (g.qemu_died() for g in GATEWAYS[first_gw:]) if d]
+        if deaths and retry_on_qemu_death and attempt == 1:
+            discarded = results[first_check:]
+            del results[first_check:]
+            RETRIES.append({"scenario": name, "qemu": deaths[0], "error": error,
+                            "discarded_checks": discarded})
+            print(f"[RETRY] {name}: {deaths[0]}; the scenario runs once more ({len(discarded)} "
+                  f"check(s) of the first attempt discarded)", flush=True)
+            continue
+        if error is not None or deaths:
+            check(f"{name} scenario completed", False,
+                  (error or "") + (f"; {deaths[0]}" if deaths else "") +
+                  ("; second attempt after a QEMU death" if attempt == 2 else ""))
+        return
 
 
 def seq_continuity(msgs):

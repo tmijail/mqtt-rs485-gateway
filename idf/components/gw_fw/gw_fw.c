@@ -102,10 +102,48 @@ static void park(bool on)
         vTaskDelay(1);
     }
 }
+/* The parked core must be core 1: core 0's tick interrupt also runs the interrupt watchdog's
+ * hook, which writes its timer group (TIMG1) and faulted in QEMU during the freeze
+ * (LoadStorePIFAddrError in reconfigure_ticks, seen with an upload served by httpd on core 1);
+ * core 1's hook only sets a flag. So @p fn runs on core 0: here, or in a task pinned there. */
+typedef struct {
+    void (*fn)(void *);
+    void *arg;
+    SemaphoreHandle_t done;
+} core0_call_t;
+
+static void core0_task(void *arg)
+{
+    core0_call_t *c = arg;
+    c->fn(c->arg);
+    xSemaphoreGive(c->done);
+    vTaskDelete(NULL);
+}
+
+static void on_core0(void (*fn)(void *), void *arg)
+{
+    if (xPortGetCoreID() == 0) {
+        fn(arg);
+        return;
+    }
+    StaticSemaphore_t buf;
+    core0_call_t c = {.fn = fn, .arg = arg, .done = xSemaphoreCreateBinaryStatic(&buf)};
+    if (xTaskCreatePinnedToCore(core0_task, "fw_install", 6144, &c, CONFIG_GW_FW_TASK_PRIORITY,
+                                NULL, 0) != pdPASS) {
+        fn(arg);   /* no memory for the task: as on the chip, without the QEMU precaution */
+        return;
+    }
+    xSemaphoreTake(c.done, portMAX_DELAY);
+}
 #else
 static void park(bool on)
 {
     (void)on;
+}
+
+static void on_core0(void (*fn)(void *), void *arg)
+{
+    fn(arg);
 }
 #endif
 
@@ -500,6 +538,24 @@ esp_err_t gw_fw_upload_write(const void *data, size_t len, char *why, size_t cap
     return ESP_OK;
 }
 
+/* Verify the uploaded image and set it to boot, with the other core parked (QEMU). */
+typedef struct {
+    esp_err_t err;
+    bool verified;
+} install_t;
+
+static void install_upload(void *arg)
+{
+    install_t *in = arg;
+    park(true);
+    in->err = esp_ota_end(s_up);   /* verifies the image */
+    in->verified = in->err == ESP_OK;
+    if (in->verified) {
+        in->err = esp_ota_set_boot_partition(s_up_part);
+    }
+    park(false);
+}
+
 esp_err_t gw_fw_upload_end(bool complete, char *why, size_t cap)
 {
     if (!complete || s_up_head_len < HEAD_LEN) {
@@ -509,13 +565,10 @@ esp_err_t gw_fw_upload_end(bool complete, char *why, size_t cap)
         fail("%s", why);
         return ESP_FAIL;
     }
-    park(true);
-    esp_err_t e = esp_ota_end(s_up);   /* verifies the image */
-    bool verified = e == ESP_OK;
-    if (verified) {
-        e = esp_ota_set_boot_partition(s_up_part);
-    }
-    park(false);
+    install_t in = {0};
+    on_core0(install_upload, &in);
+    esp_err_t e = in.err;
+    bool verified = in.verified;
     if (!verified && e == ESP_ERR_OTA_VALIDATE_FAILED) {
         snprintf(why, cap, "image %s rejected (%s)", s_up_version, WHY_INVALID);
     } else if (!verified) {
