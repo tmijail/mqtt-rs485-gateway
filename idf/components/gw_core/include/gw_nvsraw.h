@@ -122,13 +122,32 @@ uint8_t gw_nvsmig_bdseq_later(uint8_t a, uint8_t b);
 
 /* Issue #104: a boot without NVS hands out bdSeq values from RAM. It first reserves a block of
  * them in a small LittleFS file (the first value not handed out yet); the next boot with NVS
- * continues from the later of its own and the reservation, so the bdSeq never goes back to a
- * value the hosts already saw. */
+ * continues from the reservation, so the bdSeq never goes back to a value the hosts already saw.
+ * Issue #108 B3: the file also holds the base the reservations started from (the copy's or the
+ * raw bdSeq). While that base is the one known, the reservation wins at any distance: serial
+ * arithmetic alone picks the base again once boots without NVS have reserved 128 or more. */
 #define GW_NVSMIG_BDSEQ_BLOCK 16u
+
+typedef struct {
+    bool have;               /* a reservation file was read */
+    bool base_known;         /* it has its base (a one-byte file of #104 does not) */
+    uint8_t base;            /* the bdSeq the chain of reservations started from */
+    uint8_t next;            /* the first value not handed out yet */
+} gw_nvsmig_side_t;
 
 /** True when @p next (the next value to hand out) reached the reservation @p reserved: a new
  *  block must be reserved before it is used. */
 bool gw_nvsmig_bdseq_reached(uint8_t next, uint8_t reserved);
+
+/** The first value of a boot without NVS, from the latest bdSeq known otherwise (@p have_known,
+ *  @p known: the copy's, the raw one) and the reservation; @p base: the base of the reservation
+ *  this boot writes. False when nothing is known at all (the caller draws a random value). */
+bool gw_nvsmig_bdseq_start(bool have_known, uint8_t known, const gw_nvsmig_side_t *side,
+                           uint8_t *start, uint8_t *base);
+
+/** The bdSeq of the first boot with NVS after boots without it: the NVS's own (@p have_nvs,
+ *  @p nvs), or the reservation when it continues from that same value, else the later of both. */
+uint8_t gw_nvsmig_bdseq_fold(bool have_nvs, uint8_t nvs, const gw_nvsmig_side_t *side);
 
 /* What the read of the unencrypted NVS achieved before a migration may erase it. */
 typedef struct {
@@ -189,8 +208,9 @@ typedef struct {
  *  - a copy that exists but cannot be read: NO_NVS (it may hold the only copy of the entries);
  *  - issue #104: LittleFS not mountable (a copy may be there, copy_unknown) and the partition
  *    looks like an interrupted migration: EMPTY with the NVS keys present (cut right after the
- *    erase), or ENCRYPTED with the start marker and not the end one (cut while writing): NO_NVS,
- *    not an empty or partial encrypted NVS whose new entries the resume would then drop;
+ *    erase), PLAIN or MIXED with the keys present (cut during the erase, issue #108 B2), or
+ *    ENCRYPTED with the start marker and not the end one (cut while writing): NO_NVS, not an
+ *    empty, partly erased or partial NVS whose new entries the resume would then drop;
  *  - a raw page that cannot be read: no migration. With a valid copy NO_NVS; readable pages
  *    all encrypted OPEN_ENCRYPTED (staying unencrypted would make NVS discard their entries);
  *    readable pages all plain STAY_PLAIN (an unread page holds plain or encrypted entries; the

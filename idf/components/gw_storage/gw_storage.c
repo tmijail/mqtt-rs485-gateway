@@ -32,6 +32,7 @@ static const char *TAG = "storage";
 #define CFG_MOUNT   "/cfg"
 #define CFG_PATH    CFG_MOUNT "/config.json"
 #define CFG_TMP     CFG_MOUNT "/config.json.tmp"
+#define MIG_COPY_NAME CFG_MOUNT "/.nvsmig"   /* issue #94: the NVS migration copy */
 #define CFG_MAX     CONFIG_GW_CONFIG_MAX_BYTES
 #define NVS_NS      "spb"
 #define NVS_BDSEQ   "bdseq"
@@ -90,12 +91,16 @@ static bool s_nvs_failed;    /* a migration could not finish: no NVS this boot (
 static bool s_mig_pending;   /* no NVS this boot, with a copy the confirmed boot applies */
 #if CONFIG_NVS_ENCRYPTION
 /* issue #104: bdSeq values of a boot without NVS, reserved in LittleFS (MIG_BDSEQ) */
-static bool s_side_have;     /* MIG_BDSEQ was there at boot (s_side_value) */
-static uint8_t s_side_value;
+static gw_nvsmig_side_t s_side;   /* MIG_BDSEQ as it was at boot */
 static bool s_side_ok;       /* this boot without NVS keeps its reservation (s_side_reserved) */
+static uint8_t s_side_base;  /* issue #108 B3: the base of this boot's reservations */
 static uint8_t s_side_reserved;
+static bool s_bdseq_random;  /* issue #108 B3: without NVS nor a reservation, random values */
 static bool s_clear_markers; /* a normal encrypted boot: drop stale migration markers */
 #endif
+/* issue #108 M1: no NVS this boot and LittleFS not mountable, with the copy of a migration
+ * possibly in it: nothing may format LittleFS */
+static bool s_copy_unknown;
 static const char *s_nvs_why;   /* why there is no NVS this boot (shell), NULL otherwise */
 
 /* Issue #94: the bdSeq straight from the raw pages of an unencrypted NVS (without initialising
@@ -867,33 +872,39 @@ static bool mig_started(const nvs_sec_cfg_t *cfg)
     return busy && !done;
 }
 
-/* Issue #104: the bdSeq reservation of boots without NVS (MIG_BDSEQ, one byte: the first value
- * not handed out yet). */
-static bool side_read(uint8_t *v)
+/* Issue #104: the bdSeq reservation of boots without NVS (MIG_BDSEQ: the first value not handed
+ * out yet, then, issue #108 B3, the base its chain started from; #104 wrote the first byte only). */
+static void side_read(gw_nvsmig_side_t *s)
 {
+    *s = (gw_nvsmig_side_t){0};
     FILE *f = fopen(MIG_BDSEQ, "rb");
     if (f == NULL) {
-        return false;
+        return;
     }
-    int c = fgetc(f);
+    uint8_t b[2];
+    size_t n = fread(b, 1, sizeof(b), f);
     fclose(f);
-    if (c == EOF) {
-        return false;
-    }
-    *v = (uint8_t)c;
-    return true;
+    s->have = n >= 1;
+    s->next = b[0];
+    s->base_known = n == 2;
+    s->base = n == 2 ? b[1] : 0;
 }
 
+/* Reserves the values before @p from + GW_NVSMIG_BDSEQ_BLOCK. Issue #108 B3: when it cannot be
+ * written, the values of this boot are random: a value handed out without a reservation could be
+ * handed out again by the next boot. */
 static void side_reserve(uint8_t from)
 {
     s_side_reserved = (uint8_t)(from + GW_NVSMIG_BDSEQ_BLOCK);
-    s_side_ok = write_file_atomic(MIG_BDSEQ, MIG_BDSEQ ".tmp", &s_side_reserved, 1) == ESP_OK;
+    const uint8_t b[2] = {s_side_reserved, s_side_base};
+    s_side_ok = write_file_atomic(MIG_BDSEQ, MIG_BDSEQ ".tmp", b, sizeof(b)) == ESP_OK;
     if (s_side_ok) {
         ESP_LOGW(TAG, "no NVS: bdSeq values below %u reserved in " MIG_BDSEQ " (the next boot with "
                       "NVS continues from %u)", s_side_reserved, s_side_reserved);
     } else {
-        ESP_LOGE(TAG, "no NVS, and no bdSeq reservation in " MIG_BDSEQ ": the next boot with NVS "
-                      "may reuse values of this one");
+        s_bdseq_random = true;
+        ESP_LOGE(TAG, "no NVS, and no bdSeq reservation in " MIG_BDSEQ ": random bdSeq values "
+                      "from here on this boot (none is handed out twice on purpose)");
     }
 }
 
@@ -923,9 +934,10 @@ static void nvs_prepare(void)
     if (fs) {
         unlink(MIG_TMP);   /* a copy cut short before its rename: never used */
         copy = copy_load(&buf, &size, &cap, &count, &legacy);
-        s_side_have = side_read(&s_side_value);
-    } else if ((kind == GW_NVSRAW_EMPTY || kind == GW_NVSRAW_ENCRYPTED) && !storage_blank()) {
-        /* issue #104: a copy may be in the LittleFS that does not mount this boot */
+        side_read(&s_side);
+    } else if (!storage_blank()) {
+        /* issue #104: a copy may be in the LittleFS that does not mount this boot (#108 B2: also
+         * with a plain partition, which may be partly erased) */
         unknown = true;
         nvs_sec_scheme_t *scheme = nvs_flash_get_default_security_scheme();
         nvs_sec_cfg_t k;
@@ -957,10 +969,12 @@ static void nvs_prepare(void)
     case GW_NVSMIG_NO_NVS:
         s_nvs_failed = true;
         s_mig_pending = copy == GW_NVSMIG_COPY_VALID;
+        s_copy_unknown = unknown && copy == GW_NVSMIG_COPY_NONE;   /* issue #108 M1 */
         s_nvs_why = unknown && copy == GW_NVSMIG_COPY_NONE
                         ? "LittleFS does not mount and the NVS looks like an interrupted migration "
-                          "whose copy (" MIG_COPY ") is in it: nothing is opened until LittleFS "
-                          "mounts again, so the migration can finish from the copy"
+                          "whose copy (" MIG_COPY ") may be in it: nothing is opened, and LittleFS "
+                          "is not formatted (no configuration can be saved), until it mounts again "
+                          "and the migration finishes from the copy; or a factory reset"
                     : copy == GW_NVSMIG_COPY_UNREADABLE
                         ? "the copy of an NVS migration (" MIG_COPY ") cannot be read: kept, and "
                           "no NVS on any boot until it can, or until a factory reset (BOOT "
@@ -987,11 +1001,19 @@ static void nvs_prepare(void)
         uint8_t c = 0;
         bool have = copy == GW_NVSMIG_COPY_VALID && copy_bdseq(buf, size, &c);
         later_bdseq(&have, &c, raw_have, raw_value);
-        /* issue #104: and the reservation of earlier boots without NVS */
-        later_bdseq(&have, &c, s_side_have, s_side_value);
-        s_bdseq_ram = have ? c : (uint8_t)(esp_random() & 0xFFu);
+        /* issue #104: and the reservation of earlier boots without NVS (#108 B3: its chain wins
+         * while it continues from the same base) */
+        uint8_t start = 0;
+        have = gw_nvsmig_bdseq_start(have, c, &s_side, &start, &s_side_base);
+        s_bdseq_ram = have ? start : (uint8_t)(esp_random() & 0xFFu);
+        if (!have) {
+            s_side_base = s_bdseq_ram;
+        }
         if (fs) {
             side_reserve(s_bdseq_ram);
+        } else {
+            s_bdseq_random = true;   /* #108 B3: no reservation possible: random values */
+            ESP_LOGW(TAG, "no NVS and no LittleFS: random bdSeq values this boot");
         }
     }
     if (buf != NULL) {
@@ -1061,10 +1083,10 @@ const char *gw_storage_nvs_unavailable_why(void)
  * a normal encrypted boot drops migration markers that a failed cleanup left behind. */
 static void nvs_after_open(void)
 {
-    if (s_side_have) {
+    if (s_side.have) {
         uint8_t v = 0;
         bool have = nvs_get_u8(s_nvs, NVS_BDSEQ, &v) == ESP_OK;
-        uint8_t n = have ? gw_nvsmig_bdseq_later(v, s_side_value) : s_side_value;
+        uint8_t n = gw_nvsmig_bdseq_fold(have, v, &s_side);   /* #108 B3 */
         esp_err_t e = ESP_OK;
         if (!have || n != v) {
             e = nvs_set_u8(s_nvs, NVS_BDSEQ, n);
@@ -1099,7 +1121,11 @@ static void side_next(uint8_t next)
 
 uint8_t gw_storage_next_bdseq(void)
 {
+#if CONFIG_NVS_ENCRYPTION
+    uint8_t v = !s_nvs_ok && s_bdseq_random ? (uint8_t)(esp_random() & 0xFFu) : s_bdseq_ram;
+#else
     uint8_t v = s_bdseq_ram;
+#endif
     if (s_nvs_ok) {
         if (nvs_get_u8(s_nvs, NVS_BDSEQ, &v) == ESP_ERR_NVS_NOT_FOUND) {
             v = 0;
@@ -1550,6 +1576,13 @@ static char *read_file(const struct stat *st, size_t *len, gw_cfg_err_t *err)
 
 static bool ensure_mounted(esp_err_t *why)
 {
+    if (!s_mounted && s_copy_unknown) {
+        /* issue #108 M1: the copy of an interrupted NVS migration may be in the partition */
+        ESP_LOGE(TAG, "LittleFS 'storage' not mountable, and it may hold the copy of an NVS "
+                      "migration (" MIG_COPY_NAME "): not formatted");
+        *why = ESP_ERR_INVALID_STATE;
+        return false;
+    }
     if (!s_mounted && !mount(false, why)) {
         /* nothing usable in the partition: saving is the way out of that state */
         ESP_LOGW(TAG, "LittleFS 'storage' not mountable (%s): formatting it to save",
@@ -1847,11 +1880,16 @@ esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_
     char hook_why[120];
     if (!applied) {
         ret = strstr(err->msg, "memoria insuficiente") ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_ARG;
+    } else if (!dry_run && s_copy_unknown && !s_mounted) {
+        /* issue #108 M1: formatting LittleFS to save would destroy the only copy */
+        ret = ESP_ERR_INVALID_STATE;
+        reject(err, "configuración no guardada: LittleFS no monta y puede tener la copia de una "
+                    "migración de NVS (" MIG_COPY_NAME "); formatearlo la perdería (README 6.2.1)");
     } else if (!dry_run && s_commit_hook != NULL &&
                s_commit_hook(GW_STORAGE_COMMIT_CONFIG, hook_why, sizeof(hook_why)) != ESP_OK) {
         /* issue #99: the restart that applies it would roll the new firmware back */
         ret = ESP_ERR_INVALID_STATE;
-        reject(err, "configuración no guardada: %s; reintentar", hook_why);
+        reject(err, "configuración no guardada: %s", hook_why);
     } else if (!dry_run) {
         if (doc.new_web_password &&
             !hash_web_password(cfg, doc.secrets.web_password_hash,
