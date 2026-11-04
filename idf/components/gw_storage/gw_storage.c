@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 
 #include "esp_heap_caps.h"
+#include "esp_memory_utils.h"
 #include "esp_littlefs.h"
 #include "esp_log.h"
 #include "nvs.h"
@@ -71,6 +72,20 @@ static void *boot_alloc(size_t size)
     return heap_caps_malloc_prefer(size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT);
 }
 
+void *gw_storage_big_alloc(size_t size, const char *what)
+{
+    /* Not with EXT_RAM_BSS_ATTR: .bss in PSRAM (SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY) excludes
+     * SPIRAM_IGNORE_NOTFOUND, so a board whose PSRAM is not detected would not boot at all;
+     * this way it still runs from internal RAM. */
+    void *p = heap_caps_calloc_prefer(1, size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (p != NULL) {
+        ESP_LOGI(TAG, "%s: %u B in %s", what, (unsigned)size,
+                 esp_ptr_external_ram(p) ? "PSRAM" : "internal RAM");
+    }
+    return p;
+}
+
 static bool reject(gw_cfg_err_t *err, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
 static bool reject(gw_cfg_err_t *err, const char *fmt, ...)
@@ -93,6 +108,12 @@ static bool load_file(const struct stat *st, gw_config_t *cfg, gw_cfg_err_t *err
                       (long)st->st_size, CFG_MAX);
     }
     size_t size = (size_t)st->st_size;
+    /* Without PSRAM the file and the parser's tree (several times the file) come from the
+     * internal heap: log what is available, so a "memoria insuficiente" can be put in context. */
+    ESP_LOGI(TAG, CFG_PATH ": %zu bytes; free heap: internal %u B (largest block %u B), PSRAM %u B",
+             size, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     char *buf = boot_alloc(size);
     if (buf == NULL) {
         return reject(err, CFG_PATH ": sin memoria para leer %zu bytes", size);

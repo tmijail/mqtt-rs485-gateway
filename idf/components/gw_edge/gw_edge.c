@@ -25,8 +25,12 @@ static const char *TAG = "edge";
 
 #define STACK_BYTES      6144
 #define MAX_IDLE_MS      1000
-#define NET_TIMEOUT_MS   5000   /* esp-mqtt socket timeout; bounded below the task watchdog */
+#define NET_TIMEOUT_MS   5000   /* esp-mqtt socket timeout (one socket write) */
 #define REBOOT_DELAY_MS  100    /* let the log drain */
+#define STABLE_MAX_MS    60000  /* a session is stable after one keepalive period, at most this */
+#define SUBACK_TIMEOUT_MS 5000  /* NBIRTH waits this long at most for the SUBACK */
+#define STR_(x) #x
+#define STR(x)  STR_(x)
 
 enum { EV_WAKE = 0, EV_CMD, EV_WRITE_DONE };
 
@@ -51,6 +55,7 @@ static atomic_bool s_io_dirty;
 static atomic_uint s_conn_gen;
 static atomic_uint s_disc_gen;
 static atomic_uint s_dev_dirty;
+static atomic_int s_suback;     /* msg_id of the last SUBACK, negated if a topic was refused */
 static atomic_uint s_route_gen;
 
 /* ---- queues and buffers (static, REL-2 / MQTT-7) ---- */
@@ -66,7 +71,7 @@ static StackType_t s_stack[STACK_BYTES / sizeof(StackType_t)];
 
 /* ---- owned by the Sparkplug task ---- */
 static const gw_config_t *s_cfg;
-static gw_node_t s_node;
+static gw_node_t *s_node;   /* ~27 KB, in PSRAM when present (gw_storage_big_alloc) */
 static esp_mqtt_client_handle_t s_client;
 static esp_mqtt_client_config_t s_mqtt_cfg;
 static char s_death_topic[GW_TOPIC_MAX];
@@ -77,11 +82,16 @@ static uint8_t s_bdseq;
 static bool s_started;
 static bool s_prev_ip;
 static int64_t s_ip_since_us;
-static uint32_t s_attempt;
+static uint32_t s_attempt;      /* failed attempts since the last stable session (backoff) */
 static int64_t s_retry_at_us;   /* 0: no reconnect scheduled */
+static int64_t s_session_up_us; /* when the current session's NBIRTH went out */
+static int s_sub_msg_id;        /* > 0: SUBSCRIBE sent, NBIRTH waits for its SUBACK */
+static int64_t s_sub_deadline_us;
 static unsigned s_handled_conn;
 static unsigned s_handled_disc;
 static bool s_births_timed;     /* the current session's births carried synchronised time */
+static int64_t s_fed_us;        /* last time this task fed the task watchdog */
+static uint32_t s_max_unfed_ms; /* longest stretch without feeding since the last reset */
 static unsigned s_handled_route;
 static struct ifreq s_ifr;      /* interface the client is bound to (NET-4, two interfaces only) */
 
@@ -182,6 +192,12 @@ static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *da
         atomic_fetch_add(&s_disc_gen, 1);
         wake();
         break;
+    case MQTT_EVENT_SUBSCRIBED:
+        atomic_store(&s_suback, ev->error_handle->error_type == MQTT_ERROR_TYPE_SUBSCRIBE_FAILED
+                                    ? -ev->msg_id
+                                    : ev->msg_id);
+        wake();
+        break;
     case MQTT_EVENT_DATA:
         enqueue_cmd(ev);
         break;
@@ -199,13 +215,34 @@ static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *da
     }
 }
 
+/* ---------- task watchdog ---------- */
+
+/* Feed the TWDT and keep the longest stretch without feeding (logged after the births). A
+ * single loop can publish NBIRTH and up to 16 DBIRTHs (and then 16 DDATAs); on a slow but
+ * live link each publish may take seconds, so the watchdog is fed after every publish, not
+ * once per loop: only one publish has to fit in the watchdog period. */
+static void feed_watchdog(void)
+{
+    int64_t now = esp_timer_get_time();
+    if (s_fed_us != 0) {
+        uint32_t gap = (uint32_t)((now - s_fed_us) / 1000);
+        if (gap > s_max_unfed_ms) {
+            s_max_unfed_ms = gap;
+        }
+    }
+    s_fed_us = now;
+    esp_task_wdt_reset();
+}
+
 /* ---------- node ops (run in the Sparkplug task) ---------- */
 
 static int op_publish(void *ctx, const char *topic, const uint8_t *data, size_t len, int qos,
                       bool retain)
 {
     (void)ctx;
-    return esp_mqtt_client_publish(s_client, topic, (const char *)data, (int)len, qos, retain);
+    int r = esp_mqtt_client_publish(s_client, topic, (const char *)data, (int)len, qos, retain);
+    feed_watchdog();
+    return r;
 }
 
 static bool op_set_do(void *ctx, uint8_t index, bool on)
@@ -242,9 +279,12 @@ static void prepare_attempt(void)
              s_cfg->mqtt.client_id, s_bdseq);
 }
 
-static void start_client(void)
+static void schedule_retry(int64_t now);
+
+static void start_client(int64_t now)
 {
     prepare_attempt();
+    s_retry_at_us = 0;
     /* NET-4: with two interfaces the socket is bound to the active one, so the session really
      * runs where gw_net says (both may reach the broker). The binding is copied by
      * esp_mqtt_client_init and only changes with a new client (move_session). */
@@ -256,7 +296,10 @@ static void start_client(void)
     s_client = esp_mqtt_client_init(&s_mqtt_cfg);
     s_mqtt_cfg.network.if_name = NULL;   /* esp_mqtt_set_config would allocate it again */
     if (s_client == NULL) {
+        /* Out of memory: retry with the same backoff as a failed connection (each attempt
+         * takes a bdSeq and writes NVS, so it must not run once per loop). */
         ESP_LOGE(TAG, "esp_mqtt_client_init failed");
+        schedule_retry(now);
         return;
     }
     ESP_ERROR_CHECK(esp_mqtt_client_register_event(s_client, ESP_EVENT_ANY_ID, on_mqtt_event, NULL));
@@ -283,18 +326,60 @@ static void reconnect(int64_t now)
     }
 }
 
+/* Close a session that cannot work; the DISCONNECTED event schedules the retry (backoff).
+ * DISCONNECT makes the broker drop the will: no NBIRTH went out, so no NDEATH is owed. */
+static void abort_session(const char *why)
+{
+    ESP_LOGW(TAG, "%s: closing the connection", why);
+    s_sub_msg_id = 0;
+    esp_mqtt_client_disconnect(s_client);
+}
+
+/* CONNACK received: subscribe to NCMD and DCMD; the births wait for the SUBACK (on_subscribed),
+ * so a node that is announced online always receives its commands. */
 static void on_connected(void)
 {
-    esp_mqtt_client_subscribe(s_client, s_ncmd_topic, 1);
-    esp_mqtt_client_subscribe(s_client, s_dcmd_topic, 1);
-    s_attempt = 0;
+    const esp_mqtt_topic_t topics[] = {
+        {.filter = s_ncmd_topic, .qos = 1},
+        {.filter = s_dcmd_topic, .qos = 1},
+    };
+    atomic_store(&s_suback, 0);
+    int id = esp_mqtt_client_subscribe_multiple(s_client, topics, 2);
+    feed_watchdog();
+    if (id < 0) {
+        abort_session("SUBSCRIBE to NCMD/DCMD could not be sent");
+        return;
+    }
+    s_sub_msg_id = id;
+    s_sub_deadline_us = esp_timer_get_time() + SUBACK_TIMEOUT_MS * 1000LL;
+}
+
+/* SUBACK received for both topics: the Sparkplug session starts (NBIRTH and DBIRTHs). */
+static void on_subscribed(void)
+{
+    /* s_attempt is not reset here: a broker that accepts the connection and drops it at once
+     * (ACL, duplicate client_id, connection limit) must still see the backoff grow. It is
+     * reset once the session has stayed up for a while (reconcile). */
     s_retry_at_us = 0;
     atomic_store(&s_dev_dirty, 0);   /* the births carry the current state */
     atomic_store(&s_io_dirty, false);
     s_births_timed = atomic_load(&s_time_synced);
-    gw_node_session_up(&s_node, s_bdseq);
+    feed_watchdog();
+    s_max_unfed_ms = 0;
+    int64_t t0 = esp_timer_get_time();
+    gw_node_session_up(s_node, s_bdseq);
+    s_session_up_us = esp_timer_get_time();
     gw_status_set(GW_ST_MQTT_UP, true);
-    ESP_LOGI(TAG, "Sparkplug session up (bdSeq=%u)", s_bdseq);
+    ESP_LOGI(TAG, "Sparkplug session up (bdSeq=%u): births sent in %lu ms, longest stretch "
+             "without feeding the watchdog %lu ms", s_bdseq,
+             (unsigned long)((esp_timer_get_time() - t0) / 1000), (unsigned long)s_max_unfed_ms);
+}
+
+/* How long a session must last before the reconnect backoff starts again from the minimum. */
+static uint32_t stable_ms(void)
+{
+    uint32_t ms = (uint32_t)s_cfg->mqtt.keepalive_s * 1000u;
+    return ms < STABLE_MAX_MS ? ms : STABLE_MAX_MS;
 }
 
 /* NET-4: the active interface changed. A TCP connection cannot migrate, so the session ends
@@ -302,13 +387,14 @@ static void on_connected(void)
 static void move_session(void)
 {
     ESP_LOGW(TAG, "active network interface changed: new MQTT session");
-    if (s_node.online) {
+    if (s_node->online) {
         /* Orderly end, as for a reboot: hosts learn it now and not after a keepalive. Over a
          * dead interface this is lost and the broker publishes the will later; the bdSeq of
          * the new session tells the two apart. */
         esp_mqtt_client_publish(s_client, s_death_topic, (const char *)s_will,
                                 s_mqtt_cfg.session.last_will.msg_len, 1, false);
-        gw_node_session_down(&s_node);
+        feed_watchdog();
+        gw_node_session_down(s_node);
         gw_status_set(GW_ST_MQTT_UP, false);
     }
     esp_mqtt_client_destroy(s_client);   /* DISCONNECT if connected; drops the old binding */
@@ -318,7 +404,8 @@ static void move_session(void)
     s_handled_conn = atomic_load(&s_conn_gen);
     s_handled_disc = atomic_load(&s_disc_gen);
     s_retry_at_us = 0;
-    s_attempt = 0;
+    s_attempt = 0;   /* a new interface starts a fresh backoff */
+    s_sub_msg_id = 0;
 }
 
 /* Bring the Sparkplug state in line with the flags set by the other tasks. */
@@ -326,6 +413,14 @@ static void reconcile(void)
 {
     int64_t now = esp_timer_get_time();
     bool ip = atomic_load(&s_ip_up);
+    /* The MQTT task stores the flag before it bumps a generation, so the generations must be
+     * read before the flag: then a generation is only ever consumed with a flag at least as
+     * recent as the event that bumped it. Read the other way round, a CONNECTED landing
+     * between the two loads was consumed with connected == false and the session stayed up
+     * forever without subscriptions or NBIRTH (and a DISCONNECTED, symmetrically, without a
+     * reconnect). An event that lands after these loads is handled on the next loop. */
+    unsigned cg = atomic_load(&s_conn_gen);
+    unsigned dg = atomic_load(&s_disc_gen);
     bool connected = atomic_load(&s_mqtt_connected);
     if (ip && !s_prev_ip) {
         s_ip_since_us = now;
@@ -338,22 +433,44 @@ static void reconcile(void)
         s_handled_route = rg;
         if (s_started) {
             move_session();
+            /* move_session consumed the generations of the old client: nothing of it is
+             * handled below (no on_connected, no retry: the new client starts at once). */
             connected = false;
+            cg = s_handled_conn;
+            dg = s_handled_disc;
         }
     }
 
-    unsigned cg = atomic_load(&s_conn_gen);
     if (cg != s_handled_conn) {
         s_handled_conn = cg;
+        s_sub_msg_id = 0;
         if (connected) {
             on_connected();
         }
     }
-    if (s_node.online && !connected) {
-        gw_node_session_down(&s_node);
+    if (s_sub_msg_id > 0) {
+        int ack = atomic_load(&s_suback);
+        if (!connected) {
+            s_sub_msg_id = 0;
+        } else if (ack == s_sub_msg_id) {
+            s_sub_msg_id = 0;
+            on_subscribed();
+        } else if (ack == -s_sub_msg_id) {
+            abort_session("the broker refused the NCMD/DCMD subscriptions");
+        } else if (now >= s_sub_deadline_us) {
+            abort_session("no SUBACK for NCMD/DCMD within " STR(SUBACK_TIMEOUT_MS) " ms");
+        }
+    }
+    if (s_node->online && connected && s_attempt != 0 &&
+        now - s_session_up_us >= stable_ms() * 1000LL) {
+        ESP_LOGI(TAG, "session stable for %lu ms: reconnect backoff reset",
+                 (unsigned long)stable_ms());
+        s_attempt = 0;
+    }
+    if (s_node->online && !connected) {
+        gw_node_session_down(s_node);
         gw_status_set(GW_ST_MQTT_UP, false);
     }
-    unsigned dg = atomic_load(&s_disc_gen);
     if (dg != s_handled_disc) {
         s_handled_disc = dg;
         if (!connected) {
@@ -361,29 +478,32 @@ static void reconcile(void)
         }
     }
 
-    if (!s_started && ip &&
+    if (!s_started && ip && (s_retry_at_us == 0 || now >= s_retry_at_us) &&
         (atomic_load(&s_time_synced) || now - s_ip_since_us >= CONFIG_GW_SNTP_WAIT_MS * 1000LL)) {
-        start_client();
+        start_client(now);
     }
     if (s_started && s_retry_at_us != 0 && now >= s_retry_at_us && ip && !connected) {
         reconnect(now);
     }
 
-    if (s_node.online && !s_births_timed && atomic_load(&s_time_synced)) {
+    if (gw_io_outputs_recover()) {
+        atomic_store(&s_io_dirty, true);   /* NDATA: the DOs go from null to their state */
+    }
+    if (s_node->online && !s_births_timed && atomic_load(&s_time_synced)) {
         /* Births went out before SNTP: re-issue them so hosts get valid timestamps. */
         s_births_timed = true;
         ESP_LOGI(TAG, "clock now synchronised: rebirth");
-        gw_node_rebirth(&s_node);
+        gw_node_rebirth(s_node);
     }
-    if (s_node.online) {
+    if (s_node->online) {
         unsigned dirty = atomic_exchange(&s_dev_dirty, 0);
         for (uint16_t d = 0; dirty != 0; d++, dirty >>= 1) {
             if (dirty & 1u) {
-                gw_node_device_changed(&s_node, d);
+                gw_node_device_changed(s_node, d);
             }
         }
         if (atomic_exchange(&s_io_dirty, false)) {
-            gw_node_io_changed(&s_node);
+            gw_node_io_changed(s_node);
         }
     }
 }
@@ -392,11 +512,15 @@ static TickType_t next_timeout(void)
 {
     int64_t ms = MAX_IDLE_MS;
     int64_t now = esp_timer_get_time();
+    if (s_sub_msg_id > 0) {
+        int64_t r = (s_sub_deadline_us - now) / 1000;
+        ms = r < ms ? r : ms;
+    }
     if (s_retry_at_us != 0) {
         int64_t r = (s_retry_at_us - now) / 1000;
         ms = r < ms ? r : ms;
     }
-    if (!s_started && s_prev_ip) {
+    if (!s_started && s_prev_ip && s_retry_at_us == 0) {
         int64_t r = (s_ip_since_us + CONFIG_GW_SNTP_WAIT_MS * 1000LL - now) / 1000;
         ms = r < ms ? r : ms;
     }
@@ -410,18 +534,18 @@ static void edge_task(void *arg)
     for (;;) {
         edge_ev_t ev;
         bool got = xQueueReceive(s_q, &ev, next_timeout()) == pdTRUE;
-        esp_task_wdt_reset();
+        feed_watchdog();
         reconcile();
         if (!got) {
             continue;
         }
         if (ev.type == EV_CMD) {
             const cmd_slot_t *c = &s_slots[ev.arg];
-            gw_node_handle_message(&s_node, c->topic, c->topic_len, c->data, c->len);
+            gw_node_handle_message(s_node, c->topic, c->topic_len, c->data, c->len);
             uint8_t slot = (uint8_t)ev.arg;
             xQueueSend(s_free_slots, &slot, 0);
         } else if (ev.type == EV_WRITE_DONE) {
-            gw_node_write_done(&s_node, ev.arg, ev.ok);
+            gw_node_write_done(s_node, ev.arg, ev.ok);
         }
     }
 }
@@ -429,6 +553,10 @@ static void edge_task(void *arg)
 esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
 {
     s_cfg = cfg;
+    s_node = gw_storage_big_alloc(sizeof(*s_node), "Sparkplug engine");
+    if (s_node == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
     const gw_node_ops_t ops = {
         .publish = op_publish,
         .set_do = op_set_do,
@@ -436,10 +564,10 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         .reboot = op_reboot,
         .ctx = NULL,
     };
-    gw_node_init(&s_node, cfg, &ops, info);
-    if (!gw_node_topic(&s_node, "NDEATH", NULL, s_death_topic, sizeof(s_death_topic)) ||
-        !gw_node_topic(&s_node, "NCMD", NULL, s_ncmd_topic, sizeof(s_ncmd_topic)) ||
-        !gw_node_topic(&s_node, "DCMD", "+", s_dcmd_topic, sizeof(s_dcmd_topic))) {
+    gw_node_init(s_node, cfg, &ops, info);
+    if (!gw_node_topic(s_node, "NDEATH", NULL, s_death_topic, sizeof(s_death_topic)) ||
+        !gw_node_topic(s_node, "NCMD", NULL, s_ncmd_topic, sizeof(s_ncmd_topic)) ||
+        !gw_node_topic(s_node, "DCMD", "+", s_dcmd_topic, sizeof(s_dcmd_topic))) {
         return ESP_ERR_INVALID_SIZE;
     }
 

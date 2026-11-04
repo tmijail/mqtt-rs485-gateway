@@ -93,6 +93,22 @@ typedef struct {
 
 bool decode_payload(const uint8_t *buf, size_t len, decoded_t *out);
 
+/* Hand-encoded command metric: unlike spb_encode() it can omit the alias and carry names or
+ * strings longer than the codec accepts (SPB_NAME_MAX / SPB_STRING_MAX). */
+typedef enum { RAW_BOOL, RAW_FLOAT, RAW_STRING } raw_kind_t;
+typedef struct {
+    const char *name;   /* NULL: omitted */
+    bool has_alias;
+    uint64_t alias;
+    uint32_t datatype;
+    raw_kind_t kind;
+    double num;
+    const char *str;
+} raw_metric_t;
+
+/* Protobuf Payload {timestamp, metrics} built by hand. Returns its length. */
+size_t raw_payload(uint8_t *out, size_t cap, const raw_metric_t *m, size_t n);
+
 /* Index of the metric with @p alias in @p d, or -1. */
 int decoded_find_alias(const decoded_t *d, uint64_t alias);
 int decoded_find_name(const decoded_t *d, const char *name);

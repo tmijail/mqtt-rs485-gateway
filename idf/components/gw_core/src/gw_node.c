@@ -117,12 +117,14 @@ static void publish_nbirth(gw_node_t *n)
             ->v.num = (io.di >> k) & 1u;
     }
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
-        metric(n, i++, k_do_names[k], GW_ALIAS_DO_BASE + k, SPB_DT_BOOLEAN,
-               io.do_ts_ms ? io.do_ts_ms : now)
-            ->v.num = (io.dout >> k) & 1u;
+        spb_metric_t *m = metric(n, i++, k_do_names[k], GW_ALIAS_DO_BASE + k, SPB_DT_BOOLEAN,
+                                 io.do_ts_ms ? io.do_ts_ms : now);
+        m->v.num = (io.dout >> k) & 1u;
+        m->is_null = io.do_unknown;   /* the latch may hold anything: never claim "off" */
     }
     n->di_reported = io.di;
     n->do_reported = io.dout;
+    n->do_unknown_reported = io.do_unknown;
     publish(n, "NBIRTH", NULL, i, 0);
 }
 
@@ -209,6 +211,9 @@ static void publish_io(gw_node_t *n, uint8_t force_do)
     gw_tagdb_get_io(&io);
     uint8_t di_changed = io.di ^ n->di_reported;
     uint8_t do_changed = (uint8_t)((io.dout ^ n->do_reported) | force_do);
+    if (io.do_unknown != n->do_unknown_reported) {
+        do_changed = 0xFF;   /* expander lost or recovered: every DO changes (null <-> value) */
+    }
     size_t count = 0;
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         if (di_changed & (1u << k)) {
@@ -218,12 +223,15 @@ static void publish_io(gw_node_t *n, uint8_t force_do)
     }
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         if (do_changed & (1u << k)) {
-            metric(n, count++, NULL, GW_ALIAS_DO_BASE + k, SPB_DT_BOOLEAN, io.do_ts_ms)->v.num =
-                (io.dout >> k) & 1u;
+            spb_metric_t *m = metric(n, count++, NULL, GW_ALIAS_DO_BASE + k, SPB_DT_BOOLEAN,
+                                     io.do_ts_ms);
+            m->v.num = (io.dout >> k) & 1u;
+            m->is_null = io.do_unknown;
         }
     }
     n->di_reported = io.di;
     n->do_reported = io.dout;
+    n->do_unknown_reported = io.do_unknown;
     if (count > 0) {
         publish(n, "NDATA", NULL, count, 0);
     }
@@ -242,7 +250,7 @@ void gw_node_write_done(gw_node_t *n, uint16_t tag, bool ok)
         return;
     }
     uint16_t dev = gw_config_tag_device(n->cfg, tag);
-    if (!n->dev_born[dev]) {
+    if (dev == GW_NO_DEVICE || !n->dev_born[dev]) {
         return;
     }
     gw_tag_value_t v;
@@ -261,8 +269,13 @@ static bool rx_true(const spb_rx_metric_t *m)
 
 static void log_discard(const char *kind, const spb_rx_metric_t *m, const char *why)
 {
-    GW_LOGW(TAG, "%s: metric '%s' (alias %" PRIu64 ") discarded: %s", kind,
-            m->name ? m->name : "", m->has_alias ? m->alias : 0, why);
+    /* Show only what the command carried: a missing alias is not "alias 0". */
+    if (m->has_alias) {
+        GW_LOGW(TAG, "%s: metric '%s' (alias %" PRIu64 ") discarded: %s", kind,
+                m->name ? m->name : "", m->alias, why);
+    } else {
+        GW_LOGW(TAG, "%s: metric '%s' discarded: %s", kind, m->name ? m->name : "", why);
+    }
 }
 
 static bool on_ncmd_metric(void *ctx, const spb_rx_metric_t *m)
@@ -364,9 +377,12 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
         }
         n->cmd_rebirth = n->cmd_reboot = false;
         n->cmd_do_mask = 0;
-        if (!spb_decode(payload, len, NULL, on_ncmd_metric, n)) {
-            GW_LOGW(TAG, "NCMD: undecodable payload (%u bytes)", (unsigned)len);
+        /* All or nothing: decode the whole payload first, then apply it. */
+        if (!spb_decode(payload, len, NULL, NULL, NULL)) {
+            GW_LOGW(TAG, "NCMD: undecodable payload (%u bytes): nothing applied", (unsigned)len);
+            return;
         }
+        spb_decode(payload, len, NULL, on_ncmd_metric, n);
         if (n->cmd_do_mask) {
             publish_io(n, n->cmd_do_mask);
         }
@@ -401,8 +417,10 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
             return;
         }
         n->cmd_dev = dev;
-        if (!spb_decode(payload, len, NULL, on_dcmd_metric, n)) {
-            GW_LOGW(TAG, "DCMD: undecodable payload (%u bytes)", (unsigned)len);
+        if (!spb_decode(payload, len, NULL, NULL, NULL)) {
+            GW_LOGW(TAG, "DCMD: undecodable payload (%u bytes): nothing applied", (unsigned)len);
+            return;
         }
+        spb_decode(payload, len, NULL, on_dcmd_metric, n);
     }
 }

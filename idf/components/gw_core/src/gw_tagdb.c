@@ -78,6 +78,16 @@ void gw_tagdb_set_do(uint8_t dout, uint64_t ts_ms)
 {
     gw_port_lock();
     s_io.dout = dout;
+    s_io.do_unknown = false;
+    s_io.do_ts_ms = ts_ms;
+    gw_port_unlock();
+}
+
+void gw_tagdb_set_do_unknown(uint64_t ts_ms)
+{
+    gw_port_lock();
+    s_io.dout = 0;
+    s_io.do_unknown = true;
     s_io.do_ts_ms = ts_ms;
     gw_port_unlock();
 }

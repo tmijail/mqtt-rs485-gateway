@@ -62,6 +62,14 @@
           "address": 0,
           "type": "bool",
           "writable": true
+        },
+        {
+          "name": "Limit",
+          "area": "holding",
+          "address": 20,
+          "type": "float32",
+          "word_order": "big",
+          "writable": true
         }
       ]
     },
@@ -429,6 +437,48 @@
           "name": "Holding_Register_159_Value",
           "area": "holding",
           "address": 159,
+          "type": "uint16"
+        }
+      ]
+    },
+    {
+      "name": "Dead3",
+      "unit_id": 3,
+      "poll_ms": 1000,
+      "offline_after": 3,
+      "tags": [
+        {
+          "name": "Value",
+          "area": "holding",
+          "address": 0,
+          "type": "uint16"
+        }
+      ]
+    },
+    {
+      "name": "Dead4",
+      "unit_id": 4,
+      "poll_ms": 1000,
+      "offline_after": 3,
+      "tags": [
+        {
+          "name": "Value",
+          "area": "holding",
+          "address": 0,
+          "type": "uint16"
+        }
+      ]
+    },
+    {
+      "name": "Dead5",
+      "unit_id": 5,
+      "poll_ms": 1000,
+      "offline_after": 3,
+      "tags": [
+        {
+          "name": "Value",
+          "area": "holding",
+          "address": 0,
           "type": "uint16"
         }
       ]

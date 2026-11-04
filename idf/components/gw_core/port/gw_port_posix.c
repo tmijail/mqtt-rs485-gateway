@@ -5,9 +5,21 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/time.h>
 
 static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
+static char *s_capture;
+static size_t s_capture_cap;
+
+void gw_port_log_capture(char *buf, size_t cap)
+{
+    s_capture = buf;
+    s_capture_cap = cap;
+    if (buf != NULL && cap > 0) {
+        buf[0] = '\0';
+    }
+}
 
 void gw_port_init(void)
 {
@@ -37,6 +49,24 @@ void gw_port_log(char level, const char *tag, const char *fmt, ...)
     if (verbose < 0) {
         const char *v = getenv("GW_TEST_VERBOSE");
         verbose = (v != NULL && v[0] == '1');
+    }
+    if (s_capture != NULL) {
+        size_t used = strlen(s_capture);
+        if (used + 1 < s_capture_cap) {
+            int n = snprintf(s_capture + used, s_capture_cap - used, "%c (%s) ", level, tag);
+            used += n > 0 ? (size_t)n : 0;
+            if (used + 1 < s_capture_cap) {
+                va_list cp;
+                va_start(cp, fmt);
+                n = vsnprintf(s_capture + used, s_capture_cap - used, fmt, cp);
+                va_end(cp);
+                used += n > 0 ? (size_t)n : 0;
+            }
+            if (used + 1 < s_capture_cap) {
+                s_capture[used] = '\n';
+                s_capture[used + 1] = '\0';
+            }
+        }
     }
     if (!verbose && level != 'E') {
         return;

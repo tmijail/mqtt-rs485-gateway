@@ -74,6 +74,7 @@ typedef struct {
     gw_rbe_t tag_rbe[GW_MAX_TAGS];
     uint8_t di_reported;
     uint8_t do_reported;
+    bool do_unknown_reported;          /* DOs last published as null (expander not answering) */
 
     /* Scratch, statically sized (REL-2). */
     gw_tag_value_t vals[GW_MAX_TAGS_PER_DEVICE];

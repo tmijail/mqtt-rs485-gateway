@@ -11,6 +11,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "gw_io.h"
 #include "gw_log.h"
 #include "gw_net.h"
@@ -92,7 +93,29 @@ static int cmd_status(int argc, char **argv)
     }
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
-    printf("local    DI 0x%02x, DO 0x%02x (bit n = channel n+1, 1 = active)\n", io.di, io.dout);
+    if (io.do_unknown) {
+        printf("local    DI 0x%02x, DO unknown: output expander not answering (retrying)\n", io.di);
+    } else {
+        printf("local    DI 0x%02x, DO 0x%02x (bit n = channel n+1, 1 = active)\n", io.di, io.dout);
+    }
+    /* Core of each task that matters for timing ("-" = no affinity; tasks not running, such as
+     * the Ethernet RX task of the other MAC, are omitted). */
+    static const char *const tasks[] = {"rs485_bus", "sparkplug", "tcpip", "mqtt_task",
+                                        "w5500_tsk", "emac_rx",   "wifi",      "sys_evt"};
+    printf("tasks   ");
+    for (size_t i = 0; i < sizeof(tasks) / sizeof(tasks[0]); i++) {
+        TaskHandle_t h = xTaskGetHandle(tasks[i]);
+        if (h == NULL) {
+            continue;
+        }
+        BaseType_t core = xTaskGetCoreID(h);
+        if (core == tskNO_AFFINITY) {
+            printf(" %s -", tasks[i]);
+        } else {
+            printf(" %s %d", tasks[i], (int)core);
+        }
+    }
+    printf(" (core)\n");
     printf("heap     internal %u B free (minimum %u B), PSRAM %u B free\n",
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
@@ -270,6 +293,17 @@ static int cmd_di(int argc, char **argv)
     gw_io_sim_set_di((uint8_t)(ch - 1), level == 1);
     return 0;
 }
+
+/* Emulator only: crash on purpose, so the E2E can check the core dump in flash and the
+ * "panic" reset reason. */
+static int cmd_panic(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    printf("panic requested from the console\n");
+    fflush(stdout);
+    abort();
+}
 #endif
 
 static esp_err_t new_repl(const esp_console_repl_config_t *rc, esp_console_repl_t **repl)
@@ -307,6 +341,7 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
 #if CONFIG_GW_IO_SIMULATED
         {.command = "di", .help = "Emulator only: set a simulated input", .hint = "<1-8> <0|1>",
          .func = cmd_di},
+        {.command = "panic", .help = "Emulator only: abort() (core dump test)", .func = cmd_panic},
 #endif
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {

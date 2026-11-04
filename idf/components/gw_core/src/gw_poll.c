@@ -1,5 +1,6 @@
 #include "gw_poll.h"
 
+#include <math.h>
 #include <string.h>
 
 #include "gw_conv.h"
@@ -35,10 +36,11 @@ static double decode_member(const gw_tag_cfg_t *t, const mb_response_t *rsp, uin
 }
 
 /* One transaction to @p dev; the attempts it took are added to the device's counters. */
-static mb_status_t execute(gw_poller_t *p, uint16_t dev, const mb_request_t *rq, mb_response_t *rsp)
+static mb_status_t execute_n(gw_poller_t *p, uint16_t dev, const mb_request_t *rq,
+                             mb_response_t *rsp, uint8_t retries)
 {
     const mb_stats_t before = p->mb->stats;
-    mb_status_t st = mb_master_execute(p->mb, rq, rsp);
+    mb_status_t st = mb_master_execute_retries(p->mb, rq, rsp, retries);
     const mb_stats_t *after = &p->mb->stats;
     mb_stats_t *acc = &p->stats[dev].bus;
     acc->ok += after->ok - before.ok;
@@ -47,6 +49,16 @@ static mb_status_t execute(gw_poller_t *p, uint16_t dev, const mb_request_t *rq,
     acc->frame += after->frame - before.frame;
     acc->exception += after->exception - before.exception;
     return st;
+}
+
+static mb_status_t execute(gw_poller_t *p, uint16_t dev, const mb_request_t *rq, mb_response_t *rsp)
+{
+    return execute_n(p, dev, rq, rsp, p->mb->cfg.retries);
+}
+
+static bool is_offline(const gw_poller_t *p, uint16_t dev)
+{
+    return !p->state[dev].online && p->state[dev].fail_streak >= p->cfg->devices[dev].offline_after;
 }
 
 void gw_poller_init(gw_poller_t *p, const gw_config_t *cfg, mb_master_t *mb,
@@ -99,12 +111,13 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
      * a row declare the device offline (DDEATH, all values invalid), and only a complete
      * cycle brings it (back) online, so a DBIRTH never carries a value that was not read. */
     bool failed = false;
+    bool probe = is_offline(p, dev);   /* first request: a single attempt (see gw_poll.h) */
     for (uint16_t b = 0; b < p->plan.dev_block_count[dev] && !failed; b++) {
         const gw_block_t *blk = &p->plan.blocks[p->plan.dev_first_block[dev] + b];
         mb_request_t rq = {
             .unit = d->unit_id, .fc = read_fc(blk->area), .addr = blk->start, .qty = blk->qty};
         mb_response_t rsp;
-        mb_status_t st = execute(p, dev, &rq, &rsp);
+        mb_status_t st = execute_n(p, dev, &rq, &rsp, probe && b == 0 ? 0 : p->mb->cfg.retries);
         if (st != MB_OK && st != MB_ERR_EXCEPTION) {
             failed = true;
             GW_LOGD(TAG, "%s: fc %u addr %u qty %u unanswered (status %d); cycle failed", d->name,
@@ -147,6 +160,18 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
     gw_tagdb_put_device(cfg, dev, p->work, p->state[dev].online);
     gw_tagdb_put_stats(dev, &p->stats[dev]);
 
+    if (is_offline(p, dev)) {
+        /* Offline: probe again after an exponential backoff, measured from this cycle. */
+        uint32_t cap = d->poll_ms > p->opts.offline_probe_max_ms ? d->poll_ms
+                                                                 : p->opts.offline_probe_max_ms;
+        uint32_t next = p->probe_ms[dev] == 0 ? d->poll_ms : p->probe_ms[dev];
+        next = next > cap / 2 ? cap : next * 2;
+        p->probe_ms[dev] = next;
+        p->next_due_ms[dev] = now_ms + next;
+        GW_LOGD(TAG, "%s offline: next probe in %lu ms", d->name, (unsigned long)next);
+        return ev;
+    }
+    p->probe_ms[dev] = 0;
     p->next_due_ms[dev] += d->poll_ms;
     if ((int32_t)(p->next_due_ms[dev] - now_ms) <= 0) {
         p->next_due_ms[dev] = now_ms + d->poll_ms;  /* overrun: skip, never burst to catch up */
@@ -157,8 +182,12 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
 gw_write_status_t gw_poller_write(gw_poller_t *p, uint16_t tag, double value)
 {
     const gw_config_t *cfg = p->cfg;
-    const gw_tag_cfg_t *t = &cfg->tags[tag];
     uint16_t dev = gw_config_tag_device(cfg, tag);
+    if (dev == GW_NO_DEVICE) {
+        GW_LOGE(TAG, "write to tag %u: no such tag", tag);
+        return GW_WRITE_UNKNOWN_TAG;
+    }
+    const gw_tag_cfg_t *t = &cfg->tags[tag];
     const gw_device_cfg_t *d = &cfg->devices[dev];
     if (!t->writable) {
         return GW_WRITE_NOT_WRITABLE;
@@ -170,6 +199,12 @@ gw_write_status_t gw_poller_write(gw_poller_t *p, uint16_t tag, double value)
     double confirmed;
 
     if (t->area == GW_AREA_COIL) {
+        /* NaN != 0.0 is true: without this check a NaN command would switch the coil ON. */
+        if (!isfinite(value)) {
+            GW_LOGW(TAG, "%s/%s: value %g not representable (not a finite number)", d->name,
+                    t->name, value);
+            return GW_WRITE_BAD_VALUE;
+        }
         bool on = value != 0.0;
         confirmed = on ? 1.0 : 0.0;
         if (p->opts.force_multi_write) {

@@ -327,3 +327,65 @@ int decoded_find_name(const decoded_t *d, const char *name)
     }
     return -1;
 }
+
+/* ---------- hand-encoded payloads ---------- */
+
+static size_t put_varint(uint8_t *out, uint64_t v)
+{
+    size_t n = 0;
+    do {
+        out[n] = (uint8_t)(v & 0x7Fu);
+        v >>= 7;
+        if (v != 0) {
+            out[n] |= 0x80u;
+        }
+        n++;
+    } while (v != 0);
+    return n;
+}
+
+static size_t put_bytes(uint8_t *out, uint8_t key, const void *data, size_t len)
+{
+    size_t n = 0;
+    out[n++] = key;
+    n += put_varint(&out[n], len);
+    memcpy(&out[n], data, len);
+    return n + len;
+}
+
+size_t raw_payload(uint8_t *out, size_t cap, const raw_metric_t *m, size_t count)
+{
+    static uint8_t metric[1024];
+    size_t n = 0;
+    out[n++] = 0x08;   /* timestamp = 1 */
+    out[n++] = 0x01;
+    for (size_t i = 0; i < count; i++) {
+        size_t k = 0;
+        if (m[i].name != NULL) {
+            k += put_bytes(&metric[k], 0x0A, m[i].name, strlen(m[i].name));   /* 1: name */
+        }
+        if (m[i].has_alias) {
+            metric[k++] = 0x10;                                               /* 2: alias */
+            k += put_varint(&metric[k], m[i].alias);
+        }
+        metric[k++] = 0x20;                                                   /* 4: datatype */
+        k += put_varint(&metric[k], m[i].datatype);
+        if (m[i].kind == RAW_BOOL) {
+            metric[k++] = 0x70;                                               /* 14: boolean */
+            metric[k++] = m[i].num != 0.0 ? 1u : 0u;
+        } else if (m[i].kind == RAW_FLOAT) {
+            float f = (float)m[i].num;
+            metric[k++] = 0x65;                                               /* 12: float */
+            memcpy(&metric[k], &f, 4);
+            k += 4;
+        } else {
+            k += put_bytes(&metric[k], 0x7A, m[i].str, strlen(m[i].str));    /* 15: string */
+        }
+        if (n + k + 8 > cap) {
+            fprintf(stderr, "raw_payload: buffer too small\n");
+            abort();
+        }
+        n += put_bytes(&out[n], 0x12, metric, k);                             /* 2: metrics */
+    }
+    return n;
+}

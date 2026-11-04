@@ -80,6 +80,10 @@ static void test_spec_example(void)
     TEST_ASSERT_EQUAL(2, gw_config_find_tag(&cfg, 0, "Run"));
     TEST_ASSERT_EQUAL(-1, gw_config_find_tag(&cfg, 0, "Nope"));
     TEST_ASSERT_EQUAL(0, gw_config_find_device(&cfg, "Meter1", 6));
+    /* issue #13: out of range is a sentinel, not device 0 */
+    TEST_ASSERT_EQUAL(0, gw_config_tag_device(&cfg, 2));
+    TEST_ASSERT_EQUAL(GW_NO_DEVICE, gw_config_tag_device(&cfg, 3));
+    TEST_ASSERT_EQUAL(GW_NO_DEVICE, gw_config_tag_device(&cfg, UINT16_MAX));
     TEST_ASSERT_EQUAL(-1, gw_config_find_device(&cfg, "Meter", 5));
 }
 
