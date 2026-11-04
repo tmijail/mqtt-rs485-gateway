@@ -652,6 +652,168 @@ static void test_copy_load(void)
     TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_BAD, gw_nvsmig_load(w, size, sizeof(w), &out, &legacy, &count));
 }
 
+/* ---------- issue #97: what the review found untested ---------- */
+
+/* entry @p i of @p pg: a copy of the 32-byte entry @p src with item span @p span, CRC fixed, and
+ * marked written in the state bitmap */
+static void put_entry(uint8_t *pg, unsigned i, const uint8_t *src, uint8_t span)
+{
+    uint8_t *e = pg + 64 + 32 * i;
+    memcpy(e, src, 32);
+    e[2] = span;
+    uint32_t c = gw_nvsraw_crc32(0xFFFFFFFFu, e, 4);
+    c = gw_nvsraw_crc32(c, e + 8, 16);
+    wr32(e + 4, gw_nvsraw_crc32(c, e + 24, 8));
+    uint8_t *w = pg + 32 + (i / 16u) * 4u;
+    wr32(w, rd32(w) & ~(1u << ((i % 16u) * 2u)));   /* 11 (empty) -> 10 (written) */
+}
+
+/* NVS reads FULL and FREEING pages as it reads the ACTIVE one; CORRUPT (0xFFFFFFF0), INVALID (0)
+ * and uninitialised pages it does not read. The state word is outside the header CRC. */
+static void test_page_states(void)
+{
+    static const struct {
+        uint32_t state;
+        bool read;
+    } k[] = {{0xFFFFFFFEu, true}, {0xFFFFFFFCu, true}, {0xFFFFFFF8u, true},
+             {0xFFFFFFF0u, false}, {0x00000000u, false}, {0xFFFFFFFFu, false}};
+    for (size_t n = 0; n < sizeof(k) / sizeof(k[0]); n++) {
+        for (int enc = 0; enc < 2; enc++) {
+            gw_nvsraw_scan_t s;
+            load(enc ? k_enc : k_plain);
+            wr32(page, k[n].state);
+            gw_nvsraw_kind_t v = scan(page, &s);
+            TEST_ASSERT_EQUAL_UINT32(k[n].read ? 1 : 0, s.pages);
+            TEST_ASSERT_EQUAL(k[n].read ? (enc ? GW_NVSRAW_ENCRYPTED : GW_NVSRAW_PLAIN)
+                                        : GW_NVSRAW_EMPTY, v);
+        }
+        /* the bdSeq is read from a full or freeing page too (a page that filled up) */
+        gw_nvsraw_u8_t f;
+        gw_nvsraw_u8_init(&f, "spb", "bdseq");
+        load(k_plain);
+        wr32(page, k[n].state);
+        gw_nvsraw_u8_ns(&f, page);
+        gw_nvsraw_u8_item(&f, page);
+        TEST_ASSERT_EQUAL(k[n].read, f.found);
+    }
+    /* a migration interrupted on a device whose NVS spans pages: one full page still plain, the
+     * active one already encrypted -> mixed (the plain entries are the newer ones, #94) */
+    static uint8_t full[GW_NVSRAW_PAGE];
+    memcpy(full, load(k_plain), sizeof(full));
+    wr32(full, 0xFFFFFFFCu);
+    gw_nvsraw_scan_t s;
+    gw_nvsraw_scan_init(&s);
+    gw_nvsraw_scan_page(&s, full);
+    gw_nvsraw_scan_page(&s, load(k_enc));
+    TEST_ASSERT_EQUAL_UINT32(2, s.pages);
+    TEST_ASSERT_EQUAL(GW_NVSRAW_MIXED, gw_nvsraw_verdict(&s));
+}
+
+/* Decision (issue #97): a page counts as plain while its valid plain items are at least as many
+ * as its written entries that fail the CRC (`plain_ok >= bad`), and that stays. A valid plain
+ * CRC on an XTS-encrypted entry is a 2^-32 chance, but a page read as plain next to encrypted
+ * ones is MIXED and migrated, erasing the encrypted entries: the rule must not let a few chance
+ * matches win. A real unencrypted NVS does not have more bad entries than good ones (NVS marks
+ * an entry written only after writing it); if bit rot gets there, the page reads as encrypted,
+ * the boot opens the encrypted NVS and the old entries are lost, as they would be with any
+ * reading of so damaged a partition. Note that a corrupt item header counts its data entries as
+ * bad too (its span cannot be trusted): three corrupt strings or blobs on a page of eight items
+ * are enough (README 6.2.1). */
+static void test_more_bad_than_plain(void)
+{
+    gw_nvsraw_scan_t s;
+    /* page 0 of k_plain: namespaces at 0, 2, 7; bdseq at 1; strings at 3 (+4) and 5 (+6); the
+     * lkg_net blob data at 8 (+9) and its index at 10: 8 items in 11 written entries */
+    /* the commission and mqtt_pw headers corrupt: 6 valid items, 4 bad entries: plain */
+    load(k_plain);
+    page[64 + 32 * 3 + 9] ^= 0x01;
+    page[64 + 32 * 5 + 9] ^= 0x01;
+    TEST_ASSERT_EQUAL(GW_NVSRAW_PLAIN, scan(page, &s));
+    TEST_ASSERT_EQUAL_UINT32(6, s.plain_ok);
+    TEST_ASSERT_EQUAL_UINT32(4, s.bad);
+    /* and the bdseq: 5 and 5, a tie is still plain */
+    page[64 + 32 * 1 + 9] ^= 0x01;
+    TEST_ASSERT_EQUAL(GW_NVSRAW_PLAIN, scan(page, &s));
+    TEST_ASSERT_EQUAL_UINT32(5, s.plain_ok);
+    TEST_ASSERT_EQUAL_UINT32(5, s.bad);
+    /* the two strings and the blob data instead: 5 valid items, 6 bad entries: read as
+     * encrypted, and so not migrated (the boot opens the encrypted NVS) */
+    load(k_plain);
+    page[64 + 32 * 3 + 9] ^= 0x01;
+    page[64 + 32 * 5 + 9] ^= 0x01;
+    page[64 + 32 * 8 + 9] ^= 0x01;
+    TEST_ASSERT_EQUAL(GW_NVSRAW_ENCRYPTED, scan(page, &s));
+    TEST_ASSERT_EQUAL_UINT32(5, s.plain_ok);
+    TEST_ASSERT_EQUAL_UINT32(6, s.bad);
+    TEST_ASSERT_EQUAL_UINT32(0, s.plain_pages);
+    TEST_ASSERT_EQUAL(GW_NVSMIG_OPEN_ENCRYPTED, decide(GW_NVSRAW_ENCRYPTED, GW_NVSMIG_COPY_NONE,
+                                                       false, true, true));
+    /* one such page next to a sound plain page: mixed, migrated (the sound page's entries are
+     * kept; the damaged ones were unreadable anyway) */
+    static uint8_t damaged[GW_NVSRAW_PAGE];
+    memcpy(damaged, page, sizeof(damaged));
+    gw_nvsraw_scan_init(&s);
+    gw_nvsraw_scan_page(&s, damaged);
+    gw_nvsraw_scan_page(&s, load(k_plain));
+    TEST_ASSERT_EQUAL(GW_NVSRAW_MIXED, gw_nvsraw_verdict(&s));
+    TEST_ASSERT_EQUAL(GW_NVSMIG_MIGRATE, decide(GW_NVSRAW_MIXED, GW_NVSMIG_COPY_NONE, false, true,
+                                                true));
+}
+
+/* The span of a valid item is trusted only while it ends inside the page: past the last entry
+ * (126) or 0 it counts as 1, so the entries after it are still read. */
+static void test_span_trimmed(void)
+{
+    static uint8_t pg[GW_NVSRAW_PAGE];
+    const uint8_t *bdseq = k_plain + 64 + 32;   /* a u8 item, span 1 */
+    gw_nvsraw_scan_t s;
+    /* ends exactly at the last entry: its data entry (125, not an item) is not counted bad */
+    memset(pg, 0xFF, sizeof(pg));
+    memcpy(pg, k_plain, 32);                    /* active page header */
+    put_entry(pg, 124, bdseq, 2);
+    wr32(pg + 32 + 7 * 4, rd32(pg + 32 + 7 * 4) & ~(1u << 26));   /* 125 written (data) */
+    gw_nvsraw_scan_init(&s);
+    gw_nvsraw_scan_page(&s, pg);
+    TEST_ASSERT_EQUAL_UINT32(2, s.written);
+    TEST_ASSERT_EQUAL_UINT32(1, s.plain_ok);
+    TEST_ASSERT_EQUAL_UINT32(0, s.bad);
+    /* past the end: span 3 at 124 trimmed to 1, the entry at 125 read on its own (and bad) */
+    put_entry(pg, 124, bdseq, 3);
+    gw_nvsraw_scan_init(&s);
+    gw_nvsraw_scan_page(&s, pg);
+    TEST_ASSERT_EQUAL_UINT32(2, s.written);
+    TEST_ASSERT_EQUAL_UINT32(1, s.plain_ok);
+    TEST_ASSERT_EQUAL_UINT32(1, s.bad);
+    /* the last entry with span 2, and span 0 at the first entry: 1 each, the next one read */
+    memset(pg, 0xFF, sizeof(pg));
+    memcpy(pg, k_plain, 32);
+    put_entry(pg, 0, bdseq, 0);
+    put_entry(pg, 1, bdseq, 1);
+    put_entry(pg, 125, bdseq, 2);
+    gw_nvsraw_scan_init(&s);
+    gw_nvsraw_scan_page(&s, pg);
+    TEST_ASSERT_EQUAL_UINT32(3, s.written);
+    TEST_ASSERT_EQUAL_UINT32(3, s.plain_ok);
+    TEST_ASSERT_EQUAL_UINT32(0, s.bad);
+    TEST_ASSERT_EQUAL(GW_NVSRAW_PLAIN, gw_nvsraw_verdict(&s));
+    /* a huge span (255) at 2 is trimmed too: the raw bdSeq after it is still found */
+    memset(pg, 0xFF, sizeof(pg));
+    memcpy(pg, k_plain, 32);
+    put_entry(pg, 0, k_plain + 64, 1);          /* namespace spb = 1 */
+    put_entry(pg, 2, bdseq, 255);
+    static uint8_t later[32];
+    memcpy(later, bdseq, 32);
+    later[24] = 77;
+    put_entry(pg, 3, later, 1);
+    gw_nvsraw_u8_t f;
+    gw_nvsraw_u8_init(&f, "spb", "bdseq");
+    gw_nvsraw_u8_ns(&f, pg);
+    gw_nvsraw_u8_item(&f, pg);
+    TEST_ASSERT_TRUE(f.found);
+    TEST_ASSERT_EQUAL_UINT8(77, f.value);
+    TEST_ASSERT_EQUAL_UINT32(3, f.entry);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -672,5 +834,8 @@ int main(void)
     RUN_TEST(test_bdseq_reservation);
     RUN_TEST(test_bdseq_reservation_chain);
     RUN_TEST(test_copy_load);
+    RUN_TEST(test_page_states);
+    RUN_TEST(test_more_bad_than_plain);
+    RUN_TEST(test_span_trimmed);
     return UNITY_END();
 }
