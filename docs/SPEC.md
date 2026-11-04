@@ -648,11 +648,14 @@ En el archivo `/cfg/config.json` un secreto ausente, vacío o `"********"` toma 
 
 **API REST** (todas las rutas piden HTTP Basic con `web.username` y `web.password`, por HTTPS con `https`; respuestas JSON):
 
+**Escrituras y CSRF** (issue #100): todo `PUT` y `POST` lleva la cabecera `X-Requested-With` (cualquier valor; la interfaz web manda `gateway`). Si el cliente manda `Origin` (o, sin él, `Referer`), tiene que ser este mismo equipo: el esquema de la conexión y el `Host` del pedido, con el puerto por defecto igual a ninguno; `Origin: null` no vale. Si no, `403`, antes de mirar la contraseña: no cuenta como acceso fallido. Un cliente que no es navegador (`curl`, un script) no manda `Origin`: le alcanza con la cabecera, por ejemplo `curl -u admin:… -H 'X-Requested-With: curl' -X PUT --data-binary @config.json https://<ip>/api/config`.
+
 | Método y ruta | Qué hace |
 |---|---|
 | `GET /api/config` | Exporta la configuración guardada, con los secretos enmascarados. `?download=1` la entrega como archivo |
 | `PUT /api/config` (o `POST`) | Importa: valida, guarda de forma atómica (archivo temporal + `rename`) y reinicia de forma ordenada (NDEATH). `?dry_run=1` solo valida. Error: `400 {"ok":false,"error":"…","path":"devices[0].tags[1].type","line":0,"column":0}`; `413` si supera `CONFIG_GW_CONFIG_MAX_BYTES` |
 | `POST /api/restart` | Reinicio ordenado |
+| `POST /api/firmware` | FW-1: `application/json` con `{"url": "https://…"}` (descarga) o `application/octet-stream` con la imagen como cuerpo; otro `Content-Type` → `415` |
 | `GET /api/status` | Estado en vivo (también en recuperación y puesta en marcha). Ver abajo |
 
 **`GET /api/status`** devuelve un objeto con: `mode` (`normal`, `recovery`, `commissioning`), `firmware`, `reset_reason`, `uptime_s`, `config` (`ok`, `source`, `error`, `path`), `network` (`up`, `interfaces`), `mqtt` (`connected`), `sparkplug` (`group_id`, `edge_node_id`, `diagnostics_s`; solo con configuración válida), `syslog`, `devices` (por dispositivo: `online`, `cycles`, `failed`, `ok`, `timeout`, `crc`, `frame`, `exception` y `tags` con `name`, `valid` y `value`: número, entero exacto para `int64`/`uint64`, texto para `string`, hexadecimal para `bytes`), `heap` y:

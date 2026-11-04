@@ -1,5 +1,8 @@
 #include "gw_cfgdoc.h"
 
+#include <float.h>
+#include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "cJSON.h"
@@ -46,34 +49,165 @@ static cJSON *secret_parent(cJSON *root, secret_t i, bool create)
     return cJSON_IsObject(o) ? o : NULL;
 }
 
-/* cJSON_Print indents with tabs: two spaces per level, one space after ':'. */
+/* ---------- document printer (issue #91) ----------
+ *
+ * The same text as cJSON_Print with its tabs turned into two spaces per level and one space
+ * after ':', written in two passes over the tree: the first counts, the second writes into a
+ * single block of exactly that size. cJSON_Print grows its buffer by doubling it (a copy of
+ * both while it moves) and the tab conversion needed a second buffer of twice the text: the
+ * largest block a validation asked for was about twice the document. Without PSRAM that block
+ * decided whether PUT /api/config answered 503. */
+
+typedef struct {
+    char *buf;    /* NULL: count only */
+    size_t len;
+} emit_t;
+
+static void emit(emit_t *e, const char *s, size_t n)
+{
+    if (e->buf != NULL) {
+        memcpy(e->buf + e->len, s, n);
+    }
+    e->len += n;
+}
+
+static void emit_text(emit_t *e, const char *s)
+{
+    emit(e, s, strlen(s));
+}
+
+static void emit_indent(emit_t *e, unsigned depth)
+{
+    for (unsigned i = 0; i < depth; i++) {
+        emit(e, "  ", 2);
+    }
+}
+
+/* print_string_ptr of cJSON: only '"', '\\' and the control characters are escaped. */
+static void emit_string(emit_t *e, const char *s)
+{
+    emit(e, "\"", 1);
+    for (const unsigned char *c = (const unsigned char *)(s != NULL ? s : ""); *c != '\0'; c++) {
+        const char *esc = NULL;
+        switch (*c) {
+        case '"': esc = "\\\""; break;
+        case '\\': esc = "\\\\"; break;
+        case '\b': esc = "\\b"; break;
+        case '\f': esc = "\\f"; break;
+        case '\n': esc = "\\n"; break;
+        case '\r': esc = "\\r"; break;
+        case '\t': esc = "\\t"; break;
+        default: break;
+        }
+        if (esc != NULL) {
+            emit(e, esc, 2);
+        } else if (*c < 32) {
+            char u[8];
+            snprintf(u, sizeof(u), "\\u%04x", *c);
+            emit(e, u, 6);
+        } else {
+            emit(e, (const char *)c, 1);
+        }
+    }
+    emit(e, "\"", 1);
+}
+
+/* print_number of cJSON (1.7.19), C locale. */
+static void emit_number(emit_t *e, const cJSON *item)
+{
+    char nb[32];
+    double d = item->valuedouble;
+    if (d != d || isinf(d)) {
+        strcpy(nb, "null");
+    } else if (d == (double)item->valueint) {
+        snprintf(nb, sizeof(nb), "%d", item->valueint);
+    } else {
+        snprintf(nb, sizeof(nb), "%1.15g", d);
+        double test = 0.0;
+        bool read = sscanf(nb, "%lg", &test) == 1;
+        double max = fabs(test) > fabs(d) ? fabs(test) : fabs(d);   /* compare_double */
+        if (!read || !(fabs(test - d) <= max * DBL_EPSILON)) {
+            snprintf(nb, sizeof(nb), "%1.17g", d);
+        }
+    }
+    emit_text(e, nb);
+}
+
+/* @p depth: cJSON's printbuffer depth on entry (arrays count as a level, as in cJSON). */
+static bool emit_value(emit_t *e, const cJSON *item, unsigned depth)
+{
+    switch (item->type & 0xFF) {
+    case cJSON_NULL: emit_text(e, "null"); return true;
+    case cJSON_False: emit_text(e, "false"); return true;
+    case cJSON_True: emit_text(e, "true"); return true;
+    case cJSON_Number: emit_number(e, item); return true;
+    case cJSON_Raw:
+        if (item->valuestring == NULL) {
+            return false;
+        }
+        emit_text(e, item->valuestring);
+        return true;
+    case cJSON_String: emit_string(e, item->valuestring); return true;
+    case cJSON_Array:
+        if (depth >= CJSON_NESTING_LIMIT) {
+            return false;
+        }
+        emit(e, "[", 1);
+        for (const cJSON *c = item->child; c != NULL; c = c->next) {
+            if (!emit_value(e, c, depth + 1)) {
+                return false;
+            }
+            if (c->next != NULL) {
+                emit(e, ", ", 2);
+            }
+        }
+        emit(e, "]", 1);
+        return true;
+    case cJSON_Object:
+        if (depth >= CJSON_NESTING_LIMIT) {
+            return false;
+        }
+        emit(e, "{\n", 2);
+        for (const cJSON *c = item->child; c != NULL; c = c->next) {
+            emit_indent(e, depth + 1);
+            emit_string(e, c->string);
+            emit(e, ": ", 2);
+            if (!emit_value(e, c, depth + 1)) {
+                return false;
+            }
+            emit_text(e, c->next != NULL ? ",\n" : "\n");
+        }
+        emit_indent(e, depth);
+        emit(e, "}", 1);
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Length of the document (without the NUL), written to @p buf unless NULL; 0 on failure. */
+static size_t print_tree(const cJSON *root, char *buf)
+{
+    emit_t e = {.buf = buf, .len = 0};
+    if (!emit_value(&e, root, 0)) {
+        return 0;
+    }
+    emit(&e, "\n", 1);
+    if (buf != NULL) {
+        buf[e.len] = '\0';
+    }
+    return e.len;
+}
+
+/* The indented document plus '\n', in one block of exactly its size (+ NUL). */
 static char *print_doc(const cJSON *root, size_t *out_len)
 {
-    char *raw = cJSON_Print(root);
-    if (raw == NULL) {
-        return NULL;
-    }
-    size_t n = strlen(raw);
-    char *out = gw_config_alloc(2 * n + 2);
+    size_t n = print_tree(root, NULL);
+    char *out = n > 0 ? gw_config_alloc(n + 1) : NULL;
     if (out != NULL) {
-        size_t o = 0;
-        bool line_start = true;
-        for (const char *c = raw; *c != '\0'; c++) {
-            if (*c == '\t') {   /* never inside strings: cJSON escapes those as \t */
-                if (line_start) {
-                    out[o++] = ' ';
-                }
-                out[o++] = ' ';
-                continue;
-            }
-            line_start = *c == '\n';
-            out[o++] = *c;
-        }
-        out[o++] = '\n';
-        out[o] = '\0';
-        *out_len = o;
+        print_tree(root, out);
+        *out_len = n;
     }
-    gw_config_release(raw);
     return out;
 }
 

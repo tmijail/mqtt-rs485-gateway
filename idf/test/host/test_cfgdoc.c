@@ -267,6 +267,118 @@ static void test_jsonfeed(void)
     TEST_ASSERT_EQUAL(7, f.len);
 }
 
+/* ---------- issue #91: the document printer ---------- */
+
+/* The printer before issue #91, as the reference for the text: cJSON_Print, then two spaces
+ * per indentation tab and one space for the tab after ':'. */
+static char *reference_print(const char *json)
+{
+    cJSON *root = cJSON_Parse(json);
+    TEST_ASSERT_NOT_NULL_MESSAGE(root, json);
+    /* no secret is stored: the export drops the empty secret keys */
+    cJSON *net = cJSON_GetObjectItemCaseSensitive(root, "network");
+    cJSON *holders[] = {cJSON_GetObjectItemCaseSensitive(root, "mqtt"),
+                        cJSON_GetObjectItemCaseSensitive(root, "web"),
+                        net != NULL ? cJSON_GetObjectItemCaseSensitive(net, "wifi") : NULL};
+    for (size_t i = 0; i < sizeof(holders) / sizeof(holders[0]); i++) {
+        if (holders[i] != NULL) {
+            cJSON_DeleteItemFromObjectCaseSensitive(holders[i], "password");
+        }
+    }
+    char *raw = cJSON_Print(root);
+    cJSON_Delete(root);
+    TEST_ASSERT_NOT_NULL(raw);
+    char *out = malloc(2 * strlen(raw) + 2);
+    size_t o = 0;
+    bool line_start = true;
+    for (const char *c = raw; *c != '\0'; c++) {
+        if (*c == '\t') {
+            if (line_start) {
+                out[o++] = ' ';
+            }
+            out[o++] = ' ';
+            continue;
+        }
+        line_start = *c == '\n';
+        out[o++] = *c;
+    }
+    out[o++] = '\n';
+    out[o] = '\0';
+    free(raw);
+    return out;
+}
+
+static size_t s_largest_request;
+static unsigned s_requests_over_1k;
+
+static void *tracking_alloc(size_t size)
+{
+    if (size > s_largest_request) {
+        s_largest_request = size;
+    }
+    s_requests_over_1k += size > 1024;
+    return malloc(size);
+}
+
+/* Export (no secrets set: nothing is masked) gives exactly the reference text, and the
+ * largest block it asks for is the document itself, once. */
+static void check_same_text(const char *json)
+{
+    char *ref = reference_print(json);
+    s_largest_request = 0;
+    s_requests_over_1k = 0;
+    gw_config_set_allocator(tracking_alloc, free);
+    size_t n = 0;
+    char *out = gw_cfgdoc_export(json, strlen(json), &stored, &n, &err);
+    gw_config_set_allocator(malloc, free);
+    TEST_ASSERT_NOT_NULL_MESSAGE(out, err.msg);
+    TEST_ASSERT_EQUAL_STRING(ref, out);
+    TEST_ASSERT_EQUAL(strlen(ref), n);
+    if (n + 1 > 256) {   /* smaller ones: a cJSON node can be the largest */
+        TEST_ASSERT_EQUAL(n + 1, s_largest_request);
+    }
+    TEST_ASSERT_TRUE(n + 1 <= 1024 || s_requests_over_1k == 1);
+    gw_cfgdoc_free_text(out);
+    free(ref);
+}
+
+static void test_printer_matches_cjson(void)
+{
+    check_same_text("{\"a\":{},\"b\":[],\"c\":[[1,2],[{\"x\":{}},{}],[]],"
+                    "\"n\":[0,-1,1.5,0.1,1e300,-2.5e-7,123456789012,9007199254740993,"
+                    "3.14159265358979,-0.0,1e-320,2147483647,-2147483648,4294967296],"
+                    "\"s\":\"q\\\"b\\\\s\\b\\f\\n\\r\\t\\u0001\\u001f \xc3\xa9/\",\"\":\"\","
+                    "\"t\":true,\"f\":false,\"z\":null,"
+                    "\"deep\":{\"x\":{\"y\":[{\"z\":[{\"w\":[1,{\"v\":\"\"}]}]}]}}}");
+    check_same_text("{}");
+    check_same_text("{\"only\":[{}]}");
+    size_t len;
+    const char *spec = support_read_file(GW_SPEC_EXAMPLE, &len);
+    check_same_text(spec);
+    const char *def = support_read_file(GW_DEFAULT_CONFIG, &len);
+    check_same_text(def);
+}
+
+/* A validation (PUT) asks for no block larger than its document: before issue #91 the print
+ * asked for about twice the document in one block. */
+static void test_apply_largest_block_is_the_document(void)
+{
+    size_t len;
+    const char *spec = support_read_file(GW_SPEC_EXAMPLE, &len);
+    gw_cfgdoc_free(&doc);
+    s_largest_request = 0;
+    s_requests_over_1k = 0;
+    gw_config_set_allocator(tracking_alloc, free);
+    bool ok = gw_cfgdoc_apply(spec, len, GW_CFGDOC_UPDATE, &stored, &cfg, &doc, &err);
+    gw_config_set_allocator(malloc, free);
+    TEST_ASSERT_TRUE_MESSAGE(ok, err.msg);
+    TEST_ASSERT_GREATER_THAN(1024, doc.doc_len);
+    TEST_ASSERT_EQUAL(doc.doc_len + 1, s_largest_request);
+    TEST_ASSERT_EQUAL(1, s_requests_over_1k);
+    TEST_ASSERT_EQUAL(strlen(doc.doc), doc.doc_len);
+    TEST_ASSERT_EQUAL('\n', doc.doc[doc.doc_len - 1]);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -277,5 +389,7 @@ int main(void)
     RUN_TEST(test_export_masks);
     RUN_TEST(test_jsonfeed);
     RUN_TEST(test_modbus_keys_round_trip);
+    RUN_TEST(test_printer_matches_cjson);
+    RUN_TEST(test_apply_largest_block_is_the_document);
     return UNITY_END();
 }
