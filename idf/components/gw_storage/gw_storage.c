@@ -74,6 +74,8 @@ static esp_err_t write_file_atomic(const char *path, const char *tmp, const void
 
 static bool s_nvs_plain;     /* this boot runs on the unencrypted NVS (issue #94) */
 static bool s_nvs_failed;    /* a migration could not finish: no NVS this boot (issue #94) */
+static bool s_mig_pending;   /* no NVS this boot, with a copy the confirmed boot applies */
+static const char *s_nvs_why;   /* why there is no NVS this boot (shell), NULL otherwise */
 
 /* Issue #94: the bdSeq straight from the raw pages of an unencrypted NVS (without initialising
  * it), for the paths that erase the partition without having read it through NVS. @p read_ok
@@ -448,6 +450,8 @@ static bool nvs_apply(const nvs_sec_cfg_t *cfg, const uint8_t *buf, size_t size,
         ESP_LOGE(TAG, "NVS migration not finished: its copy " MIG_COPY " stays for the next boot; "
                       "no NVS in this one (bdSeq in RAM, no stored secrets)");
         s_nvs_failed = true;
+        s_mig_pending = true;
+        s_nvs_why = "writing the encrypted NVS failed; the migration is retried at the next boot";
         return false;
     }
     if (unlink(MIG_COPY) != 0) {
@@ -493,6 +497,20 @@ static bool later_bdseq(bool *have, uint8_t *v, bool have2, uint8_t v2)
     return *have;
 }
 
+/* This boot does not migrate. Without an earlier copy it stays on the unencrypted NVS; with one
+ * the partition is partly erased: no NVS at all (issue #94 N2), the copy waits for a boot that
+ * can apply it. */
+static void no_migration(const uint8_t *old)
+{
+    if (old == NULL) {
+        s_nvs_plain = true;
+    } else {
+        s_nvs_failed = true;
+        s_mig_pending = true;
+        s_nvs_why = "an NVS migration is pending (its copy is kept); retried at the next boot";
+    }
+}
+
 /* MIGRATE: steps 1 to 4. Nothing is erased unless every entry is in the copy, and the copy is in
  * place. @p old: a valid copy of an earlier migration whose erase did not finish (NULL if none):
  * the partition's entries come first, the copy adds what the partition no longer has. */
@@ -505,9 +523,9 @@ static void nvs_migrate(const esp_partition_t *p, bool raw_have, uint8_t raw_val
     nvs_sec_cfg_t cfg;
     esp_err_t e = sec_cfg(&cfg);
     if (e != ESP_OK) {
-        ESP_LOGE(TAG, "NVS migration: no NVS keys (%s): the NVS stays unencrypted this boot",
+        ESP_LOGE(TAG, "NVS migration: no NVS keys (%s): nothing erased this boot",
                  esp_err_to_name(e));
-        s_nvs_plain = true;
+        no_migration(old);
         return;
     }
     /* records take a little more than entries; plus room for the earlier copy's */
@@ -515,10 +533,9 @@ static void nvs_migrate(const esp_partition_t *p, bool raw_have, uint8_t raw_val
     uint8_t *buf = heap_caps_malloc_prefer(cap, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
                                            MALLOC_CAP_8BIT);
     if (buf == NULL) {
-        ESP_LOGE(TAG, "NVS migration: no memory (%u B): the NVS stays unencrypted this boot",
-                 (unsigned)cap);
+        ESP_LOGE(TAG, "NVS migration: no memory (%u B): nothing erased this boot", (unsigned)cap);
         memset(&cfg, 0, sizeof(cfg));
-        s_nvs_plain = true;
+        no_migration(old);
         return;
     }
     size_t used = gw_nvsmig_begin(buf, cap);
@@ -533,11 +550,15 @@ static void nvs_migrate(const esp_partition_t *p, bool raw_have, uint8_t raw_val
     } else {
         ESP_LOGE(TAG, "NVS migration: the unencrypted NVS does not start (%s)", esp_err_to_name(e));
     }
+    /* N3: the bdSeq of the live partition is the newest; the copy's only counts without it */
+    uint8_t v = 0;
+    bool from_nvs = copy_bdseq(buf, used, &v);
     if (old != NULL) {   /* what the partition lost to the interrupted erase */
         gw_nvsmig_rec_t r, mine;
         for (size_t off = 0; gw_nvsmig_next(old, old_size, &off, &r);) {
-            if (gw_nvsmig_find(buf, used, r.ns, r.key, &mine)) {
-                continue;   /* the partition's entry is the newer one */
+            if (gw_nvsmig_find(buf, used, r.ns, r.key, &mine) ||
+                (strcmp(r.ns, NVS_NS) == 0 && strcmp(r.key, NVS_BDSEQ) == 0)) {
+                continue;   /* the partition's entry is the newer one; the bdSeq comes below */
             }
             size_t n = gw_nvsmig_add(buf, cap, used, r.ns, r.key, r.type, r.data, r.len);
             if (n == 0) {
@@ -550,21 +571,18 @@ static void nvs_migrate(const esp_partition_t *p, bool raw_have, uint8_t raw_val
     }
     if (!gw_nvsmig_may_erase(&rd)) {
         /* issue #94: an entry that is not in the copy would be lost by the erase */
-        ESP_LOGE(TAG, "NVS migration: %s: nothing erased, the NVS stays unencrypted this boot",
+        ESP_LOGE(TAG, "NVS migration: %s: nothing erased this boot",
                  !rd.init_ok ? "the unencrypted NVS could not be read"
                  : !rd.listed_all ? "its entries could not all be listed"
                                   : "some entries could not be copied");
-        s_nvs_plain = true;
+        no_migration(old);
     } else {
-        /* the bdSeq must not go back (Sparkplug hosts): the latest of the entry, the raw pages
-         * and the earlier copy; random only when none is known */
-        uint8_t v = 0, c = 0;
-        bool have = copy_bdseq(buf, used, &v);
-        bool from_nvs = have;
-        later_bdseq(&have, &v, raw_have, raw_value);
+        /* the bdSeq must not go back (Sparkplug hosts): the partition's entry, else its raw
+         * pages, else the earlier copy's; random only when none is known */
+        uint8_t c = 0;
         bool have_old = copy_bdseq(old, old_size, &c);
-        if (!later_bdseq(&have, &v, have_old, c)) {
-            v = (uint8_t)(esp_random() & 0xFFu);
+        if (!from_nvs) {
+            v = raw_have ? raw_value : have_old ? c : (uint8_t)(esp_random() & 0xFFu);
         }
         size_t n = copy_set_bdseq(buf, cap, used, v);
         count += n > used;
@@ -576,9 +594,9 @@ static void nvs_migrate(const esp_partition_t *p, bool raw_have, uint8_t raw_val
         size_t size = gw_nvsmig_seal(buf, used, (uint16_t)rd.skipped);
         e = write_file_atomic(MIG_COPY, MIG_TMP, buf, size);
         if (e != ESP_OK) {
-            ESP_LOGE(TAG, "NVS migration: no copy in " MIG_COPY " (%s): nothing erased, the NVS "
-                          "stays unencrypted this boot", esp_err_to_name(e));
-            s_nvs_plain = true;
+            ESP_LOGE(TAG, "NVS migration: no copy in " MIG_COPY " (%s): nothing erased this boot",
+                     esp_err_to_name(e));
+            no_migration(old);
         } else if (nvs_apply(&cfg, buf, size, count)) {
             ESP_LOGW(TAG, "NVS migration: %u entries moved into the encrypted NVS (%u skipped); "
                           "bdSeq continues", count, rd.skipped);
@@ -592,7 +610,7 @@ static void nvs_migrate(const esp_partition_t *p, bool raw_have, uint8_t raw_val
 /* RESUME: the partition was erased; the copy of the interrupted migration (@p buf, @p size,
  * checked; @p cap: its buffer, with room for a bdSeq record) is written encrypted. */
 static void nvs_resume(gw_nvsraw_kind_t kind, uint8_t *buf, size_t size, size_t cap,
-                       unsigned count)
+                       unsigned count, bool legacy)
 {
     nvs_sec_cfg_t cfg;
     esp_err_t e = sec_cfg(&cfg);
@@ -600,17 +618,38 @@ static void nvs_resume(gw_nvsraw_kind_t kind, uint8_t *buf, size_t size, size_t 
         ESP_LOGE(TAG, "NVS migration: no NVS keys (%s) to finish it: its copy " MIG_COPY
                       " stays; no NVS this boot", esp_err_to_name(e));
         s_nvs_failed = true;
+        s_mig_pending = true;
+        s_nvs_why = "no NVS keys to finish a pending NVS migration";
         return;
     }
     uint8_t nvs_b = 0;
     bool have_nvs_b = false;
-    if (kind == GW_NVSRAW_ENCRYPTED &&
-        nvs_flash_secure_init_partition(NVS_DEFAULT_PART_NAME, &cfg) == ESP_OK) {
+    e = kind == GW_NVSRAW_ENCRYPTED ? nvs_flash_secure_init_partition(NVS_DEFAULT_PART_NAME, &cfg)
+                                    : ESP_ERR_NOT_FOUND;
+    if (kind == GW_NVSRAW_ENCRYPTED && e != ESP_OK && e != ESP_ERR_NVS_NO_FREE_PAGES &&
+        e != ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        /* N4: it may hold a finished migration newer than the copy: keep both, no NVS */
+        ESP_LOGE(TAG, "NVS migration: the encrypted NVS does not start (%s): its copy " MIG_COPY
+                      " stays; no NVS this boot", esp_err_to_name(e));
+        s_nvs_failed = true;
+        s_mig_pending = true;
+        s_nvs_why = "the encrypted NVS does not start and an NVS migration copy is pending";
+        memset(&cfg, 0, sizeof(cfg));
+        return;
+    }
+    if (kind == GW_NVSRAW_ENCRYPTED && e == ESP_OK) {
         nvs_handle_t h;
         uint32_t done = 0;
         bool marked = false;
         if (nvs_open_from_partition(NVS_DEFAULT_PART_NAME, NVS_GW, NVS_READONLY, &h) == ESP_OK) {
-            marked = nvs_get_u32(h, MIG_DONE, &done) == ESP_OK;
+            esp_err_t m = nvs_get_u32(h, MIG_DONE, &done);
+            marked = m == ESP_OK;
+            uint8_t one = 0;
+            if (m == ESP_ERR_NVS_TYPE_MISMATCH && legacy && nvs_get_u8(h, MIG_DONE, &one) == ESP_OK &&
+                one == 1) {
+                marked = true;   /* N5: ebc2aa4's marker (u8 1) for its version 1 copy */
+                done = gw_nvsmig_crc(buf);
+            }
             nvs_close(h);
         }
         if (nvs_open_from_partition(NVS_DEFAULT_PART_NAME, NVS_NS, NVS_READONLY, &h) == ESP_OK) {
@@ -628,25 +667,26 @@ static void nvs_resume(gw_nvsraw_kind_t kind, uint8_t *buf, size_t size, size_t 
         }
         nvs_flash_deinit_partition(NVS_DEFAULT_PART_NAME);
     }
-    /* issue #94: a boot since the interruption (LittleFS not mounted then) may have moved the
-     * bdSeq on in the encrypted NVS: the copy takes the later one, persisted before the erase */
+    /* issue #94 N3: the encrypted NVS's bdSeq is the live one (a boot since the interruption
+     * may have moved it on): it wins, and goes into the copy before the erase */
     uint8_t c = 0;
     bool copy_has = copy_bdseq(buf, size, &c);
-    bool have = copy_has;
-    uint8_t v = c;
-    if (later_bdseq(&have, &v, have_nvs_b, nvs_b) && (!copy_has || v != c)) {
+    uint8_t v = have_nvs_b ? nvs_b : c;
+    if (have_nvs_b && (!copy_has || v != c)) {
         size_t n = copy_set_bdseq(buf, cap, size, v);
         if (n == 0 || write_file_atomic(MIG_COPY, MIG_TMP, buf,
                                         gw_nvsmig_seal(buf, n, gw_nvsmig_skipped(buf))) != ESP_OK) {
             ESP_LOGE(TAG, "NVS migration: the copy could not take the newer bdSeq %u: it stays "
                           "as it is; no NVS this boot", v);
             s_nvs_failed = true;
+            s_mig_pending = true;
+            s_nvs_why = "an NVS migration copy could not be updated; retried at the next boot";
             memset(&cfg, 0, sizeof(cfg));
             return;
         }
         count += n > size;
         size = n;
-        ESP_LOGW(TAG, "NVS migration: bdSeq %u from the encrypted NVS, later than the copy's", v);
+        ESP_LOGW(TAG, "NVS migration: bdSeq %u from the encrypted NVS (the copy had %u)", v, c);
     }
     ESP_LOGW(TAG, "NVS migration was interrupted (%s): writing its copy (%u entries) into the "
                   "encrypted NVS",
@@ -681,8 +721,10 @@ static const char *kind_name(gw_nvsraw_kind_t k)
 /* The copy of an earlier migration into a new buffer (@p cap: its size, with room for a bdSeq
  * record). Deleted only when it was read whole and does not check (issue #94); one that cannot
  * be read is kept. */
-static gw_nvsmig_copy_t copy_load(uint8_t **out, size_t *size, size_t *cap, uint32_t *count)
+static gw_nvsmig_copy_t copy_load(uint8_t **out, size_t *size, size_t *cap, uint32_t *count,
+                                   bool *legacy)
 {
+    *legacy = false;
     *out = NULL;
     *size = 0;
     struct stat st;
@@ -697,7 +739,7 @@ static gw_nvsmig_copy_t copy_load(uint8_t **out, size_t *size, size_t *cap, uint
     uint8_t *buf = NULL;
     bool whole = n == 0;   /* an empty file is read whole */
     if (n > 0 && n <= MIG_COPY_MAX) {
-        *cap = n + GW_NVSMIG_REC_HDR + 1;
+        *cap = n + GW_NVSMIG_REC_HDR + 1 + (GW_NVSMIG_HDR - 16u);   /* a bdSeq; a v1 header */
         buf = heap_caps_malloc_prefer(*cap, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
                                       MALLOC_CAP_8BIT);
         FILE *f = buf != NULL ? fopen(MIG_COPY, "rb") : NULL;
@@ -716,17 +758,28 @@ static gw_nvsmig_copy_t copy_load(uint8_t **out, size_t *size, size_t *cap, uint
         }
         return GW_NVSMIG_COPY_UNREADABLE;
     }
-    if (n == 0 || !gw_nvsmig_check(buf, n, count)) {
-        ESP_LOGE(TAG, "NVS migration: " MIG_COPY " (%u B) is damaged: discarded", (unsigned)n);
-        unlink(MIG_COPY);
+    size_t valid = 0;
+    gw_nvsmig_copy_t k = n == 0 ? GW_NVSMIG_COPY_BAD
+                                : gw_nvsmig_load(buf, n, *cap, &valid, legacy, count);
+    if (k != GW_NVSMIG_COPY_VALID) {
+        if (k == GW_NVSMIG_COPY_BAD) {
+            ESP_LOGE(TAG, "NVS migration: " MIG_COPY " (%u B) is damaged: discarded", (unsigned)n);
+            unlink(MIG_COPY);
+        } else {
+            ESP_LOGE(TAG, "NVS migration: " MIG_COPY " (%u B) is in a format this firmware does "
+                          "not know: kept", (unsigned)n);
+        }
         if (buf != NULL) {
             memset(buf, 0, *cap);
             heap_caps_free(buf);
         }
-        return GW_NVSMIG_COPY_BAD;
+        return k;
+    }
+    if (*legacy) {
+        ESP_LOGW(TAG, "NVS migration: " MIG_COPY " is a version 1 copy: converted");
     }
     *out = buf;
-    *size = n;
+    *size = valid;
     return GW_NVSMIG_COPY_VALID;
 }
 
@@ -751,15 +804,16 @@ static void nvs_prepare(void)
     uint8_t *buf = NULL;
     size_t size = 0, cap = 0;
     uint32_t count = 0;
+    bool legacy = false;
     if (fs) {
         unlink(MIG_TMP);   /* a copy cut short before its rename: never used */
-        copy = copy_load(&buf, &size, &cap, &count);
+        copy = copy_load(&buf, &size, &cap, &count, &legacy);
     }
     const gw_nvsmig_state_t state = {.kind = kind, .raw_ok = raw_ok, .copy = copy,
                                      .on_trial = running_on_trial(), .can_copy = fs};
     switch (gw_nvsmig_decide(&state)) {
     case GW_NVSMIG_RESUME:
-        nvs_resume(kind, buf, size, cap, count);
+        nvs_resume(kind, buf, size, cap, count, legacy);
         break;
     case GW_NVSMIG_MIGRATE:
         nvs_migrate(p, raw_have, raw_value, buf, size);
@@ -776,10 +830,18 @@ static void nvs_prepare(void)
         break;
     case GW_NVSMIG_NO_NVS:
         s_nvs_failed = true;
+        s_mig_pending = copy == GW_NVSMIG_COPY_VALID;
+        s_nvs_why = copy == GW_NVSMIG_COPY_UNREADABLE
+                        ? "the copy of an NVS migration (" MIG_COPY ") cannot be read: kept, and "
+                          "no NVS on any boot until it can, or until a factory reset (BOOT "
+                          "pressed 10 s: erases it with the configuration, the secrets and the "
+                          "bdSeq)"
+                    : !raw_ok ? "an NVS page could not be read: what the partition holds is "
+                                "unknown, nothing is touched"
+                              : "an NVS migration is pending (its copy is kept): applied at the "
+                                "next boot of a confirmed firmware";
         ESP_LOGE(TAG, "NVS left untouched this boot (no NVS: bdSeq in RAM, no stored secrets): %s",
-                 copy == GW_NVSMIG_COPY_UNREADABLE ? "the copy of a migration could not be read"
-                                                   : "a page could not be read, with the copy of "
-                                                     "a migration pending");
+                 s_nvs_why);
         break;
     case GW_NVSMIG_OPEN_ENCRYPTED:
     default:
@@ -788,12 +850,17 @@ static void nvs_prepare(void)
         }
         break;
     }
+    if (s_nvs_failed) {
+        /* N2: with a valid copy, the later of its bdSeq and the raw one (incremented as usual
+         * from there); otherwise nothing is known: random */
+        uint8_t c = 0;
+        bool have = copy == GW_NVSMIG_COPY_VALID && copy_bdseq(buf, size, &c);
+        later_bdseq(&have, &c, raw_have, raw_value);
+        s_bdseq_ram = have ? c : (uint8_t)(esp_random() & 0xFFu);
+    }
     if (buf != NULL) {
         memset(buf, 0, cap);
         heap_caps_free(buf);
-    }
-    if (s_nvs_failed) {
-        s_bdseq_ram = (uint8_t)(esp_random() & 0xFFu);   /* the copy's would repeat at resume */
     }
 }
 #endif
@@ -831,7 +898,12 @@ esp_err_t gw_storage_init(void)
 
 bool gw_storage_nvs_encryption_pending(void)
 {
-    return s_nvs_plain;
+    return s_nvs_plain || s_mig_pending;
+}
+
+const char *gw_storage_nvs_unavailable_why(void)
+{
+    return s_nvs_why;
 }
 
 uint8_t gw_storage_next_bdseq(void)

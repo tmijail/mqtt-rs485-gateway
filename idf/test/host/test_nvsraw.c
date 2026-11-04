@@ -398,9 +398,12 @@ static void test_decide_with_copy(void)
     /* the erase had not finished: the partition's entries first, the copy fills in */
     TEST_ASSERT_EQUAL(GW_NVSMIG_MIGRATE, decide(GW_NVSRAW_PLAIN, V, false, true, true));
     TEST_ASSERT_EQUAL(GW_NVSMIG_MIGRATE, decide(GW_NVSRAW_MIXED, V, false, true, true));
-    /* B1(a): a new image on trial never migrates, not even from a valid copy */
-    TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, decide(GW_NVSRAW_PLAIN, V, true, true, true));
-    TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, decide(GW_NVSRAW_MIXED, V, true, true, true));
+    /* B1(a), N2: a new image on trial never migrates, and with a pending copy (a partly erased
+     * partition) it does not run on the partition either: no NVS until the confirmed boot */
+    TEST_ASSERT_EQUAL(GW_NVSMIG_NO_NVS, decide(GW_NVSRAW_PLAIN, V, true, true, true));
+    TEST_ASSERT_EQUAL(GW_NVSMIG_NO_NVS, decide(GW_NVSRAW_MIXED, V, true, true, true));
+    TEST_ASSERT_EQUAL(GW_NVSMIG_NO_NVS, decide(GW_NVSRAW_PLAIN, V, false, false, true));
+    TEST_ASSERT_EQUAL(GW_NVSMIG_NO_NVS, decide(GW_NVSRAW_MIXED, V, false, false, true));
     /* M2: a copy that exists but could not be read whole: no NVS this boot, whatever else */
     for (unsigned k = 0; k < 4; k++) {
         for (int t = 0; t < 2; t++) {
@@ -417,8 +420,13 @@ static void test_decide_with_copy(void)
             for (int c = 0; c < 2; c++) {
                 gw_nvsmig_copy_t copy = c ? GW_NVSMIG_COPY_BAD : GW_NVSMIG_COPY_NONE;
                 gw_nvsmig_action_t a = decide(kKinds[k], copy, t, true, false);
-                TEST_ASSERT_EQUAL(kKinds[k] == GW_NVSRAW_ENCRYPTED ? GW_NVSMIG_OPEN_ENCRYPTED
-                                                                   : GW_NVSMIG_STAY_PLAIN, a);
+                /* N1: only readable pages of one kind say what the partition is; nothing
+                 * readable (EMPTY: also when the page buffer was not allocated) or both kinds:
+                 * no NVS, never a plain init over what may be an encrypted NVS */
+                gw_nvsmig_action_t want = kKinds[k] == GW_NVSRAW_ENCRYPTED ? GW_NVSMIG_OPEN_ENCRYPTED
+                                          : kKinds[k] == GW_NVSRAW_PLAIN   ? GW_NVSMIG_STAY_PLAIN
+                                                                           : GW_NVSMIG_NO_NVS;
+                TEST_ASSERT_EQUAL(want, a);
             }
         }
     }
@@ -449,7 +457,75 @@ static void test_bdseq_later(void)
     TEST_ASSERT_EQUAL_UINT8(2, gw_nvsmig_bdseq_later(250, 2));    /* across the wrap */
     TEST_ASSERT_EQUAL_UINT8(2, gw_nvsmig_bdseq_later(2, 250));
     TEST_ASSERT_EQUAL_UINT8(127, gw_nvsmig_bdseq_later(0, 127));
-    TEST_ASSERT_EQUAL_UINT8(0, gw_nvsmig_bdseq_later(0, 128));    /* half the ring: the first */
+    /* half the ring: undecidable; the same answer in either order (N3) */
+    TEST_ASSERT_EQUAL_UINT8(128, gw_nvsmig_bdseq_later(0, 128));
+    TEST_ASSERT_EQUAL_UINT8(128, gw_nvsmig_bdseq_later(128, 0));
+    TEST_ASSERT_EQUAL_UINT8(200, gw_nvsmig_bdseq_later(72, 200));
+    TEST_ASSERT_EQUAL_UINT8(200, gw_nvsmig_bdseq_later(200, 72));
+    for (unsigned a = 0; a < 256; a += 7) {
+        for (unsigned b = 0; b < 256; b += 5) {
+            TEST_ASSERT_EQUAL_UINT8(gw_nvsmig_bdseq_later((uint8_t)a, (uint8_t)b),
+                                    gw_nvsmig_bdseq_later((uint8_t)b, (uint8_t)a));
+        }
+    }
+}
+
+/* N5: the copy file as read: current version, version 1 (converted), unknown version (kept),
+ * not a copy or damaged (the only cases to delete it) */
+static void test_copy_load(void)
+{
+    static uint8_t buf[256], v1[256];
+    uint8_t b = 41;
+    size_t n = gw_nvsmig_begin(buf, sizeof(buf));
+    n = gw_nvsmig_add(buf, sizeof(buf), n, "spb", "bdseq", 0x01, &b, 1);
+    n = gw_nvsmig_add(buf, sizeof(buf), n, "secrets", "mqtt_pw", 0x21, "pw", 3);
+    size_t size = gw_nvsmig_seal(buf, n, 0);
+    size_t out = 0;
+    bool legacy = true;
+    uint32_t count = 0;
+    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_VALID, gw_nvsmig_load(buf, size, sizeof(buf), &out, &legacy,
+                                                           &count));
+    TEST_ASSERT_EQUAL_size_t(size, out);
+    TEST_ASSERT_FALSE(legacy);
+    TEST_ASSERT_EQUAL_UINT32(2, count);
+
+    /* the same copy as ebc2aa4 wrote it: 16-byte header, version 1 */
+    size_t body = size - GW_NVSMIG_HDR;
+    memcpy(v1, buf, 16);
+    v1[4] = 1;
+    v1[5] = 0;
+    memcpy(v1 + 16, buf + GW_NVSMIG_HDR, body);
+    wr32(v1 + 8, (uint32_t)body);
+    wr32(v1 + 12, gw_nvsraw_crc32(0, v1 + 16, body));
+    static uint8_t w[256];
+    memcpy(w, v1, sizeof(w));
+    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_VALID, gw_nvsmig_load(w, 16 + body, sizeof(w), &out, &legacy,
+                                                           &count));
+    TEST_ASSERT_TRUE(legacy);
+    TEST_ASSERT_EQUAL_size_t(size, out);
+    TEST_ASSERT_EQUAL_MEMORY(buf, w, size);   /* converted into the current version */
+    /* valid v1, but no room to convert it: kept */
+    memcpy(w, v1, sizeof(w));
+    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_UNREADABLE, gw_nvsmig_load(w, 16 + body, 16 + body, &out,
+                                                                &legacy, &count));
+    /* damaged v1: deleted */
+    memcpy(w, v1, sizeof(w));
+    w[16 + 3] ^= 1;
+    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_BAD, gw_nvsmig_load(w, 16 + body, sizeof(w), &out, &legacy,
+                                                         &count));
+    /* an unknown (newer) version: kept, never deleted */
+    memcpy(w, buf, size);
+    w[4] = 3;
+    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_UNREADABLE, gw_nvsmig_load(w, size, sizeof(w), &out, &legacy,
+                                                                &count));
+    /* not a copy, or too short to say: deleted; a damaged current one too */
+    memcpy(w, buf, size);
+    w[0] ^= 1;
+    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_BAD, gw_nvsmig_load(w, size, sizeof(w), &out, &legacy, &count));
+    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_BAD, gw_nvsmig_load(buf, 3, sizeof(buf), &out, &legacy, &count));
+    memcpy(w, buf, size);
+    w[GW_NVSMIG_HDR + 2] ^= 1;
+    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_BAD, gw_nvsmig_load(w, size, sizeof(w), &out, &legacy, &count));
 }
 
 int main(void)
@@ -468,5 +544,6 @@ int main(void)
     RUN_TEST(test_decide_with_copy);
     RUN_TEST(test_may_erase);
     RUN_TEST(test_bdseq_later);
+    RUN_TEST(test_copy_load);
     return UNITY_END();
 }

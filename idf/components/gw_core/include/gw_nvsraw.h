@@ -114,8 +114,9 @@ bool gw_nvsmig_find(const uint8_t *buf, size_t size, const char *ns, const char 
 
 /**
  * Issue #94: the later of two bdSeq values (0..255, wrapping), by serial-number arithmetic: @p b
- * is later when it is 1 to 127 steps after @p a. Used so that no path of the migration takes
- * the bdSeq back (an older copy against a newer NVS, the raw pages, ...).
+ * is later when it is 1 to 127 steps after @p a; exactly 128 apart, the larger (so the result
+ * does not depend on the order). Only for values with no live source between them (the RAM bdSeq
+ * of a boot without NVS): a value read from the live partition always wins.
  */
 uint8_t gw_nvsmig_bdseq_later(uint8_t a, uint8_t b);
 
@@ -141,6 +142,16 @@ typedef enum {
                                   * error): kept, it may be the only copy of the entries */
 } gw_nvsmig_copy_t;
 
+/**
+ * Issue #94: a copy file read whole (@p size bytes in @p buf of @p cap) into a valid copy of the
+ * current version (@p out_size bytes). VALID; BAD when it is not a copy (no magic) or fails its
+ * own version's check (the only case to delete it); UNREADABLE for a version this firmware does
+ * not know (kept). Version 1 (16-byte header, written by ebc2aa4) is converted in place (needs 4
+ * more bytes of @p cap) and @p legacy set: its "done" marker was a u8 1, not the CRC.
+ */
+gw_nvsmig_copy_t gw_nvsmig_load(uint8_t *buf, size_t size, size_t cap, size_t *out_size,
+                                bool *legacy, uint32_t *count);
+
 typedef enum {
     GW_NVSMIG_OPEN_ENCRYPTED = 0,  /* the normal start of the encrypted NVS */
     GW_NVSMIG_STAY_PLAIN,          /* this boot runs on the unencrypted NVS, nothing is erased */
@@ -161,12 +172,15 @@ typedef struct {
 /**
  * What an encrypted build does with the NVS at boot (issue #94):
  *  - a copy that exists but cannot be read: NO_NVS (it may hold the only copy of the entries);
- *  - a raw page that cannot be read: no migration. With a valid copy NO_NVS; pages that look
- *    encrypted OPEN_ENCRYPTED (staying unencrypted would make NVS discard their entries); else
- *    STAY_PLAIN;
- *  - PLAIN or MIXED: STAY_PLAIN on trial (a rollback must find the NVS as the previous image
- *    left it; a valid copy is kept for the boot that migrates) or without a place for the copy;
- *    else MIGRATE. A valid copy here means the erase had not finished: the partition's entries
+ *  - a raw page that cannot be read: no migration. With a valid copy NO_NVS; readable pages
+ *    all encrypted OPEN_ENCRYPTED (staying unencrypted would make NVS discard their entries);
+ *    readable pages all plain STAY_PLAIN (an unread page holds plain or encrypted entries; the
+ *    plain ones are the newer either way, as in MIXED); nothing readable, or both kinds, NO_NVS
+ *    (never a plain initialisation over a partition that may be encrypted);
+ *  - PLAIN or MIXED on trial or without a place for the copy: STAY_PLAIN (a rollback must find
+ *    the NVS as the previous image left it); with a valid copy NO_NVS instead (the partition is
+ *    partly erased: running on it would regenerate values that a later merge keeps over the
+ *    copy's; the copy is kept for the boot that migrates); else MIGRATE. A valid copy here means the erase had not finished: the partition's entries
  *    are taken first (they are the newer ones) and the copy fills in what it no longer has. In
  *    a MIXED partition the plain entries are the newer ones: only a build without encryption
  *    writes them, and its initialisation erases the encrypted entries it cannot read;

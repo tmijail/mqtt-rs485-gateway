@@ -307,7 +307,10 @@ static int cmd_status(int argc, char **argv)
                (unsigned long)ls.sent, (unsigned long)ls.dropped, (unsigned long)ls.send_errors);
     }
 #if CONFIG_NVS_ENCRYPTION && CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC
-    if (gw_storage_nvs_encryption_pending()) {   /* issue #94 */
+    const char *no_nvs = gw_storage_nvs_unavailable_why();
+    if (no_nvs != NULL) {   /* issue #94 */
+        out("secrets  NVS UNAVAILABLE this boot: %s\n", no_nvs);
+    } else if (gw_storage_nvs_encryption_pending()) {   /* issue #94 */
         out("secrets  NVS NOT encrypted yet (new firmware on trial, or no LittleFS for the "
             "migration): encrypted at the next boot of a confirmed firmware\n");
     } else {
