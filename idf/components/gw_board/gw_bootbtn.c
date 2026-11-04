@@ -5,11 +5,11 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "gw_buzzer.h"
 #include "gw_status.h"
 
 #if !CONFIG_GW_IO_SIMULATED
 #include "driver/gpio.h"
-#include "driver/ledc.h"
 #include "gw_bsp.h"
 #endif
 
@@ -41,14 +41,7 @@ static bool hw_pressed(void)
 {
     return s_sim_pressed;
 }
-
-static void beep(int n)
-{
-    ESP_LOGI(TAG, "buzzer: %d beep(s) (simulated)", n);
-}
 #else
-static bool s_beeper;
-
 static esp_err_t hw_init(void)
 {
     /* GPIO0 straps the boot mode: it is only read here, after the boot */
@@ -57,21 +50,7 @@ static esp_err_t hw_init(void)
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
     };
-    ESP_RETURN_ON_ERROR(gpio_config(&io), TAG, "gpio");
-    /* IO-6 subset: a passive buzzer needs a tone; 2.7 kHz, 50 % duty while beeping */
-    const ledc_timer_config_t lt = {.speed_mode = LEDC_LOW_SPEED_MODE,
-                                    .duty_resolution = LEDC_TIMER_8_BIT,
-                                    .timer_num = LEDC_TIMER_3,
-                                    .freq_hz = 2700,
-                                    .clk_cfg = LEDC_AUTO_CLK};
-    const ledc_channel_config_t lc = {.gpio_num = gw_bsp.buzzer.gpio,
-                                      .speed_mode = LEDC_LOW_SPEED_MODE,
-                                      .channel = LEDC_CHANNEL_7,
-                                      .timer_sel = LEDC_TIMER_3,
-                                      .duty = 0};
-    s_beeper = gw_bsp.buzzer.passive && ledc_timer_config(&lt) == ESP_OK &&
-               ledc_channel_config(&lc) == ESP_OK;
-    return ESP_OK;
+    return gpio_config(&io);
 }
 
 static bool hw_pressed(void)
@@ -79,17 +58,6 @@ static bool hw_pressed(void)
     return gpio_get_level(gw_bsp.boot_button.gpio) == (gw_bsp.boot_button.active_low ? 0 : 1);
 }
 
-static void beep(int n)
-{
-    for (int i = 0; s_beeper && i < n; i++) {
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7, 128);
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7);
-        vTaskDelay(pdMS_TO_TICKS(150));
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7, 0);
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_7);
-        vTaskDelay(pdMS_TO_TICKS(150));
-    }
-}
 #endif
 
 static void button_task(void *arg)
@@ -113,10 +81,10 @@ static void button_task(void *arg)
         if (ev == GW_BTN_FACTORY_RESET) {
             ESP_LOGW(TAG, "BOOT held %d s: factory reset", GW_BTN_RESET_MS / 1000);
             gw_status_set(GW_ST_RESETTING, true);
-            beep(2);
+            gw_buzzer_beep_wait(2);   /* IO-6: confirmation, before the long flash erase */
         } else if (ev == GW_BTN_COMMISSIONING) {
             ESP_LOGW(TAG, "BOOT pressed %lu ms: commissioning access point", (unsigned long)before);
-            beep(1);
+            gw_buzzer_beep(1);
         }
         if (ev != GW_BTN_NONE) {
             s_on_event(ev);

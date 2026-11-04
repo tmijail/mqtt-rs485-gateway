@@ -409,6 +409,23 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 - Al arrancar se restauran del último guardado. Un reinicio ordenado (NCMD Reboot, configuración nueva, `restart` del shell o de la web) los guarda antes; un corte de alimentación, un *panic* o el watchdog pierden lo contado desde el último guardado (como mucho `counter_save_s`).
 - No se pueden escribir por NCMD. El reset de fábrica los pone a 0.
 
+**Buzzer (IO-6), en `local_io.buzzer`.**
+
+```json
+"local_io": { "buzzer": { "alarms": ["config_error", "mqtt_down", "device_offline"],
+                          "alarm_after_s": 30 } }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `alarms` | array de textos | `[]` | Alarmas que suenan: `config_error` (configuración rechazada), `mqtt_down` (sin sesión Sparkplug), `device_offline` (algún dispositivo Modbus fuera de línea). Sin repetidos. Vacío = el buzzer solo confirma gestos del botón BOOT |
+| `alarm_after_s` | entero | `30` | 0–3600. Cuánto debe durar `mqtt_down` o `device_offline` antes de sonar. `config_error` suena enseguida |
+
+- **Patrones:** un pitido es 150 ms de tono y 150 ms de silencio. Cada alarma repite su ráfaga cada 10 s mientras dura: `device_offline` 1 pitido, `mqtt_down` 2, `config_error` 3. Si hay varias, suena la de más pitidos.
+- **`config_error`:** una configuración rechazada no puede activar nada, así que vale lo que pedía la última configuración válida (guardado en NVS). Tras un reset de fábrica no suena.
+- **Botón BOOT:** 1 pitido al soltarlo entre 2 y 10 s (punto de acceso, NET-5) y 2 pitidos al confirmar el reset de fábrica (CFG-5), haya alarmas o no.
+- No hay forma de silenciar una alarma mientras dura su condición.
+
 **`syslog` (REL-4): copia del log a un servidor syslog.**
 
 ```json

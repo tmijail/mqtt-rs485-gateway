@@ -6,6 +6,7 @@ set(GW_CORE_SRCS
     src/gw_auth.c
     src/gw_backoff.c
     src/gw_button.c
+    src/gw_buzz.c
     src/gw_cfgdoc.c
     src/gw_config.c
     src/gw_conv.c

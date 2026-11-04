@@ -8,6 +8,7 @@
  *   esp_timer                      gw_io:   1 kHz DI sampling and debounce
  *   local_io    (prio 9)           gw_io:   sole writer of the DO expander (NCMD, safe state)
  *   status_led  (prio 2)           gw_status
+ *   buzzer      (prio 2)           gw_buzzer: alarm patterns and confirmation beeps
  *   console     (prio 2)           gw_shell: diagnostic REPL on the console UART
  *   syslog      (prio 2)           gw_log:   copies the log to a syslog server (if configured)
  *   modbus_tcp  (core 0, prio 3)   gw_mbtcp: Modbus TCP gateway to the RTU slaves (if enabled)
@@ -30,6 +31,7 @@
 #include "gw_bootbtn.h"
 #include "gw_bsp.h"
 #include "gw_bus.h"
+#include "gw_buzzer.h"
 #include "gw_config.h"
 #include "gw_edge.h"
 #include "gw_io.h"
@@ -48,6 +50,8 @@
 static const char *TAG = "main";
 
 #define NVS_DO_HOLD "do_hold"   /* IO-3: outputs the last valid configuration holds */
+#define NVS_ALARM_CFG "alarm_cfg"   /* IO-6: the last valid configuration wants the
+                                     * "config_error" alarm (a rejected one cannot say) */
 
 /* Immutable after boot; shared read-only by every task. About 26 KB: allocated at boot in
  * PSRAM when the board has it (internal RAM otherwise, e.g. QEMU), see big_alloc(). */
@@ -199,6 +203,10 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
 {
     s_mode = mode;
     gw_io_outputs_all_off();   /* IO-3: "hold" belonged to a configuration that is not valid */
+    uint8_t alarm = 0;
+    if (mode == GW_WEB_RECOVERY && gw_storage_get_blob(NVS_ALARM_CFG, &alarm, 1) && alarm) {
+        gw_buzzer_configure(GW_ALARM_BIT(GW_ALARM_CONFIG_ERROR), 0);   /* IO-6 */
+    }
     gw_status_set(mode == GW_WEB_COMMISSIONING ? GW_ST_COMMISSIONING : GW_ST_CFG_ERROR, true);
     start_shell(NULL, source);
     gw_storage_recovery_config(s_cfg);
@@ -281,6 +289,10 @@ void app_main(void)
              chip.revision / 100, chip.revision % 100);
     s_info.hardware = s_hardware;
 
+    /* IO-6: GPIO46 straps the boot: configured only now, after the boot */
+    if (gw_buzzer_start() != ESP_OK) {
+        ESP_LOGE(TAG, "buzzer unavailable");
+    }
     if (gw_bootbtn_start(on_button) != ESP_OK) {
         ESP_LOGE(TAG, "BOOT button unavailable: no factory reset");
     }
@@ -303,6 +315,9 @@ void app_main(void)
     if (gw_storage_set_blob(NVS_DO_HOLD, &hold, sizeof(hold)) != ESP_OK) {
         ESP_LOGW(TAG, "DO hold mask not stored: the next restart switches every DO off first");
     }
+    uint8_t alarm = (s_cfg->local_io.buzzer.alarms & GW_ALARM_BIT(GW_ALARM_CONFIG_ERROR)) != 0;
+    gw_storage_set_blob(NVS_ALARM_CFG, &alarm, sizeof(alarm));
+    gw_buzzer_configure(s_cfg->local_io.buzzer.alarms, s_cfg->local_io.buzzer.alarm_after_s);
     ESP_LOGI(TAG, "configuration from %s: group '%s', node '%s', %u devices, %u tags", source,
              s_cfg->sparkplug.group_id, s_cfg->sparkplug.edge_node_id, s_cfg->device_count,
              s_cfg->tag_count);

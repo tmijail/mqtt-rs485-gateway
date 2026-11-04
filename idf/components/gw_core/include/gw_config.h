@@ -81,6 +81,16 @@ typedef enum {
     GW_DO_SAFE_HOLD,      /* keep the state it had (the expander's latch across a restart) */
 } gw_do_safe_t;
 
+/* IO-6 buzzer alarms; the value is also the number of beeps of its pattern and its priority. */
+typedef enum {
+    GW_ALARM_NONE = 0,
+    GW_ALARM_DEVICE_OFFLINE = 1,   /* a Modbus device offline (MB-9) */
+    GW_ALARM_MQTT_DOWN = 2,        /* no Sparkplug session */
+    GW_ALARM_CONFIG_ERROR = 3,     /* configuration rejected (recovery) */
+} gw_alarm_t;
+#define GW_ALARM_BIT(a) (1u << (a))
+#define GW_ALARM_AFTER_MAX_S 3600
+
 typedef enum {
     GW_PARITY_NONE = 0,
     GW_PARITY_EVEN,
@@ -201,6 +211,10 @@ typedef struct {
                                   * take their safe state; 0 = no reaction to an MQTT loss */
         uint8_t do_failsafe[GW_LOCAL_IO_CHANNELS];   /* gw_do_safe_t of DO/1..8 */
         uint32_t counter_save_s; /* IO-4: pulse counters saved to NVS this often (0 = never) */
+        struct {                 /* IO-6 */
+            uint8_t alarms;      /* GW_ALARM_BIT() of the enabled alarms; 0 = silent */
+            uint16_t alarm_after_s;  /* MQTT down / device offline must last this long */
+        } buzzer;
     } local_io;
     struct {                     /* REL-4; disabled when host is empty */
         char host[GW_HOST_SIZE];

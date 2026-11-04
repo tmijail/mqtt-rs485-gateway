@@ -1409,6 +1409,11 @@ def run_factory_reset(args, work):
     death = obs.wait(f"{T}/NDEATH/{node}", 10)
     commissioning = gw.wait_log(r"main: commissioning: no configuration since the factory reset", 30,
                                 pressed)
+    beep1 = gw.find(r"buzzer: 1 beep\(s\) \(simulated\)", t_short)
+    beep2 = gw.find(r"buzzer: 2 beep\(s\) \(simulated\)", pressed)
+    check("IO-6 / CFG-5 buzzer: 1 beep for the access point gesture, 2 beeps confirm the factory "
+          "reset (patterns logged by the QEMU build)", beep1 and beep2,
+          " | ".join(gw.find(r"buzzer: \d beep", t_short)) or "no beep logged")
     check("CFG-5 BOOT held 10 s -> factory reset (LED and log at 2 s, at 10 s), orderly NDEATH, "
           "restart into commissioning; a 3 s press is the access point gesture, not a reset",
           nb and ap and warn and fired and death and commissioning
@@ -1725,6 +1730,14 @@ def run(args, log, slave, broker, conf, work):
           "valid, 'off' and (after a power-up) 'hold' outputs off",
           boot_dos.get(2) is True and not any(boot_dos.get(n) for n in (1, 3, 4, 5, 6, 7, 8)),
           f"NBIRTH DO states {boot_dos}; {(gw.find(r'io: DO at restart', t0) or ['no log'])[0]}")
+    # IO-6: Dead3..Dead5 never answer: the "device offline" alarm sounds alarm_after_s (5 s)
+    # after the boot (the QEMU build logs the patterns instead of driving GPIO46)
+    dev_alarm = gw.find(r"buzzer: alarm 'device offline': 1 beep\(s\) every 10 s", t0)
+    check("IO-6 buzzer alarm 'device offline' (enabled in local_io.buzzer.alarms) after "
+          "alarm_after_s with a Modbus device offline: 1 beep every 10 s",
+          dev_alarm and gw.find(r"buzzer: alarms: configuration error MQTT down device offline "
+                                r"\(MQTT down / device offline after 5 s\)", t0),
+          (dev_alarm or gw.find(r"buzzer: ", t0) or ["no buzzer log"])[0])
     # Before the outage: DO/2 off, DO/3 on (3b) and DO/4 on by NCMD
     pre = set_do(obs, ncmd_t, ndata_t, {2: False, 3: True, 4: True})
 
@@ -1769,6 +1782,16 @@ def run(args, log, slave, broker, conf, work):
           f"before {do_states(pre[2]) if pre else 'no NDATA'}; trip {trip - lost:.1f} s after the loss; "
           f"NBIRTH after the outage {dos}" if lost and trip else
           f"loss logged {bool(lost)}, trip logged {bool(trip)}: {gw.find(r'failsafe', since)[:2]}")
+    mqtt_alarm = gw.wait_log(r"buzzer: alarm 'MQTT down': 2 beep\(s\) every 10 s", 0, since)
+    back_alarm = gw.wait_log(r"buzzer: alarm 'device offline': 1 beep\(s\)", 5,
+                             mqtt_alarm or time.monotonic())
+    check("IO-6 buzzer alarm 'MQTT down' (higher priority) after alarm_after_s (5 s) without a "
+          "session; back to 'device offline' once the session is up",
+          lost and mqtt_alarm and 4.5 <= mqtt_alarm - lost <= 6.5 and back_alarm and nb
+          and back_alarm >= nb[0] - 1,
+          f"MQTT down alarm {mqtt_alarm - lost:.1f} s after the loss; device offline again "
+          f"{back_alarm - nb[0]:+.1f} s from the NBIRTH" if lost and mqtt_alarm and back_alarm and nb
+          else " | ".join(gw.find(r"buzzer: ", since)[:3]) or "no buzzer log")
     check("Broker restart: NDEATH (will, session bdSeq) at shutdown, then NBIRTH (new bdSeq, "
           "seq 0) and every DBIRTH",
           will and bdseq_of(will[2]) == b0 and b1 != b0 and births_ok(nb, dbs),
@@ -1917,6 +1940,19 @@ def run(args, log, slave, broker, conf, work):
           all(a[0] and a[1] == "panic" for a in attempts) and attempts[-1][2],
           "; ".join(f"attempt {i + 1}: saved={a[0]} reset reason={a[1]!r} decoded={a[2]}"
                     f"{'' if a[2] else ' (' + a[3] + ')'}" for i, a in enumerate(attempts)))
+
+    # IO-6 "config_error" alarm: a rejected configuration cannot enable it, so the last valid one
+    # left the choice in NVS: a boot of this same flash with a broken config.json beeps 3 times
+    gw = Gateway(args, work / "uart0-cfgerr.log",
+                 flash_variant(args, work, "cfgerr", {"config.json": b'{"mqtt": '}))
+    t_err = time.monotonic()
+    gw.start()
+    cfg_alarm = gw.wait_log(r"buzzer: alarm 'configuration error': 3 beep\(s\) every 10 s", 30, t_err)
+    rejected = gw.find(r"main: configuration rejected", t_err)
+    gw.kill()
+    check("IO-6 buzzer alarm 'configuration error' in recovery, as enabled by the last valid "
+          "configuration (kept in NVS): 3 beeps every 10 s",
+          cfg_alarm and rejected, (gw.find(r"buzzer: |configuration rejected", t_err) or ["no log"])[0])
 
     # Issue #11: a broker that refuses the NCMD/DCMD subscriptions (SUBACK 0x80). The node must
     # not announce itself (no NBIRTH: it could not receive commands); it disconnects with

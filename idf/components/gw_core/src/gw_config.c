@@ -677,10 +677,55 @@ static bool parse_rs485(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     return true;
 }
 
+/* IO-6: local_io.buzzer {"alarms": [...], "alarm_after_s": n} */
+static bool parse_buzzer(const cJSON *local_io, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"alarms", "alarm_after_s"};
+    static const char *const names[] = {"device_offline", "mqtt_down", "config_error"};
+    static const cJSON empty = {.type = cJSON_Object};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(local_io, "buzzer");
+    long after;
+    if (o == NULL) {
+        o = &empty;
+    }
+    if (!check_keys(o, "local_io.buzzer", keys, 2, err) ||
+        !get_int(o, "alarm_after_s", "local_io.buzzer", false, 30, 0, GW_ALARM_AFTER_MAX_S, &after,
+                 err)) {
+        return false;
+    }
+    cfg->local_io.buzzer.alarm_after_s = (uint16_t)after;
+    const cJSON *list = cJSON_GetObjectItemCaseSensitive(o, "alarms");
+    if (list == NULL) {
+        return true;
+    }
+    if (!cJSON_IsArray(list)) {
+        return fail(err, "local_io.buzzer.alarms", "se esperaba un array");
+    }
+    int i = 0;
+    for (const cJSON *it = list->child; it != NULL; it = it->next, i++) {
+        char p[40];
+        snprintf(p, sizeof(p), "local_io.buzzer.alarms[%d]", i);
+        int a = -1;
+        for (int k = 0; cJSON_IsString(it) && k < 3; k++) {
+            if (strcmp(it->valuestring, names[k]) == 0) {
+                a = k + 1;   /* gw_alarm_t */
+            }
+        }
+        if (a < 0) {
+            return fail(err, p, "valor no válido (se esperaba device_offline|mqtt_down|config_error)");
+        }
+        if (cfg->local_io.buzzer.alarms & GW_ALARM_BIT(a)) {
+            return fail(err, p, "alarma repetida");
+        }
+        cfg->local_io.buzzer.alarms |= (uint8_t)GW_ALARM_BIT(a);
+    }
+    return true;
+}
+
 static bool parse_local_io(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"di_debounce_ms", "failsafe_s", "do_failsafe",
-                                       "counter_save_s"};
+                                       "counter_save_s", "buzzer"};
     static const char *const safe_names[] = {"off", "on", "hold"};   /* gw_do_safe_t order */
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "local_io");
     static const cJSON empty = {.type = cJSON_Object};
@@ -703,6 +748,9 @@ static bool parse_local_io(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *er
     cfg->local_io.di_debounce_ms = (uint16_t)db;
     cfg->local_io.failsafe_s = (uint32_t)fs;
     cfg->local_io.counter_save_s = (uint32_t)save;
+    if (!parse_buzzer(o, cfg, err)) {
+        return false;
+    }
     /* IO-3: one safe state per DO, in order (DO/1 first); missing entries are "off" */
     const cJSON *list = cJSON_GetObjectItemCaseSensitive(o, "do_failsafe");
     if (list == NULL) {

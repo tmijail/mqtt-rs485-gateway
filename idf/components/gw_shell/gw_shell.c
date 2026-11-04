@@ -482,6 +482,16 @@ static int cmd_config(int argc, char **argv)
     } else {
         out(", DO safe state %s (o off, 1 on, h hold) at restart; no MQTT failsafe\n", modes);
     }
+    if (c->local_io.buzzer.alarms != 0) {
+        uint8_t a = c->local_io.buzzer.alarms;
+        out("           buzzer alarms:%s%s%s (after %u s)\n",
+            a & GW_ALARM_BIT(GW_ALARM_CONFIG_ERROR) ? " config_error" : "",
+            a & GW_ALARM_BIT(GW_ALARM_MQTT_DOWN) ? " mqtt_down" : "",
+            a & GW_ALARM_BIT(GW_ALARM_DEVICE_OFFLINE) ? " device_offline" : "",
+            c->local_io.buzzer.alarm_after_s);
+    } else {
+        out("           buzzer alarms: none\n");
+    }
     if (c->local_io.counter_save_s != 0) {
         out("           DI pulse counters saved every %lu s\n",
             (unsigned long)c->local_io.counter_save_s);

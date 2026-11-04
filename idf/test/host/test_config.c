@@ -627,6 +627,27 @@ static void test_local_io_section(void)
     ASSERT_REJECTED(parse(doc), "local_io.counter_save_s: valor 59: 0 (no guardar) o al menos 60 s");
     snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"counter_save_s\":86401}}", base);
     ASSERT_REJECTED(parse(doc), "local_io.counter_save_s: valor 86401 fuera de rango");
+    /* IO-6 */
+    snprintf(doc, sizeof(doc), "{%s}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL(0, cfg.local_io.buzzer.alarms);              /* silent */
+    TEST_ASSERT_EQUAL(30, cfg.local_io.buzzer.alarm_after_s);
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"buzzer\":{\"alarms\":[\"mqtt_down\",\"config_error\"],"
+             "\"alarm_after_s\":5}}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_HEX8(GW_ALARM_BIT(GW_ALARM_MQTT_DOWN) | GW_ALARM_BIT(GW_ALARM_CONFIG_ERROR),
+                           cfg.local_io.buzzer.alarms);
+    TEST_ASSERT_EQUAL(5, cfg.local_io.buzzer.alarm_after_s);
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"buzzer\":{\"alarms\":[\"fire\"]}}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.buzzer.alarms[0]: valor no válido");
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"buzzer\":{\"alarms\":[\"mqtt_down\",\"mqtt_down\"]}}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.buzzer.alarms[1]: alarma repetida");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"buzzer\":{\"alarm_after_s\":3601}}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.buzzer.alarm_after_s: valor 3601 fuera de rango");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"buzzer\":{\"volume\":1}}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.buzzer.volume: clave desconocida");
 }
 
 static void test_section_errors(void)
