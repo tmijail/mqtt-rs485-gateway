@@ -23,6 +23,9 @@ typedef struct {
     bool merge_reads;         /* MB-11 block reads */
     uint16_t max_gap;         /* largest hole bridged by a block read */
     bool force_multi_write;   /* use FC15/FC16 even for single coils/registers */
+    /* Offline devices are probed (first request of the cycle, a single attempt) at
+     * 2, 4, 8 ... x poll_ms, up to max(poll_ms, offline_probe_max_ms). */
+    uint32_t offline_probe_max_ms;
 } gw_poller_opts_t;
 
 typedef enum {
@@ -40,6 +43,7 @@ typedef struct {
     gw_devstate_t state[GW_MAX_DEVICES];
     gw_dev_stats_t stats[GW_MAX_DEVICES];   /* published to gw_tagdb after each cycle / write */
     uint32_t next_due_ms[GW_MAX_DEVICES];
+    uint32_t probe_ms[GW_MAX_DEVICES];      /* current probe interval of an offline device, 0 = online */
     gw_tag_value_t work[GW_MAX_TAGS_PER_DEVICE];
 } gw_poller_t;
 
@@ -52,7 +56,17 @@ void gw_poller_init(gw_poller_t *p, const gw_config_t *cfg, mb_master_t *mb,
  */
 int gw_poller_next(const gw_poller_t *p, uint32_t now_ms, uint32_t *wait_ms);
 
-/** Run one poll cycle of @p dev (started at @p now_ms) and publish it to gw_tagdb. */
+/**
+ * Run one poll cycle of @p dev (started at @p now_ms) and publish it to gw_tagdb.
+ *
+ * A device that is offline (offline_after failed cycles in a row, also before its first
+ * answer) is only probed so it does not take the bus from the healthy ones: the first
+ * request of its cycle gets a single attempt, without retries, and the next cycle is
+ * scheduled with an exponential backoff (2, 4, 8 ... x poll_ms, capped at
+ * max(poll_ms, offline_probe_max_ms)). If the probe is answered the cycle continues
+ * normally, so the device comes back online (DBIRTH) at most one capped interval plus one
+ * cycle after it starts answering again.
+ */
 gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms);
 
 /** Write engineering @p value to tag @p tag, read it back and store the confirmed value. */

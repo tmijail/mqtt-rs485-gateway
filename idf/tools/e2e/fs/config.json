@@ -432,6 +432,48 @@
           "type": "uint16"
         }
       ]
+    },
+    {
+      "name": "Dead3",
+      "unit_id": 3,
+      "poll_ms": 1000,
+      "offline_after": 3,
+      "tags": [
+        {
+          "name": "Value",
+          "area": "holding",
+          "address": 0,
+          "type": "uint16"
+        }
+      ]
+    },
+    {
+      "name": "Dead4",
+      "unit_id": 4,
+      "poll_ms": 1000,
+      "offline_after": 3,
+      "tags": [
+        {
+          "name": "Value",
+          "area": "holding",
+          "address": 0,
+          "type": "uint16"
+        }
+      ]
+    },
+    {
+      "name": "Dead5",
+      "unit_id": 5,
+      "poll_ms": 1000,
+      "offline_after": 3,
+      "tags": [
+        {
+          "name": "Value",
+          "area": "holding",
+          "address": 0,
+          "type": "uint16"
+        }
+      ]
     }
   ]
 }

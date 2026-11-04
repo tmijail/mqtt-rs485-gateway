@@ -170,6 +170,7 @@ Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 - prioridades y núcleos de las tareas;
 - lecturas en bloque y hueco máximo;
 - FC15/FC16 forzadas;
+- intervalo máximo entre sondeos de un dispositivo fuera de línea (`GW_MB_OFFLINE_PROBE_MAX_MS`);
 - backoff MQTT;
 - espera de SNTP;
 - tamaños de cola.
@@ -316,7 +317,7 @@ Leyenda de **Evidencia**:
 | MB-5 | Implementado | `gw_core/src/gw_conv.c` | H + Q (float32, int16, uint16, bool) |
 | MB-7 | Implementado | `gw_conv.c` | H + Q |
 | MB-8 | Implementado | `gw_core/src/mb_master.c` | H + Q |
-| MB-9 | Implementado | `gw_devstate.c`, `gw_poll.c` | H (también un bloque sin respuesta mientras otro responde) + Q |
+| MB-9 | Implementado | `gw_devstate.c`, `gw_poll.c` | H (también un bloque sin respuesta mientras otro responde; sondeo con backoff de los fuera de línea y un equipo sano que mantiene su periodo junto a tres muertos) + Q (tres esclavos muertos sondeados a 2, 4, 8, 10 s sin atrasar al sano) |
 | MB-10 | Implementado | `gw_poll.c` (`gw_poller_next`) | H + Q |
 | MB-16 | Implementado | `components/gw_bus/gw_bus.c` | Diseño: una tarea y una cola |
 | IO-1 | Implementado | `components/gw_board/gw_io.c`, `gw_debounce.c`, `gw_bsp` | H (debounce y polaridad) + Q (pines simulados con la polaridad de `gw_bsp`); GPIO reales C |
@@ -382,6 +383,7 @@ La build de QEMU difiere de la de placa en esos puntos (`sdkconfig.qemu`).
 - Un dispositivo arranca fuera de línea y solo se publica su DBIRTH tras la primera respuesta.
 - **Un ciclo falla si alguna petición queda sin respuesta tras los reintentos** (una excepción Modbus cuenta como respuesta). El ciclo se corta ahí, sin gastar el timeout en los bloques restantes, y los ciclos fallidos cuentan para `offline_after`. Así el DDEATH llega en `offline_after` ciclos aunque los demás bloques del equipo respondan.
 - Los tags de los bloques no leídos **conservan el valor y el timestamp de su última lectura**: no se reportan como frescos. Si la falta persiste, el DDEATH los invalida a todos. Un equipo pasa (o vuelve) a estar en línea solo tras un ciclo completo, así que su DBIRTH nunca lleva valores que no se leyeron.
+- **Sondeo con backoff de los dispositivos fuera de línea.** Un equipo fuera de línea (tras `offline_after` ciclos fallidos, también si nunca respondió) ya no ocupa el bus como uno sano: cada sondeo manda **solo la primera petición del ciclo, con un único intento** (sin reintentos), y el siguiente se programa a 2, 4, 8… × `poll_ms`, con tope en `CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS` (10 s por defecto; nunca menos que `poll_ms`). Si responde, el ciclo sigue completo en esa misma vuelta. **Vuelta a línea acotada:** el DBIRTH llega como mucho un intervalo tope más un ciclo después de que el equipo vuelve a responder (≤ 10 s + ciclo por defecto). Con los valores por defecto un equipo muerto ocupa el bus 200 ms cada 10 s, en lugar de 600 ms por segundo.
 - Un DCMD a un dispositivo fuera de línea se descarta, no se encola.
 - Las escrituras se reintentan como cualquier transacción. FC05/06/15/16 son idempotentes, pero un esclavo que ejecuta y no responde recibe la escritura dos veces.
 - **Rebirth espontáneo:** si el primer NBIRTH salió antes de que sincronizara SNTP (timestamps de 1970), se reemite al sincronizar. Esta rama no se ejercitó en el E2E.

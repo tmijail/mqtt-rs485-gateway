@@ -91,12 +91,18 @@ static mb_status_t attempt(mb_master_t *m, const mb_request_t *rq, size_t tx_len
 
 mb_status_t mb_master_execute(mb_master_t *m, const mb_request_t *rq, mb_response_t *rsp)
 {
+    return mb_master_execute_retries(m, rq, rsp, m->cfg.retries);
+}
+
+mb_status_t mb_master_execute_retries(mb_master_t *m, const mb_request_t *rq, mb_response_t *rsp,
+                                      uint8_t retries)
+{
     size_t tx_len = mb_build_request(rq, m->tx, sizeof(m->tx));
     if (tx_len == 0) {
         return MB_ERR_ARG;
     }
     mb_status_t st = MB_ERR_TIMEOUT;
-    for (unsigned i = 0; i <= m->cfg.retries; i++) {
+    for (unsigned i = 0; i <= retries; i++) {
         if (m->tr.on_attempt != NULL) {
             m->tr.on_attempt(m->tr.ctx);
         }

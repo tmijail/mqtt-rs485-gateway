@@ -78,6 +78,10 @@ uint32_t mb_tx_timeout_ms(uint32_t baud, uint32_t char_bits, size_t len);
  */
 mb_status_t mb_master_execute(mb_master_t *m, const mb_request_t *rq, mb_response_t *rsp);
 
+/** As mb_master_execute() with @p retries extra attempts instead of the configured ones. */
+mb_status_t mb_master_execute_retries(mb_master_t *m, const mb_request_t *rq, mb_response_t *rsp,
+                                      uint8_t retries);
+
 #ifdef __cplusplus
 }
 #endif

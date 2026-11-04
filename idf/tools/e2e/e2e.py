@@ -47,6 +47,7 @@ MQTT_PORT = int(os.environ.get("E2E_MQTT_PORT", 18831))
 MODBUS_PORT = int(os.environ.get("E2E_MODBUS_PORT", 15020))
 CONSOLE_PORT = int(os.environ.get("E2E_CONSOLE_PORT", 15555))
 SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
+PROBE_MAX_S = 10.0                # CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS / 1000, read in main()
 GROUP, NODE, DEVICE, BULK = "Plant1", "GW01", "Meter1", "Bulk"
 T = f"spBv1.0/{GROUP}"
 ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/3": 22, "Voltage": 100, "Setpoint": 101, "Run": 102}
@@ -79,7 +80,8 @@ class RecordingContext(ModbusSlaveContext):
 
 
 class ModbusSlave:
-    """Unit 1 = Meter1 (SPEC example tags), unit 2 = Bulk (60 holding registers 100..159)."""
+    """Unit 1 = Meter1 (SPEC example tags), unit 2 = Bulk (60 holding registers 100..159).
+    Units 3..5 (Dead3..Dead5 in the configuration) do not exist: requests to them get no answer."""
 
     def __init__(self):
         block = lambda: ModbusSequentialDataBlock(0, [0] * 300)  # noqa: E731
@@ -88,6 +90,7 @@ class ModbusSlave:
         self.bulk.setValues(3, 100, list(range(1000, 1060)))
         self.server_ctx = ModbusServerContext(slaves={1: self.ctx, 2: self.bulk}, single=False)
         self.reads = []  # (unit, function code, address, count) of every request received
+        self.times = []  # monotonic arrival time of each entry of self.reads
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
         self.server = None
@@ -96,6 +99,7 @@ class ModbusSlave:
     def _trace(self, sending, pdu):
         if not sending:
             self.requests += 1
+            self.times.append(time.monotonic())
             self.reads.append((getattr(pdu, "dev_id", None), pdu.function_code,
                                getattr(pdu, "address", None), getattr(pdu, "count", None)))
         return pdu
@@ -103,7 +107,8 @@ class ModbusSlave:
     def start(self):
         async def run():
             self.server = ModbusTcpServer(self.server_ctx, framer=FramerType.RTU,
-                                          address=("127.0.0.1", MODBUS_PORT), trace_pdu=self._trace)
+                                          address=("127.0.0.1", MODBUS_PORT), trace_pdu=self._trace,
+                                          ignore_missing_slaves=True)
             await self.server.listen()
         asyncio.run_coroutine_threadsafe(run(), self.loop).result(5)
 
@@ -397,6 +402,8 @@ def main():
                     help="stay on the host loopback instead of a private network namespace")
     args = ap.parse_args()
     MQTT_PORT, MODBUS_PORT, CONSOLE_PORT = args.mqtt_port, args.modbus_port, args.console_port
+    global PROBE_MAX_S
+    PROBE_MAX_S = sdkconfig_int(args.sdkconfig, "GW_MB_OFFLINE_PROBE_MAX_MS") / 1000
     isolated = False if args.no_isolate else isolate_network()
     print(f"network: {'private namespace' if isolated else 'host loopback'}; ports MQTT {MQTT_PORT}, "
           f"Modbus {MODBUS_PORT}, console {CONSOLE_PORT}", flush=True)
@@ -516,6 +523,35 @@ def run_config_failsafe(args, work):
     obs.close()
 
 
+def check_offline_backoff(slave, t0):
+    """Issue #4: dead slaves (units 3..5, never answer) are probed with one attempt at 2, 4, 8 ...
+    x poll_ms up to the cap, and do not delay the healthy device's 1 s polling."""
+    reads = list(zip(slave.times, slave.reads))
+    dead = [t for t, r in reads if r[0] == 3 and t >= t0]
+    # the first 3 cycles are full (1 try + 2 retries each); then one request per probe
+    gaps = [round(b - a, 1) for a, b in zip(dead[9:], dead[10:])]
+    expect = [min(2.0 * 2 ** i, PROBE_MAX_S) for i in range(len(gaps))]
+    probes_ok = len(gaps) >= 3 and all(abs(g - e) <= 0.6 for g, e in zip(gaps, expect))
+    check("MB-9 / issue #4 offline device probed with a single attempt and an exponential "
+          "backoff (2, 4, 8 ... s, cap)", probes_ok,
+          f"{len(dead)} requests to dead unit 3; gaps after the first 3 cycles {gaps} s "
+          f"(expected {expect})")
+    # Healthy Meter1 while the three dead units back off: cycle starts = its first request kind
+    if len(dead) < 10:
+        return check("Issue #4 healthy device keeps its period next to 3 dead ones", False,
+                     "dead devices never went offline")
+    since = dead[9]
+    meter = [(t, r) for t, r in reads if r[0] == 1 and t >= since]
+    first = meter[0][1][1:] if meter else None
+    starts = [t for t, r in meter if r[1:] == first]
+    span = starts[-1] - starts[0] if len(starts) > 1 else 0
+    worst = max((b - a for a, b in zip(starts, starts[1:])), default=0)
+    # 1 s period; at worst one probe of each dead unit (200 ms timeout) in between + jitter
+    ok = len(starts) >= 8 and (len(starts) - 1) / span >= 0.9 and worst <= 1.0 + 3 * 0.2 + 0.4
+    return check("Issue #4 healthy device keeps its 1 s period next to 3 dead ones", ok,
+                 f"{len(starts)} Meter1 cycles in {span:.1f} s, longest interval {worst:.2f} s")
+
+
 def run(args, log, slave, broker, conf, work):
     nbirth_t, dbirth_t = f"{T}/NBIRTH/{NODE}", f"{T}/DBIRTH/{NODE}/{DEVICE}"
     ndata_t, ddata_t = f"{T}/NDATA/{NODE}", f"{T}/DDATA/{NODE}/{DEVICE}"
@@ -561,7 +597,7 @@ def run(args, log, slave, broker, conf, work):
     asked = time.monotonic()
     gw.console("status")
     status_ok = gw.wait_log(r"config\s+\S+.*: ok", 3, asked)
-    status_net = gw.wait_log(r"network\s+.*MQTT \S+, Modbus 2/2 devices online", 1, asked)
+    status_net = gw.wait_log(r"network\s+.*MQTT \S+, Modbus 2/5 devices online", 1, asked)
     check("CFG-6 console shell: 'status' with a valid configuration (config ok, MQTT, devices online)",
           status_ok and status_net,
           " | ".join(gw.find(r"^config\s|^network\s", asked)) or "no answer")
@@ -637,6 +673,8 @@ def run(args, log, slave, broker, conf, work):
           f"NBIRTH seq={nb[2].seq if nb else None} bdSeq={bdseq_of(nb[2]) if nb else None}, "
           f"DBIRTH seq={db[2].seq if db else None}")
 
+    check_offline_backoff(slave, t0)
+
     # 2. Slave off -> DDEATH; back on -> DBIRTH
     obs.drain()
     off = time.monotonic()
@@ -653,8 +691,13 @@ def run(args, log, slave, broker, conf, work):
           offline, (gw.find(r"Meter1\s+unit", asked) or ["no answer"])[0])
     on = time.monotonic()
     slave.start()
-    db = obs.wait(dbirth_t, 10)
-    check("2b. Slave back -> DBIRTH", db, f"{db[0] - on:.2f} s after restart" if db else "no DBIRTH")
+    # Offline devices are probed with a backoff capped at GW_MB_OFFLINE_PROBE_MAX_MS: the
+    # DBIRTH comes at most one capped interval plus one poll cycle after the slave is back.
+    back = PROBE_MAX_S + 1.0 + 1.0
+    db = obs.wait(dbirth_t, back + 5)
+    check("2b. Slave back -> DBIRTH within the offline probe interval (cap) + one cycle",
+          db and db[0] - on <= back,
+          f"{db[0] - on:.2f} s after restart (bound {back:.1f} s)" if db else "no DBIRTH")
 
     dbirth_topics = [f"{T}/DBIRTH/{NODE}/{d}" for d in (DEVICE, BULK)]
 
