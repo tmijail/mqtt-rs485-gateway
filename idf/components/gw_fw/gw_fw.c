@@ -12,6 +12,7 @@
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
+#include "esp_image_format.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_random.h"
@@ -66,6 +67,7 @@ static StaticSemaphore_t s_ota_lock_buf;
 static RTC_FAST_ATTR gw_fw_status_t s_st;   /* under s_mux; texts under s_fmt_lock */
 static RTC_FAST_ATTR gw_ota_trial_t s_trial;   /* under s_mux */
 static esp_timer_handle_t s_trial_timer;
+static TaskHandle_t s_trial_task;      /* issue #108 B4: runs what the trial timer asks for */
 static esp_timer_handle_t s_restart_timer;
 static atomic_bool s_busy;             /* a transfer is running (download or upload) */
 static char *s_url;                    /* allocated for a download only (#80) */
@@ -427,6 +429,10 @@ static bool confirm(bool nvs_restart)
         arm_trial_timer();
         return false;
     }
+    TaskHandle_t t = s_trial_task;
+    if (t != NULL && t != xTaskGetCurrentTaskHandle()) {
+        xTaskNotifyGive(t);   /* decided: the trial task ends */
+    }
     return true;
 }
 
@@ -455,6 +461,19 @@ static void rollback(void)
     gw_bus_quiesce(1000);   /* no Modbus frame cut by the restart (no-op without the bus) */
     xSemaphoreTake(s_ota_lock, portMAX_DELAY);
     park(true);
+#if CONFIG_GW_IO_SIMULATED
+    /* issue #108 B4, emulator only: the verification of the previous image that the rollback runs
+     * (signature included), once more beforehand, to log how much stack it leaves */
+    const esp_partition_t *prev = esp_ota_get_next_update_partition(NULL);
+    if (prev != NULL) {
+        const esp_partition_pos_t pos = {.offset = prev->address, .size = prev->size};
+        esp_image_metadata_t md;
+        esp_err_t v = esp_image_verify(ESP_IMAGE_VERIFY, &pos, &md);
+        ESP_LOGW(TAG, "rollback stack: %u B free in task %s after verifying %s (%s), emulator check",
+                 (unsigned)uxTaskGetStackHighWaterMark(NULL), pcTaskGetName(NULL), prev->label,
+                 esp_err_to_name(v));
+    }
+#endif
     esp_err_t e = esp_ota_mark_app_invalid_rollback_and_reboot();   /* returns only on error */
     park(false);
     xSemaphoreGive(s_ota_lock);
@@ -473,9 +492,16 @@ static void act(gw_ota_action_t a)
     }
 }
 
-static void on_trial_timeout(void *arg)
+static bool trial_decided(void)
 {
-    (void)arg;
+    portENTER_CRITICAL(&s_mux);
+    bool d = s_trial.state == GW_OTA_TRIAL_CONFIRMED || s_trial.state == GW_OTA_TRIAL_NONE;
+    portEXIT_CRITICAL(&s_mux);
+    return d;
+}
+
+static void trial_tick(void)
+{
     portENTER_CRITICAL(&s_mux);
     gw_ota_action_t a = gw_ota_trial_tick(&s_trial, now_ms());
     portEXIT_CRITICAL(&s_mux);
@@ -483,6 +509,33 @@ static void on_trial_timeout(void *arg)
         arm_trial_timer();   /* early (timer granularity): wait for the rest */
     }
     act(a);
+}
+
+/* Issue #108 B4: the timeout's rollback (with the verification of the previous image, deep with
+ * signed images) and the confirmation retries run here, not in the esp_timer task (3.5 KB). Only
+ * for a new image on trial, created at boot; it ends once the image is confirmed. */
+static void trial_task(void *arg)
+{
+    (void)arg;
+    while (!trial_decided()) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (!trial_decided()) {
+            trial_tick();
+        }
+    }
+    s_trial_task = NULL;
+    vTaskDelete(NULL);
+}
+
+static void on_trial_timeout(void *arg)
+{
+    (void)arg;
+    TaskHandle_t t = s_trial_task;
+    if (t != NULL) {
+        xTaskNotifyGive(t);
+    } else {
+        trial_tick();   /* no task (no memory at boot): as before #108, in the timer task */
+    }
 }
 
 void gw_fw_session_up(unsigned births_missing)
@@ -1077,6 +1130,12 @@ esp_err_t gw_fw_init(const gw_config_t *cfg, bool enabled, const gw_fw_hooks_t *
          * the Sparkplug task, which confirms */
         const esp_timer_create_args_t rt = {.callback = on_restart, .name = "fw_restart"};
         ESP_ERROR_CHECK(esp_timer_create(&rt, &s_restart_timer));
+        /* issue #108 B4: core 0, where the rollback ran before (QEMU parks core 1) */
+        if (xTaskCreatePinnedToCore(trial_task, "fw_trial", CONFIG_GW_FW_TRIAL_TASK_STACK, NULL,
+                                    CONFIG_GW_FW_TRIAL_TASK_PRIORITY, &s_trial_task, 0) != pdPASS) {
+            s_trial_task = NULL;
+            ESP_LOGE(TAG, "no memory for the trial task: the timeout runs in the timer task");
+        }
     }
     gw_storage_set_commit_hook(on_commit);   /* issue #99 */
 
