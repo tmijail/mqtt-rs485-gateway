@@ -74,6 +74,25 @@ void gw_tagdb_set_di(uint8_t di, uint64_t ts_ms)
     gw_port_unlock();
 }
 
+void gw_tagdb_update_di(uint8_t di, uint64_t ts_ms)
+{
+    gw_port_lock();
+    uint8_t rising = (uint8_t)(di & ~s_io.di);
+    for (int i = 0; rising != 0; i++, rising >>= 1) {
+        s_io.count[i] += rising & 1u;
+    }
+    s_io.di = di;
+    s_io.di_ts_ms = ts_ms;
+    gw_port_unlock();
+}
+
+void gw_tagdb_set_counters(const uint64_t count[8])
+{
+    gw_port_lock();
+    memcpy(s_io.count, count, sizeof(s_io.count));
+    gw_port_unlock();
+}
+
 void gw_tagdb_set_do(uint8_t dout, uint64_t ts_ms)
 {
     gw_port_lock();
@@ -89,6 +108,13 @@ void gw_tagdb_set_do_unknown(uint64_t ts_ms)
     s_io.dout = 0;
     s_io.do_unknown = true;
     s_io.do_ts_ms = ts_ms;
+    gw_port_unlock();
+}
+
+void gw_tagdb_set_failsafe(bool on)
+{
+    gw_port_lock();
+    s_io.failsafe = on;
     gw_port_unlock();
 }
 

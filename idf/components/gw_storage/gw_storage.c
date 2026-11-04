@@ -43,6 +43,7 @@ static nvs_handle_t s_nvs;
 static bool s_nvs_ok;
 static uint8_t s_bdseq_ram;  /* fallback if NVS is unusable */
 static bool s_mounted;
+static volatile bool s_reset_done;    /* factory reset: no more state writes until the restart */
 static SemaphoreHandle_t s_save_lock;   /* one writer at a time: web, shell */
 static StaticSemaphore_t s_save_lock_buf;
 
@@ -291,6 +292,49 @@ static esp_err_t wipe_storage(void)
     return esp_littlefs_format("storage");
 }
 
+/* ---------- small local I/O state (IO-3, IO-4) ---------- */
+
+#define BLOB_MAX 64
+
+esp_err_t gw_storage_set_blob(const char *key, const void *data, size_t len)
+{
+    if (s_reset_done) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    nvs_handle_t h;
+    if (!s_nvs_ok || len > BLOB_MAX || nvs_open(NVS_GW, NVS_READWRITE, &h) != ESP_OK) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    uint8_t old[BLOB_MAX];
+    size_t old_len = sizeof(old);
+    esp_err_t err = ESP_OK;
+    if (nvs_get_blob(h, key, old, &old_len) != ESP_OK || old_len != len ||
+        memcmp(old, data, len) != 0) {
+        err = nvs_set_blob(h, key, data, len);
+        if (err == ESP_OK) {
+            err = nvs_commit(h);
+        }
+    }
+    nvs_close(h);
+    return err;
+}
+
+bool gw_storage_get_blob(const char *key, void *out, size_t len)
+{
+    nvs_handle_t h;
+    if (!s_nvs_ok || len > BLOB_MAX || nvs_open(NVS_GW, NVS_READONLY, &h) != ESP_OK) {
+        return false;
+    }
+    uint8_t buf[BLOB_MAX];
+    size_t got = sizeof(buf);
+    bool ok = nvs_get_blob(h, key, buf, &got) == ESP_OK && got == len;
+    nvs_close(h);
+    if (ok) {
+        memcpy(out, buf, len);
+    }
+    return ok;
+}
+
 /* ---------- factory reset (CFG-5) ---------- */
 
 static void set_factory_marker(bool on)
@@ -309,6 +353,7 @@ esp_err_t gw_storage_factory_reset(void)
 {
     xSemaphoreTake(s_save_lock, portMAX_DELAY);   /* no save in the middle; never given back */
     ESP_LOGW(TAG, "factory reset: erasing LittleFS 'storage' and NVS");
+    s_reset_done = true;
     esp_err_t fs = wipe_storage();
     if (s_nvs_ok) {
         nvs_close(s_nvs);

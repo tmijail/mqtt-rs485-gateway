@@ -13,6 +13,20 @@ menu "Gateway: board I/O"
         range 250 1000
         default 1000
 
+    config GW_LOCAL_IO_TASK_PRIORITY
+        int "Local I/O task priority"
+        default 9
+        help
+            The local_io task is the only writer of the DO expander: DO commands (NCMD),
+            the safe state (IO-3) and the local rules (IO-7).
+
+    config GW_BUZZER_FREQ_HZ
+        int "Buzzer tone (Hz, passive buzzer)"
+        range 500 8000
+        default 2700
+        help
+            Frequency of the LEDC square wave on GPIO46 while the buzzer sounds (IO-6).
+
     config GW_LED_BRIGHTNESS
         int "Status LED brightness (0-255)"
         range 1 255

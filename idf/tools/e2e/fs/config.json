@@ -27,7 +27,35 @@
     "inter_frame_delay_ms": 5
   },
   "local_io": {
-    "di_debounce_ms": 20
+    "di_debounce_ms": 20,
+    "failsafe_s": 5,
+    "do_failsafe": [
+      "off",
+      "on",
+      "off",
+      "hold"
+    ],
+    "counter_save_s": 60,
+    "buzzer": {
+      "alarms": [
+        "config_error",
+        "mqtt_down",
+        "device_offline"
+      ],
+      "alarm_after_s": 5
+    },
+    "rules": [
+      {
+        "di": 2,
+        "do": 5,
+        "mode": "follow"
+      },
+      {
+        "di": 3,
+        "do": 6,
+        "mode": "toggle"
+      }
+    ]
   },
   "devices": [
     {

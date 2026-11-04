@@ -81,7 +81,7 @@ static void test_polarity_mapping(void)
 static void test_init_active_low_loads_off_level_before_outputs(void)
 {
     gw_dout_t d;
-    TEST_ASSERT_EQUAL(0, gw_dout_init(&d, &k_bus, 0xFF));
+    TEST_ASSERT_EQUAL(0, gw_dout_init(&d, &k_bus, 0xFF, 0));
     TEST_ASSERT_TRUE(d.ready);
     /* Exactly three writes, latch first, outputs last: the pins never become outputs at an
      * ON level, and the polarity inversion is cleared in between. */
@@ -106,7 +106,7 @@ static void test_warm_restart_switches_outputs_off(void)
     f.reg[GW_TCA9554_REG_CONFIG] = 0x00;
     f.reg[GW_TCA9554_REG_OUTPUT] = (uint8_t)~0x42;
     gw_dout_t d;
-    TEST_ASSERT_EQUAL(0, gw_dout_init(&d, &k_bus, 0xFF));
+    TEST_ASSERT_EQUAL(0, gw_dout_init(&d, &k_bus, 0xFF, 0));
     bool from_pins;
     TEST_ASSERT_EQUAL_HEX8(0x00, gw_dout_read(&d, &from_pins));
     TEST_ASSERT_EQUAL_HEX8(0xFF, f.reg[GW_TCA9554_REG_OUTPUT]);
@@ -115,7 +115,7 @@ static void test_warm_restart_switches_outputs_off(void)
 static void test_set_active_low_drives_pin_low_and_reads_back(void)
 {
     gw_dout_t d;
-    gw_dout_init(&d, &k_bus, 0xFF);
+    gw_dout_init(&d, &k_bus, 0xFF, 0);
     TEST_ASSERT_EQUAL(0, gw_dout_set(&d, 2, true));     /* NCMD DO/3 = true */
     TEST_ASSERT_EQUAL(0, pin(3));
     TEST_ASSERT_EQUAL_HEX8(0xFB, f.reg[GW_TCA9554_REG_OUTPUT]);
@@ -132,13 +132,13 @@ static void test_set_active_low_drives_pin_low_and_reads_back(void)
 static void test_active_high_and_mixed_polarity(void)
 {
     gw_dout_t d;
-    gw_dout_init(&d, &k_bus, 0x00);
+    gw_dout_init(&d, &k_bus, 0x00, 0);
     TEST_ASSERT_EQUAL_HEX8(0x00, f.log[0].val);           /* OFF = LOW when active high */
     gw_dout_set(&d, 0, true);
     TEST_ASSERT_EQUAL(1, pin(1));
 
     setUp();
-    gw_dout_init(&d, &k_bus, 0x0F);                         /* DO1-4 active low, DO5-8 high */
+    gw_dout_init(&d, &k_bus, 0x0F, 0);                         /* DO1-4 active low, DO5-8 high */
     TEST_ASSERT_EQUAL_HEX8(0x0F, f.log[0].val);
     gw_dout_set(&d, 0, true);
     gw_dout_set(&d, 4, true);
@@ -152,13 +152,13 @@ static void test_bus_errors(void)
 {
     gw_dout_t d;
     f.fail_write_at = 1;                                    /* latch write fails */
-    TEST_ASSERT_EQUAL(ERR_BUS, gw_dout_init(&d, &k_bus, 0xFF));
+    TEST_ASSERT_EQUAL(ERR_BUS, gw_dout_init(&d, &k_bus, 0xFF, 0));
     TEST_ASSERT_FALSE(d.ready);
     TEST_ASSERT_EQUAL(1, f.writes);                         /* pins were not made outputs */
     TEST_ASSERT_EQUAL_HEX8(0xFF, f.reg[GW_TCA9554_REG_CONFIG]);
 
     setUp();
-    TEST_ASSERT_EQUAL(0, gw_dout_init(&d, &k_bus, 0xFF));
+    TEST_ASSERT_EQUAL(0, gw_dout_init(&d, &k_bus, 0xFF, 0));
     gw_dout_set(&d, 1, true);
     f.fail_write_at = f.writes + 1;
     TEST_ASSERT_EQUAL(ERR_BUS, gw_dout_set(&d, 5, true));  /* latch keeps the last good state */
@@ -174,7 +174,7 @@ static void test_init_clears_polarity_inversion(void)
 {
     f.reg[GW_TCA9554_REG_POLARITY] = 0xFF;
     gw_dout_t d;
-    TEST_ASSERT_EQUAL(0, gw_dout_init(&d, &k_bus, 0xFF));
+    TEST_ASSERT_EQUAL(0, gw_dout_init(&d, &k_bus, 0xFF, 0));
     TEST_ASSERT_EQUAL_HEX8(0x00, f.reg[GW_TCA9554_REG_POLARITY]);
     bool from_pins;
     TEST_ASSERT_EQUAL_HEX8(0x00, gw_dout_read(&d, &from_pins));   /* all off, not all on */
@@ -182,12 +182,65 @@ static void test_init_clears_polarity_inversion(void)
     TEST_ASSERT_EQUAL_HEX8(0x04, gw_dout_read(&d, &from_pins));
 }
 
+/* IO-3: "hold" outputs keep their latch across a warm restart (pins already outputs); the
+ * others go off. CONFIG and OUTPUT are read first, nothing is written before. */
+static void test_warm_restart_holds_selected_outputs(void)
+{
+    f.reg[GW_TCA9554_REG_CONFIG] = 0x00;
+    f.reg[GW_TCA9554_REG_OUTPUT] = (uint8_t)~0x46;    /* DO2, DO3 and DO7 on (active low) */
+    gw_dout_t d;
+    TEST_ASSERT_EQUAL(0, gw_dout_init(&d, &k_bus, 0xFF, 0x0C));   /* hold DO3 and DO4 */
+    bool from_pins;
+    TEST_ASSERT_EQUAL_HEX8(0x04, gw_dout_read(&d, &from_pins));  /* DO3 kept, DO2/DO7 off */
+    TEST_ASSERT_EQUAL_HEX8(0x04, gw_dout_state(&d));
+    TEST_ASSERT_EQUAL(3, f.writes);
+    TEST_ASSERT_EQUAL_HEX8((uint8_t)~0x04, f.log[0].val);
+    TEST_ASSERT_EQUAL(0, pin(3));                                 /* never released */
+}
+
+/* IO-3: at a power-up the pins are inputs and the latch is 0xFF, which would be ON for an
+ * active-high output: held outputs start off like the others. */
+static void test_power_up_hold_starts_off(void)
+{
+    gw_dout_t d;
+    TEST_ASSERT_EQUAL(0, gw_dout_init(&d, &k_bus, 0x00, 0xFF));   /* active high, hold all */
+    bool from_pins;
+    TEST_ASSERT_EQUAL_HEX8(0x00, gw_dout_read(&d, &from_pins));
+    TEST_ASSERT_EQUAL_HEX8(0x00, f.log[0].val);
+
+    setUp();   /* half of the pins outputs: only those are kept */
+    f.reg[GW_TCA9554_REG_CONFIG] = 0xF0;
+    f.reg[GW_TCA9554_REG_OUTPUT] = 0x00;                          /* active low: all on */
+    TEST_ASSERT_EQUAL(0, gw_dout_init(&d, &k_bus, 0xFF, 0xFF));
+    TEST_ASSERT_EQUAL_HEX8(0x0F, gw_dout_read(&d, &from_pins));
+
+    setUp();   /* the read fails: nothing written, not ready (retried later) */
+    f.fail_read = true;
+    TEST_ASSERT_EQUAL(ERR_BUS, gw_dout_init(&d, &k_bus, 0xFF, 0x01));
+    TEST_ASSERT_FALSE(d.ready);
+    TEST_ASSERT_EQUAL(0, f.writes);
+}
+
+static void test_write_mask_in_one_transaction(void)
+{
+    gw_dout_t d;
+    gw_dout_init(&d, &k_bus, 0xFF, 0);
+    gw_dout_set(&d, 0, true);
+    int before = f.writes;
+    TEST_ASSERT_EQUAL(0, gw_dout_write(&d, 0x0F, 0x0A));   /* DO1 off, DO2 on, DO3 off, DO4 on */
+    TEST_ASSERT_EQUAL(before + 1, f.writes);
+    TEST_ASSERT_EQUAL_HEX8(0x0A, gw_dout_state(&d));
+    f.fail_write_at = f.writes + 1;
+    TEST_ASSERT_EQUAL(ERR_BUS, gw_dout_write(&d, 0xF0, 0xF0));
+    TEST_ASSERT_EQUAL_HEX8(0x0A, gw_dout_state(&d));        /* unchanged on failure */
+}
+
 /* Issue #8: an expander that does not answer at boot is retried at 1, 2, 4 ... 60 s. */
 static void test_recovery_with_backoff(void)
 {
     gw_dout_t d;
     f.absent = true;
-    TEST_ASSERT_EQUAL(ERR_BUS, gw_dout_init(&d, &k_bus, 0xFF));
+    TEST_ASSERT_EQUAL(ERR_BUS, gw_dout_init(&d, &k_bus, 0xFF, 0));
     TEST_ASSERT_FALSE(d.ready);
     uint32_t now = 5000;
     TEST_ASSERT_FALSE(gw_dout_recover(&d, now));      /* schedules the first retry */
@@ -225,6 +278,9 @@ int main(void)
     RUN_TEST(test_active_high_and_mixed_polarity);
     RUN_TEST(test_bus_errors);
     RUN_TEST(test_init_clears_polarity_inversion);
+    RUN_TEST(test_warm_restart_holds_selected_outputs);
+    RUN_TEST(test_power_up_hold_starts_off);
+    RUN_TEST(test_write_mask_in_one_transaction);
     RUN_TEST(test_recovery_with_backoff);
     return UNITY_END();
 }
