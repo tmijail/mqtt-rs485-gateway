@@ -1,7 +1,14 @@
-# Issue #63: the QEMU build with the board's octal PSRAM (applied after sdkconfig.qemu, which
-# turns it off). QEMU emulates it with -global driver=ssi_psram,property=is_octal,value=true
-# (tools/e2e/run_e2e.sh with E2E_PSRAM=1 passes it, like IDF's qemu_ext.py does).
+# Issues #63 and #85: the QEMU build with the board's octal PSRAM (applied after
+# sdkconfig.qemu, which turns it off). QEMU emulates it with
+# -global driver=ssi_psram,property=is_octal,value=true (tools/e2e/run_e2e.sh with E2E_PSRAM=1
+# passes it, like IDF's qemu_ext.py does).
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+# Issue #85: QEMU's GDMA only reaches internal RAM (espressif/qemu#180), so the SHA and AES
+# accelerators in DMA mode get nothing from a buffer in PSRAM, where mbedTLS allocates when there
+# is PSRAM: the first TLS handshake (HTTPS or MQTT) hangs. The emulator build uses software SHA
+# and AES; the board keeps the accelerators.
+CONFIG_MBEDTLS_HARDWARE_SHA=n
+CONFIG_MBEDTLS_HARDWARE_AES=n

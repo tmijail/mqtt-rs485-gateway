@@ -37,6 +37,7 @@ import sys
 import threading
 import time
 import traceback
+import zlib
 
 import hashlib
 import ssl
@@ -689,6 +690,20 @@ def flash_variant(args, work, name, files):
     return out
 
 
+def write_otadata(path):
+    """Issue #85: a valid first otadata entry (ota_seq 1 = ota_0, state VALID, CRC32 of the
+    sequence as esp_rom_crc32_le computes it), as the 2nd stage bootloader writes it on the
+    first boot of an erased otadata. With QEMU's octal ssi_psram that first write crashes QEMU
+    (SIGSEGV in psram_quad_read: docs/upstream-reports.md section 4), so the PSRAM variant boots
+    images that already carry it. Checked against the bytes the bootloader writes."""
+    offset, _ = storage_partition("otadata")
+    seq = struct.pack("<I", 1)
+    entry = seq + b"\xff" * 20 + struct.pack("<II", 2, zlib.crc32(seq, 0xFFFFFFFF))
+    with open(path, "r+b") as f:
+        f.seek(offset)
+        f.write(entry)
+
+
 # ---------------------------------------------------------------- isolation and build facts
 
 def isolate_network():
@@ -977,7 +992,8 @@ def check_ram_margin(args, work, obs, port, ca):
     gw.kill()
     obs.wait(f"{T}/NDEATH/{node}", 5)
     print(f"RAM margin: {heap} | {stack}", flush=True)
-    check(f"Issue #80 internal RAM without PSRAM after the worst case (MQTT over TLS, full births, an "
+    check(f"Issue #80 internal RAM {'with the PSRAM (#85)' if args.psram else 'without PSRAM'} after "
+          f"the worst case (MQTT over TLS, full births, an "
           f"HTTPS session open and PUT /api/config?dry_run=1 over HTTPS): minimum free >= "
           f"{RAM_MIN_FREE_B} B and largest block at the validation >= {RAM_MIN_BLOCK_B} B",
           nb and bulk and st0 == 200 and st == 200 and kept and minimum is not None
@@ -1059,7 +1075,8 @@ def check_tls_during_validation(args, work, obs, port, ca):
     print(f"TLS during validation: PUT {st}; handshake inside the hold {during}; attempts "
           f"{len(tries)}; {' | '.join(tls_err[:6])}; {rel_line}; {heap}", flush=True)
     check(f"Issue #84 an MQTT over TLS reconnection (new handshake) while a configuration is being "
-          f"validated, with a second web session open, no PSRAM: the PUT answers (200, or 503 with the "
+          f"validated, with a second web session open, {'with the PSRAM (#85)' if args.psram else 'no PSRAM'}: "
+          f"the PUT answers (200, or 503 with the "
           f"reason), MQTT comes back (NBIRTH), the session is still served, no hang, panic or "
           f"watchdog",
           nb and bulk and st0 == 200 and opened and armed and held and st in (200, 503)
@@ -1285,8 +1302,10 @@ def run_store_forward(args, work, slave):
     observer stays subscribed. While it is away Voltage takes three values (each beyond the 0.1
     deadband) and DI/3 goes on and off. Back: NBIRTH, DBIRTH with the current value, then the
     stored changes as DDATA/NDATA with is_historical, in order and with their sample times.
-    QEMU has no PSRAM: the small internal-RAM ring is used."""
+    Without PSRAM (the default QEMU build) the small internal-RAM ring is used; with --psram
+    (issue #85) the board's 40000-sample ring in PSRAM."""
     node, port = "GW20", MQTT_PORT + 9
+    where = "PSRAM" if args.psram else "internal RAM"
     ddata_t, ndata_t = f"{T}/DDATA/{node}/{DEVICE}", f"{T}/NDATA/{node}"
     relay = Relay(port, MQTT_PORT)
     obs = Observer()
@@ -1296,7 +1315,8 @@ def run_store_forward(args, work, slave):
     gw = boot_variant(args, work, "sf", cfg)
     nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
     obs.wait(f"{T}/DBIRTH/{node}/{BULK}", 10)
-    ring = gw.find(r"store & forward: \d+ samples \(\d+ B\) in internal RAM \(no PSRAM\)", t0)
+    ring = gw.find(r"store & forward: \d+ samples \(\d+ B\) in "
+                   + (r"PSRAM" if args.psram else r"internal RAM \(no PSRAM\)"), t0)
     since = time.monotonic()
     relay.stop()
     gw.wait_log(r"MQTT down; reconnect attempt", 10, since)
@@ -1308,7 +1328,7 @@ def run_store_forward(args, work, slave):
     time.sleep(0.5)
     gw.console("di 3 0")
     time.sleep(0.5)
-    asked, h = gw.shell("status", [r"^store\s+[1-9]\d* of \d+ samples waiting \(internal RAM\)"])
+    asked, h = gw.shell("status", [r"^store\s+[1-9]\d* of \d+ samples waiting \(%s\)" % where])
     waiting = list(h.values())[0]
     relay.start()
     nb2 = obs.wait(f"{T}/NBIRTH/{node}", 70)
@@ -1330,8 +1350,8 @@ def run_store_forward(args, work, slave):
     relay.stop()
     slave.set_float(4, 0, 230.5)   # what the main scenario expects
     check("SPB-14 store & forward: changes while the broker is away come after NBIRTH and DBIRTH as "
-          "DDATA/NDATA with is_historical, oldest first, with their sample times (internal-RAM ring "
-          "without PSRAM)",
+          "DDATA/NDATA with is_historical, oldest first, with their sample times ("
+          + ("ring in PSRAM)" if args.psram else "internal-RAM ring without PSRAM)"),
           nb and ring and waiting and nb2 and db and got == values and ts == sorted(ts)
           and [m.boolean_value for m in di] == [True, False] and in_order and sent,
           f"{(ring or ['no ring log'])[0]}; DBIRTH Voltage "
@@ -1482,7 +1502,9 @@ def run_store_forward_spill(args, work, slave):
     broker away, the harness changes all 60 Bulk registers twice a second: about 60 samples per
     poll overflow the 512-sample RAM ring, which spills its oldest chunks to the card. After the
     reconnection every stored sample comes back as historical DDATA, oldest first (spill, then
-    ring), with no sample lost (the shell: nothing overwritten, nothing deleted unsent)."""
+    ring), with no sample lost (the shell: nothing overwritten, nothing deleted unsent).
+    With --psram (issue #85) the ring has 40000 samples in PSRAM: the same load stays in it and
+    nothing spills, which is the board's behaviour for an outage this short."""
     node, port = "GW23", MQTT_PORT + 11
     ddata_t = f"{T}/DDATA/{node}/{BULK}"
     relay = Relay(port, MQTT_PORT)
@@ -1503,9 +1525,13 @@ def run_store_forward_spill(args, work, slave):
         value += 1
         slave.bulk.setValues(3, 100, [value] * 60)
         time.sleep(0.5)
-    asked, h = gw.shell("status", [r"^spill\s+on: [1-9]\d* samples on the card, [1-9]\d* moved there, "
-                                   r"0 deleted unsent",
-                                   r"^store\s+[1-9]\d* of 512 samples waiting \(internal RAM\), .* 0 overwritten"])
+    if args.psram:
+        want = [r"^spill\s+on: 0 samples on the card, 0 moved there, 0 deleted unsent",
+                r"^store\s+[1-9]\d* of 40000 samples waiting \(PSRAM\), .* 0 overwritten"]
+    else:
+        want = [r"^spill\s+on: [1-9]\d* samples on the card, [1-9]\d* moved there, 0 deleted unsent",
+                r"^store\s+[1-9]\d* of 512 samples waiting \(internal RAM\), .* 0 overwritten"]
+    asked, h = gw.shell("status", want)
     spilled = all(h.values())
     waiting = [int(x) for x in re.findall(r"^store\s+(\d+) of", "\n".join(gw.find(r"^store\s", asked)), re.M)]
     relay.start()
@@ -1514,7 +1540,7 @@ def run_store_forward_spill(args, work, slave):
     asked2 = time.monotonic()
     done = None
     while time.monotonic() < deadline and not done:
-        _, h = gw.shell("status", [r"^store\s+0 of 512 samples waiting"], timeout=2, tries=1)
+        _, h = gw.shell("status", [r"^store\s+0 of \d+ samples waiting"], timeout=2, tries=1)
         done = list(h.values())[0]
     time.sleep(1)
     hist = [mm for m in CAPTURE if nb2 and m[0] >= nb2[0] and m[1] == ddata_t for mm in m[2].metrics
@@ -1531,7 +1557,10 @@ def run_store_forward_spill(args, work, slave):
     slave.bulk.setValues(3, 100, list(range(1000, 1060)))   # what the main scenario expects
     check("SPB-14 spill to the card (LittleFS stand-in on QEMU): the full 512-sample ring spills "
           "its oldest samples; after the reconnection all of them come back as historical DDATA, "
-          "oldest first, none overwritten or deleted",
+          "oldest first, none overwritten or deleted" if not args.psram else
+          "SPB-14 with the PSRAM ring (issue #85): more samples than the internal ring holds stay in "
+          "the 40000-sample PSRAM ring, nothing spills to the card; after the reconnection all of "
+          "them come back as historical DDATA, oldest first, none overwritten",
           nb and spill_log and spilled and waiting and waiting[0] > 512 and nb2 and done
           and total >= waiting[0] and reg100 == sorted(reg100) and ts == sorted(ts)
           and len(set(reg100)) == len(reg100),
@@ -1652,6 +1681,8 @@ def main():
     log = work / "uart0.log"
     # The image under test gets the harness' config.json (with its MQTT port).
     args.flash = str(flash_variant(args, work, "main", {"config.json": config_json()}))
+    if args.psram:
+        write_otadata(args.flash)   # every variant is a copy of this image
 
     conf = work / "broker.conf"
     conf.write_text(f"listener {MQTT_PORT} 127.0.0.1\nallow_anonymous true\n")
@@ -2765,6 +2796,17 @@ def run(args, log, slave, broker, conf, work):
     if not check("1a. NBIRTH published", nb, "no NBIRTH within 40 s" if not nb else
                  f"{nb[0] - t0:.1f} s after QEMU start (REL-6 asks < 10 s)"):
         return
+    if args.psram:
+        # Issue #85: the board's memory path. The configuration, the Sparkplug engine and its
+        # full payload buffer are allocated in the octal PSRAM, and the shell sees it.
+        placed = {w: gw.find(r"storage: %s: \d+ B in PSRAM" % w, t0)
+                  for w in ("configuration", "Sparkplug engine", "Sparkplug payload buffer")}
+        asked, h = gw.shell("status", [r"^heap\s+internal .*PSRAM [1-9]\d* B free"])
+        check("Issue #85 octal PSRAM in QEMU: configuration, Sparkplug engine and payload buffer "
+              "in PSRAM; the shell reports the free PSRAM",
+              all(placed.values()) and all(h.values()),
+              " | ".join((v or [f"{k}: not in PSRAM"])[0] for k, v in placed.items()) + "; "
+              + ((gw.find(r"^heap\s+internal", asked) or ["no heap line"])[0]))
     p = nb[2]
     nb0 = [nb]
     b0 = bdseq_of(p)

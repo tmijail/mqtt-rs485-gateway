@@ -1,7 +1,8 @@
 # Overlay for the QEMU end-to-end test (tools/e2e/run_e2e.py). The emulator has no
-# W5500, I2C expander, GPIO inputs or RMT, and it does not model: octal PSRAM
-# (QEMU segfaults), QIO flash reads by the app (data shifted by 2 bytes) and the
-# RS485 half-duplex UART mode (uart_wait_tx_done asserts) and has no Wi-Fi radio.
+# W5500, I2C expander, GPIO inputs or RMT, and it does not model: QIO flash reads by the
+# app (data shifted by 2 bytes) and the RS485 half-duplex UART mode (uart_wait_tx_done
+# asserts) and has no Wi-Fi radio. The octal PSRAM is in sdkconfig.qemu-psram (E2E_PSRAM=1,
+# issue #85); this build runs without it.
 # Never flash this build.
 CONFIG_GW_ETH_OPENETH=y
 CONFIG_GW_IO_SIMULATED=y

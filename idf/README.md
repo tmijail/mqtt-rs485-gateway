@@ -10,7 +10,7 @@ Firmware del MVP (`docs/SPEC.md` §5) para la Waveshare **ESP32-S3-POE-ETH-8DI-8
 > - los tests de host;
 > - el firmware real en QEMU (ESP32-S3), contra mosquitto y un esclavo pymodbus.
 >
-> El W5500, el modo RS485 por hardware de la UART, el TCA9554, las DI por GPIO, el LED y la PSRAM octal **solo están compilados**. Ver §6.
+> El W5500, el modo RS485 por hardware de la UART, el TCA9554, las DI por GPIO y el LED **solo están compilados**. La PSRAM octal corre sobre el modelo de QEMU (E2E con `E2E_PSRAM=1`, #85), no en una placa. Ver §6.
 
 ## 1. Arquitectura
 
@@ -365,7 +365,7 @@ E2E_PYTHON=~/e2e/bin/python idf/tools/e2e/run_e2e.sh
 
 Configuración usada: `tools/e2e/fs/config.json` (keepalive de 10 s, syslog hacia el receptor del harness). `run_e2e.sh` pasa además el ELF y el python de IDF, para decodificar el *core dump* con `esp_coredump`.
 
-Resultado: **137/137 comprobaciones OK** (sobre `feature/diag-ram`, con #80 y #81); con `--panics 3`, en `feature/sparkplug-metrics`, los tres volcados decodificados (#62).
+Resultado: **137/137 comprobaciones OK** (sobre `feature/diag-ram`, con #80 y #81); con la PSRAM octal (`E2E_PSRAM=1`, #85), **139/139** en `fix/mem-psram` (ver «PSRAM octal» más abajo); con `--panics 3`, en `feature/sparkplug-metrics`, los tres volcados decodificados (#62).
 
 | Criterio | Resultado medido |
 |---|---|
@@ -442,7 +442,11 @@ Resultado: **137/137 comprobaciones OK** (sobre `feature/diag-ram`, con #80 y #8
 - **TCA9554 ausente.** El expansor simulado responde siempre, salvo que el shell lo pida (`expander absent <ms>`: mudo los primeros ms del arranque siguiente, medidos desde su primer acceso porque en QEMU `esp_timer` no vuelve a 0 con un reinicio por software: `docs/upstream-reports.md` §5; #74); así el E2E ejercita el reintento en puesta en marcha. El I²C real que falla solo tiene tests de host. Sus registros viven en memoria RTC que el arranque no borra, así que, como el chip, sobreviven a un reinicio por software o a un *panic* y vuelven a sus valores de encendido solo en un arranque en frío (QEMU nuevo).
 - **Buzzer.** Sin LEDC ni GPIO46: la build de QEMU solo registra en el log los pitidos y las alarmas.
 - ***Core dump* y el otro núcleo (#62).** **Causa:** el *panic handler* le pide al otro núcleo que se detenga (`esp_cpu_stall`, el *software stall* de `RTC_CNTL`) y QEMU no lo emula: el otro núcleo sigue corriendo tareas mientras se escribe el volcado. Se ve en el log: el `buzzer` (otra tarea) siguió escribiendo durante el borrado de la partición `coredump`, y en una corrida el escritor ELF abortó dentro del *panic* (`ESP_COREDUMP_ASSERT` en `core_dump_flash.c:158`: los datos de las tareas crecieron entre la pasada que calcula el tamaño y la que escribe) con "Re-entered core dump"; en otras, el checksum quedó sin escribir (`a5a5…`) o el volcado cortado (`stream read less than specified amount`). **Check determinista:** el `panic` del shell de QEMU estaciona primero el otro núcleo (una función con las interrupciones deshabilitadas en bucle, por `esp_ipc_call`, desde una tarea fijada al núcleo 0), como haría el *stall* del chip, y después aborta: un solo *panic*, y su volcado debe decodificarse (`--panics N` repite N para medirlo). Se mantiene el retardo de 1 s antes del reinicio. En la placa el otro núcleo se detiene de verdad: falta confirmarlo con un volcado real (campaña de #18). La causa ya está reportada arriba (espressif/qemu#189, con el PR #190); el síntoma del volcado, con una reproducción mínima, en `docs/upstream-reports.md` §3 (#82).
-- **PSRAM octal (#63).** QEMU sí la emula con `-global driver=ssi_psram,property=is_octal,value=true` (como `qemu_ext.py`) y `-m 8M` (el tamaño de la placa; con `-m 32M` mapea 31 MB y no queda espacio virtual para el *mmap* de la flash: no se encuentran las particiones). Bajo `gdb` el firmware arranca entero con la configuración, el motor Sparkplug y su búfer de 16 KB en PSRAM. **Pero fuera de `gdb` QEMU se cae** (SIGSEGV del proceso, no del firmware): `psram_quad_read` en `hw/misc/ssi_psram.c:154`, llamada desde `esp32s3_spi_special_command` (`hw/ssi/esp32s3_spi.c:368`), es decir, una transacción del controlador SPI1 que llega al modelo de la PSRAM, justo después de cargar la app. Con una imagen de flash y eFuse nuevas (como las de cada arranque del E2E) se cayó 6 de 6 veces a 80 MHz y 8 de 8 a 40 MHz; con una imagen ya arrancada una vez bajo `gdb`, 1 de 6. Al preparar el reporte (#82) se encontró el disparador: **la escritura de `otadata` que hace el bootloader en el primer arranque** de una imagen nueva (`Set actual ota_seq=1 in otadata[0]`) llega al modelo de la PSRAM, que lee su búfer en la dirección -1. Una aplicación mínima sin PSRAM, con `otadata` y `ota_0`, también lo tira; con el `otadata` ya escrito (un primer arranque sin `is_octal`), el gateway arrancó 3 de 3 veces con la PSRAM octal. Por eso el E2E sigue sin PSRAM (`CONFIG_SPIRAM=n` en `sdkconfig.qemu`). Queda la variante lista para cuando QEMU lo corrija: `E2E_PSRAM=1 tools/e2e/run_e2e.sh` compila `build-qemu-psram` con `sdkconfig.qemu-psram` y pasa `--psram` (la opción de QEMU y `-m 8M`). Reporte listo para espressif/qemu en `docs/upstream-reports.md` §4.
+- **PSRAM octal (#63, #85).** El E2E corre también con la PSRAM octal: `E2E_PSRAM=1 tools/e2e/run_e2e.sh` compila `build-qemu-psram` (`sdkconfig.qemu-psram`) y QEMU la emula con `-global driver=ssi_psram,property=is_octal,value=true` y `-m 8M` (el tamaño de la placa; con `-m 32M` mapea 31 MB y no queda espacio virtual para el *mmap* de la flash). **Resultado: 139/139** (las 137 de siempre, con el *store & forward* sobre el anillo de 40 000 muestras en PSRAM en lugar del interno de 512, más la ubicación en PSRAM de la configuración, 32 272 B, del motor Sparkplug, 21 368 B, y de su búfer de payload, 16 384 B). Está en el CI (job `e2e-psram`, la corrida completa: unos 12 minutos). Dos defectos de QEMU, con su rodeo solo en el emulador:
+  - **SIGSEGV en la primera escritura de `otadata`** del bootloader en una imagen nueva (`Set actual ota_seq=1 in otadata[0]`): la transacción SPI1 llega al modelo de la PSRAM, que lee su búfer en la dirección -1 (`psram_quad_read`, `hw/misc/ssi_psram.c:154`; reporte en `docs/upstream-reports.md` §4). El harness escribe antes en la imagen una entrada de `otadata` válida, idéntica a la que escribe el bootloader (`ota_seq` 1, estado válido, CRC32), así que ningún arranque la escribe (`write_otadata` en `e2e.py`). Con eso no hubo ni una caída en dos corridas completas y dos parciales.
+  - **El GDMA no llega a la PSRAM** ([espressif/qemu#180](https://github.com/espressif/qemu/issues/180), abierto): con PSRAM, mbedTLS reserva sus búferes ahí y los aceleradores SHA y AES en modo DMA no reciben nada, así que el primer *handshake* TLS (HTTPS o MQTT) se colgaba (las pruebas de recuperación de CFG-3 fallaban por *timeout*). `sdkconfig.qemu-psram` usa SHA y AES por software (`CONFIG_MBEDTLS_HARDWARE_SHA=n`, `CONFIG_MBEDTLS_HARDWARE_AES=n`). La placa conserva los aceleradores, y ese camino (DMA desde PSRAM) solo se verifica en el hardware.
+  
+  Lo que QEMU no valida de la PSRAM real: la temporización, la detección del chip y el *cache* con datos en vuelo.
 - **Flash QIO.** Las lecturas de la app llegan desplazadas 2 bytes; se usa DIO.
 - **IPv6 hacia el host.** slirp entrega las conexiones a `fec0::2` al `::1` del host y el kernel del contenedor no tiene IPv6: solo se prueban direcciones e ICMPv6.
 - **UART1 tras un reinicio.** IDF reinicia la UART0 al salir pero no la UART1; el chip la limpia en `uart_driver_install()`, el modelo de QEMU no. Si un esclavo estaba respondiendo en el momento del reinicio, la línea de interrupción quedaba activa para siempre y el arranque siguiente se colgaba al instalar el driver (visto con gdb sobre el *gdbstub* de QEMU; 2 de 3 corridas del E2E tras NCMD Reboot o un *panic*). `gw_rs485` enmascara las interrupciones del puerto antes de todo reinicio: un *shutdown handler* para `esp_restart()` y un envoltorio de `esp_restart_noos()` (`-Wl,--wrap`) que cubre también el *panic*. 40 reinicios seguidos (20 NCMD Reboot, 20 *panic*) sin cuelgue. El E2E lo comprueba con tres *panic* lanzados justo cuando una respuesta Modbus está en camino (#65). Limpiar las interrupciones de la UART1 al arrancar, antes de `uart_driver_install()`, no alcanza en QEMU (se probó: la línea sigue activa con `INT_ENA` = 0); en la placa el driver ya reinicia la UART al instalarse. En la placa no hace falta, pero no molesta.
@@ -460,13 +464,14 @@ Resultado: **137/137 comprobaciones OK** (sobre `feature/diag-ram`, con #80 y #8
 
 ### 4.5 QA-4: CI
 
-`.github/workflows/ci.yml` corre en cada push y pull request, con tres jobs:
+`.github/workflows/ci.yml` corre en cada push y pull request, con cuatro jobs:
 
 | Job | Qué hace |
 |---|---|
 | `host-tests` | Tests de host (CTest) y decodificación de los payloads de `spb_dump` con el proto oficial |
 | `firmware` | `idf.py set-target esp32s3 build` en la imagen `espressif/idf:v6.1` fijada por digest; falla si aparece un `warning:`; publica los binarios y `idf.py size` como artefactos |
 | `e2e` | Instala QEMU, mosquitto y los paquetes del harness y corre `run_e2e.sh`. Los contenedores de GitHub no permiten `unshare`, así que corre sobre el loopback del contenedor. Publica logs y payloads como artefactos |
+| `e2e-psram` | El mismo escenario completo con la PSRAM octal de QEMU (`E2E_PSRAM=1`, #85): la configuración, el motor Sparkplug, su búfer de payload, mbedTLS y el anillo de *store & forward* en PSRAM, como en la placa. Unos 12 minutos aquí, como el `e2e` |
 
 ## 5. Estado de los IDs del MVP
 
@@ -572,7 +577,7 @@ Nunca se ejecutaron:
 - el TCA9554 real;
 - la polaridad real de las DI;
 - el orden de color del LED;
-- la PSRAM octal;
+- la PSRAM octal real (en QEMU corre su modelo: §4.3, #85);
 - el arranque con flash QIO;
 - el Wi-Fi: asociación, reconexión, conmutación entre interfaces con dos enlaces reales y la atadura del socket MQTT (`SO_BINDTODEVICE`).
 
