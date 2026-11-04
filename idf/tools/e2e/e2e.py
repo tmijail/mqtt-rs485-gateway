@@ -1486,6 +1486,16 @@ def run(args, log, slave, broker, conf, work):
     check("CFG-6 console shell: 'devices' (online state, counters) and 'config' summary",
           meter and bulk and summary,
           " | ".join(gw.find(r"Meter1\s+unit|Bulk\s+unit|sparkplug\s+group", asked)) or "no answer")
+    # Issue #68: the summary shows what the poll engine runs with (MB-11, MB-12) and MB-15
+    asked, h = gw.shell("config",
+                        [r"^\s+Meter1\s+unit\s+1, poll 1000 ms, slow 3000 ms, offline after 3, 11 tag\(s\) "
+                         r"\(9 fast, 2 slow\), blocks max_gap 10$",
+                         r"^\s+Bulk\s+unit\s+2, poll 1000 ms, slow 10000 ms, offline after 3, 60 tag\(s\) "
+                         r"\(60 fast, 0 slow\), blocks max_gap 0 \(default\)$",
+                         r"^modbus_tcp enabled, port 502, idle timeout 60 s, clients 10\.0\.2\.2/32$"])
+    check("Issue #68 shell 'config': per-device periods, scan classes and block reads, modbus_tcp line",
+          all(h.values()), " | ".join(gw.find(r"^\s+(Meter1|Bulk)\s+unit\s+\d+, poll|^modbus_tcp", asked))
+          or "no answer")
 
     # REL-4 remote syslog: RFC 5424 over UDP, hostname = edge node id, app-name = esp_log tag,
     # facility local0, timestamp from SNTP
