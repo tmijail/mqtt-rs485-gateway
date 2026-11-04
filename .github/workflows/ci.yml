@@ -1,0 +1,102 @@
+# QA-4: build the firmware, run the host tests and the QEMU end-to-end scenario on every push
+# and pull request. See idf/README.md §4 for what each step proves.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# The ESP-IDF v6.1 image is pinned by digest so a re-tagged image cannot change the build silently.
+jobs:
+  host-tests:
+    name: Host tests (QA-1) and Sparkplug interop
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run the host tests
+        run: |
+          cmake -S idf/test/host -B build-host
+          cmake --build build-host -j"$(nproc)"
+          ctest --test-dir build-host --output-on-failure
+      - name: Decode generated payloads with the official Tahu proto
+        run: |
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install -q -r idf/tools/e2e/requirements.txt
+          build-host/spb_dump /tmp/spb
+          /tmp/venv/bin/python idf/tools/spb_decode.py --check /tmp/spb
+
+  firmware:
+    name: ESP32-S3 firmware build (QA-2)
+    runs-on: ubuntu-24.04
+    container:
+      image: espressif/idf:v6.1@sha256:f81b6e077e6af93c312181cd7d4e7936cfbafc5c7f77cbacba8fdd34994f218a
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # FW-4: the version carries the git hash
+      - name: Build (0 warnings required)
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          . "$IDF_PATH/export.sh"
+          cd idf
+          idf.py set-target esp32s3 build 2>&1 | tee build.log
+          if grep -E "warning:" build.log; then
+            echo "::error::the firmware build produced warnings"
+            exit 1
+          fi
+          idf.py size | tee size.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-esp32s3
+          path: |
+            idf/build/*.bin
+            idf/build/bootloader/bootloader.bin
+            idf/build/partition_table/partition-table.bin
+            idf/build/flash_args
+            idf/size.txt
+
+  e2e:
+    name: QEMU end to end (QA-3)
+    runs-on: ubuntu-24.04
+    container:
+      image: espressif/idf:v6.1@sha256:f81b6e077e6af93c312181cd7d4e7936cfbafc5c7f77cbacba8fdd34994f218a
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install QEMU, mosquitto and the harness' Python packages
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq mosquitto libslirp0 >/dev/null
+          python3 "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
+          python3 -m venv /tmp/e2e
+          /tmp/e2e/bin/pip install -q -r idf/tools/e2e/requirements.txt
+      - name: Run the scenario
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          . "$IDF_PATH/export.sh"
+          export PATH="$PATH:/usr/sbin"
+          E2E_WORKDIR=/tmp/e2e-work E2E_PYTHON=/tmp/e2e/bin/python idf/tools/e2e/run_e2e.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-artifacts
+          path: |
+            /tmp/e2e-work/*.log
+            /tmp/e2e-work/*.qemu
+            /tmp/e2e-work/results.json
+            /tmp/e2e-work/payloads/
