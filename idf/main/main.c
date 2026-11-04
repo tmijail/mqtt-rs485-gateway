@@ -71,6 +71,13 @@ static void on_ip_changed(bool up)
     gw_log_notify_network(up);
 }
 
+/* TIME-1/TIME-2: every SNTP synchronisation also sets the RTC. */
+static void on_time_synced(void)
+{
+    gw_edge_notify_time_synced();
+    gw_io_rtc_store();
+}
+
 static void on_device_updated(uint16_t dev)
 {
     gw_edge_notify_device(dev);
@@ -302,6 +309,7 @@ void app_main(void)
         ESP_LOGE(TAG, "digital outputs unavailable: published as null and DO commands refused "
                       "until the expander answers");
     }
+    gw_io_rtc_restore();   /* TIME-2: a valid time before the network, if the RTC kept it */
 
     esp_chip_info_t chip;
     esp_chip_info(&chip);
@@ -369,7 +377,7 @@ void app_main(void)
     const gw_net_callbacks_t net_cb = {
         .ip_changed = on_ip_changed,
         .route_changed = gw_edge_notify_route,
-        .time_synced = gw_edge_notify_time_synced,
+        .time_synced = on_time_synced,
     };
     ESP_ERROR_CHECK(gw_net_start(s_cfg, &net_cb));
     gw_shell_mark_up(GW_SHELL_UP_NET);

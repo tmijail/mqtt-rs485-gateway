@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_check.h"
 #include "esp_console.h"
@@ -23,6 +24,7 @@
 #include "gw_log.h"
 #include "gw_mbap.h"
 #include "gw_net.h"
+#include "gw_rtc.h"
 #include "gw_status.h"
 #include "gw_storage.h"
 #include "gw_tagdb.h"
@@ -297,6 +299,23 @@ static int cmd_status(int argc, char **argv)
     } else {
         out("local    DI 0x%02x, DO 0x%02x (bit n = channel n+1, 1 = active)%s\n", io.di, io.dout,
             io.failsafe ? ", failsafe: safe state applied (no Sparkplug session)" : "");
+    }
+    /* TIME-1/TIME-2: the clock and where it came from */
+    gw_io_rtc_info_t rtc;
+    gw_io_rtc_get(&rtc);
+    time_t now = time(NULL);
+    struct tm tm;
+    gmtime_r(&now, &tm);
+    bool synced = gw_edge_time_synced();
+    out("time     %04d-%02d-%02dT%02d:%02d:%02dZ, %s; RTC ", tm.tm_year + 1900, tm.tm_mon + 1,
+        tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
+        synced ? "SNTP synchronised" : rtc.restored ? "from the RTC (not synchronised)"
+                                                    : "not set (no SNTP yet)");
+    if (!rtc.present) {
+        out("not answering\n");
+    } else {
+        out("%s, stored %lu time(s)%s\n", gw_rtc_status_str((gw_rtc_status_t)rtc.status),
+            (unsigned long)rtc.stores, rtc.store_errors ? ", write errors" : "");
     }
     out("counters");   /* IO-4: activations of each DI */
     for (int i = 0; i < 8; i++) {

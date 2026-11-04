@@ -40,7 +40,7 @@ add_subdirectory(${IDF_PROJECT_DIR}/components/gw_core gw_core)
 enable_testing()
 foreach(t test_mb_rtu test_mb_master test_conv test_logic test_config test_plan test_spb test_node
           test_poll test_dout test_netsel test_syslog test_auth test_cfgdoc test_button
-          test_brokersel test_phost test_sf test_authlimit test_mbap test_localio test_buzz)
+          test_brokersel test_phost test_sf test_authlimit test_mbap test_localio test_buzz test_rtc)
     add_executable(${t} ${t}.c support.c)
     target_link_libraries(${t} PRIVATE gw_core unity)
     target_include_directories(${t} PRIVATE ${CMAKE_CURRENT_LIST_DIR})

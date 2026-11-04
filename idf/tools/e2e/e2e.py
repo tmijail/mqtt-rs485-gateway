@@ -66,6 +66,7 @@ PEER_CERT = {}    # DER of the certificate the gateway presented on the last HTT
 WEB_PASSWORD = "e2e-pass-1"
 SYSLOG = []       # (t, datagram text) received by the syslog listener
 SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
+SNTP_PAUSED = threading.Event()  # TIME-2: while set, the responder stays silent
 PROBE_MAX_S = 10.0                # CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS / 1000, read in main()
 GROUP, NODE, DEVICE, BULK = "Plant1", "GW01", "Meter1", "Bulk"
 T = f"spBv1.0/{GROUP}"
@@ -189,7 +190,7 @@ def sntp_responder(stop):
             data, addr = s.recvfrom(512)
         except socket.timeout:
             continue
-        if len(data) < 48:
+        if len(data) < 48 or SNTP_PAUSED.is_set():
             continue
         now = time.time() + 2208988800
         sec, frac = int(now), int((now % 1) * 2**32)
@@ -1863,6 +1864,33 @@ def check_properties_and_quality(obs, slave, db, ddata_t):
           f"after: {round(gm.float_value, 3) if gm else None} {props(gm) if gm else ''}")
 
 
+def check_rtc(gw, obs, nb, t0, since_reboot, ndata_t):
+    """TIME-2: the first boot (power-on: the simulated PCF85063 has its OS bit set) gets no time
+    from it, and stores the SNTP time in it; the boot after NCMD Reboot, with SNTP silent, sets
+    the system clock from the RTC, publishes its NBIRTH with valid timestamps at once, and when
+    SNTP answers again there is no rebirth (the births were already timed)."""
+    stopped = gw.find(r"io: RTC: oscillator stopped \(OS bit\): time lost: system time not set", t0)
+    stored = gw.find(r"io: RTC: time stored in the RTC after SNTP", t0)
+    restored = gw.find(r"io: RTC: system time set from the RTC: \d{4}-\d\d-\d\dT", since_reboot)
+    synced_early = gw.find(r"edge: time synchronised", since_reboot)
+    skew = abs(nb[2].timestamp / 1000 - time.time()) if nb else None
+    asked, h = gw.shell("status", [r"^time\s+\d{4}-.*Z, from the RTC \(not synchronised\); RTC ok"])
+    shown = list(h.values())[0]
+    SNTP_PAUSED.clear()
+    synced = gw.wait_log(r"edge: time synchronised", 45, since_reboot)
+    restore_store = gw.wait_log(r"edge: time synchronised", 0, since_reboot) and \
+        gw.find(r"clock now synchronised: rebirth", since_reboot) == []
+    check("TIME-2 RTC: OS bit at power-on (no time from it), SNTP time stored in it; after a "
+          "reboot with SNTP silent the clock comes from the RTC, NBIRTH timestamps valid at once, "
+          "no rebirth when SNTP answers later",
+          stopped and stored and restored and not synced_early and skew is not None and skew < 60
+          and shown and synced and restore_store,
+          f"{(stopped or ['no OS-bit log'])[0]} | {(stored or ['no store log'])[0]} | "
+          f"{(restored or ['no restore log'])[0]} | NBIRTH skew {round(skew, 1) if skew else None} s; "
+          f"SNTP before the NBIRTH: {bool(synced_early)}; shell {'ok' if shown else 'no'}; "
+          f"SNTP later {'yes' if synced else 'no'}")
+
+
 def modbus_rows(m):
     """SPB-17: {device: {column: value}} of the 'Node Info/Modbus' DataSet."""
     ds = m.dataset_value
@@ -2840,8 +2868,10 @@ def run(args, log, slave, broker, conf, work):
     pulse = obs.wait(ndata_t, 3, lambda q: counter_of(q) is not None)
     since_reboot = time.monotonic()
 
-    # SPB-2 orderly disconnect: NCMD Reboot -> explicit NDEATH, then reboot
+    # SPB-2 orderly disconnect: NCMD Reboot -> explicit NDEATH, then reboot. TIME-2: with SNTP
+    # silent from here on, the next boot takes its time from the RTC.
     obs.drain()
+    SNTP_PAUSED.set()
     obs.publish_cmd(ncmd_t, [{"name": "Node Control/Reboot", "datatype": 11, "boolean_value": True}])
     nd = obs.wait(ndeath_t, 10)
     time.sleep(0.5)
@@ -2874,6 +2904,7 @@ def run(args, log, slave, broker, conf, work):
           and reason1.string_value == "software",
           f"first boot {reason0.string_value if reason0 else None!r}, after reboot "
           f"{reason1.string_value if reason1 else None!r}")
+    check_rtc(gw, obs, nb, t0, since_reboot, ndata_t)
     check_panic_during_traffic(gw, obs, slave, nbirth_t)
 
     # Issue #12 / REL-1: a panic writes a core dump to the "coredump" partition, the gateway

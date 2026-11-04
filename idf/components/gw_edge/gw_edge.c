@@ -69,6 +69,7 @@ typedef struct {
 /* ---- written by other tasks ---- */
 static atomic_bool s_ip_up;
 static atomic_bool s_time_synced;
+static atomic_bool s_time_valid;    /* TIME-2: the clock came from the RTC at boot */
 static atomic_bool s_mqtt_connected;
 static atomic_bool s_io_dirty;
 static atomic_uint s_conn_gen;
@@ -185,6 +186,17 @@ void gw_edge_notify_route(void)
 {
     atomic_fetch_add(&s_route_gen, 1);
     wake();
+}
+
+/* TIME-2: a time worth timestamping with, from SNTP or from the RTC at boot. */
+static bool time_ok(void)
+{
+    return atomic_load(&s_time_synced) || atomic_load(&s_time_valid);
+}
+
+bool gw_edge_time_synced(void)
+{
+    return atomic_load(&s_time_synced);
 }
 
 void gw_edge_notify_time_synced(void)
@@ -810,7 +822,7 @@ static void start_births(void)
     s_retry_at_us = 0;
     atomic_store(&s_dev_dirty, 0);   /* the births carry the current state */
     atomic_store(&s_io_dirty, false);
-    s_births_timed = atomic_load(&s_time_synced);
+    s_births_timed = time_ok();
     feed_watchdog();
     s_max_unfed_ms = 0;
     int64_t t0 = esp_timer_get_time();
@@ -1016,7 +1028,7 @@ static bool tls_can_start(int64_t now)
         return false;
     }
 #if CONFIG_MBEDTLS_HAVE_TIME_DATE
-    if (s_cfg->mqtt.tls.enabled && !atomic_load(&s_time_synced)) {
+    if (s_cfg->mqtt.tls.enabled && !time_ok()) {
         if (!s_waiting_time_logged) {
             s_waiting_time_logged = true;
             ESP_LOGW(TAG, "TLS: waiting for SNTP before connecting (certificate dates are checked)");
@@ -1130,7 +1142,7 @@ static void reconcile(void)
     }
 
     if (!s_started && ip && (s_retry_at_us == 0 || now >= s_retry_at_us) && tls_can_start(now) &&
-        (atomic_load(&s_time_synced) || now - s_ip_since_us >= CONFIG_GW_SNTP_WAIT_MS * 1000LL)) {
+        (time_ok() || now - s_ip_since_us >= CONFIG_GW_SNTP_WAIT_MS * 1000LL)) {
         start_client(now);
     }
     if (s_started && s_retry_at_us != 0 && now >= s_retry_at_us && ip && !connected) {
@@ -1138,6 +1150,7 @@ static void reconcile(void)
     }
 
     if (s_node->online && !s_births_timed && atomic_load(&s_time_synced)) {
+        /* (births with the RTC's time were valid: no rebirth for those) */
         /* Births went out before SNTP: re-issue them so hosts get valid timestamps. */
         s_births_timed = true;
         ESP_LOGI(TAG, "clock now synchronised: rebirth");
@@ -1371,6 +1384,9 @@ static void setup_store(void)
 esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
 {
     s_cfg = cfg;
+    gw_io_rtc_info_t rtc;
+    gw_io_rtc_get(&rtc);
+    atomic_store(&s_time_valid, rtc.restored);   /* TIME-2: no SNTP wait with the RTC's time */
 #if !CONFIG_MQTT_PROTOCOL_5
     if (cfg->mqtt.protocol == GW_MQTT_V5) {
         ESP_LOGE(TAG, "mqtt.protocol 5 needs CONFIG_MQTT_PROTOCOL_5: MQTT not started");

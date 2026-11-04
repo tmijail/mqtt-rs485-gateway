@@ -49,6 +49,26 @@ esp_err_t gw_io_start(const gw_config_t *cfg, void (*on_change)(void));
  *  drives that DO (IO-7). */
 bool gw_io_set_do(uint8_t index, bool on);
 
+/* ---- TIME-2: PCF85063 RTC on the same I2C bus (same single owner) ---- */
+typedef struct {
+    bool present;          /* the chip answered */
+    bool restored;         /* the system time came from it at boot */
+    int status;            /* gw_rtc_status_t of the boot reading (or of the last store) */
+    uint32_t stores;       /* times written after SNTP */
+    uint32_t store_errors;
+} gw_io_rtc_info_t;
+
+/** At boot, after gw_io_outputs_boot() (the I2C bus) and before anything uses the time: set
+ *  the system time from the RTC if its oscillator ran (OS bit clear) and the time is
+ *  plausible. gw_io_rtc_get() tells whether it did. */
+void gw_io_rtc_restore(void);
+
+/** After each SNTP synchronisation (any task): store the system time in the RTC. Done by the
+ *  local_io task once it runs, the only user of the bus. */
+void gw_io_rtc_store(void);
+
+void gw_io_rtc_get(gw_io_rtc_info_t *out);
+
 #if CONFIG_GW_IO_SIMULATED
 /** Emulator only: set the logical level of DI @p index (0-7); used by the console shell. */
 void gw_io_sim_set_di(uint8_t index, bool active);
