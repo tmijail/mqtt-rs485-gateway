@@ -314,6 +314,20 @@ El router por defecto IPv6 se aprende de los RA; no hay *gateway* IPv6 estático
 - **`string`:** se corta en el primer NUL y se quitan los espacios finales; lo que no es ASCII imprimible se publica como `?`. Al escribir se rellena con NUL; un texto más largo que `2 × length` se rechaza. No admite `scale`, `offset` ni `deadband`.
 - **Escritura de un bit:** lectura del registro (FC03) y escritura del registro completo con el bit cambiado (FC06, o FC16 con escrituras múltiples forzadas).
 
+**Lecturas en bloque por dispositivo (MB-11), en cada dispositivo.**
+
+```json
+{ "name": "Meter1", "unit_id": 1, "max_gap": 10, "tags": [ … ] },
+{ "name": "Picky",  "unit_id": 7, "block_reads": false, "tags": [ … ] }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `block_reads` | bool | el del firmware (`true`) | `false` = una petición por tag, para esclavos que responden excepción si un bloque incluye registros no mapeados |
+| `max_gap` | entero | el del firmware (`0`) | 0–1999. Registros o bits sin usar que un bloque puede saltar para unir dos tags del mismo área. No se admite con `block_reads: false`. Un bloque nunca pasa de 125 registros ni de 2000 bits |
+
+Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `CONFIG_GW_MB_BLOCK_MAX_GAP`), como en el MVP.
+
 **`syslog` (REL-4): copia del log a un servidor syslog.**
 
 ```json

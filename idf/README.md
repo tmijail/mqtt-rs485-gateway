@@ -210,7 +210,7 @@ Opciones de compilación en `idf.py menuconfig`, en los menús `Gateway: ...`:
 
 - polaridad de las DI y de las DO (los pines son fijos, en `gw_bsp`);
 - prioridades y núcleos de las tareas;
-- lecturas en bloque y hueco máximo;
+- lecturas en bloque y hueco máximo (valores por defecto: cada dispositivo puede fijar los suyos con `block_reads` y `max_gap`);
 - FC15/FC16 forzadas;
 - intervalo máximo entre sondeos de un dispositivo fuera de línea (`GW_MB_OFFLINE_PROBE_MAX_MS`);
 - backoff MQTT;
@@ -394,7 +394,7 @@ Leyenda de **Evidencia**:
 **Fuera del MVP**, implementado total o parcialmente:
 
 - **MB-6** Implementado: `uint64`, `int64`, `float64` y `string` (1–16 registros), órdenes `ABCD`/`CDAB`/`BADC`/`DCBA` (además de `big`/`little`) y `bit` 0–15 dentro de un registro `holding`/`input`, también escribible (lectura, modificación y escritura del registro). Los enteros de 64 bits viajan **exactos** de punta a punta: el valor interno es una unión (double, int64, uint64 o texto, según el tag), no un `double`; en Sparkplug van como UInt64/Int64 en `long_value`, `float64` como Double y `string` como String. El reporte por excepción compara los 64 bits (o un hash del texto). Evidencia: H (conversión en los cuatro órdenes, 2^53 + 1, límites, textos, esquema, encuesta, escritura de bit con relectura, DCMD exacto, DBIRTH/DDATA) + interoperabilidad Python + Q (DBIRTH con los siete tags nuevos en sus órdenes; DCMD int64 2^62 + 3 con una FC16 de 4 registros; bit y texto escritos).
-- **MB-11** Parcial: bloques con hueco máximo global por Kconfig, no por dispositivo.
+- **MB-11** Implementado: los tags contiguos o cercanos del mismo área se leen en un bloque (hasta 125 registros o 2000 bits). Por dispositivo, `block_reads` (desactiva el agrupamiento) y `max_gap` (hueco máximo); sin ellas vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `CONFIG_GW_MB_BLOCK_MAX_GAP`, por defecto agrupar con hueco 0). Evidencia: H (tres dispositivos con huecos distintos y uno sin agrupar; esquema) + Q (Bulk: 60 registros en una FC03 con el hueco 0 del firmware; Meter1 con `max_gap: 10`: holding 10–37 en una sola lectura).
 - **MB-13** Parcial: excepciones decodificadas y en el log; contadores por dispositivo (ciclos, ciclos fallidos e intentos ok / timeout / CRC / trama / excepción) en el shell y en el log de fuera de línea, no publicados por Sparkplug.
 - **CFG-6** Parcial: shell de diagnóstico de solo lectura en la consola (`status` con interfaces y direcciones IPv6, `devices`, `config`, `ping <IPv4|IPv6>`; `help` lista los comandos). Funciona también con la configuración rechazada. No cambia la configuración.
 - **MB-14** Parcial: escrituras antes del siguiente sondeo, no entre bloques.

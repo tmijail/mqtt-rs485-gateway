@@ -390,6 +390,41 @@ static void test_mb6_tags(void)
                     "scale/offset no se admiten en tags bool");
 }
 
+/* Issue #38: block reads per device. */
+static void test_device_block_reads(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+              "\"devices\":[{\"name\":\"A\",\"unit_id\":1,\"max_gap\":10,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]},"
+              "{\"name\":\"B\",\"unit_id\":2,\"block_reads\":false,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]},"
+              "{\"name\":\"C\",\"unit_id\":3,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+        err.msg);
+    TEST_ASSERT_EQUAL(GW_CFG_BUILD_DEFAULT, cfg.devices[0].block_reads);
+    TEST_ASSERT_EQUAL(10, cfg.devices[0].max_gap);
+    TEST_ASSERT_EQUAL(0, cfg.devices[1].block_reads);
+    TEST_ASSERT_EQUAL(GW_CFG_BUILD_DEFAULT, cfg.devices[1].max_gap);
+    TEST_ASSERT_EQUAL(GW_CFG_BUILD_DEFAULT, cfg.devices[2].block_reads);
+    TEST_ASSERT_EQUAL(GW_CFG_BUILD_DEFAULT, cfg.devices[2].max_gap);
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"block_reads\":false,\"max_gap\":3,\"tags\":[{\"name\":\"t\","
+                          "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+                    "devices[0].max_gap: no tiene efecto con block_reads=false");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"max_gap\":2000,\"tags\":[{\"name\":\"t\","
+                          "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+                    "devices[0].max_gap: valor 2000 fuera de rango [0, 1999]");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"block_reads\":1,\"tags\":[{\"name\":\"t\","
+                          "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+                    "devices[0].block_reads: se esperaba true o false");
+}
+
 static void test_section_errors(void)
 {
     ASSERT_REJECTED(parse("{\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}}"), "mqtt:");
@@ -587,6 +622,7 @@ int main(void)
     RUN_TEST(test_syslog_section);
     RUN_TEST(test_schema_rules);
     RUN_TEST(test_mb6_tags);
+    RUN_TEST(test_device_block_reads);
     RUN_TEST(test_section_errors);
     RUN_TEST(test_limits);
     RUN_TEST(test_syntax_errors_give_line_and_column);

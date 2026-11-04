@@ -734,15 +734,27 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
 static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_device_cfg_t *d,
                          gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"name", "unit_id", "poll_ms", "offline_after", "tags"};
-    long unit, poll, off;
+    static const char *const keys[] = {"name",        "unit_id", "poll_ms", "offline_after",
+                                       "block_reads", "max_gap", "tags"};
+    long unit, poll, off, gap;
+    bool merge;
     char p[96];
-    if (!check_keys(o, path, keys, 5, err) ||
+    if (!check_keys(o, path, keys, sizeof(keys) / sizeof(keys[0]), err) ||
         !get_string(o, "name", path, true, "", d->name, sizeof(d->name), err) ||
         !get_int(o, "unit_id", path, true, 0, 1, 247, &unit, err) ||
         !get_int(o, "poll_ms", path, false, 1000, 50, 3600000, &poll, err) ||
-        !get_int(o, "offline_after", path, false, 3, 1, 1000, &off, err)) {
+        !get_int(o, "offline_after", path, false, 3, 1, 1000, &off, err) ||
+        !get_bool(o, "block_reads", path, true, &merge, err) ||
+        !get_int(o, "max_gap", path, false, GW_CFG_BUILD_DEFAULT, 0, GW_MAX_GAP_LIMIT, &gap, err)) {
         return false;
+    }
+    /* MB-11: absent keys keep the build's setting (CONFIG_GW_MB_BLOCK_READS / _MAX_GAP) */
+    bool has_merge = cJSON_GetObjectItemCaseSensitive(o, "block_reads") != NULL;
+    d->block_reads = has_merge ? (int8_t)merge : (int8_t)GW_CFG_BUILD_DEFAULT;
+    d->max_gap = (int16_t)gap;
+    if (has_merge && !merge && gap != GW_CFG_BUILD_DEFAULT) {
+        join(p, sizeof(p), path, "max_gap");
+        return fail(err, p, "no tiene efecto con block_reads=false");
     }
     join(p, sizeof(p), path, "name");
     if (!check_topic_id(d->name, p, false, err)) {

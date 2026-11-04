@@ -32,6 +32,8 @@ extern "C" {
 #define GW_STR_MAX      (2 * GW_STR_MAX_REGS)
 #define GW_TAG_MAX_REGS GW_STR_MAX_REGS     /* widest tag: a string of 16 registers */
 #define GW_NO_BIT       (-1)
+#define GW_CFG_BUILD_DEFAULT (-1)   /* optional key absent: the build-time default applies */
+#define GW_MAX_GAP_LIMIT 1999       /* a block never spans more than 2000 bits */
 
 typedef enum {
     GW_AREA_COIL = 0,
@@ -130,6 +132,9 @@ typedef struct {
     uint8_t unit_id;
     uint32_t poll_ms;
     uint16_t offline_after;
+    /* MB-11 block reads of this device; GW_CFG_BUILD_DEFAULT = the build's setting (Kconfig) */
+    int8_t block_reads;         /* 0 = one request per tag, 1 = merge, or build default */
+    int16_t max_gap;            /* largest unused register/bit hole bridged, or build default */
     uint16_t first_tag;         /* index into gw_config_t.tags */
     uint16_t tag_count;
 } gw_device_cfg_t;

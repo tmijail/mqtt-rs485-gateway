@@ -3,6 +3,8 @@
  * Tags of the same area whose addresses are contiguous, overlapping or separated
  * by at most `max_gap` unused registers/bits are read with one request, up to 125
  * registers or 2000 bits. With merging disabled every tag gets its own request.
+ * Merging and the gap are per device (block_reads, max_gap); @p merge and @p max_gap of
+ * gw_plan_build() are the build defaults for devices that do not set them.
  */
 #pragma once
 
