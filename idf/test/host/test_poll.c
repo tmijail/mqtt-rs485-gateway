@@ -1,5 +1,6 @@
 /* QA-1: poll engine against a simulated slave: decoding, offline detection
  * (MB-9), scheduling (MB-10) and DCMD writes with read-back (SPB-10, MB-4). */
+#include <math.h>
 #include <string.h>
 
 #include "gw_poll.h"
@@ -195,6 +196,24 @@ static void test_write_setpoint_fc06(void)
     TEST_ASSERT_EQUAL(GW_WRITE_BUS_ERROR, gw_poller_write(&p, 1, 1));
 }
 
+/* Issue #7: NaN != 0.0, so a NaN on a coil used to write ON. */
+static void test_write_coil_rejects_nan_and_inf(void)
+{
+    s.coils[0] = false;
+    const double bad[] = {NAN, INFINITY, -INFINITY};
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        TEST_ASSERT_EQUAL(GW_WRITE_BAD_VALUE, gw_poller_write(&p, 2, bad[i]));
+    }
+    TEST_ASSERT_EQUAL(0, s.requests);   /* nothing reached the bus */
+    TEST_ASSERT_FALSE(s.coils[0]);
+    setup_with(true);                   /* FC15 path too */
+    TEST_ASSERT_EQUAL(GW_WRITE_BAD_VALUE, gw_poller_write(&p, 2, NAN));
+    TEST_ASSERT_EQUAL(0, s.requests);
+    /* registers already rejected them */
+    TEST_ASSERT_EQUAL(GW_WRITE_BAD_VALUE, gw_poller_write(&p, 1, NAN));
+    TEST_ASSERT_EQUAL(GW_WRITE_BAD_VALUE, gw_poller_write(&p, 1, INFINITY));
+}
+
 static void test_write_forced_multi(void)
 {
     setup_with(true);
@@ -351,6 +370,7 @@ int main(void)
     RUN_TEST(test_device_counters);
     RUN_TEST(test_scheduling);
     RUN_TEST(test_write_setpoint_fc06);
+    RUN_TEST(test_write_coil_rejects_nan_and_inf);
     RUN_TEST(test_write_forced_multi);
     RUN_TEST(test_offline_device_is_probed_with_backoff);
     RUN_TEST(test_probe_answered_but_cycle_incomplete_stays_offline);

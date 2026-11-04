@@ -1,5 +1,6 @@
 #include "gw_poll.h"
 
+#include <math.h>
 #include <string.h>
 
 #include "gw_conv.h"
@@ -194,6 +195,12 @@ gw_write_status_t gw_poller_write(gw_poller_t *p, uint16_t tag, double value)
     double confirmed;
 
     if (t->area == GW_AREA_COIL) {
+        /* NaN != 0.0 is true: without this check a NaN command would switch the coil ON. */
+        if (!isfinite(value)) {
+            GW_LOGW(TAG, "%s/%s: value %g not representable (not a finite number)", d->name,
+                    t->name, value);
+            return GW_WRITE_BAD_VALUE;
+        }
         bool on = value != 0.0;
         confirmed = on ? 1.0 : 0.0;
         if (p->opts.force_multi_write) {

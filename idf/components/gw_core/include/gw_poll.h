@@ -31,7 +31,8 @@ typedef struct {
 typedef enum {
     GW_WRITE_OK = 0,
     GW_WRITE_NOT_WRITABLE,
-    GW_WRITE_BAD_VALUE,       /* NaN or out of the register type's range after inverse scaling */
+    GW_WRITE_BAD_VALUE,       /* NaN or infinite, or out of the register type's range after
+                                 inverse scaling */
     GW_WRITE_BUS_ERROR,       /* timeout, CRC/framing error or exception response */
 } gw_write_status_t;
 
