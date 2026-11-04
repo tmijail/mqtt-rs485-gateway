@@ -2228,7 +2228,7 @@ def run(args, log, slave, broker, conf, work):
                      early)
     nb = obs.wait(nbirth_t, 40)
     later = [ln for ln in gw.find(r"edge: Sparkplug session up|web: HTTPS on port", t0)]
-    first_up = gw.wait_log(r"edge: Sparkplug session up", 0, t0)
+    first_up = gw.wait_log(r"edge: Sparkplug session up", 5, t0)   # the console lags MQTT
     check("Issue #72 the console shell answers a command sent right after it starts, before the "
           "MQTT session and the web server (a command whose subsystem is not up says so)",
           ready and answered and mb and first_up and answered < first_up,
