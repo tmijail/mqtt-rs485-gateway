@@ -9,7 +9,10 @@ the CI host-tests job:
 import argparse
 import pathlib
 import socket
+import ssl
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -529,6 +532,129 @@ class FakeBrokerPort(unittest.TestCase):
         b2 = e2e.FakeBroker(port, "cut")
         b2.close()
         c.close()
+
+
+class UploadProgress(unittest.TestCase):
+    """Issue #115: a web upload waits as long as the gateway makes progress, and fails once it
+    makes none for UPLOAD_STALL_S (or after UPLOAD_CAP_S in all), against a local TLS server."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        d = pathlib.Path(cls.tmp.name)
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt",
+                        "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", str(d / "k.pem"),
+                        "-out", str(d / "c.pem"), "-subj", "/CN=e2e", "-days", "1"],
+                       check=True, capture_output=True)
+        cls.ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        cls.ctx.load_cert_chain(d / "c.pem", d / "k.pem")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        e2e.FAULT.clear()
+        self.saved = (e2e.HTTPS_PORT, e2e.UPLOAD_STALL_S, e2e.UPLOAD_CAP_S, e2e.ARGS,
+                      e2e.UPLOAD_STATUS_S)
+        e2e.ARGS = None
+        self.srv = socket.socket()
+        self.srv.bind(("127.0.0.1", 0))
+        self.srv.listen(1)
+        e2e.HTTPS_PORT = self.srv.getsockname()[1]
+        self.gw = type("G", (), {})()
+        self.gw.lines = []
+        self.status = []   # bytes the next `status` answers report (one per command)
+        self.gw.console = lambda text: (self.gw.lines.append(
+            (time.monotonic(), f"ota      v1 in ota_0, other slot empty | receiving e2e "
+                               f"({self.status.pop(0)} of 1052672 bytes)")) if self.status
+            else None)
+        self.stop = threading.Event()
+
+    def tearDown(self):
+        self.stop.set()
+        self.srv.close()
+        (e2e.HTTPS_PORT, e2e.UPLOAD_STALL_S, e2e.UPLOAD_CAP_S, e2e.ARGS,
+         e2e.UPLOAD_STATUS_S) = self.saved
+
+    def serve(self, read_body, lines_for, answer):
+        """One request: read the headers (and the body if @read_body), add an image-check line
+        to the console every 0.25 s for @lines_for s, then send @answer (None: never)."""
+        def run():
+            try:
+                c, _ = self.srv.accept()
+            except OSError:
+                return
+            with self.ctx.wrap_socket(c, server_side=True) as t:
+                buf = b""
+                while b"\r\n\r\n" not in buf:
+                    buf += t.recv(4096)
+                head, body = buf.split(b"\r\n\r\n", 1)
+                n = int(next(ln.split(b":")[1] for ln in head.split(b"\r\n")
+                             if ln.lower().startswith(b"content-length")))
+                while read_body and len(body) < n:
+                    body += t.recv(65536)
+                end = time.monotonic() + lines_for
+                k = 0
+                while time.monotonic() < end and not self.stop.is_set():
+                    k += 1
+                    self.gw.lines.append((time.monotonic(), f"I ({k}) esp_image: segment {k}"))
+                    time.sleep(0.25)
+                if answer is not None:
+                    t.sendall(answer)
+                self.stop.wait(30)
+        threading.Thread(target=run, daemon=True).start()
+
+    def test_slow_but_progressing_upload_is_answered(self):
+        e2e.UPLOAD_STALL_S, e2e.UPLOAD_CAP_S = 1.0, 30
+        self.serve(True, 3.0, b"HTTP/1.1 400 Bad Request\r\nContent-Length: 8\r\n\r\nrejected")
+        t0 = time.monotonic()
+        st, _, body = e2e.upload_firmware(self.gw, b"\xe9" * 300_000)
+        self.assertEqual((400, b"rejected"), (st, body))
+        self.assertGreater(time.monotonic() - t0, 2.5)   # longer than the stall bound
+
+    def test_bytes_written_count_as_progress(self):
+        """The shell's byte count: the client sent everything long before (slirp buffers it)."""
+        e2e.UPLOAD_STALL_S, e2e.UPLOAD_CAP_S, e2e.UPLOAD_STATUS_S = 1.0, 30, 0.2
+        self.status = list(range(0, 1052672, 65536))
+        self.serve(True, 0, None)
+        t0 = time.monotonic()
+        st, _, body = e2e.upload_firmware(self.gw, b"\xe9" * 1000)
+        self.assertIsNone(st)   # the server never answers: the reports end, then a stall
+        self.assertIn(b"no progress for 1 s", body)
+        self.assertIn(b"1048576 written", body)   # the last report
+        self.assertGreater(time.monotonic() - t0, 3.0)   # 17 reports 0.2 s apart, then 1 s
+
+    def test_a_stall_fails_promptly(self):
+        e2e.UPLOAD_STALL_S, e2e.UPLOAD_CAP_S = 1.0, 30
+        self.serve(False, 0, None)
+        t0 = time.monotonic()
+        st, _, body = e2e.upload_firmware(self.gw, b"\xe9" * 300_000)
+        self.assertIsNone(st)
+        self.assertIn(b"no progress for 1 s", body)
+        self.assertLess(time.monotonic() - t0, 10)
+
+    def test_the_cap_ends_an_endless_upload(self):
+        e2e.UPLOAD_STALL_S, e2e.UPLOAD_CAP_S = 1.0, 2.0
+        self.serve(True, 20, None)
+        st, _, body = e2e.upload_firmware(self.gw, b"\xe9" * 1000)
+        self.assertIsNone(st)
+        self.assertIn(b"still running after 2 s", body)
+
+    def test_wait_progress(self):
+        t = [0.0]
+        clock, sleep = (lambda: t[0]), (lambda s: t.__setitem__(0, t[0] + s))
+        # progress every 5 s for 300 s, then ready: never a stall with a 10 s bound
+        self.assertEqual("ready", e2e.wait_progress(lambda: t[0] >= 300, lambda: int(t[0] // 5),
+                                                    10, 900, clock=clock, sleep=sleep))
+        t[0] = 0.0
+        self.assertEqual("stall", e2e.wait_progress(lambda: False, lambda: 0, 10, 900,
+                                                    clock=clock, sleep=sleep))
+        self.assertEqual(10.0, t[0])
+        t[0] = 0.0
+        self.assertEqual("cap", e2e.wait_progress(lambda: False, lambda: t[0], 10, 60,
+                                                  clock=clock, sleep=sleep))
+        self.assertEqual(60.0, t[0])
 
 
 if __name__ == "__main__":
