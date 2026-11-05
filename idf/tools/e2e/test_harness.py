@@ -441,6 +441,53 @@ class Monitor(unittest.TestCase):
         self.assertTrue(self.th.is_alive())   # it keeps watching
 
 
+class CrashDiagnostics(unittest.TestCase):
+    """Issue #107: what the harness keeps of a QEMU crash."""
+
+    def test_core_dumps_are_allowed(self):
+        import resource
+        e2e.allow_core_dumps()
+        soft, hard = resource.getrlimit(resource.RLIMIT_CORE)
+        self.assertEqual(e2e.CORE_LIMIT_B if hard == resource.RLIM_INFINITY
+                         else min(e2e.CORE_LIMIT_B, hard), soft)
+
+    def test_death_report_skips_the_harness_header(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            work = pathlib.Path(d)
+            g = FakeGateway()
+            g.log_path = work / "uart0-x.log"
+            g.cwd = work / "qemu" / "000-uart0-x"
+            g.cwd.mkdir(parents=True)
+            (work / "uart0-x.log.qemu").write_text(
+                "# harness: qemu-system-xtensa -M esp32s3 ...\n# harness: 2 other QEMU "
+                "process(es) on the host, load average 3.06\nAdding SPI flash device\n")
+
+            class Dead(FakeProc):
+                def poll(self):
+                    return -11
+            g.proc, g.err_offset = Dead(), 0
+            work_before, e2e.WORK = e2e.WORK, work
+            try:
+                self.assertIn("signal 11", g.qemu_died())
+                self.assertIn("no error message", g.qemu_died())
+                self.assertIsNone(g.core_file())
+                (g.cwd / "core").write_bytes(b"\0")
+                self.assertIn("core dump qemu/000-uart0-x/core", g.qemu_died())
+                which = e2e.shutil.which
+                e2e.shutil.which = lambda name: None
+                try:
+                    self.assertEqual("no gdb on this host",
+                                     e2e.core_backtrace("qemu", g.cwd / "core"))
+                finally:
+                    e2e.shutil.which = which
+            finally:
+                e2e.WORK = work_before
+
+    def test_host_qemus(self):
+        self.assertTrue(all(isinstance(p, int) for p in e2e.host_qemus()))
+
+
 class FakeBrokerPort(unittest.TestCase):
     def test_close_frees_the_port(self):
         """M5: a retried scenario binds its fake broker's port again."""

@@ -1079,7 +1079,12 @@ class Gateway:
                "-chardev", f"socket,id=con,host=127.0.0.1,port={CONSOLE_PORT},server=on,wait=on",
                "-serial", "chardev:con",
                "-chardev", f"socket,id=rs485,host=127.0.0.1,port={MODBUS_PORT},reconnect-ms=500",
-               "-serial", "chardev:rs485"]
+               "-serial", "chardev:rs485",
+               # issue #107: both vCPUs on one host thread. With MTTCG (a thread per vCPU) the
+               # S3 MMU write handler reads the flash image while the other vCPU keeps running
+               # and fetches through the mapping being replaced: "Bad ram pointer" aborts and
+               # SIGSEGVs in code_gen_buffer under host load (docs/upstream-reports.md 7)
+               "-accel", f"tcg,thread={a.tcg_thread}"]
         # issue #92: a monitor socket per emulator, read by dump_state() before a kill
         self.mon_path = MON_DIR / f"q{len(GATEWAYS)}.sock"
         cmd += ["-monitor", f"unix:{self.mon_path},server=on,wait=off"]
@@ -1223,6 +1228,8 @@ class Gateway:
                 return
             self.gone_before_kill = self.proc.poll()
             self.killed = True
+            if hasattr(self, "info"):
+                self.info["ended_at"] = now_s()
             self.proc.send_signal(signal.SIGKILL)
             self.proc.wait()
             if self.sock is not None:
@@ -1243,7 +1250,8 @@ class Gateway:
                 f.seek(getattr(self, "err_offset", 0))
                 lines = f.read().decode(errors="replace").splitlines()
         tail = [ln.strip() for ln in lines if ln.strip() and "waiting for connection" not in ln
-                and ln.strip() != "Adding SPI flash device"][-3:]
+                and ln.strip() != "Adding SPI flash device"
+                and not ln.startswith("# harness:")][-3:]
         how = f"signal {-code}" if code < 0 else f"exit status {code}"
         core = self.core_file()
         return (f"QEMU terminó ({how}, {self.log_path.name}); stderr: "
@@ -3469,6 +3477,11 @@ def main():
                          "repeated), 'hang-mute' (the same with the QEMU process SIGSTOPped), "
                          "'ota-failed' (a failed check, then the death), 'ota-panic' (an unknown "
                          "firmware panic on the console, then the death)")
+    ap.add_argument("--tcg-thread", choices=("single", "multi"),
+                    default=os.environ.get("E2E_TCG_THREAD", "single"),
+                    help="issue #107: QEMU's TCG threading (E2E_TCG_THREAD): 'single' (default) runs "
+                         "both vCPUs on one host thread; 'multi' (MTTCG) gives each its own and "
+                         "crashes QEMU now and then under host load")
     ap.add_argument("--plain-elf", default="",
                     help="ELF of the --plain-flash build (symbols for the fault monitor)")
     ap.add_argument("--nm", default="xtensa-esp32s3-elf-nm",
