@@ -2838,50 +2838,92 @@ STORM_RX = re.compile(r"bus: console storm from core 1, line (\d+)")
 PARK_BOUND_RX = re.compile(r"fw: core 1 park (bound|refused)|fw: blocking IPC to core 1 while it")
 
 
-def run_park_storm(gw, image):
-    """Issue #111 (QEMU build: CONFIG_GW_FW_PARK_OTHER_CORE): the verification of a web upload
-    with core 1 parked, while the bus task (pinned to core 1) floods the console (emulator
-    command `storm`). Before the fix the park preempted that task in the middle of a log line,
-    with the console's locks taken, and the verifying task blocked on its next line for good.
-    Now the bus task stops between two transactions before core 1 is parked: the upload is
-    answered (the image is rejected), no storm line comes from a park (between its 'parking'
-    and 'resumed' lines), the storm goes on after it, and no park reached its bound."""
+def run_park_storm(gw, image, obs, ndata_t):
+    """Issue #111 (QEMU build: CONFIG_GW_FW_PARK_OTHER_CORE): the two parks of a web upload
+    (esp_ota_begin(), then the verification) with core 1 parked while the bus task (pinned to core
+    1) floods the console (emulator command `storm`). Before the fix the park preempted that task
+    in the middle of a log line, with the console's locks taken, and the verifying task blocked on
+    its next line for good. Now the bus task stops between two transactions before core 1 is
+    parked: the upload is answered (the image is rejected), no storm line comes from a park
+    (between its 'parking' and 'resumed' lines), the storm goes on after it, and no park reached
+    its bound. Issue #114: the storm runs right before each park, not through the whole transfer:
+    with single-threaded TCG (#107) and PSRAM a storm through it slowed a 1 MB upload past 200 s
+    of guest time. It runs from before the upload until its first park is over, and again from
+    80 % of the transfer (Firmware Update/Progress) until the answer."""
+    def started(since):   # the shell's answer to a storm command
+        return gw.wait_log(r"console storm from the bus task for \d+ ms", 15, since)
+
+    obs.drain()   # no NDATA left from the downloads before (their Progress reached 100)
     asked = time.monotonic()
-    gw.console("storm 90000")
+    gw.console("storm 600000")
+    first_on = started(asked)
     storming = gw.wait_log(STORM_RX.pattern, 15, asked)
-    st, _, body = http("POST", "/api/firmware", image.read_bytes(),
-                       headers={"Content-Type": "application/octet-stream"}, timeout=150)
-    answered = time.monotonic()
+    result = {}
+
+    def post():
+        result["r"] = http("POST", "/api/firmware", image.read_bytes(),
+                           headers={"Content-Type": "application/octet-stream"},
+                           timeout=UPLOAD_TIMEOUT_S)
+        result["t"] = time.monotonic()
+
+    poster = threading.Thread(target=post, daemon=True)
+    poster.start()
+    receiving = gw.wait_log(r"fw: receiving a firmware upload", UPLOAD_TIMEOUT_S, asked)
+    gw.console("storm 0")   # the transfer itself without the storm
+    paused = gw.wait_log(r"console storm stopped", 15, receiving or asked)
+    # an NDATA carries the State only when its text changes ("receiving e2e-bad" at 10 %), the
+    # Progress (alias 42) at each step: this upload is the only transfer running
+    late = obs.wait(ndata_t, UPLOAD_TIMEOUT_S, lambda p: metric(p, alias=42) is not None
+                    and (metric(p, alias=42).long_value or metric(p, alias=42).int_value) >= 80)
+    again = time.monotonic()
+    gw.console("storm 600000")
+    second_on = started(again)
+    poster.join(UPLOAD_TIMEOUT_S + 10)
+    st, _, body = result.get("r", (None, {}, b"no answer"))
+    answered = result.get("t", time.monotonic())
     after = gw.wait_log(STORM_RX.pattern, 15, answered)
     gw.console("storm 0")
     gw.wait_log(r"console storm stopped", 10, answered)
     rejected = gw.wait_log(r"fw: firmware update failed: image e2e-bad rejected", 10, asked)
-    parks, inside, open_at, last_resume = [], 0, None, None
-    lines = [ln for t, ln in list(gw.lines) if t >= asked]
-    storm_lines = 0
-    for ln in lines:
-        if PARK_RX.search(ln):
+    # in console order: each park, the storm lines inside it, those before it since the storm
+    # was (re)started, and those after the last one
+    parks, inside, before, open_at, last_resume = [], 0, [], None, None
+    lines = [(t, ln) for t, ln in list(gw.lines) if t >= asked]
+    storm_lines, since_on = 0, 0
+    for t, ln in lines:
+        if re.search(r"console storm from the bus task for \d+ ms", ln):
+            since_on = 0
+        elif PARK_RX.search(ln):
             open_at = len(parks)
             parks.append(None)
+            before.append(since_on)
+            since_on = 0
         elif (m := RESUMED_RX.search(ln)) and open_at is not None:
             parks[open_at] = int(m.group(1))
             open_at, last_resume = None, storm_lines
         elif STORM_RX.search(ln):
             storm_lines += 1
+            since_on += 1
             if open_at is not None:
                 inside += 1
     after_park = storm_lines - (last_resume or 0) if last_resume is not None else 0
-    bound = [ln for ln in lines if PARK_BOUND_RX.search(ln)]
+    bound = [ln for _, ln in lines if PARK_BOUND_RX.search(ln)]
     check("Issue #111 core 1 parked for the verification of a web upload while the bus task "
           "(core 1) floods the console: the bus task stops first, between two transactions, so the "
           "verification never waits on a lock left on core 1; the upload is answered (image "
-          "rejected), no console line from core 1 while it is parked, the storm goes on after it, "
-          "no park bound reached",
-          storming and st == 400 and isinstance(body, bytes) and b"rejected" in body and rejected and len(parks) >= 2
-          and None not in parks and inside == 0 and after and after_park > 0 and not bound,
+          "rejected), both parks of the upload come during the storm, no console line from core 1 "
+          "while it is parked, the storm goes on after it, no park bound reached",
+          first_on and storming and receiving and paused and late and second_on and st == 400
+          and isinstance(body, bytes) and b"rejected" in body and rejected and len(parks) == 2
+          and None not in parks and all(n > 0 for n in before) and inside == 0 and after
+          and after_park > 0 and not bound,
           f"POST {st} {body[:70]!r} {answered - asked:.1f} s after the storm began; parks "
-          f"{parks} ms; {storm_lines} storm lines, {inside} while parked, {after_park} after the "
-          f"last park; {bound[:1]}")
+          f"{parks} ms, after {before} storm lines each; {storm_lines} storm lines, {inside} while "
+          f"parked, {after_park} after the last park; storm again at "
+          f"{'80 %' if late else 'no 80 % progress'}; {bound[:1]}")
+
+
+POST_PARK_ATTEMPT_S = 90   # issue #114: bound for the next attempt to unit 1 after the parks
 
 
 def run_park_long_txn(args, work, slave):
@@ -2937,15 +2979,21 @@ def run_park_long_txn(args, work, slave):
         first = (unit1_attempts() or [None])[0]
         until(lambda: False, 1.0)   # the first attempt of that request is under way
         st, _, body = http("POST", "/api/firmware", image.read_bytes(),
-                           headers={"Content-Type": "application/octet-stream"}, timeout=150)
+                           headers={"Content-Type": "application/octet-stream"},
+                           timeout=UPLOAD_TIMEOUT_S)
         answered = time.monotonic()
         gw.wait_log(r"fw: firmware update failed: image e2e-long rejected", 20, asked)
         lines = [(t, ln) for t, ln in list(gw.lines) if t >= asked]
         parks = [t for t, ln in lines if PARK_RX.search(ln)]
         resumed = [int(m.group(1)) for _, ln in lines if (m := RESUMED_RX.search(ln))]
         refused = [ln for _, ln in lines if PARK_BOUND_RX.search(ln)]
-        # one more attempt of the transaction after the parks (5 s apart)
-        until(lambda: parks and any(t > parks[-1] for t in unit1_attempts()), 12)
+        # Issue #114: the next attempt to unit 1 after the parks, waited for up to a bound, not
+        # in a fixed window: the rest of the transaction (attempts 5 s apart), or, once it is
+        # over, the next poll of Meter1 behind the probes of Dead3..Dead5 (5 s each), or its own
+        # offline probe (every 10 s at most): under 40 s of guest time, and the guest runs
+        # slower than the host under load (#107)
+        until(lambda: parks and any(t > parks[-1] for t in unit1_attempts()),
+              POST_PARK_ATTEMPT_S * ARGS.timeout_scale)
         unit1 = unit1_attempts()
         after = [t for t in unit1 if parks and t > parks[-1]]
         check("Issue #112 core 1 parked while the bus task is in an RS485 transaction of over 30 s "
@@ -3057,7 +3105,7 @@ def run_ota(args, work):
               + (f"; {(gw.find(r'secure_boot_v2|[Ss]ignature', asked) or ['no signature log'])[0][:120]}"
                  if signed else ""))
 
-        run_park_storm(gw, images["bad"])
+        run_park_storm(gw, images["bad"], obs, ndata_t)
 
         # Issue #98: a download cut in the middle (the server closes after CUT bytes of the
         # announced image): failed with the bytes actually received, no panic, no restart
