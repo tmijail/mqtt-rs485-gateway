@@ -484,6 +484,14 @@ class CrashDiagnostics(unittest.TestCase):
             finally:
                 e2e.WORK = work_before
 
+    def test_tcg_mode(self):
+        self.assertEqual("single", e2e.tcg_mode("auto", "FW-1 OTA"))
+        self.assertEqual("single", e2e.tcg_mode("auto", "issues #99/#101 OTA trial"))
+        self.assertEqual("multi", e2e.tcg_mode("auto", "main"))
+        self.assertEqual("multi", e2e.tcg_mode("auto", None))
+        self.assertEqual("single", e2e.tcg_mode("single", "main"))
+        self.assertEqual("multi", e2e.tcg_mode("multi", "FW-1 OTA"))
+
     def test_host_qemus(self):
         self.assertTrue(all(isinstance(p, int) for p in e2e.host_qemus()))
 

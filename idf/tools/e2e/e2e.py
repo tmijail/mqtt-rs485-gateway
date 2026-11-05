@@ -767,6 +767,23 @@ def core_backtrace(qemu, core):
     return str(out.relative_to(WORK))
 
 
+# Issue #107: the scenarios that map flash all the time (downloads, uploads, image checks): with
+# MTTCG the S3 MMU write handler reads the flash image while the other vCPU keeps running and
+# fetches through the mapping being replaced ("Bad ram pointer", SIGSEGV in code_gen_buffer under
+# host load, docs/upstream-reports.md 7). They run both vCPUs on one host thread. The others keep
+# MTTCG: single-threaded TCG is about 1.5-2x slower, too slow for their latency bounds under load.
+SINGLE_TCG_SCENARIOS = {"FW-1 OTA", "issue #97 OTA trial wiring", "issues #99/#101 OTA trial",
+                        "issue #94 OTA to NVS encryption"}
+
+
+def tcg_mode(option, scenario):
+    """QEMU's TCG threading for an emulator of @scenario: @option ('single', 'multi', or 'auto':
+    single-threaded for SINGLE_TCG_SCENARIOS, multi-threaded otherwise)."""
+    if option != "auto":
+        return option
+    return "single" if scenario in SINGLE_TCG_SCENARIOS else "multi"
+
+
 def host_qemus():
     """Issue #107: pids of the qemu-system-xtensa processes running on the host (any user's run,
     other namespaces included): the parallel load a crash came with."""
@@ -1080,11 +1097,8 @@ class Gateway:
                "-serial", "chardev:con",
                "-chardev", f"socket,id=rs485,host=127.0.0.1,port={MODBUS_PORT},reconnect-ms=500",
                "-serial", "chardev:rs485",
-               # issue #107: both vCPUs on one host thread. With MTTCG (a thread per vCPU) the
-               # S3 MMU write handler reads the flash image while the other vCPU keeps running
-               # and fetches through the mapping being replaced: "Bad ram pointer" aborts and
-               # SIGSEGVs in code_gen_buffer under host load (docs/upstream-reports.md 7)
-               "-accel", f"tcg,thread={a.tcg_thread}"]
+               # issue #107: see tcg_mode()
+               "-accel", f"tcg,thread={tcg_mode(a.tcg_thread, ATTEMPT.get('name'))}"]
         # issue #92: a monitor socket per emulator, read by dump_state() before a kill
         self.mon_path = MON_DIR / f"q{len(GATEWAYS)}.sock"
         cmd += ["-monitor", f"unix:{self.mon_path},server=on,wait=off"]
@@ -3764,11 +3778,14 @@ def main():
                          "repeated), 'hang-mute' (the same with the QEMU process SIGSTOPped), "
                          "'ota-failed' (a failed check, then the death), 'ota-panic' (an unknown "
                          "firmware panic on the console, then the death)")
-    ap.add_argument("--tcg-thread", choices=("single", "multi"),
-                    default=os.environ.get("E2E_TCG_THREAD", "single"),
-                    help="issue #107: QEMU's TCG threading (E2E_TCG_THREAD): 'single' (default) runs "
-                         "both vCPUs on one host thread; 'multi' (MTTCG) gives each its own and "
-                         "crashes QEMU now and then under host load")
+    ap.add_argument("--tcg-thread", choices=("auto", "single", "multi"),
+                    default=os.environ.get("E2E_TCG_THREAD", "auto"),
+                    help="issue #107: QEMU's TCG threading (E2E_TCG_THREAD): 'auto' (default) runs "
+                         "the flash-mapping OTA scenarios with both vCPUs on one host thread "
+                         "(SINGLE_TCG_SCENARIOS) and the rest with MTTCG; 'single' or 'multi' for "
+                         "every scenario. MTTCG crashes QEMU now and then under host load in the "
+                         "OTA scenarios; single-threaded TCG is too slow for the latency bounds "
+                         "of the others")
     ap.add_argument("--plain-elf", default="",
                     help="ELF of the --plain-flash build (symbols for the fault monitor)")
     ap.add_argument("--nm", default="xtensa-esp32s3-elf-nm",

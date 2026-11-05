@@ -17,8 +17,9 @@
 #
 # JOBS: parallel jobs of the builds (default: every CPU).
 #
-# E2E_TCG_THREAD=multi (issue #107): QEMU with multi-threaded TCG instead of the default single
-# thread for both vCPUs; under host load it crashes now and then (docs/upstream-reports.md 7).
+# E2E_TCG_THREAD (issue #107): auto (default: the OTA scenarios with both vCPUs on one host
+# thread, the rest with multi-threaded TCG), single or multi for every scenario. MTTCG crashes
+# QEMU now and then under host load in the OTA scenarios (docs/upstream-reports.md 7).
 #
 # E2E_PYTHON needs: paho-mqtt>=2, pymodbus==3.8.6, protobuf, grpcio-tools (tools/e2e/requirements.txt).
 # Host tools: mosquitto, qemu-system-xtensa (idf_tools.py install qemu-xtensa; needs libslirp0).
