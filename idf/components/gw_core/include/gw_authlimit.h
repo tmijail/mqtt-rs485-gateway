@@ -54,6 +54,16 @@ void gw_authlimit_succeeded(gw_authlimit_t *l, const uint8_t addr[16]);
 /** Addresses blocked at @p now_ms. */
 unsigned gw_authlimit_blocked(const gw_authlimit_t *l, uint64_t now_ms);
 
+/*
+ * Issue #110: stall watchdog of a single-task web server (esp_http_server). The server task
+ * marks @p alive_ms every time it gets back to its loop; @p busy is true while it runs one of
+ * our handlers (a long upload, a validation) or drains the body of a refused authenticated
+ * request, which may legitimately take long. Otherwise a task that has not been back for more
+ * than @p limit_ms is held by a request that does not arrive: a TLS handshake or headers sent
+ * byte by byte (slowloris), or a client that stopped half-way. Wrap-safe 32-bit milliseconds.
+ */
+bool gw_webstall_stuck(uint32_t now_ms, uint32_t alive_ms, bool busy, uint32_t limit_ms);
+
 #ifdef __cplusplus
 }
 #endif

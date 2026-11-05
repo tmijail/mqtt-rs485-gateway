@@ -26,4 +26,15 @@ menu "Gateway: web"
         range 1 86400
         default 900
 
+    config GW_WEB_STALL_S
+        int "Longest time a web server may be held by one incoming request (s), 0 = off"
+        range 0 300
+        default 8
+        help
+            Issue #110: esp_http_server serves every session from one task and reads a TLS
+            handshake and the request headers with blocking receives. A client that sends them
+            byte by byte (slowloris) or stops half-way holds the whole web UI and API. If a
+            server has been held this long outside the gateway's handlers (and outside the
+            drain of a refused authenticated upload), its sessions are shut down.
+
 endmenu

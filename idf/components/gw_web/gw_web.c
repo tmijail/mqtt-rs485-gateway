@@ -14,6 +14,8 @@
 #include "esp_https_server.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "gw_auth.h"
 #include "gw_authlimit.h"
 #include "gw_fw.h"
@@ -136,6 +138,130 @@ static void peer_addr(httpd_req_t *req, uint8_t out[16], char *text, size_t cap)
     }
 }
 
+/* ---------- stall watchdog (issue #110) ---------- */
+
+/*
+ * esp_http_server serves every session from one task, and it reads a request's TLS handshake
+ * and headers with blocking receives (SO_RCVTIMEO = recv_wait_timeout, 5 s, per receive, not
+ * per request). A client that sends them byte by byte (slowloris), or stops half-way, holds
+ * the task, and with it the whole web UI and API, for as long as it keeps trickling. A
+ * periodic esp_timer queues a "ping" to each server's control socket; the server task runs it
+ * when it is back in its loop and marks it alive. If a server has not been back for
+ * CONFIG_GW_WEB_STALL_S while it is not in one of our handlers nor draining a refused body
+ * (gw_webstall_stuck), the watchdog shuts down its sessions (shutdown(), from the timer task:
+ * the blocked receive returns and httpd closes the session). Idle keep-alive sessions of the
+ * same server go too: browsers reconnect. The ping also records each server's task, so the
+ * shell can tell the two "httpd" tasks apart.
+ */
+typedef struct {
+    httpd_handle_t server;
+    const char *name;
+    TaskHandle_t task;                 /* the server's task, from its first ping */
+    atomic_uint alive_ms;              /* last time the task was back in its loop */
+    atomic_bool in_handler;            /* in one of our handlers */
+    atomic_bool draining;              /* a refused authenticated body after the reply */
+    atomic_bool ping_pending;
+    atomic_uint stalls;                /* times its sessions were shut down */
+} web_guard_t;
+
+static web_guard_t s_guard[2];         /* [0] the web UI and API, [1] the HTTP redirect */
+static esp_timer_handle_t s_guard_timer;
+
+static uint32_t now_ms32(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
+
+static web_guard_t *guard_of(httpd_handle_t server)
+{
+    for (size_t i = 0; i < sizeof(s_guard) / sizeof(s_guard[0]); i++) {
+        if (s_guard[i].server == server) {
+            return &s_guard[i];
+        }
+    }
+    return NULL;
+}
+
+/* Every handler goes through here: the watchdog leaves a long handler alone. */
+typedef struct {
+    esp_err_t (*fn)(httpd_req_t *req);
+} handler_t;
+
+static esp_err_t guarded(httpd_req_t *req)
+{
+    web_guard_t *g = guard_of(req->handle);
+    if (g != NULL) {
+        atomic_store(&g->in_handler, true);
+    }
+    esp_err_t r = ((const handler_t *)req->user_ctx)->fn(req);
+    if (g != NULL) {
+        atomic_store(&g->in_handler, false);
+    }
+    return r;
+}
+
+static void guard_ping(void *arg)   /* runs in the server's task, from its loop */
+{
+    web_guard_t *g = arg;
+    g->task = xTaskGetCurrentTaskHandle();
+    atomic_store(&g->alive_ms, now_ms32());
+    atomic_store(&g->draining, false);   /* back in the loop: any drain is over */
+    atomic_store(&g->ping_pending, false);
+}
+
+static void guard_tick(void *arg)   /* esp_timer task, every second */
+{
+    (void)arg;
+    for (size_t i = 0; i < sizeof(s_guard) / sizeof(s_guard[0]); i++) {
+        web_guard_t *g = &s_guard[i];
+        if (g->server == NULL) {
+            continue;
+        }
+        if (!atomic_exchange(&g->ping_pending, true) &&
+            httpd_queue_work(g->server, guard_ping, g) != ESP_OK) {
+            atomic_store(&g->ping_pending, false);
+        }
+        uint32_t now = now_ms32();
+        bool busy = atomic_load(&g->in_handler) || atomic_load(&g->draining);
+        if (!gw_webstall_stuck(now, atomic_load(&g->alive_ms), busy, CONFIG_GW_WEB_STALL_S * 1000u)) {
+            continue;
+        }
+        /* the task is blocked on one session: its table does not change meanwhile */
+        int fds[4];
+        size_t n = sizeof(fds) / sizeof(fds[0]);
+        if (httpd_get_client_list(g->server, &n, fds) == ESP_OK) {
+            for (size_t k = 0; k < n; k++) {
+                shutdown(fds[k], SHUT_RDWR);
+            }
+        }
+        atomic_fetch_add(&g->stalls, 1u);
+        atomic_store(&g->alive_ms, now);   /* next look in another CONFIG_GW_WEB_STALL_S */
+        ESP_LOGW(TAG, "%s server held for more than %d s by a request that does not arrive "
+                      "(slow or stalled client): %u session(s) shut down",
+                 g->name, CONFIG_GW_WEB_STALL_S, (unsigned)n);
+    }
+}
+
+static void guard_add(int i, httpd_handle_t server, const char *name)
+{
+    web_guard_t *g = &s_guard[i];
+    g->name = name;
+    atomic_store(&g->alive_ms, now_ms32());
+    g->server = server;
+}
+
+static void guard_start(void)
+{
+    if (CONFIG_GW_WEB_STALL_S == 0 || s_guard_timer != NULL) {
+        return;
+    }
+    const esp_timer_create_args_t a = {.callback = guard_tick, .name = "web_guard"};
+    if (esp_timer_create(&a, &s_guard_timer) != ESP_OK ||
+        esp_timer_start_periodic(s_guard_timer, 1000 * 1000) != ESP_OK) {
+        ESP_LOGE(TAG, "no stall watchdog for the web server");
+    }
+}
+
 /* ---------- refused requests with a body (issue #106) ---------- */
 
 /* Refused requests whose unread body was cut. Incremented by the web server task and by the
@@ -188,6 +314,10 @@ static void close_after_reply(httpd_req_t *req)
  */
 static esp_err_t refuse_body(httpd_req_t *req, const char *status, const char *msg)
 {
+    web_guard_t *g = guard_of(req->handle);
+    if (g != NULL) {
+        atomic_store(&g->draining, true);   /* httpd drains after we return: not a stall */
+    }
     httpd_resp_set_hdr(req, "Connection", "close");   /* the client may stop sending */
     return send_error(req, status, NULL, msg);
 }
@@ -806,9 +936,12 @@ static esp_err_t start_redirect(uint16_t port)
     hc.max_uri_handlers = 3;
     hc.uri_match_fn = httpd_uri_match_wildcard;
     ESP_RETURN_ON_ERROR(httpd_start(&s_redirect, &hc), TAG, "redirect server");
+    guard_add(1, s_redirect, "HTTP redirect");
+    static const handler_t redirect = {redirect_any};
     static const httpd_method_t methods[] = {HTTP_GET, HTTP_PUT, HTTP_POST};
     for (size_t i = 0; i < sizeof(methods) / sizeof(methods[0]); i++) {
-        const httpd_uri_t u = {.uri = "/*", .method = methods[i], .handler = redirect_any};
+        const httpd_uri_t u = {.uri = "/*", .method = methods[i], .handler = guarded,
+                               .user_ctx = (void *)&redirect};
         ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_redirect, &u), TAG, "redirect uri");
     }
     return ESP_OK;
@@ -823,6 +956,7 @@ void gw_web_get_stats(gw_web_stats_t *out)
     out->blocks = s_limit.blocks_total;
     out->csrf_refused = s_csrf_refused;
     out->cut_bodies = atomic_load_explicit(&s_cut_bodies, memory_order_relaxed);
+    out->stalls = atomic_load(&s_guard[0].stalls) + atomic_load(&s_guard[1].stalls);
     out->blocked_now = gw_authlimit_blocked(&s_limit, (uint64_t)(esp_timer_get_time() / 1000));
 }
 
@@ -880,21 +1014,32 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         ESP_RETURN_ON_ERROR(httpd_start(&s_server, &hc), TAG, "httpd_start");
     }
 
-    static const httpd_uri_t uris[] = {
-        {.uri = "/", .method = HTTP_GET, .handler = index_get},
-        {.uri = "/favicon.ico", .method = HTTP_GET, .handler = favicon_get},
-        {.uri = "/api/status", .method = HTTP_GET, .handler = status_get},
-        {.uri = "/api/config", .method = HTTP_GET, .handler = config_get},
-        {.uri = "/api/config", .method = HTTP_PUT, .handler = config_put},
-        {.uri = "/api/config", .method = HTTP_POST, .handler = config_put},
-        {.uri = "/api/restart", .method = HTTP_POST, .handler = restart_post},
-        {.uri = "/api/firmware", .method = HTTP_GET, .handler = firmware_get},     /* FW-1 */
-        {.uri = "/api/firmware", .method = HTTP_POST, .handler = firmware_post},
+    guard_add(0, s_server, s_https ? "HTTPS" : "HTTP");
+    static const handler_t h_index = {index_get}, h_favicon = {favicon_get},
+                           h_status = {status_get}, h_config_get = {config_get},
+                           h_config_put = {config_put}, h_restart = {restart_post},
+                           h_fw_get = {firmware_get}, h_fw_post = {firmware_post};
+    static const struct {
+        const char *uri;
+        httpd_method_t method;
+        const handler_t *h;
+    } uris[] = {
+        {"/", HTTP_GET, &h_index},
+        {"/favicon.ico", HTTP_GET, &h_favicon},
+        {"/api/status", HTTP_GET, &h_status},
+        {"/api/config", HTTP_GET, &h_config_get},
+        {"/api/config", HTTP_PUT, &h_config_put},
+        {"/api/config", HTTP_POST, &h_config_put},
+        {"/api/restart", HTTP_POST, &h_restart},
+        {"/api/firmware", HTTP_GET, &h_fw_get},     /* FW-1 */
+        {"/api/firmware", HTTP_POST, &h_fw_post},
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
-        ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &uris[i]), TAG, "%s",
-                            uris[i].uri);
+        const httpd_uri_t u = {.uri = uris[i].uri, .method = uris[i].method, .handler = guarded,
+                               .user_ctx = (void *)uris[i].h};
+        ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &u), TAG, "%s", uris[i].uri);
     }
+    guard_start();
     if (s_https) {
         ESP_LOGI(TAG, "HTTPS on port %u; HTTP on port %u only redirects to it",
                  ctx->cfg->web.https_port, ctx->cfg->web.port);
@@ -905,4 +1050,10 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
              : s_user[0] != '\0' ? "web.username and web.password"
                                 : "stored web password, any user name");
     return ESP_OK;
+}
+
+void gw_web_stack_free(unsigned *web, unsigned *redirect)
+{
+    *web = s_guard[0].task != NULL ? (unsigned)uxTaskGetStackHighWaterMark(s_guard[0].task) : 0;
+    *redirect = s_guard[1].task != NULL ? (unsigned)uxTaskGetStackHighWaterMark(s_guard[1].task) : 0;
 }

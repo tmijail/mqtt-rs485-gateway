@@ -90,10 +90,23 @@ static void test_addresses_and_table(void)
     TEST_ASSERT_NOT_EQUAL(0, gw_authlimit_check(&l, n, 21));
 }
 
+/* Issue #110: the web server's stall watchdog. */
+static void test_webstall(void)
+{
+    TEST_ASSERT_FALSE(gw_webstall_stuck(1000, 0, false, 8000));
+    TEST_ASSERT_FALSE(gw_webstall_stuck(8000, 0, false, 8000));     /* exactly the limit */
+    TEST_ASSERT_TRUE(gw_webstall_stuck(8001, 0, false, 8000));
+    TEST_ASSERT_FALSE(gw_webstall_stuck(60000, 0, true, 8000));     /* a handler or a drain */
+    /* the 32-bit millisecond clock wraps after 49 days */
+    TEST_ASSERT_FALSE(gw_webstall_stuck(100, 0xFFFFFF00u, false, 8000));
+    TEST_ASSERT_TRUE(gw_webstall_stuck(9000, 0xFFFFFF00u, false, 8000));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(test_block_and_backoff);
     RUN_TEST(test_addresses_and_table);
+    RUN_TEST(test_webstall);
     return UNITY_END();
 }
