@@ -376,7 +376,8 @@ static int cmd_status(int argc, char **argv)
     out(" (core)\n");
     /* Lowest free stack since boot of the tasks of ours whose depth depends on the traffic
      * (Sparkplug: births, nested template/DataSet coding, history replay; Modbus) */
-    static const char *const deep[] = {"sparkplug", "mqtt_task", "rs485_bus", "local_io"};
+    static const char *const deep[] = {"sparkplug", "mqtt_task", "rs485_bus", "local_io",
+                                       "web_guard"};
     out("stack   ");
     for (size_t i = 0; i < sizeof(deep) / sizeof(deep[0]); i++) {
         TaskHandle_t h = xTaskGetHandle(deep[i]);

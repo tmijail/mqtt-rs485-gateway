@@ -1639,10 +1639,13 @@ REDIRECT_STACK_MIN_B = 512
 def check_web_stacks(line, when, redirect=True):
     web = re.search(r" httpd (\d+)", line)
     red = re.search(r" httpd_redirect (\d+)", line)
+    guard = re.search(r" web_guard (\d+)", line)
     ok = web is not None and int(web.group(1)) >= HTTPD_STACK_MIN_B and (
-        not redirect or (red is not None and int(red.group(1)) >= REDIRECT_STACK_MIN_B))
+        not redirect or (red is not None and int(red.group(1)) >= REDIRECT_STACK_MIN_B)) and (
+        guard is not None and int(guard.group(1)) >= REDIRECT_STACK_MIN_B)
     check(f"Issue #110 web server task stack (httpd, by its handle) >= {HTTPD_STACK_MIN_B} B free"
-          + (f" and HTTP redirect task (httpd_redirect) >= {REDIRECT_STACK_MIN_B} B" if redirect else "")
+          + (f", HTTP redirect task (httpd_redirect) >= {REDIRECT_STACK_MIN_B} B" if redirect else "")
+          + f" and its watchdog (web_guard) >= {REDIRECT_STACK_MIN_B} B"
           + f" {when}", ok, line.strip() or "no stack line")
 
 
@@ -2501,7 +2504,7 @@ def check_slow_client(gw, since):
           f"hold the web server: a normal GET started meanwhile answers within {STALL_S + 4} s "
           f"(stall watchdog after {STALL_S} s, logged and counted)",
           st == 200 and took <= STALL_S + 4 and held is not None and out["closed"] is not None
-          and "stalls 1" in web,
+          and re.search(r"stalls 1$", web.strip()) is not None,
           f"GET {st} in {took:.1f} s; slow client: {out['sent']} B, connection {out['closed']}; "
           f"log {'yes' if held else 'no'}; {web.strip()}")
     check_web_stacks(stack, "after GW22 (TLS sessions, refused uploads, redirects, slow client)")
