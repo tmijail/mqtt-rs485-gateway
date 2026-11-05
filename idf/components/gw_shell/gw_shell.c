@@ -295,10 +295,11 @@ static int cmd_status(int argc, char **argv)
     gw_web_get_stats(&ws);
     if (ws.running) {
         out("web      %s, logins failed %lu, refused while blocked %lu, blocks %lu, addresses "
-            "blocked now %u, cross-site writes refused %lu, bodies cut %lu\n",
+            "blocked now %u, cross-site writes refused %lu, bodies cut %lu, stalls %lu\n",
             ws.https ? "HTTPS (HTTP redirects)" : "HTTP", (unsigned long)ws.failed,
             (unsigned long)ws.refused, (unsigned long)ws.blocks, ws.blocked_now,
-            (unsigned long)ws.csrf_refused, (unsigned long)ws.cut_bodies);
+            (unsigned long)ws.csrf_refused, (unsigned long)ws.cut_bodies,
+            (unsigned long)ws.stalls);
     }
     gw_log_stats_t ls;
     gw_log_get_stats(&ls);
@@ -375,13 +376,23 @@ static int cmd_status(int argc, char **argv)
     out(" (core)\n");
     /* Lowest free stack since boot of the tasks of ours whose depth depends on the traffic
      * (Sparkplug: births, nested template/DataSet coding, history replay; Modbus) */
-    static const char *const deep[] = {"sparkplug", "mqtt_task", "rs485_bus", "local_io", "httpd"};
+    static const char *const deep[] = {"sparkplug", "mqtt_task", "rs485_bus", "local_io",
+                                       "web_guard"};
     out("stack   ");
     for (size_t i = 0; i < sizeof(deep) / sizeof(deep[0]); i++) {
         TaskHandle_t h = xTaskGetHandle(deep[i]);
         if (h != NULL) {
             out(" %s %u", deep[i], (unsigned)uxTaskGetStackHighWaterMark(h));
         }
+    }
+    /* issue #110: both web servers' tasks are named "httpd": by their handles */
+    unsigned web_free, redirect_free;
+    gw_web_stack_free(&web_free, &redirect_free);
+    if (web_free > 0) {
+        out(" httpd %u", web_free);
+    }
+    if (redirect_free > 0) {
+        out(" httpd_redirect %u", redirect_free);
     }
     out(" (B free, high-water mark)\n");
     /* issue #80: the minimum since boot, and the largest block (now and the lowest seen when a
@@ -1030,8 +1041,27 @@ static int cmd_validation(int argc, char **argv)
     return 0;
 }
 
+/* Issue #111: the bus task (core 1) floods the console, so a park of core 1 finds it logging. */
+static int cmd_storm(int argc, char **argv)
+{
+    char *end = NULL;
+    long ms = argc == 2 ? strtol(argv[1], &end, 10) : -1;
+    if (end == NULL || *end != '\0' || ms < 0 || ms > 120000) {
+        out("usage: storm <0-120000 ms>\n");
+        return 1;
+    }
+    gw_bus_sim_log_storm((uint32_t)ms);
+    if (ms > 0) {
+        out("console storm from the bus task for %ld ms\n", ms);
+    } else {
+        out("console storm stopped\n");
+    }
+    return 0;
+}
+
 ATOMIC(cmd_expander)
 ATOMIC(cmd_validation)
+ATOMIC(cmd_storm)
 ATOMIC(cmd_boot)
 #endif
 
@@ -1092,6 +1122,8 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
          "while after the next boot (issue #74)", .hint = "absent <ms>", .func = cmd_expander_atomic},
         {.command = "validation", .help = "Emulator only: the next configuration validation "
          "keeps its buffers for a while (issue #84)", .hint = "hold <ms>", .func = cmd_validation_atomic},
+        {.command = "storm", .help = "Emulator only: the bus task (core 1) floods the console "
+         "for a while (issue #111)", .hint = "<0-120000 ms>", .func = cmd_storm_atomic},
         {.command = "boot", .help = "Emulator only: press (1) or release (0) the BOOT button",
          .hint = "<0|1>", .func = cmd_boot_atomic},
         {.command = "panic", .help = "Emulator only: abort() (core dump test)", .func = cmd_panic},

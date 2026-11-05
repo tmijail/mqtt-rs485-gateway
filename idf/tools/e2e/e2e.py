@@ -708,6 +708,8 @@ FAILURE_RX = [(re.compile(p), what) for p, what in (
     (r"ESP_ERROR_CHECK failed", "ESP_ERROR_CHECK failed"),
     (r"CORRUPT HEAP", "corrupt heap"),
     (r"stack overflow", "stack overflow"),
+    # issue #111: a park of core 1 that had to give up (QEMU build) is the firmware's
+    (r"fw: core 1 park (bound reached|refused)", "core 1 park refused or past its bound"),
 )]
 ABORT_RX = re.compile(r"abort\(\) was called")
 BACKTRACE_RX = re.compile(r"^Backtrace:")
@@ -1723,6 +1725,27 @@ def check_ram_margin(args, work, obs, port, ca):
           f"NBIRTH {'yes' if nb else 'no'}, Bulk DBIRTH {'yes' if bulk else 'no'}; PUT dry run {st} "
           f"{body[:80]!r}; session kept {kept}; {heap}; {stack}")
     check_print_block(gw, args, t0)
+    check_web_stacks(stack, "after the #80 validation and its HTTPS sessions", redirect=False)
+
+
+# Issue #110: the two esp_http_server tasks are both named "httpd"; the shell gives each by its
+# handle. What must stay free on each at its deepest: the web server (10 KB) runs a TLS
+# handshake and a configuration validation; the redirect server (3 KB) only answers 301/308.
+HTTPD_STACK_MIN_B = 2048
+REDIRECT_STACK_MIN_B = 512
+
+
+def check_web_stacks(line, when, redirect=True):
+    web = re.search(r" httpd (\d+)", line)
+    red = re.search(r" httpd_redirect (\d+)", line)
+    guard = re.search(r" web_guard (\d+)", line)
+    ok = web is not None and int(web.group(1)) >= HTTPD_STACK_MIN_B and (
+        not redirect or (red is not None and int(red.group(1)) >= REDIRECT_STACK_MIN_B)) and (
+        guard is not None and int(guard.group(1)) >= REDIRECT_STACK_MIN_B)
+    check(f"Issue #110 web server task stack (httpd, by its handle) >= {HTTPD_STACK_MIN_B} B free"
+          + (f", HTTP redirect task (httpd_redirect) >= {REDIRECT_STACK_MIN_B} B" if redirect else "")
+          + f" and its watchdog (web_guard) >= {REDIRECT_STACK_MIN_B} B"
+          + f" {when}", ok, line.strip() or "no stack line")
 
 
 # Issue #91: what must stay contiguous beside the printed document at the validation without
@@ -2389,6 +2412,9 @@ def run_https(args, work):
 
     check_csrf(gw, t0)
     check_refused_bodies(gw, t0)
+    check_slow_client(gw, t0)
+    if args.web_stress:
+        web_stress(gw, args.web_stress)
 
     codes = [http("GET", "/api/status", auth=("admin", f"wrong-{i}"))[0] for i in range(5)]
     st6, hdr6, _ = http("GET", "/api/status", auth=("admin", "wrong-6"))
@@ -2525,7 +2551,7 @@ def check_refused_bodies(gw, since):
           and st_after == 200,
           f"reply {rejected!r} after {up.get('sent')} of {total} B in {up.get('duration', 0):.1f} s "
           f"(error {up.get('error')}); GET /api/status afterwards {st_after}")
-    asked, h = gw.shell("status", [r"^web\s+HTTPS .*, bodies cut [1-9]\d*$"])
+    asked, h = gw.shell("status", [r"^web\s+HTTPS .*, bodies cut [1-9]\d*, stalls \d+$"])
     cut_line = (gw.find(r"^web\s", asked) or [""])[-1]
     m = re.search(r"bodies cut (\d+)", cut_line)
     ok = base_st == 200 and m is not None and all(
@@ -2539,6 +2565,89 @@ def check_refused_bodies(gw, since):
               f"B in {up.get('duration', 0):.1f} s ({up.get('error')}), reply seen "
               f"{up.get('status')!r}" for k, (st, took, up, _) in res.items())
           + f"; {cut_line.strip()}")
+
+STALL_S = 8   # CONFIG_GW_WEB_STALL_S default (issue #110)
+
+
+def check_slow_client(gw, since):
+    """Issue #110 (GW22): slowloris. A client opens an HTTPS session and sends a request's
+    headers one byte every 2 s (under the 5 s receive timeout, so httpd never gives up on it):
+    esp_http_server's only task is held. A normal GET started a second later must be answered
+    within STALL_S + 4 s: the stall watchdog shuts down the held server's sessions after
+    STALL_S. Without it the GET waited for as long as the client kept trickling (here 30 s).
+    Then the stacks of both web tasks, after the TLS sessions, the refused uploads and this."""
+    out = {"sent": 0, "closed": None}
+
+    def trickle():
+        t0 = time.monotonic()
+        try:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            sock = ctx.wrap_socket(socket.create_connection(("127.0.0.1", HTTPS_PORT), timeout=10))
+            sock.sendall(f"GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:{HTTPS_PORT}\r\nX-Slow: ".encode())
+            while time.monotonic() - t0 < 30:
+                sock.send(b"a")
+                out["sent"] += 1
+                time.sleep(2)
+        except (OSError, ssl.SSLError) as e:
+            out["closed"] = f"{type(e).__name__} after {time.monotonic() - t0:.1f} s"
+
+    th = threading.Thread(target=trickle, daemon=True)
+    th.start()
+    time.sleep(1.5)
+    t = time.monotonic()
+    st, _, _ = http("GET", "/api/status", timeout=40)
+    took = time.monotonic() - t
+    th.join(35)
+    held = gw.wait_log(r"HTTPS server held for more than \d+ s by a request that does not arrive", 2,
+                       since)
+    asked, h = gw.shell("status", [r"^web\s+HTTPS .*, stalls [1-9]\d*$", r"^stack\s+sparkplug \d+ "])
+    web = (gw.find(r"^web\s", asked) or [""])[-1]
+    stack = (gw.find(r"^stack\s+sparkplug", asked) or [""])[-1]
+    check(f"Issue #110 slowloris: an HTTPS client trickling its headers (1 B every 2 s) does not "
+          f"hold the web server: a normal GET started meanwhile answers within {STALL_S + 4} s "
+          f"(stall watchdog after {STALL_S} s, logged and counted)",
+          st == 200 and took <= STALL_S + 4 and held is not None and out["closed"] is not None
+          and re.search(r"stalls 1$", web.strip()) is not None,
+          f"GET {st} in {took:.1f} s; slow client: {out['sent']} B, connection {out['closed']}; "
+          f"log {'yes' if held else 'no'}; {web.strip()}")
+    check_web_stacks(stack, "after GW22 (TLS sessions, refused uploads, redirects, slow client)")
+
+def web_stress(gw, rounds):
+    """Issue #110, item 2: once, in QEMU with PSRAM, the third accepted PUT of check_csrf never
+    reached httpd for 15 s, right after six cut sessions and two normal ones. Each round here:
+    six forged PUTs whose bodies are cut, the three accepted PUTs of check_csrf (UI-like,
+    Referer only, script), a refused 1.5 MB upload (cut) and a GET. Every accepted request must
+    be answered; a failure records the time, the client's error and the shell's web line."""
+    me = f"https://127.0.0.1:{HTTPS_PORT}"
+    doc = node_config("GW22")
+    doc["web"] = {"username": "admin", "password": "********"}
+    dry = "/api/config?dry_run=1"
+    failures, slow, t_start = [], 0, time.monotonic()
+    for i in range(rounds):
+        for _ in range(6):
+            http("PUT", dry, doc, headers={"Origin": "https://evil.e2e"})
+        for name, hdrs in (("UI", {"Origin": me, "Referer": me + "/"}),
+                           ("Referer", {"Referer": me + "/"}), ("script", {})):
+            t = time.monotonic()
+            st, _, b = http("PUT", dry, doc, headers=hdrs)
+            took = time.monotonic() - t
+            slow += took > 5
+            if st != 200:
+                asked, _ = gw.shell("status", [r"^web\s"])
+                line = (gw.find(r"^web\s", asked) or [""])[-1].strip()
+                failures.append(f"round {i + 1} {name} PUT -> {st} after {took:.1f} s "
+                                f"({b[:80]!r}); {line}")
+        up = {}
+        slow_upload({"X-Requested-With": "e2e"}, 1536 * 1024, 4 * 1024 * 1024, up)
+        st, _, _ = http("GET", "/api/status")
+        if st != 200:
+            failures.append(f"round {i + 1} GET after the cut upload -> {st}")
+    check(f"Issue #110 web stress: {rounds} round(s) of cut sessions and accepted PUTs, every "
+          f"accepted request answered", not failures,
+          f"{rounds} rounds in {time.monotonic() - t_start:.0f} s, {slow} PUT(s) over 5 s; "
+          + ("; ".join(failures[:5]) or "no failure"))
 
 def check_csrf(gw, since):
     """Issue #100 (GW22, before the login limit checks): every write needs X-Requested-With and,
@@ -2580,7 +2689,7 @@ def check_csrf(gw, since):
     wrong_type = http("POST", "/api/firmware", b"\xe9" + b"\0" * 255,
                       headers={"Content-Type": "text/plain", "Origin": me})[0]
     asked, h = gw.shell("status", [r"^web\s+HTTPS \(HTTP redirects\), logins failed 0, .*"
-                                   r"cross-site writes refused 9, bodies cut \d+$"])
+                                   r"cross-site writes refused 9, bodies cut \d+, stalls 0$"])
     counted = list(h.values())[0]
     # the web UI: X-Requested-With and its own Origin (and Referer); a script: the header only
     st_ui, _, b_ui = http("PUT", dry, doc, headers={"Origin": me, "Referer": me + "/"})
@@ -2721,6 +2830,58 @@ def fw_state(p):
     return m.string_value if m is not None else None
 
 
+PARK_RX = re.compile(r"fw: parking core 1 \(")
+RESUMED_RX = re.compile(r"fw: core 1 resumed after (\d+) ms")
+STORM_RX = re.compile(r"bus: console storm from core 1, line (\d+)")
+PARK_BOUND_RX = re.compile(r"fw: core 1 park (bound|refused)")
+
+
+def run_park_storm(gw, image):
+    """Issue #111 (QEMU build: CONFIG_GW_FW_PARK_OTHER_CORE): the verification of a web upload
+    with core 1 parked, while the bus task (pinned to core 1) floods the console (emulator
+    command `storm`). Before the fix the park preempted that task in the middle of a log line,
+    with the console's locks taken, and the verifying task blocked on its next line for good.
+    Now the bus task stops between two transactions before core 1 is parked: the upload is
+    answered (the image is rejected), no storm line comes from a park (between its 'parking'
+    and 'resumed' lines), the storm goes on after it, and no park reached its bound."""
+    asked = time.monotonic()
+    gw.console("storm 90000")
+    storming = gw.wait_log(STORM_RX.pattern, 15, asked)
+    st, _, body = http("POST", "/api/firmware", image.read_bytes(),
+                       headers={"Content-Type": "application/octet-stream"}, timeout=150)
+    answered = time.monotonic()
+    after = gw.wait_log(STORM_RX.pattern, 15, answered)
+    gw.console("storm 0")
+    gw.wait_log(r"console storm stopped", 10, answered)
+    rejected = gw.wait_log(r"fw: firmware update failed: image e2e-bad rejected", 10, asked)
+    parks, inside, open_at, last_resume = [], 0, None, None
+    lines = [ln for t, ln in list(gw.lines) if t >= asked]
+    storm_lines = 0
+    for ln in lines:
+        if PARK_RX.search(ln):
+            open_at = len(parks)
+            parks.append(None)
+        elif (m := RESUMED_RX.search(ln)) and open_at is not None:
+            parks[open_at] = int(m.group(1))
+            open_at, last_resume = None, storm_lines
+        elif STORM_RX.search(ln):
+            storm_lines += 1
+            if open_at is not None:
+                inside += 1
+    after_park = storm_lines - (last_resume or 0) if last_resume is not None else 0
+    bound = [ln for ln in lines if PARK_BOUND_RX.search(ln)]
+    check("Issue #111 core 1 parked for the verification of a web upload while the bus task "
+          "(core 1) floods the console: the bus task stops first, between two transactions, so the "
+          "verification never waits on a lock left on core 1; the upload is answered (image "
+          "rejected), no console line from core 1 while it is parked, the storm goes on after it, "
+          "no park bound reached",
+          storming and st == 400 and isinstance(body, bytes) and b"rejected" in body and rejected and len(parks) >= 2
+          and None not in parks and inside == 0 and after and after_park > 0 and not bound,
+          f"POST {st} {body[:70]!r} {answered - asked:.1f} s after the storm began; parks "
+          f"{parks} ms; {storm_lines} storm lines, {inside} while parked, {after_park} after the "
+          f"last park; {bound[:1]}")
+
+
 def run_ota(args, work):
     """FW-1 in one gateway (GW40) with its own broker: updates by NCMD (HTTPS download with the
     CA from ota.ca_file) and by web upload; bad images rejected without a restart; a new image
@@ -2807,6 +2968,8 @@ def run_ota(args, work):
               " | ".join(dict.fromkeys(states(asked))) + f"; restarted: {not still}"
               + (f"; {(gw.find(r'secure_boot_v2|[Ss]ignature', asked) or ['no signature log'])[0][:120]}"
                  if signed else ""))
+
+        run_park_storm(gw, images["bad"])
 
         # Issue #98: a download cut in the middle (the server closes after CUT bytes of the
         # announced image): failed with the bytes actually received, no panic, no restart
@@ -3833,6 +3996,9 @@ def main():
                     help="comma-separated scenarios to run (failsafe,network,web,reset,tls,failover,"
                          "mqtt5,phost,sf,https,ota,nvs,slow,refuse,main); "
                          "default all")
+    ap.add_argument("--web-stress", type=int, default=0, metavar="N",
+                    help="issue #110: N extra rounds of cut sessions and accepted PUTs in the "
+                         "https scenario (GW22), to reproduce a connection that never reached httpd")
     ap.add_argument("--psram", action="store_true",
                     help="issue #63: emulate the octal PSRAM (build with sdkconfig.qemu-psram)")
     ap.add_argument("--panics", type=int, default=1,
@@ -3980,6 +4146,12 @@ def main():
                                                   if STALE else ""))
         check("Issue #92 the fault monitor ran without an error of its own", not MONITOR_ERRORS,
               "; ".join(MONITOR_ERRORS[:3]) or "ok")
+        parks = [int(m.group(1)) for g in GATEWAYS for _, ln in list(g.lines)
+                 if (m := RESUMED_RX.search(ln))]
+        gave_up = [ln for g in GATEWAYS for _, ln in list(g.lines) if PARK_BOUND_RX.search(ln)]
+        check("Issue #111 every park of core 1 (QEMU build) ended within its bound and none was "
+              "refused (all emulators of the run)", not gave_up,
+              f"{len(parks)} parks, longest {max(parks) if parks else 0} ms; {gave_up[:2]}")
         seq_errors = seq_continuity(CAPTURE)
         check("SPB-5 seq continuity per session", not seq_errors, "; ".join(seq_errors) or "ok")
         # issue #86: the retries next to the checks (their discarded checks included); #92:

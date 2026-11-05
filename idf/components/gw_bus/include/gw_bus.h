@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "sdkconfig.h"
 #include "gw_config.h"
 #include "gw_mbap.h"
 #include "gw_tagdb.h"
@@ -66,6 +67,23 @@ void gw_bus_quiesce(uint32_t timeout_ms);
 mb_status_t gw_bus_diag_read(uint8_t unit, mb_fc_t fc, uint16_t addr, uint16_t count,
                              uint16_t out[GW_BUS_DIAG_MAX], uint8_t *exception,
                              uint32_t timeout_ms);
+
+#if CONFIG_GW_FW_PARK_OTHER_CORE
+/**
+ * Issue #111 (QEMU build only): before gw_fw parks core 1, the bus task, the only task of ours
+ * pinned there, stops between two transactions, where it holds no lock, and waits until
+ * gw_bus_release(). Waits at most @p timeout_ms for it; true once it stopped (or the bus is not
+ * running), false if it did not (then released again: nothing to undo).
+ */
+bool gw_bus_hold(uint32_t timeout_ms);
+void gw_bus_release(void);
+#endif
+
+#if CONFIG_GW_IO_SIMULATED
+/** Issue #111, emulator only: the bus task (core 1) floods the console for @p ms (0 stops it),
+ * a burst of log lines between two transactions, so a park of core 1 finds it logging. */
+void gw_bus_sim_log_storm(uint32_t ms);
+#endif
 
 #ifdef __cplusplus
 }

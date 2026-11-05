@@ -59,9 +59,14 @@ typedef struct {
     unsigned blocked_now;
     uint32_t csrf_refused; /* issue #100: writes refused as cross-site (no header, other origin) */
     uint32_t cut_bodies;   /* issue #106: refused requests whose body was cut, not drained */
+    uint32_t stalls;       /* issue #110: times a stalled server's sessions were shut down */
 } gw_web_stats_t;
 
 void gw_web_get_stats(gw_web_stats_t *out);
+
+/** Issue #110: lowest free stack since boot (B) of the web server's task and of the HTTP
+ *  redirect server's task (both are named "httpd"); 0 = not running (yet). */
+void gw_web_stack_free(unsigned *web, unsigned *redirect);
 
 /** Start the server: HTTPS on cfg->web.https_port (and a redirect on cfg->web.port) with
  *  cfg->web.https, else HTTP on cfg->web.port. Everything @p ctx points to must outlive it. */
