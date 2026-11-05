@@ -2342,6 +2342,12 @@ def slow_upload(headers, total, rate, out, plain=False):
             sock.setblocking(True)
             sock.settimeout(10)
             time.sleep(n / rate)
+        # the whole body went out: what a browser does next, read the reply (if not yet seen)
+        while b"\r\n" not in reply:
+            more = sock.recv(512)
+            if not more:
+                break
+            reply += more
     except (OSError, ssl.SSLError) as e:
         out["error"] = type(e).__name__
         try:
@@ -2359,10 +2365,9 @@ def check_refused_bodies(gw, since):
     no X-Requested-With), a 1.5 MB image upload sent at about 150 KB/s (some 10 s); half a
     second into it a GET /api/status, over an HTTPS session opened before (a new handshake takes
     about as long as the bound in QEMU), must answer within 1 s, and the gateway must cut the
-    upload early (the client's send fails), not drain it. Over TLS esp_http_server's drain of
-    the unread body also ends at the first moment nothing is buffered (esp-tls sockets are
-    non-blocking), so in QEMU the GET is not held even without the fix: the cut is what shows
-    it there, and on a link the client keeps full the drain lasted as long as the upload.
+    upload early (the client's send fails), not drain it. In QEMU the HTTPS GET was not held
+    even with the cut disabled (control run; why is not established: the server's sockets
+    block with SO_RCVTIMEO, esp-tls included), so over HTTPS the cut is what shows the fix.
 
     Plain HTTP (the redirect port; also the API with web.https false): there the drain blocks
     on the socket for as long as data keeps coming. The same slow upload, then a GET on that
@@ -2403,6 +2408,20 @@ def check_refused_bodies(gw, since):
         th.join(20)
         res[name] = (st, took, dict(up), 301 if plain else 200)
     session.close()
+    # issue #106 review: an authenticated, same-origin upload the gateway rejects is not cut:
+    # 1.5 MB that is not an image, sent whole as a browser does, then the reply is read
+    up = {}
+    slow_upload({"Authorization": auth, "X-Requested-With": "e2e",
+                 "Origin": f"https://127.0.0.1:{HTTPS_PORT}"}, total, 4 * 1024 * 1024, up)
+    rejected = up.get("status") or ""
+    st_after = http("GET", "/api/status")[0]
+    check("Issue #106 an authenticated, same-origin 1.5 MB upload the gateway rejects (not an "
+          "image) is drained in full, not cut: the client sends the whole body and then reads "
+          "the 4xx with its reason; the web answers afterwards",
+          rejected.startswith("HTTP/1.1 4") and up.get("sent") == total and not up.get("error")
+          and st_after == 200,
+          f"reply {rejected!r} after {up.get('sent')} of {total} B in {up.get('duration', 0):.1f} s "
+          f"(error {up.get('error')}); GET /api/status afterwards {st_after}")
     asked, h = gw.shell("status", [r"^web\s+HTTPS .*, bodies cut [1-9]\d*$"])
     cut_line = (gw.find(r"^web\s", asked) or [""])[-1]
     m = re.search(r"bodies cut (\d+)", cut_line)

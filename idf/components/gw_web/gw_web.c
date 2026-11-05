@@ -1,6 +1,7 @@
 #include "gw_web.h"
 
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -137,7 +138,9 @@ static void peer_addr(httpd_req_t *req, uint8_t out[16], char *text, size_t cap)
 
 /* ---------- refused requests with a body (issue #106) ---------- */
 
-static uint32_t s_cut_bodies;   /* refused requests whose unread body was not drained */
+/* Refused requests whose unread body was cut. Incremented by the web server task and by the
+ * redirect server's task, read by the shell's: atomic. */
+static atomic_uint s_cut_bodies;
 
 static int recv_refused(httpd_handle_t hd, int sockfd, char *buf, size_t len, int flags)
 {
@@ -145,59 +148,48 @@ static int recv_refused(httpd_handle_t hd, int sockfd, char *buf, size_t len, in
     return HTTPD_SOCK_ERR_FAIL;
 }
 
-/*
- * esp_http_server ignores "Connection: close" in a response and, once the handler returns, reads
- * and discards what is left of the body (httpd_req_delete, CONFIG_HTTPD_PURGE_BUF_LEN = 32 B at a
- * time) on the server's only task: a refused 1.5 MB upload (no credentials, another site) held
- * the web server for the whole transfer, and anyone on the network could repeat it. cut_body()
- * replaces the session's receive function with one that fails: httpd_req_delete gives up at
- * once and httpd closes the session. lwIP closes a socket with unread data with a reset, so a
- * client that is still sending may see the reset rather than the reply.
- */
-static void cut_body(httpd_req_t *req)
-{
-    if (httpd_sess_set_recv_override(req->handle, httpd_req_to_sockfd(req), recv_refused) == ESP_OK) {
-        s_cut_bodies++;
-    }
-}
-
 /* Bodies up to CUT_MIN_BODY are drained as before: they are in the socket buffers already (a
  * few reads), the client reads the reply cleanly, and a 401 to a GET keeps its connection. */
 #define CUT_MIN_BODY 1024
 
-/* An untrusted refusal (401, 429, 403: no credentials checked yet, or another site): nothing
- * more of the body is read. Call before sending the reply. */
+/*
+ * An untrusted refusal (401, 429, 403: no credentials checked yet, or another site; the HTTP
+ * port's redirect): the rest of the body is not read. Call before sending the reply, and only
+ * before the handler read any of the body.
+ *
+ * esp_http_server ignores "Connection: close" in a response and, once the handler returns, reads
+ * and discards what is left of the body (httpd_req_delete, CONFIG_HTTPD_PURGE_BUF_LEN = 32 B per
+ * recv, each recv waiting up to recv_wait_timeout) on the server's only task: a refused 1.5 MB
+ * upload held the web server for as long as the client kept sending, and anyone on the network
+ * could repeat it. Here the session's receive function is replaced by one that fails.
+ *
+ * The session is always closed, in the same step: nothing of the body was read, so more than
+ * CUT_MIN_BODY bytes remain; httpd_req_delete's purge goes past the few bytes httpd keeps from
+ * the header parse (pending_data) and calls the receive function, which fails; the purge
+ * returns an error and httpd_sess_process deletes the session (no later request can arrive on
+ * it with the failing function). lwIP closes a socket with unread data with a reset, so a client
+ * that is still sending may see the reset rather than the reply: acceptable for these.
+ */
 static void close_after_reply(httpd_req_t *req)
 {
     httpd_resp_set_hdr(req, "Connection", "close");
-    if (req->content_len > CUT_MIN_BODY) {
-        cut_body(req);
+    if (req->content_len > CUT_MIN_BODY &&
+        httpd_sess_set_recv_override(req->handle, httpd_req_to_sockfd(req), recv_refused) == ESP_OK) {
+        atomic_fetch_add_explicit(&s_cut_bodies, 1u, memory_order_relaxed);
     }
 }
 
-/* A refusal of an authenticated, same-origin request (413, 415, a rejected image): after the
- * reply, at most DRAIN_MAX_BYTES of the body during DRAIN_MAX_MS are read and dropped, so the
- * web UI or a script reads the status rather than a reset (a 131 KB configuration over the
- * limit gets its 413); whatever is left then is cut. */
-#define DRAIN_MAX_BYTES (256 * 1024)
-#define DRAIN_MAX_MS 1000
-
+/*
+ * A refusal of an authenticated, same-origin request (400 bad image, 409 busy, 413, 415): the
+ * body is not cut. httpd drains it in full after the reply, as before #106, so the web UI or a
+ * script that is still sending gets the status and its reason instead of a reset (a cut under
+ * a browser that is uploading 1.5 MB ends in a network error). The cost: an authenticated,
+ * same-origin client holds the web server for as long as its upload lasts.
+ */
 static esp_err_t refuse_body(httpd_req_t *req, const char *status, const char *msg)
 {
-    httpd_resp_set_hdr(req, "Connection", "close");
-    esp_err_t ret = send_error(req, status, NULL, msg);
-    char sink[256];
-    size_t total = 0;
-    int r = 1;
-    int64_t until = esp_timer_get_time() + DRAIN_MAX_MS * 1000LL;
-    while (total < DRAIN_MAX_BYTES && esp_timer_get_time() < until &&
-           (r = httpd_req_recv(req, sink, sizeof(sink))) > 0) {
-        total += (size_t)r;
-    }
-    if (r != 0 && req->content_len > CUT_MIN_BODY) {   /* 0: the whole body was read */
-        cut_body(req);
-    }
-    return ret;
+    httpd_resp_set_hdr(req, "Connection", "close");   /* the client may stop sending */
+    return send_error(req, status, NULL, msg);
 }
 
 static bool authorized(httpd_req_t *req)
@@ -825,7 +817,7 @@ void gw_web_get_stats(gw_web_stats_t *out)
     out->refused = s_limit.refused_total;
     out->blocks = s_limit.blocks_total;
     out->csrf_refused = s_csrf_refused;
-    out->cut_bodies = s_cut_bodies;
+    out->cut_bodies = atomic_load_explicit(&s_cut_bodies, memory_order_relaxed);
     out->blocked_now = gw_authlimit_blocked(&s_limit, (uint64_t)(esp_timer_get_time() / 1000));
 }
 
