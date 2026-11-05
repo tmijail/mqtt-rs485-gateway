@@ -83,6 +83,10 @@ spb = spb_decode.load_module()
 logging.getLogger("pymodbus").setLevel(logging.CRITICAL)
 results = []
 CAPTURE = []      # every message seen by any observer: (t, topic, Payload, raw bytes)
+# Issue #107: the messages of a discarded (retried) attempt. A retry starts from the same device
+# (bdSeq, seq), so scenario checks that scan CAPTURE must not see them twice; criterion 6 still
+# decodes them
+DISCARDED_CAPTURE = []
 GATEWAYS = []     # every QEMU the harness started (issue #86: did one die on its own?)
 RETRIES = []      # issue #86: scenarios repeated once because QEMU died under them
 PROCS = []        # brokers and QEMU instances to clean up
@@ -3946,13 +3950,15 @@ def main():
         bad = 0
         dump = work / "payloads"
         dump.mkdir(exist_ok=True)
-        for i, (_, topic, p, raw) in enumerate(CAPTURE):
+        for i, (_, topic, p, raw) in enumerate(CAPTURE + DISCARDED_CAPTURE):
             kind = topic.split("/")[2]
             (dump / f"{i:03d}_{kind}.bin").write_bytes(raw)
             bad += len(spb_decode.check(kind, p))
         check(f"6. payloads decode with the official sparkplug_b.proto (Python protobuf "
               f"{google.protobuf.__version__})",
-              CAPTURE and bad == 0, f"{len(CAPTURE)} messages decoded, {bad} structural errors")
+              CAPTURE and bad == 0,
+              f"{len(CAPTURE) + len(DISCARDED_CAPTURE)} messages decoded ({len(DISCARDED_CAPTURE)} "
+              f"of discarded attempts), {bad} structural errors")
         runs, errs, prev = 0, [], None
         for d in syslog_from(NODE):
             if d[4] == 1:
@@ -4102,6 +4108,7 @@ def run_scenario(name, fn, retry_on_qemu_death=True):
         slave = MAIN_BROKER.get("slave")
         slave_snap = slave.snapshot() if slave is not None else None
         first_check, first_gw, first_proc = len(results), len(GATEWAYS), len(PROCS)
+        first_capture = len(CAPTURE)
         budget = (SCENARIO_BUDGET_S.get(name, DEFAULT_BUDGET_S) if not ARGS.scenario_timeout
                   else ARGS.scenario_timeout) * ARGS.timeout_scale
         started = time.monotonic()
@@ -4165,6 +4172,9 @@ def run_scenario(name, fn, retry_on_qemu_death=True):
         if first and refusal is None:
             discarded = results[first_check:]
             del results[first_check:]
+            # issue #107: the attempt's observers are closed: its messages leave CAPTURE
+            DISCARDED_CAPTURE.extend(CAPTURE[first_capture:])
+            del CAPTURE[first_capture:]
             RETRIES.append({"scenario": name, "qemu": first["signature"], "fault": first,
                             "error": error, "discarded_checks": discarded})
             print(f"[RETRY] {name}: {first['signature']}"

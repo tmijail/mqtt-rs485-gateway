@@ -376,6 +376,24 @@ class RetryRule(unittest.TestCase):
         self.assertEqual(start, slave.snapshot())
         e2e.MAIN_BROKER.clear()
 
+    def test_retried_attempt_messages_leave_capture(self):
+        """Issue #107: a retry starts from the same device (same bdSeq): the first attempt's
+        messages must not count again in the checks that scan CAPTURE."""
+        e2e.CAPTURE.clear()
+        e2e.DISCARDED_CAPTURE.clear()
+        e2e.CAPTURE.append((0.0, "before", None, b""))
+
+        def fn():
+            self.attempts += 1
+            e2e.CAPTURE.append((0.0, f"attempt {self.attempts}", None, b""))
+            if self.attempts == 1:
+                self.fault()
+        e2e.run_scenario("s", fn)
+        self.assertEqual(["before", "attempt 2"], [m[1] for m in e2e.CAPTURE])
+        self.assertEqual(["attempt 1"], [m[1] for m in e2e.DISCARDED_CAPTURE])
+        e2e.CAPTURE.clear()
+        e2e.DISCARDED_CAPTURE.clear()
+
     def test_waits_raise_after_a_fault(self):
         e2e.FAULT.set()
         t = time.monotonic()
