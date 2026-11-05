@@ -1335,11 +1335,13 @@ class Gateway:
 # only after its backoff, past a 15 s client timeout. The web clients therefore make the TCP
 # connection and TLS handshake in up to TLS_CONNECT_TRIES attempts that share the caller's
 # timeout (a new attempt is a new SYN; each gets at least TLS_CONNECT_MIN_S, so a short caller
-# timeout keeps its single attempt), on a timeout only, and before any byte of the request is
+# timeout keeps its single attempt, and at most TLS_CONNECT_MAX_S but the last, which gets what
+# is left), on a timeout only, and before any byte of the request is
 # sent: the request itself is never repeated, and a server that does not accept within the
 # caller's timeout still fails as before. Every repeat is counted here.
 TLS_CONNECT_TRIES = 3
 TLS_CONNECT_MIN_S = 5.0
+TLS_CONNECT_MAX_S = 15.0   # issue #116: a long caller timeout (an upload's cap) still retries soon
 TLS_CONNECT_RETRIES = []   # (time, what) of each repeated handshake
 
 
@@ -1351,7 +1353,7 @@ def tls_connect(timeout, what):
     end = time.monotonic() + timeout
     for attempt in range(TLS_CONNECT_TRIES):
         left = end - time.monotonic()
-        per = max(timeout / TLS_CONNECT_TRIES, TLS_CONNECT_MIN_S)
+        per = min(max(timeout / TLS_CONNECT_TRIES, TLS_CONNECT_MIN_S), TLS_CONNECT_MAX_S)
         last = attempt == TLS_CONNECT_TRIES - 1 or left - per < TLS_CONNECT_MIN_S - 0.5
         if last:
             per = left   # the last attempt gets whatever the caller's timeout leaves
@@ -1371,6 +1373,8 @@ def tls_connect(timeout, what):
 
 class _GatewayHTTPS(httplib.HTTPSConnection):
     """http.client over tls_connect()."""
+
+    _what = "HTTPS session"
 
     def connect(self):
         self.sock = tls_connect(self.timeout, f"{self._what}")
@@ -1739,10 +1743,7 @@ def check_ram_margin(args, work, obs, port, ca):
     st0, _, _ = wait_http("/api/status", 40)
     session, kept = None, False
     try:
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        session = httplib.HTTPSConnection("127.0.0.1", HTTPS_PORT, timeout=15, context=ctx)
+        session = _GatewayHTTPS("127.0.0.1", HTTPS_PORT, timeout=15)   # issue #116
         auth = {"Authorization": "Basic " + base64.b64encode(f"admin:{WEB_PASSWORD}".encode()).decode()}
         session.request("GET", "/api/status", headers=auth)
         session.getresponse().read()
@@ -1843,12 +1844,9 @@ def check_tls_during_validation(args, work, obs, port, ca):
     bulk = obs.wait(f"{T}/DBIRTH/{node}/{BULK}", 15)
     st0, _, _ = wait_http("/api/status", 40)
     # as in #80, a second web session stays open (keep-alive) through the whole case
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
     auth = {"Authorization": "Basic " + base64.b64encode(f"admin:{WEB_PASSWORD}".encode()).decode()}
-    session = httplib.HTTPSConnection("127.0.0.1", HTTPS_PORT, timeout=VALIDATION_HOLD_MS / 1000 + 30,
-                                      context=ctx)
+    session = _GatewayHTTPS("127.0.0.1", HTTPS_PORT,   # issue #116
+                            timeout=VALIDATION_HOLD_MS / 1000 + 30)
     try:
         session.request("GET", "/api/status", headers=auth)
         opened = session.getresponse().read() is not None
@@ -2821,10 +2819,8 @@ def upload_firmware(gw, data, auth=("admin", WEB_PASSWORD)):
 
     def run():
         try:
-            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            c = httplib.HTTPSConnection("127.0.0.1", HTTPS_PORT, timeout=cap_s, context=ctx)
+            c = _GatewayHTTPS("127.0.0.1", HTTPS_PORT, timeout=cap_s)   # issue #116
+            c._what = "POST /api/firmware"
             conn["c"] = c
             c.putrequest("POST", "/api/firmware", skip_accept_encoding=True)
             for k, v in h.items():
