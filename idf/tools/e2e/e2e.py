@@ -2086,7 +2086,14 @@ def run_store_forward(args, work, slave):
     values = [240.0, 241.0, 242.0]
     for v in values:
         slave.set_float(4, 0, v)
-        time.sleep(1.6)   # poll_ms 1000: every value is read at least once
+        # every value is read at least once: two reads of the Voltage registers after the change
+        # (poll_ms 1000; issue #107: with single-threaded TCG under host load a cycle can take
+        # longer than the 1.6 s this used to wait)
+        n0, end = len(slave.reads), time.monotonic() + 15
+        while wait_left(end) > 0 and sum(
+                1 for r in list(slave.reads)[n0:] if r[0] == 1 and r[1] == 4
+                and r[2] is not None and r[2] <= 0 < r[2] + (r[3] or 1)) < 2:
+            time.sleep(0.1)
     gw.console("di 3 1")
     time.sleep(0.5)
     gw.console("di 3 0")
