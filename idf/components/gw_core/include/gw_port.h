@@ -23,6 +23,16 @@ uint64_t gw_port_time_ms(void);
 void gw_port_lock(void);
 void gw_port_unlock(void);
 
+/**
+ * Issue #106: lock for every use of cJSON. cJSON's hooks (the allocator), its error pointer and
+ * gw_config's allocation-failure flag are process-wide, and several tasks parse JSON (web, shell,
+ * boot). Recursive: a document operation (gw_cfgdoc) holds it across the gw_config_parse it
+ * calls. Held for a whole validation (tens of ms to seconds): never take it while holding
+ * gw_port_lock, and never in the polling or publish path.
+ */
+void gw_port_json_lock(void);
+void gw_port_json_unlock(void);
+
 #ifdef ESP_PLATFORM
 #include "esp_log.h"
 #define GW_LOGE(tag, fmt, ...) ESP_LOGE(tag, fmt, ##__VA_ARGS__)

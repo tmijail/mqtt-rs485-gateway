@@ -358,24 +358,88 @@ bool gw_auth_check_password(const char *password, const char *encoded)
 
 /* ---------- issue #100: same-origin check of state-changing requests ---------- */
 
-/* Lower-case "host[:port]" of @p in (up to its end, '/', '?' or '#'), without the default port
- * of the scheme. False if empty, with user information ('@') or longer than @p cap - 1. */
+static char lower(char c)
+{
+    return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+}
+
+/*
+ * Issue #106: the canonical "host[:port]" of the authority at @p in (up to its end, '/', '?' or
+ * '#'), so that the Host header and the Origin (or Referer) compare by what they name, not by
+ * how they are spelt:
+ *   - host: a name of letters, digits, '-', '_' and '.' (an IPv4 literal is one), lower-cased,
+ *     without the trailing '.' of a fully qualified name; or an IPv6 literal in brackets
+ *     (hex digits, ':' and '.'), lower-cased;
+ *   - port: decimal, 1 to 65535, written without leading zeros; the scheme's default port (443
+ *     with HTTPS, 80 without) and an empty port (RFC 3986) are left out.
+ * False for anything else: empty, user information ('@'), spaces, a second ':', a port out of
+ * range, an unclosed bracket, or a result longer than @p cap - 1.
+ */
 static bool authority(const char *in, bool https, char *out, size_t cap)
 {
     size_t n = strcspn(in, "/?#");
-    if (n == 0 || n >= cap || memchr(in, '@', n) != NULL) {
+    size_t i = 0, o = 0;
+    if (n == 0 || cap < 2) {
         return false;
     }
-    for (size_t i = 0; i < n; i++) {
-        char c = in[i];
-        out[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+    if (in[0] == '[') {
+        out[o++] = '[';
+        for (i = 1; i < n && in[i] != ']'; i++) {
+            char c = lower(in[i]);
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || c == ':' || c == '.') ||
+                o + 2 >= cap) {
+                return false;
+            }
+            out[o++] = c;
+        }
+        if (i >= n || o == 1) {
+            return false;   /* no ']', or "[]" */
+        }
+        out[o++] = ']';
+        i++;
+    } else {
+        for (; i < n && in[i] != ':'; i++) {
+            char c = lower(in[i]);
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || c == '-' || c == '_' ||
+                  c == '.') ||
+                o + 1 >= cap) {
+                return false;
+            }
+            out[o++] = c;
+        }
+        if (o > 0 && out[o - 1] == '.') {
+            o--;   /* "gw.local." names "gw.local" */
+        }
+        if (o == 0) {
+            return false;
+        }
     }
-    out[n] = '\0';
-    const char *def = https ? ":443" : ":80";
-    size_t d = strlen(def);
-    if (n > d && strcmp(out + n - d, def) == 0) {
-        out[n - d] = '\0';
+    if (i < n) {
+        if (in[i] != ':') {
+            return false;   /* something after "]" that is not a port */
+        }
+        unsigned long port = 0;
+        size_t digits = 0;
+        for (i++; i < n; i++, digits++) {
+            if (in[i] < '0' || in[i] > '9' || digits >= 5) {
+                return false;
+            }
+            port = port * 10u + (unsigned long)(in[i] - '0');
+        }
+        if (digits > 0) {
+            if (port == 0 || port > 65535u) {
+                return false;
+            }
+            if (port != (https ? 443u : 80u)) {
+                int w = snprintf(out + o, cap - o, ":%lu", port);
+                if (w < 0 || (size_t)w >= cap - o) {
+                    return false;
+                }
+                o += (size_t)w;
+            }
+        }
     }
+    out[o] = '\0';
     return true;
 }
 
@@ -389,8 +453,7 @@ static bool same_site(const char *url, bool https, const char *host)
         return false;
     }
     for (size_t i = 0; i < s; i++) {
-        char c = url[i];
-        if (((c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c) != scheme[i]) {
+        if (lower(url[i]) != scheme[i]) {
             return false;
         }
     }
@@ -411,7 +474,7 @@ gw_csrf_t gw_auth_csrf_check(bool https, const char *host, const char *origin,
         return GW_CSRF_OK;   /* not a browser */
     }
     char h[96];
-    if (host == NULL || !authority(host, https, h, sizeof(h)) || strchr(host, '/') != NULL) {
+    if (host == NULL || strpbrk(host, "/?#") != NULL || !authority(host, https, h, sizeof(h))) {
         return GW_CSRF_CROSS_ORIGIN;
     }
     return same_site(from, https, h) ? GW_CSRF_OK : GW_CSRF_CROSS_ORIGIN;

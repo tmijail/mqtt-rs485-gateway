@@ -9,6 +9,8 @@
 #include <sys/time.h>
 
 static pthread_mutex_t s_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t s_json_lock;
+static pthread_once_t s_json_once = PTHREAD_ONCE_INIT;
 static char *s_capture;
 static size_t s_capture_cap;
 static uint64_t s_fake_ms;   /* 0: real clock */
@@ -49,6 +51,26 @@ void gw_port_lock(void)
 void gw_port_unlock(void)
 {
     pthread_mutex_unlock(&s_lock);
+}
+
+static void json_lock_init(void)
+{
+    pthread_mutexattr_t a;
+    pthread_mutexattr_init(&a);
+    pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&s_json_lock, &a);
+    pthread_mutexattr_destroy(&a);
+}
+
+void gw_port_json_lock(void)
+{
+    pthread_once(&s_json_once, json_lock_init);   /* host tests may not call gw_port_init */
+    pthread_mutex_lock(&s_json_lock);
+}
+
+void gw_port_json_unlock(void)
+{
+    pthread_mutex_unlock(&s_json_lock);
 }
 
 void gw_port_log(char level, const char *tag, const char *fmt, ...)

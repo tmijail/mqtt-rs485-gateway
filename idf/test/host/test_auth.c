@@ -190,6 +190,32 @@ static void test_csrf_check(void)
     TEST_ASSERT_EQUAL(GW_CSRF_CROSS_ORIGIN,
                       gw_auth_csrf_check(true, "10.0.0.5", "https://evil.example",
                                          "https://10.0.0.5/", xrw));
+    /* issue #106: canonical forms (trailing dot, leading zeros, empty or explicit default
+     * port, upper-case IPv6) compare equal; malformed authorities are refused */
+    TEST_ASSERT_EQUAL(GW_CSRF_OK, gw_auth_csrf_check(true, "gw01.local.", "https://GW01.local", NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_OK, gw_auth_csrf_check(true, "gw01.local", "https://gw01.local.:443", NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_OK, gw_auth_csrf_check(true, "10.0.0.5:0443", "https://10.0.0.5", NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_OK, gw_auth_csrf_check(true, "10.0.0.5:", "https://10.0.0.5:443", NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_OK, gw_auth_csrf_check(true, "10.0.0.5:08443", "https://10.0.0.5:8443", NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_OK, gw_auth_csrf_check(true, "[FE80::A]:443", "https://[fe80::a]", NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_OK, gw_auth_csrf_check(false, "gw", "http://gw:80/", NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_OK, gw_auth_csrf_check(true, "gw.plant.example", "https://gw.plant.example", NULL, xrw));
+    /* the same device under two names is still two origins */
+    TEST_ASSERT_EQUAL(GW_CSRF_CROSS_ORIGIN, gw_auth_csrf_check(true, "10.0.0.5", "https://gw01.local", NULL, xrw));
+    /* the scheme's default only: 80 is not the default of HTTPS */
+    TEST_ASSERT_EQUAL(GW_CSRF_CROSS_ORIGIN, gw_auth_csrf_check(true, "gw:80", "https://gw", NULL, xrw));
+    static const char *const bad[] = {"10.0.0.5:99999", "10.0.0.5:0", "10.0.0.5:123456", "gw:1:2",
+                                      "g w", " gw", "gw\t", "[fe80::1", "[]", "[fe80::1]x", "[fe80::g]",
+                                      "u@gw", ":443", ".", "gw:44a"};
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char origin[64];
+        snprintf(origin, sizeof(origin), "https://%s", bad[i]);
+        TEST_ASSERT_EQUAL_MESSAGE(GW_CSRF_CROSS_ORIGIN, gw_auth_csrf_check(true, bad[i], origin, NULL, xrw), bad[i]);
+        TEST_ASSERT_EQUAL_MESSAGE(GW_CSRF_CROSS_ORIGIN, gw_auth_csrf_check(true, "gw", origin, NULL, xrw), bad[i]);
+    }
+    /* a Host header is an authority only (in a URL, '/', '?' or '#' end it) */
+    TEST_ASSERT_EQUAL(GW_CSRF_CROSS_ORIGIN, gw_auth_csrf_check(true, "gw?x", "https://gw", NULL, xrw));
+    TEST_ASSERT_EQUAL(GW_CSRF_CROSS_ORIGIN, gw_auth_csrf_check(true, "gw#x", "https://gw", NULL, xrw));
     /* an authority longer than the buffer is refused, not cut */
     char longhost[200];
     memset(longhost, 'a', sizeof(longhost) - 1);

@@ -74,7 +74,9 @@ let cfg=null,tab="status";
 const PAR=["none","even","odd"],AREA=["coil","discrete","holding","input"],TYPE=["bool","uint16","int16","uint32","int32","float32"],WO=["big","little"];
 async function api(method,path,body){
  const h={"X-Requested-With":"gateway"};if(body)h["Content-Type"]="application/json";
- const r=await fetch(path,{method,headers:h,body,cache:"no-store"});
+ let r;
+ try{r=await fetch(path,{method,headers:h,body,cache:"no-store"})}
+ catch(e){return {status:0,json:{error:`sin respuesta del equipo (${e.message})`}}}
  let j=null;try{j=await r.json()}catch(e){}
  return {status:r.status,json:j};
 }
@@ -167,12 +169,12 @@ async function poll(){
  $("#st-fw").innerHTML=`${esc(w.running)} en ${esc(w.slot)} · otra partición: ${esc(w.other||"vacía")}${w.enabled?"":" · actualizaciones deshabilitadas (ota.enabled)"}<br>${esc(w.detail)}${w.phase==="downloading"?` (${w.progress} %)`:w.phase==="trial"?` (${w.trial_left_s} s)`:""}`;
 }
 $("#fw-get").onclick=async()=>{const u=$("#fw-url").value.trim();if(!u)return;const r=await api("POST","/api/firmware",JSON.stringify({url:u}));msg(r.status===202?"Descarga iniciada: el equipo se reinicia al terminar.":`No se inició (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};
-$("#fw-file").onchange=async e=>{const f=e.target.files[0];if(!f||!confirm(`¿Instalar ${f.name} (${f.size} B) y reiniciar?`))return;msg("Subiendo…");const r=await fetch("/api/firmware",{method:"POST",headers:{"Content-Type":"application/octet-stream","X-Requested-With":"gateway"},body:f});let j=null;try{j=await r.json()}catch(x){}msg(r.status===200?"Imagen instalada: reiniciando en la nueva versión.":`Rechazada (${r.status}): ${(j||{}).error||""}`,r.status===200?"ok":"bad")};
+$("#fw-file").onchange=async e=>{const f=e.target.files[0];if(!f||!confirm(`¿Instalar ${f.name} (${f.size} B) y reiniciar?`))return;msg("Subiendo…");let r;try{r=await fetch("/api/firmware",{method:"POST",headers:{"Content-Type":"application/octet-stream","X-Requested-With":"gateway"},body:f})}catch(x){const w=(await api("GET","/api/firmware")).json;msg(`Subida interrumpida (${x.message})`+(w&&w.detail?`: ${w.detail}`:""),"bad");return}let j=null;try{j=await r.json()}catch(x){}msg(r.status===200?"Imagen instalada: reiniciando en la nueva versión.":`Rechazada (${r.status}): ${(j||{}).error||""}`,r.status===200?"ok":"bad")};
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>show(b.dataset.tab));
 $("#b-check").onclick=()=>put(true);$("#b-save").onclick=()=>put(false);
 $("#b-export").onclick=()=>{location.href="/api/config?download=1"};
 $("#b-import").onchange=async e=>{const f=e.target.files[0];if(!f)return;const t=await f.text();try{cfg=JSON.parse(t)}catch(x){msg("El archivo no es JSON: "+x.message,"bad");return}tab="json";show("json");msg("Importado en el editor: revise y pulse Guardar.")};
-$("#b-restart").onclick=async()=>{if(confirm("¿Reiniciar el equipo?")){await api("POST","/api/restart");msg("Reiniciando…")}};
+$("#b-restart").onclick=async()=>{if(confirm("¿Reiniciar el equipo?")){const r=await api("POST","/api/restart");msg(r.status===202?"Reiniciando…":`No se reinició (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"":"bad")}};
 $("#add-dev").onclick=()=>{readForms();(cfg.devices=cfg.devices||[]).push({name:"Dev"+(cfg.devices.length+1),unit_id:cfg.devices.length+1,poll_ms:1000,offline_after:3,tags:[{name:"Tag1",area:"holding",address:0,type:"uint16"}]});renderForms()};
 $("#f-dev").onclick=e=>{const t=e.target.dataset;if(!(t.addTag||t.delTag||t.delDev))return;readForms();
  if(t.addTag){const d=cfg.devices[+t.addTag];d.tags.push({name:"Tag"+(d.tags.length+1),area:"holding",address:0,type:"uint16"})}

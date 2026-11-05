@@ -7,6 +7,7 @@
 
 #include "cJSON.h"
 #include "gw_config_priv.h"
+#include "gw_port.h"
 
 typedef enum { SECRET_MQTT = 0, SECRET_WIFI, SECRET_WEB, SECRET_COUNT } secret_t;
 
@@ -228,7 +229,7 @@ static cJSON *parse_tree(const char *json, size_t len)
 
 typedef enum { EFF_STORED = 0, EFF_NEW, EFF_NONE } effective_t;
 
-bool gw_cfgdoc_apply(const char *json, size_t len, gw_cfgdoc_mode_t mode,
+static bool apply_locked(const char *json, size_t len, gw_cfgdoc_mode_t mode,
                      const gw_secrets_t *stored, gw_config_t *cfg, gw_cfgdoc_t *out,
                      gw_cfg_err_t *err)
 {
@@ -297,6 +298,18 @@ bool gw_cfgdoc_apply(const char *json, size_t len, gw_cfgdoc_mode_t mode,
     return true;
 }
 
+/* Issue #106: under the JSON lock (recursive: gw_config_parse takes it again), so no other
+ * task's cJSON use changes the hooks or the allocation-failure flag in between. */
+bool gw_cfgdoc_apply(const char *json, size_t len, gw_cfgdoc_mode_t mode,
+                     const gw_secrets_t *stored, gw_config_t *cfg, gw_cfgdoc_t *out,
+                     gw_cfg_err_t *err)
+{
+    gw_port_json_lock();
+    bool ok = apply_locked(json, len, mode, stored, cfg, out, err);
+    gw_port_json_unlock();
+    return ok;
+}
+
 void gw_cfgdoc_free(gw_cfgdoc_t *doc)
 {
     gw_config_release(doc->doc);
@@ -304,7 +317,7 @@ void gw_cfgdoc_free(gw_cfgdoc_t *doc)
     doc->doc_len = 0;
 }
 
-char *gw_cfgdoc_export(const char *json, size_t len, const gw_secrets_t *stored,
+static char *export_locked(const char *json, size_t len, const gw_secrets_t *stored,
                        size_t *out_len, gw_cfg_err_t *err)
 {
     cJSON *root = NULL;
@@ -351,6 +364,15 @@ char *gw_cfgdoc_export(const char *json, size_t len, const gw_secrets_t *stored,
     if (text == NULL) {
         no_memory(err);
     }
+    return text;
+}
+
+char *gw_cfgdoc_export(const char *json, size_t len, const gw_secrets_t *stored,
+                       size_t *out_len, gw_cfg_err_t *err)
+{
+    gw_port_json_lock();
+    char *text = export_locked(json, len, stored, out_len, err);
+    gw_port_json_unlock();
     return text;
 }
 
