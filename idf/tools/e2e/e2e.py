@@ -2610,6 +2610,11 @@ def check_csrf(gw, since):
 APP_DESC_MAGIC = 0xABCD5432
 
 
+# Issue #107: a 1 MB web upload is answered once the image is written and verified: with the
+# PSRAM build (software AES and SHA) and single-threaded TCG that took about 150 s
+UPLOAD_TIMEOUT_S = 300
+
+
 def fw_image(src, version, dst, corrupt=False):
     """Copy of the app image @src with esp_app_desc_t.version = @version: checksum and the
     appended SHA-256 recomputed so the bootloader and esp_ota_end() accept it (@corrupt: the
@@ -2902,7 +2907,8 @@ def run_ota(args, work):
         gw.wait_log(r"edge: time synchronised", 10, nb3[0] - 5 if nb3 else t0)
         asked = time.monotonic()
         st, _, body = http("POST", "/api/firmware", images["v3"].read_bytes(),
-                           headers={"Content-Type": "application/octet-stream"}, timeout=120)
+                           headers={"Content-Type": "application/octet-stream"},
+                           timeout=UPLOAD_TIMEOUT_S)
         death = obs.wait(f"{T}/NDEATH/{node}", 20)
         broker.terminate()
         broker.wait()
@@ -2993,7 +2999,8 @@ def run_ota_wiring(args, work):
     def upload(version, pw):
         st, _, body = http("POST", "/api/firmware", (fwdir / f"{version}.bin").read_bytes(),
                            auth=("admin", pw or "?"),
-                           headers={"Content-Type": "application/octet-stream"}, timeout=120)
+                           headers={"Content-Type": "application/octet-stream"},
+                           timeout=UPLOAD_TIMEOUT_S)
         return st, body
 
     # 1. a stored configuration the new image rejects (a syntax error: the running image runs in
@@ -3120,7 +3127,8 @@ def run_ota_trial(args, work):
 
     def upload(name):
         return http("POST", "/api/firmware", images[name].read_bytes(),
-                    headers={"Content-Type": "application/octet-stream"}, timeout=120)
+                    headers={"Content-Type": "application/octet-stream"},
+                    timeout=UPLOAD_TIMEOUT_S)
 
     t0 = time.monotonic()
     gw = boot_variant(args, work, "trial", cfg)
