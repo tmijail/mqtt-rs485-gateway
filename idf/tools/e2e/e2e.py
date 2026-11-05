@@ -2462,8 +2462,8 @@ def check_csrf(gw, since):
     counted = list(h.values())[0]
     # the web UI: X-Requested-With and its own Origin (and Referer); a script: the header only
     st_ui, _, b_ui = http("PUT", dry, doc, headers={"Origin": me, "Referer": me + "/"})
-    st_ref, _, _ = http("PUT", dry, doc, headers={"Referer": me + "/"})
-    st_cli, _, _ = http("PUT", dry, doc)
+    st_ref, _, b_ref = http("PUT", dry, doc, headers={"Referer": me + "/"})
+    st_cli, _, b_cli = http("PUT", dry, doc)
     st_page, _, page = http("GET", "/")
     ui_sends = page.count(b'"X-Requested-With":"gateway"')
     up = gw.wait_log(r"restart requested through the REST API", 0.5, since) is None
@@ -2480,7 +2480,8 @@ def check_csrf(gw, since):
           "upload), and a script with the header and no Origin is accepted",
           st_ui == 200 and (as_json(b_ui) or {}).get("saved") is False and st_ref == 200
           and st_cli == 200 and st_page == 200 and ui_sends == 2,
-          f"UI PUT dry run {st_ui} {b_ui[:60]!r}; Referer only {st_ref}; no Origin {st_cli}; page "
+          f"UI PUT dry run {st_ui} {b_ui[:60]!r}; Referer only {st_ref} {b_ref[:60]!r}; no Origin "
+          f"{st_cli} {b_cli[:60]!r}; page "
           f"{st_page} with the header in {ui_sends} request(s)")
 
 
