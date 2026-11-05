@@ -101,41 +101,105 @@ static uint8_t s_up_pct;
  * state): core 1 then faulted on a peripheral write (LoadStorePIFAddrError in
  * esp_crosscore_int_send, from the syslog task) at the start of a download.
  * CONFIG_GW_FW_PARK_OTHER_CORE (QEMU build only) parks the other core in an IRAM loop for those
- * calls; a task, not an ISR stall, so IPC calls (the otadata write) still reach that core. */
+ * calls; a task, not an ISR stall, so the flash driver's IPC calls (the otadata write:
+ * esp_ipc_call_nonblocking(), which raises ipc1 to the top priority) still reach that core. A
+ * blocking esp_ipc_call() made at a low priority would not (CONFIG_ESP_IPC_USES_CALLERS_PRIORITY
+ * runs ipc1 at the caller's priority, below the park task): none is made while parked. */
 #if CONFIG_GW_FW_PARK_OTHER_CORE
+/* Issue #111: a park must never leave core 0 waiting on core 1. The park task used to preempt
+ * whatever ran on core 1. When that was the bus task holding a lock (gettimeofday()'s
+ * s_adjtime_lock, which the syslog copy of a log line also takes; or stdout's, in a log line), the
+ * image verification on core 0 blocked on it for good (core 0 idle, core 1 in park_loop; seen
+ * with a gdb task dump). The rules now:
+ * - a task that can only run on core 1 is parked where it holds no lock. The bus task, the only
+ *   task of ours pinned there, first stops between two transactions (gw_bus_hold); IDF's own
+ *   (IDLE1, and ipc1, which runs above the park task) take no lock that a parked section needs.
+ *   A task with no affinity that the park task preempts on core 1 is run by core 0 instead
+ *   (FreeRTOS SMP scheduling), so it still releases what it holds. A new task pinned to core 1
+ *   must take part like the bus task;
+ * - nothing of ours between park(true) and park(false) logs; the lines around it ("parking
+ *   core 1", "core 1 resumed after N ms") come before the park task starts and after it ended.
+ *   IDF's own lines inside (esp_image's) go out as usual: no lock they need is left on core 1;
+ * - a park lasts at most PARK_MAX_MS: past it core 1 resumes by itself (the emulator fault the
+ *   park avoids may follow) and park(false) logs it, an error for the E2E. */
+#define PARK_HOLD_MS 10000u   /* a bus transaction in progress, with its retries */
+#define PARK_MAX_MS 45000u    /* below the harness' 60 s without console output (issue #92) */
 static volatile bool s_park;
 static volatile bool s_parked;
+static volatile bool s_park_overrun;   /* set by park_loop when it gave up */
+static bool s_park_on;                 /* park(true) parked core 1: park(false) undoes it */
+static int64_t s_park_t0;
+static SemaphoreHandle_t s_park_lock;  /* one park at a time, park(true) to park(false) */
+static StaticSemaphore_t s_park_lock_buf;
 
 static void IRAM_ATTR park_loop(void *arg)
 {
     (void)arg;
+    const TickType_t t0 = xTaskGetTickCount();   /* in IRAM (FreeRTOS linker fragment) */
     s_parked = true;
     while (s_park) {
+        if (xTaskGetTickCount() - t0 >= pdMS_TO_TICKS(PARK_MAX_MS)) {
+            s_park_overrun = true;
+            break;
+        }
         __asm__ volatile("waiti 0");   /* halted until the next interrupt (the tick) */
     }
     s_parked = false;
     vTaskDelete(NULL);
 }
 
+static void park_init(void)
+{
+    s_park_lock = xSemaphoreCreateMutexStatic(&s_park_lock_buf);
+}
+
 static void park(bool on)
 {
     if (!on) {
+        if (!s_park_on) {
+            return;   /* that park(true) did not park */
+        }
         s_park = false;
         while (s_parked) {
             vTaskDelay(1);
         }
+        s_park_on = false;
+        bool overrun = s_park_overrun;
+        s_park_overrun = false;
+        unsigned long ms = (unsigned long)((esp_timer_get_time() - s_park_t0) / 1000);
+        if (overrun) {
+            ESP_LOGE(TAG, "core 1 park bound reached: core 1 resumed by itself after %u s, "
+                          "before the parked section ended (issue #111)", PARK_MAX_MS / 1000);
+        }
+        /* before the bus task goes on: none of its lines comes before this one (the E2E) */
+        ESP_LOGI(TAG, "core 1 resumed after %lu ms", ms);
+        gw_bus_release();
+        xSemaphoreGive(s_park_lock);
         return;
     }
+    xSemaphoreTake(s_park_lock, portMAX_DELAY);
+    if (!gw_bus_hold(PARK_HOLD_MS)) {
+        xSemaphoreGive(s_park_lock);
+        ESP_LOGE(TAG, "core 1 park refused: the bus task did not stop within %u ms (issue #111)",
+                 PARK_HOLD_MS);
+        return;
+    }
+    ESP_LOGI(TAG, "parking core 1 (bus task stopped)");
     s_park = true;
     BaseType_t other = xPortGetCoreID() == 0 ? 1 : 0;
     if (xTaskCreatePinnedToCore(park_loop, "fw_park", 2048, NULL, configMAX_PRIORITIES - 2, NULL,
                                 other) != pdPASS) {
         s_park = false;
+        gw_bus_release();
+        xSemaphoreGive(s_park_lock);
+        ESP_LOGE(TAG, "core 1 park refused: no memory for its task (issue #111)");
         return;
     }
     while (!s_parked) {
         vTaskDelay(1);
     }
+    s_park_t0 = esp_timer_get_time();
+    s_park_on = true;
 }
 /* The parked core must be core 1: core 0's tick interrupt also runs the interrupt watchdog's
  * hook, which writes its timer group (TIMG1) and faulted in QEMU during the freeze
@@ -171,6 +235,10 @@ static void on_core0(void (*fn)(void *), void *arg)
     xSemaphoreTake(c.done, portMAX_DELAY);
 }
 #else
+static void park_init(void)
+{
+}
+
 static void park(bool on)
 {
     (void)on;
@@ -1092,6 +1160,7 @@ void gw_fw_early_init(void)
         return;
     }
     s_early = true;
+    park_init();
     s_fmt_lock = xSemaphoreCreateMutexStatic(&s_fmt_lock_buf);
     s_ota_lock = xSemaphoreCreateMutexStatic(&s_ota_lock_buf);
     const esp_app_desc_t *app = esp_app_get_description();

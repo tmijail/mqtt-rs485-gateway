@@ -1041,8 +1041,27 @@ static int cmd_validation(int argc, char **argv)
     return 0;
 }
 
+/* Issue #111: the bus task (core 1) floods the console, so a park of core 1 finds it logging. */
+static int cmd_storm(int argc, char **argv)
+{
+    char *end = NULL;
+    long ms = argc == 2 ? strtol(argv[1], &end, 10) : -1;
+    if (end == NULL || *end != '\0' || ms < 0 || ms > 120000) {
+        out("usage: storm <0-120000 ms>\n");
+        return 1;
+    }
+    gw_bus_sim_log_storm((uint32_t)ms);
+    if (ms > 0) {
+        out("console storm from the bus task for %ld ms\n", ms);
+    } else {
+        out("console storm stopped\n");
+    }
+    return 0;
+}
+
 ATOMIC(cmd_expander)
 ATOMIC(cmd_validation)
+ATOMIC(cmd_storm)
 ATOMIC(cmd_boot)
 #endif
 
@@ -1103,6 +1122,8 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
          "while after the next boot (issue #74)", .hint = "absent <ms>", .func = cmd_expander_atomic},
         {.command = "validation", .help = "Emulator only: the next configuration validation "
          "keeps its buffers for a while (issue #84)", .hint = "hold <ms>", .func = cmd_validation_atomic},
+        {.command = "storm", .help = "Emulator only: the bus task (core 1) floods the console "
+         "for a while (issue #111)", .hint = "<0-120000 ms>", .func = cmd_storm_atomic},
         {.command = "boot", .help = "Emulator only: press (1) or release (0) the BOOT button",
          .hint = "<0|1>", .func = cmd_boot_atomic},
         {.command = "panic", .help = "Emulator only: abort() (core dump test)", .func = cmd_panic},
