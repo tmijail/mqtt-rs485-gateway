@@ -5,6 +5,8 @@
 
 #include "cJSON.h"
 #include "gw_backoff.h"
+#include "gw_config_priv.h"
+#include "gw_port.h"
 
 void gw_ota_trial_init(gw_ota_trial_t *t, bool pending, uint32_t now_ms, uint32_t timeout_ms)
 {
@@ -254,11 +256,18 @@ bool gw_ota_progress_update(gw_ota_progress_t *p, uint32_t done, uint32_t now_ms
     return due;
 }
 
+/* Issue #106: under the JSON lock, with the configuration allocator's hooks (the same ones every
+ * other cJSON use installs), so it cannot change them, or the failure flag, under another task's
+ * validation. */
 bool gw_ota_parse_request(const char *body, size_t len, char *out, char *why, size_t cap)
 {
+    gw_port_json_lock();
+    gw_config_json_hooks();
     cJSON *root = cJSON_ParseWithLength(body, len);
     bool ok = false;
-    if (root == NULL || !cJSON_IsObject(root)) {
+    if (root == NULL && gw_config_json_alloc_failed()) {
+        snprintf(why, cap, "out of memory parsing the request");
+    } else if (root == NULL || !cJSON_IsObject(root)) {
         snprintf(why, cap, "expected a JSON object {\"url\": \"https://...\"}");
     } else if (cJSON_GetArraySize(root) != 1 || !cJSON_IsString(cJSON_GetObjectItemCaseSensitive(root, "url"))) {
         snprintf(why, cap, "expected exactly one key, \"url\", with a string");
@@ -272,5 +281,6 @@ bool gw_ota_parse_request(const char *body, size_t len, char *out, char *why, si
         }
     }
     cJSON_Delete(root);
+    gw_port_json_unlock();
     return ok;
 }

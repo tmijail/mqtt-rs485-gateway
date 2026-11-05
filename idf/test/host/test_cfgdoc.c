@@ -1,10 +1,12 @@
 /* QA-1: configuration documents with secrets (CFG-4 export/import, CFG-7 secret store). */
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "cJSON.h"
 #include "gw_cfgdoc.h"
+#include "gw_ota.h"
 #include "support.h"
 #include "unity.h"
 
@@ -379,6 +381,62 @@ static void test_apply_largest_block_is_the_document(void)
     TEST_ASSERT_EQUAL('\n', doc.doc[doc.doc_len - 1]);
 }
 
+/* ---------- issue #106: cJSON's process-wide state across tasks ---------- */
+
+static __thread bool t_fail_alloc;   /* this thread's allocations fail */
+
+static void *per_thread_alloc(size_t size)
+{
+    return t_fail_alloc ? NULL : malloc(size);
+}
+
+#define RACE_ROUNDS 3000
+
+static void *ota_parser(void *arg)
+{
+    unsigned *oom = arg;
+    t_fail_alloc = true;   /* every allocation of this thread fails: it sets the OOM flag */
+    char url[GW_OTA_URL_MAX], why[96];
+    static const char body[] = "{\"url\":\"https://fw.example/gw.bin\"}";
+    for (int i = 0; i < RACE_ROUNDS; i++) {
+        if (!gw_ota_parse_request(body, sizeof(body) - 1, url, why, sizeof(why)) &&
+            strstr(why, "out of memory") != NULL) {
+            (*oom)++;
+        }
+    }
+    return NULL;
+}
+
+/* A firmware request parsed on another task (the web's POST /api/firmware) while a document is
+ * exported or validated (the shell): before the JSON lock, the other task's failed allocations
+ * set the shared flag in the middle of this one and it reported "memoria insuficiente" with
+ * plenty of memory (or its own reset hid a real failure). */
+static void test_json_state_across_threads(void)
+{
+    size_t len;
+    const char *spec = support_read_file(GW_SPEC_EXAMPLE, &len);
+    char *copy = malloc(len + 1);
+    memcpy(copy, spec, len + 1);
+    gw_config_set_allocator(per_thread_alloc, free);
+    unsigned ota_oom = 0, spurious = 0;
+    pthread_t th;
+    TEST_ASSERT_EQUAL(0, pthread_create(&th, NULL, ota_parser, &ota_oom));
+    for (int i = 0; i < RACE_ROUNDS; i++) {
+        size_t n;
+        gw_cfg_err_t e;
+        char *out = gw_cfgdoc_export(copy, len, &stored, &n, &e);
+        if (out == NULL) {
+            spurious++;
+        }
+        gw_cfgdoc_free_text(out);
+    }
+    pthread_join(th, NULL);
+    gw_config_set_allocator(malloc, free);
+    free(copy);
+    TEST_ASSERT_EQUAL_MESSAGE(0, spurious, "exports failed by another thread's allocations");
+    TEST_ASSERT_EQUAL(RACE_ROUNDS, ota_oom);   /* and each real failure is reported */
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -391,5 +449,6 @@ int main(void)
     RUN_TEST(test_modbus_keys_round_trip);
     RUN_TEST(test_printer_matches_cjson);
     RUN_TEST(test_apply_largest_block_is_the_document);
+    RUN_TEST(test_json_state_across_threads);
     return UNITY_END();
 }

@@ -1,6 +1,7 @@
 #include "gw_web.h"
 
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -135,6 +136,62 @@ static void peer_addr(httpd_req_t *req, uint8_t out[16], char *text, size_t cap)
     }
 }
 
+/* ---------- refused requests with a body (issue #106) ---------- */
+
+/* Refused requests whose unread body was cut. Incremented by the web server task and by the
+ * redirect server's task, read by the shell's: atomic. */
+static atomic_uint s_cut_bodies;
+
+static int recv_refused(httpd_handle_t hd, int sockfd, char *buf, size_t len, int flags)
+{
+    (void)hd, (void)sockfd, (void)buf, (void)len, (void)flags;
+    return HTTPD_SOCK_ERR_FAIL;
+}
+
+/* Bodies up to CUT_MIN_BODY are drained as before: they are in the socket buffers already (a
+ * few reads), the client reads the reply cleanly, and a 401 to a GET keeps its connection. */
+#define CUT_MIN_BODY 1024
+
+/*
+ * An untrusted refusal (401, 429, 403: no credentials checked yet, or another site; the HTTP
+ * port's redirect): the rest of the body is not read. Call before sending the reply, and only
+ * before the handler read any of the body.
+ *
+ * esp_http_server ignores "Connection: close" in a response and, once the handler returns, reads
+ * and discards what is left of the body (httpd_req_delete, CONFIG_HTTPD_PURGE_BUF_LEN = 32 B per
+ * recv, each recv waiting up to recv_wait_timeout) on the server's only task: a refused 1.5 MB
+ * upload held the web server for as long as the client kept sending, and anyone on the network
+ * could repeat it. Here the session's receive function is replaced by one that fails.
+ *
+ * The session is always closed, in the same step: nothing of the body was read, so more than
+ * CUT_MIN_BODY bytes remain; httpd_req_delete's purge goes past the few bytes httpd keeps from
+ * the header parse (pending_data) and calls the receive function, which fails; the purge
+ * returns an error and httpd_sess_process deletes the session (no later request can arrive on
+ * it with the failing function). lwIP closes a socket with unread data with a reset, so a client
+ * that is still sending may see the reset rather than the reply: acceptable for these.
+ */
+static void close_after_reply(httpd_req_t *req)
+{
+    httpd_resp_set_hdr(req, "Connection", "close");
+    if (req->content_len > CUT_MIN_BODY &&
+        httpd_sess_set_recv_override(req->handle, httpd_req_to_sockfd(req), recv_refused) == ESP_OK) {
+        atomic_fetch_add_explicit(&s_cut_bodies, 1u, memory_order_relaxed);
+    }
+}
+
+/*
+ * A refusal of an authenticated, same-origin request (400 bad image, 409 busy, 413, 415): the
+ * body is not cut. httpd drains it in full after the reply, as before #106, so the web UI or a
+ * script that is still sending gets the status and its reason instead of a reset (a cut under
+ * a browser that is uploading 1.5 MB ends in a network error). The cost: an authenticated,
+ * same-origin client holds the web server for as long as its upload lasts.
+ */
+static esp_err_t refuse_body(httpd_req_t *req, const char *status, const char *msg)
+{
+    httpd_resp_set_hdr(req, "Connection", "close");   /* the client may stop sending */
+    return send_error(req, status, NULL, msg);
+}
+
 static bool authorized(httpd_req_t *req)
 {
     char hdr[192];
@@ -148,6 +205,7 @@ static bool authorized(httpd_req_t *req)
         static char retry[12];   /* server task only; must outlive the response */
         snprintf(retry, sizeof(retry), "%lu", (unsigned long)((left + 999) / 1000));
         httpd_resp_set_hdr(req, "Retry-After", retry);
+        close_after_reply(req);
         send_error(req, "429 Too Many Requests", NULL,
                    "demasiados intentos de acceso fallidos: espere y vuelva a intentar");
         return false;
@@ -176,6 +234,7 @@ static bool authorized(httpd_req_t *req)
         }
     }
     httpd_resp_set_hdr(req, "WWW-Authenticate", REALM_HDR);
+    close_after_reply(req);
     send_error(req, "401 Unauthorized", NULL, "autenticación requerida");
     return false;
 }
@@ -212,9 +271,7 @@ static bool same_origin(httpd_req_t *req)
     s_csrf_refused++;
     ESP_LOGW(TAG, "%s %s from %s refused: %s", req->method == HTTP_PUT ? "PUT" : "POST", req->uri,
              who, r == GW_CSRF_NO_HEADER ? "no " GW_CSRF_HEADER " header" : "cross-origin request");
-    /* Tells the client the connection ends here. It does not spare reading the body: httpd
-     * still drains the unread body (an image?) before closing (issue #106). */
-    httpd_resp_set_hdr(req, "Connection", "close");
+    close_after_reply(req);   /* its body (an image?) is not read */
     send_error(req, "403 Forbidden", NULL,
                r == GW_CSRF_NO_HEADER
                    ? "falta la cabecera " GW_CSRF_HEADER ": las escrituras la necesitan (CSRF)"
@@ -303,8 +360,7 @@ static esp_err_t config_put(httpd_req_t *req)
         char msg[96];
         snprintf(msg, sizeof(msg), "cuerpo de %u bytes no aceptado (máximo %d)",
                  (unsigned)req->content_len, CONFIG_GW_CONFIG_MAX_BYTES);
-        httpd_resp_set_hdr(req, "Connection", "close");
-        return send_error(req, status, NULL, msg);
+        return refuse_body(req, status, msg);
     }
     bool dry_run = query_flag(req, "dry_run");
     /* issue #109: ?discard_nvs_copy=1, the explicit way out when LittleFS may hold an unreachable
@@ -410,18 +466,16 @@ static esp_err_t firmware_post(httpd_req_t *req)
     char why[160];
     bool json = media_type_is(ctype, "application/json");
     if (!json && !media_type_is(ctype, "application/octet-stream")) {
-        httpd_resp_set_hdr(req, "Connection", "close");
-        return send_error(req, "415 Unsupported Media Type", NULL,
-                          "Content-Type: application/json ({\"url\": ...}) o "
-                          "application/octet-stream (la imagen)");
+        return refuse_body(req, "415 Unsupported Media Type",
+                           "Content-Type: application/json ({\"url\": ...}) o "
+                           "application/octet-stream (la imagen)");
     }
     if (json) {
         size_t len;
         const char *status;
         char *body = req->content_len <= 1024 ? read_body(req, &len, &status) : NULL;
         if (body == NULL) {
-            httpd_resp_set_hdr(req, "Connection", "close");
-            return send_error(req, "400 Bad Request", NULL, "se esperaba {\"url\": \"https://...\"}");
+            return refuse_body(req, "400 Bad Request", "se esperaba {\"url\": \"https://...\"}");
         }
         char url[GW_OTA_URL_MAX];
         bool parsed = gw_ota_parse_request(body, len, url, why, sizeof(why));
@@ -442,9 +496,8 @@ static esp_err_t firmware_post(httpd_req_t *req)
     }
     esp_err_t e = gw_fw_upload_begin(req->content_len, why, sizeof(why));
     if (e != ESP_OK) {
-        httpd_resp_set_hdr(req, "Connection", "close");
-        return send_error(req, e == ESP_ERR_INVALID_SIZE ? "413 Content Too Large" : "409 Conflict",
-                          NULL, why);
+        return refuse_body(req, e == ESP_ERR_INVALID_SIZE ? "413 Content Too Large" : "409 Conflict",
+                           why);
     }
     ESP_LOGW(TAG, "firmware upload of %u bytes through the REST API", (unsigned)req->content_len);
     const size_t chunk = 4096;
@@ -465,18 +518,16 @@ static esp_err_t firmware_post(httpd_req_t *req)
         timeouts = 0;
         if (gw_fw_upload_write(buf, (size_t)r, why, sizeof(why)) != ESP_OK) {
             heap_caps_free(buf);
-            httpd_resp_set_hdr(req, "Connection", "close");
-            return send_error(req, "400 Bad Request", NULL, why);
+            return refuse_body(req, "400 Bad Request", why);
         }
         got += (size_t)r;
     }
     heap_caps_free(buf);
     e = gw_fw_upload_end(ok && got == req->content_len, why, sizeof(why));
     if (e != ESP_OK) {
-        httpd_resp_set_hdr(req, "Connection", "close");
-        return send_error(req, !ok ? "503 Service Unavailable"
-                               : got < req->content_len ? "408 Request Timeout" : "400 Bad Request",
-                          NULL, why);
+        return refuse_body(req, !ok ? "503 Service Unavailable"
+                                : got < req->content_len ? "408 Request Timeout" : "400 Bad Request",
+                           why);
     }
     return send_json(req, "200 OK", "{\"ok\":true,\"restart\":true}\n");
 }
@@ -739,7 +790,7 @@ static esp_err_t redirect_any(httpd_req_t *req)
     httpd_resp_set_status(req, req->method == HTTP_GET ? "301 Moved Permanently"
                                                        : "308 Permanent Redirect");
     httpd_resp_set_hdr(req, "Location", loc);
-    httpd_resp_set_hdr(req, "Connection", "close");
+    close_after_reply(req);
     return httpd_resp_send(req, NULL, 0);
 }
 
@@ -771,6 +822,7 @@ void gw_web_get_stats(gw_web_stats_t *out)
     out->refused = s_limit.refused_total;
     out->blocks = s_limit.blocks_total;
     out->csrf_refused = s_csrf_refused;
+    out->cut_bodies = atomic_load_explicit(&s_cut_bodies, memory_order_relaxed);
     out->blocked_now = gw_authlimit_blocked(&s_limit, (uint64_t)(esp_timer_get_time() / 1000));
 }
 
