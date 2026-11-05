@@ -520,7 +520,7 @@ static bool config_read(pasted_t *p)
 }
 
 /* Runs with s_ctx_lock held: validate, save, restart. Frees the pasted buffer. */
-static int config_apply(pasted_t *p, bool dry_run)
+static int config_apply(pasted_t *p, bool dry_run, bool discard_copy)
 {
     int rc = 1;
     gw_cfg_err_t err;
@@ -529,7 +529,7 @@ static int config_apply(pasted_t *p, bool dry_run)
     } else if (p->overflow) {
         out("config: rejected: larger than %d bytes (CONFIG_GW_CONFIG_MAX_BYTES) or no memory\n",
                CONFIG_GW_CONFIG_MAX_BYTES);
-    } else if (gw_storage_save_config(p->buf, p->len, dry_run, &err) != ESP_OK) {
+    } else if (gw_storage_save_config_ex(p->buf, p->len, dry_run, discard_copy, &err) != ESP_OK) {
         out("config: rejected: %s\n", err.msg);
         if (err.path[0] != '\0') {
             out("config: path %s\n", err.path);
@@ -553,7 +553,7 @@ static int config_apply(pasted_t *p, bool dry_run)
 }
 
 /* 'config load' / 'config check': registered without the ATOMIC wrapper (issue #78). */
-static int cmd_config_load(bool dry_run)
+static int cmd_config_load(bool dry_run, bool discard_copy)
 {
     s_out_len = 0;
     pasted_t p;
@@ -562,7 +562,7 @@ static int cmd_config_load(bool dry_run)
         return 1;
     }
     xSemaphoreTake(s_ctx_lock, portMAX_DELAY);
-    int rc = config_apply(&p, dry_run);
+    int rc = config_apply(&p, dry_run, discard_copy);
     out_flush();
     xSemaphoreGive(s_ctx_lock);
     return rc;
@@ -986,7 +986,11 @@ static int cmd_config_entry(int argc, char **argv)
 {
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
     if (argc == 2 && (strcmp(argv[1], "load") == 0 || strcmp(argv[1], "check") == 0)) {
-        return cmd_config_load(strcmp(argv[1], "check") == 0);
+        return cmd_config_load(strcmp(argv[1], "check") == 0, false);
+    }
+    /* issue #109: the explicit way out when LittleFS may hold an unreachable NVS migration copy */
+    if (argc == 3 && strcmp(argv[1], "load") == 0 && strcmp(argv[2], "discard-nvs-copy") == 0) {
+        return cmd_config_load(false, true);
     }
 #endif
     return cmd_config_atomic(argc, argv);
@@ -1068,10 +1072,11 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
                  "(secrets masked)"
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
                  ", 'load' reads a new one from the console, validates, saves and restarts, "
-                 "'check' only validates"
+                 "'check' only validates; 'load discard-nvs-copy' also formats a LittleFS that "
+                 "does not mount, losing an NVS migration copy it may hold (README 6.2.1)"
 #endif
          ,
-         .hint = "[show|load|check]", .func = cmd_config_entry},
+         .hint = "[show|load [discard-nvs-copy]|check]", .func = cmd_config_entry},
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
         {.command = "restart", .help = "Orderly restart (NDEATH first)", .func = cmd_restart_atomic},
         {.command = "rebirth", .help = "Re-issue NBIRTH and every DBIRTH", .func = cmd_rebirth_atomic},

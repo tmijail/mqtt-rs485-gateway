@@ -34,7 +34,8 @@ typedef struct {
     uint32_t pages;          /* pages in use (active, full or freeing, header CRC valid) */
     uint32_t written;        /* entries marked written (first entries and data spans) */
     uint32_t plain_ok;       /* items whose plain CRC32 matches */
-    uint32_t bad;            /* written entries that do not parse as plain items */
+    uint32_t bad;            /* written entries that do not parse as plain items (a damaged string
+                              * or blob that still reads as one counts once, issue #107) */
     uint32_t plain_pages;    /* pages with written entries, mostly plain items */
     uint32_t enc_pages;      /* pages with written entries, mostly not plain (encrypted) */
 } gw_nvsraw_scan_t;
@@ -70,6 +71,16 @@ typedef struct {
 } gw_nvsraw_u8_t;
 
 void gw_nvsraw_u8_init(gw_nvsraw_u8_t *f, const char *ns, const char *key);
+
+/* Issue #109: the "erase in progress" entry a migration writes into the plain NVS right before it
+ * erases the partition (the erase takes its page last). Recognised by itself, whatever namespace
+ * index it has: the page with the namespace's own entry may be erased already (issue #109 round
+ * 3b). A key no other entry of the firmware uses, type u8 and a fixed value. */
+#define GW_NVSMIG_ERASE_KEY "_gw_erase_mark"
+#define GW_NVSMIG_ERASE_VALUE 0xA5u
+
+/** True when the raw @p page (a valid page, a plain item with a valid CRC) holds that entry. */
+bool gw_nvsraw_has_erase_marker(const uint8_t *page);
 void gw_nvsraw_u8_ns(gw_nvsraw_u8_t *f, const uint8_t *page);
 void gw_nvsraw_u8_item(gw_nvsraw_u8_t *f, const uint8_t *page);
 
@@ -163,6 +174,12 @@ typedef struct {
  *  iteration that stopped early, one skipped entry) erases nothing: the boot stays unencrypted. */
 bool gw_nvsmig_may_erase(const gw_nvsmig_read_t *r);
 
+/** Issue #109 round 3b: the erase writes its "erase in progress" entry first only when the plain
+ *  NVS started (it is written through it). An NVS that does not start by layout (NO_FREE_PAGES,
+ *  NEW_VERSION_FOUND, e.g. full) has nothing readable to keep: it is erased whole, without the
+ *  entry, as IDF itself would. */
+bool gw_nvsmig_erase_with_marker(const gw_nvsmig_read_t *r);
+
 typedef enum {
     GW_NVSMIG_COPY_NONE = 0,     /* no copy */
     GW_NVSMIG_COPY_VALID,        /* read whole, and it passes gw_nvsmig_check() */
@@ -200,7 +217,11 @@ typedef struct {
      * (copy is then NONE: nothing could be looked at) */
     bool copy_unknown;
     bool keys;               /* the NVS keys can be read (an encrypted NVS was used here before) */
-    bool mig_busy;           /* the encrypted NVS has a migration's start marker, not its end */
+    bool mig_busy;           /* the encrypted NVS has a migration's start marker, not its end, or
+                              * it does not even start (issue #109 B-d) */
+    bool erase_marker;       /* issue #109: the plain NVS has the "erase in progress" entry a
+                              * migration writes just before it erases the partition (the erase
+                              * removes that entry last) */
 } gw_nvsmig_state_t;
 
 /**
@@ -208,9 +229,11 @@ typedef struct {
  *  - a copy that exists but cannot be read: NO_NVS (it may hold the only copy of the entries);
  *  - issue #104: LittleFS not mountable (a copy may be there, copy_unknown) and the partition
  *    looks like an interrupted migration: EMPTY with the NVS keys present (cut right after the
- *    erase), PLAIN or MIXED with the keys present (cut during the erase, issue #108 B2), or
- *    ENCRYPTED with the start marker and not the end one (cut while writing): NO_NVS, not an
- *    empty, partly erased or partial NVS whose new entries the resume would then drop;
+ *    erase), PLAIN or MIXED with the keys present and the "erase in progress" entry (cut during
+ *    the erase, issues #108 B2 and #109: without that entry the erase never started and the
+ *    partition is intact), or ENCRYPTED with the start marker and not the end one (cut while
+ *    writing): NO_NVS, not an empty, partly erased or partial NVS whose new entries the resume
+ *    would then drop;
  *  - a raw page that cannot be read: no migration. With a valid copy NO_NVS; readable pages
  *    all encrypted OPEN_ENCRYPTED (staying unencrypted would make NVS discard their entries);
  *    readable pages all plain STAY_PLAIN (an unread page holds plain or encrypted entries; the

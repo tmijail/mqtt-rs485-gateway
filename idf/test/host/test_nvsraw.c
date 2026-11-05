@@ -146,6 +146,29 @@ static void test_one_corrupt_entry_keeps_plain(void)
     TEST_ASSERT_EQUAL_UINT32(1, s.bad);
 }
 
+/* Issue #107: three damaged strings or blobs (header CRC) on a page of 8 items: three bad items,
+ * not one per entry they take, so the page stays plain (5 good items) */
+static void test_damaged_multi_entry_items_count_once(void)
+{
+    gw_nvsraw_scan_t s;
+    load(k_plain);
+    page[64 + 32 * 3 + 4] ^= 0x5A;   /* "commission" (string, 2 entries) */
+    page[64 + 32 * 5 + 4] ^= 0x5A;   /* "mqtt_pw" (string, 2 entries) */
+    page[64 + 32 * 8 + 4] ^= 0x5A;   /* "lkg_net" (blob data, 2 entries) */
+    TEST_ASSERT_EQUAL(GW_NVSRAW_PLAIN, scan(page, &s));
+    TEST_ASSERT_EQUAL_UINT32(5, s.plain_ok);
+    TEST_ASSERT_EQUAL_UINT32(3, s.bad);
+    TEST_ASSERT_EQUAL_UINT32(11, s.written);   /* every entry still counted as written */
+    /* a damaged size no longer matches the span: one bad per entry, as before */
+    load(k_plain);
+    page[64 + 32 * 3 + 24] = 0x7F;   /* commission: 127 bytes would take 5 entries, not 2 */
+    TEST_ASSERT_EQUAL(GW_NVSRAW_PLAIN, scan(page, &s));
+    TEST_ASSERT_EQUAL_UINT32(2, s.bad);   /* the header and its data entry */
+    /* the encrypted image: no entry reads as a plain string or blob, all bad */
+    TEST_ASSERT_EQUAL(GW_NVSRAW_ENCRYPTED, scan(load(k_enc), &s));
+    TEST_ASSERT_EQUAL_UINT32(s.written, s.bad);
+}
+
 static void test_several_pages_accumulate(void)
 {
     gw_nvsraw_scan_t s;
@@ -223,6 +246,63 @@ static void test_mixed_pages(void)
     gw_nvsraw_scan_page(&s, page);
     TEST_ASSERT_EQUAL_UINT32(2, s.plain_pages);
     TEST_ASSERT_EQUAL(GW_NVSRAW_PLAIN, gw_nvsraw_verdict(&s));
+}
+
+/* Issue #109 round 3b: the "erase in progress" entry is recognised by itself, even when the page
+ * with its namespace's entry was erased first (a device that ran a while has "gw" on an older
+ * page than the active one where the entry lands) */
+static void put_marker(uint8_t *pg, unsigned i, uint8_t ns, uint8_t value)
+{
+    uint8_t *e = pg + 64 + 32 * i;
+    e[0] = ns;
+    e[1] = 0x01;   /* u8 */
+    e[2] = 1;
+    memset(e + 8, 0, 16);
+    memcpy(e + 8, GW_NVSMIG_ERASE_KEY, strlen(GW_NVSMIG_ERASE_KEY));
+    set_u8(pg, i, value);
+}
+
+static void test_erase_marker_without_its_namespace(void)
+{
+    TEST_ASSERT_FALSE(gw_nvsraw_has_erase_marker(load(k_plain)));
+    TEST_ASSERT_FALSE(gw_nvsraw_has_erase_marker(load(k_enc)));
+    /* the marker in namespace "gw" (index 3) on a page whose "gw" entry is gone (here: its CRC
+     * broken, as good as erased): the namespace-bound finder cannot see it, the marker check can */
+    load(k_plain);
+    put_marker(page, 1, 3, GW_NVSMIG_ERASE_VALUE);
+    page[64 + 32 * 7 + 4] ^= 0x5A;   /* the "gw" namespace entry */
+    TEST_ASSERT_TRUE(gw_nvsraw_has_erase_marker(page));
+    gw_nvsraw_u8_t f;
+    gw_nvsraw_u8_init(&f, "gw", GW_NVSMIG_ERASE_KEY);
+    gw_nvsraw_u8_ns(&f, page);
+    gw_nvsraw_u8_item(&f, page);
+    TEST_ASSERT_FALSE(f.found);
+    /* any namespace index; not with another value, nor as a namespace entry (index 0), nor with a
+     * broken CRC */
+    load(k_plain);
+    put_marker(page, 1, 9, GW_NVSMIG_ERASE_VALUE);
+    TEST_ASSERT_TRUE(gw_nvsraw_has_erase_marker(page));
+    put_marker(page, 1, 3, 1);
+    TEST_ASSERT_FALSE(gw_nvsraw_has_erase_marker(page));
+    put_marker(page, 1, 0, GW_NVSMIG_ERASE_VALUE);
+    TEST_ASSERT_FALSE(gw_nvsraw_has_erase_marker(page));
+    put_marker(page, 1, 3, GW_NVSMIG_ERASE_VALUE);
+    page[64 + 32 + 4] ^= 1;
+    TEST_ASSERT_FALSE(gw_nvsraw_has_erase_marker(page));
+}
+
+/* Issue #109 round 3b: the entry is written through the plain NVS; one that does not start by
+ * layout (full: NO_FREE_PAGES) is erased whole without it, as before, never left for good */
+static void test_erase_mode(void)
+{
+    gw_nvsmig_read_t r = {.init_ok = true, .listed_all = true};
+    TEST_ASSERT_TRUE(gw_nvsmig_may_erase(&r));
+    TEST_ASSERT_TRUE(gw_nvsmig_erase_with_marker(&r));
+    gw_nvsmig_read_t full = {.init_ok = false, .init_layout_error = true};
+    TEST_ASSERT_TRUE(gw_nvsmig_may_erase(&full));
+    TEST_ASSERT_FALSE(gw_nvsmig_erase_with_marker(&full));
+    gw_nvsmig_read_t broken = {.init_ok = false, .init_layout_error = false};
+    TEST_ASSERT_FALSE(gw_nvsmig_may_erase(&broken));
 }
 
 static void test_raw_u8_bdseq(void)
@@ -480,16 +560,41 @@ static void test_decide_copy_out_of_reach(void)
     st.kind = GW_NVSRAW_ENCRYPTED;
     st.mig_busy = true;
     TEST_ASSERT_EQUAL(GW_NVSMIG_OPEN_ENCRYPTED, gw_nvsmig_decide(&st));
-    /* issue #108 B2: an unencrypted partition with the keys present may be partly erased (cut
-     * during the erase): no NVS either; without the keys no migration ever started */
+    /* issue #108 B2, #109: an unencrypted partition with the keys present is partly erased only
+     * when it has the "erase in progress" entry (cut during the erase): no NVS; without it the
+     * migration stopped before the erase and the partition is intact: it stays unencrypted */
     st.copy_unknown = true;
     for (int t = 0; t < 2; t++) {
         st.on_trial = t;
+        st.erase_marker = true;
         st.kind = GW_NVSRAW_PLAIN;
         TEST_ASSERT_EQUAL(GW_NVSMIG_NO_NVS, gw_nvsmig_decide(&st));
         st.kind = GW_NVSRAW_MIXED;
         TEST_ASSERT_EQUAL(GW_NVSMIG_NO_NVS, gw_nvsmig_decide(&st));
+        st.erase_marker = false;
+        st.kind = GW_NVSRAW_PLAIN;
+        TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(&st));
+        st.kind = GW_NVSRAW_MIXED;
+        TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(&st));
     }
+    /* the entry without the keys (it cannot happen: the keys come first): as without the keys */
+    st.on_trial = false;
+    st.erase_marker = true;
+    st.keys = false;
+    st.kind = GW_NVSRAW_PLAIN;
+    TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(&st));
+    st.keys = true;
+    st.erase_marker = false;
+    /* with the copy within reach the entry changes nothing: the copy completes the partition */
+    st.copy_unknown = false;
+    st.can_copy = true;
+    st.copy = GW_NVSMIG_COPY_VALID;
+    st.erase_marker = true;
+    TEST_ASSERT_EQUAL(GW_NVSMIG_MIGRATE, gw_nvsmig_decide(&st));
+    st.copy = GW_NVSMIG_COPY_NONE;
+    st.can_copy = false;
+    st.erase_marker = false;
+    st.copy_unknown = true;
     st.on_trial = false;
     st.keys = false;
     st.kind = GW_NVSRAW_PLAIN;
@@ -724,36 +829,42 @@ static void test_more_bad_than_plain(void)
     gw_nvsraw_scan_t s;
     /* page 0 of k_plain: namespaces at 0, 2, 7; bdseq at 1; strings at 3 (+4) and 5 (+6); the
      * lkg_net blob data at 8 (+9) and its index at 10: 8 items in 11 written entries */
-    /* the commission and mqtt_pw headers corrupt: 6 valid items, 4 bad entries: plain */
+    /* the commission and mqtt_pw headers corrupt (their keys): 6 valid items and, since issue
+     * #107, 2 bad ones (a damaged string that still reads as one counts once, not per entry) */
     load(k_plain);
     page[64 + 32 * 3 + 9] ^= 0x01;
     page[64 + 32 * 5 + 9] ^= 0x01;
     TEST_ASSERT_EQUAL(GW_NVSRAW_PLAIN, scan(page, &s));
     TEST_ASSERT_EQUAL_UINT32(6, s.plain_ok);
-    TEST_ASSERT_EQUAL_UINT32(4, s.bad);
-    /* and the bdseq: 5 and 5, a tie is still plain */
+    TEST_ASSERT_EQUAL_UINT32(2, s.bad);
+    /* and the bdseq: 5 and 3, plain */
     page[64 + 32 * 1 + 9] ^= 0x01;
     TEST_ASSERT_EQUAL(GW_NVSRAW_PLAIN, scan(page, &s));
     TEST_ASSERT_EQUAL_UINT32(5, s.plain_ok);
-    TEST_ASSERT_EQUAL_UINT32(5, s.bad);
-    /* the two strings and the blob data instead: 5 valid items, 6 bad entries: read as
-     * encrypted, and so not migrated (the boot opens the encrypted NVS) */
+    TEST_ASSERT_EQUAL_UINT32(3, s.bad);
+    /* the two strings and the blob data instead: 5 valid items, 3 bad ones. Before #107 the
+     * data entries counted too (6 bad) and the page read as encrypted; now it stays plain */
     load(k_plain);
     page[64 + 32 * 3 + 9] ^= 0x01;
     page[64 + 32 * 5 + 9] ^= 0x01;
     page[64 + 32 * 8 + 9] ^= 0x01;
-    TEST_ASSERT_EQUAL(GW_NVSRAW_ENCRYPTED, scan(page, &s));
+    TEST_ASSERT_EQUAL(GW_NVSRAW_PLAIN, scan(page, &s));
     TEST_ASSERT_EQUAL_UINT32(5, s.plain_ok);
-    TEST_ASSERT_EQUAL_UINT32(6, s.bad);
-    TEST_ASSERT_EQUAL_UINT32(0, s.plain_pages);
-    TEST_ASSERT_EQUAL(GW_NVSMIG_OPEN_ENCRYPTED, decide(GW_NVSRAW_ENCRYPTED, GW_NVSMIG_COPY_NONE,
-                                                       false, true, true));
-    /* one such page next to a sound plain page: mixed, migrated (the sound page's entries are
-     * kept; the damaged ones were unreadable anyway) */
+    TEST_ASSERT_EQUAL_UINT32(3, s.bad);
+    TEST_ASSERT_EQUAL_UINT32(1, s.plain_pages);
+    TEST_ASSERT_EQUAL(GW_NVSMIG_MIGRATE, decide(GW_NVSRAW_PLAIN, GW_NVSMIG_COPY_NONE, false, true,
+                                                true));
+    /* six damaged items (more bad than good) on a page still read as encrypted: next to a sound
+     * plain page, mixed, migrated (the sound page's entries are kept; the damaged ones were
+     * unreadable anyway) */
+    for (unsigned i = 0; i < 3; i++) {
+        page[64 + 32 * i + 9] ^= 0x01;   /* the spb namespace, bdseq, the secrets namespace */
+    }
     static uint8_t damaged[GW_NVSRAW_PAGE];
     memcpy(damaged, page, sizeof(damaged));
     gw_nvsraw_scan_init(&s);
     gw_nvsraw_scan_page(&s, damaged);
+    TEST_ASSERT_EQUAL(GW_NVSRAW_ENCRYPTED, gw_nvsraw_verdict(&s));
     gw_nvsraw_scan_page(&s, load(k_plain));
     TEST_ASSERT_EQUAL(GW_NVSRAW_MIXED, gw_nvsraw_verdict(&s));
     TEST_ASSERT_EQUAL(GW_NVSMIG_MIGRATE, decide(GW_NVSRAW_MIXED, GW_NVSMIG_COPY_NONE, false, true,
@@ -822,9 +933,12 @@ int main(void)
     RUN_TEST(test_encrypted_image);
     RUN_TEST(test_erased_or_empty);
     RUN_TEST(test_one_corrupt_entry_keeps_plain);
+    RUN_TEST(test_damaged_multi_entry_items_count_once);
     RUN_TEST(test_several_pages_accumulate);
     RUN_TEST(test_mixed_pages);
     RUN_TEST(test_raw_u8_bdseq);
+    RUN_TEST(test_erase_marker_without_its_namespace);
+    RUN_TEST(test_erase_mode);
     RUN_TEST(test_copy_round_trip);
     RUN_TEST(test_decide);
     RUN_TEST(test_decide_with_copy);

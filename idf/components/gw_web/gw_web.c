@@ -282,8 +282,10 @@ static bool same_origin(httpd_req_t *req)
 static bool query_flag(httpd_req_t *req, const char *key)
 {
     char q[64], v[8];
+    /* issue #109 round 3b: exactly "1" (a stray value never turns a flag on, above all the
+     * discard of an NVS migration copy) */
     return httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
-           httpd_query_key_value(q, key, v, sizeof(v)) == ESP_OK && strcmp(v, "0") != 0;
+           httpd_query_key_value(q, key, v, sizeof(v)) == ESP_OK && strcmp(v, "1") == 0;
 }
 
 /* ---------- /api/config ---------- */
@@ -361,8 +363,11 @@ static esp_err_t config_put(httpd_req_t *req)
         return refuse_body(req, status, msg);
     }
     bool dry_run = query_flag(req, "dry_run");
+    /* issue #109: ?discard_nvs_copy=1, the explicit way out when LittleFS may hold an unreachable
+     * NVS migration copy (README 6.2.1): formats LittleFS, the copy is lost */
+    bool discard = query_flag(req, "discard_nvs_copy");
     gw_cfg_err_t err;
-    esp_err_t r = gw_storage_save_config(body, len, dry_run, &err);
+    esp_err_t r = gw_storage_save_config_ex(body, len, dry_run, discard, &err);
     memset(body, 0, len);   /* may hold secrets in clear */
     heap_caps_free(body);
     switch (r) {
