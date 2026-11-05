@@ -47,6 +47,15 @@ bool gw_storage_load_config(gw_config_t *cfg, gw_cfg_err_t *err, const char **so
 esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_cfg_err_t *err);
 
 /**
+ * Issue #109: gw_storage_save_config(), and with @p discard_copy, in the boot without NVS where
+ * LittleFS does not mount and may hold the copy of an NVS migration (README 6.2.1), the save is
+ * not refused: LittleFS is formatted and the copy is lost (whatever only it had: secrets, the
+ * bdSeq, the commissioning password). The operator's explicit way out of that state.
+ */
+esp_err_t gw_storage_save_config_ex(const char *json, size_t len, bool dry_run, bool discard_copy,
+                                    gw_cfg_err_t *err);
+
+/**
  * The stored document (or the embedded default if there is no file) for export, with every
  * secret masked. NULL with the reason in @p err. Release with gw_storage_free().
  */
