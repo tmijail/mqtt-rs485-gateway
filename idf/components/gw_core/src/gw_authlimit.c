@@ -93,3 +93,8 @@ unsigned gw_authlimit_blocked(const gw_authlimit_t *l, uint64_t now_ms)
     }
     return n;
 }
+
+bool gw_webstall_stuck(uint32_t now_ms, uint32_t alive_ms, bool busy, uint32_t limit_ms)
+{
+    return !busy && (uint32_t)(now_ms - alive_ms) > limit_ms;
+}

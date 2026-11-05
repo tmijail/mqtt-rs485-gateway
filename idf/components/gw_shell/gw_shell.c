@@ -295,10 +295,11 @@ static int cmd_status(int argc, char **argv)
     gw_web_get_stats(&ws);
     if (ws.running) {
         out("web      %s, logins failed %lu, refused while blocked %lu, blocks %lu, addresses "
-            "blocked now %u, cross-site writes refused %lu, bodies cut %lu\n",
+            "blocked now %u, cross-site writes refused %lu, bodies cut %lu, stalls %lu\n",
             ws.https ? "HTTPS (HTTP redirects)" : "HTTP", (unsigned long)ws.failed,
             (unsigned long)ws.refused, (unsigned long)ws.blocks, ws.blocked_now,
-            (unsigned long)ws.csrf_refused, (unsigned long)ws.cut_bodies);
+            (unsigned long)ws.csrf_refused, (unsigned long)ws.cut_bodies,
+            (unsigned long)ws.stalls);
     }
     gw_log_stats_t ls;
     gw_log_get_stats(&ls);
@@ -375,13 +376,23 @@ static int cmd_status(int argc, char **argv)
     out(" (core)\n");
     /* Lowest free stack since boot of the tasks of ours whose depth depends on the traffic
      * (Sparkplug: births, nested template/DataSet coding, history replay; Modbus) */
-    static const char *const deep[] = {"sparkplug", "mqtt_task", "rs485_bus", "local_io", "httpd"};
+    static const char *const deep[] = {"sparkplug", "mqtt_task", "rs485_bus", "local_io",
+                                       "web_guard"};
     out("stack   ");
     for (size_t i = 0; i < sizeof(deep) / sizeof(deep[0]); i++) {
         TaskHandle_t h = xTaskGetHandle(deep[i]);
         if (h != NULL) {
             out(" %s %u", deep[i], (unsigned)uxTaskGetStackHighWaterMark(h));
         }
+    }
+    /* issue #110: both web servers' tasks are named "httpd": by their handles */
+    unsigned web_free, redirect_free;
+    gw_web_stack_free(&web_free, &redirect_free);
+    if (web_free > 0) {
+        out(" httpd %u", web_free);
+    }
+    if (redirect_free > 0) {
+        out(" httpd_redirect %u", redirect_free);
     }
     out(" (B free, high-water mark)\n");
     /* issue #80: the minimum since boot, and the largest block (now and the lowest seen when a

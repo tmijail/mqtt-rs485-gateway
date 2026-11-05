@@ -288,7 +288,75 @@ Texto propuesto (en inglés):
 
 Seguimiento en este repositorio (issue #92): el harness del E2E reconoce el `LoadStorePIFAddrError` en un periférico mientras la app escribe o verifica una imagen y repite el escenario una vez; el mismo fallo en el *tick* fuera de una verificación (visto solo con *heap poisoning*, al leer la otra ranura) cuenta como del firmware y no se repite (`idf/README.md` §4.3). Un silencio se vuelca (`info registers -a` por el monitor de QEMU, dos veces, en `fault-*.txt`) pero nunca se repite. El silencio después de `Take trusted digest key(s)` que antes se sumaba a este reporte **no es del emulador**: era el desborde de la pila de la tarea `esp_timer` durante la verificación RSA-PSS del *rollback* por plazo (corregido en `fix/ota-trial`, e09b7b4). Su volcado (núcleo 0 quieto en una toma de spinlock con un puntero `0xffffffff`) encaja con eso. No va en el texto para espressif/qemu.
 
-## 7. espressif/qemu: `atomic_mmu_lookup: code should not be reached` (SIGABRT) durante una OTA
+## 7. espressif/qemu: con MTTCG, escribir la MMU del ESP32-S3 desde un núcleo hace caer QEMU mientras el otro ejecuta (`Bad ram pointer`, SIGSEGV en `code_gen_buffer`)
+
+- **Repositorio:** https://github.com/espressif/qemu.
+- **Versión:** `QEMU emulator version 9.2.2 (esp_develop_9.2.2_20260417)`, máquina `esp32s3`, TCG multihilo (el valor por omisión con dos vCPU).
+- **Visto en este repositorio (issue #107):** los SIGSEGV sin mensaje y los `Bad ram pointer 0x403764a6` / `0x4200xxxx` de los escenarios OTA, del #97 y de la prueba del #99/#101, siempre con carga en el host (otro E2E en paralelo). Los volcados de núcleo de QEMU (el harness los guarda desde el #107, `qemu/NNN-<log>/core` con `core-bt.txt`) dicen esto. En los tres SIGSEGV del E2E, un vCPU estaba dentro de `esp32s3_write_mmu_value()` (`hw/misc/esp32s3_cache.c:109`), releyendo la página de 64 KB con `blk_pread()` → `aio_poll()` en el *handler* MMIO de la escritura del registro de la MMU (`mmu_hal_map_region()` del firmware), y el otro se cayó dentro del código traducido (`code_gen_buffer`); en el firmware, ese núcleo estaba en `spi_flash_op_block_func()` (IRAM). En los tres *aborts* de la reproducción de abajo, el vCPU que aborta busca código por una dirección de la flash o de IRAM (`get_page_addr_code_hostp()` → `qemu_ram_addr_from_host_nofail()` → `Bad ram pointer`) mientras el otro sigue ejecutando, ya fuera del *handler*: la traducción de esa página quedó apuntando a memoria del host que ya no es RAM del huésped.
+- **Relación con §6:** es el mismo hueco (el congelamiento de caché del S3 no está modelado), visto desde dentro de QEMU: el otro vCPU sigue corriendo durante la lectura bloqueante del *handler*. La reproducción de abajo no necesita ni OTA ni tareas en el otro núcleo.
+- **Rodeo en este repositorio:** el harness arranca QEMU con `-accel tcg,thread=single` (los dos vCPU en un solo hilo del host; `E2E_TCG_THREAD=multi` vuelve a MTTCG).
+
+Medido el 2026-11-04 en el contenedor de 4 CPU, con la aplicación de abajo, 9 corridas de 60 s, de a 3 en paralelo:
+
+| Carga del host | MTTCG (por omisión) | `-accel tcg,thread=single` |
+|---|---|---|
+| Solo las 3 corridas | 0 caídas de 9 | 0 de 9 |
+| Con 4 procesos que ocupan una CPU cada uno | **3 de 9** (`Bad ram pointer 0x4200dca3`, `0x4200dca6`, `0x4037acfa`, con *core*) | **0 de 9** (y la misma cantidad de *maps* por segundo) |
+
+Texto propuesto (en inglés):
+
+> **Title:** esp32s3: QEMU aborts ("Bad ram pointer") or segfaults in translated code while the other vCPU writes the MMU (MTTCG)
+>
+> **Version:** esp_develop_9.2.2_20260417, `-M esp32s3`, ESP-IDF v6.1, default TCG (multi-threaded)
+>
+> An app that maps and unmaps flash pages in a loop on core 0 (`esp_partition_mmap()` / `esp_partition_munmap()`), with core 1 only running its idle task, makes QEMU abort with `qemu-system-xtensa: Bad ram pointer 0x4200dca3` (`get_page_addr_code_hostp` → `qemu_ram_addr_from_host_nofail`, the aborting vCPU fetching code) within a minute when the host is loaded. In a larger app the same load gives SIGSEGVs inside `code_gen_buffer`; those core dumps show the other vCPU thread inside `esp32s3_write_mmu_value()` (`hw/misc/esp32s3_cache.c:109`), blocked in `blk_pread()` → `aio_poll()` while handling the MMU register write, so the MMU update (and its reload of the page from the flash image) races with the other vCPU's execution. With `-accel tcg,thread=single` it never happened in our runs.
+>
+> **Steps:** project with `partitions.csv`:
+> ```
+> nvs,      data, nvs,     0x9000,   0x6000
+> phy_init, data, phy,     0xf000,   0x1000
+> factory,  app,  factory, 0x10000,  0x100000
+> blob,     data, 0x40,    0x110000, 0x200000
+> ```
+> `sdkconfig.defaults`: `CONFIG_IDF_TARGET="esp32s3"`, `CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y`, `CONFIG_ESPTOOLPY_FLASHMODE_DIO=y`, `CONFIG_PARTITION_TABLE_CUSTOM=y`, `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"`, `CONFIG_ESP_TASK_WDT_EN=n`. `main/main.c`:
+> ```c
+> #include <stdio.h>
+> #include <inttypes.h>
+> #include "freertos/FreeRTOS.h"
+> #include "freertos/task.h"
+> #include "esp_partition.h"
+> #include "esp_timer.h"
+>
+> static void mapper(void *arg)
+> {
+>     const esp_partition_t *part = arg;
+>     for (uint32_t i = 0;; i++) {
+>         const void *p;
+>         esp_partition_mmap_handle_t h;
+>         if (esp_partition_mmap(part, (i % 32) * 0x10000, 0x10000, ESP_PARTITION_MMAP_DATA, &p,
+>                                &h) == ESP_OK) {
+>             volatile uint8_t x = ((const uint8_t *)p)[i % 0x10000];
+>             (void)x;
+>             esp_partition_munmap(h);
+>         }
+>         if (i % 2000 == 0) {
+>             printf("REPRO core %d: %" PRIu32 " maps at %" PRId64 " us\n", xPortGetCoreID(), i,
+>                    esp_timer_get_time());
+>         }
+>     }
+> }
+>
+> void app_main(void)
+> {
+>     const esp_partition_t *part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, 0x40, "blob");
+>     xTaskCreatePinnedToCore(mapper, "mapper", 4096, (void *)part, 5, NULL, 0);
+> }
+> ```
+> Run `qemu-system-xtensa -M esp32s3 -m 32M -nographic -drive file=flash.bin,if=mtd,format=raw` (plus the usual eFuse drive) three at a time for 60 s each, with four busy loops on the host: 3 of 9 runs aborted here.
+>
+> **Expected:** no host crash; the other vCPU waits for (or is not affected by) the MMU update, as the cache freeze makes the other core wait on the chip.
+
+## 8. espressif/qemu: `atomic_mmu_lookup: code should not be reached` (SIGABRT) durante una OTA
 
 - **Repositorio:** https://github.com/espressif/qemu.
 - **Versión:** `esp_develop_9.2.2_20260417`, máquina `esp32s3`, TCG multihilo (el que usa el harness de `main`; sin `-accel tcg,thread=single`).

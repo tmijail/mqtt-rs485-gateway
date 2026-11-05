@@ -2,3 +2,4 @@ grpcio-tools==1.85.1
 paho-mqtt==2.1.0
 protobuf==7.36.2
 pymodbus==3.8.6
+pyflakes==4.1.0

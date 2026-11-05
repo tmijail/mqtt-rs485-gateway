@@ -83,6 +83,10 @@ spb = spb_decode.load_module()
 logging.getLogger("pymodbus").setLevel(logging.CRITICAL)
 results = []
 CAPTURE = []      # every message seen by any observer: (t, topic, Payload, raw bytes)
+# Issue #107: the messages of a discarded (retried) attempt. A retry starts from the same device
+# (bdSeq, seq), so scenario checks that scan CAPTURE must not see them twice; criterion 6 still
+# decodes them
+DISCARDED_CAPTURE = []
 GATEWAYS = []     # every QEMU the harness started (issue #86: did one die on its own?)
 RETRIES = []      # issue #86: scenarios repeated once because QEMU died under them
 PROCS = []        # brokers and QEMU instances to clean up
@@ -738,6 +742,70 @@ SCENARIO_BUDGET_S = {}
 DEFAULT_BUDGET_S = 900.0
 
 
+def allow_core_dumps():
+    """Issue #107: core dumps up to CORE_LIMIT_B for this process and so for every QEMU it starts
+    (QEMU maps a large translation buffer; a core is mostly holes, but the cap bounds the disk).
+    Returns the limit set, 0 if the hard limit allows none."""
+    import resource
+    hard = resource.getrlimit(resource.RLIMIT_CORE)[1]
+    want = CORE_LIMIT_B if hard == resource.RLIM_INFINITY else min(CORE_LIMIT_B, hard)
+    resource.setrlimit(resource.RLIMIT_CORE, (want, hard))
+    return want
+
+
+CORE_LIMIT_B = 4 << 30
+QEMU_VERSION = None  # qemu-system-xtensa --version (main)
+
+
+def core_backtrace(qemu, core):
+    """Issue #107: every thread's backtrace of a QEMU core dump (gdb, when the host has it),
+    written next to the core as core-bt.txt (the core itself is too big for a CI artefact).
+    Returns the file name relative to the work directory, or why there is none."""
+    gdb = shutil.which("gdb")
+    if gdb is None:
+        return "no gdb on this host"
+    out = pathlib.Path(core).with_name("core-bt.txt")
+    try:
+        r = subprocess.run([gdb, "-batch", "-nx", "-ex", "info sharedlibrary", "-ex",
+                            "thread apply all bt 30", str(qemu), str(core)],
+                           capture_output=True, text=True, timeout=120)
+        out.write_text(r.stdout + r.stderr)
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"gdb failed ({e})"
+    return str(out.relative_to(WORK))
+
+
+# Issue #107: the scenarios that map flash all the time (downloads, uploads, image checks): with
+# MTTCG the S3 MMU write handler reads the flash image while the other vCPU keeps running and
+# fetches through the mapping being replaced ("Bad ram pointer", SIGSEGV in code_gen_buffer under
+# host load, docs/upstream-reports.md 7). They run both vCPUs on one host thread. The others keep
+# MTTCG: single-threaded TCG is about 1.5-2x slower, too slow for their latency bounds under load.
+SINGLE_TCG_SCENARIOS = {"FW-1 OTA", "issue #97 OTA trial wiring", "issues #99/#101 OTA trial",
+                        "issue #94 OTA to NVS encryption"}
+
+
+def tcg_mode(option, scenario):
+    """QEMU's TCG threading for an emulator of @scenario: @option ('single', 'multi', or 'auto':
+    single-threaded for SINGLE_TCG_SCENARIOS, multi-threaded otherwise)."""
+    if option != "auto":
+        return option
+    return "single" if scenario in SINGLE_TCG_SCENARIOS else "multi"
+
+
+def host_qemus():
+    """Issue #107: pids of the qemu-system-xtensa processes running on the host (any user's run,
+    other namespaces included): the parallel load a crash came with."""
+    out = []
+    for d in pathlib.Path("/proc").iterdir():
+        if d.name.isdigit():
+            try:
+                if (d / "comm").read_text().strip().startswith("qemu-system-xt"):
+                    out.append(int(d.name))
+            except OSError:
+                pass
+    return out
+
+
 def load_symbols(nm, elfs):
     """{name: [(start, end)]} of the WAITING functions in @elfs (nm -S), {} if nm is missing (the
     hang dump's analysis then cannot tell a waiting core)."""
@@ -1025,8 +1093,8 @@ class Gateway:
         # With the octal PSRAM, -m is its size (the board's 8 MB): with 32M QEMU maps 31 MB and
         # leaves no virtual address space for the flash mmap (the partitions are not found).
         cmd = [a.qemu, "-M", "esp32s3", "-m", "8M" if a.psram else "32M", "-nographic",
-               "-drive", f"file={self.flash},if=mtd,format=raw",
-               "-drive", f"file={self.efuse},if=none,format=raw,id=efuse",
+               "-drive", f"file={pathlib.Path(self.flash).resolve()},if=mtd,format=raw",
+               "-drive", f"file={pathlib.Path(self.efuse).resolve()},if=none,format=raw,id=efuse",
                "-global", "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
                "-global", "driver=timer.esp32s3.timg,property=wdt_disable,value=true",
                *(["-global", "driver=ssi_psram,property=is_octal,value=true"] if a.psram else []),
@@ -1036,15 +1104,32 @@ class Gateway:
                "-chardev", f"socket,id=con,host=127.0.0.1,port={CONSOLE_PORT},server=on,wait=on",
                "-serial", "chardev:con",
                "-chardev", f"socket,id=rs485,host=127.0.0.1,port={MODBUS_PORT},reconnect-ms=500",
-               "-serial", "chardev:rs485"]
+               "-serial", "chardev:rs485",
+               # issue #107: see tcg_mode()
+               "-accel", f"tcg,thread={tcg_mode(a.tcg_thread, ATTEMPT.get('name'))}"]
         # issue #92: a monitor socket per emulator, read by dump_state() before a kill
         self.mon_path = MON_DIR / f"q{len(GATEWAYS)}.sock"
         cmd += ["-monitor", f"unix:{self.mon_path},server=on,wait=off"]
         err = pathlib.Path(str(self.log_path) + ".qemu")
+        # issue #107: what a QEMU crash needs for its diagnosis. Each emulator runs in a directory
+        # of its own with core dumps allowed (the container's core_pattern is "core": the file
+        # lands in the process' working directory); its command line, the host's load and the
+        # other QEMU processes of the host head its part of the stderr file.
+        self.cwd = WORK / "qemu" / f"{len(GATEWAYS):03d}-{self.log_path.stem}" if WORK else None
+        if self.cwd is not None:
+            self.cwd.mkdir(parents=True, exist_ok=True)
+        others = host_qemus()
+        self.info = {"log": self.log_path.name, "cwd": str(self.cwd) if self.cwd else None,
+                     "cmd": cmd, "host_qemus_at_start": len(others),
+                     "loadavg_at_start": os.getloadavg()[0], "started": now_s()}
+        with open(err, "ab") as f:
+            f.write((f"# harness: {' '.join(cmd)}\n# harness: {len(others)} other QEMU process(es) "
+                     f"on the host, load average {os.getloadavg()[0]:.2f}\n").encode())
         self.err_offset = err.stat().st_size if err.exists() else 0   # this boot's stderr only
         self.started = time.monotonic()
         self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                     stderr=open(err, "ab"))
+                                     stderr=open(err, "ab"), cwd=self.cwd)
+        self.info["pid"] = self.proc.pid
         PROCS.append(self.proc)
         GATEWAYS.append(self)
         if a.simulate_qemu_death == "console" and not RETRIES and len(GATEWAYS) == 1:
@@ -1165,6 +1250,8 @@ class Gateway:
                 return
             self.gone_before_kill = self.proc.poll()
             self.killed = True
+            if hasattr(self, "info"):
+                self.info["ended_at"] = now_s()
             self.proc.send_signal(signal.SIGKILL)
             self.proc.wait()
             if self.sock is not None:
@@ -1185,10 +1272,20 @@ class Gateway:
                 f.seek(getattr(self, "err_offset", 0))
                 lines = f.read().decode(errors="replace").splitlines()
         tail = [ln.strip() for ln in lines if ln.strip() and "waiting for connection" not in ln
-                and ln.strip() != "Adding SPI flash device"][-3:]
+                and ln.strip() != "Adding SPI flash device"
+                and not ln.startswith("# harness:")][-3:]
         how = f"signal {-code}" if code < 0 else f"exit status {code}"
+        core = self.core_file()
         return (f"QEMU terminó ({how}, {self.log_path.name}); stderr: "
-                f"{' | '.join(tail) if tail else 'no error message'}")
+                f"{' | '.join(tail) if tail else 'no error message'}"
+                f"{f'; core dump {core}' if core else ''}")
+
+    def core_file(self):
+        """Issue #107: the core dump this emulator left (relative to the work directory)."""
+        if self.cwd is None:
+            return None
+        cores = sorted(self.cwd.glob("core*"))
+        return str(cores[0].relative_to(WORK)) if cores else None
 
     def shell(self, commands, patterns, timeout=3, tries=3):
         """Ask the console shell (read-only commands only: they are repeated) until every regex in
@@ -1630,6 +1727,27 @@ def check_ram_margin(args, work, obs, port, ca):
           f"NBIRTH {'yes' if nb else 'no'}, Bulk DBIRTH {'yes' if bulk else 'no'}; PUT dry run {st} "
           f"{body[:80]!r}; session kept {kept}; {heap}; {stack}")
     check_print_block(gw, args, t0)
+    check_web_stacks(stack, "after the #80 validation and its HTTPS sessions", redirect=False)
+
+
+# Issue #110: the two esp_http_server tasks are both named "httpd"; the shell gives each by its
+# handle. What must stay free on each at its deepest: the web server (10 KB) runs a TLS
+# handshake and a configuration validation; the redirect server (3 KB) only answers 301/308.
+HTTPD_STACK_MIN_B = 2048
+REDIRECT_STACK_MIN_B = 512
+
+
+def check_web_stacks(line, when, redirect=True):
+    web = re.search(r" httpd (\d+)", line)
+    red = re.search(r" httpd_redirect (\d+)", line)
+    guard = re.search(r" web_guard (\d+)", line)
+    ok = web is not None and int(web.group(1)) >= HTTPD_STACK_MIN_B and (
+        not redirect or (red is not None and int(red.group(1)) >= REDIRECT_STACK_MIN_B)) and (
+        guard is not None and int(guard.group(1)) >= REDIRECT_STACK_MIN_B)
+    check(f"Issue #110 web server task stack (httpd, by its handle) >= {HTTPD_STACK_MIN_B} B free"
+          + (f", HTTP redirect task (httpd_redirect) >= {REDIRECT_STACK_MIN_B} B" if redirect else "")
+          + f" and its watchdog (web_guard) >= {REDIRECT_STACK_MIN_B} B"
+          + f" {when}", ok, line.strip() or "no stack line")
 
 
 # Issue #91: what must stay contiguous beside the printed document at the validation without
@@ -2011,7 +2129,14 @@ def run_store_forward(args, work, slave):
     values = [240.0, 241.0, 242.0]
     for v in values:
         slave.set_float(4, 0, v)
-        time.sleep(1.6)   # poll_ms 1000: every value is read at least once
+        # every value is read at least once: two reads of the Voltage registers after the change
+        # (poll_ms 1000; issue #107: with single-threaded TCG under host load a cycle can take
+        # longer than the 1.6 s this used to wait)
+        n0, end = len(slave.reads), time.monotonic() + 15
+        while wait_left(end) > 0 and sum(
+                1 for r in list(slave.reads)[n0:] if r[0] == 1 and r[1] == 4
+                and r[2] is not None and r[2] <= 0 < r[2] + (r[3] or 1)) < 2:
+            time.sleep(0.1)
     gw.console("di 3 1")
     time.sleep(0.5)
     gw.console("di 3 0")
@@ -2082,7 +2207,6 @@ def run_stack_margin(args, work, slave):
         {"name": "Block", "area": "holding", "address": 240, "type": "bytes", "length": 4,
          "writable": True}]})
     slave.ctx.setValues(3, 240, [0x0001, 0x0203, 0x0405, 0x0607])
-    t0 = time.monotonic()
     gw = boot_variant(args, work, "stack", cfg)
     nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
     for d in ("PumpA", "Raw"):
@@ -2290,6 +2414,9 @@ def run_https(args, work):
 
     check_csrf(gw, t0)
     check_refused_bodies(gw, t0)
+    check_slow_client(gw, t0)
+    if args.web_stress:
+        web_stress(gw, args.web_stress)
 
     codes = [http("GET", "/api/status", auth=("admin", f"wrong-{i}"))[0] for i in range(5)]
     st6, hdr6, _ = http("GET", "/api/status", auth=("admin", "wrong-6"))
@@ -2426,7 +2553,7 @@ def check_refused_bodies(gw, since):
           and st_after == 200,
           f"reply {rejected!r} after {up.get('sent')} of {total} B in {up.get('duration', 0):.1f} s "
           f"(error {up.get('error')}); GET /api/status afterwards {st_after}")
-    asked, h = gw.shell("status", [r"^web\s+HTTPS .*, bodies cut [1-9]\d*$"])
+    asked, h = gw.shell("status", [r"^web\s+HTTPS .*, bodies cut [1-9]\d*, stalls \d+$"])
     cut_line = (gw.find(r"^web\s", asked) or [""])[-1]
     m = re.search(r"bodies cut (\d+)", cut_line)
     ok = base_st == 200 and m is not None and all(
@@ -2440,6 +2567,89 @@ def check_refused_bodies(gw, since):
               f"B in {up.get('duration', 0):.1f} s ({up.get('error')}), reply seen "
               f"{up.get('status')!r}" for k, (st, took, up, _) in res.items())
           + f"; {cut_line.strip()}")
+
+STALL_S = 8   # CONFIG_GW_WEB_STALL_S default (issue #110)
+
+
+def check_slow_client(gw, since):
+    """Issue #110 (GW22): slowloris. A client opens an HTTPS session and sends a request's
+    headers one byte every 2 s (under the 5 s receive timeout, so httpd never gives up on it):
+    esp_http_server's only task is held. A normal GET started a second later must be answered
+    within STALL_S + 4 s: the stall watchdog shuts down the held server's sessions after
+    STALL_S. Without it the GET waited for as long as the client kept trickling (here 30 s).
+    Then the stacks of both web tasks, after the TLS sessions, the refused uploads and this."""
+    out = {"sent": 0, "closed": None}
+
+    def trickle():
+        t0 = time.monotonic()
+        try:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            sock = ctx.wrap_socket(socket.create_connection(("127.0.0.1", HTTPS_PORT), timeout=10))
+            sock.sendall(f"GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:{HTTPS_PORT}\r\nX-Slow: ".encode())
+            while time.monotonic() - t0 < 30:
+                sock.send(b"a")
+                out["sent"] += 1
+                time.sleep(2)
+        except (OSError, ssl.SSLError) as e:
+            out["closed"] = f"{type(e).__name__} after {time.monotonic() - t0:.1f} s"
+
+    th = threading.Thread(target=trickle, daemon=True)
+    th.start()
+    time.sleep(1.5)
+    t = time.monotonic()
+    st, _, _ = http("GET", "/api/status", timeout=40)
+    took = time.monotonic() - t
+    th.join(35)
+    held = gw.wait_log(r"HTTPS server held for more than \d+ s by a request that does not arrive", 2,
+                       since)
+    asked, h = gw.shell("status", [r"^web\s+HTTPS .*, stalls [1-9]\d*$", r"^stack\s+sparkplug \d+ "])
+    web = (gw.find(r"^web\s", asked) or [""])[-1]
+    stack = (gw.find(r"^stack\s+sparkplug", asked) or [""])[-1]
+    check(f"Issue #110 slowloris: an HTTPS client trickling its headers (1 B every 2 s) does not "
+          f"hold the web server: a normal GET started meanwhile answers within {STALL_S + 4} s "
+          f"(stall watchdog after {STALL_S} s, logged and counted)",
+          st == 200 and took <= STALL_S + 4 and held is not None and out["closed"] is not None
+          and re.search(r"stalls 1$", web.strip()) is not None,
+          f"GET {st} in {took:.1f} s; slow client: {out['sent']} B, connection {out['closed']}; "
+          f"log {'yes' if held else 'no'}; {web.strip()}")
+    check_web_stacks(stack, "after GW22 (TLS sessions, refused uploads, redirects, slow client)")
+
+def web_stress(gw, rounds):
+    """Issue #110, item 2: once, in QEMU with PSRAM, the third accepted PUT of check_csrf never
+    reached httpd for 15 s, right after six cut sessions and two normal ones. Each round here:
+    six forged PUTs whose bodies are cut, the three accepted PUTs of check_csrf (UI-like,
+    Referer only, script), a refused 1.5 MB upload (cut) and a GET. Every accepted request must
+    be answered; a failure records the time, the client's error and the shell's web line."""
+    me = f"https://127.0.0.1:{HTTPS_PORT}"
+    doc = node_config("GW22")
+    doc["web"] = {"username": "admin", "password": "********"}
+    dry = "/api/config?dry_run=1"
+    failures, slow, t_start = [], 0, time.monotonic()
+    for i in range(rounds):
+        for _ in range(6):
+            http("PUT", dry, doc, headers={"Origin": "https://evil.e2e"})
+        for name, hdrs in (("UI", {"Origin": me, "Referer": me + "/"}),
+                           ("Referer", {"Referer": me + "/"}), ("script", {})):
+            t = time.monotonic()
+            st, _, b = http("PUT", dry, doc, headers=hdrs)
+            took = time.monotonic() - t
+            slow += took > 5
+            if st != 200:
+                asked, _ = gw.shell("status", [r"^web\s"])
+                line = (gw.find(r"^web\s", asked) or [""])[-1].strip()
+                failures.append(f"round {i + 1} {name} PUT -> {st} after {took:.1f} s "
+                                f"({b[:80]!r}); {line}")
+        up = {}
+        slow_upload({"X-Requested-With": "e2e"}, 1536 * 1024, 4 * 1024 * 1024, up)
+        st, _, _ = http("GET", "/api/status")
+        if st != 200:
+            failures.append(f"round {i + 1} GET after the cut upload -> {st}")
+    check(f"Issue #110 web stress: {rounds} round(s) of cut sessions and accepted PUTs, every "
+          f"accepted request answered", not failures,
+          f"{rounds} rounds in {time.monotonic() - t_start:.0f} s, {slow} PUT(s) over 5 s; "
+          + ("; ".join(failures[:5]) or "no failure"))
 
 def check_csrf(gw, since):
     """Issue #100 (GW22, before the login limit checks): every write needs X-Requested-With and,
@@ -2481,7 +2691,7 @@ def check_csrf(gw, since):
     wrong_type = http("POST", "/api/firmware", b"\xe9" + b"\0" * 255,
                       headers={"Content-Type": "text/plain", "Origin": me})[0]
     asked, h = gw.shell("status", [r"^web\s+HTTPS \(HTTP redirects\), logins failed 0, .*"
-                                   r"cross-site writes refused 9, bodies cut \d+$"])
+                                   r"cross-site writes refused 9, bodies cut \d+, stalls 0$"])
     counted = list(h.values())[0]
     # the web UI: X-Requested-With and its own Origin (and Referer); a script: the header only
     st_ui, _, b_ui = http("PUT", dry, doc, headers={"Origin": me, "Referer": me + "/"})
@@ -2513,6 +2723,11 @@ def check_csrf(gw, since):
 # ---------------------------------------------------------------- FW-1 firmware updates
 
 APP_DESC_MAGIC = 0xABCD5432
+
+
+# Issue #107: a 1 MB web upload is answered once the image is written and verified: with the
+# PSRAM build (software AES and SHA) and single-threaded TCG that took about 150 s
+UPLOAD_TIMEOUT_S = 300
 
 
 def fw_image(src, version, dst, corrupt=False):
@@ -2767,7 +2982,6 @@ def run_ota(args, work):
     app = pathlib.Path(args.elf).with_suffix(".bin")
     unsigned = pathlib.Path(args.elf).with_name(app.stem + "-unsigned.bin")
     src = unsigned if unsigned.exists() else app
-    v1 = None
     fw_image(src, "e2e-v2", fwdir / "v2.bin")
     fw_image(src, "e2e-v3", fwdir / "v3.bin")
     fw_image(src, "e2e-bad", fwdir / "bad.bin", corrupt=True)
@@ -2808,7 +3022,6 @@ def run_ota(args, work):
                      and metric(nb[2], alias=42) is not None,
                      f"state {fw_state(nb[2])!r}" if nb else "no NBIRTH"):
             return
-        v1 = metric(nb[2], name="Node Info/Firmware").string_value
         gw.wait_log(r"edge: time synchronised", 10, t0)   # the image server's certificate dates
 
         def update(url):
@@ -2949,7 +3162,8 @@ def run_ota(args, work):
         gw.wait_log(r"edge: time synchronised", 10, nb3[0] - 5 if nb3 else t0)
         asked = time.monotonic()
         st, _, body = http("POST", "/api/firmware", images["v3"].read_bytes(),
-                           headers={"Content-Type": "application/octet-stream"}, timeout=120)
+                           headers={"Content-Type": "application/octet-stream"},
+                           timeout=UPLOAD_TIMEOUT_S)
         death = obs.wait(f"{T}/NDEATH/{node}", 20)
         broker.terminate()
         broker.wait()
@@ -3040,7 +3254,8 @@ def run_ota_wiring(args, work):
     def upload(version, pw):
         st, _, body = http("POST", "/api/firmware", (fwdir / f"{version}.bin").read_bytes(),
                            auth=("admin", pw or "?"),
-                           headers={"Content-Type": "application/octet-stream"}, timeout=120)
+                           headers={"Content-Type": "application/octet-stream"},
+                           timeout=UPLOAD_TIMEOUT_S)
         return st, body
 
     # 1. a stored configuration the new image rejects (a syntax error: the running image runs in
@@ -3167,7 +3382,8 @@ def run_ota_trial(args, work):
 
     def upload(name):
         return http("POST", "/api/firmware", images[name].read_bytes(),
-                    headers={"Content-Type": "application/octet-stream"}, timeout=120)
+                    headers={"Content-Type": "application/octet-stream"},
+                    timeout=UPLOAD_TIMEOUT_S)
 
     t0 = time.monotonic()
     gw = boot_variant(args, work, "trial", cfg)
@@ -3749,8 +3965,9 @@ def run_nvs_ota(args, work):
         update("plain")
         refused = obs.wait(ndata_t, 120, lambda p: (fw_state(p) or "").startswith(
             "failed: image e2e-plain refused: built without NVS encryption"))
-        why = gw.find(r"fw: update refused: the image built without NVS encryption \(this device's "
-                      r"NVS is encrypted\)", asked)
+        # the NDATA can arrive before the console line is read (issue #107: slower emulation)
+        why = gw.wait_log(r"fw: update refused: the image built without NVS encryption \(this "
+                          r"device's NVS is encrypted\)", 10, asked)
         time.sleep(3)
         restarted = any(m[1] == f"{T}/NDEATH/{node}" for m in CAPTURE if m[0] >= asked)
         gw.kill()
@@ -3825,6 +4042,14 @@ def main():
                          "repeated), 'hang-mute' (the same with the QEMU process SIGSTOPped), "
                          "'ota-failed' (a failed check, then the death), 'ota-panic' (an unknown "
                          "firmware panic on the console, then the death)")
+    ap.add_argument("--tcg-thread", choices=("auto", "single", "multi"),
+                    default=os.environ.get("E2E_TCG_THREAD", "auto"),
+                    help="issue #107: QEMU's TCG threading (E2E_TCG_THREAD): 'auto' (default) runs "
+                         "the flash-mapping OTA scenarios with both vCPUs on one host thread "
+                         "(SINGLE_TCG_SCENARIOS) and the rest with MTTCG; 'single' or 'multi' for "
+                         "every scenario. MTTCG crashes QEMU now and then under host load in the "
+                         "OTA scenarios; single-threaded TCG is too slow for the latency bounds "
+                         "of the others")
     ap.add_argument("--plain-elf", default="",
                     help="ELF of the --plain-flash build (symbols for the fault monitor)")
     ap.add_argument("--nm", default="xtensa-esp32s3-elf-nm",
@@ -3859,6 +4084,9 @@ def main():
                     help="comma-separated scenarios to run (failsafe,network,web,reset,tls,failover,"
                          "mqtt5,phost,sf,https,ota,nvs,slow,refuse,main); "
                          "default all")
+    ap.add_argument("--web-stress", type=int, default=0, metavar="N",
+                    help="issue #110: N extra rounds of cut sessions and accepted PUTs in the "
+                         "https scenario (GW22), to reproduce a connection that never reached httpd")
     ap.add_argument("--psram", action="store_true",
                     help="issue #63: emulate the octal PSRAM (build with sdkconfig.qemu-psram)")
     ap.add_argument("--panics", type=int, default=1,
@@ -3868,6 +4096,18 @@ def main():
     args = ap.parse_args()
     ARGS, HANG_S = args, args.hang_timeout
     SYMBOLS.update(load_symbols(args.nm, [args.elf, args.plain_elf]))
+    global QEMU_VERSION
+    try:
+        QEMU_VERSION = subprocess.run([args.qemu, "--version"], capture_output=True, text=True,
+                                      timeout=10).stdout.splitlines()[0]
+    except (OSError, subprocess.SubprocessError, IndexError) as e:
+        QEMU_VERSION = f"unknown ({e})"
+    pattern = pathlib.Path("/proc/sys/kernel/core_pattern")
+    pattern = pattern.read_text().strip() if pattern.exists() else "?"
+    print(f"emulator: {QEMU_VERSION}; core dumps up to {allow_core_dumps() >> 20} MB, "
+          f"core_pattern {pattern!r}" + ("" if not pattern.startswith("|") else
+                                         " (piped to a handler: no core file in qemu/)"),
+          flush=True)
     print(f"fault monitor symbols: {', '.join(sorted(SYMBOLS)) or 'none'}", flush=True)
     MQTT_PORT, MODBUS_PORT, CONSOLE_PORT = args.mqtt_port, args.modbus_port, args.console_port
     SYSLOG_PORT, HTTP_PORT, HTTPS_PORT = args.syslog_port, args.http_port, args.https_port
@@ -3966,13 +4206,15 @@ def main():
         bad = 0
         dump = work / "payloads"
         dump.mkdir(exist_ok=True)
-        for i, (_, topic, p, raw) in enumerate(CAPTURE):
+        for i, (_, topic, p, raw) in enumerate(CAPTURE + DISCARDED_CAPTURE):
             kind = topic.split("/")[2]
             (dump / f"{i:03d}_{kind}.bin").write_bytes(raw)
             bad += len(spb_decode.check(kind, p))
         check(f"6. payloads decode with the official sparkplug_b.proto (Python protobuf "
               f"{google.protobuf.__version__})",
-              CAPTURE and bad == 0, f"{len(CAPTURE)} messages decoded, {bad} structural errors")
+              CAPTURE and bad == 0,
+              f"{len(CAPTURE) + len(DISCARDED_CAPTURE)} messages decoded ({len(DISCARDED_CAPTURE)} "
+              f"of discarded attempts), {bad} structural errors")
         runs, errs, prev = 0, [], None
         for d in syslog_from(NODE):
             if d[4] == 1:
@@ -4005,8 +4247,18 @@ def main():
         check("SPB-5 seq continuity per session", not seq_errors, "; ".join(seq_errors) or "ok")
         # issue #86: the retries next to the checks (their discarded checks included); #92:
         # every emulator fault (with its state dump file) and each attempt's duration
+        # issue #107: every emulator (command line, host load, how it ended, its core dump)
+        emus = []
+        for g in GATEWAYS:
+            e = dict(getattr(g, "info", {}))
+            e["ended"] = g.qemu_died() or "ended by the harness"
+            e["core"] = g.core_file() if g.proc is not None else None
+            if e["core"]:
+                e["backtrace"] = core_backtrace(args.qemu, WORK / e["core"])
+            emus.append(e)
         (work / "results.json").write_text(json.dumps({"checks": results, "retries": RETRIES,
-                                                       "faults": FAULTS, "durations": DURATIONS},
+                                                       "faults": FAULTS, "durations": DURATIONS,
+                                                       "qemu": QEMU_VERSION, "emulators": emus},
                                                       indent=2))
         failed = [r for r in results if not r["ok"]]
         # issue #90: every emulator that ended on its own, with its stderr tail, and the
@@ -4119,6 +4371,7 @@ def run_scenario(name, fn, retry_on_qemu_death=True):
         slave = MAIN_BROKER.get("slave")
         slave_snap = slave.snapshot() if slave is not None else None
         first_check, first_gw, first_proc = len(results), len(GATEWAYS), len(PROCS)
+        first_capture = len(CAPTURE)
         budget = (SCENARIO_BUDGET_S.get(name, DEFAULT_BUDGET_S) if not ARGS.scenario_timeout
                   else ARGS.scenario_timeout) * ARGS.timeout_scale
         started = time.monotonic()
@@ -4182,6 +4435,9 @@ def run_scenario(name, fn, retry_on_qemu_death=True):
         if first and refusal is None:
             discarded = results[first_check:]
             del results[first_check:]
+            # issue #107: the attempt's observers are closed: its messages leave CAPTURE
+            DISCARDED_CAPTURE.extend(CAPTURE[first_capture:])
+            del CAPTURE[first_capture:]
             RETRIES.append({"scenario": name, "qemu": first["signature"], "fault": first,
                             "error": error, "discarded_checks": discarded})
             print(f"[RETRY] {name}: {first['signature']}"
