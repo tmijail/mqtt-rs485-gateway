@@ -1628,6 +1628,27 @@ def check_ram_margin(args, work, obs, port, ca):
           f"NBIRTH {'yes' if nb else 'no'}, Bulk DBIRTH {'yes' if bulk else 'no'}; PUT dry run {st} "
           f"{body[:80]!r}; session kept {kept}; {heap}; {stack}")
     check_print_block(gw, args, t0)
+    check_web_stacks(stack, "after the #80 validation and its HTTPS sessions", redirect=False)
+
+
+# Issue #110: the two esp_http_server tasks are both named "httpd"; the shell gives each by its
+# handle. What must stay free on each at its deepest: the web server (10 KB) runs a TLS
+# handshake and a configuration validation; the redirect server (3 KB) only answers 301/308.
+HTTPD_STACK_MIN_B = 2048
+REDIRECT_STACK_MIN_B = 512
+
+
+def check_web_stacks(line, when, redirect=True):
+    web = re.search(r" httpd (\d+)", line)
+    red = re.search(r" httpd_redirect (\d+)", line)
+    guard = re.search(r" web_guard (\d+)", line)
+    ok = web is not None and int(web.group(1)) >= HTTPD_STACK_MIN_B and (
+        not redirect or (red is not None and int(red.group(1)) >= REDIRECT_STACK_MIN_B)) and (
+        guard is not None and int(guard.group(1)) >= REDIRECT_STACK_MIN_B)
+    check(f"Issue #110 web server task stack (httpd, by its handle) >= {HTTPD_STACK_MIN_B} B free"
+          + (f", HTTP redirect task (httpd_redirect) >= {REDIRECT_STACK_MIN_B} B" if redirect else "")
+          + f" and its watchdog (web_guard) >= {REDIRECT_STACK_MIN_B} B"
+          + f" {when}", ok, line.strip() or "no stack line")
 
 
 # Issue #91: what must stay contiguous beside the printed document at the validation without
@@ -2288,6 +2309,9 @@ def run_https(args, work):
 
     check_csrf(gw, t0)
     check_refused_bodies(gw, t0)
+    check_slow_client(gw, t0)
+    if args.web_stress:
+        web_stress(gw, args.web_stress)
 
     codes = [http("GET", "/api/status", auth=("admin", f"wrong-{i}"))[0] for i in range(5)]
     st6, hdr6, _ = http("GET", "/api/status", auth=("admin", "wrong-6"))
@@ -2424,7 +2448,7 @@ def check_refused_bodies(gw, since):
           and st_after == 200,
           f"reply {rejected!r} after {up.get('sent')} of {total} B in {up.get('duration', 0):.1f} s "
           f"(error {up.get('error')}); GET /api/status afterwards {st_after}")
-    asked, h = gw.shell("status", [r"^web\s+HTTPS .*, bodies cut [1-9]\d*$"])
+    asked, h = gw.shell("status", [r"^web\s+HTTPS .*, bodies cut [1-9]\d*, stalls \d+$"])
     cut_line = (gw.find(r"^web\s", asked) or [""])[-1]
     m = re.search(r"bodies cut (\d+)", cut_line)
     ok = base_st == 200 and m is not None and all(
@@ -2438,6 +2462,89 @@ def check_refused_bodies(gw, since):
               f"B in {up.get('duration', 0):.1f} s ({up.get('error')}), reply seen "
               f"{up.get('status')!r}" for k, (st, took, up, _) in res.items())
           + f"; {cut_line.strip()}")
+
+STALL_S = 8   # CONFIG_GW_WEB_STALL_S default (issue #110)
+
+
+def check_slow_client(gw, since):
+    """Issue #110 (GW22): slowloris. A client opens an HTTPS session and sends a request's
+    headers one byte every 2 s (under the 5 s receive timeout, so httpd never gives up on it):
+    esp_http_server's only task is held. A normal GET started a second later must be answered
+    within STALL_S + 4 s: the stall watchdog shuts down the held server's sessions after
+    STALL_S. Without it the GET waited for as long as the client kept trickling (here 30 s).
+    Then the stacks of both web tasks, after the TLS sessions, the refused uploads and this."""
+    out = {"sent": 0, "closed": None}
+
+    def trickle():
+        t0 = time.monotonic()
+        try:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            sock = ctx.wrap_socket(socket.create_connection(("127.0.0.1", HTTPS_PORT), timeout=10))
+            sock.sendall(f"GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:{HTTPS_PORT}\r\nX-Slow: ".encode())
+            while time.monotonic() - t0 < 30:
+                sock.send(b"a")
+                out["sent"] += 1
+                time.sleep(2)
+        except (OSError, ssl.SSLError) as e:
+            out["closed"] = f"{type(e).__name__} after {time.monotonic() - t0:.1f} s"
+
+    th = threading.Thread(target=trickle, daemon=True)
+    th.start()
+    time.sleep(1.5)
+    t = time.monotonic()
+    st, _, _ = http("GET", "/api/status", timeout=40)
+    took = time.monotonic() - t
+    th.join(35)
+    held = gw.wait_log(r"HTTPS server held for more than \d+ s by a request that does not arrive", 2,
+                       since)
+    asked, h = gw.shell("status", [r"^web\s+HTTPS .*, stalls [1-9]\d*$", r"^stack\s+sparkplug \d+ "])
+    web = (gw.find(r"^web\s", asked) or [""])[-1]
+    stack = (gw.find(r"^stack\s+sparkplug", asked) or [""])[-1]
+    check(f"Issue #110 slowloris: an HTTPS client trickling its headers (1 B every 2 s) does not "
+          f"hold the web server: a normal GET started meanwhile answers within {STALL_S + 4} s "
+          f"(stall watchdog after {STALL_S} s, logged and counted)",
+          st == 200 and took <= STALL_S + 4 and held is not None and out["closed"] is not None
+          and re.search(r"stalls 1$", web.strip()) is not None,
+          f"GET {st} in {took:.1f} s; slow client: {out['sent']} B, connection {out['closed']}; "
+          f"log {'yes' if held else 'no'}; {web.strip()}")
+    check_web_stacks(stack, "after GW22 (TLS sessions, refused uploads, redirects, slow client)")
+
+def web_stress(gw, rounds):
+    """Issue #110, item 2: once, in QEMU with PSRAM, the third accepted PUT of check_csrf never
+    reached httpd for 15 s, right after six cut sessions and two normal ones. Each round here:
+    six forged PUTs whose bodies are cut, the three accepted PUTs of check_csrf (UI-like,
+    Referer only, script), a refused 1.5 MB upload (cut) and a GET. Every accepted request must
+    be answered; a failure records the time, the client's error and the shell's web line."""
+    me = f"https://127.0.0.1:{HTTPS_PORT}"
+    doc = node_config("GW22")
+    doc["web"] = {"username": "admin", "password": "********"}
+    dry = "/api/config?dry_run=1"
+    failures, slow, t_start = [], 0, time.monotonic()
+    for i in range(rounds):
+        for _ in range(6):
+            http("PUT", dry, doc, headers={"Origin": "https://evil.e2e"})
+        for name, hdrs in (("UI", {"Origin": me, "Referer": me + "/"}),
+                           ("Referer", {"Referer": me + "/"}), ("script", {})):
+            t = time.monotonic()
+            st, _, b = http("PUT", dry, doc, headers=hdrs)
+            took = time.monotonic() - t
+            slow += took > 5
+            if st != 200:
+                asked, _ = gw.shell("status", [r"^web\s"])
+                line = (gw.find(r"^web\s", asked) or [""])[-1].strip()
+                failures.append(f"round {i + 1} {name} PUT -> {st} after {took:.1f} s "
+                                f"({b[:80]!r}); {line}")
+        up = {}
+        slow_upload({"X-Requested-With": "e2e"}, 1536 * 1024, 4 * 1024 * 1024, up)
+        st, _, _ = http("GET", "/api/status")
+        if st != 200:
+            failures.append(f"round {i + 1} GET after the cut upload -> {st}")
+    check(f"Issue #110 web stress: {rounds} round(s) of cut sessions and accepted PUTs, every "
+          f"accepted request answered", not failures,
+          f"{rounds} rounds in {time.monotonic() - t_start:.0f} s, {slow} PUT(s) over 5 s; "
+          + ("; ".join(failures[:5]) or "no failure"))
 
 def check_csrf(gw, since):
     """Issue #100 (GW22, before the login limit checks): every write needs X-Requested-With and,
@@ -2479,7 +2586,7 @@ def check_csrf(gw, since):
     wrong_type = http("POST", "/api/firmware", b"\xe9" + b"\0" * 255,
                       headers={"Content-Type": "text/plain", "Origin": me})[0]
     asked, h = gw.shell("status", [r"^web\s+HTTPS \(HTTP redirects\), logins failed 0, .*"
-                                   r"cross-site writes refused 9, bodies cut \d+$"])
+                                   r"cross-site writes refused 9, bodies cut \d+, stalls 0$"])
     counted = list(h.values())[0]
     # the web UI: X-Requested-With and its own Origin (and Referer); a script: the header only
     st_ui, _, b_ui = http("PUT", dry, doc, headers={"Origin": me, "Referer": me + "/"})
@@ -3771,6 +3878,9 @@ def main():
                     help="comma-separated scenarios to run (failsafe,network,web,reset,tls,failover,"
                          "mqtt5,phost,sf,https,ota,nvs,slow,refuse,main); "
                          "default all")
+    ap.add_argument("--web-stress", type=int, default=0, metavar="N",
+                    help="issue #110: N extra rounds of cut sessions and accepted PUTs in the "
+                         "https scenario (GW22), to reproduce a connection that never reached httpd")
     ap.add_argument("--psram", action="store_true",
                     help="issue #63: emulate the octal PSRAM (build with sdkconfig.qemu-psram)")
     ap.add_argument("--panics", type=int, default=1,
