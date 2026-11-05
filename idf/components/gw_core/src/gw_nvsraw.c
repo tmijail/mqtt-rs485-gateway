@@ -68,6 +68,25 @@ static uint32_t item_span(const uint8_t *e, uint32_t i)
     return span == 0 || i + span > ENTRY_COUNT ? 1u : span;
 }
 
+/* Issue #107: a header whose CRC failed but that still reads as a plain variable-length item (a
+ * string or a blob, its span matching its declared size): one damaged item, not as many as the
+ * entries it takes. Its data entries are skipped like those of a good item. 0 otherwise. */
+#define TYPE_STR       0x21u
+#define TYPE_BLOB      0x41u
+#define TYPE_BLOB_DATA 0x42u
+
+static uint32_t damaged_span(const uint8_t *e, uint32_t i)
+{
+    if (e[1] != TYPE_STR && e[1] != TYPE_BLOB && e[1] != TYPE_BLOB_DATA) {
+        return 0;
+    }
+    uint32_t size = (uint32_t)e[24] | (uint32_t)e[25] << 8;
+    uint32_t span = e[2];
+    return span >= 2u && i + span <= ENTRY_COUNT && span == 1u + (size + ENTRY_LEN - 1u) / ENTRY_LEN
+               ? span
+               : 0;
+}
+
 void gw_nvsraw_scan_page(gw_nvsraw_scan_t *s, const uint8_t *page)
 {
     if (!page_ok(page)) {
@@ -88,8 +107,14 @@ void gw_nvsraw_scan_page(gw_nvsraw_scan_t *s, const uint8_t *page)
             s->written += span - 1;   /* its data entries */
             i += span;
         } else {
-            bad++;
-            i++;
+            bad++;   /* one per item: a damaged string or blob is not one per entry (#107) */
+            uint32_t span = damaged_span(e, i);
+            if (span > 1u) {
+                s->written += span - 1u;
+                i += span;
+            } else {
+                i++;
+            }
         }
     }
     s->plain_ok += ok;
@@ -177,6 +202,24 @@ static void on_item(gw_nvsraw_u8_t *f, const uint8_t *e, uint32_t seq, uint32_t 
         f->seq = seq;
         f->entry = i;
     }
+}
+
+static void on_marker(gw_nvsraw_u8_t *f, const uint8_t *e, uint32_t seq, uint32_t i)
+{
+    (void)seq;
+    (void)i;
+    if (e[0] != 0 && e[1] == TYPE_U8 && key_is(e, GW_NVSMIG_ERASE_KEY) &&
+        e[24] == GW_NVSMIG_ERASE_VALUE) {
+        f->found = true;
+    }
+}
+
+bool gw_nvsraw_has_erase_marker(const uint8_t *page)
+{
+    gw_nvsraw_u8_t f;
+    gw_nvsraw_u8_init(&f, "", GW_NVSMIG_ERASE_KEY);
+    each_item(page, on_marker, &f);
+    return f.found;
 }
 
 void gw_nvsraw_u8_ns(gw_nvsraw_u8_t *f, const uint8_t *page)
@@ -437,12 +480,19 @@ uint8_t gw_nvsmig_bdseq_fold(bool have_nvs, uint8_t nvs, const gw_nvsmig_side_t 
     return gw_nvsmig_bdseq_later(nvs, side->next);
 }
 
+bool gw_nvsmig_erase_with_marker(const gw_nvsmig_read_t *r)
+{
+    return r->init_ok;
+}
+
 gw_nvsmig_action_t gw_nvsmig_decide(const gw_nvsmig_state_t *s)
 {
     if (s->copy == GW_NVSMIG_COPY_UNREADABLE) {
         return GW_NVSMIG_NO_NVS;
     }
-    if (s->copy_unknown && ((s->kind != GW_NVSRAW_ENCRYPTED && s->keys) ||
+    if (s->copy_unknown && ((s->kind == GW_NVSRAW_EMPTY && s->keys) ||
+                            ((s->kind == GW_NVSRAW_PLAIN || s->kind == GW_NVSRAW_MIXED) && s->keys &&
+                             s->erase_marker) ||
                             (s->kind == GW_NVSRAW_ENCRYPTED && s->mig_busy))) {
         return GW_NVSMIG_NO_NVS;   /* issue #104: the copy that would finish it is out of reach */
     }

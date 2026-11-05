@@ -3011,22 +3011,34 @@ def run_nvs_migration(args, work):
     requires it), the commissioning password is the old one, nothing stays in clear and the
     migration does not run again. Issue #104: after each cut, one boot whose LittleFS does not
     mount (superblocks damaged, not erased: the copy is out of reach) opens no NVS at all, so
-    nothing it writes can be lost or win over the copy; then the partition comes back."""
+    nothing it writes can be lost or win over the copy; then the partition comes back. Issue #109:
+    two more cuts first, before the erase (the partition intact: that boot runs on it) and in the
+    middle of it (the "erase in progress" entry: no NVS); and at the end, from the state of cut 2
+    with LittleFS out of reach, the operator's way out, 'config load discard-nvs-copy'."""
     node, port = "GW41", MQTT_PORT + 24
     nvs_off, nvs_size = storage_partition("nvs")
     st_off, st_size = storage_partition("storage")
     csv = work / "nvs-plain.csv"
-    csv.write_text("key,type,encoding,value\nspb,namespace,,\nbdseq,data,u8,41\n"
+    # issue #109 round 3b: the "gw" namespace entry and a 3840-byte blob fill page 0, so the
+    # "erase in progress" entry the migration writes into "gw" lands on a later page (as on a device
+    # that ran a while): the erase takes the namespace's page before the entry's
+    filler = work / "nvs-filler.bin"
+    filler.write_bytes(bytes(range(256)) * 15)
+    csv.write_text("key,type,encoding,value\ngw,namespace,,\ndo_hold,data,u8,0\n"
+                   f"filler,file,binary,{filler}\nspb,namespace,,\nbdseq,data,u8,41\n"
                    "secrets,namespace,,\ncommission,data,string,abcdefgh1234\n"
-                   "mqtt_pw,data,string,s3cret-mqtt-67\ngw,namespace,,\ndo_hold,data,u8,0\n")
+                   "mqtt_pw,data,string,s3cret-mqtt-67\n")
     gen = pathlib.Path(os.environ["IDF_PATH"]) / "components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py"
     plain = work / "nvs-plain.bin"
     subprocess.run([args.idf_python, str(gen), "generate", str(csv), str(plain), hex(nvs_size)],
                    check=True, capture_output=True)
+    raw = plain.read_bytes()
+    if raw[0:4] != b"\xfc\xff\xff\xff" or raw[64 + 8:64 + 10] != b"gw":
+        raise SystemExit("nvs fixture: page 0 should be full and start with the gw namespace")
     # the password is only in the NVS (CFG-7); the broker refuses the gateway without it
     cfg = node_config(node, port=port, username="gw41")
     flash = flash_variant(args, work, "nvsmig", {"config.json": json.dumps(cfg).encode(),
-                                                  ".nvsmig-cut": b"12"})
+                                                  ".nvsmig-cut": b"0312"})
     img = bytearray(flash.read_bytes())
     img[nvs_off:nvs_off + nvs_size] = plain.read_bytes()
     flash.write_bytes(img)
@@ -3041,8 +3053,8 @@ def run_nvs_migration(args, work):
     words = (b"abcdefgh1234", b"s3cret-mqtt-67", b"commission", b"bdseq")
     boots = []
     try:
-        cuts, out_of_reach = [], []
-        for point in ("1", "2"):
+        cuts, out_of_reach, intact, snap = [], [], None, None
+        for point in ("0", "3", "1", "2"):
             t = time.monotonic()
             gw = Gateway(args, log, flash, efuse=efuse)
             gw.start()
@@ -3054,6 +3066,8 @@ def run_nvs_migration(args, work):
             region = flash.read_bytes()[nvs_off:nvs_off + nvs_size]
             cuts.append((held is not None, resumed[0].split("storage: ")[-1][:90] if resumed else None,
                          region.count(b"\xff") == len(region)))
+            if point == "2":
+                snap = flash.read_bytes()   # for the operator's way out, at the end
             # issue #104: LittleFS does not mount for one boot (the copy is in it)
             img = bytearray(flash.read_bytes())
             saved = bytes(img[st_off:st_off + 8192])
@@ -3064,6 +3078,19 @@ def run_nvs_migration(args, work):
             gw = Gateway(args, log, flash, efuse=efuse)
             gw.start()
             boots.append(gw)
+            if point == "0":
+                # issue #109: keys made, nothing erased: the partition is intact and this boot
+                # runs on it (its commissioning password is the old one), not without NVS
+                stays = gw.wait_log(r'storage: NVS partition "nvs" is not encrypted and stays so this '
+                                    r"boot: LittleFS is not mountable", 60, t)
+                pw0 = commissioning_password(gw, t)
+                no_nvs = gw.find(r"NVS left untouched this boot", t)
+                gw.kill()
+                img = bytearray(flash.read_bytes())
+                img[st_off:st_off + 8192] = saved
+                flash.write_bytes(img)
+                intact = (stays is not None, pw0, not no_nvs)
+                continue
             left = gw.wait_log(r"storage: NVS left untouched this boot \(no NVS: .*\): LittleFS does "
                                r"not mount and the NVS looks like an interrupted migration", 60, t)
             _, h_out = gw.shell("status", [r"^secrets\s+NVS UNAVAILABLE this boot: LittleFS does not "
@@ -3084,8 +3111,8 @@ def run_nvs_migration(args, work):
             kept = bytes(img[st_off:st_off + st_size]) == storage_before
             img[st_off:st_off + 8192] = saved
             flash.write_bytes(img)
-            # issue #108 B9: the boot does not change the NVS either (cut 1: not even initialised;
-            # cut 2: only read for the migration's markers)
+            # issue #108 B9: the boot does not change the NVS either (cuts 3 and 1: not even
+            # initialised; cut 2: only read for the migration's markers)
             out_of_reach.append((left is not None, all(h_out.values()), same,
                                  refused is not None and not formatted and kept))
         burned = efuse.read_bytes() != blank
@@ -3109,12 +3136,15 @@ def run_nvs_migration(args, work):
         again = gw.find(r"NVS migration", t1)
         _, h = gw.shell("status", [r"^secrets\s+NVS encrypted \(HMAC key in eFuse KEY5\)"])
         gw.kill()
-        # cut 1: held right after the erase (partition all 0xFF), first boot (nothing resumed);
-        # cut 2: the second boot resumed from the copy and held halfway through the writes
-        cut_ok = (len(cuts) == 2 and cuts[0][0] and cuts[0][1] is None and cuts[0][2]
-                  and cuts[1][0] and cuts[1][1] is not None and not cuts[1][2])
-        check("Issue #94 an unencrypted NVS meets the encrypted build and the power is cut twice "
-              "during the migration (after the erase, then halfway through the encrypted writes): "
+        # cut 0: before the erase (the partition as it was); cut 3: every page erased but the one
+        # with the "erase in progress" entry; cut 1: right after the erase (all 0xFF); none of them
+        # a resume; cut 2: the boot resumed from the copy and held halfway through the writes
+        cut_ok = (len(cuts) == 4 and all(c[0] for c in cuts)
+                  and all(c[1] is None for c in cuts[:3]) and not cuts[0][2] and not cuts[1][2]
+                  and cuts[2][2] and cuts[3][1] is not None and not cuts[3][2])
+        check("Issue #94 an unencrypted NVS meets the encrypted build and the power is cut four "
+              "times during the migration (#109: before the erase and in the middle of it; after "
+              "the erase, then halfway through the encrypted writes): "
               "the next boot finishes it from the reset-safe copy (0 skipped); bdSeq continues, the MQTT "
               "password from the NVS opens the broker that requires it, the commissioning "
               "password is the old one, nothing in clear, no migration on the next boot "
@@ -3130,7 +3160,7 @@ def run_nvs_migration(args, work):
         # its first emulated cut; none of the later boots generated keys again
         keygen = [len(b.find(r"storage: NVS keys not readable \(.*\): generating them"))
                   for b in boots]
-        first_cut = boots[0].wait_log(r"storage: NVS migration: emulated power cut 1 ", 0)
+        first_cut = boots[0].wait_log(r"storage: NVS migration: emulated power cut 0 ", 0)
         gen_t = boots[0].wait_log(r"storage: NVS keys not readable", 0)
         check("Issue #97 the NVS migration scenario starts on a device whose eFuse KEY5 is not "
               "burned (its own blank eFuse file, also in a full run): the first boot generates the "
@@ -3139,14 +3169,133 @@ def run_nvs_migration(args, work):
               and gen_t <= first_cut,
               f"eFuse file changed by the interrupted boots: {burned}; key generations per boot "
               f"{keygen}; {(boots[0].find(r'storage: NVS keys not readable') or ['no log'])[0][:110]}")
-        check("Issue #104 after each cut, a boot whose LittleFS does not mount (the copy is in it) "
+        check("Issue #104 after each cut (#109: in the middle of the erase, after it, halfway "
+              "through the writes), a boot whose LittleFS does not mount (the copy is in it) "
               "opens no NVS at all and leaves the NVS partition as it was (no empty or partial "
               "encrypted NVS), the shell says why; issue #108 M1: a configuration saved in that "
               "boot is refused and LittleFS is not formatted, so the next boot with LittleFS "
               "still finishes the migration from the copy (check above)",
-              len(out_of_reach) == 2 and all(all(x) for x in out_of_reach),
+              len(out_of_reach) == 3 and all(all(x) for x in out_of_reach),
               f"(logged, shell, NVS untouched, save refused and LittleFS kept) per cut: "
               f"{out_of_reach}")
+        check("Issue #109 a migration cut before its erase (keys made, nothing erased) with LittleFS "
+              "out of reach: the boot runs on the intact unencrypted NVS (the old commissioning "
+              "password), not without NVS; cut in the middle of the erase: the \"erase in "
+              "progress\" entry makes it a boot without NVS (row 2 above)",
+              intact is not None and intact[0] and intact[1] == "abcdefgh1234" and intact[2],
+              f"(stays unencrypted, commissioning password, not without NVS): {intact}")
+
+        # issue #109: the operator's way out, from the state of cut 2 with LittleFS out of reach:
+        # the configuration saved with discard-nvs-copy formats LittleFS (the copy is lost), and
+        # the next boot runs with it
+        img = bytearray(snap)
+        img[st_off:st_off + 8192] = b"\x55" * 8192
+        flash.write_bytes(img)
+        t3 = time.monotonic()
+        gw = Gateway(args, log, flash, efuse=efuse)
+        gw.start()
+        gw.wait_log(r"storage: NVS left untouched this boot", 60, t3)
+        gw.wait_log(r"shell: console ready", 30, t3)
+        asked = time.monotonic()
+        gw.console("config load discard-nvs-copy")
+        gw.wait_log(r"^paste the JSON document", 10, asked)
+        gw.sock.sendall((json.dumps(cfg, indent=2) + "\n").encode())
+        discarded = gw.wait_log(r"storage: configuration saved discarding the unreachable NVS "
+                                r"migration copy", 30, asked)
+        saved_ok = gw.wait_log(r"^config: saved \(\d+ bytes\); restarting", 30, asked)
+        reserved = gw.find(r"storage: no NVS: bdSeq values below \d+ reserved", asked)
+        loaded = gw.wait_log(r"main: configuration from /cfg/config\.json", 60, saved_ok or asked)
+        after = gw.find(r"NVS left untouched this boot", loaded or asked)
+        gw.kill()
+        check("Issue #109 the operator's way out of a LittleFS that does not mount with an "
+              "unreachable migration copy: 'config load discard-nvs-copy' formats it (the copy is "
+              "lost), keeps the bdSeq going with a reservation, and the next boot runs with the "
+              "saved configuration and an NVS",
+              discarded and saved_ok and reserved and loaded and not after,
+              f"discarded {discarded is not None}, saved {saved_ok is not None}, reservation "
+              f"{reserved[:1]}, next boot from config.json {loaded is not None}, without NVS "
+              f"again {bool(after)}")
+    finally:
+        obs.close()
+        broker.terminate()
+        broker.wait()
+
+
+def run_nvs_full(args, work):
+    """Issue #109 round 3b (GW44): an unencrypted NVS with no free page (generated with ESP-IDF's
+    nvs_partition_gen.py, five 3840-byte blobs and bdSeq 77, its last page then started as NVS
+    does): it does not even start (ESP_ERR_NVS_NO_FREE_PAGES), and IDF would erase it. The
+    migration must still happen: erased whole, without the "erase in progress" entry (written
+    through an NVS that starts), the bdSeq kept from the raw pages, encrypted from then on."""
+    node, port = "GW44", MQTT_PORT + 26
+    nvs_off, nvs_size = storage_partition("nvs")
+    filler = work / "nvs-filler.bin"
+    filler.write_bytes(bytes(range(256)) * 15)
+    csv = work / "nvs-full.csv"
+    csv.write_text("key,type,encoding,value\nspb,namespace,,\nbdseq,data,u8,77\ngw,namespace,,\n"
+                   + "".join(f"fill{i},file,binary,{filler}\n" for i in range(1, 6)))
+    gen = pathlib.Path(os.environ["IDF_PATH"]) / "components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py"
+    full = work / "nvs-full.bin"
+    subprocess.run([args.idf_python, str(gen), "generate", str(csv), str(full), hex(nvs_size)],
+                   check=True, capture_output=True)
+    nv = bytearray(full.read_bytes())
+    pages = nvs_size // 4096
+    last = (pages - 1) * 4096
+    if nv[last:last + 4] != b"\xff\xff\xff\xff":
+        raise SystemExit("nvs-full: the generator filled the last page itself")
+    # the active page before the last becomes full, the last becomes the active one (empty): no
+    # free page is left; the page header CRC covers bytes 4..27 (as esp_rom_crc32_le)
+    prev = last - 4096
+    nv[prev:prev + 4] = b"\xfc\xff\xff\xff"
+    hdr = bytearray(b"\xff" * 32)
+    hdr[0:4] = b"\xfe\xff\xff\xff"
+    hdr[4:8] = struct.pack("<I", pages - 1)
+    hdr[8] = nv[prev + 8]   # the format version of the generator's pages
+    hdr[28:32] = struct.pack("<I", zlib.crc32(bytes(hdr[4:28]), 0xFFFFFFFF))
+    nv[last:last + 32] = hdr
+    cfg = node_config(node, port=port)
+    flash = flash_variant(args, work, "nvsfull", {"config.json": json.dumps(cfg).encode()})
+    img = bytearray(flash.read_bytes())
+    img[nvs_off:nvs_off + nvs_size] = nv
+    flash.write_bytes(img)
+    efuse = work / "efuse-nvsfull.bin"
+    shutil.copy(work / "efuse-blank.bin", efuse)
+    conf = work / "broker-nvsfull.conf"
+    conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\n")
+    broker = start_broker(conf, work / "mosquitto-nvsfull.log")
+    obs = observer_retry(port)
+    log = work / "uart0-nvsfull.log"
+    nbirth_t = f"{T}/NBIRTH/{node}"
+    try:
+        t0 = time.monotonic()
+        gw = Gateway(args, log, flash, efuse=efuse)
+        gw.start()
+        nb = obs.wait(nbirth_t, 60)
+        nostart = gw.find(r"storage: NVS migration: the unencrypted NVS does not start "
+                          r"\(ESP_ERR_NVS_NO_FREE_PAGES\)", t0)
+        moved = gw.find(r"storage: NVS migration: \d+ entries moved into the encrypted NVS "
+                        r"\(0 skipped\); bdSeq continues", t0)
+        stuck = gw.find(r"erase in progress\" entry could not be written|NVS migration not finished",
+                        t0)
+        gw.kill()
+        obs.wait(f"{T}/NDEATH/{node}", 5)
+        obs.drain()
+        t1 = time.monotonic()
+        gw = Gateway(args, log, flash, efuse=efuse)
+        gw.start()
+        nb2 = obs.wait(nbirth_t, 60)
+        again = gw.find(r"NVS migration", t1)
+        _, h = gw.shell("status", [r"^secrets\s+NVS encrypted \(HMAC key in eFuse KEY5\)"])
+        gw.kill()
+        check("Issue #109 round 3b an unencrypted NVS with no free page (it does not start: "
+              "NO_FREE_PAGES) is still migrated: erased whole without the \"erase in progress\" "
+              "entry, bdSeq 77 kept from its raw pages, encrypted on the next boot (no migration "
+              "again)",
+              nostart and moved and not stuck and nb and bdseq_of(nb[2]) == 77 and nb2
+              and bdseq_of(nb2[2]) == 78 and not again and all(h.values()),
+              f"does not start: {bool(nostart)}; {(moved or stuck or ['no migration log'])[0][:110]}; "
+              f"NBIRTH bdSeq {bdseq_of(nb[2]) if nb else None} then "
+              f"{bdseq_of(nb2[2]) if nb2 else None}; migration again {bool(again)}")
     finally:
         obs.close()
         broker.terminate()
@@ -3516,6 +3665,7 @@ def main():
             run_scenario("issues #99/#101 OTA trial", lambda: run_ota_trial(args, work))
         if want("nvs"):
             run_scenario("issues #67/#94 NVS migration", lambda: run_nvs_migration(args, work))
+            run_scenario("issue #109 full unencrypted NVS", lambda: run_nvs_full(args, work))
             run_scenario("issue #94 OTA to NVS encryption", lambda: run_nvs_ota(args, work))
         if want("slow"):
             run_scenario("slow", lambda: run_slow_link(
