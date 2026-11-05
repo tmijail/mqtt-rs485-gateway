@@ -225,8 +225,10 @@ static bool same_origin(httpd_req_t *req)
 static bool query_flag(httpd_req_t *req, const char *key)
 {
     char q[64], v[8];
+    /* issue #109 round 3b: exactly "1" (a stray value never turns a flag on, above all the
+     * discard of an NVS migration copy) */
     return httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
-           httpd_query_key_value(q, key, v, sizeof(v)) == ESP_OK && strcmp(v, "0") != 0;
+           httpd_query_key_value(q, key, v, sizeof(v)) == ESP_OK && strcmp(v, "1") == 0;
 }
 
 /* ---------- /api/config ---------- */
