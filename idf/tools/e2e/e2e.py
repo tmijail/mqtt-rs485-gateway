@@ -704,6 +704,8 @@ FAILURE_RX = [(re.compile(p), what) for p, what in (
     (r"ESP_ERROR_CHECK failed", "ESP_ERROR_CHECK failed"),
     (r"CORRUPT HEAP", "corrupt heap"),
     (r"stack overflow", "stack overflow"),
+    # issue #111: a park of core 1 that had to give up (QEMU build) is the firmware's
+    (r"fw: core 1 park (bound reached|refused)", "core 1 park refused or past its bound"),
 )]
 ABORT_RX = re.compile(r"abort\(\) was called")
 BACKTRACE_RX = re.compile(r"^Backtrace:")
@@ -2613,6 +2615,58 @@ def fw_state(p):
     return m.string_value if m is not None else None
 
 
+PARK_RX = re.compile(r"fw: parking core 1 \(")
+RESUMED_RX = re.compile(r"fw: core 1 resumed after (\d+) ms")
+STORM_RX = re.compile(r"bus: console storm from core 1, line (\d+)")
+PARK_BOUND_RX = re.compile(r"fw: core 1 park (bound|refused)")
+
+
+def run_park_storm(gw, image):
+    """Issue #111 (QEMU build: CONFIG_GW_FW_PARK_OTHER_CORE): the verification of a web upload
+    with core 1 parked, while the bus task (pinned to core 1) floods the console (emulator
+    command `storm`). Before the fix the park preempted that task in the middle of a log line,
+    with the console's locks taken, and the verifying task blocked on its next line for good.
+    Now the bus task stops between two transactions before core 1 is parked: the upload is
+    answered (the image is rejected), no storm line comes from a park (between its 'parking'
+    and 'resumed' lines), the storm goes on after it, and no park reached its bound."""
+    asked = time.monotonic()
+    gw.console("storm 90000")
+    storming = gw.wait_log(STORM_RX.pattern, 15, asked)
+    st, _, body = http("POST", "/api/firmware", image.read_bytes(),
+                       headers={"Content-Type": "application/octet-stream"}, timeout=150)
+    answered = time.monotonic()
+    after = gw.wait_log(STORM_RX.pattern, 15, answered)
+    gw.console("storm 0")
+    gw.wait_log(r"console storm stopped", 10, answered)
+    rejected = gw.wait_log(r"fw: firmware update failed: image e2e-bad rejected", 10, asked)
+    parks, inside, open_at, last_resume = [], 0, None, None
+    lines = [ln for t, ln in list(gw.lines) if t >= asked]
+    storm_lines = 0
+    for ln in lines:
+        if PARK_RX.search(ln):
+            open_at = len(parks)
+            parks.append(None)
+        elif (m := RESUMED_RX.search(ln)) and open_at is not None:
+            parks[open_at] = int(m.group(1))
+            open_at, last_resume = None, storm_lines
+        elif STORM_RX.search(ln):
+            storm_lines += 1
+            if open_at is not None:
+                inside += 1
+    after_park = storm_lines - (last_resume or 0) if last_resume is not None else 0
+    bound = [ln for ln in lines if PARK_BOUND_RX.search(ln)]
+    check("Issue #111 core 1 parked for the verification of a web upload while the bus task "
+          "(core 1) floods the console: the bus task stops first, between two transactions, so the "
+          "verification never waits on a lock left on core 1; the upload is answered (image "
+          "rejected), no console line from core 1 while it is parked, the storm goes on after it, "
+          "no park bound reached",
+          storming and st == 400 and isinstance(body, bytes) and b"rejected" in body and rejected and len(parks) >= 2
+          and None not in parks and inside == 0 and after and after_park > 0 and not bound,
+          f"POST {st} {body[:70]!r} {answered - asked:.1f} s after the storm began; parks "
+          f"{parks} ms; {storm_lines} storm lines, {inside} while parked, {after_park} after the "
+          f"last park; {bound[:1]}")
+
+
 def run_ota(args, work):
     """FW-1 in one gateway (GW40) with its own broker: updates by NCMD (HTTPS download with the
     CA from ota.ca_file) and by web upload; bad images rejected without a restart; a new image
@@ -2701,6 +2755,8 @@ def run_ota(args, work):
               " | ".join(dict.fromkeys(states(asked))) + f"; restarted: {not still}"
               + (f"; {(gw.find(r'secure_boot_v2|[Ss]ignature', asked) or ['no signature log'])[0][:120]}"
                  if signed else ""))
+
+        run_park_storm(gw, images["bad"])
 
         # Issue #98: a download cut in the middle (the server closes after CUT bytes of the
         # announced image): failed with the bytes actually received, no panic, no restart
@@ -3848,6 +3904,12 @@ def main():
                                                   if STALE else ""))
         check("Issue #92 the fault monitor ran without an error of its own", not MONITOR_ERRORS,
               "; ".join(MONITOR_ERRORS[:3]) or "ok")
+        parks = [int(m.group(1)) for g in GATEWAYS for _, ln in list(g.lines)
+                 if (m := RESUMED_RX.search(ln))]
+        gave_up = [ln for g in GATEWAYS for _, ln in list(g.lines) if PARK_BOUND_RX.search(ln)]
+        check("Issue #111 every park of core 1 (QEMU build) ended within its bound and none was "
+              "refused (all emulators of the run)", not gave_up,
+              f"{len(parks)} parks, longest {max(parks) if parks else 0} ms; {gave_up[:2]}")
         seq_errors = seq_continuity(CAPTURE)
         check("SPB-5 seq continuity per session", not seq_errors, "; ".join(seq_errors) or "ok")
         # issue #86: the retries next to the checks (their discarded checks included); #92:

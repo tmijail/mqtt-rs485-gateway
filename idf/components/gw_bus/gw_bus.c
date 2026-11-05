@@ -80,12 +80,106 @@ static uint32_t now_ms(void)
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
+#if CONFIG_GW_FW_PARK_OTHER_CORE
+/* Issue #111 (QEMU build only): gw_fw parks core 1 around flash mappings (gw_fw.c). The park
+ * task preempted this task wherever it was, also holding a lock (gettimeofday()'s, or stdout's in
+ * a log line), so the image verification on core 0 blocked on it and nothing released it (this
+ * task, pinned to core 1, never ran again). Now the park first stops this task here, between
+ * two transactions, where it holds no lock: a hold request is acknowledged (s_held) and the task
+ * waits, feeding the watchdog, until gw_bus_release(). Each request has a number, so a new one
+ * made before this task saw the previous release is acknowledged too. */
+static atomic_bool s_hold;
+static atomic_uint s_hold_req;
+static SemaphoreHandle_t s_held;
+static StaticSemaphore_t s_held_buf;
+static SemaphoreHandle_t s_resume;
+static StaticSemaphore_t s_resume_buf;
+
+static void hold_point(void)
+{
+    static unsigned acked;
+    while (atomic_load(&s_hold)) {
+        unsigned req = atomic_load(&s_hold_req);
+        if (req != acked) {
+            acked = req;
+            xSemaphoreGive(s_held);
+        }
+        esp_task_wdt_reset();
+        xSemaphoreTake(s_resume, pdMS_TO_TICKS(100));
+    }
+}
+
+bool gw_bus_hold(uint32_t timeout_ms)
+{
+    if (s_task == NULL) {
+        return true;   /* not started (or not created): nothing of ours on core 1 */
+    }
+    xSemaphoreTake(s_held, 0);   /* an acknowledgement left by a request that timed out */
+    atomic_fetch_add(&s_hold_req, 1);
+    atomic_store(&s_hold, true);
+    xTaskNotifyGive(s_task);     /* wakes an idle bus task */
+    if (xSemaphoreTake(s_held, pdMS_TO_TICKS(timeout_ms)) == pdTRUE) {
+        return true;
+    }
+    gw_bus_release();
+    return false;
+}
+
+void gw_bus_release(void)
+{
+    if (s_task == NULL) {
+        return;
+    }
+    atomic_store(&s_hold, false);
+    xSemaphoreGive(s_resume);
+}
+#else
+static void hold_point(void)
+{
+}
+#endif
+
+#if CONFIG_GW_IO_SIMULATED
+/* Issue #111, emulator only: a burst of STORM_LINES log lines at each stop between two
+ * transactions while the storm lasts, and no idle wait longer than a tick. */
+#define STORM_LINES 16
+static _Atomic uint32_t s_storm_until;   /* now_ms() at its end; 0: no storm */
+static uint32_t s_storm_n;
+
+static bool storm_on(void)
+{
+    uint32_t until = atomic_load(&s_storm_until);
+    return until != 0 && (int32_t)(until - now_ms()) > 0;
+}
+
+void gw_bus_sim_log_storm(uint32_t ms)
+{
+    uint32_t until = now_ms() + ms;
+    atomic_store(&s_storm_until, ms ? (until ? until : 1) : 0);
+    if (s_task != NULL) {
+        xTaskNotifyGive(s_task);
+    }
+}
+
+static void storm(void)
+{
+    if (!storm_on()) {
+        return;
+    }
+    for (int i = 0; i < STORM_LINES; i++) {
+        ESP_LOGI(TAG, "console storm from core %d, line %lu (issue #111)", xPortGetCoreID(),
+                 (unsigned long)++s_storm_n);
+    }
+}
+#endif
+
 /* Restart pending: no more bus traffic; keep feeding the watchdog until it happens. */
 static void stay_quiet(void)
 {
     ESP_LOGI(TAG, "bus quiet for the restart");
     xSemaphoreGive(s_quiet);
     for (;;) {
+        hold_point();   /* issue #111: the rollback parks core 1 after the quiesce */
         esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(100));
     }
@@ -114,6 +208,10 @@ static void serve_pending(void *ctx)
     if (atomic_load(&s_quiesce)) {
         stay_quiet();   /* also between two requests of a cycle: never returns */
     }
+    hold_point();   /* issue #111: a park of core 1 finds this task here, holding no lock */
+#if CONFIG_GW_IO_SIMULATED
+    storm();
+#endif
     write_req_t w;
     while (xQueueReceive(s_writes, &w, 0) == pdTRUE) {
         do_write(&w);
@@ -152,6 +250,11 @@ static void bus_task(void *arg)
         if (wait > MAX_IDLE_MS) {
             wait = MAX_IDLE_MS;
         }
+#if CONFIG_GW_IO_SIMULATED
+        if (storm_on()) {
+            wait = 1;   /* issue #111: the next burst a tick later */
+        }
+#endif
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait));   /* a write or a TCP request wakes it */
     }
 }
@@ -188,6 +291,10 @@ esp_err_t gw_bus_start(const gw_config_t *cfg, const mb_transport_t *tr, const g
                                   s_writes_storage, &s_writes_buf);
     s_fwd = xQueueCreateStatic(1, sizeof(gw_mbap_txn_t *), s_fwd_storage, &s_fwd_buf);
     s_fwd_done = xSemaphoreCreateBinaryStatic(&s_fwd_done_buf);
+#if CONFIG_GW_FW_PARK_OTHER_CORE
+    s_held = xSemaphoreCreateBinaryStatic(&s_held_buf);
+    s_resume = xSemaphoreCreateBinaryStatic(&s_resume_buf);
+#endif
     s_task = xTaskCreateStaticPinnedToCore(bus_task, "rs485_bus", STACK_WORDS, NULL,
                                            CONFIG_GW_BUS_TASK_PRIORITY, s_stack, &s_task_buf,
                                            CONFIG_GW_BUS_TASK_CORE);
