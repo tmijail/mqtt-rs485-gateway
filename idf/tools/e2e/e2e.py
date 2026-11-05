@@ -1329,6 +1329,52 @@ class Gateway:
 
 # ---------------------------------------------------------------- HTTP (CFG-3, CFG-4)
 
+# Issue #113: QEMU's open_eth model drops a received frame now and then when slirp bursts
+# ("RX frame dropped (0x14)"). If the lost frame is a new connection's SYN, slirp sends it again
+# only after its backoff, past a 15 s client timeout. The web clients therefore make the TCP
+# connection and TLS handshake in up to TLS_CONNECT_TRIES attempts that share the caller's
+# timeout (a new attempt is a new SYN; each gets at least TLS_CONNECT_MIN_S, so a short caller
+# timeout keeps its single attempt), on a timeout only, and before any byte of the request is
+# sent: the request itself is never repeated, and a server that does not accept within the
+# caller's timeout still fails as before. Every repeat is counted here.
+TLS_CONNECT_TRIES = 3
+TLS_CONNECT_MIN_S = 5.0
+TLS_CONNECT_RETRIES = []   # (time, what) of each repeated handshake
+
+
+def tls_connect(timeout, what):
+    """Connected and TLS-wrapped socket to the gateway's HTTPS port (see TLS_CONNECT_TRIES)."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    end = time.monotonic() + timeout
+    for attempt in range(TLS_CONNECT_TRIES):
+        left = end - time.monotonic()
+        per = max(timeout / TLS_CONNECT_TRIES, TLS_CONNECT_MIN_S)
+        last = attempt == TLS_CONNECT_TRIES - 1 or left - per < TLS_CONNECT_MIN_S - 0.5
+        if last:
+            per = left   # the last attempt gets whatever the caller's timeout leaves
+        raw = None
+        try:
+            raw = socket.create_connection(("127.0.0.1", HTTPS_PORT), timeout=max(per, 0.1))
+            sock = ctx.wrap_socket(raw)
+            sock.settimeout(timeout)
+            return sock
+        except TimeoutError:
+            if raw is not None:
+                raw.close()
+            if last:
+                raise
+            TLS_CONNECT_RETRIES.append((time.monotonic(), what))
+
+
+class _GatewayHTTPS(httplib.HTTPSConnection):
+    """http.client over tls_connect()."""
+
+    def connect(self):
+        self.sock = tls_connect(self.timeout, f"{self._what}")
+
+
 def http(method, path, body=None, auth=("admin", WEB_PASSWORD), timeout=15, headers=None,
          plain=False):
     """(status, headers dict, body bytes) of one request to the gateway's web server, or
@@ -1349,10 +1395,8 @@ def http(method, path, body=None, auth=("admin", WEB_PASSWORD), timeout=15, head
         if plain:
             c = httplib.HTTPConnection("127.0.0.1", HTTP_PORT, timeout=timeout)
         else:
-            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            c = httplib.HTTPSConnection("127.0.0.1", HTTPS_PORT, timeout=timeout, context=ctx)
+            c = _GatewayHTTPS("127.0.0.1", HTTPS_PORT, timeout=timeout)
+            c._what = f"{method} {path}"
         c.request(method, path, body=body, headers=h)
         if not plain:
             PEER_CERT["der"] = c.sock.getpeercert(binary_form=True)
@@ -2450,12 +2494,8 @@ def slow_upload(headers, total, rate, out, plain=False):
     sock = None
     try:
         port = HTTP_PORT if plain else HTTPS_PORT
-        sock = socket.create_connection(("127.0.0.1", port), timeout=10)
-        if not plain:
-            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            sock = ctx.wrap_socket(sock)
+        sock = (socket.create_connection(("127.0.0.1", port), timeout=10) if plain
+                else tls_connect(10, "upload"))
         head = (f"POST /api/firmware HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
                 f"Content-Type: application/octet-stream\r\nContent-Length: {total}\r\n"
                 + "".join(f"{k}: {v}\r\n" for k, v in headers.items()) + "\r\n").encode()
@@ -2510,10 +2550,8 @@ def check_refused_bodies(gw, since):
              "HTTPS 403 cross-site, right credentials": ({"Authorization": auth}, False),
              "HTTP port (redirect), 308": ({}, True)}
     res = {}
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    session = httplib.HTTPSConnection("127.0.0.1", HTTPS_PORT, timeout=15, context=ctx)
+    session = _GatewayHTTPS("127.0.0.1", HTTPS_PORT, timeout=15)
+    session._what = "session"
 
     def get_status(plain):
         t = time.monotonic()
@@ -2648,7 +2686,9 @@ def web_stress(gw, rounds):
             failures.append(f"round {i + 1} GET after the cut upload -> {st}")
     check(f"Issue #110 web stress: {rounds} round(s) of cut sessions and accepted PUTs, every "
           f"accepted request answered", not failures,
-          f"{rounds} rounds in {time.monotonic() - t_start:.0f} s, {slow} PUT(s) over 5 s; "
+          f"{rounds} rounds in {time.monotonic() - t_start:.0f} s, {slow} PUT(s) over 5 s, "
+          f"{sum(1 for t, _ in TLS_CONNECT_RETRIES if t >= t_start)} TLS handshake(s) repeated "
+          f"(issue #113); "
           + ("; ".join(failures[:5]) or "no failure"))
 
 def check_csrf(gw, since):
