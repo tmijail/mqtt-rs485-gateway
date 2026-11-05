@@ -41,9 +41,3 @@ CONFIG_SECURE_BOOT_SIGNING_KEY="build-qemu/e2e_signing_key.pem"
 # monitor runs in every tick interrupt and reads the USB peripheral; on the core parked during
 # an image verification that read faulted under QEMU's cache freeze (LoadStorePIFAddrError)
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
-# Issue #110: the emulated open_eth MAC has 4 RX DMA buffers by default (1 600 B each). Under the
-# E2E's full-speed uploads slirp's bursts overflow them ("RX frame dropped (0x14)"); a dropped
-# SYN is retransmitted by slirp only after a backoff, and the harness client's 15 s timeout ran
-# out first (a connection that "never reached httpd"). 10, the default of the S3's own EMAC
-# driver. QEMU only: the board's W5500 has its own 16 KB of RX buffer.
-CONFIG_ETH_OPENETH_DMA_RX_BUFFER_NUM=10
