@@ -87,13 +87,20 @@ static uint32_t now_ms(void)
  * task, pinned to core 1, never ran again). Now the park first stops this task here, between
  * two transactions, where it holds no lock: a hold request is acknowledged (s_held) and the task
  * waits, feeding the watchdog, until gw_bus_release(). Each request has a number, so a new one
- * made before this task saw the previous release is acknowledged too. */
+ * made before this task saw the previous release is acknowledged too. Issue #112: it also stops
+ * between two attempts of a transaction (the transport's on_attempt hook, where neither the
+ * poller nor the master holds a lock), so a request waits for one attempt at most, never for a
+ * whole transaction with its retries (up to 6 x 5 s): the wait is derived from the RS485
+ * settings (mb_master_attempt_max_ms), so no valid configuration gets "park refused". */
+#define HOLD_SLACK_MS 1000u   /* the work between two stops besides the attempt (logs, tags) */
 static atomic_bool s_hold;
 static atomic_uint s_hold_req;
 static SemaphoreHandle_t s_held;
 static StaticSemaphore_t s_held_buf;
 static SemaphoreHandle_t s_resume;
 static StaticSemaphore_t s_resume_buf;
+static uint32_t s_hold_wait_ms;            /* the longest time between two stops */
+static void (*s_on_attempt)(void *ctx);    /* the transport's own hook (the watchdog) */
 
 static void hold_point(void)
 {
@@ -109,10 +116,21 @@ static void hold_point(void)
     }
 }
 
+static void on_attempt_hold(void *ctx)
+{
+    if (s_on_attempt != NULL) {
+        s_on_attempt(ctx);
+    }
+    hold_point();
+}
+
 bool gw_bus_hold(uint32_t timeout_ms)
 {
     if (s_task == NULL) {
         return true;   /* not started (or not created): nothing of ours on core 1 */
+    }
+    if (timeout_ms < s_hold_wait_ms) {
+        timeout_ms = s_hold_wait_ms;
     }
     xSemaphoreTake(s_held, 0);   /* an acknowledgement left by a request that timed out */
     atomic_fetch_add(&s_hold_req, 1);
@@ -268,7 +286,15 @@ esp_err_t gw_bus_start(const gw_config_t *cfg, const mb_transport_t *tr, const g
         .retries = cfg->rs485.retries,
         .inter_frame_delay_ms = cfg->rs485.inter_frame_delay_ms,
     };
+#if CONFIG_GW_FW_PARK_OTHER_CORE
+    mb_transport_t hooked = *tr;   /* issue #112: a stop between two attempts too */
+    s_on_attempt = hooked.on_attempt;
+    hooked.on_attempt = on_attempt_hold;
+    mb_master_init(&s_mb, &hooked, &mc);
+    s_hold_wait_ms = mb_master_attempt_max_ms(&s_mb) + HOLD_SLACK_MS;
+#else
     mb_master_init(&s_mb, tr, &mc);
+#endif
     const gw_poller_opts_t opts = {
         .offline_probe_max_ms = CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS,
         .between_requests = serve_pending,

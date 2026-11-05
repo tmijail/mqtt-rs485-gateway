@@ -71,9 +71,16 @@ mb_status_t gw_bus_diag_read(uint8_t unit, mb_fc_t fc, uint16_t addr, uint16_t c
 #if CONFIG_GW_FW_PARK_OTHER_CORE
 /**
  * Issue #111 (QEMU build only): before gw_fw parks core 1, the bus task, the only task of ours
- * pinned there, stops between two transactions, where it holds no lock, and waits until
- * gw_bus_release(). Waits at most @p timeout_ms for it; true once it stopped (or the bus is not
- * running), false if it did not (then released again: nothing to undo).
+ * pinned there, stops between two transactions or two attempts of one (issue #112), where it
+ * holds no lock, and waits until gw_bus_release(). Waits at most @p timeout_ms for it, or the
+ * longest attempt of the configured RS485 settings plus 1 s if that is longer; true once it
+ * stopped (or the bus is not running), false if it did not (then released again).
+ *
+ * Issue #112: while core 1 is parked, nothing may make a blocking IPC call to it
+ * (esp_ipc_call(), esp_ipc_call_blocking()): with CONFIG_ESP_IPC_USES_CALLERS_PRIORITY ipc1 runs
+ * at the caller's priority, below the park task, so the call waits until the park ends, and
+ * deadlocks if the caller holds a lock the parked section needs. gw_fw wraps both calls at link
+ * time in this build and logs "fw: blocking IPC to core 1 while it was parked" (an E2E failure).
  */
 bool gw_bus_hold(uint32_t timeout_ms);
 void gw_bus_release(void);

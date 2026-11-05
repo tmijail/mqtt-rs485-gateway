@@ -72,6 +72,15 @@ uint32_t mb_char_bits(bool parity, uint8_t stop_bits);
 uint32_t mb_tx_timeout_ms(uint32_t baud, uint32_t char_bits, size_t len);
 
 /**
+ * Issue #112: upper bound, in ms, of one attempt of a transaction with @p m's configuration:
+ * the bus silence before it, the longest request on the wire at 12 bits per character (the
+ * transport waits at most mb_tx_timeout_ms() for it), the response timeout and the frame
+ * timeouts of the rest of the longest response. The transport's on_attempt hook runs between
+ * two attempts, so it is reached at least this often while a transaction runs.
+ */
+uint32_t mb_master_attempt_max_ms(const mb_master_t *m);
+
+/**
  * Execute one transaction, retrying on timeout, CRC and framing errors.
  * Exception responses are final (not retried). On MB_OK / MB_ERR_EXCEPTION
  * @p rsp is filled; its data pointer stays valid until the next call.

@@ -355,3 +355,22 @@ Texto propuesto (en inglés):
 > Run `qemu-system-xtensa -M esp32s3 -m 32M -nographic -drive file=flash.bin,if=mtd,format=raw` (plus the usual eFuse drive) three at a time for 60 s each, with four busy loops on the host: 3 of 9 runs aborted here.
 >
 > **Expected:** no host crash; the other vCPU waits for (or is not affected by) the MMU update, as the cache freeze makes the other core wait on the chip.
+
+## 8. espressif/qemu: `atomic_mmu_lookup: code should not be reached` (SIGABRT) durante una OTA
+
+- **Repositorio:** https://github.com/espressif/qemu.
+- **Versión:** `esp_develop_9.2.2_20260417`, máquina `esp32s3`, TCG multihilo (el que usa el harness de `main`; sin `-accel tcg,thread=single`).
+- **Ya reportado arriba:** no se encontró nada igual. Es otra firma que el SIGSEGV del #107 y que el `Bad ram pointer` de §6.
+- **Visto:** una vez (issue #112), en el E2E completo sin PSRAM de `fix/park-deadlock` (9947335), en el escenario FW-1 OTA, con otros E2E corriendo en el mismo host (4 CPU compartidas). QEMU terminó con la señal 6 y `ERROR:../accel/tcg/cputlb.c:1845:atomic_mmu_lookup: code should not be reached`. El harness lo repitió como muerte de QEMU (la regla lo permite) y el segundo intento pasó.
+- **Por qué es de QEMU:** es un `g_assert_not_reached()` interno de TCG. En `atomic_mmu_lookup()` (`accel/tcg/cputlb.c`, la búsqueda para una operación atómica de lectura-escritura; en Xtensa, `S32C1I`: los *spinlocks* y los atómicos), QEMU primero llena la entrada del TLB para escribir. Si después esa entrada no tiene permiso de lectura (`addr_read == -1`), llena el TLB para leer y espera que eso levante una excepción del huésped, porque "no debería volver nunca". Volvió: el segundo llenado dio permiso de lectura a una página que el primero dejó sin él. Ningún programa del huésped debería poder llegar a un *assert* del emulador. Una hipótesis, no confirmada: el otro vCPU cambió entre los dos llenados el mapeo de la caché del S3 (la OTA mapea y desmapea segmentos de la flash, §6).
+- **Sin core ni backtrace:** el harness de `main` no guarda el core de QEMU (`ulimit -c 0`), y la consola de esa corrida se borró. **Intento de reproducción (unos 45 min):** 16 corridas de `--only ota` de a dos en paralelo, con TCG multihilo, el firmware de `main` 03544d0 y los cores guardados (un *wrapper* de QEMU con `ulimit -c unlimited`), con otros E2E en el host. Esta firma no apareció. Sí aparecieron otras 16 muertes, todas ya conocidas: 14 SIGSEGV con el PC en `code_gen_buffer` (código generado por TCG; el #107) y 2 `Bad ram pointer` (`qemu_ram_addr_from_host_nofail`, `physmem.c:2384`; §6), además de un `LoadStorePIFAddrError` del huésped en SYSTIMER. Los backtraces están en el informe del issue. Mientras no se tenga un core, el harness lo sigue tratando como cualquier muerte de QEMU (se repite una vez).
+
+Texto propuesto (en inglés):
+
+> **Title:** esp32s3 (MTTCG): `atomic_mmu_lookup: code should not be reached` abort during flash mapping activity
+>
+> **Version:** esp_develop_9.2.2_20260417, `-M esp32s3`, multi-threaded TCG (default), ESP-IDF v6.1, dual core.
+>
+> Once in a long E2E run, while the app (both cores active) downloads an OTA image and verifies it (`esp_image_verify()`, which maps and unmaps flash segments through the S3 cache MMU), QEMU aborts with `ERROR:../accel/tcg/cputlb.c:1845:atomic_mmu_lookup: code should not be reached` (SIGABRT). That is the `g_assert_not_reached()` after the `MMU_DATA_LOAD` `tlb_fill_align()` in `atomic_mmu_lookup()`: the store fill for an atomic RMW (here Xtensa `S32C1I`) left `addr_read == -1`, and the following load fill returned instead of raising a guest exception. So the target's `tlb_fill` gave the same page different permissions in two consecutive calls. A plausible cause is that the other vCPU changed the cache MMU mapping in between. A guest should never be able to reach an assertion. It is rare (seen once so far) and 16 further runs did not reproduce it; we have no core dump yet.
+>
+> **Expected:** a consistent permission check, or a guest exception, never an abort.
