@@ -285,10 +285,13 @@ static size_t nvs_read_all(uint8_t *buf, size_t cap, size_t used, size_t vcap, u
         nvs_entry_info_t info;
         nvs_entry_info(it, &info);
         e = nvs_entry_next(&it);
-        if (strcmp(info.namespace_name, NVS_GW) == 0 &&
-            (strcmp(info.key, MIG_DONE) == 0 || strcmp(info.key, MIG_BUSY) == 0 ||
-             strcmp(info.key, MIG_ERASE) == 0)) {
-            continue;   /* a stale marker would end a later migration early */
+        if ((strcmp(info.namespace_name, NVS_GW) == 0 &&
+             (strcmp(info.key, MIG_DONE) == 0 || strcmp(info.key, MIG_BUSY) == 0)) ||
+            strcmp(info.key, MIG_ERASE) == 0) {
+            /* a stale marker would end a later migration early. Issue #109 round 3b: the "erase
+             * in progress" entry by its key alone: once its namespace's page is erased, NVS lists
+             * it under whatever namespace has its index, and copying it fails */
+            continue;
         }
         nvs_handle_t h;
         size_t len = 0;
