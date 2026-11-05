@@ -376,6 +376,24 @@ class RetryRule(unittest.TestCase):
         self.assertEqual(start, slave.snapshot())
         e2e.MAIN_BROKER.clear()
 
+    def test_retried_attempt_messages_leave_capture(self):
+        """Issue #107: a retry starts from the same device (same bdSeq): the first attempt's
+        messages must not count again in the checks that scan CAPTURE."""
+        e2e.CAPTURE.clear()
+        e2e.DISCARDED_CAPTURE.clear()
+        e2e.CAPTURE.append((0.0, "before", None, b""))
+
+        def fn():
+            self.attempts += 1
+            e2e.CAPTURE.append((0.0, f"attempt {self.attempts}", None, b""))
+            if self.attempts == 1:
+                self.fault()
+        e2e.run_scenario("s", fn)
+        self.assertEqual(["before", "attempt 2"], [m[1] for m in e2e.CAPTURE])
+        self.assertEqual(["attempt 1"], [m[1] for m in e2e.DISCARDED_CAPTURE])
+        e2e.CAPTURE.clear()
+        e2e.DISCARDED_CAPTURE.clear()
+
     def test_waits_raise_after_a_fault(self):
         e2e.FAULT.set()
         t = time.monotonic()
@@ -439,6 +457,61 @@ class Monitor(unittest.TestCase):
         e2e.run_scenario("s", fn)
         self.assertTrue(any("simulated monitor bug" in m for m in e2e.MONITOR_ERRORS))
         self.assertTrue(self.th.is_alive())   # it keeps watching
+
+
+class CrashDiagnostics(unittest.TestCase):
+    """Issue #107: what the harness keeps of a QEMU crash."""
+
+    def test_core_dumps_are_allowed(self):
+        import resource
+        e2e.allow_core_dumps()
+        soft, hard = resource.getrlimit(resource.RLIMIT_CORE)
+        self.assertEqual(e2e.CORE_LIMIT_B if hard == resource.RLIM_INFINITY
+                         else min(e2e.CORE_LIMIT_B, hard), soft)
+
+    def test_death_report_skips_the_harness_header(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            work = pathlib.Path(d)
+            g = FakeGateway()
+            g.log_path = work / "uart0-x.log"
+            g.cwd = work / "qemu" / "000-uart0-x"
+            g.cwd.mkdir(parents=True)
+            (work / "uart0-x.log.qemu").write_text(
+                "# harness: qemu-system-xtensa -M esp32s3 ...\n# harness: 2 other QEMU "
+                "process(es) on the host, load average 3.06\nAdding SPI flash device\n")
+
+            class Dead(FakeProc):
+                def poll(self):
+                    return -11
+            g.proc, g.err_offset = Dead(), 0
+            work_before, e2e.WORK = e2e.WORK, work
+            try:
+                self.assertIn("signal 11", g.qemu_died())
+                self.assertIn("no error message", g.qemu_died())
+                self.assertIsNone(g.core_file())
+                (g.cwd / "core").write_bytes(b"\0")
+                self.assertIn("core dump qemu/000-uart0-x/core", g.qemu_died())
+                which = e2e.shutil.which
+                e2e.shutil.which = lambda name: None
+                try:
+                    self.assertEqual("no gdb on this host",
+                                     e2e.core_backtrace("qemu", g.cwd / "core"))
+                finally:
+                    e2e.shutil.which = which
+            finally:
+                e2e.WORK = work_before
+
+    def test_tcg_mode(self):
+        self.assertEqual("single", e2e.tcg_mode("auto", "FW-1 OTA"))
+        self.assertEqual("single", e2e.tcg_mode("auto", "issues #99/#101 OTA trial"))
+        self.assertEqual("multi", e2e.tcg_mode("auto", "main"))
+        self.assertEqual("multi", e2e.tcg_mode("auto", None))
+        self.assertEqual("single", e2e.tcg_mode("single", "main"))
+        self.assertEqual("multi", e2e.tcg_mode("multi", "FW-1 OTA"))
+
+    def test_host_qemus(self):
+        self.assertTrue(all(isinstance(p, int) for p in e2e.host_qemus()))
 
 
 class FakeBrokerPort(unittest.TestCase):
