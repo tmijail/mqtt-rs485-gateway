@@ -706,6 +706,8 @@ FAILURE_RX = [(re.compile(p), what) for p, what in (
     (r"stack overflow", "stack overflow"),
     # issue #111: a park of core 1 that had to give up (QEMU build) is the firmware's
     (r"fw: core 1 park (bound reached|refused)", "core 1 park refused or past its bound"),
+    # issue #112: a blocking IPC call to core 1 while it was parked (QEMU build)
+    (r"fw: blocking IPC to core 1 while it was parked", "blocking IPC to the parked core"),
 )]
 ABORT_RX = re.compile(r"abort\(\) was called")
 BACKTRACE_RX = re.compile(r"^Backtrace:")
@@ -2618,7 +2620,7 @@ def fw_state(p):
 PARK_RX = re.compile(r"fw: parking core 1 \(")
 RESUMED_RX = re.compile(r"fw: core 1 resumed after (\d+) ms")
 STORM_RX = re.compile(r"bus: console storm from core 1, line (\d+)")
-PARK_BOUND_RX = re.compile(r"fw: core 1 park (bound|refused)")
+PARK_BOUND_RX = re.compile(r"fw: core 1 park (bound|refused)|fw: blocking IPC to core 1 while it")
 
 
 def run_park_storm(gw, image):
@@ -2665,6 +2667,92 @@ def run_park_storm(gw, image):
           f"POST {st} {body[:70]!r} {answered - asked:.1f} s after the storm began; parks "
           f"{parks} ms; {storm_lines} storm lines, {inside} while parked, {after_park} after the "
           f"last park; {bound[:1]}")
+
+
+def run_park_long_txn(args, work, slave):
+    """Issue #112 (QEMU build): a park of core 1 while the bus task is in a long RS485
+    transaction. GW47 polls with the longest response timeout (5 s) and the most retries (5): a
+    request that gets no answer takes 6 attempts, over 30 s. Meter1 (unit 1) stops answering, and
+    once its next request is on the bus a corrupt image is uploaded through the web (two parks:
+    esp_ota_begin(), the verification). The bus task stops between two attempts, so neither park
+    waits for the whole transaction: before, a park waited at most 10 s and was refused
+    ('fw: core 1 park refused'). The upload is answered (rejected), every park ended, and the
+    transaction went on after the parks (more attempts to unit 1)."""
+    node, port = "GW47", MQTT_PORT + 27
+    app = pathlib.Path(args.elf).with_suffix(".bin")
+    unsigned = pathlib.Path(args.elf).with_name(app.stem + "-unsigned.bin")
+    src = unsigned if unsigned.exists() else app
+    fwdir = work / "fw-longtxn"
+    fwdir.mkdir(exist_ok=True)
+    image = fw_image(src, "e2e-long", fwdir / "long-unsigned.bin", corrupt=True)
+    if args.signing_key:
+        subprocess.run([args.idf_python, "-m", "espsecure", "sign-data", "--version", "2",
+                        "--keyfile", args.signing_key, "--output", str(fwdir / "long.bin"),
+                        str(image)], check=True, capture_output=True)
+        image = fwdir / "long.bin"
+    conf = work / "broker-longtxn.conf"
+    conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\n")
+    broker = start_broker(conf, work / "mosquitto-longtxn.log")
+    obs = Observer(port)
+    cfg = node_config(node, port=port)
+    cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    cfg["rs485"].update({"response_timeout_ms": 5000, "retries": 5})
+    gw = boot_variant(args, work, "longtxn", cfg)
+    muted = False
+    try:
+        nb = obs.wait(f"{T}/NBIRTH/{node}", 90)
+        up = wait_http("/api/firmware", 60)
+        if not check("Issue #112 GW47 runs with a 5 s response timeout and 5 retries",
+                     nb and up[0] == 200, f"NBIRTH {'yes' if nb else 'no'}, web {up[0]}"):
+            return
+        n0 = len(slave.reads)
+        del slave.server_ctx[1]   # Meter1 stops answering (ignore_missing_slaves: no answer)
+        muted = True
+        asked = time.monotonic()
+        def unit1_attempts():
+            return [t for (u, *_), t in zip(slave.reads[n0:], slave.times[n0:]) if u == 1]
+
+        def until(cond, seconds):   # a harness wait: ends the attempt after an emulator fault
+            end = time.monotonic() + seconds
+            while not cond() and wait_left(end) > 0:
+                time.sleep(0.2)
+            return cond()
+
+        until(unit1_attempts, 20)
+        first = (unit1_attempts() or [None])[0]
+        until(lambda: False, 1.0)   # the first attempt of that request is under way
+        st, _, body = http("POST", "/api/firmware", image.read_bytes(),
+                           headers={"Content-Type": "application/octet-stream"}, timeout=150)
+        answered = time.monotonic()
+        gw.wait_log(r"fw: firmware update failed: image e2e-long rejected", 20, asked)
+        lines = [(t, ln) for t, ln in list(gw.lines) if t >= asked]
+        parks = [t for t, ln in lines if PARK_RX.search(ln)]
+        resumed = [int(m.group(1)) for _, ln in lines if (m := RESUMED_RX.search(ln))]
+        refused = [ln for _, ln in lines if PARK_BOUND_RX.search(ln)]
+        # one more attempt of the transaction after the parks (5 s apart)
+        until(lambda: parks and any(t > parks[-1] for t in unit1_attempts()), 12)
+        unit1 = unit1_attempts()
+        after = [t for t in unit1 if parks and t > parks[-1]]
+        check("Issue #112 core 1 parked while the bus task is in an RS485 transaction of over 30 s "
+              "(no answer, 5 s timeout, 5 retries): the bus task stops between two attempts, so no "
+              "park is refused; the upload is answered (image rejected) and the transaction goes on "
+              "after the parks",
+              first is not None and parks and first < parks[0] and st == 400
+              and isinstance(body, bytes) and b"rejected" in body and len(parks) >= 2
+              and len(resumed) == len(parks) and not refused and after,
+              f"POST {st} {body[:60]!r} {answered - asked:.1f} s after the mute; first park "
+              f"{parks[0] - first:.1f} s into the transaction; parks {resumed} ms; "
+              f"{len(unit1)} attempts to unit 1 ({len(after)} after the parks); {refused[:1]}"
+              if first is not None and parks else
+              f"POST {st} {body[:60]!r}; request to unit 1 {first}; parks {len(parks)}; "
+              f"{refused[:1]}")
+    finally:
+        if muted:
+            slave.server_ctx[1] = slave.ctx
+        gw.kill()
+        obs.close()
+        broker.terminate()
+        broker.wait()
 
 
 def run_ota(args, work):
@@ -3848,6 +3936,8 @@ def main():
             run_scenario("https", lambda: run_https(args, work))
         if want("ota"):
             run_scenario("FW-1 OTA", lambda: run_ota(args, work))
+            run_scenario("issue #112 park in a long RS485 transaction",
+                         lambda: run_park_long_txn(args, work, slave))
             run_scenario("issue #97 OTA trial wiring", lambda: run_ota_wiring(args, work))
             run_scenario("issues #99/#101 OTA trial", lambda: run_ota_trial(args, work))
         if want("nvs"):
@@ -3908,7 +3998,8 @@ def main():
                  if (m := RESUMED_RX.search(ln))]
         gave_up = [ln for g in GATEWAYS for _, ln in list(g.lines) if PARK_BOUND_RX.search(ln)]
         check("Issue #111 every park of core 1 (QEMU build) ended within its bound and none was "
-              "refused (all emulators of the run)", not gave_up,
+              "refused; issue #112: no blocking IPC call reached core 1 while it was parked (all "
+              "emulators of the run)", not gave_up,
               f"{len(parks)} parks, longest {max(parks) if parks else 0} ms; {gave_up[:2]}")
         seq_errors = seq_continuity(CAPTURE)
         check("SPB-5 seq continuity per session", not seq_errors, "; ".join(seq_errors) or "ok")

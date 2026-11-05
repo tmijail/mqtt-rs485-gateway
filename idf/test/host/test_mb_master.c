@@ -148,6 +148,52 @@ static void test_writes(void)
     TEST_ASSERT_EQUAL_HEX16(0xCCCD, s.holding[21]);
 }
 
+/* Issue #112: the bus task can stop between two attempts (on_attempt) in the QEMU build; the
+ * park of core 1 waits that long at most. Worst valid configuration: 1200 baud, 5 s response
+ * timeout, 5 retries, 1 s inter-frame delay, so a whole transaction lasts over 30 s. */
+static uint64_t s_attempt_at[8];
+static unsigned s_attempts;
+
+static void record_attempt(void *ctx)
+{
+    if (s_attempts < 8) {
+        s_attempt_at[s_attempts] = ((sim_slave_t *)ctx)->clock_us;
+    }
+    s_attempts++;
+}
+
+static void test_attempt_bound(void)
+{
+    /* default settings: t3.5 4.011 ms + 5 + tx 256 B 12-bit at 9600 (320 + 20) + 200 + frame
+     * timeouts of 1 and 256 characters (21 + 297) */
+    uint32_t b = mb_master_attempt_max_ms(&m);
+    TEST_ASSERT_EQUAL_UINT32(5 + 5 + 340 + 200 + 25 + 317, b);
+
+    sim_reset(&s, 1);
+    s.offline = true;
+    mb_transport_t t = sim_transport(&s);
+    t.on_attempt = record_attempt;
+    mb_master_cfg_t c = {.baud = 1200, .response_timeout_ms = 5000, .retries = 5,
+                         .inter_frame_delay_ms = 1000};
+    mb_master_init(&m, &t, &c);
+    b = mb_master_attempt_max_ms(&m);
+    TEST_ASSERT_GREATER_THAN_UINT32(10000, b);   /* the old fixed wait refused this one */
+    TEST_ASSERT_LESS_THAN_UINT32(15000, b);      /* below the 15 s task watchdog */
+
+    s_attempts = 0;
+    s.clock_us = 1000000;
+    mb_request_t rq = {.unit = 1, .fc = MB_FC_READ_HOLDING_REGISTERS, .addr = 0, .qty = 10};
+    mb_response_t rsp;
+    TEST_ASSERT_EQUAL(MB_ERR_TIMEOUT, mb_master_execute(&m, &rq, &rsp));
+    uint64_t end = s.clock_us;
+    TEST_ASSERT_EQUAL(6, s_attempts);
+    TEST_ASSERT_GREATER_THAN_UINT64(30000000u, end - s_attempt_at[0]);
+    for (unsigned i = 1; i < 6; i++) {
+        TEST_ASSERT_LESS_OR_EQUAL_UINT64((uint64_t)b * 1000u, s_attempt_at[i] - s_attempt_at[i - 1]);
+    }
+    TEST_ASSERT_LESS_OR_EQUAL_UINT64((uint64_t)b * 1000u, end - s_attempt_at[5]);
+}
+
 static void test_invalid_request(void)
 {
     mb_request_t rq = {.unit = 1, .fc = MB_FC_READ_HOLDING_REGISTERS, .addr = 0, .qty = 0};
@@ -167,6 +213,7 @@ int main(void)
     RUN_TEST(test_wrong_unit_is_frame_error);
     RUN_TEST(test_exception_not_retried);
     RUN_TEST(test_writes);
+    RUN_TEST(test_attempt_bound);
     RUN_TEST(test_invalid_request);
     return UNITY_END();
 }

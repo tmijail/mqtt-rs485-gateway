@@ -38,6 +38,18 @@ static uint32_t frame_timeout_ms(const mb_master_t *m, size_t nbytes)
     return (uint32_t)((nbytes * m->char_us + m->t35_us) / 1000u) + MB_FRAME_MARGIN_MS;
 }
 
+uint32_t mb_master_attempt_max_ms(const mb_master_t *m)
+{
+    /* attempt(): wait_bus_silence(), write(), rx(2, response timeout), then at most
+     * rx(1, frame_timeout(1)) and one rx of the rest (the drain of a frame that is not an
+     * answer, frame_timeout(8), is shorter) */
+    uint64_t ms = (m->t35_us + 999u) / 1000u + m->cfg.inter_frame_delay_ms +
+                  mb_tx_timeout_ms(m->cfg.baud, mb_char_bits(true, 2), MB_ADU_MAX) +
+                  m->cfg.response_timeout_ms + frame_timeout_ms(m, 1) +
+                  frame_timeout_ms(m, MB_ADU_MAX);
+    return ms > UINT32_MAX ? UINT32_MAX : (uint32_t)ms;
+}
+
 static void wait_bus_silence(mb_master_t *m)
 {
     uint64_t ready = m->last_bus_us + m->t35_us + (uint64_t)m->cfg.inter_frame_delay_ms * 1000u;

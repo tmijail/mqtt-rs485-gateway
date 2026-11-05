@@ -12,6 +12,7 @@
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
+#include "esp_ipc.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_random.h"
@@ -153,6 +154,64 @@ static void park_init(void)
     s_park_lock = xSemaphoreCreateMutexStatic(&s_park_lock_buf);
 }
 
+/* Issue #112: a blocking IPC call to the parked core waits until the park ends (ipc1 runs at
+ * the caller's priority, CONFIG_ESP_IPC_USES_CALLERS_PRIORITY, below fw_park), and deadlocks if
+ * the caller holds a lock the parked section needs. Nothing does it today; the build wraps both
+ * calls (CMakeLists.txt, --wrap) so that one made while parked is recorded here, without a log
+ * line or a lock, and reported by park(false). */
+static portMUX_TYPE s_ipc_mux = portMUX_INITIALIZER_UNLOCKED;
+static const char *s_ipc_api;          /* the first offending call of this park, NULL: none */
+static char s_ipc_task[configMAX_TASK_NAME_LEN];
+static esp_ipc_func_t s_ipc_func;
+
+esp_err_t __real_esp_ipc_call(uint32_t cpu_id, esp_ipc_func_t func, void *arg);
+esp_err_t __real_esp_ipc_call_blocking(uint32_t cpu_id, esp_ipc_func_t func, void *arg);
+esp_err_t __wrap_esp_ipc_call(uint32_t cpu_id, esp_ipc_func_t func, void *arg);
+esp_err_t __wrap_esp_ipc_call_blocking(uint32_t cpu_id, esp_ipc_func_t func, void *arg);
+
+static void ipc_check(uint32_t cpu_id, const char *api, esp_ipc_func_t func)
+{
+    if (!s_parked || cpu_id != 1) {
+        return;
+    }
+    const char *name = xPortInIsrContext() ? "(ISR)" : pcTaskGetName(NULL);
+    portENTER_CRITICAL_SAFE(&s_ipc_mux);
+    if (s_ipc_api == NULL) {
+        s_ipc_api = api;
+        s_ipc_func = func;
+        strlcpy(s_ipc_task, name, sizeof(s_ipc_task));
+    }
+    portEXIT_CRITICAL_SAFE(&s_ipc_mux);
+}
+
+esp_err_t __wrap_esp_ipc_call(uint32_t cpu_id, esp_ipc_func_t func, void *arg)
+{
+    ipc_check(cpu_id, "esp_ipc_call", func);
+    return __real_esp_ipc_call(cpu_id, func, arg);
+}
+
+esp_err_t __wrap_esp_ipc_call_blocking(uint32_t cpu_id, esp_ipc_func_t func, void *arg)
+{
+    ipc_check(cpu_id, "esp_ipc_call_blocking", func);
+    return __real_esp_ipc_call_blocking(cpu_id, func, arg);
+}
+
+/* The offending call of the park that just ended, if any (park(false), core 1 running). */
+static void ipc_report(void)
+{
+    portENTER_CRITICAL(&s_ipc_mux);
+    const char *api = s_ipc_api;
+    esp_ipc_func_t func = s_ipc_func;
+    char task[sizeof(s_ipc_task)];
+    memcpy(task, s_ipc_task, sizeof(task));
+    s_ipc_api = NULL;
+    portEXIT_CRITICAL(&s_ipc_mux);
+    if (api != NULL) {
+        ESP_LOGE(TAG, "blocking IPC to core 1 while it was parked: %s(%p) from task %s "
+                      "(issue #112)", api, (void *)func, task);
+    }
+}
+
 static void park(bool on)
 {
     if (!on) {
@@ -171,6 +230,7 @@ static void park(bool on)
             ESP_LOGE(TAG, "core 1 park bound reached: core 1 resumed by itself after %u s, "
                           "before the parked section ended (issue #111)", PARK_MAX_MS / 1000);
         }
+        ipc_report();
         /* before the bus task goes on: none of its lines comes before this one (the E2E) */
         ESP_LOGI(TAG, "core 1 resumed after %lu ms", ms);
         gw_bus_release();
