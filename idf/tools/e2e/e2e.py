@@ -3710,8 +3710,9 @@ def run_nvs_ota(args, work):
         update("plain")
         refused = obs.wait(ndata_t, 120, lambda p: (fw_state(p) or "").startswith(
             "failed: image e2e-plain refused: built without NVS encryption"))
-        why = gw.find(r"fw: update refused: the image built without NVS encryption \(this device's "
-                      r"NVS is encrypted\)", asked)
+        # the NDATA can arrive before the console line is read (issue #107: slower emulation)
+        why = gw.wait_log(r"fw: update refused: the image built without NVS encryption \(this "
+                          r"device's NVS is encrypted\)", 10, asked)
         time.sleep(3)
         restarted = any(m[1] == f"{T}/NDEATH/{node}" for m in CAPTURE if m[0] >= asked)
         gw.kill()
