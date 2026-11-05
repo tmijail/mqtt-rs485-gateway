@@ -24,6 +24,7 @@ import base64
 import http.client as httplib
 import json
 import logging
+import math
 import os
 import pathlib
 import queue
@@ -2726,8 +2727,119 @@ APP_DESC_MAGIC = 0xABCD5432
 
 
 # Issue #107: a 1 MB web upload is answered once the image is written and verified: with the
-# PSRAM build (software AES and SHA) and single-threaded TCG that took about 150 s
-UPLOAD_TIMEOUT_S = 300
+# PSRAM build (software AES and SHA) and single-threaded TCG that took about 150 s, about 25 s
+# with MTTCG. Issue #115: no fixed timeout then (300 s had little margin on a loaded host): the
+# upload waits as long as the gateway makes progress, and fails after UPLOAD_STALL_S without
+# any, or UPLOAD_CAP_S in all (both times --timeout-scale). Progress is what the gateway reports:
+# the bytes written so far in the shell's `status` (asked every UPLOAD_STATUS_S; the client's
+# own sending says nothing, slirp takes the whole megabyte at once), then the lines of the image
+# check on the console. The stall bound is above the harness' own 60 s silence limit in an image
+# check, which catches a hang in the verification first.
+UPLOAD_STALL_S = 90
+UPLOAD_CAP_S = 900
+UPLOAD_STATUS_S = 10
+UPLOAD_CHUNK = 16384
+UPLOAD_PROGRESS_RX = re.compile(r"fw: |esp_image: |esp_ota_ops: |secure_boot_v2: |"
+                                r"web: firmware upload")
+UPLOAD_BYTES_RX = re.compile(r"^ota\s.*\((\d+) of \d+ bytes\)")
+
+
+def wait_progress(ready, token, stall_s, cap_s, poll_s=1.0, clock=time.monotonic,
+                  sleep=time.sleep):
+    """Issue #115: wait until ready() is true ("ready"), as long as token() keeps changing: "stall"
+    once it has not changed for @stall_s, "cap" after @cap_s in all."""
+    start = last_at = clock()
+    last = token()
+    while True:
+        if ready():
+            return "ready"
+        now = clock()
+        cur = token()
+        if cur != last:
+            last, last_at = cur, now
+        elif now - last_at >= stall_s:
+            return "stall"
+        if now - start >= cap_s:
+            return "cap"
+        sleep(poll_s)
+
+
+def upload_firmware(gw, data, auth=("admin", WEB_PASSWORD)):
+    """POST /api/firmware with the image @data, as http() does it (Basic auth, the CSRF header,
+    the device certificate into PEER_CERT): (status, headers dict, body bytes), or (None, {},
+    reason) when the request failed, stalled or ran past its cap (issue #115, wait_progress()).
+    Progress: the bytes written as @gw's shell reports them, and its console lines of the upload
+    and the image check. Raises AttemptAborted after an emulator fault, like a wait."""
+    scale = ARGS.timeout_scale if ARGS is not None else 1.0
+    stall_s, cap_s = UPLOAD_STALL_S * scale, UPLOAD_CAP_S * scale
+    h = {"X-Requested-With": "e2e", "Content-Type": "application/octet-stream",
+         "Content-Length": str(len(data))}
+    if auth is not None:
+        h["Authorization"] = "Basic " + base64.b64encode(f"{auth[0]}:{auth[1]}".encode()).decode()
+    first_line = len(gw.lines)
+    sent, result, conn = [0], {}, {}
+
+    def run():
+        try:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            c = httplib.HTTPSConnection("127.0.0.1", HTTPS_PORT, timeout=cap_s, context=ctx)
+            conn["c"] = c
+            c.putrequest("POST", "/api/firmware", skip_accept_encoding=True)
+            for k, v in h.items():
+                c.putheader(k, v)
+            c.endheaders()
+            PEER_CERT["der"] = c.sock.getpeercert(binary_form=True)
+            for i in range(0, len(data), UPLOAD_CHUNK):
+                c.send(data[i:i + UPLOAD_CHUNK])
+                sent[0] = min(len(data), i + UPLOAD_CHUNK)
+            r = c.getresponse()
+            body = r.read()
+            c.close()
+            result["r"] = (r.status, {k.lower(): v for k, v in r.getheaders()}, body)
+        except (OSError, httplib.HTTPException, ssl.SSLError) as e:
+            result["r"] = (None, {}, str(e).encode())
+
+    def lines():
+        return sum(1 for _, ln in list(gw.lines)[first_line:] if UPLOAD_PROGRESS_RX.search(ln))
+
+    asked = [0.0]
+
+    def written():
+        """The bytes written so far, from the shell's latest `status` (asked again every
+        UPLOAD_STATUS_S)."""
+        if time.monotonic() - asked[0] >= UPLOAD_STATUS_S:
+            asked[0] = time.monotonic()
+            try:
+                gw.console("status")
+            except QemuGone:
+                pass   # the fault monitor reports it; the wait raises
+        got = [int(m.group(1)) for _, ln in list(gw.lines)[first_line:]
+               if (m := UPLOAD_BYTES_RX.search(ln))]
+        return max(got, default=0)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    how = "aborted"
+    try:
+        how = wait_progress(lambda: wait_left(math.inf) > 0 and not worker.is_alive(),
+                            lambda: (written(), lines()), stall_s, cap_s)
+    finally:
+        if how != "ready":   # unblock the worker: the request is given up
+            c = conn.get("c")
+            if c is not None and c.sock is not None:
+                try:
+                    c.sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            worker.join(10)
+    if how == "ready":
+        return result.get("r", (None, {}, b"no answer"))
+    what = (f"no progress for {stall_s:.0f} s" if how == "stall" else
+            f"still running after {cap_s:.0f} s")
+    return None, {}, (f"upload {what}: {sent[0]} of {len(data)} bytes sent, {written()} written "
+                      f"(shell), {lines()} upload line(s) on the console").encode()
 
 
 def fw_image(src, version, dst, corrupt=False):
@@ -2861,24 +2973,26 @@ def run_park_storm(gw, image, obs, ndata_t):
     result = {}
 
     def post():
-        result["r"] = http("POST", "/api/firmware", image.read_bytes(),
-                           headers={"Content-Type": "application/octet-stream"},
-                           timeout=UPLOAD_TIMEOUT_S)
+        result["r"] = upload_firmware(gw, image.read_bytes())
         result["t"] = time.monotonic()
 
     poster = threading.Thread(target=post, daemon=True)
     poster.start()
-    receiving = gw.wait_log(r"fw: receiving a firmware upload", UPLOAD_TIMEOUT_S, asked)
+    receiving = gw.wait_log(r"fw: receiving a firmware upload", UPLOAD_STALL_S * ARGS.timeout_scale,
+                            asked)
     gw.console("storm 0")   # the transfer itself without the storm
     paused = gw.wait_log(r"console storm stopped", 15, receiving or asked)
     # an NDATA carries the State only when its text changes ("receiving e2e-bad" at 10 %), the
     # Progress (alias 42) at each step: this upload is the only transfer running
-    late = obs.wait(ndata_t, UPLOAD_TIMEOUT_S, lambda p: metric(p, alias=42) is not None
-                    and (metric(p, alias=42).long_value or metric(p, alias=42).int_value) >= 80)
+    # (issue #115: for as long as the upload runs, its own helper bounds it)
+    late = None
+    while late is None and poster.is_alive():
+        late = obs.wait(ndata_t, 2, lambda p: metric(p, alias=42) is not None
+                        and (metric(p, alias=42).long_value or metric(p, alias=42).int_value) >= 80)
     again = time.monotonic()
     gw.console("storm 600000")
     second_on = started(again)
-    poster.join(UPLOAD_TIMEOUT_S + 10)
+    poster.join()
     st, _, body = result.get("r", (None, {}, b"no answer"))
     answered = result.get("t", time.monotonic())
     after = gw.wait_log(STORM_RX.pattern, 15, answered)
@@ -2978,9 +3092,7 @@ def run_park_long_txn(args, work, slave):
         until(unit1_attempts, 20)
         first = (unit1_attempts() or [None])[0]
         until(lambda: False, 1.0)   # the first attempt of that request is under way
-        st, _, body = http("POST", "/api/firmware", image.read_bytes(),
-                           headers={"Content-Type": "application/octet-stream"},
-                           timeout=UPLOAD_TIMEOUT_S)
+        st, _, body = upload_firmware(gw, image.read_bytes())
         answered = time.monotonic()
         gw.wait_log(r"fw: firmware update failed: image e2e-long rejected", 20, asked)
         lines = [(t, ln) for t, ln in list(gw.lines) if t >= asked]
@@ -3209,9 +3321,7 @@ def run_ota(args, work):
         timeout_s = sdkconfig_int(args.sdkconfig, "GW_FW_CONFIRM_TIMEOUT_S")
         gw.wait_log(r"edge: time synchronised", 10, nb3[0] - 5 if nb3 else t0)
         asked = time.monotonic()
-        st, _, body = http("POST", "/api/firmware", images["v3"].read_bytes(),
-                           headers={"Content-Type": "application/octet-stream"},
-                           timeout=UPLOAD_TIMEOUT_S)
+        st, _, body = upload_firmware(gw, images["v3"].read_bytes())
         death = obs.wait(f"{T}/NDEATH/{node}", 20)
         broker.terminate()
         broker.wait()
@@ -3300,10 +3410,8 @@ def run_ota_wiring(args, work):
     timeout_s = sdkconfig_int(args.sdkconfig, "GW_FW_CONFIRM_TIMEOUT_S")
 
     def upload(version, pw):
-        st, _, body = http("POST", "/api/firmware", (fwdir / f"{version}.bin").read_bytes(),
-                           auth=("admin", pw or "?"),
-                           headers={"Content-Type": "application/octet-stream"},
-                           timeout=UPLOAD_TIMEOUT_S)
+        st, _, body = upload_firmware(gw, (fwdir / f"{version}.bin").read_bytes(),
+                                      auth=("admin", pw or "?"))
         return st, body
 
     # 1. a stored configuration the new image rejects (a syntax error: the running image runs in
@@ -3429,9 +3537,7 @@ def run_ota_trial(args, work):
         return metric(item[2], name="Node Info/Firmware").string_value if item else None
 
     def upload(name):
-        return http("POST", "/api/firmware", images[name].read_bytes(),
-                    headers={"Content-Type": "application/octet-stream"},
-                    timeout=UPLOAD_TIMEOUT_S)
+        return upload_firmware(gw, images[name].read_bytes())
 
     t0 = time.monotonic()
     gw = boot_variant(args, work, "trial", cfg)
