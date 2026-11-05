@@ -201,7 +201,7 @@ static void bdseq_fallback(bool have, uint8_t old)
 #define MIG_TMP  CFG_MOUNT "/.nvsmig.tmp"
 #define MIG_DONE "nvsmig_ok"          /* in NVS_GW */
 #define MIG_BUSY "nvsmig_busy"        /* in NVS_GW: written first, issue #104 */
-#define MIG_ERASE "nvsmig_erase"      /* in NVS_GW of the plain NVS: erase in progress, #109 */
+#define MIG_ERASE GW_NVSMIG_ERASE_KEY /* in NVS_GW of the plain NVS: erase in progress, #109 */
 #define MIG_BDSEQ CFG_MOUNT "/.nvsmig-bdseq"   /* issue #104: bdSeq reserved without NVS */
 
 #if CONFIG_GW_IO_SIMULATED
@@ -465,33 +465,42 @@ static esp_err_t done_marker(bool set, uint32_t crc)
     return mark(MIG_DONE, set, crc);
 }
 
-/* Issue #109: the offset of the raw page holding u8 item @p ns / @p key of a plain NVS, or -1. */
-static int32_t raw_u8_page(const esp_partition_t *p, const char *ns, const char *key)
+/* Issue #109: the offset of the raw page holding the "erase in progress" entry, or -1. Round 3b:
+ * found by the entry itself (gw_nvsraw_has_erase_marker), not through the "gw" namespace entry,
+ * which may be on a page the erase already took. */
+static int32_t raw_marker_page(const esp_partition_t *p)
 {
     uint8_t *page = heap_caps_malloc(GW_NVSRAW_PAGE, MALLOC_CAP_8BIT);
     if (p == NULL || page == NULL) {
         heap_caps_free(page);
         return -1;
     }
-    gw_nvsraw_u8_t f;
-    gw_nvsraw_u8_init(&f, ns, key);
     int32_t at = -1;
-    for (int pass = 0; pass < 2 && at < 0; pass++) {   /* the namespace's index, then the item */
-        for (uint32_t off = 0; off + GW_NVSRAW_PAGE <= p->size && at < 0; off += GW_NVSRAW_PAGE) {
-            if (esp_partition_read_raw(p, off, page, GW_NVSRAW_PAGE) != ESP_OK) {
-                continue;
-            }
-            if (pass == 0) {
-                gw_nvsraw_u8_ns(&f, page);
-            } else {
-                f.found = false;
-                gw_nvsraw_u8_item(&f, page);
-                at = f.found ? (int32_t)off : -1;
-            }
+    for (uint32_t off = 0; off + GW_NVSRAW_PAGE <= p->size && at < 0; off += GW_NVSRAW_PAGE) {
+        if (esp_partition_read_raw(p, off, page, GW_NVSRAW_PAGE) == ESP_OK &&
+            gw_nvsraw_has_erase_marker(page)) {
+            at = (int32_t)off;
         }
     }
     heap_caps_free(page);
     return at;
+}
+
+/* Issue #109 round 3b B1: the entry was written but its page is not found: it goes again, so it
+ * cannot later make an intact partition look partly erased. */
+static void drop_marker(void)
+{
+    nvs_handle_t h;
+    if (nvs_flash_init_partition(NVS_DEFAULT_PART_NAME) != ESP_OK) {
+        return;
+    }
+    if (nvs_open_from_partition(NVS_DEFAULT_PART_NAME, NVS_GW, NVS_READWRITE, &h) == ESP_OK) {
+        if (nvs_erase_key(h, MIG_ERASE) == ESP_OK) {
+            nvs_commit(h);
+        }
+        nvs_close(h);
+    }
+    nvs_flash_deinit_partition(NVS_DEFAULT_PART_NAME);
 }
 
 /* Issue #109: "PLAIN with keys" is ambiguous: the keys come first, and a migration may stop before
@@ -507,7 +516,7 @@ static bool erase_plain(void)
     if (e == ESP_OK) {
         e = nvs_open_from_partition(NVS_DEFAULT_PART_NAME, NVS_GW, NVS_READWRITE, &h);
         if (e == ESP_OK) {
-            e = nvs_set_u8(h, MIG_ERASE, 1);
+            e = nvs_set_u8(h, MIG_ERASE, GW_NVSMIG_ERASE_VALUE);
             if (e == ESP_OK) {
                 e = nvs_commit(h);
             }
@@ -515,10 +524,13 @@ static bool erase_plain(void)
         }
         nvs_flash_deinit_partition(NVS_DEFAULT_PART_NAME);
     }
-    int32_t at = e == ESP_OK ? raw_u8_page(p, NVS_GW, MIG_ERASE) : -1;
+    int32_t at = e == ESP_OK ? raw_marker_page(p) : -1;
     if (at < 0) {
         ESP_LOGE(TAG, "NVS migration: the \"erase in progress\" entry could not be written or found "
                       "(%s): nothing erased", esp_err_to_name(e));
+        if (e == ESP_OK) {
+            drop_marker();
+        }
         return false;
     }
     uint32_t a = (uint32_t)at;
@@ -537,7 +549,9 @@ static bool erase_plain(void)
 }
 
 /* Step 3 and 4 (above) from the copy in @p buf. False: the copy stays, no NVS this boot.
- * @p plain: the partition still holds the unencrypted NVS (a migration, not a resume). */
+ * @p plain: the partition holds an unencrypted NVS that starts (a migration that read it, not a
+ * resume, nor one whose NVS does not start by layout: issue #109 round 3b, erased whole as before,
+ * without the "erase in progress" entry, which is written through it). */
 static bool nvs_apply(const nvs_sec_cfg_t *cfg, const uint8_t *buf, size_t size, unsigned count,
                       bool plain)
 {
@@ -728,7 +742,7 @@ static void nvs_migrate(const esp_partition_t *p, bool raw_have, uint8_t raw_val
             ESP_LOGE(TAG, "NVS migration: no copy in " MIG_COPY " (%s): nothing erased this boot",
                      esp_err_to_name(e));
             no_migration(old);
-        } else if (nvs_apply(&cfg, buf, size, count, true)) {
+        } else if (nvs_apply(&cfg, buf, size, count, gw_nvsmig_erase_with_marker(&rd))) {
             ESP_LOGW(TAG, "NVS migration: %u entries moved into the encrypted NVS (%u skipped); "
                           "bdSeq continues", count, rd.skipped);
         }
@@ -1035,7 +1049,7 @@ static void nvs_prepare(void)
         busy = keys && kind == GW_NVSRAW_ENCRYPTED && mig_started(&k);
         memset(&k, 0, sizeof(k));
         erase_marker = (kind == GW_NVSRAW_PLAIN || kind == GW_NVSRAW_MIXED) &&
-                       raw_u8_page(p, NVS_GW, MIG_ERASE) >= 0;   /* issue #109 */
+                       raw_marker_page(p) >= 0;   /* issue #109 */
         s_fs_unknown = true;
     }
     const gw_nvsmig_state_t state = {.kind = kind, .raw_ok = raw_ok, .copy = copy,
@@ -1139,7 +1153,11 @@ esp_err_t gw_storage_init(void)
         s_nvs_why = "the NVS does not start and LittleFS, which may hold the copy of an NVS "
                     "migration, does not mount: nothing is erased nor formatted";
 #if CONFIG_NVS_ENCRYPTION
-        s_bdseq_random = true;   /* no NVS and no reservation possible */
+        /* no NVS and no reservation possible: random values; round 3b B2: the RAM value and the
+         * base agree, so a discard save before any session reserves from where this boot is */
+        s_bdseq_random = true;
+        s_bdseq_ram = (uint8_t)(esp_random() & 0xFFu);
+        s_side_base = s_bdseq_ram;
 #endif
     } else if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_LOGW(TAG, "NVS layout changed, erasing");

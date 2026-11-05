@@ -248,6 +248,63 @@ static void test_mixed_pages(void)
     TEST_ASSERT_EQUAL(GW_NVSRAW_PLAIN, gw_nvsraw_verdict(&s));
 }
 
+/* Issue #109 round 3b: the "erase in progress" entry is recognised by itself, even when the page
+ * with its namespace's entry was erased first (a device that ran a while has "gw" on an older
+ * page than the active one where the entry lands) */
+static void put_marker(uint8_t *pg, unsigned i, uint8_t ns, uint8_t value)
+{
+    uint8_t *e = pg + 64 + 32 * i;
+    e[0] = ns;
+    e[1] = 0x01;   /* u8 */
+    e[2] = 1;
+    memset(e + 8, 0, 16);
+    memcpy(e + 8, GW_NVSMIG_ERASE_KEY, strlen(GW_NVSMIG_ERASE_KEY));
+    set_u8(pg, i, value);
+}
+
+static void test_erase_marker_without_its_namespace(void)
+{
+    TEST_ASSERT_FALSE(gw_nvsraw_has_erase_marker(load(k_plain)));
+    TEST_ASSERT_FALSE(gw_nvsraw_has_erase_marker(load(k_enc)));
+    /* the marker in namespace "gw" (index 3) on a page whose "gw" entry is gone (here: its CRC
+     * broken, as good as erased): the namespace-bound finder cannot see it, the marker check can */
+    load(k_plain);
+    put_marker(page, 1, 3, GW_NVSMIG_ERASE_VALUE);
+    page[64 + 32 * 7 + 4] ^= 0x5A;   /* the "gw" namespace entry */
+    TEST_ASSERT_TRUE(gw_nvsraw_has_erase_marker(page));
+    gw_nvsraw_u8_t f;
+    gw_nvsraw_u8_init(&f, "gw", GW_NVSMIG_ERASE_KEY);
+    gw_nvsraw_u8_ns(&f, page);
+    gw_nvsraw_u8_item(&f, page);
+    TEST_ASSERT_FALSE(f.found);
+    /* any namespace index; not with another value, nor as a namespace entry (index 0), nor with a
+     * broken CRC */
+    load(k_plain);
+    put_marker(page, 1, 9, GW_NVSMIG_ERASE_VALUE);
+    TEST_ASSERT_TRUE(gw_nvsraw_has_erase_marker(page));
+    put_marker(page, 1, 3, 1);
+    TEST_ASSERT_FALSE(gw_nvsraw_has_erase_marker(page));
+    put_marker(page, 1, 0, GW_NVSMIG_ERASE_VALUE);
+    TEST_ASSERT_FALSE(gw_nvsraw_has_erase_marker(page));
+    put_marker(page, 1, 3, GW_NVSMIG_ERASE_VALUE);
+    page[64 + 32 + 4] ^= 1;
+    TEST_ASSERT_FALSE(gw_nvsraw_has_erase_marker(page));
+}
+
+/* Issue #109 round 3b: the entry is written through the plain NVS; one that does not start by
+ * layout (full: NO_FREE_PAGES) is erased whole without it, as before, never left for good */
+static void test_erase_mode(void)
+{
+    gw_nvsmig_read_t r = {.init_ok = true, .listed_all = true};
+    TEST_ASSERT_TRUE(gw_nvsmig_may_erase(&r));
+    TEST_ASSERT_TRUE(gw_nvsmig_erase_with_marker(&r));
+    gw_nvsmig_read_t full = {.init_ok = false, .init_layout_error = true};
+    TEST_ASSERT_TRUE(gw_nvsmig_may_erase(&full));
+    TEST_ASSERT_FALSE(gw_nvsmig_erase_with_marker(&full));
+    gw_nvsmig_read_t broken = {.init_ok = false, .init_layout_error = false};
+    TEST_ASSERT_FALSE(gw_nvsmig_may_erase(&broken));
+}
+
 static void test_raw_u8_bdseq(void)
 {
     gw_nvsraw_u8_t f;
@@ -880,6 +937,8 @@ int main(void)
     RUN_TEST(test_several_pages_accumulate);
     RUN_TEST(test_mixed_pages);
     RUN_TEST(test_raw_u8_bdseq);
+    RUN_TEST(test_erase_marker_without_its_namespace);
+    RUN_TEST(test_erase_mode);
     RUN_TEST(test_copy_round_trip);
     RUN_TEST(test_decide);
     RUN_TEST(test_decide_with_copy);

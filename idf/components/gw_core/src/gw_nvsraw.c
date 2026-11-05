@@ -204,6 +204,24 @@ static void on_item(gw_nvsraw_u8_t *f, const uint8_t *e, uint32_t seq, uint32_t 
     }
 }
 
+static void on_marker(gw_nvsraw_u8_t *f, const uint8_t *e, uint32_t seq, uint32_t i)
+{
+    (void)seq;
+    (void)i;
+    if (e[0] != 0 && e[1] == TYPE_U8 && key_is(e, GW_NVSMIG_ERASE_KEY) &&
+        e[24] == GW_NVSMIG_ERASE_VALUE) {
+        f->found = true;
+    }
+}
+
+bool gw_nvsraw_has_erase_marker(const uint8_t *page)
+{
+    gw_nvsraw_u8_t f;
+    gw_nvsraw_u8_init(&f, "", GW_NVSMIG_ERASE_KEY);
+    each_item(page, on_marker, &f);
+    return f.found;
+}
+
 void gw_nvsraw_u8_ns(gw_nvsraw_u8_t *f, const uint8_t *page)
 {
     each_item(page, on_ns, f);
@@ -460,6 +478,11 @@ uint8_t gw_nvsmig_bdseq_fold(bool have_nvs, uint8_t nvs, const gw_nvsmig_side_t 
         return side->next;
     }
     return gw_nvsmig_bdseq_later(nvs, side->next);
+}
+
+bool gw_nvsmig_erase_with_marker(const gw_nvsmig_read_t *r)
+{
+    return r->init_ok;
 }
 
 gw_nvsmig_action_t gw_nvsmig_decide(const gw_nvsmig_state_t *s)

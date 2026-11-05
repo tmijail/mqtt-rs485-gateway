@@ -71,6 +71,16 @@ typedef struct {
 } gw_nvsraw_u8_t;
 
 void gw_nvsraw_u8_init(gw_nvsraw_u8_t *f, const char *ns, const char *key);
+
+/* Issue #109: the "erase in progress" entry a migration writes into the plain NVS right before it
+ * erases the partition (the erase takes its page last). Recognised by itself, whatever namespace
+ * index it has: the page with the namespace's own entry may be erased already (issue #109 round
+ * 3b). A key no other entry of the firmware uses, type u8 and a fixed value. */
+#define GW_NVSMIG_ERASE_KEY "_gw_erase_mark"
+#define GW_NVSMIG_ERASE_VALUE 0xA5u
+
+/** True when the raw @p page (a valid page, a plain item with a valid CRC) holds that entry. */
+bool gw_nvsraw_has_erase_marker(const uint8_t *page);
 void gw_nvsraw_u8_ns(gw_nvsraw_u8_t *f, const uint8_t *page);
 void gw_nvsraw_u8_item(gw_nvsraw_u8_t *f, const uint8_t *page);
 
@@ -163,6 +173,12 @@ typedef struct {
  *  layout, as IDF itself would erase it). Anything else (no memory, a flash read error, an
  *  iteration that stopped early, one skipped entry) erases nothing: the boot stays unencrypted. */
 bool gw_nvsmig_may_erase(const gw_nvsmig_read_t *r);
+
+/** Issue #109 round 3b: the erase writes its "erase in progress" entry first only when the plain
+ *  NVS started (it is written through it). An NVS that does not start by layout (NO_FREE_PAGES,
+ *  NEW_VERSION_FOUND, e.g. full) has nothing readable to keep: it is erased whole, without the
+ *  entry, as IDF itself would. */
+bool gw_nvsmig_erase_with_marker(const gw_nvsmig_read_t *r);
 
 typedef enum {
     GW_NVSMIG_COPY_NONE = 0,     /* no copy */
