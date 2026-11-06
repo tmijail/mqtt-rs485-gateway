@@ -1408,17 +1408,14 @@ static void setup_spill(size_t ring)
                  why);
         return;
     }
-    /* segments: at least 8 of them within max_kb, 64..4096 records each (24 B) */
-    uint64_t bytes = (uint64_t)s_cfg->sparkplug.sf_sd_max_kb * 1024u;
-    uint64_t recs = bytes / (8u * sizeof(gw_sf_rec_t));
-    uint32_t seg = (uint32_t)(recs < 64 ? 64 : recs > 4096 ? 4096 : recs);
-    uint64_t segs = bytes / (seg * sizeof(gw_sf_rec_t) + sizeof(gw_sfspill_hdr_t));
-    segs = segs < 2 ? 2 : segs > GW_SFSPILL_MAX_SEGS ? GW_SFSPILL_MAX_SEGS : segs;
+    /* segments: 8..128 of them, together within max_kb and using all of it (#119) */
+    uint32_t seg, segs;
+    gw_sfspill_plan(s_cfg->sparkplug.sf_sd_max_kb, &seg, &segs);
     /* the tag indexes in the records only mean the same with the same devices and tags */
     uint32_t hash = gw_sfspill_fnv(GW_SFSPILL_FNV_INIT, s_cfg->devices,
                                    s_cfg->device_count * sizeof(s_cfg->devices[0]));
     hash = gw_sfspill_fnv(hash, s_cfg->tags, s_cfg->tag_count * sizeof(s_cfg->tags[0]));
-    gw_sfspill_init(&s_spill, &io, seg, (uint32_t)segs, hash);
+    gw_sfspill_init(&s_spill, &io, seg, segs, hash);
     size_t chunk = ring / 4 < 512 ? ring / 4 : 512;
     gw_sf_attach_spill(&s_sf, &s_spill, chunk);
     s_spill_on = true;

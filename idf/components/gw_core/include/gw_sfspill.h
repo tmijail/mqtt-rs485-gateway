@@ -32,6 +32,13 @@ extern "C" {
 #define GW_SFSPILL_VERSION 1u
 #define GW_SFSPILL_MAX_SEGS 128
 
+/* Layout planned by gw_sfspill_plan() for sparkplug.store_forward.sd.max_kb (#119). */
+#define GW_SFSPILL_MIN_KB        64        /* bounds of max_kb, also enforced by gw_config */
+#define GW_SFSPILL_MAX_KB        4194304   /* 4 GiB: a segment stays below 2^31 bytes */
+#define GW_SFSPILL_MIN_SEGS      8         /* segments, at least */
+#define GW_SFSPILL_SEG_RECORDS   4096      /* preferred records per segment: bigger only once
+                                              GW_SFSPILL_MAX_SEGS segments are in use */
+
 typedef struct {
     uint32_t magic;
     uint16_t version;
@@ -73,6 +80,15 @@ typedef struct {
     uint32_t written;        /* records ever written */
     uint32_t kept_at_boot;   /* records found from before the boot */
 } gw_sfspill_t;
+
+/**
+ * Segment layout for a spill bounded to @p max_kb KiB (clamped to GW_SFSPILL_MIN_KB ..
+ * GW_SFSPILL_MAX_KB): GW_SFSPILL_MIN_SEGS .. GW_SFSPILL_MAX_SEGS segments of about
+ * GW_SFSPILL_SEG_RECORDS records, segments made larger when more would not fit in the table.
+ * The segments with their headers fit in max_kb, and they use all of it but less than one
+ * record per segment.
+ */
+void gw_sfspill_plan(uint32_t max_kb, uint32_t *seg_records, uint32_t *max_segs);
 
 /** Recover the segments left by a previous run (same @p cfg_hash), delete the others. */
 void gw_sfspill_init(gw_sfspill_t *sp, const gw_sfspill_io_t *io, uint32_t seg_records,

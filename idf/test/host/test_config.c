@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "gw_config.h"
+#include "gw_sfspill.h"
 #include "support.h"
 #include "unity.h"
 
@@ -460,6 +461,15 @@ static void test_store_forward_key(void)
     ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd.enabled: la tarjeta solo extiende");
     snprintf(doc, sizeof(doc), "%s{\"sd\":{\"max_kb\":8}}}}", head);
     ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd.max_kb: valor 8 fuera de rango");
+    /* the bounds of gw_sfspill_plan() (#119): 64 KB .. 4 GiB */
+    snprintf(doc, sizeof(doc), "%s{\"sd\":{\"max_kb\":64}}}}", head);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_UINT32(GW_SFSPILL_MIN_KB, cfg.sparkplug.sf_sd_max_kb);
+    snprintf(doc, sizeof(doc), "%s{\"sd\":{\"max_kb\":4194304}}}}", head);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_UINT32(GW_SFSPILL_MAX_KB, cfg.sparkplug.sf_sd_max_kb);
+    snprintf(doc, sizeof(doc), "%s{\"sd\":{\"max_kb\":4194305}}}}", head);
+    ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd.max_kb: valor 4194305 fuera de rango");
     snprintf(doc, sizeof(doc), "%s{\"sd\":{\"pins\":1}}}}", head);
     ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd.pins: clave desconocida");
     snprintf(doc, sizeof(doc), "%s{\"sd\":true}}}", head);

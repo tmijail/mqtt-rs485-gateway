@@ -5,6 +5,28 @@
 #define HDR ((uint32_t)sizeof(gw_sfspill_hdr_t))
 #define REC ((uint32_t)sizeof(gw_sf_rec_t))
 
+/* io.size() returns an int32_t: the largest segment must fit. */
+_Static_assert((uint64_t)GW_SFSPILL_MAX_KB * 1024u / GW_SFSPILL_MIN_SEGS <= INT32_MAX,
+               "a spill segment must stay below 2^31 bytes");
+_Static_assert(GW_SFSPILL_MIN_SEGS >= 2 && GW_SFSPILL_MIN_SEGS <= GW_SFSPILL_MAX_SEGS,
+               "segment bounds");
+
+void gw_sfspill_plan(uint32_t max_kb, uint32_t *seg_records, uint32_t *max_segs)
+{
+    max_kb = max_kb < GW_SFSPILL_MIN_KB   ? GW_SFSPILL_MIN_KB
+             : max_kb > GW_SFSPILL_MAX_KB ? GW_SFSPILL_MAX_KB
+                                          : max_kb;
+    uint64_t bytes = (uint64_t)max_kb * 1024u;
+    /* as many preferred-size segments as fit, within the bounds of the segment count ... */
+    uint64_t segs = bytes / ((uint64_t)GW_SFSPILL_SEG_RECORDS * REC + HDR);
+    segs = segs < GW_SFSPILL_MIN_SEGS   ? GW_SFSPILL_MIN_SEGS
+           : segs > GW_SFSPILL_MAX_SEGS ? GW_SFSPILL_MAX_SEGS
+                                        : segs;
+    /* ... then each segment grows (or shrinks) to its share of max_kb, header included */
+    *max_segs = (uint32_t)segs;
+    *seg_records = (uint32_t)((bytes / segs - HDR) / REC);
+}
+
 uint32_t gw_sfspill_fnv(uint32_t h, const void *data, size_t len)
 {
     const uint8_t *p = data;

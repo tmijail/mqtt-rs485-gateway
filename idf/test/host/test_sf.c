@@ -370,6 +370,69 @@ static void test_spill_io_error(void)
     TEST_ASSERT_EQUAL_UINT32(0xE40C292Cu, gw_sfspill_fnv(GW_SFSPILL_FNV_INIT, "a", 1));
 }
 
+/* #119: check one layout of gw_sfspill_plan(): its bounds, and that it fills max_kb. */
+static void check_plan(uint32_t max_kb, uint32_t want_segs, uint32_t want_records)
+{
+    uint32_t recs = 0, segs = 0;
+    gw_sfspill_plan(max_kb, &recs, &segs);
+    char msg[48];
+    snprintf(msg, sizeof(msg), "max_kb %lu", (unsigned long)max_kb);
+    if (want_segs != 0) {
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(want_segs, segs, msg);
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(want_records, recs, msg);
+    }
+    TEST_ASSERT_TRUE_MESSAGE(segs >= GW_SFSPILL_MIN_SEGS && segs <= GW_SFSPILL_MAX_SEGS, msg);
+    uint64_t kb = max_kb < GW_SFSPILL_MIN_KB   ? GW_SFSPILL_MIN_KB
+                  : max_kb > GW_SFSPILL_MAX_KB ? GW_SFSPILL_MAX_KB
+                                               : max_kb;
+    uint64_t bytes = kb * 1024u;
+    uint64_t seg_bytes = sizeof(gw_sfspill_hdr_t) + (uint64_t)recs * sizeof(gw_sf_rec_t);
+    TEST_ASSERT_TRUE_MESSAGE(seg_bytes <= INT32_MAX, msg);              /* io.size() is int32 */
+    TEST_ASSERT_TRUE_MESSAGE(segs * seg_bytes <= bytes, msg);           /* within max_kb */
+    TEST_ASSERT_TRUE_MESSAGE(bytes - segs * seg_bytes < segs * 25u, msg);   /* and all of it */
+    /* the preferred segment size, unless all the segments are in use */
+    TEST_ASSERT_TRUE_MESSAGE(recs >= GW_SFSPILL_SEG_RECORDS || segs == GW_SFSPILL_MIN_SEGS, msg);
+    /* larger than preferred only to stay within the segment table */
+    TEST_ASSERT_TRUE_MESSAGE(recs < GW_SFSPILL_SEG_RECORDS * 2u || segs == GW_SFSPILL_MAX_SEGS,
+                             msg);
+}
+
+/* #119: the segment layout for sparkplug.store_forward.sd.max_kb. Before, segments stopped at
+ * 4096 records, so 128 segments held 12.6 MB at most (the default max_kb is 16 MB), and the
+ * 16-byte headers often left 7 segments instead of 8. */
+static void test_spill_plan(void)
+{
+    TEST_ASSERT_EQUAL_size_t(16, sizeof(gw_sfspill_hdr_t));
+    TEST_ASSERT_EQUAL_size_t(24, sizeof(gw_sf_rec_t));
+    check_plan(GW_SFSPILL_MIN_KB, 8, 340);       /* the minimum: 8 segments (it was 7) */
+    check_plan(128, 8, 682);                     /* the E2E (GW23) layout, unchanged */
+    check_plan(256, 8, 1364);                    /* it was 7 */
+    check_plan(768, 8, 4095);                    /* it was 7 */
+    check_plan(1024, 10, 4368);
+    check_plan(12288, 127, 4127);
+    check_plan(12290, 128, 4096);                /* 128 segments of exactly 4096 */
+    check_plan(16384, 128, 5460);                /* the default: 16 MB used, not 12.6 MB */
+    check_plan(GW_SFSPILL_MAX_KB, 128, 1398100); /* the maximum: 4 GiB, 32 MiB segments */
+    /* out of range (the configuration rejects it): clamped to the bounds */
+    check_plan(0, 8, 340);
+    check_plan(UINT32_MAX, 128, 1398100);
+    /* and every max_kb in between keeps the invariants */
+    for (uint32_t kb = GW_SFSPILL_MIN_KB; kb <= 20000; kb++) {
+        check_plan(kb, 0, 0);
+    }
+    for (uint64_t kb = 20000; kb <= GW_SFSPILL_MAX_KB; kb = kb * 9 / 8 + 7) {
+        check_plan((uint32_t)kb, 0, 0);
+    }
+    /* the planned count is the bound gw_sfspill_init() keeps */
+    mem_reset();
+    gw_sfspill_t sp;
+    uint32_t recs, segs;
+    gw_sfspill_plan(16384, &recs, &segs);
+    gw_sfspill_init(&sp, &io, recs, segs, 1);
+    TEST_ASSERT_EQUAL_UINT32(128, sp.max_segs);
+    TEST_ASSERT_EQUAL_UINT32(5460, sp.seg_records);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -384,5 +447,6 @@ int main(void)
     RUN_TEST(test_spill_strings);
     RUN_TEST(test_spill_survives_reboot);
     RUN_TEST(test_spill_io_error);
+    RUN_TEST(test_spill_plan);
     return UNITY_END();
 }
