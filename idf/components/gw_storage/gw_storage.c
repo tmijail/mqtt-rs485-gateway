@@ -1958,6 +1958,13 @@ void gw_storage_sim_hold_validation(uint32_t ms)
 {
     s_sim_hold_ms = ms;
 }
+
+bool gw_storage_sim_take(const char *name)
+{
+    char path[sizeof(CFG_MOUNT) + 64];
+    snprintf(path, sizeof(path), CFG_MOUNT "/%s", name);
+    return unlink(path) == 0;
+}
 #endif
 
 esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_cfg_err_t *err)
