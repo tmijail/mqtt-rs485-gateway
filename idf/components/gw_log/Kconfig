@@ -1,0 +1,18 @@
+menu "Gateway: remote syslog"
+
+    config GW_SYSLOG_SLOTS
+        int "Log lines buffered for the syslog server"
+        range 8 256
+        default 32
+        help
+            Each slot holds one line (about 250 bytes), allocated at boot in PSRAM when
+            available and only if the configuration enables syslog. When the buffer is
+            full (no network, slow sender) new lines are dropped and counted; the console
+            still shows them.
+
+    config GW_SYSLOG_TASK_PRIORITY
+        int "Syslog sender task priority"
+        range 1 10
+        default 2
+
+endmenu

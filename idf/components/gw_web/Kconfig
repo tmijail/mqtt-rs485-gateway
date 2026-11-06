@@ -1,0 +1,40 @@
+menu "Gateway: web"
+
+    config GW_MDNS
+        bool "mDNS responder and _http._tcp announcement (NET-6)"
+        default y
+        help
+            Answers <network.hostname>.local and announces the web UI. Turned off per device
+            with network.mdns = false.
+
+    config GW_WEB_LOGIN_MAX_FAILS
+        int "Failed logins in a row before a source address is blocked"
+        range 1 100
+        default 5
+
+    config GW_WEB_LOGIN_BLOCK_S
+        int "First block of a source address (s)"
+        range 1 3600
+        default 30
+        help
+            Issue #64: after GW_WEB_LOGIN_MAX_FAILS failed logins in a row an address gets
+            429 for this long, without any password check; every further block in a row
+            doubles it, up to GW_WEB_LOGIN_BLOCK_MAX_S. A successful login resets it.
+
+    config GW_WEB_LOGIN_BLOCK_MAX_S
+        int "Longest block of a source address (s)"
+        range 1 86400
+        default 900
+
+    config GW_WEB_STALL_S
+        int "Longest time a web server may be held by one incoming request (s), 0 = off"
+        range 0 300
+        default 8
+        help
+            Issue #110: esp_http_server serves every session from one task and reads a TLS
+            handshake and the request headers with blocking receives. A client that sends them
+            byte by byte (slowloris) or stops half-way holds the whole web UI and API. If a
+            server has been held this long outside the gateway's handlers (and outside the
+            drain of a refused authenticated upload), its sessions are shut down.
+
+endmenu

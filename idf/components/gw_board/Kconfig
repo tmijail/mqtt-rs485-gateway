@@ -6,43 +6,26 @@ menu "Gateway: board I/O"
         help
             Replaces the GPIO inputs, the I2C output expander and the RGB LED by RAM
             models so the firmware runs under QEMU. DI levels are then set from the
-            console with "di <1-8> <0|1>". Never enable on hardware.
-
-    config GW_DI_FIRST_GPIO
-        int "GPIO of DI1 (DI1..DI8 are consecutive)"
-        default 4
-
-    config GW_DI_ACTIVE_LOW
-        bool "DI inputs are active low"
-        default y
-        help
-            Waveshare's demo configures GPIO4-11 with pull-ups and the sibling board's
-            ESPHome definition marks them inverted: an energised input pulls the GPIO low.
+            console shell with "di <1-8> <0|1>". Never enable on hardware.
 
     config GW_DI_SAMPLE_US
         int "DI sampling period (us)"
         range 250 1000
         default 1000
 
-    config GW_I2C_SDA_GPIO
-        int "I2C SDA GPIO"
-        default 42
+    config GW_LOCAL_IO_TASK_PRIORITY
+        int "Local I/O task priority"
+        default 9
+        help
+            The local_io task is the only writer of the DO expander: DO commands (NCMD),
+            the safe state (IO-3) and the local rules (IO-7).
 
-    config GW_I2C_SCL_GPIO
-        int "I2C SCL GPIO"
-        default 41
-
-    config GW_I2C_FREQ_HZ
-        int "I2C clock (Hz)"
-        default 100000
-
-    config GW_DO_EXPANDER_ADDR
-        hex "TCA9554 I2C address"
-        default 0x20
-
-    config GW_LED_GPIO
-        int "WS2812 status LED GPIO"
-        default 38
+    config GW_BUZZER_FREQ_HZ
+        int "Buzzer tone (Hz, passive buzzer)"
+        range 500 8000
+        default 2700
+        help
+            Frequency of the LEDC square wave on GPIO46 while the buzzer sounds (IO-6).
 
     config GW_LED_BRIGHTNESS
         int "Status LED brightness (0-255)"

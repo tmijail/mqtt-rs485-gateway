@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gateway RS485 - Sparkplug B</title>
+<style>
+:root{--bg:#f4f5f7;--fg:#1d2330;--mut:#5d6575;--card:#fff;--line:#d8dce3;--acc:#0b5cad;--ok:#1e7d32;--bad:#b3261e;--warn:#9a6700}
+@media (prefers-color-scheme:dark){:root{--bg:#15181e;--fg:#e4e7ec;--mut:#9aa3b2;--card:#1e222a;--line:#343a46;--acc:#6aa8ff;--ok:#5cc46b;--bad:#ff7b72;--warn:#e3b341}}
+*{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+header{padding:12px 16px;background:var(--card);border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+header h1{font-size:16px;margin:0;flex:1}nav button{margin-right:4px}
+main{padding:16px;max-width:1100px;margin:auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:12px 14px;margin-bottom:14px}
+.card h2{font-size:14px;margin:0 0 10px}
+.banner{padding:10px 14px;border-radius:6px;margin-bottom:14px;border:1px solid var(--bad);color:var(--bad);background:var(--card)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px 14px}
+label{display:flex;flex-direction:column;font-size:12px;color:var(--mut)}
+input,select,textarea{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:5px 7px;margin-top:2px}
+input[type=checkbox]{width:auto;align-self:flex-start}
+textarea{width:100%;min-height:360px;font-family:ui-monospace,monospace;font-size:12px}
+button{font:inherit;padding:6px 12px;border-radius:4px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
+button.pri{background:var(--acc);border-color:var(--acc);color:#fff}button.sel{border-color:var(--acc);color:var(--acc)}
+table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line)}
+td input,td select{width:100%;margin:0;padding:3px 4px}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.mut{color:var(--mut)}.err{outline:2px solid var(--bad)}
+#msg{white-space:pre-wrap;margin:8px 0 0}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<header><h1>Gateway RS485 &rarr; MQTT Sparkplug B <span id="node" class="mut"></span></h1>
+<nav><button data-tab="status" class="sel">Estado</button><button data-tab="config">Configuración</button><button data-tab="json">JSON</button></nav></header>
+<main>
+<div id="banner" class="banner hidden"></div>
+
+<section id="tab-status">
+ <div class="card"><h2>Equipo</h2><div id="st-dev" class="grid"></div></div>
+ <div class="card"><h2>Red y MQTT</h2><div id="st-net"></div></div>
+ <div class="card"><h2>Dispositivos Modbus</h2><div id="st-mb" class="mut">sin dispositivos</div></div>
+ <div class="card"><h2>E/S locales</h2><div id="st-io"></div></div>
+ <div class="card"><h2>Firmware</h2><div id="st-fw" class="mut"></div>
+  <div class="row"><input id="fw-url" placeholder="https://servidor/rs485_spb_gateway.bin" size="40"><button id="fw-get">Descargar e instalar</button></div>
+  <div class="row"><label class="row" style="flex-direction:row">Subir imagen <input type="file" id="fw-file" accept=".bin,application/octet-stream"></label></div></div>
+</section>
+
+<section id="tab-config" class="hidden">
+ <div class="card"><h2>Red (Ethernet)</h2><div class="grid" id="f-net"></div></div>
+ <div class="card"><h2>MQTT</h2><div class="grid" id="f-mqtt"></div></div>
+ <div class="card"><h2>Sparkplug</h2><div class="grid" id="f-spb"></div></div>
+ <div class="card"><h2>RS485</h2><div class="grid" id="f-rs485"></div></div>
+ <div class="card"><h2>Interfaz web</h2><div class="grid" id="f-web"></div></div>
+ <div class="card"><h2>Dispositivos y tags</h2><div id="f-dev"></div><button id="add-dev">+ dispositivo</button></div>
+ <p class="mut">Wi-Fi, IPv6, syslog y el resto de las claves de SPEC §6.1 se editan en la pestaña JSON. Los secretos se muestran como ******** y se conservan si no se cambian.</p>
+</section>
+
+<section id="tab-json" class="hidden">
+ <div class="card"><h2>Documento completo</h2><textarea id="raw" spellcheck="false"></textarea></div>
+</section>
+
+<div class="card" id="actions">
+ <div class="row">
+  <button id="b-check">Validar</button><button id="b-save" class="pri">Guardar y reiniciar</button>
+  <button id="b-export">Exportar</button><label class="row" style="flex-direction:row">Importar <input type="file" id="b-import" accept=".json,application/json"></label>
+  <button id="b-restart">Reiniciar</button>
+ </div>
+ <div id="msg" class="mut"></div>
+</div>
+</main>
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+let cfg=null,tab="status";
+const PAR=["none","even","odd"],AREA=["coil","discrete","holding","input"],TYPE=["bool","uint16","int16","uint32","int32","float32"],WO=["big","little"];
+async function api(method,path,body){
+ const h={"X-Requested-With":"gateway"};if(body)h["Content-Type"]="application/json";
+ let r;
+ try{r=await fetch(path,{method,headers:h,body,cache:"no-store"})}
+ catch(e){return {status:0,json:{error:`sin respuesta del equipo (${e.message})`}}}
+ let j=null;try{j=await r.json()}catch(e){}
+ return {status:r.status,json:j};
+}
+function msg(t,cls){const m=$("#msg");m.textContent=t;m.className=cls||"mut"}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
+function get(o,p){return p.split(".").reduce((a,k)=>a==null?undefined:a[k],o)}
+function set(o,p,v){const ks=p.split(".");let a=o;for(const k of ks.slice(0,-1)){if(a[k]==null||typeof a[k]!=="object")a[k]={};a=a[k]}a[ks[ks.length-1]]=v}
+function field(path,lbl,kind,opts){
+ const v=get(cfg,path);let h;
+ if(kind==="bool")h=`<input type="checkbox" data-p="${path}" data-k="bool" ${v?"checked":""}>`;
+ else if(kind==="sel")h=`<select data-p="${path}" data-k="str">${opts.map(o=>`<option ${o===v?"selected":""}>${o}</option>`).join("")}</select>`;
+ else h=`<input data-p="${path}" data-k="${kind}" ${kind==="pw"?'type="password" autocomplete="new-password"':""} value="${v==null?"":esc(v)}">`;
+ return `<label>${lbl}${h}</label>`;
+}
+function renderForms(){
+ $("#f-net").innerHTML=field("network.dhcp","DHCP","bool")+field("network.ip","IP","str")+field("network.netmask","Máscara","str")+field("network.gateway","Gateway","str")+field("network.dns","DNS","str")+field("network.hostname","Hostname (vacío = edge node)","str")+field("network.mdns","mDNS (.local)","bool");
+ $("#f-mqtt").innerHTML=field("mqtt.host","Broker","str")+field("mqtt.port","Puerto","int")+field("mqtt.client_id","Client ID (vacío = edge node)","str")+field("mqtt.username","Usuario","str")+field("mqtt.password","Contraseña","pw")+field("mqtt.keepalive_s","Keepalive (s)","int");
+ $("#f-spb").innerHTML=field("sparkplug.group_id","Group ID","str")+field("sparkplug.edge_node_id","Edge node ID","str")+field("sparkplug.primary_host_id","Primary host ID","str");
+ $("#f-rs485").innerHTML=field("rs485.baud","Baudios","int")+field("rs485.parity","Paridad","sel",PAR)+field("rs485.stop_bits","Bits de stop","int")+field("rs485.response_timeout_ms","Timeout (ms)","int")+field("rs485.retries","Reintentos","int")+field("rs485.inter_frame_delay_ms","Retardo entre tramas (ms)","int")+field("local_io.di_debounce_ms","Debounce DI (ms)","int");
+ $("#f-web").innerHTML=field("web.username","Usuario","str")+field("web.password","Contraseña (mín. 8)","pw")+field("web.port","Puerto","int");
+ const devs=cfg.devices||[];
+ $("#f-dev").innerHTML=devs.map((d,i)=>`<div class="card"><div class="grid">${field(`devices.${i}.name`,"Nombre","str")+field(`devices.${i}.unit_id`,"Unit ID","int")+field(`devices.${i}.poll_ms`,"Encuesta (ms)","int")+field(`devices.${i}.offline_after`,"Fuera de línea tras","int")+field(`devices.${i}.type`,"Tipo (plantilla)","str")}</div>
+ <table><tr><th>Tag</th><th>Área</th><th>Dirección</th><th>Tipo</th><th>Orden</th><th>Escala</th><th>Offset</th><th>Banda</th><th>Escr.</th><th>Unid.</th><th>Mín. ing.</th><th>Máx. ing.</th><th></th></tr>
+ ${(d.tags||[]).map((t,k)=>{const p=`devices.${i}.tags.${k}`;const c=(f,kind,o)=>`<td>${field(p+"."+f,"",kind,o).replace(/^<label>|<\/label>$/g,"")}</td>`;
+  return `<tr>${c("name","str")}${c("area","sel",AREA)}${c("address","int")}${c("type","sel",TYPE)}${c("word_order","sel",WO)}${c("scale","num")}${c("offset","num")}${c("deadband","num")}${c("writable","bool")}${c("units","str")}${c("eng_low","num")}${c("eng_high","num")}<td><button data-del-tag="${i}.${k}">x</button></td></tr>`}).join("")}
+ </table><div class="row"><button data-add-tag="${i}">+ tag</button><button data-del-dev="${i}">Quitar dispositivo</button></div></div>`).join("");
+}
+function readForms(){
+ document.querySelectorAll("[data-p]").forEach(e=>{
+  const p=e.dataset.p.replace(/\.(\d+)(?=\.|$)/g,".$1"),k=e.dataset.k;let v;
+  if(k==="bool")v=e.checked;else if(k==="int"||k==="num"){if(e.value.trim()===""){unset(p);return}v=Number(e.value)}else v=e.value;
+  if(k==="str"&&v===""&&get(cfg,p)===undefined)return;
+  set(cfg,p,v);
+ });
+}
+function unset(p){const ks=p.split(".");const o=get(cfg,ks.slice(0,-1).join("."));if(o)delete o[ks[ks.length-1]]}
+function sync(from){
+ try{
+  if(from==="json"&&tab==="json")cfg=JSON.parse($("#raw").value);
+  else if(from==="forms"&&tab==="config")readForms();
+ }catch(e){msg("JSON no válido: "+e.message,"bad");return false}
+ return true;
+}
+function show(t){
+ if(!sync(tab==="json"?"json":"forms"))return;
+ tab=t;
+ document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("sel",b.dataset.tab===t));
+ ["status","config","json"].forEach(n=>$("#tab-"+n).classList.toggle("hidden",n!==t));
+ $("#actions").classList.toggle("hidden",t==="status");
+ if(cfg&&t==="config")renderForms();
+ if(cfg&&t==="json")$("#raw").value=JSON.stringify(cfg,null,2);
+}
+function body(){if(!sync(tab==="json"?"json":"forms"))return null;return JSON.stringify(cfg,null,2)}
+function markError(path){
+ document.querySelectorAll(".err").forEach(e=>e.classList.remove("err"));
+ if(!path)return;
+ const p=path.replace(/\[(\d+)\]/g,".$1");
+ const e=document.querySelector(`[data-p="${p}"]`);if(e){e.classList.add("err");e.focus()}
+}
+async function put(dry){
+ const b=body();if(b==null)return;
+ msg(dry?"Validando…":"Guardando…");
+ const r=await api("PUT","/api/config"+(dry?"?dry_run=1":""),b);
+ if(r.json&&r.json.ok){markError("");msg(dry?"Configuración válida.":"Guardada. El equipo se reinicia; esta página se recarga en 15 s.","ok");if(!dry)setTimeout(()=>location.reload(),15000)}
+ else{const j=r.json||{};markError(j.path);msg(`Error ${r.status}: ${j.error||"sin respuesta"}`+(j.line?` (línea ${j.line}, columna ${j.column})`:""),"bad")}
+}
+async function load(){
+ const r=await api("GET","/api/config");
+ if(r.status===200){cfg=r.json;if(tab!=="status")show(tab);return}
+ cfg={};msg(`No se pudo leer la configuración guardada (${r.status}): ${(r.json||{}).error||""}. Pegue o importe un documento en la pestaña JSON.`,"bad");
+}
+function yes(b,t,f){return `<span class="${b?"ok":"bad"}">${b?t:f}</span>`}
+async function poll(){
+ const r=await api("GET","/api/status");if(r.status!==200||!r.json)return;
+ const s=r.json,ban=$("#banner");
+ $("#node").textContent=s.sparkplug?`${s.sparkplug.group_id} / ${s.sparkplug.edge_node_id}`:"";
+ if(s.mode!=="normal"){ban.classList.remove("hidden");ban.textContent=s.mode==="commissioning"?"Puesta en marcha: no hay configuración. Cárguela y guárdela para arrancar.":`Configuración rechazada (${s.config.source}): ${s.config.error}. No hay encuesta ni MQTT; corrija la configuración y guárdela.`}else ban.classList.add("hidden");
+ $("#st-dev").innerHTML=[["Firmware",s.firmware],["Motivo del reinicio",s.reset_reason],["Encendido hace",`${s.uptime_s} s`],["Modo",s.mode],["Configuración",s.config.source],["Heap interno libre",`${s.heap.internal_free} B (mín. ${s.heap.internal_min})`],["PSRAM libre",`${s.heap.psram_free} B`]].map(([k,v])=>`<div><div class="mut">${k}</div>${esc(v)}</div>`).join("");
+ $("#st-net").innerHTML=`<p>Red ${yes(s.network.up,"arriba","sin IP")} · MQTT ${yes(s.mqtt.connected,"conectado","desconectado")}${s.syslog?` · syslog ${esc(s.syslog)}`:""}</p><table><tr><th>Interfaz</th><th>Estado</th><th>IPv4</th><th>IPv6</th></tr>${s.network.interfaces.map(i=>`<tr><td>${i.name}${i.active?" (activa)":""}</td><td>${!i.configured?"no configurada":!i.link?"sin enlace":i.usable?"arriba":"sin dirección"}</td><td>${i.ipv4||""}</td><td>${(i.ipv6||[]).join("<br>")}</td></tr>`).join("")}</table>`;
+ $("#st-mb").innerHTML=s.devices.length?`<table><tr><th>Dispositivo</th><th>Unit</th><th>Estado</th><th>Ciclos / fallidos</th><th>OK / timeout / CRC / trama / excepción</th><th>Valores</th></tr>${s.devices.map(d=>`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td>${yes(d.online,"en línea","fuera de línea")}</td><td>${d.cycles} / ${d.failed}</td><td>${d.ok} / ${d.timeout} / ${d.crc} / ${d.frame} / ${d.exception}</td><td>${d.tags.map(t=>`${esc(t.name)}=${t.valid?t.value:"—"}`).join(", ")}</td></tr>`).join("")}</table>`:"sin dispositivos";
+ const bits=(v)=>[...Array(8)].map((_,i)=>`<span class="${v>>i&1?"ok":"mut"}">${i+1}</span>`).join(" ");
+ const AL={none:"en silencio",device_offline:"dispositivo fuera de línea",mqtt_down:"sin sesión MQTT",config_error:"configuración rechazada"};
+ const io=s.io,rules=io.rule_do?[...Array(8)].map((_,i)=>io.rule_do>>i&1?`DO/${i+1}`:"").filter(x=>x).join(", "):"ninguna";
+ $("#st-io").innerHTML=`DI: ${bits(io.di)}<br>DO: ${io.do==null?`<span class="bad">desconocidas: el expansor no responde</span> (${io.expander.retrying?"reintentando, ":""}${io.expander.attempts} intentos)`:bits(io.do)}`+
+  `<br>Estado seguro (failsafe): ${io.failsafe?`<span class="bad">aplicado (sin sesión Sparkplug)</span>`:"no"} · DO con regla local: ${rules}`+
+  `<br>Contadores: ${io.counters.map((c,i)=>`${i+1}: ${c}`).join(" · ")}`+
+  `<br>Buzzer: ${s.buzzer.alarm==="none"?"en silencio":`<span class="bad">${AL[s.buzzer.alarm]}</span>`} (alarmas: ${s.buzzer.enabled.map(a=>AL[a]).join(", ")||"ninguna"})`+
+  `<br>Hora: ${new Date(s.time.utc_s*1000).toISOString()} · ${s.time.synced?yes(true,"sincronizada por SNTP",""):s.time.source==="rtc"?"del RTC (sin sincronizar)":`<span class="bad">sin hora válida</span>`} · RTC ${esc(s.time.rtc.status)}`;
+ const f=await api("GET","/api/firmware");if(f.status!==200||!f.json)return;const w=f.json;
+ $("#st-fw").innerHTML=`${esc(w.running)} en ${esc(w.slot)} · otra partición: ${esc(w.other||"vacía")}${w.enabled?"":" · actualizaciones deshabilitadas (ota.enabled)"}<br>${esc(w.detail)}${w.phase==="downloading"?` (${w.progress} %)`:w.phase==="trial"?` (${w.trial_left_s} s)`:""}`;
+}
+$("#fw-get").onclick=async()=>{const u=$("#fw-url").value.trim();if(!u)return;const r=await api("POST","/api/firmware",JSON.stringify({url:u}));msg(r.status===202?"Descarga iniciada: el equipo se reinicia al terminar.":`No se inició (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};
+$("#fw-file").onchange=async e=>{const f=e.target.files[0];if(!f||!confirm(`¿Instalar ${f.name} (${f.size} B) y reiniciar?`))return;msg("Subiendo…");let r;try{r=await fetch("/api/firmware",{method:"POST",headers:{"Content-Type":"application/octet-stream","X-Requested-With":"gateway"},body:f})}catch(x){const w=(await api("GET","/api/firmware")).json;msg(`Subida interrumpida (${x.message})`+(w&&w.detail?`: ${w.detail}`:""),"bad");return}let j=null;try{j=await r.json()}catch(x){}msg(r.status===200?"Imagen instalada: reiniciando en la nueva versión.":`Rechazada (${r.status}): ${(j||{}).error||""}`,r.status===200?"ok":"bad")};
+document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>show(b.dataset.tab));
+$("#b-check").onclick=()=>put(true);$("#b-save").onclick=()=>put(false);
+$("#b-export").onclick=()=>{location.href="/api/config?download=1"};
+$("#b-import").onchange=async e=>{const f=e.target.files[0];if(!f)return;const t=await f.text();try{cfg=JSON.parse(t)}catch(x){msg("El archivo no es JSON: "+x.message,"bad");return}tab="json";show("json");msg("Importado en el editor: revise y pulse Guardar.")};
+$("#b-restart").onclick=async()=>{if(confirm("¿Reiniciar el equipo?")){const r=await api("POST","/api/restart");msg(r.status===202?"Reiniciando…":`No se reinició (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"":"bad")}};
+$("#add-dev").onclick=()=>{readForms();(cfg.devices=cfg.devices||[]).push({name:"Dev"+(cfg.devices.length+1),unit_id:cfg.devices.length+1,poll_ms:1000,offline_after:3,tags:[{name:"Tag1",area:"holding",address:0,type:"uint16"}]});renderForms()};
+$("#f-dev").onclick=e=>{const t=e.target.dataset;if(!(t.addTag||t.delTag||t.delDev))return;readForms();
+ if(t.addTag){const d=cfg.devices[+t.addTag];d.tags.push({name:"Tag"+(d.tags.length+1),area:"holding",address:0,type:"uint16"})}
+ if(t.delTag){const[i,k]=t.delTag.split(".").map(Number);cfg.devices[i].tags.splice(k,1)}
+ if(t.delDev)cfg.devices.splice(+t.delDev,1);renderForms()};
+show("status");load();poll();setInterval(poll,2000);
+</script>
+</body>
+</html>

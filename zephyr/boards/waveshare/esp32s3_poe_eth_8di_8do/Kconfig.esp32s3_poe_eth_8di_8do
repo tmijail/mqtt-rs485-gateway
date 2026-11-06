@@ -1,8 +1,0 @@
-# SPDX-License-Identifier: Apache-2.0
-#
-# Only the PRO CPU target is provided: the gateway runs on one core and the
-# flash layout reserves no APP CPU image partition.
-
-config BOARD_ESP32S3_POE_ETH_8DI_8DO
-	select SOC_ESP32S3
-	select SOC_ESP32S3_PROCPU if BOARD_ESP32S3_POE_ETH_8DI_8DO_ESP32S3_PROCPU

@@ -6,6 +6,7 @@ gw_dev_event_t gw_devstate_cycle(gw_devstate_t *st, bool success, uint16_t offli
         st->fail_streak = 0;
         if (!st->online) {
             st->online = true;
+            st->seen = true;
             return GW_DEV_WENT_ONLINE;
         }
         return GW_DEV_NO_CHANGE;
@@ -18,4 +19,9 @@ gw_dev_event_t gw_devstate_cycle(gw_devstate_t *st, bool success, uint16_t offli
         return GW_DEV_WENT_OFFLINE;
     }
     return GW_DEV_NO_CHANGE;
+}
+
+bool gw_devstate_probing(const gw_devstate_t *st, uint16_t offline_after)
+{
+    return !st->online && (!st->seen || st->fail_streak >= offline_after);
 }

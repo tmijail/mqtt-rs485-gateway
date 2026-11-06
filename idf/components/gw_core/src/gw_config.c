@@ -1,11 +1,61 @@
 #include "gw_config.h"
+#include "gw_conv.h"
 
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <float.h>
 #include <string.h>
 
 #include "cJSON.h"
+#include "gw_config_priv.h"
+#include "gw_port.h"
+
+/* ---------- parser memory ---------- */
+
+static void *(*s_alloc)(size_t) = malloc;
+static void (*s_release)(void *) = free;
+static bool s_alloc_failed;
+
+static void *tracked_alloc(size_t size)
+{
+    void *p = s_alloc(size);
+    if (p == NULL) {
+        s_alloc_failed = true;
+    }
+    return p;
+}
+
+void gw_config_set_allocator(void *(*alloc)(size_t size), void (*release)(void *ptr))
+{
+    s_alloc = alloc;
+    s_release = release;
+}
+
+void gw_config_json_hooks(void)
+{
+    cJSON_Hooks hooks = {.malloc_fn = tracked_alloc, .free_fn = s_release};
+    cJSON_InitHooks(&hooks);
+    s_alloc_failed = false;
+}
+
+bool gw_config_json_alloc_failed(void)
+{
+    return s_alloc_failed;
+}
+
+void *gw_config_alloc(size_t size)
+{
+    return s_alloc(size);
+}
+
+void gw_config_release(void *ptr)
+{
+    if (ptr != NULL) {
+        s_release(ptr);
+    }
+}
 
 /* ---------- error reporting ---------- */
 
@@ -14,6 +64,8 @@ static bool fail(gw_cfg_err_t *err, const char *path, const char *fmt, ...)
 
 static bool fail(gw_cfg_err_t *err, const char *path, const char *fmt, ...)
 {
+    snprintf(err->path, sizeof(err->path), "%s", path);
+    err->line = err->column = 0;
     int n = snprintf(err->msg, sizeof(err->msg), "%s: ", path);
     if (n < 0 || (size_t)n >= sizeof(err->msg)) {
         return false;
@@ -27,24 +79,60 @@ static bool fail(gw_cfg_err_t *err, const char *path, const char *fmt, ...)
 
 static void join(char *out, size_t cap, const char *path, const char *key)
 {
-    snprintf(out, cap, "%s.%s", path, key);
+    snprintf(out, cap, "%s%s%s", path, path[0] != '\0' ? "." : "", key);
+}
+
+/* 1-based line and column (in characters, not UTF-8 bytes) of @p at in @p json. */
+static void line_col(const char *json, const char *at, unsigned *line, unsigned *col)
+{
+    *line = 1;
+    *col = 1;
+    for (const char *c = json; c < at; c++) {
+        if (*c == '\n') {
+            (*line)++;
+            *col = 1;
+        } else if (((unsigned char)*c & 0xC0u) != 0x80u) {
+            (*col)++;
+        }
+    }
+}
+
+static bool fail_at(gw_cfg_err_t *err, const char *json, const char *at, const char *what)
+{
+    unsigned line, col;
+    line_col(json, at, &line, &col);
+    err->path[0] = '\0';
+    err->line = line;
+    err->column = col;
+    snprintf(err->msg, sizeof(err->msg), "JSON mal formado en la línea %u, columna %u: %s", line,
+             col, what);
+    return false;
 }
 
 /* ---------- generic typed getters ---------- */
 
+/* Every object of the schema goes through here: unknown keys (typos) and duplicated
+ * keys (cJSON keeps both and lookups see only the first) are rejected. */
 static bool check_keys(const cJSON *obj, const char *path, const char *const *allowed, size_t n,
                        gw_cfg_err_t *err)
 {
     if (!cJSON_IsObject(obj)) {
-        return fail(err, path, "se esperaba un objeto JSON");
+        return fail(err, path[0] != '\0' ? path : "$", "se esperaba un objeto JSON");
     }
     for (const cJSON *it = obj->child; it != NULL; it = it->next) {
+        char p[96];
+        join(p, sizeof(p), path, it->string);
         bool known = false;
         for (size_t i = 0; i < n && !known; i++) {
             known = strcmp(it->string, allowed[i]) == 0;
         }
         if (!known) {
-            return fail(err, path, "clave desconocida '%s'", it->string);
+            return fail(err, p, "clave desconocida");
+        }
+        for (const cJSON *prev = obj->child; prev != it; prev = prev->next) {
+            if (strcmp(prev->string, it->string) == 0) {
+                return fail(err, p, "clave duplicada");
+            }
         }
     }
     return true;
@@ -199,6 +287,120 @@ static bool get_ipv4(const cJSON *obj, const char *key, const char *path, bool r
     return true;
 }
 
+static int hex_digit(char c)
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
+bool gw_parse_ipv6(const char *s, uint8_t out[16])
+{
+    uint16_t head[8], tail[8];
+    unsigned nh = 0, nt = 0;
+    bool gap = false;   /* "::" seen; later groups go to tail[] */
+    const char *p = s;
+    if (p[0] == ':') {
+        if (p[1] != ':') {
+            return false;
+        }
+        gap = true;
+        p += 2;
+    }
+    while (*p != '\0') {
+        if (nh + nt >= 8) {
+            return false;
+        }
+        const char *colon = strchr(p, ':');
+        const char *dot = strchr(p, '.');
+        if (dot != NULL && (colon == NULL || dot < colon)) {
+            /* trailing dotted quad (::ffff:192.0.2.1): two groups, must be last */
+            uint8_t v4[4];
+            if (nh + nt > 6 || !parse_ipv4(p, v4)) {
+                return false;
+            }
+            uint16_t *g = gap ? tail : head;
+            unsigned *n = gap ? &nt : &nh;
+            g[(*n)++] = (uint16_t)(v4[0] << 8 | v4[1]);
+            g[(*n)++] = (uint16_t)(v4[2] << 8 | v4[3]);
+            p += strlen(p);
+            break;
+        }
+        unsigned v = 0, digits = 0;
+        for (int d; (d = hex_digit(*p)) >= 0; p++) {
+            if (++digits > 4) {
+                return false;
+            }
+            v = v * 16u + (unsigned)d;
+        }
+        if (digits == 0) {
+            return false;
+        }
+        if (gap) {
+            tail[nt++] = (uint16_t)v;
+        } else {
+            head[nh++] = (uint16_t)v;
+        }
+        if (*p == '\0') {
+            break;
+        }
+        if (*p++ != ':') {
+            return false;
+        }
+        if (*p == ':') {
+            if (gap) {
+                return false;   /* a second "::" */
+            }
+            gap = true;
+            p++;
+        } else if (*p == '\0') {
+            return false;       /* trailing single ':' */
+        }
+    }
+    if (gap ? nh + nt > 7 : nh != 8) {
+        return false;
+    }
+    uint16_t g[8] = {0};
+    for (unsigned i = 0; i < nh; i++) {
+        g[i] = head[i];
+    }
+    for (unsigned i = 0; i < nt; i++) {
+        g[8 - nt + i] = tail[i];
+    }
+    for (unsigned i = 0; i < 8; i++) {
+        out[2 * i] = (uint8_t)(g[i] >> 8);
+        out[2 * i + 1] = (uint8_t)g[i];
+    }
+    return true;
+}
+
+static bool get_ipv6(const cJSON *obj, const char *key, const char *path, uint8_t out[16],
+                     bool *present, gw_cfg_err_t *err)
+{
+    char p[96];
+    join(p, sizeof(p), path, key);
+    char buf[48];
+    if (!get_string(obj, key, path, false, "", buf, sizeof(buf), err)) {
+        return false;
+    }
+    *present = buf[0] != '\0';
+    if (!*present) {
+        memset(out, 0, 16);
+        return true;
+    }
+    if (!gw_parse_ipv6(buf, out)) {
+        return fail(err, p, "'%s' no es una dirección IPv6 válida", buf);
+    }
+    return true;
+}
+
 /* Sparkplug identifiers become MQTT topic levels: no '/', '+', '#', no control chars. */
 static bool check_topic_id(const char *s, const char *path, bool allow_empty, gw_cfg_err_t *err)
 {
@@ -217,27 +419,172 @@ static bool check_topic_id(const char *s, const char *path, bool allow_empty, gw
 /* ---------- sections ---------- */
 
 static const char *const k_area_names[] = {"coil", "discrete", "holding", "input"};
-static const char *const k_type_names[] = {"bool", "uint16", "int16", "uint32", "int32", "float32"};
-static const char *const k_word_names[] = {"big", "little"};
+static const char *const k_type_names[] = {"bool",  "uint16", "int16",   "uint32", "int32",
+                                           "float32", "uint64", "int64", "float64", "string",
+                                           "bytes"};
+#define TYPE_COUNT (sizeof(k_type_names) / sizeof(k_type_names[0]))
+/* "big"/"little" are the MVP names of ABCD/CDAB (MB-5); the four letter forms come with MB-6. */
+static const char *const k_word_names[] = {"big", "little", "ABCD", "CDAB", "BADC", "DCBA"};
+static const gw_word_order_t k_word_values[] = {GW_WORD_BIG,    GW_WORD_LITTLE, GW_WORD_BIG,
+                                                GW_WORD_LITTLE, GW_WORD_BADC,   GW_WORD_DCBA};
 static const char *const k_parity_names[] = {"none", "even", "odd"};
+
+/* dhcp/ip/netmask/gateway/dns of one interface; the addresses are required with dhcp=false. */
+static bool parse_ipv4_keys(const cJSON *o, const char *path, bool *dhcp, uint8_t ip[4],
+                            uint8_t netmask[4], uint8_t gateway[4], uint8_t dns[4],
+                            gw_cfg_err_t *err)
+{
+    if (!get_bool(o, "dhcp", path, true, dhcp, err)) {
+        return false;
+    }
+    bool st = !*dhcp;
+    return get_ipv4(o, "ip", path, st, ip, err) && get_ipv4(o, "netmask", path, st, netmask, err) &&
+           get_ipv4(o, "gateway", path, st, gateway, err) &&
+           get_ipv4(o, "dns", path, false, dns, err);
+}
+
+static bool parse_ipv6_section(const cJSON *net, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"enabled", "slaac", "address", "dns"};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(net, "ipv6");
+    static const cJSON empty = {.type = cJSON_Object};
+    if (o == NULL) {
+        o = &empty;
+    }
+    if (!check_keys(o, "network.ipv6", keys, 4, err) ||
+        !get_bool(o, "enabled", "network.ipv6", false, &cfg->network.ipv6.enabled, err) ||
+        !get_bool(o, "slaac", "network.ipv6", true, &cfg->network.ipv6.slaac, err) ||
+        !get_ipv6(o, "address", "network.ipv6", cfg->network.ipv6.address,
+                  &cfg->network.ipv6.has_address, err) ||
+        !get_ipv6(o, "dns", "network.ipv6", cfg->network.ipv6.dns, &cfg->network.ipv6.has_dns,
+                  err)) {
+        return false;
+    }
+    const uint8_t *a = cfg->network.ipv6.address;
+    if (cfg->network.ipv6.has_address) {
+        static const uint8_t zero[16];
+        if (a[0] == 0xff || (a[0] == 0xfe && (a[1] & 0xc0) == 0x80) || memcmp(a, zero, 15) == 0) {
+            return fail(err, "network.ipv6.address",
+                        "se esperaba una dirección unicast global o local única (no multicast, "
+                        "link-local, :: ni ::1)");
+        }
+    }
+    return true;
+}
+
+static bool check_wifi_password(const char *pw)
+{
+    size_t n = strlen(pw);
+    if (n == 0 || (n >= 8 && n <= 63)) {
+        return true;
+    }
+    if (n != 64) {
+        return false;
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (hex_digit(pw[i]) < 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool parse_wifi_section(const cJSON *net, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"enabled", "ssid", "password", "role", "failback_s",
+                                       "dhcp", "ip", "netmask", "gateway", "dns"};
+    static const char *const roles[] = {"backup", "primary"};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(net, "wifi");
+    static const cJSON empty = {.type = cJSON_Object};
+    if (o == NULL) {
+        o = &empty;
+    }
+    gw_wifi_cfg_t *w = &cfg->network.wifi;
+    int role;
+    long failback;
+    if (!check_keys(o, "network.wifi", keys, 10, err) ||
+        !get_bool(o, "enabled", "network.wifi", false, &w->enabled, err) ||
+        !get_string(o, "ssid", "network.wifi", false, "", w->ssid, sizeof(w->ssid), err) ||
+        !get_string(o, "password", "network.wifi", false, "", w->password, sizeof(w->password),
+                    err) ||
+        !get_enum(o, "role", "network.wifi", false, GW_WIFI_BACKUP, roles, 2, &role, err) ||
+        !get_int(o, "failback_s", "network.wifi", false, 30, 0, 3600, &failback, err) ||
+        !parse_ipv4_keys(o, "network.wifi", &w->ipv4.dhcp, w->ipv4.ip, w->ipv4.netmask,
+                         w->ipv4.gateway, w->ipv4.dns, err)) {
+        return false;
+    }
+    w->role = (gw_wifi_role_t)role;
+    w->failback_s = (uint16_t)failback;
+    if (w->enabled && w->ssid[0] == '\0') {
+        return fail(err, "network.wifi.ssid", "obligatorio con enabled=true");
+    }
+    if (!check_wifi_password(w->password)) {
+        return fail(err, "network.wifi.password",
+                    "se esperaban 8 a 63 caracteres (WPA2), 64 dígitos hexadecimales o vacío "
+                    "(red abierta)");
+    }
+    return true;
+}
+
+void gw_hostname_from(const char *src, char *out, size_t cap)
+{
+    size_t n = 0;
+    size_t max = cap - 1 < 63 ? cap - 1 : 63;
+    for (const unsigned char *c = (const unsigned char *)src; *c && n < max; c++) {
+        char ch = (char)((*c >= 'A' && *c <= 'Z') ? *c - 'A' + 'a' : *c);
+        bool ok = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9');
+        if (ok) {
+            out[n++] = ch;
+        } else if (n > 0 && out[n - 1] != '-') {
+            out[n++] = '-';
+        }
+    }
+    while (n > 0 && out[n - 1] == '-') {
+        n--;
+    }
+    out[n] = '\0';
+    if (n == 0) {
+        snprintf(out, cap, "gateway");
+    }
+}
+
+/* RFC 1123 label: letters, digits and '-', not at either end. */
+static bool check_hostname(const char *h, gw_cfg_err_t *err)
+{
+    size_t n = strlen(h);
+    if (n == 0) {
+        return true;
+    }
+    for (size_t i = 0; i < n; i++) {
+        char c = h[i];
+        bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                  (c == '-' && i > 0 && i + 1 < n);
+        if (!ok) {
+            return fail(err, "network.hostname",
+                        "se esperaban letras, dígitos y '-' (no al principio ni al final), sin "
+                        "puntos: es un nombre de host, no un FQDN");
+        }
+    }
+    return true;
+}
 
 static bool parse_network(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"dhcp", "ip", "netmask", "gateway", "dns"};
+    static const char *const keys[] = {"dhcp", "ip",   "netmask", "gateway", "dns",
+                                       "ipv6", "wifi", "hostname", "mdns"};
+    static const cJSON empty = {.type = cJSON_Object};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "network");
-    cfg->network.dhcp = true;
     if (o == NULL) {
-        return true;
+        o = &empty;
     }
-    if (!check_keys(o, "network", keys, 5, err) ||
-        !get_bool(o, "dhcp", "network", true, &cfg->network.dhcp, err)) {
-        return false;
-    }
-    bool st = !cfg->network.dhcp;
-    return get_ipv4(o, "ip", "network", st, cfg->network.ip, err) &&
-           get_ipv4(o, "netmask", "network", st, cfg->network.netmask, err) &&
-           get_ipv4(o, "gateway", "network", st, cfg->network.gateway, err) &&
-           get_ipv4(o, "dns", "network", false, cfg->network.dns, err);
+    return check_keys(o, "network", keys, 9, err) &&
+           get_string(o, "hostname", "network", false, "", cfg->network.hostname,
+                      sizeof(cfg->network.hostname), err) &&
+           check_hostname(cfg->network.hostname, err) &&
+           get_bool(o, "mdns", "network", true, &cfg->network.mdns, err) &&
+           parse_ipv4_keys(o, "network", &cfg->network.dhcp, cfg->network.ip,
+                           cfg->network.netmask, cfg->network.gateway, cfg->network.dns, err) &&
+           parse_ipv6_section(o, cfg, err) && parse_wifi_section(o, cfg, err);
 }
 
 static bool parse_ntp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
@@ -256,25 +603,127 @@ static bool parse_ntp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     return cfg->ntp.server[0] != '\0' ? true : fail(err, "ntp.server", "no puede estar vacío");
 }
 
+bool gw_config_file_name_ok(const char *name)
+{
+    size_t n = strlen(name);
+    if (n == 0 || n >= GW_FILE_SIZE || name[0] == '.' || strncmp(name, "config.json", 11) == 0) {
+        return false;
+    }
+    for (size_t i = 0; i < n; i++) {
+        char c = name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+              c == '.' || c == '_' || c == '-')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool get_file_name(const cJSON *o, const char *key, const char *path, char *out,
+                          gw_cfg_err_t *err)
+{
+    if (!get_string(o, key, path, false, "", out, GW_FILE_SIZE, err)) {
+        return false;
+    }
+    if (out[0] != '\0' && !gw_config_file_name_ok(out)) {
+        char p[96];
+        join(p, sizeof(p), path, key);
+        return fail(err, p, "'%s' no es un nombre de archivo válido (1-%d caracteres A-Z a-z 0-9 . _ "
+                    "-, sin '/', no config.json)", out, GW_FILE_SIZE - 1);
+    }
+    return true;
+}
+
+/* MQTT-4 / MQTT-5 */
+static bool parse_tls(const cJSON *mqtt, gw_tls_cfg_t *t, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"enabled", "ca_file", "server_name", "cert_file",
+                                       "key_file"};
+    static const cJSON empty = {.type = cJSON_Object};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(mqtt, "tls");
+    if (o == NULL) {
+        o = &empty;
+    }
+    if (!check_keys(o, "mqtt.tls", keys, 5, err) ||
+        !get_bool(o, "enabled", "mqtt.tls", false, &t->enabled, err) ||
+        !get_file_name(o, "ca_file", "mqtt.tls", t->ca_file, err) ||
+        !get_string(o, "server_name", "mqtt.tls", false, "", t->server_name,
+                    sizeof(t->server_name), err) ||
+        !get_file_name(o, "cert_file", "mqtt.tls", t->cert_file, err) ||
+        !get_file_name(o, "key_file", "mqtt.tls", t->key_file, err)) {
+        return false;
+    }
+    if ((t->cert_file[0] == '\0') != (t->key_file[0] == '\0')) {
+        return fail(err, t->cert_file[0] ? "mqtt.tls.key_file" : "mqtt.tls.cert_file",
+                    "cert_file y key_file van juntos (TLS mutuo)");
+    }
+    return true;
+}
+
+/* MQTT-6: [{"host": "...", "port": n}, ...], tried in order after mqtt.host. */
+static bool parse_backup_brokers(const cJSON *mqtt, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"host", "port"};
+    const cJSON *arr = cJSON_GetObjectItemCaseSensitive(mqtt, "backup_brokers");
+    if (arr == NULL) {
+        return true;
+    }
+    if (!cJSON_IsArray(arr)) {
+        return fail(err, "mqtt.backup_brokers", "se esperaba un array");
+    }
+    int n = cJSON_GetArraySize(arr);
+    if (n > GW_MAX_BACKUP_BROKERS) {
+        return fail(err, "mqtt.backup_brokers", "%d brokers; el máximo es %d", n,
+                    GW_MAX_BACKUP_BROKERS);
+    }
+    int i = 0;
+    for (const cJSON *it = arr->child; it != NULL; it = it->next, i++) {
+        char path[40];
+        snprintf(path, sizeof(path), "mqtt.backup_brokers[%d]", i);
+        long port;
+        if (!check_keys(it, path, keys, 2, err) ||
+            !get_string(it, "host", path, true, "", cfg->mqtt.backup[i].host,
+                        sizeof(cfg->mqtt.backup[i].host), err) ||
+            !get_int(it, "port", path, false, cfg->mqtt.port, 1, 65535, &port, err)) {
+            return false;
+        }
+        if (cfg->mqtt.backup[i].host[0] == '\0') {
+            char p[56];
+            snprintf(p, sizeof(p), "%s.host", path);
+            return fail(err, p, "no puede estar vacío");
+        }
+        cfg->mqtt.backup[i].port = (uint16_t)port;
+    }
+    cfg->mqtt.backup_count = (uint8_t)n;
+    return true;
+}
+
 static bool parse_mqtt(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"host", "port", "client_id", "username", "password",
-                                       "keepalive_s"};
+                                       "keepalive_s", "tls", "backup_brokers", "failover_after",
+                                       "primary_return_s", "protocol"};
+    static const char *const protocols[] = {"3.1.1", "5"};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "mqtt");
     if (o == NULL) {
         return fail(err, "mqtt", "sección obligatoria ausente");
     }
-    long port, ka;
-    if (!check_keys(o, "mqtt", keys, 6, err) ||
+    long port, ka, failover, back;
+    int proto;
+    if (!check_keys(o, "mqtt", keys, 11, err) || !parse_tls(o, &cfg->mqtt.tls, err) ||
         !get_string(o, "host", "mqtt", true, "", cfg->mqtt.host, sizeof(cfg->mqtt.host), err) ||
-        !get_int(o, "port", "mqtt", false, 1883, 1, 65535, &port, err) ||
+        !get_int(o, "port", "mqtt", false, cfg->mqtt.tls.enabled ? 8883 : 1883, 1, 65535, &port,
+                 err) ||
         !get_string(o, "client_id", "mqtt", false, "", cfg->mqtt.client_id,
                     sizeof(cfg->mqtt.client_id), err) ||
         !get_string(o, "username", "mqtt", false, "", cfg->mqtt.username,
                     sizeof(cfg->mqtt.username), err) ||
         !get_string(o, "password", "mqtt", false, "", cfg->mqtt.password,
                     sizeof(cfg->mqtt.password), err) ||
-        !get_int(o, "keepalive_s", "mqtt", false, 30, 5, 3600, &ka, err)) {
+        !get_int(o, "keepalive_s", "mqtt", false, 30, 5, 3600, &ka, err) ||
+        !get_int(o, "failover_after", "mqtt", false, 3, 1, 20, &failover, err) ||
+        !get_int(o, "primary_return_s", "mqtt", false, 0, 0, 86400, &back, err) ||
+        !get_enum(o, "protocol", "mqtt", false, GW_MQTT_V311, protocols, 2, &proto, err)) {
         return false;
     }
     if (cfg->mqtt.host[0] == '\0') {
@@ -282,17 +731,66 @@ static bool parse_mqtt(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     }
     cfg->mqtt.port = (uint16_t)port;
     cfg->mqtt.keepalive_s = (uint16_t)ka;
+    cfg->mqtt.failover_after = (uint8_t)failover;
+    cfg->mqtt.primary_return_s = (uint32_t)back;
+    cfg->mqtt.protocol = (gw_mqtt_protocol_t)proto;
+    return parse_backup_brokers(o, cfg, err);
+}
+
+/* SPB-14: true/false, or {"enabled": bool, "sd": {"enabled": bool, "max_kb": n}}. */
+static bool parse_store_forward(const cJSON *sp, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"enabled", "sd"};
+    static const char *const sd_keys[] = {"enabled", "max_kb"};
+    static const cJSON empty = {.type = cJSON_Object};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(sp, "store_forward");
+    cfg->sparkplug.sf_sd_max_kb = 16384;
+    if (o == NULL || cJSON_IsBool(o)) {
+        cfg->sparkplug.store_forward = cJSON_IsTrue(o);
+        return true;
+    }
+    if (!cJSON_IsObject(o)) {
+        return fail(err, "sparkplug.store_forward", "se esperaba true, false o un objeto");
+    }
+    const cJSON *sd = cJSON_GetObjectItemCaseSensitive(o, "sd");
+    long max_kb;
+    if (!check_keys(o, "sparkplug.store_forward", keys, 2, err) ||
+        !get_bool(o, "enabled", "sparkplug.store_forward", true, &cfg->sparkplug.store_forward,
+                  err) ||
+        !check_keys(sd != NULL ? sd : &empty, "sparkplug.store_forward.sd", sd_keys, 2, err) ||
+        !get_bool(sd != NULL ? sd : &empty, "enabled", "sparkplug.store_forward.sd", false,
+                  &cfg->sparkplug.sf_sd, err) ||
+        !get_int(sd != NULL ? sd : &empty, "max_kb", "sparkplug.store_forward.sd", false, 16384,
+                 64, 4194304, &max_kb, err)) {
+        return false;
+    }
+    cfg->sparkplug.sf_sd_max_kb = (uint32_t)max_kb;
+    if (cfg->sparkplug.sf_sd && !cfg->sparkplug.store_forward) {
+        return fail(err, "sparkplug.store_forward.sd.enabled",
+                    "la tarjeta solo extiende el búfer: requiere store_forward.enabled");
+    }
     return true;
 }
 
 static bool parse_sparkplug(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"group_id", "edge_node_id", "primary_host_id"};
+    static const char *const keys[] = {"group_id", "edge_node_id", "primary_host_id",
+                                       "store_forward", "diagnostics_s"};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "sparkplug");
     if (o == NULL) {
         return fail(err, "sparkplug", "sección obligatoria ausente");
     }
-    return check_keys(o, "sparkplug", keys, 3, err) &&
+    long diag;
+    if (!check_keys(o, "sparkplug", keys, sizeof(keys) / sizeof(keys[0]), err) ||
+        !get_int(o, "diagnostics_s", "sparkplug", false, 60, 0, GW_DIAG_MAX_S, &diag, err)) {
+        return false;
+    }
+    if (diag != 0 && diag < GW_DIAG_MIN_S) {
+        return fail(err, "sparkplug.diagnostics_s", "0 (solo en el NBIRTH) o %d-%d s",
+                    GW_DIAG_MIN_S, GW_DIAG_MAX_S);
+    }
+    cfg->sparkplug.diagnostics_s = (uint32_t)diag;
+    return parse_store_forward(o, cfg, err) &&
            get_string(o, "group_id", "sparkplug", true, "", cfg->sparkplug.group_id,
                       sizeof(cfg->sparkplug.group_id), err) &&
            get_string(o, "edge_node_id", "sparkplug", true, "", cfg->sparkplug.edge_node_id,
@@ -334,57 +832,378 @@ static bool parse_rs485(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     return true;
 }
 
-static bool parse_local_io(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+/* IO-6: local_io.buzzer {"alarms": [...], "alarm_after_s": n} */
+static bool parse_buzzer(const cJSON *local_io, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"di_debounce_ms"};
-    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "local_io");
+    static const char *const keys[] = {"alarms", "alarm_after_s"};
+    static const char *const names[] = {"device_offline", "mqtt_down", "config_error"};
     static const cJSON empty = {.type = cJSON_Object};
-    long db;
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(local_io, "buzzer");
+    long after;
     if (o == NULL) {
         o = &empty;
     }
-    if (!check_keys(o, "local_io", keys, 1, err) ||
-        !get_int(o, "di_debounce_ms", "local_io", false, 20, 0, 1000, &db, err)) {
+    if (!check_keys(o, "local_io.buzzer", keys, 2, err) ||
+        !get_int(o, "alarm_after_s", "local_io.buzzer", false, 30, 0, GW_ALARM_AFTER_MAX_S, &after,
+                 err)) {
         return false;
     }
+    cfg->local_io.buzzer.alarm_after_s = (uint16_t)after;
+    const cJSON *list = cJSON_GetObjectItemCaseSensitive(o, "alarms");
+    if (list == NULL) {
+        return true;
+    }
+    if (!cJSON_IsArray(list)) {
+        return fail(err, "local_io.buzzer.alarms", "se esperaba un array");
+    }
+    int i = 0;
+    for (const cJSON *it = list->child; it != NULL; it = it->next, i++) {
+        char p[40];
+        snprintf(p, sizeof(p), "local_io.buzzer.alarms[%d]", i);
+        int a = -1;
+        for (int k = 0; cJSON_IsString(it) && k < 3; k++) {
+            if (strcmp(it->valuestring, names[k]) == 0) {
+                a = k + 1;   /* gw_alarm_t */
+            }
+        }
+        if (a < 0) {
+            return fail(err, p, "valor no válido (se esperaba device_offline|mqtt_down|config_error)");
+        }
+        if (cfg->local_io.buzzer.alarms & GW_ALARM_BIT(a)) {
+            return fail(err, p, "alarma repetida");
+        }
+        cfg->local_io.buzzer.alarms |= (uint8_t)GW_ALARM_BIT(a);
+    }
+    return true;
+}
+
+/* IO-7: local_io.rules [{"di": 1-8, "do": 1-8, "mode": "follow|invert|toggle"}], one per DO.
+ * Called once do_failsafe is parsed: a rule's DO cannot have the safe state "on". */
+static bool parse_rules(const cJSON *local_io, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"di", "do", "mode"};
+    static const char *const modes[] = {"follow", "invert", "toggle"};   /* gw_rule_mode_t */
+    const cJSON *list = cJSON_GetObjectItemCaseSensitive(local_io, "rules");
+    if (list == NULL) {
+        return true;
+    }
+    if (!cJSON_IsArray(list)) {
+        return fail(err, "local_io.rules", "se esperaba un array");
+    }
+    int n = cJSON_GetArraySize(list);
+    if (n > GW_LOCAL_IO_CHANNELS) {
+        return fail(err, "local_io.rules", "%d reglas; el máximo es %d (una por DO)", n,
+                    GW_LOCAL_IO_CHANNELS);
+    }
+    int i = 0;
+    for (const cJSON *it = list->child; it != NULL; it = it->next, i++) {
+        char p[40];
+        snprintf(p, sizeof(p), "local_io.rules[%d]", i);
+        long di, dout;
+        int mode;
+        if (!check_keys(it, p, keys, 3, err) ||
+            !get_int(it, "di", p, true, 0, 1, GW_LOCAL_IO_CHANNELS, &di, err) ||
+            !get_int(it, "do", p, true, 0, 1, GW_LOCAL_IO_CHANNELS, &dout, err) ||
+            !get_enum(it, "mode", p, false, GW_RULE_FOLLOW, modes, 3, &mode, err)) {
+            return false;
+        }
+        for (int k = 0; k < i; k++) {
+            if (cfg->local_io.rules[k].dout == dout - 1) {
+                char q[48];
+                snprintf(q, sizeof(q), "%s.do", p);
+                return fail(err, q, "la DO/%ld ya la maneja local_io.rules[%d]", dout, k);
+            }
+        }
+        if (cfg->local_io.do_failsafe[dout - 1] == GW_DO_SAFE_ON) {
+            char q[48];
+            snprintf(q, sizeof(q), "local_io.do_failsafe[%ld]", dout - 1);
+            return fail(err, q, "la DO/%ld la maneja local_io.rules[%d]: el estado seguro no se "
+                                "le aplica (use off u hold)", dout, i);
+        }
+        cfg->local_io.rules[i].di = (uint8_t)(di - 1);
+        cfg->local_io.rules[i].dout = (uint8_t)(dout - 1);
+        cfg->local_io.rules[i].mode = (uint8_t)mode;
+    }
+    cfg->local_io.rule_count = (uint8_t)n;
+    return true;
+}
+
+static bool parse_local_io(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"di_debounce_ms", "failsafe_s", "do_failsafe",
+                                       "counter_save_s", "buzzer", "rules"};
+    static const char *const safe_names[] = {"off", "on", "hold"};   /* gw_do_safe_t order */
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "local_io");
+    static const cJSON empty = {.type = cJSON_Object};
+    long db, fs, save;
+    if (o == NULL) {
+        o = &empty;
+    }
+    if (!check_keys(o, "local_io", keys, sizeof(keys) / sizeof(keys[0]), err) ||
+        !get_int(o, "di_debounce_ms", "local_io", false, 20, 0, 1000, &db, err) ||
+        !get_int(o, "failsafe_s", "local_io", false, 0, 0, GW_FAILSAFE_MAX_S, &fs, err) ||
+        !get_int(o, "counter_save_s", "local_io", false, 600, 0, GW_COUNTER_SAVE_MAX_S, &save,
+                 err)) {
+        return false;
+    }
+    if (save != 0 && save < GW_COUNTER_SAVE_MIN_S) {
+        return fail(err, "local_io.counter_save_s",
+                    "valor %ld: 0 (no guardar) o al menos %d s (desgaste de la flash)", save,
+                    GW_COUNTER_SAVE_MIN_S);
+    }
     cfg->local_io.di_debounce_ms = (uint16_t)db;
+    cfg->local_io.failsafe_s = (uint32_t)fs;
+    cfg->local_io.counter_save_s = (uint32_t)save;
+    /* IO-3: one safe state per DO, in order (DO/1 first); missing entries are "off" */
+    const cJSON *list = cJSON_GetObjectItemCaseSensitive(o, "do_failsafe");
+    if (list != NULL && !cJSON_IsArray(list)) {
+        return fail(err, "local_io.do_failsafe", "se esperaba un array (DO/1 primero)");
+    }
+    int n = list != NULL ? cJSON_GetArraySize(list) : 0;
+    if (n > GW_LOCAL_IO_CHANNELS) {
+        return fail(err, "local_io.do_failsafe", "%d entradas; hay %d salidas", n,
+                    GW_LOCAL_IO_CHANNELS);
+    }
+    int i = 0;
+    for (const cJSON *it = list != NULL ? list->child : NULL; it != NULL; it = it->next, i++) {
+        char p[40];
+        snprintf(p, sizeof(p), "local_io.do_failsafe[%d]", i);
+        int mode = -1;
+        for (int k = 0; cJSON_IsString(it) && k < 3; k++) {
+            if (strcmp(it->valuestring, safe_names[k]) == 0) {
+                mode = k;
+            }
+        }
+        if (mode < 0) {
+            return fail(err, p, "valor no válido (se esperaba off|on|hold)");
+        }
+        cfg->local_io.do_failsafe[i] = (uint8_t)mode;
+    }
+    return parse_buzzer(o, cfg, err) && parse_rules(o, cfg, err);
+}
+
+static bool parse_syslog(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"host", "port", "level"};
+    static const char *const levels[] = {"error", "warning", "info", "debug"};
+    static const gw_log_level_t level_values[] = {GW_LOG_ERROR, GW_LOG_WARNING, GW_LOG_INFO,
+                                                  GW_LOG_DEBUG};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "syslog");
+    static const cJSON empty = {.type = cJSON_Object};
+    long port;
+    int level;
+    if (o == NULL) {
+        o = &empty;
+    }
+    if (!check_keys(o, "syslog", keys, 3, err) ||
+        !get_string(o, "host", "syslog", false, "", cfg->syslog.host, sizeof(cfg->syslog.host),
+                    err) ||
+        !get_int(o, "port", "syslog", false, 514, 1, 65535, &port, err) ||
+        !get_enum(o, "level", "syslog", false, 2, levels, 4, &level, err)) {
+        return false;
+    }
+    cfg->syslog.port = (uint16_t)port;
+    cfg->syslog.level = level_values[level];
+    return true;
+}
+
+/* FW-1: "ota": {"enabled": true, "ca_file": ""}. */
+static bool parse_ota(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"enabled", "ca_file"};
+    static const cJSON empty = {.type = cJSON_Object};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "ota");
+    if (o == NULL) {
+        o = &empty;
+    }
+    return check_keys(o, "ota", keys, 2, err) &&
+           get_bool(o, "enabled", "ota", true, &cfg->ota.enabled, err) &&
+           get_file_name(o, "ca_file", "ota", cfg->ota.ca_file, err);
+}
+
+/* MB-15. Modbus TCP has no authentication: off by default, and allowed_clients limits who may
+ * connect ("a.b.c.d" or "a.b.c.d/prefix"). */
+static bool parse_modbus_tcp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"enabled", "port", "allowed_clients", "idle_timeout_s"};
+    static const cJSON empty = {.type = cJSON_Object};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "modbus_tcp");
+    if (o == NULL) {
+        o = &empty;
+    }
+    long port, idle;
+    if (!check_keys(o, "modbus_tcp", keys, 4, err) ||
+        !get_bool(o, "enabled", "modbus_tcp", false, &cfg->modbus_tcp.enabled, err) ||
+        !get_int(o, "port", "modbus_tcp", false, 502, 1, 65535, &port, err) ||
+        !get_int(o, "idle_timeout_s", "modbus_tcp", false, 60, 0, 3600, &idle, err)) {
+        return false;
+    }
+    cfg->modbus_tcp.port = (uint16_t)port;
+    cfg->modbus_tcp.idle_timeout_s = (uint16_t)idle;
+    const cJSON *list = cJSON_GetObjectItemCaseSensitive(o, "allowed_clients");
+    if (list == NULL) {
+        return true;
+    }
+    if (!cJSON_IsArray(list)) {
+        return fail(err, "modbus_tcp.allowed_clients", "se esperaba un array");
+    }
+    int n = cJSON_GetArraySize(list);
+    if (n > GW_MBTCP_MAX_ALLOWED) {
+        return fail(err, "modbus_tcp.allowed_clients", "%d entradas; el máximo es %d", n,
+                    GW_MBTCP_MAX_ALLOWED);
+    }
+    int i = 0;
+    for (const cJSON *it = list->child; it != NULL; it = it->next, i++) {
+        char p[48];
+        snprintf(p, sizeof(p), "modbus_tcp.allowed_clients[%d]", i);
+        if (!cJSON_IsString(it)) {
+            return fail(err, p, "se esperaba un texto (\"a.b.c.d\" o \"a.b.c.d/n\")");
+        }
+        char buf[24];
+        size_t len = strlen(it->valuestring);
+        if (len >= sizeof(buf)) {
+            return fail(err, p, "'%s' no es una dirección IPv4 ni una red", it->valuestring);
+        }
+        memcpy(buf, it->valuestring, len + 1);
+        unsigned prefix = 32;
+        char *slash = strchr(buf, '/');
+        if (slash != NULL) {
+            char tail;
+            *slash = '\0';
+            if (sscanf(slash + 1, "%u%c", &prefix, &tail) != 1 || prefix > 32) {
+                return fail(err, p, "prefijo no válido en '%s' (0-32)", it->valuestring);
+            }
+        }
+        uint8_t *ip = cfg->modbus_tcp.clients[i].ip;
+        if (!parse_ipv4(buf, ip)) {
+            return fail(err, p, "'%s' no es una dirección IPv4 ni una red", it->valuestring);
+        }
+        cfg->modbus_tcp.clients[i].prefix = (uint8_t)prefix;
+    }
+    cfg->modbus_tcp.client_count = (uint8_t)n;
+    return true;
+}
+
+/* CFG-3 / CFG-4: web UI and REST API. The password is a secret (CFG-7): it only appears
+ * here while a new one is being set; the stored document never holds it. */
+static bool parse_web(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"enabled", "port", "username", "password", "https",
+                                       "https_port"};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "web");
+    static const cJSON empty = {.type = cJSON_Object};
+    long port, sport;
+    if (o == NULL) {
+        o = &empty;
+    }
+    if (!check_keys(o, "web", keys, 6, err) ||
+        !get_bool(o, "enabled", "web", true, &cfg->web.enabled, err) ||
+        !get_int(o, "port", "web", false, 80, 1, 65535, &port, err) ||
+        !get_bool(o, "https", "web", true, &cfg->web.https, err) ||
+        !get_int(o, "https_port", "web", false, 443, 1, 65535, &sport, err) ||
+        !get_string(o, "username", "web", false, "admin", cfg->web.username,
+                    sizeof(cfg->web.username), err) ||
+        !get_string(o, "password", "web", false, "", cfg->web.password,
+                    sizeof(cfg->web.password), err)) {
+        return false;
+    }
+    cfg->web.port = (uint16_t)port;
+    cfg->web.https_port = (uint16_t)sport;
+    if (cfg->web.https && sport == port) {
+        return fail(err, "web.https_port", "no puede ser igual a web.port (%ld)", port);
+    }
+    if (cfg->web.username[0] == '\0') {
+        return fail(err, "web.username", "no puede estar vacío");
+    }
+    for (const unsigned char *c = (const unsigned char *)cfg->web.username; *c; c++) {
+        if (*c <= 0x20 || *c >= 0x7f || *c == ':') {
+            return fail(err, "web.username",
+                        "solo caracteres ASCII visibles, sin ':' (Basic auth)");
+        }
+    }
+    size_t pw = strlen(cfg->web.password);
+    if (pw != 0 && pw < 8) {
+        return fail(err, "web.password", "se esperaban al menos 8 caracteres (o vacío)");
+    }
     return true;
 }
 
 static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"name",   "area",   "address",  "type",     "word_order",
-                                       "scale",  "offset", "deadband", "writable", "units"};
-    int area, type, word;
-    long addr;
+    static const char *const keys[] = {"name",   "area",     "address",  "type",  "word_order",
+                                       "scale",  "offset",   "deadband", "writable", "units",
+                                       "bit",    "length",   "scan",  "eng_low", "eng_high"};
+    static const char *const scans[] = {"fast", "slow"};
+    int area, type, word, scan;
+    long addr, bit, length;
+    double eng_low, eng_high;
     char p[96];
-    if (!check_keys(o, path, keys, 10, err) ||
+    if (!check_keys(o, path, keys, sizeof(keys) / sizeof(keys[0]), err) ||
         !get_string(o, "name", path, true, "", t->name, sizeof(t->name), err) ||
         !get_enum(o, "area", path, true, 0, k_area_names, 4, &area, err) ||
         !get_int(o, "address", path, true, 0, 0, 65535, &addr, err) ||
-        !get_enum(o, "type", path, true, 0, k_type_names, 6, &type, err) ||
-        !get_enum(o, "word_order", path, false, GW_WORD_BIG, k_word_names, 2, &word, err) ||
+        !get_enum(o, "type", path, true, 0, k_type_names, TYPE_COUNT, &type, err) ||
+        !get_enum(o, "word_order", path, false, 0, k_word_names, 6, &word, err) ||
         !get_double(o, "scale", path, 1.0, &t->scale, err) ||
         !get_double(o, "offset", path, 0.0, &t->offset, err) ||
         !get_double(o, "deadband", path, 0.0, &t->deadband, err) ||
         !get_bool(o, "writable", path, false, &t->writable, err) ||
-        !get_string(o, "units", path, false, "", t->units, sizeof(t->units), err)) {
+        !get_string(o, "units", path, false, "", t->units, sizeof(t->units), err) ||
+        !get_int(o, "bit", path, false, GW_NO_BIT, 0, 15, &bit, err) ||
+        !get_int(o, "length", path, false, 0, 1, GW_STR_MAX_REGS, &length, err) ||
+        !get_enum(o, "scan", path, false, 0, scans, 2, &scan, err) ||
+        !get_double(o, "eng_low", path, 0.0, &eng_low, err) ||
+        !get_double(o, "eng_high", path, 0.0, &eng_high, err)) {
         return false;
     }
+    if (fabs(eng_low) > FLT_MAX || fabs(eng_high) > FLT_MAX) {
+        join(p, sizeof(p), path, fabs(eng_low) > FLT_MAX ? "eng_low" : "eng_high");
+        return fail(err, p, "fuera del rango de un Float (±3.4e38)");
+    }
+    t->eng_low = (float)eng_low;
+    t->eng_high = (float)eng_high;
+    t->has_eng_low = cJSON_GetObjectItemCaseSensitive(o, "eng_low") != NULL;
+    t->has_eng_high = cJSON_GetObjectItemCaseSensitive(o, "eng_high") != NULL;
+    t->slow = scan == 1;
     t->area = (gw_area_t)area;
     t->type = (gw_type_t)type;
-    t->word_order = (gw_word_order_t)word;
+    t->word_order = k_word_values[word];
     t->address = (uint16_t)addr;
+    t->bit = (int8_t)bit;
+    t->length = (uint8_t)length;
 
     if (t->name[0] == '\0') {
         join(p, sizeof(p), path, "name");
         return fail(err, p, "no puede estar vacío");
     }
     bool bit_area = t->area == GW_AREA_COIL || t->area == GW_AREA_DISCRETE;
-    if (bit_area != (t->type == GW_TYPE_BOOL)) {
+    if (bit_area && t->type != GW_TYPE_BOOL) {
         join(p, sizeof(p), path, "type");
-        return fail(err, p, bit_area ? "las áreas coil/discrete solo admiten type=bool"
-                                     : "type=bool solo vale en las áreas coil y discrete");
+        return fail(err, p, "las áreas coil/discrete solo admiten type=bool");
+    }
+    bool has_bit = cJSON_GetObjectItemCaseSensitive(o, "bit") != NULL;
+    if (!bit_area && t->type == GW_TYPE_BOOL && !has_bit) {
+        join(p, sizeof(p), path, "type");
+        return fail(err, p, "type=bool en holding/input requiere la clave bit (0-15); sin bit, "
+                            "solo vale en las áreas coil y discrete");
+    }
+    if (has_bit && (bit_area || t->type != GW_TYPE_BOOL)) {
+        join(p, sizeof(p), path, "bit");
+        return fail(err, p, "solo vale con type=bool en las áreas holding e input");
+    }
+    if (has_bit && cJSON_GetObjectItemCaseSensitive(o, "word_order") != NULL &&
+        t->word_order != GW_WORD_BIG) {
+        join(p, sizeof(p), path, "word_order");
+        return fail(err, p, "no se admite en un tag bit: el bit 0 es el menos significativo del "
+                            "registro tal como llega");
+    }
+    bool has_length = cJSON_GetObjectItemCaseSensitive(o, "length") != NULL;
+    bool blob = t->type == GW_TYPE_STRING || t->type == GW_TYPE_BYTES;
+    if (blob != has_length) {
+        join(p, sizeof(p), path, "length");
+        return fail(err, p, has_length ? "solo vale con type=string o bytes"
+                                       : "obligatorio con type=%s (registros, 1-16)",
+                    k_type_names[t->type]);
     }
     if (t->writable && t->area != GW_AREA_COIL && t->area != GW_AREA_HOLDING) {
         join(p, sizeof(p), path, "writable");
@@ -398,36 +1217,112 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
         join(p, sizeof(p), path, "scale");
         return fail(err, p, "no puede ser 0");
     }
-    if (t->type == GW_TYPE_BOOL && (t->scale != 1.0 || t->offset != 0.0)) {
+    if ((t->type == GW_TYPE_BOOL || blob) && (t->scale != 1.0 || t->offset != 0.0)) {
         join(p, sizeof(p), path, "scale");
-        return fail(err, p, "scale/offset no se admiten en tags bool");
+        return fail(err, p, "scale/offset no se admiten en tags %s", k_type_names[t->type]);
     }
     if (t->deadband < 0.0) {
         join(p, sizeof(p), path, "deadband");
         return fail(err, p, "no puede ser negativo");
     }
+    if (blob && t->deadband != 0.0) {
+        join(p, sizeof(p), path, "deadband");
+        return fail(err, p, "no se admite en tags %s", k_type_names[t->type]);
+    }
+    /* SPB-16: the engineering range of a numeric value */
+    if ((t->has_eng_low || t->has_eng_high) && (t->type == GW_TYPE_BOOL || blob)) {
+        join(p, sizeof(p), path, t->has_eng_low ? "eng_low" : "eng_high");
+        return fail(err, p, "no se admite en tags %s", k_type_names[t->type]);
+    }
+    if (t->has_eng_low && t->has_eng_high && t->eng_low >= t->eng_high) {
+        join(p, sizeof(p), path, "eng_high");
+        return fail(err, p, "debe ser mayor que eng_low (%g)", t->eng_low);
+    }
+    return true;
+}
+
+/* SPB-18: every device of a type has the same tags (names and datatypes, in order): the type
+ * is one Sparkplug template definition. The definitions together describe at most
+ * GW_MAX_TEMPLATE_TAGS tags, so the NBIRTH that carries them stays bounded. */
+static bool check_device_type(const gw_config_t *cfg, const gw_device_cfg_t *d, const char *path,
+                              unsigned *template_tags, gw_cfg_err_t *err)
+{
+    if (d->type[0] == '\0') {
+        return true;
+    }
+    char p[48];
+    snprintf(p, sizeof(p), "%s.type", path);
+    if (!check_topic_id(d->type, p, false, err)) {
+        return false;
+    }
+    if (strcmp(d->type, "bdSeq") == 0) {
+        return fail(err, p, "'bdSeq' es una métrica del nodo");
+    }
+    for (uint16_t j = 0; j < cfg->device_count; j++) {
+        const gw_device_cfg_t *o = &cfg->devices[j];
+        if (strcmp(o->type, d->type) != 0) {
+            continue;
+        }
+        bool same = o->tag_count == d->tag_count;
+        for (uint16_t k = 0; same && k < d->tag_count; k++) {
+            const gw_tag_cfg_t *a = &cfg->tags[o->first_tag + k];
+            const gw_tag_cfg_t *b = &cfg->tags[d->first_tag + k];
+            same = strcmp(a->name, b->name) == 0 && gw_conv_datatype(a) == gw_conv_datatype(b);
+        }
+        if (!same) {
+            return fail(err, p, "el tipo '%s' ya lo define devices[%u] (%s) con otros tags: los "
+                                "dispositivos de un tipo deben tener los mismos nombres y "
+                                "datatypes, en el mismo orden", d->type, j, o->name);
+        }
+        return true;
+    }
+    if (*template_tags + d->tag_count > GW_MAX_TEMPLATE_TAGS) {
+        return fail(err, p, "los tipos de dispositivo describen más de %d tags en total (el "
+                            "NBIRTH lleva sus definiciones)", GW_MAX_TEMPLATE_TAGS);
+    }
+    *template_tags += d->tag_count;
     return true;
 }
 
 static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_device_cfg_t *d,
                          gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"name", "unit_id", "poll_ms", "offline_after", "tags"};
-    long unit, poll, off;
+    static const char *const keys[] = {"name",        "unit_id", "poll_ms", "slow_poll_ms",
+                                       "offline_after", "block_reads", "max_gap", "tags", "type"};
+    long unit, poll, off, gap, slow;
+    bool merge;
     char p[96];
-    if (!check_keys(o, path, keys, 5, err) ||
+    if (!check_keys(o, path, keys, sizeof(keys) / sizeof(keys[0]), err) ||
         !get_string(o, "name", path, true, "", d->name, sizeof(d->name), err) ||
+        !get_string(o, "type", path, false, "", d->type, sizeof(d->type), err) ||
         !get_int(o, "unit_id", path, true, 0, 1, 247, &unit, err) ||
         !get_int(o, "poll_ms", path, false, 1000, 50, 3600000, &poll, err) ||
-        !get_int(o, "offline_after", path, false, 3, 1, 1000, &off, err)) {
+        !get_int(o, "slow_poll_ms", path, false, poll * 10 < 3600000 ? poll * 10 : 3600000, 50,
+                 3600000, &slow, err) ||
+        !get_int(o, "offline_after", path, false, 3, 1, 1000, &off, err) ||
+        !get_bool(o, "block_reads", path, true, &merge, err) ||
+        !get_int(o, "max_gap", path, false, GW_CFG_BUILD_DEFAULT, 0, GW_MAX_GAP_LIMIT, &gap, err)) {
         return false;
+    }
+    /* MB-11: absent keys keep the build's setting (CONFIG_GW_MB_BLOCK_READS / _MAX_GAP) */
+    bool has_merge = cJSON_GetObjectItemCaseSensitive(o, "block_reads") != NULL;
+    d->block_reads = has_merge ? (int8_t)merge : (int8_t)GW_CFG_BUILD_DEFAULT;
+    d->max_gap = (int16_t)gap;
+    if (has_merge && !merge && gap != GW_CFG_BUILD_DEFAULT) {
+        join(p, sizeof(p), path, "max_gap");
+        return fail(err, p, "no tiene efecto con block_reads=false");
     }
     join(p, sizeof(p), path, "name");
     if (!check_topic_id(d->name, p, false, err)) {
         return false;
     }
+    if (slow < poll) {
+        join(p, sizeof(p), path, "slow_poll_ms");
+        return fail(err, p, "no puede ser menor que poll_ms (%ld)", poll);
+    }
     d->unit_id = (uint8_t)unit;
     d->poll_ms = (uint32_t)poll;
+    d->slow_poll_ms = (uint32_t)slow;
     d->offline_after = (uint16_t)off;
 
     const cJSON *tags = cJSON_GetObjectItemCaseSensitive(o, "tags");
@@ -480,6 +1375,7 @@ static bool parse_devices(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err
     if (n > GW_MAX_DEVICES) {
         return fail(err, "devices", "%d dispositivos; el máximo es %d", n, GW_MAX_DEVICES);
     }
+    unsigned template_tags = 0;
     int i = 0;
     for (const cJSON *it = arr->child; it != NULL; it = it->next, i++) {
         char path[32];
@@ -495,34 +1391,103 @@ static bool parse_devices(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err
                 return fail(err, p, "nombre de dispositivo duplicado '%s'", d->name);
             }
         }
+        if (!check_device_type(cfg, d, path, &template_tags, err)) {
+            return false;
+        }
         cfg->device_count++;
     }
     return true;
 }
 
+unsigned gw_json_depth(const char *json, size_t len)
+{
+    unsigned depth = 0, max = 0;
+    bool in_str = false, esc = false;
+    for (size_t i = 0; i < len && json[i] != '\0'; i++) {
+        char c = json[i];
+        if (in_str) {
+            if (esc) {
+                esc = false;
+            } else if (c == '\\') {
+                esc = true;
+            } else if (c == '"') {
+                in_str = false;
+            }
+        } else if (c == '"') {
+            in_str = true;
+        } else if (c == '{' || c == '[') {
+            if (++depth > max) {
+                max = depth;
+            }
+        } else if ((c == '}' || c == ']') && depth > 0) {
+            depth--;
+        }
+    }
+    return max;
+}
+
+static bool parse_locked(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_t *err);
+
+/* Issue #106: cJSON's hooks, its error pointer and s_alloc_failed are process-wide: the whole
+ * parse runs under the JSON lock (another task's parse could set or clear the flag). */
 bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"network", "ntp",   "mqtt",     "sparkplug",
-                                       "rs485",   "local_io", "devices"};
+    gw_port_json_lock();
+    bool ok = parse_locked(json, len, cfg, err);
+    gw_port_json_unlock();
+    return ok;
+}
+
+static bool parse_locked(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"network", "ntp",      "mqtt",    "sparkplug", "rs485",
+                                       "local_io", "devices", "syslog",  "web",
+                                       "modbus_tcp", "ota"};
     memset(cfg, 0, sizeof(*cfg));
     err->msg[0] = '\0';
+    err->path[0] = '\0';
+    err->line = err->column = 0;
 
-    cJSON *root = cJSON_ParseWithLength(json, len);
-    if (root == NULL) {
-        const char *at = cJSON_GetErrorPtr();
-        size_t off = (at != NULL && at >= json && at <= json + len) ? (size_t)(at - json) : 0;
-        fail(err, "$", "JSON mal formado cerca del byte %zu", off);
-        memset(cfg, 0, sizeof(*cfg));
+    /* cJSON recurses once per nesting level: bound it before parsing (the schema needs 4). */
+    if (gw_json_depth(json, len) > GW_JSON_MAX_DEPTH) {
+        snprintf(err->msg, sizeof(err->msg), "JSON anidado a más de %d niveles",
+                 GW_JSON_MAX_DEPTH);
         return false;
     }
-    bool ok = check_keys(root, "$", keys, 7, err) && parse_network(root, cfg, err) &&
+    gw_config_json_hooks();
+    const char *end = NULL;
+    cJSON *root = cJSON_ParseWithLengthOpts(json, len, &end, false);
+    if (root == NULL && s_alloc_failed) {
+        snprintf(err->msg, sizeof(err->msg), "memoria insuficiente para analizar %zu bytes de JSON",
+                 len);
+        return false;
+    }
+    if (root == NULL) {
+        const char *at = cJSON_GetErrorPtr();
+        return fail_at(err, json, (at != NULL && at >= json && at <= json + len) ? at : json,
+                       "sintaxis no válida");
+    }
+    while (end < json + len && (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')) {
+        end++;
+    }
+    if (end < json + len && *end != '\0') {
+        cJSON_Delete(root);
+        return fail_at(err, json, end, "contenido después del documento");
+    }
+    bool ok = check_keys(root, "", keys, sizeof(keys) / sizeof(keys[0]), err) && parse_network(root, cfg, err) &&
               parse_ntp(root, cfg, err) && parse_mqtt(root, cfg, err) &&
               parse_sparkplug(root, cfg, err) && parse_rs485(root, cfg, err) &&
-              parse_local_io(root, cfg, err) && parse_devices(root, cfg, err);
+              parse_local_io(root, cfg, err) && parse_devices(root, cfg, err) &&
+              parse_syslog(root, cfg, err) && parse_web(root, cfg, err) &&
+              parse_modbus_tcp(root, cfg, err) && parse_ota(root, cfg, err);
     cJSON_Delete(root);
 
     if (ok && cfg->mqtt.client_id[0] == '\0') {
         strcpy(cfg->mqtt.client_id, cfg->sparkplug.edge_node_id);
+    }
+    if (ok && cfg->network.hostname[0] == '\0') {
+        gw_hostname_from(cfg->sparkplug.edge_node_id, cfg->network.hostname,
+                         sizeof(cfg->network.hostname));
     }
     if (!ok) {
         memset(cfg, 0, sizeof(*cfg));
@@ -559,7 +1524,7 @@ uint16_t gw_config_tag_device(const gw_config_t *cfg, uint16_t tag)
             return i;
         }
     }
-    return 0;
+    return GW_NO_DEVICE;   /* not 0: that is a valid device and would hide the error */
 }
 
 uint16_t gw_tag_width(const gw_tag_cfg_t *tag)
@@ -569,7 +1534,14 @@ uint16_t gw_tag_width(const gw_tag_cfg_t *tag)
     case GW_TYPE_INT32:
     case GW_TYPE_FLOAT32:
         return 2;
+    case GW_TYPE_UINT64:
+    case GW_TYPE_INT64:
+    case GW_TYPE_FLOAT64:
+        return 4;
+    case GW_TYPE_STRING:
+    case GW_TYPE_BYTES:
+        return tag->length;
     default:
-        return 1;
+        return 1;   /* 16-bit types, coils, discrete inputs and register bits */
     }
 }

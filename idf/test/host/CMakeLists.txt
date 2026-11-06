@@ -2,7 +2,8 @@
 #
 #   cmake -S idf/test/host -B build-host && cmake --build build-host -j3 && ctest --test-dir build-host
 #
-# Unity and cJSON are fetched at the versions used on target (pinned tags).
+# Unity and cJSON are fetched at the versions used on target, pinned by commit hash (a tag
+# can be moved; the hash cannot): Unity v2.6.1, cJSON v1.7.19.
 cmake_minimum_required(VERSION 3.16)
 project(gw_host_tests C)
 
@@ -12,12 +13,10 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 include(FetchContent)
 FetchContent_Declare(unity
     GIT_REPOSITORY https://github.com/ThrowTheSwitch/Unity.git
-    GIT_TAG v2.6.1
-    GIT_SHALLOW TRUE)
+    GIT_TAG cbcd08fa7de711053a3deec6339ee89cad5d2697)   # v2.6.1
 FetchContent_Declare(cjson
     GIT_REPOSITORY https://github.com/DaveGamble/cJSON.git
-    GIT_TAG v1.7.19
-    GIT_SHALLOW TRUE)
+    GIT_TAG c859b25da02955fef659d658b8f324b5cde87be3)   # v1.7.19
 FetchContent_GetProperties(unity)
 if(NOT unity_POPULATED)
     FetchContent_Populate(unity)
@@ -40,7 +39,9 @@ add_subdirectory(${IDF_PROJECT_DIR}/components/gw_core gw_core)
 
 enable_testing()
 foreach(t test_mb_rtu test_mb_master test_conv test_logic test_config test_plan test_spb test_node
-          test_poll)
+          test_poll test_dout test_netsel test_syslog test_auth test_cfgdoc test_button
+          test_brokersel test_phost test_sf test_authlimit test_mbap test_localio test_buzz test_rtc
+          test_ota test_nvsraw)
     add_executable(${t} ${t}.c support.c)
     target_link_libraries(${t} PRIVATE gw_core unity)
     target_include_directories(${t} PRIVATE ${CMAKE_CURRENT_LIST_DIR})
@@ -58,3 +59,75 @@ target_link_libraries(spb_dump PRIVATE gw_core unity)
 target_include_directories(spb_dump PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 target_compile_definitions(spb_dump PRIVATE
     GW_SPEC_EXAMPLE="${CMAKE_CURRENT_LIST_DIR}/spec_example.json")
+
+# Issue #58: esp-mqtt 1.1.0 leaks network.if_name in esp_mqtt_set_config(); gw_edge must call it
+# only through its guarded wrapper set_config().
+add_test(NAME check_set_config
+         COMMAND ${CMAKE_COMMAND} -DSRC=${IDF_PROJECT_DIR}/components/gw_edge/gw_edge.c
+                 -P ${CMAKE_CURRENT_LIST_DIR}/check_set_config.cmake)
+
+# Issue #83: the build's check of the sdkconfig against sdkconfig.defaults and its overlays.
+# fresh: matches; stale: DYNAMIC_BUFFER "is not set" from before #80 (fails, and only warns with
+# MODE=warn); wdt5: a different watchdog timeout fails, unless an overlay of the build sets it;
+# absent options (SPIRAM_IGNORE_NOTFOUND with SPIRAM off, as in the QEMU build) are skipped.
+# Issue #93, with sdkconfig.production in the chain ("@" = a file of the project): prod_fresh
+# matches; prod_stale lacks SECURE_DISABLE_ROM_DL_MODE (fails; reported with MODE=warn), which a
+# build without the production overlay does not check. Issue #103: NVS encryption without flash
+# encryption fails (reported with MODE=warn), except in the emulator build (GW_IO_SIMULATED).
+set(GW_CFGCHK ${IDF_PROJECT_DIR}/cmake/gw_sdkconfig_check.cmake)
+set(GW_CFGCHK_DIR ${CMAKE_CURRENT_LIST_DIR}/sdkconfig_check)
+set(GW_CFGCHK_DEFAULTS ${IDF_PROJECT_DIR}/sdkconfig.defaults)
+foreach(c "fresh;fresh;;;0" "stale;stale;;warn;0;MBEDTLS_DYNAMIC_BUFFER" "stale;stale;;;1"
+          "wdt5;wdt5;;;1" "wdt5_overlay;wdt5;wdt5.defaults;;0"
+          "prod_fresh;prod_fresh;@sdkconfig.production;;0"
+          "prod_stale;prod_stale;@sdkconfig.production;;1"
+          "prod_stale;prod_stale;@sdkconfig.production;warn;0;SECURE_DISABLE_ROM_DL_MODE"
+          "prod_stale_default;prod_stale;;;0"
+          "nvsenc_noflash;nvsenc_noflash;;;1"
+          "nvsenc_noflash;nvsenc_noflash;;warn;0;NVS_ENCRYPTION"
+          "nvsenc_sim;nvsenc_sim;;;0")
+    list(GET c 0 name)
+    list(GET c 1 cfg)
+    list(GET c 2 overlay)
+    list(GET c 3 mode)
+    list(GET c 4 fails)
+    set(expect "")
+    if(mode STREQUAL "warn")
+        list(GET c 5 expect)
+        string(APPEND name "_warn")
+    endif()
+    set(defaults ${GW_CFGCHK_DEFAULTS})
+    # $<SEMICOLON>: one argument with a list in it ("\;" kept its backslash, so before issue #93
+    # an overlay was never read and wdt5_overlay passed without checking anything)
+    if(overlay MATCHES "^@(.*)")
+        string(APPEND defaults "$<SEMICOLON>${IDF_PROJECT_DIR}/${CMAKE_MATCH_1}")
+    elseif(overlay)
+        string(APPEND defaults "$<SEMICOLON>${GW_CFGCHK_DIR}/${overlay}")
+    endif()
+    add_test(NAME sdkconfig_check_${name}
+             COMMAND ${CMAKE_COMMAND} -DSDKCONFIG=${GW_CFGCHK_DIR}/${cfg}.sdkconfig
+                     "-DDEFAULTS=${defaults}" -DMODE=${mode} -P ${GW_CFGCHK})
+    if(fails)
+        set_tests_properties(sdkconfig_check_${name} PROPERTIES WILL_FAIL TRUE)
+    elseif(mode STREQUAL "warn")
+        set_tests_properties(sdkconfig_check_${name} PROPERTIES
+                             PASS_REGULAR_EXPRESSION "CMake Warning.*CONFIG_${expect}")
+    endif()
+endforeach()
+
+# Issue #108 B7: with flash and NVS encryption, the partition table of the sdkconfig must flag
+# storage and coredump "encrypted": the project's partitions-production.csv passes, a table
+# without the flag on either fails (fixtures resolved against sdkconfig_check/).
+foreach(c "prodpart_ok;${IDF_PROJECT_DIR};0" "prodpart_plain;${GW_CFGCHK_DIR};1"
+          "prodpart_coredump;${GW_CFGCHK_DIR};1")
+    list(GET c 0 name)
+    list(GET c 1 dir)
+    list(GET c 2 fails)
+    add_test(NAME sdkconfig_check_${name}
+             COMMAND ${CMAKE_COMMAND} -DSDKCONFIG=${GW_CFGCHK_DIR}/${name}.sdkconfig
+                     "-DDEFAULTS=${GW_CFGCHK_DEFAULTS}$<SEMICOLON>${IDF_PROJECT_DIR}/sdkconfig.production"
+                     -DPROJECT_DIR=${dir} -P ${GW_CFGCHK})
+    if(fails)
+        set_tests_properties(sdkconfig_check_${name} PROPERTIES WILL_FAIL TRUE)
+    endif()
+endforeach()

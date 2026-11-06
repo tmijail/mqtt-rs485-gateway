@@ -8,6 +8,7 @@
 #include "freertos/task.h"
 
 #if !CONFIG_GW_IO_SIMULATED
+#include "gw_bsp.h"
 #include "led_strip.h"
 #endif
 
@@ -24,6 +25,11 @@ void gw_status_set(uint32_t flag, bool on)
     }
 }
 
+uint32_t gw_status_get(void)
+{
+    return atomic_load(&s_flags);
+}
+
 typedef struct {
     uint8_t r, g, b;
 } rgb_t;
@@ -33,10 +39,24 @@ typedef struct {
 #define GREEN  ((rgb_t){0, 255, 0})
 #define AMBER  ((rgb_t){255, 140, 0})
 #define ORANGE ((rgb_t){255, 60, 0})
+#define WHITE  ((rgb_t){255, 255, 255})
+#define BLUE   ((rgb_t){0, 60, 255})
 
 /* Pattern for the current flags; @p tick advances every 125 ms. */
 static rgb_t pattern(uint32_t f, uint32_t tick, const char **name)
 {
+    if (f & GW_ST_RESETTING) {
+        *name = "factory reset";
+        return WHITE;
+    }
+    if (f & GW_ST_BUTTON) {
+        *name = "BOOT held";
+        return (tick & 1) ? OFF : WHITE;
+    }
+    if (f & GW_ST_COMMISSIONING) {
+        *name = "commissioning";
+        return (tick & 4) ? OFF : BLUE;
+    }
     if (f & GW_ST_CFG_ERROR) {
         *name = "config error";
         return (tick & 1) ? OFF : RED;
@@ -77,11 +97,12 @@ typedef led_strip_handle_t led_handle_t;
 static esp_err_t led_open(led_handle_t *h)
 {
     const led_strip_config_t sc = {
-        .strip_gpio_num = CONFIG_GW_LED_GPIO,
+        .strip_gpio_num = gw_bsp.status_led.gpio,
         .max_leds = 1,
         .led_model = LED_MODEL_WS2812,
-        /* Waveshare drives this LED in R,G,B byte order (demo swaps neopixelWrite args). */
-        .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_RGB,
+        .color_component_format = gw_bsp.status_led.order == GW_BSP_LED_ORDER_RGB
+                                      ? LED_STRIP_COLOR_COMPONENT_FMT_RGB
+                                      : LED_STRIP_COLOR_COMPONENT_FMT_GRB,
     };
     const led_strip_rmt_config_t rc = {
         .clk_src = RMT_CLK_SRC_DEFAULT,

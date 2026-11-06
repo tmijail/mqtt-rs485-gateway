@@ -6,3 +6,9 @@ managed_components/
 __pycache__/
 *.pyc
 .venv/
+# FW-2: signing keys never enter the repository (README 3.6)
+*signing_key*.pem
+keys/
+# throwaway keys of tools/e2e/secure_boot_qemu.sh, in its workdir (issue #93)
+key.pem
+other.pem

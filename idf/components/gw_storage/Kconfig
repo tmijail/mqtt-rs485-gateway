@@ -1,0 +1,32 @@
+menu "Gateway: storage"
+
+    config GW_CONFIG_MAX_BYTES
+        int "Largest accepted /cfg/config.json (bytes)"
+        range 4096 1048576
+        default 131072
+        help
+            The spec maximum (16 devices, 256 tags with every field) is about 46 KB of
+            compact JSON and 82 KB indented with 2 spaces. The file and the parser's
+            document tree (about 200 KB for 256 tags) are allocated at boot, in PSRAM
+            when present, and freed before the gateway starts. A larger file is
+            rejected: the gateway then stays stopped with the configuration error state.
+
+    choice GW_SF_SPILL
+        prompt "Store & forward spill (SPB-14, sparkplug.store_forward.sd)"
+        default GW_SF_SPILL_SDMMC
+        help
+            Where the store & forward ring spills when it is full, if the configuration
+            enables it (off by default). GPIO45, the card's D0, is a strapping pin: see
+            README 6.5 before enabling it on a board.
+
+        config GW_SF_SPILL_SDMMC
+            bool "microSD card on SDMMC, 1-bit (CLK 48, CMD 47, D0 45)"
+
+        config GW_SF_SPILL_LITTLEFS
+            bool "A directory of the LittleFS partition (QEMU stand-in for the card)"
+
+        config GW_SF_SPILL_NONE
+            bool "None"
+    endchoice
+
+endmenu

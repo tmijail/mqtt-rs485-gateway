@@ -83,7 +83,7 @@ static int sim_write(void *ctx, const uint8_t *d, size_t len)
         fprintf(stderr, "sim: master sent a bad CRC\n");
         abort();
     }
-    if (s->offline || d[0] != s->unit) {
+    if (s->offline || d[0] != s->unit || (s->mute_fc != 0 && d[1] == s->mute_fc)) {
         return 0;
     }
     uint8_t fc = d[1];
@@ -209,8 +209,12 @@ static int rec_publish(void *ctx, const char *topic, const uint8_t *data, size_t
                        bool retain)
 {
     (void)ctx;
-    if (g_rec.count >= REC_MAX) {
+    if (g_rec.count >= REC_MAX || g_rec.publish_fails) {
         return -1;
+    }
+    if (g_rec.too_large_topic != NULL && strstr(topic, g_rec.too_large_topic) != NULL) {
+        g_rec.too_large++;
+        return GW_NODE_PUBLISH_TOO_LARGE;
     }
     rec_msg_t *m = &g_rec.msgs[g_rec.count++];
     snprintf(m->topic, sizeof(m->topic), "%s", topic);
@@ -233,16 +237,33 @@ static bool rec_set_do(void *ctx, uint8_t index, bool on)
     return true;
 }
 
-static bool rec_request_write(void *ctx, uint16_t tag, double value)
+static bool rec_request_write(void *ctx, uint16_t tag, const gw_tag_value_t *value)
 {
     (void)ctx;
     if (g_rec.write_queue_full) {
         return false;
     }
     g_rec.writes++;
+    if (g_rec.room_limited && g_rec.room > 0) {
+        g_rec.room--;
+    }
     g_rec.last_write_tag = tag;
-    g_rec.last_write_value = value;
+    g_rec.last_write_value = value->value;
+    g_rec.last_write = *value;
     return true;
+}
+
+static void rec_set_scan_rate(void *ctx, uint32_t ms)
+{
+    (void)ctx;
+    g_rec.scan_rate_calls++;
+    g_rec.scan_rate = ms;
+}
+
+static size_t rec_write_room(void *ctx)
+{
+    (void)ctx;
+    return g_rec.room_limited ? g_rec.room : 64;
 }
 
 static void rec_reboot(void *ctx)
@@ -251,33 +272,66 @@ static void rec_reboot(void *ctx)
     g_rec.reboots++;
 }
 
+static void rec_firmware_update(void *ctx, const char *url)
+{
+    (void)ctx;
+    g_rec.fw_updates++;
+    snprintf(g_rec.fw_url, sizeof(g_rec.fw_url), "%s", url);
+}
+
+void recorder_default_diag(void)
+{
+    g_rec.diag = (gw_node_diag_t){.uptime_s = 12, .free_heap = 150000, .min_free_heap = 140000,
+                                  .has_rssi = true, .rssi_valid = false};
+}
+
+static void rec_diagnostics(void *ctx, gw_node_diag_t *out)
+{
+    (void)ctx;
+    *out = g_rec.diag;
+}
+
 gw_node_ops_t recorder_ops(void)
 {
     gw_node_ops_t ops = {
         .publish = rec_publish,
         .set_do = rec_set_do,
         .request_write = rec_request_write,
+        .write_room = rec_write_room,
+        .set_scan_rate = rec_set_scan_rate,
         .reboot = rec_reboot,
+        .firmware_update = rec_firmware_update,
+        .diagnostics = rec_diagnostics,
         .ctx = NULL,
     };
     return ops;
 }
 
+void support_node_buffer(gw_node_t *n)
+{
+    /* a few nodes may live at once (spb_dump): one buffer each, from a small pool */
+    static uint8_t pool[4][GW_SPB_PAYLOAD_MAX];
+    static size_t next;
+    gw_node_set_buffer(n, pool[next++ % 4], GW_SPB_PAYLOAD_MAX);
+}
+
 void recorder_clear(void)
 {
+    gw_node_diag_t diag = g_rec.diag;
     memset(&g_rec, 0, sizeof(g_rec));
+    g_rec.diag = diag;   /* the node's conditions stay as the test set them */
 }
 
 /* ---------- decoding ---------- */
 
-static bool dec_cb(void *ctx, const spb_rx_metric_t *m)
+static void fill_dec(dec_metric_t *o, const spb_rx_metric_t *m)
 {
-    decoded_t *d = ctx;
-    if (d->count >= DEC_MAX) {
-        return false;
-    }
-    __typeof__(d->m[0]) *o = &d->m[d->count++];
     memset(o, 0, sizeof(*o));
+    o->has_alias = m->has_alias;
+    o->has_ref = m->tmpl.has_ref;
+    memcpy(o->ref, m->tmpl.ref, sizeof(o->ref));
+    o->is_definition = m->tmpl.is_definition;
+    o->members = m->tmpl.members;
     if (m->name) {
         o->has_name = true;
         snprintf(o->name, sizeof(o->name), "%s", m->name);
@@ -285,13 +339,56 @@ static bool dec_cb(void *ctx, const spb_rx_metric_t *m)
     o->alias = m->alias;
     o->datatype = m->datatype;
     o->is_null = m->is_null;
+    o->is_historical = m->is_historical;
     o->kind = m->kind;
     o->timestamp = m->timestamp;
-    if (m->kind == SPB_VAL_STRING) {
+    if (m->kind == SPB_VAL_LONG) {
+        o->u64 = m->v.l;
+    }
+    if (m->kind == SPB_VAL_BYTES) {
+        o->bytes_len = m->v.bytes.len;
+        memcpy(o->bytes, m->v.bytes.data, m->v.bytes.len);
+    } else if (m->kind == SPB_VAL_STRING) {
         snprintf(o->str, sizeof(o->str), "%s", m->v.s);
     } else {
         spb_rx_number(m, m->datatype, &o->num);
     }
+    o->prop_count = m->prop_count;
+    const spb_rx_prop_t *p = spb_rx_prop(m, "Quality");
+    if (p != NULL && p->kind == SPB_VAL_INT) {
+        o->has_quality = true;
+        o->quality = (int32_t)p->v.i;
+    }
+    if ((p = spb_rx_prop(m, "engUnit")) != NULL && p->kind == SPB_VAL_STRING) {
+        snprintf(o->eng_unit, sizeof(o->eng_unit), "%s", p->s);
+    }
+    if ((p = spb_rx_prop(m, "engLow")) != NULL && p->kind == SPB_VAL_FLOAT) {
+        o->has_eng_low = true;
+        o->eng_low = p->v.f;
+    }
+    if ((p = spb_rx_prop(m, "engHigh")) != NULL && p->kind == SPB_VAL_FLOAT) {
+        o->has_eng_high = true;
+        o->eng_high = p->v.f;
+    }
+}
+
+static bool dec_cb(void *ctx, const spb_rx_metric_t *m)
+{
+    decoded_t *d = ctx;
+    if (d->count >= DEC_MAX) {
+        return false;
+    }
+    fill_dec(&d->m[d->count++], m);
+    return true;
+}
+
+static bool dec_member_cb(void *ctx, const spb_rx_metric_t *m)
+{
+    decoded_t *d = ctx;
+    if (d->mem_count >= DEC_MAX) {
+        return false;
+    }
+    fill_dec(&d->mem[d->mem_count++], m);
     return true;
 }
 
@@ -299,7 +396,8 @@ bool decode_payload(const uint8_t *buf, size_t len, decoded_t *out)
 {
     memset(out, 0, sizeof(*out));
     spb_rx_header_t hdr;
-    if (!spb_decode(buf, len, &hdr, dec_cb, out)) {
+    const spb_decoder_t d = {.metric = dec_cb, .member = dec_member_cb, .ctx = out};
+    if (!spb_decode_with(buf, len, &hdr, &d)) {
         return false;
     }
     out->has_seq = hdr.has_seq;
@@ -326,4 +424,66 @@ int decoded_find_name(const decoded_t *d, const char *name)
         }
     }
     return -1;
+}
+
+/* ---------- hand-encoded payloads ---------- */
+
+static size_t put_varint(uint8_t *out, uint64_t v)
+{
+    size_t n = 0;
+    do {
+        out[n] = (uint8_t)(v & 0x7Fu);
+        v >>= 7;
+        if (v != 0) {
+            out[n] |= 0x80u;
+        }
+        n++;
+    } while (v != 0);
+    return n;
+}
+
+static size_t put_bytes(uint8_t *out, uint8_t key, const void *data, size_t len)
+{
+    size_t n = 0;
+    out[n++] = key;
+    n += put_varint(&out[n], len);
+    memcpy(&out[n], data, len);
+    return n + len;
+}
+
+size_t raw_payload(uint8_t *out, size_t cap, const raw_metric_t *m, size_t count)
+{
+    static uint8_t metric[1024];
+    size_t n = 0;
+    out[n++] = 0x08;   /* timestamp = 1 */
+    out[n++] = 0x01;
+    for (size_t i = 0; i < count; i++) {
+        size_t k = 0;
+        if (m[i].name != NULL) {
+            k += put_bytes(&metric[k], 0x0A, m[i].name, strlen(m[i].name));   /* 1: name */
+        }
+        if (m[i].has_alias) {
+            metric[k++] = 0x10;                                               /* 2: alias */
+            k += put_varint(&metric[k], m[i].alias);
+        }
+        metric[k++] = 0x20;                                                   /* 4: datatype */
+        k += put_varint(&metric[k], m[i].datatype);
+        if (m[i].kind == RAW_BOOL) {
+            metric[k++] = 0x70;                                               /* 14: boolean */
+            metric[k++] = m[i].num != 0.0 ? 1u : 0u;
+        } else if (m[i].kind == RAW_FLOAT) {
+            float f = (float)m[i].num;
+            metric[k++] = 0x65;                                               /* 12: float */
+            memcpy(&metric[k], &f, 4);
+            k += 4;
+        } else {
+            k += put_bytes(&metric[k], 0x7A, m[i].str, strlen(m[i].str));    /* 15: string */
+        }
+        if (n + k + 8 > cap) {
+            fprintf(stderr, "raw_payload: buffer too small\n");
+            abort();
+        }
+        n += put_bytes(&out[n], 0x12, metric, k);                             /* 2: metrics */
+    }
+    return n;
 }

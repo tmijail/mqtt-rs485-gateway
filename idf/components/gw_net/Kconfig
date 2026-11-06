@@ -5,36 +5,35 @@ menu "Gateway: network"
         default GW_ETH_W5500
 
         config GW_ETH_W5500
-            bool "WIZnet W5500 over SPI (board)"
+            bool "WIZnet W5500 over SPI (board; pins in gw_bsp)"
 
         config GW_ETH_OPENETH
             bool "OpenCores Ethernet (QEMU only)"
             select ETH_USE_OPENETH
     endchoice
 
-    if GW_ETH_W5500
-        config GW_ETH_SPI_MOSI_GPIO
-            int "W5500 MOSI GPIO"
-            default 13
-        config GW_ETH_SPI_MISO_GPIO
-            int "W5500 MISO GPIO"
-            default 14
-        config GW_ETH_SPI_SCLK_GPIO
-            int "W5500 SCLK GPIO"
-            default 15
-        config GW_ETH_SPI_CS_GPIO
-            int "W5500 CS GPIO"
-            default 16
-        config GW_ETH_INT_GPIO
-            int "W5500 INT GPIO"
-            default 12
-        config GW_ETH_RST_GPIO
-            int "W5500 RST GPIO"
-            default 39
-        config GW_ETH_SPI_MHZ
-            int "W5500 SPI clock (MHz)"
-            range 1 40
-            default 20
-    endif
+    config GW_WIFI
+        bool "Wi-Fi station as alternative or backup of Ethernet (NET-4)"
+        depends on SOC_WIFI_SUPPORTED
+        default y
+        help
+            Compiles the Wi-Fi station driver. It is only started when the configuration
+            enables network.wifi; Ethernet-only configurations behave as without it.
+            QEMU does not emulate the radio: the emulator build disables this.
+
+    config GW_NET_NO_SERVICE_MIN_S
+        int "Hold of an interface without a path to the broker, first time (s)"
+        range 10 3600
+        default 60
+        help
+            Issue #57, with Ethernet and Wi-Fi: when every broker failed over the active
+            interface although it has link and an address, the session moves to the other
+            one and this interface is not chosen again for this long. Each report in a row
+            doubles it, up to GW_NET_NO_SERVICE_MAX_S; a stable session resets it.
+
+    config GW_NET_NO_SERVICE_MAX_S
+        int "Hold of an interface without a path to the broker, maximum (s)"
+        range 10 86400
+        default 1800
 
 endmenu

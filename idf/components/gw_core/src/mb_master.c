@@ -19,9 +19,35 @@ void mb_master_init(mb_master_t *m, const mb_transport_t *tr, const mb_master_cf
     m->t35_us = cfg->baud > 19200u ? 1750u : (m->char_us * 7u + 1u) / 2u;
 }
 
+/* Margin on top of the transmission time of a frame (tick granularity, task switches). */
+#define MB_TX_MARGIN_MS 20u
+
+uint32_t mb_char_bits(bool parity, uint8_t stop_bits)
+{
+    return 1u + 8u + (parity ? 1u : 0u) + (stop_bits >= 2 ? 2u : 1u);
+}
+
+uint32_t mb_tx_timeout_ms(uint32_t baud, uint32_t char_bits, size_t len)
+{
+    uint64_t us = ((uint64_t)len * char_bits * 1000000u + baud - 1u) / baud;
+    return (uint32_t)((us + 999u) / 1000u) + MB_TX_MARGIN_MS;
+}
+
 static uint32_t frame_timeout_ms(const mb_master_t *m, size_t nbytes)
 {
     return (uint32_t)((nbytes * m->char_us + m->t35_us) / 1000u) + MB_FRAME_MARGIN_MS;
+}
+
+uint32_t mb_master_attempt_max_ms(const mb_master_t *m)
+{
+    /* attempt(): wait_bus_silence(), write(), rx(2, response timeout), then at most
+     * rx(1, frame_timeout(1)) and one rx of the rest (the drain of a frame that is not an
+     * answer, frame_timeout(8), is shorter) */
+    uint64_t ms = (m->t35_us + 999u) / 1000u + m->cfg.inter_frame_delay_ms +
+                  mb_tx_timeout_ms(m->cfg.baud, mb_char_bits(true, 2), MB_ADU_MAX) +
+                  m->cfg.response_timeout_ms + frame_timeout_ms(m, 1) +
+                  frame_timeout_ms(m, MB_ADU_MAX);
+    return ms > UINT32_MAX ? UINT32_MAX : (uint32_t)ms;
 }
 
 static void wait_bus_silence(mb_master_t *m)
@@ -77,12 +103,18 @@ static mb_status_t attempt(mb_master_t *m, const mb_request_t *rq, size_t tx_len
 
 mb_status_t mb_master_execute(mb_master_t *m, const mb_request_t *rq, mb_response_t *rsp)
 {
+    return mb_master_execute_retries(m, rq, rsp, m->cfg.retries);
+}
+
+mb_status_t mb_master_execute_retries(mb_master_t *m, const mb_request_t *rq, mb_response_t *rsp,
+                                      uint8_t retries)
+{
     size_t tx_len = mb_build_request(rq, m->tx, sizeof(m->tx));
     if (tx_len == 0) {
         return MB_ERR_ARG;
     }
     mb_status_t st = MB_ERR_TIMEOUT;
-    for (unsigned i = 0; i <= m->cfg.retries; i++) {
+    for (unsigned i = 0; i <= retries; i++) {
         if (m->tr.on_attempt != NULL) {
             m->tr.on_attempt(m->tr.ctx);
         }

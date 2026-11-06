@@ -10,22 +10,40 @@
 #include <stdint.h>
 
 #include "gw_config.h"
+#include "mb_master.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+/** One tag's value. The member in use follows the tag's configuration (gw_conv_kind). */
 typedef struct {
-    double value;
+    union {
+        double value;              /* every type up to 32 bits, float32/float64, scaled tags */
+        int64_t i64;               /* unscaled int64: exact (a double is not above 2^53) */
+        uint64_t u64;              /* unscaled uint64 */
+        char str[GW_STR_MAX + 1];  /* string, NUL terminated */
+    };
     uint64_t ts_ms;      /* acquisition time, UTC ms */
     bool valid;          /* false: never read, read failed with an exception, or device offline */
 } gw_tag_value_t;
 
+/** Per-device diagnostics (MB-13), kept by the poll engine. */
+typedef struct {
+    uint32_t cycles;          /* poll cycles run */
+    uint32_t failed_cycles;   /* cycles with a request unanswered after its retries */
+    mb_stats_t bus;           /* outcome of every attempt (retries included) to this device */
+    mb_stats_t tcp;           /* MB-15: attempts of Modbus TCP requests forwarded to its unit */
+} gw_dev_stats_t;
+
 typedef struct {
     uint8_t di;          /* bit n = DI n+1 (debounced, true = active) */
     uint8_t dout;        /* bit n = DO n+1 (read back from the expander) */
+    bool do_unknown;     /* the expander does not answer: DO states unknown (published as null) */
+    bool failsafe;       /* IO-3: the DOs took their safe state (no Sparkplug session) */
     uint64_t di_ts_ms;
     uint64_t do_ts_ms;
+    uint64_t count[8];   /* IO-4: activations (inactive -> active) of DI n+1 */
 } gw_local_io_t;
 
 /** Clear everything (all devices offline, all values invalid). */
@@ -38,12 +56,24 @@ void gw_tagdb_put_device(const gw_config_t *cfg, uint16_t dev, const gw_tag_valu
 /** Copy a device's values (tag_count entries) and online flag. */
 void gw_tagdb_get_device(const gw_config_t *cfg, uint16_t dev, gw_tag_value_t *vals, bool *online);
 
+void gw_tagdb_put_stats(uint16_t dev, const gw_dev_stats_t *stats);
+/** Online flag of @p dev, without copying its values. */
+bool gw_tagdb_device_online(uint16_t dev);
+void gw_tagdb_get_stats(uint16_t dev, gw_dev_stats_t *stats);
+
 /** Update one tag (write confirmation). */
 void gw_tagdb_put_tag(uint16_t tag, const gw_tag_value_t *val);
 void gw_tagdb_get_tag(uint16_t tag, gw_tag_value_t *val);
 
+/** DI states without counting (start-up). */
 void gw_tagdb_set_di(uint8_t di, uint64_t ts_ms);
-void gw_tagdb_set_do(uint8_t dout, uint64_t ts_ms);
+/** New debounced DI states: every input that became active counts one pulse (IO-4). */
+void gw_tagdb_update_di(uint8_t di, uint64_t ts_ms);
+/** IO-4: counters restored at boot. */
+void gw_tagdb_set_counters(const uint64_t count[8]);
+void gw_tagdb_set_do(uint8_t dout, uint64_t ts_ms);   /* also clears do_unknown */
+void gw_tagdb_set_do_unknown(uint64_t ts_ms);
+void gw_tagdb_set_failsafe(bool on);
 void gw_tagdb_get_io(gw_local_io_t *io);
 
 #ifdef __cplusplus

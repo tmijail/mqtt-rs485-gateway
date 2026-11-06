@@ -2,6 +2,8 @@
 
 Fecha: 2026-11-03
 
+> En `main` solo están la implementación IDF y sus documentos. `zephyr/`, `docs/feasibility-zephyr.md` y `docs/review-zephyr.md`, que se citan abajo, están en el branch `comparison/idf-vs-zephyr`.
+
 **Insumos:**
 - `docs/SPEC.md`;
 - los estudios de viabilidad `docs/feasibility-{idf,zephyr}.md`;

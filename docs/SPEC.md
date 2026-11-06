@@ -231,8 +231,8 @@ Encuesta N esclavos Modbus RTU por el RS485 integrado, con los tipos de 16 y 32 
 **Reglas del esquema:**
 
 - `area` ∈ {`coil`, `discrete`, `holding`, `input`}.
-- `type` ∈ {`bool`, `uint16`, `int16`, `uint32`, `int32`, `float32`}.
-- `bool` solo vale en `coil` y `discrete`.
+- `type` ∈ {`bool`, `uint16`, `int16`, `uint32`, `int32`, `float32`}; fuera del MVP también `uint64`, `int64`, `float64` y `string` (§6.1, MB-6).
+- `bool` solo vale en `coil` y `discrete`; fuera del MVP, también como bit de un registro `holding` o `input` (clave `bit`, §6.1).
 - `writable` solo vale en `coil` y `holding`.
 - Si `client_id` está vacío se usa `edge_node_id`.
 
@@ -249,6 +249,427 @@ Encuesta N esclavos Modbus RTU por el RS485 integrado, con los tipos de 16 y 32 
 | `uint32` | UInt32 (7) |
 | `float32` | Float (9) |
 | Cualquier tipo con `scale` ≠ 1 u `offset` ≠ 0 | Float (9) |
+| `uint64` / `int64` (MB-6) | UInt64 (8) / Int64 (4), exactos en `long_value` |
+| `float64` (MB-6), o `uint64`/`int64`/`float64` con `scale` ≠ 1 u `offset` ≠ 0 | Double (10) |
+| `string` (MB-6) | String (12) |
+| `bool` con `bit` (MB-6) | Boolean (11) |
+| `bytes` (SPB-19) | Bytes (17) |
+
+### 6.1 Claves opcionales fuera del MVP
+
+Todas son opcionales. Si faltan, el equipo se comporta como el MVP. Las claves desconocidas siguen siendo un error.
+
+**`network.wifi` (NET-4): Wi-Fi STA como alternativa o respaldo de Ethernet.**
+
+```json
+"network": { "dhcp": true,
+             "wifi": { "enabled": true, "ssid": "Planta", "password": "secreto123",
+                       "role": "backup", "failback_s": 30, "dhcp": true } }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `enabled` | bool | `false` | `false` = solo Ethernet |
+| `ssid` | texto | `""` | 1–32 bytes; obligatorio con `enabled=true` |
+| `password` | texto | `""` | vacío (red abierta), 8–63 caracteres (WPA2) o 64 dígitos hexadecimales (PSK) |
+| `role` | `backup` \| `primary` | `backup` | `backup`: Ethernet gana la ruta por defecto y Wi-Fi solo se usa sin Ethernet. `primary`: al revés |
+| `failback_s` | entero | `30` | 0–3600. Tiempo que la interfaz preferida debe estar arriba, sin cortes, para recuperar la sesión |
+| `dhcp`, `ip`, `netmask`, `gateway`, `dns` | como `network` | DHCP | IPv4 de la interfaz Wi-Fi; con `dhcp=false`, `ip`, `netmask` y `gateway` son obligatorias |
+
+Las claves de IPv4 de `network` siguen siendo las de Ethernet.
+
+**Alcance del broker (issue #57).** Una interfaz con enlace y dirección puede no llegar al broker (router o switch aguas arriba caído). Si fallan todos los brokers de la lista (MQTT-6) por la interfaz activa, esta queda "sin servicio": la sesión pasa en el acto a la otra, si es utilizable, sea cual sea su rango. La espera empieza en 60 s y se duplica en cada nuevo fallo seguido, hasta 30 min (`CONFIG_GW_NET_NO_SERVICE_MIN_S` / `_MAX_S`); una sesión estable por esa interfaz la vuelve al mínimo. Al vencer, la preferida recupera la sesión como en el *failback* normal: ese es el reintento. Una interfaz sin servicio se sigue usando si no hay otra.
+
+**`network.hostname` y `network.mdns` (NET-6): nombre del equipo.**
+
+```json
+"network": { "dhcp": true, "hostname": "planta1-gw01", "mdns": true }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `hostname` | texto | `""` | Una etiqueta DNS: 1–63 letras, dígitos y `-` (no al principio ni al final), sin puntos. Vacío = derivado de `edge_node_id` (minúsculas; lo que no es letra ni dígito pasa a `-`; `GW01` → `gw01`) |
+| `mdns` | bool | `true` | Responde `<hostname>.local` por mDNS y anuncia la web como servicio `_https._tcp` en `web.https_port` (`_http._tcp` en `web.port` con `web.https: false`; instancia `<group_id>/<edge_node_id>`) |
+
+El nombre va también en las peticiones DHCP de Ethernet y Wi-Fi.
+
+**`network.ipv6` (NET-7): IPv6 además de IPv4.**
+
+```json
+"network": { "dhcp": true,
+             "ipv6": { "enabled": true, "slaac": true, "address": "fd00:1::50", "dns": "" } }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `enabled` | bool | `false` | `false` = solo IPv4. Con `true`, cada interfaz tiene dirección link-local |
+| `slaac` | bool | `true` | Autoconfiguración sin estado con los anuncios del router (RA) |
+| `address` | texto | `""` | Dirección estática de Ethernet, en forma de texto RFC 4291. Prefijo /64 en el enlace. No se admiten multicast, link-local, `::` ni `::1` |
+| `dns` | texto | `""` | Servidor DNS IPv6 (tercera posición; DHCPv4 llena las dos primeras) |
+
+El router por defecto IPv6 se aprende de los RA; no hay *gateway* IPv6 estático. `mqtt.host`, `ntp.server` y `syslog.host` aceptan literales IPv6 (`fd00::10`) o nombres con registro AAAA.
+
+**`mqtt.tls` (MQTT-4, MQTT-5): TLS hacia el broker, opcionalmente mutuo.**
+
+```json
+"mqtt": { "host": "broker.planta.local", "port": 8883,
+          "tls": { "enabled": true, "ca_file": "ca.pem", "server_name": "",
+                   "cert_file": "gw01.crt", "key_file": "gw01.key" } }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `enabled` | bool | `false` | `false` = TCP sin cifrar, como en el MVP. Con `true`, el defecto de `mqtt.port` pasa a `8883` |
+| `ca_file` | texto | `""` | Archivo PEM con la o las CA que firman el certificado del broker, en la partición LittleFS junto a `config.json` (`/cfg/<nombre>`). Vacío = el paquete de CA raíz públicas de ESP-IDF. Nombre de 1–32 caracteres `A-Z a-z 0-9 . _ -`, sin `/`, que no empiece con `.` ni sea `config.json` |
+| `server_name` | texto | `""` | Nombre que debe llevar el certificado del broker (SAN o CN). Vacío = el `host` al que se conecta (también un literal IP, contra un SAN de tipo IP). La verificación del nombre no se puede desactivar |
+| `cert_file` | texto | `""` | MQTT-5: certificado PEM del cliente (TLS mutuo), en LittleFS como `ca_file`. Vacío = sin certificado de cliente |
+| `key_file` | texto | `""` | Su clave privada PEM, **sin cifrar** (PKCS#1, SEC1 o PKCS#8). Obligatoria con `cert_file` y prohibida sin él |
+
+TLS 1.2 o 1.3, lo que negocie el broker. Las fechas de validez del certificado se comprueban: la conexión TLS espera a que SNTP fije el reloj. Las claves se validan aunque `enabled` sea `false`.
+
+**`mqtt.protocol` (MQTT-8): versión del protocolo.**
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `protocol` | `"3.1.1"` \| `"5"` | `"3.1.1"` | Versión de MQTT para todos los brokers de la lista. Con `"5"`, como pide Sparkplug 3.0: *Clean Start* = 1 y *Session Expiry Interval* = 0 (el broker no guarda la sesión entre conexiones, igual que *clean session* en 3.1.1) y *Will Delay Interval* = 0 (el NDEATH se publica en cuanto se pierde la conexión). Los temas, QoS, retención y payloads no cambian |
+
+**`mqtt.backup_brokers`, `failover_after`, `primary_return_s` (MQTT-6): lista de brokers.**
+
+```json
+"mqtt": { "host": "broker1.planta.local", "port": 1883,
+          "backup_brokers": [ { "host": "broker2.planta.local" },
+                              { "host": "10.0.0.20", "port": 1884 } ],
+          "failover_after": 3, "primary_return_s": 0 }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `backup_brokers` | array | `[]` | Hasta 3 brokers de respaldo, en orden, después de `mqtt.host` (el primario). Cada uno: `host` (obligatorio, no vacío) y `port` (defecto: `mqtt.port`). Credenciales, `client_id`, keepalive y `tls` son los mismos para todos; con TLS el nombre se verifica contra el `host` de cada uno (o `tls.server_name`) |
+| `failover_after` | entero | `3` | 1–20. Intentos fallidos seguidos en un broker antes de pasar al siguiente (tras el último, el primero) |
+| `primary_return_s` | entero | `0` | 0–86400. `0` = un respaldo que funciona se conserva hasta que falle. Con N > 0, tras N s de sesión estable en un respaldo se cierra en orden (NDEATH) y se prueba **una vez** el primario; si falla, se sigue por el primer respaldo |
+
+Un intento falla si no termina en una sesión estable: conexión TCP o TLS fallida, CONNACK rechazado, SUBSCRIBE rechazado o sin respuesta, o sesión que cae antes de durar un keepalive (como mucho 60 s) desde el NBIRTH. Una sesión estable vuelve a contar desde cero. Cada broker nuevo empieza con el *backoff* mínimo. Con dos interfaces (NET-4), si fallan todos los brokers de la lista (`failover_after` veces cada uno) por la interfaz activa, esa interfaz queda "sin servicio" y la sesión pasa a la otra (ver `network.wifi`).
+
+**`sparkplug.primary_host_id` (SPB-13): Primary Host Application.** Clave del MVP; vacía = sin host primario. Con un id, el nodo se suscribe a `spBv1.0/STATE/{id}` en el mismo SUBSCRIBE que NCMD y DCMD y espera un STATE de Sparkplug 3.0 (JSON `{"online": true|false, "timestamp": <ms>}`, retenido) antes del NBIRTH:
+
+- `online: true` → NBIRTH y DBIRTH;
+- `online: false` con la sesión arriba → NDEATH explícito (bdSeq de la sesión) y DISCONNECT; la sesión siguiente vuelve a esperar;
+- un STATE con `timestamp` menor que el último aceptado se ignora (mensaje retenido viejo); el último `timestamp` se recuerda entre sesiones, no entre arranques;
+- un payload que no es ese JSON (por ejemplo, el `ONLINE` de Sparkplug 2.x) se ignora con un aviso.
+
+Con brokers de respaldo (MQTT-6), un host fuera de línea en un broker (STATE `false`, o ningún STATE `true` en 30 s) cuenta como intento fallido en ese broker. Con un solo broker el nodo queda conectado esperando.
+
+**`sparkplug.store_forward` (SPB-14): store & forward.**
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `store_forward` | bool u objeto | `false` | `false` = sin sesión Sparkplug los cambios se coalescen y la sesión siguiente publica solo el valor actual (como el MVP). `true` = los cambios que se habrían publicado (mismas reglas de excepción y *deadband*) se guardan en un búfer circular y, tras el NBIRTH y los DBIRTH de la sesión siguiente, se publican del más viejo al más nuevo como DDATA/NDATA con `is_historical = true` y el timestamp de la muestra |
+
+"Sin sesión" incluye broker caído y host primario (SPB-13) fuera de línea, desde el primer NBIRTH del arranque (antes no hay estado publicado con qué comparar). El búfer tiene 40 000 muestras en PSRAM (960 KB) o 512 en RAM interna si no hay PSRAM (Kconfig `GW_SF_PSRAM_SAMPLES` / `GW_SF_INTERNAL_SAMPLES`); lleno, se pisan las más viejas. Las muestras de un dispositivo sin DBIRTH en la sesión nueva (fuera de línea al volver) se descartan. Los enteros de 64 bits y los textos (MB-6) se guardan exactos.
+
+Forma de objeto, con el volcado opcional a microSD:
+
+```json
+"sparkplug": { "group_id": "Plant1", "edge_node_id": "GW01",
+               "store_forward": { "enabled": true, "sd": { "enabled": false, "max_kb": 16384 } } }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `enabled` | bool | `true` | Lo mismo que `store_forward: true` |
+| `sd.enabled` | bool | `false` | Con el búfer de RAM lleno, sus muestras más viejas pasan a la tarjeta microSD (de a bloques) en lugar de pisarse; al volver la sesión se publican primero las de la tarjeta. Requiere `enabled`. **GPIO45 (D0 de la tarjeta) es pin de *strapping*: ver la advertencia de `idf/README.md` §6.5 antes de activarlo** |
+| `sd.max_kb` | entero | `16384` | 64–4 194 304. Espacio máximo en la tarjeta; lleno, se borra el segmento más viejo (contado como perdido) |
+
+En la tarjeta: carpeta `/sf` de una tarjeta FAT (no se formatea nunca), segmentos numerados de solo escritura al final, que se borran enteros al publicarse. Sobreviven a un reinicio y se publican después si la lista de dispositivos y tags no cambió; si cambió, se borran.
+
+**Tipos de 64 bits, `string`, órdenes de bytes y bits de registro (MB-6), en cada tag.**
+
+```json
+{ "name": "Energy",  "area": "holding", "address": 30, "type": "uint64" },
+{ "name": "Counter", "area": "holding", "address": 34, "type": "int64", "word_order": "CDAB", "writable": true },
+{ "name": "Flow",    "area": "input",   "address": 40, "type": "float64", "word_order": "DCBA" },
+{ "name": "Serial",  "area": "holding", "address": 50, "type": "string", "length": 8 },
+{ "name": "Alarm",   "area": "holding", "address": 60, "type": "bool", "bit": 3, "writable": true }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `type` | + `uint64` \| `int64` \| `float64` \| `string` | — | 64 bits = 4 registros; `string` = `length` registros |
+| `word_order` | `big` \| `little` \| `ABCD` \| `CDAB` \| `BADC` \| `DCBA` | `big` | Letras = bytes del valor, del más significativo (A) al menos, en el orden en que llegan. `big` = `ABCD`, `little` = `CDAB` (palabra menos significativa primero), `BADC` = bytes invertidos en cada registro, `DCBA` = todo invertido. Vale igual para 32 y 64 bits; en 16 bits solo cuenta la inversión de bytes |
+| `length` | entero | — | 1–16 registros; obligatorio con `type: string` y solo con él. Dos caracteres ASCII por registro, el primero en el byte alto (en el bajo con `BADC`/`DCBA`; el orden de palabras no se aplica) |
+| `bit` | entero | — | 0–15, con `type: bool` en `holding` o `input` (obligatorio ahí). 0 = bit menos significativo del registro tal como llega; no admite `word_order` distinto de `big` |
+
+- **Exactitud.** `int64` y `uint64` sin escala se publican exactos (UInt64/Int64), también por encima de 2^53; con `scale`/`offset` pasan a Double.
+- **`string`:** se corta en el primer NUL y se quitan los espacios finales; lo que no es ASCII imprimible se publica como `?`. Al escribir se rellena con NUL; un texto más largo que `2 × length` se rechaza. No admite `scale`, `offset` ni `deadband`.
+- **Escritura de un bit:** lectura del registro (FC03) y escritura del registro completo con el bit cambiado (FC06, o FC16 con escrituras múltiples forzadas).
+
+**Bloque de registros crudo (SPB-19), `type: bytes`.**
+
+```json
+{ "name": "Block", "area": "holding", "address": 220, "type": "bytes", "length": 3, "writable": true }
+```
+
+- `length` registros (1–16, obligatorio) que se publican como métrica **Bytes** (17): dos bytes por registro, el alto primero (el bajo primero con `BADC`/`DCBA`; el orden de palabras no se aplica). Sin ningún otro proceso: un NUL o un byte no ASCII viajan tal cual.
+- No admite `scale`, `offset`, `deadband`, `eng_low` ni `eng_high`. El reporte por excepción compara todos los bytes.
+- Un DCMD debe traer un valor Bytes de exactamente `2 × length` bytes; se escribe con una FC16.
+
+**Propiedades de métrica (SPB-16), en cada tag.**
+
+```json
+{ "name": "Voltage", "area": "input", "address": 0, "type": "float32", "units": "V",
+  "eng_low": 0, "eng_high": 400 }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `units` | texto | `""` | Hasta 15 caracteres. Se publica como la propiedad `engUnit` (String) en el DBIRTH; vacío = sin propiedad |
+| `eng_low` | número | — | Propiedad `engLow` (Float) en el DBIRTH. Dentro del rango de un Float (±3,4e38). No vale en tags `bool`, `string` ni `bytes` |
+| `eng_high` | número | — | Propiedad `engHigh` (Float) en el DBIRTH. Con las dos claves, `eng_high` > `eng_low` |
+
+- **Calidad (`Quality`, Int32):** 192 (GOOD) cuando la lectura respondió, 0 (BAD) cuando falló (excepción Modbus) o el tag nunca se leyó; con BAD el valor va además como `is_null`. Todo DBIRTH la lleva en cada métrica; un DDATA, solo cuando cambia. Las DO del nodo usan la misma regla: BAD mientras el expansor no responde.
+- Las propiedades viajan en el `PropertySet` de la métrica (claves y valores en el mismo orden). Un comando (NCMD/DCMD) con propiedades se acepta; sus propiedades se ignoran.
+
+**Lecturas en bloque por dispositivo (MB-11), en cada dispositivo.**
+
+```json
+{ "name": "Meter1", "unit_id": 1, "max_gap": 10, "tags": [ … ] },
+{ "name": "Picky",  "unit_id": 7, "block_reads": false, "tags": [ … ] }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `block_reads` | bool | el del firmware (`true`) | `false` = una petición por tag, para esclavos que responden excepción si un bloque incluye registros no mapeados |
+| `max_gap` | entero | el del firmware (`0`) | 0–1999. Registros o bits sin usar que un bloque puede saltar para unir dos tags del mismo área. No se admite con `block_reads: false`. Un bloque nunca pasa de 125 registros ni de 2000 bits |
+
+Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `CONFIG_GW_MB_BLOCK_MAX_GAP`), como en el MVP.
+
+**Tipos de dispositivo como plantillas Sparkplug (SPB-18), en cada dispositivo.**
+
+```json
+{ "name": "PumpA", "unit_id": 1, "type": "Pump", "tags": [ … ] },
+{ "name": "PumpB", "unit_id": 2, "type": "Pump", "tags": [ … ] }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `type` | texto | `""` | Hasta 39 caracteres, sin `/ + #` ni `bdSeq`. Vacío = sin plantilla (una métrica por tag, como el MVP) |
+
+- Todos los dispositivos de un mismo `type` tienen los mismos tags: mismos nombres y datatypes, en el mismo orden (área, dirección, escala y unidades pueden cambiar). Si no, la configuración se rechaza con la ruta `devices[i].type`.
+- Las definiciones juntas describen como mucho **64 tags** (cada tipo cuenta una vez): el NBIRTH las lleva todas.
+- **NBIRTH:** una métrica Template (19) por tipo, con su nombre, `is_definition = true`, sin alias ni `template_ref`. Sus miembros: nombre, datatype, un valor por defecto (0, falso o texto vacío) y las propiedades `engUnit`/`engLow`/`engHigh` del primer dispositivo del tipo.
+- **DBIRTH:** una sola métrica Template, la instancia: nombre = el tipo, alias 100 + el primer tag del dispositivo, `template_ref` = el tipo. Sus miembros son los tags, por nombre y sin alias, con valor y `Quality`.
+- **DDATA:** la instancia por alias, solo con los miembros que cambiaron (por nombre).
+- **DCMD:** la instancia con los miembros a escribir (por nombre); también se acepta el tag por nombre como métrica suelta. Por alias, no: los miembros no tienen alias.
+
+**Encuesta rápida y lenta (MB-12).**
+
+```json
+{ "name": "Meter1", "unit_id": 1, "poll_ms": 1000, "slow_poll_ms": 30000, "tags": [
+    { "name": "Voltage", "area": "input",   "address": 0,  "type": "float32" },
+    { "name": "Serial",  "area": "holding", "address": 50, "type": "string", "length": 8, "scan": "slow" } ] }
+```
+
+| Clave | Dónde | Tipo | Defecto | Regla |
+|---|---|---|---|---|
+| `scan` | tag | `fast` \| `slow` | `fast` | `fast` se lee cada `poll_ms`; `slow`, cada `slow_poll_ms` |
+| `slow_poll_ms` | dispositivo | entero | 10 × `poll_ms` (tope 3 600 000) | 50–3 600 000 y nunca menor que `poll_ms` |
+
+- Los tags rápidos y los lentos nunca comparten un bloque de lectura.
+- **Fuera de línea (MB-9):** un ciclo que solo lee los tags rápidos cuenta como cualquier otro: falla si una petición queda sin respuesta. Pero un dispositivo pasa (o vuelve) a en línea solo con un ciclo que leyó **todos** sus bloques, así que su DBIRTH lleva todos los tags. Mientras está fuera de línea, cada ciclo incluye los lentos.
+- Si un ciclo falla antes de leer los lentos, quedan pendientes para el ciclo siguiente.
+- Un dispositivo con solo tags lentos se encuesta cada `slow_poll_ms`.
+
+**`modbus_tcp` (MB-15): gateway Modbus TCP hacia los esclavos RTU.**
+
+```json
+"modbus_tcp": { "enabled": true, "port": 502, "allowed_clients": ["192.168.1.20", "10.0.5.0/24"],
+                "idle_timeout_s": 60 }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `enabled` | bool | `false` | Modbus TCP **no tiene autenticación**: el servidor solo arranca si se pide |
+| `port` | entero | `502` | 1–65535 |
+| `allowed_clients` | array de textos | `[]` | Hasta 8 direcciones IPv4 (`a.b.c.d`) o redes (`a.b.c.d/n`, n 0–32). Una conexión de otro origen se cierra sin respuesta. Vacío = cualquier cliente (el equipo lo advierte en el log) |
+| `idle_timeout_s` | entero | `60` | 0–3600. Una conexión sin peticiones en ese tiempo se cierra; 0 = nunca |
+
+- Se reenvían FC01–FC06, FC15 y FC16 a las unidades 1–247, tengan o no un dispositivo configurado. El gateway responde él mismo, con excepción, a cualquier otra función (01), a datos no válidos (03) y a las unidades 0 y 248–255 (0A). Si la unidad no responde tras los reintentos de `rs485`, la excepción es 0B.
+- **Arbitraje del bus (MB-16):** las peticiones TCP pasan por la tarea dueña del bus, una a la vez y con la misma granularidad que los DCMD: entre dos peticiones de la encuesta. Prioridad: escrituras DCMD, después Modbus TCP, después la encuesta.
+
+**`ota` (FW-1): actualizaciones de firmware por NCMD y por la web.**
+
+```json
+"ota": { "enabled": true, "ca_file": "fw-ca.pem" }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `enabled` | bool | `true` | `false` rechaza las actualizaciones por NCMD y por la web (en recuperación y puesta en marcha la web siempre puede subir una imagen) |
+| `ca_file` | texto | `""` | CA (PEM, en LittleFS junto a `config.json`, mismas reglas de nombre que `mqtt.tls.ca_file`) del servidor de las imágenes. Vacío: la de `mqtt.tls.ca_file` si TLS está activo; si no, las CA raíz públicas de ESP-IDF |
+
+- **Disparo:** NCMD con la métrica `Node Control/Firmware Update` (String, la URL `https://…`) o `POST /api/firmware` de la web (`{"url": "…"}`, o el cuerpo con la imagen). La URL tiene hasta 255 caracteres; una más larga se rechaza con su motivo (issue #87). Solo `https://`; la imagen debe ser de este proyecto (y, con firma exigida, FW-2, firmada con la clave del equipo).
+- **Resultado:** métricas de nodo `Firmware Update/State` (String) y `Firmware Update/Progress` (UInt32, %), en el NBIRTH y por NDATA cuando cambian.
+- **Salud y *rollback*:** la imagen nueva arranca a prueba. Su primera sesión Sparkplug completa (NBIRTH y todos los DBIRTH publicados) la confirma; una sesión con un DBIRTH que no salió por ser más grande que el límite del broker no cuenta (issue #99). Sin sesión completa en `CONFIG_GW_FW_CONFIRM_TIMEOUT_S` (10 min por defecto), por la causa que sea (también un broker caído), vuelve a la anterior. También vuelve si rechaza la configuración guardada, si no puede arrancar (sin memoria para la configuración) o si se reinicia antes de confirmarse.
+- **Guardar una configuración o un reset de fábrica durante la prueba confirma la imagen** antes del reinicio (issue #99): ese reinicio la revertiría, y la imagen anterior podría rechazar un documento con claves nuevas. Si la confirmación falla, la configuración no se guarda (el error lo dice). Un reinicio sin guardar nada (shell `restart`, `POST /api/restart`, NCMD Reboot) sigue revirtiéndola: es la forma de rechazarla a mano.
+
+**`local_io`: E/S local sin red. Estado seguro de las DO (IO-3).** Todas las claves de `local_io` son opcionales (IO-3, IO-4, IO-6 e IO-7).
+
+```json
+"local_io": { "di_debounce_ms": 20, "failsafe_s": 30,
+              "do_failsafe": ["off", "on", "hold", "off", "off", "off", "off", "off"] }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `failsafe_s` | entero | `0` | 0–86400. Segundos sin sesión Sparkplug (sin un NBIRTH vigente) tras los que cada DO toma su estado seguro. 0 = la pérdida de MQTT no cambia las DO |
+| `do_failsafe` | array de textos | todas `off` | Hasta 8 entradas, `DO/1` primero; cada una `off`, `on` u `hold`. Las que faltan son `off` |
+
+- **Al reiniciar** (encendido, reinicio por software, *panic* o watchdog): `off` y `on` toman ese estado en cuanto la configuración es válida; `hold` conserva el estado que el expansor TCA9554 mantuvo durante el reinicio. Tras un corte de alimentación el expansor también se apaga: `hold` arranca en OFF.
+- **Antes de cargar la configuración** todas las DO pasan a OFF, salvo las `hold` de la última configuración válida (guardadas en NVS), que no se tocan. Las `on` se encienden recién con la configuración validada.
+- **Configuración rechazada** (recuperación) o puesta en marcha: todas a OFF, también las `hold`. Si el expansor no respondía al arrancar, se lo sigue reintentando con el mismo backoff y se apagan todas cuando responde.
+- **Sin sesión durante `failsafe_s`** (contados desde el arranque o desde la pérdida): las `off` y las `on` toman ese estado, una vez; las `hold` no cambian. Al volver la sesión, las DO quedan como están hasta el próximo NCMD; el NBIRTH informa su estado real.
+- Sin estas claves el equipo se comporta como el MVP: todas a OFF al reiniciar y sin reacción a la pérdida de MQTT.
+
+**Contadores de pulsos de las DI (IO-4), en `local_io`.**
+
+```json
+"local_io": { "di_debounce_ms": 20, "counter_save_s": 600 }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `counter_save_s` | entero | `600` | 0 o 60–86400. Cada cuánto se guardan los contadores en NVS, solo si cambiaron. 0 = no se guardan (vuelven a 0 en cada arranque) |
+
+- Cada DI cuenta sus **activaciones** (paso de inactiva a activa, después del debounce): con 20 ms de debounce, hasta unos 25 Hz. Un pulso más corto que el debounce no cuenta.
+- Métricas del nodo `Counter/1`…`Counter/8` (UInt64, alias 30–37), en el NBIRTH y por excepción en el mismo NDATA que el cambio de la DI.
+- Al arrancar se restauran del último guardado. Un reinicio ordenado (NCMD Reboot, configuración nueva, `restart` del shell o de la web) los guarda antes; un corte de alimentación, un *panic* o el watchdog pierden lo contado desde el último guardado (como mucho `counter_save_s`).
+- No se pueden escribir por NCMD. El reset de fábrica los pone a 0.
+
+**Enlaces locales DI→DO (IO-7), en `local_io.rules`.**
+
+```json
+"local_io": { "rules": [ { "di": 2, "do": 5, "mode": "follow" },
+                         { "di": 3, "do": 6, "mode": "toggle" } ] }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `rules` | array de objetos | `[]` | Hasta 8 reglas; cada DO en una sola regla |
+| `di` | entero | — | 1–8, obligatorio |
+| `do` | entero | — | 1–8, obligatorio |
+| `mode` | `follow` \| `invert` \| `toggle` | `follow` | `follow`: DO = DI. `invert`: DO = no DI. `toggle`: cada activación de la DI (flanco a activa, después del debounce) invierte la DO |
+
+- Las reglas se evalúan en el equipo, con o sin red ni broker: un cambio de DI llega a la DO en pocos milisegundos más el debounce.
+- **Prioridades:** una DO con regla es de la regla. Un NCMD sobre ella se rechaza (queda en el log y el NDATA confirma el estado real) y el estado seguro por pérdida de MQTT (IO-3) no la toca. Al reiniciar arranca como cualquier DO (`off` u `hold` en `do_failsafe`; `on` se rechaza para una DO con regla) hasta que la regla se evalúa con las DI del arranque: `follow` e `invert` toman enseguida el valor de su DI; `toggle` sigue desde ese estado de arranque.
+- Las DO sin regla se manejan como siempre: NCMD con sesión, estado seguro sin ella.
+
+**Buzzer (IO-6), en `local_io.buzzer`.**
+
+```json
+"local_io": { "buzzer": { "alarms": ["config_error", "mqtt_down", "device_offline"],
+                          "alarm_after_s": 30 } }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `alarms` | array de textos | `[]` | Alarmas que suenan: `config_error` (configuración rechazada), `mqtt_down` (sin sesión Sparkplug), `device_offline` (algún dispositivo Modbus fuera de línea). Sin repetidos. Vacío = el buzzer solo confirma gestos del botón BOOT |
+| `alarm_after_s` | entero | `30` | 0–3600. Cuánto debe durar `mqtt_down` o `device_offline` antes de sonar. `config_error` suena enseguida |
+
+- **Patrones:** un pitido es 150 ms de tono y 150 ms de silencio. Cada alarma repite su ráfaga cada 10 s mientras dura: `device_offline` 1 pitido, `mqtt_down` 2, `config_error` 3. Si hay varias, suena la de más pitidos.
+- **`config_error`:** una configuración rechazada no puede activar nada, así que vale lo que pedía la última configuración válida (guardado en NVS). Tras un reset de fábrica no suena.
+- **Botón BOOT:** 1 pitido al soltarlo entre 2 y 10 s (punto de acceso, NET-5) y 2 pitidos al confirmar el reset de fábrica (CFG-5), haya alarmas o no.
+- No hay forma de silenciar una alarma mientras dura su condición.
+
+**Diagnóstico del nodo (SPB-17, MB-13), en `sparkplug`.**
+
+```json
+"sparkplug": { "group_id": "Plant1", "edge_node_id": "GW01", "diagnostics_s": 60 }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `diagnostics_s` | entero | `60` | 0 o 10–86400. Cada cuánto se publica un NDATA con el diagnóstico. 0 = solo en el NBIRTH |
+
+Métricas del nodo, en el NBIRTH y en ese NDATA periódico:
+
+| Métrica | Alias | Datatype | Qué es |
+|---|---|---|---|
+| `Node Info/Uptime` | 50 | UInt64 | Segundos desde el arranque |
+| `Node Info/Free Heap` | 51 | UInt32 | Bytes libres de RAM interna |
+| `Node Info/Min Free Heap` | 52 | UInt32 | Mínimo de RAM interna libre desde el arranque |
+| `Node Info/RSSI` | 53 | Int32 | dBm del punto de acceso Wi-Fi; solo si el equipo tiene Wi-Fi configurado, `null` mientras no está asociado |
+| `Node Info/Modbus` | 54 | DataSet | Una fila por dispositivo: `Device` (String), `Online` (Boolean), `Cycles`, `Failed Cycles`, `OK`, `Timeout`, `CRC`, `Frame`, `Exception` (UInt32; los tres últimos cuentan intentos, reintentos incluidos) |
+
+| `Node Info/Modbus TCP` | 56 | DataSet | Solo con `modbus_tcp.enabled`. Las peticiones Modbus TCP reenviadas a cada unidad (MB-15): una fila por dispositivo, `Device` (String), `Unit`, `Online` (Boolean), `OK`, `Timeout`, `CRC`, `Frame`, `Exception` (UInt32, intentos), y una última fila `(other units)` (unidad 0) para las unidades que no tienen dispositivo |
+
+- Las tablas Modbus van en el NDATA solo si algún contador o estado cambió desde la última vez (las dos juntas); uptime y heap van siempre.
+- La de Modbus TCP es una tabla aparte, no una columna más de `Node Info/Modbus`: esa conserva sus columnas para los hosts que ya la leen, los ciclos de encuesta no tienen sentido para las peticiones reenviadas y la de TCP existe solo con el gateway encendido.
+- **`Node Info/Time Synced`** (TIME-3, alias 55, Boolean): `true` cuando SNTP sincronizó el reloj al menos una vez desde el arranque. Una hora tomada del RTC al arrancar (TIME-2) es válida pero **no** cuenta como sincronizada. Va en el NBIRTH y en un NDATA propio cada vez que cambia (no en el periódico).
+- Los contadores son del nodo, no de cada dispositivo: así se publican también los de un dispositivo fuera de línea (sin DBIRTH), que es cuando más crecen.
+
+**`syslog` (REL-4): copia del log a un servidor syslog.**
+
+```json
+"syslog": { "host": "192.168.1.20", "port": 514, "level": "info" }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `host` | texto | `""` | Nombre, IPv4 o IPv6 del servidor. Vacío = sin syslog remoto |
+| `port` | entero | `514` | 1–65535, UDP |
+| `level` | `error` \| `warning` \| `info` \| `debug` | `info` | Severidad mínima que se envía |
+
+Formato: RFC 5424 sobre UDP (RFC 5426), un mensaje por datagrama, *facility* `local0`, HOSTNAME = `edge_node_id`, APP-NAME = módulo del log y `[meta sequenceId="n"]`. Ejemplo: `<134>1 2026-11-04T12:00:00.123Z GW01 edge - - [meta sequenceId="12"] Sparkplug session up (bdSeq=3)`.
+
+**`web` (CFG-3, CFG-4): interfaz web y API REST.**
+
+```json
+"web": { "enabled": true, "port": 80, "username": "admin", "password": "una-clave-larga" }
+```
+
+| Clave | Tipo | Defecto | Regla |
+|---|---|---|---|
+| `enabled` | bool | `true` | `false` = sin servidor web con la configuración válida. Con la configuración rechazada o en puesta en marcha el servidor arranca igual (recuperación) |
+| `port` | entero | `80` | 1–65535, HTTP. Con `https` en `true` solo redirige (301/308) a HTTPS |
+| `https` | bool | `true` | HTTPS con el certificado propio del equipo (EC P-256 autofirmado, generado en el primer arranque y guardado con los secretos en NVS; su huella SHA-256 sale en la consola en cada arranque). `false` = HTTP plano como antes |
+| `https_port` | entero | `443` | 1–65535, distinto de `port` |
+| `username` | texto | `"admin"` | 1–32 caracteres ASCII visibles, sin `:` |
+| `password` | texto (secreto) | `""` | Vacío o al menos 8 caracteres. Vacío = el equipo acepta `admin` con su **contraseña de puesta en marcha** (aleatoria, se ve en la consola) |
+
+**Secretos** (`mqtt.password`, `network.wifi.password`, `web.password`): no se guardan en el JSON, sino en NVS (CFG-7); `web.password` solo como hash PBKDF2-HMAC-SHA256 con sal. Al exportar, un secreto definido vale `"********"`. Al importar (PUT):
+
+- `"********"` conserva el secreto guardado;
+- otro texto lo reemplaza (`""` lo borra);
+- la clave ausente lo borra: el documento reemplaza la configuración entera.
+
+En el archivo `/cfg/config.json` un secreto ausente, vacío o `"********"` toma el valor de NVS; uno en claro (archivo grabado a mano o de un firmware anterior) se usa, se mueve a NVS y el archivo se reescribe sin él.
+
+**Límite de intentos:** tras 5 accesos fallidos seguidos desde una misma dirección, esa dirección recibe `429` con `Retry-After` durante 30 s, sin comprobar la contraseña (tampoco la correcta); cada bloqueo seguido duplica el tiempo, hasta 15 min; un acceso correcto lo borra (Kconfig `GW_WEB_LOGIN_*`).
+
+**API REST** (todas las rutas piden HTTP Basic con `web.username` y `web.password`, por HTTPS con `https`; respuestas JSON):
+
+**Escrituras y CSRF** (issue #100): todo `PUT` y `POST` lleva la cabecera `X-Requested-With` (cualquier valor; la interfaz web manda `gateway`). Si el cliente manda `Origin` (o, sin él, `Referer`), tiene que ser este mismo equipo: el esquema de la conexión y el `Host` del pedido. Se comparan normalizados (issue #106): nombre en minúsculas y sin el punto final, IPv6 entre corchetes, puerto en decimal y omitido si es el del esquema (443 con HTTPS, 80 sin) o está vacío. Vale cualquier nombre con el que se llegue al equipo (IP, `<hostname>.local`, `<hostname>`, un nombre DNS de la planta) siempre que la página y el pedido usen el mismo; un `Host` u `Origin` mal formado no vale, y `Origin: null` tampoco. Si no, `403`, antes de mirar la contraseña: no cuenta como acceso fallido. Un pedido rechazado sin credenciales o de otro sitio, con un cuerpo de más de 1 KB, no se lee entero (issue #106): la respuesta sale y la conexión se cierra (`401`, `403`, `429`; el cliente que todavía está enviando puede ver la conexión cortada en vez de la respuesta). El rechazo de un pedido autenticado y del mismo origen (`400`, `409`, `413`, `415`) no se corta: el equipo descarta el cuerpo entero y el cliente recibe la respuesta. Un cliente que no es navegador (`curl`, un script) no manda `Origin`: le alcanza con la cabecera, por ejemplo `curl -u admin:… -H 'X-Requested-With: curl' -X PUT --data-binary @config.json https://<ip>/api/config`.
+
+| Método y ruta | Qué hace |
+|---|---|
+| `GET /api/config` | Exporta la configuración guardada, con los secretos enmascarados. `?download=1` la entrega como archivo |
+| `PUT /api/config` (o `POST`) | Importa: valida, guarda de forma atómica (archivo temporal + `rename`) y reinicia de forma ordenada (NDEATH). `?dry_run=1` solo valida. Error: `400 {"ok":false,"error":"…","path":"devices[0].tags[1].type","line":0,"column":0}`; `413` si supera `CONFIG_GW_CONFIG_MAX_BYTES` |
+| `POST /api/restart` | Reinicio ordenado |
+| `POST /api/firmware` | FW-1: `application/json` con `{"url": "https://…"}` (descarga) o `application/octet-stream` con la imagen como cuerpo; otro `Content-Type` → `415` |
+| `GET /api/status` | Estado en vivo (también en recuperación y puesta en marcha). Ver abajo |
+
+**`GET /api/status`** devuelve un objeto con: `mode` (`normal`, `recovery`, `commissioning`), `firmware`, `reset_reason`, `uptime_s`, `config` (`ok`, `source`, `error`, `path`), `network` (`up`, `interfaces`), `mqtt` (`connected`), `sparkplug` (`group_id`, `edge_node_id`, `diagnostics_s`; solo con configuración válida), `syslog`, `devices` (por dispositivo: `online`, `cycles`, `failed`, `ok`, `timeout`, `crc`, `frame`, `exception` y `tags` con `name`, `valid` y `value`: número, entero exacto para `int64`/`uint64`, texto para `string`, hexadecimal para `bytes`), `heap` y:
+
+| Campo | Qué es |
+|---|---|
+| `io.di`, `io.do` | Bits de las DI y DO (bit n = canal n+1). `io.do` es `null` mientras el expansor no responde |
+| `io.do_unknown`, `io.expander` | El expansor no responde; `ready`, `retrying` (se reintenta con backoff) y `attempts` |
+| `io.failsafe` | IO-3: las DO tomaron su estado seguro por falta de sesión Sparkplug |
+| `io.rule_do` | IO-7: máscara de las DO que maneja una regla local (no aceptan NCMD) |
+| `io.counters` | IO-4: los 8 contadores de pulsos |
+| `buzzer.alarm`, `buzzer.enabled` | IO-6: alarma que suena ahora (`none`, `device_offline`, `mqtt_down`, `config_error`) y las habilitadas |
+| `time.utc_s`, `time.synced`, `time.source` | Hora del equipo (s UTC), si SNTP la sincronizó (TIME-3) y de dónde viene: `sntp`, `rtc` (TIME-2) o `none` |
+| `time.rtc` | `present`, `status` de la última lectura o escritura del RTC y `stores` (veces que se escribió tras SNTP) |
 
 ## 7. Criterios de aceptación del MVP
 
