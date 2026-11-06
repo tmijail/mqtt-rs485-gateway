@@ -11,10 +11,13 @@ void gw_sf_init(gw_sf_t *sf, gw_sf_rec_t *storage, size_t cap)
     sf->cap = storage != NULL ? cap : 0;
 }
 
-void gw_sf_attach_spill(gw_sf_t *sf, void *spill, size_t chunk)
+void gw_sf_attach_spill(gw_sf_t *sf, void *spill)
 {
     sf->spill = spill;
-    sf->spill_chunk = chunk == 0 ? 1 : chunk > sf->cap ? sf->cap : chunk;
+    sf->spill_at = sf->cap - sf->cap / 4;   /* three quarters: room for a slow card step */
+    if (sf->spill_at == 0) {
+        sf->spill_at = 1;
+    }
 }
 
 void gw_sf_begin(gw_sf_t *sf)
@@ -32,26 +35,62 @@ static const gw_sf_rec_t *at(const gw_sf_t *sf, size_t i)
     return &sf->rec[(tail(sf) + i) % sf->cap];
 }
 
-/* Move the oldest records of the ring to the spill (whole string samples only). */
-static bool spill_some(gw_sf_t *sf)
+/* Records of the sample at ring index @p i: 1, or a string head and its continuations. */
+static size_t sample_len(const gw_sf_t *sf, size_t i)
+{
+    size_t n = 1;
+    if (at(sf, i)->flags & GW_SF_STR) {
+        while (i + n < sf->count && (at(sf, i + n)->flags & GW_SF_CONT)) {
+            n++;
+        }
+    }
+    return n;
+}
+
+static bool want_block(const gw_sf_t *sf)
+{
+    return sf->count >= sf->spill_at;
+}
+
+bool gw_sf_step(gw_sf_t *sf, uint32_t now_ms)
 {
     gw_sfspill_t *sp = sf->spill;
-    if (sp == NULL || !sp->ok || sf->count == 0) {
+    if (sp == NULL) {
         return false;
     }
-    size_t n = sf->spill_chunk < sf->count ? sf->spill_chunk : sf->count;
-    while (n < sf->count && (at(sf, n)->flags & GW_SF_CONT)) {
-        n++;   /* never split a string sample */
+    while (sf->count > 0 && (at(sf, 0)->flags & GW_SF_CONT)) {
+        sf->count--;   /* continuations whose head was overwritten */
     }
-    size_t t = tail(sf);
-    size_t first = n < sf->cap - t ? n : sf->cap - t;   /* contiguous part, then the wrap */
-    bool ok = gw_sfspill_append(sp, &sf->rec[t], first) &&
-              (first == n || gw_sfspill_append(sp, &sf->rec[0], n - first));
-    if (ok) {
+    bool want = sf->count > 0 && want_block(sf);
+    int r = gw_sfspill_prepare(sp, want, now_ms);
+    if (r != GW_SFSPILL_BLOCK_READY) {
+        return r == GW_SFSPILL_DID;
+    }
+    /* the oldest whole samples that fit in a block (a string sample is never split) */
+    gw_sf_rec_t *dst = gw_sfspill_block_recs(sp);
+    size_t n = 0;
+    while (n < sf->count) {
+        size_t k = sample_len(sf, n);
+        if (n + k > GW_SFSPILL_BLK_RECS) {
+            break;
+        }
+        for (size_t j = 0; j < k; j++) {
+            dst[n + j] = *at(sf, n + j);
+        }
+        n += k;
+    }
+    if (n > 0 && gw_sfspill_put_block(sp, n)) {
         sf->count -= n;
         sf->spilled += (uint32_t)n;
     }
-    return ok;
+    return true;
+}
+
+bool gw_sf_busy(const gw_sf_t *sf)
+{
+    const gw_sfspill_t *sp = sf->spill;
+    return sp != NULL && sp->ok &&
+           (gw_sfspill_busy(sp) || (sp->phase == GW_SFSPILL_READY && sf->count > 0 && want_block(sf)));
 }
 
 static void put(gw_sf_t *sf, const gw_sf_rec_t *r)
@@ -62,7 +101,7 @@ static void put(gw_sf_t *sf, const gw_sf_rec_t *r)
         }
         return;
     }
-    if (sf->count == sf->cap && !spill_some(sf)) {
+    if (sf->count == sf->cap) {
         /* overwrite the oldest record; a string losing its head leaves continuations, which
          * gw_sf_peek() skips */
         if (!(at(sf, 0)->flags & GW_SF_CONT)) {
@@ -174,9 +213,14 @@ size_t gw_sf_peek(gw_sf_t *sf, gw_sf_rec_t *out, size_t max)
 {
     gw_sfspill_t *sp = sf->spill;
     sf->peeked_spill = false;
-    while (sp != NULL && sp->count > 0) {
+    /* the spill first: it holds the older records. While it may hold some that it cannot give
+     * now (its recovery runs, a checkpoint is due), the ring waits too: never out of order. */
+    while (sp != NULL && gw_sfspill_holds(sp)) {
         size_t n = gw_sfspill_peek(sp, out, max);
         if (n == 0) {
+            if (sp->ok) {
+                return 0;
+            }
             break;   /* I/O error: the ring is next */
         }
         size_t skip = 0;
@@ -218,5 +262,5 @@ void gw_sf_pop(gw_sf_t *sf, size_t n)
 size_t gw_sf_count(const gw_sf_t *sf)
 {
     const gw_sfspill_t *sp = sf->spill;
-    return sf->count + (sp != NULL ? (size_t)sp->count : 0);
+    return sf->count + (sp != NULL ? (size_t)gw_sfspill_waiting(sp) : 0);
 }

@@ -452,11 +452,15 @@ static void test_store_forward_key(void)
     TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
     TEST_ASSERT_TRUE(cfg.sparkplug.store_forward);
     TEST_ASSERT_FALSE(cfg.sparkplug.sf_sd);
-    TEST_ASSERT_EQUAL_UINT32(16384, cfg.sparkplug.sf_sd_max_kb);
+    TEST_ASSERT_EQUAL_UINT32(131072, cfg.sparkplug.sf_sd_max_kb);   /* #124: 128 MiB */
     snprintf(doc, sizeof(doc), "%s{\"sd\":{\"enabled\":true,\"max_kb\":1024}}}}", head);
     TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
     TEST_ASSERT_TRUE(cfg.sparkplug.sf_sd);
     TEST_ASSERT_EQUAL_UINT32(1024, cfg.sparkplug.sf_sd_max_kb);
+    snprintf(doc, sizeof(doc), "%s{\"sd\":{\"enabled\":true}}}}", head);   /* #124 default */
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_UINT32(GW_SFSPILL_DEFAULT_KB, cfg.sparkplug.sf_sd_max_kb);
+    TEST_ASSERT_EQUAL_UINT32(128u * 1024u, GW_SFSPILL_DEFAULT_KB);
     snprintf(doc, sizeof(doc), "%s{\"enabled\":false,\"sd\":{\"enabled\":true}}}}", head);
     ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd.enabled: la tarjeta solo extiende");
     snprintf(doc, sizeof(doc), "%s{\"sd\":{\"max_kb\":8}}}}", head);

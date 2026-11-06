@@ -745,7 +745,7 @@ static bool parse_store_forward(const cJSON *sp, gw_config_t *cfg, gw_cfg_err_t 
     static const char *const sd_keys[] = {"enabled", "max_kb"};
     static const cJSON empty = {.type = cJSON_Object};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(sp, "store_forward");
-    cfg->sparkplug.sf_sd_max_kb = 16384;
+    cfg->sparkplug.sf_sd_max_kb = GW_SFSPILL_DEFAULT_KB;
     if (o == NULL || cJSON_IsBool(o)) {
         cfg->sparkplug.store_forward = cJSON_IsTrue(o);
         return true;
@@ -761,8 +761,8 @@ static bool parse_store_forward(const cJSON *sp, gw_config_t *cfg, gw_cfg_err_t 
         !check_keys(sd != NULL ? sd : &empty, "sparkplug.store_forward.sd", sd_keys, 2, err) ||
         !get_bool(sd != NULL ? sd : &empty, "enabled", "sparkplug.store_forward.sd", false,
                   &cfg->sparkplug.sf_sd, err) ||
-        !get_int(sd != NULL ? sd : &empty, "max_kb", "sparkplug.store_forward.sd", false, 16384,
-                 GW_SFSPILL_MIN_KB, GW_SFSPILL_MAX_KB, &max_kb, err)) {
+        !get_int(sd != NULL ? sd : &empty, "max_kb", "sparkplug.store_forward.sd", false,
+                 GW_SFSPILL_DEFAULT_KB, GW_SFSPILL_MIN_KB, GW_SFSPILL_MAX_KB, &max_kb, err)) {
         return false;
     }
     cfg->sparkplug.sf_sd_max_kb = (uint32_t)max_kb;

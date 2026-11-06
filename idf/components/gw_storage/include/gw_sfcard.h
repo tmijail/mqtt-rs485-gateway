@@ -4,15 +4,19 @@
  * /sdcard/sf. In the QEMU build (CONFIG_GW_SF_SPILL_LITTLEFS) a directory of the LittleFS
  * partition, /cfg/sf, stands in for the card (QEMU has no SDMMC).
  *
- * #122: the segment files stay open between calls (one handle for the segment being written,
- * one for reads, one for deletes), so a card operation allocates nothing except when it opens
- * a segment. Writes and reads from PSRAM go through one DMA-capable buffer allocated at mount
- * (the SDMMC driver would allocate a bounce buffer for each of them). Each operation is timed
- * for the board tests (gw_sfcard_get_stats, the shell's `status`).
+ * #124: the files are the ring's extents (r0000.sf ..), its two superblock copies (ringa.sf,
+ * ringb.sf) and, until they are migrated, the segments of the earlier format (NNNNNNNN.sf), all
+ * 8.3 names. They stay open between calls (one handle each for the extent being written, the
+ * one being read, a delete, and each superblock copy), so a card operation allocates nothing
+ * except when it opens a file. A block or a superblock is whole aligned sectors with no fsync:
+ * FatFs writes them straight to the card, with no FAT or directory write. The SDMMC transfers
+ * from PSRAM go through one DMA-capable buffer allocated at mount (the driver would allocate a
+ * bounce buffer for each). Each operation is timed for the board tests (gw_sfcard_get_stats,
+ * the shell's `status`).
  *
  * GPIO45 is a strapping pin (VDD_SPI voltage): a card whose D0 pull-up holds it high at reset
- * selects 1.8 V for the flash and the board may not boot. Fix VDD_SPI in eFuse (factory step,
- * irreversible) or check the schematic before enabling it (README 6.5).
+ * selects 1.8 V for the flash and the board may not boot. Check the schematic before enabling
+ * it (README 6.5).
  */
 #pragma once
 
@@ -28,13 +32,15 @@ extern "C" {
 
 /* Kinds of card operation that gw_sfcard times. */
 typedef enum {
-    GW_SFCARD_OPEN,     /* open (and close) of a segment file */
-    GW_SFCARD_APPEND,   /* write of records or of a new header */
-    GW_SFCARD_SYNC,     /* fsync after a write, a dead mark or a truncate */
+    GW_SFCARD_OPEN,     /* open (and close) of a file */
+    GW_SFCARD_BLOCK,    /* write of one 4 KiB block */
+    GW_SFCARD_SUPER,    /* write of one superblock copy (a checkpoint or a head hint) */
     GW_SFCARD_READ,
-    GW_SFCARD_MARK,     /* in-place write of the dead mark */
+    GW_SFCARD_ALLOC,    /* allocation of an extent or a superblock file (lseek and fsync) */
+    GW_SFCARD_MARK,     /* in-place write of the dead mark of an old segment, with its fsync */
     GW_SFCARD_STEP,     /* one delete step: truncate (with its fsync) or unlink */
-    GW_SFCARD_STAT,     /* size of a segment that is not open */
+    GW_SFCARD_STAT,     /* size of a file that is not open */
+    GW_SFCARD_LIST,     /* the directory listing of the boot */
     GW_SFCARD_OP_COUNT
 } gw_sfcard_op_t;
 
@@ -54,6 +60,17 @@ typedef struct {
  *  failure @p why says why. Boot time only. */
 bool gw_sfcard_open(gw_sfspill_io_t *io, char *where, size_t where_cap, char *why,
                     size_t why_cap);
+
+/** Close every open file (the spill stopped: before a format). The owner of the card only. */
+void gw_sfcard_close(void);
+
+/**
+ * #124: format the card as FAT (FAT32 from 2 GB; FAT16 below, where FAT32 cannot be) with
+ * 32 KiB clusters. Everything on it is lost. Only after gw_sfcard_close(), with no other card
+ * access. False with @p msg saying why when there is no card to format (the QEMU stand-in, no
+ * card mounted); else @p msg tells the result.
+ */
+bool gw_sfcard_format(char *msg, size_t cap);
 
 /** Copy of the operation times and counters (any task). */
 void gw_sfcard_get_stats(gw_sfcard_stats_t *out);

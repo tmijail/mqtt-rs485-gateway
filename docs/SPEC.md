@@ -361,26 +361,41 @@ Con brokers de respaldo (MQTT-6), un host fuera de línea en un broker (STATE `f
 
 **`sparkplug.store_forward` (SPB-14): store & forward.**
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `store_forward` | bool u objeto | `false` | `false` = sin sesión Sparkplug los cambios se coalescen y la sesión siguiente publica solo el valor actual (como el MVP). `true` = los cambios que se habrían publicado (mismas reglas de excepción y *deadband*) se guardan en un búfer circular y, tras el NBIRTH y los DBIRTH de la sesión siguiente, se publican del más viejo al más nuevo como DDATA/NDATA con `is_historical = true` y el timestamp de la muestra |
+| `store_forward` | bool or object | `false` | `false`: without a Sparkplug session, the gateway coalesces the changes, and the next session publishes only the current value (as in the MVP). `true`: the gateway keeps the changes that it would publish (the same exception and *deadband* rules) in a ring buffer. After the NBIRTH and the DBIRTHs of the next session, it publishes them from the oldest to the newest as DDATA/NDATA, with `is_historical = true` and the time of the sample |
 
-"Sin sesión" incluye broker caído y host primario (SPB-13) fuera de línea, desde el primer NBIRTH del arranque (antes no hay estado publicado con qué comparar). El búfer tiene 40 000 muestras en PSRAM (960 KB) o 512 en RAM interna si no hay PSRAM (Kconfig `GW_SF_PSRAM_SAMPLES` / `GW_SF_INTERNAL_SAMPLES`); lleno, se pisan las más viejas. Las muestras de un dispositivo sin DBIRTH en la sesión nueva (fuera de línea al volver) se descartan. Los enteros de 64 bits y los textos (MB-6) se guardan exactos.
+"Without a session" includes a broker that is down and a primary host (SPB-13) that is offline, from the first NBIRTH of the boot. (Before it, there is no published state to compare with.) The buffer has 40 000 samples in PSRAM (960 KB), or 512 samples in internal RAM without PSRAM (Kconfig `GW_SF_PSRAM_SAMPLES` / `GW_SF_INTERNAL_SAMPLES`). When it is full, the gateway overwrites the oldest samples. When the session comes back, the gateway discards the samples of a device without a DBIRTH in the new session (offline at that time). It keeps 64-bit integers and texts (MB-6) exactly.
 
-Forma de objeto, con el volcado opcional a microSD:
+The object form, with the optional spill to a microSD card:
 
 ```json
 "sparkplug": { "group_id": "Plant1", "edge_node_id": "GW01",
-               "store_forward": { "enabled": true, "sd": { "enabled": false, "max_kb": 16384 } } }
+               "store_forward": { "enabled": true, "sd": { "enabled": false, "max_kb": 131072 } } }
 ```
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `enabled` | bool | `true` | Lo mismo que `store_forward: true` |
-| `sd.enabled` | bool | `false` | Con el búfer de RAM lleno, sus muestras más viejas pasan a la tarjeta microSD (de a bloques) en lugar de pisarse; al volver la sesión se publican primero las de la tarjeta. Requiere `enabled`. **GPIO45 (D0 de la tarjeta) es pin de *strapping*: ver la advertencia de `idf/README.md` §6.5 antes de activarlo** |
-| `sd.max_kb` | entero | `16384` | 64–4 194 304. Espacio máximo en la tarjeta; lleno, se borra el segmento más viejo (contado como perdido) |
+| `enabled` | bool | `true` | The same as `store_forward: true` |
+| `sd.enabled` | bool | `false` | When the RAM buffer is three quarters full, its oldest samples go to the microSD card in blocks of 4 KB. When the session comes back, the gateway publishes the samples of the card first. It requires `enabled` and the PSRAM. Without PSRAM, the spill does not start, and the boot log and the shell tell why. **GPIO45 (D0 of the card) is a *strapping* pin: read the warning in `idf/README.md` §6.5 before you enable it** |
+| `sd.max_kb` | integer | `131072` | 64–4 194 304 (128 MB by default). The space that the gateway uses on the card. It uses less when the cluster size limits it (§6.5 of the README). When the card is full of data, the gateway overwrites the oldest blocks and counts their samples as lost |
 
-En la tarjeta: carpeta `/sf` de una tarjeta FAT (no se formatea nunca), segmentos numerados de solo escritura al final, que se borran enteros al publicarse. Sobreviven a un reinicio y se publican después si la lista de dispositivos y tags no cambió; si cambió, se borran.
+**The card.**
+
+- Use a card formatted as FAT32 (FAT16 below 2 GB). exFAT cards do not mount: ESP-IDF v6.1 has no exFAT. Most cards of 64 GB or more come with exFAT.
+- Format the card with clusters of 32 KB. The shell command `card format confirm` does this on the gateway. It deletes everything on the card. The gateway never formats a card by itself. With 4 KB clusters, the gateway uses a maximum of 512 MB.
+- Use an industrial card (pSLC) when you can. The gateway writes each block one time, with no FAT or directory write in normal operation.
+- The gateway keeps the data in the folder `/sf`. The ring is in the files `r0000.sf`, `r0001.sf` and so on. The files `ringa.sf` and `ringb.sf` are the two copies of its superblock. A PC does not need to read them.
+- The data on the card stays after a restart and after a power cut. A change of the devices or tags starts a new ring. The gateway does not publish the old data, and it deletes no file for it. The segments of the earlier format (`NNNNNNNN.sf`) are published one time, before the ring, and then deleted.
+
+**Retention.** The gateway keeps only the changes, not each poll: a tag goes into the buffer only when it changed by more than its `deadband`. Thus calculate the retention in changes per second. One change is one sample of 24 B (a text: 1 + length / 8 samples), and one block of 4 KB holds 169 samples. Thus 1 MB of `max_kb` holds 43 264 samples:
+
+- hours ≈ `max_kb` × 0.01174 / (changes per second);
+- the default 128 MB at 50 changes per second: approximately 31 h; at 5 changes per second: approximately 13 days.
+
+The RAM buffer adds 40 000 samples. The `deadband` is the main control: set it a little above the noise of the sensor.
+
+**Duplicates after a restart (for the host or historian).** The gateway saves its replay position on the card after each 64 KB of published history (2 730 samples). It saves the position after the publish of those samples returned. Thus a restart or a power cut during a replay can send again a maximum of 64 KB of historical samples, approximately 2 700. If the power cut damages the save itself, the maximum is 128 KB. If both superblock copies are damaged, the gateway can send again all the data on the card. The duplicates have the same timestamps and values as the first copy. The host or historian must handle them: for example, keep one value for each tag and timestamp. A counter or an aggregate of the received messages counts them two times. The history uses QoS 0: a power cut can also lose the messages that the TCP connection did not send yet.
 
 **Tipos de 64 bits, `string`, órdenes de bytes y bits de registro (MB-6), en cada tag.**
 
