@@ -4,8 +4,8 @@
 #   storage  LittleFS (config.json, TLS certificates and the client key): esp_partition_* (and
 #            so LittleFS) read and write it through the XTS engine
 #   coredump the panic handler writes it encrypted
-# NVS is never flash-encrypted: CFG-7 encrypts it with its own HMAC-derived keys. otadata and
-# phy_init hold nothing secret. The apps (ota_0/ota_1) are always encrypted.
+# NVS is never flash-encrypted: CFG-7 encrypts it with its own HMAC-derived keys. phy_init holds
+# nothing secret and stays in plaintext. The bootloader always encrypts otadata and the app images.
 # Name,     Type, SubType,  Offset,   Size,     Flags
 nvs,        data, nvs,      0x11000,  0x6000,
 otadata,    data, ota,      0x17000,  0x2000,
