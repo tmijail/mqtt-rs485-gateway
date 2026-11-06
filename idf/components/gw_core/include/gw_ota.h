@@ -1,5 +1,5 @@
 /*
- * FW-1: firmware update policy, pure C (host-tested). The IDF side (components/gw_ota)
+ * FW-1: firmware update policy, pure C (host-tested). The IDF side (components/gw_fw)
  * downloads and writes the image; this decides when a new image is healthy, when it is
  * rolled back, which URLs are acceptable and when progress is worth reporting.
  *

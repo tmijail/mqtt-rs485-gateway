@@ -24,7 +24,7 @@ const gw_bsp_t gw_bsp = {
         .active_low = DI_ACTIVE_LOW,
         .pull_up = DI_ACTIVE_LOW != 0,
     },
-    /* Shared with the PCF85063 RTC at 0x51 (not used by the MVP). */
+    /* Shared with the PCF85063 RTC at 0x51 (TIME-2; its address is in gw_rtc.h). */
     .i2c = {.port = -1, .sda = GPIO_NUM_42, .scl = GPIO_NUM_41, .clk_hz = 100000},
     /* Darlington sink outputs on TCA9554 EXIO1..8: a LOW expander pin turns the
      * output on (demo: TCA9554PWR_Init(0x00, 0xFF) at boot; ESPHome: inverted). */
