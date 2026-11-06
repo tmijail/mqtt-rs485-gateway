@@ -16,7 +16,6 @@
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_random.h"
-#include "esp_rom_sys.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -120,7 +119,9 @@ static uint8_t s_up_pct;
  *   must take part like the bus task;
  * - nothing of ours between park(true) and park(false) logs; the lines around it ("parking
  *   core 1", "core 1 resumed after N ms") come before the park task starts and after it ended.
- *   IDF's own lines inside (esp_image's) go out as usual: no lock they need is left on core 1;
+ *   IDF's own lines inside (esp_image's) go out as usual: no lock they need is left on core 1.
+ *   One exception, emulator only: the rollback's shutdown handler (log_rollback_stack, #123),
+ *   at the very end of the path, logs the same way as esp_ota_ops does just before it;
  * - a park lasts at most PARK_MAX_MS: past it core 1 resumes by itself (the emulator fault the
  *   park avoids may follow) and park(false) logs it, an error for the E2E. */
 #define PARK_HOLD_MS 10000u   /* least wait for the bus task to stop (more with slow RS485, #112) */
@@ -589,10 +590,22 @@ static void __attribute__((noinline)) rollback_report(void)
 #if CONFIG_GW_IO_SIMULATED
 #define GW_FW_SIM_ROLLBACK_FAILS ".sim-rollback-fails"   /* in /cfg, put there by the E2E */
 
+/* Issue #123: a normal log line, not esp_rom_printf(). The ROM call puts one character at a time
+ * into the UART FIFO and takes none of the console's locks, so a line of another task came out
+ * inside it: one that waited in the UART driver for room in the FIFO with its line half written
+ * (the edge task, in the CI failure), or one of a task of higher priority that preempted the ROM
+ * call (reproduced with a temporary flood task on core 0). A log line takes the console lock
+ * (gw_shell's log_vprintf) and stdout's, both held to the end of every log line and shell answer:
+ * a line in progress ends first, and none goes out inside this one. Only output that bypasses
+ * those locks (esp_rom_printf, ESP_EARLY/DRAM_LOG*) could still cut in; nothing uses it on this
+ * path. Safe here, as are esp_ota_ops' own lines just before it: the park leaves no lock on core
+ * 1 (#111), and the shallow frame of a shutdown handler has more stack than the verification left
+ * (the high water mark, read before the call). */
 static void log_rollback_stack(void)
 {
-    esp_rom_printf("W fw: rollback stack: %u B free in task %s on the rollback path (emulator "
-                   "check)\n", (unsigned)uxTaskGetStackHighWaterMark(NULL), pcTaskGetName(NULL));
+    unsigned free_b = (unsigned)uxTaskGetStackHighWaterMark(NULL);
+    ESP_LOGW(TAG, "rollback stack: %u B free in task %s on the rollback path (emulator check)",
+             free_b, pcTaskGetName(NULL));
 }
 #endif
 
