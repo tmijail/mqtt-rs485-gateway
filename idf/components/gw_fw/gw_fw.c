@@ -587,6 +587,8 @@ static void __attribute__((noinline)) rollback_report(void)
 }
 
 #if CONFIG_GW_IO_SIMULATED
+#define GW_FW_SIM_ROLLBACK_FAILS ".sim-rollback-fails"   /* in /cfg, put there by the E2E */
+
 static void log_rollback_stack(void)
 {
     esp_rom_printf("W fw: rollback stack: %u B free in task %s on the rollback path (emulator "
@@ -594,13 +596,17 @@ static void log_rollback_stack(void)
 }
 #endif
 
-static void rollback(void)
+/* Mark the running image invalid and restart into the previous one; returns only on error. */
+static esp_err_t mark_invalid(void)
 {
-    if (s_trial_timer != NULL) {
-        esp_timer_stop(s_trial_timer);
+#if CONFIG_GW_IO_SIMULATED
+    /* issue #118, emulator only: the E2E makes this call fail once (as when the verification of
+     * the previous image cannot allocate), to see the restart that follows */
+    if (gw_storage_sim_take(GW_FW_SIM_ROLLBACK_FAILS)) {
+        ESP_LOGW(TAG, "emulator: the rollback call fails once (%s)", GW_FW_SIM_ROLLBACK_FAILS);
+        return ESP_ERR_NO_MEM;
     }
-    rollback_report();
-    gw_bus_quiesce(1000);   /* no Modbus frame cut by the restart (no-op without the bus) */
+#endif
     xSemaphoreTake(s_ota_lock, portMAX_DELAY);
     park(true);
 #if CONFIG_GW_IO_SIMULATED
@@ -615,7 +621,27 @@ static void rollback(void)
 #endif
     park(false);
     xSemaphoreGive(s_ota_lock);
-    ESP_LOGE(TAG, "rollback impossible (%s): the new firmware stays", esp_err_to_name(e));
+    return e;
+}
+
+/* Never returns. Issue #118: every rollback the policy decides ends in a restart, also when the
+ * rollback call fails (before, only some callers restarted: a rejected configuration left the
+ * gateway in recovery mode, refusing every save, until someone restarted it). A reset of an image
+ * still PENDING_VERIFY makes the bootloader boot the previous one, so the restart completes the
+ * rollback. Runs only in tasks with a large stack (main, fw_trial: the verification of the
+ * previous image is deep), never in the esp_timer task (issue #92; on_trial_timeout restarts
+ * without it). */
+static void __attribute__((noreturn)) rollback(void)
+{
+    if (s_trial_timer != NULL) {
+        esp_timer_stop(s_trial_timer);
+    }
+    rollback_report();
+    gw_bus_quiesce(1000);   /* no Modbus frame cut by the restart (no-op without the bus) */
+    esp_err_t e = mark_invalid();
+    ESP_LOGE(TAG, "rollback call failed (%s): restarting; the bootloader goes back to the "
+                  "previous image", esp_err_to_name(e));
+    esp_restart();
 }
 
 static void act(gw_ota_action_t a)
@@ -660,15 +686,7 @@ static void trial_task(void *arg)
         if (!trial_decided()) {
             trial_tick();
         }
-        portENTER_CRITICAL(&s_mux);
-        bool rollback_failed = s_trial.state == GW_OTA_TRIAL_ROLLBACK;
-        portEXIT_CRITICAL(&s_mux);
-        if (rollback_failed) {
-            /* issue #109 B-c: the rollback call returned (it failed): any reset of an image still
-             * PENDING_VERIFY makes the bootloader boot the previous one */
-            ESP_LOGE(TAG, "restarting: the bootloader goes back to the previous image");
-            esp_restart();
-        }
+        /* issue #109 B-c: a rollback never comes back here, it restarts (rollback()) */
     }
     atomic_store(&s_trial_worker, false);
     vTaskDelete(NULL);
@@ -712,6 +730,7 @@ void gw_fw_session_up(unsigned births_missing)
     act(a);
 }
 
+/* Issue #118: a ROLLBACK restarts even when its call fails (rollback()). */
 void gw_fw_config_rejected(void)
 {
     portENTER_CRITICAL(&s_mux);
@@ -733,13 +752,7 @@ void gw_fw_cannot_start(const char *why)
     portENTER_CRITICAL(&s_mux);
     gw_ota_action_t a = gw_ota_trial_cannot_start(&s_trial, why);
     portEXIT_CRITICAL(&s_mux);
-    act(a);
-    if (a == GW_OTA_ROLLBACK) {
-        /* issue #108 B6: the rollback call failed (likely here: its verification allocates); any
-         * reset of an image still PENDING_VERIFY makes the bootloader boot the previous one */
-        ESP_LOGE(TAG, "restarting: the bootloader goes back to the previous image");
-        esp_restart();
-    }
+    act(a);   /* issue #108 B6: a ROLLBACK restarts even when its call fails (rollback()) */
 }
 
 /* Issue #108 B5: a healthy image whose confirmation keeps failing is not rolled back by a plain

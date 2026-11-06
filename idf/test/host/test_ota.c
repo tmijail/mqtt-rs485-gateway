@@ -179,6 +179,39 @@ static void test_operator_commit_and_cannot_start(void)
     TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_operator(&t, "x"));   /* rolling back already */
 }
 
+/* Issue #118: once a rollback is decided (rejected configuration, cannot start, timeout), the
+ * policy never acts again: no timer, no confirmation, no other decision, no save. If the rollback
+ * call fails, only the restart the IDF glue does (gw_fw.c rollback()) ends that state; the policy
+ * offers no other way out, so every ROLLBACK must restart. */
+static void test_rollback_decided_has_no_way_out(void)
+{
+    gw_ota_trial_t t;
+    for (int how = 0; how < 3; how++) {
+        gw_ota_trial_init(&t, true, 0, 30000);
+        gw_ota_action_t a = how == 0 ? gw_ota_trial_config_rejected(&t)
+                            : how == 1 ? gw_ota_trial_cannot_start(&t, "no memory")
+                                       : gw_ota_trial_tick(&t, 30000);
+        TEST_ASSERT_EQUAL(GW_OTA_ROLLBACK, a);
+        TEST_ASSERT_EQUAL(GW_OTA_TRIAL_ROLLBACK, t.state);
+        TEST_ASSERT_EQUAL_UINT32(GW_OTA_NO_TICK, gw_ota_trial_next_ms(&t, 30000));
+        TEST_ASSERT_EQUAL_UINT32(0, gw_ota_trial_left_ms(&t, 10));
+        TEST_ASSERT_FALSE(gw_ota_trial_open(&t));
+        TEST_ASSERT_FALSE(gw_ota_trial_commit_allowed(&t));
+        for (uint32_t now = 0; now < 200000u; now += 10000u) {
+            TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_tick(&t, now));
+        }
+        TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_config_rejected(&t));
+        TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_cannot_start(&t, "x"));
+        TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_session_up(&t, 0));
+        TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_commissioning(&t));
+        TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_operator(&t, "x"));
+        TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_restart_requested(&t));
+        gw_ota_trial_confirm_result(&t, true, 1000, 0);   /* a stray write result: ignored */
+        TEST_ASSERT_EQUAL(GW_OTA_TRIAL_ROLLBACK, t.state);
+        TEST_ASSERT_FALSE(gw_ota_trial_commit_allowed(&t));
+    }
+}
+
 /* Issue #102: the capabilities block after esp_app_desc_t, and when an image may replace the
  * running one */
 static void test_image_capabilities(void)
@@ -347,6 +380,7 @@ int main(void)
     RUN_TEST(test_incomplete_births_do_not_confirm);
     RUN_TEST(test_failed_confirmation_is_retried);
     RUN_TEST(test_operator_commit_and_cannot_start);
+    RUN_TEST(test_rollback_decided_has_no_way_out);
     RUN_TEST(test_commit_after_rollback_and_restart_while_confirming);
     RUN_TEST(test_image_capabilities);
     RUN_TEST(test_urls);
