@@ -33,7 +33,9 @@ set(GW_SDKCONFIG_REQUIRED
     # Core dump to the "coredump" partition
     ESP_COREDUMP_ENABLE_TO_FLASH
     # The board boots without PSRAM when it is not detected
-    SPIRAM_IGNORE_NOTFOUND)
+    SPIRAM_IGNORE_NOTFOUND
+    # #122: no name buffer allocated on each microSD file operation (REL-2)
+    FATFS_LFN_NONE)
 
 # Issue #93: checked only when sdkconfig.production is in the defaults chain. A production
 # sdkconfig generated before one of these was set (or edited by hand) would build an image that
