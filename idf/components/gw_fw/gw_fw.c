@@ -123,7 +123,7 @@ static uint8_t s_up_pct;
  *   IDF's own lines inside (esp_image's) go out as usual: no lock they need is left on core 1;
  * - a park lasts at most PARK_MAX_MS: past it core 1 resumes by itself (the emulator fault the
  *   park avoids may follow) and park(false) logs it, an error for the E2E. */
-#define PARK_HOLD_MS 10000u   /* a bus transaction in progress, with its retries */
+#define PARK_HOLD_MS 10000u   /* least wait for the bus task to stop (more with slow RS485, #112) */
 #define PARK_MAX_MS 45000u    /* below the harness' 60 s without console output (issue #92) */
 static volatile bool s_park;
 static volatile bool s_parked;
@@ -238,10 +238,12 @@ static void park(bool on)
         return;
     }
     xSemaphoreTake(s_park_lock, portMAX_DELAY);
-    if (!gw_bus_hold(PARK_HOLD_MS)) {
+    uint32_t waited_ms = PARK_HOLD_MS;
+    if (!gw_bus_hold(PARK_HOLD_MS, &waited_ms)) {
         xSemaphoreGive(s_park_lock);
-        ESP_LOGE(TAG, "core 1 park refused: the bus task did not stop within %u ms (issue #111)",
-                 PARK_HOLD_MS);
+        /* the bound gw_bus_hold() used: longer than PARK_HOLD_MS with slow RS485 settings */
+        ESP_LOGE(TAG, "core 1 park refused: the bus task did not stop within %lu ms (issue #111)",
+                 (unsigned long)waited_ms);
         return;
     }
     ESP_LOGI(TAG, "parking core 1 (bus task stopped)");

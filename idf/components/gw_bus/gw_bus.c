@@ -124,13 +124,16 @@ static void on_attempt_hold(void *ctx)
     hold_point();
 }
 
-bool gw_bus_hold(uint32_t timeout_ms)
+bool gw_bus_hold(uint32_t timeout_ms, uint32_t *waited_ms)
 {
-    if (s_task == NULL) {
-        return true;   /* not started (or not created): nothing of ours on core 1 */
-    }
     if (timeout_ms < s_hold_wait_ms) {
         timeout_ms = s_hold_wait_ms;
+    }
+    if (waited_ms != NULL) {
+        *waited_ms = timeout_ms;
+    }
+    if (s_task == NULL) {
+        return true;   /* not started (or not created): nothing of ours on core 1 */
     }
     xSemaphoreTake(s_held, 0);   /* an acknowledgement left by a request that timed out */
     atomic_fetch_add(&s_hold_req, 1);
