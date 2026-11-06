@@ -11,6 +11,7 @@
 #include "cJSON.h"
 #include "gw_config_priv.h"
 #include "gw_port.h"
+#include "gw_sfspill.h"
 
 /* ---------- parser memory ---------- */
 
@@ -761,7 +762,7 @@ static bool parse_store_forward(const cJSON *sp, gw_config_t *cfg, gw_cfg_err_t 
         !get_bool(sd != NULL ? sd : &empty, "enabled", "sparkplug.store_forward.sd", false,
                   &cfg->sparkplug.sf_sd, err) ||
         !get_int(sd != NULL ? sd : &empty, "max_kb", "sparkplug.store_forward.sd", false, 16384,
-                 64, 4194304, &max_kb, err)) {
+                 GW_SFSPILL_MIN_KB, GW_SFSPILL_MAX_KB, &max_kb, err)) {
         return false;
     }
     cfg->sparkplug.sf_sd_max_kb = (uint32_t)max_kb;
