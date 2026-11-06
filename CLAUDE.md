@@ -6,7 +6,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Firmware for an RS485 (Modbus RTU) → MQTT Sparkplug B 3.0 gateway on the Waveshare ESP32-S3-POE-ETH-8DI-8DO board, built on ESP-IDF v6.1 (target `esp32s3`). Everything lives in `idf/`. `docs/SPEC.md` is the product spec; requirement IDs such as MB-6, SPB-14 and FW-1 come from it, and code, tests and commits refer to them and to GitHub issue numbers (`#80`, `#107`, …).
 
-`idf/README.md` is the authoritative, detailed reference. It covers architecture, task table, memory budget, build, configuration, verification results and known limitations. Read the relevant section before changing a subsystem. The README, docs and GitHub issues are written in Spanish; code, comments and commit messages are in English.
+`idf/README.md` is the authoritative, detailed reference. It covers architecture, task table, memory budget, build, configuration, verification results and known limitations. Read the relevant section before changing a subsystem. The existing README, docs and GitHub issues are in Spanish; all new writing follows **Writing standard** below.
+
+## Writing standard: ASD-STE100 Simplified Technical English
+
+Write all new or changed prose in ASD-STE100 Simplified Technical English (STE). This includes READMEs, `docs/`, GitHub issues, issue and PR comments, PR descriptions and commit messages. Code comments and identifiers stay in normal technical English.
+
+- **Vocabulary:** Use the STE dictionary words only in their approved meaning and part of speech: one word, one meaning. For example, "test" (verb) means "examine for correct function", "show" means "let someone see". Use technical names (component, Kconfig option, API, signal) and technical verbs (build, flash, publish, poll, encrypt) as they are. Keep one term for one thing in the full document.
+- **Sentences:**
+  - Procedures (steps): max 20 words.
+  - Descriptions: max 25 words.
+  - One topic per sentence; one instruction per sentence, unless the actions happen at the same time.
+  - Paragraphs: max 6 sentences.
+- **Grammar:**
+  - Procedures use the imperative ("Delete the `sdkconfig`. Do the reconfiguration again.").
+  - Descriptions use the active voice and the simple tenses: present, past and future.
+  - Do not use the -ing form as a noun or as a modifier. Do not use phrasal verbs.
+  - Use articles ("the", "a"), and avoid long noun clusters: write "the margin of the internal RAM", not "the internal RAM margin value".
+- **Warnings and cautions:** Start them with a clear instruction (the command). Then give the risk.
+- **Existing Spanish text:** When you change a section, rewrite that section in STE. Translate full files only when the user asks.
 
 **The firmware has never run on real hardware.** It has only run in host tests and in QEMU. The W5500, RS485 hardware mode, TCA9554, GPIO DIs and LED are compile-only (issues #1 and #18).
 
@@ -131,5 +149,5 @@ Rules that tests and fixes must respect:
 ## Conventions
 
 - Commits reference issues with `Fixes #N` or `Refs #N`. Feature and fix branches are merged into `main` with `--no-ff`.
-- When behaviour or measurements change, update `idf/README.md`: §4 has the verification results and test counts, §6 the known limitations, §6.10 the test environment notes.
+- When behaviour or measurements change, update `idf/README.md` (in STE): §4 has the verification results and test counts, §6 the known limitations, §6.10 the test environment notes.
 - Managed components are pinned with `==` in each `idf_component.yml` and hashed in `dependencies.lock`. Host-test dependencies (Unity, cJSON) are pinned by commit hash via FetchContent.
