@@ -2,8 +2,8 @@
 #   idf.py -B build-prod -D SDKCONFIG=build-prod/sdkconfig \
 #          -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.production" build
 #   tools/sign_firmware.sh --keyfile <key> --expect-digest <digest> --build-dir build-prod
-#   (FW-2: images are signed outside the build; README 3.6 has the whole factory procedure)
-# Never use it on a development board you want to keep reusable (README 3.4, 3.5).
+#   (FW-2: images are signed outside the build; README 3.7 has the whole factory procedure)
+# Never use it on a development board you want to keep reusable (README 3.5, 3.7).
 # eFuse key blocks: on the first boot the bootloader takes the first free ones for flash
 # encryption (FW-3) and the Secure Boot key digest (FW-2), i.e. KEY0 and KEY1; then the app
 # burns KEY5 for NVS (CFG-7).
