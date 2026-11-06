@@ -51,7 +51,7 @@ static const char *TAG = "edge";
 #define TLS_ERROR_LOG_MS 10000  /* a TLS setup that cannot work is logged this often */
 #define PHOST_WAIT_MS    30000  /* with backup brokers: no STATE online this long -> next broker */
 #define SF_MSGS_PER_LOOP 4      /* historical messages per loop: live data is not held back */
-#define SPILL_GC_WAIT_MS 10000  /* #122: the card deletes start then without a network */
+#define SPILL_GO_WAIT_MS 10000  /* #122/#124: the card work starts then without a network */
 #define STR_(x) #x
 #define STR(x)  STR_(x)
 
@@ -165,12 +165,18 @@ static int64_t s_host_wait_since_us;
 static bool s_host_disconnect;  /* the session ends because of the host, not the network */
 static gw_sf_t s_sf;            /* SPB-14: store & forward ring (storage allocated at boot) */
 static bool s_sf_psram;
-static gw_sfspill_t s_spill;    /* SPB-14: the ring's spill to the microSD card (optional) */
+/* SPB-14: the ring's spill to the microSD card (optional; #124: allocated with its buffers, in
+ * PSRAM, only when it starts: no internal .bss for it in a build without PSRAM) */
+static gw_sfspill_t *s_spill;
 static bool s_spill_on;
 static uint32_t s_spill_kb;     /* the KB its layout uses */
-static bool s_spill_gc_go;      /* #122: the deletes may run (the network is up, or a while
-                                   after the boot) */
+static char s_spill_off[96];    /* why the spill is not on (sd enabled), for the shell */
+static bool s_spill_go;         /* #124: the card work may run (the network is up, or a while
+                                   after the boot): the recovery is not in app_main */
+static bool s_spill_ready_logged, s_spill_fail_logged;
 static uint32_t s_spill_gc_logged; /* gc_files at the last "deleted" log line */
+static atomic_bool s_card_release; /* #124: the shell formats the card: stop using it */
+static atomic_bool s_card_released;
 static bool s_stable;           /* the current session lasted stable_ms(): it counts as working */
 static char s_client_if[8];     /* interface the client was bound to ("" = one interface) */
 
@@ -240,6 +246,25 @@ void gw_edge_notify_write_done(uint16_t tag, bool ok)
     if (xQueueSend(s_q, &ev, pdMS_TO_TICKS(50)) != pdTRUE) {
         ESP_LOGW(TAG, "write confirmation for tag %u dropped (queue full)", tag);
     }
+}
+
+bool gw_edge_card_format(char *msg, size_t cap)
+{
+#if CONFIG_GW_SF_SPILL_SDMMC
+    if (s_spill_on) {
+        atomic_store(&s_card_release, true);
+        wake();
+        for (int i = 0; i < 100 && !atomic_load(&s_card_released); i++) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+        if (!atomic_load(&s_card_released)) {
+            snprintf(msg, cap, "the Sparkplug task did not release the card in 5 s: nothing "
+                               "formatted");
+            return false;
+        }
+    }
+#endif
+    return gw_sfcard_format(msg, cap);
 }
 
 void gw_edge_request_restart(void)
@@ -660,9 +685,18 @@ static void op_diagnostics(void *ctx, gw_node_diag_t *out)
     out->time_synced = atomic_load(&s_time_synced);   /* TIME-3: SNTP only, not the RTC */
 }
 
+/* #124: before a planned restart, the replay position goes to the card (fewer duplicates). */
+static void spill_checkpoint(void)
+{
+    if (s_spill_on && gw_sfspill_checkpoint(s_spill, (uint32_t)(esp_timer_get_time() / 1000))) {
+        ESP_LOGI(TAG, "store & forward: replay position saved on the card");
+    }
+}
+
 static void op_reboot(void *ctx)
 {
     (void)ctx;
+    spill_checkpoint();
     gw_fw_restart_requested();   /* issue #108 B5 (a no-op unless a confirmation keeps failing) */
     /* Orderly shutdown: NDEATH was just published; stop() sends DISCONNECT synchronously so
      * the broker discards the will instead of publishing a second NDEATH. */
@@ -703,19 +737,36 @@ static void publish_status(void)
     s_st.sf_dropped = s_sf.dropped;
     s_st.sf_sent = s_node != NULL ? s_node->sf_sent : 0;
     s_st.spill_on = s_spill_on;
-    s_st.spill_count = (uint32_t)s_spill.count;
     s_st.spilled = s_sf.spilled;
-    s_st.spill_dropped = s_spill.dropped;
-    s_st.spill_failed = s_spill_on && !s_spill.ok;
-    s_st.spill_segs = s_spill.nsegs;
-    s_st.spill_max_segs = s_spill.max_segs;
-    s_st.spill_seg_records = s_spill.seg_records;
     s_st.spill_kb = s_spill_kb;
-    s_st.spill_gc_pending = gw_sfspill_gc_pending(&s_spill);
-    s_st.spill_gc_files = s_spill.gc_files;
-    s_st.spill_gc_steps = s_spill.gc_steps;
-    s_st.spill_gc_left = s_spill.gc_left;
-    s_st.spill_trimmed = s_spill.trimmed;
+    const gw_sfspill_t *sp = s_spill_on ? s_spill : NULL;
+    const char *off = sp != NULL && !sp->ok ? sp->why : s_spill_off;
+    size_t off_len = strnlen(off, sizeof(s_st.spill_off) - 1);   /* no printf with IRQs off */
+    memcpy(s_st.spill_off, off, off_len);
+    s_st.spill_off[off_len] = '\0';
+    if (sp != NULL) {
+        s_st.spill_ready = sp->phase == GW_SFSPILL_READY;
+        s_st.spill_failed = !sp->ok;
+        s_st.spill_count = (uint32_t)gw_sfspill_waiting(sp);
+        s_st.spill_legacy = (uint32_t)sp->leg_count;
+        s_st.spill_dropped = sp->dropped;
+        s_st.spill_stranded = (uint32_t)sp->stranded;
+        s_st.spill_holes = sp->holes;
+        s_st.spill_blocks = sp->blocks;
+        s_st.spill_nblocks = sp->nblocks;
+        s_st.spill_extents = sp->extents;
+        s_st.spill_ext_blocks = sp->ext_blocks;
+        s_st.spill_waiting_blocks = (uint32_t)(sp->head - sp->tail);
+        s_st.spill_sb_writes = sp->sb_writes;
+        s_st.spill_checkpoints = sp->checkpoints;
+        s_st.spill_ck_max = sp->ck_max;
+        s_st.spill_boot_ms = sp->boot_ms;
+        s_st.spill_boot_reads = sp->scan_reads;
+        s_st.spill_gc_pending = gw_sfspill_gc_pending(sp);
+        s_st.spill_gc_files = sp->gc_files;
+        s_st.spill_gc_steps = sp->gc_steps;
+        s_st.spill_gc_left = sp->gc_left;
+    }
     s_st.max_unfed_ms = s_max_gap_ms;
     s_st.max_packet = atomic_load(&s_max_packet);
     s_st.oversize = s_oversize;
@@ -1092,6 +1143,7 @@ static void attempt_ended(void)
 static void restart_now(void)
 {
     ESP_LOGW(TAG, "restart requested%s", s_node->online ? ": publishing NDEATH" : "");
+    spill_checkpoint();
     gw_fw_restart_requested();   /* issue #108 B5 */
     if (s_node->online) {
         publish_ndeath();
@@ -1126,37 +1178,66 @@ static bool tls_can_start(int64_t now)
     return true;
 }
 
-/* #122: the deletes on the card wait for the network (not to hold up the boot), or for
- * SPILL_GC_WAIT_MS when it does not come. */
-static bool spill_gc_wants_time(void)
+/* #124: the card work (the boot recovery first) waits for the network, not to hold up the
+ * boot, or for SPILL_GO_WAIT_MS when it does not come. */
+static bool spill_wants_time(void)
 {
-    return s_spill_on && s_spill_gc_go && s_spill.ok && gw_sfspill_gc_pending(&s_spill) > 0;
+    return s_spill_on && s_spill_go && gw_sf_busy(&s_sf);
 }
 
-/* #122: one bounded delete step on the card per loop (gw_sfspill_step feeds the watchdog after
- * it, through s_spill.tick). */
-static void spill_gc_step(int64_t now)
+/* #124: at most one bounded card operation per loop (each one followed by a watchdog feed,
+ * through s_spill->tick): the recovery, a superblock, an extent, a block of the RAM ring, or a
+ * delete step. Not inlined: its log arguments and card statistics must not grow the frame of
+ * reconcile(), which is on the deepest stack path (the history replay). */
+static __attribute__((noinline)) void spill_step(int64_t now)
 {
     if (!s_spill_on) {
         return;
     }
-    if (!s_spill_gc_go && (atomic_load(&s_ip_up) || now >= SPILL_GC_WAIT_MS * 1000LL)) {
-        s_spill_gc_go = true;
-        if (gw_sfspill_gc_pending(&s_spill) > 0) {
-            ESP_LOGI(TAG, "store & forward: %lu file(s) on the card to delete, one step per loop",
-                     (unsigned long)gw_sfspill_gc_pending(&s_spill));
-        }
+    if (atomic_load(&s_card_release) && !atomic_load(&s_card_released)) {
+        /* the shell formats the card: the spill stops for good (until the restart) */
+        spill_checkpoint();
+        gw_sfspill_stop(s_spill, "stopped: the card was formatted");
+        gw_sfcard_close();
+        atomic_store(&s_card_released, true);
+        ESP_LOGW(TAG, "store & forward: the card is released for a format; the RAM ring goes on");
+        return;
     }
-    if (s_spill_gc_go && gw_sfspill_step(&s_spill) && gw_sfspill_gc_pending(&s_spill) == 0 &&
-        s_spill.gc_files != s_spill_gc_logged) {
+    if (!s_spill_go && (atomic_load(&s_ip_up) || now >= SPILL_GO_WAIT_MS * 1000LL)) {
+        s_spill_go = true;
+        ESP_LOGI(TAG, "store & forward: the card is read now, one step per loop");
+    }
+    if (!s_spill_go) {
+        return;
+    }
+    gw_sf_step(&s_sf, (uint32_t)(now / 1000));
+    if (!s_spill->ok && !s_spill_fail_logged) {
+        s_spill_fail_logged = true;
+        ESP_LOGE(TAG, "store & forward: spill FAILED (%s): %lu samples stay on the card unsent; "
+                      "the RAM ring overwrites its oldest samples when full",
+                 s_spill->why, (unsigned long)s_spill->stranded);
+        return;
+    }
+    if (s_spill->phase == GW_SFSPILL_READY && !s_spill_ready_logged) {
+        s_spill_ready_logged = true;
+        ESP_LOGI(TAG, "store & forward: card ready in %lu ms (%lu blocks read): %lu samples "
+                      "waiting (%lu of the old format), ring %lu of %lu blocks, nonce %08lx%s; "
+                      "%lu file(s) to delete",
+                 (unsigned long)s_spill->boot_ms, (unsigned long)s_spill->scan_reads,
+                 (unsigned long)gw_sfspill_waiting(s_spill), (unsigned long)s_spill->leg_count,
+                 (unsigned long)(s_spill->head - s_spill->tail), (unsigned long)s_spill->nblocks,
+                 (unsigned long)s_spill->nonce, s_spill->sb_due ? " (new ring)" : "",
+                 (unsigned long)gw_sfspill_gc_pending(s_spill));
+    }
+    if (s_spill->gc_files != s_spill_gc_logged && gw_sfspill_gc_pending(s_spill) == 0) {
         gw_sfcard_stats_t cs;
         gw_sfcard_get_stats(&cs);
         ESP_LOGI(TAG, "store & forward: card: %lu file(s) deleted in %lu steps since boot (longest "
                       "step %lu ms), %lu left for the next boot",
-                 (unsigned long)s_spill.gc_files, (unsigned long)s_spill.gc_steps,
+                 (unsigned long)s_spill->gc_files, (unsigned long)s_spill->gc_steps,
                  (unsigned long)(cs.op[GW_SFCARD_STEP].max_us / 1000),
-                 (unsigned long)s_spill.gc_left);
-        s_spill_gc_logged = s_spill.gc_files;
+                 (unsigned long)s_spill->gc_left);
+        s_spill_gc_logged = s_spill->gc_files;
     }
 }
 
@@ -1307,7 +1388,7 @@ static void reconcile(void)
                      (unsigned long)s_node->sf_sent, (unsigned long)s_node->sf_discarded);
         }
     }
-    spill_gc_step(now);
+    spill_step(now);
     /* SPB-17: periodic diagnostics NDATA (rate limited by sparkplug.diagnostics_s) */
     s_diag_wait_ms = gw_node_diag_tick(s_node, (uint64_t)(esp_timer_get_time() / 1000));
     publish_status();
@@ -1315,8 +1396,8 @@ static void reconcile(void)
 
 static TickType_t next_timeout(void)
 {
-    int64_t ms = (s_node->online && gw_sf_count(&s_sf) > 0) || spill_gc_wants_time() ? 10
-                                                                                    : MAX_IDLE_MS;
+    int64_t ms = (s_node->online && gw_sf_count(&s_sf) > 0) || spill_wants_time() ? 10
+                                                                                 : MAX_IDLE_MS;
     int64_t now = esp_timer_get_time();
     if (s_sub_msg_id > 0) {
         int64_t r = (s_sub_deadline_us - now) / 1000;
@@ -1448,56 +1529,61 @@ static void setup_tls(const gw_tls_cfg_t *tls)
     }
 }
 
-/* SPB-14: the optional spill of the full ring to the microSD card (gw_sfspill). */
-static void setup_spill(size_t ring)
+/* SPB-14: the optional spill of the ring to the microSD card (gw_sfspill, #124). It needs the
+ * PSRAM: the target board has 8 MB, and the spill is not designed for a board without it. */
+static void setup_spill(void)
 {
+    if (!s_sf_psram) {
+        snprintf(s_spill_off, sizeof(s_spill_off), "off: it needs PSRAM, and none was detected");
+        ESP_LOGW(TAG, "store & forward: microSD spill not started: it needs PSRAM, and none was "
+                      "detected; the RAM ring overwrites its oldest samples when full");
+        return;
+    }
 #if CONFIG_GW_SF_SPILL_SDMMC
     ESP_LOGW(TAG, "store & forward: microSD enabled. GPIO45 (its D0) is the VDD_SPI strapping "
                   "pin: a card that holds it high at reset can select 1.8 V for the flash and "
-                  "stop the board from booting unless VDD_SPI is fixed in eFuse (README 6.5)");
+                  "stop the board from booting (README 6.5)");
 #endif
     static gw_sfspill_io_t io;
-    char where[96], why[96];
+    char where[96], why[80];
     if (!gw_sfcard_open(&io, where, sizeof(where), why, sizeof(why))) {
+        snprintf(s_spill_off, sizeof(s_spill_off), "off: %s", why);
         ESP_LOGE(TAG, "store & forward: %s: the RAM ring overwrites its oldest samples when full",
                  why);
         return;
     }
-    /* the file list at boot, then the delete queue (#122): allocated once */
-    uint32_t *work = gw_storage_big_alloc(GW_SFSPILL_LIST_MAX * sizeof(uint32_t),
-                                          "store & forward spill delete queue");
-    if (work == NULL) {
+    /* its state, two blocks, the list of old segments and the delete queue: allocated once */
+    s_spill = gw_storage_big_alloc(sizeof(*s_spill), "store & forward spill state");
+    void *mem = s_spill != NULL ? gw_storage_big_alloc(gw_sfspill_mem_size(),
+                                                       "store & forward spill buffers")
+                                : NULL;
+    if (mem == NULL) {
+        snprintf(s_spill_off, sizeof(s_spill_off), "off: no memory for its buffers");
         return;
     }
-    /* segments: 8..128 of them, together within max_kb and using all of it (#119), each at
-     * most 128 clusters of the card (#122) */
-    uint32_t seg, segs;
-    s_spill_kb = gw_sfspill_plan(s_cfg->sparkplug.sf_sd_max_kb, io.unit, &seg, &segs);
+    /* extents of min(4 MiB, 128 clusters) of the card, at most 1024 of them */
+    uint32_t ext_blocks, extents;
+    s_spill_kb = gw_sfspill_plan(s_cfg->sparkplug.sf_sd_max_kb, io.unit, &ext_blocks, &extents);
     /* the tag indexes in the records only mean the same with the same devices and tags */
     uint32_t hash = gw_sfspill_fnv(GW_SFSPILL_FNV_INIT, s_cfg->devices,
                                    s_cfg->device_count * sizeof(s_cfg->devices[0]));
     hash = gw_sfspill_fnv(hash, s_cfg->tags, s_cfg->tag_count * sizeof(s_cfg->tags[0]));
-    gw_sfspill_init(&s_spill, &io, seg, segs, hash, work, GW_SFSPILL_LIST_MAX);
-    s_spill.tick = feed_watchdog;   /* from now on only the Sparkplug task uses the card */
-    size_t chunk = ring / 4 < 512 ? ring / 4 : 512;
-    gw_sf_attach_spill(&s_sf, &s_spill, chunk);
+    gw_sfspill_init(s_spill, &io, ext_blocks, extents, hash, mem);
+    s_spill->tick = feed_watchdog;   /* from now on only the Sparkplug task uses the card */
+    s_spill->random = esp_random;
+    gw_sf_attach_spill(&s_sf, s_spill);
     s_spill_on = true;
-    ESP_LOGI(TAG, "store & forward: spill to %s: %lu segments of %lu samples, %u at a time; %lu "
-                  "samples kept from before this boot",
-             where, (unsigned long)segs, (unsigned long)seg, (unsigned)chunk,
-             (unsigned long)s_spill.kept_at_boot);
+    ESP_LOGI(TAG, "store & forward: spill to %s: a ring of %lu KB, %lu extents of %lu KB, "
+                  "configuration %08lx; the card is read after the network starts",
+             where, (unsigned long)s_spill_kb, (unsigned long)extents,
+             (unsigned long)(ext_blocks * GW_SFSPILL_BLOCK / 1024), (unsigned long)hash);
     if (s_spill_kb < s_cfg->sparkplug.sf_sd_max_kb) {
-        ESP_LOGW(TAG, "store & forward: the card's %lu B clusters limit the spill to %lu KB of "
-                      "the %lu KB of max_kb (a delete step frees at most %u clusters): format the "
-                      "card with larger clusters (32 KB) to use more",
-                 (unsigned long)io.unit, (unsigned long)s_spill_kb,
-                 (unsigned long)s_cfg->sparkplug.sf_sd_max_kb, GW_SFSPILL_STEP_UNITS);
-    }
-    if (gw_sfspill_gc_pending(&s_spill) > 0) {
-        ESP_LOGI(TAG, "store & forward: %lu file(s) on the card to delete after the boot (%lu "
-                      "samples over max_kb), in steps of at most %lu KB",
-                 (unsigned long)gw_sfspill_gc_pending(&s_spill), (unsigned long)s_spill.trimmed,
-                 (unsigned long)(s_spill.step_bytes / 1024));
+        ESP_LOGW(TAG, "store & forward: the ring uses %lu KB of the %lu KB of max_kb: at most %u "
+                      "extents of %lu clusters of %lu B; format the card with 32 KB clusters "
+                      "(shell: card format confirm) to use more",
+                 (unsigned long)s_spill_kb, (unsigned long)s_cfg->sparkplug.sf_sd_max_kb,
+                 GW_SFSPILL_MAX_EXTENTS, (unsigned long)(io.unit ? ext_blocks * GW_SFSPILL_BLOCK / io.unit : 0),
+                 (unsigned long)io.unit);
     }
 }
 
@@ -1524,7 +1610,7 @@ static void setup_store(void)
     ESP_LOGI(TAG, "store & forward: %u samples (%u B) in %s", (unsigned)n,
              (unsigned)(n * sizeof(gw_sf_rec_t)), s_sf_psram ? "PSRAM" : "internal RAM (no PSRAM)");
     if (s_cfg->sparkplug.sf_sd) {
-        setup_spill(n);
+        setup_spill();
     }
 }
 

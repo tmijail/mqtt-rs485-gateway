@@ -267,19 +267,36 @@ static int cmd_status(int argc, char **argv)
                 (unsigned long)es.sf_count, (unsigned long)es.sf_cap,
                 es.sf_psram ? "PSRAM" : "internal RAM", (unsigned long)es.sf_sent,
                 (unsigned long)es.sf_dropped);
-            if (es.spill_on) {
-                out("spill    %s: %lu samples on the card, %lu moved there, %lu deleted unsent; "
-                    "%lu of %lu segments of %lu samples (%lu KB), %lu samples over max_kb at "
-                    "boot; %lu file(s) to delete, %lu deleted in %lu steps, %lu left for the "
+            if (es.spill_on && !es.spill_failed) {
+                /* #124: the ring on the card, for the board tests (#131) */
+                out("spill    %s: %lu samples on the card (%lu of the old format), %lu moved "
+                    "there, %lu overwritten unsent (card full), %lu block(s) lost as holes; "
+                    "ring %lu of %lu blocks (%lu extents of %lu blocks, %lu KB), %lu written "
+                    "since boot; %lu superblock writes (%lu checkpoints, at most %lu samples "
+                    "replayed between two); boot recovery %lu ms, %lu blocks "
+                    "read; %lu file(s) to delete, %lu deleted in %lu steps, %lu left for the "
                     "next boot\n",
-                    es.spill_failed ? "FAILED (the ring overwrites)" : "on", (unsigned long)es.spill_count,
-                    (unsigned long)es.spilled, (unsigned long)es.spill_dropped,
-                    (unsigned long)es.spill_segs, (unsigned long)es.spill_max_segs,
-                    (unsigned long)es.spill_seg_records, (unsigned long)es.spill_kb,
-                    (unsigned long)es.spill_trimmed, (unsigned long)es.spill_gc_pending,
-                    (unsigned long)es.spill_gc_files, (unsigned long)es.spill_gc_steps,
-                    (unsigned long)es.spill_gc_left);
+                    es.spill_ready ? "on" : "on, reading the card", (unsigned long)es.spill_count,
+                    (unsigned long)es.spill_legacy, (unsigned long)es.spilled,
+                    (unsigned long)es.spill_dropped, (unsigned long)es.spill_holes,
+                    (unsigned long)es.spill_waiting_blocks, (unsigned long)es.spill_nblocks,
+                    (unsigned long)es.spill_extents, (unsigned long)es.spill_ext_blocks,
+                    (unsigned long)es.spill_kb, (unsigned long)es.spill_blocks,
+                    (unsigned long)es.spill_sb_writes, (unsigned long)es.spill_checkpoints,
+                    (unsigned long)es.spill_ck_max,
+                    (unsigned long)es.spill_boot_ms, (unsigned long)es.spill_boot_reads,
+                    (unsigned long)es.spill_gc_pending, (unsigned long)es.spill_gc_files,
+                    (unsigned long)es.spill_gc_steps, (unsigned long)es.spill_gc_left);
                 status_card(es.max_unfed_ms);
+            } else if (es.spill_on) {
+                /* #134: what stays on the card is not counted as waiting */
+                out("spill    FAILED (%s): %lu samples stay on the card unsent, %lu moved there; "
+                    "the RAM ring overwrites its oldest samples when full\n",
+                    es.spill_off, (unsigned long)es.spill_stranded, (unsigned long)es.spilled);
+                status_card(es.max_unfed_ms);
+            } else if (s_ctx.cfg->sparkplug.sf_sd) {
+                out("spill    %s; the RAM ring overwrites its oldest samples when full\n",
+                    es.spill_off);
             }
         }
         if (s_ctx.cfg->sparkplug.primary_host_id[0] != '\0') {
@@ -879,6 +896,34 @@ static int cmd_restart(int argc, char **argv)
     return 0;
 }
 
+/* #124: 'card' shows the card's operation times; 'card format confirm' formats it (FAT32, 32 KiB
+ * clusters). Never automatic, and the word "confirm" is part of the command. */
+static int cmd_card(int argc, char **argv)
+{
+    if (argc == 1) {
+        gw_edge_status_t es;
+        gw_edge_get_status(&es);
+        status_card(es.max_unfed_ms);
+        return 0;
+    }
+    if (strcmp(argv[1], "format") != 0 || argc > 3 ||
+        (argc == 3 && strcmp(argv[2], "confirm") != 0)) {
+        out("usage: card [format [confirm]]\n");
+        return 1;
+    }
+    if (argc == 2) {
+        out("card format: this deletes everything on the microSD card (also the data waiting "
+            "there) and formats it as FAT32 with 32 KB clusters. To do it: card format confirm\n");
+        return 1;
+    }
+    out("card format: stopping the spill, then formatting (a large card can take a minute)\n");
+    out_flush();
+    char msg[160];
+    bool ok = gw_edge_card_format(msg, sizeof(msg));
+    out("card format: %s%s\n", ok ? "" : "REFUSED: ", msg);
+    return ok ? 0 : 1;
+}
+
 static int cmd_rebirth(int argc, char **argv)
 {
     (void)argc;
@@ -1038,6 +1083,7 @@ static int cmd_config_entry(int argc, char **argv)
 ATOMIC(cmd_ping)
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
 ATOMIC(cmd_restart)
+ATOMIC(cmd_card)
 ATOMIC(cmd_rebirth)
 ATOMIC(cmd_mbread)
 #endif
@@ -1139,6 +1185,9 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
         {.command = "restart", .help = "Orderly restart (NDEATH first)", .func = cmd_restart_atomic},
         {.command = "rebirth", .help = "Re-issue NBIRTH and every DBIRTH", .func = cmd_rebirth_atomic},
+        {.command = "card", .help = "microSD card: its operation times; 'format confirm' formats "
+         "it as FAT32 with 32 KB clusters (everything on it is lost)",
+         .hint = "[format [confirm]]", .func = cmd_card_atomic},
         {.command = "mbread", .help = "One Modbus read through the bus owner",
          .hint = "<unit> <coil|discrete|holding|input> <address> [count]", .func = cmd_mbread_atomic},
 #endif

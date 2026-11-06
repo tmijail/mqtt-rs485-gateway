@@ -1,7 +1,7 @@
 menu "Gateway: console shell"
 
     config GW_SHELL_WRITE_COMMANDS
-        bool "Shell commands that change the gateway (config load, restart, rebirth, mbread)"
+        bool "Shell commands that change the gateway (config load, restart, rebirth, mbread, card format)"
         default y
         help
             CFG-6. The console is reached only with physical access to the board (USB-C),

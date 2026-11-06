@@ -37,19 +37,30 @@ typedef struct {
     uint32_t sf_dropped;     /* overwritten before they could be sent */
     uint32_t sf_sent;        /* historical messages published */
     bool spill_on;           /* SPB-14: the ring spills to the card */
-    uint32_t spill_count;    /* samples (records) on the card waiting */
+    char spill_off[96];      /* why not (sd enabled), or why it failed */
+    bool spill_ready;        /* #124: the boot recovery is done */
+    uint32_t spill_count;    /* samples (records) on the card waiting (0 after a failure) */
+    uint32_t spill_legacy;   /* of them, in segments of the step 1 format */
     uint32_t spilled;        /* records ever moved to the card */
-    uint32_t spill_dropped;  /* records deleted from the card unsent (space) */
+    uint32_t spill_dropped;  /* records overwritten on the card unsent (card full) */
     bool spill_failed;       /* the card failed: spill stopped */
-    uint32_t spill_segs;     /* #122: live segments on the card, and their bounds */
-    uint32_t spill_max_segs;
-    uint32_t spill_seg_records;
-    uint32_t spill_kb;       /* the KB the layout uses (max_kb, less when the cluster limits it) */
+    uint32_t spill_stranded; /* #134: records left on the card by the failure */
+    uint32_t spill_holes;    /* invalid blocks met in the data: lost, not replayed */
+    uint32_t spill_blocks;   /* blocks written since boot */
+    uint32_t spill_nblocks;  /* the ring: blocks, extents, blocks per extent, KB */
+    uint32_t spill_extents;
+    uint32_t spill_ext_blocks;
+    uint32_t spill_kb;
+    uint32_t spill_waiting_blocks;
+    uint32_t spill_sb_writes;    /* superblock writes, of them checkpoints */
+    uint32_t spill_checkpoints;
+    uint32_t spill_ck_max;       /* most records replayed between two (the duplicates bound) */
+    uint32_t spill_boot_ms;      /* the boot recovery: time and blocks read */
+    uint32_t spill_boot_reads;
     uint32_t spill_gc_pending; /* files waiting for their delete */
     uint32_t spill_gc_files; /* files deleted, in spill_gc_steps steps */
     uint32_t spill_gc_steps;
     uint32_t spill_gc_left;  /* deletes left for the next boot */
-    uint32_t spill_trimmed;  /* samples deleted at boot: over max_kb */
     uint32_t max_unfed_ms;   /* longest time the Sparkplug task went without feeding its
                                 watchdog, since boot */
     uint32_t max_packet;     /* issue #73: broker's MQTT 5 Maximum Packet Size, 0 = none */
@@ -74,6 +85,15 @@ bool gw_edge_time_synced(void);
 void gw_edge_notify_device(uint16_t dev);
 void gw_edge_notify_io(void);
 void gw_edge_notify_write_done(uint16_t tag, bool ok);
+
+/**
+ * #124 (shell): format the microSD card as FAT (FAT32 from 2 GB) with 32 KiB clusters. The
+ * Sparkplug task first stops the spill and closes its files (the RAM ring goes on); the format
+ * runs in the caller's task and can take a minute. False, with @p msg saying why, when there is
+ * no card to format (the QEMU stand-in, no card mounted). The card is used again after a
+ * restart.
+ */
+bool gw_edge_card_format(char *msg, size_t cap);
 
 /** Orderly restart from another task (new configuration, REST API, shell): the Sparkplug task
  *  publishes NDEATH and disconnects first when a session is up, then restarts. */

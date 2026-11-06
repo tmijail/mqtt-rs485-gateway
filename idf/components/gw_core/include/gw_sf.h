@@ -12,9 +12,10 @@
  * its 64 bits); a string sample (MB-6) is a head record with its length followed by
  * ceil(length / 8) continuation records with its bytes.
  *
- * When the ring is full: with a spill attached (gw_sfspill, microSD), the oldest records go to
- * it, a chunk at a time, and are replayed from there first; without one (or once it fails),
- * the oldest samples are overwritten (the newest data is kept) and counted as dropped.
+ * With a spill attached (gw_sfspill, microSD), gw_sf_step() moves the oldest records to it, one
+ * 4 KiB block per call, once the ring is three quarters full; they are replayed from there
+ * first. Pushing never touches the card (#124): a full ring overwrites its oldest samples (the
+ * newest data is kept) and counts them as dropped, with or without a spill.
  */
 #pragma once
 
@@ -32,6 +33,9 @@ extern "C" {
 #define GW_SF_NULL 0x01u   /* the sample is null (read failed) */
 #define GW_SF_STR  0x02u   /* string head: v.u64 = length; continuation records follow */
 #define GW_SF_CONT 0x04u   /* 8 bytes of the preceding string head */
+
+/* Records of the longest sample: a string head and 255 / 8 rounded up continuations. */
+#define GW_SF_SAMPLE_MAX_RECS 33u
 
 typedef struct {
     uint64_t ts_ms;        /* sample time (metric timestamp) */
@@ -56,15 +60,25 @@ typedef struct {
     uint32_t dropped;      /* samples overwritten before they could be sent */
     uint32_t stored;       /* samples ever stored */
     void *spill;           /* gw_sfspill_t, or NULL */
-    size_t spill_chunk;    /* records moved to the spill at a time */
+    size_t spill_at;       /* records in the ring from which a block moves to the spill */
     uint32_t spilled;      /* records moved to the spill */
     bool peeked_spill;     /* the last peek came from the spill */
 } gw_sf_t;
 
 void gw_sf_init(gw_sf_t *sf, gw_sf_rec_t *storage, size_t cap);
 
-/** Extend the ring with a spill (gw_sfspill_t *): @p chunk records move at a time. */
-void gw_sf_attach_spill(gw_sf_t *sf, void *spill, size_t chunk);
+/** Extend the ring with a spill (gw_sfspill_t *). */
+void gw_sf_attach_spill(gw_sf_t *sf, void *spill);
+
+/**
+ * One bounded card operation of the spill (call once per pass of the owner's loop): a step of
+ * its recovery or upkeep, or one block of the oldest records when the ring is three quarters
+ * full. True if it did one. @p now_ms: a monotonic time.
+ */
+bool gw_sf_step(gw_sf_t *sf, uint32_t now_ms);
+
+/** True while gw_sf_step() has work to do (call it soon). */
+bool gw_sf_busy(const gw_sf_t *sf);
 
 /** Start a batch; the samples pushed until the next call share its id. */
 void gw_sf_begin(gw_sf_t *sf);
@@ -99,7 +113,7 @@ void gw_sf_pop(gw_sf_t *sf, size_t n);
  *  terminated, into @p str when it is a string. */
 size_t gw_sf_sample(const gw_sf_rec_t *recs, size_t n, char *str, size_t cap);
 
-/** Records waiting (ring and spill). */
+/** Records waiting (ring and spill; not those on a card that failed, #134). */
 size_t gw_sf_count(const gw_sf_t *sf);
 
 #ifdef __cplusplus
