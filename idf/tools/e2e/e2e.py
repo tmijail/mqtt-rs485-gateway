@@ -2482,6 +2482,37 @@ def run_https(args, work):
           + " | ".join(gw.find(r"^web\s", asked)))
 
 
+# Issue #117: QEMU's open_eth model (4 RX buffers without PSRAM, #113) also drops frames inside
+# connections already open; slirp retransmits them about a second later, which alone breaks a
+# check bounded at about 1 s although the firmware is fine. A timed measurement whose own window
+# holds an "RX frame dropped" line of the device log may be measured once more; the discarded
+# attempt goes to REMEASURED (results.json "remeasured"). What the check asserts does not
+# change, a failure without a drop in its window is a failure, and so is the second attempt.
+RX_DROP_RX = re.compile(r"opencores\.emac: .*RX frame dropped")
+RX_DROP_BEFORE_S, RX_DROP_AFTER_S = 0.2, 0.5   # console latency around the harness's clock
+REMEASURED = []
+
+
+def rx_drops_in(lines, t0, t1):
+    """The device log lines of a dropped received frame that the harness got within the
+    window [t0, t1] of a measurement (its own clock, with RX_DROP_BEFORE/AFTER_S of slack)."""
+    return [(t, ln) for t, ln in lines
+            if t0 - RX_DROP_BEFORE_S <= t <= t1 + RX_DROP_AFTER_S and RX_DROP_RX.search(ln)]
+
+
+def remeasure(check_name, what, attempt, ok, drops, detail):
+    """Issue #117: whether a failed timed measurement is measured once more: only after its
+    first attempt, only if it failed, and only if a frame was dropped in its window. Records
+    the discarded attempt."""
+    if ok or attempt != 1 or not drops:
+        return False
+    REMEASURED.append({"check": check_name, "measurement": what, "discarded": detail,
+                       "rx_dropped": [ln.strip() for _, ln in drops]})
+    print(f"[REMEASURE] {check_name}: {what}: {detail} with an RX frame dropped in its window "
+          f"({drops[0][1].strip()}); measured once more", flush=True)
+    return True
+
+
 def slow_upload(headers, total, rate, out, plain=False):
     """Issue #106: one POST /api/firmware with a body of @total bytes sent at about @rate B/s
     (a client uploading over a slow link), over HTTPS or, with @plain, the HTTP port; stops at
@@ -2566,15 +2597,32 @@ def check_refused_bodies(gw, since):
             st = None
         return st, time.monotonic() - t
 
+    def case_ok(st, took, up, want):   # what the check asserts of each case
+        return (st == want and took < 1.0 and up.get("sent", total) < total and up.get("error")
+                and up.get("duration", 99) < 5)
+
     base_st, base = get_status(False)
+    remeasured = []
     for name, (hdrs, plain) in cases.items():
-        up = {}
-        th = threading.Thread(target=slow_upload, args=(hdrs, total, rate, up, plain), daemon=True)
-        th.start()
-        time.sleep(0.5)
-        st, took = get_status(plain)
-        th.join(20)
-        res[name] = (st, took, dict(up), 301 if plain else 200)
+        for attempt in (1, 2):
+            up = {}
+            t0 = time.monotonic()
+            th = threading.Thread(target=slow_upload, args=(hdrs, total, rate, up, plain),
+                                  daemon=True)
+            th.start()
+            time.sleep(0.5)
+            st, took = get_status(plain)
+            th.join(20)
+            want = 301 if plain else 200
+            res[name] = (st, took, dict(up), want)
+            # issue #117: a frame dropped by QEMU's NIC model in this case's own window
+            drops = rx_drops_in(list(gw.lines), t0, time.monotonic())
+            if not remeasure("issue #106 refused bodies", name, attempt,
+                             bool(case_ok(st, took, up, want)), drops,
+                             f"GET {st} in {took:.2f} s, upload stopped after "
+                             f"{up.get('sent', 0)} B in {up.get('duration', 0):.1f} s"):
+                break
+            remeasured.append(name)
     session.close()
     # issue #106 review: an authenticated, same-origin upload the gateway rejects is not cut:
     # 1.5 MB that is not an image, sent whole as a browser does, then the reply is read
@@ -2593,9 +2641,7 @@ def check_refused_bodies(gw, since):
     asked, h = gw.shell("status", [r"^web\s+HTTPS .*, bodies cut [1-9]\d*, stalls \d+$"])
     cut_line = (gw.find(r"^web\s", asked) or [""])[-1]
     m = re.search(r"bodies cut (\d+)", cut_line)
-    ok = base_st == 200 and m is not None and all(
-        st == want and took < 1.0 and up.get("sent", total) < total and up.get("error")
-        and up.get("duration", 99) < 5 for st, took, up, want in res.values())
+    ok = base_st == 200 and m is not None and all(case_ok(*r) for r in res.values())
     check("Issue #106 a refused 1.5 MB upload (HTTPS 401 without credentials, 403 from another "
           "site; the HTTP port's redirect) is cut, not drained: a GET half a second into it "
           "answers within 1 s",
@@ -2603,7 +2649,8 @@ def check_refused_bodies(gw, since):
               f"{k}: GET {st} in {took:.2f} s, upload stopped after {up.get('sent', 0)} of {total} "
               f"B in {up.get('duration', 0):.1f} s ({up.get('error')}), reply seen "
               f"{up.get('status')!r}" for k, (st, took, up, _) in res.items())
-          + f"; {cut_line.strip()}")
+          + (f"; measured again after an RX frame dropped in its window: {remeasured}"
+             if remeasured else "") + f"; {cut_line.strip()}")
 
 STALL_S = 8   # CONFIG_GW_WEB_STALL_S default (issue #110)
 
@@ -4448,6 +4495,7 @@ def main():
             emus.append(e)
         (work / "results.json").write_text(json.dumps({"checks": results, "retries": RETRIES,
                                                        "faults": FAULTS, "durations": DURATIONS,
+                                                       "remeasured": REMEASURED,
                                                        "qemu": QEMU_VERSION, "emulators": emus},
                                                       indent=2))
         failed = [r for r in results if not r["ok"]]

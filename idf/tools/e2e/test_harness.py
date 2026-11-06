@@ -657,5 +657,37 @@ class UploadProgress(unittest.TestCase):
         self.assertEqual(60.0, t[0])
 
 
+class RxDropWindow(unittest.TestCase):
+    """Issue #117: a timed measurement is measured again only when the device log shows a frame
+    dropped by QEMU's NIC model inside its own window, once, and the discarded attempt is kept."""
+
+    DROP = "W (15079) opencores.emac: emac_opencores_isr_handler: RX frame dropped (0x14)"
+
+    def setUp(self):
+        self.saved = list(e2e.REMEASURED)
+        e2e.REMEASURED.clear()
+
+    def tearDown(self):
+        e2e.REMEASURED[:] = self.saved
+
+    def test_window(self):
+        lines = [(9.0, self.DROP), (10.1, "I (1) web: something else"), (10.5, self.DROP),
+                 (12.4, self.DROP), (13.0, self.DROP)]
+        got = [t for t, _ in e2e.rx_drops_in(lines, 10.0, 12.0)]
+        self.assertEqual([10.5, 12.4], got)   # inside, and within the slack after the end
+        self.assertEqual([9.0], [t for t, _ in e2e.rx_drops_in(lines, 9.1, 9.2)])   # slack before
+        self.assertEqual([], e2e.rx_drops_in([(10.5, "W (1) other: RX frame dropped")], 10, 12))
+
+    def test_rule(self):
+        drops = [(10.5, self.DROP)]
+        self.assertFalse(e2e.remeasure("c", "m", 1, True, drops, "passed"))       # passed
+        self.assertFalse(e2e.remeasure("c", "m", 1, False, [], "no drop"))        # real failure
+        self.assertFalse(e2e.remeasure("c", "m", 2, False, drops, "second"))      # once only
+        self.assertEqual([], e2e.REMEASURED)
+        self.assertTrue(e2e.remeasure("c", "m", 1, False, drops, "GET 200 in 1.60 s"))
+        self.assertEqual([{"check": "c", "measurement": "m", "discarded": "GET 200 in 1.60 s",
+                           "rx_dropped": [self.DROP]}], e2e.REMEASURED)
+
+
 if __name__ == "__main__":
     unittest.main()
