@@ -19,6 +19,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import e2e  # noqa: E402
+import scenarios  # noqa: E402
 
 APP = "I (300) main: rs485_spb_gateway e2e-v2 (IDF v6.1), reset reason: software"
 # the panic of issue #92 (second comment): the encrypted image, core 1, verifying a download
@@ -687,6 +688,102 @@ class RxDropWindow(unittest.TestCase):
         self.assertTrue(e2e.remeasure("c", "m", 1, False, drops, "GET 200 in 1.60 s"))
         self.assertEqual([{"check": "c", "measurement": "m", "discarded": "GET 200 in 1.60 s",
                            "rx_dropped": [self.DROP]}], e2e.REMEASURED)
+
+
+class CiGroups(unittest.TestCase):
+    """Issue #121: the CI runs the scenarios in parallel groups (scenarios.CI_GROUPS); together
+    they must be exactly one full run."""
+
+    def test_selection(self):
+        full = scenarios.selected(set())
+        self.assertEqual(len(scenarios.SCENARIOS) - 1, len(full))    # every one but 'refuse'
+        self.assertNotIn("refuse", full)
+        self.assertEqual(["refuse"], scenarios.selected({"refuse"}))
+        self.assertEqual(["main"], scenarios.selected({"refuse", "main"}))
+        # the existing names select what they did before the finer OTA names
+        ota = ["FW-1 OTA", "issue #112 park in a long RS485 transaction",
+               "issue #97 OTA trial wiring", "issues #99/#101 OTA trial"]
+        self.assertEqual(ota, scenarios.selected({"ota"}))
+        self.assertEqual(ota, scenarios.selected({"ota-fw1", "ota-park", "ota-wiring",
+                                                  "ota-trial"}))
+        self.assertEqual(["mqtt5", "max_packet"], scenarios.selected({"mqtt5"}))
+        self.assertEqual(["sf", "sf spill", "stack margin"], scenarios.selected({"sf"}))
+        self.assertEqual(3, len(scenarios.selected({"nvs"})))
+        with self.assertRaises(ValueError):
+            scenarios.parse_only("ota,otaa")
+        self.assertEqual({"ota", "main"}, scenarios.parse_only("ota, main,"))
+        self.assertEqual(set(), scenarios.parse_only(""))
+
+    def test_groups_cover_one_full_run(self):
+        full = scenarios.selected(set())
+        seen = []
+        for group, only in scenarios.CI_GROUPS:
+            got = scenarios.group_scenarios(only)   # raises on an unknown name
+            self.assertTrue(got, f"group {group} selects nothing")
+            # "6. payloads decode" needs at least one captured payload in each run
+            self.assertTrue(set(got) - scenarios.NO_CAPTURE,
+                            f"group {group} has no scenario with an MQTT observer")
+            seen += got
+        for name in full:
+            self.assertEqual(1, seen.count(name), f"{name!r} in {seen.count(name)} CI groups")
+        self.assertEqual(sorted(full), sorted(seen))
+        ids = [g for g, _ in scenarios.CI_GROUPS]
+        self.assertEqual(len(ids), len(set(ids)))
+        for g in ids:   # artifact names and directory names
+            self.assertRegex(g, r"^[a-z0-9-]+$")
+
+    def test_matrix(self):
+        m = scenarios.matrix()
+        run = m["run"]["include"]
+        self.assertEqual(len(scenarios.VARIANTS) * len(scenarios.CI_GROUPS), len(run))
+        for job in run:
+            self.assertEqual(job["plain"] == "1", scenarios.needs_plain(job["only"]))
+        # the GW42 scenario needs the build without NVS encryption: its group downloads it
+        nvs = [j for j in run if "issue #94 OTA to NVS encryption" in
+               scenarios.group_scenarios(j["only"])]
+        self.assertEqual(len(scenarios.VARIANTS), len(nvs))
+        self.assertTrue(all(j["plain"] == "1" for j in nvs))
+        self.assertEqual(["1"], [b["plain"] for b in m["build"]["include"] if b["plain"] == "1"])
+        self.assertEqual(e2e.MAX_RETRIES, scenarios.max_retries())
+        for name in scenarios.NO_CAPTURE | scenarios.PLAIN_SCENARIOS:
+            self.assertIn(name, dict(scenarios.SCENARIOS))
+        self.assertEqual(e2e.SINGLE_TCG_SCENARIOS - set(dict(scenarios.SCENARIOS)), set())
+
+    def test_summary(self):
+        """The summary job: one row per group, and a failure for a missing group, a failed
+        check, a scenario in no group and more retries than one full run may have."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+
+            def write(variant, group, only, ok=True, retries=0):
+                d = root / f"e2e-result-{variant}-{group}"
+                d.mkdir(exist_ok=True)
+                names = scenarios.group_scenarios(only)
+                checks = [{"criterion": f"{n} works", "ok": ok} for n in names]
+                checks += [{"criterion": c, "ok": True} for c in scenarios.RUN_CHECKS[:5]]
+                res = {"checks": checks, "durations": {f"{n} #1": 1.0 for n in names},
+                       "retries": [{"scenario": names[0], "qemu": "SIGSEGV"}] * retries}
+                (d / "results.json").write_text(e2e.json.dumps(res))
+                (d / "qemu-exits.txt").write_text("none\n")
+
+            for v, _ in scenarios.VARIANTS:
+                for g, only in scenarios.CI_GROUPS:
+                    write(v, g, only)
+            text, problems = scenarios.summary(root)
+            self.assertEqual([], problems)
+            n = len(scenarios.selected(set()))
+            self.assertIn(f"{n + 5 * len(scenarios.CI_GROUPS)}/{n + 5 * len(scenarios.CI_GROUPS)}"
+                          f" checks passed ({n + 5} as one full run)", text)
+            self.assertIn("qemu-exits: none", text)
+            g, only = scenarios.CI_GROUPS[0]
+            write("psram", g, only, ok=False)
+            write("default", g, only, retries=scenarios.max_retries() + 1)
+            (root / f"e2e-result-default-{scenarios.CI_GROUPS[1][0]}" / "results.json").unlink()
+            problems = scenarios.summary(root)[1]
+            self.assertEqual(3, len(problems), problems)
+            self.assertTrue(any("failed check" in p for p in problems))
+            self.assertTrue(any("no results.json" in p for p in problems))
+            self.assertTrue(any("scenarios repeated" in p for p in problems))
 
 
 if __name__ == "__main__":

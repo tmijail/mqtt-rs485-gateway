@@ -53,6 +53,8 @@ from pymodbus.server import ModbusTcpServer
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import spb_decode  # noqa: E402  (official proto loader + structural checks)
+sys.path.insert(0, str(HERE))
+import scenarios  # noqa: E402  (issue #121: the --only selection and the CI groups)
 
 # Defaults; main() overrides them from the command line or the environment. The MQTT port
 # is written into the config.json of the flash image under test, so any free port works.
@@ -4365,9 +4367,9 @@ def main():
     ap.add_argument("--http-port", type=int, default=HTTP_PORT)
     ap.add_argument("--https-port", type=int, default=HTTPS_PORT)
     ap.add_argument("--only", default="",
-                    help="comma-separated scenarios to run (failsafe,network,web,reset,tls,failover,"
-                         "mqtt5,phost,sf,https,ota,nvs,slow,refuse,main); "
-                         "default all")
+                    help=f"comma-separated scenarios to run ({','.join(scenarios.ONLY_NAMES)}); "
+                         "default all. 'ota' is ota-fw1,ota-park,ota-wiring,ota-trial; 'refuse' "
+                         "runs alone only without 'main' (which includes it)")
     ap.add_argument("--web-stress", type=int, default=0, metavar="N",
                     help="issue #110: N extra rounds of cut sessions and accepted PUTs in the "
                          "https scenario (GW22), to reproduce a connection that never reached httpd")
@@ -4378,6 +4380,10 @@ def main():
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
     args = ap.parse_args()
+    try:
+        only = scenarios.parse_only(args.only)   # issue #121: a typo must not select nothing
+    except ValueError as e:
+        ap.error(str(e))
     ARGS, HANG_S = args, args.hang_timeout
     SYMBOLS.update(load_symbols(args.nm, [args.elf, args.plain_elf]))
     global QEMU_VERSION
@@ -4429,53 +4435,42 @@ def main():
     slave.reset()
     slave.start()
     MAIN_BROKER["slave"] = slave
-    only = set(filter(None, args.only.split(",")))
-    want = lambda name: not only or name in only  # noqa: E731
+    # Issues #86/#90: every scenario through run_scenario: a QEMU that dies under one (at any
+    # boot) is reported as such and the scenario runs once more; firmware failures are not
+    # retried. The OTA scenario is the one where it happens most (README 4.3). Issue #121: the
+    # selection and the order come from scenarios.SCENARIOS (the CI groups are checked on it).
+    runners = {
+        "failsafe": lambda: run_config_failsafe(args, work, slave),
+        "network": lambda: run_network_variant(args, work, slave),
+        "web": lambda: run_web(args, work),
+        "reset": lambda: run_factory_reset(args, work),
+        "tls": lambda: run_tls(args, work),
+        "failover": lambda: run_failover(args, work),
+        "mqtt5": lambda: run_mqtt5(args, work, work / "mosquitto.log"),
+        "max_packet": lambda: run_max_packet(args, work, slave),
+        "phost": lambda: run_primary_host(args, work),
+        "sf": lambda: run_store_forward(args, work, slave),
+        "sf spill": lambda: run_store_forward_spill(args, work, slave),
+        "stack margin": lambda: run_stack_margin(args, work, slave),
+        "https": lambda: run_https(args, work),
+        "FW-1 OTA": lambda: run_ota(args, work),
+        "issue #112 park in a long RS485 transaction": lambda: run_park_long_txn(args, work, slave),
+        "issue #97 OTA trial wiring": lambda: run_ota_wiring(args, work),
+        "issues #99/#101 OTA trial": lambda: run_ota_trial(args, work),
+        "issues #67/#94 NVS migration": lambda: run_nvs_migration(args, work),
+        "issue #109 full unencrypted NVS": lambda: run_nvs_full(args, work),
+        "issue #94 OTA to NVS encryption": lambda: run_nvs_ota(args, work),
+        "slow": lambda: run_slow_link(
+            args, work, sdkconfig_int(args.sdkconfig, "GW_MQTT_PUBLISH_BUDGET_MS")),
+        # part of "main"; alone only on request (#89)
+        "refuse": lambda: check_suback_refused(args, work),
+        "main": lambda: run(args, log, slave, MAIN_BROKER["proc"], conf, work),
+    }
+    assert set(runners) == {name for name, _ in scenarios.SCENARIOS}
+    chosen = scenarios.selected(only)
     try:
-        # Issues #86/#90: every scenario through run_scenario: a QEMU that dies under one (at any
-        # boot) is reported as such and the scenario runs once more; firmware failures are not
-        # retried. The OTA scenario is the one where it happens most (README 4.3).
-        if want("failsafe"):
-            run_scenario("failsafe", lambda: run_config_failsafe(args, work, slave))
-        if want("network"):
-            run_scenario("network", lambda: run_network_variant(args, work, slave))
-        if want("web"):
-            run_scenario("web", lambda: run_web(args, work))
-        if want("reset"):
-            run_scenario("reset", lambda: run_factory_reset(args, work))
-        if want("tls"):
-            run_scenario("tls", lambda: run_tls(args, work))
-        if want("failover"):
-            run_scenario("failover", lambda: run_failover(args, work))
-        if want("mqtt5"):
-            run_scenario("mqtt5", lambda: run_mqtt5(args, work, work / "mosquitto.log"))
-            run_scenario("max_packet", lambda: run_max_packet(args, work, slave))
-        if want("phost"):
-            run_scenario("phost", lambda: run_primary_host(args, work))
-        if want("sf"):
-            run_scenario("sf", lambda: run_store_forward(args, work, slave))
-            run_scenario("sf spill", lambda: run_store_forward_spill(args, work, slave))
-            run_scenario("stack margin", lambda: run_stack_margin(args, work, slave))
-        if want("https"):
-            run_scenario("https", lambda: run_https(args, work))
-        if want("ota"):
-            run_scenario("FW-1 OTA", lambda: run_ota(args, work))
-            run_scenario("issue #112 park in a long RS485 transaction",
-                         lambda: run_park_long_txn(args, work, slave))
-            run_scenario("issue #97 OTA trial wiring", lambda: run_ota_wiring(args, work))
-            run_scenario("issues #99/#101 OTA trial", lambda: run_ota_trial(args, work))
-        if want("nvs"):
-            run_scenario("issues #67/#94 NVS migration", lambda: run_nvs_migration(args, work))
-            run_scenario("issue #109 full unencrypted NVS", lambda: run_nvs_full(args, work))
-            run_scenario("issue #94 OTA to NVS encryption", lambda: run_nvs_ota(args, work))
-        if want("slow"):
-            run_scenario("slow", lambda: run_slow_link(
-                args, work, sdkconfig_int(args.sdkconfig, "GW_MQTT_PUBLISH_BUDGET_MS")))
-        if "refuse" in only and "main" not in only:
-            # part of "main"; alone only on request (#89)
-            run_scenario("refuse", lambda: check_suback_refused(args, work))
-        if want("main"):
-            run_scenario("main", lambda: run(args, log, slave, MAIN_BROKER["proc"], conf, work))
+        for name in chosen:
+            run_scenario(name, runners[name])
     except BaseException:
         traceback.print_exc()   # the summary below exits: keep the reason visible
         check("harness completed every scenario", False, traceback.format_exc().splitlines()[-1])
@@ -4506,7 +4501,7 @@ def main():
             elif prev is None or d[4] != prev + 1:
                 errs.append(f"{prev}->{d[4]}")
             prev = d[4]
-        if want("main"):   # GW01's syslog: only the main scenario has it (--only ota: E2E_POISON)
+        if "main" in chosen:   # GW01's syslog: only the main scenario has it (E2E_POISON: ota)
             check("REL-4 syslog sequenceId continuous within each boot (UDP over the emulator's "
                   "NAT, nothing lost)", runs >= 1 and not errs,
                   f"{len(syslog_from(NODE))} datagrams in {runs} boot(s); gaps {errs[:5]}")

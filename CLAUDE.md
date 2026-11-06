@@ -52,7 +52,11 @@ python3 -m venv ~/e2e && ~/e2e/bin/pip install -r tools/e2e/requirements.txt
 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh                 # default (no PSRAM)
 E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh     # octal PSRAM variant
 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh --only ota,https   # subset of scenarios
-#  --only: failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,ota,nvs,slow,refuse,main
+#  --only: failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,ota,ota-fw1,ota-park,ota-wiring,
+#          ota-trial,nvs,slow,refuse,main (ota = the four ota-* names; an unknown name is an error)
+E2E_PYTHON=~/e2e/bin/python tools/e2e/run_ci_groups.sh /tmp/gw-groups   # the CI groups: build once, run in parallel
+#  E2E_STAGE=<dir> (build the images into <dir>, run nothing), E2E_PREBUILT=<dir> (run on them, no build),
+#  PARALLEL=n (groups at the same time); the groups are CI_GROUPS in tools/e2e/scenarios.py
 #  E2E_POISON=1 (heap poisoning, use with --only ota), E2E_PLAIN=0 (skip the no-NVS-encryption build),
 #  E2E_TIMEOUT_SCALE / --timeout-scale (slow host), --web-stress N, JOBS=n (build parallelism)
 
@@ -61,7 +65,7 @@ python3 idf/tools/e2e/test_harness.py
 python3 -m pyflakes idf/tools/e2e/*.py idf/tools/*.py
 ```
 
-CI (`.github/workflows/ci.yml`) runs host-tests, firmware, firmware-production, e2e, e2e-psram and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image. A change is done when the host tests pass and the full E2E passes in both the default and `E2E_PSRAM=1` variants. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
+CI (`.github/workflows/ci.yml`) runs host-tests, firmware, firmware-production, the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image. The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run (#121). A change is done when the host tests pass and the full E2E passes in both the default and `E2E_PSRAM=1` variants. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
 
 ### sdkconfig pitfalls
 
