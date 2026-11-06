@@ -35,7 +35,7 @@
 # (espsecure sign-data --append-signatures) and --check then takes every digest.
 #
 # Outputs with --keyfile/--hsm-config, next to the inputs in the build directory (issue #93: the
-# only files the factory procedure flashes, README 3.6):
+# only files the factory procedure flashes, README 3.7):
 #   bootloader/bootloader-signed.bin   flashed once at the factory (0x0)
 #   rs485_spb_gateway-signed.bin       flashed at the factory (ota_0) and served for OTA (FW-1)
 #   signing_key_digest.bin             SHA-256 of the public key (what the eFuse will hold)
@@ -90,7 +90,7 @@ for o in SECURE_BOOT_V2_ENABLED SECURE_FLASH_ENC_ENABLED SECURE_FLASH_ENCRYPTION
 done
 if [ ${#missing[@]} -gt 0 ]; then
     echo "$SDK: not a complete production build, missing: ${missing[*]}" >&2
-    echo "(build with SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.production, README 3.6)" >&2
+    echo "(build with SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.production, README 3.7)" >&2
     exit 1
 fi
 grep -q '^CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=y' "$SDK" &&

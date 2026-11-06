@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Issue #95: build and check the production configuration as the CI does, so a change that
-# breaks it shows up before the factory (README 3.6, 4.5). Offline file work only: nothing here
+# breaks it shows up before the factory (README 3.7, 4.5). Offline file work only: nothing here
 # talks to a device or touches an eFuse.
 #
 #   . $IDF_PATH/export.sh && [JOBS=n] tools/check_production.sh [build-dir]   (default build-prod)

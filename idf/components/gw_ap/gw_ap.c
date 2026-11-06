@@ -36,7 +36,7 @@ static void stop_ap(void *arg)
     ESP_LOGW(TAG, "commissioning access point stopped (timeout)");
 }
 
-esp_err_t gw_ap_start(const char *password, uint32_t timeout_s)
+esp_err_t gw_ap_start(const char *password, uint32_t timeout_s, bool https, uint16_t web_port)
 {
     if (s_timer == NULL) {
         const esp_timer_create_args_t ta = {.callback = stop_ap, .name = "ap_timeout"};
@@ -78,9 +78,13 @@ esp_err_t gw_ap_start(const char *password, uint32_t timeout_s)
             ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "start");
         }
         s_active = true;
+        char port[8] = "";
+        if (web_port != (https ? 443u : 80u)) {
+            snprintf(port, sizeof(port), ":%u", (unsigned)web_port);
+        }
         ESP_LOGW(TAG, "commissioning access point '%s' (WPA2, commissioning password): web UI at "
-                      "http://192.168.4.1/",
-                 (const char *)ap.ap.ssid);
+                      "%s://192.168.4.1%s/",
+                 (const char *)ap.ap.ssid, https ? "https" : "http", port);
     }
     if (timeout_s != 0) {
         esp_timer_start_once(s_timer, (uint64_t)timeout_s * 1000000u);
@@ -96,10 +100,12 @@ bool gw_ap_active(void)
 
 #else
 
-esp_err_t gw_ap_start(const char *password, uint32_t timeout_s)
+esp_err_t gw_ap_start(const char *password, uint32_t timeout_s, bool https, uint16_t web_port)
 {
     (void)password;
     (void)timeout_s;
+    (void)https;
+    (void)web_port;
     ESP_LOGW(TAG, "commissioning access point not available in this build (CONFIG_GW_SOFTAP, "
                   "needs the Wi-Fi radio): use Ethernet");
     return ESP_ERR_NOT_SUPPORTED;
