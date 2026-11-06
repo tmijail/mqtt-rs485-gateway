@@ -6,6 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Firmware for an RS485 (Modbus RTU) → MQTT Sparkplug B 3.0 gateway on the Waveshare ESP32-S3-POE-ETH-8DI-8DO board, built on ESP-IDF v6.1 (target `esp32s3`). Everything lives in `idf/`. `docs/SPEC.md` is the product spec; requirement IDs such as MB-6, SPB-14 and FW-1 come from it, and code, tests and commits refer to them and to GitHub issue numbers (`#80`, `#107`, …).
 
+**This is an open-source project, not a product to flash, lock and sell.** The firmware runs on a board that anyone can buy, and the owner of the board must always be able to reflash it, read it and change it. Do not design for a vendor that controls the devices of its users:
+- The default build must never burn eFuses or take away the owner's access: no Secure Boot, no flash encryption in release mode, and no disabled download mode.
+- Do not add work that depends on the optional eFuse-burning overlay `sdkconfig.production` (FW-2, FW-3, the eFuse part of CFG-7). Issue #133 must first decide whether these features stay in the project.
+- When a requirement in `docs/SPEC.md` assumes a vendor product (factory stations, locked devices), question it before you implement it.
+
 `idf/README.md` is the authoritative, detailed reference. It covers architecture, task table, memory budget, build, configuration, verification results and known limitations. Read the relevant section before changing a subsystem. The existing README, docs and GitHub issues are in Spanish; all new writing follows **Writing standard** below.
 
 ## Writing standard: ASD-STE100 Simplified Technical English
