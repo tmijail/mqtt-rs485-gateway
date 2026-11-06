@@ -1,11 +1,11 @@
 # mqtt-rs485-gateway
 
-Gateway RS485 (Modbus RTU) → MQTT Sparkplug B 3.0 para la placa Waveshare **ESP32-S3-POE-ETH-8DI-8DO**, basado en **ESP-IDF**.
+This firmware is an RS485 (Modbus RTU) to MQTT Sparkplug B 3.0 gateway for the Waveshare **ESP32-S3-POE-ETH-8DI-8DO** board. It uses **ESP-IDF**.
 
-- `idf/`: firmware (ESP-IDF v6.1). Compilación, configuración, arquitectura y pruebas en `idf/README.md`.
-- `docs/SPEC.md`: especificación de producto (completa y MVP).
-- `docs/feasibility-idf.md`: viabilidad de cada requisito de la spec con ESP-IDF.
-- `docs/review-idf.md`: review independiente del MVP, con hallazgos pendientes.
-- `docs/RECOMMENDATION.md`: por qué se eligió ESP-IDF frente a Zephyr.
+- `idf/`: the firmware (ESP-IDF v6.1). `idf/README.md` gives the build, the configuration, the architecture and the tests.
+- `docs/SPEC.md`: the product specification (the full product and the MVP).
+- `docs/feasibility-idf.md`: the feasibility of each requirement of the specification with ESP-IDF.
+- `docs/review-idf.md`: an independent review of the MVP, with the open findings.
+- `docs/RECOMMENDATION.md`: the reasons for ESP-IDF and not Zephyr.
 
-La implementación alternativa con Zephyr y la comparación completa se conservan en los branches `impl/zephyr` y `comparison/idf-vs-zephyr`.
+The branches `impl/zephyr` and `comparison/idf-vs-zephyr` keep the alternative Zephyr implementation and the full comparison.
