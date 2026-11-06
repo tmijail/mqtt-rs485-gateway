@@ -54,7 +54,7 @@ static const char *TAG = "main";
 #define NVS_ALARM_CFG "alarm_cfg"   /* IO-6: the last valid configuration wants the
                                      * "config_error" alarm (a rejected one cannot say) */
 
-/* Immutable after boot; shared read-only by every task. About 26 KB: allocated at boot in
+/* Immutable after boot; shared read-only by every task. About 32 KB: allocated at boot in
  * PSRAM when the board has it (internal RAM otherwise, e.g. QEMU), see big_alloc(). */
 static gw_config_t *s_cfg;
 static char s_hardware[64];
@@ -197,6 +197,16 @@ static void net_noop(void)
 {
 }
 
+/* NET-5: the access point, with the web UI's address as the web server really serves it
+ * (HTTPS, or HTTP when web.https is false or the device certificate is missing). */
+static void start_ap(uint32_t timeout_s)
+{
+    gw_web_stats_t ws;
+    gw_web_get_stats(&ws);
+    gw_ap_start(s_commission_pw, timeout_s, ws.https,
+                ws.https ? s_cfg->web.https_port : s_cfg->web.port);
+}
+
 /* CFG-5 / NET-5: BOOT gestures, in every mode. */
 static void on_button(gw_btn_event_t ev)
 {
@@ -219,9 +229,9 @@ static void on_button(gw_btn_event_t ev)
         gw_storage_commissioning_password(s_commission_pw);
         printf("ap: password = commissioning password '%s'\n", s_commission_pw);
 #if CONFIG_GW_SOFTAP
-        gw_ap_start(s_commission_pw, s_mode == GW_WEB_NORMAL ? CONFIG_GW_SOFTAP_TIMEOUT_MIN * 60 : 0);
+        start_ap(s_mode == GW_WEB_NORMAL ? CONFIG_GW_SOFTAP_TIMEOUT_MIN * 60 : 0);
 #else
-        gw_ap_start(s_commission_pw, 0);
+        start_ap(0);
 #endif
     }
 }
@@ -267,7 +277,7 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
     start_web(mode, s_cfg, source);
     s_source = source;
     s_ready = true;
-    gw_ap_start(s_commission_pw, 0);   /* NET-5: no valid configuration */
+    start_ap(0);   /* NET-5: no valid configuration */
     for (;;) {
         if (mode == GW_WEB_COMMISSIONING) {
             ESP_LOGW(TAG, "commissioning: no configuration since the factory reset; nothing is "

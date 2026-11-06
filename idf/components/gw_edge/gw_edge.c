@@ -114,7 +114,7 @@ static StackType_t s_stack[STACK_BYTES / sizeof(StackType_t)];
 
 /* ---- owned by the Sparkplug task ---- */
 static const gw_config_t *s_cfg;
-static gw_node_t *s_node;   /* ~27 KB, in PSRAM when present (gw_storage_big_alloc) */
+static gw_node_t *s_node;   /* ~21 KB, in PSRAM when present (gw_storage_big_alloc) */
 static esp_mqtt_client_handle_t s_client;
 static esp_mqtt_client_config_t s_mqtt_cfg;
 static char s_death_topic[GW_TOPIC_MAX];
