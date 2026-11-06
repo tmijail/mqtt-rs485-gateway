@@ -737,8 +737,9 @@ ATTEMPT = {"active": False}
 MON_LOCK = threading.RLock()   # held by the monitor while it handles an attempt (issue #92 M4)
 MONITOR_ERRORS = []  # exceptions of the fault monitor (each fails the run)
 # Seconds a scenario attempt may take, scaled by --timeout-scale: DEFAULT_BUDGET_S unless a name
-# is listed here. 900 s is over four times the longest attempt measured on a loaded 4-CPU host
-# (main, about 200 s, results.json "durations"), so no scenario needs its own yet.
+# is listed here. 900 s is less than twice the longest attempt measured on a loaded 4-CPU host
+# (the #97 integration with PSRAM in single-threaded TCG, 477 s, results.json "durations"; main
+# is about 200 s): on a slower host raise --timeout-scale / E2E_TIMEOUT_SCALE.
 SCENARIO_BUDGET_S = {}
 DEFAULT_BUDGET_S = 900.0
 
@@ -1567,9 +1568,10 @@ def make_pki(work):
 
 
 def run_tls(args, work):
-    """MQTT-4 / MQTT-5 against a mosquitto with three listeners: TLS 1.3 only (server
-    authentication), TLS 1.2 only with client certificates required (mutual TLS), and plain TCP
-    for the observer. Separate boots with their own edge node ids:
+    """MQTT-4 / MQTT-5 against a mosquitto with four listeners: TLS 1.3 only (server
+    authentication), TLS 1.2 only with client certificates required (mutual TLS), plain TCP
+    for the observer, and TLS 1.3 with an expired broker certificate (issue #70, GW25). Separate
+    boots with their own edge node ids:
       GW12  CA file in LittleFS, name checked against the IP literal (SAN IP:10.0.2.2), TLS 1.3
       GW13  mutual TLS (MQTT-5): client certificate and key from LittleFS, TLS 1.2, the broker name
             checked against tls.server_name (SAN DNS:broker.e2e); mosquitto takes the certificate's
