@@ -114,18 +114,90 @@ jobs:
             /tmp/sb-qemu/*.log
             /tmp/sb-qemu/*.qemu
 
-  e2e:
-    name: QEMU end to end (QA-3)
+  # Issue #121: the E2E in parallel jobs, for the default variant and for the octal PSRAM one
+  # (#85: the configuration, the Sparkplug engine and its payload buffer, mbedTLS and the store &
+  # forward ring in PSRAM; the harness writes otadata into the image first, docs/upstream-reports.md
+  # section 4). e2e-plan reads the groups from idf/tools/e2e/scenarios.py (CI_GROUPS: together
+  # one full run, each scenario in one group, as test_harness.py checks). e2e-build builds the
+  # QEMU images once per variant (run_e2e.sh with E2E_STAGE; the default variant also builds
+  # build-qemu-plain, the same for both variants). Each e2e job runs one group of one variant on
+  # those images, without a build (E2E_PREBUILT). e2e-summary puts one line per group into the
+  # job summary and fails unless the groups of each variant passed and ran one full run.
+  e2e-plan:
+    name: E2E groups (issue #121)
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      run: ${{ steps.plan.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        run: python3 idf/tools/e2e/scenarios.py matrix | tee -a "$GITHUB_OUTPUT"
+
+  e2e-build:
+    name: QEMU images for the E2E (${{ matrix.variant }})
+    needs: e2e-plan
     runs-on: ubuntu-24.04
     container:
       image: espressif/idf:v6.1@sha256:f81b6e077e6af93c312181cd7d4e7936cfbafc5c7f77cbacba8fdd34994f218a
     defaults:
       run:
         shell: bash
+    strategy:
+      matrix: ${{ fromJSON(needs.e2e-plan.outputs.build) }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0   # FW-4: the version carries the git hash
+      - name: Build the QEMU images
+        env:
+          E2E_PSRAM: ${{ matrix.psram }}
+          E2E_PLAIN: ${{ matrix.plain }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          . "$IDF_PATH/export.sh"
+          E2E_STAGE=/tmp/e2e-images E2E_WORKDIR=/tmp/e2e-build idf/tools/e2e/run_e2e.sh
+          tar -C /tmp/e2e-images --exclude=./plain -czf /tmp/e2e-images.tgz .
+          if [ "$E2E_PLAIN" = 1 ]; then
+            tar -C /tmp/e2e-images -czf /tmp/e2e-images-plain.tgz plain
+          fi
+      # the throwaway signing key of this run's QEMU images goes with them: kept for one day
+      - uses: actions/upload-artifact@v4
+        with:
+          name: e2e-images-${{ matrix.variant }}
+          path: /tmp/e2e-images.tgz
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: matrix.plain == '1'
+        with:
+          name: e2e-images-plain
+          path: /tmp/e2e-images-plain.tgz
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  e2e:
+    name: QEMU end to end, ${{ matrix.variant }}, ${{ matrix.group }} (QA-3)
+    needs: [e2e-plan, e2e-build]
+    runs-on: ubuntu-24.04
+    container:
+      image: espressif/idf:v6.1@sha256:f81b6e077e6af93c312181cd7d4e7936cfbafc5c7f77cbacba8fdd34994f218a
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.e2e-plan.outputs.run) }}
+    env:
+      VARIANT: ${{ matrix.variant }}
+      GROUP: ${{ matrix.group }}
+      ONLY: ${{ matrix.only }}
+      E2E_PSRAM: ${{ matrix.psram }}
+      E2E_PLAIN: ${{ matrix.plain }}
+    steps:
+      - uses: actions/checkout@v4
       - name: Install QEMU, mosquitto and the harness' Python packages
         run: |
           apt-get update -qq
@@ -133,16 +205,32 @@ jobs:
           python3 "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
           python3 -m venv /tmp/e2e
           /tmp/e2e/bin/pip install -q -r idf/tools/e2e/requirements.txt
-      - name: Run the scenario
+      - uses: actions/download-artifact@v4
+        with:
+          name: e2e-images-${{ matrix.variant }}
+          path: /tmp/e2e-dl
+      - uses: actions/download-artifact@v4
+        if: matrix.plain == '1'
+        with:
+          name: e2e-images-plain
+          path: /tmp/e2e-dl
+      - name: Run the group's scenarios on the prebuilt images
         run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           . "$IDF_PATH/export.sh"
           export PATH="$PATH:/usr/sbin"
-          E2E_WORKDIR=/tmp/e2e-work E2E_PYTHON=/tmp/e2e/bin/python idf/tools/e2e/run_e2e.sh
+          mkdir -p /tmp/e2e-images
+          for t in /tmp/e2e-dl/*.tgz; do tar -C /tmp/e2e-images -xzf "$t"; done
+          E2E_PREBUILT=/tmp/e2e-images E2E_WORKDIR=/tmp/e2e-work E2E_PYTHON=/tmp/e2e/bin/python \
+              idf/tools/e2e/run_e2e.sh --only "$ONLY"
+      - name: Summary line
+        if: always()
+        run: |
+          python3 idf/tools/e2e/scenarios.py line --header "$VARIANT" "$GROUP" /tmp/e2e-work \
+              | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: e2e-artifacts
+          name: e2e-${{ matrix.variant }}-${{ matrix.group }}
           path: |
             /tmp/e2e-work/*.log
             /tmp/e2e-work/*.qemu
@@ -152,50 +240,33 @@ jobs:
             /tmp/e2e-work/fault-*.txt
             /tmp/e2e-work/qemu/*/core-bt.txt
             /tmp/e2e-work/payloads/
-
-  # Issue #85: the same scenario on the board's memory path, with QEMU's octal PSRAM (the
-  # configuration, the Sparkplug engine and its payload buffer, mbedTLS and the store & forward
-  # ring in PSRAM). run_e2e.sh builds build-qemu-psram (sdkconfig.qemu-psram) and the harness
-  # writes otadata into the image first (QEMU crashes on the bootloader's first otadata write
-  # with the octal PSRAM model: docs/upstream-reports.md section 4).
-  e2e-psram:
-    name: QEMU end to end with the octal PSRAM (QA-3, issue #85)
-    runs-on: ubuntu-24.04
-    container:
-      image: espressif/idf:v6.1@sha256:f81b6e077e6af93c312181cd7d4e7936cfbafc5c7f77cbacba8fdd34994f218a
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Install QEMU, mosquitto and the harness' Python packages
-        run: |
-          apt-get update -qq
-          apt-get install -y -qq mosquitto libslirp0 >/dev/null
-          python3 "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
-          python3 -m venv /tmp/e2e
-          /tmp/e2e/bin/pip install -q -r idf/tools/e2e/requirements.txt
-      - name: Run the scenario with PSRAM
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          . "$IDF_PATH/export.sh"
-          export PATH="$PATH:/usr/sbin"
-          E2E_PSRAM=1 E2E_WORKDIR=/tmp/e2e-psram E2E_PYTHON=/tmp/e2e/bin/python idf/tools/e2e/run_e2e.sh
+      # only what e2e-summary reads
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: e2e-psram-artifacts
+          name: e2e-result-${{ matrix.variant }}-${{ matrix.group }}
           path: |
-            /tmp/e2e-psram/*.log
-            /tmp/e2e-psram/*.qemu
-            /tmp/e2e-psram/results.json
-            /tmp/e2e-psram/coredump-info.txt
-            /tmp/e2e-psram/qemu-exits.txt
-            /tmp/e2e-psram/fault-*.txt
-            /tmp/e2e-psram/qemu/*/core-bt.txt
-            /tmp/e2e-psram/payloads/
+            /tmp/e2e-work/results.json
+            /tmp/e2e-work/qemu-exits.txt
+
+  e2e-summary:
+    name: E2E summary of the groups (issue #121)
+    needs: [e2e-plan, e2e]
+    if: always() && needs.e2e-plan.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        continue-on-error: true   # a missing group is reported below
+        with:
+          pattern: e2e-result-*
+          path: /tmp/e2e-results
+      - name: One line per group; each variant's groups passed and ran one full run
+        run: |
+          rc=0
+          python3 idf/tools/e2e/scenarios.py summary /tmp/e2e-results > /tmp/summary.md || rc=$?
+          cat /tmp/summary.md | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
 
   # Issue #104 (item 3): the OTA scenarios on a build with comprehensive heap poisoning
   # (sdkconfig.qemu-poison): freed memory is overwritten, so a use after free such as the one of
