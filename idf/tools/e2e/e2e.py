@@ -3477,7 +3477,10 @@ def run_ota_wiring(args, work):
     previous one at once, without waiting for the trial's timeout (an invalid config.json, so no
     node id: recovery mode, gw_fw_config_rejected); an image that boots into commissioning is
     confirmed, as nothing can judge it there (WIRING_NODE: after a factory reset,
-    gw_fw_commissioning). Only the main broker and the web server: no port of its own."""
+    gw_fw_commissioning). Issue #118: the same rejection with a rollback call that fails (the
+    emulator build fails it once when /cfg/.sim-rollback-fails exists): the gateway restarts, and
+    the bootloader goes back to the previous image. Only the main broker and the web server: no
+    port of its own."""
     fwdir = work / "fw-wiring"
     fwdir.mkdir(exist_ok=True)
     app = pathlib.Path(args.elf).with_suffix(".bin")
@@ -3528,6 +3531,48 @@ def run_ota_wiring(args, work):
               f"rejected {f'{back - boot:.1f} s after its boot' if boot and back else 'no'}; "
               f"previous image again {again is not None}, in recovery {rec2 is not None}; "
               f"shell {bool(list(h.values())[0])}")
+    finally:
+        gw.kill()
+
+    # 1b. issue #118: the same, but the rollback call fails (emulator hook, consumed by the call):
+    # the gateway restarts by itself, and the bootloader goes back to the previous image
+    t0 = time.monotonic()
+    gw = Gateway(args, work / "uart0-otarbf.log",
+                 flash_variant(args, work, "otarbf", {"config.json": b'{"sparkplug": \n',
+                                                      ".sim-rollback-fails": b"1"}))
+    gw.start()
+    try:
+        rec = gw.wait_log(r"main: configuration rejected", 60, t0)
+        pw = commissioning_password(gw, t0, 30)
+        wait_http("/api/status", 30, auth=("admin", pw or "?"))
+        hook0 = gw.find(r"fw: emulator: the rollback call fails", t0)   # not on trial: unused
+        asked = time.monotonic()
+        st, body = upload("e2e-rej", pw)
+        boot = gw.wait_log(r"main: rs485_spb_gateway e2e-rej .*reset reason", 120, asked)
+        back = gw.wait_log(r"fw: firmware e2e-rej rejected \(it rejected the stored "
+                           r"configuration\): back to", 30, boot or asked)
+        hook = gw.wait_log(r"fw: emulator: the rollback call fails once", 30, back or asked)
+        failed = gw.wait_log(r"fw: rollback call failed \(ESP_ERR_NO_MEM\): restarting; the "
+                             r"bootloader goes back to the previous image", 30, hook or asked)
+        prev = gw.wait_log(r"main: rs485_spb_gateway (?!e2e-rej )\S+ .*reset reason: software", 60,
+                           failed or asked)
+        again = gw.wait_log(r"fw: firmware e2e-rej \(ota_\d\) was rejected or did not confirm "
+                            r"itself; running \S+ again", 60, failed or asked)
+        rec2 = gw.wait_log(r"main: configuration rejected", 30, again or asked)
+        _, h = gw.shell("status", [r"^ota\s+\S+ in ota_\d.*\| firmware e2e-rej \(ota_\d\) was "
+                                   r"rejected or did not confirm itself"])
+        # the real call did not run: no stack line of its shutdown handler
+        real = gw.find(r"fw: rollback stack:", asked)
+        check("Issue #118 a new image that rejects the stored configuration, with a rollback call "
+              "that fails (emulator hook): the gateway restarts by itself (software reset), the "
+              "bootloader boots the previous image, and the previous image says so",
+              rec and pw and st == 200 and not hook0 and boot and back and hook and failed
+              and prev and again and rec2 and list(h.values())[0] and not real,
+              f"recovery {rec is not None}; POST {st} {body[:60]!r}; new image {boot is not None}; "
+              f"rejected {back is not None}; hook {hook is not None} (before the upload "
+              f"{len(hook0)}); call failed {failed is not None}; previous image after a software "
+              f"reset {prev is not None}, says so {again is not None}, in recovery "
+              f"{rec2 is not None}; shell {bool(list(h.values())[0])}; real call {len(real)}")
     finally:
         gw.kill()
 

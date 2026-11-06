@@ -180,6 +180,9 @@ size_t gw_storage_validation_min_block(void);
 /** Emulator only (issue #84): the next configuration validation keeps its buffers for @p ms at
  *  its peak, so the E2E can make a TLS handshake happen during it. */
 void gw_storage_sim_hold_validation(uint32_t ms);
+/** Emulator only: true when the E2E put the file @p name in LittleFS (/cfg); the file is deleted,
+ *  so it acts once. False when it is absent or LittleFS is not mounted. */
+bool gw_storage_sim_take(const char *name);
 #endif
 
 #ifdef __cplusplus
