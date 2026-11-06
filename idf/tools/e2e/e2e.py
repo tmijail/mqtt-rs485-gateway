@@ -1455,6 +1455,7 @@ def flash_variant(args, work, name, files, base=None):
         shutil.rmtree(src, ignore_errors=True)
         src.mkdir()
         for fname, data in files.items():
+            (src / fname).parent.mkdir(parents=True, exist_ok=True)
             (src / fname).write_bytes(data)
         img = work / f"storage-{name}.bin"
         subprocess.run([args.littlefs_python, "-m", "littlefs", "create", str(src), str(img),
@@ -2355,6 +2356,20 @@ def run_slow_link(args, work, budget_ms):
           f"panics {panics[:1]}")
 
 
+# Issue #122: files on the "card" at the boot of GW23 (format version 1, gw_sfspill.h), each deleted
+# after the boot in steps of 128 units of 32 B (the stand-in's "cluster": one 4 KB LittleFS block)
+OLD_SPILL_FILES = {
+    # a segment of another configuration: the dead mark, 5 truncates (20 480, 16 384, 12 288,
+    # 8 192 and 4 096 B) and the unlink
+    "sf/00000100.sf": struct.pack("<IHHII", 0x46535747, 1, 24, 0xDEADBEEF, 0x100) + bytes(range(256)) * 80,
+    # a segment marked dead by a delete that a power cut stopped: 2 truncates and the unlink
+    "sf/00000101.sf": struct.pack("<I", 0x44414544) + bytes(10236),
+    # a torn file (a cut while a segment was created): only the unlink
+    "sf/00000102.sf": b"GWS",
+}
+OLD_SPILL_STEPS = 7 + 3 + 1
+
+
 def run_store_forward_spill(args, work, slave):
     """SPB-14 spill (GW23): store_forward with sd enabled; QEMU has no SDMMC, so the build puts
     the "card" in a LittleFS directory (CONFIG_GW_SF_SPILL_LITTLEFS). While the relay keeps the
@@ -2363,7 +2378,12 @@ def run_store_forward_spill(args, work, slave):
     reconnection every stored sample comes back as historical DDATA, oldest first (spill, then
     ring), with no sample lost (the shell: nothing overwritten, nothing deleted unsent).
     With --psram (issue #85) the ring has 40000 samples in PSRAM: the same load stays in it and
-    nothing spills, which is the board's behaviour for an outage this short."""
+    nothing spills, which is the board's behaviour for an outage this short.
+    Issue #122, both variants: the stand-in's 32 B "clusters" limit a segment to one delete step
+    (4 KB: 32 segments of 170 samples for max_kb 128); the image holds OLD_SPILL_FILES, which the
+    boot only reads and the Sparkplug loop then deletes in exactly OLD_SPILL_STEPS steps; each
+    replayed segment is marked dead and then deleted in one step; the shell shows the time of
+    every card operation, and the Sparkplug task keeps its stack margin."""
     node, port = "GW23", MQTT_PORT + 11
     ddata_t = f"{T}/DDATA/{node}/{BULK}"
     relay = Relay(port, MQTT_PORT)
@@ -2371,10 +2391,13 @@ def run_store_forward_spill(args, work, slave):
     cfg = node_config(node, port=port)
     cfg["sparkplug"]["store_forward"] = {"enabled": True, "sd": {"enabled": True, "max_kb": 128}}
     t0 = time.monotonic()
-    gw = boot_variant(args, work, "sfsd", cfg)
+    gw = boot_variant(args, work, "sfsd", cfg, files=OLD_SPILL_FILES)
     nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
     obs.wait(f"{T}/DBIRTH/{node}/{BULK}", 10)
     spill_log = gw.find(r"store & forward: spill to LittleFS /cfg/sf .*: \d+ segments of \d+ samples", t0)
+    layout = gw.find(r"store & forward: spill to LittleFS /cfg/sf .*: 32 segments of 170 samples", t0)
+    queued = gw.find(r"store & forward: 3 file\(s\) on the card to delete after the boot \(0 samples "
+                     r"over max_kb\), in steps of at most 4 KB", t0)
     since = time.monotonic()
     relay.stop()
     gw.wait_log(r"MQTT down; reconnect attempt", 10, since)
@@ -2402,6 +2425,27 @@ def run_store_forward_spill(args, work, slave):
         _, h = gw.shell("status", [r"^store\s+0 of \d+ samples waiting"], timeout=2, tries=1)
         done = list(h.values())[0]
     time.sleep(1)
+    # #122: the deletes end (one step per loop); then the counters and the card's times
+    gc_rx = r"^spill\s+on: .*; 0 file\(s\) to delete, (\d+) deleted in (\d+) steps, 0 left"
+    gc_line = card_line = stack_line = ""
+    end = time.monotonic() + 30
+    while time.monotonic() < end and not gc_line:
+        asked3, _ = gw.shell("status", [gc_rx, r"^card\s", r"^stack\s+sparkplug \d+ "], timeout=2, tries=1)
+        gc_line = (gw.find(gc_rx, asked3) or [""])[-1]
+        card_line = (gw.find(r"^card\s", asked3) or [""])[-1]
+        stack_line = (gw.find(r"^stack\s+sparkplug \d+ ", asked3) or [""])[-1]
+    m = re.search(gc_rx, gc_line)
+    nfiles, nsteps = (int(m.group(1)), int(m.group(2))) if m else (0, -1)
+    ops = {k: int(v) for k, v in re.findall(r" (\w+) (\d+) avg [\d.]+ max [\d.]+ ms", card_line)}
+    unfed = re.search(r"longest unfed (\d+) ms", card_line)
+    free = re.search(r"sparkplug (\d+)", stack_line)
+    # the 3 old files, then each replayed segment (dead at once, one unlink); a step is a mark,
+    # a truncate or an unlink, and the card counts the marks apart
+    used = ("open", "mark", "step", "read") if args.psram else ("open", "append", "sync", "read", "mark", "step")
+    gc_ok = (m is not None and nfiles >= 3 and (nfiles > 3) != bool(args.psram)
+             and nsteps == OLD_SPILL_STEPS + (nfiles - 3)
+             and ops.get("step") == nsteps - 1 and ops.get("mark") == 1 + (nfiles - 3)
+             and all(ops.get(k, 0) > 0 for k in used) and re.search(r" 0 error\(s\)", card_line))
     hist = [mm for m in CAPTURE if nb2 and m[0] >= nb2[0] and m[1] == ddata_t for mm in m[2].metrics
             if mm.is_historical]
     total = sum(1 for m in CAPTURE if nb2 and m[0] >= nb2[0] and m[1].split("/")[3:4] == [node]
@@ -2427,6 +2471,16 @@ def run_store_forward_spill(args, work, slave):
           f"{total} historical metrics after it ({len(hist)} of Bulk), register 100: {reg100[:3]}..{reg100[-2:]} "
           f"({len(reg100)} samples, in order {reg100 == sorted(reg100)}); "
           + " | ".join(gw.find(r"^spill\s", asked) + final))
+    check(f"Issue #122 the spill's deletes in bounded steps after the boot (LittleFS stand-in): "
+          f"segments of one step (32 of 170 samples), the 3 old files on the card deleted in "
+          f"{OLD_SPILL_STEPS} steps (mark, truncates of 4 KB, unlink), each replayed segment dead and "
+          f"then deleted in one step, the card's operation times in the shell, the Sparkplug task "
+          f"fed within the task watchdog and >= {STACK_MARGIN_B} B of its stack free",
+          nb and layout and queued and gc_ok and unfed and int(unfed.group(1)) < 15000
+          and free and int(free.group(1)) >= STACK_MARGIN_B,
+          f"layout {'ok' if layout else 'missing'}; queue at boot {'ok' if queued else 'missing'}; "
+          f"{gc_line or 'deletes not finished'} | {card_line or 'no card line'} | "
+          f"{stack_line or 'no stack line'}")
 
 
 # ---------------------------------------------------------------- HTTPS and login limit (issue #64)

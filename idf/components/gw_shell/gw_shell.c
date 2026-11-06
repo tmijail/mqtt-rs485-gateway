@@ -27,6 +27,7 @@
 #include "gw_mbap.h"
 #include "gw_net.h"
 #include "gw_rtc.h"
+#include "gw_sfcard.h"
 #include "gw_status.h"
 #include "gw_storage.h"
 #include "gw_tagdb.h"
@@ -178,6 +179,25 @@ static bool device_online(uint16_t dev)
     return online;
 }
 
+/* #122: the time of each card operation (count, average and longest, in ms with one decimal),
+ * for the board tests (#18). */
+static void status_card(uint32_t max_unfed_ms)
+{
+    gw_sfcard_stats_t cs;
+    gw_sfcard_get_stats(&cs);
+    out("card     cluster %lu B,", (unsigned long)cs.unit);
+    for (int i = 0; i < GW_SFCARD_OP_COUNT; i++) {
+        const gw_sfcard_time_t *t = &cs.op[i];
+        uint32_t avg = t->count ? (uint32_t)(t->total_us / t->count) : 0;
+        out(" %s %lu avg %lu.%lu max %lu.%lu ms%s", gw_sfcard_op_name((gw_sfcard_op_t)i),
+            (unsigned long)t->count, (unsigned long)(avg / 1000), (unsigned long)(avg % 1000 / 100),
+            (unsigned long)(t->max_us / 1000), (unsigned long)(t->max_us % 1000 / 100),
+            i + 1 < GW_SFCARD_OP_COUNT ? "," : ";");
+    }
+    out(" %lu error(s); sparkplug watchdog longest unfed %lu ms\n", (unsigned long)cs.errors,
+        (unsigned long)max_unfed_ms);
+}
+
 static int cmd_status(int argc, char **argv)
 {
     (void)argc;
@@ -248,9 +268,18 @@ static int cmd_status(int argc, char **argv)
                 es.sf_psram ? "PSRAM" : "internal RAM", (unsigned long)es.sf_sent,
                 (unsigned long)es.sf_dropped);
             if (es.spill_on) {
-                out("spill    %s: %lu samples on the card, %lu moved there, %lu deleted unsent\n",
+                out("spill    %s: %lu samples on the card, %lu moved there, %lu deleted unsent; "
+                    "%lu of %lu segments of %lu samples (%lu KB), %lu samples over max_kb at "
+                    "boot; %lu file(s) to delete, %lu deleted in %lu steps, %lu left for the "
+                    "next boot\n",
                     es.spill_failed ? "FAILED (the ring overwrites)" : "on", (unsigned long)es.spill_count,
-                    (unsigned long)es.spilled, (unsigned long)es.spill_dropped);
+                    (unsigned long)es.spilled, (unsigned long)es.spill_dropped,
+                    (unsigned long)es.spill_segs, (unsigned long)es.spill_max_segs,
+                    (unsigned long)es.spill_seg_records, (unsigned long)es.spill_kb,
+                    (unsigned long)es.spill_trimmed, (unsigned long)es.spill_gc_pending,
+                    (unsigned long)es.spill_gc_files, (unsigned long)es.spill_gc_steps,
+                    (unsigned long)es.spill_gc_left);
+                status_card(es.max_unfed_ms);
             }
         }
         if (s_ctx.cfg->sparkplug.primary_host_id[0] != '\0') {

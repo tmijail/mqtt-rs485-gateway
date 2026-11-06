@@ -90,3 +90,8 @@ CONFIG_LWIP_MAX_SOCKETS=24
 # and confirms itself after its first Sparkplug session (gw_fw); a reset before that makes the
 # bootloader boot the previous one.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# Issue #122 (REL-2): the microSD spill uses 8.3 names only (NNNNNNNN.SF). Without long file
+# names, FatFs allocates no name buffer on each open, stat or unlink (FATFS_LFN_HEAP did, in the
+# Sparkplug task).
+CONFIG_FATFS_LFN_NONE=y

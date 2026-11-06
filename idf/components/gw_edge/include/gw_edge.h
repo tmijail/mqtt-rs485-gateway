@@ -41,6 +41,17 @@ typedef struct {
     uint32_t spilled;        /* records ever moved to the card */
     uint32_t spill_dropped;  /* records deleted from the card unsent (space) */
     bool spill_failed;       /* the card failed: spill stopped */
+    uint32_t spill_segs;     /* #122: live segments on the card, and their bounds */
+    uint32_t spill_max_segs;
+    uint32_t spill_seg_records;
+    uint32_t spill_kb;       /* the KB the layout uses (max_kb, less when the cluster limits it) */
+    uint32_t spill_gc_pending; /* files waiting for their delete */
+    uint32_t spill_gc_files; /* files deleted, in spill_gc_steps steps */
+    uint32_t spill_gc_steps;
+    uint32_t spill_gc_left;  /* deletes left for the next boot */
+    uint32_t spill_trimmed;  /* samples deleted at boot: over max_kb */
+    uint32_t max_unfed_ms;   /* longest time the Sparkplug task went without feeding its
+                                watchdog, since boot */
     uint32_t max_packet;     /* issue #73: broker's MQTT 5 Maximum Packet Size, 0 = none */
     uint32_t oversize;       /* messages not published because they exceed it */
     uint32_t oversize_bytes; /* size of the last one */

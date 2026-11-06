@@ -51,6 +51,7 @@ static const char *TAG = "edge";
 #define TLS_ERROR_LOG_MS 10000  /* a TLS setup that cannot work is logged this often */
 #define PHOST_WAIT_MS    30000  /* with backup brokers: no STATE online this long -> next broker */
 #define SF_MSGS_PER_LOOP 4      /* historical messages per loop: live data is not held back */
+#define SPILL_GC_WAIT_MS 10000  /* #122: the card deletes start then without a network */
 #define STR_(x) #x
 #define STR(x)  STR_(x)
 
@@ -136,6 +137,7 @@ static unsigned s_handled_disc;
 static bool s_births_timed;     /* the current session's births carried synchronised time */
 static int64_t s_fed_us;        /* last time this task fed the task watchdog */
 static uint32_t s_max_unfed_ms; /* longest stretch without feeding since the last reset */
+static uint32_t s_max_gap_ms;   /* the same since boot (#122: the shell, for the board tests) */
 static unsigned s_handled_route;
 static uint32_t s_diag_wait_ms = UINT32_MAX;   /* until the next diagnostics NDATA */
 static struct ifreq s_ifr;      /* interface the client is bound to (NET-4, two interfaces only) */
@@ -165,6 +167,10 @@ static gw_sf_t s_sf;            /* SPB-14: store & forward ring (storage allocat
 static bool s_sf_psram;
 static gw_sfspill_t s_spill;    /* SPB-14: the ring's spill to the microSD card (optional) */
 static bool s_spill_on;
+static uint32_t s_spill_kb;     /* the KB its layout uses */
+static bool s_spill_gc_go;      /* #122: the deletes may run (the network is up, or a while
+                                   after the boot) */
+static uint32_t s_spill_gc_logged; /* gc_files at the last "deleted" log line */
 static bool s_stable;           /* the current session lasted stable_ms(): it counts as working */
 static char s_client_if[8];     /* interface the client was bound to ("" = one interface) */
 
@@ -481,6 +487,9 @@ static void feed_watchdog(void)
         if (gap > s_max_unfed_ms) {
             s_max_unfed_ms = gap;
         }
+        if (gap > s_max_gap_ms) {
+            s_max_gap_ms = gap;
+        }
     }
     s_fed_us = now;
     esp_task_wdt_reset();
@@ -698,6 +707,16 @@ static void publish_status(void)
     s_st.spilled = s_sf.spilled;
     s_st.spill_dropped = s_spill.dropped;
     s_st.spill_failed = s_spill_on && !s_spill.ok;
+    s_st.spill_segs = s_spill.nsegs;
+    s_st.spill_max_segs = s_spill.max_segs;
+    s_st.spill_seg_records = s_spill.seg_records;
+    s_st.spill_kb = s_spill_kb;
+    s_st.spill_gc_pending = gw_sfspill_gc_pending(&s_spill);
+    s_st.spill_gc_files = s_spill.gc_files;
+    s_st.spill_gc_steps = s_spill.gc_steps;
+    s_st.spill_gc_left = s_spill.gc_left;
+    s_st.spill_trimmed = s_spill.trimmed;
+    s_st.max_unfed_ms = s_max_gap_ms;
     s_st.max_packet = atomic_load(&s_max_packet);
     s_st.oversize = s_oversize;
     s_st.oversize_bytes = s_oversize_bytes;
@@ -1107,6 +1126,40 @@ static bool tls_can_start(int64_t now)
     return true;
 }
 
+/* #122: the deletes on the card wait for the network (not to hold up the boot), or for
+ * SPILL_GC_WAIT_MS when it does not come. */
+static bool spill_gc_wants_time(void)
+{
+    return s_spill_on && s_spill_gc_go && s_spill.ok && gw_sfspill_gc_pending(&s_spill) > 0;
+}
+
+/* #122: one bounded delete step on the card per loop (gw_sfspill_step feeds the watchdog after
+ * it, through s_spill.tick). */
+static void spill_gc_step(int64_t now)
+{
+    if (!s_spill_on) {
+        return;
+    }
+    if (!s_spill_gc_go && (atomic_load(&s_ip_up) || now >= SPILL_GC_WAIT_MS * 1000LL)) {
+        s_spill_gc_go = true;
+        if (gw_sfspill_gc_pending(&s_spill) > 0) {
+            ESP_LOGI(TAG, "store & forward: %lu file(s) on the card to delete, one step per loop",
+                     (unsigned long)gw_sfspill_gc_pending(&s_spill));
+        }
+    }
+    if (s_spill_gc_go && gw_sfspill_step(&s_spill) && gw_sfspill_gc_pending(&s_spill) == 0 &&
+        s_spill.gc_files != s_spill_gc_logged) {
+        gw_sfcard_stats_t cs;
+        gw_sfcard_get_stats(&cs);
+        ESP_LOGI(TAG, "store & forward: card: %lu file(s) deleted in %lu steps since boot (longest "
+                      "step %lu ms), %lu left for the next boot",
+                 (unsigned long)s_spill.gc_files, (unsigned long)s_spill.gc_steps,
+                 (unsigned long)(cs.op[GW_SFCARD_STEP].max_us / 1000),
+                 (unsigned long)s_spill.gc_left);
+        s_spill_gc_logged = s_spill.gc_files;
+    }
+}
+
 /* Bring the Sparkplug state in line with the flags set by the other tasks. */
 static void reconcile(void)
 {
@@ -1254,6 +1307,7 @@ static void reconcile(void)
                      (unsigned long)s_node->sf_sent, (unsigned long)s_node->sf_discarded);
         }
     }
+    spill_gc_step(now);
     /* SPB-17: periodic diagnostics NDATA (rate limited by sparkplug.diagnostics_s) */
     s_diag_wait_ms = gw_node_diag_tick(s_node, (uint64_t)(esp_timer_get_time() / 1000));
     publish_status();
@@ -1261,7 +1315,8 @@ static void reconcile(void)
 
 static TickType_t next_timeout(void)
 {
-    int64_t ms = s_node->online && gw_sf_count(&s_sf) > 0 ? 10 : MAX_IDLE_MS;
+    int64_t ms = (s_node->online && gw_sf_count(&s_sf) > 0) || spill_gc_wants_time() ? 10
+                                                                                    : MAX_IDLE_MS;
     int64_t now = esp_timer_get_time();
     if (s_sub_msg_id > 0) {
         int64_t r = (s_sub_deadline_us - now) / 1000;
@@ -1402,20 +1457,28 @@ static void setup_spill(size_t ring)
                   "stop the board from booting unless VDD_SPI is fixed in eFuse (README 6.5)");
 #endif
     static gw_sfspill_io_t io;
-    char where[64], why[96];
+    char where[96], why[96];
     if (!gw_sfcard_open(&io, where, sizeof(where), why, sizeof(why))) {
         ESP_LOGE(TAG, "store & forward: %s: the RAM ring overwrites its oldest samples when full",
                  why);
         return;
     }
-    /* segments: 8..128 of them, together within max_kb and using all of it (#119) */
+    /* the file list at boot, then the delete queue (#122): allocated once */
+    uint32_t *work = gw_storage_big_alloc(GW_SFSPILL_LIST_MAX * sizeof(uint32_t),
+                                          "store & forward spill delete queue");
+    if (work == NULL) {
+        return;
+    }
+    /* segments: 8..128 of them, together within max_kb and using all of it (#119), each at
+     * most 128 clusters of the card (#122) */
     uint32_t seg, segs;
-    gw_sfspill_plan(s_cfg->sparkplug.sf_sd_max_kb, &seg, &segs);
+    s_spill_kb = gw_sfspill_plan(s_cfg->sparkplug.sf_sd_max_kb, io.unit, &seg, &segs);
     /* the tag indexes in the records only mean the same with the same devices and tags */
     uint32_t hash = gw_sfspill_fnv(GW_SFSPILL_FNV_INIT, s_cfg->devices,
                                    s_cfg->device_count * sizeof(s_cfg->devices[0]));
     hash = gw_sfspill_fnv(hash, s_cfg->tags, s_cfg->tag_count * sizeof(s_cfg->tags[0]));
-    gw_sfspill_init(&s_spill, &io, seg, segs, hash);
+    gw_sfspill_init(&s_spill, &io, seg, segs, hash, work, GW_SFSPILL_LIST_MAX);
+    s_spill.tick = feed_watchdog;   /* from now on only the Sparkplug task uses the card */
     size_t chunk = ring / 4 < 512 ? ring / 4 : 512;
     gw_sf_attach_spill(&s_sf, &s_spill, chunk);
     s_spill_on = true;
@@ -1423,6 +1486,19 @@ static void setup_spill(size_t ring)
                   "samples kept from before this boot",
              where, (unsigned long)segs, (unsigned long)seg, (unsigned)chunk,
              (unsigned long)s_spill.kept_at_boot);
+    if (s_spill_kb < s_cfg->sparkplug.sf_sd_max_kb) {
+        ESP_LOGW(TAG, "store & forward: the card's %lu B clusters limit the spill to %lu KB of "
+                      "the %lu KB of max_kb (a delete step frees at most %u clusters): format the "
+                      "card with larger clusters (32 KB) to use more",
+                 (unsigned long)io.unit, (unsigned long)s_spill_kb,
+                 (unsigned long)s_cfg->sparkplug.sf_sd_max_kb, GW_SFSPILL_STEP_UNITS);
+    }
+    if (gw_sfspill_gc_pending(&s_spill) > 0) {
+        ESP_LOGI(TAG, "store & forward: %lu file(s) on the card to delete after the boot (%lu "
+                      "samples over max_kb), in steps of at most %lu KB",
+                 (unsigned long)gw_sfspill_gc_pending(&s_spill), (unsigned long)s_spill.trimmed,
+                 (unsigned long)(s_spill.step_bytes / 1024));
+    }
 }
 
 /* SPB-14: the ring, once at boot: large in PSRAM, small in internal RAM without it. */
