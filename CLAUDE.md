@@ -66,6 +66,7 @@ E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh --only ota,https   # subset of 
 #  --only: failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,ota,ota-fw1,ota-park,ota-wiring,
 #          ota-trial,nvs,slow,refuse,main (ota = the four ota-* names; an unknown name is an error)
 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_ci_groups.sh /tmp/gw-groups   # the CI groups: build once, run in parallel
+#  Windows / no local IDF: the same in Docker (idf/tools/e2e/Dockerfile), see docs/how-to/run-e2e-in-docker.md
 #  E2E_STAGE=<dir> (build the images into <dir>, run nothing), E2E_PREBUILT=<dir> (run on them, no build),
 #  PARALLEL=n (groups at the same time); the groups are CI_GROUPS in tools/e2e/scenarios.py
 #  E2E_POISON=1 (heap poisoning, use with --only ota), E2E_PLAIN=0 (skip the no-NVS-encryption build),
