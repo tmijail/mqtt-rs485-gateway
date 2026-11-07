@@ -9,6 +9,7 @@ set(GW_CORE_SRCS
     src/gw_brokersel.c
     src/gw_button.c
     src/gw_buzz.c
+    src/gw_cardfmt.c
     src/gw_cfgdoc.c
     src/gw_config.c
     src/gw_conv.c

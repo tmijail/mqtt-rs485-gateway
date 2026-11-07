@@ -14,6 +14,12 @@
  * bounce buffer for each). Each operation is timed for the board tests (gw_sfcard_get_stats,
  * the shell's `status`).
  *
+ * #139: the card has one owner at a time: the spill (from the boot mount), or a format. The
+ * format runs in a task of its own (created for it, deleted after it), asks the spill to give
+ * the card up first, then starts the SDMMC host and the card itself: it also formats a card that
+ * did not mount, or that the spill does not use. The boot never formats. The card's state and
+ * the format's state are kept here for the shell and /api/status (gw_cardfmt).
+ *
  * GPIO45 is a strapping pin (VDD_SPI voltage): a card whose D0 pull-up holds it high at reset
  * selects 1.8 V for the flash and the board may not boot. Check the schematic before enabling
  * it (README 6.5).
@@ -24,6 +30,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "gw_cardfmt.h"
 #include "gw_sfspill.h"
 
 #ifdef __cplusplus
@@ -56,21 +63,45 @@ typedef struct {
     uint32_t unit;          /* allocation unit (FAT cluster) in bytes, 0 = unknown */
 } gw_sfcard_stats_t;
 
-/** Mount the card (or the stand-in) and fill @p io. @p where names it for the log; on
- *  failure @p why says why. Boot time only. */
+/**
+ * Mount the card (or the stand-in) for the spill and fill @p io. @p where names it for the
+ * log; on failure @p why says why. Boot time only. The spill owns the card from then on:
+ * when a format needs it, gw_sfcard calls @p release (from the format task); the owner must
+ * then stop using the card and call gw_sfcard_close() (#139).
+ */
 bool gw_sfcard_open(gw_sfspill_io_t *io, char *where, size_t where_cap, char *why,
-                    size_t why_cap);
+                    size_t why_cap, void (*release)(void));
 
-/** Close every open file (the spill stopped: before a format). The owner of the card only. */
+/** The owner stops using the card for good (until the restart): every open file is closed
+ *  and the card is free for a format. The owner of the card only. */
 void gw_sfcard_close(void);
 
+/** The boot did not look for the card (the spill did not start before the mount): @p why,
+ *  for the card's state. */
+void gw_sfcard_unchecked(const char *why);
+
 /**
- * #124: format the card as FAT (FAT32 from 2 GB; FAT16 below, where FAT32 cannot be) with
- * 32 KiB clusters. Everything on it is lost. Only after gw_sfcard_close(), with no other card
- * access. False with @p msg saying why when there is no card to format (the QEMU stand-in, no
- * card mounted); else @p msg tells the result.
+ * #139 / #137: start a format of the card in a task of its own, and return at once. The card
+ * becomes FAT32 (FAT16 below 2 GB) with 32 KiB clusters, in one MBR partition; everything on
+ * it is lost. It also formats a card that did not mount (no file system, exFAT, NTFS, ext4,
+ * GPT), and a card that the spill does not use (store_forward.sd off). A spill that uses the
+ * card stops first (the RAM ring goes on). Never automatic: only the shell's and the web
+ * API's confirmed requests call this. STARTED, or why not: a format runs, the build has no
+ * card, there is no PSRAM, no memory for the task. A card that does not answer ends the
+ * format as failed (gw_sfcard_get_format). Restart the gateway to use the card afterwards.
  */
-bool gw_sfcard_format(char *msg, size_t cap);
+gw_cardfmt_answer_t gw_sfcard_format_start(void);
+
+/** CONFIG_GW_IO_SIMULATED only: a format that writes nothing and takes @p ms, through the same
+ *  task, the same release of the spill and the same states (the E2E). */
+gw_cardfmt_answer_t gw_sfcard_format_simulate(uint32_t ms);
+
+/** Copies of the format's state and of the card's state (any task). */
+void gw_sfcard_get_format(gw_cardfmt_t *out);
+void gw_sfcard_get_info(gw_card_info_t *out);
+
+/** The format task's stack: its size and, after a format, the least free since its start (B). */
+void gw_sfcard_format_stack(uint32_t *size, uint32_t *min_free);
 
 /** Copy of the operation times and counters (any task). */
 void gw_sfcard_get_stats(gw_sfcard_stats_t *out);
