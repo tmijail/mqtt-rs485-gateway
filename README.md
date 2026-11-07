@@ -7,5 +7,8 @@ This firmware is an RS485 (Modbus RTU) to MQTT Sparkplug B 3.0 gateway for the W
 - `docs/feasibility-idf.md`: the feasibility of each requirement of the specification with ESP-IDF.
 - `docs/review-idf.md`: an independent review of the MVP, with the open findings.
 - `docs/RECOMMENDATION.md`: the reasons for ESP-IDF and not Zephyr.
+- `docs/how-to/run-e2e-in-docker.md`: how to run the QEMU E2E tests in Docker, also on Windows.
+- `docs/reference/e2e-durations.md`: the measured durations of the E2E tests on a Windows computer.
+- `docs/explanation/e2e-environment.md`: why the E2E tests on Windows run in Docker.
 
 The branches `impl/zephyr` and `comparison/idf-vs-zephyr` keep the alternative Zephyr implementation and the full comparison.
