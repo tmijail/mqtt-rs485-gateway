@@ -25,6 +25,7 @@
 #include "gw_edge.h"
 #include "gw_io.h"
 #include "gw_rtc.h"
+#include "gw_sfcard.h"
 #include "gw_log.h"
 #include "gw_net.h"
 #include "gw_ota.h"
@@ -582,6 +583,46 @@ static esp_err_t restart_post(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ---------- #139: POST /api/card/format?confirm=1 ---------- */
+
+/* The UI's text for the answers that are not "started" (the shell has them in English). */
+static const char *card_answer_es(gw_cardfmt_answer_t a)
+{
+    switch (a) {
+    case GW_CARDFMT_BUSY:
+        return "ya hay un formateo en curso";
+    case GW_CARDFMT_NO_SUPPORT:
+        return "esta compilación no tiene tarjeta microSD (QEMU): no se formateó nada";
+    case GW_CARDFMT_NO_PSRAM:
+        return "el formateo necesita PSRAM y este equipo no la tiene: no se formateó nada";
+    default:
+        return "sin memoria para la tarea de formateo: no se formateó nada";
+    }
+}
+
+/* Same checks as every write (CSRF, then the password); the request must say ?confirm=1 (the
+ * web UI asks the operator to type a word first). The format runs in its own task: the answer
+ * comes at once, and /api/status shows the progress and the result. */
+static esp_err_t card_format_post(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    if (!query_flag(req, "confirm")) {
+        return send_error(req, "400 Bad Request", NULL,
+                          "falta ?confirm=1: el formateo borra todo el contenido de la tarjeta");
+    }
+    gw_cardfmt_answer_t a = gw_sfcard_format_start();
+    if (a == GW_CARDFMT_STARTED) {
+        ESP_LOGW(TAG, "microSD card format requested through the REST API");
+        return send_json(req, "202 Accepted", "{\"ok\":true,\"started\":true}\n");
+    }
+    char body[200];
+    snprintf(body, sizeof(body), "{\"ok\":false,\"error\":\"%s\",\"reason\":\"%s\"}\n",
+             card_answer_es(a), gw_cardfmt_answer_key(a));
+    return send_json(req, gw_cardfmt_answer_http(a), body);
+}
+
 /* ---------- FW-1: /api/firmware ---------- */
 
 static const char *const k_fw_phase[] = {"idle", "downloading", "rebooting", "failed", "trial",
@@ -771,6 +812,64 @@ static void out_str(out_t *o, const char *s)
 
 static gw_tag_value_t s_vals[GW_MAX_TAGS_PER_DEVICE];   /* server task only */
 
+/* "off: why" (the shell's spill line) without its "off: " */
+static const char *spill_why(const char *s)
+{
+    return strncmp(s, "off: ", 5) == 0 ? s + 5 : s;
+}
+
+/* #139: the card, the spill and the format, as optional objects (older clients ignore them).
+ * "spill" only with a configuration (normal mode). Not inlined: its buffers stay off the
+ * stack frame of status_get. */
+static __attribute__((noinline)) void status_card(out_t *o, const gw_config_t *c)
+{
+    char buf[400];
+    gw_card_info_t ci;
+    gw_sfcard_get_info(&ci);
+    gw_card_json(&ci, buf, sizeof(buf));
+    outf(o, ",\"card\":%s", buf);
+    gw_cardfmt_t f;
+    gw_sfcard_get_format(&f);
+    gw_cardfmt_json(&f, now_ms32(), buf, sizeof(buf));
+    outf(o, ",\"card_format\":%s", buf);
+    if (s_ctx.mode != GW_WEB_NORMAL) {
+        return;
+    }
+    gw_edge_status_t es;
+    gw_edge_get_status(&es);
+    if (!c->sparkplug.store_forward || !c->sparkplug.sf_sd) {
+        outf(o, ",\"spill\":{\"state\":\"off\",\"detail\":\"%s\"}",
+             c->sparkplug.store_forward ? "store_forward.sd is off" : "store_forward is off");
+        return;
+    }
+    if (!es.spill_on) {
+        outf(o, ",\"spill\":{\"state\":\"not_started\",\"detail\":");
+        out_str(o, spill_why(es.spill_off));
+        outf(o, "}");
+        return;
+    }
+    if (es.spill_failed) {
+        outf(o, ",\"spill\":{\"state\":\"%s\",\"detail\":",
+             es.spill_released ? "stopped" : "failed");
+        out_str(o, es.spill_off);
+        outf(o, ",\"stranded\":%lu,\"moved\":%lu}", (unsigned long)es.spill_stranded,
+             (unsigned long)es.spilled);
+        return;
+    }
+    outf(o,
+         ",\"spill\":{\"state\":\"on\",\"ready\":%s,\"waiting\":%lu,\"old_format\":%lu,"
+         "\"moved\":%lu,\"overwritten\":%lu,\"holes\":%lu,\"ring_blocks\":%lu,"
+         "\"waiting_blocks\":%lu,\"extents\":%lu,\"kb\":%lu,\"blocks_written\":%lu,"
+         "\"checkpoints\":%lu,\"boot_ms\":%lu,\"files_to_delete\":%lu}",
+         es.spill_ready ? "true" : "false", (unsigned long)es.spill_count,
+         (unsigned long)es.spill_legacy, (unsigned long)es.spilled,
+         (unsigned long)es.spill_dropped, (unsigned long)es.spill_holes,
+         (unsigned long)es.spill_nblocks, (unsigned long)es.spill_waiting_blocks,
+         (unsigned long)es.spill_extents, (unsigned long)es.spill_kb,
+         (unsigned long)es.spill_blocks, (unsigned long)es.spill_checkpoints,
+         (unsigned long)es.spill_boot_ms, (unsigned long)es.spill_gc_pending);
+}
+
 static esp_err_t status_get(httpd_req_t *req)
 {
     if (!authorized(req)) {
@@ -928,9 +1027,10 @@ static esp_err_t status_get(httpd_req_t *req)
          (long long)time(NULL), synced ? "true" : "false",
          synced ? "sntp" : rtc.restored ? "rtc" : "none", rtc.present ? "true" : "false");
     out_str(&o, rtc.present ? gw_rtc_status_str((gw_rtc_status_t)rtc.status) : "not answering");
-    outf(&o, ",\"stores\":%lu}", (unsigned long)rtc.stores);
+    outf(&o, ",\"stores\":%lu}}", (unsigned long)rtc.stores);
+    status_card(&o, c);
     outf(&o,
-         "},\"heap\":{\"internal_free\":%u,\"internal_min\":%u,"
+         ",\"heap\":{\"internal_free\":%u,\"internal_min\":%u,"
          "\"psram_free\":%u}}\n",
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
          (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
@@ -1068,7 +1168,8 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
     static const handler_t h_index = {index_get}, h_favicon = {favicon_get},
                            h_status = {status_get}, h_config_get = {config_get},
                            h_config_put = {config_put}, h_restart = {restart_post},
-                           h_fw_get = {firmware_get}, h_fw_post = {firmware_post};
+                           h_fw_get = {firmware_get}, h_fw_post = {firmware_post},
+                           h_card_format = {card_format_post};
     static const struct {
         const char *uri;
         httpd_method_t method;
@@ -1083,6 +1184,7 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         {"/api/restart", HTTP_POST, &h_restart},
         {"/api/firmware", HTTP_GET, &h_fw_get},     /* FW-1 */
         {"/api/firmware", HTTP_POST, &h_fw_post},
+        {"/api/card/format", HTTP_POST, &h_card_format},   /* #139 */
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         const httpd_uri_t u = {.uri = uris[i].uri, .method = uris[i].method, .handler = guarded,

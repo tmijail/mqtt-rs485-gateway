@@ -44,6 +44,7 @@ typedef struct {
     uint32_t spilled;        /* records ever moved to the card */
     uint32_t spill_dropped;  /* records overwritten on the card unsent (card full) */
     bool spill_failed;       /* the card failed: spill stopped */
+    bool spill_released;     /* #139: of it, stopped because a format took the card */
     uint32_t spill_stranded; /* #134: records left on the card by the failure */
     uint32_t spill_holes;    /* invalid blocks met in the data: lost, not replayed */
     uint32_t spill_blocks;   /* blocks written since boot */
@@ -85,15 +86,6 @@ bool gw_edge_time_synced(void);
 void gw_edge_notify_device(uint16_t dev);
 void gw_edge_notify_io(void);
 void gw_edge_notify_write_done(uint16_t tag, bool ok);
-
-/**
- * #124 (shell): format the microSD card as FAT (FAT32 from 2 GB) with 32 KiB clusters. The
- * Sparkplug task first stops the spill and closes its files (the RAM ring goes on); the format
- * runs in the caller's task and can take a minute. False, with @p msg saying why, when there is
- * no card to format (the QEMU stand-in, no card mounted). The card is used again after a
- * restart.
- */
-bool gw_edge_card_format(char *msg, size_t cap);
 
 /** Orderly restart from another task (new configuration, REST API, shell): the Sparkplug task
  *  publishes NDEATH and disconnects first when a session is up, then restarts. */

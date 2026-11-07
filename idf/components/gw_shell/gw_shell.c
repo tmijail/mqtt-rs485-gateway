@@ -198,6 +198,23 @@ static void status_card(uint32_t max_unfed_ms)
         (unsigned long)max_unfed_ms);
 }
 
+/* #139: the card's state and, once one was asked for, the format's. */
+static void status_sdcard(bool always_format)
+{
+    gw_card_info_t c;
+    gw_cardfmt_t f;
+    gw_sfcard_get_info(&c);
+    gw_sfcard_get_format(&f);
+    char line[200];
+    gw_card_text(&c, line, sizeof(line));
+    out("sdcard   %s\n", line);
+    if (always_format || f.phase != GW_CARDFMT_IDLE) {
+        uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+        gw_cardfmt_text(&f, now, line, sizeof(line));
+        out("format   %s\n", line);
+    }
+}
+
 static int cmd_status(int argc, char **argv)
 {
     (void)argc;
@@ -305,6 +322,7 @@ static int cmd_status(int argc, char **argv)
                 es.waiting_host ? ", NBIRTH waits for it" : "");
         }
     }
+    status_sdcard(false);
     gw_net_if_status_t ifs[GW_NET_IF_COUNT];
     gw_net_get_status(ifs);
     static const char *const names[GW_NET_IF_COUNT] = {"ethernet", "wifi"};
@@ -896,16 +914,32 @@ static int cmd_restart(int argc, char **argv)
     return 0;
 }
 
-/* #124: 'card' shows the card's operation times; 'card format confirm' formats it (FAT32, 32 KiB
- * clusters). Never automatic, and the word "confirm" is part of the command. */
+/* #124: 'card' shows the card's operation times and state; 'card format confirm' formats it
+ * (FAT32, 32 KiB clusters). Never automatic, and the word "confirm" is part of the command.
+ * #139/#137: the format runs in a task of its own; the command only starts it. */
 static int cmd_card(int argc, char **argv)
 {
     if (argc == 1) {
         gw_edge_status_t es;
         gw_edge_get_status(&es);
         status_card(es.max_unfed_ms);
+        status_sdcard(true);
         return 0;
     }
+#if CONFIG_GW_IO_SIMULATED
+    /* emulator only: the same task, release of the spill and states, but nothing written */
+    if (argc == 4 && strcmp(argv[1], "format") == 0 && strcmp(argv[2], "simulate") == 0) {
+        long ms = strtol(argv[3], NULL, 10);
+        if (ms < 1 || ms > 600000) {
+            out("usage: card format simulate <1-600000 ms>\n");
+            return 1;
+        }
+        gw_cardfmt_answer_t a = gw_sfcard_format_simulate((uint32_t)ms);
+        out("card format: %s%s (simulated: nothing is written)\n",
+            a == GW_CARDFMT_STARTED ? "" : "REFUSED: ", gw_cardfmt_answer_text(a));
+        return a == GW_CARDFMT_STARTED ? 0 : 1;
+    }
+#endif
     if (strcmp(argv[1], "format") != 0 || argc > 3 ||
         (argc == 3 && strcmp(argv[2], "confirm") != 0)) {
         out("usage: card [format [confirm]]\n");
@@ -913,15 +947,15 @@ static int cmd_card(int argc, char **argv)
     }
     if (argc == 2) {
         out("card format: this deletes everything on the microSD card (also the data waiting "
-            "there) and formats it as FAT32 with 32 KB clusters. To do it: card format confirm\n");
+            "there) and formats it as FAT32 with 32 KB clusters, also a card that does not "
+            "mount (exFAT, NTFS, no format). The card is only for the gateway. To do it: card "
+            "format confirm\n");
         return 1;
     }
-    out("card format: stopping the spill, then formatting (a large card can take a minute)\n");
-    out_flush();
-    char msg[160];
-    bool ok = gw_edge_card_format(msg, sizeof(msg));
-    out("card format: %s%s\n", ok ? "" : "REFUSED: ", msg);
-    return ok ? 0 : 1;
+    gw_cardfmt_answer_t a = gw_sfcard_format_start();
+    out("card format: %s%s\n", a == GW_CARDFMT_STARTED ? "" : "REFUSED: ",
+        gw_cardfmt_answer_text(a));
+    return a == GW_CARDFMT_STARTED ? 0 : 1;
 }
 
 static int cmd_rebirth(int argc, char **argv)
@@ -1185,8 +1219,13 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
         {.command = "restart", .help = "Orderly restart (NDEATH first)", .func = cmd_restart_atomic},
         {.command = "rebirth", .help = "Re-issue NBIRTH and every DBIRTH", .func = cmd_rebirth_atomic},
-        {.command = "card", .help = "microSD card: its operation times; 'format confirm' formats "
-         "it as FAT32 with 32 KB clusters (everything on it is lost)",
+        {.command = "card", .help = "microSD card: its state and operation times; 'format "
+         "confirm' formats it as FAT32 with 32 KB clusters in the background (everything on it "
+         "is lost; restart afterwards)"
+#if CONFIG_GW_IO_SIMULATED
+         "; emulator only: 'format simulate <ms>' writes nothing"
+#endif
+         ,
          .hint = "[format [confirm]]", .func = cmd_card_atomic},
         {.command = "mbread", .help = "One Modbus read through the bus owner",
          .hint = "<unit> <coil|discrete|holding|input> <address> [count]", .func = cmd_mbread_atomic},

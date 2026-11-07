@@ -42,6 +42,8 @@ td input,td select{width:100%;margin:0;padding:3px 4px}
  <div class="card"><h2>Firmware</h2><div id="st-fw" class="mut"></div>
   <div class="row"><input id="fw-url" placeholder="https://servidor/rs485_spb_gateway.bin" size="40"><button id="fw-get">Descargar e instalar</button></div>
   <div class="row"><label class="row" style="flex-direction:row">Subir imagen <input type="file" id="fw-file" accept=".bin,application/octet-stream"></label></div></div>
+ <div class="card"><h2>Tarjeta microSD</h2><div id="st-sd" class="mut"></div>
+  <div class="row"><button id="sd-fmt">Formatear tarjeta</button><button id="sd-rst" class="hidden">Reiniciar ahora</button></div><div id="sd-msg" class="mut"></div></div>
 </section>
 
 <section id="tab-config" class="hidden">
@@ -165,9 +167,25 @@ async function poll(){
   `<br>Contadores: ${io.counters.map((c,i)=>`${i+1}: ${c}`).join(" · ")}`+
   `<br>Buzzer: ${s.buzzer.alarm==="none"?"en silencio":`<span class="bad">${AL[s.buzzer.alarm]}</span>`} (alarmas: ${s.buzzer.enabled.map(a=>AL[a]).join(", ")||"ninguna"})`+
   `<br>Hora: ${new Date(s.time.utc_s*1000).toISOString()} · ${s.time.synced?yes(true,"sincronizada por SNTP",""):s.time.source==="rtc"?"del RTC (sin sincronizar)":`<span class="bad">sin hora válida</span>`} · RTC ${esc(s.time.rtc.status)}`;
+ sd(s);
  const f=await api("GET","/api/firmware");if(f.status!==200||!f.json)return;const w=f.json;
  $("#st-fw").innerHTML=`${esc(w.running)} en ${esc(w.slot)} · otra partición: ${esc(w.other||"vacía")}${w.enabled?"":" · actualizaciones deshabilitadas (ota.enabled)"}<br>${esc(w.detail)}${w.phase==="downloading"?` (${w.progress} %)`:w.phase==="trial"?` (${w.trial_left_s} s)`:""}`;
 }
+const CS={unsupported:"sin soporte en esta compilación",unchecked:"sin revisar",absent:"no hay tarjeta",not_mounted:"no se puede montar",mounted:"montada",formatting:"formateando",formatted:"formateada"},SP={off:"apagado",not_started:"no arrancó",on:"activo",failed:"FALLÓ",stopped:"detenido"};
+let sdc={};
+const mb=v=>v>=10240?`${(v/1024).toFixed(1)} GB`:`${v} MB`;
+function sd(s){const c=s.card||{},p=s.spill,f=s.card_format||{};sdc=c;
+ let h=`Tarjeta: <b>${CS[c.state]||esc(c.state||"?")}</b>${c.name?` · ${esc(c.name)}`:""}${c.size_mb?` · ${mb(c.size_mb)}`:""}${c.fat?` · ${c.fat}, clúster ${c.cluster/1024} KB`:""}${c.free_mb!=null?` · libre ${mb(c.free_mb)}`:""}${c.detail?` · ${esc(c.detail)}`:""}`;
+ if(p)h+=`<br>Volcado del store &amp; forward: ${SP[p.state]||esc(p.state)}${p.detail?` · ${esc(p.detail)}`:""}${p.state==="on"?` · ${p.waiting} muestras en la tarjeta${p.ready?"":" (leyendo la tarjeta)"}, ${p.overwritten} sobrescritas sin enviar, ${p.holes} bloques perdidos`:""}${p.stranded?` · ${p.stranded} muestras quedan en la tarjeta`:""}`;
+ const t={running:`formateando… ${f.elapsed_s} s`,done:`<span class="ok">terminado en ${f.duration_s} s: ${esc(f.fat)}, clúster ${f.cluster/1024} KB, ${mb(f.size_mb)}. Reinicie el equipo para usar la tarjeta.</span>`,failed:`<span class="bad">falló tras ${f.duration_s} s: ${esc(f.error||"")}</span>`}[f.state];
+ if(t)h+=`<br>Formateo${f.simulated?" (simulado)":""}: ${t}`;
+ $("#st-sd").innerHTML=h;$("#sd-fmt").disabled=f.state==="running";$("#sd-rst").classList.toggle("hidden",f.state!=="done");
+}
+function sdmsg(t,c){const m=$("#sd-msg");m.textContent=t;m.className=c||"mut"}
+$("#sd-fmt").onclick=async()=>{const n=sdc.other_entries>0?`\nLa tarjeta tiene ${sdc.other_entries} archivos o carpetas que no son del gateway: también se borran.`:"";
+ if(prompt(`Formatear la tarjeta microSD borra TODO su contenido, también las muestras que esperan su envío.${n}\nLa tarjeta es solo para el gateway. Después reinicie el equipo.\nEscriba FORMATEAR para confirmar:`)!=="FORMATEAR"){sdmsg("No se formateó: falta la confirmación.");return}
+ const r=await api("POST","/api/card/format?confirm=1");sdmsg(r.status===202?"Formateo iniciado: el estado se actualiza arriba.":`No se formateó (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};
+$("#sd-rst").onclick=async()=>{if(!confirm("¿Reiniciar el equipo?"))return;const r=await api("POST","/api/restart");sdmsg(r.status===202?"Reiniciando…":`No se reinició (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"":"bad")};
 $("#fw-get").onclick=async()=>{const u=$("#fw-url").value.trim();if(!u)return;const r=await api("POST","/api/firmware",JSON.stringify({url:u}));msg(r.status===202?"Descarga iniciada: el equipo se reinicia al terminar.":`No se inició (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};
 $("#fw-file").onchange=async e=>{const f=e.target.files[0];if(!f||!confirm(`¿Instalar ${f.name} (${f.size} B) y reiniciar?`))return;msg("Subiendo…");let r;try{r=await fetch("/api/firmware",{method:"POST",headers:{"Content-Type":"application/octet-stream","X-Requested-With":"gateway"},body:f})}catch(x){const w=(await api("GET","/api/firmware")).json;msg(`Subida interrumpida (${x.message})`+(w&&w.detail?`: ${w.detail}`:""),"bad");return}let j=null;try{j=await r.json()}catch(x){}msg(r.status===200?"Imagen instalada: reiniciando en la nueva versión.":`Rechazada (${r.status}): ${(j||{}).error||""}`,r.status===200?"ok":"bad")};
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>show(b.dataset.tab));

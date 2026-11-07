@@ -2394,6 +2394,100 @@ def bulk0_history(nb, node):
     return [mm.int_value for mm in hist], [mm.timestamp for mm in hist]
 
 
+CARD_STACK_MIN_B = 1024   # #139: the format task's stack never used, at least (of 5120 B)
+
+
+def check_card_web(gw, since, psram, auth):
+    """Issue #139 (GW23; QEMU has no microSD card): POST /api/card/format goes through the same
+    checks as every write: no credentials -> 401, no X-Requested-With or another Origin -> 403
+    (before the password check), no ?confirm=1 -> 400; with all of them, the clear refusal of a
+    build without a card (501, reason "no_support") and nothing changes. /api/status has the
+    optional card, spill and card_format objects (without PSRAM: the spill does not start, and
+    why), and the page has the microSD section with its format button."""
+    path = "/api/card/format?confirm=1"
+    codes = {
+        "no credentials": http("POST", path, b"", auth=None)[0],
+        "no X-Requested-With": http("POST", path, b"", auth=auth, headers={"X-Requested-With": None})[0],
+        "other Origin": http("POST", path, b"", auth=auth, headers={"Origin": "https://evil.e2e"})[0],
+        "no confirm": http("POST", "/api/card/format", b"", auth=auth)[0],
+    }
+    st, _, body = http("POST", path, b"", auth=auth)
+    ans = as_json(body) or {}
+    st_s, _, b_s = http("GET", "/api/status", auth=auth)
+    status = as_json(b_s) or {}
+    card, spill, fmt = (status.get(k) or {} for k in ("card", "spill", "card_format"))
+    want_spill = (spill == {"state": "not_started", "detail": "it needs PSRAM, and none was detected"}
+                  if not psram else spill.get("state") == "on" and "waiting" in spill)
+    st_p, _, page = http("GET", "/", auth=auth)
+    ui = all(x.encode() in page for x in ("<h2>Tarjeta microSD</h2>", ">Formatear tarjeta<",
+                                          '"/api/card/format?confirm=1"', '"FORMATEAR"'))
+    requested = gw.find(r"card format requested", since)
+    check("Issue #139 POST /api/card/format: the same Basic auth and CSRF checks as every write "
+          "(401, 403 before the password, 400 without ?confirm=1); in QEMU the clear refusal "
+          "of a build without a card (501, no_support) and nothing changes",
+          codes == {"no credentials": 401, "no X-Requested-With": 403, "other Origin": 403,
+                    "no confirm": 400}
+          and st == 501 and ans.get("reason") == "no_support" and ans.get("ok") is False
+          and "no tiene tarjeta microSD" in ans.get("error", "") and fmt == {"state": "idle"}
+          and not requested,
+          ", ".join(f"{k} -> {v}" for k, v in codes.items()) + f"; confirmed -> {st} {ans}; "
+          f"card_format {fmt}; format requests in the log {len(requested)}")
+    check(f"Issue #139 /api/status has the card, spill and card_format objects ("
+          f"{'PSRAM: the spill is on' if psram else 'no PSRAM: the spill does not start, and why'})"
+          f", and the web UI has the microSD section, its format button and its confirmation",
+          st_s == 200 and card.get("state") == "unsupported" and "LittleFS" in card.get("detail", "")
+          and want_spill and fmt == {"state": "idle"} and st_p == 200 and ui,
+          f"/api/status {st_s}: card {card}, spill {spill}, card_format {fmt}; page {st_p} "
+          f"{len(page)} B, section and button {ui}")
+
+
+def check_card_simulated(gw, spill_on, auth):
+    """Issues #139/#137 (emulator only: 'card format simulate', which writes nothing): the shell
+    only starts the format task and returns; while it runs, a second request is refused (409
+    busy) and /api/status and the shell 'card' show it running; with the spill on, the Sparkplug
+    task first stops the spill and gives the card up. Then the result, the restart prompt, and
+    the task's stack margin."""
+    asked = time.monotonic()
+    gw.console("card format simulate 5000")
+    started = gw.wait_log(r"^card format: started in the background .*\(simulated: nothing is "
+                          r"written\)", 5, asked)
+    st409, _, b409 = http("POST", "/api/card/format?confirm=1", b"", auth=auth)
+    busy = as_json(b409) or {}
+    _, _, b_run = http("GET", "/api/status", auth=auth)
+    run = (as_json(b_run) or {}).get("card_format") or {}
+    _, h = gw.shell("card", [r"^format\s+running for \d+ s \(simulated: nothing written\)"])
+    shell_run = list(h.values())[0]
+    done = gw.wait_log(r"card format: done in \d+ s \(simulated: nothing written\): FAT32, 32768 B "
+                       r"clusters, 0 MB; restart the gateway to use the card \(format task: \d+ "
+                       r"of 5120 B of stack never used\)", 40, asked)
+    line = (gw.find(r"card format: done in", asked) or [""])[0]
+    m = re.search(r"format task: (\d+) of", line)
+    stack_free = int(m.group(1)) if m else 0
+    _, _, b_end = http("GET", "/api/status", auth=auth)
+    end = as_json(b_end) or {}
+    efmt, espill = end.get("card_format") or {}, end.get("spill") or {}
+    asked2, h2 = gw.shell("status", [r"^format\s+done in \d+ s \(simulated"])
+    stopping = gw.find(r"card format: the spill uses the card: the Sparkplug task stops it first",
+                       asked)
+    released = gw.find(r"store & forward: the card is released for a format", asked)
+    spill_ok = (stopping and released and espill.get("state") == "stopped"
+                and "formatted" in espill.get("detail", "")) if spill_on \
+        else not stopping and not released
+    check(f"Issues #139/#137 the format runs in its own task: the shell starts it and returns; "
+          f"while it runs a second request gets 409 (busy) and /api/status and 'card' show it "
+          f"running; "
+          f"{'the Sparkplug task stops the spill and gives the card up first; ' if spill_on else ''}"
+          f"then done with the restart prompt, and >= {CARD_STACK_MIN_B} B of the task's stack "
+          f"never used",
+          started and st409 == 409 and busy.get("reason") == "busy" and run.get("state") == "running"
+          and run.get("simulated") is True and "elapsed_s" in run and shell_run and done
+          and efmt.get("state") == "done" and efmt.get("restart") is True
+          and all(h2.values()) and spill_ok and stack_free >= CARD_STACK_MIN_B,
+          f"409 {busy}; running {run}; {line or 'not done'}; after: {efmt}, spill {espill}; "
+          f"stop {len(stopping)}, released {len(released)}")
+
+
+
 def run_store_forward_spill(args, work, slave):
     """SPB-14 spill (GW23) with store_forward.sd enabled. QEMU has no SDMMC: the build puts the
     "card" in a LittleFS directory (CONFIG_GW_SF_SPILL_LITTLEFS), whose 32 B "clusters" make
@@ -2412,7 +2506,10 @@ def run_store_forward_spill(args, work, slave):
       4. A new image with two segments of the step 1 format of this configuration (its hash
          from the boot log): they are replayed once, oldest first, and deleted in steps.
     Both variants: 'card format' asks for 'confirm', and 'card format confirm' refuses
-    cleanly (no card in QEMU); the Sparkplug task keeps its stack margin."""
+    cleanly (no card in QEMU); the Sparkplug task keeps its stack margin. Issue #139: the web
+    API's checks and refusal, the status objects and the page (check_card_web), and the
+    format task with a simulated format (check_card_simulated: in the PSRAM variant at the end,
+    with the spill on)."""
     node, port = "GW23", MQTT_PORT + 11
     relay = Relay(port, MQTT_PORT)
     obs = Observer()
@@ -2427,6 +2524,11 @@ def run_store_forward_spill(args, work, slave):
               r"^card format: REFUSED: this build has no microSD card")
     asked_f, hf = gw.shell(["card format", "card format confirm"], list(fmt_rx))
     fmt_ok = all(hf.values())
+    # #139: no web password in this configuration (its migration to NVS would format LittleFS,
+    # and the old files with it): the commissioning password
+    web = ("admin", commissioning_password(gw, t0) or "?")
+    wait_http("/api/status", 20, auth=web)
+    check_card_web(gw, t0, args.psram, web)
     if not args.psram:
         refused = gw.find(r"store & forward: microSD spill not started: it needs PSRAM, and none "
                           r"was detected", t0)
@@ -2435,6 +2537,7 @@ def run_store_forward_spill(args, work, slave):
         line, stack_line = spill_line(gw, asked), spill_line(gw, asked, r"^stack\s+sparkplug \d+ ")
         free = re.search(r"sparkplug (\d+)", stack_line)
         card_used = gw.find(r"sfcard|spill to LittleFS|card ready", t0)
+        check_card_simulated(gw, spill_on=False, auth=web)
         gw.kill()
         obs.wait(f"{T}/NDEATH/{node}", 5)
         obs.close()
@@ -2576,6 +2679,7 @@ def run_store_forward_spill(args, work, slave):
         asked4, _ = gw3.shell("status", [mig_rx], timeout=2, tries=1)
         mig_line = spill_line(gw3, asked4, mig_rx)
     reg3, ts3 = bulk0_history(nb4, node)
+    check_card_simulated(gw3, spill_on=True, auth=("admin", commissioning_password(gw3, t3) or "?"))
     old_vals = [v for v in reg3 if v >= 7000]
     gw3.kill()
     obs.wait(f"{T}/NDEATH/{node}", 5)

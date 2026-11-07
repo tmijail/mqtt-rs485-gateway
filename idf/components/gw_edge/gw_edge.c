@@ -175,7 +175,7 @@ static bool s_spill_go;         /* #124: the card work may run (the network is u
                                    after the boot): the recovery is not in app_main */
 static bool s_spill_ready_logged, s_spill_fail_logged;
 static uint32_t s_spill_gc_logged; /* gc_files at the last "deleted" log line */
-static atomic_bool s_card_release; /* #124: the shell formats the card: stop using it */
+static atomic_bool s_card_release; /* #124/#139: a format needs the card: stop using it */
 static atomic_bool s_card_released;
 static bool s_stable;           /* the current session lasted stable_ms(): it counts as working */
 static char s_client_if[8];     /* interface the client was bound to ("" = one interface) */
@@ -248,23 +248,12 @@ void gw_edge_notify_write_done(uint16_t tag, bool ok)
     }
 }
 
-bool gw_edge_card_format(char *msg, size_t cap)
+/* #139: the format task needs the card (gw_sfcard): the Sparkplug task stops the spill at its
+ * next pass, between two card operations, and gives the card up (spill_step). */
+static void release_card(void)
 {
-#if CONFIG_GW_SF_SPILL_SDMMC
-    if (s_spill_on) {
-        atomic_store(&s_card_release, true);
-        wake();
-        for (int i = 0; i < 100 && !atomic_load(&s_card_released); i++) {
-            vTaskDelay(pdMS_TO_TICKS(50));
-        }
-        if (!atomic_load(&s_card_released)) {
-            snprintf(msg, cap, "the Sparkplug task did not release the card in 5 s: nothing "
-                               "formatted");
-            return false;
-        }
-    }
-#endif
-    return gw_sfcard_format(msg, cap);
+    atomic_store(&s_card_release, true);
+    wake();
 }
 
 void gw_edge_request_restart(void)
@@ -747,6 +736,7 @@ static void publish_status(void)
     if (sp != NULL) {
         s_st.spill_ready = sp->phase == GW_SFSPILL_READY;
         s_st.spill_failed = !sp->ok;
+        s_st.spill_released = atomic_load(&s_card_released);
         s_st.spill_count = (uint32_t)gw_sfspill_waiting(sp);
         s_st.spill_legacy = (uint32_t)sp->leg_count;
         s_st.spill_dropped = sp->dropped;
@@ -1195,7 +1185,7 @@ static __attribute__((noinline)) void spill_step(int64_t now)
         return;
     }
     if (atomic_load(&s_card_release) && !atomic_load(&s_card_released)) {
-        /* the shell formats the card: the spill stops for good (until the restart) */
+        /* a format needs the card: the spill stops for good (until the restart) */
         spill_checkpoint();
         gw_sfspill_stop(s_spill, "stopped: the card was formatted");
         gw_sfcard_close();
@@ -1535,6 +1525,8 @@ static void setup_spill(void)
 {
     if (!s_sf_psram) {
         snprintf(s_spill_off, sizeof(s_spill_off), "off: it needs PSRAM, and none was detected");
+        gw_sfcard_unchecked("the spill needs PSRAM, and none was detected: the boot did not "
+                            "look for a card");
         ESP_LOGW(TAG, "store & forward: microSD spill not started: it needs PSRAM, and none was "
                       "detected; the RAM ring overwrites its oldest samples when full");
         return;
@@ -1546,7 +1538,7 @@ static void setup_spill(void)
 #endif
     static gw_sfspill_io_t io;
     char where[96], why[80];
-    if (!gw_sfcard_open(&io, where, sizeof(where), why, sizeof(why))) {
+    if (!gw_sfcard_open(&io, where, sizeof(where), why, sizeof(why), release_card)) {
         snprintf(s_spill_off, sizeof(s_spill_off), "off: %s", why);
         ESP_LOGE(TAG, "store & forward: %s: the RAM ring overwrites its oldest samples when full",
                  why);
@@ -1559,6 +1551,7 @@ static void setup_spill(void)
                                 : NULL;
     if (mem == NULL) {
         snprintf(s_spill_off, sizeof(s_spill_off), "off: no memory for its buffers");
+        gw_sfcard_close();   /* the card is free for a format */
         return;
     }
     /* extents of min(4 MiB, 128 clusters) of the card, at most 1024 of them */
@@ -1579,8 +1572,8 @@ static void setup_spill(void)
              (unsigned long)(ext_blocks * GW_SFSPILL_BLOCK / 1024), (unsigned long)hash);
     if (s_spill_kb < s_cfg->sparkplug.sf_sd_max_kb) {
         ESP_LOGW(TAG, "store & forward: the ring uses %lu KB of the %lu KB of max_kb: at most %u "
-                      "extents of %lu clusters of %lu B; format the card with 32 KB clusters "
-                      "(shell: card format confirm) to use more",
+                      "extents of %lu clusters of %lu B; format the card with the gateway (web "
+                      "UI, or shell: card format confirm) to use more",
                  (unsigned long)s_spill_kb, (unsigned long)s_cfg->sparkplug.sf_sd_max_kb,
                  GW_SFSPILL_MAX_EXTENTS, (unsigned long)(io.unit ? ext_blocks * GW_SFSPILL_BLOCK / io.unit : 0),
                  (unsigned long)io.unit);
