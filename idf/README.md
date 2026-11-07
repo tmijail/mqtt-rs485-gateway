@@ -1006,10 +1006,10 @@ The table does not have a row for each check. These checks are in the result par
 
 `idf.py set-target esp32s3 build`: **0 warnings in the full build** (1219 targets). During the configuration, IDF v6.1 prints 5 CMake warnings of its own (`component_validation.cmake`: private directories of `esp_wifi` that `wpa_supplicant` uses). These warnings occur in the two builds. They do not come from the project or from the compiler. `tools/check_production.sh` also fails on a `CMake Warning`, but not on these. It accepts only the IDF `component_validation.cmake` warnings about directories in `$IDF_PATH/components`.
 
-The production build (`sdkconfig.defaults;sdkconfig.production`, §3.5 and §3.7) also has 0 warnings: 1222 targets, and an image of 1 485 940 B (not signed). `tools/sign_firmware.sh --test-key` signs and verifies the bootloader and the app. `tools/check_production.sh` (issue #95, also in the CI) does all of this. It also checks these limits:
+The production build (`sdkconfig.defaults;sdkconfig.production`, §3.5 and §3.7) also has 0 warnings: 1222 targets, and an image of 1 517 508 B (not signed; measured with #145). `tools/sign_firmware.sh --test-key` signs and verifies the bootloader and the app. `tools/check_production.sh` (issue #95, also in the CI) does all of this. It also checks these limits:
 
 - The signed bootloader has 40 960 B. It ends 24 576 B before the partition table at 0x10000.
-- The signed app has 1 511 424 B. This is 36.0 % of `ota_0` and of `ota_1` (4 MB each).
+- The signed app has 1 576 960 B. This is 37.6 % of `ota_0` and of `ota_1` (4 MB each).
 
 The components of the project compile with `-Wall -Wextra -Werror`.
 

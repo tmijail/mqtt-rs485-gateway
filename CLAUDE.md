@@ -44,7 +44,7 @@ When the product owner says that the first gateway is installed, tag that commit
 The host tests and the decode check run from the repo root. The firmware commands are run from `idf/`, after `. $IDF_PATH/export.sh`.
 
 ```bash
-# Host tests (pure C, no IDF): 25 Unity suites + sdkconfig checks, -Werror
+# Host tests (pure C, no IDF): 27 Unity suites + sdkconfig and guard checks, -Werror
 cmake -S idf/test/host -B build-host && cmake --build build-host -j && ctest --test-dir build-host --output-on-failure
 ctest --test-dir build-host -R test_poll      # one suite; or run build-host/test_poll directly
 
