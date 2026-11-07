@@ -167,6 +167,8 @@ typedef struct {
     char key_file[GW_FILE_SIZE];      /* its private key (PEM, unencrypted); with cert_file */
 } gw_tls_cfg_t;
 
+/* A new field here or in gw_device_cfg_t: decide whether the store & forward hash covers it
+ * (gw_sfcfg.c, #145; its guard fails the build until then). */
 typedef struct {
     char name[GW_NAME_SIZE];
     gw_area_t area;

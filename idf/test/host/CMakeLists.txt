@@ -41,7 +41,7 @@ enable_testing()
 foreach(t test_mb_rtu test_mb_master test_conv test_logic test_config test_plan test_spb test_node
           test_poll test_dout test_netsel test_syslog test_auth test_cfgdoc test_button
           test_brokersel test_phost test_sf test_authlimit test_mbap test_localio test_buzz test_rtc
-          test_ota test_nvsraw test_cardfmt)
+          test_ota test_nvsraw test_cardfmt test_sfcfg)
     add_executable(${t} ${t}.c support.c)
     target_link_libraries(${t} PRIVATE gw_core unity)
     target_include_directories(${t} PRIVATE ${CMAKE_CURRENT_LIST_DIR})
@@ -51,6 +51,35 @@ foreach(t test_mb_rtu test_mb_master test_conv test_logic test_config test_plan 
         GW_SPEC_EXAMPLE="${CMAKE_CURRENT_LIST_DIR}/spec_example.json")
     add_test(NAME ${t} COMMAND ${t})
 endforeach()
+
+# Issue #145: the configuration hash of the spill does not depend on the C layout. The same
+# suite again with every structure of the code under test packed and 1-byte enums (other sizes
+# and offsets): the same golden value. cJSON and the sources that share structures with
+# gw_config.c are compiled into it with the same flags; the rest comes from gw_core.
+add_executable(test_sfcfg_packed test_sfcfg.c ${cjson_SOURCE_DIR}/cJSON.c
+               ${IDF_PROJECT_DIR}/components/gw_core/src/gw_sfcfg.c
+               ${IDF_PROJECT_DIR}/components/gw_core/src/gw_config.c
+               ${IDF_PROJECT_DIR}/components/gw_core/src/gw_conv.c
+               ${IDF_PROJECT_DIR}/components/gw_core/src/gw_sfspill.c
+               ${IDF_PROJECT_DIR}/components/gw_core/port/gw_port_posix.c)
+target_link_libraries(test_sfcfg_packed PRIVATE gw_core unity)
+target_include_directories(test_sfcfg_packed PRIVATE ${CMAKE_CURRENT_LIST_DIR} ${cjson_SOURCE_DIR}
+                           ${IDF_PROJECT_DIR}/components/gw_core/proto)
+target_compile_options(test_sfcfg_packed PRIVATE -Wall -Wextra -Werror -fpack-struct -fshort-enums
+                       -Wno-address-of-packed-member)
+target_compile_definitions(test_sfcfg_packed PRIVATE GW_SFCFG_PACKED)
+add_test(NAME test_sfcfg_packed COMMAND test_sfcfg_packed)
+
+# Issue #145: the guard next to the canonical list fails the build when a field is added to
+# gw_tag_cfg_t (a positional initializer one short, as after a new field, with the flags of
+# gw_core). The firmware compiles gw_core with -Wall -Wextra -Werror too.
+add_test(NAME sfcfg_guard
+         COMMAND ${CMAKE_C_COMPILER} -std=c11 -fsyntax-only -Wall -Wextra -Werror
+                 -DGW_SFCFG_GUARD_SELFTEST -I${IDF_PROJECT_DIR}/components/gw_core/include
+                 -I${cjson_SOURCE_DIR} -I${IDF_PROJECT_DIR}/components/nanopb
+                 ${IDF_PROJECT_DIR}/components/gw_core/src/gw_sfcfg.c)
+set_tests_properties(sfcfg_guard PROPERTIES
+                     PASS_REGULAR_EXPRESSION "error: missing initializer for field .eng_high.")
 
 # Writes representative Sparkplug payloads for the interoperability check
 # (tools/spb_decode.py, decoded with the official proto and Python protobuf).

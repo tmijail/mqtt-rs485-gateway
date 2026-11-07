@@ -22,8 +22,10 @@
  *    GW_SFSPILL_HOLES_MAX invalid blocks as holes (counted as lost, never replayed); with no valid
  *    superblock, the nonce comes from the first block of each extent (a vote) and the head from a
  *    scan after the newest of them.
- *  - A configuration (devices, tags) or geometry (max_kb, cluster size) change writes a new
- *    superblock with a new nonce: the old blocks are invalid at once, no file is deleted for it.
+ *  - A configuration change that changes gw_sfspill_cfg_hash() (what a record means on replay:
+ *    the node and device names, templates, tag order, names and datatypes; #145) or a geometry
+ *    (max_kb, cluster size) change writes a new superblock with a new nonce: the old blocks are
+ *    invalid at once, no file is deleted for it.
  *    Extents beyond the new ring are deleted one per step.
  *  - Card full while the ring is allocated the first time: the ring stops at the extents it
  *    has (a new superblock, the same nonce: every block written so far stays valid).
@@ -47,6 +49,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "gw_config.h"
 #include "gw_sf.h"
 
 #ifdef __cplusplus
@@ -101,7 +104,7 @@ typedef struct {
     uint16_t version;        /* GW_SFSPILL_VERSION2 */
     uint16_t rec_size;       /* sizeof(gw_sf_rec_t) */
     uint32_t nonce;          /* of the ring instance */
-    uint32_t cfg_hash;       /* devices and tags */
+    uint32_t cfg_hash;       /* gw_sfspill_cfg_hash() (#145) */
     uint64_t seq;            /* block number since the ring began; position = seq mod N */
     uint16_t nrec;           /* 1 .. GW_SFSPILL_BLK_RECS */
     uint16_t flags;          /* 0 */
@@ -334,6 +337,15 @@ uint32_t gw_sfspill_crc32c(uint32_t crc, const void *data, size_t len);
 /** FNV-1a over @p len bytes, chained from @p h (start with GW_SFSPILL_FNV_INIT). */
 #define GW_SFSPILL_FNV_INIT 2166136261u
 uint32_t gw_sfspill_fnv(uint32_t h, const void *data, size_t len);
+
+/**
+ * #145: the configuration hash of the ring (gw_sfspill_init's @p cfg_hash): what a stored record
+ * means on replay, from an explicit list of fields with a fixed size and byte order (gw_sfcfg.c
+ * has the list and the reasons). A change outside the list (a deadband, a poll period, a broker)
+ * or a firmware update that changes only the C layout of the configuration keeps the hash, and
+ * so the data on the card.
+ */
+uint32_t gw_sfspill_cfg_hash(const gw_config_t *cfg);
 
 #ifdef __cplusplus
 }

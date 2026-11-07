@@ -391,14 +391,16 @@ The object form, with the optional spill to a microSD card:
 - A card that a PC formatted with clusters of 4 KB mounts, but the gateway then uses a maximum of 512 MB of it.
 - Use an industrial card (pSLC) when you can. The gateway writes each block one time, with no FAT or directory write in normal operation.
 - The gateway keeps the data in the folder `/sf`. The ring is in the files `r0000.sf`, `r0001.sf` and so on. The files `ringa.sf` and `ringb.sf` are the two copies of its superblock. A PC does not need to read them.
-- The data on the card stays after a restart and after a power cut. A change of the devices or tags starts a new ring. The gateway does not publish the old data, and it deletes no file for it. The segments of the earlier format (`NNNNNNNN.sf`) are published one time, before the ring, and then deleted.
+- The data on the card stays after a restart and after a power cut. The ring keeps a hash of the configuration fields that give a sample its meaning (issue #145). When this hash changes, the gateway starts a new ring. The gateway does not publish the old data, and it deletes no file for it. The segments of the earlier format (`NNNNNNNN.sf`) are published one time, before the ring, and then deleted.
+- **These changes start a new ring:** a device or a tag that you add, remove, rename or move; a change of the datatype of a tag (from `type`, `scale` and `offset`, for example a scale on an `int16` tag); a change of the `type` (template) of a device, of `sparkplug.group_id` or of `sparkplug.edge_node_id`; a change of the `length` of a `bytes` tag.
+- **These changes keep the data on the card:** `poll_ms`, `slow_poll_ms`, `scan`, `unit_id`, `offline_after`, `block_reads`, `max_gap`, `area`, `address`, `bit`, `word_order`, `deadband`, `writable`, `units`, `eng_low`, `eng_high`; a new `scale` or `offset` when the datatype stays the same; the `length` of a `string` tag; all other sections. A firmware update also keeps the data, because the hash does not use the memory layout of the firmware.
 
 **Planned restart (issue #136).** Before a planned restart, the gateway moves the samples of the RAM buffer to the card. Then it writes the superblock. After the boot, it publishes these samples one time, in order, before the newer data.
 
 - These restarts are planned: the shell `restart`, `POST /api/restart`, NCMD Node Control/Reboot, the restart after a firmware update, and the restart after a saved configuration.
 - The move has a time limit of 5 s. When the limit expires, the gateway restarts. The samples that are not on the card are then lost. The log tells how many samples moved and how many are lost.
 - The gateway does not move the RAM buffer after a factory reset, during a format of the card, when the spill is off or failed, or before the boot read the card.
-- After a saved configuration that changes the devices or tags, the gateway starts a new ring: it does not publish the moved samples.
+- After a saved configuration that changes the configuration hash (the list above), the gateway starts a new ring: it does not publish the moved samples.
 - **An unplanned restart (a power cut, a watchdog, a crash) loses the RAM buffer.** Only the data that was on the card before stays.
 
 **Retention.** The gateway keeps only the changes, not each poll: a tag goes into the buffer only when it changed by more than its `deadband`. Thus calculate the retention in changes per second. One change is one sample of 24 B (a text: 1 + length / 8 samples), and one block of 4 KB holds 169 samples. Thus 1 MB of `max_kb` holds 43 264 samples:

@@ -21,6 +21,7 @@ Usage: tools/e2e/run_e2e.sh  (prepares the flash image and calls this script)
 import argparse
 import asyncio
 import base64
+import copy
 import http.client as httplib
 import json
 import logging
@@ -2488,13 +2489,17 @@ def check_card_simulated(gw, spill_on, auth):
 
 
 
-def check_restart_flush(gw, obs, relay, slave, node, prev_nb, first, how, auth=None):
+def check_restart_flush(gw, obs, relay, slave, node, prev_nb, first, how, auth=None, new_cfg=None,
+                        replay=True):
     """Issue #136 (GW23, PSRAM variant): an outage that leaves samples in the RAM ring below three
     quarters (750 of the 1000 samples of this build: nothing goes to the card by itself), then a
-    planned restart (@how: the shell 'restart' or POST /api/restart). The Sparkplug task moves the
-    RAM ring to the card first; after the boot the recovery finds it, and the replay sends exactly
-    those samples as historical DDATA, once and oldest first, and nothing from before. Returns
-    (ok, detail, the NBIRTH after the restart)."""
+    planned restart (@how: the shell 'restart', POST /api/restart, or "config": PUT /api/config
+    with @new_cfg, issue #145). The Sparkplug task moves the RAM ring to the card first; after the
+    boot the recovery finds it, and the replay sends exactly those samples as historical DDATA,
+    once and oldest first, and nothing from before. With @replay False (a configuration that
+    changes what the records mean, #145) the boot starts a new ring instead: 0 samples waiting
+    and no historical DDATA. Returns (ok, detail, the NBIRTH after the restart, the configuration
+    hash of the spill in the boot log after the restart)."""
     since = time.monotonic()
     relay.stop()
     gw.wait_log(r"MQTT down; reconnect attempt", 10, since)
@@ -2517,15 +2522,22 @@ def check_restart_flush(gw, obs, relay, slave, node, prev_nb, first, how, auth=N
     if how == "shell":
         gw.console("restart")
         answer = gw.wait_log(r"^restarting\s*$", 10, t) is not None
+    elif how == "config":
+        answer = http("PUT", "/api/config", new_cfg, auth=auth, timeout=30)[0] == 200
     else:
         answer = http("POST", "/api/restart", b"", auth=auth)[0] == 202
     flush_rx = (r"store & forward: before the restart, (\d+) samples \((\d+) records\) moved from "
                 r"the RAM ring to the card in (\d+) ms .*sparkplug stack (\d+) B never used")
     gw.wait_log(flush_rx, 30, t)
     flush_l = (gw.find(r"store & forward: before the restart", t) or [""])[0]
-    ready = gw.wait_log(r"store & forward: card ready in \d+ ms \(\d+ blocks read\): [1-9]\d* "
-                        r"samples waiting", 90, t)
+    ready_rx = (r"store & forward: card ready in \d+ ms \(\d+ blocks read\): [1-9]\d* samples "
+                r"waiting \(0 of the old format\), ring \d+ of \d+ blocks, nonce [0-9a-f]{8}; " if replay
+                else r"store & forward: card ready in \d+ ms \(\d+ blocks read\): 0 samples waiting "
+                r"\(0 of the old format\), .* \(new ring\); ")
+    ready = gw.wait_log(ready_rx, 90, t)
     ready_l = (gw.find(r"store & forward: card ready", t) or [""])[0]
+    ring_l = (gw.find(r"store & forward: spill to .* configuration [0-9a-f]{8}", t) or [""])[0]
+    mh = re.search(r"configuration ([0-9a-f]{8})", ring_l)
     relay.start()
     nb = obs.wait(f"{T}/NBIRTH/{node}", 90,
                   lambda p: prev_nb is None or bdseq_of(p) != bdseq_of(prev_nb[2]))
@@ -2539,16 +2551,19 @@ def check_restart_flush(gw, obs, relay, slave, node, prev_nb, first, how, auth=N
                 for mm in m[2].metrics if mm.is_historical)
     mf = re.search(flush_rx, flush_l)
     moved, recs, ms, stack = (int(x) for x in mf.groups()) if mf else (0, 0, -1, 0)
-    ok = (answer and mf and 0 < waiting < 750 and spilled == 0 and recs >= waiting
-          and stack >= STACK_MARGIN_B and ready and nb and done and total == moved
-          and reg and reg == sorted(reg) and len(set(reg)) == len(reg)
-          and all(first < v <= value for v in reg) and reg[0] <= first + 5 and reg[-1] == value
-          and ts == sorted(ts))
+    flushed = (answer and mf and 0 < waiting < 750 and spilled == 0 and recs >= waiting
+               and stack >= STACK_MARGIN_B and ready and nb and done)
+    if replay:
+        ok = (flushed and total == moved and reg and reg == sorted(reg) and len(set(reg)) == len(reg)
+              and all(first < v <= value for v in reg) and reg[0] <= first + 5 and reg[-1] == value
+              and ts == sorted(ts))
+    else:
+        ok = flushed and moved > 0 and total == 0 and not reg
     detail = (f"{how}: {waiting} records in the RAM ring before the restart, {spilled} moved to "
-              f"the card by the spill | {flush_l or 'no flush line'} | {ready_l or 'not ready'} | "
-              f"{total} historical metrics after the restart, register 100: {reg[:2]}..{reg[-2:]} "
-              f"({len(reg)} samples, the outage set {first + 1}..{value})")
-    return ok, detail, nb
+              f"the card by the spill | {flush_l or 'no flush line'} | {ring_l or 'no ring line'} | "
+              f"{ready_l or 'not ready'} | {total} historical metrics after the restart, register "
+              f"100: {reg[:2]}..{reg[-2:]} ({len(reg)} samples, the outage set {first + 1}..{value})")
+    return ok, detail, nb, int(mh.group(1), 16) if mh else None
 
 
 def run_store_forward_spill(args, work, slave):
@@ -2569,6 +2584,9 @@ def run_store_forward_spill(args, work, slave):
       3b. Issue #136: an outage below three quarters of the RAM ring, then a planned restart
          (the shell 'restart', then POST /api/restart): the RAM ring goes to the card first, and
          its samples come back once, in order, after the boot (check_restart_flush).
+      3c. Issue #145: the same with a saved configuration (PUT /api/config) that changes only
+         fields outside the hash of the spill: the same hash, the samples come back; then one
+         that renames a tag: another hash, a new ring, no replay.
       4. A new image with two segments of the step 1 format of this configuration (its hash
          from the boot log): they are replayed once, oldest first, and deleted in steps.
     Both variants: 'card format' asks for 'confirm', and 'card format confirm' refuses
@@ -2729,14 +2747,46 @@ def run_store_forward_spill(args, work, slave):
 
     # 3b. #136: samples below three quarters of the RAM ring, then a planned restart: the shell
     # 'restart', then POST /api/restart (through the web server's task)
-    ok_sh, det_sh, nb_sh = check_restart_flush(gw2, obs, relay, slave, node, nb3, 9000, "shell")
+    ok_sh, det_sh, nb_sh, _ = check_restart_flush(gw2, obs, relay, slave, node, nb3, 9000, "shell")
     web2 = ("admin", commissioning_password(gw2, t2) or "?")
-    ok_web, det_web, _ = check_restart_flush(gw2, obs, relay, slave, node, nb_sh, 9500, "web", web2)
+    t_web = time.monotonic()
+    ok_web, det_web, nb_web, _ = check_restart_flush(gw2, obs, relay, slave, node, nb_sh, 9500,
+                                                     "web", web2)
     check("Issue #136 a planned restart while offline (the shell 'restart', and POST /api/restart) "
           "moves the RAM ring to the card first (bounded, one card operation per step): after the "
           "boot its samples come back as historical DDATA, once, oldest first, and nothing from "
           f"before; the Sparkplug task keeps >= {STACK_MARGIN_B} B of its stack",
           ok_sh and ok_web, f"{det_sh} || {det_web}")
+
+    # 3c. #145: a saved configuration that changes only fields outside the hash of the spill
+    # (a deadband, a scale that keeps the tag scaled, units, poll period, offline_after) keeps
+    # the data on the card: the same hash, no new ring, the moved samples replayed after the
+    # restart. Then a saved configuration that renames a tag starts a new ring (another hash):
+    # the moved samples are not replayed.
+    keep = copy.deepcopy(cfg)
+    meter, bulk = keep["devices"][0], keep["devices"][1]
+    meter["tags"][0]["deadband"] = 0.5
+    meter["tags"][0]["units"] = "kV"
+    meter["tags"][1]["scale"] = 0.5
+    bulk["poll_ms"] = 900
+    bulk["offline_after"] = 4
+    web3 = ("admin", commissioning_password(gw2, t_web) or "?")
+    t_keep = time.monotonic()
+    ok_keep, det_keep, nb_keep, h_keep = check_restart_flush(
+        gw2, obs, relay, slave, node, nb_web, 10000, "config", web3, new_cfg=keep)
+    renamed = copy.deepcopy(keep)
+    renamed["devices"][-1]["tags"][0]["name"] = "Value2"
+    web4 = ("admin", commissioning_password(gw2, t_keep) or "?")
+    ok_new, det_new, _, h_new = check_restart_flush(
+        gw2, obs, relay, slave, node, nb_keep, 10500, "config", web4, new_cfg=renamed, replay=False)
+    check("Issue #145 the hash of the spill covers only what a record means on replay: a saved "
+          "configuration (PUT /api/config, a planned restart) that changes a deadband, units, a "
+          "scale of a scaled tag, a poll period and offline_after keeps the hash and the data on "
+          "the card (the moved samples come back once, in order); one that renames a tag gets "
+          "another hash and a new ring (the moved samples are not replayed)",
+          ok_keep and ok_new and cfg_hash and h_keep == cfg_hash and h_new and h_new != cfg_hash,
+          f"configuration {cfg_hash:08x} at the first boot, {h_keep or 0:08x} after the first "
+          f"change, {h_new or 0:08x} after the rename || {det_keep} || {det_new}")
     gw2.kill()
     obs.wait(f"{T}/NDEATH/{node}", 5)
 
