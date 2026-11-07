@@ -15,7 +15,8 @@
  * With a spill attached (gw_sfspill, microSD), gw_sf_step() moves the oldest records to it, one
  * 4 KiB block per call, once the ring is three quarters full; they are replayed from there
  * first. Pushing never touches the card (#124): a full ring overwrites its oldest samples (the
- * newest data is kept) and counts them as dropped, with or without a spill.
+ * newest data is kept) and counts them as dropped, with or without a spill. Before a planned
+ * restart, gw_sf_flush() moves the whole ring to the spill, within a time limit (#136).
  */
 #pragma once
 
@@ -79,6 +80,40 @@ bool gw_sf_step(gw_sf_t *sf, uint32_t now_ms);
 
 /** True while gw_sf_step() has work to do (call it soon). */
 bool gw_sf_busy(const gw_sf_t *sf);
+
+/* gw_sf_flush_t.result */
+enum {
+    GW_SF_FLUSH_DONE,        /* the RAM ring is on the card, with a superblock after it */
+    GW_SF_FLUSH_TIMEOUT,     /* the time limit expired: the rest stays in the RAM ring */
+    GW_SF_FLUSH_FAILED,      /* the card failed during the flush (the spill stops) */
+    GW_SF_FLUSH_NO_SPILL,    /* no spill, or it failed or was stopped before */
+    GW_SF_FLUSH_NOT_READY,   /* the boot recovery of the spill has not finished */
+};
+
+typedef struct {
+    int result;              /* GW_SF_FLUSH_* */
+    uint32_t moved;          /* samples moved from the RAM ring to the card */
+    uint32_t records;        /* their records (a string sample has more than one) */
+    uint32_t left;           /* samples left in the RAM ring (a restart loses them) */
+    uint32_t blocks;         /* blocks written */
+    uint32_t steps;          /* card operations */
+    uint32_t ms;             /* time taken */
+} gw_sf_flush_t;
+
+/**
+ * #136: before a planned restart, move the RAM ring to the spill: the oldest whole samples
+ * first, one card operation per step (a block, an extent allocation or a superblock; the spill's
+ * tick, the watchdog feed, after each), then one superblock with the head and the replay
+ * position. Stops when @p limit_ms has passed since the start (checked before each step: the
+ * total is at most @p limit_ms plus one card operation), or at a card failure. @p now_ms: a
+ * monotonic clock; @p sleep_ms: wait that long (the gap between two superblock writes). Nothing
+ * allocates. The samples moved are replayed after the restart, before anything newer, once.
+ */
+void gw_sf_flush(gw_sf_t *sf, uint32_t (*now_ms)(void), void (*sleep_ms)(uint32_t),
+                 uint32_t limit_ms, gw_sf_flush_t *res);
+
+/** Samples (not records) in the RAM ring. */
+size_t gw_sf_ram_samples(const gw_sf_t *sf);
 
 /** Start a batch; the samples pushed until the next call share its id. */
 void gw_sf_begin(gw_sf_t *sf);

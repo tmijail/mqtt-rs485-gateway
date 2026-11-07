@@ -249,8 +249,8 @@ typedef struct {
     uint32_t kept_at_boot;       /* ring records found at boot */
 } gw_sfspill_t;
 
-/* gw_sfspill_prepare() results */
-enum { GW_SFSPILL_IDLE, GW_SFSPILL_DID, GW_SFSPILL_BLOCK_READY };
+/* gw_sfspill_prepare() and gw_sfspill_flush_step() results */
+enum { GW_SFSPILL_IDLE, GW_SFSPILL_DID, GW_SFSPILL_BLOCK_READY, GW_SFSPILL_WAIT };
 
 /**
  * Geometry for max_kb KiB (clamped to GW_SFSPILL_MIN_KB .. GW_SFSPILL_MAX_KB) on a card with
@@ -310,6 +310,17 @@ void gw_sfspill_consume(gw_sfspill_t *sp, size_t n);
 /** Before a planned restart: write the replay position now if it moved (one superblock, unless
  *  one was written less than GW_SFSPILL_SB_GAP_MS ago). True if it wrote one. */
 bool gw_sfspill_checkpoint(gw_sfspill_t *sp, uint32_t now_ms);
+
+/**
+ * #136: one bounded card operation of a flush before a planned restart (gw_sf_flush()). Only
+ * when the spill is ready and has not failed (else GW_SFSPILL_IDLE). With @p want_block: a due
+ * superblock (a new ring, or the head hint every GW_SFSPILL_HINT_BLOCKS blocks), an extent
+ * allocation, or GW_SFSPILL_BLOCK_READY (then gw_sfspill_put_block()). Without it (the RAM ring
+ * is empty): one superblock with the head and the replay position, if either moved since the
+ * last one. GW_SFSPILL_WAIT: that superblock must wait for GW_SFSPILL_SB_GAP_MS (nothing done).
+ * GW_SFSPILL_IDLE: nothing is left to do. No delete step and no boot recovery step.
+ */
+int gw_sfspill_flush_step(gw_sfspill_t *sp, bool want_block, uint32_t now_ms);
 
 /** Stop using the card (an operator formats it): as after an I/O error, with @p why. */
 void gw_sfspill_stop(gw_sfspill_t *sp, const char *why);

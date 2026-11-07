@@ -52,23 +52,21 @@ static bool want_block(const gw_sf_t *sf)
     return sf->count >= sf->spill_at;
 }
 
-bool gw_sf_step(gw_sf_t *sf, uint32_t now_ms)
+static void skip_orphans(gw_sf_t *sf)
 {
-    gw_sfspill_t *sp = sf->spill;
-    if (sp == NULL) {
-        return false;
-    }
     while (sf->count > 0 && (at(sf, 0)->flags & GW_SF_CONT)) {
         sf->count--;   /* continuations whose head was overwritten */
     }
-    bool want = sf->count > 0 && want_block(sf);
-    int r = gw_sfspill_prepare(sp, want, now_ms);
-    if (r != GW_SFSPILL_BLOCK_READY) {
-        return r == GW_SFSPILL_DID;
-    }
-    /* the oldest whole samples that fit in a block (a string sample is never split) */
+}
+
+/* After GW_SFSPILL_BLOCK_READY: the oldest whole samples that fit in a block go to the card (a
+ * string sample is never split, and leaves the ring only once its block is written). Returns
+ * the samples moved; 0 if the write failed (they stay in the ring). */
+static uint32_t move_block(gw_sf_t *sf, gw_sfspill_t *sp)
+{
     gw_sf_rec_t *dst = gw_sfspill_block_recs(sp);
     size_t n = 0;
+    uint32_t samples = 0;
     while (n < sf->count) {
         size_t k = sample_len(sf, n);
         if (n + k > GW_SFSPILL_BLK_RECS) {
@@ -78,12 +76,84 @@ bool gw_sf_step(gw_sf_t *sf, uint32_t now_ms)
             dst[n + j] = *at(sf, n + j);
         }
         n += k;
+        samples++;
     }
-    if (n > 0 && gw_sfspill_put_block(sp, n)) {
-        sf->count -= n;
-        sf->spilled += (uint32_t)n;
+    if (n == 0 || !gw_sfspill_put_block(sp, n)) {
+        return 0;
     }
+    sf->count -= n;
+    sf->spilled += (uint32_t)n;
+    return samples;
+}
+
+bool gw_sf_step(gw_sf_t *sf, uint32_t now_ms)
+{
+    gw_sfspill_t *sp = sf->spill;
+    if (sp == NULL) {
+        return false;
+    }
+    skip_orphans(sf);
+    bool want = sf->count > 0 && want_block(sf);
+    int r = gw_sfspill_prepare(sp, want, now_ms);
+    if (r != GW_SFSPILL_BLOCK_READY) {
+        return r == GW_SFSPILL_DID;
+    }
+    move_block(sf, sp);
     return true;
+}
+
+size_t gw_sf_ram_samples(const gw_sf_t *sf)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < sf->count; i++) {
+        n += !(at(sf, i)->flags & GW_SF_CONT);
+    }
+    return n;
+}
+
+void gw_sf_flush(gw_sf_t *sf, uint32_t (*now_ms)(void), void (*sleep_ms)(uint32_t),
+                 uint32_t limit_ms, gw_sf_flush_t *res)
+{
+    gw_sfspill_t *sp = sf->spill;
+    memset(res, 0, sizeof(*res));
+    uint32_t start = now_ms(), spilled = sf->spilled;
+    if (sp == NULL || !sp->ok) {
+        res->result = GW_SF_FLUSH_NO_SPILL;
+    } else if (sp->phase != GW_SFSPILL_READY) {
+        res->result = GW_SF_FLUSH_NOT_READY;
+    } else {
+        res->result = GW_SF_FLUSH_DONE;
+        for (;;) {
+            uint32_t now = now_ms();
+            if ((uint32_t)(now - start) >= limit_ms) {
+                res->result = GW_SF_FLUSH_TIMEOUT;
+                break;
+            }
+            skip_orphans(sf);
+            int r = gw_sfspill_flush_step(sp, sf->count > 0, now);
+            if (r == GW_SFSPILL_IDLE) {
+                break;   /* the ring is on the card, and the superblock after it */
+            }
+            if (r == GW_SFSPILL_WAIT) {
+                uint32_t left = limit_ms - (uint32_t)(now - start);
+                sleep_ms(left < 10u ? left : 10u);
+                continue;
+            }
+            res->steps++;
+            if (r == GW_SFSPILL_BLOCK_READY) {
+                uint32_t k = move_block(sf, sp);
+                res->moved += k;
+                res->blocks += k > 0;
+            }
+            if (!sp->ok) {
+                res->result = GW_SF_FLUSH_FAILED;
+                break;
+            }
+        }
+    }
+    res->records = sf->spilled - spilled;
+    res->left = (uint32_t)gw_sf_ram_samples(sf);
+    res->ms = now_ms() - start;
 }
 
 bool gw_sf_busy(const gw_sf_t *sf)

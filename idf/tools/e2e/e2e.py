@@ -2488,6 +2488,69 @@ def check_card_simulated(gw, spill_on, auth):
 
 
 
+def check_restart_flush(gw, obs, relay, slave, node, prev_nb, first, how, auth=None):
+    """Issue #136 (GW23, PSRAM variant): an outage that leaves samples in the RAM ring below three
+    quarters (750 of the 1000 samples of this build: nothing goes to the card by itself), then a
+    planned restart (@how: the shell 'restart' or POST /api/restart). The Sparkplug task moves the
+    RAM ring to the card first; after the boot the recovery finds it, and the replay sends exactly
+    those samples as historical DDATA, once and oldest first, and nothing from before. Returns
+    (ok, detail, the NBIRTH after the restart)."""
+    since = time.monotonic()
+    relay.stop()
+    gw.wait_log(r"MQTT down; reconnect attempt", 10, since)
+    value, waiting, end = first, 0, time.monotonic() + 40
+    while wait_left(end) > 0 and waiting < 300:
+        value += 1
+        slave.bulk.setValues(3, 100, [value] * 60)
+        time.sleep(0.5)
+        asked, _ = gw.shell("status", [r"^store\s+\d+ of 1000 samples"], timeout=2, tries=1)
+        m = re.search(r"^store\s+(\d+) of", spill_line(gw, asked, r"^store\s"))
+        waiting = int(m.group(1)) if m else waiting
+    time.sleep(2)   # the last value is polled and stored
+    asked, _ = gw.shell("status", [r"^store\s+\d+ of 1000 samples", r"^spill\s+on: "])
+    store_l, spill_l = spill_line(gw, asked, r"^store\s"), spill_line(gw, asked)
+    m = re.search(r"^store\s+(\d+) of", store_l)
+    waiting = int(m.group(1)) if m else 0
+    m = re.search(r", (\d+) moved there", spill_l)
+    spilled = int(m.group(1)) if m else -1
+    t = time.monotonic()
+    if how == "shell":
+        gw.console("restart")
+        answer = gw.wait_log(r"^restarting\s*$", 10, t) is not None
+    else:
+        answer = http("POST", "/api/restart", b"", auth=auth)[0] == 202
+    flush_rx = (r"store & forward: before the restart, (\d+) samples \((\d+) records\) moved from "
+                r"the RAM ring to the card in (\d+) ms .*sparkplug stack (\d+) B never used")
+    gw.wait_log(flush_rx, 30, t)
+    flush_l = (gw.find(r"store & forward: before the restart", t) or [""])[0]
+    ready = gw.wait_log(r"store & forward: card ready in \d+ ms \(\d+ blocks read\): [1-9]\d* "
+                        r"samples waiting", 90, t)
+    ready_l = (gw.find(r"store & forward: card ready", t) or [""])[0]
+    relay.start()
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 90,
+                  lambda p: prev_nb is None or bdseq_of(p) != bdseq_of(prev_nb[2]))
+    done, deadline = None, time.monotonic() + 60
+    while wait_left(deadline) > 0 and not done:
+        _, h = gw.shell("status", [r"^store\s+0 of \d+ samples waiting"], timeout=2, tries=1)
+        done = list(h.values())[0]
+    time.sleep(1)
+    reg, ts = bulk0_history(nb, node)
+    total = sum(1 for m in CAPTURE if nb and m[0] >= nb[0] and m[1].split("/")[3:4] == [node]
+                for mm in m[2].metrics if mm.is_historical)
+    mf = re.search(flush_rx, flush_l)
+    moved, recs, ms, stack = (int(x) for x in mf.groups()) if mf else (0, 0, -1, 0)
+    ok = (answer and mf and 0 < waiting < 750 and spilled == 0 and recs >= waiting
+          and stack >= STACK_MARGIN_B and ready and nb and done and total == moved
+          and reg and reg == sorted(reg) and len(set(reg)) == len(reg)
+          and all(first < v <= value for v in reg) and reg[0] <= first + 5 and reg[-1] == value
+          and ts == sorted(ts))
+    detail = (f"{how}: {waiting} records in the RAM ring before the restart, {spilled} moved to "
+              f"the card by the spill | {flush_l or 'no flush line'} | {ready_l or 'not ready'} | "
+              f"{total} historical metrics after the restart, register 100: {reg[:2]}..{reg[-2:]} "
+              f"({len(reg)} samples, the outage set {first + 1}..{value})")
+    return ok, detail, nb
+
+
 def run_store_forward_spill(args, work, slave):
     """SPB-14 spill (GW23) with store_forward.sd enabled. QEMU has no SDMMC: the build puts the
     "card" in a LittleFS directory (CONFIG_GW_SF_SPILL_LITTLEFS), whose 32 B "clusters" make
@@ -2503,6 +2566,9 @@ def run_store_forward_spill(args, work, slave):
       3. A second outage, then a power cut (QEMU killed) while offline: after the reboot the
          blocks on the card are found (superblock and scan), and replayed once: none of the
          first outage again (the checkpoint).
+      3b. Issue #136: an outage below three quarters of the RAM ring, then a planned restart
+         (the shell 'restart', then POST /api/restart): the RAM ring goes to the card first, and
+         its samples come back once, in order, after the boot (check_restart_flush).
       4. A new image with two segments of the step 1 format of this configuration (its hash
          from the boot log): they are replayed once, oldest first, and deleted in steps.
     Both variants: 'card format' asks for 'confirm', and 'card format confirm' refuses
@@ -2660,6 +2726,17 @@ def run_store_forward_spill(args, work, slave):
           and all(5000 < v <= last2 for v in reg2) and reg2[0] <= 5000 + 25 and ts2 == sorted(ts2),
           f"before the cut: {before2}; {ready2_line}; register 100 after the reboot: "
           f"{reg2[:2]}..{reg2[-2:]} ({len(reg2)} samples)")
+
+    # 3b. #136: samples below three quarters of the RAM ring, then a planned restart: the shell
+    # 'restart', then POST /api/restart (through the web server's task)
+    ok_sh, det_sh, nb_sh = check_restart_flush(gw2, obs, relay, slave, node, nb3, 9000, "shell")
+    web2 = ("admin", commissioning_password(gw2, t2) or "?")
+    ok_web, det_web, _ = check_restart_flush(gw2, obs, relay, slave, node, nb_sh, 9500, "web", web2)
+    check("Issue #136 a planned restart while offline (the shell 'restart', and POST /api/restart) "
+          "moves the RAM ring to the card first (bounded, one card operation per step): after the "
+          "boot its samples come back as historical DDATA, once, oldest first, and nothing from "
+          f"before; the Sparkplug task keeps >= {STACK_MARGIN_B} B of its stack",
+          ok_sh and ok_web, f"{det_sh} || {det_web}")
     gw2.kill()
     obs.wait(f"{T}/NDEATH/{node}", 5)
 
