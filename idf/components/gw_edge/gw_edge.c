@@ -1678,10 +1678,8 @@ static void setup_spill(void)
     /* extents of min(4 MiB, 128 clusters) of the card, at most 1024 of them */
     uint32_t ext_blocks, extents;
     s_spill_kb = gw_sfspill_plan(s_cfg->sparkplug.sf_sd_max_kb, io.unit, &ext_blocks, &extents);
-    /* the tag indexes in the records only mean the same with the same devices and tags */
-    uint32_t hash = gw_sfspill_fnv(GW_SFSPILL_FNV_INIT, s_cfg->devices,
-                                   s_cfg->device_count * sizeof(s_cfg->devices[0]));
-    hash = gw_sfspill_fnv(hash, s_cfg->tags, s_cfg->tag_count * sizeof(s_cfg->tags[0]));
+    /* #145: the records keep their meaning while the fields of this hash do not change */
+    uint32_t hash = gw_sfspill_cfg_hash(s_cfg);
     gw_sfspill_init(s_spill, &io, ext_blocks, extents, hash, mem);
     s_spill->tick = feed_watchdog;   /* from now on only the Sparkplug task uses the card */
     s_spill->random = esp_random;

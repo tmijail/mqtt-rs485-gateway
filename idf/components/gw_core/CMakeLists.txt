@@ -28,6 +28,7 @@ set(GW_CORE_SRCS
     src/gw_rbe.c
     src/gw_rtc.c
     src/gw_sf.c
+    src/gw_sfcfg.c
     src/gw_sfspill.c
     src/gw_syslog.c
     src/gw_tagdb.c
