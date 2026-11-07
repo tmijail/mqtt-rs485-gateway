@@ -30,6 +30,7 @@ Write all new or changed prose in ASD-STE100 Simplified Technical English (STE).
   - Use articles ("the", "a"), and avoid long noun clusters: write "the margin of the internal RAM", not "the internal RAM margin value".
 - **Warnings and cautions:** Start them with a clear instruction (the command). Then give the risk.
 - **Existing Spanish text:** When you change a section, rewrite that section in STE. Translate full files only when the user asks.
+- **Structure (Diátaxis):** Put each new document in `docs/` into one Diátaxis type: `docs/tutorials/`, `docs/how-to/`, `docs/reference/` or `docs/explanation/`. Do not mix the types in one document. Link to the other type instead (for example, from a procedure to the reasons for it).
 
 **The firmware has never run on real hardware.** It has only run in host tests and in QEMU. The W5500, RS485 hardware mode, TCA9554, GPIO DIs and LED are compile-only (issues #1 and #18).
 
