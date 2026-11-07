@@ -52,6 +52,19 @@ static const char *TAG = "edge";
 #define PHOST_WAIT_MS    30000  /* with backup brokers: no STATE online this long -> next broker */
 #define SF_MSGS_PER_LOOP 4      /* historical messages per loop: live data is not held back */
 #define SPILL_GO_WAIT_MS 10000  /* #122/#124: the card work starts then without a network */
+/* #136: the longest time a planned restart spends to move the RAM ring to the card (plus at most
+ * one card operation). The work is at most 3/4 of the 40 000-record PSRAM ring: about 180 blocks,
+ * 2 extent allocations and 6 superblocks. At the 1-5 ms of a block write (#124) that is under 1 s;
+ * 5 s also takes an average of 25 ms per operation, or one FAT step of 1 s (the #124 limit for a
+ * card that needs a task of its own) with the blocks. The watchdog is fed after each operation, so
+ * the 15 s task watchdog does not set the limit: the operator who waits for the restart and the
+ * OTA restart do (the new image is already set to boot; 5 s more do not change its trial). */
+#define FLUSH_LIMIT_MS   5000
+/* #136: a restart requested by another task (web, shell, OTA, configuration) waits this long at
+ * most for the Sparkplug task to start it; then the esp_timer task restarts without NDEATH and
+ * without the flush. Longer than one publish with its budget and socket timeout (8 + 5 s), the
+ * longest normal pass of the loop; a hung task meets the 15 s task watchdog first. */
+#define RESTART_ANSWER_MS 20000
 #define STR_(x) #x
 #define STR(x)  STR_(x)
 
@@ -82,6 +95,8 @@ static atomic_uint s_dev_dirty;
 static atomic_int s_suback;     /* msg_id of the last SUBACK, negated if a topic was refused */
 static atomic_uint s_route_gen;
 static atomic_bool s_restart_req;
+static atomic_bool s_restart_discard;   /* #136: a factory reset: the RAM ring is not kept */
+static esp_timer_handle_t s_restart_backstop;   /* #136: RESTART_ANSWER_MS */
 static atomic_bool s_rebirth_req;
 static atomic_bool s_fw_dirty;     /* FW-1: the update's state changed */
 
@@ -256,10 +271,37 @@ static void release_card(void)
     wake();
 }
 
+/* #136: the Sparkplug task did not start the requested restart in time (it is busy or stuck):
+ * restart from here (esp_timer task), with no flush of the RAM ring and no NDEATH. */
+static void on_restart_backstop(void *arg)
+{
+    (void)arg;
+    ESP_LOGE(TAG, "restart requested %d s ago, but the Sparkplug task did not start it: restarting "
+                  "now, without NDEATH; the samples in the RAM ring are lost",
+             RESTART_ANSWER_MS / 1000);
+    gw_bus_quiesce(1000);   /* no Modbus frame cut by the restart */
+    esp_restart();
+}
+
+static void request_restart(bool keep_samples)
+{
+    if (!keep_samples) {
+        atomic_store(&s_restart_discard, true);
+    }
+    if (!atomic_exchange(&s_restart_req, true) && s_restart_backstop != NULL) {
+        esp_timer_start_once(s_restart_backstop, RESTART_ANSWER_MS * 1000ULL);
+    }
+    wake();
+}
+
 void gw_edge_request_restart(void)
 {
-    atomic_store(&s_restart_req, true);
-    wake();
+    request_restart(true);
+}
+
+void gw_edge_request_restart_discard(void)
+{
+    request_restart(false);
 }
 
 void gw_edge_notify_firmware(void)
@@ -674,7 +716,7 @@ static void op_diagnostics(void *ctx, gw_node_diag_t *out)
     out->time_synced = atomic_load(&s_time_synced);   /* TIME-3: SNTP only, not the RTC */
 }
 
-/* #124: before a planned restart, the replay position goes to the card (fewer duplicates). */
+/* #124: the replay position goes to the card (fewer duplicates), before a format. */
 static void spill_checkpoint(void)
 {
     if (s_spill_on && gw_sfspill_checkpoint(s_spill, (uint32_t)(esp_timer_get_time() / 1000))) {
@@ -682,10 +724,86 @@ static void spill_checkpoint(void)
     }
 }
 
+static uint32_t flush_clock(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
+
+static void flush_sleep(uint32_t ms)
+{
+    TickType_t t = pdMS_TO_TICKS(ms);
+    vTaskDelay(t > 0 ? t : 1);
+    feed_watchdog();
+}
+
+/*
+ * #136: before a planned restart, the samples of the RAM ring go to the card (they are replayed
+ * after the boot, before anything newer), then one superblock with the head and the replay
+ * position. Bounded by FLUSH_LIMIT_MS; each card operation feeds the watchdog (s_spill->tick).
+ * Runs once, in this task, which owns the card: no other task uses it. Not when a format of the
+ * card was requested (the format task waits for the card, #139), after a factory reset (the next
+ * boot runs another configuration: the data could not be replayed), without a spill, or when it
+ * failed or has not finished its boot recovery: then the RAM ring is lost, as before. Not inlined:
+ * it must not grow the frame of reconcile().
+ */
+static __attribute__((noinline)) void spill_before_restart(void)
+{
+    static bool done;
+    if (done || !s_spill_on) {
+        return;
+    }
+    done = true;
+    unsigned ram = (unsigned)gw_sf_ram_samples(&s_sf);
+    if (atomic_load(&s_card_release) || atomic_load(&s_card_released)) {
+        ESP_LOGW(TAG, "store & forward: a format of the card was requested: the %u samples of the "
+                      "RAM ring are not moved to the card (lost by the restart)", ram);
+        return;
+    }
+    if (atomic_load(&s_restart_discard)) {
+        ESP_LOGW(TAG, "store & forward: factory reset: the %u samples of the RAM ring are not moved "
+                      "to the card", ram);
+        return;
+    }
+    gw_sf_flush_t r;
+    gw_sf_flush(&s_sf, flush_clock, flush_sleep, FLUSH_LIMIT_MS, &r);
+    unsigned stack = (unsigned)uxTaskGetStackHighWaterMark(NULL);
+    switch (r.result) {
+    case GW_SF_FLUSH_DONE:
+        ESP_LOGW(TAG, "store & forward: before the restart, %lu samples (%lu records) moved from "
+                      "the RAM ring to the card in %lu ms (%lu blocks, %lu card operations); "
+                      "sparkplug stack %u B never used",
+                 (unsigned long)r.moved, (unsigned long)r.records, (unsigned long)r.ms,
+                 (unsigned long)r.blocks, (unsigned long)r.steps, stack);
+        break;
+    case GW_SF_FLUSH_TIMEOUT:
+        ESP_LOGE(TAG, "store & forward: before the restart, the time limit of %d ms expired: %lu "
+                      "samples moved to the card (%lu blocks), %lu samples stay in the RAM ring and "
+                      "are lost",
+                 FLUSH_LIMIT_MS, (unsigned long)r.moved, (unsigned long)r.blocks,
+                 (unsigned long)r.left);
+        break;
+    case GW_SF_FLUSH_FAILED:
+        ESP_LOGE(TAG, "store & forward: before the restart, the card failed (%s) after %lu ms: %lu "
+                      "samples moved to the card, %lu samples of the RAM ring are lost",
+                 s_spill->why, (unsigned long)r.ms, (unsigned long)r.moved, (unsigned long)r.left);
+        break;
+    case GW_SF_FLUSH_NOT_READY:
+        ESP_LOGW(TAG, "store & forward: the card is not read yet (boot recovery): the %lu samples of "
+                      "the RAM ring are not moved to it (lost by the restart)",
+                 (unsigned long)r.left);
+        break;
+    default:
+        ESP_LOGW(TAG, "store & forward: the spill failed before (%s): the %lu samples of the RAM "
+                      "ring are lost by the restart",
+                 s_spill->why, (unsigned long)r.left);
+        break;
+    }
+}
+
 static void op_reboot(void *ctx)
 {
     (void)ctx;
-    spill_checkpoint();
+    spill_before_restart();
     gw_fw_restart_requested();   /* issue #108 B5 (a no-op unless a confirmation keeps failing) */
     /* Orderly shutdown: NDEATH was just published; stop() sends DISCONNECT synchronously so
      * the broker discards the will instead of publishing a second NDEATH. */
@@ -1132,8 +1250,11 @@ static void attempt_ended(void)
 /* Requested restart: the same orderly end as NCMD Reboot (explicit NDEATH, DISCONNECT). */
 static void restart_now(void)
 {
+    if (s_restart_backstop != NULL) {
+        esp_timer_stop(s_restart_backstop);   /* this task answered; each step below is bounded */
+    }
     ESP_LOGW(TAG, "restart requested%s", s_node->online ? ": publishing NDEATH" : "");
-    spill_checkpoint();
+    spill_before_restart();
     gw_fw_restart_requested();   /* issue #108 B5 */
     if (s_node->online) {
         publish_ndeath();
@@ -1695,6 +1816,8 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
     s_pub_lock = xSemaphoreCreateMutexStatic(&s_pub_lock_buf);
     const esp_timer_create_args_t pt = {.callback = on_publish_budget, .name = "pub_budget"};
     ESP_ERROR_CHECK(esp_timer_create(&pt, &s_pub_timer));
+    const esp_timer_create_args_t rb = {.callback = on_restart_backstop, .name = "restart_bound"};
+    ESP_ERROR_CHECK(esp_timer_create(&rb, &s_restart_backstop));
     s_q = xQueueCreateStatic(CONFIG_GW_EDGE_QUEUE_LEN, sizeof(edge_ev_t), s_q_storage, &s_q_buf);
     s_free_slots = xQueueCreateStatic(CONFIG_GW_CMD_SLOTS, 1, s_free_storage, &s_free_buf);
     for (uint8_t i = 0; i < CONFIG_GW_CMD_SLOTS; i++) {

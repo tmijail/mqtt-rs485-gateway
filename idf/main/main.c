@@ -214,7 +214,7 @@ static void on_button(gw_btn_event_t ev)
         gw_storage_factory_reset();
         /* orderly when a session is up (NDEATH): the device leaves the Sparkplug namespace */
         if (s_mode == GW_WEB_NORMAL) {
-            gw_edge_request_restart();
+            gw_edge_request_restart_discard();   /* #136: the RAM ring is not kept */
         } else {
             restart_soon();
         }

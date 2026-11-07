@@ -87,9 +87,15 @@ void gw_edge_notify_device(uint16_t dev);
 void gw_edge_notify_io(void);
 void gw_edge_notify_write_done(uint16_t tag, bool ok);
 
-/** Orderly restart from another task (new configuration, REST API, shell): the Sparkplug task
- *  publishes NDEATH and disconnects first when a session is up, then restarts. */
+/** Orderly restart from another task (new configuration, REST API, shell, OTA): the Sparkplug
+ *  task moves the RAM ring of store & forward to the microSD card (#136, bounded), publishes
+ *  NDEATH and disconnects when a session is up, then restarts. Returns at once. If the Sparkplug
+ *  task does not start it within 20 s, the esp_timer task restarts without those steps. */
 void gw_edge_request_restart(void);
+
+/** #136: as gw_edge_request_restart(), but the samples of the RAM ring are not moved to the
+ *  microSD card first (a factory reset: the next boot runs another configuration). */
+void gw_edge_request_restart_discard(void);
 
 /** FW-1: the firmware update's state changed (gw_fw hook; any task, never blocks). */
 void gw_edge_notify_firmware(void);

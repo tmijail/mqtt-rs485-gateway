@@ -393,6 +393,14 @@ The object form, with the optional spill to a microSD card:
 - The gateway keeps the data in the folder `/sf`. The ring is in the files `r0000.sf`, `r0001.sf` and so on. The files `ringa.sf` and `ringb.sf` are the two copies of its superblock. A PC does not need to read them.
 - The data on the card stays after a restart and after a power cut. A change of the devices or tags starts a new ring. The gateway does not publish the old data, and it deletes no file for it. The segments of the earlier format (`NNNNNNNN.sf`) are published one time, before the ring, and then deleted.
 
+**Planned restart (issue #136).** Before a planned restart, the gateway moves the samples of the RAM buffer to the card. Then it writes the superblock. After the boot, it publishes these samples one time, in order, before the newer data.
+
+- These restarts are planned: the shell `restart`, `POST /api/restart`, NCMD Node Control/Reboot, the restart after a firmware update, and the restart after a saved configuration.
+- The move has a time limit of 5 s. When the limit expires, the gateway restarts. The samples that are not on the card are then lost. The log tells how many samples moved and how many are lost.
+- The gateway does not move the RAM buffer after a factory reset, during a format of the card, when the spill is off or failed, or before the boot read the card.
+- After a saved configuration that changes the devices or tags, the gateway starts a new ring: it does not publish the moved samples.
+- **An unplanned restart (a power cut, a watchdog, a crash) loses the RAM buffer.** Only the data that was on the card before stays.
+
 **Retention.** The gateway keeps only the changes, not each poll: a tag goes into the buffer only when it changed by more than its `deadband`. Thus calculate the retention in changes per second. One change is one sample of 24 B (a text: 1 + length / 8 samples), and one block of 4 KB holds 169 samples. Thus 1 MB of `max_kb` holds 43 264 samples:
 
 - hours ≈ `max_kb` × 0.01174 / (changes per second);
@@ -400,7 +408,7 @@ The object form, with the optional spill to a microSD card:
 
 The RAM buffer adds 40 000 samples. The `deadband` is the main control: set it a little above the noise of the sensor.
 
-**Duplicates after a restart (for the host or historian).** The gateway saves its replay position on the card after each 64 KB of published history (2 730 samples). It saves the position after the publish of those samples returned. Thus a restart or a power cut during a replay can send again a maximum of 64 KB of historical samples, approximately 2 700. If the power cut damages the save itself, the maximum is 128 KB. If both superblock copies are damaged, the gateway can send again all the data on the card. The duplicates have the same timestamps and values as the first copy. The host or historian must handle them: for example, keep one value for each tag and timestamp. A counter or an aggregate of the received messages counts them two times. The history uses QoS 0: a power cut can also lose the messages that the TCP connection did not send yet.
+**Duplicates after a restart (for the host or historian).** The gateway saves its replay position on the card after each 64 KB of published history (2 730 samples). It saves the position after the publish of those samples returned. Thus a restart or a power cut during a replay can send again a maximum of 64 KB of historical samples, approximately 2 700. A planned restart saves the position first. If the power cut damages the save itself, the maximum is 128 KB. If both superblock copies are damaged, the gateway can send again all the data on the card. The duplicates have the same timestamps and values as the first copy. The host or historian must handle them: for example, keep one value for each tag and timestamp. A counter or an aggregate of the received messages counts them two times. The history uses QoS 0: a power cut can also lose the messages that the TCP connection did not send yet.
 
 **Tipos de 64 bits, `string`, órdenes de bytes y bits de registro (MB-6), en cada tag.**
 

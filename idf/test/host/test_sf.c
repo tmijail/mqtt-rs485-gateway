@@ -194,6 +194,7 @@ typedef struct {
     bool cut_super;         /* the fault touched a superblock */
     int faulty_blocks;      /* acknowledged block writes the fault took back or damaged */
     int64_t space;          /* free bytes, -1: no limit */
+    uint32_t op_ms;         /* a slow card: each change takes this long (#136) */
     uint32_t unit;
     int allocs, writes, reads, truncs, removes, lists, sb_writes, block_writes;
     uint32_t max_freed;
@@ -249,6 +250,7 @@ static int change(void)
         return CH_OFF;
     }
     card.changes++;
+    now_ms += card.op_ms;
     if (card.cut_at >= 0 && card.changes - 1 == card.cut_at) {
         return CH_CUT;
     }
@@ -1185,6 +1187,199 @@ static void test_spill_faults(void)
     }
 }
 
+
+/* ---- #136: a planned restart moves the RAM ring to the card first ---- */
+
+static int flush_ticks, flush_sleeps, tick_changes;
+
+/* The spill's tick (the watchdog feed): after each card operation, at most one change. */
+static void flush_tick(void)
+{
+    TEST_ASSERT_TRUE(card.changes - tick_changes <= 1);
+    tick_changes = card.changes;
+    flush_ticks++;
+}
+
+static uint32_t flush_clock(void)
+{
+    return now_ms;
+}
+
+static void flush_sleep(uint32_t ms)
+{
+    TEST_ASSERT_TRUE(ms > 0 && ms <= 10);
+    now_ms += ms;
+    flush_sleeps++;
+}
+
+static gw_sf_flush_t flush_now(uint32_t limit_ms)
+{
+    gw_sf_flush_t res;
+    uint32_t op_ms = card.op_ms;
+    card.op_ms = op_ms > 0 ? op_ms : 1;   /* time always passes on a real card */
+    flush_ticks = flush_sleeps = 0;
+    tick_changes = card.changes;
+    sp.tick = flush_tick;
+    gw_sf_flush(&sf, flush_clock, flush_sleep, limit_ms, &res);
+    sp.tick = NULL;
+    card.op_ms = op_ms;
+    return res;
+}
+
+/* Samples below three quarters of the RAM ring (never spilled), a planned restart, a boot: all
+ * the samples come back once, in order, after those that were on the card already; a second
+ * boot sends nothing again. Each step is one card operation with a tick after it. */
+static void test_flush_before_restart(void)
+{
+    card_new(4096);
+    boot(2, 8, 0x136);
+    until_ready();
+    push_n(300);   /* 300 + 18 strings * 2 continuations = 336 records, below 384 */
+    TEST_ASSERT_EQUAL_UINT32(0, sp.blocks);
+    TEST_ASSERT_EQUAL_size_t(336, sf.count);
+    uint32_t sb_before = sp.sb_last_ms;
+    TEST_ASSERT_TRUE(now_ms - sb_before < GW_SFSPILL_SB_GAP_MS);
+    gw_sf_flush_t res = flush_now(5000);
+    TEST_ASSERT_EQUAL_INT(GW_SF_FLUSH_DONE, res.result);
+    TEST_ASSERT_EQUAL_UINT32(300, res.moved);
+    TEST_ASSERT_EQUAL_UINT32(336, res.records);
+    TEST_ASSERT_EQUAL_UINT32(0, res.left);
+    TEST_ASSERT_EQUAL_size_t(0, sf.count);
+    TEST_ASSERT_EQUAL_UINT32(2, res.blocks);   /* 169 records, then the rest */
+    TEST_ASSERT_EQUAL_UINT32(sp.blocks, res.blocks);
+    TEST_ASSERT_TRUE(flush_ticks >= (int)res.steps);
+    /* the head and position superblock waited for the 500 ms gap after the boot's one */
+    TEST_ASSERT_TRUE(flush_sleeps > 0);
+    TEST_ASSERT_TRUE(sp.sb_last_ms - sb_before >= GW_SFSPILL_SB_GAP_MS);
+    TEST_ASSERT_TRUE(now_ms - sp.sb_last_ms <= 1);   /* the last step: that superblock */
+    TEST_ASSERT_EQUAL_UINT64(sp.head, sp.hint_at);
+    /* a second flush has nothing to do */
+    int changes = card.changes;
+    res = flush_now(5000);
+    TEST_ASSERT_EQUAL_INT(GW_SF_FLUSH_DONE, res.result);
+    TEST_ASSERT_EQUAL_UINT32(0, res.moved + res.steps);
+    TEST_ASSERT_EQUAL_INT(changes, card.changes);
+
+    boot(2, 8, 0x136);   /* the restart: the RAM ring is gone */
+    until_ready();
+    TEST_ASSERT_EQUAL_UINT64(336, sp.kept_at_boot);
+    memset(consumed, 0, sizeof(consumed));
+    replay_reset();
+    TEST_ASSERT_EQUAL_INT(300, replay(-1, "after the flush"));
+    for (int c = 0; c < 300; c++) {
+        TEST_ASSERT_TRUE(rp.seen[c]);
+    }
+    steps_all();   /* the checkpoint after the replay */
+    remember_consumed();
+    boot(2, 8, 0x136);
+    until_ready();
+    replay_reset();
+    TEST_ASSERT_EQUAL_INT(0, replay(-1, "nothing again"));
+
+    /* samples on the card already and in the RAM ring: the order holds across both */
+    card_new(4096);
+    boot(2, 8, 0x137);
+    until_ready();
+    push_n(1000);
+    TEST_ASSERT_TRUE(sp.blocks > 0);
+    TEST_ASSERT_TRUE(sf.count > 0);
+    size_t ram = gw_sf_ram_samples(&sf);
+    res = flush_now(5000);
+    TEST_ASSERT_EQUAL_INT(GW_SF_FLUSH_DONE, res.result);
+    TEST_ASSERT_EQUAL_UINT32(ram, res.moved);
+    boot(2, 8, 0x137);
+    until_ready();
+    memset(consumed, 0, sizeof(consumed));
+    replay_reset();
+    TEST_ASSERT_EQUAL_INT(1000, replay(-1, "card and RAM"));
+}
+
+/* A slow card: the time limit stops the flush (at most one card operation late); the samples
+ * moved come back once and in order, the rest is counted as left (lost by the restart), and
+ * nothing is replayed from it. */
+static void test_flush_time_limit(void)
+{
+    card_new(4096);
+    boot(1, 8, 0x138);
+    until_ready();
+    now_ms += 1000;   /* no gap wait in this test */
+    push_n(370);      /* 370 + 22 * 2 = 414 records: one block spills at 384 */
+    TEST_ASSERT_EQUAL_UINT32(1, sp.blocks);
+    size_t ram = gw_sf_ram_samples(&sf);
+    card.op_ms = 300;
+    uint32_t t0 = now_ms;
+    /* the extent of the next block, then one block: the limit expires before the second */
+    gw_sf_flush_t res = flush_now(500);
+    TEST_ASSERT_EQUAL_INT(GW_SF_FLUSH_TIMEOUT, res.result);
+    TEST_ASSERT_TRUE(now_ms - t0 < 500 + card.op_ms);
+    TEST_ASSERT_EQUAL_UINT32(1, res.blocks);
+    TEST_ASSERT_TRUE(res.moved > 0);
+    TEST_ASSERT_TRUE(res.left > 0);
+    TEST_ASSERT_EQUAL_UINT32(ram, res.moved + res.left);
+    TEST_ASSERT_EQUAL_size_t(res.left, gw_sf_ram_samples(&sf));
+    int on_card = 0;
+    for (int c = 0; c < produced; c++) {
+        on_card += card.durable[c];
+    }
+    card.op_ms = 0;
+    boot(1, 8, 0x138);
+    until_ready();
+    memset(consumed, 0, sizeof(consumed));
+    replay_reset();
+    int n = replay(-1, "after the time limit");
+    TEST_ASSERT_EQUAL_INT(on_card, n);
+    TEST_ASSERT_EQUAL_INT(produced - (int)res.left, n);
+    for (int c = 0; c < produced; c++) {
+        TEST_ASSERT_EQUAL(c < n, rp.seen[c]);   /* the oldest, without a gap */
+    }
+}
+
+/* The card fails during the flush (a torn block write, then no power to the card): the flush
+ * stops at once, the spill is failed, nothing of the torn block is replayed after the boot. A
+ * flush of a failed spill, or before the boot recovery ends, does nothing. */
+static void test_flush_card_failure(void)
+{
+    card_new(4096);
+    boot(1, 8, 0x139);
+    until_ready();
+    now_ms += 1000;
+    push_n(300);
+    size_t ram = gw_sf_ram_samples(&sf);
+    card.mode = F_TORN;
+    card.cut_at = card.changes + 1;   /* the extent, then the first block is torn */
+    card.seed = 7;
+    gw_sf_flush_t res = flush_now(5000);
+    TEST_ASSERT_EQUAL_INT(GW_SF_FLUSH_FAILED, res.result);
+    TEST_ASSERT_FALSE(sp.ok);
+    TEST_ASSERT_EQUAL_UINT32(2, res.steps);
+    TEST_ASSERT_EQUAL_UINT32(0, res.moved);
+    TEST_ASSERT_EQUAL_UINT32(ram, res.left);
+    /* a failed spill: nothing */
+    int changes = card.changes;
+    res = flush_now(5000);
+    TEST_ASSERT_EQUAL_INT(GW_SF_FLUSH_NO_SPILL, res.result);
+    TEST_ASSERT_EQUAL_UINT32(ram, res.left);
+    TEST_ASSERT_EQUAL_INT(changes, card.changes);
+    /* the power comes back: the boot finds no valid block */
+    card.off = false;
+    card.cut_at = -1;
+    boot(1, 8, 0x139);
+    res = flush_now(5000);   /* the recovery has not run */
+    TEST_ASSERT_EQUAL_INT(GW_SF_FLUSH_NOT_READY, res.result);
+    TEST_ASSERT_EQUAL_INT(changes, card.changes);
+    until_ready();
+    memset(consumed, 0, sizeof(consumed));
+    replay_reset();
+    TEST_ASSERT_EQUAL_INT(0, replay(-1, "after the torn flush"));
+
+    /* without a spill */
+    gw_sf_init(&sf, storage, 8);
+    gw_sf_push(&sf, 1, 2, 3, false, 4);
+    gw_sf_flush(&sf, flush_clock, flush_sleep, 5000, &res);
+    TEST_ASSERT_EQUAL_INT(GW_SF_FLUSH_NO_SPILL, res.result);
+    TEST_ASSERT_EQUAL_UINT32(1, res.left);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -1206,5 +1401,8 @@ int main(void)
     RUN_TEST(test_spill_migration);
     RUN_TEST(test_spill_io_error);
     RUN_TEST(test_spill_faults);
+    RUN_TEST(test_flush_before_restart);
+    RUN_TEST(test_flush_time_limit);
+    RUN_TEST(test_flush_card_failure);
     return UNITY_END();
 }

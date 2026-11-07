@@ -756,14 +756,20 @@ int gw_sfspill_prepare(gw_sfspill_t *sp, bool want_block, uint32_t now_ms)
     return gc_step(sp) ? GW_SFSPILL_DID : GW_SFSPILL_IDLE;
 }
 
+/* The replay position moved since the last superblock write. */
+static bool pos_moved(const gw_sfspill_t *sp)
+{
+    const gw_sfspill_sb_t *last = &sp->sb[sp->sb_next ^ 1u];
+    return sp->ck_pending != 0 || sp->tail != last->tail_seq || sp->tail_rec != last->tail_rec ||
+           sp->mig_seg != last->mig_seg || sp->mig_off != last->mig_off;
+}
+
 bool gw_sfspill_checkpoint(gw_sfspill_t *sp, uint32_t now_ms)
 {
     if (!sp->ok || sp->phase != GW_SFSPILL_READY || !sb_gap_ok(sp, now_ms) || sp->sb_due) {
         return false;
     }
-    const gw_sfspill_sb_t *last = &sp->sb[sp->sb_next ^ 1u];
-    if (sp->ck_pending == 0 && sp->tail == last->tail_seq && sp->tail_rec == last->tail_rec &&
-        sp->mig_seg == last->mig_seg && sp->mig_off == last->mig_off) {
+    if (!pos_moved(sp)) {
         return false;
     }
     uint32_t n = sp->sb_writes;
@@ -771,6 +777,43 @@ bool gw_sfspill_checkpoint(gw_sfspill_t *sp, uint32_t now_ms)
         sb_write(sp, now_ms);   /* the superblock files first, if this boot has not made them */
     }
     return sp->sb_writes != n;
+}
+
+int gw_sfspill_flush_step(gw_sfspill_t *sp, bool want_block, uint32_t now_ms)
+{
+    if (!sp->ok || sp->phase != GW_SFSPILL_READY) {
+        return GW_SFSPILL_IDLE;
+    }
+    bool gap = sb_gap_ok(sp, now_ms);
+    if (sp->sb_due) {
+        if (!gap) {
+            return GW_SFSPILL_WAIT;   /* a new geometry or nonce goes first */
+        }
+        sb_write(sp, now_ms);
+        return GW_SFSPILL_DID;
+    }
+    if (want_block) {
+        /* the head hint as in normal operation: a short boot scan, and never a lap behind */
+        if (hint_due(sp) && gap) {
+            sb_write(sp, now_ms);
+            return GW_SFSPILL_DID;
+        }
+        uint32_t e = (uint32_t)(sp->head % sp->nblocks / sp->ext_blocks);
+        if (!ext_ok(sp, e)) {
+            alloc_step(sp, e);
+            return GW_SFSPILL_DID;
+        }
+        return GW_SFSPILL_BLOCK_READY;
+    }
+    /* the end: the head and the replay position on the card, in one superblock */
+    if (sp->head != sp->hint_at || pos_moved(sp)) {
+        if (!gap) {
+            return GW_SFSPILL_WAIT;
+        }
+        sb_write(sp, now_ms);
+        return GW_SFSPILL_DID;
+    }
+    return GW_SFSPILL_IDLE;
 }
 
 bool gw_sfspill_busy(const gw_sfspill_t *sp)
