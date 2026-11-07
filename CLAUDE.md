@@ -33,6 +33,12 @@ Write all new or changed prose in ASD-STE100 Simplified Technical English (STE).
 
 **The firmware has never run on real hardware.** It has only run in host tests and in QEMU. The W5500, RS485 hardware mode, TCA9554, GPIO DIs and LED are compile-only (issues #1 and #18).
 
+**No gateway is installed yet (before v1.0).** Until the product owner says that the first gateway is installed:
+- A change of a stored format (the configuration document, NVS keys and records, the microSD card format, RTC memory) needs no migration and no backward compatibility. Document the change in `idf/README.md`, and say in the commit that old data is dropped or reset.
+- Do not add code that reads an earlier format only for compatibility.
+
+When the product owner says that the first gateway is installed, tag that commit `v1.0`. From then on, each change of a stored format needs an upgrade path and a downgrade path (see #144, #146, #147 and #148).
+
 ## Commands
 
 The host tests and the decode check run from the repo root. The firmware commands are run from `idf/`, after `. $IDF_PATH/export.sh`.
