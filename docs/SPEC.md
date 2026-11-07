@@ -382,8 +382,13 @@ The object form, with the optional spill to a microSD card:
 
 **The card.**
 
-- Use a card formatted as FAT32 (FAT16 below 2 GB). exFAT cards do not mount: ESP-IDF v6.1 has no exFAT. Most cards of 64 GB or more come with exFAT.
-- Format the card with clusters of 32 KB. The shell command `card format confirm` does this on the gateway. It deletes everything on the card. The gateway never formats a card by itself. With 4 KB clusters, the gateway uses a maximum of 512 MB.
+- The card is only for the gateway. Do not put other files on it.
+- Format the card with the gateway before the first use. Use the web UI (the status page, "Tarjeta microSD", "Formatear tarjeta") or the shell command `card format confirm`. The format makes one MBR partition with FAT32 and clusters of 32 KB (FAT16 below 2 GB).
+- **The format deletes everything on the card**, also the samples that wait there. The gateway never formats a card by itself: the web UI asks you to type `FORMATEAR`, and the shell needs the word `confirm`.
+- These cards do not mount: a card with no file system, an exFAT card, an NTFS or ext4 card, and a card with a GPT partition table. ESP-IDF v6.1 has no exFAT, and most cards of 64 GB or more come with exFAT. The gateway formats these cards too. The format does not need a mounted card, and it operates also when `sd.enabled` is `false`. The status page and `/api/status` (`card`) tell why a card does not mount.
+- The format needs the PSRAM, as the spill does. Without PSRAM, the gateway refuses the format and tells why.
+- The format runs in the background (it can take some minutes on a large card). The spill stops first, and the RAM buffer continues. After the format, restart the gateway to use the card.
+- A card that a PC formatted with clusters of 4 KB mounts, but the gateway then uses a maximum of 512 MB of it.
 - Use an industrial card (pSLC) when you can. The gateway writes each block one time, with no FAT or directory write in normal operation.
 - The gateway keeps the data in the folder `/sf`. The ring is in the files `r0000.sf`, `r0001.sf` and so on. The files `ringa.sf` and `ringb.sf` are the two copies of its superblock. A PC does not need to read them.
 - The data on the card stays after a restart and after a power cut. A change of the devices or tags starts a new ring. The gateway does not publish the old data, and it deletes no file for it. The segments of the earlier format (`NNNNNNNN.sf`) are published one time, before the ring, and then deleted.
@@ -661,30 +666,38 @@ En el archivo `/cfg/config.json` un secreto ausente, vacío o `"********"` toma 
 
 **Límite de intentos:** tras 5 accesos fallidos seguidos desde una misma dirección, esa dirección recibe `429` con `Retry-After` durante 30 s, sin comprobar la contraseña (tampoco la correcta); cada bloqueo seguido duplica el tiempo, hasta 15 min; un acceso correcto lo borra (Kconfig `GW_WEB_LOGIN_*`).
 
-**API REST** (todas las rutas piden HTTP Basic con `web.username` y `web.password`, por HTTPS con `https`; respuestas JSON):
+**REST API.** All the routes require HTTP Basic with `web.username` and `web.password`, over HTTPS when `https` is on. The responses are JSON.
 
-**Escrituras y CSRF** (issue #100): todo `PUT` y `POST` lleva la cabecera `X-Requested-With` (cualquier valor; la interfaz web manda `gateway`). Si el cliente manda `Origin` (o, sin él, `Referer`), tiene que ser este mismo equipo: el esquema de la conexión y el `Host` del pedido. Se comparan normalizados (issue #106): nombre en minúsculas y sin el punto final, IPv6 entre corchetes, puerto en decimal y omitido si es el del esquema (443 con HTTPS, 80 sin) o está vacío. Vale cualquier nombre con el que se llegue al equipo (IP, `<hostname>.local`, `<hostname>`, un nombre DNS de la planta) siempre que la página y el pedido usen el mismo; un `Host` u `Origin` mal formado no vale, y `Origin: null` tampoco. Si no, `403`, antes de mirar la contraseña: no cuenta como acceso fallido. Un pedido rechazado sin credenciales o de otro sitio, con un cuerpo de más de 1 KB, no se lee entero (issue #106): la respuesta sale y la conexión se cierra (`401`, `403`, `429`; el cliente que todavía está enviando puede ver la conexión cortada en vez de la respuesta). El rechazo de un pedido autenticado y del mismo origen (`400`, `409`, `413`, `415`) no se corta: el equipo descarta el cuerpo entero y el cliente recibe la respuesta. Un cliente que no es navegador (`curl`, un script) no manda `Origin`: le alcanza con la cabecera, por ejemplo `curl -u admin:… -H 'X-Requested-With: curl' -X PUT --data-binary @config.json https://<ip>/api/config`.
+**Writes and CSRF (issue #100).** Each `PUT` and `POST` must have the header `X-Requested-With` (any value; the web UI sends `gateway`). If the client sends `Origin` (or `Referer` when there is no `Origin`), it must be this gateway: the scheme of the connection and the `Host` of the request. The gateway compares them in a normal form (issue #106): the name in lower case and without the final dot, IPv6 between brackets, the port in decimal, and no port when it is the port of the scheme (443 with HTTPS, 80 without) or empty. Any name that gets to the gateway is correct (IP, `<hostname>.local`, `<hostname>`, a DNS name of the plant), if the page and the request use the same name. A malformed `Host` or `Origin` is not correct, and `Origin: null` is not correct. Otherwise the response is `403`, before the password check: it does not count as a failed login.
 
-| Método y ruta | Qué hace |
+The gateway does not read all of the body of a request without credentials or from another site, when the body is more than 1 KB (issue #106). It sends the response (`401`, `403`, `429`) and closes the connection. A client that still sends can see a closed connection instead of the response. The gateway does not cut the rejection of an authenticated request from the same origin (`400`, `409`, `413`, `415`): it discards all of the body, and the client receives the response. A client that is not a browser (`curl`, a script) does not send `Origin`: the header is sufficient. For example: `curl -u admin:… -H 'X-Requested-With: curl' -X PUT --data-binary @config.json https://<ip>/api/config`.
+
+| Method and route | What it does |
 |---|---|
-| `GET /api/config` | Exporta la configuración guardada, con los secretos enmascarados. `?download=1` la entrega como archivo |
-| `PUT /api/config` (o `POST`) | Importa: valida, guarda de forma atómica (archivo temporal + `rename`) y reinicia de forma ordenada (NDEATH). `?dry_run=1` solo valida. Error: `400 {"ok":false,"error":"…","path":"devices[0].tags[1].type","line":0,"column":0}`; `413` si supera `CONFIG_GW_CONFIG_MAX_BYTES` |
-| `POST /api/restart` | Reinicio ordenado |
-| `POST /api/firmware` | FW-1: `application/json` con `{"url": "https://…"}` (descarga) o `application/octet-stream` con la imagen como cuerpo; otro `Content-Type` → `415` |
-| `GET /api/status` | Estado en vivo (también en recuperación y puesta en marcha). Ver abajo |
+| `GET /api/config` | Exports the saved configuration, with the secrets masked. `?download=1` sends it as a file |
+| `PUT /api/config` (or `POST`) | Imports: validates, saves atomically (a temporary file and `rename`) and restarts in order (NDEATH). `?dry_run=1` only validates. Error: `400 {"ok":false,"error":"…","path":"devices[0].tags[1].type","line":0,"column":0}`; `413` above `CONFIG_GW_CONFIG_MAX_BYTES` |
+| `POST /api/restart` | Restarts in order |
+| `POST /api/firmware` | FW-1: `application/json` with `{"url": "https://…"}` (download), or `application/octet-stream` with the image as the body. Another `Content-Type` gets `415` |
+| `POST /api/card/format?confirm=1` | SPB-14, issue #139: starts a format of the microSD card in the background, and returns at once. It deletes everything on the card. Without `?confirm=1`: `400`. `202 {"ok":true,"started":true}` when the format starts. `409` when a format runs. `501` when the build has no card (QEMU) or the board has no PSRAM. `503` when there is no memory for the format task. The errors have `reason`: `busy`, `no_support`, `no_psram` or `no_memory`. A card that does not answer ends the format as `failed` (`card_format` in `/api/status`) |
+| `GET /api/status` | The live state (also in recovery and in commissioning). Refer to the description below |
 
-**`GET /api/status`** devuelve un objeto con: `mode` (`normal`, `recovery`, `commissioning`), `firmware`, `reset_reason`, `uptime_s`, `config` (`ok`, `source`, `error`, `path`), `network` (`up`, `interfaces`), `mqtt` (`connected`), `sparkplug` (`group_id`, `edge_node_id`, `diagnostics_s`; solo con configuración válida), `syslog`, `devices` (por dispositivo: `online`, `cycles`, `failed`, `ok`, `timeout`, `crc`, `frame`, `exception` y `tags` con `name`, `valid` y `value`: número, entero exacto para `int64`/`uint64`, texto para `string`, hexadecimal para `bytes`), `heap` y:
+**`GET /api/status`** sends an object with these items: `mode` (`normal`, `recovery`, `commissioning`), `firmware`, `reset_reason`, `uptime_s`, `config` (`ok`, `source`, `error`, `path`), `network` (`up`, `interfaces`), `mqtt` (`connected`), `sparkplug` (`group_id`, `edge_node_id`, `diagnostics_s`; only with a valid configuration), `syslog`, `devices`, `heap` and the fields of the table. For each device, `devices` has `online`, `cycles`, `failed`, `ok`, `timeout`, `crc`, `frame`, `exception` and `tags`. Each tag has `name`, `valid` and `value`: a number, an exact integer for `int64`/`uint64`, a text for `string`, hexadecimal for `bytes`.
 
-| Campo | Qué es |
+| Field | What it is |
 |---|---|
-| `io.di`, `io.do` | Bits de las DI y DO (bit n = canal n+1). `io.do` es `null` mientras el expansor no responde |
-| `io.do_unknown`, `io.expander` | El expansor no responde; `ready`, `retrying` (se reintenta con backoff) y `attempts` |
-| `io.failsafe` | IO-3: las DO tomaron su estado seguro por falta de sesión Sparkplug |
-| `io.rule_do` | IO-7: máscara de las DO que maneja una regla local (no aceptan NCMD) |
-| `io.counters` | IO-4: los 8 contadores de pulsos |
-| `buzzer.alarm`, `buzzer.enabled` | IO-6: alarma que suena ahora (`none`, `device_offline`, `mqtt_down`, `config_error`) y las habilitadas |
-| `time.utc_s`, `time.synced`, `time.source` | Hora del equipo (s UTC), si SNTP la sincronizó (TIME-3) y de dónde viene: `sntp`, `rtc` (TIME-2) o `none` |
-| `time.rtc` | `present`, `status` de la última lectura o escritura del RTC y `stores` (veces que se escribió tras SNTP) |
+| `io.di`, `io.do` | The bits of the DIs and DOs (bit n = channel n+1). `io.do` is `null` while the expander does not respond |
+| `io.do_unknown`, `io.expander` | The expander does not respond; `ready`, `retrying` (retries with backoff) and `attempts` |
+| `io.failsafe` | IO-3: the DOs are in their safe state, because there is no Sparkplug session |
+| `io.rule_do` | IO-7: the mask of the DOs that a local rule controls (they do not accept NCMD) |
+| `io.counters` | IO-4: the 8 pulse counters |
+| `buzzer.alarm`, `buzzer.enabled` | IO-6: the alarm that sounds now (`none`, `device_offline`, `mqtt_down`, `config_error`) and the enabled alarms |
+| `time.utc_s`, `time.synced`, `time.source` | The time of the gateway (s UTC), whether SNTP synchronized it (TIME-3), and its source: `sntp`, `rtc` (TIME-2) or `none` |
+| `time.rtc` | `present`, the `status` of the last read or write of the RTC, and `stores` (the writes after SNTP) |
+| `card` (optional, issue #139) | The microSD card. `state`: `unsupported` (the build has no card), `unchecked` (the boot did not look for a card: the spill is off), `absent`, `not_mounted`, `mounted`, `formatting` or `formatted` (restart to use it). `detail` tells why (for example `no FAT file system (exFAT, NTFS, ext4, GPT, or no format) (FatFs error 13)`). When known: `name`, `size_mb`, `fat`, `cluster` (B), `free_mb` (with no scan of the FAT) and `other_entries` (the entries of the root that are not the folder `sf`: the format deletes them too) |
+| `spill` (optional, normal mode) | The spill of store & forward to the card. `state`: `off` (with `detail`), `not_started` (with `detail`, for example `it needs PSRAM, and none was detected`), `on`, `failed` (with `detail` and `stranded`, the samples that stay on the card) or `stopped` (a format took the card). With `on`: `ready` (the boot recovery ended), `waiting`, `old_format`, `moved`, `overwritten`, `holes`, `ring_blocks`, `waiting_blocks`, `extents`, `kb`, `blocks_written`, `checkpoints`, `boot_ms` and `files_to_delete` (the counters of the shell `spill` line) |
+| `card_format` (optional, issue #139) | The format of the card. `state`: `idle`, `running` (with `elapsed_s`), `done` (with `duration_s`, `fat`, `cluster`, `size_mb` and `restart: true`) or `failed` (with `duration_s` and `error`) |
+
+A client that does not know the optional fields can ignore them.
 
 ## 7. Criterios de aceptación del MVP
 
