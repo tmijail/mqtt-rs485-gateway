@@ -42,14 +42,19 @@ When the product owner says that the first gateway is installed, tag that commit
 
 ## Sparkplug B conformance
 
-The gateway must obey the Eclipse Sparkplug B 3.0.0 specification fully. Do not accept a deviation from it.
+The gateway must obey the Eclipse Sparkplug B 3.0.0 specification fully. Do not accept a deviation from it. The only exception is a compatibility profile for one host (see the last item).
 - Obey each MUST, MUST NOT, SHOULD and SHOULD NOT statement for an Edge Node. A deviation is a bug, also when a document records it.
 - The reference is the normative text with a `tck-id`, in the AsciiDoc chapters at the tag `v3.0.0` of `eclipse-sparkplug/sparkplug`. When an example does not agree with the normative text, obey the normative text.
 - When `docs/SPEC.md` does not agree with the Sparkplug specification, the Sparkplug specification is correct. Correct `docs/SPEC.md`.
-- Do not change the gateway to accept a host that does not obey the specification (for example, the Sparkplug 2.x STATE of UMH Core). Write the limit in the documentation.
-- An option for a specific host (for example, UMH Core) must also obey the specification in each of its settings.
 - When the specification permits a choice (MAY), write the choice and the reason in `idf/README.md`.
 - When a change concerns a Sparkplug rule, give its `tck-id` in the code comment, the test, the issue and the commit.
+- When a host does not obey the specification (for example, the Sparkplug 2.x STATE of UMH Core), write the limit in the documentation and report the problem to the host project. Do not change the default behaviour of the gateway for it.
+- An option for a specific host must obey the specification, if possible. A compatibility profile that does not obey it is a last resort. Add one only when all these conditions are true:
+  - A test with the real host shows that the profile is necessary.
+  - The problem was reported to the host project first, and the host project did not correct it.
+  - The product owner approves the profile.
+
+  The profile is off by default and changes only the necessary items. `idf/README.md` lists each deviation that it causes.
 
 ## Commands
 
