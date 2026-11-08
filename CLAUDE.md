@@ -40,6 +40,17 @@ Write all new or changed prose in ASD-STE100 Simplified Technical English (STE).
 
 When the product owner says that the first gateway is installed, tag that commit `v1.0`. From then on, each change of a stored format needs an upgrade path and a downgrade path (see #144, #146, #147 and #148).
 
+## Sparkplug B conformance
+
+The gateway must obey the Eclipse Sparkplug B 3.0.0 specification fully. Do not accept a deviation from it.
+- Obey each MUST, MUST NOT, SHOULD and SHOULD NOT statement for an Edge Node. A deviation is a bug, also when a document records it.
+- The reference is the normative text with a `tck-id`, in the AsciiDoc chapters at the tag `v3.0.0` of `eclipse-sparkplug/sparkplug`. When an example does not agree with the normative text, obey the normative text.
+- When `docs/SPEC.md` does not agree with the Sparkplug specification, the Sparkplug specification is correct. Correct `docs/SPEC.md`.
+- Do not change the gateway to accept a host that does not obey the specification (for example, the Sparkplug 2.x STATE of UMH Core). Write the limit in the documentation.
+- An option for a specific host (for example, UMH Core) must also obey the specification in each of its settings.
+- When the specification permits a choice (MAY), write the choice and the reason in `idf/README.md`.
+- When a change concerns a Sparkplug rule, give its `tck-id` in the code comment, the test, the issue and the commit.
+
 ## Commands
 
 The host tests and the decode check run from the repo root. The firmware commands are run from `idf/`, after `. $IDF_PATH/export.sh`.
