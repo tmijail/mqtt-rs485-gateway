@@ -149,8 +149,9 @@ def check(kind, p):
     if kind == "NDEATH":
         if p.HasField("seq"):
             errors.append("NDEATH must not carry seq")
-        if [m.name for m in p.metrics] != ["bdSeq"] or p.metrics[0].datatype != 8:
-            errors.append("NDEATH must carry exactly the UInt64 bdSeq metric")
+        # tck-id-message-flow-edge-node-birth-publish-will-message-payload-bdSeq
+        if [m.name for m in p.metrics] != ["bdSeq"] or p.metrics[0].datatype != 4:
+            errors.append("NDEATH must carry exactly the Int64 bdSeq metric")
         return errors
     if not p.HasField("seq") or not 0 <= p.seq <= 255:
         errors.append("seq missing or out of 0..255")
@@ -185,6 +186,9 @@ def check(kind, p):
                          *(f"DI/{i}" for i in range(1, 9)), *(f"DO/{i}" for i in range(1, 9))):
             if required not in names:
                 errors.append(f"NBIRTH lacks {required}")
+        # tck-id-message-flow-edge-node-birth-publish-nbirth-payload-bdSeq
+        if any(m.name == "bdSeq" and m.datatype != 4 for m in p.metrics):
+            errors.append("NBIRTH bdSeq must have the datatype Int64 (4)")
     return errors
 
 

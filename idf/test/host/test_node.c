@@ -82,7 +82,10 @@ static void test_nbirth_and_dbirth(void)
     TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS - 1, dec.count);   /* no Modbus TCP table */
     int i = decoded_find_name(&dec, "bdSeq");
     TEST_ASSERT_TRUE(i >= 0);
-    TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[i].datatype);
+    /* tck-id-message-flow-edge-node-birth-publish-nbirth-payload-bdSeq: the NBIRTH carries
+     * bdSeq with the datatype INT64 (4), not UInt64 (#154) */
+    TEST_ASSERT_EQUAL(SPB_DT_INT64, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_LONG, dec.m[i].kind);
     TEST_ASSERT_EQUAL_DOUBLE(7, dec.m[i].num);
     i = decoded_find_name(&dec, "Node Control/Rebirth");
     TEST_ASSERT_TRUE(i >= 0);

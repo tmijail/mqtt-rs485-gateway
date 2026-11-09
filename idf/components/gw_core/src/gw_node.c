@@ -233,9 +233,12 @@ static bool tag_changed(const gw_node_t *n, uint16_t tag, const gw_tag_value_t *
 
 size_t gw_node_death_payload(uint64_t bdseq, uint8_t *out, size_t cap)
 {
+    /* tck-id-message-flow-edge-node-birth-publish-will-message-payload-bdSeq: the Will
+     * payload carries bdSeq with the datatype INT64 (#154). bdSeq is 0..255, so the cast
+     * is exact and the wire value in long_value does not change. */
     spb_metric_t m = {
-        .name = NAME_BDSEQ, .alias = GW_ALIAS_BDSEQ, .datatype = SPB_DT_UINT64,
-        .v.u64 = bdseq};
+        .name = NAME_BDSEQ, .alias = GW_ALIAS_BDSEQ, .datatype = SPB_DT_INT64,
+        .v.i64 = (int64_t)bdseq};
     spb_payload_t p = {.timestamp = gw_port_time_ms(), .has_seq = false, .metrics = &m,
                        .metric_count = 1};
     return spb_encode(&p, out, cap);
@@ -389,7 +392,8 @@ static bool publish_nbirth(gw_node_t *n)
     gw_tagdb_get_io(&io);
     uint64_t now = gw_port_time_ms();
     size_t i = 0;
-    metric(n, i++, NAME_BDSEQ, GW_ALIAS_BDSEQ, SPB_DT_UINT64, now)->v.u64 = n->bdseq;
+    /* tck-id-message-flow-edge-node-birth-publish-nbirth-payload-bdSeq: INT64 (#154) */
+    metric(n, i++, NAME_BDSEQ, GW_ALIAS_BDSEQ, SPB_DT_INT64, now)->v.i64 = (int64_t)n->bdseq;
     metric(n, i++, NAME_REBIRTH, GW_ALIAS_REBIRTH, SPB_DT_BOOLEAN, now)->v.num = 0;
     metric(n, i++, NAME_REBOOT, GW_ALIAS_REBOOT, SPB_DT_BOOLEAN, now)->v.num = 0;
     metric(n, i++, NAME_FIRMWARE, GW_ALIAS_FIRMWARE, SPB_DT_STRING, now)->v.str = n->info.firmware;

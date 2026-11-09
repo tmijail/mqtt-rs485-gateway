@@ -93,7 +93,10 @@ static void test_ndeath_has_no_seq(void)
     TEST_ASSERT_FALSE(dec.has_seq);
     TEST_ASSERT_EQUAL(1, dec.count);
     TEST_ASSERT_EQUAL_STRING("bdSeq", dec.m[0].name);
-    TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[0].datatype);
+    /* tck-id-message-flow-edge-node-birth-publish-will-message-payload-bdSeq: the Will
+     * payload carries bdSeq with the datatype INT64 (4), not UInt64 (#154) */
+    TEST_ASSERT_EQUAL(SPB_DT_INT64, dec.m[0].datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_LONG, dec.m[0].kind);
     TEST_ASSERT_EQUAL_DOUBLE(7, dec.m[0].num);
 }
 

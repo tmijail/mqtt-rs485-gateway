@@ -93,7 +93,7 @@ Al publicar, el gateway hace de *Edge Node* de Sparkplug. Cada esclavo Modbus es
 | ID | Requisito | Prio | MVP |
 |---|---|---|---|
 | SPB-1 | Payload protobuf conforme a `sparkplug_b.proto` de Eclipse Tahu | P0 | ✅ |
-| SPB-2 | **NDEATH** registrado como LWT: QoS 1, sin retain, con la métrica `bdSeq` (UInt64). Al desconectarse de forma ordenada se publica NDEATH explícitamente | P0 | ✅ |
+| SPB-2 | The node registers the **NDEATH** as the MQTT Will (LWT): QoS 1, no retain. The NDEATH has the metric `bdSeq` with the datatype Int64 (`tck-id-message-flow-edge-node-birth-publish-will-message-payload-bdSeq`). The `bdSeq` of the NBIRTH also has the datatype Int64 (`tck-id-message-flow-edge-node-birth-publish-nbirth-payload-bdSeq`). Before an orderly disconnection, the node publishes the NDEATH | P0 | ✅ |
 | SPB-3 | **bdSeq** de 0 a 255, persistido en memoria no volátil. Se incrementa en cada intento de conexión y el NBIRTH lleva el mismo valor que el LWT de esa conexión | P0 | ✅ |
 | SPB-4 | **NBIRTH**: QoS 0, sin retain, `seq`=0, timestamp. Incluye `bdSeq`, `Node Control/Rebirth` (Boolean, escribible), `Node Control/Reboot`, `Node Info/Firmware`, `Node Info/Hardware` y las métricas de E/S local (§4.6), todas con nombre, alias, datatype y valor | P0 | ✅ |
 | SPB-5 | **seq** de 0 a 255 que vuelve a empezar, compartido por todos los mensajes del nodo salvo NDEATH | P0 | ✅ |
