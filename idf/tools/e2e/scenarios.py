@@ -44,7 +44,11 @@ SCENARIOS = (
     ("issue #135 no PSRAM", ("nopsram",)),
     ("refuse", ("refuse",)),   # part of "main"; alone only when "main" is not selected (#89)
     ("main", ("main",)),
+    ("umh", ("umh",)),         # optional: only when named (issue #175)
 )
+# Issue #175: scenarios that a run selects only when --only names them. A full run and the CI
+# groups leave them out: they need a program that is not in the CI image (benthos-umh).
+OPTIONAL = {"umh"}
 ONLY_NAMES = tuple(dict.fromkeys(n for _, names in SCENARIOS for n in names))
 
 # Issue #135: the firmware assumes the PSRAM of the board. The PSRAM variant ("psram") runs the
@@ -78,10 +82,14 @@ def variant_of(name):
 
 def selected(only, variant=None):
     """Names of the scenarios a run with the --only set @only runs, in order. Without --only
-    (empty set): the full run of @variant (issue #135), or of both variants (None)."""
+    (empty set): the full run of @variant (issue #135), or of both variants (None), without the
+    OPTIONAL scenarios (issue #175)."""
     out = []
     for name, names in SCENARIOS:
-        if name == "refuse":
+        if name in OPTIONAL:
+            if only & set(names):
+                out.append(name)
+        elif name == "refuse":
             if "refuse" in only and "main" not in only:
                 out.append(name)
         elif only:
