@@ -334,8 +334,10 @@ static bool fill_metric(Payload_Metric *out, const spb_metric_t *m)
     }
     out->has_alias = !m->no_alias;
     out->alias = m->no_alias ? 0 : m->alias;
-    out->has_datatype = true;
-    out->datatype = m->datatype;
+    /* tck-id-payloads-metric-datatype-req: births carry it; tck-id-payloads-metric-datatype-not-req:
+     * DATA does not (omit_datatype, #159) */
+    out->has_datatype = !m->omit_datatype;
+    out->datatype = m->omit_datatype ? 0 : m->datatype;
     if (m->timestamp != 0) {
         out->has_timestamp = true;
         out->timestamp = m->timestamp;

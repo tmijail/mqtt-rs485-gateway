@@ -79,6 +79,17 @@ bool gw_node_topic(const gw_node_t *n, const char *type, const char *device, cha
                      device);
 }
 
+/* tck-id-payloads-metric-datatype-req: every metric of NBIRTH and DBIRTH has its datatype;
+ * tck-id-payloads-metric-datatype-not-req: the metrics of NDATA and DDATA, template members
+ * included, do not (#159). The host knows each datatype from the birth. */
+static void omit_datatypes(spb_metric_t *m, size_t count, const char *type)
+{
+    bool data = strcmp(type, "NDATA") == 0 || strcmp(type, "DDATA") == 0;
+    for (size_t i = 0; i < count; i++) {
+        m[i].omit_datatype = data;
+    }
+}
+
 /* Returns 0, GW_NODE_PUBLISH_TOO_LARGE (larger than the broker accepts, #73, or than the local
  * payload buffer, #158) or -1 (any other failure).
  * tck-id-payloads-sequence-num-incrementing: only a message that went out uses a seq number.
@@ -97,6 +108,7 @@ static int publish_rc(gw_node_t *n, const char *type, const char *device, size_t
     if (n->buf == NULL) {
         return -1;
     }
+    omit_datatypes(n->metrics, metric_count, type);
     size_t len = spb_encode(&p, n->buf, n->buf_cap);
     if (len == 0) {
         GW_LOGE(TAG, "%s%s%s: payload does not fit the local buffer of %u bytes", type,
@@ -464,6 +476,7 @@ static int publish_device_rc(gw_node_t *n, const char *type, uint16_t dev, size_
     }
     n->tmpl = (spb_template_t){.ref = d->type, .is_definition = false, .count = (uint32_t)count,
                                .members = &n->metrics[1]};
+    omit_datatypes(&n->metrics[1], count, type);   /* the members; publish_rc does the instance */
     metric(n, 0, birth ? d->type : NULL, GW_ALIAS_TAG_BASE + d->first_tag, SPB_DT_TEMPLATE,
            gw_port_time_ms())
         ->v.tmpl = &n->tmpl;

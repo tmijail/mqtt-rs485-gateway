@@ -1081,7 +1081,7 @@ Legend for **Evidence**:
 | SPB-4 | Implemented | `gw_core/src/gw_node.c` (`publish_nbirth`) | H + Q. Node metrics: bdSeq, Rebirth, Reboot, `Node Info/Firmware`, `Hardware`, `Reset Reason`, `Node Control/Scan Rate` (alias 1 and 3–7), DI/1–8, DO/1–8 and `Counter/1`–`8` (IO-4, alias 30–37) |
 | SPB-5 | Implemented | `gw_node.c` | H (wrap from 255 to 0) + Q (continuity) |
 | SPB-6 | Implemented | `gw_node.c` (`gw_node_device_changed`) | H + Q |
-| SPB-7 | Implemented | `gw_node.c`, `gw_rbe.c` | H + Q |
+| SPB-7 | Implemented | `gw_node.c`, `gw_rbe.c` | H + Q. NDATA and DDATA have no datatype, also on the members of a template instance (`tck-id-payloads-metric-datatype-not-req`, #159). The births have the datatype of each metric |
 | SPB-8 | Implemented | `gw_node.h` (alias map) | H + Q |
 | SPB-9 | Implemented | `gw_node.c` (`gw_node_rebirth`) | H + Q |
 | SPB-10 | Implemented | `gw_node.c`, `gw_poll.c` (`gw_poller_write`) | H + Q. The commands are all or nothing. An NCMD/DCMD that does not decode fully applies no metric (H + Q). A DCMD with writes that do not all fit in the bus queue also applies no metric (H). The gateway rejects a DCMD metric with a datatype that is not the datatype of the DBIRTH, and a value with a fraction for an integer or Boolean tag (#163, H). The log gives the reason. A metric without a datatype uses the datatype of the DBIRTH |

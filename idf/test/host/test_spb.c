@@ -53,6 +53,39 @@ static void test_round_trip_all_types(void)
     TEST_ASSERT_EQUAL_UINT64(9, dec.m[8].alias);
 }
 
+/* #159: omit_datatype leaves the datatype out (tck-id-payloads-metric-datatype-not-req) but the
+ * value stays in the field of the datatype, also for a template instance and its members. */
+static void test_omit_datatype(void)
+{
+    spb_metric_t mem = {.name = "Speed", .no_alias = true, .datatype = SPB_DT_UINT16,
+                        .omit_datatype = true, .timestamp = 1, .v.num = 7};
+    spb_template_t inst = {.ref = "Pump", .count = 1, .members = &mem};
+    spb_metric_t m[] = {
+        {.alias = 1, .datatype = SPB_DT_INT16, .omit_datatype = true, .timestamp = 1, .v.num = -1},
+        {.alias = 2, .datatype = SPB_DT_DOUBLE, .omit_datatype = true, .timestamp = 1,
+         .v.num = 0.5},
+        {.alias = 3, .datatype = SPB_DT_TEMPLATE, .omit_datatype = true, .timestamp = 1,
+         .v.tmpl = &inst},
+        {.alias = 4, .datatype = SPB_DT_BOOLEAN, .timestamp = 1, .v.num = 1},
+    };
+    spb_payload_t p = {.timestamp = 1, .has_seq = true, .seq = 1, .metrics = m, .metric_count = 4};
+    size_t len = spb_encode(&p, buf, sizeof(buf));
+    TEST_ASSERT_GREATER_THAN(0, len);
+    TEST_ASSERT_TRUE(decode_payload(buf, len, &dec));
+    TEST_ASSERT_FALSE(dec.m[0].has_datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_INT, dec.m[0].kind);
+    TEST_ASSERT_FALSE(dec.m[1].has_datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_DOUBLE, dec.m[1].kind);
+    TEST_ASSERT_EQUAL_DOUBLE(0.5, dec.m[1].num);
+    TEST_ASSERT_FALSE(dec.m[2].has_datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_TEMPLATE, dec.m[2].kind);
+    TEST_ASSERT_EQUAL(1, dec.mem_count);
+    TEST_ASSERT_FALSE(dec.mem[0].has_datatype);
+    TEST_ASSERT_EQUAL_DOUBLE(7, dec.mem[0].num);
+    TEST_ASSERT_TRUE(dec.m[3].has_datatype);   /* not set: the datatype is there */
+    TEST_ASSERT_EQUAL(SPB_DT_BOOLEAN, dec.m[3].datatype);
+}
+
 /* MB-6: 64-bit integers travel exactly in long_value (two's complement for Int64), Double in
  * double_value. */
 static void test_round_trip_64bit_exact(void)
@@ -502,6 +535,7 @@ int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(test_round_trip_all_types);
+    RUN_TEST(test_omit_datatype);
     RUN_TEST(test_round_trip_64bit_exact);
     RUN_TEST(test_wire_format_int16_sign_extension);
     RUN_TEST(test_ndeath_has_no_seq);

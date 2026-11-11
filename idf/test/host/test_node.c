@@ -117,6 +117,7 @@ static void test_nbirth_and_dbirth(void)
     /* every birth metric has name, alias (except Rebirth) and datatype; aliases are unique */
     for (size_t a = 0; a < dec.count; a++) {
         TEST_ASSERT_TRUE(dec.m[a].has_name);
+        TEST_ASSERT_TRUE(dec.m[a].has_datatype);   /* tck-id-payloads-metric-datatype-req */
         TEST_ASSERT_NOT_EQUAL(0, dec.m[a].datatype);
         TEST_ASSERT_TRUE(dec.m[a].has_alias || strcmp(dec.m[a].name, "Node Control/Rebirth") == 0);
         for (size_t b = a + 1; b < dec.count; b++) {
@@ -138,6 +139,9 @@ static void test_nbirth_and_dbirth(void)
     TEST_ASSERT_DOUBLE_WITHIN(1e-5, 12.3, dec.m[i].num);
     i = decoded_find_name(&dec, "Run");
     TEST_ASSERT_EQUAL(SPB_DT_BOOLEAN, dec.m[i].datatype);
+    for (size_t a = 0; a < dec.count; a++) {
+        TEST_ASSERT_TRUE(dec.m[a].has_datatype);   /* tck-id-payloads-metric-datatype-req */
+    }
 }
 
 static void test_offline_device_has_no_dbirth_until_online(void)
@@ -177,8 +181,13 @@ static void test_ddata_by_exception_with_deadband(void)
     TEST_ASSERT_EQUAL(2, dec.count);   /* one message with both changes */
     for (size_t i = 0; i < dec.count; i++) {
         TEST_ASSERT_FALSE(dec.m[i].has_name);      /* alias only */
+        TEST_ASSERT_FALSE(dec.m[i].has_datatype);  /* tck-id-payloads-metric-datatype-not-req */
         TEST_ASSERT_EQUAL_UINT64(1000, dec.m[i].timestamp);
     }
+    /* the value is in the field of the DBIRTH datatype: Float for Voltage, Boolean for Run */
+    int volt = decoded_find_alias(&dec, GW_ALIAS_TAG_BASE + VOLTAGE);
+    TEST_ASSERT_EQUAL(SPB_VAL_FLOAT, dec.m[volt].kind);
+    TEST_ASSERT_EQUAL(SPB_VAL_BOOL, dec.m[decoded_find_alias(&dec, GW_ALIAS_TAG_BASE + RUN)].kind);
     int v = decoded_find_alias(&dec, GW_ALIAS_TAG_BASE + VOLTAGE);
     TEST_ASSERT_DOUBLE_WITHIN(1e-4, 230.2, dec.m[v].num);
     TEST_ASSERT_TRUE(decoded_find_alias(&dec, GW_ALIAS_TAG_BASE + RUN) >= 0);
@@ -263,6 +272,7 @@ static void test_every_metric_has_a_timestamp(void)
     for (size_t i = 0; i < dec.count; i++) {
         TEST_ASSERT_TRUE(dec.m[i].is_null);
         TEST_ASSERT_NOT_EQUAL_UINT64(0, dec.m[i].timestamp);
+        TEST_ASSERT_FALSE(dec.m[i].has_datatype);  /* NDATA: no datatype (#159) */
     }
 }
 
@@ -970,6 +980,10 @@ static void test_templates(void)
     TEST_ASSERT_EQUAL_STRING("Speed", dec.mem[0].name);
     TEST_ASSERT_EQUAL_DOUBLE(1600, dec.mem[0].num);
     TEST_ASSERT_FALSE(dec.mem[0].has_quality);
+    /* tck-id-payloads-metric-datatype-not-req: no datatype on the instance or its members in
+     * DATA; the DBIRTH and the NBIRTH definition have them (#159) */
+    TEST_ASSERT_FALSE(dec.m[0].has_datatype);
+    TEST_ASSERT_FALSE(dec.mem[0].has_datatype);
 
     /* DCMD: a member of the instance, or the tag by name; never by alias */
     recorder_clear();
@@ -996,9 +1010,11 @@ static void test_templates(void)
     recorder_clear();
     gw_node_write_done(&node, 0, true);
     msg(0);
-    TEST_ASSERT_EQUAL(SPB_DT_TEMPLATE, dec.m[0].datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_TEMPLATE, dec.m[0].kind);
+    TEST_ASSERT_FALSE(dec.m[0].has_datatype);   /* DDATA: no datatype (#159) */
     TEST_ASSERT_EQUAL(1, dec.mem_count);
     TEST_ASSERT_EQUAL_DOUBLE(900, dec.mem[0].num);
+    TEST_ASSERT_FALSE(dec.mem[0].has_datatype);
 }
 
 /* SPB-18 + SPB-16: the largest NBIRTH the configuration allows (GW_MAX_TEMPLATE_TAGS template
@@ -1129,7 +1145,9 @@ static void test_diagnostics(void)
     TEST_ASSERT_EQUAL_UINT64(72, dec.m[decoded_find_alias(&dec, GW_ALIAS_UPTIME)].u64);
     i = decoded_find_alias(&dec, GW_ALIAS_RSSI);
     TEST_ASSERT_FALSE(dec.m[i].is_null);
-    TEST_ASSERT_EQUAL_DOUBLE(-61, dec.m[i].num);
+    /* no datatype in NDATA (#159): the host reads int_value with the Int32 of the NBIRTH */
+    TEST_ASSERT_FALSE(dec.m[i].has_datatype);
+    TEST_ASSERT_EQUAL_INT32(-61, (int32_t)(uint32_t)dec.m[i].num);
     TEST_ASSERT_EQUAL(-1, decoded_find_alias(&dec, GW_ALIAS_MODBUS));
     recorder_clear();
     const gw_dev_stats_t st2 = {.cycles = 70, .failed_cycles = 1, .bus = {.ok = 200, .timeout = 3}};
@@ -1428,7 +1446,8 @@ static void test_store_and_forward(void)
     TEST_ASSERT_EQUAL_UINT64(4000, dec.m[0].timestamp);
     TEST_ASSERT_EQUAL_DOUBLE(232.0, dec.m[0].num);
     TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TAG_BASE + RUN, dec.m[1].alias);
-    TEST_ASSERT_EQUAL(11, dec.m[1].datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_BOOL, dec.m[1].kind);  /* the Boolean field of the DBIRTH type */
+    TEST_ASSERT_FALSE(dec.m[1].has_datatype);        /* DDATA: no datatype (#159) */
     TEST_ASSERT_TRUE(dec.m[1].is_historical);
     m = msg(4);
     TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", m->topic);
@@ -1494,7 +1513,8 @@ static void test_store_and_forward_counters(void)
     const rec_msg_t *m = msg(g_rec.count - 1);
     TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", m->topic);
     TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_COUNT_BASE + 2, dec.m[0].alias);
-    TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[0].datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_LONG, dec.m[0].kind);   /* UInt64 of the NBIRTH, no datatype */
+    TEST_ASSERT_FALSE(dec.m[0].has_datatype);
     TEST_ASSERT_EQUAL_UINT64(0x100000000ull + 5, dec.m[0].u64);
     TEST_ASSERT_TRUE(dec.m[0].is_historical);
 }
@@ -1770,10 +1790,13 @@ static void test_store_and_forward_mb6(void)
         TEST_ASSERT_TRUE(dec.m[i].is_historical);
     }
     TEST_ASSERT_EQUAL_UINT64(9007199254740993ull, dec.m[0].u64);
-    TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[0].datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_LONG, dec.m[0].kind);   /* the fields of the DBIRTH types, */
     TEST_ASSERT_EQUAL_INT64(-9007199254740993ll, (int64_t)dec.m[1].u64);
     TEST_ASSERT_EQUAL_DOUBLE(2.5, dec.m[2].num);
-    TEST_ASSERT_EQUAL(SPB_DT_STRING, dec.m[3].datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_STRING, dec.m[3].kind);
+    for (size_t i = 0; i < dec.count; i++) {
+        TEST_ASSERT_FALSE(dec.m[i].has_datatype);    /* with no datatype (#159) */
+    }
     TEST_ASSERT_EQUAL_STRING("XY", dec.m[3].str);
     TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[4].num);
 }
@@ -1818,7 +1841,8 @@ static void test_store_and_forward_templates_bytes(void)
     msg(g_rec.count - 1);
     TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DDATA/N/P", g_rec.msgs[g_rec.count - 1].topic);
     TEST_ASSERT_EQUAL(1, dec.count);
-    TEST_ASSERT_EQUAL(SPB_DT_TEMPLATE, dec.m[0].datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_TEMPLATE, dec.m[0].kind);
+    TEST_ASSERT_FALSE(dec.m[0].has_datatype);        /* DDATA: no datatype (#159) */
     TEST_ASSERT_TRUE(dec.m[0].is_historical);
     TEST_ASSERT_EQUAL(2, dec.mem_count);
     TEST_ASSERT_EQUAL_STRING("Speed", dec.mem[0].name);
@@ -1826,7 +1850,9 @@ static void test_store_and_forward_templates_bytes(void)
     TEST_ASSERT_TRUE(dec.mem[0].is_historical);
     TEST_ASSERT_TRUE(dec.mem[0].is_null);
     TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_BAD, dec.mem[0].quality);
-    TEST_ASSERT_EQUAL(SPB_DT_BYTES, dec.mem[1].datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_BYTES, dec.mem[1].kind);
+    TEST_ASSERT_FALSE(dec.mem[0].has_datatype);
+    TEST_ASSERT_FALSE(dec.mem[1].has_datatype);
     TEST_ASSERT_EQUAL(4, dec.mem[1].bytes_len);
     TEST_ASSERT_EQUAL_HEX8_ARRAY("\x00\xff\x00\xee", dec.mem[1].bytes, 4);
     TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_GOOD, dec.mem[1].quality);
