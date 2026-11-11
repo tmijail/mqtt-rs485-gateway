@@ -30,12 +30,9 @@
  *  - Card full while the ring is allocated the first time: the ring stops at the extents it
  *    has (a new superblock, the same nonce: every block written so far stays valid).
  *
- * Migration (format version 1, step 1, #119/#122): numbered segment files NNNNNNNN.sf with a
- * 16-byte header and raw records, no CRC. At boot those of this configuration are replayed once
- * (before the ring, oldest first; the superblock keeps the position, so a reboot repeats at most
- * 64 KiB of them too) and then deleted; the others (another configuration, dead, torn) are
- * deleted unreplayed. A delete is: the magic overwritten with GW_SFSPILL_DEAD in place (never a
- * rename), then truncates of at most 128 clusters, then the unlink, one per step.
+ * Files of the step 1 format (#122: numbered segments NNNNNNNN.sf) are deleted unreplayed at
+ * boot (#151: no gateway was installed with that format, so there is no migration). A delete is
+ * truncates of at most 128 clusters, then the unlink, one per step (never a rename).
  *
  * Real time: the card work happens in gw_sfspill_prepare()/gw_sfspill_put_block() (one bounded
  * operation per call, at most a few small writes; the caller calls them once per pass of its
@@ -92,8 +89,8 @@ extern "C" {
 #define GW_SFSPILL_MAX_KB       4194304      /* 4 GiB */
 #define GW_SFSPILL_DEFAULT_KB   131072       /* 128 MiB (#124) */
 
-/* File ids of the storage: a step 1 segment is its number (below 0x80000000); an extent and a
- * superblock copy carry these marks. */
+/* File ids of the storage: a step 1 segment is its number (below 0x80000000, only deleted); an
+ * extent and a superblock copy carry these marks. */
 #define GW_SFSPILL_F_EXTENT     0x80000000u  /* | extent index: r%04x.sf */
 #define GW_SFSPILL_F_SUPER      0xC0000000u  /* | 0 (ringa.sf) or 1 (ringb.sf) */
 #define GW_SFSPILL_F_KIND       0xC0000000u
@@ -125,24 +122,10 @@ typedef struct {
     uint64_t head_hint;      /* the next block to write when this copy was written */
     uint32_t tail_rec;       /* records of block tail_seq already replayed */
     uint32_t count;          /* records waiting between the checkpoint and head_hint */
-    uint32_t mig_seg;        /* step 1 segment being replayed: lower numbers are done */
-    uint32_t mig_off;        /* its records already replayed */
-    uint32_t pad;
+    uint32_t pad;            /* 0: no implicit padding in the image */
     uint32_t crc;            /* CRC-32C of the bytes before it */
 } gw_sfspill_sb_t;
 
-/* format version 1 (step 1): read and deleted only */
-#define GW_SFSPILL_MAGIC   0x46535747u   /* "GWSF" */
-#define GW_SFSPILL_DEAD    0x44414544u   /* "DEAD": a segment being deleted */
-#define GW_SFSPILL_VERSION 1u
-typedef struct {
-    uint32_t magic;
-    uint16_t version;
-    uint16_t rec_size;
-    uint32_t cfg_hash;
-    uint32_t seg_id;
-} gw_sfspill_hdr_t;
-#define GW_SFSPILL_LEGACY_MAX   256          /* step 1 segments examined at boot */
 #define GW_SFSPILL_GC_MAX       512          /* files in the delete queue */
 
 /**
@@ -179,10 +162,18 @@ typedef struct {
 enum {
     GW_SFSPILL_BOOT_SUPER,   /* read the superblock copies */
     GW_SFSPILL_BOOT_LIST,    /* list the directory */
-    GW_SFSPILL_BOOT_LEGACY,  /* examine the step 1 segments */
     GW_SFSPILL_BOOT_PROBE,   /* no valid superblock: the first block of each extent */
     GW_SFSPILL_BOOT_SCAN,    /* the head: forward from the hint */
     GW_SFSPILL_READY,
+};
+
+/* gw_sfspill_t.found (#152): what the boot recovery found on the card */
+enum {
+    GW_SFSPILL_FOUND_NOT_YET,   /* the recovery has not ended */
+    GW_SFSPILL_FOUND_NONE,      /* no valid ring (no superblock, no voted block): a new ring */
+    GW_SFSPILL_FOUND_OTHER,     /* a ring of another configuration hash or geometry: a new ring */
+    GW_SFSPILL_FOUND_SUPER,     /* this ring, from its superblock */
+    GW_SFSPILL_FOUND_VOTE,      /* this ring again, with no valid superblock (the vote) */
 };
 
 typedef struct {
@@ -196,6 +187,7 @@ typedef struct {
     uint32_t nblocks;            /* N in use */
     /* state */
     int phase;
+    int found;                   /* GW_SFSPILL_FOUND_*: the result of the boot recovery */
     bool ok;                     /* false after an I/O error: the spill is not used any more */
     char why[48];                /* why it failed */
     uint32_t nonce;
@@ -218,7 +210,7 @@ typedef struct {
     uint64_t rseq;               /* block held in rbuf, when rvalid */
     bool rvalid;
     uint8_t ext_ok[GW_SFSPILL_MAX_EXTENTS / 8];   /* extents known to be whole (this boot) */
-    int peek_src;                /* 0 none, 1 step 1 segment, 2 ring */
+    bool peeked;                 /* the last peek copied records of block rseq */
     /* boot scan */
     uint64_t scan_seq;           /* next block examined */
     uint64_t scan_end;           /* no valid block at or after this */
@@ -229,17 +221,11 @@ typedef struct {
     uint64_t vote_seq[4];
     uint32_t boot_start_ms, boot_ms;   /* the boot recovery: when it began, how long it took */
     uint32_t scan_reads;         /* blocks read by the boot recovery */
-    /* step 1 segments */
-    uint32_t *leg;               /* GW_SFSPILL_LEGACY_MAX: listed, then the ones to replay */
-    uint32_t leg_n, leg_i, leg_seen;
-    uint32_t leg_off, leg_recs;  /* records replayed and in segment leg[leg_i] */
-    uint64_t leg_count;          /* records of step 1 segments waiting */
-    uint32_t mig_seg, mig_off;   /* the superblock's position in them */
-    /* the deletes: a queue of file ids (bit 32: already marked dead) */
-    uint64_t *gc;
+    /* the deletes: a queue of file ids */
+    uint32_t *gc;
     uint32_t gc_head, gc_n;
     uint32_t gc_f;
-    bool gc_busy, gc_marked;
+    bool gc_busy;
     uint32_t gc_files, gc_steps, gc_left;
     /* counters */
     uint64_t written;            /* records written to the card */
@@ -248,7 +234,6 @@ typedef struct {
     uint32_t holes;              /* invalid blocks met inside the data (lost, never replayed) */
     uint64_t stranded;           /* records on the card when the spill failed (#134) */
     uint32_t sb_writes, checkpoints, allocs;
-    uint32_t legacy_found;       /* step 1 records found at boot (of this configuration) */
     uint32_t kept_at_boot;       /* ring records found at boot */
 } gw_sfspill_t;
 
@@ -263,7 +248,7 @@ enum { GW_SFSPILL_IDLE, GW_SFSPILL_DID, GW_SFSPILL_BLOCK_READY, GW_SFSPILL_WAIT 
  */
 uint32_t gw_sfspill_plan(uint32_t max_kb, uint32_t unit, uint32_t *ext_blocks, uint32_t *extents);
 
-/** Bytes of memory gw_sfspill_init() needs (two blocks, the step 1 list, the delete queue). */
+/** Bytes of memory gw_sfspill_init() needs (two blocks and the delete queue). */
 size_t gw_sfspill_mem_size(void);
 
 /**
@@ -301,7 +286,7 @@ uint64_t gw_sfspill_waiting(const gw_sfspill_t *sp);
 bool gw_sfspill_holds(const gw_sfspill_t *sp);
 
 /**
- * Copy up to @p max of the oldest records to @p out (from one step 1 segment or one block): 0
+ * Copy up to @p max of the oldest records to @p out (from one block): 0
  * when there is none now (recovery, checkpoint due, damaged blocks skipped: try again) or after
  * an I/O error (sp->ok false).
  */
@@ -324,6 +309,9 @@ bool gw_sfspill_checkpoint(gw_sfspill_t *sp, uint32_t now_ms);
  * GW_SFSPILL_IDLE: nothing is left to do. No delete step and no boot recovery step.
  */
 int gw_sfspill_flush_step(gw_sfspill_t *sp, bool want_block, uint32_t now_ms);
+
+/** #152: sp->found as text, for the log and the shell ("new ring: ...", "ring found ..."). */
+const char *gw_sfspill_found_text(const gw_sfspill_t *sp);
 
 /** Stop using the card (an operator formats it): as after an I/O error, with @p why. */
 void gw_sfspill_stop(gw_sfspill_t *sp, const char *why);

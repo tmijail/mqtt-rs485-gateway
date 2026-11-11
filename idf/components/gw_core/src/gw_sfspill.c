@@ -3,18 +3,16 @@
 #include <string.h>
 
 #define REC   ((uint32_t)sizeof(gw_sf_rec_t))
-#define HDR1  ((uint32_t)sizeof(gw_sfspill_hdr_t))
 #define BHDR  ((uint32_t)sizeof(gw_sfspill_blk_t))
 #define BLOCK GW_SFSPILL_BLOCK
-#define GC_MARKED (1ull << 32)
-#define UNKNOWN UINT32_MAX
 
 _Static_assert(sizeof(gw_sf_rec_t) == 24, "the record size is part of the card format");
 _Static_assert(sizeof(gw_sfspill_blk_t) == 32, "the block header is 32 bytes (#124)");
 _Static_assert(BHDR + GW_SFSPILL_BLK_RECS * 24u <= GW_SFSPILL_BLOCK, "records of a block");
 _Static_assert(BHDR + (GW_SFSPILL_BLK_RECS + 1u) * 24u > GW_SFSPILL_BLOCK, "a full block");
 _Static_assert(sizeof(gw_sfspill_sb_t) <= GW_SFSPILL_SB_BYTES, "the superblock is one sector");
-_Static_assert(sizeof(gw_sfspill_hdr_t) == 16, "the step 1 header");
+_Static_assert(sizeof(gw_sfspill_sb_t) == offsetof(gw_sfspill_sb_t, crc) + 4,
+               "no implicit padding in the superblock image");
 _Static_assert(GW_SFSPILL_MAX_EXTENTS % 8 == 0, "extent bitmap");
 _Static_assert((uint64_t)GW_SFSPILL_MAX_EXTENTS * GW_SFSPILL_EXT_MAX >= (uint64_t)GW_SFSPILL_MAX_KB * 1024u,
                "4 MiB extents hold the largest max_kb");
@@ -78,8 +76,7 @@ uint32_t gw_sfspill_plan(uint32_t max_kb, uint32_t unit, uint32_t *ext_blocks, u
 #define MEM_WBUF 0u
 #define MEM_RBUF BLOCK
 #define MEM_GC   (2u * BLOCK)
-#define MEM_LEG  (MEM_GC + GW_SFSPILL_GC_MAX * 8u)
-#define MEM_SIZE (MEM_LEG + GW_SFSPILL_LEGACY_MAX * 4u)
+#define MEM_SIZE (MEM_GC + GW_SFSPILL_GC_MAX * 4u)
 
 size_t gw_sfspill_mem_size(void)
 {
@@ -103,15 +100,30 @@ static void fail(gw_sfspill_t *sp, const char *why)
     }
     sp->ok = false;
     set_why(sp, why);
-    sp->stranded = sp->ring_count + sp->leg_count;
+    sp->stranded = sp->ring_count;
     sp->ring_count = 0;
-    sp->leg_count = 0;
-    sp->peek_src = 0;
+    sp->peeked = false;
 }
 
 void gw_sfspill_stop(gw_sfspill_t *sp, const char *why)
 {
     fail(sp, why);
+}
+
+const char *gw_sfspill_found_text(const gw_sfspill_t *sp)
+{
+    switch (sp->found) {
+    case GW_SFSPILL_FOUND_NONE:
+        return "new ring: no valid ring on the card";
+    case GW_SFSPILL_FOUND_OTHER:
+        return "new ring: another configuration or geometry";
+    case GW_SFSPILL_FOUND_SUPER:
+        return "ring found with its superblock";
+    case GW_SFSPILL_FOUND_VOTE:
+        return "ring found again without a superblock (vote)";
+    default:
+        return "boot recovery not ended";
+    }
 }
 
 static void tick(const gw_sfspill_t *sp)
@@ -132,7 +144,6 @@ void gw_sfspill_init(gw_sfspill_t *sp, const gw_sfspill_io_t *io, uint32_t ext_b
                                                                      : extents;
     sp->nblocks = sp->ext_blocks * sp->extents;
     sp->phase = GW_SFSPILL_BOOT_SUPER;
-    sp->leg_recs = UNKNOWN;
     sp->ok = true;
     if (mem == NULL) {
         fail(sp, "no memory");
@@ -141,8 +152,7 @@ void gw_sfspill_init(gw_sfspill_t *sp, const gw_sfspill_io_t *io, uint32_t ext_b
     uint8_t *m = mem;
     sp->wbuf = m + MEM_WBUF;
     sp->rbuf = m + MEM_RBUF;
-    sp->gc = (uint64_t *)(void *)(m + MEM_GC);
-    sp->leg = (uint32_t *)(void *)(m + MEM_LEG);
+    sp->gc = (uint32_t *)(void *)(m + MEM_GC);
 }
 
 static uint32_t f_extent(const gw_sfspill_t *sp, uint64_t seq)
@@ -162,13 +172,13 @@ static bool ext_ok(const gw_sfspill_t *sp, uint32_t e)
 
 /* ---------------------------------------------------------------- deletes */
 
-static void gc_push(gw_sfspill_t *sp, uint32_t f, bool marked)
+static void gc_push(gw_sfspill_t *sp, uint32_t f)
 {
     if (sp->gc_n < GW_SFSPILL_GC_MAX) {
-        sp->gc[(sp->gc_head + sp->gc_n) % GW_SFSPILL_GC_MAX] = f | (marked ? GC_MARKED : 0);
+        sp->gc[(sp->gc_head + sp->gc_n) % GW_SFSPILL_GC_MAX] = f;
         sp->gc_n++;
     } else {
-        sp->gc_left++;   /* the next boot finds it (dead, or not of this ring) */
+        sp->gc_left++;   /* the next boot finds it (not of this ring) */
     }
 }
 
@@ -187,19 +197,17 @@ static void gc_end(gw_sfspill_t *sp, bool done)
     }
 }
 
-/* One delete step (#122): the dead mark (a step 1 segment, so that it is never replayed
- * again), a truncate of at most 128 allocation units, or the unlink of at most that. */
+/* One delete step (#122): a truncate of at most 128 allocation units, or the unlink of at most
+ * that. Nothing reads a file in the delete queue, so a cut delete needs no mark (#151). */
 static bool gc_step(gw_sfspill_t *sp)
 {
     if (!sp->gc_busy && sp->gc_n == 0) {
         return false;
     }
     if (!sp->gc_busy) {
-        uint64_t e = sp->gc[sp->gc_head];
+        sp->gc_f = sp->gc[sp->gc_head];
         sp->gc_head = (sp->gc_head + 1) % GW_SFSPILL_GC_MAX;
         sp->gc_n--;
-        sp->gc_f = (uint32_t)e;
-        sp->gc_marked = (e & GC_MARKED) != 0;
         sp->gc_busy = true;
     }
     uint32_t f = sp->gc_f;
@@ -209,17 +217,6 @@ static bool gc_step(gw_sfspill_t *sp)
         sp->gc_busy = false;   /* already gone */
         tick(sp);
         return true;
-    }
-    if (!sp->gc_marked) {
-        sp->gc_marked = true;
-        if (size >= (int32_t)sizeof(uint32_t)) {
-            static const uint32_t dead = GW_SFSPILL_DEAD;
-            if (!sp->io.write(sp->io.ctx, f, 0, &dead, sizeof(dead))) {
-                gc_end(sp, false);
-            }
-            tick(sp);
-            return true;
-        }
     }
     uint64_t step = (uint64_t)sp->io.unit * GW_SFSPILL_STEP_UNITS;
     if (step != 0 && step < (uint64_t)size) {
@@ -305,7 +302,7 @@ static bool sb_gap_ok(const gw_sfspill_t *sp, uint32_t now_ms)
 
 static bool empty(const gw_sfspill_t *sp)
 {
-    return sp->tail >= sp->head && sp->leg_i >= sp->leg_n;
+    return sp->tail >= sp->head;
 }
 
 /* The replay position moved since the last superblock: due once 64 KiB were replayed, or once
@@ -314,8 +311,7 @@ static bool ckpt_due(const gw_sfspill_t *sp)
 {
     const gw_sfspill_sb_t *last = &sp->sb[sp->sb_next ^ 1u];   /* the copy written last */
     bool moved = sp->ck_pending > 0 || sp->tail != last->tail_seq ||
-                 sp->tail_rec != last->tail_rec || sp->mig_seg != last->mig_seg ||
-                 sp->mig_off != last->mig_off;
+                 sp->tail_rec != last->tail_rec;
     return sp->ck_pending > GW_SFSPILL_CKPT_RECS - GW_SF_SAMPLE_MAX_RECS ||
            (empty(sp) && moved && sp->sb_written);
 }
@@ -352,7 +348,6 @@ static void sb_write(gw_sfspill_t *sp, uint32_t now_ms)
         .ext_blocks = sp->ext_blocks, .extents = sp->extents, .nblocks = sp->nblocks,
         .tail_seq = sp->tail, .head_hint = sp->head, .tail_rec = sp->tail_rec,
         .count = sp->ring_count > UINT32_MAX ? UINT32_MAX : (uint32_t)sp->ring_count,
-        .mig_seg = sp->mig_seg, .mig_off = sp->mig_off,
     };
     s.crc = sb_crc(&s);
     memset(sp->wbuf, 0, GW_SFSPILL_SB_BYTES);
@@ -427,14 +422,12 @@ static void boot_super(gw_sfspill_t *sp)
     const gw_sfspill_sb_t *s = &sp->sb[best];
     sp->gen = s->gen;
     sp->sb_next = (uint8_t)(best ^ 1);
-    if (s->cfg_hash == sp->cfg_hash) {
-        sp->mig_seg = s->mig_seg;   /* the step 1 replay goes on across a geometry change */
-        sp->mig_off = s->mig_off;
-    }
     if (!sb_fits(sp, s)) {
         new_ring(sp, s->nonce);   /* another configuration or geometry */
+        sp->found = GW_SFSPILL_FOUND_OTHER;
         return;
     }
+    sp->found = GW_SFSPILL_FOUND_SUPER;
     sp->nonce = s->nonce;
     sp->nblocks = s->nblocks;
     sp->tail = s->tail_seq;
@@ -460,21 +453,17 @@ static void list_each(void *arg, uint32_t f)
         if (e < sp->nblocks / sp->ext_blocks) {
             sp->probe_e++;   /* counted here; reset before the probe */
         } else {
-            gc_push(sp, f, true);   /* beyond the ring: deleted, no mark needed */
+            gc_push(sp, f);   /* beyond the ring */
         }
         return;
     }
-    if (f >= GW_SFSPILL_ID_LIMIT) {
-        return;
-    }
-    if (sp->leg_n < GW_SFSPILL_LEGACY_MAX) {
-        sp->leg[sp->leg_n++] = f;
-    } else {
-        sp->leg_seen++;   /* left for a later boot */
+    if (f < GW_SFSPILL_ID_LIMIT) {
+        gc_push(sp, f);   /* #151: a segment of the step 1 format: deleted, never replayed */
     }
 }
 
-static void boot_list(gw_sfspill_t *sp)
+/* The listing, then the probe (no superblock but extents), the scan, or ready. */
+static void boot_list(gw_sfspill_t *sp, uint32_t now_ms)
 {
     sp->probe_e = 0;
     bool ok = sp->io.list(sp->io.ctx, list_each, sp);
@@ -483,26 +472,6 @@ static void boot_list(gw_sfspill_t *sp)
         fail(sp, "card directory unreadable");
         return;
     }
-    for (uint32_t i = 1; i < sp->leg_n; i++) {   /* oldest first */
-        uint32_t v = sp->leg[i], j = i;
-        for (; j > 0 && sp->leg[j - 1] > v; j--) {
-            sp->leg[j] = sp->leg[j - 1];
-        }
-        sp->leg[j] = v;
-    }
-    sp->leg_i = 0;
-    sp->scan_run = 0;   /* used as the write index of the step 1 classification */
-    sp->phase = GW_SFSPILL_BOOT_LEGACY;
-}
-
-/* After the step 1 segments: the probe (no superblock but extents), the scan, or ready. */
-static void boot_after_legacy(gw_sfspill_t *sp, uint32_t now_ms)
-{
-    sp->leg_n = sp->scan_run;
-    sp->leg_i = 0;
-    sp->leg_off = sp->leg_n > 0 && sp->leg[0] == sp->mig_seg ? sp->mig_off : 0;
-    sp->leg_recs = UNKNOWN;
-    sp->legacy_found = (uint32_t)sp->leg_count;
     sp->scan_run = 0;
     if (sp->sb_valid[0] || sp->sb_valid[1]) {
         sp->phase = sp->sb_due ? GW_SFSPILL_READY : GW_SFSPILL_BOOT_SCAN;
@@ -511,46 +480,11 @@ static void boot_after_legacy(gw_sfspill_t *sp, uint32_t now_ms)
         sp->phase = GW_SFSPILL_BOOT_PROBE;
     } else {
         new_ring(sp, 0);
+        sp->found = GW_SFSPILL_FOUND_NONE;
         sp->phase = GW_SFSPILL_READY;
     }
     if (sp->phase == GW_SFSPILL_READY) {
         sp->boot_ms = now_ms - sp->boot_start_ms;
-    }
-}
-
-static void boot_legacy(gw_sfspill_t *sp, uint32_t now_ms)
-{
-    for (int k = 0; k < GW_SFSPILL_SCAN_READS && sp->leg_i < sp->leg_n && sp->ok; k++) {
-        uint32_t id = sp->leg[sp->leg_i++];
-        int32_t size = sp->io.size(sp->io.ctx, id);
-        tick(sp);
-        gw_sfspill_hdr_t h = {0};
-        int r = size >= (int32_t)HDR1 ? sp->io.read(sp->io.ctx, id, 0, &h, sizeof(h)) : 0;
-        if (size >= (int32_t)HDR1) {
-            tick(sp);
-        }
-        if (r < 0) {
-            fail(sp, "card read failed");
-            return;
-        }
-        if (size < 0) {
-            continue;   /* gone */
-        }
-        bool live = r > 0 && h.magic == GW_SFSPILL_MAGIC && h.version == GW_SFSPILL_VERSION &&
-                    h.rec_size == REC && h.cfg_hash == sp->cfg_hash && h.seg_id == id;
-        if (live && id >= sp->mig_seg) {
-            uint32_t recs = ((uint32_t)size - HDR1) / REC;   /* a partial last record is ignored */
-            uint32_t done = id == sp->mig_seg ? sp->mig_off : 0;
-            sp->leg_count += recs > done ? recs - done : 0;
-            sp->leg[sp->scan_run++] = id;   /* kept: replayed, then deleted */
-        } else {
-            /* replayed before (below the superblock's position), dead, another configuration
-             * or torn: deleted unreplayed */
-            gc_push(sp, id, r > 0 && h.magic == GW_SFSPILL_DEAD);
-        }
-    }
-    if (sp->leg_i >= sp->leg_n && sp->ok) {
-        boot_after_legacy(sp, now_ms);
     }
 }
 
@@ -604,12 +538,14 @@ static void boot_probe(gw_sfspill_t *sp, uint32_t now_ms)
     }
     if (best < 0) {
         new_ring(sp, 0);
+        sp->found = GW_SFSPILL_FOUND_NONE;
         sp->phase = GW_SFSPILL_READY;
         sp->boot_ms = now_ms - sp->boot_start_ms;
         return;
     }
     /* the replay position is lost with the superblocks: everything still on the card is sent
      * (duplicates, never garbage); a new superblock is written before the next block */
+    sp->found = GW_SFSPILL_FOUND_VOTE;
     sp->nonce = sp->vote_nonce[best];
     sp->head = sp->vote_seq[best] + 1;
     sp->tail = 0;
@@ -705,7 +641,7 @@ static void alloc_step(gw_sfspill_t *sp, uint32_t e)
     if (e > 0 && sp->head < sp->nblocks && sp->head == start) {
         sp->nblocks = e * sp->ext_blocks;
         sp->sb_due = true;   /* the new size is on the card before the ring wraps */
-        gc_push(sp, GW_SFSPILL_F_EXTENT | e, true);
+        gc_push(sp, GW_SFSPILL_F_EXTENT | e);
         return;
     }
     fail(sp, "card full");
@@ -722,10 +658,7 @@ int gw_sfspill_prepare(gw_sfspill_t *sp, bool want_block, uint32_t now_ms)
         boot_super(sp);
         return GW_SFSPILL_DID;
     case GW_SFSPILL_BOOT_LIST:
-        boot_list(sp);
-        return GW_SFSPILL_DID;
-    case GW_SFSPILL_BOOT_LEGACY:
-        boot_legacy(sp, now_ms);
+        boot_list(sp, now_ms);
         return GW_SFSPILL_DID;
     case GW_SFSPILL_BOOT_PROBE:
         boot_probe(sp, now_ms);
@@ -736,8 +669,9 @@ int gw_sfspill_prepare(gw_sfspill_t *sp, bool want_block, uint32_t now_ms)
     default:
         break;
     }
-    bool gap = sb_gap_ok(sp, now_ms);
-    if ((sp->sb_due || ckpt_due(sp)) && gap) {
+    /* #142: the head hint also goes before a block (as in gw_sfspill_flush_step()): when each
+     * pass wants a block, a hint after the blocks would never come */
+    if ((sp->sb_due || ckpt_due(sp) || hint_due(sp)) && sb_gap_ok(sp, now_ms)) {
         sb_write(sp, now_ms);
         return GW_SFSPILL_DID;
     }
@@ -749,10 +683,6 @@ int gw_sfspill_prepare(gw_sfspill_t *sp, bool want_block, uint32_t now_ms)
         }
         return GW_SFSPILL_BLOCK_READY;
     }
-    if (hint_due(sp) && gap) {
-        sb_write(sp, now_ms);
-        return GW_SFSPILL_DID;
-    }
     return gc_step(sp) ? GW_SFSPILL_DID : GW_SFSPILL_IDLE;
 }
 
@@ -760,8 +690,7 @@ int gw_sfspill_prepare(gw_sfspill_t *sp, bool want_block, uint32_t now_ms)
 static bool pos_moved(const gw_sfspill_t *sp)
 {
     const gw_sfspill_sb_t *last = &sp->sb[sp->sb_next ^ 1u];
-    return sp->ck_pending != 0 || sp->tail != last->tail_seq || sp->tail_rec != last->tail_rec ||
-           sp->mig_seg != last->mig_seg || sp->mig_off != last->mig_off;
+    return sp->ck_pending != 0 || sp->tail != last->tail_seq || sp->tail_rec != last->tail_rec;
 }
 
 bool gw_sfspill_checkpoint(gw_sfspill_t *sp, uint32_t now_ms)
@@ -904,8 +833,7 @@ uint64_t gw_sfspill_waiting(const gw_sfspill_t *sp)
     if (!sp->ok) {
         return 0;
     }
-    uint64_t ring = sp->ring_count > 0 || sp->tail >= sp->head ? sp->ring_count : 1;
-    return sp->leg_count + ring;
+    return sp->ring_count > 0 || sp->tail >= sp->head ? sp->ring_count : 1;
 }
 
 bool gw_sfspill_holds(const gw_sfspill_t *sp)
@@ -913,57 +841,9 @@ bool gw_sfspill_holds(const gw_sfspill_t *sp)
     return sp->ok && (sp->phase != GW_SFSPILL_READY || !empty(sp));
 }
 
-/* The step 1 segment leg[leg_i] is done: deleted in steps, the next one starts. */
-static void legacy_next(gw_sfspill_t *sp)
-{
-    uint32_t id = sp->leg[sp->leg_i];
-    gc_push(sp, id, false);
-    sp->leg_i++;
-    sp->leg_off = 0;
-    sp->leg_recs = UNKNOWN;
-    sp->mig_seg = sp->leg_i < sp->leg_n ? sp->leg[sp->leg_i] : id + 1;
-    sp->mig_off = 0;
-    if (sp->leg_i >= sp->leg_n) {
-        sp->leg_count = 0;
-    }
-}
-
-static size_t legacy_peek(gw_sfspill_t *sp, gw_sf_rec_t *out, size_t max)
-{
-    while (sp->leg_i < sp->leg_n) {
-        uint32_t id = sp->leg[sp->leg_i];
-        if (sp->leg_recs == UNKNOWN) {
-            int32_t size = sp->io.size(sp->io.ctx, id);
-            tick(sp);
-            sp->leg_recs = size >= (int32_t)HDR1 ? ((uint32_t)size - HDR1) / REC : 0;
-        }
-        if (sp->leg_off >= sp->leg_recs) {
-            uint32_t left = sp->leg_recs > sp->leg_off ? sp->leg_recs - sp->leg_off : 0;
-            sp->leg_count = sp->leg_count > left ? sp->leg_count - left : 0;
-            legacy_next(sp);
-            continue;
-        }
-        size_t k = sp->leg_recs - sp->leg_off;
-        k = k < max ? k : max;
-        int r = sp->io.read(sp->io.ctx, id, HDR1 + sp->leg_off * REC, out, k * REC);
-        tick(sp);
-        if (r < 0) {
-            fail(sp, "card read failed");
-            return 0;
-        }
-        if (r == 0) {
-            sp->leg_recs = sp->leg_off;   /* shorter than it was: the rest is gone */
-            continue;
-        }
-        sp->peek_src = 1;
-        return k;
-    }
-    return 0;
-}
-
 size_t gw_sfspill_peek(gw_sfspill_t *sp, gw_sf_rec_t *out, size_t max)
 {
-    sp->peek_src = 0;
+    sp->peeked = false;
     if (!sp->ok || sp->phase != GW_SFSPILL_READY || sp->ck_pending >= GW_SFSPILL_CKPT_RECS) {
         return 0;
     }
@@ -975,10 +855,6 @@ size_t gw_sfspill_peek(gw_sfspill_t *sp, gw_sf_rec_t *out, size_t max)
         return 0;
     }
     max = max < room ? max : room;
-    size_t n = legacy_peek(sp, out, max);
-    if (n > 0 || !sp->ok || sp->leg_i < sp->leg_n) {
-        return n;
-    }
     for (int reads = 0; sp->tail < sp->head;) {
         if (!sp->rvalid || sp->rseq != sp->tail) {
             if (reads++ == GW_SFSPILL_SCAN_READS) {
@@ -1006,7 +882,7 @@ size_t gw_sfspill_peek(gw_sfspill_t *sp, gw_sf_rec_t *out, size_t max)
         size_t k = nrec - sp->tail_rec;
         k = k < max ? k : max;
         memcpy(out, sp->rbuf + BHDR + (size_t)sp->tail_rec * REC, k * REC);
-        sp->peek_src = 2;
+        sp->peeked = true;
         return k;
     }
     sp->ring_count = 0;   /* empty: an estimate from the boot ends here */
@@ -1016,21 +892,10 @@ size_t gw_sfspill_peek(gw_sfspill_t *sp, gw_sf_rec_t *out, size_t max)
 void gw_sfspill_consume(gw_sfspill_t *sp, size_t n)
 {
     if (!sp->ok || n == 0) {
-        sp->peek_src = 0;
+        sp->peeked = false;
         return;
     }
-    if (sp->peek_src == 1) {
-        uint32_t k = sp->leg_recs - sp->leg_off;
-        k = n < k ? (uint32_t)n : k;
-        sp->leg_off += k;
-        sp->leg_count = sp->leg_count > k ? sp->leg_count - k : 0;
-        sp->ck_pending += k;
-        sp->mig_seg = sp->leg[sp->leg_i];
-        sp->mig_off = sp->leg_off;
-        if (sp->leg_off >= sp->leg_recs) {
-            legacy_next(sp);
-        }
-    } else if (sp->peek_src == 2 && sp->rvalid && sp->rseq == sp->tail) {
+    if (sp->peeked && sp->rvalid && sp->rseq == sp->tail) {
         uint32_t nrec = blk_nrec(sp->rbuf);
         uint32_t k = nrec - sp->tail_rec;
         k = n < k ? (uint32_t)n : k;
@@ -1046,5 +911,5 @@ void gw_sfspill_consume(gw_sfspill_t *sp, size_t n)
         }
     }
     sp->ck_max = sp->ck_pending > sp->ck_max ? sp->ck_pending : sp->ck_max;
-    sp->peek_src = 0;
+    sp->peeked = false;
 }

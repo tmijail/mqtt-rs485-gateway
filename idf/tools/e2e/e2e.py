@@ -2358,30 +2358,21 @@ def run_slow_link(args, work, budget_ms):
           f"panics {panics[:1]}")
 
 
-# Issue #122: files on the "card" at the boot of GW23 (format version 1, gw_sfspill.h), each deleted
-# after the boot in steps of 128 units of 32 B (the stand-in's "cluster": one 4 KB LittleFS block)
+# Issues #122/#151: files of the step 1 format on the "card" at the boot of GW23. No gateway was
+# installed with that format: each one is deleted unreplayed after the boot, in steps of 128 units
+# of 32 B (the stand-in's "cluster": one 4 KB LittleFS block), with no mark
 OLD_SPILL_FILES = {
-    # a segment of another configuration: the dead mark, 5 truncates (20 480, 16 384, 12 288,
-    # 8 192 and 4 096 B) and the unlink
+    # a segment (header and records): 5 truncates (20 480, 16 384, 12 288, 8 192 and 4 096 B)
+    # and the unlink
     "sf/00000100.sf": struct.pack("<IHHII", 0x46535747, 1, 24, 0xDEADBEEF, 0x100) + bytes(range(256)) * 80,
-    # a segment marked dead by a delete that a power cut stopped: 2 truncates and the unlink
+    # a file with no valid header: 2 truncates and the unlink
     "sf/00000101.sf": struct.pack("<I", 0x44414544) + bytes(10236),
     # a torn file (a cut while a segment was created): only the unlink
     "sf/00000102.sf": b"GWS",
     # issue #134: a number at or above 0x80000000 is not ours: never touched
     "sf/80000001.sf": b"not a spill file",
 }
-OLD_SPILL_STEPS = 7 + 3 + 1
-BULK_DEV, BULK0_TAG = 1, 11   # the Bulk device and its first tag (alias 111) in fs/config.json
-
-
-def old_segment(seg, cfg_hash, values, t0_ms):
-    """Issue #124: a segment of the step 1 format (header, then 24-byte gw_sf_rec_t records) of
-    Bulk0 samples @values, one second apart from @t0_ms, each one its own batch (as polls make
-    them: one value of a tag in a message)."""
-    recs = b"".join(struct.pack("<QdIHBB", t0_ms + 1000 * i, float(v), 1 + i, BULK0_TAG,
-                                BULK_DEV, 0) for i, v in enumerate(values))
-    return struct.pack("<IHHII", 0x46535747, 1, 24, cfg_hash, seg) + recs
+OLD_SPILL_STEPS = 6 + 3 + 1
 
 
 def spill_line(gw, since, rx=r"^spill\s"):
@@ -2498,8 +2489,10 @@ def check_restart_flush(gw, obs, relay, slave, node, prev_nb, first, how, auth=N
     boot the recovery finds it, and the replay sends exactly those samples as historical DDATA,
     once and oldest first, and nothing from before. With @replay False (a configuration that
     changes what the records mean, #145) the boot starts a new ring instead: 0 samples waiting
-    and no historical DDATA. Returns (ok, detail, the NBIRTH after the restart, the configuration
-    hash of the spill in the boot log after the restart)."""
+    and no historical DDATA; and issue #141: the Sparkplug task does not move the RAM ring before
+    that restart, and its log line says why (the saved hash, which is the hash of the next boot,
+    and the hash of the ring). Returns (ok, detail, the NBIRTH after the restart, the
+    configuration hash of the spill in the boot log after the restart)."""
     since = time.monotonic()
     relay.stop()
     gw.wait_log(r"MQTT down; reconnect attempt", 10, since)
@@ -2528,12 +2521,17 @@ def check_restart_flush(gw, obs, relay, slave, node, prev_nb, first, how, auth=N
         answer = http("POST", "/api/restart", b"", auth=auth)[0] == 202
     flush_rx = (r"store & forward: before the restart, (\d+) samples \((\d+) records\) moved from "
                 r"the RAM ring to the card in (\d+) ms .*sparkplug stack (\d+) B never used")
-    gw.wait_log(flush_rx, 30, t)
+    skip_rx = (r"store & forward: the saved configuration has another configuration hash "
+               r"\(([0-9a-f]{8}), the ring has ([0-9a-f]{8})\): the \d+ samples of the RAM ring are "
+               r"not moved to the card \(the next boot starts a new ring\)")
+    gw.wait_log(flush_rx if replay else skip_rx, 30, t)
     flush_l = (gw.find(r"store & forward: before the restart", t) or [""])[0]
+    skip_l = (gw.find(r"store & forward: the saved configuration has another", t) or [""])[0]
     ready_rx = (r"store & forward: card ready in \d+ ms \(\d+ blocks read\): [1-9]\d* samples "
-                r"waiting \(0 of the old format\), ring \d+ of \d+ blocks, nonce [0-9a-f]{8}; " if replay
-                else r"store & forward: card ready in \d+ ms \(\d+ blocks read\): 0 samples waiting "
-                r"\(0 of the old format\), .* \(new ring\); ")
+                r"waiting, ring \d+ of \d+ blocks, nonce [0-9a-f]{8} \(ring found with its "
+                r"superblock\); " if replay
+                else r"store & forward: card ready in \d+ ms \(\d+ blocks read\): 0 samples waiting, "
+                r".* \(new ring: another configuration or geometry\); ")
     ready = gw.wait_log(ready_rx, 90, t)
     ready_l = (gw.find(r"store & forward: card ready", t) or [""])[0]
     ring_l = (gw.find(r"store & forward: spill to .* configuration [0-9a-f]{8}", t) or [""])[0]
@@ -2551,16 +2549,20 @@ def check_restart_flush(gw, obs, relay, slave, node, prev_nb, first, how, auth=N
                 for mm in m[2].metrics if mm.is_historical)
     mf = re.search(flush_rx, flush_l)
     moved, recs, ms, stack = (int(x) for x in mf.groups()) if mf else (0, 0, -1, 0)
-    flushed = (answer and mf and 0 < waiting < 750 and spilled == 0 and recs >= waiting
-               and stack >= STACK_MARGIN_B and ready and nb and done)
+    restarted = answer and 0 < waiting < 750 and spilled == 0 and ready and nb and done
     if replay:
-        ok = (flushed and total == moved and reg and reg == sorted(reg) and len(set(reg)) == len(reg)
+        ok = (restarted and mf and recs >= waiting and stack >= STACK_MARGIN_B and not skip_l
+              and total == moved and reg and reg == sorted(reg) and len(set(reg)) == len(reg)
               and all(first < v <= value for v in reg) and reg[0] <= first + 5 and reg[-1] == value
               and ts == sorted(ts))
     else:
-        ok = flushed and moved > 0 and total == 0 and not reg
+        # #141: no move, and the line names the hash of the next boot and the hash of the ring
+        ms_ = re.search(skip_rx, skip_l)
+        ok = (restarted and ms_ and not mf and mh and int(ms_.group(1), 16) == int(mh.group(1), 16)
+              and ms_.group(1) != ms_.group(2) and total == 0 and not reg)
     detail = (f"{how}: {waiting} records in the RAM ring before the restart, {spilled} moved to "
-              f"the card by the spill | {flush_l or 'no flush line'} | {ring_l or 'no ring line'} | "
+              f"the card by the spill | {flush_l or skip_l or 'no flush line'} | "
+              f"{ring_l or 'no ring line'} | "
               f"{ready_l or 'not ready'} | {total} historical metrics after the restart, register "
               f"100: {reg[:2]}..{reg[-2:]} ({len(reg)} samples, the outage set {first + 1}..{value})")
     return ok, detail, nb, int(mh.group(1), 16) if mh else None
@@ -2573,8 +2575,9 @@ def run_store_forward_spill(args, work, slave):
     Default variant (no PSRAM): issue #124, the spill needs the PSRAM: it does not start, the
     boot log and the shell say why, and the card is not used.
     PSRAM variant (the ring has 1000 samples in this build: sdkconfig.qemu-psram):
-      1. The image holds OLD_SPILL_FILES. The card is read after the network starts: a new
-         ring; the old files are deleted in exactly OLD_SPILL_STEPS bounded steps (#122).
+      1. The image holds OLD_SPILL_FILES (the step 1 format). The card is read after the
+         network starts: a new ring; the old files are deleted unreplayed in exactly
+         OLD_SPILL_STEPS bounded steps (#122, #151: no migration).
       2. The broker goes away (a relay) while the harness changes all 60 Bulk registers twice a
          second: the ring spills its oldest samples to the card, 4 KB blocks. Back: every stored
          sample comes as historical DDATA, oldest first, none lost or overwritten.
@@ -2587,8 +2590,6 @@ def run_store_forward_spill(args, work, slave):
       3c. Issue #145: the same with a saved configuration (PUT /api/config) that changes only
          fields outside the hash of the spill: the same hash, the samples come back; then one
          that renames a tag: another hash, a new ring, no replay.
-      4. A new image with two segments of the step 1 format of this configuration (its hash
-         from the boot log): they are replayed once, oldest first, and deleted in steps.
     Both variants: 'card format' asks for 'confirm', and 'card format confirm' refuses
     cleanly (no card in QEMU); the Sparkplug task keeps its stack margin. Issue #139: the web
     API's checks and refusal, the status objects and the page (check_card_web), and the
@@ -2640,8 +2641,8 @@ def run_store_forward_spill(args, work, slave):
                        r"of 4 KB, configuration ([0-9a-f]{8})", t0)
     m = re.search(r"configuration ([0-9a-f]{8})", ring_log[0]) if ring_log else None
     cfg_hash = int(m.group(1), 16) if m else 0
-    ready = gw.wait_log(r"store & forward: card ready in \d+ ms .* \(new ring\); 3 file\(s\) to "
-                        r"delete", 20, t0)
+    ready = gw.wait_log(r"store & forward: card ready in \d+ ms .* \(new ring: no valid ring on the "
+                        r"card\); 3 file\(s\) to delete", 20, t0)
 
     def load(seconds, first):
         value, end = first, time.monotonic() + seconds
@@ -2656,8 +2657,8 @@ def run_store_forward_spill(args, work, slave):
     relay.stop()
     gw.wait_log(r"MQTT down; reconnect attempt", 10, since)
     last1 = load(40, 2000)
-    asked, h = gw.shell("status", [r"^spill\s+on: [1-9]\d* samples on the card \(0 of the old "
-                                   r"format\), [1-9]\d* moved there, 0 overwritten unsent",
+    asked, h = gw.shell("status", [r"^spill\s+on: [1-9]\d* samples on the card, [1-9]\d* moved "
+                                   r"there, 0 overwritten unsent",
                                    r"^store\s+[1-9]\d* of 1000 samples waiting \(PSRAM\), .* 0 overwritten"])
     spilled = all(h.values())
     before1 = spill_line(gw, asked)
@@ -2669,9 +2670,10 @@ def run_store_forward_spill(args, work, slave):
         _, h = gw.shell("status", [r"^store\s+0 of \d+ samples waiting"], timeout=2, tries=1)
         done = list(h.values())[0]
     # the checkpoint and the deletes end (one step per loop); then the counters
-    end_rx = (r"^spill\s+on: 0 samples on the card .*, 0 overwritten unsent \(card full\), 0 "
+    end_rx = (r"^spill\s+on: 0 samples on the card, .*, 0 overwritten unsent \(card full\), 0 "
               r"block\(s\) lost as holes; .*\((\d+) checkpoints, at most (\d+) samples replayed "
-              r"between two\).*; 0 file\(s\) to delete, (\d+) deleted in (\d+) steps, 0 left")
+              r"between two\); boot recovery \d+ ms, \d+ blocks read \(new ring: no valid ring on "
+              r"the card\); 0 file\(s\) to delete, (\d+) deleted in (\d+) steps, 0 left")
     gc_line = card_line = stack_line = ""
     end = time.monotonic() + 30
     while wait_left(end) > 0 and not gc_line:
@@ -2684,8 +2686,8 @@ def run_store_forward_spill(args, work, slave):
     ops = {k: int(v) for k, v in re.findall(r" (\w+) (\d+) avg [\d.]+ max [\d.]+ ms", card_line)}
     unfed = re.search(r"longest unfed (\d+) ms", card_line)
     free = re.search(r"sparkplug (\d+)", stack_line)
-    gc_ok = (nfiles == 3 and nsteps == OLD_SPILL_STEPS and ops.get("step") == OLD_SPILL_STEPS - 1
-             and ops.get("mark") == 1 and ckpts >= 1 and 0 <= ck_max <= 2730
+    gc_ok = (nfiles == 3 and nsteps == OLD_SPILL_STEPS and ops.get("step") == OLD_SPILL_STEPS
+             and "mark" not in ops and ckpts >= 1 and 0 <= ck_max <= 2730
              and all(ops.get(k, 0) > 0 for k in ("open", "block", "super", "read", "alloc", "list"))
              and re.search(r" 0 error\(s\)", card_line))
     reg1, ts1 = bulk0_history(nb2, node)
@@ -2700,9 +2702,10 @@ def run_store_forward_spill(args, work, slave):
           f"{(ring_log or ['no ring log'])[0]}; waiting before the reconnection {waiting}; "
           f"{total} historical metrics after it, register 100: {reg1[:2]}..{reg1[-2:]} "
           f"({len(reg1)} samples, in order {reg1 == sorted(reg1)}) | {before1}")
-    check(f"Issues #122/#124 the card work in bounded steps after the network starts: the old files "
-          f"deleted in {OLD_SPILL_STEPS} steps (mark, truncates of 4 KB, unlink; a file numbered "
-          f"0x80000001 is not ours and is not touched), a checkpoint after the replay (at most 64 KB "
+    check(f"Issues #122/#124/#151 the card work in bounded steps after the network starts: the "
+          f"files of the step 1 format deleted unreplayed in {OLD_SPILL_STEPS} steps (truncates of "
+          f"4 KB, unlink, no mark; a file numbered 0x80000001 is not ours and is not touched), a "
+          f"checkpoint after the replay (at most 64 KB "
           f"replayed between two), the card's operation times in the shell, the Sparkplug task fed "
           f"within the task watchdog and >= {STACK_MARGIN_B} B of its stack free",
           nb and ready and gc_ok and unfed and int(unfed.group(1)) < 15000
@@ -2724,7 +2727,7 @@ def run_store_forward_spill(args, work, slave):
     t2 = time.monotonic()
     gw2.start()
     ready2 = gw2.wait_log(r"store & forward: card ready in \d+ ms \(\d+ blocks read\): ([1-9]\d*) "
-                          r"samples waiting \(0 of the old format\)", 60, t2)
+                          r"samples waiting, .* \(ring found with its superblock\); ", 60, t2)
     ready2_line = (gw2.find(r"store & forward: card ready", t2) or [""])[0]
     relay.start()
     nb3 = obs.wait(f"{T}/NBIRTH/{node}", 70, lambda p: nb2 is None or bdseq_of(p) != bdseq_of(nb2[2]))
@@ -2777,48 +2780,24 @@ def run_store_forward_spill(args, work, slave):
     renamed = copy.deepcopy(keep)
     renamed["devices"][-1]["tags"][0]["name"] = "Value2"
     web4 = ("admin", commissioning_password(gw2, t_keep) or "?")
+    t_new = time.monotonic()
     ok_new, det_new, _, h_new = check_restart_flush(
         gw2, obs, relay, slave, node, nb_keep, 10500, "config", web4, new_cfg=renamed, replay=False)
-    check("Issue #145 the hash of the spill covers only what a record means on replay: a saved "
-          "configuration (PUT /api/config, a planned restart) that changes a deadband, units, a "
-          "scale of a scaled tag, a poll period and offline_after keeps the hash and the data on "
-          "the card (the moved samples come back once, in order); one that renames a tag gets "
-          "another hash and a new ring (the moved samples are not replayed)",
+    check("Issues #145/#141 the hash of the spill covers only what a record means on replay: a "
+          "saved configuration (PUT /api/config, a planned restart) that changes a deadband, units, "
+          "a scale of a scaled tag, a poll period and offline_after keeps the hash and the data on "
+          "the card (the RAM ring is moved, and the samples come back once, in order); one that "
+          "renames a tag gets another hash and a new ring, and the RAM ring is not moved before "
+          "that restart (the log line names both hashes)",
           ok_keep and ok_new and cfg_hash and h_keep == cfg_hash and h_new and h_new != cfg_hash,
           f"configuration {cfg_hash:08x} at the first boot, {h_keep or 0:08x} after the first "
           f"change, {h_new or 0:08x} after the rename || {det_keep} || {det_new}")
+    check_card_simulated(gw2, spill_on=True, auth=("admin", commissioning_password(gw2, t_new) or "?"))
     gw2.kill()
-    obs.wait(f"{T}/NDEATH/{node}", 5)
-
-    # 4. step 1 segments of this configuration on the card: replayed once, then deleted
-    old_t0 = int(time.time() * 1000) - 3600 * 1000
-    files = {"sf/00000010.sf": old_segment(0x10, cfg_hash, range(7000, 7100), old_t0),
-             "sf/00000011.sf": old_segment(0x11, cfg_hash, range(7100, 7150), old_t0 + 100000)}
-    t3 = time.monotonic()
-    gw3 = boot_variant(args, work, "sfsd-old", cfg, files=files)
-    ready3 = gw3.wait_log(r"store & forward: card ready in \d+ ms .*: 150 samples waiting \(150 of "
-                          r"the old format\)", 60, t3)
-    nb4 = obs.wait(f"{T}/NBIRTH/{node}", 60, lambda p: nb3 is None or bdseq_of(p) != bdseq_of(nb3[2]))
-    mig_rx = r"^spill\s+on: 0 samples on the card .*; 0 file\(s\) to delete, 2 deleted in 4 steps, 0 left"
-    mig_line = ""
-    end = time.monotonic() + 60
-    while wait_left(end) > 0 and not mig_line:
-        asked4, _ = gw3.shell("status", [mig_rx], timeout=2, tries=1)
-        mig_line = spill_line(gw3, asked4, mig_rx)
-    reg3, ts3 = bulk0_history(nb4, node)
-    check_card_simulated(gw3, spill_on=True, auth=("admin", commissioning_password(gw3, t3) or "?"))
-    old_vals = [v for v in reg3 if v >= 7000]
-    gw3.kill()
     obs.wait(f"{T}/NDEATH/{node}", 5)
     obs.close()
     relay.stop()
     slave.bulk.setValues(3, 100, list(range(1000, 1060)))   # what the main scenario expects
-    check("Issue #124 migration: segments of the step 1 format of this configuration (its hash "
-          "from the boot log) are replayed once as historical DDATA, oldest first, then deleted "
-          "in bounded steps (dead mark, unlink)",
-          cfg_hash and ready3 and nb4 and old_vals == list(range(7000, 7150)) and mig_line,
-          f"configuration {cfg_hash:08x}; {(gw3.find(r'card ready', t3) or ['not ready'])[0]}; "
-          f"replayed {old_vals[:2]}..{old_vals[-2:]} ({len(old_vals)}) | {mig_line or 'no spill line'}")
     check("Issue #124 'card format' asks for 'confirm' and never runs by itself; 'card format "
           "confirm' refuses cleanly in QEMU (no microSD card)", fmt_ok,
           " | ".join(gw.find(r"^card format:", asked_f)))

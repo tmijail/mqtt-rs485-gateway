@@ -5,8 +5,8 @@
  * partition, /cfg/sf, stands in for the card (QEMU has no SDMMC).
  *
  * #124: the files are the ring's extents (r0000.sf ..), its two superblock copies (ringa.sf,
- * ringb.sf) and, until they are migrated, the segments of the earlier format (NNNNNNNN.sf), all
- * 8.3 names. They stay open between calls (one handle each for the extent being written, the
+ * ringb.sf) and, until they are deleted (#151), the segments of the earlier format
+ * (NNNNNNNN.sf), all 8.3 names. They stay open between calls (one handle each for the extent being written, the
  * one being read, a delete, and each superblock copy), so a card operation allocates nothing
  * except when it opens a file. A block or a superblock is whole aligned sectors with no fsync:
  * FatFs writes them straight to the card, with no FAT or directory write. The SDMMC transfers
@@ -44,7 +44,6 @@ typedef enum {
     GW_SFCARD_SUPER,    /* write of one superblock copy (a checkpoint or a head hint) */
     GW_SFCARD_READ,
     GW_SFCARD_ALLOC,    /* allocation of an extent or a superblock file (lseek and fsync) */
-    GW_SFCARD_MARK,     /* in-place write of the dead mark of an old segment, with its fsync */
     GW_SFCARD_STEP,     /* one delete step: truncate (with its fsync) or unlink */
     GW_SFCARD_STAT,     /* size of a file that is not open */
     GW_SFCARD_LIST,     /* the directory listing of the boot */

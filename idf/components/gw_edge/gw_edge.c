@@ -742,9 +742,10 @@ static void flush_sleep(uint32_t ms)
  * position. Bounded by FLUSH_LIMIT_MS; each card operation feeds the watchdog (s_spill->tick).
  * Runs once, in this task, which owns the card: no other task uses it. Not when a format of the
  * card was requested (the format task waits for the card, #139), after a factory reset (the next
- * boot runs another configuration: the data could not be replayed), without a spill, or when it
- * failed or has not finished its boot recovery: then the RAM ring is lost, as before. Not inlined:
- * it must not grow the frame of reconcile().
+ * boot runs another configuration: the data could not be replayed), after a saved configuration
+ * with another configuration hash (#141: the next boot starts a new ring), without a spill, or
+ * when it failed or has not finished its boot recovery: then the RAM ring is lost, as before. Not
+ * inlined: it must not grow the frame of reconcile().
  */
 static __attribute__((noinline)) void spill_before_restart(void)
 {
@@ -762,6 +763,15 @@ static __attribute__((noinline)) void spill_before_restart(void)
     if (atomic_load(&s_restart_discard)) {
         ESP_LOGW(TAG, "store & forward: factory reset: the %u samples of the RAM ring are not moved "
                       "to the card", ram);
+        return;
+    }
+    uint32_t saved;
+    if (gw_storage_saved_cfg_hash(&saved) && saved != s_spill->cfg_hash) {
+        /* #141: the next boot starts a new ring and would not replay what is moved now */
+        ESP_LOGW(TAG, "store & forward: the saved configuration has another configuration hash "
+                      "(%08lx, the ring has %08lx): the %u samples of the RAM ring are not moved to "
+                      "the card (the next boot starts a new ring)",
+                 (unsigned long)saved, (unsigned long)s_spill->cfg_hash, ram);
         return;
     }
     gw_sf_flush_t r;
@@ -856,7 +866,6 @@ static void publish_status(void)
         s_st.spill_failed = !sp->ok;
         s_st.spill_released = atomic_load(&s_card_released);
         s_st.spill_count = (uint32_t)gw_sfspill_waiting(sp);
-        s_st.spill_legacy = (uint32_t)sp->leg_count;
         s_st.spill_dropped = sp->dropped;
         s_st.spill_stranded = (uint32_t)sp->stranded;
         s_st.spill_holes = sp->holes;
@@ -870,6 +879,7 @@ static void publish_status(void)
         s_st.spill_ck_max = sp->ck_max;
         s_st.spill_boot_ms = sp->boot_ms;
         s_st.spill_boot_reads = sp->scan_reads;
+        s_st.spill_found = gw_sfspill_found_text(sp);   /* a constant string */
         s_st.spill_gc_pending = gw_sfspill_gc_pending(sp);
         s_st.spill_gc_files = sp->gc_files;
         s_st.spill_gc_steps = sp->gc_steps;
@@ -1332,12 +1342,11 @@ static __attribute__((noinline)) void spill_step(int64_t now)
     if (s_spill->phase == GW_SFSPILL_READY && !s_spill_ready_logged) {
         s_spill_ready_logged = true;
         ESP_LOGI(TAG, "store & forward: card ready in %lu ms (%lu blocks read): %lu samples "
-                      "waiting (%lu of the old format), ring %lu of %lu blocks, nonce %08lx%s; "
-                      "%lu file(s) to delete",
+                      "waiting, ring %lu of %lu blocks, nonce %08lx (%s); %lu file(s) to delete",
                  (unsigned long)s_spill->boot_ms, (unsigned long)s_spill->scan_reads,
-                 (unsigned long)gw_sfspill_waiting(s_spill), (unsigned long)s_spill->leg_count,
+                 (unsigned long)gw_sfspill_waiting(s_spill),
                  (unsigned long)(s_spill->head - s_spill->tail), (unsigned long)s_spill->nblocks,
-                 (unsigned long)s_spill->nonce, s_spill->sb_due ? " (new ring)" : "",
+                 (unsigned long)s_spill->nonce, gw_sfspill_found_text(s_spill),
                  (unsigned long)gw_sfspill_gc_pending(s_spill));
     }
     if (s_spill->gc_files != s_spill_gc_logged && gw_sfspill_gc_pending(s_spill) == 0) {
@@ -1665,7 +1674,7 @@ static void setup_spill(void)
                  why);
         return;
     }
-    /* its state, two blocks, the list of old segments and the delete queue: allocated once */
+    /* its state, two blocks and the delete queue: allocated once */
     s_spill = gw_storage_big_alloc(sizeof(*s_spill), "store & forward spill state");
     void *mem = s_spill != NULL ? gw_storage_big_alloc(gw_sfspill_mem_size(),
                                                        "store & forward spill buffers")

@@ -151,7 +151,7 @@ static void test_overwritten_string_head(void)
 
 #define XB_MAX 8                 /* blocks of an extent, at most, in these tests */
 #define XE_MAX 24                /* extent files r0000 .. */
-#define NLEG   32                /* step 1 segment files 0 .. NLEG - 1 */
+#define NLEG   32                /* step 1 segment files 0 .. NLEG - 1 (#151: only deleted) */
 #define LEGB   8192
 #define NVAL   14000             /* sample values of a scenario */
 #define RAMCAP 512
@@ -683,7 +683,7 @@ static void test_crc_and_plan(void)
     TEST_ASSERT_EQUAL_UINT32(0x811C9DC5u, gw_sfspill_fnv(GW_SFSPILL_FNV_INIT, "", 0));
     TEST_ASSERT_EQUAL_UINT32(0xE40C292Cu, gw_sfspill_fnv(GW_SFSPILL_FNV_INIT, "a", 1));
     TEST_ASSERT_EQUAL_size_t(32, sizeof(gw_sfspill_blk_t));
-    TEST_ASSERT_EQUAL_size_t(72, sizeof(gw_sfspill_sb_t));
+    TEST_ASSERT_EQUAL_size_t(64, sizeof(gw_sfspill_sb_t));
     TEST_ASSERT_TRUE(gw_sfspill_mem_size() <= sizeof(spmem));
     uint32_t m, e;
     /* the default 128 MiB: with 4 KiB clusters 256 extents of 512 KiB (#124) */
@@ -947,6 +947,7 @@ static void test_spill_superblocks_lost(void)
     until_ready();
     TEST_ASSERT_TRUE(sp.ok);
     TEST_ASSERT_EQUAL_HEX32(nonce, sp.nonce);
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_VOTE, sp.found);   /* #152: not a new ring */
     memset(consumed, 0, sizeof(consumed));
     replay_reset();
     int n = replay(-1, "probe");
@@ -964,7 +965,104 @@ static void test_spill_superblocks_lost(void)
     until_ready();
     TEST_ASSERT_TRUE(sp.ok);
     TEST_ASSERT_NOT_EQUAL(nonce, sp.nonce);
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_NONE, sp.found);
     TEST_ASSERT_EQUAL_size_t(0, gw_sf_count(&sf));
+}
+
+/* #152: the boot result tells what the recovery found, for the log line and the shell: a new
+ * ring (nothing valid on the card, or a ring of another configuration hash or geometry), the
+ * ring with its superblock, or the ring found again without a superblock (the vote). */
+static void test_spill_boot_result(void)
+{
+    card_new(4096);
+    boot(2, 8, 0x152);
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_NOT_YET, sp.found);
+    TEST_ASSERT_EQUAL_STRING("boot recovery not ended", gw_sfspill_found_text(&sp));
+    until_ready();
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_NONE, sp.found);
+    TEST_ASSERT_EQUAL_STRING("new ring: no valid ring on the card", gw_sfspill_found_text(&sp));
+    push_n(1500);
+    uint32_t nonce = sp.nonce;
+    boot(2, 8, 0x152);
+    until_ready();
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_SUPER, sp.found);
+    TEST_ASSERT_EQUAL_STRING("ring found with its superblock", gw_sfspill_found_text(&sp));
+    TEST_ASSERT_EQUAL_HEX32(nonce, sp.nonce);
+    TEST_ASSERT_TRUE(gw_sf_count(&sf) > 1000);
+    /* both copies damaged: the vote finds the same ring and its data again */
+    memset(sb_mem, 0x5A, sizeof(sb_mem));
+    boot(2, 8, 0x152);
+    until_ready();
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_VOTE, sp.found);
+    TEST_ASSERT_EQUAL_STRING("ring found again without a superblock (vote)",
+                             gw_sfspill_found_text(&sp));
+    TEST_ASSERT_EQUAL_HEX32(nonce, sp.nonce);
+    TEST_ASSERT_TRUE(gw_sf_count(&sf) > 1000);
+    /* another configuration hash, then another geometry: a new ring each time */
+    boot(2, 8, 0x153);
+    until_ready();
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_OTHER, sp.found);
+    TEST_ASSERT_EQUAL_STRING("new ring: another configuration or geometry",
+                             gw_sfspill_found_text(&sp));
+    TEST_ASSERT_NOT_EQUAL(nonce, sp.nonce);
+    TEST_ASSERT_EQUAL_size_t(0, gw_sf_count(&sf));
+    boot(2, 6, 0x153);
+    until_ready();
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_OTHER, sp.found);
+    TEST_ASSERT_EQUAL_size_t(0, gw_sf_count(&sf));
+}
+
+/* The head hint of the newest valid superblock copy on the card. */
+static uint64_t card_hint(void)
+{
+    gw_sfspill_sb_t c[2];
+    memcpy(&c[0], sb_mem[0], sizeof(c[0]));
+    memcpy(&c[1], sb_mem[1], sizeof(c[1]));
+    bool v0 = c[0].magic == GW_SFSPILL_SB_MAGIC, v1 = c[1].magic == GW_SFSPILL_SB_MAGIC;
+    TEST_ASSERT_TRUE(v0 || v1);
+    return v0 && (!v1 || c[0].gen > c[1].gen) ? c[0].head_hint : c[1].head_hint;
+}
+
+/* #142: each pass of the loop wants a block (a high sample rate keeps the RAM ring at three
+ * quarters or more) for more than 4 x H blocks. The head hint still goes to the card every H
+ * blocks, before the next block (the order of gw_sfspill_flush_step()), with one card change in
+ * each pass: the hint on the card is never more than H blocks behind the head (the 500 ms gap
+ * adds no block here: a pass is 100 ms and H blocks take more than 500 ms). Then a boot reads
+ * at most H + K blocks after the superblocks. */
+static void test_spill_hint_under_load(void)
+{
+    card_new(4096);
+    boot(8, 24, 0x142);   /* 192 blocks: H = 32 */
+    until_ready();
+    const uint32_t h = GW_SFSPILL_HINT_BLOCKS;
+    uint64_t max_lag = 0;
+    int hints = 0;
+    for (int pass = 0; sp.blocks < 5 * h; pass++) {
+        TEST_ASSERT_LESS_THAN_INT(1000, pass);
+        int changes = card.changes, sbw = card.sb_writes;
+        now_ms += 100;
+        if (gw_sfspill_prepare(&sp, true, now_ms) == GW_SFSPILL_BLOCK_READY) {
+            gw_sf_rec_t *recs = gw_sfspill_block_recs(&sp);
+            for (uint32_t i = 0; i < GW_SFSPILL_BLK_RECS; i++) {
+                /* a numeric sample each, outside the counters of note_samples() */
+                recs[i] = (gw_sf_rec_t){.ts_ms = (uint64_t)NVAL * 10u + i, .batch = 1};
+            }
+            TEST_ASSERT_TRUE(gw_sfspill_put_block(&sp, GW_SFSPILL_BLK_RECS));
+        }
+        TEST_ASSERT_TRUE(card.changes - changes <= 1);   /* one card operation in a pass */
+        hints += card.sb_writes - sbw;
+        uint64_t lag = sp.head - card_hint();
+        max_lag = lag > max_lag ? lag : max_lag;
+    }
+    TEST_ASSERT_TRUE(sp.ok);
+    TEST_ASSERT_TRUE(hints >= 4);
+    TEST_ASSERT_TRUE(max_lag <= h);
+    boot(8, 24, 0x142);
+    int reads = card.reads;
+    until_ready();
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_SUPER, sp.found);
+    TEST_ASSERT_TRUE(card.reads - reads <= 2 + (int)h + GW_SFSPILL_HOLES_MAX + 1);
+    TEST_ASSERT_EQUAL_UINT64(5 * h * GW_SFSPILL_BLK_RECS, sp.ring_count);
 }
 
 /* A damaged block in the middle is a hole: counted, its records lost, never replayed; the
@@ -991,81 +1089,173 @@ static void test_spill_hole(void)
     TEST_ASSERT_TRUE(n + lost >= 2000 - RAMCAP);
 }
 
-/* Write a step 1 segment (format version 1): header, @p n records of numeric samples from
- * @p from (multiples of 17 are strings in these tests: skipped), and @p partial bytes of one
- * more (a power cut). Returns the next sample. */
-static int old_segment(uint32_t seg, uint32_t hash, int from, int n, int partial)
+/* Write a file of the step 1 format (#122): its 16-byte header (magic "GWSF", version 1, the
+ * record size, the configuration hash, the number), then @p n records of samples from @p from. */
+static void old_segment(uint32_t seg, uint32_t hash, int from, int n)
 {
-    gw_sfspill_hdr_t h = {GW_SFSPILL_MAGIC, GW_SFSPILL_VERSION, 24, hash, seg};
+    struct {
+        uint32_t magic;
+        uint16_t version, rec_size;
+        uint32_t cfg_hash, seg_id;
+    } h = {0x46535747u, 1, 24, hash, seg};
     memcpy(leg_mem[seg], &h, sizeof(h));
-    int c = from;
-    for (int i = 0; i < n + (partial > 0); i++, c++) {
-        c += c % 17 == 0;
+    for (int i = 0; i < n; i++) {
+        int c = from + i;
         gw_sf_rec_t r = {.ts_ms = (uint64_t)c * 10u + 5u, .metric = (uint16_t)(c % 5), .batch = 1};
         r.v.num = c;
         memcpy(leg_mem[seg] + sizeof(h) + (size_t)i * sizeof(r), &r, sizeof(r));
     }
-    card.leg[seg].size = (int32_t)(sizeof(h) + (size_t)n * sizeof(gw_sf_rec_t)) + partial;
-    return c - (partial > 0);
+    card.leg[seg].size = (int32_t)(sizeof(h) + (size_t)n * sizeof(gw_sf_rec_t));
 }
 
-/* Migration from step 1 (#122 format): the segments of this configuration are replayed once,
- * before the ring, then deleted in bounded steps (dead mark, truncates of 128 clusters, the
- * unlink); the others are deleted unreplayed. A reboot during their replay repeats at most
- * 64 KiB (the superblock keeps the position). */
-static void test_spill_migration(void)
+/* #151: no gateway was installed with the step 1 format, so there is no migration: its files
+ * are deleted at boot in bounded steps (truncates of 128 clusters, then the unlink), and never
+ * replayed, also when they have the hash of this configuration. The ring works as on an empty
+ * card. */
+static void test_spill_step1_files_deleted(void)
 {
     card_new(8);   /* a delete step: 128 units of 8 B, 1024 B */
-    old_segment(3, 0x31, 1, 16, 0);
-    old_segment(4, 0x31, 18, 16, 5);     /* the newest: and 5 bytes of a cut record */
-    old_segment(5, 0x99, 500, 300, 0);   /* another configuration: 7216 B */
-    old_segment(6, 0x31, 900, 3, 0);
-    memcpy(leg_mem[6], "DEAD", 4);       /* a delete that a power cut stopped */
-    card.leg[7].size = 3;                /* a torn file */
-    produced = 40;
+    old_segment(3, 0x31, 1, 16);      /* this configuration: 400 B */
+    old_segment(5, 0x99, 500, 300);   /* another configuration: 7216 B */
+    card.leg[7].size = 3;             /* a torn file */
     boot(2, 8, 0x31);
     until_ready();
-    TEST_ASSERT_EQUAL_UINT32(32, sp.legacy_found);
     TEST_ASSERT_EQUAL_UINT32(3, gw_sfspill_gc_pending(&sp));
-    TEST_ASSERT_EQUAL_size_t(32, gw_sf_count(&sf));
-    /* new samples go to the ring behind them */
-    push_n(1000);
-    memset(consumed, 0, sizeof(consumed));
-    replay_reset();
-    TEST_ASSERT_EQUAL_INT(1032, replay(-1, "migration"));
-    for (int c = 1; c < 34; c++) {
-        TEST_ASSERT_EQUAL(c != 17, rp.seen[c]);
-    }
+    TEST_ASSERT_EQUAL_UINT64(0, gw_sfspill_waiting(&sp));
+    TEST_ASSERT_EQUAL_size_t(0, gw_sf_count(&sf));
+    TEST_ASSERT_FALSE(gw_sfspill_holds(&sp));
+    int writes = card.writes;
     steps_all();
     for (int i = 0; i < NLEG; i++) {
         TEST_ASSERT_EQUAL_INT32(-1, card.leg[i].size);   /* all deleted */
     }
+    TEST_ASSERT_EQUAL_INT(writes, card.writes);   /* no mark: nothing reads them again */
     TEST_ASSERT_TRUE(card.max_freed <= GW_SFSPILL_STEP_UNITS);
-    /* segment 5: mark, 7 truncates, unlink; 6 (dead already) and 7: unlink; 3 and 4
-     * (replayed): mark, unlink */
-    TEST_ASSERT_EQUAL_UINT32(9 + 1 + 1 + 2 + 2, sp.gc_steps);
-    TEST_ASSERT_EQUAL_UINT32(5, sp.gc_files);
-    /* a reboot during their replay: at most 64 KiB again, nothing lost */
-    card_new(8);
-    int next = old_segment(3, 0x31, 1, 150, 0);
-    int end = old_segment(4, 0x31, next, 300, 0);
-    produced = end;
-    boot(2, 8, 0x31);
+    /* segment 3: the unlink; 5: 7 truncates and the unlink; 7: the unlink */
+    TEST_ASSERT_EQUAL_UINT32(1 + 8 + 1, sp.gc_steps);
+    TEST_ASSERT_EQUAL_UINT32(3, sp.gc_files);
+    produced = 0;
+    memset(consumed, 0, sizeof(consumed));
+    push_n(1000);
+    replay_reset();
+    TEST_ASSERT_EQUAL_INT(1000, replay(-1, "after the step 1 files"));
+    for (int c = 0; c < 1000; c++) {
+        TEST_ASSERT_TRUE(rp.seen[c]);
+    }
+}
+
+static int flush_ticks, flush_sleeps, tick_changes;
+
+/* The spill's tick (the watchdog feed): after each card operation, at most one change. */
+static void flush_tick(void)
+{
+    TEST_ASSERT_TRUE(card.changes - tick_changes <= 1);
+    tick_changes = card.changes;
+    flush_ticks++;
+}
+
+/* After a reboot: the replay sends every sample that is still on the card and was not consumed
+ * before, and nothing again. */
+static void check_no_dups_after_reboot(uint32_t ext_blocks, uint32_t extents, uint32_t hash,
+                                       const char *msg)
+{
+    remember_consumed();
+    boot(ext_blocks, extents, hash);
+    until_ready();
+    replay_reset();
+    int n = replay(-1, msg);
+    TEST_ASSERT_TRUE_MESSAGE(n > 0, msg);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, rp.dups, msg);
+    for (int c = 0; c < produced; c++) {
+        if (card.durable[c] && !card.overwritten[c]) {
+            TEST_ASSERT_TRUE_MESSAGE(consumed[c] || rp.seen[c], msg);
+        }
+    }
+}
+
+/* #143: gw_sfspill_checkpoint() (the gateway calls it when it releases the card for a format,
+ * #139). It writes the replay position only when the boot recovery ended, no superblock is due,
+ * the position moved and the 500 ms gap permits it; when this boot has not made the superblock
+ * files yet, it makes them first (at most 3 card changes). */
+static void test_spill_checkpoint(void)
+{
+    card_new(4096);
+    boot(8, 8, 0x143);   /* 64 blocks: H = 16, no head hint in this test */
+    int changes = card.changes;
+    TEST_ASSERT_FALSE(gw_sfspill_checkpoint(&sp, now_ms + 1000));   /* the recovery has not run */
+    TEST_ASSERT_EQUAL_INT(changes, card.changes);
     until_ready();
     memset(consumed, 0, sizeof(consumed));
-    replay_reset();
-    replay(200, "migration 1");   /* segment 3 and a part of 4 */
-    remember_consumed();
-    steps_all();
-    boot(2, 8, 0x31);
+    push_n(2000);
+    boot(8, 8, 0x143);   /* the RAM ring is gone: the samples on the card stay */
     until_ready();
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_SUPER, sp.found);
+    now_ms += 1000;
+    /* nothing to save: false, and nothing written */
+    changes = card.changes;
+    TEST_ASSERT_FALSE(gw_sfspill_checkpoint(&sp, now_ms));
+    TEST_ASSERT_EQUAL_INT(changes, card.changes);
+    /* a replay in progress (less than 64 KB: no checkpoint by itself) */
     replay_reset();
-    replay(-1, "migration 2");
-    TEST_ASSERT_TRUE(rp.dups > 0);
-    TEST_ASSERT_TRUE(rp.dups <= (int)GW_SFSPILL_CKPT_RECS);
-    for (int c = 1; c < end; c++) {
-        TEST_ASSERT_EQUAL(c % 17 != 0, rp.seen[c] || consumed[c]);
-    }
+    TEST_ASSERT_TRUE(replay(500, "before the checkpoint") >= 500);
+    TEST_ASSERT_EQUAL_UINT32(0, sp.checkpoints);
+    TEST_ASSERT_TRUE(sp.ck_pending > 0);
+    /* one superblock with the position */
+    changes = card.changes;
+    uint32_t sbw = sp.sb_writes;
+    TEST_ASSERT_TRUE(gw_sfspill_checkpoint(&sp, now_ms));
+    TEST_ASSERT_EQUAL_INT(changes + 1, card.changes);   /* the files exist already */
+    TEST_ASSERT_EQUAL_UINT32(sbw + 1, sp.sb_writes);
+    TEST_ASSERT_EQUAL_UINT32(1, sp.checkpoints);
+    TEST_ASSERT_EQUAL_UINT32(0, sp.ck_pending);
+    TEST_ASSERT_EQUAL_UINT32(now_ms, sp.sb_last_ms);
+    /* nothing moved since: false, and nothing written */
+    changes = card.changes;
+    TEST_ASSERT_FALSE(gw_sfspill_checkpoint(&sp, now_ms + 1000));
+    TEST_ASSERT_EQUAL_INT(changes, card.changes);
+    /* more of the replay, then a checkpoint in the 500 ms gap after that superblock: false,
+     * and nothing written; after the gap: the next superblock */
+    TEST_ASSERT_TRUE(replay(200, "between the checkpoints") >= 200);
+    TEST_ASSERT_TRUE(sp.ck_pending > 0);
+    uint32_t last = sp.sb_last_ms;
+    TEST_ASSERT_TRUE(now_ms < last + GW_SFSPILL_SB_GAP_MS - 1);
+    now_ms = last + GW_SFSPILL_SB_GAP_MS - 1;
+    changes = card.changes;
+    TEST_ASSERT_FALSE(gw_sfspill_checkpoint(&sp, now_ms));
+    TEST_ASSERT_EQUAL_INT(changes, card.changes);
+    now_ms++;
+    TEST_ASSERT_TRUE(gw_sfspill_checkpoint(&sp, now_ms));
+    TEST_ASSERT_EQUAL_INT(changes + 1, card.changes);
+    TEST_ASSERT_EQUAL_UINT32(2, sp.checkpoints);
+    /* the next boot goes on from the saved position: no duplicates, nothing lost */
+    check_no_dups_after_reboot(8, 8, 0x143, "after the checkpoint");
+
+    /* copy B is not on the card, and this boot has not made the superblock files: the
+     * checkpoint makes them, then writes (at most 3 card changes, with a tick after each) */
+    card_new(4096);
+    boot(8, 8, 0x144);
+    until_ready();
+    memset(consumed, 0, sizeof(consumed));
+    push_n(2000);
+    card.sb[1].size = -1;
+    boot(8, 8, 0x144);
+    until_ready();
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_SUPER, sp.found);
+    replay_reset();
+    replay(300, "before the checkpoint without copy B");
+    now_ms += 1000;
+    changes = card.changes;
+    sbw = sp.sb_writes;
+    flush_ticks = 0;
+    tick_changes = card.changes;
+    sp.tick = flush_tick;
+    TEST_ASSERT_TRUE(gw_sfspill_checkpoint(&sp, now_ms));
+    sp.tick = NULL;
+    TEST_ASSERT_TRUE(card.changes - changes <= 3);
+    TEST_ASSERT_EQUAL_INT(3, flush_ticks);   /* the file of A, the file of B, the write */
+    TEST_ASSERT_EQUAL_INT32(GW_SFSPILL_SB_BYTES, card.sb[1].size);
+    TEST_ASSERT_EQUAL_UINT32(sbw + 1, sp.sb_writes);
+    check_no_dups_after_reboot(8, 8, 0x144, "after the checkpoint without copy B");
 }
 
 /* #134: after an I/O failure the samples on the card are not counted as waiting any more
@@ -1190,15 +1380,6 @@ static void test_spill_faults(void)
 
 /* ---- #136: a planned restart moves the RAM ring to the card first ---- */
 
-static int flush_ticks, flush_sleeps, tick_changes;
-
-/* The spill's tick (the watchdog feed): after each card operation, at most one change. */
-static void flush_tick(void)
-{
-    TEST_ASSERT_TRUE(card.changes - tick_changes <= 1);
-    tick_changes = card.changes;
-    flush_ticks++;
-}
 
 static uint32_t flush_clock(void)
 {
@@ -1397,8 +1578,11 @@ int main(void)
     RUN_TEST(test_spill_geometry_change);
     RUN_TEST(test_spill_card_full);
     RUN_TEST(test_spill_superblocks_lost);
+    RUN_TEST(test_spill_boot_result);
     RUN_TEST(test_spill_hole);
-    RUN_TEST(test_spill_migration);
+    RUN_TEST(test_spill_hint_under_load);
+    RUN_TEST(test_spill_step1_files_deleted);
+    RUN_TEST(test_spill_checkpoint);
     RUN_TEST(test_spill_io_error);
     RUN_TEST(test_spill_faults);
     RUN_TEST(test_flush_before_restart);

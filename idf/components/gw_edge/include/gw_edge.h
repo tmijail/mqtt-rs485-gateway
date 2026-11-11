@@ -40,7 +40,6 @@ typedef struct {
     char spill_off[96];      /* why not (sd enabled), or why it failed */
     bool spill_ready;        /* #124: the boot recovery is done */
     uint32_t spill_count;    /* samples (records) on the card waiting (0 after a failure) */
-    uint32_t spill_legacy;   /* of them, in segments of the step 1 format */
     uint32_t spilled;        /* records ever moved to the card */
     uint32_t spill_dropped;  /* records overwritten on the card unsent (card full) */
     bool spill_failed;       /* the card failed: spill stopped */
@@ -58,6 +57,7 @@ typedef struct {
     uint32_t spill_ck_max;       /* most records replayed between two (the duplicates bound) */
     uint32_t spill_boot_ms;      /* the boot recovery: time and blocks read */
     uint32_t spill_boot_reads;
+    const char *spill_found;     /* #152: what the boot recovery found (gw_sfspill_found_text) */
     uint32_t spill_gc_pending; /* files waiting for their delete */
     uint32_t spill_gc_files; /* files deleted, in spill_gc_steps steps */
     uint32_t spill_gc_steps;

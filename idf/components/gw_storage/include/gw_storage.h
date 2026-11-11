@@ -56,6 +56,14 @@ esp_err_t gw_storage_save_config_ex(const char *json, size_t len, bool dry_run, 
                                     gw_cfg_err_t *err);
 
 /**
+ * #141: true after a configuration was saved in this boot (not a dry run). @p hash gets
+ * gw_sfspill_cfg_hash() of the configuration saved last. Before the restart that applies it,
+ * the gateway compares it with the hash of the running ring: with another hash the next boot
+ * starts a new ring, so the RAM ring is not moved to the card. Safe from any task.
+ */
+bool gw_storage_saved_cfg_hash(uint32_t *hash);
+
+/**
  * The stored document (or the embedded default if there is no file) for export, with every
  * secret masked. NULL with the reason in @p err. Release with gw_storage_free().
  */
