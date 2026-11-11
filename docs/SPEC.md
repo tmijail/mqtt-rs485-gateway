@@ -400,7 +400,7 @@ The object form, with the optional spill to a microSD card:
 - These restarts are planned: the shell `restart`, `POST /api/restart`, NCMD Node Control/Reboot, the restart after a firmware update, and the restart after a saved configuration.
 - The move has a time limit of 5 s. When the limit expires, the gateway restarts. The samples that are not on the card are then lost. The log tells how many samples moved and how many are lost.
 - The gateway does not move the RAM buffer after a factory reset, during a format of the card, when the spill is off or failed, or before the boot read the card.
-- After a saved configuration that changes the configuration hash (the list above), the gateway starts a new ring: it does not publish the moved samples.
+- After a saved configuration that changes the configuration hash (the list above), the next boot starts a new ring: it does not publish the samples of the earlier ring. Thus the gateway does not move the RAM buffer before this restart (issue #141), and the log tells why.
 - **An unplanned restart (a power cut, a watchdog, a crash) loses the RAM buffer.** Only the data that was on the card before stays.
 
 **Retention.** The gateway keeps only the changes, not each poll: a tag goes into the buffer only when it changed by more than its `deadband`. Thus calculate the retention in changes per second. One change is one sample of 24 B (a text: 1 + length / 8 samples), and one block of 4 KB holds 169 samples. Thus 1 MB of `max_kb` holds 43 264 samples:

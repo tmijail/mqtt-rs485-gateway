@@ -2489,8 +2489,10 @@ def check_restart_flush(gw, obs, relay, slave, node, prev_nb, first, how, auth=N
     boot the recovery finds it, and the replay sends exactly those samples as historical DDATA,
     once and oldest first, and nothing from before. With @replay False (a configuration that
     changes what the records mean, #145) the boot starts a new ring instead: 0 samples waiting
-    and no historical DDATA. Returns (ok, detail, the NBIRTH after the restart, the configuration
-    hash of the spill in the boot log after the restart)."""
+    and no historical DDATA; and issue #141: the Sparkplug task does not move the RAM ring before
+    that restart, and its log line says why (the saved hash, which is the hash of the next boot,
+    and the hash of the ring). Returns (ok, detail, the NBIRTH after the restart, the
+    configuration hash of the spill in the boot log after the restart)."""
     since = time.monotonic()
     relay.stop()
     gw.wait_log(r"MQTT down; reconnect attempt", 10, since)
@@ -2519,8 +2521,12 @@ def check_restart_flush(gw, obs, relay, slave, node, prev_nb, first, how, auth=N
         answer = http("POST", "/api/restart", b"", auth=auth)[0] == 202
     flush_rx = (r"store & forward: before the restart, (\d+) samples \((\d+) records\) moved from "
                 r"the RAM ring to the card in (\d+) ms .*sparkplug stack (\d+) B never used")
-    gw.wait_log(flush_rx, 30, t)
+    skip_rx = (r"store & forward: the saved configuration has another configuration hash "
+               r"\(([0-9a-f]{8}), the ring has ([0-9a-f]{8})\): the \d+ samples of the RAM ring are "
+               r"not moved to the card \(the next boot starts a new ring\)")
+    gw.wait_log(flush_rx if replay else skip_rx, 30, t)
     flush_l = (gw.find(r"store & forward: before the restart", t) or [""])[0]
+    skip_l = (gw.find(r"store & forward: the saved configuration has another", t) or [""])[0]
     ready_rx = (r"store & forward: card ready in \d+ ms \(\d+ blocks read\): [1-9]\d* samples "
                 r"waiting, ring \d+ of \d+ blocks, nonce [0-9a-f]{8} \(ring found with its "
                 r"superblock\); " if replay
@@ -2543,16 +2549,20 @@ def check_restart_flush(gw, obs, relay, slave, node, prev_nb, first, how, auth=N
                 for mm in m[2].metrics if mm.is_historical)
     mf = re.search(flush_rx, flush_l)
     moved, recs, ms, stack = (int(x) for x in mf.groups()) if mf else (0, 0, -1, 0)
-    flushed = (answer and mf and 0 < waiting < 750 and spilled == 0 and recs >= waiting
-               and stack >= STACK_MARGIN_B and ready and nb and done)
+    restarted = answer and 0 < waiting < 750 and spilled == 0 and ready and nb and done
     if replay:
-        ok = (flushed and total == moved and reg and reg == sorted(reg) and len(set(reg)) == len(reg)
+        ok = (restarted and mf and recs >= waiting and stack >= STACK_MARGIN_B and not skip_l
+              and total == moved and reg and reg == sorted(reg) and len(set(reg)) == len(reg)
               and all(first < v <= value for v in reg) and reg[0] <= first + 5 and reg[-1] == value
               and ts == sorted(ts))
     else:
-        ok = flushed and moved > 0 and total == 0 and not reg
+        # #141: no move, and the line names the hash of the next boot and the hash of the ring
+        ms_ = re.search(skip_rx, skip_l)
+        ok = (restarted and ms_ and not mf and mh and int(ms_.group(1), 16) == int(mh.group(1), 16)
+              and ms_.group(1) != ms_.group(2) and total == 0 and not reg)
     detail = (f"{how}: {waiting} records in the RAM ring before the restart, {spilled} moved to "
-              f"the card by the spill | {flush_l or 'no flush line'} | {ring_l or 'no ring line'} | "
+              f"the card by the spill | {flush_l or skip_l or 'no flush line'} | "
+              f"{ring_l or 'no ring line'} | "
               f"{ready_l or 'not ready'} | {total} historical metrics after the restart, register "
               f"100: {reg[:2]}..{reg[-2:]} ({len(reg)} samples, the outage set {first + 1}..{value})")
     return ok, detail, nb, int(mh.group(1), 16) if mh else None
@@ -2773,11 +2783,12 @@ def run_store_forward_spill(args, work, slave):
     t_new = time.monotonic()
     ok_new, det_new, _, h_new = check_restart_flush(
         gw2, obs, relay, slave, node, nb_keep, 10500, "config", web4, new_cfg=renamed, replay=False)
-    check("Issue #145 the hash of the spill covers only what a record means on replay: a saved "
-          "configuration (PUT /api/config, a planned restart) that changes a deadband, units, a "
-          "scale of a scaled tag, a poll period and offline_after keeps the hash and the data on "
-          "the card (the moved samples come back once, in order); one that renames a tag gets "
-          "another hash and a new ring (the moved samples are not replayed)",
+    check("Issues #145/#141 the hash of the spill covers only what a record means on replay: a "
+          "saved configuration (PUT /api/config, a planned restart) that changes a deadband, units, "
+          "a scale of a scaled tag, a poll period and offline_after keeps the hash and the data on "
+          "the card (the RAM ring is moved, and the samples come back once, in order); one that "
+          "renames a tag gets another hash and a new ring, and the RAM ring is not moved before "
+          "that restart (the log line names both hashes)",
           ok_keep and ok_new and cfg_hash and h_keep == cfg_hash and h_new and h_new != cfg_hash,
           f"configuration {cfg_hash:08x} at the first boot, {h_keep or 0:08x} after the first "
           f"change, {h_new or 0:08x} after the rename || {det_keep} || {det_new}")

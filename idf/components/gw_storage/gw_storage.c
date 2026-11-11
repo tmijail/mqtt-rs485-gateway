@@ -24,6 +24,7 @@
 #include "gw_auth.h"
 #include "gw_nvsraw.h"
 #include "gw_port.h"
+#include "gw_sfspill.h"
 #include "mbedtls/platform.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -51,6 +52,10 @@ static uint8_t s_bdseq_ram;  /* fallback if NVS is unusable */
 static bool s_mounted;
 static volatile bool s_reset_done;    /* factory reset: no more state writes until the restart */
 static SemaphoreHandle_t s_save_lock;   /* one writer at a time: web, shell */
+/* #141: gw_sfspill_cfg_hash() of the configuration saved last in this boot */
+static portMUX_TYPE s_saved_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool s_saved;
+static uint32_t s_saved_hash;
 static StaticSemaphore_t s_save_lock_buf;
 static gw_storage_commit_hook_t s_commit_hook;   /* issue #99: gw_fw, before a commit */
 
@@ -1967,6 +1972,15 @@ bool gw_storage_sim_take(const char *name)
 }
 #endif
 
+bool gw_storage_saved_cfg_hash(uint32_t *hash)
+{
+    portENTER_CRITICAL(&s_saved_mux);
+    bool saved = s_saved;
+    *hash = s_saved_hash;
+    portEXIT_CRITICAL(&s_saved_mux);
+    return saved;
+}
+
 esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_cfg_err_t *err)
 {
     return gw_storage_save_config_ex(json, len, dry_run, false, err);
@@ -2066,6 +2080,11 @@ esp_err_t gw_storage_save_config_ex(const char *json, size_t len, bool dry_run, 
         }
         if (ret == ESP_OK) {
             set_factory_marker(false);
+            uint32_t hash = gw_sfspill_cfg_hash(cfg);   /* #141: for the restart */
+            portENTER_CRITICAL(&s_saved_mux);
+            s_saved = true;
+            s_saved_hash = hash;
+            portEXIT_CRITICAL(&s_saved_mux);
             ESP_LOGI(TAG, "configuration saved to " CFG_PATH " (%zu bytes)%s", doc.doc_len,
                      doc.secrets_changed ? "; secrets updated in NVS" : "");
 #if CONFIG_NVS_ENCRYPTION

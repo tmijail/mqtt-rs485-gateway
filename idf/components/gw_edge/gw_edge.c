@@ -742,9 +742,10 @@ static void flush_sleep(uint32_t ms)
  * position. Bounded by FLUSH_LIMIT_MS; each card operation feeds the watchdog (s_spill->tick).
  * Runs once, in this task, which owns the card: no other task uses it. Not when a format of the
  * card was requested (the format task waits for the card, #139), after a factory reset (the next
- * boot runs another configuration: the data could not be replayed), without a spill, or when it
- * failed or has not finished its boot recovery: then the RAM ring is lost, as before. Not inlined:
- * it must not grow the frame of reconcile().
+ * boot runs another configuration: the data could not be replayed), after a saved configuration
+ * with another configuration hash (#141: the next boot starts a new ring), without a spill, or
+ * when it failed or has not finished its boot recovery: then the RAM ring is lost, as before. Not
+ * inlined: it must not grow the frame of reconcile().
  */
 static __attribute__((noinline)) void spill_before_restart(void)
 {
@@ -762,6 +763,15 @@ static __attribute__((noinline)) void spill_before_restart(void)
     if (atomic_load(&s_restart_discard)) {
         ESP_LOGW(TAG, "store & forward: factory reset: the %u samples of the RAM ring are not moved "
                       "to the card", ram);
+        return;
+    }
+    uint32_t saved;
+    if (gw_storage_saved_cfg_hash(&saved) && saved != s_spill->cfg_hash) {
+        /* #141: the next boot starts a new ring and would not replay what is moved now */
+        ESP_LOGW(TAG, "store & forward: the saved configuration has another configuration hash "
+                      "(%08lx, the ring has %08lx): the %u samples of the RAM ring are not moved to "
+                      "the card (the next boot starts a new ring)",
+                 (unsigned long)saved, (unsigned long)s_spill->cfg_hash, ram);
         return;
     }
     gw_sf_flush_t r;
