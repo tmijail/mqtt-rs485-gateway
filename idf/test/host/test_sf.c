@@ -1012,6 +1012,59 @@ static void test_spill_boot_result(void)
     TEST_ASSERT_EQUAL_size_t(0, gw_sf_count(&sf));
 }
 
+/* The head hint of the newest valid superblock copy on the card. */
+static uint64_t card_hint(void)
+{
+    gw_sfspill_sb_t c[2];
+    memcpy(&c[0], sb_mem[0], sizeof(c[0]));
+    memcpy(&c[1], sb_mem[1], sizeof(c[1]));
+    bool v0 = c[0].magic == GW_SFSPILL_SB_MAGIC, v1 = c[1].magic == GW_SFSPILL_SB_MAGIC;
+    TEST_ASSERT_TRUE(v0 || v1);
+    return v0 && (!v1 || c[0].gen > c[1].gen) ? c[0].head_hint : c[1].head_hint;
+}
+
+/* #142: each pass of the loop wants a block (a high sample rate keeps the RAM ring at three
+ * quarters or more) for more than 4 x H blocks. The head hint still goes to the card every H
+ * blocks, before the next block (the order of gw_sfspill_flush_step()), with one card change in
+ * each pass: the hint on the card is never more than H blocks behind the head (the 500 ms gap
+ * adds no block here: a pass is 100 ms and H blocks take more than 500 ms). Then a boot reads
+ * at most H + K blocks after the superblocks. */
+static void test_spill_hint_under_load(void)
+{
+    card_new(4096);
+    boot(8, 24, 0x142);   /* 192 blocks: H = 32 */
+    until_ready();
+    const uint32_t h = GW_SFSPILL_HINT_BLOCKS;
+    uint64_t max_lag = 0;
+    int hints = 0;
+    for (int pass = 0; sp.blocks < 5 * h; pass++) {
+        TEST_ASSERT_LESS_THAN_INT(1000, pass);
+        int changes = card.changes, sbw = card.sb_writes;
+        now_ms += 100;
+        if (gw_sfspill_prepare(&sp, true, now_ms) == GW_SFSPILL_BLOCK_READY) {
+            gw_sf_rec_t *recs = gw_sfspill_block_recs(&sp);
+            for (uint32_t i = 0; i < GW_SFSPILL_BLK_RECS; i++) {
+                /* a numeric sample each, outside the counters of note_samples() */
+                recs[i] = (gw_sf_rec_t){.ts_ms = (uint64_t)NVAL * 10u + i, .batch = 1};
+            }
+            TEST_ASSERT_TRUE(gw_sfspill_put_block(&sp, GW_SFSPILL_BLK_RECS));
+        }
+        TEST_ASSERT_TRUE(card.changes - changes <= 1);   /* one card operation in a pass */
+        hints += card.sb_writes - sbw;
+        uint64_t lag = sp.head - card_hint();
+        max_lag = lag > max_lag ? lag : max_lag;
+    }
+    TEST_ASSERT_TRUE(sp.ok);
+    TEST_ASSERT_TRUE(hints >= 4);
+    TEST_ASSERT_TRUE(max_lag <= h);
+    boot(8, 24, 0x142);
+    int reads = card.reads;
+    until_ready();
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_SUPER, sp.found);
+    TEST_ASSERT_TRUE(card.reads - reads <= 2 + (int)h + GW_SFSPILL_HOLES_MAX + 1);
+    TEST_ASSERT_EQUAL_UINT64(5 * h * GW_SFSPILL_BLK_RECS, sp.ring_count);
+}
+
 /* A damaged block in the middle is a hole: counted, its records lost, never replayed; the
  * blocks after it come back. */
 static void test_spill_hole(void)
@@ -1422,6 +1475,7 @@ int main(void)
     RUN_TEST(test_spill_superblocks_lost);
     RUN_TEST(test_spill_boot_result);
     RUN_TEST(test_spill_hole);
+    RUN_TEST(test_spill_hint_under_load);
     RUN_TEST(test_spill_step1_files_deleted);
     RUN_TEST(test_spill_io_error);
     RUN_TEST(test_spill_faults);

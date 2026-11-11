@@ -669,8 +669,9 @@ int gw_sfspill_prepare(gw_sfspill_t *sp, bool want_block, uint32_t now_ms)
     default:
         break;
     }
-    bool gap = sb_gap_ok(sp, now_ms);
-    if ((sp->sb_due || ckpt_due(sp)) && gap) {
+    /* #142: the head hint also goes before a block (as in gw_sfspill_flush_step()): when each
+     * pass wants a block, a hint after the blocks would never come */
+    if ((sp->sb_due || ckpt_due(sp) || hint_due(sp)) && sb_gap_ok(sp, now_ms)) {
         sb_write(sp, now_ms);
         return GW_SFSPILL_DID;
     }
@@ -681,10 +682,6 @@ int gw_sfspill_prepare(gw_sfspill_t *sp, bool want_block, uint32_t now_ms)
             return GW_SFSPILL_DID;
         }
         return GW_SFSPILL_BLOCK_READY;
-    }
-    if (hint_due(sp) && gap) {
-        sb_write(sp, now_ms);
-        return GW_SFSPILL_DID;
     }
     return gc_step(sp) ? GW_SFSPILL_DID : GW_SFSPILL_IDLE;
 }
