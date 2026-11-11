@@ -159,7 +159,7 @@ Each key in this example is in benthos-umh v0.16.2:
 | Key or line | Why |
 |---|---|
 | `identity.group_id` | The bridge subscribes to `spBv1.0/<group_id>/#` only |
-| `role: "secondary_active"` | The bridge sends a rebirth request when it gets DATA with no BIRTH, for example after a restart of UMH. The default `secondary_passive` never sends it, and the tags then show as `alias_<n>` |
+| `role: "secondary_active"` | The bridge sends a rebirth request when it gets DATA with no BIRTH, for example after a restart of UMH. The default `secondary_passive` never sends it. The tags then show as `alias_<n>`, and a negative integer can show as a large number, because NDATA and DDATA have no datatype (#159) |
 | `include_edge_node_in_location: false` | The `device_id` (the `device_prefix` and the device name) already holds the full location. With `true`, UMH puts the `edge_node_id` before it |
 | `return null` | A deliberate drop in the `tag_processor` |
 | `msg.meta.timestamp_ms = msg.meta.spb_timestamp` | Without this line, UMH uses the arrival time. The store & forward samples (`is_historical`) then get the time of the replay |
@@ -207,6 +207,7 @@ This path has these limits:
 | Symptom | Probable cause | Action |
 |---|---|---|
 | The tags show as `alias_<n>` | The bridge has no BIRTH of the node, for example after a restart of UMH | Set `role: "secondary_active"`. Type `rebirth` on the gateway shell |
+| A negative value shows as a large number, for example 4294967295 for -1 | The bridge has no BIRTH of the node. NDATA and DDATA have no datatype, thus the bridge cannot know that the integer has a sign | Set `role: "secondary_active"`. Type `rebirth` on the gateway shell |
 | A device has no data | The device has a `type`, and the UMH preset is off. The tags are `bytes`. The device is offline: its values are null | Set `sparkplug.naming` to `"umh"`. Use other tag types. Read `Devices/<name>/Online`, or type `devices` on the gateway shell |
 | A level is at the wrong place | The name has a space, a `.` or a level that starts with `_` | Set `sparkplug.naming` to `"umh"`, and correct each name that the validation refuses. The metadata `spb_original_device_id` shows the name before UMH changed it |
 | An enterprise has the name of the gateway, for example `GW01` | The `edge_node_id` is a short name. UMH uses it as the location of the node metrics | Write the `edge_node_id` as a location, or drop the node metrics in the bridge |

@@ -117,6 +117,7 @@ static void test_nbirth_and_dbirth(void)
     /* every birth metric has name, alias (except Rebirth) and datatype; aliases are unique */
     for (size_t a = 0; a < dec.count; a++) {
         TEST_ASSERT_TRUE(dec.m[a].has_name);
+        TEST_ASSERT_TRUE(dec.m[a].has_datatype);   /* tck-id-payloads-metric-datatype-req */
         TEST_ASSERT_NOT_EQUAL(0, dec.m[a].datatype);
         TEST_ASSERT_TRUE(dec.m[a].has_alias || strcmp(dec.m[a].name, "Node Control/Rebirth") == 0);
         for (size_t b = a + 1; b < dec.count; b++) {
@@ -138,6 +139,9 @@ static void test_nbirth_and_dbirth(void)
     TEST_ASSERT_DOUBLE_WITHIN(1e-5, 12.3, dec.m[i].num);
     i = decoded_find_name(&dec, "Run");
     TEST_ASSERT_EQUAL(SPB_DT_BOOLEAN, dec.m[i].datatype);
+    for (size_t a = 0; a < dec.count; a++) {
+        TEST_ASSERT_TRUE(dec.m[a].has_datatype);   /* tck-id-payloads-metric-datatype-req */
+    }
 }
 
 static void test_offline_device_has_no_dbirth_until_online(void)
@@ -177,8 +181,13 @@ static void test_ddata_by_exception_with_deadband(void)
     TEST_ASSERT_EQUAL(2, dec.count);   /* one message with both changes */
     for (size_t i = 0; i < dec.count; i++) {
         TEST_ASSERT_FALSE(dec.m[i].has_name);      /* alias only */
+        TEST_ASSERT_FALSE(dec.m[i].has_datatype);  /* tck-id-payloads-metric-datatype-not-req */
         TEST_ASSERT_EQUAL_UINT64(1000, dec.m[i].timestamp);
     }
+    /* the value is in the field of the DBIRTH datatype: Float for Voltage, Boolean for Run */
+    int volt = decoded_find_alias(&dec, GW_ALIAS_TAG_BASE + VOLTAGE);
+    TEST_ASSERT_EQUAL(SPB_VAL_FLOAT, dec.m[volt].kind);
+    TEST_ASSERT_EQUAL(SPB_VAL_BOOL, dec.m[decoded_find_alias(&dec, GW_ALIAS_TAG_BASE + RUN)].kind);
     int v = decoded_find_alias(&dec, GW_ALIAS_TAG_BASE + VOLTAGE);
     TEST_ASSERT_DOUBLE_WITHIN(1e-4, 230.2, dec.m[v].num);
     TEST_ASSERT_TRUE(decoded_find_alias(&dec, GW_ALIAS_TAG_BASE + RUN) >= 0);
@@ -263,6 +272,7 @@ static void test_every_metric_has_a_timestamp(void)
     for (size_t i = 0; i < dec.count; i++) {
         TEST_ASSERT_TRUE(dec.m[i].is_null);
         TEST_ASSERT_NOT_EQUAL_UINT64(0, dec.m[i].timestamp);
+        TEST_ASSERT_FALSE(dec.m[i].has_datatype);  /* NDATA: no datatype (#159) */
     }
 }
 
@@ -534,7 +544,7 @@ static void test_umh_device_online(void)
     TEST_ASSERT_EQUAL(1, dec.count);
     TEST_ASSERT_FALSE(dec.m[0].has_name);
     TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_ONLINE_BASE + 1, dec.m[0].alias);
-    TEST_ASSERT_EQUAL(SPB_DT_BOOLEAN, dec.m[0].datatype);
+    TEST_ASSERT_EQUAL(0, dec.m[0].datatype);   /* #159: no datatype in NDATA (from the NBIRTH) */
     TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[0].num);
     TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DBIRTH/acme:gw01/acme:berlin:pump", g_rec.msgs[1].topic);
     recorder_clear();
@@ -586,8 +596,8 @@ static void test_umh_plain_types_and_diagnostics(void)
         TEST_ASSERT_NOT_EQUAL_MESSAGE(SPB_DT_TEMPLATE, dec.m[a].datatype, dec.m[a].name);
         TEST_ASSERT_NOT_EQUAL_MESSAGE(SPB_DT_DATASET, dec.m[a].datatype, dec.m[a].name);
     }
-    /* node metrics, uptime / 2 x heap / RSSI, 7 + 5 counters, Time Synced, 2 x Online */
-    TEST_ASSERT_EQUAL(10 + 3 * GW_NODE_IO_COUNT + GW_NODE_UMH_DIAG_METRICS + 1 + 2, dec.count);
+    /* node metrics, uptime / 2 x heap / RSSI, 7 + 5 counters, Time Synced, Core Dump, 2 x Online */
+    TEST_ASSERT_EQUAL(GW_NODE_UMH_BIRTH_METRICS + 2, dec.count);
     TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Info/Modbus"));
     TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Info/Modbus TCP"));
     TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Pump"));
@@ -701,7 +711,7 @@ static void test_umh_worst_case_nbirth_fits(void)
     msg(0);
     printf("UMH preset worst NBIRTH: %u bytes, %u metrics\n", (unsigned)g_rec.msgs[0].len,
            (unsigned)dec.count);
-    TEST_ASSERT_EQUAL(10 + 3 * GW_NODE_IO_COUNT + GW_NODE_UMH_DIAG_METRICS + 1 + GW_MAX_DEVICES,
+    TEST_ASSERT_EQUAL(GW_NODE_UMH_BIRTH_METRICS + GW_MAX_DEVICES,
                       dec.count);
     TEST_ASSERT_TRUE(decoded_find_name(&dec, "Devices/line15/energy-meter-with-a-long-name-xx/Online")
                      >= 0);
@@ -1295,6 +1305,10 @@ static void test_templates(void)
     TEST_ASSERT_EQUAL_STRING("Speed", dec.mem[0].name);
     TEST_ASSERT_EQUAL_DOUBLE(1600, dec.mem[0].num);
     TEST_ASSERT_FALSE(dec.mem[0].has_quality);
+    /* tck-id-payloads-metric-datatype-not-req: no datatype on the instance or its members in
+     * DATA; the DBIRTH and the NBIRTH definition have them (#159) */
+    TEST_ASSERT_FALSE(dec.m[0].has_datatype);
+    TEST_ASSERT_FALSE(dec.mem[0].has_datatype);
 
     /* DCMD: a member of the instance, or the tag by name; never by alias */
     recorder_clear();
@@ -1321,9 +1335,11 @@ static void test_templates(void)
     recorder_clear();
     gw_node_write_done(&node, 0, true);
     msg(0);
-    TEST_ASSERT_EQUAL(SPB_DT_TEMPLATE, dec.m[0].datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_TEMPLATE, dec.m[0].kind);
+    TEST_ASSERT_FALSE(dec.m[0].has_datatype);   /* DDATA: no datatype (#159) */
     TEST_ASSERT_EQUAL(1, dec.mem_count);
     TEST_ASSERT_EQUAL_DOUBLE(900, dec.mem[0].num);
+    TEST_ASSERT_FALSE(dec.mem[0].has_datatype);
 }
 
 /* SPB-18 + SPB-16: the largest NBIRTH the configuration allows (GW_MAX_TEMPLATE_TAGS template
@@ -1454,7 +1470,9 @@ static void test_diagnostics(void)
     TEST_ASSERT_EQUAL_UINT64(72, dec.m[decoded_find_alias(&dec, GW_ALIAS_UPTIME)].u64);
     i = decoded_find_alias(&dec, GW_ALIAS_RSSI);
     TEST_ASSERT_FALSE(dec.m[i].is_null);
-    TEST_ASSERT_EQUAL_DOUBLE(-61, dec.m[i].num);
+    /* no datatype in NDATA (#159): the host reads int_value with the Int32 of the NBIRTH */
+    TEST_ASSERT_FALSE(dec.m[i].has_datatype);
+    TEST_ASSERT_EQUAL_INT32(-61, (int32_t)(uint32_t)dec.m[i].num);
     TEST_ASSERT_EQUAL(-1, decoded_find_alias(&dec, GW_ALIAS_MODBUS));
     recorder_clear();
     const gw_dev_stats_t st2 = {.cycles = 70, .failed_cycles = 1, .bus = {.ok = 200, .timeout = 3}};
@@ -1585,6 +1603,46 @@ static void test_time_synced(void)
     TEST_ASSERT_EQUAL(births, g_rec.count);
     gw_node_session_down(&node);
     gw_node_set_time_synced(&node, false);           /* offline: nothing */
+    TEST_ASSERT_EQUAL(births, g_rec.count);
+}
+
+/* Issue #132: Node Info/Core Dump in the NBIRTH (Boolean, alias 57), and an NDATA with the
+ * alias only when the dump is erased (tck-id-payloads-alias-uniqueness). */
+static void test_core_dump_metric(void)
+{
+    g_rec.diag.core_dump = true;   /* the boot after a panic */
+    gw_node_session_up(&node, 0);
+    msg(0);
+    int i = decoded_find_name(&dec, "Node Info/Core Dump");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_BOOLEAN, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_CORE_DUMP, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[i].num);
+    for (size_t k = 0; k < dec.count; k++) {   /* its alias is its own */
+        TEST_ASSERT_TRUE(k == (size_t)i || dec.m[k].alias != GW_ALIAS_CORE_DUMP);
+    }
+    recorder_clear();
+    gw_node_set_core_dump(&node, true);              /* unchanged */
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    gw_node_set_core_dump(&node, false);             /* erased */
+    msg(0);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", g_rec.msgs[0].topic);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_CORE_DUMP, dec.m[0].alias);
+    TEST_ASSERT_FALSE(dec.m[0].has_name);
+    TEST_ASSERT_FALSE(dec.m[0].has_datatype);   /* tck-id-payloads-metric-datatype-not-req */
+    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[0].num);
+    gw_node_set_core_dump(&node, false);
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    /* a rebirth takes the state from the diagnostics op */
+    g_rec.diag.core_dump = false;
+    recorder_clear();
+    gw_node_rebirth(&node);
+    msg(0);
+    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[decoded_find_name(&dec, "Node Info/Core Dump")].num);
+    size_t births = g_rec.count;
+    gw_node_session_down(&node);
+    gw_node_set_core_dump(&node, true);              /* offline: nothing */
     TEST_ASSERT_EQUAL(births, g_rec.count);
 }
 
@@ -1753,7 +1811,8 @@ static void test_store_and_forward(void)
     TEST_ASSERT_EQUAL_UINT64(4000, dec.m[0].timestamp);
     TEST_ASSERT_EQUAL_DOUBLE(232.0, dec.m[0].num);
     TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TAG_BASE + RUN, dec.m[1].alias);
-    TEST_ASSERT_EQUAL(11, dec.m[1].datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_BOOL, dec.m[1].kind);  /* the Boolean field of the DBIRTH type */
+    TEST_ASSERT_FALSE(dec.m[1].has_datatype);        /* DDATA: no datatype (#159) */
     TEST_ASSERT_TRUE(dec.m[1].is_historical);
     m = msg(4);
     TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", m->topic);
@@ -1793,8 +1852,76 @@ static void test_session_up_needs_the_nbirth(void)
     gw_node_device_changed(&node, 0);   /* offline: nothing is attempted */
     TEST_ASSERT_EQUAL(0, g_rec.count);
     g_rec.publish_fails = false;
+    TEST_ASSERT_TRUE(gw_node_take_birth_failure(&node));   /* issue #164: reported once */
+    TEST_ASSERT_FALSE(gw_node_take_birth_failure(&node));
     TEST_ASSERT_TRUE(gw_node_session_up(&node, 4));
+    TEST_ASSERT_FALSE(gw_node_take_birth_failure(&node));
     TEST_ASSERT_EQUAL(2, g_rec.count);   /* NBIRTH and DBIRTH */
+    msg(0);
+    TEST_ASSERT_EQUAL_UINT64(0, dec.seq);
+}
+
+/* SPB-3 / issue #161 (tck-id-topics-nbirth-bdseq-increment): bdSeq starts at 0 at each boot
+ * and increases by exactly 1 for each CONNECT packet. An attempt that sent no CONNECT (no client,
+ * the transport did not connect) gives its value to the next attempt; one that may have sent it
+ * keeps it. 255 -> 0. */
+static void test_bdseq_per_connect_packet(void)
+{
+    gw_bdseq_t b;
+    gw_bdseq_init(&b);
+    TEST_ASSERT_EQUAL_UINT8(0, gw_bdseq_take(&b));   /* the first CONNECT of the boot */
+    TEST_ASSERT_EQUAL_UINT8(1, gw_bdseq_take(&b));   /* CONNECT sent (no CONNACK, refused...) */
+    /* the broker is down: three attempts fail at TCP, no CONNECT: the value stays */
+    for (int i = 0; i < 3; i++) {
+        TEST_ASSERT_EQUAL_UINT8(2, gw_bdseq_take(&b));
+        gw_bdseq_not_sent(&b);
+    }
+    gw_bdseq_not_sent(&b);                           /* only once per take */
+    TEST_ASSERT_EQUAL_UINT8(2, gw_bdseq_take(&b));   /* the CONNECT that works */
+    TEST_ASSERT_EQUAL_UINT8(3, gw_bdseq_take(&b));
+    /* the wrap */
+    for (unsigned v = 4; v <= 255; v++) {
+        TEST_ASSERT_EQUAL_UINT8(v, gw_bdseq_take(&b));
+    }
+    TEST_ASSERT_EQUAL_UINT8(0, gw_bdseq_take(&b));
+    gw_bdseq_not_sent(&b);
+    TEST_ASSERT_EQUAL_UINT8(0, gw_bdseq_take(&b));
+    /* a new boot starts at 0 again */
+    gw_bdseq_init(&b);
+    gw_bdseq_not_sent(&b);                           /* nothing taken: no change */
+    TEST_ASSERT_EQUAL_UINT8(0, gw_bdseq_take(&b));
+}
+
+/* Issue #164: an NCMD Rebirth whose NBIRTH publish fails one time (the connection may stay open)
+ * ends the Sparkplug session: the node is offline, sends no DBIRTH and no DDATA, and reports the
+ * failure, so the caller ends the MQTT session. The next session sends every birth again. */
+static void test_failed_rebirth_ends_the_session(void)
+{
+    set_meter(true, 230.5, 12.3, 1);
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 3));
+    TEST_ASSERT_FALSE(gw_node_take_birth_failure(&node));
+    recorder_clear();
+    g_rec.publish_fails = true;
+    spb_metric_t m = {.name = "Node Control/Rebirth", .datatype = SPB_DT_BOOLEAN, .v.num = 1};
+    send("spBv1.0/Plant1/NCMD/GW01", &m, 1);
+    g_rec.publish_fails = false;
+    TEST_ASSERT_EQUAL(0, g_rec.count);   /* no DBIRTH without its NBIRTH */
+    TEST_ASSERT_FALSE(node.online);
+    TEST_ASSERT_FALSE(node.dev_born[0]);
+    TEST_ASSERT_TRUE(gw_node_take_birth_failure(&node));
+    set_meter(true, 231.5, 12.3, 1);
+    gw_node_device_changed(&node, 0);    /* offline: no DDATA */
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    /* a local rebirth (console, SNTP) that fails is reported the same way */
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 4));
+    recorder_clear();
+    g_rec.publish_fails = true;
+    TEST_ASSERT_FALSE(gw_node_rebirth(&node));
+    g_rec.publish_fails = false;
+    TEST_ASSERT_FALSE(node.online);
+    TEST_ASSERT_TRUE(gw_node_take_birth_failure(&node));
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 5));
+    TEST_ASSERT_EQUAL(2, g_rec.count);   /* NBIRTH and DBIRTH again */
     msg(0);
     TEST_ASSERT_EQUAL_UINT64(0, dec.seq);
 }
@@ -1819,7 +1946,8 @@ static void test_store_and_forward_counters(void)
     const rec_msg_t *m = msg(g_rec.count - 1);
     TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", m->topic);
     TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_COUNT_BASE + 2, dec.m[0].alias);
-    TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[0].datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_LONG, dec.m[0].kind);   /* UInt64 of the NBIRTH, no datatype */
+    TEST_ASSERT_FALSE(dec.m[0].has_datatype);
     TEST_ASSERT_EQUAL_UINT64(0x100000000ull + 5, dec.m[0].u64);
     TEST_ASSERT_TRUE(dec.m[0].is_historical);
 }
@@ -2095,10 +2223,13 @@ static void test_store_and_forward_mb6(void)
         TEST_ASSERT_TRUE(dec.m[i].is_historical);
     }
     TEST_ASSERT_EQUAL_UINT64(9007199254740993ull, dec.m[0].u64);
-    TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[0].datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_LONG, dec.m[0].kind);   /* the fields of the DBIRTH types, */
     TEST_ASSERT_EQUAL_INT64(-9007199254740993ll, (int64_t)dec.m[1].u64);
     TEST_ASSERT_EQUAL_DOUBLE(2.5, dec.m[2].num);
-    TEST_ASSERT_EQUAL(SPB_DT_STRING, dec.m[3].datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_STRING, dec.m[3].kind);
+    for (size_t i = 0; i < dec.count; i++) {
+        TEST_ASSERT_FALSE(dec.m[i].has_datatype);    /* with no datatype (#159) */
+    }
     TEST_ASSERT_EQUAL_STRING("XY", dec.m[3].str);
     TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[4].num);
 }
@@ -2143,7 +2274,8 @@ static void test_store_and_forward_templates_bytes(void)
     msg(g_rec.count - 1);
     TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DDATA/N/P", g_rec.msgs[g_rec.count - 1].topic);
     TEST_ASSERT_EQUAL(1, dec.count);
-    TEST_ASSERT_EQUAL(SPB_DT_TEMPLATE, dec.m[0].datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_TEMPLATE, dec.m[0].kind);
+    TEST_ASSERT_FALSE(dec.m[0].has_datatype);        /* DDATA: no datatype (#159) */
     TEST_ASSERT_TRUE(dec.m[0].is_historical);
     TEST_ASSERT_EQUAL(2, dec.mem_count);
     TEST_ASSERT_EQUAL_STRING("Speed", dec.mem[0].name);
@@ -2151,7 +2283,9 @@ static void test_store_and_forward_templates_bytes(void)
     TEST_ASSERT_TRUE(dec.mem[0].is_historical);
     TEST_ASSERT_TRUE(dec.mem[0].is_null);
     TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_BAD, dec.mem[0].quality);
-    TEST_ASSERT_EQUAL(SPB_DT_BYTES, dec.mem[1].datatype);
+    TEST_ASSERT_EQUAL(SPB_VAL_BYTES, dec.mem[1].kind);
+    TEST_ASSERT_FALSE(dec.mem[0].has_datatype);
+    TEST_ASSERT_FALSE(dec.mem[1].has_datatype);
     TEST_ASSERT_EQUAL(4, dec.mem[1].bytes_len);
     TEST_ASSERT_EQUAL_HEX8_ARRAY("\x00\xff\x00\xee", dec.mem[1].bytes, 4);
     TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_GOOD, dec.mem[1].quality);
@@ -2211,6 +2345,7 @@ int main(void)
     RUN_TEST(test_store_and_forward_templates_bytes);
     RUN_TEST(test_diagnostics);
     RUN_TEST(test_time_synced);
+    RUN_TEST(test_core_dump_metric);
     RUN_TEST(test_modbus_tcp_table);
     RUN_TEST(test_worst_case_nbirth_fits);
     RUN_TEST(test_command_aborted_mid_payload_applies_nothing);
@@ -2219,6 +2354,8 @@ int main(void)
     RUN_TEST(test_history_kept_when_publish_fails);
     RUN_TEST(test_store_and_forward_mb6);
     RUN_TEST(test_session_up_needs_the_nbirth);
+    RUN_TEST(test_failed_rebirth_ends_the_session);
+    RUN_TEST(test_bdseq_per_connect_packet);
     RUN_TEST(test_dbirth_not_published_leaves_the_device_unborn);
     RUN_TEST(test_dbirth_too_large_not_retried_on_every_change);
     RUN_TEST(test_dbirth_larger_than_buffer);

@@ -19,7 +19,9 @@
 #include "freertos/task.h"
 #include "gw_bootbtn.h"
 #include "gw_bus.h"
+#include "gw_cdump.h"
 #include "gw_cfgdoc.h"
+#include "gw_coredump.h"
 #include "gw_edge.h"
 #include "gw_fw.h"
 #include "gw_io.h"
@@ -222,6 +224,12 @@ static int cmd_status(int argc, char **argv)
     uint32_t f = gw_status_get();
     out("firmware %s, reset reason %s, uptime %lld s\n", s_ctx.info->firmware,
            s_ctx.info->reset_reason, esp_timer_get_time() / 1000000);
+    uint32_t cd_size;
+    gw_cdump_state_t cd = gw_coredump_state(&cd_size);
+    if (cd != GW_CDUMP_NONE) {   /* #132 */
+        out("coredump %lu bytes in flash (%s): 'coredump' gives its summary\n",
+            (unsigned long)cd_size, gw_cdump_state_name(cd));
+    }
     /* FW-1: from the heap for the command (not the console task's stack nor .bss, #80) */
     gw_fw_status_t *fw = heap_caps_malloc_prefer(sizeof(*fw), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
                                                  MALLOC_CAP_8BIT);
@@ -922,6 +930,116 @@ static int cmd_ping(int argc, char **argv)
     return 0;
 }
 
+/* ---------- #132: coredump ----------
+ * 'coredump' gives the summary of the dump in flash, 'coredump dump' the whole dump in base64
+ * between two marker lines (for a technician at the panel, with no network), 'coredump erase'
+ * erases it (a write command). The dump is a copy of the RAM at the crash and can hold secrets
+ * in clear text. The console needs physical access to the board, and that access also reads
+ * all of the flash through USB: the shell asks for no password (the web API does). */
+#define CD_LINES_PER_READ 16   /* 912 bytes per flash read, 16 lines */
+
+static int coredump_dump(void)
+{
+    uint32_t size;
+    gw_cdump_state_t st = gw_coredump_state(&size);
+    if (st == GW_CDUMP_NONE) {
+        out("coredump: none in flash\n");
+        return 1;
+    }
+    if (size == 0) {
+        out("coredump: the partition holds no readable dump (its size is not valid): "
+            "'coredump erase' erases it\n");
+        return 1;
+    }
+    const size_t chunk = CD_LINES_PER_READ * GW_CDUMP_LINE_BYTES;
+    uint8_t *bin = heap_caps_malloc_prefer(chunk, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                           MALLOC_CAP_8BIT);
+    if (bin == NULL) {
+        out("coredump: no memory\n");
+        return 1;
+    }
+    out("coredump: %lu bytes (%s) in base64 between the two marker lines. It can contain "
+        "secrets (passwords, keys): keep the copy safe\n",
+        (unsigned long)size, gw_cdump_state_name(st));
+    out("-----BEGIN CORE DUMP-----\n");
+    int rc = 0;
+    for (uint32_t off = 0; off < size; off += (uint32_t)chunk) {
+        size_t n = size - off < chunk ? size - off : chunk;
+        esp_err_t e = gw_coredump_read(off, bin, n);
+        if (e != ESP_OK) {
+            out("-----CORE DUMP INCOMPLETE: %s-----\n", esp_err_to_name(e));
+            rc = 1;
+            break;
+        }
+        for (size_t k = 0; k < n; k += GW_CDUMP_LINE_BYTES) {
+            char line[GW_CDUMP_LINE_CHARS + 1];
+            gw_cdump_b64(bin + k, n - k < GW_CDUMP_LINE_BYTES ? n - k : GW_CDUMP_LINE_BYTES, line,
+                         sizeof(line));
+            out("%s\n", line);
+        }
+    }
+    memset(bin, 0, chunk);
+    heap_caps_free(bin);
+    if (rc == 0) {
+        out("-----END CORE DUMP-----\n");
+    }
+    return rc;
+}
+
+static int cmd_coredump(int argc, char **argv)
+{
+    if (argc == 2 && strcmp(argv[1], "dump") == 0) {
+        return coredump_dump();
+    }
+#if CONFIG_GW_SHELL_WRITE_COMMANDS
+    if (argc == 2 && strcmp(argv[1], "erase") == 0) {
+        if (!gw_coredump_present()) {
+            out("coredump: none in flash\n");
+            return 1;
+        }
+        esp_err_t e = gw_coredump_erase("shell");
+        if (e != ESP_OK) {
+            out("coredump erase: FAILED: %s\n", esp_err_to_name(e));
+            return 1;
+        }
+        gw_edge_notify_core_dump();   /* NDATA Node Info/Core Dump = false */
+        out("coredump: erased\n");
+        return 0;
+    }
+#endif
+    if (argc != 1) {
+        out("usage: coredump [dump"
+#if CONFIG_GW_SHELL_WRITE_COMMANDS
+            "|erase"
+#endif
+            "]\n");
+        return 1;
+    }
+    /* from the heap for the command (not the console task's stack nor .bss, #80) */
+    typedef struct {
+        gw_cdump_info_t i;
+        char text[768];
+    } cd_text_t;
+    cd_text_t *t = heap_caps_malloc_prefer(sizeof(*t), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                           MALLOC_CAP_8BIT);
+    if (t == NULL || gw_coredump_summary(&t->i) != ESP_OK) {
+        heap_caps_free(t);
+        out("coredump: no memory\n");
+        return 1;
+    }
+    gw_cdump_text(&t->i, s_ctx.info->reset_reason, t->text, sizeof(t->text));
+    out("%s", t->text);
+    if (t->i.state != GW_CDUMP_NONE) {
+        out("          'coredump dump' prints it in base64, GET /api/coredump downloads it"
+#if CONFIG_GW_SHELL_WRITE_COMMANDS
+            ", 'coredump erase' erases it"
+#endif
+            "\n");
+    }
+    heap_caps_free(t);
+    return 0;
+}
+
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
 static int cmd_restart(int argc, char **argv)
 {
@@ -1134,6 +1252,7 @@ static int cmd_config_entry(int argc, char **argv)
     return cmd_config_atomic(argc, argv);
 }
 ATOMIC(cmd_ping)
+ATOMIC(cmd_coredump)
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
 ATOMIC(cmd_restart)
 ATOMIC(cmd_card)
@@ -1187,9 +1306,24 @@ static int cmd_storm(int argc, char **argv)
     return 0;
 }
 
+/* Issue #164: the next Sparkplug publishes fail without a send, with the connection open. */
+static int cmd_pubfail(int argc, char **argv)
+{
+    char *end = NULL;
+    long n = argc == 2 ? strtol(argv[1], &end, 10) : -1;
+    if (end == NULL || *end != '\0' || n < 0 || n > 100) {
+        out("usage: pubfail <0-100>\n");
+        return 1;
+    }
+    gw_edge_sim_fail_publishes((unsigned)n);
+    out("the next %ld Sparkplug publish(es) fail without a send\n", n);
+    return 0;
+}
+
 ATOMIC(cmd_expander)
 ATOMIC(cmd_validation)
 ATOMIC(cmd_storm)
+ATOMIC(cmd_pubfail)
 ATOMIC(cmd_boot)
 #endif
 
@@ -1251,6 +1385,18 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
 #endif
         {.command = "ping", .help = "ICMP echo (3 requests) to an IPv4 or IPv6 address",
          .hint = "<address>", .func = cmd_ping_atomic},
+        {.command = "coredump", .help = "The core dump in flash: its summary (task, PC, "
+         "backtrace); 'dump' prints all of it in base64 (it can contain secrets)"
+#if CONFIG_GW_SHELL_WRITE_COMMANDS
+         ", 'erase' erases it"
+#endif
+         ,
+#if CONFIG_GW_SHELL_WRITE_COMMANDS
+         .hint = "[dump|erase]",
+#else
+         .hint = "[dump]",
+#endif
+         .func = cmd_coredump_atomic},
 #if CONFIG_GW_IO_SIMULATED
         {.command = "di", .help = "Emulator only: set a simulated input", .hint = "<1-8> <0|1>",
          .func = cmd_di_atomic},
@@ -1260,6 +1406,9 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
          "keeps its buffers for a while (issue #84)", .hint = "hold <ms>", .func = cmd_validation_atomic},
         {.command = "storm", .help = "Emulator only: the bus task (core 1) floods the console "
          "for a while (issue #111)", .hint = "<0-600000 ms>", .func = cmd_storm_atomic},
+        {.command = "pubfail", .help = "Emulator only: the next N publishes of the Sparkplug "
+         "engine fail without a send, with the connection open (issue #164)", .hint = "<0-100>",
+         .func = cmd_pubfail_atomic},
         {.command = "boot", .help = "Emulator only: press (1) or release (0) the BOOT button",
          .hint = "<0|1>", .func = cmd_boot_atomic},
         {.command = "panic", .help = "Emulator only: abort() (core dump test)", .func = cmd_panic},

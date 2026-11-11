@@ -4,9 +4,10 @@
  * which never block and never allocate.
  *
  * Connection management (MQTT-1..3, SPB-2, SPB-3): auto-reconnect of esp-mqtt is
- * disabled; before every attempt a new bdSeq is taken from NVS, the will is
- * replaced by the matching NDEATH and the attempt is scheduled with exponential
- * backoff and jitter.
+ * disabled; before every attempt the next bdSeq is taken (RAM, 0 at boot, +1 for
+ * each CONNECT packet: an attempt that sent none gives its value back, #161), the
+ * will is replaced by the matching NDEATH and the attempt is scheduled with
+ * exponential backoff and jitter.
  */
 #pragma once
 
@@ -14,6 +15,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "sdkconfig.h"
 #include "gw_config.h"
 #include "gw_node.h"
 
@@ -100,9 +102,19 @@ void gw_edge_request_restart_discard(void);
 /** FW-1: the firmware update's state changed (gw_fw hook; any task, never blocks). */
 void gw_edge_notify_firmware(void);
 
+/** Issue #132: the core dump was erased (shell, REST API): the Sparkplug task publishes
+ *  Node Info/Core Dump = false. Any task, never blocks. */
+void gw_edge_notify_core_dump(void);
+
 /** CFG-6, #171 (shell and REST API): re-issue NBIRTH and every DBIRTH (as NCMD Node
  *  Control/Rebirth, with the same bdSeq). False if no Sparkplug session is up. */
 bool gw_edge_request_rebirth(void);
+
+#if CONFIG_GW_IO_SIMULATED
+/** Issue #164, emulator only: the next @p n publishes of the Sparkplug engine (births, data)
+ *  return -1 without a send, while the connection stays open. */
+void gw_edge_sim_fail_publishes(unsigned n);
+#endif
 
 #ifdef __cplusplus
 }

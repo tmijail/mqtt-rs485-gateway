@@ -91,6 +91,7 @@ The gateway publishes these metrics in the NBIRTH, and their changes in NDATA. S
 | `Node Info/Modbus/Cycles`, `Failed Cycles`, `OK`, `Timeout`, `CRC`, `Frame`, `Exception` | UInt64, the sum of all devices | Only with the UMH preset (#174) and one or more devices | `Node_Info.Modbus.Cycles` to `Node_Info.Modbus.Exception` (`Failed_Cycles`) | Kept |
 | `Node Info/Modbus TCP/OK`, `Timeout`, `CRC`, `Frame`, `Exception` | UInt64, the sum of all units | Only with the UMH preset (#174) and `modbus_tcp.enabled` | `Node_Info.Modbus_TCP.OK` to `Node_Info.Modbus_TCP.Exception` | Kept |
 | `Node Info/Time Synced` | Boolean | Always | `Node_Info.Time_Synced` | Kept |
+| `Node Info/Core Dump` | Boolean | Always. `true` while a core dump is in flash (issue #132) | `Node_Info.Core_Dump` | Kept |
 | `Devices/<name>/Online`, for example `Devices/line3/meter1/Online` | Boolean | Only with the UMH preset (#173), one for each device. Each `:` of the name becomes `/` | `Devices.line3.meter1.Online` | Kept |
 | A template definition for each device `type` | Template | Only with devices that have a `type`, not with the UMH preset | None: UMH gives no value for a Template | Dropped |
 

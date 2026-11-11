@@ -1,4 +1,4 @@
-/* Persistent storage: Sparkplug bdSeq in NVS (SPB-3) and the configuration
+/* Persistent storage: the configuration
  * document (CFG-1, CFG-2): /cfg/config.json on the LittleFS "storage"
  * partition. The default embedded in the firmware is used only when that file
  * does not exist; an unmountable partition, an unreadable, empty or oversized
@@ -25,9 +25,6 @@ extern "C" {
 /** Initialise NVS (erasing it if its layout is from another IDF version). */
 esp_err_t gw_storage_init(void);
 
-/** bdSeq for a new connection attempt; the following value is persisted first. */
-uint8_t gw_storage_next_bdseq(void);
-
 /**
  * Load and validate the configuration. @p source receives a description of
  * where it came from. Returns false, with the reason in @p err, if the file
@@ -50,7 +47,7 @@ esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_
  * Issue #109: gw_storage_save_config(), and with @p discard_copy, in the boot without NVS where
  * LittleFS does not mount and may hold the copy of an NVS migration (README 6.2.1), the save is
  * not refused: LittleFS is formatted and the copy is lost (whatever only it had: secrets, the
- * bdSeq, the commissioning password). The operator's explicit way out of that state.
+ * commissioning password). The operator's explicit way out of that state.
  */
 esp_err_t gw_storage_save_config_ex(const char *json, size_t len, bool dry_run, bool discard_copy,
                                     gw_cfg_err_t *err);
@@ -125,7 +122,7 @@ void gw_storage_get_secrets(gw_secrets_t *out);
 void gw_storage_free(void *ptr);
 
 /**
- * CFG-5: format the LittleFS partition and erase NVS (configuration, secrets, bdSeq, the
+ * CFG-5: format the LittleFS partition and erase NVS (configuration, secrets, the
  * commissioning password), then mark the device for commissioning. The caller restarts.
  * ESP_ERR_INVALID_STATE: refused by the commit hook (a firmware rollback is under way), nothing
  * erased; the caller's restart finishes the rollback.

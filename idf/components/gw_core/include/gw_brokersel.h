@@ -7,9 +7,13 @@
  * Policy:
  *   - Every connection attempt goes to the current broker.
  *   - An attempt fails if no stable Sparkplug session comes out of it: TCP/TLS failure, CONNACK
- *     refused, SUBSCRIBE refused or unanswered, a session dropped before it was stable, the
- *     primary host announcing itself offline (SPB-13). After failover_after consecutive failed
+ *     refused, SUBSCRIBE refused or unanswered, a session dropped before it was stable, no STATE
+ *     online of the primary host in time (SPB-13). After failover_after consecutive failed
  *     attempts the next broker in the list becomes current (after the last one, the first).
+ *   - Issue #156: a disconnect because of a valid offline STATE of the primary host (SPB-13) is
+ *     not a failed attempt: the next broker becomes current at once (gw_brokersel_next), as
+ *     Sparkplug 3.0 requires (tck-id-operational-behavior-edge-node-termination-host-offline-
+ *     reconnect, tck-id-operational-behavior-primary-application-state-with-multiple-servers-walk).
  *   - A stable session resets the count: the broker that works is kept.
  *   - Return to the primary: with primary_return_ms > 0, a stable session on a backup that has
  *     lasted that long is ended in an orderly way and the primary gets one attempt; if that
@@ -48,6 +52,13 @@ void gw_brokersel_init(gw_brokersel_t *s, uint8_t count, uint8_t failover_after,
 /** The attempt on the current broker failed. True if the next attempt goes to another broker
  *  (gw_brokersel_t.current has changed). */
 bool gw_brokersel_failed(gw_brokersel_t *s);
+
+/** Issue #156: the session on the current broker ended because of a valid offline STATE of the
+ *  primary host. The next broker becomes current at once, whatever failover_after says; the
+ *  count of failed attempts (round_failures, used by NET-4) does not change, and the new broker
+ *  starts with no failures. A return to the primary in progress ends. True if another broker
+ *  became current (false with one broker). */
+bool gw_brokersel_next(gw_brokersel_t *s);
 
 /** The session on the current broker became stable at @p now_ms. */
 void gw_brokersel_stable(gw_brokersel_t *s, uint64_t now_ms);

@@ -22,12 +22,13 @@
  *   device with the MB-13 counters), 55 Node Info/Time Synced (TIME-3, Boolean: SNTP),
  *   56 Node Info/Modbus TCP (issue #81, DataSet: per device, the attempts of the Modbus TCP
  *   requests forwarded to its unit, plus one row for units without a device; only with
- *   modbus_tcp.enabled).
- *   80..95 #173 (UMH preset only): Devices/<name>/Online (Boolean) of device 0..15, with each
- *   ':' of the name as '/'.
+ *   modbus_tcp.enabled), 57 Node Info/Core Dump (issue #132, Boolean: a core dump is in
+ *   flash).
  *   60..66 and 70..74 #174 (UMH preset only, in place of the DataSets 54 and 56): Node
  *   Info/Modbus/<counter> (Cycles, Failed Cycles, OK, Timeout, CRC, Frame, Exception) and Node
  *   Info/Modbus TCP/<counter> (OK, Timeout, CRC, Frame, Exception), UInt64 sums of all devices.
+ *   80..95 #173 (UMH preset only): Devices/<name>/Online (Boolean) of device 0..15, with each
+ *   ':' of the name as '/'.
  *
  * SPB-18 device types: a device with a `type` is published as one Template instance metric
  * (named after the type, alias 100 + its first tag) whose members are its tags, by name; the
@@ -85,20 +86,24 @@ extern "C" {
 #define GW_ALIAS_MODBUS    54u
 #define GW_ALIAS_TIME_SYNCED 55u  /* TIME-3 */
 #define GW_ALIAS_MODBUS_TCP 56u   /* issue #81 */
-#define GW_ALIAS_ONLINE_BASE 80u  /* #173: + device index, UMH preset only */
+#define GW_ALIAS_CORE_DUMP 57u    /* issue #132 */
 #define GW_ALIAS_MB_FLAT_BASE 60u /* #174: + counter, UMH preset only */
 #define GW_ALIAS_TCP_FLAT_BASE 70u
 #define GW_MB_FLAT_COUNT 7
 #define GW_TCP_FLAT_COUNT 5
+#define GW_ALIAS_ONLINE_BASE 80u  /* #173: + device index, UMH preset only */
 
 #define GW_NODE_IO_COUNT        8
 #define GW_NODE_DIAG_METRICS    6   /* SPB-17, at most (RSSI only with Wi-Fi, Modbus with devices,
                                      * Modbus TCP with the gateway enabled) */
 /* #174: with the UMH preset: Uptime, Free Heap, Min Free Heap, RSSI and the plain counters */
 #define GW_NODE_UMH_DIAG_METRICS (4 + GW_MB_FLAT_COUNT + GW_TCP_FLAT_COUNT)
-/* Node metrics of the NBIRTH, without template definitions (3 of them FW-1) and without the UMH
- * preset (it has no definitions, and its Devices/<name>/Online come from spb_payload_t.extra) */
-#define GW_NODE_BIRTH_METRICS   (10 + 3 * GW_NODE_IO_COUNT + GW_NODE_DIAG_METRICS + 1)
+/* Node metrics of the NBIRTH, without template definitions (3 of them FW-1; the last 2: Time
+ * Synced and Core Dump) and without the UMH preset (it has no definitions, and its
+ * Devices/<name>/Online come from spb_payload_t.extra) */
+#define GW_NODE_BIRTH_METRICS   (10 + 3 * GW_NODE_IO_COUNT + GW_NODE_DIAG_METRICS + 2)
+/* #174: the same with the UMH preset, without its Devices/<name>/Online */
+#define GW_NODE_UMH_BIRTH_METRICS (10 + 3 * GW_NODE_IO_COUNT + GW_NODE_UMH_DIAG_METRICS + 2)
 /* Scratch metrics: a whole device (+1 template instance), or the NBIRTH with one template
  * definition per device type. */
 #define GW_NODE_METRICS_MAX \
@@ -129,6 +134,7 @@ typedef struct gw_node_diag {
     bool rssi_valid;           /* associated: rssi is meaningful (null otherwise) */
     int32_t rssi;              /* dBm */
     bool time_synced;          /* TIME-3: the clock was synchronised by SNTP */
+    bool core_dump;            /* issue #132: a core dump is in flash */
 } gw_node_diag_t;
 
 typedef struct {
@@ -174,6 +180,7 @@ typedef struct {
     gw_node_info_t info;
 
     bool online;                       /* NBIRTH published on the current MQTT session */
+    bool birth_failed;                 /* issue #164: gw_node_take_birth_failure() */
     uint64_t bdseq;                    /* bdSeq of the current session (SPB-3) */
     uint8_t seq;                       /* next seq to send (SPB-5) */
     bool dev_born[GW_MAX_DEVICES];
@@ -188,6 +195,7 @@ typedef struct {
     /* SPB-17 */
     bool has_rssi;                     /* fixed by the NBIRTH */
     bool time_synced_reported;         /* TIME-3: last published Time Synced */
+    bool core_dump_reported;           /* issue #132: last published Core Dump */
     uint64_t diag_due_ms;              /* next periodic NDATA (0: none scheduled) */
     bool diag_restart;                 /* NBIRTH sent: the period restarts at the next tick */
     uint64_t diag_hash;                /* of the Modbus counters last published */
@@ -244,6 +252,31 @@ void gw_node_set_buffer(gw_node_t *n, uint8_t *buf, size_t cap);
  *  (#172) to the topics of its own device messages. */
 bool gw_node_topic(const gw_node_t *n, const char *type, const char *device, char *out, size_t cap);
 
+/**
+ * SPB-3 / issue #161: the bdSeq of the MQTT CONNECT packets
+ * (tck-id-topics-nbirth-bdseq-increment: "start at zero and increment by one on every new MQTT
+ * CONNECT packet"). It is in RAM only: 0 for the first CONNECT after each boot, then the
+ * previous value + 1 (255 -> 0). The Will of a connection attempt carries its bdSeq before the
+ * attempt starts, so an attempt takes the next value (gw_bdseq_take) and gives it back when it
+ * is sure that it sent no CONNECT packet (gw_bdseq_not_sent: no client, or the transport did not
+ * connect). An attempt that may have sent its CONNECT keeps its value.
+ */
+typedef struct {
+    uint8_t next;    /* the bdSeq of the next attempt */
+    uint8_t taken;   /* the bdSeq of the last attempt */
+    bool pending;    /* the last attempt can still give its value back */
+} gw_bdseq_t;
+
+/** At boot: the first CONNECT gets 0. */
+void gw_bdseq_init(gw_bdseq_t *b);
+
+/** The bdSeq for the Will of a new connection attempt. */
+uint8_t gw_bdseq_take(gw_bdseq_t *b);
+
+/** The last attempt sent no CONNECT packet: the next attempt gets its value again. Only once
+ *  per gw_bdseq_take(). */
+void gw_bdseq_not_sent(gw_bdseq_t *b);
+
 /** NDEATH payload for @p bdseq (used for the MQTT will and the orderly disconnect). */
 size_t gw_node_death_payload(uint64_t bdseq, uint8_t *out, size_t cap);
 
@@ -279,8 +312,14 @@ size_t gw_node_flush_history(gw_node_t *n, size_t max_msgs);
 void gw_node_set_firmware_status(gw_node_t *n, const char *state, uint32_t progress);
 
 /** Re-publish NBIRTH and every DBIRTH with seq restarted (SPB-9). False if the NBIRTH could
- *  not be published (then no DBIRTH is sent). */
+ *  not be published: then no DBIRTH is sent, the node goes offline (gw_node_session_down) and
+ *  gw_node_take_birth_failure() reports it (issue #164). */
 bool gw_node_rebirth(gw_node_t *n);
+
+/** Issue #164: an NBIRTH could not be published (session up, NCMD or local rebirth) since the
+ *  last call. The node is offline; if the MQTT connection is still open, the caller must end
+ *  it, or the node stays connected with no Sparkplug session. Clears the flag. */
+bool gw_node_take_birth_failure(gw_node_t *n);
 
 /**
  * SPB-17: call periodically (monotonic ms). Every sparkplug.diagnostics_s it publishes an NDATA
@@ -292,6 +331,10 @@ uint32_t gw_node_diag_tick(gw_node_t *n, uint64_t now_ms);
 /** TIME-3: the clock's SNTP state; an NDATA with Node Info/Time Synced when it changed. The
  *  NBIRTH takes it from the diagnostics op. */
 void gw_node_set_time_synced(gw_node_t *n, bool synced);
+
+/** Issue #132: a core dump is in flash; an NDATA with Node Info/Core Dump when it changed (the
+ *  dump was erased). The NBIRTH takes it from the diagnostics op. */
+void gw_node_set_core_dump(gw_node_t *n, bool present);
 
 #ifdef __cplusplus
 }

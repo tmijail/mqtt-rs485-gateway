@@ -22,7 +22,9 @@
 #include "gw_fw.h"
 #include "gw_buzz.h"
 #include "gw_buzzer.h"
+#include "gw_cdump.h"
 #include "gw_conv.h"
+#include "gw_coredump.h"
 #include "gw_edge.h"
 #include "gw_io.h"
 #include "gw_rtc.h"
@@ -40,6 +42,7 @@
 static const char *TAG = "web";
 
 #define REALM_HDR "Basic realm=\"gateway\", charset=\"UTF-8\""
+#define WEB_URI_HANDLERS 15   /* the routes of gw_web_start (uris[]) */
 
 static gw_web_ctx_t s_ctx;
 static httpd_handle_t s_server;
@@ -429,7 +432,7 @@ static bool header(httpd_req_t *req, const char *name, char *buf, size_t cap)
     return n == 0 || (n < cap && httpd_req_get_hdr_value_str(req, name, buf, cap) == ESP_OK);
 }
 
-/* Issue #100: a state-changing request (PUT, POST) must carry GW_CSRF_HEADER and, from a
+/* Issue #100: a state-changing request (PUT, POST, DELETE) must carry GW_CSRF_HEADER and, from a
  * browser, come from this same origin (gw_auth_csrf_check). Checked before the credentials:
  * a forged request is refused without a password check, so it neither succeeds with the
  * browser's cached credentials nor counts as a failed login against the operator's address. */
@@ -451,8 +454,12 @@ static bool same_origin(httpd_req_t *req)
     char who[48];
     peer_addr(req, ip, who, sizeof(who));
     s_csrf_refused++;
-    ESP_LOGW(TAG, "%s %s from %s refused: %s", req->method == HTTP_PUT ? "PUT" : "POST", req->uri,
-             who, r == GW_CSRF_NO_HEADER ? "no " GW_CSRF_HEADER " header" : "cross-origin request");
+    ESP_LOGW(TAG, "%s %s from %s refused: %s",
+             req->method == HTTP_PUT      ? "PUT"
+             : req->method == HTTP_DELETE ? "DELETE"
+                                          : "POST",
+             req->uri, who,
+             r == GW_CSRF_NO_HEADER ? "no " GW_CSRF_HEADER " header" : "cross-origin request");
     close_after_reply(req);   /* its body (an image?) is not read */
     send_error(req, "403 Forbidden", NULL,
                r == GW_CSRF_NO_HEADER
@@ -880,6 +887,117 @@ static esp_err_t firmware_post(httpd_req_t *req)
     return send_json(req, "200 OK", "{\"ok\":true,\"restart\":true}\n");
 }
 
+/* ---------- #132: /api/coredump ---------- */
+
+/* The raw dump (header, ELF and checksum: esp-coredump --core-format raw), streamed from the
+ * partition in pieces: nothing of the dump's size is held. The dump is a copy of the RAM at the
+ * crash and can hold secrets in clear text: the password is needed in every mode (recovery
+ * too), and the piece buffer is cleared before it is freed. */
+static esp_err_t coredump_get(httpd_req_t *req)
+{
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
+    uint32_t size;
+    if (gw_coredump_state(&size) == GW_CDUMP_NONE) {
+        return send_error(req, "404 Not Found", NULL, "no core dump in flash");
+    }
+    if (size == 0) {
+        return send_error(req, "409 Conflict", NULL,
+                          "the core dump partition holds no readable dump (its size is not "
+                          "valid): erase it with DELETE /api/coredump");
+    }
+    const size_t chunk = 2048;
+    char *buf = heap_caps_malloc_prefer(chunk, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                        MALLOC_CAP_8BIT);
+    if (buf == NULL) {
+        return send_error(req, "503 Service Unavailable", NULL, "no memory");
+    }
+    /* server task only; must outlive the response */
+    static char disp[48 + sizeof(s_ctx.cfg->network.hostname) + 32];
+    snprintf(disp, sizeof(disp), "attachment; filename=\"coredump-%s-%.32s.bin\"",
+             s_ctx.cfg->network.hostname, s_ctx.info->firmware);
+    esp_err_t r = ESP_OK;
+    uint32_t off = 0;
+    while (off < size && r == ESP_OK) {
+        size_t n = size - off < chunk ? size - off : chunk;
+        esp_err_t e = gw_coredump_read(off, buf, n);
+        if (e != ESP_OK) {
+            ESP_LOGW(TAG, "core dump download stopped at byte %lu: %s", (unsigned long)off,
+                     esp_err_to_name(e));
+            if (off == 0) {   /* nothing sent yet: a clean answer */
+                memset(buf, 0, chunk);
+                heap_caps_free(buf);
+                return send_error(req, "404 Not Found", NULL, "the core dump was erased");
+            }
+            r = ESP_FAIL;   /* the session closes: the client sees an incomplete transfer */
+            break;
+        }
+        if (off == 0) {
+            httpd_resp_set_type(req, "application/octet-stream");
+            httpd_resp_set_hdr(req, "Content-Disposition", disp);
+            httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        }
+        r = httpd_resp_send_chunk(req, buf, (ssize_t)n);
+        off += (uint32_t)n;
+    }
+    memset(buf, 0, chunk);
+    heap_caps_free(buf);
+    if (r == ESP_OK) {
+        r = httpd_resp_send_chunk(req, NULL, 0);
+    }
+    if (r == ESP_OK) {
+        ESP_LOGI(TAG, "core dump of %lu bytes downloaded through the REST API",
+                 (unsigned long)size);
+    }
+    return r;
+}
+
+/* Erase the dump: after a confirmed download, or without one. Same checks as every write
+ * (CSRF, then the password). */
+static esp_err_t coredump_delete(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    if (!gw_coredump_present()) {
+        return send_error(req, "404 Not Found", NULL, "no core dump in flash");
+    }
+    esp_err_t e = gw_coredump_erase("REST API");
+    if (e != ESP_OK) {
+        return send_error(req, "500 Internal Server Error", NULL, esp_err_to_name(e));
+    }
+    gw_edge_notify_core_dump();   /* NDATA Node Info/Core Dump = false */
+    return send_json(req, "200 OK", "{\"ok\":true,\"erased\":true}\n");
+}
+
+/* The summary (task, PC, backtrace, panic reason, and the reset reason of this boot). It reads
+ * the dump, so it is a route of its own and not part of /api/status, which the web UI polls. */
+static esp_err_t coredump_summary_get(httpd_req_t *req)
+{
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
+    typedef struct {
+        gw_cdump_info_t i;
+        char body[900];
+    } summary_json_t;
+    summary_json_t *j = heap_caps_malloc_prefer(sizeof(*j), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                                MALLOC_CAP_8BIT);
+    if (j == NULL) {
+        return send_error(req, "503 Service Unavailable", NULL, "no memory");
+    }
+    esp_err_t r;
+    if (gw_coredump_summary(&j->i) != ESP_OK ||
+        gw_cdump_summary_json(&j->i, s_ctx.info->reset_reason, j->body, sizeof(j->body)) == 0) {
+        r = send_error(req, "503 Service Unavailable", NULL, "no memory for the summary");
+    } else {
+        r = send_json(req, "200 OK", j->body);
+    }
+    heap_caps_free(j);
+    return r;
+}
+
 /* ---------- / and /api/status ---------- */
 
 extern const char index_html_start[] asm("_binary_index_html_start");
@@ -1157,6 +1275,13 @@ static esp_err_t status_get(httpd_req_t *req)
     out_str(&o, rtc.present ? gw_rtc_status_str((gw_rtc_status_t)rtc.status) : "not answering");
     outf(&o, ",\"stores\":%lu}}", (unsigned long)rtc.stores);
     status_card(&o, c);
+    {   /* #132: is a core dump in flash (no flash access; the summary is a route of its own) */
+        uint32_t size;
+        gw_cdump_state_t cd = gw_coredump_state(&size);
+        char buf[80];
+        gw_cdump_status_json(cd, size, buf, sizeof(buf));
+        outf(&o, ",\"core_dump\":%s", buf);
+    }
     outf(&o,
          ",\"heap\":{\"internal_free\":%u,\"internal_min\":%u,"
          "\"psram_free\":%u}}\n",
@@ -1193,7 +1318,7 @@ static esp_err_t redirect_any(httpd_req_t *req)
         snprintf(port, sizeof(port), ":%u", s_ctx.cfg->web.https_port);
     }
     snprintf(loc, sizeof(loc), "https://%s%s%s", host, port, req->uri);
-    /* 301 for GET; 308 keeps the method and body of a PUT/POST */
+    /* 301 for GET; 308 keeps the method and body of a PUT/POST/DELETE */
     httpd_resp_set_status(req, req->method == HTTP_GET ? "301 Moved Permanently"
                                                        : "308 Permanent Redirect");
     httpd_resp_set_hdr(req, "Location", loc);
@@ -1210,12 +1335,12 @@ static esp_err_t start_redirect(uint16_t port)
     hc.stack_size = 3072;
     hc.max_open_sockets = 2;
     hc.lru_purge_enable = true;
-    hc.max_uri_handlers = 3;
+    hc.max_uri_handlers = 4;
     hc.uri_match_fn = httpd_uri_match_wildcard;
     ESP_RETURN_ON_ERROR(httpd_start(&s_redirect, &hc), TAG, "redirect server");
     guard_add(1, s_redirect, "HTTP redirect", port);
     static const handler_t redirect = {redirect_any};
-    static const httpd_method_t methods[] = {HTTP_GET, HTTP_PUT, HTTP_POST};
+    static const httpd_method_t methods[] = {HTTP_GET, HTTP_PUT, HTTP_POST, HTTP_DELETE};
     for (size_t i = 0; i < sizeof(methods) / sizeof(methods[0]); i++) {
         const httpd_uri_t u = {.uri = "/*", .method = methods[i], .handler = guarded,
                                .user_ctx = (void *)&redirect};
@@ -1260,7 +1385,7 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
     hc.server_port = ctx->cfg->web.port;
     hc.task_priority = 3;
     hc.stack_size = 8192;            /* configuration validation runs in this task */
-    hc.max_uri_handlers = 14;
+    hc.max_uri_handlers = WEB_URI_HANDLERS;
     hc.max_open_sockets = 4;
     hc.lru_purge_enable = true;
     const char *cert = NULL, *key = NULL;
@@ -1298,7 +1423,8 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
                            h_config_put = {config_put}, h_restart = {restart_post},
                            h_fw_get = {firmware_get}, h_fw_post = {firmware_post},
                            h_card_format = {card_format_post}, h_rebirth = {rebirth_post},
-                           h_modbus_read = {modbus_read_post};
+                           h_modbus_read = {modbus_read_post}, h_cd_get = {coredump_get},
+                           h_cd_delete = {coredump_delete}, h_cd_summary = {coredump_summary_get};
     static const struct {
         const char *uri;
         httpd_method_t method;
@@ -1316,7 +1442,11 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         {"/api/card/format", HTTP_POST, &h_card_format},   /* #139 */
         {"/api/rebirth", HTTP_POST, &h_rebirth},           /* #171 */
         {"/api/modbus/read", HTTP_POST, &h_modbus_read},   /* #182 */
+        {"/api/coredump", HTTP_GET, &h_cd_get},            /* #132 */
+        {"/api/coredump", HTTP_DELETE, &h_cd_delete},
+        {"/api/coredump/summary", HTTP_GET, &h_cd_summary},
     };
+    _Static_assert(sizeof(uris) / sizeof(uris[0]) == WEB_URI_HANDLERS, "WEB_URI_HANDLERS");
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         const httpd_uri_t u = {.uri = uris[i].uri, .method = uris[i].method, .handler = guarded,
                                .user_ctx = (void *)uris[i].h};

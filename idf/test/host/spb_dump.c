@@ -39,9 +39,11 @@ static size_t dataset_payload(uint8_t *out, size_t cap)
                                      .rows = 2, .cell = ds_cell};
     static const uint8_t file[] = "line 1\nline 2\n";
     const spb_metric_t m[] = {
-        {.alias = 900, .datatype = SPB_DT_DATASET, .timestamp = 1762171203000ull, .v.ds = &ds},
-        {.alias = 901, .datatype = SPB_DT_FILE, .timestamp = 1762171203000ull,
-         .v.bytes = {file, sizeof(file) - 1}},
+        /* an NDATA: no datatype on the wire (#159) */
+        {.alias = 900, .datatype = SPB_DT_DATASET, .omit_datatype = true,
+         .timestamp = 1762171203000ull, .v.ds = &ds},
+        {.alias = 901, .datatype = SPB_DT_FILE, .omit_datatype = true,
+         .timestamp = 1762171203000ull, .v.bytes = {file, sizeof(file) - 1}},
     };
     spb_payload_t p = {.timestamp = 1762171203000ull, .has_seq = true, .seq = 9, .metrics = m,
                        .metric_count = 2};

@@ -113,6 +113,9 @@ typedef struct spb_metric {
     bool no_alias;           /* template definitions and members: no alias on the wire */
     uint64_t alias;
     uint32_t datatype;
+    /* DATA messages: no datatype on the wire (tck-id-payloads-metric-datatype-not-req, #159);
+     * @c datatype still selects the value field */
+    bool omit_datatype;
     uint64_t timestamp;      /* 0: omitted */
     bool is_null;
     bool is_historical;      /* SPB-14: stored while offline, sent later */

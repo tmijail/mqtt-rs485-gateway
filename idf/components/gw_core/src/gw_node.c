@@ -37,6 +37,7 @@ static const char *const k_count_names[GW_NODE_IO_COUNT] = {
 #define NAME_MODBUS   "Node Info/Modbus"
 #define NAME_TIME_SYNCED "Node Info/Time Synced"
 #define NAME_MODBUS_TCP "Node Info/Modbus TCP"
+#define NAME_CORE_DUMP "Node Info/Core Dump"
 
 /* Issue #81: "Node Info/Modbus TCP", the Modbus TCP gateway's forwarded requests per device
  * (gw_dev_stats_t.tcp, #69) and a last row for units with no device. A table of its own rather
@@ -69,7 +70,7 @@ static const char *const k_mb_flat[GW_MB_FLAT_COUNT] = {
 static const char *const k_tcp_flat[GW_TCP_FLAT_COUNT] = {
     "Node Info/Modbus TCP/OK", "Node Info/Modbus TCP/Timeout", "Node Info/Modbus TCP/CRC",
     "Node Info/Modbus TCP/Frame", "Node Info/Modbus TCP/Exception"};
-_Static_assert(10 + 3 * GW_NODE_IO_COUNT + GW_NODE_UMH_DIAG_METRICS + 1 <= GW_NODE_METRICS_MAX,
+_Static_assert(GW_NODE_UMH_BIRTH_METRICS <= GW_NODE_METRICS_MAX,
                "the NBIRTH of the UMH preset (no template definitions) fits n->metrics");
 
 /* ---------- helpers ---------- */
@@ -135,6 +136,17 @@ static void online_metric(const void *ctx, size_t i, spb_metric_t *out, char *na
     out->v.num = (n->online_reported >> i) & 1u;
 }
 
+/* tck-id-payloads-metric-datatype-req: every metric of NBIRTH and DBIRTH has its datatype;
+ * tck-id-payloads-metric-datatype-not-req: the metrics of NDATA and DDATA, template members
+ * included, do not (#159). The host knows each datatype from the birth. */
+static void omit_datatypes(spb_metric_t *m, size_t count, const char *type)
+{
+    bool data = strcmp(type, "NDATA") == 0 || strcmp(type, "DDATA") == 0;
+    for (size_t i = 0; i < count; i++) {
+        m[i].omit_datatype = data;
+    }
+}
+
 /* Returns 0, GW_NODE_PUBLISH_TOO_LARGE (larger than the broker accepts, #73, or than the local
  * payload buffer, #158) or -1 (any other failure).
  * tck-id-payloads-sequence-num-incrementing: only a message that went out uses a seq number.
@@ -157,6 +169,7 @@ static int publish_rc_ex(gw_node_t *n, const char *type, const char *device, siz
     if (n->buf == NULL) {
         return -1;
     }
+    omit_datatypes(n->metrics, metric_count, type);
     size_t len = spb_encode(&p, n->buf, n->buf_cap);
     if (len == 0) {
         GW_LOGE(TAG, "%s%s%s: payload does not fit the local buffer of %u bytes", type,
@@ -308,6 +321,29 @@ static bool tag_changed(const gw_node_t *n, uint16_t tag, const gw_tag_value_t *
 }
 
 /* ---------- births and deaths ---------- */
+
+void gw_bdseq_init(gw_bdseq_t *b)
+{
+    b->next = 0;   /* tck-id-topics-nbirth-bdseq-increment: "MUST start at zero" */
+    b->taken = 0;
+    b->pending = false;
+}
+
+uint8_t gw_bdseq_take(gw_bdseq_t *b)
+{
+    b->taken = b->next;
+    b->next = (uint8_t)(b->taken + 1);   /* 255 -> 0 */
+    b->pending = true;
+    return b->taken;
+}
+
+void gw_bdseq_not_sent(gw_bdseq_t *b)
+{
+    if (b->pending) {
+        b->next = b->taken;
+        b->pending = false;
+    }
+}
 
 size_t gw_node_death_payload(uint64_t bdseq, uint8_t *out, size_t cap)
 {
@@ -465,6 +501,18 @@ void gw_node_set_time_synced(gw_node_t *n, bool synced)
     publish(n, "NDATA", NULL, 1, 0);
 }
 
+/* Issue #132: as Time Synced, the NDATA has the alias only (tck-id-payloads-alias-uniqueness:
+ * 57 is this metric's alone). */
+void gw_node_set_core_dump(gw_node_t *n, bool present)
+{
+    if (!n->online || present == n->core_dump_reported) {
+        return;
+    }
+    n->core_dump_reported = present;
+    metric(n, 0, NULL, GW_ALIAS_CORE_DUMP, SPB_DT_BOOLEAN, gw_port_time_ms())->v.num = present;
+    publish(n, "NDATA", NULL, 1, 0);
+}
+
 static void diag_schedule(gw_node_t *n, uint64_t now)
 {
     uint32_t s = n->cfg->sparkplug.diagnostics_s;
@@ -547,6 +595,9 @@ static bool publish_nbirth(gw_node_t *n)
         n->time_synced_reported = dg.time_synced;
         metric(n, i++, NAME_TIME_SYNCED, GW_ALIAS_TIME_SYNCED, SPB_DT_BOOLEAN, now)->v.num =
             dg.time_synced;
+        n->core_dump_reported = dg.core_dump;   /* issue #132 */
+        metric(n, i++, NAME_CORE_DUMP, GW_ALIAS_CORE_DUMP, SPB_DT_BOOLEAN, now)->v.num =
+            dg.core_dump;
     }
     n->diag_restart = true;   /* the period starts again at the next tick */
     i += template_definitions(n, i, now);
@@ -585,6 +636,7 @@ static int publish_device_rc(gw_node_t *n, const char *type, uint16_t dev, size_
     }
     n->tmpl = (spb_template_t){.ref = d->type, .is_definition = false, .count = (uint32_t)count,
                                .members = &n->metrics[1]};
+    omit_datatypes(&n->metrics[1], count, type);   /* the members; publish_rc does the instance */
     metric(n, 0, birth ? d->type : NULL, GW_ALIAS_TAG_BASE + d->first_tag, SPB_DT_TEMPLATE,
            gw_port_time_ms())
         ->v.tmpl = &n->tmpl;
@@ -707,7 +759,12 @@ bool gw_node_rebirth(gw_node_t *n)
 {
     n->seq = 0;
     if (!publish_nbirth(n)) {
-        return false;   /* no DBIRTH without the NBIRTH they belong to */
+        /* no DBIRTH without the NBIRTH they belong to. Issue #164: the session cannot go on
+         * either (the hosts would see the seq start again with no NBIRTH): the node is offline,
+         * and the caller ends the MQTT session (gw_node_take_birth_failure) */
+        gw_node_session_down(n);
+        n->birth_failed = true;
+        return false;
     }
     memset(n->dev_too_large, 0, sizeof(n->dev_too_large));   /* issue #76: try once more */
     for (uint16_t dev = 0; dev < n->cfg->device_count; dev++) {
@@ -731,6 +788,13 @@ bool gw_node_session_up(gw_node_t *n, uint64_t bdseq)
     }
     n->born_once = true;
     return true;
+}
+
+bool gw_node_take_birth_failure(gw_node_t *n)
+{
+    bool f = n->birth_failed;
+    n->birth_failed = false;
+    return f;
 }
 
 void gw_node_session_down(gw_node_t *n)

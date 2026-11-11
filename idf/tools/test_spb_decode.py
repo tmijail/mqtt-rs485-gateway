@@ -26,7 +26,8 @@ def add(p, name=None, alias=None, datatype=11, ts=TS, **value):
         m.name = name
     if alias is not None:
         m.alias = alias
-    m.datatype = datatype
+    if datatype is not None:
+        m.datatype = datatype
     if ts is not None:
         m.timestamp = ts
     for field, v in (value or {"boolean_value": False}).items():
@@ -66,11 +67,17 @@ def dbirth(seq, *aliases):
     return p
 
 
-def data(seq, *aliases, ts=TS):
+def data(seq, *aliases, ts=TS, datatype=None, field="float_value", value=1.0):
+    """DATA metrics by alias, without datatype (#159) unless @p datatype."""
     p = spb.Payload(timestamp=TS, seq=seq)
     for a in aliases:
-        add(p, alias=a, datatype=9, ts=ts, float_value=1.0)
+        add(p, alias=a, datatype=datatype, ts=ts, **{field: value})
     return p
+
+
+def ndata(seq):
+    """An NDATA with the alias 10 of nbirth() (Node Control/Reboot, a Boolean)."""
+    return data(seq, 10, field="boolean_value", value=True)
 
 
 class Timestamps(unittest.TestCase):
@@ -122,7 +129,7 @@ class Sequence(unittest.TestCase):
 
     def test_continuous_seq_passes(self):
         self.assertEqual(feed_all([("NBIRTH", None, nbirth()), ("DBIRTH", "M", dbirth(1, 100)),
-                                   ("DDATA", "M", data(2, 100)), ("NDATA", None, data(3, 10))]),
+                                   ("DDATA", "M", data(2, 100)), ("NDATA", None, ndata(3))]),
                          [])
 
     def test_gap_fails(self):
@@ -132,13 +139,13 @@ class Sequence(unittest.TestCase):
         self.assertIn("seq 3, expected 2", e[0])
 
     def test_repeated_seq_fails(self):
-        e = feed_all([("NBIRTH", None, nbirth()), ("NDATA", None, data(0, 10))])
+        e = feed_all([("NBIRTH", None, nbirth()), ("NDATA", None, ndata(0))])
         self.assertTrue(any("seq 0, expected 1" in x for x in e), e)
 
     def test_wrap_and_rebirth_pass(self):
         msgs = [("NBIRTH", None, nbirth())] + \
-               [("NDATA", None, data(i % 256, 10)) for i in range(1, 300)] + \
-               [("NBIRTH", None, nbirth()), ("NDATA", None, data(1, 10))]
+               [("NDATA", None, ndata(i % 256)) for i in range(1, 300)] + \
+               [("NBIRTH", None, nbirth()), ("NDATA", None, ndata(1))]
         self.assertEqual(feed_all(msgs), [])
 
     def test_message_before_nbirth_fails(self):
@@ -149,8 +156,8 @@ class Sequence(unittest.TestCase):
         s = spb_decode.Sessions()
         self.assertEqual(s.feed("NBIRTH", ("G", "A"), None, nbirth()), [])
         self.assertEqual(s.feed("NBIRTH", ("G", "B"), None, nbirth()), [])
-        self.assertEqual(s.feed("NDATA", ("G", "A"), None, data(1, 10)), [])
-        self.assertEqual(s.feed("NDATA", ("G", "B"), None, data(1, 10)), [])
+        self.assertEqual(s.feed("NDATA", ("G", "A"), None, ndata(1)), [])
+        self.assertEqual(s.feed("NDATA", ("G", "B"), None, ndata(1)), [])
 
 
 class AliasesAcrossBirths(unittest.TestCase):
@@ -174,6 +181,80 @@ class AliasesAcrossBirths(unittest.TestCase):
         self.assertEqual(feed_all([("NBIRTH", None, nbirth()), ("DBIRTH", "A", dbirth(1, 100)),
                                    ("DDEATH", "A", ddeath), ("DBIRTH", "A", dbirth(3, 100))]),
                          [])
+
+
+def instance(kind_birth, seq, member_dt=6, field="int_value"):
+    """A template instance Pump (alias 100) with one member Speed: with datatypes in a birth,
+    without datatypes in DATA."""
+    p = spb.Payload(timestamp=TS, seq=seq)
+    inst = p.metrics.add(alias=100, timestamp=TS)
+    if kind_birth:
+        inst.name, inst.datatype = "Pump", 19
+    inst.template_value.template_ref = "Pump"
+    mm = inst.template_value.metrics.add(name="Speed", timestamp=TS)
+    if kind_birth:
+        mm.datatype = member_dt
+    setattr(mm, field, 5)
+    return p, mm
+
+
+class DataDatatypes(unittest.TestCase):
+    """tck-id-payloads-metric-datatype-not-req (#159): no datatype in NDATA and DDATA, also on
+    template members; the value is in the field of the birth datatype."""
+
+    def test_data_without_datatype_passes(self):
+        self.assertEqual(errors("DDATA", data(2, 100)), [])
+        self.assertEqual(errors("DDATA", instance(False, 2)[0]), [])
+
+    def test_data_with_datatype_fails(self):
+        for kind in ("NDATA", "DDATA"):
+            e = errors(kind, data(2, 100, datatype=9))
+            self.assertTrue(any("with a datatype" in x for x in e), (kind, e))
+
+    def test_member_with_datatype_in_data_fails(self):
+        p, mm = instance(False, 2)
+        mm.datatype = 6
+        self.assertTrue(any("member Speed with a datatype in DATA" in x
+                            for x in errors("DDATA", p)))
+
+    def test_births_need_the_datatype(self):
+        p, mm = instance(True, 1)
+        self.assertEqual(errors("DBIRTH", p), [])
+        mm.ClearField("datatype")
+        self.assertTrue(any("member Speed without datatype" in x for x in errors("DBIRTH", p)))
+        p = dbirth(1, 100)
+        p.metrics[0].ClearField("datatype")
+        self.assertTrue(any("without name/alias/datatype" in x for x in errors("DBIRTH", p)))
+
+    def test_value_in_the_field_of_the_birth_datatype(self):
+        ok = feed_all([("NBIRTH", None, nbirth()), ("DBIRTH", "M", dbirth(1, 100)),
+                       ("DDATA", "M", data(2, 100))])
+        self.assertEqual(ok, [])
+        e = feed_all([("NBIRTH", None, nbirth()), ("DBIRTH", "M", dbirth(1, 100)),
+                      ("DDATA", "M", data(2, 100, field="double_value"))])
+        self.assertTrue(any("birth datatype 9 is in float_value" in x for x in e), e)
+
+    def test_member_value_in_the_field_of_the_birth_datatype(self):
+        ok = feed_all([("NBIRTH", None, nbirth()), ("DBIRTH", "P", instance(True, 1)[0]),
+                       ("DDATA", "P", instance(False, 2)[0])])
+        self.assertEqual(ok, [])
+        e = feed_all([("NBIRTH", None, nbirth()), ("DBIRTH", "P", instance(True, 1)[0]),
+                      ("DDATA", "P", instance(False, 2, field="long_value")[0])])
+        self.assertTrue(any("member Speed: the birth datatype 6" in x for x in e), e)
+
+    def test_alias_not_in_a_birth(self):
+        msgs = [("NBIRTH", None, nbirth()), ("DBIRTH", "M", dbirth(1, 100)),
+                ("DDATA", "M", data(2, 101))]
+        self.assertTrue(any("alias 101 is not in the birth" in x for x in feed_all(msgs)))
+        lax = spb_decode.BirthTypes(strict=False)   # a capture that started late
+        self.assertEqual(lax.feed("DDATA", NODE, "M", data(2, 100)), [])
+        self.assertEqual(lax.feed("DBIRTH", NODE, "M", dbirth(3, 100)), [])
+        self.assertEqual(lax.datatype(NODE, "M", 100), 9)
+        self.assertEqual(lax.feed("DDATA", NODE, "M", data(4, 101)), [])
+
+    def test_topic_parts(self):
+        self.assertEqual(spb_decode.topic_parts("spBv1.0/G/DDATA/N/M"), ("DDATA", ("G", "N"), "M"))
+        self.assertEqual(spb_decode.topic_parts("spBv1.0/G/NDATA/N"), ("NDATA", ("G", "N"), None))
 
 
 class FileNames(unittest.TestCase):
