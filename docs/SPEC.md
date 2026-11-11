@@ -352,10 +352,10 @@ Un intento falla si no termina en una sesión estable: conexión TCP o TLS falli
 
 **`sparkplug.primary_host_id` (SPB-13): Primary Host Application.** Clave del MVP; vacía = sin host primario. Con un id, el nodo se suscribe a `spBv1.0/STATE/{id}` en el mismo SUBSCRIBE que NCMD y DCMD y espera un STATE de Sparkplug 3.0 (JSON `{"online": true|false, "timestamp": <ms>}`, retenido) antes del NBIRTH:
 
-- `online: true` → NBIRTH y DBIRTH;
-- `online: false` con la sesión arriba → NDEATH explícito (bdSeq de la sesión) y DISCONNECT; la sesión siguiente vuelve a esperar;
-- un STATE con `timestamp` menor que el último aceptado se ignora (mensaje retenido viejo); el último `timestamp` se recuerda entre sesiones, no entre arranques;
-- un payload que no es ese JSON (por ejemplo, el `ONLINE` de Sparkplug 2.x) se ignora con un aviso.
+- `online: true`: the node publishes the NBIRTH and the DBIRTHs.
+- `online: false` while the session is up: the node publishes an explicit NDEATH (with the bdSeq of the session) and disconnects. The next session waits again.
+- The node ignores a STATE with a `timestamp` that is less than the last accepted `timestamp` (an old retained message). The host keeps one STATE timestamp for each MQTT server (`tck-id-operational-behavior-host-application-multi-server-timestamp`). Thus the node keeps the last `timestamp` for each broker of the list (issue #157), and never compares the STATE of one broker with the `timestamp` of another broker. It keeps these values between sessions, but not after a restart.
+- The node ignores, with a warning, a payload that is not this JSON (for example, the `ONLINE` of Sparkplug 2.x).
 
 Con brokers de respaldo (MQTT-6), un host fuera de línea en un broker (STATE `false`, o ningún STATE `true` en 30 s) cuenta como intento fallido en ese broker. Con un solo broker el nodo queda conectado esperando.
 

@@ -835,7 +835,7 @@ static void publish_status(void)
     s_st.host = broker_host(s_bsel.current);
     s_st.port = broker_port(s_bsel.current);
     s_st.failures = s_bsel.failures;
-    s_st.host_state = !s_phost.have_ts ? -1 : s_phost.online ? 1 : 0;
+    s_st.host_state = !gw_phost_have_ts(&s_phost) ? -1 : s_phost.online ? 1 : 0;
     s_st.waiting_host = s_waiting_host;
     s_st.sf_enabled = s_node != NULL && s_node->sf != NULL;
     s_st.sf_psram = s_sf_psram;
@@ -1026,7 +1026,9 @@ static void on_connected(void)
         {.filter = s_state_topic, .qos = 1},
     };
     atomic_store(&s_suback, 0);
-    gw_phost_session_start(&s_phost);
+    /* issue #157: the STATE timestamps of this broker only
+     * (tck-id-operational-behavior-host-application-multi-server-timestamp) */
+    gw_phost_session_start(&s_phost, s_bsel.current);
     s_waiting_host = false;
     int id = esp_mqtt_client_subscribe_multiple(s_client, topics, s_state_topic[0] ? 3 : 2);
     feed_watchdog();
@@ -1131,7 +1133,7 @@ static void on_host_state(const uint8_t *data, size_t len)
     if (!atomic_load(&s_mqtt_connected)) {
         return;
     }
-    uint64_t last = s_phost.last_ts;
+    uint64_t last = gw_phost_last_ts(&s_phost);
     const char *id = s_cfg->sparkplug.primary_host_id;
     switch (gw_phost_on_state(&s_phost, data, len)) {
     case GW_PHOST_INVALID:
@@ -1144,7 +1146,7 @@ static void on_host_state(const uint8_t *data, size_t len)
         break;
     case GW_PHOST_ONLINE:
         ESP_LOGI(TAG, "primary host '%s' online (timestamp %llu)", id,
-                 (unsigned long long)s_phost.last_ts);
+                 (unsigned long long)gw_phost_last_ts(&s_phost));
         if (s_waiting_host) {
             s_waiting_host = false;
             start_births();
@@ -1152,7 +1154,7 @@ static void on_host_state(const uint8_t *data, size_t len)
         break;
     case GW_PHOST_OFFLINE:
         ESP_LOGW(TAG, "primary host '%s' offline (timestamp %llu)", id,
-                 (unsigned long long)s_phost.last_ts);
+                 (unsigned long long)gw_phost_last_ts(&s_phost));
         if (s_node->online) {
             /* Sparkplug 3.0: NDEATH and disconnect; the next session waits for it again */
             publish_ndeath();

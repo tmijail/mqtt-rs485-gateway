@@ -7,9 +7,20 @@ void gw_phost_init(gw_phost_t *p)
     memset(p, 0, sizeof(*p));
 }
 
-void gw_phost_session_start(gw_phost_t *p)
+void gw_phost_session_start(gw_phost_t *p, uint8_t server)
 {
     p->online = false;
+    p->server = server < GW_MAX_BROKERS ? server : GW_MAX_BROKERS - 1;
+}
+
+bool gw_phost_have_ts(const gw_phost_t *p)
+{
+    return p->have_ts[p->server];
+}
+
+uint64_t gw_phost_last_ts(const gw_phost_t *p)
+{
+    return p->have_ts[p->server] ? p->last_ts[p->server] : 0;
 }
 
 typedef struct {
@@ -181,11 +192,13 @@ gw_phost_result_t gw_phost_on_state(gw_phost_t *p, const uint8_t *payload, size_
     if (!gw_phost_parse(payload, len, &online, &ts)) {
         return GW_PHOST_INVALID;
     }
-    if (p->have_ts && ts < p->last_ts) {
+    /* issue #157: only against this server's timestamp
+     * (tck-id-operational-behavior-host-application-multi-server-timestamp) */
+    if (p->have_ts[p->server] && ts < p->last_ts[p->server]) {
         return GW_PHOST_STALE;
     }
-    p->have_ts = true;
-    p->last_ts = ts;
+    p->have_ts[p->server] = true;
+    p->last_ts[p->server] = ts;
     p->online = online;
     return online ? GW_PHOST_ONLINE : GW_PHOST_OFFLINE;
 }
