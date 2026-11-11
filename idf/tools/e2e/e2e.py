@@ -2075,6 +2075,14 @@ def run_mqtt5(args, work, mosquitto_log):
           f"{(ended or ['no end of the session logged'])[0]}; NDEATHs with the old bdSeq: {len(nd3)}; "
           + (f"NBIRTH bdSeq {bdseq_of(nb3[2])} after bdSeq {bdseq_of(nb2[2])}, "
              f"{nb3[0] - failed_at:.1f} s after the fault" if nb3 and nb2 else "no new NBIRTH"))
+    # Issue #186 with MQTT 5: esp-mqtt sent the explicit NDEATH of the old session again (DUP 1)
+    # right after the CONNECT of the new one; the explicit NDEATH and the will only (0x04)
+    resent = old_session_publishes(mosquitto_log, node)
+    check("Issue #186 MQTT 5: the new session does not send the explicit NDEATH of the old session "
+          "again (no DUP PUBLISH, no NDEATH before its own NBIRTH; the old bdSeq comes 2 times: the "
+          "explicit NDEATH and the will)",
+          nb3 and not resent and len(nd3) == 2,
+          f"NDEATHs with the old bdSeq: {len(nd3)}; sent again: {' | '.join(resent) or 'none'}")
 
     killed = time.monotonic()
     gw.kill()
@@ -2172,6 +2180,28 @@ def host_state(obs, host, online, ts, retain=True):
                   qos=1, retain=retain).wait_for_publish(5)
 
 
+def old_session_publishes(log, client):
+    """Issue #186: the PUBLISH packets that @client sent again from an earlier MQTT session, from
+    a verbose mosquitto log (`-v`). Every connection of the gateway is a clean session, so each
+    PUBLISH with DUP 1 is one of them; and an explicit NDEATH comes only after the NBIRTH of its
+    own connection, so an NDEATH before it has the bdSeq of an earlier session
+    (tck-id-operational-behavior-primary-application-state-with-multiple-servers-walk)."""
+    bad, born = [], False
+    c = re.escape(client)
+    for line in pathlib.Path(log).read_text(errors="replace").splitlines():
+        if re.search(rf"New client connected from \S+ as {c} \(", line):
+            born = False
+            continue
+        m = re.search(rf"Received PUBLISH from {c} \(d(\d), q\d, r\d, m\d+, 'spBv1\.0/[^/']+/(\w+)/",
+                      line)
+        if not m:
+            continue
+        if m.group(1) == "1" or (m.group(2) == "NDEATH" and not born):
+            bad.append(line.strip()[:160])
+        born = born or m.group(2) == "NBIRTH"
+    return bad
+
+
 def run_primary_host(args, work):
     """SPB-13 in one boot (GW19, primary_host_id SCADA1) against the main mosquitto, with the
     harness playing the host's STATE messages (retained, JSON, Sparkplug 3.0):
@@ -2232,6 +2262,10 @@ def run_primary_host(args, work):
     check("SPB-13 the host back online -> NBIRTH with a new bdSeq",
           nb3 and nb and bdseq_of(nb3[2]) != bdseq_of(nb[2]),
           f"NBIRTH bdSeq {bdseq_of(nb3[2])} after {nb3[0] - sent:.2f} s" if nb3 else "no NBIRTH")
+    resent = old_session_publishes(work / "mosquitto.log", node)
+    check("Issue #186 the session after the STATE offline does not send the explicit NDEATH of the "
+          "old session again (no DUP PUBLISH, no NDEATH before its own NBIRTH)",
+          nb3 and not resent, " | ".join(resent) or "nothing sent again")
     gw.kill()
     obs.wait(ndeath_t, 5)
     obs.c.publish(f"spBv1.0/STATE/{host}", b"", qos=1, retain=True).wait_for_publish(5)
@@ -2287,6 +2321,22 @@ def run_primary_host_brokers(args, work):
           nb2 and nb2[2].seq == 0 and not stale,
           (f"NBIRTH on broker 2/2 {nb2[0] - since:.1f} s after the STATE offline"
            if nb2 else "no NBIRTH on broker 2/2") + f"; {(stale or ['no STATE ignored'])[0]}")
+    # Issue #186: esp-mqtt sent the explicit QoS 1 NDEATH of broker 1/2 again (DUP 1, the old
+    # bdSeq) as the first PUBLISH of the session on broker 2/2. The two observers see the two
+    # brokers: the old bdSeq comes one time only (the explicit NDEATH on broker 1/2)
+    old = [m for m in CAPTURE if m[1] == ndeath_t and m[0] >= since and nb
+           and bdseq_of(m[2]) == bdseq_of(nb[2])]
+    resent = (old_session_publishes(work / "mosquitto.log", node)
+              + old_session_publishes(work / "mosquitto-phost2.log", node))
+    fresh = gw.find(r"new MQTT client, nothing of the old session goes out again", since)
+    check("Issue #186 nothing of the old MQTT session goes out after the new CONNECT: after the "
+          "STATE offline on broker 1/2, no NDEATH with the old bdSeq on broker 2/2 and no PUBLISH "
+          "sent again (DUP) on either broker "
+          "(tck-id-operational-behavior-primary-application-state-with-multiple-servers-walk)",
+          nd and nb2 and len(old) == 1 and not resent,
+          f"NDEATHs with the old bdSeq {bdseq_of(nb[2]) if nb else None} on the two brokers: "
+          f"{len(old)} (1 expected); sent again: {' | '.join(resent) or 'none'}; "
+          f"{(fresh or ['outbox empty at the reconnection'])[0]}")
     gw.kill()
     obs2.wait(ndeath_t, 5)
     for o in (obs, obs2):

@@ -374,3 +374,24 @@ Texto propuesto (en inglés):
 > Once in a long E2E run, while the app (both cores active) downloads an OTA image and verifies it (`esp_image_verify()`, which maps and unmaps flash segments through the S3 cache MMU), QEMU aborts with `ERROR:../accel/tcg/cputlb.c:1845:atomic_mmu_lookup: code should not be reached` (SIGABRT). That is the `g_assert_not_reached()` after the `MMU_DATA_LOAD` `tlb_fill_align()` in `atomic_mmu_lookup()`: the store fill for an atomic RMW (here Xtensa `S32C1I`) left `addr_read == -1`, and the following load fill returned instead of raising a guest exception. So the target's `tlb_fill` gave the same page different permissions in two consecutive calls. A plausible cause is that the other vCPU changed the cache MMU mapping in between. A guest should never be able to reach an assertion. It is rare (seen once so far) and 16 further runs did not reproduce it; we have no core dump yet.
 >
 > **Expected:** a consistent permission check, or a guest exception, never an abort.
+
+## 9. espressif/esp-mqtt: a clean session sends the outbox of the previous session again
+
+- **Repository:** https://github.com/espressif/esp-mqtt (component `espressif/mqtt`).
+- **Version:** 1.1.0 (the version in `idf/components/gw_edge/idf_component.yml`).
+- **Workaround in this repository:** `reconnect()` in `idf/components/gw_edge/gw_edge.c` (issue #186). When the outbox is not empty at a reconnection, the gateway destroys the client and makes a new one.
+- **Found by:** the Eclipse Sparkplug TCK (`tck-id-operational-behavior-primary-application-state-with-multiple-servers-walk`, issue #176).
+
+Proposed text:
+
+> **Title:** With clean session, messages of the previous session are sent again after esp_mqtt_client_reconnect()
+>
+> **Version:** espressif/mqtt 1.1.0 (IDF v6.1), MQTT 3.1.1 and MQTT 5, `disable_clean_session = false`
+>
+> The outbox survives `esp_mqtt_client_disconnect()` and `esp_mqtt_client_reconnect()`. At the next connection, the client sends each item again with DUP = 1 and the old packet identifier: with MQTT 5 at once (`mqtt_requeue_transmitted_messages()`), with 3.1.1 after `message_retransmit_timeout`. The new connection has Clean Session = 1 (Clean Start = 1), so the old session state must be discarded [MQTT-3.1.2-6]. The broker gets a DUP PUBLISH (or SUBSCRIBE) that belongs to no session that it knows. With a list of brokers, this can be another broker.
+>
+> A typical case: publish a QoS 1 message, then call `esp_mqtt_client_disconnect()`. The task checks `DISCONNECT_BIT` before it reads the PUBACK, so the message stays in the outbox, and the next connection sends it again. Sparkplug B uses this sequence for its explicit NDEATH, and the NDEATH of an old session in a new one breaks the Sparkplug specification.
+>
+> **Steps:** connect with clean session; `esp_mqtt_client_publish(..., qos = 1)`; `esp_mqtt_client_disconnect()` at once; after `MQTT_EVENT_DISCONNECTED`, `esp_mqtt_client_reconnect()`. The broker log shows `Received PUBLISH (d1, q1, ...)` right after the new CONNECT.
+>
+> **Expected:** with clean session, empty the outbox when a connection ends, or before the CONNECT of the next one. Or add an API that empties the outbox, for example `esp_mqtt_client_clear_outbox()`.
