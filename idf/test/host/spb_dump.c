@@ -1,6 +1,7 @@
 /*
  * Writes the payloads the edge node produces for the SPEC example configuration
- * (NDEATH, NBIRTH, DBIRTH, DDATA, NDATA) as <dir>/<n>_<TYPE>.bin, so that
+ * (NDEATH, NBIRTH, DBIRTH, DDATA, NDATA) as <dir>/<n>_<group>+<TYPE>+<edge>[+<device>].bin
+ * (or <dir>/<n>_<TYPE>.bin for a payload that no node published), so that
  * tools/spb_decode.py can check them with the official proto and Python protobuf.
  */
 #include <stdint.h>
@@ -39,7 +40,8 @@ static size_t dataset_payload(uint8_t *out, size_t cap)
     static const uint8_t file[] = "line 1\nline 2\n";
     const spb_metric_t m[] = {
         {.alias = 900, .datatype = SPB_DT_DATASET, .timestamp = 1762171203000ull, .v.ds = &ds},
-        {.alias = 901, .datatype = SPB_DT_FILE, .v.bytes = {file, sizeof(file) - 1}},
+        {.alias = 901, .datatype = SPB_DT_FILE, .timestamp = 1762171203000ull,
+         .v.bytes = {file, sizeof(file) - 1}},
     };
     spb_payload_t p = {.timestamp = 1762171203000ull, .has_seq = true, .seq = 9, .metrics = m,
                        .metric_count = 2};
@@ -179,10 +181,15 @@ int main(int argc, char **argv)
     }
     fclose(f);
     for (size_t i = 0; i < g_rec.count; i++) {
-        /* third topic level: spBv1.0/<group>/<TYPE>/... */
-        const char *type = strchr(strchr(g_rec.msgs[i].topic, '/') + 1, '/') + 1;
-        int type_len = (int)(strchr(type, '/') - type);
-        snprintf(path, sizeof(path), "%s/%zu_%.*s.bin", argv[1], i + 1, type_len, type);
+        /* <n>_<group>+<TYPE>+<edge>[+<device>].bin: the topic after "spBv1.0/" with '+' for
+         * '/' (Sparkplug ids never contain '+'), so that spb_decode.py can check the rules
+         * across the messages of one node (seq, aliases, #166) */
+        char name[GW_TOPIC_MAX];
+        snprintf(name, sizeof(name), "%s", strchr(g_rec.msgs[i].topic, '/') + 1);
+        for (char *c = name; *c != '\0'; c++) {
+            *c = *c == '/' ? '+' : *c;
+        }
+        snprintf(path, sizeof(path), "%s/%zu_%s.bin", argv[1], i + 1, name);
         f = fopen(path, "wb");
         if (f == NULL || fwrite(g_rec.msgs[i].payload, 1, g_rec.msgs[i].len, f) != g_rec.msgs[i].len) {
             return 1;

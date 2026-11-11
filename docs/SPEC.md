@@ -95,13 +95,13 @@ Al publicar, el gateway hace de *Edge Node* de Sparkplug. Cada esclavo Modbus es
 | SPB-1 | Payload protobuf conforme a `sparkplug_b.proto` de Eclipse Tahu | P0 | ✅ |
 | SPB-2 | The node registers the **NDEATH** as the MQTT Will (LWT): QoS 1, no retain. The NDEATH has the metric `bdSeq` with the datatype Int64 (`tck-id-message-flow-edge-node-birth-publish-will-message-payload-bdSeq`). The `bdSeq` of the NBIRTH also has the datatype Int64 (`tck-id-message-flow-edge-node-birth-publish-nbirth-payload-bdSeq`). Before an orderly disconnection, the node publishes the NDEATH | P0 | ✅ |
 | SPB-3 | **bdSeq** de 0 a 255, persistido en memoria no volátil. Se incrementa en cada intento de conexión y el NBIRTH lleva el mismo valor que el LWT de esa conexión | P0 | ✅ |
-| SPB-4 | **NBIRTH**: QoS 0, sin retain, `seq`=0, timestamp. Incluye `bdSeq`, `Node Control/Rebirth` (Boolean, escribible), `Node Control/Reboot`, `Node Info/Firmware`, `Node Info/Hardware` y las métricas de E/S local (§4.6), todas con nombre, alias, datatype y valor | P0 | ✅ |
+| SPB-4 | **NBIRTH**: QoS 0, no retain, `seq` = 0, timestamp. It contains `bdSeq`, `Node Control/Rebirth` (Boolean, writable, value false), `Node Control/Reboot`, `Node Info/Firmware`, `Node Info/Hardware` and the local I/O metrics (§4.6). Each metric has a name, a datatype and a value. Each metric also has an alias, except `Node Control/Rebirth`: the NBIRTH must not give an alias to it (`tck-id-operational-behavior-data-commands-rebirth-name-aliases`) | P0 | ✅ |
 | SPB-5 | **seq** de 0 a 255 que vuelve a empezar, compartido por todos los mensajes del nodo salvo NDEATH | P0 | ✅ |
 | SPB-6 | **DBIRTH** por cada dispositivo Modbus en línea, con todas sus métricas y su valor actual. **DDEATH** cuando el dispositivo pasa a fuera de línea (§4.5, MB-9) | P0 | ✅ |
 | SPB-7 | **NDATA/DDATA** por excepción: solo se publican las métricas que cambiaron, identificadas por alias y sin nombre, con timestamp. Se agrupan los cambios de un mismo ciclo de encuesta en un único mensaje | P0 | ✅ |
 | SPB-8 | **Aliases** únicos de tipo UInt64 por nodo, declarados en los BIRTH | P0 | ✅ |
 | SPB-9 | **Rebirth**: al recibir `NCMD Node Control/Rebirth=true` se reenvía NBIRTH y todos los DBIRTH, y `seq` vuelve a 0 | P0 | ✅ |
-| SPB-10 | **DCMD**: escritura de métricas escribibles hacia Modbus. El tag se resuelve por alias o por nombre, se convierte el tipo y la escala, y tras escribir se publica el valor confirmado. Los comandos sobre métricas inexistentes o de solo lectura se descartan y quedan en el log | P0 | ✅ |
+| SPB-10 | **DCMD**: the gateway writes writable metrics to Modbus. It finds the tag by alias or by name, converts the type and the scale, and publishes the confirmed value after the write. The gateway discards these commands and writes the reason in the log: a command for a metric that does not exist or is read-only, a metric with a datatype that is not the datatype of the DBIRTH, and a value with a fraction for an integer or Boolean tag. A metric without a datatype uses the datatype of the DBIRTH | P0 | ✅ |
 | SPB-11 | **NCMD** sobre las salidas locales `DO/n` y sobre `Node Control/Reboot` | P0 | ✅ |
 | SPB-12 | Banda muerta (*deadband*) absoluta por tag para los valores analógicos | P1 | ✅ |
 | SPB-13 | **Primary Host Application**: si hay un `primary_host_id` configurado, el nodo se suscribe a `spBv1.0/STATE/{id}`, no publica NBIRTH hasta recibir `online:true` y se desconecta, con NDEATH, si el host pasa a `online:false` | P1 | |
@@ -248,9 +248,9 @@ Encuesta N esclavos Modbus RTU por el RS485 integrado, con los tipos de 16 y 32 
 | `int32` | Int32 (3) |
 | `uint32` | UInt32 (7) |
 | `float32` | Float (9) |
-| Cualquier tipo con `scale` ≠ 1 u `offset` ≠ 0 | Float (9) |
+| `int16`, `uint16` or `float32` with `scale` ≠ 1 or `offset` ≠ 0 | Float (9) |
 | `uint64` / `int64` (MB-6) | UInt64 (8) / Int64 (4), exactos en `long_value` |
-| `float64` (MB-6), o `uint64`/`int64`/`float64` con `scale` ≠ 1 u `offset` ≠ 0 | Double (10) |
+| `float64` (MB-6). `int32`, `uint32`, `int64`, `uint64` or `float64` with `scale` ≠ 1 or `offset` ≠ 0: a Float has a 24-bit mantissa, thus a 32-bit counter above 2^24 loses its last digits in it (#165) | Double (10) |
 | `string` (MB-6) | String (12) |
 | `bool` con `bit` (MB-6) | Boolean (11) |
 | `bytes` (SPB-19) | Bytes (17) |

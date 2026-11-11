@@ -134,11 +134,12 @@ bool decode_payload(const uint8_t *buf, size_t len, decoded_t *out);
 
 /* Hand-encoded command metric: unlike spb_encode() it can omit the alias and carry names or
  * strings longer than the codec accepts (SPB_NAME_MAX / SPB_STRING_MAX). */
-typedef enum { RAW_BOOL, RAW_FLOAT, RAW_STRING } raw_kind_t;
+typedef enum { RAW_BOOL, RAW_FLOAT, RAW_STRING, RAW_DOUBLE } raw_kind_t;
 typedef struct {
     const char *name;   /* NULL: omitted */
     bool has_alias;
     uint64_t alias;
+    bool no_datatype;   /* omit the datatype (Sparkplug: SHOULD NOT be in a command) */
     uint32_t datatype;
     raw_kind_t kind;
     double num;

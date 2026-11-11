@@ -8,7 +8,9 @@
  * know about MQTT clients, queues or drivers.
  *
  * Alias map (SPB-8, unique per node, stable for a given configuration):
- *   1 bdSeq, 2 Node Control/Rebirth, 3 Node Control/Reboot,
+ *   1 bdSeq, 2 reserved (Node Control/Rebirth has no alias in the NBIRTH, as
+ *   tck-id-operational-behavior-data-commands-rebirth-name-aliases requires; an NCMD with
+ *   alias 2 is still accepted as a rebirth request), 3 Node Control/Reboot,
  *   4 Node Info/Firmware, 5 Node Info/Hardware, 6 Node Info/Reset Reason,
  *   7 Node Control/Scan Rate,
  *   10..17 DI/1..DI/8, 20..27 DO/1..DO/8, 30..37 Counter/1..Counter/8 (IO-4, UInt64 pulse
@@ -100,7 +102,8 @@ extern "C" {
 #define GW_NODE_HIST_RECS       (2 * GW_MAX_TAGS_PER_DEVICE)   /* records per historical message */
 
 /** ops.publish result: the broker cannot take a message this large in the current session
- *  (MQTT 5 Maximum Packet Size, issue #73). Not a connection failure. */
+ *  (MQTT 5 Maximum Packet Size, issue #73). Not a connection failure. The engine also uses it
+ *  for a message that does not fit its own payload buffer (issue #158). */
 #define GW_NODE_PUBLISH_TOO_LARGE (-2)
 
 /** SPB-17 node diagnostics, read when published. */

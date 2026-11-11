@@ -9,6 +9,12 @@
 void setUp(void) {}
 void tearDown(void) {}
 
+static bool keep_metric(void *ctx, const spb_rx_metric_t *m)
+{
+    *(spb_rx_metric_t *)ctx = *m;
+    return true;
+}
+
 static gw_tag_cfg_t tag(gw_type_t type, gw_word_order_t wo, double scale, double offset)
 {
     gw_tag_cfg_t t;
@@ -37,8 +43,44 @@ static void test_datatype_mapping(void)
     TEST_ASSERT_EQUAL(SPB_DT_FLOAT, gw_conv_datatype(&t));
     t = tag(GW_TYPE_INT16, GW_WORD_BIG, 0.1, 0);   /* scaled -> Float */
     TEST_ASSERT_EQUAL(SPB_DT_FLOAT, gw_conv_datatype(&t));
-    t = tag(GW_TYPE_UINT32, GW_WORD_BIG, 1, -5);   /* offset -> Float */
+    t = tag(GW_TYPE_UINT16, GW_WORD_BIG, 1, -5);   /* offset -> Float */
     TEST_ASSERT_EQUAL(SPB_DT_FLOAT, gw_conv_datatype(&t));
+    t = tag(GW_TYPE_FLOAT32, GW_WORD_BIG, 2, 0);   /* a scaled float32 stays Float */
+    TEST_ASSERT_EQUAL(SPB_DT_FLOAT, gw_conv_datatype(&t));
+    /* MB-6 (#165): scaled 32-bit integer sources -> Double (a Float has a 24-bit mantissa) */
+    t = tag(GW_TYPE_UINT32, GW_WORD_BIG, 1, -5);
+    TEST_ASSERT_EQUAL(SPB_DT_DOUBLE, gw_conv_datatype(&t));
+    TEST_ASSERT_EQUAL(GW_VK_DOUBLE, gw_conv_kind(&t));
+    t = tag(GW_TYPE_INT32, GW_WORD_BIG, 0.01, 0);
+    TEST_ASSERT_EQUAL(SPB_DT_DOUBLE, gw_conv_datatype(&t));
+}
+
+/* MB-6 (#165): a scaled uint32 above 2^24 keeps every digit through the conversion and the
+ * Double of the codec (a Float would give 4 000 000 000). */
+static void test_scaled_32bit_keeps_precision(void)
+{
+    gw_tag_cfg_t t = tag(GW_TYPE_UINT32, GW_WORD_BIG, 1.0, 1.0);
+    const uint16_t r[2] = {(uint16_t)(4000000000u >> 16), (uint16_t)(4000000000u & 0xFFFFu)};
+    gw_tag_value_t v;
+    memset(&v, 0, sizeof(v));
+    gw_conv_decode(&t, r, &v);
+    TEST_ASSERT_EQUAL_DOUBLE(4000000001.0, v.value);
+    spb_metric_t m = {.name = "Energy", .alias = 100, .datatype = gw_conv_datatype(&t),
+                      .timestamp = 1, .v.num = v.value};
+    spb_payload_t p = {.timestamp = 1, .has_seq = true, .seq = 0, .metrics = &m,
+                       .metric_count = 1};
+    uint8_t buf[128];
+    size_t len = spb_encode(&p, buf, sizeof(buf));
+    TEST_ASSERT_GREATER_THAN(0, len);
+    static spb_rx_metric_t got;
+    TEST_ASSERT_TRUE(spb_decode(buf, len, NULL, keep_metric, &got));
+    TEST_ASSERT_EQUAL(SPB_VAL_DOUBLE, got.kind);
+    TEST_ASSERT_EQUAL_DOUBLE(4000000001.0, got.v.d);
+    /* the inverse conversion of a DCMD value is exact too */
+    uint16_t w[2];
+    TEST_ASSERT_EQUAL(GW_CONV_OK, gw_conv_to_regs(&t, 4000000001.0, w));
+    TEST_ASSERT_EQUAL_HEX16(r[0], w[0]);
+    TEST_ASSERT_EQUAL_HEX16(r[1], w[1]);
 }
 
 static void test_decode_16bit(void)
@@ -143,7 +185,7 @@ static void test_datatype_mapping_mb6(void)
     TEST_ASSERT_EQUAL(GW_VK_DOUBLE, gw_conv_kind(&t));
     t = tag(GW_TYPE_UINT64, GW_WORD_BIG, 1, 1);
     TEST_ASSERT_EQUAL(SPB_DT_DOUBLE, gw_conv_datatype(&t));
-    t = tag(GW_TYPE_INT32, GW_WORD_BIG, 2, 0);   /* the MVP rule stays: Float */
+    t = tag(GW_TYPE_INT16, GW_WORD_BIG, 2, 0);   /* the MVP rule stays for 16 bits: Float */
     TEST_ASSERT_EQUAL(SPB_DT_FLOAT, gw_conv_datatype(&t));
 }
 
@@ -310,6 +352,7 @@ int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(test_datatype_mapping);
+    RUN_TEST(test_scaled_32bit_keeps_precision);
     RUN_TEST(test_decode_16bit);
     RUN_TEST(test_decode_32bit_word_order);
     RUN_TEST(test_encode_inverse_scale);

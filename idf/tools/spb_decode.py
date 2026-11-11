@@ -7,6 +7,10 @@ firmware are parsed by Google's protobuf runtime, independently of nanopb.
     python3 tools/spb_decode.py FILE_OR_DIR...        # *.bin files, as written by spb_dump
     python3 tools/spb_decode.py --check DIR           # also assert Sparkplug structure
 
+--check examines each message, and also the messages of one node in the order of their file
+numbers (seq continuity, alias uniqueness across the NBIRTH and the DBIRTHs) when the file
+names give the node (spb_dump: <n>_<group>+<TYPE>+<edge>[+<device>].bin).
+
 Requires: pip install protobuf grpcio-tools
 """
 import argparse
@@ -16,6 +20,8 @@ import sys
 import tempfile
 
 PROTO = pathlib.Path(__file__).resolve().parent.parent / "components/gw_core/proto/sparkplug_b.proto"
+REBIRTH = "Node Control/Rebirth"
+TIMESTAMPED = ("NBIRTH", "DBIRTH", "NDATA", "DDATA")
 
 DATATYPE_FIELD = {  # Sparkplug datatype -> oneof field that must carry the value
     1: "int_value", 2: "int_value", 3: "int_value", 5: "int_value", 6: "int_value", 7: "int_value",
@@ -163,11 +169,24 @@ def check(kind, p):
     aliases = set()
     for m in p.metrics:
         definition = m.datatype == 19 and m.template_value.is_definition
-        if births and not (m.HasField("name") and (definition or m.HasField("alias"))
+        rebirth = kind == "NBIRTH" and m.name == REBIRTH
+        if births and not (m.HasField("name") and (definition or rebirth or m.HasField("alias"))
                            and m.HasField("datatype")):
             errors.append(f"birth metric without name/alias/datatype: {m}")
+        # tck-id-operational-behavior-data-commands-rebirth-name-aliases (#153)
+        if rebirth and m.HasField("alias"):
+            errors.append(f"NBIRTH {REBIRTH} must not have an alias (alias {m.alias})")
         if not births and m.HasField("name"):
             errors.append(f"{kind} metric should use the alias only: {m.name}")
+        # tck-id-payloads-name-birth-data-requirement: a timestamp on every metric of NBIRTH,
+        # DBIRTH, NDATA and DDATA (and on the members of a template instance, which are values;
+        # the members of a definition are not)
+        if kind in TIMESTAMPED:
+            members = [] if definition or m.datatype != 19 else list(m.template_value.metrics)
+            for mm in [m] + members:
+                if not mm.HasField("timestamp"):
+                    errors.append(f"{kind} metric without timestamp: "
+                                  f"{mm.name or 'alias ' + str(mm.alias)}")
         if m.HasField("alias"):
             if m.alias in aliases:
                 errors.append(f"duplicate alias {m.alias}")
@@ -180,7 +199,7 @@ def check(kind, p):
         errors += check_template(kind, m)
     if kind == "NBIRTH":
         names = {m.name for m in p.metrics}
-        for required in ("bdSeq", "Node Control/Rebirth", "Node Control/Reboot",
+        for required in ("bdSeq", REBIRTH, "Node Control/Reboot",
                          "Node Info/Firmware", "Node Info/Hardware", "Node Info/Reset Reason",
                          "Node Control/Scan Rate",
                          *(f"DI/{i}" for i in range(1, 9)), *(f"DO/{i}" for i in range(1, 9))):
@@ -192,6 +211,69 @@ def check(kind, p):
     return errors
 
 
+class Sessions:
+    """Rules across the messages of one Edge Node (#166). Feed every message of the node in
+    publish order: a new NBIRTH starts a new session, an NDEATH ends it.
+
+    - tck-id-payloads-sequence-num-incrementing: each message after the NBIRTH has the seq of
+      the message before it plus one, 255 followed by 0.
+    - tck-id-payloads-alias-uniqueness: an alias of the NBIRTH or of a DBIRTH is unique across
+      all the metrics of the node: the NBIRTH and the DBIRTHs of all its devices. A new DBIRTH
+      of the same device (after a DDEATH) replaces the aliases of that device.
+    """
+
+    def __init__(self):
+        self.nodes = {}
+
+    def feed(self, kind, node, device, p):
+        """Errors of message @p p (type @p kind) from @p node ((group, edge)) and @p device
+        (None for a node message). A message without a node gives no error here."""
+        if node is None or kind in ("NCMD", "DCMD", "STATE"):
+            return []
+        where = "/".join(node) + (f"/{device}" if device else "")
+        if kind == "NDEATH":
+            self.nodes.pop(node, None)
+            return []
+        if kind == "NBIRTH":
+            self.nodes[node] = {"next": 0, "node": set(), "devices": {}}
+        s = self.nodes.get(node)
+        if s is None:
+            return [f"{kind} {where} before the NBIRTH of its node"]
+        errors = []
+        if p.HasField("seq"):
+            if p.seq != s["next"]:
+                errors.append(f"{kind} {where}: seq {p.seq}, expected {s['next']} "
+                              "(the seq of the message before it plus one)")
+            s["next"] = (p.seq + 1) % 256
+        aliases = {m.alias for m in p.metrics if m.HasField("alias")}
+        if kind == "NBIRTH":
+            s["node"] = aliases
+        elif kind == "DBIRTH":
+            for owner, used in [("the NBIRTH", s["node"])] + [
+                    (f"the DBIRTH of {d}", a) for d, a in s["devices"].items() if d != device]:
+                for alias in sorted(aliases & used):
+                    errors.append(f"DBIRTH {where}: alias {alias} is also in {owner}")
+            s["devices"][device] = aliases
+        return errors
+
+
+def parse_name(path):
+    """(kind, node, device) of a payload file. spb_dump writes
+    <n>_<group>+<TYPE>+<edge>[+<device>].bin (the topic after spBv1.0/, '+' for '/'); node is
+    (group, edge). Other names (<n>_<TYPE>.bin) give no node."""
+    rest = path.stem.split("_", 1)[-1]
+    parts = rest.split("+")
+    if len(parts) >= 3:
+        return parts[1], (parts[0], parts[2]), parts[3] if len(parts) > 3 else None
+    return rest.split("_")[-1], None, None
+
+
+def publish_order(path):
+    """Sort key: the number before the first '_' (10 after 9), then the name."""
+    head = path.stem.split("_", 1)[0]
+    return (int(head) if head.isdigit() else sys.maxsize, path.name)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("paths", nargs="+", type=pathlib.Path)
@@ -200,15 +282,16 @@ def main():
     spb = load_module()
     files = []
     for path in args.paths:
-        files += sorted(path.glob("*.bin")) if path.is_dir() else [path]
+        files += sorted(path.glob("*.bin"), key=publish_order) if path.is_dir() else [path]
     failed = 0
+    sessions = Sessions()
     for f in files:
-        kind = f.stem.split("_")[-1]
+        kind, node, device = parse_name(f)
         p = spb.Payload()
         p.ParseFromString(f.read_bytes())  # raises DecodeError on malformed input
         print(f"[{f.name}] " + describe(kind, p))
         if args.check:
-            for e in check(kind, p):
+            for e in check(kind, p) + sessions.feed(kind, node, device, p):
                 print(f"    ERROR: {e}")
                 failed += 1
     print(f"{len(files)} payload(s) decoded with the official proto, {failed} structural error(s)")

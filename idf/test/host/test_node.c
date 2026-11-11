@@ -66,6 +66,12 @@ static void send(const char *topic, const spb_metric_t *m, size_t n)
     gw_node_handle_message(&node, topic, strlen(topic), cmd, len);
 }
 
+static void send_raw(const char *topic, const raw_metric_t *m, size_t n)
+{
+    size_t len = raw_payload(cmd, sizeof(cmd), m, n);
+    gw_node_handle_message(&node, topic, strlen(topic), cmd, len);
+}
+
 static void test_nbirth_and_dbirth(void)
 {
     set_meter(true, 230.5, 12.3, 1);
@@ -90,7 +96,9 @@ static void test_nbirth_and_dbirth(void)
     i = decoded_find_name(&dec, "Node Control/Rebirth");
     TEST_ASSERT_TRUE(i >= 0);
     TEST_ASSERT_EQUAL(SPB_DT_BOOLEAN, dec.m[i].datatype);
-    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_REBIRTH, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[i].num);   /* tck-id-payloads-nbirth-rebirth-req */
+    /* tck-id-operational-behavior-data-commands-rebirth-name-aliases: no alias (#153) */
+    TEST_ASSERT_FALSE(dec.m[i].has_alias);
     TEST_ASSERT_TRUE(decoded_find_name(&dec, "Node Control/Reboot") >= 0);
     i = decoded_find_name(&dec, "Node Info/Firmware");
     TEST_ASSERT_EQUAL_STRING("0.1.0+gdeadbee", dec.m[i].str);
@@ -106,12 +114,14 @@ static void test_nbirth_and_dbirth(void)
     i = decoded_find_name(&dec, "DI/2");
     TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[i].num);
     TEST_ASSERT_TRUE(decoded_find_name(&dec, "DO/8") >= 0);
-    /* every birth metric has name, alias and datatype; aliases are unique */
+    /* every birth metric has name, alias (except Rebirth) and datatype; aliases are unique */
     for (size_t a = 0; a < dec.count; a++) {
         TEST_ASSERT_TRUE(dec.m[a].has_name);
         TEST_ASSERT_NOT_EQUAL(0, dec.m[a].datatype);
+        TEST_ASSERT_TRUE(dec.m[a].has_alias || strcmp(dec.m[a].name, "Node Control/Rebirth") == 0);
         for (size_t b = a + 1; b < dec.count; b++) {
-            TEST_ASSERT_NOT_EQUAL(dec.m[a].alias, dec.m[b].alias);
+            TEST_ASSERT_TRUE(!dec.m[a].has_alias || !dec.m[b].has_alias ||
+                             dec.m[a].alias != dec.m[b].alias);
         }
     }
 
@@ -190,11 +200,14 @@ static void test_seq_wraps_and_is_shared(void)
     set_meter(true, 0, 0, 0);
     gw_node_session_up(&node, 0);
     for (int i = 1; i <= 300; i++) {
+        recorder_clear();   /* the recorder holds REC_MAX messages; a full one fails (#158) */
         gw_tagdb_set_di((uint8_t)(i & 1), (uint64_t)i);
         gw_node_io_changed(&node);
+        TEST_ASSERT_EQUAL(1, g_rec.count);
+        msg(0);
+        TEST_ASSERT_EQUAL_UINT64((uint64_t)((i + 1) % 256), dec.seq);
     }
     /* 2 births + 300 NDATA, seq continues 0..255,0.. */
-    TEST_ASSERT_EQUAL(REC_MAX, g_rec.count);  /* recorder saturates; check via node state */
     TEST_ASSERT_EQUAL_UINT8((uint8_t)(302 % 256), node.seq);
 }
 
@@ -213,6 +226,8 @@ static void test_ncmd_rebirth(void)
     TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NBIRTH/GW01", g_rec.msgs[0].topic);
     TEST_ASSERT_EQUAL_UINT64(0, dec.seq);
     TEST_ASSERT_EQUAL_DOUBLE(3, dec.m[decoded_find_name(&dec, "bdSeq")].num); /* same session */
+    /* the request came by name: the NBIRTH has no alias for Rebirth (#153) */
+    TEST_ASSERT_FALSE(dec.m[decoded_find_name(&dec, "Node Control/Rebirth")].has_alias);
     msg(1);
     TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/DBIRTH/GW01/Meter1", g_rec.msgs[1].topic);
     TEST_ASSERT_EQUAL_UINT64(1, dec.seq);
@@ -225,6 +240,30 @@ static void test_ncmd_rebirth(void)
     /* another node's NCMD is ignored */
     send("spBv1.0/Plant1/NCMD/GW02", &m, 1);
     TEST_ASSERT_EQUAL(0, g_rec.count);
+}
+
+/* tck-id-payloads-name-birth-data-requirement (#166): every metric of NBIRTH, DBIRTH and DATA
+ * has a timestamp; one with no sample time (0) gets the time of the message. */
+static void test_every_metric_has_a_timestamp(void)
+{
+    set_meter(true, 1, 2, 0);
+    gw_node_session_up(&node, 0);
+    TEST_ASSERT_EQUAL(2, g_rec.count);
+    for (size_t k = 0; k < 2; k++) {
+        msg(k);
+        for (size_t i = 0; i < dec.count; i++) {
+            TEST_ASSERT_NOT_EQUAL_UINT64(0, dec.m[i].timestamp);
+        }
+    }
+    recorder_clear();
+    gw_tagdb_set_do_unknown(0);   /* the expander is lost: no sample time for the DOs */
+    gw_node_io_changed(&node);
+    msg(0);
+    TEST_ASSERT_EQUAL(GW_NODE_IO_COUNT, dec.count);
+    for (size_t i = 0; i < dec.count; i++) {
+        TEST_ASSERT_TRUE(dec.m[i].is_null);
+        TEST_ASSERT_NOT_EQUAL_UINT64(0, dec.m[i].timestamp);
+    }
 }
 
 static void test_ncmd_do_and_reboot(void)
@@ -358,6 +397,80 @@ static void test_dcmd_writes(void)
     gw_node_device_changed(&node, 0);
     send("spBv1.0/Plant1/DCMD/GW01/Meter1", &sp, 1);
     TEST_ASSERT_EQUAL(2, g_rec.writes);
+}
+
+/* SPB-10 (#163): a DCMD metric with a datatype other than the one of the DBIRTH, or with a
+ * fraction for an integer or Boolean tag, is rejected with a log line: no write, no DDATA.
+ * Without a datatype (the Sparkplug recommendation for commands,
+ * tck-id-payloads-metric-datatype-not-req), the datatype of the DBIRTH applies. */
+static void test_dcmd_strict_datatype_and_integer(void)
+{
+    static const char doc[] =
+        "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+        " \"devices\": [{\"name\": \"M\", \"unit_id\": 1, \"tags\": ["
+        "  {\"name\": \"Level\", \"area\": \"holding\", \"address\": 0, \"type\": \"int16\","
+        "   \"writable\": true},"
+        "  {\"name\": \"Gain\", \"area\": \"holding\", \"address\": 1, \"type\": \"int16\","
+        "   \"scale\": 0.1, \"writable\": true},"
+        "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\","
+        "   \"writable\": true}]}]}";
+    static gw_config_t c;
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(doc, sizeof(doc) - 1, &c, &err), err.msg);
+    cfg = &c;
+    gw_tagdb_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    gw_tag_value_t v[3] = {{.value = 1, .ts_ms = 1000, .valid = true},
+                           {.value = 1, .ts_ms = 1000, .valid = true},
+                           {.value = 0, .ts_ms = 1000, .valid = true}};
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_node_session_up(&node, 0);
+    recorder_clear();
+    const char *topic = "spBv1.0/G/DCMD/N/M";
+    static char log[2048];
+    gw_port_log_capture(log, sizeof(log));
+
+    /* another datatype: Double for the Int16 tag, Int16 for the Float (scaled) tag */
+    raw_metric_t dbl = {.name = "Level", .datatype = SPB_DT_DOUBLE, .kind = RAW_DOUBLE, .num = 7};
+    send_raw(topic, &dbl, 1);
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Level' discarded: datatype 10 is not the datatype 2 "
+                                     "of the DBIRTH"));
+    spb_metric_t i16 = {.name = "Gain", .no_alias = true, .datatype = SPB_DT_INT16, .v.num = 5};
+    send(topic, &i16, 1);
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Gain' discarded: datatype 2 is not the datatype 9"));
+    /* a fraction for the Int16 tag: with its datatype, and without a datatype */
+    raw_metric_t frac = {.name = "Level", .datatype = SPB_DT_INT16, .kind = RAW_FLOAT, .num = 1.5};
+    send_raw(topic, &frac, 1);
+    frac.no_datatype = true;
+    send_raw(topic, &frac, 1);
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Level' discarded: value with a fraction for an "
+                                     "integer tag"));
+    /* a fraction for the Boolean tag */
+    raw_metric_t half = {.name = "Run", .no_datatype = true, .kind = RAW_DOUBLE, .num = 0.5};
+    send_raw(topic, &half, 1);
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Run' discarded: value with a fraction for a "
+                                     "Boolean tag"));
+    TEST_ASSERT_EQUAL(0, g_rec.writes);
+    TEST_ASSERT_EQUAL(0, g_rec.count);   /* no DDATA */
+
+    /* accepted: the datatype of the DBIRTH or none, an integral value for Level, a fraction for
+     * the scaled Gain */
+    raw_metric_t ok = {.name = "Level", .no_datatype = true, .kind = RAW_DOUBLE, .num = -7};
+    send_raw(topic, &ok, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.writes);
+    TEST_ASSERT_EQUAL_DOUBLE(-7, g_rec.last_write.value);
+    spb_metric_t lvl = {.name = "Level", .no_alias = true, .datatype = SPB_DT_INT16, .v.num = 12};
+    send(topic, &lvl, 1);
+    TEST_ASSERT_EQUAL(2, g_rec.writes);
+    TEST_ASSERT_EQUAL_DOUBLE(12, g_rec.last_write.value);
+    spb_metric_t gain = {.name = "Gain", .no_alias = true, .datatype = SPB_DT_FLOAT, .v.num = 0.5};
+    send(topic, &gain, 1);
+    TEST_ASSERT_EQUAL(3, g_rec.writes);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-6, 0.5, g_rec.last_write.value);
+    gw_port_log_capture(NULL, 0);
 }
 
 /* Issue #60: a DCMD whose writes do not all fit in the bus queue is rejected whole. */
@@ -498,20 +611,30 @@ static void test_mb6_dcmd(void)
     send(topic, &u64, 1);
     TEST_ASSERT_EQUAL(3, g_rec.writes);
     TEST_ASSERT_EQUAL_UINT64(UINT64_MAX, g_rec.last_write.u64);
-    /* a Float/Double/Int32 command for a 64-bit tag: integral values only */
-    spb_metric_t f = {.name = "U64", .datatype = SPB_DT_DOUBLE, .v.num = 42.0};
-    send(topic, &f, 1);
+    /* a value in double_value with no datatype for a 64-bit tag: integral values only */
+    raw_metric_t f = {.name = "U64", .no_datatype = true, .kind = RAW_DOUBLE, .num = 42.0};
+    send_raw(topic, &f, 1);
+    TEST_ASSERT_EQUAL(4, g_rec.writes);
     TEST_ASSERT_EQUAL_UINT64(42, g_rec.last_write.u64);
-    f.v.num = 1.5;
-    send(topic, &f, 1);
-    f.v.num = -1.0;                                   /* negative for a uint64 */
-    send(topic, &f, 1);
-    spb_metric_t neg = {.name = "I64", .datatype = SPB_DT_INT32, .v.num = -7};
-    send(topic, &neg, 1);
+    f.num = 1.5;
+    send_raw(topic, &f, 1);
+    f.num = -1.0;                                     /* negative for a uint64 */
+    send_raw(topic, &f, 1);
+    raw_metric_t neg = {.name = "I64", .no_datatype = true, .kind = RAW_DOUBLE, .num = -7};
+    send_raw(topic, &neg, 1);
     TEST_ASSERT_EQUAL(5, g_rec.writes);
     TEST_ASSERT_EQUAL_INT64(-7, g_rec.last_write.i64);
-    spb_metric_t big = {.name = "I64", .datatype = SPB_DT_UINT64, .v.u64 = UINT64_MAX};
-    send(topic, &big, 1);                             /* above INT64_MAX: rejected */
+    neg.num = 1e19;                                   /* above INT64_MAX: rejected */
+    send_raw(topic, &neg, 1);
+    TEST_ASSERT_EQUAL(5, g_rec.writes);
+    /* SPB-10 (#163): a datatype other than the one of the DBIRTH is rejected, also with an
+     * integral value that fits */
+    spb_metric_t other = {.name = "U64", .datatype = SPB_DT_DOUBLE, .v.num = 42.0};
+    send(topic, &other, 1);
+    spb_metric_t i32 = {.name = "I64", .datatype = SPB_DT_INT32, .v.num = -7};
+    send(topic, &i32, 1);
+    spb_metric_t big = {.name = "I64", .datatype = SPB_DT_UINT64, .v.u64 = 1};
+    send(topic, &big, 1);
     TEST_ASSERT_EQUAL(5, g_rec.writes);
     /* strings: up to 2 x length characters */
     spb_metric_t str = {.name = "Str", .datatype = SPB_DT_STRING, .v.str = "OK"};
@@ -580,12 +703,6 @@ static void test_scan_rate(void)
     gw_node_rebirth(&node);
     msg(0);
     TEST_ASSERT_EQUAL_DOUBLE(500, dec.m[decoded_find_name(&dec, "Node Control/Scan Rate")].num);
-}
-
-static void send_raw(const char *topic, const raw_metric_t *m, size_t n)
-{
-    size_t len = raw_payload(cmd, sizeof(cmd), m, n);
-    gw_node_handle_message(&node, topic, strlen(topic), cmd, len);
 }
 
 /* Issue #8: while the expander does not answer, the DOs are published as null (the latch may
@@ -1398,8 +1515,73 @@ static void test_dbirth_not_published_leaves_the_device_unborn(void)
     set_meter(true, 231.5, 12.3, 1);
     gw_node_device_changed(&node, 0);           /* a DBIRTH again, not a DDATA */
     TEST_ASSERT_EQUAL(1, g_rec.count);
-    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/DBIRTH/GW01/Meter1", g_rec.msgs[0].topic);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/DBIRTH/GW01/Meter1", msg(0)->topic);
     TEST_ASSERT_TRUE(node.dev_born[0]);
+    /* the failed publish used no seq number (tck-id-payloads-sequence-num-incrementing, #158) */
+    TEST_ASSERT_EQUAL_UINT64(1, dec.seq);
+}
+
+/* Issue #158: a DBIRTH that does not fit the local payload buffer (6 KB without PSRAM) is
+ * "too large": it uses no seq number, the device stays unborn, and the engine does not build
+ * it again on each change of the device (only at the next session or rebirth, as #76). */
+static void test_dbirth_larger_than_buffer(void)
+{
+    static char doc[16384];
+    static gw_config_t c;
+    size_t n = (size_t)snprintf(doc, sizeof(doc), "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": "
+                                "{\"group_id\": \"Plant1\", \"edge_node_id\": \"GW01\"}, "
+                                "\"devices\": [{\"name\": \"Big\", \"unit_id\": 1, \"tags\": [");
+    for (int k = 0; k < GW_MAX_TAGS_PER_DEVICE; k++) {
+        n += (size_t)snprintf(doc + n, sizeof(doc) - n,
+                              "%s{\"name\": \"T%036d%02d\", \"area\": \"input\", \"address\": %d,"
+                              " \"type\": \"float32\", \"units\": \"uuuuuuuuuuuuuuu\","
+                              " \"eng_low\": -3e38, \"eng_high\": 3e38}",
+                              k ? "," : "", 0, k, 2 * k);
+    }
+    snprintf(doc + n, sizeof(doc) - n, "]}]}");
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(doc, strlen(doc), &c, &err), err.msg);
+    cfg = &c;
+    gw_tagdb_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    static uint8_t small[6144];   /* CONFIG_GW_SPB_PAYLOAD_INTERNAL */
+    gw_node_set_buffer(&node, small, sizeof(small));
+    static gw_tag_value_t v[GW_MAX_TAGS_PER_DEVICE];
+    for (int k = 0; k < GW_MAX_TAGS_PER_DEVICE; k++) {
+        v[k] = (gw_tag_value_t){.value = k, .ts_ms = 1000, .valid = true};
+    }
+    gw_tagdb_put_device(cfg, 0, v, true);
+    static char log[4096];
+    gw_port_log_capture(log, sizeof(log));
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 1));
+    TEST_ASSERT_EQUAL(1, g_rec.count);          /* the NBIRTH fits, the DBIRTH does not */
+    TEST_ASSERT_FALSE(node.dev_born[0]);
+    TEST_ASSERT_TRUE(node.dev_too_large[0]);
+    TEST_ASSERT_EQUAL_UINT8(1, node.seq);       /* the DBIRTH used no seq number */
+    TEST_ASSERT_NOT_NULL(strstr(log, "DBIRTH Big: payload does not fit the local buffer of 6144"));
+    /* changes of the device: no DBIRTH built again, no DDATA */
+    log[0] = '\0';
+    for (int i = 0; i < 5; i++) {
+        v[0].value = 100 + i;
+        gw_tagdb_put_device(cfg, 0, v, true);
+        gw_node_device_changed(&node, 0);
+    }
+    TEST_ASSERT_NULL(strstr(log, "does not fit"));
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    TEST_ASSERT_EQUAL_UINT8(1, node.seq);
+    /* the next message gets the seq that follows the NBIRTH */
+    gw_node_set_firmware_status(&node, "refused: x", 0);
+    TEST_ASSERT_EQUAL(2, g_rec.count);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", msg(1)->topic);
+    TEST_ASSERT_EQUAL_UINT64(1, dec.seq);
+    /* a rebirth tries every birth once */
+    log[0] = '\0';
+    TEST_ASSERT_TRUE(gw_node_rebirth(&node));
+    TEST_ASSERT_NOT_NULL(strstr(log, "DBIRTH Big: payload does not fit"));
+    TEST_ASSERT_EQUAL_UINT8(1, node.seq);
+    gw_port_log_capture(NULL, 0);
 }
 
 /* FW-1: NBIRTH declares the update command and its state; an NCMD with the URL reaches the
@@ -1682,8 +1864,10 @@ int main(void)
     RUN_TEST(test_seq_wraps_and_is_shared);
     RUN_TEST(test_ncmd_rebirth);
     RUN_TEST(test_ncmd_do_and_reboot);
+    RUN_TEST(test_every_metric_has_a_timestamp);
     RUN_TEST(test_pulse_counters);
     RUN_TEST(test_dcmd_writes);
+    RUN_TEST(test_dcmd_strict_datatype_and_integer);
     RUN_TEST(test_dcmd_rejected_whole_when_queue_lacks_room);
     RUN_TEST(test_scan_rate);
     RUN_TEST(test_mb6_birth_and_data);
@@ -1707,6 +1891,7 @@ int main(void)
     RUN_TEST(test_session_up_needs_the_nbirth);
     RUN_TEST(test_dbirth_not_published_leaves_the_device_unborn);
     RUN_TEST(test_dbirth_too_large_not_retried_on_every_change);
+    RUN_TEST(test_dbirth_larger_than_buffer);
     RUN_TEST(test_firmware_update_metrics);
     RUN_TEST(test_firmware_url_limit);
     RUN_TEST(test_store_and_forward_counters);
