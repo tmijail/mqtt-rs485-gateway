@@ -1981,7 +1981,8 @@ def run_failover(args, work):
 def run_mqtt5(args, work, mosquitto_log):
     """MQTT-8 in one boot (GW18) against the harness' main mosquitto: CONNECT with protocol
     level 5 and Clean Start, NBIRTH, the NCMD subscription working (rebirth), an NCMD Reboot whose
-    DISCONNECT carries the reason code 0x04 (issue #155: the broker publishes the will too), and
+    DISCONNECT carries the reason code 0x04 (issue #155: the broker publishes the will too), a
+    rebirth whose NBIRTH publish fails with the connection open (issue #164: a new session), and
     the NDEATH will published as soon as the TCP connection dies (Will Delay Interval 0)."""
     node = "GW18"
     nbirth_t, ndeath_t = f"{T}/NBIRTH/{node}", f"{T}/NDEATH/{node}"
@@ -2017,6 +2018,27 @@ def run_mqtt5(args, work, mosquitto_log):
           f"will); explicit NDEATH publishes in the broker log: {explicit}; NBIRTH after the reboot "
           f"{'yes' if nb2 else 'no'}")
 
+    # Issue #164: a rebirth whose NBIRTH publish fails one time while the connection stays open
+    # (emulator-only fault) must not leave the node connected with no Sparkplug session: NDEATH,
+    # DISCONNECT, a new connection with the next bdSeq and every birth
+    gw.wait_log(r"Sparkplug session up", 10, rebooted)
+    obs.drain()
+    failed_at = time.monotonic()
+    gw.console("pubfail 1")
+    gw.wait_log(r"the next 1 Sparkplug publish\(es\) fail without a send", 5, failed_at)
+    gw.console("rebirth")
+    nb3 = obs.wait(nbirth_t, 30)
+    ended = gw.find(r"rebirth: NBIRTH not published \(bdSeq=\d+\) with the connection open", failed_at)
+    nd3 = [m for m in CAPTURE if m[1] == ndeath_t and m[0] >= failed_at and nb2
+           and bdseq_of(m[2]) == bdseq_of(nb2[2])]
+    check("Issue #164 a rebirth whose NBIRTH publish fails while the connection stays open ends the "
+          "session (NDEATH, DISCONNECT); the node connects again: NBIRTH with the next bdSeq",
+          ended and nd3 and nb2 and nb3 and bdseq_of(nb3[2]) == (bdseq_of(nb2[2]) + 1) % 256
+          and nb3[2].seq == 0,
+          f"{(ended or ['no end of the session logged'])[0]}; NDEATHs with the old bdSeq: {len(nd3)}; "
+          + (f"NBIRTH bdSeq {bdseq_of(nb3[2])} after bdSeq {bdseq_of(nb2[2])}, "
+             f"{nb3[0] - failed_at:.1f} s after the fault" if nb3 and nb2 else "no new NBIRTH"))
+
     killed = time.monotonic()
     gw.kill()
     will = obs.wait(ndeath_t, 10)
@@ -2024,7 +2046,7 @@ def run_mqtt5(args, work, mosquitto_log):
     check("MQTT-8 MQTT 5.0 (mqtt.protocol \"5\"): CONNECT protocol level 5 with Clean Start, NBIRTH, "
           "NCMD rebirth received over the v5 subscription, NDEATH will with the session's bdSeq "
           "right after the connection dies (Will Delay 0)",
-          nb and attempt and v5 and rb and nb2 and will and bdseq_of(will[2]) == bdseq_of(nb2[2])
+          nb and attempt and v5 and rb and nb3 and will and bdseq_of(will[2]) == bdseq_of(nb3[2])
           and will[0] - killed < 5,
           f"NBIRTH {'yes' if nb else 'no'}; mosquitto: {v5.group(0) if v5 else 'no p5 connection'}; "
           f"rebirth {'yes' if rb else 'no'}; will "

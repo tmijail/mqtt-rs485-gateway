@@ -1168,9 +1168,24 @@ static int cmd_storm(int argc, char **argv)
     return 0;
 }
 
+/* Issue #164: the next Sparkplug publishes fail without a send, with the connection open. */
+static int cmd_pubfail(int argc, char **argv)
+{
+    char *end = NULL;
+    long n = argc == 2 ? strtol(argv[1], &end, 10) : -1;
+    if (end == NULL || *end != '\0' || n < 0 || n > 100) {
+        out("usage: pubfail <0-100>\n");
+        return 1;
+    }
+    gw_edge_sim_fail_publishes((unsigned)n);
+    out("the next %ld Sparkplug publish(es) fail without a send\n", n);
+    return 0;
+}
+
 ATOMIC(cmd_expander)
 ATOMIC(cmd_validation)
 ATOMIC(cmd_storm)
+ATOMIC(cmd_pubfail)
 ATOMIC(cmd_boot)
 #endif
 
@@ -1241,6 +1256,9 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
          "keeps its buffers for a while (issue #84)", .hint = "hold <ms>", .func = cmd_validation_atomic},
         {.command = "storm", .help = "Emulator only: the bus task (core 1) floods the console "
          "for a while (issue #111)", .hint = "<0-600000 ms>", .func = cmd_storm_atomic},
+        {.command = "pubfail", .help = "Emulator only: the next N publishes of the Sparkplug "
+         "engine fail without a send, with the connection open (issue #164)", .hint = "<0-100>",
+         .func = cmd_pubfail_atomic},
         {.command = "boot", .help = "Emulator only: press (1) or release (0) the BOOT button",
          .hint = "<0|1>", .func = cmd_boot_atomic},
         {.command = "panic", .help = "Emulator only: abort() (core dump test)", .func = cmd_panic},

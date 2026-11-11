@@ -14,6 +14,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "sdkconfig.h"
 #include "gw_config.h"
 #include "gw_node.h"
 
@@ -103,6 +104,12 @@ void gw_edge_notify_firmware(void);
 /** CFG-6: re-issue NBIRTH and every DBIRTH (as NCMD Node Control/Rebirth). False if no
  *  Sparkplug session is up. */
 bool gw_edge_request_rebirth(void);
+
+#if CONFIG_GW_IO_SIMULATED
+/** Issue #164, emulator only: the next @p n publishes of the Sparkplug engine (births, data)
+ *  return -1 without a send, while the connection stays open. */
+void gw_edge_sim_fail_publishes(unsigned n);
+#endif
 
 #ifdef __cplusplus
 }

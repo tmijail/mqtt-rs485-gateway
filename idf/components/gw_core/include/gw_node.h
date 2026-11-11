@@ -157,6 +157,7 @@ typedef struct {
     gw_node_info_t info;
 
     bool online;                       /* NBIRTH published on the current MQTT session */
+    bool birth_failed;                 /* issue #164: gw_node_take_birth_failure() */
     uint64_t bdseq;                    /* bdSeq of the current session (SPB-3) */
     uint8_t seq;                       /* next seq to send (SPB-5) */
     bool dev_born[GW_MAX_DEVICES];
@@ -259,8 +260,14 @@ size_t gw_node_flush_history(gw_node_t *n, size_t max_msgs);
 void gw_node_set_firmware_status(gw_node_t *n, const char *state, uint32_t progress);
 
 /** Re-publish NBIRTH and every DBIRTH with seq restarted (SPB-9). False if the NBIRTH could
- *  not be published (then no DBIRTH is sent). */
+ *  not be published: then no DBIRTH is sent, the node goes offline (gw_node_session_down) and
+ *  gw_node_take_birth_failure() reports it (issue #164). */
 bool gw_node_rebirth(gw_node_t *n);
+
+/** Issue #164: an NBIRTH could not be published (session up, NCMD or local rebirth) since the
+ *  last call. The node is offline; if the MQTT connection is still open, the caller must end
+ *  it, or the node stays connected with no Sparkplug session. Clears the flag. */
+bool gw_node_take_birth_failure(gw_node_t *n);
 
 /**
  * SPB-17: call periodically (monotonic ms). Every sparkplug.diagnostics_s it publishes an NDATA

@@ -570,7 +570,12 @@ bool gw_node_rebirth(gw_node_t *n)
 {
     n->seq = 0;
     if (!publish_nbirth(n)) {
-        return false;   /* no DBIRTH without the NBIRTH they belong to */
+        /* no DBIRTH without the NBIRTH they belong to. Issue #164: the session cannot go on
+         * either (the hosts would see the seq start again with no NBIRTH): the node is offline,
+         * and the caller ends the MQTT session (gw_node_take_birth_failure) */
+        gw_node_session_down(n);
+        n->birth_failed = true;
+        return false;
     }
     memset(n->dev_too_large, 0, sizeof(n->dev_too_large));   /* issue #76: try once more */
     for (uint16_t dev = 0; dev < n->cfg->device_count; dev++) {
@@ -594,6 +599,13 @@ bool gw_node_session_up(gw_node_t *n, uint64_t bdseq)
     }
     n->born_once = true;
     return true;
+}
+
+bool gw_node_take_birth_failure(gw_node_t *n)
+{
+    bool f = n->birth_failed;
+    n->birth_failed = false;
+    return f;
 }
 
 void gw_node_session_down(gw_node_t *n)

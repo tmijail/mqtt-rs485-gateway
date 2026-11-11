@@ -652,10 +652,29 @@ static int bounded_publish(const char *topic, const char *data, int len, int qos
 static bool s_in_births;        /* issue #71: start_births() is publishing */
 static unsigned s_birth_failures;
 
+#if CONFIG_GW_IO_SIMULATED
+static atomic_uint s_sim_pubfail;   /* issue #164: publishes still to fail on purpose */
+
+void gw_edge_sim_fail_publishes(unsigned n)
+{
+    atomic_store(&s_sim_pubfail, n);
+}
+#endif
+
 static int op_publish(void *ctx, const char *topic, const uint8_t *data, size_t len, int qos,
                       bool retain)
 {
     (void)ctx;
+#if CONFIG_GW_IO_SIMULATED
+    unsigned left = atomic_load(&s_sim_pubfail);
+    if (left > 0 && atomic_compare_exchange_strong(&s_sim_pubfail, &left, left - 1)) {
+        ESP_LOGW(TAG, "%s: publish failed on purpose, connection open (emulator only)", topic);
+        if (s_in_births) {
+            s_birth_failures++;
+        }
+        return -1;
+    }
+#endif
     int r = bounded_publish(topic, (const char *)data, (int)len, qos, retain);
     if (r == -1 && s_in_births) {   /* not PUBLISH_OVERSIZE: that one is not the connection */
         s_birth_failures++;
@@ -1084,6 +1103,38 @@ static void log_stacks(void)
              mqtt != NULL ? (unsigned)uxTaskGetStackHighWaterMark(mqtt) : 0u);
 }
 
+/*
+ * Issue #164: births that failed while the connection stays open. For the births (QoS 0, no
+ * retain, no MQTT 5 property) esp-mqtt 1.1.0 returns -1 only when the connection is closed or
+ * closing: a failed socket write closes it (esp_mqtt_abort_connection, DISCONNECTED event), and
+ * the publish budget (#59) shuts the socket down. The cases that keep the connection open (the
+ * MQTT 5 check of the QoS and retain flag, a full outbox, no memory for the outbox) apply only to
+ * QoS > 0 or retain. But gw_node also fails a message that it cannot encode, and another esp-mqtt
+ * version can differ: the node must not stay connected with no Sparkplug session. NDEATH when the
+ * hosts saw an NBIRTH with this bdSeq, then DISCONNECT: the DISCONNECTED event schedules a new
+ * attempt (backoff, a new CONNECT and bdSeq, every birth).
+ */
+static void end_failed_births(bool ndeath, const char *why)
+{
+    ESP_LOGW(TAG, "%s (bdSeq=%u) with the connection open: the session is not up", why, s_bdseq);
+    if (ndeath) {
+        publish_ndeath();
+    }
+    gw_node_session_down(s_node);
+    gw_status_set(GW_ST_MQTT_UP, false);
+    abort_session("births failed");
+}
+
+/* Issue #164: a rebirth (NCMD, console, SNTP) whose NBIRTH failed took the node offline; with the
+ * connection still open, the session ends here (the hosts saw the earlier NBIRTH). */
+static void check_rebirth(void)
+{
+    if (gw_node_take_birth_failure(s_node) && atomic_load(&s_mqtt_connected) &&
+        atomic_load(&s_disc_gen) == s_handled_disc) {
+        end_failed_births(true, "rebirth: NBIRTH not published");
+    }
+}
+
 /* The Sparkplug session starts: NBIRTH and DBIRTHs. */
 static void start_births(void)
 {
@@ -1108,22 +1159,31 @@ static void start_births(void)
     uint32_t oversize_before = s_oversize;
     bool born = gw_node_session_up(s_node, s_bdseq);
     s_in_births = false;
+    gw_node_take_birth_failure(s_node);   /* handled here */
     if (!born && s_oversize != oversize_before) {
         /* the NBIRTH itself is too large for this broker: no session can work here */
         abort_session("NBIRTH larger than the broker's Maximum Packet Size");
         return;
     }
+    bool open = atomic_load(&s_mqtt_connected) && atomic_load(&s_disc_gen) == s_handled_disc;
     if (!born) {
+        if (open) {
+            end_failed_births(false, "NBIRTH not published");
+            return;
+        }
         ESP_LOGW(TAG, "NBIRTH not published (bdSeq=%u): the connection dropped, the session is "
                       "not up",
                  s_bdseq);
         return;   /* the DISCONNECTED event schedules the retry */
     }
-    if (s_birth_failures > 0 || !atomic_load(&s_mqtt_connected) ||
-        atomic_load(&s_disc_gen) != s_handled_disc) {
-        /* the NBIRTH went out but the connection died under the DBIRTHs: hosts would see a
-         * node without its devices; the new session repeats every birth */
+    if (s_birth_failures > 0 || !open) {
+        /* the NBIRTH went out but a DBIRTH did not: hosts would see a node without its
+         * devices; the new session repeats every birth */
         gw_node_session_down(s_node);
+        if (open) {
+            end_failed_births(true, "births incomplete");
+            return;
+        }
         ESP_LOGW(TAG, "births incomplete (bdSeq=%u, %u publish(es) failed): the connection "
                       "dropped, the session is not up",
                  s_bdseq, s_birth_failures);
@@ -1533,6 +1593,7 @@ static void reconcile(void)
         ESP_LOGI(TAG, "rebirth requested from the console");
         gw_node_rebirth(s_node);
     }
+    check_rebirth();   /* issue #164 */
     /* online: DDATA/NDATA; offline with store & forward: the same changes into the store */
     if (s_node->online || s_node->sf != NULL) {
         unsigned dirty = atomic_exchange(&s_dev_dirty, 0);
@@ -1599,6 +1660,7 @@ static void edge_task(void *arg)
                 on_host_state(c->data, c->len);
             } else {
                 gw_node_handle_message(s_node, c->topic, c->topic_len, c->data, c->len);
+                check_rebirth();   /* issue #164: an NCMD Rebirth */
             }
             uint8_t slot = (uint8_t)ev.arg;
             xQueueSend(s_free_slots, &slot, 0);

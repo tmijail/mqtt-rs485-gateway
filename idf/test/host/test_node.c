@@ -1351,8 +1351,45 @@ static void test_session_up_needs_the_nbirth(void)
     gw_node_device_changed(&node, 0);   /* offline: nothing is attempted */
     TEST_ASSERT_EQUAL(0, g_rec.count);
     g_rec.publish_fails = false;
+    TEST_ASSERT_TRUE(gw_node_take_birth_failure(&node));   /* issue #164: reported once */
+    TEST_ASSERT_FALSE(gw_node_take_birth_failure(&node));
     TEST_ASSERT_TRUE(gw_node_session_up(&node, 4));
+    TEST_ASSERT_FALSE(gw_node_take_birth_failure(&node));
     TEST_ASSERT_EQUAL(2, g_rec.count);   /* NBIRTH and DBIRTH */
+    msg(0);
+    TEST_ASSERT_EQUAL_UINT64(0, dec.seq);
+}
+
+/* Issue #164: an NCMD Rebirth whose NBIRTH publish fails one time (the connection may stay open)
+ * ends the Sparkplug session: the node is offline, sends no DBIRTH and no DDATA, and reports the
+ * failure, so the caller ends the MQTT session. The next session sends every birth again. */
+static void test_failed_rebirth_ends_the_session(void)
+{
+    set_meter(true, 230.5, 12.3, 1);
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 3));
+    TEST_ASSERT_FALSE(gw_node_take_birth_failure(&node));
+    recorder_clear();
+    g_rec.publish_fails = true;
+    spb_metric_t m = {.name = "Node Control/Rebirth", .datatype = SPB_DT_BOOLEAN, .v.num = 1};
+    send("spBv1.0/Plant1/NCMD/GW01", &m, 1);
+    g_rec.publish_fails = false;
+    TEST_ASSERT_EQUAL(0, g_rec.count);   /* no DBIRTH without its NBIRTH */
+    TEST_ASSERT_FALSE(node.online);
+    TEST_ASSERT_FALSE(node.dev_born[0]);
+    TEST_ASSERT_TRUE(gw_node_take_birth_failure(&node));
+    set_meter(true, 231.5, 12.3, 1);
+    gw_node_device_changed(&node, 0);    /* offline: no DDATA */
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    /* a local rebirth (console, SNTP) that fails is reported the same way */
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 4));
+    recorder_clear();
+    g_rec.publish_fails = true;
+    TEST_ASSERT_FALSE(gw_node_rebirth(&node));
+    g_rec.publish_fails = false;
+    TEST_ASSERT_FALSE(node.online);
+    TEST_ASSERT_TRUE(gw_node_take_birth_failure(&node));
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 5));
+    TEST_ASSERT_EQUAL(2, g_rec.count);   /* NBIRTH and DBIRTH again */
     msg(0);
     TEST_ASSERT_EQUAL_UINT64(0, dec.seq);
 }
@@ -1705,6 +1742,7 @@ int main(void)
     RUN_TEST(test_history_kept_when_publish_fails);
     RUN_TEST(test_store_and_forward_mb6);
     RUN_TEST(test_session_up_needs_the_nbirth);
+    RUN_TEST(test_failed_rebirth_ends_the_session);
     RUN_TEST(test_dbirth_not_published_leaves_the_device_unborn);
     RUN_TEST(test_dbirth_too_large_not_retried_on_every_change);
     RUN_TEST(test_firmware_update_metrics);
