@@ -1316,7 +1316,7 @@ class Gateway:
                 and not ln.startswith("# harness:")][-3:]
         how = f"signal {-code}" if code < 0 else f"exit status {code}"
         core = self.core_file()
-        return (f"QEMU terminó ({how}, {self.log_path.name}); stderr: "
+        return (f"QEMU ended ({how}, {self.log_path.name}); stderr: "
                 f"{' | '.join(tail) if tail else 'no error message'}"
                 f"{f'; core dump {core}' if core else ''}")
 
@@ -1738,7 +1738,8 @@ def run_tls(args, work):
     t0 = time.monotonic()
     gw = boot_variant(args, work, "tlsmissing", node_config(node, port=p13, tls={
         "enabled": True, "ca_file": "missing.pem"}))
-    missing = gw.wait_log(r"mqtt\.tls\.ca_file: /cfg/missing\.pem: no existe .*MQTT not started", 30, t0)
+    missing = gw.wait_log(r"mqtt\.tls\.ca_file: /cfg/missing\.pem: not in the LittleFS partition"
+                          r".*MQTT not started", 30, t0)
     attempts = gw.find(r"connecting to .* as 'GW15'", t0)
     gw.kill()
     check("MQTT-4 a CA file missing from LittleFS is reported and no connection is attempted",
@@ -2549,8 +2550,8 @@ def check_card_web(gw, since, psram, auth):
     want_spill = (spill == {"state": "not_started", "detail": "it needs PSRAM, and none was detected"}
                   if not psram else spill.get("state") == "on" and "waiting" in spill)
     st_p, _, page = http("GET", "/", auth=auth)
-    ui = all(x.encode() in page for x in ("<h2>Tarjeta microSD</h2>", ">Formatear tarjeta<",
-                                          '"/api/card/format?confirm=1"', '"FORMATEAR"'))
+    ui = all(x.encode() in page for x in ("<h2>microSD card</h2>", ">Format the card<",
+                                          '"/api/card/format?confirm=1"', '"FORMAT"'))
     requested = gw.find(r"card format requested", since)
     check("Issue #139 POST /api/card/format: the same Basic auth and CSRF checks as every write "
           "(401, 403 before the password, 400 without ?confirm=1); in QEMU the clear refusal "
@@ -2558,7 +2559,7 @@ def check_card_web(gw, since, psram, auth):
           codes == {"no credentials": 401, "no X-Requested-With": 403, "other Origin": 403,
                     "no confirm": 400}
           and st == 501 and ans.get("reason") == "no_support" and ans.get("ok") is False
-          and "no tiene tarjeta microSD" in ans.get("error", "") and fmt == {"state": "idle"}
+          and "has no microSD card" in ans.get("error", "") and fmt == {"state": "idle"}
           and not requested,
           ", ".join(f"{k} -> {v}" for k, v in codes.items()) + f"; confirmed -> {st} {ans}; "
           f"card_format {fmt}; format requests in the log {len(requested)}")
@@ -4572,8 +4573,8 @@ def run_nvs_migration(args, work):
             gw.console("config load")
             gw.wait_log(r"^paste the JSON document", 10, asked)
             gw.sock.sendall((json.dumps(cfg, indent=2) + "\n").encode())
-            refused = gw.wait_log(r"^config: rejected: configuración no guardada: LittleFS no monta y "
-                                  r"puede tener la copia de una migración de NVS", 30, asked)
+            refused = gw.wait_log(r"^config: rejected: configuration not saved: LittleFS does not "
+                                  r"mount and can hold the copy of an NVS migration", 30, asked)
             formatted = gw.find(r"formatting it to save", asked)
             time.sleep(1)
             gw.kill()
@@ -6064,15 +6065,15 @@ def run_config_failsafe(args, work, slave):
     limit = sdkconfig_int(args.sdkconfig, "GW_CONFIG_MAX_BYTES")
     cases = [
         ("oversized", {"config.json": good + b" " * (limit + 1 - len(good))},
-         rf"config\.json: {limit + 1} bytes; el máximo es {limit}"),
-        ("unmountable", None, r"partición LittleFS 'storage' no montable"),
-        ("empty", {"config.json": b""}, r"config\.json: archivo vacío"),
+         rf"config\.json: {limit + 1} bytes; the maximum is {limit}"),
+        ("unmountable", None, r"LittleFS partition 'storage' not mountable"),
+        ("empty", {"config.json": b""}, r"config\.json: empty file"),
         # without the ',' that closes "network" (line 4), the parser stops at the '"' of
         # "ntp": line 5, column 3
         ("syntax-error", {"config.json": good.replace(b'"dhcp": true\n  },', b'"dhcp": true\n  }', 1)},
-         r"JSON mal formado en la línea 5, columna 3"),
+         r"JSON syntax error at line 5, column 3"),
         ("semantic-error", {"config.json": good.replace(b'"type": "float32"', b'"type": "float16"', 1)},
-         r"devices\[0\]\.tags\[0\]\.type: valor no válido"),
+         r"devices\[0\]\.tags\[0\]\.type: invalid value"),
     ]
     obs = Observer()
     for name, files, reason in cases:
@@ -7133,7 +7134,7 @@ def run_web(args, work):
     bad["devices"][0]["tags"][0]["type"] = "float16"   # invalid (float64 is a type since MB-6)
     asked = time.monotonic()
     paste(bad)
-    rej = gw.wait_log(r"^config: rejected: devices\[0\]\.tags\[0\]\.type: valor no válido", 15, asked)
+    rej = gw.wait_log(r"^config: rejected: devices\[0\]\.tags\[0\]\.type: invalid value", 15, asked)
     rpath = gw.wait_log(r"^config: path devices\[0\]\.tags\[0\]\.type$", 2, asked)
     good = json.loads(json.dumps(doc8))
     good["_save"] = False

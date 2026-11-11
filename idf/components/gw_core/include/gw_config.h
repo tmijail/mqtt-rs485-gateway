@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-/* Static limits (SPEC section 6, "Limites del MVP"). */
+/* Static limits (SPEC section 6, "MVP limits"). */
 #define GW_MAX_DEVICES          16
 #define GW_MAX_TAGS_PER_DEVICE  64
 #define GW_MAX_TAGS             256
@@ -325,7 +325,7 @@ typedef struct {
 } gw_config_t;
 
 typedef struct {
-    char msg[GW_CFG_ERR_SIZE];  /* "<json path>: <reason>" or "... línea L, columna C: ..." */
+    char msg[GW_CFG_ERR_SIZE];  /* "<json path>: <reason>" or "... line L, column C: ..." */
     char path[GW_CFG_PATH_SIZE]; /* JSON path of a semantic error ("devices[0].tags[1].type",
                                   * "$" for the root); "" for syntax and other errors */
     unsigned line, column;      /* 1-based position of a syntax error; 0 otherwise */
@@ -337,7 +337,7 @@ typedef struct {
  * Unknown and duplicated keys are rejected (catches typos and copy-paste
  * mistakes). Optional keys take the defaults of the SPEC example. On failure
  * @p err holds a descriptive message and @p cfg is left zeroed: syntax errors
- * give the line and column ("JSON mal formado en la línea 3, columna 15: ..."),
+ * give the line and column ("JSON syntax error at line 3, column 15: ..."),
  * semantic errors the JSON path of the offending value
  * ("devices[0].tags[2].type: ...").
  */

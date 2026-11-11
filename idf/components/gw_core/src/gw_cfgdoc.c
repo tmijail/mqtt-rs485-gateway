@@ -215,7 +215,7 @@ static char *print_doc(const cJSON *root, size_t *out_len)
 static bool no_memory(gw_cfg_err_t *err)
 {
     memset(err, 0, sizeof(*err));
-    strcpy(err->msg, "memoria insuficiente para procesar la configuración");
+    strcpy(err->msg, "not enough memory to process the configuration");
     return false;
 }
 
@@ -341,7 +341,7 @@ static char *export_locked(const char *json, size_t len, const gw_secrets_t *sto
         cJSON_Delete(root);
         memset(err, 0, sizeof(*err));
         strcpy(err->path, "$");
-        strcpy(err->msg, "$: se esperaba un objeto JSON");
+        strcpy(err->msg, "$: expected a JSON object");
         return NULL;
     }
     for (int i = 0; i < SECRET_COUNT; i++) {

@@ -187,7 +187,7 @@ static void halt_no_memory(void)
     /* issue #99: a new image on trial goes back to the previous one at once (no trial timer
      * runs yet, nothing else would ever judge it) */
     gw_fw_cannot_start("no memory for the configuration");
-    snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg), "sin memoria para la configuración (%u B)",
+    snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg), "no memory for the configuration (%u B)",
              (unsigned)sizeof(gw_config_t));
     gw_status_set(GW_ST_CFG_ERROR, true);
     start_shell(NULL, "RAM", false);
@@ -393,7 +393,7 @@ void app_main(void)
 #endif
     if (gw_storage_commissioning_pending()) {
         snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg),
-                 "sin configuración: puesta en marcha tras un reset de fábrica");
+                 "no configuration: commissioning after a factory reset");
         run_without_config(GW_WEB_COMMISSIONING, "commissioning (factory reset)");
     }
     if (!gw_storage_load_config(s_cfg, &s_cfg_err, &source)) {

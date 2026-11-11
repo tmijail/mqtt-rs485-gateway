@@ -392,8 +392,8 @@ The object form, with the optional spill to a microSD card:
 **The card.**
 
 - The card is only for the gateway. Do not put other files on it.
-- Format the card with the gateway before the first use. Use the web UI (the status page, "Tarjeta microSD", "Formatear tarjeta") or the shell command `card format confirm`. The format makes one MBR partition with FAT32 and clusters of 32 KB (FAT16 below 2 GB).
-- **The format deletes everything on the card**, also the samples that wait there. The gateway never formats a card by itself: the web UI asks you to type `FORMATEAR`, and the shell needs the word `confirm`.
+- Format the card with the gateway before the first use. Use the web UI (the status page, "microSD card", "Format the card") or the shell command `card format confirm`. The format makes one MBR partition with FAT32 and clusters of 32 KB (FAT16 below 2 GB).
+- **The format deletes everything on the card**, also the samples that wait there. The gateway never formats a card by itself: the web UI asks you to type `FORMAT`, and the shell needs the word `confirm`.
 - These cards do not mount: a card with no file system, an exFAT card, an NTFS or ext4 card, and a card with a GPT partition table. ESP-IDF v6.1 has no exFAT, and most cards of 64 GB or more come with exFAT. The gateway formats these cards too. The format does not need a mounted card, and it operates also when `sd.enabled` is `false`. The status page and `/api/status` (`card`) tell why a card does not mount.
 - The format needs the PSRAM, as the spill does. Without PSRAM, the gateway refuses the format and tells why.
 - The format runs in the background (it can take some minutes on a large card). The spill stops first, and the RAM buffer continues. After the format, restart the gateway to use the card.
