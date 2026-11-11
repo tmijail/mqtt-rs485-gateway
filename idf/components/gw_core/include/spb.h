@@ -129,6 +129,12 @@ typedef struct {
     uint64_t seq;
     const spb_metric_t *metrics;
     size_t metric_count;
+    /* #173: @c extra_count more metrics after metrics[], produced on demand by @c extra (called
+     * once per metric). @p name is scratch of SPB_NAME_MAX + 1 bytes for a metric name that the
+     * callback makes; it stays valid until the metric is encoded. No table, no allocation. */
+    size_t extra_count;
+    void (*extra)(const void *ctx, size_t i, spb_metric_t *out, char *name);
+    const void *extra_ctx;
 } spb_payload_t;
 
 /** Encode @p p into @p buf. Returns the encoded length, 0 on failure (buffer too small, or a

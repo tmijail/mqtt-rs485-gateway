@@ -15,7 +15,7 @@ A Sparkplug B topic has three names: `spBv1.0/<group_id>/<type>/<edge_node_id>/<
 - The specification gives no meaning to the names. It does not tell a host to make a location path from them.
 - Thus each host makes its own map from the Sparkplug names to its data model.
 
-The gateway uses the names as the configuration gives them. `sparkplug.group_id` is the group, `sparkplug.edge_node_id` is the node, and the `name` of each device is the `device_id`. The name of each tag is the metric name.
+The gateway uses the names as the configuration gives them. `sparkplug.group_id` is the group, `sparkplug.edge_node_id` is the node, and the `name` of each device is the `device_id`. With `sparkplug.device_prefix`, the `device_id` is `<device_prefix>:<name>`. The name of each tag is the metric name.
 
 ## The Parris Method
 
@@ -32,15 +32,18 @@ UMH uses a different convention. It calls it the "Modified Parris Method":
 - For node data (NBIRTH and NDATA), UMH uses the `edge_node_id` as the location.
 - UMH splits a metric name into a virtual path and a tag name. It splits at the last `:`. If there is no `:`, it splits at the last `/`, and then at the last `.`.
 
-Thus the gateway must put the full location in the device name. The same is true for the node: put the location of the gateway in the `edge_node_id`.
+Thus the full location must be in the `device_id`. The key `sparkplug.device_prefix` holds the levels that are the same for all devices of the gateway, and each device name holds the last levels. The same is true for the node: put the location of the gateway in the `edge_node_id`.
+
+UMH moves away from the fixed levels enterprise, site, area, line and work cell, and it permits a location path of free depth. Thus the prefix is a list of levels with no fixed count. The length of the full `device_id` is the only limit: the longest device topic must fit in 159 bytes.
 
 | Configuration | UMH topic | Result |
 |---|---|---|
-| Device `acme:berlin:packaging:line3:meter1`, node `acme:berlin:packaging:gw01` | `umh.v1.acme.berlin.packaging.line3.meter1._raw.Voltage` | Correct |
+| Prefix `acme:berlin:packaging:line3`, device `meter1`, node `acme:berlin:packaging:gw01` | `umh.v1.acme.berlin.packaging.line3.meter1._raw.Voltage` | Correct |
+| Device `acme:berlin:packaging:line3:meter1` with no prefix | `umh.v1.acme.berlin.packaging.line3.meter1._raw.Voltage` | Correct, but each device name must hold the full location, in 39 characters or less |
 | The default `Plant1` / `GW01` / `Meter1` | `umh.v1.Meter1._raw.Voltage` | The device becomes the enterprise. Two gateways with `Meter1` write to the same topic |
 | Group `Acme:Berlin:Packaging`, device `Meter1` | `umh.v1.Meter1._raw.Voltage` | The location in the group is lost |
 | Device `Acme: Berlin: Line 3: Meter 1` | The location is `Acme` only. `_Berlin` becomes the data contract | Wrong, and UMH gives no error |
-| Device with `type` (a template) | No topic | The device is not visible |
+| Device with `type` (a template) | No topic. With the UMH preset: a topic for each tag | The device is not visible without the preset |
 
 The embedded default configuration of the gateway stays neutral for all hosts. The UMH example is in the how-to.
 
@@ -55,7 +58,7 @@ UMH changes each name before it makes the topic:
 
 The changes give no error. A name with a space or a `_` at the start of a level puts the data at a wrong place, with no warning. The metadata `spb_original_device_id` and `spb_original_metric_name` keep the names before the change.
 
-The gateway accepts these names, because Sparkplug permits them. Other hosts can need them. A UMH preset that rejects such names is planned (#169).
+The gateway accepts these names, because Sparkplug permits them. Other hosts can need them. But the validation gives a warning for each name that UMH changes (#169), and the UMH preset (`sparkplug.naming: "umh"`) refuses such names. The preset is an option that the user selects: it only adds checks, and it obeys the Sparkplug specification.
 
 ## The effect of `include_edge_node_in_location`
 
@@ -64,7 +67,7 @@ This option of the `sparkplug_b` input puts the `edge_node_id` before the `devic
 - Use `false` (the default) when the device name holds the full location. With `true`, UMH puts the node name before the location a second time.
 - Use `true` for a producer that uses `group_id`, `edge_node_id` and `device_id` as real levels, with short device names. Then devices with the same name on different nodes do not write to the same topic.
 
-The how-to uses `false`, because it puts the full location in the device name. With short device names, the key `sparkplug.device_prefix` (#172, planned) will put a common location before each name.
+The how-to uses `false`, because the `device_prefix` and the device name give the full location.
 
 ## What UMH drops, and why the gateway keeps it
 
@@ -82,9 +85,15 @@ The gateway keeps these items, because they are correct Sparkplug B 3.0 and othe
 - A device with `type` is a template instance (SPB-18).
 - A tag of the type `bytes` is a Bytes metric (SPB-19).
 - Each tag has the properties `engUnit`, `engLow`, `engHigh` and `Quality` (SPB-16).
-- A failed read gives a null value with the Quality BAD. UMH drops the null value and keeps the last good value. Thus UMH does not show that the value is old.
+- A failed read gives a null value with the Quality BAD. UMH drops the null value and keeps the last good value. Thus UMH does not show that the value is old. With the UMH preset, the node metric `Devices/<name>/Online` tells UMH when a device goes offline (#173).
 
-The gateway must obey the Sparkplug specification fully. It does not change its default behaviour for one host. The UMH preset (#169, planned) will add plain metrics that UMH can read, and keep the Sparkplug rules.
+The gateway must obey the Sparkplug specification fully. It does not change its default behaviour for one host. The UMH preset (`sparkplug.naming: "umh"`, #169) adds plain metrics that UMH can read, and keeps the Sparkplug rules:
+
+- A typed device publishes its tags as plain metrics, and the NBIRTH has no template definitions (#174). A definition is necessary only for a template instance, so this obeys the specification.
+- The Modbus counters go out as plain node metrics, the sums of all devices (#174).
+- Each device has the node metric `Devices/<name>/Online` (#173).
+
+The preset changes nothing that the specification requires. It only selects one of the choices that the specification permits. Thus it is a host option, not a compatibility profile that deviates from the specification.
 
 ## No primary host: data can be lost
 

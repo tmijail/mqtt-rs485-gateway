@@ -434,6 +434,19 @@ static bool fill_metric(Payload_Metric *out, const spb_metric_t *m)
     return true;
 }
 
+/* #173: one metric of spb_payload_t.extra; its scratch stays off the frame of enc_metrics. */
+static __attribute__((noinline)) bool enc_extra(pb_ostream_t *stream, const pb_field_iter_t *field,
+                                                const spb_payload_t *p, size_t i)
+{
+    spb_metric_t mm;
+    char name[SPB_NAME_MAX + 1] = "";
+    memset(&mm, 0, sizeof(mm));
+    p->extra(p->extra_ctx, i, &mm, name);
+    Payload_Metric m;
+    return fill_metric(&m, &mm) && pb_encode_tag_for_field(stream, field) &&
+           pb_encode_submessage(stream, Payload_Metric_fields, &m);
+}
+
 static bool enc_metrics(pb_ostream_t *stream, const pb_field_iter_t *field, void *const *arg)
 {
     const spb_payload_t *p = *arg;
@@ -441,6 +454,11 @@ static bool enc_metrics(pb_ostream_t *stream, const pb_field_iter_t *field, void
     for (size_t i = 0; i < p->metric_count; i++) {
         if (!fill_metric(&m, &p->metrics[i]) || !pb_encode_tag_for_field(stream, field) ||
             !pb_encode_submessage(stream, Payload_Metric_fields, &m)) {
+            return false;
+        }
+    }
+    for (size_t i = 0; p->extra != NULL && i < p->extra_count; i++) {
+        if (!enc_extra(stream, field, p, i)) {
             return false;
         }
     }

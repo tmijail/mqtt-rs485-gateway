@@ -238,6 +238,7 @@ Encuesta N esclavos Modbus RTU por el RS485 integrado, con los tipos de 16 y 32 
 - Names (issue #162). `group_id`, `edge_node_id`, `primary_host_id`, the device `name` and `type`, the tag `name` and `units` must be valid UTF-8. The Sparkplug IDs must not contain the control characters U+0080–U+009F.
 - Two device names must not differ only in case (`tck-id-case-sensitivity-sparkplug-ids`). Two device types and two tag names of one device must not differ only in case (`tck-id-case-sensitivity-metric-names`). The comparison folds ASCII letters only.
 - A tag name must not also be a folder of another tag name of the same device (`A` and `A/B`). A device `type` must not be the name or the first folder of a node metric (`bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info`, `Firmware Update`).
+- With `sparkplug.device_prefix` (§6.1, #172), the `device_id` of a device is `<device_prefix>:<name>`. The longest device topic (`spBv1.0/<group_id>/DBIRTH/<edge_node_id>/<device_id>`) must fit in 159 bytes.
 
 **Límites del MVP:** hasta 16 dispositivos, 64 tags por dispositivo y 256 tags en total.
 
@@ -618,6 +619,40 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 - **Botón BOOT:** 1 pitido al soltarlo entre 2 y 10 s (punto de acceso, NET-5) y 2 pitidos al confirmar el reset de fábrica (CFG-5), haya alarmas o no.
 - No hay forma de silenciar una alarma mientras dura su condición.
 
+**Device prefix (#172), in `sparkplug`.**
+
+```json
+"sparkplug": { "group_id": "acme", "edge_node_id": "acme:berlin:packaging:gw01",
+               "device_prefix": "acme:berlin:packaging:line3" }
+```
+
+| Key | Type | Default | Rule |
+|---|---|---|---|
+| `device_prefix` | text | `""` | 0–96 bytes. Location levels with `:` between them. No empty level: no `:` at the start or the end, and no `::`. The characters of a Sparkplug ID (UTF-8, no `/ + #`, no control characters). No limit on the number of levels, other than the length |
+
+- The `device_id` of each device is `<device_prefix>:<name>`. Without the key, it is the name. The DBIRTH, DDATA, DDEATH and DCMD topics use the `device_id`.
+- The longest device topic (`spBv1.0/<group_id>/DBIRTH/<edge_node_id>/<device_id>`) must fit in 159 bytes. With a `group_id` and an `edge_node_id` of 32 bytes, the `device_id` can have 78 bytes.
+- The metric names do not get the prefix.
+
+**Name checks for UNS hosts and the UMH preset (#169), in `sparkplug`.**
+
+```json
+"sparkplug": { "group_id": "acme", "edge_node_id": "acme:berlin:packaging:gw01",
+               "device_prefix": "acme:berlin:packaging:line3", "naming": "umh" }
+```
+
+| Key | Type | Default | Rule |
+|---|---|---|---|
+| `naming` | text | `"sparkplug"` | `"sparkplug"` or `"umh"`. `"umh"` turns on the UMH preset |
+
+The validation finds the names that UMH Core and other UNS hosts change with no error. Sparkplug permits these names, thus they are warnings. The dry run, the shell `config check`, the boot log and the web UI show them, each with its JSON path.
+
+- **Name rules.** The gateway splits `edge_node_id`, `device_prefix` and each device `name` at `:`. Each level must match `[A-Za-z0-9][A-Za-z0-9_-]*`. The gateway splits each tag `name` at `/`. Each segment must match `[A-Za-z0-9][A-Za-z0-9._-]*`. The warning tells the problem: an empty level, a space, a character that is not ASCII, `_` at the start, `.` in a level, `:` in a tag name, or another character.
+- **Other warnings.** A `primary_host_id` that is not empty (UMH publishes a Sparkplug 2.x STATE, #177), a device `type` (UMH gives no value for a template instance) and a tag of the type `bytes` (UMH gives no value for Bytes).
+- **The UMH preset (`"naming": "umh"`).** The name rules become errors: the validation refuses the configuration, with the JSON path of the first name. The other warnings stay warnings. The default `"sparkplug"` changes nothing for other hosts. Each item of the preset obeys Sparkplug B 3.0.0. The preset also does these items:
+  - **Device state (#173).** The NBIRTH has one Boolean metric for each device, `Devices/<name>/Online`, with alias 80 + the index of the device. Each `:` of the name becomes `/`, because UMH splits a metric name at its last `:` first. An NDATA gives each change: `true` when the device comes online (before its DBIRTH), `false` when it goes offline (before its DDEATH). UMH drops null values, the Quality property and the DDEATH, so this metric tells UMH that the last values are old. The preset refuses a device name that continues another device name with the level `Online` (`a` and `a:Online`): the metric of one device would also be a folder.
+  - **Plain metrics (#174).** A device with `type` publishes one plain metric for each tag in its DBIRTH and DDATA, with the tag aliases, and not a template instance. The NBIRTH has no template definitions. The DataSets `Node Info/Modbus` and `Node Info/Modbus TCP` are not published. In their place, the NBIRTH and the diagnostic NDATA have UInt64 node metrics with the sums of all devices: `Node Info/Modbus/Cycles`, `Failed Cycles`, `OK`, `Timeout`, `CRC`, `Frame`, `Exception` (aliases 60–66, with one or more devices) and `Node Info/Modbus TCP/OK`, `Timeout`, `CRC`, `Frame`, `Exception` (aliases 70–74, with `modbus_tcp.enabled`; the units without a device are included). The state of each device is `Devices/<name>/Online`. A DCMD to a typed device can use the alias of a tag.
+
 **Node diagnostics (SPB-17, MB-13), in `sparkplug`.**
 
 ```json
@@ -693,7 +728,7 @@ The gateway does not read all of the body of a request without credentials or fr
 | Method and route | What it does |
 |---|---|
 | `GET /api/config` | Exports the saved configuration, with the secrets masked. `?download=1` sends it as a file |
-| `PUT /api/config` (or `POST`) | Imports: validates, saves atomically (a temporary file and `rename`) and restarts in order (NDEATH). `?dry_run=1` only validates. Error: `400 {"ok":false,"error":"…","path":"devices[0].tags[1].type","line":0,"column":0}`; `413` above `CONFIG_GW_CONFIG_MAX_BYTES` |
+| `PUT /api/config` (or `POST`) | Imports: validates, saves atomically (a temporary file and `rename`) and restarts in order (NDEATH). `?dry_run=1` only validates. Success: `200 {"ok":true,"saved":false,"warnings":[{"path":"devices[0].name","message":"…"}],"warning_count":1}` (with a save: `"saved":true,"restart":true`). The warnings are the name checks of #169; the answer has the first 50, and `warning_count` gives all of them. Error: `400 {"ok":false,"error":"…","path":"devices[0].tags[1].type","line":0,"column":0}`; `413` above `CONFIG_GW_CONFIG_MAX_BYTES` |
 | `POST /api/restart` | Restarts in order |
 | `POST /api/rebirth` | Issue #171: sends the NBIRTH and all the DBIRTH messages again, with the same bdSeq, as an NCMD `Node Control/Rebirth` does. Use it when a host shows the tags as `alias_<n>` after its own restart. `202 {"ok":true,"rebirth":true}`. `409` when there is no Sparkplug session (not connected, recovery, commissioning) |
 | `POST /api/modbus/read` | Issue #182: one Modbus read for commissioning, through the task that owns the bus (MB-16), as the shell `mbread` does. Body: `{"unit": 1-247, "area": "coil"\|"discrete"\|"holding"\|"input", "address": 0-65535}`, optional `"count"` (1–16, default 1 or the size of the type), `"type"` (a tag type; `bool` only for `coil`/`discrete`; `string` and `bytes` take `count` registers) and `"word_order"` (only with `type`). `200 {"ok":true,"unit":1,"area":"input","address":0,"count":2,"values":[17254,32768],"type":"float32","word_order":"ABCD","value":230.5}`. A Modbus error: `504` (`"result":"timeout"`) or `502` (`crc`, `frame`, or `exception` with `"exception"`: the code), with `error`. `503` when the bus does not run the read in time or another test read waits. `400` for a request that is not correct. `409` in recovery and in commissioning (the bus does not run). Read only |

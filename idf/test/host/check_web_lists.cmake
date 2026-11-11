@@ -12,7 +12,8 @@ function(quoted_items text out)
 endfunction()
 
 set(failed "")
-foreach(pair "PAR;k_parity_names" "AREA;k_area_names" "TYPE;k_type_names" "WO;k_word_names")
+foreach(pair "PAR;k_parity_names" "AREA;k_area_names" "TYPE;k_type_names" "WO;k_word_names"
+             "NAMING;k_naming_names")
     list(GET pair 0 js)
     list(GET pair 1 c)
     string(REGEX MATCH "${c}\\[\\] = {([^}]*)}" m "${c_text}")

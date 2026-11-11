@@ -537,6 +537,50 @@ static char *read_body(httpd_req_t *req, size_t *len, const char **status)
     return buf;
 }
 
+/* #169: the warnings of an accepted document go into the answer as they come: the answer starts
+ * at the first one (status 200, chunked), so nothing holds them in RAM. At most WEB_LINT_MAX;
+ * "warning_count" gives all of them. */
+#define WEB_LINT_MAX 50
+
+typedef struct {
+    httpd_req_t *req;
+    bool dry_run;
+    bool started;
+    unsigned sent;
+    esp_err_t err;
+} lint_out_t;
+
+static void lint_head(lint_out_t *o)
+{
+    httpd_resp_set_status(o->req, "200 OK");
+    httpd_resp_set_type(o->req, "application/json");
+    httpd_resp_set_hdr(o->req, "Cache-Control", "no-store");
+    o->err = httpd_resp_sendstr_chunk(o->req, o->dry_run
+                                                  ? "{\"ok\":true,\"saved\":false,\"warnings\":["
+                                                  : "{\"ok\":true,\"saved\":true,\"restart\":true,"
+                                                    "\"warnings\":[");
+    o->started = true;
+}
+
+static bool lint_send(void *ctx, gw_lint_level_t level, const char *path, const char *msg)
+{
+    lint_out_t *o = ctx;
+    (void)level;   /* a GW_LINT_ERROR never gets here: the validation refused it */
+    if (!o->started) {
+        lint_head(o);
+    }
+    char line[2 * GW_CFG_PATH_SIZE + 2 * GW_CFG_ERR_SIZE + 32];
+    int n = snprintf(line, sizeof(line), "%s{\"path\":\"", o->sent > 0 ? "," : "");
+    n += (int)json_escape(line + n, sizeof(line) - (size_t)n, path);
+    n += snprintf(line + n, sizeof(line) - (size_t)n, "\",\"message\":\"");
+    n += (int)json_escape(line + n, sizeof(line) - (size_t)n, msg);
+    snprintf(line + n, sizeof(line) - (size_t)n, "\"}");
+    if (o->err == ESP_OK) {
+        o->err = httpd_resp_sendstr_chunk(o->req, line);
+    }
+    return ++o->sent < WEB_LINT_MAX && o->err == ESP_OK;
+}
+
 static esp_err_t config_put(httpd_req_t *req)
 {
     if (!same_origin(req) || !authorized(req)) {
@@ -556,7 +600,10 @@ static esp_err_t config_put(httpd_req_t *req)
      * NVS migration copy (README 6.2.1): formats LittleFS, the copy is lost */
     bool discard = query_flag(req, "discard_nvs_copy");
     gw_cfg_err_t err;
-    esp_err_t r = gw_storage_save_config_ex(body, len, dry_run, discard, &err);
+    lint_out_t lo = {.req = req, .dry_run = dry_run};
+    size_t warnings = 0;
+    esp_err_t r = gw_storage_save_config_lint(body, len, dry_run, discard, &err, lint_send, &lo,
+                                              &warnings);
     memset(body, 0, len);   /* may hold secrets in clear */
     heap_caps_free(body);
     switch (r) {
@@ -572,11 +619,21 @@ static esp_err_t config_put(httpd_req_t *req)
     default:
         return send_error(req, "500 Internal Server Error", &err, NULL);
     }
+    if (!lo.started) {
+        lint_head(&lo);
+    }
+    char tail[48];
+    snprintf(tail, sizeof(tail), "],\"warning_count\":%u}\n", (unsigned)warnings);
+    if (lo.err == ESP_OK) {
+        lo.err = httpd_resp_sendstr_chunk(req, tail);
+    }
+    if (lo.err == ESP_OK) {
+        lo.err = httpd_resp_send_chunk(req, NULL, 0);
+    }
     if (dry_run) {
-        return send_json(req, "200 OK", "{\"ok\":true,\"saved\":false}\n");
+        return lo.err;
     }
     ESP_LOGW(TAG, "new configuration saved through the REST API: restarting");
-    send_json(req, "200 OK", "{\"ok\":true,\"saved\":true,\"restart\":true}\n");
     s_ctx.restart();
     return ESP_OK;
 }

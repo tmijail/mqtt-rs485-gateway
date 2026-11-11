@@ -24,11 +24,17 @@
  *   requests forwarded to its unit, plus one row for units without a device; only with
  *   modbus_tcp.enabled), 57 Node Info/Core Dump (issue #132, Boolean: a core dump is in
  *   flash).
+ *   60..66 and 70..74 #174 (UMH preset only, in place of the DataSets 54 and 56): Node
+ *   Info/Modbus/<counter> (Cycles, Failed Cycles, OK, Timeout, CRC, Frame, Exception) and Node
+ *   Info/Modbus TCP/<counter> (OK, Timeout, CRC, Frame, Exception), UInt64 sums of all devices.
+ *   80..95 #173 (UMH preset only): Devices/<name>/Online (Boolean) of device 0..15, with each
+ *   ':' of the name as '/'.
  *
  * SPB-18 device types: a device with a `type` is published as one Template instance metric
  * (named after the type, alias 100 + its first tag) whose members are its tags, by name; the
  * NBIRTH carries one Template definition per type (no alias). DDATA carries the instance with
- * the changed members only. Devices without a type keep one metric per tag.
+ * the changed members only. Devices without a type keep one metric per tag. #174: with the UMH
+ * preset, a typed device also has one metric per tag, and the NBIRTH has no definitions.
  *
  * Store & forward (SPB-14, optional): with a gw_sf_t attached, changes that happen while the
  * node is not online (no session, or the primary host offline) are evaluated with the same
@@ -81,13 +87,23 @@ extern "C" {
 #define GW_ALIAS_TIME_SYNCED 55u  /* TIME-3 */
 #define GW_ALIAS_MODBUS_TCP 56u   /* issue #81 */
 #define GW_ALIAS_CORE_DUMP 57u    /* issue #132 */
+#define GW_ALIAS_MB_FLAT_BASE 60u /* #174: + counter, UMH preset only */
+#define GW_ALIAS_TCP_FLAT_BASE 70u
+#define GW_MB_FLAT_COUNT 7
+#define GW_TCP_FLAT_COUNT 5
+#define GW_ALIAS_ONLINE_BASE 80u  /* #173: + device index, UMH preset only */
 
 #define GW_NODE_IO_COUNT        8
 #define GW_NODE_DIAG_METRICS    6   /* SPB-17, at most (RSSI only with Wi-Fi, Modbus with devices,
                                      * Modbus TCP with the gateway enabled) */
+/* #174: with the UMH preset: Uptime, Free Heap, Min Free Heap, RSSI and the plain counters */
+#define GW_NODE_UMH_DIAG_METRICS (4 + GW_MB_FLAT_COUNT + GW_TCP_FLAT_COUNT)
 /* Node metrics of the NBIRTH, without template definitions (3 of them FW-1; the last 2: Time
- * Synced and Core Dump) */
+ * Synced and Core Dump) and without the UMH preset (it has no definitions, and its
+ * Devices/<name>/Online come from spb_payload_t.extra) */
 #define GW_NODE_BIRTH_METRICS   (10 + 3 * GW_NODE_IO_COUNT + GW_NODE_DIAG_METRICS + 2)
+/* #174: the same with the UMH preset, without its Devices/<name>/Online */
+#define GW_NODE_UMH_BIRTH_METRICS (10 + 3 * GW_NODE_IO_COUNT + GW_NODE_UMH_DIAG_METRICS + 2)
 /* Scratch metrics: a whole device (+1 template instance), or the NBIRTH with one template
  * definition per device type. */
 #define GW_NODE_METRICS_MAX \
@@ -101,7 +117,7 @@ extern "C" {
                                          * every SPB-16 property, about 10 KB, test_spb) and
                                          * NBIRTH (64 template tags and the SPB-17 DataSet of 16
                                          * devices, about 12 KB, test_node) */
-#define GW_TOPIC_MAX            160
+#define GW_TOPIC_MAX            GW_TOPIC_SIZE   /* gw_config.h: the validation uses it */
 #define GW_NODE_HIST_RECS       (2 * GW_MAX_TAGS_PER_DEVICE)   /* records per historical message */
 
 /** ops.publish result: the broker cannot take a message this large in the current session
@@ -189,6 +205,7 @@ typedef struct {
     spb_dataset_t mb_ds;
     spb_dataset_t mbtcp_ds;
     bool do_unknown_reported;          /* DOs last published as null (expander not answering) */
+    uint32_t online_reported;          /* #173: bit d: Devices/<d>/Online last published true */
     char fw_state[GW_NODE_FW_STATE_MAX];   /* FW-1: "Firmware Update/State" */
     uint32_t fw_progress;                  /* FW-1: "Firmware Update/Progress" (%) */
 
@@ -230,7 +247,9 @@ void gw_node_init(gw_node_t *n, const gw_config_t *cfg, const gw_node_ops_t *ops
  */
 void gw_node_set_buffer(gw_node_t *n, uint8_t *buf, size_t cap);
 
-/** Build "spBv1.0/<group>/<type>/<edge>[/<device>]" for this node. */
+/** Build "spBv1.0/<group>/<type>/<edge>[/<device>]" for this node. @p device is used as it is
+ *  (the MQTT wildcard "+" for the DCMD subscription); the engine adds sparkplug.device_prefix
+ *  (#172) to the topics of its own device messages. */
 bool gw_node_topic(const gw_node_t *n, const char *type, const char *device, char *out, size_t cap);
 
 /**

@@ -58,6 +58,21 @@ static const uint32_t k_mb_types[] = {SPB_DT_STRING, SPB_DT_BOOLEAN, SPB_DT_UINT
                                       SPB_DT_UINT32, SPB_DT_UINT32,  SPB_DT_UINT32,
                                       SPB_DT_UINT32, SPB_DT_UINT32,  SPB_DT_UINT32};
 
+/* #174: with the UMH preset (UMH Core gives no value for a DataSet), the counters of the two
+ * tables as plain UInt64 node metrics: the sums of all devices (and, for Modbus TCP, of the
+ * units without a device). The state of each device is Devices/<name>/Online (#173). Sums, not
+ * one metric per device and counter: 16 devices x 12 counters would not fit the NBIRTH in the
+ * payload buffer without PSRAM. */
+static const char *const k_mb_flat[GW_MB_FLAT_COUNT] = {
+    "Node Info/Modbus/Cycles", "Node Info/Modbus/Failed Cycles", "Node Info/Modbus/OK",
+    "Node Info/Modbus/Timeout", "Node Info/Modbus/CRC", "Node Info/Modbus/Frame",
+    "Node Info/Modbus/Exception"};
+static const char *const k_tcp_flat[GW_TCP_FLAT_COUNT] = {
+    "Node Info/Modbus TCP/OK", "Node Info/Modbus TCP/Timeout", "Node Info/Modbus TCP/CRC",
+    "Node Info/Modbus TCP/Frame", "Node Info/Modbus TCP/Exception"};
+_Static_assert(GW_NODE_UMH_BIRTH_METRICS <= GW_NODE_METRICS_MAX,
+               "the NBIRTH of the UMH preset (no template definitions) fits n->metrics");
+
 /* ---------- helpers ---------- */
 
 void gw_node_init(gw_node_t *n, const gw_config_t *cfg, const gw_node_ops_t *ops,
@@ -82,6 +97,45 @@ bool gw_node_topic(const gw_node_t *n, const char *type, const char *device, cha
                      device);
 }
 
+/* #172: the topic of a device carries its device_id "<sparkplug.device_prefix>:<name>"; the
+ * validation makes sure that the longest one fits GW_TOPIC_MAX. */
+static bool message_topic(const gw_node_t *n, const char *type, const char *device, char *out,
+                          size_t cap)
+{
+    const char *prefix = n->cfg->sparkplug.device_prefix;
+    if (device == NULL || prefix[0] == '\0') {
+        return gw_node_topic(n, type, device, out, cap);
+    }
+    int r = snprintf(out, cap, "spBv1.0/%s/%s/%s/%s:%s", n->cfg->sparkplug.group_id, type,
+                     n->cfg->sparkplug.edge_node_id, prefix, device);
+    return r > 0 && (size_t)r < cap;
+}
+
+/* #169: the UMH preset (sparkplug.naming "umh"). Declared before typed(). */
+static bool umh(const gw_node_t *n)
+{
+    return n->cfg->sparkplug.naming == GW_NAMING_UMH;
+}
+
+/* #173: "Devices/<name>/Online" of device @p i, each ':' of the name as '/' (UMH Core splits a
+ * metric name at its last ':' first). The value comes from the snapshot online_reported. */
+static void online_metric(const void *ctx, size_t i, spb_metric_t *out, char *name)
+{
+    const gw_node_t *n = ctx;
+    /* at most 8 + 39 + 7 = 54 characters: it fits SPB_NAME_MAX */
+    int len = snprintf(name, SPB_NAME_MAX + 1, "Devices/%s/Online", n->cfg->devices[i].name);
+    for (int k = 8; k < len && k < SPB_NAME_MAX; k++) {
+        if (name[k] == ':') {
+            name[k] = '/';
+        }
+    }
+    out->name = name;
+    out->alias = GW_ALIAS_ONLINE_BASE + i;
+    out->datatype = SPB_DT_BOOLEAN;
+    out->timestamp = gw_port_time_ms();
+    out->v.num = (n->online_reported >> i) & 1u;
+}
+
 /* tck-id-payloads-metric-datatype-req: every metric of NBIRTH and DBIRTH has its datatype;
  * tck-id-payloads-metric-datatype-not-req: the metrics of NDATA and DDATA, template members
  * included, do not (#159). The host knows each datatype from the birth. */
@@ -97,9 +151,10 @@ static void omit_datatypes(spb_metric_t *m, size_t count, const char *type)
  * payload buffer, #158) or -1 (any other failure).
  * tck-id-payloads-sequence-num-incrementing: only a message that went out uses a seq number.
  * One that was not sent (any failure) leaves its seq to the next message, or hosts would see a
- * gap in a session that lost nothing (SPB-5, #158). */
-static int publish_rc(gw_node_t *n, const char *type, const char *device, size_t metric_count,
-                      int qos)
+ * gap in a session that lost nothing (SPB-5, #158).
+ * @p online: the NBIRTH of the UMH preset also carries Devices/<name>/Online (#173). */
+static int publish_rc_ex(gw_node_t *n, const char *type, const char *device, size_t metric_count,
+                         int qos, bool online)
 {
     spb_payload_t p = {
         .timestamp = gw_port_time_ms(),
@@ -107,6 +162,9 @@ static int publish_rc(gw_node_t *n, const char *type, const char *device, size_t
         .seq = n->seq,
         .metrics = n->metrics,
         .metric_count = metric_count,
+        .extra_count = online ? n->cfg->device_count : 0,
+        .extra = online_metric,
+        .extra_ctx = n,
     };
     if (n->buf == NULL) {
         return -1;
@@ -118,7 +176,7 @@ static int publish_rc(gw_node_t *n, const char *type, const char *device, size_t
                 device ? " " : "", device ? device : "", (unsigned)n->buf_cap);
         return GW_NODE_PUBLISH_TOO_LARGE;
     }
-    if (!gw_node_topic(n, type, device, n->topic, sizeof(n->topic))) {
+    if (!message_topic(n, type, device, n->topic, sizeof(n->topic))) {
         GW_LOGE(TAG, "%s%s%s: topic too long", type, device ? " " : "", device ? device : "");
         return -1;
     }
@@ -131,9 +189,15 @@ static int publish_rc(gw_node_t *n, const char *type, const char *device, size_t
         return r;
     }
     n->seq++;   /* uint8_t wraps 255 -> 0 (SPB-5) */
-    GW_LOGD(TAG, "%s seq=%" PRIu64 " metrics=%u bytes=%u", n->topic, p.seq, (unsigned)metric_count,
-            (unsigned)len);
+    GW_LOGD(TAG, "%s seq=%" PRIu64 " metrics=%u bytes=%u", n->topic, p.seq,
+            (unsigned)(metric_count + p.extra_count), (unsigned)len);
     return 0;
+}
+
+static int publish_rc(gw_node_t *n, const char *type, const char *device, size_t metric_count,
+                      int qos)
+{
+    return publish_rc_ex(n, type, device, metric_count, qos, false);
 }
 
 static bool publish(gw_node_t *n, const char *type, const char *device, size_t metric_count,
@@ -190,10 +254,14 @@ static void set_quality(spb_metric_t *m, bool good)
     m->props.quality = good ? SPB_QUALITY_GOOD : SPB_QUALITY_BAD;
 }
 
-/* SPB-18: the device is published as a template instance. */
+static bool umh(const gw_node_t *n);
+
+/* SPB-18: the device is published as a template instance. #174: not with the UMH preset, which
+ * publishes the tags of a typed device as plain metrics (UMH Core gives no value for a
+ * Template). */
 static bool typed(const gw_node_t *n, uint16_t dev)
 {
-    return n->cfg->devices[dev].type[0] != '\0';
+    return n->cfg->devices[dev].type[0] != '\0' && !umh(n);
 }
 
 /* @p v must stay valid until the metric is published (strings are referenced, not copied).
@@ -376,6 +444,37 @@ static size_t diag_metrics(gw_node_t *n, size_t i, uint64_t now, bool birth, boo
         m->v.num = dg.rssi;
         m->is_null = !dg.rssi_valid;
     }
+    if (modbus && umh(n)) {   /* #174: sums as plain metrics, from the snapshot (mb_snapshot) */
+        uint64_t mb[GW_MB_FLAT_COUNT] = {0}, tcp[GW_TCP_FLAT_COUNT] = {0};
+        for (uint16_t d = 0; d <= n->cfg->device_count; d++) {
+            const mb_stats_t *t = d < n->cfg->device_count ? &n->diag_stats[d].tcp
+                                                           : &n->diag_tcp_other;
+            const uint32_t tv[GW_TCP_FLAT_COUNT] = {t->ok, t->timeout, t->crc, t->frame,
+                                                    t->exception};
+            for (size_t c = 0; c < GW_TCP_FLAT_COUNT; c++) {
+                tcp[c] += tv[c];
+            }
+            if (d == n->cfg->device_count) {
+                break;
+            }
+            const gw_dev_stats_t *st = &n->diag_stats[d];
+            const uint32_t mv[GW_MB_FLAT_COUNT] = {st->cycles,      st->failed_cycles, st->bus.ok,
+                                                   st->bus.timeout, st->bus.crc,
+                                                   st->bus.frame,   st->bus.exception};
+            for (size_t c = 0; c < GW_MB_FLAT_COUNT; c++) {
+                mb[c] += mv[c];
+            }
+        }
+        for (size_t c = 0; n->cfg->device_count > 0 && c < GW_MB_FLAT_COUNT; c++) {
+            metric(n, k++, birth ? k_mb_flat[c] : NULL, GW_ALIAS_MB_FLAT_BASE + c, SPB_DT_UINT64,
+                   now)->v.u64 = mb[c];
+        }
+        for (size_t c = 0; n->cfg->modbus_tcp.enabled && c < GW_TCP_FLAT_COUNT; c++) {
+            metric(n, k++, birth ? k_tcp_flat[c] : NULL, GW_ALIAS_TCP_FLAT_BASE + c,
+                   SPB_DT_UINT64, now)->v.u64 = tcp[c];
+        }
+        return k - i;
+    }
     if (modbus && n->cfg->device_count > 0) {
         n->mb_ds = (spb_dataset_t){.columns = 9, .names = k_mb_cols, .types = k_mb_types,
                                    .rows = n->cfg->device_count, .cell = mb_cell, .ctx = n};
@@ -502,7 +601,27 @@ static bool publish_nbirth(gw_node_t *n)
     }
     n->diag_restart = true;   /* the period starts again at the next tick */
     i += template_definitions(n, i, now);
-    return publish(n, "NBIRTH", NULL, i, 0);
+    /* #173: with the UMH preset, one Boolean per device (the snapshot is the value) */
+    n->online_reported = 0;
+    for (uint16_t d = 0; umh(n) && d < n->cfg->device_count; d++) {
+        if (gw_tagdb_device_online(d)) {
+            n->online_reported |= 1u << d;
+        }
+    }
+    return publish_rc_ex(n, "NBIRTH", NULL, i, 0, umh(n)) == 0;
+}
+
+/* #173: UMH preset: an NDATA with Devices/<name>/Online when the state of @p dev changed. */
+static void publish_online(gw_node_t *n, uint16_t dev, bool online)
+{
+    uint32_t bit = 1u << dev;
+    if (!umh(n) || online == ((n->online_reported & bit) != 0)) {
+        return;
+    }
+    n->online_reported ^= bit;
+    metric(n, 0, NULL, GW_ALIAS_ONLINE_BASE + dev, SPB_DT_BOOLEAN, gw_port_time_ms())->v.num =
+        online;
+    publish(n, "NDATA", NULL, 1, 0);
 }
 
 /* Publish @p dev's metrics: n->metrics[0..count) for a plain device; for a typed one (SPB-18)
@@ -572,10 +691,15 @@ static void def_member(const void *ctx, uint32_t i, spb_metric_t *out)
     out->props.eng_high = t->eng_high;
 }
 
-/* SPB-18: one definition per device type, after the node's own metrics. Returns the count. */
+/* SPB-18: one definition per device type, after the node's own metrics. Returns the count.
+ * #174: none with the UMH preset: no device is an instance, and
+ * tck-id-payloads-template-definition-nbirth asks for a definition only for the instances. */
 static size_t template_definitions(gw_node_t *n, size_t i, uint64_t now)
 {
     size_t k = 0;
+    if (umh(n)) {
+        return 0;
+    }
     for (uint16_t dev = 0; dev < n->cfg->device_count; dev++) {
         const gw_device_cfg_t *d = &n->cfg->devices[dev];
         bool first = d->type[0] != '\0';
@@ -737,6 +861,7 @@ void gw_node_device_changed(gw_node_t *n, uint16_t dev)
     }
     bool online;
     gw_tagdb_get_device(n->cfg, dev, n->vals, &online);
+    publish_online(n, dev, online);   /* #173 */
     if (online && !n->dev_born[dev]) {
         if (!n->dev_too_large[dev]) {   /* issue #76 */
             publish_dbirth(n, dev);
@@ -1279,6 +1404,10 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
     if ((q = eat(p, end, "DCMD/")) != NULL) {
         q = eat(q, end, n->cfg->sparkplug.edge_node_id);
         q = q ? eat(q, end, "/") : NULL;
+        if (q != NULL && n->cfg->sparkplug.device_prefix[0] != '\0') {   /* #172 */
+            q = eat(q, end, n->cfg->sparkplug.device_prefix);
+            q = q ? eat(q, end, ":") : NULL;
+        }
         if (q == NULL) {
             return;
         }

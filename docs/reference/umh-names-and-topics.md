@@ -16,13 +16,27 @@ The gateway counts the length in bytes. For ASCII text, one character is one byt
 | `sparkplug.group_id` | 1 to 32 | `/`, `+`, `#`, control characters | Only the subscription filter of the bridge (`identity.group_id`) |
 | `sparkplug.edge_node_id` | 1 to 32 | `/`, `+`, `#`, control characters | The location of the node metrics. With `include_edge_node_in_location: true`, also the start of the location of the device metrics |
 | `sparkplug.primary_host_id` | 0 to 32 | `/`, `+`, `#`, control characters | Keep it empty. UMH cannot be the primary host (#177) |
-| `devices[].name` (the `device_id`) | 1 to 39 | `/`, `+`, `#`, control characters | The location of the device metrics |
+| `sparkplug.device_prefix` | 0 to 96. No empty level | `/`, `+`, `#`, control characters | The start of the location of the device metrics. The gateway puts it before each device name, with `:` between them |
+| `devices[].name` | 1 to 39 | `/`, `+`, `#`, control characters | The end of the location of the device metrics |
+| The `device_id` (`<device_prefix>:<name>`, or the name) | The longest device topic must fit in 159 bytes: 78 bytes with a `group_id` and an `edge_node_id` of 32 bytes | As above | The location of the device metrics |
 | `devices[].type` | 1 to 39, or absent | `/`, `+`, `#`, control characters | Do not use it. UMH shows no value for a template instance |
 | `devices[].tags[].name` (the metric name) | 1 to 39 | None. The name must be unique in the device | The virtual path and the tag name |
 
-The sources are `GW_NAME_SIZE` (40) and `GW_ID_SIZE` (33) in `idf/components/gw_core/include/gw_config.h`, and `check_topic_id()` in `gw_config.c`. The Sparkplug rules are `tck-id-topic-structure-namespace-valid-group-id`, `tck-id-topic-structure-namespace-valid-edge-node-id` and `tck-id-topic-structure-namespace-valid-device-id`.
+The sources are `GW_NAME_SIZE` (40), `GW_ID_SIZE` (33), `GW_PREFIX_SIZE` (97) and `GW_TOPIC_SIZE` (160) in `idf/components/gw_core/include/gw_config.h`, and `check_topic_id()` in `gw_config.c`. The Sparkplug rules are `tck-id-topic-structure-namespace-valid-group-id`, `tck-id-topic-structure-namespace-valid-edge-node-id` and `tck-id-topic-structure-namespace-valid-device-id`.
 
-Planned changes: the key `sparkplug.device_prefix` (#172) and a UMH preset with name checks (#169).
+## Name checks of the gateway
+
+The validation of the gateway gives a warning for each name that UMH changes (#169). With `sparkplug.naming: "umh"` (the UMH preset), the name warnings are errors, and the gateway refuses the configuration.
+
+| Item | Rule | With the UMH preset |
+|---|---|---|
+| Each level of `edge_node_id`, `device_prefix` and each device `name` (split at `:`) | `[A-Za-z0-9][A-Za-z0-9_-]*` | Error |
+| Each segment of a tag `name` (split at `/`) | `[A-Za-z0-9][A-Za-z0-9._-]*` | Error |
+| `primary_host_id` not empty | Warning: UMH publishes a Sparkplug 2.x STATE (#177) | Warning |
+| A device `type` | Warning: UMH gives no value for a template instance | Warning |
+| A tag of the type `bytes` | Warning: UMH gives no value for Bytes | Warning |
+
+The dry run (`PUT /api/config?dry_run=1`), the shell command `config check`, the boot log and the web UI show the warnings with their JSON paths.
 
 ## Characters for UMH
 
@@ -42,12 +56,12 @@ UMH also changes two or more `.` in sequence to one `.`. It removes `.` at the s
 
 UMH makes the topic `umh.v1.<location_path>.<data_contract>.<virtual_path>.<tag_name>`:
 
-- `location_path`: the `device_id` for device metrics, or the `edge_node_id` for node metrics, with `.` in place of `:`.
+- `location_path`: the `device_id` (with the `device_prefix`) for device metrics, or the `edge_node_id` for node metrics, with `.` in place of `:`.
 - `data_contract`: the value that the bridge sets. The how-to uses `_raw`.
 - `virtual_path`: the part of the metric name before the last separator. It is absent if the name has no separator.
 - `tag_name`: the part of the metric name after the last separator.
 
-The tables below use the node `acme:berlin:packaging:gw01` and the device `acme:berlin:packaging:line3:meter1`. The column "Bridge example" tells what the `tag_processor` of the how-to does.
+The tables below use the node `acme:berlin:packaging:gw01` and the device `meter1` with the `device_prefix` `acme:berlin:packaging:line3`. Thus the `device_id` is `acme:berlin:packaging:line3:meter1`. The column "Bridge example" tells what the `tag_processor` of the how-to does.
 
 ## Node metrics
 
@@ -72,11 +86,14 @@ The gateway publishes these metrics in the NBIRTH, and their changes in NDATA. S
 | `Node Info/Free Heap` | UInt32 | Always | `Node_Info.Free_Heap` | Kept |
 | `Node Info/Min Free Heap` | UInt32 | Always | `Node_Info.Min_Free_Heap` | Kept |
 | `Node Info/RSSI` | Int32 | Only with `network.wifi`. Null without a Wi-Fi connection | `Node_Info.RSSI` | Kept. A null value is dropped |
-| `Node Info/Modbus` | DataSet | With one or more devices | None: UMH gives no value for a DataSet | Dropped |
-| `Node Info/Modbus TCP` | DataSet | Only with `modbus_tcp.enabled` | None: UMH gives no value for a DataSet | Dropped |
+| `Node Info/Modbus` | DataSet | With one or more devices, not with the UMH preset | None: UMH gives no value for a DataSet | Dropped |
+| `Node Info/Modbus TCP` | DataSet | Only with `modbus_tcp.enabled`, not with the UMH preset | None: UMH gives no value for a DataSet | Dropped |
+| `Node Info/Modbus/Cycles`, `Failed Cycles`, `OK`, `Timeout`, `CRC`, `Frame`, `Exception` | UInt64, the sum of all devices | Only with the UMH preset (#174) and one or more devices | `Node_Info.Modbus.Cycles` to `Node_Info.Modbus.Exception` (`Failed_Cycles`) | Kept |
+| `Node Info/Modbus TCP/OK`, `Timeout`, `CRC`, `Frame`, `Exception` | UInt64, the sum of all units | Only with the UMH preset (#174) and `modbus_tcp.enabled` | `Node_Info.Modbus_TCP.OK` to `Node_Info.Modbus_TCP.Exception` | Kept |
 | `Node Info/Time Synced` | Boolean | Always | `Node_Info.Time_Synced` | Kept |
 | `Node Info/Core Dump` | Boolean | Always. `true` while a core dump is in flash (issue #132) | `Node_Info.Core_Dump` | Kept |
-| A template definition for each device `type` | Template | Only with devices that have a `type` | None: UMH gives no value for a Template | Dropped |
+| `Devices/<name>/Online`, for example `Devices/line3/meter1/Online` | Boolean | Only with the UMH preset (#173), one for each device. Each `:` of the name becomes `/` | `Devices.line3.meter1.Online` | Kept |
+| A template definition for each device `type` | Template | Only with devices that have a `type`, not with the UMH preset | None: UMH gives no value for a Template | Dropped |
 
 `Node Info/Uptime`, `Free Heap`, `Min Free Heap` and `RSSI` also go in an NDATA each `sparkplug.diagnostics_s` (60 s by default, 0 = never). The DataSets go in this NDATA only when a counter changed.
 
@@ -90,6 +107,6 @@ The DBIRTH and the DDATA of a device hold one metric for each tag of the device.
 | `L1/Current` | From the tag `type` | `L1.Current` | Kept |
 | A tag with a failed read, or of an offline device | Null, with the Quality BAD | No new value | Dropped |
 | A tag of the type `bytes` | Bytes | None: UMH gives no value for Bytes | Dropped |
-| All tags of a device with a `type` | One Template instance | None: UMH gives no value for a Template | Dropped |
+| All tags of a device with a `type` | One Template instance. With the UMH preset: one plain metric for each tag | None for a Template. With the UMH preset, as the tags above | Dropped. With the UMH preset: kept |
 
-UMH ignores the properties of each tag (`engUnit`, `engLow`, `engHigh`, `Quality`). A DDEATH gives no UMH topic, and the tags of the device keep their last value in UMH.
+UMH ignores the properties of each tag (`engUnit`, `engLow`, `engHigh`, `Quality`). A DDEATH gives no UMH topic, and the tags of the device keep their last value in UMH. With the UMH preset, the node metric `Devices/<name>/Online` changes to `false` when the device goes offline.

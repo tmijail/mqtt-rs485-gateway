@@ -479,6 +479,7 @@ static const char *const k_word_names[] = {"big", "little", "ABCD", "CDAB", "BAD
 static const gw_word_order_t k_word_values[] = {GW_WORD_BIG,    GW_WORD_LITTLE, GW_WORD_BIG,
                                                 GW_WORD_LITTLE, GW_WORD_BADC,   GW_WORD_DCBA};
 static const char *const k_parity_names[] = {"none", "even", "odd"};
+static const char *const k_naming_names[] = {"sparkplug", "umh"};   /* gw_naming_t (#169) */
 
 /* dhcp/ip/netmask/gateway/dns of one interface; the addresses are required with dhcp=false. */
 static bool parse_ipv4_keys(const cJSON *o, const char *path, bool *dhcp, uint8_t ip[4],
@@ -823,19 +824,43 @@ static bool parse_store_forward(const cJSON *sp, gw_config_t *cfg, gw_cfg_err_t 
     return true;
 }
 
+/* #172: sparkplug.device_prefix is a list of location levels with ':' between them: a topic ID
+ * (check_topic_id), and no empty level (no ':' at the start or the end, no "::"). The checks of
+ * the characters of each level for UNS hosts are in gw_config_lint (#169). */
+static bool check_device_prefix(const char *s, gw_cfg_err_t *err)
+{
+    static const char *const path = "sparkplug.device_prefix";
+    if (!check_topic_id(s, path, true, err)) {
+        return false;
+    }
+    size_t n = strlen(s);
+    for (size_t i = 0; i < n; i++) {
+        if (s[i] == ':' && (i == 0 || i + 1 == n || s[i + 1] == ':')) {
+            return fail(err, path, "empty level at byte %u: put one ':' between two levels, and "
+                        "no ':' at the start or the end", (unsigned)i);
+        }
+    }
+    return true;
+}
+
 static bool parse_sparkplug(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"group_id", "edge_node_id", "primary_host_id",
-                                       "store_forward", "diagnostics_s"};
+                                       "store_forward", "diagnostics_s", "device_prefix",
+                                       "naming"};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "sparkplug");
     if (o == NULL) {
         return fail(err, "sparkplug", "sección obligatoria ausente");
     }
     long diag;
+    int naming;
     if (!check_keys(o, "sparkplug", keys, sizeof(keys) / sizeof(keys[0]), err) ||
-        !get_int(o, "diagnostics_s", "sparkplug", false, 60, 0, GW_DIAG_MAX_S, &diag, err)) {
+        !get_int(o, "diagnostics_s", "sparkplug", false, 60, 0, GW_DIAG_MAX_S, &diag, err) ||
+        !get_enum(o, "naming", "sparkplug", false, GW_NAMING_SPARKPLUG, k_naming_names, 2,
+                  &naming, err)) {
         return false;
     }
+    cfg->sparkplug.naming = (gw_naming_t)naming;
     if (diag != 0 && diag < GW_DIAG_MIN_S) {
         return fail(err, "sparkplug.diagnostics_s", "0 (solo en el NBIRTH) o %d-%d s",
                     GW_DIAG_MIN_S, GW_DIAG_MAX_S);
@@ -849,9 +874,12 @@ static bool parse_sparkplug(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *e
            get_string(o, "primary_host_id", "sparkplug", false, "",
                       cfg->sparkplug.primary_host_id, sizeof(cfg->sparkplug.primary_host_id),
                       err) &&
+           get_string(o, "device_prefix", "sparkplug", false, "", cfg->sparkplug.device_prefix,
+                      sizeof(cfg->sparkplug.device_prefix), err) &&
            check_topic_id(cfg->sparkplug.group_id, "sparkplug.group_id", false, err) &&
            check_topic_id(cfg->sparkplug.edge_node_id, "sparkplug.edge_node_id", false, err) &&
-           check_topic_id(cfg->sparkplug.primary_host_id, "sparkplug.primary_host_id", true, err);
+           check_topic_id(cfg->sparkplug.primary_host_id, "sparkplug.primary_host_id", true, err) &&
+           check_device_prefix(cfg->sparkplug.device_prefix, err);
 }
 
 static bool parse_rs485(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
@@ -1482,6 +1510,20 @@ static bool parse_devices(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err
         if (!check_device_type(cfg, d, path, &template_tags, err)) {
             return false;
         }
+        /* #172: the longest topic of the device ("spBv1.0/<group>/DBIRTH/<edge>/<device_id>")
+         * fits GW_TOPIC_SIZE: gw_node builds it in a buffer of that size, with no allocation */
+        size_t prefix = strlen(cfg->sparkplug.device_prefix);
+        size_t id_len = (prefix > 0 ? prefix + 1 : 0) + strlen(d->name);
+        size_t fixed = strlen("spBv1.0/") + strlen(cfg->sparkplug.group_id) + strlen("/DBIRTH/") +
+                       strlen(cfg->sparkplug.edge_node_id) + strlen("/");
+        if (fixed + id_len >= GW_TOPIC_SIZE) {
+            char p[48];
+            snprintf(p, sizeof(p), "%s.name", path);
+            return fail(err, p, "the device_id (sparkplug.device_prefix, ':' and the name) has %u "
+                        "bytes; with this group_id and edge_node_id the maximum is %u (Sparkplug "
+                        "topic of %d bytes)", (unsigned)id_len,
+                        (unsigned)(GW_TOPIC_SIZE - 1 - fixed), GW_TOPIC_SIZE - 1);
+        }
         cfg->device_count++;
     }
     return true;
@@ -1515,6 +1557,16 @@ unsigned gw_json_depth(const char *json, size_t len)
 }
 
 static bool parse_locked(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_t *err);
+
+/* #169: the first GW_LINT_ERROR becomes the error of the validation. */
+static bool lint_refuse(void *ctx, gw_lint_level_t level, const char *path, const char *msg)
+{
+    if (level != GW_LINT_ERROR) {
+        return true;
+    }
+    fail(ctx, path, "%s", msg);
+    return false;
+}
 
 /* Issue #106: cJSON's hooks, its error pointer and s_alloc_failed are process-wide: the whole
  * parse runs under the JSON lock (another task's parse could set or clear the flag). */
@@ -1577,10 +1629,39 @@ static bool parse_locked(const char *json, size_t len, gw_config_t *cfg, gw_cfg_
         gw_hostname_from(cfg->sparkplug.edge_node_id, cfg->network.hostname,
                          sizeof(cfg->network.hostname));
     }
+    /* #169: the UMH preset refuses what the lint finds as an error */
+    if (ok && cfg->sparkplug.naming == GW_NAMING_UMH) {
+        gw_config_lint(cfg, lint_refuse, err);
+        ok = err->msg[0] == '\0';
+    }
     if (!ok) {
         memset(cfg, 0, sizeof(*cfg));
     }
     return ok;
+}
+
+bool gw_config_device_id(const gw_config_t *cfg, uint16_t dev, char *out, size_t cap)
+{
+    const char *prefix = cfg->sparkplug.device_prefix;
+    int n = prefix[0] != '\0' ? snprintf(out, cap, "%s:%s", prefix, cfg->devices[dev].name)
+                              : snprintf(out, cap, "%s", cfg->devices[dev].name);
+    return n >= 0 && (size_t)n < cap;
+}
+
+void gw_config_mdns_instance(const gw_config_t *cfg, char *out, size_t cap)
+{
+    snprintf(out, cap, "%s/%s", cfg->sparkplug.group_id, cfg->sparkplug.edge_node_id);
+    /* two IDs of 32 bytes give 65: cut before the character that passes the label limit */
+    size_t max = GW_MDNS_INSTANCE_SIZE - 1 < cap - 1 ? GW_MDNS_INSTANCE_SIZE - 1 : cap - 1;
+    size_t n = strlen(out), i = 0;
+    while (i < n) {
+        size_t k = gw_utf8_seq(out + i, n - i);
+        if (k == 0 || i + k > max) {
+            break;
+        }
+        i += k;
+    }
+    out[i] = '\0';
 }
 
 int gw_config_find_device(const gw_config_t *cfg, const char *name, size_t len)

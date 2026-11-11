@@ -144,6 +144,48 @@ int main(int argc, char **argv)
     gw_tagdb_put_device(&tc, 0, pv, true);
     gw_node_device_changed(&node8, 0);
 
+    /* #169/#172/#173/#174: the UMH preset: a device prefix, Devices/<name>/Online in the NBIRTH
+     * and in NDATA, typed devices as plain metrics, the Modbus counters as plain metrics */
+    static const char umh_json[] =
+        "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"Plant1\","
+        " \"edge_node_id\": \"acme:berlin:gw09\", \"device_prefix\": \"acme:berlin:packaging\","
+        " \"naming\": \"umh\", \"diagnostics_s\": 10}, \"modbus_tcp\": {\"enabled\": true},"
+        " \"devices\": ["
+        " {\"name\": \"line3:pump-a\", \"unit_id\": 1, \"type\": \"Pump\", \"tags\": ["
+        "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
+        "   \"units\": \"rpm\"},"
+        "  {\"name\": \"Motor/Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]},"
+        " {\"name\": \"line3:pump-b\", \"unit_id\": 2, \"type\": \"Pump\", \"tags\": ["
+        "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\"},"
+        "  {\"name\": \"Motor/Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]}]}";
+    static gw_config_t uc;
+    if (!gw_config_parse(umh_json, sizeof(umh_json) - 1, &uc, &err)) {
+        fprintf(stderr, "UMH preset configuration rejected: %s\n", err.msg);
+        return 1;
+    }
+    gw_tagdb_reset();
+    static gw_node_t node9;
+    gw_node_init(&node9, &uc, &ops, &info);
+    support_node_buffer(&node9);
+    const gw_dev_stats_t ust = {.cycles = 40, .failed_cycles = 2, .bus = {.ok = 80, .timeout = 4},
+                                .tcp = {.ok = 3}};
+    gw_tagdb_put_stats(0, &ust);
+    pv[0].value = 1450;
+    pv[1].valid = true;
+    gw_tagdb_put_device(&uc, 0, pv, true);
+    gw_tagdb_put_device(&uc, 1, pv, true);
+    gw_node_session_up(&node9, 7);
+    pv[0].value = 1500;
+    gw_tagdb_put_device(&uc, 0, pv, true);
+    gw_node_device_changed(&node9, 0);              /* DDATA, plain */
+    gw_tagdb_put_device(&uc, 1, pv, false);
+    gw_node_device_changed(&node9, 1);              /* NDATA Online false, DDEATH */
+    gw_node_diag_tick(&node9, 1000);
+    const gw_dev_stats_t ust2 = {.cycles = 41, .failed_cycles = 2, .bus = {.ok = 81, .timeout = 4},
+                                 .tcp = {.ok = 3}};
+    gw_tagdb_put_stats(0, &ust2);
+    gw_node_diag_tick(&node9, 11000);               /* NDATA with the plain counters */
+
     gw_tagdb_reset();
     static gw_node_t node6;
     gw_node_init(&node6, &mb6, &ops, &info);

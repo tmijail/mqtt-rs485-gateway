@@ -12,6 +12,7 @@ set(GW_CORE_SRCS
     src/gw_cardfmt.c
     src/gw_cdump.c
     src/gw_cfgdoc.c
+    src/gw_cfglint.c
     src/gw_config.c
     src/gw_conv.c
     src/gw_debounce.c

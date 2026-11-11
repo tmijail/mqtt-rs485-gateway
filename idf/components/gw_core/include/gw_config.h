@@ -20,6 +20,9 @@ extern "C" {
 /* Buffer sizes, including the terminating NUL. */
 #define GW_NAME_SIZE   40   /* device and tag names */
 #define GW_ID_SIZE     33   /* Sparkplug group_id / edge_node_id / primary_host_id */
+#define GW_PREFIX_SIZE 97   /* #172: sparkplug.device_prefix, location levels with ':' between them */
+#define GW_TOPIC_SIZE  160  /* longest Sparkplug topic, with its NUL (gw_node.h GW_TOPIC_MAX) */
+#define GW_MDNS_INSTANCE_SIZE 64  /* #172: one DNS label, 1..63 bytes (RFC 6763 section 4.1.1) */
 #define GW_HOST_SIZE   128  /* broker and NTP host names */
 #define GW_CRED_SIZE   65   /* client_id, username, password */
 #define GW_UNITS_SIZE  16
@@ -49,6 +52,13 @@ extern "C" {
 #define GW_DIAG_MIN_S 10             /* SPB-17: sparkplug.diagnostics_s (or 0) */
 #define GW_DIAG_MAX_S 86400
 #define GW_MAX_TEMPLATE_TAGS 64     /* SPB-18: tags of all template definitions together (NBIRTH) */
+
+/* #169: sparkplug.naming. GW_NAMING_UMH is the UMH preset: the name checks of gw_config_lint()
+ * become errors (and, with #173 and #174, more items that obey Sparkplug B 3.0.0). */
+typedef enum {
+    GW_NAMING_SPARKPLUG = 0,   /* default: no change for any host */
+    GW_NAMING_UMH,
+} gw_naming_t;
 
 typedef enum {
     GW_AREA_COIL = 0,
@@ -241,6 +251,9 @@ typedef struct {
         char group_id[GW_ID_SIZE];
         char edge_node_id[GW_ID_SIZE];
         char primary_host_id[GW_ID_SIZE];  /* SPB-13: "" = no primary host application */
+        char device_prefix[GW_PREFIX_SIZE]; /* #172: "" or "<level>:<level>...": the device_id of
+                                             * each device is "<device_prefix>:<name>" */
+        gw_naming_t naming;                /* #169: GW_NAMING_UMH = the UMH preset */
         bool store_forward;                /* SPB-14: keep changes made while offline */
         bool sf_sd;                        /* SPB-14: spill the full ring to the microSD card */
         uint32_t sf_sd_max_kb;             /* bound of the spill on the card */
@@ -357,6 +370,39 @@ bool gw_parse_ipv6(const char *s, uint8_t out[16]);
  * of [A-Za-z0-9._-], not starting with '.', and not one of the configuration's own files.
  */
 bool gw_config_file_name_ok(const char *name);
+
+/**
+ * #172: the Sparkplug device_id of device @p dev: "<sparkplug.device_prefix>:<name>", or the
+ * name without a prefix. False if it does not fit @p cap (the validation makes sure that it
+ * fits GW_TOPIC_SIZE in a topic).
+ */
+bool gw_config_device_id(const gw_config_t *cfg, uint16_t dev, char *out, size_t cap);
+
+/**
+ * #172: the mDNS instance name "<group_id>/<edge_node_id>", cut at a UTF-8 character boundary
+ * so that it has at most GW_MDNS_INSTANCE_SIZE - 1 bytes (one DNS label). @p cap must be at
+ * least GW_MDNS_INSTANCE_SIZE.
+ */
+void gw_config_mdns_instance(const gw_config_t *cfg, char *out, size_t cap);
+
+/** #169: severity of a finding of gw_config_lint(). */
+typedef enum {
+    GW_LINT_WARNING = 0,   /* the configuration is valid; a UNS host can change the name */
+    GW_LINT_ERROR,         /* the UMH preset (sparkplug.naming "umh") refuses it */
+} gw_lint_level_t;
+
+/** One finding: @p path is the JSON path ("devices[0].name"), @p msg the reason. Return false
+ *  to stop the calls. The strings are valid only during the call. */
+typedef bool (*gw_lint_cb_t)(void *ctx, gw_lint_level_t level, const char *path,
+                             const char *msg);
+
+/**
+ * #169: the name checks for UMH Core and other UNS hosts, on a parsed configuration. It calls
+ * @p cb (NULL: none) once for each finding, and returns the count of all findings, also of
+ * those after @p cb returned false. It runs at the validation, never in the publish path, and
+ * allocates nothing. With the UMH preset, gw_config_parse() refuses the first GW_LINT_ERROR.
+ */
+size_t gw_config_lint(const gw_config_t *cfg, gw_lint_cb_t cb, void *ctx);
 
 /** Index of the device named @p name (length @p len), or -1. */
 int gw_config_find_device(const gw_config_t *cfg, const char *name, size_t len);

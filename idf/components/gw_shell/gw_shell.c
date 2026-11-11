@@ -603,17 +603,31 @@ static bool config_read(pasted_t *p)
     return true;
 }
 
+/* #169: the findings of gw_config_lint for an accepted document, at most this many lines */
+#define SHELL_LINT_LINES 50
+
+static bool shell_lint(void *ctx, gw_lint_level_t level, const char *path, const char *msg)
+{
+    unsigned *lines = ctx;
+    (void)level;   /* a GW_LINT_ERROR never gets here: the validation refused it */
+    out("config: warning: %s: %s\n", path, msg);
+    return ++*lines < SHELL_LINT_LINES;
+}
+
 /* Runs with s_ctx_lock held: validate, save, restart. Frees the pasted buffer. */
 static int config_apply(pasted_t *p, bool dry_run, bool discard_copy)
 {
     int rc = 1;
     gw_cfg_err_t err;
+    unsigned lines = 0;
+    size_t warnings = 0;
     if (p->aborted) {
         out("config: aborted, nothing changed\n");
     } else if (p->overflow) {
         out("config: rejected: larger than %d bytes (CONFIG_GW_CONFIG_MAX_BYTES) or no memory\n",
                CONFIG_GW_CONFIG_MAX_BYTES);
-    } else if (gw_storage_save_config_ex(p->buf, p->len, dry_run, discard_copy, &err) != ESP_OK) {
+    } else if (gw_storage_save_config_lint(p->buf, p->len, dry_run, discard_copy, &err,
+                                           shell_lint, &lines, &warnings) != ESP_OK) {
         out("config: rejected: %s\n", err.msg);
         if (err.path[0] != '\0') {
             out("config: path %s\n", err.path);
@@ -621,6 +635,10 @@ static int config_apply(pasted_t *p, bool dry_run, bool discard_copy)
             out("config: line %u, column %u\n", err.line, err.column);
         }
     } else {
+        if (warnings > 0) {
+            out("config: %u warning(s) for UNS hosts such as UMH Core (#169)%s\n",
+                (unsigned)warnings, warnings > lines ? "; the first ones above" : "");
+        }
         out(dry_run ? "config: valid (%u bytes), nothing saved\n"
                        : "config: saved (%u bytes); restarting\n",
                (unsigned)p->len);
