@@ -324,9 +324,13 @@ static void on_core0(void (*fn)(void *), void *arg)
 }
 #endif
 
+/* The uptime of this boot (ms, 32 bits: it wraps after 49 days, and gw_ota compares with that
+ * in mind). From the FreeRTOS tick, not esp_timer: in QEMU the system timer does not restart at
+ * a software reset, so esp_timer_get_time() can be minutes at the start of app_main, and the
+ * self-check of a new image (60 s of uptime, issue #144) would pass at once. */
 static uint32_t now_ms(void)
 {
-    return (uint32_t)(esp_timer_get_time() / 1000);
+    return (uint32_t)((uint64_t)xTaskGetTickCount() * portTICK_PERIOD_MS);
 }
 
 /* s_st's texts. The mutex exists from gw_fw_early_init(), before the shell starts (issue #101:

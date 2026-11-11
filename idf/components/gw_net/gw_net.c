@@ -424,6 +424,11 @@ static esp_err_t configure_ipv6_dns(esp_netif_t *netif, const gw_ipv6_cfg_t *v6)
 
 /* ---------------------------------------------------------------- Ethernet */
 
+#if CONFIG_GW_IO_SIMULATED
+/* Issue #144, emulator only: the driver, for gw_net_sim_stop_eth() */
+static esp_eth_handle_t s_sim_eth;
+#endif
+
 static esp_err_t new_eth_driver(esp_eth_handle_t *eth)
 {
     eth_mac_config_t mac_cfg = ETH_MAC_DEFAULT_CONFIG();
@@ -488,11 +493,23 @@ static esp_err_t start_ethernet(const gw_config_t *cfg)
     ESP_RETURN_ON_ERROR(configure_ipv6_dns(netif, &cfg->network.ipv6), TAG, "ipv6 dns");
     esp_eth_handle_t eth;
     ESP_RETURN_ON_ERROR(new_eth_driver(&eth), TAG, "driver");
+#if CONFIG_GW_IO_SIMULATED
+    s_sim_eth = eth;
+#endif
     ESP_RETURN_ON_ERROR(esp_netif_attach(netif, esp_eth_new_netif_glue(eth)), TAG, "attach");
     ESP_RETURN_ON_ERROR(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, on_eth_event, NULL),
                         TAG, "eth events");
     return esp_eth_start(eth);
 }
+
+#if CONFIG_GW_IO_SIMULATED
+void gw_net_sim_stop_eth(void)
+{
+    if (s_sim_eth != NULL) {
+        esp_eth_stop(s_sim_eth);
+    }
+}
+#endif
 
 /* ---------------------------------------------------------------- Wi-Fi (NET-4) */
 

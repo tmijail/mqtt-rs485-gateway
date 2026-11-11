@@ -1239,8 +1239,10 @@ static void panic_task(void *arg)
 
 static int cmd_panic(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
+    if (argc > 1 && strcmp(argv[1], "net-off") == 0) {
+        /* issue #144: the E2E's crashes in a row (safe mode); see gw_net_sim_stop_eth() */
+        gw_net_sim_stop_eth();
+    }
     if (xTaskCreatePinnedToCore(panic_task, "panic", 3072, NULL, configMAX_PRIORITIES - 1, NULL,
                                 0) != pdPASS) {
         printf("panic requested from the console (other core not parked)\n");
@@ -1430,7 +1432,7 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
          .func = cmd_pubfail_atomic},
         {.command = "boot", .help = "Emulator only: press (1) or release (0) the BOOT button",
          .hint = "<0|1>", .func = cmd_boot_atomic},
-        {.command = "panic", .help = "Emulator only: abort() (core dump test)", .func = cmd_panic},
+        {.command = "panic", .help = "Emulator only: abort() (core dump test); 'panic net-off' stops Ethernet first", .func = cmd_panic},
 #endif
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {

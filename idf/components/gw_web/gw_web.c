@@ -844,7 +844,7 @@ static esp_err_t firmware_post(httpd_req_t *req)
     }
     char ctype[48] = "";
     httpd_req_get_hdr_value_str(req, "Content-Type", ctype, sizeof(ctype));
-    char why[160];
+    char why[320];   /* issue #144: the reasons of the pre-flight check */
     bool json = media_type_is(ctype, "application/json");
     if (!json && !media_type_is(ctype, "application/octet-stream")) {
         return refuse_body(req, "415 Unsupported Media Type",

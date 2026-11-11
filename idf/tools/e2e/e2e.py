@@ -3444,9 +3444,9 @@ def upload_firmware(gw, data, auth=("admin", WEB_PASSWORD), force=False):
 
 
 CAPS_OFFSET = 288   # gw_ota.h GW_OTA_CAPS_OFFSET: the capabilities block after esp_app_desc_t
-# Issue #144: a new image is confirmed by its self-check at 60 s of uptime (CONFIG_GW_FW_SELFCHECK_S;
-# the uptime includes the bootloader's verification of the image); the bound to wait for its
-# "installed" state after its NBIRTH (or its boot)
+# Issue #144: a new image is confirmed by its self-check at 60 s of uptime (CONFIG_GW_FW_SELFCHECK_S,
+# the FreeRTOS tick of the boot); the bound to wait for its "installed" state after its NBIRTH (or
+# its boot)
 SELFCHECK_WAIT_S = 150
 
 
@@ -4063,9 +4063,8 @@ def run_ota_wiring(args, work):
     the same older-schema image with force must reach recovery mode only: it stays, a save is
     refused during its trial and works after its self-check;
     (3) an image installed from commissioning (after a factory reset) is installed there by its
-    self-check, and stays after a power cut;
-    (4) three crashes in a row (emulator 'panic') start safe mode, and safe mode accepts an
-    upload (the new image, on trial, ignores the boot-loop counter)."""
+    self-check, and stays after a power cut. Safe mode is in run_ota_trial (the budget of one
+    attempt)."""
     fwdir = work / "fw-wiring"
     fwdir.mkdir(exist_ok=True)
     src = app_source(args)
@@ -4075,7 +4074,6 @@ def run_ota_wiring(args, work):
         "e2e-s0": signed_image(args, src, "e2e-s0", fwdir, "e2e-s0", cfg_schema=0),
         "e2e-v1caps": signed_image(args, src, "e2e-v1caps", fwdir, "e2e-v1caps", caps_version=1),
         "e2e-com": signed_image(args, src, "e2e-com", fwdir, "e2e-com"),
-        "e2e-safe": signed_image(args, src, "e2e-safe", fwdir, "e2e-safe"),
     }
 
     def upload(version, pw, force=False):
@@ -4116,9 +4114,10 @@ def run_ota_wiring(args, work):
     finally:
         gw.kill()
 
-    # 2. normal mode with the emulator hook: a new image on trial cannot read the configuration
+    # 2. normal mode with the emulator hook: a new image on trial cannot read the configuration.
+    # No web password in the document: a password in clear makes the first boot move it to NVS
+    # and rewrite LittleFS with config.json and the certificates only (CFG-7), without the hook
     cfg = node_config(WIRING_NODE)
-    cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
     flash = flash_variant(args, work, "otanorm", {"config.json": json.dumps(cfg, indent=2).encode(),
                                                   ".sim-reject-config": b"1"})
     t0 = time.monotonic()
@@ -4126,10 +4125,12 @@ def run_ota_wiring(args, work):
     gw.start()
     try:
         up = gw.wait_log(r"edge: Sparkplug session up", 60, t0)
-        wait_http("/api/firmware", 30)
+        pw = commissioning_password(gw, t0, 30)
+        auth = ("admin", pw or "?")
+        wait_http("/api/firmware", 30, auth=auth)
         asked = time.monotonic()
-        st0, b0 = upload("e2e-s0", WEB_PASSWORD)
-        st1, b1 = upload("e2e-v1caps", WEB_PASSWORD)
+        st0, b0 = upload("e2e-s0", pw)
+        st1, b1 = upload("e2e-v1caps", pw)
         time.sleep(1)
         booted = gw.find(r"main: rs485_spb_gateway e2e-(s0|v1caps) ", asked)
         check("Issue #144 item 3 the pre-flight check refuses before any write: an image that reads "
@@ -4143,7 +4144,7 @@ def run_ota_wiring(args, work):
               f"{b1[:120]!r}; booted {booted[:1]}")
 
         asked = time.monotonic()
-        st2, b2 = upload("e2e-rjn", WEB_PASSWORD)
+        st2, b2 = upload("e2e-rjn", pw)
         boot = gw.wait_log(r"main: rs485_spb_gateway e2e-rjn .*reset reason", 120, asked)
         trial = gw.wait_log(r"fw: firmware e2e-rjn \(ota_\d\) on trial: it must reach normal mode",
                             30, boot or asked)
@@ -4154,7 +4155,7 @@ def run_ota_wiring(args, work):
         back = gw.wait_log(r"fw: firmware e2e-rjn was rolled back \(configuration rejected: "
                            r"e2e\.simulated\); running \S+ again", 30, prev or asked)
         up2 = gw.wait_log(r"edge: Sparkplug session up", 60, prev or asked)
-        fw2 = as_json(wait_http("/api/firmware", 30)[2]) or {}
+        fw2 = as_json(wait_http("/api/firmware", 30, auth=auth)[2]) or {}
         fast = boot is not None and rej is not None and rej - boot < 30
         check("Issue #144 item 2 an image installed from normal mode (accepted by the pre-flight "
               "check) that rejects the configuration goes back to the earlier image at once (a "
@@ -4173,16 +4174,16 @@ def run_ota_wiring(args, work):
 
         # the older-schema image again, forced: it must reach recovery mode only
         asked = time.monotonic()
-        st3, b3 = upload("e2e-s0", WEB_PASSWORD, force=True)
+        st3, b3 = upload("e2e-s0", pw, force=True)
         boot = gw.wait_log(r"main: rs485_spb_gateway e2e-s0 .*reset reason", 120, asked)
         trial = gw.wait_log(r"fw: firmware e2e-s0 \(ota_\d\) on trial: it must reach recovery mode",
                             30, boot or asked)
         rec = gw.wait_log(r"main: configuration rejected", 30, boot or asked)
-        wait_http("/api/firmware", 30)
-        st_t, _, b_t = http("PUT", "/api/config", cfg, timeout=30)
+        wait_http("/api/firmware", 30, auth=auth)
+        st_t, _, b_t = http("PUT", "/api/config", cfg, auth=auth, timeout=30)
         inst = gw.wait_log(r"fw: firmware e2e-s0 installed: the self-check passed in recovery mode",
                            SELFCHECK_WAIT_S, boot or asked)
-        st_s, _, b_s = http("PUT", "/api/config", cfg, timeout=30)
+        st_s, _, b_s = http("PUT", "/api/config", cfg, auth=auth, timeout=30)
         boot2 = gw.wait_log(r"main: rs485_spb_gateway e2e-s0 .*reset reason: software", 120,
                             inst or asked)
         up3 = gw.wait_log(r"edge: Sparkplug session up", 60, boot2 or asked)
@@ -4247,67 +4248,20 @@ def run_ota_wiring(args, work):
     finally:
         gw.kill()
 
-    # 4. issue #144 item 4: three crashes in a row start safe mode; safe mode accepts an upload
-    cfg = node_config(WIRING_NODE)
-    cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
-    flash = flash_variant(args, work, "otasafe", {"config.json": json.dumps(cfg, indent=2).encode()})
-    t0 = time.monotonic()
-    gw = Gateway(args, work / "uart0-otasafe.log", flash)
-    gw.start()
-    try:
-        boots = []
-        since = t0
-        for _ in range(3):
-            gw.wait_log(r"edge: Sparkplug session up", 60, since)
-            gw.shell("status", [r"^config\s"])   # the shell is up: 'panic' is not lost
-            asked = time.monotonic()
-            gw.console("panic")
-            boots.append(gw.wait_log(r"main: rs485_spb_gateway \S+ .*reset reason: panic", 60,
-                                     asked))
-            since = boots[-1] or asked
-        safe = gw.wait_log(r"fw: safe mode: 3 crash resets in a row", 30, since)
-        main_safe = gw.wait_log(r"main: safe mode: 3 crash resets in a row; the configuration is "
-                                r"not loaded", 30, since)
-        wait_http("/api/firmware", 40)
-        fw = as_json(http("GET", "/api/firmware")[2]) or {}
-        _, h = gw.shell("status", [r"^bootloop 3 crash resets in a row: SAFE MODE"])
-        session = gw.find(r"edge: Sparkplug session up", since)
-        asked = time.monotonic()
-        st, body = upload("e2e-safe", WEB_PASSWORD)
-        boot = gw.wait_log(r"main: rs485_spb_gateway e2e-safe .*reset reason", 120, asked)
-        trial = gw.wait_log(r"fw: firmware e2e-safe \(ota_\d\) on trial: it must reach recovery "
-                            r"mode", 30, boot or asked)
-        up = gw.wait_log(r"edge: Sparkplug session up", 60, boot or asked)
-        inst = gw.wait_log(r"fw: firmware e2e-safe installed: the self-check passed in normal mode",
-                           SELFCHECK_WAIT_S, boot or asked)
-        safe_again = gw.find(r"fw: safe mode:", boot or asked)
-        check("Issue #144 item 4 three crashes in a row (emulator 'panic') start safe mode "
-              "(recovery mode: nothing started, the shell and GET /api/firmware say so); safe mode "
-              "accepts a firmware upload, and the new image on trial ignores the boot-loop "
-              "counter (normal mode, installed by its self-check)",
-              all(boots) and safe and main_safe and fw.get("safe_mode") is True
-              and fw.get("boot_count") == 3 and list(h.values())[0] and not session and st == 200
-              and boot and trial and up and inst and not safe_again,
-              f"panic resets {sum(1 for b in boots if b)}/3; safe mode {safe is not None} "
-              f"({main_safe is not None}); GET /api/firmware safe_mode {fw.get('safe_mode')!r} "
-              f"boot_count {fw.get('boot_count')!r}; shell {bool(list(h.values())[0])}; session "
-              f"in safe mode {len(session)}; POST {st} {body[:60]!r}; new image {boot is not None}, "
-              f"on trial {trial is not None}, session {up is not None}, installed "
-              f"{inst is not None}; safe mode again {safe_again[:1]}")
-    finally:
-        gw.kill()
-
 
 def run_ota_trial(args, work):
-    """Issue #144 item 1 (GW43): the trial of a new image is a self-check of the gateway; it does
-    not depend on the broker. A web upload, then the broker goes away before the new image boots:
-    during the trial an update is refused (409, "testing <v>: N s left") and the shell shows the
-    expected mode and the time left; the self-check installs the image with no broker and no
-    rollback; when the broker is back, the NBIRTH publishes "installed <v>"."""
+    """Issue #144 (GW43): (1) item 1: the trial of a new image is a self-check of the gateway; it
+    does not depend on the broker. A web upload, then the broker goes away before the new image
+    boots: during the trial an update is refused (409, "testing <v>: N s left") and the shell shows
+    the expected mode and the time left; the self-check installs the image with no broker and no
+    rollback; when the broker is back, the NBIRTH publishes "installed <v>". (2) item 4: three
+    crashes in a row (emulator 'panic') start safe mode, and safe mode accepts an upload (the new
+    image, on trial, ignores the boot-loop counter)."""
     node, port = "GW43", MQTT_PORT + 25
     fwdir = work / "fw-trial"
     fwdir.mkdir(exist_ok=True)
     image = signed_image(args, app_source(args), "e2e-t2", fwdir, "t2")
+    safe_image = signed_image(args, app_source(args), "e2e-safe", fwdir, "safe")
     conf = work / "broker-trial.conf"
     conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\n")
     broker = start_broker(conf, work / "mosquitto-trial.log")
@@ -4359,6 +4313,54 @@ def run_ota_trial(args, work):
               f"{f'{inst - boot:.1f} s after its boot' if inst and boot else 'no'}; sessions "
               f"before {len(session)}; rolled back {rolled[:1]}; NBIRTH {fw(nb2)!r} state "
               f"{fw_state(nb2[2]) if nb2 else None!r}")
+    finally:
+        gw.kill()
+
+    # 2. issue #144 item 4: three crashes in a row start safe mode; safe mode accepts an upload
+    flash = flash_variant(args, work, "otasafe", {"config.json": json.dumps(cfg, indent=2).encode()})
+    t0 = time.monotonic()
+    gw = Gateway(args, work / "uart0-otasafe.log", flash)
+    gw.start()
+    try:
+        boots = []
+        since = t0
+        for _ in range(3):
+            gw.wait_log(r"edge: Sparkplug session up", 60, since)
+            gw.shell("status", [r"^config\s"])   # the shell is up: 'panic' is not lost
+            asked = time.monotonic()
+            gw.console("panic net-off")   # QEMU's openeth survives a panic reset (README 6.10)
+            boots.append(gw.wait_log(r"main: rs485_spb_gateway \S+ .*reset reason: panic", 60,
+                                     asked))
+            since = boots[-1] or asked
+        safe = gw.wait_log(r"fw: safe mode: 3 crash resets in a row", 30, since)
+        main_safe = gw.wait_log(r"main: safe mode: 3 crash resets in a row; the configuration is "
+                                r"not loaded", 30, since)
+        wait_http("/api/firmware", 40)
+        fws = as_json(http("GET", "/api/firmware")[2]) or {}
+        _, h = gw.shell("status", [r"^bootloop 3 crash resets in a row: SAFE MODE"])
+        session = gw.find(r"edge: Sparkplug session up", since)
+        asked = time.monotonic()
+        st, _, body = upload_firmware(gw, safe_image.read_bytes())
+        boot = gw.wait_log(r"main: rs485_spb_gateway e2e-safe .*reset reason", 120, asked)
+        trial = gw.wait_log(r"fw: firmware e2e-safe \(ota_\d\) on trial: it must reach recovery "
+                            r"mode", 30, boot or asked)
+        up = gw.wait_log(r"edge: Sparkplug session up", 60, boot or asked)
+        inst = gw.wait_log(r"fw: firmware e2e-safe installed: the self-check passed in normal mode",
+                           SELFCHECK_WAIT_S, boot or asked)
+        safe_again = gw.find(r"fw: safe mode:", boot or asked)
+        check("Issue #144 item 4 three crashes in a row (emulator 'panic') start safe mode "
+              "(recovery mode: nothing started, the shell and GET /api/firmware say so); safe mode "
+              "accepts a firmware upload, and the new image on trial ignores the boot-loop "
+              "counter (normal mode, installed by its self-check)",
+              all(boots) and safe and main_safe and fws.get("safe_mode") is True
+              and fws.get("boot_count") == 3 and list(h.values())[0] and not session and st == 200
+              and boot and trial and up and inst and not safe_again,
+              f"panic resets {sum(1 for b in boots if b)}/3; safe mode {safe is not None} "
+              f"({main_safe is not None}); GET /api/firmware safe_mode {fws.get('safe_mode')!r} "
+              f"boot_count {fws.get('boot_count')!r}; shell {bool(list(h.values())[0])}; session "
+              f"in safe mode {len(session)}; POST {st} {body[:60]!r}; new image {boot is not None}, "
+              f"on trial {trial is not None}, session {up is not None}, installed "
+              f"{inst is not None}; safe mode again {safe_again[:1]}")
     finally:
         gw.kill()
         obs.close()
