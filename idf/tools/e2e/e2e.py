@@ -5992,6 +5992,26 @@ def run_web(args, work):
           rb and rb[2].seq == 0 and dbs == [1, 2] and said,
           f"NBIRTH {'seq %d' % rb[2].seq if rb else 'missing'}, DBIRTH seq {dbs}, shell answer "
           f"{bool(said)}")
+    # Issue #171: the same through the REST API. Without the CSRF header: 403 and no rebirth.
+    obs.drain()
+    t_nc = time.monotonic()
+    st_nc, _, b_nc = http("POST", "/api/rebirth", headers={"X-Requested-With": None})
+    time.sleep(2)
+    forged = [m for m in CAPTURE if m[0] >= t_nc and m[1] == f"{T}/NBIRTH/{node2}"]
+    asked = time.monotonic()
+    st_rb, _, b_rb = http("POST", "/api/rebirth")
+    rb2 = obs.wait(f"{T}/NBIRTH/{node2}", 5)
+    obs.wait(f"{T}/DBIRTH/{node2}/{BULK}", 5)
+    dbs2 = sorted(m[2].seq for m in CAPTURE if m[0] >= asked and m[1].startswith(f"{T}/DBIRTH/{node2}/"))
+    bd0, bd2 = (bdseq_of(nb2[2]) if nb2 else None), (bdseq_of(rb2[2]) if rb2 else None)
+    check("CFG-4 issue #171: POST /api/rebirth re-issues NBIRTH (seq 0, the same bdSeq) and the "
+          "DBIRTHs; without the CSRF header -> 403 and no rebirth",
+          st_nc == 403 and not forged and st_rb == 202 and (as_json(b_rb) or {}).get("ok")
+          and rb2 and rb2[2].seq == 0 and bd2 is not None and bd2 == bd0 and dbs2 == [1, 2],
+          f"no header {st_nc} {b_nc.decode(errors='replace').strip()}, {len(forged)} NBIRTH after it; "
+          f"POST {st_rb} {b_rb.decode(errors='replace').strip()}; NBIRTH "
+          f"{'seq %d' % rb2[2].seq if rb2 else 'missing'}, bdSeq {bd2} (session NBIRTH {bd0}), "
+          f"DBIRTH seq {dbs2}")
 
     def paste(doc_obj):
         gw.console("config load" if doc_obj.get("_save", True) else "config check")

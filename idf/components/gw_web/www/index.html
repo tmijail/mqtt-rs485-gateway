@@ -36,7 +36,8 @@ td input,td select{width:100%;margin:0;padding:3px 4px}
 
 <section id="tab-status">
  <div class="card"><h2>Equipo</h2><div id="st-dev" class="grid"></div></div>
- <div class="card"><h2>Red y MQTT</h2><div id="st-net"></div></div>
+ <div class="card"><h2>Red y MQTT</h2><div id="st-net"></div>
+  <div class="row"><button id="rebirth" title="Send the NBIRTH and every DBIRTH again, with the same bdSeq. Use it when a host shows alias_N in place of the tag names.">Rebirth</button><span id="rb-msg" class="mut"></span></div></div>
  <div class="card"><h2>Dispositivos Modbus</h2><div id="st-mb" class="mut">sin dispositivos</div></div>
  <div class="card"><h2>E/S locales</h2><div id="st-io"></div></div>
  <div class="card"><h2>Firmware</h2><div id="st-fw" class="mut"></div>
@@ -201,6 +202,7 @@ function sdmsg(t,c){const m=$("#sd-msg");m.textContent=t;m.className=c||"mut"}
 $("#sd-fmt").onclick=async()=>{const n=sdc.other_entries>0?`\nLa tarjeta tiene ${sdc.other_entries} archivos o carpetas que no son del gateway: también se borran.`:"";
  if(prompt(`Formatear la tarjeta microSD borra TODO su contenido, también las muestras que esperan su envío.${n}\nLa tarjeta es solo para el gateway. Después reinicie el equipo.\nEscriba FORMATEAR para confirmar:`)!=="FORMATEAR"){sdmsg("No se formateó: falta la confirmación.");return}
  const r=await api("POST","/api/card/format?confirm=1");sdmsg(r.status===202?"Formateo iniciado: el estado se actualiza arriba.":`No se formateó (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};
+$("#rebirth").onclick=async()=>{const r=await api("POST","/api/rebirth"),m=$("#rb-msg");m.textContent=r.status===202?"NBIRTH and every DBIRTH requested.":`No rebirth (${r.status}): ${(r.json||{}).error||""}`;m.className=r.status===202?"ok":"bad"};
 $("#sd-rst").onclick=async()=>{if(!confirm("¿Reiniciar el equipo?"))return;const r=await api("POST","/api/restart");sdmsg(r.status===202?"Reiniciando…":`No se reinició (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"":"bad")};
 $("#fw-get").onclick=async()=>{const u=$("#fw-url").value.trim();if(!u)return;const r=await api("POST","/api/firmware",JSON.stringify({url:u}));msg(r.status===202?"Descarga iniciada: el equipo se reinicia al terminar.":`No se inició (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};
 $("#fw-file").onchange=async e=>{const f=e.target.files[0];if(!f||!confirm(`¿Instalar ${f.name} (${f.size} B) y reiniciar?`))return;msg("Subiendo…");let r;try{r=await fetch("/api/firmware",{method:"POST",headers:{"Content-Type":"application/octet-stream","X-Requested-With":"gateway"},body:f})}catch(x){const w=(await api("GET","/api/firmware")).json;msg(`Subida interrumpida (${x.message})`+(w&&w.detail?`: ${w.detail}`:""),"bad");return}let j=null;try{j=await r.json()}catch(x){}msg(r.status===200?"Imagen instalada: reiniciando en la nueva versión.":`Rechazada (${r.status}): ${(j||{}).error||""}`,r.status===200?"ok":"bad")};

@@ -100,8 +100,8 @@ void gw_edge_request_restart_discard(void);
 /** FW-1: the firmware update's state changed (gw_fw hook; any task, never blocks). */
 void gw_edge_notify_firmware(void);
 
-/** CFG-6: re-issue NBIRTH and every DBIRTH (as NCMD Node Control/Rebirth). False if no
- *  Sparkplug session is up. */
+/** CFG-6, #171 (shell and REST API): re-issue NBIRTH and every DBIRTH (as NCMD Node
+ *  Control/Rebirth, with the same bdSeq). False if no Sparkplug session is up. */
 bool gw_edge_request_rebirth(void);
 
 #ifdef __cplusplus

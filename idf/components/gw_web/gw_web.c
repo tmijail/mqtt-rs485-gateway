@@ -583,6 +583,26 @@ static esp_err_t restart_post(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ---------- #171: POST /api/rebirth ---------- */
+
+/* The NBIRTH and every DBIRTH again, with the same bdSeq, as an NCMD Node Control/Rebirth (and
+ * the shell's rebirth): for a host that shows the tags as alias_<n> after its own restart and
+ * does not ask for a rebirth. Same checks as every write (CSRF, then the password). */
+static esp_err_t rebirth_post(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    if (s_ctx.mode != GW_WEB_NORMAL || !gw_edge_request_rebirth()) {
+        return refuse_body(req, "409 Conflict",
+                           s_ctx.mode != GW_WEB_NORMAL
+                               ? "no Sparkplug session: the gateway has no valid configuration"
+                               : "no Sparkplug session: the gateway is not connected to the broker");
+    }
+    ESP_LOGI(TAG, "rebirth requested through the REST API");
+    return send_json(req, "202 Accepted", "{\"ok\":true,\"rebirth\":true}\n");
+}
+
 /* ---------- #139: POST /api/card/format?confirm=1 ---------- */
 
 /* The UI's text for the answers that are not "started" (the shell has them in English). */
@@ -1132,7 +1152,7 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
     hc.server_port = ctx->cfg->web.port;
     hc.task_priority = 3;
     hc.stack_size = 8192;            /* configuration validation runs in this task */
-    hc.max_uri_handlers = 12;
+    hc.max_uri_handlers = 14;
     hc.max_open_sockets = 4;
     hc.lru_purge_enable = true;
     const char *cert = NULL, *key = NULL;
@@ -1169,7 +1189,7 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
                            h_status = {status_get}, h_config_get = {config_get},
                            h_config_put = {config_put}, h_restart = {restart_post},
                            h_fw_get = {firmware_get}, h_fw_post = {firmware_post},
-                           h_card_format = {card_format_post};
+                           h_card_format = {card_format_post}, h_rebirth = {rebirth_post};
     static const struct {
         const char *uri;
         httpd_method_t method;
@@ -1185,6 +1205,7 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         {"/api/firmware", HTTP_GET, &h_fw_get},     /* FW-1 */
         {"/api/firmware", HTTP_POST, &h_fw_post},
         {"/api/card/format", HTTP_POST, &h_card_format},   /* #139 */
+        {"/api/rebirth", HTTP_POST, &h_rebirth},           /* #171 */
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         const httpd_uri_t u = {.uri = uris[i].uri, .method = uris[i].method, .handler = guarded,

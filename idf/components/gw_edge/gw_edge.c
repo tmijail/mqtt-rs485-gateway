@@ -1476,7 +1476,7 @@ static void reconcile(void)
     gw_node_set_time_synced(s_node, atomic_load(&s_time_synced));
     sync_firmware();
     if (atomic_exchange(&s_rebirth_req, false) && s_node->online) {
-        ESP_LOGI(TAG, "rebirth requested from the console");
+        ESP_LOGI(TAG, "rebirth requested from the shell or the REST API");
         gw_node_rebirth(s_node);
     }
     /* online: DDATA/NDATA; offline with store & forward: the same changes into the store */

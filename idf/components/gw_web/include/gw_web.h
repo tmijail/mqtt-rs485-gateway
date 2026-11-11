@@ -12,6 +12,9 @@
  *   GET  /api/firmware          FW-1: running version, slot, update state and progress
  *   POST /api/firmware          FW-1: {"url": "https://..."} (application/json) downloads an
  *                               image; any other content type uploads the body as the image
+ *   POST /api/card/format       #139: format the microSD card (?confirm=1)
+ *   POST /api/rebirth           #171: NBIRTH and every DBIRTH again, same bdSeq (202; 409
+ *                               without a Sparkplug session)
  *
  * Every request needs HTTP Basic auth: the configured web.username and web.password, or,
  * while no web password is set, user "admin" with the device's commissioning password.
