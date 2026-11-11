@@ -61,6 +61,8 @@ To use images that you built before, add `-e E2E_PREBUILT=<dir>` and `-e E2E_PLA
 
 A check fails when an assertion is FAIL and the harness cannot explain it. The harness explains a FAIL only when it can prove a known cause from the messages that it captured (`KNOWN_RULES` in `tools/e2e/tck.py`). Such a FAIL shows `(known: <reason>)`, and it does not make the check fail.
 
+If a test gives no result, the scenario runs it one more time and shows `no result ... one more attempt`. This is a fault of the TCK extension, not of the gateway (`idf/README.md` §4.6). The run records it in `retries` of `results.json`.
+
 A NOT EXECUTED result is not a failure. It applies to an assertion that the test cannot examine, for example the MQTT 5 assertion in the MQTT 3.1.1 run, or the template parameters that the gateway does not use.
 
 ## 4. Make a new TCK installation

@@ -242,10 +242,14 @@ class Console:
         return None
 
     def close(self):
+        """Disconnect, and wait at most 5 s for the network thread (a daemon): with a HiveMQ that
+        does not answer, paho's loop_stop() can wait for ever."""
         if not self.closed:
             self.closed = True
-            self.c.loop_stop()
             self.c.disconnect()
+            t = threading.Thread(target=self.c.loop_stop, daemon=True)
+            t.start()
+            t.join(5)
 
 
 def gateway_config(h, protocol, backup=False):
@@ -289,6 +293,18 @@ def run(h, args, work, slave):
             name = f"{test}-mqtt{protocol.replace('.', '')}"
             print(f"[TCK] {test} (MQTT {protocol}): start", flush=True)
             rows, notes = run_one(h, args, work, slave, root, test, protocol, name)
+            if not rows:
+                # The TCK gave no result: the extension hung (seen once: its simulated host
+                # connects to HiveMQ from inside the publish interceptor and did not return).
+                # A fault of the TCK, never a result of an assertion: one more attempt, with a
+                # new HiveMQ and a new boot. A FAIL is never repeated.
+                print(f"[TCK] {test} (MQTT {protocol}): no result ({'; '.join(notes)}): "
+                      "one more attempt", flush=True)
+                h.RETRIES.append({"scenario": f"tck {name}", "qemu": "no TCK result",
+                                  "fault": None, "error": "; ".join(notes),
+                                  "discarded_checks": []})
+                rows, again = run_one(h, args, work, slave, root, test, protocol, f"{name}-2")
+                notes = [f"attempt 1 gave no result ({'; '.join(notes)})"] + again
             table += rows
             fails = [r for r in rows if r["status"] == "FAIL" and not r["known"]]
             known = [r for r in rows if r["status"] == "FAIL" and r["known"]]
@@ -386,14 +402,16 @@ def run_one(h, args, work, slave, root, test, protocol, name):
                 notes.append(f"slave restart: {e}")
         if gw is not None:
             gw.kill()
+        # HiveMQ first: a QoS 1 message that a hung HiveMQ never acknowledged keeps paho's
+        # loop_stop() waiting until the socket closes
+        hmq.stop()
+        if b2 is not None:
+            b2.terminate()
+            b2.wait()
         for o in (obs, obs2):
             if o is not None:
                 o.close()
         console.close()
-        if b2 is not None:
-            b2.terminate()
-            b2.wait()
-        hmq.stop()
     (work / f"tck-{name}.result.txt").write_text(text or "")
     (work / f"tck-{name}.console.txt").write_text(
         "".join(f"{t:.2f} {topic} {payload}\n" for t, topic, payload in console.lines))

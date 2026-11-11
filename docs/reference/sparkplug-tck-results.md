@@ -10,8 +10,8 @@ This document gives the result of each assertion of the Eclipse Sparkplug TCK 3.
 | TCK | Eclipse Sparkplug TCK 3.0.0 (`Eclipse-Sparkplug-TCK-3.0.0.zip`), from the tag `v3.0.0` |
 | Broker | HiveMQ CE 2025.5 with the TCK extension; mosquitto 2.0.18 as the second MQTT server of `MultipleBrokerTest` |
 | Java | Eclipse Temurin 21.0.13 |
-| Date | 2026-11-11, three runs with the same results; the tables show the last run |
-| Duration | 262 s for the 14 tests (7 tests × 2 MQTT versions) |
+| Date | 2026-11-11, four runs with the same results; the tables show a run with the two MQTT versions |
+| Duration | 262 to 270 s for the 14 tests (7 tests × 2 MQTT versions) |
 
 ## Legend
 
