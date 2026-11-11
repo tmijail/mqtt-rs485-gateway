@@ -5652,11 +5652,19 @@ def check_panic_during_traffic(gw, obs, slave, nbirth_t):
     while the gateway restarts used to hang the next boot in uart_driver_install(). Unit 1
     answers 120 ms late, and the panic is sent right after one of its requests reached the
     slave, so the answer lands during the panic handler. Every boot must come back (NBIRTH with
-    reset reason "panic"); a panic restart does not quiesce the bus."""
+    reset reason "panic"); a panic restart does not quiesce the bus. Issue #144: three crash
+    resets in a row start safe mode, so a restart by the operator (shell 'restart', which clears
+    the boot-loop counter) comes before the third panic."""
     outcomes = []
     slave.delay = 0.12
     try:
-        for _ in range(3):
+        for i in range(3):
+            if i == 2:
+                obs.drain()
+                gw.console("restart")
+                if obs.wait(nbirth_t, 60) is None:
+                    outcomes.append("no NBIRTH after the operator restart")
+                    break
             n0 = len(slave.reads)
             end = time.monotonic() + 5
             while time.monotonic() < end and not any(r[0] == 1 for r in list(slave.reads)[n0:]):
@@ -7226,10 +7234,17 @@ def run(args, log, slave, broker, conf, work):
         return ok, (info.stderr.strip().splitlines() or [""])[-1][:90]
 
     n = 0
+    crashes = 1   # issue #144: the boot-loop counter after the last panic of #65 (3 start safe mode)
     while sum(1 for a in attempts if a["kind"] != "emulator") < args.panics:
+        if crashes >= 2:   # a restart by the operator clears the counter
+            obs.drain()
+            gw.console("restart")
+            obs.wait(nbirth_t, 60)
+            crashes = 0
         obs.drain()
         since = time.monotonic()
         gw.console("panic")
+        crashes += 1
         nb = obs.wait(nbirth_t, 40)
         lines = [l for t, l in gw.lines if t >= since]
         (work / f"uart0-panic-{n}.log").write_text("\n".join(lines))
