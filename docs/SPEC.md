@@ -235,6 +235,9 @@ Encuesta N esclavos Modbus RTU por el RS485 integrado, con los tipos de 16 y 32 
 - `bool` solo vale en `coil` y `discrete`; fuera del MVP, también como bit de un registro `holding` o `input` (clave `bit`, §6.1).
 - `writable` solo vale en `coil` y `holding`.
 - Si `client_id` está vacío se usa `edge_node_id`.
+- Names (issue #162). `group_id`, `edge_node_id`, `primary_host_id`, the device `name` and `type`, the tag `name` and `units` must be valid UTF-8. The Sparkplug IDs must not contain the control characters U+0080–U+009F.
+- Two device names must not differ only in case (`tck-id-case-sensitivity-sparkplug-ids`). Two device types and two tag names of one device must not differ only in case (`tck-id-case-sensitivity-metric-names`). The comparison folds ASCII letters only.
+- A tag name must not also be a folder of another tag name of the same device (`A` and `A/B`). A device `type` must not be the name or the first folder of a node metric (`bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info`, `Firmware Update`).
 
 **Límites del MVP:** hasta 16 dispositivos, 64 tags por dispositivo y 256 tags en total.
 
@@ -482,7 +485,7 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 
 | Clave | Tipo | Defecto | Regla |
 |---|---|---|---|
-| `type` | texto | `""` | Hasta 39 caracteres, sin `/ + #` ni `bdSeq`. Vacío = sin plantilla (una métrica por tag, como el MVP) |
+| `type` | text | `""` | A maximum of 39 characters, valid UTF-8, no `/ + #`. Not the name or the folder of a node metric (§6, issue #162). Two types must not differ only in case. Empty = no template (one metric for each tag, as in the MVP) |
 
 - Todos los dispositivos de un mismo `type` tienen los mismos tags: mismos nombres y datatypes, en el mismo orden (área, dirección, escala y unidades pueden cambiar). Si no, la configuración se rechaza con la ruta `devices[i].type`.
 - Las definiciones juntas describen como mucho **64 tags** (cada tipo cuenta una vez): el NBIRTH las lleva todas.
@@ -687,6 +690,8 @@ The gateway does not read all of the body of a request without credentials or fr
 | `GET /api/config` | Exports the saved configuration, with the secrets masked. `?download=1` sends it as a file |
 | `PUT /api/config` (or `POST`) | Imports: validates, saves atomically (a temporary file and `rename`) and restarts in order (NDEATH). `?dry_run=1` only validates. Error: `400 {"ok":false,"error":"…","path":"devices[0].tags[1].type","line":0,"column":0}`; `413` above `CONFIG_GW_CONFIG_MAX_BYTES` |
 | `POST /api/restart` | Restarts in order |
+| `POST /api/rebirth` | Issue #171: sends the NBIRTH and all the DBIRTH messages again, with the same bdSeq, as an NCMD `Node Control/Rebirth` does. Use it when a host shows the tags as `alias_<n>` after its own restart. `202 {"ok":true,"rebirth":true}`. `409` when there is no Sparkplug session (not connected, recovery, commissioning) |
+| `POST /api/modbus/read` | Issue #182: one Modbus read for commissioning, through the task that owns the bus (MB-16), as the shell `mbread` does. Body: `{"unit": 1-247, "area": "coil"\|"discrete"\|"holding"\|"input", "address": 0-65535}`, optional `"count"` (1–16, default 1 or the size of the type), `"type"` (a tag type; `bool` only for `coil`/`discrete`; `string` and `bytes` take `count` registers) and `"word_order"` (only with `type`). `200 {"ok":true,"unit":1,"area":"input","address":0,"count":2,"values":[17254,32768],"type":"float32","word_order":"ABCD","value":230.5}`. A Modbus error: `504` (`"result":"timeout"`) or `502` (`crc`, `frame`, or `exception` with `"exception"`: the code), with `error`. `503` when the bus does not run the read in time or another test read waits. `400` for a request that is not correct. `409` in recovery and in commissioning (the bus does not run). Read only |
 | `POST /api/firmware` | FW-1: `application/json` with `{"url": "https://…"}` (download), or `application/octet-stream` with the image as the body. Another `Content-Type` gets `415` |
 | `POST /api/card/format?confirm=1` | SPB-14, issue #139: starts a format of the microSD card in the background, and returns at once. It deletes everything on the card. Without `?confirm=1`: `400`. `202 {"ok":true,"started":true}` when the format starts. `409` when a format runs. `501` when the build has no card (QEMU) or the board has no PSRAM. `503` when there is no memory for the format task. The errors have `reason`: `busy`, `no_support`, `no_psram` or `no_memory`. A card that does not answer ends the format as `failed` (`card_format` in `/api/status`) |
 | `GET /api/status` | The live state (also in recovery and in commissioning). Refer to the description below |

@@ -5208,6 +5208,15 @@ def run_config_failsafe(args, work, slave):
               f"password {'read' if pw else 'not found'}; /api/status {st} mode "
               f"{status.get('mode')!r} error {status.get('config', {}).get('error')!r}; / {page[0]}")
         if name == "semantic-error":
+            # issues #182 and #171: no bus and no Sparkplug session in recovery: a clear 409
+            st_mb, _, b_mb = http("POST", "/api/modbus/read", {"unit": 1, "area": "holding", "address": 10},
+                                  auth=("admin", pw or "?"))
+            st_rb, _, b_rb = http("POST", "/api/rebirth", auth=("admin", pw or "?"))
+            e_mb, e_rb = (as_json(b_mb) or {}).get("error", ""), (as_json(b_rb) or {}).get("error", "")
+            check("CFG-3 issues #182 and #171 recovery: POST /api/modbus/read and POST /api/rebirth "
+                  "-> 409 with the reason (no bus, no Sparkplug session)",
+                  st_mb == 409 and "recovery mode" in e_mb and st_rb == 409 and "no Sparkplug session" in e_rb,
+                  f"modbus/read {st_mb} {e_mb!r}; rebirth {st_rb} {e_rb!r}")
             # the rejected document can be exported, fixed and saved: the gateway then starts
             st2, _, b2 = http("GET", "/api/config", auth=("admin", pw or "?"))
             fixed = as_json(b2) or {}
@@ -5902,6 +5911,30 @@ def run_web(args, work):
           f"{status.get('mqtt')}, {DEVICE} online {devs.get(DEVICE, {}).get('online')}, Voltage "
           f"{volt[0] if volt else None}")
 
+    # Issue #167: a <select> without the current value shows its first option, and a save writes
+    # it back (a CDAB tag became "big"). The served page's lists must hold every value of the
+    # configuration (float64, CDAB, DCBA, BADC tags here): then a save with no change sends the
+    # exported document unchanged (the form keeps an absent optional key absent), and it is valid.
+    text = page.decode(errors="replace")
+    lists = {}
+    for name in ("PAR", "AREA", "TYPE", "WO"):
+        m = re.search(r"\b%s=\[([^\]]*)\]" % name, text)
+        lists[name] = re.findall(r'"([^"]*)"', m.group(1)) if m else []
+    used = [("PAR", doc.get("rs485", {}).get("parity", "none"))]
+    for d in doc.get("devices", []):
+        for t in d.get("tags", []):
+            used += [("AREA", t.get("area")), ("TYPE", t.get("type"))]
+            if "word_order" in t:
+                used.append(("WO", t["word_order"]))
+    missing = sorted({f"{k}:{v}" for k, v in used if v not in lists[k]})
+    st_rt, _, b_rt = http("PUT", "/api/config?dry_run=1", body)   # the exported bytes, unchanged
+    check("CFG-3 issue #167: the form's lists (PAR, AREA, TYPE, WO) hold every value of the "
+          "configuration (float64, CDAB, DCBA, BADC), and the unchanged exported document is valid",
+          st_p == 200 and not missing and ("TYPE", "float64") in used and ("WO", "CDAB") in used
+          and st_rt == 200 and (as_json(b_rt) or {}).get("saved") is False,
+          f"lists {[f'{k}={len(v)}' for k, v in lists.items()]}; not in the lists: "
+          f"{missing or 'none'}; PUT dry run {st_rt} {b_rt.decode(errors='replace').strip()}")
+
     bad = json.loads(json.dumps(doc))
     bad["devices"][0]["tags"][0]["type"] = "float16"   # invalid (float64 is a type since MB-6)
     st3, _, b3 = http("PUT", "/api/config", bad)
@@ -5957,6 +5990,24 @@ def run_web(args, work):
           shown and len(masked_sh) >= 2 and not leaked and reg and flt and absent,
           f"show: node {bool(shown)}, {len(masked_sh)} masked secrets, leaks {len(leaked)}; "
           + " | ".join(gw.find(r"^mbread: ", asked)))
+    # Issue #182: the same test read through the REST API (the bus owner runs it, MB-16)
+    def mb_read(req, **kw):
+        st, _, b = http("POST", "/api/modbus/read", req, timeout=20, **kw)
+        return st, as_json(b) or {"raw": b.decode(errors="replace")[:120]}
+    r_reg = mb_read({"unit": 1, "area": "holding", "address": 10})
+    r_flt = mb_read({"unit": 1, "area": "input", "address": 0, "type": "float32"})
+    r_dead = mb_read({"unit": 3, "area": "holding", "address": 0})
+    r_bad = mb_read({"unit": 1, "area": "holding", "address": 0, "count": 17})
+    r_csrf = mb_read({"unit": 1, "area": "holding", "address": 10}, headers={"X-Requested-With": None})
+    check("CFG-6 issue #182: POST /api/modbus/read through the bus owner (register, float32 value, "
+          "unit 3 without a slave -> no value, count 17 -> 400, no CSRF header -> 403)",
+          r_reg[0] == 200 and r_reg[1].get("values") == [50]
+          and r_flt[0] == 200 and r_flt[1].get("values") == [17254, 32768] and r_flt[1].get("value") == 230.5
+          # as the shell check of unit 9: no answer, or noise taken for a frame in the emulator
+          and (r_dead[0], r_dead[1].get("result")) in ((504, "timeout"), (502, "frame"))
+          and "value" not in r_dead[1] and r_bad[0] == 400 and "1-16" in r_bad[1].get("error", "")
+          and r_csrf[0] == 403,
+          " | ".join(f"{st} {j}" for st, j in (r_reg, r_flt, r_dead, r_bad, r_csrf)))
     obs.drain()
     asked = time.monotonic()
     gw.console("rebirth")
@@ -5968,6 +6019,26 @@ def run_web(args, work):
           rb and rb[2].seq == 0 and dbs == [1, 2] and said,
           f"NBIRTH {'seq %d' % rb[2].seq if rb else 'missing'}, DBIRTH seq {dbs}, shell answer "
           f"{bool(said)}")
+    # Issue #171: the same through the REST API. Without the CSRF header: 403 and no rebirth.
+    obs.drain()
+    t_nc = time.monotonic()
+    st_nc, _, b_nc = http("POST", "/api/rebirth", headers={"X-Requested-With": None})
+    time.sleep(2)
+    forged = [m for m in CAPTURE if m[0] >= t_nc and m[1] == f"{T}/NBIRTH/{node2}"]
+    asked = time.monotonic()
+    st_rb, _, b_rb = http("POST", "/api/rebirth")
+    rb2 = obs.wait(f"{T}/NBIRTH/{node2}", 5)
+    obs.wait(f"{T}/DBIRTH/{node2}/{BULK}", 5)
+    dbs2 = sorted(m[2].seq for m in CAPTURE if m[0] >= asked and m[1].startswith(f"{T}/DBIRTH/{node2}/"))
+    bd0, bd2 = (bdseq_of(nb2[2]) if nb2 else None), (bdseq_of(rb2[2]) if rb2 else None)
+    check("CFG-4 issue #171: POST /api/rebirth re-issues NBIRTH (seq 0, the same bdSeq) and the "
+          "DBIRTHs; without the CSRF header -> 403 and no rebirth",
+          st_nc == 403 and not forged and st_rb == 202 and (as_json(b_rb) or {}).get("ok")
+          and rb2 and rb2[2].seq == 0 and bd2 is not None and bd2 == bd0 and dbs2 == [1, 2],
+          f"no header {st_nc} {b_nc.decode(errors='replace').strip()}, {len(forged)} NBIRTH after it; "
+          f"POST {st_rb} {b_rb.decode(errors='replace').strip()}; NBIRTH "
+          f"{'seq %d' % rb2[2].seq if rb2 else 'missing'}, bdSeq {bd2} (session NBIRTH {bd0}), "
+          f"DBIRTH seq {dbs2}")
 
     def paste(doc_obj):
         gw.console("config load" if doc_obj.get("_save", True) else "config check")

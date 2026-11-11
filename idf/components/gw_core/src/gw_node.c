@@ -11,6 +11,8 @@
 
 static const char *TAG = "spb";
 
+/* The node's metric names. Issue #162: a device type is an NBIRTH metric too; check_device_type
+ * in gw_config.c refuses these names and their first folders: keep its list in step. */
 static const char *const k_di_names[GW_NODE_IO_COUNT] = {"DI/1", "DI/2", "DI/3", "DI/4",
                                                          "DI/5", "DI/6", "DI/7", "DI/8"};
 static const char *const k_do_names[GW_NODE_IO_COUNT] = {"DO/1", "DO/2", "DO/3", "DO/4",

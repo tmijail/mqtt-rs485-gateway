@@ -7,11 +7,13 @@
 #include <stdlib.h>
 #include <float.h>
 #include <string.h>
+#include <strings.h>
 
 #include "cJSON.h"
 #include "gw_config_priv.h"
 #include "gw_port.h"
 #include "gw_sfspill.h"
+#include "gw_utf8.h"
 
 /* ---------- parser memory ---------- */
 
@@ -402,7 +404,26 @@ static bool get_ipv6(const cJSON *obj, const char *key, const char *path, uint8_
     return true;
 }
 
-/* Sparkplug identifiers become MQTT topic levels: no '/', '+', '#', no control chars. */
+/* Issue #162: text that goes into a Sparkplug string (a metric name, a template name, the
+ * engineering units) must be well-formed UTF-8: a protobuf decoder may refuse it otherwise. */
+static bool check_utf8(const char *s, const char *path, gw_cfg_err_t *err)
+{
+    size_t n = strlen(s);
+    for (size_t i = 0; i < n;) {
+        size_t k = gw_utf8_seq(s + i, n - i);
+        if (k == 0) {
+            return fail(err, path, "not valid UTF-8 (byte 0x%02x at offset %u)",
+                        (unsigned char)s[i], (unsigned)i);
+        }
+        i += k;
+    }
+    return true;
+}
+
+/* Sparkplug identifiers become MQTT topic levels: no '/', '+', '#', no control chars, and
+ * well-formed UTF-8 (issue #162: tck-id-topic-structure-namespace-valid-group-id,
+ * -valid-edge-node-id, -valid-device-id; MQTT 3.1.1 section 1.5.3: a broker may close the
+ * connection for a topic that is not UTF-8 or that has a control character, also U+0080-U+009F). */
 static bool check_topic_id(const char *s, const char *path, bool allow_empty, gw_cfg_err_t *err)
 {
     if (s[0] == '\0') {
@@ -414,7 +435,36 @@ static bool check_topic_id(const char *s, const char *path, bool allow_empty, gw
                         *c >= 0x20 ? *c : '?');
         }
     }
+    if (!check_utf8(s, path, err)) {
+        return false;
+    }
+    size_t n = strlen(s);
+    for (size_t i = 0; i < n;) {
+        size_t k = gw_utf8_seq(s + i, n - i);
+        unsigned long cp = gw_utf8_code(s + i, k);
+        if (cp >= 0x80 && cp <= 0x9f) {
+            return fail(err, path, "control character U+%04lX not allowed", cp);
+        }
+        i += k;
+    }
     return true;
+}
+
+/* Issue #162: Sparkplug IDs and metric names SHOULD NOT differ only in case
+ * (tck-id-case-sensitivity-sparkplug-ids, tck-id-case-sensitivity-metric-names): a host may
+ * store them in a case-insensitive system. The comparison folds ASCII letters only. */
+static bool same_but_case(const char *a, const char *b)
+{
+    return strcmp(a, b) != 0 && strcasecmp(a, b) == 0;
+}
+
+/* Issue #162: true if metric name @p a is a folder of metric name @p b ("A" and "A/B"):
+ * the slashes of a metric name make folders, and "a defined folder should always remain a
+ * folder" (Sparkplug B 3.0, chapter 6, Metric: name). Without case, as the comparison above. */
+static bool folder_of(const char *a, const char *b)
+{
+    size_t n = strlen(a);
+    return strncasecmp(a, b, n) == 0 && b[n] == '/';
 }
 
 /* ---------- sections ---------- */
@@ -1177,6 +1227,15 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
         join(p, sizeof(p), path, "name");
         return fail(err, p, "no puede estar vacío");
     }
+    /* issue #162: the metric name and the engUnit property are Sparkplug strings */
+    join(p, sizeof(p), path, "name");
+    if (!check_utf8(t->name, p, err)) {
+        return false;
+    }
+    join(p, sizeof(p), path, "units");
+    if (!check_utf8(t->units, p, err)) {
+        return false;
+    }
     bool bit_area = t->area == GW_AREA_COIL || t->area == GW_AREA_DISCRETE;
     if (bit_area && t->type != GW_TYPE_BOOL) {
         join(p, sizeof(p), path, "type");
@@ -1256,11 +1315,23 @@ static bool check_device_type(const gw_config_t *cfg, const gw_device_cfg_t *d, 
     if (!check_topic_id(d->type, p, false, err)) {
         return false;
     }
-    if (strcmp(d->type, "bdSeq") == 0) {
-        return fail(err, p, "'bdSeq' es una métrica del nodo");
+    /* The definition is an NBIRTH metric named <type>, next to the node's own metrics (gw_node):
+     * not one of them, nor one of their folders, also without case (issue #162). */
+    static const char *const node_names[] = {"bdSeq", "DI", "DO", "Counter", "Node Control",
+                                             "Node Info", "Firmware Update"};
+    for (size_t k = 0; k < sizeof(node_names) / sizeof(node_names[0]); k++) {
+        if (strcasecmp(d->type, node_names[k]) == 0) {
+            return fail(err, p, "'%s' is the name or a folder of the node metric '%s'", d->type,
+                        node_names[k]);
+        }
     }
     for (uint16_t j = 0; j < cfg->device_count; j++) {
         const gw_device_cfg_t *o = &cfg->devices[j];
+        /* issue #162: tck-id-case-sensitivity-metric-names */
+        if (same_but_case(o->type, d->type)) {
+            return fail(err, p, "'%s' differs only in case from the type '%s' of devices[%u] "
+                                "(Sparkplug metric names should not)", d->type, o->type, j);
+        }
         if (strcmp(o->type, d->type) != 0) {
             continue;
         }
@@ -1351,10 +1422,21 @@ static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_
         if (!parse_tag(it, tp, t, err)) {
             return false;
         }
+        join(p, sizeof(p), tp, "name");
         for (uint16_t j = d->first_tag; j < cfg->tag_count; j++) {
-            if (strcmp(cfg->tags[j].name, t->name) == 0) {
-                join(p, sizeof(p), tp, "name");
+            const char *other = cfg->tags[j].name;
+            unsigned k = (unsigned)(j - d->first_tag);
+            if (strcmp(other, t->name) == 0) {
                 return fail(err, p, "nombre de tag duplicado '%s'", t->name);
+            }
+            /* issue #162: tck-id-case-sensitivity-metric-names */
+            if (same_but_case(other, t->name)) {
+                return fail(err, p, "'%s' differs only in case from tags[%u] '%s' (Sparkplug "
+                                    "metric names should not)", t->name, k, other);
+            }
+            if (folder_of(other, t->name) || folder_of(t->name, other)) {
+                return fail(err, p, "'%s' and tags[%u] '%s': a metric name cannot also be a "
+                                    "folder of another metric", t->name, k, other);
             }
         }
         cfg->tag_count++;
@@ -1386,10 +1468,15 @@ static bool parse_devices(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err
             return false;
         }
         for (uint16_t j = 0; j < cfg->device_count; j++) {
+            char p[48];
+            snprintf(p, sizeof(p), "%s.name", path);
             if (strcmp(cfg->devices[j].name, d->name) == 0) {
-                char p[48];
-                snprintf(p, sizeof(p), "%s.name", path);
                 return fail(err, p, "nombre de dispositivo duplicado '%s'", d->name);
+            }
+            /* issue #162: tck-id-case-sensitivity-sparkplug-ids */
+            if (same_but_case(cfg->devices[j].name, d->name)) {
+                return fail(err, p, "'%s' differs only in case from devices[%u] '%s' (Sparkplug "
+                                    "device IDs should not)", d->name, j, cfg->devices[j].name);
             }
         }
         if (!check_device_type(cfg, d, path, &template_tags, err)) {
@@ -1545,4 +1632,46 @@ uint16_t gw_tag_width(const gw_tag_cfg_t *tag)
     default:
         return 1;   /* 16-bit types, coils, discrete inputs and register bits */
     }
+}
+
+static int name_index(const char *name, const char *const *names, size_t n)
+{
+    for (size_t i = 0; name != NULL && i < n; i++) {
+        if (strcmp(name, names[i]) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+bool gw_config_area_of(const char *name, gw_area_t *out)
+{
+    int i = name_index(name, k_area_names, sizeof(k_area_names) / sizeof(k_area_names[0]));
+    if (i >= 0) {
+        *out = (gw_area_t)i;
+    }
+    return i >= 0;
+}
+
+bool gw_config_type_of(const char *name, gw_type_t *out)
+{
+    int i = name_index(name, k_type_names, TYPE_COUNT);
+    if (i >= 0) {
+        *out = (gw_type_t)i;
+    }
+    return i >= 0;
+}
+
+const char *gw_config_type_name(gw_type_t type)
+{
+    return (size_t)type < TYPE_COUNT ? k_type_names[type] : "?";
+}
+
+bool gw_config_word_order_of(const char *name, gw_word_order_t *out)
+{
+    int i = name_index(name, k_word_names, sizeof(k_word_names) / sizeof(k_word_names[0]));
+    if (i >= 0) {
+        *out = k_word_values[i];
+    }
+    return i >= 0;
 }

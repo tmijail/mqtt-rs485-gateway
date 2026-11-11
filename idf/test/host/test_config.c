@@ -5,6 +5,7 @@
 
 #include "gw_config.h"
 #include "gw_sfspill.h"
+#include "gw_utf8.h"
 #include "support.h"
 #include "unity.h"
 
@@ -821,6 +822,119 @@ static void test_device_types(void)
     ASSERT_REJECTED(parse(big), "devices[2].type: los tipos de dispositivo describen más de 64 tags");
 }
 
+/* Issue #162: well-formed UTF-8 (RFC 3629) */
+static void test_utf8_sequences(void)
+{
+    TEST_ASSERT_TRUE(gw_utf8_valid(""));
+    TEST_ASSERT_TRUE(gw_utf8_valid("Planta Nº1 \xc3\xa9t\xc3\xa9 \xe2\x82\xac \xf0\x9f\x98\x80"));
+    TEST_ASSERT_TRUE(gw_utf8_valid("\xed\x9f\xbf\xee\x80\x80\xf4\x8f\xbf\xbf"));   /* U+D7FF, U+E000, U+10FFFF */
+    static const char *const bad[] = {
+        "\x80",                 /* continuation byte alone */
+        "a\xc3",                /* truncated */
+        "\xc0\xaf",             /* overlong '/' */
+        "\xc1\xbf",             /* overlong */
+        "\xe0\x80\xaf",         /* overlong */
+        "\xf0\x80\x80\xaf",     /* overlong */
+        "\xed\xa0\x80",         /* surrogate U+D800 */
+        "\xed\xbf\xbf",         /* surrogate U+DFFF */
+        "\xf4\x90\x80\x80",     /* U+110000 */
+        "\xf5\x80\x80\x80",     /* lead byte F5 */
+        "\xff",
+        "\xe2\x82",             /* truncated */
+        "\xe2\x28\xa1",         /* bad continuation */
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        TEST_ASSERT_FALSE_MESSAGE(gw_utf8_valid(bad[i]), bad[i]);
+    }
+    TEST_ASSERT_EQUAL(2, gw_utf8_seq("\xc2\x85", 2));
+    TEST_ASSERT_EQUAL_HEX32(0x85, gw_utf8_code("\xc2\x85", 2));
+    TEST_ASSERT_EQUAL_HEX32(0x1F600, gw_utf8_code("\xf0\x9f\x98\x80", 4));
+    TEST_ASSERT_EQUAL(0, gw_utf8_seq("\xc2\x85", 1));
+}
+
+/* Issue #162 (CFG-1): Sparkplug IDs and names: valid UTF-8, no two names that differ only in
+ * case (tck-id-case-sensitivity-sparkplug-ids, tck-id-case-sensitivity-metric-names), and no
+ * metric that is also a folder of another metric. */
+static void test_sparkplug_names(void)
+{
+    char doc[1024];
+#define SPB_DOC(group, node)                                                                      \
+    (snprintf(doc, sizeof(doc),                                                                    \
+              "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"%s\",\"edge_node_id\":"    \
+              "\"%s\"}}", group, node), parse(doc))
+    TEST_ASSERT_TRUE_MESSAGE(SPB_DOC("Planta \xc3\xa9t\xc3\xa9", "GW\xe2\x82\xac"), err.msg);
+    ASSERT_REJECTED(SPB_DOC("G\xc3", "E"), "sparkplug.group_id: not valid UTF-8 (byte 0xc3 at offset 1)");
+    ASSERT_REJECTED(SPB_DOC("G", "\xc0\xaf" "E"), "sparkplug.edge_node_id: not valid UTF-8");
+    ASSERT_REJECTED(SPB_DOC("G", "E\xed\xa0\x80"), "sparkplug.edge_node_id: not valid UTF-8");
+    ASSERT_REJECTED(SPB_DOC("G\xc2\x85", "E"), "sparkplug.group_id: control character U+0085");
+    snprintf(doc, sizeof(doc), "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+             "\"edge_node_id\":\"E\",\"primary_host_id\":\"H\xff\"}}");
+    ASSERT_REJECTED(parse(doc), "sparkplug.primary_host_id: not valid UTF-8");
+#undef SPB_DOC
+
+    /* device IDs */
+#define DEV(name, type) "{\"name\":\"" name "\",\"unit_id\":1," type "\"tags\":[{\"name\":\"v\"," \
+                        "\"area\":\"input\",\"address\":0,\"type\":\"uint16\"}]}"
+#define DEVS(...) "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":" \
+                  "\"E\"},\"devices\":[" __VA_ARGS__ "]}"
+    TEST_ASSERT_TRUE_MESSAGE(parse(DEVS(DEV("Meter1", "") "," DEV("Meter2", ""))), err.msg);
+    ASSERT_REJECTED(parse(DEVS(DEV("Meter1", "") "," DEV("meter1", ""))),
+                    "devices[1].name: 'meter1' differs only in case from devices[0] 'Meter1'");
+    ASSERT_REJECTED(parse(DEVS(DEV("M\xe9ter", ""))), "devices[0].name: not valid UTF-8 (byte 0xe9");
+    /* device types (template definitions in the NBIRTH, next to the node metrics) */
+    TEST_ASSERT_TRUE_MESSAGE(parse(DEVS(DEV("A", "\"type\":\"Meter\",") "," DEV("B", "\"type\":\"Meter\","))),
+                             err.msg);
+    ASSERT_REJECTED(parse(DEVS(DEV("A", "\"type\":\"Meter\",") "," DEV("B", "\"type\":\"METER\","))),
+                    "devices[1].type: 'METER' differs only in case from the type 'Meter' of devices[0]");
+    ASSERT_REJECTED(parse(DEVS(DEV("A", "\"type\":\"bdSeq\","))),
+                    "devices[0].type: 'bdSeq' is the name or a folder of the node metric 'bdSeq'");
+    ASSERT_REJECTED(parse(DEVS(DEV("A", "\"type\":\"node info\","))),
+                    "the node metric 'Node Info'");
+    ASSERT_REJECTED(parse(DEVS(DEV("A", "\"type\":\"DI\","))), "the node metric 'DI'");
+    ASSERT_REJECTED(parse(DEVS(DEV("A", "\"type\":\"T\xf8\","))), "devices[0].type: not valid UTF-8");
+#undef DEV
+#undef DEVS
+
+    /* metric names: UTF-8, case, folders; also the engUnit property */
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse_tag("{\"name\":\"Temp \xc2\xb0" "C\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
+                  "\"units\":\"\xc2\xb0" "C\"},"
+                  "{\"name\":\"A/B\",\"area\":\"input\",\"address\":1,\"type\":\"int16\"},"
+                  "{\"name\":\"A/C\",\"area\":\"input\",\"address\":2,\"type\":\"int16\"},"
+                  "{\"name\":\"AB\",\"area\":\"input\",\"address\":3,\"type\":\"int16\"},"
+                  "{\"name\":\"A/BC\",\"area\":\"input\",\"address\":4,\"type\":\"int16\"}"),
+        err.msg);
+    ASSERT_REJECTED(parse_tag("{\"name\":\"T\xb0\",\"area\":\"input\",\"address\":0,\"type\":\"int16\"}"),
+                    "devices[0].tags[0].name: not valid UTF-8 (byte 0xb0 at offset 1)");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"T\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
+                              "\"units\":\"\xb0" "C\"}"),
+                    "devices[0].tags[0].units: not valid UTF-8");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"Temp\",\"area\":\"input\",\"address\":0,\"type\":\"int16\"},"
+                              "{\"name\":\"TEMP\",\"area\":\"input\",\"address\":1,\"type\":\"int16\"}"),
+                    "devices[0].tags[1].name: 'TEMP' differs only in case from tags[0] 'Temp'");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"A\",\"area\":\"input\",\"address\":0,\"type\":\"int16\"},"
+                              "{\"name\":\"A/B\",\"area\":\"input\",\"address\":1,\"type\":\"int16\"}"),
+                    "devices[0].tags[1].name: 'A/B' and tags[0] 'A': a metric name cannot also be "
+                    "a folder of another metric");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"x/A/B\",\"area\":\"input\",\"address\":0,\"type\":\"int16\"},"
+                              "{\"name\":\"x/a\",\"area\":\"input\",\"address\":1,\"type\":\"int16\"}"),
+                    "devices[0].tags[1].name: 'x/a' and tags[0] 'x/A/B'");
+    /* names in two devices do not conflict: each device has its own metrics (its DBIRTH) */
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+              "\"devices\":[{\"name\":\"A\",\"unit_id\":1,\"tags\":[{\"name\":\"v\",\"area\":\"input\","
+              "\"address\":0,\"type\":\"uint16\"}]},{\"name\":\"B\",\"unit_id\":2,\"tags\":[{\"name\":"
+              "\"v/x\",\"area\":\"input\",\"address\":1,\"type\":\"uint16\"}]},{\"name\":\"C\","
+              "\"unit_id\":3,\"tags\":[{\"name\":\"V\",\"area\":\"input\",\"address\":1,\"type\":"
+              "\"uint16\"}]}]}"),
+        err.msg);
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+                          "\"devices\":[{\"name\":\"B\",\"unit_id\":2,\"tags\":[{\"name\":"
+                          "\"V\",\"area\":\"input\",\"address\":0,\"type\":\"uint16\"},{\"name\":\"v/x\",\"area\":"
+                          "\"input\",\"address\":1,\"type\":\"uint16\"}]}]}"),
+                    "devices[0].tags[1].name: 'v/x' and tags[0] 'V'");
+}
+
 /* Issue #38: block reads per device. */
 static void test_device_block_reads(void)
 {
@@ -1232,6 +1346,8 @@ int main(void)
     RUN_TEST(test_eng_range);
     RUN_TEST(test_bytes_tags);
     RUN_TEST(test_device_types);
+    RUN_TEST(test_utf8_sequences);
+    RUN_TEST(test_sparkplug_names);
     RUN_TEST(test_device_block_reads);
     RUN_TEST(test_scan_classes);
     RUN_TEST(test_modbus_tcp_section);

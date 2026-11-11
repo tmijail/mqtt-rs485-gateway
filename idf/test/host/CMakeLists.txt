@@ -41,7 +41,7 @@ enable_testing()
 foreach(t test_mb_rtu test_mb_master test_conv test_logic test_config test_plan test_spb test_node
           test_poll test_dout test_netsel test_syslog test_auth test_cfgdoc test_button
           test_brokersel test_phost test_sf test_authlimit test_mbap test_localio test_buzz test_rtc
-          test_ota test_nvsraw test_cardfmt test_sfcfg)
+          test_ota test_nvsraw test_cardfmt test_sfcfg test_mbdiag)
     add_executable(${t} ${t}.c support.c)
     target_link_libraries(${t} PRIVATE gw_core unity)
     target_include_directories(${t} PRIVATE ${CMAKE_CURRENT_LIST_DIR})
@@ -94,6 +94,13 @@ target_compile_definitions(spb_dump PRIVATE
 add_test(NAME check_set_config
          COMMAND ${CMAKE_COMMAND} -DSRC=${IDF_PROJECT_DIR}/components/gw_edge/gw_edge.c
                  -P ${CMAKE_CURRENT_LIST_DIR}/check_set_config.cmake)
+
+# Issue #167: the option lists of the web UI's configuration form are the value sets of the
+# parser (a missing option silently changed a tag's word order on a save).
+add_test(NAME check_web_lists
+         COMMAND ${CMAKE_COMMAND} -DCONFIG_C=${IDF_PROJECT_DIR}/components/gw_core/src/gw_config.c
+                 -DINDEX_HTML=${IDF_PROJECT_DIR}/components/gw_web/www/index.html
+                 -P ${CMAKE_CURRENT_LIST_DIR}/check_web_lists.cmake)
 
 # Issue #83: the build's check of the sdkconfig against sdkconfig.defaults and its overlays.
 # fresh: matches; stale: DYNAMIC_BUFFER "is not set" from before #80 (fails, and only warns with
