@@ -36,7 +36,7 @@ SCENARIOS = (
     ("FW-1 OTA", ("ota", "ota-fw1")),
     ("issue #112 park in a long RS485 transaction", ("ota", "ota-park")),
     ("issue #97 OTA trial wiring", ("ota", "ota-wiring")),
-    ("issues #99/#101 OTA trial", ("ota", "ota-trial")),
+    ("issue #144 OTA self-check", ("ota", "ota-trial")),
     ("issues #67/#94 NVS migration", ("nvs",)),
     ("issue #109 full unencrypted NVS", ("nvs",)),
     ("issue #94 OTA to NVS encryption", ("nvs",)),
@@ -55,7 +55,7 @@ ONLY_NAMES = tuple(dict.fromkeys(n for _, names in SCENARIOS for n in names))
 # software AES and SHA of sdkconfig.qemu-psram). FW-1 OTA stays with PSRAM: on the board its
 # transfer buffers and its TLS session are in PSRAM. --only selects in any variant.
 DEFAULT_VARIANT_SCENARIOS = {"issue #112 park in a long RS485 transaction",
-                             "issue #97 OTA trial wiring", "issues #99/#101 OTA trial"}
+                             "issue #97 OTA trial wiring", "issue #144 OTA self-check"}
 # Scenarios that need the PSRAM build (the harness skips them without --psram).
 PSRAM_BUILD_SCENARIOS = {"issue #135 no PSRAM"}
 
