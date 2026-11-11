@@ -236,16 +236,30 @@ static int cmd_status(int argc, char **argv)
         gw_fw_get_status(fw);
     }
     if (fw != NULL && fw->running[0] != '\0') {
-        out("ota      %s in %s, other slot %s%s | %s", fw->running, fw->slot,
-            fw->other[0] ? fw->other : "empty", fw->enabled ? "" : " (updates disabled)",
-            fw->detail);
-        if (fw->phase == GW_FW_TRIAL && fw->trial_left_s > 0) {   /* 0: confirmation retried */
-            out(" (%lu s left)", (unsigned long)fw->trial_left_s);
+        /* issue #144: both slots (item 6), the trial and its expected mode, the state */
+        static const char *const slot_state[] = {"empty", "previous", "set to boot", "rejected",
+                                                 "invalid"};
+        out("ota      %s in %s, other slot %s (%s%s%s)%s | %s", fw->running, fw->slot,
+            fw->other[0] ? fw->other : "-",
+            (unsigned)fw->other_state < sizeof(slot_state) / sizeof(slot_state[0])
+                ? slot_state[fw->other_state] : "?",
+            fw->other_why[0] ? ": " : "", fw->other_why,
+            fw->enabled ? "" : " (updates disabled)", fw->detail);
+        if (fw->trial) {
+            out(" (testing: it must reach %s mode", gw_ota_mode_name(fw->expected));
+            if (fw->trial_left_s > 0) {   /* 0: the confirmation is retried */
+                out(", %lu s left", (unsigned long)fw->trial_left_s);
+            }
+            out(")");
         } else if (fw->phase == GW_FW_DOWNLOADING) {
             out(" %u%% (%lu of %lu bytes)", fw->progress, (unsigned long)fw->bytes,
                 (unsigned long)fw->total);
         }
         out("\n");
+        if (fw->safe_mode || fw->boot_count != 0) {
+            out("bootloop %lu crash resets in a row%s\n", (unsigned long)fw->boot_count,
+                fw->safe_mode ? ": SAFE MODE (repeated crashes)" : "");
+        }
     }
     heap_caps_free(fw);
     if (s_ctx.cfg == NULL && s_ctx.starting) {
@@ -389,8 +403,8 @@ static int cmd_status(int argc, char **argv)
     if (no_nvs != NULL) {   /* issue #94 */
         out("secrets  NVS UNAVAILABLE this boot: %s\n", no_nvs);
     } else if (gw_storage_nvs_encryption_pending()) {   /* issue #94 */
-        out("secrets  NVS NOT encrypted yet (new firmware on trial, or no LittleFS for the "
-            "migration): encrypted at the next boot of a confirmed firmware\n");
+        out("secrets  NVS NOT encrypted yet (new firmware on trial, safe mode, or no LittleFS "
+            "for the migration): encrypted at the next boot of a confirmed firmware\n");
     } else {
         out("secrets  NVS %s (HMAC key in eFuse KEY%d)\n",
             gw_storage_secrets_encrypted() ? "encrypted" : "UNAVAILABLE",

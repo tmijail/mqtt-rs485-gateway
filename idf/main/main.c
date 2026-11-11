@@ -66,6 +66,11 @@ static gw_web_mode_t s_mode = GW_WEB_NORMAL;
 static bool s_web_started;
 static const char *s_source = "";
 static volatile bool s_ready;   /* the mode is settled: BOOT gestures may act on it */
+static bool s_safe;             /* issue #144 item 4: safe mode (repeated crashes) */
+static bool s_net_started;      /* the network driver started (the self-check of FW-1) */
+
+#define SAFE_MODE_MSG "safe mode: %lu crash resets in a row; the configuration is not loaded. " \
+                      "Normal mode again in %d min, at a restart by the operator or a power cycle"
 
 /* Issue #135: the firmware assumes the board's PSRAM. Without it the gateway does not start
  * (GW_WEB_FAULT): the log, the shell and the web UI give this text. */
@@ -128,7 +133,7 @@ static void start_shell(const gw_config_t *cfg, const char *source, bool running
 static void restart_now(void *arg)
 {
     (void)arg;
-    gw_fw_restart_requested();   /* issue #108 B5 */
+    gw_fw_restart_requested();   /* issue #99; #144: an operator restart clears the counter */
     gw_bus_quiesce(1000);   /* no-op unless the bus runs */
     esp_restart();
 }
@@ -143,6 +148,15 @@ static void restart_soon(void)
         esp_restart();
     }
     esp_timer_start_once(t, 300 * 1000);
+}
+
+/* Issue #144 item 1: the self-check items of a new image on trial (gw_fw asks about once a
+ * second). Not the link, not the broker: only what this firmware itself starts. */
+static void self_check(gw_ota_selfcheck_t *out)
+{
+    out->net_started = s_net_started;
+    out->web_needed = s_web_started;   /* a web server was started (or failed to start) */
+    out->web_alive = gw_web_loop_alive(GW_OTA_WEB_PING_MS);
 }
 
 static void start_web(gw_web_mode_t mode, const gw_config_t *cfg, const char *source)
@@ -184,9 +198,8 @@ static void start_web(gw_web_mode_t mode, const gw_config_t *cfg, const char *so
  * the recovery network; the shell reports why. */
 static void halt_no_memory(void)
 {
-    /* issue #99: a new image on trial goes back to the previous one at once (no trial timer
-     * runs yet, nothing else would ever judge it) */
-    gw_fw_cannot_start("no memory for the configuration");
+    /* issue #144: a new image on trial goes back to the earlier one at once */
+    gw_fw_cannot_start("no memory to start");
     snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg), "sin memoria para la configuración (%u B)",
              (unsigned)sizeof(gw_config_t));
     gw_status_set(GW_ST_CFG_ERROR, true);
@@ -267,16 +280,31 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
     gw_status_set(mode == GW_WEB_COMMISSIONING ? GW_ST_COMMISSIONING : GW_ST_CFG_ERROR, true);
     start_shell(NULL, source, false);
     gw_storage_recovery_config(s_cfg);
-    /* FW-1: web uploads stay possible (the way out of a bad configuration); a new image on
-     * trial that rejects the configuration goes back to the previous one at once */
-    const gw_fw_hooks_t fw_hooks = {.changed = NULL, .restart = restart_soon};
+    /* FW-1: web uploads stay possible (the way out of a bad configuration). Issue #144 item 2:
+     * a new image installed from normal mode that rejects the configuration goes back to the
+     * earlier one at once; one installed from recovery, safe mode or commissioning (or forced)
+     * stays, and the self-check confirms it */
+    const gw_fw_hooks_t fw_hooks = {.changed = NULL, .restart = restart_soon,
+                                    .self_check = self_check};
     gw_fw_init(s_cfg, true, &fw_hooks);
     if (mode == GW_WEB_COMMISSIONING) {
-        gw_fw_commissioning();
+        gw_fw_mode(GW_OTA_MODE_COMMISSIONING, NULL);
     } else if (mode == GW_WEB_FAULT) {
-        gw_fw_cannot_start("no PSRAM");   /* #99: the image cannot run the gateway */
+        gw_fw_cannot_start("no memory to start (no PSRAM)");   /* the image cannot run */
     } else {
-        gw_fw_config_rejected();
+        char where[64];   /* the cause in fw_last is short (GW_OTA_CAUSE_MAX) */
+        if (s_cfg_err.path[0] != '\0') {
+            snprintf(where, sizeof(where), "%.63s", s_cfg_err.path);
+        } else if (s_cfg_err.line != 0) {
+            snprintf(where, sizeof(where), "line %u, column %u", s_cfg_err.line,
+                     s_cfg_err.column);
+        } else {
+            snprintf(where, sizeof(where), "%.63s", s_safe ? "safe mode" : s_cfg_err.msg);
+        }
+        gw_fw_mode(GW_OTA_MODE_RECOVERY, where);
+        if (s_safe) {
+            gw_fw_safe_mode();   /* normal mode again after CONFIG_GW_FW_SAFE_MODE_MIN */
+        }
     }
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -286,6 +314,7 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
     if (gw_net_start(s_cfg, &net_cb) != ESP_OK) {
         ESP_LOGE(TAG, "recovery network unavailable: only the console shell is left");
     } else {
+        s_net_started = true;
         gw_shell_mark_up(GW_SHELL_UP_NET);
     }
     start_web(mode, s_cfg, source);
@@ -303,13 +332,21 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
                           "started (no polling, no MQTT); load one with the web UI on port %u or "
                           "the shell ('config load')",
                      s_cfg->web.https ? s_cfg->web.https_port : s_cfg->web.port);
+        } else if (s_safe) {
+            ESP_LOGE(TAG, "%s", s_cfg_err.msg);
+            ESP_LOGE(TAG, "safe mode: nothing is started (no polling, no MQTT); the web UI on "
+                          "port %u and the shell accept a firmware upload",
+                     s_cfg->web.https ? s_cfg->web.https_port : s_cfg->web.port);
         } else {
             ESP_LOGE(TAG, "configuration rejected (%s): %s", source, s_cfg_err.msg);
             ESP_LOGE(TAG, "nothing is started (no polling, no MQTT); fix it with the web UI on "
                           "port %u, the shell ('config load') or by reflashing (see README)",
                      s_cfg->web.https ? s_cfg->web.https_port : s_cfg->web.port);
         }
-        vTaskDelay(pdMS_TO_TICKS(10000));
+        for (int i = 0; i < 10; i++) {   /* issue #144: the self-check of a new image on trial */
+            gw_fw_trial_poll();
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
     }
 }
 
@@ -343,6 +380,12 @@ void app_main(void)
     s_info.reset_reason = reset_reason();
     ESP_LOGI(TAG, "%s %s (IDF %s), reset reason: %s", app->project_name, app->version,
              app->idf_ver, s_info.reset_reason);
+    /* issue #144 item 4: the boot-loop counter, before anything that can crash in a loop (the
+     * storage, the configuration) */
+    s_safe = gw_fw_bootloop_start();
+    if (s_safe) {
+        gw_storage_safe_mode();   /* no NVS migration */
+    }
 
     gw_port_init();
     gw_tagdb_reset();
@@ -390,6 +433,11 @@ void app_main(void)
         run_without_config(GW_WEB_FAULT, "not loaded (hardware fault)");
     }
 #endif
+    if (s_safe) {
+        snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg), SAFE_MODE_MSG,
+                 (unsigned long)gw_fw_boot_count(), CONFIG_GW_FW_SAFE_MODE_MIN);
+        run_without_config(GW_WEB_RECOVERY, "not loaded (safe mode: repeated crashes)");
+    }
     if (gw_storage_commissioning_pending()) {
         snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg),
                  "sin configuración: puesta en marcha tras un reset de fábrica");
@@ -398,7 +446,10 @@ void app_main(void)
     if (!gw_storage_load_config(s_cfg, &s_cfg_err, &source)) {
         run_without_config(GW_WEB_RECOVERY, source);
     }
-    gw_storage_save_last_good(s_cfg);
+    if (!gw_fw_on_trial()) {
+        /* issue #144 item 8: a new image on trial writes it after its confirmation */
+        gw_storage_save_last_good(s_cfg);
+    }
     start_shell(s_cfg, source, false);
     hold = gw_lio_hold_mask(s_cfg);   /* for the next restart's first step */
     if (gw_storage_set_blob(NVS_DO_HOLD, &hold, sizeof(hold)) != ESP_OK) {
@@ -414,9 +465,10 @@ void app_main(void)
     if (gw_log_start(s_cfg) != ESP_OK) {
         ESP_LOGE(TAG, "remote syslog unavailable");
     }
-    /* FW-1: before anything can judge a new image (its trial starts now) */
+    /* FW-1: before the mode is reported (the trial of a new image counts from the boot) */
     const gw_fw_hooks_t fw_hooks = {.changed = gw_edge_notify_firmware,
-                                    .restart = gw_edge_request_restart};
+                                    .restart = gw_edge_request_restart,
+                                    .self_check = self_check};
     gw_fw_init(s_cfg, s_cfg->ota.enabled, &fw_hooks);
     ESP_ERROR_CHECK(gw_edge_start(s_cfg, &s_info));
     gw_shell_mark_up(GW_SHELL_UP_EDGE);
@@ -443,6 +495,7 @@ void app_main(void)
         .time_synced = on_time_synced,
     };
     ESP_ERROR_CHECK(gw_net_start(s_cfg, &net_cb));
+    s_net_started = true;
     gw_shell_mark_up(GW_SHELL_UP_NET);
     if (gw_mbtcp_start(s_cfg) != ESP_OK) {   /* MB-15, only with modbus_tcp.enabled */
         ESP_LOGE(TAG, "Modbus TCP gateway unavailable");
@@ -453,4 +506,8 @@ void app_main(void)
     s_source = source;
     s_ready = true;
     start_shell(s_cfg, source, true);
+    /* issue #144: normal mode reached; a new image on trial waits here for its self-check (this
+     * task is not watched by the task watchdog: gw_fw's backstop timer covers a block) */
+    gw_fw_mode(GW_OTA_MODE_NORMAL, NULL);
+    gw_fw_trial_wait();
 }

@@ -22,6 +22,10 @@
 extern "C" {
 #endif
 
+/** Issue #144 item 4: this boot is in safe mode (repeated crashes). Before gw_storage_init():
+ *  no NVS migration starts (as for a new image on trial). */
+void gw_storage_safe_mode(void);
+
 /** Initialise NVS (erasing it if its layout is from another IDF version). */
 esp_err_t gw_storage_init(void);
 
@@ -61,6 +65,13 @@ esp_err_t gw_storage_save_config_ex(const char *json, size_t len, bool dry_run, 
 esp_err_t gw_storage_save_config_lint(const char *json, size_t len, bool dry_run,
                                       bool discard_copy, gw_cfg_err_t *err, gw_lint_cb_t lint,
                                       void *ctx, size_t *count);
+
+/**
+ * Issue #144 item 3: a copy of the "since" schema report of the stored configuration, as the
+ * last load or save of this boot accepted it. False when there is none (a configuration that
+ * this firmware rejected or did not load: recovery, safe mode, commissioning).
+ */
+bool gw_storage_config_schema(gw_schema_report_t *out);
 
 /**
  * #141: true after a configuration was saved in this boot (not a dry run). @p hash gets
@@ -124,8 +135,7 @@ void gw_storage_free(void *ptr);
 /**
  * CFG-5: format the LittleFS partition and erase NVS (configuration, secrets, the
  * commissioning password), then mark the device for commissioning. The caller restarts.
- * ESP_ERR_INVALID_STATE: refused by the commit hook (a firmware rollback is under way), nothing
- * erased; the caller's restart finishes the rollback.
+ * ESP_ERR_INVALID_STATE: refused by the commit hook, nothing erased.
  */
 esp_err_t gw_storage_factory_reset(void);
 
@@ -135,7 +145,9 @@ esp_err_t gw_storage_factory_reset(void);
  */
 bool gw_storage_commissioning_pending(void);
 
-/** Remember the network (and web port) of a configuration that was accepted, for recovery. */
+/** Remember the network (and web port) of a configuration that was accepted, for recovery.
+ *  Issue #144 item 8: only from a confirmed image in normal mode, as records that an earlier
+ *  image reads (gw_lkgnet.h). */
 void gw_storage_save_last_good(const gw_config_t *cfg);
 
 /**
@@ -165,6 +177,15 @@ esp_err_t gw_storage_set_blob(const char *key, const void *data, size_t len);
 
 /** Read blob @p key of exactly @p len bytes into @p out; false (out untouched) if absent. */
 bool gw_storage_get_blob(const char *key, void *out, size_t len);
+
+#define GW_STORAGE_STR_MAX 128   /* gw_storage_set_str(): with the NUL */
+
+/** Issue #144 item 5: NVS string @p key (shorter than GW_STORAGE_STR_MAX), written only when it
+ *  changed; refused after gw_storage_factory_reset() like gw_storage_set_blob(). */
+esp_err_t gw_storage_set_str(const char *key, const char *value);
+
+/** NVS string @p key into @p out (@p cap bytes with the NUL); false if absent or longer. */
+bool gw_storage_get_str(const char *key, char *out, size_t cap);
 
 /**
  * Issue #135: the boot found the PSRAM of the board. The firmware assumes it: without it the
@@ -197,11 +218,12 @@ typedef enum {
 } gw_storage_commit_t;
 
 /** Called before the change is made, which a restart then puts into effect; non-ESP_OK (with the
- *  reason in English in @p why) refuses a configuration. A factory reset is refused only on
- *  ESP_ERR_INVALID_STATE (issue #108 B1: a rollback is decided) and goes on otherwise. */
+ *  reason in English in @p why) refuses a configuration (ESP_ERR_INVALID_STATE: HTTP 409). A
+ *  factory reset is refused only on ESP_ERR_INVALID_STATE and goes on otherwise. */
 typedef esp_err_t (*gw_storage_commit_hook_t)(gw_storage_commit_t what, char *why, size_t cap);
 
-/** Issue #99: gw_fw confirms a new image on trial before such a restart. One hook. */
+/** Issue #144 item 1: gw_fw refuses a configuration save during the trial of a new image (the
+ *  restart would roll it back); a factory reset stays allowed. One hook. */
 void gw_storage_set_commit_hook(gw_storage_commit_hook_t hook);
 
 /** Issue #80: the smallest "largest free internal block" seen at the peak of a configuration
@@ -212,9 +234,6 @@ size_t gw_storage_validation_min_block(void);
 /** Emulator only (issue #84): the next configuration validation keeps its buffers for @p ms at
  *  its peak, so the E2E can make a TLS handshake happen during it. */
 void gw_storage_sim_hold_validation(uint32_t ms);
-/** Emulator only: true when the E2E put the file @p name in LittleFS (/cfg); the file is deleted,
- *  so it acts once. False when it is absent or LittleFS is not mounted. */
-bool gw_storage_sim_take(const char *name);
 #endif
 
 #ifdef __cplusplus

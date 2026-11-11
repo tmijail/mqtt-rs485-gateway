@@ -43,8 +43,10 @@ td input,td select{width:100%;margin:0;padding:3px 4px}
  <div class="card"><h2>Dispositivos Modbus</h2><div id="st-mb" class="mut">sin dispositivos</div></div>
  <div class="card"><h2>E/S locales</h2><div id="st-io"></div></div>
  <div class="card"><h2>Firmware</h2><div id="st-fw" class="mut"></div>
-  <div class="row"><input id="fw-url" placeholder="https://servidor/rs485_spb_gateway.bin" size="40"><button id="fw-get">Descargar e instalar</button></div>
-  <div class="row"><label class="row" style="flex-direction:row">Subir imagen <input type="file" id="fw-file" accept=".bin,application/octet-stream"></label></div></div>
+  <div class="row"><button id="fw-other" class="hidden"></button><span id="fw-msg" class="mut"></span></div>
+  <div class="row"><input id="fw-url" placeholder="https://server/rs485_spb_gateway.bin" size="40"><button id="fw-get">Download and install</button></div>
+  <div class="row"><label class="row" style="flex-direction:row">Upload an image <input type="file" id="fw-file" accept=".bin,application/octet-stream"></label></div>
+  <div class="row"><label class="row" style="flex-direction:row" title="Install also an image that the pre-flight check refuses. The image must then reach recovery mode or better."><input type="checkbox" id="fw-force"> Force (into recovery mode)</label></div></div>
  <div class="card"><h2>Tarjeta microSD</h2><div id="st-sd" class="mut"></div>
   <div class="row"><button id="sd-fmt">Formatear tarjeta</button><button id="sd-rst" class="hidden">Reiniciar ahora</button></div><div id="sd-msg" class="mut"></div></div>
 </section>
@@ -250,7 +252,12 @@ async function poll(){
  const cd=s.core_dump||{};$("#st-cd").classList.toggle("hidden",!cd.present);$("#cd-txt").textContent=cd.present?`Core dump in flash: ${cd.size} B (${cd.state}). It can contain secrets: keep the file safe, and erase the dump after the download.`:"";
  sd(s);
  const f=await api("GET","/api/firmware");if(f.status!==200||!f.json)return;const w=f.json;
- $("#st-fw").innerHTML=`${esc(w.running)} en ${esc(w.slot)} · otra partición: ${esc(w.other||"vacía")}${w.enabled?"":" · actualizaciones deshabilitadas (ota.enabled)"}<br>${esc(w.detail)}${w.phase==="downloading"?` (${w.progress} %)`:w.phase==="trial"?` (${w.trial_left_s} s)`:""}`;
+ const OS={empty:"empty",previous:"previous",new:"set to boot",rejected:"rejected",invalid:"invalid (its verification failed)"};
+ $("#st-fw").innerHTML=`Running: ${esc(w.running)} in ${esc(w.slot)}${w.trial?` · <span class="bad">testing: it must reach ${esc(w.expected_mode)} mode${w.trial_left_s?`, ${w.trial_left_s} s left`:""}</span>`:""}`+
+  `<br>Other slot (${esc(w.other_slot)}): ${w.other?`${esc(w.other)}, `:""}${OS[w.other_state]||esc(w.other_state)}${w.other_why?` (${esc(w.other_why)})`:""}`+
+  `${w.enabled?"":"<br>Updates disabled (ota.enabled)"}${w.safe_mode?`<br><span class="bad">Safe mode: ${w.boot_count} crash resets in a row</span>`:""}`+
+  `<br>State: ${esc(w.state)}${w.phase==="downloading"?` (${w.progress} %)`:""}${w.detail&&w.detail!==w.state?`<br><span class="mut">${esc(w.detail)}</span>`:""}`;
+ const ob=$("#fw-other");ob.textContent=`Restart into ${w.other||"the other slot"}`;ob.classList.toggle("hidden",w.other_state==="empty");ob.disabled=!w.can_boot_other;
 }
 const CS={unsupported:"sin soporte en esta compilación",unchecked:"sin revisar",absent:"no hay tarjeta",not_mounted:"no se puede montar",mounted:"montada",formatting:"formateando",formatted:"formateada"},SP={off:"apagado",not_started:"no arrancó",on:"activo",failed:"FALLÓ",stopped:"detenido"};
 let sdc={};
@@ -279,8 +286,12 @@ $("#mb-read").onclick=async()=>{const q={unit:Number($("#mb-unit").value),area:$
 $("#cd-del").onclick=async()=>{if(!confirm("Erase the core dump? Download it first."))return;const r=await api("DELETE","/api/coredump"),m=$("#cd-msg");m.textContent=r.status===200?"Erased.":`Not erased (${r.status}): ${(r.json||{}).error||""}`;m.className=r.status===200?"ok":"bad"};
 $("#rebirth").onclick=async()=>{const r=await api("POST","/api/rebirth"),m=$("#rb-msg");m.textContent=r.status===202?"NBIRTH and every DBIRTH requested.":`No rebirth (${r.status}): ${(r.json||{}).error||""}`;m.className=r.status===202?"ok":"bad"};
 $("#sd-rst").onclick=async()=>{if(!confirm("¿Reiniciar el equipo?"))return;const r=await api("POST","/api/restart");sdmsg(r.status===202?"Reiniciando…":`No se reinició (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"":"bad")};
-$("#fw-get").onclick=async()=>{const u=$("#fw-url").value.trim();if(!u)return;const r=await api("POST","/api/firmware",JSON.stringify({url:u}));msg(r.status===202?"Descarga iniciada: el equipo se reinicia al terminar.":`No se inició (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};
-$("#fw-file").onchange=async e=>{const f=e.target.files[0];if(!f||!confirm(`¿Instalar ${f.name} (${f.size} B) y reiniciar?`))return;msg("Subiendo…");let r;try{r=await fetch("/api/firmware",{method:"POST",headers:{"Content-Type":"application/octet-stream","X-Requested-With":"gateway"},body:f})}catch(x){const w=(await api("GET","/api/firmware")).json;msg(`Subida interrumpida (${x.message})`+(w&&w.detail?`: ${w.detail}`:""),"bad");return}let j=null;try{j=await r.json()}catch(x){}msg(r.status===200?"Imagen instalada: reiniciando en la nueva versión.":`Rechazada (${r.status}): ${(j||{}).error||""}`,r.status===200?"ok":"bad")};
+// issue #144: a 409 of the pre-flight check gives the reasons; "Force" installs the image into recovery mode
+const fwforce=()=>$("#fw-force").checked;
+const fwmsg=(t,c)=>{const m=$("#fw-msg");m.textContent=t;m.className=c||"mut"};
+$("#fw-get").onclick=async()=>{const u=$("#fw-url").value.trim();if(!u)return;const b={url:u};if(fwforce())b.force=true;const r=await api("POST","/api/firmware",JSON.stringify(b));fwmsg(r.status===202?"Download started: the gateway restarts at the end.":`Not started (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};
+$("#fw-file").onchange=async e=>{const f=e.target.files[0];if(!f||!confirm(`Install ${f.name} (${f.size} B) and restart?`))return;fwmsg("Uploading…");let r;try{r=await fetch("/api/firmware"+(fwforce()?"?force=1":""),{method:"POST",headers:{"Content-Type":"application/octet-stream","X-Requested-With":"gateway"},body:f})}catch(x){const w=(await api("GET","/api/firmware")).json;fwmsg(`Upload interrupted (${x.message})`+(w&&w.detail?`: ${w.detail}`:""),"bad");return}let j=null;try{j=await r.json()}catch(x){}fwmsg(r.status===200?"Image installed: restarting into the new version.":`Refused (${r.status}): ${(j||{}).error||""}${r.status===409&&!fwforce()?" (select Force to install it into recovery mode)":""}`,r.status===200?"ok":"bad")};
+$("#fw-other").onclick=async()=>{const v=$("#fw-other").textContent;if(!confirm(`${v}? The image boots on trial; a reset during its test returns to this firmware.`))return;const r=await api("POST","/api/firmware/other"+(fwforce()?"?force=1":""));fwmsg(r.status===202?"Restarting into the other slot…":`Not restarted (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>show(b.dataset.tab));
 $("#b-check").onclick=()=>put(true);$("#b-save").onclick=()=>put(false);
 $("#b-export").onclick=()=>{location.href="/api/config?download=1"};
