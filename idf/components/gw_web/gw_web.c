@@ -512,8 +512,7 @@ static char *read_body(httpd_req_t *req, size_t *len, const char **status)
         *status = "413 Content Too Large";
         return NULL;
     }
-    char *buf = heap_caps_malloc_prefer(req->content_len + 1, 2,
-                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT);
+    char *buf = gw_storage_malloc(req->content_len + 1);
     if (buf == NULL) {
         *status = "503 Service Unavailable";
         return NULL;
@@ -604,7 +603,10 @@ static esp_err_t rebirth_post(httpd_req_t *req)
     }
     if (s_ctx.mode != GW_WEB_NORMAL || !gw_edge_request_rebirth()) {
         return refuse_body(req, "409 Conflict",
-                           s_ctx.mode != GW_WEB_NORMAL
+                           s_ctx.mode == GW_WEB_FAULT
+                               ? "no Sparkplug session: the gateway does not start (hardware "
+                                 "fault, see the status)"
+                           : s_ctx.mode != GW_WEB_NORMAL
                                ? "no Sparkplug session: the gateway has no valid configuration"
                                : "no Sparkplug session: the gateway is not connected to the broker");
     }
@@ -629,6 +631,9 @@ static esp_err_t modbus_read_post(httpd_req_t *req)
                            s_ctx.mode == GW_WEB_RECOVERY
                                ? "the RS485 bus does not run: the configuration was rejected "
                                  "(recovery mode). Correct it and save it first"
+                           : s_ctx.mode == GW_WEB_FAULT
+                               ? "the RS485 bus does not run: the gateway does not start "
+                                 "(hardware fault, see the status)"
                                : "the RS485 bus does not run: there is no configuration yet "
                                  "(commissioning). Save a configuration first");
     }
@@ -711,8 +716,8 @@ static esp_err_t firmware_get(httpd_req_t *req)
     if (!authorized(req)) {
         return ESP_OK;
     }
-    /* about 3 KB for one request: from the heap (PSRAM when present), not the server task's
-     * stack nor .bss (issue #80: internal RAM is tight without PSRAM) */
+    /* about 3 KB for one request: from the PSRAM (gw_storage_malloc), not the server task's
+     * stack nor .bss (issue #80: internal RAM is shared with Wi-Fi, lwIP and the stacks) */
     typedef struct {
         gw_fw_status_t f;
         char text[2 * sizeof(((gw_fw_status_t *)0)->text)];
@@ -721,8 +726,7 @@ static esp_err_t firmware_get(httpd_req_t *req)
         char other[2 * sizeof(((gw_fw_status_t *)0)->other)];
         char body[1400];
     } fw_json_t;
-    fw_json_t *j = heap_caps_malloc_prefer(sizeof(*j), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                           MALLOC_CAP_8BIT);
+    fw_json_t *j = gw_storage_malloc(sizeof(*j));
     if (j == NULL) {
         return send_error(req, "503 Service Unavailable", NULL, "sin memoria");
     }
@@ -799,8 +803,7 @@ static esp_err_t firmware_post(httpd_req_t *req)
     }
     ESP_LOGW(TAG, "firmware upload of %u bytes through the REST API", (unsigned)req->content_len);
     const size_t chunk = 4096;
-    char *buf = heap_caps_malloc_prefer(chunk, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                        MALLOC_CAP_8BIT);
+    char *buf = gw_storage_malloc(chunk);
     size_t got = 0;
     int timeouts = 0;
     bool ok = buf != NULL;
@@ -851,8 +854,7 @@ static esp_err_t coredump_get(httpd_req_t *req)
                           "valid): erase it with DELETE /api/coredump");
     }
     const size_t chunk = 2048;
-    char *buf = heap_caps_malloc_prefer(chunk, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                        MALLOC_CAP_8BIT);
+    char *buf = gw_storage_malloc(chunk);
     if (buf == NULL) {
         return send_error(req, "503 Service Unavailable", NULL, "no memory");
     }
@@ -925,8 +927,7 @@ static esp_err_t coredump_summary_get(httpd_req_t *req)
         gw_cdump_info_t i;
         char body[900];
     } summary_json_t;
-    summary_json_t *j = heap_caps_malloc_prefer(sizeof(*j), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                                MALLOC_CAP_8BIT);
+    summary_json_t *j = gw_storage_malloc(sizeof(*j));
     if (j == NULL) {
         return send_error(req, "503 Service Unavailable", NULL, "no memory");
     }
@@ -1064,7 +1065,7 @@ static esp_err_t status_get(httpd_req_t *req)
     if (!authorized(req)) {
         return ESP_OK;
     }
-    static const char *const modes[] = {"normal", "recovery", "commissioning"};
+    static const char *const modes[] = {"normal", "recovery", "commissioning", "fault"};
     static out_t o;   /* server task only */
     o.req = req;
     o.len = 0;
@@ -1073,7 +1074,9 @@ static esp_err_t status_get(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     const gw_config_t *c = s_ctx.cfg;
     uint32_t f = gw_status_get();
-    outf(&o, "{\"mode\":\"%s\",\"firmware\":", modes[s_ctx.mode]);
+    outf(&o, "{\"mode\":\"%s\",\"fault\":", modes[s_ctx.mode]);
+    out_str(&o, s_ctx.fault != NULL ? s_ctx.fault : "");   /* #135 */
+    outf(&o, ",\"firmware\":");
     out_str(&o, s_ctx.info->firmware);
     outf(&o, ",\"reset_reason\":");
     out_str(&o, s_ctx.info->reset_reason);
@@ -1339,7 +1342,7 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
     s_https = cert != NULL;
     if (s_https) {
         /* issue #64: HTTPS with the device certificate; a TLS session's mbedTLS buffers come
-         * from PSRAM when the board has it (gw_storage_init) */
+         * from the PSRAM (gw_storage_init, #135) */
         httpd_ssl_config_t sc = HTTPD_SSL_CONFIG_DEFAULT();
         sc.httpd = hc;
         sc.httpd.server_port = 0;

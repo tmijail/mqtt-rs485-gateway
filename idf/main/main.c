@@ -56,7 +56,7 @@ static const char *TAG = "main";
                                      * "config_error" alarm (a rejected one cannot say) */
 
 /* Immutable after boot; shared read-only by every task. About 32 KB: allocated at boot in
- * PSRAM when the board has it (internal RAM otherwise, e.g. QEMU), see big_alloc(). */
+ * PSRAM (internal RAM in the fault mode and in the QEMU build without PSRAM), see big_alloc(). */
 static gw_config_t *s_cfg;
 static char s_hardware[64];
 static gw_node_info_t s_info;  /* NBIRTH "Node Info/..." */
@@ -66,6 +66,12 @@ static gw_web_mode_t s_mode = GW_WEB_NORMAL;
 static bool s_web_started;
 static const char *s_source = "";
 static volatile bool s_ready;   /* the mode is settled: BOOT gestures may act on it */
+
+/* Issue #135: the firmware assumes the board's PSRAM. Without it the gateway does not start
+ * (GW_WEB_FAULT): the log, the shell and the web UI give this text. */
+static const char PSRAM_FAULT[] = "PSRAM not detected: the board has 8 MB of PSRAM and the boot "
+                                  "did not find it (a defective or missing chip); the gateway "
+                                  "does not start";
 
 static void on_ip_changed(bool up)
 {
@@ -108,6 +114,7 @@ static void start_shell(const gw_config_t *cfg, const char *source, bool running
     const gw_shell_ctx_t ctx = {.cfg = cfg,
                                 .starting = cfg != NULL && !running,
                                 .commissioning = s_mode == GW_WEB_COMMISSIONING,
+                                .fault = s_mode == GW_WEB_FAULT ? PSRAM_FAULT : NULL,
                                 .config_source = source,
                                 .config_error = s_cfg_err.msg,
                                 .info = &s_info,
@@ -160,6 +167,7 @@ static void start_web(gw_web_mode_t mode, const gw_config_t *cfg, const char *so
         .cfg = cfg,
         .config_source = source,
         .config_error = mode != GW_WEB_NORMAL ? &s_cfg_err : NULL,
+        .fault = mode == GW_WEB_FAULT ? PSRAM_FAULT : NULL,
         .info = &s_info,
         .commissioning_password = s_commission_pw,
         .restart = mode == GW_WEB_NORMAL ? gw_edge_request_restart : restart_soon,
@@ -172,8 +180,8 @@ static void start_web(gw_web_mode_t mode, const gw_config_t *cfg, const char *so
     }
 }
 
-/* Not even the configuration structure fits (no PSRAM, internal heap exhausted): nothing can
- * run, not even the recovery network; the shell reports why. */
+/* Not even the configuration structure fits (the heap is exhausted): nothing can run, not even
+ * the recovery network; the shell reports why. */
 static void halt_no_memory(void)
 {
     /* issue #99: a new image on trial goes back to the previous one at once (no trial timer
@@ -239,7 +247,9 @@ static void on_button(gw_btn_event_t ev)
 
 /* CFG-3 recovery: without a valid configuration nothing that needs one runs (no polling, no
  * MQTT), but the network comes up with the last valid configuration's settings (or DHCP on
- * Ethernet) so the web UI, the REST API and the shell can fix it without reflashing. */
+ * Ethernet) so the web UI, the REST API and the shell can fix it without reflashing.
+ * #135: the fault mode (no PSRAM) is the same, with the configuration not loaded at all: only
+ * what reports the fault runs, from internal RAM. */
 static void run_without_config(gw_web_mode_t mode, const char *source)
 {
     s_mode = mode;
@@ -253,6 +263,7 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
     if (mode == GW_WEB_RECOVERY && gw_storage_get_blob(NVS_ALARM_CFG, &alarm, 1) && alarm) {
         gw_buzzer_configure(GW_ALARM_BIT(GW_ALARM_CONFIG_ERROR), 0);   /* IO-6 */
     }
+    /* #135: the fault mode shows the configuration error state on the LED too */
     gw_status_set(mode == GW_WEB_COMMISSIONING ? GW_ST_COMMISSIONING : GW_ST_CFG_ERROR, true);
     start_shell(NULL, source, false);
     gw_storage_recovery_config(s_cfg);
@@ -262,6 +273,8 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
     gw_fw_init(s_cfg, true, &fw_hooks);
     if (mode == GW_WEB_COMMISSIONING) {
         gw_fw_commissioning();
+    } else if (mode == GW_WEB_FAULT) {
+        gw_fw_cannot_start("no PSRAM");   /* #99: the image cannot run the gateway */
     } else {
         gw_fw_config_rejected();
     }
@@ -280,7 +293,12 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
     s_ready = true;
     start_ap(0);   /* NET-5: no valid configuration */
     for (;;) {
-        if (mode == GW_WEB_COMMISSIONING) {
+        if (mode == GW_WEB_FAULT) {
+            ESP_LOGE(TAG, "%s (issue #135)", PSRAM_FAULT);
+            ESP_LOGE(TAG, "nothing is started (no polling, no MQTT): only the network, the web UI "
+                          "on port %u and the shell, to report the fault",
+                     s_cfg->web.https ? s_cfg->web.https_port : s_cfg->web.port);
+        } else if (mode == GW_WEB_COMMISSIONING) {
             ESP_LOGW(TAG, "commissioning: no configuration since the factory reset; nothing is "
                           "started (no polling, no MQTT); load one with the web UI on port %u or "
                           "the shell ('config load')",
@@ -364,6 +382,14 @@ void app_main(void)
     if (s_cfg == NULL) {
         halt_no_memory();
     }
+#if !CONFIG_GW_EMU_NO_PSRAM
+    if (!gw_storage_psram()) {
+        /* #135: CONFIG_SPIRAM_IGNORE_NOTFOUND lets the boot go on without the PSRAM only so
+         * that the fault can be reported; the gateway does not start */
+        ESP_LOGE(TAG, "%s (issue #135)", PSRAM_FAULT);
+        run_without_config(GW_WEB_FAULT, "not loaded (hardware fault)");
+    }
+#endif
     if (gw_storage_commissioning_pending()) {
         snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg),
                  "sin configuración: puesta en marcha tras un reset de fábrica");

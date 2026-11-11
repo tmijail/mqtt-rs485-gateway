@@ -32,6 +32,7 @@ typedef struct {
     const char *config_source;
     const char *config_error;     /* reason when cfg is NULL */
     bool commissioning;           /* cfg is NULL because of a factory reset (CFG-5) */
+    const char *fault;            /* #135: cfg is NULL because of a hardware fault (no PSRAM) */
     const gw_node_info_t *info;
     void (*restart)(void);        /* orderly restart (NDEATH first when a session is up) */
 } gw_shell_ctx_t;

@@ -4,6 +4,10 @@ CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# Issue #135: the firmware assumes the board's 8 MB of octal PSRAM: the gateway's own buffers
+# are there (gw_storage_malloc). When the boot does not detect the PSRAM it goes on
+# (IGNORE_NOTFOUND) only to report the fault: the fault mode starts the network, the web server
+# and the shell, and not the gateway (main.c). Only the QEMU build turns the PSRAM off.
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
@@ -59,15 +63,16 @@ CONFIG_ESP_NETIF_SET_DNS_PER_DEFAULT_NETIF=y
 CONFIG_LWIP_IPV6_AUTOCONFIG=y
 
 # MQTT-4: TLS 1.2 and 1.3 towards the broker. The certificate dates are checked (the connection
-# waits for SNTP); a session's ~40 KB of mbedTLS heap goes to PSRAM when the board has it and to
-# internal RAM otherwise (custom allocator set in gw_storage_init). The bundle of public root CAs
+# waits for SNTP); a session's ~40 KB of mbedTLS heap goes to PSRAM (custom allocator set in
+# gw_storage_init; internal RAM only in the fault mode of #135). The bundle of public root CAs
 # (used when mqtt.tls.ca_file is empty) is the common subset, not the full list.
 CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y
 CONFIG_MBEDTLS_HAVE_TIME_DATE=y
 CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC=y
 # Issue #80: TX/RX record buffers allocated while a record is in flight, not for the whole
-# session (an idle TLS session no longer holds its 16 KB input buffer). Without PSRAM, MQTT over
-# TLS plus two HTTPS sessions left no 32 KB block to validate a configuration (PUT: 503).
+# session (an idle TLS session no longer holds its 16 KB input buffer). In the QEMU build without
+# PSRAM, MQTT over TLS plus two HTTPS sessions left no 32 KB block to validate a configuration
+# (PUT: 503).
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
 

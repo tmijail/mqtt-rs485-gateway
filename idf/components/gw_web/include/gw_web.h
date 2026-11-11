@@ -23,9 +23,10 @@
  * Errors are JSON: {"ok":false,"error":"...","path":"devices[0].tags[1].type","line":0,
  * "column":0}. The server task is not on the critical path (priority 3, not watched).
  *
- * The server also runs when the configuration was rejected (recovery) and in commissioning
- * mode, with the network of the last valid configuration or DHCP on Ethernet; then the
- * stored web password is accepted with any user name.
+ * The server also runs when the configuration was rejected (recovery), in commissioning
+ * mode and in the fault mode (#135: no PSRAM), with the network of the last valid
+ * configuration or DHCP on Ethernet; then the stored web password is accepted with any user
+ * name.
  */
 #pragma once
 
@@ -41,6 +42,8 @@ typedef enum {
     GW_WEB_NORMAL = 0,     /* valid configuration, gateway running */
     GW_WEB_RECOVERY,       /* configuration rejected: nothing runs but network, web, shell */
     GW_WEB_COMMISSIONING,  /* after a factory reset: no configuration yet (CFG-5) */
+    GW_WEB_FAULT,          /* #135: a hardware fault (no PSRAM): the gateway does not start;
+                            * network, web and shell only, to report it */
 } gw_web_mode_t;
 
 typedef struct {
@@ -49,6 +52,7 @@ typedef struct {
                                           * recovery and commissioning) */
     const char *config_source;
     const gw_cfg_err_t *config_error;    /* why it was rejected (recovery) */
+    const char *fault;                   /* #135: the hardware fault (GW_WEB_FAULT), or NULL */
     const gw_node_info_t *info;
     const char *commissioning_password;  /* accepted for "admin" while no web password is set */
     void (*restart)(void);               /* orderly restart, after the response went out */

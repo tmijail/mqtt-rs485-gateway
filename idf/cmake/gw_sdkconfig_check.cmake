@@ -15,9 +15,10 @@
 # a deliberate local override.
 
 set(GW_SDKCONFIG_REQUIRED
-    # #80: without it, no PSRAM leaves no 32 KB block to validate a configuration (PUT: 503)
+    # #80: without it, the QEMU build without PSRAM had no 32 KB block to validate a
+    # configuration (PUT: 503); with PSRAM it keeps the internal RAM of idle TLS sessions free
     MBEDTLS_DYNAMIC_BUFFER
-    # MQTT-4: mbedTLS allocations go to PSRAM when present (gw_storage's allocator)
+    # MQTT-4: mbedTLS allocations go to PSRAM (gw_storage's allocator, #135)
     MBEDTLS_CUSTOM_MEM_ALLOC
     # MB-2: RS485 DE released in the TX_DONE interrupt even while the cache is off
     UART_ISR_IN_IRAM
@@ -32,7 +33,10 @@ set(GW_SDKCONFIG_REQUIRED
     BOOTLOADER_APP_ROLLBACK_ENABLE
     # Core dump to the "coredump" partition
     ESP_COREDUMP_ENABLE_TO_FLASH
-    # The board boots without PSRAM when it is not detected
+    # #135: the firmware assumes the board's PSRAM (only the QEMU build turns it off)
+    SPIRAM
+    # #135: a board whose PSRAM is not detected still boots, only to report the fault (the
+    # fault mode: network, web server and shell; the gateway does not start)
     SPIRAM_IGNORE_NOTFOUND
     # #122: no name buffer allocated on each microSD file operation (REL-2)
     FATFS_LFN_NONE)

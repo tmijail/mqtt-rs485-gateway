@@ -55,8 +55,43 @@ static uint32_t s_saved_hash;
 static StaticSemaphore_t s_save_lock_buf;
 static gw_storage_commit_hook_t s_commit_hook;   /* issue #99: gw_fw, before a commit */
 
+#if !CONFIG_SPIRAM && !CONFIG_GW_IO_SIMULATED
+#error "issue #135: the firmware needs the PSRAM of the board (CONFIG_SPIRAM); only the QEMU build (CONFIG_GW_IO_SIMULATED) runs without it"
+#endif
+
+/* Issue #135: the gateway's own buffers go to the PSRAM of the board, and only there: with
+ * PSRAM, internal RAM stays for Wi-Fi, lwIP, the task stacks and DMA, and a full PSRAM is an
+ * allocation failure, not a silent move into internal RAM. Without PSRAM (the fault mode of a
+ * board whose PSRAM was not detected, which starts only the network, the web server and the
+ * shell; or the QEMU build without PSRAM, CONFIG_GW_EMU_NO_PSRAM) there is only internal RAM. */
+bool gw_storage_psram(void)
+{
+    return heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0;
+}
+
+static uint32_t own_caps(void)
+{
+    return gw_storage_psram() ? MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+                              : MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+}
+
+void *gw_storage_malloc(size_t size)
+{
+    return heap_caps_malloc(size, own_caps());
+}
+
+void *gw_storage_calloc(size_t n, size_t size)
+{
+    return heap_caps_calloc(n, size, own_caps());
+}
+
+void *gw_storage_realloc(void *p, size_t size)
+{
+    return heap_caps_realloc(p, size, own_caps());
+}
+
 /* Configuration buffers (the file and the parser's document tree, at boot and for every
- * save or export): PSRAM when the board has it, internal RAM otherwise (QEMU). */
+ * save or export): gw_storage_malloc(). */
 /* Issue #91: the largest block a validation asks for after its gw_config_t (the printed
  * document, gw_cfgdoc) and the largest free internal block just before that request. Set
  * and read under the save lock and the JSON lock (issue #106: no other task's cJSON allocates
@@ -71,16 +106,15 @@ static void *boot_alloc(size_t size)
         s_track_size = size;
         s_track_room = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     }
-    return heap_caps_malloc_prefer(size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT);
+    return gw_storage_malloc(size);
 }
 
 #if CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC
-/* MQTT-4: a TLS session takes some 40 KB of heap. In PSRAM when the board has it, internal
- * RAM otherwise (QEMU, PSRAM not detected): TLS must keep working without PSRAM. */
+/* MQTT-4: a TLS session takes some 40 KB of heap: in PSRAM (#135). Without PSRAM (the fault
+ * mode's HTTPS server, the QEMU build without PSRAM) internal RAM. */
 static void *tls_calloc(size_t n, size_t size)
 {
-    return heap_caps_calloc_prefer(n, size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    return gw_storage_calloc(n, size);
 }
 #endif
 
@@ -235,8 +269,7 @@ static esp_err_t get_int(nvs_handle_t h, const char *key, uint8_t type, uint8_t 
 static size_t nvs_read_all(uint8_t *buf, size_t cap, size_t used, size_t vcap, unsigned *count,
                            unsigned *skipped, bool *listed_all)
 {
-    uint8_t *data = heap_caps_malloc_prefer(vcap, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                            MALLOC_CAP_8BIT);   /* one value at a time */
+    uint8_t *data = gw_storage_malloc(vcap);   /* one value at a time */
     if (data == NULL) {
         ESP_LOGE(TAG, "NVS migration: no memory (%u B) to read the entries", (unsigned)vcap);
     }
@@ -343,8 +376,7 @@ static unsigned nvs_put_all(const uint8_t *buf, size_t size, unsigned count, boo
     for (size_t off = 0; gw_nvsmig_next(buf, size, &off, &r);) {
         largest = r.len > largest ? r.len : largest;
     }
-    uint8_t *tmp = verify ? heap_caps_malloc_prefer(largest, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                                    MALLOC_CAP_8BIT)
+    uint8_t *tmp = verify ? gw_storage_malloc(largest)
                           : NULL;
     if (verify && tmp == NULL) {
         ESP_LOGE(TAG, "NVS migration: no memory to read the entries back");
@@ -604,8 +636,7 @@ static void nvs_migrate(const esp_partition_t *p, const uint8_t *old, size_t old
     }
     /* records take a little more than entries; plus room for the earlier copy's */
     size_t cap = 2 * p->size + GW_NVSMIG_HDR + (old != NULL ? old_size : 0);
-    uint8_t *buf = heap_caps_malloc_prefer(cap, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                           MALLOC_CAP_8BIT);
+    uint8_t *buf = gw_storage_malloc(cap);
     if (buf == NULL) {
         ESP_LOGE(TAG, "NVS migration: no memory (%u B): nothing erased this boot", (unsigned)cap);
         memset(&cfg, 0, sizeof(cfg));
@@ -769,8 +800,7 @@ static gw_nvsmig_copy_t copy_load(uint8_t **out, size_t *size, size_t *cap, uint
     bool whole = n == 0;   /* an empty file is read whole */
     if (n > 0 && n <= MIG_COPY_MAX) {
         *cap = n + (GW_NVSMIG_HDR - 16u);   /* a v1 header becomes a v2 one */
-        buf = heap_caps_malloc_prefer(*cap, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                      MALLOC_CAP_8BIT);
+        buf = gw_storage_malloc(*cap);
         FILE *f = buf != NULL ? fopen(MIG_COPY, "rb") : NULL;
         whole = f != NULL && fread(buf, 1, n, f) == n;
         if (f != NULL) {
@@ -1022,10 +1052,9 @@ static void nvs_after_open(void)
 void *gw_storage_big_alloc(size_t size, const char *what)
 {
     /* Not with EXT_RAM_BSS_ATTR: .bss in PSRAM (SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY) excludes
-     * SPIRAM_IGNORE_NOTFOUND, so a board whose PSRAM is not detected would not boot at all;
-     * this way it still runs from internal RAM. */
-    void *p = heap_caps_calloc_prefer(1, size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+     * SPIRAM_IGNORE_NOTFOUND, so a board whose PSRAM is not detected would not boot at all and
+     * could not report the fault (#135: the fault mode in main). */
+    void *p = gw_storage_calloc(1, size);
     if (p != NULL) {
         ESP_LOGI(TAG, "%s: %u B in %s", what, (unsigned)size,
                  esp_ptr_external_ram(p) ? "PSRAM" : "internal RAM");
@@ -1423,8 +1452,9 @@ static char *read_file(const struct stat *st, size_t *len, gw_cfg_err_t *err)
         return NULL;
     }
     size_t size = (size_t)st->st_size;
-    /* Without PSRAM the file and the parser's tree (several times the file) come from the
-     * internal heap: log what is available, so a "memoria insuficiente" can be put in context. */
+    /* The file and the parser's tree (several times the file) come from the PSRAM (internal
+     * heap in the QEMU build without PSRAM): log what is available, so a "memoria
+     * insuficiente" can be put in context. */
     ESP_LOGI(TAG, CFG_PATH ": %zu bytes; free heap: internal %u B (largest block %u B), PSRAM %u B",
              size, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),

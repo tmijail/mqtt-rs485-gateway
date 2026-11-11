@@ -1,5 +1,17 @@
 menu "Gateway: storage"
 
+    config GW_EMU_NO_PSRAM
+        bool
+        default y if GW_IO_SIMULATED && !SPIRAM
+        help
+            Issue #135: the firmware assumes the 8 MB of PSRAM of the board. A board whose
+            PSRAM is not detected boots in the fault mode only (network, web server and
+            shell report the fault; the gateway does not start). This hidden option is set
+            only in the QEMU build without PSRAM (sdkconfig.qemu: CONFIG_GW_IO_SIMULATED and
+            no CONFIG_SPIRAM). There the gateway runs from internal RAM, with the small
+            sizes of CONFIG_GW_SPB_PAYLOAD_INTERNAL and CONFIG_GW_SF_SAMPLES, for the E2E
+            scenarios that do not depend on memory (they run faster without PSRAM).
+
     config GW_CONFIG_MAX_BYTES
         int "Largest accepted /cfg/config.json (bytes)"
         range 4096 1048576
@@ -7,8 +19,8 @@ menu "Gateway: storage"
         help
             The spec maximum (16 devices, 256 tags with every field) is about 46 KB of
             compact JSON and 82 KB indented with 2 spaces. The file and the parser's
-            document tree (about 200 KB for 256 tags) are allocated at boot, in PSRAM
-            when present, and freed before the gateway starts. A larger file is
+            document tree (about 200 KB for 256 tags) are allocated at boot, in PSRAM,
+            and freed before the gateway starts. A larger file is
             rejected: the gateway then stays stopped with the configuration error state.
 
     choice GW_SF_SPILL

@@ -25,13 +25,15 @@ menu "Gateway: Sparkplug / MQTT"
         default 1024
 
     config GW_SPB_PAYLOAD_INTERNAL
-        int "Sparkplug payload buffer without PSRAM (bytes)"
+        int "QEMU build without PSRAM: Sparkplug payload buffer (bytes)"
+        depends on GW_EMU_NO_PSRAM
         range 4096 16384
         default 6144
         help
-            With PSRAM the payload buffer holds the largest birth the configuration allows
-            (16 KB: templates, diagnostics and every property). Without PSRAM it is this size,
-            from internal RAM; a birth that does not fit is logged and its device stays unborn.
+            The payload buffer is in PSRAM and holds the largest birth the configuration
+            allows (16 KB: templates, diagnostics and every property). Only the QEMU build
+            without PSRAM (GW_EMU_NO_PSRAM, issue #135) has this smaller buffer, from
+            internal RAM; a birth that does not fit is logged and its device stays unborn.
 
     config GW_MQTT_BUFFER_SIZE
         int "esp-mqtt send/receive buffer (bytes)"
@@ -68,21 +70,18 @@ menu "Gateway: Sparkplug / MQTT"
             Births carry better timestamps if the clock is set first. The connection
             proceeds without synchronised time once this expires.
 
-    config GW_SF_PSRAM_SAMPLES
-        int "Store & forward: samples kept in PSRAM (24 B each)"
+    config GW_SF_SAMPLES
+        int "Store & forward: samples kept in the RAM ring (24 B each)"
+        range 64 8192 if GW_EMU_NO_PSRAM
         range 1000 400000
+        default 512 if GW_EMU_NO_PSRAM
         default 40000
         help
             SPB-14, with sparkplug.store_forward: changes made while there is no Sparkplug
             session are kept in a ring of this many metric samples, allocated once at boot
-            in PSRAM (40000 = 960 KB). When full, the oldest samples are overwritten.
-
-    config GW_SF_INTERNAL_SAMPLES
-        int "Store & forward: samples kept without PSRAM (24 B each)"
-        range 64 8192
-        default 512
-        help
-            The same ring in internal RAM when the board has no PSRAM (or it was not
-            detected, or QEMU): 512 samples = 12 KB.
+            in PSRAM (40000 = 960 KB). When full, the oldest samples are overwritten (or
+            spilled to the microSD card, sparkplug.store_forward.sd). The QEMU build
+            without PSRAM (GW_EMU_NO_PSRAM, issue #135) has 512 samples (12 KB) in
+            internal RAM.
 
 endmenu

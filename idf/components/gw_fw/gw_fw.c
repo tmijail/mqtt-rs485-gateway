@@ -63,8 +63,8 @@ static StaticSemaphore_t s_fmt_lock_buf;
 static SemaphoreHandle_t s_ota_lock;   /* otadata writes: confirm, rollback (issue #99) */
 static StaticSemaphore_t s_ota_lock_buf;
 /* Plain data in RTC FAST memory (8 KB, both cores, otherwise only a little-used heap region):
- * the internal DRAM heap keeps these bytes (issue #80: no PSRAM, the configuration validation
- * needs its large blocks). Locks stay in DRAM (atomic instructions). */
+ * the internal DRAM heap keeps these bytes (issue #80: internal RAM is shared with Wi-Fi, lwIP,
+ * the stacks and the fault mode of #135). Locks stay in DRAM (atomic instructions). */
 static RTC_FAST_ATTR gw_fw_status_t s_st;   /* under s_mux; texts under s_fmt_lock */
 static RTC_FAST_ATTR gw_ota_trial_t s_trial;   /* under s_mux */
 static esp_timer_handle_t s_trial_timer;
@@ -884,10 +884,10 @@ static const char *project(void)
     return esp_app_get_description()->project_name;
 }
 
-/* Buffers of a transfer: PSRAM when there is some, internal RAM otherwise; freed after it. */
+/* Buffers of a transfer: PSRAM (gw_storage_malloc, #135); freed after it. */
 static void *xfer_alloc(size_t size)
 {
-    return heap_caps_malloc_prefer(size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_8BIT);
+    return gw_storage_malloc(size);
 }
 
 static void download_release(void)

@@ -1,0 +1,6 @@
+# Issue #135: an sdkconfig without the PSRAM. The board build refuses it; the QEMU build
+# (sdkconfig.qemu: CONFIG_SPIRAM=n) accepts it
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_UART_ISR_IN_IRAM=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=15
+# CONFIG_SPIRAM is not set

@@ -15,6 +15,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "gw_storage.h"
 #include "sdkconfig.h"
 
 #if CONFIG_GW_SF_SPILL_SDMMC
@@ -870,7 +871,7 @@ static gw_cardfmt_answer_t format_start(uint32_t sim_ms)
 #else
     const bool support = false;
 #endif
-    bool psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0;
+    bool psram = gw_storage_psram();
     uint32_t now = now_ms();
     portENTER_CRITICAL(&s_mux);
     gw_cardfmt_t before = s_fmt;
@@ -926,11 +927,9 @@ bool gw_sfcard_open(gw_sfspill_io_t *io, char *where, size_t where_cap, char *wh
     }
 #if CONFIG_GW_SF_SPILL_SDMMC
     /* #122: the ring is in PSRAM, which the SDMMC DMA cannot reach: without a buffer of its
-     * own the driver allocates up to 8 KB of internal RAM for each transfer */
-    void *dma = NULL;
-    if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0) {
-        dma = heap_caps_malloc(DMA_BUF_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    }
+     * own the driver allocates up to 8 KB of internal RAM for each transfer. (The spill starts
+     * only with the PSRAM: gw_edge's setup_spill.) */
+    void *dma = heap_caps_malloc(DMA_BUF_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     sdmmc_host_t host;
     host_config(&host, dma);
     sdmmc_card_t *card = heap_caps_calloc(1, sizeof(*card), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
