@@ -7509,6 +7509,11 @@ def run(args, log, slave, broker, conf, work):
     meter = {r[1:] for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 1 and t >= t0}
     want = {(1, 0, 1), (3, 10, 12), (3, 34, 4), (3, 60, 1), (3, 30, 4), (3, 50, 8), (4, 0, 2),
             (4, 40, 7)}
+    # the issue #72 'mbread 1 holding 10' sent at the start reads the register when the bus is
+    # already up at that moment (the boot got faster with PSRAM); that one FC03 is this
+    # scenario's own request, not a cycle read
+    if gw.find(r"^mbread: unit 1 holding 10: ", early):
+        want.add((3, 10, 1))
     check("MB-11 / issue #38 per-device max_gap: Meter1 (max_gap 10) bridges holes up to 10 "
           "registers, Bulk keeps the build default", meter == want,
           f"Meter1 requests {sorted(meter)} (expected {sorted(want)})")
