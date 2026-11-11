@@ -373,6 +373,14 @@ uint16_t gw_config_tag_device(const gw_config_t *cfg, uint16_t tag);
 /** Number of Modbus registers (or bits, for coil/discrete) a tag occupies. */
 uint16_t gw_tag_width(const gw_tag_cfg_t *tag);
 
+/** Issue #182: the value of a tag's "area", "type" or "word_order" name, as the configuration
+ *  accepts it ("CDAB" -> GW_WORD_LITTLE). False if the name is not one of them. */
+bool gw_config_area_of(const char *name, gw_area_t *out);
+bool gw_config_type_of(const char *name, gw_type_t *out);
+bool gw_config_word_order_of(const char *name, gw_word_order_t *out);
+/** The configuration name of @p type ("float32"). */
+const char *gw_config_type_name(gw_type_t type);
+
 #ifdef __cplusplus
 }
 #endif

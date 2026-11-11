@@ -5208,6 +5208,15 @@ def run_config_failsafe(args, work, slave):
               f"password {'read' if pw else 'not found'}; /api/status {st} mode "
               f"{status.get('mode')!r} error {status.get('config', {}).get('error')!r}; / {page[0]}")
         if name == "semantic-error":
+            # issues #182 and #171: no bus and no Sparkplug session in recovery: a clear 409
+            st_mb, _, b_mb = http("POST", "/api/modbus/read", {"unit": 1, "area": "holding", "address": 10},
+                                  auth=("admin", pw or "?"))
+            st_rb, _, b_rb = http("POST", "/api/rebirth", auth=("admin", pw or "?"))
+            e_mb, e_rb = (as_json(b_mb) or {}).get("error", ""), (as_json(b_rb) or {}).get("error", "")
+            check("CFG-3 issues #182 and #171 recovery: POST /api/modbus/read and POST /api/rebirth "
+                  "-> 409 with the reason (no bus, no Sparkplug session)",
+                  st_mb == 409 and "recovery mode" in e_mb and st_rb == 409 and "no Sparkplug session" in e_rb,
+                  f"modbus/read {st_mb} {e_mb!r}; rebirth {st_rb} {e_rb!r}")
             # the rejected document can be exported, fixed and saved: the gateway then starts
             st2, _, b2 = http("GET", "/api/config", auth=("admin", pw or "?"))
             fixed = as_json(b2) or {}
@@ -5981,6 +5990,24 @@ def run_web(args, work):
           shown and len(masked_sh) >= 2 and not leaked and reg and flt and absent,
           f"show: node {bool(shown)}, {len(masked_sh)} masked secrets, leaks {len(leaked)}; "
           + " | ".join(gw.find(r"^mbread: ", asked)))
+    # Issue #182: the same test read through the REST API (the bus owner runs it, MB-16)
+    def mb_read(req, **kw):
+        st, _, b = http("POST", "/api/modbus/read", req, timeout=20, **kw)
+        return st, as_json(b) or {"raw": b.decode(errors="replace")[:120]}
+    r_reg = mb_read({"unit": 1, "area": "holding", "address": 10})
+    r_flt = mb_read({"unit": 1, "area": "input", "address": 0, "type": "float32"})
+    r_dead = mb_read({"unit": 3, "area": "holding", "address": 0})
+    r_bad = mb_read({"unit": 1, "area": "holding", "address": 0, "count": 17})
+    r_csrf = mb_read({"unit": 1, "area": "holding", "address": 10}, headers={"X-Requested-With": None})
+    check("CFG-6 issue #182: POST /api/modbus/read through the bus owner (register, float32 value, "
+          "unit 3 without a slave -> no value, count 17 -> 400, no CSRF header -> 403)",
+          r_reg[0] == 200 and r_reg[1].get("values") == [50]
+          and r_flt[0] == 200 and r_flt[1].get("values") == [17254, 32768] and r_flt[1].get("value") == 230.5
+          # as the shell check of unit 9: no answer, or noise taken for a frame in the emulator
+          and (r_dead[0], r_dead[1].get("result")) in ((504, "timeout"), (502, "frame"))
+          and "value" not in r_dead[1] and r_bad[0] == 400 and "1-16" in r_bad[1].get("error", "")
+          and r_csrf[0] == 403,
+          " | ".join(f"{st} {j}" for st, j in (r_reg, r_flt, r_dead, r_bad, r_csrf)))
     obs.drain()
     asked = time.monotonic()
     gw.console("rebirth")

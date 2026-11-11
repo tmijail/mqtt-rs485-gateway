@@ -18,6 +18,7 @@
 #include "freertos/task.h"
 #include "gw_auth.h"
 #include "gw_authlimit.h"
+#include "gw_bus.h"
 #include "gw_fw.h"
 #include "gw_buzz.h"
 #include "gw_buzzer.h"
@@ -27,6 +28,7 @@
 #include "gw_rtc.h"
 #include "gw_sfcard.h"
 #include "gw_log.h"
+#include "gw_mbdiag.h"
 #include "gw_net.h"
 #include "gw_ota.h"
 #include "gw_status.h"
@@ -601,6 +603,55 @@ static esp_err_t rebirth_post(httpd_req_t *req)
     }
     ESP_LOGI(TAG, "rebirth requested through the REST API");
     return send_json(req, "202 Accepted", "{\"ok\":true,\"rebirth\":true}\n");
+}
+
+/* ---------- #182: POST /api/modbus/read ---------- */
+
+_Static_assert(GW_MBDIAG_MAX == GW_BUS_DIAG_MAX, "one test read is one diagnostic read of the bus");
+
+/* A test read for commissioning (is a slave there, what does it answer), through the bus owner
+ * as the shell's mbread (MB-16): the bus task runs it between two poll transactions, from its
+ * static request slot (no allocation in the bus path); this task waits for the answer. */
+static esp_err_t modbus_read_post(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    if (s_ctx.mode != GW_WEB_NORMAL) {
+        return refuse_body(req, "409 Conflict",
+                           s_ctx.mode == GW_WEB_RECOVERY
+                               ? "the RS485 bus does not run: the configuration was rejected "
+                                 "(recovery mode). Correct it and save it first"
+                               : "the RS485 bus does not run: there is no configuration yet "
+                                 "(commissioning). Save a configuration first");
+    }
+    size_t len;
+    const char *status;
+    char *body = req->content_len <= 512 ? read_body(req, &len, &status) : NULL;
+    if (body == NULL) {
+        return refuse_body(req, "400 Bad Request",
+                           "expected {\"unit\": 1, \"area\": \"holding\", \"address\": 0, "
+                           "\"count\": 1} (at most 512 bytes)");
+    }
+    gw_mbdiag_req_t rq;
+    char why[160];
+    bool parsed = gw_mbdiag_parse(body, len, &rq, why, sizeof(why));
+    heap_caps_free(body);
+    if (!parsed) {
+        return send_error(req, "400 Bad Request", NULL, why);
+    }
+    uint16_t v[GW_BUS_DIAG_MAX];
+    uint8_t exc;
+    /* worst case: a poll cycle in progress plus every retry of this request (as mbread) */
+    uint32_t wait = 2000u + (uint32_t)s_ctx.cfg->rs485.response_timeout_ms *
+                                (s_ctx.cfg->rs485.retries + 1u) * 2u;
+    mb_status_t st = gw_bus_diag_read(rq.unit, gw_mbdiag_fc(&rq), rq.address, rq.count, v, &exc,
+                                      wait);
+    char answer[512];
+    const char *http = gw_mbdiag_answer(&rq, st, exc, v, answer, sizeof(answer));
+    ESP_LOGI(TAG, "Modbus test read through the REST API: unit %u FC%02u %u x%u: %s", rq.unit,
+             (unsigned)gw_mbdiag_fc(&rq), rq.address, rq.count, http);
+    return send_json(req, http, answer);
 }
 
 /* ---------- #139: POST /api/card/format?confirm=1 ---------- */
@@ -1189,7 +1240,8 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
                            h_status = {status_get}, h_config_get = {config_get},
                            h_config_put = {config_put}, h_restart = {restart_post},
                            h_fw_get = {firmware_get}, h_fw_post = {firmware_post},
-                           h_card_format = {card_format_post}, h_rebirth = {rebirth_post};
+                           h_card_format = {card_format_post}, h_rebirth = {rebirth_post},
+                           h_modbus_read = {modbus_read_post};
     static const struct {
         const char *uri;
         httpd_method_t method;
@@ -1206,6 +1258,7 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         {"/api/firmware", HTTP_POST, &h_fw_post},
         {"/api/card/format", HTTP_POST, &h_card_format},   /* #139 */
         {"/api/rebirth", HTTP_POST, &h_rebirth},           /* #171 */
+        {"/api/modbus/read", HTTP_POST, &h_modbus_read},   /* #182 */
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         const httpd_uri_t u = {.uri = uris[i].uri, .method = uris[i].method, .handler = guarded,

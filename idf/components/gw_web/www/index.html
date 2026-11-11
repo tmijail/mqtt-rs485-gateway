@@ -54,6 +54,12 @@ td input,td select{width:100%;margin:0;padding:3px 4px}
  <div class="card"><h2>RS485</h2><div class="grid" id="f-rs485"></div></div>
  <div class="card"><h2>Interfaz web</h2><div class="grid" id="f-web"></div></div>
  <div class="card"><h2>Dispositivos y tags</h2><div id="f-dev"></div><button id="add-dev">+ dispositivo</button></div>
+ <div class="card"><h2>Modbus test read</h2>
+  <p class="mut">One read through the RS485 bus, for example to find out if a device answers before you add its tags. The read does not change the configuration.</p>
+  <div class="grid"><label>Unit ID (1-247)<input id="mb-unit" value="1"></label><label>Area<select id="mb-area"></select></label>
+   <label>Address (0-65535)<input id="mb-addr" value="0"></label><label>Count (1-16, empty = 1 or the size of the type)<input id="mb-count"></label>
+   <label>Type<select id="mb-type"></select></label><label>Word order<select id="mb-wo"></select></label></div>
+  <div class="row"><button id="mb-read">Read</button></div><div id="mb-msg" class="mut"></div></div>
  <p class="mut">Wi-Fi, IPv6, syslog y el resto de las claves de SPEC §6.1 se editan en la pestaña JSON. Los secretos se muestran como ******** y se conservan si no se cambian.</p>
 </section>
 
@@ -202,6 +208,16 @@ function sdmsg(t,c){const m=$("#sd-msg");m.textContent=t;m.className=c||"mut"}
 $("#sd-fmt").onclick=async()=>{const n=sdc.other_entries>0?`\nLa tarjeta tiene ${sdc.other_entries} archivos o carpetas que no son del gateway: también se borran.`:"";
  if(prompt(`Formatear la tarjeta microSD borra TODO su contenido, también las muestras que esperan su envío.${n}\nLa tarjeta es solo para el gateway. Después reinicie el equipo.\nEscriba FORMATEAR para confirmar:`)!=="FORMATEAR"){sdmsg("No se formateó: falta la confirmación.");return}
  const r=await api("POST","/api/card/format?confirm=1");sdmsg(r.status===202?"Formateo iniciado: el estado se actualiza arriba.":`No se formateó (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};
+/* #182: a Modbus test read through the bus owner (POST /api/modbus/read) */
+$("#mb-area").innerHTML=AREA.map(a=>`<option ${a==="holding"?"selected":""}>${a}</option>`).join("");
+$("#mb-type").innerHTML=`<option value="">(none: raw values only)</option>`+TYPE.map(t=>`<option>${t}</option>`).join("");
+$("#mb-wo").innerHTML=`<option value="">(default: big)</option>`+WO.map(w=>`<option>${w}</option>`).join("");
+$("#mb-read").onclick=async()=>{const q={unit:Number($("#mb-unit").value),area:$("#mb-area").value,address:Number($("#mb-addr").value)},c=$("#mb-count").value.trim(),m=$("#mb-msg");
+ if(c!=="")q.count=Number(c);if($("#mb-type").value)q.type=$("#mb-type").value;if($("#mb-wo").value)q.word_order=$("#mb-wo").value;
+ m.textContent="Reading…";m.className="mut";$("#mb-read").disabled=true;
+ const r=await api("POST","/api/modbus/read",JSON.stringify(q)),j=r.json||{};$("#mb-read").disabled=false;
+ if(r.status===200&&j.ok){m.textContent=`Unit ${j.unit}, ${j.area} ${j.address}: ${j.values.join(" ")}`+("value" in j?` = ${JSON.stringify(j.value)} (${j.type}, ${j.word_order})`:"");m.className="ok"}
+ else{m.textContent=`Error ${r.status}: ${j.error||"no answer"}`;m.className="bad"}};
 $("#rebirth").onclick=async()=>{const r=await api("POST","/api/rebirth"),m=$("#rb-msg");m.textContent=r.status===202?"NBIRTH and every DBIRTH requested.":`No rebirth (${r.status}): ${(r.json||{}).error||""}`;m.className=r.status===202?"ok":"bad"};
 $("#sd-rst").onclick=async()=>{if(!confirm("¿Reiniciar el equipo?"))return;const r=await api("POST","/api/restart");sdmsg(r.status===202?"Reiniciando…":`No se reinició (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"":"bad")};
 $("#fw-get").onclick=async()=>{const u=$("#fw-url").value.trim();if(!u)return;const r=await api("POST","/api/firmware",JSON.stringify({url:u}));msg(r.status===202?"Descarga iniciada: el equipo se reinicia al terminar.":`No se inició (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};

@@ -1633,3 +1633,45 @@ uint16_t gw_tag_width(const gw_tag_cfg_t *tag)
         return 1;   /* 16-bit types, coils, discrete inputs and register bits */
     }
 }
+
+static int name_index(const char *name, const char *const *names, size_t n)
+{
+    for (size_t i = 0; name != NULL && i < n; i++) {
+        if (strcmp(name, names[i]) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+bool gw_config_area_of(const char *name, gw_area_t *out)
+{
+    int i = name_index(name, k_area_names, sizeof(k_area_names) / sizeof(k_area_names[0]));
+    if (i >= 0) {
+        *out = (gw_area_t)i;
+    }
+    return i >= 0;
+}
+
+bool gw_config_type_of(const char *name, gw_type_t *out)
+{
+    int i = name_index(name, k_type_names, TYPE_COUNT);
+    if (i >= 0) {
+        *out = (gw_type_t)i;
+    }
+    return i >= 0;
+}
+
+const char *gw_config_type_name(gw_type_t type)
+{
+    return (size_t)type < TYPE_COUNT ? k_type_names[type] : "?";
+}
+
+bool gw_config_word_order_of(const char *name, gw_word_order_t *out)
+{
+    int i = name_index(name, k_word_names, sizeof(k_word_names) / sizeof(k_word_names[0]));
+    if (i >= 0) {
+        *out = k_word_values[i];
+    }
+    return i >= 0;
+}

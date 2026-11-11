@@ -18,6 +18,7 @@ set(GW_CORE_SRCS
     src/gw_devstate.c
     src/gw_dout.c
     src/gw_localio.c
+    src/gw_mbdiag.c
     src/gw_netsel.c
     src/gw_node.c
     src/gw_nvsraw.c
