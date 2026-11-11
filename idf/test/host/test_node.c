@@ -242,6 +242,30 @@ static void test_ncmd_rebirth(void)
     TEST_ASSERT_EQUAL(0, g_rec.count);
 }
 
+/* tck-id-payloads-name-birth-data-requirement (#166): every metric of NBIRTH, DBIRTH and DATA
+ * has a timestamp; one with no sample time (0) gets the time of the message. */
+static void test_every_metric_has_a_timestamp(void)
+{
+    set_meter(true, 1, 2, 0);
+    gw_node_session_up(&node, 0);
+    TEST_ASSERT_EQUAL(2, g_rec.count);
+    for (size_t k = 0; k < 2; k++) {
+        msg(k);
+        for (size_t i = 0; i < dec.count; i++) {
+            TEST_ASSERT_NOT_EQUAL_UINT64(0, dec.m[i].timestamp);
+        }
+    }
+    recorder_clear();
+    gw_tagdb_set_do_unknown(0);   /* the expander is lost: no sample time for the DOs */
+    gw_node_io_changed(&node);
+    msg(0);
+    TEST_ASSERT_EQUAL(GW_NODE_IO_COUNT, dec.count);
+    for (size_t i = 0; i < dec.count; i++) {
+        TEST_ASSERT_TRUE(dec.m[i].is_null);
+        TEST_ASSERT_NOT_EQUAL_UINT64(0, dec.m[i].timestamp);
+    }
+}
+
 static void test_ncmd_do_and_reboot(void)
 {
     set_meter(true, 1, 2, 0);
@@ -1840,6 +1864,7 @@ int main(void)
     RUN_TEST(test_seq_wraps_and_is_shared);
     RUN_TEST(test_ncmd_rebirth);
     RUN_TEST(test_ncmd_do_and_reboot);
+    RUN_TEST(test_every_metric_has_a_timestamp);
     RUN_TEST(test_pulse_counters);
     RUN_TEST(test_dcmd_writes);
     RUN_TEST(test_dcmd_strict_datatype_and_integer);

@@ -135,7 +135,10 @@ static spb_metric_t *metric(gw_node_t *n, size_t i, const char *name, uint64_t a
     m->name = name;
     m->alias = alias;
     m->datatype = datatype;
-    m->timestamp = ts;
+    /* tck-id-payloads-name-birth-data-requirement: every metric of a birth or DATA message has a
+     * timestamp; one with no sample time yet (0: a DO that never changed, for example) gets the
+     * time of the message (#166) */
+    m->timestamp = ts != 0 ? ts : gw_port_time_ms();
     return m;
 }
 
