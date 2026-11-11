@@ -33,6 +33,7 @@ SCENARIOS = (
     ("sf spill", ("sf",)),
     ("stack margin", ("sf",)),
     ("https", ("https",)),
+    ("time", ("time",)),   # issue #160: no NDATA/DDATA before a valid clock
     ("FW-1 OTA", ("ota", "ota-fw1")),
     ("issue #112 park in a long RS485 transaction", ("ota", "ota-park")),
     ("issue #97 OTA trial wiring", ("ota", "ota-wiring")),
@@ -109,7 +110,7 @@ def selected(only, variant=None):
 CI_GROUPS = (
     ("psram", "ota-fw1", "ota-fw1,nopsram"),
     ("psram", "nvs-main", "nvs,main"),
-    ("psram", "other", "failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,slow"),
+    ("psram", "other", "failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,time,slow"),
     ("default", "ota-trial", "ota-park,ota-wiring,ota-trial"),
 )
 # The CI's variants: the environment of their build and of their runs.

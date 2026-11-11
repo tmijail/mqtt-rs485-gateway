@@ -2998,6 +2998,186 @@ def run_https(args, work):
           + " | ".join(gw.find(r"^web\s", asked)))
 
 
+Y2020_MS = 1577836800000   # 2020-01-01T00:00:00Z: a timestamp before it counts from 1970
+
+
+def stamps(p):
+    """The payload timestamp and every metric timestamp of @p (ms)."""
+    return [p.timestamp] + [m.timestamp for m in p.metrics]
+
+
+def time_data(node, since):
+    """NDATA and DDATA of @node captured at or after @since."""
+    return [m for m in CAPTURE if m[0] >= since and m[1].split("/")[2:4] in
+            (["NDATA", node], ["DDATA", node])]
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+def run_valid_time(args, work, slave):
+    """Issue #160 (TIME-1; tck-id-payloads-timestamp-in-UTC, tck-id-payloads-metric-timestamp-in-UTC)
+    in two boots of GW31, each a power-on (the simulated PCF85063 has its OS bit set, so no time
+    from it) with the SNTP responder silent. Without a valid clock the births go out with 1970
+    timestamps, but no NDATA or DDATA, while a tag changes, DI/1 pulses and the diagnostics period
+    passes. Boot 1: POST /api/time (the web UI's button) with the CSRF and password checks of every
+    write, then a rebirth with UTC timestamps and the values of the changes, and DATA with UTC
+    timestamps; the source is "browser", Time Synced stays false. Boot 2: SNTP answers late, then
+    the same rebirth; a time from the browser is refused (409) over a clock that SNTP synchronises.
+    No NDATA or DDATA of the node in either boot has a timestamp before 2020."""
+    node = "GW31"
+    nbirth_t, dbirth_t = f"{T}/NBIRTH/{node}", f"{T}/DBIRTH/{node}/{DEVICE}"
+    ndata_t, ddata_t = f"{T}/NDATA/{node}", f"{T}/DDATA/{node}/{DEVICE}"
+    cfg = node_config(node)
+    cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    obs = Observer()
+    utc = (lambda p: p.timestamp >= Y2020_MS)
+    volt = (lambda p: metric(p, alias=ALIAS["Voltage"]))
+    SNTP_PAUSED.set()
+    try:
+        # ---- boot 1: the time from the browser
+        t0 = time.monotonic()
+        gw = boot_variant(args, work, "time", cfg)
+        nb = obs.wait(nbirth_t, 60)
+        db = obs.wait(dbirth_t, 10)
+        slave.set_float(4, 0, 236.0)
+        gw.console("di 1 1")
+        time.sleep(0.5)
+        gw.console("di 1 0")
+        time.sleep(12)   # the change read (poll_ms 1 s), DI/1, and one diagnostics_s (10 s)
+        before = time_data(node, t0)
+        st0, _, b0 = http("GET", "/api/status")
+        tm0 = (as_json(b0) or {}).get("time", {})
+        asked, h = gw.shell("status", [r"^time\s+1970-.*NOT valid \(no SNTP, RTC or browser time "
+                                       r"yet\): births only, no NDATA/DDATA"])
+        shown0 = list(h.values())[0]
+        check("Issue #160 without a valid clock (no SNTP, RTC OS bit set): NBIRTH and DBIRTH go out "
+              "(1970 timestamps), no NDATA or DDATA while a tag changes, DI/1 pulses and the "
+              "diagnostics period passes; /api/status time.valid false, source none; shell",
+              nb and db and nb[2].timestamp < Y2020_MS and not before and st0 == 200
+              and tm0.get("valid") is False and tm0.get("source") == "none"
+              and tm0.get("synced") is False and shown0,
+              f"NBIRTH {nb[2].timestamp if nb else None}, DBIRTH {'yes' if db else 'no'}; "
+              f"{len(before)} NDATA/DDATA; /api/status {st0} {tm0}; "
+              + " | ".join(gw.find(r"^time\s", asked)))
+
+        refused = {
+            "no X-Requested-With": http("POST", "/api/time", {"utc_ms": now_ms()},
+                                        headers={"X-Requested-With": None})[0],
+            "other Origin": http("POST", "/api/time", {"utc_ms": now_ms()},
+                                 headers={"Origin": "https://evil.e2e"})[0],
+            "wrong password": http("POST", "/api/time", {"utc_ms": now_ms()},
+                                   auth=("admin", "wrong-time"))[0],
+            "1970": http("POST", "/api/time", {"utc_ms": 5000})[0],
+            "utc_s": http("POST", "/api/time", {"utc_s": now_ms() // 1000})[0],
+            "not JSON": http("POST", "/api/time", b"now")[0],
+        }
+        st1, _, b1 = http("GET", "/api/status")
+        still = (as_json(b1) or {}).get("time", {}).get("valid")
+        check("Issue #160 POST /api/time: CSRF (no X-Requested-With, other Origin) 403, wrong "
+              "password 401, a time before 2025, another key or no JSON 400; the clock stays not "
+              "valid",
+              refused == {"no X-Requested-With": 403, "other Origin": 403, "wrong password": 401,
+                          "1970": 400, "utc_s": 400, "not JSON": 400} and still is False,
+              f"{refused}; time.valid after them {still}")
+
+        obs.drain()
+        sent = now_ms()
+        t_set = time.monotonic()
+        st2, _, b2 = http("POST", "/api/time", {"utc_ms": sent})
+        nb2 = obs.wait(nbirth_t, 15, utc, since=t_set)
+        db2 = obs.wait(dbirth_t, 10, utc, since=t_set)
+        rebirth = gw.wait_log(r"spb: clock now valid: rebirth", 5, t_set)
+        logged = gw.find(r"edge: clock set from the browser: \d{4}-\d\d-\d\dT.*Z \(was none", t_set)
+        ts_all = stamps(nb2[2]) + stamps(db2[2]) if nb2 and db2 else []
+        v2 = volt(db2[2]) if db2 else None
+        cnt = counter_of(nb2[2]) if nb2 else None
+        synced = metric(nb2[2], name="Node Info/Time Synced") if nb2 else None
+        check("Issue #160 POST /api/time 200 with the browser's time -> rebirth (NBIRTH seq 0, "
+              "DBIRTH) with every timestamp UTC (within 60 s), the value of the change made "
+              "without a valid clock (Voltage 236) and DI/1's pulse (Counter/1 1); Time Synced "
+              "false (TIME-3: SNTP only)",
+              st2 == 200 and (as_json(b2) or {}).get("source") == "browser" and nb2 and db2
+              and rebirth and logged and nb2[2].seq == 0
+              and all(abs(t - sent) < 60000 for t in ts_all) and v2 is not None
+              and abs(v2.float_value - 236.0) < 1e-3 and cnt == 1 and synced is not None
+              and synced.boolean_value is False,
+              f"POST {st2} {b2[:80]!r}; NBIRTH {nb2[2].timestamp - sent if nb2 else None} ms from "
+              f"the browser's time, seq {nb2[2].seq if nb2 else None}; timestamps off by at most "
+              f"{max((abs(t - sent) for t in ts_all), default=None)} ms; Voltage "
+              f"{round(v2.float_value, 1) if v2 else None}; Counter/1 {cnt}; Time Synced "
+              f"{synced.boolean_value if synced else None}; {(logged or ['no log'])[0]}")
+
+        t_chg = time.monotonic()
+        slave.set_float(4, 0, 237.0)
+        dd = obs.wait(ddata_t, 10, lambda q: volt(q) is not None, since=t_chg)
+        gw.console("di 1 1")
+        nd = obs.wait(ndata_t, 5, lambda q: metric(q, alias=ALIAS["DI/1"]) is not None, since=t_chg)
+        st3, _, b3 = http("GET", "/api/status")
+        tm3 = (as_json(b3) or {}).get("time", {})
+        asked, h = gw.shell("status", [r"^time\s+\d{4}-.*Z, set from the browser \(not synchronised\)"])
+        shown3 = list(h.values())[0]
+        check("Issue #160 after the time from the browser: DDATA and NDATA again, with UTC "
+              "timestamps; /api/status time.valid true, source browser, synced false; shell",
+              dd and nd and all(t >= Y2020_MS for t in stamps(dd[2]) + stamps(nd[2]))
+              and abs(volt(dd[2]).float_value - 237.0) < 1e-3 and st3 == 200
+              and tm3.get("valid") is True and tm3.get("source") == "browser"
+              and tm3.get("synced") is False and abs(tm3.get("utc_s", 0) - time.time()) < 60
+              and shown3,
+              f"DDATA {stamps(dd[2]) if dd else None}; NDATA {stamps(nd[2]) if nd else None}; "
+              f"/api/status {tm3}; " + " | ".join(gw.find(r"^time\s", asked)))
+        boot1 = time_data(node, t0)
+        gw.kill()
+
+        # ---- boot 2: SNTP answers late
+        t1 = time.monotonic()
+        gw = boot_variant(args, work, "time2", cfg)
+        nb = obs.wait(nbirth_t, 60, since=t1)
+        slave.set_float(4, 0, 238.0)
+        time.sleep(4)
+        before = time_data(node, t1)
+        obs.drain()
+        t_sntp = time.monotonic()
+        SNTP_PAUSED.clear()
+        synced_at = gw.wait_log(r"edge: time synchronised", 45, t1)
+        nb2 = obs.wait(nbirth_t, 15, utc, since=t_sntp)
+        db2 = obs.wait(dbirth_t, 10, utc, since=t_sntp)
+        rebirth = gw.wait_log(r"spb: clock now valid: rebirth", 5, t1)
+        v2 = volt(db2[2]) if db2 else None
+        synced = metric(nb2[2], name="Node Info/Time Synced") if nb2 else None
+        t_chg = time.monotonic()
+        slave.set_float(4, 0, 239.0)
+        dd = obs.wait(ddata_t, 10, lambda q: volt(q) is not None, since=t_chg)
+        st4, _, b4 = http("POST", "/api/time", {"utc_ms": now_ms()})
+        st5, _, b5 = http("GET", "/api/status")
+        tm5 = (as_json(b5) or {}).get("time", {})
+        check("Issue #160 SNTP late: births with 1970 timestamps, no NDATA/DDATA before it; when "
+              "SNTP answers, a rebirth with UTC timestamps and the current value (Voltage 238), "
+              "Time Synced true, then DDATA; POST /api/time over a clock that SNTP synchronises "
+              "-> 409; /api/status source sntp",
+              nb and nb[2].timestamp < Y2020_MS and not before and synced_at and nb2 and db2
+              and rebirth and all(t >= Y2020_MS for t in stamps(nb2[2]) + stamps(db2[2]))
+              and v2 is not None and abs(v2.float_value - 238.0) < 1e-3 and synced is not None
+              and synced.boolean_value is True and dd and st4 == 409
+              and tm5.get("source") == "sntp" and tm5.get("valid") is True,
+              f"first NBIRTH {nb[2].timestamp if nb else None}; {len(before)} NDATA/DDATA before "
+              f"SNTP; SNTP {'yes' if synced_at else 'no'}; rebirth {'yes' if rebirth else 'no'}, "
+              f"NBIRTH {nb2[2].timestamp if nb2 else None}; Voltage "
+              f"{round(v2.float_value, 1) if v2 else None}; Time Synced "
+              f"{synced.boolean_value if synced else None}; DDATA {'yes' if dd else 'no'}; "
+              f"POST {st4} {b4[:90]!r}; /api/status {tm5}")
+        all_data = boot1 + time_data(node, t1)
+        early = [(m[1], min(stamps(m[2]))) for m in all_data if min(stamps(m[2])) < Y2020_MS]
+        check("Issue #160 no NDATA or DDATA of the node (both boots) has a payload or metric "
+              "timestamp before 2020",
+              all_data and not early, f"{len(all_data)} NDATA/DDATA; before 2020: {early[:3]}")
+        gw.kill()
+    finally:
+        SNTP_PAUSED.clear()
+        slave.set_float(4, 0, 230.5)   # what the main scenario expects
+        obs.close()
+
 # Issue #117: QEMU's open_eth model (4 RX buffers without PSRAM, #113) also drops frames inside
 # connections already open; slirp retransmits them about a second later, which alone breaks a
 # check bounded at about 1 s although the firmware is fine. A timed measurement whose own window
@@ -5497,6 +5677,7 @@ def main():
         "sf spill": lambda: run_store_forward_spill(args, work, slave),
         "stack margin": lambda: run_stack_margin(args, work, slave),
         "https": lambda: run_https(args, work),
+        "time": lambda: run_valid_time(args, work, slave),
         "FW-1 OTA": lambda: run_ota(args, work),
         "issue #112 park in a long RS485 transaction": lambda: run_park_long_txn(args, work, slave),
         "issue #97 OTA trial wiring": lambda: run_ota_wiring(args, work),
@@ -6381,7 +6562,7 @@ def check_rtc(gw, obs, nb, t0, since_reboot, ndata_t, first_nbirth):
     the system clock from the RTC, publishes its NBIRTH with valid timestamps at once, and when
     SNTP answers again there is no rebirth (the births were already timed)."""
     stopped = gw.find(r"io: RTC: oscillator stopped \(OS bit\): time lost: system time not set", t0)
-    stored = gw.find(r"io: RTC: time stored in the RTC after SNTP", t0)
+    stored = gw.find(r"io: RTC: time stored in the RTC \(again after every SNTP", t0)
     restored = gw.find(r"io: RTC: system time set from the RTC: \d{4}-\d\d-\d\dT", since_reboot)
     synced_early = gw.find(r"edge: time synchronised", since_reboot)
     skew = abs(nb[2].timestamp / 1000 - time.time()) if nb else None
@@ -6402,7 +6583,7 @@ def check_rtc(gw, obs, nb, t0, since_reboot, ndata_t, first_nbirth):
           f"{reboot_ts.boolean_value if reboot_ts else None}; NDATA "
           f"{metric(ts_ndata[2], alias=55).boolean_value if ts_ndata else None}")
     restore_store = gw.wait_log(r"edge: time synchronised", 0, since_reboot) and \
-        gw.find(r"clock now synchronised: rebirth", since_reboot) == []
+        gw.find(r"clock now valid: rebirth", since_reboot) == []
     check("TIME-2 RTC: OS bit at power-on (no time from it), SNTP time stored in it; after a "
           "reboot with SNTP silent the clock comes from the RTC, NBIRTH timestamps valid at once, "
           "no rebirth when SNTP answers later",
@@ -6412,6 +6593,23 @@ def check_rtc(gw, obs, nb, t0, since_reboot, ndata_t, first_nbirth):
           f"{(restored or ['no restore log'])[0]} | NBIRTH skew {round(skew, 1) if skew else None} s; "
           f"SNTP before the NBIRTH: {bool(synced_early)}; shell {'ok' if shown else 'no'}; "
           f"SNTP later {'yes' if synced else 'no'}")
+
+
+def check_birth_stamps(t0):
+    """Issue #160 and the #175 interop test: a birth that went out with a valid clock (payload
+    timestamp in 2020 or later: after SNTP, or with the RTC time after NCMD Reboot) has only UTC
+    metric timestamps. A value read before the clock was valid (the DO boot state, read before
+    the RTC set the clock; a poll before SNTP) gets the time of the birth, not ~1970."""
+    births = [m for m in CAPTURE if m[0] >= t0 and m[1].split("/")[2:4] in
+              (["NBIRTH", NODE], ["DBIRTH", NODE]) and m[2].timestamp >= Y2020_MS]
+    early = [(m[1].split("/")[2], mm.name or mm.alias, mm.timestamp) for m in births
+             for mm in m[2].metrics if mm.timestamp < Y2020_MS]
+    nbirths = sum(1 for m in births if "/NBIRTH/" in m[1])
+    check("Issue #160 every metric timestamp of the NBIRTH and DBIRTH messages with a valid clock "
+          "(after SNTP, and with the RTC time after the reboot) is UTC: none before 2020",
+          nbirths >= 2 and not early,
+          f"{nbirths} NBIRTH, {len(births) - nbirths} DBIRTH with a UTC payload timestamp; metric "
+          f"timestamps before 2020: {early[:4]}")
 
 
 def modbus_rows(m):
@@ -7624,6 +7822,7 @@ def run(args, log, slave, broker, conf, work):
           f"first boot {reason0.string_value if reason0 else None!r}, after reboot "
           f"{reason1.string_value if reason1 else None!r}")
     check_rtc(gw, obs, nb, t0, since_reboot, ndata_t, nb0[0][2])
+    check_birth_stamps(t0)
     check_status_api(gw, since_reboot)
     check_panic_during_traffic(gw, obs, slave, nbirth_t)
 

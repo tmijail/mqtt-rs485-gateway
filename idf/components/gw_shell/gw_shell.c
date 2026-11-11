@@ -416,11 +416,15 @@ static int cmd_status(int argc, char **argv)
     time_t now = time(NULL);
     struct tm tm;
     gmtime_r(&now, &tm);
-    bool synced = gw_edge_time_synced();
+    /* #160: without a valid clock only the births go out (no NDATA, DDATA or store) */
+    gw_clock_source_t src = gw_edge_time_source();
     out("time     %04d-%02d-%02dT%02d:%02d:%02dZ, %s; RTC ", tm.tm_year + 1900, tm.tm_mon + 1,
         tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
-        synced ? "SNTP synchronised" : rtc.restored ? "from the RTC (not synchronised)"
-                                                    : "not set (no SNTP yet)");
+        src == GW_CLOCK_SNTP      ? "SNTP synchronised"
+        : src == GW_CLOCK_RTC     ? "from the RTC (not synchronised)"
+        : src == GW_CLOCK_BROWSER ? "set from the browser (not synchronised)"
+                                  : "NOT valid (no SNTP, RTC or browser time yet): births only, "
+                                    "no NDATA/DDATA");
     if (!rtc.present) {
         out("not answering\n");
     } else {
