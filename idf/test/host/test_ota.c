@@ -1,286 +1,394 @@
-/* FW-1: health criterion and rollback policy of a new image, update URLs, progress. */
+/* FW-1: the trial of a new image (issue #144: self-check, expected mode), the pre-flight check
+ * of an image, update URLs, progress. */
 #include <string.h>
 
+#include "gw_config.h"
 #include "gw_ota.h"
 #include "unity.h"
 
 void setUp(void) {}
 void tearDown(void) {}
 
+#define SC_MS 60000u
+#define BACKSTOP_MS 300000u
+
+static const gw_ota_selfcheck_t k_all_ok = {.net_started = true, .web_needed = true,
+                                            .web_alive = true};
+
+static void test_expected_mode(void)
+{
+    /* issue #144 item 2: only an update from normal mode without force must reach normal mode */
+    TEST_ASSERT_EQUAL(GW_OTA_MODE_NORMAL, gw_ota_expected_mode(GW_OTA_MODE_NORMAL, false));
+    TEST_ASSERT_EQUAL(GW_OTA_MODE_RECOVERY, gw_ota_expected_mode(GW_OTA_MODE_NORMAL, true));
+    TEST_ASSERT_EQUAL(GW_OTA_MODE_RECOVERY, gw_ota_expected_mode(GW_OTA_MODE_RECOVERY, false));
+    TEST_ASSERT_EQUAL(GW_OTA_MODE_RECOVERY,
+                      gw_ota_expected_mode(GW_OTA_MODE_COMMISSIONING, false));
+    TEST_ASSERT_TRUE(gw_ota_mode_reached(GW_OTA_MODE_NORMAL, GW_OTA_MODE_NORMAL));
+    TEST_ASSERT_FALSE(gw_ota_mode_reached(GW_OTA_MODE_NORMAL, GW_OTA_MODE_RECOVERY));
+    TEST_ASSERT_FALSE(gw_ota_mode_reached(GW_OTA_MODE_NORMAL, GW_OTA_MODE_COMMISSIONING));
+    TEST_ASSERT_TRUE(gw_ota_mode_reached(GW_OTA_MODE_RECOVERY, GW_OTA_MODE_RECOVERY));
+    TEST_ASSERT_TRUE(gw_ota_mode_reached(GW_OTA_MODE_RECOVERY, GW_OTA_MODE_COMMISSIONING));
+    TEST_ASSERT_TRUE(gw_ota_mode_reached(GW_OTA_MODE_RECOVERY, GW_OTA_MODE_NORMAL));
+    TEST_ASSERT_FALSE(gw_ota_mode_reached(GW_OTA_MODE_RECOVERY, GW_OTA_MODE_NONE));
+    TEST_ASSERT_EQUAL_STRING("recovery", gw_ota_mode_name(GW_OTA_MODE_RECOVERY));
+    TEST_ASSERT_EQUAL_STRING("normal", gw_ota_mode_name(GW_OTA_MODE_NORMAL));
+}
+
 static void test_not_pending_never_acts(void)
 {
     gw_ota_trial_t t;
-    gw_ota_trial_init(&t, false, 1000, 30000);
+    gw_ota_trial_init(&t, false, GW_OTA_MODE_NORMAL, SC_MS, BACKSTOP_MS);
     TEST_ASSERT_EQUAL(GW_OTA_TRIAL_NONE, t.state);
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_tick(&t, 1000000));
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_session_up(&t, 0));
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_config_rejected(&t));
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_commissioning(&t));
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_mode(&t, GW_OTA_MODE_RECOVERY, "x"));
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_check(&t, 1000000, &k_all_ok));
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_cannot_start(&t, "no memory to start"));
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_backstop(&t, "mode not reached"));
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_before_restart(&t));
+    TEST_ASSERT_FALSE(gw_ota_trial_open(&t));
     TEST_ASSERT_EQUAL_UINT32(0, gw_ota_trial_left_ms(&t, 1000));
 }
 
-static void test_first_session_confirms_once(void)
+/* issue #144 item 1: the self-check confirms at the first instant when all items are true, at
+ * or after 60 s; a broker, Modbus slaves or NTP do not take part */
+static void test_selfcheck_confirms_at_60_s(void)
 {
     gw_ota_trial_t t;
-    gw_ota_trial_init(&t, true, 5000, 30000);
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_tick(&t, 34999));
-    TEST_ASSERT_EQUAL_UINT32(1, gw_ota_trial_left_ms(&t, 34999));
-    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_session_up(&t, 0));
-    TEST_ASSERT_EQUAL(GW_OTA_TRIAL_CONFIRMING, t.state);   /* until the write succeeds */
-    gw_ota_trial_confirm_result(&t, true, 6000, 0);
-    TEST_ASSERT_EQUAL(GW_OTA_TRIAL_CONFIRMED, t.state);
-    TEST_ASSERT_EQUAL_UINT32(GW_OTA_NO_TICK, gw_ota_trial_next_ms(&t, 6000));
-    /* decided: later sessions, the timeout or a rejection change nothing */
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_session_up(&t, 0));
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_tick(&t, 100000));
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_config_rejected(&t));
-    TEST_ASSERT_EQUAL_UINT32(0, gw_ota_trial_left_ms(&t, 6000));
-}
-
-static void test_timeout_rolls_back(void)
-{
-    gw_ota_trial_t t;
-    gw_ota_trial_init(&t, true, 5000, 30000);
-    TEST_ASSERT_EQUAL(GW_OTA_ROLLBACK, gw_ota_trial_tick(&t, 35000));
-    TEST_ASSERT_EQUAL(GW_OTA_TRIAL_ROLLBACK, t.state);
-    TEST_ASSERT_EQUAL_STRING("no Sparkplug session before the timeout", t.why);
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_session_up(&t, 0));   /* too late */
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_tick(&t, 36000));
-}
-
-static void test_timeout_across_the_32bit_wrap(void)
-{
-    gw_ota_trial_t t;
-    gw_ota_trial_init(&t, true, 0xFFFFF000u, 30000);
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_tick(&t, 0x00001000u));   /* 8.2 s later */
-    TEST_ASSERT_EQUAL_UINT32(30000 - 8192 - 96, gw_ota_trial_left_ms(&t, 0x00001000u + 96));
-    TEST_ASSERT_EQUAL(GW_OTA_ROLLBACK, gw_ota_trial_tick(&t, 0xFFFFF000u + 30000u));
-}
-
-static void test_rejected_configuration_and_commissioning(void)
-{
-    gw_ota_trial_t t;
-    gw_ota_trial_init(&t, true, 0, 30000);
-    TEST_ASSERT_EQUAL(GW_OTA_ROLLBACK, gw_ota_trial_config_rejected(&t));
-    TEST_ASSERT_EQUAL_STRING("it rejected the stored configuration", t.why);
-    gw_ota_trial_init(&t, true, 0, 30000);
-    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_commissioning(&t));
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_tick(&t, 60000));
-}
-
-/* Issue #101: a refusal never hides a running transfer's state, nor the trial of a new image */
-static void test_refusal_keeps_transfer_and_trial(void)
-{
-    gw_ota_trial_t t;
-    gw_ota_trial_init(&t, true, 0, 30000);
+    gw_ota_trial_init(&t, true, GW_OTA_MODE_NORMAL, SC_MS, BACKSTOP_MS);
     TEST_ASSERT_TRUE(gw_ota_trial_open(&t));
-    TEST_ASSERT_EQUAL(GW_OTA_REFUSAL_IN_TRIAL, gw_ota_refusal(&t, false));
-    TEST_ASSERT_EQUAL(GW_OTA_REFUSAL_QUIET, gw_ota_refusal(&t, true));
-    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_session_up(&t, 0));
-    TEST_ASSERT_TRUE(gw_ota_trial_open(&t));   /* confirming: still no other update */
-    gw_ota_trial_confirm_result(&t, true, 10, 0);
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_check(&t, 1000, &k_all_ok));   /* mode not set */
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_mode(&t, GW_OTA_MODE_NORMAL, NULL));
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_check(&t, SC_MS - 1, &k_all_ok));
+    TEST_ASSERT_EQUAL_UINT32(1, gw_ota_trial_left_ms(&t, SC_MS - 1));
+    char why[96];
+    gw_ota_trial_refusal(&t, "v2", 15000, why, sizeof(why));
+    TEST_ASSERT_EQUAL_STRING("testing v2: 45 s left", why);
+    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_check(&t, SC_MS, &k_all_ok));
+    TEST_ASSERT_EQUAL(GW_OTA_TRIAL_CONFIRMING, t.state);   /* until the write succeeds */
+    TEST_ASSERT_TRUE(gw_ota_trial_open(&t));
+    gw_ota_trial_refusal(&t, "v2", SC_MS, why, sizeof(why));
+    TEST_ASSERT_EQUAL_STRING("testing v2: not marked valid yet", why);
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_check(&t, SC_MS + 1000, &k_all_ok));  /* in flight */
+    gw_ota_trial_confirm_result(&t, true, SC_MS + 10, 0);
+    TEST_ASSERT_EQUAL(GW_OTA_TRIAL_CONFIRMED, t.state);
     TEST_ASSERT_FALSE(gw_ota_trial_open(&t));
-    TEST_ASSERT_EQUAL(GW_OTA_REFUSAL_REPORT, gw_ota_refusal(&t, false));
-    TEST_ASSERT_EQUAL(GW_OTA_REFUSAL_QUIET, gw_ota_refusal(&t, true));
-    gw_ota_trial_init(&t, false, 0, 30000);
-    TEST_ASSERT_FALSE(gw_ota_trial_open(&t));
-    TEST_ASSERT_EQUAL(GW_OTA_REFUSAL_REPORT, gw_ota_refusal(&t, false));
-    gw_ota_trial_init(&t, true, 0, 30000);
-    TEST_ASSERT_EQUAL(GW_OTA_ROLLBACK, gw_ota_trial_tick(&t, 30000));
-    TEST_ASSERT_EQUAL(GW_OTA_REFUSAL_REPORT, gw_ota_refusal(&t, false));
+    /* decided once */
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_check(&t, BACKSTOP_MS * 2, &k_all_ok));
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_mode(&t, GW_OTA_MODE_RECOVERY, "a"));
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_backstop(&t, "x"));
+    TEST_ASSERT_EQUAL(GW_OTA_TRIAL_CONFIRMED, t.state);
 }
 
-/* Issue #99: a session without every DBIRTH (too large for the broker) does not confirm; the
- * timeout then rolls the image back, saying why */
-static void test_incomplete_births_do_not_confirm(void)
+/* an item that becomes true after 60 s confirms then; the web server only counts when one runs */
+static void test_selfcheck_items_and_late_confirmation(void)
 {
     gw_ota_trial_t t;
-    gw_ota_trial_init(&t, true, 0, 30000);
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_session_up(&t, 1));
-    TEST_ASSERT_EQUAL(GW_OTA_TRIAL_PENDING, t.state);
-    TEST_ASSERT_EQUAL_UINT32(20000, gw_ota_trial_next_ms(&t, 10000));
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_session_up(&t, 3));
-    TEST_ASSERT_EQUAL(GW_OTA_ROLLBACK, gw_ota_trial_tick(&t, 30000));
-    TEST_ASSERT_EQUAL_STRING("no complete Sparkplug session (every DBIRTH) before the timeout", t.why);
-    /* a later complete session (a new connection: a rebirth does not count) confirms it in time */
-    gw_ota_trial_init(&t, true, 0, 30000);
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_session_up(&t, 1));
-    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_session_up(&t, 0));
-    TEST_ASSERT_EQUAL_STRING("first Sparkplug session up", t.why);
-    /* not on trial: nothing to say */
-    gw_ota_trial_init(&t, false, 0, 30000);
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_session_up(&t, 2));
-    TEST_ASSERT_EQUAL_STRING("", t.why);
+    gw_ota_trial_init(&t, true, GW_OTA_MODE_RECOVERY, SC_MS, BACKSTOP_MS);
+    gw_ota_trial_mode(&t, GW_OTA_MODE_RECOVERY, NULL);
+    gw_ota_selfcheck_t sc = {.net_started = false, .web_needed = true, .web_alive = true};
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_check(&t, SC_MS, &sc));
+    TEST_ASSERT_EQUAL_UINT32(BACKSTOP_MS - SC_MS - 1000, gw_ota_trial_left_ms(&t, SC_MS + 1000));
+    sc.net_started = true;
+    sc.web_alive = false;
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_check(&t, 120000, &sc));
+    sc.web_needed = false;   /* web.enabled false: not an item */
+    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_check(&t, 130000, &sc));
 }
 
-/* Issue #99: a failed write to mark the image valid leaves it on trial, without timeout, and is
- * retried with a backoff from 1 s up to 60 s until it succeeds */
+/* the backstop: not true after 5 min, rejected with the first item that is false */
+static void test_backstop_rejects_with_the_item(void)
+{
+    const struct {
+        bool mode;
+        gw_ota_selfcheck_t sc;
+        const char *cause;
+    } c[] = {
+        {false, {true, true, true}, "self-check failed: mode not reached"},
+        {true, {false, true, true}, "self-check failed: network driver not started"},
+        {true, {true, true, false}, "self-check failed: web server not alive"},
+    };
+    for (size_t i = 0; i < sizeof(c) / sizeof(c[0]); i++) {
+        gw_ota_trial_t t;
+        gw_ota_trial_init(&t, true, GW_OTA_MODE_NORMAL, SC_MS, BACKSTOP_MS);
+        if (c[i].mode) {
+            gw_ota_trial_mode(&t, GW_OTA_MODE_NORMAL, NULL);
+        }
+        TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_check(&t, BACKSTOP_MS - 1, &c[i].sc));
+        TEST_ASSERT_EQUAL(GW_OTA_REJECT, gw_ota_trial_check(&t, BACKSTOP_MS, &c[i].sc));
+        TEST_ASSERT_EQUAL(GW_OTA_TRIAL_REJECTED, t.state);
+        TEST_ASSERT_EQUAL_STRING(c[i].cause, t.cause);
+        TEST_ASSERT_TRUE(gw_ota_trial_open(&t));   /* nothing saved until the restart */
+        TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_check(&t, BACKSTOP_MS + 1, &k_all_ok));
+        char why[128];
+        gw_ota_trial_refusal(&t, "v9", BACKSTOP_MS, why, sizeof(why));
+        TEST_ASSERT_EQUAL_STRING_LEN("v9 was rejected (self-check failed: ", why, 36);
+    }
+    /* the timer of a blocked main task */
+    gw_ota_trial_t t;
+    gw_ota_trial_init(&t, true, GW_OTA_MODE_NORMAL, SC_MS, BACKSTOP_MS);
+    TEST_ASSERT_EQUAL(GW_OTA_REJECT, gw_ota_trial_backstop(&t, "main task blocked"));
+    TEST_ASSERT_EQUAL_STRING("self-check failed: main task blocked", t.cause);
+    /* a backstop below the self-check time is raised to it */
+    gw_ota_trial_init(&t, true, GW_OTA_MODE_NORMAL, SC_MS, 1000);
+    TEST_ASSERT_EQUAL_UINT32(SC_MS, t.backstop_ms);
+}
+
+/* issue #144 item 2: a rejected configuration after an update from normal mode rejects the
+ * image at once, with the path; from recovery (or forced) it stays */
+static void test_rejected_configuration(void)
+{
+    gw_ota_trial_t t;
+    gw_ota_trial_init(&t, true, GW_OTA_MODE_NORMAL, SC_MS, BACKSTOP_MS);
+    TEST_ASSERT_EQUAL(GW_OTA_REJECT,
+                      gw_ota_trial_mode(&t, GW_OTA_MODE_RECOVERY, "devices[0].tags[1].type"));
+    TEST_ASSERT_EQUAL_STRING("configuration rejected: devices[0].tags[1].type", t.cause);
+    gw_ota_trial_init(&t, true, GW_OTA_MODE_NORMAL, SC_MS, BACKSTOP_MS);
+    TEST_ASSERT_EQUAL(GW_OTA_REJECT, gw_ota_trial_mode(&t, GW_OTA_MODE_COMMISSIONING, NULL));
+    TEST_ASSERT_EQUAL_STRING("configuration rejected: commissioning", t.cause);
+    gw_ota_trial_init(&t, true, GW_OTA_MODE_NORMAL, SC_MS, BACKSTOP_MS);
+    TEST_ASSERT_EQUAL(GW_OTA_REJECT, gw_ota_trial_mode(&t, GW_OTA_MODE_RECOVERY, ""));
+    TEST_ASSERT_EQUAL_STRING("configuration rejected: ?", t.cause);
+    /* expected recovery: it stays, and the self-check confirms it in recovery mode */
+    gw_ota_trial_init(&t, true, GW_OTA_MODE_RECOVERY, SC_MS, BACKSTOP_MS);
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_mode(&t, GW_OTA_MODE_RECOVERY, "a.b"));
+    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_check(&t, SC_MS, &k_all_ok));
+    /* an expected mode other than normal counts as recovery */
+    gw_ota_trial_init(&t, true, GW_OTA_MODE_COMMISSIONING, SC_MS, BACKSTOP_MS);
+    TEST_ASSERT_EQUAL(GW_OTA_MODE_RECOVERY, t.expected);
+}
+
+static void test_cannot_start(void)
+{
+    gw_ota_trial_t t;
+    gw_ota_trial_init(&t, true, GW_OTA_MODE_RECOVERY, SC_MS, BACKSTOP_MS);
+    TEST_ASSERT_EQUAL(GW_OTA_REJECT, gw_ota_trial_cannot_start(&t, "no memory to start"));
+    TEST_ASSERT_EQUAL_STRING("no memory to start", t.cause);
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_cannot_start(&t, "again"));
+    TEST_ASSERT_EQUAL_STRING("no memory to start", t.cause);
+}
+
+/* issue #99: a failed write keeps the image on trial (no backstop: it passed the self-check),
+ * retried after 1, 2, 4 ... up to 60 s, and once before a planned restart */
 static void test_failed_confirmation_is_retried(void)
 {
     gw_ota_trial_t t;
-    gw_ota_trial_init(&t, true, 0, 30000);
-    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_session_up(&t, 0));
-    TEST_ASSERT_EQUAL_UINT32(GW_OTA_NO_TICK, gw_ota_trial_next_ms(&t, 100));   /* in flight */
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_tick(&t, 100));
-    gw_ota_trial_confirm_result(&t, false, 1000, 0);
+    gw_ota_trial_init(&t, true, GW_OTA_MODE_NORMAL, SC_MS, BACKSTOP_MS);
+    gw_ota_trial_mode(&t, GW_OTA_MODE_NORMAL, NULL);
+    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_check(&t, SC_MS, &k_all_ok));
+    gw_ota_trial_confirm_result(&t, false, SC_MS, 0);
     TEST_ASSERT_EQUAL(GW_OTA_TRIAL_CONFIRMING, t.state);
     TEST_ASSERT_EQUAL_UINT32(1, t.attempts);
-    TEST_ASSERT_EQUAL_UINT32(1000, gw_ota_trial_next_ms(&t, 1000));
-    TEST_ASSERT_EQUAL_UINT32(0, gw_ota_trial_left_ms(&t, 1000));   /* no rollback deadline */
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_tick(&t, 1999));
-    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_tick(&t, 2000));
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_tick(&t, 2001));   /* one write at a time */
-    uint32_t now = 2000, prev = 1000;
-    for (int i = 2; i <= 10; i++) {
-        gw_ota_trial_confirm_result(&t, false, now, 0);
-        uint32_t d = gw_ota_trial_next_ms(&t, now);
-        TEST_ASSERT_TRUE(d >= prev && d <= GW_OTA_RETRY_MAX_MS);
-        prev = d;
-        now += d;
-        TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_tick(&t, now));
+    TEST_ASSERT_EQUAL_UINT32(0, gw_ota_trial_left_ms(&t, SC_MS));
+    uint32_t due = t.retry_at_ms;
+    TEST_ASSERT_TRUE(due > SC_MS && due <= SC_MS + GW_OTA_RETRY_MIN_MS);
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_check(&t, due - 1, &k_all_ok));
+    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_check(&t, due, &k_all_ok));
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_before_restart(&t));   /* one in flight */
+    uint32_t now = due;
+    for (int i = 0; i < 12; i++) {
+        gw_ota_trial_confirm_result(&t, false, now, 0xFFFFFFFFu);
+        TEST_ASSERT_TRUE(t.retry_at_ms - now <= GW_OTA_RETRY_MAX_MS);
+        now = t.retry_at_ms;
+        TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_check(&t, now, &k_all_ok));
     }
-    TEST_ASSERT_EQUAL_UINT32(GW_OTA_RETRY_MAX_MS, prev);
-    /* the timeout of the trial does not roll back an image judged healthy */
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_tick(&t, now + 100000));
+    /* far past the backstop: still not rejected */
+    TEST_ASSERT_TRUE(now > BACKSTOP_MS);
+    gw_ota_trial_confirm_result(&t, false, now, 0);
+    TEST_ASSERT_EQUAL(GW_OTA_TRIAL_CONFIRMING, t.state);
+    /* before a planned restart: one more try at once */
+    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_before_restart(&t));
     gw_ota_trial_confirm_result(&t, true, now, 0);
     TEST_ASSERT_EQUAL(GW_OTA_TRIAL_CONFIRMED, t.state);
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_tick(&t, now + 200000));
-    /* across the 32-bit wrap of the clock */
-    gw_ota_trial_init(&t, true, 0xFFFFF000u, 30000);
-    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_session_up(&t, 0));
-    gw_ota_trial_confirm_result(&t, false, 0xFFFFFF00u, 0);
-    TEST_ASSERT_EQUAL_UINT32(1000, gw_ota_trial_next_ms(&t, 0xFFFFFF00u));
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_tick(&t, 0x000002E7u));
-    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_tick(&t, 0x000002E8u));
-}
-
-/* Issue #99: a save or a factory reset during the trial confirms the image (the restart would
- * roll it back); it retries a failed write at once; no-op once decided or without a trial. An
- * image that cannot start at all is rolled back at once. */
-static void test_operator_commit_and_cannot_start(void)
-{
-    gw_ota_trial_t t;
-    gw_ota_trial_init(&t, true, 0, 30000);
-    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_operator(&t, "the operator saved a configuration"));
-    TEST_ASSERT_EQUAL_STRING("the operator saved a configuration", t.why);
-    gw_ota_trial_confirm_result(&t, false, 10, 0);
-    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_operator(&t, "factory reset"));
-    TEST_ASSERT_EQUAL_STRING("the operator saved a configuration", t.why);
-    gw_ota_trial_confirm_result(&t, true, 20, 0);
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_before_restart(&t));
+    /* a result that comes after the state changed changes nothing */
+    gw_ota_trial_confirm_result(&t, false, now, 0);
     TEST_ASSERT_EQUAL(GW_OTA_TRIAL_CONFIRMED, t.state);
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_operator(&t, "again"));
-    gw_ota_trial_init(&t, false, 0, 30000);
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_operator(&t, "x"));
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_cannot_start(&t, "x"));
-    gw_ota_trial_init(&t, true, 0, 30000);
-    TEST_ASSERT_EQUAL(GW_OTA_ROLLBACK, gw_ota_trial_cannot_start(&t, "no memory for the configuration"));
-    TEST_ASSERT_EQUAL(GW_OTA_TRIAL_ROLLBACK, t.state);
-    TEST_ASSERT_EQUAL_STRING("no memory for the configuration", t.why);
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_operator(&t, "x"));   /* rolling back already */
 }
 
-/* Issue #118: once a rollback is decided (rejected configuration, cannot start, timeout), the
- * policy never acts again: no timer, no confirmation, no other decision, no save. If the rollback
- * call fails, only the restart the IDF glue does (gw_fw.c rollback()) ends that state; the policy
- * offers no other way out, so every ROLLBACK must restart. */
-static void test_rollback_decided_has_no_way_out(void)
+static void test_uptime_past_32_bits_in_retries(void)
 {
     gw_ota_trial_t t;
-    for (int how = 0; how < 3; how++) {
-        gw_ota_trial_init(&t, true, 0, 30000);
-        gw_ota_action_t a = how == 0 ? gw_ota_trial_config_rejected(&t)
-                            : how == 1 ? gw_ota_trial_cannot_start(&t, "no memory")
-                                       : gw_ota_trial_tick(&t, 30000);
-        TEST_ASSERT_EQUAL(GW_OTA_ROLLBACK, a);
-        TEST_ASSERT_EQUAL(GW_OTA_TRIAL_ROLLBACK, t.state);
-        TEST_ASSERT_EQUAL_UINT32(GW_OTA_NO_TICK, gw_ota_trial_next_ms(&t, 30000));
-        TEST_ASSERT_EQUAL_UINT32(0, gw_ota_trial_left_ms(&t, 10));
-        TEST_ASSERT_FALSE(gw_ota_trial_open(&t));
-        TEST_ASSERT_FALSE(gw_ota_trial_commit_allowed(&t));
-        for (uint32_t now = 0; now < 200000u; now += 10000u) {
-            TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_tick(&t, now));
-        }
-        TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_config_rejected(&t));
-        TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_cannot_start(&t, "x"));
-        TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_session_up(&t, 0));
-        TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_commissioning(&t));
-        TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_operator(&t, "x"));
-        TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_restart_requested(&t));
-        gw_ota_trial_confirm_result(&t, true, 1000, 0);   /* a stray write result: ignored */
-        TEST_ASSERT_EQUAL(GW_OTA_TRIAL_ROLLBACK, t.state);
-        TEST_ASSERT_FALSE(gw_ota_trial_commit_allowed(&t));
-    }
+    gw_ota_trial_init(&t, true, GW_OTA_MODE_NORMAL, SC_MS, BACKSTOP_MS);
+    gw_ota_trial_mode(&t, GW_OTA_MODE_NORMAL, NULL);
+    gw_ota_trial_check(&t, SC_MS, &k_all_ok);
+    gw_ota_trial_confirm_result(&t, false, 0xFFFFFF00u, 0);   /* the retry wraps */
+    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_check(&t, 0xFFFFFF80u, &k_all_ok));
+    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_check(&t, t.retry_at_ms, &k_all_ok));
 }
 
-/* Issue #102: the capabilities block after esp_app_desc_t, and when an image may replace the
- * running one */
+static void caps_block(uint8_t *b, uint16_t version, uint16_t size, uint32_t flags,
+                       uint16_t schema, uint16_t nvs, uint32_t lfs)
+{
+    memset(b, 0, GW_OTA_CAPS_SIZE);
+    const uint8_t m[4] = {0x47, 0x57, 0x43, 0x50};
+    memcpy(b, m, 4);
+    b[4] = (uint8_t)version;
+    b[5] = (uint8_t)(version >> 8);
+    b[6] = (uint8_t)size;
+    b[7] = (uint8_t)(size >> 8);
+    for (int i = 0; i < 4; i++) {
+        b[8 + i] = (uint8_t)(flags >> (8 * i));
+        b[16 + i] = (uint8_t)(lfs >> (8 * i));
+    }
+    b[12] = (uint8_t)schema;
+    b[13] = (uint8_t)(schema >> 8);
+    b[14] = (uint8_t)nvs;
+    b[15] = (uint8_t)(nvs >> 8);
+}
+
 static void test_image_capabilities(void)
 {
-    uint8_t b[GW_OTA_CAPS_SIZE] = {0x47, 0x57, 0x43, 0x50, 1, 0, 32, 0, 0x01, 0, 0, 0};
-    uint32_t flags = 0;
-    TEST_ASSERT_TRUE(gw_ota_caps_read(b, sizeof(b), &flags));
-    TEST_ASSERT_EQUAL_HEX32(GW_OTA_CAP_NVS_ENCRYPTION, flags);
-    b[8] = 0x02;
-    TEST_ASSERT_TRUE(gw_ota_caps_read(b, sizeof(b), &flags));
-    TEST_ASSERT_EQUAL_HEX32(GW_OTA_CAP_FLASH_ENCRYPTION, flags);
-    /* a newer version with a larger block still says what the first 12 bytes say */
-    b[4] = 7;
-    b[6] = 24;
-    TEST_ASSERT_TRUE(gw_ota_caps_read(b, sizeof(b), &flags));
+    uint8_t b[GW_OTA_CAPS_SIZE];
+    gw_ota_caps_info_t c;
+    caps_block(b, 1, 32, GW_OTA_CAP_NVS_ENCRYPTION, 0, 0, 0);
+    gw_ota_caps_parse(b, sizeof(b), &c);
+    TEST_ASSERT_TRUE(c.declared);
+    TEST_ASSERT_EQUAL_UINT16(1, c.version);
+    TEST_ASSERT_EQUAL_HEX32(GW_OTA_CAP_NVS_ENCRYPTION, c.flags);
+    TEST_ASSERT_EQUAL_UINT16(0, c.cfg_schema);   /* version 1: no schema */
+    /* version 2 (#144, #148) */
+    caps_block(b, 2, 32, GW_OTA_CAP_FLASH_ENCRYPTION, 7, 0x0102, 0x00020001);
+    gw_ota_caps_parse(b, sizeof(b), &c);
+    TEST_ASSERT_TRUE(c.declared);
+    TEST_ASSERT_EQUAL_HEX32(GW_OTA_CAP_FLASH_ENCRYPTION, c.flags);
+    TEST_ASSERT_EQUAL_UINT16(7, c.cfg_schema);
+    TEST_ASSERT_EQUAL_HEX16(0x0102, c.nvs_format);
+    TEST_ASSERT_EQUAL_HEX32(0x00020001, c.lfs_disk);
+    /* a version 2 block shorter than its fields: only the first 12 bytes */
+    b[6] = 12;
+    gw_ota_caps_parse(b, sizeof(b), &c);
+    TEST_ASSERT_TRUE(c.declared);
+    TEST_ASSERT_EQUAL_UINT16(0, c.cfg_schema);
+    /* a newer version keeps the offsets */
+    caps_block(b, 9, 32, 0, 3, 0x0101, 0x00020001);
+    gw_ota_caps_parse(b, sizeof(b), &c);
+    TEST_ASSERT_EQUAL_UINT16(3, c.cfg_schema);
     b[6] = 33;   /* larger than what was read */
-    TEST_ASSERT_FALSE(gw_ota_caps_read(b, sizeof(b), &flags));
+    gw_ota_caps_parse(b, sizeof(b), &c);
+    TEST_ASSERT_FALSE(c.declared);
     b[6] = 11;
-    TEST_ASSERT_FALSE(gw_ota_caps_read(b, sizeof(b), &flags));
+    gw_ota_caps_parse(b, sizeof(b), &c);
+    TEST_ASSERT_FALSE(c.declared);
     b[6] = 32;
     b[4] = 0;
-    TEST_ASSERT_FALSE(gw_ota_caps_read(b, sizeof(b), &flags));
+    b[5] = 0;
+    gw_ota_caps_parse(b, sizeof(b), &c);
+    TEST_ASSERT_FALSE(c.declared);
     b[4] = 1;
     b[0] = 0x48;   /* other magic: an image built before #102 (its .rodata goes on there) */
-    TEST_ASSERT_FALSE(gw_ota_caps_read(b, sizeof(b), &flags));
+    gw_ota_caps_parse(b, sizeof(b), &c);
+    TEST_ASSERT_FALSE(c.declared);
     b[0] = 0x47;
-    TEST_ASSERT_FALSE(gw_ota_caps_read(b, 11, &flags));
+    gw_ota_caps_parse(b, 11, &c);
+    TEST_ASSERT_FALSE(c.declared);
     /* the layout the firmware compiles */
     TEST_ASSERT_EQUAL(GW_OTA_CAPS_SIZE, sizeof(gw_ota_caps_t));
 
+    /* issue #102: the NVS encryption rule */
     char why[96] = "";
-    TEST_ASSERT_TRUE(gw_ota_caps_accept(true, GW_OTA_CAP_NVS_ENCRYPTION, true, why, sizeof(why)));
-    TEST_ASSERT_TRUE(gw_ota_caps_accept(true, 0, false, why, sizeof(why)));    /* NVS not encrypted */
-    TEST_ASSERT_TRUE(gw_ota_caps_accept(false, 0, false, why, sizeof(why)));   /* an older image */
-    TEST_ASSERT_FALSE(gw_ota_caps_accept(true, GW_OTA_CAP_FLASH_ENCRYPTION, true, why, sizeof(why)));
+    gw_ota_caps_info_t img = {.declared = true, .version = 2, .flags = GW_OTA_CAP_NVS_ENCRYPTION};
+    TEST_ASSERT_TRUE(gw_ota_caps_accept(&img, true, why, sizeof(why)));
+    img.flags = 0;
+    TEST_ASSERT_TRUE(gw_ota_caps_accept(&img, false, why, sizeof(why)));   /* NVS not encrypted */
+    gw_ota_caps_info_t none = {0};
+    TEST_ASSERT_TRUE(gw_ota_caps_accept(&none, false, why, sizeof(why)));   /* an older image */
+    img.flags = GW_OTA_CAP_FLASH_ENCRYPTION;
+    TEST_ASSERT_FALSE(gw_ota_caps_accept(&img, true, why, sizeof(why)));
     TEST_ASSERT_EQUAL_STRING("built without NVS encryption (this device's NVS is encrypted)", why);
-    TEST_ASSERT_FALSE(gw_ota_caps_accept(false, GW_OTA_CAP_NVS_ENCRYPTION, true, why, sizeof(why)));
+    TEST_ASSERT_FALSE(gw_ota_caps_accept(&none, true, why, sizeof(why)));
     TEST_ASSERT_EQUAL_STRING("declares no NVS encryption (this device's NVS is encrypted)", why);
 }
 
-/* Issue #108 B1: no save nor factory reset once a rollback is decided (also when the rollback
- * call failed); B5: a plain restart retries a failing confirmation first, and only then */
-static void test_commit_after_rollback_and_restart_while_confirming(void)
+static void report_with(gw_schema_report_t *r, const gw_since_t *table, size_t n)
 {
-    gw_ota_trial_t t;
-    gw_ota_trial_init(&t, true, 0, 30000);
-    TEST_ASSERT_TRUE(gw_ota_trial_commit_allowed(&t));           /* pending: confirmed by it */
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_restart_requested(&t));   /* rejects it */
-    TEST_ASSERT_EQUAL(GW_OTA_ROLLBACK, gw_ota_trial_tick(&t, 30000));
-    TEST_ASSERT_FALSE(gw_ota_trial_commit_allowed(&t));
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_operator(&t, "x"));   /* stays refused */
-    TEST_ASSERT_FALSE(gw_ota_trial_commit_allowed(&t));
-    gw_ota_trial_init(&t, true, 0, 30000);
-    TEST_ASSERT_EQUAL(GW_OTA_ROLLBACK, gw_ota_trial_config_rejected(&t));
-    TEST_ASSERT_FALSE(gw_ota_trial_commit_allowed(&t));
-    gw_ota_trial_init(&t, false, 0, 30000);
-    TEST_ASSERT_TRUE(gw_ota_trial_commit_allowed(&t));
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_restart_requested(&t));
-    /* healthy, its write failing: the restart retries it now */
-    gw_ota_trial_init(&t, true, 0, 30000);
-    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_session_up(&t, 0));
-    TEST_ASSERT_TRUE(gw_ota_trial_commit_allowed(&t));
-    gw_ota_trial_confirm_result(&t, false, 100, 0);
-    TEST_ASSERT_EQUAL(GW_OTA_CONFIRM, gw_ota_trial_restart_requested(&t));
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_tick(&t, 100000));   /* that write is in flight */
-    gw_ota_trial_confirm_result(&t, true, 200, 0);
-    TEST_ASSERT_EQUAL(GW_OTA_TRIAL_CONFIRMED, t.state);
-    TEST_ASSERT_EQUAL(GW_OTA_KEEP, gw_ota_trial_restart_requested(&t));
-    TEST_ASSERT_TRUE(gw_ota_trial_commit_allowed(&t));
+    gw_schema_init(r, table, n);
+    gw_schema_note(r, "network", NULL);
+    gw_schema_note(r, "network.dhcp", NULL);
+    gw_schema_note(r, "devices[0].tags[3].scan", NULL);
+    gw_schema_note(r, "sparkplug.naming", "umh");
+    r->valid = true;
+}
+
+/* issue #144 item 3 and #148: the pre-flight check */
+static void test_preflight(void)
+{
+    static const gw_since_t table[] = {{"devices[].tags[].scan", NULL, 3},
+                                       {"sparkplug.naming", "umh", 2}};
+    gw_schema_report_t doc;
+    report_with(&doc, table, 2);
+    TEST_ASSERT_EQUAL_UINT16(3, doc.need);
+    const gw_ota_caps_info_t own = {.declared = true, .version = 2, .cfg_schema = 3,
+                                    .nvs_format = 0x0101, .lfs_disk = 0x00020001};
+    gw_ota_caps_info_t img = own;
+    char why[256];
+    TEST_ASSERT_EQUAL(GW_OTA_PF_OK, gw_ota_preflight(&own, &img, &doc, why, sizeof(why)));
+    TEST_ASSERT_EQUAL_STRING("", why);
+    /* a downgrade that cannot read the configuration: the paths that are too new */
+    img.cfg_schema = 1;
+    TEST_ASSERT_EQUAL(GW_OTA_PF_REFUSE, gw_ota_preflight(&own, &img, &doc, why, sizeof(why)));
+    TEST_ASSERT_EQUAL_STRING("the configuration needs schema 3, the image reads 1: "
+                             "devices[0].tags[3].scan (3), sparkplug.naming=umh (2)", why);
+    img.cfg_schema = 2;
+    TEST_ASSERT_EQUAL(GW_OTA_PF_REFUSE, gw_ota_preflight(&own, &img, &doc, why, sizeof(why)));
+    TEST_ASSERT_EQUAL_STRING("the configuration needs schema 3, the image reads 2: "
+                             "devices[0].tags[3].scan (3)", why);
+    /* a configuration that the running image does not load: nothing to check */
+    TEST_ASSERT_EQUAL(GW_OTA_PF_OK, gw_ota_preflight(&own, &img, NULL, why, sizeof(why)));
+    doc.valid = false;
+    TEST_ASSERT_EQUAL(GW_OTA_PF_OK, gw_ota_preflight(&own, &img, &doc, why, sizeof(why)));
+    doc.valid = true;
+    /* NVS format: the IDF page format or the gateway records of the image are older */
+    img = own;
+    img.nvs_format = 0x0100;
+    TEST_ASSERT_EQUAL(GW_OTA_PF_REFUSE, gw_ota_preflight(&own, &img, &doc, why, sizeof(why)));
+    TEST_ASSERT_EQUAL_STRING("NVS format 1.0, this firmware writes 1.1", why);
+    img.nvs_format = 0x0201;   /* newer: it reads ours */
+    TEST_ASSERT_EQUAL(GW_OTA_PF_OK, gw_ota_preflight(&own, &img, &doc, why, sizeof(why)));
+    img.nvs_format = 0x0002;
+    TEST_ASSERT_EQUAL(GW_OTA_PF_REFUSE, gw_ota_preflight(&own, &img, &doc, why, sizeof(why)));
+    /* LittleFS: another major version or an older minor version */
+    img = own;
+    img.lfs_disk = 0x00020000;
+    TEST_ASSERT_EQUAL(GW_OTA_PF_REFUSE, gw_ota_preflight(&own, &img, &doc, why, sizeof(why)));
+    TEST_ASSERT_EQUAL_STRING("LittleFS disk version 2.0, this firmware writes 2.1", why);
+    img.lfs_disk = 0x00020002;
+    TEST_ASSERT_EQUAL(GW_OTA_PF_OK, gw_ota_preflight(&own, &img, &doc, why, sizeof(why)));
+    img.lfs_disk = 0x00030001;
+    TEST_ASSERT_EQUAL(GW_OTA_PF_REFUSE, gw_ota_preflight(&own, &img, &doc, why, sizeof(why)));
+    /* all reasons together */
+    img.cfg_schema = 2;
+    img.nvs_format = 0x0100;
+    TEST_ASSERT_EQUAL(GW_OTA_PF_REFUSE, gw_ota_preflight(&own, &img, &doc, why, sizeof(why)));
+    TEST_ASSERT_EQUAL_STRING("the configuration needs schema 3, the image reads 2: "
+                             "devices[0].tags[3].scan (3); NVS format 1.0, this firmware writes "
+                             "1.1; LittleFS disk version 3.1, this firmware writes 2.1", why);
+    /* an image without capabilities version 2 (all images before #144): unknown, force */
+    gw_ota_caps_info_t v1 = {.declared = true, .version = 1, .flags = 1};
+    TEST_ASSERT_EQUAL(GW_OTA_PF_UNKNOWN, gw_ota_preflight(&own, &v1, &doc, why, sizeof(why)));
+    TEST_ASSERT_EQUAL_STRING("the image declares no configuration schema (capabilities version "
+                             "1, built before the pre-flight check): it may not read the stored "
+                             "data", why);
+    gw_ota_caps_info_t none = {0};
+    TEST_ASSERT_EQUAL(GW_OTA_PF_UNKNOWN, gw_ota_preflight(&own, &none, NULL, why, sizeof(why)));
+    /* a small buffer: cut, never overrun */
+    char small[20];
+    img.cfg_schema = 1;
+    TEST_ASSERT_EQUAL(GW_OTA_PF_REFUSE, gw_ota_preflight(&own, &img, &doc, small, sizeof(small)));
+    TEST_ASSERT_EQUAL(sizeof(small) - 1, strlen(small));
+}
+
+/* this firmware's own capabilities pass its own pre-flight with its own configuration */
+static void test_preflight_same_image(void)
+{
+    gw_schema_report_t doc;
+    gw_config_schema_init(&doc);
+    gw_schema_note(&doc, "network", NULL);
+    doc.valid = true;
+    const gw_ota_caps_info_t own = {.declared = true, .version = GW_OTA_CAPS_VERSION,
+                                    .cfg_schema = GW_CONFIG_SCHEMA,
+                                    .nvs_format = 0x0100 | GW_NVS_RECORDS,
+                                    .lfs_disk = 0x00020001};
+    char why[160];
+    TEST_ASSERT_EQUAL(GW_OTA_PF_OK, gw_ota_preflight(&own, &own, &doc, why, sizeof(why)));
 }
 
 static void test_urls(void)
@@ -351,38 +459,53 @@ static void test_progress_unknown_size_by_time(void)
 static void test_request_body(void)
 {
     char url[GW_OTA_URL_MAX], why[96];
+    bool force = true;
     const char *ok = "{\"url\": \"https://fw.example/gw.bin\"}";
-    TEST_ASSERT_TRUE(gw_ota_parse_request(ok, strlen(ok), url, why, sizeof(why)));
+    TEST_ASSERT_TRUE(gw_ota_parse_request(ok, strlen(ok), url, &force, why, sizeof(why)));
     TEST_ASSERT_EQUAL_STRING("https://fw.example/gw.bin", url);
+    TEST_ASSERT_FALSE(force);
     const char *esc = "{\"url\":\"https://fw.example/a\\/b\"}";   /* JSON escape of '/' */
-    TEST_ASSERT_TRUE(gw_ota_parse_request(esc, strlen(esc), url, why, sizeof(why)));
+    TEST_ASSERT_TRUE(gw_ota_parse_request(esc, strlen(esc), url, &force, why, sizeof(why)));
     TEST_ASSERT_EQUAL_STRING("https://fw.example/a/b", url);
+    /* issue #144 item 3: force */
+    const char *forced = "{\"url\":\"https://x/y\",\"force\":true}";
+    TEST_ASSERT_TRUE(gw_ota_parse_request(forced, strlen(forced), url, &force, why, sizeof(why)));
+    TEST_ASSERT_TRUE(force);
+    const char *unforced = "{\"force\":false,\"url\":\"https://x/y\"}";
+    TEST_ASSERT_TRUE(gw_ota_parse_request(unforced, strlen(unforced), url, &force, why,
+                                          sizeof(why)));
+    TEST_ASSERT_FALSE(force);
     const char *bad[] = {"", "[]", "\"https://x\"", "{}", "{\"url\":1}",
-                         "{\"url\":\"https://x\",\"force\":true}", "{\"url\":\"https://x\""};
+                         "{\"url\":\"https://x\",\"force\":1}",
+                         "{\"url\":\"https://x\",\"other\":true}",
+                         "{\"url\":\"https://x\",\"force\":true,\"x\":1}", "{\"force\":true}",
+                         "{\"url\":\"https://x\""};
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
-        TEST_ASSERT_FALSE_MESSAGE(gw_ota_parse_request(bad[i], strlen(bad[i]), url, why, sizeof(why)),
+        TEST_ASSERT_FALSE_MESSAGE(gw_ota_parse_request(bad[i], strlen(bad[i]), url, &force, why,
+                                                       sizeof(why)),
                                   bad[i]);
     }
     /* not NUL terminated: only len bytes count */
     const char trunc[] = "{\"url\":\"https://x/y\"}garbage";
-    TEST_ASSERT_TRUE(gw_ota_parse_request(trunc, sizeof(trunc) - 1 - 7, url, why, sizeof(why)));
+    TEST_ASSERT_TRUE(gw_ota_parse_request(trunc, sizeof(trunc) - 1 - 7, url, &force, why,
+                                          sizeof(why)));
 }
 
 int main(void)
 {
     UNITY_BEGIN();
+    RUN_TEST(test_expected_mode);
     RUN_TEST(test_not_pending_never_acts);
-    RUN_TEST(test_first_session_confirms_once);
-    RUN_TEST(test_timeout_rolls_back);
-    RUN_TEST(test_timeout_across_the_32bit_wrap);
-    RUN_TEST(test_rejected_configuration_and_commissioning);
-    RUN_TEST(test_refusal_keeps_transfer_and_trial);
-    RUN_TEST(test_incomplete_births_do_not_confirm);
+    RUN_TEST(test_selfcheck_confirms_at_60_s);
+    RUN_TEST(test_selfcheck_items_and_late_confirmation);
+    RUN_TEST(test_backstop_rejects_with_the_item);
+    RUN_TEST(test_rejected_configuration);
+    RUN_TEST(test_cannot_start);
     RUN_TEST(test_failed_confirmation_is_retried);
-    RUN_TEST(test_operator_commit_and_cannot_start);
-    RUN_TEST(test_rollback_decided_has_no_way_out);
-    RUN_TEST(test_commit_after_rollback_and_restart_while_confirming);
+    RUN_TEST(test_uptime_past_32_bits_in_retries);
     RUN_TEST(test_image_capabilities);
+    RUN_TEST(test_preflight);
+    RUN_TEST(test_preflight_same_image);
     RUN_TEST(test_urls);
     RUN_TEST(test_progress_every_ten_percent);
     RUN_TEST(test_progress_unknown_size_by_time);

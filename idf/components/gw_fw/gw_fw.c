@@ -21,15 +21,18 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "gw_bootloop.h"
 #include "gw_bus.h"
-#include "gw_ota.h"
 #include "gw_storage.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "fw";
 
-/* Issue #102: what this image declares about itself, right after its esp_app_desc_t (see
- * gw_ota.h); an update reads the same block of the incoming image. */
+#define NVS_FW_LAST "fw_last"   /* issue #144 item 5 */
+
+/* Issues #102 and #144: what this image declares about itself, right after its esp_app_desc_t
+ * (see gw_ota.h); an update reads the same block of the incoming image. GW_LFS_DISK_VERSION and
+ * GW_NVS_PAGE_VERSION come from the littlefs and nvs_flash sources (CMakeLists.txt, #148). */
 const __attribute__((section(".rodata_custom_desc"), used)) gw_ota_caps_t gw_app_caps = {
     .magic = GW_OTA_CAPS_MAGIC,
     .version = GW_OTA_CAPS_VERSION,
@@ -42,12 +45,16 @@ const __attribute__((section(".rodata_custom_desc"), used)) gw_ota_caps_t gw_app
              | GW_OTA_CAP_FLASH_ENCRYPTION
 #endif
     ,
+    .cfg_schema = GW_CONFIG_SCHEMA,
+    .nvs_format = (uint16_t)(((0xFFu - GW_NVS_PAGE_VERSION) << 8) | GW_NVS_RECORDS),
+    .lfs_disk = GW_LFS_DISK_VERSION,
 };
 _Static_assert(sizeof(gw_ota_caps_t) == GW_OTA_CAPS_SIZE, "gw_ota_caps_t layout");
 _Static_assert(GW_OTA_CAPS_OFFSET == sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) +
                                          sizeof(esp_app_desc_t), "caps offset");
 
 #define RESTART_DELAY_MS 1500   /* the state NDATA (or the HTTP answer) goes out first */
+#define BACKSTOP_GRACE_MS 10000u   /* the timer after the backstop of the main task's check */
 #if CONFIG_SECURE_SIGNED_APPS
 #define WHY_INVALID "checksum or signature"   /* FW-2: signed images required */
 #else
@@ -60,21 +67,27 @@ static bool s_enabled;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t s_fmt_lock;   /* s_st.text and s_st.detail (formatted in place) */
 static StaticSemaphore_t s_fmt_lock_buf;
-static SemaphoreHandle_t s_ota_lock;   /* otadata writes: confirm, rollback (issue #99) */
+static SemaphoreHandle_t s_ota_lock;   /* otadata writes: confirm, boot partition (issue #99) */
 static StaticSemaphore_t s_ota_lock_buf;
 /* Plain data in RTC FAST memory (8 KB, both cores, otherwise only a little-used heap region):
  * the internal DRAM heap keeps these bytes (issue #80: internal RAM is shared with Wi-Fi, lwIP,
  * the stacks and the fault mode of #135). Locks stay in DRAM (atomic instructions). */
 static RTC_FAST_ATTR gw_fw_status_t s_st;   /* under s_mux; texts under s_fmt_lock */
 static RTC_FAST_ATTR gw_ota_trial_t s_trial;   /* under s_mux */
-static esp_timer_handle_t s_trial_timer;
-/* Issue #108 B4: a task runs what the trial timer asks for. Issue #109 B-a: it is woken through a
- * static semaphore, never through its handle: a give after the task ended touches no freed TCB. */
-static atomic_bool s_trial_worker;     /* the task exists (it clears this before it ends) */
-static SemaphoreHandle_t s_trial_wake;
-static StaticSemaphore_t s_trial_wake_buf;
+static RTC_FAST_ATTR gw_fwlast_t s_last;    /* the fw_last record (issue #144 item 5) */
+/* Issue #144 item 4: the boot-loop counter, in RTC memory that a reset does not clear */
+static RTC_NOINIT_ATTR gw_bootloop_t s_loop;
+static uint32_t s_loop_count;
+static bool s_safe;
+static atomic_bool s_planned;          /* the next restart is planned by gw_fw, not the operator */
+static gw_ota_mode_t s_mode;           /* the mode that this boot reached */
+static gw_ota_caps_info_t s_own;       /* gw_app_caps as gw_ota_caps_parse() reads it */
+static bool s_other_invalid;           /* the other slot failed its verification in this boot */
+static esp_timer_handle_t s_backstop_timer;
+static esp_timer_handle_t s_loop_timer;   /* the clear after 120 s, or the end of safe mode */
 static esp_timer_handle_t s_restart_timer;
 static atomic_bool s_busy;             /* a transfer is running (download or upload) */
+static bool s_force;                   /* the running transfer was forced (issue #144 item 3) */
 static char *s_url;                    /* allocated for a download only (#80) */
 static char *s_ca_pem;                 /* read for a download only (#80), freed after it */
 static const char *s_ca_name;          /* CA file of the update server, NULL: public CAs */
@@ -119,9 +132,7 @@ static uint8_t s_up_pct;
  *   must take part like the bus task;
  * - nothing of ours between park(true) and park(false) logs; the lines around it ("parking
  *   core 1", "core 1 resumed after N ms") come before the park task starts and after it ended.
- *   IDF's own lines inside (esp_image's) go out as usual: no lock they need is left on core 1.
- *   One exception, emulator only: the rollback's shutdown handler (log_rollback_stack, #123),
- *   at the very end of the path, logs the same way as esp_ota_ops does just before it;
+ *   IDF's own lines inside (esp_image's) go out as usual: no lock they need is left on core 1;
  * - a park lasts at most PARK_MAX_MS: past it core 1 resumes by itself (the emulator fault the
  *   park avoids may follow) and park(false) logs it, an error for the E2E. */
 #define PARK_HOLD_MS 10000u   /* least wait for the bus task to stop (more with slow RS485, #112) */
@@ -313,9 +324,13 @@ static void on_core0(void (*fn)(void *), void *arg)
 }
 #endif
 
+/* The uptime of this boot (ms, 32 bits: it wraps after 49 days, and gw_ota compares with that
+ * in mind). From the FreeRTOS tick, not esp_timer: in QEMU the system timer does not restart at
+ * a software reset, so esp_timer_get_time() can be minutes at the start of app_main, and the
+ * self-check of a new image (60 s of uptime, issue #144) would pass at once. */
 static uint32_t now_ms(void)
 {
-    return (uint32_t)(esp_timer_get_time() / 1000);
+    return (uint32_t)((uint64_t)xTaskGetTickCount() * portTICK_PERIOD_MS);
 }
 
 /* s_st's texts. The mutex exists from gw_fw_early_init(), before the shell starts (issue #101:
@@ -338,7 +353,7 @@ static void text_unlock(bool taken)
  * of the callers, among them the esp_timer task, nor in .bss: issue #80). @p release: the
  * transfer ends with this state; the busy flag drops in the same critical section as the phase,
  * so nobody sees the new state with the old flag (issue #101: a new update could start in
- * between and have its "connecting" overwritten by this one's "failed"). */
+ * between and have its "downloading" overwritten by this one's "failed"). */
 static void update_status(gw_fw_phase_t phase, uint8_t progress, const char *detail, bool release,
                           const char *fmt, va_list ap)
 {
@@ -414,14 +429,53 @@ void gw_fw_get_status(gw_fw_status_t *out)
     portENTER_CRITICAL(&s_mux);
     *out = s_st;
     out->trial_left_s = (gw_ota_trial_left_ms(&s_trial, now_ms()) + 999u) / 1000u;
+    out->trial = gw_ota_trial_open(&s_trial);
+    out->expected = out->trial ? s_trial.expected : GW_OTA_MODE_NONE;
+    out->boot_count = gw_bootloop_count(&s_loop);
     portEXIT_CRITICAL(&s_mux);
     text_unlock(taken);
 }
 
-static void fail(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+bool gw_fw_on_trial(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    bool open = gw_ota_trial_open(&s_trial);
+    portEXIT_CRITICAL(&s_mux);
+    return open;
+}
+
+uint32_t gw_fw_boot_count(void)
+{
+    return gw_bootloop_count(&s_loop);
+}
+
+/* ---------- issue #144 item 5: the record of the last update (fw_last) ---------- */
+
+/* Written before each step that can end in a restart, and with each result. NVS refuses writes
+ * after a factory reset (gw_storage_set_str): then the record stays as it was. */
+static void last_write(gw_fwlast_result_t result, const char *version, gw_ota_mode_t expect,
+                       const char *cause)
+{
+    char text[GW_FWLAST_MAX];
+    portENTER_CRITICAL(&s_mux);
+    s_last.result = result;
+    s_last.expect = expect;
+    snprintf(s_last.version, sizeof(s_last.version), "%s", version != NULL ? version : "");
+    snprintf(s_last.cause, sizeof(s_last.cause), "%s", cause != NULL ? cause : "");
+    gw_fwlast_format(&s_last, text, sizeof(text));
+    portEXIT_CRITICAL(&s_mux);
+    esp_err_t e = gw_storage_set_str(NVS_FW_LAST, text);
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "record of the last update not written (%s): %s", esp_err_to_name(e), text);
+    }
+}
+
+/* ---------- failures and refusals ---------- */
+
+static void fail(const char *version, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
 /* The transfer failed: the running image stays, nothing changes at boot. */
-static void fail(const char *fmt, ...)
+static void fail(const char *version, const char *fmt, ...)
 {
     char why[sizeof(s_st.detail)];
     va_list ap;
@@ -429,108 +483,115 @@ static void fail(const char *fmt, ...)
     vsnprintf(why, sizeof(why), fmt, ap);
     va_end(ap);
     ESP_LOGE(TAG, "firmware update failed: %s", why);
+    last_write(GW_FWLAST_FAILED, version, GW_OTA_MODE_NONE, why);
     /* whoever sees the failed state may start the next update right away: the flag drops with
      * the phase, under the same lock (issue #101) */
     set_status_release(GW_FW_FAILED, s_st.progress, why, "failed: %s", why);
 }
 
-/* Issue #101: a refused request is reported without hiding a running transfer's state or the
- * trial of a new image (its phase, and with it the time left, stay). */
+/* A refused request (nothing written). Issue #101: it does not hide a running transfer's state;
+ * during a trial the state stays "testing <v>" (the HTTP answer and the log give the refusal). */
 static void refused(const char *why)
 {
     ESP_LOGW(TAG, "firmware update refused: %s", why);
     portENTER_CRITICAL(&s_mux);
-    gw_ota_refusal_t r = gw_ota_refusal(&s_trial, atomic_load(&s_busy));
+    bool quiet = atomic_load(&s_busy) || gw_ota_trial_open(&s_trial);
     portEXIT_CRITICAL(&s_mux);
-    if (r == GW_OTA_REFUSAL_IN_TRIAL) {
-        char detail[sizeof(s_st.detail)];
-        snprintf(detail, sizeof(detail), "refused: %s; firmware %s on trial", why, s_st.running);
-        set_status(GW_FW_TRIAL, 100, detail, "refused: %s", why);
-    } else if (r == GW_OTA_REFUSAL_REPORT) {
-        set_status(GW_FW_FAILED, 0, why, "refused: %s", why);
+    if (!quiet) {
+        set_status(GW_FW_FAILED, 0, why, "failed: %s", why);
+    }
+}
+
+/* ---------- restarts ---------- */
+
+/* A restart that gw_fw plans (not the operator's): the boot-loop counter stays. */
+static void planned_restart(void)
+{
+    atomic_store(&s_planned, true);
+    if (s_hooks.restart != NULL) {
+        s_hooks.restart();   /* orderly: NDEATH first in normal mode */
+    } else {
+        gw_bus_quiesce(1000);   /* no-op without the bus */
+        esp_restart();
     }
 }
 
 static void on_restart(void *arg)
 {
     (void)arg;
-    s_hooks.restart();
+    planned_restart();
 }
 
 /* An orderly restart in RESTART_DELAY_MS: the state NDATA (or the HTTP answer) goes out first. */
 static void restart_soon(void)
 {
+    atomic_store(&s_planned, true);
     /* created when needed: no allocation in a normal boot. Issue #104: a new image on trial has
-     * it from gw_fw_init(), so the restart after its confirmation (Sparkplug task) allocates
-     * nothing in the publish path (REL-2); here only for a finished transfer */
+     * it from gw_fw_init(), so the restart after its confirmation (main task) allocates nothing */
     if (s_restart_timer == NULL) {
         const esp_timer_create_args_t rt = {.callback = on_restart, .name = "fw_restart"};
         if (esp_timer_create(&rt, &s_restart_timer) != ESP_OK) {
             ESP_LOGE(TAG, "no memory for the restart timer: restarting now");
-            s_hooks.restart();
+            planned_restart();
             return;
         }
     }
     esp_timer_start_once(s_restart_timer, RESTART_DELAY_MS * 1000ULL);
 }
 
-/* The new image is written, verified and set to boot: restart into it. */
-static void finished(const char *version)
+/* ---------- issue #144 item 1: the trial of a new image ---------- */
+
+static const char *other_version(void)
 {
-    portENTER_CRITICAL(&s_mux);
-    snprintf(s_st.other, sizeof(s_st.other), "%s", version);
-    portEXIT_CRITICAL(&s_mux);
-    ESP_LOGW(TAG, "firmware %s written and verified; restarting into it (on trial until its "
-                  "first Sparkplug session, at most %d s)",
-             version, CONFIG_GW_FW_CONFIRM_TIMEOUT_S);
-    set_status(GW_FW_REBOOTING, 100, NULL, "rebooting into %s", version);
-    restart_soon();
+    return s_st.other[0] ? s_st.other : "the earlier firmware";
 }
 
-/* ---------- trial of a new image (FW-1 health criterion, gw_ota policy) ---------- */
-
-/* The trial timer at what the policy waits for next: the timeout, or the retry of a failed
- * confirmation (issue #99). */
-static void arm_trial_timer(void)
+/* The image rejected itself: the cause goes to fw_last, then a planned restart. The image is
+ * still pending, so the bootloader boots the earlier one (esp_ota_mark_app_invalid_rollback_
+ * and_reboot() is not called: no verification of the earlier image in the app, whatever the
+ * stack of the caller, issues #108, #109, #118). Runs in the main task, or in the esp_timer task
+ * for the backstop (shallow: an NVS write and a request). */
+static void reject_now(void)
 {
-    if (s_trial_timer == NULL) {
-        return;
-    }
+    char cause[GW_OTA_CAUSE_MAX];
     portENTER_CRITICAL(&s_mux);
-    uint32_t ms = gw_ota_trial_next_ms(&s_trial, now_ms());
+    snprintf(cause, sizeof(cause), "%s", s_trial.cause);
+    gw_ota_mode_t expected = s_trial.expected;
     portEXIT_CRITICAL(&s_mux);
-    esp_timer_stop(s_trial_timer);   /* ESP_ERR_INVALID_STATE when it is not running: fine */
-    if (ms != GW_OTA_NO_TICK) {
-        esp_timer_start_once(s_trial_timer, (uint64_t)(ms ? ms : 1u) * 1000ULL);
+    if (s_backstop_timer != NULL) {
+        esp_timer_stop(s_backstop_timer);
     }
+    last_write(GW_FWLAST_REJECTED, s_st.running, expected, cause);
+    char detail[sizeof(s_st.detail)];
+    snprintf(detail, sizeof(detail), "firmware %s rejected (%s): restarting into %s",
+             s_st.running, cause, other_version());
+    ESP_LOGE(TAG, "%s", detail);
+    set_status(GW_FW_RESTARTING, 0, detail, "restarting into %s", other_version());
+    planned_restart();
 }
 
-/* The texts of a confirmation (or of its failure), in their own frame (see rollback_report()
- * below). */
-static void __attribute__((noinline)) confirm_report(esp_err_t e, bool mine, bool nvs_restart)
+/* The texts of a confirmation (or of its failure). */
+static void confirm_report(esp_err_t e, bool nvs_restart)
 {
-    char why[96];
     portENTER_CRITICAL(&s_mux);
-    snprintf(why, sizeof(why), "%s", s_trial.why);
     uint32_t attempts = s_trial.attempts;
-    uint32_t next = gw_ota_trial_next_ms(&s_trial, now_ms());
+    uint32_t retry = s_trial.retry_at_ms;
     portEXIT_CRITICAL(&s_mux);
     char detail[sizeof(s_st.detail)];
     if (e != ESP_OK) {
-        snprintf(detail, sizeof(detail), "firmware %.31s healthy (%.60s), not marked valid "
-                 "(%.32s, attempt %lu): retry in %lu s; a restart first rolls it back",
-                 s_st.running, why, esp_err_to_name(e), (unsigned long)attempts,
-                 (unsigned long)((next == GW_OTA_NO_TICK ? 0 : next) + 999u) / 1000u);
+        int32_t in = (int32_t)(retry - now_ms());
+        snprintf(detail, sizeof(detail), "firmware %.31s passed the self-check, not marked valid "
+                 "(%.32s, attempt %lu): retry in %ld s; a restart first rolls it back",
+                 s_st.running, esp_err_to_name(e), (unsigned long)attempts,
+                 (long)((in > 0 ? in : 0) + 999) / 1000);
         ESP_LOGE(TAG, "%s", detail);
-        set_status(GW_FW_TRIAL, 100, detail, "on trial: %s (not confirmed yet)", s_st.running);
+        set_status(GW_FW_TESTING, 100, detail, "testing %s", s_st.running);
         return;
     }
-    if (!mine) {
-        return;
-    }
-    snprintf(detail, sizeof(detail), "firmware %s confirmed: %s", s_st.running, why);
+    snprintf(detail, sizeof(detail), "firmware %s installed: the self-check passed in %s mode",
+             s_st.running, gw_ota_mode_name(s_mode));
     ESP_LOGW(TAG, "%s; the bootloader keeps it", detail);
-    set_status(GW_FW_CONFIRMED, 100, detail, "confirmed: %s", s_st.running);
+    set_status(GW_FW_INSTALLED, 100, detail, "installed %s", s_st.running);
     if (nvs_restart && gw_storage_nvs_migrates_next_boot()) {
         /* issue #94: the trial ran on the unencrypted NVS (a rollback had to find it as the
          * previous image left it); now no rollback can come, and the next boot moves it into
@@ -545,10 +606,10 @@ static void __attribute__((noinline)) confirm_report(esp_err_t e, bool mine, boo
 }
 
 /* Mark the running image valid. Issue #99: the image is CONFIRMED only when the write succeeded;
- * otherwise it stays on trial (no timeout: it was judged healthy) and the write is retried with
- * a backoff, since any restart before it succeeds would roll it back. Serialised: the trial
- * timer, the Sparkplug task and an operator's save may ask at once. @p nvs_restart: restart once
- * for the NVS encryption (issue #94) when it is pending; not when the caller restarts anyway. */
+ * otherwise it stays on trial and the write is retried with a backoff, since any restart before
+ * it succeeds would roll it back. On core 0 (QEMU's parked core must be core 1). @p nvs_restart:
+ * restart once for the NVS encryption (issue #94) when it is pending; not when the caller
+ * restarts anyway. */
 static bool confirm(bool nvs_restart)
 {
     xSemaphoreTake(s_ota_lock, portMAX_DELAY);
@@ -557,304 +618,240 @@ static bool confirm(bool nvs_restart)
     park(false);
     xSemaphoreGive(s_ota_lock);
     portENTER_CRITICAL(&s_mux);
-    bool mine = s_trial.state == GW_OTA_TRIAL_CONFIRMING;   /* not reported by another caller */
     gw_ota_trial_confirm_result(&s_trial, e == ESP_OK, now_ms(), esp_random());
     portEXIT_CRITICAL(&s_mux);
-    confirm_report(e, mine, nvs_restart);
-    if (e != ESP_OK) {
-        arm_trial_timer();
-        return false;
+    if (e == ESP_OK) {
+        if (s_backstop_timer != NULL) {
+            esp_timer_stop(s_backstop_timer);
+        }
+        last_write(GW_FWLAST_INSTALLED, s_st.running, GW_OTA_MODE_NONE, "");
+        /* issue #144 item 8: the recovery network only from a confirmed image in normal mode */
+        if (s_mode == GW_OTA_MODE_NORMAL && s_cfg != NULL) {
+            gw_storage_save_last_good(s_cfg);
+        }
     }
-    if (atomic_load(&s_trial_worker)) {
-        xSemaphoreGive(s_trial_wake);   /* decided: the trial task ends */
-    }
-    return true;
+    confirm_report(e, nvs_restart);
+    return e == ESP_OK;
 }
 
-/* The texts of a rollback, in their own frame: it is gone before the verification of the previous
- * image (RSA-PSS with signed images), which runs deep in the caller's stack, the esp_timer task's
- * 3.5 KB on a timeout (E2E: "stack overflow in task esp_timer" with the texts still on it). */
-static void __attribute__((noinline)) rollback_report(void)
+typedef struct {
+    bool nvs_restart;
+    bool ok;
+} confirm_call_t;
+
+static void confirm_on_core0(void *arg)
 {
-    char why[96];
+    confirm_call_t *c = arg;
+    c->ok = confirm(c->nvs_restart);
+}
+
+static void act(gw_ota_action_t a, bool nvs_restart)
+{
+    if (a == GW_OTA_CONFIRM) {
+        confirm_call_t c = {.nvs_restart = nvs_restart};
+        on_core0(confirm_on_core0, &c);
+    } else if (a == GW_OTA_REJECT) {
+        reject_now();
+    }
+}
+
+static bool trial_open(void)
+{
     portENTER_CRITICAL(&s_mux);
-    snprintf(why, sizeof(why), "%s", s_trial.why);
+    bool open = gw_ota_trial_open(&s_trial);
     portEXIT_CRITICAL(&s_mux);
-    char detail[sizeof(s_st.detail)];
-    snprintf(detail, sizeof(detail), "firmware %s rejected (%s): back to %s", s_st.running, why,
-             s_st.other[0] ? s_st.other : "the previous image");
-    ESP_LOGE(TAG, "%s", detail);
-    set_status(GW_FW_FAILED, 0, detail, "rolling back: %s", s_st.running);
+    return open;
 }
 
-#if CONFIG_GW_IO_SIMULATED
-#define GW_FW_SIM_ROLLBACK_FAILS ".sim-rollback-fails"   /* in /cfg, put there by the E2E */
-
-/* Issue #123: a normal log line, not esp_rom_printf(). The ROM call puts one character at a time
- * into the UART FIFO and takes none of the console's locks, so a line of another task came out
- * inside it: one that waited in the UART driver for room in the FIFO with its line half written
- * (the edge task, in the CI failure), or one of a task of higher priority that preempted the ROM
- * call (reproduced with a temporary flood task on core 0). A log line takes the console lock
- * (gw_shell's log_vprintf) and stdout's, both held to the end of every log line and shell answer:
- * a line in progress ends first, and none goes out inside this one. Only output that bypasses
- * those locks (esp_rom_printf, ESP_EARLY/DRAM_LOG*) could still cut in; nothing uses it on this
- * path. Safe here, as are esp_ota_ops' own lines just before it: the park leaves no lock on core
- * 1 (#111), and the shallow frame of a shutdown handler has more stack than the verification left
- * (the high water mark, read before the call). */
-static void log_rollback_stack(void)
+void gw_fw_trial_poll(void)
 {
-    unsigned free_b = (unsigned)uxTaskGetStackHighWaterMark(NULL);
-    ESP_LOGW(TAG, "rollback stack: %u B free in task %s on the rollback path (emulator check)",
-             free_b, pcTaskGetName(NULL));
-}
-#endif
-
-/* Mark the running image invalid and restart into the previous one; returns only on error. */
-static esp_err_t mark_invalid(void)
-{
-#if CONFIG_GW_IO_SIMULATED
-    /* issue #118, emulator only: the E2E makes this call fail once (as when the verification of
-     * the previous image cannot allocate), to see the restart that follows */
-    if (gw_storage_sim_take(GW_FW_SIM_ROLLBACK_FAILS)) {
-        ESP_LOGW(TAG, "emulator: the rollback call fails once (%s)", GW_FW_SIM_ROLLBACK_FAILS);
-        return ESP_ERR_NO_MEM;
+    if (!trial_open()) {
+        return;
     }
-#endif
-    xSemaphoreTake(s_ota_lock, portMAX_DELAY);
-    park(true);
-#if CONFIG_GW_IO_SIMULATED
-    /* issue #109 B-e, emulator only: the stack the real rollback path leaves (the verification of
-     * the previous image, signature included), read in esp_restart()'s shutdown handlers, which
-     * run in this task at the end of that path */
-    esp_register_shutdown_handler(log_rollback_stack);
-#endif
-    esp_err_t e = esp_ota_mark_app_invalid_rollback_and_reboot();   /* returns only on error */
-#if CONFIG_GW_IO_SIMULATED
-    esp_unregister_shutdown_handler(log_rollback_stack);
-#endif
-    park(false);
-    xSemaphoreGive(s_ota_lock);
-    return e;
+    gw_ota_selfcheck_t sc = {.net_started = false, .web_needed = false, .web_alive = false};
+    if (s_hooks.self_check != NULL) {
+        s_hooks.self_check(&sc);
+    }
+    portENTER_CRITICAL(&s_mux);
+    gw_ota_action_t a = gw_ota_trial_check(&s_trial, now_ms(), &sc);
+    portEXIT_CRITICAL(&s_mux);
+    act(a, true);
 }
 
-/* Never returns. Issue #118: every rollback the policy decides ends in a restart, also when the
- * rollback call fails (before, only some callers restarted: a rejected configuration left the
- * gateway in recovery mode, refusing every save, until someone restarted it). A reset of an image
- * still PENDING_VERIFY makes the bootloader boot the previous one, so the restart completes the
- * rollback. Runs only in tasks with a large stack (main, fw_trial: the verification of the
- * previous image is deep), never in the esp_timer task (issue #92; on_trial_timeout restarts
- * without it). */
-static void __attribute__((noreturn)) rollback(void)
+void gw_fw_trial_wait(void)
 {
-    if (s_trial_timer != NULL) {
-        esp_timer_stop(s_trial_timer);
+    while (true) {
+        portENTER_CRITICAL(&s_mux);
+        bool waiting = s_trial.state == GW_OTA_TRIAL_TESTING ||
+                       s_trial.state == GW_OTA_TRIAL_CONFIRMING;
+        portEXIT_CRITICAL(&s_mux);
+        if (!waiting) {
+            return;
+        }
+        gw_fw_trial_poll();
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
-    rollback_report();
-    gw_bus_quiesce(1000);   /* no Modbus frame cut by the restart (no-op without the bus) */
-    esp_err_t e = mark_invalid();
-    ESP_LOGE(TAG, "rollback call failed (%s): restarting; the bootloader goes back to the "
-                  "previous image", esp_err_to_name(e));
+}
+
+/* The backstop of a blocked main task: the self-check did not run to its end. */
+static void on_backstop(void *arg)
+{
+    (void)arg;
+    portENTER_CRITICAL(&s_mux);
+    gw_ota_action_t a = gw_ota_trial_backstop(&s_trial, "main task blocked");
+    portEXIT_CRITICAL(&s_mux);
+    if (a == GW_OTA_REJECT) {
+        reject_now();
+    }
+}
+
+static void on_loop_clear(void *arg)
+{
+    (void)arg;
+    if (gw_bootloop_count(&s_loop) != 0) {
+        ESP_LOGI(TAG, "boot-loop counter cleared: %d s in normal mode", CONFIG_GW_FW_BOOTLOOP_CLEAR_S);
+    }
+    gw_bootloop_set(&s_loop, 0);
+}
+
+static void on_safe_end(void *arg)
+{
+    (void)arg;
+    gw_bootloop_set(&s_loop, GW_BOOTLOOP_SAFE - 1);
+    ESP_LOGW(TAG, "safe mode ends after %d min: restarting to try normal mode again (one more "
+                  "crash starts safe mode again)", CONFIG_GW_FW_SAFE_MODE_MIN);
+    planned_restart();
+}
+
+static void loop_timer(esp_timer_cb_t cb, const char *name, uint64_t us)
+{
+    const esp_timer_create_args_t a = {.callback = cb, .name = name};
+    if (s_loop_timer == NULL && esp_timer_create(&a, &s_loop_timer) != ESP_OK) {
+        ESP_LOGE(TAG, "no memory for the %s timer", name);
+        return;
+    }
+    esp_timer_start_once(s_loop_timer, us);
+}
+
+void gw_fw_mode(gw_ota_mode_t mode, const char *detail)
+{
+    s_mode = mode;
+    portENTER_CRITICAL(&s_mux);
+    gw_ota_action_t a = gw_ota_trial_mode(&s_trial, mode, detail);
+    portEXIT_CRITICAL(&s_mux);
+    if (mode == GW_OTA_MODE_NORMAL && !s_safe) {
+        loop_timer(on_loop_clear, "bootloop", CONFIG_GW_FW_BOOTLOOP_CLEAR_S * 1000000ULL);
+    }
+    act(a, true);
+}
+
+void gw_fw_safe_mode(void)
+{
+    s_mode = GW_OTA_MODE_RECOVERY;
+    loop_timer(on_safe_end, "safe_mode", CONFIG_GW_FW_SAFE_MODE_MIN * 60ULL * 1000000ULL);
+}
+
+void gw_fw_cannot_start(const char *cause)
+{
+    portENTER_CRITICAL(&s_mux);
+    gw_ota_action_t a = gw_ota_trial_cannot_start(&s_trial, cause);
+    portEXIT_CRITICAL(&s_mux);
+    if (a != GW_OTA_REJECT) {
+        return;
+    }
+    /* nothing runs that a restart must close: write the cause and restart at once */
+    last_write(GW_FWLAST_REJECTED, s_st.running, s_trial.expected, s_trial.cause);
+    ESP_LOGE(TAG, "firmware %s rejected (%s): restarting into %s", s_st.running, s_trial.cause,
+             other_version());
+    atomic_store(&s_planned, true);
     esp_restart();
 }
 
-static void act(gw_ota_action_t a)
-{
-    if (a == GW_OTA_CONFIRM) {
-        if (s_trial_timer != NULL) {
-            esp_timer_stop(s_trial_timer);
-        }
-        confirm(true);
-    } else if (a == GW_OTA_ROLLBACK) {
-        rollback();
-    }
-}
-
-static bool trial_decided(void)
-{
-    portENTER_CRITICAL(&s_mux);
-    bool d = s_trial.state == GW_OTA_TRIAL_CONFIRMED || s_trial.state == GW_OTA_TRIAL_NONE;
-    portEXIT_CRITICAL(&s_mux);
-    return d;
-}
-
-static void trial_tick(void)
-{
-    portENTER_CRITICAL(&s_mux);
-    gw_ota_action_t a = gw_ota_trial_tick(&s_trial, now_ms());
-    portEXIT_CRITICAL(&s_mux);
-    if (a == GW_OTA_KEEP) {
-        arm_trial_timer();   /* early (timer granularity): wait for the rest */
-    }
-    act(a);
-}
-
-/* Issue #108 B4: the timeout's rollback (with the verification of the previous image, deep with
- * signed images) and the confirmation retries run here, not in the esp_timer task (3.5 KB). Only
- * for a new image on trial, created at boot; it ends once the image is confirmed. */
-static void trial_task(void *arg)
-{
-    (void)arg;
-    while (!trial_decided()) {
-        xSemaphoreTake(s_trial_wake, portMAX_DELAY);
-        if (!trial_decided()) {
-            trial_tick();
-        }
-        /* issue #109 B-c: a rollback never comes back here, it restarts (rollback()) */
-    }
-    atomic_store(&s_trial_worker, false);
-    vTaskDelete(NULL);
-}
-
-static void on_trial_timeout(void *arg)
-{
-    (void)arg;
-    if (atomic_load(&s_trial_worker)) {
-        xSemaphoreGive(s_trial_wake);
-        return;
-    }
-    /* issue #109 B-b: no trial task (no memory for it at boot). A confirmation retry is shallow and
-     * runs here; a rollback, with the verification of the previous image, never does: a restart
-     * makes the bootloader roll the image back (it is PENDING_VERIFY) */
-    portENTER_CRITICAL(&s_mux);
-    gw_ota_action_t a = gw_ota_trial_tick(&s_trial, now_ms());
-    portEXIT_CRITICAL(&s_mux);
-    if (a == GW_OTA_ROLLBACK) {
-        rollback_report();
-        gw_bus_quiesce(1000);
-        esp_restart();
-    }
-    if (a == GW_OTA_KEEP) {
-        arm_trial_timer();
-    }
-    act(a);
-}
-
-void gw_fw_session_up(unsigned births_missing)
-{
-    portENTER_CRITICAL(&s_mux);
-    bool open = s_trial.state == GW_OTA_TRIAL_PENDING;
-    gw_ota_action_t a = gw_ota_trial_session_up(&s_trial, births_missing);
-    portEXIT_CRITICAL(&s_mux);
-    if (open && births_missing > 0) {
-        ESP_LOGW(TAG, "firmware %s on trial: a Sparkplug session came up without %u DBIRTH(s) "
-                      "(too large for the broker): not confirmed by it",
-                 s_st.running, births_missing);
-    }
-    act(a);
-}
-
-/* Issue #118: a ROLLBACK restarts even when its call fails (rollback()). */
-void gw_fw_config_rejected(void)
-{
-    portENTER_CRITICAL(&s_mux);
-    gw_ota_action_t a = gw_ota_trial_config_rejected(&s_trial);
-    portEXIT_CRITICAL(&s_mux);
-    act(a);
-}
-
-void gw_fw_commissioning(void)
-{
-    portENTER_CRITICAL(&s_mux);
-    gw_ota_action_t a = gw_ota_trial_commissioning(&s_trial);
-    portEXIT_CRITICAL(&s_mux);
-    act(a);
-}
-
-void gw_fw_cannot_start(const char *why)
-{
-    portENTER_CRITICAL(&s_mux);
-    gw_ota_action_t a = gw_ota_trial_cannot_start(&s_trial, why);
-    portEXIT_CRITICAL(&s_mux);
-    act(a);   /* issue #108 B6: a ROLLBACK restarts even when its call fails (rollback()) */
-}
-
-/* Issue #108 B5: a healthy image whose confirmation keeps failing is not rolled back by a plain
- * restart the operator asked for: one more synchronous try first. */
+/* Issue #99: one more synchronous try of a confirmation that keeps failing, before a planned
+ * restart rolls the image back. */
 static void restart_confirm_on_core0(void *arg)
 {
-    bool *tried = arg;
+    (void)arg;
     portENTER_CRITICAL(&s_mux);
-    gw_ota_action_t a = gw_ota_trial_restart_requested(&s_trial);
+    gw_ota_action_t a = gw_ota_trial_before_restart(&s_trial);
     portEXIT_CRITICAL(&s_mux);
-    *tried = a == GW_OTA_CONFIRM;
-    if (*tried) {
-        if (s_trial_timer != NULL) {
-            esp_timer_stop(s_trial_timer);
-        }
-        if (!confirm(false)) {   /* the caller restarts */
-            ESP_LOGE(TAG, "firmware %s still not marked valid: the restart rolls it back",
-                     s_st.running);
-        }
+    if (a == GW_OTA_CONFIRM && !confirm(false)) {   /* the caller restarts */
+        ESP_LOGE(TAG, "firmware %s still not marked valid: the restart rolls it back",
+                 s_st.running);
     }
 }
 
 void gw_fw_restart_requested(void)
 {
-    bool tried = false;
-    on_core0(restart_confirm_on_core0, &tried);
-}
-
-/* Issue #99: before a save or a factory reset restarts the gateway, a new image on trial is
- * confirmed, synchronously: that restart would roll it back, and the previous image may not
- * accept a configuration the new one saved (unknown keys). On core 0 (QEMU's parked core must
- * be core 1). */
-typedef struct {
-    const char *reason;
-    bool ok;
-    bool refused;   /* issue #108 B1: a rollback is decided */
-} commit_t;
-
-static void commit_on_core0(void *arg)
-{
-    commit_t *c = arg;
-    portENTER_CRITICAL(&s_mux);
-    c->refused = !gw_ota_trial_commit_allowed(&s_trial);
-    gw_ota_action_t a = c->refused ? GW_OTA_KEEP : gw_ota_trial_operator(&s_trial, c->reason);
-    portEXIT_CRITICAL(&s_mux);
-    if (a == GW_OTA_CONFIRM) {
-        if (s_trial_timer != NULL) {
-            esp_timer_stop(s_trial_timer);
-        }
-        c->ok = confirm(false);   /* the caller restarts */
+    on_core0(restart_confirm_on_core0, NULL);
+    if (!atomic_load(&s_planned) && gw_bootloop_count(&s_loop) != 0) {
+        /* issue #144 item 4: an operator action clears the boot-loop counter */
+        ESP_LOGI(TAG, "boot-loop counter cleared: restart asked by the operator");
+        gw_bootloop_set(&s_loop, 0);
     }
 }
 
+/* Issue #144 item 1: during the trial a configuration save is refused (the restart that applies
+ * it would roll the image back); a factory reset stays allowed. This removes the rule of #99 "a
+ * saved configuration confirms the image". */
 static esp_err_t on_commit(gw_storage_commit_t what, char *why, size_t cap)
 {
-    commit_t c = {.reason = what == GW_STORAGE_COMMIT_CONFIG
-                                ? "the operator saved a configuration"
-                                : "factory reset by the operator",
-                  .ok = true};
-    on_core0(commit_on_core0, &c);
-    if (c.refused) {
-        /* issue #108 B1: the previous image would come back with what this one stored; when the
-         * rollback call failed, a restart still rolls the image back (PENDING_VERIFY) */
-        snprintf(why, cap, "the new firmware %s is being rolled back to %s", s_st.running,
-                 s_st.other[0] ? s_st.other : "the previous image");
-        return ESP_ERR_INVALID_STATE;
+    if (what == GW_STORAGE_COMMIT_FACTORY_RESET) {
+        return ESP_OK;
     }
-    if (!c.ok) {
-        snprintf(why, cap, "the new firmware %s, on trial, could not be marked valid; retry",
-                 s_st.running);
-        return ESP_FAIL;
+    portENTER_CRITICAL(&s_mux);
+    bool open = gw_ota_trial_open(&s_trial);
+    portEXIT_CRITICAL(&s_mux);
+    if (!open) {
+        return ESP_OK;
     }
-    return ESP_OK;
+    gw_ota_trial_t t;
+    portENTER_CRITICAL(&s_mux);
+    t = s_trial;
+    portEXIT_CRITICAL(&s_mux);
+    gw_ota_trial_refusal(&t, s_st.running, now_ms(), why, cap);
+    return ESP_ERR_INVALID_STATE;
 }
 
-/* ---------- download (its own task) ---------- */
+/* ---------- issue #144 item 3: the pre-flight check ---------- */
 
-/* Issue #102: the capabilities block of an incoming image (GW_OTA_CAPS_SIZE bytes) against this
- * device. Before esp_ota_set_boot_partition(), in fact before the rest of the image is written. */
-static bool caps_fit(const uint8_t *block, char *why, size_t cap)
+/* The mode that an update from now must reach. */
+static gw_ota_mode_t expected_now(bool force)
 {
-    uint32_t flags = 0;
-    bool declared = gw_ota_caps_read(block, GW_OTA_CAPS_SIZE, &flags);
-    bool ok = gw_ota_caps_accept(declared, flags, gw_storage_nvs_encrypted_on_flash(), why, cap);
-    if (!ok) {
+    return gw_ota_expected_mode(s_safe ? GW_OTA_MODE_RECOVERY : s_mode, force);
+}
+
+/* Issue #102 and #144: the capabilities block of an incoming image (GW_OTA_CAPS_SIZE bytes)
+ * against this device. Before any write past the head: ESP_ERR_INVALID_ARG (NVS encryption,
+ * #102: no force), ESP_ERR_NOT_SUPPORTED (the pre-flight check refused and no @p force). */
+static esp_err_t check_image(const uint8_t *block, const char *version, bool force, char *why,
+                             size_t cap)
+{
+    gw_ota_caps_info_t img;
+    gw_ota_caps_parse(block, GW_OTA_CAPS_SIZE, &img);
+    char reason[200];
+    if (!gw_ota_caps_accept(&img, gw_storage_nvs_encrypted_on_flash(), reason, sizeof(reason))) {
         ESP_LOGE(TAG, "update refused: the image %s; installing it would lose the NVS (secrets)",
-                 why);
+                 reason);
+        snprintf(why, cap, "image %s refused: %s", version, reason);
+        return ESP_ERR_INVALID_ARG;
     }
-    return ok;
+    gw_schema_report_t *doc = gw_storage_malloc(sizeof(*doc));
+    bool have_doc = doc != NULL && gw_storage_config_schema(doc);
+    gw_ota_pf_t pf = gw_ota_preflight(&s_own, &img, have_doc ? doc : NULL, reason, sizeof(reason));
+    heap_caps_free(doc);
+    if (pf == GW_OTA_PF_OK) {
+        return ESP_OK;
+    }
+    if (!force) {
+        snprintf(why, cap, "pre-flight check: image %s %s: %s; force installs it into recovery "
+                 "mode", version, pf == GW_OTA_PF_UNKNOWN ? "is unknown" : "refused", reason);
+        ESP_LOGE(TAG, "update refused by the %s", why);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    ESP_LOGW(TAG, "pre-flight check: image %s %s (%s); forced: it must reach recovery mode",
+             version, pf == GW_OTA_PF_UNKNOWN ? "is unknown" : "refused", reason);
+    return ESP_OK;
 }
 
 static bool take(char *why, size_t cap)
@@ -863,12 +860,11 @@ static bool take(char *why, size_t cap)
         snprintf(why, cap, "firmware updates are disabled (ota.enabled)");
         return false;
     }
-    bool trial;
     portENTER_CRITICAL(&s_mux);
-    trial = gw_ota_trial_open(&s_trial);
+    gw_ota_trial_t t = s_trial;
     portEXIT_CRITICAL(&s_mux);
-    if (trial) {
-        snprintf(why, cap, "the running firmware is on trial (not confirmed yet)");
+    if (gw_ota_trial_open(&t)) {
+        gw_ota_trial_refusal(&t, s_st.running, now_ms(), why, cap);
         return false;
     }
     bool expected = false;
@@ -877,6 +873,21 @@ static bool take(char *why, size_t cap)
         return false;
     }
     return true;
+}
+
+/* The new image is written, verified and set to boot: restart into it. */
+static void finished(const char *version)
+{
+    portENTER_CRITICAL(&s_mux);
+    snprintf(s_st.other, sizeof(s_st.other), "%s", version);
+    s_st.other_state = GW_FW_SLOT_NEW;
+    portEXIT_CRITICAL(&s_mux);
+    ESP_LOGW(TAG, "firmware %s written and verified; restarting into it (on trial: the self-check "
+                  "confirms it after %d s; it must reach %s mode)",
+             version, CONFIG_GW_FW_SELFCHECK_S,
+             gw_ota_mode_name(expected_now(s_force)));
+    set_status(GW_FW_RESTARTING, 100, NULL, "restarting into %s", version);
+    restart_soon();
 }
 
 static const char *project(void)
@@ -890,6 +901,8 @@ static void *xfer_alloc(size_t size)
     return gw_storage_malloc(size);
 }
 
+/* ---------- download (its own task) ---------- */
+
 static void download_release(void)
 {
     gw_storage_free(s_ca_pem);
@@ -898,11 +911,12 @@ static void download_release(void)
     s_url = NULL;
 }
 
-static void download_fail(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void download_fail(const char *version, const char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
 
 /* A failed download ends its task. The URL and the CA copy go back to the heap first: the
  * failed state lets the next update start at once, and it allocates its own. */
-static void download_fail(const char *fmt, ...)
+static void download_fail(const char *version, const char *fmt, ...)
 {
     char why[sizeof(s_st.detail)];
     va_list ap;
@@ -910,26 +924,27 @@ static void download_fail(const char *fmt, ...)
     vsnprintf(why, sizeof(why), fmt, ap);
     va_end(ap);
     download_release();
-    fail("%s", why);
+    fail(version, "%s", why);
     vTaskDelete(NULL);
 }
 
-/* Issue #102: the head of the image is in the update slot; the download ends (task deleted) if
- * this device must not install it. */
+/* Issues #102 and #144: the head of the image is in the update slot; the download ends (task
+ * deleted) if this device must not install it. */
 static void check_download_caps(esp_https_ota_handle_t h, const char *version)
 {
     uint8_t caps[GW_OTA_CAPS_SIZE];
-    char reason[96];
+    char reason[sizeof(s_st.detail)];
     const esp_partition_t *slot = esp_ota_get_next_update_partition(NULL);
     esp_err_t r = slot != NULL ? esp_partition_read(slot, GW_OTA_CAPS_OFFSET, caps, sizeof(caps))
                                : ESP_ERR_NOT_FOUND;
     if (r != ESP_OK) {
         esp_https_ota_abort(h);
-        download_fail("image %s: its head could not be read back (%s)", version, esp_err_to_name(r));
+        download_fail(version, "image %s: its head could not be read back (%s)", version,
+                      esp_err_to_name(r));
     }
-    if (!caps_fit(caps, reason, sizeof(reason))) {
+    if (check_image(caps, version, s_force, reason, sizeof(reason)) != ESP_OK) {
         esp_https_ota_abort(h);
-        download_fail("image %s refused: %s", version, reason);
+        download_fail(version, "%s", reason);
     }
 }
 
@@ -951,7 +966,7 @@ static void download_task(void *arg)
     esp_https_ota_handle_t h = NULL;
     esp_err_t e = esp_https_ota_begin(&oc, &h);
     if (e != ESP_OK) {
-        download_fail("cannot download %s (%s)", s_url, esp_err_to_name(e));
+        download_fail(NULL, "cannot download %s (%s)", s_url, esp_err_to_name(e));
     }
     esp_app_desc_t d;
     e = esp_https_ota_get_img_desc(h, &d);
@@ -959,9 +974,9 @@ static void download_task(void *arg)
         esp_https_ota_abort(h);   /* frees h: only the local copies are used below */
         h = NULL;
         if (e != ESP_OK) {
-            download_fail("not an application image (%s)", esp_err_to_name(e));
+            download_fail(NULL, "not an application image (%s)", esp_err_to_name(e));
         }
-        download_fail("image of '%.32s', not of '%s'", d.project_name, project());
+        download_fail(NULL, "image of '%.32s', not of '%s'", d.project_name, project());
     }
     char version[sizeof(d.version) + 1];
     snprintf(version, sizeof(version), "%.32s", d.version);
@@ -969,6 +984,7 @@ static void download_task(void *arg)
     uint32_t total = size > 0 ? (uint32_t)size : 0;
     ESP_LOGW(TAG, "downloading firmware %s (%lu bytes) from %s", version, (unsigned long)total,
              s_url);
+    set_status(GW_FW_DOWNLOADING, 0, NULL, "downloading %s", version);
     gw_ota_progress_t p;
     gw_ota_progress_init(&p, total, now_ms());
     uint8_t pct;
@@ -996,17 +1012,19 @@ static void download_task(void *arg)
         unsigned long got = (unsigned long)esp_https_ota_get_image_len_read(h);
         esp_https_ota_abort(h);
         h = NULL;
-        download_fail("download of %s interrupted after %lu bytes (%s)", version, got,
+        download_fail(version, "download of %s interrupted after %lu bytes (%s)", version, got,
                       esp_err_to_name(e));
     }
+    /* issue #144 items 2 and 5: the expected mode is stored before the boot partition */
+    last_write(GW_FWLAST_RESTARTING, version, expected_now(s_force), "");
     park(true);
     e = esp_https_ota_finish(h);   /* verifies the image and sets it to boot; frees h always */
     h = NULL;
     park(false);
     if (e == ESP_ERR_OTA_VALIDATE_FAILED) {
-        download_fail("image %s rejected (%s)", version, WHY_INVALID);
+        download_fail(version, "image %s rejected (%s)", version, WHY_INVALID);
     } else if (e != ESP_OK) {
-        download_fail("image %s not installed (%s)", version, esp_err_to_name(e));
+        download_fail(version, "image %s not installed (%s)", version, esp_err_to_name(e));
     }
     download_release();
     set_bytes(total ? total : p.done, total);
@@ -1014,7 +1032,7 @@ static void download_task(void *arg)
     vTaskDelete(NULL);
 }
 
-esp_err_t gw_fw_start_url(const char *url, char *why, size_t cap)
+esp_err_t gw_fw_start_url(const char *url, bool force, char *why, size_t cap)
 {
     char reason[96];
     if (!gw_ota_url_ok(url, false, reason, sizeof(reason))) {
@@ -1026,11 +1044,12 @@ esp_err_t gw_fw_start_url(const char *url, char *why, size_t cap)
         refused(why);
         return ESP_ERR_INVALID_STATE;
     }
+    s_force = force;
     s_url = xfer_alloc(GW_OTA_URL_MAX);
     if (s_url == NULL) {
         snprintf(why, cap, "no memory for the update");
         ESP_LOGE(TAG, "firmware update refused: %s", why);
-        set_status_release(GW_FW_FAILED, 0, why, "refused: no memory");
+        set_status_release(GW_FW_FAILED, 0, why, "failed: no memory for the update");
         return ESP_ERR_NO_MEM;
     }
     if (s_ca_name != NULL) {
@@ -1042,17 +1061,17 @@ esp_err_t gw_fw_start_url(const char *url, char *why, size_t cap)
             snprintf(why, cap, "%s: %s", s_ca_key, err);
             ESP_LOGE(TAG, "firmware update refused: %s", why);
             download_release();
-            set_status_release(GW_FW_FAILED, 0, why, "refused: CA file unavailable");
+            set_status_release(GW_FW_FAILED, 0, why, "failed: CA file unavailable");
             return ESP_ERR_INVALID_STATE;
         }
     }
     snprintf(s_url, GW_OTA_URL_MAX, "%s", url);
     set_bytes(0, 0);
-    set_status(GW_FW_DOWNLOADING, 0, NULL, "connecting");
+    set_status(GW_FW_DOWNLOADING, 0, NULL, "downloading");
     if (xTaskCreatePinnedToCore(download_task, "fw_update", CONFIG_GW_FW_TASK_STACK, NULL,
                                 CONFIG_GW_FW_TASK_PRIORITY, NULL, 0) != pdPASS) {
         download_release();
-        fail("no memory for the update task");
+        fail(NULL, "no memory for the update task");
         snprintf(why, cap, "no memory for the update task");
         return ESP_ERR_NO_MEM;
     }
@@ -1076,11 +1095,13 @@ static void up_release(void)
     s_up_head = NULL;
 }
 
-esp_err_t gw_fw_upload_begin(size_t size, char *why, size_t cap)
+esp_err_t gw_fw_upload_begin(size_t size, bool force, char *why, size_t cap)
 {
     if (!take(why, cap)) {
+        refused(why);
         return ESP_ERR_INVALID_STATE;
     }
+    s_force = force;
     s_up_part = esp_ota_get_next_update_partition(NULL);
     if (s_up_part == NULL) {
         atomic_store(&s_busy, false);
@@ -1113,16 +1134,16 @@ esp_err_t gw_fw_upload_begin(size_t size, char *why, size_t cap)
     s_up_version[0] = '\0';
     s_up_pct = 0;
     set_bytes(0, (uint32_t)size);
-    ESP_LOGW(TAG, "receiving a firmware upload (%u bytes) into %s", (unsigned)size,
-             s_up_part->label);
-    set_status(GW_FW_DOWNLOADING, 0, NULL, "receiving upload");
+    ESP_LOGW(TAG, "receiving a firmware upload (%u bytes) into %s%s", (unsigned)size,
+             s_up_part->label, force ? " (forced)" : "");
+    set_status(GW_FW_DOWNLOADING, 0, NULL, "downloading");
     return ESP_OK;
 }
 
-static esp_err_t up_fail(char *why, size_t cap, const char *fmt, ...)
-    __attribute__((format(printf, 3, 4)));
+static esp_err_t up_fail(esp_err_t ret, char *why, size_t cap, const char *fmt, ...)
+    __attribute__((format(printf, 4, 5)));
 
-static esp_err_t up_fail(char *why, size_t cap, const char *fmt, ...)
+static esp_err_t up_fail(esp_err_t ret, char *why, size_t cap, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
@@ -1130,31 +1151,36 @@ static esp_err_t up_fail(char *why, size_t cap, const char *fmt, ...)
     va_end(ap);
     esp_ota_abort(s_up);
     up_release();
-    fail("%s", why);
-    return ESP_FAIL;
+    fail(s_up_version[0] ? s_up_version : NULL, "%s", why);
+    return ret;
 }
 
-/* The image starts with this project's app description (checked before anything is
- * written past it, like esp_https_ota does), and its capabilities fit this device (#102). */
+/* The image starts with this project's app description (checked before anything is written
+ * past it, like esp_https_ota does), and its capabilities fit this device (#102, #144). */
 static esp_err_t check_head(char *why, size_t cap)
 {
     const esp_image_header_t *h = (const esp_image_header_t *)s_up_head;
     const esp_app_desc_t *d = (const esp_app_desc_t *)(s_up_head + sizeof(esp_image_header_t) +
                                                        sizeof(esp_image_segment_header_t));
     if (h->magic != ESP_IMAGE_HEADER_MAGIC || d->magic_word != ESP_APP_DESC_MAGIC_WORD) {
-        return up_fail(why, cap, "not an application image");
+        return up_fail(ESP_FAIL, why, cap, "not an application image");
     }
     if (strncmp(d->project_name, project(), sizeof(d->project_name)) != 0) {
-        return up_fail(why, cap, "image of '%.32s', not of '%s'", d->project_name, project());
+        return up_fail(ESP_FAIL, why, cap, "image of '%.32s', not of '%s'", d->project_name,
+                       project());
     }
     snprintf(s_up_version, sizeof(s_up_version), "%.31s", d->version);
-    char reason[96];
-    if (!caps_fit(s_up_head + GW_OTA_CAPS_OFFSET, reason, sizeof(reason))) {
-        return up_fail(why, cap, "image %s refused: %s", s_up_version, reason);
+    char reason[sizeof(s_st.detail)];
+    esp_err_t c = check_image(s_up_head + GW_OTA_CAPS_OFFSET, s_up_version, s_force, reason,
+                              sizeof(reason));
+    if (c != ESP_OK) {
+        return up_fail(c == ESP_ERR_NOT_SUPPORTED ? ESP_ERR_NOT_SUPPORTED : ESP_FAIL, why, cap,
+                       "%s", reason);
     }
+    set_status(GW_FW_DOWNLOADING, 0, NULL, "downloading %s", s_up_version);
     esp_err_t e = esp_ota_write(s_up, s_up_head, s_up_head_len);
     if (e != ESP_OK) {
-        return up_fail(why, cap, "flash write failed (%s)", esp_err_to_name(e));
+        return up_fail(ESP_FAIL, why, cap, "flash write failed (%s)", esp_err_to_name(e));
     }
     up_release();   /* written: the rest goes straight to the flash */
     return ESP_OK;
@@ -1170,15 +1196,18 @@ esp_err_t gw_fw_upload_write(const void *data, size_t len, char *why, size_t cap
         p += n;
         len -= n;
         s_up_done += n;
-        if (s_up_head_len == HEAD_LEN && check_head(why, cap) != ESP_OK) {
-            return ESP_FAIL;
+        if (s_up_head_len == HEAD_LEN) {
+            esp_err_t c = check_head(why, cap);
+            if (c != ESP_OK) {
+                return c;
+            }
         }
     }
     if (len > 0) {
         esp_err_t e = esp_ota_write(s_up, p, len);
         if (e != ESP_OK) {
-            return up_fail(why, cap, "flash write failed after %u bytes (%s)", (unsigned)s_up_done,
-                           esp_err_to_name(e));
+            return up_fail(ESP_FAIL, why, cap, "flash write failed after %u bytes (%s)",
+                           (unsigned)s_up_done, esp_err_to_name(e));
         }
         s_up_done += len;
     }
@@ -1186,7 +1215,7 @@ esp_err_t gw_fw_upload_write(const void *data, size_t len, char *why, size_t cap
     uint8_t pct = s_up_total ? (uint8_t)((uint64_t)s_up_done * 100u / s_up_total) : 0;
     if (pct / 10 != s_up_pct / 10) {
         s_up_pct = pct;
-        set_status(GW_FW_DOWNLOADING, pct, NULL, "receiving %s", s_up_version);
+        set_status(GW_FW_DOWNLOADING, pct, NULL, "downloading %s", s_up_version);
     }
     return ESP_OK;
 }
@@ -1200,6 +1229,7 @@ typedef struct {
 static void install_upload(void *arg)
 {
     install_t *in = arg;
+    xSemaphoreTake(s_ota_lock, portMAX_DELAY);
     park(true);
     in->err = esp_ota_end(s_up);   /* verifies the image */
     in->verified = in->err == ESP_OK;
@@ -1207,6 +1237,7 @@ static void install_upload(void *arg)
         in->err = esp_ota_set_boot_partition(s_up_part);
     }
     park(false);
+    xSemaphoreGive(s_ota_lock);
 }
 
 esp_err_t gw_fw_upload_end(bool complete, char *why, size_t cap)
@@ -1216,9 +1247,11 @@ esp_err_t gw_fw_upload_end(bool complete, char *why, size_t cap)
                  (unsigned)s_up_done);
         esp_ota_abort(s_up);
         up_release();
-        fail("%s", why);
+        fail(s_up_version[0] ? s_up_version : NULL, "%s", why);
         return ESP_FAIL;
     }
+    /* issue #144 items 2 and 5: the expected mode is stored before the boot partition */
+    last_write(GW_FWLAST_RESTARTING, s_up_version, expected_now(s_force), "");
     install_t in = {0};
     on_core0(install_upload, &in);
     esp_err_t e = in.err;
@@ -1231,14 +1264,161 @@ esp_err_t gw_fw_upload_end(bool complete, char *why, size_t cap)
         snprintf(why, cap, "cannot boot %s (%s)", s_up_part->label, esp_err_to_name(e));
     }
     if (e != ESP_OK) {
-        fail("%s", why);
+        fail(s_up_version, "%s", why);
         return e;
     }
     finished(s_up_version);
     return ESP_OK;
 }
 
+/* ---------- issue #144 item 6: boot the other slot ---------- */
+
+static const esp_partition_t *s_other_part;
+static char s_other_version[33];
+static bool s_other_force;
+
+/* esp_ota_set_boot_partition() verifies the whole image (seconds, with the other core parked in
+ * QEMU): in its own task, so that the caller (the web server or the Sparkplug task) does not
+ * wait for it. */
+static void boot_other_task(void *arg)
+{
+    (void)arg;
+    const char *version = s_other_version;
+    last_write(GW_FWLAST_RESTARTING, version, expected_now(s_other_force), "");
+    xSemaphoreTake(s_ota_lock, portMAX_DELAY);
+    park(true);
+    esp_err_t e = esp_ota_set_boot_partition(s_other_part);   /* verifies the image */
+    park(false);
+    xSemaphoreGive(s_ota_lock);
+    if (e != ESP_OK) {
+        s_other_invalid = e == ESP_ERR_OTA_VALIDATE_FAILED;
+        portENTER_CRITICAL(&s_mux);
+        if (s_other_invalid) {
+            s_st.other_state = GW_FW_SLOT_INVALID;
+        }
+        portEXIT_CRITICAL(&s_mux);
+        fail(version, "firmware %s in %s cannot boot (%s)", version, s_other_part->label,
+             e == ESP_ERR_OTA_VALIDATE_FAILED ? WHY_INVALID : esp_err_to_name(e));
+        vTaskDelete(NULL);
+    }
+    s_force = s_other_force;
+    portENTER_CRITICAL(&s_mux);
+    s_st.other_state = GW_FW_SLOT_NEW;
+    portEXIT_CRITICAL(&s_mux);
+    ESP_LOGW(TAG, "firmware %s in %s set to boot; restarting into it (on trial: it must reach %s "
+                  "mode)", version, s_other_part->label,
+             gw_ota_mode_name(expected_now(s_other_force)));
+    set_status(GW_FW_RESTARTING, 100, NULL, "restarting into %s", version);
+    restart_soon();
+    vTaskDelete(NULL);
+}
+
+esp_err_t gw_fw_boot_other(bool force, char *why, size_t cap)
+{
+    if (!take(why, cap)) {
+        refused(why);
+        return ESP_ERR_INVALID_STATE;
+    }
+    const esp_partition_t *other = esp_ota_get_next_update_partition(NULL);
+    portENTER_CRITICAL(&s_mux);
+    gw_fw_slot_t st = s_st.other_state;
+    snprintf(s_other_version, sizeof(s_other_version), "%s", s_st.other);
+    portEXIT_CRITICAL(&s_mux);
+    if (other == NULL || st == GW_FW_SLOT_EMPTY || st == GW_FW_SLOT_INVALID) {
+        atomic_store(&s_busy, false);
+        snprintf(why, cap, "the other slot is %s",
+                 st == GW_FW_SLOT_INVALID ? "invalid (its verification failed)" : "empty");
+        refused(why);
+        return ESP_ERR_NOT_FOUND;
+    }
+    uint8_t caps[GW_OTA_CAPS_SIZE];
+    esp_err_t e = esp_partition_read(other, GW_OTA_CAPS_OFFSET, caps, sizeof(caps));
+    if (e == ESP_OK) {
+        e = check_image(caps, s_other_version, force, why, cap);
+    } else {
+        snprintf(why, cap, "the head of %s could not be read (%s)", other->label,
+                 esp_err_to_name(e));
+    }
+    if (e != ESP_OK) {
+        atomic_store(&s_busy, false);
+        refused(why);
+        return e == ESP_ERR_NOT_SUPPORTED ? e : ESP_ERR_INVALID_STATE;
+    }
+    s_other_part = other;
+    s_other_force = force;
+    ESP_LOGW(TAG, "booting the other slot: firmware %s in %s, on trial%s", s_other_version,
+             other->label, force ? " (forced)" : "");
+    set_status(GW_FW_RESTARTING, 0, NULL, "restarting into %s", s_other_version);
+    if (xTaskCreatePinnedToCore(boot_other_task, "fw_update", CONFIG_GW_FW_TASK_STACK, NULL,
+                                CONFIG_GW_FW_TASK_PRIORITY, NULL, 0) != pdPASS) {
+        snprintf(why, cap, "no memory for the update task");
+        fail(s_other_version, "%s", why);
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
 /* ---------- boot ---------- */
+
+static gw_reset_kind_t reset_kind(esp_reset_reason_t r)
+{
+    switch (r) {
+    case ESP_RST_POWERON: return GW_RESET_POWERON;
+    case ESP_RST_BROWNOUT: return GW_RESET_BROWNOUT;
+    case ESP_RST_PWR_GLITCH: return GW_RESET_PWR_GLITCH;
+    case ESP_RST_SW: return GW_RESET_SOFTWARE;
+    case ESP_RST_EXT: return GW_RESET_EXTERNAL;
+    case ESP_RST_PANIC: return GW_RESET_PANIC;
+    case ESP_RST_INT_WDT: return GW_RESET_INT_WDT;
+    case ESP_RST_TASK_WDT: return GW_RESET_TASK_WDT;
+    case ESP_RST_WDT: return GW_RESET_WDT;
+    case ESP_RST_CPU_LOCKUP: return GW_RESET_CPU_LOCKUP;
+    default: return GW_RESET_OTHER;
+    }
+}
+
+static bool running_pending(void)
+{
+    const esp_partition_t *run = esp_ota_get_running_partition();
+    esp_ota_img_states_t state;
+    return run != NULL && esp_ota_get_state_partition(run, &state) == ESP_OK &&
+           state == ESP_OTA_IMG_PENDING_VERIFY;
+}
+
+bool gw_fw_bootloop_start(void)
+{
+    bool pending = running_pending();
+    esp_reset_reason_t why = esp_reset_reason();
+    uint32_t before = gw_bootloop_count(&s_loop);
+    s_loop_count = gw_bootloop_boot(&s_loop, reset_kind(why), pending);
+    s_safe = gw_bootloop_safe(s_loop_count, pending);
+    if (s_safe) {
+        ESP_LOGE(TAG, "safe mode: %lu crash resets in a row (boot-loop counter); the configuration "
+                      "is not loaded: network, web UI, shell and firmware upload only",
+                 (unsigned long)s_loop_count);
+    } else if (s_loop_count != 0 || before != 0) {
+        ESP_LOGW(TAG, "boot-loop counter %lu (was %lu)%s", (unsigned long)s_loop_count,
+                 (unsigned long)before, pending ? "; ignored by a new image on trial" : "");
+    }
+    return s_safe;
+}
+
+static const char *reset_text(esp_reset_reason_t r)
+{
+    switch (r) {
+    case ESP_RST_POWERON: return "power-on";
+    case ESP_RST_EXT: return "external pin";
+    case ESP_RST_SW: return "software";
+    case ESP_RST_PANIC: return "panic";
+    case ESP_RST_INT_WDT: return "interrupt watchdog";
+    case ESP_RST_TASK_WDT: return "task watchdog";
+    case ESP_RST_WDT: return "watchdog";
+    case ESP_RST_BROWNOUT: return "brownout";
+    case ESP_RST_PWR_GLITCH: return "power glitch";
+    case ESP_RST_CPU_LOCKUP: return "CPU lock-up";
+    default: return "other reset";
+    }
+}
 
 static bool s_early;
 
@@ -1251,45 +1431,81 @@ void gw_fw_early_init(void)
     park_init();
     s_fmt_lock = xSemaphoreCreateMutexStatic(&s_fmt_lock_buf);
     s_ota_lock = xSemaphoreCreateMutexStatic(&s_ota_lock_buf);
+    gw_ota_caps_parse((const uint8_t *)&gw_app_caps, sizeof(gw_app_caps), &s_own);
     const esp_app_desc_t *app = esp_app_get_description();
     const esp_partition_t *run = esp_ota_get_running_partition();
-    esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
-    if (run == NULL || esp_ota_get_state_partition(run, &state) != ESP_OK) {
-        state = ESP_OTA_IMG_UNDEFINED;   /* factory or flashed by serial: never on trial */
-    }
+    bool pending = running_pending();
     const esp_partition_t *other = esp_ota_get_next_update_partition(NULL);
     esp_app_desc_t od;
     park(true);
     bool have_other = other != NULL && esp_ota_get_partition_description(other, &od) == ESP_OK;
-    const esp_partition_t *bad = esp_ota_get_last_invalid_partition();
-    esp_app_desc_t bd;
-    bool have_bad = bad != NULL && esp_ota_get_partition_description(bad, &bd) == ESP_OK;
     park(false);
-    bool pending = state == ESP_OTA_IMG_PENDING_VERIFY;
+    esp_ota_img_states_t ost = ESP_OTA_IMG_UNDEFINED;
+    bool ost_known = have_other && esp_ota_get_state_partition(other, &ost) == ESP_OK;
+    bool other_rejected = ost_known && (ost == ESP_OTA_IMG_ABORTED || ost == ESP_OTA_IMG_INVALID);
+
+    /* issue #144 item 5: the record of the last update, with the reset reason and otadata */
+    char text[GW_FWLAST_MAX];
+    gw_fwlast_t last;
+    if (!gw_storage_get_str(NVS_FW_LAST, text, sizeof(text)) || !gw_fwlast_parse(text, &last)) {
+        memset(&last, 0, sizeof(last));
+    }
+    const gw_fwlast_boot_t b = {.pending = pending, .running = app->version,
+                                .other_rejected = other_rejected,
+                                .reset = reset_text(esp_reset_reason())};
+    gw_ota_mode_t expected = GW_OTA_MODE_NONE;
+    bool write = gw_fwlast_on_boot(&last, &b, &expected);
+    char state[sizeof(s_st.text)];
+    gw_fwlast_state(&last, app->version, state, sizeof(state));
+
     /* issue #101: written under the locks the readers take (the shell may already ask) */
     bool taken = text_lock();
     portENTER_CRITICAL(&s_mux);
+    s_last = last;
     snprintf(s_st.running, sizeof(s_st.running), "%s", app->version);
     snprintf(s_st.slot, sizeof(s_st.slot), "%s", run != NULL ? run->label : "?");
     snprintf(s_st.other, sizeof(s_st.other), "%.31s", have_other ? od.version : "");
-    gw_ota_trial_init(&s_trial, pending, now_ms(), CONFIG_GW_FW_CONFIRM_TIMEOUT_S * 1000u);
+    snprintf(s_st.other_slot, sizeof(s_st.other_slot), "%s", other != NULL ? other->label : "");
+    s_st.other_state = !have_other                                            ? GW_FW_SLOT_EMPTY
+                       : other_rejected                                       ? GW_FW_SLOT_REJECTED
+                       : ost_known && (ost == ESP_OTA_IMG_NEW ||
+                                       ost == ESP_OTA_IMG_PENDING_VERIFY)     ? GW_FW_SLOT_NEW
+                                                                              : GW_FW_SLOT_PREVIOUS;
+    s_st.other_why[0] = '\0';
+    if (other_rejected && strcmp(last.version, s_st.other) == 0 &&
+        (last.result == GW_FWLAST_ROLLED_BACK || last.result == GW_FWLAST_REJECTED)) {
+        /* item 6: esp_ota_get_last_invalid_partition() forgets it when otadata changes */
+        snprintf(s_st.other_why, sizeof(s_st.other_why), "%s", last.cause);
+    }
+    s_st.safe_mode = s_safe;
+    gw_ota_trial_init(&s_trial, pending, expected, CONFIG_GW_FW_SELFCHECK_S * 1000u,
+                      CONFIG_GW_FW_BACKSTOP_S * 1000u);
     portEXIT_CRITICAL(&s_mux);
     text_unlock(taken);
+    if (write) {
+        last_write(last.result, last.version, last.expect, last.cause);
+    }
 
     if (pending) {
-        ESP_LOGW(TAG, "firmware %s (%s) on trial: confirmed by its first Sparkplug session "
-                      "within %d s, otherwise back to %s",
-                 s_st.running, s_st.slot, CONFIG_GW_FW_CONFIRM_TIMEOUT_S,
-                 s_st.other[0] ? s_st.other : "the previous image");
-        set_status(GW_FW_TRIAL, 100, NULL, "on trial: %s", s_st.running);
-    } else if (have_bad) {
+        ESP_LOGW(TAG, "firmware %s (%s) on trial: it must reach %s mode; the self-check confirms "
+                      "it after %d s, otherwise back to %s at %d s",
+                 s_st.running, s_st.slot, gw_ota_mode_name(s_trial.expected),
+                 CONFIG_GW_FW_SELFCHECK_S, other_version(), CONFIG_GW_FW_BACKSTOP_S);
+        set_status(GW_FW_TESTING, 100, NULL, "testing %s", s_st.running);
+        return;
+    }
+    gw_fw_phase_t phase = last.result == GW_FWLAST_ROLLED_BACK ? GW_FW_ROLLED_BACK
+                          : last.result == GW_FWLAST_FAILED    ? GW_FW_FAILED
+                          : strncmp(state, "installed ", 10) == 0 ? GW_FW_INSTALLED
+                                                                  : GW_FW_IDLE;
+    if (phase == GW_FW_ROLLED_BACK) {
         char detail[sizeof(s_st.detail)];
-        snprintf(detail, sizeof(detail), "firmware %.31s (%s) was rejected or did not confirm "
-                 "itself; running %s again", bd.version, bad->label, s_st.running);
+        snprintf(detail, sizeof(detail), "firmware %s was rolled back (%s); running %s again",
+                 last.version, last.cause, s_st.running);
         ESP_LOGW(TAG, "%s", detail);
-        set_status(GW_FW_ROLLED_BACK, 0, detail, "rolled back from %.31s", bd.version);
+        set_status(phase, 0, detail, "%s", state);
     } else {
-        set_status(GW_FW_IDLE, 0, NULL, "idle");
+        set_status(phase, 0, NULL, "%s", state);
     }
 }
 
@@ -1302,30 +1518,19 @@ esp_err_t gw_fw_init(const gw_config_t *cfg, bool enabled, const gw_fw_hooks_t *
     portENTER_CRITICAL(&s_mux);
     s_st.enabled = enabled;
     bool pending = gw_ota_trial_open(&s_trial);
-    uint32_t left = gw_ota_trial_left_ms(&s_trial, now_ms());
     portEXIT_CRITICAL(&s_mux);
     if (pending) {
-        /* only a new image on trial needs the timer (#80: nothing allocated otherwise); the
-         * trial counts from gw_fw_early_init() */
-        /* issue #108 B4: core 0, where the rollback ran before (QEMU parks core 1); issue #109
-         * B-b: before the timer is armed, so the timer never finds it missing by a race */
-        s_trial_wake = xSemaphoreCreateBinaryStatic(&s_trial_wake_buf);
-        atomic_store(&s_trial_worker, true);
-        if (xTaskCreatePinnedToCore(trial_task, "fw_trial", CONFIG_GW_FW_TRIAL_TASK_STACK, NULL,
-                                    CONFIG_GW_FW_TRIAL_TASK_PRIORITY, NULL, 0) != pdPASS) {
-            atomic_store(&s_trial_worker, false);
-            ESP_LOGE(TAG, "no memory for the trial task: at the timeout a restart rolls the image "
-                          "back (the bootloader), not the timer task");
-        }
-        /* issue #104: the restart after the confirmation (NVS encryption) must not allocate in
-         * the Sparkplug task, which confirms */
+        /* only a new image on trial needs these (#80: nothing allocated otherwise). Issue #104:
+         * the restart after the confirmation (NVS encryption) must not allocate */
         const esp_timer_create_args_t rt = {.callback = on_restart, .name = "fw_restart"};
         ESP_ERROR_CHECK(esp_timer_create(&rt, &s_restart_timer));
-        const esp_timer_create_args_t tt = {.callback = on_trial_timeout, .name = "fw_trial"};
-        ESP_ERROR_CHECK(esp_timer_create(&tt, &s_trial_timer));
-        esp_timer_start_once(s_trial_timer, (left ? left : 1) * 1000ULL);
+        /* the backstop of a blocked main task (it is not watched by the task watchdog) */
+        const esp_timer_create_args_t bt = {.callback = on_backstop, .name = "fw_backstop"};
+        ESP_ERROR_CHECK(esp_timer_create(&bt, &s_backstop_timer));
+        uint32_t now = now_ms(), at = CONFIG_GW_FW_BACKSTOP_S * 1000u + BACKSTOP_GRACE_MS;
+        esp_timer_start_once(s_backstop_timer, (uint64_t)(at > now ? at - now : 1u) * 1000ULL);
     }
-    gw_storage_set_commit_hook(on_commit);   /* issue #99 */
+    gw_storage_set_commit_hook(on_commit);   /* issue #144 item 1 */
 
     if (enabled) {
         const char *ca = cfg->ota.ca_file[0] ? cfg->ota.ca_file

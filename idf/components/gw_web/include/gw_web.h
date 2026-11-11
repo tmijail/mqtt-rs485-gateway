@@ -93,6 +93,10 @@ typedef struct {
 
 void gw_web_get_stats(gw_web_stats_t *out);
 
+/** Issue #144 item 1: the web server is running and its loop answered the watchdog's ping (or a
+ *  handler ran) in the last @p max_age_ms. False when no server runs. */
+bool gw_web_loop_alive(uint32_t max_age_ms);
+
 /** Issue #110: lowest free stack since boot (B) of the web server's task and of the HTTP
  *  redirect server's task (both are named "httpd"); 0 = not running (yet). */
 void gw_web_stack_free(unsigned *web, unsigned *redirect);

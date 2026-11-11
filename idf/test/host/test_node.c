@@ -2272,6 +2272,33 @@ static void test_firmware_update_metrics(void)
     TEST_ASSERT_EQUAL(GW_NODE_FW_STATE_MAX - 1, strlen(dec.m[0].str));
 }
 
+/* Issue #144 item 6: the NBIRTH declares Node Control/Boot Other Slot (Boolean false); an NCMD
+ * with true, by name or by alias, reaches the boot_other op; false or another type does not. */
+static void test_boot_other_slot_command(void)
+{
+    gw_node_session_up(&node, 0);
+    msg(0);
+    int b = decoded_find_name(&dec, "Node Control/Boot Other Slot");
+    TEST_ASSERT_TRUE(b >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_BOOLEAN, dec.m[b].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_BOOT_OTHER, dec.m[b].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[b].num);
+    recorder_clear();
+    spb_metric_t t = {.name = "Node Control/Boot Other Slot", .datatype = SPB_DT_BOOLEAN,
+                      .v.num = 1};
+    send("spBv1.0/Plant1/NCMD/GW01", &t, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.boot_others);
+    TEST_ASSERT_EQUAL(0, g_rec.count);   /* the result comes as the firmware status */
+    spb_metric_t a = {.alias = GW_ALIAS_BOOT_OTHER, .datatype = SPB_DT_BOOLEAN, .v.num = 1};
+    send("spBv1.0/Plant1/NCMD/GW01", &a, 1);
+    TEST_ASSERT_EQUAL(2, g_rec.boot_others);
+    spb_metric_t f = {.alias = GW_ALIAS_BOOT_OTHER, .datatype = SPB_DT_BOOLEAN, .v.num = 0};
+    send("spBv1.0/Plant1/NCMD/GW01", &f, 1);
+    spb_metric_t s = {.alias = GW_ALIAS_BOOT_OTHER, .datatype = SPB_DT_STRING, .v.str = "x"};
+    send("spBv1.0/Plant1/NCMD/GW01", &s, 1);
+    TEST_ASSERT_EQUAL(2, g_rec.boot_others);
+}
+
 /* Issue #87: an NCMD with a String metric of @p n characters named "Node Control/Firmware
  * Update", built by hand (the encoder refuses strings longer than SPB_STRING_MAX). */
 static size_t raw_fw_ncmd(uint8_t *out, size_t n)
@@ -2535,6 +2562,7 @@ int main(void)
     RUN_TEST(test_dbirth_too_large_not_retried_on_every_change);
     RUN_TEST(test_dbirth_larger_than_buffer);
     RUN_TEST(test_firmware_update_metrics);
+    RUN_TEST(test_boot_other_slot_command);
     RUN_TEST(test_firmware_url_limit);
     RUN_TEST(test_store_and_forward_counters);
     return UNITY_END();

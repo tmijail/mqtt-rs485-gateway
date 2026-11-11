@@ -279,6 +279,12 @@ static void rec_firmware_update(void *ctx, const char *url)
     snprintf(g_rec.fw_url, sizeof(g_rec.fw_url), "%s", url);
 }
 
+static void rec_boot_other(void *ctx)
+{
+    (void)ctx;
+    g_rec.boot_others++;
+}
+
 void recorder_default_diag(void)
 {
     g_rec.diag = (gw_node_diag_t){.uptime_s = 12, .free_heap = 150000, .min_free_heap = 140000,
@@ -301,6 +307,7 @@ gw_node_ops_t recorder_ops(void)
         .set_scan_rate = rec_set_scan_rate,
         .reboot = rec_reboot,
         .firmware_update = rec_firmware_update,
+        .boot_other = rec_boot_other,
         .diagnostics = rec_diagnostics,
         .ctx = NULL,
     };

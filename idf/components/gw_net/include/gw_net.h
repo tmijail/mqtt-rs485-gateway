@@ -12,6 +12,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "sdkconfig.h"
 #include "gw_config.h"
 
 #ifdef __cplusplus
@@ -45,6 +46,13 @@ typedef struct {
 
 /** Requires esp_netif_init() and the default event loop. */
 esp_err_t gw_net_start(const gw_config_t *cfg, const gw_net_callbacks_t *cb);
+
+#if CONFIG_GW_IO_SIMULATED
+/** Emulator only (issue #144): stop the Ethernet driver (openeth), before the shell's
+ *  'panic net-off'. QEMU's openeth model keeps its state across a panic reset: after two panics
+ *  with traffic, the next boot can hang in an endless openeth interrupt. */
+void gw_net_sim_stop_eth(void);
+#endif
 
 /**
  * lwIP name of the active interface ("en1", "st2", ...) for binding the MQTT socket to it.

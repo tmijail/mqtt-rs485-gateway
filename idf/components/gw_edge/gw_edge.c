@@ -762,12 +762,24 @@ static bool op_request_write(void *ctx, uint16_t tag, const gw_tag_value_t *valu
     return gw_bus_request_write(tag, value);
 }
 
-/* FW-1: NCMD "Node Control/Firmware Update"; the outcome arrives through gw_fw's status. */
+/* FW-1: NCMD "Node Control/Firmware Update"; the outcome arrives through gw_fw's status. NCMD
+ * has no force (issue #144 item 3): the pre-flight check refuses what it refuses. */
 static void op_firmware_update(void *ctx, const char *url)
 {
     (void)ctx;
-    char why[120];
-    gw_fw_start_url(url, why, sizeof(why));
+    char why[200];
+    gw_fw_start_url(url, false, why, sizeof(why));
+}
+
+/* Issue #144 item 6: NCMD "Node Control/Boot Other Slot"; the outcome arrives through gw_fw's
+ * status (the image is verified in gw_fw's own task). No force. */
+static void op_boot_other(void *ctx)
+{
+    (void)ctx;
+    char why[200];
+    if (gw_fw_boot_other(false, why, sizeof(why)) != ESP_OK) {
+        ESP_LOGW(TAG, "NCMD Boot Other Slot refused: %s", why);
+    }
 }
 
 /* FW-1: the update's state and progress into the node metrics (NDATA when online). */
@@ -932,7 +944,7 @@ static void op_reboot(void *ctx)
 {
     (void)ctx;
     spill_before_restart();
-    gw_fw_restart_requested();   /* issue #108 B5 (a no-op unless a confirmation keeps failing) */
+    gw_fw_restart_requested();   /* issue #99: a failing confirmation is tried once more */
     /* Orderly shutdown: NDEATH was just published; stop() sends DISCONNECT synchronously. With
      * MQTT 3.1.1 the broker discards the will; with MQTT 5 the reason code 0x04 makes it
      * publish the will too (issue #155). */
@@ -1317,15 +1329,14 @@ static void start_births(void)
         return;
     }
     /* born: the NBIRTH fitted, so whatever was too large since was a DBIRTH (issue #76: the
-     * session stays without those devices) */
-    unsigned not_born = (unsigned)(s_oversize - oversize_before);
+     * session stays without those devices). Issue #144: a session does not judge a new image
+     * (its trial is a local self-check) */
     s_session_up_us = esp_timer_get_time();
     gw_status_set(GW_ST_MQTT_UP, true);
     ESP_LOGI(TAG, "Sparkplug session up (bdSeq=%u): births sent in %lu ms, longest stretch "
              "without feeding the watchdog %lu ms", s_bdseq,
              (unsigned long)((esp_timer_get_time() - t0) / 1000), (unsigned long)s_max_unfed_ms);
     log_stacks();
-    gw_fw_session_up(not_born);   /* FW-1: a new image on trial is healthy if every birth went out */
     if (gw_sf_count(&s_sf) > 0) {
         ESP_LOGI(TAG, "store & forward: %u sample(s) stored while offline follow as historical "
                       "data (%lu overwritten)",
@@ -1490,7 +1501,7 @@ static void restart_now(void)
     }
     ESP_LOGW(TAG, "restart requested%s", s_node->online ? ": publishing NDEATH" : "");
     spill_before_restart();
-    gw_fw_restart_requested();   /* issue #108 B5 */
+    gw_fw_restart_requested();   /* issue #99; #144: an operator restart clears the counter */
     if (s_node->online) {
         publish_ndeath();
         op_reboot(NULL);
@@ -1989,6 +2000,7 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         .set_scan_rate = op_set_scan_rate,
         .reboot = op_reboot,
         .firmware_update = op_firmware_update,
+        .boot_other = op_boot_other,
         .diagnostics = op_diagnostics,
         .ctx = NULL,
     };

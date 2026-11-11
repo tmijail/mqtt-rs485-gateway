@@ -7,20 +7,24 @@ set(GW_CORE_SRCS
     src/gw_authlimit.c
     src/gw_backoff.c
     src/gw_brokersel.c
+    src/gw_bootloop.c
     src/gw_button.c
     src/gw_buzz.c
     src/gw_cardfmt.c
     src/gw_claim.c
     src/gw_cdump.c
-    src/gw_clock.c
     src/gw_cfgdoc.c
     src/gw_cfglint.c
+    src/gw_cfgschema.c
+    src/gw_clock.c
     src/gw_config.c
     src/gw_conv.c
     src/gw_debounce.c
     src/gw_mbap.c
     src/gw_devstate.c
     src/gw_dout.c
+    src/gw_fwlast.c
+    src/gw_lkgnet.c
     src/gw_localio.c
     src/gw_mbdiag.c
     src/gw_netsel.c

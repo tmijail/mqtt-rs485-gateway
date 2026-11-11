@@ -519,7 +519,7 @@ class CrashDiagnostics(unittest.TestCase):
 
     def test_tcg_mode(self):
         self.assertEqual("single", e2e.tcg_mode("auto", "FW-1 OTA"))
-        self.assertEqual("single", e2e.tcg_mode("auto", "issues #99/#101 OTA trial"))
+        self.assertEqual("single", e2e.tcg_mode("auto", "issue #144 OTA self-check"))
         self.assertEqual("multi", e2e.tcg_mode("auto", "main"))
         self.assertEqual("multi", e2e.tcg_mode("auto", None))
         self.assertEqual("single", e2e.tcg_mode("single", "main"))
@@ -725,7 +725,7 @@ class CiGroups(unittest.TestCase):
         self.assertEqual(["umh", "tck"], scenarios.selected({"tck", "umh"}))
         # the existing names select what they did before the finer OTA names
         ota = ["FW-1 OTA", "issue #112 park in a long RS485 transaction",
-               "issue #97 OTA trial wiring", "issues #99/#101 OTA trial"]
+               "issue #97 OTA trial wiring", "issue #144 OTA self-check"]
         self.assertEqual(ota, scenarios.selected({"ota"}))
         self.assertEqual(ota, scenarios.selected({"ota-fw1", "ota-park", "ota-wiring",
                                                   "ota-trial"}))

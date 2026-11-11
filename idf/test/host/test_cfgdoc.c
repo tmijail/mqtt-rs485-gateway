@@ -397,9 +397,10 @@ static void *ota_parser(void *arg)
     unsigned *oom = arg;
     t_fail_alloc = true;   /* every allocation of this thread fails: it sets the OOM flag */
     char url[GW_OTA_URL_MAX], why[96];
+    bool force;
     static const char body[] = "{\"url\":\"https://fw.example/gw.bin\"}";
     for (int i = 0; i < RACE_ROUNDS; i++) {
-        if (!gw_ota_parse_request(body, sizeof(body) - 1, url, why, sizeof(why)) &&
+        if (!gw_ota_parse_request(body, sizeof(body) - 1, url, &force, why, sizeof(why)) &&
             strstr(why, "out of memory") != NULL) {
             (*oom)++;
         }

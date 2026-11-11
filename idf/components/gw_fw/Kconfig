@@ -1,16 +1,42 @@
 menu "Gateway: firmware updates (FW-1)"
 
-    config GW_FW_CONFIRM_TIMEOUT_S
-        int "Seconds a new firmware has to reach its first Sparkplug session"
-        range 10 86400
-        default 600
+    config GW_FW_SELFCHECK_S
+        int "Least uptime of a new firmware before its self-check confirms it (s)"
+        range 10 600
+        default 60
         help
-            A new image boots on trial. Its first Sparkplug session (NBIRTH and every
-            DBIRTH published) confirms it; without one within this time it is rolled back
-            to the previous image, whatever the cause (also a broker that is down: the
-            update can then be repeated). A reset during the trial (crash, watchdog,
-            power cut) makes the bootloader roll it back, and an image that rejects the
-            stored configuration is rolled back at once.
+            Issue #144: a new image boots on trial. The self-check confirms it at the first
+            instant when the uptime is at least this value, the gateway is in its expected
+            mode, the network driver started and the web server loop is alive. It does not
+            depend on the broker, the Modbus slaves, NTP or the update server. A reset
+            before the confirmation (crash, watchdog, power cut) returns to the earlier
+            image.
+
+    config GW_FW_BACKSTOP_S
+        int "Uptime at which a new firmware whose self-check is not true is rejected (s)"
+        range 60 3600
+        default 300
+        help
+            Issue #144: without a true self-check at this uptime, the image is rejected
+            (planned restart: the bootloader returns to the earlier image). An esp_timer does
+            the same 10 s later when the main task is blocked.
+
+    config GW_FW_BOOTLOOP_CLEAR_S
+        int "Uptime in normal mode that clears the boot-loop counter (s)"
+        range 10 3600
+        default 120
+        help
+            Issue #144: the boot-loop counter (crash resets in a row, RTC memory) starts safe
+            mode at 3. It is cleared after this uptime in normal mode.
+
+    config GW_FW_SAFE_MODE_MIN
+        int "Duration of safe mode before normal mode is tried again (min)"
+        range 1 1440
+        default 60
+        help
+            Issue #144: safe mode (recovery mode with the cause "repeated crashes") ends
+            after this time with a restart, and the counter at 2: one more crash starts safe
+            mode again. A restart by the operator or a power cycle also ends it.
 
     config GW_FW_HTTP_TIMEOUT_MS
         int "Network timeout of a firmware download (ms)"
@@ -22,28 +48,13 @@ menu "Gateway: firmware updates (FW-1)"
         range 6144 16384
         default 8192
         help
-            The task exists only while a download runs (TLS handshake included).
+            The task exists only while a download runs (TLS handshake included), or while
+            the image of the other slot is verified (the "Restart into" button).
 
     config GW_FW_TASK_PRIORITY
         int "Priority of the download task"
         range 1 7
         default 2
-
-    config GW_FW_TRIAL_TASK_STACK
-        int "Stack of the trial task of a new image (bytes)"
-        range 4096 16384
-        default 6144
-        help
-            Issue #108: a new image on trial has a task (core 0) for what its trial timer
-            asks for: the rollback at the timeout, which verifies the previous image (its
-            signature too, with signed images), and the retries of a failed confirmation.
-            The esp_timer task (3.5 KB) overflowed with it. The task exists only while the
-            image is on trial; the emulator build logs the stack the verification leaves.
-
-    config GW_FW_TRIAL_TASK_PRIORITY
-        int "Priority of the trial task"
-        range 1 20
-        default 5
 
     config GW_FW_PARK_OTHER_CORE
         bool "Park the other core while an image is verified (QEMU only)"

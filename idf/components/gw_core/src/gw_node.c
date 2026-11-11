@@ -30,6 +30,7 @@ static const char *const k_count_names[GW_NODE_IO_COUNT] = {
 #define NAME_FW_UPDATE "Node Control/Firmware Update"
 #define NAME_FW_STATE "Firmware Update/State"
 #define NAME_FW_PROGRESS "Firmware Update/Progress"
+#define NAME_BOOT_OTHER "Node Control/Boot Other Slot"
 #define NAME_UPTIME   "Node Info/Uptime"
 #define NAME_FREE_HEAP "Node Info/Free Heap"
 #define NAME_MIN_HEAP "Node Info/Min Free Heap"
@@ -584,6 +585,7 @@ static bool publish_nbirth(gw_node_t *n)
     metric(n, i++, NAME_FW_STATE, GW_ALIAS_FW_STATE, SPB_DT_STRING, now)->v.str = n->fw_state;
     metric(n, i++, NAME_FW_PROGRESS, GW_ALIAS_FW_PROGRESS, SPB_DT_UINT32, now)->v.num =
         n->fw_progress;
+    metric(n, i++, NAME_BOOT_OTHER, GW_ALIAS_BOOT_OTHER, SPB_DT_BOOLEAN, now)->v.num = 0;
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         metric(n, i++, k_di_names[k], GW_ALIAS_DI_BASE + k, SPB_DT_BOOLEAN,
                live_ts(n, io.di_ts_ms))
@@ -1186,6 +1188,17 @@ static bool on_ncmd_metric(void *ctx, const spb_rx_metric_t *m)
         } else {
             GW_LOGW(TAG, "NCMD Firmware Update from %s", m->v.s);
             n->ops.firmware_update(n->ops.ctx, m->v.s);
+        }
+        return true;
+    }
+    if (by_name ? strcmp(m->name, NAME_BOOT_OTHER) == 0 : m->alias == GW_ALIAS_BOOT_OTHER) {
+        if (!rx_true(m)) {
+            log_discard("NCMD", m, "Boot Other Slot needs the Boolean true");
+        } else if (n->ops.boot_other == NULL) {
+            log_discard("NCMD", m, "booting the other slot not supported");
+        } else {
+            GW_LOGW(TAG, "NCMD Boot Other Slot");
+            n->ops.boot_other(n->ops.ctx);
         }
         return true;
     }

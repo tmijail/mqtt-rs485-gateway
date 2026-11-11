@@ -43,7 +43,7 @@
 static const char *TAG = "web";
 
 #define REALM_HDR "Basic realm=\"gateway\", charset=\"UTF-8\""
-#define WEB_URI_HANDLERS 19   /* the routes of gw_web_start (uris[]) */
+#define WEB_URI_HANDLERS 20   /* the routes of gw_web_start (uris[]) */
 
 static gw_web_ctx_t s_ctx;
 static httpd_handle_t s_server;
@@ -877,6 +877,10 @@ static esp_err_t config_put(httpd_req_t *req)
         return send_error(req, "413 Content Too Large", &err, NULL);
     case ESP_ERR_NO_MEM:
         return send_error(req, "503 Service Unavailable", &err, NULL);
+    case ESP_ERR_INVALID_STATE:
+        /* issue #144 item 1: during the trial of a new image ("testing <v>: N s left") */
+        ESP_LOGW(TAG, "configuration refused: %s", err.msg);
+        return send_error(req, "409 Conflict", &err, NULL);
     default:
         return send_error(req, "500 Internal Server Error", &err, NULL);
     }
@@ -1066,8 +1070,9 @@ static esp_err_t card_format_post(httpd_req_t *req)
 
 /* ---------- FW-1: /api/firmware ---------- */
 
-static const char *const k_fw_phase[] = {"idle", "downloading", "rebooting", "failed", "trial",
-                                         "confirmed", "rolled_back"};
+static const char *const k_fw_phase[] = {"idle", "downloading", "restarting", "failed",
+                                         "testing", "installed", "rolled_back"};
+static const char *const k_fw_slot[] = {"empty", "previous", "new", "rejected", "invalid"};
 
 static esp_err_t firmware_get(httpd_req_t *req)
 {
@@ -1082,7 +1087,8 @@ static esp_err_t firmware_get(httpd_req_t *req)
         char detail[2 * sizeof(((gw_fw_status_t *)0)->detail)];
         char run[2 * sizeof(((gw_fw_status_t *)0)->running)];
         char other[2 * sizeof(((gw_fw_status_t *)0)->other)];
-        char body[1400];
+        char other_why[2 * sizeof(((gw_fw_status_t *)0)->other_why)];
+        char body[1800];
     } fw_json_t;
     fw_json_t *j = gw_storage_malloc(sizeof(*j));
     if (j == NULL) {
@@ -1093,14 +1099,28 @@ static esp_err_t firmware_get(httpd_req_t *req)
     json_escape(j->detail, sizeof(j->detail), j->f.detail);
     json_escape(j->run, sizeof(j->run), j->f.running);
     json_escape(j->other, sizeof(j->other), j->f.other);
+    json_escape(j->other_why, sizeof(j->other_why), j->f.other_why);
+    /* issue #144: both slots, the trial (expected mode, time left), the boot-loop counter */
+    bool can_boot = j->f.enabled && !j->f.trial && j->f.phase != GW_FW_DOWNLOADING &&
+                    j->f.phase != GW_FW_RESTARTING && j->f.other_state != GW_FW_SLOT_EMPTY &&
+                    j->f.other_state != GW_FW_SLOT_INVALID;
     snprintf(j->body, sizeof(j->body),
-             "{\"running\":\"%s\",\"slot\":\"%s\",\"other\":\"%s\",\"enabled\":%s,"
-             "\"phase\":\"%s\",\"state\":\"%s\",\"detail\":\"%s\",\"progress\":%u,"
-             "\"bytes\":%lu,\"total\":%lu,\"trial_left_s\":%lu}\n",
-             j->run, j->f.slot, j->other, j->f.enabled ? "true" : "false",
+             "{\"running\":\"%s\",\"slot\":\"%s\",\"other\":\"%s\",\"other_slot\":\"%s\","
+             "\"other_state\":\"%s\",\"other_why\":\"%s\",\"can_boot_other\":%s,"
+             "\"enabled\":%s,\"phase\":\"%s\",\"state\":\"%s\",\"detail\":\"%s\","
+             "\"progress\":%u,\"bytes\":%lu,\"total\":%lu,\"trial\":%s,"
+             "\"trial_left_s\":%lu,\"expected_mode\":\"%s\",\"boot_count\":%lu,"
+             "\"safe_mode\":%s}\n",
+             j->run, j->f.slot, j->other, j->f.other_slot,
+             j->f.other_state < sizeof(k_fw_slot) / sizeof(k_fw_slot[0])
+                 ? k_fw_slot[j->f.other_state] : "?",
+             j->other_why, can_boot ? "true" : "false", j->f.enabled ? "true" : "false",
              j->f.phase < sizeof(k_fw_phase) / sizeof(k_fw_phase[0]) ? k_fw_phase[j->f.phase] : "?",
              j->text, j->detail, j->f.progress, (unsigned long)j->f.bytes,
-             (unsigned long)j->f.total, (unsigned long)j->f.trial_left_s);
+             (unsigned long)j->f.total, j->f.trial ? "true" : "false",
+             (unsigned long)j->f.trial_left_s,
+             j->f.trial ? gw_ota_mode_name(j->f.expected) : "",
+             (unsigned long)j->f.boot_count, j->f.safe_mode ? "true" : "false");
     esp_err_t r = send_json(req, "200 OK", j->body);
     heap_caps_free(j);
     return r;
@@ -1115,7 +1135,9 @@ static bool media_type_is(const char *ctype, const char *type)
 
 /* {"url": "https://..."} (application/json): the gateway downloads it.
  * application/octet-stream: the body is the image itself, written as it arrives. Any other
- * content type is refused (issue #100: text/plain is what a foreign page can send). */
+ * content type is refused (issue #100: text/plain is what a foreign page can send).
+ * Issue #144 item 3: "force": true in the JSON, or ?force=1 with an image, installs an image
+ * that the pre-flight check refuses (409 without it); it must then reach recovery mode. */
 static esp_err_t firmware_post(httpd_req_t *req)
 {
     if (!same_origin(req) || !authorized(req)) {
@@ -1123,7 +1145,7 @@ static esp_err_t firmware_post(httpd_req_t *req)
     }
     char ctype[48] = "";
     httpd_req_get_hdr_value_str(req, "Content-Type", ctype, sizeof(ctype));
-    char why[160];
+    char why[320];   /* issue #144: the reasons of the pre-flight check */
     bool json = media_type_is(ctype, "application/json");
     if (!json && !media_type_is(ctype, "application/octet-stream")) {
         return refuse_body(req, "415 Unsupported Media Type",
@@ -1138,12 +1160,13 @@ static esp_err_t firmware_post(httpd_req_t *req)
             return refuse_body(req, "400 Bad Request", "expected {\"url\": \"https://...\"}");
         }
         char url[GW_OTA_URL_MAX];
-        bool parsed = gw_ota_parse_request(body, len, url, why, sizeof(why));
+        bool force = false;
+        bool parsed = gw_ota_parse_request(body, len, url, &force, why, sizeof(why));
         heap_caps_free(body);
         if (!parsed) {
             return send_error(req, "400 Bad Request", NULL, why);
         }
-        esp_err_t e = gw_fw_start_url(url, why, sizeof(why));
+        esp_err_t e = gw_fw_start_url(url, force, why, sizeof(why));
         if (e != ESP_OK) {
             return send_error(req, e == ESP_ERR_INVALID_ARG ? "400 Bad Request" : "409 Conflict",
                               NULL, why);
@@ -1154,7 +1177,8 @@ static esp_err_t firmware_post(httpd_req_t *req)
     if (req->content_len == 0) {
         return send_error(req, "411 Length Required", NULL, "image without Content-Length");
     }
-    esp_err_t e = gw_fw_upload_begin(req->content_len, why, sizeof(why));
+    esp_err_t e = gw_fw_upload_begin(req->content_len, query_flag(req, "force"), why,
+                                     sizeof(why));
     if (e != ESP_OK) {
         return refuse_body(req, e == ESP_ERR_INVALID_SIZE ? "413 Content Too Large" : "409 Conflict",
                            why);
@@ -1175,9 +1199,12 @@ static esp_err_t firmware_post(httpd_req_t *req)
             break;
         }
         timeouts = 0;
-        if (gw_fw_upload_write(buf, (size_t)r, why, sizeof(why)) != ESP_OK) {
+        esp_err_t w = gw_fw_upload_write(buf, (size_t)r, why, sizeof(why));
+        if (w != ESP_OK) {
             heap_caps_free(buf);
-            return refuse_body(req, "400 Bad Request", why);
+            /* issue #144 item 3: the pre-flight check refused (force with ?force=1) */
+            return refuse_body(req, w == ESP_ERR_NOT_SUPPORTED ? "409 Conflict" : "400 Bad Request",
+                               why);
         }
         got += (size_t)r;
     }
@@ -1189,6 +1216,26 @@ static esp_err_t firmware_post(httpd_req_t *req)
                            why);
     }
     return send_json(req, "200 OK", "{\"ok\":true,\"restart\":true}\n");
+}
+
+/* Issue #144 item 6: POST /api/firmware/other: the "Restart into <version>" button. The image
+ * of the other slot boots on trial; refused during a trial (409), when the slot is empty or
+ * invalid (404), or when the pre-flight check refuses it (409, ?force=1 forces it). */
+static esp_err_t firmware_other_post(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    char why[240];
+    esp_err_t e = gw_fw_boot_other(query_flag(req, "force"), why, sizeof(why));
+    if (e == ESP_ERR_NOT_FOUND) {
+        return refuse_body(req, "404 Not Found", why);
+    }
+    if (e != ESP_OK) {
+        return refuse_body(req, "409 Conflict", why);
+    }
+    ESP_LOGW(TAG, "boot of the other slot requested through the REST API");
+    return send_json(req, "202 Accepted", "{\"ok\":true,\"restart\":true}\n");
 }
 
 /* ---------- #132: /api/coredump ---------- */
@@ -1664,6 +1711,18 @@ static esp_err_t start_redirect(uint16_t port)
     return ESP_OK;
 }
 
+bool gw_web_loop_alive(uint32_t max_age_ms)
+{
+    web_guard_t *g = &s_guard[0];
+    if (g->server == NULL) {
+        return false;
+    }
+    if (CONFIG_GW_WEB_STALL_S == 0) {
+        return true;   /* no watchdog, no ping: the server runs */
+    }
+    return atomic_load(&g->in_handler) || now_ms32() - atomic_load(&g->alive_ms) < max_age_ms;
+}
+
 void gw_web_get_stats(gw_web_stats_t *out)
 {
     out->running = s_server != NULL;
@@ -1745,6 +1804,7 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
                            h_status = {status_get}, h_config_get = {config_get},
                            h_config_put = {config_put}, h_restart = {restart_post},
                            h_fw_get = {firmware_get}, h_fw_post = {firmware_post},
+                           h_fw_other = {firmware_other_post},
                            h_card_format = {card_format_post}, h_rebirth = {rebirth_post},
                            h_modbus_read = {modbus_read_post}, h_cd_get = {coredump_get},
                            h_cd_delete = {coredump_delete}, h_cd_summary = {coredump_summary_get},
@@ -1764,6 +1824,7 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         {"/api/restart", HTTP_POST, &h_restart},
         {"/api/firmware", HTTP_GET, &h_fw_get},     /* FW-1 */
         {"/api/firmware", HTTP_POST, &h_fw_post},
+        {"/api/firmware/other", HTTP_POST, &h_fw_other},   /* #144 */
         {"/api/card/format", HTTP_POST, &h_card_format},   /* #139 */
         {"/api/rebirth", HTTP_POST, &h_rebirth},           /* #171 */
         {"/api/modbus/read", HTTP_POST, &h_modbus_read},   /* #182 */

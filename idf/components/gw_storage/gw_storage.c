@@ -22,6 +22,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "gw_auth.h"
+#include "gw_lkgnet.h"
 #include "gw_nvsraw.h"
 #include "gw_port.h"
 #include "gw_sfspill.h"
@@ -54,6 +55,10 @@ static bool s_saved;
 static uint32_t s_saved_hash;
 static StaticSemaphore_t s_save_lock_buf;
 static gw_storage_commit_hook_t s_commit_hook;   /* issue #99: gw_fw, before a commit */
+static bool s_safe_mode;   /* issue #144 item 4: no NVS migration in safe mode */
+/* Issue #144 item 3: the "since" schema report of the stored configuration (PSRAM, allocated at
+ * the first load; under the save lock). NULL or not valid: no document was accepted. */
+static gw_schema_report_t *s_schema;
 
 #if !CONFIG_SPIRAM && !CONFIG_GW_IO_SIMULATED
 #error "issue #135: the firmware needs the PSRAM of the board (CONFIG_SPIRAM); only the QEMU build (CONFIG_GW_IO_SIMULATED) runs without it"
@@ -929,7 +934,8 @@ static void nvs_prepare(void)
         s_fs_unknown = true;
     }
     const gw_nvsmig_state_t state = {.kind = kind, .raw_ok = raw_ok, .copy = copy,
-                                     .on_trial = running_on_trial(), .can_copy = fs,
+                                     .on_trial = running_on_trial() || s_safe_mode,
+                                     .can_copy = fs,
                                      .copy_unknown = unknown, .keys = keys, .mig_busy = busy,
                                      .erase_marker = erase_marker};
     switch (gw_nvsmig_decide(&state)) {
@@ -945,6 +951,7 @@ static void nvs_prepare(void)
         ESP_LOGW(TAG, "NVS partition \"%s\" is %s and stays so this boot: %s", p->label,
                  kind_name(kind),
                  !raw_ok ? "a page could not be read, nothing is erased"
+                 : s_safe_mode    ? "safe mode (repeated crashes): no NVS migration"
                  : state.on_trial ? "this firmware is on trial (a rollback must find it as the "
                                     "previous image left it); it is encrypted once the firmware "
                                     "is confirmed"
@@ -987,6 +994,11 @@ static void nvs_prepare(void)
 #if CONFIG_NVS_ENCRYPTION
 static void nvs_after_open(void);
 #endif
+
+void gw_storage_safe_mode(void)
+{
+    s_safe_mode = true;
+}
 
 esp_err_t gw_storage_init(void)
 {
@@ -1225,64 +1237,51 @@ esp_err_t gw_storage_set_web_tls(const char *cert, const char *key)
     return err;
 }
 
-/* ---------- network of the last valid configuration (CFG-3 recovery) ---------- */
-
-typedef struct {
-    uint32_t size;    /* sizeof(lkg_t): a blob from a firmware with another layout is ignored */
-    __typeof__(((gw_config_t *)0)->network) network;
-    uint16_t web_port;
-    uint16_t web_https_port;
-    bool web_https;
-} lkg_t;
+/* ---------- network of the last valid configuration (CFG-3 recovery) ----------
+ * Issue #144 item 8: records that an earlier or a later image reads (gw_lkgnet.h), not a raw
+ * struct: a rollback into recovery mode keeps the static IP of the site. The raw struct of the
+ * firmware before #144 is not read (no gateway is installed yet): it counts as no record. */
 
 void gw_storage_save_last_good(const gw_config_t *cfg)
 {
     nvs_handle_t h;
-    if (!s_nvs_ok || nvs_open(NVS_GW, NVS_READWRITE, &h) != ESP_OK) {
+    if (s_reset_done || !s_nvs_ok || nvs_open(NVS_GW, NVS_READWRITE, &h) != ESP_OK) {
         return;
     }
-    lkg_t now = {.size = sizeof(lkg_t), .web_port = cfg->web.port,
-                 .web_https_port = cfg->web.https_port, .web_https = cfg->web.https}, old;
-    now.network = cfg->network;
+    uint8_t now[GW_LKG_MAX], old[GW_LKG_MAX];
+    size_t n = gw_lkg_encode(cfg, now, sizeof(now));
     size_t len = sizeof(old);
     /* written only when it changed: NVS wear */
-    if (nvs_get_blob(h, NVS_LKG, &old, &len) != ESP_OK || len != sizeof(old) ||
-        memcmp(&old, &now, sizeof(now)) != 0) {
-        if (nvs_set_blob(h, NVS_LKG, &now, sizeof(now)) != ESP_OK || nvs_commit(h) != ESP_OK) {
+    if (n > 0 && (nvs_get_blob(h, NVS_LKG, old, &len) != ESP_OK || len != n ||
+                  memcmp(old, now, n) != 0)) {
+        if (nvs_set_blob(h, NVS_LKG, now, n) != ESP_OK || nvs_commit(h) != ESP_OK) {
             ESP_LOGW(TAG, "network of the valid configuration not kept for recovery");
         }
     }
     nvs_close(h);
-    memset(&now, 0, sizeof(now));
-    memset(&old, 0, sizeof(old));
+    memset(now, 0, sizeof(now));   /* the Wi-Fi password */
+    memset(old, 0, sizeof(old));
 }
 
 void gw_storage_recovery_config(gw_config_t *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
-    lkg_t lkg;
+    /* the defaults: what a field that the record does not have keeps */
+    cfg->network.dhcp = true;
+    cfg->network.wifi.failback_s = 30;
+    cfg->network.wifi.ipv4.dhcp = true;
+    cfg->web.port = 80;
+    cfg->web.https = true;
+    cfg->web.https_port = 443;
+    uint8_t lkg[GW_LKG_MAX];
     size_t len = sizeof(lkg);
     nvs_handle_t h;
     bool found = false;
     if (s_nvs_ok && nvs_open(NVS_GW, NVS_READONLY, &h) == ESP_OK) {
-        found = nvs_get_blob(h, NVS_LKG, &lkg, &len) == ESP_OK && len == sizeof(lkg) &&
-                lkg.size == sizeof(lkg);
+        found = nvs_get_blob(h, NVS_LKG, lkg, &len) == ESP_OK && gw_lkg_decode(lkg, len, cfg);
         nvs_close(h);
     }
-    if (found) {
-        cfg->network = lkg.network;
-        cfg->web.port = lkg.web_port;
-        cfg->web.https = lkg.web_https;
-        cfg->web.https_port = lkg.web_https_port;
-        memset(&lkg, 0, sizeof(lkg));
-    } else {
-        cfg->network.dhcp = true;
-        cfg->network.wifi.failback_s = 30;
-        cfg->network.wifi.ipv4.dhcp = true;
-        cfg->web.port = 80;
-        cfg->web.https = true;
-        cfg->web.https_port = 443;
-    }
+    memset(lkg, 0, sizeof(lkg));
     if (cfg->network.hostname[0] == '\0') {
         gw_hostname_from("", cfg->network.hostname, sizeof(cfg->network.hostname));
         cfg->network.mdns = true;
@@ -1343,6 +1342,40 @@ esp_err_t gw_storage_set_blob(const char *key, const void *data, size_t len)
     return err;
 }
 
+esp_err_t gw_storage_set_str(const char *key, const char *value)
+{
+    if (s_reset_done) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    nvs_handle_t h;
+    if (!s_nvs_ok || nvs_open(NVS_GW, NVS_READWRITE, &h) != ESP_OK) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    char old[GW_STORAGE_STR_MAX];
+    size_t old_len = sizeof(old);
+    esp_err_t err = ESP_OK;
+    if (nvs_get_str(h, key, old, &old_len) != ESP_OK || strcmp(old, value) != 0) {
+        err = nvs_set_str(h, key, value);
+        if (err == ESP_OK) {
+            err = nvs_commit(h);
+        }
+    }
+    nvs_close(h);
+    return err;
+}
+
+bool gw_storage_get_str(const char *key, char *out, size_t cap)
+{
+    nvs_handle_t h;
+    if (!s_nvs_ok || nvs_open(NVS_GW, NVS_READONLY, &h) != ESP_OK) {
+        return false;
+    }
+    size_t len = cap;
+    bool ok = nvs_get_str(h, key, out, &len) == ESP_OK;
+    nvs_close(h);
+    return ok;
+}
+
 bool gw_storage_get_blob(const char *key, void *out, size_t len)
 {
     nvs_handle_t h;
@@ -1380,7 +1413,7 @@ esp_err_t gw_storage_factory_reset(void)
                       ? s_commit_hook(GW_STORAGE_COMMIT_FACTORY_RESET, why, sizeof(why))
                       : ESP_OK;
     if (h == ESP_ERR_INVALID_STATE) {
-        /* issue #108 B1: refused, nothing erased; the caller's restart finishes the rollback */
+        /* refused by the commit hook: nothing erased */
         ESP_LOGE(TAG, "factory reset refused: %s", why);
         return h;
     }
@@ -1704,6 +1737,22 @@ bool gw_storage_load_config(gw_config_t *cfg, gw_cfg_err_t *err, const char **so
     if (!mount(false, &why)) {
         return reject(err, "LittleFS partition 'storage' not mountable (%s)", esp_err_to_name(why));
     }
+#if CONFIG_GW_IO_SIMULATED
+    /* issue #144, emulator only: a new image on trial that cannot read the stored configuration,
+     * as an image of an older schema (the E2E puts /cfg/.sim-reject-config there). An image that
+     * is not on trial reads the configuration as usual */
+    struct stat sim;
+    const esp_partition_t *run = esp_ota_get_running_partition();
+    esp_ota_img_states_t run_state;
+    if (stat(CFG_MOUNT "/.sim-reject-config", &sim) == 0 && run != NULL &&
+        esp_ota_get_state_partition(run, &run_state) == ESP_OK &&
+        run_state == ESP_OTA_IMG_PENDING_VERIFY) {
+        reject(err, "e2e.simulated: rejected by the emulator (/cfg/.sim-reject-config, a new "
+                    "firmware on trial)");
+        snprintf(err->path, sizeof(err->path), "e2e.simulated");
+        return false;
+    }
+#endif
     size_t len;
     bool from_file;
     char *text = current_doc(&len, &from_file, err);
@@ -1716,7 +1765,16 @@ bool gw_storage_load_config(gw_config_t *cfg, gw_cfg_err_t *err, const char **so
     gw_secrets_t stored;
     gw_storage_get_secrets(&stored);
     gw_cfgdoc_t doc;
-    bool ok = gw_cfgdoc_apply(text, len, GW_CFGDOC_FILE, &stored, cfg, &doc, err);
+    if (s_schema == NULL) {
+        s_schema = gw_storage_malloc(sizeof(*s_schema));   /* boot time, once */
+    }
+    bool ok;
+    if (s_schema != NULL) {
+        gw_config_schema_init(s_schema);
+        ok = gw_cfgdoc_apply_schema(text, len, GW_CFGDOC_FILE, &stored, cfg, &doc, err, s_schema);
+    } else {
+        ok = gw_cfgdoc_apply(text, len, GW_CFGDOC_FILE, &stored, cfg, &doc, err);
+    }
     heap_caps_free(text);
     if (!ok) {
         return false;
@@ -1780,12 +1838,6 @@ void gw_storage_sim_hold_validation(uint32_t ms)
     s_sim_hold_ms = ms;
 }
 
-bool gw_storage_sim_take(const char *name)
-{
-    char path[sizeof(CFG_MOUNT) + 64];
-    snprintf(path, sizeof(path), CFG_MOUNT "/%s", name);
-    return unlink(path) == 0;
-}
 #endif
 
 bool gw_storage_saved_cfg_hash(uint32_t *hash)
@@ -1830,10 +1882,19 @@ esp_err_t gw_storage_save_config_lint(const char *json, size_t len, bool dry_run
     gw_storage_get_secrets(&stored);
     gw_cfgdoc_t doc;
     esp_err_t ret = ESP_OK;
+    /* issue #144 item 3: the schema report of the new document replaces the stored one's when
+     * it is saved */
+    gw_schema_report_t *schema = dry_run ? NULL : gw_storage_malloc(sizeof(*schema));
+    if (schema != NULL) {
+        gw_config_schema_init(schema);
+    }
     gw_port_json_lock();   /* recursive: gw_cfgdoc_apply takes it too */
     s_track_size = s_track_room = 0;
     s_track = true;
-    bool applied = gw_cfgdoc_apply(json, len, GW_CFGDOC_UPDATE, &stored, cfg, &doc, err);
+    bool applied = schema != NULL ? gw_cfgdoc_apply_schema(json, len, GW_CFGDOC_UPDATE, &stored,
+                                                           cfg, &doc, err, schema)
+                                  : gw_cfgdoc_apply(json, len, GW_CFGDOC_UPDATE, &stored, cfg,
+                                                    &doc, err);
     s_track = false;
     gw_port_json_unlock();
     /* issue #80: the new configuration and its document are both allocated here: the deepest
@@ -1877,7 +1938,8 @@ esp_err_t gw_storage_save_config_lint(const char *json, size_t len, bool dry_run
                     "NVS migration; a format would lose it (to discard it: README 6.2.1)");
     } else if (!dry_run && s_commit_hook != NULL &&
                s_commit_hook(GW_STORAGE_COMMIT_CONFIG, hook_why, sizeof(hook_why)) != ESP_OK) {
-        /* issue #99: the restart that applies it would roll the new firmware back */
+        /* issue #144 item 1: during the trial of a new image (the restart that applies it would
+         * roll the new firmware back) */
         ret = ESP_ERR_INVALID_STATE;
         reject(err, "configuration not saved: %s", hook_why);
     } else if (!dry_run) {
@@ -1913,6 +1975,14 @@ esp_err_t gw_storage_save_config_lint(const char *json, size_t len, bool dry_run
             portEXIT_CRITICAL(&s_saved_mux);
             ESP_LOGI(TAG, "configuration saved to " CFG_PATH " (%zu bytes)%s", doc.doc_len,
                      doc.secrets_changed ? "; secrets updated in NVS" : "");
+            if (schema != NULL && schema->valid) {
+                if (s_schema == NULL) {
+                    s_schema = schema;   /* no report before (recovery, commissioning) */
+                    schema = NULL;
+                } else {
+                    *s_schema = *schema;
+                }
+            }
         }
         if (ret != ESP_OK && discarded && !s_mounted) {
             s_copy_unknown = true;   /* nothing was formatted after all */
@@ -1920,6 +1990,7 @@ esp_err_t gw_storage_save_config_lint(const char *json, size_t len, bool dry_run
     }
     gw_cfgdoc_free(&doc);
     xSemaphoreGive(s_save_lock);
+    heap_caps_free(schema);
     /* #169: after the document is freed (the callback may send its findings to a client) */
     if (ret == ESP_OK && lint != NULL) {
         size_t n = gw_config_lint(cfg, lint, ctx);
@@ -1930,6 +2001,17 @@ esp_err_t gw_storage_save_config_lint(const char *json, size_t len, bool dry_run
     memset(cfg, 0, sizeof(*cfg));   /* it held the secrets in clear */
     heap_caps_free(cfg);
     return ret;
+}
+
+bool gw_storage_config_schema(gw_schema_report_t *out)
+{
+    xSemaphoreTake(s_save_lock, portMAX_DELAY);
+    bool ok = s_schema != NULL && s_schema->valid;
+    if (ok) {
+        *out = *s_schema;
+    }
+    xSemaphoreGive(s_save_lock);
+    return ok;
 }
 
 char *gw_storage_export_config(size_t *len, gw_cfg_err_t *err)

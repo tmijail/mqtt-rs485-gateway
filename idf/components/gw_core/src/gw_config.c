@@ -85,6 +85,36 @@ static void join(char *out, size_t cap, const char *path, const char *key)
     snprintf(out, cap, "%s%s%s", path, path[0] != '\0' ? "." : "", key);
 }
 
+/* ---------- issue #144 item 3: the "since" schema of each key and enum value ----------
+ * Keys and enum values that came after schema 1: {path ("[]" for an index), enum value or NULL
+ * for the key, since}. Add each new key or value here with GW_CONFIG_SCHEMA + 1 and raise
+ * GW_CONFIG_SCHEMA. The last entry only ends the table. */
+static const gw_since_t k_since[] = {
+    {"", NULL, 0},
+};
+#define SINCE_COUNT (sizeof(k_since) / sizeof(k_since[0]) - 1)
+
+void gw_config_schema_init(gw_schema_report_t *rep)
+{
+    gw_schema_init(rep, k_since, SINCE_COUNT);
+}
+
+const gw_since_t *gw_config_since_table(size_t *n)
+{
+    *n = SINCE_COUNT;
+    return k_since;
+}
+
+/* The report of the parse in progress (under the JSON lock), NULL: none asked for. */
+static gw_schema_report_t *s_rep;
+
+static void note(const char *path, const char *value)
+{
+    if (s_rep != NULL) {
+        gw_schema_note(s_rep, path, value);
+    }
+}
+
 /* 1-based line and column (in characters, not UTF-8 bytes) of @p at in @p json. */
 static void line_col(const char *json, const char *at, unsigned *line, unsigned *col)
 {
@@ -132,6 +162,7 @@ static bool check_keys(const cJSON *obj, const char *path, const char *const *al
         if (!known) {
             return fail(err, p, "unknown key");
         }
+        note(p, NULL);
         for (const cJSON *prev = obj->child; prev != it; prev = prev->next) {
             if (strcmp(prev->string, it->string) == 0) {
                 return fail(err, p, "duplicate key");
@@ -239,6 +270,7 @@ static bool get_enum(const cJSON *obj, const char *key, const char *path, bool r
         for (size_t i = 0; i < n; i++) {
             if (strcmp(v->valuestring, names[i]) == 0) {
                 *out = (int)i;
+                note(p, names[i]);
                 return true;
             }
         }
@@ -1575,6 +1607,19 @@ bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_
 {
     gw_port_json_lock();
     bool ok = parse_locked(json, len, cfg, err);
+    gw_port_json_unlock();
+    return ok;
+}
+
+bool gw_config_parse_schema(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_t *err,
+                            gw_schema_report_t *rep)
+{
+    gw_port_json_lock();
+    rep->valid = false;
+    s_rep = rep;
+    bool ok = parse_locked(json, len, cfg, err);
+    s_rep = NULL;
+    rep->valid = ok;
     gw_port_json_unlock();
     return ok;
 }
