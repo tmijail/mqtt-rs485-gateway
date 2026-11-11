@@ -8,6 +8,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "gw_cfgschema.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -342,6 +344,25 @@ typedef struct {
  * ("devices[0].tags[2].type: ...").
  */
 bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_t *err);
+
+/* Issue #144 item 3: the highest configuration schema that this firmware reads. Raise it (and
+ * add the new keys and enum values to the "since" table in gw_config.c) when a key or an enum
+ * value is added. Images declare it in their capabilities block (gw_ota.h). */
+#define GW_CONFIG_SCHEMA 1
+
+/** gw_schema_init() with the "since" table of this firmware. */
+void gw_config_schema_init(gw_schema_report_t *rep);
+
+/** The "since" table of this firmware (@p n: its entries), for the host tests. */
+const gw_since_t *gw_config_since_table(size_t *n);
+
+/**
+ * gw_config_parse() that also gives every key and accepted enum value of the document to
+ * gw_schema_note() (@p rep, from gw_config_schema_init()). On success the report is valid;
+ * on failure it stays not valid (the document was not examined to the end).
+ */
+bool gw_config_parse_schema(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_t *err,
+                            gw_schema_report_t *rep);
 
 /**
  * Allocator for the temporary document tree built while parsing (default:

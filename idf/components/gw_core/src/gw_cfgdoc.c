@@ -231,12 +231,13 @@ typedef enum { EFF_STORED = 0, EFF_NEW, EFF_NONE } effective_t;
 
 static bool apply_locked(const char *json, size_t len, gw_cfgdoc_mode_t mode,
                      const gw_secrets_t *stored, gw_config_t *cfg, gw_cfgdoc_t *out,
-                     gw_cfg_err_t *err)
+                     gw_cfg_err_t *err, gw_schema_report_t *schema)
 {
     memset(out, 0, sizeof(*out));
     /* GW_SECRET_MASK passes every secret rule (8 characters), so the document as given
      * validates exactly like the one with the effective secrets: syntax, paths, limits. */
-    if (!gw_config_parse(json, len, cfg, err)) {
+    if (schema != NULL ? !gw_config_parse_schema(json, len, cfg, err, schema)
+                       : !gw_config_parse(json, len, cfg, err)) {
         return false;
     }
     cJSON *root = parse_tree(json, len);
@@ -305,7 +306,20 @@ bool gw_cfgdoc_apply(const char *json, size_t len, gw_cfgdoc_mode_t mode,
                      gw_cfg_err_t *err)
 {
     gw_port_json_lock();
-    bool ok = apply_locked(json, len, mode, stored, cfg, out, err);
+    bool ok = apply_locked(json, len, mode, stored, cfg, out, err, NULL);
+    gw_port_json_unlock();
+    return ok;
+}
+
+bool gw_cfgdoc_apply_schema(const char *json, size_t len, gw_cfgdoc_mode_t mode,
+                            const gw_secrets_t *stored, gw_config_t *cfg, gw_cfgdoc_t *out,
+                            gw_cfg_err_t *err, gw_schema_report_t *schema)
+{
+    gw_port_json_lock();
+    bool ok = apply_locked(json, len, mode, stored, cfg, out, err, schema);
+    if (!ok) {
+        schema->valid = false;   /* a later step (memory) failed after the parse */
+    }
     gw_port_json_unlock();
     return ok;
 }

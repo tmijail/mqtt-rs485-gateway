@@ -73,6 +73,7 @@ typedef struct {
     int scan_rate_calls;
     uint32_t scan_rate;
     int fw_updates;              /* FW-1: firmware_update calls */
+    int boot_others;             /* issue #144 item 6: boot_other calls */
     char fw_url[SPB_STRING_MAX + 1];
     gw_node_diag_t diag;         /* SPB-17: what the diagnostics op reports */
 } recorder_t;

@@ -59,6 +59,15 @@ bool gw_cfgdoc_apply(const char *json, size_t len, gw_cfgdoc_mode_t mode,
                      const gw_secrets_t *stored, gw_config_t *cfg, gw_cfgdoc_t *out,
                      gw_cfg_err_t *err);
 
+/**
+ * Issue #144 item 3: gw_cfgdoc_apply() that also fills @p schema (from gw_config_schema_init())
+ * with the "since" schema numbers of the document (gw_config_parse_schema). The report is valid
+ * only on success.
+ */
+bool gw_cfgdoc_apply_schema(const char *json, size_t len, gw_cfgdoc_mode_t mode,
+                            const gw_secrets_t *stored, gw_config_t *cfg, gw_cfgdoc_t *out,
+                            gw_cfg_err_t *err, gw_schema_report_t *schema);
+
 void gw_cfgdoc_free(gw_cfgdoc_t *doc);
 
 /**
