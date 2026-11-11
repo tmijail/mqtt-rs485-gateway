@@ -331,7 +331,7 @@ TLS 1.2 o 1.3, lo que negocie el broker. Las fechas de validez del certificado s
 
 | Clave | Tipo | Defecto | Regla |
 |---|---|---|---|
-| `protocol` | `"3.1.1"` \| `"5"` | `"3.1.1"` | Versión de MQTT para todos los brokers de la lista. Con `"5"`, como pide Sparkplug 3.0: *Clean Start* = 1 y *Session Expiry Interval* = 0 (el broker no guarda la sesión entre conexiones, igual que *clean session* en 3.1.1) y *Will Delay Interval* = 0 (el NDEATH se publica en cuanto se pierde la conexión). Los temas, QoS, retención y payloads no cambian |
+| `protocol` | `"3.1.1"` \| `"5"` | `"3.1.1"` | The MQTT version for all the brokers of the list. With `"5"`, the node obeys Sparkplug 3.0: *Clean Start* = 1 and *Session Expiry Interval* = 0 (the broker keeps no session between connections, as *clean session* in 3.1.1). *Will Delay Interval* = 0 (the broker publishes the NDEATH when the connection stops). Each DISCONNECT of the node has the reason code 0x04, *Disconnect with Will Message* (`tck-id-payloads-ndeath-will-message-publisher-disconnect-mqtt50`, issue #155). Thus the broker also publishes the NDEATH of the will. The topics, QoS, retain flags and payloads do not change |
 
 **`mqtt.backup_brokers`, `failover_after`, `primary_return_s` (MQTT-6): lista de brokers.**
 

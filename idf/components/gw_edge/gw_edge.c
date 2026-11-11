@@ -806,13 +806,39 @@ static __attribute__((noinline)) void spill_before_restart(void)
     }
 }
 
+/*
+ * MQTT-8 / issue #155: with MQTT 5, every DISCONNECT of the node carries the reason code 0x04,
+ * Disconnect with Will Message (tck-id-payloads-ndeath-will-message-publisher-disconnect-mqtt50).
+ * esp-mqtt 1.1.0 sends a DISCONNECT in two places only, both through send_disconnect_msg():
+ * esp_mqtt_client_stop() (also from esp_mqtt_client_destroy()) while connected, and its own
+ * task after esp_mqtt_client_disconnect(). send_disconnect_msg() takes the disconnect property
+ * and then clears it, so it is set again right before each of these calls. No allocation (no
+ * user property). The broker then publishes the will NDEATH too: after an explicit NDEATH, the
+ * hosts get the same bdSeq two times, which a Sparkplug host handles (README 6.5.3).
+ */
+static void disconnect_with_will(void)
+{
+#if CONFIG_MQTT_PROTOCOL_5
+    if (s_cfg->mqtt.protocol == GW_MQTT_V5 && s_client != NULL) {
+        const esp_mqtt5_disconnect_property_config_t p = {
+            .disconnect_reason = MQTT5_DISCONNECT_WITH_WILL,
+        };
+        if (esp_mqtt5_client_set_disconnect_property(s_client, &p) != ESP_OK) {
+            ESP_LOGW(TAG, "MQTT 5: the DISCONNECT reason code 0x04 could not be set");
+        }
+    }
+#endif
+}
+
 static void op_reboot(void *ctx)
 {
     (void)ctx;
     spill_before_restart();
     gw_fw_restart_requested();   /* issue #108 B5 (a no-op unless a confirmation keeps failing) */
-    /* Orderly shutdown: NDEATH was just published; stop() sends DISCONNECT synchronously so
-     * the broker discards the will instead of publishing a second NDEATH. */
+    /* Orderly shutdown: NDEATH was just published; stop() sends DISCONNECT synchronously. With
+     * MQTT 3.1.1 the broker discards the will; with MQTT 5 the reason code 0x04 makes it
+     * publish the will too (issue #155). */
+    disconnect_with_will();
     esp_mqtt_client_stop(s_client);
     /* No Modbus frame cut by the restart (bounded by the slowest transaction with retries). */
     gw_bus_quiesce(QUIESCE_MS);
@@ -1012,11 +1038,13 @@ static void publish_ndeath(void)
 }
 
 /* Close a session that cannot work; the DISCONNECTED event schedules the retry (backoff).
- * DISCONNECT makes the broker drop the will: no NBIRTH went out, so no NDEATH is owed. */
+ * With MQTT 3.1.1, DISCONNECT makes the broker drop the will; with MQTT 5 the reason code 0x04
+ * makes it publish the will (issue #155). Hosts ignore an NDEATH whose bdSeq no NBIRTH had. */
 static void abort_session(const char *why)
 {
     ESP_LOGW(TAG, "%s: closing the connection", why);
     s_sub_msg_id = 0;
+    disconnect_with_will();
     esp_mqtt_client_disconnect(s_client);
 }
 
@@ -1199,6 +1227,7 @@ static void move_session(const char *why)
         gw_node_session_down(s_node);
         gw_status_set(GW_ST_MQTT_UP, false);
     }
+    disconnect_with_will();              /* issue #155 */
     esp_mqtt_client_destroy(s_client);   /* DISCONNECT if connected; drops the old binding */
     s_client = NULL;
     s_started = false;

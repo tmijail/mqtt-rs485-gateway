@@ -1980,28 +1980,51 @@ def run_failover(args, work):
 
 def run_mqtt5(args, work, mosquitto_log):
     """MQTT-8 in one boot (GW18) against the harness' main mosquitto: CONNECT with protocol
-    level 5 and Clean Start, NBIRTH, the NCMD subscription working (rebirth), and the NDEATH will
-    published as soon as the TCP connection dies (Will Delay Interval 0)."""
+    level 5 and Clean Start, NBIRTH, the NCMD subscription working (rebirth), an NCMD Reboot whose
+    DISCONNECT carries the reason code 0x04 (issue #155: the broker publishes the will too), and
+    the NDEATH will published as soon as the TCP connection dies (Will Delay Interval 0)."""
     node = "GW18"
+    nbirth_t, ndeath_t = f"{T}/NBIRTH/{node}", f"{T}/NDEATH/{node}"
     obs = Observer()
     t0 = time.monotonic()
     gw = boot_variant(args, work, "mqtt5", node_config(node, protocol="5"))
-    nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
+    nb = obs.wait(nbirth_t, 40)
     attempt = gw.find(r"connecting to 10\.0\.2\.2:%d MQTT 5 as 'GW18'" % MQTT_PORT, t0)
     v5 = re.search(r"New client connected from \S+ as GW18 \(p5, c1, k10\)",
                    pathlib.Path(mosquitto_log).read_text())
     obs.drain()
     obs.publish_cmd(f"{T}/NCMD/{node}", [{"name": "Node Control/Rebirth", "datatype": 11,
                                           "boolean_value": True}])
-    rb = obs.wait(f"{T}/NBIRTH/{node}", 5)
+    rb = obs.wait(nbirth_t, 5)
+
+    # Issue #155: NCMD Reboot -> explicit NDEATH, then DISCONNECT with the reason code 0x04
+    # (Disconnect with Will Message): the broker publishes the will NDEATH too, with the same
+    # bdSeq (tck-id-payloads-ndeath-will-message-publisher-disconnect-mqtt50)
+    obs.drain()
+    rebooted = time.monotonic()
+    obs.publish_cmd(f"{T}/NCMD/{node}", [{"name": "Node Control/Reboot", "datatype": 11,
+                                          "boolean_value": True}])
+    nb2 = obs.wait(nbirth_t, 40)
+    deaths = [m for m in CAPTURE if m[1] == ndeath_t and m[0] >= rebooted and nb
+              and bdseq_of(m[2]) == bdseq_of(nb[2])]
+    explicit = len(re.findall(r"Received PUBLISH from GW18 \(d0, q1, r0, m\d+, 'spBv1\.0/Plant1/NDEATH/GW18'",
+                              pathlib.Path(mosquitto_log).read_text()))
+    check("Issue #155 MQTT 5: NCMD Reboot publishes the NDEATH, then sends DISCONNECT with the reason "
+          "code 0x04 (Disconnect with Will Message): the broker publishes the will NDEATH too, with "
+          "the same bdSeq; the gateway restarts (NBIRTH)",
+          nb2 and explicit >= 1 and len(deaths) == 2,
+          f"NDEATHs with the session's bdSeq: {len(deaths)} (2 expected: the explicit one and the "
+          f"will); explicit NDEATH publishes in the broker log: {explicit}; NBIRTH after the reboot "
+          f"{'yes' if nb2 else 'no'}")
+
     killed = time.monotonic()
     gw.kill()
-    will = obs.wait(f"{T}/NDEATH/{node}", 10)
+    will = obs.wait(ndeath_t, 10)
     obs.close()
     check("MQTT-8 MQTT 5.0 (mqtt.protocol \"5\"): CONNECT protocol level 5 with Clean Start, NBIRTH, "
           "NCMD rebirth received over the v5 subscription, NDEATH will with the session's bdSeq "
           "right after the connection dies (Will Delay 0)",
-          nb and attempt and v5 and rb and will and bdseq_of(will[2]) == bdseq_of(nb[2])
+          nb and attempt and v5 and rb and nb2 and will and bdseq_of(will[2]) == bdseq_of(nb2[2])
           and will[0] - killed < 5,
           f"NBIRTH {'yes' if nb else 'no'}; mosquitto: {v5.group(0) if v5 else 'no p5 connection'}; "
           f"rebirth {'yes' if rb else 'no'}; will "
