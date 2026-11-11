@@ -4,6 +4,7 @@ This is the MVP firmware (`docs/SPEC.md` §5) for the Waveshare **ESP32-S3-POE-E
 
 - **Stack:** ESP-IDF **v6.1**, target `esp32s3`, the common configuration schema of §6.
 - **Feasibility study for all of §4:** `docs/feasibility-idf.md`.
+- **Connect the RS485 bus** (termination, bias, topology, error counters): `docs/how-to/connect-the-rs485-bus.md`.
 
 > **Warning: Do not use these results as hardware results. Nobody tested the firmware on hardware.** No board was available. Only these items ran:
 >
