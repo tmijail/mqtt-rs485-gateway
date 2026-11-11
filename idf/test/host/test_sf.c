@@ -1144,6 +1144,120 @@ static void test_spill_step1_files_deleted(void)
     }
 }
 
+static int flush_ticks, flush_sleeps, tick_changes;
+
+/* The spill's tick (the watchdog feed): after each card operation, at most one change. */
+static void flush_tick(void)
+{
+    TEST_ASSERT_TRUE(card.changes - tick_changes <= 1);
+    tick_changes = card.changes;
+    flush_ticks++;
+}
+
+/* After a reboot: the replay sends every sample that is still on the card and was not consumed
+ * before, and nothing again. */
+static void check_no_dups_after_reboot(uint32_t ext_blocks, uint32_t extents, uint32_t hash,
+                                       const char *msg)
+{
+    remember_consumed();
+    boot(ext_blocks, extents, hash);
+    until_ready();
+    replay_reset();
+    int n = replay(-1, msg);
+    TEST_ASSERT_TRUE_MESSAGE(n > 0, msg);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, rp.dups, msg);
+    for (int c = 0; c < produced; c++) {
+        if (card.durable[c] && !card.overwritten[c]) {
+            TEST_ASSERT_TRUE_MESSAGE(consumed[c] || rp.seen[c], msg);
+        }
+    }
+}
+
+/* #143: gw_sfspill_checkpoint() (the gateway calls it when it releases the card for a format,
+ * #139). It writes the replay position only when the boot recovery ended, no superblock is due,
+ * the position moved and the 500 ms gap permits it; when this boot has not made the superblock
+ * files yet, it makes them first (at most 3 card changes). */
+static void test_spill_checkpoint(void)
+{
+    card_new(4096);
+    boot(8, 8, 0x143);   /* 64 blocks: H = 16, no head hint in this test */
+    int changes = card.changes;
+    TEST_ASSERT_FALSE(gw_sfspill_checkpoint(&sp, now_ms + 1000));   /* the recovery has not run */
+    TEST_ASSERT_EQUAL_INT(changes, card.changes);
+    until_ready();
+    memset(consumed, 0, sizeof(consumed));
+    push_n(2000);
+    boot(8, 8, 0x143);   /* the RAM ring is gone: the samples on the card stay */
+    until_ready();
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_SUPER, sp.found);
+    now_ms += 1000;
+    /* nothing to save: false, and nothing written */
+    changes = card.changes;
+    TEST_ASSERT_FALSE(gw_sfspill_checkpoint(&sp, now_ms));
+    TEST_ASSERT_EQUAL_INT(changes, card.changes);
+    /* a replay in progress (less than 64 KB: no checkpoint by itself) */
+    replay_reset();
+    TEST_ASSERT_TRUE(replay(500, "before the checkpoint") >= 500);
+    TEST_ASSERT_EQUAL_UINT32(0, sp.checkpoints);
+    TEST_ASSERT_TRUE(sp.ck_pending > 0);
+    /* one superblock with the position */
+    changes = card.changes;
+    uint32_t sbw = sp.sb_writes;
+    TEST_ASSERT_TRUE(gw_sfspill_checkpoint(&sp, now_ms));
+    TEST_ASSERT_EQUAL_INT(changes + 1, card.changes);   /* the files exist already */
+    TEST_ASSERT_EQUAL_UINT32(sbw + 1, sp.sb_writes);
+    TEST_ASSERT_EQUAL_UINT32(1, sp.checkpoints);
+    TEST_ASSERT_EQUAL_UINT32(0, sp.ck_pending);
+    TEST_ASSERT_EQUAL_UINT32(now_ms, sp.sb_last_ms);
+    /* nothing moved since: false, and nothing written */
+    changes = card.changes;
+    TEST_ASSERT_FALSE(gw_sfspill_checkpoint(&sp, now_ms + 1000));
+    TEST_ASSERT_EQUAL_INT(changes, card.changes);
+    /* more of the replay, then a checkpoint in the 500 ms gap after that superblock: false,
+     * and nothing written; after the gap: the next superblock */
+    TEST_ASSERT_TRUE(replay(200, "between the checkpoints") >= 200);
+    TEST_ASSERT_TRUE(sp.ck_pending > 0);
+    uint32_t last = sp.sb_last_ms;
+    TEST_ASSERT_TRUE(now_ms < last + GW_SFSPILL_SB_GAP_MS - 1);
+    now_ms = last + GW_SFSPILL_SB_GAP_MS - 1;
+    changes = card.changes;
+    TEST_ASSERT_FALSE(gw_sfspill_checkpoint(&sp, now_ms));
+    TEST_ASSERT_EQUAL_INT(changes, card.changes);
+    now_ms++;
+    TEST_ASSERT_TRUE(gw_sfspill_checkpoint(&sp, now_ms));
+    TEST_ASSERT_EQUAL_INT(changes + 1, card.changes);
+    TEST_ASSERT_EQUAL_UINT32(2, sp.checkpoints);
+    /* the next boot goes on from the saved position: no duplicates, nothing lost */
+    check_no_dups_after_reboot(8, 8, 0x143, "after the checkpoint");
+
+    /* copy B is not on the card, and this boot has not made the superblock files: the
+     * checkpoint makes them, then writes (at most 3 card changes, with a tick after each) */
+    card_new(4096);
+    boot(8, 8, 0x144);
+    until_ready();
+    memset(consumed, 0, sizeof(consumed));
+    push_n(2000);
+    card.sb[1].size = -1;
+    boot(8, 8, 0x144);
+    until_ready();
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_SUPER, sp.found);
+    replay_reset();
+    replay(300, "before the checkpoint without copy B");
+    now_ms += 1000;
+    changes = card.changes;
+    sbw = sp.sb_writes;
+    flush_ticks = 0;
+    tick_changes = card.changes;
+    sp.tick = flush_tick;
+    TEST_ASSERT_TRUE(gw_sfspill_checkpoint(&sp, now_ms));
+    sp.tick = NULL;
+    TEST_ASSERT_TRUE(card.changes - changes <= 3);
+    TEST_ASSERT_EQUAL_INT(3, flush_ticks);   /* the file of A, the file of B, the write */
+    TEST_ASSERT_EQUAL_INT32(GW_SFSPILL_SB_BYTES, card.sb[1].size);
+    TEST_ASSERT_EQUAL_UINT32(sbw + 1, sp.sb_writes);
+    check_no_dups_after_reboot(8, 8, 0x144, "after the checkpoint without copy B");
+}
+
 /* #134: after an I/O failure the samples on the card are not counted as waiting any more
  * (stranded), nothing asks for the loop's time, and the RAM ring goes on as without a card. */
 static void test_spill_io_error(void)
@@ -1266,15 +1380,6 @@ static void test_spill_faults(void)
 
 /* ---- #136: a planned restart moves the RAM ring to the card first ---- */
 
-static int flush_ticks, flush_sleeps, tick_changes;
-
-/* The spill's tick (the watchdog feed): after each card operation, at most one change. */
-static void flush_tick(void)
-{
-    TEST_ASSERT_TRUE(card.changes - tick_changes <= 1);
-    tick_changes = card.changes;
-    flush_ticks++;
-}
 
 static uint32_t flush_clock(void)
 {
@@ -1477,6 +1582,7 @@ int main(void)
     RUN_TEST(test_spill_hole);
     RUN_TEST(test_spill_hint_under_load);
     RUN_TEST(test_spill_step1_files_deleted);
+    RUN_TEST(test_spill_checkpoint);
     RUN_TEST(test_spill_io_error);
     RUN_TEST(test_spill_faults);
     RUN_TEST(test_flush_before_restart);
