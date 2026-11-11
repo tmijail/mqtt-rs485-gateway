@@ -6,7 +6,7 @@ This document gives the result of each assertion of the Eclipse Sparkplug TCK 3.
 
 | Item | Value |
 |---|---|
-| Firmware | `main` at 6621c53, QEMU default build (no PSRAM) |
+| Firmware | `main` at 6621c53, QEMU default build (no PSRAM). `MultipleBrokerTest`, `PrimaryHostTest` and `SessionTerminationTest` again after #186 (21b244d, PSRAM build) |
 | TCK | Eclipse Sparkplug TCK 3.0.0 (`Eclipse-Sparkplug-TCK-3.0.0.zip`), from the tag `v3.0.0` |
 | Broker | HiveMQ CE 2025.5 with the TCK extension; mosquitto 2.0.18 as the second MQTT server of `MultipleBrokerTest` |
 | Java | Eclipse Temurin 21.0.13 |
@@ -40,8 +40,8 @@ The name of each assertion is its `tck-id` without the prefix `tck-id-`. A name 
 | ReceiveCommandTest | 5 | 14 | 0 | 0 | 0 |
 | PrimaryHostTest | 3.1.1 | 25 | 0 | 0 | 0 |
 | PrimaryHostTest | 5 | 25 | 0 | 0 | 0 |
-| MultipleBrokerTest | 3.1.1 | 18 | 0 | 1 | 0 |
-| MultipleBrokerTest | 5 | 18 | 0 | 1 | 0 |
+| MultipleBrokerTest | 3.1.1 | 19 | 0 | 0 | 0 |
+| MultipleBrokerTest | 5 | 19 | 0 | 0 | 0 |
 
 ## SessionEstablishmentTest
 
@@ -327,7 +327,7 @@ The name of each assertion is its `tck-id` without the prefix `tck-id-`. A name 
 | `operational-behavior-edge-node-birth-sequence-wait` | PASS | PASS |
 | `operational-behavior-primary-application-state-with-multiple-servers-single-server` | PASS | PASS |
 | `operational-behavior-primary-application-state-with-multiple-servers-state-subs` | PASS | PASS |
-| `operational-behavior-primary-application-state-with-multiple-servers-walk` | FAIL (gateway) | FAIL (gateway) |
+| `operational-behavior-primary-application-state-with-multiple-servers-walk` | PASS (FAIL before #186) | PASS (FAIL before #186) |
 | `Monitor:case-sensitivity-sparkplug-ids` | PASS | PASS |
 | `Monitor:host-topic-phid-birth-payload` | PASS | PASS |
 | `Monitor:host-topic-phid-death-payload-timestamp-connect` | PASS | PASS |
