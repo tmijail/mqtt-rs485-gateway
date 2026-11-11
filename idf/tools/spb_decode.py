@@ -16,6 +16,7 @@ import sys
 import tempfile
 
 PROTO = pathlib.Path(__file__).resolve().parent.parent / "components/gw_core/proto/sparkplug_b.proto"
+REBIRTH = "Node Control/Rebirth"
 
 DATATYPE_FIELD = {  # Sparkplug datatype -> oneof field that must carry the value
     1: "int_value", 2: "int_value", 3: "int_value", 5: "int_value", 6: "int_value", 7: "int_value",
@@ -163,9 +164,13 @@ def check(kind, p):
     aliases = set()
     for m in p.metrics:
         definition = m.datatype == 19 and m.template_value.is_definition
-        if births and not (m.HasField("name") and (definition or m.HasField("alias"))
+        rebirth = kind == "NBIRTH" and m.name == REBIRTH
+        if births and not (m.HasField("name") and (definition or rebirth or m.HasField("alias"))
                            and m.HasField("datatype")):
             errors.append(f"birth metric without name/alias/datatype: {m}")
+        # tck-id-operational-behavior-data-commands-rebirth-name-aliases (#153)
+        if rebirth and m.HasField("alias"):
+            errors.append(f"NBIRTH {REBIRTH} must not have an alias (alias {m.alias})")
         if not births and m.HasField("name"):
             errors.append(f"{kind} metric should use the alias only: {m.name}")
         if m.HasField("alias"):
@@ -180,7 +185,7 @@ def check(kind, p):
         errors += check_template(kind, m)
     if kind == "NBIRTH":
         names = {m.name for m in p.metrics}
-        for required in ("bdSeq", "Node Control/Rebirth", "Node Control/Reboot",
+        for required in ("bdSeq", REBIRTH, "Node Control/Reboot",
                          "Node Info/Firmware", "Node Info/Hardware", "Node Info/Reset Reason",
                          "Node Control/Scan Rate",
                          *(f"DI/{i}" for i in range(1, 9)), *(f"DO/{i}" for i in range(1, 9))):

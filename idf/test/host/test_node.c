@@ -90,7 +90,9 @@ static void test_nbirth_and_dbirth(void)
     i = decoded_find_name(&dec, "Node Control/Rebirth");
     TEST_ASSERT_TRUE(i >= 0);
     TEST_ASSERT_EQUAL(SPB_DT_BOOLEAN, dec.m[i].datatype);
-    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_REBIRTH, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[i].num);   /* tck-id-payloads-nbirth-rebirth-req */
+    /* tck-id-operational-behavior-data-commands-rebirth-name-aliases: no alias (#153) */
+    TEST_ASSERT_FALSE(dec.m[i].has_alias);
     TEST_ASSERT_TRUE(decoded_find_name(&dec, "Node Control/Reboot") >= 0);
     i = decoded_find_name(&dec, "Node Info/Firmware");
     TEST_ASSERT_EQUAL_STRING("0.1.0+gdeadbee", dec.m[i].str);
@@ -106,12 +108,14 @@ static void test_nbirth_and_dbirth(void)
     i = decoded_find_name(&dec, "DI/2");
     TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[i].num);
     TEST_ASSERT_TRUE(decoded_find_name(&dec, "DO/8") >= 0);
-    /* every birth metric has name, alias and datatype; aliases are unique */
+    /* every birth metric has name, alias (except Rebirth) and datatype; aliases are unique */
     for (size_t a = 0; a < dec.count; a++) {
         TEST_ASSERT_TRUE(dec.m[a].has_name);
         TEST_ASSERT_NOT_EQUAL(0, dec.m[a].datatype);
+        TEST_ASSERT_TRUE(dec.m[a].has_alias || strcmp(dec.m[a].name, "Node Control/Rebirth") == 0);
         for (size_t b = a + 1; b < dec.count; b++) {
-            TEST_ASSERT_NOT_EQUAL(dec.m[a].alias, dec.m[b].alias);
+            TEST_ASSERT_TRUE(!dec.m[a].has_alias || !dec.m[b].has_alias ||
+                             dec.m[a].alias != dec.m[b].alias);
         }
     }
 
@@ -213,6 +217,8 @@ static void test_ncmd_rebirth(void)
     TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NBIRTH/GW01", g_rec.msgs[0].topic);
     TEST_ASSERT_EQUAL_UINT64(0, dec.seq);
     TEST_ASSERT_EQUAL_DOUBLE(3, dec.m[decoded_find_name(&dec, "bdSeq")].num); /* same session */
+    /* the request came by name: the NBIRTH has no alias for Rebirth (#153) */
+    TEST_ASSERT_FALSE(dec.m[decoded_find_name(&dec, "Node Control/Rebirth")].has_alias);
     msg(1);
     TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/DBIRTH/GW01/Meter1", g_rec.msgs[1].topic);
     TEST_ASSERT_EQUAL_UINT64(1, dec.seq);

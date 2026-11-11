@@ -1076,7 +1076,7 @@ Legend for **Evidence**:
 | SPB-1 | Implemented | `gw_core/src/spb.c`, `proto/` | H + Python interoperability + Q |
 | SPB-2 | Implemented | `gw_node.c`, `gw_edge.c` (`op_reboot`) | H + Q |
 | SPB-3 | Implemented | `gw_storage/gw_storage.c`, `gw_edge.c` | Q (per attempt, and persistent) |
-| SPB-4 | Implemented | `gw_core/src/gw_node.c` (`publish_nbirth`) | H + Q. Node metrics: bdSeq, Rebirth, Reboot, `Node Info/Firmware`, `Hardware`, `Reset Reason`, `Node Control/Scan Rate` (alias 1–7), DI/1–8, DO/1–8 and `Counter/1`–`8` (IO-4, alias 30–37) |
+| SPB-4 | Implemented | `gw_core/src/gw_node.c` (`publish_nbirth`) | H + Q. Node metrics: bdSeq, Rebirth, Reboot, `Node Info/Firmware`, `Hardware`, `Reset Reason`, `Node Control/Scan Rate` (alias 1 and 3–7), DI/1–8, DO/1–8 and `Counter/1`–`8` (IO-4, alias 30–37) |
 | SPB-5 | Implemented | `gw_node.c` | H (wrap from 255 to 0) + Q (continuity) |
 | SPB-6 | Implemented | `gw_node.c` (`gw_node_device_changed`) | H + Q |
 | SPB-7 | Implemented | `gw_node.c`, `gw_rbe.c` | H + Q |
@@ -1519,6 +1519,7 @@ The QEMU build is different from the board build at these points (`sdkconfig.qem
 
 - The gateway writes the bdSeq to NVS at each connection attempt. The estimated wear: decades with one attempt per minute.
 - The aliases depend on the order of the tags in the configuration.
+- `Node Control/Rebirth` has no alias in the NBIRTH (`tck-id-operational-behavior-data-commands-rebirth-name-aliases`, #153). Thus each host sends the rebirth request by name. The alias 2 stays reserved. The gateway also accepts an NCMD with the alias 2 as a rebirth request.
 
 ### 6.9 DI and DO
 

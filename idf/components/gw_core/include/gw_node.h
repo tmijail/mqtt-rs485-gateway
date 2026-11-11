@@ -8,7 +8,9 @@
  * know about MQTT clients, queues or drivers.
  *
  * Alias map (SPB-8, unique per node, stable for a given configuration):
- *   1 bdSeq, 2 Node Control/Rebirth, 3 Node Control/Reboot,
+ *   1 bdSeq, 2 reserved (Node Control/Rebirth has no alias in the NBIRTH, as
+ *   tck-id-operational-behavior-data-commands-rebirth-name-aliases requires; an NCMD with
+ *   alias 2 is still accepted as a rebirth request), 3 Node Control/Reboot,
  *   4 Node Info/Firmware, 5 Node Info/Hardware, 6 Node Info/Reset Reason,
  *   7 Node Control/Scan Rate,
  *   10..17 DI/1..DI/8, 20..27 DO/1..DO/8, 30..37 Counter/1..Counter/8 (IO-4, UInt64 pulse

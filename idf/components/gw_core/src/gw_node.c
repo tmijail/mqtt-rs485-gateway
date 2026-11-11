@@ -394,7 +394,9 @@ static bool publish_nbirth(gw_node_t *n)
     size_t i = 0;
     /* tck-id-message-flow-edge-node-birth-publish-nbirth-payload-bdSeq: INT64 (#154) */
     metric(n, i++, NAME_BDSEQ, GW_ALIAS_BDSEQ, SPB_DT_INT64, now)->v.i64 = (int64_t)n->bdseq;
-    metric(n, i++, NAME_REBIRTH, GW_ALIAS_REBIRTH, SPB_DT_BOOLEAN, now)->v.num = 0;
+    /* tck-id-operational-behavior-data-commands-rebirth-name-aliases: the NBIRTH MUST NOT
+     * give an alias to Rebirth, so that every host sends it by name (#153) */
+    metric(n, i++, NAME_REBIRTH, 0, SPB_DT_BOOLEAN, now)->no_alias = true;
     metric(n, i++, NAME_REBOOT, GW_ALIAS_REBOOT, SPB_DT_BOOLEAN, now)->v.num = 0;
     metric(n, i++, NAME_FIRMWARE, GW_ALIAS_FIRMWARE, SPB_DT_STRING, now)->v.str = n->info.firmware;
     metric(n, i++, NAME_HARDWARE, GW_ALIAS_HARDWARE, SPB_DT_STRING, now)->v.str = n->info.hardware;
