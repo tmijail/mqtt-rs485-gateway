@@ -2670,7 +2670,7 @@ def run_store_forward_spill(args, work, slave):
         _, h = gw.shell("status", [r"^store\s+0 of \d+ samples waiting"], timeout=2, tries=1)
         done = list(h.values())[0]
     # the checkpoint and the deletes end (one step per loop); then the counters
-    end_rx = (r"^spill\s+on: 0 samples on the card .*, 0 overwritten unsent \(card full\), 0 "
+    end_rx = (r"^spill\s+on: 0 samples on the card, .*, 0 overwritten unsent \(card full\), 0 "
               r"block\(s\) lost as holes; .*\((\d+) checkpoints, at most (\d+) samples replayed "
               r"between two\); boot recovery \d+ ms, \d+ blocks read \(new ring: no valid ring on "
               r"the card\); 0 file\(s\) to delete, (\d+) deleted in (\d+) steps, 0 left")
