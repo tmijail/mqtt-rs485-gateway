@@ -235,6 +235,9 @@ Encuesta N esclavos Modbus RTU por el RS485 integrado, con los tipos de 16 y 32 
 - `bool` solo vale en `coil` y `discrete`; fuera del MVP, también como bit de un registro `holding` o `input` (clave `bit`, §6.1).
 - `writable` solo vale en `coil` y `holding`.
 - Si `client_id` está vacío se usa `edge_node_id`.
+- Names (issue #162). `group_id`, `edge_node_id`, `primary_host_id`, the device `name` and `type`, the tag `name` and `units` must be valid UTF-8. The Sparkplug IDs must not contain the control characters U+0080–U+009F.
+- Two device names must not differ only in case (`tck-id-case-sensitivity-sparkplug-ids`). Two device types and two tag names of one device must not differ only in case (`tck-id-case-sensitivity-metric-names`). The comparison folds ASCII letters only.
+- A tag name must not also be a folder of another tag name of the same device (`A` and `A/B`). A device `type` must not be the name or the first folder of a node metric (`bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info`, `Firmware Update`).
 
 **Límites del MVP:** hasta 16 dispositivos, 64 tags por dispositivo y 256 tags en total.
 
@@ -482,7 +485,7 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 
 | Clave | Tipo | Defecto | Regla |
 |---|---|---|---|
-| `type` | texto | `""` | Hasta 39 caracteres, sin `/ + #` ni `bdSeq`. Vacío = sin plantilla (una métrica por tag, como el MVP) |
+| `type` | text | `""` | A maximum of 39 characters, valid UTF-8, no `/ + #`. Not the name or the folder of a node metric (§6, issue #162). Two types must not differ only in case. Empty = no template (one metric for each tag, as in the MVP) |
 
 - Todos los dispositivos de un mismo `type` tienen los mismos tags: mismos nombres y datatypes, en el mismo orden (área, dirección, escala y unidades pueden cambiar). Si no, la configuración se rechaza con la ruta `devices[i].type`.
 - Las definiciones juntas describen como mucho **64 tags** (cada tipo cuenta una vez): el NBIRTH las lleva todas.

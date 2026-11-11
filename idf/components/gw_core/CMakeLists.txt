@@ -32,6 +32,7 @@ set(GW_CORE_SRCS
     src/gw_sfspill.c
     src/gw_syslog.c
     src/gw_tagdb.c
+    src/gw_utf8.c
     src/mb_master.c
     src/mb_rtu.c
     src/spb.c

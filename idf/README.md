@@ -1241,6 +1241,9 @@ The QEMU build is different from the board build at these points (`sdkconfig.qem
   - `bool` without `scale`/`offset`;
   - tag and device names ≤ 39 characters;
   - `group_id`/`edge_node_id` ≤ 32 characters, without `/ + #`;
+  - issue #162: the Sparkplug IDs, the device types, the tag names and `units` must be valid UTF-8 (RFC 3629: no overlong form, no surrogate). The Sparkplug IDs must also not contain U+0080–U+009F, because a broker can close the connection for a topic with a control character;
+  - issue #162: two device names, two device types, or two tag names of one device must not differ only in case (`tck-id-case-sensitivity-sparkplug-ids`, `tck-id-case-sensitivity-metric-names`). The specification says SHOULD NOT, and the gateway rejects the configuration. The comparison folds only the ASCII letters: `É` and `é` are different names for the check;
+  - issue #162: a tag name must not also be a folder of another tag of the same device (`A` and `A/B`, also `a` and `A/B`). A device type is an NBIRTH metric, so it must not be the name or the first folder of a node metric (`bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info`, `Firmware Update`). Until #169 adds warnings, these checks give errors;
   - ranges that we selected: `response_timeout_ms` 10–5000, `retries` 0–5, `poll_ms` ≥ 50, `keepalive_s` 5–3600, `inter_frame_delay_ms` ≤ 1000;
   - MB-6: `bool` in `holding`/`input` requires `bit`; `bit` does not accept a different `word_order`; `length` is necessary with `string` and `bytes`, and is not permitted with other types; `string` and `bytes` do not accept a `scale` other than 1, an `offset` or a `deadband` other than 0, `eng_low` or `eng_high`.
 
