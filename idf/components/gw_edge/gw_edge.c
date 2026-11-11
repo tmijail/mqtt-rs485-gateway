@@ -177,7 +177,13 @@ static gw_brokersel_t s_bsel;   /* MQTT-6: which broker of the list the next att
 static gw_phost_t s_phost;      /* SPB-13: what the primary host last said */
 static bool s_waiting_host;     /* subscribed; NBIRTH waits for the host's STATE online */
 static int64_t s_host_wait_since_us;
-static bool s_host_disconnect;  /* the session ends because of the host, not the network */
+/* SPB-13: the session ends because of the host, not the network */
+typedef enum {
+    HOST_END_NONE = 0,
+    HOST_END_OFFLINE,    /* a valid offline STATE (#156: the next broker at once) */
+    HOST_END_NO_STATE,   /* with backups: no STATE online in PHOST_WAIT_MS (a failed attempt) */
+} host_end_t;
+static host_end_t s_host_end;
 static gw_sf_t s_sf;            /* SPB-14: store & forward ring (storage allocated at boot) */
 static bool s_sf_psram;
 /* SPB-14: the ring's spill to the microSD card (optional; #124: allocated with its buffers, in
@@ -1160,10 +1166,11 @@ static void on_host_state(const uint8_t *data, size_t len)
             publish_ndeath();
             gw_node_session_down(s_node);
             gw_status_set(GW_ST_MQTT_UP, false);
-            s_host_disconnect = true;
+            s_host_end = HOST_END_OFFLINE;
             abort_session("the primary host went offline: NDEATH published");
         } else if (s_waiting_host && s_bsel.count > 1) {
-            s_host_disconnect = true;
+            /* tck-id-operational-behavior-primary-application-state-with-multiple-servers-walk */
+            s_host_end = HOST_END_OFFLINE;
             abort_session("the primary host is offline on this broker");
         }
         break;
@@ -1203,6 +1210,7 @@ static void move_session(const char *why)
     s_sub_msg_id = 0;
     s_stable = false;
     s_waiting_host = false;
+    s_host_end = HOST_END_NONE;   /* the old client's end is not the next attempt's */
 }
 
 /* An attempt ended without a session (or a session dropped): MQTT-6 failover, and issue #57
@@ -1210,12 +1218,27 @@ static void move_session(const char *why)
 static void attempt_ended(void)
 {
     s_waiting_host = false;
-    if (s_host_disconnect) {
+    host_end_t host_end = s_host_end;
+    s_host_end = HOST_END_NONE;
+    if (host_end == HOST_END_OFFLINE) {
+        /* Issue #156: a valid offline STATE is not a failed attempt: the next broker of the list
+         * at once (tck-id-operational-behavior-edge-node-termination-host-offline-reconnect,
+         * tck-id-operational-behavior-primary-application-state-with-multiple-servers-walk) */
+        s_stable = false;
+        if (gw_brokersel_next(&s_bsel)) {
+            ESP_LOGW(TAG, "primary host offline on broker: next attempt on broker %u/%u (%s:%u)",
+                     s_bsel.current + 1, s_bsel.count, broker_host(s_bsel.current),
+                     broker_port(s_bsel.current));
+            s_attempt = 0;
+        }
+        publish_status();
+        return;
+    }
+    if (host_end == HOST_END_NO_STATE) {
         /* SPB-13: the network works; with backups the host may be on another broker */
-        s_host_disconnect = false;
         s_stable = false;
         gw_brokersel_session_down(&s_bsel);
-        if (s_bsel.count > 1 && gw_brokersel_failed(&s_bsel)) {
+        if (gw_brokersel_failed(&s_bsel)) {
             ESP_LOGW(TAG, "primary host not online on broker: next attempt on broker %u/%u (%s:%u)",
                      s_bsel.current + 1, s_bsel.count, broker_host(s_bsel.current),
                      broker_port(s_bsel.current));
@@ -1417,7 +1440,7 @@ static void reconcile(void)
     }
     if (s_waiting_host && connected && s_bsel.count > 1 &&
         now - s_host_wait_since_us >= PHOST_WAIT_MS * 1000LL) {
-        s_host_disconnect = true;
+        s_host_end = HOST_END_NO_STATE;
         s_waiting_host = false;
         abort_session("no STATE online from the primary host within 30 s on this broker");
     }

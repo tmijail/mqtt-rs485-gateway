@@ -99,6 +99,54 @@ static void test_return_to_primary(void)
     TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, gw_brokersel_next_check_ms(&s, 9000000));
 }
 
+/* Issue #156: a valid offline STATE of the primary host moves to the next broker at once
+ * (tck-id-operational-behavior-edge-node-termination-host-offline-reconnect), whatever
+ * failover_after says, and it is not a transport failure: round_failures does not change. */
+static void test_next_on_host_offline(void)
+{
+    gw_brokersel_init(&s, 3, 3, 0);
+    TEST_ASSERT_FALSE(gw_brokersel_failed(&s));   /* one transport failure on broker 1 */
+    TEST_ASSERT_EQUAL_UINT8(1, s.failures);
+    TEST_ASSERT_EQUAL_UINT16(1, s.round_failures);
+    TEST_ASSERT_TRUE(gw_brokersel_next(&s));
+    TEST_ASSERT_EQUAL_UINT8(1, s.current);
+    TEST_ASSERT_EQUAL_UINT8(0, s.failures);       /* the new broker starts with none */
+    TEST_ASSERT_EQUAL_UINT16(1, s.round_failures);
+    TEST_ASSERT_FALSE(s.stable);
+    /* from a stable session too, and in order with the wrap */
+    gw_brokersel_stable(&s, 1000);
+    TEST_ASSERT_TRUE(gw_brokersel_next(&s));
+    TEST_ASSERT_EQUAL_UINT8(2, s.current);
+    TEST_ASSERT_FALSE(gw_brokersel_should_return(&s, UINT64_MAX / 2));
+    TEST_ASSERT_TRUE(gw_brokersel_next(&s));
+    TEST_ASSERT_EQUAL_UINT8(0, s.current);
+    TEST_ASSERT_EQUAL_UINT16(0, s.round_failures);
+    TEST_ASSERT_FALSE(gw_brokersel_round_failed(&s));
+    /* the transport failures still need failover_after attempts */
+    TEST_ASSERT_FALSE(gw_brokersel_failed(&s));
+    TEST_ASSERT_FALSE(gw_brokersel_failed(&s));
+    TEST_ASSERT_TRUE(gw_brokersel_failed(&s));
+    TEST_ASSERT_EQUAL_UINT8(1, s.current);
+
+    /* a return to the primary in progress ends: the next broker after the primary */
+    gw_brokersel_init(&s, 2, 3, 1000);
+    gw_brokersel_failed(&s);
+    gw_brokersel_failed(&s);
+    gw_brokersel_failed(&s);
+    gw_brokersel_stable(&s, 0);
+    TEST_ASSERT_TRUE(gw_brokersel_should_return(&s, 1000));
+    gw_brokersel_return_to_primary(&s);
+    TEST_ASSERT_TRUE(gw_brokersel_next(&s));
+    TEST_ASSERT_EQUAL_UINT8(1, s.current);
+    TEST_ASSERT_FALSE(s.probing_primary);
+
+    /* one broker: nowhere else to go, nothing counted */
+    gw_brokersel_init(&s, 1, 3, 0);
+    TEST_ASSERT_FALSE(gw_brokersel_next(&s));
+    TEST_ASSERT_EQUAL_UINT8(0, s.current);
+    TEST_ASSERT_EQUAL_UINT16(0, s.round_failures);
+}
+
 /* Out-of-range arguments are clamped. */
 static void test_clamping(void)
 {
@@ -116,6 +164,7 @@ int main(void)
     RUN_TEST(test_failover_in_order_and_wrap);
     RUN_TEST(test_no_return_by_default);
     RUN_TEST(test_return_to_primary);
+    RUN_TEST(test_next_on_host_offline);
     RUN_TEST(test_clamping);
     return UNITY_END();
 }

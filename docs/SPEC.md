@@ -357,7 +357,12 @@ Un intento falla si no termina en una sesión estable: conexión TCP o TLS falli
 - The node ignores a STATE with a `timestamp` that is less than the last accepted `timestamp` (an old retained message). The host keeps one STATE timestamp for each MQTT server (`tck-id-operational-behavior-host-application-multi-server-timestamp`). Thus the node keeps the last `timestamp` for each broker of the list (issue #157), and never compares the STATE of one broker with the `timestamp` of another broker. It keeps these values between sessions, but not after a restart.
 - The node ignores, with a warning, a payload that is not this JSON (for example, the `ONLINE` of Sparkplug 2.x).
 
-Con brokers de respaldo (MQTT-6), un host fuera de línea en un broker (STATE `false`, o ningún STATE `true` en 30 s) cuenta como intento fallido en ese broker. Con un solo broker el nodo queda conectado esperando.
+With backup brokers (MQTT-6):
+
+- A valid STATE `false` on a broker makes the node disconnect and connect to the next broker of the list at once, also when `failover_after` is more than 1 (issue #156). This applies in a session (`tck-id-operational-behavior-edge-node-termination-host-offline-reconnect`) and while the node waits for the host (`tck-id-operational-behavior-primary-application-state-with-multiple-servers-walk`). It is not a failed attempt.
+- If no STATE `true` comes in 30 s, the node disconnects. This counts as a failed attempt on that broker.
+
+With one broker, the node stays connected and waits.
 
 **`sparkplug.store_forward` (SPB-14): store & forward.**
 

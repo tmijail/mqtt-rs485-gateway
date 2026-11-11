@@ -2149,6 +2149,64 @@ def run_primary_host(args, work):
     obs.close()
 
 
+def run_primary_host_brokers(args, work):
+    """Issues #156 and #157 in one boot (GW48, primary_host_id SCADA2, failover_after 3): broker
+    1/2 is the main mosquitto, broker 2/2 a second mosquitto (port +28). The host connected to
+    broker 2 first, so its STATE timestamp there is older than on broker 1 (a host keeps one
+    timestamp for each MQTT server).
+      1. STATE online on broker 1: NBIRTH there
+      2. a valid STATE offline on broker 1: NDEATH, and the next attempt goes to broker 2 at
+         once, not after failover_after attempts on broker 1
+         (tck-id-operational-behavior-edge-node-termination-host-offline-reconnect)
+      3. the older STATE online of broker 2 is valid there: NBIRTH on broker 2
+         (tck-id-operational-behavior-host-application-multi-server-timestamp)"""
+    node, host, port = "GW48", "SCADA2", MQTT_PORT + 28
+    nbirth_t, ndeath_t = f"{T}/NBIRTH/{node}", f"{T}/NDEATH/{node}"
+    conf = work / "broker-phost2.conf"
+    conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\n")
+    b2 = start_broker(conf, work / "mosquitto-phost2.log")
+    obs, obs2 = Observer(), Observer(port)
+    ts = int(time.time() * 1000)
+    host_state(obs2, host, True, ts)          # broker 2: the host connected there first
+    host_state(obs, host, True, ts + 5000)    # broker 1: later
+    t0 = time.monotonic()
+    cfg = node_config(node, backup_brokers=[{"host": "10.0.2.2", "port": port}], failover_after=3)
+    cfg["sparkplug"]["primary_host_id"] = host
+    gw = boot_variant(args, work, "phost2", cfg)
+    nb = obs.wait(nbirth_t, 40)
+    first = gw.find(r"connecting to 10\.0\.2\.2:%d \(broker 1/2\)" % MQTT_PORT, t0)
+    check("SPB-13 with backup brokers: STATE online on broker 1/2 -> NBIRTH there",
+          nb and len(first) == 1, f"NBIRTH {'yes' if nb else 'no'}; {len(first)} attempt(s) on broker 1")
+
+    since = time.monotonic()
+    host_state(obs, host, False, ts + 6000)
+    nd = obs.wait(ndeath_t, 10)
+    nb2 = obs2.wait(nbirth_t, 30)
+    moved = gw.find(r"primary host offline on broker: next attempt on broker 2/2 \(10\.0\.2\.2:%d\)"
+                    % port, since)
+    again = gw.find(r"connecting to 10\.0\.2\.2:%d \(broker 1/2\)" % MQTT_PORT, since)
+    to_b2 = gw.find(r"connecting to 10\.0\.2\.2:%d \(broker 2/2\)" % port, since)
+    check("Issue #156 a valid STATE offline on broker 1/2: NDEATH, then the next attempt goes to "
+          "broker 2/2 at once (not after failover_after 3 attempts on broker 1/2)",
+          nd and nb and bdseq_of(nd[2]) == bdseq_of(nb[2]) and moved and not again
+          and len(to_b2) == 1,
+          f"NDEATH {'yes' if nd else 'no'}; {(moved or ['no switch logged'])[0]}; "
+          f"{len(again)} attempt(s) on broker 1/2 and {len(to_b2)} on broker 2/2 after the STATE")
+    stale = gw.find(r"STATE of 'SCADA2' ignored: older than the last one", since)
+    check("Issue #157 the STATE online of broker 2/2, older than the last one of broker 1/2, is "
+          "valid on broker 2/2 (one timestamp for each broker): NBIRTH there",
+          nb2 and nb2[2].seq == 0 and not stale,
+          (f"NBIRTH on broker 2/2 {nb2[0] - since:.1f} s after the STATE offline"
+           if nb2 else "no NBIRTH on broker 2/2") + f"; {(stale or ['no STATE ignored'])[0]}")
+    gw.kill()
+    obs2.wait(ndeath_t, 5)
+    for o in (obs, obs2):
+        o.c.publish(f"spBv1.0/STATE/{host}", b"", qos=1, retain=True).wait_for_publish(5)
+        o.close()
+    b2.terminate()
+    b2.wait()
+
+
 # ---------------------------------------------------------------- store & forward (SPB-14)
 
 def run_store_forward(args, work, slave):
@@ -4843,7 +4901,7 @@ def main():
         "failover": lambda: run_failover(args, work),
         "mqtt5": lambda: run_mqtt5(args, work, work / "mosquitto.log"),
         "max_packet": lambda: run_max_packet(args, work, slave),
-        "phost": lambda: run_primary_host(args, work),
+        "phost": lambda: (run_primary_host(args, work), run_primary_host_brokers(args, work)),
         "sf": lambda: run_store_forward(args, work, slave),
         "sf spill": lambda: run_store_forward_spill(args, work, slave),
         "stack margin": lambda: run_stack_margin(args, work, slave),
