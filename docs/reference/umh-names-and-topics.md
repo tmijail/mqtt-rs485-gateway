@@ -24,6 +24,20 @@ The gateway counts the length in bytes. For ASCII text, one character is one byt
 
 The sources are `GW_NAME_SIZE` (40), `GW_ID_SIZE` (33), `GW_PREFIX_SIZE` (97) and `GW_TOPIC_SIZE` (160) in `idf/components/gw_core/include/gw_config.h`, and `check_topic_id()` in `gw_config.c`. The Sparkplug rules are `tck-id-topic-structure-namespace-valid-group-id`, `tck-id-topic-structure-namespace-valid-edge-node-id` and `tck-id-topic-structure-namespace-valid-device-id`.
 
+## Name checks of the gateway
+
+The validation of the gateway gives a warning for each name that UMH changes (#169). With `sparkplug.naming: "umh"` (the UMH preset), the name warnings are errors, and the gateway refuses the configuration.
+
+| Item | Rule | With the UMH preset |
+|---|---|---|
+| Each level of `edge_node_id`, `device_prefix` and each device `name` (split at `:`) | `[A-Za-z0-9][A-Za-z0-9_-]*` | Error |
+| Each segment of a tag `name` (split at `/`) | `[A-Za-z0-9][A-Za-z0-9._-]*` | Error |
+| `primary_host_id` not empty | Warning: UMH publishes a Sparkplug 2.x STATE (#177) | Warning |
+| A device `type` | Warning: UMH gives no value for a template instance | Warning |
+| A tag of the type `bytes` | Warning: UMH gives no value for Bytes | Warning |
+
+The dry run (`PUT /api/config?dry_run=1`), the shell command `config check`, the boot log and the web UI show the warnings with their JSON paths.
+
 ## Characters for UMH
 
 | Character | Effect in UMH | Use |

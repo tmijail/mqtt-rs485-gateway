@@ -56,6 +56,16 @@ esp_err_t gw_storage_save_config_ex(const char *json, size_t len, bool dry_run, 
                                     gw_cfg_err_t *err);
 
 /**
+ * #169: gw_storage_save_config_ex() that also gives the name findings of the accepted
+ * configuration: when the result is ESP_OK, it calls gw_config_lint() with @p lint and @p ctx
+ * (after the save lock and the document are released, before the configuration is freed) and
+ * puts the count in @p count. Without @p lint, nothing more.
+ */
+esp_err_t gw_storage_save_config_lint(const char *json, size_t len, bool dry_run,
+                                      bool discard_copy, gw_cfg_err_t *err, gw_lint_cb_t lint,
+                                      void *ctx, size_t *count);
+
+/**
  * #141: true after a configuration was saved in this boot (not a dry run). @p hash gets
  * gw_sfspill_cfg_hash() of the configuration saved last. Before the restart that applies it,
  * the gateway compares it with the hash of the running ring: with another hash the next boot

@@ -5937,6 +5937,26 @@ def run_web(args, work):
           f"schema {st3} {e3.get('path')!r}: {e3.get('error')}; syntax {st4} line {e4.get('line')} "
           f"column {e4.get('column')}; dry run {st5} {b5.decode().strip()}; oversized {st6}")
 
+    # Issue #169: a name that UMH Core changes (a space in a level): a warning with its JSON path
+    # in the dry run; the UMH preset (sparkplug.naming "umh") refuses the same name
+    lint = json.loads(json.dumps(doc))
+    lint["devices"][0]["name"] = "line 3:" + DEVICE
+    st_w, _, b_w = http("PUT", "/api/config?dry_run=1", lint)
+    j_w = as_json(b_w) or {}
+    lint["sparkplug"]["naming"] = "umh"
+    st_u, _, b_u = http("PUT", "/api/config?dry_run=1", lint)
+    j_u = as_json(b_u) or {}
+    warns = j_w.get("warnings") or []
+    check("CFG issue #169: the dry run gives the name warnings for UNS hosts with their JSON paths "
+          "(valid, not saved); with sparkplug.naming \"umh\" the same name is an error (400 with "
+          "the path)",
+          st_w == 200 and j_w.get("saved") is False and j_w.get("warning_count", 0) >= 1
+          and any(w.get("path") == "devices[0].name" and "space" in w.get("message", "")
+                  for w in warns)
+          and st_u == 400 and j_u.get("path") == "devices[0].name",
+          f"dry run {st_w}: {warns[:3]} (count {j_w.get('warning_count')}); UMH preset {st_u} "
+          f"{j_u.get('path')}: {j_u.get('error')}")
+
     new = json.loads(json.dumps(doc))
     new["sparkplug"]["edge_node_id"] = node2
     # Issue #172: a device prefix of five levels; the device_id of Meter1 has 62 characters

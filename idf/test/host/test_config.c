@@ -913,6 +913,165 @@ static void test_device_prefix(void)
 #undef PDOC
 }
 
+/* #169: the findings of gw_config_lint, kept for the asserts. */
+#define LINT_KEEP 16
+static struct {
+    unsigned calls, errors, stop_after;
+    char path[LINT_KEEP][GW_CFG_PATH_SIZE];
+    char msg[LINT_KEEP][GW_CFG_ERR_SIZE];
+} lr;
+
+static bool lint_cb(void *ctx, gw_lint_level_t level, const char *path, const char *msg)
+{
+    TEST_ASSERT_EQUAL_PTR(&lr, ctx);
+    if (lr.calls < LINT_KEEP) {
+        snprintf(lr.path[lr.calls], sizeof(lr.path[0]), "%s", path);
+        snprintf(lr.msg[lr.calls], sizeof(lr.msg[0]), "%s", msg);
+    }
+    lr.calls++;
+    lr.errors += level == GW_LINT_ERROR;
+    return lr.stop_after == 0 || lr.calls < lr.stop_after;
+}
+
+static size_t lint(void)
+{
+    memset(&lr.calls, 0, sizeof(lr.calls));
+    lr.errors = 0;
+    memset(lr.path, 0, sizeof(lr.path));
+    memset(lr.msg, 0, sizeof(lr.msg));
+    return gw_config_lint(&cfg, lint_cb, &lr);
+}
+
+/* The index of the finding with @p path whose message has @p text, or -1. */
+static int lint_find(const char *path, const char *text)
+{
+    for (unsigned i = 0; i < lr.calls && i < LINT_KEEP; i++) {
+        if (strcmp(lr.path[i], path) == 0 && strstr(lr.msg[i], text) != NULL) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+#define ASSERT_LINT(path, text) \
+    TEST_ASSERT_TRUE_MESSAGE(lint_find(path, text) >= 0, path ": " text)
+
+#define LINT_DOC(naming, edge, prefix, name, tags)                                                \
+    "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"" edge "\"," \
+    "\"device_prefix\":\"" prefix "\"" naming "},\"devices\":[{\"name\":\"" name "\","             \
+    "\"unit_id\":1,\"tags\":[" tags "]}]}"
+#define LTAG(name) "{\"name\":\"" name "\",\"area\":\"input\",\"address\":0,\"type\":\"uint16\"}"
+
+/* #169: the name rules for UNS hosts: warnings with JSON paths, never in the way of a valid
+ * configuration. */
+static void test_lint_name_rules(void)
+{
+    /* clean names: no finding (the SPEC example too) */
+    size_t len;
+    const char *json = support_read_file(GW_SPEC_EXAMPLE, &len);
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(json, len, &cfg, &err), err.msg);
+    TEST_ASSERT_EQUAL_size_t(0, lint());
+    TEST_ASSERT_TRUE_MESSAGE(parse(LINT_DOC("", "acme:berlin:gw-01", "acme:berlin:pack_2",
+                                            "line3:meter_1", LTAG("L1/Current") "," LTAG("x.y-z_1"))),
+                             err.msg);
+    TEST_ASSERT_EQUAL_size_t(0, lint());
+    TEST_ASSERT_EQUAL_size_t(0, gw_config_lint(&cfg, NULL, NULL));
+
+    /* location IDs: each level matches [A-Za-z0-9][A-Za-z0-9_-]* */
+    TEST_ASSERT_TRUE_MESSAGE(parse(LINT_DOC("", "acme: berlin", "acme:_raw", "Meter.1",
+                                            LTAG("v"))), err.msg);
+    TEST_ASSERT_EQUAL_size_t(3, lint());
+    TEST_ASSERT_EQUAL(0, lr.errors);
+    ASSERT_LINT("sparkplug.edge_node_id", "level 2 ' berlin' has a space: UMH changes it to '_'");
+    ASSERT_LINT("sparkplug.device_prefix", "level 2 '_raw' starts with '_': UMH reads the level "
+                                           "as the data contract");
+    ASSERT_LINT("devices[0].name", "level 1 'Meter.1' has '.': UMH reads it as one more level");
+    TEST_ASSERT_TRUE_MESSAGE(parse(LINT_DOC("", "a::b", "", "M\xc3\xa9ter", LTAG("v"))), err.msg);
+    TEST_ASSERT_EQUAL_size_t(2, lint());
+    ASSERT_LINT("sparkplug.edge_node_id", "level 2 '' is empty");
+    ASSERT_LINT("devices[0].name", "has a character that is not ASCII");
+    TEST_ASSERT_TRUE_MESSAGE(parse(LINT_DOC("", ":gw", "", "-m:x$", LTAG("v"))), err.msg);
+    TEST_ASSERT_EQUAL_size_t(3, lint());
+    ASSERT_LINT("sparkplug.edge_node_id", "level 1 '' is empty");
+    ASSERT_LINT("devices[0].name", "level 1 '-m' does not start with a letter or a digit ('-')");
+    ASSERT_LINT("devices[0].name", "level 2 'x$' has a character that UMH changes to '_' ('$')");
+
+    /* metric names: each segment between '/' matches [A-Za-z0-9][A-Za-z0-9._-]* */
+    TEST_ASSERT_TRUE_MESSAGE(parse(LINT_DOC("", "gw", "", "m",
+                                            LTAG("L1 Current") "," LTAG("L1/_x") "," LTAG("a:b") ","
+                                            LTAG("x#y") "," LTAG("/lead") "," LTAG("p/\xc2\xb5s"))),
+                             err.msg);
+    TEST_ASSERT_EQUAL_size_t(6, lint());
+    ASSERT_LINT("devices[0].tags[0].name", "segment 1 'L1 Current' of the metric name has a space");
+    ASSERT_LINT("devices[0].tags[1].name", "segment 2 '_x' of the metric name starts with '_'");
+    ASSERT_LINT("devices[0].tags[2].name", "has ':': UMH splits a metric name at the last ':'");
+    ASSERT_LINT("devices[0].tags[3].name", "UMH changes to '_' ('#')");
+    ASSERT_LINT("devices[0].tags[4].name", "segment 1 '' of the metric name is empty");
+    ASSERT_LINT("devices[0].tags[5].name", "segment 2");
+
+    /* other settings that UMH cannot use */
+    TEST_ASSERT_TRUE_MESSAGE(parse(
+        "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"gw\","
+        "\"primary_host_id\":\"SCADA\"},\"devices\":[{\"name\":\"m\",\"type\":\"Pump\","
+        "\"unit_id\":1,\"tags\":[{\"name\":\"b\",\"area\":\"input\",\"address\":0,"
+        "\"type\":\"bytes\",\"length\":2}]}]}"), err.msg);
+    TEST_ASSERT_EQUAL_size_t(3, lint());
+    ASSERT_LINT("sparkplug.primary_host_id", "UMH Core cannot be the primary host");
+    ASSERT_LINT("devices[0].type", "UMH Core gives no value for a template instance");
+    ASSERT_LINT("devices[0].tags[0].type", "UMH Core gives no value for a Bytes metric");
+
+    /* a callback that returns false gets no more calls; the count includes all */
+    TEST_ASSERT_TRUE_MESSAGE(parse(LINT_DOC("", "a b", "c d", "e f", LTAG("g h"))), err.msg);
+    lr.stop_after = 2;
+    TEST_ASSERT_EQUAL_size_t(4, lint());
+    TEST_ASSERT_EQUAL(2, lr.calls);
+    lr.stop_after = 0;
+}
+
+/* #169: the UMH preset (sparkplug.naming "umh") refuses the name findings; the other findings
+ * stay warnings. */
+static void test_lint_umh_preset(void)
+{
+#define UMH ",\"naming\":\"umh\""
+    TEST_ASSERT_TRUE_MESSAGE(parse(LINT_DOC(UMH, "acme:gw01", "acme:line3", "meter1",
+                                            LTAG("L1/Current"))), err.msg);
+    TEST_ASSERT_EQUAL(GW_NAMING_UMH, cfg.sparkplug.naming);
+    TEST_ASSERT_EQUAL_size_t(0, lint());
+    TEST_ASSERT_TRUE_MESSAGE(parse(LINT_DOC(",\"naming\":\"sparkplug\"", "gw", "", "m", LTAG("v"))),
+                             err.msg);
+    TEST_ASSERT_EQUAL(GW_NAMING_SPARKPLUG, cfg.sparkplug.naming);
+    TEST_ASSERT_TRUE_MESSAGE(parse(LINT_DOC("", "gw", "", "m", LTAG("v"))), err.msg);
+    TEST_ASSERT_EQUAL(GW_NAMING_SPARKPLUG, cfg.sparkplug.naming);   /* the default */
+    ASSERT_REJECTED(parse(LINT_DOC(",\"naming\":\"UMH\"", "gw", "", "m", LTAG("v"))),
+                    "sparkplug.naming: valor no válido (se esperaba sparkplug|umh)");
+
+    /* a name finding is the error of the validation, with its JSON path */
+    ASSERT_REJECTED(parse(LINT_DOC(UMH, "acme: gw01", "", "m", LTAG("v"))),
+                    "sparkplug.edge_node_id: level 2 ' gw01' has a space: UMH changes it to '_' "
+                    "(sparkplug.naming \"umh\")");
+    TEST_ASSERT_EQUAL_STRING("sparkplug.edge_node_id", err.path);
+    ASSERT_REJECTED(parse(LINT_DOC(UMH, "gw", "acme:_x", "m", LTAG("v"))),
+                    "sparkplug.device_prefix: level 2 '_x' starts with '_'");
+    ASSERT_REJECTED(parse(LINT_DOC(UMH, "gw", "", "m", LTAG("v") "," LTAG("a b"))),
+                    "devices[0].tags[1].name: segment 1 'a b'");
+    TEST_ASSERT_EQUAL_STRING("devices[0].tags[1].name", err.path);
+    /* the same names without the preset: valid, with warnings */
+    TEST_ASSERT_TRUE_MESSAGE(parse(LINT_DOC("", "gw", "", "m", LTAG("v") "," LTAG("a b"))),
+                             err.msg);
+    TEST_ASSERT_EQUAL_size_t(1, lint());
+    TEST_ASSERT_EQUAL(0, lr.errors);
+
+    /* not name findings: warnings, also with the preset */
+    TEST_ASSERT_TRUE_MESSAGE(parse(
+        "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"gw\","
+        "\"primary_host_id\":\"SCADA\",\"naming\":\"umh\"},\"devices\":[{\"name\":\"m\","
+        "\"unit_id\":1,\"tags\":[{\"name\":\"b\",\"area\":\"input\",\"address\":0,"
+        "\"type\":\"bytes\",\"length\":2}]}]}"), err.msg);
+    TEST_ASSERT_EQUAL_size_t(2, lint());
+    TEST_ASSERT_EQUAL(0, lr.errors);
+#undef UMH
+}
+
 /* #172: the mDNS instance name is one DNS label of 63 bytes at most. */
 static void test_mdns_instance(void)
 {
@@ -1431,6 +1590,8 @@ int main(void)
     RUN_TEST(test_sparkplug_names);
     RUN_TEST(test_device_prefix);
     RUN_TEST(test_mdns_instance);
+    RUN_TEST(test_lint_name_rules);
+    RUN_TEST(test_lint_umh_preset);
     RUN_TEST(test_device_block_reads);
     RUN_TEST(test_scan_classes);
     RUN_TEST(test_modbus_tcp_section);

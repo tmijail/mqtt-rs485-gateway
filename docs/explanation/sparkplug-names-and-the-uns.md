@@ -58,7 +58,7 @@ UMH changes each name before it makes the topic:
 
 The changes give no error. A name with a space or a `_` at the start of a level puts the data at a wrong place, with no warning. The metadata `spb_original_device_id` and `spb_original_metric_name` keep the names before the change.
 
-The gateway accepts these names, because Sparkplug permits them. Other hosts can need them. A UMH preset that rejects such names is planned (#169).
+The gateway accepts these names, because Sparkplug permits them. Other hosts can need them. But the validation gives a warning for each name that UMH changes (#169), and the UMH preset (`sparkplug.naming: "umh"`) refuses such names. The preset is an option that the user selects: it only adds checks, and it obeys the Sparkplug specification.
 
 ## The effect of `include_edge_node_in_location`
 

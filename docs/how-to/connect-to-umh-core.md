@@ -59,14 +59,16 @@ UMH makes the location path of a device from its Sparkplug `device_id`. The gate
 
 ## Configure the gateway
 
-1. Set `sparkplug.group_id`. UMH does not use it in the location, but the bridge subscribes to it.
-2. Set `sparkplug.edge_node_id` to the location of the gateway.
-3. Set `sparkplug.device_prefix` to the common levels of the location. Give each device the remaining levels as its `name`.
-4. Keep `sparkplug.primary_host_id` empty.
-5. Do not give a device the key `type`. UMH does not show a device that is a template instance.
-6. Do not use tags of the type `bytes`. UMH does not show them.
-7. Keep `mqtt.protocol` at `3.1.1` (the default).
-8. Set `sparkplug.store_forward` to `true` if you want the data of a broker failure.
+1. Set `sparkplug.naming` to `"umh"`. The UMH preset refuses the names that UMH would change.
+2. Set `sparkplug.group_id`. UMH does not use it in the location, but the bridge subscribes to it.
+3. Set `sparkplug.edge_node_id` to the location of the gateway.
+4. Set `sparkplug.device_prefix` to the common levels of the location. Give each device the remaining levels as its `name`.
+5. Keep `sparkplug.primary_host_id` empty.
+6. Do not give a device the key `type`. UMH does not show a device that is a template instance.
+7. Do not use tags of the type `bytes`. UMH does not show them.
+8. Keep `mqtt.protocol` at `3.1.1` (the default).
+9. Set `sparkplug.store_forward` to `true` if you want the data of a broker failure.
+10. Validate the configuration (the web UI button, `PUT /api/config?dry_run=1` or `config check`). Read the warnings, and correct each one.
 
 An example `config.json` for option A:
 
@@ -77,7 +79,7 @@ An example `config.json` for option A:
   "mqtt":    { "host": "192.168.1.10", "port": 1883, "client_id": "",
                "username": "", "password": "", "keepalive_s": 30, "protocol": "3.1.1" },
   "sparkplug": { "group_id": "acme", "edge_node_id": "acme:berlin:packaging:gw01",
-                 "device_prefix": "acme:berlin:packaging:line3",
+                 "device_prefix": "acme:berlin:packaging:line3", "naming": "umh",
                  "primary_host_id": "", "store_forward": true },
   "rs485":   { "baud": 9600, "parity": "none", "stop_bits": 1,
                "response_timeout_ms": 200, "retries": 2, "inter_frame_delay_ms": 5 },
@@ -203,7 +205,7 @@ This path has these limits:
 |---|---|---|
 | The tags show as `alias_<n>` | The bridge has no BIRTH of the node, for example after a restart of UMH | Set `role: "secondary_active"`. Type `rebirth` on the gateway shell |
 | A device has no data | The device has a `type`. The tags are `bytes`. The device is offline: its values are null | Remove `type`. Use other tag types. Type `devices` on the gateway shell |
-| A level is at the wrong place | The name has a space, a `.` or a level that starts with `_` | Correct the name. The metadata `spb_original_device_id` shows the name before UMH changed it |
+| A level is at the wrong place | The name has a space, a `.` or a level that starts with `_` | Set `sparkplug.naming` to `"umh"`, and correct each name that the validation refuses. The metadata `spb_original_device_id` shows the name before UMH changed it |
 | An enterprise has the name of the gateway, for example `GW01` | The `edge_node_id` is a short name. UMH uses it as the location of the node metrics | Write the `edge_node_id` as a location, or drop the node metrics in the bridge |
 | The device is the enterprise, for example `umh.v1.Meter1` | The `device_id` is not a location. Two gateways with `Meter1` then write to the same topic | Set `sparkplug.device_prefix` to the location of the devices |
 | The timestamps are near 1970 | The gateway published before it had a valid time | Make sure that the gateway gets SNTP. Read `Node Info/Time Synced`. The fix of #160 is planned |

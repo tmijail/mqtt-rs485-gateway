@@ -1889,6 +1889,19 @@ static bool hash_web_password(gw_config_t *cfg, char *out, size_t cap)
     return ok;
 }
 
+/* #169: at most this many warnings in the boot log; the dry run and `config check` give all */
+#define BOOT_LINT_LINES 16
+
+static unsigned s_boot_lint_lines;
+
+static bool boot_lint(void *ctx, gw_lint_level_t level, const char *path, const char *msg)
+{
+    (void)ctx;
+    (void)level;   /* a GW_LINT_ERROR never gets here: the parse refused it */
+    ESP_LOGW(TAG, "configuration warning: %s: %s", path, msg);
+    return ++s_boot_lint_lines < BOOT_LINT_LINES;
+}
+
 bool gw_storage_load_config(gw_config_t *cfg, gw_cfg_err_t *err, const char **source)
 {
     *source = CFG_PATH " (LittleFS)";
@@ -1947,6 +1960,13 @@ bool gw_storage_load_config(gw_config_t *cfg, gw_cfg_err_t *err, const char **so
     }
     memset(&doc.secrets, 0, sizeof(doc.secrets));
     gw_cfgdoc_free(&doc);
+    /* #169: the names that UMH Core and other UNS hosts change, in the boot log */
+    s_boot_lint_lines = 0;
+    size_t warnings = gw_config_lint(cfg, boot_lint, NULL);
+    if (warnings > 0) {
+        ESP_LOGW(TAG, "configuration: %u warning(s) for UNS hosts such as UMH Core (#169)%s",
+                 (unsigned)warnings, warnings > BOOT_LINT_LINES ? "; the first ones above" : "");
+    }
     return true;
 }
 
@@ -1990,6 +2010,16 @@ esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_
 esp_err_t gw_storage_save_config_ex(const char *json, size_t len, bool dry_run, bool discard_copy,
                                     gw_cfg_err_t *err)
 {
+    return gw_storage_save_config_lint(json, len, dry_run, discard_copy, err, NULL, NULL, NULL);
+}
+
+esp_err_t gw_storage_save_config_lint(const char *json, size_t len, bool dry_run,
+                                      bool discard_copy, gw_cfg_err_t *err, gw_lint_cb_t lint,
+                                      void *ctx, size_t *count)
+{
+    if (count != NULL) {
+        *count = 0;
+    }
     memset(err, 0, sizeof(*err));
     if (len > CFG_MAX) {
         reject(err, "%zu bytes; el máximo es %d (CONFIG_GW_CONFIG_MAX_BYTES)", len, CFG_MAX);
@@ -2101,6 +2131,13 @@ esp_err_t gw_storage_save_config_ex(const char *json, size_t len, bool dry_run, 
     }
     gw_cfgdoc_free(&doc);
     xSemaphoreGive(s_save_lock);
+    /* #169: after the document is freed (the callback may send its findings to a client) */
+    if (ret == ESP_OK && lint != NULL) {
+        size_t n = gw_config_lint(cfg, lint, ctx);
+        if (count != NULL) {
+            *count = n;
+        }
+    }
     memset(cfg, 0, sizeof(*cfg));   /* it held the secrets in clear */
     heap_caps_free(cfg);
     return ret;

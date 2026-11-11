@@ -59,6 +59,7 @@ endforeach()
 add_executable(test_sfcfg_packed test_sfcfg.c ${cjson_SOURCE_DIR}/cJSON.c
                ${IDF_PROJECT_DIR}/components/gw_core/src/gw_sfcfg.c
                ${IDF_PROJECT_DIR}/components/gw_core/src/gw_config.c
+               ${IDF_PROJECT_DIR}/components/gw_core/src/gw_cfglint.c
                ${IDF_PROJECT_DIR}/components/gw_core/src/gw_conv.c
                ${IDF_PROJECT_DIR}/components/gw_core/src/gw_sfspill.c
                ${IDF_PROJECT_DIR}/components/gw_core/port/gw_port_posix.c)

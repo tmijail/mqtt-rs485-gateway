@@ -479,6 +479,7 @@ static const char *const k_word_names[] = {"big", "little", "ABCD", "CDAB", "BAD
 static const gw_word_order_t k_word_values[] = {GW_WORD_BIG,    GW_WORD_LITTLE, GW_WORD_BIG,
                                                 GW_WORD_LITTLE, GW_WORD_BADC,   GW_WORD_DCBA};
 static const char *const k_parity_names[] = {"none", "even", "odd"};
+static const char *const k_naming_names[] = {"sparkplug", "umh"};   /* gw_naming_t (#169) */
 
 /* dhcp/ip/netmask/gateway/dns of one interface; the addresses are required with dhcp=false. */
 static bool parse_ipv4_keys(const cJSON *o, const char *path, bool *dhcp, uint8_t ip[4],
@@ -845,16 +846,21 @@ static bool check_device_prefix(const char *s, gw_cfg_err_t *err)
 static bool parse_sparkplug(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"group_id", "edge_node_id", "primary_host_id",
-                                       "store_forward", "diagnostics_s", "device_prefix"};
+                                       "store_forward", "diagnostics_s", "device_prefix",
+                                       "naming"};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "sparkplug");
     if (o == NULL) {
         return fail(err, "sparkplug", "sección obligatoria ausente");
     }
     long diag;
+    int naming;
     if (!check_keys(o, "sparkplug", keys, sizeof(keys) / sizeof(keys[0]), err) ||
-        !get_int(o, "diagnostics_s", "sparkplug", false, 60, 0, GW_DIAG_MAX_S, &diag, err)) {
+        !get_int(o, "diagnostics_s", "sparkplug", false, 60, 0, GW_DIAG_MAX_S, &diag, err) ||
+        !get_enum(o, "naming", "sparkplug", false, GW_NAMING_SPARKPLUG, k_naming_names, 2,
+                  &naming, err)) {
         return false;
     }
+    cfg->sparkplug.naming = (gw_naming_t)naming;
     if (diag != 0 && diag < GW_DIAG_MIN_S) {
         return fail(err, "sparkplug.diagnostics_s", "0 (solo en el NBIRTH) o %d-%d s",
                     GW_DIAG_MIN_S, GW_DIAG_MAX_S);
@@ -1552,6 +1558,16 @@ unsigned gw_json_depth(const char *json, size_t len)
 
 static bool parse_locked(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_t *err);
 
+/* #169: the first GW_LINT_ERROR becomes the error of the validation. */
+static bool lint_refuse(void *ctx, gw_lint_level_t level, const char *path, const char *msg)
+{
+    if (level != GW_LINT_ERROR) {
+        return true;
+    }
+    fail(ctx, path, "%s", msg);
+    return false;
+}
+
 /* Issue #106: cJSON's hooks, its error pointer and s_alloc_failed are process-wide: the whole
  * parse runs under the JSON lock (another task's parse could set or clear the flag). */
 bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_t *err)
@@ -1612,6 +1628,11 @@ static bool parse_locked(const char *json, size_t len, gw_config_t *cfg, gw_cfg_
     if (ok && cfg->network.hostname[0] == '\0') {
         gw_hostname_from(cfg->sparkplug.edge_node_id, cfg->network.hostname,
                          sizeof(cfg->network.hostname));
+    }
+    /* #169: the UMH preset refuses what the lint finds as an error */
+    if (ok && cfg->sparkplug.naming == GW_NAMING_UMH) {
+        gw_config_lint(cfg, lint_refuse, err);
+        ok = err->msg[0] == '\0';
     }
     if (!ok) {
         memset(cfg, 0, sizeof(*cfg));
