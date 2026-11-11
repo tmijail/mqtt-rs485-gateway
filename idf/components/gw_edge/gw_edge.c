@@ -57,6 +57,11 @@ _Static_assert(sizeof(gw_node_t) <= 21504, "gw_node_t is larger than 21 504 B (i
 #define TLS_ERROR_LOG_MS 10000  /* a TLS setup that cannot work is logged this often */
 #define PHOST_WAIT_MS    30000  /* with backup brokers: no STATE online this long -> next broker */
 #define SF_MSGS_PER_LOOP 4      /* historical messages per loop: live data is not held back */
+/* Issue #186: with disable_auto_reconnect, esp-mqtt 1.1.0 uses network.reconnect_timeout_ms only
+ * as the wake period of its task while it waits for esp_mqtt_client_reconnect() (half the value).
+ * esp_mqtt_client_destroy() in that state waits for the task to wake up: at most 500 ms, not the
+ * 5 s of the default (10 s). */
+#define MQTT_IDLE_WAKE_MS 1000
 #define SPILL_GO_WAIT_MS 10000  /* #122/#124: the card work starts then without a network */
 /* #136: the longest time a planned restart spends to move the RAM ring to the card (plus at most
  * one card operation). The work is at most 3/4 of the 40 000-record PSRAM ring: about 180 blocks,
@@ -1134,8 +1139,47 @@ static esp_err_t set_config(void)
     return esp_mqtt_set_config(s_client, &s_mqtt_cfg);
 }
 
+/* The end of an MQTT client: DISCONNECT if it is still connected (issue #155), then nothing of it
+ * is left: no outbox, no event, no generation for reconcile to handle. */
+static void drop_client(void)
+{
+    disconnect_with_will();              /* issue #155 */
+    esp_mqtt_client_destroy(s_client);   /* DISCONNECT if connected; drops the old binding */
+    s_client = NULL;
+    s_started = false;
+    atomic_store(&s_mqtt_connected, false);
+    s_handled_conn = atomic_load(&s_conn_gen);
+    s_handled_disc = atomic_load(&s_disc_gen);
+    /* the old mqtt_task deleted itself: the idle task frees its stack before a new client
+     * makes a new one */
+    vTaskDelay(pdMS_TO_TICKS(10));
+}
+
+/*
+ * Issue #186: no message of an earlier MQTT session goes out after a new CONNECT
+ * (tck-id-operational-behavior-primary-application-state-with-multiple-servers-walk). Every
+ * connection is a clean session (Clean Session 1, Clean Start 1 with MQTT 5), so the old session
+ * state must be discarded [MQTT-3.1.2-6]. But esp-mqtt 1.1.0 keeps its outbox across
+ * esp_mqtt_client_disconnect() and esp_mqtt_client_reconnect(), and sends each item in it again
+ * (DUP 1, with MQTT 5 at once) as the first packets of the next connection, also to another broker
+ * of the list. The DISCONNECT leaves the PUBACK of the explicit QoS 1 NDEATH unread, so that NDEATH
+ * (with the bdSeq of the old session) is almost always there; a SUBSCRIBE with no SUBACK can be
+ * too. Data is QoS 0 and never goes into the outbox (CONFIG_MQTT_SKIP_PUBLISH_IF_DISCONNECTED: no
+ * publish is queued while disconnected). esp-mqtt has no call that empties the outbox: a client
+ * with items in it is replaced by a new one (destroy deletes the outbox), as for a new interface.
+ */
 static void reconnect(int64_t now)
 {
+    int left = esp_mqtt_client_get_outbox_size(s_client);
+    if (left > 0) {
+        ESP_LOGW(TAG, "%d B of the last MQTT session still in the outbox (QoS 1 NDEATH or SUBSCRIBE "
+                      "with no acknowledgement): new MQTT client, nothing of the old session goes "
+                      "out again",
+                 left);
+        drop_client();
+        start_client(now);   /* the next bdSeq, as below; a failed init schedules a retry */
+        return;
+    }
     s_retry_at_us = 0;
     prepare_attempt();
     if (set_config() != ESP_OK ||
@@ -1381,13 +1425,7 @@ static void move_session(const char *why)
         gw_node_session_down(s_node);
         gw_status_set(GW_ST_MQTT_UP, false);
     }
-    disconnect_with_will();              /* issue #155 */
-    esp_mqtt_client_destroy(s_client);   /* DISCONNECT if connected; drops the old binding */
-    s_client = NULL;
-    s_started = false;
-    atomic_store(&s_mqtt_connected, false);
-    s_handled_conn = atomic_load(&s_conn_gen);
-    s_handled_disc = atomic_load(&s_disc_gen);
+    drop_client();   /* also the outbox: nothing of this session in the next (issue #186) */
     s_retry_at_us = 0;
     s_attempt = 0;   /* a new interface or broker starts a fresh backoff */
     s_sub_msg_id = 0;
@@ -2021,6 +2059,7 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         },
         .network = {
             .disable_auto_reconnect = true,   /* backoff and bdSeq handled here */
+            .reconnect_timeout_ms = MQTT_IDLE_WAKE_MS,   /* issue #186 */
             .timeout_ms = NET_TIMEOUT_MS,
         },
         .buffer = {.size = CONFIG_GW_MQTT_BUFFER_SIZE, .out_size = CONFIG_GW_MQTT_BUFFER_SIZE},

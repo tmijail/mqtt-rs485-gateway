@@ -30,7 +30,7 @@ The script installs nothing outside `/work/tck`. It puts the TCK extension into 
    docker run --rm --privileged -v gw-e2e:/work -w /work/repo/idf -e E2E_WORKDIR=/work/run-tck -e E2E_TCK_DIR=/work/tck gw-e2e tools/e2e/run_e2e.sh --only tck
    ```
 
-2. Wait for the last line, for example `17/19 checks passed`. There is one check for each test and MQTT version, and the five checks that the harness makes after each run.
+2. Wait for the last line, for example `19/19 checks passed`. There is one check for each test and MQTT version, and the five checks that the harness makes after each run.
 
 The scenario runs the seven Edge Node tests two times: one time with MQTT 3.1.1 and one time with MQTT 5. Each test has a new HiveMQ and a new boot of the gateway. On the test computer, the 14 tests took approximately 4.5 minutes, plus the build of the QEMU image.
 
