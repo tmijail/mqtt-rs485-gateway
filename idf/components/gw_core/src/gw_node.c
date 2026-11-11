@@ -1010,12 +1010,31 @@ static bool rx_integer(const spb_rx_metric_t *m, uint32_t dt, bool *neg, uint64_
     }
 }
 
-/* Value of a DCMD metric for tag @p t, in the member the tag uses; @p why on failure. */
+/* Integer datatypes of 8 to 32 bits and Boolean: a value with a fraction is not one of them
+ * (64-bit integers are read exactly by rx_integer). */
+static bool integral_datatype(uint32_t dt)
+{
+    return (dt >= SPB_DT_INT8 && dt <= SPB_DT_INT32) ||
+           (dt >= SPB_DT_UINT8 && dt <= SPB_DT_UINT32) || dt == SPB_DT_BOOLEAN;
+}
+
+/* Value of a DCMD metric for tag @p t, in the member the tag uses; @p why on failure.
+ * SPB-10 (#163): a write to a register is a physical action, so the gateway is strict, also
+ * where tck-id-operational-behavior-data-commands-dcmd-metric-value makes the host
+ * responsible: a datatype other than the one of the DBIRTH, or a value with a fraction for an
+ * integer or Boolean tag, is rejected (not converted or rounded). */
 static bool rx_value(const gw_tag_cfg_t *t, const spb_rx_metric_t *m, gw_tag_value_t *out,
                      const char **why)
 {
-    uint32_t dt = m->has_datatype ? m->datatype : gw_conv_datatype(t);
+    static char text[80];   /* the engine runs in one task: one reason at a time */
+    uint32_t dt = gw_conv_datatype(t);
     memset(out, 0, sizeof(*out));
+    if (m->has_datatype && m->datatype != dt) {
+        snprintf(text, sizeof(text), "datatype %" PRIu32 " is not the datatype %" PRIu32
+                 " of the DBIRTH", m->datatype, dt);
+        *why = text;
+        return false;
+    }
     bool neg;
     uint64_t mag;
     switch (gw_conv_kind(t)) {
@@ -1066,6 +1085,11 @@ static bool rx_value(const gw_tag_cfg_t *t, const spb_rx_metric_t *m, gw_tag_val
     default:
         if (!spb_rx_number(m, dt, &out->value)) {
             *why = "no numeric value";
+            return false;
+        }
+        if (integral_datatype(dt) && out->value != floor(out->value)) {
+            *why = dt == SPB_DT_BOOLEAN ? "value with a fraction for a Boolean tag"
+                                        : "value with a fraction for an integer tag";
             return false;
         }
         return true;

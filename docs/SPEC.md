@@ -101,7 +101,7 @@ Al publicar, el gateway hace de *Edge Node* de Sparkplug. Cada esclavo Modbus es
 | SPB-7 | **NDATA/DDATA** por excepción: solo se publican las métricas que cambiaron, identificadas por alias y sin nombre, con timestamp. Se agrupan los cambios de un mismo ciclo de encuesta en un único mensaje | P0 | ✅ |
 | SPB-8 | **Aliases** únicos de tipo UInt64 por nodo, declarados en los BIRTH | P0 | ✅ |
 | SPB-9 | **Rebirth**: al recibir `NCMD Node Control/Rebirth=true` se reenvía NBIRTH y todos los DBIRTH, y `seq` vuelve a 0 | P0 | ✅ |
-| SPB-10 | **DCMD**: escritura de métricas escribibles hacia Modbus. El tag se resuelve por alias o por nombre, se convierte el tipo y la escala, y tras escribir se publica el valor confirmado. Los comandos sobre métricas inexistentes o de solo lectura se descartan y quedan en el log | P0 | ✅ |
+| SPB-10 | **DCMD**: the gateway writes writable metrics to Modbus. It finds the tag by alias or by name, converts the type and the scale, and publishes the confirmed value after the write. The gateway discards these commands and writes the reason in the log: a command for a metric that does not exist or is read-only, a metric with a datatype that is not the datatype of the DBIRTH, and a value with a fraction for an integer or Boolean tag. A metric without a datatype uses the datatype of the DBIRTH | P0 | ✅ |
 | SPB-11 | **NCMD** sobre las salidas locales `DO/n` y sobre `Node Control/Reboot` | P0 | ✅ |
 | SPB-12 | Banda muerta (*deadband*) absoluta por tag para los valores analógicos | P1 | ✅ |
 | SPB-13 | **Primary Host Application**: si hay un `primary_host_id` configurado, el nodo se suscribe a `spBv1.0/STATE/{id}`, no publica NBIRTH hasta recibir `online:true` y se desconecta, con NDEATH, si el host pasa a `online:false` | P1 | |

@@ -1082,7 +1082,7 @@ Legend for **Evidence**:
 | SPB-7 | Implemented | `gw_node.c`, `gw_rbe.c` | H + Q |
 | SPB-8 | Implemented | `gw_node.h` (alias map) | H + Q |
 | SPB-9 | Implemented | `gw_node.c` (`gw_node_rebirth`) | H + Q |
-| SPB-10 | Implemented | `gw_node.c`, `gw_poll.c` (`gw_poller_write`) | H + Q. The commands are all or nothing. An NCMD/DCMD that does not decode fully applies no metric (H + Q). A DCMD with writes that do not all fit in the bus queue also applies no metric (H) |
+| SPB-10 | Implemented | `gw_node.c`, `gw_poll.c` (`gw_poller_write`) | H + Q. The commands are all or nothing. An NCMD/DCMD that does not decode fully applies no metric (H + Q). A DCMD with writes that do not all fit in the bus queue also applies no metric (H). The gateway rejects a DCMD metric with a datatype that is not the datatype of the DBIRTH, and a value with a fraction for an integer or Boolean tag (#163, H). The log gives the reason. A metric without a datatype uses the datatype of the DBIRTH |
 | SPB-11 | Implemented | `gw_node.c`, `gw_board/gw_io.c` | H + Q (simulated DO with the polarity of the board; TCA9554 C) |
 | SPB-12 | Implemented | `gw_rbe.c` | H + Q |
 | MB-1 | Implemented | `components/gw_rs485/gw_rs485.c` | Q at 9600 8N1; other parities C. The wait for the end of the transmission is proportional to the frame (the bits per character from the configuration + 20 ms): H at 1200 baud with parity |

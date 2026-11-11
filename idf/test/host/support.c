@@ -466,9 +466,15 @@ size_t raw_payload(uint8_t *out, size_t cap, const raw_metric_t *m, size_t count
             metric[k++] = 0x10;                                               /* 2: alias */
             k += put_varint(&metric[k], m[i].alias);
         }
-        metric[k++] = 0x20;                                                   /* 4: datatype */
-        k += put_varint(&metric[k], m[i].datatype);
-        if (m[i].kind == RAW_BOOL) {
+        if (!m[i].no_datatype) {
+            metric[k++] = 0x20;                                               /* 4: datatype */
+            k += put_varint(&metric[k], m[i].datatype);
+        }
+        if (m[i].kind == RAW_DOUBLE) {
+            metric[k++] = 0x69;                                               /* 13: double */
+            memcpy(&metric[k], &m[i].num, 8);
+            k += 8;
+        } else if (m[i].kind == RAW_BOOL) {
             metric[k++] = 0x70;                                               /* 14: boolean */
             metric[k++] = m[i].num != 0.0 ? 1u : 0u;
         } else if (m[i].kind == RAW_FLOAT) {

@@ -66,6 +66,12 @@ static void send(const char *topic, const spb_metric_t *m, size_t n)
     gw_node_handle_message(&node, topic, strlen(topic), cmd, len);
 }
 
+static void send_raw(const char *topic, const raw_metric_t *m, size_t n)
+{
+    size_t len = raw_payload(cmd, sizeof(cmd), m, n);
+    gw_node_handle_message(&node, topic, strlen(topic), cmd, len);
+}
+
 static void test_nbirth_and_dbirth(void)
 {
     set_meter(true, 230.5, 12.3, 1);
@@ -369,6 +375,80 @@ static void test_dcmd_writes(void)
     TEST_ASSERT_EQUAL(2, g_rec.writes);
 }
 
+/* SPB-10 (#163): a DCMD metric with a datatype other than the one of the DBIRTH, or with a
+ * fraction for an integer or Boolean tag, is rejected with a log line: no write, no DDATA.
+ * Without a datatype (the Sparkplug recommendation for commands,
+ * tck-id-payloads-metric-datatype-not-req), the datatype of the DBIRTH applies. */
+static void test_dcmd_strict_datatype_and_integer(void)
+{
+    static const char doc[] =
+        "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+        " \"devices\": [{\"name\": \"M\", \"unit_id\": 1, \"tags\": ["
+        "  {\"name\": \"Level\", \"area\": \"holding\", \"address\": 0, \"type\": \"int16\","
+        "   \"writable\": true},"
+        "  {\"name\": \"Gain\", \"area\": \"holding\", \"address\": 1, \"type\": \"int16\","
+        "   \"scale\": 0.1, \"writable\": true},"
+        "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\","
+        "   \"writable\": true}]}]}";
+    static gw_config_t c;
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(doc, sizeof(doc) - 1, &c, &err), err.msg);
+    cfg = &c;
+    gw_tagdb_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    gw_tag_value_t v[3] = {{.value = 1, .ts_ms = 1000, .valid = true},
+                           {.value = 1, .ts_ms = 1000, .valid = true},
+                           {.value = 0, .ts_ms = 1000, .valid = true}};
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_node_session_up(&node, 0);
+    recorder_clear();
+    const char *topic = "spBv1.0/G/DCMD/N/M";
+    static char log[2048];
+    gw_port_log_capture(log, sizeof(log));
+
+    /* another datatype: Double for the Int16 tag, Int16 for the Float (scaled) tag */
+    raw_metric_t dbl = {.name = "Level", .datatype = SPB_DT_DOUBLE, .kind = RAW_DOUBLE, .num = 7};
+    send_raw(topic, &dbl, 1);
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Level' discarded: datatype 10 is not the datatype 2 "
+                                     "of the DBIRTH"));
+    spb_metric_t i16 = {.name = "Gain", .no_alias = true, .datatype = SPB_DT_INT16, .v.num = 5};
+    send(topic, &i16, 1);
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Gain' discarded: datatype 2 is not the datatype 9"));
+    /* a fraction for the Int16 tag: with its datatype, and without a datatype */
+    raw_metric_t frac = {.name = "Level", .datatype = SPB_DT_INT16, .kind = RAW_FLOAT, .num = 1.5};
+    send_raw(topic, &frac, 1);
+    frac.no_datatype = true;
+    send_raw(topic, &frac, 1);
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Level' discarded: value with a fraction for an "
+                                     "integer tag"));
+    /* a fraction for the Boolean tag */
+    raw_metric_t half = {.name = "Run", .no_datatype = true, .kind = RAW_DOUBLE, .num = 0.5};
+    send_raw(topic, &half, 1);
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Run' discarded: value with a fraction for a "
+                                     "Boolean tag"));
+    TEST_ASSERT_EQUAL(0, g_rec.writes);
+    TEST_ASSERT_EQUAL(0, g_rec.count);   /* no DDATA */
+
+    /* accepted: the datatype of the DBIRTH or none, an integral value for Level, a fraction for
+     * the scaled Gain */
+    raw_metric_t ok = {.name = "Level", .no_datatype = true, .kind = RAW_DOUBLE, .num = -7};
+    send_raw(topic, &ok, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.writes);
+    TEST_ASSERT_EQUAL_DOUBLE(-7, g_rec.last_write.value);
+    spb_metric_t lvl = {.name = "Level", .no_alias = true, .datatype = SPB_DT_INT16, .v.num = 12};
+    send(topic, &lvl, 1);
+    TEST_ASSERT_EQUAL(2, g_rec.writes);
+    TEST_ASSERT_EQUAL_DOUBLE(12, g_rec.last_write.value);
+    spb_metric_t gain = {.name = "Gain", .no_alias = true, .datatype = SPB_DT_FLOAT, .v.num = 0.5};
+    send(topic, &gain, 1);
+    TEST_ASSERT_EQUAL(3, g_rec.writes);
+    TEST_ASSERT_DOUBLE_WITHIN(1e-6, 0.5, g_rec.last_write.value);
+    gw_port_log_capture(NULL, 0);
+}
+
 /* Issue #60: a DCMD whose writes do not all fit in the bus queue is rejected whole. */
 static void test_dcmd_rejected_whole_when_queue_lacks_room(void)
 {
@@ -507,20 +587,30 @@ static void test_mb6_dcmd(void)
     send(topic, &u64, 1);
     TEST_ASSERT_EQUAL(3, g_rec.writes);
     TEST_ASSERT_EQUAL_UINT64(UINT64_MAX, g_rec.last_write.u64);
-    /* a Float/Double/Int32 command for a 64-bit tag: integral values only */
-    spb_metric_t f = {.name = "U64", .datatype = SPB_DT_DOUBLE, .v.num = 42.0};
-    send(topic, &f, 1);
+    /* a value in double_value with no datatype for a 64-bit tag: integral values only */
+    raw_metric_t f = {.name = "U64", .no_datatype = true, .kind = RAW_DOUBLE, .num = 42.0};
+    send_raw(topic, &f, 1);
+    TEST_ASSERT_EQUAL(4, g_rec.writes);
     TEST_ASSERT_EQUAL_UINT64(42, g_rec.last_write.u64);
-    f.v.num = 1.5;
-    send(topic, &f, 1);
-    f.v.num = -1.0;                                   /* negative for a uint64 */
-    send(topic, &f, 1);
-    spb_metric_t neg = {.name = "I64", .datatype = SPB_DT_INT32, .v.num = -7};
-    send(topic, &neg, 1);
+    f.num = 1.5;
+    send_raw(topic, &f, 1);
+    f.num = -1.0;                                     /* negative for a uint64 */
+    send_raw(topic, &f, 1);
+    raw_metric_t neg = {.name = "I64", .no_datatype = true, .kind = RAW_DOUBLE, .num = -7};
+    send_raw(topic, &neg, 1);
     TEST_ASSERT_EQUAL(5, g_rec.writes);
     TEST_ASSERT_EQUAL_INT64(-7, g_rec.last_write.i64);
-    spb_metric_t big = {.name = "I64", .datatype = SPB_DT_UINT64, .v.u64 = UINT64_MAX};
-    send(topic, &big, 1);                             /* above INT64_MAX: rejected */
+    neg.num = 1e19;                                   /* above INT64_MAX: rejected */
+    send_raw(topic, &neg, 1);
+    TEST_ASSERT_EQUAL(5, g_rec.writes);
+    /* SPB-10 (#163): a datatype other than the one of the DBIRTH is rejected, also with an
+     * integral value that fits */
+    spb_metric_t other = {.name = "U64", .datatype = SPB_DT_DOUBLE, .v.num = 42.0};
+    send(topic, &other, 1);
+    spb_metric_t i32 = {.name = "I64", .datatype = SPB_DT_INT32, .v.num = -7};
+    send(topic, &i32, 1);
+    spb_metric_t big = {.name = "I64", .datatype = SPB_DT_UINT64, .v.u64 = 1};
+    send(topic, &big, 1);
     TEST_ASSERT_EQUAL(5, g_rec.writes);
     /* strings: up to 2 x length characters */
     spb_metric_t str = {.name = "Str", .datatype = SPB_DT_STRING, .v.str = "OK"};
@@ -589,12 +679,6 @@ static void test_scan_rate(void)
     gw_node_rebirth(&node);
     msg(0);
     TEST_ASSERT_EQUAL_DOUBLE(500, dec.m[decoded_find_name(&dec, "Node Control/Scan Rate")].num);
-}
-
-static void send_raw(const char *topic, const raw_metric_t *m, size_t n)
-{
-    size_t len = raw_payload(cmd, sizeof(cmd), m, n);
-    gw_node_handle_message(&node, topic, strlen(topic), cmd, len);
 }
 
 /* Issue #8: while the expander does not answer, the DOs are published as null (the latch may
@@ -1758,6 +1842,7 @@ int main(void)
     RUN_TEST(test_ncmd_do_and_reboot);
     RUN_TEST(test_pulse_counters);
     RUN_TEST(test_dcmd_writes);
+    RUN_TEST(test_dcmd_strict_datatype_and_integer);
     RUN_TEST(test_dcmd_rejected_whole_when_queue_lacks_room);
     RUN_TEST(test_scan_rate);
     RUN_TEST(test_mb6_birth_and_data);
