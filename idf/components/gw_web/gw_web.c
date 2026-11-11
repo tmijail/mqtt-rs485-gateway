@@ -392,7 +392,7 @@ static bool authorized(httpd_req_t *req)
         httpd_resp_set_hdr(req, "Retry-After", retry);
         close_after_reply(req);
         send_error(req, "429 Too Many Requests", NULL,
-                   "demasiados intentos de acceso fallidos: espere y vuelva a intentar");
+                   "too many failed login attempts: wait and try again");
         return false;
     }
     if (httpd_req_get_hdr_value_str(req, "Authorization", hdr, sizeof(hdr)) == ESP_OK) {
@@ -420,7 +420,7 @@ static bool authorized(httpd_req_t *req)
     }
     httpd_resp_set_hdr(req, "WWW-Authenticate", REALM_HDR);
     close_after_reply(req);
-    send_error(req, "401 Unauthorized", NULL, "autenticación requerida");
+    send_error(req, "401 Unauthorized", NULL, "authentication required");
     return false;
 }
 
@@ -463,8 +463,8 @@ static bool same_origin(httpd_req_t *req)
     close_after_reply(req);   /* its body (an image?) is not read */
     send_error(req, "403 Forbidden", NULL,
                r == GW_CSRF_NO_HEADER
-                   ? "falta la cabecera " GW_CSRF_HEADER ": las escrituras la necesitan (CSRF)"
-                   : "solicitud de otro origen rechazada (Origin o Referer no es este equipo)");
+                   ? "missing header " GW_CSRF_HEADER ": writes need it (CSRF)"
+                   : "cross-origin request refused (Origin or Referer is not this device)");
     return false;
 }
 
@@ -590,7 +590,7 @@ static esp_err_t config_put(httpd_req_t *req)
     char *body = read_body(req, &len, &status);
     if (body == NULL) {
         char msg[96];
-        snprintf(msg, sizeof(msg), "cuerpo de %u bytes no aceptado (máximo %d)",
+        snprintf(msg, sizeof(msg), "body of %u bytes not accepted (maximum %d)",
                  (unsigned)req->content_len, CONFIG_GW_CONFIG_MAX_BYTES);
         return refuse_body(req, status, msg);
     }
@@ -765,17 +765,17 @@ static esp_err_t modbus_read_post(httpd_req_t *req)
 /* ---------- #139: POST /api/card/format?confirm=1 ---------- */
 
 /* The UI's text for the answers that are not "started" (the shell has them in English). */
-static const char *card_answer_es(gw_cardfmt_answer_t a)
+static const char *card_answer_text(gw_cardfmt_answer_t a)
 {
     switch (a) {
     case GW_CARDFMT_BUSY:
-        return "ya hay un formateo en curso";
+        return "a format is already in progress";
     case GW_CARDFMT_NO_SUPPORT:
-        return "esta compilación no tiene tarjeta microSD (QEMU): no se formateó nada";
+        return "this build has no microSD card (QEMU): nothing was formatted";
     case GW_CARDFMT_NO_PSRAM:
-        return "el formateo necesita PSRAM y este equipo no la tiene: no se formateó nada";
+        return "the format needs PSRAM and this device has none: nothing was formatted";
     default:
-        return "sin memoria para la tarea de formateo: no se formateó nada";
+        return "no memory for the format task: nothing was formatted";
     }
 }
 
@@ -789,7 +789,7 @@ static esp_err_t card_format_post(httpd_req_t *req)
     }
     if (!query_flag(req, "confirm")) {
         return send_error(req, "400 Bad Request", NULL,
-                          "falta ?confirm=1: el formateo borra todo el contenido de la tarjeta");
+                          "missing ?confirm=1: the format erases all the contents of the card");
     }
     gw_cardfmt_answer_t a = gw_sfcard_format_start();
     if (a == GW_CARDFMT_STARTED) {
@@ -798,7 +798,7 @@ static esp_err_t card_format_post(httpd_req_t *req)
     }
     char body[200];
     snprintf(body, sizeof(body), "{\"ok\":false,\"error\":\"%s\",\"reason\":\"%s\"}\n",
-             card_answer_es(a), gw_cardfmt_answer_key(a));
+             card_answer_text(a), gw_cardfmt_answer_key(a));
     return send_json(req, gw_cardfmt_answer_http(a), body);
 }
 
@@ -824,7 +824,7 @@ static esp_err_t firmware_get(httpd_req_t *req)
     } fw_json_t;
     fw_json_t *j = gw_storage_malloc(sizeof(*j));
     if (j == NULL) {
-        return send_error(req, "503 Service Unavailable", NULL, "sin memoria");
+        return send_error(req, "503 Service Unavailable", NULL, "no memory");
     }
     gw_fw_get_status(&j->f);
     json_escape(j->text, sizeof(j->text), j->f.text);
@@ -865,15 +865,15 @@ static esp_err_t firmware_post(httpd_req_t *req)
     bool json = media_type_is(ctype, "application/json");
     if (!json && !media_type_is(ctype, "application/octet-stream")) {
         return refuse_body(req, "415 Unsupported Media Type",
-                           "Content-Type: application/json ({\"url\": ...}) o "
-                           "application/octet-stream (la imagen)");
+                           "Content-Type: application/json ({\"url\": ...}) or "
+                           "application/octet-stream (the image)");
     }
     if (json) {
         size_t len;
         const char *status;
         char *body = req->content_len <= 1024 ? read_body(req, &len, &status) : NULL;
         if (body == NULL) {
-            return refuse_body(req, "400 Bad Request", "se esperaba {\"url\": \"https://...\"}");
+            return refuse_body(req, "400 Bad Request", "expected {\"url\": \"https://...\"}");
         }
         char url[GW_OTA_URL_MAX];
         bool parsed = gw_ota_parse_request(body, len, url, why, sizeof(why));
@@ -890,7 +890,7 @@ static esp_err_t firmware_post(httpd_req_t *req)
         return send_json(req, "202 Accepted", "{\"ok\":true,\"started\":true}\n");
     }
     if (req->content_len == 0) {
-        return send_error(req, "411 Length Required", NULL, "imagen sin Content-Length");
+        return send_error(req, "411 Length Required", NULL, "image without Content-Length");
     }
     esp_err_t e = gw_fw_upload_begin(req->content_len, why, sizeof(why));
     if (e != ESP_OK) {

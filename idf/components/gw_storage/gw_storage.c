@@ -1442,26 +1442,26 @@ static char *read_file(const struct stat *st, size_t *len, gw_cfg_err_t *err)
 {
     memset(err, 0, sizeof(*err));
     if (st->st_size <= 0) {
-        snprintf(err->msg, sizeof(err->msg), CFG_PATH ": archivo vacío");
+        snprintf(err->msg, sizeof(err->msg), CFG_PATH ": empty file");
         return NULL;
     }
     if (st->st_size > CFG_MAX) {
         snprintf(err->msg, sizeof(err->msg),
-                 CFG_PATH ": %ld bytes; el máximo es %d (CONFIG_GW_CONFIG_MAX_BYTES)",
+                 CFG_PATH ": %ld bytes; the maximum is %d (CONFIG_GW_CONFIG_MAX_BYTES)",
                  (long)st->st_size, CFG_MAX);
         return NULL;
     }
     size_t size = (size_t)st->st_size;
     /* The file and the parser's tree (several times the file) come from the PSRAM (internal
-     * heap in the QEMU build without PSRAM): log what is available, so a "memoria
-     * insuficiente" can be put in context. */
+     * heap in the QEMU build without PSRAM): log what is available, so a "not enough
+     * memory" can be put in context. */
     ESP_LOGI(TAG, CFG_PATH ": %zu bytes; free heap: internal %u B (largest block %u B), PSRAM %u B",
              size, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     char *buf = boot_alloc(size + 1);
     if (buf == NULL) {
-        snprintf(err->msg, sizeof(err->msg), CFG_PATH ": sin memoria para leer %zu bytes", size);
+        snprintf(err->msg, sizeof(err->msg), CFG_PATH ": no memory to read %zu bytes", size);
         return NULL;
     }
     FILE *f = fopen(CFG_PATH, "rb");
@@ -1471,7 +1471,7 @@ static char *read_file(const struct stat *st, size_t *len, gw_cfg_err_t *err)
         fclose(f);
     }
     if (got != size) {
-        snprintf(err->msg, sizeof(err->msg), CFG_PATH ": error de lectura (%zu de %zu bytes, errno %d)",
+        snprintf(err->msg, sizeof(err->msg), CFG_PATH ": read error (%zu of %zu bytes, errno %d)",
                  got, size, read_errno);
         heap_caps_free(buf);
         return NULL;
@@ -1539,15 +1539,15 @@ char *gw_storage_read_file(const char *name, size_t *len, char *why, size_t why_
     struct stat st;
     if (!gw_config_file_name_ok(name) ||
         snprintf(path, sizeof(path), CFG_MOUNT "/%s", name) >= (int)sizeof(path)) {
-        snprintf(why, why_cap, "%s: nombre no válido", name);
+        snprintf(why, why_cap, "%s: invalid name", name);
         return NULL;
     }
     if (!s_mounted || stat(path, &st) != 0) {
-        snprintf(why, why_cap, "%s: no existe en la partición LittleFS", path);
+        snprintf(why, why_cap, "%s: not in the LittleFS partition", path);
         return NULL;
     }
     if (st.st_size <= 0 || st.st_size > GW_STORAGE_FILE_MAX) {
-        snprintf(why, why_cap, "%s: %ld bytes (de 1 a %d)", path, (long)st.st_size,
+        snprintf(why, why_cap, "%s: %ld bytes (1 to %d)", path, (long)st.st_size,
                  GW_STORAGE_FILE_MAX);
         return NULL;
     }
@@ -1559,7 +1559,7 @@ char *gw_storage_read_file(const char *name, size_t *len, char *why, size_t why_
         fclose(f);
     }
     if (got != size) {
-        snprintf(why, why_cap, "%s: %s", path, buf == NULL ? "sin memoria" : "error de lectura");
+        snprintf(why, why_cap, "%s: %s", path, buf == NULL ? "no memory" : "read error");
         heap_caps_free(buf);
         return NULL;
     }
@@ -1625,7 +1625,7 @@ static char *current_doc(size_t *len, bool *from_file, gw_cfg_err_t *err)
         return read_file(&st, len, err);
     }
     if (errno != ENOENT) {
-        reject(err, CFG_PATH ": no se puede consultar (errno %d)", errno);
+        reject(err, CFG_PATH ": cannot get its status (errno %d)", errno);
         return NULL;
     }
     *from_file = false;
@@ -1634,7 +1634,7 @@ static char *current_doc(size_t *len, bool *from_file, gw_cfg_err_t *err)
                        (size_t)(default_config_json_end - default_config_json_start));
     char *copy = boot_alloc(n + 1);
     if (copy == NULL) {
-        reject(err, "sin memoria para la configuración embebida");
+        reject(err, "no memory for the embedded configuration");
         return NULL;
     }
     memcpy(copy, default_config_json_start, n + 1);
@@ -1673,7 +1673,7 @@ bool gw_storage_load_config(gw_config_t *cfg, gw_cfg_err_t *err, const char **so
     *source = CFG_PATH " (LittleFS)";
     esp_err_t why;
     if (!mount(false, &why)) {
-        return reject(err, "partición LittleFS 'storage' no montable (%s)", esp_err_to_name(why));
+        return reject(err, "LittleFS partition 'storage' not mountable (%s)", esp_err_to_name(why));
     }
     size_t len;
     bool from_file;
@@ -1788,12 +1788,12 @@ esp_err_t gw_storage_save_config_lint(const char *json, size_t len, bool dry_run
     }
     memset(err, 0, sizeof(*err));
     if (len > CFG_MAX) {
-        reject(err, "%zu bytes; el máximo es %d (CONFIG_GW_CONFIG_MAX_BYTES)", len, CFG_MAX);
+        reject(err, "%zu bytes; the maximum is %d (CONFIG_GW_CONFIG_MAX_BYTES)", len, CFG_MAX);
         return ESP_ERR_INVALID_SIZE;
     }
     gw_config_t *cfg = boot_alloc(sizeof(*cfg));
     if (cfg == NULL) {
-        reject(err, "sin memoria para validar la configuración");
+        reject(err, "no memory to validate the configuration");
         return ESP_ERR_NO_MEM;
     }
     xSemaphoreTake(s_save_lock, portMAX_DELAY);
@@ -1840,17 +1840,17 @@ esp_err_t gw_storage_save_config_lint(const char *json, size_t len, bool dry_run
 #endif
     char hook_why[120];
     if (!applied) {
-        ret = strstr(err->msg, "memoria insuficiente") ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_ARG;
+        ret = strstr(err->msg, "not enough memory") ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_ARG;
     } else if (!dry_run && s_copy_unknown && !s_mounted && !discard_copy) {
         /* issue #108 M1: formatting LittleFS to save would destroy the only copy */
         ret = ESP_ERR_INVALID_STATE;
-        reject(err, "configuración no guardada: LittleFS no monta y puede tener la copia de una "
-                    "migración de NVS; formatearlo la perdería (para descartarla: README 6.2.1)");
+        reject(err, "configuration not saved: LittleFS does not mount and can hold the copy of an "
+                    "NVS migration; a format would lose it (to discard it: README 6.2.1)");
     } else if (!dry_run && s_commit_hook != NULL &&
                s_commit_hook(GW_STORAGE_COMMIT_CONFIG, hook_why, sizeof(hook_why)) != ESP_OK) {
         /* issue #99: the restart that applies it would roll the new firmware back */
         ret = ESP_ERR_INVALID_STATE;
-        reject(err, "configuración no guardada: %s", hook_why);
+        reject(err, "configuration not saved: %s", hook_why);
     } else if (!dry_run) {
         bool discarded = false;
         if (discard_copy && s_copy_unknown && !s_mounted) {
@@ -1867,10 +1867,10 @@ esp_err_t gw_storage_save_config_lint(const char *json, size_t len, bool dry_run
         }
         /* secrets first: if the file cannot be written, the previous ones are put back */
         if (ret == ESP_OK && doc.secrets_changed && (ret = put_secrets(&doc.secrets)) != ESP_OK) {
-            reject(err, "no se pudieron guardar los secretos en NVS (%s)", esp_err_to_name(ret));
+            reject(err, "could not save the secrets in NVS (%s)", esp_err_to_name(ret));
         }
         if (ret == ESP_OK && (ret = write_atomic(doc.doc, doc.doc_len)) != ESP_OK) {
-            reject(err, "no se pudo escribir " CFG_PATH " (%s)", esp_err_to_name(ret));
+            reject(err, "could not write " CFG_PATH " (%s)", esp_err_to_name(ret));
             if (doc.secrets_changed) {
                 put_secrets(&stored);
             }
@@ -1910,7 +1910,7 @@ char *gw_storage_export_config(size_t *len, gw_cfg_err_t *err)
     char *out = NULL;
     esp_err_t why;
     if (!mount(false, &why)) {
-        reject(err, "partición LittleFS 'storage' no montable (%s)", esp_err_to_name(why));
+        reject(err, "LittleFS partition 'storage' not mountable (%s)", esp_err_to_name(why));
     } else {
         size_t n;
         bool from_file;
