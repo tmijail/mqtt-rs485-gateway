@@ -1716,6 +1716,21 @@ The QEMU build is different from the board build at these points (`sdkconfig.qem
 
 ### 6.10 Tests and environment
 
+- **The downgrade test (issue #148).** A rollback or a manual downgrade runs an earlier image on the data that a later image wrote. A library update can change a format that the earlier image cannot read: the LittleFS disk version, the NVS page format, or a different format of ESP-IDF (`otadata`, the app descriptor, the partition table). The optional E2E scenario `downgrade` examines this:
+  1. The image under test boots on a new flash. It saves a configuration with an MQTT password and a web password (NVS), and runs in normal mode.
+  2. The harness writes the app image of an earlier release over `ota_0` of the same flash. The bootloader, `otadata`, the NVS and LittleFS stay as the later image left them, as after a rollback.
+  3. The earlier image must start in normal mode with the same configuration (`GET /api/config`) and with the secrets. Its broker requires the MQTT password, and the web UI must accept the web password. The bdSeq is in RAM only (#161), so the scenario does not examine it.
+
+  Run it with `E2E_DOWNGRADE_REF=<git ref> tools/e2e/run_e2e.sh --only downgrade`, also with `E2E_PSRAM=1`. There is no release tag yet (`v1.0`), so a commit can be the reference. `run_e2e.sh` builds the earlier image one time from the sources of the ref (a worktree, so the image has the version of the ref), with the overlays of the variant and the same signing key. The build goes into `build-downgrade/<commit>/`. Without `E2E_DOWNGRADE_REF`, the scenario shows `[SKIP]`. It is not in a full run or in a CI group.
+
+  The rule is in `CLAUDE.md` (Conventions): each change that updates `littlefs` or ESP-IDF must pass this test in both variants. If the earlier image cannot read the data, the pre-flight check must refuse that downgrade. For this, the capabilities block declares `nvs_format` and the LittleFS disk version (§3.6).
+
+  **First run (11 Nov 2026).** The reference was `761edf8`, the last commit of `main` before the merge of #144. We selected it because it is the newest commit before the change of the NVS records of #144 (`fw_last`, the new `lkg_net` format). Its configuration schema is the same (all keys are schema 1), so the earlier image can read the configuration. `littlefs`, ESP-IDF, the partition table and `dependencies.lock` did not change since, so this run examines the formats of the gateway, not of the libraries.
+
+  Result in both variants (with and without PSRAM): the image of #148 wrote the data, then `0.1.0+g761edf84` started in normal mode with the same configuration and both secrets. LittleFS and the NVS were not formatted.
+
+  The earlier image ignores the NVS keys that it does not know (`fw_last`, `cfg_prev`). It reads `lkg_net` as a raw struct with a size check, so it does not use the new record. This has an effect only in its recovery mode (DHCP), and it writes its raw struct again in normal mode.
+
 - **Crashes in a row in QEMU (issue #144).** The RTC memory of the boot-loop counter survives a panic reset in QEMU, so the E2E examines safe mode (scenario `ota-trial`). But the QEMU `open_eth` model keeps its state across a panic reset. In the first run, the boot after the second panic with traffic stopped in an endless `open_eth` interrupt (`emac_opencores_isr_handler`, core 0). Thus the E2E uses the emulator-only `panic net-off`: it stops the Ethernet driver, then aborts. The reset reason stays `panic`. On the board, a panic resets the W5500 driver at the next boot, so this limit does not apply. The rules of the counter for each reset reason are also in the host tests (`test_bootloop`).
 - **The uptime of the self-check (issue #144).** In QEMU, the system timer of `esp_timer` does not restart at a software reset. Thus the self-check uses the FreeRTOS tick of the boot, not `esp_timer_get_time()`.
 

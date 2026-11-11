@@ -79,12 +79,14 @@ E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh     # PSRAM variant
 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh                 # variant without PSRAM: only the OTA trial scenarios (~4 min)
 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh --only ota,https   # subset of scenarios (--only selects in any variant)
 #  --only: failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,time,ota,ota-fw1,ota-park,ota-wiring,
-#          ota-trial,nvs,slow,nopsram,refuse,main,umh,tck (ota = the four ota-* names; an unknown name is an
-#          error; nopsram needs E2E_PSRAM=1)
+#          ota-trial,nvs,slow,nopsram,refuse,main,umh,tck,downgrade (ota = the four ota-* names; an unknown
+#          name is an error; nopsram needs E2E_PSRAM=1)
 #  Optional scenarios (never in a full run or in the CI groups; they SKIP when the tool is absent):
 #    umh  real benthos-umh v0.16.2 (UMH Core), E2E_BENTHOS_UMH=<binary>        (#175, README §4.6)
 #    tck  Eclipse Sparkplug TCK 3.0.0 on HiveMQ CE, E2E_TCK_DIR=<dir from tools/e2e/tck_setup.sh>
 #         (#176, README §4.7, docs/how-to/run-the-sparkplug-tck.md)
+#    downgrade  the image of an earlier release on the flash that this image wrote,
+#               E2E_DOWNGRADE_REF=<git ref> (built once into build-downgrade/; #148, README §6.10)
 E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_ci_groups.sh /tmp/gw-groups   # the CI groups of a variant: build once, run in parallel (run it for each variant)
 #  Windows / no local IDF: the same in Docker (idf/tools/e2e/Dockerfile), see docs/how-to/run-e2e-in-docker.md
 #  E2E_STAGE=<dir> (build the images into <dir>, run nothing), E2E_PREBUILT=<dir> (run on them, no build),
@@ -192,3 +194,4 @@ Rules that tests and fixes must respect:
 - Commits reference issues with `Fixes #N` or `Refs #N`. Feature and fix branches are merged into `main` with `--no-ff`.
 - When behaviour or measurements change, update `idf/README.md` (in STE): §4 has the verification results and test counts, §6 the known limitations, §6.10 the test environment notes.
 - Managed components are pinned with `==` in each `idf_component.yml` and hashed in `dependencies.lock`. Host-test dependencies (Unity, cJSON) are pinned by commit hash via FetchContent.
+- A change can update a managed component that writes data (`littlefs`) or ESP-IDF (the NVS format, `otadata`, the app descriptor, the partition table). Such a change must pass the downgrade test (#148). Run `E2E_DOWNGRADE_REF=<the last release> tools/e2e/run_e2e.sh --only downgrade` in both variants. Before the tag `v1.0`, use the commit before the change. The earlier image must start in normal mode with the same configuration and secrets. If it cannot, merge the change only when the pre-flight check refuses that downgrade (`nvs_format` and the LittleFS disk version in the capabilities block, README §3.6).
