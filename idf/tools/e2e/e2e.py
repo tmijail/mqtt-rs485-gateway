@@ -56,6 +56,7 @@ sys.path.insert(0, str(HERE.parent))
 import spb_decode  # noqa: E402  (official proto loader + structural checks)
 sys.path.insert(0, str(HERE))
 import scenarios  # noqa: E402  (issue #121: the --only selection and the CI groups)
+import tck  # noqa: E402  (issue #176: the optional Sparkplug TCK scenario)
 
 # Defaults; main() overrides them from the command line or the environment. The MQTT port
 # is written into the config.json of the flash image under test, so any free port works.
@@ -111,6 +112,7 @@ FAULT = threading.Event()
 RESOURCES = []
 STALE = []        # issue #105: messages delivered to an observer of an attempt that had ended
 ATTEMPTS = [0, 0]  # issue #105: key of the current attempt (0 outside any scenario), last key
+TCK_SKIPPED = []  # issue #176: why the optional 'tck' scenario ran nothing (no TCK installed)
 
 
 def track(obj, closer):
@@ -773,7 +775,7 @@ MONITOR_ERRORS = []  # exceptions of the fault monitor (each fails the run)
 # is listed here. 900 s is less than twice the longest attempt measured on a loaded 4-CPU host
 # (the #97 integration with PSRAM in single-threaded TCG, 477 s, results.json "durations"; main
 # is about 200 s): on a slower host raise --timeout-scale / E2E_TIMEOUT_SCALE.
-SCENARIO_BUDGET_S = {}
+SCENARIO_BUDGET_S = {"tck": 3600.0}   # issue #176: 14 TCK tests, each with a boot and a HiveMQ
 DEFAULT_BUDGET_S = 900.0
 
 
@@ -4972,6 +4974,8 @@ def main():
         # part of "main"; alone only on request (#89)
         "refuse": lambda: check_suback_refused(args, work),
         "main": lambda: run(args, log, slave, MAIN_BROKER["proc"], conf, work),
+        # issue #176: only with --only tck, and only with E2E_TCK_DIR (else [SKIP])
+        "tck": lambda: tck.run(sys.modules[__name__], args, work, slave),
     }
     assert set(runners) == {name for name, _ in scenarios.SCENARIOS}
     chosen = scenarios.selected(only)
@@ -5004,11 +5008,14 @@ def main():
             for e in errs[:3]:
                 print(f"criterion 6: {topic}: {e}", flush=True)
             bad += len(errs)
-        check(f"6. payloads decode with the official sparkplug_b.proto (Python protobuf "
-              f"{google.protobuf.__version__})",
-              CAPTURE and bad == 0,
-              f"{len(CAPTURE) + len(DISCARDED_CAPTURE)} messages decoded ({len(DISCARDED_CAPTURE)} "
-              f"of discarded attempts), {bad} structural errors")
+        if not CAPTURE and TCK_SKIPPED and chosen == ["tck"]:
+            print("[SKIP] 6. payloads decode: the tck scenario ran nothing", flush=True)
+        else:
+            check(f"6. payloads decode with the official sparkplug_b.proto (Python protobuf "
+                  f"{google.protobuf.__version__})",
+                  CAPTURE and bad == 0,
+                  f"{len(CAPTURE) + len(DISCARDED_CAPTURE)} messages decoded "
+                  f"({len(DISCARDED_CAPTURE)} of discarded attempts), {bad} structural errors")
         runs, errs, prev = 0, [], None
         for d in syslog_from(NODE):
             if d[4] == 1:

@@ -42,8 +42,12 @@ SCENARIOS = (
     ("slow", ("slow",)),
     ("refuse", ("refuse",)),   # part of "main"; alone only when "main" is not selected (#89)
     ("main", ("main",)),
+    ("tck", ("tck",)),         # issue #176: the Sparkplug TCK, optional (OPTIONAL)
 )
 ONLY_NAMES = tuple(dict.fromkeys(n for _, names in SCENARIOS for n in names))
+# Scenarios that run only when --only names them: not in a full run and not in the CI groups.
+# 'tck' needs Java, HiveMQ CE and the TCK extension (E2E_TCK_DIR, tools/e2e/tck.py).
+OPTIONAL = {"tck"}
 
 
 def parse_only(text):
@@ -63,6 +67,9 @@ def selected(only):
     for name, names in SCENARIOS:
         if name == "refuse":
             if "refuse" in only and "main" not in only:
+                out.append(name)
+        elif name in OPTIONAL:
+            if only & set(names):
                 out.append(name)
         elif not only or only & set(names):
             out.append(name)
