@@ -12,12 +12,23 @@ This document gives the measured durations of the QEMU E2E tests in Docker on a 
 | Docker | Docker Desktop, engine 29.1.3, WSL 2 |
 | Image | `gw-e2e` (`idf/tools/e2e/Dockerfile`, on `espressif/idf:v6.1@sha256:f81b6e07…`) |
 | QEMU | `esp_develop_9.2.2_20260417` |
-| Commit | `main` eb7c870 |
-| Date | 2026-11-07 |
+| Commit | `main` 8c2e8be |
+| Date | 2026-11-11 |
 
 The harness ran in its own network namespace (`--privileged`). No other E2E ran at the same time, except where the table says "in parallel".
 
+## The variants (issue #135)
+
+Since issue #135, the full run of each variant has different scenarios:
+
+- **PSRAM** (`E2E_PSRAM=1`): all the scenarios except the three of the default variant. It has the memory configuration of the board.
+- **Default** (no PSRAM): only the three OTA scenarios `ota-park`, `ota-wiring` and `ota-trial`. They examine logic, not memory, and they are 4 to 7 times slower with PSRAM.
+
+Thus the durations of this document are not comparable with the durations before #135. The measurement of `main` eb7c870 (2026-11-07), when each variant ran all the scenarios, gave 1 093 s (default) and 2 347 s (PSRAM) for the full runs one at a time.
+
 ## One-time setup
+
+Measured on 2026-11-07.
 
 | Step | Duration |
 |---|---|
@@ -25,79 +36,70 @@ The harness ran in its own network namespace (`--privileged`). No other E2E ran 
 | `docker build -t gw-e2e idf/tools/e2e` | 19 s |
 | `git clone` into the volume | 2 s |
 
-## Builds
+## CI groups
 
-The builds ran from a clean volume, with all 24 CPUs (`JOBS` not set).
+`run_ci_groups.sh` builds the images of one variant, then runs the CI groups of that variant. The PSRAM variant ran its three groups at the same time (`PARALLEL=3`). The default variant has one group. The two variants ran one after the other. The build was incremental (ccache, with earlier builds in the volume). The duration goes from the start of the build to the last result file of a group.
 
-| Build | Duration |
-|---|---|
-| Default variant: `build-qemu` and `build-qemu-plain` (`E2E_STAGE`) | 69 s |
-| PSRAM variant: `build-qemu-psram` (`build-qemu-plain` already built) | 39 s |
+| Variant | Build | Result | Retries | QEMU exits | Duration |
+|---|---|---|---|---|---|
+| PSRAM | approximately 60 s | 223/223 checks passed (213 as one full run) | none | none | 674 s (11.2 min) |
+| Default | approximately 40 s | 15/15 checks passed | none | none | 632 s (10.5 min) |
 
-## Full runs, one at a time
-
-Each run is `run_e2e.sh` on the images of the build above (`E2E_PREBUILT`), with no other E2E at the same time.
-
-| Variant | Result | Retries | QEMU exits | Duration |
-|---|---|---|---|---|
-| Default | 181/181 checks passed | none | none | 1 093 s (18.2 min) |
-| PSRAM | 187/187 checks passed | none | none | 2 347 s (39.1 min) |
-
-The two runs one after the other, with the two builds, took 3 548 s (59 min).
-
-## CI groups in parallel
-
-`run_ci_groups.sh` with `PARALLEL=5`: the build of one variant, then the five CI groups at the same time. The duration includes the incremental build. The PSRAM duration goes from the start of the container to the last result file of a group.
-
-| Variant | Result | Retries | QEMU exits | Duration |
-|---|---|---|---|---|
-| Default | 201/201 checks passed (181 as one full run) | none | none | 392 s (6.5 min) |
-| PSRAM | 207/207 checks passed (187 as one full run) | none | none | 736 s (12.3 min) |
+The two variants with their builds took 1 306 s (21.8 min).
 
 The scenario time of each group, in seconds (the sum of `durations` in its `results.json`):
 
-| Group | `--only` | Default | PSRAM | Longest scenario (PSRAM) |
+| Variant | Group | `--only` | Scenario time | Longest scenario |
 |---|---|---|---|---|
-| `ota-wiring` | `network,ota-wiring` | 104 | 710 | #97 integration, 701 s |
-| `ota-fw1` | `ota-fw1` | 145 | 431 | FW-1 OTA, 431 s |
-| `ota-trial` | `ota-park,ota-trial` | 108 | 382 | #99/#101 trial, 343 s |
-| `nvs-main` | `nvs,main` | 363 | 361 | main, 191 s |
-| `other` | `failsafe,web,reset,tls,failover,mqtt5,phost,sf,https,slow` | 365 | 471 | sf spill, 129 s |
+| PSRAM | `ota-fw1` | `ota-fw1,nopsram` | 596.1 | FW-1 OTA, 584.5 s |
+| PSRAM | `nvs-main` | `nvs,main` | 469.8 | main, 200.9 s |
+| PSRAM | `other` | `failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,time,slow` | 610.2 | sf spill, 153.5 s |
+| Default | `ota-trial` | `ota-park,ota-wiring,ota-trial` | 590.9 | #97 integration, 293.9 s |
 
-The longest group sets the duration of a parallel run. With PSRAM, that is `ota-wiring`, because of the #97 integration.
+The longest group sets the duration of a run of the groups. The groups of the two variants have approximately the same scenario time, so the CI jobs end at approximately the same time.
 
-## Duration of each scenario (full runs)
+## Duration of each scenario
 
-The values come from `results.json` → `durations`, in seconds. The harness gives each scenario a limit of 900 s (`DEFAULT_BUDGET_S`).
+The values come from `results.json` → `durations` of the groups above, in seconds. The scenarios of the PSRAM variant ran in parallel with the two other groups of that variant. The harness gives each scenario a limit of 900 s (`DEFAULT_BUDGET_S`).
 
-| Scenario | Default | PSRAM |
+| Scenario | Variant | Duration |
 |---|---|---|
-| failsafe | 48.6 | 48.0 |
-| network | 9.2 | 9.2 |
-| web | 20.6 | 19.1 |
-| reset | 36.4 | 36.4 |
-| tls | 52.1 | 51.3 |
-| failover | 39.2 | 39.3 |
-| mqtt5 | 2.6 | 3.6 |
-| max_packet | 15.0 | 16.0 |
-| phost | 15.9 | 15.8 |
-| sf | 13.1 | 12.6 |
-| sf spill | 12.0 | 136.4 |
-| stack margin | 19.4 | 19.5 |
-| https | 65.8 | 65.2 |
-| FW-1 OTA | 144.3 | 418.6 |
-| issue #112 park in a long RS485 transaction | 28.7 | 32.7 |
-| issue #97 OTA trial wiring | 99.6 | **706.7** |
-| issues #99/#101 OTA trial | 83.3 | 336.1 |
-| issues #67/#94 NVS migration | 60.7 | 60.8 |
-| issue #109 full unencrypted NVS | 6.7 | 5.6 |
-| issue #94 OTA to NVS encryption | 108.2 | 103.3 |
-| slow | 17.4 | 17.4 |
-| main | 191.3 | 190.9 |
-| **Sum** | **1 090.1** | **2 344.5** |
+| failsafe | PSRAM | 49.1 |
+| network | PSRAM | 8.0 |
+| web | PSRAM | 26.9 |
+| reset | PSRAM | 68.5 |
+| tls | PSRAM | 50.5 |
+| failover | PSRAM | 39.3 |
+| mqtt5 | PSRAM | 6.1 |
+| max_packet | PSRAM | 14.9 |
+| phost | PSRAM | 21.9 |
+| sf | PSRAM | 12.1 |
+| sf spill | PSRAM | 153.5 |
+| stack margin | PSRAM | 18.3 |
+| https | PSRAM | 65.8 |
+| time | PSRAM | 57.9 |
+| FW-1 OTA | PSRAM | **584.5** |
+| issue #135 no PSRAM | PSRAM | 11.6 |
+| issues #67/#94 NVS migration | PSRAM | 60.8 |
+| issue #109 full unencrypted NVS | PSRAM | 6.7 |
+| issue #94 OTA to NVS encryption | PSRAM | 201.4 |
+| slow | PSRAM | 17.4 |
+| main | PSRAM | 200.9 |
+| **Sum (PSRAM)** | | **1 676.1** |
+| issue #112 park in a long RS485 transaction | Default | 28.7 |
+| issue #97 OTA trial wiring | Default | 293.9 |
+| issue #144 OTA self-check | Default | 268.3 |
+| **Sum (default)** | | **590.9** |
+
+## Optional scenarios
+
+| Scenario | Variant | Result | Duration |
+|---|---|---|---|
+| `tck` (§4.7 of `idf/README.md`) | PSRAM | 19/19 checks passed, one test repeated (`PrimaryHostTest`, MQTT 3.1.1: no TCK result) | 406.9 s for the 14 tests and the repeated test |
+
+The `umh` scenario did not run in this measurement.
 
 ## Notes
 
-- With PSRAM, the #97 integration took 706.7 s alone and 701.1 s in parallel. That is 78–79 % of its 900 s limit. `idf/README.md` §4.5 gives 477 s and 496 s for this scenario on the machine of those measurements. The load of the parallel groups did not change the duration. The OTA scenarios use single-threaded TCG (issue #107), so the speed of one host thread sets their duration. On a CPU with P-cores and E-cores, Windows can put that thread on an E-core. The project did not examine the cause. If a run fails on this limit, add `E2E_TIMEOUT_SCALE=1.5`.
-- The parallel groups are 2.8 times (default) and 3.2 times (PSRAM) faster than the full runs. Use them for the check of a change. The two variants with their builds took 1 128 s (19 min), against 3 548 s (59 min) one at a time.
-- The other scenarios have approximately the same durations in the two variants. The differences come from the OTA scenarios and `sf spill` (the microSD spill runs only with PSRAM).
+- FW-1 OTA with PSRAM took 584.5 s. That is 65 % of its 900 s limit. The OTA scenarios use single-threaded TCG (issue #107), so the speed of one host thread sets their duration. On a CPU with P-cores and E-cores, Windows can put that thread on an E-core. If a run fails on this limit, add `E2E_TIMEOUT_SCALE=1.5`.
+- Since issue #144, the self-check installs a new image at 60 s after its boot, at the earliest. The scenarios that install images take more time than before #144. Without PSRAM, the #97 integration took 99.6 s on eb7c870 and 293.9 s now. With PSRAM, `issue #94 OTA to NVS encryption` took 103.3 s on eb7c870 and 201.4 s now.
