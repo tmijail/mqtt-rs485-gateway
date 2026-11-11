@@ -744,6 +744,10 @@ ABORT_RX = re.compile(r"abort\(\) was called")
 BACKTRACE_RX = re.compile(r"^Backtrace:")
 DELIBERATE_RX = re.compile(r"panic requested from the console")   # the shell's 'panic' command
 DELIBERATE_LINES = 20   # how far back an abort()/backtrace looks for it, on the same gateway
+# Issue #132: the shell's 'coredump' summary quotes the panic reason of the dump in flash
+# ("reason    abort() was called at ..."): a past failure that the harness asked about, not a
+# new one. The panic handler's own line starts with the reason itself.
+DUMP_QUOTE_RX = re.compile(r"^reason {4}")
 # An image being written or verified by the app (download, upload, esp_ota_end, a rollback's
 # check). Only lines after app_main's first line count (the bootloader prints esp_image too).
 OTA_RX = re.compile(r"esp_https_ota: |fw: downloading firmware|fw: receiving a firmware upload|"
@@ -1217,7 +1221,8 @@ class Gateway:
         for rx, what in FAILURE_RX:
             if rx.search(text):
                 self.panics.append([t, what, None, i])
-        if (ABORT_RX.search(text) or BACKTRACE_RX.search(text)) and not self._excused(i):
+        if (ABORT_RX.search(text) or BACKTRACE_RX.search(text)) and not DUMP_QUOTE_RX.search(text) \
+                and not self._excused(i):
             self.panics.append([t, "abort() not requested by the harness" if ABORT_RX.search(text)
                                 else "backtrace without a known emulator signature", None, i])
         m = EXCVADDR_RX.search(text)
@@ -5393,6 +5398,114 @@ def check_panic_during_traffic(gw, obs, slave, nbirth_t):
                  f"reset reasons after each panic: {outcomes}")
 
 
+def esp_coredump_info(args, core, fmt, out):
+    """esp_coredump info_corefile of @core (--core-format @fmt) against the ELF; the text goes
+    to @out. True when it decodes with the backtrace through panic_task and abort."""
+    info = subprocess.run([args.idf_python, "-m", "esp_coredump", "--chip", "esp32s3",
+                           "info_corefile", "--core", str(core), "--core-format", fmt, args.elf],
+                          capture_output=True, text=True, timeout=120)
+    out.write_text(info.stdout + info.stderr)
+    return info.returncode == 0 and "panic_task" in info.stdout and "abort" in info.stdout
+
+
+def check_core_dump_api(gw, obs, args, work, nb, since, ndata_t, off):
+    """Issue #132: the dump of the last panic, read by the running firmware. The NBIRTH has
+    'Node Info/Core Dump' true, /api/status has core_dump, the summary route gives the task, PC,
+    backtrace and reason, GET /api/coredump gives the bytes of the partition (esp_coredump
+    decodes them), and the shell gives the summary and the dump in base64 lines (decoded with
+    --core-format b64, as the how-to does). DELETE without the CSRF header is refused; with it
+    the dump is erased: NDATA Core Dump false (alias only), 404, and no dump in the status."""
+    pw = commissioning_password(gw, since, 10)
+    auth = ("admin", pw or "?")
+    flag = metric(nb[2], name="Node Info/Core Dump") if nb else None
+    born = flag is not None and flag.alias == 57 and flag.datatype == 11 and flag.boolean_value
+    st, _, body = http("GET", "/api/status", auth=auth)
+    cd = (as_json(body) or {}).get("core_dump", {})
+    s_st, _, s_body = http("GET", "/api/coredump/summary", auth=auth)
+    summ = as_json(s_body) or {}
+    d_st, d_h, dump = http("GET", "/api/coredump", auth=auth, timeout=60)
+    dump = dump if d_st == 200 else b""
+    flash = pathlib.Path(args.flash).read_bytes()[off:off + len(dump)]
+    core = work / "coredump-api.bin"
+    core.write_bytes(dump)
+    decoded = bool(dump) and esp_coredump_info(args, core, "raw", work / "coredump-api-info.txt")
+    status_ok = st == 200 and cd.get("present") is True and cd.get("state") == "valid" \
+        and cd.get("size") == len(dump)
+    summary_ok = s_st == 200 and summ.get("task") == "panic" and summ.get("reset_reason") == "panic" \
+        and re.fullmatch(r"0x[0-9a-f]{8}", summ.get("pc", "")) is not None \
+        and len(summ.get("backtrace", [])) >= 2 and "abort()" in summ.get("reason", "") \
+        and summ.get("size") == len(dump)
+    download_ok = d_st == 200 and len(dump) > 1000 and dump == flash \
+        and d_h.get("content-type") == "application/octet-stream" \
+        and "attachment" in d_h.get("content-disposition", "")
+    check("Issue #132 the core dump through the running firmware: NBIRTH 'Node Info/Core Dump' "
+          "true (Boolean, alias 57), /api/status core_dump, GET /api/coredump/summary (task, PC, "
+          "backtrace, reason), GET /api/coredump = the partition's bytes, decoded by esp_coredump",
+          born and status_ok and summary_ok and download_ok and decoded,
+          f"NBIRTH Core Dump {flag.boolean_value if flag else None} (alias "
+          f"{flag.alias if flag else None}); status HTTP {st} {cd}; summary HTTP {s_st} "
+          f"task {summ.get('task')!r} pc {summ.get('pc')} bt {len(summ.get('backtrace', []))} "
+          f"reason {summ.get('reason', '')[:50]!r}; download HTTP {d_st} {len(dump)} B, same as "
+          f"the flash {dump == flash and bool(dump)}, decoded {decoded}")
+
+    # the shell: the summary, then the whole dump in base64 lines between two markers
+    # (its reason line quotes the dump's abort(): not a new failure, DUMP_QUOTE_RX)
+    _, hits = gw.shell("coredump", [r"^coredump  \d+ bytes in flash, checksum correct",
+                                    r"^task\s+panic$", r"^backtrace( 0x[0-9a-f]{8}){2,}",
+                                    r"^reason {4}abort\(\) was called at PC 0x"])
+    t_dump = time.monotonic()
+    gw.console("coredump dump")
+    end = gw.wait_log(r"^-----END CORE DUMP-----$", 60, t_dump)
+    lines = [ln for t, ln in list(gw.lines) if t >= t_dump]
+    begin = next((i for i, ln in enumerate(lines) if ln.endswith("-----BEGIN CORE DUMP-----")), None)
+    stop = next((i for i, ln in enumerate(lines) if ln == "-----END CORE DUMP-----"), None)
+    b64 = [ln for ln in lines[begin + 1:stop] if re.fullmatch(r"[A-Za-z0-9+/=]+", ln)] \
+        if begin is not None and stop is not None else []
+    b64_file = work / "coredump-console.b64"
+    b64_file.write_text("".join(f"{ln}\n" for ln in b64))
+    try:
+        console = base64.b64decode("".join(b64), validate=True)
+    except ValueError:
+        console = b""
+    console_decoded = bool(b64) and esp_coredump_info(args, b64_file, "b64",
+                                                      work / "coredump-console-info.txt")
+    check("Issue #132 shell 'coredump' (summary: size, task, backtrace, reason) and 'coredump "
+          "dump' (the dump in base64 lines between two markers: the same bytes as the download, "
+          "decoded by esp_coredump --core-format b64)",
+          all(hits.values()) and end and console == dump and bool(dump) and console_decoded,
+          f"summary lines missing: {[p for p, t in hits.items() if t is None] or 'none'}; "
+          f"dump end marker {'yes' if end else 'no'}, {len(b64)} lines, {len(console)} B, same "
+          f"as the download {console == dump}, decoded {console_decoded}")
+
+    # erase: the CSRF check first, then the dump goes and the metric follows
+    f_st, _, _ = http("DELETE", "/api/coredump", auth=auth, headers={"X-Requested-With": None})
+    kept = ((as_json(http("GET", "/api/status", auth=auth)[2]) or {}).get("core_dump") or {}) \
+        .get("present")
+    obs.drain()
+    e_st, _, e_body = http("DELETE", "/api/coredump", auth=auth)
+    nd = obs.wait(ndata_t, 15, lambda q: metric(q, alias=57) is not None)
+    nd_m = metric(nd[2], alias=57) if nd else None
+    g_st, _, _ = http("GET", "/api/coredump", auth=auth)
+    a_st, _, a_body = http("GET", "/api/status", auth=auth)
+    gone = (as_json(a_body) or {}).get("core_dump", {})
+    summ2 = as_json(http("GET", "/api/coredump/summary", auth=auth)[2]) or {}
+    again, _, _ = http("DELETE", "/api/coredump", auth=auth)
+    _, none = gw.shell("coredump", [r"^coredump  none in flash$"])
+    erased = gw.find(r"coredump: core dump erased through the REST API", t_dump)
+    check("Issue #132 DELETE /api/coredump: refused without the CSRF header (403, the dump "
+          "stays), then erased (200, NDATA 'Node Info/Core Dump' false by alias only); afterwards "
+          "GET 404, /api/status and the summary show no dump, a second DELETE 404, shell 'none'",
+          f_st == 403 and kept is True and e_st == 200 and (as_json(e_body) or {}).get("erased")
+          and nd_m is not None and not nd_m.name and nd_m.boolean_value is False and g_st == 404
+          and a_st == 200 and gone.get("present") is False and summ2.get("present") is False
+          and again == 404 and all(none.values()) and erased,
+          f"without header HTTP {f_st} (dump kept {kept}); DELETE HTTP {e_st} {e_body[:60]!r}; "
+          f"NDATA {nd_m.boolean_value if nd_m else None} name {nd_m.name if nd_m else None!r}; "
+          f"GET after {g_st}; status {gone}; summary present {summ2.get('present')}; second "
+          f"DELETE {again}; shell {'none' if all(none.values()) else 'no answer'}; "
+          f"log {(erased or ['no erase log'])[0]}")
+
+
 def check_scan_rate(obs, gw, slave, nbirth, ncmd_t, ndata_t):
     """SPB-15: writable Node Control/Scan Rate (UInt32 ms, 0 = each device at its poll_ms).
     3000 makes Meter1 poll every 3 s, an invalid value is refused (NDATA keeps 3000), 0 brings
@@ -6796,6 +6909,7 @@ def run(args, log, slave, broker, conf, work):
         n += 1
         if kind == "invalid":
             break
+    check_core_dump_api(gw, obs, args, work, nb, since, ndata_t, off)   # issue #132
     gw.kill()
 
     def describe(i, a):

@@ -613,32 +613,32 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 - **Botón BOOT:** 1 pitido al soltarlo entre 2 y 10 s (punto de acceso, NET-5) y 2 pitidos al confirmar el reset de fábrica (CFG-5), haya alarmas o no.
 - No hay forma de silenciar una alarma mientras dura su condición.
 
-**Diagnóstico del nodo (SPB-17, MB-13), en `sparkplug`.**
+**Node diagnostics (SPB-17, MB-13), in `sparkplug`.**
 
 ```json
 "sparkplug": { "group_id": "Plant1", "edge_node_id": "GW01", "diagnostics_s": 60 }
 ```
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `diagnostics_s` | entero | `60` | 0 o 10–86400. Cada cuánto se publica un NDATA con el diagnóstico. 0 = solo en el NBIRTH |
+| `diagnostics_s` | integer | `60` | 0 or 10–86400. The period of the NDATA with the diagnostics, in seconds. 0 = only in the NBIRTH |
 
-Métricas del nodo, en el NBIRTH y en ese NDATA periódico:
+The node metrics in the NBIRTH and in this periodic NDATA:
 
-| Métrica | Alias | Datatype | Qué es |
+| Metric | Alias | Datatype | What it is |
 |---|---|---|---|
-| `Node Info/Uptime` | 50 | UInt64 | Segundos desde el arranque |
-| `Node Info/Free Heap` | 51 | UInt32 | Bytes libres de RAM interna |
-| `Node Info/Min Free Heap` | 52 | UInt32 | Mínimo de RAM interna libre desde el arranque |
-| `Node Info/RSSI` | 53 | Int32 | dBm del punto de acceso Wi-Fi; solo si el equipo tiene Wi-Fi configurado, `null` mientras no está asociado |
-| `Node Info/Modbus` | 54 | DataSet | Una fila por dispositivo: `Device` (String), `Online` (Boolean), `Cycles`, `Failed Cycles`, `OK`, `Timeout`, `CRC`, `Frame`, `Exception` (UInt32; los tres últimos cuentan intentos, reintentos incluidos) |
+| `Node Info/Uptime` | 50 | UInt64 | The seconds since the boot |
+| `Node Info/Free Heap` | 51 | UInt32 | The free bytes of the internal RAM |
+| `Node Info/Min Free Heap` | 52 | UInt32 | The minimum free internal RAM since the boot |
+| `Node Info/RSSI` | 53 | Int32 | The dBm of the Wi-Fi access point. Only when the gateway has a Wi-Fi configuration; `null` while it is not associated |
+| `Node Info/Modbus` | 54 | DataSet | One row for each device: `Device` (String), `Online` (Boolean), `Cycles`, `Failed Cycles`, `OK`, `Timeout`, `CRC`, `Frame`, `Exception` (UInt32; the last three count the attempts, retries included) |
+| `Node Info/Modbus TCP` | 56 | DataSet | Only with `modbus_tcp.enabled`. The Modbus TCP requests that the gateway sends to each unit (MB-15): one row for each device, `Device` (String), `Unit`, `Online` (Boolean), `OK`, `Timeout`, `CRC`, `Frame`, `Exception` (UInt32, attempts), and a last row `(other units)` (unit 0) for the units that have no device |
 
-| `Node Info/Modbus TCP` | 56 | DataSet | Solo con `modbus_tcp.enabled`. Las peticiones Modbus TCP reenviadas a cada unidad (MB-15): una fila por dispositivo, `Device` (String), `Unit`, `Online` (Boolean), `OK`, `Timeout`, `CRC`, `Frame`, `Exception` (UInt32, intentos), y una última fila `(other units)` (unidad 0) para las unidades que no tienen dispositivo |
-
-- Las tablas Modbus van en el NDATA solo si algún contador o estado cambió desde la última vez (las dos juntas); uptime y heap van siempre.
-- La de Modbus TCP es una tabla aparte, no una columna más de `Node Info/Modbus`: esa conserva sus columnas para los hosts que ya la leen, los ciclos de encuesta no tienen sentido para las peticiones reenviadas y la de TCP existe solo con el gateway encendido.
-- **`Node Info/Time Synced`** (TIME-3, alias 55, Boolean): `true` cuando SNTP sincronizó el reloj al menos una vez desde el arranque. Una hora tomada del RTC al arrancar (TIME-2) es válida pero **no** cuenta como sincronizada. Va en el NBIRTH y en un NDATA propio cada vez que cambia (no en el periódico).
-- Los contadores son del nodo, no de cada dispositivo: así se publican también los de un dispositivo fuera de línea (sin DBIRTH), que es cuando más crecen.
+- The Modbus tables go in the NDATA only if a counter or a state changed since the last time (the two tables together). The uptime and the heap go always.
+- The Modbus TCP table is a separate table, not one more column of `Node Info/Modbus`. That table keeps its columns for the hosts that read it. The poll cycles have no meaning for the forwarded requests, and the TCP table exists only when the Modbus TCP gateway is on.
+- **`Node Info/Time Synced`** (TIME-3, alias 55, Boolean): `true` when SNTP synchronized the clock one or more times since the boot. A time from the RTC at boot (TIME-2) is valid, but it is **not** synchronized. It goes in the NBIRTH, and in an NDATA of its own each time that it changes (not in the periodic NDATA).
+- **`Node Info/Core Dump`** (REL-1, issue #132, alias 57, Boolean): `true` while a core dump is in the `coredump` partition (a panic occurred, and nobody erased the dump). It goes in the NBIRTH. When the dump is erased (`DELETE /api/coredump` or the shell's `coredump erase`), an NDATA of its own sends `false`, with the alias only. The operator downloads the dump with `GET /api/coredump` (§6.1).
+- The counters are of the node, not of each device. Thus the gateway also publishes the counters of a device that is offline (without DBIRTH), when they increase most.
 
 **`syslog` (REL-4): copia del log a un servidor syslog.**
 
@@ -681,7 +681,7 @@ En el archivo `/cfg/config.json` un secreto ausente, vacío o `"********"` toma 
 
 **REST API.** All the routes require HTTP Basic with `web.username` and `web.password`, over HTTPS when `https` is on. The responses are JSON.
 
-**Writes and CSRF (issue #100).** Each `PUT` and `POST` must have the header `X-Requested-With` (any value; the web UI sends `gateway`). If the client sends `Origin` (or `Referer` when there is no `Origin`), it must be this gateway: the scheme of the connection and the `Host` of the request. The gateway compares them in a normal form (issue #106): the name in lower case and without the final dot, IPv6 between brackets, the port in decimal, and no port when it is the port of the scheme (443 with HTTPS, 80 without) or empty. Any name that gets to the gateway is correct (IP, `<hostname>.local`, `<hostname>`, a DNS name of the plant), if the page and the request use the same name. A malformed `Host` or `Origin` is not correct, and `Origin: null` is not correct. Otherwise the response is `403`, before the password check: it does not count as a failed login.
+**Writes and CSRF (issue #100).** Each `PUT`, `POST` and `DELETE` must have the header `X-Requested-With` (any value; the web UI sends `gateway`). If the client sends `Origin` (or `Referer` when there is no `Origin`), it must be this gateway: the scheme of the connection and the `Host` of the request. The gateway compares them in a normal form (issue #106): the name in lower case and without the final dot, IPv6 between brackets, the port in decimal, and no port when it is the port of the scheme (443 with HTTPS, 80 without) or empty. Any name that gets to the gateway is correct (IP, `<hostname>.local`, `<hostname>`, a DNS name of the plant), if the page and the request use the same name. A malformed `Host` or `Origin` is not correct, and `Origin: null` is not correct. Otherwise the response is `403`, before the password check: it does not count as a failed login.
 
 The gateway does not read all of the body of a request without credentials or from another site, when the body is more than 1 KB (issue #106). It sends the response (`401`, `403`, `429`) and closes the connection. A client that still sends can see a closed connection instead of the response. The gateway does not cut the rejection of an authenticated request from the same origin (`400`, `409`, `413`, `415`): it discards all of the body, and the client receives the response. A client that is not a browser (`curl`, a script) does not send `Origin`: the header is sufficient. For example: `curl -u admin:… -H 'X-Requested-With: curl' -X PUT --data-binary @config.json https://<ip>/api/config`.
 
@@ -694,6 +694,9 @@ The gateway does not read all of the body of a request without credentials or fr
 | `POST /api/modbus/read` | Issue #182: one Modbus read for commissioning, through the task that owns the bus (MB-16), as the shell `mbread` does. Body: `{"unit": 1-247, "area": "coil"\|"discrete"\|"holding"\|"input", "address": 0-65535}`, optional `"count"` (1–16, default 1 or the size of the type), `"type"` (a tag type; `bool` only for `coil`/`discrete`; `string` and `bytes` take `count` registers) and `"word_order"` (only with `type`). `200 {"ok":true,"unit":1,"area":"input","address":0,"count":2,"values":[17254,32768],"type":"float32","word_order":"ABCD","value":230.5}`. A Modbus error: `504` (`"result":"timeout"`) or `502` (`crc`, `frame`, or `exception` with `"exception"`: the code), with `error`. `503` when the bus does not run the read in time or another test read waits. `400` for a request that is not correct. `409` in recovery and in commissioning (the bus does not run). Read only |
 | `POST /api/firmware` | FW-1: `application/json` with `{"url": "https://…"}` (download), or `application/octet-stream` with the image as the body. Another `Content-Type` gets `415` |
 | `POST /api/card/format?confirm=1` | SPB-14, issue #139: starts a format of the microSD card in the background, and returns at once. It deletes everything on the card. Without `?confirm=1`: `400`. `202 {"ok":true,"started":true}` when the format starts. `409` when a format runs. `501` when the build has no card (QEMU) or the board has no PSRAM. `503` when there is no memory for the format task. The errors have `reason`: `busy`, `no_support`, `no_psram` or `no_memory`. A card that does not answer ends the format as `failed` (`card_format` in `/api/status`) |
+| `GET /api/coredump` | REL-1, issue #132: downloads the core dump in flash, as it is in the partition (header, ELF and checksum; `application/octet-stream`, `Content-Disposition: attachment`). Decode it with `esp-coredump --core-format raw` and the ELF of the same build. `404` when there is no dump. `409` when the partition holds no readable dump (erase it). The dump can contain secrets in clear text: keep the file safe |
+| `DELETE /api/coredump` | Issue #132: erases the core dump, after a download or without one. `200 {"ok":true,"erased":true}`. `404` when there is no dump. The gateway then publishes `Node Info/Core Dump` = `false` |
+| `GET /api/coredump/summary` | Issue #132: `present`, `state` (`none`, `valid`, `corrupt`), `size` and `reset_reason` (of this boot: the dump can be older). For a valid dump also `task`, `pc`, `backtrace` (addresses as `"0x…"` strings), `backtrace_corrupted`, `exc_cause`, `exc_vaddr`, `reason` (the panic reason, for example `abort() was called at PC 0x… on core 0`; empty when the dump has none) and `app_elf_sha256` (the start of the SHA-256 of the ELF that crashed) |
 | `GET /api/status` | The live state (also in recovery and in commissioning). Refer to the description below |
 
 **`GET /api/status`** sends an object with these items: `mode` (`normal`, `recovery`, `commissioning`), `firmware`, `reset_reason`, `uptime_s`, `config` (`ok`, `source`, `error`, `path`), `network` (`up`, `interfaces`), `mqtt` (`connected`), `sparkplug` (`group_id`, `edge_node_id`, `diagnostics_s`; only with a valid configuration), `syslog`, `devices`, `heap` and the fields of the table. For each device, `devices` has `online`, `cycles`, `failed`, `ok`, `timeout`, `crc`, `frame`, `exception` and `tags`. Each tag has `name`, `valid` and `value`: a number, an exact integer for `int64`/`uint64`, a text for `string`, hexadecimal for `bytes`.
@@ -710,6 +713,7 @@ The gateway does not read all of the body of a request without credentials or fr
 | `time.rtc` | `present`, the `status` of the last read or write of the RTC, and `stores` (the writes after SNTP) |
 | `card` (optional, issue #139) | The microSD card. `state`: `unsupported` (the build has no card), `unchecked` (the boot did not look for a card: the spill is off), `absent`, `not_mounted`, `mounted`, `formatting` or `formatted` (restart to use it). `detail` tells why (for example `no FAT file system (exFAT, NTFS, ext4, GPT, or no format) (FatFs error 13)`). When known: `name`, `size_mb`, `fat`, `cluster` (B), `free_mb` (with no scan of the FAT) and `other_entries` (the entries of the root that are not the folder `sf`: the format deletes them too) |
 | `spill` (optional, normal mode) | The spill of store & forward to the card. `state`: `off` (with `detail`), `not_started` (with `detail`, for example `it needs PSRAM, and none was detected`), `on`, `failed` (with `detail` and `stranded`, the samples that stay on the card) or `stopped` (a format took the card). With `on`: `ready` (the boot recovery ended), `waiting`, `moved`, `overwritten`, `holes`, `ring_blocks`, `waiting_blocks`, `extents`, `kb`, `blocks_written`, `checkpoints`, `boot_ms` and `files_to_delete` (the counters of the shell `spill` line) |
+| `core_dump` (optional, issue #132) | The core dump in flash: `present`, `state` (`none`, `valid`: the checksum is correct, `corrupt`) and `size` (bytes, 0 = not known). `GET /api/coredump/summary` gives its summary |
 | `card_format` (optional, issue #139) | The format of the card. `state`: `idle`, `running` (with `elapsed_s`), `done` (with `duration_s`, `fat`, `cluster`, `size_mb` and `restart: true`) or `failed` (with `duration_s` and `error`) |
 
 A client that does not know the optional fields can ignore them.

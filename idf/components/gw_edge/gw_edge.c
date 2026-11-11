@@ -21,6 +21,7 @@
 #include "gw_backoff.h"
 #include "gw_brokersel.h"
 #include "gw_bus.h"
+#include "gw_coredump.h"
 #include "gw_fw.h"
 #include "gw_io.h"
 #include "gw_net.h"
@@ -309,6 +310,11 @@ void gw_edge_notify_firmware(void)
     if (!atomic_exchange(&s_fw_dirty, true)) {
         wake();
     }
+}
+
+void gw_edge_notify_core_dump(void)
+{
+    wake();   /* the loop reads gw_coredump_present() */
 }
 
 bool gw_edge_request_rebirth(void)
@@ -714,6 +720,7 @@ static void op_diagnostics(void *ctx, gw_node_diag_t *out)
     out->rssi_valid = out->has_rssi && gw_net_wifi_rssi(&rssi);
     out->rssi = out->rssi_valid ? rssi : 0;
     out->time_synced = atomic_load(&s_time_synced);   /* TIME-3: SNTP only, not the RTC */
+    out->core_dump = gw_coredump_present();           /* issue #132 */
 }
 
 /* #124: the replay position goes to the card (fewer duplicates), before a format. */
@@ -1483,6 +1490,7 @@ static void reconcile(void)
     /* TIME-3: NDATA Time Synced when SNTP synchronises after births timed by the RTC (the
      * rebirth above already carried it otherwise) */
     gw_node_set_time_synced(s_node, atomic_load(&s_time_synced));
+    gw_node_set_core_dump(s_node, gw_coredump_present());   /* #132: NDATA after an erase */
     sync_firmware();
     if (atomic_exchange(&s_rebirth_req, false) && s_node->online) {
         ESP_LOGI(TAG, "rebirth requested from the shell or the REST API");

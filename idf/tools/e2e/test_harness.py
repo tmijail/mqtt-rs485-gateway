@@ -172,6 +172,17 @@ class Signatures(unittest.TestCase):
                + [f"I ({n}) edge: noise" for n in range(e2e.DELIBERATE_LINES + 1)]
                + ["abort() was called at PC 0x42001234 on core 0"])
         self.assertEqual(1, len(g.unknown_panics()))
+        # issue #132: the shell's 'coredump' summary quotes the reason of the dump in flash
+        g = FakeGateway()
+        g.feed([APP, "coredump  12345 bytes in flash, checksum correct; the reset reason of "
+                "this boot: panic", "task      panic",
+                "reason    abort() was called at PC 0x42001234 on core 0"])
+        self.assertEqual([], g.unknown_panics())
+        # the same reason anywhere else is still a failure
+        g = FakeGateway()
+        g.feed([APP, "I (1) edge: Sparkplug session up",
+                "panic reason abort() was called at PC 0x42001234 on core 0"])
+        self.assertEqual(1, len(g.unknown_panics()))
         # the backtrace of the known emulator panic is not a failure either
         g = FakeGateway()
         g.feed([APP] + FLAKE + ["", "Backtrace: 0x4037c264:0x3fc935f0 0x40377acf:0x3fc93610"])

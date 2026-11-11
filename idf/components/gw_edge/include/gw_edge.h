@@ -100,6 +100,10 @@ void gw_edge_request_restart_discard(void);
 /** FW-1: the firmware update's state changed (gw_fw hook; any task, never blocks). */
 void gw_edge_notify_firmware(void);
 
+/** Issue #132: the core dump was erased (shell, REST API): the Sparkplug task publishes
+ *  Node Info/Core Dump = false. Any task, never blocks. */
+void gw_edge_notify_core_dump(void);
+
 /** CFG-6, #171 (shell and REST API): re-issue NBIRTH and every DBIRTH (as NCMD Node
  *  Control/Rebirth, with the same bdSeq). False if no Sparkplug session is up. */
 bool gw_edge_request_rebirth(void);

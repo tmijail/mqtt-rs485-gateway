@@ -22,7 +22,8 @@
  *   device with the MB-13 counters), 55 Node Info/Time Synced (TIME-3, Boolean: SNTP),
  *   56 Node Info/Modbus TCP (issue #81, DataSet: per device, the attempts of the Modbus TCP
  *   requests forwarded to its unit, plus one row for units without a device; only with
- *   modbus_tcp.enabled).
+ *   modbus_tcp.enabled), 57 Node Info/Core Dump (issue #132, Boolean: a core dump is in
+ *   flash).
  *
  * SPB-18 device types: a device with a `type` is published as one Template instance metric
  * (named after the type, alias 100 + its first tag) whose members are its tags, by name; the
@@ -79,12 +80,14 @@ extern "C" {
 #define GW_ALIAS_MODBUS    54u
 #define GW_ALIAS_TIME_SYNCED 55u  /* TIME-3 */
 #define GW_ALIAS_MODBUS_TCP 56u   /* issue #81 */
+#define GW_ALIAS_CORE_DUMP 57u    /* issue #132 */
 
 #define GW_NODE_IO_COUNT        8
 #define GW_NODE_DIAG_METRICS    6   /* SPB-17, at most (RSSI only with Wi-Fi, Modbus with devices,
                                      * Modbus TCP with the gateway enabled) */
-/* Node metrics of the NBIRTH, without template definitions (3 of them FW-1) */
-#define GW_NODE_BIRTH_METRICS   (10 + 3 * GW_NODE_IO_COUNT + GW_NODE_DIAG_METRICS + 1)
+/* Node metrics of the NBIRTH, without template definitions (3 of them FW-1; the last 2: Time
+ * Synced and Core Dump) */
+#define GW_NODE_BIRTH_METRICS   (10 + 3 * GW_NODE_IO_COUNT + GW_NODE_DIAG_METRICS + 2)
 /* Scratch metrics: a whole device (+1 template instance), or the NBIRTH with one template
  * definition per device type. */
 #define GW_NODE_METRICS_MAX \
@@ -115,6 +118,7 @@ typedef struct gw_node_diag {
     bool rssi_valid;           /* associated: rssi is meaningful (null otherwise) */
     int32_t rssi;              /* dBm */
     bool time_synced;          /* TIME-3: the clock was synchronised by SNTP */
+    bool core_dump;            /* issue #132: a core dump is in flash */
 } gw_node_diag_t;
 
 typedef struct {
@@ -174,6 +178,7 @@ typedef struct {
     /* SPB-17 */
     bool has_rssi;                     /* fixed by the NBIRTH */
     bool time_synced_reported;         /* TIME-3: last published Time Synced */
+    bool core_dump_reported;           /* issue #132: last published Core Dump */
     uint64_t diag_due_ms;              /* next periodic NDATA (0: none scheduled) */
     bool diag_restart;                 /* NBIRTH sent: the period restarts at the next tick */
     uint64_t diag_hash;                /* of the Modbus counters last published */
@@ -275,6 +280,10 @@ uint32_t gw_node_diag_tick(gw_node_t *n, uint64_t now_ms);
 /** TIME-3: the clock's SNTP state; an NDATA with Node Info/Time Synced when it changed. The
  *  NBIRTH takes it from the diagnostics op. */
 void gw_node_set_time_synced(gw_node_t *n, bool synced);
+
+/** Issue #132: a core dump is in flash; an NDATA with Node Info/Core Dump when it changed (the
+ *  dump was erased). The NBIRTH takes it from the diagnostics op. */
+void gw_node_set_core_dump(gw_node_t *n, bool present);
 
 #ifdef __cplusplus
 }

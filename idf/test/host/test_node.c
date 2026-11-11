@@ -1281,6 +1281,46 @@ static void test_time_synced(void)
     TEST_ASSERT_EQUAL(births, g_rec.count);
 }
 
+/* Issue #132: Node Info/Core Dump in the NBIRTH (Boolean, alias 57), and an NDATA with the
+ * alias only when the dump is erased (tck-id-payloads-alias-uniqueness). */
+static void test_core_dump_metric(void)
+{
+    g_rec.diag.core_dump = true;   /* the boot after a panic */
+    gw_node_session_up(&node, 0);
+    msg(0);
+    int i = decoded_find_name(&dec, "Node Info/Core Dump");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_BOOLEAN, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_CORE_DUMP, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[i].num);
+    for (size_t k = 0; k < dec.count; k++) {   /* its alias is its own */
+        TEST_ASSERT_TRUE(k == (size_t)i || dec.m[k].alias != GW_ALIAS_CORE_DUMP);
+    }
+    recorder_clear();
+    gw_node_set_core_dump(&node, true);              /* unchanged */
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    gw_node_set_core_dump(&node, false);             /* erased */
+    msg(0);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", g_rec.msgs[0].topic);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_CORE_DUMP, dec.m[0].alias);
+    TEST_ASSERT_FALSE(dec.m[0].has_name);
+    TEST_ASSERT_FALSE(dec.m[0].has_datatype);   /* tck-id-payloads-metric-datatype-not-req */
+    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[0].num);
+    gw_node_set_core_dump(&node, false);
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    /* a rebirth takes the state from the diagnostics op */
+    g_rec.diag.core_dump = false;
+    recorder_clear();
+    gw_node_rebirth(&node);
+    msg(0);
+    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[decoded_find_name(&dec, "Node Info/Core Dump")].num);
+    size_t births = g_rec.count;
+    gw_node_session_down(&node);
+    gw_node_set_core_dump(&node, true);              /* offline: nothing */
+    TEST_ASSERT_EQUAL(births, g_rec.count);
+}
+
 /* Issue #14: a command metric without an alias is not logged as "alias 0". */
 static void test_discard_log_shows_alias_only_if_present(void)
 {
@@ -1907,6 +1947,7 @@ int main(void)
     RUN_TEST(test_store_and_forward_templates_bytes);
     RUN_TEST(test_diagnostics);
     RUN_TEST(test_time_synced);
+    RUN_TEST(test_core_dump_metric);
     RUN_TEST(test_modbus_tcp_table);
     RUN_TEST(test_worst_case_nbirth_fits);
     RUN_TEST(test_command_aborted_mid_payload_applies_nothing);

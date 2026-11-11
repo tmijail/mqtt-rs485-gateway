@@ -75,6 +75,7 @@ The gateway publishes these metrics in the NBIRTH, and their changes in NDATA. S
 | `Node Info/Modbus` | DataSet | With one or more devices | None: UMH gives no value for a DataSet | Dropped |
 | `Node Info/Modbus TCP` | DataSet | Only with `modbus_tcp.enabled` | None: UMH gives no value for a DataSet | Dropped |
 | `Node Info/Time Synced` | Boolean | Always | `Node_Info.Time_Synced` | Kept |
+| `Node Info/Core Dump` | Boolean | Always. `true` while a core dump is in flash (issue #132) | `Node_Info.Core_Dump` | Kept |
 | A template definition for each device `type` | Template | Only with devices that have a `type` | None: UMH gives no value for a Template | Dropped |
 
 `Node Info/Uptime`, `Free Heap`, `Min Free Heap` and `RSSI` also go in an NDATA each `sparkplug.diagnostics_s` (60 s by default, 0 = never). The DataSets go in this NDATA only when a counter changed.

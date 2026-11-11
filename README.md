@@ -9,6 +9,7 @@ This firmware is an RS485 (Modbus RTU) to MQTT Sparkplug B 3.0 gateway for the W
 - `docs/RECOMMENDATION.md`: the reasons for ESP-IDF and not Zephyr.
 - `docs/how-to/connect-the-rs485-bus.md`: how to connect the RS485 bus, and how to find the cause of a bus problem.
 - `docs/how-to/connect-to-umh-core.md`: how to send the data of the gateway to UMH Core.
+- `docs/how-to/decode-a-core-dump.md`: how to get the core dump of a gateway after a crash, and how to decode it.
 - `docs/how-to/run-e2e-in-docker.md`: how to run the QEMU E2E tests in Docker, also on Windows.
 - `docs/reference/e2e-durations.md`: the measured durations of the E2E tests on a Windows computer.
 - `docs/reference/umh-names-and-topics.md`: the name limits of the gateway, and the UMH topic of each metric.

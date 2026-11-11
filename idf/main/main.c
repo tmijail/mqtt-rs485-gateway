@@ -33,6 +33,7 @@
 #include "gw_bus.h"
 #include "gw_buzzer.h"
 #include "gw_config.h"
+#include "gw_coredump.h"
 #include "gw_edge.h"
 #include "gw_fw.h"
 #include "gw_io.h"
@@ -331,6 +332,7 @@ void app_main(void)
         ESP_LOGE(TAG, "status LED unavailable");
     }
     gw_storage_init();  /* failure is logged; bdSeq then lives in RAM only */
+    gw_coredump_init();   /* #132: before the shell, the web server and the Sparkplug task */
     /* Before the configuration: whatever happens next, no DO stays on from before a reset,
      * except those the last valid configuration holds across a restart (IO-3, kept in NVS). */
     uint8_t hold = 0;
