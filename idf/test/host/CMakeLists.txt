@@ -41,7 +41,7 @@ enable_testing()
 foreach(t test_mb_rtu test_mb_master test_conv test_logic test_config test_plan test_spb test_node
           test_poll test_dout test_netsel test_syslog test_auth test_cfgdoc test_button
           test_brokersel test_phost test_sf test_authlimit test_mbap test_localio test_buzz test_rtc
-          test_ota test_nvsraw test_cardfmt test_sfcfg test_mbdiag test_cdump)
+          test_ota test_nvsraw test_cardfmt test_sfcfg test_mbdiag test_cdump test_claim)
     add_executable(${t} ${t}.c support.c)
     target_link_libraries(${t} PRIVATE gw_core unity)
     target_include_directories(${t} PRIVATE ${CMAKE_CURRENT_LIST_DIR})
@@ -109,6 +109,7 @@ add_test(NAME check_web_lists
 # absent options (SPIRAM_IGNORE_NOTFOUND with SPIRAM off, as in the QEMU build) are skipped.
 # An overlay with "@" is a file of the project. Issue #103: NVS encryption without flash
 # encryption fails (reported with MODE=warn), except in the emulator build (GW_IO_SIMULATED).
+# Issue #135: an sdkconfig without the PSRAM fails, except with the QEMU overlay (CONFIG_SPIRAM=n).
 set(GW_CFGCHK ${IDF_PROJECT_DIR}/cmake/gw_sdkconfig_check.cmake)
 set(GW_CFGCHK_DIR ${CMAKE_CURRENT_LIST_DIR}/sdkconfig_check)
 set(GW_CFGCHK_DEFAULTS ${IDF_PROJECT_DIR}/sdkconfig.defaults)
@@ -116,7 +117,10 @@ foreach(c "fresh;fresh;;;0" "stale;stale;;warn;0;MBEDTLS_DYNAMIC_BUFFER" "stale;
           "wdt5;wdt5;;;1" "wdt5_overlay;wdt5;wdt5.defaults;;0"
           "nvsenc_noflash;nvsenc_noflash;;;1"
           "nvsenc_noflash;nvsenc_noflash;;warn;0;NVS_ENCRYPTION"
-          "nvsenc_sim;nvsenc_sim;;;0")
+          "nvsenc_sim;nvsenc_sim;@sdkconfig.qemu;;0"
+          "nopsram;nopsram;;;1"
+          "nopsram;nopsram;;warn;0;SPIRAM"
+          "nopsram_qemu;nopsram;@sdkconfig.qemu;;0")
     list(GET c 0 name)
     list(GET c 1 cfg)
     list(GET c 2 overlay)

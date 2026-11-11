@@ -16,6 +16,7 @@
 
 #include "esp_err.h"
 #include "sdkconfig.h"
+#include "gw_clock.h"
 #include "gw_config.h"
 #include "gw_node.h"
 
@@ -85,6 +86,20 @@ void gw_edge_notify_time_synced(void);
 /** TIME-1: SNTP has synchronised the clock at least once (safe from any task, also before
  *  gw_edge_start). */
 bool gw_edge_time_synced(void);
+
+/** TIME-1 / issue #160: the source of the clock (safe from any task, also before
+ *  gw_edge_start): SNTP, the RTC at boot, the browser, or none. */
+gw_clock_source_t gw_edge_time_source(void);
+
+/** Issue #160: the clock is valid for timestamps (gw_clock_valid of the source). Without it the
+ *  gateway publishes the births only: no NDATA or DDATA, and stores nothing. */
+bool gw_edge_time_valid(void);
+
+/** Issue #160, POST /api/time: set the system clock to @p utc_ms (a plausible time,
+ *  gw_clock_plausible_ms) and store it in the RTC. The source becomes "browser" (not
+ *  synchronised: TIME-3 stays false). False, and nothing changes, if SNTP synchronised the clock
+ *  or the time is not plausible. Any task; the Sparkplug task does the rebirth if needed. */
+bool gw_edge_set_browser_time(int64_t utc_ms);
 void gw_edge_notify_device(uint16_t dev);
 void gw_edge_notify_io(void);
 void gw_edge_notify_write_done(uint16_t tag, bool ok);

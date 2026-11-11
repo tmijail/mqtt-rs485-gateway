@@ -53,6 +53,10 @@ esp_err_t gw_net_start(const gw_config_t *cfg, const gw_net_callbacks_t *cb);
  */
 bool gw_net_active_ifname(char *name, size_t cap);
 
+/** Issue #120: the IPv4 address and netmask of interface @p i (network byte order); false when it
+ *  is not configured or has no address. Safe from any task. */
+bool gw_net_ip4_info(gw_net_if_t i, uint8_t ip[4], uint8_t mask[4]);
+
 /** Snapshot of every interface, for diagnostics (safe from any task). */
 void gw_net_get_status(gw_net_if_status_t out[GW_NET_IF_COUNT]);
 

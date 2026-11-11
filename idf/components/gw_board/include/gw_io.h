@@ -70,7 +70,7 @@ typedef struct {
     bool present;          /* the chip answered */
     bool restored;         /* the system time came from it at boot */
     int status;            /* gw_rtc_status_t of the boot reading (or of the last store) */
-    uint32_t stores;       /* times written after SNTP */
+    uint32_t stores;       /* times written after SNTP or a browser time (#160) */
     uint32_t store_errors;
 } gw_io_rtc_info_t;
 
@@ -79,7 +79,8 @@ typedef struct {
  *  plausible. gw_io_rtc_get() tells whether it did. */
 void gw_io_rtc_restore(void);
 
-/** After each SNTP synchronisation (any task): store the system time in the RTC. Done by the
+/** After each SNTP synchronisation, and after a time set from the browser (issue #160), from
+ *  any task: store the system time in the RTC. Done by the
  *  local_io task once it runs, the only user of the bus. */
 void gw_io_rtc_store(void);
 

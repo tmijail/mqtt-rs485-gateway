@@ -8,6 +8,9 @@
 #   E2E_PYTHON=~/e2e/bin/python tools/e2e/run_ci_groups.sh /tmp/gw-groups            # all groups
 #   E2E_PSRAM=1 E2E_PYTHON=... tools/e2e/run_ci_groups.sh /tmp/gw-groups ota-fw1 other
 #
+# Issue #135: each variant has its own groups (the PSRAM variant runs most scenarios, the
+# variant without PSRAM only the OTA trial scenarios); run the script once for each variant.
+#
 # Each group writes <dir>/e2e-result-<variant>-<group>/ (its E2E_WORKDIR: results.json,
 # qemu-exits.txt, logs) and <dir>/<variant>-<group>.out (its console output). PARALLEL (default
 # 2): groups at the same time; QEMU uses up to 2 host threads per group, and a loaded host makes
@@ -23,7 +26,7 @@ if [ "${E2E_PSRAM:-0}" = 1 ]; then VARIANT=psram; else VARIANT=default; fi
 IMAGES="$DIR/images-$VARIANT"
 
 # the selected groups: id, --only, needs the build without NVS encryption
-mapfile -t ROWS < <(python3 "$HERE/scenarios.py" groups)
+mapfile -t ROWS < <(python3 "$HERE/scenarios.py" groups "$VARIANT")
 SEL=()
 PLAIN=0
 for r in "${ROWS[@]}"; do

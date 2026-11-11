@@ -4,7 +4,8 @@ a full run into parallel jobs. No third-party imports: the CI reads it without t
 packages, e2e.py dispatches with it and test_harness.py checks the groups against it.
 
     python3 scenarios.py matrix                 # GitHub outputs: build=<json>, run=<json>
-    python3 scenarios.py groups                 # one line per CI group: id, --only, plain 0/1
+    python3 scenarios.py groups [VARIANT]       # one line per CI group (of VARIANT): id, --only,
+                                                # plain 0/1
     python3 scenarios.py line [--header] VARIANT GROUP DIR
                                                 # one Markdown table row for a group's workdir
     python3 scenarios.py summary DIR [VARIANT]  # every group's results (DIR/e2e-result-*/):
@@ -32,6 +33,7 @@ SCENARIOS = (
     ("sf spill", ("sf",)),
     ("stack margin", ("sf",)),
     ("https", ("https",)),
+    ("time", ("time",)),   # issue #160: no NDATA/DDATA before a valid clock
     ("FW-1 OTA", ("ota", "ota-fw1")),
     ("issue #112 park in a long RS485 transaction", ("ota", "ota-park")),
     ("issue #97 OTA trial wiring", ("ota", "ota-wiring")),
@@ -40,14 +42,29 @@ SCENARIOS = (
     ("issue #109 full unencrypted NVS", ("nvs",)),
     ("issue #94 OTA to NVS encryption", ("nvs",)),
     ("slow", ("slow",)),
+    ("issue #135 no PSRAM", ("nopsram",)),
     ("refuse", ("refuse",)),   # part of "main"; alone only when "main" is not selected (#89)
     ("main", ("main",)),
-    ("tck", ("tck",)),         # issue #176: the Sparkplug TCK, optional (OPTIONAL)
+    ("umh", ("umh",)),         # optional: only when named (issue #175)
+    ("tck", ("tck",)),         # optional: only when named (issue #176, the Sparkplug TCK)
 )
+# Issues #175 and #176: scenarios that a run selects only when --only names them. A full run and
+# the CI groups leave them out: they need programs that are not in the CI image (benthos-umh;
+# Java, HiveMQ CE and the TCK extension: E2E_TCK_DIR, tools/e2e/tck.py).
+OPTIONAL = {"umh", "tck"}
 ONLY_NAMES = tuple(dict.fromkeys(n for _, names in SCENARIOS for n in names))
-# Scenarios that run only when --only names them: not in a full run and not in the CI groups.
-# 'tck' needs Java, HiveMQ CE and the TCK extension (E2E_TCK_DIR, tools/e2e/tck.py).
-OPTIONAL = {"tck"}
+
+# Issue #135: the firmware assumes the PSRAM of the board. The PSRAM variant ("psram") runs the
+# configuration of the board, so a full run of it runs every scenario that depends on memory
+# (the #80 margins of the internal RAM among them: "tls"). The variant without PSRAM ("default":
+# the QEMU build with CONFIG_GW_EMU_NO_PSRAM) keeps only these scenarios: they examine logic,
+# not memory, and they are 4 to 7 times slower with PSRAM (single-threaded TCG, #107, with the
+# software AES and SHA of sdkconfig.qemu-psram). FW-1 OTA stays with PSRAM: on the board its
+# transfer buffers and its TLS session are in PSRAM. --only selects in any variant.
+DEFAULT_VARIANT_SCENARIOS = {"issue #112 park in a long RS485 transaction",
+                             "issue #97 OTA trial wiring", "issues #99/#101 OTA trial"}
+# Scenarios that need the PSRAM build (the harness skips them without --psram).
+PSRAM_BUILD_SCENARIOS = {"issue #135 no PSRAM"}
 
 
 def parse_only(text):
@@ -61,31 +78,42 @@ def parse_only(text):
     return only
 
 
-def selected(only):
-    """Names of the scenarios a run with the --only set @only (empty: all) runs, in order."""
+def variant_of(name):
+    """Issue #135: the variant whose full run runs the scenario @name."""
+    return "default" if name in DEFAULT_VARIANT_SCENARIOS else "psram"
+
+
+def selected(only, variant=None):
+    """Names of the scenarios a run with the --only set @only runs, in order. Without --only
+    (empty set): the full run of @variant (issue #135), or of both variants (None), without the
+    OPTIONAL scenarios (issue #175)."""
     out = []
     for name, names in SCENARIOS:
-        if name == "refuse":
-            if "refuse" in only and "main" not in only:
-                out.append(name)
-        elif name in OPTIONAL:
+        if name in OPTIONAL:
             if only & set(names):
                 out.append(name)
-        elif not only or only & set(names):
+        elif name == "refuse":
+            if "refuse" in only and "main" not in only:
+                out.append(name)
+        elif only:
+            if only & set(names):
+                out.append(name)
+        elif variant is None or variant_of(name) == variant:
             out.append(name)
     return out
 
 
-# The CI's E2E groups: (id, --only). One job per group and variant runs them in parallel; their
-# union must be the full run, each scenario in exactly one group (test_harness.py checks it, and
-# the summary job checks it on the results). Balanced on the PSRAM durations of a full run (s):
-# #97 wiring 496, FW-1 OTA 487, #99/#101 trial 369, main 201, the three nvs 201, the rest 15-80.
+# The CI's E2E groups: (variant, id, --only). One job per group runs them in parallel; the union
+# of the groups of a variant must be the full run of that variant (issue #135), each scenario in
+# exactly one group (test_harness.py checks it, and the summary job checks it on the results).
+# Balanced on the durations of docs/reference/e2e-durations.md (s): with PSRAM FW-1 OTA 419,
+# main 191, the three nvs 170, sf spill 136, the rest 3-65; without PSRAM #97 wiring 100,
+# #99/#101 trial 83, #112 park 29.
 CI_GROUPS = (
-    ("ota-wiring", "network,ota-wiring"),   # network: the wiring scenario captures no payload
-    ("ota-fw1", "ota-fw1"),
-    ("ota-trial", "ota-park,ota-trial"),
-    ("nvs-main", "nvs,main"),
-    ("other", "failsafe,web,reset,tls,failover,mqtt5,phost,sf,https,slow"),
+    ("psram", "ota-fw1", "ota-fw1,nopsram"),
+    ("psram", "nvs-main", "nvs,main"),
+    ("psram", "other", "failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,time,slow"),
+    ("default", "ota-trial", "ota-park,ota-wiring,ota-trial"),
 )
 # The CI's variants: the environment of their build and of their runs.
 VARIANTS = (("default", "0"), ("psram", "1"))   # (id, E2E_PSRAM)
@@ -96,7 +124,7 @@ PLAIN_BUILDER = "default"
 PLAIN_SCENARIOS = {"issue #94 OTA to NVS encryption"}
 # Scenarios with no MQTT observer: a run of only these fails the run-level check "6. payloads
 # decode" (it requires at least one captured payload).
-NO_CAPTURE = {"issue #97 OTA trial wiring", "https", "refuse"}
+NO_CAPTURE = {"issue #97 OTA trial wiring", "https", "refuse", "issue #135 no PSRAM"}
 # The checks that the harness makes once per run, after the scenarios (each CI group repeats
 # them). REL-4 runs only with "main", so once in the CI too.
 RUN_CHECKS = ("6. payloads decode", "Issue #105 no message reached", "Issue #92 the fault monitor",
@@ -112,12 +140,18 @@ def needs_plain(only_text):
     return bool(set(group_scenarios(only_text)) & PLAIN_SCENARIOS)
 
 
+def groups_of(variant):
+    """[(id, --only)] of the CI groups of @variant."""
+    return [(g, only) for v, g, only in CI_GROUPS if v == variant]
+
+
 def matrix():
     build = [{"variant": v, "psram": p, "plain": "1" if v == PLAIN_BUILDER else "0"}
              for v, p in VARIANTS]
-    run = [{"variant": v, "psram": p, "group": g, "only": only,
+    psram = dict(VARIANTS)
+    run = [{"variant": v, "psram": psram[v], "group": g, "only": only,
             "plain": "1" if needs_plain(only) else "0"}
-           for v, p in VARIANTS for g, only in CI_GROUPS]
+           for v, g, only in CI_GROUPS]
     return {"build": {"include": build}, "run": {"include": run}}
 
 
@@ -166,16 +200,17 @@ HEADER = "| Variant | Group | Checks | Retries | QEMU exits |\n|---|---|---|---|
 
 def summary(root, variants=None):
     """Markdown for every (variant, group) of the CI in @root/e2e-result-<variant>-<group>/
-    (@variants: these ids only; default all), and the problems: a group without results or with a failed check, a scenario that ran in no
-    group or in two, more retries than one full run may have (MAX_RETRIES)."""
+    (@variants: these ids only; default all), and the problems: a group without results or with
+    a failed check, a scenario of the variant's full run that ran in no group or in two, more
+    retries than one full run may have (MAX_RETRIES)."""
     root = pathlib.Path(root)
     lines, problems = [HEADER], []
-    full = selected(set())
     for variant, _ in VARIANTS:
         if variants and variant not in variants:
             continue
+        full = selected(set(), variant)
         seen, checks, failed, retries, run_level, groups = [], 0, 0, 0, 0, 0
-        for group, only in CI_GROUPS:
+        for group, only in groups_of(variant):
             d = root / f"e2e-result-{variant}-{group}"
             lines.append(row(variant, group, d))
             results, _ = read_group(d)
@@ -198,7 +233,7 @@ def summary(root, variants=None):
             seen += got
         missing = [s for s in full if s not in seen]
         twice = sorted({s for s in seen if seen.count(s) > 1})
-        if groups == len(CI_GROUPS) and (missing or twice):
+        if groups == len(groups_of(variant)) and (missing or twice):
             problems.append(f"{variant}: scenarios in no group {missing}, in two {twice}")
         if retries > max_retries():
             problems.append(f"{variant}: {retries} scenarios repeated, a full run may repeat "
@@ -216,9 +251,10 @@ def main(argv):
         print(f"build={json.dumps(m['build'])}")
         print(f"run={json.dumps(m['run'])}")
         return 0
-    if argv[:1] == ["groups"]:
-        for g, only in CI_GROUPS:
-            print(g, only, "1" if needs_plain(only) else "0")
+    if argv[:1] == ["groups"] and len(argv) <= 2:
+        for v, g, only in CI_GROUPS:
+            if argv[1:] in ([], [v]):
+                print(g, only, "1" if needs_plain(only) else "0")
         return 0
     if argv[:1] == ["line"]:
         args = [a for a in argv[1:] if a != "--header"]

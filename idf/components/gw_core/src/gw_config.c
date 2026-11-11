@@ -107,7 +107,7 @@ static bool fail_at(gw_cfg_err_t *err, const char *json, const char *at, const c
     err->path[0] = '\0';
     err->line = line;
     err->column = col;
-    snprintf(err->msg, sizeof(err->msg), "JSON mal formado en la línea %u, columna %u: %s", line,
+    snprintf(err->msg, sizeof(err->msg), "JSON syntax error at line %u, column %u: %s", line,
              col, what);
     return false;
 }
@@ -120,7 +120,7 @@ static bool check_keys(const cJSON *obj, const char *path, const char *const *al
                        gw_cfg_err_t *err)
 {
     if (!cJSON_IsObject(obj)) {
-        return fail(err, path[0] != '\0' ? path : "$", "se esperaba un objeto JSON");
+        return fail(err, path[0] != '\0' ? path : "$", "expected a JSON object");
     }
     for (const cJSON *it = obj->child; it != NULL; it = it->next) {
         char p[96];
@@ -130,11 +130,11 @@ static bool check_keys(const cJSON *obj, const char *path, const char *const *al
             known = strcmp(it->string, allowed[i]) == 0;
         }
         if (!known) {
-            return fail(err, p, "clave desconocida");
+            return fail(err, p, "unknown key");
         }
         for (const cJSON *prev = obj->child; prev != it; prev = prev->next) {
             if (strcmp(prev->string, it->string) == 0) {
-                return fail(err, p, "clave duplicada");
+                return fail(err, p, "duplicate key");
             }
         }
     }
@@ -152,7 +152,7 @@ static bool get_bool(const cJSON *obj, const char *key, const char *path, bool d
     if (!cJSON_IsBool(v)) {
         char p[96];
         join(p, sizeof(p), path, key);
-        return fail(err, p, "se esperaba true o false");
+        return fail(err, p, "expected true or false");
     }
     *out = cJSON_IsTrue(v);
     return true;
@@ -166,16 +166,16 @@ static bool get_int(const cJSON *obj, const char *key, const char *path, bool re
     const cJSON *v = cJSON_GetObjectItemCaseSensitive(obj, key);
     if (v == NULL) {
         if (required) {
-            return fail(err, p, "campo obligatorio ausente");
+            return fail(err, p, "missing required field");
         }
         *out = def;
         return true;
     }
     if (!cJSON_IsNumber(v) || v->valuedouble != floor(v->valuedouble)) {
-        return fail(err, p, "se esperaba un número entero");
+        return fail(err, p, "expected an integer");
     }
     if (v->valuedouble < (double)min || v->valuedouble > (double)max) {
-        return fail(err, p, "valor %.0f fuera de rango [%ld, %ld]", v->valuedouble, min, max);
+        return fail(err, p, "value %.0f out of range [%ld, %ld]", v->valuedouble, min, max);
     }
     *out = (long)v->valuedouble;
     return true;
@@ -192,7 +192,7 @@ static bool get_double(const cJSON *obj, const char *key, const char *path, doub
     if (!cJSON_IsNumber(v) || !isfinite(v->valuedouble)) {
         char p[96];
         join(p, sizeof(p), path, key);
-        return fail(err, p, "se esperaba un número");
+        return fail(err, p, "expected a number");
     }
     *out = v->valuedouble;
     return true;
@@ -207,16 +207,16 @@ static bool get_string(const cJSON *obj, const char *key, const char *path, bool
     const char *s = def;
     if (v == NULL) {
         if (required) {
-            return fail(err, p, "campo obligatorio ausente");
+            return fail(err, p, "missing required field");
         }
     } else if (!cJSON_IsString(v)) {
-        return fail(err, p, "se esperaba un texto");
+        return fail(err, p, "expected a string");
     } else {
         s = v->valuestring;
     }
     size_t len = strlen(s);
     if (len >= cap) {
-        return fail(err, p, "texto demasiado largo (%zu caracteres, máximo %zu)", len, cap - 1);
+        return fail(err, p, "string too long (%zu characters, maximum %zu)", len, cap - 1);
     }
     memcpy(out, s, len + 1);
     return true;
@@ -230,7 +230,7 @@ static bool get_enum(const cJSON *obj, const char *key, const char *path, bool r
     const cJSON *v = cJSON_GetObjectItemCaseSensitive(obj, key);
     if (v == NULL) {
         if (required) {
-            return fail(err, p, "campo obligatorio ausente");
+            return fail(err, p, "missing required field");
         }
         *out = def;
         return true;
@@ -250,7 +250,7 @@ static bool get_enum(const cJSON *obj, const char *key, const char *path, bool r
             strncat(allowed, "|", sizeof(allowed) - strlen(allowed) - 1);
         }
     }
-    return fail(err, p, "valor no válido (se esperaba %s)", allowed);
+    return fail(err, p, "invalid value (expected %s)", allowed);
 }
 
 static bool parse_ipv4(const char *s, uint8_t out[4])
@@ -279,13 +279,13 @@ static bool get_ipv4(const cJSON *obj, const char *key, const char *path, bool r
     }
     if (buf[0] == '\0') {
         if (required) {
-            return fail(err, p, "dirección IPv4 obligatoria con dhcp=false");
+            return fail(err, p, "IPv4 address required with dhcp=false");
         }
         memset(out, 0, 4);
         return true;
     }
     if (!parse_ipv4(buf, out)) {
-        return fail(err, p, "'%s' no es una dirección IPv4 válida", buf);
+        return fail(err, p, "'%s' is not a valid IPv4 address", buf);
     }
     return true;
 }
@@ -399,7 +399,7 @@ static bool get_ipv6(const cJSON *obj, const char *key, const char *path, uint8_
         return true;
     }
     if (!gw_parse_ipv6(buf, out)) {
-        return fail(err, p, "'%s' no es una dirección IPv6 válida", buf);
+        return fail(err, p, "'%s' is not a valid IPv6 address", buf);
     }
     return true;
 }
@@ -427,11 +427,12 @@ static bool check_utf8(const char *s, const char *path, gw_cfg_err_t *err)
 static bool check_topic_id(const char *s, const char *path, bool allow_empty, gw_cfg_err_t *err)
 {
     if (s[0] == '\0') {
-        return allow_empty ? true : fail(err, path, "no puede estar vacío");
+        return allow_empty ? true : fail(err, path, "cannot be empty");
     }
     for (const unsigned char *c = (const unsigned char *)s; *c; c++) {
         if (*c == '/' || *c == '+' || *c == '#' || *c < 0x20 || *c == 0x7f) {
-            return fail(err, path, "carácter no permitido '%c' (prohibidos: / + # y de control)",
+            return fail(err, path,
+                        "character not allowed '%c' (forbidden: / + # and control characters)",
                         *c >= 0x20 ? *c : '?');
         }
     }
@@ -517,8 +518,8 @@ static bool parse_ipv6_section(const cJSON *net, gw_config_t *cfg, gw_cfg_err_t 
         static const uint8_t zero[16];
         if (a[0] == 0xff || (a[0] == 0xfe && (a[1] & 0xc0) == 0x80) || memcmp(a, zero, 15) == 0) {
             return fail(err, "network.ipv6.address",
-                        "se esperaba una dirección unicast global o local única (no multicast, "
-                        "link-local, :: ni ::1)");
+                        "expected a global unicast or unique local address (not multicast, "
+                        "link-local, :: or ::1)");
         }
     }
     return true;
@@ -568,12 +569,12 @@ static bool parse_wifi_section(const cJSON *net, gw_config_t *cfg, gw_cfg_err_t 
     w->role = (gw_wifi_role_t)role;
     w->failback_s = (uint16_t)failback;
     if (w->enabled && w->ssid[0] == '\0') {
-        return fail(err, "network.wifi.ssid", "obligatorio con enabled=true");
+        return fail(err, "network.wifi.ssid", "required with enabled=true");
     }
     if (!check_wifi_password(w->password)) {
         return fail(err, "network.wifi.password",
-                    "se esperaban 8 a 63 caracteres (WPA2), 64 dígitos hexadecimales o vacío "
-                    "(red abierta)");
+                    "expected 8 to 63 characters (WPA2), 64 hexadecimal digits or empty "
+                    "(open network)");
     }
     return true;
 }
@@ -613,8 +614,8 @@ static bool check_hostname(const char *h, gw_cfg_err_t *err)
                   (c == '-' && i > 0 && i + 1 < n);
         if (!ok) {
             return fail(err, "network.hostname",
-                        "se esperaban letras, dígitos y '-' (no al principio ni al final), sin "
-                        "puntos: es un nombre de host, no un FQDN");
+                        "expected letters, digits and '-' (not at the start or the end), no "
+                        "dots: it is a host name, not an FQDN");
         }
     }
     return true;
@@ -652,7 +653,7 @@ static bool parse_ntp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
                     sizeof(cfg->ntp.server), err)) {
         return false;
     }
-    return cfg->ntp.server[0] != '\0' ? true : fail(err, "ntp.server", "no puede estar vacío");
+    return cfg->ntp.server[0] != '\0' ? true : fail(err, "ntp.server", "cannot be empty");
 }
 
 bool gw_config_file_name_ok(const char *name)
@@ -680,8 +681,8 @@ static bool get_file_name(const cJSON *o, const char *key, const char *path, cha
     if (out[0] != '\0' && !gw_config_file_name_ok(out)) {
         char p[96];
         join(p, sizeof(p), path, key);
-        return fail(err, p, "'%s' no es un nombre de archivo válido (1-%d caracteres A-Z a-z 0-9 . _ "
-                    "-, sin '/', no config.json)", out, GW_FILE_SIZE - 1);
+        return fail(err, p, "'%s' is not a valid file name (1-%d characters A-Z a-z 0-9 . _ "
+                    "-, no '/', not config.json)", out, GW_FILE_SIZE - 1);
     }
     return true;
 }
@@ -707,7 +708,7 @@ static bool parse_tls(const cJSON *mqtt, gw_tls_cfg_t *t, gw_cfg_err_t *err)
     }
     if ((t->cert_file[0] == '\0') != (t->key_file[0] == '\0')) {
         return fail(err, t->cert_file[0] ? "mqtt.tls.key_file" : "mqtt.tls.cert_file",
-                    "cert_file y key_file van juntos (TLS mutuo)");
+                    "set cert_file and key_file together (mutual TLS)");
     }
     return true;
 }
@@ -721,11 +722,11 @@ static bool parse_backup_brokers(const cJSON *mqtt, gw_config_t *cfg, gw_cfg_err
         return true;
     }
     if (!cJSON_IsArray(arr)) {
-        return fail(err, "mqtt.backup_brokers", "se esperaba un array");
+        return fail(err, "mqtt.backup_brokers", "expected an array");
     }
     int n = cJSON_GetArraySize(arr);
     if (n > GW_MAX_BACKUP_BROKERS) {
-        return fail(err, "mqtt.backup_brokers", "%d brokers; el máximo es %d", n,
+        return fail(err, "mqtt.backup_brokers", "%d brokers; the maximum is %d", n,
                     GW_MAX_BACKUP_BROKERS);
     }
     int i = 0;
@@ -742,7 +743,7 @@ static bool parse_backup_brokers(const cJSON *mqtt, gw_config_t *cfg, gw_cfg_err
         if (cfg->mqtt.backup[i].host[0] == '\0') {
             char p[56];
             snprintf(p, sizeof(p), "%s.host", path);
-            return fail(err, p, "no puede estar vacío");
+            return fail(err, p, "cannot be empty");
         }
         cfg->mqtt.backup[i].port = (uint16_t)port;
     }
@@ -758,7 +759,7 @@ static bool parse_mqtt(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     static const char *const protocols[] = {"3.1.1", "5"};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "mqtt");
     if (o == NULL) {
-        return fail(err, "mqtt", "sección obligatoria ausente");
+        return fail(err, "mqtt", "missing required section");
     }
     long port, ka, failover, back;
     int proto;
@@ -779,7 +780,7 @@ static bool parse_mqtt(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
         return false;
     }
     if (cfg->mqtt.host[0] == '\0') {
-        return fail(err, "mqtt.host", "no puede estar vacío");
+        return fail(err, "mqtt.host", "cannot be empty");
     }
     cfg->mqtt.port = (uint16_t)port;
     cfg->mqtt.keepalive_s = (uint16_t)ka;
@@ -802,7 +803,7 @@ static bool parse_store_forward(const cJSON *sp, gw_config_t *cfg, gw_cfg_err_t 
         return true;
     }
     if (!cJSON_IsObject(o)) {
-        return fail(err, "sparkplug.store_forward", "se esperaba true, false o un objeto");
+        return fail(err, "sparkplug.store_forward", "expected true, false or an object");
     }
     const cJSON *sd = cJSON_GetObjectItemCaseSensitive(o, "sd");
     long max_kb;
@@ -819,7 +820,7 @@ static bool parse_store_forward(const cJSON *sp, gw_config_t *cfg, gw_cfg_err_t 
     cfg->sparkplug.sf_sd_max_kb = (uint32_t)max_kb;
     if (cfg->sparkplug.sf_sd && !cfg->sparkplug.store_forward) {
         return fail(err, "sparkplug.store_forward.sd.enabled",
-                    "la tarjeta solo extiende el búfer: requiere store_forward.enabled");
+                    "the card only extends the buffer: it needs store_forward.enabled");
     }
     return true;
 }
@@ -850,7 +851,7 @@ static bool parse_sparkplug(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *e
                                        "naming"};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "sparkplug");
     if (o == NULL) {
-        return fail(err, "sparkplug", "sección obligatoria ausente");
+        return fail(err, "sparkplug", "missing required section");
     }
     long diag;
     int naming;
@@ -862,7 +863,7 @@ static bool parse_sparkplug(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *e
     }
     cfg->sparkplug.naming = (gw_naming_t)naming;
     if (diag != 0 && diag < GW_DIAG_MIN_S) {
-        return fail(err, "sparkplug.diagnostics_s", "0 (solo en el NBIRTH) o %d-%d s",
+        return fail(err, "sparkplug.diagnostics_s", "0 (only in the NBIRTH) or %d-%d s",
                     GW_DIAG_MIN_S, GW_DIAG_MAX_S);
     }
     cfg->sparkplug.diagnostics_s = (uint32_t)diag;
@@ -933,7 +934,7 @@ static bool parse_buzzer(const cJSON *local_io, gw_config_t *cfg, gw_cfg_err_t *
         return true;
     }
     if (!cJSON_IsArray(list)) {
-        return fail(err, "local_io.buzzer.alarms", "se esperaba un array");
+        return fail(err, "local_io.buzzer.alarms", "expected an array");
     }
     int i = 0;
     for (const cJSON *it = list->child; it != NULL; it = it->next, i++) {
@@ -946,10 +947,10 @@ static bool parse_buzzer(const cJSON *local_io, gw_config_t *cfg, gw_cfg_err_t *
             }
         }
         if (a < 0) {
-            return fail(err, p, "valor no válido (se esperaba device_offline|mqtt_down|config_error)");
+            return fail(err, p, "invalid value (expected device_offline|mqtt_down|config_error)");
         }
         if (cfg->local_io.buzzer.alarms & GW_ALARM_BIT(a)) {
-            return fail(err, p, "alarma repetida");
+            return fail(err, p, "duplicate alarm");
         }
         cfg->local_io.buzzer.alarms |= (uint8_t)GW_ALARM_BIT(a);
     }
@@ -967,11 +968,11 @@ static bool parse_rules(const cJSON *local_io, gw_config_t *cfg, gw_cfg_err_t *e
         return true;
     }
     if (!cJSON_IsArray(list)) {
-        return fail(err, "local_io.rules", "se esperaba un array");
+        return fail(err, "local_io.rules", "expected an array");
     }
     int n = cJSON_GetArraySize(list);
     if (n > GW_LOCAL_IO_CHANNELS) {
-        return fail(err, "local_io.rules", "%d reglas; el máximo es %d (una por DO)", n,
+        return fail(err, "local_io.rules", "%d rules; the maximum is %d (one per DO)", n,
                     GW_LOCAL_IO_CHANNELS);
     }
     int i = 0;
@@ -990,14 +991,14 @@ static bool parse_rules(const cJSON *local_io, gw_config_t *cfg, gw_cfg_err_t *e
             if (cfg->local_io.rules[k].dout == dout - 1) {
                 char q[48];
                 snprintf(q, sizeof(q), "%s.do", p);
-                return fail(err, q, "la DO/%ld ya la maneja local_io.rules[%d]", dout, k);
+                return fail(err, q, "DO/%ld already has a rule: local_io.rules[%d]", dout, k);
             }
         }
         if (cfg->local_io.do_failsafe[dout - 1] == GW_DO_SAFE_ON) {
             char q[48];
             snprintf(q, sizeof(q), "local_io.do_failsafe[%ld]", dout - 1);
-            return fail(err, q, "la DO/%ld la maneja local_io.rules[%d]: el estado seguro no se "
-                                "le aplica (use off u hold)", dout, i);
+            return fail(err, q, "DO/%ld has a rule (local_io.rules[%d]): the safe state does not "
+                                "apply to it (use off or hold)", dout, i);
         }
         cfg->local_io.rules[i].di = (uint8_t)(di - 1);
         cfg->local_io.rules[i].dout = (uint8_t)(dout - 1);
@@ -1027,7 +1028,7 @@ static bool parse_local_io(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *er
     }
     if (save != 0 && save < GW_COUNTER_SAVE_MIN_S) {
         return fail(err, "local_io.counter_save_s",
-                    "valor %ld: 0 (no guardar) o al menos %d s (desgaste de la flash)", save,
+                    "value %ld: 0 (do not save) or at least %d s (wear of the flash)", save,
                     GW_COUNTER_SAVE_MIN_S);
     }
     cfg->local_io.di_debounce_ms = (uint16_t)db;
@@ -1036,11 +1037,11 @@ static bool parse_local_io(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *er
     /* IO-3: one safe state per DO, in order (DO/1 first); missing entries are "off" */
     const cJSON *list = cJSON_GetObjectItemCaseSensitive(o, "do_failsafe");
     if (list != NULL && !cJSON_IsArray(list)) {
-        return fail(err, "local_io.do_failsafe", "se esperaba un array (DO/1 primero)");
+        return fail(err, "local_io.do_failsafe", "expected an array (DO/1 first)");
     }
     int n = list != NULL ? cJSON_GetArraySize(list) : 0;
     if (n > GW_LOCAL_IO_CHANNELS) {
-        return fail(err, "local_io.do_failsafe", "%d entradas; hay %d salidas", n,
+        return fail(err, "local_io.do_failsafe", "%d entries; there are %d outputs", n,
                     GW_LOCAL_IO_CHANNELS);
     }
     int i = 0;
@@ -1054,7 +1055,7 @@ static bool parse_local_io(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *er
             }
         }
         if (mode < 0) {
-            return fail(err, p, "valor no válido (se esperaba off|on|hold)");
+            return fail(err, p, "invalid value (expected off|on|hold)");
         }
         cfg->local_io.do_failsafe[i] = (uint8_t)mode;
     }
@@ -1124,11 +1125,11 @@ static bool parse_modbus_tcp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *
         return true;
     }
     if (!cJSON_IsArray(list)) {
-        return fail(err, "modbus_tcp.allowed_clients", "se esperaba un array");
+        return fail(err, "modbus_tcp.allowed_clients", "expected an array");
     }
     int n = cJSON_GetArraySize(list);
     if (n > GW_MBTCP_MAX_ALLOWED) {
-        return fail(err, "modbus_tcp.allowed_clients", "%d entradas; el máximo es %d", n,
+        return fail(err, "modbus_tcp.allowed_clients", "%d entries; the maximum is %d", n,
                     GW_MBTCP_MAX_ALLOWED);
     }
     int i = 0;
@@ -1136,12 +1137,12 @@ static bool parse_modbus_tcp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *
         char p[48];
         snprintf(p, sizeof(p), "modbus_tcp.allowed_clients[%d]", i);
         if (!cJSON_IsString(it)) {
-            return fail(err, p, "se esperaba un texto (\"a.b.c.d\" o \"a.b.c.d/n\")");
+            return fail(err, p, "expected a string (\"a.b.c.d\" or \"a.b.c.d/n\")");
         }
         char buf[24];
         size_t len = strlen(it->valuestring);
         if (len >= sizeof(buf)) {
-            return fail(err, p, "'%s' no es una dirección IPv4 ni una red", it->valuestring);
+            return fail(err, p, "'%s' is not an IPv4 address or network", it->valuestring);
         }
         memcpy(buf, it->valuestring, len + 1);
         unsigned prefix = 32;
@@ -1150,12 +1151,12 @@ static bool parse_modbus_tcp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *
             char tail;
             *slash = '\0';
             if (sscanf(slash + 1, "%u%c", &prefix, &tail) != 1 || prefix > 32) {
-                return fail(err, p, "prefijo no válido en '%s' (0-32)", it->valuestring);
+                return fail(err, p, "invalid prefix in '%s' (0-32)", it->valuestring);
             }
         }
         uint8_t *ip = cfg->modbus_tcp.clients[i].ip;
         if (!parse_ipv4(buf, ip)) {
-            return fail(err, p, "'%s' no es una dirección IPv4 ni una red", it->valuestring);
+            return fail(err, p, "'%s' is not an IPv4 address or network", it->valuestring);
         }
         cfg->modbus_tcp.clients[i].prefix = (uint8_t)prefix;
     }
@@ -1189,20 +1190,20 @@ static bool parse_web(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     cfg->web.port = (uint16_t)port;
     cfg->web.https_port = (uint16_t)sport;
     if (cfg->web.https && sport == port) {
-        return fail(err, "web.https_port", "no puede ser igual a web.port (%ld)", port);
+        return fail(err, "web.https_port", "cannot be equal to web.port (%ld)", port);
     }
     if (cfg->web.username[0] == '\0') {
-        return fail(err, "web.username", "no puede estar vacío");
+        return fail(err, "web.username", "cannot be empty");
     }
     for (const unsigned char *c = (const unsigned char *)cfg->web.username; *c; c++) {
         if (*c <= 0x20 || *c >= 0x7f || *c == ':') {
             return fail(err, "web.username",
-                        "solo caracteres ASCII visibles, sin ':' (Basic auth)");
+                        "only visible ASCII characters, no ':' (Basic auth)");
         }
     }
     size_t pw = strlen(cfg->web.password);
     if (pw != 0 && pw < 8) {
-        return fail(err, "web.password", "se esperaban al menos 8 caracteres (o vacío)");
+        return fail(err, "web.password", "expected at least 8 characters (or empty)");
     }
     return true;
 }
@@ -1237,7 +1238,7 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
     }
     if (fabs(eng_low) > FLT_MAX || fabs(eng_high) > FLT_MAX) {
         join(p, sizeof(p), path, fabs(eng_low) > FLT_MAX ? "eng_low" : "eng_high");
-        return fail(err, p, "fuera del rango de un Float (±3.4e38)");
+        return fail(err, p, "out of the range of a Float (±3.4e38)");
     }
     t->eng_low = (float)eng_low;
     t->eng_high = (float)eng_high;
@@ -1253,7 +1254,7 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
 
     if (t->name[0] == '\0') {
         join(p, sizeof(p), path, "name");
-        return fail(err, p, "no puede estar vacío");
+        return fail(err, p, "cannot be empty");
     }
     /* issue #162: the metric name and the engUnit property are Sparkplug strings */
     join(p, sizeof(p), path, "name");
@@ -1267,64 +1268,64 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
     bool bit_area = t->area == GW_AREA_COIL || t->area == GW_AREA_DISCRETE;
     if (bit_area && t->type != GW_TYPE_BOOL) {
         join(p, sizeof(p), path, "type");
-        return fail(err, p, "las áreas coil/discrete solo admiten type=bool");
+        return fail(err, p, "the coil/discrete areas accept only type=bool");
     }
     bool has_bit = cJSON_GetObjectItemCaseSensitive(o, "bit") != NULL;
     if (!bit_area && t->type == GW_TYPE_BOOL && !has_bit) {
         join(p, sizeof(p), path, "type");
-        return fail(err, p, "type=bool en holding/input requiere la clave bit (0-15); sin bit, "
-                            "solo vale en las áreas coil y discrete");
+        return fail(err, p, "type=bool in holding/input needs the key bit (0-15); without bit, "
+                            "it is valid only in the coil and discrete areas");
     }
     if (has_bit && (bit_area || t->type != GW_TYPE_BOOL)) {
         join(p, sizeof(p), path, "bit");
-        return fail(err, p, "solo vale con type=bool en las áreas holding e input");
+        return fail(err, p, "valid only with type=bool in the holding and input areas");
     }
     if (has_bit && cJSON_GetObjectItemCaseSensitive(o, "word_order") != NULL &&
         t->word_order != GW_WORD_BIG) {
         join(p, sizeof(p), path, "word_order");
-        return fail(err, p, "no se admite en un tag bit: el bit 0 es el menos significativo del "
-                            "registro tal como llega");
+        return fail(err, p, "not accepted in a bit tag: bit 0 is the least significant bit of "
+                            "the register as it arrives");
     }
     bool has_length = cJSON_GetObjectItemCaseSensitive(o, "length") != NULL;
     bool blob = t->type == GW_TYPE_STRING || t->type == GW_TYPE_BYTES;
     if (blob != has_length) {
         join(p, sizeof(p), path, "length");
-        return fail(err, p, has_length ? "solo vale con type=string o bytes"
-                                       : "obligatorio con type=%s (registros, 1-16)",
+        return fail(err, p, has_length ? "valid only with type=string or bytes"
+                                       : "required with type=%s (registers, 1-16)",
                     k_type_names[t->type]);
     }
     if (t->writable && t->area != GW_AREA_COIL && t->area != GW_AREA_HOLDING) {
         join(p, sizeof(p), path, "writable");
-        return fail(err, p, "solo las áreas coil y holding son escribibles");
+        return fail(err, p, "only the coil and holding areas are writable");
     }
     if ((uint32_t)t->address + gw_tag_width(t) - 1u > 65535u) {
         join(p, sizeof(p), path, "address");
-        return fail(err, p, "el tag excede la dirección 65535");
+        return fail(err, p, "the tag goes past the address 65535");
     }
     if (t->scale == 0.0) {
         join(p, sizeof(p), path, "scale");
-        return fail(err, p, "no puede ser 0");
+        return fail(err, p, "cannot be 0");
     }
     if ((t->type == GW_TYPE_BOOL || blob) && (t->scale != 1.0 || t->offset != 0.0)) {
         join(p, sizeof(p), path, "scale");
-        return fail(err, p, "scale/offset no se admiten en tags %s", k_type_names[t->type]);
+        return fail(err, p, "scale/offset not accepted in %s tags", k_type_names[t->type]);
     }
     if (t->deadband < 0.0) {
         join(p, sizeof(p), path, "deadband");
-        return fail(err, p, "no puede ser negativo");
+        return fail(err, p, "cannot be negative");
     }
     if (blob && t->deadband != 0.0) {
         join(p, sizeof(p), path, "deadband");
-        return fail(err, p, "no se admite en tags %s", k_type_names[t->type]);
+        return fail(err, p, "not accepted in %s tags", k_type_names[t->type]);
     }
     /* SPB-16: the engineering range of a numeric value */
     if ((t->has_eng_low || t->has_eng_high) && (t->type == GW_TYPE_BOOL || blob)) {
         join(p, sizeof(p), path, t->has_eng_low ? "eng_low" : "eng_high");
-        return fail(err, p, "no se admite en tags %s", k_type_names[t->type]);
+        return fail(err, p, "not accepted in %s tags", k_type_names[t->type]);
     }
     if (t->has_eng_low && t->has_eng_high && t->eng_low >= t->eng_high) {
         join(p, sizeof(p), path, "eng_high");
-        return fail(err, p, "debe ser mayor que eng_low (%g)", t->eng_low);
+        return fail(err, p, "must be greater than eng_low (%g)", t->eng_low);
     }
     return true;
 }
@@ -1370,15 +1371,15 @@ static bool check_device_type(const gw_config_t *cfg, const gw_device_cfg_t *d, 
             same = strcmp(a->name, b->name) == 0 && gw_conv_datatype(a) == gw_conv_datatype(b);
         }
         if (!same) {
-            return fail(err, p, "el tipo '%s' ya lo define devices[%u] (%s) con otros tags: los "
-                                "dispositivos de un tipo deben tener los mismos nombres y "
-                                "datatypes, en el mismo orden", d->type, j, o->name);
+            return fail(err, p, "the type '%s' is already defined by devices[%u] (%s) with other "
+                                "tags: the devices of one type must have the same names and "
+                                "datatypes, in the same order", d->type, j, o->name);
         }
         return true;
     }
     if (*template_tags + d->tag_count > GW_MAX_TEMPLATE_TAGS) {
-        return fail(err, p, "los tipos de dispositivo describen más de %d tags en total (el "
-                            "NBIRTH lleva sus definiciones)", GW_MAX_TEMPLATE_TAGS);
+        return fail(err, p, "the device types describe more than %d tags in total (the "
+                            "NBIRTH holds their definitions)", GW_MAX_TEMPLATE_TAGS);
     }
     *template_tags += d->tag_count;
     return true;
@@ -1410,7 +1411,7 @@ static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_
     d->max_gap = (int16_t)gap;
     if (has_merge && !merge && gap != GW_CFG_BUILD_DEFAULT) {
         join(p, sizeof(p), path, "max_gap");
-        return fail(err, p, "no tiene efecto con block_reads=false");
+        return fail(err, p, "has no effect with block_reads=false");
     }
     join(p, sizeof(p), path, "name");
     if (!check_topic_id(d->name, p, false, err)) {
@@ -1418,7 +1419,7 @@ static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_
     }
     if (slow < poll) {
         join(p, sizeof(p), path, "slow_poll_ms");
-        return fail(err, p, "no puede ser menor que poll_ms (%ld)", poll);
+        return fail(err, p, "cannot be less than poll_ms (%ld)", poll);
     }
     d->unit_id = (uint8_t)unit;
     d->poll_ms = (uint32_t)poll;
@@ -1428,17 +1429,17 @@ static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_
     const cJSON *tags = cJSON_GetObjectItemCaseSensitive(o, "tags");
     join(p, sizeof(p), path, "tags");
     if (!cJSON_IsArray(tags)) {
-        return fail(err, p, tags == NULL ? "campo obligatorio ausente" : "se esperaba un array");
+        return fail(err, p, tags == NULL ? "missing required field" : "expected an array");
     }
     int n = cJSON_GetArraySize(tags);
     if (n == 0) {
-        return fail(err, p, "el dispositivo no tiene tags");
+        return fail(err, p, "the device has no tags");
     }
     if (n > GW_MAX_TAGS_PER_DEVICE) {
-        return fail(err, p, "%d tags; el máximo por dispositivo es %d", n, GW_MAX_TAGS_PER_DEVICE);
+        return fail(err, p, "%d tags; the maximum per device is %d", n, GW_MAX_TAGS_PER_DEVICE);
     }
     if (cfg->tag_count + n > GW_MAX_TAGS) {
-        return fail(err, p, "se supera el máximo total de %d tags", GW_MAX_TAGS);
+        return fail(err, p, "more than the total maximum of %d tags", GW_MAX_TAGS);
     }
     d->first_tag = cfg->tag_count;
     d->tag_count = 0;
@@ -1455,7 +1456,7 @@ static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_
             const char *other = cfg->tags[j].name;
             unsigned k = (unsigned)(j - d->first_tag);
             if (strcmp(other, t->name) == 0) {
-                return fail(err, p, "nombre de tag duplicado '%s'", t->name);
+                return fail(err, p, "duplicate tag name '%s'", t->name);
             }
             /* issue #162: tck-id-case-sensitivity-metric-names */
             if (same_but_case(other, t->name)) {
@@ -1480,11 +1481,11 @@ static bool parse_devices(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err
         return true;
     }
     if (!cJSON_IsArray(arr)) {
-        return fail(err, "devices", "se esperaba un array");
+        return fail(err, "devices", "expected an array");
     }
     int n = cJSON_GetArraySize(arr);
     if (n > GW_MAX_DEVICES) {
-        return fail(err, "devices", "%d dispositivos; el máximo es %d", n, GW_MAX_DEVICES);
+        return fail(err, "devices", "%d devices; the maximum is %d", n, GW_MAX_DEVICES);
     }
     unsigned template_tags = 0;
     int i = 0;
@@ -1499,7 +1500,7 @@ static bool parse_devices(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err
             char p[48];
             snprintf(p, sizeof(p), "%s.name", path);
             if (strcmp(cfg->devices[j].name, d->name) == 0) {
-                return fail(err, p, "nombre de dispositivo duplicado '%s'", d->name);
+                return fail(err, p, "duplicate device name '%s'", d->name);
             }
             /* issue #162: tck-id-case-sensitivity-sparkplug-ids */
             if (same_but_case(cfg->devices[j].name, d->name)) {
@@ -1590,7 +1591,7 @@ static bool parse_locked(const char *json, size_t len, gw_config_t *cfg, gw_cfg_
 
     /* cJSON recurses once per nesting level: bound it before parsing (the schema needs 4). */
     if (gw_json_depth(json, len) > GW_JSON_MAX_DEPTH) {
-        snprintf(err->msg, sizeof(err->msg), "JSON anidado a más de %d niveles",
+        snprintf(err->msg, sizeof(err->msg), "JSON nested deeper than %d levels",
                  GW_JSON_MAX_DEPTH);
         return false;
     }
@@ -1598,21 +1599,21 @@ static bool parse_locked(const char *json, size_t len, gw_config_t *cfg, gw_cfg_
     const char *end = NULL;
     cJSON *root = cJSON_ParseWithLengthOpts(json, len, &end, false);
     if (root == NULL && s_alloc_failed) {
-        snprintf(err->msg, sizeof(err->msg), "memoria insuficiente para analizar %zu bytes de JSON",
+        snprintf(err->msg, sizeof(err->msg), "not enough memory to parse %zu bytes of JSON",
                  len);
         return false;
     }
     if (root == NULL) {
         const char *at = cJSON_GetErrorPtr();
         return fail_at(err, json, (at != NULL && at >= json && at <= json + len) ? at : json,
-                       "sintaxis no válida");
+                       "invalid syntax");
     }
     while (end < json + len && (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')) {
         end++;
     }
     if (end < json + len && *end != '\0') {
         cJSON_Delete(root);
-        return fail_at(err, json, end, "contenido después del documento");
+        return fail_at(err, json, end, "content after the document");
     }
     bool ok = check_keys(root, "", keys, sizeof(keys) / sizeof(keys[0]), err) && parse_network(root, cfg, err) &&
               parse_ntp(root, cfg, err) && parse_mqtt(root, cfg, err) &&

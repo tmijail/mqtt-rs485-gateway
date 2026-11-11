@@ -10,6 +10,7 @@
 #include "esp_partition.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "gw_storage.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "coredump";
@@ -103,11 +104,9 @@ esp_err_t gw_coredump_summary(gw_cdump_info_t *out)
     if (out->state != GW_CDUMP_VALID) {
         return ESP_OK;
     }
-    /* about 300 B, for this call only: from the heap (PSRAM when present), not the caller's
+    /* about 300 B, for this call only: from the PSRAM (gw_storage_malloc), not the caller's
      * stack (the console task, the web server task) */
-    esp_core_dump_summary_t *s = heap_caps_malloc_prefer(sizeof(*s), 2,
-                                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                                         MALLOC_CAP_8BIT);
+    esp_core_dump_summary_t *s = gw_storage_malloc(sizeof(*s));
     if (s == NULL) {
         return ESP_ERR_NO_MEM;
     }

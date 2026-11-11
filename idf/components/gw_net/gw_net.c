@@ -1,6 +1,7 @@
 #include "gw_net.h"
 
 #include <ctype.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #include "esp_check.h"
@@ -63,6 +64,7 @@ static gw_netsel_t s_sel;
 static int s_session_if = GW_NETSEL_NONE;   /* last active interface (the MQTT binding) */
 static esp_timer_handle_t s_poll_timer;
 static bool s_sntp_started;
+static atomic_bool s_sntp_synced;   /* written in the lwIP task (on_time_sync) */
 
 /* ---- read by other tasks ---- */
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -142,6 +144,18 @@ bool gw_net_wifi_rssi(int8_t *rssi)
     (void)rssi;
     return false;
 #endif
+}
+
+bool gw_net_ip4_info(gw_net_if_t i, uint8_t ip[4], uint8_t mask[4])
+{
+    esp_netif_ip_info_t info;
+    if (i >= GW_NET_IF_COUNT || s_if[i].netif == NULL ||
+        esp_netif_get_ip_info(s_if[i].netif, &info) != ESP_OK || info.ip.addr == 0) {
+        return false;
+    }
+    memcpy(ip, &info.ip.addr, 4);
+    memcpy(mask, &info.netmask.addr, 4);
+    return true;
 }
 
 void gw_net_get_status(gw_net_if_status_t out[GW_NET_IF_COUNT])
@@ -298,16 +312,28 @@ static void on_eth_event(void *arg, esp_event_base_t base, int32_t id, void *dat
 static void on_time_sync(struct timeval *tv)
 {
     (void)tv;
+    atomic_store(&s_sntp_synced, true);
     s_cb.time_synced();
+}
+
+/* SNTP starts with the first address. Issue #160: an address that comes before the one the
+ * server needs (with network.ipv6, the static IPv6 address comes before the DHCP IPv4 address)
+ * makes the first request fail (no route to an IPv4 server), and lwIP sends the next one only
+ * after its retry interval (15 s or more). Without a valid clock the gateway publishes no NDATA
+ * or DDATA, so until the first synchronisation each new address starts SNTP again
+ * (esp_netif_sntp_start() restarts it when it runs): one request at once. */
+static void sntp_on_address(void)
+{
+    if (!s_sntp_started || !atomic_load(&s_sntp_synced)) {
+        s_sntp_started = esp_netif_sntp_start() == ESP_OK;
+    }
 }
 
 static void got_ipv4(gw_net_if_t i, const ip_event_got_ip_t *ev)
 {
     ESP_LOGI(TAG, "%sIPv4 " IPSTR " mask " IPSTR " gw " IPSTR, i == GW_NET_WIFI ? "wifi: " : "",
              IP2STR(&ev->ip_info.ip), IP2STR(&ev->ip_info.netmask), IP2STR(&ev->ip_info.gw));
-    if (!s_sntp_started) {
-        s_sntp_started = esp_netif_sntp_start() == ESP_OK;
-    }
+    sntp_on_address();
     s_if[i].v4 = true;
     s_if[i].ip = ev->ip_info.ip;
     update(i);
@@ -345,9 +371,7 @@ static void got_ipv6(const ip_event_got_ip6_t *ev)
         memcpy(s_if[i].ip6[ev->ip_index], text, sizeof(text));
     }
     if (type != ESP_IP6_ADDR_IS_LINK_LOCAL && !s_if[i].v6) {
-        if (!s_sntp_started) {
-            s_sntp_started = esp_netif_sntp_start() == ESP_OK;
-        }
+        sntp_on_address();
         s_if[i].v6 = true;
     }
     update((gw_net_if_t)i);

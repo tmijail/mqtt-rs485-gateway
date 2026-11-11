@@ -72,14 +72,16 @@ mkdir -p /tmp/spb && build-host/spb_dump /tmp/spb && python3 idf/tools/spb_decod
 # Firmware build (CI requires 0 warnings)
 idf.py set-target esp32s3 build && idf.py size
 
-# E2E: real firmware in QEMU against mosquitto + a pymodbus RTU slave (~15–25 min; PSRAM ~45 min)
+# E2E: real firmware in QEMU against mosquitto + a pymodbus RTU slave. Each variant has its own
+# full run (#135, scenarios.py DEFAULT_VARIANT_SCENARIOS); the two together are the full E2E.
 python3 -m venv ~/e2e && ~/e2e/bin/pip install -r tools/e2e/requirements.txt
-E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh                 # default (no PSRAM)
-E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh     # octal PSRAM variant
-E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh --only ota,https   # subset of scenarios
+E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh     # PSRAM variant: the board's configuration, all but 3 scenarios (~22 min)
+E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh                 # variant without PSRAM: only the OTA trial scenarios (~4 min)
+E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh --only ota,https   # subset of scenarios (--only selects in any variant)
 #  --only: failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,ota,ota-fw1,ota-park,ota-wiring,
-#          ota-trial,nvs,slow,refuse,main (ota = the four ota-* names; an unknown name is an error)
-E2E_PYTHON=~/e2e/bin/python tools/e2e/run_ci_groups.sh /tmp/gw-groups   # the CI groups: build once, run in parallel
+#          ota-trial,nvs,slow,nopsram,refuse,main (ota = the four ota-* names; an unknown name is an error;
+#          nopsram needs E2E_PSRAM=1)
+E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_ci_groups.sh /tmp/gw-groups   # the CI groups of a variant: build once, run in parallel (run it for each variant)
 #  Windows / no local IDF: the same in Docker (idf/tools/e2e/Dockerfile), see docs/how-to/run-e2e-in-docker.md
 #  E2E_STAGE=<dir> (build the images into <dir>, run nothing), E2E_PREBUILT=<dir> (run on them, no build),
 #  PARALLEL=n (groups at the same time); the groups are CI_GROUPS in tools/e2e/scenarios.py
@@ -91,7 +93,7 @@ python3 idf/tools/e2e/test_harness.py
 python3 -m pyflakes idf/tools/e2e/*.py idf/tools/*.py
 ```
 
-CI (`.github/workflows/ci.yml`) runs host-tests, firmware, the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image. The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run (#121). A change is done when the host tests pass and the full E2E passes in both the default and `E2E_PSRAM=1` variants. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
+CI (`.github/workflows/ci.yml`) runs host-tests, firmware, the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image. The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run of that variant (#121, #135). A change is done when the host tests pass and the full E2E passes: the full run of the `E2E_PSRAM=1` variant and the full run of the default variant. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
 
 ### sdkconfig pitfalls
 
@@ -146,14 +148,17 @@ Platform calls go through `gw_port.h`, which has two implementations: `port/gw_p
 ### Memory rules (REL-2)
 
 - Limits: 16 devices, 64 tags per device, 256 tags in total.
-- All own memory is fixed-size, static or allocated once at boot. It goes to PSRAM when present (`gw_storage_big_alloc`) and to internal RAM otherwise.
+- **The firmware assumes the 8 MB of PSRAM of the board (#135).** It does not support a board without PSRAM. Do not add fallbacks or smaller sizes for a board without PSRAM.
+- All own memory is fixed-size, static or allocated once at boot. It goes to the PSRAM (`gw_storage_malloc`, `gw_storage_calloc`, `gw_storage_big_alloc`, and mbedTLS through them). These functions never use internal RAM when the PSRAM is full: the allocation fails.
+- A board whose PSRAM the boot does not detect runs the fault mode only (`CONFIG_SPIRAM_IGNORE_NOTFOUND`; `GW_WEB_FAULT` in `main.c`). The log, the shell and the web UI give the fault. Only the network, the web server and the shell start, from internal RAM. The gateway does not start.
 - **No malloc in the polling, encoding or publish path.**
-- Without PSRAM (the QEMU default build) internal RAM is tight. The E2E enforces ≥ 8 KB minimum free and a ≥ 17 KB largest block at the worst-case config validation (#80).
-- **Never lower these thresholds.** Measure any change in `.bss`, stack or heap with the `--only tls` / #80 checks.
+- Internal RAM is still shared with Wi-Fi, lwIP, esp-mqtt, the task stacks and DMA. The E2E enforces ≥ 8 KB minimum free and a ≥ 17 KB largest block at the worst-case config validation (#80). The check runs in the PSRAM variant, the configuration of the board (`tls` scenario, node GW29).
+- **Never lower these thresholds.** Measure any change in `.bss`, stack or heap with the `E2E_PSRAM=1 --only tls` / #80 checks.
 
 ### QEMU-only code
 
 - `CONFIG_GW_IO_SIMULATED` replaces GPIO, the I²C expander and the LED with RAM models and enables emulator-only shell commands (`di`, `storm`, `validation hold`, `panic`, …). It must never be enabled on hardware.
+- `CONFIG_GW_EMU_NO_PSRAM` (hidden) is set only in the QEMU build without PSRAM (`sdkconfig.qemu`: `CONFIG_GW_IO_SIMULATED` and no `CONFIG_SPIRAM`). There the own memory goes to internal RAM, with a 6 KB payload buffer and a store & forward ring of 512 samples. A build without `CONFIG_SPIRAM` and without `CONFIG_GW_IO_SIMULATED` does not compile.
 - `CONFIG_GW_FW_PARK_OTHER_CORE` parks core 1 while flash is mapped, to work around QEMU MMU races (#107, #111). `gw_bus_hold()` makes the bus task step aside at a lock-free point first.
 
 ## E2E harness (`idf/tools/e2e/e2e.py`)
@@ -167,7 +172,8 @@ This single large file runs every scenario. It:
 Rules that tests and fixes must respect:
 - Only known emulator faults are retried: QEMU process death, or the image-check PIF panic. Firmware failure lines (Guru Meditation, assert, task_wdt, CORRUPT HEAP, stack overflow) and hangs are never retried.
 - Discarded attempts are recorded in `results.json` (`retries`, `remeasured`).
-- The OTA scenarios run single-threaded TCG (`E2E_TCG_THREAD=auto`), because MTTCG crashes QEMU under load (`docs/upstream-reports.md` §7–8). This makes them 2–4× slower with PSRAM.
+- The OTA scenarios run single-threaded TCG (`E2E_TCG_THREAD=auto`), because MTTCG crashes QEMU under load (`docs/upstream-reports.md` §7–8). This makes them 2–7× slower with PSRAM.
+- The PSRAM variant is the main variant (#135). Its full run has every scenario except the three OTA trial scenarios (#97, #99/#101, #112): they examine logic, not memory, and they run only in the faster variant without PSRAM (`DEFAULT_VARIANT_SCENARIOS` in `scenarios.py`). Put a new scenario that depends on memory in the PSRAM variant. `test_harness.py` checks that each scenario is in one variant and in one CI group.
 - Timing flakes are fixed by waiting on evidence (progress, log lines) up to a bound, never by loosening what a check asserts.
 - `test_harness.py` unit-tests the retry, hang and progress logic with fake clocks. Extend it when changing that logic.
 

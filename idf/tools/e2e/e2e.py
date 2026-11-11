@@ -112,7 +112,6 @@ FAULT = threading.Event()
 RESOURCES = []
 STALE = []        # issue #105: messages delivered to an observer of an attempt that had ended
 ATTEMPTS = [0, 0]  # issue #105: key of the current attempt (0 outside any scenario), last key
-TCK_SKIPPED = []  # issue #176: why the optional 'tck' scenario ran nothing (no TCK installed)
 
 
 def track(obj, closer):
@@ -1107,10 +1106,13 @@ class QemuGone(ConnectionError):
 
 
 class Gateway:
-    def __init__(self, args, log_path, flash=None, efuse=None):
+    def __init__(self, args, log_path, flash=None, efuse=None, psram=None):
         self.args, self.log_path = args, log_path
         self.flash = flash or args.flash
         self.efuse = efuse or args.efuse   # issue #97: a scenario may bring its own eFuse file
+        # issue #135: False boots the image on an emulator without the octal PSRAM model (a
+        # board whose PSRAM is not detected); None: as the build (--psram)
+        self.psram = psram
         self.proc, self.sock, self.lines = None, None, []
         self.killed = False          # the harness ended it (kill())
         self.gone_before_kill = None  # returncode if QEMU had already exited when killed
@@ -1127,14 +1129,15 @@ class Gateway:
 
     def start(self):
         a = self.args
+        psram = a.psram if self.psram is None else self.psram   # issue #135
         # With the octal PSRAM, -m is its size (the board's 8 MB): with 32M QEMU maps 31 MB and
         # leaves no virtual address space for the flash mmap (the partitions are not found).
-        cmd = [a.qemu, "-M", "esp32s3", "-m", "8M" if a.psram else "32M", "-nographic",
+        cmd = [a.qemu, "-M", "esp32s3", "-m", "8M" if psram else "32M", "-nographic",
                "-drive", f"file={pathlib.Path(self.flash).resolve()},if=mtd,format=raw",
                "-drive", f"file={pathlib.Path(self.efuse).resolve()},if=none,format=raw,id=efuse",
                "-global", "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
                "-global", "driver=timer.esp32s3.timg,property=wdt_disable,value=true",
-               *(["-global", "driver=ssi_psram,property=is_octal,value=true"] if a.psram else []),
+               *(["-global", "driver=ssi_psram,property=is_octal,value=true"] if psram else []),
                "-nic", f"user,model=open_eth,hostfwd=tcp:127.0.0.1:{HTTP_PORT}-:80,"
                        f"hostfwd=tcp:127.0.0.1:{HTTPS_PORT}-:443,"
                        f"hostfwd=tcp:127.0.0.1:{MBTCP_PORT}-:502",
@@ -1314,7 +1317,7 @@ class Gateway:
                 and not ln.startswith("# harness:")][-3:]
         how = f"signal {-code}" if code < 0 else f"exit status {code}"
         core = self.core_file()
-        return (f"QEMU terminó ({how}, {self.log_path.name}); stderr: "
+        return (f"QEMU ended ({how}, {self.log_path.name}); stderr: "
                 f"{' | '.join(tail) if tail else 'no error message'}"
                 f"{f'; core dump {core}' if core else ''}")
 
@@ -1736,7 +1739,8 @@ def run_tls(args, work):
     t0 = time.monotonic()
     gw = boot_variant(args, work, "tlsmissing", node_config(node, port=p13, tls={
         "enabled": True, "ca_file": "missing.pem"}))
-    missing = gw.wait_log(r"mqtt\.tls\.ca_file: /cfg/missing\.pem: no existe .*MQTT not started", 30, t0)
+    missing = gw.wait_log(r"mqtt\.tls\.ca_file: /cfg/missing\.pem: not in the LittleFS partition"
+                          r".*MQTT not started", 30, t0)
     attempts = gw.find(r"connecting to .* as 'GW15'", t0)
     gw.kill()
     check("MQTT-4 a CA file missing from LittleFS is reported and no connection is attempted",
@@ -2086,14 +2090,21 @@ def run_mqtt5(args, work, mosquitto_log):
           f"{f'{will[0] - killed:.1f} s after the kill, bdSeq {bdseq_of(will[2])}' if will else 'missing'}")
 
 
+# Issue #73: the Maximum Packet Size of the test broker. Between the NBIRTH of GW26 (2065 B
+# with the node metrics of #132 and #173; it was below 2000 B before) and the Meter1 DBIRTH (about
+# 560 B) on one side, and the Bulk DBIRTH (about 3.8 KB) on the other, with a margin of more than
+# 500 B to each. A failed NBIRTH ends the session (#164), so the NBIRTH must fit.
+MAXPKT_B = 2600
+
+
 def run_max_packet(args, work, slave):
-    """Issue #73 (GW26, MQTT 5) against a mosquitto with max_packet_size 2000, which it
-    announces in the CONNACK: NBIRTH and the small DBIRTH of Meter1 go out; the DBIRTH of Bulk
-    (about 2.7 KB) is not sent, with a clear error and the shell showing it, and the session
+    """Issue #73 (GW26, MQTT 5) against a mosquitto with max_packet_size MAXPKT_B (2600), which
+    it announces in the CONNACK: NBIRTH and the small DBIRTH of Meter1 go out; the DBIRTH of Bulk
+    (about 3.8 KB) is not sent, with a clear error and the shell showing it, and the session
     stays up (no reconnection loop)."""
     node, port = "GW26", MQTT_PORT + 14
     conf = work / "broker-maxpkt.conf"
-    conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\nmax_packet_size 2000\n")
+    conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\nmax_packet_size {MAXPKT_B}\n")
     broker = start_broker(conf, work / "mosquitto-maxpkt.log")
     obs = Observer(port)
     t0 = time.monotonic()
@@ -2120,19 +2131,19 @@ def run_max_packet(args, work, slave):
            if nb else "no NBIRTH") + "; " + (" | ".join(gw.find(r"^config: ", t0)) or "no answer"))
     db = obs.wait(f"{T}/DBIRTH/{node}/{DEVICE}", 10)
     err = gw.wait_log(r"spBv1\.0/Plant1/DBIRTH/GW26/Bulk: \d+ bytes, more than the broker's Maximum "
-                      r"Packet Size of 2000 \(by \d+\): not published", 15, t0)
+                      rf"Packet Size of {MAXPKT_B} \(by \d+\): not published", 15, t0)
     time.sleep(8)
     # Issue #76: Bulk is polled (and reported to the Sparkplug task) every cycle, but its DBIRTH
     # is tried once per session, not rebuilt and rejected each time: the count stays at 1; a
     # rebirth tries it once more
-    asked, h = gw.shell("status", [r"^limit\s+broker Maximum Packet Size 2000 B; 1 message\(s\) too "
+    asked, h = gw.shell("status", [rf"^limit\s+broker Maximum Packet Size {MAXPKT_B} B; 1 message\(s\) too "
                                    r"large, not published \(last: spBv1\.0/Plant1/DBIRTH/GW26/Bulk\)"])
     shown = list(h.values())[0]
     bulk_cycles = len([r for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 2 and t >= t0])
     gw.console("rebirth")
     gw.wait_log(r"^rebirth: NBIRTH and every DBIRTH requested", 5, asked)
     time.sleep(3)
-    _, h2 = gw.shell("status", [r"^limit\s+broker Maximum Packet Size 2000 B; 2 message\(s\) too large"])
+    _, h2 = gw.shell("status", [rf"^limit\s+broker Maximum Packet Size {MAXPKT_B} B; 2 message\(s\) too large"])
     once = list(h2.values())[0]
     check("Issue #76 a DBIRTH larger than the broker's limit is not rebuilt on every change of its "
           "device: one attempt per session, one more per rebirth",
@@ -2149,7 +2160,7 @@ def run_max_packet(args, work, slave):
           "published (clear error, shown in the shell); the rest goes out and the session stays",
           nb and db and err and shown and not bulk and len(attempts) == 1 and not dropped,
           f"NBIRTH {'yes' if nb else 'no'}, Meter1 DBIRTH {'yes' if db else 'no'}, Bulk DBIRTH "
-          f"{len(bulk)}; {(gw.find(r'Maximum Packet Size of 2000', t0) or ['no error'])[0][:150]}; "
+          f"{len(bulk)}; {(gw.find(rf'Maximum Packet Size of {MAXPKT_B}', t0) or ['no error'])[0][:150]}; "
           f"{len(attempts)} connection(s); " + " | ".join(gw.find(r"^limit\s", asked)))
 
 
@@ -2547,8 +2558,8 @@ def check_card_web(gw, since, psram, auth):
     want_spill = (spill == {"state": "not_started", "detail": "it needs PSRAM, and none was detected"}
                   if not psram else spill.get("state") == "on" and "waiting" in spill)
     st_p, _, page = http("GET", "/", auth=auth)
-    ui = all(x.encode() in page for x in ("<h2>Tarjeta microSD</h2>", ">Formatear tarjeta<",
-                                          '"/api/card/format?confirm=1"', '"FORMATEAR"'))
+    ui = all(x.encode() in page for x in ("<h2>microSD card</h2>", ">Format the card<",
+                                          '"/api/card/format?confirm=1"', '"FORMAT"'))
     requested = gw.find(r"card format requested", since)
     check("Issue #139 POST /api/card/format: the same Basic auth and CSRF checks as every write "
           "(401, 403 before the password, 400 without ?confirm=1); in QEMU the clear refusal "
@@ -2556,7 +2567,7 @@ def check_card_web(gw, since, psram, auth):
           codes == {"no credentials": 401, "no X-Requested-With": 403, "other Origin": 403,
                     "no confirm": 400}
           and st == 501 and ans.get("reason") == "no_support" and ans.get("ok") is False
-          and "no tiene tarjeta microSD" in ans.get("error", "") and fmt == {"state": "idle"}
+          and "has no microSD card" in ans.get("error", "") and fmt == {"state": "idle"}
           and not requested,
           ", ".join(f"{k} -> {v}" for k, v in codes.items()) + f"; confirmed -> {st} {ans}; "
           f"card_format {fmt}; format requests in the log {len(requested)}")
@@ -2995,6 +3006,186 @@ def run_https(args, work):
           f"block {st8}; {(gw.find(r'blocked for', t0) or ['no log'])[0]}; "
           + " | ".join(gw.find(r"^web\s", asked)))
 
+
+Y2020_MS = 1577836800000   # 2020-01-01T00:00:00Z: a timestamp before it counts from 1970
+
+
+def stamps(p):
+    """The payload timestamp and every metric timestamp of @p (ms)."""
+    return [p.timestamp] + [m.timestamp for m in p.metrics]
+
+
+def time_data(node, since):
+    """NDATA and DDATA of @node captured at or after @since."""
+    return [m for m in CAPTURE if m[0] >= since and m[1].split("/")[2:4] in
+            (["NDATA", node], ["DDATA", node])]
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+def run_valid_time(args, work, slave):
+    """Issue #160 (TIME-1; tck-id-payloads-timestamp-in-UTC, tck-id-payloads-metric-timestamp-in-UTC)
+    in two boots of GW31, each a power-on (the simulated PCF85063 has its OS bit set, so no time
+    from it) with the SNTP responder silent. Without a valid clock the births go out with 1970
+    timestamps, but no NDATA or DDATA, while a tag changes, DI/1 pulses and the diagnostics period
+    passes. Boot 1: POST /api/time (the web UI's button) with the CSRF and password checks of every
+    write, then a rebirth with UTC timestamps and the values of the changes, and DATA with UTC
+    timestamps; the source is "browser", Time Synced stays false. Boot 2: SNTP answers late, then
+    the same rebirth; a time from the browser is refused (409) over a clock that SNTP synchronises.
+    No NDATA or DDATA of the node in either boot has a timestamp before 2020."""
+    node = "GW31"
+    nbirth_t, dbirth_t = f"{T}/NBIRTH/{node}", f"{T}/DBIRTH/{node}/{DEVICE}"
+    ndata_t, ddata_t = f"{T}/NDATA/{node}", f"{T}/DDATA/{node}/{DEVICE}"
+    cfg = node_config(node)
+    cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    obs = Observer()
+    utc = (lambda p: p.timestamp >= Y2020_MS)
+    volt = (lambda p: metric(p, alias=ALIAS["Voltage"]))
+    SNTP_PAUSED.set()
+    try:
+        # ---- boot 1: the time from the browser
+        t0 = time.monotonic()
+        gw = boot_variant(args, work, "time", cfg)
+        nb = obs.wait(nbirth_t, 60)
+        db = obs.wait(dbirth_t, 10)
+        slave.set_float(4, 0, 236.0)
+        gw.console("di 1 1")
+        time.sleep(0.5)
+        gw.console("di 1 0")
+        time.sleep(12)   # the change read (poll_ms 1 s), DI/1, and one diagnostics_s (10 s)
+        before = time_data(node, t0)
+        st0, _, b0 = http("GET", "/api/status")
+        tm0 = (as_json(b0) or {}).get("time", {})
+        asked, h = gw.shell("status", [r"^time\s+1970-.*NOT valid \(no SNTP, RTC or browser time "
+                                       r"yet\): births only, no NDATA/DDATA"])
+        shown0 = list(h.values())[0]
+        check("Issue #160 without a valid clock (no SNTP, RTC OS bit set): NBIRTH and DBIRTH go out "
+              "(1970 timestamps), no NDATA or DDATA while a tag changes, DI/1 pulses and the "
+              "diagnostics period passes; /api/status time.valid false, source none; shell",
+              nb and db and nb[2].timestamp < Y2020_MS and not before and st0 == 200
+              and tm0.get("valid") is False and tm0.get("source") == "none"
+              and tm0.get("synced") is False and shown0,
+              f"NBIRTH {nb[2].timestamp if nb else None}, DBIRTH {'yes' if db else 'no'}; "
+              f"{len(before)} NDATA/DDATA; /api/status {st0} {tm0}; "
+              + " | ".join(gw.find(r"^time\s", asked)))
+
+        refused = {
+            "no X-Requested-With": http("POST", "/api/time", {"utc_ms": now_ms()},
+                                        headers={"X-Requested-With": None})[0],
+            "other Origin": http("POST", "/api/time", {"utc_ms": now_ms()},
+                                 headers={"Origin": "https://evil.e2e"})[0],
+            "wrong password": http("POST", "/api/time", {"utc_ms": now_ms()},
+                                   auth=("admin", "wrong-time"))[0],
+            "1970": http("POST", "/api/time", {"utc_ms": 5000})[0],
+            "utc_s": http("POST", "/api/time", {"utc_s": now_ms() // 1000})[0],
+            "not JSON": http("POST", "/api/time", b"now")[0],
+        }
+        st1, _, b1 = http("GET", "/api/status")
+        still = (as_json(b1) or {}).get("time", {}).get("valid")
+        check("Issue #160 POST /api/time: CSRF (no X-Requested-With, other Origin) 403, wrong "
+              "password 401, a time before 2025, another key or no JSON 400; the clock stays not "
+              "valid",
+              refused == {"no X-Requested-With": 403, "other Origin": 403, "wrong password": 401,
+                          "1970": 400, "utc_s": 400, "not JSON": 400} and still is False,
+              f"{refused}; time.valid after them {still}")
+
+        obs.drain()
+        sent = now_ms()
+        t_set = time.monotonic()
+        st2, _, b2 = http("POST", "/api/time", {"utc_ms": sent})
+        nb2 = obs.wait(nbirth_t, 15, utc, since=t_set)
+        db2 = obs.wait(dbirth_t, 10, utc, since=t_set)
+        rebirth = gw.wait_log(r"spb: clock now valid: rebirth", 5, t_set)
+        logged = gw.find(r"edge: clock set from the browser: \d{4}-\d\d-\d\dT.*Z \(was none", t_set)
+        ts_all = stamps(nb2[2]) + stamps(db2[2]) if nb2 and db2 else []
+        v2 = volt(db2[2]) if db2 else None
+        cnt = counter_of(nb2[2]) if nb2 else None
+        synced = metric(nb2[2], name="Node Info/Time Synced") if nb2 else None
+        check("Issue #160 POST /api/time 200 with the browser's time -> rebirth (NBIRTH seq 0, "
+              "DBIRTH) with every timestamp UTC (within 60 s), the value of the change made "
+              "without a valid clock (Voltage 236) and DI/1's pulse (Counter/1 1); Time Synced "
+              "false (TIME-3: SNTP only)",
+              st2 == 200 and (as_json(b2) or {}).get("source") == "browser" and nb2 and db2
+              and rebirth and logged and nb2[2].seq == 0
+              and all(abs(t - sent) < 60000 for t in ts_all) and v2 is not None
+              and abs(v2.float_value - 236.0) < 1e-3 and cnt == 1 and synced is not None
+              and synced.boolean_value is False,
+              f"POST {st2} {b2[:80]!r}; NBIRTH {nb2[2].timestamp - sent if nb2 else None} ms from "
+              f"the browser's time, seq {nb2[2].seq if nb2 else None}; timestamps off by at most "
+              f"{max((abs(t - sent) for t in ts_all), default=None)} ms; Voltage "
+              f"{round(v2.float_value, 1) if v2 else None}; Counter/1 {cnt}; Time Synced "
+              f"{synced.boolean_value if synced else None}; {(logged or ['no log'])[0]}")
+
+        t_chg = time.monotonic()
+        slave.set_float(4, 0, 237.0)
+        dd = obs.wait(ddata_t, 10, lambda q: volt(q) is not None, since=t_chg)
+        gw.console("di 1 1")
+        nd = obs.wait(ndata_t, 5, lambda q: metric(q, alias=ALIAS["DI/1"]) is not None, since=t_chg)
+        st3, _, b3 = http("GET", "/api/status")
+        tm3 = (as_json(b3) or {}).get("time", {})
+        asked, h = gw.shell("status", [r"^time\s+\d{4}-.*Z, set from the browser \(not synchronised\)"])
+        shown3 = list(h.values())[0]
+        check("Issue #160 after the time from the browser: DDATA and NDATA again, with UTC "
+              "timestamps; /api/status time.valid true, source browser, synced false; shell",
+              dd and nd and all(t >= Y2020_MS for t in stamps(dd[2]) + stamps(nd[2]))
+              and abs(volt(dd[2]).float_value - 237.0) < 1e-3 and st3 == 200
+              and tm3.get("valid") is True and tm3.get("source") == "browser"
+              and tm3.get("synced") is False and abs(tm3.get("utc_s", 0) - time.time()) < 60
+              and shown3,
+              f"DDATA {stamps(dd[2]) if dd else None}; NDATA {stamps(nd[2]) if nd else None}; "
+              f"/api/status {tm3}; " + " | ".join(gw.find(r"^time\s", asked)))
+        boot1 = time_data(node, t0)
+        gw.kill()
+
+        # ---- boot 2: SNTP answers late
+        t1 = time.monotonic()
+        gw = boot_variant(args, work, "time2", cfg)
+        nb = obs.wait(nbirth_t, 60, since=t1)
+        slave.set_float(4, 0, 238.0)
+        time.sleep(4)
+        before = time_data(node, t1)
+        obs.drain()
+        t_sntp = time.monotonic()
+        SNTP_PAUSED.clear()
+        synced_at = gw.wait_log(r"edge: time synchronised", 45, t1)
+        nb2 = obs.wait(nbirth_t, 15, utc, since=t_sntp)
+        db2 = obs.wait(dbirth_t, 10, utc, since=t_sntp)
+        rebirth = gw.wait_log(r"spb: clock now valid: rebirth", 5, t1)
+        v2 = volt(db2[2]) if db2 else None
+        synced = metric(nb2[2], name="Node Info/Time Synced") if nb2 else None
+        t_chg = time.monotonic()
+        slave.set_float(4, 0, 239.0)
+        dd = obs.wait(ddata_t, 10, lambda q: volt(q) is not None, since=t_chg)
+        st4, _, b4 = http("POST", "/api/time", {"utc_ms": now_ms()})
+        st5, _, b5 = http("GET", "/api/status")
+        tm5 = (as_json(b5) or {}).get("time", {})
+        check("Issue #160 SNTP late: births with 1970 timestamps, no NDATA/DDATA before it; when "
+              "SNTP answers, a rebirth with UTC timestamps and the current value (Voltage 238), "
+              "Time Synced true, then DDATA; POST /api/time over a clock that SNTP synchronises "
+              "-> 409; /api/status source sntp",
+              nb and nb[2].timestamp < Y2020_MS and not before and synced_at and nb2 and db2
+              and rebirth and all(t >= Y2020_MS for t in stamps(nb2[2]) + stamps(db2[2]))
+              and v2 is not None and abs(v2.float_value - 238.0) < 1e-3 and synced is not None
+              and synced.boolean_value is True and dd and st4 == 409
+              and tm5.get("source") == "sntp" and tm5.get("valid") is True,
+              f"first NBIRTH {nb[2].timestamp if nb else None}; {len(before)} NDATA/DDATA before "
+              f"SNTP; SNTP {'yes' if synced_at else 'no'}; rebirth {'yes' if rebirth else 'no'}, "
+              f"NBIRTH {nb2[2].timestamp if nb2 else None}; Voltage "
+              f"{round(v2.float_value, 1) if v2 else None}; Time Synced "
+              f"{synced.boolean_value if synced else None}; DDATA {'yes' if dd else 'no'}; "
+              f"POST {st4} {b4[:90]!r}; /api/status {tm5}")
+        all_data = boot1 + time_data(node, t1)
+        early = [(m[1], min(stamps(m[2]))) for m in all_data if min(stamps(m[2])) < Y2020_MS]
+        check("Issue #160 no NDATA or DDATA of the node (both boots) has a payload or metric "
+              "timestamp before 2020",
+              all_data and not early, f"{len(all_data)} NDATA/DDATA; before 2020: {early[:3]}")
+        gw.kill()
+    finally:
+        SNTP_PAUSED.clear()
+        slave.set_float(4, 0, 230.5)   # what the main scenario expects
+        obs.close()
 
 # Issue #117: QEMU's open_eth model (4 RX buffers without PSRAM, #113) also drops frames inside
 # connections already open; slirp retransmits them about a second later, which alone breaks a
@@ -4390,8 +4581,8 @@ def run_nvs_migration(args, work):
             gw.console("config load")
             gw.wait_log(r"^paste the JSON document", 10, asked)
             gw.sock.sendall((json.dumps(cfg, indent=2) + "\n").encode())
-            refused = gw.wait_log(r"^config: rejected: configuración no guardada: LittleFS no monta y "
-                                  r"puede tener la copia de una migración de NVS", 30, asked)
+            refused = gw.wait_log(r"^config: rejected: configuration not saved: LittleFS does not "
+                                  r"mount and can hold the copy of an NVS migration", 30, asked)
             formatted = gw.find(r"formatting it to save", asked)
             time.sleep(1)
             gw.kill()
@@ -4798,6 +4989,537 @@ def run_nvs_ota(args, work):
         broker.wait()
 
 
+# ---------------------------------------------------------------- UMH Core interoperability (#175)
+#
+# Optional (scenarios.OPTIONAL): a real benthos-umh with the sparkplug_b input and the bridge of
+# docs/how-to/connect-to-umh-core.md reads the gateway through the main mosquitto. The harness
+# takes the input keys and the tag_processor code from that document, so the test examines what
+# the document tells users to do. Get the binary (it is not in the CI image):
+#   curl -sSLo benthos-umh https://github.com/united-manufacturing-hub/benthos-umh/releases/\
+#       download/v0.16.2/benthos-linux-amd64 && chmod +x benthos-umh
+#   E2E_BENTHOS_UMH=$PWD/benthos-umh tools/e2e/run_e2e.sh --only umh
+# Without E2E_BENTHOS_UMH the scenario is a SKIP. The checks assert what v0.16.2 does, the gaps of
+# UMH included, so a new UMH version that changes its behaviour makes a check fail.
+
+UMH_VERSION, UMH_COMMIT = "0.16.2", "0d3a203"
+# sha256 of the release asset benthos-linux-amd64 of v0.16.2 (the GitHub release digest)
+UMH_SHA256 = "39a876816578efbd5b36474c079dbdca5ba376ae25cc8453ba52b8e7b46d7c33"
+UMH_GROUP, UMH_NODE, UMH_NODE2 = "acme", "acme:berlin:gw01", "acme:berlin:gw02"
+# Issue #172: six location levels before each device name, more than the five levels of ISA-95
+UMH_PREFIX = "acme:berlin:tempelhof:packaging:hall2:line3"
+UMH_LOC = UMH_PREFIX.replace(":", ".")
+UMH_HOWTO = HERE.parent.parent.parent / "docs" / "how-to" / "connect-to-umh-core.md"
+UMH_TS_LINE = "msg.meta.timestamp_ms = msg.meta.spb_timestamp;"
+SKIPPED = []      # issue #175: scenarios that did not run (a program that they need is absent)
+# The tags of the device cell2:meter1 (unit 1): (name, tag configuration, value at the input of
+# the bridge). Each scalar type of the gateway, signed integers included.
+UMH_TAGS = [
+    ("L1/Voltage", {"area": "input", "address": 0, "type": "float32", "word_order": "big",
+                    "deadband": 0.1, "units": "V"}, 230.5),
+    ("Setpoint", {"area": "holding", "address": 10, "type": "int16", "scale": 0.1}, 5.0),
+    ("Run", {"area": "coil", "address": 0, "type": "bool"}, False),
+    ("Energy", {"area": "holding", "address": 30, "type": "uint64", "word_order": "ABCD"},
+     MB6["Energy"]),
+    ("Counter", {"area": "holding", "address": 34, "type": "int64", "word_order": "CDAB"},
+     MB6["Counter"]),
+    ("Flow", {"area": "input", "address": 40, "type": "float64", "word_order": "DCBA"},
+     MB6["Flow"]),
+    ("Temp", {"area": "input", "address": 44, "type": "int32", "word_order": "BADC"},
+     MB6["Temp"]),
+    ("Serial", {"area": "holding", "address": 50, "type": "string", "length": 8}, MB6["Serial"]),
+    ("Ready", {"area": "input", "address": 46, "type": "bool", "bit": 15}, True),
+    ("Neg16", {"area": "holding", "address": 70, "type": "int16"}, -2),
+    ("Max16", {"area": "holding", "address": 71, "type": "uint16"}, 65535),
+    ("Big32", {"area": "holding", "address": 72, "type": "uint32"}, 4000000000),
+]
+
+
+def umh_bridge():
+    """(input section, tag_processor code) of the bridge example in the how-to, or None."""
+    try:
+        text = UMH_HOWTO.read_text()
+    except OSError:
+        return None
+    m = re.search(r"^## Configure the UMH bridge$.*?^```yaml\n(.*?)^```", text, re.S | re.M)
+    if not m:
+        return None
+    lines = m.group(1).splitlines()
+    try:
+        inp = lines[lines.index("input:"):lines.index("pipeline:")]
+        j = next(k for k, ln in enumerate(lines) if ln.strip() == "defaults: |")
+    except (ValueError, StopIteration):
+        return None
+    ind = len(lines[j]) - len(lines[j].lstrip())
+    code = []
+    for ln in lines[j + 1:]:
+        if ln.strip() and len(ln) - len(ln.lstrip()) <= ind:
+            break
+        code.append(ln)
+    import textwrap
+    return "\n".join(inp).rstrip(), textwrap.dedent("\n".join(code)).strip() + "\n"
+
+
+def umh_yaml(inp, outputs):
+    """A benthos-umh configuration: the input section @inp, and a file of JSON lines for each
+    (path, tag_processor code or None) of @outputs. None: the messages of the input as they are
+    (payload and metadata); code: the tag_processor with that code, then the UMH topic, the
+    payload and the metadata."""
+    import textwrap
+    y = ["http:", "  enabled: false", "logger:", "  level: INFO", "  format: logfmt", inp,
+         "output:", "  broker:", "    pattern: fan_out", "    outputs:"]
+    for path, code in outputs:
+        y += [f"      - file: {{path: {json.dumps(str(path))}, codec: lines}}", "        processors:"]
+        if code is not None:
+            y += ["          - tag_processor:", "              defaults: |",
+                  textwrap.indent(code, " " * 16).rstrip(),
+                  "          - mapping: |", "              root.topic = @umh_topic"]
+        else:
+            y += ["          - mapping: |"]
+        y += ["              root.payload = this.catch(content().string())",
+              "              root.meta = @"]
+    return "\n".join(y) + "\n"
+
+
+class Benthos:
+    """Issue #175: one benthos-umh process (configuration @yaml_text, outputs {key: path})."""
+
+    def __init__(self, exe, work, name, yaml_text, outputs):
+        self.dir = work / f"umh-{name}"
+        shutil.rmtree(self.dir, ignore_errors=True)
+        self.dir.mkdir(parents=True)
+        self.outputs, self.closed = outputs, False
+        cfg = self.dir / "config.yaml"
+        cfg.write_text(yaml_text)
+        self.log = self.dir / "benthos.log"
+        self.proc = subprocess.Popen([exe, "-c", str(cfg)], stdin=subprocess.DEVNULL,
+                                     stdout=open(self.log, "ab"), stderr=subprocess.STDOUT,
+                                     cwd=self.dir)
+        PROCS.append(self.proc)
+        track(self, self.stop)
+
+    def stop(self):
+        if self.closed:
+            return
+        self.closed = True
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(15)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+
+    def entries(self, key):
+        """The JSON lines of output @key written so far (a line in progress is left out)."""
+        try:
+            text = pathlib.Path(self.outputs[key]).read_text()
+        except OSError:
+            return []
+        out = []
+        for ln in text.splitlines():
+            try:
+                out.append(json.loads(ln))
+            except ValueError:
+                pass
+        return out
+
+    def log_lines(self, pattern):
+        try:
+            text = self.log.read_text(errors="replace")
+        except OSError:
+            return []
+        return [ln for ln in text.splitlines() if re.search(pattern, ln)]
+
+    def wait_log(self, pattern, timeout):
+        end = time.monotonic() + timeout
+        while True:
+            if self.log_lines(pattern):
+                return True
+            if self.proc.poll() is not None or wait_left(end) <= 0:
+                return False
+            time.sleep(0.2)
+
+
+def wait_for(fn, timeout, step=0.5):
+    """The first true result of @fn within @timeout (or its last result)."""
+    end = time.monotonic() + timeout
+    while True:
+        v = fn()
+        if v or wait_left(end) <= 0:
+            return v
+        time.sleep(step)
+
+
+def uns_values(entries, node=None):
+    """{UMH topic: [values in order]} of tag_processor output @entries (of edge node @node)."""
+    out = {}
+    for e in entries:
+        if node is None or e.get("meta", {}).get("spb_edge_node_id") == node:
+            out.setdefault(e.get("topic"), []).append((e.get("payload") or {}).get("value"))
+    return out
+
+
+def raw_of(entries, node, name=None, kind=None, device=None):
+    """The input messages of edge node @node (with metric @name, message type @kind and the
+    device @device: a suffix of the device_id)."""
+    out = []
+    for e in entries:
+        meta = e.get("meta", {})
+        if meta.get("spb_edge_node_id") != node:
+            continue
+        if name is not None and meta.get("spb_metric_name") != name:
+            continue
+        if kind is not None and meta.get("spb_message_type") != kind:
+            continue
+        if device is not None and not meta.get("spb_device_id", "").endswith(device):
+            continue
+        out.append(e)
+    return out
+
+
+def umh_device_cfg(cfg, preset):
+    """The configuration of the UMH scenario on the harness configuration @cfg."""
+    cfg["sparkplug"].update(group_id=UMH_GROUP, device_prefix=UMH_PREFIX, diagnostics_s=0,
+                            primary_host_id="")
+    if preset:
+        cfg["sparkplug"]["naming"] = "umh"
+    cfg.pop("modbus_tcp", None)
+    cfg["devices"] = [
+        {"name": "cell2:meter1", "unit_id": 1, "poll_ms": 1000, "offline_after": 3, "max_gap": 10,
+         "tags": [dict(t, name=n) for n, t, _ in UMH_TAGS] + [
+             {"name": "Raw", "area": "holding", "address": 76, "type": "bytes", "length": 2}]},
+        {"name": "cell2:pump1", "unit_id": 1, "type": "Pump", "poll_ms": 1000, "tags": [
+            {"name": "Speed", "area": "holding", "address": 80, "type": "uint16", "units": "rpm"},
+            {"name": "Run", "area": "coil", "address": 5, "type": "bool"}]},
+        {"name": "cell2:dead1", "unit_id": 3, "poll_ms": 1000, "offline_after": 3, "tags": [
+            {"name": "Value", "area": "holding", "address": 0, "type": "uint16"}]}]
+    return cfg
+
+
+def run_umh(args, work, slave):
+    """Issue #175: the gateway against a real benthos-umh v0.16.2 (UMH Core's sparkplug_b input),
+    with the bridge of docs/how-to/connect-to-umh-core.md. Two bridges read the main mosquitto:
+    A (the how-to: role secondary_active, include_edge_node_in_location false; its outputs: the
+    input messages, the tag_processor of the how-to, and the same without the timestamp line) and
+    B (include_edge_node_in_location true, secondary_passive). GW 'acme:berlin:gw01' (UMH preset,
+    store & forward, through a relay) has a device prefix of six levels, a device with each scalar
+    type, a typed device, a bytes tag and a device that never answers. Then: a restart of bridge
+    A (rebirth request, names), a failed read, store & forward (is_historical and the two
+    timestamp choices), and GW 'acme:berlin:gw02' without the preset (template and DataSet)."""
+    exe = os.environ.get("E2E_BENTHOS_UMH", "")
+    if not exe or not os.access(exe, os.X_OK):
+        SKIPPED.append("umh")
+        print(f"[SKIP] issue #175 UMH Core interoperability: no benthos-umh (set E2E_BENTHOS_UMH "
+              f"to the release binary benthos-linux-amd64 of v{UMH_VERSION}, commit "
+              f"{UMH_COMMIT}; got {exe!r})", flush=True)
+        return
+    bridge = umh_bridge()
+    if bridge is None:
+        check("issue #175 the bridge example of the how-to can be read", False, str(UMH_HOWTO))
+        return
+    inp, code = bridge
+    try:
+        version = subprocess.run([exe, "--version"], capture_output=True, text=True,
+                                 timeout=30).stdout
+    except (OSError, subprocess.SubprocessError) as e:
+        version = str(e)
+    m = re.search(r"Version:\s*(\S+)", version)
+    version = m.group(1) if m else version.strip()[:80]
+    with open(exe, "rb") as f:
+        digest = hashlib.file_digest(f, "sha256").hexdigest()
+    print(f"benthos-umh {version}, sha256 {digest} "
+          f"({'the release asset' if digest == UMH_SHA256 else 'NOT the release asset'})",
+          flush=True)
+    check(f"issue #175 benthos-umh is v{UMH_VERSION} (commit {UMH_COMMIT})",
+          version == UMH_VERSION, f"{version}; sha256 {digest}")
+    arrival = "\n".join(ln for ln in code.splitlines()
+                        if UMH_TS_LINE not in ln and "Sparkplug timestamp" not in ln) + "\n"
+    port = MQTT_PORT + 30
+    tu = f"spBv1.0/{UMH_GROUP}"
+    node, node2 = UMH_NODE, UMH_NODE2
+    meter, pump, dead = (f"{UMH_PREFIX}:cell2:{d}" for d in ("meter1", "pump1", "dead1"))
+    snap = slave.snapshot()
+    slave.ctx.setValues(3, 70, [0xFFFE, 65535, 4000000000 >> 16, 4000000000 & 0xFFFF])
+    slave.ctx.setValues(3, 76, [0xABCD, 0x0102])
+    slave.ctx.setValues(3, 80, [1450])
+    slave.ctx.setValues(1, 5, [1])
+    relay = Relay(port, MQTT_PORT)
+    obs = Observer()
+
+    def bridge_a(name):
+        d = work / f"umh-{name}"
+        outs = {"raw": d / "raw.jsonl", "uns": d / "uns.jsonl", "arrival": d / "uns-arrival.jsonl"}
+        return Benthos(exe, work, name, umh_yaml(inp, [(outs["raw"], None), (outs["uns"], code),
+                                                       (outs["arrival"], arrival)]), outs)
+
+    inp_b = inp.replace("include_edge_node_in_location: false",
+                        "include_edge_node_in_location: true") \
+        .replace('role: "secondary_active"', 'role: "secondary_passive"') \
+        .replace('client_id: "umh-sparkplug-acme"', 'client_id: "umh-sparkplug-acme-b"')
+    inp_a = inp.replace("tcp://192.168.1.10:1883", f"tcp://127.0.0.1:{MQTT_PORT}")
+    inp_b = inp_b.replace("tcp://192.168.1.10:1883", f"tcp://127.0.0.1:{MQTT_PORT}")
+    inp = inp_a
+    db = work / "umh-b"
+    a = bridge_a("a")
+    bridges = [a]
+    b = Benthos(exe, work, "b", umh_yaml(inp_b, [(db / "raw.jsonl", None), (db / "uns.jsonl", code)]),
+                {"raw": db / "raw.jsonl", "uns": db / "uns.jsonl"})
+    bridges.append(b)
+    subscribed = all(x.wait_log(r"Subscribed to Sparkplug topic", 30) for x in (a, b))
+    check("issue #175 the two bridges (the how-to configuration, and include_edge_node_in_location "
+          "true) connect to the broker and subscribe", subscribed and "include_edge_node" in inp_b
+          and f"127.0.0.1:{MQTT_PORT}" in inp_b,
+          f"A: {(a.log_lines(r'Subscribed') or a.log_lines(r'.')[-1:] or ['no log'])[0][:200]}; "
+          f"B: {(b.log_lines(r'Subscribed') or b.log_lines(r'.')[-1:] or ['no log'])[0][:200]}")
+    gw = None
+    try:
+        cfg = umh_device_cfg(node_config(node, port=port), preset=True)
+        cfg["sparkplug"]["store_forward"] = True
+        t0 = time.monotonic()
+        gw = boot_variant(args, work, "umh", cfg)
+        nb = obs.wait(f"{tu}/NBIRTH/{node}", 60)
+        dbirth = obs.wait(f"{tu}/DBIRTH/{node}/{meter}", 20)
+        obs.wait(f"{tu}/DBIRTH/{node}/{pump}", 10)
+        alias = {mm.name: mm.alias for mm in dbirth[2].metrics} if dbirth else {}
+        dev_topic = f"umh.v1.{UMH_LOC}.cell2.meter1._raw"
+        node_topic = "umh.v1.acme.berlin.gw01._raw"
+        want_dev = {f"{dev_topic}.{n.replace('/', '.')}" for n, _, _ in UMH_TAGS}
+        want_node = {f"{node_topic}.{t}" for t in ("DI.1", "Counter.1", "Node_Info.Uptime",
+                                                   "Node_Info.Time_Synced",
+                                                   "Devices.cell2.meter1.Online",
+                                                   "Devices.cell2.pump1.Online",
+                                                   "Devices.cell2.dead1.Online",
+                                                   "Node_Info.Modbus.Cycles")}
+        want_pump = {f"umh.v1.{UMH_LOC}.cell2.pump1._raw.{t}" for t in ("Speed", "Run")}
+        # the dead device goes offline after 3 failed polls; its state then is false
+        wait_for(lambda: uns_values(a.entries("uns"), node).get(
+            f"{node_topic}.Devices.cell2.dead1.Online", [None])[-1] is False
+            and want_dev | want_node | want_pump <= set(uns_values(a.entries("uns"), node)), 30)
+        warns = gw.find(r"configuration: \d+ warning|warning: .*bytes|warning: .*type", t0)
+        uns = uns_values(a.entries("uns"), node)
+        raw = a.entries("raw")
+        dev_loc = {e["meta"].get("umh_location_path") for e in raw_of(raw, node, kind="DBIRTH",
+                                                                      device="meter1")
+                   if e["meta"].get("umh_conversion_status") == "success"}
+        missing = sorted((want_dev | want_node | want_pump) - set(uns))
+        check("issue #175 UMH-1 location path and tag names: device prefix of six levels and a "
+              "Parris device name -> umh.v1.acme.berlin.tempelhof.packaging.hall2.line3.cell2."
+              "meter1._raw.<tag> (L1/Voltage -> L1.Voltage); node metrics under the edge node "
+              "acme:berlin:gw01 (Node Info/Uptime -> Node_Info.Uptime); no bdSeq, Node Control or "
+              "alias_<n> topic", nb and dbirth and not missing
+              and dev_loc == {f"{UMH_LOC}.cell2.meter1"}
+              and not [t for t in uns if re.search(r"bdSeq|Node_Control|alias_", t or "")],
+              f"missing {missing[:6]}; location of the device {sorted(dev_loc)}; {len(uns)} UNS "
+              f"topics of the node, e.g. {sorted(uns)[:4]}")
+        # Issue #160: a sample read before the gateway had a valid time has a timestamp near 1970;
+        # with the timestamp line of the how-to UMH keeps that time
+        old = [(e.get("topic"), e["payload"].get("timestamp_ms")) for e in a.entries("uns")
+               if isinstance(e.get("payload"), dict)
+               and (e["payload"].get("timestamp_ms") or 2 ** 62) < 10 ** 12]
+        print(f"[INFO] issue #175/#160: {len(old)} UNS values with a timestamp before 2001 (read "
+              f"before the time was valid), e.g. {old[:3]}", flush=True)
+        # UMH-2: the values. The input of the bridge has them exact; the tag_processor runs
+        # JavaScript, where each number is a double: 64-bit integers beyond 2^53 lose digits.
+        got_raw, got_uns, bad = {}, {}, []
+        for n, _, v in UMH_TAGS:
+            r = raw_of(raw, node, name=n, kind="DBIRTH", device="meter1")
+            got_raw[n] = r[-1]["payload"].get("value") if r else "absent"
+            got_uns[n] = (uns.get(f"{dev_topic}.{n.replace('/', '.')}") or ["absent"])[0]
+            want_uns = float(v) if isinstance(v, int) and not isinstance(v, bool) \
+                and abs(v) > 2 ** 53 else v
+            if got_raw[n] != v or isinstance(got_raw[n], bool) != isinstance(v, bool):
+                bad.append(f"input {n}={got_raw[n]!r} (want {v!r})")
+            if got_uns[n] != want_uns:
+                bad.append(f"UNS {n}={got_uns[n]!r} (want {want_uns!r})")
+        types = {e["meta"].get("spb_metric_name"): e["meta"].get("spb_datatype")
+                 for e in raw_of(raw, node, kind="DBIRTH", device="meter1")}
+        check("issue #175 UMH-2 values of each scalar type (bool, int16 with and without a scale, "
+              "uint16, int32, uint32, int64, uint64, float32, float64, string): exact at the input "
+              "of the bridge, signed integers included; in the UNS exact too, except the 64-bit "
+              "integers beyond 2^53, which the JavaScript of the tag_processor rounds to a double "
+              f"(Energy {MB6['Energy']} -> {float(MB6['Energy']):.0f}, Counter {MB6['Counter']} -> "
+              f"{float(MB6['Counter']):.0f})", not bad,
+              f"{'; '.join(bad[:6]) or 'all as expected'}; UNS {got_uns}; datatypes {types}")
+        # UMH-6: the UMH preset: the typed device as plain metrics, the device state, the sums of
+        # the Modbus counters; the bytes tag has no value in UMH
+        bytes_in = raw_of(raw, node, name="Raw", kind="DBIRTH", device="meter1")
+        bytes_meta = bytes_in[-1]["meta"] if bytes_in else {}
+        online = {d: (uns.get(f"{node_topic}.Devices.cell2.{d}.Online") or [None])[-1]
+                  for d in ("meter1", "pump1", "dead1")}
+        pump_v = {t: (uns.get(f"umh.v1.{UMH_LOC}.cell2.pump1._raw.{t}") or [None])[-1]
+                  for t in ("Speed", "Run")}
+        cycles = (uns.get(f"{node_topic}.Node_Info.Modbus.Cycles") or [None])[-1]
+        check("issue #175 UMH-6 the UMH preset: the typed device cell2:pump1 shows its tags (Speed "
+              "1450, Run true), Devices/<name>/Online shows each device (cell2:dead1 false), "
+              "Node Info/Modbus/Cycles is a number; the bytes tag has a null value at the input "
+              "and no UNS topic; the gateway warns about the bytes tag",
+              pump_v == {"Speed": 1450, "Run": True}
+              and online == {"meter1": True, "pump1": True, "dead1": False}
+              and isinstance(cycles, int) and bytes_in and bytes_in[-1]["payload"].get("value")
+              is None and bytes_meta.get("umh_conversion_status") != "success"
+              and f"{dev_topic}.Raw" not in uns and warns,
+              f"pump {pump_v}; online {online}; Modbus cycles {cycles!r}; bytes tag "
+              f"{bytes_in[-1]['payload'] if bytes_in else 'absent'} (status "
+              f"{bytes_meta.get('umh_conversion_status')}, datatype "
+              f"{bytes_meta.get('spb_datatype')}); warnings {warns[:2]}")
+        # UMH-5: include_edge_node_in_location true (bridge B)
+        raw_b = b.entries("raw")
+        loc_b = {e["meta"].get("umh_location_path") for e in raw_of(raw_b, node, kind="DBIRTH",
+                                                                    device="meter1")
+                 if e["meta"].get("umh_conversion_status") == "success"}
+        loc_bn = {e["meta"].get("umh_location_path") for e in raw_of(raw_b, node, kind="NBIRTH")
+                  if e["meta"].get("umh_conversion_status") == "success"}
+        check("issue #175 UMH-5 include_edge_node_in_location true puts the edge node id before "
+              "the device_id (acme.berlin.gw01.acme.berlin.tempelhof...cell2.meter1); the node "
+              "metrics keep acme.berlin.gw01",
+              loc_b == {f"acme.berlin.gw01.{UMH_LOC}.cell2.meter1"} and loc_bn == {"acme.berlin.gw01"},
+              f"device {sorted(loc_b)}; node {sorted(loc_bn)}")
+
+        # UMH-3: a restart of bridge A. Before its first DATA it has no BIRTH: the DATA gives
+        # alias_<n> and, without the datatype of the BIRTH (#159), a negative int16 as a large
+        # number. secondary_active asks for a rebirth; after it the names come back.
+        a.stop()
+        restart = time.monotonic()
+        a2 = bridge_a("a2")
+        bridges.append(a2)
+        up = a2.wait_log(r"Subscribed to Sparkplug topic", 30)
+        obs.drain()
+        slave.ctx.setValues(3, 70, [0xFFFD])   # Neg16 -3: a DDATA before bridge A has a BIRTH
+        ncmd = obs.wait(f"{tu}/NCMD/{node}", 20,
+                        lambda p: any(mm.name == "Node Control/Rebirth" and mm.boolean_value
+                                      for mm in p.metrics), since=restart)
+        nb2 = obs.wait(f"{tu}/NBIRTH/{node}", 20, since=restart)
+        neg_t = f"{dev_topic}.Neg16"
+        wait_for(lambda: -3 in uns_values(a2.entries("uns"), node).get(neg_t, []), 20)
+        raw2, uns2 = a2.entries("raw"), uns_values(a2.entries("uns"), node)
+        before = [e for e in raw2 if e["meta"].get("spb_metric_name", "").startswith("alias_")
+                  and e["meta"].get("spb_edge_node_id") == node]
+        neg_alias = [e["payload"].get("value") for e in before
+                     if e["meta"].get("spb_alias") == str(alias.get("Neg16"))]
+        rebirth_logs = a2.log_lines(r"rebirth for")
+        check("issue #175 UMH-3 restart of the bridge (secondary_active): the first DDATA has no "
+              "BIRTH (alias_<n>, Neg16 -3 not as -3, the how-to drops it); the bridge sends NCMD "
+              "Node Control/Rebirth, the gateway answers with NBIRTH and DBIRTH, and the UNS "
+              "has the names and Neg16 -3; no alias_<n> topic in the UNS",
+              up and ncmd and nb2 and neg_alias and all(v != -3 for v in neg_alias)
+              and uns2.get(neg_t, [None])[-1] == -3
+              and not [t for t in uns2 if "alias_" in (t or "")]
+              and want_dev <= set(uns2),
+              f"NCMD {'yes' if ncmd else 'no'} {round(ncmd[0] - restart, 1) if ncmd else ''} s, "
+              f"NBIRTH {'yes' if nb2 else 'no'}; before the BIRTH: "
+              f"{[(e['meta'].get('spb_metric_name'), e['payload'].get('value')) for e in before][:4]};"
+              f" UNS Neg16 {uns2.get(neg_t)}; bridge log {[ln[-120:] for ln in rebirth_logs[:2]]}")
+
+        # UMH-6 (failed read): a read with an exception gives a null value with Quality BAD;
+        # the bridge has no value for it, and the UNS keeps the last value
+        v_name, v_topic = "L1/Voltage", f"{dev_topic}.L1.Voltage"
+        obs.drain()
+        slave.ctx.refuse.add((4, 0))
+        bad_dd = obs.wait(f"{tu}/DDATA/{node}/{meter}", 10, lambda p: any(
+            mm.alias == alias.get(v_name) and mm.is_null for mm in p.metrics))
+        slave.ctx.refuse.clear()
+        good_dd = obs.wait(f"{tu}/DDATA/{node}/{meter}", 10, lambda p: any(
+            mm.alias == alias.get(v_name) and not mm.is_null for mm in p.metrics))
+        time.sleep(2)
+        nulls = [e for e in raw_of(a2.entries("raw"), node, name=v_name, kind="DDATA")
+                 if e["payload"].get("value") is None]
+        uns_v = uns_values(a2.entries("uns"), node).get(v_topic, [])
+        check("issue #175 UMH-6 a failed read (exception 02): the DDATA null value with Quality BAD "
+              "reaches the bridge as null (no UMH value), the how-to drops it, and the UNS keeps "
+              "the last value: no null and no topic for the Quality",
+              bad_dd and good_dd and nulls and None not in uns_v
+              and nulls[-1]["meta"].get("umh_conversion_status") != "success",
+              f"null at the input {len(nulls)} (status "
+              f"{nulls[-1]['meta'].get('umh_conversion_status') if nulls else None}); UNS "
+              f"L1.Voltage {uns_v}")
+
+        # UMH-4: store & forward. While the broker is away, three Voltage values; back: NBIRTH,
+        # DBIRTH, then DDATA with is_historical
+        since = time.monotonic()
+        relay.stop()
+        gw.wait_log(r"MQTT down; reconnect attempt", 15, since)
+        values = [240.0, 241.0, 242.0]
+        for v in values:
+            slave.set_float(4, 0, v)
+            n0, end = len(slave.reads), time.monotonic() + 15
+            while wait_left(end) > 0 and sum(
+                    1 for r in list(slave.reads)[n0:] if r[0] == 1 and r[1] == 4
+                    and r[2] is not None and r[2] <= 0 < r[2] + (r[3] or 1)) < 2:
+                time.sleep(0.1)
+        back_ms = int(time.time() * 1000)
+        relay.start()
+        nb3 = obs.wait(f"{tu}/NBIRTH/{node}", 70, since=since)
+
+        def hist_raw():
+            return [e for e in raw_of(a2.entries("raw"), node, name=v_name, kind="DDATA")
+                    if e["meta"].get("spb_is_historical") == "true"]
+        wait_for(lambda: len(hist_raw()) >= 3, 30)
+        time.sleep(2)
+        after = [mm for x in CAPTURE if nb3 and x[0] >= nb3[0]
+                 and x[1] == f"{tu}/DDATA/{node}/{meter}" for mm in x[2].metrics
+                 if mm.is_historical and mm.alias == alias.get(v_name)]
+        sample = [(round(mm.float_value, 1), mm.timestamp) for mm in after]
+        hr = [(e["payload"].get("value"), int(e["meta"].get("spb_timestamp", 0))) for e in hist_raw()]
+        sample_ts = {ts for _, ts in sample}
+
+        def hist_uns(key):
+            return [(e["payload"].get("value"), e["payload"].get("timestamp_ms"))
+                    for e in a2.entries(key) if e.get("topic") == v_topic
+                    and e.get("meta", {}).get("spb_is_historical") == "true"
+                    and e.get("meta", {}).get("spb_edge_node_id") == node]
+        with_ts, without_ts = hist_uns("uns"), hist_uns("arrival")
+        stale = a2.log_lines(r"stale NDEATH")
+        check("issue #175 UMH-4 store & forward: the bridge gets the replayed DDATA with "
+              "spb_is_historical true, the values in order and their sample times; with "
+              "'msg.meta.timestamp_ms = msg.meta.spb_timestamp' the UNS keeps the sample time, "
+              "without it the UNS has the arrival time",
+              nb3 and [v for v, _ in sample] == values and sorted(hr) == sorted(sample)
+              and [v for v, _ in with_ts] == values and {t for _, t in with_ts} == sample_ts
+              and [v for v, _ in without_ts] == values
+              and all(t >= back_ms - 1000 and t not in sample_ts for _, t in without_ts),
+              f"gateway {sample}; input {hr}; UNS with the line {with_ts}; UNS without it "
+              f"{without_ts} (broker back at {back_ms}); bridge log: {[ln[-140:] for ln in stale[:2]]}")
+        gw.kill()
+        gw = None
+
+        # UMH-7: the same devices without the UMH preset: a template instance, a template
+        # definition and the DataSet Node Info/Modbus, which UMH cannot read
+        cfg2 = umh_device_cfg(node_config(node2), preset=False)
+        gw = boot_variant(args, work, "umh-plain", cfg2)
+        nb4 = obs.wait(f"{tu}/NBIRTH/{node2}", 60)
+        obs.wait(f"{tu}/DBIRTH/{node2}/{pump}", 20)
+        wait_for(lambda: raw_of(a2.entries("raw"), node2, kind="DBIRTH", device="pump1"), 15)
+        time.sleep(2)
+        raw4 = a2.entries("raw")
+        tmpl_def = raw_of(raw4, node2, name="Pump", kind="NBIRTH")
+        dataset = raw_of(raw4, node2, name="Node Info/Modbus", kind="NBIRTH")
+        inst = raw_of(raw4, node2, kind="DBIRTH", device="pump1")
+        uns4 = uns_values(a2.entries("uns"), node2)
+        nulls4 = [(e["meta"].get("spb_metric_name"), e["payload"].get("value"),
+                   e["meta"].get("umh_conversion_status")) for e in tmpl_def + dataset + inst]
+        check("issue #175 UMH-7 without the UMH preset: the template definition (NBIRTH), the "
+              "template instance of cell2:pump1 (DBIRTH) and the DataSet Node Info/Modbus reach "
+              "the bridge with a null value; the UNS has no topic for cell2:pump1 and no "
+              "Devices/<name>/Online",
+              nb4 and tmpl_def and dataset and inst
+              and all(v is None and s != "success" for _, v, s in nulls4)
+              and not [t for t in uns4 if ".cell2.pump1." in (t or "") or ".Devices." in (t or "")]
+              and f"{dev_topic}.Neg16" in uns4,
+              f"{nulls4[:4]}; UNS topics of gw02 {len(uns4)}, pump1 or Devices: "
+              f"{[t for t in uns4 if '.cell2.pump1.' in (t or '') or '.Devices.' in (t or '')][:3]}")
+        gw.kill()
+        gw = None
+        a2.stop()
+    finally:
+        if gw is not None:
+            gw.kill()
+        for x in bridges:
+            x.stop()
+        obs.close()
+        relay.stop()
+        slave.restore(snap)
+
+
 def start_broker(conf, log):
     # A renamed copy of the binary: other jobs on a shared host that clean up with
     # `pkill mosquitto` must not take this broker down in the middle of the scenario.
@@ -4877,8 +5599,10 @@ def main():
     ap.add_argument("--https-port", type=int, default=HTTPS_PORT)
     ap.add_argument("--only", default="",
                     help=f"comma-separated scenarios to run ({','.join(scenarios.ONLY_NAMES)}); "
-                         "default all. 'ota' is ota-fw1,ota-park,ota-wiring,ota-trial; 'refuse' "
-                         "runs alone only without 'main' (which includes it)")
+                         "default the full run of the variant (issue #135: the PSRAM variant runs "
+                         "all but the OTA trial scenarios, the variant without PSRAM only those). "
+                         "'ota' is ota-fw1,ota-park,ota-wiring,ota-trial; 'refuse' runs alone "
+                         "only without 'main' (which includes it)")
     ap.add_argument("--web-stress", type=int, default=0, metavar="N",
                     help="issue #110: N extra rounds of cut sessions and accepted PUTs in the "
                          "https scenario (GW22), to reproduce a connection that never reached httpd")
@@ -4962,6 +5686,7 @@ def main():
         "sf spill": lambda: run_store_forward_spill(args, work, slave),
         "stack margin": lambda: run_stack_margin(args, work, slave),
         "https": lambda: run_https(args, work),
+        "time": lambda: run_valid_time(args, work, slave),
         "FW-1 OTA": lambda: run_ota(args, work),
         "issue #112 park in a long RS485 transaction": lambda: run_park_long_txn(args, work, slave),
         "issue #97 OTA trial wiring": lambda: run_ota_wiring(args, work),
@@ -4971,14 +5696,17 @@ def main():
         "issue #94 OTA to NVS encryption": lambda: run_nvs_ota(args, work),
         "slow": lambda: run_slow_link(
             args, work, sdkconfig_int(args.sdkconfig, "GW_MQTT_PUBLISH_BUDGET_MS")),
+        "issue #135 no PSRAM": lambda: run_no_psram(args, work, slave),
         # part of "main"; alone only on request (#89)
         "refuse": lambda: check_suback_refused(args, work),
         "main": lambda: run(args, log, slave, MAIN_BROKER["proc"], conf, work),
+        "umh": lambda: run_umh(args, work, slave),   # optional (issue #175)
         # issue #176: only with --only tck, and only with E2E_TCK_DIR (else [SKIP])
         "tck": lambda: tck.run(sys.modules[__name__], args, work, slave),
     }
     assert set(runners) == {name for name, _ in scenarios.SCENARIOS}
-    chosen = scenarios.selected(only)
+    # issue #135: without --only, the full run of this variant (scenarios.variant_of)
+    chosen = scenarios.selected(only, "psram" if args.psram else "default")
     try:
         for name in chosen:
             run_scenario(name, runners[name])
@@ -5008,8 +5736,9 @@ def main():
             for e in errs[:3]:
                 print(f"criterion 6: {topic}: {e}", flush=True)
             bad += len(errs)
-        if not CAPTURE and TCK_SKIPPED and chosen == ["tck"]:
-            print("[SKIP] 6. payloads decode: the tck scenario ran nothing", flush=True)
+        if not CAPTURE and chosen and set(chosen) <= set(SKIPPED):
+            # issues #175/#176: every scenario of the run was a SKIP (a program it needs is absent)
+            print("[SKIP] 6. payloads decode: every selected scenario was skipped", flush=True)
         else:
             check(f"6. payloads decode with the official sparkplug_b.proto (Python protobuf "
                   f"{google.protobuf.__version__})",
@@ -5279,6 +6008,64 @@ def commissioning_password(gw, since, timeout=20):
     return re.search(r"commissioning password '([a-z0-9]+)'", lines[0]).group(1) if lines else None
 
 
+def run_no_psram(args, work, slave):
+    """Issue #135: the firmware assumes the board's PSRAM. The PSRAM build (sdkconfig.qemu-psram:
+    CONFIG_SPIRAM with SPIRAM_IGNORE_NOTFOUND, as on the board) boots on an emulator without the
+    octal PSRAM model, as a board with a defective or missing chip: the boot does not find the
+    PSRAM and goes on in the fault mode. Expected: the log, the shell and GET /api/status give the
+    fault; the network and the HTTPS server run (from internal RAM, with the commissioning
+    password of the console); nothing of the gateway starts (no configuration loaded, no polling,
+    no MQTT); POST /api/rebirth gets 409 with the reason; no panic."""
+    if not args.psram:
+        print("[SKIP] issue #135 no PSRAM: it boots the PSRAM build (E2E_PSRAM=1)", flush=True)
+        return
+    polls = len(slave.reads)
+    t0 = time.monotonic()
+    gw = Gateway(args, work / "uart0-nopsram.log",
+                 flash_variant(args, work, "nopsram", {"config.json": config_json()}), psram=False)
+    gw.start()
+    fault = gw.wait_log(r"main: PSRAM not detected: the board has 8 MB of PSRAM and the boot did "
+                        r"not find it \(a defective or missing chip\); the gateway does not start "
+                        r"\(issue #135\)", 40, t0)
+    halted = gw.wait_log(r"nothing is started \(no polling, no MQTT\): only the network, the web "
+                         r"UI on port \d+ and the shell, to report the fault", 15, t0)
+    led = gw.find(r"status: config error", t0)
+    pw = commissioning_password(gw, t0, 20)
+    auth = ("admin", pw or "?")
+    st, _, body = wait_http("/api/status", 40, auth=auth)
+    status = as_json(body) or {}
+    st_rb, _, b_rb = http("POST", "/api/rebirth", auth=auth)
+    e_rb = (as_json(b_rb) or {}).get("error", "")
+    page = http("GET", "/", auth=auth)
+    asked, h = gw.shell("status", [r"^FAULT\s+PSRAM not detected: .* the gateway does not start",
+                                   r"nothing is running: no polling, no MQTT; network, web UI and "
+                                   r"shell only", r"^heap\s+internal \d+ B free .*PSRAM 0 B free"])
+    shell = gw.find(r"^(FAULT|heap)\s", asked)
+    time.sleep(3)   # the polling and an MQTT attempt would have started by now
+    started = gw.find(r"configuration from|connecting to|rs485: UART|Sparkplug engine|"
+                      r"store & forward:", t0)
+    births = [m for m in CAPTURE if m[0] >= t0 and "/NBIRTH/" in m[1]]
+    polled = len(slave.reads) - polls
+    bad = gw.find(r"Guru Meditation|abort\(\) was called|task_wdt|Task watchdog|CORRUPT HEAP|"
+                  r"stack overflow", t0)
+    gw.kill()
+    check("Issue #135 a board without PSRAM (the PSRAM build on an emulator without the octal "
+          "PSRAM): the fault mode. The log, the shell and GET /api/status (mode fault, the reason) "
+          "give the fault; the network and the HTTPS server run; POST /api/rebirth -> 409; no "
+          "configuration, polling or MQTT; no panic",
+          fault and halted and led and pw and st == 200 and status.get("mode") == "fault"
+          and "PSRAM not detected" in status.get("fault", "")
+          and status.get("config", {}).get("ok") is False
+          and st_rb == 409 and "hardware fault" in e_rb
+          and page[0] == 200 and b's.mode==="fault"' in page[2]
+          and all(h.values()) and not started and not births and polled == 0 and not bad,
+          f"log {'yes' if fault else 'no'}, halted {'yes' if halted else 'no'}, LED "
+          f"{'yes' if led else 'no'}; password {'read' if pw else 'not found'}; /api/status {st} "
+          f"mode {status.get('mode')!r} fault {status.get('fault')!r}; rebirth {st_rb} {e_rb!r}; "
+          f"/ {page[0]}; shell {' | '.join(shell) or 'no FAULT line'}; started {started[:2]}; "
+          f"{len(births)} NBIRTH; {polled} Modbus requests; {bad[:2]}")
+
+
 def run_config_failsafe(args, work, slave):
     """CFG-1: the embedded default is used only when /cfg/config.json does not exist; any
     other problem stops the gateway (no polling, no MQTT) with the error state and a log.
@@ -5288,15 +6075,15 @@ def run_config_failsafe(args, work, slave):
     limit = sdkconfig_int(args.sdkconfig, "GW_CONFIG_MAX_BYTES")
     cases = [
         ("oversized", {"config.json": good + b" " * (limit + 1 - len(good))},
-         rf"config\.json: {limit + 1} bytes; el máximo es {limit}"),
-        ("unmountable", None, r"partición LittleFS 'storage' no montable"),
-        ("empty", {"config.json": b""}, r"config\.json: archivo vacío"),
+         rf"config\.json: {limit + 1} bytes; the maximum is {limit}"),
+        ("unmountable", None, r"LittleFS partition 'storage' not mountable"),
+        ("empty", {"config.json": b""}, r"config\.json: empty file"),
         # without the ',' that closes "network" (line 4), the parser stops at the '"' of
         # "ntp": line 5, column 3
         ("syntax-error", {"config.json": good.replace(b'"dhcp": true\n  },', b'"dhcp": true\n  }', 1)},
-         r"JSON mal formado en la línea 5, columna 3"),
+         r"JSON syntax error at line 5, column 3"),
         ("semantic-error", {"config.json": good.replace(b'"type": "float32"', b'"type": "float16"', 1)},
-         r"devices\[0\]\.tags\[0\]\.type: valor no válido"),
+         r"devices\[0\]\.tags\[0\]\.type: invalid value"),
     ]
     obs = Observer()
     for name, files, reason in cases:
@@ -5786,7 +6573,7 @@ def check_rtc(gw, obs, nb, t0, since_reboot, ndata_t, first_nbirth):
     the system clock from the RTC, publishes its NBIRTH with valid timestamps at once, and when
     SNTP answers again there is no rebirth (the births were already timed)."""
     stopped = gw.find(r"io: RTC: oscillator stopped \(OS bit\): time lost: system time not set", t0)
-    stored = gw.find(r"io: RTC: time stored in the RTC after SNTP", t0)
+    stored = gw.find(r"io: RTC: time stored in the RTC \(again after every SNTP", t0)
     restored = gw.find(r"io: RTC: system time set from the RTC: \d{4}-\d\d-\d\dT", since_reboot)
     synced_early = gw.find(r"edge: time synchronised", since_reboot)
     skew = abs(nb[2].timestamp / 1000 - time.time()) if nb else None
@@ -5807,7 +6594,7 @@ def check_rtc(gw, obs, nb, t0, since_reboot, ndata_t, first_nbirth):
           f"{reboot_ts.boolean_value if reboot_ts else None}; NDATA "
           f"{metric(ts_ndata[2], alias=55).boolean_value if ts_ndata else None}")
     restore_store = gw.wait_log(r"edge: time synchronised", 0, since_reboot) and \
-        gw.find(r"clock now synchronised: rebirth", since_reboot) == []
+        gw.find(r"clock now valid: rebirth", since_reboot) == []
     check("TIME-2 RTC: OS bit at power-on (no time from it), SNTP time stored in it; after a "
           "reboot with SNTP silent the clock comes from the RTC, NBIRTH timestamps valid at once, "
           "no rebirth when SNTP answers later",
@@ -5817,6 +6604,23 @@ def check_rtc(gw, obs, nb, t0, since_reboot, ndata_t, first_nbirth):
           f"{(restored or ['no restore log'])[0]} | NBIRTH skew {round(skew, 1) if skew else None} s; "
           f"SNTP before the NBIRTH: {bool(synced_early)}; shell {'ok' if shown else 'no'}; "
           f"SNTP later {'yes' if synced else 'no'}")
+
+
+def check_birth_stamps(t0):
+    """Issue #160 and the #175 interop test: a birth that went out with a valid clock (payload
+    timestamp in 2020 or later: after SNTP, or with the RTC time after NCMD Reboot) has only UTC
+    metric timestamps. A value read before the clock was valid (the DO boot state, read before
+    the RTC set the clock; a poll before SNTP) gets the time of the birth, not ~1970."""
+    births = [m for m in CAPTURE if m[0] >= t0 and m[1].split("/")[2:4] in
+              (["NBIRTH", NODE], ["DBIRTH", NODE]) and m[2].timestamp >= Y2020_MS]
+    early = [(m[1].split("/")[2], mm.name or mm.alias, mm.timestamp) for m in births
+             for mm in m[2].metrics if mm.timestamp < Y2020_MS]
+    nbirths = sum(1 for m in births if "/NBIRTH/" in m[1])
+    check("Issue #160 every metric timestamp of the NBIRTH and DBIRTH messages with a valid clock "
+          "(after SNTP, and with the RTC time after the reboot) is UTC: none before 2020",
+          nbirths >= 2 and not early,
+          f"{nbirths} NBIRTH, {len(births) - nbirths} DBIRTH with a UTC payload timestamp; metric "
+          f"timestamps before 2020: {early[:4]}")
 
 
 def modbus_rows(m):
@@ -6340,7 +7144,7 @@ def run_web(args, work):
     bad["devices"][0]["tags"][0]["type"] = "float16"   # invalid (float64 is a type since MB-6)
     asked = time.monotonic()
     paste(bad)
-    rej = gw.wait_log(r"^config: rejected: devices\[0\]\.tags\[0\]\.type: valor no válido", 15, asked)
+    rej = gw.wait_log(r"^config: rejected: devices\[0\]\.tags\[0\]\.type: invalid value", 15, asked)
     rpath = gw.wait_log(r"^config: path devices\[0\]\.tags\[0\]\.type$", 2, asked)
     good = json.loads(json.dumps(doc8))
     good["_save"] = False
@@ -6387,6 +7191,117 @@ def run_web(args, work):
           f"shell {bool(enc)}; secrets found in clear: {leaks or 'none'}")
 
 
+CLAIM_PASSWORD = "e2e-claimed-pw"   # issue #120: set through the claim window
+
+
+def boot_press(gw, seconds=3):
+    """The BOOT gesture of 2-10 s (the commissioning access point, and the claim window)."""
+    gw.console("boot 1")
+    time.sleep(seconds)
+    gw.console("boot 0")
+
+
+def check_claim_window(gw, commissioning_pw):
+    """CFG-3 / NET-5, issue #120, on a gateway in commissioning (no web password): the claim
+    window opens only after the BOOT gesture, closes at the end of its time, accepts only a client
+    of the access point (QEMU has no radio: the emulator-only 'claimsim ... eth' makes the
+    Ethernet count as the access point), leaves every other endpoint behind its credential, sets
+    the first web password without a credential, then closes and does not open again. Returns
+    the new web password (None if it was not set)."""
+    t0 = time.monotonic()
+    # 1. no gesture: no window
+    st0, _, b0 = http("GET", "/api/claim", auth=None)
+    st1, _, b1 = http("POST", "/api/claim", {"password": CLAIM_PASSWORD}, auth=None)
+    check("CFG-3/NET-5 #120 no claim window before the BOOT gesture: a set without a credential is "
+          "refused",
+          st0 == 200 and (as_json(b0) or {}).get("open") is False and st1 == 403
+          and b"no claim window is open" in b1,
+          f"GET /api/claim {st0} {b0.decode(errors='replace').strip()}; POST {st1} "
+          f"{b1.decode(errors='replace').strip()[:100]}")
+    # 2. a short window closes at the end of its time
+    gw.shell("claimsim 15", [r"claim windows: 15 s; Ethernet is not the access point"])
+    t_open = time.monotonic()
+    boot_press(gw)
+    opened = gw.wait_log(r"web: claim window open for 15 s", 10, t_open)
+    led = gw.wait_log(r"led: status: claim window", 5, t_open)
+    closed = gw.wait_log(r"web: claim window closed: its time is over", 40, t_open)
+    led_back = gw.wait_log(r"led: status: commissioning", 5, closed or t_open) if closed else None
+    st2, _, b2 = http("POST", "/api/claim", {"password": CLAIM_PASSWORD}, auth=None)
+    check("CFG-3/NET-5 #120 the BOOT gesture opens the claim window (LED pattern 'claim window'); it "
+          "closes at the end of its time, and a set is then refused",
+          opened and led and closed and led_back and closed - opened >= 14 and st2 == 403
+          and b"no claim window is open" in b2,
+          f"open {bool(opened)}, LED {bool(led)}, closed after "
+          f"{(closed - opened) if opened and closed else -1:.1f} s (15 s), LED back {bool(led_back)}; "
+          f"POST {st2} {b2.decode(errors='replace').strip()[:80]}")
+    # 3. an open window: only a client of the access point; the rest still needs the credential
+    gw.shell("claimsim 600", [r"claim windows: 600 s; Ethernet is not the access point"])
+    t_open = time.monotonic()
+    boot_press(gw)
+    opened = gw.wait_log(r"web: claim window open for 600 s", 10, t_open)
+    _, h = gw.shell("status", [r"^claim\s+window OPEN, \d+ s left"])
+    st3, _, b3 = http("GET", "/api/claim", auth=None)
+    st4, _, b4 = http("POST", "/api/claim", {"password": CLAIM_PASSWORD}, auth=None)
+    st5, _, _ = http("GET", "/api/status", auth=None)
+    st6, _, _ = http("GET", "/api/config", auth=None)
+    st7, _, _ = http("POST", "/api/restart", {}, auth=None)
+    j3 = as_json(b3) or {}
+    check("CFG-3/NET-5 #120 during the claim window, a client of another interface than the access "
+          "point is refused (a person on the plant network cannot take the gateway), and the other "
+          "endpoints still require the credential",
+          opened and all(h.values()) and st3 == 200 and j3.get("open") is True
+          and j3.get("allowed") is False and st4 == 403 and b"client of the access point" in b4
+          and st5 == 401 and st6 == 401 and st7 == 401,
+          f"open {bool(opened)}, shell {all(h.values())}; GET /api/claim {st3} {j3}; POST {st4} "
+          f"{b4.decode(errors='replace').strip()[:80]}; without a credential: status {st5}, config "
+          f"{st6}, restart {st7}")
+    # 4. the same window, with the Ethernet as the access point (emulator)
+    gw.shell("claimsim 600 eth", [r"claim windows: 600 s; Ethernet counts as the access point"])
+    st8, h8, _ = http("GET", "/", auth=None)
+    st9, _, b9 = http("GET", "/claim", auth=None)
+    st10, _, b10 = http("GET", "/api/claim", auth=None)
+    j10 = as_json(b10) or {}
+    st11, _, b11 = http("POST", "/api/claim", {"password": "short"}, auth=None)
+    st12, _, _ = http("POST", "/api/claim", {"password": CLAIM_PASSWORD}, auth=None,
+                      headers={"X-Requested-With": None})
+    t_claim = time.monotonic()
+    st13, _, b13 = http("POST", "/api/claim", {"password": CLAIM_PASSWORD}, auth=None)
+    set_log = gw.wait_log(r"web: web password set through the claim window", 10, t_claim)
+    beep = gw.wait_log(r"buzzer: 1 beep\(s\) \(simulated\)", 5, t_claim)
+    check("CFG-3/NET-5 #120 a client of the access point: '/' without a credential goes to /claim; a "
+          "short password and a request without the CSRF header are refused; the first web "
+          "password is set without a credential (log without the password, one beep)",
+          st8 == 303 and h8.get("location") == "/claim" and st9 == 200 and b"claim window" in b9
+          and st10 == 200 and j10.get("allowed") is True and j10.get("left_s", 0) > 0
+          and st11 == 400 and b"at least 8 characters" in b11 and st12 == 403 and st13 == 200
+          and (as_json(b13) or {}).get("ok") is True and set_log and beep,
+          f"GET / {st8} -> {h8.get('location')}; GET /claim {st9}; GET /api/claim {st10} {j10}; "
+          f"short {st11} {b11.decode(errors='replace').strip()[:60]}; no CSRF header {st12}; "
+          f"set {st13} {b13.decode(errors='replace').strip()[:80]}; log {bool(set_log)}, beep {bool(beep)}")
+    # 5. the window is closed; it does not open again; only the new password opens the web UI
+    st14, _, b14 = http("POST", "/api/claim", {"password": "e2e-other-pw"}, auth=None)
+    st15, _, b15 = http("GET", "/api/claim", auth=None)
+    st16, _, _ = http("GET", "/api/status", auth=("admin", commissioning_pw or "?"))
+    st17, _, b17 = http("GET", "/api/status", auth=("admin", CLAIM_PASSWORD))
+    led_back = gw.wait_log(r"led: status: commissioning", 5, t_claim)
+    t_again = time.monotonic()
+    boot_press(gw)
+    again = gw.wait_log(r"main: claim window not opened: a web password is set", 10, t_again)
+    _, h = gw.shell("status", [r"^claim\s+window closed \(a web password is set"])
+    leaked = gw.find(re.escape(CLAIM_PASSWORD), t0)
+    check("CFG-3/NET-5 #120 after the set the window is closed: a second set is refused, the "
+          "commissioning password no longer opens the web UI, the new one does, a new BOOT gesture "
+          "opens no window, and the password is in no log line",
+          st14 == 403 and b"web password is set" in b14 and (as_json(b15) or {}).get("open") is False
+          and st16 == 401 and st17 == 200 and led_back and again
+          and not gw.find(r"web: claim window open", t_again) and all(h.values()) and not leaked,
+          f"second set {st14} {b14.decode(errors='replace').strip()[:60]}; GET /api/claim {st15} "
+          f"{b15.decode(errors='replace').strip()}; commissioning password {st16}, new password "
+          f"{st17}; LED back {bool(led_back)}; new gesture {bool(again)}; shell {all(h.values())}; "
+          f"password in the log: {leaked[:1] or 'no'}")
+    return CLAIM_PASSWORD if st13 == 200 else None
+
+
 def run_factory_reset(args, work):
     """CFG-5 factory reset with the BOOT button (simulated: shell 'boot 1'), then commissioning:
     no configuration, no example identity, the web UI with a new commissioning password, and a
@@ -6410,6 +7325,16 @@ def run_factory_reset(args, work):
     gw.console("boot 0")
     ap = gw.wait_log(r"button: BOOT pressed \d+ ms: commissioning access point", 3, t_short)
     ap_try = gw.wait_log(r"ap: commissioning access point not available in this build", 3, t_short)
+    # Issue #120: with a web password set, the same gesture opens no claim window
+    no_claim = gw.wait_log(r"main: claim window not opened: a web password is set", 5, t_short)
+    st_pw, _, b_pw = http("POST", "/api/claim", {"password": "e2e-claim-0"}, auth=None)
+    _, h_pw = gw.shell("status", [r"^claim\s+window closed \(a web password is set"])
+    check("CFG-3/NET-5 #120 with a web password set, the BOOT gesture opens no claim window, and "
+          "a set without a credential is refused",
+          no_claim and not gw.find(r"web: claim window open", t_short) and st_pw == 403
+          and b"web password is set" in b_pw and all(h_pw.values()),
+          f"{(gw.find(r'claim window', t_short) or ['no claim log'])[0]}; POST /api/claim {st_pw} "
+          f"{b_pw.decode(errors='replace').strip()[:100]}; shell {all(h_pw.values())}")
     # Issue #74: DO/1 on before the reset (the simulated TCA9554 keeps its latch across the warm
     # restart), and the expander silent for the first 13 s of the next boot
     lit = set_do(obs, f"{T}/NCMD/{node}", f"{T}/NDATA/{node}", {1: True})
@@ -6474,9 +7399,10 @@ def run_factory_reset(args, work):
           f"DO/1 on before: {bool(lit)}; {(absent or ['no absent log'])[0]}; shell unknown "
           f"{bool(shell_unknown)}; /api/status before {io0}; "
           f"{(gw.find(r'io: TCA9554 answered', t1 - 5) or ['never answered'])[0]}; after {io1}")
+    claimed = check_claim_window(gw, pw)
     new = json.loads(config_json())
     new["sparkplug"]["edge_node_id"] = node2
-    st2, _, b2 = http("PUT", "/api/config", new, auth=("admin", pw or "?"))
+    st2, _, b2 = http("PUT", "/api/config", new, auth=("admin", claimed or "?"))
     nb2 = obs.wait(f"{T}/NBIRTH/{node2}", 40)
     check("CFG-5 commissioning: a configuration loaded through the REST API starts the gateway",
           st2 == 200 and nb2, f"PUT {st2} {b2.decode().strip()}; NBIRTH {node2}: {bool(nb2)}")
@@ -7029,6 +7955,7 @@ def run(args, log, slave, broker, conf, work):
           f"first boot {reason0.string_value if reason0 else None!r}, after reboot "
           f"{reason1.string_value if reason1 else None!r}")
     check_rtc(gw, obs, nb, t0, since_reboot, ndata_t, nb0[0][2])
+    check_birth_stamps(t0)
     check_status_api(gw, since_reboot)
     check_panic_during_traffic(gw, obs, slave, nbirth_t)
 

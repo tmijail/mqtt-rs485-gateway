@@ -90,7 +90,7 @@ def uint32_cause(payloads):
 
 # FAILs of the TCK that are not gateway bugs: tck-id -> (message kind, rule). The rule gets the
 # messages of that kind that the harness captured during the test and returns the reason, or
-# None when the reason does not apply (then the FAIL counts). README 4.6 explains each entry.
+# None when the reason does not apply (then the FAIL counts). README 4.7 explains each entry.
 KNOWN_RULES = {
     "topics-nbirth-metrics": ("NBIRTH", uint32_cause),
     "operational-behavior-data-publish-nbirth-values": ("NBIRTH", uint32_cause),
@@ -279,7 +279,7 @@ def run(h, args, work, slave):
     root, why = configured()
     if root is None:
         print(f"[SKIP] tck: {why}; see docs/how-to/run-the-sparkplug-tck.md", flush=True)
-        h.TCK_SKIPPED.append(why)
+        h.SKIPPED.append("tck")
         return
     tests = [t.strip() for t in os.environ.get("E2E_TCK_TESTS", ",".join(TESTS)).split(",") if t.strip()]
     protocols = [p.strip() for p in os.environ.get("E2E_TCK_PROTOCOLS", ",".join(PROTOCOLS)).split(",")

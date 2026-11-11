@@ -208,7 +208,7 @@ static void test_export_masks(void)
     in = "{\"mqtt\":{\"host\":\"b\"}\n,,}";
     TEST_ASSERT_NULL(gw_cfgdoc_export(in, strlen(in), &stored, &n, &err));
     TEST_ASSERT_EQUAL(2, err.line);
-    TEST_ASSERT_NOT_NULL(strstr(err.msg, "JSON mal formado"));
+    TEST_ASSERT_NOT_NULL(strstr(err.msg, "JSON syntax error"));
     in = "[1]";
     TEST_ASSERT_NULL(gw_cfgdoc_export(in, strlen(in), &stored, &n, &err));
     TEST_ASSERT_EQUAL_STRING("$", err.path);
@@ -409,7 +409,7 @@ static void *ota_parser(void *arg)
 
 /* A firmware request parsed on another task (the web's POST /api/firmware) while a document is
  * exported or validated (the shell): before the JSON lock, the other task's failed allocations
- * set the shared flag in the middle of this one and it reported "memoria insuficiente" with
+ * set the shared flag in the middle of this one and it reported "not enough memory" with
  * plenty of memory (or its own reset hid a real failure). */
 static void test_json_state_across_threads(void)
 {

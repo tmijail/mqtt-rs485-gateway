@@ -231,8 +231,7 @@ static int cmd_status(int argc, char **argv)
             (unsigned long)cd_size, gw_cdump_state_name(cd));
     }
     /* FW-1: from the heap for the command (not the console task's stack nor .bss, #80) */
-    gw_fw_status_t *fw = heap_caps_malloc_prefer(sizeof(*fw), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                                 MALLOC_CAP_8BIT);
+    gw_fw_status_t *fw = gw_storage_malloc(sizeof(*fw));
     if (fw != NULL) {
         gw_fw_get_status(fw);
     }
@@ -251,6 +250,10 @@ static int cmd_status(int argc, char **argv)
     heap_caps_free(fw);
     if (s_ctx.cfg == NULL && s_ctx.starting) {
         out("config   loading: the gateway is starting\n");
+    } else if (s_ctx.cfg == NULL && s_ctx.fault != NULL) {
+        out("FAULT    %s\n", s_ctx.fault);   /* #135 */
+        out("         nothing is running: no polling, no MQTT; network, web UI and shell only\n");
+        out("network  %s\n", (f & GW_ST_NET_UP) ? "up" : "down");
     } else if (s_ctx.cfg == NULL && s_ctx.commissioning) {
         out("config   NONE: commissioning after a factory reset; load one with the web UI or "
                "'config load'\n");
@@ -373,6 +376,17 @@ static int cmd_status(int argc, char **argv)
             (unsigned long)ws.refused, (unsigned long)ws.blocks, ws.blocked_now,
             (unsigned long)ws.csrf_refused, (unsigned long)ws.cut_bodies,
             (unsigned long)ws.stalls);
+        /* issue #120 */
+        if (ws.claim_open) {
+            out("claim    window OPEN, %lu s left: a client of the access point can set the web "
+                "password at /claim; refused claims %lu\n",
+                (unsigned long)ws.claim_left_s, (unsigned long)ws.claim_refused);
+        } else {
+            out("claim    window closed (%s); refused claims %lu\n",
+                ws.password_set ? "a web password is set: it does not open again"
+                                : "no web password set: a BOOT push of 2-10 s opens it",
+                (unsigned long)ws.claim_refused);
+        }
     }
     gw_log_stats_t ls;
     gw_log_get_stats(&ls);
@@ -413,11 +427,15 @@ static int cmd_status(int argc, char **argv)
     time_t now = time(NULL);
     struct tm tm;
     gmtime_r(&now, &tm);
-    bool synced = gw_edge_time_synced();
+    /* #160: without a valid clock only the births go out (no NDATA, DDATA or store) */
+    gw_clock_source_t src = gw_edge_time_source();
     out("time     %04d-%02d-%02dT%02d:%02d:%02dZ, %s; RTC ", tm.tm_year + 1900, tm.tm_mon + 1,
         tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
-        synced ? "SNTP synchronised" : rtc.restored ? "from the RTC (not synchronised)"
-                                                    : "not set (no SNTP yet)");
+        src == GW_CLOCK_SNTP      ? "SNTP synchronised"
+        : src == GW_CLOCK_RTC     ? "from the RTC (not synchronised)"
+        : src == GW_CLOCK_BROWSER ? "set from the browser (not synchronised)"
+                                  : "NOT valid (no SNTP, RTC or browser time yet): births only, "
+                                    "no NDATA/DDATA");
     if (!rtc.present) {
         out("not answering\n");
     } else {
@@ -469,7 +487,7 @@ static int cmd_status(int argc, char **argv)
     }
     out(" (B free, high-water mark)\n");
     /* issue #80: the minimum since boot, and the largest block (now and the lowest seen when a
-     * configuration was validated, the deepest point of the worst case without PSRAM) */
+     * configuration was validated, the deepest point of the #80 worst case) */
     out("heap     internal %u B free (minimum %u B, largest block %u B, lowest at a validation "
         "%u B), PSRAM %u B free\n",
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -554,11 +572,11 @@ typedef struct {
 
 static bool config_read(pasted_t *p)
 {
-    /* grows with the document (up to the limit): without PSRAM 128 KiB at once may not exist */
+    /* grows with the document (up to the limit): 128 KiB at once may not exist (the internal
+     * heap of the fault mode, #135) */
     const size_t max = CONFIG_GW_CONFIG_MAX_BYTES + 1;
     size_t cap = 8192;
-    char *buf = heap_caps_malloc_prefer(cap, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                        MALLOC_CAP_8BIT);
+    char *buf = gw_storage_malloc(cap);
     if (buf == NULL) {
         out("config: no memory\n");
         return false;
@@ -585,8 +603,7 @@ static bool config_read(pasted_t *p)
         if (!aborted && need > f.cap && f.cap < max) {
             size_t ncap = 2 * f.cap > need ? 2 * f.cap : need;
             ncap = ncap < max ? ncap : max;
-            char *nb = heap_caps_realloc_prefer(f.buf, ncap, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                                MALLOC_CAP_8BIT);
+            char *nb = gw_storage_realloc(f.buf, ncap);
             if (nb != NULL) {
                 f.buf = buf = nb;
                 f.cap = ncap;
@@ -685,6 +702,10 @@ static int cmd_config(int argc, char **argv)
     const gw_config_t *c = s_ctx.cfg;
     if (c == NULL && s_ctx.starting) {
         out("config: not available yet: the configuration is loading\n");
+        return 1;
+    }
+    if (c == NULL && s_ctx.fault != NULL) {
+        out("not loaded: %s\n", s_ctx.fault);
         return 1;
     }
     if (c == NULL) {
@@ -952,8 +973,7 @@ static int coredump_dump(void)
         return 1;
     }
     const size_t chunk = CD_LINES_PER_READ * GW_CDUMP_LINE_BYTES;
-    uint8_t *bin = heap_caps_malloc_prefer(chunk, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                           MALLOC_CAP_8BIT);
+    uint8_t *bin = gw_storage_malloc(chunk);
     if (bin == NULL) {
         out("coredump: no memory\n");
         return 1;
@@ -1020,8 +1040,7 @@ static int cmd_coredump(int argc, char **argv)
         gw_cdump_info_t i;
         char text[768];
     } cd_text_t;
-    cd_text_t *t = heap_caps_malloc_prefer(sizeof(*t), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                           MALLOC_CAP_8BIT);
+    cd_text_t *t = gw_storage_malloc(sizeof(*t));
     if (t == NULL || gw_coredump_summary(&t->i) != ESP_OK) {
         heap_caps_free(t);
         out("coredump: no memory\n");
@@ -1133,7 +1152,8 @@ static int cmd_mbread(int argc, char **argv)
         return 1;
     }
     if (s_ctx.cfg == NULL) {
-        out("mbread: the bus is not running (no valid configuration)\n");
+        out(s_ctx.fault != NULL ? "mbread: the bus is not running (hardware fault)\n"
+                                : "mbread: the bus is not running (no valid configuration)\n");
         return 1;
     }
     if (!up(GW_SHELL_UP_BUS, "mbread", "the RS485 bus")) {
@@ -1189,6 +1209,23 @@ static int cmd_boot(int argc, char **argv)
         return 1;
     }
     gw_bootbtn_sim_set(argv[1][0] == '1');
+    return 0;
+}
+
+/* Issue #120: the time of the next claim windows, and whether the Ethernet counts as the access
+ * point (QEMU has no radio). */
+static int cmd_claimsim(int argc, char **argv)
+{
+    char *end = NULL;
+    long s = argc >= 2 ? strtol(argv[1], &end, 10) : -1;
+    bool eth = argc == 3 && strcmp(argv[2], "eth") == 0;
+    if (end == NULL || *end != '\0' || s < 0 || s > 3600 || (argc == 3 && !eth) || argc > 3) {
+        out("usage: claimsim <0-3600 s, 0 = Kconfig> [eth]\n");
+        return 1;
+    }
+    gw_web_sim_claim((uint32_t)s, eth);
+    out("claim windows: %ld s%s; Ethernet %s the access point\n", s, s == 0 ? " (Kconfig)" : "",
+        eth ? "counts as" : "is not");
     return 0;
 }
 /* Emulator only: crash on purpose, so the E2E can check the core dump in flash and the
@@ -1325,6 +1362,7 @@ ATOMIC(cmd_validation)
 ATOMIC(cmd_storm)
 ATOMIC(cmd_pubfail)
 ATOMIC(cmd_boot)
+ATOMIC(cmd_claimsim)
 #endif
 
 static esp_err_t new_repl(const esp_console_repl_config_t *rc, esp_console_repl_t **repl)
@@ -1411,6 +1449,9 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
          .func = cmd_pubfail_atomic},
         {.command = "boot", .help = "Emulator only: press (1) or release (0) the BOOT button",
          .hint = "<0|1>", .func = cmd_boot_atomic},
+        {.command = "claimsim", .help = "Emulator only: the time of the next claim windows; "
+         "'eth': the Ethernet counts as the access point (issue #120)",
+         .hint = "<s> [eth]", .func = cmd_claimsim_atomic},
         {.command = "panic", .help = "Emulator only: abort() (core dump test)", .func = cmd_panic},
 #endif
     };

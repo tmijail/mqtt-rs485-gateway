@@ -5,7 +5,7 @@ This procedure tells how to send the data of the gateway to the Unified Namespac
 - For the reasons of the name rules, refer to [Sparkplug names and the UNS](../explanation/sparkplug-names-and-the-uns.md).
 - For the name limits and the UMH topic of each metric, refer to [UMH names and topics](../reference/umh-names-and-topics.md).
 
-> **Warning: Do not use this procedure as tested. Nobody tested it against a real UMH Core.** The interoperability E2E (#175) does not exist yet. The source of the data about UMH is the source code and the documentation of benthos-umh **v0.16.2** (commit `0d3a203`). Another version can operate differently.
+> **Warning: Do not use this procedure with a different version of benthos-umh before you test it.** The interoperability E2E (#175, `--only umh`) tested this procedure with benthos-umh **v0.16.2** (commit `0d3a203`) and the firmware in QEMU. It used the input and the `tag_processor` of this document. Another version can operate differently. Nobody tested a full UMH Core installation (the `uns` output, the Topic Browser, the downsampler). `idf/README.md` §4.6 gives the results.
 
 > **Caution: Do not use UMH Core as the only copy of data that you must keep.** UMH cannot be the primary host of the gateway (#177). If UMH stops and the broker continues, the gateway continues to publish, and UMH loses that data. The [explanation](../explanation/sparkplug-names-and-the-uns.md#no-primary-host-data-can-be-lost) gives the details.
 
@@ -66,9 +66,10 @@ UMH makes the location path of a device from its Sparkplug `device_id`. The gate
 5. Keep `sparkplug.primary_host_id` empty.
 6. You can give a device the key `type`. With the UMH preset, a typed device publishes plain metrics, not a template instance.
 7. Do not use tags of the type `bytes`. UMH does not show them.
-8. Keep `mqtt.protocol` at `3.1.1` (the default).
-9. Set `sparkplug.store_forward` to `true` if you want the data of a broker failure.
-10. Validate the configuration (the web UI button, `PUT /api/config?dry_run=1` or `config check`). Read the warnings, and correct each one.
+8. Do not use `uint64` or `int64` tags for values larger than 2^53 (9 007 199 254 740 992). The `tag_processor` rounds them (refer to [the values](#examine-the-result)).
+9. Keep `mqtt.protocol` at `3.1.1` (the default).
+10. Set `sparkplug.store_forward` to `true` if you want the data of a broker failure.
+11. Validate the configuration (the web UI button, `PUT /api/config?dry_run=1` or `config check`). Read the warnings, and correct each one.
 
 An example `config.json` for option A:
 
@@ -162,7 +163,7 @@ Each key in this example is in benthos-umh v0.16.2:
 | `role: "secondary_active"` | The bridge sends a rebirth request when it gets DATA with no BIRTH, for example after a restart of UMH. The default `secondary_passive` never sends it. The tags then show as `alias_<n>`, and a negative integer can show as a large number, because NDATA and DDATA have no datatype (#159) |
 | `include_edge_node_in_location: false` | The `device_id` (the `device_prefix` and the device name) already holds the full location. With `true`, UMH puts the `edge_node_id` before it |
 | `return null` | A deliberate drop in the `tag_processor` |
-| `msg.meta.timestamp_ms = msg.meta.spb_timestamp` | Without this line, UMH uses the arrival time. The store & forward samples (`is_historical`) then get the time of the replay |
+| `msg.meta.timestamp_ms = msg.meta.spb_timestamp` | Without this line, UMH uses the arrival time. The store & forward samples (`is_historical`) then all get the time of the replay (measured, #175) |
 
 Do not use the role `primary`. It publishes the Sparkplug 2.x STATE text (`ONLINE`), and the gateway accepts only the 3.0 JSON STATE (#177).
 
@@ -182,6 +183,12 @@ Do not use the role `primary`. It publishes the Sparkplug 2.x STATE text (`ONLIN
 | Node metric `DI/1` | `umh.v1.acme.berlin.packaging.gw01._raw.DI.1` |
 | Node metric `Devices/meter1/Online` (UMH preset) | `umh.v1.acme.berlin.packaging.gw01._raw.Devices.meter1.Online` |
 | Node metric `Node Info/Uptime` | `umh.v1.acme.berlin.packaging.gw01._raw.Node_Info.Uptime` |
+
+The E2E of #175 measured these items with v0.16.2:
+
+- Each value of the types `bool`, `int16`, `uint16`, `int32`, `uint32`, `float32`, `float64` and `string` gets to the UNS exact, also negative values.
+- A `uint64` or `int64` value gets to the UNS exact up to 2^53. The `tag_processor` runs JavaScript, where each number is a double. Thus 9007199254740993 becomes 9007199254740992.
+- After a restart of UMH, the bridge sends the rebirth request in less than 1 s. The topics come back with their names.
 
 The [reference](../reference/umh-names-and-topics.md#node-metrics) gives all the metrics. The Rebirth button of the Status tab of the web UI (`POST /api/rebirth`) does the same as the shell command `rebirth`.
 
@@ -206,14 +213,17 @@ This path has these limits:
 
 | Symptom | Probable cause | Action |
 |---|---|---|
-| The tags show as `alias_<n>` | The bridge has no BIRTH of the node, for example after a restart of UMH | Set `role: "secondary_active"`. Type `rebirth` on the gateway shell |
+| The tags show as `alias_<n>` | The bridge has no BIRTH of the node, for example after a restart of UMH | Set `role: "secondary_active"`. Type `rebirth` on the gateway shell. The `tag_processor` of this document drops the `alias_<n>` tags |
 | A negative value shows as a large number, for example 4294967295 for -1 | The bridge has no BIRTH of the node. NDATA and DDATA have no datatype, thus the bridge cannot know that the integer has a sign | Set `role: "secondary_active"`. Type `rebirth` on the gateway shell |
 | A device has no data | The device has a `type`, and the UMH preset is off. The tags are `bytes`. The device is offline: its values are null | Set `sparkplug.naming` to `"umh"`. Use other tag types. Read `Devices/<name>/Online`, or type `devices` on the gateway shell |
 | A level is at the wrong place | The name has a space, a `.` or a level that starts with `_` | Set `sparkplug.naming` to `"umh"`, and correct each name that the validation refuses. The metadata `spb_original_device_id` shows the name before UMH changed it |
 | An enterprise has the name of the gateway, for example `GW01` | The `edge_node_id` is a short name. UMH uses it as the location of the node metrics | Write the `edge_node_id` as a location, or drop the node metrics in the bridge |
 | The device is the enterprise, for example `umh.v1.Meter1` | The `device_id` is not a location. Two gateways with `Meter1` then write to the same topic | Set `sparkplug.device_prefix` to the location of the devices |
-| The timestamps are near 1970 | The gateway published before it had a valid time | Make sure that the gateway gets SNTP. Read `Node Info/Time Synced`. The fix of #160 is planned |
+| The gateway sends only NBIRTH and DBIRTH, and no NDATA or DDATA | The gateway has no valid time: no SNTP, no RTC time and no time from the browser (#160) | Make sure that the gateway gets SNTP. Or, in the web UI, click "Set the time from the browser". Type `status` on the gateway shell: the `time` line shows the source |
+| The births have timestamps near 1970 | The gateway sent the births before it had a valid time. It sends them again when the time becomes valid, and a value read before that time then gets the time of the rebirth (#160) | No action. Make sure that the gateway gets SNTP, or set the time from the browser |
+| A large counter shows a different last digit | A `uint64` or `int64` value is larger than 2^53. The JavaScript of the `tag_processor` rounds it | Keep the value at 2^53 or less |
 | The samples of a broker failure have the time of the replay | The `tag_processor` has no `timestamp_ms` line | Add `msg.meta.timestamp_ms = msg.meta.spb_timestamp` |
+| After a broker failure, the UNS shows an old value for a short time | The gateway sends the DBIRTH with the current value first, then the stored samples (`is_historical`). The last message of the topic is then the last stored sample | Use the timestamps, not the order of arrival. The next change of the value corrects the last value |
 | The gateway sends no NBIRTH, and the shell says that it waits for the primary host | `sparkplug.primary_host_id` is not empty | Set `primary_host_id` to `""` |
 
-The UMH downsampler has the option `late_policy` (`passthrough` or `drop`) for samples that arrive out of order. Nobody examined its effect on a replay of store & forward yet (#175).
+The UMH downsampler has the option `late_policy` (`passthrough` or `drop`) for samples that arrive out of order. A replay of store & forward sends samples that are older than the DBIRTH. Nobody examined the effect of `late_policy` on them: the E2E of #175 has no downsampler.

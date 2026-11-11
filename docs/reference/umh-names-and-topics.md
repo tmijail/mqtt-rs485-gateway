@@ -5,7 +5,7 @@ This reference gives the limits of the Sparkplug names of the gateway and the ch
 - For the procedure, refer to [Connect the gateway to UMH Core](../how-to/connect-to-umh-core.md).
 - For the reasons, refer to [Sparkplug names and the UNS](../explanation/sparkplug-names-and-the-uns.md).
 
-The UMH data is from benthos-umh **v0.16.2** (commit `0d3a203`). Nobody tested it against a real UMH Core (#175).
+The UMH data is from benthos-umh **v0.16.2** (commit `0d3a203`). The E2E scenario `umh` (#175) measured the topics and the values in this document with that version and the firmware in QEMU (`idf/README.md` §4.6).
 
 ## Name limits of the gateway
 
@@ -106,7 +106,29 @@ The DBIRTH and the DDATA of a device hold one metric for each tag of the device.
 | `Voltage` | From the tag `type` (`docs/SPEC.md` §6) | `Voltage` | Kept |
 | `L1/Current` | From the tag `type` | `L1.Current` | Kept |
 | A tag with a failed read, or of an offline device | Null, with the Quality BAD | No new value | Dropped |
-| A tag of the type `bytes` | Bytes | None: UMH gives no value for Bytes | Dropped |
+| A tag of the type `bytes` | Bytes | None: UMH gives no value for Bytes. The input gives the datatype `Unknown` | Dropped |
 | All tags of a device with a `type` | One Template instance. With the UMH preset: one plain metric for each tag | None for a Template. With the UMH preset, as the tags above | Dropped. With the UMH preset: kept |
 
 UMH ignores the properties of each tag (`engUnit`, `engLow`, `engHigh`, `Quality`). A DDEATH gives no UMH topic, and the tags of the device keep their last value in UMH. With the UMH preset, the node metric `Devices/<name>/Online` changes to `false` when the device goes offline.
+
+## Values in the UNS
+
+The E2E of #175 measured these values. The column "UNS" is the value after the `tag_processor` of the how-to.
+
+| Tag `type` | Sparkplug datatype | Value at the gateway | UNS |
+|---|---|---|---|
+| `bool` | Boolean | `true` | `true` |
+| `int16` | Int16 | -2 | -2 |
+| `int16` with `scale` | Float | 5.0 | 5 |
+| `uint16` | UInt16 | 65535 | 65535 |
+| `int32` | Int32 | -123456 | -123456 |
+| `uint32` | UInt32 | 4000000000 | 4000000000 |
+| `int64` | Int64 | -9007199254740993 | -9007199254740992 (rounded) |
+| `uint64` | UInt64 | 9007199254740993 | 9007199254740992 (rounded) |
+| `float32` | Float | 230.5 | 230.5 |
+| `float64` | Double | 1234.56789012345 | 1234.56789012345 |
+| `string` | String | `SN-0042-ABCD` | `SN-0042-ABCD` |
+| `bytes` | Bytes | 2 registers | No topic |
+| A failed read | The datatype of the tag, null, Quality BAD | Null | No new value |
+
+The input of the bridge has the exact value in each row. Only the JavaScript of the `tag_processor` rounds the 64-bit integers. Without a BIRTH in the cache of the bridge, a DATA metric has no datatype. Then the input gives an Int16 value of -3 as 4294967293, with the name `alias_<n>`.

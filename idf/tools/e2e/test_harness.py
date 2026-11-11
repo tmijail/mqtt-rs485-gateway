@@ -702,20 +702,27 @@ class RxDropWindow(unittest.TestCase):
 
 
 class CiGroups(unittest.TestCase):
-    """Issue #121: the CI runs the scenarios in parallel groups (scenarios.CI_GROUPS); together
-    they must be exactly one full run."""
+    """Issue #121: the CI runs the scenarios in parallel groups (scenarios.CI_GROUPS); the groups
+    of a variant must be exactly one full run of that variant, and the two variants together
+    every scenario once (issue #135)."""
 
     def test_selection(self):
         full = scenarios.selected(set())
-        # every one but 'refuse' and the optional ones (issue #176: 'tck')
+        # every one but 'refuse' and the optional ones (issues #175 and #176)
         self.assertEqual(len(scenarios.SCENARIOS) - 1 - len(scenarios.OPTIONAL), len(full))
         self.assertNotIn("refuse", full)
+        # issue #175: an optional scenario runs only when named, alone or with others
+        self.assertEqual(set(), set(full) & scenarios.OPTIONAL)
+        self.assertEqual(scenarios.OPTIONAL - set(dict(scenarios.SCENARIOS)), set())
+        self.assertEqual(["umh"], scenarios.selected({"umh"}))
+        self.assertEqual(["main", "umh"], scenarios.selected({"main", "umh"}))
         self.assertEqual(["refuse"], scenarios.selected({"refuse"}))
         self.assertEqual(["main"], scenarios.selected({"refuse", "main"}))
         for name in scenarios.OPTIONAL:
             self.assertNotIn(name, full)
             self.assertEqual([name], scenarios.selected({name}))
         self.assertEqual(["main", "tck"], scenarios.selected({"main", "tck"}))
+        self.assertEqual(["umh", "tck"], scenarios.selected({"tck", "umh"}))
         # the existing names select what they did before the finer OTA names
         ota = ["FW-1 OTA", "issue #112 park in a long RS485 transaction",
                "issue #97 OTA trial wiring", "issues #99/#101 OTA trial"]
@@ -725,39 +732,62 @@ class CiGroups(unittest.TestCase):
         self.assertEqual(["mqtt5", "max_packet"], scenarios.selected({"mqtt5"}))
         self.assertEqual(["sf", "sf spill", "stack margin"], scenarios.selected({"sf"}))
         self.assertEqual(3, len(scenarios.selected({"nvs"})))
+        # issue #135: a full run of a variant runs its own scenarios; --only selects in any one
+        default, psram = scenarios.selected(set(), "default"), scenarios.selected(set(), "psram")
+        self.assertEqual(sorted(scenarios.DEFAULT_VARIANT_SCENARIOS), sorted(default))
+        self.assertEqual([], [n for n in default if n in psram])
+        self.assertEqual(sorted(full), sorted(default + psram))
+        for name in ("tls", "main", "sf spill", "FW-1 OTA", "issue #135 no PSRAM"):
+            self.assertIn(name, psram)   # the real configuration: #80, the spill, OTA buffers
+        self.assertEqual(ota, scenarios.selected({"ota"}, "psram"))
+        self.assertEqual(["tls", "main"], scenarios.selected({"tls", "main"}, "default"))
+        self.assertTrue(scenarios.PSRAM_BUILD_SCENARIOS <= set(psram))
         with self.assertRaises(ValueError):
             scenarios.parse_only("ota,otaa")
         self.assertEqual({"ota", "main"}, scenarios.parse_only("ota, main,"))
         self.assertEqual(set(), scenarios.parse_only(""))
 
     def test_groups_cover_one_full_run(self):
-        full = scenarios.selected(set())
-        seen = []
-        for group, only in scenarios.CI_GROUPS:
-            got = scenarios.group_scenarios(only)   # raises on an unknown name
-            self.assertTrue(got, f"group {group} selects nothing")
-            # "6. payloads decode" needs at least one captured payload in each run
-            self.assertTrue(set(got) - scenarios.NO_CAPTURE,
-                            f"group {group} has no scenario with an MQTT observer")
-            seen += got
-        for name in full:
-            self.assertEqual(1, seen.count(name), f"{name!r} in {seen.count(name)} CI groups")
-        self.assertEqual(sorted(full), sorted(seen))
-        ids = [g for g, _ in scenarios.CI_GROUPS]
+        everything = []
+        for variant, _ in scenarios.VARIANTS:
+            full = scenarios.selected(set(), variant)
+            seen = []
+            for group, only in scenarios.groups_of(variant):
+                got = scenarios.group_scenarios(only)   # raises on an unknown name
+                self.assertTrue(got, f"group {group} selects nothing")
+                # "6. payloads decode" needs at least one captured payload in each run
+                self.assertTrue(set(got) - scenarios.NO_CAPTURE,
+                                f"group {group} has no scenario with an MQTT observer")
+                seen += got
+            for name in full:
+                self.assertEqual(1, seen.count(name),
+                                 f"{name!r} in {seen.count(name)} CI groups of {variant}")
+            self.assertEqual(sorted(full), sorted(seen), variant)
+            everything += seen
+        # issue #135: each scenario in exactly one variant
+        self.assertEqual(sorted(scenarios.selected(set())), sorted(everything))
+        # issue #175: no CI group runs an optional scenario (the CI image has no benthos-umh)
+        self.assertEqual(set(), set(everything) & scenarios.OPTIONAL)
+        for _, _, only in scenarios.CI_GROUPS:
+            self.assertEqual(set(), scenarios.parse_only(only) & scenarios.OPTIONAL)
+        ids = [g for _, g, _ in scenarios.CI_GROUPS]
         self.assertEqual(len(ids), len(set(ids)))
         for g in ids:   # artifact names and directory names
             self.assertRegex(g, r"^[a-z0-9-]+$")
+        self.assertEqual({v for v, _ in scenarios.VARIANTS},
+                         {v for v, _, _ in scenarios.CI_GROUPS})
 
     def test_matrix(self):
         m = scenarios.matrix()
         run = m["run"]["include"]
-        self.assertEqual(len(scenarios.VARIANTS) * len(scenarios.CI_GROUPS), len(run))
+        self.assertEqual(len(scenarios.CI_GROUPS), len(run))
         for job in run:
             self.assertEqual(job["plain"] == "1", scenarios.needs_plain(job["only"]))
+            self.assertEqual(job["psram"], dict(scenarios.VARIANTS)[job["variant"]])
         # the GW42 scenario needs the build without NVS encryption: its group downloads it
         nvs = [j for j in run if "issue #94 OTA to NVS encryption" in
                scenarios.group_scenarios(j["only"])]
-        self.assertEqual(len(scenarios.VARIANTS), len(nvs))
+        self.assertEqual(1, len(nvs))
         self.assertTrue(all(j["plain"] == "1" for j in nvs))
         self.assertEqual(["1"], [b["plain"] for b in m["build"]["include"] if b["plain"] == "1"])
         self.assertEqual(e2e.MAX_RETRIES, scenarios.max_retries())
@@ -782,24 +812,32 @@ class CiGroups(unittest.TestCase):
                 (d / "results.json").write_text(e2e.json.dumps(res))
                 (d / "qemu-exits.txt").write_text("none\n")
 
-            for v, _ in scenarios.VARIANTS:
-                for g, only in scenarios.CI_GROUPS:
-                    write(v, g, only)
+            for v, g, only in scenarios.CI_GROUPS:
+                write(v, g, only)
             text, problems = scenarios.summary(root)
             self.assertEqual([], problems)
-            n = len(scenarios.selected(set()))
-            self.assertIn(f"{n + 5 * len(scenarios.CI_GROUPS)}/{n + 5 * len(scenarios.CI_GROUPS)}"
-                          f" checks passed ({n + 5} as one full run)", text)
+            for v, _ in scenarios.VARIANTS:
+                n, k = len(scenarios.selected(set(), v)), len(scenarios.groups_of(v))
+                self.assertIn(f"| {v} | **all** | {n + 5 * k}/{n + 5 * k} checks passed "
+                              f"({n + 5} as one full run)", text)
             self.assertIn("qemu-exits: none", text)
-            g, only = scenarios.CI_GROUPS[0]
-            write("psram", g, only, ok=False)
-            write("default", g, only, retries=scenarios.max_retries() + 1)
-            (root / f"e2e-result-default-{scenarios.CI_GROUPS[1][0]}" / "results.json").unlink()
+            pg, ponly = scenarios.groups_of("psram")[0]
+            write("psram", pg, ponly, ok=False)
+            dg, donly = scenarios.groups_of("default")[0]
+            write("default", dg, donly, retries=scenarios.max_retries() + 1)
+            (root / f"e2e-result-psram-{scenarios.groups_of('psram')[1][0]}"
+             / "results.json").unlink()
             problems = scenarios.summary(root)[1]
             self.assertEqual(3, len(problems), problems)
             self.assertTrue(any("failed check" in p for p in problems))
             self.assertTrue(any("no results.json" in p for p in problems))
             self.assertTrue(any("scenarios repeated" in p for p in problems))
+            # a group that ran the scenarios of the other variant: not one full run
+            write("psram", pg, ponly)
+            write("default", dg, donly)
+            write("psram", scenarios.groups_of("psram")[1][0], "ota-park")
+            problems = scenarios.summary(root)[1]
+            self.assertTrue(any("expected" in p for p in problems), problems)
 
 
 class TckResults(unittest.TestCase):

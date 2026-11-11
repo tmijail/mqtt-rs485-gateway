@@ -1,6 +1,6 @@
 # Sparkplug TCK results (Edge Node profile)
 
-This document gives the result of each assertion of the Eclipse Sparkplug TCK 3.0.0, Edge Node profile, for the gateway firmware. The summary, the test environment and the reason for each failure are in `idf/README.md` §4.6. To run the TCK, refer to [Run the Sparkplug TCK against the gateway](../how-to/run-the-sparkplug-tck.md).
+This document gives the result of each assertion of the Eclipse Sparkplug TCK 3.0.0, Edge Node profile, for the gateway firmware. The summary, the test environment and the reason for each failure are in `idf/README.md` §4.7. To run the TCK, refer to [Run the Sparkplug TCK against the gateway](../how-to/run-the-sparkplug-tck.md).
 
 ## Run
 

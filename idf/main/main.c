@@ -56,7 +56,7 @@ static const char *TAG = "main";
                                      * "config_error" alarm (a rejected one cannot say) */
 
 /* Immutable after boot; shared read-only by every task. About 32 KB: allocated at boot in
- * PSRAM when the board has it (internal RAM otherwise, e.g. QEMU), see big_alloc(). */
+ * PSRAM (internal RAM in the fault mode and in the QEMU build without PSRAM), see big_alloc(). */
 static gw_config_t *s_cfg;
 static char s_hardware[64];
 static gw_node_info_t s_info;  /* NBIRTH "Node Info/..." */
@@ -66,6 +66,12 @@ static gw_web_mode_t s_mode = GW_WEB_NORMAL;
 static bool s_web_started;
 static const char *s_source = "";
 static volatile bool s_ready;   /* the mode is settled: BOOT gestures may act on it */
+
+/* Issue #135: the firmware assumes the board's PSRAM. Without it the gateway does not start
+ * (GW_WEB_FAULT): the log, the shell and the web UI give this text. */
+static const char PSRAM_FAULT[] = "PSRAM not detected: the board has 8 MB of PSRAM and the boot "
+                                  "did not find it (a defective or missing chip); the gateway "
+                                  "does not start";
 
 static void on_ip_changed(bool up)
 {
@@ -108,6 +114,7 @@ static void start_shell(const gw_config_t *cfg, const char *source, bool running
     const gw_shell_ctx_t ctx = {.cfg = cfg,
                                 .starting = cfg != NULL && !running,
                                 .commissioning = s_mode == GW_WEB_COMMISSIONING,
+                                .fault = s_mode == GW_WEB_FAULT ? PSRAM_FAULT : NULL,
                                 .config_source = source,
                                 .config_error = s_cfg_err.msg,
                                 .info = &s_info,
@@ -138,6 +145,17 @@ static void restart_soon(void)
     esp_timer_start_once(t, 300 * 1000);
 }
 
+/* CFG-3 / NET-5, issue #120: the claim window closed (time over, or a password was set): the
+ * LED goes back; a set password gets one beep at the panel. The access point keeps its open
+ * period to the end of the window time (gw_ap). */
+static void claim_closed(bool claimed)
+{
+    gw_status_set(GW_ST_CLAIM, false);
+    if (claimed) {
+        gw_buzzer_beep(1);
+    }
+}
+
 static void start_web(gw_web_mode_t mode, const gw_config_t *cfg, const char *source)
 {
     if (s_web_started) {
@@ -160,9 +178,12 @@ static void start_web(gw_web_mode_t mode, const gw_config_t *cfg, const char *so
         .cfg = cfg,
         .config_source = source,
         .config_error = mode != GW_WEB_NORMAL ? &s_cfg_err : NULL,
+        .fault = mode == GW_WEB_FAULT ? PSRAM_FAULT : NULL,
         .info = &s_info,
         .commissioning_password = s_commission_pw,
         .restart = mode == GW_WEB_NORMAL ? gw_edge_request_restart : restart_soon,
+        .ap_ip4 = gw_ap_ip4,
+        .claim_closed = claim_closed,
     };
     if (gw_web_start(&ctx) != ESP_OK) {
         ESP_LOGE(TAG, "web server unavailable");
@@ -172,14 +193,14 @@ static void start_web(gw_web_mode_t mode, const gw_config_t *cfg, const char *so
     }
 }
 
-/* Not even the configuration structure fits (no PSRAM, internal heap exhausted): nothing can
- * run, not even the recovery network; the shell reports why. */
+/* Not even the configuration structure fits (the heap is exhausted): nothing can run, not even
+ * the recovery network; the shell reports why. */
 static void halt_no_memory(void)
 {
     /* issue #99: a new image on trial goes back to the previous one at once (no trial timer
      * runs yet, nothing else would ever judge it) */
     gw_fw_cannot_start("no memory for the configuration");
-    snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg), "sin memoria para la configuración (%u B)",
+    snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg), "no memory for the configuration (%u B)",
              (unsigned)sizeof(gw_config_t));
     gw_status_set(GW_ST_CFG_ERROR, true);
     start_shell(NULL, "RAM", false);
@@ -199,13 +220,14 @@ static void net_noop(void)
 }
 
 /* NET-5: the access point, with the web UI's address as the web server really serves it
- * (HTTPS, or HTTP when web.https is false or the device certificate is missing). */
-static void start_ap(uint32_t timeout_s)
+ * (HTTPS, or HTTP when web.https is false or the device certificate is missing). @p open_s:
+ * the open period of a claim window (issue #120), 0 = WPA2. */
+static esp_err_t start_ap(uint32_t timeout_s, uint32_t open_s)
 {
     gw_web_stats_t ws;
     gw_web_get_stats(&ws);
-    gw_ap_start(s_commission_pw, timeout_s, ws.https,
-                ws.https ? s_cfg->web.https_port : s_cfg->web.port);
+    return gw_ap_start(s_commission_pw, timeout_s, ws.https,
+                       ws.https ? s_cfg->web.https_port : s_cfg->web.port, open_s);
 }
 
 /* CFG-5 / NET-5: BOOT gestures, in every mode. */
@@ -229,17 +251,40 @@ static void on_button(gw_btn_event_t ev)
         start_web(s_mode, s_cfg, s_source);
         gw_storage_commissioning_password(s_commission_pw);
         printf("ap: password = commissioning password '%s'\n", s_commission_pw);
+        /* CFG-3 / NET-5, issue #120: while no web password is set, the same gesture opens the
+         * claim window, and the access point is open (no key) for the time of the window */
+        uint32_t claim_s = gw_web_claim_window_s();
 #if CONFIG_GW_SOFTAP
-        start_ap(s_mode == GW_WEB_NORMAL ? CONFIG_GW_SOFTAP_TIMEOUT_MIN * 60 : 0);
+        esp_err_t ap = start_ap(s_mode == GW_WEB_NORMAL ? CONFIG_GW_SOFTAP_TIMEOUT_MIN * 60 : 0,
+                                claim_s);
 #else
-        start_ap(0);
+        esp_err_t ap = start_ap(0, claim_s);
 #endif
+#if CONFIG_GW_IO_SIMULATED
+        /* QEMU has no radio: the window opens without the access point, so the E2E can examine
+         * it (a claim over Ethernet is refused unless the shell's 'claimsim ... eth' says so) */
+        const bool need_ap = false;
+#else
+        const bool need_ap = true;
+#endif
+        if (claim_s == 0) {
+            ESP_LOGI(TAG, "claim window not opened: a web password is set (or no web server)");
+        } else if (ap != ESP_OK && need_ap) {
+            /* the window accepts only clients of the access point: without it, nobody */
+            ESP_LOGW(TAG, "claim window not opened: no access point (%s); set the web password "
+                          "with the commissioning password of the serial console",
+                     esp_err_to_name(ap));
+        } else if (gw_web_claim_open(claim_s)) {
+            gw_status_set(GW_ST_CLAIM, true);
+        }
     }
 }
 
 /* CFG-3 recovery: without a valid configuration nothing that needs one runs (no polling, no
  * MQTT), but the network comes up with the last valid configuration's settings (or DHCP on
- * Ethernet) so the web UI, the REST API and the shell can fix it without reflashing. */
+ * Ethernet) so the web UI, the REST API and the shell can fix it without reflashing.
+ * #135: the fault mode (no PSRAM) is the same, with the configuration not loaded at all: only
+ * what reports the fault runs, from internal RAM. */
 static void run_without_config(gw_web_mode_t mode, const char *source)
 {
     s_mode = mode;
@@ -253,6 +298,7 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
     if (mode == GW_WEB_RECOVERY && gw_storage_get_blob(NVS_ALARM_CFG, &alarm, 1) && alarm) {
         gw_buzzer_configure(GW_ALARM_BIT(GW_ALARM_CONFIG_ERROR), 0);   /* IO-6 */
     }
+    /* #135: the fault mode shows the configuration error state on the LED too */
     gw_status_set(mode == GW_WEB_COMMISSIONING ? GW_ST_COMMISSIONING : GW_ST_CFG_ERROR, true);
     start_shell(NULL, source, false);
     gw_storage_recovery_config(s_cfg);
@@ -262,6 +308,8 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
     gw_fw_init(s_cfg, true, &fw_hooks);
     if (mode == GW_WEB_COMMISSIONING) {
         gw_fw_commissioning();
+    } else if (mode == GW_WEB_FAULT) {
+        gw_fw_cannot_start("no PSRAM");   /* #99: the image cannot run the gateway */
     } else {
         gw_fw_config_rejected();
     }
@@ -269,7 +317,8 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     const gw_net_callbacks_t net_cb = {
         .ip_changed = net_down_noop, .route_changed = net_noop,
-        .time_synced = gw_io_rtc_store};   /* TIME-2: the RTC follows SNTP here too */
+        .time_synced = on_time_synced};   /* TIME-2: the RTC follows SNTP here too; #160: the
+                                           * clock source in /api/status (no browser time over it) */
     if (gw_net_start(s_cfg, &net_cb) != ESP_OK) {
         ESP_LOGE(TAG, "recovery network unavailable: only the console shell is left");
     } else {
@@ -278,9 +327,14 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
     start_web(mode, s_cfg, source);
     s_source = source;
     s_ready = true;
-    start_ap(0);   /* NET-5: no valid configuration */
+    start_ap(0, 0);   /* NET-5: no valid configuration */
     for (;;) {
-        if (mode == GW_WEB_COMMISSIONING) {
+        if (mode == GW_WEB_FAULT) {
+            ESP_LOGE(TAG, "%s (issue #135)", PSRAM_FAULT);
+            ESP_LOGE(TAG, "nothing is started (no polling, no MQTT): only the network, the web UI "
+                          "on port %u and the shell, to report the fault",
+                     s_cfg->web.https ? s_cfg->web.https_port : s_cfg->web.port);
+        } else if (mode == GW_WEB_COMMISSIONING) {
             ESP_LOGW(TAG, "commissioning: no configuration since the factory reset; nothing is "
                           "started (no polling, no MQTT); load one with the web UI on port %u or "
                           "the shell ('config load')",
@@ -364,9 +418,17 @@ void app_main(void)
     if (s_cfg == NULL) {
         halt_no_memory();
     }
+#if !CONFIG_GW_EMU_NO_PSRAM
+    if (!gw_storage_psram()) {
+        /* #135: CONFIG_SPIRAM_IGNORE_NOTFOUND lets the boot go on without the PSRAM only so
+         * that the fault can be reported; the gateway does not start */
+        ESP_LOGE(TAG, "%s (issue #135)", PSRAM_FAULT);
+        run_without_config(GW_WEB_FAULT, "not loaded (hardware fault)");
+    }
+#endif
     if (gw_storage_commissioning_pending()) {
         snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg),
-                 "sin configuración: puesta en marcha tras un reset de fábrica");
+                 "no configuration: commissioning after a factory reset");
         run_without_config(GW_WEB_COMMISSIONING, "commissioning (factory reset)");
     }
     if (!gw_storage_load_config(s_cfg, &s_cfg_err, &source)) {
