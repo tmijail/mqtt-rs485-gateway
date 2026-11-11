@@ -194,11 +194,14 @@ static void test_seq_wraps_and_is_shared(void)
     set_meter(true, 0, 0, 0);
     gw_node_session_up(&node, 0);
     for (int i = 1; i <= 300; i++) {
+        recorder_clear();   /* the recorder holds REC_MAX messages; a full one fails (#158) */
         gw_tagdb_set_di((uint8_t)(i & 1), (uint64_t)i);
         gw_node_io_changed(&node);
+        TEST_ASSERT_EQUAL(1, g_rec.count);
+        msg(0);
+        TEST_ASSERT_EQUAL_UINT64((uint64_t)((i + 1) % 256), dec.seq);
     }
     /* 2 births + 300 NDATA, seq continues 0..255,0.. */
-    TEST_ASSERT_EQUAL(REC_MAX, g_rec.count);  /* recorder saturates; check via node state */
     TEST_ASSERT_EQUAL_UINT8((uint8_t)(302 % 256), node.seq);
 }
 
@@ -1404,8 +1407,73 @@ static void test_dbirth_not_published_leaves_the_device_unborn(void)
     set_meter(true, 231.5, 12.3, 1);
     gw_node_device_changed(&node, 0);           /* a DBIRTH again, not a DDATA */
     TEST_ASSERT_EQUAL(1, g_rec.count);
-    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/DBIRTH/GW01/Meter1", g_rec.msgs[0].topic);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/DBIRTH/GW01/Meter1", msg(0)->topic);
     TEST_ASSERT_TRUE(node.dev_born[0]);
+    /* the failed publish used no seq number (tck-id-payloads-sequence-num-incrementing, #158) */
+    TEST_ASSERT_EQUAL_UINT64(1, dec.seq);
+}
+
+/* Issue #158: a DBIRTH that does not fit the local payload buffer (6 KB without PSRAM) is
+ * "too large": it uses no seq number, the device stays unborn, and the engine does not build
+ * it again on each change of the device (only at the next session or rebirth, as #76). */
+static void test_dbirth_larger_than_buffer(void)
+{
+    static char doc[16384];
+    static gw_config_t c;
+    size_t n = (size_t)snprintf(doc, sizeof(doc), "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": "
+                                "{\"group_id\": \"Plant1\", \"edge_node_id\": \"GW01\"}, "
+                                "\"devices\": [{\"name\": \"Big\", \"unit_id\": 1, \"tags\": [");
+    for (int k = 0; k < GW_MAX_TAGS_PER_DEVICE; k++) {
+        n += (size_t)snprintf(doc + n, sizeof(doc) - n,
+                              "%s{\"name\": \"T%036d%02d\", \"area\": \"input\", \"address\": %d,"
+                              " \"type\": \"float32\", \"units\": \"uuuuuuuuuuuuuuu\","
+                              " \"eng_low\": -3e38, \"eng_high\": 3e38}",
+                              k ? "," : "", 0, k, 2 * k);
+    }
+    snprintf(doc + n, sizeof(doc) - n, "]}]}");
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(doc, strlen(doc), &c, &err), err.msg);
+    cfg = &c;
+    gw_tagdb_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    static uint8_t small[6144];   /* CONFIG_GW_SPB_PAYLOAD_INTERNAL */
+    gw_node_set_buffer(&node, small, sizeof(small));
+    static gw_tag_value_t v[GW_MAX_TAGS_PER_DEVICE];
+    for (int k = 0; k < GW_MAX_TAGS_PER_DEVICE; k++) {
+        v[k] = (gw_tag_value_t){.value = k, .ts_ms = 1000, .valid = true};
+    }
+    gw_tagdb_put_device(cfg, 0, v, true);
+    static char log[4096];
+    gw_port_log_capture(log, sizeof(log));
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 1));
+    TEST_ASSERT_EQUAL(1, g_rec.count);          /* the NBIRTH fits, the DBIRTH does not */
+    TEST_ASSERT_FALSE(node.dev_born[0]);
+    TEST_ASSERT_TRUE(node.dev_too_large[0]);
+    TEST_ASSERT_EQUAL_UINT8(1, node.seq);       /* the DBIRTH used no seq number */
+    TEST_ASSERT_NOT_NULL(strstr(log, "DBIRTH Big: payload does not fit the local buffer of 6144"));
+    /* changes of the device: no DBIRTH built again, no DDATA */
+    log[0] = '\0';
+    for (int i = 0; i < 5; i++) {
+        v[0].value = 100 + i;
+        gw_tagdb_put_device(cfg, 0, v, true);
+        gw_node_device_changed(&node, 0);
+    }
+    TEST_ASSERT_NULL(strstr(log, "does not fit"));
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    TEST_ASSERT_EQUAL_UINT8(1, node.seq);
+    /* the next message gets the seq that follows the NBIRTH */
+    gw_node_set_firmware_status(&node, "refused: x", 0);
+    TEST_ASSERT_EQUAL(2, g_rec.count);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", msg(1)->topic);
+    TEST_ASSERT_EQUAL_UINT64(1, dec.seq);
+    /* a rebirth tries every birth once */
+    log[0] = '\0';
+    TEST_ASSERT_TRUE(gw_node_rebirth(&node));
+    TEST_ASSERT_NOT_NULL(strstr(log, "DBIRTH Big: payload does not fit"));
+    TEST_ASSERT_EQUAL_UINT8(1, node.seq);
+    gw_port_log_capture(NULL, 0);
 }
 
 /* FW-1: NBIRTH declares the update command and its state; an NCMD with the URL reaches the
@@ -1713,6 +1781,7 @@ int main(void)
     RUN_TEST(test_session_up_needs_the_nbirth);
     RUN_TEST(test_dbirth_not_published_leaves_the_device_unborn);
     RUN_TEST(test_dbirth_too_large_not_retried_on_every_change);
+    RUN_TEST(test_dbirth_larger_than_buffer);
     RUN_TEST(test_firmware_update_metrics);
     RUN_TEST(test_firmware_url_limit);
     RUN_TEST(test_store_and_forward_counters);

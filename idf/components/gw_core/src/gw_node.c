@@ -79,25 +79,32 @@ bool gw_node_topic(const gw_node_t *n, const char *type, const char *device, cha
                      device);
 }
 
-static uint8_t next_seq(gw_node_t *n)
-{
-    return n->seq++;  /* uint8_t wraps 255 -> 0 (SPB-5) */
-}
-
-/* Returns 0, GW_NODE_PUBLISH_TOO_LARGE or -1 (any other failure). */
+/* Returns 0, GW_NODE_PUBLISH_TOO_LARGE (larger than the broker accepts, #73, or than the local
+ * payload buffer, #158) or -1 (any other failure).
+ * tck-id-payloads-sequence-num-incrementing: only a message that went out uses a seq number.
+ * One that was not sent (any failure) leaves its seq to the next message, or hosts would see a
+ * gap in a session that lost nothing (SPB-5, #158). */
 static int publish_rc(gw_node_t *n, const char *type, const char *device, size_t metric_count,
                       int qos)
 {
     spb_payload_t p = {
         .timestamp = gw_port_time_ms(),
         .has_seq = true,
-        .seq = next_seq(n),
+        .seq = n->seq,
         .metrics = n->metrics,
         .metric_count = metric_count,
     };
-    size_t len = n->buf != NULL ? spb_encode(&p, n->buf, n->buf_cap) : 0;
-    if (len == 0 || !gw_node_topic(n, type, device, n->topic, sizeof(n->topic))) {
-        GW_LOGE(TAG, "%s%s%s: payload does not fit", type, device ? " " : "", device ? device : "");
+    if (n->buf == NULL) {
+        return -1;
+    }
+    size_t len = spb_encode(&p, n->buf, n->buf_cap);
+    if (len == 0) {
+        GW_LOGE(TAG, "%s%s%s: payload does not fit the local buffer of %u bytes", type,
+                device ? " " : "", device ? device : "", (unsigned)n->buf_cap);
+        return GW_NODE_PUBLISH_TOO_LARGE;
+    }
+    if (!gw_node_topic(n, type, device, n->topic, sizeof(n->topic))) {
+        GW_LOGE(TAG, "%s%s%s: topic too long", type, device ? " " : "", device ? device : "");
         return -1;
     }
     int r = n->ops.publish(n->ops.ctx, n->topic, n->buf, len, qos, false);
@@ -106,11 +113,9 @@ static int publish_rc(gw_node_t *n, const char *type, const char *device, size_t
             GW_LOGW(TAG, "publish %s failed", n->topic);
             return -1;
         }
-        /* never sent (too large for the broker, #73): its seq goes to the next message, or
-         * hosts would see a gap in a session that lost nothing (SPB-5) */
-        n->seq = (uint8_t)p.seq;
         return r;
     }
+    n->seq++;   /* uint8_t wraps 255 -> 0 (SPB-5) */
     GW_LOGD(TAG, "%s seq=%" PRIu64 " metrics=%u bytes=%u", n->topic, p.seq, (unsigned)metric_count,
             (unsigned)len);
     return 0;
@@ -478,13 +483,14 @@ static void publish_dbirth(gw_node_t *n, uint16_t dev)
     }
     /* born only if the DBIRTH went out (issue #73: it may be larger than the broker accepts):
      * no DDATA without it. Issue #76: one that is too large is not rebuilt on every change of
-     * the device; the next session or rebirth tries again */
+     * the device; the next session or rebirth tries again. Issue #158: the same for one that
+     * does not fit the local payload buffer (without PSRAM) */
     int r = publish_device_rc(n, "DBIRTH", dev, d->tag_count, true, false);
     n->dev_born[dev] = r == 0;
     if (r == GW_NODE_PUBLISH_TOO_LARGE) {
         n->dev_too_large[dev] = true;
-        GW_LOGW(TAG, "DBIRTH %s too large for the broker: device not born, not retried until "
-                     "the next session or rebirth",
+        GW_LOGW(TAG, "DBIRTH %s too large for the broker or the payload buffer: device not "
+                     "born, not retried until the next session or rebirth",
                 d->name);
     }
 }

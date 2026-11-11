@@ -102,7 +102,8 @@ extern "C" {
 #define GW_NODE_HIST_RECS       (2 * GW_MAX_TAGS_PER_DEVICE)   /* records per historical message */
 
 /** ops.publish result: the broker cannot take a message this large in the current session
- *  (MQTT 5 Maximum Packet Size, issue #73). Not a connection failure. */
+ *  (MQTT 5 Maximum Packet Size, issue #73). Not a connection failure. The engine also uses it
+ *  for a message that does not fit its own payload buffer (issue #158). */
 #define GW_NODE_PUBLISH_TOO_LARGE (-2)
 
 /** SPB-17 node diagnostics, read when published. */
