@@ -12,9 +12,12 @@ bool gw_conv_is_scaled(const gw_tag_cfg_t *tag)
     return tag->scale != 1.0 || tag->offset != 0.0;
 }
 
-static bool is_wide(gw_type_t type)
+/* MB-6 (#165): a scaled value of these sources needs a Double. A Float has a 24-bit mantissa,
+ * so a 32-bit counter above 2^24 (for example an energy counter) loses its last digits in it. */
+static bool needs_double(gw_type_t type)
 {
-    return type == GW_TYPE_UINT64 || type == GW_TYPE_INT64 || type == GW_TYPE_FLOAT64;
+    return type == GW_TYPE_UINT64 || type == GW_TYPE_INT64 || type == GW_TYPE_FLOAT64 ||
+           type == GW_TYPE_UINT32 || type == GW_TYPE_INT32;
 }
 
 gw_val_kind_t gw_conv_kind(const gw_tag_cfg_t *tag)
@@ -48,8 +51,9 @@ uint32_t gw_conv_datatype(const gw_tag_cfg_t *tag)
         return SPB_DT_BYTES;
     }
     if (gw_conv_is_scaled(tag)) {
-        /* Float keeps the MVP mapping; 64-bit sources need a Double to keep their precision */
-        return is_wide(tag->type) ? SPB_DT_DOUBLE : SPB_DT_FLOAT;
+        /* Float for 16-bit and float32 sources (the MVP mapping); Double for 32-bit integer
+         * and 64-bit sources, to keep their precision */
+        return needs_double(tag->type) ? SPB_DT_DOUBLE : SPB_DT_FLOAT;
     }
     switch (tag->type) {
     case GW_TYPE_INT16:

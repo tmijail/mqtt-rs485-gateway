@@ -248,9 +248,9 @@ Encuesta N esclavos Modbus RTU por el RS485 integrado, con los tipos de 16 y 32 
 | `int32` | Int32 (3) |
 | `uint32` | UInt32 (7) |
 | `float32` | Float (9) |
-| Cualquier tipo con `scale` ≠ 1 u `offset` ≠ 0 | Float (9) |
+| `int16`, `uint16` or `float32` with `scale` ≠ 1 or `offset` ≠ 0 | Float (9) |
 | `uint64` / `int64` (MB-6) | UInt64 (8) / Int64 (4), exactos en `long_value` |
-| `float64` (MB-6), o `uint64`/`int64`/`float64` con `scale` ≠ 1 u `offset` ≠ 0 | Double (10) |
+| `float64` (MB-6). `int32`, `uint32`, `int64`, `uint64` or `float64` with `scale` ≠ 1 or `offset` ≠ 0: a Float has a 24-bit mantissa, thus a 32-bit counter above 2^24 loses its last digits in it (#165) | Double (10) |
 | `string` (MB-6) | String (12) |
 | `bool` con `bit` (MB-6) | Boolean (11) |
 | `bytes` (SPB-19) | Bytes (17) |

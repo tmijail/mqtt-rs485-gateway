@@ -24,8 +24,8 @@
  * value, already scaled and converted, and the replay never reads these):
  *   tag:    area, address, bit, word_order, slow, writable, deadband, units, eng_low/high and
  *           their flags; scale and offset (only whether a tag is scaled matters, and the
- *           datatype carries it: Int16 -> Float, Int64 -> Double); length of a String tag (the
- *           record holds the text with its own length)
+ *           datatype carries it: Int16 -> Float, Int32/Int64 -> Double); length of a String
+ *           tag (the record holds the text with its own length)
  *   device: unit_id, poll_ms, slow_poll_ms, offline_after, block_reads, max_gap
  *   node metrics (GW_SF_NODE: DI, DO, counters): fixed aliases and datatypes, no configuration
  *   everything else (network, MQTT, broker list, primary host, rs485, local_io, web, ...)
