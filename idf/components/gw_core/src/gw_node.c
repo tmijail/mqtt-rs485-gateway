@@ -81,6 +81,20 @@ bool gw_node_topic(const gw_node_t *n, const char *type, const char *device, cha
                      device);
 }
 
+/* #172: the topic of a device carries its device_id "<sparkplug.device_prefix>:<name>"; the
+ * validation makes sure that the longest one fits GW_TOPIC_MAX. */
+static bool message_topic(const gw_node_t *n, const char *type, const char *device, char *out,
+                          size_t cap)
+{
+    const char *prefix = n->cfg->sparkplug.device_prefix;
+    if (device == NULL || prefix[0] == '\0') {
+        return gw_node_topic(n, type, device, out, cap);
+    }
+    int r = snprintf(out, cap, "spBv1.0/%s/%s/%s/%s:%s", n->cfg->sparkplug.group_id, type,
+                     n->cfg->sparkplug.edge_node_id, prefix, device);
+    return r > 0 && (size_t)r < cap;
+}
+
 /* Returns 0, GW_NODE_PUBLISH_TOO_LARGE (larger than the broker accepts, #73, or than the local
  * payload buffer, #158) or -1 (any other failure).
  * tck-id-payloads-sequence-num-incrementing: only a message that went out uses a seq number.
@@ -105,7 +119,7 @@ static int publish_rc(gw_node_t *n, const char *type, const char *device, size_t
                 device ? " " : "", device ? device : "", (unsigned)n->buf_cap);
         return GW_NODE_PUBLISH_TOO_LARGE;
     }
-    if (!gw_node_topic(n, type, device, n->topic, sizeof(n->topic))) {
+    if (!message_topic(n, type, device, n->topic, sizeof(n->topic))) {
         GW_LOGE(TAG, "%s%s%s: topic too long", type, device ? " " : "", device ? device : "");
         return -1;
     }
@@ -1215,6 +1229,10 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
     if ((q = eat(p, end, "DCMD/")) != NULL) {
         q = eat(q, end, n->cfg->sparkplug.edge_node_id);
         q = q ? eat(q, end, "/") : NULL;
+        if (q != NULL && n->cfg->sparkplug.device_prefix[0] != '\0') {   /* #172 */
+            q = eat(q, end, n->cfg->sparkplug.device_prefix);
+            q = q ? eat(q, end, ":") : NULL;
+        }
         if (q == NULL) {
             return;
         }

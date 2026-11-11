@@ -98,7 +98,7 @@ extern "C" {
                                          * every SPB-16 property, about 10 KB, test_spb) and
                                          * NBIRTH (64 template tags and the SPB-17 DataSet of 16
                                          * devices, about 12 KB, test_node) */
-#define GW_TOPIC_MAX            160
+#define GW_TOPIC_MAX            GW_TOPIC_SIZE   /* gw_config.h: the validation uses it */
 #define GW_NODE_HIST_RECS       (2 * GW_MAX_TAGS_PER_DEVICE)   /* records per historical message */
 
 /** ops.publish result: the broker cannot take a message this large in the current session
@@ -224,7 +224,9 @@ void gw_node_init(gw_node_t *n, const gw_config_t *cfg, const gw_node_ops_t *ops
  */
 void gw_node_set_buffer(gw_node_t *n, uint8_t *buf, size_t cap);
 
-/** Build "spBv1.0/<group>/<type>/<edge>[/<device>]" for this node. */
+/** Build "spBv1.0/<group>/<type>/<edge>[/<device>]" for this node. @p device is used as it is
+ *  (the MQTT wildcard "+" for the DCMD subscription); the engine adds sparkplug.device_prefix
+ *  (#172) to the topics of its own device messages. */
 bool gw_node_topic(const gw_node_t *n, const char *type, const char *device, char *out, size_t cap);
 
 /** NDEATH payload for @p bdseq (used for the MQTT will and the orderly disconnect). */

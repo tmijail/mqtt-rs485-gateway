@@ -399,6 +399,53 @@ static void test_dcmd_writes(void)
     TEST_ASSERT_EQUAL(2, g_rec.writes);
 }
 
+/* #172: with sparkplug.device_prefix, each device topic carries "<prefix>:<name>" (DBIRTH,
+ * DDATA, DDEATH), and a DCMD must use that device_id. Node topics do not change. */
+static void test_device_prefix_topics(void)
+{
+    static gw_config_t c;
+    c = *support_spec_config();
+    strcpy(c.sparkplug.device_prefix, "acme:berlin:packaging:line3");
+    cfg = &c;
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    set_meter(true, 1, 2, 0);
+    gw_node_session_up(&node, 0);
+    TEST_ASSERT_EQUAL(2, g_rec.count);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NBIRTH/GW01", g_rec.msgs[0].topic);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/DBIRTH/GW01/acme:berlin:packaging:line3:Meter1",
+                             g_rec.msgs[1].topic);
+    msg(1);
+    TEST_ASSERT_TRUE(decoded_find_name(&dec, "Voltage") >= 0);   /* metric names: no prefix */
+    recorder_clear();
+
+    set_meter(true, 50, 2, 0);
+    gw_node_device_changed(&node, 0);
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/DDATA/GW01/acme:berlin:packaging:line3:Meter1",
+                             g_rec.msgs[0].topic);
+    recorder_clear();
+
+    /* DCMD: only the full device_id selects the device */
+    spb_metric_t sp = {.name = "Setpoint", .datatype = SPB_DT_FLOAT, .v.num = 12.3};
+    send("spBv1.0/Plant1/DCMD/GW01/Meter1", &sp, 1);
+    send("spBv1.0/Plant1/DCMD/GW01/acme:berlin:packaging:Meter1", &sp, 1);
+    send("spBv1.0/Plant1/DCMD/GW01/acme:berlin:packaging:line3Meter1", &sp, 1);
+    send("spBv1.0/Plant1/DCMD/GW01/acme:berlin:packaging:line3:", &sp, 1);
+    TEST_ASSERT_EQUAL(0, g_rec.writes);
+    send("spBv1.0/Plant1/DCMD/GW01/acme:berlin:packaging:line3:Meter1", &sp, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.writes);
+    TEST_ASSERT_EQUAL(SETPOINT, g_rec.last_write_tag);
+
+    set_meter(false, 0, 0, 0);
+    gw_node_device_changed(&node, 0);
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/DDEATH/GW01/acme:berlin:packaging:line3:Meter1",
+                             g_rec.msgs[0].topic);
+}
+
 /* SPB-10 (#163): a DCMD metric with a datatype other than the one of the DBIRTH, or with a
  * fraction for an integer or Boolean tag, is rejected with a log line: no write, no DDATA.
  * Without a datatype (the Sparkplug recommendation for commands,
@@ -1867,6 +1914,7 @@ int main(void)
     RUN_TEST(test_every_metric_has_a_timestamp);
     RUN_TEST(test_pulse_counters);
     RUN_TEST(test_dcmd_writes);
+    RUN_TEST(test_device_prefix_topics);
     RUN_TEST(test_dcmd_strict_datatype_and_integer);
     RUN_TEST(test_dcmd_rejected_whole_when_queue_lacks_room);
     RUN_TEST(test_scan_rate);

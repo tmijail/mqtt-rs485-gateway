@@ -16,13 +16,13 @@ The gateway counts the length in bytes. For ASCII text, one character is one byt
 | `sparkplug.group_id` | 1 to 32 | `/`, `+`, `#`, control characters | Only the subscription filter of the bridge (`identity.group_id`) |
 | `sparkplug.edge_node_id` | 1 to 32 | `/`, `+`, `#`, control characters | The location of the node metrics. With `include_edge_node_in_location: true`, also the start of the location of the device metrics |
 | `sparkplug.primary_host_id` | 0 to 32 | `/`, `+`, `#`, control characters | Keep it empty. UMH cannot be the primary host (#177) |
-| `devices[].name` (the `device_id`) | 1 to 39 | `/`, `+`, `#`, control characters | The location of the device metrics |
+| `sparkplug.device_prefix` | 0 to 96. No empty level | `/`, `+`, `#`, control characters | The start of the location of the device metrics. The gateway puts it before each device name, with `:` between them |
+| `devices[].name` | 1 to 39 | `/`, `+`, `#`, control characters | The end of the location of the device metrics |
+| The `device_id` (`<device_prefix>:<name>`, or the name) | The longest device topic must fit in 159 bytes: 78 bytes with a `group_id` and an `edge_node_id` of 32 bytes | As above | The location of the device metrics |
 | `devices[].type` | 1 to 39, or absent | `/`, `+`, `#`, control characters | Do not use it. UMH shows no value for a template instance |
 | `devices[].tags[].name` (the metric name) | 1 to 39 | None. The name must be unique in the device | The virtual path and the tag name |
 
-The sources are `GW_NAME_SIZE` (40) and `GW_ID_SIZE` (33) in `idf/components/gw_core/include/gw_config.h`, and `check_topic_id()` in `gw_config.c`. The Sparkplug rules are `tck-id-topic-structure-namespace-valid-group-id`, `tck-id-topic-structure-namespace-valid-edge-node-id` and `tck-id-topic-structure-namespace-valid-device-id`.
-
-Planned changes: the key `sparkplug.device_prefix` (#172) and a UMH preset with name checks (#169).
+The sources are `GW_NAME_SIZE` (40), `GW_ID_SIZE` (33), `GW_PREFIX_SIZE` (97) and `GW_TOPIC_SIZE` (160) in `idf/components/gw_core/include/gw_config.h`, and `check_topic_id()` in `gw_config.c`. The Sparkplug rules are `tck-id-topic-structure-namespace-valid-group-id`, `tck-id-topic-structure-namespace-valid-edge-node-id` and `tck-id-topic-structure-namespace-valid-device-id`.
 
 ## Characters for UMH
 
@@ -42,12 +42,12 @@ UMH also changes two or more `.` in sequence to one `.`. It removes `.` at the s
 
 UMH makes the topic `umh.v1.<location_path>.<data_contract>.<virtual_path>.<tag_name>`:
 
-- `location_path`: the `device_id` for device metrics, or the `edge_node_id` for node metrics, with `.` in place of `:`.
+- `location_path`: the `device_id` (with the `device_prefix`) for device metrics, or the `edge_node_id` for node metrics, with `.` in place of `:`.
 - `data_contract`: the value that the bridge sets. The how-to uses `_raw`.
 - `virtual_path`: the part of the metric name before the last separator. It is absent if the name has no separator.
 - `tag_name`: the part of the metric name after the last separator.
 
-The tables below use the node `acme:berlin:packaging:gw01` and the device `acme:berlin:packaging:line3:meter1`. The column "Bridge example" tells what the `tag_processor` of the how-to does.
+The tables below use the node `acme:berlin:packaging:gw01` and the device `meter1` with the `device_prefix` `acme:berlin:packaging:line3`. Thus the `device_id` is `acme:berlin:packaging:line3:meter1`. The column "Bridge example" tells what the `tag_processor` of the how-to does.
 
 ## Node metrics
 

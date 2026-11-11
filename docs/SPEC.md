@@ -238,6 +238,7 @@ Encuesta N esclavos Modbus RTU por el RS485 integrado, con los tipos de 16 y 32 
 - Names (issue #162). `group_id`, `edge_node_id`, `primary_host_id`, the device `name` and `type`, the tag `name` and `units` must be valid UTF-8. The Sparkplug IDs must not contain the control characters U+0080–U+009F.
 - Two device names must not differ only in case (`tck-id-case-sensitivity-sparkplug-ids`). Two device types and two tag names of one device must not differ only in case (`tck-id-case-sensitivity-metric-names`). The comparison folds ASCII letters only.
 - A tag name must not also be a folder of another tag name of the same device (`A` and `A/B`). A device `type` must not be the name or the first folder of a node metric (`bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info`, `Firmware Update`).
+- With `sparkplug.device_prefix` (§6.1, #172), the `device_id` of a device is `<device_prefix>:<name>`. The longest device topic (`spBv1.0/<group_id>/DBIRTH/<edge_node_id>/<device_id>`) must fit in 159 bytes.
 
 **Límites del MVP:** hasta 16 dispositivos, 64 tags por dispositivo y 256 tags en total.
 
@@ -612,6 +613,21 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 - **`config_error`:** una configuración rechazada no puede activar nada, así que vale lo que pedía la última configuración válida (guardado en NVS). Tras un reset de fábrica no suena.
 - **Botón BOOT:** 1 pitido al soltarlo entre 2 y 10 s (punto de acceso, NET-5) y 2 pitidos al confirmar el reset de fábrica (CFG-5), haya alarmas o no.
 - No hay forma de silenciar una alarma mientras dura su condición.
+
+**Device prefix (#172), in `sparkplug`.**
+
+```json
+"sparkplug": { "group_id": "acme", "edge_node_id": "acme:berlin:packaging:gw01",
+               "device_prefix": "acme:berlin:packaging:line3" }
+```
+
+| Key | Type | Default | Rule |
+|---|---|---|---|
+| `device_prefix` | text | `""` | 0–96 bytes. Location levels with `:` between them. No empty level: no `:` at the start or the end, and no `::`. The characters of a Sparkplug ID (UTF-8, no `/ + #`, no control characters). No limit on the number of levels, other than the length |
+
+- The `device_id` of each device is `<device_prefix>:<name>`. Without the key, it is the name. The DBIRTH, DDATA, DDEATH and DCMD topics use the `device_id`.
+- The longest device topic (`spBv1.0/<group_id>/DBIRTH/<edge_node_id>/<device_id>`) must fit in 159 bytes. With a `group_id` and an `edge_node_id` of 32 bytes, the `device_id` can have 78 bytes.
+- The metric names do not get the prefix.
 
 **Diagnóstico del nodo (SPB-17, MB-13), en `sparkplug`.**
 

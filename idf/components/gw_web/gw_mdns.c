@@ -20,10 +20,11 @@ esp_err_t gw_web_mdns_start(const gw_config_t *cfg, bool configured)
     }
     ESP_RETURN_ON_ERROR(mdns_init(), TAG, "init");
     ESP_RETURN_ON_ERROR(mdns_hostname_set(cfg->network.hostname), TAG, "hostname");
-    char instance[2 * GW_ID_SIZE + 2];
+    char instance[GW_MDNS_INSTANCE_SIZE];
     if (configured) {
-        snprintf(instance, sizeof(instance), "%s/%s", cfg->sparkplug.group_id,
-                 cfg->sparkplug.edge_node_id);
+        /* #172: two IDs of 32 bytes give 65 bytes, more than the label limit of 63 that
+         * mdns_instance_name_set() refuses: cut at a character boundary */
+        gw_config_mdns_instance(cfg, instance, sizeof(instance));
     } else {
         snprintf(instance, sizeof(instance), "gateway setup");
     }

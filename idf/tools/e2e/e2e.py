@@ -5843,6 +5843,10 @@ def check_templates_gw02(obs, slave, node, nb):
                 f"{[(x.name, x.int_value) for x in dm.template_value.metrics] if dm else None}")
 
 
+# Issue #172: five location levels before each device name (Meter1: a device_id of 62 characters)
+WEB_DEVICE_PREFIX = "acme-corporation:berlin-tempelhof:packaging:line3:cell2"
+
+
 def run_web(args, work):
     """CFG-4 REST API (and the web UI, CFG-3), in boots of their own with separate edge node ids:
     authentication, export with masked secrets, invalid import -> 400 with the JSON path,
@@ -5935,12 +5939,23 @@ def run_web(args, work):
 
     new = json.loads(json.dumps(doc))
     new["sparkplug"]["edge_node_id"] = node2
+    # Issue #172: a device prefix of five levels; the device_id of Meter1 has 62 characters
+    new["sparkplug"]["device_prefix"] = pfx = WEB_DEVICE_PREFIX
     obs.drain()
     st7, _, b7 = http("PUT", "/api/config", new)
     death = obs.wait(f"{T}/NDEATH/{node}", 10)
     nb2 = obs.wait(f"{T}/NBIRTH/{node2}", 40)
+    db_long = obs.wait(f"{T}/DBIRTH/{node2}/{pfx}:{DEVICE}", 20)
+    db_bulk = obs.wait(f"{T}/DBIRTH/{node2}/{pfx}:{BULK}", 10)
     st8, _, b8 = wait_http("/api/config", 20)
     doc8 = as_json(b8) or {}
+    check("CFG issue #172: sparkplug.device_prefix of five levels: the DBIRTHs use the device_id "
+          f"'<prefix>:<name>' ({len(pfx) + 1 + len(DEVICE)} characters for {DEVICE})",
+          db_long and db_bulk and len(pfx) + 1 + len(DEVICE) >= 60
+          and doc8.get("sparkplug", {}).get("device_prefix") == pfx
+          and not [m for m in CAPTURE if m[1] == f"{T}/DBIRTH/{node2}/{DEVICE}"],
+          f"DBIRTH {pfx}:{DEVICE} {bool(db_long)}, {pfx}:{BULK} {bool(db_bulk)}; GET device_prefix "
+          f"{doc8.get('sparkplug', {}).get('device_prefix')!r}")
     check("CFG-4 PUT valid -> saved atomically, orderly restart (NDEATH) and NBIRTH with the new "
           "configuration; secrets kept through the mask",
           st7 == 200 and (as_json(b7) or {}).get("saved") and death and nb2 and st8 == 200
@@ -5992,7 +6007,7 @@ def run_web(args, work):
     gw.console("rebirth")
     rb = obs.wait(f"{T}/NBIRTH/{node2}", 5)
     said = gw.wait_log(r"^rebirth: NBIRTH and every DBIRTH requested", 3, asked)
-    obs.wait(f"{T}/DBIRTH/{node2}/{BULK}", 5)
+    obs.wait(f"{T}/DBIRTH/{node2}/{pfx}:{BULK}", 5)
     dbs = sorted(m[2].seq for m in CAPTURE if m[0] >= asked and m[1].startswith(f"{T}/DBIRTH/{node2}/"))
     check("CFG-6 shell 'rebirth' re-issues NBIRTH (seq 0, same session) and the DBIRTHs",
           rb and rb[2].seq == 0 and dbs == [1, 2] and said,
@@ -6007,7 +6022,7 @@ def run_web(args, work):
     asked = time.monotonic()
     st_rb, _, b_rb = http("POST", "/api/rebirth")
     rb2 = obs.wait(f"{T}/NBIRTH/{node2}", 5)
-    obs.wait(f"{T}/DBIRTH/{node2}/{BULK}", 5)
+    obs.wait(f"{T}/DBIRTH/{node2}/{pfx}:{BULK}", 5)
     dbs2 = sorted(m[2].seq for m in CAPTURE if m[0] >= asked and m[1].startswith(f"{T}/DBIRTH/{node2}/"))
     bd0, bd2 = (bdseq_of(nb2[2]) if nb2 else None), (bdseq_of(rb2[2]) if rb2 else None)
     check("CFG-4 issue #171: POST /api/rebirth re-issues NBIRTH (seq 0, the same bdSeq) and the "

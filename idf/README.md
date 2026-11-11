@@ -397,6 +397,7 @@ CI generates the `sdkconfig` from zero and does not see this problem. Host tests
    - `mqtt.backup_brokers`, MQTT-6;
    - `mqtt.protocol`, MQTT-8;
    - `sparkplug.primary_host_id`, SPB-13;
+   - `sparkplug.device_prefix`, the location levels before each device name (#172);
    - `sparkplug.store_forward`, SPB-14;
    - `syslog`, REL-4;
    - `modbus_tcp`, MB-15;
@@ -1164,6 +1165,7 @@ The QEMU build is different from the board build at these points (`sdkconfig.qem
   - `bool` without `scale`/`offset`;
   - tag and device names ≤ 39 characters;
   - `group_id`/`edge_node_id` ≤ 32 characters, without `/ + #`;
+  - #172: `sparkplug.device_prefix` ≤ 96 bytes, with the same characters as a Sparkplug ID and no empty level (no `:` at the start or the end, no `::`). The full `device_id` (prefix, `:` and name) must fit the longest device topic, `spBv1.0/<group_id>/DBIRTH/<edge_node_id>/<device_id>`, in 159 bytes. The check uses the real lengths: with a `group_id` and an `edge_node_id` of 32 bytes, the `device_id` can have 78 bytes. The validation does not limit the number of levels;
   - issue #162: the Sparkplug IDs, the device types, the tag names and `units` must be valid UTF-8 (RFC 3629: no overlong form, no surrogate). The Sparkplug IDs must also not contain U+0080–U+009F, because a broker can close the connection for a topic with a control character;
   - issue #162: two device names, two device types, or two tag names of one device must not differ only in case (`tck-id-case-sensitivity-sparkplug-ids`, `tck-id-case-sensitivity-metric-names`). The specification says SHOULD NOT, and the gateway rejects the configuration. The comparison folds only the ASCII letters: `É` and `é` are different names for the check;
   - issue #162: a tag name must not also be a folder of another tag of the same device (`A` and `A/B`, also `a` and `A/B`). A device type is an NBIRTH metric, so it must not be the name or the first folder of a node metric (`bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info`, `Firmware Update`). Until #169 adds warnings, these checks give errors;
@@ -1286,6 +1288,15 @@ The QEMU build is different from the board build at these points (`sdkconfig.qem
   - No FC07, FC08, FC17, FC22, FC23 or FC43: exception 01. Also no *broadcast* (unit 0).
   - **Counters (#69):** each device counts separately the attempts of the TCP requests that the gateway forwards to its unit (`devices`: `| tcp ok … timeout … crc … frame … exception …`). The gateway counts these items: accepted and rejected connections, forwarded requests, the exceptions that it answered itself (01, 03, 0A, 0B), and the attempts to units without a configured device (the `modbus_tcp` line of `devices`). The per-device counters and the `(other units)` row go over Sparkplug in the DataSet `Node Info/Modbus TCP` (alias 56, #81). The connections, the forwarded requests and the exceptions that the gateway answers itself are only in the shell (`devices`).
   - Memory: 5.8 KB of `.bss` (4 KB stack, the buffers of 2 clients and the transaction, §3.2), also when the function is off.
+
+### 6.3.0 Device prefix (#172)
+
+- `sparkplug.device_prefix` holds the location levels that are the same for all devices of the gateway, for example `acme:berlin:packaging:line3`. The `device_id` of each device is `<device_prefix>:<name>` in each DBIRTH, DDATA, DDEATH and DCMD topic. A DCMD must use the full `device_id`. Without the key, the `device_id` is the name, as before.
+- The key has no fixed number of levels. UMH Core makes the location path from the `device_id`, and it permits a path of free depth. The user writes the location one time, not in each of the 16 devices. The web UI shows the prefix as a list of levels that the user can add and remove.
+- The engine writes the prefix into the topic buffer of the message (`GW_TOPIC_MAX`, 160 B). It keeps no copy of each `device_id`: there is no allocation in the publish path, and the Sparkplug engine does not become larger. The validation makes sure that the longest topic fits.
+- Metric names do not get the prefix. The `Device` column of `Node Info/Modbus` and `Node Info/Modbus TCP` holds the device name without the prefix, because the prefix is the same for each row.
+- The prefix is part of the configuration hash of the store & forward ring on the microSD card (§6.5, #145, format 2): a replay publishes on the topic of the `device_id`. Thus a new prefix starts a new ring, and the samples of the old ring are not published. This firmware also starts a new ring at its first boot. No gateway is installed, so there is no migration.
+- **mDNS (NET-6).** The instance name is `<group_id>/<edge_node_id>`. Two IDs of 32 bytes give 65 bytes, but a DNS label has a maximum of 63 bytes, and `mdns_instance_name_set()` refused the name. Now the gateway cuts the name at 63 bytes, at the boundary of a UTF-8 character (`gw_config_mdns_instance()`).
 
 ### 6.3.1 Templates (SPB-18)
 

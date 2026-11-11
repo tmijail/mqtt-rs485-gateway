@@ -855,6 +855,87 @@ static void test_utf8_sequences(void)
 /* Issue #162 (CFG-1): Sparkplug IDs and names: valid UTF-8, no two names that differ only in
  * case (tck-id-case-sensitivity-sparkplug-ids, tck-id-case-sensitivity-metric-names), and no
  * metric that is also a folder of another metric. */
+/* #172: sparkplug.device_prefix, a list of location levels before each device name. */
+static void test_device_prefix(void)
+{
+    char doc[1024];
+#define PDOC(group, node, prefix, name)                                                           \
+    (snprintf(doc, sizeof(doc),                                                                    \
+              "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"%s\",\"edge_node_id\":"    \
+              "\"%s\",\"device_prefix\":\"%s\"},\"devices\":[{\"name\":\"%s\",\"unit_id\":1,"      \
+              "\"tags\":[{\"name\":\"v\",\"area\":\"input\",\"address\":0,\"type\":\"uint16\"}]}]}", \
+              group, node, prefix, name), parse(doc))
+    char id[GW_TOPIC_SIZE];
+    /* absent: the device_id is the name */
+    TEST_ASSERT_TRUE_MESSAGE(PDOC("G", "E", "", "meter1"), err.msg);
+    TEST_ASSERT_EQUAL_STRING("", cfg.sparkplug.device_prefix);
+    TEST_ASSERT_TRUE(gw_config_device_id(&cfg, 0, id, sizeof(id)));
+    TEST_ASSERT_EQUAL_STRING("meter1", id);
+    /* free depth: one level or many */
+    TEST_ASSERT_TRUE_MESSAGE(PDOC("G", "E", "acme", "meter1"), err.msg);
+    TEST_ASSERT_TRUE(gw_config_device_id(&cfg, 0, id, sizeof(id)));
+    TEST_ASSERT_EQUAL_STRING("acme:meter1", id);
+    TEST_ASSERT_TRUE_MESSAGE(PDOC("G", "E", "acme:berlin:packaging:line3:cell2:station4", "m1"),
+                             err.msg);
+    TEST_ASSERT_TRUE(gw_config_device_id(&cfg, 0, id, sizeof(id)));
+    TEST_ASSERT_EQUAL_STRING("acme:berlin:packaging:line3:cell2:station4:m1", id);
+    TEST_ASSERT_FALSE(gw_config_device_id(&cfg, 0, id, 10));   /* does not fit: false */
+    /* each level must exist; the characters are a topic ID (#162) */
+    ASSERT_REJECTED(PDOC("G", "E", ":acme", "m"), "sparkplug.device_prefix: empty level at byte 0");
+    ASSERT_REJECTED(PDOC("G", "E", "acme:", "m"), "sparkplug.device_prefix: empty level at byte 4");
+    ASSERT_REJECTED(PDOC("G", "E", "acme::line3", "m"), "sparkplug.device_prefix: empty level");
+    ASSERT_REJECTED(PDOC("G", "E", "acme/line3", "m"), "sparkplug.device_prefix: car");
+    ASSERT_REJECTED(PDOC("G", "E", "acme+", "m"), "sparkplug.device_prefix: car");
+    ASSERT_REJECTED(PDOC("G", "E", "acme\xc3", "m"), "sparkplug.device_prefix: not valid UTF-8");
+    /* 96 bytes at most */
+    char longp[GW_PREFIX_SIZE + 1];
+    memset(longp, 'a', GW_PREFIX_SIZE);
+    longp[GW_PREFIX_SIZE] = '\0';
+    ASSERT_REJECTED(PDOC("G", "E", longp, "m"), "sparkplug.device_prefix: texto demasiado largo");
+    /* the full device_id: the longest topic (DBIRTH) fits GW_TOPIC_SIZE - 1 = 159 bytes. With
+     * a group and a node of 32 bytes, 159 - 8 - 32 - 8 - 32 - 1 = 78 bytes are left */
+    const char *g32 = "gggggggggggggggggggggggggggggggg", *e32 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    char p60[61], p59[60];
+    memset(p60, 'p', 60);
+    p60[60] = '\0';
+    memset(p59, 'p', 59);
+    p59[59] = '\0';
+    p59[10] = p60[10] = ':';
+    TEST_ASSERT_TRUE_MESSAGE(PDOC(g32, e32, p59, "abcdefghijklmnopqr"), err.msg);   /* 78 */
+    TEST_ASSERT_TRUE(gw_config_device_id(&cfg, 0, id, sizeof(id)));
+    TEST_ASSERT_EQUAL_size_t(78, strlen(id));
+    ASSERT_REJECTED(PDOC(g32, e32, p60, "abcdefghijklmnopqr"),
+                    "devices[0].name: the device_id (sparkplug.device_prefix, ':' and the name) "
+                    "has 79 bytes; with this group_id and edge_node_id the maximum is 78");
+    /* shorter group and node IDs leave more room: the check uses the real lengths */
+    TEST_ASSERT_TRUE_MESSAGE(PDOC("G", "E", p60, "abcdefghijklmnopqrstuvwxyz0123456789ABC"),
+                             err.msg);
+#undef PDOC
+}
+
+/* #172: the mDNS instance name is one DNS label of 63 bytes at most. */
+static void test_mdns_instance(void)
+{
+    char out[GW_MDNS_INSTANCE_SIZE];
+    memset(&cfg, 0, sizeof(cfg));
+    strcpy(cfg.sparkplug.group_id, "Plant1");
+    strcpy(cfg.sparkplug.edge_node_id, "GW01");
+    gw_config_mdns_instance(&cfg, out, sizeof(out));
+    TEST_ASSERT_EQUAL_STRING("Plant1/GW01", out);
+    memset(cfg.sparkplug.group_id, 'g', GW_ID_SIZE - 1);
+    memset(cfg.sparkplug.edge_node_id, 'e', GW_ID_SIZE - 1);
+    gw_config_mdns_instance(&cfg, out, sizeof(out));   /* 32 + 1 + 32 = 65 bytes */
+    TEST_ASSERT_EQUAL_size_t(63, strlen(out));
+    TEST_ASSERT_EQUAL_CHAR('/', out[32]);
+    /* never cut inside a UTF-8 character: a 3-byte character at bytes 62..64 goes away */
+    memset(cfg.sparkplug.edge_node_id, 0, GW_ID_SIZE);
+    memset(cfg.sparkplug.edge_node_id, 'e', 29);
+    memcpy(cfg.sparkplug.edge_node_id + 29, "\xe2\x82\xac", 3);
+    gw_config_mdns_instance(&cfg, out, sizeof(out));
+    TEST_ASSERT_EQUAL_size_t(62, strlen(out));
+    TEST_ASSERT_TRUE(gw_utf8_valid(out));
+}
+
 static void test_sparkplug_names(void)
 {
     char doc[1024];
@@ -1348,6 +1429,8 @@ int main(void)
     RUN_TEST(test_device_types);
     RUN_TEST(test_utf8_sequences);
     RUN_TEST(test_sparkplug_names);
+    RUN_TEST(test_device_prefix);
+    RUN_TEST(test_mdns_instance);
     RUN_TEST(test_device_block_reads);
     RUN_TEST(test_scan_classes);
     RUN_TEST(test_modbus_tcp_section);
