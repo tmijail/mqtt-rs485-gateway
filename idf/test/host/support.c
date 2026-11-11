@@ -337,7 +337,8 @@ static void fill_dec(dec_metric_t *o, const spb_rx_metric_t *m)
         snprintf(o->name, sizeof(o->name), "%s", m->name);
     }
     o->alias = m->alias;
-    o->datatype = m->datatype;
+    o->has_datatype = m->has_datatype;
+    o->datatype = m->datatype;   /* 0 when absent (DATA, #159) */
     o->is_null = m->is_null;
     o->is_historical = m->is_historical;
     o->kind = m->kind;

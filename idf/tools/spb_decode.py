@@ -31,12 +31,19 @@ DATATYPE_FIELD = {  # Sparkplug datatype -> oneof field that must carry the valu
 }
 
 
+def is_template(m):
+    """A template metric: by its datatype (births) or by its value field (DATA, no datatype)."""
+    return m.datatype == 19 or m.WhichOneof("value") == "template_value"
+
+
 def check_template(kind, m):
     """SPB-18: definitions only in NBIRTH, without alias or template_ref; instances name their
-    definition; members carry name and datatype and no alias, and are not templates."""
-    if m.datatype != 19 or m.is_null:
+    definition; members carry a name and no alias, and are not templates. Members carry their
+    datatype in births and no datatype in DATA (tck-id-payloads-metric-datatype-not-req)."""
+    if not is_template(m) or m.is_null:
         return []
     t, errors = m.template_value, []
+    data = kind in ("NDATA", "DDATA")
     if t.is_definition:
         if kind != "NBIRTH":
             errors.append(f"{m.name}: template definition outside NBIRTH")
@@ -45,9 +52,12 @@ def check_template(kind, m):
     elif not t.template_ref:
         errors.append(f"alias {m.alias}: template instance without template_ref")
     for mm in t.metrics:
-        if not (mm.HasField("name") and mm.HasField("datatype")) or mm.HasField("alias"):
-            errors.append(f"{m.name or m.alias}: member without name/datatype or with an alias")
-        if mm.datatype == 19:
+        if not mm.HasField("name") or mm.HasField("alias"):
+            errors.append(f"{m.name or m.alias}: member without name or with an alias")
+        if mm.HasField("datatype") == data:
+            errors.append(f"{m.name or m.alias}: member {mm.name} "
+                          + ("with a datatype in DATA" if data else "without datatype"))
+        if mm.datatype == 19 or mm.WhichOneof("value") == "template_value":
             errors.append(f"{m.name or m.alias}: nested template member {mm.name}")
         expected = DATATYPE_FIELD.get(mm.datatype)
         if not mm.is_null and not t.is_definition and expected and mm.WhichOneof("value") != expected:
@@ -60,7 +70,7 @@ CELL_FIELD = {k: v for k, v in DATATYPE_FIELD.items() if k <= 14}   # SPB-19 Dat
 def check_dataset(m):
     """SPB-19: num_of_columns, names and types agree; every row has one element per column,
     in the field its column type asks for."""
-    if m.datatype != 16 or m.is_null:
+    if (m.datatype != 16 and m.WhichOneof("value") != "dataset_value") or m.is_null:
         return []
     ds, errors = m.dataset_value, []
     if not (ds.num_of_columns == len(ds.columns) == len(ds.types)):
@@ -178,11 +188,15 @@ def check(kind, p):
             errors.append(f"NBIRTH {REBIRTH} must not have an alias (alias {m.alias})")
         if not births and m.HasField("name"):
             errors.append(f"{kind} metric should use the alias only: {m.name}")
+        # tck-id-payloads-metric-datatype-not-req: no datatype in NDATA and DDATA (#159); the
+        # host knows it from the birth (BirthTypes checks the value field against it)
+        if kind in ("NDATA", "DDATA") and m.HasField("datatype"):
+            errors.append(f"{kind} metric with a datatype: alias {m.alias}, datatype {m.datatype}")
         # tck-id-payloads-name-birth-data-requirement: a timestamp on every metric of NBIRTH,
         # DBIRTH, NDATA and DDATA (and on the members of a template instance, which are values;
         # the members of a definition are not)
         if kind in TIMESTAMPED:
-            members = [] if definition or m.datatype != 19 else list(m.template_value.metrics)
+            members = [] if definition or not is_template(m) else list(m.template_value.metrics)
             for mm in [m] + members:
                 if not mm.HasField("timestamp"):
                     errors.append(f"{kind} metric without timestamp: "
@@ -211,6 +225,90 @@ def check(kind, p):
     return errors
 
 
+def topic_parts(topic):
+    """(kind, node, device) of a Sparkplug topic spBv1.0/<group>/<TYPE>/<edge>[/<device>]."""
+    parts = topic.split("/")
+    if len(parts) < 4:
+        return (parts[2] if len(parts) > 2 else None), None, None
+    return parts[2], (parts[1], parts[3]), parts[4] if len(parts) > 4 else None
+
+
+def field_error(what, dt, m):
+    """The value of @p m is not in the field of datatype @p dt (None when it is)."""
+    expected = DATATYPE_FIELD.get(dt)
+    if m.is_null or expected is None or m.WhichOneof("value") == expected:
+        return None
+    return f"{what}: the birth datatype {dt} is in {expected}, the value is in {m.WhichOneof('value')}"
+
+
+class BirthTypes:
+    """The datatype of each alias, from the births of each node (#159). NDATA and DDATA carry
+    no datatype (tck-id-payloads-metric-datatype-not-req), so the value of a DATA metric must be
+    in the field of the datatype that its birth gave (and each member of a template instance in
+    the field of the datatype of that member in the DBIRTH).
+
+    Feed the messages in publish order. With @p strict, a DATA message or alias that no birth
+    gave is an error (a complete dump); without it (a capture that can start late), it is not
+    examined."""
+
+    def __init__(self, strict=True):
+        self.strict = strict
+        self.nodes = {}   # node -> {device or None: {alias: (datatype, {member: datatype})}}
+
+    @staticmethod
+    def types_of(p):
+        out = {}
+        for m in p.metrics:
+            if m.HasField("alias"):
+                members = {mm.name: mm.datatype for mm in m.template_value.metrics} \
+                    if m.datatype == 19 else {}
+                out[m.alias] = (m.datatype, members)
+        return out
+
+    def datatype(self, node, device, alias):
+        """The birth datatype of @p alias of @p device (None: a node metric), or None."""
+        t = self.nodes.get(node, {}).get(device, {}).get(alias)
+        return t[0] if t else None
+
+    def feed(self, kind, node, device, p):
+        if node is None:
+            return []
+        if kind == "NDEATH":
+            self.nodes.pop(node, None)
+            return []
+        if kind == "NBIRTH":
+            self.nodes[node] = {None: self.types_of(p)}
+            return []
+        if kind == "DBIRTH":
+            self.nodes.setdefault(node, {})[device] = self.types_of(p)
+            return []
+        if kind not in ("NDATA", "DDATA"):
+            return []
+        where = "/".join(node) + (f"/{device}" if device else "")
+        known = self.nodes.get(node, {}).get(device if kind == "DDATA" else None)
+        if known is None:
+            return [f"{kind} {where}: no birth gave its datatypes"] if self.strict else []
+        errors = []
+        for m in p.metrics:
+            t = known.get(m.alias) if m.HasField("alias") else None
+            if t is None:
+                if self.strict:
+                    errors.append(f"{kind} {where}: alias {m.alias} is not in the birth")
+                continue
+            dt, members = t
+            e = field_error(f"{kind} {where} alias {m.alias}", dt, m)
+            errors += [e] if e else []
+            for mm in m.template_value.metrics if dt == 19 else []:
+                if mm.name not in members:
+                    errors.append(f"{kind} {where} alias {m.alias}: member {mm.name} is not in "
+                                  "the DBIRTH")
+                    continue
+                e = field_error(f"{kind} {where} alias {m.alias} member {mm.name}",
+                                members[mm.name], mm)
+                errors += [e] if e else []
+        return errors
+
+
 class Sessions:
     """Rules across the messages of one Edge Node (#166). Feed every message of the node in
     publish order: a new NBIRTH starts a new session, an NDEATH ends it.
@@ -220,10 +318,12 @@ class Sessions:
     - tck-id-payloads-alias-uniqueness: an alias of the NBIRTH or of a DBIRTH is unique across
       all the metrics of the node: the NBIRTH and the DBIRTHs of all its devices. A new DBIRTH
       of the same device (after a DDEATH) replaces the aliases of that device.
+    - #159: the value of each DATA metric is in the field of its birth datatype (BirthTypes).
     """
 
     def __init__(self):
         self.nodes = {}
+        self.types = BirthTypes(strict=True)
 
     def feed(self, kind, node, device, p):
         """Errors of message @p p (type @p kind) from @p node ((group, edge)) and @p device
@@ -233,13 +333,14 @@ class Sessions:
         where = "/".join(node) + (f"/{device}" if device else "")
         if kind == "NDEATH":
             self.nodes.pop(node, None)
+            self.types.feed(kind, node, device, p)
             return []
         if kind == "NBIRTH":
             self.nodes[node] = {"next": 0, "node": set(), "devices": {}}
         s = self.nodes.get(node)
         if s is None:
             return [f"{kind} {where} before the NBIRTH of its node"]
-        errors = []
+        errors = self.types.feed(kind, node, device, p)
         if p.HasField("seq"):
             if p.seq != s["next"]:
                 errors.append(f"{kind} {where}: seq {p.seq}, expected {s['next']} "

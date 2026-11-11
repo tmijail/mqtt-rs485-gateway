@@ -91,6 +91,10 @@ CAPTURE = []      # every message seen by any observer: (t, topic, Payload, raw 
 # (bdSeq, seq), so scenario checks that scan CAPTURE must not see them twice; criterion 6 still
 # decodes them
 DISCARDED_CAPTURE = []
+# Issue #159: NDATA and DDATA carry no datatype (tck-id-payloads-metric-datatype-not-req). The
+# datatype of each alias comes from the last NBIRTH/DBIRTH that an observer saw (datatype_of).
+BIRTH_TYPES = spb_decode.BirthTypes(strict=False)
+BIRTH_TYPES_LOCK = threading.Lock()   # observers run in their own paho threads
 GATEWAYS = []     # every QEMU the harness started (issue #86: did one die on its own?)
 RETRIES = []      # issue #86: scenarios repeated once because QEMU died under them
 PROCS = []        # brokers and QEMU instances to clean up
@@ -610,6 +614,10 @@ class Observer:
         p = spb.Payload()
         p.ParseFromString(msg.payload)  # raises on anything the official proto cannot parse
         item = (time.monotonic(), msg.topic, p, bytes(msg.payload))
+        kind, node, device = spb_decode.topic_parts(msg.topic)
+        if kind in ("NBIRTH", "DBIRTH"):
+            with BIRTH_TYPES_LOCK:
+                BIRTH_TYPES.feed(kind, node, device, p)
         CAPTURE.append(item)
         self.q.put(item)
 
@@ -657,6 +665,16 @@ def metric(p, alias=None, name=None):
     return None
 
 
+def datatype_of(topic, m):
+    """Sparkplug datatype of metric @p m of a message on @p topic: its own in a birth, else the
+    one that the last birth of its node or device gave to its alias (DATA has none, #159)."""
+    if m.HasField("datatype"):
+        return m.datatype
+    _, node, device = spb_decode.topic_parts(topic)
+    with BIRTH_TYPES_LOCK:
+        return BIRTH_TYPES.datatype(node, device, m.alias)
+
+
 def bdseq_of(p):
     return metric(p, name="bdSeq").long_value
 
@@ -674,7 +692,12 @@ def do_states(p):
 def counter_of(p, n=1):
     """Value of Counter/n (IO-4, UInt64) in an NBIRTH (by name) or NDATA (by alias), or None."""
     m = metric(p, name=f"Counter/{n}") or metric(p, alias=30 + n - 1)
-    return m.long_value if m is not None and m.datatype == 8 else None
+    if m is None:
+        return None
+    # NBIRTH: the datatype UInt64. NDATA has no datatype (#159): the value is in long_value, the
+    # field of the UInt64 of the NBIRTH (criterion 6 checks each DATA field against its birth)
+    uint64 = m.datatype == 8 if m.HasField("datatype") else m.WhichOneof("value") == "long_value"
+    return m.long_value if uint64 else None
 
 
 def set_do(obs, ncmd_t, ndata_t, states):
@@ -2290,9 +2313,9 @@ def run_stack_margin(args, work, slave):
     time.sleep(3)
     after = [x for x in CAPTURE if nb2 and x[0] >= nb2[0] and x[1].split("/")[3:4] == [node]]
     hist_pump = [x for x in after if x[1] == f"{T}/DDATA/{node}/PumpB" and x[2].metrics
-                 and x[2].metrics[0].is_historical and x[2].metrics[0].datatype == 19]
+                 and x[2].metrics[0].is_historical and datatype_of(x[1], x[2].metrics[0]) == 19]
     hist_raw = [x for x in after if x[1] == f"{T}/DDATA/{node}/Raw"
-                and any(y.is_historical and y.datatype == 17 for y in x[2].metrics)]
+                and any(y.is_historical and datatype_of(x[1], y) == 17 for y in x[2].metrics)]
     asked, h = gw.shell("status", [r"^stack\s+sparkplug \d+ "])
     line = (gw.find(r"^stack\s+sparkplug \d+ ", asked) or [""])[0]
     free = int(re.search(r"sparkplug (\d+)", line).group(1)) if line else None
@@ -4859,10 +4882,18 @@ def main():
         bad = 0
         dump = work / "payloads"
         dump.mkdir(exist_ok=True)
-        for i, (_, topic, p, raw) in enumerate(CAPTURE + DISCARDED_CAPTURE):
-            kind = topic.split("/")[2]
+        # #159: DATA has no datatype; its value field must match the datatype of the birth (each
+        # list in its own order: a discarded attempt is another boot)
+        types = {id(CAPTURE): spb_decode.BirthTypes(strict=False),
+                 id(DISCARDED_CAPTURE): spb_decode.BirthTypes(strict=False)}
+        numbered = [(src, item) for src in (CAPTURE, DISCARDED_CAPTURE) for item in src]
+        for i, (src, (_, topic, p, raw)) in enumerate(numbered):
+            kind, node, device = spb_decode.topic_parts(topic)
             (dump / f"{i:03d}_{kind}.bin").write_bytes(raw)
-            bad += len(spb_decode.check(kind, p))
+            errs = spb_decode.check(kind, p) + types[id(src)].feed(kind, node, device, p)
+            for e in errs[:3]:
+                print(f"criterion 6: {topic}: {e}", flush=True)
+            bad += len(errs)
         check(f"6. payloads decode with the official sparkplug_b.proto (Python protobuf "
               f"{google.protobuf.__version__})",
               CAPTURE and bad == 0,
@@ -5835,7 +5866,10 @@ def check_templates_gw02(obs, slave, node, nb):
     wrote = slave.ctx.writes[before:]
     dm = dd[2].metrics[0] if dd and dd[2].metrics else None
     alias = births["PumpA"][2].metrics[0].alias if births.get("PumpA") else None
-    data_ok = dm is not None and not dm.HasField("name") and dm.alias == alias and dm.datatype == 19 \
+    # #159: no datatype in DDATA, on the instance or its members; the DBIRTH gives Template
+    data_ok = dm is not None and not dm.HasField("name") and dm.alias == alias \
+        and not dm.HasField("datatype") and datatype_of(dd[1], dm) == 19 \
+        and not any(x.HasField("datatype") for x in dm.template_value.metrics) \
         and [(x.name, x.int_value) for x in dm.template_value.metrics] == [("Speed", 1234)]
     ok = def_ok and inst_ok and wrote == [(6, 230, [1234])] and data_ok
     return ok, (f"definition {members} (alias {'yes' if d is not None and d.HasField('alias') else 'no'}); "
@@ -6361,7 +6395,7 @@ def run(args, log, slave, broker, conf, work):
     check("IO-4 pulse counters: NBIRTH carries Counter/1..8 (UInt64, 0 on a fresh device); the DI "
           "activation counts one pulse, in the same NDATA as the DI change",
           births == [0] * 8 and nd and counter_of(nd[2]) == 1,
-          f"NBIRTH counters {births}; NDATA {[(m.alias, m.long_value if m.datatype == 8 else m.boolean_value) for m in nd[2].metrics] if nd else None}")
+          f"NBIRTH counters {births}; NDATA {[(m.alias, m.long_value if datatype_of(nd[1], m) == 8 else m.boolean_value) for m in nd[2].metrics] if nd else None}")
     obs.drain()
     obs.publish_cmd(ncmd_t, [{"name": "DO/3", "datatype": 11, "boolean_value": True}])
     nd = obs.wait(ndata_t, 3, lambda q: metric(q, alias=ALIAS["DO/3"]) is not None)

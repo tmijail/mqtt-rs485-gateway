@@ -96,6 +96,7 @@ typedef struct {
     bool has_name;
     bool has_alias;
     uint64_t alias;
+        bool has_datatype;       /* births only (#159) */
         uint32_t datatype;
         bool is_null;
         bool is_historical;
