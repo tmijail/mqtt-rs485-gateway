@@ -155,15 +155,15 @@ Al publicar, el gateway hace de *Edge Node* de Sparkplug. Cada esclavo Modbus es
 | CFG-4 | API REST JSON para leer y escribir la configuración, con importar y exportar | P1 | |
 | CFG-5 | Reset de fábrica con el botón BOOT presionado más de 10 s | P1 | |
 | CFG-6 | Consola serie (shell) con comandos de estado, configuración y diagnóstico | P1 | |
-| CFG-7 | Secretos (contraseñas, claves TLS) en almacenamiento cifrado | P1 | |
+| CFG-7 | The gateway keeps the secrets (passwords, TLS keys) out of the configuration document, in NVS. **Out of scope:** encryption of the secrets with a key in eFuse on the board. The key in eFuse is permanent, and the owner of the board must keep full control of it (#133). The QEMU build still encrypts NVS on emulated eFuses; #133 decides whether this stays. The archived feature is on the branch `archive/efuse-production` | P1 | |
 
 ### 4.8 Gestión del firmware (FW)
 
 | ID | Requisito | Prio | MVP |
 |---|---|---|---|
 | FW-1 | **OTA** por HTTPS con particiones A/B, *rollback* automático si el nuevo firmware no confirma su salud y disparo por web o por NCMD | P1 | |
-| FW-2 | Firmware firmado y *secure boot* | P1 | |
-| FW-3 | Cifrado de flash | P2 | |
+| FW-2 | **Out of scope:** Secure Boot. Secure Boot burns eFuses, and after it the board accepts only the firmware of the owner of the key. This is a vendor lock, and the project is open source (#133). The archived feature is on the branch `archive/efuse-production`. The QEMU build still requires signed OTA images without Secure Boot; #133 decides whether this stays | — | |
+| FW-3 | **Out of scope:** flash encryption. Flash encryption in release mode burns eFuses and stops the owner from reading or flashing the board through USB (#133). The archived feature is on the branch `archive/efuse-production` | — | |
 | FW-4 | Versión semántica y hash de git visibles en NBIRTH (`Node Info/Firmware`) | P0 | ✅ |
 
 ### 4.9 Robustez y observabilidad (REL)

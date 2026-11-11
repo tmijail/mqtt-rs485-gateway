@@ -37,20 +37,6 @@ set(GW_SDKCONFIG_REQUIRED
     # #122: no name buffer allocated on each microSD file operation (REL-2)
     FATFS_LFN_NONE)
 
-# Issue #93: checked only when sdkconfig.production is in the defaults chain. A production
-# sdkconfig generated before one of these was set (or edited by hand) would build an image that
-# burns eFuses without the protection the overlay promises (FW-2, FW-3, CFG-7). An option whose
-# parent is off is absent and skipped (the QEMU Secure Boot run turns flash encryption off in its
-# own overlay, so the release mode is absent); the parents are in the list.
-set(GW_SDKCONFIG_REQUIRED_PRODUCTION
-    SECURE_BOOT
-    SECURE_BOOT_V2_ENABLED
-    SECURE_FLASH_ENC_ENABLED
-    SECURE_FLASH_ENCRYPTION_MODE_RELEASE
-    SECURE_DISABLE_ROM_DL_MODE
-    NVS_ENCRYPTION
-    NVS_SEC_KEY_PROTECT_USING_HMAC)
-
 # Reads CONFIG_ assignments of <file> into <prefix>_<NAME> variables (value "n" for "is not set",
 # and for "=n" in a defaults file) and appends the names to <prefix>_NAMES.
 function(__gw_sdkconfig_read file prefix)
@@ -78,10 +64,6 @@ function(gw_sdkconfig_mismatches sdkconfig defaults target result)
     set(expected_NAMES "")
     set(required ${GW_SDKCONFIG_REQUIRED})
     foreach(f IN LISTS defaults)
-        get_filename_component(base "${f}" NAME)
-        if(base STREQUAL "sdkconfig.production")
-            list(APPEND required ${GW_SDKCONFIG_REQUIRED_PRODUCTION})
-        endif()
         foreach(g "${f}" "${f}.${target}")
             if(EXISTS "${g}")
                 __gw_sdkconfig_read("${g}" expected)
@@ -102,42 +84,6 @@ function(gw_sdkconfig_mismatches sdkconfig defaults target result)
     set(${result} "${out}" PARENT_SCOPE)
 endfunction()
 
-# Directory a relative CONFIG_PARTITION_TABLE_CUSTOM_FILENAME is resolved against: the project
-# (the parent of this file's directory) unless GW_SDKCONFIG_PROJECT_DIR (script mode: PROJECT_DIR)
-# says otherwise (host tests).
-set(__gw_cfgchk_project "${CMAKE_CURRENT_LIST_DIR}/..")
-
-# Issue #108 B7: sets <result> to the partitions of the CSV <file> named in <names> whose flags
-# lack "encrypted" (or to the reason the file cannot be checked).
-function(__gw_partitions_unencrypted file names result)
-    if(NOT EXISTS "${file}")
-        set(${result} "partition table ${file} not found" PARENT_SCOPE)
-        return()
-    endif()
-    file(STRINGS "${file}" lines)
-    set(out "")
-    foreach(line IN LISTS lines)
-        string(STRIP "${line}" line)
-        if(line STREQUAL "" OR line MATCHES "^#")
-            continue()
-        endif()
-        # Name, Type, SubType, Offset, Size, Flags (no list(): empty fields, policy CMP0007)
-        if(NOT line MATCHES "^([^,]*),[^,]*,[^,]*,[^,]*,[^,]*(,(.*))?$")
-            continue()
-        endif()
-        string(STRIP "${CMAKE_MATCH_1}" name)
-        set(flags "${CMAKE_MATCH_3}")
-        list(FIND names "${name}" i)
-        if(i LESS 0)
-            continue()
-        endif()
-        if(NOT flags MATCHES "encrypted")
-            list(APPEND out "${name}")
-        endif()
-    endforeach()
-    set(${result} "${out}" PARENT_SCOPE)
-endfunction()
-
 # Issue #103: combinations of options that the sdkconfig in use must not have, whatever the
 # defaults say. NVS encryption (CFG-7) without flash encryption (FW-3), outside the emulator
 # build: the reset-safe copy of an NVS migration (#94, secrets included) is a LittleFS file, and
@@ -151,27 +97,8 @@ function(gw_sdkconfig_forbidden sdkconfig result)
        AND NOT "${active_GW_IO_SIMULATED}" STREQUAL "y")
         list(APPEND out "CONFIG_NVS_ENCRYPTION=y without CONFIG_SECURE_FLASH_ENC_ENABLED: an NVS "
                         "migration leaves its copy of the secrets in clear in the free blocks of "
-                        "LittleFS (issue #103); use sdkconfig.production, or the default build")
-    endif()
-    # issue #108 B7: flash encryption covers only the partitions flagged "encrypted": storage
-    # (LittleFS, the migration copy, certificates) and coredump (RAM with the secrets) must be
-    if("${active_NVS_ENCRYPTION}" STREQUAL "y" AND "${active_SECURE_FLASH_ENC_ENABLED}" STREQUAL "y"
-       AND "${active_PARTITION_TABLE_CUSTOM}" STREQUAL "y")
-        string(REGEX REPLACE "^\"(.*)\"$" "\\1" csv "${active_PARTITION_TABLE_CUSTOM_FILENAME}")
-        if(NOT IS_ABSOLUTE "${csv}")
-            if(DEFINED GW_SDKCONFIG_PROJECT_DIR)
-                set(csv "${GW_SDKCONFIG_PROJECT_DIR}/${csv}")
-            else()
-                set(csv "${__gw_cfgchk_project}/${csv}")
-            endif()
-        endif()
-        __gw_partitions_unencrypted("${csv}" "storage;coredump" plain)
-        if(plain)
-            list(JOIN plain ", " plain)
-            list(APPEND out "flash encryption with NVS encryption, but ${plain} not flagged "
-                            "\"encrypted\" in ${csv}: they would stay in clear (issue #108), use "
-                            "partitions-production.csv")
-        endif()
+                        "LittleFS (issue #103); use the default build (flash encryption is not in "
+                        "this project: issue #133, branch archive/efuse-production)")
     endif()
     set(${result} "${out}" PARENT_SCOPE)
 endfunction()
@@ -212,9 +139,6 @@ endfunction()
 if(CMAKE_SCRIPT_MODE_FILE STREQUAL CMAKE_CURRENT_LIST_FILE)
     if(NOT IDF_TARGET)
         set(IDF_TARGET esp32s3)
-    endif()
-    if(PROJECT_DIR)
-        set(GW_SDKCONFIG_PROJECT_DIR "${PROJECT_DIR}")
     endif()
     gw_sdkconfig_check("${SDKCONFIG}" "${DEFAULTS}" "${IDF_TARGET}" "${MODE}")
 endif()

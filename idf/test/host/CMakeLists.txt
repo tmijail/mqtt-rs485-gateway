@@ -99,19 +99,13 @@ add_test(NAME check_set_config
 # fresh: matches; stale: DYNAMIC_BUFFER "is not set" from before #80 (fails, and only warns with
 # MODE=warn); wdt5: a different watchdog timeout fails, unless an overlay of the build sets it;
 # absent options (SPIRAM_IGNORE_NOTFOUND with SPIRAM off, as in the QEMU build) are skipped.
-# Issue #93, with sdkconfig.production in the chain ("@" = a file of the project): prod_fresh
-# matches; prod_stale lacks SECURE_DISABLE_ROM_DL_MODE (fails; reported with MODE=warn), which a
-# build without the production overlay does not check. Issue #103: NVS encryption without flash
+# An overlay with "@" is a file of the project. Issue #103: NVS encryption without flash
 # encryption fails (reported with MODE=warn), except in the emulator build (GW_IO_SIMULATED).
 set(GW_CFGCHK ${IDF_PROJECT_DIR}/cmake/gw_sdkconfig_check.cmake)
 set(GW_CFGCHK_DIR ${CMAKE_CURRENT_LIST_DIR}/sdkconfig_check)
 set(GW_CFGCHK_DEFAULTS ${IDF_PROJECT_DIR}/sdkconfig.defaults)
 foreach(c "fresh;fresh;;;0" "stale;stale;;warn;0;MBEDTLS_DYNAMIC_BUFFER" "stale;stale;;;1"
           "wdt5;wdt5;;;1" "wdt5_overlay;wdt5;wdt5.defaults;;0"
-          "prod_fresh;prod_fresh;@sdkconfig.production;;0"
-          "prod_stale;prod_stale;@sdkconfig.production;;1"
-          "prod_stale;prod_stale;@sdkconfig.production;warn;0;SECURE_DISABLE_ROM_DL_MODE"
-          "prod_stale_default;prod_stale;;;0"
           "nvsenc_noflash;nvsenc_noflash;;;1"
           "nvsenc_noflash;nvsenc_noflash;;warn;0;NVS_ENCRYPTION"
           "nvsenc_sim;nvsenc_sim;;;0")
@@ -141,22 +135,5 @@ foreach(c "fresh;fresh;;;0" "stale;stale;;warn;0;MBEDTLS_DYNAMIC_BUFFER" "stale;
     elseif(mode STREQUAL "warn")
         set_tests_properties(sdkconfig_check_${name} PROPERTIES
                              PASS_REGULAR_EXPRESSION "CMake Warning.*CONFIG_${expect}")
-    endif()
-endforeach()
-
-# Issue #108 B7: with flash and NVS encryption, the partition table of the sdkconfig must flag
-# storage and coredump "encrypted": the project's partitions-production.csv passes, a table
-# without the flag on either fails (fixtures resolved against sdkconfig_check/).
-foreach(c "prodpart_ok;${IDF_PROJECT_DIR};0" "prodpart_plain;${GW_CFGCHK_DIR};1"
-          "prodpart_coredump;${GW_CFGCHK_DIR};1")
-    list(GET c 0 name)
-    list(GET c 1 dir)
-    list(GET c 2 fails)
-    add_test(NAME sdkconfig_check_${name}
-             COMMAND ${CMAKE_COMMAND} -DSDKCONFIG=${GW_CFGCHK_DIR}/${name}.sdkconfig
-                     "-DDEFAULTS=${GW_CFGCHK_DEFAULTS}$<SEMICOLON>${IDF_PROJECT_DIR}/sdkconfig.production"
-                     -DPROJECT_DIR=${dir} -P ${GW_CFGCHK})
-    if(fails)
-        set_tests_properties(sdkconfig_check_${name} PROPERTIES WILL_FAIL TRUE)
     endif()
 endforeach()

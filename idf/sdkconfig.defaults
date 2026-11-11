@@ -84,7 +84,9 @@ CONFIG_MBEDTLS_X509_CREATE_C=y
 CONFIG_LWIP_MAX_SOCKETS=24
 
 # CFG-7: NVS is NOT encrypted in this default build (no eFuse is ever burned by flashing it).
-# Secrets still live in NVS, outside config.json. Production units add sdkconfig.production.
+# Secrets still live in NVS, outside config.json. The eFuse-burning overlay (Secure Boot, flash
+# encryption, NVS encryption with an eFuse key) is not in main: issue #133, branch
+# archive/efuse-production.
 
 # FW-1: A/B OTA with automatic rollback. A new image boots on trial (ESP_OTA_IMG_PENDING_VERIFY)
 # and confirms itself after its first Sparkplug session (gw_fw); a reset before that makes the
