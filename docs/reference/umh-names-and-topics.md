@@ -89,6 +89,7 @@ The gateway publishes these metrics in the NBIRTH, and their changes in NDATA. S
 | `Node Info/Modbus` | DataSet | With one or more devices | None: UMH gives no value for a DataSet | Dropped |
 | `Node Info/Modbus TCP` | DataSet | Only with `modbus_tcp.enabled` | None: UMH gives no value for a DataSet | Dropped |
 | `Node Info/Time Synced` | Boolean | Always | `Node_Info.Time_Synced` | Kept |
+| `Devices/<name>/Online`, for example `Devices/line3/meter1/Online` | Boolean | Only with the UMH preset (#173), one for each device. Each `:` of the name becomes `/` | `Devices.line3.meter1.Online` | Kept |
 | A template definition for each device `type` | Template | Only with devices that have a `type` | None: UMH gives no value for a Template | Dropped |
 
 `Node Info/Uptime`, `Free Heap`, `Min Free Heap` and `RSSI` also go in an NDATA each `sparkplug.diagnostics_s` (60 s by default, 0 = never). The DataSets go in this NDATA only when a counter changed.
@@ -105,4 +106,4 @@ The DBIRTH and the DDATA of a device hold one metric for each tag of the device.
 | A tag of the type `bytes` | Bytes | None: UMH gives no value for Bytes | Dropped |
 | All tags of a device with a `type` | One Template instance | None: UMH gives no value for a Template | Dropped |
 
-UMH ignores the properties of each tag (`engUnit`, `engLow`, `engHigh`, `Quality`). A DDEATH gives no UMH topic, and the tags of the device keep their last value in UMH.
+UMH ignores the properties of each tag (`engUnit`, `engLow`, `engHigh`, `Quality`). A DDEATH gives no UMH topic, and the tags of the device keep their last value in UMH. With the UMH preset, the node metric `Devices/<name>/Online` changes to `false` when the device goes offline.

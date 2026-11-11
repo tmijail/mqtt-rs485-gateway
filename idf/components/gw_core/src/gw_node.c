@@ -95,13 +95,39 @@ static bool message_topic(const gw_node_t *n, const char *type, const char *devi
     return r > 0 && (size_t)r < cap;
 }
 
+/* #169: the UMH preset (sparkplug.naming "umh"). */
+static bool umh(const gw_node_t *n)
+{
+    return n->cfg->sparkplug.naming == GW_NAMING_UMH;
+}
+
+/* #173: "Devices/<name>/Online" of device @p i, each ':' of the name as '/' (UMH Core splits a
+ * metric name at its last ':' first). The value comes from the snapshot online_reported. */
+static void online_metric(const void *ctx, size_t i, spb_metric_t *out, char *name)
+{
+    const gw_node_t *n = ctx;
+    /* at most 8 + 39 + 7 = 54 characters: it fits SPB_NAME_MAX */
+    int len = snprintf(name, SPB_NAME_MAX + 1, "Devices/%s/Online", n->cfg->devices[i].name);
+    for (int k = 8; k < len && k < SPB_NAME_MAX; k++) {
+        if (name[k] == ':') {
+            name[k] = '/';
+        }
+    }
+    out->name = name;
+    out->alias = GW_ALIAS_ONLINE_BASE + i;
+    out->datatype = SPB_DT_BOOLEAN;
+    out->timestamp = gw_port_time_ms();
+    out->v.num = (n->online_reported >> i) & 1u;
+}
+
 /* Returns 0, GW_NODE_PUBLISH_TOO_LARGE (larger than the broker accepts, #73, or than the local
  * payload buffer, #158) or -1 (any other failure).
  * tck-id-payloads-sequence-num-incrementing: only a message that went out uses a seq number.
  * One that was not sent (any failure) leaves its seq to the next message, or hosts would see a
- * gap in a session that lost nothing (SPB-5, #158). */
-static int publish_rc(gw_node_t *n, const char *type, const char *device, size_t metric_count,
-                      int qos)
+ * gap in a session that lost nothing (SPB-5, #158).
+ * @p online: the NBIRTH of the UMH preset also carries Devices/<name>/Online (#173). */
+static int publish_rc_ex(gw_node_t *n, const char *type, const char *device, size_t metric_count,
+                         int qos, bool online)
 {
     spb_payload_t p = {
         .timestamp = gw_port_time_ms(),
@@ -109,6 +135,9 @@ static int publish_rc(gw_node_t *n, const char *type, const char *device, size_t
         .seq = n->seq,
         .metrics = n->metrics,
         .metric_count = metric_count,
+        .extra_count = online ? n->cfg->device_count : 0,
+        .extra = online_metric,
+        .extra_ctx = n,
     };
     if (n->buf == NULL) {
         return -1;
@@ -132,9 +161,15 @@ static int publish_rc(gw_node_t *n, const char *type, const char *device, size_t
         return r;
     }
     n->seq++;   /* uint8_t wraps 255 -> 0 (SPB-5) */
-    GW_LOGD(TAG, "%s seq=%" PRIu64 " metrics=%u bytes=%u", n->topic, p.seq, (unsigned)metric_count,
-            (unsigned)len);
+    GW_LOGD(TAG, "%s seq=%" PRIu64 " metrics=%u bytes=%u", n->topic, p.seq,
+            (unsigned)(metric_count + p.extra_count), (unsigned)len);
     return 0;
+}
+
+static int publish_rc(gw_node_t *n, const char *type, const char *device, size_t metric_count,
+                      int qos)
+{
+    return publish_rc_ex(n, type, device, metric_count, qos, false);
 }
 
 static bool publish(gw_node_t *n, const char *type, const char *device, size_t metric_count,
@@ -465,7 +500,27 @@ static bool publish_nbirth(gw_node_t *n)
     }
     n->diag_restart = true;   /* the period starts again at the next tick */
     i += template_definitions(n, i, now);
-    return publish(n, "NBIRTH", NULL, i, 0);
+    /* #173: with the UMH preset, one Boolean per device (the snapshot is the value) */
+    n->online_reported = 0;
+    for (uint16_t d = 0; umh(n) && d < n->cfg->device_count; d++) {
+        if (gw_tagdb_device_online(d)) {
+            n->online_reported |= 1u << d;
+        }
+    }
+    return publish_rc_ex(n, "NBIRTH", NULL, i, 0, umh(n)) == 0;
+}
+
+/* #173: UMH preset: an NDATA with Devices/<name>/Online when the state of @p dev changed. */
+static void publish_online(gw_node_t *n, uint16_t dev, bool online)
+{
+    uint32_t bit = 1u << dev;
+    if (!umh(n) || online == ((n->online_reported & bit) != 0)) {
+        return;
+    }
+    n->online_reported ^= bit;
+    metric(n, 0, NULL, GW_ALIAS_ONLINE_BASE + dev, SPB_DT_BOOLEAN, gw_port_time_ms())->v.num =
+        online;
+    publish(n, "NDATA", NULL, 1, 0);
 }
 
 /* Publish @p dev's metrics: n->metrics[0..count) for a plain device; for a typed one (SPB-18)
@@ -687,6 +742,7 @@ void gw_node_device_changed(gw_node_t *n, uint16_t dev)
     }
     bool online;
     gw_tagdb_get_device(n->cfg, dev, n->vals, &online);
+    publish_online(n, dev, online);   /* #173 */
     if (online && !n->dev_born[dev]) {
         if (!n->dev_too_large[dev]) {   /* issue #76 */
             publish_dbirth(n, dev);

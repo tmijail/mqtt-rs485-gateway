@@ -23,6 +23,8 @@
  *   56 Node Info/Modbus TCP (issue #81, DataSet: per device, the attempts of the Modbus TCP
  *   requests forwarded to its unit, plus one row for units without a device; only with
  *   modbus_tcp.enabled).
+ *   80..95 #173 (UMH preset only): Devices/<name>/Online (Boolean) of device 0..15, with each
+ *   ':' of the name as '/'.
  *
  * SPB-18 device types: a device with a `type` is published as one Template instance metric
  * (named after the type, alias 100 + its first tag) whose members are its tags, by name; the
@@ -79,6 +81,7 @@ extern "C" {
 #define GW_ALIAS_MODBUS    54u
 #define GW_ALIAS_TIME_SYNCED 55u  /* TIME-3 */
 #define GW_ALIAS_MODBUS_TCP 56u   /* issue #81 */
+#define GW_ALIAS_ONLINE_BASE 80u  /* #173: + device index, UMH preset only */
 
 #define GW_NODE_IO_COUNT        8
 #define GW_NODE_DIAG_METRICS    6   /* SPB-17, at most (RSSI only with Wi-Fi, Modbus with devices,
@@ -183,6 +186,7 @@ typedef struct {
     spb_dataset_t mb_ds;
     spb_dataset_t mbtcp_ds;
     bool do_unknown_reported;          /* DOs last published as null (expander not answering) */
+    uint32_t online_reported;          /* #173: bit d: Devices/<d>/Online last published true */
     char fw_state[GW_NODE_FW_STATE_MAX];   /* FW-1: "Firmware Update/State" */
     uint32_t fw_progress;                  /* FW-1: "Firmware Update/Progress" (%) */
 

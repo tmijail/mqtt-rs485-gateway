@@ -446,6 +446,140 @@ static void test_device_prefix_topics(void)
                              g_rec.msgs[0].topic);
 }
 
+/* #169 / #173: a node with the UMH preset (two devices, "line3:meter1" and "pump"); with
+ * @p tcp the Modbus TCP gateway, with @p typed a type on both devices. */
+static void setup_umh(bool tcp, bool typed)
+{
+    static char json[1024];
+    snprintf(json, sizeof(json),
+             "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\":"
+             " \"acme:gw01\", \"device_prefix\": \"acme:berlin\", \"naming\": \"umh\"},"
+             " \"modbus_tcp\": {\"enabled\": %s},"
+             " \"devices\": ["
+             " {\"name\": \"line3:meter1\", \"unit_id\": 1, %s \"tags\": ["
+             "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
+             "   \"units\": \"rpm\", \"writable\": true},"
+             "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]},"
+             " {\"name\": \"pump\", \"unit_id\": 2, %s \"tags\": ["
+             "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
+             "   \"writable\": true},"
+             "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]}]}",
+             tcp ? "true" : "false", typed ? "\"type\": \"Pump\"," : "",
+             typed ? "\"type\": \"Pump\"," : "");
+    static gw_config_t c;
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(json, strlen(json), &c, &err), err.msg);
+    cfg = &c;
+    gw_tagdb_reset();
+    gw_mbap_stats_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+}
+
+static void put_pump(uint16_t dev, bool online, double speed)
+{
+    gw_tag_value_t v[2] = {{.value = speed, .ts_ms = 1000, .valid = true},
+                           {.value = 1, .ts_ms = 1000, .valid = true}};
+    gw_tagdb_put_device(cfg, dev, v, online);
+}
+
+/* Every metric of the decoded birth has a name and a datatype, and the aliases are unique. */
+static void assert_birth_aliases_unique(void)
+{
+    for (size_t a = 0; a < dec.count; a++) {
+        TEST_ASSERT_TRUE(dec.m[a].has_name);
+        TEST_ASSERT_NOT_EQUAL(0, dec.m[a].datatype);
+        for (size_t b = a + 1; b < dec.count; b++) {
+            TEST_ASSERT_TRUE_MESSAGE(!dec.m[a].has_alias || !dec.m[b].has_alias ||
+                                     dec.m[a].alias != dec.m[b].alias, dec.m[b].name);
+            TEST_ASSERT_TRUE_MESSAGE(strcmp(dec.m[a].name, dec.m[b].name) != 0, dec.m[b].name);
+        }
+    }
+}
+
+/* #173: with the UMH preset, the NBIRTH has one Boolean "Devices/<name>/Online" per device
+ * (each ':' of the name as '/', alias 80 + index), and an NDATA tells each change. UMH Core
+ * drops null values, Quality and DDEATH: this plain metric tells it that a value is old. */
+static void test_umh_device_online(void)
+{
+    setup_umh(false, false);
+    put_pump(0, true, 1500);
+    gw_node_session_up(&node, 0);
+    TEST_ASSERT_EQUAL(2, g_rec.count);                       /* NBIRTH, DBIRTH line3:meter1 */
+    msg(0);
+    int i = decoded_find_name(&dec, "Devices/line3/meter1/Online");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_BOOLEAN, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_ONLINE_BASE + 0, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[i].num);
+    TEST_ASSERT_NOT_EQUAL(0, dec.m[i].timestamp);
+    i = decoded_find_name(&dec, "Devices/pump/Online");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_ONLINE_BASE + 1, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[i].num);
+    TEST_ASSERT_FALSE(dec.m[i].is_null);
+    assert_birth_aliases_unique();
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DBIRTH/acme:gw01/acme:berlin:line3:meter1",
+                             g_rec.msgs[1].topic);
+    recorder_clear();
+
+    /* pump comes online: NDATA Online true, then its DBIRTH */
+    put_pump(1, true, 10);
+    gw_node_device_changed(&node, 1);
+    TEST_ASSERT_EQUAL(2, g_rec.count);
+    msg(0);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/G/NDATA/acme:gw01", g_rec.msgs[0].topic);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_FALSE(dec.m[0].has_name);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_ONLINE_BASE + 1, dec.m[0].alias);
+    TEST_ASSERT_EQUAL(SPB_DT_BOOLEAN, dec.m[0].datatype);
+    TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[0].num);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DBIRTH/acme:gw01/acme:berlin:pump", g_rec.msgs[1].topic);
+    recorder_clear();
+
+    /* a value change: no Online metric */
+    put_pump(1, true, 11);
+    gw_node_device_changed(&node, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DDATA/acme:gw01/acme:berlin:pump", g_rec.msgs[0].topic);
+    recorder_clear();
+
+    /* line3:meter1 goes offline: NDATA Online false, then its DDEATH; the seq goes on */
+    put_pump(0, false, 0);
+    gw_node_device_changed(&node, 0);
+    TEST_ASSERT_EQUAL(2, g_rec.count);
+    msg(0);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_ONLINE_BASE + 0, dec.m[0].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[0].num);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DDEATH/acme:gw01/acme:berlin:line3:meter1",
+                             g_rec.msgs[1].topic);
+
+    /* a rebirth carries the current states */
+    recorder_clear();
+    gw_node_rebirth(&node);
+    msg(0);
+    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[decoded_find_name(&dec, "Devices/line3/meter1/Online")].num);
+    TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[decoded_find_name(&dec, "Devices/pump/Online")].num);
+}
+
+/* #173: without the preset, no Online metric and no NDATA for a device state. */
+static void test_no_device_online_without_preset(void)
+{
+    set_meter(true, 1, 2, 0);
+    gw_node_session_up(&node, 0);
+    msg(0);
+    for (size_t a = 0; a < dec.count; a++) {
+        TEST_ASSERT_NULL(strstr(dec.m[a].name, "Online"));
+    }
+    recorder_clear();
+    set_meter(false, 0, 0, 0);
+    gw_node_device_changed(&node, 0);
+    TEST_ASSERT_EQUAL(1, g_rec.count);   /* only the DDEATH */
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/DDEATH/GW01/Meter1", g_rec.msgs[0].topic);
+}
+
 /* SPB-10 (#163): a DCMD metric with a datatype other than the one of the DBIRTH, or with a
  * fraction for an integer or Boolean tag, is rejected with a log line: no write, no DDATA.
  * Without a datatype (the Sparkplug recommendation for commands,
@@ -1915,6 +2049,8 @@ int main(void)
     RUN_TEST(test_pulse_counters);
     RUN_TEST(test_dcmd_writes);
     RUN_TEST(test_device_prefix_topics);
+    RUN_TEST(test_umh_device_online);
+    RUN_TEST(test_no_device_online_without_preset);
     RUN_TEST(test_dcmd_strict_datatype_and_integer);
     RUN_TEST(test_dcmd_rejected_whole_when_queue_lacks_room);
     RUN_TEST(test_scan_rate);

@@ -84,7 +84,7 @@ The gateway keeps these items, because they are correct Sparkplug B 3.0 and othe
 - A device with `type` is a template instance (SPB-18).
 - A tag of the type `bytes` is a Bytes metric (SPB-19).
 - Each tag has the properties `engUnit`, `engLow`, `engHigh` and `Quality` (SPB-16).
-- A failed read gives a null value with the Quality BAD. UMH drops the null value and keeps the last good value. Thus UMH does not show that the value is old.
+- A failed read gives a null value with the Quality BAD. UMH drops the null value and keeps the last good value. Thus UMH does not show that the value is old. With the UMH preset, the node metric `Devices/<name>/Online` tells UMH when a device goes offline (#173).
 
 The gateway must obey the Sparkplug specification fully. It does not change its default behaviour for one host. The UMH preset (#169, planned) will add plain metrics that UMH can read, and keep the Sparkplug rules.
 

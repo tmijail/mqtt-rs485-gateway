@@ -15,12 +15,16 @@
  * a Sparkplug 2.x STATE, #177), a device type (UMH gives no value for a template instance),
  * and a bytes tag (UMH gives no value for Bytes).
  *
+ * With the preset only, one more error: a device name that would make the node metric
+ * Devices/<name>/Online of another device also a folder (#173).
+ *
  * It runs only at the validation, on the parsed structure: no allocation, and the message
  * buffers are on the stack of the caller of the callback.
  */
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 
 #include "gw_config.h"
 
@@ -159,6 +163,22 @@ size_t gw_config_lint(const gw_config_t *cfg, gw_lint_cb_t cb, void *ctx)
         const gw_device_cfg_t *d = &cfg->devices[i];
         snprintf(path, sizeof(path), "devices[%u].name", (unsigned)i);
         check_location(&l, path, d->name);
+        for (uint16_t j = 0; umh && j < cfg->device_count; j++) {
+            /* #173: the preset publishes Devices/<name>/Online, each ':' of the name as '/'. A
+             * name that continues another one with the level "Online" ("a" and "a:Online")
+             * would make that metric also a folder (Sparkplug B 3.0, chapter 6, Metric name;
+             * without case, as issue #162) */
+            const char *a = cfg->devices[j].name;
+            size_t an = strlen(a);
+            if (j != i && strncasecmp(d->name, a, an) == 0 && d->name[an] == ':' &&
+                strncasecmp(d->name + an + 1, "Online", 6) == 0 &&
+                (d->name[an + 7] == ':' || d->name[an + 7] == '\0')) {
+                report(&l, GW_LINT_ERROR, path,
+                       "the node metric Devices/%s/Online of devices[%u] would also be a folder "
+                       "of the metric of this device: use another level than 'Online'", a,
+                       (unsigned)j);
+            }
+        }
         if (d->type[0] != '\0') {
             snprintf(path, sizeof(path), "devices[%u].type", (unsigned)i);
             report(&l, GW_LINT_WARNING, path,

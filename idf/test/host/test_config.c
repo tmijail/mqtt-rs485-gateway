@@ -1061,6 +1061,20 @@ static void test_lint_umh_preset(void)
     TEST_ASSERT_EQUAL_size_t(1, lint());
     TEST_ASSERT_EQUAL(0, lr.errors);
 
+    /* #173: Devices/<name>/Online, each ':' as '/': "a" and "a:online:x" would make a metric
+     * also a folder (without case, as issue #162); another level is good */
+#define DEV2(a, b) "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":" \
+                   "\"gw\"" UMH "},\"devices\":[{\"name\":\"" a "\",\"unit_id\":1,\"tags\":["     \
+                   LTAG("v") "]},{\"name\":\"" b "\",\"unit_id\":2,\"tags\":[" LTAG("v") "]}]}"
+    ASSERT_REJECTED(parse(DEV2("line3", "line3:online:x")),
+                    "devices[1].name: the node metric Devices/line3/Online of devices[0] would "
+                    "also be a folder");
+    ASSERT_REJECTED(parse(DEV2("Line3:Online", "line3")), "devices[0].name: the node metric "
+                                                          "Devices/line3/Online of devices[1]");
+    TEST_ASSERT_TRUE_MESSAGE(parse(DEV2("line3", "line3:onlinex")), err.msg);
+    TEST_ASSERT_TRUE_MESSAGE(parse(DEV2("line3", "line3:meter1")), err.msg);
+#undef DEV2
+
     /* not name findings: warnings, also with the preset */
     TEST_ASSERT_TRUE_MESSAGE(parse(
         "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"gw\","
