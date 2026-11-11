@@ -707,8 +707,14 @@ class CiGroups(unittest.TestCase):
 
     def test_selection(self):
         full = scenarios.selected(set())
-        self.assertEqual(len(scenarios.SCENARIOS) - 1, len(full))    # every one but 'refuse'
+        # every one but 'refuse' and the optional ones
+        self.assertEqual(len(scenarios.SCENARIOS) - 1 - len(scenarios.OPTIONAL), len(full))
         self.assertNotIn("refuse", full)
+        # issue #175: an optional scenario runs only when named, alone or with others
+        self.assertEqual(set(), set(full) & scenarios.OPTIONAL)
+        self.assertEqual(scenarios.OPTIONAL - set(dict(scenarios.SCENARIOS)), set())
+        self.assertEqual(["umh"], scenarios.selected({"umh"}))
+        self.assertEqual(["main", "umh"], scenarios.selected({"main", "umh"}))
         self.assertEqual(["refuse"], scenarios.selected({"refuse"}))
         self.assertEqual(["main"], scenarios.selected({"refuse", "main"}))
         # the existing names select what they did before the finer OTA names
@@ -738,6 +744,10 @@ class CiGroups(unittest.TestCase):
         for name in full:
             self.assertEqual(1, seen.count(name), f"{name!r} in {seen.count(name)} CI groups")
         self.assertEqual(sorted(full), sorted(seen))
+        # issue #175: no CI group runs an optional scenario (the CI image has no benthos-umh)
+        self.assertEqual(set(), set(seen) & scenarios.OPTIONAL)
+        for _, only in scenarios.CI_GROUPS:
+            self.assertEqual(set(), scenarios.parse_only(only) & scenarios.OPTIONAL)
         ids = [g for g, _ in scenarios.CI_GROUPS]
         self.assertEqual(len(ids), len(set(ids)))
         for g in ids:   # artifact names and directory names

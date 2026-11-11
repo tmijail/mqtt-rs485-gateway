@@ -42,7 +42,11 @@ SCENARIOS = (
     ("slow", ("slow",)),
     ("refuse", ("refuse",)),   # part of "main"; alone only when "main" is not selected (#89)
     ("main", ("main",)),
+    ("umh", ("umh",)),         # optional: only when named (issue #175)
 )
+# Issue #175: scenarios that a run selects only when --only names them. A full run and the CI
+# groups leave them out: they need a program that is not in the CI image (benthos-umh).
+OPTIONAL = {"umh"}
 ONLY_NAMES = tuple(dict.fromkeys(n for _, names in SCENARIOS for n in names))
 
 
@@ -58,10 +62,14 @@ def parse_only(text):
 
 
 def selected(only):
-    """Names of the scenarios a run with the --only set @only (empty: all) runs, in order."""
+    """Names of the scenarios a run with the --only set @only (empty: all but OPTIONAL) runs, in
+    order."""
     out = []
     for name, names in SCENARIOS:
-        if name == "refuse":
+        if name in OPTIONAL:
+            if only & set(names):
+                out.append(name)
+        elif name == "refuse":
             if "refuse" in only and "main" not in only:
                 out.append(name)
         elif not only or only & set(names):
