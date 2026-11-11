@@ -1,11 +1,12 @@
 menu "Gateway: console shell"
 
     config GW_SHELL_WRITE_COMMANDS
-        bool "Shell commands that change the gateway (config load, restart, rebirth, mbread, card format)"
+        bool "Shell commands that change the gateway (config load, restart, rebirth, mbread, card format, coredump erase)"
         default y
         help
             CFG-6. The console is reached only with physical access to the board (USB-C),
             which also gives the BOOT button and the flash. Production builds that want a
-            read-only console (status, devices, config, config show, ping) turn this off.
+            read-only console (status, devices, config, config show, ping, coredump,
+            coredump dump) turn this off.
 
 endmenu

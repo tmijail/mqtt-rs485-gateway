@@ -37,6 +37,7 @@ static const char *const k_count_names[GW_NODE_IO_COUNT] = {
 #define NAME_MODBUS   "Node Info/Modbus"
 #define NAME_TIME_SYNCED "Node Info/Time Synced"
 #define NAME_MODBUS_TCP "Node Info/Modbus TCP"
+#define NAME_CORE_DUMP "Node Info/Core Dump"
 
 /* Issue #81: "Node Info/Modbus TCP", the Modbus TCP gateway's forwarded requests per device
  * (gw_dev_stats_t.tcp, #69) and a last row for units with no device. A table of its own rather
@@ -401,6 +402,18 @@ void gw_node_set_time_synced(gw_node_t *n, bool synced)
     publish(n, "NDATA", NULL, 1, 0);
 }
 
+/* Issue #132: as Time Synced, the NDATA has the alias only (tck-id-payloads-alias-uniqueness:
+ * 57 is this metric's alone). */
+void gw_node_set_core_dump(gw_node_t *n, bool present)
+{
+    if (!n->online || present == n->core_dump_reported) {
+        return;
+    }
+    n->core_dump_reported = present;
+    metric(n, 0, NULL, GW_ALIAS_CORE_DUMP, SPB_DT_BOOLEAN, gw_port_time_ms())->v.num = present;
+    publish(n, "NDATA", NULL, 1, 0);
+}
+
 static void diag_schedule(gw_node_t *n, uint64_t now)
 {
     uint32_t s = n->cfg->sparkplug.diagnostics_s;
@@ -483,6 +496,9 @@ static bool publish_nbirth(gw_node_t *n)
         n->time_synced_reported = dg.time_synced;
         metric(n, i++, NAME_TIME_SYNCED, GW_ALIAS_TIME_SYNCED, SPB_DT_BOOLEAN, now)->v.num =
             dg.time_synced;
+        n->core_dump_reported = dg.core_dump;   /* issue #132 */
+        metric(n, i++, NAME_CORE_DUMP, GW_ALIAS_CORE_DUMP, SPB_DT_BOOLEAN, now)->v.num =
+            dg.core_dump;
     }
     n->diag_restart = true;   /* the period starts again at the next tick */
     i += template_definitions(n, i, now);
