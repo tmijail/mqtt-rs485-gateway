@@ -145,6 +145,17 @@ static void restart_soon(void)
     esp_timer_start_once(t, 300 * 1000);
 }
 
+/* CFG-3 / NET-5, issue #120: the claim window closed (time over, or a password was set): the
+ * LED goes back; a set password gets one beep at the panel. The access point keeps its open
+ * period to the end of the window time (gw_ap). */
+static void claim_closed(bool claimed)
+{
+    gw_status_set(GW_ST_CLAIM, false);
+    if (claimed) {
+        gw_buzzer_beep(1);
+    }
+}
+
 static void start_web(gw_web_mode_t mode, const gw_config_t *cfg, const char *source)
 {
     if (s_web_started) {
@@ -171,6 +182,8 @@ static void start_web(gw_web_mode_t mode, const gw_config_t *cfg, const char *so
         .info = &s_info,
         .commissioning_password = s_commission_pw,
         .restart = mode == GW_WEB_NORMAL ? gw_edge_request_restart : restart_soon,
+        .ap_ip4 = gw_ap_ip4,
+        .claim_closed = claim_closed,
     };
     if (gw_web_start(&ctx) != ESP_OK) {
         ESP_LOGE(TAG, "web server unavailable");
@@ -207,13 +220,14 @@ static void net_noop(void)
 }
 
 /* NET-5: the access point, with the web UI's address as the web server really serves it
- * (HTTPS, or HTTP when web.https is false or the device certificate is missing). */
-static void start_ap(uint32_t timeout_s)
+ * (HTTPS, or HTTP when web.https is false or the device certificate is missing). @p open_s:
+ * the open period of a claim window (issue #120), 0 = WPA2. */
+static esp_err_t start_ap(uint32_t timeout_s, uint32_t open_s)
 {
     gw_web_stats_t ws;
     gw_web_get_stats(&ws);
-    gw_ap_start(s_commission_pw, timeout_s, ws.https,
-                ws.https ? s_cfg->web.https_port : s_cfg->web.port);
+    return gw_ap_start(s_commission_pw, timeout_s, ws.https,
+                       ws.https ? s_cfg->web.https_port : s_cfg->web.port, open_s);
 }
 
 /* CFG-5 / NET-5: BOOT gestures, in every mode. */
@@ -237,11 +251,32 @@ static void on_button(gw_btn_event_t ev)
         start_web(s_mode, s_cfg, s_source);
         gw_storage_commissioning_password(s_commission_pw);
         printf("ap: password = commissioning password '%s'\n", s_commission_pw);
+        /* CFG-3 / NET-5, issue #120: while no web password is set, the same gesture opens the
+         * claim window, and the access point is open (no key) for the time of the window */
+        uint32_t claim_s = gw_web_claim_window_s();
 #if CONFIG_GW_SOFTAP
-        start_ap(s_mode == GW_WEB_NORMAL ? CONFIG_GW_SOFTAP_TIMEOUT_MIN * 60 : 0);
+        esp_err_t ap = start_ap(s_mode == GW_WEB_NORMAL ? CONFIG_GW_SOFTAP_TIMEOUT_MIN * 60 : 0,
+                                claim_s);
 #else
-        start_ap(0);
+        esp_err_t ap = start_ap(0, claim_s);
 #endif
+#if CONFIG_GW_IO_SIMULATED
+        /* QEMU has no radio: the window opens without the access point, so the E2E can examine
+         * it (a claim over Ethernet is refused unless the shell's 'claimsim ... eth' says so) */
+        const bool need_ap = false;
+#else
+        const bool need_ap = true;
+#endif
+        if (claim_s == 0) {
+            ESP_LOGI(TAG, "claim window not opened: a web password is set (or no web server)");
+        } else if (ap != ESP_OK && need_ap) {
+            /* the window accepts only clients of the access point: without it, nobody */
+            ESP_LOGW(TAG, "claim window not opened: no access point (%s); set the web password "
+                          "with the commissioning password of the serial console",
+                     esp_err_to_name(ap));
+        } else if (gw_web_claim_open(claim_s)) {
+            gw_status_set(GW_ST_CLAIM, true);
+        }
     }
 }
 
@@ -292,7 +327,7 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
     start_web(mode, s_cfg, source);
     s_source = source;
     s_ready = true;
-    start_ap(0);   /* NET-5: no valid configuration */
+    start_ap(0, 0);   /* NET-5: no valid configuration */
     for (;;) {
         if (mode == GW_WEB_FAULT) {
             ESP_LOGE(TAG, "%s (issue #135)", PSRAM_FAULT);

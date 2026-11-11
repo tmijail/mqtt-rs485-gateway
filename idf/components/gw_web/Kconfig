@@ -26,6 +26,17 @@ menu "Gateway: web"
         range 1 86400
         default 900
 
+    config GW_WEB_CLAIM_WINDOW_MIN
+        int "Minutes of the claim window after a BOOT push (issue #120)"
+        range 1 30
+        default 10
+        help
+            CFG-3 / NET-5: while no web password is set, the BOOT push of 2-10 s opens a
+            claim window for this time. During the window, a client of the commissioning
+            access point (open, no key, for the same time) can set the first web password at
+            /claim without a credential. The window closes at the end of this time, after the
+            first password that is set through it, and at a restart.
+
     config GW_WEB_STALL_S
         int "Longest time a web server may be held by one incoming request (s), 0 = off"
         range 0 300

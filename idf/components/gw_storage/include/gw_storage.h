@@ -85,6 +85,15 @@ char *gw_storage_export_config(size_t *len, gw_cfg_err_t *err);
  */
 void gw_storage_commissioning_password(char out[GW_COMMISSION_PW_LEN + 1]);
 
+/**
+ * CFG-3 / NET-5, issue #120: store a new web password set through the claim window: its salted
+ * PBKDF2 hash (gw_auth.h, CFG-7) goes to NVS with the other secrets and to @p hash (@p cap
+ * bytes, at least GW_PWHASH_SIZE) for the running web server. The configuration document does
+ * not change. ESP_ERR_INVALID_STATE after a factory reset; an NVS error otherwise (then @p hash
+ * is ""). Safe from any task; it waits for a configuration save to end.
+ */
+esp_err_t gw_storage_set_web_password(const char *password, char *hash, size_t cap);
+
 /** Issue #94: true in an encrypted build whose NVS is not encrypted yet: unencrypted this boot (a
  *  new firmware on trial keeps it as the previous image left it, or there was no place for the
  *  reset-safe copy), or no NVS this boot with a migration copy pending. The next boot of a

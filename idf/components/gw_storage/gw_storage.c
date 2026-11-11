@@ -1161,6 +1161,35 @@ static esp_err_t put_secrets(const gw_secrets_t *in)
     return err;
 }
 
+/* CFG-3 / NET-5, issue #120: the claim window stores only the hash of the web password, under
+ * the key of the configuration secrets ("web_hash"). The configuration document is not changed:
+ * at the next boot a document without web.password takes the stored hash (gw_cfgdoc FILE mode). */
+esp_err_t gw_storage_set_web_password(const char *password, char *hash, size_t cap)
+{
+    uint8_t salt[GW_AUTH_SALT_LEN];
+    esp_fill_random(salt, sizeof(salt));
+    if (!gw_auth_hash_password(password, salt, GW_AUTH_ITERATIONS, hash, cap)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    xSemaphoreTake(s_save_lock, portMAX_DELAY);   /* not in the middle of a configuration save */
+    nvs_handle_t h;
+    esp_err_t err = s_reset_done ? ESP_ERR_INVALID_STATE
+                    : !s_nvs_ok  ? ESP_ERR_NVS_NOT_INITIALIZED
+                                 : nvs_open(NVS_SECRETS, NVS_READWRITE, &h);
+    if (err == ESP_OK) {
+        err = nvs_set_str(h, "web_hash", hash);
+        if (err == ESP_OK) {
+            err = nvs_commit(h);
+        }
+        nvs_close(h);
+    }
+    xSemaphoreGive(s_save_lock);
+    if (err != ESP_OK) {
+        hash[0] = '\0';
+    }
+    return err;
+}
+
 /* ---------- device certificate of the web server (issue #64) ---------- */
 
 bool gw_storage_get_web_tls(char *cert, size_t cert_cap, char *key, size_t key_cap)

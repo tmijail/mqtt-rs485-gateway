@@ -23,6 +23,7 @@
 #include "gw_buzz.h"
 #include "gw_buzzer.h"
 #include "gw_cdump.h"
+#include "gw_claim.h"
 #include "gw_conv.h"
 #include "gw_coredump.h"
 #include "gw_edge.h"
@@ -42,7 +43,7 @@
 static const char *TAG = "web";
 
 #define REALM_HDR "Basic realm=\"gateway\", charset=\"UTF-8\""
-#define WEB_URI_HANDLERS 16   /* the routes of gw_web_start (uris[]) */
+#define WEB_URI_HANDLERS 19   /* the routes of gw_web_start (uris[]) */
 
 static gw_web_ctx_t s_ctx;
 static httpd_handle_t s_server;
@@ -377,6 +378,17 @@ static esp_err_t refuse_body(httpd_req_t *req, const char *status, const char *m
     return ret;
 }
 
+/* Issue #64: the answer to a blocked address (no password check at all, right or wrong). */
+static void send_blocked(httpd_req_t *req, uint32_t left)
+{
+    static char retry[12];   /* server task only; must outlive the response */
+    snprintf(retry, sizeof(retry), "%lu", (unsigned long)((left + 999) / 1000));
+    httpd_resp_set_hdr(req, "Retry-After", retry);
+    close_after_reply(req);
+    send_error(req, "429 Too Many Requests", NULL,
+               "demasiados intentos de acceso fallidos: espere y vuelva a intentar");
+}
+
 static bool authorized(httpd_req_t *req)
 {
     char hdr[192];
@@ -386,13 +398,7 @@ static bool authorized(httpd_req_t *req)
     uint64_t now = (uint64_t)(esp_timer_get_time() / 1000);
     uint32_t left = gw_authlimit_check(&s_limit, ip, now);
     if (left != 0) {
-        /* issue #64: a blocked address gets no password check at all, right or wrong */
-        static char retry[12];   /* server task only; must outlive the response */
-        snprintf(retry, sizeof(retry), "%lu", (unsigned long)((left + 999) / 1000));
-        httpd_resp_set_hdr(req, "Retry-After", retry);
-        close_after_reply(req);
-        send_error(req, "429 Too Many Requests", NULL,
-                   "demasiados intentos de acceso fallidos: espere y vuelva a intentar");
+        send_blocked(req, left);
         return false;
     }
     if (httpd_req_get_hdr_value_str(req, "Authorization", hdr, sizeof(hdr)) == ESP_OK) {
@@ -475,6 +481,261 @@ static bool query_flag(httpd_req_t *req, const char *key)
      * discard of an NVS migration copy) */
     return httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
            httpd_query_key_value(q, key, v, sizeof(v)) == ESP_OK && strcmp(v, "1") == 0;
+}
+
+/* ---------- CFG-3 / NET-5: the claim window (issue #120) ---------- */
+
+/* The state is shared by the button task (open), the esp_timer task (end of the time) and the
+ * server task (GET and POST /api/claim): under s_claim_mux, never held across a call. */
+static portMUX_TYPE s_claim_mux = portMUX_INITIALIZER_UNLOCKED;
+static gw_claim_t s_claim;
+static esp_timer_handle_t s_claim_timer;
+static atomic_bool s_pw_set;          /* s_hash is not "": the window never opens */
+static atomic_uint s_claim_refused;
+#if CONFIG_GW_IO_SIMULATED
+static volatile uint32_t s_sim_claim_s;
+static volatile bool s_sim_eth_as_ap;
+
+void gw_web_sim_claim(uint32_t window_s, bool eth_as_ap)
+{
+    s_sim_claim_s = window_s;
+    s_sim_eth_as_ap = eth_as_ap;
+}
+#endif
+
+static uint64_t now_ms64(void)
+{
+    return (uint64_t)(esp_timer_get_time() / 1000);
+}
+
+static void claim_expired(void *arg)
+{
+    (void)arg;
+    portENTER_CRITICAL(&s_claim_mux);
+    bool was = s_claim.open;
+    gw_claim_close(&s_claim);
+    portEXIT_CRITICAL(&s_claim_mux);
+    if (was) {
+        ESP_LOGW(TAG, "claim window closed: its time is over (no web password was set)");
+        if (s_ctx.claim_closed != NULL) {
+            s_ctx.claim_closed(false);
+        }
+    }
+}
+
+uint32_t gw_web_claim_window_s(void)
+{
+    if (s_server == NULL || atomic_load(&s_pw_set)) {
+        return 0;
+    }
+#if CONFIG_GW_IO_SIMULATED
+    if (s_sim_claim_s != 0) {
+        return s_sim_claim_s;
+    }
+#endif
+    return CONFIG_GW_WEB_CLAIM_WINDOW_MIN * 60u;
+}
+
+bool gw_web_claim_open(uint32_t seconds)
+{
+    if (s_server == NULL || s_claim_timer == NULL) {
+        return false;
+    }
+    portENTER_CRITICAL(&s_claim_mux);
+    bool ok = gw_claim_open(&s_claim, atomic_load(&s_pw_set), seconds * 1000u, now_ms64());
+    portEXIT_CRITICAL(&s_claim_mux);
+    if (!ok) {
+        ESP_LOGW(TAG, "claim window not opened: a web password is set (only a factory reset "
+                      "removes it)");
+        return false;
+    }
+    esp_timer_stop(s_claim_timer);
+    esp_timer_start_once(s_claim_timer, (uint64_t)seconds * 1000000u);
+    ESP_LOGW(TAG, "claim window open for %lu s: a client of the access point can set the web "
+                  "password at /claim without a credential", (unsigned long)seconds);
+    return true;
+}
+
+/* IPv4 address of @p a, also when it is mapped into IPv6; false for a real IPv6 address. */
+static bool ipv4_of(const struct sockaddr_storage *a, uint8_t out[4])
+{
+    if (a->ss_family == AF_INET) {
+        memcpy(out, &((const struct sockaddr_in *)a)->sin_addr, 4);
+        return true;
+    }
+    static const uint8_t mapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+    const uint8_t *v6 = (const uint8_t *)&((const struct sockaddr_in6 *)a)->sin6_addr;
+    if (a->ss_family == AF_INET6 && memcmp(v6, mapped, sizeof(mapped)) == 0) {
+        memcpy(out, v6 + 12, 4);
+        return true;
+    }
+    return false;
+}
+
+/* The access point rule (gw_claim_from_ap) for the connection of @p req. An IPv6 connection never
+ * passes: the access point has IPv4 only. */
+static bool claim_from_ap(httpd_req_t *req)
+{
+    int fd = httpd_req_to_sockfd(req);
+    struct sockaddr_storage la, pa;
+    socklen_t ln = sizeof(la), pn = sizeof(pa);
+    uint8_t local[4], peer[4];
+    if (getsockname(fd, (struct sockaddr *)&la, &ln) != 0 ||
+        getpeername(fd, (struct sockaddr *)&pa, &pn) != 0 || !ipv4_of(&la, local) ||
+        !ipv4_of(&pa, peer)) {
+        return false;
+    }
+    gw_claim_if_t ap, others[GW_NET_IF_COUNT];
+    int ap_if = GW_NET_IF_COUNT;   /* the access point is not an interface of gw_net */
+    bool have_ap = s_ctx.ap_ip4 != NULL && s_ctx.ap_ip4(ap.ip, ap.mask);
+#if CONFIG_GW_IO_SIMULATED
+    if (s_sim_eth_as_ap) {
+        ap_if = GW_NET_ETH;
+        have_ap = gw_net_ip4_info(GW_NET_ETH, ap.ip, ap.mask);
+    }
+#endif
+    if (!have_ap) {
+        return false;
+    }
+    size_t n = 0;
+    for (int i = 0; i < GW_NET_IF_COUNT; i++) {
+        if (i != ap_if && gw_net_ip4_info((gw_net_if_t)i, others[n].ip, others[n].mask)) {
+            n++;
+        }
+    }
+    return gw_claim_from_ap(local, peer, &ap, others, n);
+}
+
+/* True while the window is open (and no password is set); @p left_ms gets the time left. */
+static bool claim_window_open(uint32_t *left_ms)
+{
+    uint64_t now = now_ms64();
+    portENTER_CRITICAL(&s_claim_mux);
+    bool open = gw_claim_active(&s_claim, now) && !atomic_load(&s_pw_set);
+    *left_ms = open ? gw_claim_left_ms(&s_claim, now) : 0;
+    portEXIT_CRITICAL(&s_claim_mux);
+    return open;
+}
+
+extern const char claim_html_start[] asm("_binary_claim_html_start");
+extern const char claim_html_end[] asm("_binary_claim_html_end");
+
+/* GET /claim: the page of the window. It holds nothing secret: no credential. */
+static esp_err_t claim_page_get(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, claim_html_start, claim_html_end - claim_html_start - 1);
+}
+
+/* GET /api/claim: {"open": the window is open, "allowed": this client may use it, "left_s",
+ * "username": the user name for the new password, "" = any (recovery, commissioning)}. The user
+ * name and the time go only to a client that may use the window. No credential. */
+static esp_err_t claim_get(httpd_req_t *req)
+{
+    uint32_t left_ms;
+    bool open = claim_window_open(&left_ms);
+    bool allowed = open && claim_from_ap(req);
+    char user[2 * GW_USER_SIZE], body[2 * GW_USER_SIZE + 96];
+    json_escape(user, sizeof(user), allowed ? s_user : "");
+    snprintf(body, sizeof(body),
+             "{\"open\":%s,\"allowed\":%s,\"left_s\":%lu,\"username\":\"%s\"}\n",
+             open ? "true" : "false", allowed ? "true" : "false",
+             (unsigned long)(allowed ? (left_ms + 999) / 1000 : 0), user);
+    return send_json(req, "200 OK", body);
+}
+
+/* POST /api/claim {"password": "..."}: the first web password, without a credential. The CSRF
+ * check and the login block (#64) as for a login; a refusal because of the state (a password is
+ * set, no window, not a client of the access point) counts as a failed login. */
+static esp_err_t claim_post(httpd_req_t *req)
+{
+    if (!same_origin(req)) {
+        return ESP_OK;
+    }
+    uint8_t ip[16];
+    char who[48];
+    peer_addr(req, ip, who, sizeof(who));
+    uint64_t now = now_ms64();
+    uint32_t left = gw_authlimit_check(&s_limit, ip, now);
+    if (left != 0) {
+        send_blocked(req, left);
+        return ESP_OK;
+    }
+    char body[GW_CLAIM_BODY_MAX + 1];
+    size_t got = 0;
+    bool fits = req->content_len > 0 && req->content_len <= GW_CLAIM_BODY_MAX;
+    int timeouts = 0;
+    while (fits && got < req->content_len) {
+        int r = httpd_req_recv(req, body + got, req->content_len - got);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 3) {
+            continue;
+        }
+        if (r <= 0) {
+            fits = false;
+            break;
+        }
+        got += (size_t)r;
+    }
+    char pw[GW_CLAIM_PW_MAX + 1] = "";
+    gw_claim_result_t parsed = fits ? gw_claim_parse(body, got, pw, sizeof(pw)) : GW_CLAIM_BAD_REQUEST;
+    memset(body, 0, sizeof(body));
+    bool from_ap = claim_from_ap(req);
+    portENTER_CRITICAL(&s_claim_mux);
+    gw_claim_result_t r = gw_claim_check(&s_claim, atomic_load(&s_pw_set), from_ap, pw, now);
+    portEXIT_CRITICAL(&s_claim_mux);
+    if (r != GW_CLAIM_PASSWORD_SET && r != GW_CLAIM_CLOSED && r != GW_CLAIM_NOT_AP &&
+        parsed != GW_CLAIM_OK) {
+        r = parsed;   /* the state allows a claim: the request itself is wrong */
+    }
+    if (!fits) {
+        close_after_reply(req);   /* what is left of a long body is not read */
+    }
+    if (r == GW_CLAIM_PASSWORD_SET || r == GW_CLAIM_CLOSED || r == GW_CLAIM_NOT_AP) {
+        memset(pw, 0, sizeof(pw));
+        atomic_fetch_add(&s_claim_refused, 1u);
+        uint32_t blocked = gw_authlimit_failed(&s_limit, ip, now);
+        ESP_LOGW(TAG, "claim from %s refused: %s", who, gw_claim_text(r));
+        if (blocked != 0) {
+            ESP_LOGW(TAG, "%s blocked for %lu s after %d failed logins in a row", who,
+                     (unsigned long)(blocked / 1000), CONFIG_GW_WEB_LOGIN_MAX_FAILS);
+        }
+        return send_error(req, "403 Forbidden", NULL, gw_claim_text(r));
+    }
+    if (r != GW_CLAIM_OK) {
+        memset(pw, 0, sizeof(pw));
+        return send_error(req, "400 Bad Request", NULL, gw_claim_text(r));
+    }
+    char hash[GW_PWHASH_SIZE];
+    esp_err_t e = gw_storage_set_web_password(pw, hash, sizeof(hash));
+    memset(pw, 0, sizeof(pw));
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "claim from %s: the web password was not stored (%s); the window stays open",
+                 who, esp_err_to_name(e));
+        return send_error(req, "503 Service Unavailable", NULL,
+                          "the web password was not stored (NVS): the claim window stays open");
+    }
+    /* from now on only the new password opens the web UI: not the commissioning password, and
+     * not a cached Authorization header */
+    memcpy(s_hash, hash, sizeof(s_hash));
+    memset(hash, 0, sizeof(hash));
+    s_ok_cached = false;
+    atomic_store(&s_pw_set, true);
+    portENTER_CRITICAL(&s_claim_mux);
+    gw_claim_done(&s_claim);
+    portEXIT_CRITICAL(&s_claim_mux);
+    esp_timer_stop(s_claim_timer);
+    gw_authlimit_succeeded(&s_limit, ip);
+    ESP_LOGW(TAG, "web password set through the claim window from %s: the window is closed and "
+                  "does not open again", who);
+    char user[2 * GW_USER_SIZE], answer[2 * GW_USER_SIZE + 48];
+    json_escape(user, sizeof(user), s_user);
+    snprintf(answer, sizeof(answer), "{\"ok\":true,\"username\":\"%s\"}\n", user);
+    esp_err_t ret = send_json(req, "200 OK", answer);
+    if (s_ctx.claim_closed != NULL) {
+        s_ctx.claim_closed(true);
+    }
+    return ret;
 }
 
 /* ---------- /api/config ---------- */
@@ -1045,6 +1306,16 @@ extern const char index_html_end[] asm("_binary_index_html_end");
 
 static esp_err_t index_get(httpd_req_t *req)
 {
+    /* #120: a browser without credentials, on the access point while the claim window is open,
+     * goes to the page of the window instead of the login prompt */
+    uint32_t left_ms;
+    if (httpd_req_get_hdr_value_len(req, "Authorization") == 0 && claim_window_open(&left_ms) &&
+        claim_from_ap(req)) {
+        httpd_resp_set_status(req, "303 See Other");
+        httpd_resp_set_hdr(req, "Location", "/claim");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+        return httpd_resp_send(req, NULL, 0);
+    }
     if (!authorized(req)) {
         return ESP_OK;
     }
@@ -1403,6 +1674,11 @@ void gw_web_get_stats(gw_web_stats_t *out)
     out->cut_bodies = atomic_load_explicit(&s_cut_bodies, memory_order_relaxed);
     out->stalls = atomic_load(&s_guard[0].stalls) + atomic_load(&s_guard[1].stalls);
     out->blocked_now = gw_authlimit_blocked(&s_limit, (uint64_t)(esp_timer_get_time() / 1000));
+    out->password_set = atomic_load(&s_pw_set);
+    uint32_t left_ms;
+    out->claim_open = claim_window_open(&left_ms);
+    out->claim_left_s = (left_ms + 999) / 1000;
+    out->claim_refused = atomic_load(&s_claim_refused);
 }
 
 /* ---------- start ---------- */
@@ -1421,6 +1697,9 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         snprintf(s_hash, sizeof(s_hash), "%s", sec.web_password_hash);
         memset(&sec, 0, sizeof(sec));
     }
+    atomic_store(&s_pw_set, s_hash[0] != '\0');
+    const esp_timer_create_args_t ct = {.callback = claim_expired, .name = "claim_window"};
+    ESP_RETURN_ON_ERROR(esp_timer_create(&ct, &s_claim_timer), TAG, "claim timer");
 
     gw_authlimit_init(&s_limit, CONFIG_GW_WEB_LOGIN_MAX_FAILS, CONFIG_GW_WEB_LOGIN_BLOCK_S * 1000u,
                       CONFIG_GW_WEB_LOGIN_BLOCK_MAX_S * 1000u);
@@ -1468,7 +1747,8 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
                            h_card_format = {card_format_post}, h_rebirth = {rebirth_post},
                            h_modbus_read = {modbus_read_post}, h_cd_get = {coredump_get},
                            h_cd_delete = {coredump_delete}, h_cd_summary = {coredump_summary_get},
-                           h_time = {time_post};
+                           h_time = {time_post}, h_claim_page = {claim_page_get},
+                           h_claim_get = {claim_get}, h_claim_post = {claim_post};
     static const struct {
         const char *uri;
         httpd_method_t method;
@@ -1490,6 +1770,9 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         {"/api/coredump", HTTP_DELETE, &h_cd_delete},
         {"/api/coredump/summary", HTTP_GET, &h_cd_summary},
         {"/api/time", HTTP_POST, &h_time},                 /* #160 */
+        {"/claim", HTTP_GET, &h_claim_page},               /* #120 */
+        {"/api/claim", HTTP_GET, &h_claim_get},
+        {"/api/claim", HTTP_POST, &h_claim_post},
     };
     _Static_assert(sizeof(uris) / sizeof(uris[0]) == WEB_URI_HANDLERS, "WEB_URI_HANDLERS");
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {

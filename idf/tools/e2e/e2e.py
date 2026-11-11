@@ -7180,6 +7180,117 @@ def run_web(args, work):
           f"shell {bool(enc)}; secrets found in clear: {leaks or 'none'}")
 
 
+CLAIM_PASSWORD = "e2e-claimed-pw"   # issue #120: set through the claim window
+
+
+def boot_press(gw, seconds=3):
+    """The BOOT gesture of 2-10 s (the commissioning access point, and the claim window)."""
+    gw.console("boot 1")
+    time.sleep(seconds)
+    gw.console("boot 0")
+
+
+def check_claim_window(gw, commissioning_pw):
+    """CFG-3 / NET-5, issue #120, on a gateway in commissioning (no web password): the claim
+    window opens only after the BOOT gesture, closes at the end of its time, accepts only a client
+    of the access point (QEMU has no radio: the emulator-only 'claimsim ... eth' makes the
+    Ethernet count as the access point), leaves every other endpoint behind its credential, sets
+    the first web password without a credential, then closes and does not open again. Returns
+    the new web password (None if it was not set)."""
+    t0 = time.monotonic()
+    # 1. no gesture: no window
+    st0, _, b0 = http("GET", "/api/claim", auth=None)
+    st1, _, b1 = http("POST", "/api/claim", {"password": CLAIM_PASSWORD}, auth=None)
+    check("CFG-3/NET-5 #120 no claim window before the BOOT gesture: a set without a credential is "
+          "refused",
+          st0 == 200 and (as_json(b0) or {}).get("open") is False and st1 == 403
+          and b"no claim window is open" in b1,
+          f"GET /api/claim {st0} {b0.decode(errors='replace').strip()}; POST {st1} "
+          f"{b1.decode(errors='replace').strip()[:100]}")
+    # 2. a short window closes at the end of its time
+    gw.shell("claimsim 15", [r"claim windows: 15 s; Ethernet is not the access point"])
+    t_open = time.monotonic()
+    boot_press(gw)
+    opened = gw.wait_log(r"web: claim window open for 15 s", 10, t_open)
+    led = gw.wait_log(r"led: status: claim window", 5, t_open)
+    closed = gw.wait_log(r"web: claim window closed: its time is over", 40, t_open)
+    led_back = gw.wait_log(r"led: status: commissioning", 5, closed or t_open) if closed else None
+    st2, _, b2 = http("POST", "/api/claim", {"password": CLAIM_PASSWORD}, auth=None)
+    check("CFG-3/NET-5 #120 the BOOT gesture opens the claim window (LED pattern 'claim window'); it "
+          "closes at the end of its time, and a set is then refused",
+          opened and led and closed and led_back and closed - opened >= 14 and st2 == 403
+          and b"no claim window is open" in b2,
+          f"open {bool(opened)}, LED {bool(led)}, closed after "
+          f"{(closed - opened) if opened and closed else -1:.1f} s (15 s), LED back {bool(led_back)}; "
+          f"POST {st2} {b2.decode(errors='replace').strip()[:80]}")
+    # 3. an open window: only a client of the access point; the rest still needs the credential
+    gw.shell("claimsim 600", [r"claim windows: 600 s; Ethernet is not the access point"])
+    t_open = time.monotonic()
+    boot_press(gw)
+    opened = gw.wait_log(r"web: claim window open for 600 s", 10, t_open)
+    _, h = gw.shell("status", [r"^claim\s+window OPEN, \d+ s left"])
+    st3, _, b3 = http("GET", "/api/claim", auth=None)
+    st4, _, b4 = http("POST", "/api/claim", {"password": CLAIM_PASSWORD}, auth=None)
+    st5, _, _ = http("GET", "/api/status", auth=None)
+    st6, _, _ = http("GET", "/api/config", auth=None)
+    st7, _, _ = http("POST", "/api/restart", {}, auth=None)
+    j3 = as_json(b3) or {}
+    check("CFG-3/NET-5 #120 during the claim window, a client of another interface than the access "
+          "point is refused (a person on the plant network cannot take the gateway), and the other "
+          "endpoints still require the credential",
+          opened and all(h.values()) and st3 == 200 and j3.get("open") is True
+          and j3.get("allowed") is False and st4 == 403 and b"client of the access point" in b4
+          and st5 == 401 and st6 == 401 and st7 == 401,
+          f"open {bool(opened)}, shell {all(h.values())}; GET /api/claim {st3} {j3}; POST {st4} "
+          f"{b4.decode(errors='replace').strip()[:80]}; without a credential: status {st5}, config "
+          f"{st6}, restart {st7}")
+    # 4. the same window, with the Ethernet as the access point (emulator)
+    gw.shell("claimsim 600 eth", [r"claim windows: 600 s; Ethernet counts as the access point"])
+    st8, h8, _ = http("GET", "/", auth=None)
+    st9, _, b9 = http("GET", "/claim", auth=None)
+    st10, _, b10 = http("GET", "/api/claim", auth=None)
+    j10 = as_json(b10) or {}
+    st11, _, b11 = http("POST", "/api/claim", {"password": "short"}, auth=None)
+    st12, _, _ = http("POST", "/api/claim", {"password": CLAIM_PASSWORD}, auth=None,
+                      headers={"X-Requested-With": None})
+    t_claim = time.monotonic()
+    st13, _, b13 = http("POST", "/api/claim", {"password": CLAIM_PASSWORD}, auth=None)
+    set_log = gw.wait_log(r"web: web password set through the claim window", 10, t_claim)
+    beep = gw.wait_log(r"buzzer: 1 beep\(s\) \(simulated\)", 5, t_claim)
+    check("CFG-3/NET-5 #120 a client of the access point: '/' without a credential goes to /claim; a "
+          "short password and a request without the CSRF header are refused; the first web "
+          "password is set without a credential (log without the password, one beep)",
+          st8 == 303 and h8.get("location") == "/claim" and st9 == 200 and b"claim window" in b9
+          and st10 == 200 and j10.get("allowed") is True and j10.get("left_s", 0) > 0
+          and st11 == 400 and b"at least 8 characters" in b11 and st12 == 403 and st13 == 200
+          and (as_json(b13) or {}).get("ok") is True and set_log and beep,
+          f"GET / {st8} -> {h8.get('location')}; GET /claim {st9}; GET /api/claim {st10} {j10}; "
+          f"short {st11} {b11.decode(errors='replace').strip()[:60]}; no CSRF header {st12}; "
+          f"set {st13} {b13.decode(errors='replace').strip()[:80]}; log {bool(set_log)}, beep {bool(beep)}")
+    # 5. the window is closed; it does not open again; only the new password opens the web UI
+    st14, _, b14 = http("POST", "/api/claim", {"password": "e2e-other-pw"}, auth=None)
+    st15, _, b15 = http("GET", "/api/claim", auth=None)
+    st16, _, _ = http("GET", "/api/status", auth=("admin", commissioning_pw or "?"))
+    st17, _, b17 = http("GET", "/api/status", auth=("admin", CLAIM_PASSWORD))
+    led_back = gw.wait_log(r"led: status: commissioning", 5, t_claim)
+    t_again = time.monotonic()
+    boot_press(gw)
+    again = gw.wait_log(r"main: claim window not opened: a web password is set", 10, t_again)
+    _, h = gw.shell("status", [r"^claim\s+window closed \(a web password is set"])
+    leaked = gw.find(re.escape(CLAIM_PASSWORD), t0)
+    check("CFG-3/NET-5 #120 after the set the window is closed: a second set is refused, the "
+          "commissioning password no longer opens the web UI, the new one does, a new BOOT gesture "
+          "opens no window, and the password is in no log line",
+          st14 == 403 and b"web password is set" in b14 and (as_json(b15) or {}).get("open") is False
+          and st16 == 401 and st17 == 200 and led_back and again
+          and not gw.find(r"web: claim window open", t_again) and all(h.values()) and not leaked,
+          f"second set {st14} {b14.decode(errors='replace').strip()[:60]}; GET /api/claim {st15} "
+          f"{b15.decode(errors='replace').strip()}; commissioning password {st16}, new password "
+          f"{st17}; LED back {bool(led_back)}; new gesture {bool(again)}; shell {all(h.values())}; "
+          f"password in the log: {leaked[:1] or 'no'}")
+    return CLAIM_PASSWORD if st13 == 200 else None
+
+
 def run_factory_reset(args, work):
     """CFG-5 factory reset with the BOOT button (simulated: shell 'boot 1'), then commissioning:
     no configuration, no example identity, the web UI with a new commissioning password, and a
@@ -7203,6 +7314,16 @@ def run_factory_reset(args, work):
     gw.console("boot 0")
     ap = gw.wait_log(r"button: BOOT pressed \d+ ms: commissioning access point", 3, t_short)
     ap_try = gw.wait_log(r"ap: commissioning access point not available in this build", 3, t_short)
+    # Issue #120: with a web password set, the same gesture opens no claim window
+    no_claim = gw.wait_log(r"main: claim window not opened: a web password is set", 5, t_short)
+    st_pw, _, b_pw = http("POST", "/api/claim", {"password": "e2e-claim-0"}, auth=None)
+    _, h_pw = gw.shell("status", [r"^claim\s+window closed \(a web password is set"])
+    check("CFG-3/NET-5 #120 with a web password set, the BOOT gesture opens no claim window, and "
+          "a set without a credential is refused",
+          no_claim and not gw.find(r"web: claim window open", t_short) and st_pw == 403
+          and b"web password is set" in b_pw and all(h_pw.values()),
+          f"{(gw.find(r'claim window', t_short) or ['no claim log'])[0]}; POST /api/claim {st_pw} "
+          f"{b_pw.decode(errors='replace').strip()[:100]}; shell {all(h_pw.values())}")
     # Issue #74: DO/1 on before the reset (the simulated TCA9554 keeps its latch across the warm
     # restart), and the expander silent for the first 13 s of the next boot
     lit = set_do(obs, f"{T}/NCMD/{node}", f"{T}/NDATA/{node}", {1: True})
@@ -7267,9 +7388,10 @@ def run_factory_reset(args, work):
           f"DO/1 on before: {bool(lit)}; {(absent or ['no absent log'])[0]}; shell unknown "
           f"{bool(shell_unknown)}; /api/status before {io0}; "
           f"{(gw.find(r'io: TCA9554 answered', t1 - 5) or ['never answered'])[0]}; after {io1}")
+    claimed = check_claim_window(gw, pw)
     new = json.loads(config_json())
     new["sparkplug"]["edge_node_id"] = node2
-    st2, _, b2 = http("PUT", "/api/config", new, auth=("admin", pw or "?"))
+    st2, _, b2 = http("PUT", "/api/config", new, auth=("admin", claimed or "?"))
     nb2 = obs.wait(f"{T}/NBIRTH/{node2}", 40)
     check("CFG-5 commissioning: a configuration loaded through the REST API starts the gateway",
           st2 == 200 and nb2, f"PUT {st2} {b2.decode().strip()}; NBIRTH {node2}: {bool(nb2)}")

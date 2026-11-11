@@ -57,7 +57,7 @@ Al publicar, el gateway hace de *Edge Node* de Sparkplug. Cada esclavo Modbus es
 | NET-2 | IPv4 por DHCP o estática (IP, máscara, gateway y DNS), configurable | P0 | ✅ |
 | NET-3 | Resolución de nombres por DNS para el host del broker | P0 | ✅ |
 | NET-4 | Wi-Fi STA como interfaz alternativa o de respaldo cuando cae Ethernet, con prioridad configurable | P1 | |
-| NET-5 | Modo AP de Wi-Fi para la puesta en marcha: se activa si no hay configuración válida o con el botón BOOT | P1 | |
+| NET-5 | Wi-Fi access point for commissioning. It starts when there is no valid configuration, and on a push of the BOOT button for 2 to 10 s. It uses WPA2 with the commissioning password. During a claim window (CFG-8) it is open (no key) | P1 | |
 | NET-6 | Hostname configurable y anuncio mDNS (`_http._tcp`) | P2 | |
 | NET-7 | IPv6 | P2 | |
 
@@ -156,6 +156,7 @@ Al publicar, el gateway hace de *Edge Node* de Sparkplug. Cada esclavo Modbus es
 | CFG-5 | Reset de fábrica con el botón BOOT presionado más de 10 s | P1 | |
 | CFG-6 | Consola serie (shell) con comandos de estado, configuración y diagnóstico | P1 | |
 | CFG-7 | The gateway keeps the secrets (passwords, TLS keys) out of the configuration document, in NVS. **Out of scope:** encryption of the secrets with a key in eFuse on the board. The key in eFuse is permanent, and the owner of the board must keep full control of it (#133). The QEMU build still encrypts NVS on emulated eFuses; #133 decides whether this stays. The archived feature is on the branch `archive/efuse-production` | P1 | |
+| CFG-8 | **First web access without the serial console** (issue #120): the claim window. While `web.password` is empty, the push of BOOT for 2 to 10 s opens a claim window for 10 min (Kconfig `GW_WEB_CLAIM_WINDOW_MIN`). During the window, a client of the access point (NET-5) can set the first web password without a credential (`POST /api/claim`, §6.1). Clients of other interfaces get `403`. The window closes at the end of its time, after the first password that is set, and at a restart. When a web password is set, the window does not open again: only a factory reset (CFG-5) removes the password | P1 | |
 
 ### 4.8 Gestión del firmware (FW)
 
@@ -616,7 +617,7 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 
 - **Patrones:** un pitido es 150 ms de tono y 150 ms de silencio. Cada alarma repite su ráfaga cada 10 s mientras dura: `device_offline` 1 pitido, `mqtt_down` 2, `config_error` 3. Si hay varias, suena la de más pitidos.
 - **`config_error`:** una configuración rechazada no puede activar nada, así que vale lo que pedía la última configuración válida (guardado en NVS). Tras un reset de fábrica no suena.
-- **Botón BOOT:** 1 pitido al soltarlo entre 2 y 10 s (punto de acceso, NET-5) y 2 pitidos al confirmar el reset de fábrica (CFG-5), haya alarmas o no.
+- **BOOT button:** 1 beep when you release the button after 2 to 10 s (access point, NET-5; claim window, CFG-8). 1 beep when the claim window sets the web password. 2 beeps when the factory reset starts (CFG-5). These beeps sound with or without alarms.
 - No hay forma de silenciar una alarma mientras dura su condición.
 
 **Device prefix (#172), in `sparkplug`.**
@@ -694,20 +695,20 @@ The node metrics in the NBIRTH and in this periodic NDATA:
 
 Formato: RFC 5424 sobre UDP (RFC 5426), un mensaje por datagrama, *facility* `local0`, HOSTNAME = `edge_node_id`, APP-NAME = módulo del log y `[meta sequenceId="n"]`. Ejemplo: `<134>1 2026-11-04T12:00:00.123Z GW01 edge - - [meta sequenceId="12"] Sparkplug session up (bdSeq=3)`.
 
-**`web` (CFG-3, CFG-4): interfaz web y API REST.**
+**`web` (CFG-3, CFG-4, CFG-8): the web UI and the REST API.**
 
 ```json
-"web": { "enabled": true, "port": 80, "username": "admin", "password": "una-clave-larga" }
+"web": { "enabled": true, "port": 80, "username": "admin", "password": "a-long-password" }
 ```
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `enabled` | bool | `true` | `false` = sin servidor web con la configuración válida. Con la configuración rechazada o en puesta en marcha el servidor arranca igual (recuperación) |
-| `port` | entero | `80` | 1–65535, HTTP. Con `https` en `true` solo redirige (301/308) a HTTPS |
-| `https` | bool | `true` | HTTPS con el certificado propio del equipo (EC P-256 autofirmado, generado en el primer arranque y guardado con los secretos en NVS; su huella SHA-256 sale en la consola en cada arranque). `false` = HTTP plano como antes |
-| `https_port` | entero | `443` | 1–65535, distinto de `port` |
-| `username` | texto | `"admin"` | 1–32 caracteres ASCII visibles, sin `:` |
-| `password` | texto (secreto) | `""` | Vacío o al menos 8 caracteres. Vacío = el equipo acepta `admin` con su **contraseña de puesta en marcha** (aleatoria, se ve en la consola) |
+| `enabled` | bool | `true` | `false` = no web server with a valid configuration. With a rejected configuration, in commissioning, and after a push of BOOT (NET-5, CFG-8), the server starts in all cases |
+| `port` | integer | `80` | 1–65535, HTTP. With `https` set to `true`, it only redirects (301/308) to HTTPS |
+| `https` | bool | `true` | HTTPS with the certificate of the gateway (EC P-256, self-signed). The gateway makes it at the first boot and keeps it with the secrets in NVS. The console shows its SHA-256 fingerprint at each boot. `false` = plain HTTP |
+| `https_port` | integer | `443` | 1–65535, not the same as `port` |
+| `username` | text | `"admin"` | 1–32 visible ASCII characters, without `:` |
+| `password` | text (secret) | `""` | Empty, or at least 8 characters. Empty = the gateway accepts `admin` with its **commissioning password** (random, the console shows it). While it is empty, a push of BOOT opens the claim window (CFG-8), which sets it without a credential |
 
 **Secretos** (`mqtt.password`, `network.wifi.password`, `web.password`): no se guardan en el JSON, sino en NVS (CFG-7); `web.password` solo como hash PBKDF2-HMAC-SHA256 con sal. Al exportar, un secreto definido vale `"********"`. Al importar (PUT):
 
@@ -719,7 +720,7 @@ En el archivo `/cfg/config.json` un secreto ausente, vacío o `"********"` toma 
 
 **Límite de intentos:** tras 5 accesos fallidos seguidos desde una misma dirección, esa dirección recibe `429` con `Retry-After` durante 30 s, sin comprobar la contraseña (tampoco la correcta); cada bloqueo seguido duplica el tiempo, hasta 15 min; un acceso correcto lo borra (Kconfig `GW_WEB_LOGIN_*`).
 
-**REST API.** All the routes require HTTP Basic with `web.username` and `web.password`, over HTTPS when `https` is on. The responses are JSON.
+**REST API.** All the routes require HTTP Basic with `web.username` and `web.password`, over HTTPS when `https` is on. The only exceptions are the routes of the claim window (CFG-8): `GET /claim`, `GET /api/claim` and `POST /api/claim`. The responses are JSON.
 
 **Writes and CSRF (issue #100).** Each `PUT`, `POST` and `DELETE` must have the header `X-Requested-With` (any value; the web UI sends `gateway`). If the client sends `Origin` (or `Referer` when there is no `Origin`), it must be this gateway: the scheme of the connection and the `Host` of the request. The gateway compares them in a normal form (issue #106): the name in lower case and without the final dot, IPv6 between brackets, the port in decimal, and no port when it is the port of the scheme (443 with HTTPS, 80 without) or empty. Any name that gets to the gateway is correct (IP, `<hostname>.local`, `<hostname>`, a DNS name of the plant), if the page and the request use the same name. A malformed `Host` or `Origin` is not correct, and `Origin: null` is not correct. Otherwise the response is `403`, before the password check: it does not count as a failed login.
 
@@ -739,6 +740,9 @@ The gateway does not read all of the body of a request without credentials or fr
 | `DELETE /api/coredump` | Issue #132: erases the core dump, after a download or without one. `200 {"ok":true,"erased":true}`. `404` when there is no dump. The gateway then publishes `Node Info/Core Dump` = `false` |
 | `GET /api/coredump/summary` | Issue #132: `present`, `state` (`none`, `valid`, `corrupt`), `size` and `reset_reason` (of this boot: the dump can be older). For a valid dump also `task`, `pc`, `backtrace` (addresses as `"0x…"` strings), `backtrace_corrupted`, `exc_cause`, `exc_vaddr`, `reason` (the panic reason, for example `abort() was called at PC 0x… on core 0`; empty when the dump has none) and `app_elf_sha256` (the start of the SHA-256 of the ELF that crashed) |
 | `GET /api/status` | The live state (also in recovery, in commissioning and in the fault mode). Refer to the description below |
+| `GET /claim` | CFG-8, issue #120: the page of the claim window. No credential. `GET /` without an `Authorization` header goes to it (`303`) while the window is open and the client is a client of the access point |
+| `GET /api/claim` | CFG-8: the state of the claim window for this client. No credential. `200 {"open":true,"allowed":true,"left_s":540,"username":"admin"}`. `allowed` is `true` only for a client of the access point; `left_s` and `username` are only for that client. `username` is `""` in recovery and in commissioning (any user name) |
+| `POST /api/claim` | CFG-8: sets the first web password. No credential, but the CSRF check above and the limit of attempts apply. Body: `{"password": "…"}`: at least 8 characters, at most 64 bytes, UTF-8 without control characters. `200 {"ok":true,"username":"admin"}`: the password is valid at once, and the window closes. `403` when a web password is set, when no window is open, or when the client is not a client of the access point; these refusals count as failed logins. `400` for a password or a body that is not correct. `503` when NVS does not store it (the window stays open). The gateway stores only the hash, in NVS; the configuration document does not change |
 
 **`GET /api/status`** sends an object with these items: `mode` (`normal`, `recovery`, `commissioning`, `fault`), `fault` (issue #135: the hardware fault in the mode `fault`, for example a PSRAM that the boot did not detect; else empty), `firmware`, `reset_reason`, `uptime_s`, `config` (`ok`, `source`, `error`, `path`), `network` (`up`, `interfaces`), `mqtt` (`connected`), `sparkplug` (`group_id`, `edge_node_id`, `diagnostics_s`; only with a valid configuration), `syslog`, `devices`, `heap` and the fields of the table. For each device, `devices` has `online`, `cycles`, `failed`, `ok`, `timeout`, `crc`, `frame`, `exception` and `tags`. Each tag has `name`, `valid` and `value`: a number, an exact integer for `int64`/`uint64`, a text for `string`, hexadecimal for `bytes`.
 
