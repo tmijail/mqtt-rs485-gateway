@@ -2,7 +2,9 @@
  *
  * LED patterns, highest priority first:
  *   BOOT held for a reset  white, fast blink (4 Hz) from 2 s; steady white at the reset
- *   commissioning          blue, slow blink (1 Hz): no configuration after a factory reset
+ *   claim window open      blue and white, alternating every 250 ms (issue #120: the web
+ *                          password can be set from the access point without a credential)
+ *   commissioning         blue, slow blink (1 Hz): no configuration after a factory reset
  *   configuration error    red, fast blink (4 Hz)
  *   no network (no IP)     red, steady
  *   no MQTT session        amber, slow blink (1 Hz)
@@ -27,6 +29,7 @@ extern "C" {
 #define GW_ST_BUTTON    (1u << 4)   /* BOOT held long enough to be a reset gesture */
 #define GW_ST_RESETTING (1u << 5)   /* factory reset in progress */
 #define GW_ST_COMMISSIONING (1u << 6)
+#define GW_ST_CLAIM     (1u << 7)   /* CFG-3 / NET-5 claim window open (issue #120) */
 
 void gw_status_set(uint32_t flag, bool on);
 

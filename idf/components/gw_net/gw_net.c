@@ -146,6 +146,18 @@ bool gw_net_wifi_rssi(int8_t *rssi)
 #endif
 }
 
+bool gw_net_ip4_info(gw_net_if_t i, uint8_t ip[4], uint8_t mask[4])
+{
+    esp_netif_ip_info_t info;
+    if (i >= GW_NET_IF_COUNT || s_if[i].netif == NULL ||
+        esp_netif_get_ip_info(s_if[i].netif, &info) != ESP_OK || info.ip.addr == 0) {
+        return false;
+    }
+    memcpy(ip, &info.ip.addr, 4);
+    memcpy(mask, &info.netmask.addr, 4);
+    return true;
+}
+
 void gw_net_get_status(gw_net_if_status_t out[GW_NET_IF_COUNT])
 {
     portENTER_CRITICAL(&s_mux);

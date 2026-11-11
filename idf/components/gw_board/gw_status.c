@@ -53,6 +53,10 @@ static rgb_t pattern(uint32_t f, uint32_t tick, const char **name)
         *name = "BOOT held";
         return (tick & 1) ? OFF : WHITE;
     }
+    if (f & GW_ST_CLAIM) {
+        *name = "claim window";
+        return (tick & 2) ? WHITE : BLUE;
+    }
     if (f & GW_ST_COMMISSIONING) {
         *name = "commissioning";
         return (tick & 4) ? OFF : BLUE;

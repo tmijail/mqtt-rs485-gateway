@@ -10,6 +10,7 @@ set(GW_CORE_SRCS
     src/gw_button.c
     src/gw_buzz.c
     src/gw_cardfmt.c
+    src/gw_claim.c
     src/gw_cdump.c
     src/gw_clock.c
     src/gw_cfgdoc.c

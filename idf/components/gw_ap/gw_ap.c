@@ -17,8 +17,12 @@ static const char *TAG = "ap";
 
 static esp_netif_t *s_netif;
 static esp_timer_handle_t s_timer;
+static esp_timer_handle_t s_open_timer;   /* issue #120: the end of the open period */
 static bool s_active;
+static bool s_open;          /* no WPA2 key (claim window, issue #120) */
 static bool s_own_driver;   /* started by this module (no Wi-Fi station configured) */
+static const char *s_password;   /* the caller's buffer (the commissioning password) */
+static char s_ssid[33];
 
 static void stop_ap(void *arg)
 {
@@ -27,22 +31,67 @@ static void stop_ap(void *arg)
     if (!s_active || esp_wifi_get_mode(&mode) != ESP_OK) {
         return;
     }
+    esp_timer_stop(s_open_timer);
     if (mode == WIFI_MODE_APSTA) {
         esp_wifi_set_mode(WIFI_MODE_STA);   /* the station of gw_net goes on */
     } else if (s_own_driver) {
         esp_wifi_stop();
     }
     s_active = false;
+    s_open = false;
     ESP_LOGW(TAG, "commissioning access point stopped (timeout)");
 }
 
-esp_err_t gw_ap_start(const char *password, uint32_t timeout_s, bool https, uint16_t web_port)
+/* The access point's configuration: WPA2 with the commissioning password, or open (no key)
+ * during the open period of a claim window. A change while it runs disconnects its clients. */
+static esp_err_t apply(bool open)
+{
+    wifi_config_t ap = {0};
+    size_t n = strnlen(s_ssid, sizeof(ap.ap.ssid));
+    memcpy(ap.ap.ssid, s_ssid, n);
+    ap.ap.ssid_len = (uint8_t)n;
+    if (open) {
+        ap.ap.authmode = WIFI_AUTH_OPEN;
+    } else {
+        size_t pl = strnlen(s_password, sizeof(ap.ap.password) - 1);
+        memcpy(ap.ap.password, s_password, pl);
+        ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
+        ap.ap.pmf_cfg.capable = true;
+    }
+    ap.ap.channel = 1;
+    ap.ap.max_connection = 4;
+    esp_err_t e = esp_wifi_set_config(WIFI_IF_AP, &ap);
+    if (e == ESP_OK) {
+        s_open = open;
+    }
+    return e;
+}
+
+/* Issue #120: the open period is over: WPA2 again, for the rest of the access point's time. */
+static void close_open(void *arg)
+{
+    (void)arg;
+    if (s_active && s_open && apply(false) == ESP_OK) {
+        ESP_LOGW(TAG, "access point '%s' uses WPA2 with the commissioning password again "
+                      "(the claim window is over)", s_ssid);
+    }
+}
+
+esp_err_t gw_ap_start(const char *password, uint32_t timeout_s, bool https, uint16_t web_port,
+                      uint32_t open_s)
 {
     if (s_timer == NULL) {
         const esp_timer_create_args_t ta = {.callback = stop_ap, .name = "ap_timeout"};
         ESP_RETURN_ON_ERROR(esp_timer_create(&ta, &s_timer), TAG, "timer");
     }
+    if (s_open_timer == NULL) {
+        const esp_timer_create_args_t ta = {.callback = close_open, .name = "ap_open"};
+        ESP_RETURN_ON_ERROR(esp_timer_create(&ta, &s_open_timer), TAG, "timer");
+    }
     esp_timer_stop(s_timer);
+    esp_timer_stop(s_open_timer);
+    s_password = password;
+    bool open = open_s != 0;
     if (!s_active) {
         if (s_netif == NULL) {
             s_netif = esp_netif_create_default_wifi_ap();
@@ -63,17 +112,8 @@ esp_err_t gw_ap_start(const char *password, uint32_t timeout_s, bool https, uint
         ESP_RETURN_ON_ERROR(esp_wifi_set_mode(sta ? WIFI_MODE_APSTA : WIFI_MODE_AP), TAG, "mode");
         uint8_t mac[6];
         ESP_RETURN_ON_ERROR(esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP), TAG, "mac");
-        wifi_config_t ap = {0};
-        int n = snprintf((char *)ap.ap.ssid, sizeof(ap.ap.ssid), "GW-Setup-%02X%02X%02X", mac[3],
-                         mac[4], mac[5]);
-        ap.ap.ssid_len = (uint8_t)n;
-        size_t pl = strnlen(password, sizeof(ap.ap.password) - 1);
-        memcpy(ap.ap.password, password, pl);
-        ap.ap.authmode = WIFI_AUTH_WPA2_PSK;
-        ap.ap.channel = 1;
-        ap.ap.max_connection = 4;
-        ap.ap.pmf_cfg.capable = true;
-        ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &ap), TAG, "config");
+        snprintf(s_ssid, sizeof(s_ssid), "GW-Setup-%02X%02X%02X", mac[3], mac[4], mac[5]);
+        ESP_RETURN_ON_ERROR(apply(open), TAG, "config");
         if (s_own_driver) {
             ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "start");
         }
@@ -82,9 +122,17 @@ esp_err_t gw_ap_start(const char *password, uint32_t timeout_s, bool https, uint
         if (web_port != (https ? 443u : 80u)) {
             snprintf(port, sizeof(port), ":%u", (unsigned)web_port);
         }
-        ESP_LOGW(TAG, "commissioning access point '%s' (WPA2, commissioning password): web UI at "
-                      "%s://192.168.4.1%s/",
-                 (const char *)ap.ap.ssid, https ? "https" : "http", port);
+        ESP_LOGW(TAG, "commissioning access point '%s' (%s): web UI at %s://192.168.4.1%s/",
+                 s_ssid, open ? "OPEN, no key: claim window" : "WPA2, commissioning password",
+                 https ? "https" : "http", port);
+    } else if (open != s_open) {
+        ESP_RETURN_ON_ERROR(apply(open), TAG, "config");
+        ESP_LOGW(TAG, "access point '%s' is now %s", s_ssid,
+                 open ? "OPEN, no key: claim window" : "WPA2 with the commissioning password");
+    }
+    if (open) {
+        esp_timer_start_once(s_open_timer, (uint64_t)open_s * 1000000u);
+        ESP_LOGW(TAG, "the access point stays open for %lu s", (unsigned long)open_s);
     }
     if (timeout_s != 0) {
         esp_timer_start_once(s_timer, (uint64_t)timeout_s * 1000000u);
@@ -98,14 +146,27 @@ bool gw_ap_active(void)
     return s_active;
 }
 
+bool gw_ap_ip4(uint8_t ip[4], uint8_t mask[4])
+{
+    esp_netif_ip_info_t info;
+    if (!s_active || s_netif == NULL || esp_netif_get_ip_info(s_netif, &info) != ESP_OK) {
+        return false;
+    }
+    memcpy(ip, &info.ip.addr, 4);
+    memcpy(mask, &info.netmask.addr, 4);
+    return true;
+}
+
 #else
 
-esp_err_t gw_ap_start(const char *password, uint32_t timeout_s, bool https, uint16_t web_port)
+esp_err_t gw_ap_start(const char *password, uint32_t timeout_s, bool https, uint16_t web_port,
+                      uint32_t open_s)
 {
     (void)password;
     (void)timeout_s;
     (void)https;
     (void)web_port;
+    (void)open_s;
     ESP_LOGW(TAG, "commissioning access point not available in this build (CONFIG_GW_SOFTAP, "
                   "needs the Wi-Fi radio): use Ethernet");
     return ESP_ERR_NOT_SUPPORTED;
@@ -113,6 +174,13 @@ esp_err_t gw_ap_start(const char *password, uint32_t timeout_s, bool https, uint
 
 bool gw_ap_active(void)
 {
+    return false;
+}
+
+bool gw_ap_ip4(uint8_t ip[4], uint8_t mask[4])
+{
+    (void)ip;
+    (void)mask;
     return false;
 }
 

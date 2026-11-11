@@ -6,6 +6,7 @@ This is the MVP firmware (`docs/SPEC.md` §5) for the Waveshare **ESP32-S3-POE-E
 - **Feasibility study for all of §4:** `docs/feasibility-idf.md`.
 - **Connect the RS485 bus** (termination, bias, topology, error counters): `docs/how-to/connect-the-rs485-bus.md`.
 - **Get and decode a core dump** after a crash (web API, shell, `esp-coredump`): `docs/how-to/decode-a-core-dump.md`.
+- **Set the first web password on site** without the serial console (the claim window, CFG-8): `docs/how-to/set-the-first-web-password.md`.
 - **Use the gateway with UMH Core:** `docs/how-to/connect-to-umh-core.md` (procedure), `docs/explanation/sparkplug-names-and-the-uns.md` (the name rules) and `docs/reference/umh-names-and-topics.md` (name limits and UMH topics).
 
 > **Warning: Do not use these results as hardware results. Nobody tested the firmware on hardware.** No board was available. Only these items ran:
@@ -21,7 +22,7 @@ This is the MVP firmware (`docs/SPEC.md` §5) for the Waveshare **ESP32-S3-POE-E
 
 | Component | Function | Uses IDF |
 |---|---|---|
-| `gw_core` | **Pure C logic with no IDF. The host tests examine it:**<br>• `gw_config`: the parser and the validation of the §6 JSON.<br>• `gw_dout`: the boot sequence of the TCA9554 and the I/O polarity.<br>• `mb_rtu`: CRC and the FC01–06/15/16 frames.<br>• `mb_master`: transactions, t3.5, timeout and retries.<br>• `gw_conv`: types (up to 64 bits, `string` and register bits), scale, byte order and the Sparkplug datatype.<br>• `gw_mbap`: the Modbus TCP ↔ RTU frames of the TCP gateway function (MB-15).<br>• `gw_plan`: block reads.<br>• `gw_poll`: polling, the offline state and writes.<br>• `gw_rbe`: report by exception and deadband.<br>• `gw_debounce`, `gw_backoff`, `gw_devstate`.<br>• `gw_localio`: the DO policy without a network. It has the safe state at restart and without MQTT (IO-3) and the local DI→DO rules (IO-7). It also decides when to save the pulse counters (IO-4).<br>• `gw_netsel`: the active interface, Ethernet or Wi-Fi (NET-4). An interface is "out of service" when it cannot get to the broker (issue #57).<br>• `gw_syslog`: the conversion of log lines to RFC 5424, and a bounded ring (REL-4).<br>• `gw_tagdb`: the shared process image.<br>• `gw_cfgdoc`: the configuration document, with the secrets kept separately (masked export, import, migration). Also a reader for JSON that you paste in the console (CFG-4, CFG-6, CFG-7).<br>• `gw_auth`: SHA-256, HMAC, PBKDF2 and Basic auth for the web UI (CFG-3).<br>• `gw_button`: the BOOT button gestures (CFG-5, NET-5).<br>• `gw_buzz`: buzzer patterns, and alarms with their delay and priority (IO-6).<br>• `gw_brokersel`: the broker list, with failover and return to the primary broker (MQTT-6).<br>• `gw_phost`: the Sparkplug 3.0 primary host STATE (SPB-13).<br>• `gw_sf`: the store & forward ring buffer (SPB-14).<br>• `gw_sfspill`: the policy of the store & forward spill to the microSD card (issue #31): since issue #124, a ring of self-checking 4 KB blocks with a superblock and its boot recovery.<br>• `gw_rtc`: the PCF85063 registers ↔ UTC, with the BCD values and the OS bit (TIME-2).<br>• `gw_clock`: the sources of the clock, when the clock is valid, and the time from the browser (TIME-1, issue #160).<br>• `gw_authlimit`: a limit on the web login attempts per address (issue #64).<br>• `gw_nvsraw`: NVS, unencrypted or encrypted, read from its raw pages (issue #67).<br>• `gw_ota`: the health criterion for a new image and the *rollback* policy (FW-1), update URLs, progress.<br>• `spb`: the Sparkplug codec, with nanopb.<br>• `gw_node`: the Edge Node engine, with births, deaths, seq, alias, NCMD/DCMD and rebirth. | No (only `port/gw_port_esp.c`) |
+| `gw_core` | **Pure C logic with no IDF. The host tests examine it:**<br>• `gw_config`: the parser and the validation of the §6 JSON.<br>• `gw_dout`: the boot sequence of the TCA9554 and the I/O polarity.<br>• `mb_rtu`: CRC and the FC01–06/15/16 frames.<br>• `mb_master`: transactions, t3.5, timeout and retries.<br>• `gw_conv`: types (up to 64 bits, `string` and register bits), scale, byte order and the Sparkplug datatype.<br>• `gw_mbap`: the Modbus TCP ↔ RTU frames of the TCP gateway function (MB-15).<br>• `gw_plan`: block reads.<br>• `gw_poll`: polling, the offline state and writes.<br>• `gw_rbe`: report by exception and deadband.<br>• `gw_debounce`, `gw_backoff`, `gw_devstate`.<br>• `gw_localio`: the DO policy without a network. It has the safe state at restart and without MQTT (IO-3) and the local DI→DO rules (IO-7). It also decides when to save the pulse counters (IO-4).<br>• `gw_netsel`: the active interface, Ethernet or Wi-Fi (NET-4). An interface is "out of service" when it cannot get to the broker (issue #57).<br>• `gw_syslog`: the conversion of log lines to RFC 5424, and a bounded ring (REL-4).<br>• `gw_tagdb`: the shared process image.<br>• `gw_cfgdoc`: the configuration document, with the secrets kept separately (masked export, import, migration). Also a reader for JSON that you paste in the console (CFG-4, CFG-6, CFG-7).<br>• `gw_auth`: SHA-256, HMAC, PBKDF2 and Basic auth for the web UI (CFG-3).<br>• `gw_button`: the BOOT button gestures (CFG-5, NET-5).<br>• `gw_claim`: the claim window for the first web password, and the access point rule (CFG-8, issue #120).<br>• `gw_buzz`: buzzer patterns, and alarms with their delay and priority (IO-6).<br>• `gw_brokersel`: the broker list, with failover and return to the primary broker (MQTT-6).<br>• `gw_phost`: the Sparkplug 3.0 primary host STATE (SPB-13).<br>• `gw_sf`: the store & forward ring buffer (SPB-14).<br>• `gw_sfspill`: the policy of the store & forward spill to the microSD card (issue #31): since issue #124, a ring of self-checking 4 KB blocks with a superblock and its boot recovery.<br>• `gw_rtc`: the PCF85063 registers ↔ UTC, with the BCD values and the OS bit (TIME-2).<br>• `gw_clock`: the sources of the clock, when the clock is valid, and the time from the browser (TIME-1, issue #160).<br>• `gw_authlimit`: a limit on the web login attempts per address (issue #64).<br>• `gw_nvsraw`: NVS, unencrypted or encrypted, read from its raw pages (issue #67).<br>• `gw_ota`: the health criterion for a new image and the *rollback* policy (FW-1), update URLs, progress.<br>• `spb`: the Sparkplug codec, with nanopb.<br>• `gw_node`: the Edge Node engine, with births, deaths, seq, alias, NCMD/DCMD and rebirth. | No (only `port/gw_port_esp.c`) |
 | `nanopb` | The vendored nanopb 0.4.9.1 runtime (Zlib) | No |
 | `gw_rs485` | UART1 in `UART_MODE_RS485_HALF_DUPLEX` (RTS = GPIO21), available as an `mb_transport_t` | Yes |
 | `gw_bus` | The task that is the **single owner of the RS485 bus**: polling and DCMD writes | Yes |
@@ -31,7 +32,7 @@ This is the MVP firmware (`docs/SPEC.md` §5) for the Waveshare **ESP32-S3-POE-E
 | `gw_board` | 8 DIs, sampled at 1 kHz, with debounce and pulse counters (IO-4, in NVS). 8 DOs on the TCA9554 (on `gw_dout`, with no pulses at boot), with the `local_io` task. This task is the **only writer of the expander** (NCMD, local rules IO-7, safe state IO-3, retries). The WS2812 status LED. The buzzer on GPIO46 (IO-6, LEDC) | Yes |
 | `gw_storage` | The configuration from LittleFS, or the embedded configuration (only if the file is missing). The atomic write of a new configuration. The secrets in encrypted NVS (CFG-7). The network of the last valid configuration, for recovery mode. Factory reset and the commissioning flag (CFG-5). The microSD card of the store & forward spill (`gw_sfcard.c`, issue #31). The core dump in flash: its state, summary, read and erase (`gw_coredump.c`, issue #132) | Yes |
 | `gw_web` | An HTTPS server with a certificate of the gateway itself, and a redirect from HTTP (issue #64). It has the embedded web UI (CFG-3), a JSON REST API for configuration and status (CFG-4), and Basic auth with an attempt limit. Also mDNS and `_https._tcp` (NET-6) | Yes |
-| `gw_ap` | The Wi-Fi access point for commissioning (NET-5), separate from `gw_net` | Yes |
+| `gw_ap` | The Wi-Fi access point for commissioning (NET-5), separate from `gw_net`. It is open (no key) only during a claim window (CFG-8, issue #120) | Yes |
 | `gw_fw` | Firmware updates (FW-1): HTTPS download (`esp_https_ota`) or upload through the web UI to the other OTA partition, verification, restart, trial period of the new image and *rollback* (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`) | Yes |
 | `gw_log` | Remote syslog (REL-4). It installs a hook on `esp_log_set_vprintf` and copies each line to a bounded ring. A task sends the lines over UDP | Yes |
 | `gw_mbtcp` | The Modbus TCP gateway (MB-15). A TCP server (lwIP) sends each MBAP request to the bus owner task and returns the response of the RTU slave. Only with `modbus_tcp.enabled` | Yes |
@@ -465,7 +466,8 @@ Build options in `idf.py menuconfig`, in the `Gateway: ...` menus:
 - the number of lines that the remote syslog keeps (`CONFIG_GW_SYSLOG_SLOTS`, 32 by default) and the priority of its task;
 - the queue sizes;
 - the Modbus TCP gateway: simultaneous clients, priority and the maximum wait for a bus response (menu `Gateway: Modbus TCP gateway`);
-- the shell commands that change something (`CONFIG_GW_SHELL_WRITE_COMMANDS`), the access point (`CONFIG_GW_SOFTAP`, minutes after BOOT) and mDNS (`CONFIG_GW_MDNS`).
+- the shell commands that change something (`CONFIG_GW_SHELL_WRITE_COMMANDS`), the access point (`CONFIG_GW_SOFTAP`, minutes after BOOT) and mDNS (`CONFIG_GW_MDNS`);
+- the time of the claim window (`CONFIG_GW_WEB_CLAIM_WINDOW_MIN`, 10 min, menu `Gateway: web`, §3.5).
 
 **Status LED** (from the highest to the lowest priority):
 
@@ -473,6 +475,7 @@ Build options in `idf.py menuconfig`, in the `Gateway: ...` menus:
 |---|---|
 | Factory reset in progress | White, continuous |
 | BOOT pushed for more than 2 s | White, blinks at 4 Hz |
+| Claim window open (CFG-8, §3.5) | Blue and white, alternately (each color 250 ms) |
 | Commissioning (no configuration after a reset) | Blue, blinks at 1 Hz |
 | Configuration not valid (recovery mode) | Red, blinks at 4 Hz |
 | No network (no IP) | Red, continuous |
@@ -488,14 +491,49 @@ The web UI and the API require HTTP Basic with `web.username` and `web.password`
 
 In recovery mode and in commissioning, the saved web password is also valid, with any user (the user name is in the rejected document).
 
-**Procedure on site:**
+**The access point (NET-5).** The access point starts automatically when the configuration was rejected and in commissioning. With a valid configuration, a push of BOOT for 2 to 10 s starts it for 30 min (`CONFIG_GW_SOFTAP_TIMEOUT_MIN`). The network is `GW-Setup-XXXXXX` (the last bytes of the MAC). It uses WPA2 with the commissioning password, except during a claim window (below). The web UI is at `https://192.168.4.1/`.
 
-1. Connect Ethernet (DHCP). If there is no network, use the access point.
-   - When the configuration was rejected, or in commissioning, the access point starts automatically.
-   - With a valid configuration, push BOOT for 2 to 10 s. The access point then starts for 30 min (`CONFIG_GW_SOFTAP_TIMEOUT_MIN`).
-   - The network is `GW-Setup-XXXXXX` (the last bytes of the MAC), WPA2 with the commissioning password. The web UI is at `https://192.168.4.1/`.
-2. Open `https://<ip>/` (or `https://<hostname>.local/`, NET-6). Compare the fingerprint with the fingerprint on the console. Then accept the certificate of the gateway. Load or edit the configuration (the forms, the JSON tab or Importar). Click Validar, then click Guardar. The gateway restarts with the new configuration.
-3. Set your own `web.password` (at least 8 characters).
+**The claim window (CFG-8, issue #120).** While no web password is set, the same push of BOOT (2 to 10 s) also opens a claim window. During the window, a client of the access point can set the first web password at `https://192.168.4.1/claim`, without a credential. A person who can push the button can also flash the board, so the window gives no access that physical access does not give. The installer procedure is in `docs/how-to/set-the-first-web-password.md`. These are the choices of the implementation and their reasons:
+
+| Item | Choice | Reason |
+|---|---|---|
+| Time | 10 min (`CONFIG_GW_WEB_CLAIM_WINDOW_MIN`, 1 to 30). A new push of BOOT starts the time again | Sufficient to connect a phone and type a password. A short time decreases the time for a claim by another person |
+| After a set | The window closes. It does not open again: a factory reset (CFG-5) is the only way to remove the password | The issue decision. One claim per window gives no second chance to a person who comes after the operator |
+| Restart | The window closes (its state is only in RAM) | A restart must not keep a window that nobody sees |
+| Interfaces | Only a client of the access point. A client on Ethernet or on the Wi-Fi station gets `403` | A person on the plant network must not take the gateway while the window is open. To use the window, a person must be in the radio range during the window |
+| How the rule knows the client | The local address of the TCP connection is the address of the access point, and the peer is a host of its subnet. No other interface has a subnet that contains the peer (`gw_claim_from_ap`). IPv6 is refused | lwIP of ESP-IDF sends the answers of a connection by its source address (`ip4_route_src_hook`): a host on Ethernet that sends to `192.168.4.1` gets no answer. The peer check is a second barrier |
+| Key of the access point | Open (no key) for the time of the window. Then WPA2 with the commissioning password again, for the rest of its time. The set of a password does not end the open period | The WPA2 key is the commissioning password, which only the console shows. A printed label needs a factory step, which an open-source project does not have. After the set, the operator can continue on the access point with the new password until the end of the window time |
+| Other routes during the window | No change: they require the credential | The window gives only the first password |
+| Modes | All modes: normal, recovery, commissioning and fault | The web server runs in all of them, and the first password is necessary in all of them |
+| Without the access point | On the board, the window does not open when the access point does not start (a build without `CONFIG_GW_SOFTAP`). The log tells this | Without the access point, nobody can use the window |
+| LED and buzzer | LED blue and white, alternately, while the window is open (§3.4). One beep at the push (as before), and one beep when the password is set | The operator at the panel sees that the window is open and hears that it was used |
+| Login block | The route has the CSRF check and the limit of attempts of #64. A refusal because of the state (a password is set, no window, not a client of the access point) counts as a failed login | An attacker cannot try the route without limit |
+| Log | The log records when the window opens and closes, and each refusal with the address. It never records the password | The log can go to a syslog server (REL-4) |
+
+**Procedure on site.** There are three paths to the first web password:
+
+- **Claim window (no computer at the panel):** refer to `docs/how-to/set-the-first-web-password.md`.
+- **USB console:**
+  1. Connect a computer to the USB-C connector of the board.
+  2. Open a serial terminal at 115200 baud.
+  3. Restart the gateway, or push BOOT for 2 to 10 s.
+  4. Read the commissioning password on the console.
+  5. Connect Ethernet (DHCP), or connect to the access point with the commissioning password.
+  6. Open `https://<ip>/` (or `https://<hostname>.local/`, NET-6) with the user `admin` and the commissioning password.
+  7. Compare the fingerprint in the browser with the fingerprint on the console. Then accept the certificate.
+  8. Set your own `web.password` (at least 8 characters) in the configuration, and save it.
+- **Bench (before the installation):** connect the gateway through USB. Load a configuration with a `web.password` (`config load` in the shell). Then install the gateway in the panel.
+
+To change the configuration, open the web UI. Load or edit the configuration (the forms, the JSON tab or Importar). Click Validar, then click Guardar. The gateway restarts with the new configuration.
+
+**Get access again when you do not know the web password:**
+
+1. Connect a computer to the USB-C connector. Open a serial terminal at 115200 baud.
+2. Type `config show`. Copy the document. The secrets show as `********`.
+3. Change the value of `web.password` in the copy to a new password.
+4. Type `config load`, then paste the document. The other secrets stay (`********` keeps a stored secret).
+
+The shell has no password: the console needs physical access. Without the console, do a factory reset (below). The factory reset also erases the configuration.
 
 **Factory reset (CFG-5):** push BOOT for 10 s while the gateway operates. GPIO0 is a *strapping* pin: if you push it at power-on, the ROM goes into download mode. Thus the firmware reads the button only after boot, and it must see the button released one time. At 2 s, the LED changes to white. At 10 s, the gateway gives two beeps and erases the full LittleFS partition and NVS (configuration, secrets, commissioning password). Then the gateway does an orderly restart in **commissioning mode**.
 
@@ -1137,7 +1175,8 @@ Legend for **Evidence**:
   - The combination of encrypted NVS without flash encryption does not configure outside the emulator (issue #103).
 
   Evidence: H (`test_nvsraw`, with images from `nvs_partition_gen.py`: mixed partition, a u8 entry from the raw pages, the migration copy, the boot decision; `test_ota`: the capabilities block; `sdkconfig_check_nvsenc_*`) + Q (QEMU emulates HMAC and eFuse: encrypted NVS; no plaintext secret in the full flash image after the migration; an unencrypted NVS migrated, also with two cuts in the middle, and a boot without LittleFS after each cut; an OTA from the unencrypted build to the encrypted build with a *rollback*, and then confirmed; the return to the unencrypted build rejected, with the NVS intact).
-- **NET-5** Implemented, **not tested with a radio**: an access point `GW-Setup-XXXXXX` (WPA2, commissioning password) when there is no valid configuration, and with BOOT for 2–10 s. Q (the two triggers reach `gw_ap`; the QEMU build has no radio) + C (SoftAP, AP+STA).
+- **CFG-8** Implemented (issue #120): the claim window for the first web password (§3.5). `gw_claim` (gw_core) has the window, the password rules, the body of the request and the access point rule. H (`test_claim`: the window opens, closes at the end of its time, closes after a set, refuses a short password, refuses a set while closed, never opens with a password set, accepts only a client of the access point) + Q (scenario `reset`: no window with a password set; no window before the push; the window closes at the end of its time; during the window a client that is not on the access point gets `403` and the other routes need the credential; with `claimsim … eth` the set succeeds without a credential, then the window is closed and does not open again, and only the new password opens the web UI) + C (the open access point).
+- **NET-5** Implemented, **not tested with a radio**: an access point `GW-Setup-XXXXXX` (WPA2, commissioning password) when there is no valid configuration, and with BOOT for 2–10 s. It is open (no key) for the time of a claim window (CFG-8). Q (the two triggers reach `gw_ap`; the QEMU build has no radio) + C (SoftAP, AP+STA, the open period).
 - **NET-6** Implemented: `network.hostname` (or a name derived from `edge_node_id`) in DHCP, and in mDNS with `_https._tcp` (or `_http._tcp` with `web.https: false`). H (schema, derivation) + Q (the responder starts with the derived name) + C (mDNS responses: `open_eth` has no multicast filter, §6.2.1).
 - **MQTT-4** Implemented: TLS 1.2 and 1.3 to the broker (`mqtt.tls`, SPEC §6.1). The CA comes from a PEM file in LittleFS (`ca_file`) or from the ESP-IDF bundle of public root CAs. The gateway always verifies the name (the `host`, also an IP literal against an IP SAN, or `server_name`). It always verifies the dates (it waits for SNTP). The gateway validates the file at boot. If the file is missing or is not PEM, the gateway reports it and does not try to connect. The mbedTLS memory is in PSRAM if there is PSRAM.
 
@@ -1283,6 +1322,14 @@ The QEMU build is different from the board build at these points (`sdkconfig.qem
 - `config load` reads the pasted document until its outer object closes. It stops after 60 s without data. The console read has no echo. While you paste, the shell does not take the lock of the shell context (issue #78). Thus the boot (which updates that context) and the tasks that report that their subsystem is up continue. The shell takes the lock only to validate, save and restart, with the context of that moment.
 - `mbread` goes through the bus queue (single owner, MB-16): it waits until the current transaction ends. A device that does not exist gives `timeout` or `framing error` (this depends on the answers of the rest of the bus).
 - **The access point (NET-5) is compile-only** (QEMU has no radio). There is no captive portal: open `https://192.168.4.1/`. With Wi-Fi STA configured, the driver changes to AP+STA, and the AP uses the channel of the STA.
+- **Claim window (CFG-8, issue #120): residual risks and limits.**
+  - **A claim by another person.** During the window, another client of the access point can set the password before the operator. That person must be in the radio range during the window. After the set, make sure that your password opens the web UI. If it does not, do a factory reset.
+  - **An open access point.** During the window, any person in the radio range can connect to the access point without a key. That person gets the same access as a client of the plant network: the web UI with its credential, and the Modbus TCP gateway (MB-15) when `modbus_tcp.enabled` is true (Modbus TCP has no authentication). Open Wi-Fi does not encrypt the traffic: HTTPS protects the password, but nobody compares the fingerprint (next item).
+  - **A certificate that nobody compares.** Without the console, the operator does not see the fingerprint. A person in the radio range who operates a false access point with the same name can read the new password (man in the middle). The same risk was in option E of the issue.
+  - **The rule is for IPv4 only.** A claim over IPv6 is refused. If the plant network uses the subnet of the access point (`192.168.4.0/24`), the route back to the client is not clear, and the gateway refuses the claim.
+  - **Test.** QEMU has no radio. The access point and its open period are compile-only. The E2E (scenario `reset`) runs the window over the emulated Ethernet. The emulator-only shell command `claimsim <s> [eth]` sets a short time, and `eth` makes the Ethernet count as the access point. Without `eth`, the E2E also tests the refusal of a client that is not on the access point. The host tests (`test_claim`) examine the access point rule with the addresses of the board.
+  - **A password set through the window is only in NVS.** The configuration document does not change: at the next boot, a document without `web.password` takes the stored hash. A later `PUT /api/config` or `config load` without the `web.password` key removes the password, as for any other secret (SPEC §6.1). The web UI exports `********`, which keeps it.
+  - The rule for the length counts characters (at least 8). The configuration counts bytes (at least 8). Thus the window refuses some passwords with letters outside ASCII that the configuration accepts.
 - **mDNS (NET-6) is compile-only for the responses:** in QEMU the responder starts, but `open_eth` has no multicast filter, and the responder does not use that interface. The W5500 has a filter (`add_mac_filter`), but nobody verified it on the board.
 - The factory reset and the migration erase the full 1 MB LittleFS partition. On real flash, this takes some seconds (in 64 KB steps).
 - The gateway decrypts the secrets of the encrypted NVS to RAM at boot. A memory dump (a *core dump* in flash) can contain them. `GET /api/coredump` and the shell's `coredump dump` give the dump (issue #132, §3.2): the web routes need the password, the shell needs physical access. Keep a downloaded dump as safe as the passwords, and erase it from the gateway after the download.
