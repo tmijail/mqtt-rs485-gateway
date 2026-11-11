@@ -212,7 +212,8 @@ This path has these limits:
 | A level is at the wrong place | The name has a space, a `.` or a level that starts with `_` | Set `sparkplug.naming` to `"umh"`, and correct each name that the validation refuses. The metadata `spb_original_device_id` shows the name before UMH changed it |
 | An enterprise has the name of the gateway, for example `GW01` | The `edge_node_id` is a short name. UMH uses it as the location of the node metrics | Write the `edge_node_id` as a location, or drop the node metrics in the bridge |
 | The device is the enterprise, for example `umh.v1.Meter1` | The `device_id` is not a location. Two gateways with `Meter1` then write to the same topic | Set `sparkplug.device_prefix` to the location of the devices |
-| The timestamps are near 1970 | The gateway published before it had a valid time | Make sure that the gateway gets SNTP. Read `Node Info/Time Synced`. The fix of #160 is planned |
+| The gateway sends only NBIRTH and DBIRTH, and no NDATA or DDATA | The gateway has no valid time: no SNTP, no RTC time and no time from the browser (#160) | Make sure that the gateway gets SNTP. Or, in the web UI, click "Set the time from the browser". Type `status` on the gateway shell: the `time` line shows the source |
+| The births have timestamps near 1970 | The gateway sent the births before it had a valid time. It sends them again when the time becomes valid | No action. Make sure that the gateway gets SNTP, or set the time from the browser |
 | The samples of a broker failure have the time of the replay | The `tag_processor` has no `timestamp_ms` line | Add `msg.meta.timestamp_ms = msg.meta.spb_timestamp` |
 | The gateway sends no NBIRTH, and the shell says that it waits for the primary host | `sparkplug.primary_host_id` is not empty | Set `primary_host_id` to `""` |
 

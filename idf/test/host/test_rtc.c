@@ -2,6 +2,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "gw_clock.h"
 #include "gw_rtc.h"
 #include "unity.h"
 
@@ -92,6 +93,71 @@ static void test_rejected_readings(void)
     TEST_ASSERT_EQUAL_UINT8(0x99, r[6]);
 }
 
+/* Issue #160: the sources of the clock, which of them make it valid, and their order. */
+static void test_clock_sources(void)
+{
+    TEST_ASSERT_FALSE(gw_clock_valid(GW_CLOCK_NONE));
+    TEST_ASSERT_TRUE(gw_clock_valid(GW_CLOCK_RTC));
+    TEST_ASSERT_TRUE(gw_clock_valid(GW_CLOCK_BROWSER));
+    TEST_ASSERT_TRUE(gw_clock_valid(GW_CLOCK_SNTP));
+    TEST_ASSERT_EQUAL_STRING("none", gw_clock_source_key(GW_CLOCK_NONE));
+    TEST_ASSERT_EQUAL_STRING("rtc", gw_clock_source_key(GW_CLOCK_RTC));
+    TEST_ASSERT_EQUAL_STRING("browser", gw_clock_source_key(GW_CLOCK_BROWSER));
+    TEST_ASSERT_EQUAL_STRING("sntp", gw_clock_source_key(GW_CLOCK_SNTP));
+    TEST_ASSERT_EQUAL(GW_CLOCK_BROWSER, gw_clock_after(GW_CLOCK_NONE, GW_CLOCK_BROWSER));
+    TEST_ASSERT_EQUAL(GW_CLOCK_BROWSER, gw_clock_after(GW_CLOCK_RTC, GW_CLOCK_BROWSER));
+    TEST_ASSERT_EQUAL(GW_CLOCK_SNTP, gw_clock_after(GW_CLOCK_BROWSER, GW_CLOCK_SNTP));
+    TEST_ASSERT_EQUAL(GW_CLOCK_SNTP, gw_clock_after(GW_CLOCK_SNTP, GW_CLOCK_BROWSER));
+    TEST_ASSERT_EQUAL(GW_CLOCK_RTC, gw_clock_after(GW_CLOCK_RTC, GW_CLOCK_NONE));
+}
+
+static gw_clock_set_t set(const char *body, gw_clock_source_t cur, int64_t *ms, char *why)
+{
+    return gw_clock_parse_set(body, strlen(body), cur, ms, why, 160);
+}
+
+/* Issue #160: POST /api/time takes {"utc_ms": <integer>} in the range of the RTC, and does not
+ * change a clock that SNTP synchronises. */
+static void test_clock_parse_set(void)
+{
+    char why[160];
+    int64_t ms = 0;
+    TEST_ASSERT_EQUAL(GW_CLOCK_SET_OK, set("{\"utc_ms\": 1793799462123}", GW_CLOCK_NONE, &ms, why));
+    TEST_ASSERT_EQUAL_INT64(1793799462123LL, ms);
+    TEST_ASSERT_EQUAL(GW_CLOCK_SET_OK, set("{\"utc_ms\":1735689600000}", GW_CLOCK_RTC, &ms, why));
+    TEST_ASSERT_EQUAL_INT64(GW_RTC_MIN_EPOCH * 1000LL, ms);
+    TEST_ASSERT_EQUAL(GW_CLOCK_SET_OK, set("{\"utc_ms\":4102444799999}", GW_CLOCK_BROWSER, &ms, why));
+    TEST_ASSERT_TRUE(gw_clock_plausible_ms(GW_RTC_MAX_EPOCH * 1000LL + 999));
+    TEST_ASSERT_FALSE(gw_clock_plausible_ms(GW_RTC_MAX_EPOCH * 1000LL + 1000));
+    TEST_ASSERT_FALSE(gw_clock_plausible_ms(GW_RTC_MIN_EPOCH * 1000LL - 1));
+
+    ms = 42;
+    static const char *const bad[] = {
+        "",                                       /* not JSON */
+        "[1793799462123]",                        /* not an object */
+        "{}",                                     /* no key */
+        "{\"utc_s\": 1793799462}",                /* other key */
+        "{\"utc_ms\": 1793799462123, \"x\": 1}",  /* one more key */
+        "{\"utc_ms\": \"1793799462123\"}",        /* a string */
+        "{\"utc_ms\": 1793799462123.5}",          /* not an integer */
+        "{\"utc_ms\": 1735689599999}",            /* before 2025 */
+        "{\"utc_ms\": 5000}",                     /* 1970 */
+        "{\"utc_ms\": -1}",
+        "{\"utc_ms\": 4102444800000}",            /* after 2099 */
+        "{\"utc_ms\": 1e300}",
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        why[0] = '\0';
+        TEST_ASSERT_EQUAL_MESSAGE(GW_CLOCK_SET_BAD, set(bad[i], GW_CLOCK_NONE, &ms, why), bad[i]);
+        TEST_ASSERT_NOT_EQUAL(0, strlen(why));
+    }
+    TEST_ASSERT_EQUAL_INT64(42, ms);   /* not changed */
+    TEST_ASSERT_EQUAL(GW_CLOCK_SET_SYNCED,
+                      set("{\"utc_ms\": 1793799462123}", GW_CLOCK_SNTP, &ms, why));
+    TEST_ASSERT_NOT_NULL(strstr(why, "SNTP"));
+    TEST_ASSERT_EQUAL(GW_CLOCK_SET_BAD, set("{}", GW_CLOCK_SNTP, &ms, why));   /* bad first */
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -99,5 +165,7 @@ int main(void)
     RUN_TEST(test_decode_and_encode);
     RUN_TEST(test_round_trip_against_libc);
     RUN_TEST(test_rejected_readings);
+    RUN_TEST(test_clock_sources);
+    RUN_TEST(test_clock_parse_set);
     return UNITY_END();
 }

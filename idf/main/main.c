@@ -282,7 +282,8 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     const gw_net_callbacks_t net_cb = {
         .ip_changed = net_down_noop, .route_changed = net_noop,
-        .time_synced = gw_io_rtc_store};   /* TIME-2: the RTC follows SNTP here too */
+        .time_synced = on_time_synced};   /* TIME-2: the RTC follows SNTP here too; #160: the
+                                           * clock source in /api/status (no browser time over it) */
     if (gw_net_start(s_cfg, &net_cb) != ESP_OK) {
         ESP_LOGE(TAG, "recovery network unavailable: only the console shell is left");
     } else {

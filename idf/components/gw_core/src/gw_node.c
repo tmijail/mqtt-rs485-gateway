@@ -82,6 +82,7 @@ void gw_node_init(gw_node_t *n, const gw_config_t *cfg, const gw_node_ops_t *ops
     n->cfg = cfg;
     n->ops = *ops;
     n->info = *info;
+    n->time_valid = true;   /* #160: the caller says when it is not */
     strcpy(n->fw_state, "idle");
 }
 
@@ -221,6 +222,21 @@ static spb_metric_t *metric(gw_node_t *n, size_t i, const char *name, uint64_t a
     return m;
 }
 
+/* Issue #160: the time of a live sample for metric() and the store. A sample taken before the
+ * clock became valid counts from 1970: 0, so that metric() gives it the time of its message (the
+ * value still holds then). Not for the historical samples: they were stored with a valid clock. */
+static uint64_t live_ts(const gw_node_t *n, uint64_t ts)
+{
+    return ts >= n->valid_since_ms ? ts : 0;
+}
+
+/* Issue #160: the time of a sample that goes into the store (live_ts, or now). */
+static uint64_t sample_ts(const gw_node_t *n, uint64_t ts)
+{
+    uint64_t t = live_ts(n, ts);
+    return t != 0 ? t : gw_port_time_ms();
+}
+
 /* Exact report-by-exception key of 64-bit integers and strings (MB-6). */
 static uint64_t rbe_key(const gw_tag_cfg_t *t, const gw_tag_value_t *v)
 {
@@ -273,7 +289,7 @@ static void tag_metric(gw_node_t *n, size_t i, uint16_t tag, const gw_tag_value_
 {
     const gw_tag_cfg_t *t = &n->cfg->tags[tag];
     spb_metric_t *m = metric(n, i, birth || member ? t->name : NULL, GW_ALIAS_TAG_BASE + tag,
-                             gw_conv_datatype(t), v->ts_ms);
+                             gw_conv_datatype(t), live_ts(n, v->ts_ms));
     m->no_alias = member;
     m->is_null = !v->valid;
     if (birth) {
@@ -493,7 +509,7 @@ static size_t diag_metrics(gw_node_t *n, size_t i, uint64_t now, bool birth, boo
 
 void gw_node_set_time_synced(gw_node_t *n, bool synced)
 {
-    if (!n->online || synced == n->time_synced_reported) {
+    if (!n->online || !n->time_valid || synced == n->time_synced_reported) {
         return;
     }
     n->time_synced_reported = synced;
@@ -505,7 +521,7 @@ void gw_node_set_time_synced(gw_node_t *n, bool synced)
  * 57 is this metric's alone). */
 void gw_node_set_core_dump(gw_node_t *n, bool present)
 {
-    if (!n->online || present == n->core_dump_reported) {
+    if (!n->online || !n->time_valid || present == n->core_dump_reported) {   /* #160 */
         return;
     }
     n->core_dump_reported = present;
@@ -533,6 +549,9 @@ uint32_t gw_node_diag_tick(gw_node_t *n, uint64_t now_ms)
         return left < UINT32_MAX ? (uint32_t)left : UINT32_MAX - 1u;
     }
     diag_schedule(n, now_ms);
+    if (!n->time_valid) {
+        return n->cfg->sparkplug.diagnostics_s * 1000u;   /* #160: no NDATA yet */
+    }
     uint64_t h = mb_snapshot(n);
     bool modbus = h != n->diag_hash;   /* rate limited: the counters only when they changed */
     n->diag_hash = h;
@@ -567,19 +586,19 @@ static bool publish_nbirth(gw_node_t *n)
         n->fw_progress;
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         metric(n, i++, k_di_names[k], GW_ALIAS_DI_BASE + k, SPB_DT_BOOLEAN,
-               io.di_ts_ms ? io.di_ts_ms : now)
+               live_ts(n, io.di_ts_ms))
             ->v.num = (io.di >> k) & 1u;
     }
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         spb_metric_t *m = metric(n, i++, k_do_names[k], GW_ALIAS_DO_BASE + k, SPB_DT_BOOLEAN,
-                                 io.do_ts_ms ? io.do_ts_ms : now);
+                                 live_ts(n, io.do_ts_ms));
         m->v.num = (io.dout >> k) & 1u;
         m->is_null = io.do_unknown;   /* the latch may hold anything: never claim "off" */
         set_quality(m, !io.do_unknown);
     }
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         metric(n, i++, k_count_names[k], GW_ALIAS_COUNT_BASE + k, SPB_DT_UINT64,
-               io.di_ts_ms ? io.di_ts_ms : now)
+               live_ts(n, io.di_ts_ms))
             ->v.u64 = io.count[k];
     }
     memcpy(n->count_reported, io.count, sizeof(n->count_reported));
@@ -608,14 +627,19 @@ static bool publish_nbirth(gw_node_t *n)
             n->online_reported |= 1u << d;
         }
     }
-    return publish_rc_ex(n, "NBIRTH", NULL, i, 0, umh(n)) == 0;
+    if (publish_rc_ex(n, "NBIRTH", NULL, i, 0, umh(n)) != 0) {
+        return false;
+    }
+    n->births_untimed = !n->time_valid;   /* #160: a rebirth when the clock becomes valid */
+    return true;
 }
 
 /* #173: UMH preset: an NDATA with Devices/<name>/Online when the state of @p dev changed. */
 static void publish_online(gw_node_t *n, uint16_t dev, bool online)
 {
     uint32_t bit = 1u << dev;
-    if (!umh(n) || online == ((n->online_reported & bit) != 0)) {
+    /* #160: no NDATA before the clock is valid; the rebirth takes the snapshot again */
+    if (!umh(n) || !n->time_valid || online == ((n->online_reported & bit) != 0)) {
         return;
     }
     n->online_reported ^= bit;
@@ -741,8 +765,8 @@ void gw_node_set_firmware_status(gw_node_t *n, const char *state, uint32_t progr
     }
     memcpy(n->fw_state, s, sizeof(s));
     n->fw_progress = progress;
-    if (!n->online) {
-        return;   /* the next NBIRTH carries it */
+    if (!n->online || !n->time_valid) {
+        return;   /* the next NBIRTH carries it (#160: the rebirth when the clock is valid) */
     }
     uint64_t now = gw_port_time_ms();
     size_t i = 0;
@@ -775,6 +799,24 @@ bool gw_node_rebirth(gw_node_t *n)
             publish_dbirth(n, dev);
         }
     }
+    return true;
+}
+
+bool gw_node_set_time_valid(gw_node_t *n, bool valid)
+{
+    if (valid == n->time_valid) {
+        return false;
+    }
+    n->time_valid = valid;
+    if (!valid) {
+        return false;
+    }
+    n->valid_since_ms = gw_port_time_ms();
+    if (!n->online || !n->births_untimed) {
+        return false;   /* the next births have a valid clock */
+    }
+    GW_LOGI(TAG, "clock now valid: rebirth (the births went out without a valid clock)");
+    gw_node_rebirth(n);
     return true;
 }
 
@@ -825,23 +867,24 @@ static void store_device(gw_node_t *n, uint16_t dev)
             gw_sf_begin(n->sf);
             begun = true;
         }
+        uint64_t ts = sample_ts(n, v->ts_ms);
         /* MB-6: 64-bit integers exact (their bits), strings in continuation records */
         switch (gw_conv_kind(&n->cfg->tags[tag])) {
         case GW_VK_INT64:
-            gw_sf_push_u64(n->sf, (uint8_t)dev, tag, (uint64_t)v->i64, !v->valid, v->ts_ms);
+            gw_sf_push_u64(n->sf, (uint8_t)dev, tag, (uint64_t)v->i64, !v->valid, ts);
             break;
         case GW_VK_UINT64:
-            gw_sf_push_u64(n->sf, (uint8_t)dev, tag, v->u64, !v->valid, v->ts_ms);
+            gw_sf_push_u64(n->sf, (uint8_t)dev, tag, v->u64, !v->valid, ts);
             break;
         case GW_VK_STRING:
-            gw_sf_push_str(n->sf, (uint8_t)dev, tag, v->str, !v->valid, v->ts_ms);
+            gw_sf_push_str(n->sf, (uint8_t)dev, tag, v->str, !v->valid, ts);
             break;
         case GW_VK_BYTES:   /* SPB-19: raw bytes, NUL included */
             gw_sf_push_bytes(n->sf, (uint8_t)dev, tag, v->str, 2u * n->cfg->tags[tag].length,
-                             !v->valid, v->ts_ms);
+                             !v->valid, ts);
             break;
         default:
-            gw_sf_push(n->sf, (uint8_t)dev, tag, v->value, !v->valid, v->ts_ms);
+            gw_sf_push(n->sf, (uint8_t)dev, tag, v->value, !v->valid, ts);
             break;
         }
         rbe_commit(n, tag, v);
@@ -854,7 +897,7 @@ void gw_node_device_changed(gw_node_t *n, uint16_t dev)
         return;
     }
     if (!n->online) {
-        if (n->sf != NULL && n->born_once) {
+        if (n->sf != NULL && n->born_once && n->time_valid) {
             store_device(n, dev);
         }
         return;
@@ -874,6 +917,9 @@ void gw_node_device_changed(gw_node_t *n, uint16_t dev)
         }
         return;
     }
+    if (!n->time_valid) {
+        return;   /* #160: no DDATA yet; the report-by-exception state waits for the rebirth */
+    }
     const gw_device_cfg_t *d = &n->cfg->devices[dev];
     size_t base = typed(n, dev) ? 1 : 0;
     size_t count = 0;
@@ -890,6 +936,9 @@ void gw_node_device_changed(gw_node_t *n, uint16_t dev)
 
 static void publish_io(gw_node_t *n, uint8_t force_do)
 {
+    if (!n->time_valid) {
+        return;   /* #160: no NDATA yet (also no DO confirmation): the rebirth carries the I/O */
+    }
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
     uint8_t di_changed = io.di ^ n->di_reported;
@@ -901,14 +950,15 @@ static void publish_io(gw_node_t *n, uint8_t force_do)
     size_t count = 0;
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         if (di_changed & (1u << k)) {
-            metric(n, count++, NULL, GW_ALIAS_DI_BASE + k, SPB_DT_BOOLEAN, io.di_ts_ms)->v.num =
-                (io.di >> k) & 1u;
+            metric(n, count++, NULL, GW_ALIAS_DI_BASE + k, SPB_DT_BOOLEAN,
+                   live_ts(n, io.di_ts_ms))
+                ->v.num = (io.di >> k) & 1u;
         }
     }
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         if (do_changed & (1u << k)) {
             spb_metric_t *m = metric(n, count++, NULL, GW_ALIAS_DO_BASE + k, SPB_DT_BOOLEAN,
-                                     io.do_ts_ms);
+                                     live_ts(n, io.do_ts_ms));
             m->v.num = (io.dout >> k) & 1u;
             m->is_null = io.do_unknown;
             if (do_quality) {
@@ -918,8 +968,9 @@ static void publish_io(gw_node_t *n, uint8_t force_do)
     }
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {   /* IO-4: with the DI change that made it */
         if (io.count[k] != n->count_reported[k]) {
-            metric(n, count++, NULL, GW_ALIAS_COUNT_BASE + k, SPB_DT_UINT64, io.di_ts_ms)->v.u64 =
-                io.count[k];
+            metric(n, count++, NULL, GW_ALIAS_COUNT_BASE + k, SPB_DT_UINT64,
+                   live_ts(n, io.di_ts_ms))
+                ->v.u64 = io.count[k];
         }
     }
     memcpy(n->count_reported, io.count, sizeof(n->count_reported));
@@ -949,19 +1000,19 @@ static void store_io(gw_node_t *n)
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         if (di_changed & (1u << k)) {
             gw_sf_push(n->sf, GW_SF_NODE, (uint16_t)(GW_ALIAS_DI_BASE + k), (io.di >> k) & 1u,
-                       false, io.di_ts_ms);
+                       false, sample_ts(n, io.di_ts_ms));
         }
     }
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         if (do_changed & (1u << k)) {
             gw_sf_push(n->sf, GW_SF_NODE, (uint16_t)(GW_ALIAS_DO_BASE + k), (io.dout >> k) & 1u,
-                       io.do_unknown, io.do_ts_ms);
+                       io.do_unknown, sample_ts(n, io.do_ts_ms));
         }
     }
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {   /* IO-4 pulse counters, UInt64 */
         if (io.count[k] != n->count_reported[k]) {
             gw_sf_push_u64(n->sf, GW_SF_NODE, (uint16_t)(GW_ALIAS_COUNT_BASE + k), io.count[k],
-                           false, io.di_ts_ms);
+                           false, sample_ts(n, io.di_ts_ms));
         }
     }
     n->di_reported = io.di;
@@ -974,7 +1025,7 @@ void gw_node_io_changed(gw_node_t *n)
 {
     if (n->online) {
         publish_io(n, 0);
-    } else if (n->sf != NULL && n->born_once) {
+    } else if (n->sf != NULL && n->born_once && n->time_valid) {
         store_io(n);
     }
 }
@@ -988,6 +1039,9 @@ size_t gw_node_flush_history(gw_node_t *n, size_t max_msgs)
 {
     if (n->sf == NULL) {
         return 0;
+    }
+    if (!n->time_valid) {
+        return gw_sf_count(n->sf);   /* #160: no DDATA or NDATA yet (their payload timestamp) */
     }
     for (size_t sent = 0; n->online && sent < max_msgs && gw_sf_count(n->sf) > 0;) {
         size_t cnt = gw_sf_peek(n->sf, n->hist, GW_NODE_HIST_RECS);
@@ -1063,7 +1117,8 @@ size_t gw_node_flush_history(gw_node_t *n, size_t max_msgs)
 
 void gw_node_write_done(gw_node_t *n, uint16_t tag, bool ok)
 {
-    if (!ok || !n->online || tag >= n->cfg->tag_count) {
+    /* #160: no DDATA before the clock is valid; the rebirth carries the written value */
+    if (!ok || !n->online || !n->time_valid || tag >= n->cfg->tag_count) {
         return;
     }
     uint16_t dev = gw_config_tag_device(n->cfg, tag);
@@ -1381,7 +1436,7 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
         if (n->cmd_do_mask) {
             publish_io(n, n->cmd_do_mask);
         }
-        if (n->cmd_scan_rate) {
+        if (n->cmd_scan_rate && n->time_valid) {   /* #160: else in the rebirth */
             metric(n, 0, NULL, GW_ALIAS_SCAN_RATE, SPB_DT_UINT32, gw_port_time_ms())->v.num =
                 n->scan_rate_ms;
             publish(n, "NDATA", NULL, 1, 0);

@@ -42,7 +42,7 @@
 static const char *TAG = "web";
 
 #define REALM_HDR "Basic realm=\"gateway\", charset=\"UTF-8\""
-#define WEB_URI_HANDLERS 15   /* the routes of gw_web_start (uris[]) */
+#define WEB_URI_HANDLERS 16   /* the routes of gw_web_start (uris[]) */
 
 static gw_web_ctx_t s_ctx;
 static httpd_handle_t s_server;
@@ -671,6 +671,45 @@ static esp_err_t rebirth_post(httpd_req_t *req)
     return send_json(req, "202 Accepted", "{\"ok\":true,\"rebirth\":true}\n");
 }
 
+/* ---------- #160: POST /api/time ---------- */
+
+/* TIME-1 / issue #160: the web UI's button "Set the time from the browser", for a network with
+ * no time server and a gateway with no RTC time. {"utc_ms": <ms UTC>}: the gateway sets its
+ * clock and the RTC; it publishes NDATA and DDATA again, after a rebirth if the births went out
+ * without a valid clock. Same checks as every write (CSRF, then the password); in every mode
+ * (the RTC keeps the time for the next boot). Not over a clock that SNTP synchronises. */
+static esp_err_t time_post(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    size_t len;
+    const char *status;
+    char *body = req->content_len <= 128 ? read_body(req, &len, &status) : NULL;
+    if (body == NULL) {
+        return refuse_body(req, "400 Bad Request",
+                           "expected {\"utc_ms\": <milliseconds since 1970-01-01T00:00:00Z>} (at "
+                           "most 128 bytes)");
+    }
+    int64_t ms = 0;
+    char why[120];
+    gw_clock_set_t r = gw_clock_parse_set(body, len, gw_edge_time_source(), &ms, why, sizeof(why));
+    heap_caps_free(body);
+    if (r == GW_CLOCK_SET_OK && !gw_edge_set_browser_time(ms)) {
+        r = GW_CLOCK_SET_SYNCED;   /* SNTP answered in between */
+        snprintf(why, sizeof(why), "SNTP synchronises the clock: the time of the browser is not used");
+    }
+    if (r != GW_CLOCK_SET_OK) {
+        return send_error(req, r == GW_CLOCK_SET_SYNCED ? "409 Conflict" : "400 Bad Request", NULL,
+                          why);
+    }
+    ESP_LOGI(TAG, "clock set through the REST API");
+    char answer[96];
+    snprintf(answer, sizeof(answer), "{\"ok\":true,\"utc_ms\":%lld,\"source\":\"browser\"}\n",
+             (long long)ms);
+    return send_json(req, "200 OK", answer);
+}
+
 /* ---------- #182: POST /api/modbus/read ---------- */
 
 _Static_assert(GW_MBDIAG_MAX == GW_BUS_DIAG_MAX, "one test read is one diagnostic read of the bus");
@@ -1270,11 +1309,12 @@ static esp_err_t status_get(httpd_req_t *req)
     /* TIME-1..3 */
     gw_io_rtc_info_t rtc;
     gw_io_rtc_get(&rtc);
-    bool synced = gw_edge_time_synced();
-    outf(&o, "]},\"time\":{\"utc_s\":%lld,\"synced\":%s,\"source\":\"%s\",\"rtc\":{"
-             "\"present\":%s,\"status\":",
-         (long long)time(NULL), synced ? "true" : "false",
-         synced ? "sntp" : rtc.restored ? "rtc" : "none", rtc.present ? "true" : "false");
+    gw_clock_source_t src = gw_edge_time_source();   /* #160: "valid", source "browser" */
+    outf(&o, "]},\"time\":{\"utc_s\":%lld,\"synced\":%s,\"valid\":%s,\"source\":\"%s\","
+             "\"rtc\":{\"present\":%s,\"status\":",
+         (long long)time(NULL), src == GW_CLOCK_SNTP ? "true" : "false",
+         gw_clock_valid(src) ? "true" : "false", gw_clock_source_key(src),
+         rtc.present ? "true" : "false");
     out_str(&o, rtc.present ? gw_rtc_status_str((gw_rtc_status_t)rtc.status) : "not answering");
     outf(&o, ",\"stores\":%lu}}", (unsigned long)rtc.stores);
     status_card(&o, c);
@@ -1427,7 +1467,8 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
                            h_fw_get = {firmware_get}, h_fw_post = {firmware_post},
                            h_card_format = {card_format_post}, h_rebirth = {rebirth_post},
                            h_modbus_read = {modbus_read_post}, h_cd_get = {coredump_get},
-                           h_cd_delete = {coredump_delete}, h_cd_summary = {coredump_summary_get};
+                           h_cd_delete = {coredump_delete}, h_cd_summary = {coredump_summary_get},
+                           h_time = {time_post};
     static const struct {
         const char *uri;
         httpd_method_t method;
@@ -1448,6 +1489,7 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         {"/api/coredump", HTTP_GET, &h_cd_get},            /* #132 */
         {"/api/coredump", HTTP_DELETE, &h_cd_delete},
         {"/api/coredump/summary", HTTP_GET, &h_cd_summary},
+        {"/api/time", HTTP_POST, &h_time},                 /* #160 */
     };
     _Static_assert(sizeof(uris) / sizeof(uris[0]) == WEB_URI_HANDLERS, "WEB_URI_HANDLERS");
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {

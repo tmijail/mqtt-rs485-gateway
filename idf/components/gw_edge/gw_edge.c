@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <stdatomic.h>
 #include <string.h>
+#include <sys/time.h>
 #include <time.h>
 
 #include "esp_crt_bundle.h"
@@ -41,6 +42,10 @@
 #include "psa/crypto.h"
 
 static const char *TAG = "edge";
+
+/* Issue #80: the Sparkplug engine is one allocation (gw_storage_big_alloc). Under 21 504 B it
+ * stays in the TLSF size class that the RAM checks of the E2E measured (gw_node.h). */
+_Static_assert(sizeof(gw_node_t) <= 21504, "gw_node_t is larger than 21 504 B (issue #80)");
 
 #define STACK_BYTES      6144   /* about 2.5 KB free at the births (log_stacks), templates included */
 #define MAX_IDLE_MS      1000
@@ -87,7 +92,7 @@ typedef struct {
 /* ---- written by other tasks ---- */
 static atomic_bool s_ip_up;
 static atomic_bool s_time_synced;
-static atomic_bool s_time_valid;    /* TIME-2: the clock came from the RTC at boot */
+static atomic_int s_time_src;       /* gw_clock_source_t other than SNTP: RTC, browser (#160) */
 static atomic_bool s_mqtt_connected;
 static atomic_bool s_io_dirty;
 static atomic_uint s_conn_gen;
@@ -154,7 +159,6 @@ static int s_sub_msg_id;        /* > 0: SUBSCRIBE sent, NBIRTH waits for its SUB
 static int64_t s_sub_deadline_us;
 static unsigned s_handled_conn;
 static unsigned s_handled_disc;
-static bool s_births_timed;     /* the current session's births carried synchronised time */
 static int64_t s_fed_us;        /* last time this task fed the task watchdog */
 static uint32_t s_max_unfed_ms; /* longest stretch without feeding since the last reset */
 static uint32_t s_max_gap_ms;   /* the same since boot (#122: the shell, for the board tests) */
@@ -232,15 +236,48 @@ void gw_edge_notify_route(void)
     wake();
 }
 
-/* TIME-2: a time worth timestamping with, from SNTP or from the RTC at boot. */
+/* TIME-1/TIME-2 and issue #160: the source of the clock (SNTP before the others). */
+gw_clock_source_t gw_edge_time_source(void)
+{
+    return atomic_load(&s_time_synced) ? GW_CLOCK_SNTP
+                                       : (gw_clock_source_t)atomic_load(&s_time_src);
+}
+
+/* A time worth timestamping with: SNTP, the RTC at boot or the browser (#160). */
 static bool time_ok(void)
 {
-    return atomic_load(&s_time_synced) || atomic_load(&s_time_valid);
+    return gw_clock_valid(gw_edge_time_source());
+}
+
+bool gw_edge_time_valid(void)
+{
+    return time_ok();
 }
 
 bool gw_edge_time_synced(void)
 {
     return atomic_load(&s_time_synced);
+}
+
+bool gw_edge_set_browser_time(int64_t utc_ms)
+{
+    if (atomic_load(&s_time_synced) || !gw_clock_plausible_ms(utc_ms)) {
+        return false;
+    }
+    const struct timeval tv = {.tv_sec = (time_t)(utc_ms / 1000),
+                               .tv_usec = (suseconds_t)((utc_ms % 1000) * 1000)};
+    gw_clock_source_t before = gw_edge_time_source();
+    settimeofday(&tv, NULL);
+    atomic_store(&s_time_src, gw_clock_after(before, GW_CLOCK_BROWSER));
+    gw_io_rtc_store();   /* TIME-2: the RTC keeps it across a power cut */
+    struct tm tm;
+    gmtime_r(&tv.tv_sec, &tm);
+    ESP_LOGW(TAG, "clock set from the browser: %04d-%02d-%02dT%02d:%02d:%02dZ (was %s; not "
+                  "synchronised until SNTP)",
+             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
+             gw_clock_source_key(before));
+    wake();
+    return true;
 }
 
 void gw_edge_notify_time_synced(void)
@@ -1197,7 +1234,6 @@ static void start_births(void)
     s_retry_at_us = 0;
     atomic_store(&s_dev_dirty, 0);   /* the births carry the current state */
     atomic_store(&s_io_dirty, false);
-    s_births_timed = time_ok();
     feed_watchdog();
     s_max_unfed_ms = 0;
     int64_t t0 = esp_timer_get_time();
@@ -1428,7 +1464,8 @@ static void restart_now(void)
 
 /* MQTT-4: TLS settings that cannot work (a missing or unreadable certificate) never connect;
  * and with certificate dates checked (CONFIG_MBEDTLS_HAVE_TIME_DATE) a TLS connection waits
- * for SNTP: without a valid clock every certificate would be "not valid yet". */
+ * for a valid clock (SNTP, the RTC, the browser: #160): without it every certificate would be
+ * "not valid yet". */
 static bool tls_can_start(int64_t now)
 {
     if (s_setup_error[0] != '\0') {
@@ -1442,7 +1479,8 @@ static bool tls_can_start(int64_t now)
     if (s_cfg->mqtt.tls.enabled && !time_ok()) {
         if (!s_waiting_time_logged) {
             s_waiting_time_logged = true;
-            ESP_LOGW(TAG, "TLS: waiting for SNTP before connecting (certificate dates are checked)");
+            ESP_LOGW(TAG, "TLS: waiting for a valid clock before connecting (SNTP, the RTC or the "
+                          "web UI; certificate dates are checked)");
         }
         return false;
     }
@@ -1624,13 +1662,11 @@ static void reconcile(void)
         reconnect(now);
     }
 
-    if (s_node->online && !s_births_timed && atomic_load(&s_time_synced)) {
-        /* (births with the RTC's time were valid: no rebirth for those) */
-        /* Births went out before SNTP: re-issue them so hosts get valid timestamps. */
-        s_births_timed = true;
-        ESP_LOGI(TAG, "clock now synchronised: rebirth");
-        gw_node_rebirth(s_node);
-    }
+    /* Issue #160: no NDATA/DDATA (and nothing stored) without a valid clock; when it becomes
+     * valid (SNTP, browser), a rebirth if the births went out without it, so that hosts get
+     * UTC timestamps (tck-id-payloads-timestamp-in-UTC). Births with the RTC's time were
+     * valid: no rebirth for those. A failed NBIRTH: check_rebirth() below. */
+    gw_node_set_time_valid(s_node, time_ok());
     /* TIME-3: NDATA Time Synced when SNTP synchronises after births timed by the RTC (the
      * rebirth above already carried it otherwise) */
     gw_node_set_time_synced(s_node, atomic_load(&s_time_synced));
@@ -1653,8 +1689,8 @@ static void reconcile(void)
             gw_node_io_changed(s_node);
         }
     }
-    if (s_node->online && gw_sf_count(&s_sf) > 0) {
-        /* SPB-14: history after the births, a few messages per loop */
+    if (s_node->online && s_node->time_valid && gw_sf_count(&s_sf) > 0) {
+        /* SPB-14: history after the births, a few messages per loop (#160: valid clock) */
         if (gw_node_flush_history(s_node, SF_MSGS_PER_LOOP) == 0) {
             ESP_LOGI(TAG, "store & forward: history sent (%lu historical messages in total, %lu "
                           "samples of devices without DBIRTH dropped)",
@@ -1669,8 +1705,10 @@ static void reconcile(void)
 
 static TickType_t next_timeout(void)
 {
-    int64_t ms = (s_node->online && gw_sf_count(&s_sf) > 0) || spill_wants_time() ? 10
-                                                                                 : MAX_IDLE_MS;
+    int64_t ms = (s_node->online && s_node->time_valid && gw_sf_count(&s_sf) > 0) ||
+                         spill_wants_time()
+                     ? 10
+                     : MAX_IDLE_MS;
     int64_t now = esp_timer_get_time();
     if (s_sub_msg_id > 0) {
         int64_t r = (s_sub_deadline_us - now) / 1000;
@@ -1891,7 +1929,10 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
     s_cfg = cfg;
     gw_io_rtc_info_t rtc;
     gw_io_rtc_get(&rtc);
-    atomic_store(&s_time_valid, rtc.restored);   /* TIME-2: no SNTP wait with the RTC's time */
+    if (rtc.restored) {   /* TIME-2: no SNTP wait with the RTC's time */
+        int none = GW_CLOCK_NONE;
+        atomic_compare_exchange_strong(&s_time_src, &none, GW_CLOCK_RTC);
+    }
 #if !CONFIG_MQTT_PROTOCOL_5
     if (cfg->mqtt.protocol == GW_MQTT_V5) {
         ESP_LOGE(TAG, "mqtt.protocol 5 needs CONFIG_MQTT_PROTOCOL_5: MQTT not started");
@@ -1914,6 +1955,11 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         .ctx = NULL,
     };
     gw_node_init(s_node, cfg, &ops, info);
+    /* #160: no DATA before a valid clock. With a valid clock already (the RTC), false then true
+     * still marks this moment: a sample taken before the RTC set the clock (the DO boot state,
+     * read before gw_io_rtc_restore) gets the time of its message, not ~1970 */
+    gw_node_set_time_valid(s_node, false);
+    gw_node_set_time_valid(s_node, time_ok());
     gw_bdseq_init(&s_bdseqs);   /* SPB-3 / #161: bdSeq 0 for the first CONNECT of the boot */
     atomic_store(&s_fw_dirty, true);   /* the first NBIRTH carries the update's state */
     /* The largest births (SPB-16/17/18) need GW_SPB_PAYLOAD_MAX, in PSRAM. Only the QEMU build
