@@ -4980,6 +4980,537 @@ def run_nvs_ota(args, work):
         broker.wait()
 
 
+# ---------------------------------------------------------------- UMH Core interoperability (#175)
+#
+# Optional (scenarios.OPTIONAL): a real benthos-umh with the sparkplug_b input and the bridge of
+# docs/how-to/connect-to-umh-core.md reads the gateway through the main mosquitto. The harness
+# takes the input keys and the tag_processor code from that document, so the test examines what
+# the document tells users to do. Get the binary (it is not in the CI image):
+#   curl -sSLo benthos-umh https://github.com/united-manufacturing-hub/benthos-umh/releases/\
+#       download/v0.16.2/benthos-linux-amd64 && chmod +x benthos-umh
+#   E2E_BENTHOS_UMH=$PWD/benthos-umh tools/e2e/run_e2e.sh --only umh
+# Without E2E_BENTHOS_UMH the scenario is a SKIP. The checks assert what v0.16.2 does, the gaps of
+# UMH included, so a new UMH version that changes its behaviour makes a check fail.
+
+UMH_VERSION, UMH_COMMIT = "0.16.2", "0d3a203"
+# sha256 of the release asset benthos-linux-amd64 of v0.16.2 (the GitHub release digest)
+UMH_SHA256 = "39a876816578efbd5b36474c079dbdca5ba376ae25cc8453ba52b8e7b46d7c33"
+UMH_GROUP, UMH_NODE, UMH_NODE2 = "acme", "acme:berlin:gw01", "acme:berlin:gw02"
+# Issue #172: six location levels before each device name, more than the five levels of ISA-95
+UMH_PREFIX = "acme:berlin:tempelhof:packaging:hall2:line3"
+UMH_LOC = UMH_PREFIX.replace(":", ".")
+UMH_HOWTO = HERE.parent.parent.parent / "docs" / "how-to" / "connect-to-umh-core.md"
+UMH_TS_LINE = "msg.meta.timestamp_ms = msg.meta.spb_timestamp;"
+SKIPPED = []      # issue #175: scenarios that did not run (a program that they need is absent)
+# The tags of the device cell2:meter1 (unit 1): (name, tag configuration, value at the input of
+# the bridge). Each scalar type of the gateway, signed integers included.
+UMH_TAGS = [
+    ("L1/Voltage", {"area": "input", "address": 0, "type": "float32", "word_order": "big",
+                    "deadband": 0.1, "units": "V"}, 230.5),
+    ("Setpoint", {"area": "holding", "address": 10, "type": "int16", "scale": 0.1}, 5.0),
+    ("Run", {"area": "coil", "address": 0, "type": "bool"}, False),
+    ("Energy", {"area": "holding", "address": 30, "type": "uint64", "word_order": "ABCD"},
+     MB6["Energy"]),
+    ("Counter", {"area": "holding", "address": 34, "type": "int64", "word_order": "CDAB"},
+     MB6["Counter"]),
+    ("Flow", {"area": "input", "address": 40, "type": "float64", "word_order": "DCBA"},
+     MB6["Flow"]),
+    ("Temp", {"area": "input", "address": 44, "type": "int32", "word_order": "BADC"},
+     MB6["Temp"]),
+    ("Serial", {"area": "holding", "address": 50, "type": "string", "length": 8}, MB6["Serial"]),
+    ("Ready", {"area": "input", "address": 46, "type": "bool", "bit": 15}, True),
+    ("Neg16", {"area": "holding", "address": 70, "type": "int16"}, -2),
+    ("Max16", {"area": "holding", "address": 71, "type": "uint16"}, 65535),
+    ("Big32", {"area": "holding", "address": 72, "type": "uint32"}, 4000000000),
+]
+
+
+def umh_bridge():
+    """(input section, tag_processor code) of the bridge example in the how-to, or None."""
+    try:
+        text = UMH_HOWTO.read_text()
+    except OSError:
+        return None
+    m = re.search(r"^## Configure the UMH bridge$.*?^```yaml\n(.*?)^```", text, re.S | re.M)
+    if not m:
+        return None
+    lines = m.group(1).splitlines()
+    try:
+        inp = lines[lines.index("input:"):lines.index("pipeline:")]
+        j = next(k for k, ln in enumerate(lines) if ln.strip() == "defaults: |")
+    except (ValueError, StopIteration):
+        return None
+    ind = len(lines[j]) - len(lines[j].lstrip())
+    code = []
+    for ln in lines[j + 1:]:
+        if ln.strip() and len(ln) - len(ln.lstrip()) <= ind:
+            break
+        code.append(ln)
+    import textwrap
+    return "\n".join(inp).rstrip(), textwrap.dedent("\n".join(code)).strip() + "\n"
+
+
+def umh_yaml(inp, outputs):
+    """A benthos-umh configuration: the input section @inp, and a file of JSON lines for each
+    (path, tag_processor code or None) of @outputs. None: the messages of the input as they are
+    (payload and metadata); code: the tag_processor with that code, then the UMH topic, the
+    payload and the metadata."""
+    import textwrap
+    y = ["http:", "  enabled: false", "logger:", "  level: INFO", "  format: logfmt", inp,
+         "output:", "  broker:", "    pattern: fan_out", "    outputs:"]
+    for path, code in outputs:
+        y += [f"      - file: {{path: {json.dumps(str(path))}, codec: lines}}", "        processors:"]
+        if code is not None:
+            y += ["          - tag_processor:", "              defaults: |",
+                  textwrap.indent(code, " " * 16).rstrip(),
+                  "          - mapping: |", "              root.topic = @umh_topic"]
+        else:
+            y += ["          - mapping: |"]
+        y += ["              root.payload = this.catch(content().string())",
+              "              root.meta = @"]
+    return "\n".join(y) + "\n"
+
+
+class Benthos:
+    """Issue #175: one benthos-umh process (configuration @yaml_text, outputs {key: path})."""
+
+    def __init__(self, exe, work, name, yaml_text, outputs):
+        self.dir = work / f"umh-{name}"
+        shutil.rmtree(self.dir, ignore_errors=True)
+        self.dir.mkdir(parents=True)
+        self.outputs, self.closed = outputs, False
+        cfg = self.dir / "config.yaml"
+        cfg.write_text(yaml_text)
+        self.log = self.dir / "benthos.log"
+        self.proc = subprocess.Popen([exe, "-c", str(cfg)], stdin=subprocess.DEVNULL,
+                                     stdout=open(self.log, "ab"), stderr=subprocess.STDOUT,
+                                     cwd=self.dir)
+        PROCS.append(self.proc)
+        track(self, self.stop)
+
+    def stop(self):
+        if self.closed:
+            return
+        self.closed = True
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(15)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+
+    def entries(self, key):
+        """The JSON lines of output @key written so far (a line in progress is left out)."""
+        try:
+            text = pathlib.Path(self.outputs[key]).read_text()
+        except OSError:
+            return []
+        out = []
+        for ln in text.splitlines():
+            try:
+                out.append(json.loads(ln))
+            except ValueError:
+                pass
+        return out
+
+    def log_lines(self, pattern):
+        try:
+            text = self.log.read_text(errors="replace")
+        except OSError:
+            return []
+        return [ln for ln in text.splitlines() if re.search(pattern, ln)]
+
+    def wait_log(self, pattern, timeout):
+        end = time.monotonic() + timeout
+        while True:
+            if self.log_lines(pattern):
+                return True
+            if self.proc.poll() is not None or wait_left(end) <= 0:
+                return False
+            time.sleep(0.2)
+
+
+def wait_for(fn, timeout, step=0.5):
+    """The first true result of @fn within @timeout (or its last result)."""
+    end = time.monotonic() + timeout
+    while True:
+        v = fn()
+        if v or wait_left(end) <= 0:
+            return v
+        time.sleep(step)
+
+
+def uns_values(entries, node=None):
+    """{UMH topic: [values in order]} of tag_processor output @entries (of edge node @node)."""
+    out = {}
+    for e in entries:
+        if node is None or e.get("meta", {}).get("spb_edge_node_id") == node:
+            out.setdefault(e.get("topic"), []).append((e.get("payload") or {}).get("value"))
+    return out
+
+
+def raw_of(entries, node, name=None, kind=None, device=None):
+    """The input messages of edge node @node (with metric @name, message type @kind and the
+    device @device: a suffix of the device_id)."""
+    out = []
+    for e in entries:
+        meta = e.get("meta", {})
+        if meta.get("spb_edge_node_id") != node:
+            continue
+        if name is not None and meta.get("spb_metric_name") != name:
+            continue
+        if kind is not None and meta.get("spb_message_type") != kind:
+            continue
+        if device is not None and not meta.get("spb_device_id", "").endswith(device):
+            continue
+        out.append(e)
+    return out
+
+
+def umh_device_cfg(cfg, preset):
+    """The configuration of the UMH scenario on the harness configuration @cfg."""
+    cfg["sparkplug"].update(group_id=UMH_GROUP, device_prefix=UMH_PREFIX, diagnostics_s=0,
+                            primary_host_id="")
+    if preset:
+        cfg["sparkplug"]["naming"] = "umh"
+    cfg.pop("modbus_tcp", None)
+    cfg["devices"] = [
+        {"name": "cell2:meter1", "unit_id": 1, "poll_ms": 1000, "offline_after": 3, "max_gap": 10,
+         "tags": [dict(t, name=n) for n, t, _ in UMH_TAGS] + [
+             {"name": "Raw", "area": "holding", "address": 76, "type": "bytes", "length": 2}]},
+        {"name": "cell2:pump1", "unit_id": 1, "type": "Pump", "poll_ms": 1000, "tags": [
+            {"name": "Speed", "area": "holding", "address": 80, "type": "uint16", "units": "rpm"},
+            {"name": "Run", "area": "coil", "address": 5, "type": "bool"}]},
+        {"name": "cell2:dead1", "unit_id": 3, "poll_ms": 1000, "offline_after": 3, "tags": [
+            {"name": "Value", "area": "holding", "address": 0, "type": "uint16"}]}]
+    return cfg
+
+
+def run_umh(args, work, slave):
+    """Issue #175: the gateway against a real benthos-umh v0.16.2 (UMH Core's sparkplug_b input),
+    with the bridge of docs/how-to/connect-to-umh-core.md. Two bridges read the main mosquitto:
+    A (the how-to: role secondary_active, include_edge_node_in_location false; its outputs: the
+    input messages, the tag_processor of the how-to, and the same without the timestamp line) and
+    B (include_edge_node_in_location true, secondary_passive). GW 'acme:berlin:gw01' (UMH preset,
+    store & forward, through a relay) has a device prefix of six levels, a device with each scalar
+    type, a typed device, a bytes tag and a device that never answers. Then: a restart of bridge
+    A (rebirth request, names), a failed read, store & forward (is_historical and the two
+    timestamp choices), and GW 'acme:berlin:gw02' without the preset (template and DataSet)."""
+    exe = os.environ.get("E2E_BENTHOS_UMH", "")
+    if not exe or not os.access(exe, os.X_OK):
+        SKIPPED.append("umh")
+        print(f"[SKIP] issue #175 UMH Core interoperability: no benthos-umh (set E2E_BENTHOS_UMH "
+              f"to the release binary benthos-linux-amd64 of v{UMH_VERSION}, commit "
+              f"{UMH_COMMIT}; got {exe!r})", flush=True)
+        return
+    bridge = umh_bridge()
+    if bridge is None:
+        check("issue #175 the bridge example of the how-to can be read", False, str(UMH_HOWTO))
+        return
+    inp, code = bridge
+    try:
+        version = subprocess.run([exe, "--version"], capture_output=True, text=True,
+                                 timeout=30).stdout
+    except (OSError, subprocess.SubprocessError) as e:
+        version = str(e)
+    m = re.search(r"Version:\s*(\S+)", version)
+    version = m.group(1) if m else version.strip()[:80]
+    with open(exe, "rb") as f:
+        digest = hashlib.file_digest(f, "sha256").hexdigest()
+    print(f"benthos-umh {version}, sha256 {digest} "
+          f"({'the release asset' if digest == UMH_SHA256 else 'NOT the release asset'})",
+          flush=True)
+    check(f"issue #175 benthos-umh is v{UMH_VERSION} (commit {UMH_COMMIT})",
+          version == UMH_VERSION, f"{version}; sha256 {digest}")
+    arrival = "\n".join(ln for ln in code.splitlines()
+                        if UMH_TS_LINE not in ln and "Sparkplug timestamp" not in ln) + "\n"
+    port = MQTT_PORT + 30
+    tu = f"spBv1.0/{UMH_GROUP}"
+    node, node2 = UMH_NODE, UMH_NODE2
+    meter, pump, dead = (f"{UMH_PREFIX}:cell2:{d}" for d in ("meter1", "pump1", "dead1"))
+    snap = slave.snapshot()
+    slave.ctx.setValues(3, 70, [0xFFFE, 65535, 4000000000 >> 16, 4000000000 & 0xFFFF])
+    slave.ctx.setValues(3, 76, [0xABCD, 0x0102])
+    slave.ctx.setValues(3, 80, [1450])
+    slave.ctx.setValues(1, 5, [1])
+    relay = Relay(port, MQTT_PORT)
+    obs = Observer()
+
+    def bridge_a(name):
+        d = work / f"umh-{name}"
+        outs = {"raw": d / "raw.jsonl", "uns": d / "uns.jsonl", "arrival": d / "uns-arrival.jsonl"}
+        return Benthos(exe, work, name, umh_yaml(inp, [(outs["raw"], None), (outs["uns"], code),
+                                                       (outs["arrival"], arrival)]), outs)
+
+    inp_b = inp.replace("include_edge_node_in_location: false",
+                        "include_edge_node_in_location: true") \
+        .replace('role: "secondary_active"', 'role: "secondary_passive"') \
+        .replace('client_id: "umh-sparkplug-acme"', 'client_id: "umh-sparkplug-acme-b"')
+    inp_a = inp.replace("tcp://192.168.1.10:1883", f"tcp://127.0.0.1:{MQTT_PORT}")
+    inp_b = inp_b.replace("tcp://192.168.1.10:1883", f"tcp://127.0.0.1:{MQTT_PORT}")
+    inp = inp_a
+    db = work / "umh-b"
+    a = bridge_a("a")
+    bridges = [a]
+    b = Benthos(exe, work, "b", umh_yaml(inp_b, [(db / "raw.jsonl", None), (db / "uns.jsonl", code)]),
+                {"raw": db / "raw.jsonl", "uns": db / "uns.jsonl"})
+    bridges.append(b)
+    subscribed = all(x.wait_log(r"Subscribed to Sparkplug topic", 30) for x in (a, b))
+    check("issue #175 the two bridges (the how-to configuration, and include_edge_node_in_location "
+          "true) connect to the broker and subscribe", subscribed and "include_edge_node" in inp_b
+          and f"127.0.0.1:{MQTT_PORT}" in inp_b,
+          f"A: {(a.log_lines(r'Subscribed') or a.log_lines(r'.')[-1:] or ['no log'])[0][:200]}; "
+          f"B: {(b.log_lines(r'Subscribed') or b.log_lines(r'.')[-1:] or ['no log'])[0][:200]}")
+    gw = None
+    try:
+        cfg = umh_device_cfg(node_config(node, port=port), preset=True)
+        cfg["sparkplug"]["store_forward"] = True
+        t0 = time.monotonic()
+        gw = boot_variant(args, work, "umh", cfg)
+        nb = obs.wait(f"{tu}/NBIRTH/{node}", 60)
+        dbirth = obs.wait(f"{tu}/DBIRTH/{node}/{meter}", 20)
+        obs.wait(f"{tu}/DBIRTH/{node}/{pump}", 10)
+        alias = {mm.name: mm.alias for mm in dbirth[2].metrics} if dbirth else {}
+        dev_topic = f"umh.v1.{UMH_LOC}.cell2.meter1._raw"
+        node_topic = "umh.v1.acme.berlin.gw01._raw"
+        want_dev = {f"{dev_topic}.{n.replace('/', '.')}" for n, _, _ in UMH_TAGS}
+        want_node = {f"{node_topic}.{t}" for t in ("DI.1", "Counter.1", "Node_Info.Uptime",
+                                                   "Node_Info.Time_Synced",
+                                                   "Devices.cell2.meter1.Online",
+                                                   "Devices.cell2.pump1.Online",
+                                                   "Devices.cell2.dead1.Online",
+                                                   "Node_Info.Modbus.Cycles")}
+        want_pump = {f"umh.v1.{UMH_LOC}.cell2.pump1._raw.{t}" for t in ("Speed", "Run")}
+        # the dead device goes offline after 3 failed polls; its state then is false
+        wait_for(lambda: uns_values(a.entries("uns"), node).get(
+            f"{node_topic}.Devices.cell2.dead1.Online", [None])[-1] is False
+            and want_dev | want_node | want_pump <= set(uns_values(a.entries("uns"), node)), 30)
+        warns = gw.find(r"configuration: \d+ warning|warning: .*bytes|warning: .*type", t0)
+        uns = uns_values(a.entries("uns"), node)
+        raw = a.entries("raw")
+        dev_loc = {e["meta"].get("umh_location_path") for e in raw_of(raw, node, kind="DBIRTH",
+                                                                      device="meter1")
+                   if e["meta"].get("umh_conversion_status") == "success"}
+        missing = sorted((want_dev | want_node | want_pump) - set(uns))
+        check("issue #175 UMH-1 location path and tag names: device prefix of six levels and a "
+              "Parris device name -> umh.v1.acme.berlin.tempelhof.packaging.hall2.line3.cell2."
+              "meter1._raw.<tag> (L1/Voltage -> L1.Voltage); node metrics under the edge node "
+              "acme:berlin:gw01 (Node Info/Uptime -> Node_Info.Uptime); no bdSeq, Node Control or "
+              "alias_<n> topic", nb and dbirth and not missing
+              and dev_loc == {f"{UMH_LOC}.cell2.meter1"}
+              and not [t for t in uns if re.search(r"bdSeq|Node_Control|alias_", t or "")],
+              f"missing {missing[:6]}; location of the device {sorted(dev_loc)}; {len(uns)} UNS "
+              f"topics of the node, e.g. {sorted(uns)[:4]}")
+        # Issue #160: a sample read before the gateway had a valid time has a timestamp near 1970;
+        # with the timestamp line of the how-to UMH keeps that time
+        old = [(e.get("topic"), e["payload"].get("timestamp_ms")) for e in a.entries("uns")
+               if isinstance(e.get("payload"), dict)
+               and (e["payload"].get("timestamp_ms") or 2 ** 62) < 10 ** 12]
+        print(f"[INFO] issue #175/#160: {len(old)} UNS values with a timestamp before 2001 (read "
+              f"before the time was valid), e.g. {old[:3]}", flush=True)
+        # UMH-2: the values. The input of the bridge has them exact; the tag_processor runs
+        # JavaScript, where each number is a double: 64-bit integers beyond 2^53 lose digits.
+        got_raw, got_uns, bad = {}, {}, []
+        for n, _, v in UMH_TAGS:
+            r = raw_of(raw, node, name=n, kind="DBIRTH", device="meter1")
+            got_raw[n] = r[-1]["payload"].get("value") if r else "absent"
+            got_uns[n] = (uns.get(f"{dev_topic}.{n.replace('/', '.')}") or ["absent"])[0]
+            want_uns = float(v) if isinstance(v, int) and not isinstance(v, bool) \
+                and abs(v) > 2 ** 53 else v
+            if got_raw[n] != v or isinstance(got_raw[n], bool) != isinstance(v, bool):
+                bad.append(f"input {n}={got_raw[n]!r} (want {v!r})")
+            if got_uns[n] != want_uns:
+                bad.append(f"UNS {n}={got_uns[n]!r} (want {want_uns!r})")
+        types = {e["meta"].get("spb_metric_name"): e["meta"].get("spb_datatype")
+                 for e in raw_of(raw, node, kind="DBIRTH", device="meter1")}
+        check("issue #175 UMH-2 values of each scalar type (bool, int16 with and without a scale, "
+              "uint16, int32, uint32, int64, uint64, float32, float64, string): exact at the input "
+              "of the bridge, signed integers included; in the UNS exact too, except the 64-bit "
+              "integers beyond 2^53, which the JavaScript of the tag_processor rounds to a double "
+              f"(Energy {MB6['Energy']} -> {float(MB6['Energy']):.0f}, Counter {MB6['Counter']} -> "
+              f"{float(MB6['Counter']):.0f})", not bad,
+              f"{'; '.join(bad[:6]) or 'all as expected'}; UNS {got_uns}; datatypes {types}")
+        # UMH-6: the UMH preset: the typed device as plain metrics, the device state, the sums of
+        # the Modbus counters; the bytes tag has no value in UMH
+        bytes_in = raw_of(raw, node, name="Raw", kind="DBIRTH", device="meter1")
+        bytes_meta = bytes_in[-1]["meta"] if bytes_in else {}
+        online = {d: (uns.get(f"{node_topic}.Devices.cell2.{d}.Online") or [None])[-1]
+                  for d in ("meter1", "pump1", "dead1")}
+        pump_v = {t: (uns.get(f"umh.v1.{UMH_LOC}.cell2.pump1._raw.{t}") or [None])[-1]
+                  for t in ("Speed", "Run")}
+        cycles = (uns.get(f"{node_topic}.Node_Info.Modbus.Cycles") or [None])[-1]
+        check("issue #175 UMH-6 the UMH preset: the typed device cell2:pump1 shows its tags (Speed "
+              "1450, Run true), Devices/<name>/Online shows each device (cell2:dead1 false), "
+              "Node Info/Modbus/Cycles is a number; the bytes tag has a null value at the input "
+              "and no UNS topic; the gateway warns about the bytes tag",
+              pump_v == {"Speed": 1450, "Run": True}
+              and online == {"meter1": True, "pump1": True, "dead1": False}
+              and isinstance(cycles, int) and bytes_in and bytes_in[-1]["payload"].get("value")
+              is None and bytes_meta.get("umh_conversion_status") != "success"
+              and f"{dev_topic}.Raw" not in uns and warns,
+              f"pump {pump_v}; online {online}; Modbus cycles {cycles!r}; bytes tag "
+              f"{bytes_in[-1]['payload'] if bytes_in else 'absent'} (status "
+              f"{bytes_meta.get('umh_conversion_status')}, datatype "
+              f"{bytes_meta.get('spb_datatype')}); warnings {warns[:2]}")
+        # UMH-5: include_edge_node_in_location true (bridge B)
+        raw_b = b.entries("raw")
+        loc_b = {e["meta"].get("umh_location_path") for e in raw_of(raw_b, node, kind="DBIRTH",
+                                                                    device="meter1")
+                 if e["meta"].get("umh_conversion_status") == "success"}
+        loc_bn = {e["meta"].get("umh_location_path") for e in raw_of(raw_b, node, kind="NBIRTH")
+                  if e["meta"].get("umh_conversion_status") == "success"}
+        check("issue #175 UMH-5 include_edge_node_in_location true puts the edge node id before "
+              "the device_id (acme.berlin.gw01.acme.berlin.tempelhof...cell2.meter1); the node "
+              "metrics keep acme.berlin.gw01",
+              loc_b == {f"acme.berlin.gw01.{UMH_LOC}.cell2.meter1"} and loc_bn == {"acme.berlin.gw01"},
+              f"device {sorted(loc_b)}; node {sorted(loc_bn)}")
+
+        # UMH-3: a restart of bridge A. Before its first DATA it has no BIRTH: the DATA gives
+        # alias_<n> and, without the datatype of the BIRTH (#159), a negative int16 as a large
+        # number. secondary_active asks for a rebirth; after it the names come back.
+        a.stop()
+        restart = time.monotonic()
+        a2 = bridge_a("a2")
+        bridges.append(a2)
+        up = a2.wait_log(r"Subscribed to Sparkplug topic", 30)
+        obs.drain()
+        slave.ctx.setValues(3, 70, [0xFFFD])   # Neg16 -3: a DDATA before bridge A has a BIRTH
+        ncmd = obs.wait(f"{tu}/NCMD/{node}", 20,
+                        lambda p: any(mm.name == "Node Control/Rebirth" and mm.boolean_value
+                                      for mm in p.metrics), since=restart)
+        nb2 = obs.wait(f"{tu}/NBIRTH/{node}", 20, since=restart)
+        neg_t = f"{dev_topic}.Neg16"
+        wait_for(lambda: -3 in uns_values(a2.entries("uns"), node).get(neg_t, []), 20)
+        raw2, uns2 = a2.entries("raw"), uns_values(a2.entries("uns"), node)
+        before = [e for e in raw2 if e["meta"].get("spb_metric_name", "").startswith("alias_")
+                  and e["meta"].get("spb_edge_node_id") == node]
+        neg_alias = [e["payload"].get("value") for e in before
+                     if e["meta"].get("spb_alias") == str(alias.get("Neg16"))]
+        rebirth_logs = a2.log_lines(r"rebirth for")
+        check("issue #175 UMH-3 restart of the bridge (secondary_active): the first DDATA has no "
+              "BIRTH (alias_<n>, Neg16 -3 not as -3, the how-to drops it); the bridge sends NCMD "
+              "Node Control/Rebirth, the gateway answers with NBIRTH and DBIRTH, and the UNS "
+              "has the names and Neg16 -3; no alias_<n> topic in the UNS",
+              up and ncmd and nb2 and neg_alias and all(v != -3 for v in neg_alias)
+              and uns2.get(neg_t, [None])[-1] == -3
+              and not [t for t in uns2 if "alias_" in (t or "")]
+              and want_dev <= set(uns2),
+              f"NCMD {'yes' if ncmd else 'no'} {round(ncmd[0] - restart, 1) if ncmd else ''} s, "
+              f"NBIRTH {'yes' if nb2 else 'no'}; before the BIRTH: "
+              f"{[(e['meta'].get('spb_metric_name'), e['payload'].get('value')) for e in before][:4]};"
+              f" UNS Neg16 {uns2.get(neg_t)}; bridge log {[ln[-120:] for ln in rebirth_logs[:2]]}")
+
+        # UMH-6 (failed read): a read with an exception gives a null value with Quality BAD;
+        # the bridge has no value for it, and the UNS keeps the last value
+        v_name, v_topic = "L1/Voltage", f"{dev_topic}.L1.Voltage"
+        obs.drain()
+        slave.ctx.refuse.add((4, 0))
+        bad_dd = obs.wait(f"{tu}/DDATA/{node}/{meter}", 10, lambda p: any(
+            mm.alias == alias.get(v_name) and mm.is_null for mm in p.metrics))
+        slave.ctx.refuse.clear()
+        good_dd = obs.wait(f"{tu}/DDATA/{node}/{meter}", 10, lambda p: any(
+            mm.alias == alias.get(v_name) and not mm.is_null for mm in p.metrics))
+        time.sleep(2)
+        nulls = [e for e in raw_of(a2.entries("raw"), node, name=v_name, kind="DDATA")
+                 if e["payload"].get("value") is None]
+        uns_v = uns_values(a2.entries("uns"), node).get(v_topic, [])
+        check("issue #175 UMH-6 a failed read (exception 02): the DDATA null value with Quality BAD "
+              "reaches the bridge as null (no UMH value), the how-to drops it, and the UNS keeps "
+              "the last value: no null and no topic for the Quality",
+              bad_dd and good_dd and nulls and None not in uns_v
+              and nulls[-1]["meta"].get("umh_conversion_status") != "success",
+              f"null at the input {len(nulls)} (status "
+              f"{nulls[-1]['meta'].get('umh_conversion_status') if nulls else None}); UNS "
+              f"L1.Voltage {uns_v}")
+
+        # UMH-4: store & forward. While the broker is away, three Voltage values; back: NBIRTH,
+        # DBIRTH, then DDATA with is_historical
+        since = time.monotonic()
+        relay.stop()
+        gw.wait_log(r"MQTT down; reconnect attempt", 15, since)
+        values = [240.0, 241.0, 242.0]
+        for v in values:
+            slave.set_float(4, 0, v)
+            n0, end = len(slave.reads), time.monotonic() + 15
+            while wait_left(end) > 0 and sum(
+                    1 for r in list(slave.reads)[n0:] if r[0] == 1 and r[1] == 4
+                    and r[2] is not None and r[2] <= 0 < r[2] + (r[3] or 1)) < 2:
+                time.sleep(0.1)
+        back_ms = int(time.time() * 1000)
+        relay.start()
+        nb3 = obs.wait(f"{tu}/NBIRTH/{node}", 70, since=since)
+
+        def hist_raw():
+            return [e for e in raw_of(a2.entries("raw"), node, name=v_name, kind="DDATA")
+                    if e["meta"].get("spb_is_historical") == "true"]
+        wait_for(lambda: len(hist_raw()) >= 3, 30)
+        time.sleep(2)
+        after = [mm for x in CAPTURE if nb3 and x[0] >= nb3[0]
+                 and x[1] == f"{tu}/DDATA/{node}/{meter}" for mm in x[2].metrics
+                 if mm.is_historical and mm.alias == alias.get(v_name)]
+        sample = [(round(mm.float_value, 1), mm.timestamp) for mm in after]
+        hr = [(e["payload"].get("value"), int(e["meta"].get("spb_timestamp", 0))) for e in hist_raw()]
+        sample_ts = {ts for _, ts in sample}
+
+        def hist_uns(key):
+            return [(e["payload"].get("value"), e["payload"].get("timestamp_ms"))
+                    for e in a2.entries(key) if e.get("topic") == v_topic
+                    and e.get("meta", {}).get("spb_is_historical") == "true"
+                    and e.get("meta", {}).get("spb_edge_node_id") == node]
+        with_ts, without_ts = hist_uns("uns"), hist_uns("arrival")
+        stale = a2.log_lines(r"stale NDEATH")
+        check("issue #175 UMH-4 store & forward: the bridge gets the replayed DDATA with "
+              "spb_is_historical true, the values in order and their sample times; with "
+              "'msg.meta.timestamp_ms = msg.meta.spb_timestamp' the UNS keeps the sample time, "
+              "without it the UNS has the arrival time",
+              nb3 and [v for v, _ in sample] == values and sorted(hr) == sorted(sample)
+              and [v for v, _ in with_ts] == values and {t for _, t in with_ts} == sample_ts
+              and [v for v, _ in without_ts] == values
+              and all(t >= back_ms - 1000 and t not in sample_ts for _, t in without_ts),
+              f"gateway {sample}; input {hr}; UNS with the line {with_ts}; UNS without it "
+              f"{without_ts} (broker back at {back_ms}); bridge log: {[ln[-140:] for ln in stale[:2]]}")
+        gw.kill()
+        gw = None
+
+        # UMH-7: the same devices without the UMH preset: a template instance, a template
+        # definition and the DataSet Node Info/Modbus, which UMH cannot read
+        cfg2 = umh_device_cfg(node_config(node2), preset=False)
+        gw = boot_variant(args, work, "umh-plain", cfg2)
+        nb4 = obs.wait(f"{tu}/NBIRTH/{node2}", 60)
+        obs.wait(f"{tu}/DBIRTH/{node2}/{pump}", 20)
+        wait_for(lambda: raw_of(a2.entries("raw"), node2, kind="DBIRTH", device="pump1"), 15)
+        time.sleep(2)
+        raw4 = a2.entries("raw")
+        tmpl_def = raw_of(raw4, node2, name="Pump", kind="NBIRTH")
+        dataset = raw_of(raw4, node2, name="Node Info/Modbus", kind="NBIRTH")
+        inst = raw_of(raw4, node2, kind="DBIRTH", device="pump1")
+        uns4 = uns_values(a2.entries("uns"), node2)
+        nulls4 = [(e["meta"].get("spb_metric_name"), e["payload"].get("value"),
+                   e["meta"].get("umh_conversion_status")) for e in tmpl_def + dataset + inst]
+        check("issue #175 UMH-7 without the UMH preset: the template definition (NBIRTH), the "
+              "template instance of cell2:pump1 (DBIRTH) and the DataSet Node Info/Modbus reach "
+              "the bridge with a null value; the UNS has no topic for cell2:pump1 and no "
+              "Devices/<name>/Online",
+              nb4 and tmpl_def and dataset and inst
+              and all(v is None and s != "success" for _, v, s in nulls4)
+              and not [t for t in uns4 if ".cell2.pump1." in (t or "") or ".Devices." in (t or "")]
+              and f"{dev_topic}.Neg16" in uns4,
+              f"{nulls4[:4]}; UNS topics of gw02 {len(uns4)}, pump1 or Devices: "
+              f"{[t for t in uns4 if '.cell2.pump1.' in (t or '') or '.Devices.' in (t or '')][:3]}")
+        gw.kill()
+        gw = None
+        a2.stop()
+    finally:
+        if gw is not None:
+            gw.kill()
+        for x in bridges:
+            x.stop()
+        obs.close()
+        relay.stop()
+        slave.restore(snap)
+
+
 def start_broker(conf, log):
     # A renamed copy of the binary: other jobs on a shared host that clean up with
     # `pkill mosquitto` must not take this broker down in the middle of the scenario.
@@ -5160,6 +5691,7 @@ def main():
         # part of "main"; alone only on request (#89)
         "refuse": lambda: check_suback_refused(args, work),
         "main": lambda: run(args, log, slave, MAIN_BROKER["proc"], conf, work),
+        "umh": lambda: run_umh(args, work, slave),   # optional (issue #175)
     }
     assert set(runners) == {name for name, _ in scenarios.SCENARIOS}
     # issue #135: without --only, the full run of this variant (scenarios.variant_of)
@@ -5193,11 +5725,15 @@ def main():
             for e in errs[:3]:
                 print(f"criterion 6: {topic}: {e}", flush=True)
             bad += len(errs)
-        check(f"6. payloads decode with the official sparkplug_b.proto (Python protobuf "
-              f"{google.protobuf.__version__})",
-              CAPTURE and bad == 0,
-              f"{len(CAPTURE) + len(DISCARDED_CAPTURE)} messages decoded ({len(DISCARDED_CAPTURE)} "
-              f"of discarded attempts), {bad} structural errors")
+        if not CAPTURE and chosen and set(chosen) <= set(SKIPPED):
+            # issue #175: every scenario of the run was a SKIP (a program it needs is absent)
+            print("[SKIP] 6. payloads decode: every selected scenario was skipped", flush=True)
+        else:
+            check(f"6. payloads decode with the official sparkplug_b.proto (Python protobuf "
+                  f"{google.protobuf.__version__})",
+                  CAPTURE and bad == 0,
+                  f"{len(CAPTURE) + len(DISCARDED_CAPTURE)} messages decoded "
+                  f"({len(DISCARDED_CAPTURE)} of discarded attempts), {bad} structural errors")
         runs, errs, prev = 0, [], None
         for d in syslog_from(NODE):
             if d[4] == 1:

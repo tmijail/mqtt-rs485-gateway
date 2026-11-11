@@ -728,7 +728,7 @@ On Windows, or without a local ESP-IDF, run the E2E tests in the CI image with `
 - **Broker list (MQTT-6):** the primary is a port where, at first, nothing listens. Then the harness starts another mosquitto on this port and stops it again. The backup is the main mosquitto.
 - **Primary host (SPB-13):** the harness itself publishes the STATE messages (retained Sparkplug 3.0 JSON) of the host `SCADA1`.
 - **TCP relay** of the harness between the gateway and the main mosquitto. When the harness closes the relay, the gateway loses the broker, but the observer stays connected (store & forward, SPB-14). When the harness reads the relay at 700 B/s, it simulates a slow link (issue #59).
-- HTTPS (issue #64): slirp forwards `127.0.0.1:18443` of the host to port 443 of the gateway (`--https-port`), and `127.0.0.1:18080` to port 80 (`--http-port`). Port 80 only redirects. The harness uses HTTPS without a verification of the certificate (it is self-signed), and compares its fingerprint with the fingerprint on the console. The harness queries the shell with a common helper that asks again until it sees all the expected lines (#56). `--only` runs only some scenarios. The names are `failsafe`, `network`, `web`, `reset`, `tls`, `failover`, `mqtt5`, `phost`, `sf`, `https`, `time`, `ota`, `ota-fw1`, `ota-park`, `ota-wiring`, `ota-trial`, `nvs`, `slow`, `refuse` and `main`. `ota` selects the four OTA scenarios: FW-1 OTA (`ota-fw1`), the park of #112 (`ota-park`), the #97 integration (`ota-wiring`) and the trial of #99/#101 (`ota-trial`). The CI uses the four names to put these scenarios into different jobs (§4.5, issue #121). If a name is not known, the harness stops with an error. `refuse` runs as a separate scenario only when `main` is not in the list (`main` includes it). `tools/e2e/scenarios.py` holds the list of the scenarios and their names.
+- HTTPS (issue #64): slirp forwards `127.0.0.1:18443` of the host to port 443 of the gateway (`--https-port`), and `127.0.0.1:18080` to port 80 (`--http-port`). Port 80 only redirects. The harness uses HTTPS without a verification of the certificate (it is self-signed), and compares its fingerprint with the fingerprint on the console. The harness queries the shell with a common helper that asks again until it sees all the expected lines (#56). `--only` runs only some scenarios. The names are `failsafe`, `network`, `web`, `reset`, `tls`, `failover`, `mqtt5`, `phost`, `sf`, `https`, `time`, `ota`, `ota-fw1`, `ota-park`, `ota-wiring`, `ota-trial`, `nvs`, `slow`, `refuse`, `main` and `umh`. `umh` is optional: a full run and the CI groups do not run it, and it runs only when `--only` names it (§4.6). `ota` selects the four OTA scenarios: FW-1 OTA (`ota-fw1`), the park of #112 (`ota-park`), the #97 integration (`ota-wiring`) and the trial of #99/#101 (`ota-trial`). The CI uses the four names to put these scenarios into different jobs (§4.5, issue #121). If a name is not known, the harness stops with an error. `refuse` runs as a separate scenario only when `main` is not in the list (`main` includes it). `tools/e2e/scenarios.py` holds the list of the scenarios and their names.
 
 Configuration used: `tools/e2e/fs/config.json` (keepalive of 10 s, syslog to the receiver of the harness). `run_e2e.sh` also passes the ELF and the IDF python, to decode the *core dump* with `esp_coredump`.
 
@@ -1004,6 +1004,42 @@ The components of the project compile with `-Wall -Wextra -Werror`.
 - With PSRAM: from 992 s to 2030 s (approximately 17 minutes more). The same four scenarios take 307, 477, 386 and 131 s. The main cause is the web uploads of 1 MB. Each upload takes approximately 150 s, with AES and SHA in software.
 
 If the `psram` jobs are too long, set `E2E_TCG_THREAD=multi` in the `e2e` job. This gives the previous times again, but QEMU deaths occur, and the harness retries them.
+
+### 4.6 UMH Core interoperability (optional, #175)
+
+```bash
+curl -sSLo /work/umh/benthos-umh   https://github.com/united-manufacturing-hub/benthos-umh/releases/download/v0.16.2/benthos-linux-amd64
+chmod +x /work/umh/benthos-umh   # sha256 39a876816578efbd5b36474c079dbdca5ba376ae25cc8453ba52b8e7b46d7c33
+E2E_BENTHOS_UMH=/work/umh/benthos-umh E2E_PYTHON=~/e2e/bin/python idf/tools/e2e/run_e2e.sh --only umh
+```
+
+The scenario `umh` runs the real benthos-umh **v0.16.2** (commit `0d3a203`), the program that UMH Core uses for its bridges. Download the release binary `benthos-linux-amd64` into a scratch directory, not into the repository. Without `E2E_BENTHOS_UMH`, the harness reports the scenario as `SKIP`. The CI image has no benthos-umh, so the scenario is not in `CI_GROUPS` (`scenarios.OPTIONAL`). The scenario takes approximately 25 s.
+
+The harness reads the input section and the `tag_processor` code of the bridge from `docs/how-to/connect-to-umh-core.md`. Thus the test uses the configuration that the document gives to the users. Only the output changes: files of JSON lines in place of `uns: {}`.
+
+- Bridge A: the how-to configuration (`role: "secondary_active"`, `include_edge_node_in_location: false`). It has three outputs: the messages of the input, the `tag_processor` of the how-to, and the same `tag_processor` without the line `msg.meta.timestamp_ms = msg.meta.spb_timestamp`.
+- Bridge B: `include_edge_node_in_location: true` and `secondary_passive`.
+- Gateway `acme:berlin:gw01`: the UMH preset, store & forward, and a relay to the broker. Its `device_prefix` has six levels (`acme:berlin:tempelhof:packaging:hall2:line3`). It has the device `cell2:meter1` with a tag of each scalar type and a `bytes` tag, the typed device `cell2:pump1`, and the device `cell2:dead1` that never answers.
+- Gateway `acme:berlin:gw02`: the same devices without the UMH preset.
+
+The checks assert what v0.16.2 does, also its limits. Thus a new UMH version that changes its behaviour makes a check fail. Result: **15/15 checks passed** in the default variant and in the `E2E_PSRAM=1` variant (23 s each). The measured behaviour of v0.16.2:
+
+| Item | Result |
+|---|---|
+| Location path | The device prefix and the device name give `umh.v1.acme.berlin.tempelhof.packaging.hall2.line3.cell2.meter1._raw.<tag>`: eight levels, no error. The node metrics go to `umh.v1.acme.berlin.gw01._raw.<tag>` |
+| Tag names | `L1/Voltage` becomes `L1.Voltage`, `Node Info/Uptime` becomes `Node_Info.Uptime`, `Devices/cell2/meter1/Online` becomes `Devices.cell2.meter1.Online`. The `tag_processor` of the how-to drops `bdSeq`, `Node Control/…` and `Firmware Update/…` |
+| Values | At the input of the bridge, each value is exact: Boolean, Int16 (also negative), UInt16, Int32, UInt32, Int64, UInt64, Float, Double and String. The `tag_processor` uses JavaScript, where each number is a double. Thus it rounds an integer larger than 2^53: 9007199254740993 becomes 9007199254740992 in the UNS |
+| Restart of the bridge | The first DDATA after the restart has no BIRTH. The input shows it as `alias_109`, and the Int16 value -3 as 4294967293. The how-to drops it. The bridge sends `Node Control/Rebirth` 0.6 s later. After the NBIRTH and the DBIRTH, the UNS has the names and -3. No `alias_<n>` topic gets to the UNS |
+| Failed read | The null value with the Quality BAD gets to the input as `null` (`umh_conversion_status: failed_no_value`). The how-to drops it. The UNS keeps the last value and shows no Quality |
+| Store & forward | The replayed DDATA has `spb_is_historical: true`, with the values in order. With the timestamp line, the UNS keeps the sample time. Without the line, the three samples get the same arrival time. The UNS receives the DBIRTH value first, then the older historical samples |
+| `include_edge_node_in_location: true` | The device location becomes `acme.berlin.gw01.acme.berlin.tempelhof.packaging.hall2.line3.cell2.meter1`. The node metrics keep `acme.berlin.gw01` |
+| UMH preset | The typed device shows its tags (`Speed`, `Run`). `Devices/<name>/Online` shows each device (`false` for `cell2:dead1`). `Node Info/Modbus/Cycles` and the other sums show as numbers |
+| `bytes` tag | The input gives `null` with the datatype `Unknown`. The tag gets no UNS topic. The gateway gives the warning of #169 |
+| Without the preset | The template definition, the template instance and the DataSet `Node Info/Modbus` get to the input as `null`. The typed device gets no UNS topic |
+| Timestamps before SNTP | The metrics of the NBIRTH and the DBIRTH that the gateway read before it had a valid time have a timestamp near 1970 (for example 711 ms). With the timestamp line, UMH keeps that time (38 of 56 UNS values of the first BIRTHs). A rebirth does not correct it while the value does not change. Refer to #160 |
+| NDEATH | The input gives an event `DeviceOffline` for each NDEATH. The bdSeq check of #177 did not occur, because the first session of a boot has bdSeq 0 |
+
+Not tested: the downsampler (`late_policy`), the `uns` output into Redpanda, the role `primary` (#177) and a DDEATH (the scenario has no device that goes offline after its DBIRTH).
 
 ## 5. Status of the MVP IDs
 
