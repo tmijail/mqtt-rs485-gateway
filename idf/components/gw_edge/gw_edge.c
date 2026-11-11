@@ -856,7 +856,6 @@ static void publish_status(void)
         s_st.spill_failed = !sp->ok;
         s_st.spill_released = atomic_load(&s_card_released);
         s_st.spill_count = (uint32_t)gw_sfspill_waiting(sp);
-        s_st.spill_legacy = (uint32_t)sp->leg_count;
         s_st.spill_dropped = sp->dropped;
         s_st.spill_stranded = (uint32_t)sp->stranded;
         s_st.spill_holes = sp->holes;
@@ -1332,10 +1331,9 @@ static __attribute__((noinline)) void spill_step(int64_t now)
     if (s_spill->phase == GW_SFSPILL_READY && !s_spill_ready_logged) {
         s_spill_ready_logged = true;
         ESP_LOGI(TAG, "store & forward: card ready in %lu ms (%lu blocks read): %lu samples "
-                      "waiting (%lu of the old format), ring %lu of %lu blocks, nonce %08lx%s; "
-                      "%lu file(s) to delete",
+                      "waiting, ring %lu of %lu blocks, nonce %08lx%s; %lu file(s) to delete",
                  (unsigned long)s_spill->boot_ms, (unsigned long)s_spill->scan_reads,
-                 (unsigned long)gw_sfspill_waiting(s_spill), (unsigned long)s_spill->leg_count,
+                 (unsigned long)gw_sfspill_waiting(s_spill),
                  (unsigned long)(s_spill->head - s_spill->tail), (unsigned long)s_spill->nblocks,
                  (unsigned long)s_spill->nonce, s_spill->sb_due ? " (new ring)" : "",
                  (unsigned long)gw_sfspill_gc_pending(s_spill));
@@ -1665,7 +1663,7 @@ static void setup_spill(void)
                  why);
         return;
     }
-    /* its state, two blocks, the list of old segments and the delete queue: allocated once */
+    /* its state, two blocks and the delete queue: allocated once */
     s_spill = gw_storage_big_alloc(sizeof(*s_spill), "store & forward spill state");
     void *mem = s_spill != NULL ? gw_storage_big_alloc(gw_sfspill_mem_size(),
                                                        "store & forward spill buffers")

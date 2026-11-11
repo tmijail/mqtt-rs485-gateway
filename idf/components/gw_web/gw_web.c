@@ -857,12 +857,12 @@ static __attribute__((noinline)) void status_card(out_t *o, const gw_config_t *c
         return;
     }
     outf(o,
-         ",\"spill\":{\"state\":\"on\",\"ready\":%s,\"waiting\":%lu,\"old_format\":%lu,"
+         ",\"spill\":{\"state\":\"on\",\"ready\":%s,\"waiting\":%lu,"
          "\"moved\":%lu,\"overwritten\":%lu,\"holes\":%lu,\"ring_blocks\":%lu,"
          "\"waiting_blocks\":%lu,\"extents\":%lu,\"kb\":%lu,\"blocks_written\":%lu,"
          "\"checkpoints\":%lu,\"boot_ms\":%lu,\"files_to_delete\":%lu}",
          es.spill_ready ? "true" : "false", (unsigned long)es.spill_count,
-         (unsigned long)es.spill_legacy, (unsigned long)es.spilled,
+         (unsigned long)es.spilled,
          (unsigned long)es.spill_dropped, (unsigned long)es.spill_holes,
          (unsigned long)es.spill_nblocks, (unsigned long)es.spill_waiting_blocks,
          (unsigned long)es.spill_extents, (unsigned long)es.spill_kb,

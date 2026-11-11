@@ -30,7 +30,7 @@
 static const char *TAG = "sfcard";
 
 /* QEMU stand-in: a "cluster" of 32 B makes an extent (128 units) one 4 KiB LittleFS block, and
- * the delete step of an old segment 4 KiB, so the E2E runs many extents and the stepwise
+ * the delete step of a step 1 file 4 KiB, so the E2E runs many extents and the stepwise
  * delete on small files. */
 #define LITTLEFS_UNIT 32u
 /* The DMA bounce buffer for transfers from and to PSRAM: 8 sectors per command. */
@@ -61,7 +61,7 @@ static gw_sfcard_stats_t s_stats;
 static portMUX_TYPE s_stats_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static const char *const s_op_names[GW_SFCARD_OP_COUNT] = {
-    "open", "block", "super", "read", "alloc", "mark", "step", "stat", "list",
+    "open", "block", "super", "read", "alloc", "step", "stat", "list",
 };
 
 const char *gw_sfcard_op_name(gw_sfcard_op_t op)
@@ -238,10 +238,8 @@ static int io_alloc(void *ctx, uint32_t f, uint32_t size)
 static bool io_write(void *ctx, uint32_t f, uint32_t off, const void *data, size_t len)
 {
     (void)ctx;
-    gw_sfcard_op_t op = kind(f) == GW_SFSPILL_F_SUPER    ? GW_SFCARD_SUPER
-                        : kind(f) == GW_SFSPILL_F_EXTENT ? GW_SFCARD_BLOCK
-                                                         : GW_SFCARD_MARK;
-    slot_t *s = slot_get(f, op == GW_SFCARD_MARK ? SLOT_GC : SLOT_WRITE, false, NULL);
+    gw_sfcard_op_t op = kind(f) == GW_SFSPILL_F_SUPER ? GW_SFCARD_SUPER : GW_SFCARD_BLOCK;
+    slot_t *s = slot_get(f, SLOT_WRITE, false, NULL);
     if (s == NULL) {
         return false;
     }

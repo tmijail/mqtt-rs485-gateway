@@ -40,7 +40,6 @@ typedef struct {
     char spill_off[96];      /* why not (sd enabled), or why it failed */
     bool spill_ready;        /* #124: the boot recovery is done */
     uint32_t spill_count;    /* samples (records) on the card waiting (0 after a failure) */
-    uint32_t spill_legacy;   /* of them, in segments of the step 1 format */
     uint32_t spilled;        /* records ever moved to the card */
     uint32_t spill_dropped;  /* records overwritten on the card unsent (card full) */
     bool spill_failed;       /* the card failed: spill stopped */

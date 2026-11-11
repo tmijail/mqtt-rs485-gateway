@@ -286,7 +286,7 @@ static int cmd_status(int argc, char **argv)
                 (unsigned long)es.sf_dropped);
             if (es.spill_on && !es.spill_failed) {
                 /* #124: the ring on the card, for the board tests (#131) */
-                out("spill    %s: %lu samples on the card (%lu of the old format), %lu moved "
+                out("spill    %s: %lu samples on the card, %lu moved "
                     "there, %lu overwritten unsent (card full), %lu block(s) lost as holes; "
                     "ring %lu of %lu blocks (%lu extents of %lu blocks, %lu KB), %lu written "
                     "since boot; %lu superblock writes (%lu checkpoints, at most %lu samples "
@@ -294,7 +294,7 @@ static int cmd_status(int argc, char **argv)
                     "read; %lu file(s) to delete, %lu deleted in %lu steps, %lu left for the "
                     "next boot\n",
                     es.spill_ready ? "on" : "on, reading the card", (unsigned long)es.spill_count,
-                    (unsigned long)es.spill_legacy, (unsigned long)es.spilled,
+                    (unsigned long)es.spilled,
                     (unsigned long)es.spill_dropped, (unsigned long)es.spill_holes,
                     (unsigned long)es.spill_waiting_blocks, (unsigned long)es.spill_nblocks,
                     (unsigned long)es.spill_extents, (unsigned long)es.spill_ext_blocks,
