@@ -851,8 +851,8 @@ static bool caps_fit(const uint8_t *block, char *why, size_t cap)
     bool declared = gw_ota_caps_read(block, GW_OTA_CAPS_SIZE, &flags);
     bool ok = gw_ota_caps_accept(declared, flags, gw_storage_nvs_encrypted_on_flash(), why, cap);
     if (!ok) {
-        ESP_LOGE(TAG, "update refused: the image %s; installing it would lose the NVS (bdSeq, "
-                      "secrets)", why);
+        ESP_LOGE(TAG, "update refused: the image %s; installing it would lose the NVS (secrets)",
+                 why);
     }
     return ok;
 }

@@ -99,6 +99,9 @@ static atomic_bool s_restart_discard;   /* #136: a factory reset: the RAM ring i
 static esp_timer_handle_t s_restart_backstop;   /* #136: RESTART_ANSWER_MS */
 static atomic_bool s_rebirth_req;
 static atomic_bool s_fw_dirty;     /* FW-1: the update's state changed */
+/* SPB-3 / issue #161: the attempt in progress sent no CONNECT packet (its transport did not
+ * connect): set by the MQTT task, taken by the next prepare_attempt() */
+static atomic_bool s_no_connect;
 
 /* ---- publish time bound (issue #59): shared with the esp_timer task ---- */
 static esp_timer_handle_t s_pub_timer;
@@ -138,7 +141,8 @@ static char s_ncmd_topic[GW_TOPIC_MAX];
 static char s_dcmd_topic[GW_TOPIC_MAX];
 static char s_state_topic[GW_TOPIC_MAX];   /* SPB-13: "" without sparkplug.primary_host_id */
 static uint8_t s_will[64];
-static uint8_t s_bdseq;
+static gw_bdseq_t s_bdseqs;     /* SPB-3: the bdSeq of the CONNECT packets (RAM, 0 at boot) */
+static uint8_t s_bdseq;         /* the bdSeq of the current attempt (its Will) */
 static bool s_started;
 static bool s_prev_ip;
 static int64_t s_ip_since_us;
@@ -492,6 +496,9 @@ static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *da
     (void)base;
     const esp_mqtt_event_t *ev = data;
     switch ((esp_mqtt_event_id_t)id) {
+    case MQTT_EVENT_BEFORE_CONNECT:
+        atomic_store(&s_no_connect, false);   /* a new attempt: nothing known yet */
+        break;
     case MQTT_EVENT_CONNECTED:
 #if CONFIG_MQTT_PROTOCOL_5
         /* issue #73: what the broker accepts at most (0: no limit, or MQTT 3.1.1) */
@@ -518,6 +525,19 @@ static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *da
         enqueue_cmd(ev);
         break;
     case MQTT_EVENT_ERROR:
+        if (ev->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT &&
+            !atomic_load(&s_mqtt_connected)) {
+            /* SPB-3 / issue #161: esp-mqtt 1.1.0 sends the CONNECT packet only after
+             * esp_transport_connect() returned (TCP, and TLS, connected). When the connect fails,
+             * the transport has no socket (IDF transport_ssl.c: sockfd = INVALID_SOCKET) and this
+             * event comes before the abort; a failed CONNECT write or CONNACK read comes with the
+             * socket still open. No socket: this attempt sent no CONNECT, its bdSeq is not used */
+            esp_transport_handle_t t = esp_mqtt_client_get_transport(
+                ev->client, s_cfg->mqtt.tls.enabled ? "mqtts" : "mqtt");
+            if (t == NULL || esp_transport_get_socket(t) < 0) {
+                atomic_store(&s_no_connect, true);
+            }
+        }
         if (ev->error_handle->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
             ESP_LOGW(TAG, "broker refused the connection (code %d)",
                      ev->error_handle->connect_return_code);
@@ -941,10 +961,18 @@ void gw_edge_get_status(gw_edge_status_t *out)
     portEXIT_CRITICAL(&s_st_mux);
 }
 
+/* SPB-3 / issue #161: the Will (with its bdSeq) is set before the attempt starts, so the attempt
+ * takes the next bdSeq here. When the previous attempt sent no CONNECT packet, its value is taken
+ * again: the bdSeq of two CONNECT packets in sequence differs by exactly 1
+ * (tck-id-topics-nbirth-bdseq-increment). An attempt that may have sent its CONNECT (a failed
+ * write, no CONNACK) keeps its value: a late Will NDEATH of it must never match a newer NBIRTH. */
 static void prepare_attempt(void)
 {
     memset(&s_vf, 0, sizeof(s_vf));   /* issue #70: what the next handshake will see */
-    s_bdseq = gw_storage_next_bdseq();
+    if (atomic_exchange(&s_no_connect, false)) {
+        gw_bdseq_not_sent(&s_bdseqs);
+    }
+    s_bdseq = gw_bdseq_take(&s_bdseqs);
     size_t n = gw_node_death_payload(s_bdseq, s_will, sizeof(s_will));
     s_mqtt_cfg.session.last_will.msg = (const char *)s_will;
     s_mqtt_cfg.session.last_will.msg_len = (int)n;
@@ -985,9 +1013,10 @@ static void start_client(int64_t now)
     s_client = esp_mqtt_client_init(&s_mqtt_cfg);
     s_mqtt_cfg.network.if_name = NULL;   /* esp_mqtt_set_config would allocate it again */
     if (s_client == NULL) {
-        /* Out of memory: retry with the same backoff as a failed connection (each attempt
-         * takes a bdSeq and writes NVS, so it must not run once per loop). */
+        /* Out of memory: retry with the same backoff as a failed connection (not once per
+         * loop). No CONNECT was sent: the next attempt takes the same bdSeq (#161). */
         ESP_LOGE(TAG, "esp_mqtt_client_init failed");
+        gw_bdseq_not_sent(&s_bdseqs);
         schedule_retry(now);
         return;
     }
@@ -1045,6 +1074,7 @@ static void reconnect(int64_t now)
     prepare_attempt();
     if (set_config() != ESP_OK ||
         esp_mqtt_client_reconnect(s_client) != ESP_OK) {
+        gw_bdseq_not_sent(&s_bdseqs);   /* #161: no attempt, no CONNECT */
         schedule_retry(now);
     }
 }
@@ -1870,6 +1900,7 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         .ctx = NULL,
     };
     gw_node_init(s_node, cfg, &ops, info);
+    gw_bdseq_init(&s_bdseqs);   /* SPB-3 / #161: bdSeq 0 for the first CONNECT of the boot */
     atomic_store(&s_fw_dirty, true);   /* the first NBIRTH carries the update's state */
     /* The largest births (SPB-16/17/18) need GW_SPB_PAYLOAD_MAX: in PSRAM when the board has
      * it; without PSRAM a smaller buffer leaves internal RAM for TLS and the web server. */

@@ -4,9 +4,10 @@
  * which never block and never allocate.
  *
  * Connection management (MQTT-1..3, SPB-2, SPB-3): auto-reconnect of esp-mqtt is
- * disabled; before every attempt a new bdSeq is taken from NVS, the will is
- * replaced by the matching NDEATH and the attempt is scheduled with exponential
- * backoff and jitter.
+ * disabled; before every attempt the next bdSeq is taken (RAM, 0 at boot, +1 for
+ * each CONNECT packet: an attempt that sent none gives its value back, #161), the
+ * will is replaced by the matching NDEATH and the attempt is scheduled with
+ * exponential backoff and jitter.
  */
 #pragma once
 

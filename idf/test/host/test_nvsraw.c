@@ -372,7 +372,7 @@ static void test_copy_round_trip(void)
     n = gw_nvsmig_add(buf, sizeof(buf), n, "secrets", "mqtt_pw", 0x21, pw, strlen(pw) + 1);
     n = gw_nvsmig_add(buf, sizeof(buf), n, "gw", "lkg_net", 0x42, blob, sizeof(blob));
     TEST_ASSERT_EQUAL_size_t(GW_NVSMIG_HDR + 3 * GW_NVSMIG_REC_HDR + 1 + 15 + 32, n);
-    /* found before it is sealed (the bdSeq fallback looks for it) */
+    /* found before it is sealed (a lookup works on a copy that is not sealed yet) */
     gw_nvsmig_rec_t r;
     TEST_ASSERT_TRUE(gw_nvsmig_find(buf, n, "spb", "bdseq", &r));
     TEST_ASSERT_FALSE(gw_nvsmig_check(buf, n, NULL));   /* not sealed yet */
@@ -606,97 +606,6 @@ static void test_decide_copy_out_of_reach(void)
     st.copy_unknown = false;
     st.on_trial = false;
     TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(&st));   /* no place for a copy */
-}
-
-/* Issue #104: the reservation of bdSeq values of a boot without NVS */
-static void test_bdseq_reservation(void)
-{
-    TEST_ASSERT_FALSE(gw_nvsmig_bdseq_reached(41, 57));
-    TEST_ASSERT_TRUE(gw_nvsmig_bdseq_reached(57, 57));
-    TEST_ASSERT_TRUE(gw_nvsmig_bdseq_reached(58, 57));   /* never skipped past unnoticed */
-    TEST_ASSERT_FALSE(gw_nvsmig_bdseq_reached(250, 10));   /* across the wrap */
-    TEST_ASSERT_TRUE(gw_nvsmig_bdseq_reached(10, 10));
-    TEST_ASSERT_TRUE(gw_nvsmig_bdseq_reached(12, 250));
-    /* the next boot with NVS continues from the reservation, never below what was handed out */
-    for (unsigned start = 0; start < 256; start++) {
-        uint8_t reserved = (uint8_t)(start + GW_NVSMIG_BDSEQ_BLOCK), v = (uint8_t)start;
-        for (unsigned i = 0; i < 3 * GW_NVSMIG_BDSEQ_BLOCK; i++) {
-            v++;   /* handed out */
-            if (gw_nvsmig_bdseq_reached(v, reserved)) {
-                reserved = (uint8_t)(v + GW_NVSMIG_BDSEQ_BLOCK);
-            }
-            TEST_ASSERT_EQUAL_UINT8(reserved, gw_nvsmig_bdseq_later(v, reserved));
-        }
-    }
-}
-
-/* Issue #108 B3, the review's simulation against the code: boots without NVS whose pending copy
- * (bdSeq 10) never gets applied, one session each. The chain of reservations continues from its
- * base however far it went (it went back to 10 at the tenth boot before); the first boot with NVS
- * continues after it. */
-static void test_bdseq_reservation_chain(void)
-{
-    const uint8_t c = 10;
-    gw_nvsmig_side_t side = {0};
-    uint8_t prev = 0;
-    for (int boot = 1; boot <= 40; boot++) {
-        uint8_t start, base;
-        TEST_ASSERT_TRUE(gw_nvsmig_bdseq_start(true, c, &side, &start, &base));
-        if (boot > 1) {   /* one value per boot, then the next block */
-            TEST_ASSERT_EQUAL_UINT8((uint8_t)(prev + GW_NVSMIG_BDSEQ_BLOCK), start);
-        }
-        TEST_ASSERT_EQUAL_UINT8(c, base);
-        prev = start;
-        side = (gw_nvsmig_side_t){.have = true, .base_known = true, .base = base,
-                                  .next = (uint8_t)(start + GW_NVSMIG_BDSEQ_BLOCK)};
-    }
-    /* the migration finally writes the copy (10): the NVS goes on from the reservation */
-    TEST_ASSERT_EQUAL_UINT8(side.next, gw_nvsmig_bdseq_fold(true, c, &side));
-    /* an NVS that moved on by itself (another base): the later of both */
-    TEST_ASSERT_EQUAL_UINT8(side.next, gw_nvsmig_bdseq_fold(true, (uint8_t)(side.next - 3), &side));
-    TEST_ASSERT_EQUAL_UINT8((uint8_t)(side.next + 5),
-                            gw_nvsmig_bdseq_fold(true, (uint8_t)(side.next + 5), &side));
-    TEST_ASSERT_EQUAL_UINT8(side.next, gw_nvsmig_bdseq_fold(false, 0, &side));
-    /* no reservation: the NVS's own; nothing known and no reservation: random (false) */
-    gw_nvsmig_side_t none = {0};
-    TEST_ASSERT_EQUAL_UINT8(77, gw_nvsmig_bdseq_fold(true, 77, &none));
-    uint8_t start, base;
-    TEST_ASSERT_FALSE(gw_nvsmig_bdseq_start(false, 0, &none, &start, &base));
-    TEST_ASSERT_TRUE(gw_nvsmig_bdseq_start(true, 42, &none, &start, &base));
-    TEST_ASSERT_EQUAL_UINT8(42, start);
-    /* a one-byte reservation of #104 (no base): the later, as before */
-    gw_nvsmig_side_t old = {.have = true, .base_known = false, .next = 60};
-    TEST_ASSERT_TRUE(gw_nvsmig_bdseq_start(true, 50, &old, &start, &base));
-    TEST_ASSERT_EQUAL_UINT8(60, start);
-    TEST_ASSERT_EQUAL_UINT8(50, base);
-    TEST_ASSERT_TRUE(gw_nvsmig_bdseq_start(false, 0, &old, &start, &base));
-    TEST_ASSERT_EQUAL_UINT8(60, start);
-    /* a known value newer than the reservation's chain (a resume moved the copy on) */
-    gw_nvsmig_side_t s2 = {.have = true, .base_known = true, .base = 10, .next = 40};
-    TEST_ASSERT_TRUE(gw_nvsmig_bdseq_start(true, 45, &s2, &start, &base));
-    TEST_ASSERT_EQUAL_UINT8(45, start);
-    TEST_ASSERT_EQUAL_UINT8(45, base);
-}
-
-static void test_bdseq_later(void)
-{
-    TEST_ASSERT_EQUAL_UINT8(42, gw_nvsmig_bdseq_later(41, 42));
-    TEST_ASSERT_EQUAL_UINT8(42, gw_nvsmig_bdseq_later(42, 41));
-    TEST_ASSERT_EQUAL_UINT8(7, gw_nvsmig_bdseq_later(7, 7));
-    TEST_ASSERT_EQUAL_UINT8(2, gw_nvsmig_bdseq_later(250, 2));    /* across the wrap */
-    TEST_ASSERT_EQUAL_UINT8(2, gw_nvsmig_bdseq_later(2, 250));
-    TEST_ASSERT_EQUAL_UINT8(127, gw_nvsmig_bdseq_later(0, 127));
-    /* half the ring: undecidable; the same answer in either order (N3) */
-    TEST_ASSERT_EQUAL_UINT8(128, gw_nvsmig_bdseq_later(0, 128));
-    TEST_ASSERT_EQUAL_UINT8(128, gw_nvsmig_bdseq_later(128, 0));
-    TEST_ASSERT_EQUAL_UINT8(200, gw_nvsmig_bdseq_later(72, 200));
-    TEST_ASSERT_EQUAL_UINT8(200, gw_nvsmig_bdseq_later(200, 72));
-    for (unsigned a = 0; a < 256; a += 7) {
-        for (unsigned b = 0; b < 256; b += 5) {
-            TEST_ASSERT_EQUAL_UINT8(gw_nvsmig_bdseq_later((uint8_t)a, (uint8_t)b),
-                                    gw_nvsmig_bdseq_later((uint8_t)b, (uint8_t)a));
-        }
-    }
 }
 
 /* N5: the copy file as read: current version, version 1 (converted), unknown version (kept),
@@ -943,10 +852,7 @@ int main(void)
     RUN_TEST(test_decide);
     RUN_TEST(test_decide_with_copy);
     RUN_TEST(test_may_erase);
-    RUN_TEST(test_bdseq_later);
     RUN_TEST(test_decide_copy_out_of_reach);
-    RUN_TEST(test_bdseq_reservation);
-    RUN_TEST(test_bdseq_reservation_chain);
     RUN_TEST(test_copy_load);
     RUN_TEST(test_page_states);
     RUN_TEST(test_more_bad_than_plain);

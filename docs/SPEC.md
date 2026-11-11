@@ -94,7 +94,7 @@ Al publicar, el gateway hace de *Edge Node* de Sparkplug. Cada esclavo Modbus es
 |---|---|---|---|
 | SPB-1 | Payload protobuf conforme a `sparkplug_b.proto` de Eclipse Tahu | P0 | ✅ |
 | SPB-2 | The node registers the **NDEATH** as the MQTT Will (LWT): QoS 1, no retain. The NDEATH has the metric `bdSeq` with the datatype Int64 (`tck-id-message-flow-edge-node-birth-publish-will-message-payload-bdSeq`). The `bdSeq` of the NBIRTH also has the datatype Int64 (`tck-id-message-flow-edge-node-birth-publish-nbirth-payload-bdSeq`). Before an orderly disconnection, the node publishes the NDEATH | P0 | ✅ |
-| SPB-3 | **bdSeq** de 0 a 255, persistido en memoria no volátil. Se incrementa en cada intento de conexión y el NBIRTH lleva el mismo valor que el LWT de esa conexión | P0 | ✅ |
+| SPB-3 | **bdSeq** from 0 to 255, in RAM only. It starts at 0 at each boot and increases by exactly 1 for each new MQTT CONNECT packet; after 255 it is 0 (`tck-id-topics-nbirth-bdseq-increment`, issue #161). A connection attempt that sends no CONNECT packet (DNS, TCP or TLS failure) does not use a value. The NBIRTH has the same value as the Will of that connection | P0 | ✅ |
 | SPB-4 | **NBIRTH**: QoS 0, sin retain, `seq`=0, timestamp. Incluye `bdSeq`, `Node Control/Rebirth` (Boolean, escribible), `Node Control/Reboot`, `Node Info/Firmware`, `Node Info/Hardware` y las métricas de E/S local (§4.6), todas con nombre, alias, datatype y valor | P0 | ✅ |
 | SPB-5 | **seq** de 0 a 255 que vuelve a empezar, compartido por todos los mensajes del nodo salvo NDEATH | P0 | ✅ |
 | SPB-6 | **DBIRTH** por cada dispositivo Modbus en línea, con todas sus métricas y su valor actual. **DDEATH** cuando el dispositivo pasa a fuera de línea (§4.5, MB-9) | P0 | ✅ |
@@ -190,9 +190,9 @@ Al publicar, el gateway hace de *Edge Node* de Sparkplug. Cada esclavo Modbus es
 
 El MVP es un gateway que se pone en marcha editando un JSON, se conecta por Ethernet (DHCP o IP estática) a un broker MQTT sin TLS y publica con Sparkplug B 3.0 correcto, sin host primario y sin store & forward. Esto incluye:
 
-- birth y death del nodo y de los dispositivos, bdSeq persistido, seq y aliases;
-- reporte por excepción con deadband;
-- rebirth, y escrituras por DCMD y NCMD.
+- the birth and death of the node and of the devices, bdSeq (SPB-3), seq and aliases;
+- report by exception with a deadband;
+- rebirth, and writes by DCMD and NCMD.
 
 Encuesta N esclavos Modbus RTU por el RS485 integrado, con los tipos de 16 y 32 bits, escala, timeouts, reintentos y detección de fuera de línea. Expone además las 8 DI y las 8 DO, y muestra su estado en el LED RGB.
 

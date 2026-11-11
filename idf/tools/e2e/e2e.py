@@ -629,14 +629,17 @@ class Observer:
                 found[item[1]] = item
         return found
 
-    def wait(self, topic, timeout, pred=lambda p: True):
+    def wait(self, topic, timeout, pred=lambda p: True, since=None):
+        """The first message on @topic for which @pred(payload) is true and, with @since, that
+        arrived at or after that time (issue #161: a new boot has bdSeq 0 again, so a new session
+        cannot be told apart by its bdSeq alone)."""
         end = time.monotonic() + timeout
         while wait_left(end) > 0:
             try:
                 item = self.q.get(timeout=min(0.5, max(0.01, wait_left(end))))
             except queue.Empty:
                 continue
-            if item[1] == topic and pred(item[2]):
+            if item[1] == topic and (since is None or item[0] >= since) and pred(item[2]):
                 return item
         return None
 
@@ -2642,8 +2645,8 @@ def check_restart_flush(gw, obs, relay, slave, node, prev_nb, first, how, auth=N
     ring_l = (gw.find(r"store & forward: spill to .* configuration [0-9a-f]{8}", t) or [""])[0]
     mh = re.search(r"configuration ([0-9a-f]{8})", ring_l)
     relay.start()
-    nb = obs.wait(f"{T}/NBIRTH/{node}", 90,
-                  lambda p: prev_nb is None or bdseq_of(p) != bdseq_of(prev_nb[2]))
+    # #161: the boot after the restart starts at bdSeq 0 again: its NBIRTH by its time
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 90, since=t)
     done, deadline = None, time.monotonic() + 60
     while wait_left(deadline) > 0 and not done:
         _, h = gw.shell("status", [r"^store\s+0 of \d+ samples waiting"], timeout=2, tries=1)
@@ -2830,7 +2833,7 @@ def run_store_forward_spill(args, work, slave):
                           r"samples waiting \(0 of the old format\)", 60, t2)
     ready2_line = (gw2.find(r"store & forward: card ready", t2) or [""])[0]
     relay.start()
-    nb3 = obs.wait(f"{T}/NBIRTH/{node}", 70, lambda p: nb2 is None or bdseq_of(p) != bdseq_of(nb2[2]))
+    nb3 = obs.wait(f"{T}/NBIRTH/{node}", 70, since=t2)
     done3, deadline = None, time.monotonic() + 60
     while wait_left(deadline) > 0 and not done3:
         _, h = gw2.shell("status", [r"^store\s+0 of \d+ samples waiting"], timeout=2, tries=1)
@@ -2901,7 +2904,7 @@ def run_store_forward_spill(args, work, slave):
     gw3 = boot_variant(args, work, "sfsd-old", cfg, files=files)
     ready3 = gw3.wait_log(r"store & forward: card ready in \d+ ms .*: 150 samples waiting \(150 of "
                           r"the old format\)", 60, t3)
-    nb4 = obs.wait(f"{T}/NBIRTH/{node}", 60, lambda p: nb3 is None or bdseq_of(p) != bdseq_of(nb3[2]))
+    nb4 = obs.wait(f"{T}/NBIRTH/{node}", 60, since=t3)
     mig_rx = r"^spill\s+on: 0 samples on the card .*; 0 file\(s\) to delete, 2 deleted in 4 steps, 0 left"
     mig_line = ""
     end = time.monotonic() + 60
@@ -4278,12 +4281,11 @@ def nvs_clear(flash, words):
 
 def run_nvs_migration(args, work):
     """Issues #67 and #94 (GW41): a flash whose NVS was written without NVS encryption (the
-    format of the default build, generated here with ESP-IDF's nvs_partition_gen.py: bdSeq 41,
-    the commissioning password, the MQTT password) boots the encrypted build, and the power is
+    format of the default build, generated here with ESP-IDF's nvs_partition_gen.py: the
+    commissioning password, the MQTT password) boots the encrypted build, and the power is
     cut twice in the middle of the migration (emulated cut points: right after the partition is
     erased, then after half of the entries are written encrypted). The next boots finish it from
-    the reset-safe copy: the bdSeq continues, the MQTT password still opens the broker (which
-    requires it), the commissioning password is the old one, nothing stays in clear and the
+    the reset-safe copy: the MQTT password still opens the broker (which requires it), the commissioning password is the old one, nothing stays in clear and the
     migration does not run again. Issue #104: after each cut, one boot whose LittleFS does not
     mount (superblocks damaged, not erased: the copy is out of reach) opens no NVS at all, so
     nothing it writes can be lost or win over the copy; then the partition comes back. Issue #109:
@@ -4299,6 +4301,9 @@ def run_nvs_migration(args, work):
     # that ran a while): the erase takes the namespace's page before the entry's
     filler = work / "nvs-filler.bin"
     filler.write_bytes(bytes(range(256)) * 15)
+    # spb/bdseq: the record of the firmware before #161 (unused now: the migration moves it as any
+    # entry). It also completes page 0, so the "secrets" namespace entry and its items share page 1
+    # with the "erase in progress" entry (the layout this scenario was made for)
     csv.write_text("key,type,encoding,value\ngw,namespace,,\ndo_hold,data,u8,0\n"
                    f"filler,file,binary,{filler}\nspb,namespace,,\nbdseq,data,u8,41\n"
                    "secrets,namespace,,\ncommission,data,string,abcdefgh1234\n"
@@ -4397,7 +4402,7 @@ def run_nvs_migration(args, work):
         boots.append(gw)
         nb = obs.wait(f"{T}/NBIRTH/{node}", 60)
         done = gw.find(r"storage: NVS migration resumed: \d+ entries moved into the encrypted NVS "
-                       r"\(0 skipped\); bdSeq continues", t0)
+                       r"\(0 skipped\)", t0)
         pw = commissioning_password(gw, t0)
         gw.kill()
         obs.wait(f"{T}/NDEATH/{node}", 5)
@@ -4420,12 +4425,12 @@ def run_nvs_migration(args, work):
         check("Issue #94 an unencrypted NVS meets the encrypted build and the power is cut four "
               "times during the migration (#109: before the erase and in the middle of it; after "
               "the erase, then halfway through the encrypted writes): "
-              "the next boot finishes it from the reset-safe copy (0 skipped); bdSeq continues, the MQTT "
+              "the next boot finishes it from the reset-safe copy (0 skipped); the MQTT "
               "password from the NVS opens the broker that requires it, the commissioning "
               "password is the old one, nothing in clear, no migration on the next boot "
-              "(issue #67)",
-              cut_ok and nb and bdseq_of(nb[2]) == 41 and done and pw == "abcdefgh1234"
-              and not clear and nb2 and bdseq_of(nb2[2]) == 42 and not again
+              "(issue #67); #161: bdSeq 0 at each boot",
+              cut_ok and nb and bdseq_of(nb[2]) == 0 and done and pw == "abcdefgh1234"
+              and not clear and nb2 and bdseq_of(nb2[2]) == 0 and not again
               and list(h.values())[0],
               f"cuts (held, resumed, erased): {cuts}; NBIRTH bdSeq "
               f"{bdseq_of(nb[2]) if nb else None} then {bdseq_of(nb2[2]) if nb2 else None}; "
@@ -4478,18 +4483,15 @@ def run_nvs_migration(args, work):
         discarded = gw.wait_log(r"storage: configuration saved discarding the unreachable NVS "
                                 r"migration copy", 30, asked)
         saved_ok = gw.wait_log(r"^config: saved \(\d+ bytes\); restarting", 30, asked)
-        reserved = gw.find(r"storage: no NVS: bdSeq values below \d+ reserved", asked)
         loaded = gw.wait_log(r"main: configuration from /cfg/config\.json", 60, saved_ok or asked)
         after = gw.find(r"NVS left untouched this boot", loaded or asked)
         gw.kill()
         check("Issue #109 the operator's way out of a LittleFS that does not mount with an "
               "unreachable migration copy: 'config load discard-nvs-copy' formats it (the copy is "
-              "lost), keeps the bdSeq going with a reservation, and the next boot runs with the "
-              "saved configuration and an NVS",
-              discarded and saved_ok and reserved and loaded and not after,
-              f"discarded {discarded is not None}, saved {saved_ok is not None}, reservation "
-              f"{reserved[:1]}, next boot from config.json {loaded is not None}, without NVS "
-              f"again {bool(after)}")
+              "lost), and the next boot runs with the saved configuration and an NVS",
+              discarded and saved_ok and loaded and not after,
+              f"discarded {discarded is not None}, saved {saved_ok is not None}, next boot from "
+              f"config.json {loaded is not None}, without NVS again {bool(after)}")
     finally:
         obs.close()
         broker.terminate()
@@ -4498,16 +4500,16 @@ def run_nvs_migration(args, work):
 
 def run_nvs_full(args, work):
     """Issue #109 round 3b (GW44): an unencrypted NVS with no free page (generated with ESP-IDF's
-    nvs_partition_gen.py, five 3840-byte blobs and bdSeq 77, its last page then started as NVS
-    does): it does not even start (ESP_ERR_NVS_NO_FREE_PAGES), and IDF would erase it. The
-    migration must still happen: erased whole, without the "erase in progress" entry (written
-    through an NVS that starts), the bdSeq kept from the raw pages, encrypted from then on."""
+    nvs_partition_gen.py, five 3840-byte blobs, its last page then started as NVS does): it does
+    not even start (ESP_ERR_NVS_NO_FREE_PAGES), and IDF would erase it. The migration must still
+    happen: erased whole, without the "erase in progress" entry (written through an NVS that
+    starts), encrypted from then on."""
     node, port = "GW44", MQTT_PORT + 26
     nvs_off, nvs_size = storage_partition("nvs")
     filler = work / "nvs-filler.bin"
     filler.write_bytes(bytes(range(256)) * 15)
     csv = work / "nvs-full.csv"
-    csv.write_text("key,type,encoding,value\nspb,namespace,,\nbdseq,data,u8,77\ngw,namespace,,\n"
+    csv.write_text("key,type,encoding,value\ngw,namespace,,\n"
                    + "".join(f"fill{i},file,binary,{filler}\n" for i in range(1, 6)))
     gen = pathlib.Path(os.environ["IDF_PATH"]) / "components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py"
     full = work / "nvs-full.bin"
@@ -4549,7 +4551,7 @@ def run_nvs_full(args, work):
         nostart = gw.find(r"storage: NVS migration: the unencrypted NVS does not start "
                           r"\(ESP_ERR_NVS_NO_FREE_PAGES\)", t0)
         moved = gw.find(r"storage: NVS migration: \d+ entries moved into the encrypted NVS "
-                        r"\(0 skipped\); bdSeq continues", t0)
+                        r"\(0 skipped\)", t0)
         stuck = gw.find(r"erase in progress\" entry could not be written|NVS migration not finished",
                         t0)
         gw.kill()
@@ -4564,10 +4566,9 @@ def run_nvs_full(args, work):
         gw.kill()
         check("Issue #109 round 3b an unencrypted NVS with no free page (it does not start: "
               "NO_FREE_PAGES) is still migrated: erased whole without the \"erase in progress\" "
-              "entry, bdSeq 77 kept from its raw pages, encrypted on the next boot (no migration "
-              "again)",
-              nostart and moved and not stuck and nb and bdseq_of(nb[2]) == 77 and nb2
-              and bdseq_of(nb2[2]) == 78 and not again and all(h.values()),
+              "entry, encrypted on the next boot (no migration again); #161: bdSeq 0 at each boot",
+              nostart and moved and not stuck and nb and bdseq_of(nb[2]) == 0 and nb2
+              and bdseq_of(nb2[2]) == 0 and not again and all(h.values()),
               f"does not start: {bool(nostart)}; {(moved or stuck or ['no migration log'])[0][:110]}; "
               f"NBIRTH bdSeq {bdseq_of(nb[2]) if nb else None} then "
               f"{bdseq_of(nb2[2]) if nb2 else None}; migration again {bool(again)}")
@@ -4579,13 +4580,13 @@ def run_nvs_full(args, work):
 
 def run_nvs_ota(args, work):
     """Issue #94 (GW42): a device on the build WITHOUT NVS encryption (QEMU variant
-    sdkconfig.qemu-plain; bdSeq, commissioning password and MQTT password in its unencrypted
-    NVS) is updated by OTA to the encrypted build under test. On trial, the new image keeps the
-    NVS unencrypted; a reset during the trial (panic) rolls it back and the old image finds its
-    bdSeq (continued by the trial) and its secrets. Updated again with the broker up: confirmed,
-    one restart, and that boot moves the NVS into the encrypted one. Issue #102: then the build
-    without NVS encryption, sent back by OTA, is refused before it is set to boot, and the NVS
-    (bdSeq, secrets) stays intact."""
+    sdkconfig.qemu-plain; commissioning password and MQTT password in its unencrypted NVS) is
+    updated by OTA to the encrypted build under test. On trial, the new image keeps the NVS
+    unencrypted; a reset during the trial (panic) rolls it back and the old image finds its
+    secrets. Updated again with the broker up: confirmed, one restart, and that boot moves the
+    NVS into the encrypted one. Issue #102: then the build without NVS encryption, sent back by
+    OTA, is refused before it is set to boot, and the NVS (secrets) stays intact. Issue #161:
+    each boot starts at bdSeq 0."""
     if not args.plain_flash:
         print("[SKIP] issue #94 OTA from a build without NVS encryption: no --plain-flash "
               "(run_e2e.sh builds it)", flush=True)
@@ -4621,7 +4622,7 @@ def run_nvs_ota(args, work):
     shutil.copy(work / "efuse-blank.bin", efuse)
     nbirth_t, ncmd_t = f"{T}/NBIRTH/{node}", f"{T}/NCMD/{node}"
     ndata_t = f"{T}/NDATA/{node}"
-    words = (secret.encode(), b"commission", b"bdseq", b"mqtt_pw")
+    words = (secret.encode(), b"commission", b"mqtt_pw")
     if args.plain_app:
         # issue #102: the build without NVS encryption as an update, signed like the others
         fw_image(args.plain_app, "e2e-plain", fwdir / "plain-unsigned.bin")
@@ -4647,13 +4648,14 @@ def run_nvs_ota(args, work):
         pw0 = commissioning_password(gw, t0)
         v1 = fw(nb0)
         clear0 = nvs_clear(flash, words)
-        if not check("Issue #94 the build without NVS encryption runs (its secrets and bdSeq in "
-                     "an unencrypted NVS) and reaches the broker that requires its password",
-                     nb0 and pw0 and v1 != "e2e-enc" and secret.encode() in clear0,
+        if not check("Issue #94 the build without NVS encryption runs (its secrets in an "
+                     "unencrypted NVS) and reaches the broker that requires its password; #161: "
+                     "bdSeq 0 at the boot",
+                     nb0 and pw0 and v1 != "e2e-enc" and secret.encode() in clear0
+                     and bdseq_of(nb0[2]) == 0,
                      f"firmware {v1!r}, bdSeq {bdseq_of(nb0[2]) if nb0 else None}, commissioning "
                      f"password {pw0!r}; in clear in its NVS: {clear0}"):
             return
-        b0 = bdseq_of(nb0[2])
         gw.wait_log(r"edge: time synchronised", 20, t0)
 
         # 1. update; the broker goes away before the new image reaches a session; a reset (panic)
@@ -4667,7 +4669,7 @@ def run_nvs_ota(args, work):
         trial = gw.wait_log(r"fw: firmware e2e-enc \(ota_1\) on trial", 60, asked)
         kept = gw.find(r'storage: NVS partition "nvs" is not encrypted and stays so this boot: '
                        r"this firmware is on trial", asked)
-        # a connection attempt of the trial image takes (and stores) the next bdSeq
+        # a connection attempt of the trial image (the broker is down)
         attempt = gw.wait_log(r"edge: connecting to .* bdSeq=\d+", 60, trial or asked)
         time.sleep(1)
         _, h_trial = gw.shell("status", [r"^secrets\s+NVS NOT encrypted yet \(new firmware on trial"])
@@ -4681,17 +4683,16 @@ def run_nvs_ota(args, work):
         pw1 = commissioning_password(gw, back or asked) if back else None
         clear1 = nvs_clear(flash, words)
         b1 = bdseq_of(nb1[2]) if nb1 else None
-        grew = b1 is not None and 2 <= (b1 - b0) % 256 <= 64
         check("Issue #94 OTA from the build without NVS encryption to the encrypted one, rolled back "
               "by a reset during the trial: the new image kept the NVS unencrypted while on trial, "
-              "and the old image finds its bdSeq (continued by the trial) and its secrets (the MQTT "
-              "password opens the broker, the commissioning password is the same)",
+              "and the old image finds its secrets (the MQTT password opens the broker, the "
+              "commissioning password is the same); #161: bdSeq 0 again after the restart",
               death and trial and kept and attempt and list(h_trial.values())[0] and back
               and not erased
-              and nb1 and fw(nb1) == v1 and grew and pw1 == pw0 and secret.encode() in clear1,
+              and nb1 and fw(nb1) == v1 and b1 == 0 and pw1 == pw0 and secret.encode() in clear1,
               f"trial {trial is not None}, kept unencrypted {bool(kept)}, rolled back "
               f"{back is not None}; NVS erased by the old image: {erased[:1]}; NBIRTH firmware "
-              f"{fw(nb1)!r} bdSeq {b0} -> {b1}; commissioning password {pw1!r}; in clear: {clear1}")
+              f"{fw(nb1)!r} bdSeq {b1}; commissioning password {pw1!r}; in clear: {clear1}")
 
         # 2. update again with the broker up: confirmed by the session, one restart, migrated
         gw.wait_log(r"edge: time synchronised", 20, nb1[0] - 5 if nb1 else t0)
@@ -4700,7 +4701,7 @@ def run_nvs_ota(args, work):
         conf_t = gw.wait_log(r"fw: firmware e2e-enc confirmed: restarting once to encrypt the NVS",
                              300, asked)
         moved_t = gw.wait_log(r"storage: NVS migration: \d+ entries moved into the encrypted NVS "
-                              r"\(0 skipped\); bdSeq continues", 90, conf_t or asked)
+                              r"\(0 skipped\)", 90, conf_t or asked)
         # the NBIRTH of the boot that migrated (the trial's own session came before it)
         nb3, end = None, time.monotonic() + 90
         while moved_t is not None and nb3 is None and time.monotonic() < end:
@@ -4722,19 +4723,20 @@ def run_nvs_ota(args, work):
         clear2 = nvs_clear(flash, words)
         b3 = bdseq_of(nb3[2]) if nb3 else None
         check("Issue #94 the same update with the broker up: confirmed by its first session, one "
-              "restart (and no second one), and that boot moves the NVS into the encrypted one (bdSeq continues, the "
-              "MQTT password still opens the broker, same commissioning password, nothing in clear)",
-              conf_t and moved_t and nb3 and fw(nb3) == "e2e-enc" and b1 is not None
-              and b3 is not None and 1 <= (b3 - b1) % 256 <= 64 and pw2 == pw0 and not clear2
+              "restart (and no second one), and that boot moves the NVS into the encrypted one (the "
+              "MQTT password still opens the broker, same commissioning password, nothing in "
+              "clear; #161: bdSeq 0 at that boot)",
+              conf_t and moved_t and nb3 and fw(nb3) == "e2e-enc" and b3 == 0 and pw2 == pw0
+              and not clear2
               and list(h_enc.values())[0] and one_restart,
               f"confirmed {conf_t is not None}, migrated {moved_t is not None}; boots after the "
               f"confirmation {len(boots)}, restart requests {len(restarts)}, another NBIRTH in "
               f"20 s {later is not None}; NBIRTH firmware "
-              f"{fw(nb3)!r} bdSeq {b1} -> {b3}; commissioning password {pw2!r}; in clear: {clear2}")
+              f"{fw(nb3)!r} bdSeq {b3}; commissioning password {pw2!r}; in clear: {clear2}")
 
         # 3. issue #102: the build without NVS encryption sent to the migrated device: refused
         # once its head is in the slot (before esp_ota_set_boot_partition), no restart; the next
-        # boot still has the encrypted NVS (bdSeq continues, the password opens the broker)
+        # boot still has the encrypted NVS (the password opens the broker)
         if not args.plain_app:
             print("[SKIP] issue #102 OTA back to the build without NVS encryption: no --plain-app",
                   flush=True)
@@ -4770,11 +4772,11 @@ def run_nvs_ota(args, work):
         b5 = bdseq_of(nb5[2]) if nb5 else None
         check("Issue #102 an OTA update to the build without NVS encryption, on a device whose NVS "
               "is already encrypted, is refused with its reason before it is set to boot (no "
-              "restart); the next boot runs the same firmware with the NVS intact (bdSeq continues, "
-              "the MQTT password from the NVS opens the broker, same commissioning password)",
+              "restart); the next boot runs the same firmware with the NVS intact (the MQTT "
+              "password from the NVS opens the broker, same commissioning password; #161: bdSeq 0 "
+              "at each boot)",
               nb4 and refused and why and not restarted and nb5 and fw(nb5) == "e2e-enc"
-              and b4 is not None and b5 is not None and 1 <= (b5 - b4) % 256 <= 64
-              and pw3 == pw0 and all(h3.values()) and not clear3,
+              and b4 == 0 and b5 == 0 and pw3 == pw0 and all(h3.values()) and not clear3,
               f"state {fw_state(refused[2]) if refused else None!r}; restarted {restarted}; NBIRTH "
               f"firmware {fw(nb5)!r} bdSeq {b4} -> {b5}; commissioning password {pw3!r}; shell "
               f"{h3}; in clear: {clear3}")
@@ -6282,6 +6284,13 @@ def run(args, log, slave, broker, conf, work):
     reason0 = metric(p, name="Node Info/Reset Reason")
     check("1b. NBIRTH seq=0, bdSeq metric, timestamp", p.seq == 0 and p.timestamp > 0,
           f"seq={p.seq} bdSeq={b0} timestamp={p.timestamp}")
+    # SPB-3 / #161 (tck-id-topics-nbirth-bdseq-increment): the first CONNECT of the boot has bdSeq
+    # 0; the console logs the bdSeq of each attempt, and the NBIRTH carries that of its attempt
+    tried = [int(x) for x in re.findall(r"bdSeq=(\d+)", " ".join(
+        l for l in gw.find(r"edge: connecting to .* bdSeq=\d+", t0)))]
+    check("SPB-3 bdSeq starts at 0 at the boot (the first attempt), and the NBIRTH carries the bdSeq "
+          "of its attempt", tried[:1] == [0] and b0 == tried[-1],
+          f"bdSeq of the attempts {tried}; NBIRTH bdSeq {b0}")
     check("TIME-1 timestamps are UTC ms from SNTP (the harness' own responder)",
           SNTP_BOUND.is_set() and abs(p.timestamp / 1000 - time.time()) < 60,
           f"NBIRTH timestamp {p.timestamp} vs host {int(time.time() * 1000)}; responder on UDP 123: "
@@ -6576,8 +6585,8 @@ def run(args, log, slave, broker, conf, work):
     pre = set_do(obs, ncmd_t, ndata_t, {2: False, 3: True, 4: True})
 
     # MQTT-2 broker restart: the broker publishes the session's will (NDEATH) while shutting
-    # down; the gateway retries with exponential backoff and a new bdSeq per attempt, and the
-    # new session starts with NBIRTH and every DBIRTH.
+    # down; the gateway retries with exponential backoff (the attempts fail at TCP: no CONNECT
+    # packet, so the same bdSeq, #161), and the new session starts with NBIRTH and every DBIRTH.
     obs.drain()
     since = time.monotonic()
     broker.terminate()
@@ -6604,9 +6613,13 @@ def run(args, log, slave, broker, conf, work):
     check("MQTT-2 reconnect with exponential backoff and jitter (1 s..60 s)", growing and nb,
           f"delays {delays} ms, {len(attempts)} attempts while down, NBIRTH after restart: {bool(nb)}")
     b1 = bdseq_of(nb[2]) if nb else None
-    check("SPB-3 bdSeq incremented on every connection attempt",
-          nb and b1 == (b0 + len(attempts) + 1) % 256,
-          f"first session bdSeq={b0}, attempts while down={len(attempts)}, new NBIRTH bdSeq={b1}")
+    down_seqs = sorted({int(x) for x in re.findall(r"bdSeq=(\d+)", " ".join(attempts))})
+    check("SPB-3 / issue #161 bdSeq increases by exactly 1 for each CONNECT packet: the attempts "
+          "while the broker is down fail at TCP (no CONNECT) and keep the same value; the new "
+          "session has the bdSeq of the old one + 1 (tck-id-topics-nbirth-bdseq-increment)",
+          nb and len(attempts) >= 2 and down_seqs == [(b0 + 1) % 256] and b1 == (b0 + 1) % 256,
+          f"first session bdSeq={b0}, attempts while down={len(attempts)} with bdSeq {down_seqs}, "
+          f"new NBIRTH bdSeq={b1}")
     if args.simulate_qemu_death == "main" and not RETRIES:
         # issue #105 M6 self-test: the emulator dies after the main broker was replaced
         # (mosquitto2): the retry must find a main broker running
@@ -6695,12 +6708,13 @@ def run(args, log, slave, broker, conf, work):
           f"NDEATH bdSeq={bdseq_of(nd[2]) if nd else None} (NBIRTH had {b2})")
     b1 = b2
 
-    # Restart on the same flash: bdSeq persisted in NVS
+    # Restart on the same flash: SPB-3 / #161, bdSeq starts at 0 again (it is not persisted)
     gw = Gateway(args, log)
     gw.start()
     nb = obs.wait(nbirth_t, 40)
     b2 = bdseq_of(nb[2]) if nb else None
-    check("SPB-3 bdSeq persisted across reboot (NVS)", nb and b2 == (b1 + 1) % 256,
+    check("SPB-3 / issue #161 bdSeq starts at 0 after a power cycle (not persisted; "
+          "tck-id-topics-nbirth-bdseq-increment)", nb and b2 == 0,
           f"after power cycle NBIRTH bdSeq={b2}, previous {b1}")
 
     # IO-3 'hold' across a software restart: the expander keeps its latch (the QEMU model keeps
@@ -6723,16 +6737,19 @@ def run(args, log, slave, broker, conf, work):
     # silent from here on, the next boot takes its time from the RTC.
     obs.drain()
     SNTP_PAUSED.set()
+    cmd_t = time.monotonic()
     obs.publish_cmd(ncmd_t, [{"name": "Node Control/Reboot", "datatype": 11, "boolean_value": True}])
     nd = obs.wait(ndeath_t, 10)
     time.sleep(0.5)
     explicit = re.search(r"Received PUBLISH from GW01 \(d0, q1, r0, m\d+, 'spBv1\.0/Plant1/NDEATH/GW01'",
                          (work / "mosquitto2.log").read_text()) is not None
     nb = obs.wait(nbirth_t, 40)
-    deaths = [m for m in CAPTURE if m[1] == ndeath_t and bdseq_of(m[2]) == b2]
-    check("SPB-2/SPB-11 NCMD Reboot publishes NDEATH explicitly (QoS 1), disconnects and restarts",
+    # #161: the earlier sessions of this run had bdSeq 0 too: only the NDEATHs since the command
+    deaths = [m for m in CAPTURE if m[1] == ndeath_t and m[0] >= cmd_t and bdseq_of(m[2]) == b2]
+    check("SPB-2/SPB-11 NCMD Reboot publishes NDEATH explicitly (QoS 1), disconnects and restarts "
+          "(#161: bdSeq 0 again)",
           nd and explicit and bdseq_of(nd[2]) == b2 and len(deaths) == 1 and nb
-          and bdseq_of(nb[2]) == (b2 + 1) % 256,
+          and bdseq_of(nb[2]) == 0,
           f"NDEATH bdSeq={bdseq_of(nd[2]) if nd else None} sent by the node={explicit}, "
           f"NDEATHs with that bdSeq={len(deaths)} (will discarded if 1), "
           f"NBIRTH after reboot bdSeq={bdseq_of(nb[2]) if nb else None}")

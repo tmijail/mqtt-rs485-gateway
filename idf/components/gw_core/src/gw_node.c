@@ -231,6 +231,29 @@ static bool tag_changed(const gw_node_t *n, uint16_t tag, const gw_tag_value_t *
 
 /* ---------- births and deaths ---------- */
 
+void gw_bdseq_init(gw_bdseq_t *b)
+{
+    b->next = 0;   /* tck-id-topics-nbirth-bdseq-increment: "MUST start at zero" */
+    b->taken = 0;
+    b->pending = false;
+}
+
+uint8_t gw_bdseq_take(gw_bdseq_t *b)
+{
+    b->taken = b->next;
+    b->next = (uint8_t)(b->taken + 1);   /* 255 -> 0 */
+    b->pending = true;
+    return b->taken;
+}
+
+void gw_bdseq_not_sent(gw_bdseq_t *b)
+{
+    if (b->pending) {
+        b->next = b->taken;
+        b->pending = false;
+    }
+}
+
 size_t gw_node_death_payload(uint64_t bdseq, uint8_t *out, size_t cap)
 {
     /* tck-id-message-flow-edge-node-birth-publish-will-message-payload-bdSeq: the Will

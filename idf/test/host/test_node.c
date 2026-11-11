@@ -1360,6 +1360,37 @@ static void test_session_up_needs_the_nbirth(void)
     TEST_ASSERT_EQUAL_UINT64(0, dec.seq);
 }
 
+/* SPB-3 / issue #161 (tck-id-topics-nbirth-bdseq-increment): bdSeq starts at 0 at each boot
+ * and increases by exactly 1 for each CONNECT packet. An attempt that sent no CONNECT (no client,
+ * the transport did not connect) gives its value to the next attempt; one that may have sent it
+ * keeps it. 255 -> 0. */
+static void test_bdseq_per_connect_packet(void)
+{
+    gw_bdseq_t b;
+    gw_bdseq_init(&b);
+    TEST_ASSERT_EQUAL_UINT8(0, gw_bdseq_take(&b));   /* the first CONNECT of the boot */
+    TEST_ASSERT_EQUAL_UINT8(1, gw_bdseq_take(&b));   /* CONNECT sent (no CONNACK, refused...) */
+    /* the broker is down: three attempts fail at TCP, no CONNECT: the value stays */
+    for (int i = 0; i < 3; i++) {
+        TEST_ASSERT_EQUAL_UINT8(2, gw_bdseq_take(&b));
+        gw_bdseq_not_sent(&b);
+    }
+    gw_bdseq_not_sent(&b);                           /* only once per take */
+    TEST_ASSERT_EQUAL_UINT8(2, gw_bdseq_take(&b));   /* the CONNECT that works */
+    TEST_ASSERT_EQUAL_UINT8(3, gw_bdseq_take(&b));
+    /* the wrap */
+    for (unsigned v = 4; v <= 255; v++) {
+        TEST_ASSERT_EQUAL_UINT8(v, gw_bdseq_take(&b));
+    }
+    TEST_ASSERT_EQUAL_UINT8(0, gw_bdseq_take(&b));
+    gw_bdseq_not_sent(&b);
+    TEST_ASSERT_EQUAL_UINT8(0, gw_bdseq_take(&b));
+    /* a new boot starts at 0 again */
+    gw_bdseq_init(&b);
+    gw_bdseq_not_sent(&b);                           /* nothing taken: no change */
+    TEST_ASSERT_EQUAL_UINT8(0, gw_bdseq_take(&b));
+}
+
 /* Issue #164: an NCMD Rebirth whose NBIRTH publish fails one time (the connection may stay open)
  * ends the Sparkplug session: the node is offline, sends no DBIRTH and no DDATA, and reports the
  * failure, so the caller ends the MQTT session. The next session sends every birth again. */
@@ -1743,6 +1774,7 @@ int main(void)
     RUN_TEST(test_store_and_forward_mb6);
     RUN_TEST(test_session_up_needs_the_nbirth);
     RUN_TEST(test_failed_rebirth_ends_the_session);
+    RUN_TEST(test_bdseq_per_connect_packet);
     RUN_TEST(test_dbirth_not_published_leaves_the_device_unborn);
     RUN_TEST(test_dbirth_too_large_not_retried_on_every_change);
     RUN_TEST(test_firmware_update_metrics);
