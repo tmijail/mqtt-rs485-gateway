@@ -2,7 +2,7 @@
 
 This is the MVP firmware (`docs/SPEC.md` §5) for the Waveshare **ESP32-S3-POE-ETH-8DI-8DO**.
 
-- **Stack:** ESP-IDF **v6.1**, target `esp32s3`, the common configuration schema of §6.
+- **Stack:** ESP-IDF **v6.1**, target `esp32s3`, the configuration schema of `docs/SPEC.md` §6. This is the only implementation of the specification (`docs/SPEC.md` §2.2).
 - **Feasibility study for all of §4:** `docs/feasibility-idf.md`.
 - **Connect the RS485 bus** (termination, bias, topology, error counters): `docs/how-to/connect-the-rs485-bus.md`.
 - **Get and decode a core dump** after a crash (web API, shell, `esp-coredump`): `docs/how-to/decode-a-core-dump.md`.
@@ -205,7 +205,7 @@ The search found no published schematic.
 | Data | Finding | Evidence | Confidence |
 |---|---|---|---|
 | DO expander | **TCA9554 at 0x20** | Demo: `TCA9554_ADDRESS 0x20` (`WS_TCA9554PWR.h`). ESPHome of the sister board: `pca9554 address: 0x20` | High |
-| DO polarity | **Low level on the expander pin = DO active** (Darlington output) | **For:** the demo boots with `Dout_Init()` → `TCA9554PWR_Init(0x00, 0xFF)`, all high (a demo does not energize 8 loads at power-on). Its DI→DO mode (`WS_DIN.cpp`, `DIN_Inverse_Enable = 0`) copies the raw level (DI at rest = 1 → DO = 1 = off). The ESPHome definition of this board (8DI-8DO) declares `inverted: true` on the 8 DOs. The Zephyr implementation got the same result (`GPIO_ACTIVE_LOW`). **Against:** the demo calls `Dout_Open()` at the HIGH level, and `"CH1":1` over MQTT sets the pin high. Also, the wiki (a copy of the relay wiki) says "ALL_ON … high level (on state)" | **Medium.** Configurable: `CONFIG_GW_DO_ACTIVE_LOW` (default `y`, the most probable hypothesis). **Measure with a multimeter before you connect loads** |
+| DO polarity | **Low level on the expander pin = DO active** (Darlington output) | **For:** the demo boots with `Dout_Init()` → `TCA9554PWR_Init(0x00, 0xFF)`, all high (a demo does not energize 8 loads at power-on). Its DI→DO mode (`WS_DIN.cpp`, `DIN_Inverse_Enable = 0`) copies the raw level (DI at rest = 1 → DO = 1 = off). The ESPHome definition of this board (8DI-8DO) declares `inverted: true` on the 8 DOs. The Zephyr prototype of the stack comparison (branch `impl/zephyr`, not maintained) got the same result from the same sources (`GPIO_ACTIVE_LOW`): it is not independent evidence. **Against:** the demo calls `Dout_Open()` at the HIGH level, and `"CH1":1` over MQTT sets the pin high. Also, the wiki (a copy of the relay wiki) says "ALL_ON … high level (on state)" | **Medium.** Configurable: `CONFIG_GW_DO_ACTIVE_LOW` (default `y`, the most probable hypothesis). **Measure with a multimeter before you connect loads** |
 | RTC | **PCF85063 at 0x51** (SDA 42, SCL 41, INT 40) | Demo: `PCF85063_ADDRESS (0x51)` (`WS_PCF85063.h`); ESPHome: `platform: pcf85063` | High (TIME-2: the firmware uses the RTC; the real I²C has no test) |
 | DI polarity | GPIO with pull-up; **active input = level 0** (inverted) | Demo: `pinMode(DIN_PIN_CHx, INPUT_PULLUP)` and the rest state `0xFF`; ESPHome: `INPUT_PULLUP` + `inverted: true` | Medium-high. Configurable: `CONFIG_GW_DI_ACTIVE_LOW` |
 | Buzzer | **Passive** (needs PWM) | Demo: `ledcAttach(46, 1000 Hz, 8 bits)` with duty 200/255; ESPHome uses `rtttl` on `ledc` | Medium. The firmware drives it with LEDC at 2.7 kHz (`CONFIG_GW_BUZZER_FREQ_HZ`). An active buzzer would need level control (`gw_bsp.buzzer.passive = false`) |
@@ -1185,7 +1185,7 @@ Legend for **Evidence**:
 | MQTT-7 | Implemented | `gw_edge.c`, `gw_bus.c` | Static queues and buffers, `outbox.limit` and `SKIP_PUBLISH_IF_DISCONNECTED`. No stress test |
 | SPB-1 | Implemented | `gw_core/src/spb.c`, `proto/` | H + Python interoperability + Q |
 | SPB-2 | Implemented | `gw_node.c`, `gw_edge.c` (`op_reboot`) | H + Q |
-| SPB-3 | Implemented | `gw_storage/gw_storage.c`, `gw_edge.c` | Q (per attempt, and persistent) |
+| SPB-3 | Implemented | `gw_core/src/gw_node.c` (`gw_bdseq_t`), `gw_edge.c` | H + Q. In RAM only: 0 at each boot, and +1 for each MQTT CONNECT packet (issue #161, §6.3) |
 | SPB-4 | Implemented | `gw_core/src/gw_node.c` (`publish_nbirth`) | H + Q. Node metrics: bdSeq, Rebirth, Reboot, `Node Info/Firmware`, `Hardware`, `Reset Reason`, `Node Control/Scan Rate` (alias 1 and 3–7), DI/1–8, DO/1–8 and `Counter/1`–`8` (IO-4, alias 30–37) |
 | SPB-5 | Implemented | `gw_node.c` | H (wrap from 255 to 0) + Q (continuity) |
 | SPB-6 | Implemented | `gw_node.c` (`gw_node_device_changed`) | H + Q |
@@ -1360,7 +1360,7 @@ The QEMU build is different from the board build at these points (`sdkconfig.qem
   - ranges that we selected: `response_timeout_ms` 10–5000, `retries` 0–5, `poll_ms` ≥ 50, `keepalive_s` 5–3600, `inter_frame_delay_ms` ≤ 1000;
   - MB-6: `bool` in `holding`/`input` requires `bit`; `bit` does not accept a different `word_order`; `length` is necessary with `string` and `bytes`, and is not permitted with other types; `string` and `bytes` do not accept a `scale` other than 1, an `offset` or a `deadband` other than 0, `eng_low` or `eng_high`.
 
-  The Zephyr implementation can be less strict: an agreement on this is necessary.
+  These rules are part of the configuration schema (`docs/SPEC.md` §6). This firmware is the only implementation of the schema.
 - **`units`**, `eng_low` and `eng_high` go only in the DBIRTH, as the properties `engUnit`, `engLow` and `engHigh` (SPB-16). `engLow`/`engHigh` go as Float for all tag types. A Float uses 4 B per value in the 256-tag configuration. This configuration is in memory two times while the gateway validates a new one (in internal RAM in the QEMU build without PSRAM). Thus the gateway rounds a range with more than 7 significant digits.
 
 ### 6.2.1 Web, API, shell and secrets (CFG-3 to CFG-7, NET-5, NET-6)

@@ -1,88 +1,134 @@
-# Especificación de producto — Gateway RS485 (Modbus RTU) → MQTT Sparkplug B
+# Product specification: RS485 (Modbus RTU) to MQTT Sparkplug B gateway
 
-Versión: 1.0 · Fecha: 2026-11-03
+Version: 2.0 · Date: 2026-11-11
 
-## 1. Objetivo
+This document gives the requirements (§4), the minimum product or MVP (§5), the configuration schema (§6) and the acceptance criteria of the MVP (§7). `idf/README.md` gives the design, the evidence for each requirement and the known limitations.
 
-Gateway industrial de borde que:
+## 1. Purpose
 
-- encuesta equipos de campo por **RS485 / Modbus RTU**,
-- publica sus variables en un broker **MQTT** con **Sparkplug B 3.0**,
-- acepta comandos de escritura desde SCADA o MES (DCMD/NCMD),
-- y expone sus 8 entradas y 8 salidas digitales locales como métricas Sparkplug.
+The gateway is an industrial edge device. It does these functions:
 
-Al publicar, el gateway hace de *Edge Node* de Sparkplug. Cada esclavo Modbus es un *Device* de Sparkplug.
+- It polls field devices on **RS485 with Modbus RTU**.
+- It publishes their values to an **MQTT** broker with **Sparkplug B 3.0.0**.
+- It writes the values of commands (NCMD and DCMD) from a SCADA or MES host.
+- It publishes its 8 local digital inputs and its 8 local digital outputs as Sparkplug metrics.
 
-## 2. Selección de hardware
+In Sparkplug, the gateway is an *Edge Node*. Each Modbus slave is a Sparkplug *Device*.
 
-| Candidato | Programable | Veredicto |
+**Open source.** The firmware runs on a board that anyone can buy. The owner of the board must always be able to read, flash and change it. Thus the firmware burns no eFuse and does not lock the board (FW-2, FW-3, CFG-7).
+
+**Sparkplug conformance.** The gateway obeys each MUST, MUST NOT, SHOULD and SHOULD NOT of Sparkplug B 3.0.0 for an Edge Node. The reference is the normative text with a `tck-id`, at the tag `v3.0.0` of `eclipse-sparkplug/sparkplug`. When this document does not agree with that text, the Sparkplug text is correct, and this document must change. `docs/reference/sparkplug-tck-results.md` gives the results of the Sparkplug TCK.
+
+## 2. Hardware
+
+### 2.1 Selection
+
+| Candidate | Can you program it? | Result |
 |---|---|---|
-| Waveshare RS232/485/422 TO POE ETH (B) | **No**: firmware cerrado de servidor serie; solo se configura (web, herramienta de PC o set de comandos) | Descartado: no es posible implementar Sparkplug B propio |
-| **Waveshare ESP32-S3-POE-ETH-8DI-8DO** | **Sí**: ESP32-S3, soportado por ESP-IDF, Arduino y Zephyr | **Elegido** |
+| Waveshare RS232/485/422 TO POE ETH (B) | **No.** It has closed firmware for a serial server. You can only configure it (web, PC tool or command set) | Not selected: it cannot run a Sparkplug B implementation of its own |
+| **Waveshare ESP32-S3-POE-ETH-8DI-8DO** | **Yes.** It has an ESP32-S3, and ESP-IDF supports it | **Selected** |
 
-### 2.1 Recursos del ESP32-S3-POE-ETH-8DI-8DO
+### 2.2 One implementation
 
-| Recurso | Detalle | Pines |
+This repository has one implementation of this specification: the ESP-IDF v6.1 firmware in `idf/`.
+
+During the selection, a Zephyr prototype was also made for a comparison. That prototype is not on `main`, and the project does not maintain it. The branches `impl/zephyr` and `comparison/idf-vs-zephyr` keep it. `docs/RECOMMENDATION.md` gives the reasons for ESP-IDF.
+
+### 2.3 Resources of the ESP32-S3-POE-ETH-8DI-8DO
+
+| Resource | Data | Pins |
 |---|---|---|
-| MCU | ESP32-S3-WROOM-1U-**N16R8**: 2× Xtensa LX7 a 240 MHz, 16 MB de flash, 8 MB de PSRAM octal | — |
-| Ethernet | **W5500** por SPI, 10/100 | MOSI 13, MISO 14, SCLK 15, CS 16, INT 12, RST 39 |
-| PoE | Módulo IEEE 802.3af integrado | — |
-| RS485 | Aislado, half-duplex, con dirección por RTS | TX 17, RX 18, **RTS/DE 21** |
-| CAN | Aislado, TWAI | TX 2, RX 3 |
-| DI ×8 | Optoaisladas, bidireccionales, aceptan contacto seco o señal activa | GPIO 4–11 (**verificar polaridad**) |
-| DO ×8 | Darlington optoaislado, hasta 500 mA en modo sumidero, con diodo de rueda libre | EXIO1–8 de un expansor I²C (TCA9554/PCA9554, **verificar dirección**, típicamente 0x20) |
-| RTC | I²C con interrupción (PCF85063, **verificar**) | SDA 42, SCL 41, INT 40 |
-| LED RGB | WS2812 | GPIO 38 |
-| Buzzer | Activo o pasivo (**verificar**) | GPIO 46 |
-| microSD | Modo SPI o SDMMC de 1 bit | D0 45, CMD 47, SCK 48 |
-| Botón BOOT | — | GPIO 0 |
-| Wi-Fi / BLE | 2,4 GHz, del ESP32-S3 | — |
-| Alimentación | 7–36 V por bornera, PoE o USB-C 5 V | — |
+| MCU | ESP32-S3-WROOM-1U-**N16R8**: 2 × Xtensa LX7 at 240 MHz, 16 MB of flash, 8 MB of octal PSRAM. The firmware requires the PSRAM (§2.5) | — |
+| Ethernet | **W5500** on SPI, 10/100 | MOSI 13, MISO 14, SCLK 15, CS 16, INT 12, RST 39 |
+| PoE | IEEE 802.3af module on the board | — |
+| RS485 | Isolated, half-duplex, direction control with RTS | TX 17, RX 18, **RTS/DE 21** |
+| CAN | Isolated, TWAI controller. **Not used** (§2.4) | TX 2, RX 3 |
+| DI × 8 | Opto-isolated and bidirectional. They accept a dry contact or an active signal. An active input is a low level on the GPIO (pull-up) | GPIO 4–11 |
+| DO × 8 | Opto-isolated Darlington outputs that sink up to 500 mA, with a flyback diode. An active output is a low level on the pin of the expander | EXIO1–8 of a TCA9554 I²C expander at address 0x20 |
+| RTC | PCF85063 at address 0x51, on I²C, with an interrupt | SDA 42, SCL 41, INT 40 |
+| RGB LED | WS2812, RGB byte order | GPIO 38 |
+| Buzzer | Passive (it needs PWM) | GPIO 46 |
+| microSD | SDMMC, 1-bit mode | D0 45, CMD 47, CLK 48 |
+| BOOT button | — | GPIO 0 |
+| Wi-Fi / BLE | 2.4 GHz, in the ESP32-S3 | — |
+| Power supply | 7–36 V on the terminal block, PoE, or 5 V on USB-C | — |
 
-> El TCA9554 de las salidas y el RTC comparten el bus I²C de los GPIO 41 y 42. Los datos marcados como **verificar** deben confirmarse con el esquemático o el código demo de Waveshare.
+The TCA9554 of the outputs and the RTC use the same I²C bus (GPIO 41 and 42). Nobody found a published schematic. `idf/README.md` §2 gives the source and the confidence of each item in this table.
 
-## 3. Convenciones
+> **Caution: Measure the polarity of the DOs with a multimeter before you connect loads.** The polarity of the DIs and of the DOs comes only from indirect evidence. The Kconfig options `CONFIG_GW_DI_ACTIVE_LOW` and `CONFIG_GW_DO_ACTIVE_LOW` change it.
 
-- Cada requisito tiene un ID con el formato `ÁREA-n`.
-- La columna **MVP** indica si el requisito forma parte del producto mínimo (§5).
-- Prioridad: **P0** = imprescindible, **P1** = esperado en un producto de buen nivel, **P2** = diferencial.
+### 2.4 The isolated CAN port: out of scope
 
-## 4. Especificación completa
+The board has an isolated CAN port on the TWAI controller of the ESP32-S3 (TX GPIO 2, RX GPIO 3).
 
-### 4.1 Red (NET)
+**Decision of the product owner (issue #184):** the firmware does not use the CAN port. The CAN port is out of scope until the product owner decides differently.
 
-| ID | Requisito | Prio | MVP |
-|---|---|---|---|
-| NET-1 | Ethernet por W5500 como interfaz primaria, con detección de enlace (link up/down) y reconexión automática | P0 | ✅ |
-| NET-2 | IPv4 por DHCP o estática (IP, máscara, gateway y DNS), configurable | P0 | ✅ |
-| NET-3 | Resolución de nombres por DNS para el host del broker | P0 | ✅ |
-| NET-4 | Wi-Fi STA como interfaz alternativa o de respaldo cuando cae Ethernet, con prioridad configurable | P1 | |
-| NET-5 | Wi-Fi access point for commissioning. It starts when there is no valid configuration, and on a push of the BOOT button for 2 to 10 s. It uses WPA2 with the commissioning password. During a claim window (CFG-8) it is open (no key) | P1 | |
-| NET-6 | Hostname configurable y anuncio mDNS (`_http._tcp`) | P2 | |
-| NET-7 | IPv6 | P2 | |
+- No requirement of §4 uses the CAN port, and the configuration schema has no key for it.
+- The firmware does not configure GPIO 2 and GPIO 3. GPIO 3 is also a strapping pin (the JTAG source).
+- A requirement for the CAN port needs a new requirement ID and a decision of the product owner.
 
-### 4.2 Tiempo (TIME)
+### 2.5 PSRAM
 
-| ID | Requisito | Prio | MVP |
-|---|---|---|---|
-| TIME-1 | SNTP synchronization with a server that you can configure. The Sparkplug timestamps are in ms UTC (`tck-id-payloads-timestamp-in-UTC`, `tck-id-payloads-metric-timestamp-in-UTC`). Until a source sets the clock (SNTP, the RTC or the browser with `POST /api/time`), the gateway publishes the births only: no NDATA and no DDATA. When the clock becomes valid, the gateway does a rebirth (issue #160) | P0 | ✅ |
-| TIME-2 | The gateway reads the RTC at boot. It writes the RTC after each SNTP synchronization and after each time from the browser. Thus the timestamps are valid without a network | P1 | |
-| TIME-3 | Métrica `Node Info/Time Synced` que indica si la hora es confiable | P2 | |
+The firmware assumes the 8 MB of PSRAM of the board (issue #135). When the boot does not find the PSRAM, the gateway runs only the fault mode:
+
+- It does not load the configuration. It does not poll, and it does not connect to MQTT. All DOs are off.
+- The network, the web UI, the shell and the access point (NET-5) start. They show the cause.
+
+`idf/README.md` §1.3 gives the details. Only the QEMU build without PSRAM (`CONFIG_GW_EMU_NO_PSRAM`) runs the gateway without PSRAM, for the tests.
+
+## 3. Conventions
+
+- Each requirement has an ID with the format `AREA-n`, for example `SPB-3`. An ID does not change. A requirement that is out of scope keeps its ID.
+- The column **MVP** marks the requirements of the minimum product (§5).
+- The column **Prio** gives the priority:
+  - **P0**: necessary;
+  - **P1**: expected in a good product;
+  - **P2**: an advantage over other products;
+  - **—**: out of scope.
+- The column **Status** gives the state of the code on `main`:
+  - **Done**: the firmware has the function, and host tests or the E2E in QEMU examine it;
+  - **Partial**: the firmware has a part of the function. The cell tells which part is not done;
+  - **Open**: the function is not done;
+  - **Out of scope**: the project does not do it. The requirement gives the reason.
+- **Done does not mean a test on hardware.** The firmware has never run on the board (issues #1 and #18). The W5500, the RS485 hardware mode, the TCA9554, the GPIO DIs, the LED and the radio are compile-only. `idf/README.md` §5 gives the evidence for each requirement, and §6 gives the known limitations.
+- A text such as `#120` refers to a GitHub issue. A text such as `tck-id-…` refers to a normative statement of Sparkplug B 3.0.0.
+
+## 4. Requirements
+
+### 4.1 Network (NET)
+
+| ID | Requirement | Prio | MVP | Status |
+|---|---|---|---|---|
+| NET-1 | Ethernet with the W5500 is the primary interface. The gateway detects the link state (up and down) and connects again automatically | P0 | ✅ | Done |
+| NET-2 | IPv4 with DHCP or with a static address (IP, netmask, gateway and DNS). You can configure it | P0 | ✅ | Done |
+| NET-3 | The gateway finds the address of the broker host with DNS | P0 | ✅ | Done |
+| NET-4 | Wi-Fi STA as an alternative interface, or as a backup when Ethernet stops. You can configure the priority | P1 | | Done. Not tested with a radio |
+| NET-5 | A Wi-Fi access point for commissioning. It starts when there is no valid configuration, and when you push the BOOT button for 2 to 10 s. It uses WPA2 with the commissioning password. During a claim window (CFG-8), it is open (no key) | P1 | | Done. Not tested with a radio |
+| NET-6 | A hostname that you can configure, and an mDNS announcement of the web UI (`_https._tcp`, or `_http._tcp` without HTTPS) | P2 | | Done |
+| NET-7 | IPv6 | P2 | | Done |
+
+### 4.2 Time (TIME)
+
+| ID | Requirement | Prio | MVP | Status |
+|---|---|---|---|---|
+| TIME-1 | SNTP synchronization with a server that you can configure. The Sparkplug timestamps are in ms UTC (`tck-id-payloads-timestamp-in-UTC`, `tck-id-payloads-metric-timestamp-in-UTC`). Until a source sets the clock (SNTP, the RTC or the browser with `POST /api/time`), the gateway publishes only the births: no NDATA and no DDATA. When the clock becomes valid, the gateway does a rebirth if it sent the births without a valid clock (issue #160) | P0 | ✅ | Done |
+| TIME-2 | The gateway reads the RTC at boot. It writes the RTC after each SNTP synchronization and after each time from the browser. Thus the timestamps are valid without a network | P1 | | Done |
+| TIME-3 | The node metric `Node Info/Time Synced` tells if SNTP synchronized the clock | P2 | | Done |
 
 ### 4.3 MQTT (MQTT)
 
-| ID | Requisito | Prio | MVP |
-|---|---|---|---|
-| MQTT-1 | Cliente MQTT 3.1.1 sobre TCP con host, puerto, client_id, usuario, contraseña y keepalive configurables | P0 | ✅ |
-| MQTT-2 | Reconexión automática con *backoff* exponencial y jitter (de 1 s a 60 s) | P0 | ✅ |
-| MQTT-3 | LWT con el NDEATH de Sparkplug (§4.4) | P0 | ✅ |
-| MQTT-4 | TLS 1.2 o 1.3 con CA configurable y verificación de hostname | P1 | |
-| MQTT-5 | TLS mutuo con certificado y clave de cliente | P1 | |
-| MQTT-6 | Lista de brokers con conmutación por falla, en orden | P1 | |
-| MQTT-7 | Colas de publicación acotadas: nunca hay alocación dinámica sin límite ante un broker lento | P0 | ✅ |
-| MQTT-8 | MQTT 5.0 | P2 | |
+| ID | Requirement | Prio | MVP | Status |
+|---|---|---|---|---|
+| MQTT-1 | An MQTT 3.1.1 client on TCP. You can configure the host, the port, the client ID, the user name, the password and the keepalive. Each CONNECT has Clean Session = 1 (`tck-id-principles-persistence-clean-session-311`) | P0 | ✅ | Done |
+| MQTT-2 | The gateway connects again automatically, with an exponential backoff and jitter (1 s to 60 s) | P0 | ✅ | Done |
+| MQTT-3 | The MQTT Will (LWT) is the Sparkplug NDEATH (SPB-2) | P0 | ✅ | Done |
+| MQTT-4 | TLS 1.2 or 1.3, with a CA that you can configure and a check of the host name | P1 | | Done |
+| MQTT-5 | Mutual TLS with a client certificate and a client key | P1 | | Done |
+| MQTT-6 | An ordered list of brokers, with failover | P1 | | Done |
+| MQTT-7 | Bounded publish queues: a slow broker never causes a memory allocation without a limit | P0 | ✅ | Done |
+| MQTT-8 | MQTT 5.0 | P2 | | Done |
 
-### 4.4 Sparkplug B 3.0 (SPB)
+### 4.4 Sparkplug B 3.0.0 (SPB)
 
 **Topics:**
 
@@ -90,116 +136,145 @@ Al publicar, el gateway hace de *Edge Node* de Sparkplug. Cada esclavo Modbus es
 - `spBv1.0/{group_id}/{DBIRTH|DDEATH|DDATA|DCMD}/{edge_node_id}/{device_id}`
 - `spBv1.0/STATE/{primary_host_id}`
 
-| ID | Requisito | Prio | MVP |
-|---|---|---|---|
-| SPB-1 | Payload protobuf conforme a `sparkplug_b.proto` de Eclipse Tahu | P0 | ✅ |
-| SPB-2 | The node registers the **NDEATH** as the MQTT Will (LWT): QoS 1, no retain. The NDEATH has the metric `bdSeq` with the datatype Int64 (`tck-id-message-flow-edge-node-birth-publish-will-message-payload-bdSeq`). The `bdSeq` of the NBIRTH also has the datatype Int64 (`tck-id-message-flow-edge-node-birth-publish-nbirth-payload-bdSeq`). Before an orderly disconnection, the node publishes the NDEATH | P0 | ✅ |
-| SPB-3 | **bdSeq** from 0 to 255, in RAM only. It starts at 0 at each boot and increases by exactly 1 for each new MQTT CONNECT packet; after 255 it is 0 (`tck-id-topics-nbirth-bdseq-increment`, issue #161). A connection attempt that sends no CONNECT packet (DNS, TCP or TLS failure) does not use a value. The NBIRTH has the same value as the Will of that connection | P0 | ✅ |
-| SPB-4 | **NBIRTH**: QoS 0, no retain, `seq` = 0, timestamp. It contains `bdSeq`, `Node Control/Rebirth` (Boolean, writable, value false), `Node Control/Reboot`, `Node Info/Firmware`, `Node Info/Hardware` and the local I/O metrics (§4.6). Each metric has a name, a datatype and a value. Each metric also has an alias, except `Node Control/Rebirth`: the NBIRTH must not give an alias to it (`tck-id-operational-behavior-data-commands-rebirth-name-aliases`) | P0 | ✅ |
-| SPB-5 | **seq** de 0 a 255 que vuelve a empezar, compartido por todos los mensajes del nodo salvo NDEATH | P0 | ✅ |
-| SPB-6 | **DBIRTH** por cada dispositivo Modbus en línea, con todas sus métricas y su valor actual. **DDEATH** cuando el dispositivo pasa a fuera de línea (§4.5, MB-9) | P0 | ✅ |
-| SPB-7 | **NDATA/DDATA** by exception: the node publishes only the metrics that changed. Each metric has its alias and a timestamp, and has no name and no datatype (`tck-id-payloads-metric-datatype-not-req`; the host knows the datatype from the birth). The members of a template instance also have no datatype. The changes of one poll cycle go in one message | P0 | ✅ |
-| SPB-8 | **Aliases** únicos de tipo UInt64 por nodo, declarados en los BIRTH | P0 | ✅ |
-| SPB-9 | **Rebirth**: al recibir `NCMD Node Control/Rebirth=true` se reenvía NBIRTH y todos los DBIRTH, y `seq` vuelve a 0 | P0 | ✅ |
-| SPB-10 | **DCMD**: the gateway writes writable metrics to Modbus. It finds the tag by alias or by name, converts the type and the scale, and publishes the confirmed value after the write. The gateway discards these commands and writes the reason in the log: a command for a metric that does not exist or is read-only, a metric with a datatype that is not the datatype of the DBIRTH, and a value with a fraction for an integer or Boolean tag. A metric without a datatype uses the datatype of the DBIRTH | P0 | ✅ |
-| SPB-11 | **NCMD** sobre las salidas locales `DO/n` y sobre `Node Control/Reboot` | P0 | ✅ |
-| SPB-12 | Banda muerta (*deadband*) absoluta por tag para los valores analógicos | P1 | ✅ |
-| SPB-13 | **Primary Host Application**: si hay un `primary_host_id` configurado, el nodo se suscribe a `spBv1.0/STATE/{id}`, no publica NBIRTH hasta recibir `online:true` y se desconecta, con NDEATH, si el host pasa a `online:false` | P1 | |
-| SPB-14 | **Store & forward**: when the broker or the primary host is not available, the gateway keeps the changes in a ring buffer in PSRAM. An option moves them to a microSD card. When the session comes back, the gateway publishes them with `is_historical=true`. Without a valid clock (TIME-1), the gateway keeps nothing and sends no history | P1 | |
-| SPB-15 | `Node Control/Scan Rate` escribible, que permite cambiar el periodo de encuesta global | P2 | |
-| SPB-16 | Propiedades de métrica: `engUnit`, `engLow`, `engHigh` y calidad (`Quality`: 0 = BAD, 192 = GOOD) | P1 | |
-| SPB-17 | Métricas de diagnóstico del nodo: `Node Info/Uptime`, `Free Heap`, contadores Modbus (OK, timeout, CRC, excepción) y RSSI de Wi-Fi | P1 | |
-| SPB-18 | Plantillas (Template) Sparkplug para describir tipos de dispositivo | P2 | |
-| SPB-19 | Payload `DataSet` y tipos `Bytes` y `File` | P2 | |
+The `device_id` is the device name, or `<device_prefix>:<name>` with `sparkplug.device_prefix` (§6.1, UMH-4).
 
-### 4.5 Modbus RTU maestro sobre RS485 (MB)
+| ID | Requirement | Prio | MVP | Status |
+|---|---|---|---|---|
+| SPB-1 | The payload is protobuf, as `sparkplug_b.proto` of Eclipse Tahu specifies | P0 | ✅ | Done |
+| SPB-2 | The gateway registers the **NDEATH** as the MQTT Will: QoS 1, no retain (`tck-id-payloads-ndeath-will-message-qos`, `tck-id-payloads-ndeath-will-message-retain`). The NDEATH has the metric `bdSeq` with the datatype Int64 (`tck-id-message-flow-edge-node-birth-publish-will-message-payload-bdSeq`). It has no `seq` (`tck-id-payloads-ndeath-seq`). The `bdSeq` of the NBIRTH also has the datatype Int64 (`tck-id-message-flow-edge-node-birth-publish-nbirth-payload-bdSeq`). Before an intentional disconnection, the gateway publishes the NDEATH (`tck-id-operational-behavior-edge-node-intentional-disconnect-ndeath`) | P0 | ✅ | Done. Since #186, no message of an old session goes out after a new CONNECT (`tck-id-operational-behavior-primary-application-state-with-multiple-servers-walk`) |
+| SPB-3 | **bdSeq** from 0 to 255, in RAM only. It starts at 0 at each boot and increases by exactly 1 for each new MQTT CONNECT packet. After 255, it is 0 (`tck-id-topics-nbirth-bdseq-increment`, issue #161). A connection attempt that sends no CONNECT packet (DNS, TCP or TLS failure) does not use a value. The NBIRTH has the same value as the Will of that connection (`tck-id-topics-nbirth-bdseq-matching`) | P0 | ✅ | Done |
+| SPB-4 | **NBIRTH**: QoS 0, no retain, `seq` = 0, with a timestamp (`tck-id-payloads-nbirth-qos`, `tck-id-payloads-nbirth-retain`, `tck-id-payloads-nbirth-seq`, `tck-id-payloads-nbirth-timestamp`). It contains `bdSeq`, `Node Control/Rebirth`, `Node Control/Reboot`, `Node Control/Scan Rate`, `Node Info/Firmware`, `Node Info/Hardware`, `Node Info/Reset Reason` and the local I/O metrics (§4.6). `Node Control/Rebirth` is a writable Boolean with the value false (`tck-id-payloads-nbirth-rebirth-req`). Each metric has a name, a datatype and a value (`tck-id-payloads-name-birth-data-requirement`, `tck-id-payloads-metric-datatype-req`). Each metric also has an alias, except `Node Control/Rebirth` (`tck-id-operational-behavior-data-commands-rebirth-name-aliases`, issue #153). If the publish of a birth fails, the gateway stops the session, and the next connection sends all the births again (issue #164) | P0 | ✅ | Done |
+| SPB-5 | **seq** from 0 to 255, then 0 again. All the messages of the node use one sequence, except the NDEATH (`tck-id-payloads-sequence-num-incrementing`). A message that the gateway cannot encode does not use a number (issue #158) | P0 | ✅ | Done |
+| SPB-6 | A **DBIRTH** for each Modbus device that is online, with all its metrics and their current values. The gateway sends it only after the NBIRTH (`tck-id-message-flow-device-birth-publish-nbirth-wait`). A **DDEATH** when the device goes offline (§4.5, MB-9, `tck-id-operational-behavior-device-ddeath`) | P0 | ✅ | Done |
+| SPB-7 | **NDATA and DDATA** by exception: the gateway publishes only the metrics that changed. Each metric has its alias and a timestamp. It has no name and no datatype (`tck-id-payloads-metric-datatype-not-req`, issue #159): the host knows the datatype from the birth. A member of a template instance has its name and no datatype. The changes of one poll cycle go in one message | P0 | ✅ | Done |
+| SPB-8 | **Aliases**: UInt64, unique in the node, declared in the births (`tck-id-payloads-alias-uniqueness`, `tck-id-payloads-alias-birth-requirement`) | P0 | ✅ | Done |
+| SPB-9 | **Rebirth**: when the gateway receives the NCMD `Node Control/Rebirth` = true, it stops the NDATA and DDATA messages (`tck-id-operational-behavior-data-commands-rebirth-action-1`). Then it sends the NBIRTH and all the DBIRTHs again. `seq` starts again at 0, and the NBIRTH keeps the `bdSeq` of the session. `POST /api/rebirth` and the shell command `rebirth` do the same (issue #171) | P0 | ✅ | Done |
+| SPB-10 | **DCMD**: the gateway writes writable metrics to Modbus. It finds the tag by alias or by name, and converts the type and the scale. After the write, it publishes the confirmed value. A command applies all its metrics or none. The gateway discards a metric that does not exist or is read-only. It also discards a metric with a datatype that is not the datatype of the DBIRTH (issue #163). It also discards a value with a fraction for an integer or Boolean tag. The log gives the reason. A metric without a datatype uses the datatype of the DBIRTH | P0 | ✅ | Done |
+| SPB-11 | **NCMD** for the local outputs `DO/n`, `Node Control/Reboot`, `Node Control/Scan Rate` (SPB-15) and `Node Control/Firmware Update` (FW-1) | P0 | ✅ | Done |
+| SPB-12 | An absolute deadband for each analog tag | P1 | ✅ | Done |
+| SPB-13 | **Primary Host Application**: with a `primary_host_id`, the gateway subscribes to `spBv1.0/STATE/{id}`. It does not publish the NBIRTH until it receives `online: true`. When the host becomes offline, the gateway publishes the NDEATH and disconnects (`tck-id-operational-behavior-edge-node-termination-host-offline`) | P1 | | Done |
+| SPB-14 | **Store & forward**: when the broker or the primary host is not available, the gateway keeps the changes in a ring buffer in PSRAM. An option moves them to a microSD card. When the session starts again, the gateway publishes them with `is_historical = true`. Without a valid clock (TIME-1), the gateway keeps nothing and sends no history | P1 | | Done |
+| SPB-15 | A writable `Node Control/Scan Rate`, that changes the poll period of all devices | P2 | | Done |
+| SPB-16 | Metric properties: `engUnit`, `engLow`, `engHigh` and the quality (`Quality`: 0 = BAD, 192 = GOOD) | P1 | | Done |
+| SPB-17 | Diagnostic metrics of the node: `Node Info/Uptime`, `Free Heap`, the Modbus counters (OK, timeout, CRC, exception) and the Wi-Fi RSSI | P1 | | Done |
+| SPB-18 | Sparkplug templates that describe the device types | P2 | | Done. No template parameters |
+| SPB-19 | The `DataSet` payload, and the types `Bytes` and `File` | P2 | | Done |
 
-| ID | Requisito | Prio | MVP |
-|---|---|---|---|
-| MB-1 | UART configurable: baudrate de 1200 a 115200, paridad N/E/O, 1 o 2 bits de stop y 8 bits de datos | P0 | ✅ |
-| MB-2 | Control de dirección RS485 en half-duplex con el pin RTS (GPIO 21). Se prefiere el modo RS485 por hardware de la UART del ESP32-S3; el GPIO por software es la alternativa | P0 | ✅ |
-| MB-3 | Funciones de lectura FC01 (coils), FC02 (discrete inputs), FC03 (holding registers) y FC04 (input registers) | P0 | ✅ |
-| MB-4 | Funciones de escritura FC05, FC06, FC15 y FC16 (siempre FC16 para valores de 32 bits) | P0 | ✅ |
-| MB-5 | Tipos de dato `bool`, `uint16`, `int16`, `uint32`, `int32` y `float32`, con orden de palabras configurable (`big` = ABCD, `little` = CDAB) | P0 | ✅ |
-| MB-6 | Tipos `uint64`, `int64`, `float64` y `string`, orden de bytes configurable (BADC, DCBA) y bit dentro de un registro (`bit`: 0–15) | P1 | |
-| MB-7 | Escala lineal `value = raw * scale + offset`, con la inversa al escribir | P0 | ✅ |
-| MB-8 | Timeout de respuesta y reintentos configurables. Se respeta el silencio de 3,5 caracteres entre tramas y un retardo configurable entre transacciones | P0 | ✅ |
-| MB-9 | Detección de fuera de línea: tras `offline_after` ciclos fallidos seguidos el dispositivo se marca fuera de línea (DDEATH). La primera respuesta válida lo devuelve a en línea (DBIRTH) | P0 | ✅ |
-| MB-10 | Periodo de encuesta por dispositivo | P0 | ✅ |
-| MB-11 | **Optimización por bloques**: los tags contiguos o cercanos del mismo área se agrupan en una sola lectura (hasta 125 registros o 2000 bits, con un hueco máximo configurable) | P1 | |
-| MB-12 | Periodo de encuesta por tag, con *fast* y *slow* scan | P2 | |
-| MB-13 | Manejo de excepciones Modbus (códigos 1–11) con contadores por dispositivo | P1 | |
-| MB-14 | Escrituras de DCMD encoladas con prioridad sobre la encuesta | P1 | |
-| MB-15 | Gateway o servidor **Modbus TCP** (puerto 502) que expone los esclavos RTU por Ethernet | P2 | |
-| MB-16 | Un único dueño del bus RS485: la encuesta y las escrituras pasan serializadas por una sola tarea o cola | P0 | ✅ |
+### 4.5 Modbus RTU master on RS485 (MB)
 
-### 4.6 E/S local (IO)
+| ID | Requirement | Prio | MVP | Status |
+|---|---|---|---|---|
+| MB-1 | A UART that you can configure: 1200 to 115200 baud, parity N, E or O, 1 or 2 stop bits, and 8 data bits | P0 | ✅ | Done |
+| MB-2 | Half-duplex RS485 direction control with the RTS pin (GPIO 21). The gateway uses the hardware RS485 mode of the ESP32-S3 UART. A software GPIO is the alternative | P0 | ✅ | Done. Compile-only: QEMU has no RS485 mode |
+| MB-3 | The read functions FC01 (coils), FC02 (discrete inputs), FC03 (holding registers) and FC04 (input registers) | P0 | ✅ | Done |
+| MB-4 | The write functions FC05, FC06, FC15 and FC16. A 32-bit value always uses FC16 | P0 | ✅ | Done |
+| MB-5 | The datatypes `bool`, `uint16`, `int16`, `uint32`, `int32` and `float32`, with a word order that you can configure (`big` = ABCD, `little` = CDAB) | P0 | ✅ | Done |
+| MB-6 | The types `uint64`, `int64`, `float64` and `string`, the byte orders BADC and DCBA, and one bit of a register (`bit`: 0–15) | P1 | | Done |
+| MB-7 | A linear scale `value = raw * scale + offset`, and the inverse for a write | P0 | ✅ | Done |
+| MB-8 | A response timeout and retries that you can configure. The gateway keeps the silence of 3.5 characters between frames, and a delay between transactions that you can configure | P0 | ✅ | Done |
+| MB-9 | Offline detection: after `offline_after` failed cycles in sequence, the device is offline (DDEATH). The first valid response makes it online again (DBIRTH) | P0 | ✅ | Done |
+| MB-10 | A poll period for each device | P0 | ✅ | Done |
+| MB-11 | **Block reads**: the gateway reads contiguous or near tags of the same area in one request. A block has up to 125 registers or 2000 bits, and a maximum gap that you can configure | P1 | | Done |
+| MB-12 | A poll period for each tag, with a fast scan and a slow scan | P2 | | Done |
+| MB-13 | The gateway decodes the Modbus exceptions (codes 1–11) and counts them for each device | P1 | | Done |
+| MB-14 | The gateway queues the DCMD writes, and they have priority over the poll | P1 | | Done |
+| MB-15 | A **Modbus TCP** gateway or server (port 502) that gives access to the RTU slaves through Ethernet | P2 | | Done |
+| MB-16 | One owner of the RS485 bus: the poll and the writes go through one task or queue, one at a time | P0 | ✅ | Done |
 
-| ID | Requisito | Prio | MVP |
-|---|---|---|---|
-| IO-1 | 8 DI publicadas como métricas Boolean del nodo `DI/1`…`DI/8`, con debounce configurable (20 ms por defecto) y detección por interrupción o muestreo a 1 kHz o más | P0 | ✅ |
-| IO-2 | 8 DO como métricas Boolean escribibles del nodo `DO/1`…`DO/8`, manejadas por el expansor I²C | P0 | ✅ |
-| IO-3 | **Estado seguro de las DO** (*failsafe*), configurable por salida (mantener, OFF u ON), al perder MQTT durante más de N s o al reiniciar | P1 | |
-| IO-4 | Contadores de pulsos por DI (UInt64), persistidos periódicamente | P1 | |
-| IO-5 | LED RGB de estado: sin red, sin broker, operando y error de Modbus, con colores o patrones documentados | P1 | ✅ |
-| IO-6 | Buzzer para alarmas configurables y para confirmar el reset de fábrica | P2 | |
-| IO-7 | Enlaces locales DI→DO (lógica simple), aunque no haya red | P2 | |
+### 4.6 Local I/O (IO)
 
-### 4.7 Configuración (CFG)
+| ID | Requirement | Prio | MVP | Status |
+|---|---|---|---|---|
+| IO-1 | 8 DIs as Boolean node metrics `DI/1`…`DI/8`, with a debounce that you can configure (20 ms by default). The gateway uses an interrupt, or it samples at 1 kHz or more | P0 | ✅ | Done |
+| IO-2 | 8 DOs as writable Boolean node metrics `DO/1`…`DO/8`, through the I²C expander | P0 | ✅ | Done |
+| IO-3 | **Safe state of the DOs** (failsafe), configurable for each output (hold, OFF or ON). It applies when MQTT is lost for more than N s, and at a restart | P1 | | Done |
+| IO-4 | A pulse counter for each DI (UInt64), saved at intervals | P1 | | Done |
+| IO-5 | An RGB status LED: no network, no broker, normal operation and a Modbus error, with documented colors or patterns | P1 | ✅ | Done. The colors have no test on the board |
+| IO-6 | A buzzer for alarms that you can configure, and to confirm the factory reset | P2 | | Done |
+| IO-7 | Local links from a DI to a DO (simple logic), also without a network | P2 | | Done |
 
-| ID | Requisito | Prio | MVP |
-|---|---|---|---|
-| CFG-1 | Configuración en un documento JSON con el esquema común (§6), validado al cargarlo y con errores descriptivos. Si la configuración es inválida no se arranca la encuesta | P0 | ✅ |
-| CFG-2 | Configuración por defecto embebida en el firmware y sobrescribible por un archivo en un sistema de archivos interno (LittleFS) | P0 | ✅ |
-| CFG-3 | **Interfaz web** (HTTP) con usuario y contraseña para editar la red, MQTT, Sparkplug, RS485 y los dispositivos y tags, y para ver el estado en vivo | P1 | |
-| CFG-4 | API REST JSON para leer y escribir la configuración, con importar y exportar | P1 | |
-| CFG-5 | Reset de fábrica con el botón BOOT presionado más de 10 s | P1 | |
-| CFG-6 | Consola serie (shell) con comandos de estado, configuración y diagnóstico | P1 | |
-| CFG-7 | The gateway keeps the secrets (passwords, TLS keys) out of the configuration document, in NVS. **Out of scope:** encryption of the secrets with a key in eFuse on the board. The key in eFuse is permanent, and the owner of the board must keep full control of it (#133). The QEMU build still encrypts NVS on emulated eFuses; #133 decides whether this stays. The archived feature is on the branch `archive/efuse-production` | P1 | |
-| CFG-8 | **First web access without the serial console** (issue #120): the claim window. While `web.password` is empty, the push of BOOT for 2 to 10 s opens a claim window for 10 min (Kconfig `GW_WEB_CLAIM_WINDOW_MIN`). During the window, a client of the access point (NET-5) can set the first web password without a credential (`POST /api/claim`, §6.1). Clients of other interfaces get `403`. The window closes at the end of its time, after the first password that is set, and at a restart. When a web password is set, the window does not open again: only a factory reset (CFG-5) removes the password | P1 | |
+### 4.7 Configuration (CFG)
 
-### 4.8 Gestión del firmware (FW)
+| ID | Requirement | Prio | MVP | Status |
+|---|---|---|---|---|
+| CFG-1 | The configuration is a JSON document with the schema of §6. The gateway validates it when it loads it, and gives errors with the JSON path. With a configuration that is not valid, the gateway does not start the poll | P0 | ✅ | Done |
+| CFG-2 | A default configuration in the firmware. A file in an internal file system (LittleFS) replaces it | P0 | ✅ | Done |
+| CFG-3 | A **web UI** (HTTPS) with a user name and a password. You can edit the network, MQTT, Sparkplug, RS485 and the devices and tags, and see the live state | P1 | | Done |
+| CFG-4 | A JSON REST API to read and write the configuration, with import and export | P1 | | Done |
+| CFG-5 | A factory reset when you push the BOOT button for more than 10 s | P1 | | Done |
+| CFG-6 | A serial console (shell) with commands for the state, the configuration and diagnostics | P1 | | Done |
+| CFG-7 | The gateway keeps the secrets (passwords, TLS keys) out of the configuration document, in NVS. **Out of scope:** the encryption of the secrets with a key in eFuse on the board. The key in eFuse is permanent, and the owner of the board must keep full control of the board (#133). The QEMU build still encrypts NVS with emulated eFuses; #133 decides if this stays. The branch `archive/efuse-production` keeps the archived feature | P1 | | Done. The eFuse part is out of scope |
+| CFG-8 | **First web access without the serial console** (issue #120): the claim window. While `web.password` is empty, a push of BOOT for 2 to 10 s opens a claim window for 10 min (Kconfig `GW_WEB_CLAIM_WINDOW_MIN`). During the window, a client of the access point (NET-5) can set the first web password without a credential (`POST /api/claim`, §6.1). Clients of other interfaces get `403`. The window closes at the end of its time, after the first password, and at a restart. When a web password is set, the window does not open again. Only a factory reset (CFG-5) removes the password | P1 | | Done |
 
-| ID | Requisito | Prio | MVP |
-|---|---|---|---|
-| FW-1 | **OTA** over HTTPS with A/B partitions, started from the web or by NCMD. A new image confirms itself with a local self-check; a reset or a failed self-check before that returns to the earlier image. A pre-flight check refuses an image that cannot read the stored data, a boot-loop counter starts a safe mode, and a button boots the other slot (issue #144) | P1 | |
-| FW-2 | **Out of scope:** Secure Boot. Secure Boot burns eFuses, and after it the board accepts only the firmware of the owner of the key. This is a vendor lock, and the project is open source (#133). The archived feature is on the branch `archive/efuse-production`. The QEMU build still requires signed OTA images without Secure Boot; #133 decides whether this stays | — | |
-| FW-3 | **Out of scope:** flash encryption. Flash encryption in release mode burns eFuses and stops the owner from reading or flashing the board through USB (#133). The archived feature is on the branch `archive/efuse-production` | — | |
-| FW-4 | Versión semántica y hash de git visibles en NBIRTH (`Node Info/Firmware`) | P0 | ✅ |
+### 4.8 Firmware management (FW)
 
-### 4.9 Robustez y observabilidad (REL)
+| ID | Requirement | Prio | MVP | Status |
+|---|---|---|---|---|
+| FW-1 | **OTA** through HTTPS with A/B partitions, started from the web UI or by NCMD. A new image confirms itself with a local self-check; a reset or a failed self-check before that returns to the earlier image. A pre-flight check refuses an image that cannot read the stored data, a boot-loop counter starts a safe mode, and a button boots the other slot (issue #144) | P1 | | Done |
+| FW-2 | **Out of scope:** Secure Boot. Secure Boot burns eFuses, and after it the board accepts only the firmware of the owner of the key. This is a vendor lock, and the project is open source (#133). The branch `archive/efuse-production` keeps the archived feature. The QEMU build still requires signed OTA images without Secure Boot; #133 decides if this stays | — | | Out of scope |
+| FW-3 | **Out of scope:** flash encryption. Flash encryption in release mode burns eFuses. After it, the owner cannot read or flash the board through USB (#133). The branch `archive/efuse-production` keeps the archived feature | — | | Out of scope |
+| FW-4 | The semantic version and the git hash are in the NBIRTH (`Node Info/Firmware`) | P0 | ✅ | Done |
 
-| ID | Requisito | Prio | MVP |
-|---|---|---|---|
-| REL-1 | Watchdog de tareas en todas las tareas críticas | P0 | ✅ |
-| REL-2 | Memoria acotada: dispositivos y tags con límites estáticos y sin alocaciones en el camino crítico de encuesta y publicación | P0 | ✅ |
-| REL-3 | Logs por niveles en la UART de consola | P0 | ✅ |
-| REL-4 | Syslog remoto o logs por MQTT | P2 | |
-| REL-5 | Registro del motivo del último reinicio, publicado en NBIRTH | P1 | |
-| REL-6 | Arranque hasta NBIRTH en menos de 10 s con red y broker disponibles | P1 | |
+### 4.9 Reliability and observability (REL)
 
-### 4.10 Calidad (QA)
+| ID | Requirement | Prio | MVP | Status |
+|---|---|---|---|---|
+| REL-1 | The task watchdog watches all critical tasks. After a panic, the core dump stays in flash, and the web API and the shell give it (issue #132) | P0 | ✅ | Done |
+| REL-2 | Bounded memory: static limits for the devices and the tags, and no allocation in the poll, encode and publish path | P0 | ✅ | Partial. lwIP and esp-mqtt allocate from the heap |
+| REL-3 | Logs with levels on the console UART | P0 | ✅ | Done |
+| REL-4 | Remote syslog, or logs through MQTT | P2 | | Partial. Syslog only |
+| REL-5 | The cause of the last restart, in the log and in the NBIRTH | P1 | | Done |
+| REL-6 | Less than 10 s from the boot to the NBIRTH when the network and the broker are available | P1 | | Done. 1.9 s in QEMU, no measurement on the board |
 
-| ID | Requisito | Prio | MVP |
-|---|---|---|---|
-| QA-1 | Tests unitarios en el host para la codificación y decodificación Sparkplug, CRC y tramas Modbus, la conversión de tipos y escalas, el reporte por excepción y el parseo de configuración | P0 | ✅ |
-| QA-2 | El build para ESP32-S3 sale limpio, sin warnings en el código propio, y se reporta el uso de flash y RAM | P0 | ✅ |
-| QA-3 | Prueba de punta a punta en el host o en un emulador, contra mosquitto y un esclavo Modbus simulado | P1 | |
-| QA-4 | CI que compila y corre los tests | P1 | |
+### 4.10 Quality (QA)
 
-## 5. MVP: resumen
+| ID | Requirement | Prio | MVP | Status |
+|---|---|---|---|---|
+| QA-1 | Unit tests on the host. They examine the Sparkplug encode and decode, the CRC and the Modbus frames, and the type and scale conversion. They also examine report by exception and the configuration parser | P0 | ✅ | Done |
+| QA-2 | The ESP32-S3 build has no warnings in the code of the project, and it reports the use of flash and RAM | P0 | ✅ | Done |
+| QA-3 | An end-to-end test on the host or in an emulator, with mosquitto and a simulated Modbus slave | P1 | | Partial. QEMU only, no hardware |
+| QA-4 | CI that builds the firmware and runs the tests | P1 | | Done |
 
-El MVP es un gateway que se pone en marcha editando un JSON, se conecta por Ethernet (DHCP o IP estática) a un broker MQTT sin TLS y publica con Sparkplug B 3.0 correcto, sin host primario y sin store & forward. Esto incluye:
+### 4.11 UMH Core (UMH)
 
-- the birth and death of the node and of the devices, bdSeq (SPB-3), seq and aliases;
+UMH Core is a Unified Namespace (UNS) platform. Its bridge reads Sparkplug B with the `sparkplug_b` input of benthos-umh. These requirements make the gateway easy to use with UMH Core.
+
+All these items obey Sparkplug B 3.0.0. None of them is a compatibility profile: the gateway does not change its default behaviour for UMH Core. When UMH Core does not obey Sparkplug, the project writes the limit in the documents and reports it to the UMH project (UMH-8).
+
+| ID | Requirement | Prio | MVP | Status |
+|---|---|---|---|---|
+| UMH-1 | **Documents** (issue #168): a how-to (`docs/how-to/connect-to-umh-core.md`), an explanation (`docs/explanation/sparkplug-names-and-the-uns.md`) and a reference (`docs/reference/umh-names-and-topics.md`). They give the broker listener, the names, the gateway configuration, the UMH bridge configuration and the limits of UMH Core | P1 | | Done |
+| UMH-2 | **Name checks** (issue #169): the validation finds the names that UMH Core and other UNS hosts change with no error. Sparkplug permits these names, thus they are warnings, each with its JSON path. The rules are in §6.1 | P2 | | Done |
+| UMH-3 | **The UMH preset** (`sparkplug.naming: "umh"`, issues #169, #173 and #174). The name checks of UMH-2 become errors. Each device gets a Boolean node metric for its state (`Devices/<name>/Online`). A typed device publishes plain metrics, and the node publishes no DataSet. The preset is off by default (§6.1) | P2 | | Done |
+| UMH-4 | **A device prefix of free depth** (issue #172): `sparkplug.device_prefix` gives the location levels of all devices. The `device_id` of each device is `<device_prefix>:<name>`. The number of levels has no limit, other than the length of the topic (§6.1) | P2 | | Done |
+| UMH-5 | **The topic preview in the web UI** (issue #170): each device shows its Sparkplug topic and its UMH topic, with the length of the `device_id`. The previews change while you type. The fields have length limits and help texts | P2 | | Done |
+| UMH-6 | **The interoperability test** (issue #175): the optional E2E scenario `umh` runs the real benthos-umh against the firmware in QEMU. It uses the bridge configuration of the how-to (UMH-1). `idf/README.md` §4.6 gives the result | P1 | | Done. Optional scenario, not in the CI |
+| UMH-7 | **Rebirth on request** (issue #171): `POST /api/rebirth` and the Rebirth button of the web UI send the NBIRTH and all the DBIRTHs again (SPB-9). Use them when a host shows the tags as `alias_<n>` after its restart | P2 | | Done |
+| UMH-8 | **Reports to the UMH project** (issue #177): one upstream report for each gap of the `sparkplug_b` input. Examples: the Sparkplug 2.x STATE, Template, DataSet and Bytes values that become `null`, and no PropertySet | P2 | | Open |
+
+## 5. MVP: summary
+
+The MVP is a gateway that you start with a JSON file. It connects through Ethernet (DHCP or a static IP) to an MQTT broker without TLS. It publishes correct Sparkplug B 3.0.0, without a primary host and without store & forward. This includes:
+
+- the birth and the death of the node and of the devices, the bdSeq (SPB-3), the seq and the aliases;
 - report by exception with a deadband;
 - rebirth, and writes by DCMD and NCMD.
 
-Encuesta N esclavos Modbus RTU por el RS485 integrado, con los tipos de 16 y 32 bits, escala, timeouts, reintentos y detección de fuera de línea. Expone además las 8 DI y las 8 DO, y muestra su estado en el LED RGB.
+The MVP polls N Modbus RTU slaves through the RS485 port of the board. It supports the 16-bit and 32-bit types, the scale, the timeouts, the retries and the offline detection. It also publishes the 8 DIs and the 8 DOs, and shows its state on the RGB LED.
 
-**IDs del MVP:** NET-1, NET-2, NET-3, TIME-1, MQTT-1, MQTT-2, MQTT-3, MQTT-7, SPB-1 a SPB-12, MB-1 a MB-5, MB-7 a MB-10, MB-16, IO-1, IO-2, IO-5, CFG-1, CFG-2, FW-4, REL-1 a REL-3, QA-1 y QA-2.
+**IDs of the MVP:**
 
-## 6. Esquema común de configuración (obligatorio para ambas implementaciones)
+- NET-1, NET-2, NET-3, TIME-1;
+- MQTT-1, MQTT-2, MQTT-3, MQTT-7;
+- SPB-1 to SPB-12;
+- MB-1 to MB-5, MB-7 to MB-10, MB-16;
+- IO-1, IO-2, IO-5;
+- CFG-1, CFG-2, FW-4;
+- REL-1 to REL-3, QA-1 and QA-2.
+
+## 6. Configuration schema
+
+This is the schema of the configuration document (CFG-1). The keys of this example are the keys of the MVP.
 
 ```json
 {
@@ -229,23 +304,54 @@ Encuesta N esclavos Modbus RTU por el RS485 integrado, con los tipos de 16 y 32 
 }
 ```
 
-**Reglas del esquema:**
+**Ranges and defaults of the MVP keys.** The sections `mqtt` and `sparkplug` are necessary. The other sections are optional.
 
-- `area` ∈ {`coil`, `discrete`, `holding`, `input`}.
-- `type` ∈ {`bool`, `uint16`, `int16`, `uint32`, `int32`, `float32`}; fuera del MVP también `uint64`, `int64`, `float64` y `string` (§6.1, MB-6).
-- `bool` solo vale en `coil` y `discrete`; fuera del MVP, también como bit de un registro `holding` o `input` (clave `bit`, §6.1).
-- `writable` solo vale en `coil` y `holding`.
-- Si `client_id` está vacío se usa `edge_node_id`.
-- Names (issue #162). `group_id`, `edge_node_id`, `primary_host_id`, the device `name` and `type`, the tag `name` and `units` must be valid UTF-8. The Sparkplug IDs must not contain the control characters U+0080–U+009F.
-- Two device names must not differ only in case (`tck-id-case-sensitivity-sparkplug-ids`). Two device types and two tag names of one device must not differ only in case (`tck-id-case-sensitivity-metric-names`). The comparison folds ASCII letters only.
-- A tag name must not also be a folder of another tag name of the same device (`A` and `A/B`). A device `type` must not be the name or the first folder of a node metric (`bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info`, `Firmware Update`).
+| Key | Default | Rule |
+|---|---|---|
+| `network.dhcp` | `true` | With `false`, `ip`, `netmask` and `gateway` are necessary |
+| `ntp.server` | `pool.ntp.org` | Name, IPv4 or IPv6 of the SNTP server |
+| `mqtt.host` | — | Necessary |
+| `mqtt.port` | `1883` | 1–65535 |
+| `mqtt.keepalive_s` | `30` | 5–3600 |
+| `sparkplug.group_id`, `sparkplug.edge_node_id` | — | Necessary. 1–32 bytes, without `/ + #` |
+| `rs485.baud` | `9600` | 1200–115200 |
+| `rs485.parity` | `none` | `none`, `even` or `odd` |
+| `rs485.stop_bits` | `1` | 1 or 2 |
+| `rs485.response_timeout_ms` | `200` | 10–5000 |
+| `rs485.retries` | `2` | 0–5 |
+| `rs485.inter_frame_delay_ms` | `5` | 0–1000 |
+| `local_io.di_debounce_ms` | `20` | 0–1000 |
+| `devices[].name` | — | Necessary. 1–39 bytes |
+| `devices[].unit_id` | — | Necessary. 1–247 |
+| `devices[].poll_ms` | `1000` | 50–3 600 000 |
+| `devices[].offline_after` | `3` | 1–1000 |
+| `devices[].tags` | — | Necessary. 1–64 tags |
+| `tags[].name` | — | Necessary. 1–39 bytes |
+| `tags[].address` | — | Necessary. 0–65535 |
+| `tags[].scale` | `1` | Not 0 |
+
+**Rules of the schema:**
+
+- `area` is one of `coil`, `discrete`, `holding` and `input`.
+- `type` is one of `bool`, `uint16`, `int16`, `uint32`, `int32` and `float32`. Out of the MVP, `type` can also be `uint64`, `int64`, `float64`, `string` and `bytes` (§6.1, MB-6, SPB-19).
+- `bool` is only for `coil` and `discrete`. Out of the MVP, `bool` can also be one bit of a `holding` or `input` register (key `bit`, §6.1).
+- `writable` is only for `coil` and `holding`.
+- A `bool` tag has no `scale` and no `offset`.
+- If `client_id` is empty, the gateway uses `edge_node_id`.
+- Unknown keys and duplicate keys are errors.
+- Names (issue #162):
+  - `group_id`, `edge_node_id`, `primary_host_id`, the device `name` and `type`, and the tag `name` and `units` must be valid UTF-8.
+  - The Sparkplug IDs must not contain the control characters U+0080–U+009F.
+  - Two device names must not differ only in case (`tck-id-case-sensitivity-sparkplug-ids`). Two device types, or two tag names of one device, must not differ only in case (`tck-id-case-sensitivity-metric-names`). The comparison folds ASCII letters only.
+  - A tag name must not also be a folder of another tag name of the same device (`A` and `A/B`).
+  - A device `type` must not be the name or the first folder of a node metric (`bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info`, `Firmware Update`).
 - With `sparkplug.device_prefix` (§6.1, #172), the `device_id` of a device is `<device_prefix>:<name>`. The longest device topic (`spBv1.0/<group_id>/DBIRTH/<edge_node_id>/<device_id>`) must fit in 159 bytes.
 
-**Límites del MVP:** hasta 16 dispositivos, 64 tags por dispositivo y 256 tags en total.
+**Limits:** a maximum of 16 devices, 64 tags for each device and 256 tags in total (REL-2).
 
-**Mapeo de tipos a Sparkplug:**
+**Datatypes of the tags in Sparkplug:**
 
-| Tipo de tag | Datatype Sparkplug |
+| Tag type | Sparkplug datatype |
 |---|---|
 | `bool` | Boolean (11) |
 | `int16` | Int16 (2) |
@@ -254,128 +360,137 @@ Encuesta N esclavos Modbus RTU por el RS485 integrado, con los tipos de 16 y 32 
 | `uint32` | UInt32 (7) |
 | `float32` | Float (9) |
 | `int16`, `uint16` or `float32` with `scale` ≠ 1 or `offset` ≠ 0 | Float (9) |
-| `uint64` / `int64` (MB-6) | UInt64 (8) / Int64 (4), exactos en `long_value` |
-| `float64` (MB-6). `int32`, `uint32`, `int64`, `uint64` or `float64` with `scale` ≠ 1 or `offset` ≠ 0: a Float has a 24-bit mantissa, thus a 32-bit counter above 2^24 loses its last digits in it (#165) | Double (10) |
+| `uint64` / `int64` (MB-6) | UInt64 (8) / Int64 (4), exact in `long_value` |
+| `float64` (MB-6). Also `int32`, `uint32`, `int64`, `uint64` or `float64` with `scale` ≠ 1 or `offset` ≠ 0. A Float has a 24-bit mantissa, thus a 32-bit counter above 2^24 loses its last digits in a Float (#165) | Double (10) |
 | `string` (MB-6) | String (12) |
-| `bool` con `bit` (MB-6) | Boolean (11) |
+| `bool` with `bit` (MB-6) | Boolean (11) |
 | `bytes` (SPB-19) | Bytes (17) |
 
-### 6.1 Claves opcionales fuera del MVP
+### 6.1 Optional keys out of the MVP
 
-Todas son opcionales. Si faltan, el equipo se comporta como el MVP. Las claves desconocidas siguen siendo un error.
+All these keys are optional. Without them, the gateway operates as the MVP. An unknown key is still an error.
 
-**`network.wifi` (NET-4): Wi-Fi STA como alternativa o respaldo de Ethernet.**
+**`network.wifi` (NET-4): Wi-Fi STA as an alternative or a backup for Ethernet.**
 
 ```json
 "network": { "dhcp": true,
-             "wifi": { "enabled": true, "ssid": "Planta", "password": "secreto123",
+             "wifi": { "enabled": true, "ssid": "Plant", "password": "secret123",
                        "role": "backup", "failback_s": 30, "dhcp": true } }
 ```
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `enabled` | bool | `false` | `false` = solo Ethernet |
-| `ssid` | texto | `""` | 1–32 bytes; obligatorio con `enabled=true` |
-| `password` | texto | `""` | vacío (red abierta), 8–63 caracteres (WPA2) o 64 dígitos hexadecimales (PSK) |
-| `role` | `backup` \| `primary` | `backup` | `backup`: Ethernet gana la ruta por defecto y Wi-Fi solo se usa sin Ethernet. `primary`: al revés |
-| `failback_s` | entero | `30` | 0–3600. Tiempo que la interfaz preferida debe estar arriba, sin cortes, para recuperar la sesión |
-| `dhcp`, `ip`, `netmask`, `gateway`, `dns` | como `network` | DHCP | IPv4 de la interfaz Wi-Fi; con `dhcp=false`, `ip`, `netmask` y `gateway` son obligatorias |
+| `enabled` | bool | `false` | `false` = Ethernet only |
+| `ssid` | text | `""` | 1–32 bytes. Necessary with `enabled=true` |
+| `password` | text | `""` | Empty (open network), 8–63 characters (WPA2) or 64 hexadecimal digits (PSK) |
+| `role` | `backup` \| `primary` | `backup` | `backup`: Ethernet gets the default route, and the gateway uses Wi-Fi only without Ethernet. `primary`: the opposite |
+| `failback_s` | integer | `30` | 0–3600. The time that the preferred interface must be up without a cut before it gets the session again |
+| `dhcp`, `ip`, `netmask`, `gateway`, `dns` | as in `network` | DHCP | The IPv4 data of the Wi-Fi interface. With `dhcp=false`, `ip`, `netmask` and `gateway` are necessary |
 
-Las claves de IPv4 de `network` siguen siendo las de Ethernet.
+The IPv4 keys of `network` stay the keys of Ethernet.
 
-**Alcance del broker (issue #57).** Una interfaz con enlace y dirección puede no llegar al broker (router o switch aguas arriba caído). Si fallan todos los brokers de la lista (MQTT-6) por la interfaz activa, esta queda "sin servicio": la sesión pasa en el acto a la otra, si es utilizable, sea cual sea su rango. La espera empieza en 60 s y se duplica en cada nuevo fallo seguido, hasta 30 min (`CONFIG_GW_NET_NO_SERVICE_MIN_S` / `_MAX_S`); una sesión estable por esa interfaz la vuelve al mínimo. Al vencer, la preferida recupera la sesión como en el *failback* normal: ese es el reintento. Una interfaz sin servicio se sigue usando si no hay otra.
+**Path to the broker (issue #57).** An interface with a link and an address can have no path to the broker, for example when a router or a switch stops. If all brokers of the list (MQTT-6) fail on the active interface, the interface becomes "no service". The session then moves at once to the other interface, if it is usable, independently of its rank. The wait starts at 60 s, and each new failure in sequence makes it two times longer, up to 30 min (`CONFIG_GW_NET_NO_SERVICE_MIN_S` / `_MAX_S`). A stable session on that interface sets the wait to the minimum again. At the end of the wait, the preferred interface gets the session again, as in a normal failback: this is the retry. The gateway still uses an interface with no service when no other interface is usable.
 
-**`network.hostname` y `network.mdns` (NET-6): nombre del equipo.**
+**`network.hostname` and `network.mdns` (NET-6): the name of the gateway.**
 
 ```json
-"network": { "dhcp": true, "hostname": "planta1-gw01", "mdns": true }
+"network": { "dhcp": true, "hostname": "plant1-gw01", "mdns": true }
 ```
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `hostname` | texto | `""` | Una etiqueta DNS: 1–63 letras, dígitos y `-` (no al principio ni al final), sin puntos. Vacío = derivado de `edge_node_id` (minúsculas; lo que no es letra ni dígito pasa a `-`; `GW01` → `gw01`) |
-| `mdns` | bool | `true` | Responde `<hostname>.local` por mDNS y anuncia la web como servicio `_https._tcp` en `web.https_port` (`_http._tcp` en `web.port` con `web.https: false`; instancia `<group_id>/<edge_node_id>`) |
+| `hostname` | text | `""` | One DNS label: 1–63 letters, digits and `-` (not at the start or the end), no dots. Empty = a name from `edge_node_id`: lower case, and `-` for each character that is not a letter or a digit (`GW01` → `gw01`) |
+| `mdns` | bool | `true` | The gateway answers `<hostname>.local` with mDNS. It announces the web UI as the service `_https._tcp` on `web.https_port` (`_http._tcp` on `web.port` with `web.https: false`). The instance name is `<group_id>/<edge_node_id>` |
 
-El nombre va también en las peticiones DHCP de Ethernet y Wi-Fi.
+The DHCP requests of Ethernet and Wi-Fi also contain the hostname.
 
-**`network.ipv6` (NET-7): IPv6 además de IPv4.**
+**`network.ipv6` (NET-7): IPv6 together with IPv4.**
 
 ```json
 "network": { "dhcp": true,
              "ipv6": { "enabled": true, "slaac": true, "address": "fd00:1::50", "dns": "" } }
 ```
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `enabled` | bool | `false` | `false` = solo IPv4. Con `true`, cada interfaz tiene dirección link-local |
-| `slaac` | bool | `true` | Autoconfiguración sin estado con los anuncios del router (RA) |
-| `address` | texto | `""` | Dirección estática de Ethernet, en forma de texto RFC 4291. Prefijo /64 en el enlace. No se admiten multicast, link-local, `::` ni `::1` |
-| `dns` | texto | `""` | Servidor DNS IPv6 (tercera posición; DHCPv4 llena las dos primeras) |
+| `enabled` | bool | `false` | `false` = IPv4 only. With `true`, each interface has a link-local address |
+| `slaac` | bool | `true` | Stateless address autoconfiguration from the router advertisements (RA) |
+| `address` | text | `""` | A static address for Ethernet, in the text form of RFC 4291. The prefix on the link is /64. Multicast, link-local, `::` and `::1` are not permitted |
+| `dns` | text | `""` | An IPv6 DNS server (the third position; DHCPv4 fills the first two positions) |
 
-El router por defecto IPv6 se aprende de los RA; no hay *gateway* IPv6 estático. `mqtt.host`, `ntp.server` y `syslog.host` aceptan literales IPv6 (`fd00::10`) o nombres con registro AAAA.
+The gateway learns the default IPv6 router from the RAs. There is no static IPv6 gateway. `mqtt.host`, `ntp.server` and `syslog.host` accept IPv6 literals (`fd00::10`) and names with an AAAA record.
 
-**`mqtt.tls` (MQTT-4, MQTT-5): TLS hacia el broker, opcionalmente mutuo.**
+**`mqtt.tls` (MQTT-4, MQTT-5): TLS to the broker, with an optional client certificate.**
 
 ```json
-"mqtt": { "host": "broker.planta.local", "port": 8883,
+"mqtt": { "host": "broker.plant.local", "port": 8883,
           "tls": { "enabled": true, "ca_file": "ca.pem", "server_name": "",
                    "cert_file": "gw01.crt", "key_file": "gw01.key" } }
 ```
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `enabled` | bool | `false` | `false` = TCP sin cifrar, como en el MVP. Con `true`, el defecto de `mqtt.port` pasa a `8883` |
-| `ca_file` | texto | `""` | Archivo PEM con la o las CA que firman el certificado del broker, en la partición LittleFS junto a `config.json` (`/cfg/<nombre>`). Vacío = el paquete de CA raíz públicas de ESP-IDF. Nombre de 1–32 caracteres `A-Z a-z 0-9 . _ -`, sin `/`, que no empiece con `.` ni sea `config.json` |
-| `server_name` | texto | `""` | Nombre que debe llevar el certificado del broker (SAN o CN). Vacío = el `host` al que se conecta (también un literal IP, contra un SAN de tipo IP). La verificación del nombre no se puede desactivar |
-| `cert_file` | texto | `""` | MQTT-5: certificado PEM del cliente (TLS mutuo), en LittleFS como `ca_file`. Vacío = sin certificado de cliente |
-| `key_file` | texto | `""` | Su clave privada PEM, **sin cifrar** (PKCS#1, SEC1 o PKCS#8). Obligatoria con `cert_file` y prohibida sin él |
+| `enabled` | bool | `false` | `false` = TCP without encryption, as in the MVP. With `true`, the default of `mqtt.port` becomes `8883` |
+| `ca_file` | text | `""` | A PEM file with the CAs that sign the certificate of the broker. It is in the LittleFS partition, together with `config.json` (`/cfg/<name>`). Empty = the bundle of public root CAs of ESP-IDF. A name of 1–32 characters `A-Z a-z 0-9 . _ -`, without `/`. It must not start with `.`, and it must not be `config.json` |
+| `server_name` | text | `""` | The name that the certificate of the broker must contain (SAN or CN). Empty = the `host` of the connection (also an IP literal, against a SAN of the type IP). You cannot disable the name check |
+| `cert_file` | text | `""` | MQTT-5: the PEM certificate of the client (mutual TLS), in LittleFS as `ca_file`. Empty = no client certificate |
+| `key_file` | text | `""` | The PEM private key of the client, **not encrypted** (PKCS#1, SEC1 or PKCS#8). Necessary with `cert_file`, and not permitted without it |
 
-TLS 1.2 o 1.3, lo que negocie el broker. Las fechas de validez del certificado se comprueban: la conexión TLS espera a que SNTP fije el reloj. Las claves se validan aunque `enabled` sea `false`.
+The gateway uses TLS 1.2 or 1.3, as the broker selects. The gateway checks the validity dates of the certificate: the TLS connection waits for a valid clock (TIME-1). The gateway validates the TLS keys also when `enabled` is `false`.
 
-**`mqtt.protocol` (MQTT-8): versión del protocolo.**
+**`mqtt.protocol` (MQTT-8): the protocol version.**
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `protocol` | `"3.1.1"` \| `"5"` | `"3.1.1"` | The MQTT version for all the brokers of the list. With `"5"`, the node obeys Sparkplug 3.0: *Clean Start* = 1 and *Session Expiry Interval* = 0 (the broker keeps no session between connections, as *clean session* in 3.1.1). *Will Delay Interval* = 0 (the broker publishes the NDEATH when the connection stops). Each DISCONNECT of the node has the reason code 0x04, *Disconnect with Will Message* (`tck-id-payloads-ndeath-will-message-publisher-disconnect-mqtt50`, issue #155). Thus the broker also publishes the NDEATH of the will. The topics, QoS, retain flags and payloads do not change |
+| `protocol` | `"3.1.1"` \| `"5"` | `"3.1.1"` | The MQTT version for all brokers of the list. With `"5"`, the gateway obeys Sparkplug 3.0.0 on MQTT 5: *Clean Start* = 1 and *Session Expiry Interval* = 0 (`tck-id-principles-persistence-clean-session-50`). Thus the broker keeps no session between connections. *Will Delay Interval* = 0: the broker publishes the NDEATH when the connection stops. Each DISCONNECT of the gateway has the reason code 0x04, *Disconnect with Will Message* (`tck-id-payloads-ndeath-will-message-publisher-disconnect-mqtt50`, issue #155). Thus the broker also publishes the NDEATH of the Will. The topics, the QoS, the retain flags and the payloads do not change |
 
-**`mqtt.backup_brokers`, `failover_after`, `primary_return_s` (MQTT-6): lista de brokers.**
+**`mqtt.backup_brokers`, `failover_after`, `primary_return_s` (MQTT-6): the list of brokers.**
 
 ```json
-"mqtt": { "host": "broker1.planta.local", "port": 1883,
-          "backup_brokers": [ { "host": "broker2.planta.local" },
+"mqtt": { "host": "broker1.plant.local", "port": 1883,
+          "backup_brokers": [ { "host": "broker2.plant.local" },
                               { "host": "10.0.0.20", "port": 1884 } ],
           "failover_after": 3, "primary_return_s": 0 }
 ```
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `backup_brokers` | array | `[]` | Hasta 3 brokers de respaldo, en orden, después de `mqtt.host` (el primario). Cada uno: `host` (obligatorio, no vacío) y `port` (defecto: `mqtt.port`). Credenciales, `client_id`, keepalive y `tls` son los mismos para todos; con TLS el nombre se verifica contra el `host` de cada uno (o `tls.server_name`) |
-| `failover_after` | entero | `3` | 1–20. Intentos fallidos seguidos en un broker antes de pasar al siguiente (tras el último, el primero) |
-| `primary_return_s` | entero | `0` | 0–86400. `0` = un respaldo que funciona se conserva hasta que falle. Con N > 0, tras N s de sesión estable en un respaldo se cierra en orden (NDEATH) y se prueba **una vez** el primario; si falla, se sigue por el primer respaldo |
+| `backup_brokers` | array | `[]` | Up to 3 backup brokers, in order, after `mqtt.host` (the primary broker). Each one has `host` (necessary, not empty) and `port` (default: `mqtt.port`). All brokers use the same credentials, `client_id`, keepalive and `tls`. With TLS, the gateway checks the name against the `host` of each broker (or `tls.server_name`) |
+| `failover_after` | integer | `3` | 1–20. The number of failed attempts in sequence on a broker before the gateway goes to the next broker. After the last broker, it goes to the first broker |
+| `primary_return_s` | integer | `0` | 0–86400. `0` = the gateway keeps a backup broker that operates until it fails. With N > 0, after N s of a stable session on a backup broker, the gateway ends the session in order (NDEATH). Then it tries the primary broker **one time**. If that attempt fails, it goes to the first backup broker |
 
-Un intento falla si no termina en una sesión estable: conexión TCP o TLS fallida, CONNACK rechazado, SUBSCRIBE rechazado o sin respuesta, o sesión que cae antes de durar un keepalive (como mucho 60 s) desde el NBIRTH. Una sesión estable vuelve a contar desde cero. Cada broker nuevo empieza con el *backoff* mínimo. Con dos interfaces (NET-4), si fallan todos los brokers de la lista (`failover_after` veces cada uno) por la interfaz activa, esa interfaz queda "sin servicio" y la sesión pasa a la otra (ver `network.wifi`).
+An attempt fails if it does not give a stable session. These are failed attempts:
 
-**`sparkplug.primary_host_id` (SPB-13): Primary Host Application.** Clave del MVP; vacía = sin host primario. Con un id, el nodo se suscribe a `spBv1.0/STATE/{id}` en el mismo SUBSCRIBE que NCMD y DCMD y espera un STATE de Sparkplug 3.0 (JSON `{"online": true|false, "timestamp": <ms>}`, retenido) antes del NBIRTH:
+- a TCP or TLS connection that fails;
+- a CONNACK that refuses the connection;
+- a SUBSCRIBE that the broker refuses or does not answer;
+- a session that stops before one keepalive (60 s maximum) after the NBIRTH.
 
-- `online: true`: the node publishes the NBIRTH and the DBIRTHs.
-- `online: false` while the session is up: the node publishes an explicit NDEATH (with the bdSeq of the session) and disconnects. The next session waits again.
-- The node ignores a STATE with a `timestamp` that is less than the last accepted `timestamp` (an old retained message). The host keeps one STATE timestamp for each MQTT server (`tck-id-operational-behavior-host-application-multi-server-timestamp`). Thus the node keeps the last `timestamp` for each broker of the list (issue #157), and never compares the STATE of one broker with the `timestamp` of another broker. It keeps these values between sessions, but not after a restart.
-- The node ignores, with a warning, a payload that is not this JSON (for example, the `ONLINE` of Sparkplug 2.x).
+A stable session sets the count to zero. Each new broker starts with the minimum backoff. With two interfaces (NET-4), all brokers of the list can fail (`failover_after` times each) on the active interface. Then that interface has "no service", and the session moves to the other interface (refer to `network.wifi`).
+
+**`sparkplug.primary_host_id` (SPB-13): the Primary Host Application.** This is a key of the MVP; empty = no primary host. With an ID, the gateway subscribes to `spBv1.0/STATE/{id}`, in the same SUBSCRIBE as NCMD and DCMD. Before the NBIRTH, it waits for a Sparkplug 3.0.0 STATE: a retained JSON `{"online": true|false, "timestamp": <ms>}`.
+
+- `online: true`: the gateway publishes the NBIRTH and the DBIRTHs.
+- `online: false` during a session: the gateway publishes an explicit NDEATH (with the bdSeq of the session) and disconnects. The next session waits again.
+- The gateway ignores a STATE with a `timestamp` that is less than the last accepted `timestamp` (an old retained message). The host keeps one STATE timestamp for each MQTT server (`tck-id-operational-behavior-host-application-multi-server-timestamp`). Thus the gateway keeps the last `timestamp` for each broker of the list (issue #157). It never compares the STATE of one broker with the `timestamp` of another broker. It keeps these values between sessions, but not after a restart.
+- The gateway ignores, with a warning, a payload that is not this JSON (for example, the `ONLINE` of Sparkplug 2.x).
 
 With backup brokers (MQTT-6):
 
-- A valid STATE `false` on a broker makes the node disconnect and connect to the next broker of the list at once, also when `failover_after` is more than 1 (issue #156). This applies in a session (`tck-id-operational-behavior-edge-node-termination-host-offline-reconnect`) and while the node waits for the host (`tck-id-operational-behavior-primary-application-state-with-multiple-servers-walk`). It is not a failed attempt.
-- If no STATE `true` comes in 30 s, the node disconnects. This counts as a failed attempt on that broker.
+- A valid STATE `false` on a broker makes the gateway disconnect and connect to the next broker of the list at once (issue #156). This also applies when `failover_after` is more than 1. It applies during a session (`tck-id-operational-behavior-edge-node-termination-host-offline-reconnect`) and while the gateway waits for the host (`tck-id-operational-behavior-primary-application-state-with-multiple-servers-walk`). It is not a failed attempt.
+- If the gateway receives no STATE `true` in 30 s, it disconnects. This counts as a failed attempt on that broker.
 
-With one broker, the node stays connected and waits.
+With one broker, the gateway stays connected and waits.
 
 **`sparkplug.store_forward` (SPB-14): store & forward.**
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `store_forward` | bool or object | `false` | `false`: without a Sparkplug session, the gateway coalesces the changes, and the next session publishes only the current value (as in the MVP). `true`: the gateway keeps the changes that it would publish (the same exception and *deadband* rules) in a ring buffer. After the NBIRTH and the DBIRTHs of the next session, it publishes them from the oldest to the newest as DDATA/NDATA, with `is_historical = true` and the time of the sample |
+| `store_forward` | bool or object | `false` | `false`: without a Sparkplug session, the gateway keeps only the last value of each metric. The next session publishes the current value (as in the MVP). `true`: the gateway keeps each change that it would publish (with the same exception and *deadband* rules) in a ring buffer. After the NBIRTH and the DBIRTHs of the next session, it publishes them from the oldest to the newest as DDATA or NDATA. Each one has `is_historical = true` and the time of the sample |
 
-"Without a session" includes a broker that is down and a primary host (SPB-13) that is offline, from the first NBIRTH of the boot. (Before it, there is no published state to compare with.) The buffer has 40 000 samples in PSRAM (960 KB), or 512 samples in internal RAM without PSRAM (Kconfig `GW_SF_PSRAM_SAMPLES` / `GW_SF_INTERNAL_SAMPLES`). When it is full, the gateway overwrites the oldest samples. When the session comes back, the gateway discards the samples of a device without a DBIRTH in the new session (offline at that time). It keeps 64-bit integers and texts (MB-6) exactly.
+"Without a session" includes a broker that is not available and a primary host (SPB-13) that is offline, from the first NBIRTH of the boot. Before the first NBIRTH, there is no published state to compare with.
+
+The buffer has 40 000 samples in PSRAM (960 KB, Kconfig `GW_SF_SAMPLES`). The QEMU build without PSRAM has 512 samples in internal RAM. When the buffer is full, the gateway writes over the oldest samples. When the session starts again, a device can have no DBIRTH, because it is offline. The gateway discards the samples of that device. The buffer keeps 64-bit integers and texts (MB-6) exactly.
 
 The object form, with the optional spill to a microSD card:
 
@@ -387,31 +502,46 @@ The object form, with the optional spill to a microSD card:
 | Key | Type | Default | Rule |
 |---|---|---|---|
 | `enabled` | bool | `true` | The same as `store_forward: true` |
-| `sd.enabled` | bool | `false` | When the RAM buffer is three quarters full, its oldest samples go to the microSD card in blocks of 4 KB. When the session comes back, the gateway publishes the samples of the card first. It requires `enabled` and the PSRAM. Without PSRAM, the spill does not start, and the boot log and the shell tell why. **GPIO45 (D0 of the card) is a *strapping* pin: read the warning in `idf/README.md` §6.5 before you enable it** |
-| `sd.max_kb` | integer | `131072` | 64–4 194 304 (128 MB by default). The space that the gateway uses on the card. It uses less when the cluster size limits it (§6.5 of the README). When the card is full of data, the gateway overwrites the oldest blocks and counts their samples as lost |
+| `sd.enabled` | bool | `false` | When the RAM buffer is three quarters full, its oldest samples go to the microSD card in blocks of 4 KB. When the session starts again, the gateway publishes the samples of the card first. It requires `enabled`. The QEMU build without PSRAM does not start the spill, and the boot log and the shell tell why. **GPIO45 (D0 of the card) is a *strapping* pin: read the warning in `idf/README.md` §6.5 before you enable it** |
+| `sd.max_kb` | integer | `131072` | 64–4 194 304 (128 MB by default). The space that the gateway uses on the card. It uses less when the cluster size limits it (§6.5 of the README). When the card is full of data, the gateway writes over the oldest blocks and counts their samples as lost |
 
 **The card.**
 
 - The card is only for the gateway. Do not put other files on it.
 - Format the card with the gateway before the first use. Use the web UI (the status page, "microSD card", "Format the card") or the shell command `card format confirm`. The format makes one MBR partition with FAT32 and clusters of 32 KB (FAT16 below 2 GB).
-- **The format deletes everything on the card**, also the samples that wait there. The gateway never formats a card by itself: the web UI asks you to type `FORMAT`, and the shell needs the word `confirm`.
-- These cards do not mount: a card with no file system, an exFAT card, an NTFS or ext4 card, and a card with a GPT partition table. ESP-IDF v6.1 has no exFAT, and most cards of 64 GB or more come with exFAT. The gateway formats these cards too. The format does not need a mounted card, and it operates also when `sd.enabled` is `false`. The status page and `/api/status` (`card`) tell why a card does not mount.
-- The format needs the PSRAM, as the spill does. Without PSRAM, the gateway refuses the format and tells why.
-- The format runs in the background (it can take some minutes on a large card). The spill stops first, and the RAM buffer continues. After the format, restart the gateway to use the card.
+- **The format deletes everything on the card**, also the samples on it. The gateway never formats a card by itself: the web UI asks you to type `FORMAT`, and the shell needs the word `confirm`.
+- These cards do not mount: a card with no file system, an exFAT, NTFS or ext4 card, and a card with a GPT partition table. ESP-IDF v6.1 has no exFAT, and most cards of 64 GB or more have exFAT when you buy them. The gateway formats these cards too. The format does not need a mounted card, and it operates also when `sd.enabled` is `false`. The status page and `/api/status` (`card`) tell why a card does not mount.
+- The QEMU build without PSRAM refuses the format and tells why.
+- The format runs in the background. It can take some minutes on a large card. The spill stops first, and the RAM buffer continues. After the format, restart the gateway to use the card.
 - A card that a PC formatted with clusters of 4 KB mounts, but the gateway then uses a maximum of 512 MB of it.
 - Use an industrial card (pSLC) when you can. The gateway writes each block one time, with no FAT or directory write in normal operation.
-- The gateway keeps the data in the folder `/sf`. The ring is in the files `r0000.sf`, `r0001.sf` and so on. The files `ringa.sf` and `ringb.sf` are the two copies of its superblock. A PC does not need to read them.
-- The data on the card stays after a restart and after a power cut. The ring keeps a hash of the configuration fields that give a sample its meaning (issue #145). When this hash changes, the gateway starts a new ring. The gateway does not publish the old data, and it deletes no file for it. The segments of the earlier format (`NNNNNNNN.sf`) are published one time, before the ring, and then deleted.
-- **These changes start a new ring:** a device or a tag that you add, remove, rename or move; a change of the datatype of a tag (from `type`, `scale` and `offset`, for example a scale on an `int16` tag); a change of the `type` (template) of a device, of `sparkplug.group_id` or of `sparkplug.edge_node_id`; a change of the `length` of a `bytes` tag.
-- **These changes keep the data on the card:** `poll_ms`, `slow_poll_ms`, `scan`, `unit_id`, `offline_after`, `block_reads`, `max_gap`, `area`, `address`, `bit`, `word_order`, `deadband`, `writable`, `units`, `eng_low`, `eng_high`; a new `scale` or `offset` when the datatype stays the same; the `length` of a `string` tag; all other sections. A firmware update also keeps the data, because the hash does not use the memory layout of the firmware.
+- The gateway keeps the data in the folder `/sf`. The ring is in the files `r0000.sf`, `r0001.sf` and the next numbers. The files `ringa.sf` and `ringb.sf` are the two copies of its superblock. A PC does not need to read them.
+- The data on the card stays after a restart and after a power cut. The ring keeps a hash of the configuration fields that identify a sample (issue #145). When this hash changes, the gateway starts a new ring. The gateway does not publish the old data, and it deletes no file for it.
+- The gateway deletes the files of the earlier card format (`NNNNNNNN.sf`) at the boot, and does not publish their data (issue #151).
+- **These changes start a new ring:**
+  - a device or a tag that you add, remove, rename or move;
+  - a change of the datatype of a tag (from `type`, `scale` and `offset`, for example a scale on an `int16` tag);
+  - a change of the `type` (template) of a device, of `sparkplug.group_id`, of `sparkplug.edge_node_id`, of `sparkplug.device_prefix` or of `sparkplug.naming`;
+  - a change of the `length` of a `bytes` tag.
+- **These changes keep the data on the card:**
+  - `poll_ms`, `slow_poll_ms`, `scan`, `unit_id`, `offline_after`, `block_reads`, `max_gap`, `area`, `address`, `bit`, `word_order`, `deadband`, `writable`, `units`, `eng_low`, `eng_high`;
+  - a new `scale` or `offset` when the datatype stays the same;
+  - the `length` of a `string` tag;
+  - all other sections.
+
+  A firmware update also keeps the data, because the hash does not use the memory layout of the firmware.
 
 **Planned restart (issue #136).** Before a planned restart, the gateway moves the samples of the RAM buffer to the card. Then it writes the superblock. After the boot, it publishes these samples one time, in order, before the newer data.
 
-- These restarts are planned: the shell `restart`, `POST /api/restart`, NCMD Node Control/Reboot, the restart after a firmware update, and the restart after a saved configuration.
-- The move has a time limit of 5 s. When the limit expires, the gateway restarts. The samples that are not on the card are then lost. The log tells how many samples moved and how many are lost.
-- The gateway does not move the RAM buffer after a factory reset, during a format of the card, when the spill is off or failed, or before the boot read the card.
-- After a saved configuration that changes the configuration hash (the list above), the next boot starts a new ring: it does not publish the samples of the earlier ring. Thus the gateway does not move the RAM buffer before this restart (issue #141), and the log tells why.
-- **An unplanned restart (a power cut, a watchdog, a crash) loses the RAM buffer.** Only the data that was on the card before stays.
+- These restarts are planned: the shell `restart`, `POST /api/restart`, the NCMD `Node Control/Reboot`, the restart after a firmware update, and the restart after a saved configuration.
+- The move has a time limit of 5 s. At the end of the limit, the gateway restarts. The samples that are not on the card are then lost. The log tells how many samples moved and how many are lost.
+- The gateway does not move the RAM buffer in these cases:
+  - after a factory reset;
+  - during a format of the card;
+  - when the spill is off or failed;
+  - before the boot read the card.
+- A saved configuration can change the configuration hash (the list above). Then the next boot starts a new ring, and it does not publish the samples of the earlier ring. Thus the gateway does not move the RAM buffer before this restart (issue #141), and the log tells why.
+- **An unplanned restart (a power cut, a watchdog, a crash) loses the RAM buffer.** Only the data that was already on the card stays.
 
 **Retention.** The gateway keeps only the changes, not each poll: a tag goes into the buffer only when it changed by more than its `deadband`. Thus calculate the retention in changes per second. One change is one sample of 24 B (a text: 1 + length / 8 samples), and one block of 4 KB holds 169 samples. Thus 1 MB of `max_kb` holds 43 264 samples:
 
@@ -420,9 +550,15 @@ The object form, with the optional spill to a microSD card:
 
 The RAM buffer adds 40 000 samples. The `deadband` is the main control: set it a little above the noise of the sensor.
 
-**Duplicates after a restart (for the host or historian).** The gateway saves its replay position on the card after each 64 KB of published history (2 730 samples). It saves the position after the publish of those samples returned. Thus a restart or a power cut during a replay can send again a maximum of 64 KB of historical samples, approximately 2 700. A planned restart saves the position first. If the power cut damages the save itself, the maximum is 128 KB. If both superblock copies are damaged, the gateway can send again all the data on the card. The duplicates have the same timestamps and values as the first copy. The host or historian must handle them: for example, keep one value for each tag and timestamp. A counter or an aggregate of the received messages counts them two times. The history uses QoS 0: a power cut can also lose the messages that the TCP connection did not send yet.
+**Duplicates after a restart (for the host or historian).** The gateway saves its replay position on the card after each 64 KB of published history (2 730 samples). It saves the position after the publish of those samples returned.
 
-**Tipos de 64 bits, `string`, órdenes de bytes y bits de registro (MB-6), en cada tag.**
+- Thus a restart or a power cut during a replay can send a maximum of 64 KB of historical samples again (approximately 2 700).
+- A planned restart saves the position first.
+- If the power cut damages the save itself, the maximum is 128 KB. If both superblock copies are damaged, the gateway can send all the data on the card again.
+- The duplicates have the same timestamps and values as the first copy. The host or historian must remove them: for example, it keeps one value for each tag and timestamp. A counter or an aggregate of the received messages counts them two times.
+- The history uses QoS 0: a power cut can also lose the messages that the TCP connection did not send yet.
+
+**64-bit types, `string`, byte orders and register bits (MB-6), in each tag.**
 
 ```json
 { "name": "Energy",  "area": "holding", "address": 30, "type": "uint64" },
@@ -432,76 +568,77 @@ The RAM buffer adds 40 000 samples. The `deadband` is the main control: set it a
 { "name": "Alarm",   "area": "holding", "address": 60, "type": "bool", "bit": 3, "writable": true }
 ```
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `type` | + `uint64` \| `int64` \| `float64` \| `string` | — | 64 bits = 4 registros; `string` = `length` registros |
-| `word_order` | `big` \| `little` \| `ABCD` \| `CDAB` \| `BADC` \| `DCBA` | `big` | Letras = bytes del valor, del más significativo (A) al menos, en el orden en que llegan. `big` = `ABCD`, `little` = `CDAB` (palabra menos significativa primero), `BADC` = bytes invertidos en cada registro, `DCBA` = todo invertido. Vale igual para 32 y 64 bits; en 16 bits solo cuenta la inversión de bytes |
-| `length` | entero | — | 1–16 registros; obligatorio con `type: string` y solo con él. Dos caracteres ASCII por registro, el primero en el byte alto (en el bajo con `BADC`/`DCBA`; el orden de palabras no se aplica) |
-| `bit` | entero | — | 0–15, con `type: bool` en `holding` o `input` (obligatorio ahí). 0 = bit menos significativo del registro tal como llega; no admite `word_order` distinto de `big` |
+| `type` | also `uint64` \| `int64` \| `float64` \| `string` | — | 64 bits = 4 registers. `string` = `length` registers |
+| `word_order` | `big` \| `little` \| `ABCD` \| `CDAB` \| `BADC` \| `DCBA` | `big` | The letters are the bytes of the value, from the most significant (A) to the least significant, in the order of arrival. `big` = `ABCD`. `little` = `CDAB` (the least significant word first). `BADC` = the bytes of each register in the opposite order. `DCBA` = all bytes in the opposite order. This applies to 32 and 64 bits. For 16 bits, only the byte swap applies |
+| `length` | integer | — | 1–16 registers. Necessary with `type: string`, and only with it. Each register holds two ASCII characters. The first character is in the high byte (in the low byte with `BADC` or `DCBA`). The word order does not apply |
+| `bit` | integer | — | 0–15, with `type: bool` in `holding` or `input` (necessary there). 0 = the least significant bit of the register, as it arrives. With `bit`, `word_order` must be `big` |
 
-- **Exactitud.** `int64` y `uint64` sin escala se publican exactos (UInt64/Int64), también por encima de 2^53; con `scale`/`offset` pasan a Double.
-- **`string`:** se corta en el primer NUL y se quitan los espacios finales; lo que no es ASCII imprimible se publica como `?`. Al escribir se rellena con NUL; un texto más largo que `2 × length` se rechaza. No admite `scale`, `offset` ni `deadband`.
-- **Escritura de un bit:** lectura del registro (FC03) y escritura del registro completo con el bit cambiado (FC06, o FC16 con escrituras múltiples forzadas).
+- **Exact values.** The gateway publishes `int64` and `uint64` without a scale exactly (UInt64 or Int64), also above 2^53. With `scale` or `offset`, they become a Double.
+- **`string`:** the gateway cuts the text at the first NUL and removes the spaces at the end. It publishes each character that is not printable ASCII as `?`. For a write, it adds NUL characters at the end. It refuses a text that is longer than `2 × length`. A `string` tag has no `scale`, no `offset` and no `deadband`.
+- **Write of a bit:** the gateway reads the register (FC03). Then it writes the full register with the changed bit (FC06, or FC16 when multiple writes are forced).
 
-**Bloque de registros crudo (SPB-19), `type: bytes`.**
+**Raw register block (SPB-19), `type: bytes`.**
 
 ```json
 { "name": "Block", "area": "holding", "address": 220, "type": "bytes", "length": 3, "writable": true }
 ```
 
-- `length` registros (1–16, obligatorio) que se publican como métrica **Bytes** (17): dos bytes por registro, el alto primero (el bajo primero con `BADC`/`DCBA`; el orden de palabras no se aplica). Sin ningún otro proceso: un NUL o un byte no ASCII viajan tal cual.
-- No admite `scale`, `offset`, `deadband`, `eng_low` ni `eng_high`. El reporte por excepción compara todos los bytes.
-- Un DCMD debe traer un valor Bytes de exactamente `2 × length` bytes; se escribe con una FC16.
+- The gateway publishes `length` registers (1–16, necessary) as a **Bytes** metric (17). Each register gives two bytes, the high byte first (the low byte first with `BADC` or `DCBA`; the word order does not apply). The gateway does not change the bytes: a NUL or a byte that is not ASCII stays as it is.
+- A `bytes` tag has no `scale`, `offset`, `deadband`, `eng_low` or `eng_high`. Report by exception compares all the bytes.
+- A DCMD must have a Bytes value of exactly `2 × length` bytes. The gateway writes it with one FC16.
 
-**Propiedades de métrica (SPB-16), en cada tag.**
+**Metric properties (SPB-16), in each tag.**
 
 ```json
 { "name": "Voltage", "area": "input", "address": 0, "type": "float32", "units": "V",
   "eng_low": 0, "eng_high": 400 }
 ```
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `units` | texto | `""` | Hasta 15 caracteres. Se publica como la propiedad `engUnit` (String) en el DBIRTH; vacío = sin propiedad |
-| `eng_low` | número | — | Propiedad `engLow` (Float) en el DBIRTH. Dentro del rango de un Float (±3,4e38). No vale en tags `bool`, `string` ni `bytes` |
-| `eng_high` | número | — | Propiedad `engHigh` (Float) en el DBIRTH. Con las dos claves, `eng_high` > `eng_low` |
+| `units` | text | `""` | Up to 15 characters. The DBIRTH gives it as the property `engUnit` (String). Empty = no property |
+| `eng_low` | number | — | The property `engLow` (Float) in the DBIRTH. In the range of a Float (±3.4e38). Not permitted on `bool`, `string` and `bytes` tags |
+| `eng_high` | number | — | The property `engHigh` (Float) in the DBIRTH. With the two keys, `eng_high` > `eng_low` |
 
-- **Calidad (`Quality`, Int32):** 192 (GOOD) cuando la lectura respondió, 0 (BAD) cuando falló (excepción Modbus) o el tag nunca se leyó; con BAD el valor va además como `is_null`. Todo DBIRTH la lleva en cada métrica; un DDATA, solo cuando cambia. Las DO del nodo usan la misma regla: BAD mientras el expansor no responde.
-- Las propiedades viajan en el `PropertySet` de la métrica (claves y valores en el mismo orden). Un comando (NCMD/DCMD) con propiedades se acepta; sus propiedades se ignoran.
+- **Quality (`Quality`, Int32):** the value is 192 (GOOD) when the read got a response. It is 0 (BAD) when the read failed (a Modbus exception). It is also 0 when the gateway never read the tag. With BAD, the value is also `is_null`. Each DBIRTH has the quality in each metric. A DDATA has it only when it changes. The node DOs use the same rule: BAD while the expander does not respond.
+- The properties are in the `PropertySet` of the metric (keys and values in the same order). The gateway accepts a command (NCMD or DCMD) with properties, and ignores its properties.
 
-**Lecturas en bloque por dispositivo (MB-11), en cada dispositivo.**
+**Block reads for each device (MB-11), in each device.**
 
 ```json
 { "name": "Meter1", "unit_id": 1, "max_gap": 10, "tags": [ … ] },
 { "name": "Picky",  "unit_id": 7, "block_reads": false, "tags": [ … ] }
 ```
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `block_reads` | bool | el del firmware (`true`) | `false` = una petición por tag, para esclavos que responden excepción si un bloque incluye registros no mapeados |
-| `max_gap` | entero | el del firmware (`0`) | 0–1999. Registros o bits sin usar que un bloque puede saltar para unir dos tags del mismo área. No se admite con `block_reads: false`. Un bloque nunca pasa de 125 registros ni de 2000 bits |
+| `block_reads` | bool | the firmware value (`true`) | `false` = one request for each tag. Use it for a slave that answers with an exception if a block contains registers that it does not map |
+| `max_gap` | integer | the firmware value (`0`) | 0–1999. The number of unused registers or bits that a block can include to join two tags of the same area. Not permitted with `block_reads: false`. A block never has more than 125 registers or 2000 bits |
 
-Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `CONFIG_GW_MB_BLOCK_MAX_GAP`), como en el MVP.
+Without these keys, the build option applies (`CONFIG_GW_MB_BLOCK_READS`, `CONFIG_GW_MB_BLOCK_MAX_GAP`), as in the MVP.
 
-**Tipos de dispositivo como plantillas Sparkplug (SPB-18), en cada dispositivo.**
+**Device types as Sparkplug templates (SPB-18), in each device.**
 
 ```json
 { "name": "PumpA", "unit_id": 1, "type": "Pump", "tags": [ … ] },
 { "name": "PumpB", "unit_id": 2, "type": "Pump", "tags": [ … ] }
 ```
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
 | `type` | text | `""` | A maximum of 39 characters, valid UTF-8, no `/ + #`. Not the name or the folder of a node metric (§6, issue #162). Two types must not differ only in case. Empty = no template (one metric for each tag, as in the MVP) |
 
-- Todos los dispositivos de un mismo `type` tienen los mismos tags: mismos nombres y datatypes, en el mismo orden (área, dirección, escala y unidades pueden cambiar). Si no, la configuración se rechaza con la ruta `devices[i].type`.
-- Las definiciones juntas describen como mucho **64 tags** (cada tipo cuenta una vez): el NBIRTH las lleva todas.
-- **NBIRTH:** una métrica Template (19) por tipo, con su nombre, `is_definition = true`, sin alias ni `template_ref`. Sus miembros: nombre, datatype, un valor por defecto (0, falso o texto vacío) y las propiedades `engUnit`/`engLow`/`engHigh` del primer dispositivo del tipo.
-- **DBIRTH:** una sola métrica Template, la instancia: nombre = el tipo, alias 100 + el primer tag del dispositivo, `template_ref` = el tipo. Sus miembros son los tags, por nombre y sin alias, con valor y `Quality`.
-- **DDATA:** la instancia por alias, solo con los miembros que cambiaron (por nombre).
-- **DCMD:** la instancia con los miembros a escribir (por nombre); también se acepta el tag por nombre como métrica suelta. Por alias, no: los miembros no tienen alias.
+- All devices of one `type` have the same tags: the same names and datatypes, in the same order. The area, the address, the scale and the units can be different. If not, the gateway refuses the configuration with the path `devices[i].type`.
+- All the definitions together describe a maximum of **64 tags** (each type counts one time), because the NBIRTH contains all of them.
+- **NBIRTH:** one Template metric (19) for each type, with its name, `is_definition = true`, no alias and no `template_ref` (`tck-id-payloads-template-definition-nbirth`). Its members have a name, a datatype and a default value (0, false or an empty text). They also have the properties `engUnit`, `engLow` and `engHigh` of the first device of the type.
+- **DBIRTH:** one Template metric, the instance. Its name is the type, its alias is 100 + the first tag of the device, and its `template_ref` is the type. Its members are the tags, by name and without an alias, with a value and `Quality`.
+- **DDATA:** the instance by alias, with only the members that changed (by name).
+- **DCMD:** the instance with the members to write (by name). The gateway also accepts the tag by name as a separate metric. It does not accept a member by alias, because the members have no alias.
+- The gateway does not use template parameters. With the UMH preset (UMH-3), a typed device publishes plain metrics.
 
-**Encuesta rápida y lenta (MB-12).**
+**Fast and slow scan (MB-12).**
 
 ```json
 { "name": "Meter1", "unit_id": 1, "poll_ms": 1000, "slow_poll_ms": 30000, "tags": [
@@ -509,34 +646,34 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
     { "name": "Serial",  "area": "holding", "address": 50, "type": "string", "length": 8, "scan": "slow" } ] }
 ```
 
-| Clave | Dónde | Tipo | Defecto | Regla |
+| Key | Where | Type | Default | Rule |
 |---|---|---|---|---|
-| `scan` | tag | `fast` \| `slow` | `fast` | `fast` se lee cada `poll_ms`; `slow`, cada `slow_poll_ms` |
-| `slow_poll_ms` | dispositivo | entero | 10 × `poll_ms` (tope 3 600 000) | 50–3 600 000 y nunca menor que `poll_ms` |
+| `scan` | tag | `fast` \| `slow` | `fast` | The gateway reads a `fast` tag each `poll_ms`, and a `slow` tag each `slow_poll_ms` |
+| `slow_poll_ms` | device | integer | 10 × `poll_ms` (maximum 3 600 000) | 50–3 600 000, and not less than `poll_ms` |
 
-- Los tags rápidos y los lentos nunca comparten un bloque de lectura.
-- **Fuera de línea (MB-9):** un ciclo que solo lee los tags rápidos cuenta como cualquier otro: falla si una petición queda sin respuesta. Pero un dispositivo pasa (o vuelve) a en línea solo con un ciclo que leyó **todos** sus bloques, así que su DBIRTH lleva todos los tags. Mientras está fuera de línea, cada ciclo incluye los lentos.
-- Si un ciclo falla antes de leer los lentos, quedan pendientes para el ciclo siguiente.
-- Un dispositivo con solo tags lentos se encuesta cada `slow_poll_ms`.
+- Fast tags and slow tags are never in the same read block.
+- **Offline (MB-9):** a cycle that reads only the fast tags counts as any other cycle: it fails if a request gets no response. But a device becomes online (or online again) only after a cycle that read **all** its blocks. Thus its DBIRTH contains all the tags. While the device is offline, each cycle includes the slow tags.
+- If a cycle fails before it reads the slow tags, the next cycle reads them.
+- The gateway polls a device with only slow tags each `slow_poll_ms`.
 
-**`modbus_tcp` (MB-15): gateway Modbus TCP hacia los esclavos RTU.**
+**`modbus_tcp` (MB-15): a Modbus TCP gateway to the RTU slaves.**
 
 ```json
 "modbus_tcp": { "enabled": true, "port": 502, "allowed_clients": ["192.168.1.20", "10.0.5.0/24"],
                 "idle_timeout_s": 60 }
 ```
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `enabled` | bool | `false` | Modbus TCP **no tiene autenticación**: el servidor solo arranca si se pide |
-| `port` | entero | `502` | 1–65535 |
-| `allowed_clients` | array de textos | `[]` | Hasta 8 direcciones IPv4 (`a.b.c.d`) o redes (`a.b.c.d/n`, n 0–32). Una conexión de otro origen se cierra sin respuesta. Vacío = cualquier cliente (el equipo lo advierte en el log) |
-| `idle_timeout_s` | entero | `60` | 0–3600. Una conexión sin peticiones en ese tiempo se cierra; 0 = nunca |
+| `enabled` | bool | `false` | Modbus TCP **has no authentication**: the server starts only when you enable it |
+| `port` | integer | `502` | 1–65535 |
+| `allowed_clients` | array of texts | `[]` | Up to 8 IPv4 addresses (`a.b.c.d`) or networks (`a.b.c.d/n`, n 0–32). The gateway closes a connection from another source without a response. Empty = any client (the log gives a warning) |
+| `idle_timeout_s` | integer | `60` | 0–3600. The gateway closes a connection without requests for this time. 0 = never |
 
-- Se reenvían FC01–FC06, FC15 y FC16 a las unidades 1–247, tengan o no un dispositivo configurado. El gateway responde él mismo, con excepción, a cualquier otra función (01), a datos no válidos (03) y a las unidades 0 y 248–255 (0A). Si la unidad no responde tras los reintentos de `rs485`, la excepción es 0B.
-- **Arbitraje del bus (MB-16):** las peticiones TCP pasan por la tarea dueña del bus, una a la vez y con la misma granularidad que los DCMD: entre dos peticiones de la encuesta. Prioridad: escrituras DCMD, después Modbus TCP, después la encuesta.
+- The gateway sends FC01–FC06, FC15 and FC16 to the units 1–247, with or without a configured device. The gateway itself answers with an exception: any other function (01), data that is not valid (03), and the units 0 and 248–255 (0A). If the unit does not respond after the retries of `rs485`, the exception is 0B.
+- **Bus access (MB-16):** the TCP requests go through the task that owns the bus, one at a time. They have the same granularity as the DCMD writes: between two poll requests. The priority is: DCMD writes, then Modbus TCP, then the poll.
 
-**`ota` (FW-1): firmware updates by NCMD and by the web.**
+**`ota` (FW-1): firmware updates by NCMD and through the web UI.**
 
 ```json
 "ota": { "enabled": true, "ca_file": "fw-ca.pem" }
@@ -556,75 +693,81 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 - **Safe mode:** three crash resets in a row (panic, watchdog, CPU lock-up) start safe mode: recovery mode without the configuration, with the network, the web UI, the shell and the firmware upload. Safe mode ends after 60 min (one more try of normal mode), at a restart by the operator or at a power cycle.
 - **The other slot:** the web UI shows both slots. The button "Restart into `<version>`" (`POST /api/firmware/other`) and the NCMD `Node Control/Boot Other Slot` (Boolean) boot the image of the other slot on trial, after the pre-flight check. A manual rollback uses this button, or an upload of the earlier image.
 
-**`local_io`: E/S local sin red. Estado seguro de las DO (IO-3).** Todas las claves de `local_io` son opcionales (IO-3, IO-4, IO-6 e IO-7).
+**`local_io`: local I/O without a network. Safe state of the DOs (IO-3).** All keys of `local_io` are optional (IO-3, IO-4, IO-6 and IO-7).
 
 ```json
 "local_io": { "di_debounce_ms": 20, "failsafe_s": 30,
               "do_failsafe": ["off", "on", "hold", "off", "off", "off", "off", "off"] }
 ```
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `failsafe_s` | entero | `0` | 0–86400. Segundos sin sesión Sparkplug (sin un NBIRTH vigente) tras los que cada DO toma su estado seguro. 0 = la pérdida de MQTT no cambia las DO |
-| `do_failsafe` | array de textos | todas `off` | Hasta 8 entradas, `DO/1` primero; cada una `off`, `on` u `hold`. Las que faltan son `off` |
+| `failsafe_s` | integer | `0` | 0–86400. After this number of seconds without a Sparkplug session (without a valid NBIRTH), each DO goes to its safe state. 0 = a loss of MQTT does not change the DOs |
+| `do_failsafe` | array of texts | all `off` | Up to 8 items, `DO/1` first. Each item is `off`, `on` or `hold`. An item that is not there is `off` |
 
-- **Al reiniciar** (encendido, reinicio por software, *panic* o watchdog): `off` y `on` toman ese estado en cuanto la configuración es válida; `hold` conserva el estado que el expansor TCA9554 mantuvo durante el reinicio. Tras un corte de alimentación el expansor también se apaga: `hold` arranca en OFF.
-- **Antes de cargar la configuración** todas las DO pasan a OFF, salvo las `hold` de la última configuración válida (guardadas en NVS), que no se tocan. Las `on` se encienden recién con la configuración validada.
-- **Configuración rechazada** (recuperación) o puesta en marcha: todas a OFF, también las `hold`. Si el expansor no respondía al arrancar, se lo sigue reintentando con el mismo backoff y se apagan todas cuando responde.
-- **Sin sesión durante `failsafe_s`** (contados desde el arranque o desde la pérdida): las `off` y las `on` toman ese estado, una vez; las `hold` no cambian. Al volver la sesión, las DO quedan como están hasta el próximo NCMD; el NBIRTH informa su estado real.
-- Sin estas claves el equipo se comporta como el MVP: todas a OFF al reiniciar y sin reacción a la pérdida de MQTT.
+- **At a restart** (power-on, software restart, panic or watchdog): `off` and `on` go to that state when the configuration is valid. `hold` keeps the state that the TCA9554 expander kept during the restart. After a power cut, the expander is also off: `hold` starts as OFF.
+- **Before the gateway loads the configuration**, all DOs go to OFF. The exceptions are the `hold` outputs of the last valid configuration (saved in NVS): the gateway does not change them. The `on` outputs become ON only after the validation of the configuration.
+- **Rejected configuration** (recovery mode) or commissioning: all DOs go to OFF, also the `hold` outputs. If the expander did not respond at the boot, the gateway tries again with the same backoff. It sets all DOs to OFF when the expander responds.
+- **No session during `failsafe_s`** (counted from the boot or from the loss): the `off` and `on` outputs go to that state one time. The `hold` outputs do not change. When the session starts again, the DOs stay as they are until the next NCMD. The NBIRTH gives their real state.
+- Without these keys, the gateway operates as the MVP: all DOs are OFF at a restart, and a loss of MQTT does not change them.
 
-**Contadores de pulsos de las DI (IO-4), en `local_io`.**
+**Pulse counters of the DIs (IO-4), in `local_io`.**
 
 ```json
 "local_io": { "di_debounce_ms": 20, "counter_save_s": 600 }
 ```
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `counter_save_s` | entero | `600` | 0 o 60–86400. Cada cuánto se guardan los contadores en NVS, solo si cambiaron. 0 = no se guardan (vuelven a 0 en cada arranque) |
+| `counter_save_s` | integer | `600` | 0 or 60–86400. The interval for the save of the counters in NVS, only if they changed. 0 = no save (they are 0 again at each boot) |
 
-- Cada DI cuenta sus **activaciones** (paso de inactiva a activa, después del debounce): con 20 ms de debounce, hasta unos 25 Hz. Un pulso más corto que el debounce no cuenta.
-- Métricas del nodo `Counter/1`…`Counter/8` (UInt64, alias 30–37), en el NBIRTH y por excepción en el mismo NDATA que el cambio de la DI.
-- Al arrancar se restauran del último guardado. Un reinicio ordenado (NCMD Reboot, configuración nueva, `restart` del shell o de la web) los guarda antes; un corte de alimentación, un *panic* o el watchdog pierden lo contado desde el último guardado (como mucho `counter_save_s`).
-- No se pueden escribir por NCMD. El reset de fábrica los pone a 0.
+- Each DI counts its **activations**: a change from inactive to active, after the debounce. With a debounce of 20 ms, the maximum is approximately 25 Hz. A pulse that is shorter than the debounce does not count.
+- The node metrics `Counter/1`…`Counter/8` (UInt64, alias 30–37) are in the NBIRTH. They are also in the NDATA of the DI change, by exception.
+- At the boot, the gateway restores the counters from the last save. An orderly restart (NCMD Reboot, a new configuration, the `restart` of the shell or of the web UI) saves them first. A power cut, a panic or the watchdog loses the count since the last save (a maximum of `counter_save_s`).
+- An NCMD cannot write them. The factory reset sets them to 0.
 
-**Enlaces locales DI→DO (IO-7), en `local_io.rules`.**
+**Local links from a DI to a DO (IO-7), in `local_io.rules`.**
 
 ```json
 "local_io": { "rules": [ { "di": 2, "do": 5, "mode": "follow" },
                          { "di": 3, "do": 6, "mode": "toggle" } ] }
 ```
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `rules` | array de objetos | `[]` | Hasta 8 reglas; cada DO en una sola regla |
-| `di` | entero | — | 1–8, obligatorio |
-| `do` | entero | — | 1–8, obligatorio |
-| `mode` | `follow` \| `invert` \| `toggle` | `follow` | `follow`: DO = DI. `invert`: DO = no DI. `toggle`: cada activación de la DI (flanco a activa, después del debounce) invierte la DO |
+| `rules` | array of objects | `[]` | Up to 8 rules. Each DO is in one rule only |
+| `di` | integer | — | 1–8, necessary |
+| `do` | integer | — | 1–8, necessary |
+| `mode` | `follow` \| `invert` \| `toggle` | `follow` | `follow`: DO = DI. `invert`: DO = not DI. `toggle`: each activation of the DI (the change to active, after the debounce) inverts the DO |
 
-- Las reglas se evalúan en el equipo, con o sin red ni broker: un cambio de DI llega a la DO en pocos milisegundos más el debounce.
-- **Prioridades:** una DO con regla es de la regla. Un NCMD sobre ella se rechaza (queda en el log y el NDATA confirma el estado real) y el estado seguro por pérdida de MQTT (IO-3) no la toca. Al reiniciar arranca como cualquier DO (`off` u `hold` en `do_failsafe`; `on` se rechaza para una DO con regla) hasta que la regla se evalúa con las DI del arranque: `follow` e `invert` toman enseguida el valor de su DI; `toggle` sigue desde ese estado de arranque.
-- Las DO sin regla se manejan como siempre: NCMD con sesión, estado seguro sin ella.
+- The gateway calculates the rules itself, with or without a network or a broker. A DI change gets to the DO in a few milliseconds plus the debounce.
+- **Priorities:** a DO with a rule belongs to the rule.
+  - The gateway refuses an NCMD for it: the log tells this, and the NDATA confirms the real state.
+  - The safe state after a loss of MQTT (IO-3) does not change it.
+  - At a restart, it starts as any DO (`off` or `hold` in `do_failsafe`; `on` is not permitted for a DO with a rule). Then the gateway calculates the rule with the DIs of the boot. `follow` and `invert` take the value of their DI immediately. `toggle` starts from that boot state.
+- The DOs without a rule operate as usual: NCMD with a session, safe state without it.
 
-**Buzzer (IO-6), en `local_io.buzzer`.**
+**Buzzer (IO-6), in `local_io.buzzer`.**
 
 ```json
 "local_io": { "buzzer": { "alarms": ["config_error", "mqtt_down", "device_offline"],
                           "alarm_after_s": 30 } }
 ```
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `alarms` | array de textos | `[]` | Alarmas que suenan: `config_error` (configuración rechazada), `mqtt_down` (sin sesión Sparkplug), `device_offline` (algún dispositivo Modbus fuera de línea). Sin repetidos. Vacío = el buzzer solo confirma gestos del botón BOOT |
-| `alarm_after_s` | entero | `30` | 0–3600. Cuánto debe durar `mqtt_down` o `device_offline` antes de sonar. `config_error` suena enseguida |
+| `alarms` | array of texts | `[]` | The alarms that sound: `config_error` (rejected configuration), `mqtt_down` (no Sparkplug session), `device_offline` (one or more Modbus devices offline). No item two times. Empty = the buzzer only confirms the BOOT button actions |
+| `alarm_after_s` | integer | `30` | 0–3600. The time of `mqtt_down` or `device_offline` before the alarm sounds. `config_error` sounds immediately |
 
-- **Patrones:** un pitido es 150 ms de tono y 150 ms de silencio. Cada alarma repite su ráfaga cada 10 s mientras dura: `device_offline` 1 pitido, `mqtt_down` 2, `config_error` 3. Si hay varias, suena la de más pitidos.
-- **`config_error`:** una configuración rechazada no puede activar nada, así que vale lo que pedía la última configuración válida (guardado en NVS). Tras un reset de fábrica no suena.
-- **BOOT button:** 1 beep when you release the button after 2 to 10 s (access point, NET-5; claim window, CFG-8). 1 beep when the claim window sets the web password. 2 beeps when the factory reset starts (CFG-5). These beeps sound with or without alarms.
-- No hay forma de silenciar una alarma mientras dura su condición.
+- **Patterns:** one beep is 150 ms of tone and 150 ms of silence. Each alarm sounds its burst each 10 s while its condition continues: `device_offline` 1 beep, `mqtt_down` 2 beeps, `config_error` 3 beeps. If there are a number of alarms, the alarm with the most beeps sounds.
+- **`config_error`:** a rejected configuration cannot enable an alarm. Thus the alarms of the last valid configuration apply (saved in NVS). After a factory reset, it does not sound.
+- **BOOT button.** These beeps sound with or without alarms:
+  - 1 beep when you release the button after 2 to 10 s (access point, NET-5; claim window, CFG-8);
+  - 1 beep when the claim window sets the web password;
+  - 2 beeps when the factory reset starts (CFG-5).
+- You cannot stop an alarm while its condition continues.
 
-**Device prefix (#172), in `sparkplug`.**
+**Device prefix (UMH-4, #172), in `sparkplug`.**
 
 ```json
 "sparkplug": { "group_id": "acme", "edge_node_id": "acme:berlin:packaging:gw01",
@@ -633,13 +776,13 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `device_prefix` | text | `""` | 0–96 bytes. Location levels with `:` between them. No empty level: no `:` at the start or the end, and no `::`. The characters of a Sparkplug ID (UTF-8, no `/ + #`, no control characters). No limit on the number of levels, other than the length |
+| `device_prefix` | text | `""` | 0–96 bytes. Location levels with `:` between them. No empty level: no `:` at the start or the end, and no `::`. The characters of a Sparkplug ID (UTF-8, no `/ + #`, no control characters). The number of levels has no limit, other than the length |
 
 - The `device_id` of each device is `<device_prefix>:<name>`. Without the key, it is the name. The DBIRTH, DDATA, DDEATH and DCMD topics use the `device_id`.
 - The longest device topic (`spBv1.0/<group_id>/DBIRTH/<edge_node_id>/<device_id>`) must fit in 159 bytes. With a `group_id` and an `edge_node_id` of 32 bytes, the `device_id` can have 78 bytes.
 - The metric names do not get the prefix.
 
-**Name checks for UNS hosts and the UMH preset (#169), in `sparkplug`.**
+**Name checks for UNS hosts and the UMH preset (UMH-2, UMH-3, #169), in `sparkplug`.**
 
 ```json
 "sparkplug": { "group_id": "acme", "edge_node_id": "acme:berlin:packaging:gw01",
@@ -648,15 +791,25 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `naming` | text | `"sparkplug"` | `"sparkplug"` or `"umh"`. `"umh"` turns on the UMH preset |
+| `naming` | text | `"sparkplug"` | `"sparkplug"` or `"umh"`. `"umh"` selects the UMH preset |
 
-The validation finds the names that UMH Core and other UNS hosts change with no error. Sparkplug permits these names, thus they are warnings. The dry run, the shell `config check`, the boot log and the web UI show them, each with its JSON path.
+The validation finds the names that UMH Core and other UNS hosts change with no error. Sparkplug permits these names (`tck-id-topic-structure-namespace-valid-device-id`), thus they are warnings. The dry run, the shell `config check`, the boot log and the web UI show them, each with its JSON path.
 
-- **Name rules.** The gateway splits `edge_node_id`, `device_prefix` and each device `name` at `:`. Each level must match `[A-Za-z0-9][A-Za-z0-9_-]*`. The gateway splits each tag `name` at `/`. Each segment must match `[A-Za-z0-9][A-Za-z0-9._-]*`. The warning tells the problem: an empty level, a space, a character that is not ASCII, `_` at the start, `.` in a level, `:` in a tag name, or another character.
-- **Other warnings.** A `primary_host_id` that is not empty (UMH publishes a Sparkplug 2.x STATE, #177), a device `type` (UMH gives no value for a template instance) and a tag of the type `bytes` (UMH gives no value for Bytes).
+- **Name rules.**
+  - The gateway divides `edge_node_id`, `device_prefix` and each device `name` at `:`. Each level must match `[A-Za-z0-9][A-Za-z0-9_-]*`.
+  - The gateway divides each tag `name` at `/`. Each segment must match `[A-Za-z0-9][A-Za-z0-9._-]*`.
+  - The warning tells the problem. Examples: an empty level, a space, a character that is not ASCII, `_` at the start, `.` in a level, `:` in a tag name.
+- **Other warnings:**
+  - a `primary_host_id` that is not empty (UMH publishes a Sparkplug 2.x STATE, #177);
+  - a device `type` (UMH gives no value for a template instance);
+  - a tag of the type `bytes` (UMH gives no value for Bytes).
 - **The UMH preset (`"naming": "umh"`).** The name rules become errors: the validation refuses the configuration, with the JSON path of the first name. The other warnings stay warnings. The default `"sparkplug"` changes nothing for other hosts. Each item of the preset obeys Sparkplug B 3.0.0. The preset also does these items:
-  - **Device state (#173).** The NBIRTH has one Boolean metric for each device, `Devices/<name>/Online`, with alias 80 + the index of the device. Each `:` of the name becomes `/`, because UMH splits a metric name at its last `:` first. An NDATA gives each change: `true` when the device comes online (before its DBIRTH), `false` when it goes offline (before its DDEATH). UMH drops null values, the Quality property and the DDEATH, so this metric tells UMH that the last values are old. The preset refuses a device name that continues another device name with the level `Online` (`a` and `a:Online`): the metric of one device would also be a folder.
-  - **Plain metrics (#174).** A device with `type` publishes one plain metric for each tag in its DBIRTH and DDATA, with the tag aliases, and not a template instance. The NBIRTH has no template definitions. The DataSets `Node Info/Modbus` and `Node Info/Modbus TCP` are not published. In their place, the NBIRTH and the diagnostic NDATA have UInt64 node metrics with the sums of all devices: `Node Info/Modbus/Cycles`, `Failed Cycles`, `OK`, `Timeout`, `CRC`, `Frame`, `Exception` (aliases 60–66, with one or more devices) and `Node Info/Modbus TCP/OK`, `Timeout`, `CRC`, `Frame`, `Exception` (aliases 70–74, with `modbus_tcp.enabled`; the units without a device are included). The state of each device is `Devices/<name>/Online`. A DCMD to a typed device can use the alias of a tag.
+  - **Device state (#173).** The NBIRTH has one Boolean metric for each device, `Devices/<name>/Online`, with the alias 80 + the index of the device. Each `:` of the name becomes `/`, because UMH divides a metric name at its last `:` first. An NDATA gives each change: `true` when the device becomes online (before its DBIRTH), `false` when it becomes offline (before its DDEATH). UMH drops null values, the Quality property and the DDEATH. Thus this metric tells UMH that the last values are old. The preset refuses a device name that continues another device name with the level `Online` (`a` and `a:Online`). The reason: the metric of one device would also be a folder.
+  - **Plain metrics (#174).** A device with `type` does not publish a template instance. Its DBIRTH and DDATA have one plain metric for each tag, with the tag aliases. The NBIRTH has no template definitions. The gateway does not publish the DataSets `Node Info/Modbus` and `Node Info/Modbus TCP`. In their place, the NBIRTH and the diagnostic NDATA have UInt64 node metrics with the sums of all devices:
+    - `Node Info/Modbus/Cycles`, `Failed Cycles`, `OK`, `Timeout`, `CRC`, `Frame` and `Exception` (aliases 60–66, with one or more devices);
+    - `Node Info/Modbus TCP/OK`, `Timeout`, `CRC`, `Frame` and `Exception` (aliases 70–74, with `modbus_tcp.enabled`; the sums include the units without a device).
+
+    The state of each device is `Devices/<name>/Online`. A DCMD to a typed device can use the alias of a tag.
 
 **Node diagnostics (SPB-17, MB-13), in `sparkplug`.**
 
@@ -676,28 +829,28 @@ The node metrics in the NBIRTH and in this periodic NDATA:
 | `Node Info/Free Heap` | 51 | UInt32 | The free bytes of the internal RAM |
 | `Node Info/Min Free Heap` | 52 | UInt32 | The minimum free internal RAM since the boot |
 | `Node Info/RSSI` | 53 | Int32 | The dBm of the Wi-Fi access point. Only when the gateway has a Wi-Fi configuration; `null` while it is not associated |
-| `Node Info/Modbus` | 54 | DataSet | One row for each device: `Device` (String), `Online` (Boolean), `Cycles`, `Failed Cycles`, `OK`, `Timeout`, `CRC`, `Frame`, `Exception` (UInt32; the last three count the attempts, retries included) |
-| `Node Info/Modbus TCP` | 56 | DataSet | Only with `modbus_tcp.enabled`. The Modbus TCP requests that the gateway sends to each unit (MB-15): one row for each device, `Device` (String), `Unit`, `Online` (Boolean), `OK`, `Timeout`, `CRC`, `Frame`, `Exception` (UInt32, attempts), and a last row `(other units)` (unit 0) for the units that have no device |
+| `Node Info/Modbus` | 54 | DataSet | One row for each device. The columns are `Device` (String), `Online` (Boolean), and `Cycles`, `Failed Cycles`, `OK`, `Timeout`, `CRC`, `Frame`, `Exception` (UInt32). The last three count the attempts, with the retries |
+| `Node Info/Modbus TCP` | 56 | DataSet | Only with `modbus_tcp.enabled`. The Modbus TCP requests that the gateway sends to each unit (MB-15). One row for each device: `Device` (String), `Unit`, `Online` (Boolean), `OK`, `Timeout`, `CRC`, `Frame`, `Exception` (UInt32, attempts). A last row `(other units)` (unit 0) is for the units that have no device |
 
-- The Modbus tables go in the NDATA only if a counter or a state changed since the last time (the two tables together). The uptime and the heap go always.
-- The Modbus TCP table is a separate table, not one more column of `Node Info/Modbus`. That table keeps its columns for the hosts that read it. The poll cycles have no meaning for the forwarded requests, and the TCP table exists only when the Modbus TCP gateway is on.
-- **`Node Info/Time Synced`** (TIME-3, alias 55, Boolean): `true` when SNTP synchronized the clock at least one time since the boot. A time from the RTC at boot (TIME-2) or from the browser (`POST /api/time`) is valid, but it is **not** synchronized. The metric is in the NBIRTH, and in its own NDATA each time that it changes (not in the periodic NDATA).
-- **`Node Info/Core Dump`** (REL-1, issue #132, alias 57, Boolean): `true` while a core dump is in the `coredump` partition (a panic occurred, and nobody erased the dump). It goes in the NBIRTH. When the dump is erased (`DELETE /api/coredump` or the shell's `coredump erase`), an NDATA of its own sends `false`, with the alias only. The operator downloads the dump with `GET /api/coredump` (§6.1).
-- The counters are of the node, not of each device. Thus the gateway also publishes the counters of a device that is offline (without DBIRTH), when they increase most.
+- The Modbus tables go in the NDATA only if a counter or a state changed since the last time (the two tables together). The uptime and the heap go in each NDATA.
+- The Modbus TCP table is a separate table, not one more column of `Node Info/Modbus`. Thus `Node Info/Modbus` keeps its columns for the hosts that read it. The poll cycles do not apply to the forwarded requests, and the TCP table exists only when the Modbus TCP gateway is on.
+- **`Node Info/Time Synced`** (TIME-3, alias 55, Boolean): `true` when SNTP synchronized the clock at least one time since the boot. A time from the RTC at boot (TIME-2) or from the browser (`POST /api/time`) is valid, but it is **not** synchronized. The metric is in the NBIRTH, and in an NDATA of its own each time that it changes (not in the periodic NDATA).
+- **`Node Info/Core Dump`** (REL-1, issue #132, alias 57, Boolean): `true` while a core dump is in the `coredump` partition (a panic occurred, and nobody erased the dump). It is in the NBIRTH. When somebody erases the dump (`DELETE /api/coredump` or the shell `coredump erase`), an NDATA of its own sends `false`, with the alias only. The operator downloads the dump with `GET /api/coredump` (§6.1).
+- The counters are node metrics, not device metrics. Thus the gateway also publishes the counters of a device that is offline (without a DBIRTH), when they increase most.
 
-**`syslog` (REL-4): copia del log a un servidor syslog.**
+**`syslog` (REL-4): a copy of the log to a syslog server.**
 
 ```json
 "syslog": { "host": "192.168.1.20", "port": 514, "level": "info" }
 ```
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `host` | texto | `""` | Nombre, IPv4 o IPv6 del servidor. Vacío = sin syslog remoto |
-| `port` | entero | `514` | 1–65535, UDP |
-| `level` | `error` \| `warning` \| `info` \| `debug` | `info` | Severidad mínima que se envía |
+| `host` | text | `""` | The name, IPv4 or IPv6 address of the server. Empty = no remote syslog |
+| `port` | integer | `514` | 1–65535, UDP |
+| `level` | `error` \| `warning` \| `info` \| `debug` | `info` | The minimum severity that the gateway sends |
 
-Formato: RFC 5424 sobre UDP (RFC 5426), un mensaje por datagrama, *facility* `local0`, HOSTNAME = `edge_node_id`, APP-NAME = módulo del log y `[meta sequenceId="n"]`. Ejemplo: `<134>1 2026-11-04T12:00:00.123Z GW01 edge - - [meta sequenceId="12"] Sparkplug session up (bdSeq=3)`.
+The format is RFC 5424 on UDP (RFC 5426), with one message in each datagram. The *facility* is `local0`, HOSTNAME is `edge_node_id`, APP-NAME is the log module, and the message has `[meta sequenceId="n"]`. Example: `<134>1 2026-11-04T12:00:00.123Z GW01 edge - - [meta sequenceId="12"] Sparkplug session up (bdSeq=3)`.
 
 **`web` (CFG-3, CFG-4, CFG-8): the web UI and the REST API.**
 
@@ -707,50 +860,67 @@ Formato: RFC 5424 sobre UDP (RFC 5426), un mensaje por datagrama, *facility* `lo
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `enabled` | bool | `true` | `false` = no web server with a valid configuration. With a rejected configuration, in commissioning, and after a push of BOOT (NET-5, CFG-8), the server starts in all cases |
+| `enabled` | bool | `true` | `false` = no web server with a valid configuration. The server starts in all cases with a rejected configuration, in commissioning, in the fault mode, and after a push of BOOT (NET-5, CFG-8) |
 | `port` | integer | `80` | 1–65535, HTTP. With `https` set to `true`, it only redirects (301/308) to HTTPS |
 | `https` | bool | `true` | HTTPS with the certificate of the gateway (EC P-256, self-signed). The gateway makes it at the first boot and keeps it with the secrets in NVS. The console shows its SHA-256 fingerprint at each boot. `false` = plain HTTP |
 | `https_port` | integer | `443` | 1–65535, not the same as `port` |
 | `username` | text | `"admin"` | 1–32 visible ASCII characters, without `:` |
-| `password` | text (secret) | `""` | Empty, or at least 8 characters. Empty = the gateway accepts `admin` with its **commissioning password** (random, the console shows it). While it is empty, a push of BOOT opens the claim window (CFG-8), which sets it without a credential |
+| `password` | text (secret) | `""` | Empty, or at least 8 characters. Empty = the gateway accepts `admin` with its **commissioning password** (random; the console shows it). While it is empty, a push of BOOT opens the claim window (CFG-8), which sets it without a credential |
 
-**Secretos** (`mqtt.password`, `network.wifi.password`, `web.password`): no se guardan en el JSON, sino en NVS (CFG-7); `web.password` solo como hash PBKDF2-HMAC-SHA256 con sal. Al exportar, un secreto definido vale `"********"`. Al importar (PUT):
+**Secrets** (`mqtt.password`, `network.wifi.password`, `web.password`): the gateway keeps them in NVS (CFG-7), not in the JSON. It keeps `web.password` only as a salted PBKDF2-HMAC-SHA256 hash. On export, a secret that has a value shows as `"********"`. On import (PUT):
 
-- `"********"` conserva el secreto guardado;
-- otro texto lo reemplaza (`""` lo borra);
-- la clave ausente lo borra: el documento reemplaza la configuración entera.
+- `"********"` keeps the saved secret;
+- another text replaces it (`""` deletes it);
+- a key that is not there deletes it: the document replaces the full configuration.
 
-En el archivo `/cfg/config.json` un secreto ausente, vacío o `"********"` toma el valor de NVS; uno en claro (archivo grabado a mano o de un firmware anterior) se usa, se mueve a NVS y el archivo se reescribe sin él.
+In the file `/cfg/config.json`, a secret that is not there, empty or `"********"` gets the value from NVS. The gateway uses a secret in clear text (in a file that you wrote by hand). Then it moves the secret to NVS and writes the file again without it.
 
-**Límite de intentos:** tras 5 accesos fallidos seguidos desde una misma dirección, esa dirección recibe `429` con `Retry-After` durante 30 s, sin comprobar la contraseña (tampoco la correcta); cada bloqueo seguido duplica el tiempo, hasta 15 min; un acceso correcto lo borra (Kconfig `GW_WEB_LOGIN_*`).
+**Limit of attempts:** after 5 failed logins in sequence from one address, that address gets `429` with `Retry-After` for 30 s. During that time, the gateway does not examine the password (also not the correct one). Each new lockout in sequence makes the time two times longer, up to 15 min. A correct login removes the lockout (Kconfig `GW_WEB_LOGIN_*`).
 
-**REST API.** All the routes require HTTP Basic with `web.username` and `web.password`, over HTTPS when `https` is on. The only exceptions are the routes of the claim window (CFG-8): `GET /claim`, `GET /api/claim` and `POST /api/claim`. The responses are JSON.
+**REST API.** All routes require HTTP Basic with `web.username` and `web.password`, over HTTPS when `https` is on. The only exceptions are the routes of the claim window (CFG-8): `GET /claim`, `GET /api/claim` and `POST /api/claim`. The responses are JSON.
 
-**Writes and CSRF (issue #100).** Each `PUT`, `POST` and `DELETE` must have the header `X-Requested-With` (any value; the web UI sends `gateway`). If the client sends `Origin` (or `Referer` when there is no `Origin`), it must be this gateway: the scheme of the connection and the `Host` of the request. The gateway compares them in a normal form (issue #106): the name in lower case and without the final dot, IPv6 between brackets, the port in decimal, and no port when it is the port of the scheme (443 with HTTPS, 80 without) or empty. Any name that gets to the gateway is correct (IP, `<hostname>.local`, `<hostname>`, a DNS name of the plant), if the page and the request use the same name. A malformed `Host` or `Origin` is not correct, and `Origin: null` is not correct. Otherwise the response is `403`, before the password check: it does not count as a failed login.
+**Writes and CSRF (issue #100).** Each `PUT`, `POST` and `DELETE` must have the header `X-Requested-With` (any value; the web UI sends `gateway`). The client can send `Origin` (or `Referer` when there is no `Origin`). Then it must be this gateway: the scheme of the connection and the `Host` of the request.
 
-The gateway does not read all of the body of a request without credentials or from another site, when the body is more than 1 KB (issue #106). It sends the response (`401`, `403`, `429`) and closes the connection. A client that still sends can see a closed connection instead of the response. The gateway does not cut the rejection of an authenticated request from the same origin (`400`, `409`, `413`, `415`): it discards all of the body, and the client receives the response. A client that is not a browser (`curl`, a script) does not send `Origin`: the header is sufficient. For example: `curl -u admin:… -H 'X-Requested-With: curl' -X PUT --data-binary @config.json https://<ip>/api/config`.
+- The gateway compares them in a normal form (issue #106). The name is in lower case and without the final dot, IPv6 is between brackets, and the port is decimal. There is no port when it is the port of the scheme (443 with HTTPS, 80 without) or empty.
+- Any name that gets to the gateway is correct, if the page and the request use the same name. Examples: the IP, `<hostname>.local`, `<hostname>`, a DNS name of the plant.
+- A malformed `Host` or `Origin` is not correct, and `Origin: null` is not correct.
+- Otherwise, the response is `403`, before the password check: it does not count as a failed login.
+
+A request can have no credentials, or come from another site. When its body is more than 1 KB, the gateway does not read all of it (issue #106). It sends the response (`401`, `403`, `429`) and closes the connection. Thus a client that continues to send can see a closed connection and not the response.
+
+The gateway does not cut the rejection of an authenticated request from the same origin (`400`, `409`, `413`, `415`). It discards all of the body, and the client receives the response. A client that is not a browser (`curl`, a script) does not send `Origin`: the header is sufficient. For example: `curl -u admin:… -H 'X-Requested-With: curl' -X PUT --data-binary @config.json https://<ip>/api/config`.
 
 | Method and route | What it does |
 |---|---|
 | `GET /api/config` | Exports the saved configuration, with the secrets masked. `?download=1` sends it as a file |
-| `PUT /api/config` (or `POST`) | Imports: validates, saves atomically (a temporary file and `rename`) and restarts in order (NDEATH). `?dry_run=1` only validates. Success: `200 {"ok":true,"saved":false,"warnings":[{"path":"devices[0].name","message":"…"}],"warning_count":1}` (with a save: `"saved":true,"restart":true`). The warnings are the name checks of #169; the answer has the first 50, and `warning_count` gives all of them. Error: `400 {"ok":false,"error":"…","path":"devices[0].tags[1].type","line":0,"column":0}`; `413` above `CONFIG_GW_CONFIG_MAX_BYTES`; `409` during the trial of a new image (issue #144) |
+| `PUT /api/config` (or `POST`) | Imports: validates, saves atomically (a temporary file and `rename`) and restarts in order (NDEATH). `?dry_run=1` only validates. Success: `200 {"ok":true,"saved":false,"warnings":[{"path":"devices[0].name","message":"…"}],"warning_count":1}` (after a save: `"saved":true,"restart":true`). The warnings are the name checks of UMH-2. The response has the first 50, and `warning_count` gives the number of all warnings. Error: `400 {"ok":false,"error":"…","path":"devices[0].tags[1].type","line":0,"column":0}`. `413` above `CONFIG_GW_CONFIG_MAX_BYTES`; `409` during the trial of a new image (issue #144) |
 | `POST /api/restart` | Restarts in order |
-| `POST /api/rebirth` | Issue #171: sends the NBIRTH and all the DBIRTH messages again, with the same bdSeq, as an NCMD `Node Control/Rebirth` does. Use it when a host shows the tags as `alias_<n>` after its own restart. `202 {"ok":true,"rebirth":true}`. `409` when there is no Sparkplug session (not connected, recovery, commissioning) |
-| `POST /api/modbus/read` | Issue #182: one Modbus read for commissioning, through the task that owns the bus (MB-16), as the shell `mbread` does. Body: `{"unit": 1-247, "area": "coil"\|"discrete"\|"holding"\|"input", "address": 0-65535}`, optional `"count"` (1–16, default 1 or the size of the type), `"type"` (a tag type; `bool` only for `coil`/`discrete`; `string` and `bytes` take `count` registers) and `"word_order"` (only with `type`). `200 {"ok":true,"unit":1,"area":"input","address":0,"count":2,"values":[17254,32768],"type":"float32","word_order":"ABCD","value":230.5}`. A Modbus error: `504` (`"result":"timeout"`) or `502` (`crc`, `frame`, or `exception` with `"exception"`: the code), with `error`. `503` when the bus does not run the read in time or another test read waits. `400` for a request that is not correct. `409` in recovery and in commissioning (the bus does not run). Read only |
+| `POST /api/rebirth` | SPB-9, UMH-7, issue #171: sends the NBIRTH and all the DBIRTH messages again, with the same bdSeq, as the NCMD `Node Control/Rebirth` does. `202 {"ok":true,"rebirth":true}`. `409` when there is no Sparkplug session (not connected, recovery mode, commissioning) |
+| `POST /api/modbus/read` | Issue #182: one Modbus read for commissioning, through the task that owns the bus (MB-16), as the shell `mbread` does. Body: `{"unit": 1-247, "area": "coil"\|"discrete"\|"holding"\|"input", "address": 0-65535}`. Optional: `"count"` (1–16, default 1 or the size of the type), `"type"` (a tag type; `bool` only for `coil` and `discrete`; `string` and `bytes` read `count` registers) and `"word_order"` (only with `type`). `200 {"ok":true,"unit":1,"area":"input","address":0,"count":2,"values":[17254,32768],"type":"float32","word_order":"ABCD","value":230.5}`. A Modbus error gives `504` (`"result":"timeout"`) or `502` (`crc`, `frame`, or `exception` with the code in `"exception"`), with `error`. `503` when the bus does not run the read in time, or when another test read waits. `400` for a request that is not correct. `409` in recovery mode and in commissioning (the bus does not run). The route only reads |
+| `POST /api/time` | TIME-1, issue #160: sets the clock of the gateway and the RTC to the time of the browser. Use it on a network without a time server. Body: `{"utc_ms": <ms since 1970-01-01T00:00:00Z>}`, an integer from 2025 to 2099. `200 {"ok":true,"utc_ms":…,"source":"browser"}`. `400` for a body that is not correct. `409` when SNTP synchronized the clock. The source becomes `browser`, and `Node Info/Time Synced` stays `false`. It also operates in recovery mode and in commissioning |
 | `POST /api/firmware` | FW-1: `application/json` with `{"url": "https://…"}` (download) and, as an option, `"force": true`; or `application/octet-stream` with the image as the body (`?force=1` to force). Another `Content-Type` gets `415`. `409` during the trial of a new image (`testing <v>: N s left`) and when the pre-flight check refuses the image (the error lists the reasons; force installs it into recovery mode, issue #144) |
-| `POST /api/time` | TIME-1, issue #160: sets the clock of the gateway and the RTC to the time of the browser. Use it on a network without a time server. Body: `{"utc_ms": <ms since 1970-01-01T00:00:00Z>}`, an integer from 2025 to 2099. `200 {"ok":true,"utc_ms":…,"source":"browser"}`. `400` for a body that is not correct. `409` when SNTP synchronized the clock. The source becomes `browser`; `Node Info/Time Synced` stays `false`. It also operates in recovery and in commissioning |
 | `POST /api/firmware/other` | Issue #144: the button "Restart into `<version>`". The image of the other slot boots on trial, after the pre-flight check (`?force=1` to force). `202 {"ok":true,"restart":true}`. `409` during a trial or a transfer, or when the pre-flight check refuses; `404` when the other slot is empty or failed its verification |
 | `GET /api/firmware` | FW-1: the running slot and the other slot (`other`, `other_slot`, `other_state`: `empty`, `previous`, `new`, `rejected`, `invalid`; `other_why`), `can_boot_other`, `phase`, `state`, `detail`, `progress`, `bytes`, `total`, `trial`, `trial_left_s`, `expected_mode`, `boot_count` and `safe_mode` (issue #144) |
-| `POST /api/card/format?confirm=1` | SPB-14, issue #139: starts a format of the microSD card in the background, and returns at once. It deletes everything on the card. Without `?confirm=1`: `400`. `202 {"ok":true,"started":true}` when the format starts. `409` when a format runs. `501` when the build has no card (QEMU) or the board has no PSRAM. `503` when there is no memory for the format task. The errors have `reason`: `busy`, `no_support`, `no_psram` or `no_memory`. A card that does not answer ends the format as `failed` (`card_format` in `/api/status`) |
-| `GET /api/coredump` | REL-1, issue #132: downloads the core dump in flash, as it is in the partition (header, ELF and checksum; `application/octet-stream`, `Content-Disposition: attachment`). Decode it with `esp-coredump --core-format raw` and the ELF of the same build. `404` when there is no dump. `409` when the partition holds no readable dump (erase it). The dump can contain secrets in clear text: keep the file safe |
+| `POST /api/card/format?confirm=1` | SPB-14, issue #139: starts a format of the microSD card in the background, and returns at once. It deletes everything on the card. Without `?confirm=1`: `400`. `202 {"ok":true,"started":true}` when the format starts. `409` when a format runs. `501` when the build has no card (QEMU) or no PSRAM. `503` when there is no memory for the format task. The errors have `reason`: `busy`, `no_support`, `no_psram` or `no_memory`. A card that does not answer ends the format as `failed` (`card_format` in `/api/status`) |
+| `GET /api/coredump` | REL-1, issue #132: downloads the core dump in flash, as it is in the partition (header, ELF and checksum; `application/octet-stream`, `Content-Disposition: attachment`). Decode it with `esp-coredump --core-format raw` and the ELF of the same build. `404` when there is no dump. `409` when the partition holds no readable dump (erase it). **The dump can contain secrets in clear text: keep the file safe** |
 | `DELETE /api/coredump` | Issue #132: erases the core dump, after a download or without one. `200 {"ok":true,"erased":true}`. `404` when there is no dump. The gateway then publishes `Node Info/Core Dump` = `false` |
-| `GET /api/coredump/summary` | Issue #132: `present`, `state` (`none`, `valid`, `corrupt`), `size` and `reset_reason` (of this boot: the dump can be older). For a valid dump also `task`, `pc`, `backtrace` (addresses as `"0x…"` strings), `backtrace_corrupted`, `exc_cause`, `exc_vaddr`, `reason` (the panic reason, for example `abort() was called at PC 0x… on core 0`; empty when the dump has none) and `app_elf_sha256` (the start of the SHA-256 of the ELF that crashed) |
-| `GET /api/status` | The live state (also in recovery, in commissioning and in the fault mode). Refer to the description below |
+| `GET /api/coredump/summary` | Issue #132: `present`, `state` (`none`, `valid`, `corrupt`), `size` and `reset_reason` (of this boot: the dump can be older). For a valid dump, also: `task`, `pc`, `backtrace` (addresses as `"0x…"` strings), `backtrace_corrupted`, `exc_cause`, `exc_vaddr`, `reason` and `app_elf_sha256`. `reason` is the panic reason, for example `abort() was called at PC 0x… on core 0` (empty when the dump has none). `app_elf_sha256` is the start of the SHA-256 of the ELF that crashed |
+| `GET /api/status` | The live state (also in recovery mode, in commissioning and in the fault mode). Refer to the description below |
 | `GET /claim` | CFG-8, issue #120: the page of the claim window. No credential. `GET /` without an `Authorization` header goes to it (`303`) while the window is open and the client is a client of the access point |
-| `GET /api/claim` | CFG-8: the state of the claim window for this client. No credential. `200 {"open":true,"allowed":true,"left_s":540,"username":"admin"}`. `allowed` is `true` only for a client of the access point; `left_s` and `username` are only for that client. `username` is `""` in recovery and in commissioning (any user name) |
-| `POST /api/claim` | CFG-8: sets the first web password. No credential, but the CSRF check above and the limit of attempts apply. Body: `{"password": "…"}`: at least 8 characters, at most 64 bytes, UTF-8 without control characters. `200 {"ok":true,"username":"admin"}`: the password is valid at once, and the window closes. `403` when a web password is set, when no window is open, or when the client is not a client of the access point; these refusals count as failed logins. `400` for a password or a body that is not correct. `503` when NVS does not store it (the window stays open). The gateway stores only the hash, in NVS; the configuration document does not change |
+| `GET /api/claim` | CFG-8: the state of the claim window for this client. No credential. `200 {"open":true,"allowed":true,"left_s":540,"username":"admin"}`. `allowed` is `true` only for a client of the access point. `left_s` and `username` are only for that client. `username` is `""` in recovery mode and in commissioning (any user name) |
+| `POST /api/claim` | CFG-8: sets the first web password. No credential, but the CSRF check above and the limit of attempts apply. Body: `{"password": "…"}`: at least 8 characters, at most 64 bytes, UTF-8 without control characters. `200 {"ok":true,"username":"admin"}`: the password is valid at once, and the window closes. `403` when a web password is set, when no window is open, or when the client is not a client of the access point. These refusals count as failed logins. `400` for a password or a body that is not correct. `503` when NVS does not store it (the window stays open). The gateway stores only the hash, in NVS. The configuration document does not change |
 
-**`GET /api/status`** sends an object with these items: `mode` (`normal`, `recovery`, `commissioning`, `fault`), `fault` (issue #135: the hardware fault in the mode `fault`, for example a PSRAM that the boot did not detect; else empty), `firmware`, `reset_reason`, `uptime_s`, `config` (`ok`, `source`, `error`, `path`), `network` (`up`, `interfaces`), `mqtt` (`connected`), `sparkplug` (`group_id`, `edge_node_id`, `diagnostics_s`; only with a valid configuration), `syslog`, `devices`, `heap` and the fields of the table. For each device, `devices` has `online`, `cycles`, `failed`, `ok`, `timeout`, `crc`, `frame`, `exception` and `tags`. Each tag has `name`, `valid` and `value`: a number, an exact integer for `int64`/`uint64`, a text for `string`, hexadecimal for `bytes`.
+**`GET /api/status`** sends an object with these items:
+
+- `mode` (`normal`, `recovery`, `commissioning`, `fault`);
+- `fault` (issue #135): the hardware fault in the mode `fault`, for example a PSRAM that the boot did not find. Else empty;
+- `firmware`, `reset_reason`, `uptime_s`;
+- `config` (`ok`, `source`, `error`, `path`);
+- `network` (`up`, `interfaces`), `mqtt` (`connected`);
+- `sparkplug` (`group_id`, `edge_node_id`, `diagnostics_s`; only with a valid configuration);
+- `syslog`, `devices`, `heap`, and the fields of the table below.
+
+For each device, `devices` has `online`, `cycles`, `failed`, `ok`, `timeout`, `crc`, `frame`, `exception` and `tags`. Each tag has `name`, `valid` and `value`. The value is a number, an exact integer for `int64` and `uint64`, a text for `string`, and hexadecimal for `bytes`.
 
 | Field | What it is |
 |---|---|
@@ -760,20 +930,20 @@ The gateway does not read all of the body of a request without credentials or fr
 | `io.rule_do` | IO-7: the mask of the DOs that a local rule controls (they do not accept NCMD) |
 | `io.counters` | IO-4: the 8 pulse counters |
 | `buzzer.alarm`, `buzzer.enabled` | IO-6: the alarm that sounds now (`none`, `device_offline`, `mqtt_down`, `config_error`) and the enabled alarms |
-| `time.utc_s`, `time.synced`, `time.valid`, `time.source` | The time of the gateway (s UTC), whether SNTP synchronized it (TIME-3), whether it is valid for timestamps (issue #160: without it, no NDATA or DDATA), and its source: `sntp`, `rtc` (TIME-2), `browser` (`POST /api/time`) or `none` |
-| `time.rtc` | `present`, the `status` of the last read or write of the RTC, and `stores` (the writes after SNTP or a time from the browser) |
-| `card` (optional, issue #139) | The microSD card. `state`: `unsupported` (the build has no card), `unchecked` (the boot did not look for a card: the spill is off), `absent`, `not_mounted`, `mounted`, `formatting` or `formatted` (restart to use it). `detail` tells why (for example `no FAT file system (exFAT, NTFS, ext4, GPT, or no format) (FatFs error 13)`). When known: `name`, `size_mb`, `fat`, `cluster` (B), `free_mb` (with no scan of the FAT) and `other_entries` (the entries of the root that are not the folder `sf`: the format deletes them too) |
-| `spill` (optional, normal mode) | The spill of store & forward to the card. `state`: `off` (with `detail`), `not_started` (with `detail`, for example `it needs PSRAM, and none was detected`), `on`, `failed` (with `detail` and `stranded`, the samples that stay on the card) or `stopped` (a format took the card). With `on`: `ready` (the boot recovery ended), `waiting`, `moved`, `overwritten`, `holes`, `ring_blocks`, `waiting_blocks`, `extents`, `kb`, `blocks_written`, `checkpoints`, `boot_ms` and `files_to_delete` (the counters of the shell `spill` line) |
-| `core_dump` (optional, issue #132) | The core dump in flash: `present`, `state` (`none`, `valid`: the checksum is correct, `corrupt`) and `size` (bytes, 0 = not known). `GET /api/coredump/summary` gives its summary |
+| `time.utc_s`, `time.synced`, `time.valid`, `time.source` | The time of the gateway (s UTC), and if SNTP synchronized it (TIME-3). `time.valid` tells if the time is valid for timestamps (issue #160: without it, no NDATA or DDATA). `time.source` is `sntp`, `rtc` (TIME-2), `browser` (`POST /api/time`) or `none` |
+| `time.rtc` | `present`, the `status` of the last read or write of the RTC, and `stores` (the writes after SNTP or after a time from the browser) |
+| `card` (optional, issue #139) | The microSD card. `state` is `unsupported`, `unchecked`, `absent`, `not_mounted`, `mounted`, `formatting` or `formatted`. `unsupported`: the build has no card. `unchecked`: the boot did not try to find a card, because the spill is off. `formatted`: restart to use the card. `detail` tells why, for example `no FAT file system (exFAT, NTFS, ext4, GPT, or no format) (FatFs error 13)`. When known: `name`, `size_mb`, `fat`, `cluster` (B), `free_mb` (with no scan of the FAT) and `other_entries`. `other_entries` are the entries of the root that are not the folder `sf`: the format deletes them too |
+| `spill` (optional, normal mode) | The spill of store & forward to the card. `state` is `off`, `not_started`, `on`, `failed` or `stopped`. `off` and `not_started` have `detail`, for example `it needs PSRAM, and none was detected`. `failed` has `detail` and `stranded` (the samples that stay on the card). `stopped`: a format took the card. With `on`, the object also has the counters of the shell `spill` line. They are `ready` (the boot recovery ended), `waiting`, `moved`, `overwritten`, `holes`, `ring_blocks`, `waiting_blocks`, `extents`, `kb`, `blocks_written`, `checkpoints`, `boot_ms` and `files_to_delete` |
+| `core_dump` (optional, issue #132) | The core dump in flash: `present`, `state` (`none`; `valid`: the checksum is correct; `corrupt`) and `size` (bytes, 0 = not known). `GET /api/coredump/summary` gives its summary |
 | `card_format` (optional, issue #139) | The format of the card. `state`: `idle`, `running` (with `elapsed_s`), `done` (with `duration_s`, `fat`, `cluster`, `size_mb` and `restart: true`) or `failed` (with `duration_s` and `error`) |
 
 A client that does not know the optional fields can ignore them.
 
-## 7. Criterios de aceptación del MVP
+## 7. Acceptance criteria of the MVP
 
-1. `NBIRTH` con `seq`=0 y el `bdSeq` del LWT. Al matar la conexión TCP el broker publica `NDEATH` con ese mismo `bdSeq`.
-2. Al apagar un esclavo se publica DDEATH en `offline_after × poll_ms` (más el tiempo de los timeouts). Al volver a encenderlo se publica DBIRTH.
-3. Un cambio en una DI se ve en NDATA en menos de 100 ms. Un NCMD `DO/3=true` activa la salida 3 y el NDATA lo confirma.
-4. Un DCMD `Setpoint=12.3` escribe 123 en el registro holding 10 (FC06) y se confirma por DDATA.
-5. Un NCMD `Node Control/Rebirth` reemite NBIRTH y todos los DBIRTH, con `seq` reiniciado.
-6. Los payloads se decodifican sin errores con `sparkplug_b.proto` oficial, por ejemplo con Python y `protobuf`.
+1. The `NBIRTH` has `seq` = 0 and the `bdSeq` of the Will. When the TCP connection stops, the broker publishes the `NDEATH` with the same `bdSeq`.
+2. When a slave stops, the gateway publishes the DDEATH after `offline_after × poll_ms` (plus the time of the timeouts). When the slave operates again, the gateway publishes the DBIRTH.
+3. A change of a DI is in an NDATA in less than 100 ms. An NCMD `DO/3` = true sets output 3 to on, and the NDATA confirms it.
+4. A DCMD `Setpoint` = 12.3 writes 123 to the holding register 10 (FC06), and a DDATA confirms it.
+5. An NCMD `Node Control/Rebirth` sends the NBIRTH and all the DBIRTHs again, with `seq` set to 0.
+6. The payloads decode with no errors with the official `sparkplug_b.proto`, for example with Python and `protobuf`.
