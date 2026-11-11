@@ -1099,7 +1099,7 @@ The scenario is not in a full run and not in `CI_GROUPS` (`scenarios.OPTIONAL`).
 | PrimaryHostTest | Boot the gateway first, and wait until it waits for its primary host. Then start the test | 25 PASS | the same |
 | MultipleBrokerTest | Start a mosquitto on port 1884 (the backup broker of the gateway). Start the test, then boot | 18 PASS, 1 FAIL (gateway) | the same |
 
-Four runs gave the same results: one with MQTT 3.1.1, one with MQTT 5 and two with the two versions. Thus each test ran three times with each MQTT version. A fifth run gave the same results until the TCK stopped (see below). The last run took 270 s for the 14 tests, plus the image build.
+Four runs gave the same results: one with MQTT 3.1.1, one with MQTT 5 and two with the two versions. Thus each test ran three times with each MQTT version. A run on the merge with `main` 2a970bf (the default variant of #135) also gave the same results, in 269 s. A fifth run gave the same results until the TCK stopped (see below). The last run took 270 s for the 14 tests, plus the image build.
 
 **FAIL: a TCK bug (UInt32).** `tck-id-topics-nbirth-metrics` and `tck-id-operational-behavior-data-publish-nbirth-values` fail on the metrics `Node Control/Scan Rate`, `Node Info/Free Heap`, `Node Info/Min Free Heap` and `Firmware Update/Progress`. These metrics are UInt32, and the gateway puts their value in `int_value`.
 - The datatype table of the specification (chapter 6, "UInt32: Google Protocol Buffer Type: uint32") requires `int_value`, the uint32 field of the proto. The gateway obeys it.
