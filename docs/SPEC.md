@@ -57,7 +57,7 @@ Al publicar, el gateway hace de *Edge Node* de Sparkplug. Cada esclavo Modbus es
 | NET-2 | IPv4 por DHCP o estática (IP, máscara, gateway y DNS), configurable | P0 | ✅ |
 | NET-3 | Resolución de nombres por DNS para el host del broker | P0 | ✅ |
 | NET-4 | Wi-Fi STA como interfaz alternativa o de respaldo cuando cae Ethernet, con prioridad configurable | P1 | |
-| NET-5 | Modo AP de Wi-Fi para la puesta en marcha: se activa si no hay configuración válida o con el botón BOOT | P1 | |
+| NET-5 | Wi-Fi access point for commissioning. It starts when there is no valid configuration, and on a push of the BOOT button for 2 to 10 s. It uses WPA2 with the commissioning password. During a claim window (CFG-8) it is open (no key) | P1 | |
 | NET-6 | Hostname configurable y anuncio mDNS (`_http._tcp`) | P2 | |
 | NET-7 | IPv6 | P2 | |
 
@@ -65,8 +65,8 @@ Al publicar, el gateway hace de *Edge Node* de Sparkplug. Cada esclavo Modbus es
 
 | ID | Requisito | Prio | MVP |
 |---|---|---|---|
-| TIME-1 | Sincronización por SNTP con un servidor configurable; los timestamps Sparkplug van en ms UTC | P0 | ✅ |
-| TIME-2 | Lectura del RTC al arrancar y su actualización tras cada SNTP exitoso, para tener timestamps válidos sin red | P1 | |
+| TIME-1 | SNTP synchronization with a server that you can configure. The Sparkplug timestamps are in ms UTC (`tck-id-payloads-timestamp-in-UTC`, `tck-id-payloads-metric-timestamp-in-UTC`). Until a source sets the clock (SNTP, the RTC or the browser with `POST /api/time`), the gateway publishes the births only: no NDATA and no DDATA. When the clock becomes valid, the gateway does a rebirth (issue #160) | P0 | ✅ |
+| TIME-2 | The gateway reads the RTC at boot. It writes the RTC after each SNTP synchronization and after each time from the browser. Thus the timestamps are valid without a network | P1 | |
 | TIME-3 | Métrica `Node Info/Time Synced` que indica si la hora es confiable | P2 | |
 
 ### 4.3 MQTT (MQTT)
@@ -105,7 +105,7 @@ Al publicar, el gateway hace de *Edge Node* de Sparkplug. Cada esclavo Modbus es
 | SPB-11 | **NCMD** sobre las salidas locales `DO/n` y sobre `Node Control/Reboot` | P0 | ✅ |
 | SPB-12 | Banda muerta (*deadband*) absoluta por tag para los valores analógicos | P1 | ✅ |
 | SPB-13 | **Primary Host Application**: si hay un `primary_host_id` configurado, el nodo se suscribe a `spBv1.0/STATE/{id}`, no publica NBIRTH hasta recibir `online:true` y se desconecta, con NDEATH, si el host pasa a `online:false` | P1 | |
-| SPB-14 | **Store & forward**: con el broker o el host primario caído, guarda los cambios en un buffer circular en PSRAM, con opción de volcarlo a microSD. Al reconectar los publica con `is_historical=true` | P1 | |
+| SPB-14 | **Store & forward**: when the broker or the primary host is not available, the gateway keeps the changes in a ring buffer in PSRAM. An option moves them to a microSD card. When the session comes back, the gateway publishes them with `is_historical=true`. Without a valid clock (TIME-1), the gateway keeps nothing and sends no history | P1 | |
 | SPB-15 | `Node Control/Scan Rate` escribible, que permite cambiar el periodo de encuesta global | P2 | |
 | SPB-16 | Propiedades de métrica: `engUnit`, `engLow`, `engHigh` y calidad (`Quality`: 0 = BAD, 192 = GOOD) | P1 | |
 | SPB-17 | Métricas de diagnóstico del nodo: `Node Info/Uptime`, `Free Heap`, contadores Modbus (OK, timeout, CRC, excepción) y RSSI de Wi-Fi | P1 | |
@@ -156,6 +156,7 @@ Al publicar, el gateway hace de *Edge Node* de Sparkplug. Cada esclavo Modbus es
 | CFG-5 | Reset de fábrica con el botón BOOT presionado más de 10 s | P1 | |
 | CFG-6 | Consola serie (shell) con comandos de estado, configuración y diagnóstico | P1 | |
 | CFG-7 | The gateway keeps the secrets (passwords, TLS keys) out of the configuration document, in NVS. **Out of scope:** encryption of the secrets with a key in eFuse on the board. The key in eFuse is permanent, and the owner of the board must keep full control of it (#133). The QEMU build still encrypts NVS on emulated eFuses; #133 decides whether this stays. The archived feature is on the branch `archive/efuse-production` | P1 | |
+| CFG-8 | **First web access without the serial console** (issue #120): the claim window. While `web.password` is empty, the push of BOOT for 2 to 10 s opens a claim window for 10 min (Kconfig `GW_WEB_CLAIM_WINDOW_MIN`). During the window, a client of the access point (NET-5) can set the first web password without a credential (`POST /api/claim`, §6.1). Clients of other interfaces get `403`. The window closes at the end of its time, after the first password that is set, and at a restart. When a web password is set, the window does not open again: only a factory reset (CFG-5) removes the password | P1 | |
 
 ### 4.8 Gestión del firmware (FW)
 
@@ -392,8 +393,8 @@ The object form, with the optional spill to a microSD card:
 **The card.**
 
 - The card is only for the gateway. Do not put other files on it.
-- Format the card with the gateway before the first use. Use the web UI (the status page, "Tarjeta microSD", "Formatear tarjeta") or the shell command `card format confirm`. The format makes one MBR partition with FAT32 and clusters of 32 KB (FAT16 below 2 GB).
-- **The format deletes everything on the card**, also the samples that wait there. The gateway never formats a card by itself: the web UI asks you to type `FORMATEAR`, and the shell needs the word `confirm`.
+- Format the card with the gateway before the first use. Use the web UI (the status page, "microSD card", "Format the card") or the shell command `card format confirm`. The format makes one MBR partition with FAT32 and clusters of 32 KB (FAT16 below 2 GB).
+- **The format deletes everything on the card**, also the samples that wait there. The gateway never formats a card by itself: the web UI asks you to type `FORMAT`, and the shell needs the word `confirm`.
 - These cards do not mount: a card with no file system, an exFAT card, an NTFS or ext4 card, and a card with a GPT partition table. ESP-IDF v6.1 has no exFAT, and most cards of 64 GB or more come with exFAT. The gateway formats these cards too. The format does not need a mounted card, and it operates also when `sd.enabled` is `false`. The status page and `/api/status` (`card`) tell why a card does not mount.
 - The format needs the PSRAM, as the spill does. Without PSRAM, the gateway refuses the format and tells why.
 - The format runs in the background (it can take some minutes on a large card). The spill stops first, and the RAM buffer continues. After the format, restart the gateway to use the card.
@@ -620,7 +621,7 @@ Sin estas claves vale la opción de compilación (`CONFIG_GW_MB_BLOCK_READS`, `C
 
 - **Patrones:** un pitido es 150 ms de tono y 150 ms de silencio. Cada alarma repite su ráfaga cada 10 s mientras dura: `device_offline` 1 pitido, `mqtt_down` 2, `config_error` 3. Si hay varias, suena la de más pitidos.
 - **`config_error`:** una configuración rechazada no puede activar nada, así que vale lo que pedía la última configuración válida (guardado en NVS). Tras un reset de fábrica no suena.
-- **Botón BOOT:** 1 pitido al soltarlo entre 2 y 10 s (punto de acceso, NET-5) y 2 pitidos al confirmar el reset de fábrica (CFG-5), haya alarmas o no.
+- **BOOT button:** 1 beep when you release the button after 2 to 10 s (access point, NET-5; claim window, CFG-8). 1 beep when the claim window sets the web password. 2 beeps when the factory reset starts (CFG-5). These beeps sound with or without alarms.
 - No hay forma de silenciar una alarma mientras dura su condición.
 
 **Device prefix (#172), in `sparkplug`.**
@@ -680,7 +681,7 @@ The node metrics in the NBIRTH and in this periodic NDATA:
 
 - The Modbus tables go in the NDATA only if a counter or a state changed since the last time (the two tables together). The uptime and the heap go always.
 - The Modbus TCP table is a separate table, not one more column of `Node Info/Modbus`. That table keeps its columns for the hosts that read it. The poll cycles have no meaning for the forwarded requests, and the TCP table exists only when the Modbus TCP gateway is on.
-- **`Node Info/Time Synced`** (TIME-3, alias 55, Boolean): `true` when SNTP synchronized the clock one or more times since the boot. A time from the RTC at boot (TIME-2) is valid, but it is **not** synchronized. It goes in the NBIRTH, and in an NDATA of its own each time that it changes (not in the periodic NDATA).
+- **`Node Info/Time Synced`** (TIME-3, alias 55, Boolean): `true` when SNTP synchronized the clock at least one time since the boot. A time from the RTC at boot (TIME-2) or from the browser (`POST /api/time`) is valid, but it is **not** synchronized. The metric is in the NBIRTH, and in its own NDATA each time that it changes (not in the periodic NDATA).
 - **`Node Info/Core Dump`** (REL-1, issue #132, alias 57, Boolean): `true` while a core dump is in the `coredump` partition (a panic occurred, and nobody erased the dump). It goes in the NBIRTH. When the dump is erased (`DELETE /api/coredump` or the shell's `coredump erase`), an NDATA of its own sends `false`, with the alias only. The operator downloads the dump with `GET /api/coredump` (§6.1).
 - The counters are of the node, not of each device. Thus the gateway also publishes the counters of a device that is offline (without DBIRTH), when they increase most.
 
@@ -698,20 +699,20 @@ The node metrics in the NBIRTH and in this periodic NDATA:
 
 Formato: RFC 5424 sobre UDP (RFC 5426), un mensaje por datagrama, *facility* `local0`, HOSTNAME = `edge_node_id`, APP-NAME = módulo del log y `[meta sequenceId="n"]`. Ejemplo: `<134>1 2026-11-04T12:00:00.123Z GW01 edge - - [meta sequenceId="12"] Sparkplug session up (bdSeq=3)`.
 
-**`web` (CFG-3, CFG-4): interfaz web y API REST.**
+**`web` (CFG-3, CFG-4, CFG-8): the web UI and the REST API.**
 
 ```json
-"web": { "enabled": true, "port": 80, "username": "admin", "password": "una-clave-larga" }
+"web": { "enabled": true, "port": 80, "username": "admin", "password": "a-long-password" }
 ```
 
-| Clave | Tipo | Defecto | Regla |
+| Key | Type | Default | Rule |
 |---|---|---|---|
-| `enabled` | bool | `true` | `false` = sin servidor web con la configuración válida. Con la configuración rechazada o en puesta en marcha el servidor arranca igual (recuperación) |
-| `port` | entero | `80` | 1–65535, HTTP. Con `https` en `true` solo redirige (301/308) a HTTPS |
-| `https` | bool | `true` | HTTPS con el certificado propio del equipo (EC P-256 autofirmado, generado en el primer arranque y guardado con los secretos en NVS; su huella SHA-256 sale en la consola en cada arranque). `false` = HTTP plano como antes |
-| `https_port` | entero | `443` | 1–65535, distinto de `port` |
-| `username` | texto | `"admin"` | 1–32 caracteres ASCII visibles, sin `:` |
-| `password` | texto (secreto) | `""` | Vacío o al menos 8 caracteres. Vacío = el equipo acepta `admin` con su **contraseña de puesta en marcha** (aleatoria, se ve en la consola) |
+| `enabled` | bool | `true` | `false` = no web server with a valid configuration. With a rejected configuration, in commissioning, and after a push of BOOT (NET-5, CFG-8), the server starts in all cases |
+| `port` | integer | `80` | 1–65535, HTTP. With `https` set to `true`, it only redirects (301/308) to HTTPS |
+| `https` | bool | `true` | HTTPS with the certificate of the gateway (EC P-256, self-signed). The gateway makes it at the first boot and keeps it with the secrets in NVS. The console shows its SHA-256 fingerprint at each boot. `false` = plain HTTP |
+| `https_port` | integer | `443` | 1–65535, not the same as `port` |
+| `username` | text | `"admin"` | 1–32 visible ASCII characters, without `:` |
+| `password` | text (secret) | `""` | Empty, or at least 8 characters. Empty = the gateway accepts `admin` with its **commissioning password** (random, the console shows it). While it is empty, a push of BOOT opens the claim window (CFG-8), which sets it without a credential |
 
 **Secretos** (`mqtt.password`, `network.wifi.password`, `web.password`): no se guardan en el JSON, sino en NVS (CFG-7); `web.password` solo como hash PBKDF2-HMAC-SHA256 con sal. Al exportar, un secreto definido vale `"********"`. Al importar (PUT):
 
@@ -723,7 +724,7 @@ En el archivo `/cfg/config.json` un secreto ausente, vacío o `"********"` toma 
 
 **Límite de intentos:** tras 5 accesos fallidos seguidos desde una misma dirección, esa dirección recibe `429` con `Retry-After` durante 30 s, sin comprobar la contraseña (tampoco la correcta); cada bloqueo seguido duplica el tiempo, hasta 15 min; un acceso correcto lo borra (Kconfig `GW_WEB_LOGIN_*`).
 
-**REST API.** All the routes require HTTP Basic with `web.username` and `web.password`, over HTTPS when `https` is on. The responses are JSON.
+**REST API.** All the routes require HTTP Basic with `web.username` and `web.password`, over HTTPS when `https` is on. The only exceptions are the routes of the claim window (CFG-8): `GET /claim`, `GET /api/claim` and `POST /api/claim`. The responses are JSON.
 
 **Writes and CSRF (issue #100).** Each `PUT`, `POST` and `DELETE` must have the header `X-Requested-With` (any value; the web UI sends `gateway`). If the client sends `Origin` (or `Referer` when there is no `Origin`), it must be this gateway: the scheme of the connection and the `Host` of the request. The gateway compares them in a normal form (issue #106): the name in lower case and without the final dot, IPv6 between brackets, the port in decimal, and no port when it is the port of the scheme (443 with HTTPS, 80 without) or empty. Any name that gets to the gateway is correct (IP, `<hostname>.local`, `<hostname>`, a DNS name of the plant), if the page and the request use the same name. A malformed `Host` or `Origin` is not correct, and `Origin: null` is not correct. Otherwise the response is `403`, before the password check: it does not count as a failed login.
 
@@ -737,6 +738,7 @@ The gateway does not read all of the body of a request without credentials or fr
 | `POST /api/rebirth` | Issue #171: sends the NBIRTH and all the DBIRTH messages again, with the same bdSeq, as an NCMD `Node Control/Rebirth` does. Use it when a host shows the tags as `alias_<n>` after its own restart. `202 {"ok":true,"rebirth":true}`. `409` when there is no Sparkplug session (not connected, recovery, commissioning) |
 | `POST /api/modbus/read` | Issue #182: one Modbus read for commissioning, through the task that owns the bus (MB-16), as the shell `mbread` does. Body: `{"unit": 1-247, "area": "coil"\|"discrete"\|"holding"\|"input", "address": 0-65535}`, optional `"count"` (1–16, default 1 or the size of the type), `"type"` (a tag type; `bool` only for `coil`/`discrete`; `string` and `bytes` take `count` registers) and `"word_order"` (only with `type`). `200 {"ok":true,"unit":1,"area":"input","address":0,"count":2,"values":[17254,32768],"type":"float32","word_order":"ABCD","value":230.5}`. A Modbus error: `504` (`"result":"timeout"`) or `502` (`crc`, `frame`, or `exception` with `"exception"`: the code), with `error`. `503` when the bus does not run the read in time or another test read waits. `400` for a request that is not correct. `409` in recovery and in commissioning (the bus does not run). Read only |
 | `POST /api/firmware` | FW-1: `application/json` with `{"url": "https://…"}` (download) and, as an option, `"force": true`; or `application/octet-stream` with the image as the body (`?force=1` to force). Another `Content-Type` gets `415`. `409` during the trial of a new image (`testing <v>: N s left`) and when the pre-flight check refuses the image (the error lists the reasons; force installs it into recovery mode, issue #144) |
+| `POST /api/time` | TIME-1, issue #160: sets the clock of the gateway and the RTC to the time of the browser. Use it on a network without a time server. Body: `{"utc_ms": <ms since 1970-01-01T00:00:00Z>}`, an integer from 2025 to 2099. `200 {"ok":true,"utc_ms":…,"source":"browser"}`. `400` for a body that is not correct. `409` when SNTP synchronized the clock. The source becomes `browser`; `Node Info/Time Synced` stays `false`. It also operates in recovery and in commissioning |
 | `POST /api/firmware/other` | Issue #144: the button "Restart into `<version>`". The image of the other slot boots on trial, after the pre-flight check (`?force=1` to force). `202 {"ok":true,"restart":true}`. `409` during a trial or a transfer, or when the pre-flight check refuses; `404` when the other slot is empty or failed its verification |
 | `GET /api/firmware` | FW-1: the running slot and the other slot (`other`, `other_slot`, `other_state`: `empty`, `previous`, `new`, `rejected`, `invalid`; `other_why`), `can_boot_other`, `phase`, `state`, `detail`, `progress`, `bytes`, `total`, `trial`, `trial_left_s`, `expected_mode`, `boot_count` and `safe_mode` (issue #144) |
 | `POST /api/card/format?confirm=1` | SPB-14, issue #139: starts a format of the microSD card in the background, and returns at once. It deletes everything on the card. Without `?confirm=1`: `400`. `202 {"ok":true,"started":true}` when the format starts. `409` when a format runs. `501` when the build has no card (QEMU) or the board has no PSRAM. `503` when there is no memory for the format task. The errors have `reason`: `busy`, `no_support`, `no_psram` or `no_memory`. A card that does not answer ends the format as `failed` (`card_format` in `/api/status`) |
@@ -744,6 +746,9 @@ The gateway does not read all of the body of a request without credentials or fr
 | `DELETE /api/coredump` | Issue #132: erases the core dump, after a download or without one. `200 {"ok":true,"erased":true}`. `404` when there is no dump. The gateway then publishes `Node Info/Core Dump` = `false` |
 | `GET /api/coredump/summary` | Issue #132: `present`, `state` (`none`, `valid`, `corrupt`), `size` and `reset_reason` (of this boot: the dump can be older). For a valid dump also `task`, `pc`, `backtrace` (addresses as `"0x…"` strings), `backtrace_corrupted`, `exc_cause`, `exc_vaddr`, `reason` (the panic reason, for example `abort() was called at PC 0x… on core 0`; empty when the dump has none) and `app_elf_sha256` (the start of the SHA-256 of the ELF that crashed) |
 | `GET /api/status` | The live state (also in recovery, in commissioning and in the fault mode). Refer to the description below |
+| `GET /claim` | CFG-8, issue #120: the page of the claim window. No credential. `GET /` without an `Authorization` header goes to it (`303`) while the window is open and the client is a client of the access point |
+| `GET /api/claim` | CFG-8: the state of the claim window for this client. No credential. `200 {"open":true,"allowed":true,"left_s":540,"username":"admin"}`. `allowed` is `true` only for a client of the access point; `left_s` and `username` are only for that client. `username` is `""` in recovery and in commissioning (any user name) |
+| `POST /api/claim` | CFG-8: sets the first web password. No credential, but the CSRF check above and the limit of attempts apply. Body: `{"password": "…"}`: at least 8 characters, at most 64 bytes, UTF-8 without control characters. `200 {"ok":true,"username":"admin"}`: the password is valid at once, and the window closes. `403` when a web password is set, when no window is open, or when the client is not a client of the access point; these refusals count as failed logins. `400` for a password or a body that is not correct. `503` when NVS does not store it (the window stays open). The gateway stores only the hash, in NVS; the configuration document does not change |
 
 **`GET /api/status`** sends an object with these items: `mode` (`normal`, `recovery`, `commissioning`, `fault`), `fault` (issue #135: the hardware fault in the mode `fault`, for example a PSRAM that the boot did not detect; else empty), `firmware`, `reset_reason`, `uptime_s`, `config` (`ok`, `source`, `error`, `path`), `network` (`up`, `interfaces`), `mqtt` (`connected`), `sparkplug` (`group_id`, `edge_node_id`, `diagnostics_s`; only with a valid configuration), `syslog`, `devices`, `heap` and the fields of the table. For each device, `devices` has `online`, `cycles`, `failed`, `ok`, `timeout`, `crc`, `frame`, `exception` and `tags`. Each tag has `name`, `valid` and `value`: a number, an exact integer for `int64`/`uint64`, a text for `string`, hexadecimal for `bytes`.
 
@@ -755,8 +760,8 @@ The gateway does not read all of the body of a request without credentials or fr
 | `io.rule_do` | IO-7: the mask of the DOs that a local rule controls (they do not accept NCMD) |
 | `io.counters` | IO-4: the 8 pulse counters |
 | `buzzer.alarm`, `buzzer.enabled` | IO-6: the alarm that sounds now (`none`, `device_offline`, `mqtt_down`, `config_error`) and the enabled alarms |
-| `time.utc_s`, `time.synced`, `time.source` | The time of the gateway (s UTC), whether SNTP synchronized it (TIME-3), and its source: `sntp`, `rtc` (TIME-2) or `none` |
-| `time.rtc` | `present`, the `status` of the last read or write of the RTC, and `stores` (the writes after SNTP) |
+| `time.utc_s`, `time.synced`, `time.valid`, `time.source` | The time of the gateway (s UTC), whether SNTP synchronized it (TIME-3), whether it is valid for timestamps (issue #160: without it, no NDATA or DDATA), and its source: `sntp`, `rtc` (TIME-2), `browser` (`POST /api/time`) or `none` |
+| `time.rtc` | `present`, the `status` of the last read or write of the RTC, and `stores` (the writes after SNTP or a time from the browser) |
 | `card` (optional, issue #139) | The microSD card. `state`: `unsupported` (the build has no card), `unchecked` (the boot did not look for a card: the spill is off), `absent`, `not_mounted`, `mounted`, `formatting` or `formatted` (restart to use it). `detail` tells why (for example `no FAT file system (exFAT, NTFS, ext4, GPT, or no format) (FatFs error 13)`). When known: `name`, `size_mb`, `fat`, `cluster` (B), `free_mb` (with no scan of the FAT) and `other_entries` (the entries of the root that are not the folder `sf`: the format deletes them too) |
 | `spill` (optional, normal mode) | The spill of store & forward to the card. `state`: `off` (with `detail`), `not_started` (with `detail`, for example `it needs PSRAM, and none was detected`), `on`, `failed` (with `detail` and `stranded`, the samples that stay on the card) or `stopped` (a format took the card). With `on`: `ready` (the boot recovery ended), `waiting`, `moved`, `overwritten`, `holes`, `ring_blocks`, `waiting_blocks`, `extents`, `kb`, `blocks_written`, `checkpoints`, `boot_ms` and `files_to_delete` (the counters of the shell `spill` line) |
 | `core_dump` (optional, issue #132) | The core dump in flash: `present`, `state` (`none`, `valid`: the checksum is correct, `corrupt`) and `size` (bytes, 0 = not known). `GET /api/coredump/summary` gives its summary |

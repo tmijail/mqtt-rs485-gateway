@@ -390,6 +390,17 @@ static int cmd_status(int argc, char **argv)
             (unsigned long)ws.refused, (unsigned long)ws.blocks, ws.blocked_now,
             (unsigned long)ws.csrf_refused, (unsigned long)ws.cut_bodies,
             (unsigned long)ws.stalls);
+        /* issue #120 */
+        if (ws.claim_open) {
+            out("claim    window OPEN, %lu s left: a client of the access point can set the web "
+                "password at /claim; refused claims %lu\n",
+                (unsigned long)ws.claim_left_s, (unsigned long)ws.claim_refused);
+        } else {
+            out("claim    window closed (%s); refused claims %lu\n",
+                ws.password_set ? "a web password is set: it does not open again"
+                                : "no web password set: a BOOT push of 2-10 s opens it",
+                (unsigned long)ws.claim_refused);
+        }
     }
     gw_log_stats_t ls;
     gw_log_get_stats(&ls);
@@ -430,11 +441,15 @@ static int cmd_status(int argc, char **argv)
     time_t now = time(NULL);
     struct tm tm;
     gmtime_r(&now, &tm);
-    bool synced = gw_edge_time_synced();
+    /* #160: without a valid clock only the births go out (no NDATA, DDATA or store) */
+    gw_clock_source_t src = gw_edge_time_source();
     out("time     %04d-%02d-%02dT%02d:%02d:%02dZ, %s; RTC ", tm.tm_year + 1900, tm.tm_mon + 1,
         tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
-        synced ? "SNTP synchronised" : rtc.restored ? "from the RTC (not synchronised)"
-                                                    : "not set (no SNTP yet)");
+        src == GW_CLOCK_SNTP      ? "SNTP synchronised"
+        : src == GW_CLOCK_RTC     ? "from the RTC (not synchronised)"
+        : src == GW_CLOCK_BROWSER ? "set from the browser (not synchronised)"
+                                  : "NOT valid (no SNTP, RTC or browser time yet): births only, "
+                                    "no NDATA/DDATA");
     if (!rtc.present) {
         out("not answering\n");
     } else {
@@ -1210,6 +1225,23 @@ static int cmd_boot(int argc, char **argv)
     gw_bootbtn_sim_set(argv[1][0] == '1');
     return 0;
 }
+
+/* Issue #120: the time of the next claim windows, and whether the Ethernet counts as the access
+ * point (QEMU has no radio). */
+static int cmd_claimsim(int argc, char **argv)
+{
+    char *end = NULL;
+    long s = argc >= 2 ? strtol(argv[1], &end, 10) : -1;
+    bool eth = argc == 3 && strcmp(argv[2], "eth") == 0;
+    if (end == NULL || *end != '\0' || s < 0 || s > 3600 || (argc == 3 && !eth) || argc > 3) {
+        out("usage: claimsim <0-3600 s, 0 = Kconfig> [eth]\n");
+        return 1;
+    }
+    gw_web_sim_claim((uint32_t)s, eth);
+    out("claim windows: %ld s%s; Ethernet %s the access point\n", s, s == 0 ? " (Kconfig)" : "",
+        eth ? "counts as" : "is not");
+    return 0;
+}
 /* Emulator only: crash on purpose, so the E2E can check the core dump in flash and the
  * "panic" reset reason. */
 /* Issue #62: on the chip the panic handler stalls the other core (RTC_CNTL software stall)
@@ -1346,6 +1378,7 @@ ATOMIC(cmd_validation)
 ATOMIC(cmd_storm)
 ATOMIC(cmd_pubfail)
 ATOMIC(cmd_boot)
+ATOMIC(cmd_claimsim)
 #endif
 
 static esp_err_t new_repl(const esp_console_repl_config_t *rc, esp_console_repl_t **repl)
@@ -1432,7 +1465,12 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
          .func = cmd_pubfail_atomic},
         {.command = "boot", .help = "Emulator only: press (1) or release (0) the BOOT button",
          .hint = "<0|1>", .func = cmd_boot_atomic},
-        {.command = "panic", .help = "Emulator only: abort() (core dump test); 'panic net-off' stops Ethernet first", .func = cmd_panic},
+        {.command = "claimsim", .help = "Emulator only: the time of the next claim windows; "
+         "'eth': the Ethernet counts as the access point (issue #120)",
+         .hint = "<s> [eth]", .func = cmd_claimsim_atomic},
+        {.command = "panic",
+         .help = "Emulator only: abort() (core dump test); 'panic net-off' stops Ethernet first",
+         .func = cmd_panic},
 #endif
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {

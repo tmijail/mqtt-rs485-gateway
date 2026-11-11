@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gateway - set the web password</title>
+<style>
+:root{--bg:#f4f5f7;--fg:#1d2330;--mut:#5d6575;--card:#fff;--line:#d8dce3;--acc:#0b5cad;--ok:#1e7d32;--bad:#b3261e}
+@media (prefers-color-scheme:dark){:root{--bg:#15181e;--fg:#e4e7ec;--mut:#9aa3b2;--card:#1e222a;--line:#343a46;--acc:#6aa8ff;--ok:#5cc46b;--bad:#ff7b72}}
+*{box-sizing:border-box}body{margin:0;font:15px/1.45 system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+main{padding:16px;max-width:520px;margin:auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:14px 16px;margin-top:16px}
+h1{font-size:18px;margin:0 0 10px}
+label{display:flex;flex-direction:column;font-size:13px;color:var(--mut);margin:10px 0}
+input{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:7px 8px;margin-top:3px}
+button{font:inherit;padding:8px 14px;border-radius:4px;border:1px solid var(--acc);background:var(--acc);color:#fff;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.mut{color:var(--mut)}.hidden{display:none}
+#msg{white-space:pre-wrap;margin-top:10px}
+</style>
+</head>
+<body>
+<main>
+<div class="card">
+<h1>Set the web password</h1>
+<p id="state" class="mut">Reading the state of the claim window…</p>
+<form id="form" class="hidden" autocomplete="off">
+<p class="mut">No web password is set. Set it now. After that, the gateway asks for it at each access, and this page does not work again (only a factory reset removes the password).</p>
+<label>New web password (at least 8 characters)<input id="pw" type="password" minlength="8" maxlength="64" autocomplete="new-password" required></label>
+<label>Type the password again<input id="pw2" type="password" minlength="8" maxlength="64" autocomplete="new-password" required></label>
+<button id="go" type="submit">Set the password</button>
+</form>
+<p id="msg"></p>
+<p><a href="/">Go to the web UI</a></p>
+</div>
+</main>
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+let left=0,timer=null;
+function msg(t,c){const m=$("#msg");m.textContent=t;m.className=c||""}
+function showLeft(){$("#state").textContent=`The claim window is open for ${Math.floor(left/60)} min ${left%60} s more.`}
+async function load(){
+  let j={};
+  try{j=await (await fetch("/api/claim",{cache:"no-store"})).json()}catch(e){$("#state").textContent="The gateway does not answer.";return}
+  if(j.open&&j.allowed){
+    left=j.left_s;showLeft();$("#form").classList.remove("hidden");
+    timer=setInterval(()=>{if(--left<=0){clearInterval(timer);$("#form").classList.add("hidden");$("#state").textContent="The claim window is closed. Push the BOOT button for 2 to 10 s to open it again."}else showLeft()},1000);
+  }else if(j.open){
+    $("#state").textContent="The claim window is open, but only a client of the access point GW-Setup-XXXXXX of the gateway can use it. Connect to that access point.";
+  }else{
+    $("#state").textContent="No claim window is open. When no web password is set, push the BOOT button of the gateway for 2 to 10 s. The window then stays open for a short time.";
+  }
+}
+$("#form").onsubmit=async e=>{
+  e.preventDefault();
+  const pw=$("#pw").value;
+  if(pw!==$("#pw2").value){msg("The two passwords are not the same.","bad");return}
+  $("#go").disabled=true;msg("Setting the password…");
+  let r,j={};
+  try{r=await fetch("/api/claim",{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"gateway"},body:JSON.stringify({password:pw})});j=await r.json()}
+  catch(x){$("#go").disabled=false;msg(`No answer from the gateway (${x.message}).`,"bad");return}
+  if(r.status===200){
+    clearInterval(timer);$("#form").classList.add("hidden");$("#state").textContent="The claim window is closed.";
+    msg(`The web password is set. Log in to the web UI with the user name ${j.username?`"${j.username}"`:"of your choice"} and the new password. Make sure now that the password works. The access point uses its WPA2 key again at the end of the window time.`,"ok");
+  }else{
+    $("#go").disabled=false;msg(`Refused (${r.status}): ${j.error||""}`,"bad");
+  }
+};
+load();
+</script>
+</body>
+</html>

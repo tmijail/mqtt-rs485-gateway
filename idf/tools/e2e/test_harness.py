@@ -708,10 +708,21 @@ class CiGroups(unittest.TestCase):
 
     def test_selection(self):
         full = scenarios.selected(set())
-        self.assertEqual(len(scenarios.SCENARIOS) - 1, len(full))    # every one but 'refuse'
+        # every one but 'refuse' and the optional ones (issues #175 and #176)
+        self.assertEqual(len(scenarios.SCENARIOS) - 1 - len(scenarios.OPTIONAL), len(full))
         self.assertNotIn("refuse", full)
+        # issue #175: an optional scenario runs only when named, alone or with others
+        self.assertEqual(set(), set(full) & scenarios.OPTIONAL)
+        self.assertEqual(scenarios.OPTIONAL - set(dict(scenarios.SCENARIOS)), set())
+        self.assertEqual(["umh"], scenarios.selected({"umh"}))
+        self.assertEqual(["main", "umh"], scenarios.selected({"main", "umh"}))
         self.assertEqual(["refuse"], scenarios.selected({"refuse"}))
         self.assertEqual(["main"], scenarios.selected({"refuse", "main"}))
+        for name in scenarios.OPTIONAL:
+            self.assertNotIn(name, full)
+            self.assertEqual([name], scenarios.selected({name}))
+        self.assertEqual(["main", "tck"], scenarios.selected({"main", "tck"}))
+        self.assertEqual(["umh", "tck"], scenarios.selected({"tck", "umh"}))
         # the existing names select what they did before the finer OTA names
         ota = ["FW-1 OTA", "issue #112 park in a long RS485 transaction",
                "issue #97 OTA trial wiring", "issue #144 OTA self-check"]
@@ -755,6 +766,10 @@ class CiGroups(unittest.TestCase):
             everything += seen
         # issue #135: each scenario in exactly one variant
         self.assertEqual(sorted(scenarios.selected(set())), sorted(everything))
+        # issue #175: no CI group runs an optional scenario (the CI image has no benthos-umh)
+        self.assertEqual(set(), set(everything) & scenarios.OPTIONAL)
+        for _, _, only in scenarios.CI_GROUPS:
+            self.assertEqual(set(), scenarios.parse_only(only) & scenarios.OPTIONAL)
         ids = [g for _, g, _ in scenarios.CI_GROUPS]
         self.assertEqual(len(ids), len(set(ids)))
         for g in ids:   # artifact names and directory names
@@ -823,6 +838,69 @@ class CiGroups(unittest.TestCase):
             write("psram", scenarios.groups_of("psram")[1][0], "ota-park")
             problems = scenarios.summary(root)[1]
             self.assertTrue(any("expected" in p for p in problems), problems)
+
+
+class TckResults(unittest.TestCase):
+    """Issue #176: the summary that the TCK extension publishes on SPARKPLUG_TCK/RESULT."""
+
+    TEXT = ("2026-11-11 11:24:17.272 Summary Test Results for Edge SessionEstablishment\n"
+            "Monitor:topics-nbirth-bdseq-increment: NOT EXECUTED;\n"
+            "payloads-nbirth-qos: PASS;\n"
+            "payloads-nbirth-timestamp: FAIL NBIRTH messages MUST include a payload timestamp: "
+            "x (SessionEstablishmentTest.java:540);\n"
+            "OVERALL: FAIL;\n")
+
+    def test_parse(self):
+        name, res, overall = e2e.tck.parse_result(self.TEXT)
+        self.assertEqual("Edge SessionEstablishment", name)
+        self.assertEqual("FAIL", overall)
+        self.assertEqual(["Monitor:topics-nbirth-bdseq-increment", "payloads-nbirth-qos",
+                          "payloads-nbirth-timestamp"], sorted(res))
+        self.assertEqual(["NOT EXECUTED", "PASS", "FAIL"],
+                         [e2e.tck.status_of(res[k]) for k in sorted(res)])
+        self.assertIn("SessionEstablishmentTest.java:540", res["payloads-nbirth-timestamp"])
+
+    def test_uint32_rule(self):
+        """A FAIL of tck-id-topics-nbirth-metrics is known only when the UInt32 int_value
+        metrics are its whole cause."""
+        def birth(*metrics):
+            p = e2e.spb.Payload()
+            for name, dt, field, value in metrics:
+                m = p.metrics.add()
+                m.name, m.datatype = name, dt
+                setattr(m, field, value)
+            return p
+        good = ("bdSeq", 4, "long_value", 0)
+        u32 = ("Node Info/Free Heap", 7, "int_value", 120000)
+        reason = e2e.tck.uint32_cause([birth(good, u32)])
+        self.assertIn("Free Heap", reason)
+        self.assertIn("sparkplug#102", reason)
+        self.assertIsNone(e2e.tck.uint32_cause([birth(good)]))           # the TCK sees no fault
+        self.assertIsNone(e2e.tck.uint32_cause([]))
+        self.assertIsNone(e2e.tck.uint32_cause([birth(u32, ("x", 11, "int_value", 1))]))  # Boolean
+        self.assertIsNone(e2e.tck.uint32_cause([birth(("y", 7, "long_value", 1), ("z", 3, "long_value", 1))]))
+        captured = [("spBv1.0/Plant1/NBIRTH/TCK1", birth(good, u32)),
+                    ("spBv1.0/Plant1/DBIRTH/TCK1/Meter1", birth(good))]
+        self.assertIsNotNone(e2e.tck.known_reason("topics-nbirth-metrics", captured))
+        self.assertIsNone(e2e.tck.known_reason("topics-dbirth-metrics", captured))
+        self.assertIsNone(e2e.tck.known_reason("payloads-nbirth-qos", captured))
+
+    def test_not_configured(self):
+        import os
+        old = os.environ.pop("E2E_TCK_DIR", None)
+        try:
+            root, why = e2e.tck.configured()
+            self.assertIsNone(root)
+            self.assertIn("E2E_TCK_DIR", why)
+            with tempfile.TemporaryDirectory() as d:
+                os.environ["E2E_TCK_DIR"] = d
+                root, why = e2e.tck.configured()
+                self.assertIsNone(root)
+                self.assertIn("tck_setup.sh", why)
+        finally:
+            os.environ.pop("E2E_TCK_DIR", None)
+            if old is not None:
+                os.environ["E2E_TCK_DIR"] = old
 
 
 if __name__ == "__main__":

@@ -62,7 +62,7 @@ The gateway must obey the Eclipse Sparkplug B 3.0.0 specification fully. Do not 
 The host tests and the decode check run from the repo root. The firmware commands are run from `idf/`, after `. $IDF_PATH/export.sh`.
 
 ```bash
-# Host tests (pure C, no IDF): 27 Unity suites + sdkconfig and guard checks, -Werror
+# Host tests (pure C, no IDF): 30 Unity suites + sdkconfig and guard checks, -Werror
 cmake -S idf/test/host -B build-host && cmake --build build-host -j && ctest --test-dir build-host --output-on-failure
 ctest --test-dir build-host -R test_poll      # one suite; or run build-host/test_poll directly
 
@@ -78,9 +78,13 @@ python3 -m venv ~/e2e && ~/e2e/bin/pip install -r tools/e2e/requirements.txt
 E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh     # PSRAM variant: the board's configuration, all but 3 scenarios (~22 min)
 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh                 # variant without PSRAM: only the OTA trial scenarios (~4 min)
 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh --only ota,https   # subset of scenarios (--only selects in any variant)
-#  --only: failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,ota,ota-fw1,ota-park,ota-wiring,
-#          ota-trial,nvs,slow,nopsram,refuse,main (ota = the four ota-* names; an unknown name is an error;
-#          nopsram needs E2E_PSRAM=1)
+#  --only: failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,time,ota,ota-fw1,ota-park,ota-wiring,
+#          ota-trial,nvs,slow,nopsram,refuse,main,umh,tck (ota = the four ota-* names; an unknown name is an
+#          error; nopsram needs E2E_PSRAM=1)
+#  Optional scenarios (never in a full run or in the CI groups; they SKIP when the tool is absent):
+#    umh  real benthos-umh v0.16.2 (UMH Core), E2E_BENTHOS_UMH=<binary>        (#175, README §4.6)
+#    tck  Eclipse Sparkplug TCK 3.0.0 on HiveMQ CE, E2E_TCK_DIR=<dir from tools/e2e/tck_setup.sh>
+#         (#176, README §4.7, docs/how-to/run-the-sparkplug-tck.md)
 E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_ci_groups.sh /tmp/gw-groups   # the CI groups of a variant: build once, run in parallel (run it for each variant)
 #  Windows / no local IDF: the same in Docker (idf/tools/e2e/Dockerfile), see docs/how-to/run-e2e-in-docker.md
 #  E2E_STAGE=<dir> (build the images into <dir>, run nothing), E2E_PREBUILT=<dir> (run on them, no build),
@@ -157,7 +161,7 @@ Platform calls go through `gw_port.h`, which has two implementations: `port/gw_p
 
 ### QEMU-only code
 
-- `CONFIG_GW_IO_SIMULATED` replaces GPIO, the I²C expander and the LED with RAM models and enables emulator-only shell commands (`di`, `storm`, `validation hold`, `panic`, …). It must never be enabled on hardware.
+- `CONFIG_GW_IO_SIMULATED` replaces GPIO, the I²C expander and the LED with RAM models and enables emulator-only shell commands (`di`, `storm`, `validation hold`, `panic`, `pubfail`, `claimsim`, …). It must never be enabled on hardware.
 - `CONFIG_GW_EMU_NO_PSRAM` (hidden) is set only in the QEMU build without PSRAM (`sdkconfig.qemu`: `CONFIG_GW_IO_SIMULATED` and no `CONFIG_SPIRAM`). There the own memory goes to internal RAM, with a 6 KB payload buffer and a store & forward ring of 512 samples. A build without `CONFIG_SPIRAM` and without `CONFIG_GW_IO_SIMULATED` does not compile.
 - `CONFIG_GW_FW_PARK_OTHER_CORE` parks core 1 while flash is mapped, to work around QEMU MMU races (#107, #111). `gw_bus_hold()` makes the bus task step aside at a lock-free point first.
 

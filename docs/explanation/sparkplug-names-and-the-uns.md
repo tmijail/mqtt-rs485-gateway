@@ -5,7 +5,7 @@ This document tells why the names of the gateway control where its data goes in 
 - For the procedure, refer to [Connect the gateway to UMH Core](../how-to/connect-to-umh-core.md).
 - For the limits and the topics, refer to [UMH names and topics](../reference/umh-names-and-topics.md).
 
-The data about UMH is from benthos-umh **v0.16.2** (commit `0d3a203`). Nobody tested it against a real UMH Core (#175).
+The data about UMH is from benthos-umh **v0.16.2** (commit `0d3a203`). The E2E scenario `umh` (#175) runs that version against the firmware in QEMU and confirms the behaviour in this document (`idf/README.md` §4.6).
 
 ## The Sparkplug names
 
@@ -77,7 +77,8 @@ In v0.16.2, the `sparkplug_b` input has these limits:
 - It ignores the PropertySet of a metric. Thus the UNS does not receive the units and the Quality.
 - It cannot send a DCMD. UMH cannot write to a Modbus device through the gateway.
 - The default role `secondary_passive` never asks for a rebirth.
-- Without a BIRTH in its cache, the input uses the datatype of the DATA metric. The gateway sends no datatype in NDATA and DDATA, because the specification says so (`tck-id-payloads-metric-datatype-not-req`, #159). Thus, until the next BIRTH, a negative integer can show as a large number. The role `secondary_active` asks for that BIRTH.
+- Without a BIRTH in its cache, the input uses the datatype of the DATA metric. The gateway sends no datatype in NDATA and DDATA, because the specification says so (`tck-id-payloads-metric-datatype-not-req`, #159). Thus, until the next BIRTH, a negative integer can show as a large number. The E2E measured -3 as 4294967293, with the name `alias_<n>`. The role `secondary_active` asks for that BIRTH, and the BIRTH came in less than 1 s.
+- The `tag_processor` runs JavaScript, where each number is a double. Thus it rounds a 64-bit integer that is larger than 2^53. The input of the bridge has the exact value.
 
 The gateway keeps these items, because they are correct Sparkplug B 3.0 and other hosts use them:
 
@@ -111,9 +112,10 @@ With a 3.0 primary host, the gateway would stop and keep the data when the host 
 
 Each Sparkplug metric has the time of its sample. UMH uses this time only if the `tag_processor` sets `msg.meta.timestamp_ms` from `msg.meta.spb_timestamp`. Without this line, UMH uses the arrival time.
 
-- Store & forward samples arrive late, with `is_historical`. Without the line, they get the time of the replay.
-- Before the gateway has a valid time, its timestamps are near 1970. The decision of #160 (planned) is: no DATA until the time is valid, and a button in the web UI that sets the time from the browser.
-- The UMH downsampler has the option `late_policy` (`passthrough` or `drop`) for samples that arrive out of order. Nobody examined its effect on a replay yet.
+- Store & forward samples arrive late, with `is_historical`. With the line, the UNS keeps the time of each sample. Without the line, all samples of the replay get the same arrival time. The E2E of #175 measured the two cases.
+- The gateway sends the DBIRTH with the current value first, then the stored samples. Thus the UNS receives samples that are older than the last value. A consumer that keeps only the last message shows the last stored sample until the next change.
+- Before the gateway has a valid time (SNTP, the RTC or the browser), it sends only the births, and their timestamps are near 1970. It sends no DATA (#160). When the time becomes valid, the gateway does a rebirth. A value that the gateway read before that time then gets the time of the rebirth. The web UI has a button that sets the time from the browser.
+- The UMH downsampler has the option `late_policy` (`passthrough` or `drop`) for samples that arrive out of order. Nobody examined its effect on a replay yet: the E2E has no downsampler.
 
 ## Why the gateway does not make the UMH bridge configuration
 

@@ -39,7 +39,8 @@
  * Store & forward (SPB-14, optional): with a gw_sf_t attached, changes that happen while the
  * node is not online (no session, or the primary host offline) are evaluated with the same
  * report-by-exception rules and stored (from the first NBIRTH of the run on: before it there
- * is no reported state to compare with, and the clock may not be set); once online, after
+ * is no reported state to compare with), and only with a valid clock (issue #160,
+ * gw_node_set_time_valid); once online, after
  * NBIRTH and the DBIRTHs (which carry the current values), gw_node_flush_history() publishes
  * them, oldest first, as DDATA/NDATA whose metrics have is_historical = true and the time
  * they were sampled.
@@ -186,7 +187,11 @@ typedef struct {
 
     bool online;                       /* NBIRTH published on the current MQTT session */
     bool birth_failed;                 /* issue #164: gw_node_take_birth_failure() */
+    /* Issue #160: gw_node_set_time_valid() */
+    bool time_valid;                   /* the clock is valid: NDATA, DDATA and the store */
+    bool births_untimed;               /* the last NBIRTH went out without a valid clock */
     uint64_t bdseq;                    /* bdSeq of the current session (SPB-3) */
+    uint64_t valid_since_ms;           /* #160: the clock became valid then (0: from the start) */
     uint8_t seq;                       /* next seq to send (SPB-5) */
     bool dev_born[GW_MAX_DEVICES];
     /* Issue #76: the device's DBIRTH was too large for this session's broker: not rebuilt on
@@ -340,6 +345,23 @@ void gw_node_set_time_synced(gw_node_t *n, bool synced);
 /** Issue #132: a core dump is in flash; an NDATA with Node Info/Core Dump when it changed (the
  *  dump was erased). The NBIRTH takes it from the diagnostics op. */
 void gw_node_set_core_dump(gw_node_t *n, bool present);
+
+/**
+ * TIME-1 / issue #160: the clock is valid for timestamps (gw_clock_valid). gw_node_init() starts
+ * with true; the caller sets false at once when the clock is not valid yet (false then true marks
+ * the moment from which the samples have a valid time). While it is false:
+ * - the births (NBIRTH, DBIRTH) and DDEATH still go out, so that the hosts see the node and its
+ *   devices (their timestamps count from 1970);
+ * - no NDATA and no DDATA go out (live, historical, write and command confirmations, diagnostics,
+ *   firmware state), and no change goes into the store (SPB-14). The report-by-exception state
+ *   does not change, so nothing is lost: the births carry the current values.
+ * When it becomes true: a rebirth if the node is online with births that went out without a valid
+ * clock, so that the hosts get UTC timestamps (tck-id-payloads-timestamp-in-UTC,
+ * tck-id-payloads-metric-timestamp-in-UTC). From then on, a live sample taken before that moment
+ * gets the time of its message, not its 1970 sample time. Returns true if it did a rebirth (its
+ * result: gw_node_take_birth_failure).
+ */
+bool gw_node_set_time_valid(gw_node_t *n, bool valid);
 
 #ifdef __cplusplus
 }

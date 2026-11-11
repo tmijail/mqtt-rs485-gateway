@@ -160,10 +160,10 @@ static void test_wifi_section(void)
     TEST_ASSERT_TRUE_MESSAGE(parse_network("{\"wifi\":{\"enabled\":false}}"), err.msg);
 
     ASSERT_REJECTED(parse_network("{\"wifi\":{\"enabled\":true}}"),
-                    "network.wifi.ssid: obligatorio con enabled=true");
+                    "network.wifi.ssid: required with enabled=true");
     ASSERT_REJECTED(parse_network("{\"wifi\":{\"enabled\":true,\"ssid\":"
                                   "\"123456789012345678901234567890123\"}}"),
-                    "network.wifi.ssid: texto demasiado largo (33 caracteres, máximo 32)");
+                    "network.wifi.ssid: string too long (33 characters, maximum 32)");
     ASSERT_REJECTED(parse_network("{\"wifi\":{\"enabled\":true,\"ssid\":\"s\",\"password\":"
                                   "\"1234567\"}}"),
                     "network.wifi.password");
@@ -171,17 +171,17 @@ static void test_wifi_section(void)
                                   "abcdef0123456789abcdef0123456789abcdef0123456789abcdeg\"}}"),
                     "network.wifi.password");
     ASSERT_REJECTED(parse_network("{\"wifi\":{\"role\":\"tertiary\"}}"),
-                    "network.wifi.role: valor no válido (se esperaba backup|primary)");
+                    "network.wifi.role: invalid value (expected backup|primary)");
     ASSERT_REJECTED(parse_network("{\"wifi\":{\"failback_s\":3601}}"),
-                    "network.wifi.failback_s: valor 3601 fuera de rango");
+                    "network.wifi.failback_s: value 3601 out of range");
     ASSERT_REJECTED(parse_network("{\"wifi\":{\"enabled\":true,\"ssid\":\"s\",\"dhcp\":false}}"),
-                    "network.wifi.ip: campo obligatorio");
+                    "network.wifi.ip: missing required field");
     ASSERT_REJECTED(parse_network("{\"wifi\":{\"enabled\":true,\"ssid\":\"s\",\"dhcp\":false,"
                                   "\"ip\":\"10.0.0.2\",\"netmask\":\"255.0.0.0\",\"gateway\":\"10.0.0\"}}"),
-                    "network.wifi.gateway: '10.0.0' no es una dirección IPv4 válida");
+                    "network.wifi.gateway: '10.0.0' is not a valid IPv4 address");
     ASSERT_REJECTED(parse_network("{\"wifi\":{\"sssid\":\"x\"}}"),
-                    "network.wifi.sssid: clave desconocida");
-    ASSERT_REJECTED(parse_network("{\"wifi\":true}"), "network.wifi: se esperaba un objeto JSON");
+                    "network.wifi.sssid: unknown key");
+    ASSERT_REJECTED(parse_network("{\"wifi\":true}"), "network.wifi: expected a JSON object");
 }
 
 static void assert_ipv6(const char *text, const uint8_t expected[16])
@@ -236,17 +236,17 @@ static void test_ipv6_section(void)
     TEST_ASSERT_EQUAL_HEX8(0x88, cfg.network.ipv6.dns[15]);
 
     ASSERT_REJECTED(parse_network("{\"ipv6\":{\"enabled\":true,\"address\":\"2001:db8::g\"}}"),
-                    "network.ipv6.address: '2001:db8::g' no es una dirección IPv6 válida");
+                    "network.ipv6.address: '2001:db8::g' is not a valid IPv6 address");
     ASSERT_REJECTED(parse_network("{\"ipv6\":{\"address\":\"fe80::1\"}}"),
-                    "network.ipv6.address: se esperaba una dirección unicast");
+                    "network.ipv6.address: expected a global unicast");
     ASSERT_REJECTED(parse_network("{\"ipv6\":{\"address\":\"ff02::1\"}}"), "network.ipv6.address");
     ASSERT_REJECTED(parse_network("{\"ipv6\":{\"address\":\"::1\"}}"), "network.ipv6.address");
     ASSERT_REJECTED(parse_network("{\"ipv6\":{\"dns\":\"8.8.8.8\"}}"),
-                    "network.ipv6.dns: '8.8.8.8' no es una dirección IPv6 válida");
+                    "network.ipv6.dns: '8.8.8.8' is not a valid IPv6 address");
     ASSERT_REJECTED(parse_network("{\"ipv6\":{\"enabled\":1}}"),
-                    "network.ipv6.enabled: se esperaba true o false");
+                    "network.ipv6.enabled: expected true or false");
     ASSERT_REJECTED(parse_network("{\"ipv6\":{\"prefix_len\":64}}"),
-                    "network.ipv6.prefix_len: clave desconocida");
+                    "network.ipv6.prefix_len: unknown key");
 }
 
 /* REL-4: optional "syslog" section. */
@@ -276,13 +276,13 @@ static void test_syslog_section(void)
     TEST_ASSERT_EQUAL(GW_LOG_ERROR, cfg.syslog.level);
 
     snprintf(doc, sizeof(doc), "{%s,\"syslog\":{\"host\":\"h\",\"port\":0}}", base);
-    ASSERT_REJECTED(parse(doc), "syslog.port: valor 0 fuera de rango");
+    ASSERT_REJECTED(parse(doc), "syslog.port: value 0 out of range");
     snprintf(doc, sizeof(doc), "{%s,\"syslog\":{\"level\":\"notice\"}}", base);
-    ASSERT_REJECTED(parse(doc), "syslog.level: valor no válido (se esperaba error|warning|info|debug)");
+    ASSERT_REJECTED(parse(doc), "syslog.level: invalid value (expected error|warning|info|debug)");
     snprintf(doc, sizeof(doc), "{%s,\"syslog\":{\"facility\":16}}", base);
-    ASSERT_REJECTED(parse(doc), "syslog.facility: clave desconocida");
+    ASSERT_REJECTED(parse(doc), "syslog.facility: unknown key");
     snprintf(doc, sizeof(doc), "{%s,\"syslog\":{\"host\":5}}", base);
-    ASSERT_REJECTED(parse(doc), "syslog.host: se esperaba un texto");
+    ASSERT_REJECTED(parse(doc), "syslog.host: expected a string");
 }
 
 /* FW-1: "ota" section, optional; updates enabled by default. */
@@ -303,14 +303,14 @@ static void test_ota_section(void)
     TEST_ASSERT_FALSE(cfg.ota.enabled);
     TEST_ASSERT_EQUAL_STRING("fw-ca.pem", cfg.ota.ca_file);
     snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"ca_file\":\"../ca.pem\"}}", base);
-    ASSERT_REJECTED(parse(doc), "ota.ca_file: '../ca.pem' no es un nombre de archivo válido");
+    ASSERT_REJECTED(parse(doc), "ota.ca_file: '../ca.pem' is not a valid file name");
     TEST_ASSERT_EQUAL_STRING("ota.ca_file", err.path);
     snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"enabled\":1}}", base);
-    ASSERT_REJECTED(parse(doc), "ota.enabled: se esperaba true o false");
+    ASSERT_REJECTED(parse(doc), "ota.enabled: expected true or false");
     snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"url\":\"https://x/y\"}}", base);
-    ASSERT_REJECTED(parse(doc), "ota.url: clave desconocida");
+    ASSERT_REJECTED(parse(doc), "ota.url: unknown key");
     snprintf(doc, sizeof(doc), "{%s,\"ota\":true}", base);
-    ASSERT_REJECTED(parse(doc), "ota: se esperaba un objeto JSON");
+    ASSERT_REJECTED(parse(doc), "ota: expected a JSON object");
 }
 
 /* Document with "mqtt": {@p mqtt_body} and a minimal sparkplug section. */
@@ -346,7 +346,7 @@ static void test_tls_section(void)
     TEST_ASSERT_EQUAL_STRING("broker.plant.local", cfg.mqtt.tls.server_name);
     /* the keys are validated also with TLS off (a disabled section stays consistent) */
     ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":{\"ca_file\":\"../ca.pem\"}"),
-                    "mqtt.tls.ca_file: '../ca.pem' no es un nombre de archivo válido");
+                    "mqtt.tls.ca_file: '../ca.pem' is not a valid file name");
 
     static const char *const bad_names[] = {"/cfg/ca.pem", "a b.pem", ".hidden", "config.json",
                                             "config.json.tmp", "ca\\\\x.pem",
@@ -362,10 +362,10 @@ static void test_tls_section(void)
     TEST_ASSERT_FALSE(gw_config_file_name_ok(""));
     TEST_ASSERT_FALSE(gw_config_file_name_ok("config.json"));
     ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":{\"enabled\":1}"),
-                    "mqtt.tls.enabled: se esperaba true o false");
+                    "mqtt.tls.enabled: expected true or false");
     ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":{\"verify\":false}"),
-                    "mqtt.tls.verify: clave desconocida");
-    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":true"), "mqtt.tls: se esperaba un objeto JSON");
+                    "mqtt.tls.verify: unknown key");
+    ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":true"), "mqtt.tls: expected a JSON object");
 }
 
 /* MQTT-5: client certificate and key (mutual TLS), both or neither. */
@@ -380,12 +380,12 @@ static void test_tls_client_certificate(void)
     TEST_ASSERT_EQUAL_STRING("gw01.crt", cfg.mqtt.tls.cert_file);
     TEST_ASSERT_EQUAL_STRING("gw01.key", cfg.mqtt.tls.key_file);
     ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":{\"enabled\":true,\"cert_file\":\"gw01.crt\"}"),
-                    "mqtt.tls.key_file: cert_file y key_file van juntos");
+                    "mqtt.tls.key_file: set cert_file and key_file together");
     ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":{\"enabled\":true,\"key_file\":\"gw01.key\"}"),
-                    "mqtt.tls.cert_file: cert_file y key_file van juntos");
+                    "mqtt.tls.cert_file: set cert_file and key_file together");
     ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"tls\":{\"cert_file\":\"a/b.crt\","
                                "\"key_file\":\"k\"}"),
-                    "mqtt.tls.cert_file: 'a/b.crt' no es un nombre de archivo válido");
+                    "mqtt.tls.cert_file: 'a/b.crt' is not a valid file name");
 }
 
 /* MQTT-6: ordered backup brokers, failover count and return-to-primary policy. */
@@ -415,21 +415,21 @@ static void test_backup_brokers(void)
 
     ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"backup_brokers\":[{\"host\":\"b\"},{\"host\":\"c\"},"
                                "{\"host\":\"d\"},{\"host\":\"e\"}]"),
-                    "mqtt.backup_brokers: 4 brokers; el máximo es 3");
+                    "mqtt.backup_brokers: 4 brokers; the maximum is 3");
     ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"backup_brokers\":[{\"port\":1}]"),
-                    "mqtt.backup_brokers[0].host: campo obligatorio ausente");
+                    "mqtt.backup_brokers[0].host: missing required field");
     ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"backup_brokers\":[{\"host\":\"b\"},{\"host\":\"\"}]"),
-                    "mqtt.backup_brokers[1].host: no puede estar vacío");
+                    "mqtt.backup_brokers[1].host: cannot be empty");
     ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"backup_brokers\":[{\"host\":\"b\",\"port\":0}]"),
-                    "mqtt.backup_brokers[0].port: valor 0 fuera de rango");
+                    "mqtt.backup_brokers[0].port: value 0 out of range");
     ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"backup_brokers\":[{\"host\":\"b\",\"tls\":true}]"),
-                    "mqtt.backup_brokers[0].tls: clave desconocida");
+                    "mqtt.backup_brokers[0].tls: unknown key");
     ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"backup_brokers\":{\"host\":\"b\"}"),
-                    "mqtt.backup_brokers: se esperaba un array");
+                    "mqtt.backup_brokers: expected an array");
     ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"failover_after\":0"),
-                    "mqtt.failover_after: valor 0 fuera de rango [1, 20]");
+                    "mqtt.failover_after: value 0 out of range [1, 20]");
     ASSERT_REJECTED(parse_mqtt("\"host\":\"a\",\"primary_return_s\":-1"),
-                    "mqtt.primary_return_s: valor -1 fuera de rango");
+                    "mqtt.primary_return_s: value -1 out of range");
 }
 
 /* SPB-14: store & forward switch. */
@@ -443,7 +443,7 @@ static void test_store_forward_key(void)
     TEST_ASSERT_TRUE(cfg.sparkplug.store_forward);
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
                           "\"edge_node_id\":\"E\",\"store_forward\":\"yes\"}}"),
-                    "sparkplug.store_forward: se esperaba true, false o un objeto");
+                    "sparkplug.store_forward: expected true, false or an object");
     TEST_ASSERT_FALSE(cfg.sparkplug.sf_sd);
     /* the object form, with the optional microSD spill (off by default) */
     static const char head[] = "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
@@ -463,9 +463,9 @@ static void test_store_forward_key(void)
     TEST_ASSERT_EQUAL_UINT32(GW_SFSPILL_DEFAULT_KB, cfg.sparkplug.sf_sd_max_kb);
     TEST_ASSERT_EQUAL_UINT32(128u * 1024u, GW_SFSPILL_DEFAULT_KB);
     snprintf(doc, sizeof(doc), "%s{\"enabled\":false,\"sd\":{\"enabled\":true}}}}", head);
-    ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd.enabled: la tarjeta solo extiende");
+    ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd.enabled: the card only extends");
     snprintf(doc, sizeof(doc), "%s{\"sd\":{\"max_kb\":8}}}}", head);
-    ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd.max_kb: valor 8 fuera de rango");
+    ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd.max_kb: value 8 out of range");
     /* the bounds of gw_sfspill_plan() (#119): 64 KB .. 4 GiB */
     snprintf(doc, sizeof(doc), "%s{\"sd\":{\"max_kb\":64}}}}", head);
     TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
@@ -474,11 +474,11 @@ static void test_store_forward_key(void)
     TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
     TEST_ASSERT_EQUAL_UINT32(GW_SFSPILL_MAX_KB, cfg.sparkplug.sf_sd_max_kb);
     snprintf(doc, sizeof(doc), "%s{\"sd\":{\"max_kb\":4194305}}}}", head);
-    ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd.max_kb: valor 4194305 fuera de rango");
+    ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd.max_kb: value 4194305 out of range");
     snprintf(doc, sizeof(doc), "%s{\"sd\":{\"pins\":1}}}}", head);
-    ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd.pins: clave desconocida");
+    ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd.pins: unknown key");
     snprintf(doc, sizeof(doc), "%s{\"sd\":true}}}", head);
-    ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd: se esperaba un objeto JSON");
+    ASSERT_REJECTED(parse(doc), "sparkplug.store_forward.sd: expected a JSON object");
 }
 
 /* MQTT-8: protocol version. */
@@ -491,9 +491,9 @@ static void test_mqtt_protocol(void)
     TEST_ASSERT_TRUE_MESSAGE(parse_mqtt("\"host\":\"b\",\"protocol\":\"3.1.1\""), err.msg);
     TEST_ASSERT_EQUAL(GW_MQTT_V311, cfg.mqtt.protocol);
     ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"protocol\":5"),
-                    "mqtt.protocol: valor no válido (se esperaba 3.1.1|5)");
+                    "mqtt.protocol: invalid value (expected 3.1.1|5)");
     ASSERT_REJECTED(parse_mqtt("\"host\":\"b\",\"protocol\":\"3.1\""),
-                    "mqtt.protocol: valor no válido (se esperaba 3.1.1|5)");
+                    "mqtt.protocol: invalid value (expected 3.1.1|5)");
 }
 
 /* Issue #64: HTTPS keys of the web section. */
@@ -515,10 +515,10 @@ static void test_web_https(void)
     TEST_ASSERT_FALSE(cfg.web.https);
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
                           "\"edge_node_id\":\"E\"},\"web\":{\"https_port\":80}}"),
-                    "web.https_port: no puede ser igual a web.port (80)");
+                    "web.https_port: cannot be equal to web.port (80)");
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
                           "\"edge_node_id\":\"E\"},\"web\":{\"https\":\"on\"}}"),
-                    "web.https: se esperaba true o false");
+                    "web.https: expected true or false");
 }
 
 /* CFG-3 / CFG-4: optional "web" section. */
@@ -543,11 +543,11 @@ static void test_web_section(void)
     TEST_ASSERT_EQUAL_STRING("12345678", cfg.web.password);
     static const char *const bad[][2] = {
         {"{\"port\":0}", "web.port"},
-        {"{\"username\":\"\"}", "web.username: no puede estar vacío"},
-        {"{\"username\":\"a:b\"}", "web.username: solo caracteres ASCII visibles"},
+        {"{\"username\":\"\"}", "web.username: cannot be empty"},
+        {"{\"username\":\"a:b\"}", "web.username: only visible ASCII characters"},
         {"{\"username\":\"a b\"}", "web.username"},
-        {"{\"password\":\"1234567\"}", "web.password: se esperaban al menos 8"},
-        {"{\"user\":\"x\"}", "web.user: clave desconocida"},
+        {"{\"password\":\"1234567\"}", "web.password: expected at least 8"},
+        {"{\"user\":\"x\"}", "web.user: unknown key"},
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         char doc[256];
@@ -593,7 +593,7 @@ static void test_error_fields(void)
                     "mqtt.port");
     TEST_ASSERT_EQUAL_STRING("mqtt.port", err.path);
     TEST_ASSERT_EQUAL(0, err.line);
-    ASSERT_REJECTED(parse("{\n  \"mqtt\": {\"host\": \"b\"}\n  \"sparkplug\": {}\n}"), "línea 3");
+    ASSERT_REJECTED(parse("{\n  \"mqtt\": {\"host\": \"b\"}\n  \"sparkplug\": {}\n}"), "line 3");
     TEST_ASSERT_EQUAL_STRING("", err.path);
     TEST_ASSERT_EQUAL(3, err.line);
     TEST_ASSERT_EQUAL(3, err.column);
@@ -606,7 +606,7 @@ static void test_error_fields(void)
         deep[n++] = '[';
     }
     deep[n] = '\0';
-    ASSERT_REJECTED(parse(deep), "JSON anidado a más de 32 niveles");
+    ASSERT_REJECTED(parse(deep), "JSON nested deeper than 32 levels");
     TEST_ASSERT_EQUAL(4, gw_json_depth("{\"a\":[{\"b\":[1]}],\"s\":\"[[[[[\\\"[[\"}", 40));
 }
 
@@ -615,7 +615,7 @@ static void test_schema_rules(void)
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bool\"}"),
                     "devices[0].tags[0].type");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"coil\",\"address\":0,\"type\":\"int16\"}"),
-                    "solo admiten type=bool");
+                    "accept only type=bool");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
                               "\"writable\":true}"),
                     "devices[0].tags[0].writable");
@@ -629,7 +629,7 @@ static void test_schema_rules(void)
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":65535,\"type\":\"int32\"}"),
                     "65535");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":1.5,\"type\":\"int16\"}"),
-                    "entero");
+                    "integer");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
                               "\"scale\":0}"),
                     "scale");
@@ -637,12 +637,12 @@ static void test_schema_rules(void)
                               "\"word_order\":\"middle\"}"),
                     "big|little|ABCD|CDAB|BADC|DCBA");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"adress\":0,\"type\":\"int16\"}"),
-                    "devices[0].tags[0].adress: clave desconocida");
+                    "devices[0].tags[0].adress: unknown key");
     ASSERT_REJECTED(parse_tag("{\"area\":\"input\",\"address\":0,\"type\":\"int16\"}"),
-                    "devices[0].tags[0].name: campo obligatorio");
+                    "devices[0].tags[0].name: missing required field");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\"},"
                               "{\"name\":\"t\",\"area\":\"input\",\"address\":1,\"type\":\"int16\"}"),
-                    "duplicado");
+                    "duplicate tag name");
     TEST_ASSERT_TRUE_MESSAGE(
         parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":65534,\"type\":\"float32\","
                   "\"word_order\":\"little\",\"deadband\":0.5,\"units\":\"kWh\"}"),
@@ -682,39 +682,39 @@ static void test_mb6_tags(void)
     TEST_ASSERT_EQUAL(GW_WORD_BIG, cfg.tags[6].word_order);
 
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"string\"}"),
-                    "devices[0].tags[0].length: obligatorio con type=string");
+                    "devices[0].tags[0].length: required with type=string");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"string\","
                               "\"length\":17}"),
-                    "devices[0].tags[0].length: valor 17 fuera de rango [1, 16]");
+                    "devices[0].tags[0].length: value 17 out of range [1, 16]");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"int16\","
                               "\"length\":2}"),
-                    "length: solo vale con type=string");
+                    "length: valid only with type=string");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"string\","
                               "\"length\":2,\"scale\":2}"),
-                    "scale/offset no se admiten en tags string");
+                    "scale/offset not accepted in string tags");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"string\","
                               "\"length\":2,\"deadband\":1}"),
-                    "deadband: no se admite en tags string");
+                    "deadband: not accepted in string tags");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":65533,\"type\":\"int64\"}"),
                     "65535");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bool\","
                               "\"bit\":16}"),
-                    "devices[0].tags[0].bit: valor 16 fuera de rango [0, 15]");
+                    "devices[0].tags[0].bit: value 16 out of range [0, 15]");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"coil\",\"address\":0,\"type\":\"bool\","
                               "\"bit\":1}"),
-                    "bit: solo vale con type=bool en las áreas holding e input");
+                    "bit: valid only with type=bool in the holding and input areas");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\","
                               "\"bit\":1}"),
-                    "bit: solo vale con type=bool");
+                    "bit: valid only with type=bool");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bool\","
                               "\"bit\":1,\"word_order\":\"BADC\"}"),
-                    "word_order: no se admite en un tag bit");
+                    "word_order: not accepted in a bit tag");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"bool\","
                               "\"bit\":1,\"writable\":true}"),
-                    "writable: solo las áreas coil y holding");
+                    "writable: only the coil and holding areas");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bool\","
                               "\"bit\":1,\"scale\":2}"),
-                    "scale/offset no se admiten en tags bool");
+                    "scale/offset not accepted in bool tags");
 }
 
 /* SPB-16: engineering range of a tag (units already existed). */
@@ -739,19 +739,19 @@ static void test_eng_range(void)
 
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
                               "\"eng_low\":10,\"eng_high\":10}"),
-                    "devices[0].tags[0].eng_high: debe ser mayor que eng_low (10)");
+                    "devices[0].tags[0].eng_high: must be greater than eng_low (10)");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
                               "\"eng_low\":\"0\"}"),
-                    "devices[0].tags[0].eng_low: se esperaba un número");
+                    "devices[0].tags[0].eng_low: expected a number");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"coil\",\"address\":0,\"type\":\"bool\","
                               "\"eng_high\":1}"),
-                    "devices[0].tags[0].eng_high: no se admite en tags bool");
+                    "devices[0].tags[0].eng_high: not accepted in bool tags");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"string\","
                               "\"length\":2,\"eng_low\":1}"),
-                    "devices[0].tags[0].eng_low: no se admite en tags string");
+                    "devices[0].tags[0].eng_low: not accepted in string tags");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
                               "\"eng_high\":1e39}"),
-                    "devices[0].tags[0].eng_high: fuera del rango de un Float");
+                    "devices[0].tags[0].eng_high: out of the range of a Float");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
                               "\"units\":\"0123456789abcdef\"}"),
                     "devices[0].tags[0].units");
@@ -767,16 +767,16 @@ static void test_bytes_tags(void)
     TEST_ASSERT_EQUAL(GW_TYPE_BYTES, cfg.tags[0].type);
     TEST_ASSERT_EQUAL(16, gw_tag_width(&cfg.tags[0]));
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"bytes\"}"),
-                    "devices[0].tags[0].length: obligatorio con type=bytes");
+                    "devices[0].tags[0].length: required with type=bytes");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"bytes\","
                               "\"length\":2,\"deadband\":1}"),
-                    "deadband: no se admite en tags bytes");
+                    "deadband: not accepted in bytes tags");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"bytes\","
                               "\"length\":2,\"scale\":2}"),
-                    "scale/offset no se admiten en tags bytes");
+                    "scale/offset not accepted in bytes tags");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"coil\",\"address\":0,\"type\":\"bytes\","
                               "\"length\":2}"),
-                    "las áreas coil/discrete solo admiten type=bool");
+                    "the coil/discrete areas accept only type=bool");
 }
 
 /* SPB-18: devices of a type have the same tags; the definitions stay bounded. */
@@ -799,11 +799,11 @@ static void test_device_types(void)
     snprintf(doc, sizeof(doc), "%s", ok);
     char *t = strstr(doc, "\"address\":7,\"type\":\"uint16\"");
     memcpy(t + strlen("\"address\":7,\"type\":\""), "uint32", 6);   /* other datatype */
-    ASSERT_REJECTED(parse(doc), "devices[1].type: el tipo 'Meter' ya lo define devices[0] (A)");
+    ASSERT_REJECTED(parse(doc), "devices[1].type: the type 'Meter' is already defined by devices[0] (A)");
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
                           "\"devices\":[{\"name\":\"A\",\"unit_id\":1,\"type\":\"M/1\",\"tags\":[{\"name\":\"v\","
                           "\"area\":\"input\",\"address\":0,\"type\":\"uint16\"}]}]}"),
-                    "devices[0].type: carácter no permitido '/'");
+                    "devices[0].type: character not allowed '/'");
 
     /* the definitions together: at most GW_MAX_TEMPLATE_TAGS tags */
     static char big[16384];
@@ -819,7 +819,7 @@ static void test_device_types(void)
         n += (size_t)snprintf(big + n, sizeof(big) - n, "]}");
     }
     snprintf(big + n, sizeof(big) - n, "]}");
-    ASSERT_REJECTED(parse(big), "devices[2].type: los tipos de dispositivo describen más de 64 tags");
+    ASSERT_REJECTED(parse(big), "devices[2].type: the device types describe more than 64 tags");
 }
 
 /* Issue #162: well-formed UTF-8 (RFC 3629) */
@@ -884,14 +884,14 @@ static void test_device_prefix(void)
     ASSERT_REJECTED(PDOC("G", "E", ":acme", "m"), "sparkplug.device_prefix: empty level at byte 0");
     ASSERT_REJECTED(PDOC("G", "E", "acme:", "m"), "sparkplug.device_prefix: empty level at byte 4");
     ASSERT_REJECTED(PDOC("G", "E", "acme::line3", "m"), "sparkplug.device_prefix: empty level");
-    ASSERT_REJECTED(PDOC("G", "E", "acme/line3", "m"), "sparkplug.device_prefix: car");
-    ASSERT_REJECTED(PDOC("G", "E", "acme+", "m"), "sparkplug.device_prefix: car");
+    ASSERT_REJECTED(PDOC("G", "E", "acme/line3", "m"), "sparkplug.device_prefix: character not allowed");
+    ASSERT_REJECTED(PDOC("G", "E", "acme+", "m"), "sparkplug.device_prefix: character not allowed");
     ASSERT_REJECTED(PDOC("G", "E", "acme\xc3", "m"), "sparkplug.device_prefix: not valid UTF-8");
     /* 96 bytes at most */
     char longp[GW_PREFIX_SIZE + 1];
     memset(longp, 'a', GW_PREFIX_SIZE);
     longp[GW_PREFIX_SIZE] = '\0';
-    ASSERT_REJECTED(PDOC("G", "E", longp, "m"), "sparkplug.device_prefix: texto demasiado largo");
+    ASSERT_REJECTED(PDOC("G", "E", longp, "m"), "sparkplug.device_prefix: string too long");
     /* the full device_id: the longest topic (DBIRTH) fits GW_TOPIC_SIZE - 1 = 159 bytes. With
      * a group and a node of 32 bytes, 159 - 8 - 32 - 8 - 32 - 1 = 78 bytes are left */
     const char *g32 = "gggggggggggggggggggggggggggggggg", *e32 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
@@ -1043,7 +1043,7 @@ static void test_lint_umh_preset(void)
     TEST_ASSERT_TRUE_MESSAGE(parse(LINT_DOC("", "gw", "", "m", LTAG("v"))), err.msg);
     TEST_ASSERT_EQUAL(GW_NAMING_SPARKPLUG, cfg.sparkplug.naming);   /* the default */
     ASSERT_REJECTED(parse(LINT_DOC(",\"naming\":\"UMH\"", "gw", "", "m", LTAG("v"))),
-                    "sparkplug.naming: valor no válido (se esperaba sparkplug|umh)");
+                    "sparkplug.naming: invalid value (expected sparkplug|umh)");
 
     /* a name finding is the error of the validation, with its JSON path */
     ASSERT_REJECTED(parse(LINT_DOC(UMH, "acme: gw01", "", "m", LTAG("v"))),
@@ -1212,17 +1212,17 @@ static void test_device_block_reads(void)
                           "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
                           "\"block_reads\":false,\"max_gap\":3,\"tags\":[{\"name\":\"t\","
                           "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
-                    "devices[0].max_gap: no tiene efecto con block_reads=false");
+                    "devices[0].max_gap: has no effect with block_reads=false");
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
                           "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
                           "\"max_gap\":2000,\"tags\":[{\"name\":\"t\","
                           "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
-                    "devices[0].max_gap: valor 2000 fuera de rango [0, 1999]");
+                    "devices[0].max_gap: value 2000 out of range [0, 1999]");
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
                           "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
                           "\"block_reads\":1,\"tags\":[{\"name\":\"t\","
                           "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
-                    "devices[0].block_reads: se esperaba true o false");
+                    "devices[0].block_reads: expected true or false");
 }
 
 /* MB-12: scan classes. */
@@ -1249,10 +1249,10 @@ static void test_scan_classes(void)
                           "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
                           "\"poll_ms\":1000,\"slow_poll_ms\":999,\"tags\":[{\"name\":\"t\","
                           "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
-                    "devices[0].slow_poll_ms: no puede ser menor que poll_ms (1000)");
+                    "devices[0].slow_poll_ms: cannot be less than poll_ms (1000)");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
                               "\"scan\":\"medium\"}"),
-                    "devices[0].tags[0].scan: valor no válido (se esperaba fast|slow)");
+                    "devices[0].tags[0].scan: invalid value (expected fast|slow)");
 }
 
 /* MB-15: Modbus TCP gateway section. */
@@ -1280,21 +1280,21 @@ static void test_modbus_tcp_section(void)
     TEST_ASSERT_EQUAL(24, cfg.modbus_tcp.clients[1].prefix);
     TEST_ASSERT_EQUAL(0, cfg.modbus_tcp.clients[2].prefix);
     snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"allowed_clients\":[\"10.0.0.0/33\"]}}", base);
-    ASSERT_REJECTED(parse(doc), "modbus_tcp.allowed_clients[0]: prefijo no válido");
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.allowed_clients[0]: invalid prefix");
     snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"allowed_clients\":[\"x\",1]}}", base);
-    ASSERT_REJECTED(parse(doc), "modbus_tcp.allowed_clients[0]: 'x' no es una dirección IPv4");
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.allowed_clients[0]: 'x' is not an IPv4 address");
     snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"allowed_clients\":[\"1.2.3.4\",1]}}", base);
-    ASSERT_REJECTED(parse(doc), "modbus_tcp.allowed_clients[1]: se esperaba un texto");
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.allowed_clients[1]: expected a string");
     snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"allowed_clients\":\"1.2.3.4\"}}", base);
-    ASSERT_REJECTED(parse(doc), "modbus_tcp.allowed_clients: se esperaba un array");
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.allowed_clients: expected an array");
     snprintf(doc, sizeof(doc),
              "{%s,\"modbus_tcp\":{\"allowed_clients\":[\"1.1.1.1\",\"1.1.1.2\",\"1.1.1.3\","
              "\"1.1.1.4\",\"1.1.1.5\",\"1.1.1.6\",\"1.1.1.7\",\"1.1.1.8\",\"1.1.1.9\"]}}", base);
-    ASSERT_REJECTED(parse(doc), "9 entradas; el máximo es 8");
+    ASSERT_REJECTED(parse(doc), "9 entries; the maximum is 8");
     snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"port\":0}}", base);
-    ASSERT_REJECTED(parse(doc), "modbus_tcp.port: valor 0 fuera de rango");
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.port: value 0 out of range");
     snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"enable\":true}}", base);
-    ASSERT_REJECTED(parse(doc), "modbus_tcp.enable: clave desconocida");
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.enable: unknown key");
 }
 
 /* IO-3 (and the other optional local_io keys): defaults keep the MVP behaviour. */
@@ -1320,24 +1320,24 @@ static void test_local_io_section(void)
     TEST_ASSERT_EQUAL(GW_DO_SAFE_HOLD, cfg.local_io.do_failsafe[3]);
     TEST_ASSERT_EQUAL(GW_DO_SAFE_OFF, cfg.local_io.do_failsafe[4]);   /* missing: off */
     snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"failsafe_s\":86401}}", base);
-    ASSERT_REJECTED(parse(doc), "local_io.failsafe_s: valor 86401 fuera de rango [0, 86400]");
+    ASSERT_REJECTED(parse(doc), "local_io.failsafe_s: value 86401 out of range [0, 86400]");
     snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"do_failsafe\":[\"off\",\"keep\"]}}", base);
-    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe[1]: valor no válido (se esperaba off|on|hold)");
+    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe[1]: invalid value (expected off|on|hold)");
     snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"do_failsafe\":[true]}}", base);
-    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe[0]: valor no válido");
+    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe[0]: invalid value");
     snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"do_failsafe\":\"off\"}}", base);
-    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe: se esperaba un array");
+    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe: expected an array");
     snprintf(doc, sizeof(doc),
              "{%s,\"local_io\":{\"do_failsafe\":[\"off\",\"off\",\"off\",\"off\",\"off\","
              "\"off\",\"off\",\"off\",\"off\"]}}", base);
-    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe: 9 entradas; hay 8 salidas");
+    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe: 9 entries; there are 8 outputs");
     snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"counter_save_s\":0}}", base);
     TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
     TEST_ASSERT_EQUAL(0, cfg.local_io.counter_save_s);
     snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"counter_save_s\":59}}", base);
-    ASSERT_REJECTED(parse(doc), "local_io.counter_save_s: valor 59: 0 (no guardar) o al menos 60 s");
+    ASSERT_REJECTED(parse(doc), "local_io.counter_save_s: value 59: 0 (do not save) or at least 60 s");
     snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"counter_save_s\":86401}}", base);
-    ASSERT_REJECTED(parse(doc), "local_io.counter_save_s: valor 86401 fuera de rango");
+    ASSERT_REJECTED(parse(doc), "local_io.counter_save_s: value 86401 out of range");
     /* IO-6 */
     snprintf(doc, sizeof(doc), "{%s}", base);
     TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
@@ -1351,14 +1351,14 @@ static void test_local_io_section(void)
                            cfg.local_io.buzzer.alarms);
     TEST_ASSERT_EQUAL(5, cfg.local_io.buzzer.alarm_after_s);
     snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"buzzer\":{\"alarms\":[\"fire\"]}}}", base);
-    ASSERT_REJECTED(parse(doc), "local_io.buzzer.alarms[0]: valor no válido");
+    ASSERT_REJECTED(parse(doc), "local_io.buzzer.alarms[0]: invalid value");
     snprintf(doc, sizeof(doc),
              "{%s,\"local_io\":{\"buzzer\":{\"alarms\":[\"mqtt_down\",\"mqtt_down\"]}}}", base);
-    ASSERT_REJECTED(parse(doc), "local_io.buzzer.alarms[1]: alarma repetida");
+    ASSERT_REJECTED(parse(doc), "local_io.buzzer.alarms[1]: duplicate alarm");
     snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"buzzer\":{\"alarm_after_s\":3601}}}", base);
-    ASSERT_REJECTED(parse(doc), "local_io.buzzer.alarm_after_s: valor 3601 fuera de rango");
+    ASSERT_REJECTED(parse(doc), "local_io.buzzer.alarm_after_s: value 3601 out of range");
     snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"buzzer\":{\"volume\":1}}}", base);
-    ASSERT_REJECTED(parse(doc), "local_io.buzzer.volume: clave desconocida");
+    ASSERT_REJECTED(parse(doc), "local_io.buzzer.volume: unknown key");
     /* IO-7 */
     snprintf(doc, sizeof(doc),
              "{%s,\"local_io\":{\"do_failsafe\":[\"hold\"],\"rules\":[{\"di\":2,\"do\":1},"
@@ -1374,22 +1374,22 @@ static void test_local_io_section(void)
     TEST_ASSERT_EQUAL(GW_RULE_TOGGLE, cfg.local_io.rules[2].mode);
     snprintf(doc, sizeof(doc),
              "{%s,\"local_io\":{\"rules\":[{\"di\":1,\"do\":3},{\"di\":2,\"do\":3}]}}", base);
-    ASSERT_REJECTED(parse(doc), "local_io.rules[1].do: la DO/3 ya la maneja local_io.rules[0]");
+    ASSERT_REJECTED(parse(doc), "local_io.rules[1].do: DO/3 already has a rule: local_io.rules[0]");
     snprintf(doc, sizeof(doc),
              "{%s,\"local_io\":{\"do_failsafe\":[\"off\",\"on\"],\"rules\":[{\"di\":1,\"do\":2}]}}",
              base);
-    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe[1]: la DO/2 la maneja local_io.rules[0]");
+    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe[1]: DO/2 has a rule (local_io.rules[0])");
     snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"rules\":[{\"di\":9,\"do\":1}]}}", base);
-    ASSERT_REJECTED(parse(doc), "local_io.rules[0].di: valor 9 fuera de rango [1, 8]");
+    ASSERT_REJECTED(parse(doc), "local_io.rules[0].di: value 9 out of range [1, 8]");
     snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"rules\":[{\"di\":1}]}}", base);
-    ASSERT_REJECTED(parse(doc), "local_io.rules[0].do: campo obligatorio ausente");
+    ASSERT_REJECTED(parse(doc), "local_io.rules[0].do: missing required field");
     snprintf(doc, sizeof(doc),
              "{%s,\"local_io\":{\"rules\":[{\"di\":1,\"do\":1,\"mode\":\"latch\"}]}}", base);
-    ASSERT_REJECTED(parse(doc), "local_io.rules[0].mode: valor no válido (se esperaba follow|invert|toggle)");
+    ASSERT_REJECTED(parse(doc), "local_io.rules[0].mode: invalid value (expected follow|invert|toggle)");
     snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"rules\":[{\"di\":1,\"do\":1,\"when\":1}]}}", base);
-    ASSERT_REJECTED(parse(doc), "local_io.rules[0].when: clave desconocida");
+    ASSERT_REJECTED(parse(doc), "local_io.rules[0].when: unknown key");
     snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"rules\":{}}}", base);
-    ASSERT_REJECTED(parse(doc), "local_io.rules: se esperaba un array");
+    ASSERT_REJECTED(parse(doc), "local_io.rules: expected an array");
 }
 
 static void test_section_errors(void)
@@ -1400,14 +1400,14 @@ static void test_section_errors(void)
                     "sparkplug.group_id");
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\",\"port\":70000},\"sparkplug\":{\"group_id\":"
                           "\"G\",\"edge_node_id\":\"E\"}}"),
-                    "mqtt.port: valor 70000 fuera de rango");
+                    "mqtt.port: value 70000 out of range");
     ASSERT_REJECTED(parse("{\"network\":{\"dhcp\":false,\"ip\":\"10.0.0.256\",\"netmask\":"
                           "\"255.0.0.0\",\"gateway\":\"10.0.0.1\"},\"mqtt\":{\"host\":\"b\"},"
                           "\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}}"),
                     "network.ip");
     ASSERT_REJECTED(parse("{\"network\":{\"dhcp\":false},\"mqtt\":{\"host\":\"b\"},"
                           "\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}}"),
-                    "network.ip: campo obligatorio");
+                    "network.ip: missing required field");
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
                           "\"edge_node_id\":\"E\"},\"rs485\":{\"parity\":\"mark\"}}"),
                     "rs485.parity");
@@ -1416,7 +1416,7 @@ static void test_section_errors(void)
                     "rs485.baud");
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
                           "\"edge_node_id\":\"E\"},\"extra\":1}"),
-                    "extra: clave desconocida");
+                    "extra: unknown key");
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
                           "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"D\",\"unit_id\":248,"
                           "\"tags\":[]}]}"),
@@ -1436,7 +1436,7 @@ static void test_limits(void)
                       i ? "," : "", i, i);
     }
     snprintf(doc + n, sizeof(doc) - (size_t)n, "]}]}");
-    ASSERT_REJECTED(parse(doc), "máximo por dispositivo es 64");
+    ASSERT_REJECTED(parse(doc), "maximum per device is 64");
 
     /* 17 devices */
     n = snprintf(doc, sizeof(doc),
@@ -1449,7 +1449,7 @@ static void test_limits(void)
                       d ? "," : "", d, d + 1);
     }
     snprintf(doc + n, sizeof(doc) - (size_t)n, "]}");
-    ASSERT_REJECTED(parse(doc), "máximo es 16");
+    ASSERT_REJECTED(parse(doc), "maximum is 16");
 
     /* 5 devices x 64 tags = 320 > 256 total */
     n = snprintf(doc, sizeof(doc),
@@ -1466,20 +1466,20 @@ static void test_limits(void)
         n += snprintf(doc + n, sizeof(doc) - (size_t)n, "]}");
     }
     snprintf(doc + n, sizeof(doc) - (size_t)n, "]}");
-    ASSERT_REJECTED(parse(doc), "devices[4].tags: se supera el máximo total de 256");
+    ASSERT_REJECTED(parse(doc), "devices[4].tags: more than the total maximum of 256");
     TEST_ASSERT_EQUAL(0, cfg.tag_count);  /* zeroed on failure */
 }
 
 static void test_syntax_errors_give_line_and_column(void)
 {
     ASSERT_REJECTED(parse("{\n  \"mqtt\": {\"host\": \"b\"}\n  \"sparkplug\": {}\n}"),
-                    "JSON mal formado en la línea 3, columna 3");  /* missing ',' */
-    ASSERT_REJECTED(parse("{\"mqtt\": {\"host\": tru}}"), "línea 1, columna 19");
+                    "JSON syntax error at line 3, column 3");  /* missing ',' */
+    ASSERT_REJECTED(parse("{\"mqtt\": {\"host\": tru}}"), "line 1, column 19");
     /* columns count characters, not UTF-8 bytes */
-    ASSERT_REJECTED(parse("{\"mqtt\": {\"host\": \"\xc3\xa1\" x}}"), "línea 1, columna 23");
-    ASSERT_REJECTED(parse("{\"mqtt\": {\"host\": \"b\"}, \"devices\": [\n"), "línea 1");
+    ASSERT_REJECTED(parse("{\"mqtt\": {\"host\": \"\xc3\xa1\" x}}"), "line 1, column 23");
+    ASSERT_REJECTED(parse("{\"mqtt\": {\"host\": \"b\"}, \"devices\": [\n"), "line 1");
     ASSERT_REJECTED(parse("{\"mqtt\": {\"host\": \"b\"}}\n\n  x"),
-                    "línea 3, columna 3: contenido después del documento");
+                    "line 3, column 3: content after the document");
     TEST_ASSERT_NULL(strstr(err.msg, "$"));
 }
 
@@ -1493,23 +1493,23 @@ static void test_semantic_errors_give_json_path(void)
         "{\"name\":\"a\",\"area\":\"input\",\"address\":0,\"type\":\"int16\"},"
         "{\"name\":\"b\",\"area\":\"input\",\"address\":1,\"type\":\"int16\"},"
         "{\"name\":\"c\",\"area\":\"input\",\"address\":2,\"type\":\"int8\"}]}]}";
-    ASSERT_REJECTED(parse(doc), "devices[1].tags[2].type: valor no válido");
+    ASSERT_REJECTED(parse(doc), "devices[1].tags[2].type: invalid value");
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":[]}"),
-                    "sparkplug: se esperaba un objeto JSON");
-    ASSERT_REJECTED(parse("[]"), "$: se esperaba un objeto JSON");
+                    "sparkplug: expected a JSON object");
+    ASSERT_REJECTED(parse("[]"), "$: expected a JSON object");
 }
 
 static void test_duplicate_keys_rejected(void)
 {
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"a\",\"port\":1883,\"host\":\"b\"},"
                           "\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}}"),
-                    "mqtt.host: clave duplicada");
+                    "mqtt.host: duplicate key");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"int16\","
                               "\"address\":4}"),
-                    "devices[0].tags[0].address: clave duplicada");
+                    "devices[0].tags[0].address: duplicate key");
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
                           "\"edge_node_id\":\"E\"},\"devices\":[],\"devices\":[]}"),
-                    "devices: clave duplicada");
+                    "devices: duplicate key");
 }
 
 /* SPEC maximum: 16 devices x 16 tags carrying every optional field (CFG-1 with H1 of the
@@ -1572,8 +1572,8 @@ static void test_allocator_and_out_of_memory(void)
     s_fail_after = 5;
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"coil\",\"address\":0,"
                               "\"type\":\"bool\"}"),
-                    "memoria insuficiente");
-    TEST_ASSERT_NULL(strstr(err.msg, "mal formado"));
+                    "not enough memory");
+    TEST_ASSERT_NULL(strstr(err.msg, "syntax error"));
     gw_config_set_allocator(malloc, free);
 }
 

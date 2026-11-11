@@ -33,6 +33,7 @@ SCENARIOS = (
     ("sf spill", ("sf",)),
     ("stack margin", ("sf",)),
     ("https", ("https",)),
+    ("time", ("time",)),   # issue #160: no NDATA/DDATA before a valid clock
     ("FW-1 OTA", ("ota", "ota-fw1")),
     ("issue #112 park in a long RS485 transaction", ("ota", "ota-park")),
     ("issue #97 OTA trial wiring", ("ota", "ota-wiring")),
@@ -44,7 +45,13 @@ SCENARIOS = (
     ("issue #135 no PSRAM", ("nopsram",)),
     ("refuse", ("refuse",)),   # part of "main"; alone only when "main" is not selected (#89)
     ("main", ("main",)),
+    ("umh", ("umh",)),         # optional: only when named (issue #175)
+    ("tck", ("tck",)),         # optional: only when named (issue #176, the Sparkplug TCK)
 )
+# Issues #175 and #176: scenarios that a run selects only when --only names them. A full run and
+# the CI groups leave them out: they need programs that are not in the CI image (benthos-umh;
+# Java, HiveMQ CE and the TCK extension: E2E_TCK_DIR, tools/e2e/tck.py).
+OPTIONAL = {"umh", "tck"}
 ONLY_NAMES = tuple(dict.fromkeys(n for _, names in SCENARIOS for n in names))
 
 # Issue #135: the firmware assumes the PSRAM of the board. The PSRAM variant ("psram") runs the
@@ -78,10 +85,14 @@ def variant_of(name):
 
 def selected(only, variant=None):
     """Names of the scenarios a run with the --only set @only runs, in order. Without --only
-    (empty set): the full run of @variant (issue #135), or of both variants (None)."""
+    (empty set): the full run of @variant (issue #135), or of both variants (None), without the
+    OPTIONAL scenarios (issue #175)."""
     out = []
     for name, names in SCENARIOS:
-        if name == "refuse":
+        if name in OPTIONAL:
+            if only & set(names):
+                out.append(name)
+        elif name == "refuse":
             if "refuse" in only and "main" not in only:
                 out.append(name)
         elif only:
@@ -101,7 +112,7 @@ def selected(only, variant=None):
 CI_GROUPS = (
     ("psram", "ota-fw1", "ota-fw1,nopsram"),
     ("psram", "nvs-main", "nvs,main"),
-    ("psram", "other", "failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,slow"),
+    ("psram", "other", "failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,time,slow"),
     ("default", "ota-trial", "ota-park,ota-wiring,ota-trial"),
 )
 # The CI's variants: the environment of their build and of their runs.

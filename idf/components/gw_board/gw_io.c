@@ -359,7 +359,8 @@ void gw_io_rtc_restore(void)
              tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
 
-/* Store the system time (just synchronised by SNTP) in the RTC. Owner of the bus only. */
+/* Store the system time (just synchronised by SNTP, or set from the browser: #160) in the RTC.
+ * Owner of the bus only. */
 static void rtc_store_now(void)
 {
     if (!s_rtc.present) {
@@ -384,7 +385,8 @@ static void rtc_store_now(void)
     s_rtc.stores++;
     s_rtc.status = GW_RTC_OK;
     if (s_rtc.stores == 1) {
-        ESP_LOGI(TAG, "RTC: time stored in the RTC after SNTP (again after every synchronisation)");
+        ESP_LOGI(TAG, "RTC: time stored in the RTC (again after every SNTP synchronisation and "
+                      "every time set from the browser)");
     }
 }
 
