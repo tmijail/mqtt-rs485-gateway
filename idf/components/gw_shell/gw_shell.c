@@ -385,7 +385,7 @@ static int cmd_status(int argc, char **argv)
             CONFIG_NVS_SEC_HMAC_EFUSE_KEY_ID);
     }
 #else
-    out("secrets  NVS NOT encrypted (default build; sdkconfig.production encrypts it)\n");
+    out("secrets  NVS NOT encrypted (default build)\n");
 #endif
     gw_local_io_t io;
     gw_tagdb_get_io(&io);

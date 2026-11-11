@@ -364,7 +364,7 @@ Nobody tested this on the board.
 - **Before the declarative description of the board (`gw_bsp`):** `reconfigure` discards 17 pin options **without a warning** (6 from `gw_board`, 7 from `gw_net` and 4 from `gw_rs485`). The pins are now fixed in `gw_bsp.c`. Also, `CONFIG_GW_DO_ACTIVE_LOW=y` appears. This option **inverts the polarity of the DOs** compared with a build that was already tested.
 - **Options added later** do not get into an existing `sdkconfig`: `CONFIG_UART_ISR_IN_IRAM`, the core 0 affinity of lwIP and esp-mqtt (`CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0`, `CONFIG_MQTT_USE_CORE_0`), `CONFIG_MBEDTLS_DYNAMIC_BUFFER` (#80: without it and without PSRAM, `PUT /api/config` responds 503). Measured with IDF v6.1 (kconfgen 3.14): IDF **does not do the configuration again** when `sdkconfig.defaults` changes. Thus `idf.py build` continued with the old `sdkconfig`. When the configuration step runs, kconfgen applies the new default only to the values that it marked `# default:`. It does not apply it to a value from `menuconfig`, or to a file written without these marks.
 
-After an update, the simplest procedure is to **regenerate the `sdkconfig`**: `rm sdkconfig && idf.py reconfigure` (or `idf.py set-target esp32s3`). For a different build directory, delete its `sdkconfig` and use the same `-B`/`-D SDKCONFIG=`/`-D SDKCONFIG_DEFAULTS=` again. For example, for production: `rm build-prod/sdkconfig && idf.py -B build-prod -D SDKCONFIG=build-prod/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.production" reconfigure`. If you keep the old `sdkconfig`, examine at least `CONFIG_GW_DO_ACTIVE_LOW` and the options above in `menuconfig`. No gateways are in service, thus the project did not add an automatic migration.
+After an update, the simplest procedure is to **regenerate the `sdkconfig`**: `rm sdkconfig && idf.py reconfigure` (or `idf.py set-target esp32s3`). For a different build directory, delete its `sdkconfig` and use the same `-B`/`-D SDKCONFIG=`/`-D SDKCONFIG_DEFAULTS=` again. For example, for the QEMU build: `rm build-qemu/sdkconfig && idf.py -B build-qemu -D SDKCONFIG=build-qemu/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.qemu" reconfigure`. If you keep the old `sdkconfig`, examine at least `CONFIG_GW_DO_ACTIVE_LOW` and the options above in `menuconfig`. No gateways are in service, thus the project did not add an automatic migration.
 
 **Check in the build (#83).** The defaults files of the build are now dependencies of the configuration. When one of them changes, the next `idf.py build` does the configuration again. The values marked `# default:` then get the new default automatically (tested: `# CONFIG_MBEDTLS_DYNAMIC_BUFFER is not set` changed to `=y`).
 
@@ -374,15 +374,13 @@ Also, during the configuration, `cmake/gw_sdkconfig_check.cmake` compares the `s
 - the *task watchdog* options (`ESP_TASK_WDT_EN`, `_INIT`, `_TIMEOUT_S`, `_PANIC`, `_CHECK_IDLE_TASK_CPU0/1`);
 - `BOOTLOADER_APP_ROLLBACK_ENABLE` (FW-1);
 - `ESP_COREDUMP_ENABLE_TO_FLASH` and `SPIRAM_IGNORE_NOTFOUND`;
-- with `sdkconfig.production` in the chain, also the security options (issue #93): `SECURE_BOOT`, `SECURE_BOOT_V2_ENABLED`, `SECURE_FLASH_ENC_ENABLED`, `SECURE_FLASH_ENCRYPTION_MODE_RELEASE`, `SECURE_DISABLE_ROM_DL_MODE`, `NVS_ENCRYPTION` and `NVS_SEC_KEY_PROTECT_USING_HMAC`.
+- `FATFS_LFN_NONE` (#122).
 
 If one of them is different, **the configuration fails**. The error gives the list (`CONFIG_MBEDTLS_DYNAMIC_BUFFER: sdkconfig has n, the defaults y`) and the procedure to regenerate. An *overlay* that changes one of these options on purpose does not cause the error, because the check compares with the overlay value. The check does not compare an option that is not in the `sdkconfig`. This occurs when the dependencies of the option are off, for example `SPIRAM_IGNORE_NOTFOUND` in the QEMU build without PSRAM. For a deliberate local change, use `idf.py -D GW_SDKCONFIG_CHECK=warn …`: it only gives a warning.
 
-CI generates the `sdkconfig` from zero and does not see this problem. Host tests: `sdkconfig_check_*`. They cover these cases: current, old, old with `warn`, a different *watchdog* with and without an *overlay*. For production, they cover: current, no `SECURE_DISABLE_ROM_DL_MODE` with the production *overlay*, with `warn`, and no *overlay* (then there is no comparison). Before #93, the tests with an *overlay* gave the list with `\;`, and the check never read the *overlay*. Thus `wdt5_overlay` passed and compared nothing.
+CI generates the `sdkconfig` from zero and does not see this problem. Host tests: `sdkconfig_check_*`. They cover these cases: current, old, old with `warn`, a different *watchdog* with and without an *overlay*. The checks of the production *overlay* (issues #93 and #108 B7) are on the branch `archive/efuse-production` (§3.7). Before #93, the tests with an *overlay* gave the list with `\;`, and the check never read the *overlay*. Thus `wdt5_overlay` passed and compared nothing.
 
-**Prohibited combinations (issue #103):** the check also compares the `sdkconfig` with itself. `CONFIG_NVS_ENCRYPTION=y` without `CONFIG_SECURE_FLASH_ENC_ENABLED` fails outside the emulator build (`CONFIG_GW_IO_SIMULATED`). The reason: the copy from an NVS migration (§6.2.1) would leave the secrets in clear text in the free blocks of LittleFS. `warn` also lets this combination pass. Tests: `sdkconfig_check_nvsenc_noflash` (fails), `_warn` (gives a warning) and `sdkconfig_check_nvsenc_sim` (passes).
-
-**Partition table (issue #108 B7):** with flash encryption, NVS encryption and a custom table, the table that the `sdkconfig` names must mark `storage` and `coredump` (if present) as `encrypted`. Flash encryption covers only the partitions with this mark. These partitions hold the migration copy, the TLS key and the *core dump*. Tests: `sdkconfig_check_prodpart_ok` (the `partitions-production.csv` of the project, passes), `_plain` and `_coredump` (the mark is missing, they fail).
+**Prohibited combinations (issue #103):** the check also compares the `sdkconfig` with itself. `CONFIG_NVS_ENCRYPTION=y` without `CONFIG_SECURE_FLASH_ENC_ENABLED` fails outside the emulator build (`CONFIG_GW_IO_SIMULATED`). The reason: the copy from an NVS migration (§6.2.1) would leave the secrets in clear text in the free blocks of LittleFS. `warn` also lets this combination pass. Tests: `sdkconfig_check_nvsenc_noflash` (fails), `_warn` (gives a warning) and `sdkconfig_check_nvsenc_sim` (passes). Flash encryption is not in `main` (§3.7). Thus a build for the board with NVS encryption passes the check only with `warn`.
 
 ### 3.4 Configuration
 
@@ -472,23 +470,21 @@ In recovery mode and in commissioning, the saved web password is also valid, wit
 
 In commissioning mode, the gateway does not use the embedded example configuration or its Sparkplug identity. It waits for a configuration from the web UI or the shell, with a new commissioning password. In QEMU, `boot 1` / `boot 0` simulates the button.
 
-**Secrets (CFG-7):** `mqtt.password`, `network.wifi.password` and the hash of `web.password` (PBKDF2-HMAC-SHA256, 2048 iterations, random salt) are in NVS, never in `/cfg/config.json`. This applies to the two builds:
+**Secrets (CFG-7):** `mqtt.password`, `network.wifi.password` and the hash of `web.password` (PBKDF2-HMAC-SHA256, 2048 iterations, random salt) are in NVS, never in `/cfg/config.json`:
 
 | Build | How | NVS | eFuses |
 |---|---|---|---|
-| **Default** (development) | `idf.py set-target esp32s3 build` | **Not encrypted**: the secrets are not in the JSON, but a person can read them from a dump of the flash. The shell gives the warning `secrets  NVS NOT encrypted` | Burns no eFuse: you can flash it on any board |
-| **Production** | `idf.py -B build-prod -D SDKCONFIG=build-prod/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.production" build` | Encrypted with the HMAC scheme (`CONFIG_NVS_ENCRYPTION`, `CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC`, key in the eFuse block **KEY5**). IDF does not require flash encryption for this scheme. But outside the emulator build, the build check of this project rejects NVS encryption without flash encryption (§3.3, issue #103). The shell shows `secrets  NVS encrypted (HMAC key in eFuse KEY5)` | **Burns KEY5 at the first boot** (and, because of FW-2/FW-3, KEY0, KEY1 and the security eFuses: §3.7) |
+| **Default** (the build for the board) | `idf.py set-target esp32s3 build` | **Not encrypted**: the secrets are not in the JSON, but a person can read them from a dump of the flash. The shell gives the warning `secrets  NVS NOT encrypted` | Burns no eFuse: you can flash it on any board, and flash it again |
+| **QEMU** (E2E only) | `sdkconfig.defaults;sdkconfig.qemu` (`tools/e2e/run_e2e.sh`) | Encrypted with the HMAC scheme (`CONFIG_NVS_ENCRYPTION`, `CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC`, key in the eFuse block **KEY5**). The shell shows `secrets  NVS encrypted (HMAC key in eFuse KEY5)` | Burns KEY5 in the emulated eFuse file of each run. Nothing real is burned |
 
-`sdkconfig.production` is the production overlay. It also enables Secure Boot V2 (FW-2) and flash encryption (FW-3). These burn more eFuses and require signed images (§3.7). The QEMU build (`sdkconfig.qemu`) enables the same encryption on the emulated eFuses of each run. Thus the E2E tests this encryption and burns nothing real.
+The project does not encrypt NVS on the board (decision of #133, §3.7). The HMAC key in eFuse is permanent, and the owner of the board must keep full control of it. The QEMU build keeps the NVS encryption and its migration code until #133 decides about them. Outside the emulator build, the build check rejects NVS encryption without flash encryption (§3.3, issue #103).
 
-- **Factory process (production build only).** The first boot generates a random HMAC key and **burns it into KEY5 with the purpose `HMAC_UP`. This is irreversible**, and nobody can read the key after this (the HMAC peripheral derives the NVS keys). This block is then in use: Secure Boot (FW-2) and flash encryption (FW-3) must use other blocks. To burn the key on the production line instead, use `espefuse --chip esp32s3 burn-key BLOCK_KEY5 clave.bin HMAC_UP` before the first boot. On a board where KEY5 already has a different use, NVS does not start (the log tells this, and bdSeq stays in RAM).
-- **Development boards.** Always flash the default build: it burns no eFuses. If you flash the production build one time, KEY5 stays in use permanently on that board. A change from the default build to the production build on the same gateway erases NVS (see Migration).
 - **Migration.** The firmware accepts a `config.json` with secrets in clear text (flashed with `idf.py flash`, or from an earlier firmware). At boot, the secrets move to NVS. The firmware **erases the full LittleFS partition** (LittleFS is *copy-on-write*, and the old blocks would keep the text). Then it writes the file again without the secrets. During this window, the gateway has a commissioning mark: a power cut does not leave it with the example identity.
 
   Issues #67 and #94 cover the change from a build without NVS encryption to a build with NVS encryption. The first encrypted boot identifies the unencrypted NVS from its raw pages (`gw_nvsraw`: the CRC of the entries in clear text; it initializes nothing). It **moves all the entries** to the encrypted NVS: all the namespaces (bdSeq, secrets, commissioning password, web certificate, I/O state). This move is **safe from power cuts** (issue #94):
 
   1. The firmware reads the keys of the encrypted NVS. At the first encrypted boot, it generates them (this burns KEY5). If this step fails, it changes nothing, and that boot continues with the unencrypted NVS.
-  2. It copies all the entries to `/cfg/.nvsmig` in LittleFS (temporary file, `fsync` and `rename`; in production, LittleFS is under flash encryption). **It erases the NVS only if all the entries are in the copy** (`gw_nvsmig_may_erase`). In these cases, it erases nothing, and that boot continues without encryption:
+  2. It copies all the entries to `/cfg/.nvsmig` in LittleFS (temporary file, `fsync` and `rename`; LittleFS is not encrypted, see §6.2.1). **It erases the NVS only if all the entries are in the copy** (`gw_nvsmig_may_erase`). In these cases, it erases nothing, and that boot continues without encryption:
      - the unencrypted NVS does not start because of an error that is not a format error (`ESP_ERR_NO_MEM`, a flash read error…);
      - there is not sufficient memory to read a value;
      - the list of entries stops before its end;
@@ -530,7 +526,7 @@ In commissioning mode, the gateway does not use the embedded example configurati
 
 **How an update starts:**
 
-- **NCMD** `Node Control/Firmware Update` (String, alias 40) with the `https://…` URL of the image (`build/rs485_spb_gateway.bin`, or the signed image in production, §3.7). The Sparkplug codec accepts texts of up to 256 characters, and an update URL can have up to 255 characters (issue #87). The firmware rejects a longer URL and gives the cause. It never truncates the URL.
+- **NCMD** `Node Control/Firmware Update` (String, alias 40) with the `https://…` URL of the image (`build/rs485_spb_gateway.bin`; the QEMU build uses a signed image, §3.7). The Sparkplug codec accepts texts of up to 256 characters, and an update URL can have up to 255 characters (issue #87). The firmware rejects a longer URL and gives the cause. It never truncates the URL.
 - **Web:** the "Firmware" card of the status page, or the API: `POST /api/firmware` with `{"url": "https://…"}` (`application/json`, up to 255 characters) or with the image as the body (`application/octet-stream`). A different `Content-Type` gives 415. As for all writes, the request must have `X-Requested-With` (issue #100, SPEC §6.1). `GET /api/firmware` gives the version, the partition, the state and the progress.
 - `ota.enabled: false` (SPEC §6.1) rejects the two methods. In recovery mode and in commissioning, the web UI can always upload an image. This is the solution if the new firmware does not understand the configuration.
 
@@ -538,7 +534,7 @@ In commissioning mode, the gateway does not use the embedded example configurati
 
 - The download runs in a dedicated task (`fw_update`, 8 KB, priority 2, core 0) that exists only during the download. The Sparkplug task does not block. The firmware writes the flash sector by sector as the data arrives (`esp_https_ota`; it does not erase the full 4 MB at one time).
 - Only `https://`. The CA of the server is `ota.ca_file`. If it is not set, the firmware uses `mqtt.tls.ca_file` (with TLS active). If that is not set, it uses the public CA bundle of ESP-IDF. To verify the certificate, the firmware needs the time (SNTP).
-- The image must be from this project (the `project_name` of its `esp_app_desc_t`). The firmware checks this before it writes past the header. `esp_ota_end()` verifies the full image: the checksum and the SHA-256 and, when signatures are required (§3.7), the signature.
+- The image must be from this project (the `project_name` of its `esp_app_desc_t`). The firmware checks this before it writes past the header. `esp_ota_end()` verifies the full image: the checksum and the SHA-256. The default build does not require a signature. The QEMU build also verifies the signature (§3.7).
 - If a step fails, the running firmware continues, and the state gives the cause. If the image is valid, the gateway publishes the state `rebooting into <versión>` and does an orderly restart (NDEATH).
 
 **State:** `Firmware Update/State` (String, alias 41) and `Firmware Update/Progress` (UInt32 %, alias 42). They are in the NBIRTH, and in NDATA when they change (every 10 %). The shell (`status`, line `ota`) and `GET /api/firmware` also give the details.
@@ -582,119 +578,48 @@ In commissioning mode, the gateway does not use the embedded example configurati
 - **Broker not available when the new firmware boots:** the gateway returns to the earlier image when the time limit expires. This is the safe option: the firmware cannot tell the difference between a broker that is not available and a firmware that cannot connect. The earlier image was already confirmed. Do the update again when the broker is available again.
 - While an image is on trial, the firmware does not accept a different update. The state gives the rejection (`refused: the running firmware is on trial (not confirmed yet)`), but the phase stays the trial phase. The shell and `GET /api/firmware` continue to show the remaining time (issue #101).
 
-**Images that would lose the encrypted NVS (issue #102).** Each image declares its capabilities in a 32 B block immediately after its `esp_app_desc_t` (section `.rodata_custom_desc`, offset 288 in the image). The block holds `GWCP`, the version, the size and two flags: *encrypted NVS* (`CONFIG_NVS_ENCRYPTION`) and *encrypted flash*. A gateway can have an encrypted NVS (or a pending migration). On such a gateway, the firmware rejects an image that does not declare encrypted NVS. That image could not read the NVS and would erase it (bdSeq, secrets), and a later *rollback* would also find it erased.
+**Images that would lose the encrypted NVS (issue #102).** Each image declares its capabilities in a 32 B block immediately after its `esp_app_desc_t` (section `.rodata_custom_desc`, offset 288 in the image). The block holds `GWCP`, the version, the size and two flags: *encrypted NVS* (`CONFIG_NVS_ENCRYPTION`) and *encrypted flash* (only for information; no build in `main` sets it, §3.7). A gateway can have an encrypted NVS (or a pending migration). On such a gateway, the firmware rejects an image that does not declare encrypted NVS. That image could not read the NVS and would erase it (bdSeq, secrets), and a later *rollback* would also find it erased.
 
 The rejection occurs as soon as the header arrives (the first 320 B of an upload, or the first KB of a download, read again from the partition). This is much before `esp_ota_set_boot_partition`: `failed: image <v> refused: built without NVS encryption (this device's NVS is encrypted)`. An image without the block (from before this change) counts as an image that does not declare encrypted NVS. While the NVS stays unencrypted (image on trial, no LittleFS), or in the build without encryption, the firmware accepts all images, as before.
 
-### 3.7 Production: signature, Secure Boot and flash encryption (FW-2, FW-3)
+### 3.7 eFuse-burning features: archived (FW-2, FW-3, CFG-7)
 
-> **Irreversible.** **Never** flash the production build on a development board. The production build burns eFuses at the first boot. After this, the board boots only images signed with **that** key. Its flash is encrypted with a key that nobody can read, there is no JTAG, and the UART download mode is disabled permanently. Such a board is not usable for development. The default build (`idf.py set-target esp32s3 build`) does not sign, does not encrypt and burns no eFuse.
+**Decision of issue #133 (option 3):** the project does not burn eFuses on the board. These features are not in `main`:
 
-**What `sdkconfig.production` does** (overlay on `sdkconfig.defaults`):
+- Secure Boot V2 with RSA-3072 (FW-2);
+- flash encryption in *release* mode (FW-3);
+- NVS encryption with an HMAC key in the eFuse block KEY5 on the board (the eFuse part of CFG-7);
+- the serial download mode disabled permanently (`CONFIG_SECURE_DISABLE_ROM_DL_MODE`).
 
-| Function | Options | What occurs at the first boot |
-|---|---|---|
-| Secure Boot V2 (FW-2) | `CONFIG_SECURE_BOOT_V2_ENABLED`, RSA-3072 PSS (the only scheme of the S3) | The bootloader calculates the SHA-256 of the public key of each signature block. It burns each digest into the first free eFuse block (`SECURE_BOOT_DIGEST0`: KEY0 with one signing key), before the flash encryption key. It revokes the digest slots that stay empty. After this, at each boot, the ROM verifies the bootloader and the bootloader verifies the app |
-| Signature of the OTA images (FW-1 + FW-2) | — (part of Secure Boot) | `esp_ota_end()` rejects all images that the key of that digest did not sign |
-| Unsigned images in the build | `CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=n` | The private key is not on the build machine: sign the images separately (`tools/sign_firmware.sh`) |
-| JTAG | (default with Secure Boot and encryption) | The first boot burns `DIS_PAD_JTAG`, `DIS_USB_JTAG` and `SOFT_DIS_JTAG` |
-| Download mode | `CONFIG_SECURE_DISABLE_ROM_DL_MODE` | Disabled permanently: no flash read and no flash write through UART. The only procedure to change the firmware is a signed OTA |
-| Flash encryption (FW-3) | `CONFIG_SECURE_FLASH_ENC_ENABLED`, *release* mode, XTS-AES-128 (256-bit key) | After the Secure Boot digests, the chip generates the key and burns it into the next free block (KEY1 with one signing key) with read protection. It encrypts in place the bootloader, the partition table, `otadata` (always) and the app image in `ota_0` (only the length of the image). It also encrypts the partitions marked `encrypted` (`storage`, `coredump`). It encrypts `ota_1` only if `ota_1` holds a valid image: after the factory procedure, `ota_1` is empty |
-| Partition table | `partitions-production.csv`, `CONFIG_PARTITION_TABLE_OFFSET=0x10000` | The same partitions, with `encrypted` on `storage` (LittleFS) and `coredump`. The table moves to 0x10000. The bootloader with Secure Boot and encryption is 36 864 B (40 960 B signed), and it does not fit below 0x8000. `nvs`, `otadata` and `phy_init` move to 0x11000–0x1A000. The apps, `storage` and `coredump` stay at the same addresses |
-| Encrypted NVS (CFG-7) | `CONFIG_NVS_ENCRYPTION` with an HMAC key | The app burns KEY5 (`HMAC_UP`). Flash encryption does not cover NVS: NVS has its own scheme |
+**The reason.** This is an open-source project for a board that anyone can buy. Each of these features burns eFuses at the first boot, and an eFuse burn is permanent. After the burn, only the person with the signing key can change the firmware. The owner of the board cannot read or flash the board through USB. This is a vendor lock, and the project does not lock the devices of their owners.
 
-eFuse key blocks in use, with one signing key: KEY0 (Secure Boot digest), KEY1 (flash encryption), KEY5 (NVS HMAC, CFG-7). At the first boot, IDF v6.1 first enables Secure Boot V2: it burns the digests into the first free blocks. Then it burns the flash encryption key into the next free block. Thus, with N signing keys in the bootloader signature block (N = 1 to 3), the digests use KEY0 to KEY(N−1). The flash encryption key uses KEY(N). The other blocks below KEY5 stay free, for example for the DS peripheral of §6.5.1.
+**The archive branch.** The branch `archive/efuse-production` keeps these features as they were in `main` at commit 4a0e01c. It contains:
 
-> **Caution: Put all the reserve signing keys in the bootloader signature block before the first boot.** The first boot revokes the empty digest slots. After this, you cannot add a reserve key in a free block.
+- the overlay `sdkconfig.production` and the partition table `partitions-production.csv`;
+- `tools/sign_firmware.sh` (the offline signature and its checks), `tools/check_production.sh` and `tools/e2e/secure_boot_qemu.sh`;
+- the CI job `firmware-production`;
+- the build checks of the production options (issues #93 and #108 B7) and their host tests;
+- §3.7 and §6.12 of its `idf/README.md`: the factory procedure, the management of the signing key and the known limitations.
 
-**Management of the signing key:**
+> **Warning: Do not flash a build of the archive branch on a board that you want to use again.** Its first boot burns eFuses, and you cannot undo this. Nobody tested that branch on a real board, and the project does not maintain it.
 
-- It is **one RSA-3072 key for each product** (or for each batch), not for each gateway. The person who has the key can publish firmware for all the gateways with its digest. A person who loses the key can never update these gateways again.
-- The key is **not on the build machine**. It is in an HSM (PKCS#11, `--hsm-config` of `espsecure`) or on a machine without a network. Keep an encrypted backup copy at a different physical location.
-- Generate the key one time: `espsecure generate-signing-key --version 2 --scheme rsa3072 gw_signing_key.pem` (or in the HSM).
-- Only the persons responsible for releases sign. Record each signature (version, image hash, person).
-- **Never** put the key in the repository. `.gitignore` excludes `*signing_key*.pem`, `keys/`, and `key.pem` and `other.pem` (the keys of `tools/e2e/secure_boot_qemu.sh`). The tests generate the test keys (E2E, `--test-key`) in `build-qemu/` and in `build-prod/test-signed/`, which are also not in version control. Test keys are not valid for gateways.
-- **Published digest.** Publish the SHA-256 of the public key (the value that the first boot burns into the eFuse) separately from the build. Use a channel that is not the channel of the images (a signed release sheet, the factory system). The factory compares it with the images before the flash (see below). `sign_firmware.sh` requires it in all its modes, except `--test-key` (issue #103).
-- **Public key.** The factory also needs the public key (`espsecure extract-public-key --version 2 --keyfile gw_signing_key.pem gw_signing_pub.pem`) to verify the RSA signatures. It is not secret: you can put it in version control with the releases. The check compares its digest with the published digest. Thus a changed public key in the repository does not pass.
-- **Revocation:** Secure Boot V2 accepts up to 3 digests. To make key rotation possible, also sign the bootloader with a second reserve key (`--append-signatures` of `espsecure sign-data`). Then the first boot burns the two digests. Without this, you cannot revoke a compromised key. You cannot add a reserve key later: the first boot revokes the empty digest slots.
+**The default build burns no eFuse.** This was examined on the default build of this change (`idf.py set-target esp32s3 build`, IDF v6.1):
 
-**Factory procedure** (for each gateway, with blank eFuses):
+- The `sdkconfig` has no option that burns an eFuse. These options are off: `CONFIG_SECURE_BOOT`, `CONFIG_SECURE_FLASH_ENC_ENABLED`, `CONFIG_SECURE_DISABLE_ROM_DL_MODE`, `CONFIG_SECURE_ENABLE_SECURE_ROM_DL_MODE`, `CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK` and `CONFIG_NVS_ENCRYPTION`.
+- The ROM log mode stays `CONFIG_BOOT_ROM_LOG_ALWAYS_ON` (the IDF default). The other ROM log modes burn an eFuse at the first boot.
+- `BOOTLOADER_APP_ROLLBACK_ENABLE` (FW-1) uses only `otadata`. It is not the *anti-rollback*, which burns an eFuse counter.
+- The app and the bootloader contain no function that writes eFuses (`esp_efuse_write_*`, `esp_efuse_utility_burn_*`, `efuse_hal_program`). `xtensa-esp32s3-elf-nm` finds only read functions, for example the MAC address and the chip version.
 
-```bash
-cd idf
-idf.py -B build-prod -D SDKCONFIG=build-prod/sdkconfig \
-       -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.production" build
-# on the key machine (or with --hsm-config and --pub-key):
-tools/sign_firmware.sh --keyfile /ruta/segura/gw_signing_key.pem --build-dir build-prod \
-       --expect-digest <digest publicado>
-# at the factory station, BEFORE the flash: the two images are this build, signed only with
-# the real key (RSA signature verified with its public key)
-tools/sign_firmware.sh --check --pub-key gw_signing_pub.pem --expect-digest <digest publicado> \
-       --build-dir build-prod
-# flash in clear text: the first boot encrypts everything
-python -m esptool --chip esp32s3 -p /dev/ttyUSB0 write-flash \
-    0x0 build-prod/bootloader/bootloader-signed.bin \
-    0x10000 build-prod/partition_table/partition-table.bin \
-    0x17000 build-prod/ota_data_initial.bin \
-    0x20000 build-prod/rs485_spb_gateway-signed.bin \
-    0x820000 build-prod/storage.bin
-```
+**The QEMU build** (`sdkconfig.qemu`) still has two features that issue #133 must decide. Each one uses the emulated eFuse file of the run, and nothing real is burned:
 
-`sign_firmware.sh` (issue #93):
+- **Signed OTA images without Secure Boot** (`CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT`). `esp_ota_end()` verifies the RSA-3072 signature of each image with the public key of the running app. This burns no eFuse, also on a board. `tools/e2e/run_e2e.sh` generates the test key in `build-qemu/`.
+- **NVS encryption** with the HMAC key in KEY5, and the migration from an unencrypted NVS (§3.5, issues #67 and #94).
 
-- **It rejects an incomplete build.** Without Secure Boot V2, flash encryption in *release* mode, `CONFIG_SECURE_DISABLE_ROM_DL_MODE` or `CONFIG_NVS_ENCRYPTION`, it signs nothing. The build also checks this. With `sdkconfig.production` in the chain, the `sdkconfig` check (issue #83, §3.3) adds these options. The check fails if an old or manually edited `sdkconfig` contradicts them.
-- **`--test-key` never writes the factory names.** It signs with a throwaway key in `build-prod/test-signed/` (`bootloader-TESTKEY-signed.bin`, `rs485_spb_gateway-TESTKEY-signed.bin`, `signing_key_digest-TESTKEY.bin`), and the procedure does not flash these files. It can find images with the factory names that are not a coherent set. A coherent set has these properties:
-  - it has the two images and the digest file;
-  - the key of that digest signs the two images;
-  - each app block is from a key that also signs the bootloader;
-  - no block is from a known test key.
+Until #133 decides, the project adds no work that depends on these two features.
 
-  The script deletes images that are not a coherent set. Such sets came from the earlier version of the script, or from a partial run with the digest of a different key (issue #103). The script keeps a valid set with reserve signatures. It rejects `--keyfile` with a known test key.
-- **`--expect-digest` is mandatory** to sign (`--keyfile`, `--hsm-config`) and in `--check` (issue #103). The script rejects a key with a digest that is not the published digest **before** it signs. Thus the result does not depend on the test keys on this machine: a test key generated in a different checkout also does not pass.
-- **No remaining files:** each run first deletes the outputs that it will write. It deletes them again if it fails. A failed signature leaves no old or partial images.
-- **`--check --pub-key P --expect-digest D`** (issue #103) fails with a non-zero exit code, and the `esptool` line does not run. A `--pub-key` that is missing, unreadable or not one of the expected digests stops the script before the image checks, with its own message. For the images, the script fails with `DO NOT FLASH` and exit code 1 if one of these conditions is true for one of the two images:
-  - A signature block is not from a key with digest `D`, or it is from a known test key. (Repeat the two options for each reserve key.)
-  - The RSA-PSS signature of a block does not verify **alone** with the public key of its digest. `espsecure verify-signature --version 2` runs on a copy of the image where the signature sector has only that block. On the full image, it passes if **any** block verifies with the key. Thus a block 1 with the real key, a bad signature and a corrected CRC was hidden behind block 0. `signature-info-v2` was the only check before #103. It examines the CRC and the digests, but **not** the signature.
-  - The blocks of the **bootloader** are not exactly from the expected keys (all the given `D` values, no more and no less). Or a block of the **app** is from a key that the bootloader does not have. The first boot burns the digest of each valid bootloader block and revokes the remaining free slots. After this, the bootloader accepts only apps from these keys. Without this check, with `D1` and `D2` expected, these cases passed:
-    - a bootloader signed only with `K1` and an app signed only with `K2`. The eFuses are burned, the bootloader rejects the app, and there is no download mode;
-    - a bootloader signed only with `K1`. The reserve key is lost permanently.
-  - The signed content is not the current build. The signed content must be the unsigned image in the directory, padded with `0xFF` to 4 KB, then the signature sector. The script rejects an old image signed with the real key from a different build (`STALE`).
-  - An image is missing. (The script checks each key read before this, because `set -e` does not apply in `$(...)`.)
-- **Reserve keys:** the script signs with one key. Add the reserve keys after this (`espsecure sign-data --append-signatures`). Then give `--check` all the digests and all the public keys.
+> **Caution: Never flash the QEMU build on a board.** On a real chip, its first boot burns the HMAC key into KEY5 for the NVS encryption, and you cannot undo this. Also, the QEMU build simulates the I/O.
 
-1. The first boot takes time (it encrypts approximately 2.6 MB: the bootloader, the partition table, `otadata`, the app image, `storage` and `coredump`) and restarts automatically. **Do not cut the power** during this boot.
-2. After the first boot, you cannot flash the gateway again through UART. The app shows `NVS partition "nvs" is encrypted` on the console. The production bootloader writes only warnings (`CONFIG_BOOTLOADER_LOG_LEVEL_WARN`).
-3. Load the configuration through the web UI or the shell (§3.4). Do the next updates by OTA (§3.6) with `rs485_spb_gateway-signed.bin`.
-
-**What the project verified (without a board):**
-
-- **`sign_firmware.sh` after #103, tested manually** with throwaway keys in a separate directory (nothing in the repository):
-  - The script rejects `--keyfile` without `--expect-digest`, or with the digest of a different key, before it signs.
-  - It rejects `--check` without `--pub-key`, or with the public key of a different key.
-  - `--check` accepts the newly signed images. It rejects these: a changed RSA signature with a corrected block CRC (`BAD SIGNATURE`; `signature-info-v2` accepted it), the app image signed before a change of the build (`STALE`), an image signed with a key that is unknown here (`WRONG KEY`), and missing images.
-  - With two blocks (key and reserve, `--append-signatures`), `--check` requires the two public keys.
-  - `--test-key` keeps a coherent set with the factory names. It deletes a partial set (bootloader signed with the test key, and the digest of a different key). It also deletes a set with the app signed with a key from a different machine.
-- **Second review of #103, tested manually** (a test script with throwaway keys outside the repository, deleted after the test; 21 cases):
-  - With `D1` and `D2` expected, the script rejects a bootloader only with `K1` and the app only with `K2` (`KEY SET`). It also rejects a bootloader only with `K1`. A bootloader with `K1`+`K2` passes with an app with `K1`, `K2` or both.
-  - The script rejects a bootloader with `K1`+`K2` when only `D1` is expected.
-  - The script rejects a block 1 with the real key, a changed signature and a corrected CRC, behind a good block 0 (`BAD SIGNATURE: block 1`). This applies to the app and to the bootloader. `espsecure verify-signature` on the full image accepts it.
-  - An unreadable `--pub-key` or `--keyfile` gives a clear message. An unreadable test key gives a warning and does not add an empty digest.
-  - `--test-key` keeps a set with two keys (bootloader and app with `K1`+`K2`, digest of `K1`). It deletes a set where the app has an added block from the test key.
-  - The earlier version of the script accepted the first two cases and the hidden signature. It also deleted the set with two keys.
-- The production build compiles with 0 warnings (§4.4). `tools/sign_firmware.sh --test-key` signs the bootloader (40 960 B) and the app (1 511 424 B) with a throwaway key in `build-prod/test-signed/`. `espsecure verify-signature` accepts the two signatures. Tested manually (issue #93):
-  - `--test-key` leaves nothing with the factory names. It also deleted the test images that the earlier version left with these names in `build-prod/`.
-  - The script rejects `--keyfile` with the test key.
-  - `--check` accepts the images signed with the expected key. It rejects a different key, the test key with the factory names, and missing images.
-  - A signature with an unreadable key leaves no images.
-  - The script rejects a `sdkconfig` without `SECURE_DISABLE_ROM_DL_MODE` and `NVS_ENCRYPTION`.
-- **The OTA signature verification does run in QEMU.** The emulator build requires signed images without Secure Boot (`CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT`, no eFuses). `esp_ota_end()` uses the same RSA-PSS verification code, with the public key from the running app instead of the eFuse. In the E2E, the firmware rejects an image signed with a different key (§4.3).
-- **Secure Boot V2 in QEMU, on the emulated eFuse file** (nothing real): `tools/e2e/secure_boot_qemu.sh` builds the emulator build with `sdkconfig.production` on top (without flash encryption), signed with a throwaway key. It boots this build three times on blank eFuses:
-  - First boot: the bootloader burns the digest (in the file), and the app boots.
-  - Second boot: the ROM verifies the signed bootloader (`secure boot verification succeeded`), and the app boots.
-  - Third boot, with the app signed with a different key: the bootloader rejects it (`image valid, signature bad`), and nothing boots.
-
-  This script is not part of `run_e2e.sh` (it is a different full build).
-- Flash encryption and Secure Boot on the real chip are **only compiled**: see §6.12.
+The measurements of the production build in §3.2 are from before the archive.
 
 ## 4. Verification (real evidence)
 
@@ -1008,12 +933,9 @@ The table does not have a row for each check. These checks are in the result par
 
 ### 4.4 QA-2
 
-`idf.py set-target esp32s3 build`: **0 warnings in the full build** (1219 targets). During the configuration, IDF v6.1 prints 5 CMake warnings of its own (`component_validation.cmake`: private directories of `esp_wifi` that `wpa_supplicant` uses). These warnings occur in the two builds. They do not come from the project or from the compiler. `tools/check_production.sh` also fails on a `CMake Warning`, but not on these. It accepts only the IDF `component_validation.cmake` warnings about directories in `$IDF_PATH/components`.
+`idf.py set-target esp32s3 build`: **0 warnings in the full build** (1219 targets). During the configuration, IDF v6.1 prints 5 CMake warnings of its own (`component_validation.cmake`: private directories of `esp_wifi` that `wpa_supplicant` uses). They do not come from the project or from the compiler.
 
-The production build (`sdkconfig.defaults;sdkconfig.production`, §3.5 and §3.7) also has 0 warnings: 1222 targets, and an image of 1 517 508 B (not signed; measured with #145). `tools/sign_firmware.sh --test-key` signs and verifies the bootloader and the app. `tools/check_production.sh` (issue #95, also in the CI) does all of this. It also checks these limits:
-
-- The signed bootloader has 40 960 B. It ends 24 576 B before the partition table at 0x10000.
-- The signed app has 1 576 960 B. This is 37.6 % of `ota_0` and of `ota_1` (4 MB each).
+The production build and its checks (`tools/check_production.sh`, issue #95) are on the branch `archive/efuse-production` (§3.7).
 
 The components of the project compile with `-Wall -Wextra -Werror`.
 
@@ -1025,7 +947,6 @@ The components of the project compile with `-Wall -Wextra -Werror`.
 |---|---|
 | `host-tests` | Runs the host tests (CTest). Decodes the `spb_dump` payloads with the official proto. Runs the self-test of the harness (`tools/e2e/test_harness.py`: the fault signatures of the emulator and the retry rule, #92/#96). Runs `pyflakes` on the Python tools, with no warnings (#107) |
 | `firmware` | Runs `idf.py set-target esp32s3 build` in the `espressif/idf:v6.1` image, pinned by digest. Fails if a `warning:` occurs. Publishes the binaries and the `idf.py size` output as artifacts |
-| `firmware-production` | Issue #95. Runs `tools/check_production.sh`. The script builds `sdkconfig.defaults` + `sdkconfig.production` (Secure Boot V2, flash encryption in *release* mode, encrypted NVS, `partitions-production.csv`). It fails on a `warning:`. It signs with `sign_firmware.sh --test-key` (a throwaway key; the outputs go only to `build-prod/test-signed/`, with TESTKEY in the name). It verifies the two signatures again with `espsecure verify-signature`. No image with a production name can contain that key. The script also checks that the signed bootloader ends before the partition table (`CONFIG_PARTITION_TABLE_OFFSET`). It checks that the compiled table is the production table (`storage` and `coredump` encrypted), and that the signed app fits in `ota_0` and `ota_1`. Then the job runs `tools/e2e/secure_boot_qemu.sh` (Secure Boot V2 on emulated eFuses, §3.7). It publishes only `size.txt`, `production-check.txt` and the logs. It publishes no image signed with the test key |
 | `e2e-plan` | Issue #121. Reads the E2E groups from `tools/e2e/scenarios.py` (`CI_GROUPS`). Gives the matrix of the two next jobs |
 | `e2e-build` | One job for each variant: `default` and `psram` (`E2E_PSRAM=1`, the octal PSRAM of QEMU, #85). Runs `run_e2e.sh` with `E2E_STAGE`. The script builds `build-qemu` or `build-qemu-psram`, and copies into one directory all the files that the harness needs: the merged flash image, the ELF, the two app images, the `sdkconfig`, `flash_args`, the test signing key and the version of `littlefs-python`. The `default` job also builds `build-qemu-plain` (the same for the two variants). Publishes the artifacts `e2e-images-default`, `e2e-images-psram` and `e2e-images-plain`. GitHub keeps them for 1 day, because they contain the throwaway signing key of the run |
 | `e2e` | One job for each group and each variant (10 jobs). Installs QEMU, mosquitto and the harness packages. Gets the images of its variant, and `e2e-images-plain` when the group contains the OTA to NVS encryption (`GW42`). Runs `run_e2e.sh --only <group>` with `E2E_PREBUILT`: no build. In the `psram` jobs, the configuration, the Sparkplug engine, its payload buffer, mbedTLS and the *store & forward* ring are in PSRAM, as on the board. The GitHub containers do not permit `unshare`, so each job runs on the loopback interface of its container. Writes one line to the job summary: `N/N checks passed`, the retries and `qemu-exits.txt`. Publishes the logs, the payloads, `results.json`, `qemu-exits.txt` and the `fault-*.txt` dumps (#92, #96) as the artifact `e2e-<variant>-<group>`. Publishes `results.json` and `qemu-exits.txt` also as `e2e-result-<variant>-<group>` |
@@ -1144,19 +1065,19 @@ Legend for **Evidence**:
 
   The responses are atomic relative to the log (#56). The shell works with the rejected configuration. Q (show, mbread of a register, float32 and an absent device, rebirth, a rejected load with the path, check, a valid load that restarts). The shell has no password (physical access). `CONFIG_GW_SHELL_WRITE_COMMANDS=n` makes it read-only.
 - **CFG-7** Implemented: the secrets are outside the JSON, in NVS.
-  - The NVS is encrypted with the HMAC key in eFuse KEY5 in the production build (`sdkconfig.production`) and in QEMU. It is not encrypted in the default build.
+  - The NVS is encrypted with the HMAC key in eFuse KEY5 only in QEMU. It is not encrypted in the default build. The encryption with a key in eFuse on the board is out of scope (issue #133, §3.7).
   - Migration of a file with plaintext secrets (with an erase of the partition), and of an unencrypted NVS to the encrypted NVS (issue #67). The migration is safe against cuts. It does not occur while a new image is in its trial period (issue #94).
   - The gateway reserves the bdSeq on the boots without NVS, and without NVS when the copy is out of reach (issue #104).
   - On a migrated gateway, the gateway rejects an OTA to an image without NVS encryption (issue #102).
   - The combination of encrypted NVS without flash encryption does not configure outside the emulator (issue #103).
 
-  Evidence: H (`test_nvsraw`, with images from `nvs_partition_gen.py`: mixed partition, bdSeq from the raw pages, the migration copy, the boot decision, the bdSeq reservation; `test_ota`: the capabilities block; `sdkconfig_check_nvsenc_*`) + Q (QEMU emulates HMAC and eFuse: encrypted NVS; no plaintext secret in the full flash image after the migration; an unencrypted NVS migrated with the bdSeq, also with two cuts in the middle, and a boot without LittleFS after each cut; an OTA from the unencrypted build to the encrypted build with a *rollback*, and then confirmed; the return to the unencrypted build rejected, with the NVS intact). The production build on the board and the eFuse burn: C (irreversible, §3.5).
+  Evidence: H (`test_nvsraw`, with images from `nvs_partition_gen.py`: mixed partition, bdSeq from the raw pages, the migration copy, the boot decision, the bdSeq reservation; `test_ota`: the capabilities block; `sdkconfig_check_nvsenc_*`) + Q (QEMU emulates HMAC and eFuse: encrypted NVS; no plaintext secret in the full flash image after the migration; an unencrypted NVS migrated with the bdSeq, also with two cuts in the middle, and a boot without LittleFS after each cut; an OTA from the unencrypted build to the encrypted build with a *rollback*, and then confirmed; the return to the unencrypted build rejected, with the NVS intact).
 - **NET-5** Implemented, **not tested with a radio**: an access point `GW-Setup-XXXXXX` (WPA2, commissioning password) when there is no valid configuration, and with BOOT for 2–10 s. Q (the two triggers reach `gw_ap`; the QEMU build has no radio) + C (SoftAP, AP+STA).
 - **NET-6** Implemented: `network.hostname` (or a name derived from `edge_node_id`) in DHCP, and in mDNS with `_https._tcp` (or `_http._tcp` with `web.https: false`). H (schema, derivation) + Q (the responder starts with the derived name) + C (mDNS responses: `open_eth` has no multicast filter, §6.2.1).
 - **MQTT-4** Implemented: TLS 1.2 and 1.3 to the broker (`mqtt.tls`, SPEC §6.1). The CA comes from a PEM file in LittleFS (`ca_file`) or from the ESP-IDF bundle of public root CAs. The gateway always verifies the name (the `host`, also an IP literal against an IP SAN, or `server_name`). It always verifies the dates (it waits for SNTP). The gateway validates the file at boot. If the file is missing or is not PEM, the gateway reports it and does not try to connect. The mbedTLS memory is in PSRAM if there is PSRAM.
 
   Evidence: H (schema) + Q (TLS 1.3 with the CA from LittleFS and the name against the IP SAN; a `server_name` that the certificate does not contain → rejected; CA missing → error and no attempts) + C (bundle of public CAs).
-- **MQTT-5** Implemented: mutual TLS with a PEM client certificate and key in LittleFS (`mqtt.tls.cert_file`, `key_file`). The gateway validates them at boot. H (schema) + Q (a TLS 1.2 listener that requires a client certificate: NBIRTH, and mosquitto uses the CN of the certificate as the user name; without a certificate, the broker rejects the connection). The DS peripheral (a key out of reach of the firmware) is not implemented: see §6.5.1.
+- **MQTT-5** Implemented: mutual TLS with a PEM client certificate and key in LittleFS (`mqtt.tls.cert_file`, `key_file`). The gateway validates them at boot. H (schema) + Q (a TLS 1.2 listener that requires a client certificate: NBIRTH, and mosquitto uses the CN of the certificate as the user name; without a certificate, the broker rejects the connection). The DS peripheral (a key out of reach of the firmware) is out of scope, because it burns an eFuse (§6.5.1).
 - **SPB-14** Implemented: with `sparkplug.store_forward`, the gateway keeps the changes that occur without a Sparkplug session (broker down or primary host offline). It applies the exception and *deadband* rules. It keeps the changes in a circular buffer allocated at boot (40 000 samples in PSRAM; 512 in internal RAM without PSRAM). After the NBIRTH and the DBIRTHs, it publishes them from the oldest to the newest as DDATA/NDATA, with `is_historical` and their timestamp. It publishes 4 messages per loop. The logic is in `gw_sf` and `gw_node`.
 
   Evidence: H (ring, overflow, batches, history after the births, seq, a device without DBIRTH, a failed publish) + Q (broker stopped: three Voltage values and DI/3 on and off arrive as historical, in order, after the DBIRTH with the current value; internal ring, because QEMU has no PSRAM). The ring keeps exact 64-bit values and texts (continuation records).
@@ -1201,10 +1122,8 @@ Legend for **Evidence**:
   A *rollback* occurs at the time limit, on a rejected configuration, when there is not enough memory to boot, and on a restart during the trial period (§3.6). A rejection during the trial period does not hide the trial (issue #101).
 
   Evidence: H (`test_ota`: policy, retried confirmation, incomplete session, operator, rejections, URLs, progress, request body; `test_node`: metrics and NCMD; `test_config`: the `ota` section) + Q (download, upload, rejections, confirmation, the two *rollback* cases, a session without one DBIRTH that does not confirm, and a saved configuration that confirms, §4.3). The *rollback* when there is not enough memory for the configuration: C (QEMU cannot cause it without a different build).
-- **FW-2** Implemented, **not tested on the board**: Secure Boot V2 (RSA-3072) in `sdkconfig.production`. `tools/sign_firmware.sh` signs the images outside the build machine (a key in a file, an HSM or a test key). It verifies each signature. Before you flash, `--check` verifies the RSA signature with the public key, the published digest, and that the images are the current build (issue #103). The configuration disables JTAG and the download mode. §3.7 gives the factory procedure and the key management.
-
-  Evidence: C (production build, 0 warnings; offline signature and verification; in the CI, the `firmware-production` job with `tools/check_production.sh`, #95) + Q (the QEMU build requires signed images: the gateway rejects an OTA signed with a different key, §4.3; Secure Boot V2 on emulated eFuses with `tools/e2e/secure_boot_qemu.sh`: the ROM and the bootloader verify, and a different key does not boot).
-- **FW-3** Implemented, **not tested on the board**: XTS-AES-128 flash encryption in *release* mode in `sdkconfig.production`, with `storage` (LittleFS) and `coredump` encrypted (`partitions-production.csv`). The NVS keeps its own encryption (CFG-7). C (production build, 0 warnings).
+- **FW-2** Out of scope (issue #133): Secure Boot burns eFuses. The implementation is on the branch `archive/efuse-production` (§3.7). The QEMU build still requires signed OTA images without Secure Boot, and #133 decides whether this stays. Q (the gateway rejects an OTA signed with a different key, §4.3).
+- **FW-3** Out of scope (issue #133): flash encryption burns eFuses. The implementation is on the branch `archive/efuse-production` (§3.7).
 - **REL-4** Implemented (syslog: yes; logs through MQTT: no). The gateway copies each `esp_log` line to the console, and also to an RFC 5424 syslog server over UDP (`syslog.host`, `port`, `level`). The task that writes the log never waits. The gateway formats the line only if the format lock is free (*try-lock*). Then the line goes into a ring of `CONFIG_GW_SYSLOG_SLOTS` lines (in PSRAM if there is PSRAM). If not, the gateway discards and counts the line, and later the server receives a warning with the number.
 
   The gateway does not forward the lines of the sender task itself (no recursion). Evidence: H (parse of the `esp_log` lines, RFC 5424 format, timestamps, full ring, schema) + Q (lines with PRI, HOSTNAME, APP-NAME and the SNTP timestamp; a warning with the broker down; `sequenceId` with no gaps at each boot; counters in `status`).
@@ -1213,7 +1132,7 @@ Legend for **Evidence**:
 - **REL-5** Implemented: `esp_reset_reason()` goes to the boot log and to the NBIRTH as `Node Info/Reset Reason` (String, alias 6). H + Q (`power-on` at the first boot, `software` after NCMD Reboot).
 - **REL-6**: measured in QEMU.
 - **QA-3** Partial: QEMU, no hardware. The harness detects a dead or hung QEMU and the known emulator faults, and dumps its state. It sets a time limit for each scenario. It retries only these faults, one time, if nothing failed before (#86, #90, #92, #96). It closes what an attempt leaves open (#105). A variant with *heap poisoning* is available for OTA (#104).
-- **QA-4** Implemented: `.github/workflows/ci.yml` (§4.5). It also includes the production build signed with a test key, its size limits and Secure Boot in QEMU (#95). It also includes the OTA scenarios with *heap poisoning* (#104).
+- **QA-4** Implemented: `.github/workflows/ci.yml` (§4.5). It also includes the OTA scenarios with *heap poisoning* (#104).
 
 ## 6. Deviations and known limitations (as they are)
 
@@ -1298,12 +1217,12 @@ The QEMU build is different from the board build at these points (`sdkconfig.qem
 - The factory reset and the migration erase the full 1 MB LittleFS partition. On real flash, this takes some seconds (in 64 KB steps).
 - The gateway decrypts the secrets of the encrypted NVS to RAM at boot. A memory dump (a *core dump* in flash) can contain them.
 - **Migration of NVS to encrypted NVS (issue #94).** The window without the entries in the NVS does not lose them now. They are in the copy `/cfg/.nvsmig` until the gateway wrote the encrypted NVS and read it again. That window is not «tens of ms». It includes the key generation and the burn of KEY5 (first encrypted boot), the erase of 24 KB, and all writes with their `commit`. In QEMU, the window is some seconds. Limits:
-  - The copy holds the secrets in plain text in LittleFS. In production, LittleFS is under flash encryption (FW-3). In a build with NVS encryption but without flash encryption, the blocks of the deleted file stay in the partition until LittleFS uses them again. **That combination does not configure now** outside the emulator build (issue #103): `gw_sdkconfig_check` rejects it (`CONFIG_NVS_ENCRYPTION=y without CONFIG_SECURE_FLASH_ENC_ENABLED …`). `-D GW_SDKCONFIG_CHECK=warn` permits it intentionally, for example on a development board. Zeros written over the file before the delete would not help: LittleFS is *copy-on-write*, and the new write goes to new blocks. The QEMU build still has this combination: the E2E checks that no plain text stays in the `nvs` partition, but not in `storage`.
+  - The copy holds the secrets in plain text in LittleFS. Flash encryption (FW-3) is not in `main` (§3.7). In a build with NVS encryption but without flash encryption, the blocks of the deleted file stay in the partition until LittleFS uses them again. **That combination does not configure now** outside the emulator build (issue #103): `gw_sdkconfig_check` rejects it (`CONFIG_NVS_ENCRYPTION=y without CONFIG_SECURE_FLASH_ENC_ENABLED …`). `-D GW_SDKCONFIG_CHECK=warn` permits it intentionally, for example on a development board. Zeros written over the file before the delete would not help: LittleFS is *copy-on-write*, and the new write goes to new blocks. The QEMU build still has this combination: the E2E checks that no plain text stays in the `nvs` partition, but not in `storage`.
   - Without a LittleFS that can mount (a partition that was never formatted), the migration does not occur. The NVS stays unencrypted until a boot with LittleFS (a configuration save formats LittleFS).
   - If the gateway cannot write the encrypted NVS two times in sequence, that boot continues without NVS (bdSeq in RAM, no secrets: MQTT with a password does not connect). The next boot tries again from the copy.
   - **bdSeq in the boots without NVS (issue #104).** A boot without NVS (a failed write, a pending copy while the image is on trial, an unreadable copy or page) takes the newest bdSeq that it knows (the copy, the raw pages, the previous reservation). Before it uses this bdSeq, it **reserves a block of 16 values** in `/cfg/.nvsmig-bdseq`. The file has two bytes: the first value that the gateway did not give yet, and the base of the chain of reservations. At the end of the block, the gateway reserves the next block (one LittleFS write each 16 connection attempts, only in those boots). While the base is the known bdSeq (the bdSeq of the copy), the reservation wins at any distance. (Issue #108 B3: before, after approximately 9 boots without NVS, the reservation was 128 or more ahead, and the serial arithmetic selected the bdSeq of the copy again. Boot 9 gave 138 and boot 10 gave 10.) The first boot with NVS continues from the reservation if its bdSeq is that base (if not, from the newer of the two). It then deletes the file: the bdSeq does not go back to a value that the hosts saw. **When a reservation is not possible** (no LittleFS, or its write fails), that boot gives random values. It never gives a value without a backup, because the next boot would give that value again. Forward jumps are not a problem for Sparkplug.
   - An image on trial keeps the NVS unencrypted until the gateway confirms the image. Then the gateway restarts one time (one more NDEATH/NBIRTH). Until then, the secrets stay as the previous image left them: unencrypted. The gateway creates the *timer* of that restart when it boots on trial, not in the Sparkplug task that confirms the image (REL-2, issue #104). If the NVS stayed unencrypted because LittleFS does not mount, the next boot could not do the migration either: the gateway does not restart (the log tells this).
-  - The gateway **rejects** an image without NVS encryption that arrives by OTA on a gateway that did the migration (issue #102, §3.6). If you flash such an image by serial (only in development: production has no download mode), the NVS is lost.
+  - The gateway **rejects** an image without NVS encryption that arrives by OTA on a gateway that did the migration (issue #102, §3.6). If you flash such an image through USB, the NVS is lost.
   - Only the host tests examine the error paths that destroy nothing (no memory, a read error of the flash or of the copy, a cut listing, an unreadable raw page). They test the pure decision (`gw_nvsmig_decide`, `gw_nvsmig_may_erase`), because QEMU cannot inject these errors. In QEMU, the power cuts and the *rollback* run.
   - **Unreadable copy = no NVS at each boot.** Sometimes `/cfg/.nvsmig` exists, but the gateway can never read it (damaged LittleFS blocks, a format from a newer firmware). Then the gateway always boots without NVS:
     - no stored secrets (MQTT with a password does not connect);
@@ -1472,13 +1391,8 @@ The QEMU build is different from the board build at these points (`sdkconfig.qem
 - **The certificate files go into LittleFS next to `config.json`** (the `fs/` folder at flash time, `idf.py flash`). A file change applies at the next restart. The secrets migration of CFG-7 erases the full partition, but it keeps these files (it copies them to RAM and writes them again).
 - **Memory.** A TLS session uses approximately 40 KB of mbedTLS heap. The custom allocator (`CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC`, in `gw_storage_init`) uses PSRAM when present, and internal RAM if not (QEMU, PSRAM not detected). In PSRAM without flash encryption (FW-3), these buffers are in plain text outside the chip.
 - The public CA bundle is the common subset of ESP-IDF (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN`). It is compile-only: the E2E uses its own CA.
-- **The private key of the client (MQTT-5) is in plain text in the flash** in the default build, in LittleFS. It is also in RAM while the firmware runs. The key cannot go to the encrypted NVS (CFG-7), because esp-mqtt needs all of the key in memory. In the production build, LittleFS is encrypted (FW-3, §3.7), and the flash does not show the key. Anyone who reads the flash gets the key. The gateway does not accept keys with a password (encrypted PEM).
-- **DS (Digital Signature) peripheral of the S3: not implemented, factory process documented.** With DS, the RSA key is never in plain text. An HMAC key burned in an eFuse block encrypts it, and only the peripheral signs. The steps are irreversible and per gateway:
-  1. Generate the key and the certificate.
-  2. Run `esp_secure_cert_tool.py` (component `espressif/esp_secure_cert_mgr`) with `--configure_ds`. It encrypts the key and burns the HMAC key in a free eFuse block (**not KEY5**, which CFG-7 uses). It also writes the `esp_secure_cert` partition.
-  3. Give the firmware `CONFIG_ESP_TLS_USE_DS_PERIPHERAL`, the component, and `credentials.authentication.ds_data` in place of `key`.
-
-  Only RSA (up to 4096 bits). You cannot test this in QEMU or without a board.
+- **The private key of the client (MQTT-5) is in plain text in the flash** in the default build, in LittleFS. It is also in RAM while the firmware runs. The key cannot go to the encrypted NVS (CFG-7), because esp-mqtt needs all of the key in memory. Flash encryption (FW-3) is not in `main` (§3.7). Anyone who reads the flash gets the key. The gateway does not accept keys with a password (encrypted PEM).
+- **DS (Digital Signature) peripheral of the S3: out of scope.** With DS, the RSA key is never in plain text. But DS needs an HMAC key burned in an eFuse block, and the project burns no eFuse (issue #133, §3.7).
 - **Cause of a certificate rejection (issue #70).** esp-tls reports the verification *flags* only if the certificate of the broker is still available after the failure. With TLS 1.3, it is not available (upstream report in `docs/upstream-reports.md`). The firmware installs its own mbedTLS verification callback through the `crt_bundle_attach` hook of esp-tls. This callback uses the CA of the file, or chains to the callback of the public CA bundle. It keeps the *flags*, the *subject*, the SANs and the dates of the certificate. The log tells the cause (`expired`, `not valid yet`, `does not carry the expected name`, `not signed by the configured CA`). A second log line gives the certificate, the expected name, the time of the gateway and the SNTP synchronization state: `TLS: certificate CN=broker.e2e [IP:10.0.2.2,DNS:broker.e2e], valid … to …; expected name 'wrong.e2e' (mqtt.tls.server_name); clock … UTC, SNTP synchronised`.
 - **Chain to the CA bundle without private symbols (issue #77).** The verification of the public CA bundle is a function of `esp_crt_bundle.c` without a public declaration. The firmware does not use the name of this function. It calls the public API `esp_crt_bundle_attach()`, reads the callback that this API installed in the mbedTLS configuration, and calls it from its own callback. If a future IDF gives the function a new name, nothing changes. If the callback type or the field changes, the build fails with a message that gives the reason (`_Static_assert`). If `esp_crt_bundle_attach()` does not install a callback any more, the attempt fails with an error in the log. The gateway never accepts a certificate without verification. The supported versions are in §3.1.
 - The handshake runs in the esp-mqtt task, not in the Sparkplug task, so it does not affect the TWDT of the Sparkplug task. After each NBIRTH, the log shows the stack margin of the two tasks (`stack free (high-water mark): sparkplug … mqtt_task …`).
@@ -1644,7 +1558,7 @@ The QEMU build is different from the board build at these points (`sdkconfig.qem
   The `string` tags stay limited by their `length` (up to 16 registers, 32 characters), which the configuration validation checks. The `Firmware Update/State` status has up to 95 characters (`GW_NODE_FW_STATE_MAX`). The firmware publishes a longer status truncated, with a warning in the log. The full reason (up to 239 characters) stays in the shell (`status`) and in `GET /api/firmware`. This limit keeps the Sparkplug engine, a single allocation, in the 21 504 B *heap* class (issue #80).
 
   The increase of the limit cost 193 B of stack per metric in the encoder and in the decoder (`Payload_Metric` of nanopb). The stack check of the Sparkplug task measured this (§4.3).
-- **There is no version *anti-rollback*** (`CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK`): the gateway accepts any valid (and signed, FW-2) image of the project, also an older one.
+- **There is no version *anti-rollback*** (`CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK`): the gateway accepts any valid image of the project, also an older one. The *anti-rollback* burns an eFuse counter, and the project burns no eFuse (§3.7).
 - **An interrupted download does not continue:** it starts again. The status shows how many bytes arrived (`failed: download of <v> interrupted after N bytes`). The firmware reads the count before `esp_https_ota_abort()`, which releases the *handle*. Issue #98: before, the firmware read the count after the abort, from released memory. The E2E cuts a download at 300 000 bytes (§4.3). While the firmware writes the flash, the other tasks can see short delays (each erased sector stops the cache for some ms). The Modbus polling did not stop in the E2E, but nobody measured it on the board.
 - A web upload runs in the `httpd` task and blocks the web UI until it ends.
 - While an image is in its trial period, the gateway does not accept a different update.
@@ -1661,19 +1575,12 @@ The QEMU build is different from the board build at these points (`sdkconfig.qem
   These writes take some ms, far from the 15 s of the watchdog. They do not occur on the polling path or on the data publish path.
 - **The gateway cannot install images older than the capability block (issue #102) when it has encrypted NVS.** This is also true when these images have NVS encryption, because they do not declare it. On a migrated gateway, OTA cannot go back to such a version.
 
-### 6.12 Secure Boot and flash encryption (FW-2, FW-3)
+### 6.12 No Secure Boot and no flash encryption (FW-2, FW-3)
 
-- **No board.** Secure Boot ran only in QEMU, with emulated eFuses (`tools/e2e/secure_boot_qemu.sh`, §3.7). The ROM and the bootloader verify the signatures, and an app signed with a different key does not boot. The offline signature and its verification also ran (`tools/sign_firmware.sh --test-key`). In the E2E, the RSA-PSS verification of each OTA image also ran. Nobody tested the real burn of eFuses, or disabled JTAG and download mode (QEMU does not model them).
-- **Irreversible.** Do a test first on a board that you can discard. An error in the key or in the procedure gives gateways that cannot boot a different image.
-- **Lost key = gateways with no updates.** Leaked key = any person can publish firmware for them. Revocation is possible only if the bootloader was signed from the start also with reserve keys (`--append-signatures`). `tools/sign_firmware.sh` signs with one key only.
-- **No download mode** (`CONFIG_SECURE_DISABLE_ROM_DL_MODE`): you cannot recover a gateway with two unusable OTA partitions through UART. The *rollback* (FW-1) prevents this in the normal cases. If you prefer to read the chip (not the flash), use the secure download mode (`CONFIG_SECURE_ENABLE_SECURE_ROM_DL_MODE`).
-- **No *anti-rollback*** (`CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK`): the gateway accepts an old image signed with the same key. If you enable it, it burns an eFuse counter at each security version.
-- The production build does not sign. Thus `idf.py flash` with this build does not operate. Flash it with `esptool` as in §3.7.
-- **`sign_firmware.sh --check` gives protection only if you run it** (issue #103): nothing prevents a flash with `esptool` without it. There is no real key yet, so the repository does not contain its public key or its digest. The factory receives them with each release. The comparison with the current build requires the build directory of the version that you flash (the unsigned images next to the signed images).
-- **Flash encryption, no board: compile-only.** A test in QEMU used an emulated eFuse file (nothing real). It used a build with the production security added to the emulator build (`sdkconfig.defaults;sdkconfig.qemu;sdkconfig.production`, signed with a test key). This build boots. The bootloader encrypts the flash at the first boot and restarts. The ROM verifies the bootloader signature (`secure boot verification succeeded`). But the encrypted app fails the checksum when it is read (`Checksum failed`): the emulator does not decrypt what it encrypted. Thus this test is not evidence for the encryption.
-- The first boot encrypts approximately 2.6 MB in place (§3.7). A power cut at that time can make the board unusable.
-- ***Release* mode:** there is no way back, and no way to flash in plaintext through UART. The project does not offer the *development* mode (which permits these), because it lets a person read the flash.
-- **Encrypted LittleFS:** `storage` has the `encrypted` flag. In partition mode, `joltwallet/littlefs` reads and writes through `esp_partition_*`, which encrypts and decrypts. Its *blockdev* mode does not support this (CFG-7 issue). The LittleFS writes (128 B) meet the 16 B alignment that XTS requires. This did not run: QEMU did not run the production build with LittleFS.
-- **Flash encryption does not encrypt NVS:** the HMAC scheme of CFG-7 protects it. `phy_init` stays in plaintext (it contains no secrets). IDF always encrypts `otadata` at the first boot.
-- **PSRAM:** with flash encryption active, the S3 also encrypts the PSRAM (as the ESP-IDF documentation says). Nobody measured the performance cost.
-- You flash the LittleFS image in plaintext before the first boot, and it becomes encrypted after the first boot. A new `config.json` can come only through the web UI, the API or the shell.
+The project does not use the eFuse-burning features (§3.7). Thus physical access to the board gives full control of it:
+
+- A person with access to the USB-C port can read all of the flash. The flash contains the secrets in NVS (not encrypted), the files of LittleFS (the client key of MQTT-5, the certificates) and the *core dump*. If the secrets are important, put the gateway in a locked cabinet.
+- That person can also flash a different firmware through USB. The owner can also do this, for example after a failed update.
+- The default build does not verify a signature on OTA images. The gateway accepts each image of this project (`project_name`) with a correct checksum and SHA-256 (§3.6). The access control of the channel protects the update: the web password, the ACL of the broker for NCMD, and TLS with a server check for the HTTPS download.
+- With PSRAM, the data in PSRAM is in clear text outside the chip (§6.5.1).
+- `idf.py coredump-info` reads the *core dump* through USB (#132).

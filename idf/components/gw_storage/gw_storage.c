@@ -190,7 +190,8 @@ static void bdseq_fallback(bool have, uint8_t old)
  * the encrypted NVS, reset-safe (issue #94):
  *   1. the NVS keys are read, or generated (HMAC key burned in eFuse) before anything changes;
  *   2. every entry is read into a copy (gw_nvsmig format) that is written to LittleFS
- *      (MIG_COPY, temporary file + fsync + rename; flash-encrypted in production);
+ *      (MIG_COPY, temporary file + fsync + rename; in clear: flash encryption, FW-3, is not
+ *      in main, issue #133);
  *   3. the partition is erased and initialised encrypted, the entries written, read back and
  *      compared, and MIG_DONE written last;
  *   4. the copy is deleted, then MIG_DONE.

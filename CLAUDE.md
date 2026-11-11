@@ -8,7 +8,8 @@ Firmware for an RS485 (Modbus RTU) → MQTT Sparkplug B 3.0 gateway on the Waves
 
 **This is an open-source project, not a product to flash, lock and sell.** The firmware runs on a board that anyone can buy, and the owner of the board must always be able to reflash it, read it and change it. Do not design for a vendor that controls the devices of its users:
 - The default build must never burn eFuses or take away the owner's access: no Secure Boot, no flash encryption in release mode, and no disabled download mode.
-- Do not add work that depends on the optional eFuse-burning overlay `sdkconfig.production` (FW-2, FW-3, the eFuse part of CFG-7). Issue #133 must first decide whether these features stay in the project.
+- The eFuse-burning features are not in `main` (decision of #133): Secure Boot V2 (FW-2), flash encryption (FW-3), NVS encryption with an HMAC key in eFuse on the board (the eFuse part of CFG-7), and the disabled download mode. The overlay `sdkconfig.production`, `partitions-production.csv`, the signing scripts and their CI job are on the branch `archive/efuse-production`, as they were in `main` at commit 4a0e01c. That branch gets no maintenance. Do not bring them back to `main`, and do not add other features that burn eFuses (for example the DS peripheral for the MQTT client key).
+- Two items of #133 still need a decision of the product owner: the signed OTA images without Secure Boot (`SECURE_SIGNED_APPS_NO_SECURE_BOOT`) and the NVS encryption with its migration code. Both are only in the QEMU build. Do not add new work that depends on them until #133 decides.
 - When a requirement in `docs/SPEC.md` assumes a vendor product (factory stations, locked devices), question it before you implement it.
 
 `idf/README.md` is the authoritative, detailed reference. It covers architecture, task table, memory budget, build, configuration, verification results and known limitations. Read the relevant section before changing a subsystem. The existing README, docs and GitHub issues are in Spanish; all new writing follows **Writing standard** below.
@@ -71,10 +72,6 @@ mkdir -p /tmp/spb && build-host/spb_dump /tmp/spb && python3 idf/tools/spb_decod
 # Firmware build (CI requires 0 warnings)
 idf.py set-target esp32s3 build && idf.py size
 
-# Production overlay (Secure Boot V2, flash + NVS encryption), signed with a throwaway key in the build dir
-tools/check_production.sh build-prod
-tools/e2e/secure_boot_qemu.sh /tmp/sb-qemu
-
 # E2E: real firmware in QEMU against mosquitto + a pymodbus RTU slave (~15–25 min; PSRAM ~45 min)
 python3 -m venv ~/e2e && ~/e2e/bin/pip install -r tools/e2e/requirements.txt
 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh                 # default (no PSRAM)
@@ -94,17 +91,17 @@ python3 idf/tools/e2e/test_harness.py
 python3 -m pyflakes idf/tools/e2e/*.py idf/tools/*.py
 ```
 
-CI (`.github/workflows/ci.yml`) runs host-tests, firmware, firmware-production, the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image. The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run (#121). A change is done when the host tests pass and the full E2E passes in both the default and `E2E_PSRAM=1` variants. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
+CI (`.github/workflows/ci.yml`) runs host-tests, firmware, the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image. The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run (#121). A change is done when the host tests pass and the full E2E passes in both the default and `E2E_PSRAM=1` variants. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
 
 ### sdkconfig pitfalls
 
-- `sdkconfig.defaults` and the overlays only apply when an `sdkconfig` is **created**. After changing them, delete the build dir's `sdkconfig` and reconfigure. For example: `rm build-prod/sdkconfig && idf.py -B build-prod -D SDKCONFIG=build-prod/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.production" reconfigure`.
+- `sdkconfig.defaults` and the overlays only apply when an `sdkconfig` is **created**. After changing them, delete the build dir's `sdkconfig` and reconfigure. For example: `rm build-qemu/sdkconfig && idf.py -B build-qemu -D SDKCONFIG=build-qemu/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.qemu" reconfigure`.
 - A stale `sdkconfig` shows up as undeclared `CONFIG_GW_*` symbols.
 - `cmake/gw_sdkconfig_check.cmake` fails the build when required options drift. If the firmware starts depending on a new option, add it to `GW_SDKCONFIG_REQUIRED`.
 - Overlays:
   - `sdkconfig.qemu` (the QEMU build, with `CONFIG_GW_IO_SIMULATED`);
-  - `sdkconfig.qemu-psram`, `sdkconfig.qemu-plain` (no NVS encryption) and `sdkconfig.qemu-poison`, each stacked on `sdkconfig.qemu`;
-  - `sdkconfig.production`.
+  - `sdkconfig.qemu-psram`, `sdkconfig.qemu-plain` (no NVS encryption) and `sdkconfig.qemu-poison`, each stacked on `sdkconfig.qemu`.
+- There is no production overlay in `main`. The eFuse-burning overlay `sdkconfig.production` is on the branch `archive/efuse-production` (#133).
 
 ## Architecture
 
@@ -176,7 +173,8 @@ Rules that tests and fixes must respect:
 
 ## Security constraints
 
-- Never run `espefuse`/`espsecure` against a real device or burn eFuses. QEMU's emulated eFuse file is fine.
+- Never burn eFuses on a real device, and never run `espefuse` against one. QEMU's emulated eFuse file is fine.
+- No build in `main` may burn an eFuse on the board (#133). A Kconfig option that burns eFuses (`CONFIG_SECURE_BOOT`, `CONFIG_SECURE_FLASH_ENC_ENABLED`, `CONFIG_SECURE_DISABLE_ROM_DL_MODE`, `CONFIG_SECURE_ENABLE_SECURE_ROM_DL_MODE`, `CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK`, `CONFIG_BOOT_ROM_LOG_ALWAYS_OFF`/`_ON_GPIO_*`, `CONFIG_NVS_ENCRYPTION` with the HMAC scheme) can appear only in a QEMU overlay.
 - Signing keys for tests are generated into build or scratch dirs (e.g. `build-qemu/e2e_signing_key.pem`) and are never committed.
 
 ## Conventions

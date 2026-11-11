@@ -96,7 +96,7 @@ bool gw_storage_nvs_encrypted_on_flash(void);
 bool gw_storage_secrets_encrypted(void);
 
 /** Issue #64: the web server's certificate and private key (PEM), kept with the secrets in
- *  NVS (encrypted in production). False if there is none yet. */
+ *  NVS (encrypted only with CONFIG_NVS_ENCRYPTION). False if there is none yet. */
 bool gw_storage_get_web_tls(char *cert, size_t cert_cap, char *key, size_t key_cap);
 
 esp_err_t gw_storage_set_web_tls(const char *cert, const char *key);
