@@ -57,6 +57,7 @@ typedef struct {
     uint32_t spill_ck_max;       /* most records replayed between two (the duplicates bound) */
     uint32_t spill_boot_ms;      /* the boot recovery: time and blocks read */
     uint32_t spill_boot_reads;
+    const char *spill_found;     /* #152: what the boot recovery found (gw_sfspill_found_text) */
     uint32_t spill_gc_pending; /* files waiting for their delete */
     uint32_t spill_gc_files; /* files deleted, in spill_gc_steps steps */
     uint32_t spill_gc_steps;

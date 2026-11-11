@@ -110,6 +110,22 @@ void gw_sfspill_stop(gw_sfspill_t *sp, const char *why)
     fail(sp, why);
 }
 
+const char *gw_sfspill_found_text(const gw_sfspill_t *sp)
+{
+    switch (sp->found) {
+    case GW_SFSPILL_FOUND_NONE:
+        return "new ring: no valid ring on the card";
+    case GW_SFSPILL_FOUND_OTHER:
+        return "new ring: another configuration or geometry";
+    case GW_SFSPILL_FOUND_SUPER:
+        return "ring found with its superblock";
+    case GW_SFSPILL_FOUND_VOTE:
+        return "ring found again without a superblock (vote)";
+    default:
+        return "boot recovery not ended";
+    }
+}
+
 static void tick(const gw_sfspill_t *sp)
 {
     if (sp->tick != NULL) {
@@ -408,8 +424,10 @@ static void boot_super(gw_sfspill_t *sp)
     sp->sb_next = (uint8_t)(best ^ 1);
     if (!sb_fits(sp, s)) {
         new_ring(sp, s->nonce);   /* another configuration or geometry */
+        sp->found = GW_SFSPILL_FOUND_OTHER;
         return;
     }
+    sp->found = GW_SFSPILL_FOUND_SUPER;
     sp->nonce = s->nonce;
     sp->nblocks = s->nblocks;
     sp->tail = s->tail_seq;
@@ -462,6 +480,7 @@ static void boot_list(gw_sfspill_t *sp, uint32_t now_ms)
         sp->phase = GW_SFSPILL_BOOT_PROBE;
     } else {
         new_ring(sp, 0);
+        sp->found = GW_SFSPILL_FOUND_NONE;
         sp->phase = GW_SFSPILL_READY;
     }
     if (sp->phase == GW_SFSPILL_READY) {
@@ -519,12 +538,14 @@ static void boot_probe(gw_sfspill_t *sp, uint32_t now_ms)
     }
     if (best < 0) {
         new_ring(sp, 0);
+        sp->found = GW_SFSPILL_FOUND_NONE;
         sp->phase = GW_SFSPILL_READY;
         sp->boot_ms = now_ms - sp->boot_start_ms;
         return;
     }
     /* the replay position is lost with the superblocks: everything still on the card is sent
      * (duplicates, never garbage); a new superblock is written before the next block */
+    sp->found = GW_SFSPILL_FOUND_VOTE;
     sp->nonce = sp->vote_nonce[best];
     sp->head = sp->vote_seq[best] + 1;
     sp->tail = 0;

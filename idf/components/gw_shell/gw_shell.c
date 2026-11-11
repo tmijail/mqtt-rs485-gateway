@@ -291,7 +291,7 @@ static int cmd_status(int argc, char **argv)
                     "ring %lu of %lu blocks (%lu extents of %lu blocks, %lu KB), %lu written "
                     "since boot; %lu superblock writes (%lu checkpoints, at most %lu samples "
                     "replayed between two); boot recovery %lu ms, %lu blocks "
-                    "read; %lu file(s) to delete, %lu deleted in %lu steps, %lu left for the "
+                    "read (%s); %lu file(s) to delete, %lu deleted in %lu steps, %lu left for the "
                     "next boot\n",
                     es.spill_ready ? "on" : "on, reading the card", (unsigned long)es.spill_count,
                     (unsigned long)es.spilled,
@@ -302,6 +302,7 @@ static int cmd_status(int argc, char **argv)
                     (unsigned long)es.spill_sb_writes, (unsigned long)es.spill_checkpoints,
                     (unsigned long)es.spill_ck_max,
                     (unsigned long)es.spill_boot_ms, (unsigned long)es.spill_boot_reads,
+                    es.spill_found != NULL ? es.spill_found : "?",
                     (unsigned long)es.spill_gc_pending, (unsigned long)es.spill_gc_files,
                     (unsigned long)es.spill_gc_steps, (unsigned long)es.spill_gc_left);
                 status_card(es.max_unfed_ms);

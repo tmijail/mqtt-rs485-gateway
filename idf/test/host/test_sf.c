@@ -947,6 +947,7 @@ static void test_spill_superblocks_lost(void)
     until_ready();
     TEST_ASSERT_TRUE(sp.ok);
     TEST_ASSERT_EQUAL_HEX32(nonce, sp.nonce);
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_VOTE, sp.found);   /* #152: not a new ring */
     memset(consumed, 0, sizeof(consumed));
     replay_reset();
     int n = replay(-1, "probe");
@@ -964,6 +965,50 @@ static void test_spill_superblocks_lost(void)
     until_ready();
     TEST_ASSERT_TRUE(sp.ok);
     TEST_ASSERT_NOT_EQUAL(nonce, sp.nonce);
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_NONE, sp.found);
+    TEST_ASSERT_EQUAL_size_t(0, gw_sf_count(&sf));
+}
+
+/* #152: the boot result tells what the recovery found, for the log line and the shell: a new
+ * ring (nothing valid on the card, or a ring of another configuration hash or geometry), the
+ * ring with its superblock, or the ring found again without a superblock (the vote). */
+static void test_spill_boot_result(void)
+{
+    card_new(4096);
+    boot(2, 8, 0x152);
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_NOT_YET, sp.found);
+    TEST_ASSERT_EQUAL_STRING("boot recovery not ended", gw_sfspill_found_text(&sp));
+    until_ready();
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_NONE, sp.found);
+    TEST_ASSERT_EQUAL_STRING("new ring: no valid ring on the card", gw_sfspill_found_text(&sp));
+    push_n(1500);
+    uint32_t nonce = sp.nonce;
+    boot(2, 8, 0x152);
+    until_ready();
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_SUPER, sp.found);
+    TEST_ASSERT_EQUAL_STRING("ring found with its superblock", gw_sfspill_found_text(&sp));
+    TEST_ASSERT_EQUAL_HEX32(nonce, sp.nonce);
+    TEST_ASSERT_TRUE(gw_sf_count(&sf) > 1000);
+    /* both copies damaged: the vote finds the same ring and its data again */
+    memset(sb_mem, 0x5A, sizeof(sb_mem));
+    boot(2, 8, 0x152);
+    until_ready();
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_VOTE, sp.found);
+    TEST_ASSERT_EQUAL_STRING("ring found again without a superblock (vote)",
+                             gw_sfspill_found_text(&sp));
+    TEST_ASSERT_EQUAL_HEX32(nonce, sp.nonce);
+    TEST_ASSERT_TRUE(gw_sf_count(&sf) > 1000);
+    /* another configuration hash, then another geometry: a new ring each time */
+    boot(2, 8, 0x153);
+    until_ready();
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_OTHER, sp.found);
+    TEST_ASSERT_EQUAL_STRING("new ring: another configuration or geometry",
+                             gw_sfspill_found_text(&sp));
+    TEST_ASSERT_NOT_EQUAL(nonce, sp.nonce);
+    TEST_ASSERT_EQUAL_size_t(0, gw_sf_count(&sf));
+    boot(2, 6, 0x153);
+    until_ready();
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_OTHER, sp.found);
     TEST_ASSERT_EQUAL_size_t(0, gw_sf_count(&sf));
 }
 
@@ -1375,6 +1420,7 @@ int main(void)
     RUN_TEST(test_spill_geometry_change);
     RUN_TEST(test_spill_card_full);
     RUN_TEST(test_spill_superblocks_lost);
+    RUN_TEST(test_spill_boot_result);
     RUN_TEST(test_spill_hole);
     RUN_TEST(test_spill_step1_files_deleted);
     RUN_TEST(test_spill_io_error);

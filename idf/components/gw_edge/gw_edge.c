@@ -869,6 +869,7 @@ static void publish_status(void)
         s_st.spill_ck_max = sp->ck_max;
         s_st.spill_boot_ms = sp->boot_ms;
         s_st.spill_boot_reads = sp->scan_reads;
+        s_st.spill_found = gw_sfspill_found_text(sp);   /* a constant string */
         s_st.spill_gc_pending = gw_sfspill_gc_pending(sp);
         s_st.spill_gc_files = sp->gc_files;
         s_st.spill_gc_steps = sp->gc_steps;
@@ -1331,11 +1332,11 @@ static __attribute__((noinline)) void spill_step(int64_t now)
     if (s_spill->phase == GW_SFSPILL_READY && !s_spill_ready_logged) {
         s_spill_ready_logged = true;
         ESP_LOGI(TAG, "store & forward: card ready in %lu ms (%lu blocks read): %lu samples "
-                      "waiting, ring %lu of %lu blocks, nonce %08lx%s; %lu file(s) to delete",
+                      "waiting, ring %lu of %lu blocks, nonce %08lx (%s); %lu file(s) to delete",
                  (unsigned long)s_spill->boot_ms, (unsigned long)s_spill->scan_reads,
                  (unsigned long)gw_sfspill_waiting(s_spill),
                  (unsigned long)(s_spill->head - s_spill->tail), (unsigned long)s_spill->nblocks,
-                 (unsigned long)s_spill->nonce, s_spill->sb_due ? " (new ring)" : "",
+                 (unsigned long)s_spill->nonce, gw_sfspill_found_text(s_spill),
                  (unsigned long)gw_sfspill_gc_pending(s_spill));
     }
     if (s_spill->gc_files != s_spill_gc_logged && gw_sfspill_gc_pending(s_spill) == 0) {

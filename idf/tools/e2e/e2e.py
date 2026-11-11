@@ -2522,9 +2522,10 @@ def check_restart_flush(gw, obs, relay, slave, node, prev_nb, first, how, auth=N
     gw.wait_log(flush_rx, 30, t)
     flush_l = (gw.find(r"store & forward: before the restart", t) or [""])[0]
     ready_rx = (r"store & forward: card ready in \d+ ms \(\d+ blocks read\): [1-9]\d* samples "
-                r"waiting, ring \d+ of \d+ blocks, nonce [0-9a-f]{8}; " if replay
+                r"waiting, ring \d+ of \d+ blocks, nonce [0-9a-f]{8} \(ring found with its "
+                r"superblock\); " if replay
                 else r"store & forward: card ready in \d+ ms \(\d+ blocks read\): 0 samples waiting, "
-                r".* \(new ring\); ")
+                r".* \(new ring: another configuration or geometry\); ")
     ready = gw.wait_log(ready_rx, 90, t)
     ready_l = (gw.find(r"store & forward: card ready", t) or [""])[0]
     ring_l = (gw.find(r"store & forward: spill to .* configuration [0-9a-f]{8}", t) or [""])[0]
@@ -2630,8 +2631,8 @@ def run_store_forward_spill(args, work, slave):
                        r"of 4 KB, configuration ([0-9a-f]{8})", t0)
     m = re.search(r"configuration ([0-9a-f]{8})", ring_log[0]) if ring_log else None
     cfg_hash = int(m.group(1), 16) if m else 0
-    ready = gw.wait_log(r"store & forward: card ready in \d+ ms .* \(new ring\); 3 file\(s\) to "
-                        r"delete", 20, t0)
+    ready = gw.wait_log(r"store & forward: card ready in \d+ ms .* \(new ring: no valid ring on the "
+                        r"card\); 3 file\(s\) to delete", 20, t0)
 
     def load(seconds, first):
         value, end = first, time.monotonic() + seconds
@@ -2661,7 +2662,8 @@ def run_store_forward_spill(args, work, slave):
     # the checkpoint and the deletes end (one step per loop); then the counters
     end_rx = (r"^spill\s+on: 0 samples on the card .*, 0 overwritten unsent \(card full\), 0 "
               r"block\(s\) lost as holes; .*\((\d+) checkpoints, at most (\d+) samples replayed "
-              r"between two\).*; 0 file\(s\) to delete, (\d+) deleted in (\d+) steps, 0 left")
+              r"between two\); boot recovery \d+ ms, \d+ blocks read \(new ring: no valid ring on "
+              r"the card\); 0 file\(s\) to delete, (\d+) deleted in (\d+) steps, 0 left")
     gc_line = card_line = stack_line = ""
     end = time.monotonic() + 30
     while wait_left(end) > 0 and not gc_line:
@@ -2715,7 +2717,7 @@ def run_store_forward_spill(args, work, slave):
     t2 = time.monotonic()
     gw2.start()
     ready2 = gw2.wait_log(r"store & forward: card ready in \d+ ms \(\d+ blocks read\): ([1-9]\d*) "
-                          r"samples waiting, ", 60, t2)
+                          r"samples waiting, .* \(ring found with its superblock\); ", 60, t2)
     ready2_line = (gw2.find(r"store & forward: card ready", t2) or [""])[0]
     relay.start()
     nb3 = obs.wait(f"{T}/NBIRTH/{node}", 70, lambda p: nb2 is None or bdseq_of(p) != bdseq_of(nb2[2]))

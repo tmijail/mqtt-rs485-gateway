@@ -167,6 +167,15 @@ enum {
     GW_SFSPILL_READY,
 };
 
+/* gw_sfspill_t.found (#152): what the boot recovery found on the card */
+enum {
+    GW_SFSPILL_FOUND_NOT_YET,   /* the recovery has not ended */
+    GW_SFSPILL_FOUND_NONE,      /* no valid ring (no superblock, no voted block): a new ring */
+    GW_SFSPILL_FOUND_OTHER,     /* a ring of another configuration hash or geometry: a new ring */
+    GW_SFSPILL_FOUND_SUPER,     /* this ring, from its superblock */
+    GW_SFSPILL_FOUND_VOTE,      /* this ring again, with no valid superblock (the vote) */
+};
+
 typedef struct {
     gw_sfspill_io_t io;
     void (*tick)(void);          /* after each card operation (feeds the watchdog) */
@@ -178,6 +187,7 @@ typedef struct {
     uint32_t nblocks;            /* N in use */
     /* state */
     int phase;
+    int found;                   /* GW_SFSPILL_FOUND_*: the result of the boot recovery */
     bool ok;                     /* false after an I/O error: the spill is not used any more */
     char why[48];                /* why it failed */
     uint32_t nonce;
@@ -299,6 +309,9 @@ bool gw_sfspill_checkpoint(gw_sfspill_t *sp, uint32_t now_ms);
  * GW_SFSPILL_IDLE: nothing is left to do. No delete step and no boot recovery step.
  */
 int gw_sfspill_flush_step(gw_sfspill_t *sp, bool want_block, uint32_t now_ms);
+
+/** #152: sp->found as text, for the log and the shell ("new ring: ...", "ring found ..."). */
+const char *gw_sfspill_found_text(const gw_sfspill_t *sp);
 
 /** Stop using the card (an operator formats it): as after an I/O error, with @p why. */
 void gw_sfspill_stop(gw_sfspill_t *sp, const char *why);
