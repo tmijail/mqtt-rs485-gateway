@@ -28,6 +28,10 @@
 # E2E_PSRAM and E2E_POISON must be the ones of the build; E2E_PLAIN=1 (the default) requires
 # <dir>/plain. The CI builds once per variant and runs its groups (scenarios.py) from the images.
 #
+# E2E_TCK_DIR=<dir> (issue #176): Java, HiveMQ CE and the Eclipse Sparkplug TCK, as
+# tools/e2e/tck_setup.sh <dir> installs them. Only for --only tck (E2E_TCK_TESTS,
+# E2E_TCK_PROTOCOLS: see tools/e2e/tck.py); without it that scenario shows [SKIP].
+#
 # E2E_PYTHON needs: paho-mqtt>=2, pymodbus==3.8.6, protobuf, grpcio-tools (tools/e2e/requirements.txt).
 # Host tools: mosquitto, qemu-system-xtensa (idf_tools.py install qemu-xtensa; needs libslirp0).
 set -euo pipefail

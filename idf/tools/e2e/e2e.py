@@ -56,6 +56,7 @@ sys.path.insert(0, str(HERE.parent))
 import spb_decode  # noqa: E402  (official proto loader + structural checks)
 sys.path.insert(0, str(HERE))
 import scenarios  # noqa: E402  (issue #121: the --only selection and the CI groups)
+import tck  # noqa: E402  (issue #176: the optional Sparkplug TCK scenario)
 
 # Defaults; main() overrides them from the command line or the environment. The MQTT port
 # is written into the config.json of the flash image under test, so any free port works.
@@ -773,7 +774,7 @@ MONITOR_ERRORS = []  # exceptions of the fault monitor (each fails the run)
 # is listed here. 900 s is less than twice the longest attempt measured on a loaded 4-CPU host
 # (the #97 integration with PSRAM in single-threaded TCG, 477 s, results.json "durations"; main
 # is about 200 s): on a slower host raise --timeout-scale / E2E_TIMEOUT_SCALE.
-SCENARIO_BUDGET_S = {}
+SCENARIO_BUDGET_S = {"tck": 3600.0}   # issue #176: 14 TCK tests, each with a boot and a HiveMQ
 DEFAULT_BUDGET_S = 900.0
 
 
@@ -5700,6 +5701,8 @@ def main():
         "refuse": lambda: check_suback_refused(args, work),
         "main": lambda: run(args, log, slave, MAIN_BROKER["proc"], conf, work),
         "umh": lambda: run_umh(args, work, slave),   # optional (issue #175)
+        # issue #176: only with --only tck, and only with E2E_TCK_DIR (else [SKIP])
+        "tck": lambda: tck.run(sys.modules[__name__], args, work, slave),
     }
     assert set(runners) == {name for name, _ in scenarios.SCENARIOS}
     # issue #135: without --only, the full run of this variant (scenarios.variant_of)
@@ -5734,7 +5737,7 @@ def main():
                 print(f"criterion 6: {topic}: {e}", flush=True)
             bad += len(errs)
         if not CAPTURE and chosen and set(chosen) <= set(SKIPPED):
-            # issue #175: every scenario of the run was a SKIP (a program it needs is absent)
+            # issues #175/#176: every scenario of the run was a SKIP (a program it needs is absent)
             print("[SKIP] 6. payloads decode: every selected scenario was skipped", flush=True)
         else:
             check(f"6. payloads decode with the official sparkplug_b.proto (Python protobuf "

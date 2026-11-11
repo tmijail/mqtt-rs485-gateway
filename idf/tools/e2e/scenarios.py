@@ -46,10 +46,12 @@ SCENARIOS = (
     ("refuse", ("refuse",)),   # part of "main"; alone only when "main" is not selected (#89)
     ("main", ("main",)),
     ("umh", ("umh",)),         # optional: only when named (issue #175)
+    ("tck", ("tck",)),         # optional: only when named (issue #176, the Sparkplug TCK)
 )
-# Issue #175: scenarios that a run selects only when --only names them. A full run and the CI
-# groups leave them out: they need a program that is not in the CI image (benthos-umh).
-OPTIONAL = {"umh"}
+# Issues #175 and #176: scenarios that a run selects only when --only names them. A full run and
+# the CI groups leave them out: they need programs that are not in the CI image (benthos-umh;
+# Java, HiveMQ CE and the TCK extension: E2E_TCK_DIR, tools/e2e/tck.py).
+OPTIONAL = {"umh", "tck"}
 ONLY_NAMES = tuple(dict.fromkeys(n for _, names in SCENARIOS for n in names))
 
 # Issue #135: the firmware assumes the PSRAM of the board. The PSRAM variant ("psram") runs the
