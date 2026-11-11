@@ -2088,14 +2088,21 @@ def run_mqtt5(args, work, mosquitto_log):
           f"{f'{will[0] - killed:.1f} s after the kill, bdSeq {bdseq_of(will[2])}' if will else 'missing'}")
 
 
+# Issue #73: the Maximum Packet Size of the test broker. Between the NBIRTH of GW26 (2065 B
+# with the node metrics of #132 and #173; it was below 2000 B before) and the Meter1 DBIRTH (about
+# 560 B) on one side, and the Bulk DBIRTH (about 3.8 KB) on the other, with a margin of more than
+# 500 B to each. A failed NBIRTH ends the session (#164), so the NBIRTH must fit.
+MAXPKT_B = 2600
+
+
 def run_max_packet(args, work, slave):
-    """Issue #73 (GW26, MQTT 5) against a mosquitto with max_packet_size 2000, which it
-    announces in the CONNACK: NBIRTH and the small DBIRTH of Meter1 go out; the DBIRTH of Bulk
-    (about 2.7 KB) is not sent, with a clear error and the shell showing it, and the session
+    """Issue #73 (GW26, MQTT 5) against a mosquitto with max_packet_size MAXPKT_B (2600), which
+    it announces in the CONNACK: NBIRTH and the small DBIRTH of Meter1 go out; the DBIRTH of Bulk
+    (about 3.8 KB) is not sent, with a clear error and the shell showing it, and the session
     stays up (no reconnection loop)."""
     node, port = "GW26", MQTT_PORT + 14
     conf = work / "broker-maxpkt.conf"
-    conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\nmax_packet_size 2000\n")
+    conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\nmax_packet_size {MAXPKT_B}\n")
     broker = start_broker(conf, work / "mosquitto-maxpkt.log")
     obs = Observer(port)
     t0 = time.monotonic()
@@ -2122,19 +2129,19 @@ def run_max_packet(args, work, slave):
            if nb else "no NBIRTH") + "; " + (" | ".join(gw.find(r"^config: ", t0)) or "no answer"))
     db = obs.wait(f"{T}/DBIRTH/{node}/{DEVICE}", 10)
     err = gw.wait_log(r"spBv1\.0/Plant1/DBIRTH/GW26/Bulk: \d+ bytes, more than the broker's Maximum "
-                      r"Packet Size of 2000 \(by \d+\): not published", 15, t0)
+                      rf"Packet Size of {MAXPKT_B} \(by \d+\): not published", 15, t0)
     time.sleep(8)
     # Issue #76: Bulk is polled (and reported to the Sparkplug task) every cycle, but its DBIRTH
     # is tried once per session, not rebuilt and rejected each time: the count stays at 1; a
     # rebirth tries it once more
-    asked, h = gw.shell("status", [r"^limit\s+broker Maximum Packet Size 2000 B; 1 message\(s\) too "
+    asked, h = gw.shell("status", [rf"^limit\s+broker Maximum Packet Size {MAXPKT_B} B; 1 message\(s\) too "
                                    r"large, not published \(last: spBv1\.0/Plant1/DBIRTH/GW26/Bulk\)"])
     shown = list(h.values())[0]
     bulk_cycles = len([r for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 2 and t >= t0])
     gw.console("rebirth")
     gw.wait_log(r"^rebirth: NBIRTH and every DBIRTH requested", 5, asked)
     time.sleep(3)
-    _, h2 = gw.shell("status", [r"^limit\s+broker Maximum Packet Size 2000 B; 2 message\(s\) too large"])
+    _, h2 = gw.shell("status", [rf"^limit\s+broker Maximum Packet Size {MAXPKT_B} B; 2 message\(s\) too large"])
     once = list(h2.values())[0]
     check("Issue #76 a DBIRTH larger than the broker's limit is not rebuilt on every change of its "
           "device: one attempt per session, one more per rebirth",
@@ -2151,7 +2158,7 @@ def run_max_packet(args, work, slave):
           "published (clear error, shown in the shell); the rest goes out and the session stays",
           nb and db and err and shown and not bulk and len(attempts) == 1 and not dropped,
           f"NBIRTH {'yes' if nb else 'no'}, Meter1 DBIRTH {'yes' if db else 'no'}, Bulk DBIRTH "
-          f"{len(bulk)}; {(gw.find(r'Maximum Packet Size of 2000', t0) or ['no error'])[0][:150]}; "
+          f"{len(bulk)}; {(gw.find(rf'Maximum Packet Size of {MAXPKT_B}', t0) or ['no error'])[0][:150]}; "
           f"{len(attempts)} connection(s); " + " | ".join(gw.find(r"^limit\s", asked)))
 
 
