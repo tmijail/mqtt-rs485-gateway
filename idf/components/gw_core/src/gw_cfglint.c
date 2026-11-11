@@ -12,8 +12,9 @@
  * name findings: warnings, or errors with the UMH preset (sparkplug.naming "umh").
  *
  * Other findings stay warnings, also with the preset: sparkplug.primary_host_id (UMH publishes
- * a Sparkplug 2.x STATE, #177), a device type (UMH gives no value for a template instance),
- * and a bytes tag (UMH gives no value for Bytes).
+ * a Sparkplug 2.x STATE, #177), a device type (UMH gives no value for a template instance;
+ * not with the preset, which publishes the tags as plain metrics, #174), and a bytes tag (UMH
+ * gives no value for Bytes).
  *
  * With the preset only, one more error: a device name that would make the node metric
  * Devices/<name>/Online of another device also a folder (#173).
@@ -179,7 +180,7 @@ size_t gw_config_lint(const gw_config_t *cfg, gw_lint_cb_t cb, void *ctx)
                        (unsigned)j);
             }
         }
-        if (d->type[0] != '\0') {
+        if (d->type[0] != '\0' && !umh) {   /* #174: the preset publishes plain metrics */
             snprintf(path, sizeof(path), "devices[%u].type", (unsigned)i);
             report(&l, GW_LINT_WARNING, path,
                    "UMH Core gives no value for a template instance: the tags of the device do "

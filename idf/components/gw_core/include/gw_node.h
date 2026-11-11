@@ -25,11 +25,15 @@
  *   modbus_tcp.enabled).
  *   80..95 #173 (UMH preset only): Devices/<name>/Online (Boolean) of device 0..15, with each
  *   ':' of the name as '/'.
+ *   60..66 and 70..74 #174 (UMH preset only, in place of the DataSets 54 and 56): Node
+ *   Info/Modbus/<counter> (Cycles, Failed Cycles, OK, Timeout, CRC, Frame, Exception) and Node
+ *   Info/Modbus TCP/<counter> (OK, Timeout, CRC, Frame, Exception), UInt64 sums of all devices.
  *
  * SPB-18 device types: a device with a `type` is published as one Template instance metric
  * (named after the type, alias 100 + its first tag) whose members are its tags, by name; the
  * NBIRTH carries one Template definition per type (no alias). DDATA carries the instance with
- * the changed members only. Devices without a type keep one metric per tag.
+ * the changed members only. Devices without a type keep one metric per tag. #174: with the UMH
+ * preset, a typed device also has one metric per tag, and the NBIRTH has no definitions.
  *
  * Store & forward (SPB-14, optional): with a gw_sf_t attached, changes that happen while the
  * node is not online (no session, or the primary host offline) are evaluated with the same
@@ -82,11 +86,18 @@ extern "C" {
 #define GW_ALIAS_TIME_SYNCED 55u  /* TIME-3 */
 #define GW_ALIAS_MODBUS_TCP 56u   /* issue #81 */
 #define GW_ALIAS_ONLINE_BASE 80u  /* #173: + device index, UMH preset only */
+#define GW_ALIAS_MB_FLAT_BASE 60u /* #174: + counter, UMH preset only */
+#define GW_ALIAS_TCP_FLAT_BASE 70u
+#define GW_MB_FLAT_COUNT 7
+#define GW_TCP_FLAT_COUNT 5
 
 #define GW_NODE_IO_COUNT        8
 #define GW_NODE_DIAG_METRICS    6   /* SPB-17, at most (RSSI only with Wi-Fi, Modbus with devices,
                                      * Modbus TCP with the gateway enabled) */
-/* Node metrics of the NBIRTH, without template definitions (3 of them FW-1) */
+/* #174: with the UMH preset: Uptime, Free Heap, Min Free Heap, RSSI and the plain counters */
+#define GW_NODE_UMH_DIAG_METRICS (4 + GW_MB_FLAT_COUNT + GW_TCP_FLAT_COUNT)
+/* Node metrics of the NBIRTH, without template definitions (3 of them FW-1) and without the UMH
+ * preset (it has no definitions, and its Devices/<name>/Online come from spb_payload_t.extra) */
 #define GW_NODE_BIRTH_METRICS   (10 + 3 * GW_NODE_IO_COUNT + GW_NODE_DIAG_METRICS + 1)
 /* Scratch metrics: a whole device (+1 template instance), or the NBIRTH with one template
  * definition per device type. */

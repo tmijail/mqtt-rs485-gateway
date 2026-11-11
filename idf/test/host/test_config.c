@@ -1079,10 +1079,11 @@ static void test_lint_umh_preset(void)
     TEST_ASSERT_TRUE_MESSAGE(parse(
         "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"gw\","
         "\"primary_host_id\":\"SCADA\",\"naming\":\"umh\"},\"devices\":[{\"name\":\"m\","
-        "\"unit_id\":1,\"tags\":[{\"name\":\"b\",\"area\":\"input\",\"address\":0,"
-        "\"type\":\"bytes\",\"length\":2}]}]}"), err.msg);
-    TEST_ASSERT_EQUAL_size_t(2, lint());
+        "\"type\":\"Pump\",\"unit_id\":1,\"tags\":[{\"name\":\"b\",\"area\":\"input\","
+        "\"address\":0,\"type\":\"bytes\",\"length\":2}]}]}"), err.msg);
+    TEST_ASSERT_EQUAL_size_t(2, lint());   /* #174: no type warning: plain metrics */
     TEST_ASSERT_EQUAL(0, lr.errors);
+    TEST_ASSERT_EQUAL(-1, lint_find("devices[0].type", ""));
 #undef UMH
 }
 

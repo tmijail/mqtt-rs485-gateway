@@ -43,7 +43,7 @@ UMH moves away from the fixed levels enterprise, site, area, line and work cell,
 | The default `Plant1` / `GW01` / `Meter1` | `umh.v1.Meter1._raw.Voltage` | The device becomes the enterprise. Two gateways with `Meter1` write to the same topic |
 | Group `Acme:Berlin:Packaging`, device `Meter1` | `umh.v1.Meter1._raw.Voltage` | The location in the group is lost |
 | Device `Acme: Berlin: Line 3: Meter 1` | The location is `Acme` only. `_Berlin` becomes the data contract | Wrong, and UMH gives no error |
-| Device with `type` (a template) | No topic | The device is not visible |
+| Device with `type` (a template) | No topic. With the UMH preset: a topic for each tag | The device is not visible without the preset |
 
 The embedded default configuration of the gateway stays neutral for all hosts. The UMH example is in the how-to.
 
@@ -86,7 +86,13 @@ The gateway keeps these items, because they are correct Sparkplug B 3.0 and othe
 - Each tag has the properties `engUnit`, `engLow`, `engHigh` and `Quality` (SPB-16).
 - A failed read gives a null value with the Quality BAD. UMH drops the null value and keeps the last good value. Thus UMH does not show that the value is old. With the UMH preset, the node metric `Devices/<name>/Online` tells UMH when a device goes offline (#173).
 
-The gateway must obey the Sparkplug specification fully. It does not change its default behaviour for one host. The UMH preset (#169, planned) will add plain metrics that UMH can read, and keep the Sparkplug rules.
+The gateway must obey the Sparkplug specification fully. It does not change its default behaviour for one host. The UMH preset (`sparkplug.naming: "umh"`, #169) adds plain metrics that UMH can read, and keeps the Sparkplug rules:
+
+- A typed device publishes its tags as plain metrics, and the NBIRTH has no template definitions (#174). A definition is necessary only for a template instance, so this obeys the specification.
+- The Modbus counters go out as plain node metrics, the sums of all devices (#174).
+- Each device has the node metric `Devices/<name>/Online` (#173).
+
+The preset changes nothing that the specification requires. It only selects one of the choices that the specification permits. Thus it is a host option, not a compatibility profile that deviates from the specification.
 
 ## No primary host: data can be lost
 

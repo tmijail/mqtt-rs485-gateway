@@ -16,6 +16,9 @@
  *   u32 format
  *   str sparkplug.group_id, str sparkplug.edge_node_id      (the topic of every replayed message)
  *   str sparkplug.device_prefix                             (#172: the start of each device_id)
+ *   u8  sparkplug.naming                                    (#174: the UMH preset replays the
+ *                                                            members of a typed device as plain
+ *                                                            metrics, not as a template instance)
  *   u16 device_count
  *   per device:  str name, str type (template), u16 first_tag, u16 tag_count
  *   u16 tag_count
@@ -50,7 +53,7 @@
  *      update the golden value in test_sfcfg.c; if not, add it to the "Left out" list above.
  *   3. Add the new field to the initializer below.
  */
-#define GW_SFCFG_HASH_FORMAT 2u   /* 2: sparkplug.device_prefix (#172) */
+#define GW_SFCFG_HASH_FORMAT 3u   /* 2: sparkplug.device_prefix (#172); 3: sparkplug.naming */
 
 #ifdef GW_SFCFG_GUARD_SELFTEST
 /* test/host (sfcfg_guard): one initializer short, as after a new field: the build must fail */
@@ -124,6 +127,7 @@ uint32_t gw_sfspill_cfg_hash(const gw_config_t *cfg)
     h = feed_str(h, cfg->sparkplug.group_id, sizeof(cfg->sparkplug.group_id));
     h = feed_str(h, cfg->sparkplug.edge_node_id, sizeof(cfg->sparkplug.edge_node_id));
     h = feed_str(h, cfg->sparkplug.device_prefix, sizeof(cfg->sparkplug.device_prefix));
+    h = feed_u8(h, (uint8_t)cfg->sparkplug.naming);
     h = feed_u16(h, cfg->device_count);
     for (size_t i = 0; i < cfg->device_count; i++) {
         const gw_device_cfg_t *d = &cfg->devices[i];

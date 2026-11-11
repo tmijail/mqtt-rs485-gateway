@@ -57,6 +57,21 @@ static const uint32_t k_mb_types[] = {SPB_DT_STRING, SPB_DT_BOOLEAN, SPB_DT_UINT
                                       SPB_DT_UINT32, SPB_DT_UINT32,  SPB_DT_UINT32,
                                       SPB_DT_UINT32, SPB_DT_UINT32,  SPB_DT_UINT32};
 
+/* #174: with the UMH preset (UMH Core gives no value for a DataSet), the counters of the two
+ * tables as plain UInt64 node metrics: the sums of all devices (and, for Modbus TCP, of the
+ * units without a device). The state of each device is Devices/<name>/Online (#173). Sums, not
+ * one metric per device and counter: 16 devices x 12 counters would not fit the NBIRTH in the
+ * payload buffer without PSRAM. */
+static const char *const k_mb_flat[GW_MB_FLAT_COUNT] = {
+    "Node Info/Modbus/Cycles", "Node Info/Modbus/Failed Cycles", "Node Info/Modbus/OK",
+    "Node Info/Modbus/Timeout", "Node Info/Modbus/CRC", "Node Info/Modbus/Frame",
+    "Node Info/Modbus/Exception"};
+static const char *const k_tcp_flat[GW_TCP_FLAT_COUNT] = {
+    "Node Info/Modbus TCP/OK", "Node Info/Modbus TCP/Timeout", "Node Info/Modbus TCP/CRC",
+    "Node Info/Modbus TCP/Frame", "Node Info/Modbus TCP/Exception"};
+_Static_assert(10 + 3 * GW_NODE_IO_COUNT + GW_NODE_UMH_DIAG_METRICS + 1 <= GW_NODE_METRICS_MAX,
+               "the NBIRTH of the UMH preset (no template definitions) fits n->metrics");
+
 /* ---------- helpers ---------- */
 
 void gw_node_init(gw_node_t *n, const gw_config_t *cfg, const gw_node_ops_t *ops,
@@ -95,7 +110,7 @@ static bool message_topic(const gw_node_t *n, const char *type, const char *devi
     return r > 0 && (size_t)r < cap;
 }
 
-/* #169: the UMH preset (sparkplug.naming "umh"). */
+/* #169: the UMH preset (sparkplug.naming "umh"). Declared before typed(). */
 static bool umh(const gw_node_t *n)
 {
     return n->cfg->sparkplug.naming == GW_NAMING_UMH;
@@ -226,10 +241,14 @@ static void set_quality(spb_metric_t *m, bool good)
     m->props.quality = good ? SPB_QUALITY_GOOD : SPB_QUALITY_BAD;
 }
 
-/* SPB-18: the device is published as a template instance. */
+static bool umh(const gw_node_t *n);
+
+/* SPB-18: the device is published as a template instance. #174: not with the UMH preset, which
+ * publishes the tags of a typed device as plain metrics (UMH Core gives no value for a
+ * Template). */
 static bool typed(const gw_node_t *n, uint16_t dev)
 {
-    return n->cfg->devices[dev].type[0] != '\0';
+    return n->cfg->devices[dev].type[0] != '\0' && !umh(n);
 }
 
 /* @p v must stay valid until the metric is published (strings are referenced, not copied).
@@ -388,6 +407,37 @@ static size_t diag_metrics(gw_node_t *n, size_t i, uint64_t now, bool birth, boo
         spb_metric_t *m = metric(n, k++, birth ? NAME_RSSI : NULL, GW_ALIAS_RSSI, SPB_DT_INT32, now);
         m->v.num = dg.rssi;
         m->is_null = !dg.rssi_valid;
+    }
+    if (modbus && umh(n)) {   /* #174: sums as plain metrics, from the snapshot (mb_snapshot) */
+        uint64_t mb[GW_MB_FLAT_COUNT] = {0}, tcp[GW_TCP_FLAT_COUNT] = {0};
+        for (uint16_t d = 0; d <= n->cfg->device_count; d++) {
+            const mb_stats_t *t = d < n->cfg->device_count ? &n->diag_stats[d].tcp
+                                                           : &n->diag_tcp_other;
+            const uint32_t tv[GW_TCP_FLAT_COUNT] = {t->ok, t->timeout, t->crc, t->frame,
+                                                    t->exception};
+            for (size_t c = 0; c < GW_TCP_FLAT_COUNT; c++) {
+                tcp[c] += tv[c];
+            }
+            if (d == n->cfg->device_count) {
+                break;
+            }
+            const gw_dev_stats_t *st = &n->diag_stats[d];
+            const uint32_t mv[GW_MB_FLAT_COUNT] = {st->cycles,      st->failed_cycles, st->bus.ok,
+                                                   st->bus.timeout, st->bus.crc,
+                                                   st->bus.frame,   st->bus.exception};
+            for (size_t c = 0; c < GW_MB_FLAT_COUNT; c++) {
+                mb[c] += mv[c];
+            }
+        }
+        for (size_t c = 0; n->cfg->device_count > 0 && c < GW_MB_FLAT_COUNT; c++) {
+            metric(n, k++, birth ? k_mb_flat[c] : NULL, GW_ALIAS_MB_FLAT_BASE + c, SPB_DT_UINT64,
+                   now)->v.u64 = mb[c];
+        }
+        for (size_t c = 0; n->cfg->modbus_tcp.enabled && c < GW_TCP_FLAT_COUNT; c++) {
+            metric(n, k++, birth ? k_tcp_flat[c] : NULL, GW_ALIAS_TCP_FLAT_BASE + c,
+                   SPB_DT_UINT64, now)->v.u64 = tcp[c];
+        }
+        return k - i;
     }
     if (modbus && n->cfg->device_count > 0) {
         n->mb_ds = (spb_dataset_t){.columns = 9, .names = k_mb_cols, .types = k_mb_types,
@@ -589,10 +639,15 @@ static void def_member(const void *ctx, uint32_t i, spb_metric_t *out)
     out->props.eng_high = t->eng_high;
 }
 
-/* SPB-18: one definition per device type, after the node's own metrics. Returns the count. */
+/* SPB-18: one definition per device type, after the node's own metrics. Returns the count.
+ * #174: none with the UMH preset: no device is an instance, and
+ * tck-id-payloads-template-definition-nbirth asks for a definition only for the instances. */
 static size_t template_definitions(gw_node_t *n, size_t i, uint64_t now)
 {
     size_t k = 0;
+    if (umh(n)) {
+        return 0;
+    }
     for (uint16_t dev = 0; dev < n->cfg->device_count; dev++) {
         const gw_device_cfg_t *d = &n->cfg->devices[dev];
         bool first = d->type[0] != '\0';

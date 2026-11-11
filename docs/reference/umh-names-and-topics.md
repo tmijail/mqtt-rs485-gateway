@@ -86,11 +86,13 @@ The gateway publishes these metrics in the NBIRTH, and their changes in NDATA. S
 | `Node Info/Free Heap` | UInt32 | Always | `Node_Info.Free_Heap` | Kept |
 | `Node Info/Min Free Heap` | UInt32 | Always | `Node_Info.Min_Free_Heap` | Kept |
 | `Node Info/RSSI` | Int32 | Only with `network.wifi`. Null without a Wi-Fi connection | `Node_Info.RSSI` | Kept. A null value is dropped |
-| `Node Info/Modbus` | DataSet | With one or more devices | None: UMH gives no value for a DataSet | Dropped |
-| `Node Info/Modbus TCP` | DataSet | Only with `modbus_tcp.enabled` | None: UMH gives no value for a DataSet | Dropped |
+| `Node Info/Modbus` | DataSet | With one or more devices, not with the UMH preset | None: UMH gives no value for a DataSet | Dropped |
+| `Node Info/Modbus TCP` | DataSet | Only with `modbus_tcp.enabled`, not with the UMH preset | None: UMH gives no value for a DataSet | Dropped |
+| `Node Info/Modbus/Cycles`, `Failed Cycles`, `OK`, `Timeout`, `CRC`, `Frame`, `Exception` | UInt64, the sum of all devices | Only with the UMH preset (#174) and one or more devices | `Node_Info.Modbus.Cycles` to `Node_Info.Modbus.Exception` (`Failed_Cycles`) | Kept |
+| `Node Info/Modbus TCP/OK`, `Timeout`, `CRC`, `Frame`, `Exception` | UInt64, the sum of all units | Only with the UMH preset (#174) and `modbus_tcp.enabled` | `Node_Info.Modbus_TCP.OK` to `Node_Info.Modbus_TCP.Exception` | Kept |
 | `Node Info/Time Synced` | Boolean | Always | `Node_Info.Time_Synced` | Kept |
 | `Devices/<name>/Online`, for example `Devices/line3/meter1/Online` | Boolean | Only with the UMH preset (#173), one for each device. Each `:` of the name becomes `/` | `Devices.line3.meter1.Online` | Kept |
-| A template definition for each device `type` | Template | Only with devices that have a `type` | None: UMH gives no value for a Template | Dropped |
+| A template definition for each device `type` | Template | Only with devices that have a `type`, not with the UMH preset | None: UMH gives no value for a Template | Dropped |
 
 `Node Info/Uptime`, `Free Heap`, `Min Free Heap` and `RSSI` also go in an NDATA each `sparkplug.diagnostics_s` (60 s by default, 0 = never). The DataSets go in this NDATA only when a counter changed.
 
@@ -104,6 +106,6 @@ The DBIRTH and the DDATA of a device hold one metric for each tag of the device.
 | `L1/Current` | From the tag `type` | `L1.Current` | Kept |
 | A tag with a failed read, or of an offline device | Null, with the Quality BAD | No new value | Dropped |
 | A tag of the type `bytes` | Bytes | None: UMH gives no value for Bytes | Dropped |
-| All tags of a device with a `type` | One Template instance | None: UMH gives no value for a Template | Dropped |
+| All tags of a device with a `type` | One Template instance. With the UMH preset: one plain metric for each tag | None for a Template. With the UMH preset, as the tags above | Dropped. With the UMH preset: kept |
 
 UMH ignores the properties of each tag (`engUnit`, `engLow`, `engHigh`, `Quality`). A DDEATH gives no UMH topic, and the tags of the device keep their last value in UMH. With the UMH preset, the node metric `Devices/<name>/Online` changes to `false` when the device goes offline.

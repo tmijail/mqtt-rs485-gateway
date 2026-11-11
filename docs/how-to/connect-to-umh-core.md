@@ -59,12 +59,12 @@ UMH makes the location path of a device from its Sparkplug `device_id`. The gate
 
 ## Configure the gateway
 
-1. Set `sparkplug.naming` to `"umh"`. The UMH preset refuses the names that UMH would change.
+1. Set `sparkplug.naming` to `"umh"`. The UMH preset refuses the names that UMH would change. It also publishes the state of each device and plain metrics that UMH can read.
 2. Set `sparkplug.group_id`. UMH does not use it in the location, but the bridge subscribes to it.
 3. Set `sparkplug.edge_node_id` to the location of the gateway.
 4. Set `sparkplug.device_prefix` to the common levels of the location. Give each device the remaining levels as its `name`.
 5. Keep `sparkplug.primary_host_id` empty.
-6. Do not give a device the key `type`. UMH does not show a device that is a template instance.
+6. You can give a device the key `type`. With the UMH preset, a typed device publishes plain metrics, not a template instance.
 7. Do not use tags of the type `bytes`. UMH does not show them.
 8. Keep `mqtt.protocol` at `3.1.1` (the default).
 9. Set `sparkplug.store_forward` to `true` if you want the data of a broker failure.
@@ -204,7 +204,7 @@ This path has these limits:
 | Symptom | Probable cause | Action |
 |---|---|---|
 | The tags show as `alias_<n>` | The bridge has no BIRTH of the node, for example after a restart of UMH | Set `role: "secondary_active"`. Type `rebirth` on the gateway shell |
-| A device has no data | The device has a `type`. The tags are `bytes`. The device is offline: its values are null | Remove `type`. Use other tag types. Type `devices` on the gateway shell |
+| A device has no data | The device has a `type`, and the UMH preset is off. The tags are `bytes`. The device is offline: its values are null | Set `sparkplug.naming` to `"umh"`. Use other tag types. Read `Devices/<name>/Online`, or type `devices` on the gateway shell |
 | A level is at the wrong place | The name has a space, a `.` or a level that starts with `_` | Set `sparkplug.naming` to `"umh"`, and correct each name that the validation refuses. The metadata `spb_original_device_id` shows the name before UMH changed it |
 | An enterprise has the name of the gateway, for example `GW01` | The `edge_node_id` is a short name. UMH uses it as the location of the node metrics | Write the `edge_node_id` as a location, or drop the node metrics in the bridge |
 | The device is the enterprise, for example `umh.v1.Meter1` | The `device_id` is not a location. Two gateways with `Meter1` then write to the same topic | Set `sparkplug.device_prefix` to the location of the devices |

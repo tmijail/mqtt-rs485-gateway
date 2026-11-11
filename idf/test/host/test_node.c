@@ -564,6 +564,150 @@ static void test_umh_device_online(void)
     TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[decoded_find_name(&dec, "Devices/pump/Online")].num);
 }
 
+/* #174: with the UMH preset, a typed device publishes its tags as plain metrics (no template
+ * definition in the NBIRTH, no instance), and the Modbus diagnostics are plain UInt64 node
+ * metrics (sums of all devices) in place of the DataSets. UMH Core gives no value for a
+ * Template or a DataSet. */
+static void test_umh_plain_types_and_diagnostics(void)
+{
+    setup_umh(true, true);
+    const gw_dev_stats_t s0 = {.cycles = 7, .failed_cycles = 1, .bus = {.ok = 20, .timeout = 3},
+                               .tcp = {.ok = 4}};
+    const gw_dev_stats_t s1 = {.cycles = 5, .bus = {.ok = 9, .crc = 2}, .tcp = {.timeout = 1}};
+    gw_tagdb_put_stats(0, &s0);
+    gw_tagdb_put_stats(1, &s1);
+    put_pump(0, true, 1500);
+    put_pump(1, true, 20);
+    gw_node_session_up(&node, 0);
+    TEST_ASSERT_EQUAL(3, g_rec.count);
+
+    msg(0);   /* NBIRTH */
+    for (size_t a = 0; a < dec.count; a++) {
+        TEST_ASSERT_NOT_EQUAL_MESSAGE(SPB_DT_TEMPLATE, dec.m[a].datatype, dec.m[a].name);
+        TEST_ASSERT_NOT_EQUAL_MESSAGE(SPB_DT_DATASET, dec.m[a].datatype, dec.m[a].name);
+    }
+    /* node metrics, uptime / 2 x heap / RSSI, 7 + 5 counters, Time Synced, 2 x Online */
+    TEST_ASSERT_EQUAL(10 + 3 * GW_NODE_IO_COUNT + GW_NODE_UMH_DIAG_METRICS + 1 + 2, dec.count);
+    TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Info/Modbus"));
+    TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Info/Modbus TCP"));
+    TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Pump"));
+    static const struct {
+        const char *name;
+        uint64_t alias, value;
+    } flat[] = {
+        {"Node Info/Modbus/Cycles", GW_ALIAS_MB_FLAT_BASE + 0, 12},
+        {"Node Info/Modbus/Failed Cycles", GW_ALIAS_MB_FLAT_BASE + 1, 1},
+        {"Node Info/Modbus/OK", GW_ALIAS_MB_FLAT_BASE + 2, 29},
+        {"Node Info/Modbus/Timeout", GW_ALIAS_MB_FLAT_BASE + 3, 3},
+        {"Node Info/Modbus/CRC", GW_ALIAS_MB_FLAT_BASE + 4, 2},
+        {"Node Info/Modbus/Frame", GW_ALIAS_MB_FLAT_BASE + 5, 0},
+        {"Node Info/Modbus/Exception", GW_ALIAS_MB_FLAT_BASE + 6, 0},
+        {"Node Info/Modbus TCP/OK", GW_ALIAS_TCP_FLAT_BASE + 0, 4},
+        {"Node Info/Modbus TCP/Timeout", GW_ALIAS_TCP_FLAT_BASE + 1, 1},
+        {"Node Info/Modbus TCP/CRC", GW_ALIAS_TCP_FLAT_BASE + 2, 0},
+        {"Node Info/Modbus TCP/Frame", GW_ALIAS_TCP_FLAT_BASE + 3, 0},
+        {"Node Info/Modbus TCP/Exception", GW_ALIAS_TCP_FLAT_BASE + 4, 0},
+    };
+    for (size_t k = 0; k < sizeof(flat) / sizeof(flat[0]); k++) {
+        int i = decoded_find_name(&dec, flat[k].name);
+        TEST_ASSERT_TRUE_MESSAGE(i >= 0, flat[k].name);
+        TEST_ASSERT_EQUAL_MESSAGE(SPB_DT_UINT64, dec.m[i].datatype, flat[k].name);
+        TEST_ASSERT_EQUAL_UINT64_MESSAGE(flat[k].alias, dec.m[i].alias, flat[k].name);
+        TEST_ASSERT_EQUAL_UINT64_MESSAGE(flat[k].value, dec.m[i].u64, flat[k].name);
+    }
+    assert_birth_aliases_unique();
+
+    msg(1);   /* DBIRTH of a typed device: one plain metric per tag, with its alias */
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DBIRTH/acme:gw01/acme:berlin:line3:meter1",
+                             g_rec.msgs[1].topic);
+    TEST_ASSERT_EQUAL(2, dec.count);
+    int i = decoded_find_name(&dec, "Speed");
+    TEST_ASSERT_EQUAL(SPB_DT_UINT16, dec.m[i].datatype);
+    TEST_ASSERT_TRUE(dec.m[i].has_alias);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TAG_BASE + 0, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(1500, dec.m[i].num);
+    TEST_ASSERT_EQUAL_STRING("rpm", dec.m[i].eng_unit);
+    TEST_ASSERT_EQUAL(0, dec.mem_count);
+    recorder_clear();
+
+    /* DDATA: plain, by alias */
+    put_pump(1, true, 21);
+    gw_node_device_changed(&node, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+    msg(0);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_FALSE(dec.m[0].has_name);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TAG_BASE + 2, dec.m[0].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(21, dec.m[0].num);
+    recorder_clear();
+
+    /* DCMD by alias to a typed device (an instance member would need its name) */
+    spb_metric_t sp = {.alias = GW_ALIAS_TAG_BASE + 2, .datatype = SPB_DT_UINT16, .v.num = 7};
+    send("spBv1.0/G/DCMD/acme:gw01/acme:berlin:pump", &sp, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.writes);
+    TEST_ASSERT_EQUAL(2, g_rec.last_write_tag);
+
+    /* periodic NDATA: the plain counters by alias, only after a change */
+    recorder_clear();
+    gw_node_diag_tick(&node, 1000);
+    gw_node_diag_tick(&node, 61000);
+    msg(0);
+    TEST_ASSERT_EQUAL(4, dec.count);                         /* uptime, 2 x heap, RSSI */
+    recorder_clear();
+    const gw_dev_stats_t s2 = {.cycles = 8, .failed_cycles = 1, .bus = {.ok = 21, .timeout = 3},
+                               .tcp = {.ok = 4}};
+    gw_tagdb_put_stats(0, &s2);
+    gw_node_diag_tick(&node, 121000);
+    msg(0);
+    TEST_ASSERT_EQUAL(4 + GW_MB_FLAT_COUNT + GW_TCP_FLAT_COUNT, dec.count);
+    i = decoded_find_alias(&dec, GW_ALIAS_MB_FLAT_BASE + 0);
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_FALSE(dec.m[i].has_name);
+    TEST_ASSERT_EQUAL_UINT64(13, dec.m[i].u64);
+    TEST_ASSERT_EQUAL_UINT64(30, dec.m[decoded_find_alias(&dec, GW_ALIAS_MB_FLAT_BASE + 2)].u64);
+    TEST_ASSERT_EQUAL(-1, decoded_find_alias(&dec, GW_ALIAS_MODBUS));
+}
+
+/* #174: the worst NBIRTH of the UMH preset (16 devices with names of 39 characters, RSSI, the
+ * Modbus TCP counters): it fits the payload buffer without PSRAM (CONFIG_GW_SPB_PAYLOAD_INTERNAL,
+ * 6144 B by default). */
+static void test_umh_worst_case_nbirth_fits(void)
+{
+    static char json[8192];
+    size_t n = (size_t)snprintf(json, sizeof(json),
+                                "{\"mqtt\":{\"host\":\"h\"},\"sparkplug\":{\"group_id\":\"G\","
+                                "\"edge_node_id\":\"acme:gw01\",\"naming\":\"umh\"},"
+                                "\"modbus_tcp\":{\"enabled\":true},\"devices\":[");
+    for (int d = 0; d < GW_MAX_DEVICES; d++) {
+        n += (size_t)snprintf(json + n, sizeof(json) - n,
+                              "%s{\"name\":\"line%02d:energy-meter-with-a-long-name-xx\","
+                              "\"unit_id\":%d,\"tags\":[{\"name\":\"v\",\"area\":\"input\","
+                              "\"address\":0,\"type\":\"uint16\"}]}", d ? "," : "", d, d + 1);
+    }
+    snprintf(json + n, sizeof(json) - n, "]}");
+    static gw_config_t c;
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(json, strlen(json), &c, &err), err.msg);
+    TEST_ASSERT_EQUAL_size_t(39, strlen(c.devices[0].name));
+    cfg = &c;
+    gw_tagdb_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "0.1.0+gdeadbee", .hardware = "test-hw",
+                                 .reset_reason = "task watchdog"};
+    gw_node_init(&node, cfg, &ops, &info);
+    static uint8_t small[6144];
+    gw_node_set_buffer(&node, small, sizeof(small));
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 0));
+    msg(0);
+    printf("UMH preset worst NBIRTH: %u bytes, %u metrics\n", (unsigned)g_rec.msgs[0].len,
+           (unsigned)dec.count);
+    TEST_ASSERT_EQUAL(10 + 3 * GW_NODE_IO_COUNT + GW_NODE_UMH_DIAG_METRICS + 1 + GW_MAX_DEVICES,
+                      dec.count);
+    TEST_ASSERT_TRUE(decoded_find_name(&dec, "Devices/line15/energy-meter-with-a-long-name-xx/Online")
+                     >= 0);
+    assert_birth_aliases_unique();
+}
+
 /* #173: without the preset, no Online metric and no NDATA for a device state. */
 static void test_no_device_online_without_preset(void)
 {
@@ -2051,6 +2195,8 @@ int main(void)
     RUN_TEST(test_device_prefix_topics);
     RUN_TEST(test_umh_device_online);
     RUN_TEST(test_no_device_online_without_preset);
+    RUN_TEST(test_umh_plain_types_and_diagnostics);
+    RUN_TEST(test_umh_worst_case_nbirth_fits);
     RUN_TEST(test_dcmd_strict_datatype_and_integer);
     RUN_TEST(test_dcmd_rejected_whole_when_queue_lacks_room);
     RUN_TEST(test_scan_rate);

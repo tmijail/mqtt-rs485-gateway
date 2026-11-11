@@ -33,9 +33,9 @@ static gw_cfg_err_t err;
     "{\"name\":\"N\",\"area\":\"holding\",\"address\":1,\"type\":\"int64\",\"scale\":2}]}"
 static const char k_doc[] = DOC_HEAD "\"devices\":[" DEV_M1 "," DEV_P2 "]}";
 
-/* The golden value of k_doc (format 2). It changes only with the canonical list: then also
+/* The golden value of k_doc (format 3). It changes only with the canonical list: then also
  * increment GW_SFCFG_HASH_FORMAT in gw_sfcfg.c (a new ring on every card after the update). */
-#define GOLDEN 0x9A26AC4Du
+#define GOLDEN 0xCC15B152u
 
 void setUp(void)
 {
@@ -97,10 +97,11 @@ static uint32_t fnv1a(const uint8_t *p, size_t n)
 static void test_golden_value_and_documented_input(void)
 {
     ref_len = 0;
-    put_le(2, 4);   /* format */
+    put_le(3, 4);   /* format */
     put_str("G");
     put_str("E");
     put_str("");    /* sparkplug.device_prefix (#172) */
+    put_le(0, 1);   /* sparkplug.naming (#174): "sparkplug" */
     put_le(2, 2);   /* devices */
     put_str("M1");
     put_str("");
@@ -221,6 +222,7 @@ static void test_included_fields_change_the_hash(void)
     DIFFERENT(strcpy(var.sparkplug.group_id, "G2"));
     DIFFERENT(strcpy(var.sparkplug.edge_node_id, "E2"));
     DIFFERENT(strcpy(var.sparkplug.device_prefix, "acme:line3"));   /* #172: each device_id */
+    DIFFERENT(var.sparkplug.naming = GW_NAMING_UMH);   /* #174: no template instance on replay */
     DIFFERENT(var.device_count = 1);
     DIFFERENT(var.tag_count = 6);
     DIFFERENT((var.devices[0].tag_count = 4, var.devices[1].first_tag = 4,
