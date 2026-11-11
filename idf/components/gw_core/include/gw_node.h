@@ -160,6 +160,7 @@ typedef struct {
     gw_node_info_t info;
 
     bool online;                       /* NBIRTH published on the current MQTT session */
+    bool birth_failed;                 /* issue #164: gw_node_take_birth_failure() */
     uint64_t bdseq;                    /* bdSeq of the current session (SPB-3) */
     uint8_t seq;                       /* next seq to send (SPB-5) */
     bool dev_born[GW_MAX_DEVICES];
@@ -227,6 +228,31 @@ void gw_node_set_buffer(gw_node_t *n, uint8_t *buf, size_t cap);
 /** Build "spBv1.0/<group>/<type>/<edge>[/<device>]" for this node. */
 bool gw_node_topic(const gw_node_t *n, const char *type, const char *device, char *out, size_t cap);
 
+/**
+ * SPB-3 / issue #161: the bdSeq of the MQTT CONNECT packets
+ * (tck-id-topics-nbirth-bdseq-increment: "start at zero and increment by one on every new MQTT
+ * CONNECT packet"). It is in RAM only: 0 for the first CONNECT after each boot, then the
+ * previous value + 1 (255 -> 0). The Will of a connection attempt carries its bdSeq before the
+ * attempt starts, so an attempt takes the next value (gw_bdseq_take) and gives it back when it
+ * is sure that it sent no CONNECT packet (gw_bdseq_not_sent: no client, or the transport did not
+ * connect). An attempt that may have sent its CONNECT keeps its value.
+ */
+typedef struct {
+    uint8_t next;    /* the bdSeq of the next attempt */
+    uint8_t taken;   /* the bdSeq of the last attempt */
+    bool pending;    /* the last attempt can still give its value back */
+} gw_bdseq_t;
+
+/** At boot: the first CONNECT gets 0. */
+void gw_bdseq_init(gw_bdseq_t *b);
+
+/** The bdSeq for the Will of a new connection attempt. */
+uint8_t gw_bdseq_take(gw_bdseq_t *b);
+
+/** The last attempt sent no CONNECT packet: the next attempt gets its value again. Only once
+ *  per gw_bdseq_take(). */
+void gw_bdseq_not_sent(gw_bdseq_t *b);
+
 /** NDEATH payload for @p bdseq (used for the MQTT will and the orderly disconnect). */
 size_t gw_node_death_payload(uint64_t bdseq, uint8_t *out, size_t cap);
 
@@ -262,8 +288,14 @@ size_t gw_node_flush_history(gw_node_t *n, size_t max_msgs);
 void gw_node_set_firmware_status(gw_node_t *n, const char *state, uint32_t progress);
 
 /** Re-publish NBIRTH and every DBIRTH with seq restarted (SPB-9). False if the NBIRTH could
- *  not be published (then no DBIRTH is sent). */
+ *  not be published: then no DBIRTH is sent, the node goes offline (gw_node_session_down) and
+ *  gw_node_take_birth_failure() reports it (issue #164). */
 bool gw_node_rebirth(gw_node_t *n);
+
+/** Issue #164: an NBIRTH could not be published (session up, NCMD or local rebirth) since the
+ *  last call. The node is offline; if the MQTT connection is still open, the caller must end
+ *  it, or the node stays connected with no Sparkplug session. Clears the flag. */
+bool gw_node_take_birth_failure(gw_node_t *n);
 
 /**
  * SPB-17: call periodically (monotonic ms). Every sparkplug.diagnostics_s it publishes an NDATA

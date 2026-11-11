@@ -1487,8 +1487,76 @@ static void test_session_up_needs_the_nbirth(void)
     gw_node_device_changed(&node, 0);   /* offline: nothing is attempted */
     TEST_ASSERT_EQUAL(0, g_rec.count);
     g_rec.publish_fails = false;
+    TEST_ASSERT_TRUE(gw_node_take_birth_failure(&node));   /* issue #164: reported once */
+    TEST_ASSERT_FALSE(gw_node_take_birth_failure(&node));
     TEST_ASSERT_TRUE(gw_node_session_up(&node, 4));
+    TEST_ASSERT_FALSE(gw_node_take_birth_failure(&node));
     TEST_ASSERT_EQUAL(2, g_rec.count);   /* NBIRTH and DBIRTH */
+    msg(0);
+    TEST_ASSERT_EQUAL_UINT64(0, dec.seq);
+}
+
+/* SPB-3 / issue #161 (tck-id-topics-nbirth-bdseq-increment): bdSeq starts at 0 at each boot
+ * and increases by exactly 1 for each CONNECT packet. An attempt that sent no CONNECT (no client,
+ * the transport did not connect) gives its value to the next attempt; one that may have sent it
+ * keeps it. 255 -> 0. */
+static void test_bdseq_per_connect_packet(void)
+{
+    gw_bdseq_t b;
+    gw_bdseq_init(&b);
+    TEST_ASSERT_EQUAL_UINT8(0, gw_bdseq_take(&b));   /* the first CONNECT of the boot */
+    TEST_ASSERT_EQUAL_UINT8(1, gw_bdseq_take(&b));   /* CONNECT sent (no CONNACK, refused...) */
+    /* the broker is down: three attempts fail at TCP, no CONNECT: the value stays */
+    for (int i = 0; i < 3; i++) {
+        TEST_ASSERT_EQUAL_UINT8(2, gw_bdseq_take(&b));
+        gw_bdseq_not_sent(&b);
+    }
+    gw_bdseq_not_sent(&b);                           /* only once per take */
+    TEST_ASSERT_EQUAL_UINT8(2, gw_bdseq_take(&b));   /* the CONNECT that works */
+    TEST_ASSERT_EQUAL_UINT8(3, gw_bdseq_take(&b));
+    /* the wrap */
+    for (unsigned v = 4; v <= 255; v++) {
+        TEST_ASSERT_EQUAL_UINT8(v, gw_bdseq_take(&b));
+    }
+    TEST_ASSERT_EQUAL_UINT8(0, gw_bdseq_take(&b));
+    gw_bdseq_not_sent(&b);
+    TEST_ASSERT_EQUAL_UINT8(0, gw_bdseq_take(&b));
+    /* a new boot starts at 0 again */
+    gw_bdseq_init(&b);
+    gw_bdseq_not_sent(&b);                           /* nothing taken: no change */
+    TEST_ASSERT_EQUAL_UINT8(0, gw_bdseq_take(&b));
+}
+
+/* Issue #164: an NCMD Rebirth whose NBIRTH publish fails one time (the connection may stay open)
+ * ends the Sparkplug session: the node is offline, sends no DBIRTH and no DDATA, and reports the
+ * failure, so the caller ends the MQTT session. The next session sends every birth again. */
+static void test_failed_rebirth_ends_the_session(void)
+{
+    set_meter(true, 230.5, 12.3, 1);
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 3));
+    TEST_ASSERT_FALSE(gw_node_take_birth_failure(&node));
+    recorder_clear();
+    g_rec.publish_fails = true;
+    spb_metric_t m = {.name = "Node Control/Rebirth", .datatype = SPB_DT_BOOLEAN, .v.num = 1};
+    send("spBv1.0/Plant1/NCMD/GW01", &m, 1);
+    g_rec.publish_fails = false;
+    TEST_ASSERT_EQUAL(0, g_rec.count);   /* no DBIRTH without its NBIRTH */
+    TEST_ASSERT_FALSE(node.online);
+    TEST_ASSERT_FALSE(node.dev_born[0]);
+    TEST_ASSERT_TRUE(gw_node_take_birth_failure(&node));
+    set_meter(true, 231.5, 12.3, 1);
+    gw_node_device_changed(&node, 0);    /* offline: no DDATA */
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    /* a local rebirth (console, SNTP) that fails is reported the same way */
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 4));
+    recorder_clear();
+    g_rec.publish_fails = true;
+    TEST_ASSERT_FALSE(gw_node_rebirth(&node));
+    g_rec.publish_fails = false;
+    TEST_ASSERT_FALSE(node.online);
+    TEST_ASSERT_TRUE(gw_node_take_birth_failure(&node));
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 5));
+    TEST_ASSERT_EQUAL(2, g_rec.count);   /* NBIRTH and DBIRTH again */
     msg(0);
     TEST_ASSERT_EQUAL_UINT64(0, dec.seq);
 }
@@ -1915,6 +1983,8 @@ int main(void)
     RUN_TEST(test_history_kept_when_publish_fails);
     RUN_TEST(test_store_and_forward_mb6);
     RUN_TEST(test_session_up_needs_the_nbirth);
+    RUN_TEST(test_failed_rebirth_ends_the_session);
+    RUN_TEST(test_bdseq_per_connect_packet);
     RUN_TEST(test_dbirth_not_published_leaves_the_device_unborn);
     RUN_TEST(test_dbirth_too_large_not_retried_on_every_change);
     RUN_TEST(test_dbirth_larger_than_buffer);

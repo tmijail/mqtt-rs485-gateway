@@ -330,7 +330,7 @@ void app_main(void)
     if (gw_status_led_start() != ESP_OK) {
         ESP_LOGE(TAG, "status LED unavailable");
     }
-    gw_storage_init();  /* failure is logged; bdSeq then lives in RAM only */
+    gw_storage_init();  /* failure is logged; no stored secrets then */
     /* Before the configuration: whatever happens next, no DO stays on from before a reset,
      * except those the last valid configuration holds across a restart (IO-3, kept in NVS). */
     uint8_t hold = 0;

@@ -84,14 +84,50 @@ static void test_timestamps_and_sessions(void)
     TEST_ASSERT_EQUAL(GW_PHOST_OFFLINE, state(&p, "{\"online\":false,\"timestamp\":300}"));
     TEST_ASSERT_FALSE(p.online);
     /* new session: unknown until the retained message arrives, with the same timestamp */
-    gw_phost_session_start(&p);
+    gw_phost_session_start(&p, 0);
     TEST_ASSERT_EQUAL(GW_PHOST_OFFLINE, state(&p, "{\"online\":false,\"timestamp\":300}"));
     TEST_ASSERT_EQUAL(GW_PHOST_ONLINE, state(&p, "{\"online\":true,\"timestamp\":301}"));
-    gw_phost_session_start(&p);
+    gw_phost_session_start(&p, 0);
     TEST_ASSERT_FALSE(p.online);
     TEST_ASSERT_EQUAL(GW_PHOST_ONLINE, state(&p, "{\"online\":true,\"timestamp\":301}"));
     TEST_ASSERT_TRUE(p.online);
-    TEST_ASSERT_EQUAL_UINT64(301, p.last_ts);
+    TEST_ASSERT_EQUAL_UINT64(301, gw_phost_last_ts(&p));
+}
+
+/* Issue #157: the host keeps one STATE timestamp for each MQTT server
+ * (tck-id-operational-behavior-host-application-multi-server-timestamp). A STATE on broker B
+ * with a timestamp older than the last one on broker A is valid; the check for an old STATE
+ * stays per server. */
+static void test_timestamp_per_server(void)
+{
+    gw_phost_t p;
+    gw_phost_init(&p);
+    gw_phost_session_start(&p, 0);
+    TEST_ASSERT_FALSE(gw_phost_have_ts(&p));
+    TEST_ASSERT_EQUAL_UINT64(0, gw_phost_last_ts(&p));
+    TEST_ASSERT_EQUAL(GW_PHOST_ONLINE, state(&p, "{\"online\":true,\"timestamp\":100}"));
+    TEST_ASSERT_EQUAL(GW_PHOST_OFFLINE, state(&p, "{\"online\":false,\"timestamp\":200}"));
+    /* broker B: the host connected there earlier (90): accepted, not compared with 200 */
+    gw_phost_session_start(&p, 1);
+    TEST_ASSERT_FALSE(gw_phost_have_ts(&p));
+    TEST_ASSERT_EQUAL(GW_PHOST_ONLINE, state(&p, "{\"online\":true,\"timestamp\":90}"));
+    TEST_ASSERT_TRUE(p.online);
+    TEST_ASSERT_EQUAL_UINT64(90, gw_phost_last_ts(&p));
+    /* an old STATE on B is still old on B */
+    TEST_ASSERT_EQUAL(GW_PHOST_STALE, state(&p, "{\"online\":false,\"timestamp\":80}"));
+    TEST_ASSERT_TRUE(p.online);
+    /* back on A: its own timestamp (200) is kept */
+    gw_phost_session_start(&p, 0);
+    TEST_ASSERT_TRUE(gw_phost_have_ts(&p));
+    TEST_ASSERT_EQUAL_UINT64(200, gw_phost_last_ts(&p));
+    TEST_ASSERT_EQUAL(GW_PHOST_STALE, state(&p, "{\"online\":true,\"timestamp\":150}"));
+    TEST_ASSERT_EQUAL(GW_PHOST_ONLINE, state(&p, "{\"online\":true,\"timestamp\":250}"));
+    /* B keeps its own */
+    gw_phost_session_start(&p, 1);
+    TEST_ASSERT_EQUAL_UINT64(90, gw_phost_last_ts(&p));
+    /* an index out of range is clamped, never out of the arrays */
+    gw_phost_session_start(&p, 200);
+    TEST_ASSERT_EQUAL_UINT8(GW_MAX_BROKERS - 1, p.server);
 }
 
 int main(void)
@@ -100,5 +136,6 @@ int main(void)
     RUN_TEST(test_parse_valid);
     RUN_TEST(test_parse_invalid);
     RUN_TEST(test_timestamps_and_sessions);
+    RUN_TEST(test_timestamp_per_server);
     return UNITY_END();
 }

@@ -140,7 +140,7 @@ bool gw_ota_caps_read(const uint8_t *block, size_t len, uint32_t *flags);
 /** Issue #102: may the image replace the running one? @p declared, @p flags: from
  *  gw_ota_caps_read(); @p nvs_encrypted: this device's NVS partition is encrypted (or may be: a
  *  migration pending). An image without NVS encryption cannot read it: it would erase it
- *  (bdSeq, secrets). On false @p why says why. */
+ *  (secrets). On false @p why says why. */
 bool gw_ota_caps_accept(bool declared, uint32_t flags, bool nvs_encrypted, char *why, size_t cap);
 
 /* Progress of a download, reported every 10 % (or every 5 s when the size is unknown). */

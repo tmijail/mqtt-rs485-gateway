@@ -99,6 +99,9 @@ static atomic_bool s_restart_discard;   /* #136: a factory reset: the RAM ring i
 static esp_timer_handle_t s_restart_backstop;   /* #136: RESTART_ANSWER_MS */
 static atomic_bool s_rebirth_req;
 static atomic_bool s_fw_dirty;     /* FW-1: the update's state changed */
+/* SPB-3 / issue #161: the attempt in progress sent no CONNECT packet (its transport did not
+ * connect): set by the MQTT task, taken by the next prepare_attempt() */
+static atomic_bool s_no_connect;
 
 /* ---- publish time bound (issue #59): shared with the esp_timer task ---- */
 static esp_timer_handle_t s_pub_timer;
@@ -138,7 +141,8 @@ static char s_ncmd_topic[GW_TOPIC_MAX];
 static char s_dcmd_topic[GW_TOPIC_MAX];
 static char s_state_topic[GW_TOPIC_MAX];   /* SPB-13: "" without sparkplug.primary_host_id */
 static uint8_t s_will[64];
-static uint8_t s_bdseq;
+static gw_bdseq_t s_bdseqs;     /* SPB-3: the bdSeq of the CONNECT packets (RAM, 0 at boot) */
+static uint8_t s_bdseq;         /* the bdSeq of the current attempt (its Will) */
 static bool s_started;
 static bool s_prev_ip;
 static int64_t s_ip_since_us;
@@ -177,7 +181,13 @@ static gw_brokersel_t s_bsel;   /* MQTT-6: which broker of the list the next att
 static gw_phost_t s_phost;      /* SPB-13: what the primary host last said */
 static bool s_waiting_host;     /* subscribed; NBIRTH waits for the host's STATE online */
 static int64_t s_host_wait_since_us;
-static bool s_host_disconnect;  /* the session ends because of the host, not the network */
+/* SPB-13: the session ends because of the host, not the network */
+typedef enum {
+    HOST_END_NONE = 0,
+    HOST_END_OFFLINE,    /* a valid offline STATE (#156: the next broker at once) */
+    HOST_END_NO_STATE,   /* with backups: no STATE online in PHOST_WAIT_MS (a failed attempt) */
+} host_end_t;
+static host_end_t s_host_end;
 static gw_sf_t s_sf;            /* SPB-14: store & forward ring (storage allocated at boot) */
 static bool s_sf_psram;
 /* SPB-14: the ring's spill to the microSD card (optional; #124: allocated with its buffers, in
@@ -486,6 +496,9 @@ static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *da
     (void)base;
     const esp_mqtt_event_t *ev = data;
     switch ((esp_mqtt_event_id_t)id) {
+    case MQTT_EVENT_BEFORE_CONNECT:
+        atomic_store(&s_no_connect, false);   /* a new attempt: nothing known yet */
+        break;
     case MQTT_EVENT_CONNECTED:
 #if CONFIG_MQTT_PROTOCOL_5
         /* issue #73: what the broker accepts at most (0: no limit, or MQTT 3.1.1) */
@@ -512,6 +525,19 @@ static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *da
         enqueue_cmd(ev);
         break;
     case MQTT_EVENT_ERROR:
+        if (ev->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT &&
+            !atomic_load(&s_mqtt_connected)) {
+            /* SPB-3 / issue #161: esp-mqtt 1.1.0 sends the CONNECT packet only after
+             * esp_transport_connect() returned (TCP, and TLS, connected). When the connect fails,
+             * the transport has no socket (IDF transport_ssl.c: sockfd = INVALID_SOCKET) and this
+             * event comes before the abort; a failed CONNECT write or CONNACK read comes with the
+             * socket still open. No socket: this attempt sent no CONNECT, its bdSeq is not used */
+            esp_transport_handle_t t = esp_mqtt_client_get_transport(
+                ev->client, s_cfg->mqtt.tls.enabled ? "mqtts" : "mqtt");
+            if (t == NULL || esp_transport_get_socket(t) < 0) {
+                atomic_store(&s_no_connect, true);
+            }
+        }
         if (ev->error_handle->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
             ESP_LOGW(TAG, "broker refused the connection (code %d)",
                      ev->error_handle->connect_return_code);
@@ -646,10 +672,29 @@ static int bounded_publish(const char *topic, const char *data, int len, int qos
 static bool s_in_births;        /* issue #71: start_births() is publishing */
 static unsigned s_birth_failures;
 
+#if CONFIG_GW_IO_SIMULATED
+static atomic_uint s_sim_pubfail;   /* issue #164: publishes still to fail on purpose */
+
+void gw_edge_sim_fail_publishes(unsigned n)
+{
+    atomic_store(&s_sim_pubfail, n);
+}
+#endif
+
 static int op_publish(void *ctx, const char *topic, const uint8_t *data, size_t len, int qos,
                       bool retain)
 {
     (void)ctx;
+#if CONFIG_GW_IO_SIMULATED
+    unsigned left = atomic_load(&s_sim_pubfail);
+    if (left > 0 && atomic_compare_exchange_strong(&s_sim_pubfail, &left, left - 1)) {
+        ESP_LOGW(TAG, "%s: publish failed on purpose, connection open (emulator only)", topic);
+        if (s_in_births) {
+            s_birth_failures++;
+        }
+        return -1;
+    }
+#endif
     int r = bounded_publish(topic, (const char *)data, (int)len, qos, retain);
     if (r == -1 && s_in_births) {   /* not PUBLISH_OVERSIZE: that one is not the connection */
         s_birth_failures++;
@@ -810,13 +855,39 @@ static __attribute__((noinline)) void spill_before_restart(void)
     }
 }
 
+/*
+ * MQTT-8 / issue #155: with MQTT 5, every DISCONNECT of the node carries the reason code 0x04,
+ * Disconnect with Will Message (tck-id-payloads-ndeath-will-message-publisher-disconnect-mqtt50).
+ * esp-mqtt 1.1.0 sends a DISCONNECT in two places only, both through send_disconnect_msg():
+ * esp_mqtt_client_stop() (also from esp_mqtt_client_destroy()) while connected, and its own
+ * task after esp_mqtt_client_disconnect(). send_disconnect_msg() takes the disconnect property
+ * and then clears it, so it is set again right before each of these calls. No allocation (no
+ * user property). The broker then publishes the will NDEATH too: after an explicit NDEATH, the
+ * hosts get the same bdSeq two times, which a Sparkplug host handles (README 6.5.3).
+ */
+static void disconnect_with_will(void)
+{
+#if CONFIG_MQTT_PROTOCOL_5
+    if (s_cfg->mqtt.protocol == GW_MQTT_V5 && s_client != NULL) {
+        const esp_mqtt5_disconnect_property_config_t p = {
+            .disconnect_reason = MQTT5_DISCONNECT_WITH_WILL,
+        };
+        if (esp_mqtt5_client_set_disconnect_property(s_client, &p) != ESP_OK) {
+            ESP_LOGW(TAG, "MQTT 5: the DISCONNECT reason code 0x04 could not be set");
+        }
+    }
+#endif
+}
+
 static void op_reboot(void *ctx)
 {
     (void)ctx;
     spill_before_restart();
     gw_fw_restart_requested();   /* issue #108 B5 (a no-op unless a confirmation keeps failing) */
-    /* Orderly shutdown: NDEATH was just published; stop() sends DISCONNECT synchronously so
-     * the broker discards the will instead of publishing a second NDEATH. */
+    /* Orderly shutdown: NDEATH was just published; stop() sends DISCONNECT synchronously. With
+     * MQTT 3.1.1 the broker discards the will; with MQTT 5 the reason code 0x04 makes it
+     * publish the will too (issue #155). */
+    disconnect_with_will();
     esp_mqtt_client_stop(s_client);
     /* No Modbus frame cut by the restart (bounded by the slowest transaction with retries). */
     gw_bus_quiesce(QUIESCE_MS);
@@ -845,7 +916,7 @@ static void publish_status(void)
     s_st.host = broker_host(s_bsel.current);
     s_st.port = broker_port(s_bsel.current);
     s_st.failures = s_bsel.failures;
-    s_st.host_state = !s_phost.have_ts ? -1 : s_phost.online ? 1 : 0;
+    s_st.host_state = !gw_phost_have_ts(&s_phost) ? -1 : s_phost.online ? 1 : 0;
     s_st.waiting_host = s_waiting_host;
     s_st.sf_enabled = s_node != NULL && s_node->sf != NULL;
     s_st.sf_psram = s_sf_psram;
@@ -900,10 +971,18 @@ void gw_edge_get_status(gw_edge_status_t *out)
     portEXIT_CRITICAL(&s_st_mux);
 }
 
+/* SPB-3 / issue #161: the Will (with its bdSeq) is set before the attempt starts, so the attempt
+ * takes the next bdSeq here. When the previous attempt sent no CONNECT packet, its value is taken
+ * again: the bdSeq of two CONNECT packets in sequence differs by exactly 1
+ * (tck-id-topics-nbirth-bdseq-increment). An attempt that may have sent its CONNECT (a failed
+ * write, no CONNACK) keeps its value: a late Will NDEATH of it must never match a newer NBIRTH. */
 static void prepare_attempt(void)
 {
     memset(&s_vf, 0, sizeof(s_vf));   /* issue #70: what the next handshake will see */
-    s_bdseq = gw_storage_next_bdseq();
+    if (atomic_exchange(&s_no_connect, false)) {
+        gw_bdseq_not_sent(&s_bdseqs);
+    }
+    s_bdseq = gw_bdseq_take(&s_bdseqs);
     size_t n = gw_node_death_payload(s_bdseq, s_will, sizeof(s_will));
     s_mqtt_cfg.session.last_will.msg = (const char *)s_will;
     s_mqtt_cfg.session.last_will.msg_len = (int)n;
@@ -944,9 +1023,10 @@ static void start_client(int64_t now)
     s_client = esp_mqtt_client_init(&s_mqtt_cfg);
     s_mqtt_cfg.network.if_name = NULL;   /* esp_mqtt_set_config would allocate it again */
     if (s_client == NULL) {
-        /* Out of memory: retry with the same backoff as a failed connection (each attempt
-         * takes a bdSeq and writes NVS, so it must not run once per loop). */
+        /* Out of memory: retry with the same backoff as a failed connection (not once per
+         * loop). No CONNECT was sent: the next attempt takes the same bdSeq (#161). */
         ESP_LOGE(TAG, "esp_mqtt_client_init failed");
+        gw_bdseq_not_sent(&s_bdseqs);
         schedule_retry(now);
         return;
     }
@@ -1004,6 +1084,7 @@ static void reconnect(int64_t now)
     prepare_attempt();
     if (set_config() != ESP_OK ||
         esp_mqtt_client_reconnect(s_client) != ESP_OK) {
+        gw_bdseq_not_sent(&s_bdseqs);   /* #161: no attempt, no CONNECT */
         schedule_retry(now);
     }
 }
@@ -1016,11 +1097,13 @@ static void publish_ndeath(void)
 }
 
 /* Close a session that cannot work; the DISCONNECTED event schedules the retry (backoff).
- * DISCONNECT makes the broker drop the will: no NBIRTH went out, so no NDEATH is owed. */
+ * With MQTT 3.1.1, DISCONNECT makes the broker drop the will; with MQTT 5 the reason code 0x04
+ * makes it publish the will (issue #155). Hosts ignore an NDEATH whose bdSeq no NBIRTH had. */
 static void abort_session(const char *why)
 {
     ESP_LOGW(TAG, "%s: closing the connection", why);
     s_sub_msg_id = 0;
+    disconnect_with_will();
     esp_mqtt_client_disconnect(s_client);
 }
 
@@ -1036,7 +1119,9 @@ static void on_connected(void)
         {.filter = s_state_topic, .qos = 1},
     };
     atomic_store(&s_suback, 0);
-    gw_phost_session_start(&s_phost);
+    /* issue #157: the STATE timestamps of this broker only
+     * (tck-id-operational-behavior-host-application-multi-server-timestamp) */
+    gw_phost_session_start(&s_phost, s_bsel.current);
     s_waiting_host = false;
     int id = esp_mqtt_client_subscribe_multiple(s_client, topics, s_state_topic[0] ? 3 : 2);
     feed_watchdog();
@@ -1056,6 +1141,38 @@ static void log_stacks(void)
     ESP_LOGI(TAG, "stack free (high-water mark): sparkplug %u of %u B, mqtt_task %u B",
              (unsigned)uxTaskGetStackHighWaterMark(NULL), (unsigned)STACK_BYTES,
              mqtt != NULL ? (unsigned)uxTaskGetStackHighWaterMark(mqtt) : 0u);
+}
+
+/*
+ * Issue #164: births that failed while the connection stays open. For the births (QoS 0, no
+ * retain, no MQTT 5 property) esp-mqtt 1.1.0 returns -1 only when the connection is closed or
+ * closing: a failed socket write closes it (esp_mqtt_abort_connection, DISCONNECTED event), and
+ * the publish budget (#59) shuts the socket down. The cases that keep the connection open (the
+ * MQTT 5 check of the QoS and retain flag, a full outbox, no memory for the outbox) apply only to
+ * QoS > 0 or retain. But gw_node also fails a message that it cannot encode, and another esp-mqtt
+ * version can differ: the node must not stay connected with no Sparkplug session. NDEATH when the
+ * hosts saw an NBIRTH with this bdSeq, then DISCONNECT: the DISCONNECTED event schedules a new
+ * attempt (backoff, a new CONNECT and bdSeq, every birth).
+ */
+static void end_failed_births(bool ndeath, const char *why)
+{
+    ESP_LOGW(TAG, "%s (bdSeq=%u) with the connection open: the session is not up", why, s_bdseq);
+    if (ndeath) {
+        publish_ndeath();
+    }
+    gw_node_session_down(s_node);
+    gw_status_set(GW_ST_MQTT_UP, false);
+    abort_session("births failed");
+}
+
+/* Issue #164: a rebirth (NCMD, console, SNTP) whose NBIRTH failed took the node offline; with the
+ * connection still open, the session ends here (the hosts saw the earlier NBIRTH). */
+static void check_rebirth(void)
+{
+    if (gw_node_take_birth_failure(s_node) && atomic_load(&s_mqtt_connected) &&
+        atomic_load(&s_disc_gen) == s_handled_disc) {
+        end_failed_births(true, "rebirth: NBIRTH not published");
+    }
 }
 
 /* The Sparkplug session starts: NBIRTH and DBIRTHs. */
@@ -1082,22 +1199,31 @@ static void start_births(void)
     uint32_t oversize_before = s_oversize;
     bool born = gw_node_session_up(s_node, s_bdseq);
     s_in_births = false;
+    gw_node_take_birth_failure(s_node);   /* handled here */
     if (!born && s_oversize != oversize_before) {
         /* the NBIRTH itself is too large for this broker: no session can work here */
         abort_session("NBIRTH larger than the broker's Maximum Packet Size");
         return;
     }
+    bool open = atomic_load(&s_mqtt_connected) && atomic_load(&s_disc_gen) == s_handled_disc;
     if (!born) {
+        if (open) {
+            end_failed_births(false, "NBIRTH not published");
+            return;
+        }
         ESP_LOGW(TAG, "NBIRTH not published (bdSeq=%u): the connection dropped, the session is "
                       "not up",
                  s_bdseq);
         return;   /* the DISCONNECTED event schedules the retry */
     }
-    if (s_birth_failures > 0 || !atomic_load(&s_mqtt_connected) ||
-        atomic_load(&s_disc_gen) != s_handled_disc) {
-        /* the NBIRTH went out but the connection died under the DBIRTHs: hosts would see a
-         * node without its devices; the new session repeats every birth */
+    if (s_birth_failures > 0 || !open) {
+        /* the NBIRTH went out but a DBIRTH did not: hosts would see a node without its
+         * devices; the new session repeats every birth */
         gw_node_session_down(s_node);
+        if (open) {
+            end_failed_births(true, "births incomplete");
+            return;
+        }
         ESP_LOGW(TAG, "births incomplete (bdSeq=%u, %u publish(es) failed): the connection "
                       "dropped, the session is not up",
                  s_bdseq, s_birth_failures);
@@ -1141,7 +1267,7 @@ static void on_host_state(const uint8_t *data, size_t len)
     if (!atomic_load(&s_mqtt_connected)) {
         return;
     }
-    uint64_t last = s_phost.last_ts;
+    uint64_t last = gw_phost_last_ts(&s_phost);
     const char *id = s_cfg->sparkplug.primary_host_id;
     switch (gw_phost_on_state(&s_phost, data, len)) {
     case GW_PHOST_INVALID:
@@ -1154,7 +1280,7 @@ static void on_host_state(const uint8_t *data, size_t len)
         break;
     case GW_PHOST_ONLINE:
         ESP_LOGI(TAG, "primary host '%s' online (timestamp %llu)", id,
-                 (unsigned long long)s_phost.last_ts);
+                 (unsigned long long)gw_phost_last_ts(&s_phost));
         if (s_waiting_host) {
             s_waiting_host = false;
             start_births();
@@ -1162,16 +1288,17 @@ static void on_host_state(const uint8_t *data, size_t len)
         break;
     case GW_PHOST_OFFLINE:
         ESP_LOGW(TAG, "primary host '%s' offline (timestamp %llu)", id,
-                 (unsigned long long)s_phost.last_ts);
+                 (unsigned long long)gw_phost_last_ts(&s_phost));
         if (s_node->online) {
             /* Sparkplug 3.0: NDEATH and disconnect; the next session waits for it again */
             publish_ndeath();
             gw_node_session_down(s_node);
             gw_status_set(GW_ST_MQTT_UP, false);
-            s_host_disconnect = true;
+            s_host_end = HOST_END_OFFLINE;
             abort_session("the primary host went offline: NDEATH published");
         } else if (s_waiting_host && s_bsel.count > 1) {
-            s_host_disconnect = true;
+            /* tck-id-operational-behavior-primary-application-state-with-multiple-servers-walk */
+            s_host_end = HOST_END_OFFLINE;
             abort_session("the primary host is offline on this broker");
         }
         break;
@@ -1200,6 +1327,7 @@ static void move_session(const char *why)
         gw_node_session_down(s_node);
         gw_status_set(GW_ST_MQTT_UP, false);
     }
+    disconnect_with_will();              /* issue #155 */
     esp_mqtt_client_destroy(s_client);   /* DISCONNECT if connected; drops the old binding */
     s_client = NULL;
     s_started = false;
@@ -1211,6 +1339,7 @@ static void move_session(const char *why)
     s_sub_msg_id = 0;
     s_stable = false;
     s_waiting_host = false;
+    s_host_end = HOST_END_NONE;   /* the old client's end is not the next attempt's */
 }
 
 /* An attempt ended without a session (or a session dropped): MQTT-6 failover, and issue #57
@@ -1218,12 +1347,27 @@ static void move_session(const char *why)
 static void attempt_ended(void)
 {
     s_waiting_host = false;
-    if (s_host_disconnect) {
+    host_end_t host_end = s_host_end;
+    s_host_end = HOST_END_NONE;
+    if (host_end == HOST_END_OFFLINE) {
+        /* Issue #156: a valid offline STATE is not a failed attempt: the next broker of the list
+         * at once (tck-id-operational-behavior-edge-node-termination-host-offline-reconnect,
+         * tck-id-operational-behavior-primary-application-state-with-multiple-servers-walk) */
+        s_stable = false;
+        if (gw_brokersel_next(&s_bsel)) {
+            ESP_LOGW(TAG, "primary host offline on broker: next attempt on broker %u/%u (%s:%u)",
+                     s_bsel.current + 1, s_bsel.count, broker_host(s_bsel.current),
+                     broker_port(s_bsel.current));
+            s_attempt = 0;
+        }
+        publish_status();
+        return;
+    }
+    if (host_end == HOST_END_NO_STATE) {
         /* SPB-13: the network works; with backups the host may be on another broker */
-        s_host_disconnect = false;
         s_stable = false;
         gw_brokersel_session_down(&s_bsel);
-        if (s_bsel.count > 1 && gw_brokersel_failed(&s_bsel)) {
+        if (gw_brokersel_failed(&s_bsel)) {
             ESP_LOGW(TAG, "primary host not online on broker: next attempt on broker %u/%u (%s:%u)",
                      s_bsel.current + 1, s_bsel.count, broker_host(s_bsel.current),
                      broker_port(s_bsel.current));
@@ -1424,7 +1568,7 @@ static void reconcile(void)
     }
     if (s_waiting_host && connected && s_bsel.count > 1 &&
         now - s_host_wait_since_us >= PHOST_WAIT_MS * 1000LL) {
-        s_host_disconnect = true;
+        s_host_end = HOST_END_NO_STATE;
         s_waiting_host = false;
         abort_session("no STATE online from the primary host within 30 s on this broker");
     }
@@ -1488,6 +1632,7 @@ static void reconcile(void)
         ESP_LOGI(TAG, "rebirth requested from the shell or the REST API");
         gw_node_rebirth(s_node);
     }
+    check_rebirth();   /* issue #164 */
     /* online: DDATA/NDATA; offline with store & forward: the same changes into the store */
     if (s_node->online || s_node->sf != NULL) {
         unsigned dirty = atomic_exchange(&s_dev_dirty, 0);
@@ -1554,6 +1699,7 @@ static void edge_task(void *arg)
                 on_host_state(c->data, c->len);
             } else {
                 gw_node_handle_message(s_node, c->topic, c->topic_len, c->data, c->len);
+                check_rebirth();   /* issue #164: an NCMD Rebirth */
             }
             uint8_t slot = (uint8_t)ev.arg;
             xQueueSend(s_free_slots, &slot, 0);
@@ -1763,6 +1909,7 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         .ctx = NULL,
     };
     gw_node_init(s_node, cfg, &ops, info);
+    gw_bdseq_init(&s_bdseqs);   /* SPB-3 / #161: bdSeq 0 for the first CONNECT of the boot */
     atomic_store(&s_fw_dirty, true);   /* the first NBIRTH carries the update's state */
     /* The largest births (SPB-16/17/18) need GW_SPB_PAYLOAD_MAX: in PSRAM when the board has
      * it; without PSRAM a smaller buffer leaves internal RAM for TLS and the web server. */

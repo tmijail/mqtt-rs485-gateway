@@ -9,15 +9,22 @@
  * Pure logic, no OS calls, no allocation: a strict parser for that payload and the
  * timestamp rule. A STATE message older than the newest one already accepted (smaller
  * timestamp) is stale and ignored: a retained message can arrive after a live one, and a
- * host that restarts announces itself with a newer timestamp. The newest timestamp is kept
- * across MQTT sessions; whether the host is online is per session (the retained message of
- * the new session says it again).
+ * host that restarts announces itself with a newer timestamp.
+ *
+ * Issue #157: the host keeps one STATE timestamp for each MQTT server
+ * (tck-id-operational-behavior-host-application-multi-server-timestamp), so the newest
+ * timestamp is kept for each server of the list (gw_brokersel index), across the MQTT sessions
+ * on that server. A STATE on one server is never compared with the timestamp of another one.
+ * Whether the host is online is per session (the retained message of the new session says it
+ * again).
  */
 #pragma once
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#include "gw_brokersel.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,14 +39,22 @@ typedef enum {
 
 typedef struct {
     bool online;            /* per session: the host said online in this session */
-    bool have_ts;
-    uint64_t last_ts;       /* newest accepted timestamp */
+    uint8_t server;         /* the MQTT server of the current session (gw_brokersel index) */
+    bool have_ts[GW_MAX_BROKERS];
+    uint64_t last_ts[GW_MAX_BROKERS];   /* newest accepted timestamp, per server */
 } gw_phost_t;
 
 void gw_phost_init(gw_phost_t *p);
 
-/** New MQTT session: the host is not known to be online until a STATE says so. */
-void gw_phost_session_start(gw_phost_t *p);
+/** New MQTT session on server @p server (0..GW_MAX_BROKERS-1, clamped): the host is not known to
+ *  be online until a STATE says so. */
+void gw_phost_session_start(gw_phost_t *p, uint8_t server);
+
+/** A STATE was accepted on the server of the current session. */
+bool gw_phost_have_ts(const gw_phost_t *p);
+
+/** The newest timestamp accepted on the server of the current session (0 if none). */
+uint64_t gw_phost_last_ts(const gw_phost_t *p);
 
 /** Parse {"online":bool,"timestamp":uint} (keys in any order, whitespace allowed, other keys
  *  ignored). False if the payload is not that. */

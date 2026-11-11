@@ -94,7 +94,7 @@ Al publicar, el gateway hace de *Edge Node* de Sparkplug. Cada esclavo Modbus es
 |---|---|---|---|
 | SPB-1 | Payload protobuf conforme a `sparkplug_b.proto` de Eclipse Tahu | P0 | ✅ |
 | SPB-2 | The node registers the **NDEATH** as the MQTT Will (LWT): QoS 1, no retain. The NDEATH has the metric `bdSeq` with the datatype Int64 (`tck-id-message-flow-edge-node-birth-publish-will-message-payload-bdSeq`). The `bdSeq` of the NBIRTH also has the datatype Int64 (`tck-id-message-flow-edge-node-birth-publish-nbirth-payload-bdSeq`). Before an orderly disconnection, the node publishes the NDEATH | P0 | ✅ |
-| SPB-3 | **bdSeq** de 0 a 255, persistido en memoria no volátil. Se incrementa en cada intento de conexión y el NBIRTH lleva el mismo valor que el LWT de esa conexión | P0 | ✅ |
+| SPB-3 | **bdSeq** from 0 to 255, in RAM only. It starts at 0 at each boot and increases by exactly 1 for each new MQTT CONNECT packet; after 255 it is 0 (`tck-id-topics-nbirth-bdseq-increment`, issue #161). A connection attempt that sends no CONNECT packet (DNS, TCP or TLS failure) does not use a value. The NBIRTH has the same value as the Will of that connection | P0 | ✅ |
 | SPB-4 | **NBIRTH**: QoS 0, no retain, `seq` = 0, timestamp. It contains `bdSeq`, `Node Control/Rebirth` (Boolean, writable, value false), `Node Control/Reboot`, `Node Info/Firmware`, `Node Info/Hardware` and the local I/O metrics (§4.6). Each metric has a name, a datatype and a value. Each metric also has an alias, except `Node Control/Rebirth`: the NBIRTH must not give an alias to it (`tck-id-operational-behavior-data-commands-rebirth-name-aliases`) | P0 | ✅ |
 | SPB-5 | **seq** de 0 a 255 que vuelve a empezar, compartido por todos los mensajes del nodo salvo NDEATH | P0 | ✅ |
 | SPB-6 | **DBIRTH** por cada dispositivo Modbus en línea, con todas sus métricas y su valor actual. **DDEATH** cuando el dispositivo pasa a fuera de línea (§4.5, MB-9) | P0 | ✅ |
@@ -190,9 +190,9 @@ Al publicar, el gateway hace de *Edge Node* de Sparkplug. Cada esclavo Modbus es
 
 El MVP es un gateway que se pone en marcha editando un JSON, se conecta por Ethernet (DHCP o IP estática) a un broker MQTT sin TLS y publica con Sparkplug B 3.0 correcto, sin host primario y sin store & forward. Esto incluye:
 
-- birth y death del nodo y de los dispositivos, bdSeq persistido, seq y aliases;
-- reporte por excepción con deadband;
-- rebirth, y escrituras por DCMD y NCMD.
+- the birth and death of the node and of the devices, bdSeq (SPB-3), seq and aliases;
+- report by exception with a deadband;
+- rebirth, and writes by DCMD and NCMD.
 
 Encuesta N esclavos Modbus RTU por el RS485 integrado, con los tipos de 16 y 32 bits, escala, timeouts, reintentos y detección de fuera de línea. Expone además las 8 DI y las 8 DO, y muestra su estado en el LED RGB.
 
@@ -334,7 +334,7 @@ TLS 1.2 o 1.3, lo que negocie el broker. Las fechas de validez del certificado s
 
 | Clave | Tipo | Defecto | Regla |
 |---|---|---|---|
-| `protocol` | `"3.1.1"` \| `"5"` | `"3.1.1"` | Versión de MQTT para todos los brokers de la lista. Con `"5"`, como pide Sparkplug 3.0: *Clean Start* = 1 y *Session Expiry Interval* = 0 (el broker no guarda la sesión entre conexiones, igual que *clean session* en 3.1.1) y *Will Delay Interval* = 0 (el NDEATH se publica en cuanto se pierde la conexión). Los temas, QoS, retención y payloads no cambian |
+| `protocol` | `"3.1.1"` \| `"5"` | `"3.1.1"` | The MQTT version for all the brokers of the list. With `"5"`, the node obeys Sparkplug 3.0: *Clean Start* = 1 and *Session Expiry Interval* = 0 (the broker keeps no session between connections, as *clean session* in 3.1.1). *Will Delay Interval* = 0 (the broker publishes the NDEATH when the connection stops). Each DISCONNECT of the node has the reason code 0x04, *Disconnect with Will Message* (`tck-id-payloads-ndeath-will-message-publisher-disconnect-mqtt50`, issue #155). Thus the broker also publishes the NDEATH of the will. The topics, QoS, retain flags and payloads do not change |
 
 **`mqtt.backup_brokers`, `failover_after`, `primary_return_s` (MQTT-6): lista de brokers.**
 
@@ -355,12 +355,17 @@ Un intento falla si no termina en una sesión estable: conexión TCP o TLS falli
 
 **`sparkplug.primary_host_id` (SPB-13): Primary Host Application.** Clave del MVP; vacía = sin host primario. Con un id, el nodo se suscribe a `spBv1.0/STATE/{id}` en el mismo SUBSCRIBE que NCMD y DCMD y espera un STATE de Sparkplug 3.0 (JSON `{"online": true|false, "timestamp": <ms>}`, retenido) antes del NBIRTH:
 
-- `online: true` → NBIRTH y DBIRTH;
-- `online: false` con la sesión arriba → NDEATH explícito (bdSeq de la sesión) y DISCONNECT; la sesión siguiente vuelve a esperar;
-- un STATE con `timestamp` menor que el último aceptado se ignora (mensaje retenido viejo); el último `timestamp` se recuerda entre sesiones, no entre arranques;
-- un payload que no es ese JSON (por ejemplo, el `ONLINE` de Sparkplug 2.x) se ignora con un aviso.
+- `online: true`: the node publishes the NBIRTH and the DBIRTHs.
+- `online: false` while the session is up: the node publishes an explicit NDEATH (with the bdSeq of the session) and disconnects. The next session waits again.
+- The node ignores a STATE with a `timestamp` that is less than the last accepted `timestamp` (an old retained message). The host keeps one STATE timestamp for each MQTT server (`tck-id-operational-behavior-host-application-multi-server-timestamp`). Thus the node keeps the last `timestamp` for each broker of the list (issue #157), and never compares the STATE of one broker with the `timestamp` of another broker. It keeps these values between sessions, but not after a restart.
+- The node ignores, with a warning, a payload that is not this JSON (for example, the `ONLINE` of Sparkplug 2.x).
 
-Con brokers de respaldo (MQTT-6), un host fuera de línea en un broker (STATE `false`, o ningún STATE `true` en 30 s) cuenta como intento fallido en ese broker. Con un solo broker el nodo queda conectado esperando.
+With backup brokers (MQTT-6):
+
+- A valid STATE `false` on a broker makes the node disconnect and connect to the next broker of the list at once, also when `failover_after` is more than 1 (issue #156). This applies in a session (`tck-id-operational-behavior-edge-node-termination-host-offline-reconnect`) and while the node waits for the host (`tck-id-operational-behavior-primary-application-state-with-multiple-servers-walk`). It is not a failed attempt.
+- If no STATE `true` comes in 30 s, the node disconnects. This counts as a failed attempt on that broker.
+
+With one broker, the node stays connected and waits.
 
 **`sparkplug.store_forward` (SPB-14): store & forward.**
 

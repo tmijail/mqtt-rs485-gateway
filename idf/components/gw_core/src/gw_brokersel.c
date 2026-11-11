@@ -43,6 +43,17 @@ bool gw_brokersel_failed(gw_brokersel_t *s)
     return true;
 }
 
+bool gw_brokersel_next(gw_brokersel_t *s)
+{
+    s->stable = false;
+    s->probing_primary = false;
+    if (s->count == 1) {
+        return false;
+    }
+    advance(s);
+    return true;
+}
+
 void gw_brokersel_stable(gw_brokersel_t *s, uint64_t now_ms)
 {
     s->stable = true;

@@ -428,56 +428,12 @@ bool gw_nvsmig_find(const uint8_t *buf, size_t size, const char *ns, const char 
     return false;
 }
 
-uint8_t gw_nvsmig_bdseq_later(uint8_t a, uint8_t b)
-{
-    uint8_t d = (uint8_t)(b - a);
-    if (d == 128) {
-        return a > b ? a : b;   /* half the ring: undecidable, the same answer either way */
-    }
-    return d >= 1 && d <= 127 ? b : a;
-}
-
 bool gw_nvsmig_may_erase(const gw_nvsmig_read_t *r)
 {
     if (!r->init_ok) {
         return r->init_layout_error;
     }
     return r->listed_all && r->skipped == 0;
-}
-
-bool gw_nvsmig_bdseq_reached(uint8_t next, uint8_t reserved)
-{
-    return (uint8_t)(next - reserved) < 128u;
-}
-
-bool gw_nvsmig_bdseq_start(bool have_known, uint8_t known, const gw_nvsmig_side_t *side,
-                           uint8_t *start, uint8_t *base)
-{
-    if (!side->have) {
-        *start = *base = known;
-        return have_known;
-    }
-    if (!have_known) {
-        *start = side->next;
-        *base = side->base_known ? side->base : side->next;
-        return true;
-    }
-    /* the same base: the chain continues, however far it went; another one: the later */
-    *start = side->base_known && side->base == known ? side->next
-                                                     : gw_nvsmig_bdseq_later(known, side->next);
-    *base = known;
-    return true;
-}
-
-uint8_t gw_nvsmig_bdseq_fold(bool have_nvs, uint8_t nvs, const gw_nvsmig_side_t *side)
-{
-    if (!side->have) {
-        return nvs;
-    }
-    if (!have_nvs || (side->base_known && side->base == nvs)) {
-        return side->next;
-    }
-    return gw_nvsmig_bdseq_later(nvs, side->next);
 }
 
 bool gw_nvsmig_erase_with_marker(const gw_nvsmig_read_t *r)

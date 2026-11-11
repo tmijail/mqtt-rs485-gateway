@@ -253,6 +253,29 @@ static bool tag_changed(const gw_node_t *n, uint16_t tag, const gw_tag_value_t *
 
 /* ---------- births and deaths ---------- */
 
+void gw_bdseq_init(gw_bdseq_t *b)
+{
+    b->next = 0;   /* tck-id-topics-nbirth-bdseq-increment: "MUST start at zero" */
+    b->taken = 0;
+    b->pending = false;
+}
+
+uint8_t gw_bdseq_take(gw_bdseq_t *b)
+{
+    b->taken = b->next;
+    b->next = (uint8_t)(b->taken + 1);   /* 255 -> 0 */
+    b->pending = true;
+    return b->taken;
+}
+
+void gw_bdseq_not_sent(gw_bdseq_t *b)
+{
+    if (b->pending) {
+        b->next = b->taken;
+        b->pending = false;
+    }
+}
+
 size_t gw_node_death_payload(uint64_t bdseq, uint8_t *out, size_t cap)
 {
     /* tck-id-message-flow-edge-node-birth-publish-will-message-payload-bdSeq: the Will
@@ -596,7 +619,12 @@ bool gw_node_rebirth(gw_node_t *n)
 {
     n->seq = 0;
     if (!publish_nbirth(n)) {
-        return false;   /* no DBIRTH without the NBIRTH they belong to */
+        /* no DBIRTH without the NBIRTH they belong to. Issue #164: the session cannot go on
+         * either (the hosts would see the seq start again with no NBIRTH): the node is offline,
+         * and the caller ends the MQTT session (gw_node_take_birth_failure) */
+        gw_node_session_down(n);
+        n->birth_failed = true;
+        return false;
     }
     memset(n->dev_too_large, 0, sizeof(n->dev_too_large));   /* issue #76: try once more */
     for (uint16_t dev = 0; dev < n->cfg->device_count; dev++) {
@@ -620,6 +648,13 @@ bool gw_node_session_up(gw_node_t *n, uint64_t bdseq)
     }
     n->born_once = true;
     return true;
+}
+
+bool gw_node_take_birth_failure(gw_node_t *n)
+{
+    bool f = n->birth_failed;
+    n->birth_failed = false;
+    return f;
 }
 
 void gw_node_session_down(gw_node_t *n)

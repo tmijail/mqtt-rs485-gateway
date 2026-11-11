@@ -53,8 +53,8 @@ void gw_nvsraw_scan_page(gw_nvsraw_scan_t *s, const uint8_t *page);
 gw_nvsraw_kind_t gw_nvsraw_verdict(const gw_nvsraw_scan_t *s);
 
 /* ---------- issue #94: one u8 item straight from the raw pages of an unencrypted NVS ----------
- * The bdSeq when the unencrypted NVS cannot be initialised (or before it is erased): every page
- * to gw_nvsraw_u8_ns() first (finds the namespace's index), then every page to
+ * An entry when the unencrypted NVS cannot be initialised (issue #109: the "erase in progress"
+ * entry below): every page to gw_nvsraw_u8_ns() first (finds the namespace's index), then every page to
  * gw_nvsraw_u8_item(). Only plain items with a valid CRC count; of several written copies (a
  * reset in the middle of an update) the one on the page with the highest sequence number, and
  * on that page the last one, wins. */
@@ -122,43 +122,6 @@ uint16_t gw_nvsmig_skipped(const uint8_t *buf);
 bool gw_nvsmig_next(const uint8_t *buf, size_t size, size_t *off, gw_nvsmig_rec_t *r);
 bool gw_nvsmig_find(const uint8_t *buf, size_t size, const char *ns, const char *key,
                     gw_nvsmig_rec_t *r);
-
-/**
- * Issue #94: the later of two bdSeq values (0..255, wrapping), by serial-number arithmetic: @p b
- * is later when it is 1 to 127 steps after @p a; exactly 128 apart, the larger (so the result
- * does not depend on the order). Only for values with no live source between them (the RAM bdSeq
- * of a boot without NVS): a value read from the live partition always wins.
- */
-uint8_t gw_nvsmig_bdseq_later(uint8_t a, uint8_t b);
-
-/* Issue #104: a boot without NVS hands out bdSeq values from RAM. It first reserves a block of
- * them in a small LittleFS file (the first value not handed out yet); the next boot with NVS
- * continues from the reservation, so the bdSeq never goes back to a value the hosts already saw.
- * Issue #108 B3: the file also holds the base the reservations started from (the copy's or the
- * raw bdSeq). While that base is the one known, the reservation wins at any distance: serial
- * arithmetic alone picks the base again once boots without NVS have reserved 128 or more. */
-#define GW_NVSMIG_BDSEQ_BLOCK 16u
-
-typedef struct {
-    bool have;               /* a reservation file was read */
-    bool base_known;         /* it has its base (a one-byte file of #104 does not) */
-    uint8_t base;            /* the bdSeq the chain of reservations started from */
-    uint8_t next;            /* the first value not handed out yet */
-} gw_nvsmig_side_t;
-
-/** True when @p next (the next value to hand out) reached the reservation @p reserved: a new
- *  block must be reserved before it is used. */
-bool gw_nvsmig_bdseq_reached(uint8_t next, uint8_t reserved);
-
-/** The first value of a boot without NVS, from the latest bdSeq known otherwise (@p have_known,
- *  @p known: the copy's, the raw one) and the reservation; @p base: the base of the reservation
- *  this boot writes. False when nothing is known at all (the caller draws a random value). */
-bool gw_nvsmig_bdseq_start(bool have_known, uint8_t known, const gw_nvsmig_side_t *side,
-                           uint8_t *start, uint8_t *base);
-
-/** The bdSeq of the first boot with NVS after boots without it: the NVS's own (@p have_nvs,
- *  @p nvs), or the reservation when it continues from that same value, else the later of both. */
-uint8_t gw_nvsmig_bdseq_fold(bool have_nvs, uint8_t nvs, const gw_nvsmig_side_t *side);
 
 /* What the read of the unencrypted NVS achieved before a migration may erase it. */
 typedef struct {
