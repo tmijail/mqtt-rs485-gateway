@@ -5902,6 +5902,30 @@ def run_web(args, work):
           f"{status.get('mqtt')}, {DEVICE} online {devs.get(DEVICE, {}).get('online')}, Voltage "
           f"{volt[0] if volt else None}")
 
+    # Issue #167: a <select> without the current value shows its first option, and a save writes
+    # it back (a CDAB tag became "big"). The served page's lists must hold every value of the
+    # configuration (float64, CDAB, DCBA, BADC tags here): then a save with no change sends the
+    # exported document unchanged (the form keeps an absent optional key absent), and it is valid.
+    text = page.decode(errors="replace")
+    lists = {}
+    for name in ("PAR", "AREA", "TYPE", "WO"):
+        m = re.search(r"\b%s=\[([^\]]*)\]" % name, text)
+        lists[name] = re.findall(r'"([^"]*)"', m.group(1)) if m else []
+    used = [("PAR", doc.get("rs485", {}).get("parity", "none"))]
+    for d in doc.get("devices", []):
+        for t in d.get("tags", []):
+            used += [("AREA", t.get("area")), ("TYPE", t.get("type"))]
+            if "word_order" in t:
+                used.append(("WO", t["word_order"]))
+    missing = sorted({f"{k}:{v}" for k, v in used if v not in lists[k]})
+    st_rt, _, b_rt = http("PUT", "/api/config?dry_run=1", body)   # the exported bytes, unchanged
+    check("CFG-3 issue #167: the form's lists (PAR, AREA, TYPE, WO) hold every value of the "
+          "configuration (float64, CDAB, DCBA, BADC), and the unchanged exported document is valid",
+          st_p == 200 and not missing and ("TYPE", "float64") in used and ("WO", "CDAB") in used
+          and st_rt == 200 and (as_json(b_rt) or {}).get("saved") is False,
+          f"lists {[f'{k}={len(v)}' for k, v in lists.items()]}; not in the lists: "
+          f"{missing or 'none'}; PUT dry run {st_rt} {b_rt.decode(errors='replace').strip()}")
+
     bad = json.loads(json.dumps(doc))
     bad["devices"][0]["tags"][0]["type"] = "float16"   # invalid (float64 is a type since MB-6)
     st3, _, b3 = http("PUT", "/api/config", bad)

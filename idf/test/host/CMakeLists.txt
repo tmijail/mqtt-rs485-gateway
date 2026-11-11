@@ -95,6 +95,13 @@ add_test(NAME check_set_config
          COMMAND ${CMAKE_COMMAND} -DSRC=${IDF_PROJECT_DIR}/components/gw_edge/gw_edge.c
                  -P ${CMAKE_CURRENT_LIST_DIR}/check_set_config.cmake)
 
+# Issue #167: the option lists of the web UI's configuration form are the value sets of the
+# parser (a missing option silently changed a tag's word order on a save).
+add_test(NAME check_web_lists
+         COMMAND ${CMAKE_COMMAND} -DCONFIG_C=${IDF_PROJECT_DIR}/components/gw_core/src/gw_config.c
+                 -DINDEX_HTML=${IDF_PROJECT_DIR}/components/gw_web/www/index.html
+                 -P ${CMAKE_CURRENT_LIST_DIR}/check_web_lists.cmake)
+
 # Issue #83: the build's check of the sdkconfig against sdkconfig.defaults and its overlays.
 # fresh: matches; stale: DYNAMIC_BUFFER "is not set" from before #80 (fails, and only warns with
 # MODE=warn); wdt5: a different watchdog timeout fails, unless an overlay of the build sets it;

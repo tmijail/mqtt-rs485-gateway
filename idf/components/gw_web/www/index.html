@@ -73,7 +73,12 @@ td input,td select{width:100%;margin:0;padding:3px 4px}
 "use strict";
 const $=s=>document.querySelector(s);
 let cfg=null,tab="status";
-const PAR=["none","even","odd"],AREA=["coil","discrete","holding","input"],TYPE=["bool","uint16","int16","uint32","int32","float32"],WO=["big","little"];
+/* #167: the full value sets of gw_config.c (k_parity_names, k_area_names, k_type_names,
+   k_word_names); the host test check_web_lists compares them */
+const PAR=["none","even","odd"];
+const AREA=["coil","discrete","holding","input"];
+const TYPE=["bool","uint16","int16","uint32","int32","float32","uint64","int64","float64","string","bytes"];
+const WO=["big","little","ABCD","CDAB","BADC","DCBA"];
 async function api(method,path,body){
  const h={"X-Requested-With":"gateway"};if(body)h["Content-Type"]="application/json";
  let r;
@@ -86,31 +91,42 @@ function msg(t,cls){const m=$("#msg");m.textContent=t;m.className=cls||"mut"}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
 function get(o,p){return p.split(".").reduce((a,k)=>a==null?undefined:a[k],o)}
 function set(o,p,v){const ks=p.split(".");let a=o;for(const k of ks.slice(0,-1)){if(a[k]==null||typeof a[k]!=="object")a[k]={};a=a[k]}a[ks[ks.length-1]]=v}
-function field(path,lbl,kind,opts){
+/* #167: a <select> shows its first option when the value is not in its list, and a save writes
+   that option back: an absent optional value gets an empty "(default)" option, and a value that
+   is not in the list stays as an option of its own. A checkbox of an absent key shows the
+   default of the parser (opts = true or false) and a save does not add the key. */
+function selOpts(v,opts,optional){
+ const o=opts.map(x=>[x,x]);
+ if(v==null){if(optional)o.unshift(["","(default)"])}
+ else if(!opts.includes(v))o.unshift([String(v),`${v} (not in the list)`]);
+ return o.map(([x,t])=>`<option value="${esc(x)}" ${v!=null&&x===String(v)||v==null&&x===""?"selected":""}>${esc(t)}</option>`).join("");
+}
+function field(path,lbl,kind,opts,optional){
  const v=get(cfg,path);let h;
- if(kind==="bool")h=`<input type="checkbox" data-p="${path}" data-k="bool" ${v?"checked":""}>`;
- else if(kind==="sel")h=`<select data-p="${path}" data-k="str">${opts.map(o=>`<option ${o===v?"selected":""}>${o}</option>`).join("")}</select>`;
+ if(kind==="bool")h=`<input type="checkbox" data-p="${path}" data-k="bool" data-def="${opts?1:0}" ${(v==null?opts:v)?"checked":""}>`;
+ else if(kind==="sel")h=`<select data-p="${path}" data-k="sel">${selOpts(v,opts,optional)}</select>`;
  else h=`<input data-p="${path}" data-k="${kind}" ${kind==="pw"?'type="password" autocomplete="new-password"':""} value="${v==null?"":esc(v)}">`;
  return `<label>${lbl}${h}</label>`;
 }
 function renderForms(){
- $("#f-net").innerHTML=field("network.dhcp","DHCP","bool")+field("network.ip","IP","str")+field("network.netmask","Máscara","str")+field("network.gateway","Gateway","str")+field("network.dns","DNS","str")+field("network.hostname","Hostname (vacío = edge node)","str")+field("network.mdns","mDNS (.local)","bool");
+ $("#f-net").innerHTML=field("network.dhcp","DHCP","bool",true)+field("network.ip","IP","str")+field("network.netmask","Máscara","str")+field("network.gateway","Gateway","str")+field("network.dns","DNS","str")+field("network.hostname","Hostname (vacío = edge node)","str")+field("network.mdns","mDNS (.local)","bool",true);
  $("#f-mqtt").innerHTML=field("mqtt.host","Broker","str")+field("mqtt.port","Puerto","int")+field("mqtt.client_id","Client ID (vacío = edge node)","str")+field("mqtt.username","Usuario","str")+field("mqtt.password","Contraseña","pw")+field("mqtt.keepalive_s","Keepalive (s)","int");
  $("#f-spb").innerHTML=field("sparkplug.group_id","Group ID","str")+field("sparkplug.edge_node_id","Edge node ID","str")+field("sparkplug.primary_host_id","Primary host ID","str");
- $("#f-rs485").innerHTML=field("rs485.baud","Baudios","int")+field("rs485.parity","Paridad","sel",PAR)+field("rs485.stop_bits","Bits de stop","int")+field("rs485.response_timeout_ms","Timeout (ms)","int")+field("rs485.retries","Reintentos","int")+field("rs485.inter_frame_delay_ms","Retardo entre tramas (ms)","int")+field("local_io.di_debounce_ms","Debounce DI (ms)","int");
+ $("#f-rs485").innerHTML=field("rs485.baud","Baudios","int")+field("rs485.parity","Paridad","sel",PAR,true)+field("rs485.stop_bits","Bits de stop","int")+field("rs485.response_timeout_ms","Timeout (ms)","int")+field("rs485.retries","Reintentos","int")+field("rs485.inter_frame_delay_ms","Retardo entre tramas (ms)","int")+field("local_io.di_debounce_ms","Debounce DI (ms)","int");
  $("#f-web").innerHTML=field("web.username","Usuario","str")+field("web.password","Contraseña (mín. 8)","pw")+field("web.port","Puerto","int");
  const devs=cfg.devices||[];
  $("#f-dev").innerHTML=devs.map((d,i)=>`<div class="card"><div class="grid">${field(`devices.${i}.name`,"Nombre","str")+field(`devices.${i}.unit_id`,"Unit ID","int")+field(`devices.${i}.poll_ms`,"Encuesta (ms)","int")+field(`devices.${i}.offline_after`,"Fuera de línea tras","int")+field(`devices.${i}.type`,"Tipo (plantilla)","str")}</div>
- <table><tr><th>Tag</th><th>Área</th><th>Dirección</th><th>Tipo</th><th>Orden</th><th>Escala</th><th>Offset</th><th>Banda</th><th>Escr.</th><th>Unid.</th><th>Mín. ing.</th><th>Máx. ing.</th><th></th></tr>
- ${(d.tags||[]).map((t,k)=>{const p=`devices.${i}.tags.${k}`;const c=(f,kind,o)=>`<td>${field(p+"."+f,"",kind,o).replace(/^<label>|<\/label>$/g,"")}</td>`;
-  return `<tr>${c("name","str")}${c("area","sel",AREA)}${c("address","int")}${c("type","sel",TYPE)}${c("word_order","sel",WO)}${c("scale","num")}${c("offset","num")}${c("deadband","num")}${c("writable","bool")}${c("units","str")}${c("eng_low","num")}${c("eng_high","num")}<td><button data-del-tag="${i}.${k}">x</button></td></tr>`}).join("")}
+ <table><tr><th>Tag</th><th>Área</th><th>Dirección</th><th>Tipo</th><th>Orden</th><th>Escala</th><th>Offset</th><th>Banda</th><th>Escr.</th><th>Unid.</th><th>Mín. ing.</th><th>Máx. ing.</th><th>Bit</th><th>Length</th><th></th></tr>
+ ${(d.tags||[]).map((t,k)=>{const p=`devices.${i}.tags.${k}`;const c=(f,kind,o,opt)=>`<td>${field(p+"."+f,"",kind,o,opt).replace(/^<label>|<\/label>$/g,"")}</td>`;
+  return `<tr>${c("name","str")}${c("area","sel",AREA)}${c("address","int")}${c("type","sel",TYPE)}${c("word_order","sel",WO,true)}${c("scale","num")}${c("offset","num")}${c("deadband","num")}${c("writable","bool")}${c("units","str")}${c("eng_low","num")}${c("eng_high","num")}${c("bit","int")}${c("length","int")}<td><button data-del-tag="${i}.${k}">x</button></td></tr>`}).join("")}
  </table><div class="row"><button data-add-tag="${i}">+ tag</button><button data-del-dev="${i}">Quitar dispositivo</button></div></div>`).join("");
 }
 function readForms(){
  document.querySelectorAll("[data-p]").forEach(e=>{
   const p=e.dataset.p.replace(/\.(\d+)(?=\.|$)/g,".$1"),k=e.dataset.k;let v;
-  if(k==="bool")v=e.checked;else if(k==="int"||k==="num"){if(e.value.trim()===""){unset(p);return}v=Number(e.value)}else v=e.value;
-  if(k==="str"&&v===""&&get(cfg,p)===undefined)return;
+  if(k==="bool"){v=e.checked;if(get(cfg,p)===undefined&&v===(e.dataset.def==="1"))return}else if(k==="int"||k==="num"){if(e.value.trim()===""){unset(p);return}v=Number(e.value)}
+  else if(k==="sel"){const cur=get(cfg,p);if(cur!=null&&e.value===String(cur))return;if(e.value===""){unset(p);return}v=e.value}else v=e.value;
+  if((k==="str"||k==="pw")&&v===""&&get(cfg,p)===undefined)return;
   set(cfg,p,v);
  });
 }
