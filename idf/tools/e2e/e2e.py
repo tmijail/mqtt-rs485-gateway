@@ -5894,6 +5894,23 @@ def run_web(args, work):
           f"{status.get('mqtt')}, {DEVICE} online {devs.get(DEVICE, {}).get('online')}, Voltage "
           f"{volt[0] if volt else None}")
 
+    # Issue #170: the form has the byte limits of the names (maxlength 39 for device and tag names,
+    # 32 for the Sparkplug IDs), the help texts of primary_host_id, type and bytes, the topic
+    # preview (Sparkplug and UMH) and the device prefix as a list of levels (#172)
+    page_text = page.decode(errors="replace")
+    ui_items = {"maxlength 39": "ml:39" in page_text, "maxlength 32": "ml:32" in page_text,
+                "maxlength attribute": 'maxlength="${x.ml}"' in page_text,
+                "primary_host_id help": "UMH cannot be the primary host" in page_text,
+                "type help": "shows no value for a template instance" in page_text,
+                "bytes help": "shows no value for Bytes" in page_text,
+                "topic preview": "umh.v1." in page_text and "spBv1.0/" in page_text,
+                "prefix levels": "data-add-lvl" in page_text}
+    check("CFG-3 issue #170: the configuration form has maxlength on the names and IDs, help texts "
+          "(primary_host_id, type, bytes), the Sparkplug and UMH topic preview and the device "
+          "prefix levels",
+          st_p == 200 and all(ui_items.values()),
+          f"missing: {[k for k, v in ui_items.items() if not v] or 'none'}")
+
     # Issue #167: a <select> without the current value shows its first option, and a save writes
     # it back (a CDAB tag became "big"). The served page's lists must hold every value of the
     # configuration (float64, CDAB, DCBA, BADC tags here): then a save with no change sends the

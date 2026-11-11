@@ -102,6 +102,8 @@ An example `config.json` for option A:
 
 Load the configuration with the web UI, `PUT /api/config` or the shell command `config load` (`idf/README.md` §3.4).
 
+In the web UI, the Configuration tab shows the Sparkplug topic and the UMH topic of each device before you save. Compare the UMH topic with the location that you want. A level in red starts with `_`: correct it.
+
 ## Configure the UMH bridge
 
 Make a bridge in UMH Core, and put the input and the pipeline of this example in its read flow. The format of the bridge in the UMH configuration file changes between UMH versions. Thus this document gives only the benthos-umh part.
@@ -178,9 +180,10 @@ Do not use the role `primary`. It publishes the Sparkplug 2.x STATE text (`ONLIN
 | Device tag `L1/Current` | `umh.v1.acme.berlin.packaging.line3.meter1._raw.L1.Current` |
 | Device tag `Run` | `umh.v1.acme.berlin.packaging.line3.meter1._raw.Run` |
 | Node metric `DI/1` | `umh.v1.acme.berlin.packaging.gw01._raw.DI.1` |
+| Node metric `Devices/meter1/Online` (UMH preset) | `umh.v1.acme.berlin.packaging.gw01._raw.Devices.meter1.Online` |
 | Node metric `Node Info/Uptime` | `umh.v1.acme.berlin.packaging.gw01._raw.Node_Info.Uptime` |
 
-The [reference](../reference/umh-names-and-topics.md#node-metrics) gives all the metrics. A button for the rebirth in the web UI (`POST /api/rebirth`, #171) is planned.
+The [reference](../reference/umh-names-and-topics.md#node-metrics) gives all the metrics. The Rebirth button of the Status tab of the web UI (`POST /api/rebirth`) does the same as the shell command `rebirth`.
 
 ## Use Modbus TCP as a second path
 
