@@ -47,39 +47,39 @@ docker run --rm -v "${PWD}:/src:ro" -v gw-e2e:/work gw-e2e bash -c "git config -
 
 ## 3. Run the full E2E tests
 
-Each command builds the QEMU images in the volume and runs all the scenarios. The container activates ESP-IDF when it starts.
+Each command builds the QEMU images of one variant in the volume and runs the scenarios of that variant. The full E2E is the two variants (issue #135). The container activates ESP-IDF when it starts.
 
-1. Run the default variant (no PSRAM):
-
-   ```powershell
-   docker run --rm --privileged -v gw-e2e:/work -w /work/repo/idf -e E2E_WORKDIR=/work/run-default gw-e2e tools/e2e/run_e2e.sh
-   ```
-
-2. Run the octal PSRAM variant:
+1. Run the octal PSRAM variant (the configuration of the board, all scenarios but three):
 
    ```powershell
    docker run --rm --privileged -v gw-e2e:/work -w /work/repo/idf -e E2E_WORKDIR=/work/run-psram -e E2E_PSRAM=1 gw-e2e tools/e2e/run_e2e.sh
    ```
 
-The last line of the output gives the result, for example `181/181 checks passed`. On the test computer, the default variant took 18 minutes and the PSRAM variant took 39 minutes. To run only some scenarios, add `--only` at the end, for example `tools/e2e/run_e2e.sh --only ota,https`.
+2. Run the default variant (no PSRAM, only the three OTA trial scenarios):
+
+   ```powershell
+   docker run --rm --privileged -v gw-e2e:/work -w /work/repo/idf -e E2E_WORKDIR=/work/run-default gw-e2e tools/e2e/run_e2e.sh
+   ```
+
+The last line of the output gives the result, for example `181/181 checks passed`. To run only some scenarios, add `--only` at the end, for example `tools/e2e/run_e2e.sh --only ota,https`. `--only` selects the scenarios in each variant.
 
 ## 4. Run the CI groups in parallel (faster)
 
-`run_ci_groups.sh` builds the images of one variant one time. Then it runs the five CI groups at the same time, each group in its own network namespace.
+`run_ci_groups.sh` builds the images of one variant one time. Then it runs the CI groups of that variant at the same time, each group in its own network namespace. The PSRAM variant has three groups, and the default variant has one group (`CI_GROUPS` in `idf/tools/e2e/scenarios.py`).
 
-1. Run the groups of the default variant:
-
-   ```powershell
-   docker run --rm --privileged -v gw-e2e:/work -w /work/repo/idf -e PARALLEL=5 gw-e2e tools/e2e/run_ci_groups.sh /work/groups
-   ```
-
-2. Run the groups of the PSRAM variant:
+1. Run the groups of the PSRAM variant:
 
    ```powershell
-   docker run --rm --privileged -v gw-e2e:/work -w /work/repo/idf -e PARALLEL=5 -e E2E_PSRAM=1 gw-e2e tools/e2e/run_ci_groups.sh /work/groups
+   docker run --rm --privileged -v gw-e2e:/work -w /work/repo/idf -e PARALLEL=3 -e E2E_PSRAM=1 gw-e2e tools/e2e/run_ci_groups.sh /work/groups
    ```
 
-The output ends with the summary table of the CI. A change is done only when both variants pass (refer to `CLAUDE.md`). On the test computer, the default groups took 7 minutes and the PSRAM groups took 12 minutes, with the builds.
+2. Run the group of the default variant:
+
+   ```powershell
+   docker run --rm --privileged -v gw-e2e:/work -w /work/repo/idf gw-e2e tools/e2e/run_ci_groups.sh /work/groups
+   ```
+
+The output ends with the summary table of the CI. A change is done only when both variants pass (refer to `CLAUDE.md`).
 
 CAUTION: Do not run more than one variant at the same time. A host with high load makes the real-time checks slower, and QEMU can crash in the OTA scenarios (`idf/README.md` §6.10).
 

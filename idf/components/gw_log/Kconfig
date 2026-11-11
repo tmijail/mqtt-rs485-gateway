@@ -5,8 +5,8 @@ menu "Gateway: remote syslog"
         range 8 256
         default 32
         help
-            Each slot holds one line (about 250 bytes), allocated at boot in PSRAM when
-            available and only if the configuration enables syslog. When the buffer is
+            Each slot holds one line (about 250 bytes), allocated at boot in PSRAM
+            and only if the configuration enables syslog. When the buffer is
             full (no network, slow sender) new lines are dropped and counted; the console
             still shows them.
 

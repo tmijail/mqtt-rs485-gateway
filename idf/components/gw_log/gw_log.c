@@ -12,6 +12,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "gw_port.h"
+#include "gw_storage.h"
 #include "gw_syslog.h"
 #include "lwip/netdb.h"
 #include "lwip/sockets.h"
@@ -194,10 +195,7 @@ esp_err_t gw_log_start(const gw_config_t *cfg)
     }
     s_cfg = cfg;
     const size_t n = CONFIG_GW_SYSLOG_SLOTS;
-    gw_syslog_rec_t *slots = heap_caps_calloc(n, sizeof(*slots), MALLOC_CAP_SPIRAM);
-    if (slots == NULL) {
-        slots = heap_caps_calloc(n, sizeof(*slots), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    }
+    gw_syslog_rec_t *slots = gw_storage_calloc(n, sizeof(*slots));   /* PSRAM (#135) */
     ESP_RETURN_ON_FALSE(slots, ESP_ERR_NO_MEM, TAG, "no memory for %u lines", (unsigned)n);
     gw_syslog_ring_init(&s_ring, slots, (unsigned)n);
     s_fmt_lock = xSemaphoreCreateMutexStatic(&s_fmt_lock_buf);

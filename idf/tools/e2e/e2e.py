@@ -1105,10 +1105,13 @@ class QemuGone(ConnectionError):
 
 
 class Gateway:
-    def __init__(self, args, log_path, flash=None, efuse=None):
+    def __init__(self, args, log_path, flash=None, efuse=None, psram=None):
         self.args, self.log_path = args, log_path
         self.flash = flash or args.flash
         self.efuse = efuse or args.efuse   # issue #97: a scenario may bring its own eFuse file
+        # issue #135: False boots the image on an emulator without the octal PSRAM model (a
+        # board whose PSRAM is not detected); None: as the build (--psram)
+        self.psram = psram
         self.proc, self.sock, self.lines = None, None, []
         self.killed = False          # the harness ended it (kill())
         self.gone_before_kill = None  # returncode if QEMU had already exited when killed
@@ -1125,14 +1128,15 @@ class Gateway:
 
     def start(self):
         a = self.args
+        psram = a.psram if self.psram is None else self.psram   # issue #135
         # With the octal PSRAM, -m is its size (the board's 8 MB): with 32M QEMU maps 31 MB and
         # leaves no virtual address space for the flash mmap (the partitions are not found).
-        cmd = [a.qemu, "-M", "esp32s3", "-m", "8M" if a.psram else "32M", "-nographic",
+        cmd = [a.qemu, "-M", "esp32s3", "-m", "8M" if psram else "32M", "-nographic",
                "-drive", f"file={pathlib.Path(self.flash).resolve()},if=mtd,format=raw",
                "-drive", f"file={pathlib.Path(self.efuse).resolve()},if=none,format=raw,id=efuse",
                "-global", "driver=nvram.esp32s3.efuse,property=drive,value=efuse",
                "-global", "driver=timer.esp32s3.timg,property=wdt_disable,value=true",
-               *(["-global", "driver=ssi_psram,property=is_octal,value=true"] if a.psram else []),
+               *(["-global", "driver=ssi_psram,property=is_octal,value=true"] if psram else []),
                "-nic", f"user,model=open_eth,hostfwd=tcp:127.0.0.1:{HTTP_PORT}-:80,"
                        f"hostfwd=tcp:127.0.0.1:{HTTPS_PORT}-:443,"
                        f"hostfwd=tcp:127.0.0.1:{MBTCP_PORT}-:502",
@@ -4875,8 +4879,10 @@ def main():
     ap.add_argument("--https-port", type=int, default=HTTPS_PORT)
     ap.add_argument("--only", default="",
                     help=f"comma-separated scenarios to run ({','.join(scenarios.ONLY_NAMES)}); "
-                         "default all. 'ota' is ota-fw1,ota-park,ota-wiring,ota-trial; 'refuse' "
-                         "runs alone only without 'main' (which includes it)")
+                         "default the full run of the variant (issue #135: the PSRAM variant runs "
+                         "all but the OTA trial scenarios, the variant without PSRAM only those). "
+                         "'ota' is ota-fw1,ota-park,ota-wiring,ota-trial; 'refuse' runs alone "
+                         "only without 'main' (which includes it)")
     ap.add_argument("--web-stress", type=int, default=0, metavar="N",
                     help="issue #110: N extra rounds of cut sessions and accepted PUTs in the "
                          "https scenario (GW22), to reproduce a connection that never reached httpd")
@@ -4969,12 +4975,14 @@ def main():
         "issue #94 OTA to NVS encryption": lambda: run_nvs_ota(args, work),
         "slow": lambda: run_slow_link(
             args, work, sdkconfig_int(args.sdkconfig, "GW_MQTT_PUBLISH_BUDGET_MS")),
+        "issue #135 no PSRAM": lambda: run_no_psram(args, work, slave),
         # part of "main"; alone only on request (#89)
         "refuse": lambda: check_suback_refused(args, work),
         "main": lambda: run(args, log, slave, MAIN_BROKER["proc"], conf, work),
     }
     assert set(runners) == {name for name, _ in scenarios.SCENARIOS}
-    chosen = scenarios.selected(only)
+    # issue #135: without --only, the full run of this variant (scenarios.variant_of)
+    chosen = scenarios.selected(only, "psram" if args.psram else "default")
     try:
         for name in chosen:
             run_scenario(name, runners[name])
@@ -5270,6 +5278,64 @@ def commissioning_password(gw, since, timeout=20):
     t = gw.wait_log(r"commissioning password '[a-z0-9]+'", timeout, since)
     lines = gw.find(r"commissioning password '[a-z0-9]+'", since) if t else []
     return re.search(r"commissioning password '([a-z0-9]+)'", lines[0]).group(1) if lines else None
+
+
+def run_no_psram(args, work, slave):
+    """Issue #135: the firmware assumes the board's PSRAM. The PSRAM build (sdkconfig.qemu-psram:
+    CONFIG_SPIRAM with SPIRAM_IGNORE_NOTFOUND, as on the board) boots on an emulator without the
+    octal PSRAM model, as a board with a defective or missing chip: the boot does not find the
+    PSRAM and goes on in the fault mode. Expected: the log, the shell and GET /api/status give the
+    fault; the network and the HTTPS server run (from internal RAM, with the commissioning
+    password of the console); nothing of the gateway starts (no configuration loaded, no polling,
+    no MQTT); POST /api/rebirth gets 409 with the reason; no panic."""
+    if not args.psram:
+        print("[SKIP] issue #135 no PSRAM: it boots the PSRAM build (E2E_PSRAM=1)", flush=True)
+        return
+    polls = len(slave.reads)
+    t0 = time.monotonic()
+    gw = Gateway(args, work / "uart0-nopsram.log",
+                 flash_variant(args, work, "nopsram", {"config.json": config_json()}), psram=False)
+    gw.start()
+    fault = gw.wait_log(r"main: PSRAM not detected: the board has 8 MB of PSRAM and the boot did "
+                        r"not find it \(a defective or missing chip\); the gateway does not start "
+                        r"\(issue #135\)", 40, t0)
+    halted = gw.wait_log(r"nothing is started \(no polling, no MQTT\): only the network, the web "
+                         r"UI on port \d+ and the shell, to report the fault", 15, t0)
+    led = gw.find(r"status: config error", t0)
+    pw = commissioning_password(gw, t0, 20)
+    auth = ("admin", pw or "?")
+    st, _, body = wait_http("/api/status", 40, auth=auth)
+    status = as_json(body) or {}
+    st_rb, _, b_rb = http("POST", "/api/rebirth", auth=auth)
+    e_rb = (as_json(b_rb) or {}).get("error", "")
+    page = http("GET", "/", auth=auth)
+    asked, h = gw.shell("status", [r"^FAULT\s+PSRAM not detected: .* the gateway does not start",
+                                   r"nothing is running: no polling, no MQTT; network, web UI and "
+                                   r"shell only", r"^heap\s+internal \d+ B free .*PSRAM 0 B free"])
+    shell = gw.find(r"^(FAULT|heap)\s", asked)
+    time.sleep(3)   # the polling and an MQTT attempt would have started by now
+    started = gw.find(r"configuration from|connecting to|rs485: UART|Sparkplug engine|"
+                      r"store & forward:", t0)
+    births = [m for m in CAPTURE if m[0] >= t0 and "/NBIRTH/" in m[1]]
+    polled = len(slave.reads) - polls
+    bad = gw.find(r"Guru Meditation|abort\(\) was called|task_wdt|Task watchdog|CORRUPT HEAP|"
+                  r"stack overflow", t0)
+    gw.kill()
+    check("Issue #135 a board without PSRAM (the PSRAM build on an emulator without the octal "
+          "PSRAM): the fault mode. The log, the shell and GET /api/status (mode fault, the reason) "
+          "give the fault; the network and the HTTPS server run; POST /api/rebirth -> 409; no "
+          "configuration, polling or MQTT; no panic",
+          fault and halted and led and pw and st == 200 and status.get("mode") == "fault"
+          and "PSRAM not detected" in status.get("fault", "")
+          and status.get("config", {}).get("ok") is False
+          and st_rb == 409 and "hardware fault" in e_rb
+          and page[0] == 200 and b's.mode==="fault"' in page[2]
+          and all(h.values()) and not started and not births and polled == 0 and not bad,
+          f"log {'yes' if fault else 'no'}, halted {'yes' if halted else 'no'}, LED "
+          f"{'yes' if led else 'no'}; password {'read' if pw else 'not found'}; /api/status {st} "
+          f"mode {status.get('mode')!r} fault {status.get('fault')!r}; rebirth {st_rb} {e_rb!r}; "
+          f"/ {page[0]}; shell {' | '.join(shell) or 'no FAULT line'}; started {started[:2]}; "
+          f"{len(births)} NBIRTH; {polled} Modbus requests; {bad[:2]}")
 
 
 def run_config_failsafe(args, work, slave):

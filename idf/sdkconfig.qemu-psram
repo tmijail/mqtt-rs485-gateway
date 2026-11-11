@@ -24,4 +24,4 @@ CONFIG_ETH_OPENETH_DMA_RX_BUFFER_NUM=10
 # Issue #124: the spill to the card needs the PSRAM, so only this variant runs it (GW23). The
 # store & forward ring has 1000 samples here (the board: 40000, 960 KB), so that an outage of
 # 40 s in the E2E fills it to three quarters and it spills blocks to the LittleFS stand-in.
-CONFIG_GW_SF_PSRAM_SAMPLES=1000
+CONFIG_GW_SF_SAMPLES=1000

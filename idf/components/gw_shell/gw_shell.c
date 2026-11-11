@@ -231,8 +231,7 @@ static int cmd_status(int argc, char **argv)
             (unsigned long)cd_size, gw_cdump_state_name(cd));
     }
     /* FW-1: from the heap for the command (not the console task's stack nor .bss, #80) */
-    gw_fw_status_t *fw = heap_caps_malloc_prefer(sizeof(*fw), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                                 MALLOC_CAP_8BIT);
+    gw_fw_status_t *fw = gw_storage_malloc(sizeof(*fw));
     if (fw != NULL) {
         gw_fw_get_status(fw);
     }
@@ -251,6 +250,10 @@ static int cmd_status(int argc, char **argv)
     heap_caps_free(fw);
     if (s_ctx.cfg == NULL && s_ctx.starting) {
         out("config   loading: the gateway is starting\n");
+    } else if (s_ctx.cfg == NULL && s_ctx.fault != NULL) {
+        out("FAULT    %s\n", s_ctx.fault);   /* #135 */
+        out("         nothing is running: no polling, no MQTT; network, web UI and shell only\n");
+        out("network  %s\n", (f & GW_ST_NET_UP) ? "up" : "down");
     } else if (s_ctx.cfg == NULL && s_ctx.commissioning) {
         out("config   NONE: commissioning after a factory reset; load one with the web UI or "
                "'config load'\n");
@@ -469,7 +472,7 @@ static int cmd_status(int argc, char **argv)
     }
     out(" (B free, high-water mark)\n");
     /* issue #80: the minimum since boot, and the largest block (now and the lowest seen when a
-     * configuration was validated, the deepest point of the worst case without PSRAM) */
+     * configuration was validated, the deepest point of the #80 worst case) */
     out("heap     internal %u B free (minimum %u B, largest block %u B, lowest at a validation "
         "%u B), PSRAM %u B free\n",
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -554,11 +557,11 @@ typedef struct {
 
 static bool config_read(pasted_t *p)
 {
-    /* grows with the document (up to the limit): without PSRAM 128 KiB at once may not exist */
+    /* grows with the document (up to the limit): 128 KiB at once may not exist (the internal
+     * heap of the fault mode, #135) */
     const size_t max = CONFIG_GW_CONFIG_MAX_BYTES + 1;
     size_t cap = 8192;
-    char *buf = heap_caps_malloc_prefer(cap, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                        MALLOC_CAP_8BIT);
+    char *buf = gw_storage_malloc(cap);
     if (buf == NULL) {
         out("config: no memory\n");
         return false;
@@ -585,8 +588,7 @@ static bool config_read(pasted_t *p)
         if (!aborted && need > f.cap && f.cap < max) {
             size_t ncap = 2 * f.cap > need ? 2 * f.cap : need;
             ncap = ncap < max ? ncap : max;
-            char *nb = heap_caps_realloc_prefer(f.buf, ncap, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                                MALLOC_CAP_8BIT);
+            char *nb = gw_storage_realloc(f.buf, ncap);
             if (nb != NULL) {
                 f.buf = buf = nb;
                 f.cap = ncap;
@@ -685,6 +687,10 @@ static int cmd_config(int argc, char **argv)
     const gw_config_t *c = s_ctx.cfg;
     if (c == NULL && s_ctx.starting) {
         out("config: not available yet: the configuration is loading\n");
+        return 1;
+    }
+    if (c == NULL && s_ctx.fault != NULL) {
+        out("not loaded: %s\n", s_ctx.fault);
         return 1;
     }
     if (c == NULL) {
@@ -952,8 +958,7 @@ static int coredump_dump(void)
         return 1;
     }
     const size_t chunk = CD_LINES_PER_READ * GW_CDUMP_LINE_BYTES;
-    uint8_t *bin = heap_caps_malloc_prefer(chunk, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                           MALLOC_CAP_8BIT);
+    uint8_t *bin = gw_storage_malloc(chunk);
     if (bin == NULL) {
         out("coredump: no memory\n");
         return 1;
@@ -1020,8 +1025,7 @@ static int cmd_coredump(int argc, char **argv)
         gw_cdump_info_t i;
         char text[768];
     } cd_text_t;
-    cd_text_t *t = heap_caps_malloc_prefer(sizeof(*t), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
-                                           MALLOC_CAP_8BIT);
+    cd_text_t *t = gw_storage_malloc(sizeof(*t));
     if (t == NULL || gw_coredump_summary(&t->i) != ESP_OK) {
         heap_caps_free(t);
         out("coredump: no memory\n");
@@ -1133,7 +1137,8 @@ static int cmd_mbread(int argc, char **argv)
         return 1;
     }
     if (s_ctx.cfg == NULL) {
-        out("mbread: the bus is not running (no valid configuration)\n");
+        out(s_ctx.fault != NULL ? "mbread: the bus is not running (hardware fault)\n"
+                                : "mbread: the bus is not running (no valid configuration)\n");
         return 1;
     }
     if (!up(GW_SHELL_UP_BUS, "mbread", "the RS485 bus")) {

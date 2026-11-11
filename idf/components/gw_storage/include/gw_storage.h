@@ -167,9 +167,26 @@ esp_err_t gw_storage_set_blob(const char *key, const void *data, size_t len);
 bool gw_storage_get_blob(const char *key, void *out, size_t len);
 
 /**
- * Zeroed allocation for a large structure that lives for the whole run (configuration,
- * Sparkplug engine): PSRAM when the board has it, internal RAM otherwise. Logs where it
- * landed under @p what. NULL if neither has room. Boot time only (REL-2).
+ * Issue #135: the boot found the PSRAM of the board. The firmware assumes it: without it the
+ * board runs only the fault mode (main: network, web server and shell, to report the fault).
+ * Only the QEMU build without PSRAM (CONFIG_GW_EMU_NO_PSRAM) runs the gateway without it.
+ */
+bool gw_storage_psram(void);
+
+/**
+ * Issue #135: memory for the gateway's own buffers (configuration, Sparkplug engine, TLS,
+ * transfers, shell and web buffers): the PSRAM, and never internal RAM as a fallback when the
+ * PSRAM is full. Without PSRAM (the fault mode, the QEMU build without PSRAM): internal RAM.
+ * Free with heap_caps_free(). Never in the polling, encoding or publish path (REL-2).
+ */
+void *gw_storage_malloc(size_t size);
+void *gw_storage_calloc(size_t n, size_t size);
+void *gw_storage_realloc(void *p, size_t size);
+
+/**
+ * Zeroed allocation (gw_storage_calloc) for a large structure that lives for the whole run
+ * (configuration, Sparkplug engine). Logs where it landed under @p what. NULL if there is no
+ * room. Boot time only (REL-2).
  */
 void *gw_storage_big_alloc(size_t size, const char *what);
 

@@ -134,7 +134,7 @@ static StackType_t s_stack[STACK_BYTES / sizeof(StackType_t)];
 
 /* ---- owned by the Sparkplug task ---- */
 static const gw_config_t *s_cfg;
-static gw_node_t *s_node;   /* ~21 KB, in PSRAM when present (gw_storage_big_alloc) */
+static gw_node_t *s_node;   /* ~21 KB, in PSRAM (gw_storage_big_alloc) */
 static esp_mqtt_client_handle_t s_client;
 static esp_mqtt_client_config_t s_mqtt_cfg;
 static char s_death_topic[GW_TOPIC_MAX];
@@ -190,9 +190,9 @@ typedef enum {
 } host_end_t;
 static host_end_t s_host_end;
 static gw_sf_t s_sf;            /* SPB-14: store & forward ring (storage allocated at boot) */
-static bool s_sf_psram;
+static bool s_sf_psram;         /* ... in PSRAM (false only in the QEMU build without PSRAM) */
 /* SPB-14: the ring's spill to the microSD card (optional; #124: allocated with its buffers, in
- * PSRAM, only when it starts: no internal .bss for it in a build without PSRAM) */
+ * PSRAM, only when it starts: no internal .bss for it in the QEMU build without PSRAM) */
 static gw_sfspill_t *s_spill;
 static bool s_spill_on;
 static uint32_t s_spill_kb;     /* the KB its layout uses */
@@ -1804,7 +1804,9 @@ static void setup_tls(const gw_tls_cfg_t *tls)
 }
 
 /* SPB-14: the optional spill of the ring to the microSD card (gw_sfspill, #124). It needs the
- * PSRAM: the target board has 8 MB, and the spill is not designed for a board without it. */
+ * PSRAM: the target board has 8 MB, and the spill is not designed for a board without it.
+ * #135: a board without PSRAM does not start the gateway; only the QEMU build without PSRAM
+ * comes here without it. */
 static void setup_spill(void)
 {
     if (!s_sf_psram) {
@@ -1862,24 +1864,19 @@ static void setup_spill(void)
     }
 }
 
-/* SPB-14: the ring, once at boot: large in PSRAM, small in internal RAM without it. */
+/* SPB-14: the ring, once at boot, in PSRAM (#135; internal RAM and a small ring only in the QEMU
+ * build without PSRAM, CONFIG_GW_EMU_NO_PSRAM). */
 static void setup_store(void)
 {
-    size_t n = CONFIG_GW_SF_PSRAM_SAMPLES;
-    gw_sf_rec_t *buf = heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0
-                           ? heap_caps_calloc(n, sizeof(gw_sf_rec_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
-                           : NULL;
-    s_sf_psram = buf != NULL;
-    if (buf == NULL) {
-        n = CONFIG_GW_SF_INTERNAL_SAMPLES;
-        buf = heap_caps_calloc(n, sizeof(gw_sf_rec_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    }
+    const size_t n = CONFIG_GW_SF_SAMPLES;
+    gw_sf_rec_t *buf = gw_storage_calloc(n, sizeof(gw_sf_rec_t));
     if (buf == NULL) {
         ESP_LOGE(TAG, "store & forward: no memory for %u samples: changes while offline are "
                       "coalesced",
                  (unsigned)n);
         return;
     }
+    s_sf_psram = gw_storage_psram();
     gw_sf_init(&s_sf, buf, n);
     gw_node_set_store(s_node, &s_sf);
     ESP_LOGI(TAG, "store & forward: %u samples (%u B) in %s", (unsigned)n,
@@ -1919,10 +1916,14 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
     gw_node_init(s_node, cfg, &ops, info);
     gw_bdseq_init(&s_bdseqs);   /* SPB-3 / #161: bdSeq 0 for the first CONNECT of the boot */
     atomic_store(&s_fw_dirty, true);   /* the first NBIRTH carries the update's state */
-    /* The largest births (SPB-16/17/18) need GW_SPB_PAYLOAD_MAX: in PSRAM when the board has
-     * it; without PSRAM a smaller buffer leaves internal RAM for TLS and the web server. */
-    size_t cap = heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0 ? GW_SPB_PAYLOAD_MAX
-                                                                 : CONFIG_GW_SPB_PAYLOAD_INTERNAL;
+    /* The largest births (SPB-16/17/18) need GW_SPB_PAYLOAD_MAX, in PSRAM. Only the QEMU build
+     * without PSRAM (#135) has a smaller buffer, which leaves internal RAM for TLS and the web
+     * server there. */
+#if CONFIG_GW_EMU_NO_PSRAM
+    const size_t cap = CONFIG_GW_SPB_PAYLOAD_INTERNAL;
+#else
+    const size_t cap = GW_SPB_PAYLOAD_MAX;
+#endif
     uint8_t *buf = gw_storage_big_alloc(cap, "Sparkplug payload buffer");
     if (buf == NULL) {
         return ESP_ERR_NO_MEM;
