@@ -4646,8 +4646,15 @@ def run_ota_trial(args, work):
                            SELFCHECK_WAIT_S, boot or asked)
         session = gw.find(r"edge: Sparkplug session up", boot or asked)
         rolled = gw.find(r"fw: firmware e2e-t2 rejected|e2e-t2 was rolled back", asked)
-        broker = start_broker(conf, work / "mosquitto-trial.log")
-        obs = observer_retry(port)
+        # The broker comes back for the observer first: a broker that accepts only the observer,
+        # then a reload that lets the gateway in. Before, the gateway's backoff could connect it
+        # in the 0.5 s between the broker start and the SUBACK of the observer, and the NBIRTH
+        # went out unseen (2026-11-13: the reconnect came 0.2 s after the installation).
+        broker, conf_back = auth_broker(work, "trial-back", port, {})
+        obs = observer_retry(port, auth=OBS_AUTH)
+        conf_back.write_text(conf_back.read_text().replace("allow_anonymous false",
+                                                           "allow_anonymous true"))
+        broker.send_signal(signal.SIGHUP)   # mosquitto reloads allow_anonymous
         nb2 = obs.wait(nbirth_t, 90)
         check("Issue #144 item 1 a new image whose broker is down is installed by its self-check "
               "(no Sparkplug session, no rollback); during its trial an update is refused (409, "
