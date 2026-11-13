@@ -16,6 +16,7 @@
 #include "esp_err.h"
 #include "sdkconfig.h"
 #include "gw_cfgdoc.h"
+#include "gw_cfgprev.h"
 #include "gw_config.h"
 
 #ifdef __cplusplus
@@ -80,6 +81,41 @@ bool gw_storage_config_schema(gw_schema_report_t *out);
  * starts a new ring, so the RAM ring is not moved to the card. Safe from any task.
  */
 bool gw_storage_saved_cfg_hash(uint32_t *hash);
+
+/* ---------- issue #146: the configuration from before an update (gw_cfgprev.h) ----------
+ * /cfg/config.prev.json holds the document from before the first change after an update; the
+ * NVS record "cfg_prev" holds its version, schema, time and the hash of the document after it.
+ * A save captures it when the record is armed (gw_storage_save_config). */
+
+/** The record (false: none). */
+bool gw_storage_cfgprev_get(gw_cfgprev_t *out);
+
+/** At the confirmation of an update: arm the record for @p other, the version of the image
+ *  that ran before (@p running: the confirmed one). */
+void gw_storage_cfgprev_arm(const char *other, const char *running);
+
+/** gw_cfgprev_hash() of /cfg/config.json; false when there is no file. */
+bool gw_storage_config_hash(uint32_t *hash);
+
+/** The JSON paths that differ between config.prev.json and config.json (gw_cfgprev_diff()).
+ *  (size_t)-1 when a file cannot be read or parsed (@p out says why). */
+size_t gw_storage_cfgprev_diff(char *out, size_t cap);
+
+/** Before the restart into an earlier image: config.prev.json becomes config.json when
+ *  config.json still has the hash @p hash (else ESP_ERR_INVALID_STATE: it changed during the
+ *  update). config.json is kept as config.next.json, for gw_storage_cfgprev_undo(). The record
+ *  is disarmed. @p why gives the reason of a failure. */
+esp_err_t gw_storage_cfgprev_restore(uint32_t hash, char *why, size_t cap);
+
+/** The earlier image cannot boot after all: config.next.json becomes config.json again. */
+esp_err_t gw_storage_cfgprev_undo(void);
+
+/** The restore button of the web UI (recovery mode): config.prev.json is validated as at the
+ *  boot (with the stored secrets), then it becomes config.json (config.json is kept as
+ *  config.next.json); the caller restarts. ESP_ERR_NOT_FOUND: there is none;
+ *  ESP_ERR_INVALID_ARG: this firmware rejects it (@p err); ESP_ERR_INVALID_STATE: refused by
+ *  the commit hook (the trial of a new image, @p err). */
+esp_err_t gw_storage_cfgprev_restore_checked(gw_cfg_err_t *err);
 
 /**
  * The stored document (or the embedded default if there is no file) for export, with every

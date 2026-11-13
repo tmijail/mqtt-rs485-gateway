@@ -32,6 +32,12 @@
 # tools/e2e/tck_setup.sh <dir> installs them. Only for --only tck (E2E_TCK_TESTS,
 # E2E_TCK_PROTOCOLS: see tools/e2e/tck.py); without it that scenario shows [SKIP].
 #
+# E2E_DOWNGRADE_REF=<git ref> (issue #148): the optional scenario "downgrade" (--only downgrade)
+# boots the image of that earlier release on the flash that the image under test wrote. The
+# script builds it once, with the overlays of this variant and the sources of the ref, into
+# ${E2E_DOWNGRADE_DIR:-<repo>/build-downgrade}/<commit>/idf/<build dir>. Without it that scenario
+# shows [SKIP].
+#
 # E2E_PYTHON needs: paho-mqtt>=2, pymodbus==3.8.6, protobuf, grpcio-tools (tools/e2e/requirements.txt).
 # Host tools: mosquitto, qemu-system-xtensa (idf_tools.py install qemu-xtensa; needs libslirp0).
 set -euo pipefail
@@ -166,6 +172,31 @@ fi
 if [ "${E2E_POISON:-0}" = 1 ]; then
     grep -q '^CONFIG_HEAP_POISONING_COMPREHENSIVE=y' "$SDKCONFIG"
 fi
+# Issue #148: the app image of an earlier release, built from its own sources (a worktree of the
+# ref) with the overlays of this variant. The QEMU build signs its images: the same throwaway key.
+DOWNGRADE_ARGS=()
+if [ -n "${E2E_DOWNGRADE_REF:-}" ] && [ -z "$STAGE" ]; then
+    REPO="$(cd "$IDF_DIR/.." && pwd)"
+    DSHA="$(git -C "$REPO" rev-parse --verify "${E2E_DOWNGRADE_REF}^{commit}")"
+    DDIR="${E2E_DOWNGRADE_DIR:-$REPO/build-downgrade}/${DSHA:0:12}"
+    DAPP="$DDIR/idf/$BUILD/rs485_spb_gateway.bin"
+    if [ ! -f "$DAPP" ]; then
+        if [ ! -f "$DDIR/idf/CMakeLists.txt" ]; then   # the sources, once for both variants
+            rm -rf "$DDIR"
+            git -C "$REPO" worktree prune
+            mkdir -p "$(dirname "$DDIR")"
+            # a git worktree, not an archive: the build takes its version (the hash) from git
+            git -C "$REPO" worktree add --detach "$DDIR" "$DSHA"
+        fi
+        mkdir -p "$DDIR/idf/build-qemu"
+        cp "$KEY" "$DDIR/idf/build-qemu/e2e_signing_key.pem"
+        (cd "$DDIR/idf" && idf.py -B "$BUILD" -D SDKCONFIG="$BUILD/sdkconfig" \
+            -D "SDKCONFIG_DEFAULTS=$DEFAULTS" -D GW_FS_DIR="$DDIR/idf/tools/e2e/fs" reconfigure \
+            && cmake --build "$BUILD" -j "${JOBS:-$(nproc)}")
+    fi
+    echo "issue #148: the earlier release $E2E_DOWNGRADE_REF ($DSHA): $DAPP"
+    DOWNGRADE_ARGS=(--downgrade-app "$DAPP" --downgrade-ref "$E2E_DOWNGRADE_REF (${DSHA:0:12})")
+fi
 python - "$WORK/efuse.bin" <<'PYEOF'
 import os, sys
 sys.path.insert(0, os.path.join(os.environ["IDF_PATH"], "tools"))
@@ -177,4 +208,5 @@ PYEOF
     --flash "$WORK/flash.bin" --efuse "$WORK/efuse.bin" --workdir "$WORK" \
     --littlefs-python "$LFS_PY" --sdkconfig "$SDKCONFIG" \
     --elf "$ELF" --idf-python "$(command -v python)" \
-    --signing-key "$KEY" ${PLAIN_ARGS[@]+"${PLAIN_ARGS[@]}"} ${EXTRA[@]+"${EXTRA[@]}"} "$@"
+    --signing-key "$KEY" ${PLAIN_ARGS[@]+"${PLAIN_ARGS[@]}"} ${EXTRA[@]+"${EXTRA[@]}"} \
+    ${DOWNGRADE_ARGS[@]+"${DOWNGRADE_ARGS[@]}"} "$@"

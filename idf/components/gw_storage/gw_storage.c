@@ -7,6 +7,7 @@
 #include <string.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "esp_heap_caps.h"
@@ -35,6 +36,9 @@ static const char *TAG = "storage";
 #define CFG_MOUNT   "/cfg"
 #define CFG_PATH    CFG_MOUNT "/config.json"
 #define CFG_TMP     CFG_MOUNT "/config.json.tmp"
+#define CFG_PREV    CFG_MOUNT "/config.prev.json"   /* issue #146 */
+#define CFG_NEXT    CFG_MOUNT "/config.next.json"   /* issue #146: kept by a restore */
+#define NVS_CFG_PREV "cfg_prev"  /* issue #146: its record (gw_cfgprev.h) */
 #define MIG_COPY_NAME CFG_MOUNT "/.nvsmig"   /* issue #94: the NVS migration copy */
 #define CFG_MAX     CONFIG_GW_CONFIG_MAX_BYTES
 #define NVS_SECRETS "secrets"     /* CFG-7: never in the JSON document */
@@ -59,6 +63,23 @@ static bool s_safe_mode;   /* issue #144 item 4: no NVS migration in safe mode *
 /* Issue #144 item 3: the "since" schema report of the stored configuration (PSRAM, allocated at
  * the first load; under the save lock). NULL or not valid: no document was accepted. */
 static gw_schema_report_t *s_schema;
+
+#if CONFIG_GW_IO_SIMULATED
+/* Issue #146, emulator only: the E2E needs a key that a later image added. In the QEMU build,
+ * "network.hostname" counts as schema 2, so a document with it needs an image that declares
+ * schema 2 (the harness rewrites the capabilities block of an image copy). */
+static const gw_since_t k_sim_since[] = {{"network.hostname", NULL, 2}};
+#endif
+
+/* gw_config_schema_init(), or the emulator's table */
+static void schema_init(gw_schema_report_t *r)
+{
+#if CONFIG_GW_IO_SIMULATED
+    gw_schema_init(r, k_sim_since, sizeof(k_sim_since) / sizeof(k_sim_since[0]));
+#else
+    gw_config_schema_init(r);
+#endif
+}
 
 #if !CONFIG_SPIRAM && !CONFIG_GW_IO_SIMULATED
 #error "issue #135: the firmware needs the PSRAM of the board (CONFIG_SPIRAM); only the QEMU build (CONFIG_GW_IO_SIMULATED) runs without it"
@@ -1770,7 +1791,7 @@ bool gw_storage_load_config(gw_config_t *cfg, gw_cfg_err_t *err, const char **so
     }
     bool ok;
     if (s_schema != NULL) {
-        gw_config_schema_init(s_schema);
+        schema_init(s_schema);
         ok = gw_cfgdoc_apply_schema(text, len, GW_CFGDOC_FILE, &stored, cfg, &doc, err, s_schema);
     } else {
         ok = gw_cfgdoc_apply(text, len, GW_CFGDOC_FILE, &stored, cfg, &doc, err);
@@ -1821,6 +1842,301 @@ bool gw_storage_load_config(gw_config_t *cfg, gw_cfg_err_t *err, const char **so
                  (unsigned)warnings, warnings > BOOT_LINT_LINES ? "; the first ones above" : "");
     }
     return true;
+}
+
+/* ---------- issue #146: the configuration from before an update ---------- */
+
+#define COPY_CHUNK 1024
+
+static bool cfgprev_load(gw_cfgprev_t *p)
+{
+    char text[GW_CFGPREV_MAX];
+    if (!gw_storage_get_str(NVS_CFG_PREV, text, sizeof(text))) {
+        memset(p, 0, sizeof(*p));
+        return false;
+    }
+    return gw_cfgprev_parse(text, p);
+}
+
+static void cfgprev_store(const gw_cfgprev_t *p)
+{
+    char text[GW_CFGPREV_MAX];
+    gw_cfgprev_format(p, text, sizeof(text));
+    esp_err_t e = gw_storage_set_str(NVS_CFG_PREV, text);
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "record of the configuration from before the update not written (%s)",
+                 esp_err_to_name(e));
+    }
+}
+
+/* gw_cfgprev_hash() of a file, read in pieces (no buffer of its size). */
+static bool file_hash(const char *path, uint32_t *hash)
+{
+    char *buf = gw_storage_malloc(COPY_CHUNK);
+    FILE *f = buf != NULL ? fopen(path, "rb") : NULL;
+    if (f == NULL) {
+        heap_caps_free(buf);
+        return false;
+    }
+    uint32_t h = GW_CFGPREV_HASH_INIT;
+    size_t n;
+    while ((n = fread(buf, 1, COPY_CHUNK, f)) > 0) {
+        h = gw_cfgprev_hash(h, buf, n);
+    }
+    bool ok = ferror(f) == 0;
+    fclose(f);
+    heap_caps_free(buf);
+    *hash = h;
+    return ok;
+}
+
+/* @p src to @p dst through @p tmp (fsync, then rename: a power cut leaves the old or the new
+ * file), in pieces. */
+static esp_err_t copy_file_atomic(const char *src, const char *dst, const char *tmp)
+{
+    esp_err_t why = ESP_OK;
+    if (!ensure_mounted(&why)) {
+        return why;
+    }
+    char *buf = gw_storage_malloc(COPY_CHUNK);
+    if (buf == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    FILE *in = fopen(src, "rb");
+    FILE *out = in != NULL ? fopen(tmp, "wb") : NULL;
+    bool ok = out != NULL;
+    size_t n;
+    while (ok && (n = fread(buf, 1, COPY_CHUNK, in)) > 0) {
+        ok = fwrite(buf, 1, n, out) == n;
+    }
+    ok = ok && ferror(in) == 0 && fflush(out) == 0 && fsync(fileno(out)) == 0;
+    if (out != NULL) {
+        ok = fclose(out) == 0 && ok;
+    }
+    if (in != NULL) {
+        fclose(in);
+    }
+    heap_caps_free(buf);
+    if (!ok || rename(tmp, dst) != 0) {
+        ESP_LOGE(TAG, "copy of %s to %s failed (errno %d)", src, dst, errno);
+        unlink(tmp);
+        return in == NULL ? ESP_ERR_NOT_FOUND : ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+/* A whole file in a boot_alloc buffer (NUL terminated), NULL if it cannot be read. */
+static char *read_whole(const char *path, size_t *len)
+{
+    struct stat st;
+    if (stat(path, &st) != 0 || st.st_size <= 0 || st.st_size > CFG_MAX) {
+        return NULL;
+    }
+    size_t size = (size_t)st.st_size;
+    char *buf = boot_alloc(size + 1);
+    FILE *f = buf != NULL ? fopen(path, "rb") : NULL;
+    size_t got = f != NULL ? fread(buf, 1, size, f) : 0;
+    if (f != NULL) {
+        fclose(f);
+    }
+    if (got != size) {
+        heap_caps_free(buf);
+        return NULL;
+    }
+    buf[size] = '\0';
+    *len = size;
+    return buf;
+}
+
+/* Under the save lock, before a new document @p doc is written: the first change after an
+ * update keeps the stored document as config.prev.json (gw_cfgprev_on_save). */
+static void cfgprev_on_save(const char *doc, size_t len)
+{
+    gw_cfgprev_t p;
+    if (!cfgprev_load(&p) || p.armed[0] == '\0') {
+        return;
+    }
+    uint32_t old_hash = 0;
+    bool old_ok = s_schema != NULL && s_schema->valid && file_hash(CFG_PATH, &old_hash);
+    char armed[GW_CFGPREV_VERSION];
+    memcpy(armed, p.armed, sizeof(armed));
+    switch (gw_cfgprev_on_save(&p, old_ok, old_ok ? s_schema->need : 0, old_hash,
+                               gw_cfgprev_hash(GW_CFGPREV_HASH_INIT, doc, len),
+                               (int64_t)time(NULL))) {
+    case GW_CFGPREV_CAPTURE:
+        if (copy_file_atomic(CFG_PATH, CFG_PREV, CFG_PREV ".tmp") != ESP_OK) {
+            ESP_LOGE(TAG, "the configuration from before the update to this firmware is not kept");
+            return;   /* the record stays armed */
+        }
+        cfgprev_store(&p);
+        ESP_LOGW(TAG, "first change after the update: the configuration of %s (schema %u) kept as "
+                      CFG_PREV, p.version, (unsigned)p.schema);
+        break;
+    case GW_CFGPREV_DISARM:
+        cfgprev_store(&p);
+        ESP_LOGW(TAG, "the stored configuration is not one that this firmware accepted: no "
+                      "configuration kept for %s", armed);
+        break;
+    default:
+        break;
+    }
+}
+
+bool gw_storage_cfgprev_get(gw_cfgprev_t *out)
+{
+    return cfgprev_load(out);
+}
+
+void gw_storage_cfgprev_arm(const char *other, const char *running)
+{
+    xSemaphoreTake(s_save_lock, portMAX_DELAY);
+    gw_cfgprev_t p;
+    cfgprev_load(&p);
+    if (gw_cfgprev_arm(&p, other, running)) {
+        cfgprev_store(&p);
+        ESP_LOGI(TAG, "the first change of the configuration keeps the configuration of %s",
+                 other);
+    }
+    xSemaphoreGive(s_save_lock);
+}
+
+bool gw_storage_config_hash(uint32_t *hash)
+{
+    xSemaphoreTake(s_save_lock, portMAX_DELAY);
+    bool ok = s_mounted && file_hash(CFG_PATH, hash);
+    xSemaphoreGive(s_save_lock);
+    return ok;
+}
+
+size_t gw_storage_cfgprev_diff(char *out, size_t cap)
+{
+    xSemaphoreTake(s_save_lock, portMAX_DELAY);
+    size_t alen = 0, blen = 0;
+    char *a = s_mounted ? read_whole(CFG_PREV, &alen) : NULL;
+    char *b = a != NULL ? read_whole(CFG_PATH, &blen) : NULL;
+    xSemaphoreGive(s_save_lock);
+    size_t n = (size_t)-1;
+    if (b == NULL) {
+        snprintf(out, cap, "the documents cannot be read");
+    } else {
+        n = gw_cfgprev_diff(a, alen, b, blen, out, cap);
+    }
+    heap_caps_free(a);
+    heap_caps_free(b);
+    return n;
+}
+
+/* config.prev.json becomes config.json; config.json is kept as config.next.json. Under the save
+ * lock. */
+static esp_err_t cfgprev_swap(void)
+{
+    struct stat st;
+    if (stat(CFG_PATH, &st) == 0) {
+        esp_err_t e = copy_file_atomic(CFG_PATH, CFG_NEXT, CFG_NEXT ".tmp");
+        if (e != ESP_OK) {
+            return e;
+        }
+    }
+    esp_err_t e = copy_file_atomic(CFG_PREV, CFG_PATH, CFG_TMP);
+    if (e == ESP_OK) {
+        gw_cfgprev_t p;
+        if (cfgprev_load(&p) && p.armed[0] != '\0') {
+            p.armed[0] = '\0';   /* the stored document is the earlier one again */
+            cfgprev_store(&p);
+        }
+    }
+    return e;
+}
+
+esp_err_t gw_storage_cfgprev_restore(uint32_t hash, char *why, size_t cap)
+{
+    xSemaphoreTake(s_save_lock, portMAX_DELAY);
+    uint32_t now = 0;
+    struct stat st;
+    esp_err_t e = ESP_OK;
+    if (!s_mounted || stat(CFG_PREV, &st) != 0) {
+        e = ESP_ERR_NOT_FOUND;
+        snprintf(why, cap, CFG_PREV " is not there");
+    } else if (!file_hash(CFG_PATH, &now) || now != hash) {
+        e = ESP_ERR_INVALID_STATE;
+        snprintf(why, cap, "the configuration changed during the update: not restored");
+    } else if ((e = cfgprev_swap()) != ESP_OK) {
+        snprintf(why, cap, "the configuration from before the update was not restored (%s)",
+                 esp_err_to_name(e));
+    }
+    xSemaphoreGive(s_save_lock);
+    if (e == ESP_OK) {
+        ESP_LOGW(TAG, CFG_PREV " restored as " CFG_PATH " for the earlier firmware (the "
+                      "configuration of this firmware stays in " CFG_NEXT ")");
+    }
+    return e;
+}
+
+esp_err_t gw_storage_cfgprev_undo(void)
+{
+    xSemaphoreTake(s_save_lock, portMAX_DELAY);
+    esp_err_t e = copy_file_atomic(CFG_NEXT, CFG_PATH, CFG_TMP);
+    xSemaphoreGive(s_save_lock);
+    if (e == ESP_OK) {
+        ESP_LOGW(TAG, "the earlier firmware does not boot: " CFG_PATH " of this firmware is back");
+    } else {
+        ESP_LOGE(TAG, CFG_PATH " of this firmware not put back (%s): it holds the configuration "
+                      "from before the update", esp_err_to_name(e));
+    }
+    return e;
+}
+
+esp_err_t gw_storage_cfgprev_restore_checked(gw_cfg_err_t *err)
+{
+    memset(err, 0, sizeof(*err));
+    char hook_why[120];
+    if (s_commit_hook != NULL &&
+        s_commit_hook(GW_STORAGE_COMMIT_CONFIG, hook_why, sizeof(hook_why)) != ESP_OK) {
+        reject(err, "configuration not restored: %s", hook_why);
+        return ESP_ERR_INVALID_STATE;
+    }
+    gw_config_t *cfg = boot_alloc(sizeof(*cfg));
+    if (cfg == NULL) {
+        reject(err, "no memory to validate the configuration");
+        return ESP_ERR_NO_MEM;
+    }
+    xSemaphoreTake(s_save_lock, portMAX_DELAY);
+    gw_cfgprev_t p;
+    memset(&p, 0, sizeof(p));
+    size_t len = 0;
+    char *text = s_mounted && cfgprev_load(&p) && p.version[0] != '\0'
+                     ? read_whole(CFG_PREV, &len) : NULL;
+    esp_err_t ret = ESP_OK;
+    if (text == NULL) {
+        ret = ESP_ERR_NOT_FOUND;
+        reject(err, "there is no configuration from before an update");
+    } else {
+        /* as at the boot: the secrets come from NVS (the documents do not hold them) */
+        gw_secrets_t stored;
+        gw_storage_get_secrets(&stored);
+        gw_cfgdoc_t doc;
+        bool ok = gw_cfgdoc_apply(text, len, GW_CFGDOC_FILE, &stored, cfg, &doc, err);
+        memset(&stored, 0, sizeof(stored));
+        if (ok) {
+            memset(&doc.secrets, 0, sizeof(doc.secrets));
+            gw_cfgdoc_free(&doc);
+            ret = cfgprev_swap();
+            if (ret != ESP_OK) {
+                reject(err, "could not write " CFG_PATH " (%s)", esp_err_to_name(ret));
+            }
+        } else {
+            ret = strstr(err->msg, "not enough memory") ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_ARG;
+        }
+    }
+    xSemaphoreGive(s_save_lock);
+    heap_caps_free(text);
+    memset(cfg, 0, sizeof(*cfg));
+    heap_caps_free(cfg);
+    if (ret == ESP_OK) {
+        ESP_LOGW(TAG, "the configuration from before the update (%s) restored as " CFG_PATH,
+                 p.version);
+    }
+    return ret;
 }
 
 static size_t s_validation_min_block;
@@ -1886,7 +2202,7 @@ esp_err_t gw_storage_save_config_lint(const char *json, size_t len, bool dry_run
      * it is saved */
     gw_schema_report_t *schema = dry_run ? NULL : gw_storage_malloc(sizeof(*schema));
     if (schema != NULL) {
-        gw_config_schema_init(schema);
+        schema_init(schema);
     }
     gw_port_json_lock();   /* recursive: gw_cfgdoc_apply takes it too */
     s_track_size = s_track_room = 0;
@@ -1955,6 +2271,9 @@ esp_err_t gw_storage_save_config_lint(const char *json, size_t len, bool dry_run
             !hash_web_password(cfg, doc.secrets.web_password_hash,
                                sizeof(doc.secrets.web_password_hash))) {
             ret = ESP_FAIL;
+        }
+        if (ret == ESP_OK) {
+            cfgprev_on_save(doc.doc, doc.doc_len);   /* issue #146 */
         }
         /* secrets first: if the file cannot be written, the previous ones are put back */
         if (ret == ESP_OK && doc.secrets_changed && (ret = put_secrets(&doc.secrets)) != ESP_OK) {

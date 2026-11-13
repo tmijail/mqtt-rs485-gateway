@@ -774,7 +774,10 @@ MONITOR_ERRORS = []  # exceptions of the fault monitor (each fails the run)
 # is listed here. 900 s is less than twice the longest attempt measured on a loaded 4-CPU host
 # (the #97 integration with PSRAM in single-threaded TCG, 477 s, results.json "durations"; main
 # is about 200 s): on a slower host raise --timeout-scale / E2E_TIMEOUT_SCALE.
-SCENARIO_BUDGET_S = {"tck": 3600.0}   # issue #176: 14 TCK tests, each with a boot and a HiveMQ
+# Issue #146: the #97 integration also examines the configuration from before an update (one
+# more update with its 60 s self-check, three saves and the restart into the earlier image).
+SCENARIO_BUDGET_S = {"tck": 3600.0,   # issue #176: 14 TCK tests, each with a boot and a HiveMQ
+                     "issue #97 OTA trial wiring": 1800.0}
 DEFAULT_BUDGET_S = 900.0
 
 
@@ -4303,7 +4306,12 @@ def run_ota_wiring(args, work):
     refused during its trial and works after its self-check;
     (3) an image installed from commissioning (after a factory reset) is installed there by its
     self-check, and stays after a power cut. Safe mode is in run_ota_trial (the budget of one
-    attempt)."""
+    attempt);
+    (4) issue #146: after an update to an image that adds a key (the emulator counts
+    network.hostname as schema 2, sdkconfig.qemu), the first save of the key keeps the earlier
+    document as config.prev.json; a second change makes the button refuse the earlier image with
+    the JSON path that changed; with the document of the capture again, the button restores the
+    earlier document, and the earlier image starts in normal mode with it."""
     fwdir = work / "fw-wiring"
     fwdir.mkdir(exist_ok=True)
     src = app_source(args)
@@ -4313,6 +4321,7 @@ def run_ota_wiring(args, work):
         "e2e-s0": signed_image(args, src, "e2e-s0", fwdir, "e2e-s0", cfg_schema=0),
         "e2e-v1caps": signed_image(args, src, "e2e-v1caps", fwdir, "e2e-v1caps", caps_version=1),
         "e2e-com": signed_image(args, src, "e2e-com", fwdir, "e2e-com"),
+        "e2e-k2": signed_image(args, src, "e2e-k2", fwdir, "e2e-k2", cfg_schema=2),
     }
 
     def upload(version, pw, force=False):
@@ -4484,6 +4493,106 @@ def run_ota_wiring(args, work):
               f"{f'{conf - boot:.1f} s after its boot' if conf and boot else 'no'}; after the "
               f"power cut: e2e-com {boot2 is not None}, commissioning {comm3 is not None}, "
               f"rolled back {rolled[:1]}")
+    finally:
+        gw.kill()
+
+    # 4. issue #146: the configuration from before an update. The base image reads schema 1;
+    # e2e-k2 declares schema 2, and in the QEMU build network.hostname is a schema 2 key
+    cfg = node_config(WIRING_NODE)
+    cfg["network"].pop("hostname", None)
+    cfg_k = json.loads(json.dumps(cfg))
+    cfg_k["network"]["hostname"] = "gw-e2e-146"
+    cfg_k2 = json.loads(json.dumps(cfg_k))
+    cfg_k2["network"]["hostname"] = "gw-e2e-146b"
+    flash = flash_variant(args, work, "otaprev", {"config.json": json.dumps(cfg, indent=2).encode()})
+    t0 = time.monotonic()
+    gw = Gateway(args, work / "uart0-otaprev.log", flash)
+    gw.start()
+
+    def save(doc, what):
+        """PUT @doc; True when it was saved and the gateway runs again in normal mode."""
+        asked = time.monotonic()
+        st, _, b = http("PUT", "/api/config", doc, auth=auth, timeout=30)
+        boot = gw.wait_log(r"main: rs485_spb_gateway \S+ .*reset reason: software", 120, asked)
+        up = gw.wait_log(r"edge: Sparkplug session up", 60, boot or asked)
+        wait_http("/api/firmware", 30, auth=auth)
+        ok = st == 200 and boot is not None and up is not None
+        if not ok:
+            notes.append(f"save {what}: {st} {b[:80]!r}, restart {boot is not None}, session "
+                         f"{up is not None}")
+        return ok
+
+    notes = []
+    try:
+        up = gw.wait_log(r"edge: Sparkplug session up", 60, t0)
+        pw = commissioning_password(gw, t0, 30)
+        auth = ("admin", pw or "?")
+        base = (as_json(wait_http("/api/firmware", 30, auth=auth)[2]) or {}).get("running", "?")
+        asked = time.monotonic()
+        st, body = upload("e2e-k2", pw)
+        boot = gw.wait_log(r"main: rs485_spb_gateway e2e-k2 .*reset reason", 120, asked)
+        inst = gw.wait_log(r"fw: firmware e2e-k2 installed: the self-check passed in normal mode",
+                           SELFCHECK_WAIT_S, boot or asked)
+        armed = gw.find(rf"storage: the first change of the configuration keeps the configuration "
+                        rf"of {re.escape(base)}", boot or asked)
+        wait_http("/api/firmware", 30, auth=auth)
+        kept_at = time.monotonic()
+        saved = save(cfg_k, "with the new key")
+        kept = gw.find(rf"storage: first change after the update: the configuration of "
+                       rf"{re.escape(base)} \(schema 1\) kept as /cfg/config.prev.json", kept_at)
+        fw1 = as_json(http("GET", "/api/firmware", auth=auth)[2]) or {}
+        prev1 = fw1.get("cfg_prev") or {}
+        check("Issue #146 the confirmation of an update arms the record with the earlier version "
+              "(the other slot); the first save that changes the configuration keeps the earlier "
+              "document as config.prev.json, and GET /api/firmware gives its version (no restore "
+              "button in normal mode)",
+              up and st == 200 and boot and inst and armed and saved and kept
+              and prev1.get("version") == base and prev1.get("schema") == 1
+              and fw1.get("cfg_prev_restore") is False,
+              f"base {base!r}; POST {st} {body[:60]!r}; installed {inst is not None}; armed "
+              f"{armed[:1]}; saved {saved}, kept {kept[:1]}; cfg_prev {prev1!r} restore "
+              f"{fw1.get('cfg_prev_restore')!r}; {notes}")
+
+        # a second change: the earlier document is not restored, the refusal gives the path
+        saved2 = save(cfg_k2, "with another value")
+        st_r, _, b_r = http("POST", "/api/firmware/other", auth=auth, timeout=30)
+        time.sleep(1)
+        booted = gw.find(rf"main: rs485_spb_gateway {re.escape(base)} ", kept_at)
+        check("Issue #146 when the configuration changed since the capture, the button refuses the "
+              "earlier image (409) with the paths that are too new and the paths that changed "
+              "since the update; nothing restarts",
+              saved2 and st_r == 409 and b"network.hostname (2)" in b_r
+              and b"it changed since (network.hostname)" in b_r and not booted,
+              f"saved {saved2}; POST {st_r} {b_r[:300]!r}; booted {booted[:1]}; {notes}")
+
+        # the document of the capture again (the same hash): the button restores the earlier one
+        saved3 = save(cfg_k, "of the capture again")
+        asked = time.monotonic()
+        st_b, _, b_b = http("POST", "/api/firmware/other", auth=auth, timeout=30)
+        plan = gw.wait_log(rf"fw: pre-flight check: image {re.escape(base)} reads the configuration "
+                           rf"from before the update", 30, asked)
+        rest = gw.wait_log(r"storage: /cfg/config.prev.json restored as /cfg/config.json", 60, asked)
+        boot = gw.wait_log(rf"main: rs485_spb_gateway {re.escape(base)} .*reset reason", 120, asked)
+        trial = gw.wait_log(rf"fw: firmware {re.escape(base)} \(ota_\d\) on trial: it must reach "
+                            r"normal mode", 30, boot or asked)
+        up3 = gw.wait_log(r"edge: Sparkplug session up", 60, boot or asked)
+        rec = gw.find(r"main: configuration rejected", boot or asked)
+        cfg3 = as_json(wait_http("/api/config", 30, auth=auth)[2]) or {}
+        inst3 = gw.wait_log(rf"fw: firmware {re.escape(base)} installed: the self-check passed in "
+                            r"normal mode", SELFCHECK_WAIT_S, boot or asked)
+        rolled = gw.find(rf"fw: firmware {re.escape(base)} rejected|{re.escape(base)} was rolled "
+                         r"back", asked)
+        check("Issue #146 with the configuration of the capture again (the same hash), the button "
+              "restores the earlier document before the restart; the earlier image starts in "
+              "normal mode with it (no network.hostname) and its self-check installs it",
+              saved3 and st_b == 202 and plan and rest and boot and trial and up3 and not rec
+              and cfg3.get("network") is not None and "hostname" not in cfg3["network"]
+              and cfg3.get("sparkplug", {}).get("edge_node_id") == WIRING_NODE
+              and inst3 and not rolled,
+              f"saved {saved3}; POST {st_b} {b_b[:120]!r}; planned {plan is not None}, restored "
+              f"{rest is not None}; earlier image {boot is not None}, on trial {trial is not None}, "
+              f"session {up3 is not None}, rejected {rec[:1]}; network {cfg3.get('network')!r}; "
+              f"installed {inst3 is not None}; rolled back {rolled[:1]}; {notes}")
     finally:
         gw.kill()
 
@@ -5145,6 +5254,100 @@ def run_nvs_ota(args, work):
         broker.wait()
 
 
+# ---------------------------------------------------------------- issue #148 downgrade
+
+DOWNGRADE_NODE = "GW49"   # issue #148 (unique in this file)
+
+
+def run_downgrade(args, work):
+    """Issue #148 (optional: only with --only downgrade and E2E_DOWNGRADE_REF, else [SKIP]): the
+    image under test boots on a new flash, saves a configuration through the web UI (the MQTT
+    password and the web password go to the encrypted NVS) and runs in normal mode. Then the
+    image of an earlier release (run_e2e.sh builds it from the git ref E2E_DOWNGRADE_REF) is
+    written over ota_0 of the same flash: the bootloader, the partition table, otadata, the NVS
+    and LittleFS stay as the new image left them, as after an OTA rollback. The earlier image must
+    start in normal mode with the same configuration, and with the secrets: its broker requires
+    the MQTT password, and the web UI accepts the web password. bdSeq is in RAM only (#161).
+    Run it each time that littlefs, an NVS format or ESP-IDF changes (CLAUDE.md)."""
+    if not args.downgrade_app:
+        SKIPPED.append("downgrade")
+        print("[SKIP] issue #148 downgrade to an earlier release: no --downgrade-app (set "
+              "E2E_DOWNGRADE_REF=<git ref> for run_e2e.sh)", flush=True)
+        return
+    old_app = pathlib.Path(args.downgrade_app).read_bytes()
+    port = MQTT_PORT + 31
+    broker, _ = auth_broker(work, "downgrade", port, {"gw148": "mqtt-secret-148"})
+    obs = observer_retry(port, auth=OBS_AUTH)
+    nbirth_t = f"{T}/NBIRTH/{DOWNGRADE_NODE}"
+    cfg = node_config(DOWNGRADE_NODE, port=port)
+    cfg_new = json.loads(json.dumps(cfg))
+    cfg_new["mqtt"].update(username="gw148", password="mqtt-secret-148")
+    cfg_new["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    flash = flash_variant(args, work, "downgrade", {"config.json": json.dumps(cfg, indent=2).encode()})
+    t0 = time.monotonic()
+    gw = Gateway(args, work / "uart0-downgrade.log", flash)
+    gw.start()
+    try:
+        boot = gw.wait_log(r"main: rs485_spb_gateway (\S+) .*reset reason", 60, t0)
+        new_ver = re.search(r"rs485_spb_gateway (\S+) ", gw.find(
+            r"main: rs485_spb_gateway \S+ .*reset reason", t0)[0]).group(1) if boot else "?"
+        pw = commissioning_password(gw, t0, 40)
+        wait_http("/api/status", 40, auth=("admin", pw or "?"))
+        asked = time.monotonic()
+        st, _, b = http("PUT", "/api/config", cfg_new, auth=("admin", pw or "?"), timeout=30)
+        boot2 = gw.wait_log(r"main: rs485_spb_gateway \S+ .*reset reason: software", 120, asked)
+        nb = obs.wait(nbirth_t, 90, since=boot2 or asked)
+        wait_http("/api/config", 40)
+        st_c, _, b_c = http("GET", "/api/config", timeout=30)
+        before = as_json(b_c) or {}
+        if not check("Issue #148 the image under test saves the configuration with the MQTT and "
+                     "web passwords (NVS) and runs in normal mode on its broker, which requires "
+                     "the password",
+                     boot and pw and st == 200 and boot2 and nb and st_c == 200
+                     and (before.get("mqtt") or {}).get("password") == "********",
+                     f"version {new_ver}; PUT {st} {b[:80]!r}; restart {boot2 is not None}; NBIRTH "
+                     f"{nb is not None}; GET /api/config {st_c}, mqtt.password "
+                     f"{(before.get('mqtt') or {}).get('password')!r}"):
+            return
+    finally:
+        gw.kill()
+
+    # the earlier image over ota_0; everything else of the flash as the new image left it
+    off, size = storage_partition("ota_0")
+    image = bytearray(pathlib.Path(flash).read_bytes())
+    image[off:off + size] = old_app + b"\xff" * (size - len(old_app))
+    pathlib.Path(flash).write_bytes(bytes(image))
+    t1 = time.monotonic()
+    gw = Gateway(args, work / "uart0-downgrade-old.log", flash)
+    gw.start()
+    try:
+        boot = gw.wait_log(r"main: rs485_spb_gateway \S+ .*reset reason", 60, t1)
+        line = gw.find(r"main: rs485_spb_gateway \S+ .*reset reason", t1)
+        old_ver = re.search(r"rs485_spb_gateway (\S+) ", line[0]).group(1) if line else "?"
+        nb = obs.wait(nbirth_t, 120, since=t1)
+        up = gw.wait_log(r"Sparkplug session up", 30, t1)   # the console after the NBIRTH
+        wait_http("/api/config", 60)
+        st_c, _, b_c = http("GET", "/api/config", timeout=30)
+        after = as_json(b_c) or {}
+        bad = gw.find(r"main: configuration rejected|main: commissioning|not mountable|"
+                      r"formatting it|safe mode", t1)
+        diff = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+        check(f"Issue #148 the image of the earlier release ({args.downgrade_ref or old_ver}) boots "
+              f"on the flash that the image under test wrote: normal mode, the same configuration "
+              f"(GET /api/config), the MQTT password (its broker requires it: NBIRTH) and the web "
+              f"password (the web UI accepts it); LittleFS and the NVS are not formatted",
+              boot and old_ver != new_ver and nb and up and st_c == 200 and not diff
+              and (after.get("mqtt") or {}).get("password") == "********" and not bad,
+              f"versions {new_ver} -> {old_ver}; NBIRTH {nb is not None}, session "
+              f"{up is not None}; GET /api/config {st_c} {b_c[:80] if st_c != 200 else b''!r}; "
+              f"different sections {diff}; lines {bad[:2]}")
+    finally:
+        gw.kill()
+        obs.close()
+        broker.terminate()
+        broker.wait()
+
+
 # ---------------------------------------------------------------- UMH Core interoperability (#175)
 #
 # Optional (scenarios.OPTIONAL): a real benthos-umh with the sparkplug_b input and the bridge of
@@ -5742,6 +5945,11 @@ def main():
     ap.add_argument("--plain-flash", default="",
                     help="issue #94: flash image of the QEMU build without NVS encryption "
                          "(sdkconfig.qemu-plain), the image before the OTA update")
+    ap.add_argument("--downgrade-app", default="",
+                    help="issue #148: app image of an earlier release (run_e2e.sh builds it from "
+                         "E2E_DOWNGRADE_REF) for the optional scenario 'downgrade'")
+    ap.add_argument("--downgrade-ref", default="",
+                    help="issue #148: the git ref of --downgrade-app (for the messages)")
     ap.add_argument("--plain-app", default="",
                     help="issue #102: the unsigned app image of that build (an OTA update the "
                          "device must refuse once its NVS is encrypted)")
@@ -5859,6 +6067,8 @@ def main():
         "umh": lambda: run_umh(args, work, slave),   # optional (issue #175)
         # issue #176: only with --only tck, and only with E2E_TCK_DIR (else [SKIP])
         "tck": lambda: tck.run(sys.modules[__name__], args, work, slave),
+        # issue #148: only with --only downgrade, and only with E2E_DOWNGRADE_REF (else [SKIP])
+        "downgrade": lambda: run_downgrade(args, work),
     }
     assert set(runners) == {name for name, _ in scenarios.SCENARIOS}
     # issue #135: without --only, the full run of this variant (scenarios.variant_of)

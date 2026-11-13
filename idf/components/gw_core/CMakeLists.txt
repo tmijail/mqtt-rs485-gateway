@@ -14,6 +14,7 @@ set(GW_CORE_SRCS
     src/gw_claim.c
     src/gw_cdump.c
     src/gw_cfgdoc.c
+    src/gw_cfgprev.c
     src/gw_cfglint.c
     src/gw_cfgschema.c
     src/gw_clock.c

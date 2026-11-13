@@ -842,10 +842,43 @@ static bool lint_send(void *ctx, gw_lint_level_t level, const char *path, const 
     return ++o->sent < WEB_LINT_MAX && o->err == ESP_OK;
 }
 
+/* Issue #146: POST /api/config?restore_prev=1 (no body): the button "Restore it" of the web UI in
+ * recovery mode. config.prev.json is validated as at the boot (with the stored secrets) and
+ * becomes config.json; then the gateway restarts. 404 when there is none, 400 when this firmware
+ * rejects it, 409 during the trial of a new image. */
+static esp_err_t config_restore_prev(httpd_req_t *req)
+{
+    gw_cfg_err_t err;
+    esp_err_t r = gw_storage_cfgprev_restore_checked(&err);
+    switch (r) {
+    case ESP_OK:
+        break;
+    case ESP_ERR_NOT_FOUND:
+        return send_error(req, "404 Not Found", &err, NULL);
+    case ESP_ERR_INVALID_ARG:
+        ESP_LOGW(TAG, "configuration from before the update rejected: %s", err.msg);
+        return send_error(req, "400 Bad Request", &err, NULL);
+    case ESP_ERR_INVALID_STATE:
+        return send_error(req, "409 Conflict", &err, NULL);
+    case ESP_ERR_NO_MEM:
+        return send_error(req, "503 Service Unavailable", &err, NULL);
+    default:
+        return send_error(req, "500 Internal Server Error", &err, NULL);
+    }
+    send_json(req, "200 OK", "{\"ok\":true,\"restart\":true}\n");
+    ESP_LOGW(TAG, "configuration from before the update restored through the REST API: "
+                  "restarting");
+    s_ctx.restart();
+    return ESP_OK;
+}
+
 static esp_err_t config_put(httpd_req_t *req)
 {
     if (!same_origin(req) || !authorized(req)) {
         return ESP_OK;
+    }
+    if (query_flag(req, "restore_prev")) {
+        return config_restore_prev(req);
     }
     size_t len;
     const char *status;
@@ -1088,7 +1121,9 @@ static esp_err_t firmware_get(httpd_req_t *req)
         char run[2 * sizeof(((gw_fw_status_t *)0)->running)];
         char other[2 * sizeof(((gw_fw_status_t *)0)->other)];
         char other_why[2 * sizeof(((gw_fw_status_t *)0)->other_why)];
-        char body[1800];
+        gw_cfgprev_t prev;
+        char prev_ver[2 * GW_CFGPREV_VERSION];
+        char body[2000];
     } fw_json_t;
     fw_json_t *j = gw_storage_malloc(sizeof(*j));
     if (j == NULL) {
@@ -1100,6 +1135,10 @@ static esp_err_t firmware_get(httpd_req_t *req)
     json_escape(j->run, sizeof(j->run), j->f.running);
     json_escape(j->other, sizeof(j->other), j->f.other);
     json_escape(j->other_why, sizeof(j->other_why), j->f.other_why);
+    /* issue #146: the configuration from before the update; the web UI restores it in recovery
+     * mode (POST /api/config?restore_prev=1) */
+    bool prev = gw_storage_cfgprev_get(&j->prev) && j->prev.version[0] != '\0';
+    json_escape(j->prev_ver, sizeof(j->prev_ver), prev ? j->prev.version : "");
     /* issue #144: both slots, the trial (expected mode, time left), the boot-loop counter */
     bool can_boot = j->f.enabled && !j->f.trial && j->f.phase != GW_FW_DOWNLOADING &&
                     j->f.phase != GW_FW_RESTARTING && j->f.other_state != GW_FW_SLOT_EMPTY &&
@@ -1110,7 +1149,8 @@ static esp_err_t firmware_get(httpd_req_t *req)
              "\"enabled\":%s,\"phase\":\"%s\",\"state\":\"%s\",\"detail\":\"%s\","
              "\"progress\":%u,\"bytes\":%lu,\"total\":%lu,\"trial\":%s,"
              "\"trial_left_s\":%lu,\"expected_mode\":\"%s\",\"boot_count\":%lu,"
-             "\"safe_mode\":%s}\n",
+             "\"safe_mode\":%s,\"cfg_prev\":{\"version\":\"%s\",\"saved\":%lld,"
+             "\"schema\":%u},\"cfg_prev_restore\":%s}\n",
              j->run, j->f.slot, j->other, j->f.other_slot,
              j->f.other_state < sizeof(k_fw_slot) / sizeof(k_fw_slot[0])
                  ? k_fw_slot[j->f.other_state] : "?",
@@ -1120,7 +1160,9 @@ static esp_err_t firmware_get(httpd_req_t *req)
              (unsigned long)j->f.total, j->f.trial ? "true" : "false",
              (unsigned long)j->f.trial_left_s,
              j->f.trial ? gw_ota_mode_name(j->f.expected) : "",
-             (unsigned long)j->f.boot_count, j->f.safe_mode ? "true" : "false");
+             (unsigned long)j->f.boot_count, j->f.safe_mode ? "true" : "false", j->prev_ver,
+             prev ? (long long)j->prev.saved : 0LL, prev ? (unsigned)j->prev.schema : 0u,
+             prev && s_ctx.mode == GW_WEB_RECOVERY ? "true" : "false");
     esp_err_t r = send_json(req, "200 OK", j->body);
     heap_caps_free(j);
     return r;
@@ -1226,7 +1268,7 @@ static esp_err_t firmware_other_post(httpd_req_t *req)
     if (!same_origin(req) || !authorized(req)) {
         return ESP_OK;
     }
-    char why[240];
+    char why[320];   /* issue #146: also the JSON paths that changed */
     esp_err_t e = gw_fw_boot_other(query_flag(req, "force"), why, sizeof(why));
     if (e == ESP_ERR_NOT_FOUND) {
         return refuse_body(req, "404 Not Found", why);

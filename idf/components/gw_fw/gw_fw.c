@@ -88,6 +88,8 @@ static esp_timer_handle_t s_loop_timer;   /* the clear after 120 s, or the end o
 static esp_timer_handle_t s_restart_timer;
 static atomic_bool s_busy;             /* a transfer is running (download or upload) */
 static bool s_force;                   /* the running transfer was forced (issue #144 item 3) */
+static bool s_restore;                 /* issue #146: restore config.prev.json before the boot */
+static uint32_t s_restore_hash;        /* ... while config.json keeps this hash */
 static char *s_url;                    /* allocated for a download only (#80) */
 static char *s_ca_pem;                 /* read for a download only (#80), freed after it */
 static const char *s_ca_name;          /* CA file of the update server, NULL: public CAs */
@@ -625,6 +627,9 @@ static bool confirm(bool nvs_restart)
             esp_timer_stop(s_backstop_timer);
         }
         last_write(GW_FWLAST_INSTALLED, s_st.running, GW_OTA_MODE_NONE, "");
+        /* issue #146: the first change of the configuration keeps the one of the image that ran
+         * before (the other slot) */
+        gw_storage_cfgprev_arm(s_st.other, s_st.running);
         /* issue #144 item 8: the recovery network only from a confirmed image in normal mode */
         if (s_mode == GW_OTA_MODE_NORMAL && s_cfg != NULL) {
             gw_storage_save_last_good(s_cfg);
@@ -829,29 +834,89 @@ static esp_err_t check_image(const uint8_t *block, const char *version, bool for
 {
     gw_ota_caps_info_t img;
     gw_ota_caps_parse(block, GW_OTA_CAPS_SIZE, &img);
-    char reason[200];
-    if (!gw_ota_caps_accept(&img, gw_storage_nvs_encrypted_on_flash(), reason, sizeof(reason))) {
+    /* issue #146: the texts and the report from the heap (PSRAM), not from the stack of the
+     * caller (the web server, or the Sparkplug task for the NCMD) */
+    typedef struct {
+        gw_schema_report_t doc;
+        char reason[320];
+        char rest[160];
+    } pf_work_t;
+    pf_work_t *w = gw_storage_malloc(sizeof(*w));
+    char small[200];
+    char *reason = w != NULL ? w->reason : small;
+    size_t rcap = w != NULL ? sizeof(w->reason) : sizeof(small);
+    if (!gw_ota_caps_accept(&img, gw_storage_nvs_encrypted_on_flash(), reason, rcap)) {
         ESP_LOGE(TAG, "update refused: the image %s; installing it would lose the NVS (secrets)",
                  reason);
         snprintf(why, cap, "image %s refused: %s", version, reason);
+        heap_caps_free(w);
         return ESP_ERR_INVALID_ARG;
     }
-    gw_schema_report_t *doc = gw_storage_malloc(sizeof(*doc));
-    bool have_doc = doc != NULL && gw_storage_config_schema(doc);
-    gw_ota_pf_t pf = gw_ota_preflight(&s_own, &img, have_doc ? doc : NULL, reason, sizeof(reason));
-    heap_caps_free(doc);
-    if (pf == GW_OTA_PF_OK) {
-        return ESP_OK;
+    bool have_doc = w != NULL && gw_storage_config_schema(&w->doc);
+    gw_ota_pf_t pf = gw_ota_preflight(&s_own, &img, have_doc ? &w->doc : NULL, reason, rcap);
+    s_restore = false;
+    if (pf == GW_OTA_PF_REFUSE && have_doc && w->doc.need > img.cfg_schema) {
+        /* issue #146: the image cannot read the stored configuration; the configuration from
+         * before the update to this firmware may be the one that it read */
+        gw_cfgprev_t prev;
+        uint32_t hash = 0;
+        gw_cfgprev_action_t act = gw_storage_cfgprev_get(&prev) && gw_storage_config_hash(&hash)
+                                      ? gw_cfgprev_decide(&prev, version, img.cfg_schema, hash)
+                                      : GW_CFGPREV_NONE;
+        if (act == GW_CFGPREV_RESTORE) {
+            /* the restore fixes only the schema: the NVS and LittleFS checks still apply */
+            gw_schema_init(&w->doc, NULL, 0);
+            w->doc.valid = true;
+            w->doc.need = prev.schema;
+            if (gw_ota_preflight(&s_own, &img, &w->doc, w->rest, sizeof(w->rest)) ==
+                GW_OTA_PF_OK) {
+                s_restore = true;
+                s_restore_hash = hash;
+                pf = GW_OTA_PF_OK;
+                ESP_LOGW(TAG, "pre-flight check: image %s reads the configuration from before the "
+                              "update (unchanged since): it is restored before the restart",
+                         version);
+            }
+        } else if (act == GW_CFGPREV_CHANGED) {
+            size_t n = strlen(reason);
+            int k = snprintf(reason + n, rcap - n, "; the configuration from before the update to "
+                             "this firmware is not restored: it changed since (");
+            if (k > 0 && n + (size_t)k < rcap) {
+                n += (size_t)k;
+                gw_storage_cfgprev_diff(reason + n, rcap - n);
+                n = strlen(reason);
+                snprintf(reason + n, rcap - n, ")");
+            }
+        }
     }
-    if (!force) {
+    esp_err_t ret = ESP_OK;
+    if (pf != GW_OTA_PF_OK && !force) {
         snprintf(why, cap, "pre-flight check: image %s %s: %s; force installs it into recovery "
                  "mode", version, pf == GW_OTA_PF_UNKNOWN ? "is unknown" : "refused", reason);
         ESP_LOGE(TAG, "update refused by the %s", why);
-        return ESP_ERR_NOT_SUPPORTED;
+        ret = ESP_ERR_NOT_SUPPORTED;
+    } else if (pf != GW_OTA_PF_OK) {
+        ESP_LOGW(TAG, "pre-flight check: image %s %s (%s); forced: it must reach recovery mode",
+                 version, pf == GW_OTA_PF_UNKNOWN ? "is unknown" : "refused", reason);
     }
-    ESP_LOGW(TAG, "pre-flight check: image %s %s (%s); forced: it must reach recovery mode",
-             version, pf == GW_OTA_PF_UNKNOWN ? "is unknown" : "refused", reason);
-    return ESP_OK;
+    heap_caps_free(w);
+    return ret;
+}
+
+/* Issue #146: before the boot partition of an earlier image, the configuration from before the
+ * update (planned by check_image()). */
+static esp_err_t prev_restore(char *why, size_t cap)
+{
+    return s_restore ? gw_storage_cfgprev_restore(s_restore_hash, why, cap) : ESP_OK;
+}
+
+/* The earlier image cannot boot after all: the configuration of this firmware again. */
+static void prev_undo(void)
+{
+    if (s_restore) {
+        s_restore = false;
+        gw_storage_cfgprev_undo();
+    }
 }
 
 static bool take(char *why, size_t cap)
@@ -872,6 +937,7 @@ static bool take(char *why, size_t cap)
         snprintf(why, cap, "an update is already running");
         return false;
     }
+    s_restore = false;
     return true;
 }
 
@@ -1017,10 +1083,19 @@ static void download_task(void *arg)
     }
     /* issue #144 items 2 and 5: the expected mode is stored before the boot partition */
     last_write(GW_FWLAST_RESTARTING, version, expected_now(s_force), "");
+    char rwhy[120];
+    if (prev_restore(rwhy, sizeof(rwhy)) != ESP_OK) {   /* issue #146 */
+        esp_https_ota_abort(h);
+        h = NULL;
+        download_fail(version, "image %s not installed: %s", version, rwhy);
+    }
     park(true);
     e = esp_https_ota_finish(h);   /* verifies the image and sets it to boot; frees h always */
     h = NULL;
     park(false);
+    if (e != ESP_OK) {
+        prev_undo();
+    }
     if (e == ESP_ERR_OTA_VALIDATE_FAILED) {
         download_fail(version, "image %s rejected (%s)", version, WHY_INVALID);
     } else if (e != ESP_OK) {
@@ -1252,6 +1327,13 @@ esp_err_t gw_fw_upload_end(bool complete, char *why, size_t cap)
     }
     /* issue #144 items 2 and 5: the expected mode is stored before the boot partition */
     last_write(GW_FWLAST_RESTARTING, s_up_version, expected_now(s_force), "");
+    char rwhy[120];
+    if (prev_restore(rwhy, sizeof(rwhy)) != ESP_OK) {   /* issue #146 */
+        esp_ota_abort(s_up);
+        snprintf(why, cap, "image %s not installed: %s", s_up_version, rwhy);
+        fail(s_up_version, "%s", why);
+        return ESP_FAIL;
+    }
     install_t in = {0};
     on_core0(install_upload, &in);
     esp_err_t e = in.err;
@@ -1264,6 +1346,7 @@ esp_err_t gw_fw_upload_end(bool complete, char *why, size_t cap)
         snprintf(why, cap, "cannot boot %s (%s)", s_up_part->label, esp_err_to_name(e));
     }
     if (e != ESP_OK) {
+        prev_undo();
         fail(s_up_version, "%s", why);
         return e;
     }
@@ -1285,12 +1368,18 @@ static void boot_other_task(void *arg)
     (void)arg;
     const char *version = s_other_version;
     last_write(GW_FWLAST_RESTARTING, version, expected_now(s_other_force), "");
+    char rwhy[120];
+    if (prev_restore(rwhy, sizeof(rwhy)) != ESP_OK) {   /* issue #146 */
+        fail(version, "firmware %s in %s not booted: %s", version, s_other_part->label, rwhy);
+        vTaskDelete(NULL);
+    }
     xSemaphoreTake(s_ota_lock, portMAX_DELAY);
     park(true);
     esp_err_t e = esp_ota_set_boot_partition(s_other_part);   /* verifies the image */
     park(false);
     xSemaphoreGive(s_ota_lock);
     if (e != ESP_OK) {
+        prev_undo();
         s_other_invalid = e == ESP_ERR_OTA_VALIDATE_FAILED;
         portENTER_CRITICAL(&s_mux);
         if (s_other_invalid) {
