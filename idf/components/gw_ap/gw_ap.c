@@ -122,9 +122,16 @@ esp_err_t gw_ap_start(const char *password, uint32_t timeout_s, bool https, uint
         if (web_port != (https ? 443u : 80u)) {
             snprintf(port, sizeof(port), ":%u", (unsigned)web_port);
         }
-        ESP_LOGW(TAG, "commissioning access point '%s' (%s): web UI at %s://192.168.4.1%s/",
-                 s_ssid, open ? "OPEN, no key: claim window" : "WPA2, commissioning password",
-                 https ? "https" : "http", port);
+        /* the address of the netif, not a constant: it stays correct if the subnet of the
+         * access point becomes configurable (192.168.4.1/24 is the ESP-IDF default) */
+        char addr[16] = "?";
+        esp_netif_ip_info_t info;
+        if (esp_netif_get_ip_info(s_netif, &info) == ESP_OK && info.ip.addr != 0) {
+            snprintf(addr, sizeof(addr), IPSTR, IP2STR(&info.ip));
+        }
+        ESP_LOGW(TAG, "commissioning access point '%s' (%s): web UI at %s://%s%s/", s_ssid,
+                 open ? "OPEN, no key: claim window" : "WPA2, commissioning password",
+                 https ? "https" : "http", addr, port);
     } else if (open != s_open) {
         ESP_RETURN_ON_ERROR(apply(open), TAG, "config");
         ESP_LOGW(TAG, "access point '%s' is now %s", s_ssid,
