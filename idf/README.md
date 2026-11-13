@@ -855,6 +855,8 @@ On Windows, or without a local ESP-IDF, run the E2E tests in the CI image with `
 
 Configuration used: `tools/e2e/fs/config.json` (keepalive of 10 s, syslog to the receiver of the harness). `run_e2e.sh` also passes the ELF and the IDF python, to decode the *core dump* with `esp_coredump`.
 
+**Result on `main` ba35a34 and 1f68ba4** (#146 and #148 merged; the same computer). The PSRAM variant gave **223/223** in the groups (213 as one full run), with no retries. The default variant gave 16/18 on ba35a34: the #144 item 1 check of `ota-trial` did not see the NBIRTH after the broker came back. The cause was the test: the gateway connected before the observer subscribed. Commit 1f68ba4 lets the observer in first. Then two runs of the default group gave **18/18** each. The optional scenario `downgrade` (#148, `E2E_DOWNGRADE_REF=761edf8`) gave **7/7** in each variant. The host tests gave **50/50** CTest tests (new suite `test_cfgprev`).
+
 **Result on `main` 8c2e8be** (`tools/e2e/run_ci_groups.sh`, the 4 CI groups, in Docker on the computer of `docs/reference/e2e-durations.md`):
 
 | Variant | Groups | Checks | Retries | QEMU exits |
