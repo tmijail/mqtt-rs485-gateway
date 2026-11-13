@@ -103,7 +103,7 @@ The firmware assumes the 8 MB of PSRAM of the board (issue #135). When the boot 
 | NET-2 | IPv4 with DHCP or with a static address (IP, netmask, gateway and DNS). You can configure it | P0 | ✅ | Done |
 | NET-3 | The gateway finds the address of the broker host with DNS | P0 | ✅ | Done |
 | NET-4 | Wi-Fi STA as an alternative interface, or as a backup when Ethernet stops. You can configure the priority | P1 | | Done. Not tested with a radio |
-| NET-5 | A Wi-Fi access point for commissioning. It starts when there is no valid configuration, and when you push the BOOT button for 2 to 10 s. It uses WPA2 with the commissioning password. During a claim window (CFG-8), it is open (no key) | P1 | | Done. Not tested with a radio |
+| NET-5 | A Wi-Fi access point for commissioning. It starts when there is no valid configuration, and when you push the BOOT button for 2 to 10 s. It uses WPA2 with the commissioning password. During a claim window (CFG-8), it is open (no key). The Modbus TCP gateway (MB-15) refuses each connection through the access point (issue #120) | P1 | | Done. Not tested with a radio |
 | NET-6 | A hostname that you can configure, and an mDNS announcement of the web UI (`_https._tcp`, or `_http._tcp` without HTTPS) | P2 | | Done |
 | NET-7 | IPv6 | P2 | | Done |
 
@@ -178,7 +178,7 @@ The `device_id` is the device name, or `<device_prefix>:<name>` with `sparkplug.
 | MB-12 | A poll period for each tag, with a fast scan and a slow scan | P2 | | Done |
 | MB-13 | The gateway decodes the Modbus exceptions (codes 1–11) and counts them for each device | P1 | | Done |
 | MB-14 | The gateway queues the DCMD writes, and they have priority over the poll | P1 | | Done |
-| MB-15 | A **Modbus TCP** gateway or server (port 502) that gives access to the RTU slaves through Ethernet | P2 | | Done |
+| MB-15 | A **Modbus TCP** gateway or server (port 502) that gives access to the RTU slaves through Ethernet. It always refuses a connection through the commissioning access point (NET-5, issue #120) | P2 | | Done |
 | MB-16 | One owner of the RS485 bus: the poll and the writes go through one task or queue, one at a time | P0 | ✅ | Done |
 
 ### 4.6 Local I/O (IO)
@@ -667,10 +667,15 @@ Without these keys, the build option applies (`CONFIG_GW_MB_BLOCK_READS`, `CONFI
 |---|---|---|---|
 | `enabled` | bool | `false` | Modbus TCP **has no authentication**: the server starts only when you enable it |
 | `port` | integer | `502` | 1–65535 |
-| `allowed_clients` | array of texts | `[]` | Up to 8 IPv4 addresses (`a.b.c.d`) or networks (`a.b.c.d/n`, n 0–32). The gateway closes a connection from another source without a response. Empty = any client (the log gives a warning) |
+| `allowed_clients` | array of texts | `[]` | Up to 8 IPv4 addresses (`a.b.c.d`) or networks (`a.b.c.d/n`, n 0–32). The gateway closes a connection from another source without a response. Empty = any client (the log gives a warning). A connection through the commissioning access point is always refused, also when this list contains the client (see below) |
 | `idle_timeout_s` | integer | `60` | 0–3600. The gateway closes a connection without requests for this time. 0 = never |
 
 - The gateway sends FC01–FC06, FC15 and FC16 to the units 1–247, with or without a configured device. The gateway itself answers with an exception: any other function (01), data that is not valid (03), and the units 0 and 248–255 (0A). If the unit does not respond after the retries of `rs485`, the exception is 0B.
+- **The access point (issue #120):** the gateway always refuses a connection through the commissioning access point (NET-5). This applies in all modes, with or without a claim window (CFG-8), also when `allowed_clients` contains the client. While the access point runs, the gateway refuses a connection when one of these conditions is true:
+  - The local address of the connection is the address of the access point.
+  - The client is in the subnet of the access point (`192.168.4.0/24`). Thus the gateway also refuses a plant client in this subnet while the access point runs.
+
+  The gateway closes the connection without a response. It writes a log line and counts a rejected connection, as for a client that is not in `allowed_clients`.
 - **Bus access (MB-16):** the TCP requests go through the task that owns the bus, one at a time. They have the same granularity as the DCMD writes: between two poll requests. The priority is: DCMD writes, then Modbus TCP, then the poll.
 
 **`ota` (FW-1): firmware updates by NCMD and through the web UI.**

@@ -86,6 +86,18 @@ void gw_mbap_count_exception(uint8_t code);
 /** Whether a client at IPv4 @p ip may connect (empty list: any client). */
 bool gw_mbap_client_allowed(const gw_config_t *cfg, const uint8_t ip[4]);
 
+/**
+ * Issue #120: whether a connection comes through the commissioning access point. The Modbus
+ * TCP gateway always refuses such a connection: the access point is for commissioning, and it
+ * is open (no key) during a claim window. @p ap_ip and @p ap_mask (network byte order) are the
+ * address and netmask of the running access point; NULL or 0.0.0.0 = no access point, then the
+ * result is false. True when the local address of the connection (@p local) is the address of
+ * the access point, or when the peer (@p peer) is in the subnet of the access point (a second
+ * barrier; a client of another interface in that subnet is also refused).
+ */
+bool gw_mbap_via_ap(const uint8_t local[4], const uint8_t peer[4], const uint8_t *ap_ip,
+                    const uint8_t *ap_mask);
+
 #ifdef __cplusplus
 }
 #endif

@@ -27,6 +27,7 @@
 #include "gw_io.h"
 #include "gw_log.h"
 #include "gw_mbap.h"
+#include "gw_mbtcp.h"
 #include "gw_net.h"
 #include "gw_rtc.h"
 #include "gw_sfcard.h"
@@ -1227,7 +1228,7 @@ static int cmd_boot(int argc, char **argv)
 }
 
 /* Issue #120: the time of the next claim windows, and whether the Ethernet counts as the access
- * point (QEMU has no radio). */
+ * point (QEMU has no radio) for the claim window and for the Modbus TCP gateway. */
 static int cmd_claimsim(int argc, char **argv)
 {
     char *end = NULL;
@@ -1238,6 +1239,7 @@ static int cmd_claimsim(int argc, char **argv)
         return 1;
     }
     gw_web_sim_claim((uint32_t)s, eth);
+    gw_mbtcp_sim_ap(eth);   /* the Modbus TCP gateway refuses the clients of the access point */
     out("claim windows: %ld s%s; Ethernet %s the access point\n", s, s == 0 ? " (Kconfig)" : "",
         eth ? "counts as" : "is not");
     return 0;
@@ -1466,7 +1468,8 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
         {.command = "boot", .help = "Emulator only: press (1) or release (0) the BOOT button",
          .hint = "<0|1>", .func = cmd_boot_atomic},
         {.command = "claimsim", .help = "Emulator only: the time of the next claim windows; "
-         "'eth': the Ethernet counts as the access point (issue #120)",
+         "'eth': the Ethernet counts as the access point, for the claim window and Modbus TCP "
+         "(issue #120)",
          .hint = "<s> [eth]", .func = cmd_claimsim_atomic},
         {.command = "panic",
          .help = "Emulator only: abort() (core dump test); 'panic net-off' stops Ethernet first",
