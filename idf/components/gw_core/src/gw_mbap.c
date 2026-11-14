@@ -198,6 +198,27 @@ bool gw_mbap_client_allowed(const gw_config_t *cfg, const uint8_t ip[4])
     return false;
 }
 
+bool gw_mbap_via_ap(const uint8_t local[4], const uint8_t peer[4], const uint8_t *ap_ip,
+                    const uint8_t *ap_mask)
+{
+    static const uint8_t none[4] = {0, 0, 0, 0};
+    if (ap_ip == NULL || memcmp(ap_ip, none, 4) == 0) {
+        return false;
+    }
+    if (memcmp(local, ap_ip, 4) == 0) {
+        return true;
+    }
+    if (ap_mask == NULL || memcmp(ap_mask, none, 4) == 0) {
+        return false;   /* no subnet: only the local address counts */
+    }
+    for (int i = 0; i < 4; i++) {
+        if ((peer[i] & ap_mask[i]) != (ap_ip[i] & ap_mask[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* ---------- counters (#69) ---------- */
 
 static gw_mbap_stats_t s_stats;

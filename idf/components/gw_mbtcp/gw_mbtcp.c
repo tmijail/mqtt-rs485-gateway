@@ -5,8 +5,10 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "gw_ap.h"
 #include "gw_bus.h"
 #include "gw_mbap.h"
+#include "gw_net.h"
 #include "lwip/sockets.h"
 
 static const char *TAG = "mbtcp";
@@ -29,6 +31,27 @@ static gw_mbap_txn_t s_txn;   /* one transaction at a time, shared with the bus 
 static uint8_t s_out[GW_MBAP_ADU_MAX];
 static StaticTask_t s_task_buf;
 static StackType_t s_stack[STACK_WORDS];
+
+#if CONFIG_GW_IO_SIMULATED
+static volatile bool s_sim_eth_as_ap;
+
+void gw_mbtcp_sim_ap(bool eth_as_ap)
+{
+    s_sim_eth_as_ap = eth_as_ap;
+}
+#endif
+
+/* Issue #120: the address and netmask of the running access point; false when it does not run.
+ * In the emulator (no radio), 'claimsim ... eth' makes the Ethernet count as the access point. */
+static bool ap_ip4(uint8_t ip[4], uint8_t mask[4])
+{
+#if CONFIG_GW_IO_SIMULATED
+    if (s_sim_eth_as_ap) {
+        return gw_net_ip4_info(GW_NET_ETH, ip, mask);
+    }
+#endif
+    return gw_ap_ip4(ip, mask);
+}
 
 static int64_t now_us(void)
 {
@@ -114,6 +137,22 @@ static void on_accept(int lfd)
     }
     uint8_t ip[4];
     memcpy(ip, &peer.sin_addr.s_addr, 4);   /* network order: a.b.c.d */
+    /* Issue #120: never through the access point (commissioning only; open during a claim
+     * window), also when allowed_clients contains the client */
+    struct sockaddr_in local;
+    socklen_t llen = sizeof(local);
+    uint8_t lip[4] = {0}, ap[4], mask[4];
+    if (getsockname(fd, (struct sockaddr *)&local, &llen) == 0) {
+        memcpy(lip, &local.sin_addr.s_addr, 4);
+    }
+    bool have_ap = ap_ip4(ap, mask);
+    if (gw_mbap_via_ap(lip, ip, have_ap ? ap : NULL, have_ap ? mask : NULL)) {
+        ESP_LOGW(TAG, "connection from %u.%u.%u.%u refused: through the access point",
+                 ip[0], ip[1], ip[2], ip[3]);
+        close(fd);
+        gw_mbap_stats_add(&(const gw_mbap_stats_t){.rejected = 1});
+        return;
+    }
     if (!gw_mbap_client_allowed(s_cfg, ip)) {
         ESP_LOGW(TAG, "connection from %u.%u.%u.%u refused: not in modbus_tcp.allowed_clients",
                  ip[0], ip[1], ip[2], ip[3]);

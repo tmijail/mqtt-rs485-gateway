@@ -8,8 +8,9 @@ menu "Gateway: commissioning access point"
             Starts a WPA2 access point "GW-Setup-XXXXXX" (last bytes of the MAC) with the
             device's commissioning password when there is no valid configuration (rejected,
             or after a factory reset) and on a 2-10 s press of BOOT. The web UI is then at
-            https://192.168.4.1/ with the default web.https (plain HTTP only redirects), or at
-            http://192.168.4.1/ with web.https false; the log line gives the address in use.
+            the address of the access point (192.168.4.1, the ESP-IDF default): https with the
+            default web.https (plain HTTP only redirects), http with web.https false. The log
+            line gives the address in use.
             Needs the Wi-Fi driver (CONFIG_GW_WIFI): QEMU has no radio.
 
     config GW_SOFTAP_TIMEOUT_MIN

@@ -1,6 +1,7 @@
 /*
  * Wi-Fi access point for commissioning (NET-5): "GW-Setup-XXXXXX", WPA2 with the device's
- * commissioning password, DHCP server, address 192.168.4.1; the web server (gw_web) listens
+ * commissioning password, DHCP server, the ESP-IDF default address (192.168.4.1/24; code that
+ * needs it reads it from the netif: gw_ap_ip4); the web server (gw_web) listens
  * on every interface, so the same UI is served there. Issue #120: open (no key) only for the
  * time of a claim window.
  *

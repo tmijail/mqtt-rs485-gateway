@@ -7034,6 +7034,32 @@ def check_modbus_tcp_table(obs, ndata_t):
           ok, f"Meter1 {meter}; Dead3 {dead}; other {other}; rows {list(rows)}")
 
 
+def check_modbus_tcp_via_ap(gw, slave):
+    """Issue #120 (MB-15, NET-5): the Modbus TCP gateway refuses each connection through the
+    commissioning access point, also when modbus_tcp.allowed_clients contains the client. QEMU has
+    no radio: the emulator-only 'claimsim 0 eth' makes the Ethernet count as the access point.
+    The refusal closes the connection without an answer, writes a log line and counts as rejected.
+    'claimsim 0' makes the Ethernet a plant interface again, and a request is answered."""
+    _, h0 = gw.shell("claimsim 0 eth", [r"claim windows: 0 s \(Kconfig\); Ethernet counts as the "
+                                         r"access point"])
+    asked = time.monotonic()
+    refused = mbap_raw(b"\x03\x00\x0a\x00\x01")
+    log = gw.wait_log(r"mbtcp: connection from 10\.0\.2\.2 refused: through the access point", 5, asked)
+    _, h1 = gw.shell("devices", [r"^modbus_tcp connections 2 accepted 1 rejected \| forwarded 3 \|"])
+    _, h2 = gw.shell("claimsim 0", [r"claim windows: 0 s \(Kconfig\); Ethernet is not the access point"])
+    again = mbap_raw(b"\x03\x00\x0a\x00\x01")
+    expect = b"\x03\x02" + struct.pack(">H", slave.get(3, 10)[0])
+    check("MB-15/NET-5 #120 the Modbus TCP gateway refuses a client of the access point (Ethernet as "
+          "the access point in QEMU), also when allowed_clients contains it: closed without an "
+          "answer, logged, counted as rejected; a plant client is answered again",
+          all(h0.values()) and refused == b"" and log and all(h1.values()) and all(h2.values())
+          and again == expect,
+          f"claimsim eth {all(h0.values())}; answer through the access point {refused!r}; log "
+          f"{bool(log)}; devices {all(h1.values())} "
+          f"{(gw.find(r'^modbus_tcp connections', asked) or ['no answer'])[0]}; claimsim 0 "
+          f"{all(h2.values())}; answer after {again!r} (expected {expect!r})")
+
+
 def check_diagnostics(obs, nbirth, ndata_t):
     """SPB-17 / MB-13: NBIRTH with Uptime, Free Heap, Min Free Heap (no RSSI: no Wi-Fi in QEMU) and
     the Modbus DataSet (a row per device, counters of the dead units too); then, with
@@ -8077,6 +8103,7 @@ def run(args, log, slave, broker, conf, work):
           "forwarded requests and its own exceptions (shell 'devices')", all(h.values()),
           " | ".join(gw.find(r"^(Meter1|Dead3)\s+unit|^modbus_tcp", asked)) or "no answer")
     check_modbus_tcp_table(obs, ndata_t)
+    check_modbus_tcp_via_ap(gw, slave)
 
     # 2. Slave off -> DDEATH; back on -> DBIRTH
     obs.drain()

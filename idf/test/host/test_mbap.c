@@ -187,6 +187,31 @@ static void test_client_allow_list(void)
     TEST_ASSERT_TRUE(gw_mbap_client_allowed(&cfg, c));
 }
 
+/* Issue #120: the Modbus TCP gateway refuses each connection through the access point. */
+static void test_via_access_point(void)
+{
+    const uint8_t ap[4] = {192, 168, 4, 1}, mask[4] = {255, 255, 255, 0};
+    const uint8_t eth[4] = {10, 0, 5, 3}, plant[4] = {10, 0, 5, 20};
+    const uint8_t ap_client[4] = {192, 168, 4, 2};
+    /* no access point: never through it */
+    TEST_ASSERT_FALSE(gw_mbap_via_ap(eth, plant, NULL, NULL));
+    TEST_ASSERT_FALSE(gw_mbap_via_ap(ap, ap_client, (const uint8_t[]){0, 0, 0, 0}, mask));
+    /* a client of the access point, to the address of the access point */
+    TEST_ASSERT_TRUE(gw_mbap_via_ap(ap, ap_client, ap, mask));
+    /* a client of the access point, to the Ethernet address of the gateway */
+    TEST_ASSERT_TRUE(gw_mbap_via_ap(eth, ap_client, ap, mask));
+    /* to the address of the access point from another subnet (the local address decides) */
+    TEST_ASSERT_TRUE(gw_mbap_via_ap(ap, plant, ap, mask));
+    /* a plant client to the Ethernet address, while the access point runs */
+    TEST_ASSERT_FALSE(gw_mbap_via_ap(eth, plant, ap, mask));
+    /* a plant client in the subnet of the access point is also refused (documented) */
+    TEST_ASSERT_TRUE(gw_mbap_via_ap(eth, (const uint8_t[]){192, 168, 4, 77}, ap, mask));
+    /* no netmask: only the local address counts */
+    TEST_ASSERT_FALSE(gw_mbap_via_ap(eth, ap_client, ap, NULL));
+    TEST_ASSERT_FALSE(gw_mbap_via_ap(eth, ap_client, ap, (const uint8_t[]){0, 0, 0, 0}));
+    TEST_ASSERT_TRUE(gw_mbap_via_ap(ap, ap_client, ap, NULL));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -196,5 +221,6 @@ int main(void)
     RUN_TEST(test_gateway_exceptions);
     RUN_TEST(test_slave_outcomes);
     RUN_TEST(test_client_allow_list);
+    RUN_TEST(test_via_access_point);
     return UNITY_END();
 }
