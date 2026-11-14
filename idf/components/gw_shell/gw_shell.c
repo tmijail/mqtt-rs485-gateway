@@ -17,6 +17,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "gw_ap.h"
+#include "gw_auth.h"
 #include "gw_bootbtn.h"
 #include "gw_bus.h"
 #include "gw_cdump.h"
@@ -35,6 +37,7 @@
 #include "gw_storage.h"
 #include "gw_tagdb.h"
 #include "gw_web.h"
+#include "gw_wpa.h"
 #include "lwip/ip_addr.h"
 #include "ping/ping_sock.h"
 
@@ -216,6 +219,62 @@ static void status_sdcard(bool always_format)
         gw_cardfmt_text(&f, now, line, sizeof(line));
         out("format   %s\n", line);
     }
+}
+
+/* NET-5, issue #187: the line of the access point ('status' and 'ap'). */
+static void ap_line(void)
+{
+    gw_ap_status_t ap;
+    gw_ap_get_status(&ap);
+    if (!ap.available) {
+        out("ap       not in this build (CONFIG_GW_SOFTAP)\n");
+        return;
+    }
+    if (!ap.running) {
+        out("ap       off (last stop: %s); a BOOT push of 2-10 s starts it\n",
+            gw_ap_stop_text(ap.last_stop));
+        return;
+    }
+    char left[64];
+    if (ap.limited) {
+        snprintf(left, sizeof(left), "stops in %lu s%s", (unsigned long)ap.left_s,
+                 ap.clients != 0 ? "" : " if no client connects");
+    } else {
+        snprintf(left, sizeof(left), "no stop while a client is connected");
+    }
+    char key[64];
+    if (ap.open) {
+        snprintf(key, sizeof(key), "OPEN (no key) for %lu s more", (unsigned long)ap.open_left_s);
+    } else {
+        snprintf(key, sizeof(key), "WPA2 with the %s",
+                 ap.key_is_pmk ? "web password" : "commissioning password");
+    }
+    out("ap       '%s' on%s, %s, %u client(s), %s (idle stop %lu s)\n", ap.ssid,
+        ap.simulated ? " (simulated: no radio)" : "", key, ap.clients, left,
+        (unsigned long)ap.idle_s);
+}
+
+/* 'ap': the line of the access point; 'ap stop' closes it (NET-5, issue #187). */
+static int cmd_ap(int argc, char **argv)
+{
+    if (argc == 1) {
+        ap_line();
+        return 0;
+    }
+#if CONFIG_GW_SHELL_WRITE_COMMANDS
+    if (argc == 2 && strcmp(argv[1], "stop") == 0) {
+        if (gw_ap_stop(GW_AP_STOP_REQUEST)) {
+            out("access point stopped; a BOOT push of 2-10 s starts it again\n");
+            return 0;
+        }
+        out("the access point does not run\n");
+        return 1;
+    }
+    out("usage: ap [stop]\n");
+#else
+    out("usage: ap\n");
+#endif
+    return 1;
 }
 
 static int cmd_status(int argc, char **argv)
@@ -403,6 +462,7 @@ static int cmd_status(int argc, char **argv)
                 (unsigned long)ws.claim_refused);
         }
     }
+    ap_line();   /* issue #187 */
     gw_log_stats_t ls;
     gw_log_get_stats(&ls);
     if (ls.enabled && s_ctx.cfg != NULL) {
@@ -1244,6 +1304,47 @@ static int cmd_claimsim(int argc, char **argv)
         eth ? "counts as" : "is not");
     return 0;
 }
+
+/* Issue #187: the simulated access point (QEMU has no radio): its clients, its idle time, and
+ * the stored WPA2 key (the start of the SHA-256 of the PMK, which the E2E calculates too; never
+ * the key itself). */
+static int cmd_apsim(int argc, char **argv)
+{
+    char *end = NULL;
+    long v = argc == 3 ? strtol(argv[2], &end, 10) : -1;
+    bool num = end != NULL && *end == '\0';
+    if (argc == 3 && strcmp(argv[1], "clients") == 0 && num && v >= 0 && v <= 10) {
+        gw_ap_sim_clients((unsigned)v);
+        out("access point: %ld simulated client(s)\n", v);
+        return 0;
+    }
+    if (argc == 3 && strcmp(argv[1], "idle") == 0 && num && v >= 0 && v <= 3600) {
+        gw_ap_sim_idle_s((uint32_t)v);
+        out("access point: idle stop after %ld s%s\n", v, v == 0 ? " (Kconfig)" : "");
+        return 0;
+    }
+    if (argc == 2 && strcmp(argv[1], "key") == 0) {
+        gw_secrets_t *sec = gw_storage_malloc(sizeof(*sec));   /* not on the console stack */
+        if (sec == NULL) {
+            out("apsim: no memory\n");
+            return 1;
+        }
+        gw_storage_get_secrets(sec);
+        if (gw_wpa_pmk_hex_valid(sec->ap_pmk)) {
+            uint8_t d[GW_SHA256_LEN];
+            gw_sha256(sec->ap_pmk, strlen(sec->ap_pmk), d);
+            out("ap key: PMK of the web password stored, sha256 %02x%02x%02x%02x%02x%02x%02x%02x\n",
+                d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
+        } else {
+            out("ap key: no PMK stored (the access point uses the commissioning password)\n");
+        }
+        memset(sec, 0, sizeof(*sec));
+        gw_storage_free(sec);
+        return 0;
+    }
+    out("usage: apsim clients <0-10> | idle <0-3600 s, 0 = Kconfig> | key\n");
+    return 1;
+}
 /* Emulator only: crash on purpose, so the E2E can check the core dump in flash and the
  * "panic" reset reason. */
 /* Issue #62: on the chip the panic handler stalls the other core (RTC_CNTL software stall)
@@ -1308,6 +1409,7 @@ static int cmd_config_entry(int argc, char **argv)
 }
 ATOMIC(cmd_ping)
 ATOMIC(cmd_coredump)
+ATOMIC(cmd_ap)
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
 ATOMIC(cmd_restart)
 ATOMIC(cmd_card)
@@ -1381,6 +1483,7 @@ ATOMIC(cmd_storm)
 ATOMIC(cmd_pubfail)
 ATOMIC(cmd_boot)
 ATOMIC(cmd_claimsim)
+ATOMIC(cmd_apsim)
 #endif
 
 static esp_err_t new_repl(const esp_console_repl_config_t *rc, esp_console_repl_t **repl)
@@ -1441,6 +1544,15 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
 #endif
         {.command = "ping", .help = "ICMP echo (3 requests) to an IPv4 or IPv6 address",
          .hint = "<address>", .func = cmd_ping_atomic},
+        {.command = "ap", .help = "The commissioning access point: its state"
+#if CONFIG_GW_SHELL_WRITE_COMMANDS
+         "; 'stop' closes it (a BOOT push of 2-10 s starts it again)"
+#endif
+         ,
+#if CONFIG_GW_SHELL_WRITE_COMMANDS
+         .hint = "[stop]",
+#endif
+         .func = cmd_ap_atomic},
         {.command = "coredump", .help = "The core dump in flash: its summary (task, PC, "
          "backtrace); 'dump' prints all of it in base64 (it can contain secrets)"
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
@@ -1471,6 +1583,9 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
          "'eth': the Ethernet counts as the access point, for the claim window and Modbus TCP "
          "(issue #120)",
          .hint = "<s> [eth]", .func = cmd_claimsim_atomic},
+        {.command = "apsim", .help = "Emulator only: the clients and the idle stop of the "
+         "simulated access point, and the stored WPA2 key (start of its SHA-256) (issue #187)",
+         .hint = "clients <n> | idle <s> | key", .func = cmd_apsim_atomic},
         {.command = "panic",
          .help = "Emulator only: abort() (core dump test); 'panic net-off' stops Ethernet first",
          .func = cmd_panic},

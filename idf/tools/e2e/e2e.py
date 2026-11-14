@@ -7599,6 +7599,7 @@ def run_web(args, work):
 
 
 CLAIM_PASSWORD = "e2e-claimed-pw"   # issue #120: set through the claim window
+PUT_WEB_PASSWORD = "e2e put pw ~!"  # issue #187: printable ASCII with spaces and symbols
 
 
 def boot_press(gw, seconds=3):
@@ -7606,6 +7607,144 @@ def boot_press(gw, seconds=3):
     gw.console("boot 1")
     time.sleep(seconds)
     gw.console("boot 0")
+
+
+AP_SSID_RX = r"GW-Setup-[0-9A-F]{6}"
+
+
+def pmk_digest(password, ssid):
+    """Issue #187: the start of the SHA-256 of the PMK (64 hexadecimal characters) of @password
+    for @ssid, as the emulator-only shell 'apsim key' gives it. The PMK of WPA2-PSK (IEEE
+    802.11i): PBKDF2-HMAC-SHA1 of the passphrase with the SSID as the salt, 4096 iterations, 32
+    bytes."""
+    pmk = hashlib.pbkdf2_hmac("sha1", password.encode(), ssid.encode(), 4096, 32).hex()
+    return hashlib.sha256(pmk.encode()).hexdigest()[:16]
+
+
+def ap_key_digest(gw):
+    """Issue #187: 'apsim key': the digest of the PMK in NVS, "none" when there is no PMK, None
+    without an answer."""
+    asked, _ = gw.shell("apsim key", [r"^ap key: "])
+    lines = gw.find(r"^ap key: ", asked)
+    if not lines:
+        return None
+    m = re.search(r"sha256 ([0-9a-f]{16})", lines[0])
+    return m.group(1) if m else "none"
+
+
+def ap_object(auth):
+    """Issue #187: the "ap" object of GET /api/status ({} without an answer)."""
+    st, _, body = http("GET", "/api/status", auth=auth)
+    if st != 200:
+        return {}
+    return (as_json(body) or {}).get("ap") or {}
+
+
+def pmk_ms(gw, since):
+    """Issue #187: the time of the last PMK calculation in the log (ms), or None."""
+    lines = gw.find(r"storage: WPA2 key of the access point '%s' \(PMK of the web password\) "
+                    r"calculated in \d+ ms" % AP_SSID_RX, since)
+    return int(re.search(r"in (\d+) ms", lines[-1]).group(1)) if lines else None
+
+
+def check_claim_success(gw, j, t_claim, set_log):
+    """NET-5, issue #187: the answer of a claim has what the success page shows (the SSID, the
+    address of the access point, the seconds to WPA2, the plant addresses, the mDNS name); the
+    access point (the simulated one of the QEMU build) changes to WPA2 with the new web password
+    a few seconds after the answer; NVS holds the PMK of the password (the harness calculates the
+    same PMK with the SSID), and the log gives the time of its calculation. Returns the SSID."""
+    ap = j.get("ap") or {}
+    ssid = ap.get("ssid") or ""
+    url = ap.get("url") or ""
+    plant = j.get("plant") or []
+    mdns = j.get("mdns")
+    later = gw.wait_log(r"ap: access point '%s': WPA2 with the web password in \d+ s \(the claim "
+                        r"is done\)" % AP_SSID_RX, 5, t_claim)
+    secure = gw.wait_log(r"ap: access point '%s' uses WPA2 with the web password \(the open "
+                         r"period is over\)" % AP_SSID_RX, 20, t_claim)
+    ms = pmk_ms(gw, t_claim - 1)
+    digest = ap_key_digest(gw)
+    want = pmk_digest(CLAIM_PASSWORD, ssid) if ssid else "?"
+    a = ap_object(("admin", CLAIM_PASSWORD))
+    host = re.match(r"https://(\d+\.\d+\.\d+\.\d+)/$", url)
+    check("NET-5 #187 the answer of the claim gives the SSID, the address of the access point, the "
+          "seconds to WPA2, the plant addresses and the mDNS name; the access point changes to "
+          "WPA2 with the new web password about 5 s after the answer; NVS holds the PMK of the "
+          "password (the same PMK as PBKDF2-HMAC-SHA1(password, SSID, 4096)); /api/status ap "
+          "(QEMU timing of the PMK is only indicative)",
+          re.fullmatch(AP_SSID_RX, ssid) and ap.get("secure_in_s") == 5 and host
+          and f"https://{host.group(1)}/" in plant and (mdns is None or mdns.endswith(".local/"))
+          and later and secure and set_log and secure - set_log >= 4 and ms is not None
+          and digest == want and a.get("running") is True and a.get("security") == "wpa2"
+          and a.get("key") == "web_password" and a.get("ssid") == ssid,
+          f"answer {j}; '{('in 5 s' if later else 'no claim log')}', WPA2 "
+          f"{(secure - set_log) if secure and set_log else -1:.1f} s after the set; PMK calculated "
+          f"in {ms} ms; apsim key {digest} (expected {want}); ap {a}")
+    return ssid
+
+
+def check_access_point(gw, auth):
+    """NET-5, issue #187, on the simulated access point of the QEMU build (no radio: its clients
+    come from the emulator-only shell 'apsim'), in commissioning with a web password: POST
+    /api/ap/stop needs the credential and the CSRF header, stops the access point a short time
+    after its 202, and a second stop gets 409; the "ap" object, the shell and the LED follow it;
+    a BOOT gesture starts it again with the web password as its key; it does not stop while a
+    client is connected, and stops after the idle time without a client ('apsim idle', short
+    here)."""
+    # 1. the stop on request
+    a0 = ap_object(auth)
+    st0, _, _ = http("POST", "/api/ap/stop", {}, auth=None)
+    st1, _, _ = http("POST", "/api/ap/stop", {}, auth=auth, headers={"X-Requested-With": None})
+    t_stop = time.monotonic()
+    st2, _, b2 = http("POST", "/api/ap/stop", {}, auth=auth)
+    stopped = gw.wait_log(r"ap: commissioning access point '%s' stopped \(on request\)" % AP_SSID_RX,
+                          10, t_stop)
+    a1 = ap_object(auth)
+    st3, _, b3 = http("POST", "/api/ap/stop", {}, auth=auth)
+    _, h = gw.shell("ap", [r"^ap\s+off \(last stop: on request\); a BOOT push"])
+    led = gw.wait_log(r"led: status: commissioning(?!, access point)", 5, t_stop)
+    check("NET-5 #187 POST /api/ap/stop: 401 without the credential, 403 without the CSRF header; "
+          "with both 202, the access point stops a short time later (log, /api/status ap, shell "
+          "'ap', the LED without the access point flash); a second stop gets 409",
+          a0.get("running") is True and st0 == 401 and st1 == 403 and st2 == 202
+          and (as_json(b2) or {}).get("stopping") is True and stopped and a1.get("running") is False
+          and a1.get("last_stop") == "request" and a1.get("security") is None and st3 == 409
+          and all(h.values()) and led,
+          f"ap before {a0}; no credential {st0}, no CSRF header {st1}, stop {st2} "
+          f"{b2.decode(errors='replace').strip()}; stopped "
+          f"{(stopped - t_stop) if stopped else -1:.1f} s later; ap after {a1}; again {st3} "
+          f"{b3.decode(errors='replace').strip()[:60]}; shell {all(h.values())}; LED {bool(led)}")
+    # 2. a BOOT gesture starts it again; a client keeps it on; the idle time stops it
+    gw.shell("apsim idle 8", [r"access point: idle stop after 8 s"])
+    gw.shell("apsim clients 1", [r"access point: 1 simulated client"])
+    t_start = time.monotonic()
+    boot_press(gw)
+    started = gw.wait_log(r"ap: SIMULATED \(QEMU has no radio\) commissioning access point '%s' "
+                          r"\(WPA2, the web password\)" % AP_SSID_RX, 10, t_start)
+    led_on = gw.wait_log(r"led: status: commissioning, access point", 5, t_start)
+    time.sleep(12)
+    kept = not gw.find(r"ap: commissioning access point .* stopped", t_start)
+    a2 = ap_object(auth)
+    _, h2 = gw.shell("status", [r"^ap\s+'%s' on \(simulated: no radio\), WPA2 with the web "
+                                r"password, 1 client\(s\), no stop while a client is connected"
+                                % AP_SSID_RX])
+    t_idle = time.monotonic()
+    gw.shell("apsim clients 0", [r"access point: 0 simulated client"])
+    idle = gw.wait_log(r"ap: commissioning access point '%s' stopped \(no client for the idle "
+                       r"time\)" % AP_SSID_RX, 25, t_idle)
+    a3 = ap_object(auth)
+    gw.shell("apsim idle 0", [r"access point: idle stop after \d+ s \(Kconfig\)"])
+    check("NET-5 #187 a BOOT gesture starts the access point again (WPA2 with the web password, "
+          "LED flash of the access point); it stays on while a client is connected (no time "
+          "limit in commissioning), and stops after the idle time without a client (8 s here)",
+          started and led_on and kept and a2.get("running") is True and a2.get("clients") == 1
+          and a2.get("left_s") is None and a2.get("key") == "web_password" and all(h2.values())
+          and idle and 7 <= idle - t_idle <= 20 and a3.get("running") is False
+          and a3.get("last_stop") == "idle",
+          f"started {bool(started)}, LED {bool(led_on)}, kept 12 s with a client {kept}; ap {a2}; "
+          f"shell {all(h2.values())}; stopped {(idle - t_idle) if idle else -1:.1f} s after the "
+          f"last client left; ap after {a3}")
+    return a1.get("ssid") or a0.get("ssid") or ""
 
 
 def check_claim_window(gw, commissioning_pw):
@@ -7675,6 +7814,7 @@ def check_claim_window(gw, commissioning_pw):
     st13, _, b13 = http("POST", "/api/claim", {"password": CLAIM_PASSWORD}, auth=None)
     set_log = gw.wait_log(r"web: web password set through the claim window", 10, t_claim)
     beep = gw.wait_log(r"buzzer: 1 beep\(s\) \(simulated\)", 5, t_claim)
+    check_claim_success(gw, as_json(b13) or {}, t_claim, set_log)
     check("CFG-3/NET-5 #120 a client of the access point: '/' without a credential goes to /claim; a "
           "short password and a request without the CSRF header are refused; the first web "
           "password is set without a credential (log without the password, one beep)",
@@ -7731,7 +7871,13 @@ def run_factory_reset(args, work):
     time.sleep(3)
     gw.console("boot 0")
     ap = gw.wait_log(r"button: BOOT pressed \d+ ms: commissioning access point", 3, t_short)
-    ap_try = gw.wait_log(r"ap: commissioning access point not available in this build", 3, t_short)
+    # issue #187: QEMU has no radio: the simulated access point; the web password of the flashed
+    # config.json (clear text, moved to NVS at the first boot) gave its PMK, the WPA2 key
+    ap_try = gw.wait_log(r"ap: SIMULATED \(QEMU has no radio\) commissioning access point '%s' "
+                         r"\(WPA2, the web password\)" % AP_SSID_RX, 5, t_short)
+    ssid0 = (ap_object(("admin", WEB_PASSWORD)).get("ssid") or "")
+    key0 = ap_key_digest(gw)
+    ms0 = pmk_ms(gw, 0)
     # Issue #120: with a web password set, the same gesture opens no claim window
     no_claim = gw.wait_log(r"main: claim window not opened: a web password is set", 5, t_short)
     st_pw, _, b_pw = http("POST", "/api/claim", {"password": "e2e-claim-0"}, auth=None)
@@ -7767,10 +7913,19 @@ def run_factory_reset(args, work):
           f"{(warn - pressed) if warn else -1:.1f} s, reset after {(fired - pressed) if fired else -1:.1f} s; "
           f"NDEATH: {bool(death)}; commissioning: {bool(commissioning)}")
     t1 = commissioning or time.monotonic()
-    ap_comm = gw.wait_log(r"ap: commissioning access point not available in this build", 10, t1 - 5)
-    check("NET-5 commissioning access point requested on a 2-10 s BOOT press and when there is no "
-          "configuration (QEMU has no radio: the request is logged; the SoftAP itself is compiled only)",
-          ap_try and ap_comm, " | ".join(gw.find(r"ap: |BOOT pressed", t_short)[:3]))
+    ap_comm = gw.wait_log(r"ap: SIMULATED \(QEMU has no radio\) commissioning access point '%s' "
+                          r"\(WPA2, the commissioning password\)" % AP_SSID_RX, 10, t1 - 5)
+    key1 = ap_key_digest(gw)
+    check("NET-5 commissioning access point started on a 2-10 s BOOT press and when there is no "
+          "configuration (QEMU has no radio: the simulated access point; the SoftAP itself is "
+          "compiled only). Issue #187: the web password of a config.json in clear text gives the "
+          "PMK in NVS (the WPA2 key); the factory reset removes it (the key is then the "
+          "commissioning password)",
+          ap_try and ap_comm and ssid0 and key0 == pmk_digest(WEB_PASSWORD, ssid0) and ms0 is not None
+          and key1 == "none",
+          f"{' | '.join(gw.find(r'ap: |BOOT pressed', t_short)[:3])}; PMK at the first boot "
+          f"{key0} (expected {pmk_digest(WEB_PASSWORD, ssid0) if ssid0 else '?'}, calculated in "
+          f"{ms0} ms); after the factory reset {key1}")
     pw = commissioning_password(gw, t1 - 5, 10)
     st_old, _, _ = wait_http("/api/status", 20)                    # the old web password is gone
     st, _, body = http("GET", "/api/status", auth=("admin", pw or "?"))
@@ -7807,12 +7962,36 @@ def run_factory_reset(args, work):
           f"{bool(shell_unknown)}; /api/status before {io0}; "
           f"{(gw.find(r'io: TCA9554 answered', t1 - 5) or ['never answered'])[0]}; after {io1}")
     claimed = check_claim_window(gw, pw)
+    ssid = check_access_point(gw, ("admin", claimed or "?"))
+    # issue #187: a configuration with a new web password: its PMK replaces the PMK of the claim
     new = json.loads(config_json())
     new["sparkplug"]["edge_node_id"] = node2
+    new["web"] = {"password": PUT_WEB_PASSWORD}
+    t_put = time.monotonic()
     st2, _, b2 = http("PUT", "/api/config", new, auth=("admin", claimed or "?"))
     nb2 = obs.wait(f"{T}/NBIRTH/{node2}", 40)
     check("CFG-5 commissioning: a configuration loaded through the REST API starts the gateway",
           st2 == 200 and nb2, f"PUT {st2} {b2.decode().strip()}; NBIRTH {node2}: {bool(nb2)}")
+    gw.shell("status", [r"^config\s"])
+    key2 = ap_key_digest(gw)
+    ms2 = pmk_ms(gw, t_put)
+    # ... and a document without web.password removes the password and its PMK
+    new.pop("web")
+    obs.drain()
+    t_put2 = time.monotonic()
+    st4, _, b4 = http("PUT", "/api/config", new, auth=("admin", PUT_WEB_PASSWORD))
+    nb3 = obs.wait(f"{T}/NBIRTH/{node2}", 40, since=t_put2)
+    gw.shell("status", [r"^config\s"])
+    key3 = ap_key_digest(gw)
+    st5, _, _ = http("GET", "/api/status", auth=("admin", PUT_WEB_PASSWORD))
+    check("NET-5 #187 PUT /api/config with a new web.password: NVS holds its PMK (calculated once, "
+          "at the save); a document without web.password removes the password and its PMK",
+          st2 == 200 and nb2 and ssid and key2 == pmk_digest(PUT_WEB_PASSWORD, ssid)
+          and ms2 is not None and st4 == 200 and nb3 and key3 == "none" and st5 == 401,
+          f"PUT with the password {st2}, apsim key {key2} (expected "
+          f"{pmk_digest(PUT_WEB_PASSWORD, ssid) if ssid else '?'}, calculated in {ms2} ms); PUT "
+          f"without {st4} {b4.decode(errors='replace').strip()[:60]}, NBIRTH {bool(nb3)}, apsim key "
+          f"{key3}; the old password now {st5}")
     gw.kill()
     obs.wait(f"{T}/NDEATH/{node2}", 5)
     obs.close()

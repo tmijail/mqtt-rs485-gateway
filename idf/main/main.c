@@ -48,6 +48,7 @@
 #include "gw_storage.h"
 #include "gw_tagdb.h"
 #include "gw_web.h"
+#include "gw_wpa.h"
 
 static const char *TAG = "main";
 
@@ -159,14 +160,46 @@ static void self_check(gw_ota_selfcheck_t *out)
     out->web_alive = gw_web_loop_alive(GW_OTA_WEB_PING_MS);
 }
 
-/* CFG-3 / NET-5, issue #120: the claim window closed (time over, or a password was set): the
- * LED goes back; a set password gets one beep at the panel. The access point keeps its open
- * period to the end of the window time (gw_ap). */
+/* NET-5, issue #187: the WPA2 key of the access point: the PMK of the web password (64
+ * hexadecimal characters) when one is stored, else the commissioning password. A web password
+ * without a PMK (set by an earlier firmware) also gives the commissioning password, until the
+ * next change of the web password. */
+static bool ap_key(char out[GW_AP_KEY_SIZE])
+{
+    gw_storage_commissioning_password(s_commission_pw);
+    gw_secrets_t sec;
+    gw_storage_get_secrets(&sec);
+    bool pmk = gw_wpa_pmk_hex_valid(sec.ap_pmk);
+    snprintf(out, GW_AP_KEY_SIZE, "%s", pmk ? sec.ap_pmk : s_commission_pw);
+    memset(&sec, 0, sizeof(sec));
+    return pmk;
+}
+
+/* CFG-3 / NET-5, issue #120: the claim window closed (time over, a password was set, or the
+ * access point stopped): the LED goes back; a set password gets one beep at the panel. Issue
+ * #187: after a claim, the access point changes to WPA2 with the new web password a few seconds
+ * after the answer (gw_ap_claimed); at the end of the window time its open period ends too. */
 static void claim_closed(bool claimed)
 {
     gw_status_set(GW_ST_CLAIM, false);
     if (claimed) {
         gw_buzzer_beep(1);
+        char key[GW_AP_KEY_SIZE];
+        bool pmk = ap_key(key);
+        gw_ap_claimed(key, pmk);
+        memset(key, 0, sizeof(key));
+    }
+}
+
+/* NET-5, issue #187: the access point started, stopped or changed its key: the LED patterns. A
+ * stop also closes the claim window: it accepts only clients of the access point. */
+static void ap_changed(bool running, bool open, gw_ap_stop_t why)
+{
+    gw_status_set(GW_ST_AP, running);
+    gw_status_set(GW_ST_AP_OPEN, running && open);
+    if (!running) {
+        gw_web_claim_close(why == GW_AP_STOP_IDLE ? "the access point stopped (no client)"
+                                                  : "the access point stopped");
     }
 }
 
@@ -233,15 +266,30 @@ static void net_noop(void)
 }
 
 /* NET-5: the access point, with the web UI's address as the web server really serves it
- * (HTTPS, or HTTP when web.https is false or the device certificate is missing). @p open_s:
- * the open period of a claim window (issue #120), 0 = WPA2. */
-static esp_err_t start_ap(uint32_t timeout_s, uint32_t open_s)
+ * (HTTPS, or HTTP when web.https is false or the device certificate is missing). @p max_s: its
+ * longest time (0 = none). @p open_s: the open period of a claim window (issue #120), 0 = WPA2.
+ * Issue #187: the WPA2 key is the web password (its PMK), else the commissioning password. */
+static esp_err_t start_ap(uint32_t max_s, uint32_t open_s)
 {
     gw_web_stats_t ws;
     gw_web_get_stats(&ws);
-    return gw_ap_start(s_commission_pw, timeout_s, ws.https,
-                       ws.https ? s_cfg->web.https_port : s_cfg->web.port, open_s);
+    char key[GW_AP_KEY_SIZE];
+    bool pmk = ap_key(key);
+    esp_err_t e = gw_ap_start(key, pmk, max_s, ws.https,
+                              ws.https ? s_cfg->web.https_port : s_cfg->web.port, open_s);
+    memset(key, 0, sizeof(key));
+    if (e == ESP_OK && !pmk) {
+        /* console only (not esp_log): it must not travel to a syslog server */
+        printf("ap: WPA2 key = commissioning password '%s'\n", s_commission_pw);
+    }
+    return e;
 }
+
+#if CONFIG_GW_SOFTAP || CONFIG_GW_IO_SIMULATED
+#define AP_MAX_NORMAL_S (CONFIG_GW_SOFTAP_TIMEOUT_MIN * 60u)
+#else
+#define AP_MAX_NORMAL_S 0u
+#endif
 
 /* CFG-5 / NET-5: BOOT gestures, in every mode. */
 static void on_button(gw_btn_event_t ev)
@@ -256,23 +304,19 @@ static void on_button(gw_btn_event_t ev)
         }
     } else if (ev == GW_BTN_COMMISSIONING) {
         if (!s_ready) {
-            ESP_LOGW(TAG, "BOOT gesture ignored: still starting");
+            /* issue #187: no beep, so the operator knows that the gesture did nothing */
+            ESP_LOGW(TAG, "BOOT gesture ignored: still starting (no beep); push BOOT again "
+                          "when the boot is complete");
             return;
         }
+        gw_buzzer_beep(1);   /* IO-6: the gesture is accepted */
         ESP_LOGW(TAG, "commissioning access point requested with BOOT");
         /* NET-5: the web UI over the access point, also when web.enabled is false */
         start_web(s_mode, s_cfg, s_source);
-        gw_storage_commissioning_password(s_commission_pw);
-        printf("ap: password = commissioning password '%s'\n", s_commission_pw);
         /* CFG-3 / NET-5, issue #120: while no web password is set, the same gesture opens the
          * claim window, and the access point is open (no key) for the time of the window */
         uint32_t claim_s = gw_web_claim_window_s();
-#if CONFIG_GW_SOFTAP
-        esp_err_t ap = start_ap(s_mode == GW_WEB_NORMAL ? CONFIG_GW_SOFTAP_TIMEOUT_MIN * 60 : 0,
-                                claim_s);
-#else
-        esp_err_t ap = start_ap(0, claim_s);
-#endif
+        esp_err_t ap = start_ap(s_mode == GW_WEB_NORMAL ? AP_MAX_NORMAL_S : 0, claim_s);
 #if CONFIG_GW_IO_SIMULATED
         /* QEMU has no radio: the window opens without the access point, so the E2E can examine
          * it (a claim over Ethernet is refused unless the shell's 'claimsim ... eth' says so) */
@@ -425,6 +469,9 @@ void app_main(void)
 
     gw_port_init();
     gw_tagdb_reset();
+    if (gw_ap_init(ap_changed) != ESP_OK) {   /* NET-5, issue #187: before any BOOT gesture */
+        ESP_LOGE(TAG, "commissioning access point unavailable");
+    }
     if (gw_status_led_start() != ESP_OK) {
         ESP_LOGE(TAG, "status LED unavailable");
     }

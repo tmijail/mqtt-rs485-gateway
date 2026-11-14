@@ -103,7 +103,7 @@ The firmware assumes the 8 MB of PSRAM of the board (issue #135). When the boot 
 | NET-2 | IPv4 with DHCP or with a static address (IP, netmask, gateway and DNS). You can configure it | P0 | ✅ | Done |
 | NET-3 | The gateway finds the address of the broker host with DNS | P0 | ✅ | Done |
 | NET-4 | Wi-Fi STA as an alternative interface, or as a backup when Ethernet stops. You can configure the priority | P1 | | Done. Not tested with a radio |
-| NET-5 | A Wi-Fi access point for commissioning. It starts when there is no valid configuration, and when you push the BOOT button for 2 to 10 s. It uses WPA2 with the commissioning password. During a claim window (CFG-8), it is open (no key). The Modbus TCP gateway (MB-15) refuses each connection through the access point (issue #120) | P1 | | Done. Not tested with a radio |
+| NET-5 | A Wi-Fi access point for commissioning. It starts when there is no valid configuration, and when you push the BOOT button for 2 to 10 s. Its WPA2 key is the web password: the gateway keeps only the PMK of the password (issue #187). While no web password is set, the key is the commissioning password. During a claim window (CFG-8), it is open (no key). It stops on request (`POST /api/ap/stop`, the shell `ap stop`), after 5 min without a client in all modes (Kconfig `GW_SOFTAP_IDLE_MIN`), and in normal mode after 30 min at the latest (Kconfig `GW_SOFTAP_TIMEOUT_MIN`). The Modbus TCP gateway (MB-15) refuses each connection through the access point (issue #120) | P1 | | Done. Not tested with a radio |
 | NET-6 | A hostname that you can configure, and an mDNS announcement of the web UI (`_https._tcp`, or `_http._tcp` without HTTPS) | P2 | | Done |
 | NET-7 | IPv6 | P2 | | Done |
 
@@ -204,7 +204,7 @@ The `device_id` is the device name, or `<device_prefix>:<name>` with `sparkplug.
 | CFG-5 | A factory reset when you push the BOOT button for more than 10 s | P1 | | Done |
 | CFG-6 | A serial console (shell) with commands for the state, the configuration and diagnostics | P1 | | Done |
 | CFG-7 | The gateway keeps the secrets (passwords, TLS keys) out of the configuration document, in NVS. **Out of scope:** the encryption of the secrets with a key in eFuse on the board. The key in eFuse is permanent, and the owner of the board must keep full control of the board (#133). The QEMU build still encrypts NVS with emulated eFuses; #133 decides if this stays. The branch `archive/efuse-production` keeps the archived feature | P1 | | Done. The eFuse part is out of scope |
-| CFG-8 | **First web access without the serial console** (issue #120): the claim window. While `web.password` is empty, a push of BOOT for 2 to 10 s opens a claim window for 10 min (Kconfig `GW_WEB_CLAIM_WINDOW_MIN`). During the window, a client of the access point (NET-5) can set the first web password without a credential (`POST /api/claim`, §6.1). Clients of other interfaces get `403`. The window closes at the end of its time, after the first password, and at a restart. When a web password is set, the window does not open again. Only a factory reset (CFG-5) removes the password | P1 | | Done |
+| CFG-8 | **First web access without the serial console** (issue #120): the claim window. While `web.password` is empty, a push of BOOT for 2 to 10 s opens a claim window for 10 min (Kconfig `GW_WEB_CLAIM_WINDOW_MIN`). During the window, a client of the access point (NET-5) can set the first web password without a credential (`POST /api/claim`, §6.1). Clients of other interfaces get `403`. The window closes at the end of its time, after the first password, when the access point stops, and at a restart. When a web password is set, the window does not open again. Only a factory reset (CFG-5) removes the password. Issue #187: 5 s after the claim, the access point changes from open to WPA2, with the new web password as its key | P1 | | Done |
 
 ### 4.8 Firmware management (FW)
 
@@ -768,10 +768,26 @@ Without these keys, the build option applies (`CONFIG_GW_MB_BLOCK_READS`, `CONFI
 - **Patterns:** one beep is 150 ms of tone and 150 ms of silence. Each alarm sounds its burst each 10 s while its condition continues: `device_offline` 1 beep, `mqtt_down` 2 beeps, `config_error` 3 beeps. If there are a number of alarms, the alarm with the most beeps sounds.
 - **`config_error`:** a rejected configuration cannot enable an alarm. Thus the alarms of the last valid configuration apply (saved in NVS). After a factory reset, it does not sound.
 - **BOOT button.** These beeps sound with or without alarms:
-  - 1 beep when you release the button after 2 to 10 s (access point, NET-5; claim window, CFG-8);
+  - 1 beep when you release the button after 2 to 10 s (access point, NET-5; claim window, CFG-8). During the boot, the gateway ignores the push and gives no beep: push the button again when the boot is complete (issue #187);
   - 1 beep when the claim window sets the web password;
   - 2 beeps when the factory reset starts (CFG-5).
 - You cannot stop an alarm while its condition continues.
+
+**Status LED (IO-5).** The patterns, from the highest to the lowest priority:
+
+| State | Pattern |
+|---|---|
+| Factory reset in progress | White, continuous |
+| BOOT pushed for more than 2 s | White, blinks at 4 Hz |
+| Claim window open (CFG-8), or access point open (no key; NET-5, issue #187) | Blue and white, alternately (each color 250 ms) |
+| Commissioning (no configuration after a reset) | Blue, blinks at 1 Hz |
+| Configuration not valid (recovery mode) | Red, blinks at 4 Hz |
+| No network (no IP) | Red, continuous |
+| No broker | Amber, blinks at 1 Hz |
+| Modbus device offline | Green and orange, alternately (1 Hz) |
+| Normal operation | Green, continuous |
+
+While the access point runs with WPA2 (NET-5, issue #187), a short cyan flash (125 ms) each 2 s replaces the pattern of the table, from "Commissioning" to "Normal operation". Between the flashes, the LED shows that pattern.
 
 **Device prefix (UMH-4, #172), in `sparkplug`.**
 
@@ -871,9 +887,9 @@ The format is RFC 5424 on UDP (RFC 5426), with one message in each datagram. The
 | `https` | bool | `true` | HTTPS with the certificate of the gateway (EC P-256, self-signed). The gateway makes it at the first boot and keeps it with the secrets in NVS. The console shows its SHA-256 fingerprint at each boot. `false` = plain HTTP |
 | `https_port` | integer | `443` | 1–65535, not the same as `port` |
 | `username` | text | `"admin"` | 1–32 visible ASCII characters, without `:` |
-| `password` | text (secret) | `""` | Empty, or at least 8 characters. Empty = the gateway accepts `admin` with its **commissioning password** (random; the console shows it). While it is empty, a push of BOOT opens the claim window (CFG-8), which sets it without a credential |
+| `password` | text (secret) | `""` | Empty, or 8 to 63 characters, each one printable ASCII (a space to `~`, 0x20 to 0x7E). This is the rule of a WPA2 passphrase: the password is also the WPA2 key of the access point (NET-5, issue #187). Empty = the gateway accepts `admin` with its **commissioning password** (random; the console shows it). While it is empty, a push of BOOT opens the claim window (CFG-8), which sets it without a credential |
 
-**Secrets** (`mqtt.password`, `network.wifi.password`, `web.password`): the gateway keeps them in NVS (CFG-7), not in the JSON. It keeps `web.password` only as a salted PBKDF2-HMAC-SHA256 hash. On export, a secret that has a value shows as `"********"`. On import (PUT):
+**Secrets** (`mqtt.password`, `network.wifi.password`, `web.password`): the gateway keeps them in NVS (CFG-7), not in the JSON. It keeps `web.password` only as a salted PBKDF2-HMAC-SHA256 hash, and as the PMK of the access point (PBKDF2-HMAC-SHA1 with the SSID as the salt, 4096 iterations; issue #187). The gateway calculates the PMK only when the password gets a new value. It removes the PMK with the password. On export, a secret that has a value shows as `"********"`. On import (PUT):
 
 - `"********"` keeps the saved secret;
 - another text replaces it (`""` deletes it);
@@ -914,7 +930,8 @@ The gateway does not cut the rejection of an authenticated request from the same
 | `GET /api/status` | The live state (also in recovery mode, in commissioning and in the fault mode). Refer to the description below |
 | `GET /claim` | CFG-8, issue #120: the page of the claim window. No credential. `GET /` without an `Authorization` header goes to it (`303`) while the window is open and the client is a client of the access point |
 | `GET /api/claim` | CFG-8: the state of the claim window for this client. No credential. `200 {"open":true,"allowed":true,"left_s":540,"username":"admin"}`. `allowed` is `true` only for a client of the access point. `left_s` and `username` are only for that client. `username` is `""` in recovery mode and in commissioning (any user name) |
-| `POST /api/claim` | CFG-8: sets the first web password. No credential, but the CSRF check above and the limit of attempts apply. Body: `{"password": "…"}`: at least 8 characters, at most 64 bytes, UTF-8 without control characters. `200 {"ok":true,"username":"admin"}`: the password is valid at once, and the window closes. `403` when a web password is set, when no window is open, or when the client is not a client of the access point. These refusals count as failed logins. `400` for a password or a body that is not correct. `503` when NVS does not store it (the window stays open). The gateway stores only the hash, in NVS. The configuration document does not change |
+| `POST /api/claim` | CFG-8: sets the first web password. No credential, but the CSRF check above and the limit of attempts apply. Body: `{"password": "…"}`: the rule of `web.password` (8 to 63 printable ASCII characters). `200 {"ok":true,"username":"admin","ap":{"ssid":"GW-Setup-A1B2C3","url":"https://192.168.4.1/","secure_in_s":5},"plant":["https://10.0.0.5/"],"mdns":"https://gateway.local/"}`: the password is valid at once, and the window closes. `ap.url` is the address of this connection. 5 s after the response, the access point changes to WPA2 with the new password (issue #187). `plant` has the addresses of the gateway on Ethernet and on the Wi-Fi station. `mdns` is `null` when mDNS is off (NET-6). `403` when a web password is set, when no window is open, or when the client is not a client of the access point. These refusals count as failed logins. `400` for a password or a body that is not correct. `503` when NVS does not store it (the window stays open). The gateway stores only the hash and the PMK, in NVS. The configuration document does not change |
+| `POST /api/ap/stop` | NET-5, issue #187: the button "Close the access point". `202 {"ok":true,"stopping":true}`: the access point stops approximately 2 s later, after the response. `409` when the access point does not run. A push of BOOT for 2 to 10 s starts it again |
 
 **`GET /api/status`** sends an object with these items:
 
@@ -941,6 +958,7 @@ For each device, `devices` has `online`, `cycles`, `failed`, `ok`, `timeout`, `c
 | `card` (optional, issue #139) | The microSD card. `state` is `unsupported`, `unchecked`, `absent`, `not_mounted`, `mounted`, `formatting` or `formatted`. `unsupported`: the build has no card. `unchecked`: the boot did not try to find a card, because the spill is off. `formatted`: restart to use the card. `detail` tells why, for example `no FAT file system (exFAT, NTFS, ext4, GPT, or no format) (FatFs error 13)`. When known: `name`, `size_mb`, `fat`, `cluster` (B), `free_mb` (with no scan of the FAT) and `other_entries`. `other_entries` are the entries of the root that are not the folder `sf`: the format deletes them too |
 | `spill` (optional, normal mode) | The spill of store & forward to the card. `state` is `off`, `not_started`, `on`, `failed` or `stopped`. `off` and `not_started` have `detail`, for example `it needs PSRAM, and none was detected`. `failed` has `detail` and `stranded` (the samples that stay on the card). `stopped`: a format took the card. With `on`, the object also has the counters of the shell `spill` line. They are `ready` (the boot recovery ended), `waiting`, `moved`, `overwritten`, `holes`, `ring_blocks`, `waiting_blocks`, `extents`, `kb`, `blocks_written`, `checkpoints`, `boot_ms` and `files_to_delete` |
 | `core_dump` (optional, issue #132) | The core dump in flash: `present`, `state` (`none`; `valid`: the checksum is correct; `corrupt`) and `size` (bytes, 0 = not known). `GET /api/coredump/summary` gives its summary |
+| `ap` (optional, issue #187) | The access point (NET-5). `available` (the build has an access point), `simulated` (the model of the QEMU build, which has no radio), `running`, `ssid`, `security` (`open`, `wpa2`; `null` when it does not run), `key` (`web_password` or `commissioning_password`; `null` when it does not run), `clients`, `left_s` (the time to the stop if no client connects or disconnects; `null` when there is no limit now: a client is connected, and there is no maximum time), `open_left_s` (the time left of the open period), `idle_stop_s` and `last_stop` (`none`, `request`, `idle`, `time`) |
 | `card_format` (optional, issue #139) | The format of the card. `state`: `idle`, `running` (with `elapsed_s`), `done` (with `duration_s`, `fat`, `cluster`, `size_mb` and `restart: true`) or `failed` (with `duration_s` and `error`) |
 
 A client that does not know the optional fields can ignore them.

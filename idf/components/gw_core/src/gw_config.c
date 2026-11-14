@@ -14,6 +14,7 @@
 #include "gw_port.h"
 #include "gw_sfspill.h"
 #include "gw_utf8.h"
+#include "gw_wpa.h"
 
 /* ---------- parser memory ---------- */
 
@@ -1233,9 +1234,19 @@ static bool parse_web(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
                         "only visible ASCII characters, no ':' (Basic auth)");
         }
     }
-    size_t pw = strlen(cfg->web.password);
-    if (pw != 0 && pw < 8) {
+    /* issue #187: the web password is also the WPA2 key of the access point (its PMK): the
+     * rule of a WPA2 passphrase (gw_wpa.h). GW_SECRET_MASK obeys it. */
+    switch (cfg->web.password[0] == '\0' ? GW_WPA_PASS_OK : gw_wpa_pass_check(cfg->web.password)) {
+    case GW_WPA_PASS_OK:
+        break;
+    case GW_WPA_PASS_SHORT:
         return fail(err, "web.password", "expected at least 8 characters (or empty)");
+    case GW_WPA_PASS_LONG:
+        return fail(err, "web.password", "expected at most %d characters: it is also the WPA2 "
+                    "key of the access point", GW_WPA_PASS_MAX);
+    case GW_WPA_PASS_BAD_CHAR:
+        return fail(err, "web.password", "only printable ASCII characters (a space to '~'): it "
+                    "is also the WPA2 key of the access point");
     }
     return true;
 }

@@ -16,6 +16,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "gw_ap.h"
 #include "gw_auth.h"
 #include "gw_authlimit.h"
 #include "gw_bus.h"
@@ -43,7 +44,7 @@
 static const char *TAG = "web";
 
 #define REALM_HDR "Basic realm=\"gateway\", charset=\"UTF-8\""
-#define WEB_URI_HANDLERS 20   /* the routes of gw_web_start (uris[]) */
+#define WEB_URI_HANDLERS 21   /* the routes of gw_web_start (uris[]) */
 
 static gw_web_ctx_t s_ctx;
 static httpd_handle_t s_server;
@@ -484,6 +485,60 @@ static bool query_flag(httpd_req_t *req, const char *key)
            httpd_query_key_value(q, key, v, sizeof(v)) == ESP_OK && strcmp(v, "1") == 0;
 }
 
+/* Chunked JSON writer: a small buffer flushed as HTTP chunks (256 tags do not fit in RAM
+ * twice, and nothing here allocates). */
+typedef struct {
+    httpd_req_t *req;
+    char buf[1024];
+    size_t len;
+    esp_err_t err;
+} out_t;
+
+static void out_flush(out_t *o)
+{
+    if (o->len > 0 && o->err == ESP_OK) {
+        o->err = httpd_resp_send_chunk(o->req, o->buf, (ssize_t)o->len);
+    }
+    o->len = 0;
+}
+
+static void outf(out_t *o, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+
+static void outf(out_t *o, const char *fmt, ...)
+{
+    for (int attempt = 0; attempt < 2; attempt++) {
+        va_list ap;
+        va_start(ap, fmt);
+        int n = vsnprintf(o->buf + o->len, sizeof(o->buf) - o->len, fmt, ap);
+        va_end(ap);
+        if (n >= 0 && (size_t)n < sizeof(o->buf) - o->len) {
+            o->len += (size_t)n;
+            return;
+        }
+        out_flush(o);   /* did not fit: flush and write again into the empty buffer */
+    }
+}
+
+/* Quoted JSON string. */
+static void out_str(out_t *o, const char *s)
+{
+    char e[2 * GW_CFG_ERR_SIZE];
+    json_escape(e, sizeof(e), s);
+    outf(o, "\"%s\"", e);
+}
+
+/* The writer of the answers of the server task (/api/status, the claim): one buffer in .bss,
+ * shared because the server task serves one request at a time. */
+static out_t s_out;
+
+static out_t *out_begin(httpd_req_t *req)
+{
+    s_out.req = req;
+    s_out.len = 0;
+    s_out.err = ESP_OK;
+    return &s_out;
+}
+
 /* ---------- CFG-3 / NET-5: the claim window (issue #120) ---------- */
 
 /* The state is shared by the button task (open), the esp_timer task (end of the time) and the
@@ -555,6 +610,24 @@ bool gw_web_claim_open(uint32_t seconds)
     ESP_LOGW(TAG, "claim window open for %lu s: a client of the access point can set the web "
                   "password at /claim without a credential", (unsigned long)seconds);
     return true;
+}
+
+void gw_web_claim_close(const char *why)
+{
+    if (s_claim_timer == NULL) {
+        return;
+    }
+    portENTER_CRITICAL(&s_claim_mux);
+    bool was = gw_claim_active(&s_claim, now_ms64());
+    gw_claim_close(&s_claim);
+    portEXIT_CRITICAL(&s_claim_mux);
+    if (was) {
+        esp_timer_stop(s_claim_timer);
+        ESP_LOGW(TAG, "claim window closed: %s", why);
+        if (s_ctx.claim_closed != NULL) {
+            s_ctx.claim_closed(false);
+        }
+    }
 }
 
 /* IPv4 address of @p a, also when it is mapped into IPv6; false for a real IPv6 address. */
@@ -646,6 +719,71 @@ static esp_err_t claim_get(httpd_req_t *req)
     return send_json(req, "200 OK", body);
 }
 
+/* Issue #187: the answer of a successful claim, for the success page: the user name; the access
+ * point (its SSID, the address of this connection, the seconds to the change to WPA2 with the
+ * new password); the addresses of the gateway on the plant network and its mDNS name (NET-6). */
+static __attribute__((noinline)) esp_err_t claim_answer(httpd_req_t *req)
+{
+    const gw_config_t *c = s_ctx.cfg;
+    const char *scheme = s_https ? "https" : "http";
+    unsigned port = s_https ? c->web.https_port : c->web.port;
+    char sfx[8] = "", url[96] = "", ssid[33];
+    if (port != (s_https ? 443u : 80u)) {
+        snprintf(sfx, sizeof(sfx), ":%u", port);
+    }
+    httpd_resp_set_status(req, "200 OK");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    out_t *o = out_begin(req);
+    outf(o, "{\"ok\":true,\"username\":");
+    out_str(o, s_user);
+    gw_ap_ssid(ssid);
+    outf(o, ",\"ap\":{\"ssid\":");
+    out_str(o, ssid);
+    struct sockaddr_storage la;
+    socklen_t ln = sizeof(la);
+    uint8_t local[4];
+    if (getsockname(httpd_req_to_sockfd(req), (struct sockaddr *)&la, &ln) == 0 &&
+        ipv4_of(&la, local)) {
+        snprintf(url, sizeof(url), "%s://%u.%u.%u.%u%s/", scheme, local[0], local[1], local[2],
+                 local[3], sfx);
+    }
+    outf(o, ",\"url\":\"%s\",\"secure_in_s\":%u},\"plant\":[", url,
+         (unsigned)(GW_APLIFE_CLAIM_SECURE_MS / 1000u));
+    gw_net_if_status_t ifs[GW_NET_IF_COUNT];
+    gw_net_get_status(ifs);
+    bool first = true;
+    for (int i = 0; i < GW_NET_IF_COUNT; i++) {
+        const gw_net_if_status_t *n = &ifs[i];
+        if (n->ipv4[0] | n->ipv4[1] | n->ipv4[2] | n->ipv4[3]) {
+            outf(o, "%s\"%s://%u.%u.%u.%u%s/\"", first ? "" : ",", scheme, n->ipv4[0], n->ipv4[1],
+                 n->ipv4[2], n->ipv4[3], sfx);
+            first = false;
+        }
+        for (int k = 0; k < GW_NET_IPV6_MAX; k++) {
+            /* a link-local address needs a zone in the browser: left out */
+            if (n->ipv6[k][0] != '\0' && strncasecmp(n->ipv6[k], "fe80", 4) != 0) {
+                outf(o, "%s\"%s://[%s]%s/\"", first ? "" : ",", scheme, n->ipv6[k], sfx);
+                first = false;
+            }
+        }
+    }
+    outf(o, "],\"mdns\":");
+#if CONFIG_GW_MDNS
+    if (c->network.mdns) {
+        snprintf(url, sizeof(url), "%s://%s.local%s/", scheme, c->network.hostname, sfx);
+        out_str(o, url);
+    } else {
+        outf(o, "null");
+    }
+#else
+    outf(o, "null");
+#endif
+    outf(o, "}\n");
+    out_flush(o);
+    return o->err == ESP_OK ? httpd_resp_send_chunk(req, NULL, 0) : o->err;
+}
+
 /* POST /api/claim {"password": "..."}: the first web password, without a credential. The CSRF
  * check and the login block (#64) as for a login; a refusal because of the state (a password is
  * set, no window, not a client of the access point) counts as a failed login. */
@@ -729,10 +867,7 @@ static esp_err_t claim_post(httpd_req_t *req)
     gw_authlimit_succeeded(&s_limit, ip);
     ESP_LOGW(TAG, "web password set through the claim window from %s: the window is closed and "
                   "does not open again", who);
-    char user[2 * GW_USER_SIZE], answer[2 * GW_USER_SIZE + 48];
-    json_escape(user, sizeof(user), s_user);
-    snprintf(answer, sizeof(answer), "{\"ok\":true,\"username\":\"%s\"}\n", user);
-    esp_err_t ret = send_json(req, "200 OK", answer);
+    esp_err_t ret = claim_answer(req);
     if (s_ctx.claim_closed != NULL) {
         s_ctx.claim_closed(true);
     }
@@ -945,6 +1080,23 @@ static esp_err_t restart_post(httpd_req_t *req)
     send_json(req, "202 Accepted", "{\"ok\":true,\"restart\":true}\n");
     s_ctx.restart();
     return ESP_OK;
+}
+
+/* ---------- NET-5, issue #187: POST /api/ap/stop ---------- */
+
+/* The button "Close the access point". The same checks as every write (CSRF, then the
+ * password). The access point stops a short time after the answer, so that a client of the
+ * access point gets it. A BOOT gesture of 2-10 s starts it again. */
+static esp_err_t ap_stop_post(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    if (!gw_ap_stop_soon()) {
+        return send_error(req, "409 Conflict", NULL, "the access point does not run");
+    }
+    ESP_LOGW(TAG, "access point stop requested through the REST API");
+    return send_json(req, "202 Accepted", "{\"ok\":true,\"stopping\":true}\n");
 }
 
 /* ---------- #171: POST /api/rebirth ---------- */
@@ -1415,48 +1567,6 @@ static esp_err_t index_get(httpd_req_t *req)
     return httpd_resp_send(req, index_html_start, index_html_end - index_html_start - 1);
 }
 
-/* Chunked JSON writer: a small buffer flushed as HTTP chunks (256 tags do not fit in RAM
- * twice, and nothing here allocates). */
-typedef struct {
-    httpd_req_t *req;
-    char buf[1024];
-    size_t len;
-    esp_err_t err;
-} out_t;
-
-static void out_flush(out_t *o)
-{
-    if (o->len > 0 && o->err == ESP_OK) {
-        o->err = httpd_resp_send_chunk(o->req, o->buf, (ssize_t)o->len);
-    }
-    o->len = 0;
-}
-
-static void outf(out_t *o, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
-
-static void outf(out_t *o, const char *fmt, ...)
-{
-    for (int attempt = 0; attempt < 2; attempt++) {
-        va_list ap;
-        va_start(ap, fmt);
-        int n = vsnprintf(o->buf + o->len, sizeof(o->buf) - o->len, fmt, ap);
-        va_end(ap);
-        if (n >= 0 && (size_t)n < sizeof(o->buf) - o->len) {
-            o->len += (size_t)n;
-            return;
-        }
-        out_flush(o);   /* did not fit: flush and write again into the empty buffer */
-    }
-}
-
-/* Quoted JSON string. */
-static void out_str(out_t *o, const char *s)
-{
-    char e[2 * GW_CFG_ERR_SIZE];
-    json_escape(e, sizeof(e), s);
-    outf(o, "\"%s\"", e);
-}
-
 static gw_tag_value_t s_vals[GW_MAX_TAGS_PER_DEVICE];   /* server task only */
 
 /* "off: why" (the shell's spill line) without its "off: " */
@@ -1517,64 +1627,84 @@ static __attribute__((noinline)) void status_card(out_t *o, const gw_config_t *c
          (unsigned long)es.spill_boot_ms, (unsigned long)es.spill_gc_pending);
 }
 
+/* NET-5, issue #187: the access point, as an optional object (older clients ignore it). */
+static __attribute__((noinline)) void status_ap(out_t *o)
+{
+    gw_ap_status_t ap;
+    gw_ap_get_status(&ap);
+    outf(o, ",\"ap\":{\"available\":%s,\"simulated\":%s,\"running\":%s,\"ssid\":",
+         ap.available ? "true" : "false", ap.simulated ? "true" : "false",
+         ap.running ? "true" : "false");
+    out_str(o, ap.ssid);
+    /* the key of the running access point (null while it does not run) */
+    outf(o, ",\"security\":%s,\"key\":%s,\"clients\":%u,\"left_s\":",
+         !ap.running ? "null" : ap.open ? "\"open\"" : "\"wpa2\"",
+         !ap.running ? "null" : ap.key_is_pmk ? "\"web_password\"" : "\"commissioning_password\"",
+         ap.clients);
+    if (ap.limited) {
+        outf(o, "%lu", (unsigned long)ap.left_s);
+    } else {
+        outf(o, "null");
+    }
+    outf(o, ",\"open_left_s\":%lu,\"idle_stop_s\":%lu,\"last_stop\":\"%s\"}",
+         (unsigned long)ap.open_left_s, (unsigned long)ap.idle_s, gw_ap_stop_key(ap.last_stop));
+}
+
 static esp_err_t status_get(httpd_req_t *req)
 {
     if (!authorized(req)) {
         return ESP_OK;
     }
     static const char *const modes[] = {"normal", "recovery", "commissioning", "fault"};
-    static out_t o;   /* server task only */
-    o.req = req;
-    o.len = 0;
-    o.err = ESP_OK;
+    out_t *o = out_begin(req);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     const gw_config_t *c = s_ctx.cfg;
     uint32_t f = gw_status_get();
-    outf(&o, "{\"mode\":\"%s\",\"fault\":", modes[s_ctx.mode]);
-    out_str(&o, s_ctx.fault != NULL ? s_ctx.fault : "");   /* #135 */
-    outf(&o, ",\"firmware\":");
-    out_str(&o, s_ctx.info->firmware);
-    outf(&o, ",\"reset_reason\":");
-    out_str(&o, s_ctx.info->reset_reason);
-    outf(&o, ",\"uptime_s\":%lld,\"config\":{\"ok\":%s,\"source\":",
+    outf(o, "{\"mode\":\"%s\",\"fault\":", modes[s_ctx.mode]);
+    out_str(o, s_ctx.fault != NULL ? s_ctx.fault : "");   /* #135 */
+    outf(o, ",\"firmware\":");
+    out_str(o, s_ctx.info->firmware);
+    outf(o, ",\"reset_reason\":");
+    out_str(o, s_ctx.info->reset_reason);
+    outf(o, ",\"uptime_s\":%lld,\"config\":{\"ok\":%s,\"source\":",
          esp_timer_get_time() / 1000000, s_ctx.mode == GW_WEB_NORMAL ? "true" : "false");
-    out_str(&o, s_ctx.config_source);
-    outf(&o, ",\"error\":");
-    out_str(&o, s_ctx.config_error != NULL ? s_ctx.config_error->msg : "");
-    outf(&o, ",\"path\":");
-    out_str(&o, s_ctx.config_error != NULL ? s_ctx.config_error->path : "");
-    outf(&o, "},\"network\":{\"up\":%s,\"interfaces\":[", (f & GW_ST_NET_UP) ? "true" : "false");
+    out_str(o, s_ctx.config_source);
+    outf(o, ",\"error\":");
+    out_str(o, s_ctx.config_error != NULL ? s_ctx.config_error->msg : "");
+    outf(o, ",\"path\":");
+    out_str(o, s_ctx.config_error != NULL ? s_ctx.config_error->path : "");
+    outf(o, "},\"network\":{\"up\":%s,\"interfaces\":[", (f & GW_ST_NET_UP) ? "true" : "false");
     gw_net_if_status_t ifs[GW_NET_IF_COUNT];
     gw_net_get_status(ifs);
     static const char *const names[GW_NET_IF_COUNT] = {"ethernet", "wifi"};
     for (int i = 0; i < GW_NET_IF_COUNT; i++) {
         const gw_net_if_status_t *n = &ifs[i];
-        outf(&o,
+        outf(o,
              "%s{\"name\":\"%s\",\"configured\":%s,\"link\":%s,\"usable\":%s,\"active\":%s,"
              "\"ipv4\":\"",
              i ? "," : "", names[i], n->configured ? "true" : "false", n->link ? "true" : "false",
              n->usable ? "true" : "false", n->active ? "true" : "false");
         if (n->ipv4[0] | n->ipv4[1] | n->ipv4[2] | n->ipv4[3]) {
-            outf(&o, "%u.%u.%u.%u", n->ipv4[0], n->ipv4[1], n->ipv4[2], n->ipv4[3]);
+            outf(o, "%u.%u.%u.%u", n->ipv4[0], n->ipv4[1], n->ipv4[2], n->ipv4[3]);
         }
-        outf(&o, "\",\"ipv6\":[");
+        outf(o, "\",\"ipv6\":[");
         bool first = true;
         for (int k = 0; k < GW_NET_IPV6_MAX; k++) {
             if (n->ipv6[k][0] != '\0') {
-                outf(&o, "%s\"%s\"", first ? "" : ",", n->ipv6[k]);
+                outf(o, "%s\"%s\"", first ? "" : ",", n->ipv6[k]);
                 first = false;
             }
         }
-        outf(&o, "]}");
+        outf(o, "]}");
     }
-    outf(&o, "]},\"mqtt\":{\"connected\":%s}", (f & GW_ST_MQTT_UP) ? "true" : "false");
+    outf(o, "]},\"mqtt\":{\"connected\":%s}", (f & GW_ST_MQTT_UP) ? "true" : "false");
     if (s_ctx.mode == GW_WEB_NORMAL) {
-        outf(&o, ",\"sparkplug\":{\"group_id\":");
-        out_str(&o, c->sparkplug.group_id);
-        outf(&o, ",\"edge_node_id\":");
-        out_str(&o, c->sparkplug.edge_node_id);
-        outf(&o, ",\"diagnostics_s\":%lu}", (unsigned long)c->sparkplug.diagnostics_s);
+        outf(o, ",\"sparkplug\":{\"group_id\":");
+        out_str(o, c->sparkplug.group_id);
+        outf(o, ",\"edge_node_id\":");
+        out_str(o, c->sparkplug.edge_node_id);
+        outf(o, ",\"diagnostics_s\":%lu}", (unsigned long)c->sparkplug.diagnostics_s);
         gw_log_stats_t ls;
         gw_log_get_stats(&ls);
         if (ls.enabled) {
@@ -1583,20 +1713,20 @@ static esp_err_t status_get(httpd_req_t *req)
                      c->syslog.host, c->syslog.port, ls.connected ? "connected" : "not reachable",
                      (unsigned long)ls.sent, (unsigned long)ls.dropped,
                      (unsigned long)ls.send_errors);
-            outf(&o, ",\"syslog\":");
-            out_str(&o, line);
+            outf(o, ",\"syslog\":");
+            out_str(o, line);
         }
     }
-    outf(&o, ",\"devices\":[");
+    outf(o, ",\"devices\":[");
     for (uint16_t d = 0; s_ctx.mode == GW_WEB_NORMAL && d < c->device_count; d++) {
         const gw_device_cfg_t *dev = &c->devices[d];
         bool online;
         gw_dev_stats_t st;
         gw_tagdb_get_device(c, d, s_vals, &online);
         gw_tagdb_get_stats(d, &st);
-        outf(&o, "%s{\"name\":", d ? "," : "");
-        out_str(&o, dev->name);
-        outf(&o,
+        outf(o, "%s{\"name\":", d ? "," : "");
+        out_str(o, dev->name);
+        outf(o,
              ",\"unit_id\":%u,\"online\":%s,\"cycles\":%lu,\"failed\":%lu,\"ok\":%lu,"
              "\"timeout\":%lu,\"crc\":%lu,\"frame\":%lu,\"exception\":%lu,\"tags\":[",
              dev->unit_id, online ? "true" : "false", (unsigned long)st.cycles,
@@ -1605,65 +1735,65 @@ static esp_err_t status_get(httpd_req_t *req)
              (unsigned long)st.bus.frame, (unsigned long)st.bus.exception);
         for (uint16_t t = 0; t < dev->tag_count; t++) {
             const gw_tag_value_t *v = &s_vals[t];
-            outf(&o, "%s{\"name\":", t ? "," : "");
-            out_str(&o, c->tags[dev->first_tag + t].name);
+            outf(o, "%s{\"name\":", t ? "," : "");
+            out_str(o, c->tags[dev->first_tag + t].name);
             const gw_tag_cfg_t *tc = &c->tags[dev->first_tag + t];
             gw_val_kind_t kind = gw_conv_kind(tc);
             /* NaN is not JSON */
             bool valid = v->valid && (kind != GW_VK_DOUBLE || v->value == v->value);
             if (!valid) {
-                outf(&o, ",\"valid\":false,\"value\":null}");
+                outf(o, ",\"valid\":false,\"value\":null}");
             } else if (kind == GW_VK_STRING) {
-                outf(&o, ",\"valid\":true,\"value\":");
-                out_str(&o, v->str);
-                outf(&o, "}");
+                outf(o, ",\"valid\":true,\"value\":");
+                out_str(o, v->str);
+                outf(o, "}");
             } else if (kind == GW_VK_BYTES) {   /* SPB-19: hex */
                 char hex[2 * GW_STR_MAX + 1];
                 gw_conv_format(tc, v, hex, sizeof(hex));
-                outf(&o, ",\"valid\":true,\"value\":\"%s\"}", hex);
+                outf(o, ",\"valid\":true,\"value\":\"%s\"}", hex);
             } else if (kind == GW_VK_INT64) {   /* exact (a JSON reader may round above 2^53) */
-                outf(&o, ",\"valid\":true,\"value\":%lld}", (long long)v->i64);
+                outf(o, ",\"valid\":true,\"value\":%lld}", (long long)v->i64);
             } else if (kind == GW_VK_UINT64) {
-                outf(&o, ",\"valid\":true,\"value\":%llu}", (unsigned long long)v->u64);
+                outf(o, ",\"valid\":true,\"value\":%llu}", (unsigned long long)v->u64);
             } else {
                 /* %.9g: enough for float32 and integers up to 32 bits */
-                outf(&o, ",\"valid\":true,\"value\":%.9g}", v->value);
+                outf(o, ",\"valid\":true,\"value\":%.9g}", v->value);
             }
         }
-        outf(&o, "]}");
+        outf(o, "]}");
     }
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
     gw_io_expander_t exp;
     gw_io_get_expander(&exp);
     /* issue #74: unknown DOs (expander not answering) are null, never "off" */
-    outf(&o, "],\"io\":{\"di\":%u,\"do\":", io.di);
+    outf(o, "],\"io\":{\"di\":%u,\"do\":", io.di);
     if (io.do_unknown) {
-        outf(&o, "null");
+        outf(o, "null");
     } else {
-        outf(&o, "%u", io.dout);
+        outf(o, "%u", io.dout);
     }
-    outf(&o, ",\"do_unknown\":%s,\"expander\":{\"ready\":%s,\"retrying\":%s,\"attempts\":%u}",
+    outf(o, ",\"do_unknown\":%s,\"expander\":{\"ready\":%s,\"retrying\":%s,\"attempts\":%u}",
          io.do_unknown ? "true" : "false", exp.ready ? "true" : "false",
          exp.retrying ? "true" : "false", exp.attempts);
     /* issue #75: what IO-3, IO-4, IO-6 and IO-7 added */
-    outf(&o, ",\"failsafe\":%s,\"counters\":[", io.failsafe ? "true" : "false");
+    outf(o, ",\"failsafe\":%s,\"counters\":[", io.failsafe ? "true" : "false");
     for (int k = 0; k < GW_LOCAL_IO_CHANNELS; k++) {
-        outf(&o, "%s%llu", k ? "," : "", (unsigned long long)io.count[k]);
+        outf(o, "%s%llu", k ? "," : "", (unsigned long long)io.count[k]);
     }
     uint8_t rule_do = 0;
     for (uint8_t r = 0; s_ctx.mode == GW_WEB_NORMAL && r < c->local_io.rule_count; r++) {
         rule_do |= (uint8_t)(1u << c->local_io.rules[r].dout);
     }
-    outf(&o, "],\"rule_do\":%u}", rule_do);
+    outf(o, "],\"rule_do\":%u}", rule_do);
     static const char *const alarm_keys[] = {"none", "device_offline", "mqtt_down", "config_error"};
     gw_alarm_t alarm = gw_buzzer_alarm();
     uint8_t enabled = gw_buzzer_alarms();
-    outf(&o, ",\"buzzer\":{\"alarm\":\"%s\",\"enabled\":[", alarm_keys[alarm & 3]);
+    outf(o, ",\"buzzer\":{\"alarm\":\"%s\",\"enabled\":[", alarm_keys[alarm & 3]);
     bool first_alarm = true;
     for (int a = GW_ALARM_DEVICE_OFFLINE; a <= GW_ALARM_CONFIG_ERROR; a++) {
         if (enabled & GW_ALARM_BIT(a)) {
-            outf(&o, "%s\"%s\"", first_alarm ? "" : ",", alarm_keys[a]);
+            outf(o, "%s\"%s\"", first_alarm ? "" : ",", alarm_keys[a]);
             first_alarm = false;
         }
     }
@@ -1671,29 +1801,30 @@ static esp_err_t status_get(httpd_req_t *req)
     gw_io_rtc_info_t rtc;
     gw_io_rtc_get(&rtc);
     gw_clock_source_t src = gw_edge_time_source();   /* #160: "valid", source "browser" */
-    outf(&o, "]},\"time\":{\"utc_s\":%lld,\"synced\":%s,\"valid\":%s,\"source\":\"%s\","
+    outf(o, "]},\"time\":{\"utc_s\":%lld,\"synced\":%s,\"valid\":%s,\"source\":\"%s\","
              "\"rtc\":{\"present\":%s,\"status\":",
          (long long)time(NULL), src == GW_CLOCK_SNTP ? "true" : "false",
          gw_clock_valid(src) ? "true" : "false", gw_clock_source_key(src),
          rtc.present ? "true" : "false");
-    out_str(&o, rtc.present ? gw_rtc_status_str((gw_rtc_status_t)rtc.status) : "not answering");
-    outf(&o, ",\"stores\":%lu}}", (unsigned long)rtc.stores);
-    status_card(&o, c);
+    out_str(o, rtc.present ? gw_rtc_status_str((gw_rtc_status_t)rtc.status) : "not answering");
+    outf(o, ",\"stores\":%lu}}", (unsigned long)rtc.stores);
+    status_card(o, c);
+    status_ap(o);
     {   /* #132: is a core dump in flash (no flash access; the summary is a route of its own) */
         uint32_t size;
         gw_cdump_state_t cd = gw_coredump_state(&size);
         char buf[80];
         gw_cdump_status_json(cd, size, buf, sizeof(buf));
-        outf(&o, ",\"core_dump\":%s", buf);
+        outf(o, ",\"core_dump\":%s", buf);
     }
-    outf(&o,
+    outf(o,
          ",\"heap\":{\"internal_free\":%u,\"internal_min\":%u,"
          "\"psram_free\":%u}}\n",
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
          (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-    out_flush(&o);
-    return o.err == ESP_OK ? httpd_resp_send_chunk(req, NULL, 0) : o.err;
+    out_flush(o);
+    return o->err == ESP_OK ? httpd_resp_send_chunk(req, NULL, 0) : o->err;
 }
 
 static esp_err_t favicon_get(httpd_req_t *req)
@@ -1851,7 +1982,8 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
                            h_modbus_read = {modbus_read_post}, h_cd_get = {coredump_get},
                            h_cd_delete = {coredump_delete}, h_cd_summary = {coredump_summary_get},
                            h_time = {time_post}, h_claim_page = {claim_page_get},
-                           h_claim_get = {claim_get}, h_claim_post = {claim_post};
+                           h_claim_get = {claim_get}, h_claim_post = {claim_post},
+                           h_ap_stop = {ap_stop_post};
     static const struct {
         const char *uri;
         httpd_method_t method;
@@ -1877,6 +2009,7 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         {"/claim", HTTP_GET, &h_claim_page},               /* #120 */
         {"/api/claim", HTTP_GET, &h_claim_get},
         {"/api/claim", HTTP_POST, &h_claim_post},
+        {"/api/ap/stop", HTTP_POST, &h_ap_stop},           /* #187 */
     };
     _Static_assert(sizeof(uris) / sizeof(uris[0]) == WEB_URI_HANDLERS, "WEB_URI_HANDLERS");
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {

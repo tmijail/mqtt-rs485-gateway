@@ -41,10 +41,48 @@ typedef struct {
 #define ORANGE ((rgb_t){255, 60, 0})
 #define WHITE  ((rgb_t){255, 255, 255})
 #define BLUE   ((rgb_t){0, 60, 255})
+#define CYAN   ((rgb_t){0, 255, 200})
+
+enum { B_COMMISSIONING, B_CFG_ERROR, B_NO_NET, B_NO_BROKER, B_MB_FAULT, B_OPERATING };
+
+/* The patterns below the claim window, without the access point: the color and its index. */
+static rgb_t base_pattern(uint32_t f, uint32_t tick, int *idx)
+{
+    if (f & GW_ST_COMMISSIONING) {
+        *idx = B_COMMISSIONING;
+        return (tick & 4) ? OFF : BLUE;
+    }
+    if (f & GW_ST_CFG_ERROR) {
+        *idx = B_CFG_ERROR;
+        return (tick & 1) ? OFF : RED;
+    }
+    if (!(f & GW_ST_NET_UP)) {
+        *idx = B_NO_NET;
+        return RED;
+    }
+    if (!(f & GW_ST_MQTT_UP)) {
+        *idx = B_NO_BROKER;
+        return (tick & 4) ? OFF : AMBER;
+    }
+    if (f & GW_ST_MB_FAULT) {
+        *idx = B_MB_FAULT;
+        return (tick & 4) ? ORANGE : GREEN;
+    }
+    *idx = B_OPERATING;
+    return GREEN;
+}
 
 /* Pattern for the current flags; @p tick advances every 125 ms. */
 static rgb_t pattern(uint32_t f, uint32_t tick, const char **name)
 {
+    static const char *const plain[] = {"commissioning", "config error", "no network",
+                                        "no broker", "modbus device offline", "operating"};
+    static const char *const with_ap[] = {"commissioning, access point",
+                                          "config error, access point",
+                                          "no network, access point",
+                                          "no broker, access point",
+                                          "modbus device offline, access point",
+                                          "operating, access point"};
     if (f & GW_ST_RESETTING) {
         *name = "factory reset";
         return WHITE;
@@ -53,32 +91,21 @@ static rgb_t pattern(uint32_t f, uint32_t tick, const char **name)
         *name = "BOOT held";
         return (tick & 1) ? OFF : WHITE;
     }
-    if (f & GW_ST_CLAIM) {
-        *name = "claim window";
+    if (f & (GW_ST_CLAIM | GW_ST_AP_OPEN)) {
+        /* issue #187: the open period of the access point is the claim window (and the few
+         * seconds after a claim, until the change to WPA2) */
+        *name = (f & GW_ST_CLAIM) ? "claim window" : "access point open";
         return (tick & 2) ? WHITE : BLUE;
     }
-    if (f & GW_ST_COMMISSIONING) {
-        *name = "commissioning";
-        return (tick & 4) ? OFF : BLUE;
+    int idx;
+    rgb_t c = base_pattern(f, tick, &idx);
+    if (!(f & GW_ST_AP)) {
+        *name = plain[idx];
+        return c;
     }
-    if (f & GW_ST_CFG_ERROR) {
-        *name = "config error";
-        return (tick & 1) ? OFF : RED;
-    }
-    if (!(f & GW_ST_NET_UP)) {
-        *name = "no network";
-        return RED;
-    }
-    if (!(f & GW_ST_MQTT_UP)) {
-        *name = "no broker";
-        return (tick & 4) ? OFF : AMBER;
-    }
-    if (f & GW_ST_MB_FAULT) {
-        *name = "modbus device offline";
-        return (tick & 4) ? ORANGE : GREEN;
-    }
-    *name = "operating";
-    return GREEN;
+    /* issue #187: the access point runs (WPA2): a cyan flash every 2 s over the pattern */
+    *name = with_ap[idx];
+    return (tick & 15) == 0 ? CYAN : c;
 }
 
 #if CONFIG_GW_IO_SIMULATED

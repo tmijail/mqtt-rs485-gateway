@@ -541,12 +541,24 @@ static void test_web_section(void)
     TEST_ASSERT_EQUAL(8080, cfg.web.port);
     TEST_ASSERT_EQUAL_STRING("ops", cfg.web.username);
     TEST_ASSERT_EQUAL_STRING("12345678", cfg.web.password);
+    /* 63 printable ASCII characters, spaces and symbols included: the longest WPA2 passphrase */
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":"
+              "\"E\"},\"web\":{\"password\":\" ~!#$%&'()*+,-./:;<=>?@[]^_`{|}abcdefghijklmnopqrstu"
+              "vwxyz012345\"}}"),
+        err.msg);
+    TEST_ASSERT_EQUAL_size_t(63, strlen(cfg.web.password));
     static const char *const bad[][2] = {
         {"{\"port\":0}", "web.port"},
         {"{\"username\":\"\"}", "web.username: cannot be empty"},
         {"{\"username\":\"a:b\"}", "web.username: only visible ASCII characters"},
         {"{\"username\":\"a b\"}", "web.username"},
         {"{\"password\":\"1234567\"}", "web.password: expected at least 8"},
+        /* issue #187: the rule of a WPA2 passphrase */
+        {"{\"password\":\"1234567890123456789012345678901234567890123456789012345678901234\"}",
+         "web.password: expected at most 63 characters"},
+        {"{\"password\":\"contrase\\u00f1a\"}", "web.password: only printable ASCII"},
+        {"{\"password\":\"tab\\tin-it\"}", "web.password: only printable ASCII"},
         {"{\"user\":\"x\"}", "web.user: unknown key"},
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {

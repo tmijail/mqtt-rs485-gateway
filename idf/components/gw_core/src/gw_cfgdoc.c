@@ -278,6 +278,10 @@ static bool apply_locked(const char *json, size_t len, gw_cfgdoc_mode_t mode,
             memset(cfg->web.password, 0, sizeof(cfg->web.password));
             strcpy(out->secrets.web_password_hash, value[i]);
             strcpy(cfg->web.password_hash, value[i]);
+            /* issue #187: the PMK of the access point follows the password */
+            if (eff[i] == EFF_STORED) {
+                strcpy(out->secrets.ap_pmk, stored->ap_pmk);
+            }
         }
         if (item != NULL) {
             cJSON_DeleteItemFromObjectCaseSensitive(parent, "password");
@@ -286,7 +290,8 @@ static bool apply_locked(const char *json, size_t len, gw_cfgdoc_mode_t mode,
     out->secrets_changed = out->new_web_password ||
                            strcmp(out->secrets.mqtt_password, stored->mqtt_password) != 0 ||
                            strcmp(out->secrets.wifi_password, stored->wifi_password) != 0 ||
-                           strcmp(out->secrets.web_password_hash, stored->web_password_hash) != 0;
+                           strcmp(out->secrets.web_password_hash, stored->web_password_hash) != 0 ||
+                           strcmp(out->secrets.ap_pmk, stored->ap_pmk) != 0;
 
     out->doc = print_doc(root, &out->doc_len);
     bool oom = out->doc == NULL || gw_config_json_alloc_failed();

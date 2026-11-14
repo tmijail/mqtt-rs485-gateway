@@ -5,7 +5,6 @@
 #include "cJSON.h"
 #include "gw_config_priv.h"
 #include "gw_port.h"
-#include "gw_utf8.h"
 
 void gw_claim_init(gw_claim_t *c)
 {
@@ -41,27 +40,16 @@ void gw_claim_close(gw_claim_t *c)
     c->open = false;
 }
 
-/* The password rule: GW_CLAIM_PW_MIN characters (code points) at least, GW_CLAIM_PW_MAX bytes
- * at most, well-formed UTF-8 without control characters (C0, DEL, C1). */
+/* The password rule: the rule of a WPA2 passphrase (issue #187, gw_wpa_pass_check). */
 static gw_claim_result_t check_password(const char *pw)
 {
-    size_t bytes = strlen(pw);
-    if (bytes > GW_CLAIM_PW_MAX) {
-        return GW_CLAIM_TOO_LONG;
+    switch (gw_wpa_pass_check(pw)) {
+    case GW_WPA_PASS_OK: return GW_CLAIM_OK;
+    case GW_WPA_PASS_SHORT: return GW_CLAIM_TOO_SHORT;
+    case GW_WPA_PASS_LONG: return GW_CLAIM_TOO_LONG;
+    case GW_WPA_PASS_BAD_CHAR: break;
     }
-    size_t chars = 0;
-    for (size_t i = 0; i < bytes; chars++) {
-        size_t n = gw_utf8_seq(pw + i, bytes - i);
-        if (n == 0) {
-            return GW_CLAIM_BAD_CHAR;
-        }
-        unsigned long cp = gw_utf8_code(pw + i, n);
-        if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) {
-            return GW_CLAIM_BAD_CHAR;
-        }
-        i += n;
-    }
-    return chars < GW_CLAIM_PW_MIN ? GW_CLAIM_TOO_SHORT : GW_CLAIM_OK;
+    return GW_CLAIM_BAD_CHAR;
 }
 
 gw_claim_result_t gw_claim_check(gw_claim_t *c, bool password_set, bool from_ap,
@@ -145,9 +133,11 @@ const char *gw_claim_text(gw_claim_result_t r)
     case GW_CLAIM_TOO_SHORT:
         return "the web password must have at least 8 characters";
     case GW_CLAIM_TOO_LONG:
-        return "the web password must have at most 64 bytes";
+        return "the web password must have at most 63 characters";
     case GW_CLAIM_BAD_CHAR:
-        return "the web password must be UTF-8 text without control characters";
+        return "the web password must have only printable ASCII characters (a space, letters "
+               "A-Z and a-z, digits and the symbols of a keyboard): it is also the WPA2 key of "
+               "the access point";
     }
     return "unknown result";
 }
