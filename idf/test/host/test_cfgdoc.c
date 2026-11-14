@@ -122,6 +122,47 @@ static void test_update_mask_absent_empty(void)
     TEST_ASSERT_TRUE(doc.secrets_changed);
 }
 
+/* Issue #187: the PMK of the access point follows the web password. Kept with a kept password
+ * (mask in a PUT, absent or mask at boot), removed with the password, and "" for a new password
+ * (the caller calculates it with the hash). */
+static void test_pmk_follows_the_web_password(void)
+{
+    static const char pmk[] = "f42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e";
+    strcpy(stored.web_password_hash, "pbkdf2-sha256$1$00$00");
+    strcpy(stored.ap_pmk, pmk);
+    /* PUT with the mask: kept, nothing changes */
+    TEST_ASSERT_TRUE_MESSAGE(
+        apply(docf("", ",\"web\":{\"password\":\"" GW_SECRET_MASK "\"}"), GW_CFGDOC_UPDATE),
+        err.msg);
+    TEST_ASSERT_EQUAL_STRING(pmk, doc.secrets.ap_pmk);
+    TEST_ASSERT_FALSE(doc.secrets_changed);
+    /* boot, no key in the file: kept */
+    TEST_ASSERT_TRUE_MESSAGE(apply(docf("", ""), GW_CFGDOC_FILE), err.msg);
+    TEST_ASSERT_EQUAL_STRING(pmk, doc.secrets.ap_pmk);
+    TEST_ASSERT_FALSE(doc.secrets_changed);
+    /* PUT without web.password: the password and its PMK are removed */
+    TEST_ASSERT_TRUE_MESSAGE(apply(docf("", ""), GW_CFGDOC_UPDATE), err.msg);
+    TEST_ASSERT_EQUAL_STRING("", doc.secrets.web_password_hash);
+    TEST_ASSERT_EQUAL_STRING("", doc.secrets.ap_pmk);
+    TEST_ASSERT_TRUE(doc.secrets_changed);
+    /* PUT with "" : removed too */
+    TEST_ASSERT_TRUE_MESSAGE(apply(docf("", ",\"web\":{\"password\":\"\"}"), GW_CFGDOC_UPDATE),
+                             err.msg);
+    TEST_ASSERT_EQUAL_STRING("", doc.secrets.ap_pmk);
+    /* a new password: no PMK from the old one (the caller calculates the new one) */
+    TEST_ASSERT_TRUE_MESSAGE(
+        apply(docf("", ",\"web\":{\"password\":\"new-web-pw\"}"), GW_CFGDOC_UPDATE), err.msg);
+    TEST_ASSERT_TRUE(doc.new_web_password);
+    TEST_ASSERT_EQUAL_STRING("", doc.secrets.ap_pmk);
+    TEST_ASSERT_TRUE(doc.secrets_changed);
+    /* a stored hash without a PMK (a password from an earlier firmware): stays without one */
+    stored.ap_pmk[0] = '\0';
+    TEST_ASSERT_TRUE_MESSAGE(apply(docf("", ""), GW_CFGDOC_FILE), err.msg);
+    TEST_ASSERT_EQUAL_STRING(stored.web_password_hash, cfg.web.password_hash);
+    TEST_ASSERT_EQUAL_STRING("", doc.secrets.ap_pmk);
+    TEST_ASSERT_FALSE(doc.secrets_changed);
+}
+
 /* Boot: secrets come from the store unless the file carries them in clear (migration). */
 static void test_file_mode(void)
 {
@@ -443,6 +484,7 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(test_update_splits_secrets);
     RUN_TEST(test_update_mask_absent_empty);
+    RUN_TEST(test_pmk_follows_the_web_password);
     RUN_TEST(test_file_mode);
     RUN_TEST(test_errors);
     RUN_TEST(test_export_masks);

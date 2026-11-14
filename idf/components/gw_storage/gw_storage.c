@@ -17,7 +17,9 @@
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
+#include "esp_mac.h"
 #include "esp_random.h"
+#include "esp_timer.h"
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -27,6 +29,7 @@
 #include "gw_nvsraw.h"
 #include "gw_port.h"
 #include "gw_sfspill.h"
+#include "gw_wpa.h"
 #include "mbedtls/platform.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -1122,6 +1125,8 @@ static const struct {
     {"mqtt_pw", offsetof(gw_secrets_t, mqtt_password), GW_CRED_SIZE},
     {"wifi_pw", offsetof(gw_secrets_t, wifi_password), GW_PSK_SIZE},
     {"web_hash", offsetof(gw_secrets_t, web_password_hash), GW_PWHASH_SIZE},
+    /* issue #187: the WPA2 key of the access point (the PMK of the web password) */
+    {"ap_pmk", offsetof(gw_secrets_t, ap_pmk), GW_WPA_PMK_HEX_SIZE},
 };
 
 void gw_storage_get_secrets(gw_secrets_t *out)
@@ -1194,9 +1199,36 @@ static esp_err_t put_secrets(const gw_secrets_t *in)
     return err;
 }
 
+/* NET-5, issue #187: the WPA2 key of the access point is the web password. Only its PMK is kept
+ * (gw_wpa.h), calculated here once for each new password, never in the polling or publish path.
+ * The salt is the SSID, which comes from the MAC address of the access point. "" when the MAC
+ * cannot be read: the access point then uses the commissioning password. */
+static void ap_pmk(const char *password, char out[GW_WPA_PMK_HEX_SIZE])
+{
+    out[0] = '\0';
+    uint8_t mac[6];
+    char ssid[GW_WPA_SSID_SIZE];
+    esp_err_t e = esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "no WPA2 key for the access point: MAC address not readable (%s)",
+                 esp_err_to_name(e));
+        return;
+    }
+    gw_wpa_ssid(mac, ssid);
+    int64_t t0 = esp_timer_get_time();
+    if (!gw_wpa_pmk_hex(password, ssid, out)) {
+        ESP_LOGW(TAG, "no WPA2 key for the access point: the web password is not a WPA2 "
+                      "passphrase");
+        return;
+    }
+    ESP_LOGI(TAG, "WPA2 key of the access point '%s' (PMK of the web password) calculated in "
+                  "%lld ms", ssid, (long long)((esp_timer_get_time() - t0) / 1000));
+}
+
 /* CFG-3 / NET-5, issue #120: the claim window stores only the hash of the web password, under
- * the key of the configuration secrets ("web_hash"). The configuration document is not changed:
- * at the next boot a document without web.password takes the stored hash (gw_cfgdoc FILE mode). */
+ * the key of the configuration secrets ("web_hash"), and (issue #187) its PMK for the access
+ * point ("ap_pmk"). The configuration document is not changed: at the next boot a document
+ * without web.password takes the stored hash and PMK (gw_cfgdoc FILE mode). */
 esp_err_t gw_storage_set_web_password(const char *password, char *hash, size_t cap)
 {
     uint8_t salt[GW_AUTH_SALT_LEN];
@@ -1204,6 +1236,8 @@ esp_err_t gw_storage_set_web_password(const char *password, char *hash, size_t c
     if (!gw_auth_hash_password(password, salt, GW_AUTH_ITERATIONS, hash, cap)) {
         return ESP_ERR_INVALID_SIZE;
     }
+    char pmk[GW_WPA_PMK_HEX_SIZE];
+    ap_pmk(password, pmk);
     xSemaphoreTake(s_save_lock, portMAX_DELAY);   /* not in the middle of a configuration save */
     nvs_handle_t h;
     esp_err_t err = s_reset_done ? ESP_ERR_INVALID_STATE
@@ -1211,12 +1245,19 @@ esp_err_t gw_storage_set_web_password(const char *password, char *hash, size_t c
                                  : nvs_open(NVS_SECRETS, NVS_READWRITE, &h);
     if (err == ESP_OK) {
         err = nvs_set_str(h, "web_hash", hash);
+        if (err == ESP_OK && pmk[0] != '\0') {
+            err = nvs_set_str(h, "ap_pmk", pmk);
+        } else if (err == ESP_OK) {
+            err = nvs_erase_key(h, "ap_pmk");
+            err = err == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : err;
+        }
         if (err == ESP_OK) {
             err = nvs_commit(h);
         }
         nvs_close(h);
     }
     xSemaphoreGive(s_save_lock);
+    memset(pmk, 0, sizeof(pmk));
     if (err != ESP_OK) {
         hash[0] = '\0';
     }
@@ -1725,15 +1766,18 @@ static char *current_doc(size_t *len, bool *from_file, gw_cfg_err_t *err)
     return copy;
 }
 
-/* CFG-7: the web password is only ever stored as a salted PBKDF2 hash. */
-static bool hash_web_password(gw_config_t *cfg, char *out, size_t cap)
+/* CFG-7: the web password is only ever stored as a salted PBKDF2 hash, and (issue #187) as the
+ * PMK of the access point, both in @p sec. */
+static bool hash_web_password(gw_config_t *cfg, gw_secrets_t *sec)
 {
     uint8_t salt[GW_AUTH_SALT_LEN];
     esp_fill_random(salt, sizeof(salt));
-    bool ok = gw_auth_hash_password(cfg->web.password, salt, GW_AUTH_ITERATIONS, out, cap);
+    bool ok = gw_auth_hash_password(cfg->web.password, salt, GW_AUTH_ITERATIONS,
+                                    sec->web_password_hash, sizeof(sec->web_password_hash));
+    ap_pmk(cfg->web.password, sec->ap_pmk);
     memset(cfg->web.password, 0, sizeof(cfg->web.password));
     if (ok) {
-        strcpy(cfg->web.password_hash, out);
+        strcpy(cfg->web.password_hash, sec->web_password_hash);
     }
     return ok;
 }
@@ -1801,7 +1845,7 @@ bool gw_storage_load_config(gw_config_t *cfg, gw_cfg_err_t *err, const char **so
         return false;
     }
     if (doc.new_web_password) {
-        hash_web_password(cfg, doc.secrets.web_password_hash, sizeof(doc.secrets.web_password_hash));
+        hash_web_password(cfg, &doc.secrets);
     }
     if (from_file && doc.had_clear_secrets) {
         /* Migration (CFG-7): a file written by hand or by an older firmware carries secrets
@@ -2268,8 +2312,7 @@ esp_err_t gw_storage_save_config_lint(const char *json, size_t len, bool dry_run
             discarded = true;
         }
         if (doc.new_web_password &&
-            !hash_web_password(cfg, doc.secrets.web_password_hash,
-                               sizeof(doc.secrets.web_password_hash))) {
+            !hash_web_password(cfg, &doc.secrets)) {
             ret = ESP_FAIL;
         }
         if (ret == ESP_OK) {

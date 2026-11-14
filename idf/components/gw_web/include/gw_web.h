@@ -22,7 +22,10 @@
  *   POST /api/claim             #120: {"password": "..."}: the first web password, without a
  *                               credential, only while the claim window is open and only from
  *                               a client of the access point (gw_claim.h); CSRF check and the
- *                               login block of #64
+ *                               login block of #64. Issue #187: the answer gives the SSID, the
+ *                               plant addresses and the mDNS name for the success page
+ *   POST /api/ap/stop           #187: stop the access point a short time after the answer (202;
+ *                               409 when it does not run)
  *
  * Every other request needs HTTP Basic auth: the configured web.username and web.password, or,
  * while no web password is set, user "admin" with the device's commissioning password.
@@ -118,6 +121,13 @@ uint32_t gw_web_claim_window_s(void);
  * From any task.
  */
 bool gw_web_claim_open(uint32_t seconds);
+
+/**
+ * Issue #187: close the claim window now, if it is open (the access point stopped: the window
+ * accepts only its clients). @p why goes to the log. The claim_closed hook gets false. From any
+ * task, but not from the claim_closed hook itself.
+ */
+void gw_web_claim_close(const char *why);
 
 #if CONFIG_GW_IO_SIMULATED
 /**

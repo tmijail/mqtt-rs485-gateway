@@ -83,8 +83,9 @@ static void button_task(void *arg)
             gw_status_set(GW_ST_RESETTING, true);
             gw_buzzer_beep_wait(2);   /* IO-6: confirmation, before the long flash erase */
         } else if (ev == GW_BTN_COMMISSIONING) {
+            /* issue #187: the beep comes from the handler, only when it accepts the gesture
+             * (none while the gateway still starts) */
             ESP_LOGW(TAG, "BOOT pressed %lu ms: commissioning access point", (unsigned long)before);
-            gw_buzzer_beep(1);
         }
         if (ev != GW_BTN_NONE) {
             s_on_event(ev);

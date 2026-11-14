@@ -5,18 +5,36 @@ menu "Gateway: commissioning access point"
         depends on GW_WIFI
         default y
         help
-            Starts a WPA2 access point "GW-Setup-XXXXXX" (last bytes of the MAC) with the
-            device's commissioning password when there is no valid configuration (rejected,
-            or after a factory reset) and on a 2-10 s press of BOOT. The web UI is then at
-            the address of the access point (192.168.4.1, the ESP-IDF default): https with the
-            default web.https (plain HTTP only redirects), http with web.https false. The log
-            line gives the address in use.
-            Needs the Wi-Fi driver (CONFIG_GW_WIFI): QEMU has no radio.
+            Starts an access point "GW-Setup-XXXXXX" (last bytes of the MAC) when there is no
+            valid configuration (rejected, after a factory reset, safe mode, PSRAM fault) and on
+            a 2-10 s press of BOOT. WPA2 with the web password (issue #187: the gateway keeps
+            only its PMK), or with the device's commissioning password while no web password
+            is set; open (no key) only during a claim window (issue #120). The web UI is then
+            at the address of the access point (192.168.4.1, the ESP-IDF default): https with
+            the default web.https (plain HTTP only redirects), http with web.https false. The
+            log line gives the address in use.
+            Needs the Wi-Fi driver (CONFIG_GW_WIFI): QEMU has no radio (the emulator build
+            runs a simulated access point instead).
 
     config GW_SOFTAP_TIMEOUT_MIN
-        int "Minutes the access point stays up after a BOOT press (valid configuration)"
-        depends on GW_SOFTAP
+        int "Longest time of the access point after a BOOT press in normal mode (min)"
+        depends on GW_SOFTAP || GW_IO_SIMULATED
         range 1 1440
         default 30
+        help
+            With a valid configuration, the access point stops at the end of this time, also
+            with a client. In the modes without a valid configuration there is no longest time:
+            only GW_SOFTAP_IDLE_MIN stops it.
+
+    config GW_SOFTAP_IDLE_MIN
+        int "Minutes without a client that stop the access point (issue #187)"
+        depends on GW_SOFTAP || GW_IO_SIMULATED
+        range 1 60
+        default 5
+        help
+            The access point stops after this time without a client, in every mode (normal,
+            recovery, commissioning, safe mode, PSRAM fault). The time counts from the start
+            and from the moment the last client leaves. A new BOOT press of 2-10 s starts the
+            access point again.
 
 endmenu

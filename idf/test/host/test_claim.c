@@ -95,14 +95,15 @@ static void test_only_from_the_access_point(void)
     TEST_ASSERT_EQUAL(GW_CLAIM_OK, gw_claim_check(&c, false, true, "good-password", 3));
 }
 
-/* The password rules: at least 8 characters, at most GW_CRED_SIZE - 1 bytes, no control
- * characters, well-formed UTF-8. A refused password keeps the window open. */
+/* The password rules (issue #187): the rule of a WPA2 passphrase, 8 to 63 characters, each one
+ * printable ASCII (0x20 to 0x7E). A refused password keeps the window open. */
 static void test_password_rules(void)
 {
     TEST_ASSERT_TRUE(gw_claim_open(&c, false, MIN10, 0));
     TEST_ASSERT_EQUAL(GW_CLAIM_TOO_SHORT, gw_claim_check(&c, false, true, "", 1));
     TEST_ASSERT_EQUAL(GW_CLAIM_TOO_SHORT, gw_claim_check(&c, false, true, "1234567", 1));
     TEST_ASSERT_EQUAL(GW_CLAIM_OK, gw_claim_check(&c, false, true, "12345678", 1));
+    TEST_ASSERT_EQUAL_INT(63, GW_CLAIM_PW_MAX);
     char lng[GW_CLAIM_PW_MAX + 2];
     memset(lng, 'a', sizeof(lng) - 1);
     lng[sizeof(lng) - 1] = '\0';
@@ -112,12 +113,11 @@ static void test_password_rules(void)
     TEST_ASSERT_EQUAL(GW_CLAIM_BAD_CHAR, gw_claim_check(&c, false, true, "pass\tword1", 1));
     TEST_ASSERT_EQUAL(GW_CLAIM_BAD_CHAR, gw_claim_check(&c, false, true, "password\x7f", 1));
     TEST_ASSERT_EQUAL(GW_CLAIM_BAD_CHAR, gw_claim_check(&c, false, true, "password\xc3", 1));
-    /* spaces, a colon and UTF-8 letters are allowed (HTTP Basic splits at the first colon:
-     * the user name has none) */
-    TEST_ASSERT_EQUAL(GW_CLAIM_OK, gw_claim_check(&c, false, true, "pass word:\xc3\xb1", 1));
-    /* 8 characters, not 8 bytes: "ñ" x 4 is 8 bytes but 4 characters */
-    TEST_ASSERT_EQUAL(GW_CLAIM_TOO_SHORT,
-                      gw_claim_check(&c, false, true, "\xc3\xb1\xc3\xb1\xc3\xb1\xc3\xb1", 1));
+    /* letters outside ASCII: refused (a WPA2 passphrase; phones convert them differently) */
+    TEST_ASSERT_EQUAL(GW_CLAIM_BAD_CHAR, gw_claim_check(&c, false, true, "pass word:\xc3\xb1", 1));
+    /* spaces, a colon and the symbols are allowed (HTTP Basic splits at the first colon: the
+     * user name has none) */
+    TEST_ASSERT_EQUAL(GW_CLAIM_OK, gw_claim_check(&c, false, true, "pass word: ~!@#$%^&*", 1));
     TEST_ASSERT_TRUE(gw_claim_active(&c, 1));
     TEST_ASSERT_EQUAL_UINT32(0, c.claimed);
 }

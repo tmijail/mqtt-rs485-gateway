@@ -9,9 +9,9 @@
  *     at a restart (RAM only). A second BOOT gesture while it is open starts its time again.
  *   - Only a client of the commissioning access point may use it (gw_claim_from_ap): a person
  *     on the plant network cannot take the gateway while the window is open.
- *   - The new password obeys the rule of web.password in the configuration (at least 8
- *     characters) and the size of the field (GW_CRED_SIZE - 1), with no control characters and
- *     well-formed UTF-8 (it is typed into a browser and sent in HTTP Basic).
+ *   - The new password obeys the rule of web.password in the configuration, which is the rule of
+ *     a WPA2 passphrase (issue #187, gw_wpa.h): 8 to 63 characters, each one printable ASCII
+ *     (0x20 to 0x7E). It is also the WPA2 key of the access point (its PMK).
  *
  * Pure logic, no platform calls: the caller gives the time (ms) and the interface data.
  */
@@ -22,14 +22,15 @@
 #include <stdint.h>
 
 #include "gw_config.h"
+#include "gw_wpa.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define GW_CLAIM_PW_MIN 8
-#define GW_CLAIM_PW_MAX (GW_CRED_SIZE - 1)
-/* The largest request body of a claim: {"password": "<64 characters, each escaped>"} */
+#define GW_CLAIM_PW_MIN GW_WPA_PASS_MIN
+#define GW_CLAIM_PW_MAX GW_WPA_PASS_MAX
+/* The largest request body of a claim: {"password": "<63 characters, each escaped>"} */
 #define GW_CLAIM_BODY_MAX 512
 
 typedef struct {
@@ -47,7 +48,7 @@ typedef enum {
     GW_CLAIM_BAD_REQUEST,    /* not {"password": "<string>"} */
     GW_CLAIM_TOO_SHORT,
     GW_CLAIM_TOO_LONG,
-    GW_CLAIM_BAD_CHAR,       /* a control character, or not well-formed UTF-8 */
+    GW_CLAIM_BAD_CHAR,       /* a character outside printable ASCII (0x20 to 0x7E) */
 } gw_claim_result_t;
 
 void gw_claim_init(gw_claim_t *c);

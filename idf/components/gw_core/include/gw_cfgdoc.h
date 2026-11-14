@@ -13,7 +13,10 @@
  *                 a secret in clear in the file: it is used and moved to the secret store
  *
  * web.password is stored as a hash (gw_auth.h): a new clear-text password is returned in
- * cfg->web.password for the caller to hash, together with new_web_password.
+ * cfg->web.password for the caller to hash, together with new_web_password. Issue #187: the
+ * WPA2 key of the access point (the PMK of the web password, gw_wpa.h) follows the web password:
+ * kept with a kept password, removed with it, and "" for a new one (the caller calculates it
+ * together with the hash).
  * Pure C on cJSON; allocations go through gw_config_set_allocator.
  */
 #pragma once
@@ -22,6 +25,7 @@
 #include <stddef.h>
 
 #include "gw_config.h"
+#include "gw_wpa.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -33,6 +37,7 @@ typedef struct {
     char mqtt_password[GW_CRED_SIZE];
     char wifi_password[GW_PSK_SIZE];
     char web_password_hash[GW_PWHASH_SIZE];   /* gw_auth_hash_password format, "" = none */
+    char ap_pmk[GW_WPA_PMK_HEX_SIZE];   /* #187: PMK of the web password, 64 hex, "" = none */
 } gw_secrets_t;
 
 typedef enum {
@@ -44,7 +49,8 @@ typedef struct {
     gw_secrets_t secrets;     /* secrets of the resulting configuration */
     bool secrets_changed;     /* differ from the stored ones: store them */
     bool new_web_password;    /* cfg->web.password holds a new clear-text password to hash
-                               * into secrets.web_password_hash (then clear it) */
+                               * into secrets.web_password_hash and to turn into
+                               * secrets.ap_pmk (then clear it) */
     bool had_clear_secrets;   /* FILE mode: the document carried secrets in clear */
     char *doc;                /* the document without secrets, indented (2 spaces) */
     size_t doc_len;

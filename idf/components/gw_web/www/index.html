@@ -40,6 +40,8 @@ td input,td select{width:100%;margin:0;padding:3px 4px}
   <div id="st-cd" class="row hidden"><span id="cd-txt" class="bad"></span><a id="cd-get" href="/api/coredump" download>Download</a><button id="cd-del">Erase</button><span id="cd-msg" class="mut"></span></div></div>
  <div class="card"><h2>Network and MQTT</h2><div id="st-net"></div>
   <div class="row"><button id="rebirth" title="Send the NBIRTH and every DBIRTH again, with the same bdSeq. Use it when a host shows alias_N in place of the tag names.">Rebirth</button><span id="rb-msg" class="mut"></span></div></div>
+ <div class="card"><h2>Access point</h2><div id="st-ap" class="mut"></div>
+  <div class="row"><button id="ap-stop" class="hidden" title="Stop the Wi-Fi access point now. To start it again, push the BOOT button for 2 to 10 s.">Close the access point</button><span id="ap-msg" class="mut"></span></div></div>
  <div class="card"><h2>Modbus devices</h2><div id="st-mb" class="mut">no devices</div></div>
  <div class="card"><h2>Local I/O</h2><div id="st-io"></div>
   <div class="row"><button id="settime" title="Send the time of this computer to the gateway and its RTC. Use it on a network with no time server: without a valid time the gateway publishes only the births, no NDATA or DDATA.">Set the time from the browser</button><span id="tm-msg" class="mut"></span></div></div>
@@ -131,7 +133,8 @@ const HELP={
  type:"Optional template (Sparkplug Template). UMH Core shows no value for a template instance; with naming umh the tags go out as plain metrics.",
  naming:"umh = the UMH preset: the name warnings become errors, each device gets Devices/<name>/Online, and typed devices and the Modbus counters go out as plain metrics.",
  name:"The last levels of the location, with ':' between them. The device ID is the device prefix, ':' and this name.",
- bytes:"Type bytes: the raw registers as a Sparkplug Bytes metric. UMH Core shows no value for Bytes."
+ bytes:"Type bytes: the raw registers as a Sparkplug Bytes metric. UMH Core shows no value for Bytes.",
+ webpw:"8 to 63 characters: letters A-Z and a-z, digits, spaces and the symbols of a keyboard. It is also the Wi-Fi password of the access point GW-Setup-XXXXXX."
 };
 /* #170: the UMH topic of a metric, with the rules of UMH Core (docs/reference/umh-names-and-topics.md):
    the device ID gives the location (':' and '.' start a level), each character outside
@@ -155,7 +158,7 @@ function renderForms(){
  $("#f-mqtt").innerHTML=field("mqtt.host","Broker","str")+field("mqtt.port","Port","int")+field("mqtt.client_id","Client ID (empty = edge node)","str")+field("mqtt.username","User","str")+field("mqtt.password","Password","pw")+field("mqtt.keepalive_s","Keepalive (s)","int");
  $("#f-spb").innerHTML=field("sparkplug.group_id","Group ID","str",0,0,{ml:32})+field("sparkplug.edge_node_id","Edge node ID","str",0,0,{ml:32,help:"For UMH Core: the location of the gateway, with ':' between the levels."})+field("sparkplug.primary_host_id","Primary host ID","str",0,0,{ml:32,help:HELP.phost})+field("sparkplug.naming","Naming","sel",NAMING,true,{help:HELP.naming});
  $("#f-rs485").innerHTML=field("rs485.baud","Baud rate","int")+field("rs485.parity","Parity","sel",PAR,true)+field("rs485.stop_bits","Stop bits","int")+field("rs485.response_timeout_ms","Timeout (ms)","int")+field("rs485.retries","Retries","int")+field("rs485.inter_frame_delay_ms","Inter-frame delay (ms)","int")+field("local_io.di_debounce_ms","Debounce DI (ms)","int");
- $("#f-web").innerHTML=field("web.username","User","str")+field("web.password","Password (min. 8)","pw")+field("web.port","Port","int");
+ $("#f-web").innerHTML=field("web.username","User","str")+field("web.password","Password (8 to 63)","pw",0,0,{ml:63,help:HELP.webpw})+field("web.port","Port","int");
  renderPrefix();
  const devs=cfg.devices||[];
  $("#f-dev").innerHTML=devs.map((d,i)=>`<div class="card"><div class="grid">${field(`devices.${i}.name`,"Name","str",0,0,{ml:39,help:HELP.name})+field(`devices.${i}.unit_id`,"Unit ID","int")+field(`devices.${i}.poll_ms`,"Poll interval (ms)","int")+field(`devices.${i}.offline_after`,"Offline after (cycles)","int")+field(`devices.${i}.type`,"Type (template)","str",0,0,{ml:39,help:HELP.type})}</div>
@@ -252,6 +255,7 @@ async function poll(){
   `<br>Time: ${new Date(s.time.utc_s*1000).toISOString()} · ${s.time.synced?yes(true,"synchronized by SNTP",""):s.time.source==="rtc"?"from the RTC (not synchronized)":s.time.source==="browser"?"set from the browser (not synchronized)":`<span class="bad">no valid time: births only, no NDATA or DDATA</span>`} · RTC ${esc(s.time.rtc.status)}`;
  const cd=s.core_dump||{};$("#st-cd").classList.toggle("hidden",!cd.present);$("#cd-txt").textContent=cd.present?`Core dump in flash: ${cd.size} B (${cd.state}). It can contain secrets: keep the file safe, and erase the dump after the download.`:"";
  sd(s);
+ ap(s.ap);
  const f=await api("GET","/api/firmware");if(f.status!==200||!f.json)return;const w=f.json;
  const OS={empty:"empty",previous:"previous",new:"set to boot",rejected:"rejected",invalid:"invalid (its verification failed)"};
  $("#st-fw").innerHTML=`Running: ${esc(w.running)} in ${esc(w.slot)}${w.trial?` · <span class="bad">testing: it must reach ${esc(w.expected_mode)} mode${w.trial_left_s?`, ${w.trial_left_s} s left`:""}</span>`:""}`+
@@ -273,6 +277,20 @@ function sd(s){const c=s.card||{},p=s.spill,f=s.card_format||{};sdc=c;
  $("#st-sd").innerHTML=h;$("#sd-fmt").disabled=f.state==="running";$("#sd-rst").classList.toggle("hidden",f.state!=="done");
 }
 function sdmsg(t,c){const m=$("#sd-msg");m.textContent=t;m.className=c||"mut"}
+/* #187: the access point (NET-5): its state, and the button that closes it */
+const APS={request:"closed on request",idle:"stopped: no client for the idle time",time:"stopped: end of its maximum time"};
+const dur=s=>s>=60?`${Math.floor(s/60)} min ${s%60} s`:`${s} s`;
+function ap(a){const b=$("#ap-stop"),e=$("#st-ap");
+ if(!a||!a.available){e.textContent="This build has no access point.";b.classList.add("hidden");return}
+ if(a.running){
+  e.innerHTML=`<b>${esc(a.ssid)}</b> is on${a.simulated?" (simulated: the emulator has no radio)":""}. `+
+   (a.security==="open"?`<span class="bad">It is open (no Wi-Fi password) for the claim window: ${dur(a.open_left_s)} more.</span>`:`Wi-Fi password: ${a.key==="web_password"?"the web password":"the commissioning password (on the serial console)"}.`)+
+   ` Clients: ${a.clients}.<br>`+(a.left_s==null?"It stays on while a client is connected.":`It stops in ${dur(a.left_s)}${a.clients?"":" if no client connects"}.`);
+ }else e.textContent=`Off${APS[a.last_stop]?` (${APS[a.last_stop]})`:""}. To start it, push the BOOT button of the gateway for 2 to 10 s.`;
+ b.classList.toggle("hidden",!a.running);
+}
+$("#ap-stop").onclick=async()=>{if(!confirm("Close the access point? Its clients lose the connection. To start it again, push the BOOT button for 2 to 10 s."))return;
+ const r=await api("POST","/api/ap/stop"),m=$("#ap-msg");m.textContent=r.status===202?"The access point stops in a few seconds.":`Not closed (${r.status}): ${(r.json||{}).error||""}`;m.className=r.status===202?"ok":"bad"};
 $("#sd-fmt").onclick=async()=>{const n=sdc.other_entries>0?`\nThe card has ${sdc.other_entries} files or folders that are not from the gateway: the format also erases them.`:"";
  if(prompt(`The format erases ALL the contents of the microSD card, also the samples that wait for the send.${n}\nThe card is only for the gateway. Restart the gateway after the format.\nType FORMAT to confirm:`)!=="FORMAT"){sdmsg("Not formatted: no confirmation.");return}
  const r=await api("POST","/api/card/format?confirm=1");sdmsg(r.status===202?"Format started: the card state above shows the progress.":`Not formatted (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};

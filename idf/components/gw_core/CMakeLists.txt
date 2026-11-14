@@ -3,6 +3,7 @@
 # Builds as an ESP-IDF component or, outside IDF, as a plain static library for
 # the host unit tests (test/host).
 set(GW_CORE_SRCS
+    src/gw_aplife.c
     src/gw_auth.c
     src/gw_authlimit.c
     src/gw_backoff.c
@@ -43,6 +44,7 @@ set(GW_CORE_SRCS
     src/gw_syslog.c
     src/gw_tagdb.c
     src/gw_utf8.c
+    src/gw_wpa.c
     src/mb_master.c
     src/mb_rtu.c
     src/spb.c
