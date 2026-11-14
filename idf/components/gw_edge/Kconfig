@@ -62,14 +62,6 @@ menu "Gateway: Sparkplug / MQTT"
         int "Reconnect backoff maximum (ms)"
         default 60000
 
-    config GW_SNTP_WAIT_MS
-        int "Wait for SNTP before the first MQTT connection (ms)"
-        range 0 30000
-        default 3000
-        help
-            Births carry better timestamps if the clock is set first. The connection
-            proceeds without synchronised time once this expires.
-
     config GW_SF_SAMPLES
         int "Store & forward: samples kept in the RAM ring (24 B each)"
         range 64 8192 if GW_EMU_NO_PSRAM

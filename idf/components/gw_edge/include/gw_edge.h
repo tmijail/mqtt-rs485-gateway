@@ -92,13 +92,13 @@ bool gw_edge_time_synced(void);
 gw_clock_source_t gw_edge_time_source(void);
 
 /** Issue #160: the clock is valid for timestamps (gw_clock_valid of the source). Without it the
- *  gateway publishes the births only: no NDATA or DDATA, and stores nothing. */
+ *  gateway opens no MQTT session (no CONNECT, no NBIRTH) and stores nothing. */
 bool gw_edge_time_valid(void);
 
 /** Issue #160, POST /api/time: set the system clock to @p utc_ms (a plausible time,
  *  gw_clock_plausible_ms) and store it in the RTC. The source becomes "browser" (not
  *  synchronised: TIME-3 stays false). False, and nothing changes, if SNTP synchronised the clock
- *  or the time is not plausible. Any task; the Sparkplug task does the rebirth if needed. */
+ *  or the time is not plausible. Any task; it wakes the Sparkplug task, which connects. */
 bool gw_edge_set_browser_time(int64_t utc_ms);
 void gw_edge_notify_device(uint16_t dev);
 void gw_edge_notify_io(void);

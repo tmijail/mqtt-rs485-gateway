@@ -3068,61 +3068,105 @@ def stamps(p):
     return [p.timestamp] + [m.timestamp for m in p.metrics]
 
 
+def node_msgs(node, since, kinds=("NBIRTH", "DBIRTH", "NDATA", "DDATA")):
+    """Sparkplug messages of @node (of the types @kinds) captured at or after @since."""
+    return [m for m in CAPTURE if m[0] >= since and len(m[1].split("/")) > 3
+            and m[1].split("/")[2] in kinds and m[1].split("/")[3] == node]
+
+
 def time_data(node, since):
     """NDATA and DDATA of @node captured at or after @since."""
-    return [m for m in CAPTURE if m[0] >= since and m[1].split("/")[2:4] in
-            (["NDATA", node], ["DDATA", node])]
+    return node_msgs(node, since, ("NDATA", "DDATA"))
 
 
 def now_ms():
     return int(time.time() * 1000)
 
 
+WAIT_CLOCK_RX = r"edge: waiting for a valid clock: no MQTT connection and no NBIRTH until then"
+BATTERY_RX = r"the RTC lost the time while the power was off \(OS bit\): examine the RTC battery"
+CLOCK_WINDOW_S = 8   # issue #160: the bounded time in which no CONNECT may come (the old 3 s wait x2)
+
+
+def broker_clients(work, client, offset):
+    """CONNECTs of @client in the main broker's log after its first @offset characters."""
+    text = (work / "mosquitto.log").read_text(errors="replace")[offset:]
+    return re.findall(rf"New client connected from \S+ as {re.escape(client)} \(", text)
+
+
+def broker_log_len(work):
+    try:
+        return len((work / "mosquitto.log").read_text(errors="replace"))
+    except OSError:
+        return 0
+
+
 def run_valid_time(args, work, slave):
-    """Issue #160 (TIME-1; tck-id-payloads-timestamp-in-UTC, tck-id-payloads-metric-timestamp-in-UTC)
-    in two boots of GW31, each a power-on (the simulated PCF85063 has its OS bit set, so no time
-    from it) with the SNTP responder silent. Without a valid clock the births go out with 1970
-    timestamps, but no NDATA or DDATA, while a tag changes, DI/1 pulses and the diagnostics period
-    passes. Boot 1: POST /api/time (the web UI's button) with the CSRF and password checks of every
-    write, then a rebirth with UTC timestamps and the values of the changes, and DATA with UTC
-    timestamps; the source is "browser", Time Synced stays false. Boot 2: SNTP answers late, then
-    the same rebirth; a time from the browser is refused (409) over a clock that SNTP synchronises.
-    No NDATA or DDATA of the node in either boot has a timestamp before 2020."""
+    """Issue #160, decision of the product owner of 2026-11-14 (TIME-1;
+    tck-id-message-flow-edge-node-birth-publish-connect, tck-id-topics-nbirth-timestamp,
+    tck-id-payloads-nbirth-timestamp, tck-id-payloads-timestamp-in-UTC,
+    tck-id-payloads-metric-timestamp-in-UTC, tck-id-topics-nbirth-bdseq-increment), in two boots
+    of GW31, each a power-on (the simulated PCF85063 has its OS bit set, so no time from it) with
+    the SNTP responder silent. Without a valid clock the gateway opens no MQTT session: no CONNECT
+    reaches the broker and no message of the node comes in a bounded window after the log line of
+    the wait, while a tag changes and DI/1 pulses. The log, the shell, /api/status and the LED show
+    the wait and the battery hint. Boot 1: POST /api/time (the web UI's button) with the CSRF and
+    password checks of every write, then the first CONNECT (bdSeq 0) and the NBIRTH with UTC
+    timestamps and the values of the changes, no rebirth, and DATA with UTC timestamps; the source
+    is "browser", Time Synced stays false. Boot 2: SNTP answers late, then the first NBIRTH with UTC
+    timestamps and Time Synced true; a time from the browser is refused (409) over a clock that SNTP
+    synchronises. No message of the node in either boot has a timestamp before 2020."""
     node = "GW31"
     nbirth_t, dbirth_t = f"{T}/NBIRTH/{node}", f"{T}/DBIRTH/{node}/{DEVICE}"
     ndata_t, ddata_t = f"{T}/NDATA/{node}", f"{T}/DDATA/{node}/{DEVICE}"
     cfg = node_config(node)
     cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
     obs = Observer()
-    utc = (lambda p: p.timestamp >= Y2020_MS)
     volt = (lambda p: metric(p, alias=ALIAS["Voltage"]))
     SNTP_PAUSED.set()
     try:
         # ---- boot 1: the time from the browser
         t0 = time.monotonic()
+        blog0 = broker_log_len(work)
         gw = boot_variant(args, work, "time", cfg)
-        nb = obs.wait(nbirth_t, 60)
-        db = obs.wait(dbirth_t, 10)
+        waiting = gw.wait_log(WAIT_CLOCK_RX, 60, t0)
         slave.set_float(4, 0, 236.0)
         gw.console("di 1 1")
         time.sleep(0.5)
         gw.console("di 1 0")
-        time.sleep(12)   # the change read (poll_ms 1 s), DI/1, and one diagnostics_s (10 s)
-        before = time_data(node, t0)
+        # a bounded window after the evidence of the wait: no CONNECT and no message of the node
+        time.sleep(CLOCK_WINDOW_S)
+        early = node_msgs(node, t0)
+        conns = broker_clients(work, node, blog0)
+        tried = gw.find(r"edge: connecting to ", t0)
+        battery = gw.find(r"io: RTC: " + BATTERY_RX, t0) + gw.find(r"edge: " + BATTERY_RX, t0)
+        led = gw.find(r"led: status: waiting for a valid clock", t0)
         st0, _, b0 = http("GET", "/api/status")
-        tm0 = (as_json(b0) or {}).get("time", {})
-        asked, h = gw.shell("status", [r"^time\s+1970-.*NOT valid \(no SNTP, RTC or browser time "
-                                       r"yet\): births only, no NDATA/DDATA"])
-        shown0 = list(h.values())[0]
-        check("Issue #160 without a valid clock (no SNTP, RTC OS bit set): NBIRTH and DBIRTH go out "
-              "(1970 timestamps), no NDATA or DDATA while a tag changes, DI/1 pulses and the "
-              "diagnostics period passes; /api/status time.valid false, source none; shell",
-              nb and db and nb[2].timestamp < Y2020_MS and not before and st0 == 200
-              and tm0.get("valid") is False and tm0.get("source") == "none"
-              and tm0.get("synced") is False and shown0,
-              f"NBIRTH {nb[2].timestamp if nb else None}, DBIRTH {'yes' if db else 'no'}; "
-              f"{len(before)} NDATA/DDATA; /api/status {st0} {tm0}; "
-              + " | ".join(gw.find(r"^time\s", asked)))
+        s0 = as_json(b0) or {}
+        tm0 = s0.get("time", {})
+        asked, h = gw.shell("status", [
+            r"^network\s+up, MQTT waiting for a valid clock",
+            r"^time\s+1970-.*NOT valid \(no SNTP, RTC or browser time yet\)",
+            r"^clock\s+waiting for a valid clock: no MQTT connection and no NBIRTH until then\. "
+            r"Make sure .*Set the time from the browser",
+            r"^battery\s+" + BATTERY_RX + r" \(a rechargeable 3 V cell, for example ML1220; never "
+            r"a CR1220\)"])
+        shown0 = all(h.values())
+        check("Issue #160 without a valid clock (no SNTP, RTC OS bit set): the gateway waits (log) "
+              f"and sends no CONNECT and no message for {CLOCK_WINDOW_S} s after it, while a tag "
+              "changes and DI/1 pulses; battery hint in the log; LED 'waiting for a valid clock'; "
+              "/api/status time.valid false, source none, waiting true, rtc.lost true, MQTT not "
+              "connected; shell (MQTT line, time, clock and battery hints)",
+              waiting and not early and not conns and not tried and len(battery) >= 2 and led
+              and st0 == 200 and tm0.get("valid") is False and tm0.get("source") == "none"
+              and tm0.get("synced") is False and tm0.get("waiting") is True
+              and (tm0.get("rtc") or {}).get("lost") is True
+              and (s0.get("mqtt") or {}).get("connected") is False and shown0,
+              f"wait logged {'yes' if waiting else 'no'}; {len(early)} message(s) of the node "
+              f"({[m[1] for m in early[:3]]}); broker CONNECTs {len(conns)}; attempts logged "
+              f"{len(tried)}; battery lines {len(battery)}; LED {'yes' if led else 'no'}; "
+              f"/api/status {st0} {tm0}, mqtt {s0.get('mqtt')}; shell "
+              f"{[p[:20] for p, v in h.items() if not v]} missing")
 
         refused = {
             "no X-Requested-With": http("POST", "/api/time", {"utc_ms": now_ms()},
@@ -3139,37 +3183,46 @@ def run_valid_time(args, work, slave):
         still = (as_json(b1) or {}).get("time", {}).get("valid")
         check("Issue #160 POST /api/time: CSRF (no X-Requested-With, other Origin) 403, wrong "
               "password 401, a time before 2025, another key or no JSON 400; the clock stays not "
-              "valid",
+              "valid and no CONNECT comes",
               refused == {"no X-Requested-With": 403, "other Origin": 403, "wrong password": 401,
-                          "1970": 400, "utc_s": 400, "not JSON": 400} and still is False,
-              f"{refused}; time.valid after them {still}")
+                          "1970": 400, "utc_s": 400, "not JSON": 400} and still is False
+              and not broker_clients(work, node, blog0) and not node_msgs(node, t0),
+              f"{refused}; time.valid after them {still}; broker CONNECTs "
+              f"{len(broker_clients(work, node, blog0))}")
 
         obs.drain()
         sent = now_ms()
         t_set = time.monotonic()
         st2, _, b2 = http("POST", "/api/time", {"utc_ms": sent})
-        nb2 = obs.wait(nbirth_t, 15, utc, since=t_set)
-        db2 = obs.wait(dbirth_t, 10, utc, since=t_set)
-        rebirth = gw.wait_log(r"spb: clock now valid: rebirth", 5, t_set)
+        nb2 = obs.wait(nbirth_t, 20, since=t_set)
+        db2 = obs.wait(dbirth_t, 10, since=t_set)
         logged = gw.find(r"edge: clock set from the browser: \d{4}-\d\d-\d\dT.*Z \(was none", t_set)
+        resumed = gw.find(r"edge: clock valid \(source browser\) after a wait of \d+ s: connecting",
+                          t_set)
+        attempts = [int(x) for x in re.findall(r"bdSeq=(\d+)", " ".join(
+            gw.find(r"edge: connecting to .* bdSeq=\d+", t0)))]
         ts_all = stamps(nb2[2]) + stamps(db2[2]) if nb2 and db2 else []
         v2 = volt(db2[2]) if db2 else None
         cnt = counter_of(nb2[2]) if nb2 else None
         synced = metric(nb2[2], name="Node Info/Time Synced") if nb2 else None
-        check("Issue #160 POST /api/time 200 with the browser's time -> rebirth (NBIRTH seq 0, "
-              "DBIRTH) with every timestamp UTC (within 60 s), the value of the change made "
-              "without a valid clock (Voltage 236) and DI/1's pulse (Counter/1 1); Time Synced "
-              "false (TIME-3: SNTP only)",
+        check("Issue #160 POST /api/time 200 with the browser's time -> the first CONNECT of the "
+              "boot (bdSeq 0, tck-id-topics-nbirth-bdseq-increment) and the NBIRTH (seq 0) and "
+              "DBIRTH with every timestamp UTC (within 60 s), the value of the change made without "
+              "a valid clock (Voltage 236) and DI/1's pulse (Counter/1 1); Time Synced false "
+              "(TIME-3: SNTP only)",
               st2 == 200 and (as_json(b2) or {}).get("source") == "browser" and nb2 and db2
-              and rebirth and logged and nb2[2].seq == 0
+              and logged and resumed and nb2[2].seq == 0 and attempts[:1] == [0]
+              and bdseq_of(nb2[2]) == 0 and ts_all
               and all(abs(t - sent) < 60000 for t in ts_all) and v2 is not None
               and abs(v2.float_value - 236.0) < 1e-3 and cnt == 1 and synced is not None
               and synced.boolean_value is False,
               f"POST {st2} {b2[:80]!r}; NBIRTH {nb2[2].timestamp - sent if nb2 else None} ms from "
-              f"the browser's time, seq {nb2[2].seq if nb2 else None}; timestamps off by at most "
+              f"the browser's time, seq {nb2[2].seq if nb2 else None}, bdSeq "
+              f"{bdseq_of(nb2[2]) if nb2 else None}; attempts {attempts}; timestamps off by at most "
               f"{max((abs(t - sent) for t in ts_all), default=None)} ms; Voltage "
               f"{round(v2.float_value, 1) if v2 else None}; Counter/1 {cnt}; Time Synced "
-              f"{synced.boolean_value if synced else None}; {(logged or ['no log'])[0]}")
+              f"{synced.boolean_value if synced else None}; {(logged or ['no log'])[0]} | "
+              f"{(resumed or ['no resume log'])[0]}")
 
         t_chg = time.monotonic()
         slave.set_float(4, 0, 237.0)
@@ -3178,34 +3231,39 @@ def run_valid_time(args, work, slave):
         nd = obs.wait(ndata_t, 5, lambda q: metric(q, alias=ALIAS["DI/1"]) is not None, since=t_chg)
         st3, _, b3 = http("GET", "/api/status")
         tm3 = (as_json(b3) or {}).get("time", {})
-        asked, h = gw.shell("status", [r"^time\s+\d{4}-.*Z, set from the browser \(not synchronised\)"])
-        shown3 = list(h.values())[0]
-        check("Issue #160 after the time from the browser: DDATA and NDATA again, with UTC "
-              "timestamps; /api/status time.valid true, source browser, synced false; shell",
+        asked, h = gw.shell("status", [r"^time\s+\d{4}-.*Z, set from the browser \(not synchronised\)",
+                                       r"^network\s+up, MQTT connected"])
+        shown3 = all(h.values())
+        nbirths = node_msgs(node, t0, ("NBIRTH",))
+        check("Issue #160 after the time from the browser: DDATA and NDATA, with UTC timestamps, "
+              "and one NBIRTH only in the boot (no rebirth); /api/status time.valid true, source "
+              "browser, synced false, waiting false; shell",
               dd and nd and all(t >= Y2020_MS for t in stamps(dd[2]) + stamps(nd[2]))
-              and abs(volt(dd[2]).float_value - 237.0) < 1e-3 and st3 == 200
-              and tm3.get("valid") is True and tm3.get("source") == "browser"
-              and tm3.get("synced") is False and abs(tm3.get("utc_s", 0) - time.time()) < 60
-              and shown3,
+              and abs(volt(dd[2]).float_value - 237.0) < 1e-3 and len(nbirths) == 1
+              and st3 == 200 and tm3.get("valid") is True and tm3.get("source") == "browser"
+              and tm3.get("synced") is False and tm3.get("waiting") is False
+              and abs(tm3.get("utc_s", 0) - time.time()) < 60 and shown3,
               f"DDATA {stamps(dd[2]) if dd else None}; NDATA {stamps(nd[2]) if nd else None}; "
-              f"/api/status {tm3}; " + " | ".join(gw.find(r"^time\s", asked)))
-        boot1 = time_data(node, t0)
+              f"{len(nbirths)} NBIRTH; /api/status {tm3}; " + " | ".join(gw.find(r"^time\s", asked)))
+        boot1 = node_msgs(node, t0)
         gw.kill()
 
         # ---- boot 2: SNTP answers late
         t1 = time.monotonic()
+        blog1 = broker_log_len(work)
         gw = boot_variant(args, work, "time2", cfg)
-        nb = obs.wait(nbirth_t, 60, since=t1)
+        waiting = gw.wait_log(WAIT_CLOCK_RX, 60, t1)
         slave.set_float(4, 0, 238.0)
-        time.sleep(4)
-        before = time_data(node, t1)
+        time.sleep(CLOCK_WINDOW_S / 2)
+        before = node_msgs(node, t1)
+        conns = broker_clients(work, node, blog1)
         obs.drain()
         t_sntp = time.monotonic()
         SNTP_PAUSED.clear()
         synced_at = gw.wait_log(r"edge: time synchronised", 45, t1)
-        nb2 = obs.wait(nbirth_t, 15, utc, since=t_sntp)
-        db2 = obs.wait(dbirth_t, 10, utc, since=t_sntp)
-        rebirth = gw.wait_log(r"spb: clock now valid: rebirth", 5, t1)
+        nb2 = obs.wait(nbirth_t, 15, since=t_sntp)
+        db2 = obs.wait(dbirth_t, 10, since=t_sntp)
+        resumed = gw.find(r"edge: clock valid \(source sntp\) after a wait of \d+ s: connecting", t1)
         v2 = volt(db2[2]) if db2 else None
         synced = metric(nb2[2], name="Node Info/Time Synced") if nb2 else None
         t_chg = time.monotonic()
@@ -3214,26 +3272,29 @@ def run_valid_time(args, work, slave):
         st4, _, b4 = http("POST", "/api/time", {"utc_ms": now_ms()})
         st5, _, b5 = http("GET", "/api/status")
         tm5 = (as_json(b5) or {}).get("time", {})
-        check("Issue #160 SNTP late: births with 1970 timestamps, no NDATA/DDATA before it; when "
-              "SNTP answers, a rebirth with UTC timestamps and the current value (Voltage 238), "
-              "Time Synced true, then DDATA; POST /api/time over a clock that SNTP synchronises "
-              "-> 409; /api/status source sntp",
-              nb and nb[2].timestamp < Y2020_MS and not before and synced_at and nb2 and db2
-              and rebirth and all(t >= Y2020_MS for t in stamps(nb2[2]) + stamps(db2[2]))
+        nbirths = node_msgs(node, t1, ("NBIRTH",))
+        check("Issue #160 SNTP late: no CONNECT and no message before it; when SNTP answers, the "
+              "first NBIRTH (bdSeq 0) and DBIRTH with UTC timestamps and the current value "
+              "(Voltage 238), Time Synced true, one NBIRTH only, then DDATA; POST /api/time over "
+              "a clock that SNTP synchronises -> 409; /api/status source sntp",
+              waiting and not before and not conns and synced_at and resumed and nb2 and db2
+              and bdseq_of(nb2[2]) == 0
+              and all(t >= Y2020_MS for t in stamps(nb2[2]) + stamps(db2[2]))
               and v2 is not None and abs(v2.float_value - 238.0) < 1e-3 and synced is not None
-              and synced.boolean_value is True and dd and st4 == 409
+              and synced.boolean_value is True and len(nbirths) == 1 and dd and st4 == 409
               and tm5.get("source") == "sntp" and tm5.get("valid") is True,
-              f"first NBIRTH {nb[2].timestamp if nb else None}; {len(before)} NDATA/DDATA before "
-              f"SNTP; SNTP {'yes' if synced_at else 'no'}; rebirth {'yes' if rebirth else 'no'}, "
-              f"NBIRTH {nb2[2].timestamp if nb2 else None}; Voltage "
+              f"wait logged {'yes' if waiting else 'no'}; {len(before)} message(s) and "
+              f"{len(conns)} CONNECT(s) before SNTP; SNTP {'yes' if synced_at else 'no'}; "
+              f"{(resumed or ['no resume log'])[0]}; NBIRTH {nb2[2].timestamp if nb2 else None} "
+              f"bdSeq {bdseq_of(nb2[2]) if nb2 else None}; Voltage "
               f"{round(v2.float_value, 1) if v2 else None}; Time Synced "
-              f"{synced.boolean_value if synced else None}; DDATA {'yes' if dd else 'no'}; "
-              f"POST {st4} {b4[:90]!r}; /api/status {tm5}")
-        all_data = boot1 + time_data(node, t1)
-        early = [(m[1], min(stamps(m[2]))) for m in all_data if min(stamps(m[2])) < Y2020_MS]
-        check("Issue #160 no NDATA or DDATA of the node (both boots) has a payload or metric "
-              "timestamp before 2020",
-              all_data and not early, f"{len(all_data)} NDATA/DDATA; before 2020: {early[:3]}")
+              f"{synced.boolean_value if synced else None}; {len(nbirths)} NBIRTH; DDATA "
+              f"{'yes' if dd else 'no'}; POST {st4} {b4[:90]!r}; /api/status {tm5}")
+        all_msgs = boot1 + node_msgs(node, t1)
+        early = [(m[1], min(stamps(m[2]))) for m in all_msgs if min(stamps(m[2])) < Y2020_MS]
+        check("Issue #160 no NBIRTH, DBIRTH, NDATA or DDATA of the node (both boots) has a payload "
+              "or metric timestamp before 2020",
+              all_msgs and not early, f"{len(all_msgs)} messages; before 2020: {early[:3]}")
         gw.kill()
     finally:
         SNTP_PAUSED.clear()
@@ -5677,13 +5738,14 @@ def run_umh(args, work, slave):
               and not [t for t in uns if re.search(r"bdSeq|Node_Control|alias_", t or "")],
               f"missing {missing[:6]}; location of the device {sorted(dev_loc)}; {len(uns)} UNS "
               f"topics of the node, e.g. {sorted(uns)[:4]}")
-        # Issue #160: a sample read before the gateway had a valid time has a timestamp near 1970;
-        # with the timestamp line of the how-to UMH keeps that time
+        # Issue #160 (decision of 2026-11-14): no message goes out before a valid clock, so no
+        # UNS value has a timestamp near 1970 (with the timestamp line of the how-to UMH keeps the
+        # metric timestamp); for information only
         old = [(e.get("topic"), e["payload"].get("timestamp_ms")) for e in a.entries("uns")
                if isinstance(e.get("payload"), dict)
                and (e["payload"].get("timestamp_ms") or 2 ** 62) < 10 ** 12]
-        print(f"[INFO] issue #175/#160: {len(old)} UNS values with a timestamp before 2001 (read "
-              f"before the time was valid), e.g. {old[:3]}", flush=True)
+        print(f"[INFO] issue #175/#160: {len(old)} UNS values with a timestamp before 2001 "
+              f"(0 expected), e.g. {old[:3]}", flush=True)
         # UMH-2: the values. The input of the bridge has them exact; the tag_processor runs
         # JavaScript, where each number is a double: 64-bit integers beyond 2^53 lose digits.
         got_raw, got_uns, bad = {}, {}, []
@@ -6974,8 +7036,9 @@ def check_rtc(gw, obs, nb, t0, since_reboot, ndata_t, first_nbirth):
           f"first NBIRTH {first_ts.boolean_value if first_ts else None}; NBIRTH after the reboot "
           f"{reboot_ts.boolean_value if reboot_ts else None}; NDATA "
           f"{metric(ts_ndata[2], alias=55).boolean_value if ts_ndata else None}")
-    restore_store = gw.wait_log(r"edge: time synchronised", 0, since_reboot) and \
-        gw.find(r"clock now valid: rebirth", since_reboot) == []
+    # no NBIRTH after the one of the reboot: no rebirth when SNTP answers (issue #160)
+    reborn = [m for m in CAPTURE if nb and m[0] > nb[0] and m[1].split("/")[2:4] == ["NBIRTH", NODE]]
+    restore_store = gw.wait_log(r"edge: time synchronised", 0, since_reboot) and not reborn
     check("TIME-2 RTC: OS bit at power-on (no time from it), SNTP time stored in it; after a "
           "reboot with SNTP silent the clock comes from the RTC, NBIRTH timestamps valid at once, "
           "no rebirth when SNTP answers later",
@@ -6988,20 +7051,22 @@ def check_rtc(gw, obs, nb, t0, since_reboot, ndata_t, first_nbirth):
 
 
 def check_birth_stamps(t0):
-    """Issue #160 and the #175 interop test: a birth that went out with a valid clock (payload
-    timestamp in 2020 or later: after SNTP, or with the RTC time after NCMD Reboot) has only UTC
-    metric timestamps. A value read before the clock was valid (the DO boot state, read before
-    the RTC set the clock; a poll before SNTP) gets the time of the birth, not ~1970."""
+    """Issue #160 (decision of 2026-11-14) and the #175 interop test: no birth goes out before a
+    valid clock, so every NBIRTH and DBIRTH (after SNTP, and with the RTC time after NCMD Reboot)
+    has a UTC payload timestamp and only UTC metric timestamps. A value read before the clock was
+    valid (the DO boot state, read before the RTC set the clock; a poll before SNTP) gets the
+    time of the birth, not ~1970."""
     births = [m for m in CAPTURE if m[0] >= t0 and m[1].split("/")[2:4] in
-              (["NBIRTH", NODE], ["DBIRTH", NODE]) and m[2].timestamp >= Y2020_MS]
+              (["NBIRTH", NODE], ["DBIRTH", NODE])]
     early = [(m[1].split("/")[2], mm.name or mm.alias, mm.timestamp) for m in births
              for mm in m[2].metrics if mm.timestamp < Y2020_MS]
+    early += [(m[1].split("/")[2], "payload", m[2].timestamp) for m in births
+              if m[2].timestamp < Y2020_MS]
     nbirths = sum(1 for m in births if "/NBIRTH/" in m[1])
-    check("Issue #160 every metric timestamp of the NBIRTH and DBIRTH messages with a valid clock "
-          "(after SNTP, and with the RTC time after the reboot) is UTC: none before 2020",
+    check("Issue #160 every NBIRTH and DBIRTH (after SNTP, and with the RTC time after the reboot) "
+          "has a UTC payload timestamp and UTC metric timestamps: none before 2020",
           nbirths >= 2 and not early,
-          f"{nbirths} NBIRTH, {len(births) - nbirths} DBIRTH with a UTC payload timestamp; metric "
-          f"timestamps before 2020: {early[:4]}")
+          f"{nbirths} NBIRTH, {len(births) - nbirths} DBIRTH; timestamps before 2020: {early[:4]}")
 
 
 def modbus_rows(m):

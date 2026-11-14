@@ -69,6 +69,7 @@ bool gw_io_set_do(uint8_t index, bool on);
 typedef struct {
     bool present;          /* the chip answered */
     bool restored;         /* the system time came from it at boot */
+    bool lost;             /* #160: OS bit set at boot: it lost the time (examine the battery) */
     int status;            /* gw_rtc_status_t of the boot reading (or of the last store) */
     uint32_t stores;       /* times written after SNTP or a browser time (#160) */
     uint32_t store_errors;

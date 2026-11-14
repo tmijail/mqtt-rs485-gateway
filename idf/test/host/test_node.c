@@ -1646,28 +1646,31 @@ static void test_core_dump_metric(void)
     TEST_ASSERT_EQUAL(births, g_rec.count);
 }
 
-/* Issue #160 (TIME-1, tck-id-payloads-timestamp-in-UTC, tck-id-payloads-metric-timestamp-in-UTC):
- * without a valid clock the births go out (1970 timestamps) but no NDATA or DDATA does: no
- * live change, DO or write confirmation, Scan Rate, diagnostics, firmware state, Time Synced or
- * Core Dump.
- * When the clock becomes valid: a rebirth with the current values, and the samples taken before
- * get the time of the message. A clock valid from the start (RTC) changes nothing. */
+/* Issue #160, decision of the product owner of 2026-11-14 (TIME-1; tck-id-topics-nbirth-timestamp,
+ * tck-id-payloads-nbirth-timestamp, tck-id-payloads-timestamp-in-UTC,
+ * tck-id-payloads-metric-timestamp-in-UTC): without a valid clock nothing goes out. No NBIRTH:
+ * gw_node_session_up() and gw_node_rebirth() fail as a failed NBIRTH does (the node stays
+ * offline, gw_node_take_birth_failure), thus no DBIRTH, NDATA or DDATA either. When the clock
+ * becomes valid, nothing goes out by itself (no rebirth); the first births carry the current
+ * values with UTC timestamps, and the samples taken before get the time of the message. */
 #define T1970 5000ull                /* the clock before a source set it */
 #define TVALID 1793799462000ull      /* 2026-11-04T13:37:42Z */
-static void test_no_data_before_valid_time(void)
+static void test_no_birth_before_valid_time(void)
 {
-    TEST_ASSERT_FALSE(gw_node_set_time_valid(&node, true));   /* valid from the start: nothing */
+    gw_node_set_time_valid(&node, true);   /* valid from the start: nothing */
+    TEST_ASSERT_EQUAL(0, g_rec.count);
     gw_port_fake_time(T1970);
-    TEST_ASSERT_FALSE(gw_node_set_time_valid(&node, false));
+    gw_node_set_time_valid(&node, false);
     set_meter(true, 230.5, 12.3, 1);   /* sampled at 1000: before the clock was valid */
     gw_tagdb_set_di(0x01, 900);
-    gw_node_session_up(&node, 3);
-    TEST_ASSERT_EQUAL(2, g_rec.count);   /* NBIRTH and DBIRTH go out */
-    msg(0);
-    TEST_ASSERT_EQUAL_UINT64(T1970, dec.timestamp);
-    TEST_ASSERT_TRUE(node.births_untimed);
+    TEST_ASSERT_FALSE(gw_node_session_up(&node, 3));
+    TEST_ASSERT_FALSE(node.online);
+    TEST_ASSERT_FALSE(node.born_once);
+    TEST_ASSERT_TRUE(gw_node_take_birth_failure(&node));   /* the caller ends the session */
+    TEST_ASSERT_FALSE(gw_node_rebirth(&node));
+    TEST_ASSERT_TRUE(gw_node_take_birth_failure(&node));
+    TEST_ASSERT_EQUAL(0, g_rec.count);
 
-    recorder_clear();
     set_meter(true, 240.0, 12.3, 1);
     gw_node_device_changed(&node, 0);
     gw_tagdb_set_di(0x03, 950);
@@ -1677,25 +1680,18 @@ static void test_no_data_before_valid_time(void)
     gw_node_set_time_synced(&node, true);
     gw_node_set_core_dump(&node, true);
     gw_node_diag_tick(&node, 1000);
-    TEST_ASSERT_EQUAL_UINT32(60000, gw_node_diag_tick(&node, 61000));   /* period kept */
-    spb_metric_t cmds[2] = {{.name = "DO/3", .datatype = SPB_DT_BOOLEAN, .v.num = 1},
-                            {.alias = GW_ALIAS_SCAN_RATE, .datatype = SPB_DT_UINT32, .v.num = 500}};
-    send("spBv1.0/Plant1/NCMD/GW01", cmds, 2);
-    TEST_ASSERT_EQUAL_HEX8(0x04, g_rec.dout);   /* the commands apply ... */
-    TEST_ASSERT_EQUAL(1, g_rec.scan_rate_calls);
-    TEST_ASSERT_EQUAL(0, g_rec.count);          /* ... but no NDATA or DDATA goes out */
+    gw_node_diag_tick(&node, 61000);
+    TEST_ASSERT_EQUAL(0, g_rec.count);
 
-    /* an NCMD rebirth is a birth: it goes out, still without a valid clock */
-    spb_metric_t rb = {.name = "Node Control/Rebirth", .datatype = SPB_DT_BOOLEAN, .v.num = 1};
-    send("spBv1.0/Plant1/NCMD/GW01", &rb, 1);
-    TEST_ASSERT_EQUAL(2, g_rec.count);
-    TEST_ASSERT_TRUE(node.births_untimed);
-
-    /* the clock becomes valid: a rebirth with the current values and UTC timestamps */
-    recorder_clear();
+    /* the clock becomes valid: no message by itself (no rebirth) */
     gw_port_fake_time(TVALID);
-    TEST_ASSERT_TRUE(gw_node_set_time_valid(&node, true));
-    TEST_ASSERT_FALSE(node.births_untimed);
+    gw_node_set_time_valid(&node, true);
+    gw_node_set_time_valid(&node, true);   /* once */
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    TEST_ASSERT_FALSE(gw_node_take_birth_failure(&node));
+
+    /* the first session: the births with UTC timestamps and the current values */
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 0));
     TEST_ASSERT_EQUAL(2, g_rec.count);
     msg(0);
     TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NBIRTH/GW01", g_rec.msgs[0].topic);
@@ -1705,17 +1701,13 @@ static void test_no_data_before_valid_time(void)
         TEST_ASSERT_EQUAL_UINT64(TVALID, dec.m[i].timestamp);   /* no 1970 sample time */
     }
     TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[decoded_find_name(&dec, "DI/2")].num);
-    TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[decoded_find_name(&dec, "DO/3")].num);
     TEST_ASSERT_EQUAL_STRING("downloading", dec.m[decoded_find_name(&dec, "Firmware Update/State")].str);
-    TEST_ASSERT_EQUAL_DOUBLE(500, dec.m[decoded_find_name(&dec, "Node Control/Scan Rate")].num);
     msg(1);
     int v = decoded_find_name(&dec, "Voltage");
-    TEST_ASSERT_EQUAL_DOUBLE(240.0, dec.m[v].num);   /* the value of the change not published */
+    TEST_ASSERT_EQUAL_DOUBLE(240.0, dec.m[v].num);   /* the value read without a valid clock */
     TEST_ASSERT_EQUAL_UINT64(TVALID, dec.m[v].timestamp);
-    TEST_ASSERT_FALSE(gw_node_set_time_valid(&node, true));   /* once */
-    TEST_ASSERT_EQUAL(2, g_rec.count);
 
-    /* then DATA as usual: report by exception against the rebirth, the sample time if it is
+    /* then DATA as usual: report by exception against the births, the sample time if it is
      * valid, the time of the message if the sample is older than the valid clock */
     recorder_clear();
     gw_node_device_changed(&node, 0);
@@ -1749,7 +1741,8 @@ static void test_births_restamp_old_samples(void)
     set_meter(true, 230.5, 12.3, 1);    /* polled at 1000 ms */
     gw_node_set_time_valid(&node, false);
     gw_port_fake_time(TVALID);
-    TEST_ASSERT_FALSE(gw_node_set_time_valid(&node, true));   /* offline: no rebirth */
+    gw_node_set_time_valid(&node, true);
+    TEST_ASSERT_EQUAL(0, g_rec.count);  /* offline: nothing */
     gw_tagdb_set_di(0x02, TVALID + 5);  /* read after the clock was valid */
     gw_port_fake_time(TVALID + 10);
     gw_node_session_up(&node, 0);
@@ -1769,10 +1762,10 @@ static void test_births_restamp_old_samples(void)
     gw_port_fake_time(0);
 }
 
-/* Issue #160 with store & forward (SPB-14): without a valid clock nothing is stored and the
- * history (samples of an earlier boot, on the card) waits; once the clock is valid while
- * offline, changes are stored again, a sample older than the valid clock with the time of the
- * store. The history goes out after the births of a valid clock. */
+/* Issue #160 with store & forward (SPB-14): without a valid clock no session starts, nothing is
+ * stored and the history (samples of an earlier boot, on the card) waits. With a valid clock,
+ * the first births, then a change while offline is stored (a sample older than the valid clock
+ * with the time of the store). The history goes out after the births of the next session. */
 static void test_store_waits_for_valid_time(void)
 {
     static gw_sf_rec_t storage[64];
@@ -1784,21 +1777,24 @@ static void test_store_waits_for_valid_time(void)
     gw_port_fake_time(T1970);
     gw_node_set_time_valid(&node, false);
     set_meter(true, 230.5, 12.3, 1);
-    gw_node_session_up(&node, 1);
-    TEST_ASSERT_EQUAL(2, g_rec.count);
+    TEST_ASSERT_FALSE(gw_node_session_up(&node, 1));
+    gw_node_take_birth_failure(&node);
     TEST_ASSERT_EQUAL_size_t(1, gw_node_flush_history(&node, 10));   /* waits */
-    TEST_ASSERT_EQUAL(2, g_rec.count);
-    gw_node_session_down(&node);
     set_meter(true, 231.0, 12.3, 1);
     gw_node_device_changed(&node, 0);
     gw_tagdb_set_di(0x01, 900);
     gw_node_io_changed(&node);
     TEST_ASSERT_EQUAL_size_t(1, gw_sf_count(&sf));   /* nothing stored */
+    TEST_ASSERT_EQUAL(0, g_rec.count);
 
     gw_port_fake_time(TVALID);
-    TEST_ASSERT_FALSE(gw_node_set_time_valid(&node, true));   /* offline: no rebirth */
+    gw_node_set_time_valid(&node, true);
+    TEST_ASSERT_TRUE(gw_node_session_up(&node, 1));
+    TEST_ASSERT_EQUAL(2, g_rec.count);   /* NBIRTH and DBIRTH (231.0), no history yet */
+    gw_node_session_down(&node);
+    set_meter(true, 232.0, 12.3, 1);
     gw_port_fake_time(TVALID + 100);
-    gw_node_device_changed(&node, 0);   /* 231.0 against the births (230.5), sampled at 1000 */
+    gw_node_device_changed(&node, 0);   /* 232.0 against the births (231.0), sampled at 1000 */
     TEST_ASSERT_EQUAL_size_t(2, gw_sf_count(&sf));
 
     recorder_clear();
@@ -1814,7 +1810,7 @@ static void test_store_waits_for_valid_time(void)
     msg(3);
     TEST_ASSERT_TRUE(dec.m[0].is_historical);
     TEST_ASSERT_EQUAL_UINT64(TVALID + 100, dec.m[0].timestamp);    /* the time of the store */
-    TEST_ASSERT_EQUAL_DOUBLE(231.0, dec.m[0].num);
+    TEST_ASSERT_EQUAL_DOUBLE(232.0, dec.m[0].num);
     gw_port_fake_time(0);
 }
 
@@ -2545,7 +2541,7 @@ int main(void)
     RUN_TEST(test_diagnostics);
     RUN_TEST(test_time_synced);
     RUN_TEST(test_core_dump_metric);
-    RUN_TEST(test_no_data_before_valid_time);
+    RUN_TEST(test_no_birth_before_valid_time);
     RUN_TEST(test_store_waits_for_valid_time);
     RUN_TEST(test_births_restamp_old_samples);
     RUN_TEST(test_modbus_tcp_table);

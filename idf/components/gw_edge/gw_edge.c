@@ -55,6 +55,7 @@ _Static_assert(sizeof(gw_node_t) <= 21504, "gw_node_t is larger than 21 504 B (i
 #define STABLE_MAX_MS    60000  /* a session is stable after one keepalive period, at most this */
 #define SUBACK_TIMEOUT_MS 5000  /* NBIRTH waits this long at most for the SUBACK */
 #define TLS_ERROR_LOG_MS 10000  /* a TLS setup that cannot work is logged this often */
+#define CLOCK_WAIT_LOG_MS 600000 /* #160: the wait for a valid clock is logged this often */
 #define PHOST_WAIT_MS    30000  /* with backup brokers: no STATE online this long -> next broker */
 #define SF_MSGS_PER_LOOP 4      /* historical messages per loop: live data is not held back */
 /* Issue #186: with disable_auto_reconnect, esp-mqtt 1.1.0 uses network.reconnect_timeout_ms only
@@ -155,8 +156,6 @@ static uint8_t s_will[64];
 static gw_bdseq_t s_bdseqs;     /* SPB-3: the bdSeq of the CONNECT packets (RAM, 0 at boot) */
 static uint8_t s_bdseq;         /* the bdSeq of the current attempt (its Will) */
 static bool s_started;
-static bool s_prev_ip;
-static int64_t s_ip_since_us;
 static uint32_t s_attempt;      /* failed attempts since the last stable session (backoff) */
 static int64_t s_retry_at_us;   /* 0: no reconnect scheduled */
 static int64_t s_session_up_us; /* when the current session's NBIRTH went out */
@@ -186,7 +185,10 @@ static tls_verify_t s_vf;
 static mbedtls_x509_crt s_ca_chain;   /* mqtt.tls.ca_file, parsed once at boot */
 static char s_setup_error[200]; /* why the settings cannot work (TLS files): no connection attempted */
 static int64_t s_tls_logged_us;
-static bool s_waiting_time_logged;
+/* Issue #160: the MQTT session waits for a valid clock (no CONNECT before it) */
+static bool s_clock_waiting;
+static int64_t s_clock_wait_since_us;
+static int64_t s_clock_logged_us;
 static gw_brokersel_t s_bsel;   /* MQTT-6: which broker of the list the next attempt goes to */
 static gw_phost_t s_phost;      /* SPB-13: what the primary host last said */
 static bool s_waiting_host;     /* subscribed; NBIRTH waits for the host's STATE online */
@@ -1265,8 +1267,8 @@ static void end_failed_births(bool ndeath, const char *why)
     abort_session("births failed");
 }
 
-/* Issue #164: a rebirth (NCMD, console, SNTP) whose NBIRTH failed took the node offline; with the
- * connection still open, the session ends here (the hosts saw the earlier NBIRTH). */
+/* Issue #164: a rebirth (NCMD, console, REST API) whose NBIRTH failed took the node offline;
+ * with the connection still open, the session ends here (the hosts saw the earlier NBIRTH). */
 static void check_rebirth(void)
 {
     if (gw_node_take_birth_failure(s_node) && atomic_load(&s_mqtt_connected) &&
@@ -1511,10 +1513,9 @@ static void restart_now(void)
     esp_restart();
 }
 
-/* MQTT-4: TLS settings that cannot work (a missing or unreadable certificate) never connect;
- * and with certificate dates checked (CONFIG_MBEDTLS_HAVE_TIME_DATE) a TLS connection waits
- * for a valid clock (SNTP, the RTC, the browser: #160): without it every certificate would be
- * "not valid yet". */
+/* MQTT-4: TLS settings that cannot work (a missing or unreadable certificate) never connect.
+ * (With certificate dates checked, CONFIG_MBEDTLS_HAVE_TIME_DATE, a TLS connection also needs a
+ * valid clock: clock_can_start() holds every connection until then.) */
 static bool tls_can_start(int64_t now)
 {
     if (s_setup_error[0] != '\0') {
@@ -1524,17 +1525,49 @@ static bool tls_can_start(int64_t now)
         }
         return false;
     }
-#if CONFIG_MBEDTLS_HAVE_TIME_DATE
-    if (s_cfg->mqtt.tls.enabled && !time_ok()) {
-        if (!s_waiting_time_logged) {
-            s_waiting_time_logged = true;
-            ESP_LOGW(TAG, "TLS: waiting for a valid clock before connecting (SNTP, the RTC or the "
-                          "web UI; certificate dates are checked)");
-        }
-        return false;
-    }
-#endif
     return true;
+}
+
+/*
+ * Issue #160, decision of the product owner of 2026-11-14: no MQTT session before a valid clock
+ * (SNTP, the RTC at boot or the browser), with no time limit. The NBIRTH is the first message of
+ * a session (Sparkplug 3.0 §5: once connected, the Edge Node must publish an NBIRTH; the session
+ * comes first, tck-id-message-flow-edge-node-birth-publish-connect), and its payload timestamp
+ * is the time of the publish in UTC (tck-id-topics-nbirth-timestamp,
+ * tck-id-payloads-nbirth-timestamp, tck-id-payloads-timestamp-in-UTC). Thus no CONNECT before a
+ * valid clock. The wait is not an attempt: no bdSeq is taken (prepare_attempt runs only with
+ * the client: tck-id-topics-nbirth-bdseq-increment, the first CONNECT of the boot has bdSeq 0),
+ * and the backoff, the broker failover and the interface selection count nothing. The bus, the
+ * web server and the shell go on; the node stores nothing (gw_node_set_time_valid). No clock
+ * source makes the clock not valid again (gw_clock_after), so a session never waits here
+ * after it started. Not inlined: its log arguments must not grow the frame of reconcile().
+ */
+static __attribute__((noinline)) bool clock_can_start(int64_t now)
+{
+    if (time_ok()) {
+        if (s_clock_waiting) {
+            s_clock_waiting = false;
+            ESP_LOGI(TAG, "clock valid (source %s) after a wait of %lld s: connecting",
+                     gw_clock_source_key(gw_edge_time_source()),
+                     (long long)((now - s_clock_wait_since_us) / 1000000));
+        }
+        return true;
+    }
+    if (!s_clock_waiting) {
+        s_clock_waiting = true;
+        s_clock_wait_since_us = now;
+        s_clock_logged_us = 0;
+    }
+    if (s_clock_logged_us == 0 || now - s_clock_logged_us >= CLOCK_WAIT_LOG_MS * 1000LL) {
+        s_clock_logged_us = now != 0 ? now : 1;
+        gw_io_rtc_info_t rtc;
+        gw_io_rtc_get(&rtc);
+        ESP_LOGW(TAG, "%s", gw_clock_hint_text(GW_CLOCK_HINT_WAIT));
+        if (gw_clock_hints(GW_CLOCK_NONE, rtc.lost) & GW_CLOCK_HINT_BATTERY) {
+            ESP_LOGW(TAG, "%s", gw_clock_hint_text(GW_CLOCK_HINT_BATTERY));
+        }
+    }
+    return false;
 }
 
 /* #124: the card work (the boot recovery first) waits for the network, not to hold up the
@@ -1616,11 +1649,8 @@ static void reconcile(void)
     unsigned cg = atomic_load(&s_conn_gen);
     unsigned dg = atomic_load(&s_disc_gen);
     bool connected = atomic_load(&s_mqtt_connected);
-    if (ip && !s_prev_ip) {
-        s_ip_since_us = now;
-    }
-    s_prev_ip = ip;
     gw_status_set(GW_ST_NET_UP, ip);
+    gw_status_set(GW_ST_NO_CLOCK, !time_ok());   /* #160: the LED (IO-5) */
 
     unsigned rg = atomic_load(&s_route_gen);
     if (rg != s_handled_route) {
@@ -1703,21 +1733,19 @@ static void reconcile(void)
         }
     }
 
+    /* Issue #160: no birth, no NDATA/DDATA and nothing stored without a valid clock (the node
+     * knows it before a session can start below: the births of the session need it) */
+    gw_node_set_time_valid(s_node, time_ok());
     if (!s_started && ip && (s_retry_at_us == 0 || now >= s_retry_at_us) && tls_can_start(now) &&
-        (time_ok() || now - s_ip_since_us >= CONFIG_GW_SNTP_WAIT_MS * 1000LL)) {
+        clock_can_start(now)) {
         start_client(now);
     }
     if (s_started && s_retry_at_us != 0 && now >= s_retry_at_us && ip && !connected) {
         reconnect(now);
     }
 
-    /* Issue #160: no NDATA/DDATA (and nothing stored) without a valid clock; when it becomes
-     * valid (SNTP, browser), a rebirth if the births went out without it, so that hosts get
-     * UTC timestamps (tck-id-payloads-timestamp-in-UTC). Births with the RTC's time were
-     * valid: no rebirth for those. A failed NBIRTH: check_rebirth() below. */
-    gw_node_set_time_valid(s_node, time_ok());
-    /* TIME-3: NDATA Time Synced when SNTP synchronises after births timed by the RTC (the
-     * rebirth above already carried it otherwise) */
+    /* TIME-3: NDATA Time Synced when SNTP synchronises after births timed by the RTC or the
+     * browser */
     gw_node_set_time_synced(s_node, atomic_load(&s_time_synced));
     gw_node_set_core_dump(s_node, gw_coredump_present());   /* #132: NDATA after an erase */
     sync_firmware();
@@ -1768,10 +1796,7 @@ static TickType_t next_timeout(void)
         ms = r < ms ? r : ms;
     }
     ms = (int64_t)s_diag_wait_ms < ms ? (int64_t)s_diag_wait_ms : ms;
-    if (!s_started && s_prev_ip && s_retry_at_us == 0) {
-        int64_t r = (s_ip_since_us + CONFIG_GW_SNTP_WAIT_MS * 1000LL - now) / 1000;
-        ms = r < ms ? r : ms;
-    }
+    /* #160: no timer for the wait for a valid clock: SNTP and the browser wake the task */
     return ms > 0 ? pdMS_TO_TICKS(ms) + 1 : 1;
 }
 
@@ -2005,7 +2030,7 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         .ctx = NULL,
     };
     gw_node_init(s_node, cfg, &ops, info);
-    /* #160: no DATA before a valid clock. With a valid clock already (the RTC), false then true
+    /* #160: no birth and no DATA before a valid clock. With a valid clock already (the RTC), false then true
      * still marks this moment: a sample taken before the RTC set the clock (the DO boot state,
      * read before gw_io_rtc_restore) gets the time of its message, not ~1970 */
     gw_node_set_time_valid(s_node, false);
