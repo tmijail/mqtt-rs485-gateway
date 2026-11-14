@@ -108,6 +108,34 @@ def state_claim(h):
 # name -> function(harness) that boots the gateway and returns (Gateway, Basic auth or None)
 STATES = {"configured": state_configured, "claim": state_claim}
 
+
+def ap_on_with_client(gw):
+    """Issue #187: the access point of a configured gateway after a push of BOOT (WPA2 with the
+    web password, the maximum time of normal mode), with one client: the phone of the operator.
+    QEMU has no radio: the emulator-only 'apsim' gives the clients of the simulated model."""
+    gw.shell("apsim clients 1", [r"access point: 1 simulated client"])
+    e2e.boot_press(gw)
+    # the shell line, not the log line of the start: a push while it runs only starts the times
+    # again (no start line)
+    _, hits = gw.shell("ap", [r"^ap\s+'%s' on .*WPA2 with the web password, 1 client" %
+                              e2e.AP_SSID_RX], timeout=5, tries=4)
+    if None in hits.values():
+        raise SystemExit("the access point did not start with the web password")
+
+
+def close_ap(page):
+    """Click 'Close the access point', accept the confirmation, and open the page again when the
+    access point is off (the page polls only once: NO_TIMERS)."""
+    page.once("dialog", lambda d: d.accept())
+    page.click("#ap-stop")
+    page.locator("#ap-msg").filter(has_text="stops in a few seconds").wait_for(state="visible")
+    end = time.monotonic() + 20
+    while True:
+        page.wait_for_timeout(1000)
+        page.reload(wait_until="networkidle")
+        if page.locator("#st-ap").filter(has_text="Off").count() or time.monotonic() > end:
+            break
+
 # ---------------------------------------------------------------- the frozen values
 
 def no_hash(version):
@@ -131,6 +159,17 @@ FREEZE = {
     # the countdown of the claim page starts from the full window (claimsim 600)
     "/api/claim": {"left_s": 600},
 }
+# Issue #187: the values of the access point that change at each run (the time to the stop), and
+# the values that only the emulator gives, replaced with the values of the board. QEMU has no
+# radio: the access point is a model ("simulated": the board gives false), and the claim goes
+# over the emulated Ethernet ('claimsim ... eth'), so "ap.url" of the claim answer is the address
+# of the Ethernet; on the board it is the address of the access point.
+FREEZE["/api/status"].update({
+    "ap.simulated": False,
+    "ap.left_s": lambda v: None if v is None else 1680,   # 28 min of the 30 min maximum time
+    "ap.open_left_s": 0,
+})
+FREEZE["/api/claim"].update({"ap.url": "https://192.168.4.1/"})
 
 
 def freeze(doc, paths):
@@ -160,6 +199,8 @@ class Shot:
     or DESKTOP. @path: the page. @actions: what to do before the capture, each one of
     ("click", selector), ("fill", selector, text), ("press", selector, key), ("wait", selector)
     (visible), ("wait_text", selector, text), ("sleep", seconds), or a function(page).
+    @prep: a function(Gateway) that runs on the emulator before the page opens (for example
+    a push of BOOT); it changes the state for the shots after it.
     @wait: a selector that must be visible before the capture. @element: capture only this
     element (with @pad CSS pixels around it); else @full_page or the viewport. @auth: send the
     credential of the state (False: open the page without it). @alt: the text alternative to put
@@ -170,6 +211,7 @@ class Shot:
     path: str
     alt: str
     actions: list = field(default_factory=list)
+    prep: object = None
     wait: str = ""
     element: str = ""
     pad: int = 8
@@ -181,15 +223,38 @@ class Shot:
 SHOTS = [
     Shot("claim-page-phone", "claim", PHONE, "/claim", auth=False, wait="#form:not(.hidden)",
          element="main", pad=0,
-         alt="The page 'Set the web password' on a phone: the claim window is open for 10 min, "
-             "with two password fields and the button 'Set the password'."),
+         alt="The page 'Set the web password' on a phone: the claim window is open for 10 min. "
+             "The page tells that the web password is also the Wi-Fi password of the access "
+             "point, and it has two password fields and the button 'Set the password'."),
+    # issue #187: the claim changes the state (a web password is set); keep it after the page
+    Shot("claim-done-phone", "claim", PHONE, "/claim", auth=False, element="main", pad=0,
+         actions=[("wait", "#form:not(.hidden)"), ("fill", "#pw", DOCS_PASSWORD),
+                  ("fill", "#pw2", DOCS_PASSWORD), ("click", "#go")],
+         wait="#done:not(.hidden)",
+         alt="The page after the claim on a phone: 'The web password is set'. In 5 seconds, "
+             "the Wi-Fi network GW-Setup changes to WPA2 and asks for the new web password. "
+             "The steps tell how to connect again, and the page gives the addresses of the "
+             "gateway on the plant network."),
     Shot("status-page", "configured", DESKTOP, "/", wait="#st-mb table", full_page=True,
-         alt="The Status tab of the web UI: the gateway, the network and MQTT, the Modbus "
-             "devices, the local I/O, the firmware and the microSD card."),
+         alt="The Status tab of the web UI: the gateway, the network and MQTT, the access "
+             "point (off), the Modbus devices, the local I/O, the firmware and the microSD "
+             "card."),
     Shot("configuration-page", "configured", DESKTOP, "/",
          actions=[("click", "nav button[data-tab=config]")], wait="#f-mqtt input",
          alt="The Configuration tab of the web UI: the forms for the network, MQTT and "
              "Sparkplug."),
+    # issue #187: after the shots above, because a push of BOOT starts the access point
+    Shot("ap-card-phone", "configured", PHONE, "/", prep=ap_on_with_client,
+         element=".card:has(#st-ap)", wait="#ap-stop:not(.hidden)",
+         alt="The card 'Access point' of the Status tab on a phone: the access point GW-Setup "
+             "is on, its Wi-Fi password is the web password, it has 1 client, and it stops in "
+             "28 min. Below is the button 'Close the access point'."),
+    Shot("ap-card-closed-phone", "configured", PHONE, "/", prep=ap_on_with_client,
+         actions=[close_ap],
+         element=".card:has(#st-ap)", wait="#st-ap",
+         alt="The card 'Access point' after the button 'Close the access point': the access "
+             "point is off (closed on request). To start it, push the BOOT button of the "
+             "gateway for 2 to 10 s."),
 ]
 
 
@@ -316,9 +381,12 @@ def capture(browser, shot, auth, base):
         opts = dict(animations="disabled", caret="hide", type="png")
         if shot.element:
             box = page.locator(shot.element).first.bounding_box()
+            # the box is relative to the viewport, the clip of a full page to the page: add the
+            # scroll position (a click scrolls the page, and a reload keeps the position)
+            sx, sy = page.evaluate("[window.scrollX, window.scrollY]")
             p = shot.pad
             png = page.screenshot(full_page=True, clip={
-                "x": max(box["x"] - p, 0), "y": max(box["y"] - p, 0),
+                "x": max(box["x"] + sx - p, 0), "y": max(box["y"] + sy - p, 0),
                 "width": box["width"] + 2 * p, "height": box["height"] + 2 * p}, **opts)
         else:
             png = page.screenshot(full_page=shot.full_page, **opts)
@@ -385,6 +453,8 @@ def main():
             base = f"https://127.0.0.1:{e2e.HTTPS_PORT}"
             for s in shots:
                 auth = h.enter(s.state)
+                if s.prep:
+                    s.prep(h.gw)
                 png = capture(browser, s, auth, base)
                 written, size = write_png(png, out / f"{s.name}.png", a.lossless)
                 print(f"{s.name}.png: {'written' if written else 'unchanged'}, {size} bytes",

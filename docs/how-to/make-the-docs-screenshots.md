@@ -54,8 +54,8 @@ CAUTION: Add `-e DOCS_LOCK=/work/e2e.lock` when a different E2E run can use the 
 ## Add a shot
 
 1. Add an entry to `SHOTS` in `idf/tools/docs_shots.py`. Give the name, the state, the viewport (`PHONE` or `DESKTOP`), the page and the text alternative.
-2. If the shot needs a different state of the gateway, add a function to `STATES`.
-3. If the page shows a value that changes at each run, add its path to `FREEZE`.
+2. If the shot needs a different state of the gateway, add a function to `STATES`. For a small change of a state (for example a push of BOOT), give a function in `prep`.
+3. If the page shows a value that changes at each run, add its path to `FREEZE`. Do the same for a value that only the emulator shows, and use the value of the board.
 4. Do step 3 with `--only` and the name of the new shot.
 5. Do step 4.
 
