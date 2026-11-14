@@ -36,6 +36,26 @@ gw_clock_source_t gw_clock_after(gw_clock_source_t cur, gw_clock_source_t set)
     return set;
 }
 
+unsigned gw_clock_hints(gw_clock_source_t src, bool rtc_lost)
+{
+    return (gw_clock_valid(src) ? 0u : GW_CLOCK_HINT_WAIT) | (rtc_lost ? GW_CLOCK_HINT_BATTERY : 0u);
+}
+
+const char *gw_clock_hint_text(unsigned hint)
+{
+    switch (hint) {
+    case GW_CLOCK_HINT_WAIT:
+        return "waiting for a valid clock: no MQTT connection and no NBIRTH until then. Make sure "
+               "that the gateway can reach the SNTP server (ntp.server), or use \"Set the time "
+               "from the browser\" in the web UI (Status tab)";
+    case GW_CLOCK_HINT_BATTERY:
+        return "the RTC lost the time while the power was off (OS bit): examine the RTC battery "
+               "(a rechargeable 3 V cell, for example ML1220; never a CR1220)";
+    default:
+        return "";
+    }
+}
+
 bool gw_clock_plausible_ms(int64_t utc_ms)
 {
     return utc_ms >= GW_RTC_MIN_EPOCH * 1000LL && utc_ms <= GW_RTC_MAX_EPOCH * 1000LL + 999;

@@ -8,6 +8,8 @@
  *   commissioning         blue, slow blink (1 Hz): no configuration after a factory reset
  *   configuration error    red, fast blink (4 Hz)
  *   no network (no IP)     red, steady
+ *   no valid clock         magenta, slow blink (1 Hz): issue #160, no MQTT session before a
+ *                          valid clock (SNTP, the RTC or the browser)
  *   no MQTT session        amber, slow blink (1 Hz)
  *   Modbus device offline  green / orange alternating (1 Hz)
  *   operating              green, steady
@@ -36,6 +38,7 @@ extern "C" {
 #define GW_ST_CLAIM     (1u << 7)   /* CFG-3 / NET-5 claim window open (issue #120) */
 #define GW_ST_AP        (1u << 8)   /* NET-5 access point running (issue #187) */
 #define GW_ST_AP_OPEN   (1u << 9)   /* ... with no key (the open period of a claim window) */
+#define GW_ST_NO_CLOCK  (1u << 10)  /* issue #160: the MQTT session waits for a valid clock */
 
 void gw_status_set(uint32_t flag, bool on);
 

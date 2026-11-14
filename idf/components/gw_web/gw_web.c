@@ -1126,8 +1126,8 @@ static esp_err_t rebirth_post(httpd_req_t *req)
 
 /* TIME-1 / issue #160: the web UI's button "Set the time from the browser", for a network with
  * no time server and a gateway with no RTC time. {"utc_ms": <ms UTC>}: the gateway sets its
- * clock and the RTC; it publishes NDATA and DDATA again, after a rebirth if the births went out
- * without a valid clock. Same checks as every write (CSRF, then the password); in every mode
+ * clock and the RTC; in normal mode the Sparkplug task then connects (no MQTT session before a
+ * valid clock: the decision of 2026-11-14). Same checks as every write (CSRF, then the password); in every mode
  * (the RTC keeps the time for the next boot). Not over a clock that SNTP synchronises. */
 static esp_err_t time_post(httpd_req_t *req)
 {
@@ -1801,11 +1801,14 @@ static esp_err_t status_get(httpd_req_t *req)
     gw_io_rtc_info_t rtc;
     gw_io_rtc_get(&rtc);
     gw_clock_source_t src = gw_edge_time_source();   /* #160: "valid", source "browser" */
+    /* #160: "waiting": normal mode, and the MQTT session waits for a valid clock; rtc.lost: the
+     * OS bit was set at boot (examine the battery) */
     outf(o, "]},\"time\":{\"utc_s\":%lld,\"synced\":%s,\"valid\":%s,\"source\":\"%s\","
-             "\"rtc\":{\"present\":%s,\"status\":",
+             "\"waiting\":%s,\"rtc\":{\"present\":%s,\"lost\":%s,\"status\":",
          (long long)time(NULL), src == GW_CLOCK_SNTP ? "true" : "false",
          gw_clock_valid(src) ? "true" : "false", gw_clock_source_key(src),
-         rtc.present ? "true" : "false");
+         s_ctx.mode == GW_WEB_NORMAL && !gw_clock_valid(src) ? "true" : "false",
+         rtc.present ? "true" : "false", rtc.lost ? "true" : "false");
     out_str(o, rtc.present ? gw_rtc_status_str((gw_rtc_status_t)rtc.status) : "not answering");
     outf(o, ",\"stores\":%lu}}", (unsigned long)rtc.stores);
     status_card(o, c);

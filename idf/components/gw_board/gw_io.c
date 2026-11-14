@@ -20,6 +20,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "gw_bsp.h"
+#include "gw_clock.h"
 #include "gw_debounce.h"
 #include "gw_dout.h"
 #include "gw_localio.h"
@@ -345,7 +346,13 @@ void gw_io_rtc_restore(void)
     int64_t t = 0;
     s_rtc.status = gw_rtc_decode(regs, &t);
     if (s_rtc.status != GW_RTC_OK) {
-        ESP_LOGW(TAG, "RTC: %s: system time not set (until SNTP)", gw_rtc_status_str(s_rtc.status));
+        ESP_LOGW(TAG, "RTC: %s: system time not set (until SNTP or a time from the browser)",
+                 gw_rtc_status_str(s_rtc.status));
+        if (s_rtc.status == GW_RTC_STOPPED) {
+            /* #160: the battery keeps the time while the power is off (TIME-2) */
+            s_rtc.lost = true;
+            ESP_LOGW(TAG, "RTC: %s", gw_clock_hint_text(GW_CLOCK_HINT_BATTERY));
+        }
         return;
     }
     const struct timeval tv = {.tv_sec = (time_t)t, .tv_usec = 0};

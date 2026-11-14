@@ -347,7 +347,9 @@ static int cmd_status(int argc, char **argv)
             s_ctx.starting ? " (the gateway is still starting)" : "");
         out("network  %s, MQTT %s, Modbus %u/%u devices online\n",
                (f & GW_ST_NET_UP) ? "up" : "down",
-               (f & GW_ST_MQTT_UP) ? "connected" : "disconnected",
+               (f & GW_ST_MQTT_UP)    ? "connected"
+               : (f & GW_ST_NO_CLOCK) ? "waiting for a valid clock"   /* #160 */
+                                      : "disconnected",
                s_ctx.cfg->device_count - offline, s_ctx.cfg->device_count);
         gw_edge_status_t es;
         gw_edge_get_status(&es);
@@ -502,20 +504,26 @@ static int cmd_status(int argc, char **argv)
     time_t now = time(NULL);
     struct tm tm;
     gmtime_r(&now, &tm);
-    /* #160: without a valid clock only the births go out (no NDATA, DDATA or store) */
+    /* #160: without a valid clock no MQTT session (no NBIRTH, no DATA, nothing stored) */
     gw_clock_source_t src = gw_edge_time_source();
     out("time     %04d-%02d-%02dT%02d:%02d:%02dZ, %s; RTC ", tm.tm_year + 1900, tm.tm_mon + 1,
         tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
         src == GW_CLOCK_SNTP      ? "SNTP synchronised"
         : src == GW_CLOCK_RTC     ? "from the RTC (not synchronised)"
         : src == GW_CLOCK_BROWSER ? "set from the browser (not synchronised)"
-                                  : "NOT valid (no SNTP, RTC or browser time yet): births only, "
-                                    "no NDATA/DDATA");
+                                  : "NOT valid (no SNTP, RTC or browser time yet)");
     if (!rtc.present) {
         out("not answering\n");
     } else {
         out("%s, stored %lu time(s)%s\n", gw_rtc_status_str((gw_rtc_status_t)rtc.status),
             (unsigned long)rtc.stores, rtc.store_errors ? ", write errors" : "");
+    }
+    unsigned hints = gw_clock_hints(src, rtc.lost);
+    if ((hints & GW_CLOCK_HINT_WAIT) && s_ctx.cfg != NULL) {   /* normal mode: the session waits */
+        out("clock    %s\n", gw_clock_hint_text(GW_CLOCK_HINT_WAIT));
+    }
+    if (hints & GW_CLOCK_HINT_BATTERY) {
+        out("battery  %s\n", gw_clock_hint_text(GW_CLOCK_HINT_BATTERY));
     }
     out("counters");   /* IO-4: activations of each DI */
     for (int i = 0; i < 8; i++) {

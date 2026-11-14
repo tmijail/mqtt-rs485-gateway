@@ -5,9 +5,15 @@
  * Sparkplug requires UTC timestamps (tck-id-payloads-timestamp-in-UTC,
  * tck-id-payloads-metric-timestamp-in-UTC). Until a source sets the clock, it counts from 1970.
  * The sources, from the worst to the best: none, the RTC at boot (TIME-2), the browser (an
- * operator, POST /api/time), SNTP. The clock is valid when its source is not "none". The
- * gateway does not publish NDATA or DDATA, and does not store store & forward samples, while it
- * is not valid; the births still go out (gw_node_set_time_valid).
+ * operator, POST /api/time), SNTP. The clock is valid when its source is not "none". No source
+ * makes it not valid again (gw_clock_after).
+ *
+ * Decision of the product owner of 2026-11-14: while the clock is not valid, the gateway opens
+ * no MQTT session: no CONNECT, thus no NBIRTH (the NBIRTH is the first message of a session,
+ * and its timestamp is the time of the publish: tck-id-topics-nbirth-timestamp,
+ * tck-id-payloads-nbirth-timestamp). No NDATA, no DDATA and no store & forward sample either
+ * (gw_node_set_time_valid). There is no time limit. gw_clock_hints() tells the operator what to
+ * do.
  */
 #pragma once
 
@@ -52,6 +58,18 @@ typedef enum {
  */
 gw_clock_set_t gw_clock_parse_set(const char *json, size_t len, gw_clock_source_t cur,
                                   int64_t *utc_ms, char *why, size_t cap);
+
+/* Issue #160: what the operator must know about the clock (the log, the shell, the web UI). */
+#define GW_CLOCK_HINT_WAIT    0x1u   /* no valid clock: no MQTT session until one */
+#define GW_CLOCK_HINT_BATTERY 0x2u   /* the RTC lost the time at boot (OS bit): its battery */
+
+/** The GW_CLOCK_HINT_* bits for the clock source @p src and @p rtc_lost (the OS bit of the RTC
+ *  was set at boot). The battery hint stays after the clock became valid: the next power cut
+ *  loses the time again. */
+unsigned gw_clock_hints(gw_clock_source_t src, bool rtc_lost);
+
+/** The text for the operator of one GW_CLOCK_HINT_* bit ("" for any other value). */
+const char *gw_clock_hint_text(unsigned hint);
 
 #ifdef __cplusplus
 }

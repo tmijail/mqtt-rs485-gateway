@@ -46,6 +46,7 @@ During the selection, a Zephyr prototype was also made for a comparison. That pr
 | DI × 8 | Opto-isolated and bidirectional. They accept a dry contact or an active signal. An active input is a low level on the GPIO (pull-up) | GPIO 4–11 |
 | DO × 8 | Opto-isolated Darlington outputs that sink up to 500 mA, with a flyback diode. An active output is a low level on the pin of the expander | EXIO1–8 of a TCA9554 I²C expander at address 0x20 |
 | RTC | PCF85063 at address 0x51, on I²C, with an interrupt | SDA 42, SCL 41, INT 40 |
+| RTC battery | A holder for a 1220 coin cell (12 mm diameter, 2 mm thickness). It accepts only a rechargeable 3 V cell, for example an ML1220. The box does not contain a cell. The gateway requires the cell (TIME-2, issue #160) | — |
 | RGB LED | WS2812, RGB byte order | GPIO 38 |
 | Buzzer | Passive (it needs PWM) | GPIO 46 |
 | microSD | SDMMC, 1-bit mode | D0 45, CMD 47, CLK 48 |
@@ -54,6 +55,8 @@ During the selection, a Zephyr prototype was also made for a comparison. That pr
 | Power supply | 7–36 V on the terminal block, PoE, or 5 V on USB-C | — |
 
 The TCA9554 of the outputs and the RTC use the same I²C bus (GPIO 41 and 42). Nobody found a published schematic. `idf/README.md` §2 gives the source and the confidence of each item in this table.
+
+> **Caution: Do not install a CR1220 cell in the RTC battery holder.** The board charges the cell. A primary (not rechargeable) cell can be damaged. Install a rechargeable 3 V cell, for example an ML1220. `docs/how-to/fit-the-rtc-battery.md` gives the procedure.
 
 > **Caution: Measure the polarity of the DOs with a multimeter before you connect loads.** The polarity of the DIs and of the DOs comes only from indirect evidence. The Kconfig options `CONFIG_GW_DI_ACTIVE_LOW` and `CONFIG_GW_DO_ACTIVE_LOW` change it.
 
@@ -111,8 +114,8 @@ The firmware assumes the 8 MB of PSRAM of the board (issue #135). When the boot 
 
 | ID | Requirement | Prio | MVP | Status |
 |---|---|---|---|---|
-| TIME-1 | SNTP synchronization with a server that you can configure. The Sparkplug timestamps are in ms UTC (`tck-id-payloads-timestamp-in-UTC`, `tck-id-payloads-metric-timestamp-in-UTC`). Until a source sets the clock (SNTP, the RTC or the browser with `POST /api/time`), the gateway publishes only the births: no NDATA and no DDATA. When the clock becomes valid, the gateway does a rebirth if it sent the births without a valid clock (issue #160) | P0 | ✅ | Done |
-| TIME-2 | The gateway reads the RTC at boot. It writes the RTC after each SNTP synchronization and after each time from the browser. Thus the timestamps are valid without a network | P1 | | Done |
+| TIME-1 | SNTP synchronization with a server that you can configure. The Sparkplug timestamps are in ms UTC (`tck-id-payloads-timestamp-in-UTC`, `tck-id-payloads-metric-timestamp-in-UTC`). Until a source sets the clock (SNTP, the RTC or the browser with `POST /api/time`), the gateway opens no MQTT session: no CONNECT, no NBIRTH, no DATA and no store & forward sample. There is no time limit. The web UI, the REST API and the shell stay available. The web UI, the shell, the log and the LED show the wait and what to do (issue #160) | P0 | ✅ | Done |
+| TIME-2 | The gateway reads the RTC at boot. It writes the RTC after each SNTP synchronization and after each time from the browser. Thus the timestamps are valid without a network. The RTC battery is necessary (§2.3). Without it, after each power cut the gateway sends no data until SNTP or an operator sets the time. When the RTC lost the time (OS bit at boot), the web UI, the shell and the log tell the operator to examine the battery | P1 | | Done |
 | TIME-3 | The node metric `Node Info/Time Synced` tells if SNTP synchronized the clock | P2 | | Done |
 
 ### 4.3 MQTT (MQTT)
@@ -772,6 +775,7 @@ Without these keys, the build option applies (`CONFIG_GW_MB_BLOCK_READS`, `CONFI
   - 1 beep when the claim window sets the web password;
   - 2 beeps when the factory reset starts (CFG-5).
 - You cannot stop an alarm while its condition continues.
+- **`mqtt_down` and the clock:** while the gateway waits for a valid clock (TIME-1, issue #160), there is no Sparkplug session. Thus `mqtt_down` also sounds then, if it is enabled. The operator must set the time or make SNTP available.
 
 **Status LED (IO-5).** The patterns, from the highest to the lowest priority:
 
@@ -783,6 +787,7 @@ Without these keys, the build option applies (`CONFIG_GW_MB_BLOCK_READS`, `CONFI
 | Commissioning (no configuration after a reset) | Blue, blinks at 1 Hz |
 | Configuration not valid (recovery mode) | Red, blinks at 4 Hz |
 | No network (no IP) | Red, continuous |
+| No valid clock: the MQTT session waits for SNTP, the RTC or the browser (TIME-1, issue #160) | Magenta, blinks at 1 Hz |
 | No broker | Amber, blinks at 1 Hz |
 | Modbus device offline | Green and orange, alternately (1 Hz) |
 | Normal operation | Green, continuous |
@@ -919,7 +924,7 @@ The gateway does not cut the rejection of an authenticated request from the same
 | `POST /api/restart` | Restarts in order |
 | `POST /api/rebirth` | SPB-9, UMH-7, issue #171: sends the NBIRTH and all the DBIRTH messages again, with the same bdSeq, as the NCMD `Node Control/Rebirth` does. `202 {"ok":true,"rebirth":true}`. `409` when there is no Sparkplug session (not connected, recovery mode, commissioning) |
 | `POST /api/modbus/read` | Issue #182: one Modbus read for commissioning, through the task that owns the bus (MB-16), as the shell `mbread` does. Body: `{"unit": 1-247, "area": "coil"\|"discrete"\|"holding"\|"input", "address": 0-65535}`. Optional: `"count"` (1–16, default 1 or the size of the type), `"type"` (a tag type; `bool` only for `coil` and `discrete`; `string` and `bytes` read `count` registers) and `"word_order"` (only with `type`). `200 {"ok":true,"unit":1,"area":"input","address":0,"count":2,"values":[17254,32768],"type":"float32","word_order":"ABCD","value":230.5}`. A Modbus error gives `504` (`"result":"timeout"`) or `502` (`crc`, `frame`, or `exception` with the code in `"exception"`), with `error`. `503` when the bus does not run the read in time, or when another test read waits. `400` for a request that is not correct. `409` in recovery mode and in commissioning (the bus does not run). The route only reads |
-| `POST /api/time` | TIME-1, issue #160: sets the clock of the gateway and the RTC to the time of the browser. Use it on a network without a time server. Body: `{"utc_ms": <ms since 1970-01-01T00:00:00Z>}`, an integer from 2025 to 2099. `200 {"ok":true,"utc_ms":…,"source":"browser"}`. `400` for a body that is not correct. `409` when SNTP synchronized the clock. The source becomes `browser`, and `Node Info/Time Synced` stays `false`. It also operates in recovery mode and in commissioning |
+| `POST /api/time` | TIME-1, issue #160: sets the clock of the gateway and the RTC to the time of the browser. Use it on a network without a time server. Body: `{"utc_ms": <ms since 1970-01-01T00:00:00Z>}`, an integer from 2025 to 2099. `200 {"ok":true,"utc_ms":…,"source":"browser"}`. `400` for a body that is not correct. `409` when SNTP synchronized the clock. The source becomes `browser`, and `Node Info/Time Synced` stays `false`. In normal mode, the gateway then opens its MQTT session if it waited for a valid clock. It also operates in recovery mode and in commissioning |
 | `POST /api/firmware` | FW-1: `application/json` with `{"url": "https://…"}` (download) and, as an option, `"force": true`; or `application/octet-stream` with the image as the body (`?force=1` to force). Another `Content-Type` gets `415`. `409` during the trial of a new image (`testing <v>: N s left`) and when the pre-flight check refuses the image (the error lists the reasons; force installs it into recovery mode, issue #144) |
 | `POST /api/firmware/other` | Issue #144: the button "Restart into `<version>`". The image of the other slot boots on trial, after the pre-flight check (`?force=1` to force). `202 {"ok":true,"restart":true}`. `409` during a trial or a transfer, or when the pre-flight check refuses; `404` when the other slot is empty or failed its verification |
 | `GET /api/firmware` | FW-1: the running slot and the other slot (`other`, `other_slot`, `other_state`: `empty`, `previous`, `new`, `rejected`, `invalid`; `other_why`), `can_boot_other`, `phase`, `state`, `detail`, `progress`, `bytes`, `total`, `trial`, `trial_left_s`, `expected_mode`, `boot_count` and `safe_mode` (issue #144); `cfg_prev` (`version`, `saved`, `schema` of the configuration from before the update; `version` is empty when there is none) and `cfg_prev_restore` (recovery mode: the web UI shows the restore button; issue #146) |
@@ -953,8 +958,8 @@ For each device, `devices` has `online`, `cycles`, `failed`, `ok`, `timeout`, `c
 | `io.rule_do` | IO-7: the mask of the DOs that a local rule controls (they do not accept NCMD) |
 | `io.counters` | IO-4: the 8 pulse counters |
 | `buzzer.alarm`, `buzzer.enabled` | IO-6: the alarm that sounds now (`none`, `device_offline`, `mqtt_down`, `config_error`) and the enabled alarms |
-| `time.utc_s`, `time.synced`, `time.valid`, `time.source` | The time of the gateway (s UTC), and if SNTP synchronized it (TIME-3). `time.valid` tells if the time is valid for timestamps (issue #160: without it, no NDATA or DDATA). `time.source` is `sntp`, `rtc` (TIME-2), `browser` (`POST /api/time`) or `none` |
-| `time.rtc` | `present`, the `status` of the last read or write of the RTC, and `stores` (the writes after SNTP or after a time from the browser) |
+| `time.utc_s`, `time.synced`, `time.valid`, `time.source`, `time.waiting` | The time of the gateway (s UTC), and if SNTP synchronized it (TIME-3). `time.valid` tells if the time is valid for timestamps (issue #160: without it, no MQTT session). `time.source` is `sntp`, `rtc` (TIME-2), `browser` (`POST /api/time`) or `none`. `time.waiting` is `true` in normal mode when the MQTT session waits for a valid clock |
+| `time.rtc` | `present`, `lost` (`true` when the OS bit was set at boot: the RTC lost the time, examine its battery), the `status` of the last read or write of the RTC, and `stores` (the writes after SNTP or after a time from the browser) |
 | `card` (optional, issue #139) | The microSD card. `state` is `unsupported`, `unchecked`, `absent`, `not_mounted`, `mounted`, `formatting` or `formatted`. `unsupported`: the build has no card. `unchecked`: the boot did not try to find a card, because the spill is off. `formatted`: restart to use the card. `detail` tells why, for example `no FAT file system (exFAT, NTFS, ext4, GPT, or no format) (FatFs error 13)`. When known: `name`, `size_mb`, `fat`, `cluster` (B), `free_mb` (with no scan of the FAT) and `other_entries`. `other_entries` are the entries of the root that are not the folder `sf`: the format deletes them too |
 | `spill` (optional, normal mode) | The spill of store & forward to the card. `state` is `off`, `not_started`, `on`, `failed` or `stopped`. `off` and `not_started` have `detail`, for example `it needs PSRAM, and none was detected`. `failed` has `detail` and `stranded` (the samples that stay on the card). `stopped`: a format took the card. With `on`, the object also has the counters of the shell `spill` line. They are `ready` (the boot recovery ended), `waiting`, `moved`, `overwritten`, `holes`, `ring_blocks`, `waiting_blocks`, `extents`, `kb`, `blocks_written`, `checkpoints`, `boot_ms` and `files_to_delete` |
 | `core_dump` (optional, issue #132) | The core dump in flash: `present`, `state` (`none`; `valid`: the checksum is correct; `corrupt`) and `size` (bytes, 0 = not known). `GET /api/coredump/summary` gives its summary |

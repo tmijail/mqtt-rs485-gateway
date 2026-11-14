@@ -158,6 +158,30 @@ static void test_clock_parse_set(void)
     TEST_ASSERT_EQUAL(GW_CLOCK_SET_BAD, set("{}", GW_CLOCK_SNTP, &ms, why));   /* bad first */
 }
 
+/* Issue #160 (decision of 2026-11-14): the operator hints. Without a valid clock the gateway
+ * waits before the MQTT session and tells what to do; when the RTC lost the time at boot (OS
+ * bit), it tells to examine the battery, also after another source set the clock. */
+static void test_clock_hints(void)
+{
+    TEST_ASSERT_EQUAL_UINT(GW_CLOCK_HINT_WAIT, gw_clock_hints(GW_CLOCK_NONE, false));
+    TEST_ASSERT_EQUAL_UINT(GW_CLOCK_HINT_WAIT | GW_CLOCK_HINT_BATTERY,
+                           gw_clock_hints(GW_CLOCK_NONE, true));
+    TEST_ASSERT_EQUAL_UINT(0, gw_clock_hints(GW_CLOCK_RTC, false));
+    TEST_ASSERT_EQUAL_UINT(0, gw_clock_hints(GW_CLOCK_SNTP, false));
+    TEST_ASSERT_EQUAL_UINT(GW_CLOCK_HINT_BATTERY, gw_clock_hints(GW_CLOCK_BROWSER, true));
+    TEST_ASSERT_EQUAL_UINT(GW_CLOCK_HINT_BATTERY, gw_clock_hints(GW_CLOCK_SNTP, true));
+    const char *wait = gw_clock_hint_text(GW_CLOCK_HINT_WAIT);
+    TEST_ASSERT_NOT_NULL(strstr(wait, "waiting for a valid clock"));
+    TEST_ASSERT_NOT_NULL(strstr(wait, "no NBIRTH"));
+    TEST_ASSERT_NOT_NULL(strstr(wait, "Set the time from the browser"));
+    const char *bat = gw_clock_hint_text(GW_CLOCK_HINT_BATTERY);
+    TEST_ASSERT_NOT_NULL(strstr(bat, "examine the RTC battery"));
+    TEST_ASSERT_NOT_NULL(strstr(bat, "ML1220"));
+    TEST_ASSERT_NOT_NULL(strstr(bat, "never a CR1220"));
+    TEST_ASSERT_EQUAL_STRING("", gw_clock_hint_text(0));
+    TEST_ASSERT_EQUAL_STRING("", gw_clock_hint_text(GW_CLOCK_HINT_WAIT | GW_CLOCK_HINT_BATTERY));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -167,5 +191,6 @@ int main(void)
     RUN_TEST(test_rejected_readings);
     RUN_TEST(test_clock_sources);
     RUN_TEST(test_clock_parse_set);
+    RUN_TEST(test_clock_hints);
     return UNITY_END();
 }

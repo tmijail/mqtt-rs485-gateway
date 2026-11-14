@@ -188,8 +188,7 @@ typedef struct {
     bool online;                       /* NBIRTH published on the current MQTT session */
     bool birth_failed;                 /* issue #164: gw_node_take_birth_failure() */
     /* Issue #160: gw_node_set_time_valid() */
-    bool time_valid;                   /* the clock is valid: NDATA, DDATA and the store */
-    bool births_untimed;               /* the last NBIRTH went out without a valid clock */
+    bool time_valid;                   /* the clock is valid: births, DATA and the store */
     uint64_t bdseq;                    /* bdSeq of the current session (SPB-3) */
     uint64_t valid_since_ms;           /* #160: the clock became valid then (0: from the start) */
     uint8_t seq;                       /* next seq to send (SPB-5) */
@@ -349,19 +348,21 @@ void gw_node_set_core_dump(gw_node_t *n, bool present);
 /**
  * TIME-1 / issue #160: the clock is valid for timestamps (gw_clock_valid). gw_node_init() starts
  * with true; the caller sets false at once when the clock is not valid yet (false then true marks
- * the moment from which the samples have a valid time). While it is false:
- * - the births (NBIRTH, DBIRTH) and DDEATH still go out, so that the hosts see the node and its
- *   devices (their timestamps count from 1970);
- * - no NDATA and no DDATA go out (live, historical, write and command confirmations, diagnostics,
+ * the moment from which the samples have a valid time). While it is false nothing goes out
+ * (decision of the product owner of 2026-11-14 in issue #160):
+ * - no NBIRTH (tck-id-topics-nbirth-timestamp, tck-id-payloads-nbirth-timestamp,
+ *   tck-id-payloads-timestamp-in-UTC): gw_node_session_up() and gw_node_rebirth() publish
+ *   nothing and fail as a failed NBIRTH does (gw_node_take_birth_failure). The caller must not
+ *   open an MQTT session before the clock is valid (gw_edge waits before the CONNECT); this is
+ *   the last guard;
+ * - no NDATA and no DDATA (live, historical, write and command confirmations, diagnostics,
  *   firmware state), and no change goes into the store (SPB-14). The report-by-exception state
- *   does not change, so nothing is lost: the births carry the current values.
- * When it becomes true: a rebirth if the node is online with births that went out without a valid
- * clock, so that the hosts get UTC timestamps (tck-id-payloads-timestamp-in-UTC,
- * tck-id-payloads-metric-timestamp-in-UTC). From then on, a live sample taken before that moment
- * gets the time of its message, not its 1970 sample time. Returns true if it did a rebirth (its
- * result: gw_node_take_birth_failure).
+ *   does not change: the first births carry the current values.
+ * From the moment it becomes true, a live sample taken before that moment gets the time of its
+ * message, not its 1970 sample time (tck-id-payloads-metric-timestamp-in-UTC). No clock source
+ * makes the clock not valid again (gw_clock_after); false after true only stops the publishes.
  */
-bool gw_node_set_time_valid(gw_node_t *n, bool valid);
+void gw_node_set_time_valid(gw_node_t *n, bool valid);
 
 #ifdef __cplusplus
 }

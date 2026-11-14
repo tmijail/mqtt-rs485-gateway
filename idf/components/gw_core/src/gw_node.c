@@ -565,6 +565,14 @@ uint32_t gw_node_diag_tick(gw_node_t *n, uint64_t now_ms)
 
 static bool publish_nbirth(gw_node_t *n)
 {
+    if (!n->time_valid) {
+        /* Issue #160 (decision of 2026-11-14): no NBIRTH before a valid clock. Its payload
+         * timestamp is the time of the publish in UTC (tck-id-topics-nbirth-timestamp,
+         * tck-id-payloads-nbirth-timestamp, tck-id-payloads-timestamp-in-UTC). The caller opens
+         * no MQTT session before a valid clock: this is the last guard. */
+        GW_LOGE(TAG, "NBIRTH refused: the clock is not valid (no SNTP, RTC or browser time)");
+        return false;
+    }
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
     uint64_t now = gw_port_time_ms();
@@ -629,18 +637,14 @@ static bool publish_nbirth(gw_node_t *n)
             n->online_reported |= 1u << d;
         }
     }
-    if (publish_rc_ex(n, "NBIRTH", NULL, i, 0, umh(n)) != 0) {
-        return false;
-    }
-    n->births_untimed = !n->time_valid;   /* #160: a rebirth when the clock becomes valid */
-    return true;
+    return publish_rc_ex(n, "NBIRTH", NULL, i, 0, umh(n)) == 0;
 }
 
 /* #173: UMH preset: an NDATA with Devices/<name>/Online when the state of @p dev changed. */
 static void publish_online(gw_node_t *n, uint16_t dev, bool online)
 {
     uint32_t bit = 1u << dev;
-    /* #160: no NDATA before the clock is valid; the rebirth takes the snapshot again */
+    /* #160: no NDATA without a valid clock (the node is never online then: a guard) */
     if (!umh(n) || !n->time_valid || online == ((n->online_reported & bit) != 0)) {
         return;
     }
@@ -768,7 +772,7 @@ void gw_node_set_firmware_status(gw_node_t *n, const char *state, uint32_t progr
     memcpy(n->fw_state, s, sizeof(s));
     n->fw_progress = progress;
     if (!n->online || !n->time_valid) {
-        return;   /* the next NBIRTH carries it (#160: the rebirth when the clock is valid) */
+        return;   /* the next NBIRTH carries it */
     }
     uint64_t now = gw_port_time_ms();
     size_t i = 0;
@@ -804,22 +808,17 @@ bool gw_node_rebirth(gw_node_t *n)
     return true;
 }
 
-bool gw_node_set_time_valid(gw_node_t *n, bool valid)
+void gw_node_set_time_valid(gw_node_t *n, bool valid)
 {
     if (valid == n->time_valid) {
-        return false;
+        return;
     }
     n->time_valid = valid;
-    if (!valid) {
-        return false;
+    if (valid) {
+        /* Issue #160: no births went out before (publish_nbirth): the first births have this
+         * clock, and a sample taken before now gets the time of its message (live_ts) */
+        n->valid_since_ms = gw_port_time_ms();
     }
-    n->valid_since_ms = gw_port_time_ms();
-    if (!n->online || !n->births_untimed) {
-        return false;   /* the next births have a valid clock */
-    }
-    GW_LOGI(TAG, "clock now valid: rebirth (the births went out without a valid clock)");
-    gw_node_rebirth(n);
-    return true;
 }
 
 bool gw_node_session_up(gw_node_t *n, uint64_t bdseq)
@@ -920,7 +919,7 @@ void gw_node_device_changed(gw_node_t *n, uint16_t dev)
         return;
     }
     if (!n->time_valid) {
-        return;   /* #160: no DDATA yet; the report-by-exception state waits for the rebirth */
+        return;   /* #160: no DDATA without a valid clock (never online then: a guard) */
     }
     const gw_device_cfg_t *d = &n->cfg->devices[dev];
     size_t base = typed(n, dev) ? 1 : 0;
@@ -939,7 +938,7 @@ void gw_node_device_changed(gw_node_t *n, uint16_t dev)
 static void publish_io(gw_node_t *n, uint8_t force_do)
 {
     if (!n->time_valid) {
-        return;   /* #160: no NDATA yet (also no DO confirmation): the rebirth carries the I/O */
+        return;   /* #160: no NDATA without a valid clock (never online then: a guard) */
     }
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
@@ -1119,7 +1118,7 @@ size_t gw_node_flush_history(gw_node_t *n, size_t max_msgs)
 
 void gw_node_write_done(gw_node_t *n, uint16_t tag, bool ok)
 {
-    /* #160: no DDATA before the clock is valid; the rebirth carries the written value */
+    /* #160: no DDATA without a valid clock (never online then: a guard) */
     if (!ok || !n->online || !n->time_valid || tag >= n->cfg->tag_count) {
         return;
     }
@@ -1449,7 +1448,7 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
         if (n->cmd_do_mask) {
             publish_io(n, n->cmd_do_mask);
         }
-        if (n->cmd_scan_rate && n->time_valid) {   /* #160: else in the rebirth */
+        if (n->cmd_scan_rate && n->time_valid) {   /* #160: a guard, as publish_io */
             metric(n, 0, NULL, GW_ALIAS_SCAN_RATE, SPB_DT_UINT32, gw_port_time_ms())->v.num =
                 n->scan_rate_ms;
             publish(n, "NDATA", NULL, 1, 0);
