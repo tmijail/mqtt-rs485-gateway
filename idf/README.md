@@ -563,7 +563,7 @@ These are the choices of the implementation for the key (issue #187) and their r
   8. Set your own `web.password` (8 to 63 printable ASCII characters) in the configuration, and save it. The web password is also the key of the access point from now on (issue #187).
 - **Bench (before the installation):** connect the gateway through USB. Load a configuration with a `web.password` (`config load` in the shell). Then install the gateway in the panel.
 
-To change the configuration, open the web UI. Load or edit the configuration (the forms, the JSON tab or Importar). Click Validar, then click Guardar. The gateway restarts with the new configuration.
+To change the configuration, open the web UI. Edit the configuration in the forms or in the JSON tab, or load a file with Import. Click Validate, then click Save and restart. The gateway restarts with the new configuration. The procedure is in `docs/how-to/change-the-configuration.md`.
 
 **Get access again when you do not know the web password:**
 
