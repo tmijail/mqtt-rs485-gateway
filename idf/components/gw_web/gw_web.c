@@ -1751,10 +1751,14 @@ static esp_err_t status_get(httpd_req_t *req)
                 char hex[2 * GW_STR_MAX + 1];
                 gw_conv_format(tc, v, hex, sizeof(hex));
                 outf(o, ",\"valid\":true,\"value\":\"%s\"}", hex);
-            } else if (kind == GW_VK_INT64) {   /* exact (a JSON reader may round above 2^53) */
-                outf(o, ",\"valid\":true,\"value\":%lld}", (long long)v->i64);
+            } else if (kind == GW_VK_INT64) {
+                /* exact; #188: also as text, because a JSON reader with doubles (the browser)
+                 * rounds a number above 2^53 */
+                outf(o, ",\"valid\":true,\"value\":%lld,\"value_text\":\"%lld\"}",
+                     (long long)v->i64, (long long)v->i64);
             } else if (kind == GW_VK_UINT64) {
-                outf(o, ",\"valid\":true,\"value\":%llu}", (unsigned long long)v->u64);
+                outf(o, ",\"valid\":true,\"value\":%llu,\"value_text\":\"%llu\"}",
+                     (unsigned long long)v->u64, (unsigned long long)v->u64);
             } else {
                 /* %.9g: enough for float32 and integers up to 32 bits */
                 outf(o, ",\"valid\":true,\"value\":%.9g}", v->value);

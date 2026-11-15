@@ -215,11 +215,12 @@ static void put_value(sink_t *s, const gw_mbdiag_req_t *rq, const uint16_t *valu
     memset(&v, 0, sizeof(v));
     gw_conv_decode(&rq->tag, values, &v);
     switch (gw_conv_kind(&rq->tag)) {
-    case GW_VK_INT64:
-        put(s, "%lld", (long long)v.i64);
+    case GW_VK_INT64:   /* #188: also as text, for a JSON reader with doubles (a browser) */
+        put(s, "%lld,\"value_text\":\"%lld\"", (long long)v.i64, (long long)v.i64);
         break;
     case GW_VK_UINT64:
-        put(s, "%llu", (unsigned long long)v.u64);
+        put(s, "%llu,\"value_text\":\"%llu\"", (unsigned long long)v.u64,
+            (unsigned long long)v.u64);
         break;
     case GW_VK_STRING:   /* printable ASCII (gw_conv): only " and \ need an escape */
         put(s, "\"");
