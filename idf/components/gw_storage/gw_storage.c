@@ -294,9 +294,11 @@ static esp_err_t get_int(nvs_handle_t h, const char *key, uint8_t type, uint8_t 
 }
 
 /* Every entry of the open, unencrypted NVS appended to the copy in @p buf; @p vcap: the
- * largest value (the partition's size). */
+ * largest value (the partition's size). @p old: the copy of an interrupted migration (NULL if
+ * none), which holds the entries whose namespace entry its erase took (#185). */
 static size_t nvs_read_all(uint8_t *buf, size_t cap, size_t used, size_t vcap, unsigned *count,
-                           unsigned *skipped, bool *listed_all)
+                           unsigned *skipped, bool *listed_all, const uint8_t *old,
+                           size_t old_size)
 {
     uint8_t *data = gw_storage_malloc(vcap);   /* one value at a time */
     if (data == NULL) {
@@ -314,6 +316,15 @@ static size_t nvs_read_all(uint8_t *buf, size_t cap, size_t used, size_t vcap, u
             /* a stale marker would end a later migration early. Issue #109 round 3b: the "erase
              * in progress" entry by its key alone: once its namespace's page is erased, NVS lists
              * it under whatever namespace has its index, and copying it fails */
+            continue;
+        }
+        if (gw_nvsmig_orphan_in_copy(old, old_size, info.namespace_name, info.key,
+                                     (uint8_t)info.type)) {
+            /* issue #185: the interrupted erase took the page of its namespace entry, so NVS
+             * lists it with an empty namespace and it cannot be opened; the copy of that
+             * migration has it, and adds it below */
+            ESP_LOGW(TAG, "NVS migration: /%s has lost its namespace entry (interrupted erase): "
+                          "taken from the copy", info.key);
             continue;
         }
         nvs_handle_t h;
@@ -679,7 +690,8 @@ static void nvs_migrate(const esp_partition_t *p, const uint8_t *old, size_t old
     rd.init_ok = e == ESP_OK;
     rd.init_layout_error = e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND;
     if (rd.init_ok) {
-        used = nvs_read_all(buf, cap, used, p->size, &count, &rd.skipped, &rd.listed_all);
+        used = nvs_read_all(buf, cap, used, p->size, &count, &rd.skipped, &rd.listed_all, old,
+                            old_size);
         nvs_flash_deinit_partition(NVS_DEFAULT_PART_NAME);
     } else {
         ESP_LOGE(TAG, "NVS migration: the unencrypted NVS does not start (%s)", esp_err_to_name(e));

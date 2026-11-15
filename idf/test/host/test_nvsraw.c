@@ -529,6 +529,30 @@ static void test_may_erase(void)
     TEST_ASSERT_TRUE(gw_nvsmig_may_erase(&f));
 }
 
+/* Issue #185: after a cut in the middle of the erase, the page with the "secrets" namespace entry
+ * is erased and its items (on the next page) are listed with an empty namespace. The copy of the
+ * interrupted migration holds them, so they do not stop the next erase. */
+static void test_orphan_in_copy(void)
+{
+    static uint8_t old[512];
+    size_t n = gw_nvsmig_begin(old, sizeof(old));
+    const char *pw = "s3cret-mqtt-67";
+    uint8_t hold = 0;
+    n = gw_nvsmig_add(old, sizeof(old), n, "secrets", "mqtt_pw", 0x21, pw, strlen(pw) + 1);
+    n = gw_nvsmig_add(old, sizeof(old), n, "gw", "do_hold", 0x01, &hold, 1);
+    size_t size = gw_nvsmig_seal(old, n, 0);
+    TEST_ASSERT_TRUE(gw_nvsmig_orphan_in_copy(old, size, "", "mqtt_pw", 0x21));
+    TEST_ASSERT_TRUE(gw_nvsmig_orphan_in_copy(old, size, "", "do_hold", 0x01));
+    /* another type, another key: not the same entry, it still stops the erase */
+    TEST_ASSERT_FALSE(gw_nvsmig_orphan_in_copy(old, size, "", "mqtt_pw", 0x42));
+    TEST_ASSERT_FALSE(gw_nvsmig_orphan_in_copy(old, size, "", "commission", 0x21));
+    /* an entry with its namespace is read as usual; no copy: no interrupted migration */
+    TEST_ASSERT_FALSE(gw_nvsmig_orphan_in_copy(old, size, "secrets", "mqtt_pw", 0x21));
+    TEST_ASSERT_FALSE(gw_nvsmig_orphan_in_copy(NULL, 0, "", "mqtt_pw", 0x21));
+    /* a copy cut short has no whole record */
+    TEST_ASSERT_FALSE(gw_nvsmig_orphan_in_copy(old, GW_NVSMIG_HDR + 3, "", "mqtt_pw", 0x21));
+}
+
 /* Issue #104: LittleFS does not mount (a copy may be in it) and the partition looks like an
  * interrupted migration: no NVS, rather than an empty or partial encrypted one */
 static void test_decide_copy_out_of_reach(void)
@@ -857,5 +881,6 @@ int main(void)
     RUN_TEST(test_page_states);
     RUN_TEST(test_more_bad_than_plain);
     RUN_TEST(test_span_trimmed);
+    RUN_TEST(test_orphan_in_copy);
     return UNITY_END();
 }

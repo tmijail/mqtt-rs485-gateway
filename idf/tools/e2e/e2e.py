@@ -4833,11 +4833,11 @@ def run_nvs_migration(args, work):
     # that ran a while): the erase takes the namespace's page before the entry's
     filler = work / "nvs-filler.bin"
     filler.write_bytes(bytes(range(256)) * 15)
-    # spb/bdseq: the record of the firmware before #161 (unused now: the migration moves it as any
-    # entry). It also completes page 0, so the "secrets" namespace entry and its items share page 1
-    # with the "erase in progress" entry (the layout this scenario was made for)
+    # issue #185: the "secrets" namespace entry completes page 0, and its items are on page 1 with
+    # the "erase in progress" entry. Cut 3 erases page 0: the next boot lists the items with an
+    # empty namespace, and takes them from the copy of the interrupted migration
     csv.write_text("key,type,encoding,value\ngw,namespace,,\ndo_hold,data,u8,0\n"
-                   f"filler,file,binary,{filler}\nspb,namespace,,\nbdseq,data,u8,41\n"
+                   f"filler,file,binary,{filler}\n"
                    "secrets,namespace,,\ncommission,data,string,abcdefgh1234\n"
                    "mqtt_pw,data,string,s3cret-mqtt-67\n")
     gen = pathlib.Path(os.environ["IDF_PATH"]) / "components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py"
@@ -4862,7 +4862,7 @@ def run_nvs_migration(args, work):
     broker, _ = auth_broker(work, "nvsmig", port, {"gw41": "s3cret-mqtt-67"})
     obs = observer_retry(port, auth=OBS_AUTH)
     log = work / "uart0-nvsmig.log"
-    words = (b"abcdefgh1234", b"s3cret-mqtt-67", b"commission", b"bdseq")
+    words = (b"abcdefgh1234", b"s3cret-mqtt-67", b"commission")
     boots = []
     try:
         cuts, out_of_reach, intact, snap = [], [], None, None

@@ -428,6 +428,21 @@ bool gw_nvsmig_find(const uint8_t *buf, size_t size, const char *ns, const char 
     return false;
 }
 
+bool gw_nvsmig_orphan_in_copy(const uint8_t *old, size_t old_size, const char *ns,
+                              const char *key, uint8_t type)
+{
+    if (old == NULL || ns == NULL || ns[0] != '\0' || key == NULL) {
+        return false;
+    }
+    gw_nvsmig_rec_t r;
+    for (size_t off = 0; gw_nvsmig_next(old, old_size, &off, &r);) {
+        if (r.type == type && strcmp(r.key, key) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool gw_nvsmig_may_erase(const gw_nvsmig_read_t *r)
 {
     if (!r->init_ok) {
