@@ -136,6 +136,16 @@ def close_ap(page):
         if page.locator("#st-ap").filter(has_text="Off").count() or time.monotonic() > end:
             break
 
+def test_read(page):
+    """The Modbus test read of the Configuration tab: the float32 Voltage of Meter1 (input 0)."""
+    page.click("nav button[data-tab=config]")
+    page.fill("#mb-unit", "1")
+    page.select_option("#mb-area", "input")
+    page.fill("#mb-addr", "0")
+    page.select_option("#mb-type", "float32")
+    page.select_option("#mb-wo", "ABCD")
+    page.click("#mb-read")
+
 # ---------------------------------------------------------------- the frozen values
 
 def no_hash(version):
@@ -243,6 +253,26 @@ SHOTS = [
          actions=[("click", "nav button[data-tab=config]")], wait="#f-mqtt input",
          alt="The Configuration tab of the web UI: the forms for the network, MQTT and "
              "Sparkplug."),
+    # docs/how-to/add-a-modbus-device.md and the tutorial
+    Shot("modbus-test-read", "configured", DESKTOP, "/", actions=[test_read],
+         element=".card:has(#mb-read)", wait="#mb-msg.ok",
+         alt="The card 'Modbus test read' of the Configuration tab: unit 1, area input, address "
+             "0, type float32, word order ABCD. The result line shows the two registers 17254 "
+             "and 32768 and the value 230.5."),
+    Shot("devices-and-tags", "configured", DESKTOP, "/",
+         actions=[("click", "nav button[data-tab=config]")], element=".card:has(#f-dev)",
+         wait="#f-dev table",
+         alt="The card 'Devices and tags' of the Configuration tab: the device Meter1, unit 1, "
+             "poll interval 1000 ms, its Sparkplug topic and its UMH topic, and the table of "
+             "its tags with the area, the address, the type, the word order, the scale, the "
+             "deadband and the writable column."),
+    # docs/how-to/update-the-firmware.md
+    Shot("firmware-card", "configured", DESKTOP, "/", element=".card:has(#st-fw)",
+         actions=[("wait_text", "#st-fw", "Running")], wait="#st-fw",
+         alt="The card 'Firmware' of the Status tab: the running version, its slot, the state "
+             "of the last update, and the other slot. Below are the field for the URL of an "
+             "image with the button 'Download and install', the field 'Upload an image', and "
+             "the check box 'Force (into recovery mode)'."),
     # issue #187: after the shots above, because a push of BOOT starts the access point
     Shot("ap-card-phone", "configured", PHONE, "/", prep=ap_on_with_client,
          element=".card:has(#st-ap)", wait="#ap-stop:not(.hidden)",
