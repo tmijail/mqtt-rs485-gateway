@@ -111,10 +111,21 @@ static void test_answers(void)
     TEST_ASSERT_TRUE(parse("{\"unit\":1,\"area\":\"holding\",\"address\":0,\"type\":\"int64\"}"));
     const uint16_t i64[4] = {0xffff, 0xffff, 0xffff, 0xfffe};
     gw_mbdiag_answer(&rq, MB_OK, 0, i64, out, sizeof(out));
-    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "\"value\":-2}"), out);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "\"value\":-2,\"value_text\":\"-2\"}"), out);
     TEST_ASSERT_TRUE(parse("{\"unit\":1,\"area\":\"holding\",\"address\":0,\"type\":\"uint64\"}"));
     gw_mbdiag_answer(&rq, MB_OK, 0, i64, out, sizeof(out));
-    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "\"value\":18446744073709551614}"), out);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "\"value\":18446744073709551614,"
+                                             "\"value_text\":\"18446744073709551614\"}"), out);
+    /* #188: 2^53 + 1, which a double rounds */
+    TEST_ASSERT_TRUE(parse("{\"unit\":1,\"area\":\"holding\",\"address\":0,\"type\":\"int64\"}"));
+    const uint16_t i64big[4] = {0xffdf, 0xffff, 0xffff, 0xffff};
+    gw_mbdiag_answer(&rq, MB_OK, 0, i64big, out, sizeof(out));
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(out, "\"value\":-9007199254740993,"
+                                             "\"value_text\":\"-9007199254740993\"}"), out);
+    /* no value_text for the other types */
+    TEST_ASSERT_TRUE(parse("{\"unit\":1,\"area\":\"input\",\"address\":0,\"type\":\"float32\"}"));
+    gw_mbdiag_answer(&rq, MB_OK, 0, f, out, sizeof(out));
+    TEST_ASSERT_NULL_MESSAGE(strstr(out, "value_text"), out);
     /* a NaN is null (not JSON) */
     TEST_ASSERT_TRUE(parse("{\"unit\":1,\"area\":\"input\",\"address\":0,\"type\":\"float32\"}"));
     const uint16_t nan[2] = {0x7fc0, 0x0000};

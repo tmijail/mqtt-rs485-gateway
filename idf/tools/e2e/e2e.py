@@ -6997,17 +6997,24 @@ def check_status_api(gw, since):
     io, bz, tm = s.get("io", {}), s.get("buzzer", {}), s.get("time", {})
     meter = next((d for d in s.get("devices", []) if d.get("name") == DEVICE), {})
     tags = {t["name"]: t["value"] for t in meter.get("tags", [])}
+    # issue #188: the 64-bit values also as text (a browser reads a JSON number as a double).
+    # Counter (Int64) has the value of an earlier DCMD here (2^62 + 4), also above 2^53.
+    texts = {t["name"]: t.get("value_text") for t in meter.get("tags", [])}
     ok = st == 200 and io.get("counters", [None])[0] == 2 and len(io.get("counters", [])) == 8 \
         and io.get("rule_do") == 0x30 and io.get("failsafe") is False and io.get("do_unknown") is False \
         and isinstance(io.get("do"), int) and bz.get("enabled") == ["device_offline", "mqtt_down", "config_error"] \
         and bz.get("alarm") == "device_offline" and tm.get("synced") is True and tm.get("source") == "sntp" \
         and tm.get("rtc", {}).get("present") is True and tm.get("rtc", {}).get("stores", 0) >= 1 \
         and abs(tm.get("utc_s", 0) - time.time()) < 60 and s.get("sparkplug", {}).get("diagnostics_s") == 10 \
-        and tags.get("Energy") == MB6["Energy"] and isinstance(tags.get("Serial"), str)
+        and tags.get("Energy") == MB6["Energy"] and isinstance(tags.get("Serial"), str) \
+        and texts.get("Energy") == str(MB6["Energy"]) \
+        and isinstance(tags.get("Counter"), int) and texts.get("Counter") == str(tags["Counter"]) \
+        and texts.get("Serial") is None and texts.get("Voltage") is None
     check("Issue #75 /api/status over HTTPS: pulse counters, failsafe, DOs of local rules, unknown "
-          "DOs, buzzer alarm, clock (SNTP/RTC), diagnostics period, exact UInt64 and string values",
+          "DOs, buzzer alarm, clock (SNTP/RTC), diagnostics period, exact UInt64 and string values; "
+          "issue #188: value_text of the Int64 and UInt64 tags only",
           ok, f"HTTP {st}; io {io}; buzzer {bz}; time {tm}; Energy {tags.get('Energy')!r} "
-              f"Serial {tags.get('Serial')!r}")
+              f"Serial {tags.get('Serial')!r}; value_text {texts}")
 
 
 def check_rtc(gw, obs, nb, t0, since_reboot, ndata_t, first_nbirth):
@@ -7562,18 +7569,24 @@ def run_web(args, work):
         return st, as_json(b) or {"raw": b.decode(errors="replace")[:120]}
     r_reg = mb_read({"unit": 1, "area": "holding", "address": 10})
     r_flt = mb_read({"unit": 1, "area": "input", "address": 0, "type": "float32"})
+    # issue #188: Energy (UInt64 ABCD, holding 30) = 2^53 + 1, also as text
+    r_u64 = mb_read({"unit": 1, "area": "holding", "address": 30, "type": "uint64"})
     r_dead = mb_read({"unit": 3, "area": "holding", "address": 0})
     r_bad = mb_read({"unit": 1, "area": "holding", "address": 0, "count": 17})
     r_csrf = mb_read({"unit": 1, "area": "holding", "address": 10}, headers={"X-Requested-With": None})
     check("CFG-6 issue #182: POST /api/modbus/read through the bus owner (register, float32 value, "
-          "unit 3 without a slave -> no value, count 17 -> 400, no CSRF header -> 403)",
+          "UInt64 value and its text (#188), unit 3 without a slave -> no value, count 17 -> 400, "
+          "no CSRF header -> 403)",
           r_reg[0] == 200 and r_reg[1].get("values") == [50]
           and r_flt[0] == 200 and r_flt[1].get("values") == [17254, 32768] and r_flt[1].get("value") == 230.5
+          and "value_text" not in r_flt[1]
+          and r_u64[0] == 200 and r_u64[1].get("value") == MB6["Energy"]
+          and r_u64[1].get("value_text") == str(MB6["Energy"])
           # as the shell check of unit 9: no answer, or noise taken for a frame in the emulator
           and (r_dead[0], r_dead[1].get("result")) in ((504, "timeout"), (502, "frame"))
           and "value" not in r_dead[1] and r_bad[0] == 400 and "1-16" in r_bad[1].get("error", "")
           and r_csrf[0] == 403,
-          " | ".join(f"{st} {j}" for st, j in (r_reg, r_flt, r_dead, r_bad, r_csrf)))
+          " | ".join(f"{st} {j}" for st, j in (r_reg, r_flt, r_u64, r_dead, r_bad, r_csrf)))
     obs.drain()
     asked = time.monotonic()
     gw.console("rebirth")
