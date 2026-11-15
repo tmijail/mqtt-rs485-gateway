@@ -1,6 +1,6 @@
 # Set the first web password on site
 
-This procedure tells how to set the first web password of an installed gateway without a computer at the panel. It uses the claim window (CFG-8, issue #120). The web password is also the Wi-Fi password of the access point (issue #187).
+This procedure tells how to set the first web password of an installed gateway without a computer at the panel. It uses the claim window (issue #120). The web password is also the Wi-Fi password of the access point (issue #187).
 
 - For the keys, the times and the signals of the access point, refer to [The access point](../reference/access-point.md).
 - For the reasons and the residual risks, refer to [The security of the access point](../explanation/access-point-security.md).
@@ -18,7 +18,7 @@ You need:
 - A phone or a laptop with Wi-Fi and a browser.
 - A new web password: 8 to 63 characters. Use only the letters A to Z and a to z, the digits, the space and the symbols of a keyboard (printable ASCII). The gateway refuses other letters, for example `é` or `ñ`.
 
-The window opens only when no web password is set. This is the case on a new gateway, after a factory reset (CFG-5), and on a gateway that never got a web password. When a web password is set, refer to [Get on the access point on a later visit](get-on-the-access-point.md).
+The window opens only when no web password is set. This is the case on a new gateway, after a factory reset, and on a gateway that never got a web password. When a web password is set, refer to [Get on the access point on a later visit](get-on-the-access-point.md).
 
 ## The signals of the gateway
 

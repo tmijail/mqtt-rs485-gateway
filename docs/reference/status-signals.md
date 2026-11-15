@@ -1,6 +1,6 @@
 # The status signals
 
-This document lists the signals that the gateway gives at the panel: the modes, the status LED, the buzzer and the BOOT button. The source is [`idf/README.md` §3.4 and §3.5](../../idf/README.md#34-configuration) and `docs/SPEC.md` §6.1 (IO-6).
+This document lists the signals that the gateway gives at the panel: the modes, the status LED, the buzzer and the BOOT button. The source is [`idf/README.md` §3.4 and §3.5](../../idf/README.md#34-configuration). For the configuration of the alarms, refer to [`local_io.buzzer`](configuration.md#local_iobuzzer).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The LED and the buzzer are compile-only. The E2E reads the patterns from the log of the firmware in QEMU.
 

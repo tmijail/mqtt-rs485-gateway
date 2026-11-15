@@ -1,6 +1,6 @@
 # The clock and the RTC battery
 
-This document gives the facts about the clock of the gateway (TIME-1, TIME-2, TIME-3, issue #160): the RTC battery, the sources of the clock, and what the gateway shows while it waits for a valid clock.
+This document gives the facts about the clock of the gateway (issue #160): the RTC battery, the sources of the clock, and what the gateway shows while it waits for a valid clock.
 
 - For the procedure, refer to [Fit the RTC battery](../how-to/fit-the-rtc-battery.md).
 - For the reasons and the choices of the implementation, refer to [`idf/README.md` §6.4](../../idf/README.md#64-clock).
@@ -38,7 +38,7 @@ In normal mode, the gateway opens no MQTT session until the clock is valid. Ther
 | MQTT | No CONNECT, no NBIRTH, no DBIRTH, no NDATA, no DDATA |
 | Store & forward | Stores nothing |
 | Polling, web UI, REST API, shell | Operate |
-| Safe state of the DOs (IO-3) | Applies, as in each period without a Sparkplug session |
+| [Safe state of the DOs](configuration.md#the-safe-state-of-the-dos) | Applies, as in each period without a Sparkplug session |
 | bdSeq | The wait uses no value. The first CONNECT after the wait has bdSeq 0 |
 | Backoff, broker failover, interface selection | The wait is not a failed attempt |
 | After the wait | The gateway connects at once. The first births carry the current values with UTC timestamps. There is no rebirth |

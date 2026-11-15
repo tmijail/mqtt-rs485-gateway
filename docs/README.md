@@ -31,12 +31,15 @@ The usual sequence for a new gateway is:
 
 ## Reference
 
+- [The configuration document](reference/configuration.md): all the keys of the configuration, with their types, defaults and rules, and the datatypes of the tags in Sparkplug.
+- [Sparkplug messages and metrics](reference/sparkplug-messages-and-metrics.md): the topics, the messages, the node metrics and their aliases, the device metrics and the commands.
+- [The REST API](reference/rest-api.md): the authentication, the routes and the responses of the REST API.
+- [Store & forward](reference/store-and-forward.md): the RAM buffer, the microSD card, the retention and the duplicates after a restart.
 - [The status signals](reference/status-signals.md): the modes, the LED, the buzzer and the BOOT button.
 - [The access point](reference/access-point.md): the keys, the times, the signals, the REST API and the shell commands of the access point.
 - [The clock and the RTC battery](reference/clock-and-rtc-battery.md): the sources of the clock, and the signals while the gateway waits for a valid clock.
 - [UMH names and topics](reference/umh-names-and-topics.md): the name limits of the gateway, and the UMH topic of each metric.
 - [Sparkplug TCK results](reference/sparkplug-tck-results.md): the results of the Eclipse Sparkplug TCK, Edge Node profile.
-- `SPEC.md`: the product specification, with the configuration schema (§6) and the REST API (§6.1).
 - [`idf/README.md`](../idf/README.md): the architecture, the build, the configuration, the tests and the known limits.
 
 ## Explanation

@@ -1,6 +1,6 @@
 # The access point
 
-This document gives the facts about the commissioning access point of the gateway (NET-5, issue #187): its key, its times, its signals, its REST API and its shell commands.
+This document gives the facts about the commissioning access point of the gateway (issue #187): its key, its times, its signals, its REST API and its shell commands.
 
 - For the procedures, refer to [Set the first web password on site](../how-to/set-the-first-web-password.md) and [Get on the access point on a later visit](../how-to/get-on-the-access-point.md).
 - For the reasons and the residual risks, refer to [The security of the access point](../explanation/access-point-security.md).
@@ -17,7 +17,7 @@ This document gives the facts about the commissioning access point of the gatewa
 | Web UI | `https://192.168.4.1/`. With `web.https` set to `false`: `http://192.168.4.1/`. Plain HTTP only redirects to HTTPS |
 | Captive portal | None. Type the address in the browser |
 | Security | WPA2-PSK, or open (no key) during a claim window. No WPA3 |
-| Modbus TCP (MB-15) | Always refused through the access point (issue #120) |
+| Modbus TCP | Always refused through the access point (issue #120) |
 
 The web server starts with the access point, also when `web.enabled` is `false`.
 
@@ -35,7 +35,7 @@ A push of BOOT while the access point runs starts its times again. A push during
 | State | Key of the access point |
 |---|---|
 | No web password | WPA2 with the commissioning password. Only the serial console shows this password: `ap: WPA2 key = commissioning password '…'` |
-| Claim window (CFG-8): no web password, after a push of BOOT | Open (no key), from the push of BOOT to the claim. 5 s after the response of the claim, WPA2 with the new web password. At the end of the window without a claim, WPA2 with the commissioning password |
+| Claim window: no web password, after a push of BOOT | Open (no key), from the push of BOOT to the claim. 5 s after the response of the claim, WPA2 with the new web password. At the end of the window without a claim, WPA2 with the commissioning password |
 | Web password set | WPA2 with the web password. The gateway keeps only the PMK of the password |
 | Web password set, but no PMK stored | WPA2 with the commissioning password, until the next change of the web password. This applies to a web password that an earlier firmware set |
 
@@ -75,7 +75,7 @@ The web password is also the WPA2 key, thus it obeys the rule of a WPA2 passphra
 
 ## LED
 
-The patterns of the access point in the table of the status LED (`docs/SPEC.md` IO-5, `idf/README.md` §3.4):
+The patterns of the access point in the table of the status LED (refer to [The status signals](status-signals.md#status-led)):
 
 | State | Pattern |
 |---|---|
@@ -91,7 +91,7 @@ The patterns "Factory reset in progress" (white, continuous) and "BOOT pushed fo
 | BOOT released after 2 to 10 s, after the end of the boot | 1 beep: the access point starts. When no web password is set, the claim window opens |
 | BOOT released after 2 to 10 s, during the boot | No beep: the gateway ignores the push. The log gives `BOOT gesture ignored: still starting (no beep)` |
 | The claim window set the web password | 1 beep |
-| BOOT pushed for 10 s | 2 beeps: the factory reset starts (CFG-5) |
+| BOOT pushed for 10 s | 2 beeps: the factory reset starts |
 
 One beep is 150 ms of tone and 150 ms of silence.
 
@@ -147,7 +147,7 @@ curl -k -u admin:<web password> -X POST -H "X-Requested-With: x" https://192.168
 
 ## `POST /api/claim`: the items of the access point
 
-A successful claim gives `200` with the object `ap`: `ssid`, `url` (the address of this connection, for example `https://192.168.4.1/`) and `secure_in_s` (5: the seconds to the change to WPA2). `plant` gives the addresses of the gateway on Ethernet and on the Wi-Fi station. `mdns` gives the mDNS name (`null` when mDNS is off). `docs/SPEC.md` §6.1 gives the full request and response.
+A successful claim gives `200` with the object `ap`: `ssid`, `url` (the address of this connection, for example `https://192.168.4.1/`) and `secure_in_s` (5: the seconds to the change to WPA2). `plant` gives the addresses of the gateway on Ethernet and on the Wi-Fi station. `mdns` gives the mDNS name (`null` when mDNS is off). [The REST API](rest-api.md#post-apiclaim) gives the full request and response.
 
 ## Shell commands
 

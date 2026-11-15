@@ -148,4 +148,4 @@ The file has no secrets: they show as `********`. Refer to [Change, back up and 
 - Send the data to UMH Core: [Connect the gateway to UMH Core](../how-to/connect-to-umh-core.md).
 - Write values from a host: [Write a value to a Modbus device or a digital output](../how-to/write-to-a-modbus-device.md).
 - Update the firmware: [Update the firmware](../how-to/update-the-firmware.md).
-- Use TLS and a password on the broker: `mqtt.tls` and `mqtt.username` in `docs/SPEC.md` §6.1.
+- Use TLS and a password on the broker: refer to [`mqtt`](../reference/configuration.md#mqtt) and [`mqtt.tls`](../reference/configuration.md#mqtttls) in the configuration reference.
