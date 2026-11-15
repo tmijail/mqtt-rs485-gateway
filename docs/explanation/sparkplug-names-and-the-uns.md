@@ -82,10 +82,10 @@ In v0.16.2, the `sparkplug_b` input has these limits:
 
 The gateway keeps these items, because they are correct Sparkplug B 3.0 and other hosts use them:
 
-- `Node Info/Modbus` and `Node Info/Modbus TCP` are DataSets with the bus counters (SPB-17).
-- A device with `type` is a template instance (SPB-18).
-- A tag of the type `bytes` is a Bytes metric (SPB-19).
-- Each tag has the properties `engUnit`, `engLow`, `engHigh` and `Quality` (SPB-16).
+- `Node Info/Modbus` and `Node Info/Modbus TCP` are DataSets with the bus counters (refer to [Diagnostics](../reference/sparkplug-messages-and-metrics.md#diagnostics)).
+- A device with `type` is a template instance (refer to [Templates](../reference/sparkplug-messages-and-metrics.md#templates)).
+- A tag of the type `bytes` is a Bytes metric (refer to [`string` and `bytes`](../reference/configuration.md#string-and-bytes)).
+- Each tag has the properties `engUnit`, `engLow`, `engHigh` and `Quality` (refer to [Properties](../reference/sparkplug-messages-and-metrics.md#properties)).
 - A failed read gives a null value with the Quality BAD. UMH drops the null value and keeps the last good value. Thus UMH does not show that the value is old. With the UMH preset, the node metric `Devices/<name>/Online` tells UMH when a device goes offline (#173).
 
 The gateway must obey the Sparkplug specification fully. It does not change its default behaviour for one host. The UMH preset (`sparkplug.naming: "umh"`, #169) adds plain metrics that UMH can read, and keeps the Sparkplug rules:
@@ -102,7 +102,7 @@ The role `primary` of the `sparkplug_b` input publishes the STATE of Sparkplug 2
 
 Without a primary host, the gateway publishes when it has a session with the broker:
 
-- The store & forward function (SPB-14) keeps data only when the broker is not available.
+- The store & forward function ([Store & forward](../reference/store-and-forward.md)) keeps data only when the broker is not available.
 - If UMH stops and the broker continues, the gateway continues to publish. UMH does not get this data, also not later.
 - Thus there is no guarantee that UMH has all the data.
 

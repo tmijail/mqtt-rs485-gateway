@@ -26,6 +26,10 @@ This firmware is an RS485 (Modbus RTU) to MQTT Sparkplug B 3.0 gateway for the W
 - `docs/reference/clock-and-rtc-battery.md`: the RTC battery, the sources of the clock, and the signals while the gateway waits for a valid clock.
 - `docs/reference/status-signals.md`: the modes, the status LED, the buzzer and the BOOT button.
 - `docs/reference/access-point.md`: the keys, the times, the signals, the REST API and the shell commands of the access point.
+- `docs/reference/configuration.md`: all the keys of the configuration document, with their types, defaults and rules.
+- `docs/reference/sparkplug-messages-and-metrics.md`: the Sparkplug topics, messages, metrics and commands of the gateway.
+- `docs/reference/rest-api.md`: the routes of the REST API.
+- `docs/reference/store-and-forward.md`: the RAM buffer, the microSD card, the retention and the duplicates.
 - `docs/explanation/e2e-environment.md`: why the E2E tests on Windows run in Docker.
 - `docs/explanation/access-point-security.md`: why the Wi-Fi password of the access point is the web password, and the residual risks.
 - `docs/explanation/sparkplug-names-and-the-uns.md`: why the Sparkplug names control the place of the data in the UNS of UMH Core.

@@ -194,7 +194,7 @@ The [reference](../reference/umh-names-and-topics.md#node-metrics) gives all the
 
 ## Use Modbus TCP as a second path
 
-The `modbus` input of UMH uses only TCP (`TCP`, `RTUoverTCP`, `ASCIIoverTCP`). It cannot use serial RTU. The Modbus TCP server of the gateway (MB-15) lets UMH poll the RTU devices directly.
+The `modbus` input of UMH uses only TCP (`TCP`, `RTUoverTCP`, `ASCIIoverTCP`). It cannot use serial RTU. The Modbus TCP server of the gateway lets UMH poll the RTU devices directly. Refer to [`modbus_tcp`](../reference/configuration.md#modbus_tcp).
 
 1. In `config.json`, add `"modbus_tcp": { "enabled": true, "port": 502, "allowed_clients": ["192.168.1.20"] }`.
 2. Replace `192.168.1.20` with the address of UMH Core.

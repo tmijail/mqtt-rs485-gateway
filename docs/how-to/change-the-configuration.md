@@ -1,8 +1,9 @@
 # Change, back up and restore the configuration
 
-This document tells how to change the configuration of the gateway without a new flash, how to keep a copy of it, and how to load the copy again. The configuration is one JSON document (CFG-1, `docs/SPEC.md` §6).
+This document tells how to change the configuration of the gateway without a new flash, how to keep a copy of it, and how to load the copy again. The configuration is one JSON document.
 
-- For the keys and their rules, refer to `docs/SPEC.md` §6 and §6.1.
+- For the keys and their rules, refer to [The configuration document](../reference/configuration.md).
+- For the routes of the REST API, refer to [The REST API](../reference/rest-api.md).
 - For the details of the implementation, refer to [`idf/README.md` §3.4](../../idf/README.md#34-configuration).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The procedures and the messages come from the firmware in QEMU.

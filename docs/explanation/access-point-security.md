@@ -1,6 +1,6 @@
 # The security of the access point
 
-This document tells why the commissioning access point of the gateway (NET-5) operates as it does since issue #187. It gives the residual risks and compares the design with comparable projects.
+This document tells why the commissioning access point of the gateway operates as it does since issue #187. It gives the residual risks and compares the design with comparable projects.
 
 - For the procedures, refer to [Set the first web password on site](../how-to/set-the-first-web-password.md) and [Get on the access point on a later visit](../how-to/get-on-the-access-point.md).
 - For the keys, the times and the signals, refer to [The access point](../reference/access-point.md).

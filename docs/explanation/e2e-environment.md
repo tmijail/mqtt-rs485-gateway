@@ -28,7 +28,7 @@ A direct install in WSL is also possible: follow `idf/README.md` §3.1 and §4.3
 
 Do not build from the Windows file system. A bind mount of `C:\` into a Linux container goes through a file-sharing layer. An ESP-IDF build reads and writes many thousands of small files, and that layer makes each access slow. A named volume is on the ext4 disk of the VM, so the build runs at the speed of a Linux host.
 
-For this reason, the procedure clones the repository from the Windows folder into the volume. A clone also keeps `.git`, which the build needs: the firmware version contains the git hash (FW-4).
+For this reason, the procedure clones the repository from the Windows folder into the volume. A clone also keeps `.git`, which the build needs: the firmware version contains the git hash.
 
 The clone contains only committed work. To test changes that are not committed, commit them on a branch first, or copy the files into the volume.
 

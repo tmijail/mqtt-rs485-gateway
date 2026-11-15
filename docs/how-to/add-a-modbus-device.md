@@ -3,7 +3,7 @@
 This procedure tells how to add a Modbus RTU device to the gateway in the web UI. The gateway then reads the tags of the device and publishes them in Sparkplug B.
 
 - For the cable, the termination and the bias of the bus, refer to [Connect the RS485 bus](connect-the-rs485-bus.md).
-- For all the keys of a device and of a tag, refer to `docs/SPEC.md` §6 and §6.1.
+- For all the keys of a device and of a tag, refer to [The configuration document](../reference/configuration.md#devices).
 - For the names that UMH Core needs, refer to [UMH names and topics](../reference/umh-names-and-topics.md).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The RS485 hardware mode is compile-only. The images come from the firmware in QEMU, with a Modbus slave on the emulated UART.
@@ -95,7 +95,7 @@ Under the device, the web UI shows its Sparkplug topic and its UMH topic. Make s
 
    ![The card 'Devices and tags' of the Configuration tab: the device Meter1, unit 1, poll interval 1000 ms, its Sparkplug topic and its UMH topic, and the table of its tags with the area, the address, the type, the word order, the scale, the deadband and the writable column.](../images/devices-and-tags.png)
 
-A tag with a scale or an offset becomes a Float or a Double in Sparkplug. Refer to the table "Datatypes of the tags in Sparkplug" in `docs/SPEC.md` §6.
+A tag with a scale or an offset becomes a Float or a Double in Sparkplug. Refer to [The datatypes in Sparkplug](../reference/configuration.md#the-datatypes-in-sparkplug).
 
 ## 5. Validate and save
 
@@ -118,4 +118,4 @@ If the device stays offline, the LED shows green and orange, alternately. Do the
 - Two devices must not have names that differ only in case. Two tags of one device must not have names that differ only in case.
 - A tag name must not also be a folder of another tag name of the same device, for example `A` and `A/B`.
 
-For a slow scan of some tags, block reads, templates and the other optional keys, use the JSON tab. Refer to `docs/SPEC.md` §6.1.
+For a slow scan of some tags, block reads, templates and the other optional keys, use the JSON tab. Refer to [The configuration document](../reference/configuration.md#devices).

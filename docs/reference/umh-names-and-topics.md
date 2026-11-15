@@ -103,7 +103,7 @@ The DBIRTH and the DDATA of a device hold one metric for each tag of the device.
 
 | Tag | Datatype | UMH topic (after `umh.v1.acme.berlin.packaging.line3.meter1._raw.`) | Bridge example |
 |---|---|---|---|
-| `Voltage` | From the tag `type` (`docs/SPEC.md` §6) | `Voltage` | Kept |
+| `Voltage` | From the tag `type` (refer to [The datatypes in Sparkplug](configuration.md#the-datatypes-in-sparkplug)) | `Voltage` | Kept |
 | `L1/Current` | From the tag `type` | `L1.Current` | Kept |
 | A tag with a failed read, or of an offline device | Null, with the Quality BAD | No new value | Dropped |
 | A tag of the type `bytes` | Bytes | None: UMH gives no value for Bytes. The input gives the datatype `Unknown` | Dropped |

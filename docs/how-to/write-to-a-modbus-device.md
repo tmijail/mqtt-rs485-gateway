@@ -2,7 +2,7 @@
 
 This procedure tells how a Sparkplug host writes a value to a Modbus device (DCMD) or to a digital output of the board (NCMD). The gateway writes the value on the bus, reads it again, and publishes the confirmed value.
 
-- For the rules of a command, refer to `docs/SPEC.md` §4.4 (SPB-10, SPB-11).
+- For the commands and the node metrics, refer to [Sparkplug messages and metrics](../reference/sparkplug-messages-and-metrics.md#commands).
 - For the limits of the commands on a slow broker, refer to [`idf/README.md` §6.5](../../idf/README.md#65-slow-broker-and-command-limits).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The RS485 hardware mode and the digital outputs are compile-only. The E2E tests the commands in QEMU, with a Modbus slave and a model of the outputs.
@@ -83,14 +83,14 @@ This example uses Python, `paho-mqtt` and the Sparkplug protobuf of the reposito
 
 4. Make sure that the web UI shows the new values: tab **Status**, card **Modbus devices**.
 
-The datatypes are in `docs/SPEC.md` §6, table "Datatypes of the tags in Sparkplug". Use `int_value` for Int8 to UInt32, `long_value` for Int64 and UInt64, `double_value` for Double and `string_value` for String.
+For the datatype of each tag, refer to [The datatypes in Sparkplug](../reference/configuration.md#the-datatypes-in-sparkplug). Use `int_value` for Int8 to UInt32, `long_value` for Int64 and UInt64, `double_value` for Double and `string_value` for String.
 
 ## Set a digital output
 
 The gateway publishes the outputs as the node metrics `DO/1` to `DO/8` (Boolean). A host sets an output with an NCMD on `spBv1.0/<group_id>/NCMD/<edge_node_id>`, with the metric `DO/<n>` and a Boolean value.
 
-- An output that a local rule controls (`local_io.rules`, IO-7) does not accept the NCMD.
-- Without a Sparkplug session for `local_io.failsafe_s`, the outputs go to their safe state (`local_io.do_failsafe`, IO-3).
+- An output that a local rule controls does not accept the NCMD. Refer to [Local rules](../reference/configuration.md#local-rules).
+- Without a Sparkplug session for `local_io.failsafe_s`, the outputs go to their safe state. Refer to [The safe state of the DOs](../reference/configuration.md#the-safe-state-of-the-dos).
 
 ## Other commands of the node
 
