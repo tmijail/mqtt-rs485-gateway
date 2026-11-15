@@ -122,6 +122,13 @@ uint16_t gw_nvsmig_skipped(const uint8_t *buf);
 bool gw_nvsmig_next(const uint8_t *buf, size_t size, size_t *off, gw_nvsmig_rec_t *r);
 bool gw_nvsmig_find(const uint8_t *buf, size_t size, const char *ns, const char *key,
                     gw_nvsmig_rec_t *r);
+/** Issue #185: an entry that the NVS lists with an empty namespace name (@p ns ""), because an
+ *  interrupted erase took the page with its namespace entry, is in the copy @p old of that
+ *  migration: a record with the same key and type. Such an entry cannot be read (no namespace to
+ *  open), and the copy already holds it, so it does not stop the next erase. False when @p old
+ *  is NULL (no interrupted migration), when @p ns is not empty, or when no record matches. */
+bool gw_nvsmig_orphan_in_copy(const uint8_t *old, size_t old_size, const char *ns,
+                              const char *key, uint8_t type);
 
 /* What the read of the unencrypted NVS achieved before a migration may erase it. */
 typedef struct {
