@@ -36,18 +36,24 @@ The gateway keeps `mqtt.password`, `network.wifi.password` and `web.password` in
 1. Open the web UI: `https://<ip>/` or `https://<hostname>.local/`.
 2. Click the tab **Configuration**. Change the values in the forms.
 
-   ![The Configuration tab of the web UI: the forms for the network, MQTT and Sparkplug.](../images/configuration-page.png)
+   ![The Configuration tab of the web UI: the forms for the network, MQTT and Sparkplug. The bar at the bottom of the window shows 'No changes' and the buttons Validate and 'Save and restart'.](../images/configuration-page.png)
 
 3. For a key that has no form (for example Wi-Fi, IPv6, syslog, TLS), click the tab **JSON**. Change the document.
-4. Click **Validate**. Read the message under the buttons.
-5. If the message gives an error, correct the value. The message gives the JSON path or the line and the column. The web UI marks the field.
+4. Click **Validate** in the bar at the bottom of the window. Read the message in the bar.
+5. If the bar gives an error, click **Go to the field**. Read the error below the field, and correct the value.
+
+   ![The Configuration tab after Validate with the unit ID 300 for Meter1. Below the field Unit ID, the text 'Value 300 out of range [1, 247]' shows in red. The bar at the bottom of the window shows '1 change, not saved', '1 error: Meter1 · Unit ID' with the link 'Go to the field', and the buttons Validate and 'Save and restart'.](../images/validate-error.png)
+
 6. Click **Save and restart**. The page loads again after 15 s.
 
-| Message | Meaning |
+The bar stays in view in the Configuration tab and in the JSON tab. It shows the number of changes that are not saved. The web UI compares the document with the document that it loaded or saved last. Thus the number is 0 again after a reload of the page, and after an import of the same document.
+
+| Message in the bar | Meaning |
 |---|---|
 | `The configuration is valid.` | You can save |
-| `The configuration is valid.` and warnings | You can save. The warnings are name checks for UMH Core |
-| `Error 400: devices[1].tags[2].type: invalid value …` | Correct the value at this JSON path |
+| `The configuration is valid.` and warnings | You can save. The warnings are name checks for UMH Core. Each warning shows below its field |
+| `1 error: Meter1 · Unit ID` | The error is below the field. Click **Go to the field** |
+| `Error 400: devices[1].tags[2].type: invalid value …` | The form has no field for this JSON path, or the JSON tab is open. Correct the value at this JSON path. In the JSON tab, **Show in the form** opens the field |
 | `Error 400: JSON syntax error at line 5, column 3 …` | Correct the JSON in the JSON tab |
 | `Error 409: testing <version>: N s left` | A new firmware image is on trial. Wait, then save again |
 | `Error 413` | The document is larger than 128 KiB |

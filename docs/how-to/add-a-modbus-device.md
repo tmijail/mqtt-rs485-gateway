@@ -99,9 +99,12 @@ A tag with a scale or an offset becomes a Float or a Double in Sparkplug. Refer 
 
 ## 5. Validate and save
 
-1. Click **Validate**.
-2. If the message gives an error, correct the field. The web UI marks the field, and the message gives its JSON path, for example `devices[1].tags[2].type`.
-3. Read the warnings, if there are some. A warning does not stop the save. With the naming `umh`, the name warnings are errors.
+1. Click **Validate** in the bar at the bottom of the window.
+2. If the bar gives an error, click **Go to the field**. Read the error below the field, and correct the field.
+
+   ![The Configuration tab after Validate with the unit ID 300 for Meter1. Below the field Unit ID, the text 'Value 300 out of range [1, 247]' shows in red. The bar at the bottom of the window shows '1 change, not saved', '1 error: Meter1 · Unit ID' with the link 'Go to the field', and the buttons Validate and 'Save and restart'.](../images/validate-error.png)
+
+3. Read the warnings, if there are some. Each warning shows below its field, in amber. A warning does not stop the save. With the naming `umh`, the name warnings are errors.
 4. Click **Save and restart**. The gateway saves the configuration and restarts. The page loads again after 15 s.
 
 ## 6. Make sure that the gateway reads the device
