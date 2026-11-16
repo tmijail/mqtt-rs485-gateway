@@ -27,6 +27,31 @@ td input,td select{width:100%;margin:0;padding:3px 4px}
 #msg{white-space:pre-wrap;margin:8px 0 0}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .hidden{display:none}a{color:var(--acc)}
 .hint{font-size:11px;margin-top:2px}.topic{font-family:ui-monospace,monospace;font-size:12px;overflow-wrap:anywhere;margin:6px 0}
+/* #189 #190 */
+:root{--sub:#eef1f5}@media (prefers-color-scheme:dark){:root{--sub:#252a33}}
+.fld{display:flex;flex-direction:column;font-size:12px;color:var(--mut)}
+.lbl{display:inline-flex;align-items:center;gap:4px}.lbl label{display:inline}.card h2.lbl{display:flex}
+button.qi{width:16px;height:16px;padding:0;border-radius:50%;border:1px solid var(--mut);background:transparent;color:var(--mut);font-size:10px;font-weight:700;line-height:14px;text-align:center;flex:none;position:relative}
+button.qi.on{border-color:var(--acc);background:var(--acc);color:var(--card)}
+@media (pointer:coarse){button.qi::after{content:"";position:absolute;inset:-6px -14px}}
+.xpl{position:fixed;z-index:40;width:300px;background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:6px;box-shadow:0 6px 20px rgba(0,0,0,.18);padding:10px 12px;font-size:12.5px;line-height:1.45;white-space:normal}
+.xpl .hd{display:flex;align-items:center;gap:8px;margin-bottom:4px}.xpl .hd b{flex:1;font-size:13px}
+.xpl p{margin:0 0 6px}.xpl p:last-child{margin:0}.xpl code{font-family:ui-monospace,monospace;font-size:12px}.xpl .x{display:none}
+.xpl.sheet{left:0;right:0;bottom:0;top:auto;width:auto;max-height:80vh;overflow-y:auto;border-width:1px 0 0;border-radius:12px 12px 0 0;box-shadow:0 -6px 24px rgba(0,0,0,.25);padding:18px 16px calc(22px + env(safe-area-inset-bottom));font-size:14px}
+.xpl.sheet .hd{margin-bottom:8px}.xpl.sheet .hd b{font-size:17px}.xpl.sheet p{margin:0 0 8px}.xpl.sheet p.mut{font-size:13px;margin:0}
+.xpl.sheet .x{display:block;min-width:44px;min-height:44px;padding:0;font-size:18px;border-color:transparent;background:transparent;color:var(--mut)}
+.scrim{position:fixed;inset:0;z-index:39;background:rgba(0,0,0,.35)}
+.tnote{font-size:12px;color:var(--mut);margin:0 0 6px}
+.tw{position:relative}.tbox{overflow-x:auto;border:1px solid var(--line);border-radius:4px}
+.fade{display:none;position:absolute;top:1px;right:1px;bottom:1px;width:28px;border-radius:0 4px 4px 0;background:linear-gradient(to right,transparent,var(--card));pointer-events:none}.tw.scr .fade{display:block}
+table.tags{border-collapse:separate;border-spacing:0;table-layout:fixed}
+.tags col{width:75px}.tags col:nth-child(1){width:170px}.tags col:nth-child(2),.tags col:nth-child(4){width:105px}.tags col:nth-child(3),.tags col:nth-child(8){width:90px}.tags col:nth-child(5){width:120px}.tags col:nth-child(9){width:135px}
+.tags th,.tags td{white-space:nowrap;background:var(--card)}.tags th{font-weight:600;color:var(--mut);font-size:12px}.tags tr:last-child td{border-bottom:0}
+.tags th:first-child,.tags td:first-child{position:sticky;left:0;z-index:1;border-right:1px solid var(--line)}
+.tags td.chk{text-align:center}.tags td:last-child:not([colspan]){text-align:right}.tags td>button{padding:3px 8px;font-size:12px}.tags button.more{color:var(--acc);border-color:transparent;background:transparent}
+.tags tr.det td{position:static;background:var(--sub);padding:8px 10px 10px;border-right:0}
+.dgrid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:6px 12px;max-width:820px}
+@media (max-width:760px){#f-dev>.card{padding:10px}.tags col:nth-child(1){width:140px}.dgrid{position:sticky;left:10px;width:calc(var(--bw,320px) - 20px);grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
 <body>
@@ -58,8 +83,7 @@ td input,td select{width:100%;margin:0;padding:3px 4px}
  <div class="card"><h2>Network (Ethernet)</h2><div class="grid" id="f-net"></div></div>
  <div class="card"><h2>MQTT</h2><div class="grid" id="f-mqtt"></div></div>
  <div class="card"><h2>Sparkplug</h2><div class="grid" id="f-spb"></div>
-  <h2 style="margin-top:12px">Device prefix (location)</h2>
-  <p class="mut">Location levels that the gateway puts before each device name in the Sparkplug device ID, with ":" between them. Example: the levels acme, berlin, packaging and line3 give the device ID acme:berlin:packaging:line3:meter1. Write the location one time here, not in each device. Keep the list empty if the device names are the full device IDs.</p>
+  <h2 class="lbl" style="margin-top:12px">Device prefix (location)<button type="button" class="qi" data-x="pfx" data-t="Device prefix (location)" aria-label="About Device prefix (location)" aria-expanded="false" aria-controls="xpl">?</button></h2>
   <div id="f-pfx" class="row" data-perr="sparkplug.device_prefix" tabindex="-1"></div></div>
  <div class="card"><h2>RS485</h2><div class="grid" id="f-rs485"></div></div>
  <div class="card"><h2>Web interface</h2><div class="grid" id="f-web"></div></div>
@@ -119,23 +143,141 @@ function selOpts(v,opts,optional){
  else if(!opts.includes(v))o.unshift([String(v),`${v} (not in the list)`]);
  return o.map(([x,t])=>`<option value="${esc(x)}" ${v!=null&&x===String(v)||v==null&&x===""?"selected":""}>${esc(t)}</option>`).join("");
 }
-/* #170: x = {ml: maxlength (the byte limits of gw_config.h), help: a short help text} */
-function field(path,lbl,kind,opts,optional,x){
- const v=get(cfg,path);let h;x=x||{};
- if(kind==="bool")h=`<input type="checkbox" data-p="${path}" data-k="bool" data-def="${opts?1:0}" ${(v==null?opts:v)?"checked":""}>`;
- else if(kind==="sel")h=`<select data-p="${path}" data-k="sel">${selOpts(v,opts,optional)}</select>`;
- else h=`<input data-p="${path}" data-k="${kind}" ${kind==="pw"?'type="password" autocomplete="new-password"':""}${x.ml?` maxlength="${x.ml}"`:""} value="${v==null?"":esc(v)}">`;
- return `<label${x.help?` title="${esc(x.help)}"`:""}>${lbl}${h}${x.help?`<span class="hint mut">${esc(x.help)}</span>`:""}</label>`;
+/* #170: x = {ml: maxlength (the byte limits of gw_config.h), help: a key of HELP (#190: the
+   explainer of the (?) button after the label), ph: a placeholder, aria: the accessible name of
+   a control without a label (#189: a cell of the tag table)} */
+function ctl(path,kind,opts,optional,x){
+ const v=get(cfg,path);x=x||{};const a=` id="i-${path}" data-p="${path}"${x.aria?` aria-label="${esc(x.aria)}"`:""}`;
+ if(kind==="bool")return `<input type="checkbox"${a} data-k="bool" data-def="${opts?1:0}" ${(v==null?opts:v)?"checked":""}>`;
+ if(kind==="sel")return `<select${a} data-k="sel">${selOpts(v,opts,optional)}</select>`;
+ return `<input${a} data-k="${kind}" ${kind==="pw"?'type="password" autocomplete="new-password"':""}${x.ml?` maxlength="${x.ml}"`:""}${x.ph?` placeholder="${esc(x.ph)}"`:""} value="${v==null?"":esc(v)}">`;
 }
-/* #170: help texts. A Sparkplug ID has 32 bytes at most, a device or tag name 39 (gw_config.h) */
+function field(path,lbl,kind,opts,optional,x){x=x||{};
+ return `<div class="fld"><span class="lbl"><label for="i-${path}">${lbl}</label>${x.help?qi(x.help,lbl):""}</span>${ctl(path,kind,opts,optional,x)}</div>`;
+}
+// #189 #190
+/* #190: the explainers of the (?) buttons. A Sparkplug ID has 32 bytes at most, a device or tag
+   name 39 (gw_config.h); the facts come from docs/reference/configuration.md. "\n" starts a
+   paragraph, "\n~" the last line (range and default, in grey), `x` is code. */
 const HELP={
- phost:"Keep it empty for UMH Core: UMH cannot be the primary host (it publishes a Sparkplug 2.x STATE). With an ID, the gateway sends no NBIRTH until that Sparkplug 3.0 host is online.",
- type:"Optional template (Sparkplug Template). UMH Core shows no value for a template instance; with naming umh the tags go out as plain metrics.",
- naming:"umh = the UMH preset: the name warnings become errors, each device gets Devices/<name>/Online, and typed devices and the Modbus counters go out as plain metrics.",
- name:"The last levels of the location, with ':' between them. The device ID is the device prefix, ':' and this name.",
- bytes:"Type bytes: the raw registers as a Sparkplug Bytes metric. UMH Core shows no value for Bytes.",
- webpw:"8 to 63 characters: letters A-Z and a-z, digits, spaces and the symbols of a keyboard. It is also the Wi-Fi password of the access point GW-Setup-XXXXXX."
+ host:"The name of the gateway in DHCP and mDNS. Use one DNS label: letters, digits and `-`, with no dots.\nEmpty = a name from the edge node ID: lower case, and `-` for each other character. Example: GW01 gives gw01.\n~1 to 63 characters. Default: empty.",
+ mdns:"The gateway answers `<hostname>.local`, and it announces the web UI as a service. Example: https://gw01.local/.\n~Default: on.",
+ broker:"The name, IPv4 or IPv6 address of the primary MQTT broker. Example: 192.168.1.10.\nFor TLS, MQTT 5 and the backup brokers, use the JSON tab.\n~Necessary.",
+ cid:"The client ID of the MQTT connection. Each client of a broker must have a different client ID.\n~Default: empty = the edge node ID.",
+ keep:"The MQTT keepalive, in seconds. When the broker gets no packet from the gateway for 1.5 × the keepalive, it publishes the NDEATH of the gateway.\n~5 to 3600. Default: 30.",
+ group:"The Sparkplug group of the gateway: the second level of each topic, `spBv1.0/<group>/…`. Example: Plant1.\n~1 to 32 bytes. Necessary. No `/`, `+` or `#`.",
+ edge:"The Sparkplug ID of the gateway: the fourth level of each topic. Example: GW01.\nFor UMH Core: the location of the gateway, with ':' between the levels.\n~1 to 32 bytes. Necessary.",
+ phost:"Keep it empty for UMH Core: UMH cannot be the primary host (it publishes a Sparkplug 2.x STATE). With an ID, the gateway sends no NBIRTH until that Sparkplug 3.0 host is online.\n~Up to 32 bytes. Default: empty = no primary host.",
+ naming:"umh = the UMH preset: the name warnings become errors, each device gets Devices/<name>/Online, and typed devices and the Modbus counters go out as plain metrics.\n~Default: sparkplug.",
+ pfx:"Location levels that the gateway puts before each device name in the Sparkplug device ID, with ':' between them.\nExample: the levels acme, berlin, packaging and line3 give the device ID acme:berlin:packaging:line3:meter1.\nWrite the location one time here, not in each device. Keep the list empty if the device names are the full device IDs.\n~0 to 96 bytes. Default: empty.",
+ baud:"The speed of the RS485 bus. All the devices on the bus must use the same baud rate, parity and stop bits.\n~1200 to 115200. Default: 9600.",
+ tmo:"The time that the gateway waits for the response of a device to one request.\n~10 to 5000 ms. Default: 200.",
+ retry:"The number of times that the gateway sends a request again after a timeout or a damaged response. An exception response gets no retry.\n~0 to 5. Default: 2.",
+ ifd:"The delay between two transactions on the bus. Make it longer for a slow device. The gateway always keeps the silence of 3.5 characters between two frames.\n~0 to 1000 ms. Default: 5.",
+ deb:"A digital input must stay in its new state for this time before the gateway accepts the change. With 20 ms, the pulse counters count up to approximately 25 Hz.\n~0 to 1000 ms. Default: 20.",
+ webpw:"8 to 63 characters: letters A-Z and a-z, digits, spaces and the symbols of a keyboard. It is also the Wi-Fi password of the access point GW-Setup-XXXXXX.\n~Empty = the commissioning password of the console.",
+ name:"The name of the device in Sparkplug. The device ID is the device prefix, ':' and this name. Example: Pump1.\nFor UMH Core, put ':' between the last levels of the location. Do not use `/`, `+` or `#`.\n~1 to 39 bytes. Necessary.",
+ unit:"The Modbus address of the device on the RS485 bus (the slave ID). The manual or the display of the device gives it. Use the Modbus test read to find out if the device answers.\n~1 to 247. Necessary.",
+ poll:"The time between two reads of the tags of the device. Example: 1000 = one read each second.\n~50 to 3 600 000 ms. Default: 1000.",
+ off:"The number of failed poll cycles in sequence before the device is offline. The gateway then sends a DDEATH for the device, and the hosts show its tags as stale.\nThe first cycle that reads all the tags makes the device online again (DBIRTH).\n~1 to 1000. Default: 3.",
+ type:"Optional template (Sparkplug Template). Example: Pump, for the devices Pump1 and Pump2.\nAll the devices of one type must have the same tag names and types, in the same order.\nUMH Core shows no value for a template instance; with naming umh the tags go out as plain metrics.\n~Up to 39 bytes. Default: empty = no template, one metric for each tag.",
+ tag:"The name of the metric in Sparkplug. Use '/' between the levels of a path, no ':' and no spaces. Example: Motor/Current.\nTwo tags of one device must not have names that differ only in case. A name must not also be a folder of another name, for example A and A/B.\n~1 to 39 bytes. Necessary.",
+ area:"The Modbus table of the value. `coil` and `discrete` are bits. `holding` and `input` are 16-bit registers.\nOnly `coil` and `holding` can be writable.\n~coil = FC01, discrete = FC02, holding = FC03, input = FC04. Necessary.",
+ addr:"The address of the first register or bit on the bus, from 0. Many manuals count from 1: the input register 30001 has the address 0, and the holding register 40011 has the address 10.\n~0 to 65535. Necessary.",
+ type_t:"The data type of the value. A 16-bit type uses 1 register, a 32-bit type 2 registers, and a 64-bit type 4 registers.\n`bool` is one coil or discrete input, or one bit of a register (with Bit). `string` and `bytes` use Length registers.\nType bytes: the raw registers as a Sparkplug Bytes metric. UMH Core shows no value for Bytes.\n~Necessary.",
+ wo:"The order of the bytes of a 32-bit or 64-bit value. The letters are the bytes, from the most significant (A).\n`ABCD` (big): the most significant register first. `CDAB` (little): the least significant register first. `BADC`, `DCBA`: also the two bytes of each register in the opposite order.\nThe manual of the device gives the order. If the value is very large or very small, try `CDAB`. Use the Modbus test read to compare.\n~Default: big. With Bit, only big.",
+ scale:"The gateway multiplies the raw value by the scale, then adds the offset: value = raw × scale + offset. Example: 0.1 changes 2345 to 234.5.\nWith a scale other than 1, an integer tag goes out as a Float or a Double.\n~Not 0. Default: 1. Not for bool, string and bytes tags.",
+ units:"The engineering unit of the value, for example V, A or rpm. It goes into the DBIRTH as the property engUnit.\n~Up to 15 characters. Default: empty = no property.",
+ wr:"A host can write the value with a DCMD. The gateway then writes the coil or the register on the bus.\n~Only for coil and holding tags. Default: off.",
+ offs:"The gateway adds the offset after the scale: value = raw × scale + offset. Example: with the scale 0.1 and the offset -40, the raw value 650 gives 25.\n~Default: 0. Not for bool, string and bytes tags.",
+ db:"The gateway publishes a new value only when it differs from the last published value by more than the deadband. The deadband is in the units of the tag, after the scale. Example: 0.5 for a temperature.\n~Not negative. Default: 0 = each change. Not for bool, string and bytes tags.",
+ englo:"The bottom of the normal range of the value, in the units of the tag (after the scale). The host uses it, for example, for the scale of a gauge or a trend.\nThe gateway does not limit the value and sends no alarm. Empty = no range.\n~Sparkplug property engLow (Float). Not for bool, string and bytes tags.",
+ enghi:"The top of the normal range of the value, in the units of the tag (after the scale). The host uses it, for example, for the scale of a gauge or a trend.\nThe gateway does not limit the value and sends no alarm. With Eng. low, Eng. high must be more than Eng. low. Empty = no range.\n~Sparkplug property engHigh (Float). Not for bool, string and bytes tags.",
+ bit:"One bit of a holding or input register, for a bool tag. 0 = the least significant bit.\nFor a write, the gateway reads the register, then writes the full register with the changed bit.\n~0 to 15. Necessary for a bool tag in holding or input, and only there.",
+ len:"The number of registers of a string or bytes tag. Each register holds two characters or two bytes. Example: 8 for a text of up to 16 characters.\n~1 to 16. Necessary for string and bytes, and only for them."
 };
+function qi(k,t){return `<button type="button" class="qi" data-x="${k}" data-t="${esc(t)}" aria-label="About ${esc(t)}" aria-expanded="false" aria-controls="xpl">?</button>`}
+/* #190: one explainer for all the (?) buttons. It opens on hover, on keyboard focus and on a click
+   or tap (a click keeps it open). Esc, a click outside or a second click closes it. At the width
+   of a phone it is a sheet at the bottom of the screen (a dialog), on a scrim. */
+const XPL=document.createElement("div"),XSCR=document.createElement("div");
+XPL.id="xpl";XPL.className="xpl hidden";XPL.innerHTML=`<div class="hd"><b id="xpl-t"></b><button type="button" class="x" aria-label="Close">&times;</button></div><div id="xpl-b"></div>`;
+XSCR.className="scrim hidden";document.body.append(XSCR,XPL);
+let xb=null,xpin=false,xt=0,xskip=null;
+const narrow=()=>matchMedia("(max-width:600px)").matches;
+const xfmt=s=>esc(s).replace(/`([^`]+)`/g,"<code>$1</code>");
+function xText(s){const [m,n]=s.split("\n~");return m.split("\n").map(p=>`<p>${xfmt(p)}</p>`).join("")+(n?`<p class="mut">${xfmt(n)}</p>`:"")}
+function xPos(){
+ if(!xb||XPL.classList.contains("sheet"))return;
+ const r=xb.getBoundingClientRect(),w=XPL.offsetWidth,h=XPL.offsetHeight;let t=r.bottom+6;
+ if(t+h>innerHeight-8&&r.top-6-h>8)t=r.top-6-h;
+ XPL.style.left=Math.max(8,Math.min(r.left-8,innerWidth-w-8))+"px";XPL.style.top=t+"px";
+}
+function xOpen(b,pin){
+ clearTimeout(xt);
+ if(xb!==b){xClose(false);xb=b;$("#xpl-t").textContent=b.dataset.t;$("#xpl-b").innerHTML=xText(HELP[b.dataset.x]||"")}
+ xpin=xpin||pin;const sh=narrow();
+ XPL.classList.toggle("sheet",sh);XSCR.classList.toggle("hidden",!sh);XPL.classList.remove("hidden");
+ XPL.setAttribute("role",sh?"dialog":"tooltip");
+ if(sh){XPL.setAttribute("aria-modal","true");XPL.setAttribute("aria-labelledby","xpl-t");XPL.style.left=XPL.style.top=""}
+ else{XPL.removeAttribute("aria-modal");XPL.removeAttribute("aria-labelledby")}
+ b.classList.add("on");b.setAttribute("aria-expanded","true");b.setAttribute("aria-describedby","xpl");
+ xPos();if(sh&&pin)XPL.querySelector(".x").focus();
+}
+function xClose(back){
+ clearTimeout(xt);if(!xb)return;const b=xb;xb=null;xpin=false;
+ b.classList.remove("on");b.setAttribute("aria-expanded","false");b.removeAttribute("aria-describedby");
+ XPL.classList.add("hidden");XSCR.classList.add("hidden");
+ if(back&&b.isConnected){xskip=b;b.focus()}
+}
+const qiOf=e=>e.target.closest?e.target.closest("button.qi"):null;
+document.addEventListener("click",e=>{const b=qiOf(e);
+ if(b){if(xb===b&&xpin)xClose(false);else xOpen(b,true);return}
+ if(e.target.closest&&e.target.closest("#xpl .x")){xClose(true);return}
+ if(xb&&!XPL.contains(e.target))xClose(false)});
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&xb){xClose(XPL.contains(document.activeElement));e.preventDefault()}});
+document.addEventListener("focusin",e=>{const b=qiOf(e);
+ if(b){if(xskip===b)xskip=null;else if(!narrow()&&!xpin)xOpen(b,false);return}
+ if(xb&&!XPL.contains(e.target))xClose(false)});
+document.addEventListener("focusout",e=>{if(xb&&e.target===xb&&!xpin)xClose(false)});
+document.addEventListener("pointerover",e=>{if(e.pointerType!=="mouse")return;const b=qiOf(e);
+ if(b&&!narrow()&&!xpin)xOpen(b,false);else if(xb&&XPL.contains(e.target))clearTimeout(xt)});
+document.addEventListener("pointerout",e=>{if(e.pointerType!=="mouse"||!xb||xpin||document.activeElement===xb)return;
+ const to=e.relatedTarget;if((qiOf(e)===xb||XPL.contains(e.target))&&!(to&&(xb.contains(to)||XPL.contains(to))))xt=setTimeout(()=>xClose(false),150)});
+/* #189: the tag table. A row has the frequent fields; "More (n)" opens a details row with the
+   other fields (n = the fields with a value). The table scrolls in its box on a narrow screen:
+   the Tag column stays at the left, the details row stays in view, a shade shows more columns. */
+const TCOL=[["name","Tag","tag"],["area","Area","area"],["address","Address","addr"],["type","Type","type_t"],["word_order","Word order","wo"],["scale","Scale","scale"],["units","Units","units"],["writable","Writable","wr"]];
+const TDET=[["offset","Offset","offs"],["deadband","Deadband","db"],["eng_low","Eng. low","englo"],["eng_high","Eng. high","enghi"],["bit","Bit","bit"],["length","Length","len"]];
+const TK={name:["str",0,0,{ml:39}],area:["sel",AREA],address:["int"],type:["sel",TYPE],word_order:["sel",WO,true],scale:["num"],units:["str",0,0,{ml:15}],writable:["bool"],
+ offset:["num"],deadband:["num"],eng_low:["num"],eng_high:["num"],bit:["int",0,0,{ph:"0-15"}],length:["int",0,0,{ph:"string, bytes"}]};
+const detOpen=new Set();
+function tagTable(d,i){
+ const p=(k,f)=>`devices.${i}.tags.${k}.${f}`;
+ const rows=(d.tags||[]).map((t,k)=>{const id=`det-${i}-${k}`,open=detOpen.has(`${i}.${k}`);
+  return `<tr>${TCOL.map(([f,l])=>{const a=TK[f];return `<td${a[0]==="bool"?' class="chk"':""}>${ctl(p(k,f),a[0],a[1],a[2],Object.assign({aria:l},a[3]))}</td>`}).join("")}`+
+   `<td><button type="button" class="more" data-more="${i}.${k}" aria-expanded="${open}" aria-controls="${id}">More</button><button data-del-tag="${i}.${k}" aria-label="Remove the tag">x</button></td></tr>`+
+   `<tr class="det${open?"":" hidden"}" id="${id}"><td colspan="9"><div class="dgrid">${TDET.map(([f,l,h])=>{const a=TK[f];return field(p(k,f),l,a[0],a[1],a[2],Object.assign({help:h},a[3]))}).join("")}</div></td></tr>`}).join("");
+ return `<p class="tnote hidden">Push the table to the side for more columns.</p><div class="tw"><div class="tbox"><table class="tags"><colgroup>${"<col>".repeat(9)}</colgroup>`+
+  `<tr>${TCOL.map(([,l,h])=>`<th><span class="lbl">${l}${qi(h,l)}</span></th>`).join("")}<th></th></tr>${rows}</table></div><div class="fade" aria-hidden="true"></div></div>`;
+}
+function updMore(b){
+ const r=document.getElementById(b.getAttribute("aria-controls")),open=!r.classList.contains("hidden");
+ const n=[...r.querySelectorAll("[data-p]")].filter(e=>e.value.trim()!=="").length;
+ b.textContent=`${open?"▾":"▸"} More${n?` (${n})`:""}`;b.setAttribute("aria-expanded",open);
+}
+function togDet(b){const r=document.getElementById(b.getAttribute("aria-controls")),open=r.classList.toggle("hidden")===false;
+ detOpen[open?"add":"delete"](b.dataset.more);updMore(b);tblUpd(r.closest(".tw"))}
+/* #191 calls it before it focuses a field with an error: open the details row of the field */
+function revealField(el){const r=el&&el.closest?el.closest("tr.det"):null;
+ if(r&&r.classList.contains("hidden"))togDet(r.previousElementSibling.querySelector("[data-more]"))}
+function tblUpd(tw){(tw?[tw]:document.querySelectorAll(".tw")).forEach(w=>{const b=w.firstElementChild,s=b.scrollWidth>b.clientWidth+1;
+ w.classList.toggle("scr",s&&b.scrollLeft+b.clientWidth<b.scrollWidth-1);w.previousElementSibling.classList.toggle("hidden",!s);w.style.setProperty("--bw",b.clientWidth+"px")})}
+function tagsInit(){document.querySelectorAll("[data-more]").forEach(updMore);tblUpd()}
+$("#f-dev").addEventListener("click",e=>{const t=e.target.dataset||{};if(t.delTag||t.delDev)detOpen.clear();if(t.more)togDet(e.target)},true);
+$("#f-dev").addEventListener("input",e=>{const r=e.target.closest("tr.det");if(r)updMore(r.previousElementSibling.querySelector("[data-more]"))});
+document.addEventListener("scroll",e=>{const w=e.target.parentElement;if(w&&w.classList.contains("tw"))tblUpd(w);if(xb)xPos()},true);
+addEventListener("resize",()=>{tblUpd();if(xb)xOpen(xb,false)});
 /* #170: the UMH topic of a metric, with the rules of UMH Core (docs/reference/umh-names-and-topics.md):
    the device ID gives the location (':' and '.' start a level), each character outside
    [A-Za-z0-9._-] becomes '_', two or more '.' become one, no '.' at the start or the end. The
@@ -154,21 +296,18 @@ function updTopics(){
  });
 }
 function renderForms(){
- $("#f-net").innerHTML=field("network.dhcp","DHCP","bool",true)+field("network.ip","IP","str")+field("network.netmask","Netmask","str")+field("network.gateway","Gateway","str")+field("network.dns","DNS","str")+field("network.hostname","Hostname (empty = edge node)","str")+field("network.mdns","mDNS (.local)","bool",true);
- $("#f-mqtt").innerHTML=field("mqtt.host","Broker","str")+field("mqtt.port","Port","int")+field("mqtt.client_id","Client ID (empty = edge node)","str")+field("mqtt.username","User","str")+field("mqtt.password","Password","pw")+field("mqtt.keepalive_s","Keepalive (s)","int");
- $("#f-spb").innerHTML=field("sparkplug.group_id","Group ID","str",0,0,{ml:32})+field("sparkplug.edge_node_id","Edge node ID","str",0,0,{ml:32,help:"For UMH Core: the location of the gateway, with ':' between the levels."})+field("sparkplug.primary_host_id","Primary host ID","str",0,0,{ml:32,help:HELP.phost})+field("sparkplug.naming","Naming","sel",NAMING,true,{help:HELP.naming});
- $("#f-rs485").innerHTML=field("rs485.baud","Baud rate","int")+field("rs485.parity","Parity","sel",PAR,true)+field("rs485.stop_bits","Stop bits","int")+field("rs485.response_timeout_ms","Timeout (ms)","int")+field("rs485.retries","Retries","int")+field("rs485.inter_frame_delay_ms","Inter-frame delay (ms)","int")+field("local_io.di_debounce_ms","Debounce DI (ms)","int");
- $("#f-web").innerHTML=field("web.username","User","str")+field("web.password","Password (8 to 63)","pw",0,0,{ml:63,help:HELP.webpw})+field("web.port","Port","int");
+ $("#f-net").innerHTML=field("network.dhcp","DHCP","bool",true)+field("network.ip","IP","str")+field("network.netmask","Netmask","str")+field("network.gateway","Gateway","str")+field("network.dns","DNS","str")+field("network.hostname","Hostname","str",0,0,{help:"host"})+field("network.mdns","mDNS (.local)","bool",true,0,{help:"mdns"});
+ $("#f-mqtt").innerHTML=field("mqtt.host","Broker","str",0,0,{help:"broker"})+field("mqtt.port","Port","int")+field("mqtt.client_id","Client ID","str",0,0,{help:"cid"})+field("mqtt.username","User","str")+field("mqtt.password","Password","pw")+field("mqtt.keepalive_s","Keepalive (s)","int",0,0,{help:"keep"});
+ $("#f-spb").innerHTML=field("sparkplug.group_id","Group ID","str",0,0,{ml:32,help:"group"})+field("sparkplug.edge_node_id","Edge node ID","str",0,0,{ml:32,help:"edge"})+field("sparkplug.primary_host_id","Primary host ID","str",0,0,{ml:32,help:"phost"})+field("sparkplug.naming","Naming","sel",NAMING,true,{help:"naming"});
+ $("#f-rs485").innerHTML=field("rs485.baud","Baud rate","int",0,0,{help:"baud"})+field("rs485.parity","Parity","sel",PAR,true)+field("rs485.stop_bits","Stop bits","int")+field("rs485.response_timeout_ms","Timeout (ms)","int",0,0,{help:"tmo"})+field("rs485.retries","Retries","int",0,0,{help:"retry"})+field("rs485.inter_frame_delay_ms","Inter-frame delay (ms)","int",0,0,{help:"ifd"})+field("local_io.di_debounce_ms","Debounce DI (ms)","int",0,0,{help:"deb"});
+ $("#f-web").innerHTML=field("web.username","User","str")+field("web.password","Password (8 to 63)","pw",0,0,{ml:63,help:"webpw"})+field("web.port","Port","int");
  renderPrefix();
  const devs=cfg.devices||[];
- $("#f-dev").innerHTML=devs.map((d,i)=>`<div class="card"><div class="grid">${field(`devices.${i}.name`,"Name","str",0,0,{ml:39,help:HELP.name})+field(`devices.${i}.unit_id`,"Unit ID","int")+field(`devices.${i}.poll_ms`,"Poll interval (ms)","int")+field(`devices.${i}.offline_after`,"Offline after (cycles)","int")+field(`devices.${i}.type`,"Type (template)","str",0,0,{ml:39,help:HELP.type})}</div>
+ $("#f-dev").innerHTML=devs.map((d,i)=>`<div class="card"><div class="grid">${field(`devices.${i}.name`,"Name","str",0,0,{ml:39,help:"name"})+field(`devices.${i}.unit_id`,"Unit ID","int",0,0,{help:"unit"})+field(`devices.${i}.poll_ms`,"Poll interval (ms)","int",0,0,{help:"poll"})+field(`devices.${i}.offline_after`,"Offline after (cycles)","int",0,0,{help:"off"})+field(`devices.${i}.type`,"Type (template)","str",0,0,{ml:39,help:"type"})}</div>
  <div class="topic" data-topic="${i}"></div>
- <table><tr><th>Tag</th><th>Area</th><th>Address</th><th title="${esc(HELP.bytes)}">Type</th><th>Word order</th><th>Scale</th><th>Offset</th><th>Deadband</th><th>Writable</th><th>Units</th><th>Eng. low</th><th>Eng. high</th><th>Bit</th><th>Length</th><th></th></tr>
- ${(d.tags||[]).map((t,k)=>{const p=`devices.${i}.tags.${k}`;const c=(f,kind,o,opt,x)=>`<td>${field(p+"."+f,"",kind,o,opt,x).replace(/^<label>|<\/label>$/g,"")}</td>`;
-  return `<tr>${c("name","str",0,0,{ml:39})}${c("area","sel",AREA)}${c("address","int")}${c("type","sel",TYPE)}${c("word_order","sel",WO,true)}${c("scale","num")}${c("offset","num")}${c("deadband","num")}${c("writable","bool")}${c("units","str",0,0,{ml:15})}${c("eng_low","num")}${c("eng_high","num")}${c("bit","int")}${c("length","int")}<td><button data-del-tag="${i}.${k}">x</button></td></tr>`}).join("")}
- </table><p class="hint mut">${esc(HELP.bytes)} Tag names: use '/' between the levels of a path (L1/Current), no ':' and no spaces.</p>
- <div class="row"><button data-add-tag="${i}">+ tag</button><button data-del-dev="${i}">Remove device</button></div></div>`).join("");
- updTopics();
+ ${tagTable(d,i)}
+ <div class="row" style="margin-top:10px"><button data-add-tag="${i}">+ tag</button><button data-del-dev="${i}">Remove device</button></div></div>`).join("");
+ tagsInit();updTopics();
 }
 /* #172: sparkplug.device_prefix as a list of levels (pfx while the form is open). An empty level
    stays in the form while the user edits it; the document gets only the levels with text. */
