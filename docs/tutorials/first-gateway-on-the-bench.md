@@ -68,7 +68,7 @@ The broker `192.168.1.10` of the example is possibly not on your network. Then t
 3. In the card **MQTT**, set **Broker** to the address of your computer. Keep **Port** 1883.
 4. In the card **Sparkplug**, keep **Group ID** `Plant1` and **Edge node ID** `GW01`, or type your own names.
 5. In the card **Web interface**, type a new **Password** (8 to 63 printable ASCII characters). Record it.
-6. Click **Validate**. Make sure that the message is "The configuration is valid."
+6. Click **Validate** in the bar at the bottom of the window. Make sure that the bar shows "The configuration is valid."
 7. Click **Save and restart**.
 8. After the restart, log in with the user `admin` and the new password.
 

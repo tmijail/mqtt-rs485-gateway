@@ -52,6 +52,17 @@ table.tags{border-collapse:separate;border-spacing:0;table-layout:fixed}
 .tags tr.det td{position:static;background:var(--sub);padding:8px 10px 10px;border-right:0}
 .dgrid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:6px 12px;max-width:820px}
 @media (max-width:760px){#f-dev>.card{padding:10px}.tags col:nth-child(1){width:140px}.dgrid{position:sticky;left:10px;width:calc(var(--bw,320px) - 20px);grid-template-columns:repeat(2,minmax(0,1fr))}}
+/* #191 */
+body{min-height:100vh;display:flex;flex-direction:column}main{flex:1 0 auto;width:100%}html{scroll-padding-bottom:120px}
+#bar{position:sticky;bottom:0;z-index:5;background:var(--card);border-top:1px solid var(--line);box-shadow:0 -2px 8px rgba(0,0,0,.08)}
+#bar .in{max-width:1100px;margin:auto;padding:10px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+#bar .st{flex:1;min-width:220px;display:flex;gap:4px 14px;flex-wrap:wrap;align-items:center}
+#bar #msg{margin:0;max-height:30vh;overflow:auto}#bar .act{display:flex;gap:8px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--warn);margin-right:6px;vertical-align:1px}
+.ferr,.fwarn{font-size:12px;margin-top:3px}.ferr{color:var(--bad)}.fwarn{color:var(--warn)}td .ferr,td .fwarn{display:block;min-width:10em;white-space:normal}
+input.err,select.err{border-color:var(--bad)}
+@media (max-width:640px){#bar .in{display:block;padding:10px 16px 14px}#bar .st{flex-direction:column;align-items:flex-start;gap:2px;font-size:13px;margin-bottom:8px}
+ #bar .act{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}#bar .act button{min-height:44px}}
 </style>
 </head>
 <body>
@@ -94,7 +105,7 @@ table.tags{border-collapse:separate;border-spacing:0;table-layout:fixed}
    <label>Address (0-65535)<input id="mb-addr" value="0"></label><label>Count (1-16, empty = 1 or the size of the type)<input id="mb-count"></label>
    <label>Type<select id="mb-type"></select></label><label>Word order<select id="mb-wo"></select></label></div>
   <div class="row"><button id="mb-read">Read</button></div><div id="mb-msg" class="mut"></div></div>
- <p class="mut">Edit Wi-Fi, IPv6, syslog and the other keys in the JSON tab. For each key, refer to the <a href="https://github.com/tmijail/mqtt-rs485-gateway/blob/main/docs/reference/configuration.md" target="_blank" rel="noopener">configuration reference</a> on GitHub. The secrets show as ********. If you do not change them, the gateway keeps them.</p>
+ <p class="mut">Edit Wi-Fi, IPv6, syslog and the other keys in the JSON tab. For each key, refer to the <a href="https://github.com/tmijail/mqtt-rs485-gateway/blob/main/docs/reference/configuration.md" target="_blank" rel="noopener">configuration reference</a> on GitHub (needs internet). The secrets show as ********. If you do not change them, the gateway keeps them.</p>
 </section>
 
 <section id="tab-json" class="hidden">
@@ -103,13 +114,15 @@ table.tags{border-collapse:separate;border-spacing:0;table-layout:fixed}
 
 <div class="card" id="actions">
  <div class="row">
-  <button id="b-check">Validate</button><button id="b-save" class="pri">Save and restart</button>
   <button id="b-export">Export</button><label class="row" style="flex-direction:row">Import <input type="file" id="b-import" accept=".json,application/json"></label>
   <button id="b-restart">Restart</button>
  </div>
- <div id="msg" class="mut"></div>
 </div>
 </main>
+<div id="bar" class="hidden" role="region" aria-label="Validate and save"><div class="in">
+ <div class="st"><span id="b-chg"></span><div id="msg" class="mut" aria-live="polite"></div></div>
+ <div class="act"><button id="b-check">Validate</button><button id="b-save" class="pri">Save and restart</button></div>
+</div></div>
 <script>
 "use strict";
 const $=s=>document.querySelector(s);
@@ -345,35 +358,83 @@ function show(t){
  document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("sel",b.dataset.tab===t));
  ["status","config","json"].forEach(n=>$("#tab-"+n).classList.toggle("hidden",n!==t));
  $("#actions").classList.toggle("hidden",t==="status");
+ $("#bar").classList.toggle("hidden",t==="status");
  if(cfg&&t==="config"){pfx=null;renderForms()}
  if(cfg&&t==="json")$("#raw").value=JSON.stringify(cfg,null,2);
 }
 function body(){if(!sync(tab==="json"?"json":"forms"))return null;return JSON.stringify(cfg,null,2)}
-function markError(path){
- document.querySelectorAll(".err").forEach(e=>e.classList.remove("err"));
- if(!path)return;
- const p=path.replace(/\[(\d+)\]/g,".$1");
- const e=document.querySelector(`[data-p="${p}"],[data-perr="${p}"]`);if(e){e.classList.add("err");e.focus()}
-}
 /* #169: the warnings of an accepted document (names that UMH Core and other UNS hosts change) */
 function pathSel(path){const p=path.replace(/\[(\d+)\]/g,".$1");return `[data-p="${p}"],[data-perr="${p}"]`}
-function markWarn(ws){
- document.querySelectorAll(".wrn").forEach(e=>e.classList.remove("wrn"));
- (ws||[]).forEach(w=>{const e=document.querySelector(pathSel(w.path));if(e){e.classList.add("wrn");e.title=w.message}});
+// #191: the result of Validate and Save below its field, and the bar with the number of changes,
+// the result, Validate and Save. base191: the document that was loaded or saved last.
+let base191=null,fn191=0,t191=0;
+function fld191(path){return path?document.querySelector(pathSel(path)):null}
+function bare191(m,path){m=String(m||"");if(path&&m.startsWith(path+": "))m=m.slice(path.length+2);return m.charAt(0).toUpperCase()+m.slice(1)}
+function clear191(){document.querySelectorAll(".ferr,.fwarn").forEach(e=>e.remove());
+ document.querySelectorAll(".err,.wrn").forEach(e=>{e.classList.remove("err","wrn");e.removeAttribute("aria-invalid");e.removeAttribute("aria-describedby")})}
+function note191(el,text,cls){const s=document.createElement("span");s.className=cls==="err"?"ferr":"fwarn";s.id="fm"+(++fn191);s.textContent=text;
+ el.classList.add(cls);el.insertAdjacentElement("afterend",s);if(cls==="err")el.setAttribute("aria-invalid","true");el.setAttribute("aria-describedby",s.id)}
+/* the device, the tag and the label of a field, for example "Pump1 · Unit ID" */
+function where191(el){
+ const p=(el.dataset.p||el.dataset.perr||"").split("."),w=[];
+ if(p[0]==="devices"){w.push(val(`devices.${p[1]}.name`)||`Device ${+p[1]+1}`);if(p[2]==="tags")w.push(val(`devices.${p[1]}.tags.${p[3]}.name`)||`Tag ${+p[3]+1}`)}
+ else{const h=el.closest(".card"),h2=h&&h.querySelector("h2");if(h2)w.push(h2.textContent.replace(/\?$/,""))}
+ let l=el.getAttribute("aria-label")||"",f;
+ if(!l&&el.id&&(f=document.querySelector(`label[for="${el.id}"]`)))l=f.textContent;
+ if(!l&&(f=el.closest("label")))l=f.firstChild&&f.firstChild.nodeType===3?f.firstChild.textContent:f.textContent;
+ if(!l&&(f=el.closest("td"))&&el.closest("table"))l=el.closest("table").rows[0].cells[f.cellIndex].textContent;
+ if(!l){f=el.previousElementSibling;while(f&&f.tagName!=="H2")f=f.previousElementSibling;if(f)l=f.textContent}
+ if(l.trim())w.push(l.trim());
+ return w.join(" · ");
 }
-function warnText(j){const w=j.warnings||[];if(!w.length)return "";
- return `\n${j.warning_count} warning(s) for UNS hosts such as UMH Core. The configuration is valid; with "naming": "umh" these names are errors.\n`+w.map(x=>`${x.path}: ${x.message}`).join("\n")+(j.warning_count>w.length?"\n…":"")}
+function goto191(el){if(typeof revealField==="function")revealField(el);el.scrollIntoView({block:"center"});el.focus({preventScroll:true})}
+function link191(t,fn){const a=document.createElement("a");a.href="#";a.textContent=t;a.onclick=e=>{e.preventDefault();fn()};return a}
 async function put(dry){
  const b=body();if(b==null)return;
+ clear191();
  msg(dry?"Validating…":"Saving…");
- const r=await api("PUT","/api/config"+(dry?"?dry_run=1":""),b);
- if(r.json&&r.json.ok){markError("");markWarn(r.json.warnings);const wt=warnText(r.json);msg((dry?"The configuration is valid.":"Saved. The gateway restarts; this page loads again in 15 s.")+wt,wt?"warn":"ok");if(!dry)setTimeout(()=>location.reload(),15000)}
- else{const j=r.json||{};markError(j.path);msg(`Error ${r.status}: ${j.error||"no answer"}`+(j.line?` (line ${j.line}, column ${j.column})`:""),"bad")}
+ const r=await api("PUT","/api/config"+(dry?"?dry_run=1":""),b),j=r.json||{},m=$("#msg"),form=tab==="config";
+ m.title="";
+ if(j.ok){
+  if(!dry){base191=JSON.parse(b);setTimeout(()=>location.reload(),15000)}
+  const ws=j.warnings||[],off=[];let first=null;
+  ws.forEach(w=>{const e=form&&fld191(w.path);if(e){note191(e,bare191(w.message,w.path),"wrn");first=first||e}else off.push(`${w.path}: ${w.message}`)});
+  msg(dry?"The configuration is valid.":"Saved. The gateway restarts; this page loads again in 15 s.",ws.length?"warn":"ok");
+  if(ws.length){
+   m.append(` ${j.warning_count} warning(s) for UNS hosts such as UMH Core`+(first?`: ${where191(first)} `:"."));
+   if(first)m.append(link191("Go to the field",()=>goto191(first)));
+   if(off.length)m.append("\n"+off.join("\n")+(j.warning_count>ws.length?"\n…":""));
+   m.title='With "naming": "umh" these names are errors.';
+   if(first)goto191(first);
+  }
+ }else{
+  const e=fld191(j.path);
+  if(e&&form){note191(e,bare191(j.error,j.path),"err");msg(`1 error: ${where191(e)} `,"bad");m.append(link191("Go to the field",()=>goto191(e)));goto191(e)}
+  else{msg(`Error ${r.status}: ${j.error||"no answer"}`+(j.line?` (line ${j.line}, column ${j.column})`:""),"bad");
+   if(e){m.append(" ",link191("Show in the form",()=>{show("config");clear191();const f=fld191(j.path);if(f){note191(f,bare191(j.error,j.path),"err");goto191(f)}}))}}
+ }
+ upd191();
 }
+/* the number of changes: the leaves of the document that are not the same as in base191 */
+function ndiff191(a,b){if(a===b)return 0;
+ if(a&&b&&typeof a==="object"&&typeof b==="object"&&Array.isArray(a)===Array.isArray(b)){let n=0;for(const k of new Set([...Object.keys(a),...Object.keys(b)]))n+=ndiff191(a[k],b[k]);return n}
+ return 1}
+/* the document of the open tab; readForms runs on a copy, cfg does not change */
+function doc191(){
+ if(tab==="json"){try{return JSON.parse($("#raw").value)}catch(e){return undefined}}
+ if(tab!=="config"||!cfg)return cfg;
+ const keep=cfg,kp=pfx;cfg=JSON.parse(JSON.stringify(keep));try{readForms();return cfg}finally{cfg=keep;pfx=kp}
+}
+function upd191(){
+ if(base191===null||tab==="status")return;
+ const d=doc191(),n=d===undefined?-1:ndiff191(base191,d);
+ $("#b-chg").innerHTML=n<0?'<span class="dot"></span>JSON not valid, not saved':n?`<span class="dot"></span>${n} change${n>1?"s":""}, not saved`:'<span class="mut">No changes</span>';
+}
+["input","change","click"].forEach(t=>document.addEventListener(t,()=>{clearTimeout(t191);t191=setTimeout(upd191,150)}));
 async function load(){
  const r=await api("GET","/api/config");
- if(r.status===200){cfg=r.json;if(tab!=="status")show(tab);return}
- cfg={};msg(`Cannot read the saved configuration (${r.status}): ${(r.json||{}).error||""}. Paste or import a document in the JSON tab.`,"bad");
+ if(r.status===200){cfg=r.json;base191=JSON.parse(JSON.stringify(cfg));if(tab!=="status")show(tab);upd191();return}
+ cfg={};base191={};msg(`Cannot read the saved configuration (${r.status}): ${(r.json||{}).error||""}. Paste or import a document in the JSON tab.`,"bad");
 }
 function yes(b,t,f){return `<span class="${b?"ok":"bad"}">${b?t:f}</span>`}
 async function poll(){
@@ -460,7 +521,7 @@ $("#fw-other").onclick=async()=>{const v=$("#fw-other").textContent;if(!confirm(
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>show(b.dataset.tab));
 $("#b-check").onclick=()=>put(true);$("#b-save").onclick=()=>put(false);
 $("#b-export").onclick=()=>{location.href="/api/config?download=1"};
-$("#b-import").onchange=async e=>{const f=e.target.files[0];if(!f)return;const t=await f.text();try{cfg=JSON.parse(t)}catch(x){msg("The file is not JSON: "+x.message,"bad");return}tab="json";show("json");msg("Imported into the editor: examine it, then click Save and restart.")};
+$("#b-import").onchange=async e=>{const f=e.target.files[0];if(!f)return;const t=await f.text();try{cfg=JSON.parse(t)}catch(x){msg("The file is not JSON: "+x.message,"bad");return}tab="";show("json");msg("Imported into the editor: examine it, then click Save and restart.");upd191()};
 $("#b-restart").onclick=async()=>{if(confirm("Restart the gateway?")){const r=await api("POST","/api/restart");msg(r.status===202?"Restarting…":`Not restarted (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"":"bad")}};
 $("#f-pfx").onclick=e=>{const t=e.target.dataset;if(!(t.addLvl||t.delLvl))return;readForms();
  if(t.addLvl)pfx.push("");else pfx.splice(+t.delLvl,1);

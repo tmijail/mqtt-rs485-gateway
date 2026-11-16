@@ -261,7 +261,8 @@ SHOTS = [
     Shot("configuration-page", "configured", DESKTOP, "/",
          actions=[("click", "nav button[data-tab=config]")], wait="#f-mqtt input",
          alt="The Configuration tab of the web UI: the forms for the network, MQTT and "
-             "Sparkplug."),
+             "Sparkplug. The bar at the bottom of the window shows 'No changes' and the "
+             "buttons Validate and 'Save and restart'."),
     # docs/how-to/add-a-modbus-device.md and the tutorial
     Shot("modbus-test-read", "configured", DESKTOP, "/", actions=[test_read],
          element=".card:has(#mb-read)", wait="#mb-msg.ok",
@@ -282,6 +283,17 @@ SHOTS = [
              "Deadband, Eng. low, Eng. high, Bit and Length. The explainer of Eng. high is open "
              "below its (?) button. It tells that Eng. high is the top of the normal range of "
              "the value, and that the gateway does not limit the value."),
+    # issue #191, docs/how-to/change-the-configuration.md and add-a-modbus-device.md: a Validate
+    # (dry run, the state does not change) that the gateway refuses
+    Shot("validate-error", "configured", DESKTOP, "/",
+         actions=[("click", "nav button[data-tab=config]"),
+                  ("fill", '[data-p="devices.0.unit_id"]', "300"), ("click", "#b-check")],
+         wait=".ferr",
+         alt="The Configuration tab after Validate with the unit ID 300 for Meter1. Below the "
+             "field Unit ID, the text 'Value 300 out of range [1, 247]' shows in red. The bar "
+             "at the bottom of the window shows '1 change, not saved', '1 error: Meter1 · "
+             "Unit ID' with the link 'Go to the field', and the buttons Validate and 'Save and "
+             "restart'."),
     # docs/how-to/update-the-firmware.md
     Shot("firmware-card", "configured", DESKTOP, "/", element=".card:has(#st-fw)",
          actions=[("wait_text", "#st-fw", "Running")], wait="#st-fw",
