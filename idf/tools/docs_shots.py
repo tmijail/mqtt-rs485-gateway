@@ -146,6 +146,15 @@ def test_read(page):
     page.select_option("#mb-wo", "ABCD")
     page.click("#mb-read")
 
+
+def tag_explainer(page):
+    """Issues #189 and #190: the details row of the first tag of Meter1 (Voltage), and the
+    explainer of its Eng. high field (a click keeps it open)."""
+    page.click("nav button[data-tab=config]")
+    page.evaluate("document.querySelector('#f-dev>.card').scrollIntoView()")
+    page.click('[data-more="0.0"]')
+    page.click("#det-0-0 button.qi[data-x=enghi]")
+
 # ---------------------------------------------------------------- the frozen values
 
 def no_hash(version):
@@ -265,7 +274,14 @@ SHOTS = [
          alt="The card 'Devices and tags' of the Configuration tab: the device Meter1, unit 1, "
              "poll interval 1000 ms, its Sparkplug topic and its UMH topic, and the table of "
              "its tags with the area, the address, the type, the word order, the scale, the "
-             "deadband and the writable column."),
+             "units and the writable column. Each field has a (?) button, and each tag has a "
+             "button 'More' for its other fields."),
+    Shot("tag-explainer", "configured", DESKTOP, "/", actions=[tag_explainer],
+         wait="#xpl:not(.hidden)",
+         alt="The tag table of Meter1 with the details row of the tag Voltage open: Offset, "
+             "Deadband, Eng. low, Eng. high, Bit and Length. The explainer of Eng. high is open "
+             "below its (?) button. It tells that Eng. high is the top of the normal range of "
+             "the value, and that the gateway does not limit the value."),
     # docs/how-to/update-the-firmware.md
     Shot("firmware-card", "configured", DESKTOP, "/", element=".card:has(#st-fw)",
          actions=[("wait_text", "#st-fw", "Running")], wait="#st-fw",

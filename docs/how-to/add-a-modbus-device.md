@@ -74,6 +74,12 @@ You can also read from the shell: `mbread <unit> <area> <address> [count]`.
 
 ## 3. Add the device
 
+Most fields of the device and of its tags have a (?) button after their label. The explainer of the button tells what the field does, and gives an example, the range and the default.
+
+- To read an explainer, move the pointer onto the (?) button, or click the button. With the keyboard, go to the button with Tab.
+- On a phone, tap the (?) button. The explainer opens at the bottom of the screen.
+- To close the explainer, push Esc, or click outside the explainer.
+
 1. In the card **Devices and tags**, click **+ device**.
 2. Type the **Name** of the device. It is the last part of the Sparkplug device ID (1 to 39 bytes). Do not use `/`, `+` or `#`. For UMH Core, put `:` between the levels of the location.
 3. Type the **Unit ID**.
@@ -84,16 +90,30 @@ Under the device, the web UI shows its Sparkplug topic and its UMH topic. Make s
 
 ## 4. Add the tags
 
+The row of a tag has the frequent fields. The other fields of the tag are in its details row.
+
 1. Click **+ tag** for each value.
 2. Type the **Tag** name (1 to 39 bytes). Use `/` between the levels of a path, for example `L1/Current`. Do not use `:` or spaces.
 3. Select the **Area** and the **Type**, and type the **Address**. Use the values of the test read.
 4. Select the **Word order** for a type with two or more registers.
-5. As an option, type **Scale** and **Offset**. The gateway publishes `raw × scale + offset`.
-6. As an option, type the **Deadband**. The gateway publishes a new value only when it changes by more than the deadband.
+5. As an option, type the **Scale**. The gateway publishes `raw × scale + offset`.
+6. As an option, type the **Units**. They go into the DBIRTH as a metric property.
 7. Select **Writable** only if a host must write the value. Only `coil` and `holding` tags can be writable.
-8. As an option, type the **Units**, **Eng. low** and **Eng. high**. They go into the DBIRTH as metric properties.
 
-   ![The card 'Devices and tags' of the Configuration tab: the device Meter1, unit 1, poll interval 1000 ms, its Sparkplug topic and its UMH topic, and the table of its tags with the area, the address, the type, the word order, the scale, the deadband and the writable column.](../images/devices-and-tags.png)
+   ![The card 'Devices and tags' of the Configuration tab: the device Meter1, unit 1, poll interval 1000 ms, its Sparkplug topic and its UMH topic, and the table of its tags with the area, the address, the type, the word order, the scale, the units and the writable column. Each field has a (?) button, and each tag has a button 'More' for its other fields.](../images/devices-and-tags.png)
+
+8. For the other fields, click **More** in the row of the tag. The details row opens below the row.
+9. As an option, type the **Offset**.
+10. As an option, type the **Deadband**. The gateway publishes a new value only when it changes by more than the deadband.
+11. As an option, type **Eng. low** and **Eng. high**. They go into the DBIRTH as metric properties.
+12. For a `bool` tag in a `holding` or `input` register, type the **Bit**.
+13. For a `string` or a `bytes` tag, type the **Length**.
+
+   ![The tag table of Meter1 with the details row of the tag Voltage open: Offset, Deadband, Eng. low, Eng. high, Bit and Length. The explainer of Eng. high is open below its (?) button. It tells that Eng. high is the top of the normal range of the value, and that the gateway does not limit the value.](../images/tag-explainer.png)
+
+The button shows **More (n)**, where n is the number of fields in the details row that have a value. Click the button again to close the details row.
+
+On a narrow screen, for example a phone, the table scrolls in its box. Push the table to the side to see the other columns. The Tag column stays at the left. The fields of the details row stay in view, in two columns.
 
 A tag with a scale or an offset becomes a Float or a Double in Sparkplug. Refer to [The datatypes in Sparkplug](../reference/configuration.md#the-datatypes-in-sparkplug).
 
