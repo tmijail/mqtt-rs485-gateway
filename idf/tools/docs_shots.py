@@ -191,15 +191,58 @@ def tag_explainer(page):
 
 # ---------------------------------------------------------------- the frozen values
 
-def web_password(page):
-    """docs/how-to/change-the-web-password.md: a new value in the Password field of the card
-    'Web interface' (not saved), and the explainer of the field (a click keeps it open)."""
+# Issue #194, docs/how-to/change-the-web-password.md. These actions are also the test of #194
+# (no E2E scenario runs a browser): a save with two different passwords, and a save that removes
+# the web password and that the operator cancels, send no PUT /api/config.
+NEW_PW = "new-password-2"
+
+
+def web_password_form(page, confirm):
+    """A new value in the Password field of the card 'Web interface', and @confirm in the field
+    'Confirm the password' that it shows."""
     page.click("nav button[data-tab=config]")
     page.evaluate("document.querySelector('#f-web').closest('.card')"
                   ".scrollIntoView({block: 'center'})")
-    page.fill('[data-p="web.password"]', "new-password-2")
+    page.fill('[data-p="web.password"]', NEW_PW)
+    page.wait_for_selector("#i-pw2", state="visible")
+    page.fill("#i-pw2", confirm)
     page.wait_for_selector("#b-chg:has-text('1 change, not saved')")   # a debounced count
-    page.click("#f-web button.qi[data-x=webpw]")
+
+
+def no_put(page, step):
+    """Do @step(page); fail when the page sends a PUT (a save) meanwhile."""
+    puts = []
+    page.on("request", lambda r: puts.append(r.url) if r.method == "PUT" else None)
+    step(page)
+    page.wait_for_timeout(1000)
+    if puts:
+        raise SystemExit(f"issue #194: the web UI sent {puts}")
+
+
+def web_password(page):
+    web_password_form(page, NEW_PW)
+
+
+def web_password_mismatch(page):
+    """Save with a different value in the second field: the error shows below it, no PUT."""
+    web_password_form(page, NEW_PW + "x")
+    no_put(page, lambda p: (p.click("#b-save"), p.wait_for_selector("#i-pw2 + .ferr")))
+
+
+def web_password_remove(page):
+    """An empty Password field: Save asks first. Esc sends nothing; the second Save opens the
+    dialog again for the image."""
+    page.click("nav button[data-tab=config]")
+    page.fill('[data-p="web.password"]', "")
+    page.wait_for_selector("#b-chg:has-text('1 change, not saved')")
+
+    def esc(p):
+        p.click("#b-save")
+        p.wait_for_selector("#dlg[open]")
+        p.keyboard.press("Escape")
+        p.wait_for_selector("#dlg", state="hidden")
+    no_put(page, esc)
+    page.click("#b-save")
 
 
 def no_hash(version):
@@ -342,12 +385,25 @@ SHOTS = [
              "restart'."),
     # docs/how-to/change-the-web-password.md (no save: the state does not change)
     Shot("web-password-field", "configured", DESKTOP, "/", actions=[web_password],
-         wait="#xpl:not(.hidden)",
+         element=".card:has(#f-web)",
          alt="The card 'Web interface' of the Configuration tab: the user admin, a new password "
-             "in the field 'Password (8 to 63)'. The explainer of the password is open, over "
-             "the field Port. It gives the rule of the password, and it tells that the password is "
-             "also the Wi-Fi password of the access point GW-Setup-XXXXXX. The bar at the "
-             "bottom of the window shows '1 change, not saved'."),
+             "in the field 'Password (8 to 63)', the same password in the field 'Confirm the "
+             "password', and the port. Below the second field: after the restart, the browser "
+             "asks for the new password, and the Wi-Fi password of the access point changes to "
+             "the new password."),
+    Shot("web-password-mismatch", "configured", DESKTOP, "/", actions=[web_password_mismatch],
+         alt="The Configuration tab after 'Save and restart' with two different passwords. "
+             "Below the field 'Confirm the password', a red text tells that the two passwords "
+             "are not the same. The bar at the bottom of the window shows '1 error: Web "
+             "interface · Confirm the password' with the link 'Go to the field'."),
+    Shot("web-password-remove", "configured", DESKTOP, "/", actions=[web_password_remove],
+         wait="#dlg[open]",
+         alt="The confirmation 'Remove the web password?' after 'Save and restart' with an "
+             "empty password field: web.password is empty. After the restart, the gateway "
+             "accepts only the user admin with the commissioning password of the serial console, "
+             "the Wi-Fi password of the access point becomes the commissioning password, and a "
+             "push of BOOT opens the claim window. It has the red button 'Remove the password' "
+             "and Cancel."),
     # docs/how-to/update-the-firmware.md
     Shot("firmware-card", "configured", DESKTOP, "/", element=".card:has(#st-fw)",
          actions=[("wait_text", "#st-fw", "Running")], wait="#st-fw",

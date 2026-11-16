@@ -329,7 +329,7 @@ function renderForms(){
  $("#f-mqtt").innerHTML=field("mqtt.host","Broker","str",0,0,{help:"broker"})+field("mqtt.port","Port","int")+field("mqtt.client_id","Client ID","str",0,0,{help:"cid"})+field("mqtt.username","User","str")+field("mqtt.password","Password","pw")+field("mqtt.keepalive_s","Keepalive (s)","int",0,0,{help:"keep"});
  $("#f-spb").innerHTML=field("sparkplug.group_id","Group ID","str",0,0,{ml:32,help:"group"})+field("sparkplug.edge_node_id","Edge node ID","str",0,0,{ml:32,help:"edge"})+field("sparkplug.primary_host_id","Primary host ID","str",0,0,{ml:32,help:"phost"})+field("sparkplug.naming","Naming","sel",NAMING,true,{help:"naming"});
  $("#f-rs485").innerHTML=field("rs485.baud","Baud rate","int",0,0,{help:"baud"})+field("rs485.parity","Parity","sel",PAR,true)+field("rs485.stop_bits","Stop bits","int")+field("rs485.response_timeout_ms","Timeout (ms)","int",0,0,{help:"tmo"})+field("rs485.retries","Retries","int",0,0,{help:"retry"})+field("rs485.inter_frame_delay_ms","Inter-frame delay (ms)","int",0,0,{help:"ifd"})+field("local_io.di_debounce_ms","Debounce DI (ms)","int",0,0,{help:"deb"});
- $("#f-web").innerHTML=field("web.username","User","str")+field("web.password","Password (8 to 63)","pw",0,0,{ml:63,help:"webpw"})+field("web.port","Port","int");
+ $("#f-web").innerHTML=field("web.username","User","str")+field("web.password","Password (8 to 63)","pw",0,0,{ml:63,help:"webpw"})+PW2+field("web.port","Port","int");pw194();
  renderPrefix();
  const devs=cfg.devices||[];
  $("#f-dev").innerHTML=devs.map((d,i)=>`<div class="card"><div class="grid">${field(`devices.${i}.name`,"Name","str",0,0,{ml:39,help:"name"})+field(`devices.${i}.unit_id`,"Unit ID","int",0,0,{help:"unit"})+field(`devices.${i}.poll_ms`,"Poll interval (ms)","int",0,0,{help:"poll"})+field(`devices.${i}.offline_after`,"Offline after (cycles)","int",0,0,{help:"off"})+field(`devices.${i}.type`,"Type (template)","str",0,0,{ml:39,help:"type"})}</div>
@@ -378,6 +378,21 @@ function show(t){
  if(cfg&&t==="config"){pfx=null;renderForms()}
  if(cfg&&t==="json")$("#raw").value=JSON.stringify(cfg,null,2);
 }
+/* #194: a new web password needs the same value in a second field (a typing error locks the
+   operator out: the recovery needs the USB console or a factory reset), and a save that removes
+   the web password asks first (after it, a push of BOOT opens the claim window again). */
+const PWMASK="********",PW2=`<div class="fld hidden" id="pw2-f"><span class="lbl"><label for="i-pw2">Confirm the password</label></span><input id="i-pw2" type="password" autocomplete="new-password" maxlength="63"><span class="hint">After the restart, the browser asks for the new password. The Wi-Fi password of the access point changes to the new password.</span></div>`;
+/* the new web password of the form (the second field shows), or null */
+function pw194(){const p=document.getElementById("i-web.password"),f=$("#pw2-f");if(!p||!f)return null;
+ const on=p.value!==""&&p.value!==PWMASK;f.classList.toggle("hidden",!on);if(!on)$("#i-pw2").value="";return on?p.value:null}
+/* false (and the error below the second field) when the two values are not the same */
+function same194(){if(tab!=="config")return true;const v=pw194(),e=$("#i-pw2");if(v===null||e.value===v)return true;
+ clear191();note191(e,"The two passwords are not the same. Type the new password again in the two fields.","err");
+ msg(`1 error: ${where191(e)} `,"bad");$("#msg").append(link191("Go to the field",()=>goto191(e)));goto191(e);upd191();return false}
+/* true when the save can continue: the document @b keeps the web password, or the operator agrees */
+function keep194(b){const w=JSON.parse(b).web||{};if(!(base191&&base191.web&&base191.web.password)||w.password)return Promise.resolve(true);
+ return ask({title:"Remove the web password?",action:"Remove the password",danger:true,fact:`web.password: ${"password" in w?"empty":"not in the document"}`,
+  html:"<p>After the restart, the gateway accepts only the user admin with the commissioning password. Only the serial console shows this password.</p><p>The Wi-Fi password of the access point also becomes the commissioning password. A push of BOOT then opens the claim window: a person at the panel can set a new web password and keep this configuration.</p>"})}
 function body(){if(!sync(tab==="json"?"json":"forms"))return null;return JSON.stringify(cfg,null,2)}
 /* #169: the warnings of an accepted document (names that UMH Core and other UNS hosts change) */
 function pathSel(path){const p=path.replace(/\[(\d+)\]/g,".$1");return `[data-p="${p}"],[data-perr="${p}"]`}
@@ -406,7 +421,9 @@ function where191(el){
 function goto191(el){if(typeof revealField==="function")revealField(el);el.scrollIntoView({block:"center"});el.focus({preventScroll:true})}
 function link191(t,fn){const a=document.createElement("a");a.href="#";a.textContent=t;a.onclick=e=>{e.preventDefault();fn()};return a}
 async function put(dry){
+ if(!same194())return;
  const b=body();if(b==null)return;
+ if(!dry&&!await keep194(b))return;
  clear191();
  msg(dry?"Validating…":"Saving…");
  const r=await api("PUT","/api/config"+(dry?"?dry_run=1":""),b),j=r.json||{},m=$("#msg"),form=tab==="config";
@@ -575,7 +592,7 @@ $("#f-dev").onclick=e=>{const t=e.target.dataset;if(!(t.addTag||t.delTag||t.delD
  if(t.addTag){const d=cfg.devices[+t.addTag];d.tags.push({name:"Tag"+(d.tags.length+1),area:"holding",address:0,type:"uint16"})}
  if(t.delTag){const[i,k]=t.delTag.split(".").map(Number);cfg.devices[i].tags.splice(k,1)}
  if(t.delDev)cfg.devices.splice(+t.delDev,1);renderForms()};
-$("#tab-config").addEventListener("input",e=>{if(e.target.dataset.lvl!==undefined)pfx[+e.target.dataset.lvl]=e.target.value.trim().replace(/:/g,"");updTopics()});
+$("#tab-config").addEventListener("input",e=>{if(e.target.id==="i-web.password")pw194();if(e.target.dataset.lvl!==undefined)pfx[+e.target.dataset.lvl]=e.target.value.trim().replace(/:/g,"");updTopics()});
 show("status");load();poll();setInterval(poll,2000);
 </script>
 </body>
