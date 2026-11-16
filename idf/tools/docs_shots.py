@@ -124,10 +124,10 @@ def ap_on_with_client(gw):
 
 
 def close_ap(page):
-    """Click 'Close the access point', accept the confirmation, and open the page again when the
-    access point is off (the page polls only once: NO_TIMERS)."""
-    page.once("dialog", lambda d: d.accept())
+    """Click 'Close the access point', accept the confirmation (the dialog of the page, #193), and
+    open the page again when the access point is off (the page polls only once: NO_TIMERS)."""
     page.click("#ap-stop")
+    page.click("#dlg-ok")
     page.locator("#ap-msg").filter(has_text="stops in a few seconds").wait_for(state="visible")
     end = time.monotonic() + 20
     while True:
@@ -135,6 +135,40 @@ def close_ap(page):
         page.reload(wait_until="networkidle")
         if page.locator("#st-ap").filter(has_text="Off").count() or time.monotonic() > end:
             break
+
+def ask_close_ap(page):
+    """Issue #193: the confirmation of 'Close the access point' (the dialog stays open)."""
+    page.click("#ap-stop")
+    page.wait_for_selector("#dlg[open]")
+
+
+def ask_format(page):
+    """Issue #193: the confirmation of 'Format the card', with FORMAT typed (the button is
+    enabled)."""
+    page.click("#sd-fmt")
+    page.fill("#dlg-i", "FORMAT")
+
+
+# Issue #192: the answer of the pre-flight check to an image that cannot read the stored
+# configuration (gw_fw.c check_image). The QEMU build of the docs has only one image, so the
+# answer to the upload is given here; the box is the real code of the page.
+REFUSAL = ("pre-flight check: image 0.0.9 refused: the configuration needs schema 2, the image "
+           "reads 1: devices[0].tags[3].scan=slow (2); force installs it into recovery mode")
+
+
+def refuse_upload(page):
+    """Issue #192: upload an image, accept the confirmation, and get the 409 of the pre-flight
+    check (REFUSAL): the box of the refused image shows."""
+    page.route(re.compile(r".*/api/firmware$"), lambda r: r.fulfill(
+        status=409, content_type="application/json",
+        body=json.dumps({"ok": False, "error": REFUSAL})) if r.request.method == "POST"
+        else r.fallback())
+    page.set_input_files("#fw-file", {"name": "rs485_spb_gateway-0.0.9.bin",
+                                      "mimeType": "application/octet-stream",
+                                      "buffer": bytes([0xE9]) + bytes(4095)})
+    page.click("#dlg-ok")
+    page.wait_for_selector("#fw-ref:not(.hidden)")
+
 
 def test_read(page):
     """The Modbus test read of the Configuration tab: the float32 Voltage of Meter1 (input 0)."""
@@ -228,6 +262,7 @@ class Shot:
     full_page: bool = False
     auth: bool = True
     freeze_timers: bool = True
+    freeze: dict = field(default_factory=dict)   # more FREEZE paths of /api/status, this shot only
 
 
 SHOTS = [
@@ -271,14 +306,40 @@ SHOTS = [
          actions=[("wait_text", "#st-fw", "Running")], wait="#st-fw",
          alt="The card 'Firmware' of the Status tab: the running version, its slot, the state "
              "of the last update, and the other slot. Below are the field for the URL of an "
-             "image with the button 'Download and install', the field 'Upload an image', and "
-             "the check box 'Force (into recovery mode)'."),
+             "image with the button 'Download and install' and the check box 'Force (into "
+             "recovery mode)', and the field 'Upload an image'."),
+    # issue #192: docs/how-to/update-the-firmware.md
+    Shot("firmware-refused", "configured", DESKTOP, "/", element=".card:has(#st-fw)",
+         actions=[("wait_text", "#st-fw", "Running"), refuse_upload], wait="#fw-rgo",
+         alt="The card 'Firmware' after an upload that the pre-flight check refused: a red box "
+             "gives the file and its version, the reason (the configuration needs schema 2, "
+             "the image reads 1) and what recovery mode is. It has the buttons 'Install into "
+             "recovery mode' and 'Cancel'."),
+    # issue #193: docs/reference/store-and-forward.md. QEMU has no microSD card: the card of
+    # the board (a card that the gateway cannot mount, with files of another device)
+    # (the viewport: a full-page capture puts a fixed element at another place)
+    Shot("card-format-dialog", "configured", DESKTOP, "/", actions=[ask_format],
+         wait="#dlg-ok:enabled",
+         freeze={"card": {"state": "not_mounted", "detail": "no FAT file system", "name": "SD64G",
+                          "size_mb": 60928, "other_entries": 3}},
+         alt="The confirmation 'Format the microSD card?': the card SD64G, 59.5 GB, cannot "
+             "mount. The format erases all the contents of the card, also its 3 files or "
+             "folders that are not from the gateway. The field has FORMAT, and the red button "
+             "'Format the card' is enabled."),
     # issue #187: after the shots above, because a push of BOOT starts the access point
     Shot("ap-card-phone", "configured", PHONE, "/", prep=ap_on_with_client,
          element=".card:has(#st-ap)", wait="#ap-stop:not(.hidden)",
          alt="The card 'Access point' of the Status tab on a phone: the access point GW-Setup "
              "is on, its Wi-Fi password is the web password, it has 1 client, and it stops in "
              "28 min. Below is the button 'Close the access point'."),
+    # issue #193: docs/how-to/get-on-the-access-point.md. The phone of that procedure is a client
+    # of the access point; in QEMU the browser is on the Ethernet (request_via_ap false)
+    Shot("ap-close-dialog-phone", "configured", PHONE, "/", prep=ap_on_with_client,
+         actions=[ask_close_ap], wait="#dlg-ok", freeze={"ap.request_via_ap": True},
+         alt="The confirmation 'Close the access point?' as a sheet at the bottom of a phone: "
+             "GW-Setup stops in a few seconds, and its client loses the connection. This "
+             "browser uses the access point: the page then stops. Below are the red button "
+             "'Close the access point' and 'Cancel'."),
     Shot("ap-card-closed-phone", "configured", PHONE, "/", prep=ap_on_with_client,
          actions=[close_ap],
          element=".card:has(#st-ap)", wait="#st-ap",
@@ -359,10 +420,13 @@ class Harness:
 NO_TIMERS = "window.setInterval = () => 0;"   # the page polls once; no countdown runs
 
 
-def route_freeze(route):
-    """Answer an API request with the real answer of the gateway, with FREEZE applied."""
+def route_freeze(route, extra=None):
+    """Answer an API request with the real answer of the gateway, with FREEZE applied (and
+    @extra, the freeze of the shot, for /api/status)."""
     path = re.sub(r"\?.*", "", route.request.url.split("//", 1)[1].split("/", 1)[-1])
     paths = FREEZE.get("/" + path)
+    if extra and path == "api/status":
+        paths = {**paths, **extra}
     resp = route.fetch()
     if not paths or "json" not in resp.headers.get("content-type", ""):
         route.fulfill(response=resp)
@@ -385,7 +449,7 @@ def capture(browser, shot, auth, base):
     try:
         if shot.freeze_timers:
             ctx.add_init_script(NO_TIMERS)
-        ctx.route(re.compile(r".*/api/.*"), route_freeze)
+        ctx.route(re.compile(r".*/api/.*"), lambda r: route_freeze(r, shot.freeze))
         page = ctx.new_page()
         page.goto(base + shot.path, wait_until="networkidle")
         for act in shot.actions:

@@ -104,7 +104,12 @@ Erase the dump after you saved it, or when you do not need it. Then the gateway 
 
 2. Make sure that the answer is `{"ok":true,"erased":true}`.
 
-You can also use the **Erase** button in the Status tab, or the shell command `coredump erase`. After the erase, the gateway publishes an NDATA with `Node Info/Core Dump` = `false`.
+You can also use the shell command `coredump erase`, or the web UI:
+
+1. In the card **Gateway** of the Status tab, click **Erase**.
+2. In the confirmation "Erase the core dump?", click the red button **Erase the core dump**. To keep the dump, click **Cancel**.
+
+After the erase, the gateway publishes an NDATA with `Node Info/Core Dump` = `false`.
 
 ## Keep the file safe
 

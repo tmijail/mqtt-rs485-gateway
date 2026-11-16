@@ -31,8 +31,13 @@ When nobody knows the web password, refer to [If nobody knows the web password](
 
       ![The card 'Access point' of the Status tab on a phone: the access point GW-Setup is on, its Wi-Fi password is the web password, it has 1 client, and it stops in 28 min. Below is the button 'Close the access point'.](../images/ap-card-phone.png)
 
-   2. Click "Close the access point". Click OK to confirm.
-   3. Wait until the phone loses the connection. The access point stops approximately 2 s after the click.
+   2. Click "Close the access point". A confirmation opens at the bottom of the screen.
+   3. Read the confirmation. It tells that the page stops, because this phone uses the access point.
+
+      ![The confirmation 'Close the access point?' as a sheet at the bottom of a phone: GW-Setup stops in a few seconds, and its client loses the connection. This browser uses the access point: the page then stops. Below are the red button 'Close the access point' and 'Cancel'.](../images/ap-close-dialog-phone.png)
+
+   4. Click the red button "Close the access point". To keep the access point on, click "Cancel".
+   5. Wait until the phone loses the connection. The access point stops approximately 2 s after the click.
 8. Make sure that the LED shows no cyan flash.
 
 After step 7, a new visit to the Status tab (for example from the plant network) shows that the access point is off:

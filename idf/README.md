@@ -517,6 +517,8 @@ The stops of the access point (issue #187, `gw_aplife`):
 
 A stop also closes an open claim window: the window accepts only the clients of the access point. A new push of BOOT starts the access point again. `GET /api/status` (`ap`), the shell (`status`, `ap`) and the web UI (card "Access point") show the state: on or off, open or WPA2, the key, the clients and the time to the stop. The LED shows it too (§3.4).
 
+`ap.request_via_ap` (issue #193) is `true` when the request of `GET /api/status` came through the access point. The firmware uses the rule of the claim window (`gw_claim_from_ap`): the local address is the address of the access point, and the address of the client is in its subnet. The confirmation of "Close the access point" in the web UI then tells that the page stops too. The QEMU build has no radio, so the value is `false` there, except after the emulator-only `claimsim … eth`.
+
 The procedure for a later visit is in `docs/how-to/get-on-the-access-point.md`. `docs/reference/access-point.md` gives all the facts in one place, and `docs/explanation/access-point-security.md` gives the reasons and the residual risks.
 
 These are the choices of the implementation for the key (issue #187) and their reasons:
@@ -678,7 +680,7 @@ Issue #144 gives the process of an update and of a rollback. The product owner a
   - the image has a lower NVS format (either byte) than the running image;
   - the image has another major LittleFS disk version, or a lower minor version.
 - An image without capabilities version 2 (all images before #144) is "unknown": the firmware refuses it too, and the web UI says that force is necessary.
-- The web UI ("Force" check box) and the API (`"force": true` in the JSON, `?force=1` with an image or with `/api/firmware/other`) permit **force**. Then the expected mode is recovery (item 2). The NCMD has no force. Force does not override the NVS encryption check of #102.
+- The web UI and the API (`"force": true` in the JSON, `?force=1` with an image or with `/api/firmware/other`) permit **force**. In the web UI, the "Force" check box is only for a download. After a refusal of an upload or of the restart into the other slot, a red box in the firmware card gives each reason on its own line. Its button sends the same request again with `?force=1` (issue #192). The page splits the text of the 409 at "; ". Then the expected mode is recovery (item 2). The NCMD has no force. Force does not override the NVS encryption check of #102.
 - CAUTION: Force an image with a lower NVS format or LittleFS version only when you accept the loss of the NVS or of `/cfg`. Such an image cannot read the data, and it can erase it.
 - When the running image cannot load the stored configuration (recovery mode, safe mode, commissioning), the schema part of the check has nothing to compare and passes. The image must then reach recovery mode or better.
 - This fixes the manual downgrade bug of `main` 297c081: a downgrade is refused with the list of keys, or forced into recovery mode, where the operator corrects the configuration.
