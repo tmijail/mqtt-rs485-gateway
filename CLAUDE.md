@@ -57,6 +57,14 @@ The gateway must obey the Eclipse Sparkplug B 3.0.0 specification fully. Do not 
 
   The profile is off by default and changes only the necessary items. `idf/README.md` lists each deviation that it causes.
 
+## The web UI configures everything
+
+Each key of the configuration document must have a control in the Configuration tab of the web UI. The JSON tab alone is not sufficient. This is a principle of the project (decision of the product owner, #221).
+- A change that adds or changes a configuration key also adds or changes its control, in the same change. The control shows the validation error at its field (#191). A control that does not explain itself gets an explainer (#190).
+- A file that a key refers to (for example a PEM file in LittleFS) must be possible to load from the web UI.
+- A change of the web UI starts with a prototype in the design canvas (a Claude Design artifact, private to the product owner): https://claude.ai/artifact/FcFdKXktaEWXxS5bSnDNc7. Start the implementation only after the product owner approves the prototype in a comment on the issue. These issues have the label `design first`.
+- Some existing keys have no control yet (#221 lists them). Do not use this as a reason to add a new key without a control.
+
 ## Commands
 
 The host tests and the decode check run from the repo root. The firmware commands are run from `idf/`, after `. $IDF_PATH/export.sh`.
