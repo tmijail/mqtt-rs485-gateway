@@ -11,6 +11,7 @@ This folder has the documentation of the RS485 (Modbus RTU) to MQTT Sparkplug B 
 | Learn the gateway on the bench, from a new board to data on the broker | [Your first gateway](tutorials/first-gateway-on-the-bench.md) | Tutorial |
 | Connect the Modbus devices to the board | [Connect the RS485 bus](how-to/connect-the-rs485-bus.md) | How-to |
 | Set the web password on site, without a computer at the panel | [Set the first web password on site](how-to/set-the-first-web-password.md) | How-to |
+| Change the web password (also the Wi-Fi password of the access point) | [Change the web password](how-to/change-the-web-password.md) | How-to |
 | Open the web UI through the Wi-Fi of the gateway on a later visit | [Get on the access point on a later visit](how-to/get-on-the-access-point.md) | How-to |
 | Add a Modbus device and its tags | [Add a Modbus device and its tags](how-to/add-a-modbus-device.md) | How-to |
 | Change the configuration, keep a copy, or load a copy | [Change, back up and restore the configuration](how-to/change-the-configuration.md) | How-to |

@@ -31,6 +31,8 @@ The gateway keeps `mqtt.password`, `network.wifi.password` and `web.password` in
 
 > **Caution: Keep `web.password` as `"********"` in each document that you load.** A document without this key removes the web password. The web password is also the Wi-Fi password of the access point.
 
+To change the web password, refer to [Change the web password](change-the-web-password.md).
+
 ## Change the configuration in the web UI
 
 1. Open the web UI: `https://<ip>/` or `https://<hostname>.local/`.
