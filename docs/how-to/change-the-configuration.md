@@ -29,7 +29,7 @@ The gateway keeps `mqtt.password`, `network.wifi.password` and `web.password` in
 | `""` | The gateway deletes the secret |
 | The key is not in the document | The gateway deletes the secret |
 
-> **Caution: Keep `web.password` as `"********"` in each document that you load.** A document without this key removes the web password. The web password is also the Wi-Fi password of the access point.
+> **Caution: Keep `web.password` as `"********"` in each document that you load.** A document without this key removes the web password. The web password is also the Wi-Fi password of the access point. Before such a save, the web UI asks for a confirmation (#194).
 
 To change the web password, refer to [Change the web password](change-the-web-password.md).
 

@@ -7469,6 +7469,20 @@ def run_web(args, work):
           st_p == 200 and st_s == 200 and all(dlg_items.values()),
           f"missing: {[k for k, v in dlg_items.items() if not v] or 'none'}; ap {ap_s}")
 
+    # Issue #194: a new web password needs the same value in a second field, and a save that
+    # removes the web password asks first. The behaviour in a browser is checked by the shots
+    # web-password-* of tools/docs_shots.py (no scenario runs a browser); here the served page
+    # must hold that code.
+    pw_items = {"second field": 'id="i-pw2"' in page_text and "Confirm the password" in page_text,
+                "mismatch refused": "The two passwords are not the same" in page_text
+                and "if(!same194())return;" in page_text,
+                "removal dialog": "Remove the web password?" in page_text
+                and "if(!dry&&!await keep194(b))return;" in page_text}
+    check("Issue #194: the web UI asks for a new web password two times, and it asks before a "
+          "save that removes the web password",
+          st_p == 200 and all(pw_items.values()),
+          f"missing: {[k for k, v in pw_items.items() if not v] or 'none'}")
+
     # Issue #167: a <select> without the current value shows its first option, and a save writes
     # it back (a CDAB tag became "big"). The served page's lists must hold every value of the
     # configuration (float64, CDAB, DCBA, BADC tags here): then a save with no change sends the

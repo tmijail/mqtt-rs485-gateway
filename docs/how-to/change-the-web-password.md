@@ -21,18 +21,21 @@ A save restarts the gateway. The gateway sends the NDEATH, and the polling and t
 
 ## Change the password in the web UI
 
-> **Caution: Type the new password carefully.** The web UI asks for it only one time (#194). If you save a wrong value, you cannot log in. You then need the USB console or a factory reset.
-
 1. Open the web UI: `https://<ip>/` or `https://<hostname>.local/`. Log in with the current password.
 2. Click the tab **Configuration**.
 3. In the card **Web interface**, click the field **Password (8 to 63)**.
-4. Delete `********`, and type the new password.
+4. Delete `********`, and type the new password. The field **Confirm the password** shows.
+5. Type the new password again in the field **Confirm the password**.
 
-   ![The card 'Web interface' of the Configuration tab: the user admin, a new password in the field 'Password (8 to 63)'. The explainer of the password is open, over the field Port. It gives the rule of the password, and it tells that the password is also the Wi-Fi password of the access point GW-Setup-XXXXXX. The bar at the bottom of the window shows '1 change, not saved'.](../images/web-password-field.png)
+   ![The card 'Web interface' of the Configuration tab: the user admin, a new password in the field 'Password (8 to 63)', the same password in the field 'Confirm the password', and the port. Below the second field: after the restart, the browser asks for the new password, and the Wi-Fi password of the access point changes to the new password.](../images/web-password-field.png)
 
-5. Click **Validate** in the bar at the bottom of the window. If the bar gives an error, read the error below the field, and correct the password.
-6. Click **Save and restart**. The page loads again after 15 s.
-7. When the browser asks for the user name and the password, type the user name and the new password.
+6. Click **Validate** in the bar at the bottom of the window. If the bar gives an error, read the error below the field, and correct the value.
+7. Click **Save and restart**. The page loads again after 15 s.
+8. When the browser asks for the user name and the password, type the user name and the new password.
+
+If the two values are not the same, the web UI does not save. The error shows below the field **Confirm the password**. Type the new password again in the two fields.
+
+![The Configuration tab after 'Save and restart' with two different passwords. Below the field 'Confirm the password', a red text tells that the two passwords are not the same. The bar at the bottom of the window shows '1 error: Web interface · Confirm the password' with the link 'Go to the field'.](../images/web-password-mismatch.png)
 
 To change the user name, use the field **User** in the same card. The user name has 1 to 32 visible ASCII characters, without `:`.
 
@@ -68,6 +71,10 @@ For the routes and the responses, refer to [The REST API](../reference/rest-api.
 ## Do not remove the web password by mistake
 
 > **Caution: Do not save an empty Password field.** Keep `web.password` as `"********"` in each document that you import. An empty value or a document without this key removes the web password.
+
+Before a save that removes the web password, the web UI asks for a confirmation. Click **Cancel** to keep the password. The REST API and the shell do not ask.
+
+![The confirmation 'Remove the web password?' after 'Save and restart' with an empty password field: web.password is empty. After the restart, the gateway accepts only the user admin with the commissioning password of the serial console, the Wi-Fi password of the access point becomes the commissioning password, and a push of BOOT opens the claim window. It has the red button 'Remove the password' and Cancel.](../images/web-password-remove.png)
 
 When the web password is removed:
 
