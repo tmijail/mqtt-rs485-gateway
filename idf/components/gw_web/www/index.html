@@ -25,7 +25,7 @@ table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;p
 td input,td select{width:100%;margin:0;padding:3px 4px}
 .ok{color:var(--ok)}.bad{color:var(--bad)}.mut{color:var(--mut)}.warn{color:var(--warn)}.err{outline:2px solid var(--bad)}.wrn{outline:2px solid var(--warn)}
 #msg{white-space:pre-wrap;margin:8px 0 0}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.hidden{display:none}
+.hidden{display:none}a{color:var(--acc)}
 .hint{font-size:11px;margin-top:2px}.topic{font-family:ui-monospace,monospace;font-size:12px;overflow-wrap:anywhere;margin:6px 0}
 </style>
 </head>
@@ -70,7 +70,7 @@ td input,td select{width:100%;margin:0;padding:3px 4px}
    <label>Address (0-65535)<input id="mb-addr" value="0"></label><label>Count (1-16, empty = 1 or the size of the type)<input id="mb-count"></label>
    <label>Type<select id="mb-type"></select></label><label>Word order<select id="mb-wo"></select></label></div>
   <div class="row"><button id="mb-read">Read</button></div><div id="mb-msg" class="mut"></div></div>
- <p class="mut">Edit Wi-Fi, IPv6, syslog and the other keys of SPEC §6.1 in the JSON tab. The secrets show as ********. If you do not change them, the gateway keeps them.</p>
+ <p class="mut">Edit Wi-Fi, IPv6, syslog and the other keys in the JSON tab. For each key, refer to the <a href="https://github.com/tmijail/mqtt-rs485-gateway/blob/main/docs/reference/configuration.md" target="_blank" rel="noopener">configuration reference</a> on GitHub. The secrets show as ********. If you do not change them, the gateway keeps them.</p>
 </section>
 
 <section id="tab-json" class="hidden">
