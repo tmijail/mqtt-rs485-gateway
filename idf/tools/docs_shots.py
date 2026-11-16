@@ -191,6 +191,17 @@ def tag_explainer(page):
 
 # ---------------------------------------------------------------- the frozen values
 
+def web_password(page):
+    """docs/how-to/change-the-web-password.md: a new value in the Password field of the card
+    'Web interface' (not saved), and the explainer of the field (a click keeps it open)."""
+    page.click("nav button[data-tab=config]")
+    page.evaluate("document.querySelector('#f-web').closest('.card')"
+                  ".scrollIntoView({block: 'center'})")
+    page.fill('[data-p="web.password"]', "new-password-2")
+    page.wait_for_selector("#b-chg:has-text('1 change, not saved')")   # a debounced count
+    page.click("#f-web button.qi[data-x=webpw]")
+
+
 def no_hash(version):
     """The firmware version without its git hash ("0.1.0+g05af957f" -> "0.1.0"): the hash
     changes at each commit."""
@@ -329,6 +340,14 @@ SHOTS = [
              "at the bottom of the window shows '1 change, not saved', '1 error: Meter1 · "
              "Unit ID' with the link 'Go to the field', and the buttons Validate and 'Save and "
              "restart'."),
+    # docs/how-to/change-the-web-password.md (no save: the state does not change)
+    Shot("web-password-field", "configured", DESKTOP, "/", actions=[web_password],
+         wait="#xpl:not(.hidden)",
+         alt="The card 'Web interface' of the Configuration tab: the user admin, a new password "
+             "in the field 'Password (8 to 63)'. The explainer of the password is open, over "
+             "the field Port. It gives the rule of the password, and it tells that the password is "
+             "also the Wi-Fi password of the access point GW-Setup-XXXXXX. The bar at the "
+             "bottom of the window shows '1 change, not saved'."),
     # docs/how-to/update-the-firmware.md
     Shot("firmware-card", "configured", DESKTOP, "/", element=".card:has(#st-fw)",
          actions=[("wait_text", "#st-fw", "Running")], wait="#st-fw",
