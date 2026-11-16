@@ -29,7 +29,7 @@ In recovery mode, the polling and MQTT do not start. The network, the web UI, th
 3. Correct the configuration. Refer to [Change, back up and restore the configuration](change-the-configuration.md).
 4. Click **Validate**, then click **Save and restart**.
 
-After a firmware update into recovery mode, the card **Firmware** can show the button **Restore the configuration from before the update**. Click it to load the document that the earlier image used.
+After a firmware update into recovery mode, the card **Firmware** can show the button **Restore the configuration from before the update**. Click it to load the document that the earlier image used. In the confirmation, click **Restore and restart**. The gateway then restarts with that document.
 
 ## The gateway restarts again and again
 

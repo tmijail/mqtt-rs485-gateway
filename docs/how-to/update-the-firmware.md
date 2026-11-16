@@ -31,12 +31,14 @@ During the trial (approximately 60 s), the gateway refuses a configuration save 
 
 1. Open the web UI. Stay on the tab **Status**.
 2. In the card **Firmware**, click **Upload an image**, and select `rs485_spb_gateway.bin`.
-3. Accept the question "Install … and restart?".
+3. In the confirmation "Install rs485_spb_gateway.bin?", click **Install and restart**. To stop, click **Cancel**.
 4. Wait for the message "Image installed: restarting into the new version."
 5. Wait approximately 30 s. Then load the page again.
 6. Do the steps of "Make sure that the update is complete".
 
-   ![The card 'Firmware' of the Status tab: the running version, its slot, the state of the last update, and the other slot. Below are the field for the URL of an image with the button 'Download and install', the field 'Upload an image', and the check box 'Force (into recovery mode)'.](../images/firmware-card.png)
+   ![The card 'Firmware' of the Status tab: the running version, its slot, the state of the last update, and the other slot. Below are the field for the URL of an image with the button 'Download and install' and the check box 'Force (into recovery mode)', and the field 'Upload an image'.](../images/firmware-card.png)
+
+If the pre-flight check refuses the image, a red box shows in the card. Refer to [If the gateway refuses the image](#if-the-gateway-refuses-the-image).
 
 ## Install an image from a web server
 
@@ -71,7 +73,7 @@ A Sparkplug host can start the same download. It sends the NCMD `Node Control/Fi
 Do this when the new image operates but does not do what you need, for example when it cannot connect to the broker of the site.
 
 1. In the card **Firmware**, click **Restart into `<version>`**. The button shows the version in the other slot.
-2. Accept the question.
+2. In the confirmation, click **Restart into `<version>`** again.
 3. Wait for the restart and the trial (60 s).
 4. Make sure that the card shows the earlier version.
 
@@ -86,9 +88,27 @@ You can also upload the earlier image. The earlier image possibly cannot read a 
 | The image is "unknown" | The image is from before the pre-flight check. Use force only if you accept its risks |
 | `testing <version>: N s left` | A trial is in progress. Wait, then try again |
 
-**Force.** Select **Force (into recovery mode)**, then install the image again. The gateway then installs the image even if the pre-flight check refuses it. The new image must only reach recovery mode. In recovery mode, correct the configuration in the web UI.
+The refusal of an upload shows as a red box in the card **Firmware**. The box gives the name of the file, the version of the image and each reason on its own line.
+
+![The card 'Firmware' after an upload that the pre-flight check refused: a red box gives the file and its version, the reason (the configuration needs schema 2, the image reads 1) and what recovery mode is. It has the buttons 'Install into recovery mode' and 'Cancel'.](../images/firmware-refused.png)
+
+**Force.** Force installs the image even if the pre-flight check refuses it. The new image must then only reach recovery mode. In recovery mode, the gateway does not poll and does not connect to MQTT. Only the network and the web UI operate. Correct the configuration there.
 
 > **Caution: Do not force an image with a lower NVS format or LittleFS version, unless you accept the loss of the data.** Such an image cannot read the NVS or `/cfg`, and it can erase them. Then you lose the secrets and the configuration.
+
+To force an uploaded image:
+
+1. Read the reasons in the red box.
+2. Click **Install into recovery mode**. The web UI sends the same file again, with force. You do not select the file again.
+
+To keep the running image, click **Cancel** in the red box.
+
+To force the restart into the other slot, do the same steps in the red box. Its button is **Restart into recovery mode**.
+
+To force a download from a web server:
+
+1. Select **Force (into recovery mode)** next to **Download and install**.
+2. Click **Download and install**.
 
 ## If the web UI is not available
 

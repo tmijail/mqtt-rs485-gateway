@@ -891,6 +891,8 @@ static esp_err_t check_image(const uint8_t *block, const char *version, bool for
     }
     esp_err_t ret = ESP_OK;
     if (pf != GW_OTA_PF_OK && !force) {
+        /* issue #192: the web UI (index.html, fwref) reads this form: the version, the
+         * reasons with "; " between them, and the last sentence */
         snprintf(why, cap, "pre-flight check: image %s %s: %s; force installs it into recovery "
                  "mode", version, pf == GW_OTA_PF_UNKNOWN ? "is unknown" : "refused", reason);
         ESP_LOGE(TAG, "update refused by the %s", why);

@@ -32,6 +32,10 @@ With `sd.enabled`, the oldest samples go from the RAM buffer to the card in bloc
 - The card is only for the gateway.
 - The web UI ("microSD card", "Format the card") and the shell command `card format confirm` format the card. The format makes one MBR partition with FAT32 and clusters of 32 KB (FAT16 below 2 GB).
 - The format deletes all the data on the card. The gateway never formats a card by itself: the web UI asks you to type `FORMAT`, and the shell needs the word `confirm`.
+- The confirmation of the web UI gives the card (name, size and state) and the number of files and folders that are not from the gateway. Its red button "Format the card" stays disabled until the field has `FORMAT`. Esc and "Cancel" close it, and the card does not change.
+
+  ![The confirmation 'Format the microSD card?': the card SD64G, 59.5 GB, cannot mount. The format erases all the contents of the card, also its 3 files or folders that are not from the gateway. The field has FORMAT, and the red button 'Format the card' is enabled.](../images/card-format-dialog.png)
+
 - The format runs in the background, and can take some minutes. The spill stops first, and the RAM buffer continues. After the format, restart the gateway to use the card.
 - The format operates also on a card that does not mount, and also when `sd.enabled` is `false`.
 - The QEMU build without PSRAM refuses the format.

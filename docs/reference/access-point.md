@@ -97,7 +97,7 @@ One beep is 150 ms of tone and 150 ms of silence.
 
 ## The card "Access point" of the web UI
 
-The Status tab of the web UI has a card "Access point". It shows the network name, the key, the number of clients and the time to the stop. When the access point is on, the card has the button "Close the access point". The button asks for a confirmation, and then sends `POST /api/ap/stop`.
+The Status tab of the web UI has a card "Access point". It shows the network name, the key, the number of clients and the time to the stop. When the access point is on, the card has the button "Close the access point". The button opens a confirmation, and then sends `POST /api/ap/stop`. When `request_via_ap` is `true`, the confirmation also tells that the page stops, because the browser uses the access point.
 
 ![The card 'Access point' of the Status tab on a phone: the access point GW-Setup is on, its Wi-Fi password is the web password, it has 1 client, and it stops in 28 min. Below is the button 'Close the access point'.](../images/ap-card-phone.png)
 
@@ -118,13 +118,14 @@ The image comes from the firmware in QEMU, with one simulated client.
 | `open_left_s` | integer | The time in seconds of the open period that is left. 0 when the access point is not open |
 | `idle_stop_s` | integer | The idle time in seconds |
 | `last_stop` | text | The cause of the last stop: `none` (no stop since the boot), `request`, `idle` or `time` |
+| `request_via_ap` | bool | This request came through the access point: the address of the client is in the subnet of the access point (the rule of the claim window). `false` on the Ethernet and on the Wi-Fi station. The QEMU build has no radio: there, it is `true` only after the emulator-only shell command `claimsim … eth` (issue #193) |
 
-Example (normal mode, after a push of BOOT, one client):
+Example (normal mode, after a push of BOOT, one client, a request from that client):
 
 ```json
 "ap": {"available": true, "simulated": false, "running": true, "ssid": "GW-Setup-A1B2C3",
        "security": "wpa2", "key": "web_password", "clients": 1, "left_s": 1680,
-       "open_left_s": 0, "idle_stop_s": 300, "last_stop": "none"}
+       "open_left_s": 0, "idle_stop_s": 300, "last_stop": "none", "request_via_ap": true}
 ```
 
 ## `POST /api/ap/stop`

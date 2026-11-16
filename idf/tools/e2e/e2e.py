@@ -7453,6 +7453,22 @@ def run_web(args, work):
           st_p == 200 and all(ui_items.values()),
           f"missing: {[k for k, v in ui_items.items() if not v] or 'none'}")
 
+    # Issues #192 and #193: the confirmations are one <dialog> of the page (no prompt() or
+    # confirm()); a refused upload shows a box that installs the same file into recovery mode;
+    # /api/status ap.request_via_ap is false for a request over the Ethernet (true needs the radio
+    # of the board, #130; the emulator-only 'claimsim ... eth' case is in the reset scenario)
+    ap_s = status.get("ap") or {}
+    dlg_items = {"no prompt()": "prompt(" not in page_text, "no confirm()": "confirm(" not in page_text,
+                 "dialog": '<dialog id="dlg"' in page_text and ".showModal()" in page_text,
+                 "refusal box": 'id="fw-ref"' in page_text and "Install into recovery mode" in page_text
+                 and '"?force=1"' in page_text,
+                 "request_via_ap false": ap_s.get("request_via_ap") is False}
+    check("Issues #192 #193: the web UI confirms in a <dialog> of the page (no prompt() or "
+          "confirm()), has the box of a refused upload with 'Install into recovery mode', and "
+          "/api/status ap.request_via_ap is false over the Ethernet",
+          st_p == 200 and st_s == 200 and all(dlg_items.values()),
+          f"missing: {[k for k, v in dlg_items.items() if not v] or 'none'}; ap {ap_s}")
+
     # Issue #167: a <select> without the current value shows its first option, and a save writes
     # it back (a CDAB tag became "big"). The served page's lists must hold every value of the
     # configuration (float64, CDAB, DCBA, BADC tags here): then a save with no change sends the
@@ -7914,15 +7930,17 @@ def check_claim_window(gw, commissioning_pw):
     again = gw.wait_log(r"main: claim window not opened: a web password is set", 10, t_again)
     _, h = gw.shell("status", [r"^claim\s+window closed \(a web password is set"])
     leaked = gw.find(re.escape(CLAIM_PASSWORD), t0)
+    via17 = ((as_json(b17) or {}).get("ap") or {}).get("request_via_ap")
     check("CFG-3/NET-5 #120 after the set the window is closed: a second set is refused, the "
-          "commissioning password no longer opens the web UI, the new one does, a new BOOT gesture "
-          "opens no window, and the password is in no log line",
+          "commissioning password no longer opens the web UI, the new one does (#193: its "
+          "/api/status ap.request_via_ap is true: the Ethernet counts as the access point), a new "
+          "BOOT gesture opens no window, and the password is in no log line",
           st14 == 403 and b"web password is set" in b14 and (as_json(b15) or {}).get("open") is False
-          and st16 == 401 and st17 == 200 and led_back and again
+          and st16 == 401 and st17 == 200 and via17 is True and led_back and again
           and not gw.find(r"web: claim window open", t_again) and all(h.values()) and not leaked,
           f"second set {st14} {b14.decode(errors='replace').strip()[:60]}; GET /api/claim {st15} "
           f"{b15.decode(errors='replace').strip()}; commissioning password {st16}, new password "
-          f"{st17}; LED back {bool(led_back)}; new gesture {bool(again)}; shell {all(h.values())}; "
+          f"{st17} (request_via_ap {via17}); LED back {bool(led_back)}; new gesture {bool(again)}; shell {all(h.values())}; "
           f"password in the log: {leaked[:1] or 'no'}")
     return CLAIM_PASSWORD if st13 == 200 else None
 
