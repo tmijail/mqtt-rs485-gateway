@@ -27,6 +27,19 @@ td input,td select{width:100%;margin:0;padding:3px 4px}
 #msg{white-space:pre-wrap;margin:8px 0 0}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .hidden{display:none}a{color:var(--acc)}
 .hint{font-size:11px;margin-top:2px}.topic{font-family:ui-monospace,monospace;font-size:12px;overflow-wrap:anywhere;margin:6px 0}
+/* #192 #193 */
+:root{--badbg:#fbeceb;--dgo:#b3261e}@media (prefers-color-scheme:dark){:root{--badbg:#2e1f20;--dgo:#da3633}}
+button.danger{border-color:var(--bad);color:var(--bad)}button.dgo{background:var(--dgo);border-color:var(--dgo);color:#fff}#dlg button:disabled{opacity:.45;cursor:default}
+.refuse{border:1px solid var(--bad);background:var(--badbg);border-radius:6px;padding:10px 12px;margin:8px 0}.refuse h3{font-size:14px;margin:0 0 6px;color:var(--bad);overflow-wrap:anywhere}
+.refuse ul{margin:0 0 8px;padding-left:20px}.refuse p{margin:0 0 10px;max-width:760px}
+#dlg{width:min(480px,calc(100% - 32px));margin:72px auto auto;background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.3);padding:18px 20px 16px}
+#dlg::backdrop{background:rgba(0,0,0,.35)}#dlg h3{font-size:16px;margin:0 0 4px}#dlg p{margin:0 0 10px}#dlg .fact{font-size:13px;color:var(--mut);margin:0 0 12px}
+#dlg ul{margin:0 0 14px;padding-left:20px}#dlg li{margin-bottom:4px}#dlg .warnline{color:var(--warn);font-weight:600}#dlg input{margin-top:4px;padding:6px 8px}
+#dlg .act{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+@media (max-width:600px){#dlg{width:100%;max-width:100%;max-height:90vh;overflow:auto;margin:auto 0 0;border-width:1px 0 0;border-radius:12px 12px 0 0;box-shadow:0 -6px 24px rgba(0,0,0,.25);padding:20px 16px 24px}
+ #dlg h3{font-size:17px}#dlg label{font-size:13px}#dlg input{padding:10px;font-size:16px}#dlg .act{flex-direction:column-reverse}#dlg .act button{min-height:44px;width:100%}
+ #fw-card .row{flex-direction:column;align-items:stretch}#fw-card button{min-height:44px}#fw-card label.row{flex-direction:column!important;align-items:flex-start}
+ #fw-card label.chk{flex-direction:row!important;align-items:center;min-height:44px;font-size:13px;color:var(--fg)}#fw-card label.chk input{align-self:center}#fw-url{width:100%;padding:8px;font-size:16px}}
 </style>
 </head>
 <body>
@@ -45,11 +58,11 @@ td input,td select{width:100%;margin:0;padding:3px 4px}
  <div class="card"><h2>Modbus devices</h2><div id="st-mb" class="mut">no devices</div></div>
  <div class="card"><h2>Local I/O</h2><div id="st-io"></div>
   <div class="row"><button id="settime" title="Send the time of this computer to the gateway and its RTC. Use it on a network with no time server: without a valid time the gateway does not connect to the MQTT broker.">Set the time from the browser</button><span id="tm-msg" class="mut"></span></div></div>
- <div class="card"><h2>Firmware</h2><div id="st-fw" class="mut"></div>
+ <div class="card" id="fw-card"><h2>Firmware</h2><div id="st-fw" class="mut"></div>
   <div class="row"><button id="fw-other" class="hidden"></button><button id="fw-prev" class="hidden" title="Recovery mode: replace the stored configuration with the one from before the update, then restart.">Restore the configuration from before the update</button><span id="fw-msg" class="mut"></span></div>
-  <div class="row"><input id="fw-url" placeholder="https://server/rs485_spb_gateway.bin" size="40"><button id="fw-get">Download and install</button></div>
-  <div class="row"><label class="row" style="flex-direction:row">Upload an image <input type="file" id="fw-file" accept=".bin,application/octet-stream"></label></div>
-  <div class="row"><label class="row" style="flex-direction:row" title="Install also an image that the pre-flight check refuses. The image must then reach recovery mode or better."><input type="checkbox" id="fw-force"> Force (into recovery mode)</label></div></div>
+  <div id="fw-ref" class="refuse hidden" role="alert"></div>
+  <div class="row"><input id="fw-url" placeholder="https://server/rs485_spb_gateway.bin" size="40" aria-label="Image URL"><button id="fw-get">Download and install</button><label class="row chk" style="flex-direction:row" title="For a download: install also an image that the pre-flight check refuses. The image must then reach recovery mode or better."><input type="checkbox" id="fw-force"> Force (into recovery mode)</label></div>
+  <div class="row"><label class="row" style="flex-direction:row">Upload an image <input type="file" id="fw-file" accept=".bin,application/octet-stream"></label></div></div>
  <div class="card"><h2>microSD card</h2><div id="st-sd" class="mut"></div>
   <div class="row"><button id="sd-fmt">Format the card</button><button id="sd-rst" class="hidden">Restart now</button></div><div id="sd-msg" class="mut"></div></div>
 </section>
@@ -86,6 +99,7 @@ td input,td select{width:100%;margin:0;padding:3px 4px}
  <div id="msg" class="mut"></div>
 </div>
 </main>
+<dialog id="dlg" aria-labelledby="dlg-t"><h3 id="dlg-t"></h3><div id="dlg-b"></div><label id="dlg-w" class="hidden"><span id="dlg-wl"></span><input id="dlg-i" autocomplete="off" autocapitalize="characters" spellcheck="false"></label><div class="act"><button id="dlg-no">Cancel</button><button id="dlg-ok"></button></div></dialog>
 <script>
 "use strict";
 const $=s=>document.querySelector(s);
@@ -282,7 +296,7 @@ function sdmsg(t,c){const m=$("#sd-msg");m.textContent=t;m.className=c||"mut"}
 /* #187: the access point (NET-5): its state, and the button that closes it */
 const APS={request:"closed on request",idle:"stopped: no client for the idle time",time:"stopped: end of its maximum time"};
 const dur=s=>s>=60?`${Math.floor(s/60)} min ${s%60} s`:`${s} s`;
-function ap(a){const b=$("#ap-stop"),e=$("#st-ap");
+function ap(a){const b=$("#ap-stop"),e=$("#st-ap");apl=a||{};
  if(!a||!a.available){e.textContent="This build has no access point.";b.classList.add("hidden");return}
  if(a.running){
   e.innerHTML=`<b>${esc(a.ssid)}</b> is on${a.simulated?" (simulated: the emulator has no radio)":""}. `+
@@ -291,10 +305,12 @@ function ap(a){const b=$("#ap-stop"),e=$("#st-ap");
  }else e.textContent=`Off${APS[a.last_stop]?` (${APS[a.last_stop]})`:""}. To start it, push the BOOT button of the gateway for 2 to 10 s.`;
  b.classList.toggle("hidden",!a.running);
 }
-$("#ap-stop").onclick=async()=>{if(!confirm("Close the access point? Its clients lose the connection. To start it again, push the BOOT button for 2 to 10 s."))return;
+$("#ap-stop").onclick=async()=>{const a=apl,n=a.clients||0;if(!await ask({title:"Close the access point?",action:"Close the access point",danger:true,
+  html:`<p>${esc(a.ssid||"The access point")} stops in a few seconds. ${n?`Its ${n} client${n>1?"s lose":" loses"} the connection.`:"It has no client now."}</p>${a.request_via_ap?'<p class="warnline">This browser uses the access point: this page then stops.</p>':""}<p class="mut">To start it again, push the BOOT button for 2 to 10 s.</p>`}))return;
  const r=await api("POST","/api/ap/stop"),m=$("#ap-msg");m.textContent=r.status===202?"The access point stops in a few seconds.":`Not closed (${r.status}): ${(r.json||{}).error||""}`;m.className=r.status===202?"ok":"bad"};
-$("#sd-fmt").onclick=async()=>{const n=sdc.other_entries>0?`\nThe card has ${sdc.other_entries} files or folders that are not from the gateway: the format also erases them.`:"";
- if(prompt(`The format erases ALL the contents of the microSD card, also the samples that wait for the send.${n}\nThe card is only for the gateway. Restart the gateway after the format.\nType FORMAT to confirm:`)!=="FORMAT"){sdmsg("Not formatted: no confirmation.");return}
+$("#sd-fmt").onclick=async()=>{const c=sdc,n=c.other_entries||0;
+ if(!await ask({title:"Format the microSD card?",action:"Format the card",danger:true,word:"FORMAT",fact:[c.name&&esc(c.name),c.size_mb&&mb(c.size_mb),esc(CS[c.state]||c.state||"")].filter(x=>x).join(" · "),
+  html:`<ul><li>The format erases <b>all</b> the contents of the card, also the samples that wait for the send.</li>${n>0?`<li>The card has <b>${n} ${n>1?"files or folders":"file or folder"}</b> that ${n>1?"are":"is"} not from the gateway. The format also erases ${n>1?"them":"it"}.</li>`:""}<li>The card is only for the gateway. Restart the gateway after the format.</li></ul>`}))return;
  const r=await api("POST","/api/card/format?confirm=1");sdmsg(r.status===202?"Format started: the card state above shows the progress.":`Not formatted (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};
 /* #182: a Modbus test read through the bus owner (POST /api/modbus/read) */
 $("#mb-area").innerHTML=AREA.map(a=>`<option ${a==="holding"?"selected":""}>${a}</option>`).join("");
@@ -306,23 +322,49 @@ $("#mb-read").onclick=async()=>{const q={unit:Number($("#mb-unit").value),area:$
  const r=await api("POST","/api/modbus/read",JSON.stringify(q)),j=r.json||{};$("#mb-read").disabled=false;
  if(r.status===200&&j.ok){m.textContent=`Unit ${j.unit}, ${j.area} ${j.address}: ${j.values.join(" ")}`+("value" in j?` = ${"value_text" in j?j.value_text:JSON.stringify(j.value)} (${j.type}, ${j.word_order})`:"");m.className="ok"}
  else{m.textContent=`Error ${r.status}: ${j.error||"no answer"}`;m.className="bad"}};
-$("#cd-del").onclick=async()=>{if(!confirm("Erase the core dump? Download it first."))return;const r=await api("DELETE","/api/coredump"),m=$("#cd-msg");m.textContent=r.status===200?"Erased.":`Not erased (${r.status}): ${(r.json||{}).error||""}`;m.className=r.status===200?"ok":"bad"};
+$("#cd-del").onclick=async()=>{if(!await ask({title:"Erase the core dump?",action:"Erase the core dump",danger:true,html:"<p>The gateway erases the dump from the flash. You cannot download it again. Download it first.</p>"}))return;const r=await api("DELETE","/api/coredump"),m=$("#cd-msg");m.textContent=r.status===200?"Erased.":`Not erased (${r.status}): ${(r.json||{}).error||""}`;m.className=r.status===200?"ok":"bad"};
 $("#settime").onclick=async()=>{const r=await api("POST","/api/time",JSON.stringify({utc_ms:Date.now()})),m=$("#tm-msg");m.textContent=r.status===200?"Time set.":`Time not set (${r.status}): ${(r.json||{}).error||""}`;m.className=r.status===200?"ok":"bad";poll()};
 $("#rebirth").onclick=async()=>{const r=await api("POST","/api/rebirth"),m=$("#rb-msg");m.textContent=r.status===202?"NBIRTH and every DBIRTH requested.":`No rebirth (${r.status}): ${(r.json||{}).error||""}`;m.className=r.status===202?"ok":"bad"};
-$("#sd-rst").onclick=async()=>{if(!confirm("Restart the gateway?"))return;const r=await api("POST","/api/restart");sdmsg(r.status===202?"Restarting…":`Not restarted (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"":"bad")};
-// issue #144: a 409 of the pre-flight check gives the reasons; "Force" installs the image into recovery mode
+$("#sd-rst").onclick=async()=>{if(!await ask(RST))return;const r=await api("POST","/api/restart");sdmsg(r.status===202?"Restarting…":`Not restarted (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"":"bad")};
+// #192 #193: one <dialog> for every confirmation, in place of the dialogs of the browser. o = {title (the
+// question), html (the result), fact, action (the name of the main button), danger (a red button),
+// word (the button stays disabled until the field has this word)}. True for the action; Esc and
+// Cancel give false and do nothing.
+let apl={};
+const RST={title:"Restart the gateway?",action:"Restart",html:"<p>The gateway disconnects from MQTT, stops the polling and starts again. This page shows the state again after the restart.</p>"};
+function ask(o){const d=$("#dlg"),ok=$("#dlg-ok"),no=$("#dlg-no"),i=$("#dlg-i");
+ $("#dlg-t").textContent=o.title;$("#dlg-b").innerHTML=(o.fact?`<p class="fact">${o.fact}</p>`:"")+(o.html||"");
+ ok.textContent=o.action;ok.className=o.danger?"dgo":"pri";$("#dlg-w").classList.toggle("hidden",!o.word);i.value="";ok.disabled=!!o.word;
+ if(o.word)$("#dlg-wl").textContent=`Type ${o.word} to confirm`;
+ i.oninput=()=>{ok.disabled=i.value.trim()!==o.word};i.onkeydown=e=>{if(e.key==="Enter"&&!ok.disabled)ok.click()};
+ return new Promise(res=>{const end=v=>{d.onclose=null;if(d.open)d.close();res(v)};ok.onclick=()=>end(true);no.onclick=()=>end(false);d.onclose=()=>end(false);
+  d.showModal();(o.word?i:no).focus()})}
+// #192: a refusal of the pre-flight check ("pre-flight check: image <version> refused: <reason>; <reason>;
+// force installs it into recovery mode", gw_fw.c check_image; "; " is only between the reasons) as a box
+// with each reason; its button sends the request again with force. False for another error.
+function fwref(e,what,act,go){const b=$("#fw-ref"),m=/^pre-flight check: image (.+?) (?:refused|is unknown): (.*?)(?:; force installs it into recovery mode)?$/.exec(e||"");
+ b.classList.toggle("hidden",!m);if(!m)return false;
+ b.innerHTML=`<h3>The pre-flight check refused ${esc(what)} (${esc(m[1])})</h3><ul>${m[2].split("; ").map(x=>`<li>${esc(x)}</li>`).join("")}</ul><p>You can ${act==="Install into recovery mode"?"install the image":"start the image"} in recovery mode. In recovery mode the gateway does not poll and does not connect to MQTT: only the network and this page operate. Then change or restore the configuration.</p><div class="row"><button class="danger" id="fw-rgo">${act}</button><button id="fw-rno">Cancel</button></div>`;
+ $("#fw-rgo").onclick=()=>{fwref();go()};$("#fw-rno").onclick=()=>fwref();fwmsg("");return true}
+async function fwup(f,force){fwmsg(`Uploading ${f.name}…`);let r;try{r=await fetch("/api/firmware"+(force?"?force=1":""),{method:"POST",headers:{"Content-Type":"application/octet-stream","X-Requested-With":"gateway"},body:f})}catch(x){const w=(await api("GET","/api/firmware")).json;fwmsg(`Upload interrupted (${x.message})`+(w&&w.detail?`: ${w.detail}`:""),"bad");return}
+ let j=null;try{j=await r.json()}catch(x){}const er=(j||{}).error||"";
+ if(r.status===200)fwmsg("Image installed: restarting into the new version.","ok");else if(!(r.status===409&&fwref(er,f.name,"Install into recovery mode",()=>fwup(f,true))))fwmsg(`Refused (${r.status}): ${er}`,"bad")}
+async function fwother(force){const r=await api("POST","/api/firmware/other"+(force?"?force=1":"")),er=(r.json||{}).error||"";
+ if(r.status===202)fwmsg("Restarting into the other slot…","ok");else if(!(r.status===409&&fwref(er,"the image of the other slot","Restart into recovery mode",()=>fwother(true))))fwmsg(`Not restarted (${r.status}): ${er}`,"bad")}
+// issue #144: a 409 of the pre-flight check gives the reasons; "Force" installs a download into recovery mode
 const fwforce=()=>$("#fw-force").checked;
 const fwmsg=(t,c)=>{const m=$("#fw-msg");m.textContent=t;m.className=c||"mut"};
 $("#fw-get").onclick=async()=>{const u=$("#fw-url").value.trim();if(!u)return;const b={url:u};if(fwforce())b.force=true;const r=await api("POST","/api/firmware",JSON.stringify(b));fwmsg(r.status===202?"Download started: the gateway restarts at the end.":`Not started (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};
-$("#fw-file").onchange=async e=>{const f=e.target.files[0];if(!f||!confirm(`Install ${f.name} (${f.size} B) and restart?`))return;fwmsg("Uploading…");let r;try{r=await fetch("/api/firmware"+(fwforce()?"?force=1":""),{method:"POST",headers:{"Content-Type":"application/octet-stream","X-Requested-With":"gateway"},body:f})}catch(x){const w=(await api("GET","/api/firmware")).json;fwmsg(`Upload interrupted (${x.message})`+(w&&w.detail?`: ${w.detail}`:""),"bad");return}let j=null;try{j=await r.json()}catch(x){}fwmsg(r.status===200?"Image installed: restarting into the new version.":`Refused (${r.status}): ${(j||{}).error||""}${r.status===409&&!fwforce()?" (select Force to install it into recovery mode)":""}`,r.status===200?"ok":"bad")};
+$("#fw-file").onchange=async e=>{const f=e.target.files[0];e.target.value="";if(!f)return;fwref();
+ if(await ask({title:`Install ${f.name}?`,action:"Install and restart",fact:`${f.size} B`,html:"<p>The gateway writes the image into the other slot, then restarts into it. The new image runs on trial: if the trial fails, the gateway goes back to this firmware.</p>"}))fwup(f,false)};
 // issue #146: in recovery mode, the configuration from before the update replaces the stored one
-$("#fw-prev").onclick=async()=>{if(!confirm("Replace the stored configuration with the configuration from before the update, and restart?"))return;const r=await api("POST","/api/config?restore_prev=1");fwmsg(r.status===200?"Configuration restored: restarting…":`Not restored (${r.status}): ${(r.json||{}).error||""}`,r.status===200?"ok":"bad")};
-$("#fw-other").onclick=async()=>{const v=$("#fw-other").textContent;if(!confirm(`${v}? The image boots on trial; a reset during its test returns to this firmware.`))return;const r=await api("POST","/api/firmware/other"+(fwforce()?"?force=1":""));fwmsg(r.status===202?"Restarting into the other slot…":`Not restarted (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};
+$("#fw-prev").onclick=async()=>{if(!await ask({title:"Restore the configuration from before the update?",action:"Restore and restart",html:"<p>The configuration from before the update replaces the stored configuration. Then the gateway restarts.</p>"}))return;const r=await api("POST","/api/config?restore_prev=1");fwmsg(r.status===200?"Configuration restored: restarting…":`Not restored (${r.status}): ${(r.json||{}).error||""}`,r.status===200?"ok":"bad")};
+$("#fw-other").onclick=async()=>{const v=$("#fw-other").textContent;fwref();if(await ask({title:`${v}?`,action:v,html:"<p>The image of the other slot runs on trial. A reset during the trial goes back to this firmware.</p>"}))fwother(false)};
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>show(b.dataset.tab));
 $("#b-check").onclick=()=>put(true);$("#b-save").onclick=()=>put(false);
 $("#b-export").onclick=()=>{location.href="/api/config?download=1"};
 $("#b-import").onchange=async e=>{const f=e.target.files[0];if(!f)return;const t=await f.text();try{cfg=JSON.parse(t)}catch(x){msg("The file is not JSON: "+x.message,"bad");return}tab="json";show("json");msg("Imported into the editor: examine it, then click Save and restart.")};
-$("#b-restart").onclick=async()=>{if(confirm("Restart the gateway?")){const r=await api("POST","/api/restart");msg(r.status===202?"Restarting…":`Not restarted (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"":"bad")}};
+$("#b-restart").onclick=async()=>{if(await ask(RST)){const r=await api("POST","/api/restart");msg(r.status===202?"Restarting…":`Not restarted (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"":"bad")}};
 $("#f-pfx").onclick=e=>{const t=e.target.dataset;if(!(t.addLvl||t.delLvl))return;readForms();
  if(t.addLvl)pfx.push("");else pfx.splice(+t.delLvl,1);
  renderPrefix();readPrefix();const ins=document.querySelectorAll("[data-lvl]");if(t.addLvl&&ins.length)ins[ins.length-1].focus()};

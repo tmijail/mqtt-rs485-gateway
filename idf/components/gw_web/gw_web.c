@@ -1627,8 +1627,11 @@ static __attribute__((noinline)) void status_card(out_t *o, const gw_config_t *c
          (unsigned long)es.spill_boot_ms, (unsigned long)es.spill_gc_pending);
 }
 
-/* NET-5, issue #187: the access point, as an optional object (older clients ignore it). */
-static __attribute__((noinline)) void status_ap(out_t *o)
+/* NET-5, issue #187: the access point, as an optional object (older clients ignore it).
+ * Issue #193: "request_via_ap" = this request came through the access point (the access point
+ * rule of the claim window, claim_from_ap: the peer is a host of its subnet), so the web UI can
+ * tell that a stop also stops this page. */
+static __attribute__((noinline)) void status_ap(out_t *o, httpd_req_t *req)
 {
     gw_ap_status_t ap;
     gw_ap_get_status(&ap);
@@ -1646,8 +1649,10 @@ static __attribute__((noinline)) void status_ap(out_t *o)
     } else {
         outf(o, "null");
     }
-    outf(o, ",\"open_left_s\":%lu,\"idle_stop_s\":%lu,\"last_stop\":\"%s\"}",
-         (unsigned long)ap.open_left_s, (unsigned long)ap.idle_s, gw_ap_stop_key(ap.last_stop));
+    outf(o, ",\"open_left_s\":%lu,\"idle_stop_s\":%lu,\"last_stop\":\"%s\","
+         "\"request_via_ap\":%s}",
+         (unsigned long)ap.open_left_s, (unsigned long)ap.idle_s, gw_ap_stop_key(ap.last_stop),
+         claim_from_ap(req) ? "true" : "false");
 }
 
 static esp_err_t status_get(httpd_req_t *req)
@@ -1816,7 +1821,7 @@ static esp_err_t status_get(httpd_req_t *req)
     out_str(o, rtc.present ? gw_rtc_status_str((gw_rtc_status_t)rtc.status) : "not answering");
     outf(o, ",\"stores\":%lu}}", (unsigned long)rtc.stores);
     status_card(o, c);
-    status_ap(o);
+    status_ap(o, req);
     {   /* #132: is a core dump in flash (no flash access; the summary is a route of its own) */
         uint32_t size;
         gw_cdump_state_t cd = gw_coredump_state(&size);
