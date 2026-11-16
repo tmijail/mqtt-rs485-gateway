@@ -64,6 +64,8 @@ input.err,select.err{border-color:var(--bad)}
 @media (max-width:640px){#bar .in{display:block;padding:10px 16px 14px}#bar .st{flex-direction:column;align-items:flex-start;gap:2px;font-size:13px;margin-bottom:8px}
  #bar .act{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}#bar .act button{min-height:44px}}
 /* #192 #193 */
+/* a wide table of the Status tab scrolls in its card: a page wider than the phone moves the dialog sheet off the screen */
+#tab-status .card{overflow-x:auto}
 :root{--badbg:#fbeceb;--dgo:#b3261e}@media (prefers-color-scheme:dark){:root{--badbg:#2e1f20;--dgo:#da3633}}
 button.danger{border-color:var(--bad);color:var(--bad)}button.dgo{background:var(--dgo);border-color:var(--dgo);color:#fff}#dlg button:disabled{opacity:.45;cursor:default}
 .refuse{border:1px solid var(--bad);background:var(--badbg);border-radius:6px;padding:10px 12px;margin:8px 0}.refuse h3{font-size:14px;margin:0 0 6px;color:var(--bad);overflow-wrap:anywhere}
