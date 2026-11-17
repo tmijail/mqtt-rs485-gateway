@@ -87,7 +87,7 @@ typedef struct {
 #define CYAN   ((rgb_t){0, 255, 200})
 #define MAGENTA ((rgb_t){255, 0, 255})
 
-enum { B_COMMISSIONING, B_CFG_ERROR, B_NO_NET, B_NO_CLOCK, B_NO_BROKER, B_MB_FAULT, B_OPERATING };
+enum { B_COMMISSIONING, B_SAFE_MODE, B_CFG_ERROR, B_NO_NET, B_NO_CLOCK, B_NO_BROKER, B_MB_FAULT, B_OPERATING };
 
 /* The patterns below the claim window, without the access point: the color and its index. */
 static rgb_t base_pattern(uint32_t f, uint32_t tick, int *idx)
@@ -95,6 +95,11 @@ static rgb_t base_pattern(uint32_t f, uint32_t tick, int *idx)
     if (f & GW_ST_COMMISSIONING) {
         *idx = B_COMMISSIONING;
         return (tick & 4) ? OFF : BLUE;
+    }
+    if (f & GW_ST_SAFE_MODE) {
+        /* #209: no polling and no MQTT, but the configuration is not rejected */
+        *idx = B_SAFE_MODE;
+        return (tick & 4) ? AMBER : BLUE;
     }
     if (f & GW_ST_CFG_ERROR) {
         *idx = B_CFG_ERROR;
@@ -125,10 +130,11 @@ static rgb_t base_pattern(uint32_t f, uint32_t tick, int *idx)
 static rgb_t pattern(uint32_t f, uint32_t tick, const char **name)
 {
     const rgb_t ident[] = {RED, GREEN, BLUE};
-    static const char *const plain[] = {"commissioning", "config error", "no network",
-                                        "waiting for a valid clock", "no broker",
+    static const char *const plain[] = {"commissioning", "safe mode", "config error",
+                                        "no network", "waiting for a valid clock", "no broker",
                                         "modbus device offline", "operating"};
     static const char *const with_ap[] = {"commissioning, access point",
+                                          "safe mode, access point",
                                           "config error, access point",
                                           "no network, access point",
                                           "waiting for a valid clock, access point",

@@ -41,6 +41,7 @@ extern "C" {
 #define GW_ST_AP        (1u << 8)   /* NET-5 access point running (issue #187) */
 #define GW_ST_AP_OPEN   (1u << 9)   /* ... with no key (the open period of a claim window) */
 #define GW_ST_NO_CLOCK  (1u << 10)  /* issue #160: the MQTT session waits for a valid clock */
+#define GW_ST_SAFE_MODE (1u << 11)  /* issue #209: safe mode (on request or after crashes) */
 
 void gw_status_set(uint32_t flag, bool on);
 

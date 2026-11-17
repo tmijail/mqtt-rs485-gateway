@@ -786,7 +786,8 @@ Without these keys, the build option applies (`CONFIG_GW_MB_BLOCK_READS`, `CONFI
 | BOOT pushed for more than 2 s | White, blinks at 4 Hz |
 | Claim window open (CFG-8), or access point open (no key; NET-5, issue #187) | Blue and white, alternately (each color 250 ms) |
 | Commissioning (no configuration after a reset) | Blue, blinks at 1 Hz |
-| Configuration not valid (recovery mode) | Red, blinks at 4 Hz |
+| Safe mode (on request or after 3 crashes, issue #209) | Blue and amber, alternately (1 Hz) |
+| Configuration not valid (recovery mode, but not safe mode) | Red, blinks at 4 Hz |
 | No network (no IP) | Red, continuous |
 | No valid clock: the MQTT session waits for SNTP, the RTC or the browser (TIME-1, issue #160) | Magenta, blinks at 1 Hz |
 | No broker | Amber, blinks at 1 Hz |

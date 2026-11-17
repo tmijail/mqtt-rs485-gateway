@@ -8845,6 +8845,17 @@ def check_restart_admin(args, work, flash):
           f"{bool(death)}; status {st_st} mode {s.get('mode')!r} safe_mode {sm} source "
           f"{s.get('config', {}).get('source')!r}; shell {bool(refused)}; second {st_r2} "
           f"{b_r2.decode(errors='replace').strip()[:80]}; NBIRTHs {len(births)}")
+    # #209: safe mode does not reject the configuration: the LED has a pattern of its own, and
+    # the "config_error" alarm (enabled by this configuration, kept in NVS) does not sound
+    led_safe = gw.wait_log(r"led: status: safe mode", 5, t1)
+    led_err = gw.find(r"led: status: config error", t1)
+    bz_err = gw.find(r"buzzer: alarm 'configuration error'", t1)
+    bz = s.get("buzzer") or {}
+    check("Issue #209: safe mode on request shows the LED pattern 'safe mode', not 'config error', "
+          "and the buzzer alarm 'config_error' of the configuration does not sound (/api/status "
+          "buzzer.alarm none)",
+          led_safe and not led_err and not bz_err and bz.get("alarm") == "none",
+          f"LED {(gw.find(r'led: status: ', t1) or ['none'])[-1]!r}; config error LED {led_err[:1]}; buzzer log {bz_err[:1]}; status buzzer {bz}")
     # a restart ends safe mode (the request was for one boot)
     t2 = time.monotonic()
     st_r, _, _ = http("POST", "/api/restart", auth=auth)
