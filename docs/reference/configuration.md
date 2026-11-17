@@ -227,8 +227,8 @@ Each CONNECT has Clean Session = 1. With `protocol: "5"`, each CONNECT has Clean
 | `key_file` | text | `""` | The PEM private key of the client, **not encrypted** (PKCS#1, SEC1 or PKCS#8). Necessary with `cert_file`, and not permitted without it |
 
 - A file name has 1 to 32 characters `A-Z a-z 0-9 . _ -`, without `/`. It must not start with `.`, and it must not be `config.json`.
-- To put a file into the LittleFS partition, use **Load a file…** below the field of the file in the card MQTT of the web UI, or `PUT /api/files`. Refer to [Connect to a broker with TLS](../how-to/connect-to-a-broker-with-tls.md) and [The REST API](rest-api.md#the-pem-files).
-- A save of the configuration examines each file that `ca_file`, `cert_file`, `key_file` and `ota.ca_file` name: the file exists, it holds certificates (or an unencrypted private key for `key_file`), and the key agrees with the certificate. Otherwise, the error has the path of the key, for example `mqtt.tls.key_file: the key does not agree with the certificate gw01.crt`.
+- The button **Load a file…** below a file field of the card MQTT puts a file into the LittleFS partition. The REST API uses `PUT /api/files`. Refer to [Connect to a broker with TLS](../how-to/connect-to-a-broker-with-tls.md) and [The REST API](rest-api.md#the-pem-files).
+- A save of the configuration examines each file that `ca_file`, `cert_file`, `key_file` and `ota.ca_file` name. Each file must exist and hold certificates. The file of `key_file` must hold an unencrypted private key, and the key must agree with the certificate. Otherwise, the error has the path of the key, for example `mqtt.tls.key_file: the key does not agree with the certificate gw01.crt`.
 - The gateway uses TLS 1.2 or 1.3, as the broker selects.
 - The gateway examines the validity dates of the certificate. Thus the TLS connection waits for a valid clock.
 - The gateway validates the TLS keys also when `enabled` is `false`.
@@ -365,7 +365,7 @@ In the web UI, `slow_poll_ms`, `block_reads`, `max_gap` and `write_multiple` are
 - The device has no DBIRTH, no DDATA and no DDEATH. The gateway discards a DCMD for it.
 - The validation examines a disabled device as any other device. Its name, its tags and the device limits count.
 - A disabled device does not count as offline: it does not set the Modbus fault of the LED or the buzzer alarm `device_offline`.
-- The Status tab of the web UI, the shell command `devices` and `GET /api/status` give the state `disabled`.
+- The Status tab of the web UI and the shell command `devices` show the state `disabled`. In `GET /api/status`, the device has `"enabled":false`.
 - Modbus TCP requests to its unit still go to the bus.
 
 Use it, for example, for a slave that is not connected yet during the commissioning.
@@ -581,7 +581,7 @@ An update from the web UI is always possible, for a user who knows the web passw
 
 > **Caution: Set `mqtt` to `true` only when the ACL of the broker lets only the Sparkplug host publish to `spBv1.0/<group_id>/NCMD/<edge_node_id>`.** Each client that can publish to that topic can then change the firmware.
 
-The key `ota.enabled` of earlier firmware versions is not valid now. The validation refuses it as an unknown key. No gateway is installed yet, thus there is no migration: remove the key from an old document. `ota.mqtt` is a key of the configuration schema 2: an image that reads schema 1 cannot read a document that contains it.
+The key `ota.enabled` of earlier firmware versions is not valid now. The validation refuses it as an unknown key. No gateway is installed yet, thus there is no migration. For the change of an old document, refer to [Change the configuration](../how-to/change-the-configuration.md). `ota.mqtt` is a key of the configuration schema 2: an image that reads schema 1 cannot read a document that contains it.
 
 For the update process, refer to [Update the firmware](../how-to/update-the-firmware.md).
 
@@ -774,7 +774,7 @@ The web UI and the REST API.
 
 While `web.password` is empty, the gateway accepts `admin` with its commissioning password (random; the console shows it). A push of BOOT then opens the claim window. Refer to [Set the first web password on site](../how-to/set-the-first-web-password.md).
 
-In the web UI, the field **Port** of the card **Web interface** is `web.port`, with the label **HTTP port**. While **Enabled** or **HTTPS** is off, a warning shows at the field. A save that turns off the web interface asks first, and gives the steps to turn it on again. Refer to [Recover a gateway](../how-to/recover-the-gateway.md#the-web-interface-is-off).
+In the web UI, the field **Port** of the card **Web interface** is `web.port`, with the label **HTTP port**. While **Enabled** or **HTTPS** is off, a warning shows at the field. Before a save that disables the web interface, the web UI asks for a confirmation. The confirmation gives the steps to enable the web interface again. Refer to [Recover a gateway](../how-to/recover-the-gateway.md#the-web-interface-is-off).
 
 ![The confirmation 'Turn off the web interface?' after 'Save and restart' with Enabled off: after the restart, the page and the REST API do not answer. The steps to turn the web interface on again: push BOOT for 2 to 10 s, open the web UI, turn on Enabled and save. It has the red button 'Save and restart' and Cancel.](../images/web-off-dialog.png)
 
