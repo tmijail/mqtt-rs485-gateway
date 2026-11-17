@@ -284,10 +284,10 @@ button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
  <div class="card"><h2>Full document</h2><textarea id="raw" spellcheck="false"></textarea></div>
 </section>
 
+<!-- #195: Export and Import show only on the tabs Configuration and JSON (show); Restart is in the card Restart and reset of the Status tab -->
 <div class="card" id="actions">
  <div class="row">
   <button id="b-export">Export</button><label class="row" style="flex-direction:row">Import <input type="file" id="b-import" accept=".json,application/json"></label>
-  <button id="b-restart">Restart</button>
  </div>
 </div>
 </main>
@@ -1267,7 +1267,6 @@ document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>show(b.dataset.
 $("#b-check").onclick=()=>put(true);$("#b-save").onclick=()=>put(false);
 $("#b-export").onclick=()=>{location.href="/api/config?download=1"};
 $("#b-import").onchange=async e=>{const f=e.target.files[0];if(!f)return;const t=await f.text();try{cfg=JSON.parse(t)}catch(x){msg("The file is not JSON: "+x.message,"bad");return}tab="";show("json");msg("Imported into the editor: examine it, then click Save and restart.");upd191()};
-$("#b-restart").onclick=async()=>{if(await ask(RST)){const r=await api("POST","/api/restart");msg(r.status===202?"Restarting…":`Not restarted (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"":"bad")}};
 $("#f-pfx").onclick=e=>{const t=e.target.dataset;if(!(t.addLvl||t.delLvl))return;readForms();
  if(t.addLvl)pfx.push("");else pfx.splice(+t.delLvl,1);
  renderPrefix();readPrefix();const ins=document.querySelectorAll("[data-lvl]");if(t.addLvl&&ins.length)ins[ins.length-1].focus()};
