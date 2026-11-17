@@ -68,7 +68,11 @@ static QueueHandle_t s_req_q, s_rep_q;
 static StaticQueue_t s_req_buf, s_rep_buf;
 static uint8_t s_req_storage[2 * sizeof(do_req_t)];
 static uint8_t s_rep_storage[sizeof(do_rep_t)];
-static uint32_t s_req_id;   /* the requester's (single caller: the Sparkplug task) */
+static uint32_t s_req_id;   /* the requester's, under s_req_lock */
+/* #216: two callers of gw_io_set_do() (the Sparkplug task and the Modbus TCP local unit): one
+ * request at a time, so that each caller gets its own answer */
+static SemaphoreHandle_t s_req_lock;
+static StaticSemaphore_t s_req_lock_buf;
 static const char *const k_rule_modes[] = {"follow", "invert", "toggle"};   /* gw_rule_mode_t */
 
 /* ---- TIME-2 PCF85063 RTC, on the expander's I2C bus (the local_io task owns both) ---- */
@@ -653,6 +657,7 @@ esp_err_t gw_io_start_recovery(void)
     s_do.hold = 0;   /* target: every DO off, held ones too */
     s_req_q = xQueueCreateStatic(2, sizeof(do_req_t), s_req_storage, &s_req_buf);
     s_rep_q = xQueueCreateStatic(1, sizeof(do_rep_t), s_rep_storage, &s_rep_buf);
+    s_req_lock = xSemaphoreCreateMutexStatic(&s_req_lock_buf);
     s_task = xTaskCreateStatic(lio_task, "local_io", STACK_WORDS, NULL,
                                CONFIG_GW_LOCAL_IO_TASK_PRIORITY, s_stack, &s_task_buf);
     if (s_task == NULL) {
@@ -717,6 +722,7 @@ esp_err_t gw_io_start(const gw_config_t *cfg, void (*on_change)(void))
 
     s_req_q = xQueueCreateStatic(2, sizeof(do_req_t), s_req_storage, &s_req_buf);
     s_rep_q = xQueueCreateStatic(1, sizeof(do_rep_t), s_rep_storage, &s_rep_buf);
+    s_req_lock = xSemaphoreCreateMutexStatic(&s_req_lock_buf);
     s_task = xTaskCreateStatic(lio_task, "local_io", STACK_WORDS, NULL,
                                CONFIG_GW_LOCAL_IO_TASK_PRIORITY, s_stack, &s_task_buf);
     ESP_RETURN_ON_ERROR(in_err, TAG, "DI gpio");
@@ -741,10 +747,17 @@ bool gw_io_set_do(uint8_t index, bool on)
         ESP_LOGE(TAG, "DO%u: local I/O not started", index + 1);
         return false;
     }
-    const do_req_t r = {.id = ++s_req_id, .index = index, .on = on};
     TickType_t start = xTaskGetTickCount(), wait = pdMS_TO_TICKS(REQ_WAIT_MS);
-    if (xQueueSend(s_req_q, &r, wait) != pdTRUE) {
+    if (xSemaphoreTake(s_req_lock, wait) != pdTRUE) {
+        ESP_LOGE(TAG, "DO%u: another DO command is in progress", index + 1);
+        return false;
+    }
+    const do_req_t r = {.id = ++s_req_id, .index = index, .on = on};
+    bool ok = false;
+    TickType_t locked = xTaskGetTickCount() - start;
+    if (locked >= wait || xQueueSend(s_req_q, &r, wait - locked) != pdTRUE) {
         ESP_LOGE(TAG, "DO%u: local I/O task busy", index + 1);
+        xSemaphoreGive(s_req_lock);
         return false;
     }
     xTaskNotifyGive(s_task);
@@ -754,10 +767,13 @@ bool gw_io_set_do(uint8_t index, bool on)
         if (spent >= wait || xQueueReceive(s_rep_q, &rep, wait - spent) != pdTRUE) {
             ESP_LOGE(TAG, "DO%u: no answer from the local I/O task in %d ms", index + 1,
                      REQ_WAIT_MS);
-            return false;
+            break;
         }
         if (rep.id == r.id) {
-            return rep.ok;   /* older answers (timed out) are skipped */
+            ok = rep.ok;   /* older answers (timed out) are skipped */
+            break;
         }
     }
+    xSemaphoreGive(s_req_lock);
+    return ok;
 }

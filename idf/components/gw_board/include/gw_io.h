@@ -60,7 +60,8 @@ void gw_io_get_expander(gw_io_expander_t *out);
 esp_err_t gw_io_start(const gw_config_t *cfg, void (*on_change)(void));
 
 /** Switch DO @p index (0-7) on or off through the local_io task and wait for it (at most
- *  500 ms). The read-back state is in gw_tagdb. Single caller (the Sparkplug task).
+ *  500 ms). The read-back state is in gw_tagdb. Callers: the Sparkplug task (NCMD) and the
+ *  Modbus TCP local unit (#216), one request at a time.
  *  Returns false (and changes nothing) if the expander is not available or a local rule
  *  drives that DO (IO-7). */
 bool gw_io_set_do(uint8_t index, bool on);
