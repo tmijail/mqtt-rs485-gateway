@@ -1494,7 +1494,7 @@ static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_
     d->max_gap = (int16_t)gap;
     if (has_merge && !merge && gap != GW_CFG_BUILD_DEFAULT) {
         join(p, sizeof(p), path, "max_gap");
-        return fail(err, p, "has no effect with block_reads=false");
+        return fail(err, p, "not permitted with block_reads=false");
     }
     join(p, sizeof(p), path, "name");
     if (!check_topic_id(d->name, p, false, err)) {

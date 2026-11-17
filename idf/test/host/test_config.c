@@ -1267,7 +1267,7 @@ static void test_device_block_reads(void)
                           "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
                           "\"block_reads\":false,\"max_gap\":3,\"tags\":[{\"name\":\"t\","
                           "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
-                    "devices[0].max_gap: has no effect with block_reads=false");
+                    "devices[0].max_gap: not permitted with block_reads=false");
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
                           "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
                           "\"max_gap\":2000,\"tags\":[{\"name\":\"t\","
