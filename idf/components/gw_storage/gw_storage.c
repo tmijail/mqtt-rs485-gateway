@@ -62,6 +62,11 @@ static portMUX_TYPE s_saved_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_saved;
 static uint32_t s_saved_hash;
 static StaticSemaphore_t s_save_lock_buf;
+/* The largest blob (gw_storage_set_blob): the pulse counters and the run hours, 24 x 8 B (#217) */
+#define BLOB_MAX 192
+static uint8_t *s_blob_old;   /* PSRAM: the stored blob, for the comparison */
+static SemaphoreHandle_t s_blob_lock;
+static StaticSemaphore_t s_blob_lock_buf;
 static gw_storage_commit_hook_t s_commit_hook;   /* issue #99: gw_fw, before a commit */
 static bool s_safe_mode;   /* issue #144 item 4: no NVS migration in safe mode */
 /* Issue #144 item 3: the "since" schema report of the stored configuration (PSRAM, allocated at
@@ -1396,15 +1401,9 @@ static esp_err_t wipe_storage(void)
 
 /* ---------- small local I/O state (IO-3, IO-4, #217) ---------- */
 
-/* The largest blob: the pulse counters and the run hours, 24 x 8 B (#217). The copy of the stored
- * blob for the comparison is in PSRAM (allocated at gw_storage_init), not on the stack of the
- * caller: the save of the counters runs also in a shutdown handler (any task, for example the
- * esp_timer task of a restart). */
-#define BLOB_MAX 192
-static uint8_t *s_blob_old;
-static SemaphoreHandle_t s_blob_lock;
-static StaticSemaphore_t s_blob_lock_buf;
-
+/* The copy of the stored blob for the comparison is in PSRAM (s_blob_old, allocated at
+ * gw_storage_init), not on the stack of the caller: the save of the counters runs also in a
+ * shutdown handler (any task, for example the esp_timer task of a restart). */
 esp_err_t gw_storage_set_blob(const char *key, const void *data, size_t len)
 {
     if (s_reset_done) {
