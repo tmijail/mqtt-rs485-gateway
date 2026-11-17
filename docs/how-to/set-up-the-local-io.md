@@ -121,6 +121,10 @@ Use the Status tab to make sure of the wiring of a DO, for example during the co
 
    ![The confirmation 'Turn on DO 3?' of the Status tab: DO 3 is off and has no local rule. Make sure that it is safe to start the machine on DO 3. The new state goes to the Sparkplug host in the next NDATA. The page does not ask again until it loads again. It has the red button 'Turn on DO 3' and Cancel.](../images/do-first-change-dialog.png)
 
+   On a phone, the confirmation is a sheet at the bottom of the screen.
+
+   ![The same confirmation 'Turn on DO 3?' as a sheet at the bottom of a phone, with the red button 'Turn on DO 3' above Cancel.](../images/do-first-change-dialog-phone.png)
+
 5. Make sure that the column **State** shows the new state, and that the device on the output operates.
 
 The page does not ask again for the next changes, until you load the page again. The next NDATA gives the new state to the Sparkplug host, as for an NCMD. An NCMD from a host, or the safe state after a loss of MQTT, can change the DO again.

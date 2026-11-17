@@ -534,6 +534,11 @@ FREEZE["/api/status"].update({"io.run_hours.do.*": lambda v: None if v is None e
 # battery), and the Wi-Fi scan of QEMU is a simulated list (#208): the values of the board
 FREEZE["/api/status"].update({"time.rtc.lost": False})
 FREEZE["/api/wifi/scan"] = {"simulated": False}
+# The SNTP server of the E2E configuration is the host of the emulator (10.0.2.2): the default
+# server of a board. The test certificates of e2e.make_pki are valid for 30 days from each run
+# (the card MQTT shows "in N days"): a fixed last day, more than 90 days away (no warning).
+FREEZE["/api/config"] = {"ntp.servers.*": "pool.ntp.org"}
+FREEZE["/api/files"] = {"files.*.certs.*.not_after": "2036-11-30"}
 
 
 def freeze(doc, paths):
