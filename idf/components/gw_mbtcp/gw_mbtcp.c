@@ -12,6 +12,7 @@
 #include "gw_mblocal.h"
 #include "gw_tagdb.h"
 #include "gw_net.h"
+#include "gw_storage.h"
 #include "lwip/sockets.h"
 
 static const char *TAG = "mbtcp";
@@ -31,7 +32,9 @@ typedef struct {
 static const gw_config_t *s_cfg;
 static client_t s_clients[CONFIG_GW_MBTCP_MAX_CLIENTS];
 static gw_mbap_txn_t s_txn;   /* one transaction at a time, shared with the bus owner */
-static gw_mbap_txn_t s_txn_local;   /* #216: the local unit; s_txn can still run on the bus */
+/* #216: the transaction of the local unit (s_txn can still run on the bus); PSRAM, allocated
+ * at the start, only with a local unit */
+static gw_mbap_txn_t *s_txn_local;
 static uint8_t s_out[GW_MBAP_ADU_MAX];
 static StaticTask_t s_task_buf;
 static StackType_t s_stack[STACK_WORDS];
@@ -110,14 +113,14 @@ static void handle_local(gw_mbap_txn_t *txn)
 /* One complete MBAP frame: answer it (from the slave, or with the gateway's own exception). */
 static bool handle_frame(client_t *c, const uint8_t *frame, size_t len)
 {
-    if (gw_mblocal_is_local(s_cfg, frame[6])) {   /* #216: the bus is not involved */
-        uint8_t code = gw_mbap_parse(frame, len, &s_txn_local);
+    if (s_txn_local != NULL && gw_mblocal_is_local(s_cfg, frame[6])) {   /* #216: not the bus */
+        uint8_t code = gw_mbap_parse(frame, len, s_txn_local);
         if (code != 0) {
             gw_mbap_count_exception(code);
             return reply(c, s_out, gw_mbap_exception(frame, code, s_out, sizeof(s_out)));
         }
-        handle_local(&s_txn_local);
-        return reply(c, s_out, gw_mbap_response(&s_txn_local, s_out, sizeof(s_out)));
+        handle_local(s_txn_local);
+        return reply(c, s_out, gw_mbap_response(s_txn_local, s_out, sizeof(s_out)));
     }
     /* A previous request that timed out may still be running on the bus: s_txn is shared. */
     if (!gw_bus_forward_idle(CONFIG_GW_MBTCP_RESPONSE_WAIT_MS)) {
@@ -293,7 +296,11 @@ esp_err_t gw_mbtcp_start(const gw_config_t *cfg)
     for (int i = 0; i < CONFIG_GW_MBTCP_MAX_CLIENTS; i++) {
         s_clients[i].fd = -1;
     }
-    if (cfg->modbus_tcp.local_unit_id != 0) {
+    if (cfg->modbus_tcp.local_unit_id != 0 &&
+        (s_txn_local = gw_storage_calloc(1, sizeof(*s_txn_local))) == NULL) {
+        ESP_LOGE(TAG, "local unit %u: no memory; the unit goes to the bus",
+                 cfg->modbus_tcp.local_unit_id);
+    } else if (cfg->modbus_tcp.local_unit_id != 0) {
         ESP_LOGI(TAG, "local unit %u: DIs (discrete 0-7), DOs (coil 0-7, writes %s), counters "
                       "(input 0-31, uint64 big)", cfg->modbus_tcp.local_unit_id,
                  cfg->modbus_tcp.local_writes ? "on" : "off");
