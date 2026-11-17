@@ -13,7 +13,8 @@
  *     calculates its SHA-256 before it marks the image as the boot image. When the two do not
  *     agree, the image is not installed (failed, with the two values in the status).
  *   - gw_fw_boot_other(): the "Restart into <version>" button (POST /api/firmware/other) and NCMD
- *     "Node Control/Boot Other Slot": the image in the other slot boots on trial.
+ *     "Node Control/Boot Other Slot" (only with ota.mqtt, #223): the image in the other slot
+ *     boots on trial.
  *   - Before any write, the pre-flight check (gw_ota_preflight) refuses an image that cannot read
  *     the stored configuration, NVS or LittleFS; the web UI and the API can force it (the image
  *     must then reach recovery mode or better). The expected mode is stored with the update

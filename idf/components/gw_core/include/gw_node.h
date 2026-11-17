@@ -17,8 +17,9 @@
  *   10..17 DI/1..DI/8, 20..27 DO/1..DO/8, 30..37 Counter/1..Counter/8 (IO-4, UInt64 pulse
  *   counters of the DIs), 40 Node Control/Firmware Update (FW-1, String URL; only with
  *   ota.mqtt, #223), 41 Firmware Update/State (String), 42 Firmware Update/Progress (UInt32 %),
- *   43 Node Control/Boot Other Slot (issue #144 item 6, Boolean), 44 Node Control/Firmware
- *   SHA-256 (#215, String; only with ota.mqtt), 100 + n device tag with global index n,
+ *   43 Node Control/Boot Other Slot (issue #144 item 6, Boolean; only with ota.mqtt, #223),
+ *   44 Node Control/Firmware SHA-256 (#215, String; only with ota.mqtt), 100 + n device tag
+ *   with global index n,
  *   50..54 SPB-17 diagnostics: Node Info/Uptime (UInt64 s), Free Heap and Min Free Heap
  *   (UInt32 B, internal RAM), RSSI (Int32 dBm, only with Wi-Fi), Modbus (DataSet, one row per
  *   device with the MB-13 counters), 55 Node Info/Time Synced (TIME-3, Boolean: SNTP),
@@ -115,15 +116,16 @@ extern "C" {
                                      * Modbus TCP with the gateway enabled) */
 /* #174: with the UMH preset: Uptime, Free Heap, Min Free Heap, RSSI and the plain counters */
 #define GW_NODE_UMH_DIAG_METRICS (7 + GW_MB_FLAT_COUNT + GW_TCP_FLAT_COUNT)
-/* Node metrics of the NBIRTH at most, without template definitions (5 of them FW-1, 2 of these
+/* Node metrics of the NBIRTH at most, without template definitions (5 of them FW-1, 3 of these
  * only with ota.mqtt; the last 2: Time Synced and Core Dump) and without the UMH preset (it has
  * no definitions, and its Devices/<name>/Online come from spb_payload_t.extra);
  * 14 = 12 + Name and Location (#206) */
 #define GW_NODE_BIRTH_METRICS   (14 + 3 * GW_NODE_IO_COUNT + GW_NODE_DIAG_METRICS + 2)
 /* #174: the same with the UMH preset, without its Devices/<name>/Online */
 #define GW_NODE_UMH_BIRTH_METRICS (14 + 3 * GW_NODE_IO_COUNT + GW_NODE_UMH_DIAG_METRICS + 2)
-/* #223: the NBIRTH metrics that only ota.mqtt adds (Firmware Update and Firmware SHA-256) */
-#define GW_NODE_MQTT_OTA_METRICS 2
+/* #223: the NBIRTH metrics that only ota.mqtt adds (Firmware Update, Firmware SHA-256 and Boot
+ * Other Slot) */
+#define GW_NODE_MQTT_OTA_METRICS 3
 /* #217: the NBIRTH has one more metric per channel of local_io.run_hours (not in the counts
  * above: they are the NBIRTH without run hours) */
 #define GW_NODE_RUN_HOURS_METRICS GW_RUN_HOURS_CHANNELS
@@ -192,7 +194,7 @@ typedef struct {
     void (*firmware_sha256)(void *ctx, const uint8_t *sha256);
     /** Issue #144 item 6: boot the image of the other slot on trial (NCMD "Node Control/Boot
      *  Other Slot" true; no force); the result comes back as the firmware status. NULL = not
-     *  supported. */
+     *  supported. Only with ota.mqtt (#223). */
     void (*boot_other)(void *ctx);
     /** SPB-17: current node diagnostics (NULL: none published). */
     void (*diagnostics)(void *ctx, struct gw_node_diag *out);

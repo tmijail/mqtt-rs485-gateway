@@ -2353,6 +2353,29 @@ def run_primary_host(args, work):
           f"NBIRTH metrics {[m.name for m in nb[2].metrics if 'irmware' in m.name] if nb else None}; "
           f"refused {len(named)} by name, by alias {off is not None}; started {started[:1]}")
 
+    # #144 item 6, #223: Node Control/Boot Other Slot needs ota.mqtt too: no metric in the NBIRTH
+    # (tck-id-topics-nbirth-metric-reqs), and an NCMD with it, by name or by alias, does not boot
+    # the other slot (tck-id-operational-behavior-data-commands-ncmd-metric-name)
+    since = time.monotonic()
+    obs.publish_cmd(f"{T}/NCMD/{node}", [{"name": "Node Control/Boot Other Slot", "datatype": 11,
+                                          "boolean_value": True}])
+    obs.publish_cmd(f"{T}/NCMD/{node}", [{"alias": 43, "datatype": 11, "boolean_value": True}])
+    boot_off = gw.wait_log(r"NCMD: metric '' \(alias 43\) discarded: firmware updates from MQTT "
+                           r"are off \(ota\.mqtt\); no boot of the other slot", 10, since)
+    boot_named = gw.find(r"NCMD: metric 'Node Control/Boot Other Slot' discarded: firmware "
+                         r"updates from MQTT are off \(ota\.mqtt\); no boot of the other slot",
+                         since)
+    time.sleep(1)
+    booted = gw.find(r"NCMD Boot Other Slot|booting the other slot", since)
+    check("Issue #144 item 6 without ota.mqtt (#223) the NBIRTH has no Node Control/Boot Other "
+          "Slot, and an NCMD with it (by name or by alias) does not boot the other slot; the log "
+          "gives the cause",
+          nb and metric(nb[2], name="Node Control/Boot Other Slot") is None
+          and metric(nb[2], alias=43) is None and boot_off and len(boot_named) == 1 and not booted,
+          f"NBIRTH has it: {metric(nb[2], name='Node Control/Boot Other Slot') is not None if nb else None}; "
+          f"refused {len(boot_named)} by name, by alias {boot_off is not None}; "
+          f"boot {booted[:1]}")
+
     since = time.monotonic()
     host_state(obs, host, False, ts + 500, retain=False)
     stale = obs.wait(ndeath_t, 3)
