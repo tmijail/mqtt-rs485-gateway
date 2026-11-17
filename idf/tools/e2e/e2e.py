@@ -6987,6 +6987,143 @@ def check_properties_and_quality(obs, slave, db, ddata_t):
           f"after: {round(gm.float_value, 3) if gm else None} {props(gm) if gm else ''}")
 
 
+def run_hours_of(p, ch):
+    """#217: the value of Run Hours/<ch> ("DI/4", "DO/2"; UInt64 s) in an NBIRTH (by name) or an
+    NDATA (by alias 356 + channel, DI/1..8 then DO/1..8), or None."""
+    k = (0 if ch.startswith("DI") else 8) + int(ch[3:]) - 1
+    m = metric(p, name=f"Run Hours/{ch}") or metric(p, alias=356 + k)
+    return m.long_value if m is not None else None
+
+
+def check_local_io_channels(gw, obs, nb, ncmd_t, ndata_t, t0):
+    """#211 invert and debounce of each DI, #218 a fast counter (the simulated PCNT), #210 a pulse
+    DO, #217 run hours and #204 the DO commands of the web UI, with the local_io keys of
+    tools/e2e/fs/config.json: DI/5 inverted with 200 ms, DI/8 a fast counter, DO/7 a pulse of
+    300 ms, run hours of DI/4 and DO/2, rules on DO/5 (follow DI/2) and DO/6."""
+    # #211: DI/5 is inverted: true at rest; the console's level 1 makes it false after 200 ms
+    rest = metric(nb[2], name="DI/5")
+    obs.drain()
+    sent = time.monotonic()
+    gw.console("di 5 1")
+    nd = obs.wait(ndata_t, 3, lambda q: metric(q, alias=14) is not None)
+    lat = (nd[0] - sent) * 1000 if nd else None
+    obs.drain()
+    gw.console("di 5 0")
+    nd2 = obs.wait(ndata_t, 3, lambda q: counter_of(q, 5) is not None)
+    check("#211 invert and debounce for each DI: DI/5 (invert, 200 ms) is true at rest in the "
+          "NBIRTH, false at least 200 ms after the input becomes active, and its counter counts the "
+          "activation after the inversion (the input back to rest)",
+          rest is not None and rest.boolean_value and nd
+          and metric(nd[2], alias=14).boolean_value is False and lat >= 180
+          and nd2 and counter_of(nd2[2], 5) == 1,
+          f"NBIRTH DI/5 {rest.boolean_value if rest else None}; console->NDATA {lat:.0f} ms; "
+          f"Counter/5 after the release {counter_of(nd2[2], 5) if nd2 else None}"
+          if nd else f"NBIRTH DI/5 {rest.boolean_value if rest else None}; no NDATA for DI/5")
+
+    # #218: DI/8 is a fast counter: the PCNT counts it (the simulated unit in QEMU: 'pcnt' and
+    # the edges of 'di'), not the debounced activations
+    obs.drain()
+    gw.console("pcnt 8 1000")
+    nd = obs.wait(ndata_t, 3, lambda q: counter_of(q, 8) is not None)
+    c1 = counter_of(nd[2], 8) if nd else None
+    since = time.monotonic()
+    gw.console("di 8 1")
+    nd = obs.wait(ndata_t, 3, lambda q: counter_of(q, 8) is not None)
+    time.sleep(1)
+    gw.console("di 8 0")
+    time.sleep(0.5)
+    later = [counter_of(m[2], 8) for m in CAPTURE if m[0] >= since and m[1] == ndata_t
+             and counter_of(m[2], 8) is not None]
+    check("#218 fast counter: Counter/8 counts the pulses of the PCNT unit of DI/8 (1000 from the "
+          "simulated unit, then one edge of the input), and the debounced activation does not "
+          "count it a second time", c1 == 1000 and later == [1001],
+          f"Counter/8 after 'pcnt 8 1000': {c1}; after one activation: {later}")
+
+    # #210: DO/7 is a pulse DO of 300 ms: NCMD true gives NDATA true, then NDATA false
+    obs.drain()
+    since = time.monotonic()
+    obs.publish_cmd(ncmd_t, [{"name": "DO/7", "datatype": 11, "boolean_value": True}])
+    on = obs.wait(ndata_t, 3, lambda q: do_states(q).get(7) is True)
+    off = obs.wait(ndata_t, 3, lambda q: do_states(q).get(7) is False)
+    dt = (off[0] - on[0]) * 1000 if on and off else None
+    log = gw.wait_log(r"io: DO7: pulse of 300 ms", 2, since)
+    check("#210 pulse DO: an NCMD DO/7=true (do_pulse_ms 300) gives an NDATA with true, and an NDATA "
+          "with false after the pulse, without a second command (tck-id-topics-ndata-payload)",
+          on and off and 200 <= dt <= 3000 and log,
+          f"true -> false {dt:.0f} ms; {(gw.find(r'io: DO7: pulse', since) or ['no log'])[0]}"
+          if dt is not None else f"NDATA true {bool(on)}, NDATA false {bool(off)}")
+
+    # #217: run hours of DI/4 and DO/2 (DO/2 is on since the boot: do_failsafe "on")
+    names = {m.name: m.datatype for m in nb[2].metrics if m.name.startswith("Run Hours/")}
+    gw.console("di 4 1")
+    time.sleep(3)
+    obs.drain()
+    gw.console("di 4 0")
+    nd = obs.wait(ndata_t, 3, lambda q: run_hours_of(q, "DI/4") is not None)
+    rh4 = run_hours_of(nd[2], "DI/4") if nd else None
+    # DO/2 is on since the boot: its value so far (the NBIRTH, or an NDATA of each 60 s while
+    # on); then 3 s off, 3 s on by NCMD, and off again: the NDATA of the last edge has 3 s more
+    up = time.monotonic() - t0
+    off2 = set_do(obs, ncmd_t, ndata_t, {2: False})
+    time.sleep(1.5)
+    seen = [run_hours_of(m[2], "DO/2") for m in CAPTURE if m[0] >= nb[0]
+            and m[1] in (ndata_t, nb[1]) and run_hours_of(m[2], "DO/2") is not None]
+    before = seen[-1] if seen else None
+    on2 = set_do(obs, ncmd_t, ndata_t, {2: True})
+    time.sleep(3)
+    obs.drain()
+    since = time.monotonic()
+    set_do(obs, ncmd_t, ndata_t, {2: False})
+    # the run hours can be in the NDATA that confirms the command (set_do takes it), or in the
+    # next one
+    end, rh2 = time.monotonic() + 3, None
+    while rh2 is None and time.monotonic() < end:
+        rh2 = next((run_hours_of(m[2], "DO/2") for m in CAPTURE if m[0] >= since
+                    and m[1] == ndata_t and run_hours_of(m[2], "DO/2") is not None), None)
+        time.sleep(0.1)
+    check("#217 run hours: the NBIRTH has Run Hours/DI/4 and Run Hours/DO/2 (UInt64, only the "
+          "channels of local_io.run_hours: tck-id-topics-nbirth-metric-reqs); an NDATA gives the "
+          "time on of DI/4 (3 s) when it goes off; DO/2 (on since the boot) has a value up to the "
+          "time since the boot, and 3 s more after 3 s on by NCMD",
+          names == {"Run Hours/DI/4": 8, "Run Hours/DO/2": 8} and run_hours_of(nb[2], "DI/4") == 0
+          and rh4 is not None and 2 <= rh4 <= 4 and off2 and on2 and before is not None
+          and before <= up and rh2 is not None and 2 <= rh2 - before <= 4,
+          f"NBIRTH {names}; DI/4 {rh4} s; DO/2 {before} s before ({up:.0f} s since QEMU started), "
+          f"{rh2} s after 3 s more on")
+
+    # #204: POST /api/do sets a DO through the queue of the NCMD; the NDATA has the new state; a DO
+    # of a local rule is refused
+    auth = ("admin", commissioning_password(gw, t0, 5) or "?")
+    obs.drain()
+    since = time.monotonic()
+    st1, _, b1 = http("POST", "/api/do", {"do": 8, "on": True}, auth=auth)
+    on8 = obs.wait(ndata_t, 3, lambda q: do_states(q).get(8) is True)
+    st2, _, b2 = http("POST", "/api/do", {"do": 5, "on": False}, auth=auth)
+    st3, _, _ = http("POST", "/api/do", {"do": 8, "on": False}, auth=auth)
+    off8 = obs.wait(ndata_t, 3, lambda q: do_states(q).get(8) is False)
+    st4, _, _ = http("POST", "/api/do", {"do": 9, "on": True}, auth=auth)
+    st5, _, _ = http("POST", "/api/do", {"do": 8, "on": True}, auth=auth, headers={"X-Requested-With": None})
+    refused = gw.wait_log(r"io: DO5 is driven by local rule 0 \(follow DI2\): web command refused", 2,
+                          since)
+    st, _, body = http("GET", "/api/status", auth=auth)
+    io = (as_json(body) or {}).get("io", {})
+    rh = io.get("run_hours", {})
+    status_ok = io.get("rules") == [{"di": 2, "do": 5, "mode": "follow"},
+                                    {"di": 3, "do": 6, "mode": "toggle"}] \
+        and io.get("pulse_ms") == [0, 0, 0, 0, 0, 0, 300, 0] and io.get("fast") == 0x80 \
+        and isinstance(rh.get("di", [None] * 8)[3], int) and rh.get("di", [0])[0] is None \
+        and isinstance(rh.get("do", [None] * 8)[1], int) and rh.get("do", [0])[0] is None
+    check("#204 POST /api/do: DO/8 on and off through the queue of the NCMD commands, each state in "
+          "the next NDATA (tck-id-topics-ndata-payload); a DO of a local rule is refused (409), a "
+          "bad DO number (400) and a request without X-Requested-With (403) too; /api/status gives "
+          "the rules, the pulse times, the fast counters and the run hours",
+          st1 == 200 and on8 and st2 == 409 and refused and st3 == 200 and off8 and st4 == 400
+          and st5 == 403 and status_ok,
+          f"on {st1} {b1[:60]!r} NDATA {bool(on8)}; DO/5 {st2} {b2[:70]!r}; off {st3} NDATA "
+          f"{bool(off8)}; DO/9 {st4}; no X-Requested-With {st5}; status {st}: rules "
+          f"{io.get('rules')}, pulse_ms {io.get('pulse_ms')}, fast {io.get('fast')}, run_hours {rh}")
+
+
 def check_status_api(gw, since):
     """Issue #75: /api/status (HTTPS) reports what IO-3/4/6/7, SPB-17 and TIME-1..3 added: pulse
     counters, failsafe, DOs owned by a local rule, unknown DOs, the buzzer alarm, the clock and
@@ -8456,6 +8593,7 @@ def run(args, log, slave, broker, conf, work):
         time.sleep(0.3)
     check("IO-7 rule 'toggle': each activation of DI/3 toggles DO/6", toggles == [True, False],
           f"DO/6 after each activation: {toggles}")
+    check_local_io_channels(gw, obs, nb0[0], ncmd_t, ndata_t, t0)
 
     # IO-6: Dead3..Dead5 never answer: the "device offline" alarm sounds alarm_after_s (5 s)
     # after the boot (the QEMU build logs the patterns instead of driving GPIO46)
