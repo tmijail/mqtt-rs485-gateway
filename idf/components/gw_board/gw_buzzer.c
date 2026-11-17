@@ -8,6 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "gw_buzz.h"
+#include "gw_ident.h"
 #include "gw_status.h"
 
 #if !CONFIG_GW_IO_SIMULATED
@@ -92,6 +93,7 @@ static void buzzer_task(void *arg)
     unsigned gen = 0;
     unsigned playing = 0;   /* request numbers being played */
     bool tone = false;
+    bool ident = false;     /* #207 */
     for (;;) {
         uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
         unsigned g = atomic_load(&s_cfg_gen);
@@ -123,6 +125,19 @@ static void buzzer_task(void *arg)
             }
         }
         bool on = gw_buzz_tone(&b, now);
+        uint32_t elapsed;
+        bool ident_now = gw_status_identify_elapsed(&elapsed);
+        if (ident_now != ident) {
+            ident = ident_now;
+            if (ident) {
+                ESP_LOGI(TAG, "identify: short beeps for %u s" SIM_NOTE, GW_IDENT_MS / 1000);
+            } else {
+                ESP_LOGI(TAG, "identify over" SIM_NOTE);
+            }
+        }
+        if (ident) {
+            on = gw_ident_tone(elapsed);   /* #207: in place of the alarm and the requests */
+        }
         if (on != tone) {
             tone = on;
             hw_tone(on);
@@ -134,7 +149,7 @@ static void buzzer_task(void *arg)
         /* idle: sleep longer (less work on a core that is otherwise quiet), unless the next
          * alarm burst is closer */
         uint32_t wait = TICK_MS;
-        if (idle) {
+        if (idle && !ident) {
             uint32_t to_burst = b.burst_at - now;
             wait = b.alarm != GW_ALARM_NONE && to_burst < IDLE_MS ? to_burst : IDLE_MS;
             wait = wait < TICK_MS ? TICK_MS : wait;
@@ -181,6 +196,13 @@ void gw_buzzer_beep(uint8_t beeps)
 {
     atomic_fetch_add(&s_queued, 1);   /* first: the task reads it after taking the request */
     atomic_store(&s_request, beeps);
+    if (s_task != NULL) {
+        xTaskNotifyGive(s_task);
+    }
+}
+
+void gw_buzzer_wake(void)
+{
     if (s_task != NULL) {
         xTaskNotifyGive(s_task);
     }

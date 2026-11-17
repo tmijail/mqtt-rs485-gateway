@@ -47,6 +47,7 @@
 #include "gw_status.h"
 #include "gw_storage.h"
 #include "gw_tagdb.h"
+#include "gw_temp.h"
 #include "gw_web.h"
 #include "gw_wpa.h"
 
@@ -72,6 +73,9 @@ static bool s_net_started;      /* the network driver started (the self-check of
 
 #define SAFE_MODE_MSG "safe mode: %lu crash resets in a row; the configuration is not loaded. " \
                       "Normal mode again in %d min, at a restart by the operator or a power cycle"
+/* issue #209 */
+#define SAFE_MODE_REQ_MSG "safe mode on request: the configuration is not loaded. Normal mode " \
+                          "again in %d min, at a restart or a power cycle"
 
 /* Issue #135: the firmware assumes the board's PSRAM. Without it the gateway does not start
  * (GW_WEB_FAULT): the log, the shell and the web UI give this text. */
@@ -98,6 +102,7 @@ static void on_device_updated(uint16_t dev)
 }
 
 static void restart_soon(void);
+static esp_err_t factory_reset_remote(void);
 
 static bool s_shell_ok;
 
@@ -106,7 +111,8 @@ static bool s_shell_ok;
 static void start_shell_early(void)
 {
     const gw_shell_ctx_t ctx = {.starting = true, .config_source = "", .config_error = "",
-                                .info = &s_info, .restart = restart_soon};
+                                .info = &s_info, .restart = restart_soon,
+                                .factory_reset = factory_reset_remote};
     s_shell_ok = gw_shell_start(&ctx) == ESP_OK;
     if (!s_shell_ok) {
         ESP_LOGE(TAG, "console shell unavailable");
@@ -125,7 +131,8 @@ static void start_shell(const gw_config_t *cfg, const char *source, bool running
                                 .config_error = s_cfg_err.msg,
                                 .info = &s_info,
                                 .restart = cfg != NULL && running ? gw_edge_request_restart
-                                                                  : restart_soon};
+                                                                  : restart_soon,
+                                .factory_reset = factory_reset_remote};
     if (s_shell_ok) {
         gw_shell_set_ctx(&ctx);
     }
@@ -149,6 +156,41 @@ static void restart_soon(void)
         esp_restart();
     }
     esp_timer_start_once(t, 300 * 1000);
+}
+
+/* #203: the restart after a factory reset from the web UI, the REST API or the shell: the same
+ * as after BOOT held 10 s (orderly NDEATH when a session is up; #136: the RAM ring is not kept) */
+static void factory_restart(void *arg)
+{
+    (void)arg;
+    if (s_mode == GW_WEB_NORMAL && s_ready) {
+        gw_edge_request_restart_discard();
+    } else {
+        restart_soon();
+    }
+}
+
+/* #203: the factory reset of the web UI, the REST API and the shell: the LED and the two beeps of
+ * the BOOT gesture, the erase (gw_storage_factory_reset), then the restart into commissioning
+ * 0.5 s later, so that the answer goes out first. ESP_ERR_INVALID_STATE: refused, nothing erased
+ * and no restart. Another error: as BOOT, the gateway restarts (the erase went as far as it could). */
+static esp_err_t factory_reset_remote(void)
+{
+    static esp_timer_handle_t t;
+    gw_status_set(GW_ST_RESETTING, true);
+    gw_buzzer_beep_wait(2);   /* IO-6: the confirmation of a factory reset */
+    esp_err_t e = gw_storage_factory_reset();
+    if (e == ESP_ERR_INVALID_STATE) {
+        gw_status_set(GW_ST_RESETTING, false);
+        return e;
+    }
+    const esp_timer_create_args_t ta = {.callback = factory_restart, .name = "factory_restart"};
+    if (t == NULL && esp_timer_create(&ta, &t) != ESP_OK) {
+        factory_restart(NULL);
+        return e;
+    }
+    esp_timer_start_once(t, 500 * 1000);
+    return e;
 }
 
 /* Issue #144 item 1: the self-check items of a new image on trial (gw_fw asks about once a
@@ -229,6 +271,7 @@ static void start_web(gw_web_mode_t mode, const gw_config_t *cfg, const char *so
         .info = &s_info,
         .commissioning_password = s_commission_pw,
         .restart = mode == GW_WEB_NORMAL ? gw_edge_request_restart : restart_soon,
+        .factory_reset = factory_reset_remote,
         .ap_ip4 = gw_ap_ip4,
         .claim_closed = claim_closed,
     };
@@ -476,6 +519,11 @@ void app_main(void)
         ESP_LOGE(TAG, "status LED unavailable");
     }
     gw_storage_init();  /* failure is logged; no stored secrets then */
+    /* #200: the live log of the web UI keeps the log lines from here on (PSRAM) */
+    if (gw_log_ring_start() != ESP_OK) {
+        ESP_LOGE(TAG, "live log of the web UI unavailable");
+    }
+    gw_temp_start();   /* #212: the chip temperature (an error is logged) */
     gw_coredump_init();   /* #132: before the shell, the web server and the Sparkplug task */
     /* Before the configuration: whatever happens next, no DO stays on from before a reset,
      * except those the last valid configuration holds across a restart (IO-3, kept in NVS). */
@@ -517,9 +565,18 @@ void app_main(void)
     }
 #endif
     if (s_safe) {
-        snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg), SAFE_MODE_MSG,
-                 (unsigned long)gw_fw_boot_count(), CONFIG_GW_FW_SAFE_MODE_MIN);
-        run_without_config(GW_WEB_RECOVERY, "not loaded (safe mode: repeated crashes)");
+        bool requested;
+        uint32_t left_s;
+        gw_fw_safe_mode_info(&requested, &left_s);
+        if (requested) {   /* issue #209 */
+            snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg), SAFE_MODE_REQ_MSG,
+                     CONFIG_GW_FW_SAFE_MODE_MIN);
+        } else {
+            snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg), SAFE_MODE_MSG,
+                     (unsigned long)gw_fw_boot_count(), CONFIG_GW_FW_SAFE_MODE_MIN);
+        }
+        run_without_config(GW_WEB_RECOVERY, requested ? "not loaded (safe mode: on request)"
+                                                      : "not loaded (safe mode: repeated crashes)");
     }
     if (gw_storage_commissioning_pending()) {
         snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg),

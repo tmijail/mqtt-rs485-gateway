@@ -26,6 +26,7 @@
 #include "gw_coredump.h"
 #include "gw_edge.h"
 #include "gw_fw.h"
+#include "gw_ident.h"
 #include "gw_io.h"
 #include "gw_log.h"
 #include "gw_mbap.h"
@@ -36,6 +37,7 @@
 #include "gw_status.h"
 #include "gw_storage.h"
 #include "gw_tagdb.h"
+#include "gw_temp.h"
 #include "gw_web.h"
 #include "gw_wpa.h"
 #include "lwip/ip_addr.h"
@@ -578,6 +580,17 @@ static int cmd_status(int argc, char **argv)
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
         (unsigned)gw_storage_validation_min_block(),
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    float temp;   /* #212 */
+    if (gw_temp_read(&temp)) {
+        out("chip     temperature %.1f C\n", (double)temp);
+    } else {
+        out("chip     temperature not available (no sensor reading)\n");
+    }
+    uint32_t ident = gw_status_identify_left_s();   /* #207 */
+    if (ident > 0) {
+        out("identify the LED and the buzzer identify the gateway: %lu s left\n",
+            (unsigned long)ident);
+    }
     return 0;
 }
 
@@ -1142,15 +1155,158 @@ static int cmd_coredump(int argc, char **argv)
     return 0;
 }
 
+/* #207: the LED and the buzzer identify the gateway for 10 s (harmless: also without
+ * CONFIG_GW_SHELL_WRITE_COMMANDS). */
+static int cmd_identify(int argc, char **argv)
+{
+    (void)argv;
+    if (argc != 1) {
+        out("usage: identify\n");
+        return 1;
+    }
+    if (!gw_status_identify()) {
+        out("identify: already running, %lu s left\n", (unsigned long)gw_status_identify_left_s());
+        return 1;
+    }
+    out("identify: the LED shows red, green and blue in turn and the buzzer beeps for %u s\n",
+        GW_IDENT_MS / 1000);
+    return 0;
+}
+
+/* #199: the log level of each tag at run time; not saved (a restart sets the level of the build
+ * again). 'log' shows the levels and the tags, 'log <tag|*> <level>' sets one, 'log reset' sets
+ * every tag to the level of the build. */
+static int cmd_log(int argc, char **argv)
+{
+    if (argc == 2 && strcmp(argv[1], "reset") == 0) {
+        gw_log_level_reset();
+        out("log: every tag has the level of the build again (%s)\n",
+            gw_loglevel_name(gw_log_build_level()));
+        return 0;
+    }
+    if (argc == 3) {
+        int level = gw_loglevel_parse(argv[2]);
+        gw_log_set_t r = level < 0 ? GW_LOG_SET_BAD_LEVEL : gw_log_level_set(argv[1], level);
+        switch (r) {
+        case GW_LOG_SET_OK:
+            out("log: %s: %s (not saved)\n", argv[1], argv[2]);
+            return 0;
+        case GW_LOG_SET_BAD_TAG:
+            out("log: '%s' is not a tag (1 to %d characters without spaces and ':', or *)\n",
+                argv[1], GW_LOGTAG_SIZE - 1);
+            return 1;
+        case GW_LOG_SET_BAD_LEVEL:
+            out("log: '%s' is not a level of this build (none, error, warn, info%s)\n", argv[2],
+                gw_log_max_level() >= GW_LOGLV_VERBOSE ? ", debug, verbose"
+                : gw_log_max_level() >= GW_LOGLV_DEBUG ? ", debug" : "");
+            return 1;
+        default:
+            out("log: no room for one more tag (%d tags)\n", GW_LOGTAG_MAX);
+            return 1;
+        }
+    }
+    if (argc != 1) {
+        out("usage: log [<tag|*> <none|error|warn|info|debug|verbose> | reset]\n");
+        return 1;
+    }
+    /* from the heap for the command (not the console task's stack nor .bss, #80) */
+    gw_logtag_t *tags = gw_storage_malloc(GW_LOGTAG_MAX * sizeof(*tags));
+    size_t n = tags != NULL ? gw_log_tags(tags, GW_LOGTAG_MAX) : 0;
+    out("log      level of the build %s (maximum %s); changed levels (not saved):",
+        gw_loglevel_name(gw_log_build_level()), gw_loglevel_name(gw_log_max_level()));
+    unsigned changed = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (tags[i].level != GW_LOGTAG_DEFAULT) {
+            out(" %s=%s", tags[i].name, gw_loglevel_name(tags[i].level));
+            changed++;
+        }
+    }
+    out("%s\nlog      tags:", changed ? "" : " none");
+    for (size_t i = 0; i < n; i++) {
+        out(" %s", tags[i].name);
+    }
+    out("\n");
+    heap_caps_free(tags);
+    return 0;
+}
+
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
+/* Issue #209: 'restart safe' starts safe mode (no polling, no MQTT) for 60 min or until the next
+ * restart. */
 static int cmd_restart(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
+    if (argc == 2 && strcmp(argv[1], "safe") == 0) {
+        char why[160];
+        if (!gw_fw_request_safe_mode(why, sizeof(why))) {
+            out("restart safe: REFUSED: %s\n", why);
+            return 1;
+        }
+        out("restarting into safe mode: no polling and no MQTT for %d min, or until the next "
+            "restart\n", CONFIG_GW_FW_SAFE_MODE_MIN);
+        out_flush();
+        s_ctx.restart();
+        return 0;
+    }
+    if (argc != 1) {
+        out("usage: restart [safe]\n");
+        return 1;
+    }
     out("restarting\n");
     out_flush();
     s_ctx.restart();
     return 0;
+}
+
+#define ERASE_IDLE_MS 60000   /* the answer to 'factory-reset' must come in this time */
+
+/* #203: 'factory-reset' asks for the word ERASE, then erases what BOOT held 10 s erases and
+ * restarts in commissioning. The answer is read WITHOUT s_ctx_lock (as 'config load', issue #78). */
+static int cmd_factory_reset(int argc, char **argv)
+{
+    (void)argv;
+    s_out_len = 0;
+    if (argc != 1) {
+        out("usage: factory-reset\n");
+        out_flush();
+        return 1;
+    }
+    out("factory-reset: this erases the configuration, the secrets (for example the MQTT "
+        "password), the certificate of the web UI, the web password and the pulse counters of "
+        "the DIs. Then the gateway restarts in commissioning mode: no polling and no MQTT until "
+        "it gets a new configuration. Type ERASE to confirm (anything else aborts)\n");
+    out_flush();
+    char line[32] = "";
+    int64_t start = esp_timer_get_time();
+    bool got = false;
+    while (!got && esp_timer_get_time() - start < ERASE_IDLE_MS * 1000LL) {
+        if (fgets(line, sizeof(line), stdin) == NULL) {
+            clearerr(stdin);
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        got = true;
+    }
+    line[strcspn(line, "\r\n")] = '\0';
+    xSemaphoreTake(s_ctx_lock, portMAX_DELAY);
+    int rc = 1;
+    if (!got || strcmp(line, "ERASE") != 0) {
+        out("factory-reset: aborted, nothing erased\n");
+    } else {
+        out("factory-reset: erasing; the gateway restarts in commissioning mode\n");
+        out_flush();
+        esp_err_t e = s_ctx.factory_reset();
+        if (e == ESP_ERR_INVALID_STATE) {
+            out("factory-reset: REFUSED, nothing erased (see the log)\n");
+        } else {
+            rc = 0;
+            if (e != ESP_OK) {
+                out("factory-reset: the erase reported %s; restarting\n", esp_err_to_name(e));
+            }
+        }
+    }
+    out_flush();
+    xSemaphoreGive(s_ctx_lock);
+    return rc;
 }
 
 /* #124: 'card' shows the card's operation times and state; 'card format confirm' formats it
@@ -1418,6 +1574,8 @@ static int cmd_config_entry(int argc, char **argv)
 ATOMIC(cmd_ping)
 ATOMIC(cmd_coredump)
 ATOMIC(cmd_ap)
+ATOMIC(cmd_identify)
+ATOMIC(cmd_log)
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
 ATOMIC(cmd_restart)
 ATOMIC(cmd_card)
@@ -1537,7 +1695,12 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
          ,
          .hint = "[show|load [discard-nvs-copy]|check]", .func = cmd_config_entry},
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
-        {.command = "restart", .help = "Orderly restart (NDEATH first)", .func = cmd_restart_atomic},
+        {.command = "restart", .help = "Orderly restart (NDEATH first); 'safe' restarts into safe "
+         "mode: no polling and no MQTT for 60 min or until the next restart (issue #209)",
+         .hint = "[safe]", .func = cmd_restart_atomic},
+        {.command = "factory-reset", .help = "Erase the configuration, the secrets, the web "
+         "certificate, the web password and the DI counters, then restart in commissioning "
+         "(asks for the word ERASE, #203)", .func = cmd_factory_reset},
         {.command = "rebirth", .help = "Re-issue NBIRTH and every DBIRTH", .func = cmd_rebirth_atomic},
         {.command = "card", .help = "microSD card: its state and operation times; 'format "
          "confirm' formats it as FAT32 with 32 KB clusters in the background (everything on it "
@@ -1552,6 +1715,11 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
 #endif
         {.command = "ping", .help = "ICMP echo (3 requests) to an IPv4 or IPv6 address",
          .hint = "<address>", .func = cmd_ping_atomic},
+        {.command = "identify", .help = "The LED shows red, green and blue in turn and the "
+         "buzzer beeps for 10 s (#207)", .func = cmd_identify_atomic},
+        {.command = "log", .help = "The log levels and the tags; '<tag|*> <level>' sets the level "
+         "of a tag, 'reset' sets every tag to the level of the build (not saved, #199)",
+         .hint = "[<tag|*> <none|error|warn|info|debug|verbose> | reset]", .func = cmd_log_atomic},
         {.command = "ap", .help = "The commissioning access point: its state"
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
          "; 'stop' closes it (a BOOT push of 2-10 s starts it again)"

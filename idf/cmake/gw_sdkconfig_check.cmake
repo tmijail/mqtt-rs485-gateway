@@ -38,6 +38,8 @@ set(GW_SDKCONFIG_REQUIRED
     # #135: a board whose PSRAM is not detected still boots, only to report the fault (the
     # fault mode: network, web server and shell; the gateway does not start)
     SPIRAM_IGNORE_NOTFOUND
+    # #199: the debug and verbose lines stay in the image (the log level of a tag at run time)
+    LOG_MAXIMUM_LEVEL_VERBOSE
     # #122: no name buffer allocated on each microSD file operation (REL-2)
     FATFS_LFN_NONE)
 

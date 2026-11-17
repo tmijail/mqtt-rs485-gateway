@@ -79,6 +79,8 @@ static RTC_FAST_ATTR gw_fwlast_t s_last;    /* the fw_last record (issue #144 it
 static RTC_NOINIT_ATTR gw_bootloop_t s_loop;
 static uint32_t s_loop_count;
 static bool s_safe;
+static bool s_safe_requested;          /* issue #209: this safe mode is on request */
+static int64_t s_safe_end_us;          /* issue #209: the end of safe mode (esp_timer) */
 static atomic_bool s_planned;          /* the next restart is planned by gw_fw, not the operator */
 static gw_ota_mode_t s_mode;           /* the mode that this boot reached */
 static gw_ota_caps_info_t s_own;       /* gw_app_caps as gw_ota_caps_parse() reads it */
@@ -722,9 +724,15 @@ static void on_loop_clear(void *arg)
 static void on_safe_end(void *arg)
 {
     (void)arg;
-    gw_bootloop_set(&s_loop, GW_BOOTLOOP_SAFE - 1);
-    ESP_LOGW(TAG, "safe mode ends after %d min: restarting to try normal mode again (one more "
-                  "crash starts safe mode again)", CONFIG_GW_FW_SAFE_MODE_MIN);
+    if (s_safe_requested) {
+        /* issue #209: no crashes caused it: the count stays as it was */
+        ESP_LOGW(TAG, "safe mode (on request) ends after %d min: restarting into normal mode",
+                 CONFIG_GW_FW_SAFE_MODE_MIN);
+    } else {
+        gw_bootloop_set(&s_loop, GW_BOOTLOOP_SAFE - 1);
+        ESP_LOGW(TAG, "safe mode ends after %d min: restarting to try normal mode again (one more "
+                      "crash starts safe mode again)", CONFIG_GW_FW_SAFE_MODE_MIN);
+    }
     planned_restart();
 }
 
@@ -753,7 +761,41 @@ void gw_fw_mode(gw_ota_mode_t mode, const char *detail)
 void gw_fw_safe_mode(void)
 {
     s_mode = GW_OTA_MODE_RECOVERY;
+    s_safe_end_us = esp_timer_get_time() + CONFIG_GW_FW_SAFE_MODE_MIN * 60LL * 1000000LL;
     loop_timer(on_safe_end, "safe_mode", CONFIG_GW_FW_SAFE_MODE_MIN * 60ULL * 1000000ULL);
+}
+
+bool gw_fw_safe_mode_info(bool *requested, uint32_t *left_s)
+{
+    *requested = s_safe_requested;
+    int64_t left = s_safe_end_us - esp_timer_get_time();
+    *left_s = s_safe && s_safe_end_us != 0 && left > 0 ? (uint32_t)((left + 999999) / 1000000) : 0;
+    return s_safe;
+}
+
+/* Issue #209: the next boot starts safe mode; the caller then restarts the gateway. Refused
+ * during an update and during the trial of a new image (its restart would roll it back), and in
+ * safe mode (a restart ends it). */
+bool gw_fw_request_safe_mode(char *why, size_t cap)
+{
+    portENTER_CRITICAL(&s_mux);   /* not gw_fw_get_status(): its texts do not fit every stack */
+    bool trial = gw_ota_trial_open(&s_trial);
+    gw_fw_phase_t phase = s_st.phase;
+    portEXIT_CRITICAL(&s_mux);
+    if (s_safe) {
+        snprintf(why, cap, "the gateway is in safe mode now: a restart ends it");
+    } else if (trial) {
+        snprintf(why, cap, "a new firmware image is on trial: a restart now rolls it back; wait "
+                           "for the end of the trial");
+    } else if (atomic_load(&s_busy) || phase == GW_FW_DOWNLOADING || phase == GW_FW_RESTARTING) {
+        snprintf(why, cap, "a firmware update is in progress");
+    } else {
+        gw_bootloop_request(&s_loop);
+        ESP_LOGW(TAG, "safe mode requested: the next boot starts safe mode for %d min",
+                 CONFIG_GW_FW_SAFE_MODE_MIN);
+        return true;
+    }
+    return false;
 }
 
 void gw_fw_cannot_start(const char *cause)
@@ -1482,8 +1524,13 @@ bool gw_fw_bootloop_start(void)
     esp_reset_reason_t why = esp_reset_reason();
     uint32_t before = gw_bootloop_count(&s_loop);
     s_loop_count = gw_bootloop_boot(&s_loop, reset_kind(why), pending);
-    s_safe = gw_bootloop_safe(s_loop_count, pending);
-    if (s_safe) {
+    /* issue #209: safe mode on request (one boot only; not for an image on trial) */
+    s_safe_requested = gw_bootloop_take_request(&s_loop) && !pending;
+    s_safe = gw_bootloop_safe(s_loop_count, pending) || s_safe_requested;
+    if (s_safe_requested) {
+        ESP_LOGW(TAG, "safe mode on request (web UI, REST API or shell); the configuration is not "
+                      "loaded: network, web UI, shell and firmware upload only");
+    } else if (s_safe) {
         ESP_LOGE(TAG, "safe mode: %lu crash resets in a row (boot-loop counter); the configuration "
                       "is not loaded: network, web UI, shell and firmware upload only",
                  (unsigned long)s_loop_count);

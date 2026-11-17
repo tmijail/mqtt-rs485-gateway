@@ -48,6 +48,9 @@ CONFIG_MQTT_USE_CORE_0=y
 
 # REL-3
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+# #199: the debug and verbose lines stay in the image, so that the web UI, the REST API and the
+# shell can raise the log level of a tag at run time (89 KB of flash, 2.6 KB of internal RAM)
+CONFIG_LOG_MAXIMUM_LEVEL_VERBOSE=y
 
 # MQTT-7: never queue QoS>0 messages while disconnected (the outbox is also size-limited)
 CONFIG_MQTT_SKIP_PUBLISH_IF_DISCONNECTED=y

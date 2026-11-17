@@ -2,6 +2,8 @@
  *
  * LED patterns, highest priority first:
  *   BOOT held for a reset  white, fast blink (4 Hz) from 2 s; steady white at the reset
+ *   identify (#207)        red, green and blue in turn at 4 Hz, for 10 s (POST /api/identify,
+ *                          the shell's identify)
  *   claim window open, or  blue and white, alternating every 250 ms (issue #120: the web
  *   access point open      password can be set from the access point without a credential;
  *                          issue #187: the access point has no key)
@@ -47,6 +49,16 @@ uint32_t gw_status_get(void);
 
 /** Start the LED task (low priority). */
 esp_err_t gw_status_led_start(void);
+
+/** #207: the LED and the buzzer identify the gateway for 10 s (gw_ident.h). False when an
+ *  identify runs: its time does not start again. */
+bool gw_status_identify(void);
+
+/** #207: the seconds left of the identify, 0 when none runs. */
+uint32_t gw_status_identify_left_s(void);
+
+/** #207: true while the identify runs, with the ms since its start. */
+bool gw_status_identify_elapsed(uint32_t *elapsed_ms);
 
 #ifdef __cplusplus
 }

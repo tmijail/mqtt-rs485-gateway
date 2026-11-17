@@ -10,6 +10,17 @@ menu "Gateway: remote syslog"
             full (no network, slow sender) new lines are dropped and counted; the console
             still shows them.
 
+    config GW_LOG_RING_KB
+        int "Live log of the web UI: size of the ring (KB)"
+        range 2 64
+        default 2 if GW_EMU_NO_PSRAM
+        default 16
+        help
+            Issue #200: the last log lines for GET /api/log and the card Log of the web UI.
+            The firmware allocates the ring and a copy buffer of the same size one time at
+            boot, in PSRAM (2 x this size). The QEMU build without PSRAM uses internal RAM:
+            2 KB there.
+
     config GW_SYSLOG_TASK_PRIORITY
         int "Syslog sender task priority"
         range 1 10

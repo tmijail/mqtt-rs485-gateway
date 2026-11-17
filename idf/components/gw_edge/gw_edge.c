@@ -30,6 +30,7 @@
 #include "gw_phost.h"
 #include "gw_status.h"
 #include "gw_sfcard.h"
+#include "gw_temp.h"
 #include "gw_sfspill.h"
 #include "gw_storage.h"
 #include "esp_transport.h"
@@ -816,6 +817,10 @@ static void op_diagnostics(void *ctx, gw_node_diag_t *out)
     out->uptime_s = (uint64_t)(esp_timer_get_time() / 1000000);
     out->free_heap = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     out->min_free_heap = (uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    /* #212: the fragmentation of the internal RAM, the PSRAM and the chip temperature */
+    out->largest_block = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    out->free_psram = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    out->temp_valid = gw_temp_read(&out->temp_c);
     out->has_rssi = gw_net_has_wifi();
     int8_t rssi;
     out->rssi_valid = out->has_rssi && gw_net_wifi_rssi(&rssi);
