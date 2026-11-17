@@ -325,8 +325,8 @@ def tag_explainer(page):
     explainer of its Eng. high field (a click keeps it open)."""
     page.click("nav button[data-tab=config]")
     page.evaluate("document.querySelector('#f-dev>.card').scrollIntoView()")
-    page.click('[data-more="0.0"]')
-    page.click("#det-0-0 button.qi[data-x=enghi]")
+    page.click('[data-more="devices.0|0"]')
+    page.click("#det-devices-0-0 button.qi[data-x=enghi]")
 
 def device_settings(page):
     """Issues #197 and #221: the panel 'More device settings' of Meter1, and the explainer of
@@ -342,10 +342,46 @@ def write_limits(page):
     Write max 150, and the explainer of Write min. No save."""
     page.click("nav button[data-tab=config]")
     page.evaluate("document.querySelector('#f-dev>.card').scrollIntoView()")
-    page.click('[data-more="0.1"]')
+    page.click('[data-more="devices.0|1"]')
     page.fill('[data-p="devices.0.tags.1.write_min"]', "0")
     page.fill('[data-p="devices.0.tags.1.write_max"]', "150")
-    page.click("#det-0-1 button.qi[data-x=wmin]")
+    page.click("#det-devices-0-1 button.qi[data-x=wmin]")
+
+
+def bit_field(page):
+    """Issue #202: the tag Alarm of Meter1 (holding 60) as a field of 3 bits: type uint16, Bit
+    offset 4 and Bit width 3, with the hint and the explainer of Bit width. No save."""
+    page.click("nav button[data-tab=config]")
+    page.evaluate("document.querySelector('#f-dev>.card').scrollIntoView()")
+    page.select_option('[data-p="devices.0.tags.9.type"]', "uint16")
+    page.click('[data-more="devices.0|9"]')
+    page.fill('[data-p="devices.0.tags.9.bit_offset"]', "4")
+    page.fill('[data-p="devices.0.tags.9.bit_width"]', "3")
+    page.click("#det-devices-0-9 button.qi[data-x=bitw]")
+
+
+def ask_make_type(page):
+    """Issue #213: the dialog of 'Make a type from these tags' of Meter1, with the name Meter. No
+    save."""
+    page.click("nav button[data-tab=config]")
+    page.click('[data-mk-type="0"]')
+    page.fill("#dlg-n", "Meter")
+
+
+def make_type(page):
+    """Issue #213: Meter1 after 'Make a type from these tags' (the type Meter): the card Device
+    types open with the type Meter open. No save."""
+    ask_make_type(page)
+    page.click("#dlg-ok")
+    page.wait_for_selector("#f-dt [data-dt]")
+    page.evaluate("document.querySelector('#dt-card').scrollIntoView()")
+
+
+def device_with_type(page):
+    """Issue #213: the device Meter1 with the device type Meter: no tag table, the number of the
+    tags of the type and the link to the type. No save."""
+    make_type(page)
+    page.evaluate("document.querySelector('#f-dev>.card').scrollIntoView()")
 
 
 def device_disabled(page):
@@ -664,6 +700,31 @@ SHOTS = [
              "max 150. The explainer of Write min is open. It tells that the gateway refuses a "
              "DCMD with a lower value, does not write to the device and writes a warning to "
              "the log."),
+    # issues #202 and #213: docs/how-to/add-a-modbus-device.md and
+    # docs/how-to/add-devices-of-one-type.md (no save: the state does not change)
+    Shot("tag-bit-field", "configured", DESKTOP, "/", actions=[bit_field],
+         wait="#xpl:not(.hidden)",
+         alt="The details row of the tag Alarm of Meter1 with the type uint16: Bit offset 4 "
+             "and Bit width 3, and below Bit width the hint 'Bits 4 to 6: values 0 to 7'. The "
+             "row shows no Length (registers), because it applies only to string and bytes. "
+             "The explainer of Bit width is open."),
+    Shot("device-type-make-dialog", "configured", DESKTOP, "/", actions=[ask_make_type],
+         wait="#dlg[open]",
+         alt="The dialog 'Make a device type from the tags of Meter1': the field 'Name of the new "
+             "type' with Meter, the hint '1 to 39 bytes. No /, + or #. It is also the name of "
+             "the Sparkplug template.', the list of what occurs, and the buttons Cancel and "
+             "'Make the type'."),
+    Shot("device-types-card", "configured", DESKTOP, "/", actions=[make_type],
+         element="#dt-card",
+         alt="The card 'Device types (1)' of the Configuration tab with the type Meter open: "
+             "its name, the line 'Used by 1 device: Meter1', the table of its tags and the "
+             "buttons '+ tag' and 'Remove type'. 'Remove type' is disabled, and the text next to "
+             "it tells to give the devices another type first."),
+    Shot("device-with-type", "configured", DESKTOP, "/", actions=[device_with_type],
+         element="#f-dev>.card",
+         alt="The device Meter1 with 'Meter' in the field Device type. In place of a tag table, "
+             "a grey box tells that the device uses the tags of the device type Meter, with the "
+             "link 'Go to the type Meter'. The device has no button '+ tag'."),
     Shot("device-disabled", "configured", DESKTOP, "/", actions=[device_disabled],
          element="#f-dev>.card",
          alt="The device Meter1 with the check box Enabled cleared. The card has a dashed "
