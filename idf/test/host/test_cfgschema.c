@@ -153,6 +153,44 @@ static void test_firmware_table(void)
     TEST_ASSERT_TRUE(GW_CONFIG_SCHEMA >= 1);
 }
 
+/* #195: the keys of schema 2. A document with each of them once notes each table entry once:
+ * the paths of the table agree with the paths of the parser. */
+static void test_schema2_keys(void)
+{
+    static const char doc[] =
+        "{\"gateway\":{\"name\":\"Panel 4\",\"location\":\"Hall 2\",\"comment\":\"c\"},"
+        "\"ntp\":{\"servers\":[\"pool.ntp.org\"]},"
+        "\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+        "\"local_io\":{\"di\":[{\"invert\":true,\"debounce_ms\":50}],\"do_pulse_ms\":[300],"
+        "\"fast_counters\":[{\"di\":8,\"glitch_ns\":1000}],\"run_hours\":[\"DI/4\"]},"
+        "\"modbus_tcp\":{\"enabled\":true,\"local_unit_id\":100,\"local_writes\":true},"
+        "\"ota\":{\"mqtt\":true},"
+        "\"devices\":[{\"name\":\"M\",\"unit_id\":1,\"enabled\":true,\"write_multiple\":true,"
+        "\"tags\":[{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\","
+        "\"writable\":true,\"write_min\":0,\"write_max\":100}]}]}";
+    gw_config_t *cfg = malloc(sizeof(*cfg));
+    gw_cfg_err_t err;
+    gw_schema_report_t r;
+    gw_config_schema_init(&r);
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse_schema(doc, strlen(doc), cfg, &err, &r), err.msg);
+    size_t n;
+    const gw_since_t *t = gw_config_since_table(&n);
+    TEST_ASSERT_EQUAL(20, n);
+    TEST_ASSERT_EQUAL_UINT16(2, r.need);
+    TEST_ASSERT_EQUAL_UINT16(n, r.hist[2]);
+    TEST_ASSERT_EQUAL_STRING("gateway", r.top[0].path);   /* the first key of schema 2 */
+    char why[200];
+    TEST_ASSERT_FALSE(gw_schema_fits(&r, 1, why, sizeof(why)));
+    TEST_ASSERT_EQUAL_STRING("the configuration needs schema 2, the image reads 1: gateway (2), "
+                             "gateway.name (2), gateway.location (2) and 17 more", why);
+    /* any index matches; the keys of schema 1 next to them stay schema 1 */
+    TEST_ASSERT_EQUAL_UINT16(2, gw_schema_since(t, n, "devices[3].tags[7].write_max", NULL));
+    TEST_ASSERT_EQUAL_UINT16(2, gw_schema_since(t, n, "local_io.di[5].invert", NULL));
+    TEST_ASSERT_EQUAL_UINT16(1, gw_schema_since(t, n, "local_io.rules[0].di", NULL));
+    TEST_ASSERT_EQUAL_UINT16(1, gw_schema_since(t, n, "devices[0].tags[0].writable", NULL));
+    free(cfg);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -161,5 +199,6 @@ int main(void)
     RUN_TEST(test_report);
     RUN_TEST(test_validator_notes_the_document);
     RUN_TEST(test_firmware_table);
+    RUN_TEST(test_schema2_keys);
     return UNITY_END();
 }

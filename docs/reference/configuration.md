@@ -62,6 +62,22 @@ These rules apply to `group_id`, `edge_node_id`, `primary_host_id`, `device_pref
 - A device `type` must not be the name or the first folder of a node metric: `bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info` or `Firmware Update`.
 - The longest device topic, `spBv1.0/<group_id>/DBIRTH/<edge_node_id>/<device_id>`, must fit in 159 bytes.
 
+### The configuration schema
+
+Each key has a schema number. A firmware image declares the highest schema that it reads. Before an update, the gateway refuses an image that cannot read the stored document. For this check, refer to [Update the firmware](../how-to/update-the-firmware.md).
+
+The firmware of this version reads schema 2. These keys are schema 2. All the other keys and values are schema 1.
+
+| Section | Keys of schema 2 |
+|---|---|
+| `gateway` | The section, and `name`, `location` and `comment` |
+| `ntp` | `servers` |
+| `local_io` | `di` (with `invert` and `debounce_ms`), `do_pulse_ms`, `fast_counters` (with `di` and `glitch_ns`) and `run_hours` |
+| `modbus_tcp` | `local_unit_id` and `local_writes` |
+| `ota` | `mqtt` |
+| `devices[]` | `enabled` and `write_multiple` |
+| `devices[].tags[]` | `write_min` and `write_max` |
+
 ### The secrets
 
 The gateway keeps `mqtt.password`, `network.wifi.password` and `web.password` in NVS, not in the document.

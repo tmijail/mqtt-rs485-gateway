@@ -91,10 +91,27 @@ static void join(char *out, size_t cap, const char *path, const char *key)
  * for the key, since}. Add each new key or value here with GW_CONFIG_SCHEMA + 1 and raise
  * GW_CONFIG_SCHEMA. The last entry only ends the table. */
 static const gw_since_t k_since[] = {
-    {"ota.mqtt", NULL, 2},   /* #223 (ota.enabled was dropped: no migration before v1.0) */
-    {"ntp.servers", NULL, 2},                /* #201 (replaces ntp.server) */
-    {"modbus_tcp.local_unit_id", NULL, 2},   /* #216 */
-    {"modbus_tcp.local_writes", NULL, 2},    /* #216 */
+    /* schema 2: the keys of #195 (no migration before v1.0: the replaced keys were dropped) */
+    {"gateway", NULL, 2},                          /* #206 */
+    {"gateway.name", NULL, 2},
+    {"gateway.location", NULL, 2},
+    {"gateway.comment", NULL, 2},
+    {"ntp.servers", NULL, 2},                      /* #201 (replaces ntp.server) */
+    {"local_io.di", NULL, 2},                      /* #211 (replaces local_io.di_debounce_ms) */
+    {"local_io.di[].invert", NULL, 2},
+    {"local_io.di[].debounce_ms", NULL, 2},
+    {"local_io.do_pulse_ms", NULL, 2},             /* #210 */
+    {"local_io.fast_counters", NULL, 2},           /* #218 */
+    {"local_io.fast_counters[].di", NULL, 2},
+    {"local_io.fast_counters[].glitch_ns", NULL, 2},
+    {"local_io.run_hours", NULL, 2},               /* #217 */
+    {"modbus_tcp.local_unit_id", NULL, 2},         /* #216 */
+    {"modbus_tcp.local_writes", NULL, 2},          /* #216 */
+    {"ota.mqtt", NULL, 2},                         /* #223 (replaces ota.enabled) */
+    {"devices[].enabled", NULL, 2},                /* #214 */
+    {"devices[].write_multiple", NULL, 2},         /* #197 */
+    {"devices[].tags[].write_min", NULL, 2},       /* #196 */
+    {"devices[].tags[].write_max", NULL, 2},       /* #196 */
     {"", NULL, 0},
 };
 #define SINCE_COUNT (sizeof(k_since) / sizeof(k_since[0]) - 1)
