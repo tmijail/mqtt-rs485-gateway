@@ -12,7 +12,6 @@
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
 #include "esp_random.h"
-#include "esp_sntp.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -318,16 +317,7 @@ _Static_assert(CONFIG_LWIP_SNTP_MAX_SERVERS >= GW_MAX_NTP_SERVERS,
 static void on_time_sync(struct timeval *tv)
 {
     (void)tv;
-    /* #201: the server that answered the last request (bit 0 of its reachability) */
-    if (!atomic_exchange(&s_sntp_synced, true)) {
-        for (uint8_t i = 0; i < s_cfg->ntp.server_count; i++) {
-            if (esp_sntp_getreachability(i) & 1u) {
-                ESP_LOGI(TAG, "SNTP: first time from server %u of %u (%s)", i + 1,
-                         s_cfg->ntp.server_count, s_cfg->ntp.servers[i]);
-                break;
-            }
-        }
-    }
+    atomic_store(&s_sntp_synced, true);
     s_cb.time_synced();
 }
 

@@ -147,7 +147,7 @@ The gateway learns the default IPv6 router from the router advertisements. There
 | `servers` | array of texts | `["pool.ntp.org"]` | 1 to 3 names, IPv4 or IPv6 addresses of SNTP servers, 1 to 127 bytes each. An empty item is an error |
 
 - The gateway asks server 1 first. When a server does not answer in 15 s, the gateway asks the next server. After the last server, it asks the first server again.
-- The log tells which server gave the first time: `SNTP: first time from server 2 of 2 (192.168.10.1)`.
+- Thus a first server that does not answer delays the first valid time by approximately 15 s. The log gives the wait: `edge: clock valid (source sntp) after a wait of 16 s: connecting`.
 - The old key `ntp.server` (one server) is not valid since #201. A document with it is refused.
 
 In the web UI, the card **Time** has one row for each server. An empty row is an error at its field.

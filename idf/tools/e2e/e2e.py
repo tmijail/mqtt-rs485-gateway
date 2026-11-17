@@ -52,6 +52,13 @@ from pymodbus.datastore import ModbusSequentialDataBlock, ModbusServerContext, M
 from pymodbus.server import ModbusTcpServer
 
 HERE = pathlib.Path(__file__).resolve().parent
+
+
+def config_schema():
+    """GW_CONFIG_SCHEMA of the firmware (gw_config.h): the schema that the images of this build
+    read. In the QEMU build, network.hostname counts as one more (gw_storage.c k_sim_since)."""
+    h = (HERE.parent.parent / "components/gw_core/include/gw_config.h").read_text()
+    return int(re.search(r"^#define GW_CONFIG_SCHEMA (\d+)", h, re.M).group(1))
 sys.path.insert(0, str(HERE.parent))
 import spb_decode  # noqa: E402  (official proto loader + structural checks)
 sys.path.insert(0, str(HERE))
@@ -3696,10 +3703,10 @@ def check_csrf(gw, since):
           ", ".join(f"{k} -> {v}" for k, v in forged.items()) + f"; same origin text/plain -> "
           f"{wrong_type}; still up {up}; " + " | ".join(gw.find(r"^web\s", asked)))
     check("Issue #100 the web UI still works: its requests (X-Requested-With, same Origin and "
-          "Referer) are accepted, the page sends the header on every write (API helper and image "
-          "upload), and a script with the header and no Origin is accepted",
+          "Referer) are accepted, the page sends the header on every write (API helper, image "
+          "upload and PEM file upload, #221), and a script with the header and no Origin is accepted",
           st_ui == 200 and (as_json(b_ui) or {}).get("saved") is False and st_ref == 200
-          and st_cli == 200 and st_page == 200 and ui_sends == 2,
+          and st_cli == 200 and st_page == 200 and ui_sends == 3,
           f"UI PUT dry run {st_ui} {b_ui[:60]!r}; Referer only {st_ref} {b_ref[:60]!r}; no Origin "
           f"{st_cli} {b_cli[:60]!r}; page "
           f"{st_page} with the header in {ui_sends} request(s)")
@@ -4451,7 +4458,7 @@ def run_ota_wiring(args, work):
     self-check, and stays after a power cut. Safe mode is in run_ota_trial (the budget of one
     attempt);
     (4) issue #146: after an update to an image that adds a key (the emulator counts
-    network.hostname as schema 2, sdkconfig.qemu), the first save of the key keeps the earlier
+    network.hostname as GW_CONFIG_SCHEMA + 1, sdkconfig.qemu), the first save of the key keeps the earlier
     document as config.prev.json; a second change makes the button refuse the earlier image with
     the JSON path that changed; with the document of the capture again, the button restores the
     earlier document, and the earlier image starts in normal mode with it."""
@@ -4464,7 +4471,7 @@ def run_ota_wiring(args, work):
         "e2e-s0": signed_image(args, src, "e2e-s0", fwdir, "e2e-s0", cfg_schema=0),
         "e2e-v1caps": signed_image(args, src, "e2e-v1caps", fwdir, "e2e-v1caps", caps_version=1),
         "e2e-com": signed_image(args, src, "e2e-com", fwdir, "e2e-com"),
-        "e2e-k2": signed_image(args, src, "e2e-k2", fwdir, "e2e-k2", cfg_schema=2),
+        "e2e-k2": signed_image(args, src, "e2e-k2", fwdir, "e2e-k2", cfg_schema=config_schema() + 1),
     }
 
     def upload(version, pw, force=False):
@@ -4639,8 +4646,9 @@ def run_ota_wiring(args, work):
     finally:
         gw.kill()
 
-    # 4. issue #146: the configuration from before an update. The base image reads schema 1;
-    # e2e-k2 declares schema 2, and in the QEMU build network.hostname is a schema 2 key
+    # 4. issue #146: the configuration from before an update. The base image reads
+    # GW_CONFIG_SCHEMA; e2e-k2 declares one more, and in the QEMU build network.hostname is a key
+    # of that schema (the other keys are schema 1 there)
     cfg = node_config(WIRING_NODE)
     cfg["network"].pop("hostname", None)
     cfg_k = json.loads(json.dumps(cfg))
@@ -4704,7 +4712,7 @@ def run_ota_wiring(args, work):
         check("Issue #146 when the configuration changed since the capture, the button refuses the "
               "earlier image (409) with the paths that are too new and the paths that changed "
               "since the update; nothing restarts",
-              saved2 and st_r == 409 and b"network.hostname (2)" in b_r
+              saved2 and st_r == 409 and f"network.hostname ({config_schema() + 1})".encode() in b_r
               and b"it changed since (network.hostname)" in b_r and not booted,
               f"saved {saved2}; POST {st_r} {b_r[:300]!r}; booted {booted[:1]}; {notes}")
 
@@ -7403,9 +7411,11 @@ def run_network_variant(args, work, slave):
     gw = Gateway(args, work / "uart0-network.log", flash)
     t0 = time.monotonic()
     gw.start()
-    # #201: lwIP asks the second server after SNTP_RECV_TIMEOUT (15 s) without an answer: wait for
-    # the evidence of the synchronisation first, then for the NBIRTH that follows it
-    synced = gw.wait_log(r"net: SNTP: first time from server 2 of 2 \(10\.0\.2\.2\)", 60, t0)
+    # #201: lwIP asks the second server after SNTP_RECV_TIMEOUT (15 s) without an answer, so the
+    # clock becomes valid by SNTP after a wait of 10 s or more (only 10.0.2.2 answers): wait for
+    # this evidence first, then for the NBIRTH that follows it
+    synced = gw.wait_log(r"edge: clock valid \(source sntp\) after a wait of (1[0-9]|[2-5][0-9]) s", 75,
+                         t0)
     nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
     ignored = gw.find(r"network\.wifi ignored: Wi-Fi is not available in this build", t0)
     asked, h = gw.shell(["status", "config"],
@@ -7451,7 +7461,7 @@ def run_network_variant(args, work, slave):
     check("Issue #201 two SNTP servers: the first one does not answer, the second one gives the "
           "time; the clock becomes valid and the NBIRTH follows; the shell lists both servers",
           synced and nb and ntp_shown,
-          " | ".join(gw.find(r"SNTP: first time|^ntp\s", t0)) + f"; NBIRTH {'yes' if nb else 'no'}")
+          " | ".join(gw.find(r"clock valid|^ntp\s", t0)) + f"; NBIRTH {'yes' if nb else 'no'}")
     check("NET-4 network.wifi on a build without the radio (QEMU): accepted, reported, Ethernet "
           "carries the session as before",
           nb and ignored and iface and shown,
