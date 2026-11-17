@@ -178,11 +178,12 @@ static void test_schema2_keys(void)
     TEST_ASSERT_EQUAL(20, n);
     TEST_ASSERT_EQUAL_UINT16(2, r.need);
     TEST_ASSERT_EQUAL_UINT16(n, r.hist[2]);
-    TEST_ASSERT_EQUAL_STRING("gateway", r.top[0].path);   /* the first key of schema 2 */
+    TEST_ASSERT_EQUAL_STRING("gateway", r.top[0].path);   /* the first noted key of schema 2 */
     char why[200];
     TEST_ASSERT_FALSE(gw_schema_fits(&r, 1, why, sizeof(why)));
+    /* in the order of the parser (the sections), not of the document */
     TEST_ASSERT_EQUAL_STRING("the configuration needs schema 2, the image reads 1: gateway (2), "
-                             "gateway.name (2), gateway.location (2) and 17 more", why);
+                             "ntp.servers (2), local_io.di (2) and 17 more", why);
     /* any index matches; the keys of schema 1 next to them stay schema 1 */
     TEST_ASSERT_EQUAL_UINT16(2, gw_schema_since(t, n, "devices[3].tags[7].write_max", NULL));
     TEST_ASSERT_EQUAL_UINT16(2, gw_schema_since(t, n, "local_io.di[5].invert", NULL));
