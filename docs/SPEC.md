@@ -283,7 +283,7 @@ This is the schema of the configuration document (CFG-1). The keys of this examp
 {
   "network": { "dhcp": true, "ip": "192.168.1.50", "netmask": "255.255.255.0",
                "gateway": "192.168.1.1", "dns": "192.168.1.1" },
-  "ntp":     { "server": "pool.ntp.org" },
+  "ntp":     { "servers": ["pool.ntp.org"] },
   "mqtt":    { "host": "192.168.1.10", "port": 1883, "client_id": "",
                "username": "", "password": "", "keepalive_s": 30 },
   "sparkplug": { "group_id": "Plant1", "edge_node_id": "GW01", "primary_host_id": "" },
@@ -312,7 +312,7 @@ This is the schema of the configuration document (CFG-1). The keys of this examp
 | Key | Default | Rule |
 |---|---|---|
 | `network.dhcp` | `true` | With `false`, `ip`, `netmask` and `gateway` are necessary |
-| `ntp.server` | `pool.ntp.org` | Name, IPv4 or IPv6 of the SNTP server |
+| `ntp.servers` | `["pool.ntp.org"]` | 1 to 3 names, IPv4 or IPv6 addresses of SNTP servers, asked in order (#201) |
 | `mqtt.host` | — | Necessary |
 | `mqtt.port` | `1883` | 1–65535 |
 | `mqtt.keepalive_s` | `30` | 5–3600 |
@@ -421,7 +421,7 @@ The DHCP requests of Ethernet and Wi-Fi also contain the hostname.
 | `address` | text | `""` | A static address for Ethernet, in the text form of RFC 4291. The prefix on the link is /64. Multicast, link-local, `::` and `::1` are not permitted |
 | `dns` | text | `""` | An IPv6 DNS server (the third position; DHCPv4 fills the first two positions) |
 
-The gateway learns the default IPv6 router from the RAs. There is no static IPv6 gateway. `mqtt.host`, `ntp.server` and `syslog.host` accept IPv6 literals (`fd00::10`) and names with an AAAA record.
+The gateway learns the default IPv6 router from the RAs. There is no static IPv6 gateway. `mqtt.host`, `ntp.servers` and `syslog.host` accept IPv6 literals (`fd00::10`) and names with an AAAA record.
 
 **`mqtt.tls` (MQTT-4, MQTT-5): TLS to the broker, with an optional client certificate.**
 

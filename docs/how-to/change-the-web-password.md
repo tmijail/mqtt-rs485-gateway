@@ -27,7 +27,7 @@ A save restarts the gateway. The gateway sends the NDEATH, and the polling and t
 4. Delete `********`, and type the new password. The field **Confirm the password** shows.
 5. Type the new password again in the field **Confirm the password**.
 
-   ![The card 'Web interface' of the Configuration tab: the user admin, a new password in the field 'Password (8 to 63)', the same password in the field 'Confirm the password', and the port. Below the second field: after the restart, the browser asks for the new password, and the Wi-Fi password of the access point changes to the new password.](../images/web-password-field.png)
+   ![The card 'Web interface' of the Configuration tab: the user admin, a new password in the field 'Password (8 to 63)', the same password in the field 'Confirm the password'. Above them are Enabled, HTTPS, HTTPS port and HTTP port. Below the second field: after the restart, the browser asks for the new password, and the Wi-Fi password of the access point changes to the new password.](../images/web-password-field.png)
 
 6. Click **Validate** in the bar at the bottom of the window. If the bar gives an error, read the error below the field, and correct the value.
 7. Click **Save and restart**. The page loads again after 15 s.

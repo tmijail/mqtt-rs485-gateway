@@ -245,6 +245,62 @@ def web_password_remove(page):
     page.click("#b-save")
 
 
+# #201 #208 #216 #221: the cards of the network, the services and MQTT
+# (docs/how-to/connect-the-gateway-to-wi-fi.md, connect-to-a-broker-with-tls.md,
+# docs/reference/configuration.md). No save: the state does not change.
+def wifi_networks(page):
+    """The card Wi-Fi after "Find networks": the simulated list of QEMU (no radio)."""
+    page.click("nav button[data-tab=config]")
+    page.evaluate("document.querySelector('#wifi-card').scrollIntoView()")
+    page.click("#w-find")
+    page.wait_for_selector("#w-nets button.net")
+    page.fill('[data-p="network.wifi.ssid"]', "Plant-IoT")
+    page.wait_for_selector("#w-nets button.net.on")
+
+
+def mqtt_tls(page):
+    """The card MQTT with a backup broker and TLS on. "Load a file..." loads the CA, the client
+    certificate and the client key of the E2E PKI (e2e.make_pki, openssl), and each field selects
+    its file (decision of the product owner, #221). The files stay in LittleFS for the shots
+    after this one; no save."""
+    page.click("nav button[data-tab=config]")
+    page.wait_for_selector("#f-tls select")
+    pki = e2e.make_pki(pathlib.Path(tempfile.mkdtemp(prefix="docs-pki-")))
+    for name, src in (("ca.pem", "ca.pem"), ("gw01.crt", "client.crt"), ("gw01.key", "client.key")):
+        page.set_input_files("#tls-file", files=[{"name": name, "mimeType": "application/x-pem-file",
+                                                  "buffer": pki[src].read_bytes()}])
+        page.wait_for_selector(f"#tls-msg.ok:has-text('{name}')")
+    page.click('[data-ladd="bk"]')
+    page.fill('[data-p="mqtt.backup_brokers.0.host"]', "broker2.plant.local")
+    page.check('[data-p="mqtt.tls.enabled"]')
+    page.fill('[data-p="mqtt.port"]', "8883")
+    page.evaluate("document.querySelector('#f-mqtt').closest('.card').scrollIntoView()")
+
+
+def time_servers(page):
+    """The card Time with a second SNTP server, and the explainer of the list."""
+    page.click("nav button[data-tab=config]")
+    page.click('[data-ladd="ntp"]')
+    page.fill('[data-p="ntp.servers.1"]', "192.168.10.1")
+    page.click("button.qi[data-x=ntp]")
+
+
+def modbus_local(page):
+    """The card Modbus TCP with the local unit and the explainer of Local unit ID."""
+    page.click("nav button[data-tab=config]")
+    page.evaluate("document.querySelector('#f-mbloc').scrollIntoView({block: 'center'})")
+    page.click("button.qi[data-x=lunit]")
+
+
+def web_off(page):
+    """Enabled off in the card Web interface, then Save: the confirmation with the steps to turn
+    the web interface on again (no save: the dialog stays open for the image)."""
+    page.click("nav button[data-tab=config]")
+    page.uncheck('[data-p="web.enabled"]')
+    page.wait_for_selector("#lw-web\\.enabled")
+    page.click("#b-save")
+
+
 def no_hash(version):
     """The firmware version without its git hash ("0.1.0+g05af957f" -> "0.1.0"): the hash
     changes at each commit."""
@@ -349,9 +405,9 @@ SHOTS = [
              "card."),
     Shot("configuration-page", "configured", DESKTOP, "/",
          actions=[("click", "nav button[data-tab=config]")], wait="#f-mqtt input",
-         alt="The Configuration tab of the web UI: the forms for the network, MQTT and "
-             "Sparkplug. The bar at the bottom of the window shows 'No changes' and the "
-             "buttons Validate and 'Save and restart'."),
+         alt="The Configuration tab of the web UI: the cards Network (Ethernet) and Wi-Fi at "
+             "the top. The bar at the bottom of the window shows 'No changes' and the buttons "
+             "Validate and 'Save and restart'."),
     # docs/how-to/add-a-modbus-device.md and the tutorial
     Shot("modbus-test-read", "configured", DESKTOP, "/", actions=[test_read],
          element=".card:has(#mb-read)", wait="#mb-msg.ok",
@@ -388,9 +444,9 @@ SHOTS = [
          element=".card:has(#f-web)",
          alt="The card 'Web interface' of the Configuration tab: the user admin, a new password "
              "in the field 'Password (8 to 63)', the same password in the field 'Confirm the "
-             "password', and the port. Below the second field: after the restart, the browser "
-             "asks for the new password, and the Wi-Fi password of the access point changes to "
-             "the new password."),
+             "password'. Above them are Enabled, HTTPS, HTTPS port and HTTP port. Below the "
+             "second field: after the restart, the browser asks for the new password, and the "
+             "Wi-Fi password of the access point changes to the new password."),
     Shot("web-password-mismatch", "configured", DESKTOP, "/", actions=[web_password_mismatch],
          alt="The Configuration tab after 'Save and restart' with two different passwords. "
              "Below the field 'Confirm the password', a red text tells that the two passwords "
@@ -429,6 +485,40 @@ SHOTS = [
              "mount. The format erases all the contents of the card, also its 3 files or "
              "folders that are not from the gateway. The field has FORMAT, and the red button "
              "'Format the card' is enabled."),
+    # #208: docs/how-to/connect-the-gateway-to-wi-fi.md
+    Shot("wifi-networks", "configured", DESKTOP, "/", actions=[wifi_networks],
+         element="#wifi-card", wait="#w-nets button.net.on",
+         alt="The card 'Wi-Fi' of the Configuration tab with the list of the networks open: "
+             "Plant-IoT, Plant-Office, Plant-Corp (WPA2-Enterprise, not supported), "
+             "Warehouse-AP2, Guest and DIRECT-7F-HP M479, strongest first, each with its signal "
+             "in dBm and its security. Plant-IoT is in the field SSID."),
+    # #221: docs/how-to/connect-to-a-broker-with-tls.md
+    Shot("mqtt-tls", "configured", DESKTOP, "/", actions=[mqtt_tls],
+         element=".card:has(#f-tls)", wait="#f-tls select",
+         alt="The card 'MQTT' of the Configuration tab: the broker, the port 8883, the protocol, "
+             "the table of the backup brokers, and the section TLS with Encrypt (TLS) on. The CA "
+             "file ca.pem shows its subject and its last day, the client certificate gw01.crt "
+             "its subject, and the client key gw01.key 'Private key, EC P-256'. Below the "
+             "button 'Load a file…' a message tells that gw01.key is in the gateway."),
+    # #201: docs/reference/configuration.md (ntp)
+    Shot("time-card", "configured", DESKTOP, "/", actions=[time_servers],
+         wait="#xpl:not(.hidden)",
+         alt="The card 'Time' of the Configuration tab with two SNTP servers, pool.ntp.org and "
+             "192.168.10.1, and the explainer of SNTP servers: the gateway asks server 1 first, "
+             "then the next server when a server does not answer."),
+    # #216: docs/reference/configuration.md (the local unit)
+    Shot("modbus-tcp-card", "configured", DESKTOP, "/", actions=[modbus_local],
+         wait="#xpl:not(.hidden)",
+         alt="The card 'Modbus TCP' of the Configuration tab: Enabled, the port 502, the idle "
+             "timeout, the allowed client 10.0.2.2, and the local unit 100 with Local writes. "
+             "The explainer of Local unit ID gives the map: the DIs at discrete 0 to 7, the DOs "
+             "at coil 0 to 7, the counters at input 0 to 31."),
+    # #221: docs/how-to/recover-the-gateway.md ("The web interface is off")
+    Shot("web-off-dialog", "configured", DESKTOP, "/", actions=[web_off], wait="#dlg[open]",
+         alt="The confirmation 'Turn off the web interface?' after 'Save and restart' with "
+             "Enabled off: after the restart, the page and the REST API do not answer. The steps "
+             "to turn the web interface on again: push BOOT for 2 to 10 s, open the web UI, turn "
+             "on Enabled and save. It has the red button 'Save and restart' and Cancel."),
     # issue #187: after the shots above, because a push of BOOT starts the access point
     Shot("ap-card-phone", "configured", PHONE, "/", prep=ap_on_with_client,
          element=".card:has(#st-ap)", wait="#ap-stop:not(.hidden)",
