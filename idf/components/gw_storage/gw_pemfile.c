@@ -138,8 +138,8 @@ bool gw_pem_key_agrees(const char *key, const char *cert)
     return ok;
 }
 
-esp_err_t gw_pem_put(const char *name, const char *data, size_t len, bool replace,
-                     gw_pem_info_t *out, char *why, size_t why_cap)
+esp_err_t gw_pem_put(const char *name, const char *data, size_t len, gw_pem_info_t *out,
+                     char *why, size_t why_cap)
 {
     memset(out, 0, sizeof(*out));
     if (!gw_storage_user_file_name_ok(name)) {
@@ -154,7 +154,7 @@ esp_err_t gw_pem_put(const char *name, const char *data, size_t len, bool replac
                  "key", name);
         return ESP_ERR_INVALID_ARG;
     }
-    esp_err_t r = gw_storage_write_file(name, data, len, replace, why, why_cap);
+    esp_err_t r = gw_storage_write_file(name, data, len, false, why, why_cap);
     if (r == ESP_OK) {
         ESP_LOGI(TAG, "/cfg/%s loaded: %s", name,
                  out->kind == GW_PEM_KEY ? "a private key" : "certificates");

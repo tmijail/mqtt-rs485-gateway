@@ -1763,8 +1763,8 @@ def run_tls(args, work):
 def check_pem_files(gw, obs, node, pki, t0):
     """Issue #221 on GW15 (its document names /cfg/missing.pem, which is not there): the PEM files
     of the web UI. A dry run refuses the missing file at its JSON path; PUT /api/files loads the
-    CA (201, its subject and the CA flag), refuses the same name again (409) and a file that is
-    not PEM (400); GET /api/files lists it, never with its content. A client key that does not
+    CA (201, its subject and the CA flag), refuses the same name again (409, also with the old
+    replace=1, which is not approved) and a file that is not PEM (400); GET /api/files lists it, never with its content. A client key that does not
     agree with the client certificate is refused at mqtt.tls.key_file, the right key is not, and
     GET /api/files tells which certificate the key agrees with. After a restart the gateway
     connects to the TLS broker with the loaded CA (the configuration did not change)."""
@@ -1787,6 +1787,7 @@ def check_pem_files(gw, obs, node, pki, t0):
     st0, j0 = dry({"enabled": True, "ca_file": "missing.pem"})
     st1, j1 = put("missing.pem", ca)
     st2, j2 = put("missing.pem", ca)
+    st2r, _ = put("missing.pem", ca, "&replace=1")
     st3, j3 = put("notes.pem", b"not a certificate\n")
     st4, _, b4 = http("GET", "/api/files")
     files = {f.get("name"): f for f in (as_json(b4) or {}).get("files", [])}
@@ -1794,15 +1795,17 @@ def check_pem_files(gw, obs, node, pki, t0):
     loaded = st0 == 400 and j0.get("path") == "mqtt.tls.ca_file" and "not in the LittleFS" in \
         j0.get("error", "") and st1 == 201 and j1.get("file", {}).get("kind") == "certificates" \
         and j1["file"].get("certs", [{}])[0].get("subject") == "CN=E2E test CA" \
-        and j1["file"]["certs"][0].get("ca") is True and st2 == 409 and st3 == 400 \
+        and j1["file"]["certs"][0].get("ca") is True and st2 == 409 and st2r == 409 \
+        and st3 == 400 \
         and st4 == 200 and files.get("missing.pem", {}).get("count") == 1 \
         and "notes.pem" not in files and b"BEGIN" not in b4 and st5 == 200 and j5.get("ok")
     check("Issue #221 PEM files from the web UI: a dry run refuses a missing CA file at "
           "mqtt.tls.ca_file; PUT /api/files loads it (201, subject, CA), refuses the same name "
-          "(409) and a file that is not PEM (400); GET /api/files lists it without its content; "
+          "(409, also with replace=1) and a file that is not PEM (400); GET /api/files lists it "
+          "without its content; "
           "then the dry run passes", loaded,
           f"dry {st0} {j0.get('path')} {j0.get('error', '')[:80]!r}; put {st1} {j1.get('file')}; "
-          f"again {st2}; not PEM {st3} {j3.get('error', '')[:60]!r}; list {st4} "
+          f"again {st2}, replace=1 {st2r}; not PEM {st3} {j3.get('error', '')[:60]!r}; list {st4} "
           f"{sorted(files)}; dry after {st5}")
 
     # mutual TLS files: a key that agrees with the certificate, and one that does not
@@ -3713,7 +3716,14 @@ def check_csrf(gw, since):
     st_ref, _, b_ref = http("PUT", dry, doc, headers={"Referer": me + "/"})
     st_cli, _, b_cli = http("PUT", dry, doc)
     st_page, _, page = http("GET", "/")
-    ui_sends = page.count(b'"X-Requested-With":"gateway"')
+    # the three writes of the page: the API helper and the PEM file load (fetch, an object of
+    # headers), and the image upload (#215, XMLHttpRequest.setRequestHeader)
+    sends = {"API helper": page.count(b'const h={"X-Requested-With":"gateway"}'),
+             "PEM file load": page.count(b'headers:{"Content-Type":"application/x-pem-file",'
+                                         b'"X-Requested-With":"gateway"}'),
+             "image upload": page.count(b'x.setRequestHeader("X-Requested-With","gateway")')}
+    ui_sends = page.count(b'"X-Requested-With":"gateway"') + \
+        page.count(b'setRequestHeader("X-Requested-With","gateway")')
     up = gw.wait_log(r"restart requested through the REST API", 0.5, since) is None
     check("Issue #100 CSRF: writes without X-Requested-With or from another origin (Origin, "
           "Referer, 'null', http) -> 403 before the password check (also with a wrong password: "
@@ -3727,10 +3737,11 @@ def check_csrf(gw, since):
           "Referer) are accepted, the page sends the header on every write (API helper, image "
           "upload and PEM file upload, #221), and a script with the header and no Origin is accepted",
           st_ui == 200 and (as_json(b_ui) or {}).get("saved") is False and st_ref == 200
-          and st_cli == 200 and st_page == 200 and ui_sends == 3,
+          and st_cli == 200 and st_page == 200 and ui_sends == 3
+          and all(n == 1 for n in sends.values()),
           f"UI PUT dry run {st_ui} {b_ui[:60]!r}; Referer only {st_ref} {b_ref[:60]!r}; no Origin "
           f"{st_cli} {b_cli[:60]!r}; page "
-          f"{st_page} with the header in {ui_sends} request(s)")
+          f"{st_page} with the header in {ui_sends} request(s) {sends}")
 
 
 # ---------------------------------------------------------------- scenario

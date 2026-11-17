@@ -25,11 +25,11 @@ A save restarts the gateway. The gateway sends the NDEATH, and the polling and t
 
 1. Open the web UI. Click the tab **Configuration**.
 2. In the card **MQTT**, go to the section **TLS**.
-3. Click **Load a file…**, and select the CA file on your computer.
-4. Read the message below the button. The field **CA file** now shows the file, with the subject and the last day of the certificate below it.
-5. For mutual TLS, do steps 3 and 4 again for the certificate of the gateway and for its key. The fields **Client certificate** and **Client key** show them.
+3. Below the field **CA file**, click **Load a file…**. Select the CA file on your computer.
+4. Read the message below the section. The field **CA file** now shows the file, with the subject and the last day of the certificate below it.
+5. For mutual TLS, do steps 3 and 4 again with **Load a file…** below the field **Client certificate**, for the certificate of the gateway. Then do them again below the field **Client key**, for its key.
 
-The gateway selects the field from the content of the file: a private key goes to **Client key**, a CA certificate to **CA file**, and another certificate to **Client certificate**. Make sure that each field shows the correct file.
+The field of the button selects the loaded file. If the file is not of the kind of the field, the message tells you, and the field does not change. For example, a private key does not go into **CA file**.
 
 If the message says that the file is already in the gateway, give the file another name on your computer. Then load it again.
 
@@ -40,7 +40,7 @@ If the message says that the file is already in the gateway, give the file anoth
 3. Keep the field **Server name** empty, if the certificate of the broker has the name or the IP address of the field **Broker**. If not, type the name that the certificate has.
 4. Click **Validate** in the bar at the bottom of the window.
 
-   ![The card 'MQTT' of the Configuration tab: the broker, the port 8883, the protocol, the table of the backup brokers, and the section TLS with Encrypt (TLS) on. The CA file ca.pem shows its subject and its last day, the client certificate gw01.crt its subject, and the client key gw01.key 'Private key, EC P-256'. Below the button 'Load a file…' a message tells that gw01.key is in the gateway.](../images/mqtt-tls.png)
+   ![The card 'MQTT' of the Configuration tab: the broker, the port 8883, the protocol, the table of the backup brokers, and the section TLS with Encrypt (TLS) on. The CA file ca.pem shows its subject and its last day, the client certificate gw01.crt its subject, and the client key gw01.key 'Private key, EC P-256'. Each file field has a button 'Load a file…'. Below the section, a message tells that gw01.key is in the gateway.](../images/mqtt-tls.png)
 
 5. If the bar gives an error, read the error below the field:
    - "The key does not agree with the certificate …": the key is not the key of the client certificate. Select the correct key.

@@ -155,6 +155,7 @@ button.net.on{background:var(--sub)}button.net.no{color:var(--mut);cursor:defaul
 .grp{font-size:11.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);margin:18px 0 6px}
 .card.cc{padding:6px 14px}.card.cc.open{padding:6px 14px 12px}
 .card h2.ch,.dhd{display:flex;align-items:center;gap:2px 10px;flex-wrap:wrap;margin:0;min-height:32px}.card.cc.open>h2.ch{margin-bottom:10px}
+button.fload{align-self:flex-start;margin-top:4px;padding:3px 8px;font-size:12px}
 button.coll{font:inherit;font-size:14px;font-weight:600;color:var(--fg);padding:4px 6px 4px 0;border-color:transparent;background:transparent;text-align:left}
 button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
 .tsum{font-size:12.5px;color:var(--mut);font-weight:400;overflow-wrap:anywhere}.ebadge{font-size:12px;font-weight:600;color:var(--bad)}
@@ -235,7 +236,7 @@ button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
    <div id="f-bk" data-perr="mqtt.backup_brokers" tabindex="-1"></div><div class="grid" id="f-bk2" style="margin-top:10px"></div></div>
   <div class="tsec"><h2 class="lbl">TLS<button type="button" class="qi" data-x="tls" data-t="TLS" aria-label="About TLS" aria-expanded="false" aria-controls="xpl">?</button></h2>
    <div class="grid" id="f-tls"></div>
-   <div class="row" style="margin-top:10px"><button type="button" id="tls-load">Load a file…</button><input type="file" id="tls-file" class="hidden" accept=".pem,.crt,.cer,.key,application/x-pem-file"><span class="mut">Replace and remove the files in the card <a href="#certs">Certificates</a>.</span></div>
+   <div class="row" style="margin-top:10px"><input type="file" id="tls-file" class="hidden" accept=".pem,.crt,.cer,.key,application/x-pem-file"><span class="mut">Replace and remove the files in the card <a href="#certs">Certificates</a>.</span></div>
    <div id="tls-msg" class="mut" aria-live="polite"></div></div></div>
  <div class="card cc" data-cc="spb" data-t="Sparkplug"><div class="grid" id="f-spb"></div>
   <h2 class="lbl" style="margin-top:12px">Device prefix (location)<button type="button" class="qi" data-x="pfx" data-t="Device prefix (location)" aria-label="About Device prefix (location)" aria-expanded="false" aria-controls="xpl">?</button></h2>
@@ -319,9 +320,11 @@ const ccHead=(id,body,t,open,cls)=>`<button type="button" class="coll" ${cls}="$
 function ccInit(){document.querySelectorAll("#tab-config .card.cc").forEach(c=>{const id=c.dataset.cc,b=document.createElement("div"),h=document.createElement("h2");
  b.className="ccb";b.id="ccb-"+id;b.append(...c.childNodes);h.className="ch";c.append(h,b);ccApply(c,ccOpenOf(c))})}
 function ccOpenOf(c){const v=ccSt[c.dataset.cc];return typeof v==="boolean"?v:!c.hasAttribute("data-closed")}
-/* open (true) or close a card; save: keep the state in the browser */
-function ccApply(c,open,save){const h=c.querySelector(":scope>h2.ch"),b=c.querySelector(":scope>.ccb");
- h.innerHTML=ccHead(c.dataset.cc,b.id,c.dataset.t,open,"data-cc");
+/* open (true) or close a card; save: keep the state in the browser. The header button stays the
+   same element (a keyboard user keeps the focus): only its state and its caret change */
+function ccApply(c,open,save){const h=c.querySelector(":scope>h2.ch"),b=c.querySelector(":scope>.ccb"),btn=h.querySelector(":scope>button.coll");
+ if(btn){btn.setAttribute("aria-expanded",open);btn.querySelector(".car").textContent=open?"▾":"▸";h.querySelector(":scope>.tsum").classList.toggle("hidden",open)}
+ else h.innerHTML=ccHead(c.dataset.cc,b.id,c.dataset.t,open,"data-cc");
  c.classList.toggle("open",open);b.classList.toggle("hidden",!open);
  if(save){ccSt[c.dataset.cc]=open;lsSet(CCKEY,ccSt)}
  if(open&&typeof tblUpd==="function")tblUpd();ccSum()}
@@ -768,7 +771,7 @@ let FILES=null;
 async function loadFiles(){const r=await api("GET","/api/files");FILES=r.status===200&&r.json?r.json.files:null}
 function fileFld(path,lbl,help,kind,none){const v=get(cfg,path),names=(FILES||[]).filter(f=>f.kind===kind).map(f=>f.name);
  const o=[["",none]].concat(names.map(n=>[n,n]));if(v&&!names.includes(v))o.push([v,FILES?`${v} (not in the gateway)`:v]);
- return `<div class="fld"><span class="lbl"><label for="i-${path}">${lbl}</label>${qi(help,lbl)}</span><select id="i-${path}" data-p="${path}" data-k="sel">${o.map(([x,t])=>`<option value="${esc(x)}"${x===(v||"")?" selected":""}>${esc(t)}</option>`).join("")}</select><span class="info" id="fi-${path}"></span></div>`}
+ return `<div class="fld"><span class="lbl"><label for="i-${path}">${lbl}</label>${qi(help,lbl)}</span><select id="i-${path}" data-p="${path}" data-k="sel">${o.map(([x,t])=>`<option value="${esc(x)}"${x===(v||"")?" selected":""}>${esc(t)}</option>`).join("")}</select><span class="info" id="fi-${path}"></span><button type="button" class="fload" data-load="${path}" data-kind="${kind}" data-lbl="${esc(lbl)}" aria-label="Load a file for ${esc(lbl)}">Load a file…</button></div>`}
 function renderTls(){
  $("#f-tls").innerHTML=field("mqtt.tls.enabled","Encrypt (TLS)","bool",false,0,{help:"tlsen"})+fileFld("mqtt.tls.ca_file","CA file","ca","certificates","(none: public root CAs)")+field("mqtt.tls.server_name","Server name","str",0,0,{ml:127,ph:"the host of each broker",help:"sn"})+fileFld("mqtt.tls.cert_file","Client certificate","crt","certificates","(none)")+fileFld("mqtt.tls.key_file","Client key","key","key","(none)");
  tlsInfo()}
@@ -1002,7 +1005,9 @@ async function poll(){
  const f=await api("GET","/api/firmware");if(f.status!==200||!f.json||fwUp)return;fwW=f.json;fwRender();
 }
 /* #215: the Firmware card. fwW: the last GET /api/firmware; fwMode, fwCfgErr: the mode of
-   /api/status and the cause of a rejected configuration; fwSrc: the source ("url", "file" or "");
+   /api/status and the cause of a rejected configuration (#209: safe mode, sm0.active, also has the
+   mode "recovery", but its configuration was not rejected: no panel and no offer to restore);
+   fwSrc: the source ("url", "file" or "");
    fwFile: the chosen file; fwUp: the upload of this page in progress (XMLHttpRequest gives its
    progress); fwPend: the last download that this page started (for the #192 box of a refusal). */
 let fwW=null,fwMode="normal",fwCfgErr="",fwSrc="",fwFile=null,fwUp=null,fwPend=null;
@@ -1027,7 +1032,7 @@ function fwLast(w){
  }
 }
 function fwRender(){
- const w=fwW||{},up=fwUp,dl=!up&&(w.phase==="downloading"||w.phase==="restarting"),rec=fwMode==="recovery";
+ const w=fwW||{},up=fwUp,dl=!up&&(w.phase==="downloading"||w.phase==="restarting"),rec=fwMode==="recovery"&&!sm0.active;
  const run=w.running||"this firmware",other=w.other||"the other slot";
  $("#fw-run").textContent=w.running||"…";
  $("#fw-run-s").innerHTML=`in ${esc(w.slot||"?")}${rec?' · <span class="bad">recovery mode</span>':""}${w.safe_mode?` · <span class="bad">safe mode: ${sm0.cause==="request"?"on request":`${w.boot_count} crash resets in a row`}</span>`:""}`;
@@ -1061,7 +1066,7 @@ function fwRender(){
  $("#fw-lock").textContent=lock;$("#fw-lock").classList.toggle("hidden",!lock);$("#fw-inst").classList.toggle("locked",!!lock);
  $("#fw-inst").inert=!!lock;
  /* the actions with a restart */
- const zo=!empty,zp=!!w.cfg_prev_restore;
+ const zo=!empty,zp=!!w.cfg_prev_restore&&rec;
  $("#fw-zone").classList.toggle("hidden",!(zo||zp));$("#fw-z-other").classList.toggle("hidden",!zo);$("#fw-z-prev").classList.toggle("hidden",!zp);
  const ob=$("#fw-other");ob.textContent=`Restart into ${other}`;ob.disabled=!w.can_boot_other;
  $("#fw-other-p").textContent=w.trial?`Possible after the trial. Then you can go back to ${other} in ${w.other_slot}.`:w.other_state==="invalid"?`${other} in ${w.other_slot} cannot start: its verification failed.`:`Go back to ${other} in ${w.other_slot}. The gateway does a pre-flight check, then restarts into ${other} on trial. A reset during the trial goes back to the running image.`;
@@ -1267,23 +1272,30 @@ $("#tab-config").addEventListener("click",e=>{if(e.target.id==="w-find"){wifiSca
  if(add){if(!Array.isArray(a)){a=L.def?[L.def]:[];set(cfg,L.p,a)}if(a.length<L.max)a.push(k==="bk"?{host:""}:"")}
  else if(Array.isArray(a)){a.splice(+i,1);if(!a.length)unset(L.p)}
  renderForms();const ins=[...document.querySelectorAll(`[data-p^="${L.p}."]`)].filter(x=>!/\.port$/.test(x.dataset.p));if(add&&ins.length)ins[ins.length-1].focus()});
-/* #221: "Load a file…": the PEM file goes to the gateway (PUT /api/files). Decision of the product
-   owner: the field of the file then selects it (a key: Client key; a CA certificate: CA file;
-   another certificate: Client certificate); the bar shows the change, and the TLS connection
-   changes only after Save and restart.
+/* #221: "Load a file…" of a file field: the PEM file goes to the gateway (PUT /api/files).
+   Decision of the product owner (option A): after the load, that field selects the new file; the
+   bar shows the change, and the TLS connection changes only after Save and restart. A file of
+   the other kind (a key for a certificate field) is loaded, but the field does not select it.
+   The JSON tab keeps its text: only the key of the field changes in it.
    TODO(#221): the load dialog and the replace of an existing file wait for the approval of the
    row "Load, replace and remove the PEM files"; until then a file with the same name is refused. */
-$("#tls-load").onclick=()=>$("#tls-file").click();
-$("#tls-file").onchange=async e=>{const f=e.target.files[0];e.target.value="";if(!f)return;const m=$("#tls-msg"),say=(t,c)=>{m.textContent=t;m.className=c};
+let tlsTo=null;
+$("#tab-config").addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("button[data-load]");if(!b)return;
+ tlsTo={p:b.dataset.load,kind:b.dataset.kind,lbl:b.dataset.lbl};$("#tls-file").click()});
+$("#tls-file").onchange=async e=>{const f=e.target.files[0],to=tlsTo;e.target.value="";if(!f||!to)return;const m=$("#tls-msg"),say=(t,c)=>{m.textContent=t;m.className=c};
  if(f.size>16384){say(`${f.name}: ${f.size} B. The maximum is 16384 B.`,"bad");return}
  say(`Loading ${f.name}…`,"mut");let r,j=null;
  try{r=await fetch("/api/files?name="+encodeURIComponent(f.name),{method:"PUT",headers:{"Content-Type":"application/x-pem-file","X-Requested-With":"gateway"},body:await f.text(),cache:"no-store"})}
  catch(x){say(`No answer from the gateway (${x.message})`,"bad");return}
  try{j=await r.json()}catch(x){}
  if(r.status!==201||!j||!j.file){say(r.status===409?`${f.name} is already in the gateway. Give the file another name, then load it again.`:`${f.name} is not loaded (${r.status}): ${(j||{}).error||""}`,"bad");return}
- const fi=j.file,p=fi.kind==="key"?"mqtt.tls.key_file":fi.certs&&fi.certs[0]&&fi.certs[0].ca?"mqtt.tls.ca_file":"mqtt.tls.cert_file";
- await loadFiles();readForms();set(cfg,p,fi.name);renderTls();
- say(`${fi.name} is in the gateway. The field ${{"mqtt.tls.ca_file":"CA file","mqtt.tls.cert_file":"Client certificate","mqtt.tls.key_file":"Client key"}[p]} shows it. Select Save and restart to use it.`,"ok");upd191()};
+ const fi=j.file,ok=fi.kind===to.kind;await loadFiles();
+ if(tab==="config"){readForms();if(ok)set(cfg,to.p,fi.name);renderTls()}
+ else if(ok&&tab==="json"){let c;try{c=JSON.parse($("#raw").value)}catch(x){say(`${fi.name} is in the gateway. The JSON is not valid: write "${fi.name}" into ${to.p} yourself.`,"warn");return}
+  set(c,to.p,fi.name);cfg=c;$("#raw").value=JSON.stringify(cfg,null,2)}
+ else if(ok)set(cfg,to.p,fi.name);   /* the Status tab: cfg holds the forms (show) */
+ if(!ok){say(`${fi.name} is in the gateway, but it is ${fi.kind==="key"?"a private key":"a certificate file"}. The field ${to.lbl} does not show it.`,"warn");return}
+ say(`${fi.name} is in the gateway. The field ${to.lbl} shows it. Select Save and restart to use it.`,"ok");upd191()};
 show("status");load();poll();setInterval(poll,2000);
 </script>
 </body>

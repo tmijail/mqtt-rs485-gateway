@@ -81,7 +81,7 @@ The responses of `PUT /api/config`:
 | Method and route | What it does |
 |---|---|
 | `GET /api/files` | The files in the LittleFS partition that the configuration can name: what each file holds. Never the content of a file. Refer to [`GET /api/files`](#get-apifiles) |
-| `PUT /api/files?name=<name>` | Loads a PEM file. The body is the PEM text. `&replace=1` replaces a file with the same name. Refer to [`PUT /api/files`](#put-apifiles) |
+| `PUT /api/files?name=<name>` | Loads a PEM file. The body is the PEM text. Refer to [`PUT /api/files`](#put-apifiles) |
 
 The files are for `mqtt.tls.ca_file`, `mqtt.tls.cert_file`, `mqtt.tls.key_file` and `ota.ca_file`. A load does not change the configuration. Select the file in the configuration, then save it.
 
@@ -250,7 +250,7 @@ The list has up to 16 files. It leaves out `config.json` and the other files of 
 |---|---|
 | `201` | `{"ok":true,"file":{…}}`: the file, with the fields of `GET /api/files` |
 | `400` | The name is not correct, or the body is not PEM certificates or an unencrypted PEM private key |
-| `409` | A file with this name exists, and the request has no `replace=1` |
+| `409` | A file with this name exists. The gateway does not replace it |
 | `413` | The body is larger than 16 KiB |
 | `507` | The gateway cannot write the file, for example because the LittleFS partition is full |
 

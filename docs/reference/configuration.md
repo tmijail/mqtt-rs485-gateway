@@ -227,7 +227,7 @@ Each CONNECT has Clean Session = 1. With `protocol: "5"`, each CONNECT has Clean
 | `key_file` | text | `""` | The PEM private key of the client, **not encrypted** (PKCS#1, SEC1 or PKCS#8). Necessary with `cert_file`, and not permitted without it |
 
 - A file name has 1 to 32 characters `A-Z a-z 0-9 . _ -`, without `/`. It must not start with `.`, and it must not be `config.json`.
-- To put a file into the LittleFS partition, use **Load a file…** in the card MQTT of the web UI, or `PUT /api/files`. Refer to [Connect to a broker with TLS](../how-to/connect-to-a-broker-with-tls.md) and [The REST API](rest-api.md#the-pem-files).
+- To put a file into the LittleFS partition, use **Load a file…** below the field of the file in the card MQTT of the web UI, or `PUT /api/files`. Refer to [Connect to a broker with TLS](../how-to/connect-to-a-broker-with-tls.md) and [The REST API](rest-api.md#the-pem-files).
 - A save of the configuration examines each file that `ca_file`, `cert_file`, `key_file` and `ota.ca_file` name: the file exists, it holds certificates (or an unencrypted private key for `key_file`), and the key agrees with the certificate. Otherwise, the error has the path of the key, for example `mqtt.tls.key_file: the key does not agree with the certificate gw01.crt`.
 - The gateway uses TLS 1.2 or 1.3, as the broker selects.
 - The gateway examines the validity dates of the certificate. Thus the TLS connection waits for a valid clock.
