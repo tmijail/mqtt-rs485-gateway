@@ -20,6 +20,12 @@ static const char *const k_do_names[GW_NODE_IO_COUNT] = {"DO/1", "DO/2", "DO/3",
 static const char *const k_count_names[GW_NODE_IO_COUNT] = {
     "Counter/1", "Counter/2", "Counter/3", "Counter/4",
     "Counter/5", "Counter/6", "Counter/7", "Counter/8"};
+/* #217: DI/1..8, then DO/1..8 (alias GW_ALIAS_RUN_HOURS_BASE + index) */
+static const char *const k_run_names[GW_RUN_HOURS_CHANNELS] = {
+    "Run Hours/DI/1", "Run Hours/DI/2", "Run Hours/DI/3", "Run Hours/DI/4",
+    "Run Hours/DI/5", "Run Hours/DI/6", "Run Hours/DI/7", "Run Hours/DI/8",
+    "Run Hours/DO/1", "Run Hours/DO/2", "Run Hours/DO/3", "Run Hours/DO/4",
+    "Run Hours/DO/5", "Run Hours/DO/6", "Run Hours/DO/7", "Run Hours/DO/8"};
 #define NAME_BDSEQ    "bdSeq"
 #define NAME_REBIRTH  "Node Control/Rebirth"
 #define NAME_REBOOT   "Node Control/Reboot"
@@ -608,13 +614,27 @@ static bool publish_nbirth(gw_node_t *n)
     }
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         metric(n, i++, k_count_names[k], GW_ALIAS_COUNT_BASE + k, SPB_DT_UINT64,
-               live_ts(n, io.di_ts_ms))
+               live_ts(n, io.count_ts_ms))
             ->v.u64 = io.count[k];
     }
+    /* #217: tck-id-topics-nbirth-metric-reqs: the NBIRTH has each run hours metric that the
+     * node will report (the channels of local_io.run_hours), with its name, alias, datatype
+     * and value (tck-id-topics-nbirth-metrics, tck-id-payloads-alias-birth-requirement); the
+     * aliases follow the last tag alias (tck-id-payloads-alias-uniqueness) */
+    for (uint8_t k = 0; k < GW_RUN_HOURS_CHANNELS; k++) {
+        if (n->cfg->local_io.run_hours & (1u << k)) {
+            metric(n, i++, k_run_names[k], GW_ALIAS_RUN_HOURS_BASE + k, SPB_DT_UINT64,
+                   live_ts(n, io.run_ts_ms))
+                ->v.u64 = io.run_s[k];
+        }
+    }
     memcpy(n->count_reported, io.count, sizeof(n->count_reported));
+    memcpy(n->run_reported, io.run_s, sizeof(n->run_reported));
     n->di_reported = io.di;
     n->do_reported = io.dout;
     n->do_unknown_reported = io.do_unknown;
+    uint64_t rise_ts;
+    (void)gw_tagdb_take_do_rise(&rise_ts);   /* #210: the NBIRTH has the current states */
     n->diag_hash = mb_snapshot(n);
     i += diag_metrics(n, i, now, true, true);
     if (n->ops.diagnostics != NULL) {   /* TIME-3 */
@@ -935,6 +955,14 @@ void gw_node_device_changed(gw_node_t *n, uint16_t dev)
     }
 }
 
+/* #210: the DOs that went on and off again since the last NDATA (a pulse shorter than the
+ * time to the NDATA): their true is not lost. */
+static uint8_t missed_pulses(const gw_node_t *n, const gw_local_io_t *io, uint64_t *ts)
+{
+    uint8_t rise = gw_tagdb_take_do_rise(ts);
+    return io->do_unknown ? 0 : (uint8_t)(rise & ~io->dout & ~n->do_reported);
+}
+
 static void publish_io(gw_node_t *n, uint8_t force_do)
 {
     if (!n->time_valid) {
@@ -942,6 +970,22 @@ static void publish_io(gw_node_t *n, uint8_t force_do)
     }
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
+    uint64_t rise_ts;
+    uint8_t missed = missed_pulses(n, &io, &rise_ts);
+    if (missed != 0) {
+        /* #210: tck-id-topics-ndata-payload: the NDATA has each metric that changed. A pulse DO
+         * that went on and off before this NDATA gives true in one NDATA and false in the next
+         * one (one value per metric in a message) */
+        size_t c = 0;
+        for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
+            if (missed & (1u << k)) {
+                metric(n, c++, NULL, GW_ALIAS_DO_BASE + k, SPB_DT_BOOLEAN, live_ts(n, rise_ts))
+                    ->v.num = 1;
+            }
+        }
+        publish(n, "NDATA", NULL, c, 0);
+        n->do_reported |= missed;
+    }
     uint8_t di_changed = io.di ^ n->di_reported;
     uint8_t do_changed = (uint8_t)((io.dout ^ n->do_reported) | force_do);
     bool do_quality = io.do_unknown != n->do_unknown_reported;
@@ -970,11 +1014,21 @@ static void publish_io(gw_node_t *n, uint8_t force_do)
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {   /* IO-4: with the DI change that made it */
         if (io.count[k] != n->count_reported[k]) {
             metric(n, count++, NULL, GW_ALIAS_COUNT_BASE + k, SPB_DT_UINT64,
-                   live_ts(n, io.di_ts_ms))
+                   live_ts(n, io.count_ts_ms))
                 ->v.u64 = io.count[k];
         }
     }
+    /* #217: tck-id-topics-ndata-payload: a run hours value that changed (gw_lio_rh_tick: at a
+     * change of state, and every 60 s while on) */
+    for (uint8_t k = 0; k < GW_RUN_HOURS_CHANNELS; k++) {
+        if ((n->cfg->local_io.run_hours & (1u << k)) && io.run_s[k] != n->run_reported[k]) {
+            metric(n, count++, NULL, GW_ALIAS_RUN_HOURS_BASE + k, SPB_DT_UINT64,
+                   live_ts(n, io.run_ts_ms))
+                ->v.u64 = io.run_s[k];
+        }
+    }
     memcpy(n->count_reported, io.count, sizeof(n->count_reported));
+    memcpy(n->run_reported, io.run_s, sizeof(n->run_reported));
     n->di_reported = io.di;
     n->do_reported = io.dout;
     n->do_unknown_reported = io.do_unknown;
@@ -988,13 +1042,32 @@ static void store_io(gw_node_t *n)
 {
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
+    uint64_t rise_ts;
+    uint8_t missed = missed_pulses(n, &io, &rise_ts);
+    if (missed != 0) {
+        /* #210: the true of a short pulse first, as publish_io does */
+        gw_sf_begin(n->sf);
+        for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
+            if (missed & (1u << k)) {
+                gw_sf_push(n->sf, GW_SF_NODE, (uint16_t)(GW_ALIAS_DO_BASE + k), 1, false,
+                           sample_ts(n, rise_ts));
+            }
+        }
+        n->do_reported |= missed;
+    }
     uint8_t di_changed = io.di ^ n->di_reported;
     uint8_t do_changed = io.dout ^ n->do_reported;
     if (io.do_unknown != n->do_unknown_reported) {
         do_changed = 0xFF;
     }
     bool counts = memcmp(io.count, n->count_reported, sizeof(io.count)) != 0;
-    if ((di_changed | do_changed) == 0 && !counts) {
+    uint16_t runs = 0;
+    for (uint8_t k = 0; k < GW_RUN_HOURS_CHANNELS; k++) {
+        if ((n->cfg->local_io.run_hours & (1u << k)) && io.run_s[k] != n->run_reported[k]) {
+            runs |= (uint16_t)(1u << k);
+        }
+    }
+    if ((di_changed | do_changed) == 0 && !counts && runs == 0) {
         return;
     }
     gw_sf_begin(n->sf);
@@ -1013,13 +1086,20 @@ static void store_io(gw_node_t *n)
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {   /* IO-4 pulse counters, UInt64 */
         if (io.count[k] != n->count_reported[k]) {
             gw_sf_push_u64(n->sf, GW_SF_NODE, (uint16_t)(GW_ALIAS_COUNT_BASE + k), io.count[k],
-                           false, sample_ts(n, io.di_ts_ms));
+                           false, sample_ts(n, io.count_ts_ms));
+        }
+    }
+    for (uint8_t k = 0; k < GW_RUN_HOURS_CHANNELS; k++) {   /* #217 run hours, UInt64 */
+        if (runs & (1u << k)) {
+            gw_sf_push_u64(n->sf, GW_SF_NODE, (uint16_t)(GW_ALIAS_RUN_HOURS_BASE + k), io.run_s[k],
+                           false, sample_ts(n, io.run_ts_ms));
         }
     }
     n->di_reported = io.di;
     n->do_reported = io.dout;
     n->do_unknown_reported = io.do_unknown;
     memcpy(n->count_reported, io.count, sizeof(n->count_reported));
+    memcpy(n->run_reported, io.run_s, sizeof(n->run_reported));
 }
 
 void gw_node_io_changed(gw_node_t *n)
@@ -1068,8 +1148,10 @@ size_t gw_node_flush_history(gw_node_t *n, size_t max_msgs)
                 continue;
             }
             const gw_tag_cfg_t *t = node ? NULL : &n->cfg->tags[r->metric];
-            bool counter = node && r->metric >= GW_ALIAS_COUNT_BASE &&
-                           r->metric < GW_ALIAS_COUNT_BASE + GW_NODE_IO_COUNT;
+            bool counter = node && ((r->metric >= GW_ALIAS_COUNT_BASE &&
+                                     r->metric < GW_ALIAS_COUNT_BASE + GW_NODE_IO_COUNT) ||
+                                    (r->metric >= GW_ALIAS_RUN_HOURS_BASE &&
+                                     r->metric < GW_ALIAS_RUN_HOURS_BASE + GW_RUN_HOURS_CHANNELS));
             uint32_t dt = counter ? SPB_DT_UINT64 : node ? SPB_DT_BOOLEAN : gw_conv_datatype(t);
             spb_metric_t *m = metric(n, base + nm, base ? t->name : NULL,
                                      node ? r->metric : GW_ALIAS_TAG_BASE + r->metric, dt, r->ts_ms);

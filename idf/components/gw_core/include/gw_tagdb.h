@@ -43,7 +43,13 @@ typedef struct {
     bool failsafe;       /* IO-3: the DOs took their safe state (no Sparkplug session) */
     uint64_t di_ts_ms;
     uint64_t do_ts_ms;
-    uint64_t count[8];   /* IO-4: activations (inactive -> active) of DI n+1 */
+    uint64_t count[8];   /* IO-4: activations (inactive -> active) of DI n+1; #218: the PCNT
+                          * edges of a fast DI */
+    uint64_t count_ts_ms;   /* last change of a counter */
+    uint8_t do_rise;     /* #210: DOs switched on since gw_tagdb_take_do_rise() */
+    uint64_t do_rise_ts_ms;
+    uint64_t run_s[GW_RUN_HOURS_CHANNELS];   /* #217: run hours (s) of DI/1..8, DO/1..8 */
+    uint64_t run_ts_ms;
 } gw_local_io_t;
 
 /** Clear everything (all devices offline, all values invalid). */
@@ -67,8 +73,18 @@ void gw_tagdb_get_tag(uint16_t tag, gw_tag_value_t *val);
 
 /** DI states without counting (start-up). */
 void gw_tagdb_set_di(uint8_t di, uint64_t ts_ms);
-/** New debounced DI states: every input that became active counts one pulse (IO-4). */
+/** New debounced DI states: every input that became active counts one pulse (IO-4), except
+ *  the fast DIs (#218: the PCNT counts them, gw_tagdb_add_count()). */
 void gw_tagdb_update_di(uint8_t di, uint64_t ts_ms);
+/** #218: the DIs that the PCNT counts. */
+void gw_tagdb_set_fast(uint8_t mask);
+/** #218: @p n more pulses of DI @p index (0-7) from its PCNT unit. */
+void gw_tagdb_add_count(uint8_t index, uint32_t n, uint64_t ts_ms);
+/** #217: the run hours to publish (s; GW_RUN_HOURS_CHANNELS values). */
+void gw_tagdb_set_run_hours(const uint64_t run_s[GW_RUN_HOURS_CHANNELS], uint64_t ts_ms);
+/** #210: the DOs switched on since the last call (and the time of the last one), for the
+ *  Sparkplug task only: a pulse that ended before the NDATA still gives true, then false. */
+uint8_t gw_tagdb_take_do_rise(uint64_t *ts_ms);
 /** IO-4: counters restored at boot. */
 void gw_tagdb_set_counters(const uint64_t count[8]);
 void gw_tagdb_set_do(uint8_t dout, uint64_t ts_ms);   /* also clears do_unknown */

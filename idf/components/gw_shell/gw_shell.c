@@ -530,6 +530,15 @@ static int cmd_status(int argc, char **argv)
         out(" %d:%" PRIu64, i + 1, io.count[i]);
     }
     out("\n");
+    if (s_ctx.cfg != NULL && s_ctx.cfg->local_io.run_hours != 0) {   /* #217 */
+        out("run h   ");
+        for (int i = 0; i < GW_RUN_HOURS_CHANNELS; i++) {
+            if (s_ctx.cfg->local_io.run_hours & (1u << i)) {
+                out(" %s/%d:%" PRIu64 " s", i < 8 ? "DI" : "DO", i % 8 + 1, io.run_s[i]);
+            }
+        }
+        out("\n");
+    }
     /* Core of each task that matters for timing ("-" = no affinity; tasks not running, such as
      * the Ethernet RX task of the other MAC, are omitted). */
     static const char *const tasks[] = {"rs485_bus", "sparkplug", "tcpip", "mqtt_task",
@@ -870,7 +879,13 @@ static int cmd_config(int argc, char **argv)
            "inter-frame %u ms\n",
            (unsigned long)c->rs485.baud, parity[c->rs485.parity], c->rs485.stop_bits,
            c->rs485.response_timeout_ms, c->rs485.retries, c->rs485.inter_frame_delay_ms);
-    out("local_io   DI debounce %u ms", c->local_io.di_debounce_ms);
+    /* #211: the debounce of each DI, DI/1 first, with "i" after an inverted DI; #218 "f" after a
+     * fast counter (PCNT) */
+    out("local_io   DI debounce (ms)");
+    for (int i = 0; i < GW_LOCAL_IO_CHANNELS; i++) {
+        out(" %u%s%s", c->local_io.di_debounce_ms[i], (c->local_io.di_invert >> i) & 1u ? "i" : "",
+            (c->local_io.fast_mask >> i) & 1u ? "f" : "");
+    }
     /* IO-3: one letter per DO, DO/1 first: o = off, 1 = on, h = hold */
     char modes[GW_LOCAL_IO_CHANNELS + 1];
     for (int i = 0; i < GW_LOCAL_IO_CHANNELS; i++) {
@@ -882,6 +897,26 @@ static int cmd_config(int argc, char **argv)
             "MQTT\n", modes, (unsigned long)c->local_io.failsafe_s);
     } else {
         out(", DO safe state %s (o off, 1 on, h hold) at restart; no MQTT failsafe\n", modes);
+    }
+    for (int i = 0; i < GW_LOCAL_IO_CHANNELS; i++) {   /* #210 */
+        if (c->local_io.do_pulse_ms[i] != 0) {
+            out("           DO/%d: pulse of %u ms\n", i + 1, c->local_io.do_pulse_ms[i]);
+        }
+    }
+    for (int i = 0; i < GW_LOCAL_IO_CHANNELS; i++) {   /* #218 */
+        if (c->local_io.fast_mask & (1u << i)) {
+            out("           DI/%d: fast counter (PCNT), glitch filter %u ns\n", i + 1,
+                c->local_io.glitch_ns[i]);
+        }
+    }
+    if (c->local_io.run_hours != 0) {   /* #217 */
+        out("           run hours:");
+        for (int i = 0; i < GW_RUN_HOURS_CHANNELS; i++) {
+            if (c->local_io.run_hours & (1u << i)) {
+                out(" %s/%d", i < 8 ? "DI" : "DO", i % 8 + 1);
+            }
+        }
+        out("\n");
     }
     static const char *const rule_modes[] = {"follow", "invert", "toggle"};
     for (uint8_t i = 0; i < c->local_io.rule_count; i++) {   /* IO-7 */
@@ -900,10 +935,10 @@ static int cmd_config(int argc, char **argv)
         out("           buzzer alarms: none\n");
     }
     if (c->local_io.counter_save_s != 0) {
-        out("           DI pulse counters saved every %lu s\n",
+        out("           DI pulse counters and run hours saved every %lu s\n",
             (unsigned long)c->local_io.counter_save_s);
     } else {
-        out("           DI pulse counters not saved (lost at every restart)\n");
+        out("           DI pulse counters and run hours not saved (lost at every restart)\n");
     }
     out("devices    %u device(s), %u tag(s)\n", c->device_count, c->tag_count);
     for (uint16_t d = 0; d < c->device_count; d++) {
@@ -1285,6 +1320,25 @@ static int cmd_di(int argc, char **argv)
     return 0;
 }
 
+/* #218: pulses on the simulated PCNT unit of a fast counter (QEMU has no PCNT) */
+static int cmd_pcnt(int argc, char **argv)
+{
+    long ch = argc == 3 ? strtol(argv[1], NULL, 10) : 0;
+    long n = argc == 3 ? strtol(argv[2], NULL, 10) : -1;
+    if (ch < 1 || ch > 8 || n < 1 || n > 1000000) {
+        out("usage: pcnt <1-8> <1-1000000>\n");
+        return 1;
+    }
+    if (!up(GW_SHELL_UP_IO, "pcnt", "the local I/O")) {
+        return 1;
+    }
+    if (!gw_io_sim_pulses((uint8_t)(ch - 1), (uint32_t)n)) {
+        out("DI/%ld is not a fast counter (local_io.fast_counters)\n", ch);
+        return 1;
+    }
+    return 0;
+}
+
 static int cmd_boot(int argc, char **argv)
 {
     if (argc != 2 || (strcmp(argv[1], "0") != 0 && strcmp(argv[1], "1") != 0)) {
@@ -1426,6 +1480,7 @@ ATOMIC(cmd_mbread)
 #endif
 #if CONFIG_GW_IO_SIMULATED
 ATOMIC(cmd_di)
+ATOMIC(cmd_pcnt)
 
 /* Issue #74: the simulated expander stays silent for a while after the next boot. */
 static int cmd_expander(int argc, char **argv)
@@ -1576,6 +1631,8 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
 #if CONFIG_GW_IO_SIMULATED
         {.command = "di", .help = "Emulator only: set a simulated input", .hint = "<1-8> <0|1>",
          .func = cmd_di_atomic},
+        {.command = "pcnt", .help = "Emulator only: pulses on the simulated PCNT unit of a fast "
+         "counter (#218)", .hint = "<1-8> <n>", .func = cmd_pcnt_atomic},
         {.command = "expander", .help = "Emulator only: the DO expander does not answer for a "
          "while after the next boot (issue #74)", .hint = "absent <ms>", .func = cmd_expander_atomic},
         {.command = "validation", .help = "Emulator only: the next configuration validation "

@@ -78,6 +78,32 @@ static void test_debounce(void)
     TEST_ASSERT_EQUAL_HEX8(0x81, gw_debounce_sample(&d, 0x7E));
 }
 
+/* #211: each DI has its own debounce, and an inverted DI is active at rest. */
+static void test_debounce_each_and_invert(void)
+{
+    gw_debounce_t d;
+    uint16_t th[8] = {2, 2, 2, 2, 2, 2, 2, 2};
+    th[0] = gw_debounce_samples(100, 1000);   /* DI/1: 100 ms at 1 ms per sample */
+    th[1] = gw_debounce_samples(0, 1000);     /* DI/2: 0 ms, each change at once */
+    TEST_ASSERT_EQUAL(100, th[0]);
+    TEST_ASSERT_EQUAL(1, th[1]);
+    TEST_ASSERT_EQUAL(1, gw_debounce_samples(20, 0));
+    /* DI/3 inverted: the raw level 0 reads active */
+    gw_debounce_init_each(&d, th, 0x04, 0x00);
+    TEST_ASSERT_EQUAL_HEX8(0x04, d.stable);
+    /* DI/2 changes at the first sample, DI/1 only after 100 samples */
+    TEST_ASSERT_EQUAL_HEX8(0x02, gw_debounce_sample(&d, 0x03));
+    for (int i = 0; i < 98; i++) {
+        TEST_ASSERT_EQUAL_HEX8(0, gw_debounce_sample(&d, 0x03));
+    }
+    TEST_ASSERT_EQUAL_HEX8(0x01, gw_debounce_sample(&d, 0x03));
+    TEST_ASSERT_EQUAL_HEX8(0x07, d.stable);
+    /* the raw level 1 on DI/3 makes it inactive after its 2 samples */
+    TEST_ASSERT_EQUAL_HEX8(0, gw_debounce_sample(&d, 0x07));
+    TEST_ASSERT_EQUAL_HEX8(0x04, gw_debounce_sample(&d, 0x07));
+    TEST_ASSERT_EQUAL_HEX8(0x03, d.stable);
+}
+
 static void test_backoff(void)
 {
     TEST_ASSERT_EQUAL(1000, gw_backoff_ms(1, 1000, 60000, 0));
@@ -139,6 +165,7 @@ int main(void)
     RUN_TEST(test_rbe_deadband_against_last_reported);
     RUN_TEST(test_rbe_validity_and_nan);
     RUN_TEST(test_debounce);
+    RUN_TEST(test_debounce_each_and_invert);
     RUN_TEST(test_backoff);
     RUN_TEST(test_devstate);
     return UNITY_END();

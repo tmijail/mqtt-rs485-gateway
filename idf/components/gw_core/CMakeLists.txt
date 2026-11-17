@@ -26,6 +26,7 @@ set(GW_CORE_SRCS
     src/gw_devstate.c
     src/gw_dout.c
     src/gw_fwlast.c
+    src/gw_iocmd.c
     src/gw_lkgnet.c
     src/gw_localio.c
     src/gw_mbdiag.c

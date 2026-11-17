@@ -29,6 +29,7 @@
 #include "gw_coredump.h"
 #include "gw_edge.h"
 #include "gw_io.h"
+#include "gw_iocmd.h"
 #include "gw_rtc.h"
 #include "gw_sfcard.h"
 #include "gw_log.h"
@@ -44,7 +45,7 @@
 static const char *TAG = "web";
 
 #define REALM_HDR "Basic realm=\"gateway\", charset=\"UTF-8\""
-#define WEB_URI_HANDLERS 21   /* the routes of gw_web_start (uris[]) */
+#define WEB_URI_HANDLERS 22   /* the routes of gw_web_start (uris[]) */
 
 static gw_web_ctx_t s_ctx;
 static httpd_handle_t s_server;
@@ -1122,6 +1123,61 @@ static esp_err_t rebirth_post(httpd_req_t *req)
     return send_json(req, "202 Accepted", "{\"ok\":true,\"rebirth\":true}\n");
 }
 
+/* ---------- #204: POST /api/do ---------- */
+
+/* {"do": 1-8, "on": true|false}: switch a DO from the web UI. The command goes to the local_io
+ * task through the queue of the NCMD commands (gw_io_command_do), with the same checks: a DO
+ * that a local rule drives is refused (409), and the new state goes to the Sparkplug host in the
+ * next NDATA (tck-id-topics-ndata-payload), as for an NCMD. Only the DOs: the web UI does not
+ * write to the Modbus devices. Same checks as every write (CSRF, then the password). */
+static esp_err_t do_post(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    if (s_ctx.mode != GW_WEB_NORMAL) {
+        return refuse_body(req, "409 Conflict",
+                           s_ctx.mode == GW_WEB_FAULT
+                               ? "the local I/O does not run: the gateway does not start "
+                                 "(hardware fault, see the status)"
+                               : "the local I/O does not run: the gateway has no valid "
+                                 "configuration. Correct it and save it first");
+    }
+    size_t len;
+    const char *status;
+    char *body = req->content_len <= 128 ? read_body(req, &len, &status) : NULL;
+    if (body == NULL) {
+        return refuse_body(req, "400 Bad Request",
+                           "expected {\"do\": 1-8, \"on\": true|false} (at most 128 bytes)");
+    }
+    uint8_t index;
+    bool on;
+    char why[96];
+    bool parsed = gw_iocmd_parse(body, len, &index, &on, why, sizeof(why));
+    heap_caps_free(body);
+    if (!parsed) {
+        return send_error(req, "400 Bad Request", NULL, why);
+    }
+    gw_io_do_result_t r = gw_io_command_do(GW_IO_CALLER_WEB, index, on);
+    if (r == GW_IO_DO_RULE) {
+        snprintf(why, sizeof(why), "DO/%u is driven by a local rule (local_io.rules): refused",
+                 index + 1u);
+        return send_error(req, "409 Conflict", NULL, why);
+    }
+    if (r != GW_IO_DO_OK) {
+        return send_error(req, "503 Service Unavailable", NULL,
+                          r == GW_IO_DO_BUSY ? "the local I/O task did not answer: try again"
+                                             : "the output expander does not answer: the DOs "
+                                               "are unknown");
+    }
+    gw_local_io_t io;
+    gw_tagdb_get_io(&io);
+    char answer[96];
+    snprintf(answer, sizeof(answer), "{\"ok\":true,\"do\":%u,\"on\":%s,\"state\":%s}\n",
+             index + 1u, on ? "true" : "false", (io.dout >> index) & 1u ? "true" : "false");
+    return send_json(req, "200 OK", answer);
+}
+
 /* ---------- #160: POST /api/time ---------- */
 
 /* TIME-1 / issue #160: the web UI's button "Set the time from the browser", for a network with
@@ -1794,7 +1850,36 @@ static esp_err_t status_get(httpd_req_t *req)
     for (uint8_t r = 0; s_ctx.mode == GW_WEB_NORMAL && r < c->local_io.rule_count; r++) {
         rule_do |= (uint8_t)(1u << c->local_io.rules[r].dout);
     }
-    outf(o, "],\"rule_do\":%u}", rule_do);
+    outf(o, "],\"rule_do\":%u", rule_do);
+    /* #204 #210 #217 #218: the local rules (DI and mode of each DO with a rule), the pulse time
+     * of each DO, the fast counters, and the run hours (s; null for a channel that does not
+     * count them) */
+    bool normal = s_ctx.mode == GW_WEB_NORMAL;
+    static const char *const rule_modes[] = {"follow", "invert", "toggle"};
+    outf(o, ",\"rules\":[");
+    for (uint8_t r = 0; normal && r < c->local_io.rule_count; r++) {
+        outf(o, "%s{\"di\":%u,\"do\":%u,\"mode\":\"%s\"}", r ? "," : "",
+             c->local_io.rules[r].di + 1u, c->local_io.rules[r].dout + 1u,
+             rule_modes[c->local_io.rules[r].mode % 3]);
+    }
+    outf(o, "],\"pulse_ms\":[");
+    for (int k = 0; k < GW_LOCAL_IO_CHANNELS; k++) {
+        outf(o, "%s%u", k ? "," : "", normal ? c->local_io.do_pulse_ms[k] : 0u);
+    }
+    outf(o, "],\"fast\":%u,\"run_hours\":{", normal ? c->local_io.fast_mask : 0u);
+    for (int g = 0; g < 2; g++) {
+        outf(o, "%s\"%s\":[", g ? "," : "", g ? "do" : "di");
+        for (int k = 0; k < GW_LOCAL_IO_CHANNELS; k++) {
+            int ch = g * GW_LOCAL_IO_CHANNELS + k;
+            if (normal && (c->local_io.run_hours & (1u << ch))) {
+                outf(o, "%s%llu", k ? "," : "", (unsigned long long)io.run_s[ch]);
+            } else {
+                outf(o, "%snull", k ? "," : "");
+            }
+        }
+        outf(o, "]");
+    }
+    outf(o, "}}");
     static const char *const alarm_keys[] = {"none", "device_offline", "mqtt_down", "config_error"};
     gw_alarm_t alarm = gw_buzzer_alarm();
     uint8_t enabled = gw_buzzer_alarms();
@@ -1995,7 +2080,7 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
                            h_cd_delete = {coredump_delete}, h_cd_summary = {coredump_summary_get},
                            h_time = {time_post}, h_claim_page = {claim_page_get},
                            h_claim_get = {claim_get}, h_claim_post = {claim_post},
-                           h_ap_stop = {ap_stop_post};
+                           h_ap_stop = {ap_stop_post}, h_do = {do_post};
     static const struct {
         const char *uri;
         httpd_method_t method;
@@ -2022,6 +2107,7 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         {"/api/claim", HTTP_GET, &h_claim_get},
         {"/api/claim", HTTP_POST, &h_claim_post},
         {"/api/ap/stop", HTTP_POST, &h_ap_stop},           /* #187 */
+        {"/api/do", HTTP_POST, &h_do},                     /* #204 */
     };
     _Static_assert(sizeof(uris) / sizeof(uris[0]) == WEB_URI_HANDLERS, "WEB_URI_HANDLERS");
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
