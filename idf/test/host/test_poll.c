@@ -469,6 +469,61 @@ static void test_dead_devices_do_not_delay_the_healthy_one(void)
     TEST_ASSERT_EQUAL_UINT32(10000, p.probe_ms[1]);
 }
 
+/* #214: a disabled device is never polled (no request on the bus, no time of the bus), stays
+ * not online (so no DBIRTH) and does not count as offline. Its unit can be the unit of an enabled
+ * device. */
+static void test_disabled_device_is_not_polled(void)
+{
+    static const char doc[] =
+        "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+        " \"devices\": ["
+        "  {\"name\": \"Off\", \"unit_id\": 1, \"enabled\": false, \"poll_ms\": 100, \"tags\":"
+        "   [{\"name\": \"T\", \"area\": \"holding\", \"address\": 40, \"type\": \"uint16\"}]},"
+        "  {\"name\": \"On\", \"unit_id\": 1, \"poll_ms\": 1000, \"tags\":"
+        "   [{\"name\": \"T\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\"}]}"
+        "]}";
+    static gw_config_t c;
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(doc, sizeof(doc) - 1, &c, &err), err.msg);
+    TEST_ASSERT_FALSE(c.devices[0].enabled);
+    TEST_ASSERT_TRUE(c.devices[1].enabled);
+    poller_for(&c, false);
+    unsigned polls[2] = {0, 0};
+    while (sim_now_ms() < 20000) {
+        uint32_t now = sim_now_ms(), wait;
+        int dev = gw_poller_next(&p, now, &wait);
+        if (dev < 0) {
+            TEST_ASSERT_TRUE(wait != UINT32_MAX);   /* the enabled device is always due later */
+            s.clock_us += (uint64_t)wait * 1000u;
+            continue;
+        }
+        polls[dev]++;
+        gw_poller_poll(&p, (uint16_t)dev, now);
+    }
+    TEST_ASSERT_EQUAL_UINT(0, polls[0]);
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT(19, polls[1]);
+    TEST_ASSERT_EQUAL_UINT(polls[1], s.requests);     /* one FC03 for each poll of "On" only */
+    gw_dev_stats_t st;
+    gw_tagdb_get_stats(0, &st);
+    TEST_ASSERT_EQUAL_UINT32(0, st.cycles);
+    TEST_ASSERT_EQUAL_UINT32(0, st.bus.ok + st.bus.timeout);
+    TEST_ASSERT_FALSE(gw_tagdb_device_online(0));
+    TEST_ASSERT_TRUE(gw_tagdb_device_online(1));
+    TEST_ASSERT_EQUAL(0, gw_poller_offline_count(&p));
+    /* a direct call does nothing either */
+    unsigned before = s.requests;
+    TEST_ASSERT_EQUAL(GW_DEV_NO_CHANGE, gw_poller_poll(&p, 0, sim_now_ms()));
+    TEST_ASSERT_EQUAL_UINT(before, s.requests);
+
+    /* only disabled devices: nothing is ever due */
+    c.devices[1].enabled = false;
+    poller_for(&c, false);
+    uint32_t wait;
+    TEST_ASSERT_EQUAL(-1, gw_poller_next(&p, 0, &wait));
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, wait);
+    TEST_ASSERT_EQUAL(0, gw_poller_offline_count(&p));
+}
+
 /* ---- MB-6: 64-bit types, strings, byte orders and register bits ---- */
 
 static const char k_mb6[] =
@@ -886,6 +941,7 @@ int main(void)
     RUN_TEST(test_never_seen_device_is_probed_from_the_start);
     RUN_TEST(test_probe_answered_but_cycle_incomplete_stays_offline);
     RUN_TEST(test_dead_devices_do_not_delay_the_healthy_one);
+    RUN_TEST(test_disabled_device_is_not_polled);
     RUN_TEST(test_mb6_decode);
     RUN_TEST(test_mb6_writes);
     RUN_TEST(test_scan_classes);

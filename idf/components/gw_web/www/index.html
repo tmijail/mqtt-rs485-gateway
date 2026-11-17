@@ -54,6 +54,7 @@ table.tags{border-collapse:separate;border-spacing:0;table-layout:fixed}
 /* #197 #221: the panel "More device settings" of a device; #214: a disabled device */
 button.more{color:var(--acc);border-color:transparent;background:transparent}button.dmore{padding-left:0}
 .dsub{background:var(--sub);border-radius:4px;padding:8px 10px 10px;margin:4px 0}.dsub .grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+#f-dev>.card.dis{border-style:dashed}.offnote{color:var(--warn);font-size:12.5px;margin:8px 0 0}
 @media (max-width:760px){.dsub .grid{grid-template-columns:minmax(0,1fr)}button.dmore{width:100%;min-height:44px;text-align:left}}
 @media (max-width:600px){.fld.ck{flex-direction:row-reverse;justify-content:flex-end;align-items:center;gap:8px;min-height:44px;font-size:14px}.fld.ck .lbl label{color:var(--fg)}.fld.ck input{width:20px;height:20px;margin:0;align-self:center}}
 @media (max-width:760px){#f-dev>.card{padding:10px}.tags col:nth-child(1){width:140px}.dgrid{position:sticky;left:10px;width:calc(var(--bw,320px) - 20px);grid-template-columns:repeat(2,minmax(0,1fr))}}
@@ -210,6 +211,7 @@ const HELP={
  ifd:"The delay between two transactions on the bus. Make it longer for a slow device. The gateway always keeps the silence of 3.5 characters between two frames.\n~0 to 1000 ms. Default: 5.",
  deb:"A digital input must stay in its new state for this time before the gateway accepts the change. With 20 ms, the pulse counters count up to approximately 25 Hz.\n~0 to 1000 ms. Default: 20.",
  webpw:"8 to 63 characters: letters A-Z and a-z, digits, spaces and the symbols of a keyboard. It is also the Wi-Fi password of the access point GW-Setup-XXXXXX.\n~Empty = the commissioning password of the console.",
+ en:"Clear it to keep a device in the configuration, but stop it. Example: a slave that is not connected yet, during the commissioning.\nThe gateway does not poll a disabled device and does not send its DBIRTH. The device uses no time of the bus. The validation still examines its keys.\n~Default: on.",
  name:"The name of the device in Sparkplug. The device ID is the device prefix, ':' and this name. Example: Pump1.\nFor UMH Core, put ':' between the last levels of the location. Do not use `/`, `+` or `#`.\n~1 to 39 bytes. Necessary.",
  unit:"The Modbus address of the device on the RS485 bus (the slave ID). The manual or the display of the device gives it. Use the Modbus test read to find out if the device answers.\n~1 to 247. Necessary.",
  poll:"The time between two reads of the tags of the device. Example: 1000 = one read each second.\n~50 to 3 600 000 ms. Default: 1000.",
@@ -328,7 +330,10 @@ function togDmore(b){const r=document.getElementById(b.getAttribute("aria-contro
  devOpen[open?"add":"delete"](b.dataset.dmore);updDmore(b)}
 function tagsInit(){document.querySelectorAll("[data-dmore]").forEach(updDmore);document.querySelectorAll("[data-more]").forEach(b=>{const[i,k]=b.dataset.more.split(".");tagUpd(i,k);updMore(b)});tblUpd()}
 $("#f-dev").addEventListener("click",e=>{const t=e.target.dataset||{};if(t.delTag||t.delDev)detOpen.clear();if(t.delDev)devOpen.clear();if(t.more)togDet(e.target);if(t.dmore)togDmore(e.target)},true);
-$("#f-dev").addEventListener("input",e=>{const r=e.target.closest("tr.det");if(r)updMore(r.previousElementSibling.querySelector("[data-more]"));
+/* #214: a device with Enabled off gets the notice and a dashed border */
+function devEn(e){const m=/^devices\.(\d+)\.enabled$/.exec(e.dataset.p||"");if(!m)return;
+ e.closest(".card").classList.toggle("dis",!e.checked);$(`#off-${m[1]}`).classList.toggle("hidden",e.checked)}
+$("#f-dev").addEventListener("input",e=>{devEn(e.target);const r=e.target.closest("tr.det");if(r)updMore(r.previousElementSibling.querySelector("[data-more]"));
  const d=e.target.closest(".dsub");if(d)updDmore(document.querySelector(`[aria-controls="${d.id}"]`));
  const m=/^devices\.(\d+)\.tags\.(\d+)\./.exec(e.target.dataset.p||"");if(m)tagUpd(m[1],m[2])});
 document.addEventListener("scroll",e=>{const w=e.target.parentElement;if(w&&w.classList.contains("tw"))tblUpd(w);if(xb)xPos()},true);
@@ -358,7 +363,8 @@ function renderForms(){
  $("#f-web").innerHTML=field("web.username","User","str")+field("web.password","Password (8 to 63)","pw",0,0,{ml:63,help:"webpw"})+PW2+field("web.port","Port","int");pw194();
  renderPrefix();
  const devs=cfg.devices||[];
- $("#f-dev").innerHTML=devs.map((d,i)=>`<div class="card"><div class="grid">${field(`devices.${i}.name`,"Name","str",0,0,{ml:39,help:"name"})+field(`devices.${i}.unit_id`,"Unit ID","int",0,0,{help:"unit"})+field(`devices.${i}.poll_ms`,"Poll interval (ms)","int",0,0,{help:"poll"})+field(`devices.${i}.offline_after`,"Offline after (cycles)","int",0,0,{help:"off"})+field(`devices.${i}.type`,"Type (template)","str",0,0,{ml:39,help:"type"})}</div>
+ $("#f-dev").innerHTML=devs.map((d,i)=>`<div class="card${d.enabled===false?" dis":""}" data-dev="${i}"><div class="grid">${field(`devices.${i}.enabled`,"Enabled","bool",true,0,{help:"en",ck:1})+field(`devices.${i}.name`,"Name","str",0,0,{ml:39,help:"name"})+field(`devices.${i}.unit_id`,"Unit ID","int",0,0,{help:"unit"})+field(`devices.${i}.poll_ms`,"Poll interval (ms)","int",0,0,{help:"poll"})+field(`devices.${i}.offline_after`,"Offline after (cycles)","int",0,0,{help:"off"})+field(`devices.${i}.type`,"Type (template)","str",0,0,{ml:39,help:"type"})}</div>
+ <p class="offnote${d.enabled===false?"":" hidden"}" id="off-${i}">Disabled. The gateway does not poll this device and sends no DBIRTH. The validation still examines it.</p>
  ${devMore(i)}
  <div class="topic" data-topic="${i}"></div>
  ${tagTable(d,i)}
@@ -506,7 +512,7 @@ async function poll(){
  else{const w=tm.waiting?"Waiting for a valid clock. The gateway does not connect to the MQTT broker and sends no NBIRTH until the clock is valid. Make sure that the gateway can reach the SNTP server, or push \"Set the time from the browser\" (card \"Local I/O\").":"";ban.classList.toggle("hidden",!(w||bat));ban.textContent=(w+bat).trim()}
  $("#st-dev").innerHTML=[["Firmware",s.firmware],["Reset reason",s.reset_reason],["Uptime",`${s.uptime_s} s`],["Mode",s.mode],["Configuration",s.config.source],["Free internal heap",`${s.heap.internal_free} B (min. ${s.heap.internal_min})`],["Free PSRAM",`${s.heap.psram_free} B`]].map(([k,v])=>`<div><div class="mut">${k}</div>${esc(v)}</div>`).join("");
  $("#st-net").innerHTML=`<p>Network ${yes(s.network.up,"up","no IP")} · MQTT ${yes(s.mqtt.connected,"connected",tm.waiting?"waiting for a valid clock":"disconnected")}${s.syslog?` · syslog ${esc(s.syslog)}`:""}</p><table><tr><th>Interface</th><th>State</th><th>IPv4</th><th>IPv6</th></tr>${s.network.interfaces.map(i=>`<tr><td>${i.name}${i.active?" (active)":""}</td><td>${!i.configured?"not configured":!i.link?"no link":i.usable?"up":"no address"}</td><td>${i.ipv4||""}</td><td>${(i.ipv6||[]).join("<br>")}</td></tr>`).join("")}</table>`;
- $("#st-mb").innerHTML=s.devices.length?`<table><tr><th>Device</th><th>Unit</th><th>State</th><th>Cycles / failed</th><th>OK / timeout / CRC / frame / exception</th><th>Values</th></tr>${s.devices.map(d=>`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td>${yes(d.online,"online","offline")}</td><td>${d.cycles} / ${d.failed}</td><td>${d.ok} / ${d.timeout} / ${d.crc} / ${d.frame} / ${d.exception}</td><td>${d.tags.map(t=>`${esc(t.name)}=${t.valid?esc(t.value_text??t.value):"—"}`).join(", ")}</td></tr>`).join("")}</table>`:"no devices";
+ $("#st-mb").innerHTML=s.devices.length?`<table><tr><th>Device</th><th>Unit</th><th>State</th><th>Cycles / failed</th><th>OK / timeout / CRC / frame / exception</th><th>Values</th></tr>${s.devices.map(d=>d.enabled===false?`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td><span class="mut">disabled</span></td><td>—</td><td>—</td><td class="mut">not polled</td></tr>`:`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td>${yes(d.online,"online","offline")}</td><td>${d.cycles} / ${d.failed}</td><td>${d.ok} / ${d.timeout} / ${d.crc} / ${d.frame} / ${d.exception}</td><td>${d.tags.map(t=>`${esc(t.name)}=${t.valid?esc(t.value_text??t.value):"—"}`).join(", ")}</td></tr>`).join("")}</table>`:"no devices";
  const bits=(v)=>[...Array(8)].map((_,i)=>`<span class="${v>>i&1?"ok":"mut"}">${i+1}</span>`).join(" ");
  const AL={none:"silent",device_offline:"device offline",mqtt_down:"no MQTT session",config_error:"configuration rejected"};
  const io=s.io,rules=io.rule_do?[...Array(8)].map((_,i)=>io.rule_do>>i&1?`DO/${i+1}`:"").filter(x=>x).join(", "):"none";

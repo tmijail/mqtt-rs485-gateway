@@ -116,6 +116,9 @@ int gw_poller_next(const gw_poller_t *p, uint32_t now_ms, uint32_t *wait_ms)
     int best = -1;
     int32_t best_wait = INT32_MAX;
     for (uint16_t d = 0; d < p->cfg->device_count; d++) {
+        if (!p->cfg->devices[d].enabled) {
+            continue;   /* #214: not polled, no time of the bus */
+        }
         int32_t w = (int32_t)(p->next_due_ms[d] - now_ms);
         if (w < best_wait) {
             best_wait = w;
@@ -138,6 +141,9 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
 {
     const gw_config_t *cfg = p->cfg;
     const gw_device_cfg_t *d = &cfg->devices[dev];
+    if (!d->enabled) {
+        return GW_DEV_NO_CHANGE;   /* #214: gw_poller_next never selects it */
+    }
     bool online;
     gw_tagdb_get_device(cfg, dev, p->work, &online);
 
@@ -418,7 +424,7 @@ uint16_t gw_poller_offline_count(const gw_poller_t *p)
 {
     uint16_t n = 0;
     for (uint16_t d = 0; d < p->cfg->device_count; d++) {
-        n = (uint16_t)(n + (p->state[d].online ? 0u : 1u));
+        n = (uint16_t)(n + (p->state[d].online || !p->cfg->devices[d].enabled ? 0u : 1u));
     }
     return n;
 }

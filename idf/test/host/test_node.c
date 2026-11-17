@@ -893,6 +893,39 @@ static void test_dcmd_write_limits(void)
     gw_port_log_capture(NULL, 0);
 }
 
+/* #214: a disabled device is never online (the poll engine does not poll it), so it gets no
+ * DBIRTH at the session start or at a rebirth (tck-id-operational-behavior-data-commands-
+ * rebirth-action-2: the DBIRTHs "if applicable"), no DDATA and no DDEATH; a DCMD for it is
+ * discarded with its own log line. */
+static void test_disabled_device_no_birth_and_dcmd_discarded(void)
+{
+    static gw_config_t c;
+    c = *support_spec_config();
+    c.devices[0].enabled = false;
+    cfg = &c;
+    gw_tagdb_reset();
+    set_meter(true, 230.5, 12.3, 1);     /* the guard: also an online flag gives no DBIRTH */
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    gw_node_session_up(&node, 0);
+    TEST_ASSERT_EQUAL(1, g_rec.count);   /* the NBIRTH only */
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NBIRTH/GW01", g_rec.msgs[0].topic);
+    gw_node_device_changed(&node, 0);
+    TEST_ASSERT_EQUAL(1, g_rec.count);   /* no DDEATH for a device that never had a DBIRTH */
+    static char log[512];
+    gw_port_log_capture(log, sizeof(log));
+    spb_metric_t sp = {.name = "Setpoint", .datatype = SPB_DT_FLOAT, .v.num = 12.3};
+    send("spBv1.0/Plant1/DCMD/GW01/Meter1", &sp, 1);
+    TEST_ASSERT_EQUAL(0, g_rec.writes);
+    TEST_ASSERT_NOT_NULL(strstr(log, "DCMD for disabled device 'Meter1' discarded"));
+    gw_port_log_capture(NULL, 0);
+    gw_node_rebirth(&node);
+    TEST_ASSERT_EQUAL(2, g_rec.count);   /* a new NBIRTH, no DBIRTH */
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NBIRTH/GW01", g_rec.msgs[1].topic);
+}
+
 /* Issue #60: a DCMD whose writes do not all fit in the bus queue is rejected whole. */
 static void test_dcmd_rejected_whole_when_queue_lacks_room(void)
 {
@@ -2613,6 +2646,7 @@ int main(void)
     RUN_TEST(test_umh_worst_case_nbirth_fits);
     RUN_TEST(test_dcmd_strict_datatype_and_integer);
     RUN_TEST(test_dcmd_write_limits);
+    RUN_TEST(test_disabled_device_no_birth_and_dcmd_discarded);
     RUN_TEST(test_dcmd_rejected_whole_when_queue_lacks_room);
     RUN_TEST(test_scan_rate);
     RUN_TEST(test_mb6_birth_and_data);

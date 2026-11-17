@@ -1466,7 +1466,7 @@ static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_
 {
     static const char *const keys[] = {"name",        "unit_id", "poll_ms", "slow_poll_ms",
                                        "offline_after", "block_reads", "max_gap", "tags", "type",
-                                       "write_multiple"};
+                                       "write_multiple", "enabled"};
     long unit, poll, off, gap, slow;
     bool merge, multi;
     char p[96];
@@ -1480,7 +1480,8 @@ static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_
         !get_int(o, "offline_after", path, false, 3, 1, 1000, &off, err) ||
         !get_bool(o, "block_reads", path, true, &merge, err) ||
         !get_int(o, "max_gap", path, false, GW_CFG_BUILD_DEFAULT, 0, GW_MAX_GAP_LIMIT, &gap, err) ||
-        !get_bool(o, "write_multiple", path, false, &multi, err)) {
+        !get_bool(o, "write_multiple", path, false, &multi, err) ||
+        !get_bool(o, "enabled", path, true, &d->enabled, err)) {
         return false;
     }
     /* #197: an absent key keeps the build's setting (CONFIG_GW_MB_FORCE_MULTI_WRITE) */

@@ -32,7 +32,8 @@
  *           datatype carries it: Int16 -> Float, Int32/Int64 -> Double); length of a String
  *           tag (the record holds the text with its own length)
  *   device: unit_id, write_multiple (#197), poll_ms, slow_poll_ms, offline_after, block_reads,
- *           max_gap
+ *           max_gap; enabled (#214: a disabled device has no DBIRTH, so the replay discards
+ *           its records as those of any device without a DBIRTH)
  *   node metrics (GW_SF_NODE: DI, DO, counters): fixed aliases and datatypes, no configuration
  *   everything else (network, MQTT, broker list, primary host, rs485, local_io, web, ...)
  */
@@ -93,6 +94,7 @@ static const gw_device_cfg_t s_device_fields = {
     "", /* type: hashed */
     0,  /* unit_id */
     0,  /* write_multiple */
+    0,  /* enabled */
     0,  /* poll_ms */
     0,  /* slow_poll_ms */
     0,  /* offline_after */

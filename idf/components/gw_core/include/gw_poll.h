@@ -64,6 +64,7 @@ void gw_poller_init(gw_poller_t *p, const gw_config_t *cfg, mb_master_t *mb,
 /**
  * Device whose poll is due at monotonic time @p now_ms, or -1 when none is due;
  * then @p wait_ms receives the time until the next one (UINT32_MAX if no devices).
+ * A disabled device (#214) is never due: it gets no request on the bus.
  */
 int gw_poller_next(const gw_poller_t *p, uint32_t now_ms, uint32_t *wait_ms);
 
@@ -113,7 +114,7 @@ void gw_poller_set_scan_rate(gw_poller_t *p, uint32_t ms, uint32_t now_ms);
  */
 void gw_poller_forward(gw_poller_t *p, gw_mbap_txn_t *txn);
 
-/** Number of configured devices currently offline. */
+/** Number of enabled devices currently offline (#214: a disabled device does not count). */
 uint16_t gw_poller_offline_count(const gw_poller_t *p);
 
 #ifdef __cplusplus

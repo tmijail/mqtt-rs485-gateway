@@ -801,7 +801,9 @@ bool gw_node_rebirth(gw_node_t *n)
         bool online;
         n->dev_born[dev] = false;
         gw_tagdb_get_device(n->cfg, dev, n->vals, &online);
-        if (online) {
+        /* #214: a disabled device is never polled, so never online; a guard. Its DBIRTH is not
+         * "applicable" (tck-id-operational-behavior-data-commands-rebirth-action-2) */
+        if (online && n->cfg->devices[dev].enabled) {
             publish_dbirth(n, dev);
         }
     }
@@ -894,8 +896,8 @@ static void store_device(gw_node_t *n, uint16_t dev)
 
 void gw_node_device_changed(gw_node_t *n, uint16_t dev)
 {
-    if (dev >= n->cfg->device_count) {
-        return;
+    if (dev >= n->cfg->device_count || !n->cfg->devices[dev].enabled) {
+        return;   /* #214: a disabled device has no DBIRTH, DDATA or DDEATH (a guard) */
     }
     if (!n->online) {
         if (n->sf != NULL && n->born_once && n->time_valid) {
@@ -1504,6 +1506,12 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
         int dev = gw_config_find_device(n->cfg, q, (size_t)(end - q));
         if (dev < 0) {
             GW_LOGW(TAG, "DCMD for unknown device '%.*s'", (int)(end - q), q);
+            return;
+        }
+        if (!n->cfg->devices[dev].enabled) {
+            /* #214: a disabled device has no DBIRTH, so a host cannot know its metrics
+             * (tck-id-operational-behavior-data-commands-dcmd-metric-name) */
+            GW_LOGW(TAG, "DCMD for disabled device '%s' discarded", n->cfg->devices[dev].name);
             return;
         }
         if (!n->dev_born[dev]) {

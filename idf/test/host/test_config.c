@@ -1298,6 +1298,41 @@ static void test_device_block_reads(void)
                     "devices[0].write_multiple: expected true or false");
 }
 
+/* #214: devices[].enabled, default true. The validation examines a disabled device as any
+ * other: its keys, its tags and its name (unique, also against the enabled devices). */
+static void test_device_enabled(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+              "\"devices\":[{\"name\":\"A\",\"unit_id\":1,\"enabled\":false,\"tags\":[{"
+              "\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]},"
+              "{\"name\":\"B\",\"unit_id\":2,\"enabled\":true,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]},"
+              "{\"name\":\"C\",\"unit_id\":3,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+        err.msg);
+    TEST_ASSERT_FALSE(cfg.devices[0].enabled);
+    TEST_ASSERT_TRUE(cfg.devices[1].enabled);
+    TEST_ASSERT_TRUE(cfg.devices[2].enabled);
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"enabled\":0,\"tags\":[{\"name\":\"t\","
+                          "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+                    "devices[0].enabled: expected true or false");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"enabled\":false,\"tags\":[{\"name\":\"t\","
+                          "\"area\":\"input\",\"address\":0,\"type\":\"uint16\",\"writable\":true}]}]}"),
+                    "devices[0].tags[0].writable: only the coil and holding areas");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"tags\":[{\"name\":\"t\",\"area\":\"holding\",\"address\":0,"
+                          "\"type\":\"uint16\"}]},{\"name\":\"A\",\"unit_id\":2,\"enabled\":false,"
+                          "\"tags\":[{\"name\":\"t\",\"area\":\"holding\",\"address\":0,"
+                          "\"type\":\"uint16\"}]}]}"),
+                    "devices[1].name: duplicate device name 'A'");
+}
+
 /* MB-12: scan classes. */
 static void test_scan_classes(void)
 {
@@ -1682,6 +1717,7 @@ int main(void)
     RUN_TEST(test_lint_name_rules);
     RUN_TEST(test_lint_umh_preset);
     RUN_TEST(test_device_block_reads);
+    RUN_TEST(test_device_enabled);
     RUN_TEST(test_scan_classes);
     RUN_TEST(test_modbus_tcp_section);
     RUN_TEST(test_ota_section);

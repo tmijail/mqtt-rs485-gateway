@@ -339,18 +339,27 @@ static int cmd_status(int argc, char **argv)
                "only\n");
         out("network  %s\n", (f & GW_ST_NET_UP) ? "up" : "down");
     } else {
-        uint16_t offline = 0;
+        uint16_t offline = 0, disabled = 0;
         for (uint16_t d = 0; d < s_ctx.cfg->device_count; d++) {
+            if (!s_ctx.cfg->devices[d].enabled) {
+                disabled++;   /* #214: not polled; not in the count */
+                continue;
+            }
             offline = (uint16_t)(offline + (device_online(d) ? 0u : 1u));
         }
         out("config   %s: ok%s\n", s_ctx.config_source,
             s_ctx.starting ? " (the gateway is still starting)" : "");
-        out("network  %s, MQTT %s, Modbus %u/%u devices online\n",
+        uint16_t enabled = (uint16_t)(s_ctx.cfg->device_count - disabled);
+        char off[24] = "";
+        if (disabled > 0) {
+            snprintf(off, sizeof(off), ", %u disabled", disabled);
+        }
+        out("network  %s, MQTT %s, Modbus %u/%u devices online%s\n",
                (f & GW_ST_NET_UP) ? "up" : "down",
                (f & GW_ST_MQTT_UP)    ? "connected"
                : (f & GW_ST_NO_CLOCK) ? "waiting for a valid clock"   /* #160 */
                                       : "disconnected",
-               s_ctx.cfg->device_count - offline, s_ctx.cfg->device_count);
+               enabled - offline, enabled, off);
         gw_edge_status_t es;
         gw_edge_get_status(&es);
         if (es.host != NULL) {
@@ -596,7 +605,8 @@ static int cmd_devices(int argc, char **argv)
         gw_tagdb_get_stats(d, &st);
         out("%-16s unit %3u %-7s cycles %lu failed %lu | ok %lu timeout %lu crc %lu frame %lu "
                "exception %lu",
-               dev->name, dev->unit_id, device_online(d) ? "online" : "offline",
+               dev->name, dev->unit_id,
+               !dev->enabled ? "disabled" : device_online(d) ? "online" : "offline",   /* #214 */
                (unsigned long)st.cycles, (unsigned long)st.failed_cycles, (unsigned long)st.bus.ok,
                (unsigned long)st.bus.timeout, (unsigned long)st.bus.crc,
                (unsigned long)st.bus.frame, (unsigned long)st.bus.exception);
@@ -943,11 +953,12 @@ static int cmd_config(int argc, char **argv)
         bool multi = dev->write_multiple == GW_CFG_BUILD_DEFAULT ? build_multi
                                                                  : dev->write_multiple != 0;
         out("  %-16s unit %3u, poll %lu ms, slow %lu ms, offline after %u, %u tag(s) "
-            "(%u fast, %u slow), %s%s\n",
+            "(%u fast, %u slow), %s%s%s\n",
             dev->name, dev->unit_id, (unsigned long)dev->poll_ms,
             (unsigned long)dev->slow_poll_ms, dev->offline_after, dev->tag_count,
             dev->tag_count - slow, slow, blocks,
-            multi ? ", writes FC15/FC16" : "");   /* #197 */
+            multi ? ", writes FC15/FC16" : "",   /* #197 */
+            dev->enabled ? "" : ", disabled (not polled)");   /* #214 */
     }
     if (c->modbus_tcp.enabled) {
         char clients[GW_MBTCP_MAX_ALLOWED * 20] = "";
