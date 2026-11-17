@@ -212,6 +212,9 @@ typedef struct {
     char name[GW_NAME_SIZE];    /* also the Sparkplug device_id */
     char type[GW_NAME_SIZE];    /* SPB-18: template (device type) name; "" = no template */
     uint8_t unit_id;
+    int8_t write_multiple;      /* #197: 1 = FC15/FC16 also for one coil or register, 0 = FC05/
+                                 * FC06, or GW_CFG_BUILD_DEFAULT (CONFIG_GW_MB_FORCE_MULTI_WRITE);
+                                 * in the padding after unit_id */
     uint32_t poll_ms;           /* fast scan period (MB-10) */
     uint32_t slow_poll_ms;      /* MB-12: period of the tags with "scan": "slow" */
     uint16_t offline_after;

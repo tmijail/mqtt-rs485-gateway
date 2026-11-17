@@ -241,6 +241,68 @@ static void test_write_forced_multi(void)
     TEST_ASSERT_TRUE(s.coils[0]);
 }
 
+/* #197: devices[].write_multiple replaces the build's setting (force_multi_write) for one
+ * device: true = FC16 / FC15 also for one register or coil, false = FC06 / FC05. */
+static void poller_for(const gw_config_t *c, bool force_multi)
+{
+    cfg = c;
+    gw_tagdb_reset();
+    sim_reset(&s, 1);
+    mb_transport_t t = sim_transport(&s);
+    mb_master_cfg_t mc = {.baud = 9600, .response_timeout_ms = 200, .retries = 2,
+                          .inter_frame_delay_ms = 5};
+    mb_master_init(&mb, &t, &mc);
+    gw_poller_opts_t o = {.merge_reads = true, .force_multi_write = force_multi,
+                          .offline_probe_max_ms = 10000};
+    gw_poller_init(&p, cfg, &mb, &o, 0);
+}
+
+static void test_write_multiple_per_device(void)
+{
+    static gw_config_t c;
+    c = *support_spec_config();
+    TEST_ASSERT_EQUAL_INT8(GW_CFG_BUILD_DEFAULT, c.devices[0].write_multiple);   /* no key */
+    c.devices[0].write_multiple = 1;                 /* true on a build without the option */
+    poller_for(&c, false);
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 1, 12.3));
+    TEST_ASSERT_EQUAL(MB_FC_WRITE_MULTIPLE_REGISTERS, s.last_write_fc);
+    TEST_ASSERT_EQUAL(123, s.holding[10]);
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 2, 1));
+    TEST_ASSERT_EQUAL(MB_FC_WRITE_MULTIPLE_COILS, s.last_write_fc);
+    TEST_ASSERT_TRUE(s.coils[0]);
+
+    c.devices[0].write_multiple = 0;                 /* false on a build with the option */
+    poller_for(&c, true);
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 1, 4.5));
+    TEST_ASSERT_EQUAL(MB_FC_WRITE_SINGLE_REGISTER, s.last_write_fc);
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 2, 1));
+    TEST_ASSERT_EQUAL(MB_FC_WRITE_SINGLE_COIL, s.last_write_fc);
+
+    /* the key in the document */
+    static const char doc[] =
+        "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+        " \"devices\": [{\"name\": \"A\", \"unit_id\": 1, \"write_multiple\": true, \"tags\": ["
+        "  {\"name\": \"B3\", \"area\": \"holding\", \"address\": 20, \"type\": \"bool\","
+        "   \"bit\": 3, \"writable\": true}]},"
+        "  {\"name\": \"B\", \"unit_id\": 1, \"write_multiple\": false, \"tags\": ["
+        "  {\"name\": \"R\", \"area\": \"holding\", \"address\": 30, \"type\": \"uint16\","
+        "   \"writable\": true}]}]}";
+    static gw_config_t d;
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(doc, sizeof(doc) - 1, &d, &err), err.msg);
+    TEST_ASSERT_EQUAL_INT8(1, d.devices[0].write_multiple);
+    TEST_ASSERT_EQUAL_INT8(0, d.devices[1].write_multiple);
+    poller_for(&d, false);
+    s.holding[20] = 0x0100;
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 0, 1));    /* a register bit: FC03 + FC16 */
+    TEST_ASSERT_EQUAL(MB_FC_WRITE_MULTIPLE_REGISTERS, s.last_write_fc);
+    TEST_ASSERT_EQUAL_HEX16(0x0108, s.holding[20]);
+    poller_for(&d, true);
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 1, 7));
+    TEST_ASSERT_EQUAL(MB_FC_WRITE_SINGLE_REGISTER, s.last_write_fc);
+    TEST_ASSERT_EQUAL(7, s.holding[30]);
+}
+
 /* ---- issue #4: offline devices are probed with a backoff ---- */
 
 static uint32_t sim_now_ms(void)
@@ -819,6 +881,7 @@ int main(void)
     RUN_TEST(test_write_setpoint_fc06);
     RUN_TEST(test_write_coil_rejects_nan_and_inf);
     RUN_TEST(test_write_forced_multi);
+    RUN_TEST(test_write_multiple_per_device);
     RUN_TEST(test_offline_device_is_probed_with_backoff);
     RUN_TEST(test_never_seen_device_is_probed_from_the_start);
     RUN_TEST(test_probe_answered_but_cycle_incomplete_stays_offline);

@@ -51,6 +51,11 @@ table.tags{border-collapse:separate;border-spacing:0;table-layout:fixed}
 .tags td.chk{text-align:center}.tags td:last-child:not([colspan]){text-align:right}.tags td>button{padding:3px 8px;font-size:12px}.tags button.more{color:var(--acc);border-color:transparent;background:transparent}
 .tags tr.det td{position:static;background:var(--sub);padding:8px 10px 10px;border-right:0}
 .dgrid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:6px 12px;max-width:820px}
+/* #197 #221: the panel "More device settings" of a device; #214: a disabled device */
+button.more{color:var(--acc);border-color:transparent;background:transparent}button.dmore{padding-left:0}
+.dsub{background:var(--sub);border-radius:4px;padding:8px 10px 10px;margin:4px 0}.dsub .grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media (max-width:760px){.dsub .grid{grid-template-columns:minmax(0,1fr)}button.dmore{width:100%;min-height:44px;text-align:left}}
+@media (max-width:600px){.fld.ck{flex-direction:row-reverse;justify-content:flex-end;align-items:center;gap:8px;min-height:44px;font-size:14px}.fld.ck .lbl label{color:var(--fg)}.fld.ck input{width:20px;height:20px;margin:0;align-self:center}}
 @media (max-width:760px){#f-dev>.card{padding:10px}.tags col:nth-child(1){width:140px}.dgrid{position:sticky;left:10px;width:calc(var(--bw,320px) - 20px);grid-template-columns:repeat(2,minmax(0,1fr))}}
 /* #191 */
 body{min-height:100vh;display:flex;flex-direction:column}main{flex:1 0 auto;width:100%}html{scroll-padding-bottom:120px}
@@ -182,7 +187,7 @@ function ctl(path,kind,opts,optional,x){
  return `<input${a} data-k="${kind}" ${kind==="pw"?'type="password" autocomplete="new-password"':""}${x.ml?` maxlength="${x.ml}"`:""}${x.ph?` placeholder="${esc(x.ph)}"`:""} value="${v==null?"":esc(v)}">`;
 }
 function field(path,lbl,kind,opts,optional,x){x=x||{};
- return `<div class="fld"><span class="lbl"><label for="i-${path}">${lbl}</label>${x.help?qi(x.help,lbl):""}</span>${ctl(path,kind,opts,optional,x)}</div>`;
+ return `<div class="fld${x.ck?" ck":""}"><span class="lbl"><label for="i-${path}">${lbl}</label>${x.help?qi(x.help,lbl):""}</span>${ctl(path,kind,opts,optional,x)}</div>`;
 }
 // #189 #190
 /* #190: the explainers of the (?) buttons. A Sparkplug ID has 32 bytes at most, a device or tag
@@ -224,6 +229,7 @@ const HELP={
  enghi:"The top of the normal range of the value, in the units of the tag (after the scale). The host uses it, for example, for the scale of a gauge or a trend.\nThe gateway does not limit the value and sends no alarm. With Eng. low, Eng. high must be more than Eng. low. Empty = no range.\n~Sparkplug property engHigh (Float). Not for bool, string and bytes tags.",
  wmin:"The lowest value that a host can write to the tag with a DCMD, in the units of the tag (after the scale and the offset).\nThe gateway refuses a DCMD with a lower value. It does not write to the device, and it writes a warning to the log. The next DDATA has the value of the device.\n~Empty = no limit. Only for a writable tag. Not for bool, string and bytes tags. Modbus TCP requests have no limits.",
  wmax:"The highest value that a host can write to the tag with a DCMD, in the units of the tag (after the scale and the offset).\nThe gateway refuses a DCMD with a higher value. It does not write to the device, and it writes a warning to the log. The next DDATA has the value of the device.\n~Empty = no limit. Only for a writable tag. With Write min, not less than Write min. Not for bool, string and bytes tags. Modbus TCP requests have no limits.",
+ fc16:"The gateway writes one register with FC16 and one coil with FC15, in place of FC06 and FC05. Set it for a device that does not accept FC06 or FC05.\nA write of two or more registers always uses FC16.\n~Default: off (build option CONFIG_GW_MB_FORCE_MULTI_WRITE).",
  bit:"One bit of a holding or input register, for a bool tag. 0 = the least significant bit.\nFor a write, the gateway reads the register, then writes the full register with the changed bit.\n~0 to 15. Necessary for a bool tag in holding or input, and only there.",
  len:"The number of registers of a string or bytes tag. Each register holds two characters or two bytes. Example: 8 for a text of up to 16 characters.\n~1 to 16. Necessary for string and bytes, and only for them."
 };
@@ -301,15 +307,29 @@ function togDet(b){const r=document.getElementById(b.getAttribute("aria-controls
  detOpen[open?"add":"delete"](b.dataset.more);updMore(b);tblUpd(r.closest(".tw"))}
 /* #191 calls it before it focuses a field with an error: open the details row of the field */
 function revealField(el){const r=el&&el.closest?el.closest("tr.det"):null;
- if(r&&r.classList.contains("hidden"))togDet(r.previousElementSibling.querySelector("[data-more]"))}
+ if(r&&r.classList.contains("hidden"))togDet(r.previousElementSibling.querySelector("[data-more]"));
+ const d=el&&el.closest?el.closest(".dsub"):null;if(d&&d.classList.contains("hidden"))togDmore(document.querySelector(`[aria-controls="${d.id}"]`))}
 function tblUpd(tw){(tw?[tw]:document.querySelectorAll(".tw")).forEach(w=>{const b=w.firstElementChild,s=b.scrollWidth>b.clientWidth+1;
  w.classList.toggle("scr",s&&b.scrollLeft+b.clientWidth<b.scrollWidth-1);w.previousElementSibling.classList.toggle("hidden",!s);w.style.setProperty("--bw",b.clientWidth+"px")})}
 /* #196: the placeholder of Write min and Write max tells if the tag is writable */
 function tagUpd(i,k){const p=f=>document.getElementById(`i-devices.${i}.tags.${k}.${f}`),w=p("writable");if(!w)return;
  ["write_min","write_max"].forEach(f=>{const e=p(f);if(e)e.placeholder=w.checked?"no limit":"writable only"})}
-function tagsInit(){document.querySelectorAll("[data-more]").forEach(b=>{const[i,k]=b.dataset.more.split(".");tagUpd(i,k);updMore(b)});tblUpd()}
-$("#f-dev").addEventListener("click",e=>{const t=e.target.dataset||{};if(t.delTag||t.delDev)detOpen.clear();if(t.more)togDet(e.target)},true);
+/* #197 #221: the rare keys of a device, in the panel "More device settings (n)" below its fields.
+   n = the keys with a value in the document (a checkbox at its default without the key does not count). */
+const devOpen=new Set();
+function devMore(i){const p=k=>`devices.${i}.${k}`,o=devOpen.has(String(i));
+ return `<div class="row" style="margin-top:8px"><button type="button" class="more dmore" data-dmore="${i}" aria-expanded="${o}" aria-controls="dset-${i}">More device settings</button></div>`+
+  `<div class="dsub${o?"":" hidden"}" id="dset-${i}"><div class="grid">${
+  field(p("write_multiple"),"Write with FC15/FC16","bool",false,0,{help:"fc16",ck:1})}</div></div>`}
+function updDmore(b){const r=document.getElementById(b.getAttribute("aria-controls")),open=!r.classList.contains("hidden");
+ const n=[...r.querySelectorAll("[data-p]")].filter(e=>e.dataset.k==="bool"?get(cfg,e.dataset.p)!==undefined||e.checked!==(e.dataset.def==="1"):e.value.trim()!=="").length;
+ b.textContent=`${open?"▾":"▸"} More device settings${n?` (${n})`:""}`;b.setAttribute("aria-expanded",open)}
+function togDmore(b){const r=document.getElementById(b.getAttribute("aria-controls")),open=r.classList.toggle("hidden")===false;
+ devOpen[open?"add":"delete"](b.dataset.dmore);updDmore(b)}
+function tagsInit(){document.querySelectorAll("[data-dmore]").forEach(updDmore);document.querySelectorAll("[data-more]").forEach(b=>{const[i,k]=b.dataset.more.split(".");tagUpd(i,k);updMore(b)});tblUpd()}
+$("#f-dev").addEventListener("click",e=>{const t=e.target.dataset||{};if(t.delTag||t.delDev)detOpen.clear();if(t.delDev)devOpen.clear();if(t.more)togDet(e.target);if(t.dmore)togDmore(e.target)},true);
 $("#f-dev").addEventListener("input",e=>{const r=e.target.closest("tr.det");if(r)updMore(r.previousElementSibling.querySelector("[data-more]"));
+ const d=e.target.closest(".dsub");if(d)updDmore(document.querySelector(`[aria-controls="${d.id}"]`));
  const m=/^devices\.(\d+)\.tags\.(\d+)\./.exec(e.target.dataset.p||"");if(m)tagUpd(m[1],m[2])});
 document.addEventListener("scroll",e=>{const w=e.target.parentElement;if(w&&w.classList.contains("tw"))tblUpd(w);if(xb)xPos()},true);
 addEventListener("resize",()=>{tblUpd();if(xb)xOpen(xb,false)});
@@ -339,6 +359,7 @@ function renderForms(){
  renderPrefix();
  const devs=cfg.devices||[];
  $("#f-dev").innerHTML=devs.map((d,i)=>`<div class="card"><div class="grid">${field(`devices.${i}.name`,"Name","str",0,0,{ml:39,help:"name"})+field(`devices.${i}.unit_id`,"Unit ID","int",0,0,{help:"unit"})+field(`devices.${i}.poll_ms`,"Poll interval (ms)","int",0,0,{help:"poll"})+field(`devices.${i}.offline_after`,"Offline after (cycles)","int",0,0,{help:"off"})+field(`devices.${i}.type`,"Type (template)","str",0,0,{ml:39,help:"type"})}</div>
+ ${devMore(i)}
  <div class="topic" data-topic="${i}"></div>
  ${tagTable(d,i)}
  <div class="row" style="margin-top:10px"><button data-add-tag="${i}">+ tag</button><button data-del-dev="${i}">Remove device</button></div></div>`).join("");

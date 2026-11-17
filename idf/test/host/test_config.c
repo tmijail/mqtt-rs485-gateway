@@ -1278,6 +1278,24 @@ static void test_device_block_reads(void)
                           "\"block_reads\":1,\"tags\":[{\"name\":\"t\","
                           "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
                     "devices[0].block_reads: expected true or false");
+    /* #197: write_multiple, the build's setting when absent */
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+              "\"devices\":[{\"name\":\"A\",\"unit_id\":1,\"write_multiple\":true,\"tags\":[{"
+              "\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]},"
+              "{\"name\":\"B\",\"unit_id\":2,\"write_multiple\":false,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]},"
+              "{\"name\":\"C\",\"unit_id\":3,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+        err.msg);
+    TEST_ASSERT_EQUAL(1, cfg.devices[0].write_multiple);
+    TEST_ASSERT_EQUAL(0, cfg.devices[1].write_multiple);
+    TEST_ASSERT_EQUAL(GW_CFG_BUILD_DEFAULT, cfg.devices[2].write_multiple);
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"write_multiple\":\"yes\",\"tags\":[{\"name\":\"t\","
+                          "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+                    "devices[0].write_multiple: expected true or false");
 }
 
 /* MB-12: scan classes. */

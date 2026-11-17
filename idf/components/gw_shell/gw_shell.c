@@ -935,11 +935,19 @@ static int cmd_config(int argc, char **argv)
             snprintf(blocks, sizeof(blocks), "one request per tag%s",
                      dev->block_reads == GW_CFG_BUILD_DEFAULT ? " (default)" : "");
         }
+#if CONFIG_GW_MB_FORCE_MULTI_WRITE
+        const bool build_multi = true;
+#else
+        const bool build_multi = false;
+#endif
+        bool multi = dev->write_multiple == GW_CFG_BUILD_DEFAULT ? build_multi
+                                                                 : dev->write_multiple != 0;
         out("  %-16s unit %3u, poll %lu ms, slow %lu ms, offline after %u, %u tag(s) "
-            "(%u fast, %u slow), %s\n",
+            "(%u fast, %u slow), %s%s\n",
             dev->name, dev->unit_id, (unsigned long)dev->poll_ms,
             (unsigned long)dev->slow_poll_ms, dev->offline_after, dev->tag_count,
-            dev->tag_count - slow, slow, blocks);
+            dev->tag_count - slow, slow, blocks,
+            multi ? ", writes FC15/FC16" : "");   /* #197 */
     }
     if (c->modbus_tcp.enabled) {
         char clients[GW_MBTCP_MAX_ALLOWED * 20] = "";

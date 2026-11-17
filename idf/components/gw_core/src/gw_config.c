@@ -1465,9 +1465,10 @@ static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_
                          gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"name",        "unit_id", "poll_ms", "slow_poll_ms",
-                                       "offline_after", "block_reads", "max_gap", "tags", "type"};
+                                       "offline_after", "block_reads", "max_gap", "tags", "type",
+                                       "write_multiple"};
     long unit, poll, off, gap, slow;
-    bool merge;
+    bool merge, multi;
     char p[96];
     if (!check_keys(o, path, keys, sizeof(keys) / sizeof(keys[0]), err) ||
         !get_string(o, "name", path, true, "", d->name, sizeof(d->name), err) ||
@@ -1478,9 +1479,14 @@ static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_
                  3600000, &slow, err) ||
         !get_int(o, "offline_after", path, false, 3, 1, 1000, &off, err) ||
         !get_bool(o, "block_reads", path, true, &merge, err) ||
-        !get_int(o, "max_gap", path, false, GW_CFG_BUILD_DEFAULT, 0, GW_MAX_GAP_LIMIT, &gap, err)) {
+        !get_int(o, "max_gap", path, false, GW_CFG_BUILD_DEFAULT, 0, GW_MAX_GAP_LIMIT, &gap, err) ||
+        !get_bool(o, "write_multiple", path, false, &multi, err)) {
         return false;
     }
+    /* #197: an absent key keeps the build's setting (CONFIG_GW_MB_FORCE_MULTI_WRITE) */
+    d->write_multiple = cJSON_GetObjectItemCaseSensitive(o, "write_multiple") != NULL
+                            ? (int8_t)multi
+                            : (int8_t)GW_CFG_BUILD_DEFAULT;
     /* MB-11: absent keys keep the build's setting (CONFIG_GW_MB_BLOCK_READS / _MAX_GAP) */
     bool has_merge = cJSON_GetObjectItemCaseSensitive(o, "block_reads") != NULL;
     d->block_reads = has_merge ? (int8_t)merge : (int8_t)GW_CFG_BUILD_DEFAULT;

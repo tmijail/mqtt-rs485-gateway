@@ -23,7 +23,8 @@ extern "C" {
 typedef struct {
     bool merge_reads;         /* MB-11 block reads */
     uint16_t max_gap;         /* largest hole bridged by a block read */
-    bool force_multi_write;   /* use FC15/FC16 even for single coils/registers */
+    bool force_multi_write;   /* use FC15/FC16 even for single coils/registers: the default of
+                                 * a device without write_multiple (#197) */
     /* Offline devices are probed (first request of the cycle, a single attempt) at
      * 2, 4, 8 ... x poll_ms, up to max(poll_ms, offline_probe_max_ms). */
     uint32_t offline_probe_max_ms;
