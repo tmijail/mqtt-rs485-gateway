@@ -1764,10 +1764,11 @@ def check_pem_files(gw, obs, node, pki, t0):
     """Issue #221 on GW15 (its document names /cfg/missing.pem, which is not there): the PEM files
     of the web UI. A dry run refuses the missing file at its JSON path; PUT /api/files loads the
     CA (201, its subject and the CA flag), refuses the same name again (409, also with the old
-    replace=1, which is not approved) and a file that is not PEM (400); GET /api/files lists it, never with its content. A client key that does not
-    agree with the client certificate is refused at mqtt.tls.key_file, the right key is not, and
-    GET /api/files tells which certificate the key agrees with. After a restart the gateway
-    connects to the TLS broker with the loaded CA (the configuration did not change)."""
+    replace=1, which is not approved) and a file that is not PEM (400); GET /api/files lists it,
+    never with its content. A client key that does not agree with the client certificate is
+    refused at mqtt.tls.key_file, the right key is not, and GET /api/files tells which
+    certificate the key agrees with. After a restart the gateway connects to the TLS broker with
+    the loaded CA (the configuration did not change)."""
     wait_http("/api/status", 30)
     _, _, doc = http("GET", "/api/config")
     doc = as_json(doc) or {}
