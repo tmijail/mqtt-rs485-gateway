@@ -7,6 +7,7 @@
 
 #include "gw_conv.h"
 #include "gw_mbap.h"
+#include "gw_ota.h"
 #include "gw_port.h"
 
 static const char *TAG = "spb";
@@ -31,6 +32,7 @@ static const char *const k_count_names[GW_NODE_IO_COUNT] = {
 #define NAME_FW_STATE "Firmware Update/State"
 #define NAME_FW_PROGRESS "Firmware Update/Progress"
 #define NAME_BOOT_OTHER "Node Control/Boot Other Slot"
+#define NAME_FW_SHA256 "Node Control/Firmware SHA-256"
 #define NAME_UPTIME   "Node Info/Uptime"
 #define NAME_FREE_HEAP "Node Info/Free Heap"
 #define NAME_MIN_HEAP "Node Info/Min Free Heap"
@@ -589,7 +591,14 @@ static bool publish_nbirth(gw_node_t *n)
         n->info.reset_reason;
     metric(n, i++, NAME_SCAN_RATE, GW_ALIAS_SCAN_RATE, SPB_DT_UINT32, now)->v.num =
         n->scan_rate_ms;
-    metric(n, i++, NAME_FW_UPDATE, GW_ALIAS_FW_UPDATE, SPB_DT_STRING, now)->v.str = "";
+    if (n->cfg->ota.mqtt) {
+        /* #223, #215: only with ota.mqtt can a host start an update. Without it the gateway never
+         * accepts these metrics, so they are not in the NBIRTH (tck-id-topics-nbirth-metric-reqs:
+         * every metric that the node reports on; tck-id-topics-nbirth-metrics: name, datatype and
+         * value; a host shows no control that the gateway refuses) */
+        metric(n, i++, NAME_FW_UPDATE, GW_ALIAS_FW_UPDATE, SPB_DT_STRING, now)->v.str = "";
+        metric(n, i++, NAME_FW_SHA256, GW_ALIAS_FW_SHA256, SPB_DT_STRING, now)->v.str = "";
+    }
     metric(n, i++, NAME_FW_STATE, GW_ALIAS_FW_STATE, SPB_DT_STRING, now)->v.str = n->fw_state;
     metric(n, i++, NAME_FW_PROGRESS, GW_ALIAS_FW_PROGRESS, SPB_DT_UINT32, now)->v.num =
         n->fw_progress;
@@ -1178,15 +1187,46 @@ static bool on_ncmd_metric(void *ctx, const spb_rx_metric_t *m)
         n->cmd_reboot |= rx_true(m);
         return true;
     }
-    if (by_name ? strcmp(m->name, NAME_FW_UPDATE) == 0 : m->alias == GW_ALIAS_FW_UPDATE) {
-        /* FW-1: the payload decoded in full before this pass: the URL is complete */
+    bool fw_url = by_name ? strcmp(m->name, NAME_FW_UPDATE) == 0 : m->alias == GW_ALIAS_FW_UPDATE;
+    bool fw_sha = by_name ? strcmp(m->name, NAME_FW_SHA256) == 0 : m->alias == GW_ALIAS_FW_SHA256;
+    if ((fw_url || fw_sha) && !n->cfg->ota.mqtt) {
+        /* #223: with ota.mqtt off these metrics are not in the NBIRTH, and the gateway refuses
+         * them (tck-id-operational-behavior-data-commands-ncmd-metric-name: a host SHOULD send
+         * only NBIRTH metrics, and the Edge Node is resilient to the others) */
+        log_discard("NCMD", m, "firmware updates from MQTT are off (ota.mqtt); no update started");
+        return true;
+    }
+    if (fw_sha) {
+        /* #215 (tck-id-operational-behavior-data-commands-ncmd-metric-value: a String). "" = no
+         * check for the next update */
+        uint8_t sha[GW_OTA_SHA256_LEN];
+        char why[96];
+        if (m->is_null || m->kind != SPB_VAL_STRING) {
+            log_discard("NCMD", m, "Firmware SHA-256 needs a string");
+            n->cmd_fw_sha_bad = true;
+        } else if (n->ops.firmware_sha256 == NULL) {
+            log_discard("NCMD", m, "firmware updates not supported");
+        } else if (m->v.s[0] == '\0') {
+            GW_LOGI(TAG, "NCMD Firmware SHA-256 cleared: the next update has no SHA-256 check");
+            n->ops.firmware_sha256(n->ops.ctx, NULL);
+        } else if (!gw_ota_sha256_parse(m->v.s, sha, why, sizeof(why))) {
+            log_discard("NCMD", m, why);
+            n->cmd_fw_sha_bad = true;
+        } else {
+            GW_LOGI(TAG, "NCMD Firmware SHA-256 set for the next update");
+            n->ops.firmware_sha256(n->ops.ctx, sha);
+        }
+        return true;
+    }
+    if (fw_url) {
+        /* FW-1: started after this pass (gw_node_handle_message), so that a Firmware SHA-256
+         * later in the same NCMD applies to it (#215) */
         if (m->is_null || m->kind != SPB_VAL_STRING || m->v.s[0] == '\0') {
             log_discard("NCMD", m, "Firmware Update needs the image URL as a string");
         } else if (n->ops.firmware_update == NULL) {
             log_discard("NCMD", m, "firmware updates not supported");
         } else {
-            GW_LOGW(TAG, "NCMD Firmware Update from %s", m->v.s);
-            n->ops.firmware_update(n->ops.ctx, m->v.s);
+            n->cmd_fw_update = true;
         }
         return true;
     }
@@ -1219,6 +1259,20 @@ static bool on_ncmd_metric(void *ctx, const spb_rx_metric_t *m)
         log_discard("NCMD", m, "neither name nor alias");
     } else {
         log_discard("NCMD", m, "unknown or read-only metric");
+    }
+    return true;
+}
+
+/* #215: the third pass of an NCMD with a valid Firmware Update: start the first one. */
+static bool on_ncmd_fw_url(void *ctx, const spb_rx_metric_t *m)
+{
+    gw_node_t *n = ctx;
+    bool url = m->name != NULL ? strcmp(m->name, NAME_FW_UPDATE) == 0
+                               : m->alias == GW_ALIAS_FW_UPDATE;
+    if (n->cmd_fw_update && url && !m->is_null && m->kind == SPB_VAL_STRING && m->v.s[0] != '\0') {
+        n->cmd_fw_update = false;
+        GW_LOGW(TAG, "NCMD Firmware Update from %s", m->v.s);
+        n->ops.firmware_update(n->ops.ctx, m->v.s);
     }
     return true;
 }
@@ -1437,6 +1491,7 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
         n->cmd_rebirth = n->cmd_reboot = false;
         n->cmd_do_mask = 0;
         n->cmd_scan_rate = false;
+        n->cmd_fw_update = n->cmd_fw_sha_bad = false;
         /* All or nothing: decode the whole payload first, then apply it. */
         if (!spb_decode(payload, len, NULL, NULL, NULL)) {
             GW_LOGW(TAG, "NCMD: undecodable payload (%u bytes: %s; strings up to %d characters, names up "
@@ -1445,6 +1500,13 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
             return;
         }
         spb_decode(payload, len, NULL, on_ncmd_metric, n);
+        if (n->cmd_fw_update && n->cmd_fw_sha_bad) {
+            n->cmd_fw_update = false;
+            GW_LOGW(TAG, "NCMD Firmware Update not started: the Firmware SHA-256 of the same NCMD "
+                         "is not valid");
+        } else if (n->cmd_fw_update) {
+            spb_decode(payload, len, NULL, on_ncmd_fw_url, n);   /* #215: the URL, after the SHA */
+        }
         if (n->cmd_do_mask) {
             publish_io(n, n->cmd_do_mask);
         }

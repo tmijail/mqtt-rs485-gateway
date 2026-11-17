@@ -75,6 +75,10 @@ typedef struct {
     int fw_updates;              /* FW-1: firmware_update calls */
     int boot_others;             /* issue #144 item 6: boot_other calls */
     char fw_url[SPB_STRING_MAX + 1];
+    int fw_shas;                 /* #215: firmware_sha256 calls */
+    bool fw_sha_set;             /* ... the last one gave a SHA-256 (not NULL) */
+    uint8_t fw_sha[32];          /* ... and this one */
+    bool fw_sha_at_update;       /* a SHA-256 was set when firmware_update was called */
     gw_node_diag_t diag;         /* SPB-17: what the diagnostics op reports */
 } recorder_t;
 

@@ -21,6 +21,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "gw_auth.h"
 #include "gw_bootloop.h"
 #include "gw_bus.h"
 #include "gw_storage.h"
@@ -63,7 +64,6 @@ _Static_assert(GW_OTA_CAPS_OFFSET == sizeof(esp_image_header_t) + sizeof(esp_ima
 
 static const gw_config_t *s_cfg;
 static gw_fw_hooks_t s_hooks;
-static bool s_enabled;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t s_fmt_lock;   /* s_st.text and s_st.detail (formatted in place) */
 static StaticSemaphore_t s_fmt_lock_buf;
@@ -94,6 +94,9 @@ static char *s_url;                    /* allocated for a download only (#80) */
 static char *s_ca_pem;                 /* read for a download only (#80), freed after it */
 static const char *s_ca_name;          /* CA file of the update server, NULL: public CAs */
 static const char *s_ca_key;           /* its configuration key, for the messages */
+/* Issue #215: the SHA-256 that the running transfer must agree with (s_sha_on) */
+static bool s_sha_on;
+static RTC_FAST_ATTR uint8_t s_sha[GW_OTA_SHA256_LEN];
 
 /* upload state (web server task) */
 static esp_ota_handle_t s_up;
@@ -921,12 +924,11 @@ static void prev_undo(void)
     }
 }
 
-static bool take(char *why, size_t cap)
+/* #223: no ota.enabled any more: an update from the web UI is always possible (the Sparkplug
+ * engine refuses the NCMD without ota.mqtt). @p sha256: the SHA-256 of the new transfer (#215),
+ * NULL: none (also for the other slot). */
+static bool take(const uint8_t *sha256, char *why, size_t cap)
 {
-    if (!s_enabled) {
-        snprintf(why, cap, "firmware updates are disabled (ota.enabled)");
-        return false;
-    }
     portENTER_CRITICAL(&s_mux);
     gw_ota_trial_t t = s_trial;
     portEXIT_CRITICAL(&s_mux);
@@ -940,7 +942,69 @@ static bool take(char *why, size_t cap)
         return false;
     }
     s_restore = false;
+    s_sha_on = sha256 != NULL;
+    if (s_sha_on) {
+        memcpy(s_sha, sha256, sizeof(s_sha));
+    }
+    portENTER_CRITICAL(&s_mux);
+    s_st.sha_mismatch = false;   /* a new transfer: the values of the last one go */
+    portEXIT_CRITICAL(&s_mux);
     return true;
+}
+
+/* Issue #215: the SHA-256 of the @p len bytes written to @p part (read back from the flash)
+ * against the one of the user, before the image is marked as the boot image. True without a
+ * SHA-256 to check. On a mismatch the status keeps the two values, and @p why says it. Runs in
+ * the task of the transfer; the buffer and the hash state are in PSRAM (#80). */
+static bool sha_verify(const esp_partition_t *part, size_t len, const char *version, char *why,
+                       size_t cap)
+{
+    if (!s_sha_on) {
+        return true;
+    }
+    const size_t chunk = 4096;
+    uint8_t *buf = gw_storage_malloc(chunk + sizeof(gw_sha256_t));
+    if (buf == NULL) {
+        snprintf(why, cap, "image %s: no memory to check its SHA-256", version);
+        return false;
+    }
+    gw_sha256_t *h = (gw_sha256_t *)(void *)(buf + chunk);
+    gw_sha256_init(h);
+    esp_err_t e = part != NULL ? ESP_OK : ESP_ERR_NOT_FOUND;
+    for (size_t off = 0; off < len && e == ESP_OK; off += chunk) {
+        size_t n = len - off < chunk ? len - off : chunk;
+        e = esp_partition_read(part, off, buf, n);
+        if (e == ESP_OK) {
+            gw_sha256_update(h, buf, n);
+        }
+        if ((off / chunk) % 16u == 15u) {
+            vTaskDelay(1);   /* the idle task of this core is watched by the TWDT */
+        }
+    }
+    uint8_t got[GW_OTA_SHA256_LEN];
+    gw_sha256_final(h, got);
+    heap_caps_free(buf);
+    if (e != ESP_OK) {
+        snprintf(why, cap, "image %s: its SHA-256 could not be calculated (%s)", version,
+                 esp_err_to_name(e));
+        return false;
+    }
+    char want[GW_OTA_SHA256_HEX], file[GW_OTA_SHA256_HEX];
+    gw_ota_sha256_hex(s_sha, want);
+    if (memcmp(got, s_sha, sizeof(got)) == 0) {
+        ESP_LOGI(TAG, "image %s: the SHA-256 agrees (%s)", version, want);
+        return true;
+    }
+    gw_ota_sha256_hex(got, file);
+    ESP_LOGE(TAG, "image %s: the SHA-256 does not agree: expected %s, file %s", version, want,
+             file);
+    portENTER_CRITICAL(&s_mux);
+    memcpy(s_st.sha_expected, s_sha, sizeof(s_st.sha_expected));
+    memcpy(s_st.sha_file, got, sizeof(s_st.sha_file));
+    s_st.sha_mismatch = true;
+    portEXIT_CRITICAL(&s_mux);
+    snprintf(why, cap, "image %s: the SHA-256 of the file does not agree", version);
+    return false;
 }
 
 /* The new image is written, verified and set to boot: restart into it. */
@@ -1083,6 +1147,14 @@ static void download_task(void *arg)
         download_fail(version, "download of %s interrupted after %lu bytes (%s)", version, got,
                       esp_err_to_name(e));
     }
+    /* issue #215: before the image can become the boot image */
+    char swhy[120];
+    if (!sha_verify(esp_ota_get_next_update_partition(NULL),
+                    (size_t)esp_https_ota_get_image_len_read(h), version, swhy, sizeof(swhy))) {
+        esp_https_ota_abort(h);
+        h = NULL;
+        download_fail(version, "%s", swhy);
+    }
     /* issue #144 items 2 and 5: the expected mode is stored before the boot partition */
     last_write(GW_FWLAST_RESTARTING, version, expected_now(s_force), "");
     char rwhy[120];
@@ -1109,7 +1181,8 @@ static void download_task(void *arg)
     vTaskDelete(NULL);
 }
 
-esp_err_t gw_fw_start_url(const char *url, bool force, char *why, size_t cap)
+esp_err_t gw_fw_start_url(const char *url, const uint8_t *sha256, bool force, char *why,
+                          size_t cap)
 {
     char reason[96];
     if (!gw_ota_url_ok(url, false, reason, sizeof(reason))) {
@@ -1117,7 +1190,7 @@ esp_err_t gw_fw_start_url(const char *url, bool force, char *why, size_t cap)
         refused(why);
         return ESP_ERR_INVALID_ARG;
     }
-    if (!take(why, cap)) {
+    if (!take(sha256, why, cap)) {
         refused(why);
         return ESP_ERR_INVALID_STATE;
     }
@@ -1172,9 +1245,10 @@ static void up_release(void)
     s_up_head = NULL;
 }
 
-esp_err_t gw_fw_upload_begin(size_t size, bool force, char *why, size_t cap)
+esp_err_t gw_fw_upload_begin(size_t size, const uint8_t *sha256, bool force, char *why,
+                             size_t cap)
 {
-    if (!take(why, cap)) {
+    if (!take(sha256, why, cap)) {
         refused(why);
         return ESP_ERR_INVALID_STATE;
     }
@@ -1211,8 +1285,8 @@ esp_err_t gw_fw_upload_begin(size_t size, bool force, char *why, size_t cap)
     s_up_version[0] = '\0';
     s_up_pct = 0;
     set_bytes(0, (uint32_t)size);
-    ESP_LOGW(TAG, "receiving a firmware upload (%u bytes) into %s%s", (unsigned)size,
-             s_up_part->label, force ? " (forced)" : "");
+    ESP_LOGW(TAG, "receiving a firmware upload (%u bytes) into %s%s%s", (unsigned)size,
+             s_up_part->label, force ? " (forced)" : "", s_sha_on ? " (SHA-256 check)" : "");
     set_status(GW_FW_DOWNLOADING, 0, NULL, "downloading");
     return ESP_OK;
 }
@@ -1327,6 +1401,12 @@ esp_err_t gw_fw_upload_end(bool complete, char *why, size_t cap)
         fail(s_up_version[0] ? s_up_version : NULL, "%s", why);
         return ESP_FAIL;
     }
+    /* issue #215: before esp_ota_end(), so that the image never becomes the boot image */
+    if (!sha_verify(s_up_part, s_up_done, s_up_version, why, cap)) {
+        esp_ota_abort(s_up);
+        fail(s_up_version, "%s", why);
+        return ESP_ERR_INVALID_CRC;
+    }
     /* issue #144 items 2 and 5: the expected mode is stored before the boot partition */
     last_write(GW_FWLAST_RESTARTING, s_up_version, expected_now(s_force), "");
     char rwhy[120];
@@ -1406,7 +1486,7 @@ static void boot_other_task(void *arg)
 
 esp_err_t gw_fw_boot_other(bool force, char *why, size_t cap)
 {
-    if (!take(why, cap)) {
+    if (!take(NULL, why, cap)) {
         refused(why);
         return ESP_ERR_INVALID_STATE;
     }
@@ -1600,14 +1680,13 @@ void gw_fw_early_init(void)
     }
 }
 
-esp_err_t gw_fw_init(const gw_config_t *cfg, bool enabled, const gw_fw_hooks_t *hooks)
+esp_err_t gw_fw_init(const gw_config_t *cfg, bool mqtt, const gw_fw_hooks_t *hooks)
 {
     gw_fw_early_init();
     s_cfg = cfg;
     s_hooks = *hooks;
-    s_enabled = enabled;
     portENTER_CRITICAL(&s_mux);
-    s_st.enabled = enabled;
+    s_st.mqtt = mqtt;
     bool pending = gw_ota_trial_open(&s_trial);
     portEXIT_CRITICAL(&s_mux);
     if (pending) {
@@ -1623,16 +1702,13 @@ esp_err_t gw_fw_init(const gw_config_t *cfg, bool enabled, const gw_fw_hooks_t *
     }
     gw_storage_set_commit_hook(on_commit);   /* issue #144 item 1 */
 
-    if (enabled) {
-        const char *ca = cfg->ota.ca_file[0] ? cfg->ota.ca_file
-                         : cfg->mqtt.tls.enabled && cfg->mqtt.tls.ca_file[0] ? cfg->mqtt.tls.ca_file
-                                                                              : NULL;
-        s_ca_name = ca;
-        s_ca_key = cfg->ota.ca_file[0] ? "ota.ca_file" : "mqtt.tls.ca_file";
-        ESP_LOGI(TAG, "firmware %s in %s; updates by URL trust %s%s", s_st.running, s_st.slot,
-                 ca != NULL ? "/cfg/" : "the public root CAs", ca != NULL ? ca : "");
-    } else {
-        ESP_LOGI(TAG, "firmware %s in %s; updates disabled (ota.enabled)", s_st.running, s_st.slot);
-    }
+    const char *ca = cfg->ota.ca_file[0] ? cfg->ota.ca_file
+                     : cfg->mqtt.tls.enabled && cfg->mqtt.tls.ca_file[0] ? cfg->mqtt.tls.ca_file
+                                                                          : NULL;
+    s_ca_name = ca;
+    s_ca_key = cfg->ota.ca_file[0] ? "ota.ca_file" : "mqtt.tls.ca_file";
+    ESP_LOGI(TAG, "firmware %s in %s; updates by URL trust %s%s; updates from MQTT %s (ota.mqtt)",
+             s_st.running, s_st.slot, ca != NULL ? "/cfg/" : "the public root CAs",
+             ca != NULL ? ca : "", mqtt ? "on" : "off");
     return ESP_OK;
 }

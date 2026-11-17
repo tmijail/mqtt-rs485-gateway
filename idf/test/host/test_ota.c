@@ -459,36 +459,86 @@ static void test_progress_unknown_size_by_time(void)
 static void test_request_body(void)
 {
     char url[GW_OTA_URL_MAX], why[96];
-    bool force = true;
+    bool force = true, has_sha = true;
+    uint8_t sha[GW_OTA_SHA256_LEN];
+#define PARSE(text, n) gw_ota_parse_request((text), (n), url, &force, sha, &has_sha, why, sizeof(why))
     const char *ok = "{\"url\": \"https://fw.example/gw.bin\"}";
-    TEST_ASSERT_TRUE(gw_ota_parse_request(ok, strlen(ok), url, &force, why, sizeof(why)));
+    TEST_ASSERT_TRUE(PARSE(ok, strlen(ok)));
     TEST_ASSERT_EQUAL_STRING("https://fw.example/gw.bin", url);
     TEST_ASSERT_FALSE(force);
+    TEST_ASSERT_FALSE(has_sha);
     const char *esc = "{\"url\":\"https://fw.example/a\\/b\"}";   /* JSON escape of '/' */
-    TEST_ASSERT_TRUE(gw_ota_parse_request(esc, strlen(esc), url, &force, why, sizeof(why)));
+    TEST_ASSERT_TRUE(PARSE(esc, strlen(esc)));
     TEST_ASSERT_EQUAL_STRING("https://fw.example/a/b", url);
     /* issue #144 item 3: force */
     const char *forced = "{\"url\":\"https://x/y\",\"force\":true}";
-    TEST_ASSERT_TRUE(gw_ota_parse_request(forced, strlen(forced), url, &force, why, sizeof(why)));
+    TEST_ASSERT_TRUE(PARSE(forced, strlen(forced)));
     TEST_ASSERT_TRUE(force);
     const char *unforced = "{\"force\":false,\"url\":\"https://x/y\"}";
-    TEST_ASSERT_TRUE(gw_ota_parse_request(unforced, strlen(unforced), url, &force, why,
-                                          sizeof(why)));
+    TEST_ASSERT_TRUE(PARSE(unforced, strlen(unforced)));
     TEST_ASSERT_FALSE(force);
+    /* issue #215: the SHA-256, capital letters too; "" = no check */
+    const char *with = "{\"url\":\"https://x/y\",\"sha256\":\"17BF8431d18e8d424fb300303419bebde3749"
+                       "ad415de75afdaf4ecb1776030dd\",\"force\":true}";
+    TEST_ASSERT_TRUE_MESSAGE(PARSE(with, strlen(with)), why);
+    TEST_ASSERT_TRUE(has_sha);
+    TEST_ASSERT_TRUE(force);
+    TEST_ASSERT_EQUAL_HEX8(0x17, sha[0]);
+    TEST_ASSERT_EQUAL_HEX8(0xdd, sha[31]);
+    char hex[GW_OTA_SHA256_HEX];
+    gw_ota_sha256_hex(sha, hex);
+    TEST_ASSERT_EQUAL_STRING("17bf8431d18e8d424fb300303419bebde3749ad415de75afdaf4ecb1776030dd", hex);
+    const char *empty = "{\"url\":\"https://x/y\",\"sha256\":\"\"}";
+    TEST_ASSERT_TRUE(PARSE(empty, strlen(empty)));
+    TEST_ASSERT_FALSE(has_sha);
+    const char *short_sha = "{\"url\":\"https://x/y\",\"sha256\":\"17bf\"}";
+    TEST_ASSERT_FALSE(PARSE(short_sha, strlen(short_sha)));
+    TEST_ASSERT_EQUAL_STRING("\"sha256\": expected 64 hexadecimal characters (0-9, a-f), got 4 "
+                             "characters", why);
     const char *bad[] = {"", "[]", "\"https://x\"", "{}", "{\"url\":1}",
                          "{\"url\":\"https://x\",\"force\":1}",
                          "{\"url\":\"https://x\",\"other\":true}",
                          "{\"url\":\"https://x\",\"force\":true,\"x\":1}", "{\"force\":true}",
-                         "{\"url\":\"https://x\""};
+                         "{\"url\":\"https://x\"",
+                         "{\"url\":\"https://x\",\"sha256\":1}",
+                         "{\"url\":\"https://x\",\"sha256\":\"17bf8431d18e8d424fb300303419bebde3749a"
+                         "d415de75afdaf4ecb1776030d \"}",
+                         "{\"url\":\"https://x\",\"sha256\":\"\",\"force\":true,\"x\":1}"};
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
-        TEST_ASSERT_FALSE_MESSAGE(gw_ota_parse_request(bad[i], strlen(bad[i]), url, &force, why,
-                                                       sizeof(why)),
-                                  bad[i]);
+        TEST_ASSERT_FALSE_MESSAGE(PARSE(bad[i], strlen(bad[i])), bad[i]);
     }
     /* not NUL terminated: only len bytes count */
     const char trunc[] = "{\"url\":\"https://x/y\"}garbage";
-    TEST_ASSERT_TRUE(gw_ota_parse_request(trunc, sizeof(trunc) - 1 - 7, url, &force, why,
-                                          sizeof(why)));
+    TEST_ASSERT_TRUE(PARSE(trunc, sizeof(trunc) - 1 - 7));
+#undef PARSE
+}
+
+/* Issue #215: the SHA-256 of the user: 64 hexadecimal characters, capital or small; a space or
+ * another length is an error with the reason */
+static void test_sha256_text(void)
+{
+    uint8_t sha[GW_OTA_SHA256_LEN];
+    char why[96];
+    char hex[GW_OTA_SHA256_HEX];
+    const char *good = "000102030405060708090A0B0C0D0E0F101112131415161718191a1b1c1d1e1f";
+    TEST_ASSERT_TRUE(gw_ota_sha256_parse(good, sha, why, sizeof(why)));
+    for (unsigned i = 0; i < GW_OTA_SHA256_LEN; i++) {
+        TEST_ASSERT_EQUAL_HEX8(i, sha[i]);
+    }
+    gw_ota_sha256_hex(sha, hex);
+    TEST_ASSERT_EQUAL_STRING("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", hex);
+    char spaced[GW_OTA_SHA256_HEX];
+    memcpy(spaced, good, sizeof(spaced));
+    spaced[10] = ' ';
+    TEST_ASSERT_FALSE(gw_ota_sha256_parse(spaced, sha, why, sizeof(why)));
+    TEST_ASSERT_EQUAL_STRING("expected 64 hexadecimal characters (0-9, a-f), got other characters "
+                             "in 64", why);
+    spaced[10] = 'g';
+    TEST_ASSERT_FALSE(gw_ota_sha256_parse(spaced, sha, NULL, 0));
+    TEST_ASSERT_FALSE(gw_ota_sha256_parse(good + 1, sha, why, sizeof(why)));
+    TEST_ASSERT_EQUAL_STRING("expected 64 hexadecimal characters (0-9, a-f), got 63 characters", why);
+    TEST_ASSERT_FALSE(gw_ota_sha256_parse("", sha, why, sizeof(why)));
+    TEST_ASSERT_FALSE(gw_ota_sha256_parse(NULL, sha, why, sizeof(why)));
 }
 
 int main(void)
@@ -510,5 +560,6 @@ int main(void)
     RUN_TEST(test_progress_every_ten_percent);
     RUN_TEST(test_progress_unknown_size_by_time);
     RUN_TEST(test_request_body);
+    RUN_TEST(test_sha256_text);
     return UNITY_END();
 }

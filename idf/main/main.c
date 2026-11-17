@@ -365,7 +365,7 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
      * stays, and the self-check confirms it */
     const gw_fw_hooks_t fw_hooks = {.changed = NULL, .restart = restart_soon,
                                     .self_check = self_check};
-    gw_fw_init(s_cfg, true, &fw_hooks);
+    gw_fw_init(s_cfg, false, &fw_hooks);
     if (mode == GW_WEB_COMMISSIONING) {
         gw_fw_mode(GW_OTA_MODE_COMMISSIONING, NULL);
     } else if (mode == GW_WEB_FAULT) {
@@ -552,7 +552,7 @@ void app_main(void)
     const gw_fw_hooks_t fw_hooks = {.changed = gw_edge_notify_firmware,
                                     .restart = gw_edge_request_restart,
                                     .self_check = self_check};
-    gw_fw_init(s_cfg, s_cfg->ota.enabled, &fw_hooks);
+    gw_fw_init(s_cfg, s_cfg->ota.mqtt, &fw_hooks);
     ESP_ERROR_CHECK(gw_edge_start(s_cfg, &s_info));
     gw_shell_mark_up(GW_SHELL_UP_EDGE);
     if (gw_io_start(s_cfg, gw_edge_notify_io) != ESP_OK) {

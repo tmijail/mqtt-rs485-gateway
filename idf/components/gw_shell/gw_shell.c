@@ -299,12 +299,11 @@ static int cmd_status(int argc, char **argv)
         /* issue #144: both slots (item 6), the trial and its expected mode, the state */
         static const char *const slot_state[] = {"empty", "previous", "set to boot", "rejected",
                                                  "invalid"};
-        out("ota      %s in %s, other slot %s (%s%s%s)%s | %s", fw->running, fw->slot,
+        out("ota      %s in %s, other slot %s (%s%s%s) | %s", fw->running, fw->slot,
             fw->other[0] ? fw->other : "-",
             (unsigned)fw->other_state < sizeof(slot_state) / sizeof(slot_state[0])
                 ? slot_state[fw->other_state] : "?",
-            fw->other_why[0] ? ": " : "", fw->other_why,
-            fw->enabled ? "" : " (updates disabled)", fw->detail);
+            fw->other_why[0] ? ": " : "", fw->other_why, fw->detail);
         if (fw->trial) {
             out(" (testing: it must reach %s mode", gw_ota_mode_name(fw->expected));
             if (fw->trial_left_s > 0) {   /* 0: the confirmation is retried */

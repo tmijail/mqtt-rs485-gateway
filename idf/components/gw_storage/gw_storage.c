@@ -69,9 +69,10 @@ static gw_schema_report_t *s_schema;
 
 #if CONFIG_GW_IO_SIMULATED
 /* Issue #146, emulator only: the E2E needs a key that a later image added. In the QEMU build,
- * "network.hostname" counts as schema 2, so a document with it needs an image that declares
- * schema 2 (the harness rewrites the capabilities block of an image copy). */
-static const gw_since_t k_sim_since[] = {{"network.hostname", NULL, 2}};
+ * "network.hostname" counts as the schema after the one of this build (GW_CONFIG_SCHEMA + 1), so
+ * a document with it needs an image that declares that schema (the harness rewrites the
+ * capabilities block of an image copy). The other keys count as schema 1 here. */
+static const gw_since_t k_sim_since[] = {{"network.hostname", NULL, GW_CONFIG_SCHEMA + 1}};
 #endif
 
 /* gw_config_schema_init(), or the emulator's table */

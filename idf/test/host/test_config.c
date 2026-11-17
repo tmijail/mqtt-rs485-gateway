@@ -285,7 +285,8 @@ static void test_syslog_section(void)
     ASSERT_REJECTED(parse(doc), "syslog.host: expected a string");
 }
 
-/* FW-1: "ota" section, optional; updates enabled by default. */
+/* FW-1: "ota" section, optional. #223: updates from MQTT (ota.mqtt) are off by default, and the
+ * old key ota.enabled is unknown (dropped, no migration before v1.0). */
 static void test_ota_section(void)
 {
     static const char base[] = "\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
@@ -293,20 +294,22 @@ static void test_ota_section(void)
     char doc[512];
     snprintf(doc, sizeof(doc), "{%s}", base);
     TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
-    TEST_ASSERT_TRUE(cfg.ota.enabled);
+    TEST_ASSERT_FALSE(cfg.ota.mqtt);
     TEST_ASSERT_EQUAL_STRING("", cfg.ota.ca_file);
     snprintf(doc, sizeof(doc), "{%s,\"ota\":{}}", base);
     TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
-    TEST_ASSERT_TRUE(cfg.ota.enabled);
-    snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"enabled\":false,\"ca_file\":\"fw-ca.pem\"}}", base);
+    TEST_ASSERT_FALSE(cfg.ota.mqtt);
+    snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"mqtt\":true,\"ca_file\":\"fw-ca.pem\"}}", base);
     TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
-    TEST_ASSERT_FALSE(cfg.ota.enabled);
+    TEST_ASSERT_TRUE(cfg.ota.mqtt);
     TEST_ASSERT_EQUAL_STRING("fw-ca.pem", cfg.ota.ca_file);
     snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"ca_file\":\"../ca.pem\"}}", base);
     ASSERT_REJECTED(parse(doc), "ota.ca_file: '../ca.pem' is not a valid file name");
     TEST_ASSERT_EQUAL_STRING("ota.ca_file", err.path);
-    snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"enabled\":1}}", base);
-    ASSERT_REJECTED(parse(doc), "ota.enabled: expected true or false");
+    snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"mqtt\":1}}", base);
+    ASSERT_REJECTED(parse(doc), "ota.mqtt: expected true or false");
+    snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"enabled\":true}}", base);
+    ASSERT_REJECTED(parse(doc), "ota.enabled: unknown key");
     snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"url\":\"https://x/y\"}}", base);
     ASSERT_REJECTED(parse(doc), "ota.url: unknown key");
     snprintf(doc, sizeof(doc), "{%s,\"ota\":true}", base);

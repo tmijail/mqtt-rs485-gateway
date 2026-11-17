@@ -304,7 +304,8 @@ typedef struct {
     } web;
 
     struct {                     /* FW-1: firmware updates (NCMD and web) */
-        bool enabled;            /* default true */
+        bool mqtt;               /* #223: the NCMD Node Control/Firmware Update is accepted (and
+                                  * in the NBIRTH); default false. The web UI always can */
         char ca_file[GW_FILE_SIZE];  /* CA of the update server; "" = mqtt.tls.ca_file if
                                       * set, else the ESP-IDF bundle of public root CAs */
     } ota;
@@ -348,7 +349,7 @@ bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_
 /* Issue #144 item 3: the highest configuration schema that this firmware reads. Raise it (and
  * add the new keys and enum values to the "since" table in gw_config.c) when a key or an enum
  * value is added. Images declare it in their capabilities block (gw_ota.h). */
-#define GW_CONFIG_SCHEMA 1
+#define GW_CONFIG_SCHEMA 2
 
 /** gw_schema_init() with the "since" table of this firmware. */
 void gw_config_schema_init(gw_schema_report_t *rep);

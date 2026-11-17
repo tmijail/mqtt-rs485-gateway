@@ -139,11 +139,24 @@ void gw_ota_trial_refusal(const gw_ota_trial_t *t, const char *version, uint32_t
  *  spaces, shorter than GW_OTA_URL_MAX. On false @p why says why. */
 bool gw_ota_url_ok(const char *url, bool allow_http, char *why, size_t cap);
 
-/** Body of POST /api/firmware with a URL: {"url": "https://..."} and, as an option,
- *  "force": true (issue #144 item 3). Copies the URL to @p out (GW_OTA_URL_MAX); on false @p why
- *  says why. Does not validate the URL. */
-bool gw_ota_parse_request(const char *body, size_t len, char *out, bool *force, char *why,
-                          size_t cap);
+/* ---------- issue #215: the SHA-256 that the user gives for an image ---------- */
+#define GW_OTA_SHA256_LEN 32     /* bytes */
+#define GW_OTA_SHA256_HEX 65     /* 64 hexadecimal characters and the NUL */
+
+/** @p hex: 64 hexadecimal characters (capital or small letters) into @p out. Anything else
+ *  (other characters, spaces, another length, NULL) is false, and @p why (if not NULL) says why:
+ *  "expected 64 hexadecimal characters (0-9, a-f), got 63". */
+bool gw_ota_sha256_parse(const char *hex, uint8_t out[GW_OTA_SHA256_LEN], char *why, size_t cap);
+
+/** The 64 small hexadecimal characters of @p sha with the NUL (GW_OTA_SHA256_HEX). */
+void gw_ota_sha256_hex(const uint8_t sha[GW_OTA_SHA256_LEN], char out[GW_OTA_SHA256_HEX]);
+
+/** Body of POST /api/firmware with a URL: {"url": "https://..."} and, as options, "force": true
+ *  (issue #144 item 3) and "sha256": "<64 hexadecimal characters>" (issue #215; "" = no check).
+ *  Copies the URL to @p out (GW_OTA_URL_MAX); @p has_sha tells whether @p sha holds a SHA-256.
+ *  On false @p why says why. Does not validate the URL. */
+bool gw_ota_parse_request(const char *body, size_t len, char *out, bool *force,
+                          uint8_t sha[GW_OTA_SHA256_LEN], bool *has_sha, char *why, size_t cap);
 
 /* ---------- issues #102 and #144: what an image declares about itself ----------
  * A block right after the image's esp_app_desc_t (section .rodata_custom_desc, at

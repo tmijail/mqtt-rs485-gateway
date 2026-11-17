@@ -14,9 +14,10 @@
  *   4 Node Info/Firmware, 5 Node Info/Hardware, 6 Node Info/Reset Reason,
  *   7 Node Control/Scan Rate,
  *   10..17 DI/1..DI/8, 20..27 DO/1..DO/8, 30..37 Counter/1..Counter/8 (IO-4, UInt64 pulse
- *   counters of the DIs), 40 Node Control/Firmware Update (FW-1, String URL), 41 Firmware
- *   Update/State (String), 42 Firmware Update/Progress (UInt32 %), 43 Node Control/Boot Other
- *   Slot (issue #144 item 6, Boolean), 100 + n device tag with global index n,
+ *   counters of the DIs), 40 Node Control/Firmware Update (FW-1, String URL; only with
+ *   ota.mqtt, #223), 41 Firmware Update/State (String), 42 Firmware Update/Progress (UInt32 %),
+ *   43 Node Control/Boot Other Slot (issue #144 item 6, Boolean), 44 Node Control/Firmware
+ *   SHA-256 (#215, String; only with ota.mqtt), 100 + n device tag with global index n,
  *   50..54 SPB-17 diagnostics: Node Info/Uptime (UInt64 s), Free Heap and Min Free Heap
  *   (UInt32 B, internal RAM), RSSI (Int32 dBm, only with Wi-Fi), Modbus (DataSet, one row per
  *   device with the MB-13 counters), 55 Node Info/Time Synced (TIME-3, Boolean: SNTP),
@@ -80,6 +81,7 @@ extern "C" {
 #define GW_ALIAS_FW_STATE  41u
 #define GW_ALIAS_FW_PROGRESS 42u
 #define GW_ALIAS_BOOT_OTHER 43u  /* issue #144 item 6: NCMD, boot the image of the other slot */
+#define GW_ALIAS_FW_SHA256 44u   /* #215: NCMD, the SHA-256 for the next Firmware Update */
 #define GW_ALIAS_TAG_BASE  100u
 #define GW_ALIAS_UPTIME    50u   /* SPB-17 */
 #define GW_ALIAS_FREE_HEAP 51u
@@ -100,12 +102,14 @@ extern "C" {
                                      * Modbus TCP with the gateway enabled) */
 /* #174: with the UMH preset: Uptime, Free Heap, Min Free Heap, RSSI and the plain counters */
 #define GW_NODE_UMH_DIAG_METRICS (4 + GW_MB_FLAT_COUNT + GW_TCP_FLAT_COUNT)
-/* Node metrics of the NBIRTH, without template definitions (4 of them FW-1; the last 2: Time
- * Synced and Core Dump) and without the UMH preset (it has no definitions, and its
- * Devices/<name>/Online come from spb_payload_t.extra) */
-#define GW_NODE_BIRTH_METRICS   (11 + 3 * GW_NODE_IO_COUNT + GW_NODE_DIAG_METRICS + 2)
+/* Node metrics of the NBIRTH at most, without template definitions (5 of them FW-1, 2 of these
+ * only with ota.mqtt; the last 2: Time Synced and Core Dump) and without the UMH preset (it has
+ * no definitions, and its Devices/<name>/Online come from spb_payload_t.extra) */
+#define GW_NODE_BIRTH_METRICS   (12 + 3 * GW_NODE_IO_COUNT + GW_NODE_DIAG_METRICS + 2)
 /* #174: the same with the UMH preset, without its Devices/<name>/Online */
-#define GW_NODE_UMH_BIRTH_METRICS (11 + 3 * GW_NODE_IO_COUNT + GW_NODE_UMH_DIAG_METRICS + 2)
+#define GW_NODE_UMH_BIRTH_METRICS (12 + 3 * GW_NODE_IO_COUNT + GW_NODE_UMH_DIAG_METRICS + 2)
+/* #223: the NBIRTH metrics that only ota.mqtt adds (Firmware Update and Firmware SHA-256) */
+#define GW_NODE_MQTT_OTA_METRICS 2
 /* Scratch metrics: a whole device (+1 template instance), or the NBIRTH with one template
  * definition per device type. */
 #define GW_NODE_METRICS_MAX \
@@ -156,8 +160,12 @@ typedef struct {
     /** Restart the gateway (called after NDEATH has been published). */
     void (*reboot)(void *ctx);
     /** FW-1: start a firmware update from @p url (NCMD "Node Control/Firmware Update"); the
-     *  result comes back through gw_node_set_firmware_status(). NULL = not supported. */
+     *  result comes back through gw_node_set_firmware_status(). NULL = not supported. Only
+     *  with ota.mqtt (#223). */
     void (*firmware_update)(void *ctx, const char *url);
+    /** #215: the SHA-256 (32 bytes) that the next firmware_update must agree with (NCMD "Node
+     *  Control/Firmware SHA-256"); NULL: no check. Only with ota.mqtt. NULL op: not supported. */
+    void (*firmware_sha256)(void *ctx, const uint8_t *sha256);
     /** Issue #144 item 6: boot the image of the other slot on trial (NCMD "Node Control/Boot
      *  Other Slot" true; no force); the result comes back as the firmware status. NULL = not
      *  supported. */
@@ -199,6 +207,9 @@ typedef struct {
     gw_rbe_t tag_rbe[GW_MAX_TAGS];
     uint8_t di_reported;
     uint8_t do_reported;
+    /* #215, per NCMD (here: in the padding before count_reported, issue #80: 21 504 B) */
+    bool cmd_fw_update;                /* the NCMD carried a valid Firmware Update URL */
+    bool cmd_fw_sha_bad;               /* ... and a Firmware SHA-256 that is not valid */
     uint64_t count_reported[GW_NODE_IO_COUNT];   /* IO-4 */
     uint32_t scan_rate_ms;             /* SPB-15: current override, 0 = per-device poll_ms */
     /* SPB-17 */

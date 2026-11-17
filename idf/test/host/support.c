@@ -276,7 +276,18 @@ static void rec_firmware_update(void *ctx, const char *url)
 {
     (void)ctx;
     g_rec.fw_updates++;
+    g_rec.fw_sha_at_update = g_rec.fw_sha_set;
     snprintf(g_rec.fw_url, sizeof(g_rec.fw_url), "%s", url);
+}
+
+static void rec_firmware_sha256(void *ctx, const uint8_t *sha)
+{
+    (void)ctx;
+    g_rec.fw_shas++;
+    g_rec.fw_sha_set = sha != NULL;
+    if (sha != NULL) {
+        memcpy(g_rec.fw_sha, sha, sizeof(g_rec.fw_sha));
+    }
 }
 
 static void rec_boot_other(void *ctx)
@@ -307,6 +318,7 @@ gw_node_ops_t recorder_ops(void)
         .set_scan_rate = rec_set_scan_rate,
         .reboot = rec_reboot,
         .firmware_update = rec_firmware_update,
+        .firmware_sha256 = rec_firmware_sha256,
         .boot_other = rec_boot_other,
         .diagnostics = rec_diagnostics,
         .ctx = NULL,
