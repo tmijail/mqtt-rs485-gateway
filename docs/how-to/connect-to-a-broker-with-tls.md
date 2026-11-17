@@ -17,7 +17,7 @@ You need:
 - For mutual TLS: the certificate of the gateway and its private key, as PEM files. The key must not be encrypted (no password).
 - A valid clock on the gateway. The gateway examines the dates of the certificates. Refer to [The clock and the RTC battery](../reference/clock-and-rtc-battery.md).
 
-Each file has a maximum of 16 KiB. Its name has 1 to 32 characters `A-Z a-z 0-9 . _ -`, and must not end with `.json`. The gateway keeps the name of the file on your computer.
+Each file has a maximum of 16384 bytes, and the gateway keeps 16 files at most. Its name has 1 to 32 characters `A-Z a-z 0-9 . _ -`, and must not end with `.json`. The gateway keeps the name of the file on your computer.
 
 A save restarts the gateway. The gateway sends the NDEATH, and the polling and the Sparkplug session stop for some seconds.
 
@@ -31,7 +31,7 @@ A save restarts the gateway. The gateway sends the NDEATH, and the polling and t
 
 The field of the button selects the loaded file. If the file is not of the kind of the field, the message tells you, and the field does not change. For example, a private key does not go into **CA file**.
 
-If the message says that the file is already in the gateway, give the file another name on your computer. Then load it again.
+If the message says that the file is already in the gateway, give the file another name on your computer, and load it again. To replace the file in the gateway, use the card **Certificates**. Refer to [Manage the certificates](manage-the-certificates.md#replace-a-pem-file).
 
 ## Set the connection
 

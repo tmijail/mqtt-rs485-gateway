@@ -16,6 +16,7 @@
 #include "esp_err.h"
 #include "sdkconfig.h"
 #include "gw_cfgdoc.h"
+#include "gw_certs.h"
 #include "gw_cfgprev.h"
 #include "gw_config.h"
 
@@ -170,7 +171,21 @@ bool gw_storage_secrets_encrypted(void);
  *  NVS (encrypted only with CONFIG_NVS_ENCRYPTION). False if there is none yet. */
 bool gw_storage_get_web_tls(char *cert, size_t cert_cap, char *key, size_t key_cap);
 
-esp_err_t gw_storage_set_web_tls(const char *cert, const char *key);
+/** #205: gw_storage_get_web_tls() of the certificate in use (@p pending false) or of the
+ *  certificate that waits for the restart (@p pending true), with its source in @p src ("" when
+ *  none is stored). @p key NULL: the key is not read. */
+bool gw_storage_get_web_tls_ex(bool pending, char *cert, size_t cert_cap, char *key,
+                               size_t key_cap, char *src, size_t src_cap);
+
+/** Store the certificate in use: its PEM, its key and its source ("first-boot", "new",
+ *  "loaded"). */
+esp_err_t gw_storage_set_web_tls(const char *cert, const char *key, const char *src);
+
+/** #205: store the certificate that waits for the restart (the next boot uses it). */
+esp_err_t gw_storage_set_web_tls_pending(const char *cert, const char *key, const char *src);
+
+/** #205: discard the certificate that waits for the restart. ESP_ERR_NOT_FOUND: there is none. */
+esp_err_t gw_storage_erase_web_tls_pending(void);
 
 /** Secrets currently stored (empty strings when none). */
 void gw_storage_get_secrets(gw_secrets_t *out);
@@ -202,8 +217,8 @@ void gw_storage_save_last_good(const gw_config_t *cfg);
  */
 void gw_storage_recovery_config(gw_config_t *cfg);
 
-/** Largest file next to config.json that gw_storage_read_file() reads. */
-#define GW_STORAGE_FILE_MAX 16384
+/** Largest file next to config.json that gw_storage_read_file() reads: a PEM file (gw_certs.h). */
+#define GW_STORAGE_FILE_MAX GW_PEM_FILE_MAX_BYTES
 
 /**
  * Whole file /cfg/<@p name> (a TLS certificate or key, MQTT-4/5), NUL terminated, in PSRAM
@@ -226,6 +241,18 @@ size_t gw_storage_list_files(void (*cb)(void *ctx, const char *name, size_t size
  */
 esp_err_t gw_storage_write_file(const char *name, const void *data, size_t len, bool replace,
                                 char *why, size_t why_cap);
+
+/** #221: remove the file @p name next to config.json (a PEM file). ESP_ERR_NOT_FOUND when it is
+ *  not there. The reason of an error is in @p why. */
+esp_err_t gw_storage_delete_file(const char *name, char *why, size_t why_cap);
+
+/** #221: the size of the LittleFS partition and the bytes in use. False if it is not mounted. */
+bool gw_storage_fs_info(size_t *total, size_t *used);
+
+/** #221: the PEM files that the saved document names (/cfg/config.json, or the embedded default
+ *  when there is no file), also when the firmware rejects it. False when it cannot be read or is
+ *  not JSON: then nobody can tell which files it uses. */
+bool gw_storage_file_refs(gw_filerefs_t *out);
 
 /**
  * Small state of the local I/O kept in NVS (IO-3 outputs to hold across a restart, IO-4 pulse

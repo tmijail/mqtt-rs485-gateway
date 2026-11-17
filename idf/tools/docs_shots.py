@@ -511,6 +511,43 @@ def mqtt_tls(page):
     page.evaluate("document.querySelector('#f-mqtt').closest('.card').scrollIntoView()")
 
 
+def certificates_card(page):
+    """#205 #221: the card Certificates after mqtt_tls (ca.pem, gw01.crt and gw01.key are in
+    LittleFS): the HTTPS certificate of the first boot and the list of the PEM files."""
+    page.click("nav button[data-tab=config]")
+    page.wait_for_selector("#pf .pf-t")
+    page.wait_for_selector("#wc dl.kv")
+    page.evaluate("document.getElementById('certs').scrollIntoView()")
+
+
+def choose(page, pick, name, data):
+    """Choose the file @name (@data) with the picker @pick of the open dialog."""
+    with page.expect_file_chooser() as fc:
+        page.click(f'#dlg [data-pick="{pick}"]')
+    fc.value.set_files(files=[{"name": name, "mimeType": "application/x-pem-file",
+                               "buffer": data}])
+
+
+def pem_replace(page):
+    """#221: Replace gw01.crt in the card Certificates, with a new certificate and its key (the
+    files of the E2E PKI): the dialog after the dry run of the gateway (no replace)."""
+    certificates_card(page)
+    pki = e2e.make_pki(pathlib.Path(tempfile.mkdtemp(prefix="docs-pki-")))
+    page.click('#certs .pf-t [data-pfrep="gw01.crt"]')
+    choose(page, "f", "gw01-2027.crt", pki["client.crt"].read_bytes())
+    choose(page, "k", "gw01-2027.key", pki["client.key"].read_bytes())
+
+
+def web_cert_load(page):
+    """#205: Load a certificate in the card Certificates, with a certificate of a plant CA and its
+    key (e2e.make_web_pki, openssl): the dialog after the dry run of the gateway (no load)."""
+    certificates_card(page)
+    pki = e2e.make_web_pki(pathlib.Path(tempfile.mkdtemp(prefix="docs-webpki-")))
+    page.click("#wc-load")
+    choose(page, "c", "gw22-plant.pem", pki["plant.pem"].read_bytes())
+    choose(page, "k", "gw22-plant.key", pki["web.key"].read_bytes())
+
+
 def time_servers(page):
     """The card Time with a second SNTP server, and the explainer of the list."""
     page.click("nav button[data-tab=config]")
@@ -874,6 +911,30 @@ SHOTS = [
              "its subject, and the client key gw01.key 'Private key, EC P-256'. Each file field "
              "has a button 'Load a file…'. Below the section, a message tells that gw01.key is "
              "in the gateway."),
+    # #205 #221: docs/how-to/manage-the-certificates.md (after mqtt-tls: its files are in LittleFS)
+    Shot("certificates-card", "configured", DESKTOP, "/", actions=[certificates_card],
+         element="#certs", wait="#pf .pf-t",
+         alt="The card 'Certificates' of the Configuration tab. The section 'HTTPS certificate "
+             "of this page' shows the self-signed certificate of the first boot: its source, "
+             "subject, SANs, last day and SHA-256 fingerprint, with the buttons 'Load a "
+             "certificate…' and 'Make a new self-signed certificate'. The section 'Files for "
+             "MQTT TLS and firmware updates' lists ca.pem, gw01.crt and gw01.key with their "
+             "content, subject, last day and the keys that use them, each with Replace and "
+             "Remove, and the button 'Load a file…'."),
+    Shot("pem-replace-dialog", "configured", DESKTOP, "/", actions=[pem_replace],
+         wait="#pf-ex .exam:not(.bad)",
+         alt="The dialog 'Replace gw01.crt and gw01.key': the new certificate gw01-2027.crt and "
+             "the new key gw01-2027.key are chosen. The gateway examined the files: a "
+             "certificate CN=GW13 and a private key EC P-256 that agrees with it. It has the "
+             "button 'Replace the files' and Cancel."),
+    Shot("web-cert-load-dialog", "configured", DESKTOP, "/", actions=[web_cert_load],
+         wait="#wc-ex .exam:not(.bad)",
+         alt="The dialog 'Load the HTTPS certificate of the plant': the certificate "
+             "gw22-plant.pem with its chain and the key gw22-plant.key are chosen. The gateway "
+             "examined the files: the subject, the issuer CN=E2E plant CA, a chain of 2 "
+             "certificates, the SANs, and the key agrees. The list says that the new "
+             "certificate applies after a restart. It has the button 'Load the certificate' and "
+             "Cancel."),
     # #201: docs/reference/configuration.md (ntp)
     Shot("time-card", "configured", DESKTOP, "/", actions=[time_servers],
          wait="#xpl:not(.hidden)",
