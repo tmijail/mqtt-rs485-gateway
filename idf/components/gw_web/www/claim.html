@@ -14,6 +14,7 @@ h1{font-size:18px;margin:0 0 10px}h2{font-size:16px;margin:14px 0 6px}ol{padding
 label{display:flex;flex-direction:column;font-size:13px;color:var(--mut);margin:10px 0}
 input{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:7px 8px;margin-top:3px}
 button{font:inherit;padding:8px 14px;border-radius:4px;border:1px solid var(--acc);background:var(--acc);color:#fff;cursor:pointer}
+@media (prefers-color-scheme:dark){button{color:var(--bg)}}  /* white on the light blue --acc: 2.4:1 */
 button:disabled{opacity:.5;cursor:default}
 .ok{color:var(--ok)}.bad{color:var(--bad)}.mut{color:var(--mut)}.hidden{display:none}
 #msg{white-space:pre-wrap;margin-top:10px}
