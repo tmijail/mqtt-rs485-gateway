@@ -7009,12 +7009,15 @@ def check_status_api(gw, since):
         and tags.get("Energy") == MB6["Energy"] and isinstance(tags.get("Serial"), str) \
         and texts.get("Energy") == str(MB6["Energy"]) \
         and isinstance(tags.get("Counter"), int) and texts.get("Counter") == str(tags["Counter"]) \
-        and texts.get("Serial") is None and texts.get("Voltage") is None
+        and texts.get("Serial") is None and texts.get("Voltage") is None \
+        and meter.get("enabled") is True and meter.get("write_refused") == 0
     check("Issue #75 /api/status over HTTPS: pulse counters, failsafe, DOs of local rules, unknown "
           "DOs, buzzer alarm, clock (SNTP/RTC), diagnostics period, exact UInt64 and string values; "
-          "issue #188: value_text of the Int64 and UInt64 tags only",
+          "issue #188: value_text of the Int64 and UInt64 tags only; #214 enabled and #196 "
+          "write_refused of each device",
           ok, f"HTTP {st}; io {io}; buzzer {bz}; time {tm}; Energy {tags.get('Energy')!r} "
-              f"Serial {tags.get('Serial')!r}; value_text {texts}")
+              f"Serial {tags.get('Serial')!r}; value_text {texts}; enabled {meter.get('enabled')!r} "
+              f"write_refused {meter.get('write_refused')!r}")
 
 
 def check_rtc(gw, obs, nb, t0, since_reboot, ndata_t, first_nbirth):
@@ -7243,7 +7246,9 @@ def run_network_variant(args, work, slave):
         register bytes, and a DCMD with Bytes writes them back (FC16).
       * SPB-18: two devices of type "Pump" (PumpA and PumpB, both on unit 1 so that unit 2 keeps
         the single FC03 the main scenario checks, at holding 230 and 231): one template
-        definition in the NBIRTH, an instance per DBIRTH, a DCMD member write and its DDATA."""
+        definition in the NBIRTH, an instance per DBIRTH, a DCMD member write and its DDATA.
+      * #196, #197, #214 (check_devices_gw02): a device with write_multiple and a tag with write
+        limits (Drive, unit 1 holding 250), and a disabled device (Spare, unit 1 holding 240)."""
     node = "GW02"
     cfg = json.loads(config_json())
     cfg["sparkplug"]["edge_node_id"] = node
@@ -7264,6 +7269,16 @@ def run_network_variant(args, work, slave):
             {"name": "Run", "area": "coil", "address": 5 + k, "type": "bool"}]})
         slave.ctx.setValues(3, 230 + k, [1450 + 10 * k])
         slave.ctx.setValues(1, 5 + k, [True])
+    # #197 and #196: FC16 also for one register, and the write limits of a tag
+    cfg["devices"].append({"name": "Drive", "unit_id": 1, "poll_ms": 500, "write_multiple": True,
+                           "tags": [{"name": "Speed", "area": "holding", "address": 250,
+                                     "type": "uint16", "writable": True, "write_min": 0,
+                                     "write_max": 1500}]})
+    slave.ctx.setValues(3, 250, [100])
+    # #214: a disabled device on a unit that answers: it must get no request
+    cfg["devices"].append({"name": "Spare", "unit_id": 1, "poll_ms": 200, "enabled": False,
+                           "tags": [{"name": "Level", "area": "holding", "address": 240,
+                                     "type": "uint16", "writable": True}]})
     flash = flash_variant(args, work, "network", {"config.json": json.dumps(cfg, indent=2).encode()})
     obs = Observer()
     gw = Gateway(args, work / "uart0-network.log", flash)
@@ -7307,6 +7322,7 @@ def run_network_variant(args, work, slave):
     raw_data = obs.wait(f"{T}/DDATA/{node}/Raw", 5)
     writes = slave.ctx.writes[written_from:]
     tmpl = check_templates_gw02(obs, slave, node, nb)
+    devs = check_devices_gw02(obs, slave, gw, node, t0)
     gw.kill()
     obs.wait(f"{T}/NDEATH/{node}", 5)   # the will, before the main scenario starts
     obs.close()
@@ -7330,6 +7346,8 @@ def run_network_variant(args, work, slave):
           "Speed UInt16 'rpm' and Run Boolean), an instance per DBIRTH (template_ref, values, "
           "Quality), DCMD on a member -> FC06 and DDATA with the instance and that member only",
           tmpl[0], tmpl[1])
+    for name, ok, detail in devs:
+        check(name, ok, detail)
     check("NET-7 IPv6 on Ethernet: link-local, SLAAC (fec0::/64 from slirp's RA) and static "
           "address, shown by the shell; ICMPv6 echo to fec0::2 answered",
           lla and slaac and static and listed and cfg6 and replies,
@@ -7383,6 +7401,67 @@ def check_templates_gw02(obs, slave, node, nb):
     return ok, (f"definition {members} (alias {'yes' if d is not None and d.HasField('alias') else 'no'}); "
                 f"instances {inst}; DCMD writes {wrote}; DDATA "
                 f"{[(x.name, x.int_value) for x in dm.template_value.metrics] if dm else None}")
+
+
+def check_devices_gw02(obs, slave, gw, node, t0):
+    """#196, #197 and #214 on the GW02 boot (see run_network_variant). Returns [(name, ok, detail)].
+    Drive (write_multiple, Speed with write_min 0 and write_max 1500): a DCMD in the limits is one
+    FC16 of one register and a DDATA; a DCMD out of the limits writes nothing, gives the warning
+    (tck-id-operational-behavior-data-commands-dcmd-metric-value) and the refusal counter. Spare
+    (enabled false, on unit 1, which answers): no request at its address, no DBIRTH, the state
+    "disabled" in the shell, and a DCMD for it is discarded."""
+    out = []
+    drive = next((m for m in CAPTURE if m[1] == f"{T}/DBIRTH/{node}/Drive"), None) \
+        or obs.wait(f"{T}/DBIRTH/{node}/Drive", 15)
+    obs.drain()
+    before = len(slave.ctx.writes)
+    obs.publish_cmd(f"{T}/DCMD/{node}/Drive", [{"name": "Speed", "datatype": 6, "int_value": 1000}])
+    dd = obs.wait(f"{T}/DDATA/{node}/Drive", 5)
+    wrote = slave.ctx.writes[before:]
+    got = dd[2].metrics[0].int_value if dd and dd[2].metrics else None
+    out.append(("#197 write_multiple: a DCMD of one uint16 register is one FC16 (not FC06), and the "
+                "DDATA confirms it", drive is not None and wrote == [(16, 250, [1000])] and got == 1000,
+                f"DBIRTH {'yes' if drive else 'no'}; writes {wrote}; DDATA {got}"))
+    obs.drain()
+    since = time.monotonic()
+    before = len(slave.ctx.writes)
+    obs.publish_cmd(f"{T}/DCMD/{node}/Drive", [{"name": "Speed", "datatype": 6, "int_value": 2000}])
+    refused = gw.wait_log(r"DCMD: metric 'Speed' discarded: value 2000 out of the write limits "
+                          r"\[0, 1500\]", 5, since)
+    late = obs.wait(f"{T}/DDATA/{node}/Drive", 1.5)
+    wrote = slave.ctx.writes[before:]
+    _, h = gw.shell("devices", [r"^Drive\s+unit\s+1 online .*\| writes refused 1$",
+                                r"^Spare\s+unit\s+1 disabled\s+cycles 0 failed 0 \| ok 0 timeout 0 "])
+    counted, listed = h.values()
+    out.append(("#196 a DCMD out of the write limits (2000 > write_max 1500) writes nothing, gives a "
+                "warning and counts the refusal (shell 'devices')",
+                refused is not None and not wrote and late is None and counted is not None
+                and slave.get(3, 250)[0] == 1000,
+                f"log {(gw.find(r'metric .Speed. discarded', since) or ['none'])[0]}; writes {wrote}; "
+                f"DDATA {late is not None}; register {slave.get(3, 250)[0]}; "
+                + " | ".join(gw.find(r"^Drive\s+unit", since)[:1])))
+    # #214: Spare is never polled and has no DBIRTH; a DCMD for it is discarded
+    since = time.monotonic()
+    before = len(slave.ctx.writes)
+    obs.publish_cmd(f"{T}/DCMD/{node}/Spare", [{"name": "Level", "datatype": 6, "int_value": 7}])
+    dropped = gw.wait_log(r"DCMD for disabled device 'Spare' discarded", 5, since)
+    _, h = gw.shell(["status", "config"],
+                    [r"^network\s+.*Modbus \d+/9 devices online, 1 disabled$",
+                     r"^\s+Spare\s+unit\s+1, poll 200 ms, .*, disabled \(not polled\)$"])
+    status, summary = h.values()
+    asked = [r for t, r in zip(list(slave.times), list(slave.reads))
+             if t >= t0 and r[0] == 1 and r[2] == 240]
+    born = [m for m in CAPTURE if m[1] == f"{T}/DBIRTH/{node}/Spare"]
+    out.append(("#214 a disabled device (enabled false, on unit 1, which answers) gets no request on "
+                "the bus and no DBIRTH; the shell gives 'disabled' and does not count it; a DCMD "
+                "for it is discarded",
+                not asked and not born and listed is not None and status is not None
+                and summary is not None and dropped is not None
+                and slave.ctx.writes[before:] == [],
+                f"requests at holding 240: {asked[:3]}; DBIRTH {len(born)}; "
+                + " | ".join(gw.find(r"^Spare\s+unit|^\s+Spare\s+unit|^network\s", t0)[-3:])
+                + f"; DCMD log {dropped is not None}"))
+    return out
 
 
 # Issue #172: five location levels before each device name (Meter1: a device_id of 62 characters)
