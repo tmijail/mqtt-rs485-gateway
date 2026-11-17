@@ -50,7 +50,13 @@ table.tags{border-collapse:separate;border-spacing:0;table-layout:fixed}
 .tags th:first-child,.tags td:first-child{position:sticky;left:0;z-index:1;border-right:1px solid var(--line)}
 .tags td.chk{text-align:center}.tags td:last-child:not([colspan]){text-align:right}.tags td>button{padding:3px 8px;font-size:12px}.tags button.more{color:var(--acc);border-color:transparent;background:transparent}
 .tags tr.det td{position:static;background:var(--sub);padding:8px 10px 10px;border-right:0}
-.dgrid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:6px 12px;max-width:820px}
+.dgrid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:6px 12px;max-width:820px}.dgrid .nl{grid-column-start:1}
+/* #197 #221: the panel "More device settings" of a device; #214: a disabled device */
+button.more{color:var(--acc);border-color:transparent;background:transparent}button.dmore{padding-left:0}
+.dsub{background:var(--sub);border-radius:4px;padding:8px 10px 10px;margin:4px 0}.dsub .grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+.fld.hidden{display:none}#f-dev>.card.dis{border-style:dashed}.offnote{color:var(--warn);font-size:12.5px;margin:8px 0 0}
+@media (max-width:760px){.dsub .grid{grid-template-columns:minmax(0,1fr)}button.dmore{width:100%;min-height:44px;text-align:left}}
+@media (max-width:600px){.fld.ck{flex-direction:row-reverse;justify-content:flex-end;align-items:center;gap:8px;min-height:44px;font-size:14px}.fld.ck .lbl label{color:var(--fg)}.fld.ck input{width:20px;height:20px;margin:0;align-self:center}}
 @media (max-width:760px){#f-dev>.card{padding:10px}.tags col:nth-child(1){width:140px}.dgrid{position:sticky;left:10px;width:calc(var(--bw,320px) - 20px);grid-template-columns:repeat(2,minmax(0,1fr))}}
 /* #191 */
 body{min-height:100vh;display:flex;flex-direction:column}main{flex:1 0 auto;width:100%}html{scroll-padding-bottom:120px}
@@ -182,7 +188,7 @@ function ctl(path,kind,opts,optional,x){
  return `<input${a} data-k="${kind}" ${kind==="pw"?'type="password" autocomplete="new-password"':""}${x.ml?` maxlength="${x.ml}"`:""}${x.ph?` placeholder="${esc(x.ph)}"`:""} value="${v==null?"":esc(v)}">`;
 }
 function field(path,lbl,kind,opts,optional,x){x=x||{};
- return `<div class="fld"><span class="lbl"><label for="i-${path}">${lbl}</label>${x.help?qi(x.help,lbl):""}</span>${ctl(path,kind,opts,optional,x)}</div>`;
+ return `<div class="fld${x.ck?" ck":""}"><span class="lbl"><label for="i-${path}">${lbl}</label>${x.help?qi(x.help,lbl):""}</span>${ctl(path,kind,opts,optional,x)}</div>`;
 }
 // #189 #190
 /* #190: the explainers of the (?) buttons. A Sparkplug ID has 32 bytes at most, a device or tag
@@ -205,6 +211,7 @@ const HELP={
  ifd:"The delay between two transactions on the bus. Make it longer for a slow device. The gateway always keeps the silence of 3.5 characters between two frames.\n~0 to 1000 ms. Default: 5.",
  deb:"A digital input must stay in its new state for this time before the gateway accepts the change. With 20 ms, the pulse counters count up to approximately 25 Hz.\n~0 to 1000 ms. Default: 20.",
  webpw:"8 to 63 characters: letters A-Z and a-z, digits, spaces and the symbols of a keyboard. It is also the Wi-Fi password of the access point GW-Setup-XXXXXX.\n~Empty = the commissioning password of the console.",
+ en:"Clear it to keep a device in the configuration, but stop it. Example: a slave that is not connected yet, during the commissioning.\nThe gateway does not poll a disabled device and does not send its DBIRTH. The device uses no time of the bus. The validation still examines its keys.\n~Default: on.",
  name:"The name of the device in Sparkplug. The device ID is the device prefix, ':' and this name. Example: Pump1.\nFor UMH Core, put ':' between the last levels of the location. Do not use `/`, `+` or `#`.\n~1 to 39 bytes. Necessary.",
  unit:"The Modbus address of the device on the RS485 bus (the slave ID). The manual or the display of the device gives it. Use the Modbus test read to find out if the device answers.\n~1 to 247. Necessary.",
  poll:"The time between two reads of the tags of the device. Example: 1000 = one read each second.\n~50 to 3 600 000 ms. Default: 1000.",
@@ -222,7 +229,14 @@ const HELP={
  db:"The gateway publishes a new value only when it differs from the last published value by more than the deadband. The deadband is in the units of the tag, after the scale. Example: 0.5 for a temperature.\n~Not negative. Default: 0 = each change. Not for bool, string and bytes tags.",
  englo:"The bottom of the normal range of the value, in the units of the tag (after the scale). The host uses it, for example, for the scale of a gauge or a trend.\nThe gateway does not limit the value and sends no alarm. Empty = no range.\n~Sparkplug property engLow (Float). Not for bool, string and bytes tags.",
  enghi:"The top of the normal range of the value, in the units of the tag (after the scale). The host uses it, for example, for the scale of a gauge or a trend.\nThe gateway does not limit the value and sends no alarm. With Eng. low, Eng. high must be more than Eng. low. Empty = no range.\n~Sparkplug property engHigh (Float). Not for bool, string and bytes tags.",
+ wmin:"The lowest value that a host can write to the tag with a DCMD, in the units of the tag (after the scale and the offset).\nThe gateway refuses a DCMD with a lower value. It does not write to the device, and it writes a warning to the log. The next DDATA has the value of the device.\n~Empty = no limit. Only for a writable tag. Not for bool, string and bytes tags. Modbus TCP requests have no limits.",
+ wmax:"The highest value that a host can write to the tag with a DCMD, in the units of the tag (after the scale and the offset).\nThe gateway refuses a DCMD with a higher value. It does not write to the device, and it writes a warning to the log. The next DDATA has the value of the device.\n~Empty = no limit. Only for a writable tag. With Write min, not less than Write min. Not for bool, string and bytes tags. Modbus TCP requests have no limits.",
+ slow:"The poll interval of the tags with Scan slow. Example: 30000 = one read of the slow tags each 30 s, for a serial number or a setting.\n~50 to 3 600 000 ms, and not less than Poll interval. Default: 10 × Poll interval (at most 3 600 000).",
+ blk:"The gateway reads the tags of one area that are near each other with one request (a block). Clear it for a device that answers with an exception when a block contains registers that it does not have. The gateway then sends one request for each tag.\n~Default: on (build option CONFIG_GW_MB_BLOCK_READS). A block has 125 registers or 2000 bits at most.",
+ gap:"The number of unused registers or bits that one block can include, to read two tags of one area with one request. Example: with 4, the tags at the addresses 0 and 5 go into one block.\n~0 to 1999. Default: 0 (build option CONFIG_GW_MB_BLOCK_MAX_GAP). Not permitted with Block reads off.",
+ fc16:"The gateway writes one register with FC16 and one coil with FC15, in place of FC06 and FC05. Set it for a device that does not accept FC06 or FC05.\nA write of two or more registers always uses FC16.\n~Default: off (build option CONFIG_GW_MB_FORCE_MULTI_WRITE).",
  bit:"One bit of a holding or input register, for a bool tag. 0 = the least significant bit.\nFor a write, the gateway reads the register, then writes the full register with the changed bit.\n~0 to 15. Necessary for a bool tag in holding or input, and only there.",
+ scan:"fast = the gateway reads the tag each Poll interval. slow = each Slow poll interval of the device, for a value that changes rarely, for example a serial number.\nFast tags and slow tags are never in one read block.\n~Default: fast.",
  len:"The number of registers of a string or bytes tag. Each register holds two characters or two bytes. Example: 8 for a text of up to 16 characters.\n~1 to 16. Necessary for string and bytes, and only for them."
 };
 function qi(k,t){return `<button type="button" class="qi" data-x="${k}" data-t="${esc(t)}" aria-label="About ${esc(t)}" aria-expanded="false" aria-controls="xpl">?</button>`}
@@ -277,9 +291,9 @@ document.addEventListener("pointerout",e=>{if(e.pointerType!=="mouse"||!xb||xpin
    other fields (n = the fields with a value). The table scrolls in its box on a narrow screen:
    the Tag column stays at the left, the details row stays in view, a shade shows more columns. */
 const TCOL=[["name","Tag","tag"],["area","Area","area"],["address","Address","addr"],["type","Type","type_t"],["word_order","Word order","wo"],["scale","Scale","scale"],["units","Units","units"],["writable","Writable","wr"]];
-const TDET=[["offset","Offset","offs"],["deadband","Deadband","db"],["eng_low","Eng. low","englo"],["eng_high","Eng. high","enghi"],["bit","Bit","bit"],["length","Length","len"]];
+const TDET=[["offset","Offset","offs"],["deadband","Deadband","db"],["eng_low","Eng. low","englo"],["eng_high","Eng. high","enghi"],["write_min","Write min","wmin"],["write_max","Write max","wmax"],["bit","Bit","bit"],["length","Length","len"],["scan","Scan","scan"]];
 const TK={name:["str",0,0,{ml:39}],area:["sel",AREA],address:["int"],type:["sel",TYPE],word_order:["sel",WO,true],scale:["num"],units:["str",0,0,{ml:15}],writable:["bool"],
- offset:["num"],deadband:["num"],eng_low:["num"],eng_high:["num"],bit:["int",0,0,{ph:"0-15"}],length:["int",0,0,{ph:"string, bytes"}]};
+ offset:["num"],deadband:["num"],eng_low:["num"],eng_high:["num"],write_min:["num",0,0,{ph:"no limit"}],write_max:["num",0,0,{ph:"no limit"}],bit:["int",0,0,{ph:"0-15"}],length:["int",0,0,{ph:"1-16"}],scan:["sel",["fast","slow"],true]};
 const detOpen=new Set();
 function tagTable(d,i){
  const p=(k,f)=>`devices.${i}.tags.${k}.${f}`;
@@ -299,12 +313,46 @@ function togDet(b){const r=document.getElementById(b.getAttribute("aria-controls
  detOpen[open?"add":"delete"](b.dataset.more);updMore(b);tblUpd(r.closest(".tw"))}
 /* #191 calls it before it focuses a field with an error: open the details row of the field */
 function revealField(el){const r=el&&el.closest?el.closest("tr.det"):null;
- if(r&&r.classList.contains("hidden"))togDet(r.previousElementSibling.querySelector("[data-more]"))}
+ if(r&&r.classList.contains("hidden"))togDet(r.previousElementSibling.querySelector("[data-more]"));
+ const d=el&&el.closest?el.closest(".dsub"):null;if(d&&d.classList.contains("hidden"))togDmore(document.querySelector(`[aria-controls="${d.id}"]`))}
 function tblUpd(tw){(tw?[tw]:document.querySelectorAll(".tw")).forEach(w=>{const b=w.firstElementChild,s=b.scrollWidth>b.clientWidth+1;
  w.classList.toggle("scr",s&&b.scrollLeft+b.clientWidth<b.scrollWidth-1);w.previousElementSibling.classList.toggle("hidden",!s);w.style.setProperty("--bw",b.clientWidth+"px")})}
-function tagsInit(){document.querySelectorAll("[data-more]").forEach(updMore);tblUpd()}
-$("#f-dev").addEventListener("click",e=>{const t=e.target.dataset||{};if(t.delTag||t.delDev)detOpen.clear();if(t.more)togDet(e.target)},true);
-$("#f-dev").addEventListener("input",e=>{const r=e.target.closest("tr.det");if(r)updMore(r.previousElementSibling.querySelector("[data-more]"))});
+/* #196: the placeholder of Write min and Write max tells if the tag is writable.
+   #221: the details row shows only the fields that apply to the type of the tag (a field with a
+   value stays, so that its error shows). Bit: a bool tag in holding or input (gw_config.c). */
+const TAPPLY={offset:(t)=>t.num,eng_low:(t)=>t.num,eng_high:(t)=>t.num,write_min:(t)=>t.num,write_max:(t)=>t.num,
+ deadband:(t)=>!t.blob,bit:(t)=>t.type==="bool"&&(t.area==="holding"||t.area==="input"),length:(t)=>t.blob,scan:()=>true};
+function tagUpd(i,k){const p=f=>document.getElementById(`i-devices.${i}.tags.${k}.${f}`),w=p("writable");if(!w)return;
+ ["write_min","write_max"].forEach(f=>{const e=p(f);if(e)e.placeholder=w.checked?"no limit":"writable only"});
+ const ty=p("type").value,t={type:ty,area:p("area").value,blob:ty==="string"||ty==="bytes"};t.num=ty!=="bool"&&!t.blob;
+ let nl=false;TDET.forEach(([f])=>{const e=p(f);if(!e)return;const d=e.closest(".fld"),on=TAPPLY[f](t)||e.value.trim()!=="";
+  d.classList.toggle("hidden",!on);d.classList.remove("nl");if(on&&!nl&&["bit","length","scan"].includes(f)){d.classList.add("nl");nl=true}})}
+/* #197 #221: the rare keys of a device, in the panel "More device settings (n)" below its fields.
+   n = the keys with a value in the document (a checkbox at its default without the key does not count). */
+const devOpen=new Set();
+function devMore(i){const p=k=>`devices.${i}.${k}`,o=devOpen.has(String(i));
+ return `<div class="row" style="margin-top:8px"><button type="button" class="more dmore" data-dmore="${i}" aria-expanded="${o}" aria-controls="dset-${i}">More device settings</button></div>`+
+  `<div class="dsub${o?"":" hidden"}" id="dset-${i}"><div class="grid">${
+  field(p("slow_poll_ms"),"Slow poll interval (ms)","int",0,0,{help:"slow",ph:String(slowDef(i))})+
+  field(p("block_reads"),"Block reads","bool",true,0,{help:"blk",ck:1})+
+  field(p("max_gap"),"Max gap","int",0,0,{help:"gap",ph:"0"})+
+  field(p("write_multiple"),"Write with FC15/FC16","bool",false,0,{help:"fc16",ck:1})}</div></div>`}
+/* the default of slow_poll_ms: 10 × poll_ms, at most 3 600 000 (gw_config.c) */
+function slowDef(i){const e=document.getElementById(`i-devices.${i}.poll_ms`),v=e?e.value.trim():get(cfg,`devices.${i}.poll_ms`),n=v===""||v==null||isNaN(+v)?1000:+v;return Math.min(10*n,3600000)}
+function updDmore(b){const r=document.getElementById(b.getAttribute("aria-controls")),open=!r.classList.contains("hidden");
+ const n=[...r.querySelectorAll("[data-p]")].filter(e=>e.dataset.k==="bool"?get(cfg,e.dataset.p)!==undefined||e.checked!==(e.dataset.def==="1"):e.value.trim()!=="").length;
+ b.textContent=`${open?"▾":"▸"} More device settings${n?` (${n})`:""}`;b.setAttribute("aria-expanded",open)}
+function togDmore(b){const r=document.getElementById(b.getAttribute("aria-controls")),open=r.classList.toggle("hidden")===false;
+ devOpen[open?"add":"delete"](b.dataset.dmore);updDmore(b)}
+function tagsInit(){document.querySelectorAll("[data-dmore]").forEach(updDmore);document.querySelectorAll("[data-more]").forEach(b=>{const[i,k]=b.dataset.more.split(".");tagUpd(i,k);updMore(b)});tblUpd()}
+$("#f-dev").addEventListener("click",e=>{const t=e.target.dataset||{};if(t.delTag||t.delDev)detOpen.clear();if(t.delDev)devOpen.clear();if(t.more)togDet(e.target);if(t.dmore)togDmore(e.target)},true);
+/* #214: a device with Enabled off gets the notice and a dashed border */
+function devEn(e){const m=/^devices\.(\d+)\.enabled$/.exec(e.dataset.p||"");if(!m)return;
+ e.closest(".card").classList.toggle("dis",!e.checked);$(`#off-${m[1]}`).classList.toggle("hidden",e.checked)}
+$("#f-dev").addEventListener("input",e=>{devEn(e.target);const pm=/^devices\.(\d+)\.poll_ms$/.exec(e.target.dataset.p||"");
+ if(pm){const sl=document.getElementById(`i-devices.${pm[1]}.slow_poll_ms`);if(sl)sl.placeholder=slowDef(pm[1])}const r=e.target.closest("tr.det");if(r)updMore(r.previousElementSibling.querySelector("[data-more]"));
+ const d=e.target.closest(".dsub");if(d)updDmore(document.querySelector(`[aria-controls="${d.id}"]`));
+ const m=/^devices\.(\d+)\.tags\.(\d+)\./.exec(e.target.dataset.p||"");if(m)tagUpd(m[1],m[2])});
 document.addEventListener("scroll",e=>{const w=e.target.parentElement;if(w&&w.classList.contains("tw"))tblUpd(w);if(xb)xPos()},true);
 addEventListener("resize",()=>{tblUpd();if(xb)xOpen(xb,false)});
 /* #170: the UMH topic of a metric, with the rules of UMH Core (docs/reference/umh-names-and-topics.md):
@@ -332,7 +380,9 @@ function renderForms(){
  $("#f-web").innerHTML=field("web.username","User","str")+field("web.password","Password (8 to 63)","pw",0,0,{ml:63,help:"webpw"})+PW2+field("web.port","Port","int");pw194();
  renderPrefix();
  const devs=cfg.devices||[];
- $("#f-dev").innerHTML=devs.map((d,i)=>`<div class="card"><div class="grid">${field(`devices.${i}.name`,"Name","str",0,0,{ml:39,help:"name"})+field(`devices.${i}.unit_id`,"Unit ID","int",0,0,{help:"unit"})+field(`devices.${i}.poll_ms`,"Poll interval (ms)","int",0,0,{help:"poll"})+field(`devices.${i}.offline_after`,"Offline after (cycles)","int",0,0,{help:"off"})+field(`devices.${i}.type`,"Type (template)","str",0,0,{ml:39,help:"type"})}</div>
+ $("#f-dev").innerHTML=devs.map((d,i)=>`<div class="card${d.enabled===false?" dis":""}" data-dev="${i}"><div class="grid">${field(`devices.${i}.enabled`,"Enabled","bool",true,0,{help:"en",ck:1})+field(`devices.${i}.name`,"Name","str",0,0,{ml:39,help:"name"})+field(`devices.${i}.unit_id`,"Unit ID","int",0,0,{help:"unit"})+field(`devices.${i}.poll_ms`,"Poll interval (ms)","int",0,0,{help:"poll"})+field(`devices.${i}.offline_after`,"Offline after (cycles)","int",0,0,{help:"off"})+field(`devices.${i}.type`,"Type (template)","str",0,0,{ml:39,help:"type"})}</div>
+ <p class="offnote${d.enabled===false?"":" hidden"}" id="off-${i}">Disabled. The gateway does not poll this device and sends no DBIRTH. The validation still examines it.</p>
+ ${devMore(i)}
  <div class="topic" data-topic="${i}"></div>
  ${tagTable(d,i)}
  <div class="row" style="margin-top:10px"><button data-add-tag="${i}">+ tag</button><button data-del-dev="${i}">Remove device</button></div></div>`).join("");
@@ -479,7 +529,7 @@ async function poll(){
  else{const w=tm.waiting?"Waiting for a valid clock. The gateway does not connect to the MQTT broker and sends no NBIRTH until the clock is valid. Make sure that the gateway can reach the SNTP server, or push \"Set the time from the browser\" (card \"Local I/O\").":"";ban.classList.toggle("hidden",!(w||bat));ban.textContent=(w+bat).trim()}
  $("#st-dev").innerHTML=[["Firmware",s.firmware],["Reset reason",s.reset_reason],["Uptime",`${s.uptime_s} s`],["Mode",s.mode],["Configuration",s.config.source],["Free internal heap",`${s.heap.internal_free} B (min. ${s.heap.internal_min})`],["Free PSRAM",`${s.heap.psram_free} B`]].map(([k,v])=>`<div><div class="mut">${k}</div>${esc(v)}</div>`).join("");
  $("#st-net").innerHTML=`<p>Network ${yes(s.network.up,"up","no IP")} · MQTT ${yes(s.mqtt.connected,"connected",tm.waiting?"waiting for a valid clock":"disconnected")}${s.syslog?` · syslog ${esc(s.syslog)}`:""}</p><table><tr><th>Interface</th><th>State</th><th>IPv4</th><th>IPv6</th></tr>${s.network.interfaces.map(i=>`<tr><td>${i.name}${i.active?" (active)":""}</td><td>${!i.configured?"not configured":!i.link?"no link":i.usable?"up":"no address"}</td><td>${i.ipv4||""}</td><td>${(i.ipv6||[]).join("<br>")}</td></tr>`).join("")}</table>`;
- $("#st-mb").innerHTML=s.devices.length?`<table><tr><th>Device</th><th>Unit</th><th>State</th><th>Cycles / failed</th><th>OK / timeout / CRC / frame / exception</th><th>Values</th></tr>${s.devices.map(d=>`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td>${yes(d.online,"online","offline")}</td><td>${d.cycles} / ${d.failed}</td><td>${d.ok} / ${d.timeout} / ${d.crc} / ${d.frame} / ${d.exception}</td><td>${d.tags.map(t=>`${esc(t.name)}=${t.valid?esc(t.value_text??t.value):"—"}`).join(", ")}</td></tr>`).join("")}</table>`:"no devices";
+ $("#st-mb").innerHTML=s.devices.length?`<table><tr><th>Device</th><th>Unit</th><th>State</th><th>Cycles / failed</th><th>OK / timeout / CRC / frame / exception</th><th>Values</th></tr>${s.devices.map(d=>d.enabled===false?`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td><span class="mut">disabled</span></td><td>—</td><td>—</td><td class="mut">not polled</td></tr>`:`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td>${yes(d.online,"online","offline")}</td><td>${d.cycles} / ${d.failed}</td><td>${d.ok} / ${d.timeout} / ${d.crc} / ${d.frame} / ${d.exception}</td><td>${d.tags.map(t=>`${esc(t.name)}=${t.valid?esc(t.value_text??t.value):"—"}`).join(", ")}</td></tr>`).join("")}</table>`:"no devices";
  const bits=(v)=>[...Array(8)].map((_,i)=>`<span class="${v>>i&1?"ok":"mut"}">${i+1}</span>`).join(" ");
  const AL={none:"silent",device_offline:"device offline",mqtt_down:"no MQTT session",config_error:"configuration rejected"};
  const io=s.io,rules=io.rule_do?[...Array(8)].map((_,i)=>io.rule_do>>i&1?`DO/${i+1}`:"").filter(x=>x).join(", "):"none";

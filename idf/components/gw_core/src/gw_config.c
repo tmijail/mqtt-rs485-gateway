@@ -1251,11 +1251,24 @@ static bool parse_web(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     return true;
 }
 
+/* The shortest text of @p v that reads back as the same double (1500, 0.1, 9007199254740993). */
+static const char *num_text(double v, char *buf, size_t cap)
+{
+    for (int prec = 15; prec <= 17; prec++) {
+        snprintf(buf, cap, "%.*g", prec, v);
+        if (strtod(buf, NULL) == v) {
+            break;
+        }
+    }
+    return buf;
+}
+
 static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"name",   "area",     "address",  "type",  "word_order",
                                        "scale",  "offset",   "deadband", "writable", "units",
-                                       "bit",    "length",   "scan",  "eng_low", "eng_high"};
+                                       "bit",    "length",   "scan",  "eng_low", "eng_high",
+                                       "write_min", "write_max"};
     static const char *const scans[] = {"fast", "slow"};
     int area, type, word, scan;
     long addr, bit, length;
@@ -1276,9 +1289,13 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
         !get_int(o, "length", path, false, 0, 1, GW_STR_MAX_REGS, &length, err) ||
         !get_enum(o, "scan", path, false, 0, scans, 2, &scan, err) ||
         !get_double(o, "eng_low", path, 0.0, &eng_low, err) ||
-        !get_double(o, "eng_high", path, 0.0, &eng_high, err)) {
+        !get_double(o, "eng_high", path, 0.0, &eng_high, err) ||
+        !get_double(o, "write_min", path, 0.0, &t->write_min, err) ||
+        !get_double(o, "write_max", path, 0.0, &t->write_max, err)) {
         return false;
     }
+    t->has_write_min = cJSON_GetObjectItemCaseSensitive(o, "write_min") != NULL;
+    t->has_write_max = cJSON_GetObjectItemCaseSensitive(o, "write_max") != NULL;
     if (fabs(eng_low) > FLT_MAX || fabs(eng_high) > FLT_MAX) {
         join(p, sizeof(p), path, fabs(eng_low) > FLT_MAX ? "eng_low" : "eng_high");
         return fail(err, p, "out of the range of a Float (±3.4e38)");
@@ -1370,6 +1387,22 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
         join(p, sizeof(p), path, "eng_high");
         return fail(err, p, "must be greater than eng_low (%g)", t->eng_low);
     }
+    /* #196: the range of a DCMD write, in engineering units */
+    if (t->has_write_min || t->has_write_max) {
+        join(p, sizeof(p), path, t->has_write_min ? "write_min" : "write_max");
+        if (t->type == GW_TYPE_BOOL || blob) {
+            return fail(err, p, "not accepted in %s tags", k_type_names[t->type]);
+        }
+        if (!t->writable) {
+            return fail(err, p, "valid only with writable=true");
+        }
+    }
+    if (t->has_write_min && t->has_write_max && t->write_max < t->write_min) {
+        join(p, sizeof(p), path, "write_max");
+        char hi[32], lo[32];
+        return fail(err, p, "%s is less than write_min (%s)", num_text(t->write_max, hi, sizeof(hi)),
+                    num_text(t->write_min, lo, sizeof(lo)));
+    }
     return true;
 }
 
@@ -1432,9 +1465,10 @@ static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_
                          gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"name",        "unit_id", "poll_ms", "slow_poll_ms",
-                                       "offline_after", "block_reads", "max_gap", "tags", "type"};
+                                       "offline_after", "block_reads", "max_gap", "tags", "type",
+                                       "write_multiple", "enabled"};
     long unit, poll, off, gap, slow;
-    bool merge;
+    bool merge, multi;
     char p[96];
     if (!check_keys(o, path, keys, sizeof(keys) / sizeof(keys[0]), err) ||
         !get_string(o, "name", path, true, "", d->name, sizeof(d->name), err) ||
@@ -1445,16 +1479,22 @@ static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_
                  3600000, &slow, err) ||
         !get_int(o, "offline_after", path, false, 3, 1, 1000, &off, err) ||
         !get_bool(o, "block_reads", path, true, &merge, err) ||
-        !get_int(o, "max_gap", path, false, GW_CFG_BUILD_DEFAULT, 0, GW_MAX_GAP_LIMIT, &gap, err)) {
+        !get_int(o, "max_gap", path, false, GW_CFG_BUILD_DEFAULT, 0, GW_MAX_GAP_LIMIT, &gap, err) ||
+        !get_bool(o, "write_multiple", path, false, &multi, err) ||
+        !get_bool(o, "enabled", path, true, &d->enabled, err)) {
         return false;
     }
+    /* #197: an absent key keeps the build's setting (CONFIG_GW_MB_FORCE_MULTI_WRITE) */
+    d->write_multiple = cJSON_GetObjectItemCaseSensitive(o, "write_multiple") != NULL
+                            ? (int8_t)multi
+                            : (int8_t)GW_CFG_BUILD_DEFAULT;
     /* MB-11: absent keys keep the build's setting (CONFIG_GW_MB_BLOCK_READS / _MAX_GAP) */
     bool has_merge = cJSON_GetObjectItemCaseSensitive(o, "block_reads") != NULL;
     d->block_reads = has_merge ? (int8_t)merge : (int8_t)GW_CFG_BUILD_DEFAULT;
     d->max_gap = (int16_t)gap;
     if (has_merge && !merge && gap != GW_CFG_BUILD_DEFAULT) {
         join(p, sizeof(p), path, "max_gap");
-        return fail(err, p, "has no effect with block_reads=false");
+        return fail(err, p, "not permitted with block_reads=false");
     }
     join(p, sizeof(p), path, "name");
     if (!check_topic_id(d->name, p, false, err)) {

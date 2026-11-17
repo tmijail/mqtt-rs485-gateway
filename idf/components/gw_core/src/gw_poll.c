@@ -116,6 +116,9 @@ int gw_poller_next(const gw_poller_t *p, uint32_t now_ms, uint32_t *wait_ms)
     int best = -1;
     int32_t best_wait = INT32_MAX;
     for (uint16_t d = 0; d < p->cfg->device_count; d++) {
+        if (!p->cfg->devices[d].enabled) {
+            continue;   /* #214: not polled, no time of the bus */
+        }
         int32_t w = (int32_t)(p->next_due_ms[d] - now_ms);
         if (w < best_wait) {
             best_wait = w;
@@ -138,6 +141,9 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
 {
     const gw_config_t *cfg = p->cfg;
     const gw_device_cfg_t *d = &cfg->devices[dev];
+    if (!d->enabled) {
+        return GW_DEV_NO_CHANGE;   /* #214: gw_poller_next never selects it */
+    }
     bool online;
     gw_tagdb_get_device(cfg, dev, p->work, &online);
 
@@ -238,6 +244,14 @@ gw_dev_event_t gw_poller_poll(gw_poller_t *p, uint16_t dev, uint32_t now_ms)
     return ev;
 }
 
+/* #197: FC15/FC16 also for one coil or register: the device's write_multiple, or the build's
+ * setting (opts.force_multi_write) when the device has no such key. */
+static bool multi_write(const gw_poller_t *p, const gw_device_cfg_t *d)
+{
+    return d->write_multiple == GW_CFG_BUILD_DEFAULT ? p->opts.force_multi_write
+                                                     : d->write_multiple != 0;
+}
+
 /* Request for a register bit (MB-6): read-modify-write of the whole register. The read and the
  * write go back to back through this task, so no other gateway traffic comes in between, but
  * the device itself may change the other bits in that window (documented limitation). */
@@ -257,7 +271,7 @@ static gw_write_status_t bit_request(gw_poller_t *p, uint16_t dev, const gw_tag_
     uint16_t mask = (uint16_t)(1u << t->bit);
     uint16_t old = mb_rsp_reg(&rsp, 0);
     *reg = on ? (uint16_t)(old | mask) : (uint16_t)(old & ~mask);
-    if (p->opts.force_multi_write) {
+    if (multi_write(p, d)) {
         rq->fc = MB_FC_WRITE_MULTIPLE_REGISTERS;
         rq->qty = 1;
         rq->regs = reg;
@@ -304,7 +318,7 @@ gw_write_status_t gw_poller_write_value(gw_poller_t *p, uint16_t tag, const gw_t
                 gw_tagdb_put_stats(dev, &p->stats[dev]);
                 return ws;
             }
-        } else if (p->opts.force_multi_write) {
+        } else if (multi_write(p, d)) {
             bits[0] = on ? 1u : 0u;
             rq.fc = MB_FC_WRITE_MULTIPLE_COILS;
             rq.qty = 1;
@@ -321,7 +335,7 @@ gw_write_status_t gw_poller_write_value(gw_poller_t *p, uint16_t tag, const gw_t
             return GW_WRITE_BAD_VALUE;
         }
         gw_conv_decode(t, regs, &confirmed);
-        if (width == 1 && !p->opts.force_multi_write) {
+        if (width == 1 && !multi_write(p, d)) {
             rq.fc = MB_FC_WRITE_SINGLE_REGISTER;
             rq.value = regs[0];
         } else {
@@ -410,7 +424,7 @@ uint16_t gw_poller_offline_count(const gw_poller_t *p)
 {
     uint16_t n = 0;
     for (uint16_t d = 0; d < p->cfg->device_count; d++) {
-        n = (uint16_t)(n + (p->state[d].online ? 0u : 1u));
+        n = (uint16_t)(n + (p->state[d].online || !p->cfg->devices[d].enabled ? 0u : 1u));
     }
     return n;
 }

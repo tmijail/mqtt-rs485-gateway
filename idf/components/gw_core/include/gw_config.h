@@ -194,18 +194,29 @@ typedef struct {
     bool writable;
     bool has_eng_low;           /* SPB-16: engLow / engHigh properties (optional); in the */
     bool has_eng_high;          /* padding before the doubles: no growth of the structure */
+    bool has_write_min;         /* #196: write_min / write_max given (also in the padding) */
+    bool has_write_max;
     double scale;
     double offset;
     double deadband;
     char units[GW_UNITS_SIZE];  /* SPB-16: property engUnit in the birth ("" = none) */
     float eng_low;              /* published as Float: 8 B per tag instead of 16 (256 tags) */
     float eng_high;
+    /* #196: the range of a DCMD write, in engineering units (after scale and offset). Doubles,
+     * because a limit of a 32-bit or 64-bit integer tag must be exact. */
+    double write_min;
+    double write_max;
 } gw_tag_cfg_t;
 
 typedef struct {
     char name[GW_NAME_SIZE];    /* also the Sparkplug device_id */
     char type[GW_NAME_SIZE];    /* SPB-18: template (device type) name; "" = no template */
     uint8_t unit_id;
+    int8_t write_multiple;      /* #197: 1 = FC15/FC16 also for one coil or register, 0 = FC05/
+                                 * FC06, or GW_CFG_BUILD_DEFAULT (CONFIG_GW_MB_FORCE_MULTI_WRITE);
+                                 * in the padding after unit_id */
+    bool enabled;               /* #214: false = the device stays in the configuration (and the
+                                 * validation examines it), but is not polled and has no DBIRTH */
     uint32_t poll_ms;           /* fast scan period (MB-10) */
     uint32_t slow_poll_ms;      /* MB-12: period of the tags with "scan": "slow" */
     uint16_t offline_after;

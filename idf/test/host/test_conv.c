@@ -348,6 +348,88 @@ static void test_bytes(void)
     TEST_ASSERT_FALSE(gw_conv_from_double(&t, 1.0, &v));
 }
 
+/* #196: the write limits, exact for 64-bit integers and at Float precision for Float tags */
+static void test_write_limits(void)
+{
+    gw_tag_value_t v;
+    memset(&v, 0, sizeof(v));
+    gw_tag_cfg_t t = tag(GW_TYPE_INT16, GW_WORD_BIG, 0.1, 0);   /* a Float metric */
+    v.value = 1e9;
+    TEST_ASSERT_TRUE(gw_conv_in_write_limits(&t, &v));          /* no limits */
+    t.has_write_min = t.has_write_max = true;
+    t.write_min = 0.1;
+    t.write_max = 0.3;
+    v.value = (double)0.1f;                                      /* the Float a host sends */
+    TEST_ASSERT_TRUE(gw_conv_in_write_limits(&t, &v));
+    v.value = (double)0.3f;
+    TEST_ASSERT_TRUE(gw_conv_in_write_limits(&t, &v));
+    v.value = 0.31;
+    TEST_ASSERT_FALSE(gw_conv_in_write_limits(&t, &v));
+    v.value = 0.09;
+    TEST_ASSERT_FALSE(gw_conv_in_write_limits(&t, &v));
+    v.value = NAN;
+    TEST_ASSERT_FALSE(gw_conv_in_write_limits(&t, &v));
+    v.value = INFINITY;
+    TEST_ASSERT_FALSE(gw_conv_in_write_limits(&t, &v));
+    t.has_write_min = false;                                     /* only an upper limit */
+    v.value = -1e30;
+    TEST_ASSERT_TRUE(gw_conv_in_write_limits(&t, &v));
+
+    t = tag(GW_TYPE_FLOAT64, GW_WORD_BIG, 1, 0);                 /* a Double metric: exact */
+    t.has_write_max = true;
+    t.write_max = 0.1;
+    v.value = 0.1;
+    TEST_ASSERT_TRUE(gw_conv_in_write_limits(&t, &v));
+    v.value = (double)0.1f;                                      /* 0.10000000149 */
+    TEST_ASSERT_FALSE(gw_conv_in_write_limits(&t, &v));
+
+    t = tag(GW_TYPE_INT64, GW_WORD_BIG, 1, 0);
+    t.has_write_min = t.has_write_max = true;
+    t.write_min = -9007199254740992.0;                           /* -2^53 */
+    t.write_max = 9007199254740992.0;                            /* 2^53 */
+    v.i64 = 9007199254740992ll;
+    TEST_ASSERT_TRUE(gw_conv_in_write_limits(&t, &v));
+    v.i64 = 9007199254740993ll;                                  /* the same double as 2^53 */
+    TEST_ASSERT_FALSE(gw_conv_in_write_limits(&t, &v));
+    v.i64 = -9007199254740993ll;
+    TEST_ASSERT_FALSE(gw_conv_in_write_limits(&t, &v));
+    t.write_min = -2.5;                                          /* a limit with a fraction */
+    t.write_max = 2.5;
+    v.i64 = -2;
+    TEST_ASSERT_TRUE(gw_conv_in_write_limits(&t, &v));
+    v.i64 = 2;
+    TEST_ASSERT_TRUE(gw_conv_in_write_limits(&t, &v));
+    v.i64 = 3;
+    TEST_ASSERT_FALSE(gw_conv_in_write_limits(&t, &v));
+    v.i64 = -3;
+    TEST_ASSERT_FALSE(gw_conv_in_write_limits(&t, &v));
+    t.write_min = -1e30;                                         /* outside the int64 range */
+    t.write_max = 1e30;
+    v.i64 = INT64_MAX;
+    TEST_ASSERT_TRUE(gw_conv_in_write_limits(&t, &v));
+    v.i64 = INT64_MIN;
+    TEST_ASSERT_TRUE(gw_conv_in_write_limits(&t, &v));
+
+    t = tag(GW_TYPE_UINT64, GW_WORD_BIG, 1, 0);
+    t.has_write_min = t.has_write_max = true;
+    t.write_min = 1.5;
+    t.write_max = 18446744073709549568.0;                        /* the last double below 2^64 */
+    v.u64 = 1;
+    TEST_ASSERT_FALSE(gw_conv_in_write_limits(&t, &v));
+    v.u64 = 2;
+    TEST_ASSERT_TRUE(gw_conv_in_write_limits(&t, &v));
+    v.u64 = 18446744073709549568ull;
+    TEST_ASSERT_TRUE(gw_conv_in_write_limits(&t, &v));
+    v.u64 = 18446744073709549569ull;
+    TEST_ASSERT_FALSE(gw_conv_in_write_limits(&t, &v));
+    t.write_min = -1;
+    t.write_max = 1e30;
+    v.u64 = 0;
+    TEST_ASSERT_TRUE(gw_conv_in_write_limits(&t, &v));
+    v.u64 = UINT64_MAX;
+    TEST_ASSERT_TRUE(gw_conv_in_write_limits(&t, &v));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -363,5 +445,6 @@ int main(void)
     RUN_TEST(test_float64);
     RUN_TEST(test_strings);
     RUN_TEST(test_bytes);
+    RUN_TEST(test_write_limits);
     return UNITY_END();
 }

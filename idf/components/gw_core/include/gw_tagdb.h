@@ -61,6 +61,11 @@ void gw_tagdb_put_stats(uint16_t dev, const gw_dev_stats_t *stats);
 bool gw_tagdb_device_online(uint16_t dev);
 void gw_tagdb_get_stats(uint16_t dev, gw_dev_stats_t *stats);
 
+/** #196: one DCMD write of device @p dev refused (out of the write limits of its tag). */
+void gw_tagdb_count_refused(uint16_t dev);
+/** #196: the DCMD writes of @p dev refused since boot. */
+uint32_t gw_tagdb_refused(uint16_t dev);
+
 /** Update one tag (write confirmation). */
 void gw_tagdb_put_tag(uint16_t tag, const gw_tag_value_t *val);
 void gw_tagdb_get_tag(uint16_t tag, gw_tag_value_t *val);

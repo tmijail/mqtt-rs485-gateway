@@ -801,7 +801,9 @@ bool gw_node_rebirth(gw_node_t *n)
         bool online;
         n->dev_born[dev] = false;
         gw_tagdb_get_device(n->cfg, dev, n->vals, &online);
-        if (online) {
+        /* #214: a disabled device is never polled, so never online; a guard. Its DBIRTH is not
+         * "applicable" (tck-id-operational-behavior-data-commands-rebirth-action-2) */
+        if (online && n->cfg->devices[dev].enabled) {
             publish_dbirth(n, dev);
         }
     }
@@ -894,8 +896,8 @@ static void store_device(gw_node_t *n, uint16_t dev)
 
 void gw_node_device_changed(gw_node_t *n, uint16_t dev)
 {
-    if (dev >= n->cfg->device_count) {
-        return;
+    if (dev >= n->cfg->device_count || !n->cfg->devices[dev].enabled) {
+        return;   /* #214: a disabled device has no DBIRTH, DDATA or DDEATH (a guard) */
     }
     if (!n->online) {
         if (n->sf != NULL && n->born_once && n->time_valid) {
@@ -1383,6 +1385,29 @@ static bool dcmd_resolve(const gw_node_t *n, const spb_rx_metric_t *m, bool quie
         }
         return false;
     }
+    /* #196: the write limits of the tag. A value outside them is not written. Sparkplug has no
+     * answer to a command: the host sees the value of the device in the next DDATA. The host
+     * MUST send a compatible value (tck-id-operational-behavior-data-commands-dcmd-metric-value);
+     * the gateway is strict and refuses a value that the operator excluded, as it refuses a
+     * datatype that is not the one of the DBIRTH (SPB-10, #163). */
+    if (!gw_conv_in_write_limits(t, value)) {
+        if (!quiet) {
+            char text[48], lo[24] = "-", hi[24] = "-";
+            gw_conv_format(t, value, text, sizeof(text));
+            if (t->has_write_min) {
+                snprintf(lo, sizeof(lo), "%.9g", t->write_min);
+            }
+            if (t->has_write_max) {
+                snprintf(hi, sizeof(hi), "%.9g", t->write_max);
+            }
+            char reason[160];
+            snprintf(reason, sizeof(reason), "value %s out of the write limits [%s, %s]", text,
+                     lo, hi);
+            log_discard("DCMD", m, reason);
+            gw_tagdb_count_refused((uint16_t)n->cmd_dev);
+        }
+        return false;
+    }
     *tag_out = tag;
     return true;
 }
@@ -1481,6 +1506,12 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
         int dev = gw_config_find_device(n->cfg, q, (size_t)(end - q));
         if (dev < 0) {
             GW_LOGW(TAG, "DCMD for unknown device '%.*s'", (int)(end - q), q);
+            return;
+        }
+        if (!n->cfg->devices[dev].enabled) {
+            /* #214: a disabled device has no DBIRTH, so a host cannot know its metrics
+             * (tck-id-operational-behavior-data-commands-dcmd-metric-name) */
+            GW_LOGW(TAG, "DCMD for disabled device '%s' discarded", n->cfg->devices[dev].name);
             return;
         }
         if (!n->dev_born[dev]) {

@@ -808,6 +808,124 @@ static void test_dcmd_strict_datatype_and_integer(void)
     gw_port_log_capture(NULL, 0);
 }
 
+/* #196: write_min / write_max of a tag. A DCMD in the limits writes; a DCMD out of the limits is
+ * refused (no write, a warning, the refusal counter of the device), and the other metrics of the
+ * same DCMD still apply. The host MUST send a compatible value
+ * (tck-id-operational-behavior-data-commands-dcmd-metric-value); Sparkplug has no answer to a
+ * command, so the next DDATA has the value of the device. */
+static void test_dcmd_write_limits(void)
+{
+    static const char doc[] =
+        "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+        " \"devices\": [{\"name\": \"M\", \"unit_id\": 1, \"tags\": ["
+        "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
+        "   \"scale\": 0.1, \"writable\": true, \"write_min\": 0, \"write_max\": 150.5},"
+        "  {\"name\": \"Gain\", \"area\": \"holding\", \"address\": 1, \"type\": \"int32\","
+        "   \"writable\": true, \"write_min\": -10},"
+        "  {\"name\": \"Count\", \"area\": \"holding\", \"address\": 3, \"type\": \"int64\","
+        "   \"writable\": true, \"write_max\": 9007199254740992},"
+        "  {\"name\": \"Free\", \"area\": \"holding\", \"address\": 7, \"type\": \"int16\","
+        "   \"writable\": true}]}]}";
+    static gw_config_t c;
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(doc, sizeof(doc) - 1, &c, &err), err.msg);
+    cfg = &c;
+    gw_tagdb_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    gw_tag_value_t v[4] = {{.value = 1, .ts_ms = 1000, .valid = true},
+                           {.value = 1, .ts_ms = 1000, .valid = true},
+                           {.i64 = 1, .ts_ms = 1000, .valid = true},
+                           {.value = 1, .ts_ms = 1000, .valid = true}};
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_node_session_up(&node, 0);
+    recorder_clear();
+    const char *topic = "spBv1.0/G/DCMD/N/M";
+    static char log[2048];
+    gw_port_log_capture(log, sizeof(log));
+
+    /* in the limits, also at the limits (150.5 as a Float) */
+    spb_metric_t in = {.name = "Speed", .no_alias = true, .datatype = SPB_DT_FLOAT, .v.num = 150.5};
+    send(topic, &in, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.writes);
+    spb_metric_t lo = {.name = "Gain", .no_alias = true, .datatype = SPB_DT_INT32, .v.num = -10};
+    send(topic, &lo, 1);
+    TEST_ASSERT_EQUAL(2, g_rec.writes);
+    TEST_ASSERT_EQUAL_DOUBLE(-10, g_rec.last_write.value);
+    TEST_ASSERT_EQUAL_UINT32(0, gw_tagdb_refused(0));
+
+    /* out of the limits: refused, logged and counted; nothing written */
+    in.v.num = 150.6;
+    send(topic, &in, 1);
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Speed' discarded: value 150.6"));
+    TEST_ASSERT_NOT_NULL(strstr(log, "out of the write limits [0, 150.5]"));
+    lo.v.num = -11;
+    send(topic, &lo, 1);
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Gain' discarded: value -11 out of the write limits "
+                                     "[-10, -]"));
+    in.v.num = -0.1;
+    send(topic, &in, 1);
+    TEST_ASSERT_EQUAL(2, g_rec.writes);
+    TEST_ASSERT_EQUAL_UINT32(3, gw_tagdb_refused(0));
+    TEST_ASSERT_EQUAL(0, g_rec.count);   /* no DDATA: nothing changed */
+
+    /* an exact 64-bit limit (2^53): 2^53 is accepted, 2^53 + 1 is refused (as doubles, the two
+     * values are the same) */
+    spb_metric_t big = {.name = "Count", .no_alias = true, .datatype = SPB_DT_INT64,
+                        .v.i64 = 9007199254740992ll};
+    send(topic, &big, 1);
+    TEST_ASSERT_EQUAL(3, g_rec.writes);
+    big.v.i64 = 9007199254740993ll;
+    send(topic, &big, 1);
+    TEST_ASSERT_EQUAL(3, g_rec.writes);
+    TEST_ASSERT_EQUAL_UINT32(4, gw_tagdb_refused(0));
+    /* one DCMD with a refused metric and an accepted one: the accepted one is written */
+    spb_metric_t two[2] = {
+        {.name = "Speed", .no_alias = true, .datatype = SPB_DT_FLOAT, .v.num = 999},
+        {.name = "Free", .no_alias = true, .datatype = SPB_DT_INT16, .v.num = 30000},
+    };
+    send(topic, two, 2);
+    TEST_ASSERT_EQUAL(4, g_rec.writes);
+    TEST_ASSERT_EQUAL(3, g_rec.last_write_tag);
+    TEST_ASSERT_EQUAL_UINT32(5, gw_tagdb_refused(0));
+    gw_port_log_capture(NULL, 0);
+}
+
+/* #214: a disabled device is never online (the poll engine does not poll it), so it gets no
+ * DBIRTH at the session start or at a rebirth (tck-id-operational-behavior-data-commands-
+ * rebirth-action-2: the DBIRTHs "if applicable"), no DDATA and no DDEATH; a DCMD for it is
+ * discarded with its own log line. */
+static void test_disabled_device_no_birth_and_dcmd_discarded(void)
+{
+    static gw_config_t c;
+    c = *support_spec_config();
+    c.devices[0].enabled = false;
+    cfg = &c;
+    gw_tagdb_reset();
+    set_meter(true, 230.5, 12.3, 1);     /* the guard: also an online flag gives no DBIRTH */
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    gw_node_session_up(&node, 0);
+    TEST_ASSERT_EQUAL(1, g_rec.count);   /* the NBIRTH only */
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NBIRTH/GW01", g_rec.msgs[0].topic);
+    gw_node_device_changed(&node, 0);
+    TEST_ASSERT_EQUAL(1, g_rec.count);   /* no DDEATH for a device that never had a DBIRTH */
+    static char log[512];
+    gw_port_log_capture(log, sizeof(log));
+    spb_metric_t sp = {.name = "Setpoint", .datatype = SPB_DT_FLOAT, .v.num = 12.3};
+    send("spBv1.0/Plant1/DCMD/GW01/Meter1", &sp, 1);
+    TEST_ASSERT_EQUAL(0, g_rec.writes);
+    TEST_ASSERT_NOT_NULL(strstr(log, "DCMD for disabled device 'Meter1' discarded"));
+    gw_port_log_capture(NULL, 0);
+    gw_node_rebirth(&node);
+    TEST_ASSERT_EQUAL(2, g_rec.count);   /* a new NBIRTH, no DBIRTH */
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NBIRTH/GW01", g_rec.msgs[1].topic);
+}
+
 /* Issue #60: a DCMD whose writes do not all fit in the bus queue is rejected whole. */
 static void test_dcmd_rejected_whole_when_queue_lacks_room(void)
 {
@@ -2527,6 +2645,8 @@ int main(void)
     RUN_TEST(test_umh_plain_types_and_diagnostics);
     RUN_TEST(test_umh_worst_case_nbirth_fits);
     RUN_TEST(test_dcmd_strict_datatype_and_integer);
+    RUN_TEST(test_dcmd_write_limits);
+    RUN_TEST(test_disabled_device_no_birth_and_dcmd_discarded);
     RUN_TEST(test_dcmd_rejected_whole_when_queue_lacks_room);
     RUN_TEST(test_scan_rate);
     RUN_TEST(test_mb6_birth_and_data);

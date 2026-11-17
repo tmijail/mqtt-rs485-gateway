@@ -25,7 +25,7 @@ The `device_id` is the device name, or `<device_prefix>:<name>` with `sparkplug.
 | NBIRTH | 0 | No | `seq` = 0. All the node metrics, with a name, an alias (not `Node Control/Rebirth`), a datatype and a value |
 | NDEATH | 1 | No | The MQTT Will of the connection. Only the metric `bdSeq` (Int64). No `seq` |
 | NDATA | 0 | No | The node metrics that changed, by alias, without a name and a datatype |
-| DBIRTH | 0 | No | All the tags of one device, with their names, aliases, datatypes, values and properties. Only after the NBIRTH, and only for a device that is online |
+| DBIRTH | 0 | No | All the tags of one device, with their names, aliases, datatypes, values and properties. Only after the NBIRTH, and only for a device that is online. A disabled device (`enabled: false`) is never online: it has no DBIRTH, DDATA or DDEATH |
 | DDEATH | 0 | No | The device went offline |
 | DDATA | 0 | No | The tags that changed, by alias, without a name and a datatype. The changes of one poll cycle go in one message |
 
@@ -143,11 +143,14 @@ The gateway writes the writable metrics to the Modbus device. It finds the tag b
 | The datatype is the datatype of the DBIRTH. A metric without a datatype uses the datatype of the DBIRTH | The gateway discards the command |
 | An integer or Boolean tag gets a value without a fraction | The gateway discards the command |
 | The value fits in the register after the inverse scale: `raw = (value − offset) / scale` | The gateway discards the command |
+| The value is in the write limits of the tag (`write_min`, `write_max`, in the units of the tag) | The gateway discards the metric, and adds 1 to the refusal counter of the device |
+| The device is enabled | The gateway discards the command. A disabled device has no DBIRTH |
 
 - A command applies all its metrics or none. The log gives the reason of each discard.
+- A value out of the write limits discards only that metric. The gateway writes the other metrics of the command. Sparkplug has no answer to a command, so the next DDATA has the value of the device. The shell command `devices` and `GET /api/status` (`write_refused`) give the number of refused writes. The limits do not apply to Modbus TCP requests.
 - The writes go before the polls in the queue of the bus.
 - After the write, the gateway reads the register again and publishes the value in a DDATA. If this read fails, it publishes the value that the device acknowledged.
-- The functions: FC05 for a coil, FC06 for a tag of one register, FC16 for a tag of more registers. With the build option `CONFIG_GW_MB_FORCE_MULTI_WRITE`, all the writes use FC15 or FC16.
+- The functions: FC05 for a coil, FC06 for a tag of one register, FC16 for a tag of more registers. With `write_multiple: true` on the device, all its writes use FC15 or FC16. A device without the key uses the build option `CONFIG_GW_MB_FORCE_MULTI_WRITE` (default: off).
 
 For the procedure, refer to [Write a value to a Modbus device or a digital output](../how-to/write-to-a-modbus-device.md).
 

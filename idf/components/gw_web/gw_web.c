@@ -1732,12 +1732,16 @@ static esp_err_t status_get(httpd_req_t *req)
         outf(o, "%s{\"name\":", d ? "," : "");
         out_str(o, dev->name);
         outf(o,
-             ",\"unit_id\":%u,\"online\":%s,\"cycles\":%lu,\"failed\":%lu,\"ok\":%lu,"
-             "\"timeout\":%lu,\"crc\":%lu,\"frame\":%lu,\"exception\":%lu,\"tags\":[",
-             dev->unit_id, online ? "true" : "false", (unsigned long)st.cycles,
+             ",\"unit_id\":%u,\"enabled\":%s,\"online\":%s,\"cycles\":%lu,\"failed\":%lu,"
+             "\"ok\":%lu,"
+             "\"timeout\":%lu,\"crc\":%lu,\"frame\":%lu,\"exception\":%lu,"
+             "\"write_refused\":%lu,\"tags\":[",
+             dev->unit_id, dev->enabled ? "true" : "false",   /* #214 */
+             online ? "true" : "false", (unsigned long)st.cycles,
              (unsigned long)st.failed_cycles, (unsigned long)st.bus.ok,
              (unsigned long)st.bus.timeout, (unsigned long)st.bus.crc,
-             (unsigned long)st.bus.frame, (unsigned long)st.bus.exception);
+             (unsigned long)st.bus.frame, (unsigned long)st.bus.exception,
+             (unsigned long)gw_tagdb_refused(d));   /* #196 */
         for (uint16_t t = 0; t < dev->tag_count; t++) {
             const gw_tag_value_t *v = &s_vals[t];
             outf(o, "%s{\"name\":", t ? "," : "");

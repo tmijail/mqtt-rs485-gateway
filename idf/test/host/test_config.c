@@ -769,6 +769,49 @@ static void test_eng_range(void)
                     "devices[0].tags[0].units");
 }
 
+/* #196: write_min / write_max of a writable numeric tag, in engineering units. */
+static void test_write_limits(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse_tag("{\"name\":\"a\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\","
+                  "\"scale\":0.1,\"writable\":true,\"write_min\":0,\"write_max\":150.5},"
+                  "{\"name\":\"b\",\"area\":\"holding\",\"address\":1,\"type\":\"int32\","
+                  "\"writable\":true,\"write_max\":-5},"
+                  "{\"name\":\"c\",\"area\":\"holding\",\"address\":3,\"type\":\"uint16\","
+                  "\"writable\":true,\"write_min\":7,\"write_max\":7}"),
+        err.msg);
+    TEST_ASSERT_TRUE(cfg.tags[0].has_write_min);
+    TEST_ASSERT_TRUE(cfg.tags[0].has_write_max);
+    TEST_ASSERT_EQUAL_DOUBLE(0, cfg.tags[0].write_min);
+    TEST_ASSERT_EQUAL_DOUBLE(150.5, cfg.tags[0].write_max);
+    TEST_ASSERT_FALSE(cfg.tags[1].has_write_min);
+    TEST_ASSERT_TRUE(cfg.tags[1].has_write_max);
+    TEST_ASSERT_EQUAL_DOUBLE(-5, cfg.tags[1].write_max);
+    TEST_ASSERT_TRUE(cfg.tags[2].has_write_min);   /* min == max: one value only */
+
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"int16\","
+                              "\"writable\":true,\"write_min\":1500,\"write_max\":100}"),
+                    "devices[0].tags[0].write_max: 100 is less than write_min (1500)");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"int16\","
+                              "\"writable\":true,\"write_min\":0.1,\"write_max\":0.05}"),
+                    "devices[0].tags[0].write_max: 0.05 is less than write_min (0.1)");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"int16\","
+                              "\"write_min\":0}"),
+                    "devices[0].tags[0].write_min: valid only with writable=true");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"coil\",\"address\":0,\"type\":\"bool\","
+                              "\"writable\":true,\"write_max\":1}"),
+                    "devices[0].tags[0].write_max: not accepted in bool tags");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"string\","
+                              "\"length\":2,\"writable\":true,\"write_min\":1}"),
+                    "devices[0].tags[0].write_min: not accepted in string tags");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bytes\","
+                              "\"length\":2,\"writable\":true,\"write_max\":1}"),
+                    "devices[0].tags[0].write_max: not accepted in bytes tags");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"int16\","
+                              "\"writable\":true,\"write_min\":\"0\"}"),
+                    "devices[0].tags[0].write_min: expected a number");
+}
+
 /* SPB-19: bytes tags are like strings without the text processing. */
 static void test_bytes_tags(void)
 {
@@ -1224,7 +1267,7 @@ static void test_device_block_reads(void)
                           "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
                           "\"block_reads\":false,\"max_gap\":3,\"tags\":[{\"name\":\"t\","
                           "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
-                    "devices[0].max_gap: has no effect with block_reads=false");
+                    "devices[0].max_gap: not permitted with block_reads=false");
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
                           "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
                           "\"max_gap\":2000,\"tags\":[{\"name\":\"t\","
@@ -1235,6 +1278,59 @@ static void test_device_block_reads(void)
                           "\"block_reads\":1,\"tags\":[{\"name\":\"t\","
                           "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
                     "devices[0].block_reads: expected true or false");
+    /* #197: write_multiple, the build's setting when absent */
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+              "\"devices\":[{\"name\":\"A\",\"unit_id\":1,\"write_multiple\":true,\"tags\":[{"
+              "\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]},"
+              "{\"name\":\"B\",\"unit_id\":2,\"write_multiple\":false,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]},"
+              "{\"name\":\"C\",\"unit_id\":3,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+        err.msg);
+    TEST_ASSERT_EQUAL(1, cfg.devices[0].write_multiple);
+    TEST_ASSERT_EQUAL(0, cfg.devices[1].write_multiple);
+    TEST_ASSERT_EQUAL(GW_CFG_BUILD_DEFAULT, cfg.devices[2].write_multiple);
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"write_multiple\":\"yes\",\"tags\":[{\"name\":\"t\","
+                          "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+                    "devices[0].write_multiple: expected true or false");
+}
+
+/* #214: devices[].enabled, default true. The validation examines a disabled device as any
+ * other: its keys, its tags and its name (unique, also against the enabled devices). */
+static void test_device_enabled(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+              "\"devices\":[{\"name\":\"A\",\"unit_id\":1,\"enabled\":false,\"tags\":[{"
+              "\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]},"
+              "{\"name\":\"B\",\"unit_id\":2,\"enabled\":true,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]},"
+              "{\"name\":\"C\",\"unit_id\":3,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+        err.msg);
+    TEST_ASSERT_FALSE(cfg.devices[0].enabled);
+    TEST_ASSERT_TRUE(cfg.devices[1].enabled);
+    TEST_ASSERT_TRUE(cfg.devices[2].enabled);
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"enabled\":0,\"tags\":[{\"name\":\"t\","
+                          "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+                    "devices[0].enabled: expected true or false");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"enabled\":false,\"tags\":[{\"name\":\"t\","
+                          "\"area\":\"input\",\"address\":0,\"type\":\"uint16\",\"writable\":true}]}]}"),
+                    "devices[0].tags[0].writable: only the coil and holding areas");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"tags\":[{\"name\":\"t\",\"area\":\"holding\",\"address\":0,"
+                          "\"type\":\"uint16\"}]},{\"name\":\"A\",\"unit_id\":2,\"enabled\":false,"
+                          "\"tags\":[{\"name\":\"t\",\"area\":\"holding\",\"address\":0,"
+                          "\"type\":\"uint16\"}]}]}"),
+                    "devices[1].name: duplicate device name 'A'");
 }
 
 /* MB-12: scan classes. */
@@ -1611,6 +1707,7 @@ int main(void)
     RUN_TEST(test_schema_rules);
     RUN_TEST(test_mb6_tags);
     RUN_TEST(test_eng_range);
+    RUN_TEST(test_write_limits);
     RUN_TEST(test_bytes_tags);
     RUN_TEST(test_device_types);
     RUN_TEST(test_utf8_sequences);
@@ -1620,6 +1717,7 @@ int main(void)
     RUN_TEST(test_lint_name_rules);
     RUN_TEST(test_lint_umh_preset);
     RUN_TEST(test_device_block_reads);
+    RUN_TEST(test_device_enabled);
     RUN_TEST(test_scan_classes);
     RUN_TEST(test_modbus_tcp_section);
     RUN_TEST(test_ota_section);

@@ -239,7 +239,10 @@ Body: `{"password": "…"}`, with the rule of `web.password`: 8 to 63 printable 
 | `core_dump` (optional) | `present`, `state` (`none`, `valid`, `corrupt`) and `size` |
 | `ap` (optional) | The access point. Refer to [The access point](access-point.md) |
 
-For each device, `devices` has `online`, `cycles`, `failed`, `ok`, `timeout`, `crc`, `frame`, `exception` and `tags`. Each tag has `name`, `valid` and `value`.
+For each device, `devices` has `enabled`, `online`, `cycles`, `failed`, `ok`, `timeout`, `crc`, `frame`, `exception`, `write_refused` and `tags`. Each tag has `name`, `valid` and `value`.
+
+- `enabled`: `false` for a device with `enabled: false` in the configuration. The gateway does not poll it, so its counters stay at 0 and its tags are not valid.
+- `write_refused`: the number of DCMD writes since the start that were out of the write limits of a tag (`write_min`, `write_max`).
 
 - The value is a number, an exact integer for `int64` and `uint64`, a text for `string`, and hexadecimal for `bytes`.
 - An `int64` or `uint64` tag also has `value_text`, the same integer as a text. A JSON reader that keeps each number as a double (for example a web browser) rounds an integer above 2^53.

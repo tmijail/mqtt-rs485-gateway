@@ -310,9 +310,14 @@ esp_err_t gw_bus_start(const gw_config_t *cfg, const mb_transport_t *tr, const g
 #endif
     };
     gw_poller_init(&s_poller, cfg, &s_mb, &opts, now_ms());
-    ESP_LOGI(TAG, "%u devices, %u tags, %u read requests per full cycle", cfg->device_count,
-             cfg->tag_count, s_poller.plan.block_count);
-    gw_status_set(GW_ST_MB_FAULT, cfg->device_count > 0);  /* until the first answers */
+    uint16_t disabled = 0;   /* #214 */
+    for (uint16_t d = 0; d < cfg->device_count; d++) {
+        disabled = (uint16_t)(disabled + (cfg->devices[d].enabled ? 0u : 1u));
+    }
+    ESP_LOGI(TAG, "%u devices (%u disabled), %u tags, %u read requests per full cycle",
+             cfg->device_count, disabled, cfg->tag_count, s_poller.plan.block_count);
+    /* until the first answers; a disabled device does not count */
+    gw_status_set(GW_ST_MB_FAULT, cfg->device_count > disabled);
 
     s_diag_done = xSemaphoreCreateBinaryStatic(&s_diag_done_buf);
     s_quiet = xSemaphoreCreateBinaryStatic(&s_quiet_buf);
