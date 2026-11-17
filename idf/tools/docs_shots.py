@@ -174,7 +174,9 @@ def live_log(page):
     page.evaluate("document.querySelector('#lg-card').scrollIntoView()")
     page.click("#lg-card summary")
     page.wait_for_selector("#lg-lines .ln")
-    page.wait_for_selector("#lg-tag option[value=poll]", state="attached")
+    # the options of the tags have no value attribute (their text is the value)
+    page.wait_for_function("[...document.querySelectorAll('#lg-tag option')]"
+                           ".some(o => o.value === 'poll')")
     page.select_option("#lg-tag", "poll")
     page.select_option("#lg-lvl", "debug")
     page.click("#lg-card button.qi[data-x=loglvl]")
@@ -292,6 +294,9 @@ def sha_mismatch(page):
         r.fulfill(status=200, content_type="application/json",
                   body=json.dumps(freeze(w, FREEZE["/api/firmware"])))
     page.route(re.compile(r".*/api/firmware$"), answer)
+    # the page asks for /api/firmware only in its poll, and the poll runs once (NO_TIMERS): load
+    # the page again to get the answer above
+    page.reload(wait_until="networkidle")
     firmware_url(page)
     page.wait_for_selector("#fw-panel .pb")
 
@@ -499,6 +504,10 @@ FREEZE = {
     "/api/firmware": {"running": no_hash, "other": no_hash},
     # #200: the lines of the live log change at each run (LOG_SAMPLE)
     "/api/log": {"lines": LOG_SAMPLE, "count": 212, "lost": 0},
+    # #199: the changed levels of the shot live-log (the card Log reads them here, not in
+    # /api/status)
+    "/api/log/level": {"changed": [{"tag": "poll", "level": "debug"},
+                                   {"tag": "mb", "level": "debug"}]},
     # the countdown of the claim page starts from the full window (claimsim 600)
     "/api/claim": {"left_s": 600},
 }
@@ -518,6 +527,10 @@ FREEZE["/api/claim"].update({"ap.url": "https://192.168.4.1/"})
 FREEZE["/api/status"].update({"heap.internal_largest": 110592, "temperature_c": 46.5})
 # #217: the run hours of DO/2 (on since the boot) grow at each run: a fixed value (96.1 h)
 FREEZE["/api/status"].update({"io.run_hours.do.*": lambda v: None if v is None else 345960})
+# The RTC of the emulator loses the time at each start of QEMU (the board keeps it with its
+# battery), and the Wi-Fi scan of QEMU is a simulated list (#208): the values of the board
+FREEZE["/api/status"].update({"time.rtc.lost": False})
+FREEZE["/api/wifi/scan"] = {"simulated": False}
 
 
 def freeze(doc, paths):
@@ -931,12 +944,16 @@ def route_freeze(route, extra=None):
     paths = FREEZE.get("/" + path)
     if extra and path == "api/status":
         paths = {**paths, **extra}
-    resp = route.fetch()
+    try:
+        resp = route.fetch()
+        body = resp.body()
+    except Exception:   # noqa: BLE001 (a request of the page after the capture closed the context)
+        return
     if not paths or "json" not in resp.headers.get("content-type", ""):
         route.fulfill(response=resp)
         return
     try:
-        doc = json.loads(resp.body())
+        doc = json.loads(body)
     except ValueError:
         route.fulfill(response=resp)
         return
@@ -976,8 +993,14 @@ def capture(browser, shot, auth, base):
         page.wait_for_load_state("networkidle")
         if shot.wait:
             page.wait_for_selector(shot.wait, state="visible")
+        # the bar of the Configuration tab ("1 change, not saved") and the card summaries follow
+        # an input after 150 ms (#191, #222): let them show the state of the page
+        page.wait_for_timeout(400)
         opts = dict(animations="disabled", caret="hide", type="png")
         if shot.element:
+            # the bar sticks to the bottom of the window, also over a card that is taller than the
+            # window: keep it out of the image of a card
+            page.add_style_tag(content="#bar{visibility:hidden}")
             box = page.locator(shot.element).first.bounding_box()
             # the box is relative to the viewport, the clip of a full page to the page: add the
             # scroll position (a click scrolls the page, and a reload keeps the position)
@@ -999,7 +1022,10 @@ def write_png(png, out, lossless):
     from PIL import Image
     img = Image.open(io.BytesIO(png)).convert("RGB")
     if not lossless:
-        img = img.quantize(colors=256, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+        # kmeans: without it, the median cut of a large page drops the small colours (the green
+        # of "online" and "connected" became grey)
+        img = img.quantize(colors=256, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE,
+                           kmeans=1)
     if out.exists():
         old = Image.open(out)
         if old.size == img.size and old.convert("RGB").tobytes() == img.convert("RGB").tobytes():
