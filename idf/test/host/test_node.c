@@ -1701,7 +1701,8 @@ static void test_gateway_labels(void)
     set_meter(true, 230.5, 12.3, 1);
     gw_node_session_up(&node, 0);
     msg(0);
-    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS - 1, dec.count);   /* no Modbus TCP table */
+    /* no Modbus TCP table; #223: no ota.mqtt */
+    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS - 1 - GW_NODE_MQTT_OTA_METRICS, dec.count);
     int i = decoded_find_name(&dec, "Node Info/Name");
     TEST_ASSERT_TRUE(i >= 0);
     TEST_ASSERT_EQUAL(SPB_DT_STRING, dec.m[i].datatype);
