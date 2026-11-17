@@ -770,10 +770,12 @@ static void save_counters(bool force)
     if (xSemaphoreTake(s_save_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
         return;
     }
-    gw_local_io_t io;
+    /* static, under s_save_lock: on_shutdown() runs in the task that calls esp_restart(), for
+     * example the esp_timer task (restart_soon), with a small stack */
+    static gw_local_io_t io;
+    static uint64_t v[GW_LIO_SAVE_WORDS];   /* the counters, then the run hours (#217) */
     gw_tagdb_get_io(&io);
     uint32_t now = now_ms();
-    uint64_t v[GW_LIO_SAVE_WORDS];   /* the counters, then the run hours (#217) */
     memcpy(v, io.count, sizeof(io.count));
     gw_lio_rh_seconds(&s_rh, &v[GW_LOCAL_IO_CHANNELS]);
     if (gw_lio_save_due(&s_save, v, now, force)) {
@@ -792,6 +794,9 @@ static void save_counters(bool force)
 static void on_shutdown(void)
 {
     save_counters(true);   /* esp_restart(): NCMD Reboot, new configuration, shell, web */
+    /* the stack that the save left in the task of esp_restart() (the E2E reads it) */
+    ESP_LOGI(TAG, "shutdown in task '%s': %u B of its stack never used", pcTaskGetName(NULL),
+             (unsigned)uxTaskGetStackHighWaterMark(NULL));
 }
 
 static void lio_task(void *arg)

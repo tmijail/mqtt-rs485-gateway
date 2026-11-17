@@ -1067,6 +1067,8 @@ esp_err_t gw_storage_init(void)
     }
 #endif
     s_save_lock = xSemaphoreCreateMutexStatic(&s_save_lock_buf);
+    s_blob_lock = xSemaphoreCreateMutexStatic(&s_blob_lock_buf);
+    s_blob_old = gw_storage_malloc(BLOB_MAX);
     gw_config_set_allocator(boot_alloc, heap_caps_free);
     if (!s_nvs_ok) {
         ESP_LOGE(TAG, "NVS unavailable (%s): no stored secrets", esp_err_to_name(err));
@@ -1394,29 +1396,38 @@ static esp_err_t wipe_storage(void)
 
 /* ---------- small local I/O state (IO-3, IO-4, #217) ---------- */
 
-/* The largest blob: the pulse counters and the run hours, 24 x 8 B (#217). The caller's stack
- * holds a copy of the stored blob for the comparison. */
+/* The largest blob: the pulse counters and the run hours, 24 x 8 B (#217). The copy of the stored
+ * blob for the comparison is in PSRAM (allocated at gw_storage_init), not on the stack of the
+ * caller: the save of the counters runs also in a shutdown handler (any task, for example the
+ * esp_timer task of a restart). */
 #define BLOB_MAX 192
+static uint8_t *s_blob_old;
+static SemaphoreHandle_t s_blob_lock;
+static StaticSemaphore_t s_blob_lock_buf;
 
 esp_err_t gw_storage_set_blob(const char *key, const void *data, size_t len)
 {
     if (s_reset_done) {
         return ESP_ERR_INVALID_STATE;
     }
+    if (s_blob_old == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
     nvs_handle_t h;
     if (!s_nvs_ok || len > BLOB_MAX || nvs_open(NVS_GW, NVS_READWRITE, &h) != ESP_OK) {
         return ESP_ERR_INVALID_STATE;
     }
-    uint8_t old[BLOB_MAX];
-    size_t old_len = sizeof(old);
+    xSemaphoreTake(s_blob_lock, portMAX_DELAY);
+    size_t old_len = BLOB_MAX;
     esp_err_t err = ESP_OK;
-    if (nvs_get_blob(h, key, old, &old_len) != ESP_OK || old_len != len ||
-        memcmp(old, data, len) != 0) {
+    if (nvs_get_blob(h, key, s_blob_old, &old_len) != ESP_OK || old_len != len ||
+        memcmp(s_blob_old, data, len) != 0) {
         err = nvs_set_blob(h, key, data, len);
         if (err == ESP_OK) {
             err = nvs_commit(h);
         }
     }
+    xSemaphoreGive(s_blob_lock);
     nvs_close(h);
     return err;
 }
