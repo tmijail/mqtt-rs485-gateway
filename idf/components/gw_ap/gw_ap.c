@@ -423,6 +423,11 @@ void gw_ap_get_status(gw_ap_status_t *out)
     out->idle_s = s_life.idle_ms / 1000u;
     out->last_stop = s_life.stopped;
     xSemaphoreGive(s_lock);
+    if (out->ssid[0] == '\0') {
+        /* #203, #209: the name is known before the first start (it comes from the MAC); the
+         * dialogs of the web UI give it for the access point of the next boot */
+        gw_ap_ssid(out->ssid);
+    }
 }
 
 bool gw_ap_active(void)
