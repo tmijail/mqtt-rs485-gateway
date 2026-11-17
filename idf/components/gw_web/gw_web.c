@@ -25,6 +25,7 @@
 #include "gw_buzz.h"
 #include "gw_buzzer.h"
 #include "gw_cdump.h"
+#include "gw_certs.h"
 #include "gw_claim.h"
 #include "gw_conv.h"
 #include "gw_coredump.h"
@@ -48,7 +49,7 @@
 static const char *TAG = "web";
 
 #define REALM_HDR "Basic realm=\"gateway\", charset=\"UTF-8\""
-#define WEB_URI_HANDLERS 30   /* the routes of gw_web_start (uris[]) */
+#define WEB_URI_HANDLERS 35   /* the routes of gw_web_start (uris[]) */
 
 static gw_web_ctx_t s_ctx;
 static httpd_handle_t s_server;
@@ -1886,7 +1887,7 @@ static void jb_add(jbuf_t *j, const char *fmt, ...)
 /* "<key>":"<escaped text>" */
 static void jb_str(jbuf_t *j, const char *key, const char *s)
 {
-    char esc[2 * GW_PEM_SUBJECT_MAX + 8];
+    char esc[2 * 320 + 8];   /* the SANs of a certificate (gw_webcert_info_t) */
     json_escape(esc, sizeof(esc), s);
     jb_add(j, "\"%s\":\"%s\"", key, esc);
 }
@@ -1962,7 +1963,7 @@ static esp_err_t wifi_scan_get(httpd_req_t *req)
 
 /* ---------- #221: the PEM files next to config.json ---------- */
 
-#define FILES_MAX 16   /* files that GET /api/files lists */
+#define FILES_MAX GW_PEM_FILES_MAX   /* files that GET /api/files lists */
 
 typedef struct {
     char (*names)[GW_FILE_SIZE];
@@ -1976,6 +1977,34 @@ static void file_name(void *ctx, const char *name, size_t size)
     if (n->count < FILES_MAX) {
         snprintf(n->names[n->count++], GW_FILE_SIZE, "%s", name);
     }
+}
+
+/* The value of @p key in the query (a longer buffer than query_flag: a load names two files). */
+static bool query_get(httpd_req_t *req, const char *key, char *out, size_t cap)
+{
+    char q[192];
+    out[0] = '\0';
+    return httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+           httpd_query_key_value(q, key, out, cap) == ESP_OK;
+}
+
+static bool query_one(httpd_req_t *req, const char *key)
+{
+    char v[8];
+    return query_get(req, key, v, sizeof(v)) && strcmp(v, "1") == 0;
+}
+
+/* "used_by":["mqtt.tls.ca_file",...]: the keys of the saved configuration that name the file */
+static void jb_used(jbuf_t *j, unsigned mask)
+{
+    jb_add(j, ",\"used_by\":[");
+    unsigned m = 0;
+    for (unsigned r = 0; r < GW_FILEREF_COUNT; r++) {
+        if (mask & (1u << r)) {
+            jb_add(j, "%s\"%s\"", m++ ? "," : "", gw_fileref_path((gw_fileref_t)r));
+        }
+    }
+    jb_add(j, "]");
 }
 
 static void jb_info(jbuf_t *j, const gw_pem_info_t *f)
@@ -2000,8 +2029,9 @@ static void jb_info(jbuf_t *j, const gw_pem_info_t *f)
 }
 
 /* GET /api/files: the files that the operator can name in mqtt.tls and ota (the selects of the
- * card MQTT), with the subject and the expiry of each certificate, the type of each private key
- * and the certificate files that it agrees with. Never the content of a file. */
+ * card MQTT, the list of the card Certificates), with the subject and the expiry of each
+ * certificate, the type of each private key, the certificate files that it agrees with and the
+ * keys of the saved configuration that use each file. Never the content of a file. */
 static esp_err_t files_get(httpd_req_t *req)
 {
     if (!authorized(req)) {
@@ -2009,13 +2039,15 @@ static esp_err_t files_get(httpd_req_t *req)
     }
     names_t n = {.names = gw_storage_calloc(FILES_MAX, GW_FILE_SIZE)};
     gw_pem_info_t *info = gw_storage_calloc(FILES_MAX, sizeof(*info));
-    jbuf_t j = {.cap = 256 + FILES_MAX * (200 + GW_PEM_CERTS_MAX * (2 * GW_PEM_SUBJECT_MAX + 64))};
+    jbuf_t j = {.cap = 384 + FILES_MAX * (300 + GW_PEM_CERTS_MAX * (2 * GW_PEM_SUBJECT_MAX + 64))};
     j.b = gw_storage_malloc(j.cap);
     esp_err_t r;
     if (n.names == NULL || info == NULL || j.b == NULL) {
         r = send_error(req, "503 Service Unavailable", NULL, "no memory");
     } else {
-        gw_storage_list_files(file_name, &n);
+        size_t all = gw_storage_list_files(file_name, &n);
+        gw_filerefs_t refs;
+        bool known = gw_storage_file_refs(&refs);
         size_t total = 0;
         for (size_t i = 0; i < n.count; i++) {
             char why[96];
@@ -2038,10 +2070,15 @@ static esp_err_t files_get(httpd_req_t *req)
                 }
                 jb_add(&j, "]");
             }
+            jb_used(&j, known ? gw_filerefs_users(&refs, info[i].name) : 0);
             jb_add(&j, "}");
         }
-        jb_add(&j, "],\"total_bytes\":%u,\"max_file_bytes\":%d}\n", (unsigned)total,
-               GW_STORAGE_FILE_MAX);
+        size_t fs_total = 0, fs_used = 0;
+        gw_storage_fs_info(&fs_total, &fs_used);
+        jb_add(&j, "],\"count\":%u,\"total_bytes\":%u,\"max_files\":%d,\"max_file_bytes\":%d,"
+               "\"config_known\":%s,\"fs_total_bytes\":%u,\"fs_used_bytes\":%u}\n",
+               (unsigned)all, (unsigned)total, GW_PEM_FILES_MAX, GW_PEM_FILE_MAX_BYTES,
+               known ? "true" : "false", (unsigned)fs_total, (unsigned)fs_used);
         r = jb_send(req, "200 OK", &j);
     }
     gw_storage_free(n.names);
@@ -2050,25 +2087,93 @@ static esp_err_t files_get(httpd_req_t *req)
     return r;
 }
 
-/* PUT /api/files?name=<name> with the PEM text: the buttons "Load a file..." of the file fields
- * of the card MQTT. Certificates or an unencrypted private key, up to GW_STORAGE_FILE_MAX bytes.
- * 201 with what the file holds; 409 if the file exists (#221: the replace of a file waits for the
- * approval of the PEM file management). The configuration does not change: the web UI selects
- * the file in its field, then the operator saves. */
+/* #205 #221: a body that holds a certificate (with its chain) and its private key: the key
+ * block goes to @p key, the rest to @p cert (two PSRAM buffers, NUL terminated). False with the
+ * reason in @p why when the body has no key block, more than one, or no certificate text. */
+static bool split_pair(const char *body, size_t len, char **cert, size_t *clen, char **key,
+                       size_t *klen, char *why, size_t why_cap)
+{
+    size_t off, kn;
+    *cert = *key = NULL;
+    unsigned blocks = gw_pem_key_blocks(body, len, &off, &kn);
+    if (blocks != 1) {
+        snprintf(why, why_cap, blocks == 0 ? "the body has no PEM private key: give the "
+                                             "certificate and its key"
+                                           : "the body has more than one PEM private key");
+        return false;
+    }
+    *cert = gw_storage_malloc(len - kn + 1);
+    *key = gw_storage_malloc(kn + 1);
+    if (*cert == NULL || *key == NULL) {
+        gw_storage_free(*cert);
+        gw_storage_free(*key);
+        *cert = *key = NULL;
+        snprintf(why, why_cap, "no memory");
+        return false;
+    }
+    memcpy(*key, body + off, kn);
+    (*key)[kn] = '\0';
+    *klen = kn;
+    memcpy(*cert, body, off);
+    memcpy(*cert + off, body + off + kn, len - off - kn);
+    *clen = len - kn;
+    (*cert)[*clen] = '\0';
+    return true;
+}
+
+static void free_pair(char *cert, char *key, size_t klen)
+{
+    if (key != NULL) {
+        memset(key, 0, klen);   /* a private key */
+    }
+    gw_storage_free(cert);
+    gw_storage_free(key);
+}
+
+/* An error with a reason longer than GW_CFG_ERR_SIZE (the names of two files in it). */
+static esp_err_t send_why(httpd_req_t *req, const char *status, const char *path, const char *why)
+{
+    char m[2 * 256 + 8], p[2 * GW_CFG_PATH_SIZE], body[sizeof(m) + sizeof(p) + 64];
+    json_escape(m, sizeof(m), why);
+    json_escape(p, sizeof(p), path);
+    snprintf(body, sizeof(body), "{\"ok\":false,\"error\":\"%s\",\"path\":\"%s\"}\n", m, p);
+    return send_json(req, status, body);
+}
+
+/* The status of an error of gw_pem_load or gw_webcert_put. */
+static const char *load_status(esp_err_t e)
+{
+    return e == ESP_ERR_INVALID_STATE  ? "409 Conflict"
+           : e == ESP_ERR_NO_MEM       ? "503 Service Unavailable"
+           : e == ESP_ERR_INVALID_SIZE ? "413 Content Too Large"
+           : e == ESP_FAIL             ? "507 Insufficient Storage"
+           : e == ESP_ERR_INVALID_ARG  ? "400 Bad Request"
+                                       : "500 Internal Server Error";
+}
+
+/* PUT /api/files?name=<name>[&key_name=<name>][&replace=1][&dry_run=1] with the PEM text: the
+ * buttons "Load a file..." of the file fields of the card MQTT, and the load and the replace of
+ * the card Certificates. One file, up to GW_PEM_FILE_MAX_BYTES, or with key_name a certificate
+ * and its private key together in the body (the gateway separates the key block). Without
+ * replace=1, 409 if a file exists. dry_run=1 examines and writes nothing (200). 201 with what
+ * each file holds. The configuration does not change: a replaced file that the saved
+ * configuration uses applies after the next restart. */
 static esp_err_t files_put(httpd_req_t *req)
 {
     if (!same_origin(req) || !authorized(req)) {
         return ESP_OK;
     }
-    char q[96], name[GW_FILE_SIZE + 8];
-    if (httpd_req_get_url_query_str(req, q, sizeof(q)) != ESP_OK ||
-        httpd_query_key_value(q, "name", name, sizeof(name)) != ESP_OK || name[0] == '\0') {
+    char name[GW_FILE_SIZE + 8], key_name[GW_FILE_SIZE + 8];
+    if (!query_get(req, "name", name, sizeof(name)) || name[0] == '\0') {
         return refuse_body(req, "400 Bad Request", "name: give the name of the file (?name=...)");
     }
-    if (req->content_len > GW_STORAGE_FILE_MAX) {
+    bool pair = query_get(req, "key_name", key_name, sizeof(key_name)) && key_name[0] != '\0';
+    bool replace = query_one(req, "replace"), dry_run = query_one(req, "dry_run");
+    size_t max = (pair ? 2 : 1) * GW_PEM_FILE_MAX_BYTES;
+    if (req->content_len > max) {
         char msg[80];
-        snprintf(msg, sizeof(msg), "body of %u bytes not accepted (maximum %d)",
-                 (unsigned)req->content_len, GW_STORAGE_FILE_MAX);
+        snprintf(msg, sizeof(msg), "body of %u bytes not accepted (maximum %u)",
+                 (unsigned)req->content_len, (unsigned)max);
         return refuse_body(req, "413 Content Too Large", msg);
     }
     size_t len;
@@ -2077,35 +2182,275 @@ static esp_err_t files_put(httpd_req_t *req)
     if (body == NULL) {
         return refuse_body(req, status, "the body is empty or did not arrive");
     }
-    gw_pem_info_t *info = gw_storage_calloc(1, sizeof(*info));
-    char why[160];
-    esp_err_t e = info != NULL ? gw_pem_put(name, body, len, info, why, sizeof(why))
-                               : ESP_ERR_NO_MEM;
-    memset(body, 0, len);   /* can be a private key */
-    heap_caps_free(body);
+    gw_pem_load_t *f = gw_storage_calloc(2, sizeof(*f));
+    char why[256], path[GW_CFG_PATH_SIZE] = "";
+    char *cert = NULL, *key = NULL;
+    size_t clen = 0, klen = 0;
+    esp_err_t e = ESP_OK;
+    size_t n = 1;
+    if (f == NULL) {
+        snprintf(why, sizeof(why), "no memory");
+        e = ESP_ERR_NO_MEM;
+    } else if (pair) {
+        if (!split_pair(body, len, &cert, &clen, &key, &klen, why, sizeof(why))) {
+            e = strcmp(why, "no memory") == 0 ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_ARG;
+        } else {
+            f[0] = (gw_pem_load_t){.name = name, .pem = cert, .len = clen};
+            f[1] = (gw_pem_load_t){.name = key_name, .pem = key, .len = klen};
+            n = 2;
+        }
+    } else {
+        size_t off, kn;
+        if (gw_pem_key_blocks(body, len, &off, &kn) > 0 &&
+            (off > 0 || kn < len) && strstr(body, "-----BEGIN CERTIFICATE-----") != NULL) {
+            snprintf(why, sizeof(why), "%s holds a certificate and a private key: load them "
+                     "as a pair (key_name=...)", name);
+            e = ESP_ERR_INVALID_ARG;
+        }
+        f[0] = (gw_pem_load_t){.name = name, .pem = body, .len = len};
+    }
+    if (e == ESP_OK) {
+        e = gw_pem_load(f, n, replace, dry_run, path, sizeof(path), why, sizeof(why));
+    }
     esp_err_t r;
     if (e == ESP_OK) {
-        jbuf_t j = {.cap = 256 + GW_PEM_CERTS_MAX * (2 * GW_PEM_SUBJECT_MAX + 64)};
+        jbuf_t j = {.cap = 384 + 2 * (300 + GW_PEM_CERTS_MAX * (2 * GW_PEM_SUBJECT_MAX + 64))};
         j.b = gw_storage_malloc(j.cap);
         if (j.b == NULL) {
-            r = send_json(req, "201 Created", "{\"ok\":true}\n");
+            r = send_json(req, dry_run ? "200 OK" : "201 Created", "{\"ok\":true}\n");
         } else {
-            jb_add(&j, "{\"ok\":true,\"file\":");
-            jb_info(&j, info);
+            jb_add(&j, "{\"ok\":true,\"saved\":%s,\"files\":[", dry_run ? "false" : "true");
+            for (size_t i = 0; i < n; i++) {
+                jb_add(&j, "%s", i ? "," : "");
+                jb_info(&j, &f[i].info);
+                jb_add(&j, ",\"replaced\":%s", f[i].exists ? "true" : "false");
+                jb_used(&j, f[i].used_by);
+                jb_add(&j, "}");
+            }
+            /* "file": the first file, as before the card Certificates (the file fields) */
+            jb_add(&j, "],\"file\":");
+            jb_info(&j, &f[0].info);
             jb_add(&j, "}}\n");
-            r = jb_send(req, "201 Created", &j);
+            r = jb_send(req, dry_run ? "200 OK" : "201 Created", &j);
             gw_storage_free(j.b);
         }
     } else {
-        r = send_error(req, e == ESP_ERR_INVALID_STATE  ? "409 Conflict"
-                            : e == ESP_ERR_NO_MEM       ? "503 Service Unavailable"
-                            : e == ESP_ERR_INVALID_SIZE ? "413 Content Too Large"
-                            : e == ESP_FAIL             ? "507 Insufficient Storage"
-                                                        : "400 Bad Request",
-                       NULL, e == ESP_ERR_NO_MEM ? "no memory" : why);
+        r = send_why(req, load_status(e), path, why);
     }
-    gw_storage_free(info);
+    memset(body, 0, len);   /* can be a private key */
+    heap_caps_free(body);
+    free_pair(cert, key, klen);
+    gw_storage_free(f);
     return r;
+}
+
+/* DELETE /api/files/<name>: the button Remove of the card Certificates. 409 when the saved
+ * configuration names the file (with the keys in "used_by"), or when the saved document cannot
+ * be read (nobody can tell which files it uses). 404 when the file is not there. */
+static esp_err_t files_delete(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    char name[GW_FILE_SIZE + 8];
+    const char *p = req->uri + strlen("/api/files/");
+    size_t n = strcspn(p, "?#");
+    if (n == 0 || n >= sizeof(name)) {
+        return send_error(req, "400 Bad Request", NULL, "give the name of the file "
+                                                        "(/api/files/<name>)");
+    }
+    memcpy(name, p, n);
+    name[n] = '\0';
+    gw_filerefs_t refs;
+    if (!gw_storage_file_refs(&refs)) {
+        return send_error(req, "409 Conflict", NULL, "the saved configuration cannot be read: "
+                                                     "the gateway cannot tell if it uses the "
+                                                     "file");
+    }
+    unsigned used = gw_filerefs_users(&refs, name);
+    if (used != 0) {
+        char body[400], esc[2 * GW_FILE_SIZE + 8];
+        json_escape(esc, sizeof(esc), name);
+        int k = snprintf(body, sizeof(body), "{\"ok\":false,\"error\":\"the saved configuration "
+                         "uses %s: select another file, save, then remove it\",\"path\":\"%s\","
+                         "\"used_by\":[", esc, gw_fileref_path((gw_fileref_t)__builtin_ctz(used)));
+        unsigned m = 0;
+        for (unsigned r = 0; r < GW_FILEREF_COUNT && k > 0 && (size_t)k < sizeof(body); r++) {
+            if (used & (1u << r)) {
+                k += snprintf(body + k, sizeof(body) - (size_t)k, "%s\"%s\"", m++ ? "," : "",
+                              gw_fileref_path((gw_fileref_t)r));
+            }
+        }
+        if (k > 0 && (size_t)k < sizeof(body)) {
+            snprintf(body + k, sizeof(body) - (size_t)k, "]}\n");
+        }
+        return send_json(req, "409 Conflict", body);
+    }
+    char why[120];
+    esp_err_t e = gw_storage_delete_file(name, why, sizeof(why));
+    if (e != ESP_OK) {
+        return send_error(req, e == ESP_ERR_NOT_FOUND     ? "404 Not Found"
+                               : e == ESP_ERR_INVALID_ARG ? "400 Bad Request"
+                                                          : "507 Insufficient Storage",
+                          NULL, why);
+    }
+    return send_json(req, "200 OK", "{\"ok\":true,\"removed\":true}\n");
+}
+
+/* ---------- #205: the HTTPS certificate of the web UI ---------- */
+
+static void jb_cert(jbuf_t *j, const gw_webcert_info_t *c)
+{
+    jb_add(j, "{");
+    jb_str(j, "source", c->source);
+    jb_add(j, ",");
+    jb_str(j, "subject", c->subject);
+    jb_add(j, ",");
+    jb_str(j, "issuer", c->issuer);
+    jb_add(j, ",");
+    jb_str(j, "sans", c->sans);
+    jb_add(j, ",\"not_before\":\"%s\",\"not_after\":\"%s\",\"sha256\":\"%s\",\"chain\":%u,"
+           "\"self_signed\":%s,", c->not_before, c->not_after, c->fingerprint, c->chain,
+           c->self_signed ? "true" : "false");
+    jb_str(j, "key_type", c->key_type);
+    jb_add(j, ",\"hostname_in_sans\":%s}",
+           gw_san_has_host(c->sans, s_ctx.cfg->network.hostname) ? "true" : "false");
+}
+
+/* GET /api/web/certificate: the certificate of this page and the one that waits for the restart
+ * ("pending", null when none). Never a key. */
+static esp_err_t web_cert_get(httpd_req_t *req)
+{
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
+    gw_webcert_info_t *c = gw_storage_calloc(2, sizeof(*c));
+    jbuf_t j = {.cap = 2048 + 2 * sizeof(*c)};
+    j.b = gw_storage_malloc(j.cap);
+    esp_err_t r;
+    if (c == NULL || j.b == NULL) {
+        r = send_error(req, "503 Service Unavailable", NULL, "no memory");
+    } else {
+        bool cur = gw_webcert_get(false, &c[0]), pend = gw_webcert_get(true, &c[1]);
+        jb_add(&j, "{\"https\":%s,", s_https ? "true" : "false");
+        jb_str(&j, "hostname", s_ctx.cfg->network.hostname);
+        jb_add(&j, ",\"current\":");
+        if (cur) {
+            jb_cert(&j, &c[0]);
+        } else {
+            jb_add(&j, "null");
+        }
+        jb_add(&j, ",\"pending\":");
+        if (pend) {
+            jb_cert(&j, &c[1]);
+        } else {
+            jb_add(&j, "null");
+        }
+        jb_add(&j, ",\"max_cert_bytes\":%d,\"max_key_bytes\":%d}\n", GW_WEBCERT_PEM_MAX - 1,
+               GW_WEBCERT_KEY_MAX - 1);
+        r = jb_send(req, "200 OK", &j);
+    }
+    gw_storage_free(c);
+    gw_storage_free(j.b);
+    return r;
+}
+
+static esp_err_t send_cert(httpd_req_t *req, const char *status, const char *head,
+                           const gw_webcert_info_t *c)
+{
+    jbuf_t j = {.cap = 1536 + sizeof(*c)};
+    j.b = gw_storage_malloc(j.cap);
+    if (j.b == NULL) {
+        return send_json(req, status, "{\"ok\":true}\n");
+    }
+    jb_add(&j, "{\"ok\":true,%s,\"certificate\":", head);
+    jb_cert(&j, c);
+    jb_add(&j, "}\n");
+    esp_err_t r = jb_send(req, status, &j);
+    gw_storage_free(j.b);
+    return r;
+}
+
+/* PUT /api/web/certificate[?dry_run=1]: the certificate of the plant (PEM, with its chain) and
+ * its unencrypted private key, together in the body. The gateway examines them (the key agrees
+ * with the certificate); without dry_run they wait for the restart (201). */
+static esp_err_t web_cert_put(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    bool dry_run = query_one(req, "dry_run");
+    if (req->content_len > GW_WEBCERT_PEM_MAX + GW_WEBCERT_KEY_MAX) {
+        char msg[80];
+        snprintf(msg, sizeof(msg), "body of %u bytes not accepted (maximum %d)",
+                 (unsigned)req->content_len, GW_WEBCERT_PEM_MAX + GW_WEBCERT_KEY_MAX);
+        return refuse_body(req, "413 Content Too Large", msg);
+    }
+    size_t len;
+    const char *status;
+    char *body = read_body(req, &len, &status);
+    if (body == NULL) {
+        return refuse_body(req, status, "the body is empty or did not arrive");
+    }
+    char *cert = NULL, *key = NULL, why[200];
+    size_t clen = 0, klen = 0;
+    gw_webcert_info_t *c = gw_storage_calloc(1, sizeof(*c));
+    esp_err_t e;
+    if (c == NULL) {
+        snprintf(why, sizeof(why), "no memory");
+        e = ESP_ERR_NO_MEM;
+    } else if (!split_pair(body, len, &cert, &clen, &key, &klen, why, sizeof(why))) {
+        e = strcmp(why, "no memory") == 0 ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_ARG;
+    } else {
+        e = gw_webcert_put(cert, clen, key, klen, !dry_run, c, why, sizeof(why));
+    }
+    memset(body, 0, len);   /* holds a private key */
+    heap_caps_free(body);
+    free_pair(cert, key, klen);
+    esp_err_t r = e == ESP_OK ? send_cert(req, dry_run ? "200 OK" : "201 Created",
+                                          dry_run ? "\"saved\":false" : "\"saved\":true,"
+                                                                        "\"restart\":true",
+                                          c)
+                              : send_why(req, load_status(e), "", why);
+    gw_storage_free(c);
+    return r;
+}
+
+/* POST /api/web/certificate/new: a new key and self-signed certificate for the hostname; it
+ * waits for the restart (201) and replaces one that waited. */
+static esp_err_t web_cert_new_post(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    gw_webcert_info_t *c = gw_storage_calloc(1, sizeof(*c));
+    char why[120] = "no memory";
+    esp_err_t e = c != NULL ? gw_webcert_new(s_ctx.cfg->network.hostname, c, why, sizeof(why))
+                            : ESP_ERR_NO_MEM;
+    esp_err_t r = e == ESP_OK ? send_cert(req, "201 Created", "\"saved\":true,\"restart\":true", c)
+                              : send_error(req, e == ESP_ERR_NO_MEM ? "503 Service Unavailable"
+                                                                    : "507 Insufficient Storage",
+                                           NULL, why);
+    gw_storage_free(c);
+    return r;
+}
+
+/* DELETE /api/web/certificate/pending: the button Discard. 404 when none waits. */
+static esp_err_t web_cert_discard(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    esp_err_t e = gw_webcert_discard();
+    if (e == ESP_ERR_NOT_FOUND) {
+        return send_error(req, "404 Not Found", NULL, "no certificate waits for the restart");
+    }
+    if (e != ESP_OK) {
+        char why[80];
+        snprintf(why, sizeof(why), "NVS error %s", esp_err_to_name(e));
+        return send_error(req, "507 Insufficient Storage", NULL, why);
+    }
+    return send_json(req, "200 OK", "{\"ok\":true,\"discarded\":true}\n");
 }
 
 /* ---------- / and /api/status ---------- */
@@ -2584,6 +2929,7 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
     hc.max_uri_handlers = WEB_URI_HANDLERS;
     hc.max_open_sockets = 4;
     hc.lru_purge_enable = true;
+    hc.uri_match_fn = httpd_uri_match_wildcard;   /* #221: DELETE /api/files/<name> */
     const char *cert = NULL, *key = NULL;
     if (ctx->cfg->web.https && !gw_webcert_load(ctx->cfg->network.hostname, &cert, &key)) {
         ESP_LOGE(TAG, "HTTPS unavailable (no device certificate): plain HTTP on port %u",
@@ -2629,7 +2975,9 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
                            h_log_level_get = {log_level_get},
                            h_log_level_post = {log_level_post}, h_do = {do_post},
                            h_wifi_scan = {wifi_scan_get}, h_files_get = {files_get},
-                           h_files_put = {files_put};
+                           h_files_put = {files_put}, h_files_delete = {files_delete},
+                           h_cert_get = {web_cert_get}, h_cert_put = {web_cert_put},
+                           h_cert_new = {web_cert_new_post}, h_cert_discard = {web_cert_discard};
     static const struct {
         const char *uri;
         httpd_method_t method;
@@ -2665,6 +3013,11 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         {"/api/wifi/scan", HTTP_GET, &h_wifi_scan},        /* #208 */
         {"/api/files", HTTP_GET, &h_files_get},            /* #221 */
         {"/api/files", HTTP_PUT, &h_files_put},
+        {"/api/files/*", HTTP_DELETE, &h_files_delete},
+        {"/api/web/certificate", HTTP_GET, &h_cert_get},    /* #205 */
+        {"/api/web/certificate", HTTP_PUT, &h_cert_put},
+        {"/api/web/certificate/new", HTTP_POST, &h_cert_new},
+        {"/api/web/certificate/pending", HTTP_DELETE, &h_cert_discard},
     };
     _Static_assert(sizeof(uris) / sizeof(uris[0]) == WEB_URI_HANDLERS, "WEB_URI_HANDLERS");
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
