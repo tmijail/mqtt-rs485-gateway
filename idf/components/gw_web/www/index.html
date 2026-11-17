@@ -21,6 +21,8 @@ input[type=checkbox]{width:auto;align-self:flex-start}
 textarea{width:100%;min-height:360px;font-family:ui-monospace,monospace;font-size:12px}
 button{font:inherit;padding:6px 12px;border-radius:4px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
 button.pri{background:var(--acc);border-color:var(--acc);color:#fff}button.sel{border-color:var(--acc);color:var(--acc)}
+/* dark theme: white text on the light blue --acc has a contrast of 2.4:1; dark text has 7.3:1 (WCAG AA: 4.5:1) */
+@media (prefers-color-scheme:dark){button.pri{color:var(--bg)}}
 /* a disabled button looks disabled (for example "Remove type" of a type that devices use, #213) */
 button:disabled{opacity:.45;cursor:default}
 table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line)}
@@ -165,6 +167,8 @@ button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
 #f-dev>.card .dhd,#f-dt>.card .dhd{margin:-4px 0 0}#f-dev>.card .dbody,#f-dt>.card .dbody{margin-top:6px}
 /* #213: the card Device types (a type is a row that closes and opens), and a device with a type */
 .tinfo{background:var(--sub);border-radius:4px;padding:10px 12px;margin:8px 0 2px;font-size:13px}.tinfo p{margin:0}
+/* on a phone, "Go to the type" is a full-width touch target of 44 px (approved prototype of #213) */
+@media (max-width:600px){.tinfo a[data-goto-dt]{display:flex;align-items:center;justify-content:center;min-height:44px;margin-top:8px;border:1px solid var(--line);border-radius:4px;background:var(--card);text-decoration:none}}
 .used{font-size:12px;color:var(--mut);margin:6px 0}.empty{background:var(--sub);border-radius:4px;padding:10px 12px;margin:4px 0 10px;font-size:13px}
 .err~.hint{display:none}@media (max-width:760px){#f-dt>.card{padding:10px}}
 @media (max-width:600px){button.coll{min-height:44px}.cctools button{min-height:44px;flex:1}}
@@ -195,7 +199,7 @@ button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
 #dlg .exam{border:1px solid var(--line);border-radius:6px;background:var(--sub);padding:8px 10px;font-size:13px}#dlg .exam.bad{border-color:var(--bad);background:var(--badbg);color:var(--fg)}
 #dlg .exam b{display:block;margin-bottom:2px}#dlg .exam p{margin:0 0 4px}#dlg .exam p:last-child{margin:0}#dlg .exam code{font-family:ui-monospace,monospace;font-size:12px;overflow-wrap:anywhere}#dlg ul.cl{margin:12px 0 0}
 @media (max-width:600px){#certs .pf-t{display:none}#certs .pf-l{display:block}#certs dl.kv{display:block}#certs dl.kv dt{margin-top:6px;font-size:12px}
- #wc>.row,#pf>.row{flex-direction:column;align-items:stretch}#certs .pend button{width:100%}#dlg .pick{flex-direction:column;align-items:stretch;gap:4px}}
+ #wc>.row,#pf>.row{flex-direction:column;align-items:stretch}#certs .pend button{width:100%}#dlg .pick{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 6px}#dlg .pick button{grid-column:1/-1}}
 </style>
 </head>
 <body>
