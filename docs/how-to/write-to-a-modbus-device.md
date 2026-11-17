@@ -113,6 +113,8 @@ The gateway publishes the outputs as the node metrics `DO/1` to `DO/8` (Boolean)
 
 - An output that a local rule controls does not accept the NCMD. Refer to [Local rules](../reference/configuration.md#local-rules).
 - Without a Sparkplug session for `local_io.failsafe_s`, the outputs go to their safe state. Refer to [The safe state of the DOs](../reference/configuration.md#the-safe-state-of-the-dos).
+- `true` on a pulse DO starts its pulse. The NDATA gives `true`, and then `false` after the pulse. Refer to [Pulse DOs](../reference/configuration.md#pulse-dos).
+- Without a host, you can set an output from the Status tab of the web UI. Refer to [Set up the local inputs and outputs](set-up-the-local-io.md#set-a-do-from-the-status-tab).
 
 ## Other commands of the node
 

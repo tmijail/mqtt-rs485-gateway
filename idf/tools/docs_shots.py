@@ -349,6 +349,24 @@ def device_disabled(page):
     page.uncheck('[data-p="devices.0.enabled"]')
     page.wait_for_selector("#off-0:not(.hidden)")
 
+
+def local_io_card(page):
+    """#210 #211 #217 #218 #221: the card Local I/O of the Configuration tab, with the local_io keys
+    of the E2E configuration (DI/5 inverted with 200 ms, DI/8 a fast counter, DO/7 a pulse DO, run
+    hours of DI/4 and DO/2, two local rules)."""
+    page.click("nav button[data-tab=config]")
+    page.wait_for_selector("#lio-di tr[data-i]")
+    page.evaluate("document.querySelector('#lio-card').scrollIntoView()")
+
+
+def ask_do(page):
+    """#204: the first change of a DO in the page session (Turn on DO 3) asks first (#193)."""
+    page.wait_for_selector('#st-io button[data-do="3"]')
+    page.evaluate("document.querySelector('#st-io').scrollIntoView()")
+    page.click('#st-io button[data-do="3"]')
+    page.wait_for_selector("#dlg[open]")
+
+
 # ---------------------------------------------------------------- the frozen values
 
 # Issue #194, docs/how-to/change-the-web-password.md. These actions are also the test of #194
@@ -442,6 +460,8 @@ FREEZE["/api/claim"].update({"ap.url": "https://192.168.4.1/"})
 # #212: the largest free block changes at each run; QEMU has no temperature sensor (null): the
 # value of a board
 FREEZE["/api/status"].update({"heap.internal_largest": 110592, "temperature_c": 46.5})
+# #217: the run hours of DO/2 (on since the boot) grow at each run: a fixed value (96.1 h)
+FREEZE["/api/status"].update({"io.run_hours.do.*": lambda v: None if v is None else 345960})
 
 
 def freeze(doc, paths):
@@ -630,6 +650,34 @@ SHOTS = [
              "mount. The format erases all the contents of the card, also its 3 files or "
              "folders that are not from the gateway. The field has FORMAT, and the red button "
              "'Format the card' is enabled."),
+    # #210 #211 #217 #218 #221: docs/how-to/set-up-the-local-io.md
+    Shot("local-io-card", "configured", DESKTOP, "/", actions=[local_io_card],
+         element=".card:has(#lio-di)", wait="#lio-di tr[data-i]",
+         alt="The card 'Local I/O' of the Configuration tab: Safe state after 5 s and Counter save "
+             "interval 60 s. The table of the DIs has Invert, Debounce, Counter, Glitch filter and "
+             "Run hours: DI 5 is inverted with a debounce of 200 ms, DI 8 is a fast (PCNT) counter "
+             "with a glitch filter of 1000 ns, DI 4 counts its run hours. The table of the DOs has "
+             "Safe state, Pulse, Local rule, Mode and Run hours: DO 7 is a pulse DO of 300 ms, DO 5 "
+             "follows DI 2, DO 6 toggles with DI 3, DO 2 counts its run hours. Below are the alarms "
+             "of the buzzer and Alarm after."),
+    # #204 #217: docs/how-to/set-up-the-local-io.md
+    Shot("status-local-io", "configured", DESKTOP, "/", element=".card:has(#st-io)",
+         wait="#st-io table",
+         alt="The card 'Local I/O' of the Status tab: the table of the DIs with the state, the "
+             "counter (DI 8: fast) and the run hours, and the table of the DOs with the state, a "
+             "button Turn on or Turn off, Pulse 300 ms for DO 7, the local rules of DO 5 and DO 6 "
+             "in place of a button, and the run hours of DO 2. Below are the safe state, the "
+             "buzzer and the time."),
+    Shot("do-first-change-dialog", "configured", DESKTOP, "/", actions=[ask_do],
+         wait="#dlg-ok",
+         alt="The confirmation 'Turn on DO 3?' of the Status tab: DO 3 is off and has no local "
+             "rule. Make sure that it is safe to start the machine on DO 3. The new state goes to "
+             "the Sparkplug host in the next NDATA. The page does not ask again until it loads "
+             "again. It has the red button 'Turn on DO 3' and Cancel."),
+    Shot("do-first-change-dialog-phone", "configured", PHONE, "/", actions=[ask_do],
+         wait="#dlg-ok",
+         alt="The same confirmation 'Turn on DO 3?' as a sheet at the bottom of a phone, with the "
+             "red button 'Turn on DO 3' above Cancel."),
     # issue #187: after the shots above, because a push of BOOT starts the access point
     Shot("ap-card-phone", "configured", PHONE, "/", prep=ap_on_with_client,
          element=".card:has(#st-ap)", wait="#ap-stop:not(.hidden)",

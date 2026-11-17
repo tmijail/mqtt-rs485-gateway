@@ -289,7 +289,7 @@ This is the schema of the configuration document (CFG-1). The keys of this examp
   "sparkplug": { "group_id": "Plant1", "edge_node_id": "GW01", "primary_host_id": "" },
   "rs485":   { "baud": 9600, "parity": "none", "stop_bits": 1,
                "response_timeout_ms": 200, "retries": 2, "inter_frame_delay_ms": 5 },
-  "local_io": { "di_debounce_ms": 20 },
+  "local_io": { "counter_save_s": 600 },
   "devices": [
     {
       "name": "Meter1", "unit_id": 1, "poll_ms": 1000, "offline_after": 3,
@@ -323,7 +323,8 @@ This is the schema of the configuration document (CFG-1). The keys of this examp
 | `rs485.response_timeout_ms` | `200` | 10–5000 |
 | `rs485.retries` | `2` | 0–5 |
 | `rs485.inter_frame_delay_ms` | `5` | 0–1000 |
-| `local_io.di_debounce_ms` | `20` | 0–1000 |
+| `local_io.di[].debounce_ms` | `20` | 0–1000, for each DI (#211) |
+| `local_io.di[].invert` | `false` | Inverts the DI, after the polarity of the board (#211) |
 | `devices[].name` | — | Necessary. 1–39 bytes |
 | `devices[].unit_id` | — | Necessary. 1–247 |
 | `devices[].poll_ms` | `1000` | 50–3 600 000 |
@@ -705,7 +706,7 @@ Without these keys, the build option applies (`CONFIG_GW_MB_BLOCK_READS`, `CONFI
 **`local_io`: local I/O without a network. Safe state of the DOs (IO-3).** All keys of `local_io` are optional (IO-3, IO-4, IO-6 and IO-7).
 
 ```json
-"local_io": { "di_debounce_ms": 20, "failsafe_s": 30,
+"local_io": { "failsafe_s": 30,
               "do_failsafe": ["off", "on", "hold", "off", "off", "off", "off", "off"] }
 ```
 
@@ -723,7 +724,7 @@ Without these keys, the build option applies (`CONFIG_GW_MB_BLOCK_READS`, `CONFI
 **Pulse counters of the DIs (IO-4), in `local_io`.**
 
 ```json
-"local_io": { "di_debounce_ms": 20, "counter_save_s": 600 }
+"local_io": { "counter_save_s": 600 }
 ```
 
 | Key | Type | Default | Rule |

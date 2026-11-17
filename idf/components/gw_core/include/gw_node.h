@@ -33,6 +33,9 @@
  *   Info/Modbus TCP/<counter> (OK, Timeout, CRC, Frame, Exception), UInt64 sums of all devices.
  *   80..95 #173 (UMH preset only): Devices/<name>/Online (Boolean) of device 0..15, with each
  *   ':' of the name as '/'.
+ *   356..363 and 364..371 #217: Run Hours/DI/1..8 and Run Hours/DO/1..8 (UInt64 s), only for
+ *   the channels of local_io.run_hours (after the last tag alias, 100 + 255: the aliases below
+ *   100 are full).
  *
  * SPB-18 device types: a device with a `type` is published as one Template instance metric
  * (named after the type, alias 100 + its first tag) whose members are its tags, by name; the
@@ -104,6 +107,8 @@ extern "C" {
 #define GW_MB_FLAT_COUNT 7
 #define GW_TCP_FLAT_COUNT 5
 #define GW_ALIAS_ONLINE_BASE 80u  /* #173: + device index, UMH preset only */
+/* #217: + channel (DI/1..8, then DO/1..8); after the aliases of the tags */
+#define GW_ALIAS_RUN_HOURS_BASE (GW_ALIAS_TAG_BASE + GW_MAX_TAGS)
 
 #define GW_NODE_IO_COUNT        8
 #define GW_NODE_DIAG_METRICS    9   /* SPB-17, at most (RSSI only with Wi-Fi, Modbus with devices,
@@ -119,11 +124,17 @@ extern "C" {
 #define GW_NODE_UMH_BIRTH_METRICS (14 + 3 * GW_NODE_IO_COUNT + GW_NODE_UMH_DIAG_METRICS + 2)
 /* #223: the NBIRTH metrics that only ota.mqtt adds (Firmware Update and Firmware SHA-256) */
 #define GW_NODE_MQTT_OTA_METRICS 2
+/* #217: the NBIRTH has one more metric per channel of local_io.run_hours (not in the counts
+ * above: they are the NBIRTH without run hours) */
+#define GW_NODE_RUN_HOURS_METRICS GW_RUN_HOURS_CHANNELS
 /* Scratch metrics: a whole device (+1 template instance), or the NBIRTH with one template
- * definition per device type. */
+ * definition per device type and every run hours metric (the UMH preset has no definitions). */
+#define GW_NODE_BIRTH_MAX                                                         \
+    (GW_NODE_BIRTH_METRICS + GW_MAX_DEVICES > GW_NODE_UMH_BIRTH_METRICS           \
+         ? GW_NODE_BIRTH_METRICS + GW_MAX_DEVICES + GW_NODE_RUN_HOURS_METRICS     \
+         : GW_NODE_UMH_BIRTH_METRICS + GW_NODE_RUN_HOURS_METRICS)
 #define GW_NODE_METRICS_MAX \
-    (GW_MAX_TAGS_PER_DEVICE + 1 > GW_NODE_BIRTH_METRICS + GW_MAX_DEVICES \
-         ? GW_MAX_TAGS_PER_DEVICE + 1 : GW_NODE_BIRTH_METRICS + GW_MAX_DEVICES)
+    (GW_MAX_TAGS_PER_DEVICE + 1 > GW_NODE_BIRTH_MAX ? GW_MAX_TAGS_PER_DEVICE + 1 : GW_NODE_BIRTH_MAX)
 /* "Firmware Update/State" text with its NUL (< SPB_STRING_MAX, #87); longer is cut with a log,
  * the whole reason is in the shell and the web. 96, not more: the node (the Sparkplug engine,
  * one allocation) stays under 21 504 B, a TLSF size class of 1 KB steps (issue #80) */
@@ -224,6 +235,7 @@ typedef struct {
     bool cmd_fw_update;                /* the NCMD carried a valid Firmware Update URL */
     bool cmd_fw_sha_bad;               /* ... and a Firmware SHA-256 that is not valid */
     uint64_t count_reported[GW_NODE_IO_COUNT];   /* IO-4 */
+    uint64_t run_reported[GW_RUN_HOURS_CHANNELS];   /* #217 */
     uint32_t scan_rate_ms;             /* SPB-15: current override, 0 = per-device poll_ms */
     /* SPB-17 */
     bool has_rssi;                     /* fixed by the NBIRTH */
@@ -242,8 +254,14 @@ typedef struct {
     char fw_state[GW_NODE_FW_STATE_MAX];   /* FW-1: "Firmware Update/State" */
     uint32_t fw_progress;                  /* FW-1: "Firmware Update/Progress" (%) */
 
-    /* Scratch, statically sized (REL-2). */
-    gw_tag_value_t vals[GW_MAX_TAGS_PER_DEVICE];
+    /* Scratch, statically sized (REL-2). #217: vals (the values of one device, for its births
+     * and DATA) and hist_str (the strings of one historical message, gw_node_flush_history) are
+     * never in use at the same time: they share their memory, so that the node stays under
+     * 21 504 B (issue #80) with the scratch metrics of the run hours. */
+    union {
+        gw_tag_value_t vals[GW_MAX_TAGS_PER_DEVICE];
+        char hist_str[GW_MAX_TAGS_PER_DEVICE][GW_STR_MAX + 1];   /* of a historical message */
+    };
     spb_metric_t metrics[GW_NODE_METRICS_MAX];
     spb_template_t tmpl;               /* SPB-18: the instance being published */
     spb_template_t defs[GW_MAX_DEVICES];   /* SPB-18: NBIRTH definitions, one per type */
@@ -255,8 +273,7 @@ typedef struct {
     /* Store & forward (SPB-14); sf NULL = changes while offline are coalesced (the MVP). */
     gw_sf_t *sf;
     bool born_once;                    /* an NBIRTH went out since boot: from then on, store */
-    gw_sf_rec_t hist[GW_NODE_HIST_RECS];
-    char hist_str[GW_MAX_TAGS_PER_DEVICE][GW_STR_MAX + 1];   /* strings of a historical message */
+    gw_sf_rec_t hist[GW_NODE_HIST_RECS];   /* (its strings: hist_str, above) */
     uint32_t sf_discarded;             /* stored samples of devices without DBIRTH when sent */
     uint32_t sf_sent;                  /* historical messages published */
 

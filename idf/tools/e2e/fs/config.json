@@ -28,7 +28,16 @@
     "inter_frame_delay_ms": 5
   },
   "local_io": {
-    "di_debounce_ms": 20,
+    "di": [
+      {},
+      {},
+      {},
+      {},
+      {
+        "invert": true,
+        "debounce_ms": 200
+      }
+    ],
     "failsafe_s": 5,
     "do_failsafe": [
       "off",
@@ -36,7 +45,26 @@
       "off",
       "hold"
     ],
+    "do_pulse_ms": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      300
+    ],
     "counter_save_s": 60,
+    "fast_counters": [
+      {
+        "di": 8,
+        "glitch_ns": 1000
+      }
+    ],
+    "run_hours": [
+      "DI/4",
+      "DO/2"
+    ],
     "buzzer": {
       "alarms": [
         "config_error",

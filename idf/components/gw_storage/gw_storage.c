@@ -1390,9 +1390,11 @@ static esp_err_t wipe_storage(void)
     return esp_littlefs_format("storage");
 }
 
-/* ---------- small local I/O state (IO-3, IO-4) ---------- */
+/* ---------- small local I/O state (IO-3, IO-4, #217) ---------- */
 
-#define BLOB_MAX 64
+/* The largest blob: the pulse counters and the run hours, 24 x 8 B (#217). The caller's stack
+ * holds a copy of the stored blob for the comparison. */
+#define BLOB_MAX 192
 
 esp_err_t gw_storage_set_blob(const char *key, const void *data, size_t len)
 {

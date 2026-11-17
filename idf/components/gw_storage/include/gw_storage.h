@@ -214,7 +214,8 @@ char *gw_storage_read_file(const char *name, size_t *len, char *why, size_t why_
 
 /**
  * Small state of the local I/O kept in NVS (IO-3 outputs to hold across a restart, IO-4 pulse
- * counters, ...): blob @p key of @p len bytes. Written only when it changed (flash wear).
+ * counters, #217 run hours, ...): blob @p key of @p len bytes, 192 at most. Written only when it
+ * changed (flash wear).
  * Refused (ESP_ERR_INVALID_STATE) after gw_storage_factory_reset(), so nothing of the old
  * device survives the reset through a late write (for example at the restart).
  */

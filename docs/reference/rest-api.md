@@ -73,6 +73,7 @@ The responses of `PUT /api/config`:
 | `POST /api/rebirth` | Sends the NBIRTH and all the DBIRTHs again, with the same bdSeq. `202 {"ok":true,"rebirth":true}`. `409` when there is no Sparkplug session |
 | `POST /api/time` | Sets the clock and the RTC. Refer to [`POST /api/time`](#post-apitime) |
 | `POST /api/modbus/read` | One Modbus test read. Refer to [`POST /api/modbus/read`](#post-apimodbusread) |
+| `POST /api/do` | Sets a DO on or off. Refer to [`POST /api/do`](#post-apido) |
 
 ### Firmware
 
@@ -162,6 +163,23 @@ With the type `int64` or `uint64`, the response also has `value_text`, the same 
 | `502` | `"result"`: `crc`, `frame`, or `exception` with the code in `"exception"` |
 | `503` | The bus does not run the read in time, or another test read waits |
 | `504` | `"result":"timeout"` |
+
+### `POST /api/do`
+
+Sets a digital output, as an NCMD does. Only the DOs: the web UI does not write to the Modbus devices.
+
+- Body: `{"do": 3, "on": true}`. `do` is 1 to 8.
+- The command goes through the queue of the task that owns the expander, the same queue as an NCMD. The next NDATA gives the new state to the Sparkplug host.
+- `on: true` on a pulse DO (`local_io.do_pulse_ms`) starts its pulse.
+- The safe state rules do not change: after `local_io.failsafe_s` without a session, the DO goes to its safe state.
+- The Status tab uses this route. Its first change in a page session asks for a confirmation.
+
+| Status | Cause |
+|---|---|
+| `200` | `{"ok":true,"do":3,"on":true,"state":true}`. `state` is the state that the gateway read back from the expander |
+| `400` | The body is not correct |
+| `409` | A local rule controls the DO (`local_io.rules`). Or recovery mode, commissioning or the fault mode: the local I/O does not run |
+| `503` | The expander does not respond, or the task did not answer in time |
 
 ### `POST /api/time`
 
@@ -345,7 +363,11 @@ With a SHA-256, the gateway calculates the SHA-256 of the image that it wrote, b
 | `io.do_unknown`, `io.expander` | The expander does not respond. `ready`, `retrying` and `attempts` |
 | `io.failsafe` | The DOs are in their safe state, because there is no Sparkplug session |
 | `io.rule_do` | The mask of the DOs that a local rule controls |
+| `io.rules` | The local rules: `[{"di":2,"do":5,"mode":"follow"}]`. Empty when the mode is not normal |
 | `io.counters` | The 8 pulse counters |
+| `io.fast` | The mask of the DIs that a PCNT unit counts (`local_io.fast_counters`) |
+| `io.pulse_ms` | The pulse time of each DO, `DO/1` first. 0 = a normal DO |
+| `io.run_hours` | `{"di":[…],"do":[…]}`: the run hours in seconds, 8 values each. `null` for a channel that is not in `local_io.run_hours` |
 | `buzzer.alarm`, `buzzer.enabled` | The alarm that sounds now (`none`, `device_offline`, `mqtt_down`, `config_error`), and the enabled alarms |
 | `time.utc_s`, `time.synced`, `time.valid`, `time.source`, `time.waiting` | The time (s UTC). `synced`: SNTP synchronized it. `valid`: the time is valid for timestamps. `source`: `sntp`, `rtc`, `browser` or `none`. `waiting`: the MQTT session waits for a valid clock |
 | `time.rtc` | `present`, `lost` (the RTC lost the time: examine its battery), `status` of the last read or write, and `stores` |

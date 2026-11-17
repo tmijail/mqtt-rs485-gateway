@@ -365,6 +365,102 @@ static void test_pulse_counters(void)
     TEST_ASSERT_EQUAL_UINT64((1ull << 53) + 2, io.count[7]);
 }
 
+static void assert_birth_aliases_unique(void);
+
+/* #217: the run hours of local_io.run_hours are UInt64 metrics of the NBIRTH (the others are not:
+ * tck-id-topics-nbirth-metric-reqs), with aliases after the tags
+ * (tck-id-payloads-alias-uniqueness); an NDATA has a value that changed
+ * (tck-id-topics-ndata-payload); an NCMD cannot write them. */
+static void test_run_hours_metrics(void)
+{
+    static gw_config_t c;
+    c = *cfg;
+    c.local_io.run_hours = 0x0104;   /* DI/3 and DO/1 */
+    cfg = &c;
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    uint64_t run[GW_RUN_HOURS_CHANNELS] = {0};
+    run[2] = 3600;
+    run[3] = 99;   /* DI/4: not selected, never published */
+    gw_tagdb_set_run_hours(run, 500);
+    gw_node_session_up(&node, 0);
+    msg(0);
+    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS - 1 + 2, dec.count);   /* no Modbus TCP table */
+    int i = decoded_find_name(&dec, "Run Hours/DI/3");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_RUN_HOURS_BASE + 2, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_UINT64(3600, dec.m[i].u64);
+    i = decoded_find_name(&dec, "Run Hours/DO/1");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_RUN_HOURS_BASE + 8, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_UINT64(0, dec.m[i].u64);
+    TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Run Hours/DI/4"));
+    assert_birth_aliases_unique();
+
+    recorder_clear();
+    run[2] = 3660;
+    run[3] = 100;
+    gw_tagdb_set_run_hours(run, 700);
+    gw_node_io_changed(&node);
+    msg(0);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_RUN_HOURS_BASE + 2, dec.m[0].alias);
+    TEST_ASSERT_FALSE(dec.m[0].has_name);
+    TEST_ASSERT_EQUAL_UINT64(3660, dec.m[0].u64);
+    TEST_ASSERT_EQUAL_UINT64(700, dec.m[0].timestamp);
+
+    /* read-only: an NCMD on a run hours metric changes nothing and publishes nothing */
+    recorder_clear();
+    spb_metric_t w = {.name = "Run Hours/DI/3", .datatype = SPB_DT_UINT64, .v.u64 = 0};
+    send("spBv1.0/Plant1/NCMD/GW01", &w, 1);
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    gw_local_io_t io;
+    gw_tagdb_get_io(&io);
+    TEST_ASSERT_EQUAL_UINT64(3660, io.run_s[2]);
+}
+
+/* #210: a pulse DO that went on and off before the NDATA: true in one NDATA, then false in the
+ * next one (tck-id-topics-ndata-payload); the same into the store. */
+static void test_short_pulse_gives_true_then_false(void)
+{
+    gw_tagdb_set_do(0x00, 100);
+    gw_node_session_up(&node, 0);
+    recorder_clear();
+    gw_tagdb_set_do(0x40, 200);   /* DO/7 on ... */
+    gw_tagdb_set_do(0x00, 250);   /* ... and off again before the Sparkplug task runs */
+    gw_node_io_changed(&node);
+    TEST_ASSERT_EQUAL(2, g_rec.count);
+    msg(0);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_DO_BASE + 6, dec.m[0].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[0].num);
+    TEST_ASSERT_EQUAL_UINT64(200, dec.m[0].timestamp);
+    msg(1);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_DO_BASE + 6, dec.m[0].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[0].num);
+    TEST_ASSERT_EQUAL_UINT64(250, dec.m[0].timestamp);
+    /* a normal change: one NDATA */
+    recorder_clear();
+    gw_tagdb_set_do(0x40, 300);
+    gw_node_io_changed(&node);
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+
+    static gw_sf_rec_t storage[16];
+    gw_sf_t sf;
+    gw_sf_init(&sf, storage, 16);
+    gw_node_set_store(&node, &sf);
+    gw_node_session_down(&node);
+    gw_tagdb_set_do(0x00, 400);
+    gw_tagdb_set_do(0x02, 410);   /* DO/2 on and off while offline */
+    gw_tagdb_set_do(0x00, 420);
+    gw_node_io_changed(&node);
+    TEST_ASSERT_EQUAL_size_t(3, gw_sf_count(&sf));   /* DO/2 true; then DO/7 and DO/2 false */
+}
+
 static void test_dcmd_writes(void)
 {
     set_meter(true, 1, 2, 0);
@@ -1497,6 +1593,7 @@ static void test_worst_case_nbirth_fits(void)
     memset(c.gateway.name, 'n', sizeof(c.gateway.name) - 1);
     memset(c.gateway.location, 'l', sizeof(c.gateway.location) - 1);
     c.ota.mqtt = true;             /* #223, #215: the two firmware update commands too */
+    c.local_io.run_hours = 0xFFFF;   /* #217: every run hours metric */
     gw_tagdb_reset();
     gw_node_ops_t ops = recorder_ops();
     const gw_node_info_t info = {.firmware = "0.1.0+g0123456.dirty-xxxxxxxxxxxxxxxxxxxxxxxxx",
@@ -1525,7 +1622,8 @@ static void test_worst_case_nbirth_fits(void)
            (unsigned)g_rec.msgs[0].len, (unsigned)GW_SPB_PAYLOAD_MAX);
     TEST_ASSERT_LESS_THAN(GW_SPB_PAYLOAD_MAX, g_rec.msgs[0].len);
     msg(0);
-    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS + types, dec.count);
+    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS + types + GW_NODE_RUN_HOURS_METRICS, dec.count);
+    TEST_ASSERT_LESS_OR_EQUAL(GW_NODE_METRICS_MAX, dec.count);
     /* without PSRAM the buffer is smaller (CONFIG_GW_SPB_PAYLOAD_INTERNAL): such a birth is
      * not published (and logged), never cut */
     static uint8_t small[8192];
@@ -2847,6 +2945,8 @@ int main(void)
     RUN_TEST(test_ncmd_do_and_reboot);
     RUN_TEST(test_every_metric_has_a_timestamp);
     RUN_TEST(test_pulse_counters);
+    RUN_TEST(test_run_hours_metrics);
+    RUN_TEST(test_short_pulse_gives_true_then_false);
     RUN_TEST(test_dcmd_writes);
     RUN_TEST(test_device_prefix_topics);
     RUN_TEST(test_umh_device_online);

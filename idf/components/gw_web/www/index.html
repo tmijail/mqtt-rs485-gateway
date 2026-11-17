@@ -125,6 +125,15 @@ details.card>summary{cursor:pointer}details.card>summary h2{display:inline;margi
  #fw-card .src{grid-template-columns:minmax(0,1fr)}#fw-card .src button{min-height:56px}#fw-card input{padding:10px;font-size:16px}#fw-card input.mono{font-size:13px}
  #fw-card .act{flex-direction:column;align-items:stretch}#fw-card .act button{min-height:44px;width:100%}
  #fw-card .zrow{flex-direction:column;align-items:stretch}#fw-card .zrow button{min-height:44px;width:100%}#fw-card .panel button,#fw-card .fileb button,#fw-card .refuse button{min-height:44px}}
+/* #204 #210 #211 #217 #218 #221: the card Local I/O (Configuration) and the DI and DO tables (Status) */
+.card h3{font-size:13px;margin:16px 0 6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.card h3 .mut{font-weight:400;font-size:12px}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(440px,100%),1fr));gap:14px 20px}.cols h3{margin-top:0}
+table.io th,table.io td{white-space:nowrap;padding:4px 8px;background:var(--card)}table.io th{font-weight:600;color:var(--mut);font-size:12px;vertical-align:bottom}
+table.io tr:last-child td{border-bottom:0}table.io td.chk,table.io th.chk{text-align:center}table.io th.chk .lbl{justify-content:center}table.io td.chk input{align-self:center}
+td.ch{font-weight:600;white-space:nowrap}td.num{font-variant-numeric:tabular-nums}#st-io td{height:34px}#st-io td button{padding:3px 10px;font-size:12px}
+fieldset.fld{border:0;padding:0;margin:0;min-width:0}fieldset.fld legend{padding:0}
+label.cb{display:inline-flex;flex-direction:row;align-items:center;gap:6px;color:var(--fg);font-size:13px}label.cb input{align-self:center;margin:0}
+@media (max-width:600px){#st-io td.ctl{width:116px}#st-io td.ctl button{width:100%;min-height:44px}}
 </style>
 </head>
 <body>
@@ -142,8 +151,8 @@ details.card>summary{cursor:pointer}details.card>summary h2{display:inline;margi
  <div class="card"><h2>Access point</h2><div id="st-ap" class="mut"></div>
   <div class="row"><button id="ap-stop" class="hidden" title="Stop the Wi-Fi access point now. To start it again, push the BOOT button for 2 to 10 s.">Close the access point</button><span id="ap-msg" class="mut"></span></div></div>
  <div class="card"><h2>Modbus devices</h2><div id="st-mb" class="mut">no devices</div></div>
- <div class="card"><h2>Local I/O</h2><div id="st-io"></div>
-  <div class="row"><button id="settime" title="Send the time of this computer to the gateway and its RTC. Use it on a network with no time server: without a valid time the gateway does not connect to the MQTT broker.">Set the time from the browser</button><span id="tm-msg" class="mut"></span></div></div>
+ <div class="card"><h2>Local I/O</h2><div id="st-io"></div><div id="st-io2" style="margin-top:12px"></div>
+  <div class="row" style="margin-top:6px"><button id="settime" title="Send the time of this computer to the gateway and its RTC. Use it on a network with no time server: without a valid time the gateway does not connect to the MQTT broker.">Set the time from the browser</button><span id="tm-msg" class="mut"></span></div></div>
  <div class="card" id="fw-card"><h2>Firmware</h2>
   <div class="sum" id="fw-sum" role="group" aria-label="Firmware summary">
    <div><div class="k">Running</div><div class="v" id="fw-run">…</div><div class="s" id="fw-run-s"></div></div>
@@ -192,6 +201,12 @@ details.card>summary{cursor:pointer}details.card>summary h2{display:inline;margi
   <div id="f-pfx" class="row" data-perr="sparkplug.device_prefix" tabindex="-1"></div></div>
  <div class="card" id="c-ota"><h2>Firmware updates</h2><div class="grid" id="f-ota"></div><p class="mut" style="margin:10px 0 0">Install an image in the card Firmware of the Status tab.</p></div>
  <div class="card"><h2>RS485</h2><div class="grid" id="f-rs485"></div></div>
+ <div class="card" id="lio-card"><h2>Local I/O</h2><div class="grid" id="f-lio"></div>
+  <h3>Digital inputs <span class="mut" id="lio-fastn"></span></h3>
+  <p class="tnote hidden">Push the table to the side for more columns.</p><div class="tw"><div class="tbox"><table class="io" id="lio-di"></table></div><div class="fade" aria-hidden="true"></div></div>
+  <h3>Digital outputs</h3>
+  <p class="tnote hidden">Push the table to the side for more columns.</p><div class="tw"><div class="tbox"><table class="io" id="lio-do"></table></div><div class="fade" aria-hidden="true"></div></div>
+  <h3>Buzzer</h3><div class="grid" id="f-bz"></div></div>
  <div class="card"><h2>Web interface</h2><div class="grid" id="f-web"></div></div>
  <div class="card"><h2>Devices and tags</h2><div id="f-dev"></div><button id="add-dev">+ device</button></div>
  <div class="card"><h2>Modbus test read</h2>
@@ -284,6 +299,19 @@ const HELP={
  retry:"The number of times that the gateway sends a request again after a timeout or a damaged response. An exception response gets no retry.\n~0 to 5. Default: 2.",
  ifd:"The delay between two transactions on the bus. Make it longer for a slow device. The gateway always keeps the silence of 3.5 characters between two frames.\n~0 to 1000 ms. Default: 5.",
  deb:"A digital input must stay in its new state for this time before the gateway accepts the change. With 20 ms, the pulse counters count up to approximately 25 Hz.\n~0 to 1000 ms. Default: 20.",
+ fs:"After this time without a Sparkplug session, each DO goes to its safe state (column Safe state of the DOs). The time starts at the boot or at the loss of the session.\nA DO with a local rule does not change. When the session starts again, the DOs keep their state until the next NCMD.\n~0 to 86400 s. Default: 0 = a loss of MQTT does not change the DOs.",
+ csave:"The gateway saves the pulse counters and the run hours in the flash at this interval, only when they changed. After a power cut, the counts since the last save are lost. A restart from the gateway (for example Save and restart) saves them first.\n~0 = do not save, or 60 to 86400 s. Default: 600.",
+ inv:"The gateway inverts the input. Use it for a normally closed contact: the DI is then true when the contact opens.\nThe inversion applies after the polarity of the input circuit of the board. The pulse counter counts the activations after the inversion.\n~Default: off.",
+ cnt:"`debounced`: the gateway counts the activations of the debounced DI. With 20 ms, it counts up to approximately 25 Hz.\n`fast (PCNT)`: the pulse counter unit of the ESP32-S3 counts the input, for example for a flow meter or an energy meter. The glitch filter replaces the debounce for the count.\nThe metric Counter/n does not change. The maximum frequency depends on the input circuit of the board.\n~Up to 4 DIs with fast (PCNT). Default: debounced.",
+ glitch:"The PCNT unit ignores a pulse that is shorter than this time. Use it against noise on the input of a fast counter.\n~0 to 12787 ns. 0 = no filter. Default: 1000. Only for a fast (PCNT) counter.",
+ rh:"The gateway counts the time in the on state of this DI. It publishes the time as the metric `Run Hours/DI/n` (seconds, UInt64). The Status tab shows it in hours.\nThe gateway saves the value with the pulse counters (Counter save interval). An NCMD cannot write it. The factory reset sets it to 0.\n~Default: off.",
+ rhdo:"The gateway counts the time in the on state of this DO. It publishes the time as the metric `Run Hours/DO/n` (seconds, UInt64). The Status tab shows it in hours.\nThe gateway saves the value with the pulse counters (Counter save interval). An NCMD cannot write it. The factory reset sets it to 0.\n~Default: off.",
+ safe:"The state of the DO after a restart, and after the time of Safe state after without a Sparkplug session. `hold` keeps the state: after a restart, the state from before the restart (off after a power cut).\nA DO with a local rule follows its rule after the loss of the session. A pulse DO cannot use `on`, and it is off after a restart.\n~off, on or hold. Default: off.",
+ pulse:"A pulse DO: a write of `true` sets the DO on for this time, and then off. The NDATA gives `true` and then `false`. Use it for a latching relay or a reset input.\nThe time does not depend on the network. A local rule and the safe state on are not permitted for a pulse DO.\n~0 = a normal DO. 50 to 60000 ms. Default: 0.",
+ rule:"The gateway sets this DO from a DI, also without the network. The rule controls the DO: an NCMD and the Status tab cannot set it.\n~none, or DI 1 to DI 8. One rule for each DO. Not for a pulse DO. Default: none.",
+ mode:"`follow`: the DO has the state of the DI. `invert`: the DO has the opposite state of the DI. `toggle`: each activation of the DI changes the state of the DO.\n~Default: follow.",
+ alarms:"The conditions that sound the buzzer. Configuration rejected: 3 beeps. No MQTT session: 2 beeps. Device offline: 1 beep, for one or more Modbus devices. The pattern repeats each 10 s. When a number of alarms are active, the alarm with the most beeps sounds.\n~Default: none (the buzzer is silent).",
+ aafter:"No MQTT session and Device offline sound only after they last this time. Configuration rejected sounds immediately.\n~0 to 3600 s. Default: 30.",
  webpw:"8 to 63 characters: letters A-Z and a-z, digits, spaces and the symbols of a keyboard. It is also the Wi-Fi password of the access point GW-Setup-XXXXXX.\n~Empty = the commissioning password of the console.",
  en:"Clear it to keep a device in the configuration, but stop it. Example: a slave that is not connected yet, during the commissioning.\nThe gateway does not poll a disabled device and does not send its DBIRTH. The device uses no time of the bus. The validation still examines its keys.\n~Default: on.",
  name:"The name of the device in Sparkplug. The device ID is the device prefix, ':' and this name. Example: Pump1.\nFor UMH Core, put ':' between the last levels of the location. Do not use `/`, `+` or `#`.\n~1 to 39 bytes. Necessary.",
@@ -455,16 +483,87 @@ function updTopics(){
  });
  const h=$("#h-otamqtt");if(h)h.textContent=`Off by default. Turn it on only when the broker lets only your Sparkplug host publish to spBv1.0/${g}/NCMD/${n}.`;
 }
+/* #210 #211 #217 #218 #221: the card Local I/O. Its tables write local_io.di, do_failsafe,
+   do_pulse_ms, rules (two columns of the DO table: one rule for each DO), fast_counters,
+   run_hours and buzzer.alarms. readLio() changes a key only where a control differs from the
+   document, so the form alone gives no change; it also sets data-perr of each control to the
+   path of its error (#191), from the arrays that it writes. */
+const LIO_SAFE=["off","on","hold"],LIO_MODE=["follow","invert","toggle"],LIO_AL=[["config_error","Configuration rejected"],["mqtt_down","No MQTT session"],["device_offline","Device offline"]];
+const lioArr=(o,k)=>o&&Array.isArray(o[k])?o[k]:[];
+function lioEff(){const l=cfg&&cfg.local_io&&typeof cfg.local_io==="object"?cfg.local_io:{},di=lioArr(l,"di"),fs=lioArr(l,"do_failsafe"),pu=lioArr(l,"do_pulse_ms"),fc=lioArr(l,"fast_counters"),rh=lioArr(l,"run_hours"),ru=lioArr(l,"rules"),m={di:[],dout:[]};
+ for(let i=0;i<8;i++){const d=di[i]&&typeof di[i]==="object"?di[i]:{},f=fc.find(x=>x&&x.di===i+1),r=ru.find(x=>x&&x.do===i+1);
+  m.di.push({invert:d.invert??false,deb:d.debounce_ms??20,fast:!!f,glitch:f?(f.glitch_ns??1000):1000,rh:rh.includes(`DI/${i+1}`)});
+  m.dout.push({safe:fs[i]??"off",pulse:pu[i]??0,rule:r?r.di:0,mode:r?(r.mode??"follow"):"follow",rh:rh.includes(`DO/${i+1}`)})}
+ const bz=l.buzzer&&typeof l.buzzer==="object"?l.buzzer:{};m.alarms=lioArr(bz,"alarms");return m}
+const lioOpt=(v,opts)=>opts.map(([x,t])=>`<option value="${esc(x)}"${String(x)===String(v)?" selected":""}>${esc(t)}</option>`).join("")+(opts.some(([x])=>String(x)===String(v))?"":`<option value="${esc(v)}" selected>${esc(v)} (not in the list)</option>`);
+const lioTh=(l,h,c)=>`<th${c?' class="chk"':""}><span class="lbl">${l}${qi(h,l)}</span></th>`;
+function renderLio(){
+ const m=lioEff();
+ $("#f-lio").innerHTML=field("local_io.failsafe_s","Safe state after (s)","int",0,0,{help:"fs"})+field("local_io.counter_save_s","Counter save interval (s)","int",0,0,{help:"csave"});
+ $("#lio-di").innerHTML=`<colgroup><col style="width:64px"><col style="width:90px"><col style="width:150px"><col style="width:190px"><col style="width:170px"><col style="width:110px"><col></colgroup><tr><th>DI</th>${lioTh("Invert","inv",1)+lioTh("Debounce (ms)","deb")+lioTh("Counter","cnt")+lioTh("Glitch filter (ns)","glitch")+lioTh("Run hours","rh",1)}<th></th></tr>`+
+  m.di.map((d,i)=>{const n=`DI ${i+1}`;return `<tr data-i="${i}"><td class="ch">${n}</td><td class="chk"><input type="checkbox" data-lio="inv" data-perr="local_io.di.${i}.invert" aria-label="${n} · Invert"${d.invert?" checked":""}></td>`+
+   `<td><input data-lio="deb" data-perr="local_io.di.${i}.debounce_ms" aria-label="${n} · Debounce (ms)" value="${esc(d.deb)}"></td>`+
+   `<td><select data-lio="cnt" aria-label="${n} · Counter">${lioOpt(d.fast?"fast":"deb",[["deb","debounced"],["fast","fast (PCNT)"]])}</select></td>`+
+   `<td><span class="mut${d.fast?" hidden":""}">—</span><input data-lio="gl" class="${d.fast?"":"hidden"}" aria-label="${n} · Glitch filter (ns)" value="${esc(d.glitch)}"></td>`+
+   `<td class="chk"><input type="checkbox" data-lio="rh" aria-label="${n} · Run hours"${d.rh?" checked":""}></td><td></td></tr>`}).join("");
+ const rules=[["0","none"]].concat([...Array(8)].map((_,k)=>[String(k+1),`DI ${k+1}`]));
+ $("#lio-do").innerHTML=`<colgroup><col style="width:64px"><col style="width:190px"><col style="width:130px"><col style="width:130px"><col style="width:130px"><col style="width:110px"><col></colgroup><tr><th>DO</th>${lioTh("Safe state","safe")+lioTh("Pulse (ms)","pulse")+lioTh("Local rule","rule")+lioTh("Mode","mode")+lioTh("Run hours","rhdo",1)}<th></th></tr>`+
+  m.dout.map((d,i)=>{const n=`DO ${i+1}`;return `<tr data-i="${i}"><td class="ch">${n}</td><td style="white-space:normal"><select data-lio="safe" data-perr="local_io.do_failsafe.${i}" aria-label="${n} · Safe state">${lioOpt(d.safe,LIO_SAFE.map(x=>[x,x]))}</select></td>`+
+   `<td><input data-lio="pulse" data-perr="local_io.do_pulse_ms.${i}" aria-label="${n} · Pulse (ms)" value="${esc(d.pulse)}"></td>`+
+   `<td><select data-lio="rule" aria-label="${n} · Local rule">${lioOpt(d.rule,rules)}</select></td>`+
+   `<td><span class="mut${d.rule?" hidden":""}">—</span><select data-lio="mode" class="${d.rule?"":"hidden"}" aria-label="${n} · Mode">${lioOpt(d.mode,LIO_MODE.map(x=>[x,x]))}</select></td>`+
+   `<td class="chk"><input type="checkbox" data-lio="rh" aria-label="${n} · Run hours"${d.rh?" checked":""}></td><td></td></tr>`}).join("");
+ $("#f-bz").innerHTML=`<fieldset class="fld" style="grid-column:span 2" data-perr="local_io.buzzer.alarms" tabindex="-1"><legend class="lbl">Alarms ${qi("alarms","Alarms")}</legend><div class="row" style="gap:6px 18px;margin-top:6px">`+
+  LIO_AL.map(([k,t])=>`<label class="cb"><input type="checkbox" data-lio-al="${k}"${m.alarms.includes(k)?" checked":""}> ${t}</label>`).join("")+`</div></fieldset>`+
+  field("local_io.buzzer.alarm_after_s","Alarm after (s)","int",0,0,{help:"aafter"});
+ lioUpd();
+}
+/* the cells that depend on another cell: Glitch filter (a fast counter), Mode (a rule) */
+function lioUpd(){
+ let n=0;document.querySelectorAll("#lio-di tr[data-i]").forEach(r=>{const f=r.querySelector('[data-lio="cnt"]').value==="fast",g=r.querySelector('[data-lio="gl"]');n+=f;g.classList.toggle("hidden",!f);g.previousElementSibling.classList.toggle("hidden",f)});
+ const fn=$("#lio-fastn");if(fn)fn.textContent=`Fast counters: ${n} of 4 (PCNT units)`;
+ document.querySelectorAll("#lio-do tr[data-i]").forEach(r=>{const on=r.querySelector('[data-lio="rule"]').value!=="0",s=r.querySelector('[data-lio="mode"]');s.classList.toggle("hidden",!on);s.previousElementSibling.classList.toggle("hidden",on)});
+}
+function readLio(){
+ if(!cfg||!$("#lio-di tr[data-i]"))return;
+ const e=lioEff(),q=(r,k)=>r.querySelector(`[data-lio="${k}"]`),num=v=>v.trim()===""?undefined:Number(v);
+ const lio=()=>{if(!cfg.local_io||typeof cfg.local_io!=="object")cfg.local_io={};return cfg.local_io};
+ const at=(k,i,fill)=>{const l=lio();if(!Array.isArray(l[k]))l[k]=[];while(l[k].length<=i)l[k].push(fill());return l[k]};
+ const dr=[...document.querySelectorAll("#lio-di tr[data-i]")],or=[...document.querySelectorAll("#lio-do tr[data-i]")];
+ const u={di:dr.map(r=>({invert:q(r,"inv").checked,deb:num(q(r,"deb").value),fast:q(r,"cnt").value==="fast",glitch:num(q(r,"gl").value),rh:q(r,"rh").checked})),
+  dout:or.map(r=>({safe:q(r,"safe").value,pulse:num(q(r,"pulse").value),rule:Number(q(r,"rule").value),mode:q(r,"mode").value,rh:q(r,"rh").checked}))};
+ u.di.forEach((d,i)=>{const x=e.di[i];if(d.invert===x.invert&&d.deb===x.deb)return;const a=at("di",i,()=>({}));if(!a[i]||typeof a[i]!=="object")a[i]={};
+  if(d.invert!==x.invert)a[i].invert=d.invert;if(d.deb!==x.deb){if(d.deb===undefined)delete a[i].debounce_ms;else a[i].debounce_ms=d.deb}});
+ u.dout.forEach((d,i)=>{const x=e.dout[i];if(d.safe!==x.safe)at("do_failsafe",i,()=>"off")[i]=d.safe;if(d.pulse!==x.pulse)at("do_pulse_ms",i,()=>0)[i]=d.pulse===undefined?0:d.pulse});
+ /* a list of objects (rules, fast_counters) or of strings: the entries that stay keep their place */
+ const list=(k,keep,add)=>{const l=cfg.local_io&&typeof cfg.local_io==="object"?cfg.local_io:{},o=lioArr(l,k),r=[];o.forEach(x=>{const y=keep(x);if(y!==null)r.push(y)});add(r);
+  if(JSON.stringify(r)!==JSON.stringify(o)){if(r.length||o.length)lio()[k]=r;if(!r.length)delete lio()[k]}return JSON.stringify(r)===JSON.stringify(o)?o:r};
+ const okDo=x=>x&&typeof x==="object"&&Number.isInteger(x.do)&&x.do>=1&&x.do<=8,okDi=x=>x&&typeof x==="object"&&Number.isInteger(x.di)&&x.di>=1&&x.di<=8;
+ const ru=list("rules",x=>{if(!okDo(x))return x;const d=u.dout[x.do-1];if(!d.rule)return null;return d.rule===x.di&&d.mode===(x.mode??"follow")?x:Object.assign({},x,{di:d.rule,mode:d.mode})},
+  r=>u.dout.forEach((d,i)=>{if(d.rule&&!r.some(x=>okDo(x)&&x.do===i+1))r.push({di:d.rule,do:i+1,mode:d.mode})}));
+ or.forEach(r=>{q(r,"rule").removeAttribute("data-perr");q(r,"mode").removeAttribute("data-perr")});
+ ru.forEach((x,k)=>{if(okDo(x)){const r=or[x.do-1];q(r,"rule").dataset.perr=`local_io.rules.${k}`;q(r,"mode").dataset.perr=`local_io.rules.${k}.mode`}});
+ const fc=list("fast_counters",x=>{if(!okDi(x))return x;const d=u.di[x.di-1];if(!d.fast)return null;return d.glitch===(x.glitch_ns??1000)?x:Object.assign({},x,{glitch_ns:d.glitch})},
+  r=>u.di.forEach((d,i)=>{if(d.fast&&!r.some(x=>okDi(x)&&x.di===i+1))r.push(d.glitch===1000?{di:i+1}:{di:i+1,glitch_ns:d.glitch})}));
+ dr.forEach(r=>{q(r,"cnt").removeAttribute("data-perr");q(r,"gl").removeAttribute("data-perr")});
+ fc.forEach((x,k)=>{if(okDi(x)){const r=dr[x.di-1];q(r,"cnt").dataset.perr=k===4?"local_io.fast_counters":`local_io.fast_counters.${k}`;q(r,"gl").dataset.perr=`local_io.fast_counters.${k}.glitch_ns`}});
+ const ch=["DI","DO"].flatMap(g=>[...Array(8)].map((_,i)=>`${g}/${i+1}`)),on=c=>(c.startsWith("DI")?u.di:u.dout)[+c.slice(3)-1].rh;
+ list("run_hours",x=>typeof x==="string"&&ch.includes(x)&&!on(x)?null:x,r=>ch.forEach(c=>{if(on(c)&&!r.includes(c))r.push(c)}));
+ const al=[...document.querySelectorAll("[data-lio-al]")].filter(c=>c.checked).map(c=>c.dataset.lioAl),ao=e.alarms,ar=ao.filter(x=>typeof x!=="string"||al.includes(x)||!LIO_AL.some(([k])=>k===x)).concat(al.filter(x=>!ao.includes(x)));
+ if(JSON.stringify(ar)!==JSON.stringify(ao)){const l=lio();if(!l.buzzer||typeof l.buzzer!=="object")l.buzzer={};if(ar.length)l.buzzer.alarms=ar;else delete l.buzzer.alarms}
+}
+$("#lio-card").addEventListener("change",e=>{if(e.target.dataset.lio==="cnt"||e.target.dataset.lio==="rule")lioUpd()});
 function renderForms(){
  $("#f-gw").innerHTML=field("gateway.name","Name","str",0,0,{ml:63,help:"gname",ph:"Pump panel 2"})+field("gateway.location","Location","str",0,0,{ml:63,help:"gloc",ph:"Plant 2, hall B"})+
   field("gateway.comment","Comment","str",0,0,{ml:255,help:"gcom"}).replace('<div class="fld">','<div class="fld" style="grid-column:1/-1">');
  $("#f-net").innerHTML=field("network.dhcp","DHCP","bool",true)+field("network.ip","IP","str")+field("network.netmask","Netmask","str")+field("network.gateway","Gateway","str")+field("network.dns","DNS","str")+field("network.hostname","Hostname","str",0,0,{help:"host"})+field("network.mdns","mDNS (.local)","bool",true,0,{help:"mdns"});
  $("#f-mqtt").innerHTML=field("mqtt.host","Broker","str",0,0,{help:"broker"})+field("mqtt.port","Port","int")+field("mqtt.client_id","Client ID","str",0,0,{help:"cid"})+field("mqtt.username","User","str")+field("mqtt.password","Password","pw")+field("mqtt.keepalive_s","Keepalive (s)","int",0,0,{help:"keep"});
  $("#f-spb").innerHTML=field("sparkplug.group_id","Group ID","str",0,0,{ml:32,help:"group"})+field("sparkplug.edge_node_id","Edge node ID","str",0,0,{ml:32,help:"edge"})+field("sparkplug.primary_host_id","Primary host ID","str",0,0,{ml:32,help:"phost"})+field("sparkplug.naming","Naming","sel",NAMING,true,{help:"naming"});
- $("#f-rs485").innerHTML=field("rs485.baud","Baud rate","int",0,0,{help:"baud"})+field("rs485.parity","Parity","sel",PAR,true)+field("rs485.stop_bits","Stop bits","int")+field("rs485.response_timeout_ms","Timeout (ms)","int",0,0,{help:"tmo"})+field("rs485.retries","Retries","int",0,0,{help:"retry"})+field("rs485.inter_frame_delay_ms","Inter-frame delay (ms)","int",0,0,{help:"ifd"})+field("local_io.di_debounce_ms","Debounce DI (ms)","int",0,0,{help:"deb"});
+ $("#f-rs485").innerHTML=field("rs485.baud","Baud rate","int",0,0,{help:"baud"})+field("rs485.parity","Parity","sel",PAR,true)+field("rs485.stop_bits","Stop bits","int")+field("rs485.response_timeout_ms","Timeout (ms)","int",0,0,{help:"tmo"})+field("rs485.retries","Retries","int",0,0,{help:"retry"})+field("rs485.inter_frame_delay_ms","Inter-frame delay (ms)","int",0,0,{help:"ifd"});
  /* #223: ota.mqtt, the only control of the card (an update from the Status tab is always possible) */
  $("#f-ota").innerHTML=`<div class="fld"><span class="lbl"><label for="i-ota.mqtt">Update from MQTT</label>${qi("otamqtt","Update from MQTT")}</span>${ctl("ota.mqtt","bool",false)}<span class="hint" id="h-otamqtt"></span></div>`;
  document.getElementById("i-ota.mqtt").setAttribute("aria-describedby","h-otamqtt");
+ renderLio();
  $("#f-web").innerHTML=field("web.username","User","str")+field("web.password","Password (8 to 63)","pw",0,0,{ml:63,help:"webpw"})+PW2+field("web.port","Port","int");pw194();
  renderPrefix();
  const devs=cfg.devices||[];
@@ -489,7 +588,7 @@ function readPrefix(){
  if(v!=="")set(cfg,"sparkplug.device_prefix",v);else unset("sparkplug.device_prefix");
 }
 function readForms(){
- readPrefix();
+ readPrefix();readLio();
  document.querySelectorAll("[data-p]").forEach(e=>{
   const p=e.dataset.p.replace(/\.(\d+)(?=\.|$)/g,".$1"),k=e.dataset.k;let v;
   if(k==="bool"){v=e.checked;if(get(cfg,p)===undefined&&v===(e.dataset.def==="1"))return}else if(k==="int"||k==="num"){if(e.value.trim()===""){unset(p);return}v=Number(e.value)}
@@ -617,6 +716,33 @@ function hdr206(g,node){const n=g.name||"",l=g.location||"";
  document.title=n?(l?`${n} \u00b7 ${l}`:n):TITLE0}
 const mins=s=>`${Math.max(1,Math.ceil(s/60))} min`;
 let st0=null,sm0={};
+/* #204 #217: the tables of the DIs and the DOs. A DO without a local rule has a button (only in
+   normal mode, with the expander that answers); the first change of the page session asks first
+   (#193). The run hours show in hours with one decimal. */
+let ioLast="",ioSt=null,doAsked=false,doMsg="";
+const grp=v=>String(v).replace(/\B(?=(\d{3})+(?!\d))/g,"\u202f");
+const rhTxt=v=>v==null?'<td class="mut">—</td>':`<td class="num">${grp((v/3600).toFixed(1))} h</td>`;
+function stIo(s){const io=s.io,rh=io.run_hours||{},pl=io.pulse_ms||[],ctl=s.mode==="normal"&&io.do!=null;ioSt=s;
+ const st=(b,u)=>u?'<td class="bad">unknown</td>':`<td class="${b?"ok":"mut"}">${b?"on":"off"}</td>`;
+ const di=[...Array(8)].map((_,i)=>`<tr><td class="ch">DI ${i+1}</td>${st(io.di>>i&1)}<td class="num">${grp(io.counters[i])}${io.fast>>i&1?' <span class="mut">fast</span>':""}</td>${rhTxt((rh.di||[])[i])}</tr>`).join("");
+ const dout=[...Array(8)].map((_,i)=>{const on=io.do!=null&&(io.do>>i&1),r=(io.rules||[]).find(x=>x.do===i+1),p=pl[i]||0;
+  const c=r?`<span class="mut">Local rule: DI ${r.di}, ${esc(r.mode)}</span>`:!ctl?'<span class="mut">—</span>':`<button data-do="${i+1}" data-on="${p||!on?1:0}" data-pulse="${p}">${p?`Pulse ${grp(p)} ms`:on?"Turn off":"Turn on"}</button>`;
+  return `<tr><td class="ch">DO ${i+1}</td>${st(on,io.do==null)}<td class="ctl">${c}</td>${rhTxt((rh.do||[])[i])}</tr>`}).join("");
+ const h=`<div class="cols"><div><h3>Digital inputs</h3><table><tr><th>DI</th><th>State</th><th>Counter</th><th>Run hours</th></tr>${di}</table></div>`+
+  `<div><h3>Digital outputs</h3><table><tr><th>DO</th><th>State</th><th>Control</th><th>Run hours</th></tr>${dout}</table>`+
+  (io.do==null?`<p class="bad" style="margin:8px 0 0">The expander of the DOs does not answer (${io.expander.retrying?"retrying, ":""}${io.expander.attempts} attempts): the DOs are unknown.</p>`:"")+
+  (doMsg?`<p class="mut" style="margin:8px 0 0" role="status">${doMsg}</p>`:"")+`</div></div>`;
+ if(h!==ioLast){$("#st-io").innerHTML=h;ioLast=h}}
+$("#st-io").addEventListener("click",async e=>{const b=e.target.closest?e.target.closest("button[data-do]"):null;if(!b||!ioSt)return;
+ const n=+b.dataset.do,on=b.dataset.on==="1",p=+b.dataset.pulse||0,now=ioSt.io.do>>(n-1)&1;
+ const act=p?`Pulse DO ${n}`:`Turn ${on?"on":"off"} DO ${n}`;
+ if(!doAsked){if(!await ask({title:`${act}?`,action:act,danger:true,fact:`DO ${n} · now ${now?"on":"off"} · ${p?`pulse DO, ${grp(p)} ms`:"no local rule"}`,
+  html:`<p class="warnline">${on?`Make sure that it is safe to start the machine on DO ${n}. A machine or a device on this output can start immediately.`:`Make sure that it is safe to stop the machine on DO ${n}. A machine or a device on this output can stop immediately.`}</p>`+
+   `<ul>${p?`<li>The DO is on for ${grp(p)} ms, and then off.</li>`:""}<li>The new state goes to the Sparkplug host in the next NDATA, as for an NCMD.</li><li>An NCMD from a host, or the safe state (failsafe), can change the DO again.</li><li>This page does not ask again for the next changes. It asks again after you load the page again.</li></ul>`}))return;doAsked=true}
+ b.disabled=true;const r=await api("POST","/api/do",JSON.stringify({do:n,on}));
+ doMsg=r.status===200?(p?`DO ${n} is on for ${grp(p)} ms, then off. The host gets the two states in the next NDATA messages.`:`DO ${n} is ${on?"on":"off"}. The host gets the new state in the next NDATA.`)
+  :`<span class="bad">DO ${n} did not change (${r.status}): ${esc((r.json||{}).error||"no answer")}</span>`;
+ poll()});
 async function poll(){
  if(fwUp)return;   /* #215: during an upload the gateway does not answer the other requests */
  const r=await api("GET","/api/status");if(r.status!==200||!r.json)return;
@@ -633,12 +759,9 @@ async function poll(){
  lgChg(s.log_levels);
  $("#st-net").innerHTML=`<p>Network ${yes(s.network.up,"up","no IP")} · MQTT ${yes(s.mqtt.connected,"connected",tm.waiting?"waiting for a valid clock":"disconnected")}${s.syslog?` · syslog ${esc(s.syslog)}`:""}</p><table><tr><th>Interface</th><th>State</th><th>IPv4</th><th>IPv6</th></tr>${s.network.interfaces.map(i=>`<tr><td>${i.name}${i.active?" (active)":""}</td><td>${!i.configured?"not configured":!i.link?"no link":i.usable?"up":"no address"}</td><td>${i.ipv4||""}</td><td>${(i.ipv6||[]).join("<br>")}</td></tr>`).join("")}</table>`;
  $("#st-mb").innerHTML=s.devices.length?`<table><tr><th>Device</th><th>Unit</th><th>State</th><th>Cycles / failed</th><th>OK / timeout / CRC / frame / exception</th><th>Values</th></tr>${s.devices.map(d=>d.enabled===false?`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td><span class="mut">disabled</span></td><td>—</td><td>—</td><td class="mut">not polled</td></tr>`:`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td>${yes(d.online,"online","offline")}</td><td>${d.cycles} / ${d.failed}</td><td>${d.ok} / ${d.timeout} / ${d.crc} / ${d.frame} / ${d.exception}</td><td>${d.tags.map(t=>`${esc(t.name)}=${t.valid?esc(t.value_text??t.value):"—"}`).join(", ")}</td></tr>`).join("")}</table>`:"no devices";
- const bits=(v)=>[...Array(8)].map((_,i)=>`<span class="${v>>i&1?"ok":"mut"}">${i+1}</span>`).join(" ");
  const AL={none:"silent",device_offline:"device offline",mqtt_down:"no MQTT session",config_error:"configuration rejected"};
- const io=s.io,rules=io.rule_do?[...Array(8)].map((_,i)=>io.rule_do>>i&1?`DO/${i+1}`:"").filter(x=>x).join(", "):"none";
- $("#st-io").innerHTML=`DI: ${bits(io.di)}<br>DO: ${io.do==null?`<span class="bad">unknown: the expander does not answer</span> (${io.expander.retrying?"retrying, ":""}${io.expander.attempts} attempts)`:bits(io.do)}`+
-  `<br>Safe state (failsafe): ${io.failsafe?`<span class="bad">applied (no Sparkplug session)</span>`:"no"} · DOs with a local rule: ${rules}`+
-  `<br>Counters: ${io.counters.map((c,i)=>`${i+1}: ${c}`).join(" · ")}`+
+ const io=s.io;stIo(s);
+ $("#st-io2").innerHTML=`Safe state (failsafe): ${io.failsafe?`<span class="bad">applied (no Sparkplug session)</span>`:"no"}`+
   `<br>Buzzer: ${s.buzzer.alarm==="none"?"silent":`<span class="bad">${AL[s.buzzer.alarm]}</span>`} (alarms: ${s.buzzer.enabled.map(a=>AL[a]).join(", ")||"none"})`+
   `<br>Time: ${new Date(s.time.utc_s*1000).toISOString()} · ${s.time.synced?yes(true,"synchronized by SNTP",""):s.time.source==="rtc"?"from the RTC (not synchronized)":s.time.source==="browser"?"set from the browser (not synchronized)":`<span class="bad">no valid time: no MQTT session until the time is valid</span>`} · RTC ${esc(s.time.rtc.status)}${s.time.rtc.lost?` · <span class="bad">the RTC lost the time: examine its battery</span>`:""}`;
  const cd=s.core_dump||{};$("#st-cd").classList.toggle("hidden",!cd.present);$("#cd-txt").textContent=cd.present?`Core dump in flash: ${cd.size} B (${cd.state}). It can contain secrets: keep the file safe, and erase the dump after the download.`:"";

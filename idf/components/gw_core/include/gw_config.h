@@ -53,6 +53,16 @@ extern "C" {
 #define GW_FAILSAFE_MAX_S 86400     /* IO-3: local_io.failsafe_s */
 #define GW_COUNTER_SAVE_MIN_S 60    /* IO-4: local_io.counter_save_s (or 0) */
 #define GW_COUNTER_SAVE_MAX_S 86400
+#define GW_DI_DEBOUNCE_MAX_MS 1000  /* #211: local_io.di[].debounce_ms */
+#define GW_DI_DEBOUNCE_DEF_MS 20
+#define GW_DO_PULSE_MIN_MS 50       /* #210: local_io.do_pulse_ms (or 0: a normal DO) */
+#define GW_DO_PULSE_MAX_MS 60000
+#define GW_FAST_COUNTERS_MAX 4      /* #218: local_io.fast_counters, one PCNT unit each */
+/* #218: the glitch filter of the PCNT counts 1023 APB cycles at most (PCNT_LL_MAX_GLITCH_WIDTH,
+ * 12.5 ns at 80 MHz): 12 787 ns */
+#define GW_GLITCH_MAX_NS 12787
+#define GW_GLITCH_DEF_NS 1000
+#define GW_RUN_HOURS_CHANNELS (2 * GW_LOCAL_IO_CHANNELS)   /* #217: DI/1..8, then DO/1..8 */
 #define GW_DIAG_MIN_S 10             /* SPB-17: sparkplug.diagnostics_s (or 0) */
 #define GW_DIAG_MAX_S 86400
 #define GW_MAX_TEMPLATE_TAGS 64     /* SPB-18: tags of all template definitions together (NBIRTH) */
@@ -284,7 +294,12 @@ typedef struct {
         uint16_t inter_frame_delay_ms;
     } rs485;
     struct {
-        uint16_t di_debounce_ms;
+        uint8_t di_invert;       /* #211: bit n = DI/n+1 is inverted (after the board polarity) */
+        uint16_t di_debounce_ms[GW_LOCAL_IO_CHANNELS];   /* #211: per DI, 0 to 1000 */
+        uint16_t do_pulse_ms[GW_LOCAL_IO_CHANNELS];      /* #210: 0 = a normal DO */
+        uint8_t fast_mask;       /* #218: bit n = the PCNT counts DI/n+1 (at most 4 bits) */
+        uint16_t glitch_ns[GW_LOCAL_IO_CHANNELS];        /* #218: of each fast DI */
+        uint16_t run_hours;      /* #217: bit n = DI/n+1 (n < 8), bit 8+n = DO/n+1 */
         uint32_t failsafe_s;     /* IO-3: seconds without a Sparkplug session before the DOs
                                   * take their safe state; 0 = no reaction to an MQTT loss */
         uint8_t do_failsafe[GW_LOCAL_IO_CHANNELS];   /* gw_do_safe_t of DO/1..8 */

@@ -57,7 +57,7 @@ static void test_spec_example(void)
     TEST_ASSERT_EQUAL(200, cfg.rs485.response_timeout_ms);
     TEST_ASSERT_EQUAL(2, cfg.rs485.retries);
     TEST_ASSERT_EQUAL(5, cfg.rs485.inter_frame_delay_ms);
-    TEST_ASSERT_EQUAL(20, cfg.local_io.di_debounce_ms);
+    TEST_ASSERT_EQUAL(20, cfg.local_io.di_debounce_ms[0]);
     TEST_ASSERT_EQUAL(1, cfg.device_count);
     TEST_ASSERT_EQUAL(3, cfg.tag_count);
     const gw_device_cfg_t *d = &cfg.devices[0];
@@ -109,7 +109,7 @@ static void test_defaults_and_static_ip(void)
     TEST_ASSERT_EQUAL_STRING("cid", cfg.mqtt.client_id);
     TEST_ASSERT_EQUAL(1883, cfg.mqtt.port);
     TEST_ASSERT_EQUAL(9600, cfg.rs485.baud);
-    TEST_ASSERT_EQUAL(20, cfg.local_io.di_debounce_ms);
+    TEST_ASSERT_EQUAL(20, cfg.local_io.di_debounce_ms[7]);
     TEST_ASSERT_EQUAL(0, cfg.device_count);
 }
 
@@ -1472,7 +1472,7 @@ static void test_local_io_section(void)
         TEST_ASSERT_EQUAL(GW_DO_SAFE_OFF, cfg.local_io.do_failsafe[i]);
     }
     snprintf(doc, sizeof(doc),
-             "{%s,\"local_io\":{\"di_debounce_ms\":10,\"failsafe_s\":30,"
+             "{%s,\"local_io\":{\"failsafe_s\":30,"
              "\"do_failsafe\":[\"hold\",\"on\",\"off\",\"hold\"]}}", base);
     TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
     TEST_ASSERT_EQUAL(30, cfg.local_io.failsafe_s);
@@ -1552,6 +1552,106 @@ static void test_local_io_section(void)
     ASSERT_REJECTED(parse(doc), "local_io.rules[0].when: unknown key");
     snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"rules\":{}}}", base);
     ASSERT_REJECTED(parse(doc), "local_io.rules: expected an array");
+}
+
+/* #210 #211 #217 #218: the keys of each DI and DO */
+static void test_local_io_channels(void)
+{
+    const char *base = "\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}";
+    char doc[768];
+    snprintf(doc, sizeof(doc), "{%s}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    for (int i = 0; i < GW_LOCAL_IO_CHANNELS; i++) {
+        TEST_ASSERT_EQUAL(GW_DI_DEBOUNCE_DEF_MS, cfg.local_io.di_debounce_ms[i]);
+        TEST_ASSERT_EQUAL(0, cfg.local_io.do_pulse_ms[i]);
+    }
+    TEST_ASSERT_EQUAL_HEX8(0, cfg.local_io.di_invert);
+    TEST_ASSERT_EQUAL_HEX8(0, cfg.local_io.fast_mask);
+    TEST_ASSERT_EQUAL_HEX16(0, cfg.local_io.run_hours);
+    /* #211: invert and debounce for each DI; a missing entry or key takes the default */
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"di\":[{\"invert\":true},{},{\"debounce_ms\":0},"
+             "{\"invert\":false,\"debounce_ms\":1000}]}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_HEX8(0x01, cfg.local_io.di_invert);
+    TEST_ASSERT_EQUAL(20, cfg.local_io.di_debounce_ms[0]);
+    TEST_ASSERT_EQUAL(0, cfg.local_io.di_debounce_ms[2]);
+    TEST_ASSERT_EQUAL(1000, cfg.local_io.di_debounce_ms[3]);
+    TEST_ASSERT_EQUAL(20, cfg.local_io.di_debounce_ms[4]);
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"di\":[{},{\"debounce_ms\":1001}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.di[1].debounce_ms: value 1001 out of range [0, 1000]");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"di\":[{\"invert\":1}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.di[0].invert: expected true or false");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"di\":[{\"delay\":1}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.di[0].delay: unknown key");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"di\":[{},{},{},{},{},{},{},{},{}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.di: 9 entries; there are 8 inputs");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"di_debounce_ms\":20}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.di_debounce_ms: unknown key");   /* removed by #211 */
+
+    /* #210: pulse DOs */
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"do_pulse_ms\":[0,50,60000]}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL(0, cfg.local_io.do_pulse_ms[0]);
+    TEST_ASSERT_EQUAL(50, cfg.local_io.do_pulse_ms[1]);
+    TEST_ASSERT_EQUAL(60000, cfg.local_io.do_pulse_ms[2]);
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"do_pulse_ms\":[49]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_pulse_ms[0]: value 49: 0 (a normal DO) or 50 to 60000 ms");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"do_pulse_ms\":[0,60001]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_pulse_ms[1]: value 60001");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"do_pulse_ms\":[1.5]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_pulse_ms[0]: expected an integer");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"do_pulse_ms\":[0,0,0,0,0,0,0,0,0]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_pulse_ms: 9 entries; there are 8 outputs");
+    /* the safe state "on" and a local rule are refused on a pulse DO; "hold" and "off" are not */
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"do_failsafe\":[\"off\",\"off\",\"off\",\"on\"],"
+             "\"do_pulse_ms\":[0,0,0,500]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe[3]: not for a pulse DO. Use off or hold");
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"do_failsafe\":[\"hold\"],\"do_pulse_ms\":[500],"
+             "\"rules\":[{\"di\":1,\"do\":2},{\"di\":1,\"do\":1}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.rules[1]: DO/1 is a pulse DO (local_io.do_pulse_ms[0]): a "
+                                "local rule cannot drive it");
+
+    /* #218: fast counters with the PCNT */
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"fast_counters\":[{\"di\":5},{\"di\":6,\"glitch_ns\":0},"
+             "{\"di\":1,\"glitch_ns\":12787}]}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_HEX8(0x31, cfg.local_io.fast_mask);
+    TEST_ASSERT_EQUAL(GW_GLITCH_DEF_NS, cfg.local_io.glitch_ns[4]);
+    TEST_ASSERT_EQUAL(0, cfg.local_io.glitch_ns[5]);
+    TEST_ASSERT_EQUAL(12787, cfg.local_io.glitch_ns[0]);
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"fast_counters\":[{\"di\":1},{\"di\":2},{\"di\":3},"
+             "{\"di\":4},{\"di\":5}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.fast_counters: 5 entries; the maximum is 4 (PCNT units)");
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"fast_counters\":[{\"di\":2},{\"di\":2}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.fast_counters[1].di: DI/2 is already a fast counter");
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"fast_counters\":[{\"di\":2,\"glitch_ns\":12788}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.fast_counters[0].glitch_ns: value 12788 out of range [0, 12787]");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"fast_counters\":[{\"glitch_ns\":1}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.fast_counters[0].di: missing required field");
+
+    /* #217: run hours */
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"run_hours\":[\"DI/3\",\"DO/1\",\"DO/8\"]}}",
+             base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_HEX16(0x8104, cfg.local_io.run_hours);
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"run_hours\":[\"DI/9\"]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.run_hours[0]: invalid value (expected DI/1 to DI/8 or DO/1 "
+                                "to DO/8)");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"run_hours\":[\"DO/10\"]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.run_hours[0]: invalid value");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"run_hours\":[3]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.run_hours[0]: invalid value");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"run_hours\":[\"DO/2\",\"DO/2\"]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.run_hours[1]: duplicate channel DO/2");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"run_hours\":\"DI/1\"}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.run_hours: expected an array");
 }
 
 static void test_section_errors(void)
@@ -1777,6 +1877,7 @@ int main(void)
     RUN_TEST(test_modbus_tcp_section);
     RUN_TEST(test_ota_section);
     RUN_TEST(test_local_io_section);
+    RUN_TEST(test_local_io_channels);
     RUN_TEST(test_section_errors);
     RUN_TEST(test_limits);
     RUN_TEST(test_syntax_errors_give_line_and_column);
