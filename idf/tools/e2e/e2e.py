@@ -1763,8 +1763,8 @@ def run_tls(args, work):
 def check_pem_files(gw, obs, node, pki, t0):
     """Issue #221 on GW15 (its document names /cfg/missing.pem, which is not there): the PEM files
     of the web UI. A dry run refuses the missing file at its JSON path; PUT /api/files loads the
-    CA (201, its subject and the CA flag), refuses the same name again (409, also with the old
-    replace=1, which is not approved) and a file that is not PEM (400); GET /api/files lists it,
+    CA (201, its subject and the CA flag), refuses the same name again without replace=1 (409)
+    and a file that is not PEM (400); GET /api/files lists it,
     never with its content. A client key that does not agree with the client certificate is
     refused at mqtt.tls.key_file, the right key is not, and GET /api/files tells which
     certificate the key agrees with. After a restart the gateway connects to the TLS broker with
@@ -1788,7 +1788,7 @@ def check_pem_files(gw, obs, node, pki, t0):
     st0, j0 = dry({"enabled": True, "ca_file": "missing.pem"})
     st1, j1 = put("missing.pem", ca)
     st2, j2 = put("missing.pem", ca)
-    st2r, _ = put("missing.pem", ca, "&replace=1")
+    st2r, j2r = put("missing.pem", ca, "&replace=1")
     st3, j3 = put("notes.pem", b"not a certificate\n")
     st4, _, b4 = http("GET", "/api/files")
     files = {f.get("name"): f for f in (as_json(b4) or {}).get("files", [])}
@@ -1796,13 +1796,14 @@ def check_pem_files(gw, obs, node, pki, t0):
     loaded = st0 == 400 and j0.get("path") == "mqtt.tls.ca_file" and "not in the LittleFS" in \
         j0.get("error", "") and st1 == 201 and j1.get("file", {}).get("kind") == "certificates" \
         and j1["file"].get("certs", [{}])[0].get("subject") == "CN=E2E test CA" \
-        and j1["file"]["certs"][0].get("ca") is True and st2 == 409 and st2r == 409 \
+        and j1["file"]["certs"][0].get("ca") is True and st2 == 409 and st2r == 201 \
+        and j2r.get("files", [{}])[0].get("replaced") is True \
         and st3 == 400 \
         and st4 == 200 and files.get("missing.pem", {}).get("count") == 1 \
         and "notes.pem" not in files and b"BEGIN" not in b4 and st5 == 200 and j5.get("ok")
     check("Issue #221 PEM files from the web UI: a dry run refuses a missing CA file at "
           "mqtt.tls.ca_file; PUT /api/files loads it (201, subject, CA), refuses the same name "
-          "(409, also with replace=1) and a file that is not PEM (400); GET /api/files lists it "
+          "(409; replace=1 replaces it) and a file that is not PEM (400); GET /api/files lists it "
           "without its content; "
           "then the dry run passes", loaded,
           f"dry {st0} {j0.get('path')} {j0.get('error', '')[:80]!r}; put {st1} {j1.get('file')}; "
@@ -1832,6 +1833,8 @@ def check_pem_files(gw, obs, node, pki, t0):
           f"put {sk1} {sk2} {sk3}; key {key}; other {kf.get('other.key')}; mismatch {st6} "
           f"{j6.get('path')} {j6.get('error', '')[:80]!r}; match {st7}")
 
+    check_pem_manage(gw, pki)
+
     # the restart: the CA is now there, the session comes up over TLS
     asked = time.monotonic()
     rs = http("POST", "/api/restart", b"")[0]
@@ -1840,6 +1843,240 @@ def check_pem_files(gw, obs, node, pki, t0):
     check("Issue #221 after the load of the CA file and a restart, the gateway connects to the "
           "TLS broker with it (NBIRTH)", rs == 202 and used and nb is not None,
           f"restart {rs}; {(used and 'CA loaded') or 'no CA line'}; NBIRTH {nb is not None}")
+
+
+def check_pem_manage(gw, pki):
+    """#221, the card Certificates (on GW15, whose saved document names missing.pem as
+    mqtt.tls.ca_file): GET /api/files gives the keys that use each file, the limits and the space
+    of the LittleFS partition; a dry run of a load writes nothing; the kind of a configured file
+    cannot change (a key for the CA file: 400 at mqtt.tls.ca_file); a certificate and its key load
+    together (a key that does not agree: 400), and a body with both in one file is refused;
+    DELETE /api/files/<name> refuses a file in use (409 with used_by), removes another one (200),
+    then 404; the CSRF check covers the new routes; the 17th file is refused (507)."""
+    def put(q, data):
+        st, _, body = http("PUT", f"/api/files?{q}", data,
+                           headers={"Content-Type": "application/x-pem-file"})
+        return st, as_json(body) or {}
+
+    def listing():
+        st, _, body = http("GET", "/api/files")
+        j = as_json(body) or {}
+        return st, j, {f.get("name"): f for f in j.get("files", [])}, body
+
+    crt, key, other = (pki[n].read_bytes() for n in ("client.crt", "client.key", "server.key"))
+    ca = pki["ca.pem"].read_bytes()
+    st0, j0, f0, b0 = listing()
+    print(f"  #221 LittleFS: {j0.get('fs_used_bytes')} of {j0.get('fs_total_bytes')} bytes used "
+          f"with {j0.get('count')} PEM file(s) of {j0.get('total_bytes')} bytes", flush=True)
+    kind = put("name=missing.pem&replace=1&dry_run=1", key)
+    dry_pair = put("name=gw15b.crt&key_name=gw15b.key&dry_run=1", crt + key)
+    bad_pair = put("name=gw15b.crt&key_name=gw15b.key&dry_run=1", crt + other)
+    one_file = put("name=both.pem", crt + key)
+    _, _, f1, _ = listing()
+    pair = put("name=gw15b.crt&key_name=gw15b.key", crt + key)
+    _, _, f2, b2 = listing()
+    check("Issue #221 GET /api/files gives the keys of the saved configuration that use each file, "
+          "the limits (16 files, 16384 bytes) and the space of the LittleFS partition; a dry run "
+          "writes nothing; a key in place of the configured CA file is refused at "
+          "mqtt.tls.ca_file; a certificate and its key load together (201, both listed, the key "
+          "agrees), a key that does not agree is refused, and one file with both is refused",
+          st0 == 200 and f0.get("missing.pem", {}).get("used_by") == ["mqtt.tls.ca_file"]
+          and f0.get("gw15.crt", {}).get("used_by") == [] and j0.get("max_files") == 16
+          and j0.get("max_file_bytes") == 16384 and j0.get("config_known") is True
+          and (j0.get("fs_total_bytes") or 0) > (j0.get("fs_used_bytes") or 0) > 0
+          and kind[0] == 400 and kind[1].get("path") == "mqtt.tls.ca_file"
+          and dry_pair[0] == 200 and [f.get("kind") for f in dry_pair[1].get("files", [])]
+          == ["certificates", "key"] and dry_pair[1].get("saved") is False
+          and "gw15b.crt" not in f1 and bad_pair[0] == 400
+          and "does not agree" in bad_pair[1].get("error", "") and one_file[0] == 400
+          and "both.pem" not in f1 and pair[0] == 201
+          and "gw15b.crt" in (f2.get("gw15b.key", {}).get("agrees_with") or [])
+          and b"PRIVATE" not in b2 and b"BEGIN" not in b2,
+          f"list {st0} {f0.get('missing.pem', {}).get('used_by')} limits {j0.get('max_files')}/"
+          f"{j0.get('max_file_bytes')} fs {j0.get('fs_used_bytes')}/{j0.get('fs_total_bytes')}; "
+          f"kind {kind[0]} {kind[1].get('path')} {kind[1].get('error', '')[:70]!r}; dry pair "
+          f"{dry_pair[0]}; bad pair {bad_pair[0]} {bad_pair[1].get('error', '')[:60]!r}; one file "
+          f"{one_file[0]}; pair {pair[0]}; key {f2.get('gw15b.key')}")
+
+    forged = {
+        "DELETE, no header": http("DELETE", "/api/files/other.key",
+                                  headers={"X-Requested-With": None})[0],
+        "DELETE, other Origin": http("DELETE", "/api/files/other.key",
+                                     headers={"Origin": "https://evil.e2e"})[0],
+        "PUT, other Origin": http("PUT", "/api/files?name=x.pem", ca,
+                                  headers={"Origin": "https://evil.e2e"})[0],
+        "DELETE, wrong password": http("DELETE", "/api/files/other.key", auth=("admin", "no"))[0],
+    }
+    used = http("DELETE", "/api/files/missing.pem")
+    gone = http("DELETE", "/api/files/other.key")
+    again = http("DELETE", "/api/files/other.key")
+    _, _, f3, _ = listing()
+    uj = as_json(used[2]) or {}
+    check("Issue #221 DELETE /api/files/<name>: the CSRF check (403) and the password (401) first; "
+          "a file that the saved configuration uses is refused (409 with used_by), another file is "
+          "removed (200, then 404)",
+          forged == {"DELETE, no header": 403, "DELETE, other Origin": 403, "PUT, other Origin": 403,
+                     "DELETE, wrong password": 401}
+          and used[0] == 409 and uj.get("used_by") == ["mqtt.tls.ca_file"]
+          and "missing.pem" in f3 and gone[0] == 200 and again[0] == 404 and "other.key" not in f3,
+          f"{forged}; in use {used[0]} {uj}; remove {gone[0]}, again {again[0]}; files {sorted(f3)}")
+
+    # the limit of the number of files: the copies fill the list to 16, the 17th is refused
+    _, j4, f4, _ = listing()
+    n = j4.get("count", len(f4))
+    fill = [put(f"name=fill{i}.pem", ca)[0] for i in range(16 - n)]
+    over = put("name=fill-over.pem", ca)
+    _, j5, _, _ = listing()
+    print(f"  #221 LittleFS with {j5.get('count')} PEM files: {j5.get('fs_used_bytes')} of "
+          f"{j5.get('fs_total_bytes')} bytes used", flush=True)
+    removed = [http("DELETE", f"/api/files/fill{i}.pem")[0] for i in range(16 - n)]
+    check("Issue #221 the limit of the PEM files: up to 16 files, the 17th is refused (507); the "
+          "copies are then removed",
+          all(c == 201 for c in fill) and over[0] == 507 and "maximum is 16" in
+          over[1].get("error", "") and j5.get("count") == 16 and all(c == 200 for c in removed),
+          f"{n} file(s), loads {fill}, the 17th {over[0]} {over[1].get('error', '')[:60]!r}; "
+          f"removed {removed}")
+
+
+def make_web_pki(work):
+    """#205: a plant CA, a web certificate of the plant for gw22 (DNS:gw22.plant.e2e and
+    IP:127.0.0.1) and another key. Returns {name: path}; plant.pem is the chain (leaf + CA)."""
+    d = work / "webpki"
+    d.mkdir(exist_ok=True)
+
+    def ossl(*a):
+        subprocess.run(["openssl", *a], cwd=d, check=True, capture_output=True)
+
+    for k in ("ca", "web", "other"):
+        ossl("ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", f"{k}.key")
+    ossl("req", "-x509", "-new", "-key", "ca.key", "-sha256", "-days", "30", "-subj",
+         "/CN=E2E plant CA", "-out", "ca.pem")
+    ossl("req", "-new", "-key", "web.key", "-subj", "/CN=gw22.plant.e2e/O=E2E plant", "-out",
+         "web.csr")
+    (d / "web.ext").write_text("subjectAltName=DNS:gw22.plant.e2e,IP:127.0.0.1\n")
+    ossl("x509", "-req", "-in", "web.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial",
+         "-days", "30", "-sha256", "-extfile", "web.ext", "-out", "web.crt")
+    (d / "plant.pem").write_bytes((d / "web.crt").read_bytes() + (d / "ca.pem").read_bytes())
+    return {n: d / n for n in ("plant.pem", "web.crt", "web.key", "other.key")}
+
+
+def presented_fp():
+    der = PEER_CERT.get("der", b"")
+    return ":".join(f"{b:02X}" for b in hashlib.sha256(der).digest()) if der else ""
+
+
+def check_web_cert(gw, work, node):
+    """#205 on GW22: the HTTPS certificate of the web UI. GET /api/web/certificate gives the
+    certificate of the first boot (its SHA-256 is the one presented, the SANs contain the
+    hostname, never a key). PUT /api/web/certificate examines a certificate of the plant with its
+    chain and key (dry run: 200, nothing waits; a key that does not agree, no key: 400); the CSRF
+    check covers the new routes. A load waits for the restart; Discard (DELETE .../pending)
+    removes it (200, then 404). After a restart, the server presents the certificate of the
+    plant; then POST .../new makes a self-signed certificate that, after the next restart, is the
+    one presented."""
+    pk = make_web_pki(work)
+    chain, key, other = (pk[n].read_bytes() for n in ("plant.pem", "web.key", "other.key"))
+
+    def get():
+        st, _, body = http("GET", "/api/web/certificate")
+        return st, as_json(body) or {}, body
+
+    def put(data, q=""):
+        st, _, body = http("PUT", f"/api/web/certificate{q}", data,
+                           headers={"Content-Type": "application/x-pem-file"})
+        return st, as_json(body) or {}
+
+    st0, g0, b0 = get()
+    http("GET", "/api/status")
+    fp0 = presented_fp()
+    cur = g0.get("current") or {}
+    check("Issue #205 GET /api/web/certificate: the certificate of the first boot (self-signed, "
+          "its SANs contain the hostname, its SHA-256 is the one presented), nothing waits for the "
+          "restart, no key in the answer",
+          st0 == 200 and cur.get("source") == "first-boot" and cur.get("self_signed") is True
+          and cur.get("sans") == f"DNS:{node.lower()}.local,DNS:{node.lower()}"
+          and cur.get("hostname_in_sans") is True and cur.get("sha256") == fp0
+          and g0.get("pending") is None and g0.get("https") is True and b"PRIVATE" not in b0,
+          f"{st0} {cur}; presented {fp0[:23]}...")
+
+    dry = put(chain + key, "?dry_run=1")
+    bad = put(chain + other, "?dry_run=1")
+    nokey = put(chain, "?dry_run=1")
+    _, g1, _ = get()
+    forged = {
+        "PUT, no header": http("PUT", "/api/web/certificate", chain + key,
+                               headers={"X-Requested-With": None})[0],
+        "POST new, other Origin": http("POST", "/api/web/certificate/new", b"",
+                                       headers={"Origin": "https://evil.e2e"})[0],
+        "DELETE pending, no header": http("DELETE", "/api/web/certificate/pending",
+                                          headers={"X-Requested-With": None})[0],
+        "PUT, wrong password": http("PUT", "/api/web/certificate?dry_run=1", chain + key,
+                                    auth=("admin", "wrong-cert"))[0],
+    }
+    dc = dry[1].get("certificate") or {}
+    check("Issue #205 PUT /api/web/certificate?dry_run=1 examines the certificate of the plant: "
+          "with its key 200 (subject, issuer, a chain of 2, SANs with the hostname, nothing "
+          "waits); a key that does not agree, or no key: 400; the CSRF check (403) and the "
+          "password (401) on the new routes",
+          dry[0] == 200 and dc.get("subject") == "CN=gw22.plant.e2e, O=E2E plant"
+          and dc.get("issuer") == "CN=E2E plant CA" and dc.get("chain") == 2
+          and dc.get("sans") == "DNS:gw22.plant.e2e,IP:127.0.0.1"
+          and dc.get("hostname_in_sans") is True and g1.get("pending") is None
+          and bad[0] == 400 and "does not agree" in bad[1].get("error", "")
+          and nokey[0] == 400
+          and forged == {"PUT, no header": 403, "POST new, other Origin": 403,
+                         "DELETE pending, no header": 403, "PUT, wrong password": 401},
+          f"dry {dry[0]} {dc}; bad key {bad[0]} {bad[1].get('error', '')[:60]!r}; no key "
+          f"{nokey[0]} {nokey[1].get('error', '')[:50]!r}; {forged}")
+
+    load = put(chain + key)
+    _, g2, _ = get()
+    dis = http("DELETE", "/api/web/certificate/pending")[0]
+    _, g3, _ = get()
+    dis2 = http("DELETE", "/api/web/certificate/pending")[0]
+    load2 = put(chain + key)
+    check("Issue #205 a loaded certificate waits for the restart (201, GET shows it as pending, "
+          "the page keeps its certificate); Discard removes it (200, then 404)",
+          load[0] == 201 and (g2.get("pending") or {}).get("subject") == dc.get("subject")
+          and (g2.get("current") or {}).get("sha256") == fp0 and dis == 200
+          and g3.get("pending") is None and dis2 == 404 and load2[0] == 201,
+          f"load {load[0]}; pending {(g2.get('pending') or {}).get('subject')}; discard {dis}, "
+          f"again {dis2}; load again {load2[0]}")
+
+    def restart():
+        t = time.monotonic()
+        rs = http("POST", "/api/restart", b"")[0]
+        used = gw.wait_log(r"HTTPS: the new certificate is in use now", 90, t)
+        st = wait_http("/api/status", 60)[0] if used else None
+        return rs, used, st, t
+
+    rs1, used1, st1, t1 = restart()
+    fp1 = presented_fp()
+    _, g4, _ = get()
+    c4 = g4.get("current") or {}
+    printed = gw.find(r"HTTPS certificate SHA-256 fingerprint ([0-9A-F:]{95})", t1)
+    check("Issue #205 after a restart the server presents the certificate of the plant (its "
+          "SHA-256 on the console and in GET), the source is 'loaded' and nothing waits",
+          rs1 == 202 and used1 and st1 == 200 and fp1 and fp1 != fp0 and c4.get("sha256") == fp1
+          and c4.get("source") == "loaded" and g4.get("pending") is None and printed
+          and fp1 in printed[0],
+          f"restart {rs1}; {'switched' if used1 else 'no log line'}; status {st1}; presented "
+          f"{fp1[:23]}..., GET {c4.get('sha256', '')[:23]}... {c4.get('source')}")
+
+    new = http("POST", "/api/web/certificate/new", b"")
+    nj = (as_json(new[2]) or {}).get("certificate") or {}
+    rs2, used2, st2, _ = restart()
+    fp2 = presented_fp()
+    _, g5, _ = get()
+    c5 = g5.get("current") or {}
+    check("Issue #205 POST /api/web/certificate/new: a new self-signed certificate for the "
+          "hostname waits for the restart (201), and after the restart the server presents it "
+          "(source 'new')",
+          new[0] == 201 and nj.get("self_signed") is True and rs2 == 202 and used2 and st2 == 200
+          and fp2 == nj.get("sha256") and fp2 not in (fp0, fp1) and c5.get("source") == "new"
+          and c5.get("sans") == f"DNS:{node.lower()}.local,DNS:{node.lower()}",
+          f"new {new[0]} {nj.get('sha256', '')[:23]}...; restart {rs2}; status {st2}; presented "
+          f"{fp2[:23]}...; GET {c5.get('source')} {c5.get('sans')}")
 
 
 # Issue #80: internal RAM without PSRAM (see check_ram_margin for the reasoning)
@@ -3173,6 +3410,7 @@ def run_https(args, work):
     check_csrf(gw, t0)
     check_refused_bodies(gw, t0)
     check_slow_client(gw, t0)
+    check_web_cert(gw, work, node)
     if args.web_stress:
         web_stress(gw, args.web_stress)
 
