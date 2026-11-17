@@ -166,7 +166,7 @@ button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
    get a row of their own, and each touch target is 44 px at least (a checkbox: its row) */
 :root{color-scheme:light dark}
 @media (max-width:600px){header .who{flex:1 1 100%}nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;width:100%}nav button{margin:0}
- button:not(.qi){min-height:44px}.lrow button,td>button[data-ldel]{min-width:44px}
+ button:not(.qi){min-height:44px}.lrow button,td>button{min-width:44px}input[type=file]{min-height:44px}details.card>summary{min-height:44px}
  input:not([type=checkbox]):not([type=radio]):not([type=file]),select{min-height:44px}
  .fld>input:not([type=checkbox]):not([type=radio]):not([type=file]),.fld>select,.srow input,.lrow input{font-size:16px}
  input[type=checkbox]{width:20px;height:20px}label.cb{min-height:44px}td.chk{height:44px}
