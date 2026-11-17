@@ -84,7 +84,7 @@ An example `config.json` for option A:
                  "primary_host_id": "", "store_forward": true },
   "rs485":   { "baud": 9600, "parity": "none", "stop_bits": 1,
                "response_timeout_ms": 200, "retries": 2, "inter_frame_delay_ms": 5 },
-  "local_io": { "di_debounce_ms": 20 },
+  "local_io": { "counter_save_s": 600 },
   "devices": [
     {
       "name": "meter1", "unit_id": 1, "poll_ms": 1000,

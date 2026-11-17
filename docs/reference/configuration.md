@@ -23,7 +23,7 @@ This example has the usual keys:
   "sparkplug": { "group_id": "Plant1", "edge_node_id": "GW01", "primary_host_id": "" },
   "rs485":   { "baud": 9600, "parity": "none", "stop_bits": 1,
                "response_timeout_ms": 200, "retries": 2, "inter_frame_delay_ms": 5 },
-  "local_io": { "di_debounce_ms": 20 },
+  "local_io": { "counter_save_s": 600 },
   "devices": [
     {
       "name": "Meter1", "unit_id": 1, "poll_ms": 1000, "offline_after": 3,
@@ -458,21 +458,41 @@ For the update process, refer to [Update the firmware](../how-to/update-the-firm
 
 ## `local_io`
 
-All the keys of `local_io` are optional.
+All the keys of `local_io` are optional. The card Local I/O of the Configuration tab has a control for each key. For the procedure, refer to [Set up the local inputs and outputs](../how-to/set-up-the-local-io.md).
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `di_debounce_ms` | integer | `20` | 0 to 1000. The debounce of the DIs |
+| `di` | array of objects | all default | Up to 8 items, `DI/1` first. Refer to [The DIs](#the-dis) |
 | `failsafe_s` | integer | `0` | 0 to 86400. After this time without a Sparkplug session, each DO goes to its safe state. 0 = a loss of MQTT does not change the DOs |
 | `do_failsafe` | array of texts | all `off` | Up to 8 items, `DO/1` first. Each item is `off`, `on` or `hold`. An item that is not there is `off` |
-| `counter_save_s` | integer | `600` | 0, or 60 to 86400. The interval for the save of the pulse counters in NVS, only if they changed. 0 = no save |
+| `do_pulse_ms` | array of integers | all `0` | Up to 8 items, `DO/1` first. Refer to [Pulse DOs](#pulse-dos) |
+| `counter_save_s` | integer | `600` | 0, or 60 to 86400. The interval for the save of the pulse counters and the run hours in NVS, only if they changed. 0 = no save |
+| `fast_counters` | array of objects | `[]` | Up to 4 items. Refer to [Fast counters](#fast-counters) |
+| `run_hours` | array of texts | `[]` | Refer to [Run hours](#run-hours) |
 | `rules` | array | `[]` | Refer to [Local rules](#local-rules) |
 | `buzzer` | object | — | Refer to [`local_io.buzzer`](#local_iobuzzer) |
+
+The key `di_debounce_ms` of earlier versions is not there now (#211). The validation refuses a document that has it. Use `di[].debounce_ms`.
+
+### The DIs
+
+```json
+"local_io": { "di": [ { "invert": true }, {}, { "debounce_ms": 100 } ] }
+```
+
+| Key | Type | Default | Rule |
+|---|---|---|---|
+| `invert` | boolean | `false` | `true`: the gateway inverts the input. Use it for a normally closed contact |
+| `debounce_ms` | integer | `20` | 0 to 1000. The input must stay in its new state for this time before the gateway accepts the change |
+
+- An item or a key that is not there takes the default.
+- The polarity of the input circuit of the board is a build option for all the DIs. The inversion applies after it, before the debounce.
+- The metric `DI/n`, the pulse counter and the local rules use the state after the inversion and the debounce.
 
 ### The safe state of the DOs
 
 ```json
-"local_io": { "di_debounce_ms": 20, "failsafe_s": 30,
+"local_io": { "failsafe_s": 30,
               "do_failsafe": ["off", "on", "hold", "off", "off", "off", "off", "off"] }
 ```
 
@@ -485,13 +505,64 @@ All the keys of `local_io` are optional.
 
 Before the gateway loads the configuration, it keeps the `hold` outputs of the last valid configuration (saved in NVS). If the expander did not respond at the boot, the gateway tries again with a backoff. It sets all the DOs to OFF when the expander responds.
 
+### Pulse DOs
+
+```json
+"local_io": { "do_pulse_ms": [0, 0, 0, 500] }
+```
+
+Each item is 0 (a normal DO) or 50 to 60000 ms (a pulse DO). Use a pulse DO for a latching relay or a reset input.
+
+- A write of `true` sets the pulse DO on for its time. Then the gateway sets it off. The time does not depend on the network.
+- The NDATA gives `true`, and then a second NDATA gives `false`. If the pulse ends before the gateway sends the first NDATA, the gateway still sends `true` and then `false`.
+- A new write of `true` during the pulse starts the time again. A write of `false` ends the pulse immediately.
+- The writes come from an NCMD or from the Status tab of the web UI.
+- The safe state `on` and a local rule are not permitted for a pulse DO. The validation refuses them.
+- After the time of `failsafe_s` without a session, the safe state `off` ends a pulse. With `hold`, the pulse continues to its end.
+- A pulse does not continue after a restart. A pulse DO is OFF after a restart, also with `hold`.
+
 ### The pulse counters
 
-- Each DI counts its activations: a change from inactive to active, after the debounce. With a debounce of 20 ms, the maximum is approximately 25 Hz.
+- Each DI counts its activations: a change from inactive to active, after the inversion and the debounce. With a debounce of 20 ms, the maximum is approximately 25 Hz.
+- A fast counter counts its DI with a PCNT unit. Refer to [Fast counters](#fast-counters).
 - At the boot, the gateway restores the counters from the last save.
 - An orderly restart saves them first: NCMD Reboot, a new configuration, the `restart` of the shell or of the web UI.
 - A power cut, a panic or the watchdog loses the count since the last save.
 - An NCMD cannot write the counters. The factory reset sets them to 0.
+
+### Fast counters
+
+```json
+"local_io": { "fast_counters": [ { "di": 5, "glitch_ns": 1000 } ] }
+```
+
+| Key | Type | Default | Rule |
+|---|---|---|---|
+| `di` | integer | — | Necessary. 1 to 8. Each DI is in one item only |
+| `glitch_ns` | integer | `1000` | 0 to 12787. The PCNT unit ignores a pulse that is shorter than this time. 0 = no filter |
+
+- The ESP32-S3 has 4 PCNT units: up to 4 fast counters.
+- The PCNT unit counts the edges of the input to the active state, after the polarity of the board and the inversion. The glitch filter replaces the debounce for the count.
+- The metric `Counter/n` does not change. The state of the DI (`DI/n`) still uses the debounce.
+- The glitch filter counts the cycles of the 80 MHz APB clock, 1023 cycles at most (`PCNT_LL_MAX_GLITCH_WIDTH` of ESP-IDF v6.1). Thus the limit is 12787 ns.
+- The gateway reads the PCNT units at least each 250 ms. A unit counts up to 32767 before it goes back to 0. Thus the gateway loses no pulse up to approximately 130 kHz.
+- The input circuit of the board sets the real maximum frequency. It was not measured on the board yet (#126).
+- QEMU has no PCNT unit. The QEMU build counts the edges of the `di` command of the console, and the emulator-only command `pcnt <n> <count>` adds pulses.
+
+### Run hours
+
+```json
+"local_io": { "run_hours": ["DI/3", "DO/1"] }
+```
+
+Each item is `DI/1` to `DI/8` or `DO/1` to `DO/8`, one time only. The gateway counts the time in the on state of these channels.
+
+- The NBIRTH has the metric `Run Hours/DI/n` or `Run Hours/DO/n` (UInt64, seconds) for each channel of the list. Refer to [The Sparkplug messages and metrics](sparkplug-messages-and-metrics.md#local-io).
+- An NDATA gives a new value when the channel changes its state, and each 60 s while it stays on.
+- The Status tab of the web UI shows the run hours in hours, with one decimal.
+- The gateway saves the run hours with the pulse counters (`counter_save_s`). An NCMD cannot write them. The factory reset sets them to 0.
+- A channel that you remove from the list keeps its saved value. When you add it again, it continues from that value.
+- A DO that the expander does not read counts as off.
 
 ### Local rules
 
@@ -505,12 +576,12 @@ A local rule links a DI to a DO. The gateway calculates the rules itself, with o
 | Key | Type | Default | Rule |
 |---|---|---|---|
 | `di` | integer | — | Necessary. 1 to 8 |
-| `do` | integer | — | Necessary. 1 to 8. Each DO is in one rule only |
+| `do` | integer | — | Necessary. 1 to 8. Each DO is in one rule only. Not a pulse DO |
 | `mode` | `follow`, `invert` or `toggle` | `follow` | `follow`: DO = DI. `invert`: DO = not DI. `toggle`: each activation of the DI inverts the DO |
 
 - Up to 8 rules.
 - A DI change gets to the DO in a few milliseconds, plus the debounce.
-- The gateway refuses an NCMD for a DO with a rule. The log tells this, and the NDATA confirms the real state.
+- The gateway refuses an NCMD and a command of the Status tab for a DO with a rule. The log tells this, and the NDATA confirms the real state.
 - The safe state after a loss of MQTT does not change a DO with a rule.
 - At a restart, a DO with a rule starts as `off` or `hold`. `on` is not permitted for a DO with a rule. Then `follow` and `invert` take the value of their DI, and `toggle` starts from that state.
 
