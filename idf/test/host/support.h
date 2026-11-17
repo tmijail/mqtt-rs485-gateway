@@ -95,7 +95,7 @@ gw_node_ops_t recorder_ops(void);
 void recorder_clear(void);
 
 /* Decoded view of a recorded payload. */
-#define DEC_MAX 80
+#define DEC_MAX 128   /* the worst-case NBIRTH: labels, ota.mqtt, 16 template definitions and 16 run hours */
 typedef struct {
     char name[64];
     bool has_name;

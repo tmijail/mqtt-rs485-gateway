@@ -387,7 +387,8 @@ static void test_run_hours_metrics(void)
     gw_tagdb_set_run_hours(run, 500);
     gw_node_session_up(&node, 0);
     msg(0);
-    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS - 1 + 2, dec.count);   /* no Modbus TCP table */
+    /* no Modbus TCP table, no gateway labels (#206), no ota.mqtt (#223); + the 2 run hours */
+    TEST_ASSERT_EQUAL(BIRTH_NO_LABELS - 1 - GW_NODE_MQTT_OTA_METRICS + 2, dec.count);
     int i = decoded_find_name(&dec, "Run Hours/DI/3");
     TEST_ASSERT_TRUE(i >= 0);
     TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[i].datatype);
