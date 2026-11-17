@@ -1,4 +1,4 @@
-idf_component_register(SRCS "gw_storage.c" "gw_sfcard.c" "gw_coredump.c"
+idf_component_register(SRCS "gw_storage.c" "gw_sfcard.c" "gw_coredump.c" "gw_pemfile.c"
                        INCLUDE_DIRS "include"
                        REQUIRES gw_core
                        PRIV_REQUIRES esp_partition app_update nvs_flash vfs heap esp_hw_support mbedtls gw_bsp fatfs

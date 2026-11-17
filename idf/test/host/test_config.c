@@ -44,7 +44,8 @@ static void test_spec_example(void)
     TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(json, len, &cfg, &err), err.msg);
     TEST_ASSERT_TRUE(cfg.network.dhcp);
     TEST_ASSERT_EQUAL_UINT8_ARRAY(((uint8_t[]){192, 168, 1, 50}), cfg.network.ip, 4);
-    TEST_ASSERT_EQUAL_STRING("pool.ntp.org", cfg.ntp.server);
+    TEST_ASSERT_EQUAL_UINT8(1, cfg.ntp.server_count);
+    TEST_ASSERT_EQUAL_STRING("pool.ntp.org", cfg.ntp.servers[0]);
     TEST_ASSERT_EQUAL_STRING("192.168.1.10", cfg.mqtt.host);
     TEST_ASSERT_EQUAL(1883, cfg.mqtt.port);
     TEST_ASSERT_EQUAL_STRING("GW01", cfg.mqtt.client_id);  /* empty client_id -> edge_node_id */
@@ -57,7 +58,7 @@ static void test_spec_example(void)
     TEST_ASSERT_EQUAL(200, cfg.rs485.response_timeout_ms);
     TEST_ASSERT_EQUAL(2, cfg.rs485.retries);
     TEST_ASSERT_EQUAL(5, cfg.rs485.inter_frame_delay_ms);
-    TEST_ASSERT_EQUAL(20, cfg.local_io.di_debounce_ms);
+    TEST_ASSERT_EQUAL(20, cfg.local_io.di_debounce_ms[0]);
     TEST_ASSERT_EQUAL(1, cfg.device_count);
     TEST_ASSERT_EQUAL(3, cfg.tag_count);
     const gw_device_cfg_t *d = &cfg.devices[0];
@@ -109,7 +110,7 @@ static void test_defaults_and_static_ip(void)
     TEST_ASSERT_EQUAL_STRING("cid", cfg.mqtt.client_id);
     TEST_ASSERT_EQUAL(1883, cfg.mqtt.port);
     TEST_ASSERT_EQUAL(9600, cfg.rs485.baud);
-    TEST_ASSERT_EQUAL(20, cfg.local_io.di_debounce_ms);
+    TEST_ASSERT_EQUAL(20, cfg.local_io.di_debounce_ms[7]);
     TEST_ASSERT_EQUAL(0, cfg.device_count);
 }
 
@@ -285,7 +286,59 @@ static void test_syslog_section(void)
     ASSERT_REJECTED(parse(doc), "syslog.host: expected a string");
 }
 
-/* FW-1: "ota" section, optional; updates enabled by default. */
+/* #206: the optional section "gateway": a name and a location for people (kept: the NBIRTH
+ * and the status give them) and a comment (validated only). */
+static void test_gateway_section(void)
+{
+    static const char base[] = "\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                               "\"edge_node_id\":\"E\"}";
+    char doc[1024];
+    snprintf(doc, sizeof(doc), "{%s}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_STRING("", cfg.gateway.name);
+    TEST_ASSERT_EQUAL_STRING("", cfg.gateway.location);
+    snprintf(doc, sizeof(doc),
+             "{%s,\"gateway\":{\"name\":\"Pump panel 2\",\"location\":\"Plant 2, hall B\","
+             "\"comment\":\"Feeds the cooling towers 1 and 2. \\u00c4 ext. 214\"}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_STRING("Pump panel 2", cfg.gateway.name);
+    TEST_ASSERT_EQUAL_STRING("Plant 2, hall B", cfg.gateway.location);
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":{}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    /* 63 bytes for the name and the location, 255 for the comment */
+    char s63[64], s64[65], s255[256], s256[257];
+    memset(s63, 'n', 63);
+    s63[63] = '\0';
+    memset(s64, 'n', 64);
+    s64[64] = '\0';
+    memset(s255, 'c', 255);
+    s255[255] = '\0';
+    memset(s256, 'c', 256);
+    s256[256] = '\0';
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":{\"name\":\"%s\",\"location\":\"%s\","
+             "\"comment\":\"%s\"}}", base, s63, s63, s255);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":{\"name\":\"%s\"}}", base, s64);
+    ASSERT_REJECTED(parse(doc), "gateway.name: string too long (64 characters, maximum 63)");
+    TEST_ASSERT_EQUAL_STRING("gateway.name", err.path);
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":{\"location\":\"%s\"}}", base, s64);
+    ASSERT_REJECTED(parse(doc), "gateway.location: string too long");
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":{\"comment\":\"%s\"}}", base, s256);
+    ASSERT_REJECTED(parse(doc), "gateway.comment: string too long (256 characters, maximum 255)");
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":{\"name\":\"a\\tb\"}}", base);
+    ASSERT_REJECTED(parse(doc), "gateway.name: control characters are not allowed");
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":{\"location\":\"\xc3\"}}", base);
+    ASSERT_REJECTED(parse(doc), "gateway.location: not valid UTF-8");
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":{\"name\":7}}", base);
+    ASSERT_REJECTED(parse(doc), "gateway.name: expected a string");
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":{\"area\":\"x\"}}", base);
+    ASSERT_REJECTED(parse(doc), "gateway.area: unknown key");
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":\"GW\"}", base);
+    ASSERT_REJECTED(parse(doc), "gateway: expected a JSON object");
+}
+
+/* FW-1: "ota" section, optional. #223: updates from MQTT (ota.mqtt) are off by default, and the
+ * old key ota.enabled is unknown (dropped, no migration before v1.0). */
 static void test_ota_section(void)
 {
     static const char base[] = "\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
@@ -293,20 +346,22 @@ static void test_ota_section(void)
     char doc[512];
     snprintf(doc, sizeof(doc), "{%s}", base);
     TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
-    TEST_ASSERT_TRUE(cfg.ota.enabled);
+    TEST_ASSERT_FALSE(cfg.ota.mqtt);
     TEST_ASSERT_EQUAL_STRING("", cfg.ota.ca_file);
     snprintf(doc, sizeof(doc), "{%s,\"ota\":{}}", base);
     TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
-    TEST_ASSERT_TRUE(cfg.ota.enabled);
-    snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"enabled\":false,\"ca_file\":\"fw-ca.pem\"}}", base);
+    TEST_ASSERT_FALSE(cfg.ota.mqtt);
+    snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"mqtt\":true,\"ca_file\":\"fw-ca.pem\"}}", base);
     TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
-    TEST_ASSERT_FALSE(cfg.ota.enabled);
+    TEST_ASSERT_TRUE(cfg.ota.mqtt);
     TEST_ASSERT_EQUAL_STRING("fw-ca.pem", cfg.ota.ca_file);
     snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"ca_file\":\"../ca.pem\"}}", base);
     ASSERT_REJECTED(parse(doc), "ota.ca_file: '../ca.pem' is not a valid file name");
     TEST_ASSERT_EQUAL_STRING("ota.ca_file", err.path);
-    snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"enabled\":1}}", base);
-    ASSERT_REJECTED(parse(doc), "ota.enabled: expected true or false");
+    snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"mqtt\":1}}", base);
+    ASSERT_REJECTED(parse(doc), "ota.mqtt: expected true or false");
+    snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"enabled\":true}}", base);
+    ASSERT_REJECTED(parse(doc), "ota.enabled: unknown key");
     snprintf(doc, sizeof(doc), "{%s,\"ota\":{\"url\":\"https://x/y\"}}", base);
     ASSERT_REJECTED(parse(doc), "ota.url: unknown key");
     snprintf(doc, sizeof(doc), "{%s,\"ota\":true}", base);
@@ -769,6 +824,49 @@ static void test_eng_range(void)
                     "devices[0].tags[0].units");
 }
 
+/* #196: write_min / write_max of a writable numeric tag, in engineering units. */
+static void test_write_limits(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse_tag("{\"name\":\"a\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\","
+                  "\"scale\":0.1,\"writable\":true,\"write_min\":0,\"write_max\":150.5},"
+                  "{\"name\":\"b\",\"area\":\"holding\",\"address\":1,\"type\":\"int32\","
+                  "\"writable\":true,\"write_max\":-5},"
+                  "{\"name\":\"c\",\"area\":\"holding\",\"address\":3,\"type\":\"uint16\","
+                  "\"writable\":true,\"write_min\":7,\"write_max\":7}"),
+        err.msg);
+    TEST_ASSERT_TRUE(cfg.tags[0].has_write_min);
+    TEST_ASSERT_TRUE(cfg.tags[0].has_write_max);
+    TEST_ASSERT_EQUAL_DOUBLE(0, cfg.tags[0].write_min);
+    TEST_ASSERT_EQUAL_DOUBLE(150.5, cfg.tags[0].write_max);
+    TEST_ASSERT_FALSE(cfg.tags[1].has_write_min);
+    TEST_ASSERT_TRUE(cfg.tags[1].has_write_max);
+    TEST_ASSERT_EQUAL_DOUBLE(-5, cfg.tags[1].write_max);
+    TEST_ASSERT_TRUE(cfg.tags[2].has_write_min);   /* min == max: one value only */
+
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"int16\","
+                              "\"writable\":true,\"write_min\":1500,\"write_max\":100}"),
+                    "devices[0].tags[0].write_max: 100 is less than write_min (1500)");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"int16\","
+                              "\"writable\":true,\"write_min\":0.1,\"write_max\":0.05}"),
+                    "devices[0].tags[0].write_max: 0.05 is less than write_min (0.1)");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"int16\","
+                              "\"write_min\":0}"),
+                    "devices[0].tags[0].write_min: valid only with writable=true");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"coil\",\"address\":0,\"type\":\"bool\","
+                              "\"writable\":true,\"write_max\":1}"),
+                    "devices[0].tags[0].write_max: not accepted in bool tags");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"string\","
+                              "\"length\":2,\"writable\":true,\"write_min\":1}"),
+                    "devices[0].tags[0].write_min: not accepted in string tags");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bytes\","
+                              "\"length\":2,\"writable\":true,\"write_max\":1}"),
+                    "devices[0].tags[0].write_max: not accepted in bytes tags");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"int16\","
+                              "\"writable\":true,\"write_min\":\"0\"}"),
+                    "devices[0].tags[0].write_min: expected a number");
+}
+
 /* SPB-19: bytes tags are like strings without the text processing. */
 static void test_bytes_tags(void)
 {
@@ -1224,7 +1322,7 @@ static void test_device_block_reads(void)
                           "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
                           "\"block_reads\":false,\"max_gap\":3,\"tags\":[{\"name\":\"t\","
                           "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
-                    "devices[0].max_gap: has no effect with block_reads=false");
+                    "devices[0].max_gap: not permitted with block_reads=false");
     ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
                           "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
                           "\"max_gap\":2000,\"tags\":[{\"name\":\"t\","
@@ -1235,6 +1333,59 @@ static void test_device_block_reads(void)
                           "\"block_reads\":1,\"tags\":[{\"name\":\"t\","
                           "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
                     "devices[0].block_reads: expected true or false");
+    /* #197: write_multiple, the build's setting when absent */
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+              "\"devices\":[{\"name\":\"A\",\"unit_id\":1,\"write_multiple\":true,\"tags\":[{"
+              "\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]},"
+              "{\"name\":\"B\",\"unit_id\":2,\"write_multiple\":false,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]},"
+              "{\"name\":\"C\",\"unit_id\":3,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+        err.msg);
+    TEST_ASSERT_EQUAL(1, cfg.devices[0].write_multiple);
+    TEST_ASSERT_EQUAL(0, cfg.devices[1].write_multiple);
+    TEST_ASSERT_EQUAL(GW_CFG_BUILD_DEFAULT, cfg.devices[2].write_multiple);
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"write_multiple\":\"yes\",\"tags\":[{\"name\":\"t\","
+                          "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+                    "devices[0].write_multiple: expected true or false");
+}
+
+/* #214: devices[].enabled, default true. The validation examines a disabled device as any
+ * other: its keys, its tags and its name (unique, also against the enabled devices). */
+static void test_device_enabled(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+              "\"devices\":[{\"name\":\"A\",\"unit_id\":1,\"enabled\":false,\"tags\":[{"
+              "\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]},"
+              "{\"name\":\"B\",\"unit_id\":2,\"enabled\":true,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]},"
+              "{\"name\":\"C\",\"unit_id\":3,\"tags\":[{\"name\":\"t\","
+              "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+        err.msg);
+    TEST_ASSERT_FALSE(cfg.devices[0].enabled);
+    TEST_ASSERT_TRUE(cfg.devices[1].enabled);
+    TEST_ASSERT_TRUE(cfg.devices[2].enabled);
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"enabled\":0,\"tags\":[{\"name\":\"t\","
+                          "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]}"),
+                    "devices[0].enabled: expected true or false");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"enabled\":false,\"tags\":[{\"name\":\"t\","
+                          "\"area\":\"input\",\"address\":0,\"type\":\"uint16\",\"writable\":true}]}]}"),
+                    "devices[0].tags[0].writable: only the coil and holding areas");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"tags\":[{\"name\":\"t\",\"area\":\"holding\",\"address\":0,"
+                          "\"type\":\"uint16\"}]},{\"name\":\"A\",\"unit_id\":2,\"enabled\":false,"
+                          "\"tags\":[{\"name\":\"t\",\"area\":\"holding\",\"address\":0,"
+                          "\"type\":\"uint16\"}]}]}"),
+                    "devices[1].name: duplicate device name 'A'");
 }
 
 /* MB-12: scan classes. */
@@ -1309,6 +1460,74 @@ static void test_modbus_tcp_section(void)
     ASSERT_REJECTED(parse(doc), "modbus_tcp.enable: unknown key");
 }
 
+/* #216: the local unit of the Modbus TCP server (the DIs, the DOs and the counters). */
+static void test_modbus_tcp_local_unit(void)
+{
+    const char *base = "\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+                       "\"devices\":[{\"name\":\"Meter1\",\"unit_id\":1,\"tags\":[{\"name\":\"T\","
+                       "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]";
+    char doc[640];
+    snprintf(doc, sizeof(doc), "{%s}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL(0, cfg.modbus_tcp.local_unit_id);      /* off by default */
+    TEST_ASSERT_FALSE(cfg.modbus_tcp.local_writes);
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"local_unit_id\":100,\"local_writes\":true}}",
+             base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL(100, cfg.modbus_tcp.local_unit_id);
+    TEST_ASSERT_TRUE(cfg.modbus_tcp.local_writes);
+    /* local_writes stays valid with the unit off (the web UI keeps the control editable) */
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"local_unit_id\":0,\"local_writes\":true}}",
+             base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"local_unit_id\":1}}", base);
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.local_unit_id: unit 1 is the Unit ID of the device Meter1");
+    TEST_ASSERT_EQUAL_STRING("modbus_tcp.local_unit_id", err.path);
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"local_unit_id\":248}}", base);
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.local_unit_id: value 248 out of range");
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"local_writes\":1}}", base);
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.local_writes");
+}
+
+/* #201: ntp.servers, 1 to 3 names or addresses; the old key ntp.server is gone. */
+static void test_ntp_servers(void)
+{
+    const char *base = "\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}";
+    char doc[1024];
+    snprintf(doc, sizeof(doc), "{%s}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_UINT8(1, cfg.ntp.server_count);
+    TEST_ASSERT_EQUAL_STRING("pool.ntp.org", cfg.ntp.servers[0]);
+    snprintf(doc, sizeof(doc), "{%s,\"ntp\":{}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_STRING("pool.ntp.org", cfg.ntp.servers[0]);
+    snprintf(doc, sizeof(doc),
+             "{%s,\"ntp\":{\"servers\":[\"pool.ntp.org\",\"192.168.10.1\",\"fd00::1\"]}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_UINT8(3, cfg.ntp.server_count);
+    TEST_ASSERT_EQUAL_STRING("192.168.10.1", cfg.ntp.servers[1]);
+    TEST_ASSERT_EQUAL_STRING("fd00::1", cfg.ntp.servers[2]);
+    snprintf(doc, sizeof(doc), "{%s,\"ntp\":{\"servers\":[]}}", base);
+    ASSERT_REJECTED(parse(doc), "ntp.servers: 0 servers; expected 1 to 3");
+    snprintf(doc, sizeof(doc), "{%s,\"ntp\":{\"servers\":[\"a\",\"b\",\"c\",\"d\"]}}", base);
+    ASSERT_REJECTED(parse(doc), "ntp.servers: 4 servers; expected 1 to 3");
+    snprintf(doc, sizeof(doc), "{%s,\"ntp\":{\"servers\":[\"a\",\"\"]}}", base);
+    ASSERT_REJECTED(parse(doc), "ntp.servers[1]: cannot be empty");
+    TEST_ASSERT_EQUAL_STRING("ntp.servers[1]", err.path);
+    snprintf(doc, sizeof(doc), "{%s,\"ntp\":{\"servers\":[1]}}", base);
+    ASSERT_REJECTED(parse(doc), "ntp.servers[0]: expected a string");
+    snprintf(doc, sizeof(doc), "{%s,\"ntp\":{\"servers\":\"pool.ntp.org\"}}", base);
+    ASSERT_REJECTED(parse(doc), "ntp.servers: expected an array");
+    char host[200];
+    memset(host, 'a', 128);
+    host[128] = 0;
+    snprintf(doc, sizeof(doc), "{%s,\"ntp\":{\"servers\":[\"%s\"]}}", base, host);
+    ASSERT_REJECTED(parse(doc), "ntp.servers[0]: 128 bytes; the maximum is 127");
+    /* before v1.0 the old key is removed, with no migration */
+    snprintf(doc, sizeof(doc), "{%s,\"ntp\":{\"server\":\"pool.ntp.org\"}}", base);
+    ASSERT_REJECTED(parse(doc), "ntp.server: unknown key");
+}
+
 /* IO-3 (and the other optional local_io keys): defaults keep the MVP behaviour. */
 static void test_local_io_section(void)
 {
@@ -1322,7 +1541,7 @@ static void test_local_io_section(void)
         TEST_ASSERT_EQUAL(GW_DO_SAFE_OFF, cfg.local_io.do_failsafe[i]);
     }
     snprintf(doc, sizeof(doc),
-             "{%s,\"local_io\":{\"di_debounce_ms\":10,\"failsafe_s\":30,"
+             "{%s,\"local_io\":{\"failsafe_s\":30,"
              "\"do_failsafe\":[\"hold\",\"on\",\"off\",\"hold\"]}}", base);
     TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
     TEST_ASSERT_EQUAL(30, cfg.local_io.failsafe_s);
@@ -1402,6 +1621,106 @@ static void test_local_io_section(void)
     ASSERT_REJECTED(parse(doc), "local_io.rules[0].when: unknown key");
     snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"rules\":{}}}", base);
     ASSERT_REJECTED(parse(doc), "local_io.rules: expected an array");
+}
+
+/* #210 #211 #217 #218: the keys of each DI and DO */
+static void test_local_io_channels(void)
+{
+    const char *base = "\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}";
+    char doc[768];
+    snprintf(doc, sizeof(doc), "{%s}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    for (int i = 0; i < GW_LOCAL_IO_CHANNELS; i++) {
+        TEST_ASSERT_EQUAL(GW_DI_DEBOUNCE_DEF_MS, cfg.local_io.di_debounce_ms[i]);
+        TEST_ASSERT_EQUAL(0, cfg.local_io.do_pulse_ms[i]);
+    }
+    TEST_ASSERT_EQUAL_HEX8(0, cfg.local_io.di_invert);
+    TEST_ASSERT_EQUAL_HEX8(0, cfg.local_io.fast_mask);
+    TEST_ASSERT_EQUAL_HEX16(0, cfg.local_io.run_hours);
+    /* #211: invert and debounce for each DI; a missing entry or key takes the default */
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"di\":[{\"invert\":true},{},{\"debounce_ms\":0},"
+             "{\"invert\":false,\"debounce_ms\":1000}]}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_HEX8(0x01, cfg.local_io.di_invert);
+    TEST_ASSERT_EQUAL(20, cfg.local_io.di_debounce_ms[0]);
+    TEST_ASSERT_EQUAL(0, cfg.local_io.di_debounce_ms[2]);
+    TEST_ASSERT_EQUAL(1000, cfg.local_io.di_debounce_ms[3]);
+    TEST_ASSERT_EQUAL(20, cfg.local_io.di_debounce_ms[4]);
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"di\":[{},{\"debounce_ms\":1001}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.di[1].debounce_ms: value 1001 out of range [0, 1000]");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"di\":[{\"invert\":1}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.di[0].invert: expected true or false");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"di\":[{\"delay\":1}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.di[0].delay: unknown key");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"di\":[{},{},{},{},{},{},{},{},{}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.di: 9 entries; there are 8 inputs");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"di_debounce_ms\":20}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.di_debounce_ms: unknown key");   /* removed by #211 */
+
+    /* #210: pulse DOs */
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"do_pulse_ms\":[0,50,60000]}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL(0, cfg.local_io.do_pulse_ms[0]);
+    TEST_ASSERT_EQUAL(50, cfg.local_io.do_pulse_ms[1]);
+    TEST_ASSERT_EQUAL(60000, cfg.local_io.do_pulse_ms[2]);
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"do_pulse_ms\":[49]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_pulse_ms[0]: value 49: 0 (a normal DO) or 50 to 60000 ms");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"do_pulse_ms\":[0,60001]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_pulse_ms[1]: value 60001");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"do_pulse_ms\":[1.5]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_pulse_ms[0]: expected an integer");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"do_pulse_ms\":[0,0,0,0,0,0,0,0,0]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_pulse_ms: 9 entries; there are 8 outputs");
+    /* the safe state "on" and a local rule are refused on a pulse DO; "hold" and "off" are not */
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"do_failsafe\":[\"off\",\"off\",\"off\",\"on\"],"
+             "\"do_pulse_ms\":[0,0,0,500]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.do_failsafe[3]: not for a pulse DO. Use off or hold");
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"do_failsafe\":[\"hold\"],\"do_pulse_ms\":[500],"
+             "\"rules\":[{\"di\":1,\"do\":2},{\"di\":1,\"do\":1}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.rules[1]: DO/1 is a pulse DO (local_io.do_pulse_ms[0]): a "
+                                "local rule cannot drive it");
+
+    /* #218: fast counters with the PCNT */
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"fast_counters\":[{\"di\":5},{\"di\":6,\"glitch_ns\":0},"
+             "{\"di\":1,\"glitch_ns\":12787}]}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_HEX8(0x31, cfg.local_io.fast_mask);
+    TEST_ASSERT_EQUAL(GW_GLITCH_DEF_NS, cfg.local_io.glitch_ns[4]);
+    TEST_ASSERT_EQUAL(0, cfg.local_io.glitch_ns[5]);
+    TEST_ASSERT_EQUAL(12787, cfg.local_io.glitch_ns[0]);
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"fast_counters\":[{\"di\":1},{\"di\":2},{\"di\":3},"
+             "{\"di\":4},{\"di\":5}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.fast_counters: 5 entries; the maximum is 4 (PCNT units)");
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"fast_counters\":[{\"di\":2},{\"di\":2}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.fast_counters[1].di: DI/2 is already a fast counter");
+    snprintf(doc, sizeof(doc),
+             "{%s,\"local_io\":{\"fast_counters\":[{\"di\":2,\"glitch_ns\":12788}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.fast_counters[0].glitch_ns: value 12788 out of range [0, 12787]");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"fast_counters\":[{\"glitch_ns\":1}]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.fast_counters[0].di: missing required field");
+
+    /* #217: run hours */
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"run_hours\":[\"DI/3\",\"DO/1\",\"DO/8\"]}}",
+             base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_HEX16(0x8104, cfg.local_io.run_hours);
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"run_hours\":[\"DI/9\"]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.run_hours[0]: invalid value (expected DI/1 to DI/8 or DO/1 "
+                                "to DO/8)");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"run_hours\":[\"DO/10\"]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.run_hours[0]: invalid value");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"run_hours\":[3]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.run_hours[0]: invalid value");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"run_hours\":[\"DO/2\",\"DO/2\"]}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.run_hours[1]: duplicate channel DO/2");
+    snprintf(doc, sizeof(doc), "{%s,\"local_io\":{\"run_hours\":\"DI/1\"}}", base);
+    ASSERT_REJECTED(parse(doc), "local_io.run_hours: expected an array");
 }
 
 static void test_section_errors(void)
@@ -1529,7 +1848,7 @@ static void test_duplicate_keys_rejected(void)
 static size_t build_spec_maximum(char *doc, size_t cap)
 {
     int n = snprintf(doc, cap,
-                     "{\"network\":{\"dhcp\":true},\"ntp\":{\"server\":\"pool.ntp.org\"},"
+                     "{\"network\":{\"dhcp\":true},\"ntp\":{\"servers\":[\"pool.ntp.org\"]},"
                      "\"mqtt\":{\"host\":\"192.168.1.10\",\"port\":1883,\"client_id\":\"\","
                      "\"username\":\"\",\"password\":\"\",\"keepalive_s\":30},"
                      "\"sparkplug\":{\"group_id\":\"Plant1\",\"edge_node_id\":\"GW01\"},"
@@ -1599,6 +1918,7 @@ int main(void)
     RUN_TEST(test_ipv6_literals);
     RUN_TEST(test_ipv6_section);
     RUN_TEST(test_syslog_section);
+    RUN_TEST(test_gateway_section);
     RUN_TEST(test_tls_section);
     RUN_TEST(test_tls_client_certificate);
     RUN_TEST(test_backup_brokers);
@@ -1611,6 +1931,7 @@ int main(void)
     RUN_TEST(test_schema_rules);
     RUN_TEST(test_mb6_tags);
     RUN_TEST(test_eng_range);
+    RUN_TEST(test_write_limits);
     RUN_TEST(test_bytes_tags);
     RUN_TEST(test_device_types);
     RUN_TEST(test_utf8_sequences);
@@ -1620,10 +1941,14 @@ int main(void)
     RUN_TEST(test_lint_name_rules);
     RUN_TEST(test_lint_umh_preset);
     RUN_TEST(test_device_block_reads);
+    RUN_TEST(test_device_enabled);
     RUN_TEST(test_scan_classes);
     RUN_TEST(test_modbus_tcp_section);
+    RUN_TEST(test_modbus_tcp_local_unit);
+    RUN_TEST(test_ntp_servers);
     RUN_TEST(test_ota_section);
     RUN_TEST(test_local_io_section);
+    RUN_TEST(test_local_io_channels);
     RUN_TEST(test_section_errors);
     RUN_TEST(test_limits);
     RUN_TEST(test_syntax_errors_give_line_and_column);

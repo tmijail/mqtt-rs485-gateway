@@ -10,7 +10,7 @@ This procedure tells how a Sparkplug host writes a value to a Modbus device (DCM
 ## Before you start
 
 - The tag must have `"writable": true` in the configuration. Only `coil` and `holding` tags can be writable. Refer to [Add a Modbus device and its tags](add-a-modbus-device.md), step 4.
-- The device must be online: the host received its DBIRTH.
+- The device must be enabled and online: the host received its DBIRTH. A disabled device has no DBIRTH, and the gateway discards a DCMD for it.
 - The host must use the Sparkplug datatype of the DBIRTH. For example, an `int16` tag with `"scale": 0.1` is a Float in Sparkplug, not an Int16.
 
 ## The rules of a command
@@ -22,10 +22,32 @@ This procedure tells how a Sparkplug host writes a value to a Modbus device (DCM
 | The datatype is the datatype of the DBIRTH. A metric without a datatype uses the datatype of the DBIRTH | The gateway discards the command |
 | An integer or Boolean tag gets a value without a fraction | The gateway discards the command |
 | The value fits in the register after the inverse scale: `raw = (value − offset) / scale` | The gateway discards the command |
+| The value is in the write limits of the tag (Write min and Write max) | The gateway discards that metric. It writes the other metrics of the command |
 
 A command applies all its metrics or none. The log gives the reason of each discard. A write goes before the polls in the queue of the bus.
 
+The gateway writes one register with FC06 and one coil with FC05. A device with **Write with FC15/FC16** (`write_multiple`) gets FC16 and FC15. A value of two or more registers always goes with FC16.
+
 After the write, the gateway reads the register again, and publishes the value of the device in a DDATA. If this read fails, the gateway publishes the value that the device acknowledged.
+
+## Set the write limits of a tag
+
+Write limits stop a host that sends a value that the device must not get, for example a setpoint of 9999 to a drive that accepts 0 to 100.
+
+1. In the web UI, click the tab **Configuration**.
+2. In the card **Devices and tags**, click **More** in the row of the writable tag.
+3. Type **Write min**, **Write max**, or the two values. Use the units of the tag, after the scale and the offset. Empty = no limit on that side.
+4. Click **Validate**. Then click **Save and restart**.
+
+   ![The details row of the writable tag Setpoint of Meter1: Write min 0 and Write max 150. The explainer of Write min is open. It tells that the gateway refuses a DCMD with a lower value, does not write to the device and writes a warning to the log.](../images/tag-write-limits.png)
+
+The gateway refuses a DCMD metric with a value out of the limits:
+
+- It does not write to the device.
+- It writes a warning to the log, for example `DCMD: metric 'Setpoint' discarded: value 200 out of the write limits [0, 150]`.
+- It adds 1 to the counter of refused writes of the device. The shell command `devices` gives `writes refused <n>`, and `GET /api/status` gives `write_refused`.
+
+Sparkplug has no answer to a command, so the host sees no error. The next DDATA has the value of the device. The limits do not apply to Modbus TCP requests. For the rules, refer to [Write limits](../reference/configuration.md#write-limits).
 
 ## Write a value from a Sparkplug host
 
@@ -91,6 +113,8 @@ The gateway publishes the outputs as the node metrics `DO/1` to `DO/8` (Boolean)
 
 - An output that a local rule controls does not accept the NCMD. Refer to [Local rules](../reference/configuration.md#local-rules).
 - Without a Sparkplug session for `local_io.failsafe_s`, the outputs go to their safe state. Refer to [The safe state of the DOs](../reference/configuration.md#the-safe-state-of-the-dos).
+- `true` on a pulse DO starts its pulse. The NDATA gives `true`, and then `false` after the pulse. Refer to [Pulse DOs](../reference/configuration.md#pulse-dos).
+- Without a host, you can set an output from the Status tab of the web UI. Refer to [Set up the local inputs and outputs](set-up-the-local-io.md#set-a-do-from-the-status-tab).
 
 ## Other commands of the node
 
@@ -99,13 +123,16 @@ The gateway publishes the outputs as the node metrics `DO/1` to `DO/8` (Boolean)
 | `Node Control/Rebirth` | Boolean `true` | Sends the NBIRTH and all the DBIRTHs again. The web UI button **Rebirth** does the same |
 | `Node Control/Reboot` | Boolean `true` | Orderly restart |
 | `Node Control/Scan Rate` | UInt32, ms | Sets one poll interval for all devices (50 to 3 600 000). 0 = each device uses its own poll interval |
-| `Node Control/Firmware Update` | String, an `https://` URL | Refer to [Update the firmware](update-the-firmware.md) |
+| `Node Control/Firmware Update` | String, an `https://` URL | Only with `ota.mqtt: true`. Refer to [Update the firmware](update-the-firmware.md) |
+| `Node Control/Firmware SHA-256` | String, 64 hexadecimal characters | Only with `ota.mqtt: true`. The SHA-256 of the image for the next update. Refer to [Update the firmware](update-the-firmware.md) |
 | `Node Control/Boot Other Slot` | Boolean `true` | Refer to [Update the firmware](update-the-firmware.md) |
 
 ## If the value does not change
 
 1. Read the log of the gateway (console or syslog). Find the reason of the discard.
 2. Make sure that the datatype of the command is the datatype of the DBIRTH.
-3. Make sure that the tag is writable, and that the device is online.
-4. Do a test read of the register. Refer to [Add a Modbus device and its tags](add-a-modbus-device.md), step 2.
-5. If the device answers with a Modbus exception, read the data sheet of the device. Some registers are writable only in a special mode of the device.
+3. Make sure that the tag is writable, and that the device is enabled and online.
+4. Make sure that the value is in the write limits of the tag (Write min, Write max). The log then gives `out of the write limits`.
+5. Do a test read of the register. Refer to [Add a Modbus device and its tags](add-a-modbus-device.md), step 2.
+6. If the device answers with a Modbus exception, read the data sheet of the device. Some registers are writable only in a special mode of the device.
+7. If the device answers with exception 1 (illegal function) to FC06 or FC05, set **Write with FC15/FC16** in the panel **More device settings** of the device.

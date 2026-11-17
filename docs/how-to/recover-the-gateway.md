@@ -43,6 +43,8 @@ After 3 crashes in sequence, the gateway starts in safe mode. Safe mode is recov
 
 Safe mode ends after 60 min with a restart. A restart from the web UI or a power cycle also ends it.
 
+You can also start safe mode on request, for example to update the firmware with the polling stopped. Refer to [Restart into safe mode or do a factory reset](restart-into-safe-mode-or-reset.md).
+
 ## The gateway has no configuration
 
 After a factory reset, the gateway is in commissioning mode. It has no configuration, no web password and a new commissioning password.
@@ -72,6 +74,8 @@ Do a factory reset. A factory reset erases the configuration and all the secrets
 
 > **Caution: Back up the configuration first, if you can.** The factory reset erases the configuration, the secrets, the web certificate and the commissioning password.
 
+This procedure uses the BOOT button at the panel. To do the factory reset from a distance, use the web UI, the REST API or the shell. Refer to [Restart into safe mode or do a factory reset](restart-into-safe-mode-or-reset.md#do-a-factory-reset).
+
 1. Make sure that the gateway completed its boot.
 2. Push the BOOT button, and hold it.
 3. At 2 s, the LED blinks white. Continue to hold the button.
@@ -96,6 +100,21 @@ Do not push BOOT when you connect the power. GPIO0 is a strapping pin: the ROM t
 3. Make sure that the gateway can reach the broker: type `ping <broker address>` in the shell.
 4. With TLS, make sure that the clock is valid and that the CA of the broker is correct.
 5. With `sparkplug.primary_host_id`, make sure that the primary host is online. The gateway sends no NBIRTH until the host publishes its STATE `online`.
+
+## The web interface is off
+
+With `web.enabled: false`, the gateway starts no web server in normal mode. MQTT, Modbus and the other services continue. The BOOT button starts the web server again until the next restart.
+
+1. Push the BOOT button of the gateway for 2 to 10 s, until you hear 1 beep. Release the button.
+2. Make sure that the LED blinks white during the push. The web server and the access point start.
+3. Open the web UI on the plant network, or on the access point. Refer to [Get on the access point on a later visit](get-on-the-access-point.md).
+4. In the Configuration tab, go to the card **Web interface**.
+5. Turn on **Enabled**.
+6. Click **Save and restart**.
+
+After the restart, the web server starts at each boot. Without step 5, the web server stops again at the next restart.
+
+You can also set `"enabled": true` in `web` with the USB console. The steps are the same as in [With the USB console](#with-the-usb-console): `config show`, change the document, then `config load`.
 
 ## The web UI is not available in any mode
 

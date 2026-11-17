@@ -42,7 +42,8 @@ foreach(t test_mb_rtu test_mb_master test_conv test_logic test_config test_plan 
           test_poll test_dout test_netsel test_syslog test_auth test_cfgdoc test_button
           test_brokersel test_phost test_sf test_authlimit test_mbap test_localio test_buzz test_rtc
           test_ota test_nvsraw test_cardfmt test_sfcfg test_mbdiag test_cdump test_claim
-          test_cfgschema test_bootloop test_fwlast test_lkgnet test_cfgprev test_wpa test_aplife)
+          test_cfgschema test_bootloop test_fwlast test_lkgnet test_cfgprev test_wpa test_aplife
+          test_ident test_logring test_mblocal test_wifiown)
     add_executable(${t} ${t}.c support.c)
     target_link_libraries(${t} PRIVATE gw_core unity)
     target_include_directories(${t} PRIVATE ${CMAKE_CURRENT_LIST_DIR})
@@ -81,7 +82,7 @@ add_test(NAME sfcfg_guard
                  -I${cjson_SOURCE_DIR} -I${IDF_PROJECT_DIR}/components/nanopb
                  ${IDF_PROJECT_DIR}/components/gw_core/src/gw_sfcfg.c)
 set_tests_properties(sfcfg_guard PROPERTIES
-                     PASS_REGULAR_EXPRESSION "error: missing initializer for field .eng_high.")
+                     PASS_REGULAR_EXPRESSION "error: missing initializer for field .write_max.")
 
 # Writes representative Sparkplug payloads for the interoperability check
 # (tools/spb_decode.py, decoded with the official proto and Python protobuf).

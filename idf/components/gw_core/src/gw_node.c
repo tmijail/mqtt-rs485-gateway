@@ -7,6 +7,7 @@
 
 #include "gw_conv.h"
 #include "gw_mbap.h"
+#include "gw_ota.h"
 #include "gw_port.h"
 
 static const char *TAG = "spb";
@@ -20,6 +21,12 @@ static const char *const k_do_names[GW_NODE_IO_COUNT] = {"DO/1", "DO/2", "DO/3",
 static const char *const k_count_names[GW_NODE_IO_COUNT] = {
     "Counter/1", "Counter/2", "Counter/3", "Counter/4",
     "Counter/5", "Counter/6", "Counter/7", "Counter/8"};
+/* #217: DI/1..8, then DO/1..8 (alias GW_ALIAS_RUN_HOURS_BASE + index) */
+static const char *const k_run_names[GW_RUN_HOURS_CHANNELS] = {
+    "Run Hours/DI/1", "Run Hours/DI/2", "Run Hours/DI/3", "Run Hours/DI/4",
+    "Run Hours/DI/5", "Run Hours/DI/6", "Run Hours/DI/7", "Run Hours/DI/8",
+    "Run Hours/DO/1", "Run Hours/DO/2", "Run Hours/DO/3", "Run Hours/DO/4",
+    "Run Hours/DO/5", "Run Hours/DO/6", "Run Hours/DO/7", "Run Hours/DO/8"};
 #define NAME_BDSEQ    "bdSeq"
 #define NAME_REBIRTH  "Node Control/Rebirth"
 #define NAME_REBOOT   "Node Control/Reboot"
@@ -31,6 +38,7 @@ static const char *const k_count_names[GW_NODE_IO_COUNT] = {
 #define NAME_FW_STATE "Firmware Update/State"
 #define NAME_FW_PROGRESS "Firmware Update/Progress"
 #define NAME_BOOT_OTHER "Node Control/Boot Other Slot"
+#define NAME_FW_SHA256 "Node Control/Firmware SHA-256"
 #define NAME_UPTIME   "Node Info/Uptime"
 #define NAME_FREE_HEAP "Node Info/Free Heap"
 #define NAME_MIN_HEAP "Node Info/Min Free Heap"
@@ -39,6 +47,11 @@ static const char *const k_count_names[GW_NODE_IO_COUNT] = {
 #define NAME_TIME_SYNCED "Node Info/Time Synced"
 #define NAME_MODBUS_TCP "Node Info/Modbus TCP"
 #define NAME_CORE_DUMP "Node Info/Core Dump"
+#define NAME_NAME     "Node Info/Name"       /* #206 */
+#define NAME_LOCATION "Node Info/Location"
+#define NAME_LARGEST_BLOCK "Node Info/Largest Free Block"   /* #212 */
+#define NAME_FREE_PSRAM "Node Info/Free PSRAM"
+#define NAME_TEMPERATURE "Node Info/Temperature"
 
 /* Issue #81: "Node Info/Modbus TCP", the Modbus TCP gateway's forwarded requests per device
  * (gw_dev_stats_t.tcp, #69) and a last row for units with no device. A table of its own rather
@@ -453,6 +466,20 @@ static size_t diag_metrics(gw_node_t *n, size_t i, uint64_t now, bool birth, boo
         dg.free_heap;
     metric(n, k++, birth ? NAME_MIN_HEAP : NULL, GW_ALIAS_MIN_HEAP, SPB_DT_UINT32, now)->v.num =
         dg.min_free_heap;
+    /* #212: the health of the gateway. In the NBIRTH with name, alias and datatype, so that the
+     * diagnostics NDATA can give the alias only (tck-id-topics-nbirth-metrics,
+     * tck-id-payloads-alias-birth-requirement, tck-id-payloads-name-birth-data-requirement,
+     * tck-id-payloads-metric-datatype-req, tck-id-payloads-metric-datatype-not-req; the aliases
+     * are this metric's alone: tck-id-payloads-alias-uniqueness). The temperature is null
+     * without a reading of the sensor (QEMU has none). */
+    metric(n, k++, birth ? NAME_LARGEST_BLOCK : NULL, GW_ALIAS_LARGEST_BLOCK, SPB_DT_UINT32,
+           now)->v.num = dg.largest_block;
+    metric(n, k++, birth ? NAME_FREE_PSRAM : NULL, GW_ALIAS_FREE_PSRAM, SPB_DT_UINT32, now)
+        ->v.num = dg.free_psram;
+    spb_metric_t *temp = metric(n, k++, birth ? NAME_TEMPERATURE : NULL, GW_ALIAS_TEMPERATURE,
+                                SPB_DT_FLOAT, now);
+    temp->v.num = dg.temp_valid ? dg.temp_c : 0.0;
+    temp->is_null = !dg.temp_valid;
     if (birth) {
         n->has_rssi = dg.has_rssi;
     }
@@ -589,7 +616,23 @@ static bool publish_nbirth(gw_node_t *n)
         n->info.reset_reason;
     metric(n, i++, NAME_SCAN_RATE, GW_ALIAS_SCAN_RATE, SPB_DT_UINT32, now)->v.num =
         n->scan_rate_ms;
-    metric(n, i++, NAME_FW_UPDATE, GW_ALIAS_FW_UPDATE, SPB_DT_STRING, now)->v.str = "";
+    /* #206: the name and the location of gateway.*, for people. Static: only in the NBIRTH
+     * (tck-id-topics-nbirth-metrics), and only when set. */
+    if (n->cfg->gateway.name[0] != '\0') {
+        metric(n, i++, NAME_NAME, GW_ALIAS_NAME, SPB_DT_STRING, now)->v.str = n->cfg->gateway.name;
+    }
+    if (n->cfg->gateway.location[0] != '\0') {
+        metric(n, i++, NAME_LOCATION, GW_ALIAS_LOCATION, SPB_DT_STRING, now)->v.str =
+            n->cfg->gateway.location;
+    }
+    if (n->cfg->ota.mqtt) {
+        /* #223, #215: only with ota.mqtt can a host start an update. Without it the gateway never
+         * accepts these metrics, so they are not in the NBIRTH (tck-id-topics-nbirth-metric-reqs:
+         * every metric that the node reports on; tck-id-topics-nbirth-metrics: name, datatype and
+         * value; a host shows no control that the gateway refuses) */
+        metric(n, i++, NAME_FW_UPDATE, GW_ALIAS_FW_UPDATE, SPB_DT_STRING, now)->v.str = "";
+        metric(n, i++, NAME_FW_SHA256, GW_ALIAS_FW_SHA256, SPB_DT_STRING, now)->v.str = "";
+    }
     metric(n, i++, NAME_FW_STATE, GW_ALIAS_FW_STATE, SPB_DT_STRING, now)->v.str = n->fw_state;
     metric(n, i++, NAME_FW_PROGRESS, GW_ALIAS_FW_PROGRESS, SPB_DT_UINT32, now)->v.num =
         n->fw_progress;
@@ -608,13 +651,27 @@ static bool publish_nbirth(gw_node_t *n)
     }
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         metric(n, i++, k_count_names[k], GW_ALIAS_COUNT_BASE + k, SPB_DT_UINT64,
-               live_ts(n, io.di_ts_ms))
+               live_ts(n, io.count_ts_ms))
             ->v.u64 = io.count[k];
     }
+    /* #217: tck-id-topics-nbirth-metric-reqs: the NBIRTH has each run hours metric that the
+     * node will report (the channels of local_io.run_hours), with its name, alias, datatype
+     * and value (tck-id-topics-nbirth-metrics, tck-id-payloads-alias-birth-requirement); the
+     * aliases follow the last tag alias (tck-id-payloads-alias-uniqueness) */
+    for (uint8_t k = 0; k < GW_RUN_HOURS_CHANNELS; k++) {
+        if (n->cfg->local_io.run_hours & (1u << k)) {
+            metric(n, i++, k_run_names[k], GW_ALIAS_RUN_HOURS_BASE + k, SPB_DT_UINT64,
+                   live_ts(n, io.run_ts_ms))
+                ->v.u64 = io.run_s[k];
+        }
+    }
     memcpy(n->count_reported, io.count, sizeof(n->count_reported));
+    memcpy(n->run_reported, io.run_s, sizeof(n->run_reported));
     n->di_reported = io.di;
     n->do_reported = io.dout;
     n->do_unknown_reported = io.do_unknown;
+    uint64_t rise_ts;
+    (void)gw_tagdb_take_do_rise(&rise_ts);   /* #210: the NBIRTH has the current states */
     n->diag_hash = mb_snapshot(n);
     i += diag_metrics(n, i, now, true, true);
     if (n->ops.diagnostics != NULL) {   /* TIME-3 */
@@ -801,7 +858,9 @@ bool gw_node_rebirth(gw_node_t *n)
         bool online;
         n->dev_born[dev] = false;
         gw_tagdb_get_device(n->cfg, dev, n->vals, &online);
-        if (online) {
+        /* #214: a disabled device is never polled, so never online; a guard. Its DBIRTH is not
+         * "applicable" (tck-id-operational-behavior-data-commands-rebirth-action-2) */
+        if (online && n->cfg->devices[dev].enabled) {
             publish_dbirth(n, dev);
         }
     }
@@ -894,8 +953,8 @@ static void store_device(gw_node_t *n, uint16_t dev)
 
 void gw_node_device_changed(gw_node_t *n, uint16_t dev)
 {
-    if (dev >= n->cfg->device_count) {
-        return;
+    if (dev >= n->cfg->device_count || !n->cfg->devices[dev].enabled) {
+        return;   /* #214: a disabled device has no DBIRTH, DDATA or DDEATH (a guard) */
     }
     if (!n->online) {
         if (n->sf != NULL && n->born_once && n->time_valid) {
@@ -935,6 +994,14 @@ void gw_node_device_changed(gw_node_t *n, uint16_t dev)
     }
 }
 
+/* #210: the DOs that went on and off again since the last NDATA (a pulse shorter than the
+ * time to the NDATA): their true is not lost. */
+static uint8_t missed_pulses(const gw_node_t *n, const gw_local_io_t *io, uint64_t *ts)
+{
+    uint8_t rise = gw_tagdb_take_do_rise(ts);
+    return io->do_unknown ? 0 : (uint8_t)(rise & ~io->dout & ~n->do_reported);
+}
+
 static void publish_io(gw_node_t *n, uint8_t force_do)
 {
     if (!n->time_valid) {
@@ -942,6 +1009,22 @@ static void publish_io(gw_node_t *n, uint8_t force_do)
     }
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
+    uint64_t rise_ts;
+    uint8_t missed = missed_pulses(n, &io, &rise_ts);
+    if (missed != 0) {
+        /* #210: tck-id-topics-ndata-payload: the NDATA has each metric that changed. A pulse DO
+         * that went on and off before this NDATA gives true in one NDATA and false in the next
+         * one (one value per metric in a message) */
+        size_t c = 0;
+        for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
+            if (missed & (1u << k)) {
+                metric(n, c++, NULL, GW_ALIAS_DO_BASE + k, SPB_DT_BOOLEAN, live_ts(n, rise_ts))
+                    ->v.num = 1;
+            }
+        }
+        publish(n, "NDATA", NULL, c, 0);
+        n->do_reported |= missed;
+    }
     uint8_t di_changed = io.di ^ n->di_reported;
     uint8_t do_changed = (uint8_t)((io.dout ^ n->do_reported) | force_do);
     bool do_quality = io.do_unknown != n->do_unknown_reported;
@@ -970,11 +1053,21 @@ static void publish_io(gw_node_t *n, uint8_t force_do)
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {   /* IO-4: with the DI change that made it */
         if (io.count[k] != n->count_reported[k]) {
             metric(n, count++, NULL, GW_ALIAS_COUNT_BASE + k, SPB_DT_UINT64,
-                   live_ts(n, io.di_ts_ms))
+                   live_ts(n, io.count_ts_ms))
                 ->v.u64 = io.count[k];
         }
     }
+    /* #217: tck-id-topics-ndata-payload: a run hours value that changed (gw_lio_rh_tick: at a
+     * change of state, and every 60 s while on) */
+    for (uint8_t k = 0; k < GW_RUN_HOURS_CHANNELS; k++) {
+        if ((n->cfg->local_io.run_hours & (1u << k)) && io.run_s[k] != n->run_reported[k]) {
+            metric(n, count++, NULL, GW_ALIAS_RUN_HOURS_BASE + k, SPB_DT_UINT64,
+                   live_ts(n, io.run_ts_ms))
+                ->v.u64 = io.run_s[k];
+        }
+    }
     memcpy(n->count_reported, io.count, sizeof(n->count_reported));
+    memcpy(n->run_reported, io.run_s, sizeof(n->run_reported));
     n->di_reported = io.di;
     n->do_reported = io.dout;
     n->do_unknown_reported = io.do_unknown;
@@ -988,13 +1081,32 @@ static void store_io(gw_node_t *n)
 {
     gw_local_io_t io;
     gw_tagdb_get_io(&io);
+    uint64_t rise_ts;
+    uint8_t missed = missed_pulses(n, &io, &rise_ts);
+    if (missed != 0) {
+        /* #210: the true of a short pulse first, as publish_io does */
+        gw_sf_begin(n->sf);
+        for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
+            if (missed & (1u << k)) {
+                gw_sf_push(n->sf, GW_SF_NODE, (uint16_t)(GW_ALIAS_DO_BASE + k), 1, false,
+                           sample_ts(n, rise_ts));
+            }
+        }
+        n->do_reported |= missed;
+    }
     uint8_t di_changed = io.di ^ n->di_reported;
     uint8_t do_changed = io.dout ^ n->do_reported;
     if (io.do_unknown != n->do_unknown_reported) {
         do_changed = 0xFF;
     }
     bool counts = memcmp(io.count, n->count_reported, sizeof(io.count)) != 0;
-    if ((di_changed | do_changed) == 0 && !counts) {
+    uint16_t runs = 0;
+    for (uint8_t k = 0; k < GW_RUN_HOURS_CHANNELS; k++) {
+        if ((n->cfg->local_io.run_hours & (1u << k)) && io.run_s[k] != n->run_reported[k]) {
+            runs |= (uint16_t)(1u << k);
+        }
+    }
+    if ((di_changed | do_changed) == 0 && !counts && runs == 0) {
         return;
     }
     gw_sf_begin(n->sf);
@@ -1013,13 +1125,20 @@ static void store_io(gw_node_t *n)
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {   /* IO-4 pulse counters, UInt64 */
         if (io.count[k] != n->count_reported[k]) {
             gw_sf_push_u64(n->sf, GW_SF_NODE, (uint16_t)(GW_ALIAS_COUNT_BASE + k), io.count[k],
-                           false, sample_ts(n, io.di_ts_ms));
+                           false, sample_ts(n, io.count_ts_ms));
+        }
+    }
+    for (uint8_t k = 0; k < GW_RUN_HOURS_CHANNELS; k++) {   /* #217 run hours, UInt64 */
+        if (runs & (1u << k)) {
+            gw_sf_push_u64(n->sf, GW_SF_NODE, (uint16_t)(GW_ALIAS_RUN_HOURS_BASE + k), io.run_s[k],
+                           false, sample_ts(n, io.run_ts_ms));
         }
     }
     n->di_reported = io.di;
     n->do_reported = io.dout;
     n->do_unknown_reported = io.do_unknown;
     memcpy(n->count_reported, io.count, sizeof(n->count_reported));
+    memcpy(n->run_reported, io.run_s, sizeof(n->run_reported));
 }
 
 void gw_node_io_changed(gw_node_t *n)
@@ -1068,8 +1187,10 @@ size_t gw_node_flush_history(gw_node_t *n, size_t max_msgs)
                 continue;
             }
             const gw_tag_cfg_t *t = node ? NULL : &n->cfg->tags[r->metric];
-            bool counter = node && r->metric >= GW_ALIAS_COUNT_BASE &&
-                           r->metric < GW_ALIAS_COUNT_BASE + GW_NODE_IO_COUNT;
+            bool counter = node && ((r->metric >= GW_ALIAS_COUNT_BASE &&
+                                     r->metric < GW_ALIAS_COUNT_BASE + GW_NODE_IO_COUNT) ||
+                                    (r->metric >= GW_ALIAS_RUN_HOURS_BASE &&
+                                     r->metric < GW_ALIAS_RUN_HOURS_BASE + GW_RUN_HOURS_CHANNELS));
             uint32_t dt = counter ? SPB_DT_UINT64 : node ? SPB_DT_BOOLEAN : gw_conv_datatype(t);
             spb_metric_t *m = metric(n, base + nm, base ? t->name : NULL,
                                      node ? r->metric : GW_ALIAS_TAG_BASE + r->metric, dt, r->ts_ms);
@@ -1178,15 +1299,46 @@ static bool on_ncmd_metric(void *ctx, const spb_rx_metric_t *m)
         n->cmd_reboot |= rx_true(m);
         return true;
     }
-    if (by_name ? strcmp(m->name, NAME_FW_UPDATE) == 0 : m->alias == GW_ALIAS_FW_UPDATE) {
-        /* FW-1: the payload decoded in full before this pass: the URL is complete */
+    bool fw_url = by_name ? strcmp(m->name, NAME_FW_UPDATE) == 0 : m->alias == GW_ALIAS_FW_UPDATE;
+    bool fw_sha = by_name ? strcmp(m->name, NAME_FW_SHA256) == 0 : m->alias == GW_ALIAS_FW_SHA256;
+    if ((fw_url || fw_sha) && !n->cfg->ota.mqtt) {
+        /* #223: with ota.mqtt off these metrics are not in the NBIRTH, and the gateway refuses
+         * them (tck-id-operational-behavior-data-commands-ncmd-metric-name: a host SHOULD send
+         * only NBIRTH metrics, and the Edge Node is resilient to the others) */
+        log_discard("NCMD", m, "firmware updates from MQTT are off (ota.mqtt); no update started");
+        return true;
+    }
+    if (fw_sha) {
+        /* #215 (tck-id-operational-behavior-data-commands-ncmd-metric-value: a String). "" = no
+         * check for the next update */
+        uint8_t sha[GW_OTA_SHA256_LEN];
+        char why[96];
+        if (m->is_null || m->kind != SPB_VAL_STRING) {
+            log_discard("NCMD", m, "Firmware SHA-256 needs a string");
+            n->cmd_fw_sha_bad = true;
+        } else if (n->ops.firmware_sha256 == NULL) {
+            log_discard("NCMD", m, "firmware updates not supported");
+        } else if (m->v.s[0] == '\0') {
+            GW_LOGI(TAG, "NCMD Firmware SHA-256 cleared: the next update has no SHA-256 check");
+            n->ops.firmware_sha256(n->ops.ctx, NULL);
+        } else if (!gw_ota_sha256_parse(m->v.s, sha, why, sizeof(why))) {
+            log_discard("NCMD", m, why);
+            n->cmd_fw_sha_bad = true;
+        } else {
+            GW_LOGI(TAG, "NCMD Firmware SHA-256 set for the next update");
+            n->ops.firmware_sha256(n->ops.ctx, sha);
+        }
+        return true;
+    }
+    if (fw_url) {
+        /* FW-1: started after this pass (gw_node_handle_message), so that a Firmware SHA-256
+         * later in the same NCMD applies to it (#215) */
         if (m->is_null || m->kind != SPB_VAL_STRING || m->v.s[0] == '\0') {
             log_discard("NCMD", m, "Firmware Update needs the image URL as a string");
         } else if (n->ops.firmware_update == NULL) {
             log_discard("NCMD", m, "firmware updates not supported");
         } else {
-            GW_LOGW(TAG, "NCMD Firmware Update from %s", m->v.s);
-            n->ops.firmware_update(n->ops.ctx, m->v.s);
+            n->cmd_fw_update = true;
         }
         return true;
     }
@@ -1219,6 +1371,20 @@ static bool on_ncmd_metric(void *ctx, const spb_rx_metric_t *m)
         log_discard("NCMD", m, "neither name nor alias");
     } else {
         log_discard("NCMD", m, "unknown or read-only metric");
+    }
+    return true;
+}
+
+/* #215: the third pass of an NCMD with a valid Firmware Update: start the first one. */
+static bool on_ncmd_fw_url(void *ctx, const spb_rx_metric_t *m)
+{
+    gw_node_t *n = ctx;
+    bool url = m->name != NULL ? strcmp(m->name, NAME_FW_UPDATE) == 0
+                               : m->alias == GW_ALIAS_FW_UPDATE;
+    if (n->cmd_fw_update && url && !m->is_null && m->kind == SPB_VAL_STRING && m->v.s[0] != '\0') {
+        n->cmd_fw_update = false;
+        GW_LOGW(TAG, "NCMD Firmware Update from %s", m->v.s);
+        n->ops.firmware_update(n->ops.ctx, m->v.s);
     }
     return true;
 }
@@ -1383,6 +1549,29 @@ static bool dcmd_resolve(const gw_node_t *n, const spb_rx_metric_t *m, bool quie
         }
         return false;
     }
+    /* #196: the write limits of the tag. A value outside them is not written. Sparkplug has no
+     * answer to a command: the host sees the value of the device in the next DDATA. The host
+     * MUST send a compatible value (tck-id-operational-behavior-data-commands-dcmd-metric-value);
+     * the gateway is strict and refuses a value that the operator excluded, as it refuses a
+     * datatype that is not the one of the DBIRTH (SPB-10, #163). */
+    if (!gw_conv_in_write_limits(t, value)) {
+        if (!quiet) {
+            char text[48], lo[24] = "-", hi[24] = "-";
+            gw_conv_format(t, value, text, sizeof(text));
+            if (t->has_write_min) {
+                snprintf(lo, sizeof(lo), "%.9g", t->write_min);
+            }
+            if (t->has_write_max) {
+                snprintf(hi, sizeof(hi), "%.9g", t->write_max);
+            }
+            char reason[160];
+            snprintf(reason, sizeof(reason), "value %s out of the write limits [%s, %s]", text,
+                     lo, hi);
+            log_discard("DCMD", m, reason);
+            gw_tagdb_count_refused((uint16_t)n->cmd_dev);
+        }
+        return false;
+    }
     *tag_out = tag;
     return true;
 }
@@ -1437,6 +1626,7 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
         n->cmd_rebirth = n->cmd_reboot = false;
         n->cmd_do_mask = 0;
         n->cmd_scan_rate = false;
+        n->cmd_fw_update = n->cmd_fw_sha_bad = false;
         /* All or nothing: decode the whole payload first, then apply it. */
         if (!spb_decode(payload, len, NULL, NULL, NULL)) {
             GW_LOGW(TAG, "NCMD: undecodable payload (%u bytes: %s; strings up to %d characters, names up "
@@ -1445,6 +1635,13 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
             return;
         }
         spb_decode(payload, len, NULL, on_ncmd_metric, n);
+        if (n->cmd_fw_update && n->cmd_fw_sha_bad) {
+            n->cmd_fw_update = false;
+            GW_LOGW(TAG, "NCMD Firmware Update not started: the Firmware SHA-256 of the same NCMD "
+                         "is not valid");
+        } else if (n->cmd_fw_update) {
+            spb_decode(payload, len, NULL, on_ncmd_fw_url, n);   /* #215: the URL, after the SHA */
+        }
         if (n->cmd_do_mask) {
             publish_io(n, n->cmd_do_mask);
         }
@@ -1481,6 +1678,12 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
         int dev = gw_config_find_device(n->cfg, q, (size_t)(end - q));
         if (dev < 0) {
             GW_LOGW(TAG, "DCMD for unknown device '%.*s'", (int)(end - q), q);
+            return;
+        }
+        if (!n->cfg->devices[dev].enabled) {
+            /* #214: a disabled device has no DBIRTH, so a host cannot know its metrics
+             * (tck-id-operational-behavior-data-commands-dcmd-metric-name) */
+            GW_LOGW(TAG, "DCMD for disabled device '%s' discarded", n->cfg->devices[dev].name);
             return;
         }
         if (!n->dev_born[dev]) {

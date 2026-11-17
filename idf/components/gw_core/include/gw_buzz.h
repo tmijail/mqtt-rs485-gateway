@@ -9,6 +9,8 @@
  *                 sound, the highest wins; MQTT down and device offline only after their
  *                 condition has lasted alarm_after_s (configuration error at once).
  * A request plays after the burst in progress; an alarm burst never cuts a request.
+ *   identify      (#207, gw_ident.h) in place of the requests and the alarm bursts: they wait
+ *                 until its end, then play (gw_buzz_out).
  */
 #pragma once
 
@@ -50,6 +52,15 @@ void gw_buzz_request(gw_buzz_t *b, uint8_t beeps);
 
 /** Tone on or off at @p now_ms (call at least every 50 ms). */
 bool gw_buzz_tone(gw_buzz_t *b, uint32_t now_ms);
+
+/** #207: the tone at @p now_ms. While an identify runs (@p ident; @p ident_elapsed_ms since its
+ *  start), the identify pattern: the requests and the alarm bursts wait (gw_buzz_tone is not
+ *  called) and play after its end. Else gw_buzz_tone(). */
+bool gw_buzz_out(gw_buzz_t *b, uint32_t now_ms, bool ident, uint32_t ident_elapsed_ms);
+
+/** The longest time (ms) until a request of @p beeps beeps is over: an alarm burst in progress,
+ *  the beeps, the @p ident_left_ms of an identify that runs, and @p tick_ms of the task twice. */
+uint32_t gw_buzz_wait_ms(uint8_t beeps, uint32_t ident_left_ms, uint32_t tick_ms);
 
 /** Nothing playing nor queued. */
 bool gw_buzz_idle(const gw_buzz_t *b);

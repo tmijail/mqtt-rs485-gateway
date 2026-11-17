@@ -17,13 +17,13 @@ This example has the usual keys:
 {
   "network": { "dhcp": true, "ip": "192.168.1.50", "netmask": "255.255.255.0",
                "gateway": "192.168.1.1", "dns": "192.168.1.1" },
-  "ntp":     { "server": "pool.ntp.org" },
+  "ntp":     { "servers": ["pool.ntp.org"] },
   "mqtt":    { "host": "192.168.1.10", "port": 1883, "client_id": "",
                "username": "", "password": "", "keepalive_s": 30 },
   "sparkplug": { "group_id": "Plant1", "edge_node_id": "GW01", "primary_host_id": "" },
   "rs485":   { "baud": 9600, "parity": "none", "stop_bits": 1,
                "response_timeout_ms": 200, "retries": 2, "inter_frame_delay_ms": 5 },
-  "local_io": { "di_debounce_ms": 20 },
+  "local_io": { "counter_save_s": 600 },
   "devices": [
     {
       "name": "Meter1", "unit_id": 1, "poll_ms": 1000, "offline_after": 3,
@@ -41,7 +41,7 @@ This example has the usual keys:
 }
 ```
 
-The top-level sections are `network`, `ntp`, `mqtt`, `sparkplug`, `rs485`, `local_io`, `devices`, `syslog`, `web`, `modbus_tcp` and `ota`. The sections `mqtt` and `sparkplug` are necessary. The other sections are optional.
+The top-level sections are `gateway`, `network`, `ntp`, `mqtt`, `sparkplug`, `rs485`, `local_io`, `devices`, `syslog`, `web`, `modbus_tcp` and `ota`. The sections `mqtt` and `sparkplug` are necessary. The other sections are optional.
 
 ## General rules
 
@@ -62,6 +62,22 @@ These rules apply to `group_id`, `edge_node_id`, `primary_host_id`, `device_pref
 - A device `type` must not be the name or the first folder of a node metric: `bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info` or `Firmware Update`.
 - The longest device topic, `spBv1.0/<group_id>/DBIRTH/<edge_node_id>/<device_id>`, must fit in 159 bytes.
 
+### The configuration schema
+
+Each key has a schema number. A firmware image declares the highest schema that it reads. Before an update, the gateway refuses an image that cannot read the stored document. For this check, refer to [Update the firmware](../how-to/update-the-firmware.md).
+
+The firmware of this version reads schema 2. These keys are schema 2. All the other keys and values are schema 1.
+
+| Section | Keys of schema 2 |
+|---|---|
+| `gateway` | The section, and `name`, `location` and `comment` |
+| `ntp` | `servers` |
+| `local_io` | `di` (with `invert` and `debounce_ms`), `do_pulse_ms`, `fast_counters` (with `di` and `glitch_ns`) and `run_hours` |
+| `modbus_tcp` | `local_unit_id` and `local_writes` |
+| `ota` | `mqtt` |
+| `devices[]` | `enabled` and `write_multiple` |
+| `devices[].tags[]` | `write_min` and `write_max` |
+
 ### The secrets
 
 The gateway keeps `mqtt.password`, `network.wifi.password` and `web.password` in NVS, not in the document.
@@ -77,6 +93,28 @@ The gateway keeps `mqtt.password`, `network.wifi.password` and `web.password` in
 - In the file `/cfg/config.json`, a secret that is not there, empty or `"********"` gets its value from NVS.
 - A secret in clear text in the file is valid. The gateway moves it to NVS and writes the file again without it.
 - The gateway keeps `web.password` only as a salted PBKDF2-HMAC-SHA256 hash, and as the PMK of the access point. For the reasons, refer to [The security of the access point](../explanation/access-point-security.md).
+
+## `gateway`
+
+A name, a location and a comment for the people who use the gateway. The card **Gateway** at the top of the Configuration tab has the three fields.
+
+```json
+"gateway": { "name": "Pump panel 2", "location": "Plant 2, hall B",
+             "comment": "Feeds the cooling towers 1 and 2. Contact: maintenance, ext. 214." }
+```
+
+| Key | Type | Default | Rule |
+|---|---|---|---|
+| `name` | text | `""` | 0 to 63 bytes of valid UTF-8, without control characters |
+| `location` | text | `""` | 0 to 63 bytes of valid UTF-8, without control characters |
+| `comment` | text | `""` | 0 to 255 bytes of valid UTF-8 |
+
+- With a name, the header of the web UI shows the name and the location, and the name of the product and the edge node ID go to a second line. The title of the browser tab is `name · location`. Without a name, the header and the title do not change.
+- `GET /api/status` gives `gateway.name` and `gateway.location`. The NBIRTH gives them as `Node Info/Name` and `Node Info/Location`, only when they are set. Refer to [Sparkplug messages and metrics](sparkplug-messages-and-metrics.md#node-metrics).
+- The comment is only in the document and in the Configuration tab. The Status tab, `GET /api/status` and the NBIRTH do not give it.
+- The name and the location do not change the Sparkplug IDs or the topics. They are not `sparkplug.device_prefix`.
+
+![The top of the Configuration tab: the header with the name and the location, and the card Gateway with the explainer of Name](../images/gateway-name.png)
 
 ## `network`
 
@@ -134,13 +172,25 @@ IPv6 together with IPv4.
 | `address` | text | `""` | A static address for Ethernet (RFC 4291). The prefix on the link is /64. Multicast, link-local, `::` and `::1` are not permitted |
 | `dns` | text | `""` | An IPv6 DNS server. DHCPv4 fills the first two positions, and this server is the third |
 
-The gateway learns the default IPv6 router from the router advertisements. There is no static IPv6 gateway. `mqtt.host`, `ntp.server` and `syslog.host` accept IPv6 addresses and names with an AAAA record.
+The gateway learns the default IPv6 router from the router advertisements. There is no static IPv6 gateway. `mqtt.host`, `ntp.servers` and `syslog.host` accept IPv6 addresses and names with an AAAA record.
 
 ## `ntp`
 
+```json
+"ntp": { "servers": ["pool.ntp.org", "192.168.10.1"] }
+```
+
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `server` | text | `pool.ntp.org` | The name, IPv4 or IPv6 address of the SNTP server |
+| `servers` | array of texts | `["pool.ntp.org"]` | 1 to 3 names, IPv4 or IPv6 addresses of SNTP servers, 1 to 127 bytes each. An empty item is an error |
+
+- The gateway asks server 1 first. When a server does not answer in 15 s, the gateway asks the next server. After the last server, it asks the first server again.
+- Thus a first server that does not answer delays the first valid time by approximately 15 s. The log gives the wait: `edge: clock valid (source sntp) after a wait of 16 s: connecting`.
+- The old key `ntp.server` (one server) is not valid since #201. A document with it is refused.
+
+In the web UI, the card **Time** has one row for each server. An empty row is an error at its field.
+
+![The card 'Time' of the Configuration tab with two SNTP servers, pool.ntp.org and 192.168.10.1, and the explainer of SNTP servers: the gateway asks server 1 first, then the next server when a server does not answer.](../images/time-card.png)
 
 Without a valid clock, the gateway opens no MQTT session. Refer to [The clock and the RTC battery](clock-and-rtc-battery.md).
 
@@ -177,6 +227,8 @@ Each CONNECT has Clean Session = 1. With `protocol: "5"`, each CONNECT has Clean
 | `key_file` | text | `""` | The PEM private key of the client, **not encrypted** (PKCS#1, SEC1 or PKCS#8). Necessary with `cert_file`, and not permitted without it |
 
 - A file name has 1 to 32 characters `A-Z a-z 0-9 . _ -`, without `/`. It must not start with `.`, and it must not be `config.json`.
+- The button **Load a file…** below a file field of the card MQTT puts a file into the LittleFS partition. The REST API uses `PUT /api/files`. Refer to [Connect to a broker with TLS](../how-to/connect-to-a-broker-with-tls.md) and [The REST API](rest-api.md#the-pem-files).
+- A save of the configuration examines each file that `ca_file`, `cert_file`, `key_file` and `ota.ca_file` name. Each file must exist and hold certificates. The file of `key_file` must hold an unencrypted private key, and the key must agree with the certificate. Otherwise, the error has the path of the key, for example `mqtt.tls.key_file: the key does not agree with the certificate gw01.crt`.
 - The gateway uses TLS 1.2 or 1.3, as the broker selects.
 - The gateway examines the validity dates of the certificate. Thus the TLS connection waits for a valid clock.
 - The gateway validates the TLS keys also when `enabled` is `false`.
@@ -287,6 +339,7 @@ An array of up to 16 devices.
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
+| `enabled` | bool | `true` | `false` = the device stays in the configuration, but the gateway does not poll it. Refer to [A disabled device](#a-disabled-device) |
 | `name` | text | — | Necessary. 1 to 39 bytes |
 | `unit_id` | integer | — | Necessary. 1 to 247 |
 | `poll_ms` | integer | `1000` | 50 to 3 600 000 |
@@ -294,10 +347,28 @@ An array of up to 16 devices.
 | `slow_poll_ms` | integer | 10 × `poll_ms` (maximum 3 600 000) | 50 to 3 600 000, and not less than `poll_ms`. The poll interval of the tags with `scan: "slow"` |
 | `block_reads` | bool | `true` | `false` = one request for each tag. Use it for a slave that answers with an exception if a block contains registers that it does not map |
 | `max_gap` | integer | `0` | 0 to 1999. The number of unused registers or bits that a block can include to join two tags of the same area. Not permitted with `block_reads: false` |
+| `write_multiple` | bool | `false` | `true` = the gateway writes one register with FC16 and one coil with FC15, in place of FC06 and FC05. Use it for a slave that does not accept FC06 or FC05. A write of two or more registers always uses FC16 |
 | `type` | text | `""` | The device type, as a Sparkplug template. Refer to [Device types](#device-types) |
 | `tags` | array | — | Necessary. 1 to 64 tags |
 
-The defaults of `block_reads` and `max_gap` come from the build options `CONFIG_GW_MB_BLOCK_READS` and `CONFIG_GW_MB_BLOCK_MAX_GAP`. A block never has more than 125 registers or 2000 bits.
+The defaults of `block_reads`, `max_gap` and `write_multiple` come from the build options `CONFIG_GW_MB_BLOCK_READS`, `CONFIG_GW_MB_BLOCK_MAX_GAP` and `CONFIG_GW_MB_FORCE_MULTI_WRITE`. A block never has more than 125 registers or 2000 bits.
+
+In the web UI, `slow_poll_ms`, `block_reads`, `max_gap` and `write_multiple` are in the panel **More device settings** of each device.
+
+### A disabled device
+
+```json
+{ "name": "Meter2", "unit_id": 3, "enabled": false, "tags": [ … ] }
+```
+
+- The gateway sends no request to a disabled device. The device uses no time of the bus.
+- The device has no DBIRTH, no DDATA and no DDEATH. The gateway discards a DCMD for it.
+- The validation examines a disabled device as any other device. Its name, its tags and the device limits count.
+- A disabled device does not count as offline: it does not set the Modbus fault of the LED or the buzzer alarm `device_offline`.
+- The Status tab of the web UI and the shell command `devices` show the state `disabled`. In `GET /api/status`, the device has `"enabled":false`.
+- Modbus TCP requests to its unit still go to the bus.
+
+Use it, for example, for a slave that is not connected yet during the commissioning.
 
 ### Fast and slow scan
 
@@ -346,11 +417,31 @@ For the messages of a template, refer to [Sparkplug messages and metrics](sparkp
 | `units` | text | `""` | Up to 15 characters. The property `engUnit` of the metric. Empty = no property |
 | `eng_low` | number | — | The property `engLow` (Float). In the range of a Float (±3.4e38) |
 | `eng_high` | number | — | The property `engHigh` (Float). With the two keys, `eng_high` > `eng_low` |
+| `write_min` | number | — | The lowest value that a DCMD can write, in the units of the tag (after `scale` and `offset`). Only with `writable: true`. Refer to [Write limits](#write-limits) |
+| `write_max` | number | — | The highest value that a DCMD can write. With the two keys, `write_max` ≥ `write_min` |
 
 - A `bool` tag has no `scale` and no `offset`.
 - A `string` tag has no `scale`, no `offset` and no `deadband`.
 - A `bytes` tag has no `scale`, `offset`, `deadband`, `eng_low` or `eng_high`.
 - `eng_low` and `eng_high` are not permitted on `bool`, `string` and `bytes` tags.
+- `write_min` and `write_max` are not permitted on `bool`, `string` and `bytes` tags, and not on a tag that is not writable.
+
+In the web UI, the details row of a tag (**More**) shows only the keys that apply to the type of the tag. A key with a value stays visible.
+
+### Write limits
+
+```json
+{ "name": "SpeedSetpoint", "area": "holding", "address": 1, "type": "uint16", "scale": 0.1,
+  "writable": true, "write_min": 0, "write_max": 1500 }
+```
+
+- The gateway refuses a DCMD metric with a value below `write_min` or above `write_max`. It does not write to the device. It writes a warning to the log, and adds 1 to the refusal counter of the device (`write_refused` in `GET /api/status`, `writes refused` in the shell command `devices`).
+- The other metrics of the same DCMD still apply.
+- Sparkplug has no answer to a command. The next DDATA has the value of the device.
+- No key = no limit on that side. A limit can be equal to the other limit.
+- For a tag that is a Float in Sparkplug, the gateway compares the values with the precision of a Float. For an `int64` or `uint64` tag, the comparison is exact.
+- The limits do not apply to Modbus TCP requests. That path sends the frames to the bus without a change.
+- `eng_low` and `eng_high` are only properties of the metric. The gateway does not use them to examine a write.
 
 ### The tag types
 
@@ -401,7 +492,7 @@ The word order applies to 32 and 64 bits. For 16 bits, only the byte swap applie
 - `bit` is necessary with `type: bool` in `holding` or `input`, and only there.
 - 0 = the least significant bit of the register, as it arrives.
 - With `bit`, `word_order` must be `big`.
-- For a write, the gateway reads the register (FC03). Then it writes the full register with the changed bit (FC06, or FC16 with `CONFIG_GW_MB_FORCE_MULTI_WRITE`).
+- For a write, the gateway reads the register (FC03). Then it writes the full register with the changed bit (FC06, or FC16 with `write_multiple: true`).
 
 ### The datatypes in Sparkplug
 
@@ -437,42 +528,100 @@ A Modbus TCP server that gives access to the RTU slaves on the bus.
 | `port` | integer | `502` | 1 to 65535 |
 | `allowed_clients` | array of texts | `[]` | Up to 8 IPv4 addresses (`a.b.c.d`) or networks (`a.b.c.d/n`, n 0 to 32). The gateway closes a connection from another source without a response. Empty = any client, with a warning in the log |
 | `idle_timeout_s` | integer | `60` | 0 to 3600. The gateway closes a connection without requests after this time. 0 = never |
+| `local_unit_id` | integer | `0` | 0 to 247. The unit that the gateway answers itself, with its own I/O. 0 = off. It must not be the `unit_id` of a device. Refer to [The local unit](#the-local-unit) |
+| `local_writes` | bool | `false` | `true` permits FC05 and FC15 on the DOs of the local unit |
 
 - The gateway sends FC01 to FC06, FC15 and FC16 to the units 1 to 247, with or without a configured device.
 - The gateway itself answers with an exception: 01 for another function, 03 for data that is not valid, 0A for the units 0 and 248 to 255. If the unit does not respond after the retries of `rs485`, the exception is 0B.
 - The TCP requests go through the task that owns the bus, one at a time, between two poll requests. The priority is: DCMD writes, then Modbus TCP, then the poll.
 - The gateway always refuses a connection through the commissioning access point, also when `allowed_clients` contains the client. Refer to [The access point](access-point.md).
 
+### The local unit
+
+```json
+"modbus_tcp": { "enabled": true, "allowed_clients": ["192.168.1.20"],
+                "local_unit_id": 100, "local_writes": true }
+```
+
+A PLC or a SCADA without MQTT can read the I/O of the gateway itself on the unit `local_unit_id`. The gateway answers this unit at once, and does not send it to the RS485 bus.
+
+| Area | Function | Addresses | Content |
+|---|---|---|---|
+| Discrete inputs | FC02 | 0 to 7 | DI/1 to DI/8, after the debounce. 1 = active |
+| Coils | FC01 (read), FC05 and FC15 (write) | 0 to 7 | DO/1 to DO/8. 1 = on |
+| Input registers | FC04 | 0 to 31 | The pulse counters of DI/1 to DI/8, 4 registers each (uint64, `big`: the most significant register first). DI/1 is at 0 to 3, DI/8 at 28 to 31 |
+
+The exceptions of the local unit:
+
+| Code | Cause |
+|---|---|
+| 01 | FC03, FC06 or FC16: the local unit has no holding registers. Also FC05 and FC15 when `local_writes` is `false` |
+| 02 | An address outside the table above |
+| 03 | A write to a DO that a local rule drives. The gateway changes no DO of the request. An NCMD gets the same refusal |
+| 04 | The DO expander does not answer: the DOs are unknown. Also a write that the local I/O task did not apply |
+
+- A write goes through the local I/O task, the only writer of the DO expander, as an NCMD does. The NDATA then gives the new state of the DO.
+- The safe state after a loss of MQTT (`local_io.failsafe_s`) applies as for an NCMD. A Modbus write after the safe state changes the DO again.
+- The local unit has no authentication, as the other units. Limit the clients with `allowed_clients`, and keep `local_writes` off when no client must switch the DOs.
+
+![The card 'Modbus TCP' of the Configuration tab: Enabled, the port 502, the idle timeout, the allowed client 10.0.2.2, and the local unit 100 with Local writes. The explainer of Local unit ID gives the map: the DIs at discrete 0 to 7, the DOs at coil 0 to 7, the counters at input 0 to 31.](../images/modbus-tcp-card.png)
+
 ## `ota`
 
 ```json
-"ota": { "enabled": true, "ca_file": "fw-ca.pem" }
+"ota": { "mqtt": false, "ca_file": "fw-ca.pem" }
 ```
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `enabled` | bool | `true` | `false` refuses the updates by NCMD and by the web UI, and the button "Restart into `<version>`". In recovery mode, safe mode and commissioning, the web UI can always upload an image |
+| `mqtt` | bool | `false` | `true` lets a Sparkplug host start an update with the NCMD `Node Control/Firmware Update`. With `false`, the NBIRTH does not contain `Node Control/Firmware Update` and `Node Control/Firmware SHA-256`, and the gateway refuses an NCMD that writes them. A change needs a save and a restart. The web UI control is **Update from MQTT** in the card **Firmware updates** |
 | `ca_file` | text | `""` | The CA of the server of the images (PEM, in LittleFS, with the name rules of `mqtt.tls.ca_file`). Empty = `mqtt.tls.ca_file` if TLS is on, else the public root CAs of ESP-IDF |
+
+An update from the web UI is always possible, for a user who knows the web password. The button "Restart into `<version>`" is always available after a trial.
+
+> **Caution: Set `mqtt` to `true` only when the ACL of the broker lets only the Sparkplug host publish to `spBv1.0/<group_id>/NCMD/<edge_node_id>`.** Each client that can publish to that topic can then change the firmware.
+
+The key `ota.enabled` of earlier firmware versions is not valid now. The validation refuses it as an unknown key. No gateway is installed yet, thus there is no migration. For the change of an old document, refer to [Change the configuration](../how-to/change-the-configuration.md). `ota.mqtt` is a key of the configuration schema 2: an image that reads schema 1 cannot read a document that contains it.
 
 For the update process, refer to [Update the firmware](../how-to/update-the-firmware.md).
 
 ## `local_io`
 
-All the keys of `local_io` are optional.
+All the keys of `local_io` are optional. The card Local I/O of the Configuration tab has a control for each key. For the procedure, refer to [Set up the local inputs and outputs](../how-to/set-up-the-local-io.md).
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `di_debounce_ms` | integer | `20` | 0 to 1000. The debounce of the DIs |
+| `di` | array of objects | all default | Up to 8 items, `DI/1` first. Refer to [The DIs](#the-dis) |
 | `failsafe_s` | integer | `0` | 0 to 86400. After this time without a Sparkplug session, each DO goes to its safe state. 0 = a loss of MQTT does not change the DOs |
 | `do_failsafe` | array of texts | all `off` | Up to 8 items, `DO/1` first. Each item is `off`, `on` or `hold`. An item that is not there is `off` |
-| `counter_save_s` | integer | `600` | 0, or 60 to 86400. The interval for the save of the pulse counters in NVS, only if they changed. 0 = no save |
+| `do_pulse_ms` | array of integers | all `0` | Up to 8 items, `DO/1` first. Refer to [Pulse DOs](#pulse-dos) |
+| `counter_save_s` | integer | `600` | 0, or 60 to 86400. The interval for the save of the pulse counters and the run hours in NVS, only if they changed. 0 = no save |
+| `fast_counters` | array of objects | `[]` | Up to 4 items. Refer to [Fast counters](#fast-counters) |
+| `run_hours` | array of texts | `[]` | Refer to [Run hours](#run-hours) |
 | `rules` | array | `[]` | Refer to [Local rules](#local-rules) |
 | `buzzer` | object | — | Refer to [`local_io.buzzer`](#local_iobuzzer) |
+
+The key `di_debounce_ms` of earlier versions is not there now (#211). The validation refuses a document that has it. Use `di[].debounce_ms`.
+
+### The DIs
+
+```json
+"local_io": { "di": [ { "invert": true }, {}, { "debounce_ms": 100 } ] }
+```
+
+| Key | Type | Default | Rule |
+|---|---|---|---|
+| `invert` | boolean | `false` | `true`: the gateway inverts the input. Use it for a normally closed contact |
+| `debounce_ms` | integer | `20` | 0 to 1000. The input must stay in its new state for this time before the gateway accepts the change |
+
+- An item or a key that is not there takes the default.
+- The polarity of the input circuit of the board is a build option for all the DIs. The inversion applies after it, before the debounce.
+- The metric `DI/n`, the pulse counter and the local rules use the state after the inversion and the debounce.
 
 ### The safe state of the DOs
 
 ```json
-"local_io": { "di_debounce_ms": 20, "failsafe_s": 30,
+"local_io": { "failsafe_s": 30,
               "do_failsafe": ["off", "on", "hold", "off", "off", "off", "off", "off"] }
 ```
 
@@ -485,13 +634,64 @@ All the keys of `local_io` are optional.
 
 Before the gateway loads the configuration, it keeps the `hold` outputs of the last valid configuration (saved in NVS). If the expander did not respond at the boot, the gateway tries again with a backoff. It sets all the DOs to OFF when the expander responds.
 
+### Pulse DOs
+
+```json
+"local_io": { "do_pulse_ms": [0, 0, 0, 500] }
+```
+
+Each item is 0 (a normal DO) or 50 to 60000 ms (a pulse DO). Use a pulse DO for a latching relay or a reset input.
+
+- A write of `true` sets the pulse DO on for its time. Then the gateway sets it off. The time does not depend on the network.
+- The NDATA gives `true`, and then a second NDATA gives `false`. If the pulse ends before the gateway sends the first NDATA, the gateway still sends `true` and then `false`.
+- A new write of `true` during the pulse starts the time again. A write of `false` ends the pulse immediately.
+- The writes come from an NCMD or from the Status tab of the web UI.
+- The safe state `on` and a local rule are not permitted for a pulse DO. The validation refuses them.
+- After the time of `failsafe_s` without a session, the safe state `off` ends a pulse. With `hold`, the pulse continues to its end.
+- A pulse does not continue after a restart. A pulse DO is OFF after a restart, also with `hold`.
+
 ### The pulse counters
 
-- Each DI counts its activations: a change from inactive to active, after the debounce. With a debounce of 20 ms, the maximum is approximately 25 Hz.
+- Each DI counts its activations: a change from inactive to active, after the inversion and the debounce. With a debounce of 20 ms, the maximum is approximately 25 Hz.
+- A fast counter counts its DI with a PCNT unit. Refer to [Fast counters](#fast-counters).
 - At the boot, the gateway restores the counters from the last save.
 - An orderly restart saves them first: NCMD Reboot, a new configuration, the `restart` of the shell or of the web UI.
 - A power cut, a panic or the watchdog loses the count since the last save.
-- An NCMD cannot write the counters. The factory reset sets them to 0.
+- An NCMD cannot write the counters. The factory reset sets them to 0: BOOT held for 10 s, the web UI, `POST /api/factory-reset` or the shell `factory-reset`.
+
+### Fast counters
+
+```json
+"local_io": { "fast_counters": [ { "di": 5, "glitch_ns": 1000 } ] }
+```
+
+| Key | Type | Default | Rule |
+|---|---|---|---|
+| `di` | integer | — | Necessary. 1 to 8. Each DI is in one item only |
+| `glitch_ns` | integer | `1000` | 0 to 12787. The PCNT unit ignores a pulse that is shorter than this time. 0 = no filter |
+
+- The ESP32-S3 has 4 PCNT units: up to 4 fast counters.
+- The PCNT unit counts the edges of the input to the active state, after the polarity of the board and the inversion. The glitch filter replaces the debounce for the count.
+- The metric `Counter/n` does not change. The state of the DI (`DI/n`) still uses the debounce.
+- The glitch filter counts the cycles of the 80 MHz APB clock, 1023 cycles at most (`PCNT_LL_MAX_GLITCH_WIDTH` of ESP-IDF v6.1). Thus the limit is 12787 ns.
+- The gateway reads the PCNT units at least each 250 ms. A unit counts up to 32767 before it goes back to 0. Thus the gateway loses no pulse up to approximately 130 kHz.
+- The input circuit of the board sets the real maximum frequency. It was not measured on the board yet (#126).
+- QEMU has no PCNT unit. The QEMU build counts the edges of the `di` command of the console, and the emulator-only command `pcnt <n> <count>` adds pulses.
+
+### Run hours
+
+```json
+"local_io": { "run_hours": ["DI/3", "DO/1"] }
+```
+
+Each item is `DI/1` to `DI/8` or `DO/1` to `DO/8`, one time only. The gateway counts the time in the on state of these channels.
+
+- The NBIRTH has the metric `Run Hours/DI/n` or `Run Hours/DO/n` (UInt64, seconds) for each channel of the list. Refer to [The Sparkplug messages and metrics](sparkplug-messages-and-metrics.md#local-io).
+- An NDATA gives a new value when the channel changes its state, and each 60 s while it stays on.
+- The Status tab of the web UI shows the run hours in hours, with one decimal.
+- The gateway saves the run hours with the pulse counters (`counter_save_s`). An NCMD cannot write them. The factory reset sets them to 0.
+- A channel that you remove from the list keeps its saved value. When you add it again, it continues from that value.
+- A DO that the expander does not read counts as off.
 
 ### Local rules
 
@@ -505,12 +705,12 @@ A local rule links a DI to a DO. The gateway calculates the rules itself, with o
 | Key | Type | Default | Rule |
 |---|---|---|---|
 | `di` | integer | — | Necessary. 1 to 8 |
-| `do` | integer | — | Necessary. 1 to 8. Each DO is in one rule only |
+| `do` | integer | — | Necessary. 1 to 8. Each DO is in one rule only. Not a pulse DO |
 | `mode` | `follow`, `invert` or `toggle` | `follow` | `follow`: DO = DI. `invert`: DO = not DI. `toggle`: each activation of the DI inverts the DO |
 
 - Up to 8 rules.
 - A DI change gets to the DO in a few milliseconds, plus the debounce.
-- The gateway refuses an NCMD for a DO with a rule. The log tells this, and the NDATA confirms the real state.
+- The gateway refuses an NCMD and a command of the Status tab for a DO with a rule. The log tells this, and the NDATA confirms the real state.
 - The safe state after a loss of MQTT does not change a DO with a rule.
 - At a restart, a DO with a rule starts as `off` or `hold`. `on` is not permitted for a DO with a rule. Then `follow` and `invert` take the value of their DI, and `toggle` starts from that state.
 
@@ -553,6 +753,8 @@ The format is RFC 5424 on UDP (RFC 5426), with one message in each datagram:
 
 Example: `<134>1 2026-11-04T12:00:00.123Z GW01 edge - - [meta sequenceId="12"] Sparkplug session up (bdSeq=3)`.
 
+`level` filters only the copy to the syslog server. The log level of each tag sets which lines the firmware writes at all: to the console, to the syslog copy and to the live log of the web UI. You can change the level of a tag at run time, without a save. Refer to [Read the live log](../how-to/read-the-live-log.md).
+
 ## `web`
 
 The web UI and the REST API.
@@ -571,5 +773,9 @@ The web UI and the REST API.
 | `password` | text (secret) | `""` | Empty, or 8 to 63 printable ASCII characters (0x20 to 0x7E). The password is also the WPA2 key of the access point |
 
 While `web.password` is empty, the gateway accepts `admin` with its commissioning password (random; the console shows it). A push of BOOT then opens the claim window. Refer to [Set the first web password on site](../how-to/set-the-first-web-password.md).
+
+In the web UI, the field **Port** of the card **Web interface** is `web.port`, with the label **HTTP port**. While **Enabled** or **HTTPS** is off, a warning shows at the field. Before a save that disables the web interface, the web UI asks for a confirmation. The confirmation gives the steps to enable the web interface again. Refer to [Recover a gateway](../how-to/recover-the-gateway.md#the-web-interface-is-off).
+
+![The confirmation 'Turn off the web interface?' after 'Save and restart' with Enabled off: after the restart, the page and the REST API do not answer. The steps to turn the web interface on again: push BOOT for 2 to 10 s, open the web UI, turn on Enabled and save. It has the red button 'Save and restart' and Cancel.](../images/web-off-dialog.png)
 
 For the routes, refer to [The REST API](rest-api.md).

@@ -1,4 +1,5 @@
 #include "gw_storage.h"
+#include "gw_pemfile.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -61,6 +62,11 @@ static portMUX_TYPE s_saved_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_saved;
 static uint32_t s_saved_hash;
 static StaticSemaphore_t s_save_lock_buf;
+/* The largest blob (gw_storage_set_blob): the pulse counters and the run hours, 24 x 8 B (#217) */
+#define BLOB_MAX 192
+static uint8_t *s_blob_old;   /* PSRAM: the stored blob, for the comparison */
+static SemaphoreHandle_t s_blob_lock;
+static StaticSemaphore_t s_blob_lock_buf;
 static gw_storage_commit_hook_t s_commit_hook;   /* issue #99: gw_fw, before a commit */
 static bool s_safe_mode;   /* issue #144 item 4: no NVS migration in safe mode */
 /* Issue #144 item 3: the "since" schema report of the stored configuration (PSRAM, allocated at
@@ -69,9 +75,10 @@ static gw_schema_report_t *s_schema;
 
 #if CONFIG_GW_IO_SIMULATED
 /* Issue #146, emulator only: the E2E needs a key that a later image added. In the QEMU build,
- * "network.hostname" counts as schema 2, so a document with it needs an image that declares
- * schema 2 (the harness rewrites the capabilities block of an image copy). */
-static const gw_since_t k_sim_since[] = {{"network.hostname", NULL, 2}};
+ * "network.hostname" counts as the schema after the one of this build (GW_CONFIG_SCHEMA + 1), so
+ * a document with it needs an image that declares that schema (the harness rewrites the
+ * capabilities block of an image copy). The other keys count as schema 1 here. */
+static const gw_since_t k_sim_since[] = {{"network.hostname", NULL, GW_CONFIG_SCHEMA + 1}};
 #endif
 
 /* gw_config_schema_init(), or the emulator's table */
@@ -1065,6 +1072,8 @@ esp_err_t gw_storage_init(void)
     }
 #endif
     s_save_lock = xSemaphoreCreateMutexStatic(&s_save_lock_buf);
+    s_blob_lock = xSemaphoreCreateMutexStatic(&s_blob_lock_buf);
+    s_blob_old = gw_storage_malloc(BLOB_MAX);
     gw_config_set_allocator(boot_alloc, heap_caps_free);
     if (!s_nvs_ok) {
         ESP_LOGE(TAG, "NVS unavailable (%s): no stored secrets", esp_err_to_name(err));
@@ -1360,7 +1369,8 @@ void gw_storage_recovery_config(gw_config_t *cfg)
         gw_hostname_from("", cfg->network.hostname, sizeof(cfg->network.hostname));
         cfg->network.mdns = true;
     }
-    strcpy(cfg->ntp.server, "pool.ntp.org");
+    strcpy(cfg->ntp.servers[0], "pool.ntp.org");
+    cfg->ntp.server_count = 1;
     cfg->web.enabled = true;
     strcpy(cfg->web.username, "admin");
     ESP_LOGW(TAG, "recovery network: %s", found ? "the last valid configuration's"
@@ -1389,29 +1399,34 @@ static esp_err_t wipe_storage(void)
     return esp_littlefs_format("storage");
 }
 
-/* ---------- small local I/O state (IO-3, IO-4) ---------- */
+/* ---------- small local I/O state (IO-3, IO-4, #217) ---------- */
 
-#define BLOB_MAX 64
-
+/* The copy of the stored blob for the comparison is in PSRAM (s_blob_old, allocated at
+ * gw_storage_init), not on the stack of the caller: the save of the counters runs also in a
+ * shutdown handler (any task, for example the esp_timer task of a restart). */
 esp_err_t gw_storage_set_blob(const char *key, const void *data, size_t len)
 {
     if (s_reset_done) {
         return ESP_ERR_INVALID_STATE;
     }
+    if (s_blob_old == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
     nvs_handle_t h;
     if (!s_nvs_ok || len > BLOB_MAX || nvs_open(NVS_GW, NVS_READWRITE, &h) != ESP_OK) {
         return ESP_ERR_INVALID_STATE;
     }
-    uint8_t old[BLOB_MAX];
-    size_t old_len = sizeof(old);
+    xSemaphoreTake(s_blob_lock, portMAX_DELAY);
+    size_t old_len = BLOB_MAX;
     esp_err_t err = ESP_OK;
-    if (nvs_get_blob(h, key, old, &old_len) != ESP_OK || old_len != len ||
-        memcmp(old, data, len) != 0) {
+    if (nvs_get_blob(h, key, s_blob_old, &old_len) != ESP_OK || old_len != len ||
+        memcmp(s_blob_old, data, len) != 0) {
         err = nvs_set_blob(h, key, data, len);
         if (err == ESP_OK) {
             err = nvs_commit(h);
         }
     }
+    xSemaphoreGive(s_blob_lock);
     nvs_close(h);
     return err;
 }
@@ -1702,6 +1717,69 @@ char *gw_storage_read_file(const char *name, size_t *len, char *why, size_t why_
     buf[size] = '\0';
     *len = size;
     return buf;
+}
+
+/* #221: a file next to config.json that the operator can load (a PEM file): the name rules of
+ * gw_config_file_name_ok(), and not one of the configuration files of the gateway
+ * (config.prev.json, config.next.json) or a temporary file. */
+bool gw_storage_user_file_name_ok(const char *name)
+{
+    size_t n = strlen(name);
+    return gw_config_file_name_ok(name) && !(n >= 5 && strcmp(name + n - 5, ".json") == 0) &&
+           !(n >= 4 && strcmp(name + n - 4, ".tmp") == 0);
+}
+
+size_t gw_storage_list_files(void (*cb)(void *ctx, const char *name, size_t size), void *ctx)
+{
+    size_t n = 0;
+    DIR *d = s_mounted ? opendir(CFG_MOUNT) : NULL;
+    for (struct dirent *e; d != NULL && (e = readdir(d)) != NULL;) {
+        char path[sizeof(CFG_MOUNT) + GW_FILE_SIZE + 1];
+        struct stat st;
+        if (!gw_storage_user_file_name_ok(e->d_name) ||
+            snprintf(path, sizeof(path), CFG_MOUNT "/%s", e->d_name) >= (int)sizeof(path) ||
+            stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+            continue;
+        }
+        cb(ctx, e->d_name, (size_t)st.st_size);
+        n++;
+    }
+    if (d != NULL) {
+        closedir(d);
+    }
+    return n;
+}
+
+esp_err_t gw_storage_write_file(const char *name, const void *data, size_t len, bool replace,
+                                char *why, size_t why_cap)
+{
+    char path[sizeof(CFG_MOUNT) + GW_FILE_SIZE + 1];
+    char tmp[sizeof(path) + 4];
+    struct stat st;
+    if (!gw_storage_user_file_name_ok(name) ||
+        snprintf(path, sizeof(path), CFG_MOUNT "/%s", name) >= (int)sizeof(path) ||
+        snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp)) {
+        snprintf(why, why_cap, "'%s' is not a valid file name (1-%d characters A-Z a-z 0-9 . _ -, "
+                 "not .json)", name, GW_FILE_SIZE - 1);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (len == 0 || len > GW_STORAGE_FILE_MAX) {
+        snprintf(why, why_cap, "%u bytes (1 to %d)", (unsigned)len, GW_STORAGE_FILE_MAX);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    xSemaphoreTake(s_save_lock, portMAX_DELAY);
+    esp_err_t r = ESP_OK;
+    if (!replace && s_mounted && stat(path, &st) == 0) {
+        snprintf(why, why_cap, "/cfg/%s exists", name);
+        r = ESP_ERR_INVALID_STATE;
+    } else if ((r = write_file_atomic(path, tmp, data, len)) != ESP_OK) {
+        snprintf(why, why_cap, "could not write /cfg/%s (%s): the LittleFS partition can be full",
+                 name, esp_err_to_name(r));
+    } else {
+        ESP_LOGI(TAG, "/cfg/%s written (%u B)", name, (unsigned)len);
+    }
+    xSemaphoreGive(s_save_lock);
+    return r;
 }
 
 /* The files next to config.json, kept in RAM across a wipe of the partition (CFG-7 migration):
@@ -2303,6 +2381,10 @@ esp_err_t gw_storage_save_config_lint(const char *json, size_t len, bool dry_run
     char hook_why[120];
     if (!applied) {
         ret = strstr(err->msg, "not enough memory") ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_ARG;
+    } else if (!gw_pem_check_config(cfg, err)) {
+        /* #221: the PEM files that the document names exist, and the key agrees with the
+         * certificate (the web UI shows the error at its field) */
+        ret = ESP_ERR_INVALID_ARG;
     } else if (!dry_run && s_copy_unknown && !s_mounted && !discard_copy) {
         /* issue #108 M1: formatting LittleFS to save would destroy the only copy */
         ret = ESP_ERR_INVALID_STATE;

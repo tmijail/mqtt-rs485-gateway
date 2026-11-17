@@ -1740,20 +1740,106 @@ def run_tls(args, work):
     # GW15: a CA file that is not in LittleFS: reported, nothing attempted
     node = "GW15"
     t0 = time.monotonic()
-    gw = boot_variant(args, work, "tlsmissing", node_config(node, port=p13, tls={
-        "enabled": True, "ca_file": "missing.pem"}))
+    cfg15 = node_config(node, port=p13, tls={"enabled": True, "ca_file": "missing.pem"})
+    cfg15["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    gw = boot_variant(args, work, "tlsmissing", cfg15)
     missing = gw.wait_log(r"mqtt\.tls\.ca_file: /cfg/missing\.pem: not in the LittleFS partition"
                           r".*MQTT not started", 30, t0)
     attempts = gw.find(r"connecting to .* as 'GW15'", t0)
-    gw.kill()
     check("MQTT-4 a CA file missing from LittleFS is reported and no connection is attempted",
           missing and not attempts,
           (gw.find(r"mqtt\.tls\.ca_file", t0) or ["no error logged"])[0])
+    try:
+        check_pem_files(gw, obs, node, pki, t0)
+    finally:
+        gw.kill()
     check_ram_margin(args, work, obs, p13, pki["ca.pem"].read_bytes())
     check_tls_during_validation(args, work, obs, p13, pki["ca.pem"].read_bytes())
     obs.close()
     broker.terminate()
     broker.wait()
+
+
+def check_pem_files(gw, obs, node, pki, t0):
+    """Issue #221 on GW15 (its document names /cfg/missing.pem, which is not there): the PEM files
+    of the web UI. A dry run refuses the missing file at its JSON path; PUT /api/files loads the
+    CA (201, its subject and the CA flag), refuses the same name again (409, also with the old
+    replace=1, which is not approved) and a file that is not PEM (400); GET /api/files lists it,
+    never with its content. A client key that does not agree with the client certificate is
+    refused at mqtt.tls.key_file, the right key is not, and GET /api/files tells which
+    certificate the key agrees with. After a restart the gateway connects to the TLS broker with
+    the loaded CA (the configuration did not change)."""
+    wait_http("/api/status", 30)
+    _, _, doc = http("GET", "/api/config")
+    doc = as_json(doc) or {}
+
+    def dry(tls):
+        d = json.loads(json.dumps(doc))
+        d["mqtt"]["tls"] = tls
+        st, _, body = http("PUT", "/api/config?dry_run=1", d)
+        return st, as_json(body) or {}
+
+    def put(name, data, q=""):
+        st, _, body = http("PUT", f"/api/files?name={name}{q}", data,
+                           headers={"Content-Type": "application/x-pem-file"})
+        return st, as_json(body) or {}
+
+    ca = pki["ca.pem"].read_bytes()
+    st0, j0 = dry({"enabled": True, "ca_file": "missing.pem"})
+    st1, j1 = put("missing.pem", ca)
+    st2, j2 = put("missing.pem", ca)
+    st2r, _ = put("missing.pem", ca, "&replace=1")
+    st3, j3 = put("notes.pem", b"not a certificate\n")
+    st4, _, b4 = http("GET", "/api/files")
+    files = {f.get("name"): f for f in (as_json(b4) or {}).get("files", [])}
+    st5, j5 = dry({"enabled": True, "ca_file": "missing.pem"})
+    loaded = st0 == 400 and j0.get("path") == "mqtt.tls.ca_file" and "not in the LittleFS" in \
+        j0.get("error", "") and st1 == 201 and j1.get("file", {}).get("kind") == "certificates" \
+        and j1["file"].get("certs", [{}])[0].get("subject") == "CN=E2E test CA" \
+        and j1["file"]["certs"][0].get("ca") is True and st2 == 409 and st2r == 409 \
+        and st3 == 400 \
+        and st4 == 200 and files.get("missing.pem", {}).get("count") == 1 \
+        and "notes.pem" not in files and b"BEGIN" not in b4 and st5 == 200 and j5.get("ok")
+    check("Issue #221 PEM files from the web UI: a dry run refuses a missing CA file at "
+          "mqtt.tls.ca_file; PUT /api/files loads it (201, subject, CA), refuses the same name "
+          "(409, also with replace=1) and a file that is not PEM (400); GET /api/files lists it "
+          "without its content; "
+          "then the dry run passes", loaded,
+          f"dry {st0} {j0.get('path')} {j0.get('error', '')[:80]!r}; put {st1} {j1.get('file')}; "
+          f"again {st2}, replace=1 {st2r}; not PEM {st3} {j3.get('error', '')[:60]!r}; list {st4} "
+          f"{sorted(files)}; dry after {st5}")
+
+    # mutual TLS files: a key that agrees with the certificate, and one that does not
+    sk1, _ = put("gw15.crt", pki["client.crt"].read_bytes())
+    sk2, jk = put("gw15.key", pki["client.key"].read_bytes())
+    sk3, _ = put("other.key", pki["server.key"].read_bytes())
+    stk, _, bk = http("GET", "/api/files")
+    kf = {f.get("name"): f for f in (as_json(bk) or {}).get("files", [])}
+    st6, j6 = dry({"enabled": True, "ca_file": "missing.pem", "cert_file": "gw15.crt",
+                   "key_file": "other.key"})
+    st7, j7 = dry({"enabled": True, "ca_file": "missing.pem", "cert_file": "gw15.crt",
+                   "key_file": "gw15.key"})
+    key = kf.get("gw15.key", {})
+    check("Issue #221 the client key must agree with the client certificate: GET /api/files gives "
+          "the key type and the agreeing certificate (never the key); a dry run with another key "
+          "is refused at mqtt.tls.key_file, with the right key it passes",
+          sk1 == sk2 == sk3 == 201 and jk.get("file", {}).get("kind") == "key"
+          and key.get("key_type") == "EC P-256" and key.get("agrees_with") == ["gw15.crt"]
+          and kf.get("other.key", {}).get("agrees_with") == [] and b"PRIVATE" not in bk
+          and st6 == 400 and j6.get("path") == "mqtt.tls.key_file"
+          and "does not agree with the certificate gw15.crt" in j6.get("error", "")
+          and st7 == 200,
+          f"put {sk1} {sk2} {sk3}; key {key}; other {kf.get('other.key')}; mismatch {st6} "
+          f"{j6.get('path')} {j6.get('error', '')[:80]!r}; match {st7}")
+
+    # the restart: the CA is now there, the session comes up over TLS
+    asked = time.monotonic()
+    rs = http("POST", "/api/restart", b"")[0]
+    used = gw.wait_log(r"TLS: ca_file: 1 certificate\(s\) from /cfg/missing\.pem", 60, asked)
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 60) if used else None
+    check("Issue #221 after the load of the CA file and a restart, the gateway connects to the "
+          "TLS broker with it (NBIRTH)", rs == 202 and used and nb is not None,
+          f"restart {rs}; {(used and 'CA loaded') or 'no CA line'}; NBIRTH {nb is not None}")
 
 
 # Issue #80: internal RAM without PSRAM (see check_ram_margin for the reasoning)
@@ -2238,6 +2324,34 @@ def run_primary_host(args, work):
     nb = obs.wait(nbirth_t, 10)
     check("SPB-13 STATE online -> NBIRTH (and the DBIRTHs)", nb and nb[2].seq == 0,
           f"NBIRTH {nb[0] - sent:.2f} s after STATE online" if nb else "no NBIRTH")
+
+    # #223: ota.mqtt is off by default: the NBIRTH has no Node Control/Firmware Update and no
+    # Node Control/Firmware SHA-256 (tck-id-topics-nbirth-metric-reqs), and an NCMD with them
+    # starts no update (tck-id-operational-behavior-data-commands-ncmd-metric-name); the log
+    # gives the cause
+    since = time.monotonic()
+    obs.publish_cmd(f"{T}/NCMD/{node}", [
+        {"name": "Node Control/Firmware SHA-256", "datatype": 12, "string_value": "a" * 64},
+        {"name": "Node Control/Firmware Update", "datatype": 12,
+         "string_value": "https://10.0.2.2:1/gw.bin"}])
+    obs.publish_cmd(f"{T}/NCMD/{node}", [{"alias": 40, "datatype": 12,
+                                          "string_value": "https://10.0.2.2:1/gw.bin"}])
+    off = gw.wait_log(r"NCMD: metric '' \(alias 40\) discarded: firmware updates from MQTT are "
+                      r"off \(ota\.mqtt\); no update started", 10, since)
+    named = gw.find(r"NCMD: metric 'Node Control/Firmware (Update|SHA-256)'.* discarded: firmware "
+                    r"updates from MQTT are off \(ota\.mqtt\)", since)
+    time.sleep(1)
+    started = gw.find(r"fw: downloading|fw: firmware update (refused|failed)|NCMD Firmware Update "
+                      r"from", since)
+    check("Issue #223 without ota.mqtt (the default) the NBIRTH has no Node Control/Firmware "
+          "Update and no Node Control/Firmware SHA-256, and an NCMD with them (by name or by "
+          "alias) starts no update; the log gives the cause",
+          nb and metric(nb[2], name="Node Control/Firmware Update") is None
+          and metric(nb[2], alias=40) is None
+          and metric(nb[2], name="Node Control/Firmware SHA-256") is None
+          and fw_state(nb[2]) is not None and off and len(named) == 2 and not started,
+          f"NBIRTH metrics {[m.name for m in nb[2].metrics if 'irmware' in m.name] if nb else None}; "
+          f"refused {len(named)} by name, by alias {off is not None}; started {started[:1]}")
 
     since = time.monotonic()
     host_state(obs, host, False, ts + 500, retain=False)
@@ -3603,7 +3717,14 @@ def check_csrf(gw, since):
     st_ref, _, b_ref = http("PUT", dry, doc, headers={"Referer": me + "/"})
     st_cli, _, b_cli = http("PUT", dry, doc)
     st_page, _, page = http("GET", "/")
-    ui_sends = page.count(b'"X-Requested-With":"gateway"')
+    # the three writes of the page: the API helper and the PEM file load (fetch, an object of
+    # headers), and the image upload (#215, XMLHttpRequest.setRequestHeader)
+    sends = {"API helper": page.count(b'const h={"X-Requested-With":"gateway"}'),
+             "PEM file load": page.count(b'headers:{"Content-Type":"application/x-pem-file",'
+                                         b'"X-Requested-With":"gateway"}'),
+             "image upload": page.count(b'x.setRequestHeader("X-Requested-With","gateway")')}
+    ui_sends = page.count(b'"X-Requested-With":"gateway"') + \
+        page.count(b'setRequestHeader("X-Requested-With","gateway")')
     up = gw.wait_log(r"restart requested through the REST API", 0.5, since) is None
     check("Issue #100 CSRF: writes without X-Requested-With or from another origin (Origin, "
           "Referer, 'null', http) -> 403 before the password check (also with a wrong password: "
@@ -3614,13 +3735,14 @@ def check_csrf(gw, since):
           ", ".join(f"{k} -> {v}" for k, v in forged.items()) + f"; same origin text/plain -> "
           f"{wrong_type}; still up {up}; " + " | ".join(gw.find(r"^web\s", asked)))
     check("Issue #100 the web UI still works: its requests (X-Requested-With, same Origin and "
-          "Referer) are accepted, the page sends the header on every write (API helper and image "
-          "upload), and a script with the header and no Origin is accepted",
+          "Referer) are accepted, the page sends the header on every write (API helper, image "
+          "upload and PEM file upload, #221), and a script with the header and no Origin is accepted",
           st_ui == 200 and (as_json(b_ui) or {}).get("saved") is False and st_ref == 200
-          and st_cli == 200 and st_page == 200 and ui_sends == 2,
+          and st_cli == 200 and st_page == 200 and ui_sends == 3
+          and all(n == 1 for n in sends.values()),
           f"UI PUT dry run {st_ui} {b_ui[:60]!r}; Referer only {st_ref} {b_ref[:60]!r}; no Origin "
           f"{st_cli} {b_cli[:60]!r}; page "
-          f"{st_page} with the header in {ui_sends} request(s)")
+          f"{st_page} with the header in {ui_sends} request(s) {sends}")
 
 
 # ---------------------------------------------------------------- scenario
@@ -3668,9 +3790,9 @@ def wait_progress(ready, token, stall_s, cap_s, poll_s=1.0, clock=time.monotonic
         sleep(poll_s)
 
 
-def upload_firmware(gw, data, auth=("admin", WEB_PASSWORD), force=False):
-    """POST /api/firmware with the image @data (@force: ?force=1, issue #144), as http() does it
-    (Basic auth, the CSRF header,
+def upload_firmware(gw, data, auth=("admin", WEB_PASSWORD), force=False, sha256=None):
+    """POST /api/firmware with the image @data (@force: ?force=1, issue #144; @sha256: the header
+    X-Image-SHA256, issue #215), as http() does it (Basic auth, the CSRF header,
     the device certificate into PEER_CERT): (status, headers dict, body bytes), or (None, {},
     reason) when the request failed, stalled or ran past its cap (issue #115, wait_progress()).
     Progress: the bytes written as @gw's shell reports them, and its console lines of the upload
@@ -3679,6 +3801,8 @@ def upload_firmware(gw, data, auth=("admin", WEB_PASSWORD), force=False):
     stall_s, cap_s = UPLOAD_STALL_S * scale, UPLOAD_CAP_S * scale
     h = {"X-Requested-With": "e2e", "Content-Type": "application/octet-stream",
          "Content-Length": str(len(data))}
+    if sha256 is not None:
+        h["X-Image-SHA256"] = sha256
     if auth is not None:
         h["Authorization"] = "Basic " + base64.b64encode(f"{auth[0]}:{auth[1]}".encode()).decode()
     first_line = len(gw.lines)
@@ -3751,6 +3875,15 @@ CAPS_OFFSET = 288   # gw_ota.h GW_OTA_CAPS_OFFSET: the capabilities block after 
 # the FreeRTOS tick of the boot); the bound to wait for its "installed" state after its NBIRTH (or
 # its boot)
 SELFCHECK_WAIT_S = 150
+
+
+def image_cfg_schema(src):
+    """The configuration schema that the app image @src declares in its capabilities block
+    (GW_CONFIG_SCHEMA of its build, issue #144)."""
+    b = pathlib.Path(src).read_bytes()
+    if struct.unpack_from("<I", b, CAPS_OFFSET)[0] != 0x50435747:
+        raise SystemExit(f"{src}: no capabilities block at {CAPS_OFFSET}")
+    return struct.unpack_from("<H", b, CAPS_OFFSET + 12)[0]
 
 
 def fw_image(src, version, dst, corrupt=False, caps_version=None, cfg_schema=None):
@@ -4095,23 +4228,32 @@ def run_ota(args, work):
     obs = Observer(port)
     cfg = node_config(node, port=port)
     cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
-    cfg["ota"] = {"ca_file": "ca.pem"}
+    # #223: the updates by NCMD need ota.mqtt (off by default)
+    cfg["ota"] = {"ca_file": "ca.pem", "mqtt": True}
     t0 = time.monotonic()
     gw = boot_variant(args, work, "ota", cfg, {"ca.pem": pki["ca.pem"].read_bytes()})
     nbirth_t, ndata_t, ncmd_t = f"{T}/NBIRTH/{node}", f"{T}/NDATA/{node}", f"{T}/NCMD/{node}"
     try:
         nb = obs.wait(nbirth_t, 40)
         if not check("FW-1 NBIRTH declares Node Control/Firmware Update (String) and the update's "
-                     "state and progress", nb and metric(nb[2], alias=40) is not None
+                     "state and progress; with ota.mqtt (#223) also Node Control/Firmware SHA-256 "
+                     "(String, #215; tck-id-topics-nbirth-metrics)",
+                     nb and metric(nb[2], alias=40) is not None
                      and metric(nb[2], alias=40).datatype == 12 and fw_state(nb[2]) == "idle"
-                     and metric(nb[2], alias=42) is not None,
+                     and metric(nb[2], alias=42) is not None
+                     and metric(nb[2], name="Node Control/Firmware SHA-256") is not None
+                     and metric(nb[2], name="Node Control/Firmware SHA-256").datatype == 12
+                     and metric(nb[2], name="Node Control/Firmware SHA-256").alias == 44,
                      f"state {fw_state(nb[2])!r}" if nb else "no NBIRTH"):
             return
         gw.wait_log(r"edge: time synchronised", 10, t0)   # the image server's certificate dates
 
-        def update(url):
+        def update(url, sha256=None):
+            # issue #215: the SHA-256 after the URL in the same NCMD still applies to it
             obs.publish_cmd(ncmd_t, [{"name": "Node Control/Firmware Update", "datatype": 12,
-                                      "string_value": url}])
+                                      "string_value": url}]
+                            + ([{"name": "Node Control/Firmware SHA-256", "datatype": 12,
+                                 "string_value": sha256}] if sha256 is not None else []))
 
         def states(since):
             return [fw_state(m[2]) for m in CAPTURE
@@ -4214,7 +4356,8 @@ def run_ota(args, work):
         # NCMD with the URL: download with progress, restart into it, on trial ("testing"), then
         # installed by its self-check (issue #144); a 250-character URL (issue #87: whole)
         asked = time.monotonic()
-        update(long_url(250))
+        v2_sha = hashlib.sha256(images["v2"].read_bytes()).hexdigest()
+        update(long_url(250), v2_sha.upper())   # issue #215: capital letters too
         nb2 = obs.wait(nbirth_t, 240, lambda p: metric(p, name="Node Info/Firmware").string_value
                        == "e2e-v2")
         conf2 = obs.wait(ndata_t, SELFCHECK_WAIT_S, lambda p: fw_state(p) == "installed e2e-v2")
@@ -4224,12 +4367,14 @@ def run_ota(args, work):
         took = [ln for ln in gw.find(r"fw: downloading firmware e2e-v2", asked)]
         selfcheck = gw.find(r"fw: firmware e2e-v2 installed: the self-check passed in normal mode",
                             asked)
+        agrees = gw.find(rf"fw: image e2e-v2: the SHA-256 agrees \({v2_sha}\)", asked)
         check("FW-1 update by NCMD over HTTPS (CA from ota.ca_file, a 250-character URL): progress "
               "as NDATA, restart into the new image, on trial (NBIRTH 'testing e2e-v2'), then "
-              "installed by its self-check in normal mode (issue #144)",
+              "installed by its self-check in normal mode (issue #144); issue #215: the NCMD "
+              "Firmware SHA-256 (capital letters, after the URL) is checked before the boot",
               nb2 and conf2 and "restarting into e2e-v2" in seen and fw_state(nb2[2]) ==
               "testing e2e-v2" and prog and max(prog) == 100 and len(prog) >= 5 and took
-              and selfcheck,
+              and selfcheck and agrees,
               f"states {list(dict.fromkeys(seen))}; progress {prog[:12]}; "
               f"{nb2[0] - asked:.1f} s to the new NBIRTH; self-check {bool(selfcheck)}"
               if nb2 else f"states {seen}")
@@ -4252,8 +4397,34 @@ def run_ota(args, work):
         # issue #144 items 1 and 6: a web upload of v3; during its trial the other-slot button
         # (web and NCMD) and a configuration save are refused; the self-check installs it
         gw.wait_log(r"edge: time synchronised", 10, nb3[0] - 5 if nb3 else t0)
+        # issue #215: an upload whose SHA-256 does not agree is not installed: 422 with the two
+        # values (also in GET /api/firmware), no restart; a wrong format is refused at once
+        v3 = images["v3"].read_bytes()
+        v3_sha = hashlib.sha256(v3).hexdigest()
+        wrong = "0" * 63 + "1"
         asked = time.monotonic()
-        st, _, body = upload_firmware(gw, images["v3"].read_bytes())
+        st_f, _, b_f = upload_firmware(gw, v3[:4096], sha256="12 34")
+        st_w, _, b_w = upload_firmware(gw, v3, sha256=wrong)
+        fw_w = as_json(http("GET", "/api/firmware")[2]) or {}
+        jw = as_json(b_w) or {}
+        time.sleep(2)
+        restarted = any(m[1] == f"{T}/NDEATH/{node}" for m in CAPTURE if m[0] >= asked)
+        mism = obs.wait(ndata_t, 10, lambda p: (fw_state(p) or "") ==
+                        "failed: image e2e-v3: the SHA-256 of the file does not agree")
+        check("Issue #215 an upload with X-Image-SHA256: a wrong format -> 400; a SHA-256 that does "
+              "not agree -> 422 with the two values (GET /api/firmware too), state failed, the "
+              "image is not installed and the gateway does not restart",
+              st_f == 400 and b"X-Image-SHA256: expected 64 hexadecimal characters" in b_f
+              and st_w == 422 and jw.get("sha256_expected") == wrong
+              and jw.get("sha256_file") == v3_sha and fw_w.get("sha256_expected") == wrong
+              and fw_w.get("sha256_file") == v3_sha and fw_w.get("phase") == "failed"
+              and fw_w.get("mqtt") is True and mism and not restarted,
+              f"format {st_f} {b_f[:100]!r}; mismatch {st_w} {b_w[:240]!r}; GET phase "
+              f"{fw_w.get('phase')!r} expected {fw_w.get('sha256_expected')!r} file "
+              f"{fw_w.get('sha256_file')!r} mqtt {fw_w.get('mqtt')!r}; NDATA {mism is not None}; "
+              f"restarted {restarted}")
+        asked = time.monotonic()
+        st, _, body = upload_firmware(gw, v3, sha256=v3_sha)
         nb4 = obs.wait(nbirth_t, 240, lambda p: metric(p, name="Node Info/Firmware").string_value
                        == "e2e-v3")
         st_b, _, b_b = http("POST", "/api/firmware/other", b"", timeout=30)
@@ -4369,20 +4540,24 @@ def run_ota_wiring(args, work):
     self-check, and stays after a power cut. Safe mode is in run_ota_trial (the budget of one
     attempt);
     (4) issue #146: after an update to an image that adds a key (the emulator counts
-    network.hostname as schema 2, sdkconfig.qemu), the first save of the key keeps the earlier
+    network.hostname as the schema after the one of the build, gw_storage.c), the first save of
+    the key keeps the earlier
     document as config.prev.json; a second change makes the button refuse the earlier image with
     the JSON path that changed; with the document of the capture again, the button restores the
     earlier document, and the earlier image starts in normal mode with it."""
     fwdir = work / "fw-wiring"
     fwdir.mkdir(exist_ok=True)
     src = app_source(args)
+    # the schema that the image under test reads (GW_CONFIG_SCHEMA); the emulator counts
+    # network.hostname as the next one (gw_storage.c, k_sim_since)
+    k2 = image_cfg_schema(src) + 1
     img = {
         "e2e-rej": signed_image(args, src, "e2e-rej", fwdir, "e2e-rej"),
         "e2e-rjn": signed_image(args, src, "e2e-rjn", fwdir, "e2e-rjn", cfg_schema=1),
         "e2e-s0": signed_image(args, src, "e2e-s0", fwdir, "e2e-s0", cfg_schema=0),
         "e2e-v1caps": signed_image(args, src, "e2e-v1caps", fwdir, "e2e-v1caps", caps_version=1),
         "e2e-com": signed_image(args, src, "e2e-com", fwdir, "e2e-com"),
-        "e2e-k2": signed_image(args, src, "e2e-k2", fwdir, "e2e-k2", cfg_schema=2),
+        "e2e-k2": signed_image(args, src, "e2e-k2", fwdir, "e2e-k2", cfg_schema=k2),
     }
 
     def upload(version, pw, force=False):
@@ -4557,8 +4732,9 @@ def run_ota_wiring(args, work):
     finally:
         gw.kill()
 
-    # 4. issue #146: the configuration from before an update. The base image reads schema 1;
-    # e2e-k2 declares schema 2, and in the QEMU build network.hostname is a schema 2 key
+    # 4. issue #146: the configuration from before an update. The base image reads schema k2 - 1;
+    # e2e-k2 declares schema k2, and in the QEMU build network.hostname is a schema k2 key (the
+    # documents without it need schema 1)
     cfg = node_config(WIRING_NODE)
     cfg["network"].pop("hostname", None)
     cfg_k = json.loads(json.dumps(cfg))
@@ -4622,7 +4798,7 @@ def run_ota_wiring(args, work):
         check("Issue #146 when the configuration changed since the capture, the button refuses the "
               "earlier image (409) with the paths that are too new and the paths that changed "
               "since the update; nothing restarts",
-              saved2 and st_r == 409 and b"network.hostname (2)" in b_r
+              saved2 and st_r == 409 and f"network.hostname ({k2})".encode() in b_r
               and b"it changed since (network.hostname)" in b_r and not booted,
               f"saved {saved2}; POST {st_r} {b_r[:300]!r}; booted {booted[:1]}; {notes}")
 
@@ -5142,7 +5318,7 @@ def run_nvs_ota(args, work):
     obs = observer_retry(port, auth=OBS_AUTH)
     # the password in clear in config.json: the plain build moves it to its (unencrypted) NVS
     cfg = node_config(node, port=port, username="gw42", password=secret)
-    cfg["ota"] = {"ca_file": "ca.pem"}
+    cfg["ota"] = {"ca_file": "ca.pem", "mqtt": True}   # #223: the update by NCMD needs it
     base = pathlib.Path(args.plain_flash)
     files = {"config.json": json.dumps(cfg, indent=2).encode(), "ca.pem": pki["ca.pem"].read_bytes()}
     flash = flash_variant(args, work, "nvsota", files, base=base)
@@ -6987,6 +7163,143 @@ def check_properties_and_quality(obs, slave, db, ddata_t):
           f"after: {round(gm.float_value, 3) if gm else None} {props(gm) if gm else ''}")
 
 
+def run_hours_of(p, ch):
+    """#217: the value of Run Hours/<ch> ("DI/4", "DO/2"; UInt64 s) in an NBIRTH (by name) or an
+    NDATA (by alias 356 + channel, DI/1..8 then DO/1..8), or None."""
+    k = (0 if ch.startswith("DI") else 8) + int(ch[3:]) - 1
+    m = metric(p, name=f"Run Hours/{ch}") or metric(p, alias=356 + k)
+    return m.long_value if m is not None else None
+
+
+def check_local_io_channels(gw, obs, nb, ncmd_t, ndata_t, t0):
+    """#211 invert and debounce of each DI, #218 a fast counter (the simulated PCNT), #210 a pulse
+    DO, #217 run hours and #204 the DO commands of the web UI, with the local_io keys of
+    tools/e2e/fs/config.json: DI/5 inverted with 200 ms, DI/8 a fast counter, DO/7 a pulse of
+    300 ms, run hours of DI/4 and DO/2, rules on DO/5 (follow DI/2) and DO/6."""
+    # #211: DI/5 is inverted: true at rest; the console's level 1 makes it false after 200 ms
+    rest = metric(nb[2], name="DI/5")
+    obs.drain()
+    sent = time.monotonic()
+    gw.console("di 5 1")
+    nd = obs.wait(ndata_t, 3, lambda q: metric(q, alias=14) is not None)
+    lat = (nd[0] - sent) * 1000 if nd else None
+    obs.drain()
+    gw.console("di 5 0")
+    nd2 = obs.wait(ndata_t, 3, lambda q: counter_of(q, 5) is not None)
+    check("#211 invert and debounce for each DI: DI/5 (invert, 200 ms) is true at rest in the "
+          "NBIRTH, false at least 200 ms after the input becomes active, and its counter counts the "
+          "activation after the inversion (the input back to rest)",
+          rest is not None and rest.boolean_value and nd
+          and metric(nd[2], alias=14).boolean_value is False and lat >= 180
+          and nd2 and counter_of(nd2[2], 5) == 1,
+          f"NBIRTH DI/5 {rest.boolean_value if rest else None}; console->NDATA {lat:.0f} ms; "
+          f"Counter/5 after the release {counter_of(nd2[2], 5) if nd2 else None}"
+          if nd else f"NBIRTH DI/5 {rest.boolean_value if rest else None}; no NDATA for DI/5")
+
+    # #218: DI/8 is a fast counter: the PCNT counts it (the simulated unit in QEMU: 'pcnt' and
+    # the edges of 'di'), not the debounced activations
+    obs.drain()
+    gw.console("pcnt 8 1000")
+    nd = obs.wait(ndata_t, 3, lambda q: counter_of(q, 8) is not None)
+    c1 = counter_of(nd[2], 8) if nd else None
+    since = time.monotonic()
+    gw.console("di 8 1")
+    nd = obs.wait(ndata_t, 3, lambda q: counter_of(q, 8) is not None)
+    time.sleep(1)
+    gw.console("di 8 0")
+    time.sleep(0.5)
+    later = [counter_of(m[2], 8) for m in CAPTURE if m[0] >= since and m[1] == ndata_t
+             and counter_of(m[2], 8) is not None]
+    check("#218 fast counter: Counter/8 counts the pulses of the PCNT unit of DI/8 (1000 from the "
+          "simulated unit, then one edge of the input), and the debounced activation does not "
+          "count it a second time", c1 == 1000 and later == [1001],
+          f"Counter/8 after 'pcnt 8 1000': {c1}; after one activation: {later}")
+
+    # #210: DO/7 is a pulse DO of 300 ms: NCMD true gives NDATA true, then NDATA false
+    obs.drain()
+    since = time.monotonic()
+    obs.publish_cmd(ncmd_t, [{"name": "DO/7", "datatype": 11, "boolean_value": True}])
+    on = obs.wait(ndata_t, 3, lambda q: do_states(q).get(7) is True)
+    off = obs.wait(ndata_t, 3, lambda q: do_states(q).get(7) is False)
+    dt = (off[0] - on[0]) * 1000 if on and off else None
+    log = gw.wait_log(r"io: DO7: pulse of 300 ms", 2, since)
+    check("#210 pulse DO: an NCMD DO/7=true (do_pulse_ms 300) gives an NDATA with true, and an NDATA "
+          "with false after the pulse, without a second command (tck-id-topics-ndata-payload)",
+          on and off and 200 <= dt <= 3000 and log,
+          f"true -> false {dt:.0f} ms; {(gw.find(r'io: DO7: pulse', since) or ['no log'])[0]}"
+          if dt is not None else f"NDATA true {bool(on)}, NDATA false {bool(off)}")
+
+    # #217: run hours of DI/4 and DO/2 (DO/2 is on since the boot: do_failsafe "on")
+    names = {m.name: m.datatype for m in nb[2].metrics if m.name.startswith("Run Hours/")}
+    gw.console("di 4 1")
+    time.sleep(3)
+    obs.drain()
+    gw.console("di 4 0")
+    nd = obs.wait(ndata_t, 3, lambda q: run_hours_of(q, "DI/4") is not None)
+    rh4 = run_hours_of(nd[2], "DI/4") if nd else None
+    # DO/2 is on since the boot: its value so far (the NBIRTH, or an NDATA of each 60 s while
+    # on); then 3 s off, 3 s on by NCMD, and off again: the NDATA of the last edge has 3 s more
+    up = time.monotonic() - t0
+    off2 = set_do(obs, ncmd_t, ndata_t, {2: False})
+    time.sleep(1.5)
+    seen = [run_hours_of(m[2], "DO/2") for m in CAPTURE if m[0] >= nb[0]
+            and m[1] in (ndata_t, nb[1]) and run_hours_of(m[2], "DO/2") is not None]
+    before = seen[-1] if seen else None
+    on2 = set_do(obs, ncmd_t, ndata_t, {2: True})
+    time.sleep(3)
+    obs.drain()
+    since = time.monotonic()
+    set_do(obs, ncmd_t, ndata_t, {2: False})
+    # the run hours can be in the NDATA that confirms the command (set_do takes it), or in the
+    # next one
+    end, rh2 = time.monotonic() + 3, None
+    while rh2 is None and time.monotonic() < end:
+        rh2 = next((run_hours_of(m[2], "DO/2") for m in CAPTURE if m[0] >= since
+                    and m[1] == ndata_t and run_hours_of(m[2], "DO/2") is not None), None)
+        time.sleep(0.1)
+    check("#217 run hours: the NBIRTH has Run Hours/DI/4 and Run Hours/DO/2 (UInt64, only the "
+          "channels of local_io.run_hours: tck-id-topics-nbirth-metric-reqs); an NDATA gives the "
+          "time on of DI/4 (3 s) when it goes off; DO/2 (on since the boot) has a value up to the "
+          "time since the boot, and 3 s more after 3 s on by NCMD",
+          names == {"Run Hours/DI/4": 8, "Run Hours/DO/2": 8} and run_hours_of(nb[2], "DI/4") == 0
+          and rh4 is not None and 2 <= rh4 <= 4 and off2 and on2 and before is not None
+          and before <= up and rh2 is not None and 2 <= rh2 - before <= 4,
+          f"NBIRTH {names}; DI/4 {rh4} s; DO/2 {before} s before ({up:.0f} s since QEMU started), "
+          f"{rh2} s after 3 s more on")
+
+    # #204: POST /api/do sets a DO through the queue of the NCMD; the NDATA has the new state; a DO
+    # of a local rule is refused
+    auth = ("admin", commissioning_password(gw, t0, 5) or "?")
+    obs.drain()
+    since = time.monotonic()
+    st1, _, b1 = http("POST", "/api/do", {"do": 8, "on": True}, auth=auth)
+    on8 = obs.wait(ndata_t, 3, lambda q: do_states(q).get(8) is True)
+    st2, _, b2 = http("POST", "/api/do", {"do": 5, "on": False}, auth=auth)
+    st3, _, _ = http("POST", "/api/do", {"do": 8, "on": False}, auth=auth)
+    off8 = obs.wait(ndata_t, 3, lambda q: do_states(q).get(8) is False)
+    st4, _, _ = http("POST", "/api/do", {"do": 9, "on": True}, auth=auth)
+    st5, _, _ = http("POST", "/api/do", {"do": 8, "on": True}, auth=auth, headers={"X-Requested-With": None})
+    refused = gw.wait_log(r"io: DO5 is driven by local rule 0 \(follow DI2\): web command refused", 2,
+                          since)
+    st, _, body = http("GET", "/api/status", auth=auth)
+    io = (as_json(body) or {}).get("io", {})
+    rh = io.get("run_hours", {})
+    status_ok = io.get("rules") == [{"di": 2, "do": 5, "mode": "follow"},
+                                    {"di": 3, "do": 6, "mode": "toggle"}] \
+        and io.get("pulse_ms") == [0, 0, 0, 0, 0, 0, 300, 0] and io.get("fast") == 0x80 \
+        and isinstance(rh.get("di", [None] * 8)[3], int) and rh.get("di", [0])[0] is None \
+        and isinstance(rh.get("do", [None] * 8)[1], int) and rh.get("do", [0])[0] is None
+    check("#204 POST /api/do: DO/8 on and off through the queue of the NCMD commands, each state in "
+          "the next NDATA (tck-id-topics-ndata-payload); a DO of a local rule is refused (409), a "
+          "bad DO number (400) and a request without X-Requested-With (403) too; /api/status gives "
+          "the rules, the pulse times, the fast counters and the run hours",
+          st1 == 200 and on8 and st2 == 409 and refused and st3 == 200 and off8 and st4 == 400
+          and st5 == 403 and status_ok,
+          f"on {st1} {b1[:60]!r} NDATA {bool(on8)}; DO/5 {st2} {b2[:70]!r}; off {st3} NDATA "
+          f"{bool(off8)}; DO/9 {st4}; no X-Requested-With {st5}; status {st}: rules "
+          f"{io.get('rules')}, pulse_ms {io.get('pulse_ms')}, fast {io.get('fast')}, run_hours {rh}")
+
+
 def check_status_api(gw, since):
     """Issue #75: /api/status (HTTPS) reports what IO-3/4/6/7, SPB-17 and TIME-1..3 added: pulse
     counters, failsafe, DOs owned by a local rule, unknown DOs, the buzzer alarm, the clock and
@@ -7009,12 +7322,15 @@ def check_status_api(gw, since):
         and tags.get("Energy") == MB6["Energy"] and isinstance(tags.get("Serial"), str) \
         and texts.get("Energy") == str(MB6["Energy"]) \
         and isinstance(tags.get("Counter"), int) and texts.get("Counter") == str(tags["Counter"]) \
-        and texts.get("Serial") is None and texts.get("Voltage") is None
+        and texts.get("Serial") is None and texts.get("Voltage") is None \
+        and meter.get("enabled") is True and meter.get("write_refused") == 0
     check("Issue #75 /api/status over HTTPS: pulse counters, failsafe, DOs of local rules, unknown "
           "DOs, buzzer alarm, clock (SNTP/RTC), diagnostics period, exact UInt64 and string values; "
-          "issue #188: value_text of the Int64 and UInt64 tags only",
+          "issue #188: value_text of the Int64 and UInt64 tags only; #214 enabled and #196 "
+          "write_refused of each device",
           ok, f"HTTP {st}; io {io}; buzzer {bz}; time {tm}; Energy {tags.get('Energy')!r} "
-              f"Serial {tags.get('Serial')!r}; value_text {texts}")
+              f"Serial {tags.get('Serial')!r}; value_text {texts}; enabled {meter.get('enabled')!r} "
+              f"write_refused {meter.get('write_refused')!r}")
 
 
 def check_rtc(gw, obs, nb, t0, since_reboot, ndata_t, first_nbirth):
@@ -7132,6 +7448,55 @@ def check_modbus_tcp_via_ap(gw, slave):
           f"{all(h2.values())}; answer after {again!r} (expected {expect!r})")
 
 
+LOCAL_UNIT = 100   # #216: modbus_tcp.local_unit_id of tools/e2e/fs/config.json
+
+
+def check_modbus_local(gw, obs, ndata_t):
+    """Issue #216: the local unit of the Modbus TCP server (modbus_tcp.local_unit_id 100,
+    local_writes true) answers from the I/O of the gateway, never from the bus: FC02 gives the
+    DIs (DI/4 set with the emulator), FC04 the counter of DI/4 (uint64 big, +1 after one pulse),
+    FC05 switches DO/1 through the local_io task (FC01 reads it back, the NDATA has it) and back.
+    A DO that a local rule drives (DO/5, rule di 2 -> do 5) gives exception 03; FC03 gives 01; an
+    address past DO/8 gives 02."""
+    def frame(pdu):
+        try:
+            return mbap_raw(pdu, unit=LOCAL_UNIT)
+        except OSError as e:
+            return f"{e}".encode()
+
+    def u64(a):
+        return struct.unpack(">Q", a[2:10])[0] if a and len(a) == 10 and a[0] == 4 else None
+
+    c0 = u64(frame(b"\x04\x00\x0c\x00\x04"))           # the counter of DI/4: registers 12..15
+    gw.console("di 4 1")
+    time.sleep(0.5)                                          # > the debounce of 20 ms
+    di = frame(b"\x02\x00\x00\x00\x08")
+    gw.console("di 4 0")
+    time.sleep(0.5)
+    c1 = u64(frame(b"\x04\x00\x0c\x00\x04"))
+    before = frame(b"\x01\x00\x00\x00\x08")
+    on0 = bool(before[2] & 1) if before and len(before) == 3 and before[0] == 1 else None
+    obs.drain()
+    wr = frame(b"\x05\x00\x00" + (b"\x00\x00" if on0 else b"\xff\x00"))
+    after = frame(b"\x01\x00\x00\x00\x01")
+    nd = obs.wait(ndata_t, 5, pred=lambda pl: metric(pl, alias=ALIAS["DO/1"]) is not None)
+    do1 = metric(nd[2], alias=ALIAS["DO/1"]) if nd else None
+    back = frame(b"\x05\x00\x00" + (b"\xff\x00" if on0 else b"\x00\x00"))
+    rule = frame(b"\x05\x00\x04\xff\x00")
+    hold = frame(b"\x03\x00\x00\x00\x01")
+    past = frame(b"\x01\x00\x08\x00\x01")
+    ok = c0 is not None and c1 == c0 + 1 and di[:2] == b"\x02\x01" and di[2] & 0x08 \
+        and on0 is not None and wr[:3] == b"\x05\x00\x00" and after == bytes([1, 1, 0 if on0 else 1]) \
+        and do1 is not None and do1.boolean_value == (not on0) and back[:1] == b"\x05" \
+        and rule == b"\x85\x03" and hold == b"\x83\x01" and past == b"\x81\x02"
+    check("Issue #216 Modbus TCP local unit 100: FC02 DIs, FC04 counter of DI/4 (uint64 big, +1 per "
+          "pulse), FC05 DO/1 through the local_io task (FC01 and NDATA confirm, then back); DO/5 of "
+          "a local rule -> 03, FC03 -> 01, coil 8 -> 02", ok,
+          f"counter {c0} -> {c1}; FC02 {di!r}; DO/1 {on0} -> FC05 {wr!r}, FC01 {after!r}, NDATA "
+          f"{do1.boolean_value if do1 else None}, back {back!r}; DO/5 {rule!r}; FC03 {hold!r}; "
+          f"coil 8 {past!r}")
+
+
 def check_diagnostics(obs, nbirth, ndata_t):
     """SPB-17 / MB-13: NBIRTH with Uptime, Free Heap, Min Free Heap (no RSSI: no Wi-Fi in QEMU) and
     the Modbus DataSet (a row per device, counters of the dead units too); then, with
@@ -7243,7 +7608,9 @@ def run_network_variant(args, work, slave):
         register bytes, and a DCMD with Bytes writes them back (FC16).
       * SPB-18: two devices of type "Pump" (PumpA and PumpB, both on unit 1 so that unit 2 keeps
         the single FC03 the main scenario checks, at holding 230 and 231): one template
-        definition in the NBIRTH, an instance per DBIRTH, a DCMD member write and its DDATA."""
+        definition in the NBIRTH, an instance per DBIRTH, a DCMD member write and its DDATA.
+      * #196, #197, #214 (check_devices_gw02): a device with write_multiple and a tag with write
+        limits (Drive, unit 1 holding 250), and a disabled device (Spare, unit 1 holding 240)."""
     node = "GW02"
     cfg = json.loads(config_json())
     cfg["sparkplug"]["edge_node_id"] = node
@@ -7252,6 +7619,9 @@ def run_network_variant(args, work, slave):
                       "wifi": {"enabled": True, "ssid": "Plant WLAN", "password": "12345678",
                                "role": "backup", "failback_s": 30}}
     cfg["modbus_tcp"] = {"enabled": True, "allowed_clients": ["192.0.2.0/24"]}
+    # #201: the first SNTP server never answers (TEST-NET-1, no route), the second one is the
+    # harness' responder
+    cfg["ntp"] = {"servers": ["192.0.2.1", "10.0.2.2"]}
     cfg["devices"].append({"name": "Raw", "unit_id": 1, "poll_ms": 500, "tags": [
         {"name": "Block", "area": "holding", "address": 220, "type": "bytes", "length": 3,
          "writable": True}]})
@@ -7264,17 +7634,33 @@ def run_network_variant(args, work, slave):
             {"name": "Run", "area": "coil", "address": 5 + k, "type": "bool"}]})
         slave.ctx.setValues(3, 230 + k, [1450 + 10 * k])
         slave.ctx.setValues(1, 5 + k, [True])
+    # #197 and #196: FC16 also for one register, and the write limits of a tag
+    cfg["devices"].append({"name": "Drive", "unit_id": 1, "poll_ms": 500, "write_multiple": True,
+                           "tags": [{"name": "Speed", "area": "holding", "address": 250,
+                                     "type": "uint16", "writable": True, "write_min": 0,
+                                     "write_max": 1500}]})
+    slave.ctx.setValues(3, 250, [100])
+    # #214: a disabled device on a unit that answers: it must get no request
+    cfg["devices"].append({"name": "Spare", "unit_id": 1, "poll_ms": 200, "enabled": False,
+                           "tags": [{"name": "Level", "area": "holding", "address": 240,
+                                     "type": "uint16", "writable": True}]})
     flash = flash_variant(args, work, "network", {"config.json": json.dumps(cfg, indent=2).encode()})
     obs = Observer()
     gw = Gateway(args, work / "uart0-network.log", flash)
     t0 = time.monotonic()
     gw.start()
+    # #201: lwIP asks the second server after SNTP_RECV_TIMEOUT (15 s) without an answer, so the
+    # clock becomes valid by SNTP after a wait of 10 s or more (only 10.0.2.2 answers): wait for
+    # this evidence first, then for the NBIRTH that follows it
+    synced = gw.wait_log(r"edge: clock valid \(source sntp\) after a wait of (1[0-9]|[2-5][0-9]) s", 75,
+                         t0)
     nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
     ignored = gw.find(r"network\.wifi ignored: Wi-Fi is not available in this build", t0)
     asked, h = gw.shell(["status", "config"],
                         [r"^iface\s+ethernet up \d+\.\d+\.\d+\.\d+ \(active\) \| wifi not configured",
-                         r"^wifi\s+'Plant WLAN', backup of Ethernet, failback 30 s, DHCP"])
-    iface, shown = h.values()
+                         r"^wifi\s+'Plant WLAN', backup of Ethernet, failback 30 s, DHCP",
+                         r"^ntp\s+192\.0\.2\.1, 10\.0\.2\.2$"])
+    iface, shown, ntp_shown = h.values()
     # NET-7
     lla = gw.wait_log(r"net: ethernet: IPv6 fe80:[0-9a-f:]+ \(link-local\)", 10, t0)
     slaac = gw.wait_log(r"net: ethernet: IPv6 fec0::(?!1234 )[0-9a-f:]+ \(site local\)", 10, t0)
@@ -7307,9 +7693,14 @@ def run_network_variant(args, work, slave):
     raw_data = obs.wait(f"{T}/DDATA/{node}/Raw", 5)
     writes = slave.ctx.writes[written_from:]
     tmpl = check_templates_gw02(obs, slave, node, nb)
+    devs = check_devices_gw02(obs, slave, gw, node, t0)
     gw.kill()
     obs.wait(f"{T}/NDEATH/{node}", 5)   # the will, before the main scenario starts
     obs.close()
+    check("Issue #201 two SNTP servers: the first one does not answer, the second one gives the "
+          "time; the clock becomes valid and the NBIRTH follows; the shell lists both servers",
+          synced and nb and ntp_shown,
+          " | ".join(gw.find(r"clock valid|^ntp\s", t0)) + f"; NBIRTH {'yes' if nb else 'no'}")
     check("NET-4 network.wifi on a build without the radio (QEMU): accepted, reported, Ethernet "
           "carries the session as before",
           nb and ignored and iface and shown,
@@ -7330,6 +7721,8 @@ def run_network_variant(args, work, slave):
           "Speed UInt16 'rpm' and Run Boolean), an instance per DBIRTH (template_ref, values, "
           "Quality), DCMD on a member -> FC06 and DDATA with the instance and that member only",
           tmpl[0], tmpl[1])
+    for name, ok, detail in devs:
+        check(name, ok, detail)
     check("NET-7 IPv6 on Ethernet: link-local, SLAAC (fec0::/64 from slirp's RA) and static "
           "address, shown by the shell; ICMPv6 echo to fec0::2 answered",
           lla and slaac and static and listed and cfg6 and replies,
@@ -7385,8 +7778,124 @@ def check_templates_gw02(obs, slave, node, nb):
                 f"{[(x.name, x.int_value) for x in dm.template_value.metrics] if dm else None}")
 
 
+def check_devices_gw02(obs, slave, gw, node, t0):
+    """#196, #197 and #214 on the GW02 boot (see run_network_variant). Returns [(name, ok, detail)].
+    Drive (write_multiple, Speed with write_min 0 and write_max 1500): a DCMD in the limits is one
+    FC16 of one register and a DDATA; a DCMD out of the limits writes nothing, gives the warning
+    (tck-id-operational-behavior-data-commands-dcmd-metric-value) and the refusal counter. Spare
+    (enabled false, on unit 1, which answers): no request at its address, no DBIRTH, the state
+    "disabled" in the shell, and a DCMD for it is discarded."""
+    out = []
+    drive = next((m for m in CAPTURE if m[1] == f"{T}/DBIRTH/{node}/Drive"), None) \
+        or obs.wait(f"{T}/DBIRTH/{node}/Drive", 15)
+    obs.drain()
+    before = len(slave.ctx.writes)
+    obs.publish_cmd(f"{T}/DCMD/{node}/Drive", [{"name": "Speed", "datatype": 6, "int_value": 1000}])
+    dd = obs.wait(f"{T}/DDATA/{node}/Drive", 5)
+    wrote = slave.ctx.writes[before:]
+    got = dd[2].metrics[0].int_value if dd and dd[2].metrics else None
+    out.append(("#197 write_multiple: a DCMD of one uint16 register is one FC16 (not FC06), and the "
+                "DDATA confirms it", drive is not None and wrote == [(16, 250, [1000])] and got == 1000,
+                f"DBIRTH {'yes' if drive else 'no'}; writes {wrote}; DDATA {got}"))
+    obs.drain()
+    since = time.monotonic()
+    before = len(slave.ctx.writes)
+    obs.publish_cmd(f"{T}/DCMD/{node}/Drive", [{"name": "Speed", "datatype": 6, "int_value": 2000}])
+    refused = gw.wait_log(r"DCMD: metric 'Speed' discarded: value 2000 out of the write limits "
+                          r"\[0, 1500\]", 5, since)
+    late = obs.wait(f"{T}/DDATA/{node}/Drive", 1.5)
+    wrote = slave.ctx.writes[before:]
+    _, h = gw.shell("devices", [r"^Drive\s+unit\s+1 online .*\| writes refused 1$",
+                                r"^Spare\s+unit\s+1 disabled\s+cycles 0 failed 0 \| ok 0 timeout 0 "])
+    counted, listed = h.values()
+    out.append(("#196 a DCMD out of the write limits (2000 > write_max 1500) writes nothing, gives a "
+                "warning and counts the refusal (shell 'devices')",
+                refused is not None and not wrote and late is None and counted is not None
+                and slave.get(3, 250)[0] == 1000,
+                f"log {(gw.find(r'metric .Speed. discarded', since) or ['none'])[0]}; writes {wrote}; "
+                f"DDATA {late is not None}; register {slave.get(3, 250)[0]}; "
+                + " | ".join(gw.find(r"^Drive\s+unit", since)[:1])))
+    # #214: Spare is never polled and has no DBIRTH; a DCMD for it is discarded
+    since = time.monotonic()
+    before = len(slave.ctx.writes)
+    obs.publish_cmd(f"{T}/DCMD/{node}/Spare", [{"name": "Level", "datatype": 6, "int_value": 7}])
+    dropped = gw.wait_log(r"DCMD for disabled device 'Spare' discarded", 5, since)
+    _, h = gw.shell(["status", "config"],
+                    [r"^network\s+.*Modbus \d+/9 devices online, 1 disabled$",
+                     r"^\s+Spare\s+unit\s+1, poll 200 ms, .*, disabled \(not polled\)$"])
+    status, summary = h.values()
+    asked = [r for t, r in zip(list(slave.times), list(slave.reads))
+             if t >= t0 and r[0] == 1 and r[2] == 240]
+    born = [m for m in CAPTURE if m[1] == f"{T}/DBIRTH/{node}/Spare"]
+    out.append(("#214 a disabled device (enabled false, on unit 1, which answers) gets no request on "
+                "the bus and no DBIRTH; the shell gives 'disabled' and does not count it; a DCMD "
+                "for it is discarded",
+                not asked and not born and listed is not None and status is not None
+                and summary is not None and dropped is not None
+                and slave.ctx.writes[before:] == [],
+                f"requests at holding 240: {asked[:3]}; DBIRTH {len(born)}; "
+                + " | ".join(gw.find(r"^Spare\s+unit|^\s+Spare\s+unit|^network\s", t0)[-3:])
+                + f"; DCMD log {dropped is not None}"))
+    return out
+
+
 # Issue #172: five location levels before each device name (Meter1: a device_id of 62 characters)
 WEB_DEVICE_PREFIX = "acme-corporation:berlin-tempelhof:packaging:line3:cell2"
+
+
+def check_wifi_scan(gw):
+    """Issue #208: GET /api/wifi/scan in the emulator (no radio, network.wifi off): without
+    ?new=1 only the state; ?new=1 starts the simulated scan (202 while it runs, the log line),
+    then 200 with the list: strongest first, one record for each SSID (the strongest), no hidden
+    network, the enterprise network not supported, simulated. A second ?new=1 within 10 s gives
+    the same result at once. Without credentials: 401."""
+    s0, _, b0 = http("GET", "/api/wifi/scan")
+    t = time.monotonic()
+    s1, _, _ = http("GET", "/api/wifi/scan?new=1")
+    started = gw.wait_log(r"net: wifi scan started \(simulated", 5, t)
+    end, s2, j = time.monotonic() + 15, None, {}
+    while time.monotonic() < end:
+        s2, _, b2 = http("GET", "/api/wifi/scan")
+        j = as_json(b2) or {}
+        if s2 != 202:
+            break
+        time.sleep(0.5)
+    nets = j.get("networks", [])
+    ssids = [n.get("ssid") for n in nets]
+    rssi = [n.get("rssi") for n in nets]
+    corp = [n for n in nets if n.get("ssid") == "Plant-Corp"]
+    s3, _, b3 = http("GET", "/api/wifi/scan?new=1")
+    s4, _, _ = http("GET", "/api/wifi/scan", auth=None)
+    check("Issue #208 GET /api/wifi/scan (simulated in QEMU): ?new=1 starts a scan (202), then 200 "
+          "with the networks strongest first, one record for each SSID, no hidden network, the "
+          "enterprise network not supported; a second ?new=1 within 10 s answers at once; 401 "
+          "without credentials",
+          s0 == 200 and (as_json(b0) or {}).get("state") == "idle" and s1 == 202 and started
+          and s2 == 200 and j.get("state") == "done" and j.get("simulated") is True
+          and ssids == ["Plant-IoT", "Plant-Office", "Plant-Corp", "Warehouse-AP2", "Guest",
+                        "DIRECT-7F-HP M479"]
+          and rssi == sorted(rssi, reverse=True) and rssi[0] == -48 and "" not in ssids
+          and corp and corp[0].get("supported") is False
+          and corp[0].get("security") == "WPA2-Enterprise"
+          and all(n.get("supported") for n in nets if n.get("ssid") != "Plant-Corp")
+          and s3 == 200 and (as_json(b3) or {}).get("networks") == nets and s4 == 401,
+          f"before {s0} {b0[:40]!r}; new {s1}, log {started is not None}; result {s2} "
+          f"{j.get('state')} simulated {j.get('simulated')} {list(zip(ssids, rssi))}; "
+          f"Plant-Corp {corp}; again {s3}; no auth {s4}")
+
+
+def check_local_writes_off():
+    """Issue #216: with modbus_tcp.local_writes false, the local unit answers the reads and
+    refuses a write of a DO with exception 01."""
+    try:
+        di = mbap_raw(b"\x02\x00\x00\x00\x08", unit=100)
+        wr = mbap_raw(b"\x05\x00\x00\xff\x00", unit=100)
+        mw = mbap_raw(b"\x0f\x00\x00\x00\x02\x01\x03", unit=100)
+    except OSError as e:
+        di = wr = mw = f"{e}".encode()
+    check("Issue #216 local unit without local_writes: FC02 answered, FC05 and FC15 -> exception 01",
+          di[:2] == b"\x02\x01" and wr == b"\x85\x01" and mw == b"\x8f\x01",
+          f"FC02 {di!r}; FC05 {wr!r}; FC15 {mw!r}")
 
 
 def run_web(args, work):
@@ -7398,6 +7907,8 @@ def run_web(args, work):
     cfg["sparkplug"]["edge_node_id"] = node
     cfg["mqtt"]["password"] = "mqtt-secret"      # the broker allows anonymous: ignored there
     cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    cfg["gateway"] = dict(GATEWAY_LABELS)       # #206
+    cfg["modbus_tcp"]["local_writes"] = False   # #216: the local unit refuses the writes
     flash = flash_variant(args, work, "web", {"config.json": json.dumps(cfg, indent=2).encode()})
     obs = Observer()
     gw = Gateway(args, work / "uart0-web.log", flash)
@@ -7435,6 +7946,8 @@ def run_web(args, work):
           f"/ {st_p} {len(page)} B; /api/status {st_s}: mode {status.get('mode')}, MQTT "
           f"{status.get('mqtt')}, {DEVICE} online {devs.get(DEVICE, {}).get('online')}, Voltage "
           f"{volt[0] if volt else None}")
+    check_wifi_scan(gw)
+    check_local_writes_off()
 
     # Issue #170: the form has the byte limits of the names (maxlength 39 for device and tag names,
     # 32 for the Sparkplug IDs), the help texts of primary_host_id, type and bytes, the topic
@@ -7468,6 +7981,8 @@ def run_web(args, work):
           "/api/status ap.request_via_ap is false over the Ethernet",
           st_p == 200 and st_s == 200 and all(dlg_items.values()),
           f"missing: {[k for k, v in dlg_items.items() if not v] or 'none'}; ap {ap_s}")
+
+    check_admin_web(gw, nb, status, b_s, doc, page_text, t0)
 
     # Issue #194: a new web password needs the same value in a second field, and a save that
     # removes the web password asks first. The behaviour in a browser is checked by the shots
@@ -7704,6 +8219,177 @@ def run_web(args, work):
           moved and encrypted and enc and not leaks,
           f"{(moved or ['no migration log'])[0]}; {(encrypted or ['NVS not encrypted'])[0]}; "
           f"shell {bool(enc)}; secrets found in clear: {leaks or 'none'}")
+
+
+# #206: the name, the location and the comment of the web scenario's gateway
+GATEWAY_LABELS = {"name": "Pump panel 2", "location": "Plant 2, hall B",
+                  "comment": "Feeds the cooling towers 1 and 2. Contact: maintenance, ext. 214."}
+
+
+def check_admin_web(gw, nb, status, status_body, doc, page_text, t0):
+    """The Status tab and the administration of #195 on the web scenario's gateway (GW04, normal
+    mode): the name and the location (#206), the health values (#212), Identify (#207), the live
+    log (#200) and the log level of each tag (#199). The factory reset (#203) and safe mode (#209)
+    restart the gateway: they are in the reset scenario (check_restart_admin)."""
+    # #206: the name and the location in /api/status and in the NBIRTH (Node Info/Name and
+    # Node Info/Location, String, aliases 8 and 9); the comment only in the document
+    gl = status.get("gateway") or {}
+    nb_p = nb[2] if nb else None
+    m_name = metric(nb_p, name="Node Info/Name") if nb_p else None
+    m_loc = metric(nb_p, name="Node Info/Location") if nb_p else None
+    check("Issue #206: /api/status gives gateway.name and gateway.location (not the comment); the "
+          "NBIRTH has Node Info/Name and Node Info/Location (String, aliases 8 and 9; "
+          "tck-id-topics-nbirth-metrics); GET /api/config keeps the comment; the Configuration "
+          "tab has the card Gateway and the page sets the title of the browser tab",
+          gl.get("name") == GATEWAY_LABELS["name"] and gl.get("location") == GATEWAY_LABELS["location"]
+          and "comment" not in gl and b"cooling towers" not in status_body
+          and m_name is not None and m_name.string_value == GATEWAY_LABELS["name"]
+          and m_name.alias == 8 and m_name.datatype == 12
+          and m_loc is not None and m_loc.string_value == GATEWAY_LABELS["location"]
+          and m_loc.alias == 9 and m_loc.datatype == 12
+          and (doc.get("gateway") or {}).get("comment") == GATEWAY_LABELS["comment"]
+          and 'id="f-gw"' in page_text and '"gateway.comment"' in page_text
+          and "document.title=" in page_text,
+          f"status gateway {gl}; NBIRTH name {m_name.string_value if m_name else None!r} "
+          f"(alias {m_name.alias if m_name else None}), location "
+          f"{m_loc.string_value if m_loc else None!r}; config comment "
+          f"{(doc.get('gateway') or {}).get('comment')!r}")
+
+    # #212: the largest free block of the internal RAM, the free PSRAM and the temperature (QEMU
+    # has no sensor: null) in /api/status and in the NBIRTH (UInt32 58, UInt32 59, Float 68)
+    heap = status.get("heap") or {}
+    m_blk = metric(nb_p, name="Node Info/Largest Free Block") if nb_p else None
+    m_psr = metric(nb_p, name="Node Info/Free PSRAM") if nb_p else None
+    m_tmp = metric(nb_p, name="Node Info/Temperature") if nb_p else None
+    psram = ARGS.psram
+    check("Issue #212: /api/status gives heap.internal_largest and temperature_c (null: QEMU has no "
+          "sensor); the NBIRTH has Node Info/Largest Free Block (UInt32, alias 58), Node Info/Free "
+          "PSRAM (UInt32, alias 59) and Node Info/Temperature (Float, alias 68, null)",
+          0 < heap.get("internal_largest", 0) <= heap.get("internal_free", 0)
+          and "temperature_c" in status and status["temperature_c"] is None
+          and m_blk is not None and m_blk.alias == 58 and m_blk.datatype == 7 and m_blk.int_value > 0
+          and m_psr is not None and m_psr.alias == 59 and m_psr.datatype == 7
+          and (m_psr.int_value > 1000000 if psram else True)
+          and m_tmp is not None and m_tmp.alias == 68 and m_tmp.datatype == 9 and m_tmp.is_null,
+          f"heap {heap}; temperature_c {status.get('temperature_c', 'absent')}; NBIRTH block "
+          f"{m_blk.int_value if m_blk else None}, PSRAM {m_psr.int_value if m_psr else None}, "
+          f"temperature null {m_tmp.is_null if m_tmp else None}")
+
+    # #207: Identify. No CSRF header: 403 and nothing starts. Then 202 with 10 s, the LED pattern
+    # "identify" and the beeps (logged by the QEMU build), the time left in /api/status, a second
+    # request 409 (the time does not start again), the end after 10 s; then the shell command
+    t_id = time.monotonic()
+    st_x, _, _ = http("POST", "/api/identify", headers={"X-Requested-With": None})
+    forged = gw.find(r"web: identify requested", t_id)
+    st_i, _, b_i = http("POST", "/api/identify")
+    j_i = as_json(b_i) or {}
+    led = gw.wait_log(r"led: status: identify$", 3, t_id)
+    beeps = gw.wait_log(r"buzzer: identify: short beeps for 10 s \(simulated\)", 3, t_id)
+    st_s2, _, b_s2 = http("GET", "/api/status")
+    left = (as_json(b_s2) or {}).get("identify_left_s", 0)
+    st_i2, _, b_i2 = http("POST", "/api/identify")
+    j_i2 = as_json(b_i2) or {}
+    over = gw.wait_log(r"buzzer: identify over \(simulated\)", 15, t_id)
+    back = gw.wait_log(r"led: status: (?!identify)", 3, over or t_id) if over else None
+    asked = time.monotonic()
+    gw.console("identify")
+    sh1 = gw.wait_log(r"^identify: the LED shows red, green and blue in turn and the buzzer beeps "
+                      r"for 10 s$", 5, asked)
+    gw.console("identify")
+    sh2 = gw.wait_log(r"^identify: already running, \d+ s left$", 5, asked)
+    check("Issue #207: POST /api/identify -> 202 (10 s): the LED pattern 'identify' and the beeps; "
+          "/api/status identify_left_s; a second request -> 409 while it runs; the end after 10 s; "
+          "no CSRF header -> 403 and nothing; the shell 'identify' (and 'already running')",
+          st_x == 403 and not forged and st_i == 202 and j_i.get("identify_left_s") == 10
+          and led and beeps and 1 <= left <= 10 and st_i2 == 409 and j_i2.get("identify_left_s", 0) > 0
+          and over and 9.0 <= over - led <= 12.5 and back and sh1 and sh2
+          and "/api/identify" in page_text and 'id="ident"' in page_text,
+          f"no header {st_x}; POST {st_i} {j_i}; LED {bool(led)}, beeps {bool(beeps)}, left {left}; "
+          f"second {st_i2} {j_i2}; over after {(over - led) if over and led else None} s, LED "
+          f"{(gw.find(r'led: status: ', over or t_id) or ['?'])[0] if over else None}; shell "
+          f"{bool(sh1)} {bool(sh2)}")
+
+    # #200: GET /api/log has the lines of the console (the PSRAM ring of 16 KB); since=<last>
+    # gives only the newer lines; no credentials -> 401
+    st_l, _, b_l = http("GET", "/api/log")
+    j_l = as_json(b_l) or {}
+    lines = j_l.get("lines") or []
+    in_log = [x for x in lines if re.search(r"web: identify requested through the REST API", x)]
+    in_console = gw.find(r"web: identify requested through the REST API", t_id)
+    last = j_l.get("last", 0)
+    st_l2, _, b_l2 = http("GET", f"/api/log?since={last}")
+    j_l2 = as_json(b_l2) or {}
+    st_l3, _, _ = http("GET", "/api/log", auth=None)
+    ring = sdkconfig_int(ARGS.sdkconfig, "GW_LOG_RING_KB") * 1024
+    check("Issue #200: GET /api/log gives the log lines that the console shows (identify through "
+          "the REST API), with their numbers; ?since=<last> gives only the newer lines; no "
+          "credentials -> 401",
+          st_l == 200 and in_log and in_console
+          and in_log[0].strip() == re.sub(r"\x1b\[[0-9;]*m", "", in_console[0]).strip()
+          and j_l.get("size") == ring and j_l.get("count", 0) > 10 and last >= j_l.get("count", 0)
+          and j_l.get("lost") == 0 and st_l2 == 200 and j_l2.get("since") == last
+          and not [x for x in j_l2.get("lines") or [] if x in in_log] and st_l3 == 401,
+          f"GET {st_l}: {len(lines)} lines, count {j_l.get('count')}, last {last}, size "
+          f"{j_l.get('size')} (expected {ring}), in the log {in_log[:1]}, on the console "
+          f"{in_console[:1]}; since {st_l2} {len(j_l2.get('lines') or [])} lines; no auth {st_l3}")
+
+    # #199: the log level of a tag at run time. The tag spb has debug lines (each publish): none
+    # before; POST /api/log/level debug -> they show on the console and in GET /api/log; the shell
+    # 'log poll debug' (the offline probes of Dead3..5); /api/status log_levels; 'log reset'
+    lv = as_json(http("GET", "/api/log/level")[2]) or {}
+    before = gw.find(r"^D \(\d+\) spb: ", t0)
+    t_lv = time.monotonic()
+    st_bad, _, b_bad = http("POST", "/api/log/level", {"tag": "spb", "level": "trace"})
+    st_set, _, b_set = http("POST", "/api/log/level", {"tag": "spb", "level": "debug"})
+    dbg = gw.wait_log(r"^D \(\d+\) spb: spBv1\.0/", 25, t_lv)
+    asked = time.monotonic()
+    gw.console("log poll debug")
+    sh_set = gw.wait_log(r"^log: poll: debug \(not saved\)$", 5, asked)
+    dbg_poll = gw.wait_log(r"^D \(\d+\) poll: Dead\d offline: next probe", 25, asked)
+    st_lv = as_json(http("GET", "/api/status")[2]) or {}
+    j_dbg = as_json(http("GET", f"/api/log?since={last}")[2]) or {}
+    dbg_web = [x for x in j_dbg.get("lines") or [] if re.match(r"D \(\d+\) spb: spBv1\.0/", x)]
+    _, h_lv = gw.shell("log", [r"^log\s+level of the build info \(maximum verbose\); changed "
+                               r"levels \(not saved\):(?=.* spb=debug)(?=.* poll=debug)",
+                               r"^log\s+tags: .*\bweb\b"])
+    asked = time.monotonic()
+    gw.console("log reset")
+    sh_reset = gw.wait_log(r"^log: every tag has the level of the build again \(info\)$", 5, asked)
+    t_off = time.monotonic()
+    time.sleep(3)
+    after = gw.find(r"^D \(\d+\) (spb|poll): ", t_off + 1)
+    st_rs = as_json(http("GET", "/api/status")[2]) or {}
+    check("Issue #199: the log level of a tag at run time, not saved: GET /api/log/level (levels "
+          "none to verbose, tags of the firmware); POST {tag spb, level debug} -> the debug lines "
+          "of spb on the console and in GET /api/log; an unknown level -> 400; the shell 'log poll "
+          "debug'; /api/status log_levels; 'log reset' ends both",
+          lv.get("build") == "info" and lv.get("max") == "verbose"
+          and lv.get("levels") == ["none", "error", "warn", "info", "debug", "verbose"]
+          and {"web", "edge", "spb", "poll", "mb"} <= set(lv.get("tags") or []) and not before
+          and st_bad == 400 and b"level: one of" in b_bad and st_set == 200 and dbg and dbg_web
+          and sh_set and dbg_poll
+          and {"tag": "spb", "level": "debug"} in (st_lv.get("log_levels") or [])
+          and {"tag": "poll", "level": "debug"} in (st_lv.get("log_levels") or [])
+          and all(h_lv.values()) and sh_reset and not after and st_rs.get("log_levels") == [],
+          f"GET level {lv.get('build')}/{lv.get('max')} {lv.get('levels')} {len(lv.get('tags') or [])} "
+          f"tags; debug lines before {len(before)}; bad {st_bad} {b_bad[:80]!r}; set {st_set} "
+          f"{b_set[:80]!r}; console {bool(dbg)}, /api/log {len(dbg_web)}; shell {bool(sh_set)} "
+          f"{bool(dbg_poll)}; status {st_lv.get('log_levels')}; shell log {all(h_lv.values())}; reset "
+          f"{bool(sh_reset)}, debug lines after it {after[:2]}, status {st_rs.get('log_levels')}")
+
+    # #200 (the decision of the product owner): the page asks for GET /api/log only while the
+    # card Log is open. A browser test is in tools/docs_shots.py (the shot live-log); here the
+    # served page must hold that code: a closed <details>, and every request of the card behind
+    # its open state.
+    lg_items = {"closed card": '<details class="card" id="lg-card">' in page_text,
+                "log only while open": "async function lgPoll(){if(lgBusy||!lgOpen())return;" in page_text,
+                "tags only on open": "if(!o)return;lgState();lgLevels();lgPoll();" in page_text,
+                "stops on close": "clearInterval(lgT);lgT=0;" in page_text,
+                "one /api/log request": page_text.count("/api/log?since=") == 1,
+                "explainer": "`syslog.level` of the configuration filters only" in page_text}
+    check("Issue #200: the web UI reads GET /api/log only while the card Log is open (a closed "
+          "<details>; the poll stops when it closes), and the explainer of the log level",
+          all(lg_items.values()), f"missing: {[k for k, v in lg_items.items() if not v] or 'none'}")
 
 
 CLAIM_PASSWORD = "e2e-claimed-pw"   # issue #120: set through the claim window
@@ -8110,6 +8796,130 @@ def run_factory_reset(args, work):
     stale = [w for w in (b'"GW07"', WEB_PASSWORD.encode()) if w in image[so:so + ss]]
     check("CFG-5 the factory reset erased the storage partition (no block of the old configuration "
           "is left)", not stale and b'"GW08"' in image[so:so + ss], f"stale: {stale or 'none'}")
+    check_restart_admin(args, work, flash)
+
+
+def check_restart_admin(args, work, flash):
+    """Issues #209 and #203 on the flash of the reset scenario (GW08, no web password: the API
+    takes the commissioning password of the console), in one more boot: the restart into safe mode
+    (POST /api/restart?safe=1), its status and its end at a restart; then the shell
+    'factory-reset' with a wrong word (nothing erased) and POST /api/factory-reset?confirm=1 (the
+    erase of BOOT held 10 s, then commissioning)."""
+    node = "GW08"
+    obs = Observer()
+    gw = Gateway(args, work / "uart0-reset-admin.log", flash)
+    t0 = time.monotonic()
+    gw.start()
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 60)
+    pw = commissioning_password(gw, t0, 30)
+    auth = ("admin", pw or "?")
+    gw.shell("status", [r"^config\s"])
+    # #203, #209: the dialogs give the SSID of the access point of the next boot: /api/status
+    # has it also before the first start (it comes from the MAC)
+    st_a, _, b_a = http("GET", "/api/status", auth=auth)
+    a0 = (as_json(b_a) or {}).get("ap") or {}
+    check("Issues #203 and #209: /api/status gives the SSID of the access point before its first "
+          "start (the dialogs of the restart into safe mode and of the factory reset show it)",
+          st_a == 200 and a0.get("running") is False and a0.get("last_stop") == "none"
+          and re.fullmatch(AP_SSID_RX, a0.get("ssid") or "") is not None,
+          f"status {st_a}; ap {a0}")
+    # #209: no CSRF header -> 403 and no restart; then 202, NDEATH, safe mode on request
+    t1 = time.monotonic()
+    st_x, _, _ = http("POST", "/api/restart?safe=1", auth=auth, headers={"X-Requested-With": None})
+    st_s, _, b_s = http("POST", "/api/restart?safe=1", auth=auth)
+    req = gw.wait_log(r"fw: safe mode requested: the next boot starts safe mode for 60 min", 5, t1)
+    death = obs.wait(f"{T}/NDEATH/{node}", 15)
+    safe = gw.wait_log(r"fw: safe mode on request \(web UI, REST API or shell\)", 60, t1)
+    st_st, _, b_st = wait_http("/api/status", 40, auth=auth)
+    s = as_json(b_st) or {}
+    sm = s.get("safe_mode") or {}
+    asked = time.monotonic()
+    gw.console("restart safe")
+    refused = gw.wait_log(r"^restart safe: REFUSED: the gateway is in safe mode now", 5, asked)
+    st_r2, _, b_r2 = http("POST", "/api/restart?safe=1", auth=auth)
+    time.sleep(3)
+    births = [m for m in CAPTURE if m[0] >= t1 and m[1] == f"{T}/NBIRTH/{node}"]
+    check("Issue #209: POST /api/restart?safe=1 -> 202, NDEATH, and the next boot in safe mode on "
+          "request: no NBIRTH, /api/status mode recovery with safe_mode {active, cause request, "
+          "about 60 min left}; in safe mode 'restart safe' and a second request are refused; no "
+          "CSRF header -> 403",
+          nb and pw and st_x == 403 and st_s == 202 and (as_json(b_s) or {}).get("safe_mode")
+          and req and death and safe and st_st == 200 and s.get("mode") == "recovery"
+          and sm.get("active") is True and sm.get("cause") == "request"
+          and 3500 <= sm.get("left_s", 0) <= 3600
+          and s.get("config", {}).get("source") == "not loaded (safe mode: on request)"
+          and refused and st_r2 == 409 and not births,
+          f"NBIRTH {bool(nb)}, password {'read' if pw else 'missing'}; no header {st_x}; POST {st_s} "
+          f"{b_s.decode(errors='replace').strip()}; log {bool(req)} {bool(safe)}; NDEATH "
+          f"{bool(death)}; status {st_st} mode {s.get('mode')!r} safe_mode {sm} source "
+          f"{s.get('config', {}).get('source')!r}; shell {bool(refused)}; second {st_r2} "
+          f"{b_r2.decode(errors='replace').strip()[:80]}; NBIRTHs {len(births)}")
+    # #209: safe mode does not reject the configuration: the LED has a pattern of its own, and
+    # the "config_error" alarm (enabled by this configuration, kept in NVS) does not sound
+    led_safe = gw.wait_log(r"led: status: safe mode", 5, t1)
+    led_err = gw.find(r"led: status: config error", t1)
+    bz_err = gw.find(r"buzzer: alarm 'configuration error'", t1)
+    bz = s.get("buzzer") or {}
+    check("Issue #209: safe mode on request shows the LED pattern 'safe mode', not 'config error', "
+          "and the buzzer alarm 'config_error' of the configuration does not sound (/api/status "
+          "buzzer.alarm none)",
+          led_safe and not led_err and not bz_err and bz.get("alarm") == "none",
+          f"LED {(gw.find(r'led: status: ', t1) or ['none'])[-1]!r}; config error LED {led_err[:1]}; buzzer log {bz_err[:1]}; status buzzer {bz}")
+    # a restart ends safe mode (the request was for one boot)
+    t2 = time.monotonic()
+    st_r, _, _ = http("POST", "/api/restart", auth=auth)
+    nb2 = obs.wait(f"{T}/NBIRTH/{node}", 60, since=t2)
+    st_n, _, b_n = wait_http("/api/status", 30, auth=auth)
+    sm2 = (as_json(b_n) or {}).get("safe_mode") or {}
+    check("Issue #209: POST /api/restart in safe mode -> normal mode again (NBIRTH; safe_mode "
+          "active false)",
+          st_r == 202 and nb2 and st_n == 200 and (as_json(b_n) or {}).get("mode") == "normal"
+          and sm2.get("active") is False,
+          f"restart {st_r}; NBIRTH {bool(nb2)}; status {st_n} {(as_json(b_n) or {}).get('mode')!r} "
+          f"{sm2}")
+    # #203: the shell asks for ERASE (a wrong word erases nothing); the API needs ?confirm=1
+    gw.shell("status", [r"^config\s"])
+    asked = time.monotonic()
+    gw.console("factory-reset")
+    prompt = gw.wait_log(r"^factory-reset: this erases the configuration.*Type ERASE to confirm", 5,
+                         asked)
+    gw.console("erase")
+    aborted = gw.wait_log(r"^factory-reset: aborted, nothing erased$", 5, asked)
+    st_nc, _, b_nc = http("POST", "/api/factory-reset", auth=auth)
+    st_cs, _, _ = http("POST", "/api/factory-reset?confirm=1", auth=auth,
+                       headers={"X-Requested-With": None})
+    time.sleep(1)
+    still = gw.find(r"storage: factory reset", asked)
+    obs.drain()
+    t3 = time.monotonic()
+    st_f, _, b_f = http("POST", "/api/factory-reset?confirm=1", auth=auth)
+    beeps = gw.wait_log(r"buzzer: 2 beep\(s\) \(simulated\)", 5, t3)
+    erased = gw.wait_log(r"storage: factory reset: erasing LittleFS 'storage' and NVS", 10, t3)
+    death3 = obs.wait(f"{T}/NDEATH/{node}", 15)
+    comm = gw.wait_log(r"main: commissioning: no configuration since the factory reset", 60, t3)
+    pw2 = commissioning_password(gw, t3, 30)
+    st_c, _, b_c = wait_http("/api/status", 30, auth=("admin", pw2 or "?"))
+    st_old, _, _ = http("GET", "/api/status", auth=auth)
+    check("Issue #203: the shell 'factory-reset' with a wrong word erases nothing; POST "
+          "/api/factory-reset without ?confirm=1 -> 400, without the CSRF header -> 403; with "
+          "?confirm=1 -> 202, the 2 beeps, the erase, NDEATH and commissioning with a new "
+          "commissioning password",
+          prompt and aborted and st_nc == 400 and b"confirm=1" in b_nc and st_cs == 403 and not still
+          and st_f == 202 and (as_json(b_f) or {}).get("erased") is True and beeps and erased
+          and death3 and comm and pw2 and pw2 != pw and st_c == 200
+          and (as_json(b_c) or {}).get("mode") == "commissioning" and st_old == 401,
+          f"shell prompt {bool(prompt)}, aborted {bool(aborted)}; no confirm {st_nc}; no header "
+          f"{st_cs}; erase log before the request {len(still)}; POST {st_f} "
+          f"{b_f.decode(errors='replace').strip()}; beeps {bool(beeps)}, erase {bool(erased)}, NDEATH "
+          f"{bool(death3)}, commissioning {bool(comm)}; new password {bool(pw2 and pw2 != pw)}; "
+          f"status {st_c} {(as_json(b_c) or {}).get('mode')!r}; the old password {st_old}")
+    gw.kill()
+    obs.close()
+    image = pathlib.Path(flash).read_bytes()
+    so, ss = storage_partition()
+    check("Issue #203: the factory reset through the REST API erased the storage partition (no "
+          "block of the configuration GW08 is left)", b'"GW08"' not in image[so:so + ss],
+          "GW08 still in the storage partition" if b'"GW08"' in image[so:so + ss] else "erased")
 
 
 def run(args, log, slave, broker, conf, work):
@@ -8250,7 +9060,8 @@ def run(args, log, slave, broker, conf, work):
                          r"\(9 fast, 2 slow\), blocks max_gap 10$",
                          r"^\s+Bulk\s+unit\s+2, poll 1000 ms, slow 10000 ms, offline after 3, 60 tag\(s\) "
                          r"\(60 fast, 0 slow\), blocks max_gap 0 \(default\)$",
-                         r"^modbus_tcp enabled, port 502, idle timeout 60 s, clients 10\.0\.2\.2/32$"])
+                         r"^modbus_tcp enabled, port 502, idle timeout 60 s, clients 10\.0\.2\.2/32$",
+                         r"^modbus_tcp local unit 100 \(DIs, DOs, counters\), writes on$"])
     check("Issue #68 shell 'config': per-device periods, scan classes and block reads, modbus_tcp line",
           all(h.values()), " | ".join(gw.find(r"^\s+(Meter1|Bulk)\s+unit\s+\d+, poll|^modbus_tcp", asked))
           or "no answer")
@@ -8387,12 +9198,14 @@ def run(args, log, slave, broker, conf, work):
                         [r"^Meter1\s+unit\s+1 online .*\| tcp ok 2 timeout 0 crc 0 frame 0 exception 0$",
                          r"^Dead3\s+unit\s+3 offline .*\| tcp ok 0 timeout 3 crc 0 frame 0 exception 0$",
                          r"^modbus_tcp connections 2 accepted 0 rejected \| forwarded 3 \| gateway exceptions "
-                         r"01 1 03 0 0A 0 0B 1 \| other units ok 0 timeout 0 crc 0 frame 0 exception 0$"])
+                         r"01 1 03 0 0A 0 0B 1 \| other units ok 0 timeout 0 crc 0 frame 0 exception 0 "
+                         r"\| local unit 0$"])
     check("Issue #69 Modbus TCP counters: forwarded transactions per unit, gateway connections, "
           "forwarded requests and its own exceptions (shell 'devices')", all(h.values()),
           " | ".join(gw.find(r"^(Meter1|Dead3)\s+unit|^modbus_tcp", asked)) or "no answer")
     check_modbus_tcp_table(obs, ndata_t)
     check_modbus_tcp_via_ap(gw, slave)
+    check_modbus_local(gw, obs, ndata_t)
 
     # 2. Slave off -> DDEATH; back on -> DBIRTH
     obs.drain()
@@ -8456,6 +9269,7 @@ def run(args, log, slave, broker, conf, work):
         time.sleep(0.3)
     check("IO-7 rule 'toggle': each activation of DI/3 toggles DO/6", toggles == [True, False],
           f"DO/6 after each activation: {toggles}")
+    check_local_io_channels(gw, obs, nb0[0], ncmd_t, ndata_t, t0)
 
     # IO-6: Dead3..Dead5 never answer: the "device offline" alarm sounds alarm_after_s (5 s)
     # after the boot (the QEMU build logs the patterns instead of driving GPIO46)

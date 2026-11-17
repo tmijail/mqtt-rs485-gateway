@@ -25,7 +25,7 @@ The `device_id` is the device name, or `<device_prefix>:<name>` with `sparkplug.
 | NBIRTH | 0 | No | `seq` = 0. All the node metrics, with a name, an alias (not `Node Control/Rebirth`), a datatype and a value |
 | NDEATH | 1 | No | The MQTT Will of the connection. Only the metric `bdSeq` (Int64). No `seq` |
 | NDATA | 0 | No | The node metrics that changed, by alias, without a name and a datatype |
-| DBIRTH | 0 | No | All the tags of one device, with their names, aliases, datatypes, values and properties. Only after the NBIRTH, and only for a device that is online |
+| DBIRTH | 0 | No | All the tags of one device, with their names, aliases, datatypes, values and properties. Only after the NBIRTH, and only for a device that is online. A disabled device (`enabled: false`) is never online: it has no DBIRTH, DDATA or DDEATH |
 | DDEATH | 0 | No | The device went offline |
 | DDATA | 0 | No | The tags that changed, by alias, without a name and a datatype. The changes of one poll cycle go in one message |
 
@@ -48,13 +48,16 @@ The NBIRTH contains these metrics.
 | `Node Info/Hardware` | 5 | String | The name of the board |
 | `Node Info/Reset Reason` | 6 | String | The cause of the last restart |
 | `Node Control/Scan Rate` | 7 | UInt32 | Writable. ms. 0 = each device uses its `poll_ms` |
-| `DI/1` to `DI/8` | 10 to 17 | Boolean | The digital inputs, after the debounce |
+| `Node Info/Name` | 8 | String | `gateway.name`. Only when it is set. Only in the NBIRTH |
+| `Node Info/Location` | 9 | String | `gateway.location`. Only when it is set. Only in the NBIRTH |
+| `DI/1` to `DI/8` | 10 to 17 | Boolean | The digital inputs, after the inversion and the debounce |
 | `DO/1` to `DO/8` | 20 to 27 | Boolean | Writable. The digital outputs. Null and BAD quality while the expander does not respond |
 | `Counter/1` to `Counter/8` | 30 to 37 | UInt64 | The pulse counters of the DIs |
-| `Node Control/Firmware Update` | 40 | String | Writable. Empty in the NBIRTH |
+| `Node Control/Firmware Update` | 40 | String | Writable. Empty in the NBIRTH. Only with `ota.mqtt: true` |
 | `Firmware Update/State` | 41 | String | The result of the last update |
 | `Firmware Update/Progress` | 42 | UInt32 | % |
 | `Node Control/Boot Other Slot` | 43 | Boolean | Writable |
+| `Node Control/Firmware SHA-256` | 44 | String | Writable. Empty in the NBIRTH. Only with `ota.mqtt: true` |
 | `Node Info/Uptime` | 50 | UInt64 | The seconds since the boot |
 | `Node Info/Free Heap` | 51 | UInt32 | The free bytes of the internal RAM |
 | `Node Info/Min Free Heap` | 52 | UInt32 | The minimum free internal RAM since the boot |
@@ -63,12 +66,31 @@ The NBIRTH contains these metrics.
 | `Node Info/Time Synced` | 55 | Boolean | `true` when SNTP synchronized the clock at least one time since the boot |
 | `Node Info/Modbus TCP` | 56 | DataSet | Only with `modbus_tcp.enabled`. The Modbus TCP counters |
 | `Node Info/Core Dump` | 57 | Boolean | `true` while a core dump is in flash |
+| `Node Info/Largest Free Block` | 58 | UInt32 | The largest free block of the internal RAM, in bytes. A low value with much free heap shows a fragmented RAM |
+| `Node Info/Free PSRAM` | 59 | UInt32 | The free bytes of the PSRAM |
+| `Node Info/Temperature` | 68 | Float | The temperature of the chip, in °C, from its internal sensor. Null when there is no reading, for example in QEMU |
+| `Run Hours/DI/1` to `Run Hours/DI/8` | 356 to 363 | UInt64 | Only for the DIs of `local_io.run_hours`. The seconds in the on state |
+| `Run Hours/DO/1` to `Run Hours/DO/8` | 364 to 371 | UInt64 | Only for the DOs of `local_io.run_hours`. The seconds in the on state |
+
+`gateway.comment` is not in the NBIRTH: only the configuration document has it. A change of the name or the location needs a restart, as each change of the configuration. Thus the gateway sends them only in the NBIRTH (`tck-id-topics-nbirth-metrics`).
+
+### Local I/O
+
+The metrics of the local inputs and outputs go in an NDATA when they change (report by exception).
+
+- `DI/n` is the state after the inversion (`local_io.di[].invert`) and the debounce (`local_io.di[].debounce_ms`).
+- `Counter/n` counts the activations of the DI. For a fast counter, a PCNT unit counts the input (`local_io.fast_counters`). The metric is the same.
+- `DO/n` is the state that the gateway reads back from the expander. An NCMD or the Status tab of the web UI can set a DO without a local rule. The next NDATA gives the new state.
+- A pulse DO (`local_io.do_pulse_ms`) gives `true` in one NDATA and `false` in a next NDATA, also when the pulse ends before the first NDATA.
+- The run hours are only in the NBIRTH for the channels of `local_io.run_hours`. An NDATA gives a new value when the channel changes its state, and each 60 s while it stays on. Their aliases come after the aliases of the tags (100 to 355), because the aliases below 100 are full. They are read-only.
+
+For the keys, refer to [`local_io`](configuration.md#local_io).
 
 ### Diagnostics
 
 The gateway publishes the diagnostics in an NDATA each `sparkplug.diagnostics_s` seconds (60 by default; 0 = only in the NBIRTH).
 
-- The uptime and the heap go in each diagnostic NDATA.
+- The uptime, the heap, the largest free block, the free PSRAM and the temperature go in each diagnostic NDATA, with their aliases only.
 - The Modbus tables go in the NDATA only if a counter or a state changed.
 - `Node Info/Time Synced` and `Node Info/Core Dump` go in an NDATA of their own, each time that they change.
 - The gateway also publishes the counters of a device that is offline.
@@ -126,9 +148,10 @@ The gateway does not use template parameters.
 | `Node Control/Rebirth` | Boolean `true` | Stops the NDATA and DDATA. Sends the NBIRTH and all the DBIRTHs again. `seq` starts again at 0, and the NBIRTH keeps the `bdSeq` of the session |
 | `Node Control/Reboot` | Boolean `true` | Orderly restart, with the NDEATH |
 | `Node Control/Scan Rate` | UInt32 | One poll interval for all the devices: 50 to 3 600 000 ms. 0 = each device uses its `poll_ms` |
-| `Node Control/Firmware Update` | String | Downloads and installs the image at the `https://` URL (255 characters at most) |
+| `Node Control/Firmware Update` | String | Downloads and installs the image at the `https://` URL (255 characters at most). Only with `ota.mqtt: true` |
+| `Node Control/Firmware SHA-256` | String | The SHA-256 of the image file for the next `Node Control/Firmware Update`: 64 hexadecimal characters, capital or small letters. Empty = no check. In the same NCMD as the URL or in an earlier one. A value that is not valid also stops the URL of the same NCMD. Only with `ota.mqtt: true` |
 | `Node Control/Boot Other Slot` | Boolean `true` | Restarts into the image of the other slot, on trial, after the pre-flight check |
-| `DO/1` to `DO/8` | Boolean | Sets the output. A DO with a local rule refuses the command |
+| `DO/1` to `DO/8` | Boolean | Sets the output. A DO with a local rule refuses the command. `true` on a pulse DO starts its pulse |
 
 `POST /api/rebirth`, the web UI button **Rebirth** and the shell command `rebirth` do the same as `Node Control/Rebirth`. For the firmware commands, refer to [Update the firmware](../how-to/update-the-firmware.md).
 
@@ -143,11 +166,14 @@ The gateway writes the writable metrics to the Modbus device. It finds the tag b
 | The datatype is the datatype of the DBIRTH. A metric without a datatype uses the datatype of the DBIRTH | The gateway discards the command |
 | An integer or Boolean tag gets a value without a fraction | The gateway discards the command |
 | The value fits in the register after the inverse scale: `raw = (value − offset) / scale` | The gateway discards the command |
+| The value is in the write limits of the tag (`write_min`, `write_max`, in the units of the tag) | The gateway discards the metric, and adds 1 to the refusal counter of the device |
+| The device is enabled | The gateway discards the command. A disabled device has no DBIRTH |
 
 - A command applies all its metrics or none. The log gives the reason of each discard.
+- A value out of the write limits discards only that metric. The gateway writes the other metrics of the command. Sparkplug has no answer to a command, so the next DDATA has the value of the device. The shell command `devices` and `GET /api/status` (`write_refused`) give the number of refused writes. The limits do not apply to Modbus TCP requests.
 - The writes go before the polls in the queue of the bus.
 - After the write, the gateway reads the register again and publishes the value in a DDATA. If this read fails, it publishes the value that the device acknowledged.
-- The functions: FC05 for a coil, FC06 for a tag of one register, FC16 for a tag of more registers. With the build option `CONFIG_GW_MB_FORCE_MULTI_WRITE`, all the writes use FC15 or FC16.
+- The functions: FC05 for a coil, FC06 for a tag of one register, FC16 for a tag of more registers. With `write_multiple: true` on the device, all its writes use FC15 or FC16. A device without the key uses the build option `CONFIG_GW_MB_FORCE_MULTI_WRITE` (default: off).
 
 For the procedure, refer to [Write a value to a Modbus device or a digital output](../how-to/write-to-a-modbus-device.md).
 
@@ -182,5 +208,7 @@ With `sparkplug.naming: "umh"`, these items change. Each item obeys Sparkplug B 
 - **No DataSets.** The gateway does not publish `Node Info/Modbus` and `Node Info/Modbus TCP`. The NBIRTH and the diagnostic NDATA have UInt64 node metrics with the sums of all the devices:
   - `Node Info/Modbus/Cycles`, `Failed Cycles`, `OK`, `Timeout`, `CRC`, `Frame` and `Exception` (aliases 60 to 66);
   - `Node Info/Modbus TCP/OK`, `Timeout`, `CRC`, `Frame` and `Exception` (aliases 70 to 74, with `modbus_tcp.enabled`).
+
+  The other node metrics, for example `Node Info/Largest Free Block` and `Node Info/Temperature`, do not change.
 
 For the reasons, refer to [Sparkplug names and the UNS](../explanation/sparkplug-names-and-the-uns.md).

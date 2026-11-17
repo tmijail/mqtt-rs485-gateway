@@ -18,6 +18,7 @@
 #include "freertos/task.h"
 #include "gw_ap.h"
 #include "gw_auth.h"
+#include "gw_ident.h"
 #include "gw_authlimit.h"
 #include "gw_bus.h"
 #include "gw_fw.h"
@@ -29,22 +30,25 @@
 #include "gw_coredump.h"
 #include "gw_edge.h"
 #include "gw_io.h"
+#include "gw_iocmd.h"
 #include "gw_rtc.h"
 #include "gw_sfcard.h"
 #include "gw_log.h"
 #include "gw_mbdiag.h"
 #include "gw_net.h"
 #include "gw_ota.h"
+#include "gw_pemfile.h"
 #include "gw_status.h"
 #include "gw_storage.h"
 #include "gw_tagdb.h"
+#include "gw_temp.h"
 #include "gw_webcert.h"
 #include "lwip/sockets.h"
 
 static const char *TAG = "web";
 
 #define REALM_HDR "Basic realm=\"gateway\", charset=\"UTF-8\""
-#define WEB_URI_HANDLERS 21   /* the routes of gw_web_start (uris[]) */
+#define WEB_URI_HANDLERS 30   /* the routes of gw_web_start (uris[]) */
 
 static gw_web_ctx_t s_ctx;
 static httpd_handle_t s_server;
@@ -1076,10 +1080,208 @@ static esp_err_t restart_post(httpd_req_t *req)
     if (!same_origin(req) || !authorized(req)) {
         return ESP_OK;
     }
+    if (query_flag(req, "safe")) {
+        /* issue #209: safe mode (no polling, no MQTT) for 60 min or until the next restart */
+        char why[160];
+        if (!gw_fw_request_safe_mode(why, sizeof(why))) {
+            return send_error(req, "409 Conflict", NULL, why);
+        }
+        ESP_LOGW(TAG, "restart into safe mode requested through the REST API");
+        send_json(req, "202 Accepted", "{\"ok\":true,\"restart\":true,\"safe_mode\":true}\n");
+        s_ctx.restart();
+        return ESP_OK;
+    }
     ESP_LOGW(TAG, "restart requested through the REST API");
     send_json(req, "202 Accepted", "{\"ok\":true,\"restart\":true}\n");
     s_ctx.restart();
     return ESP_OK;
+}
+
+/* ---------- #203: POST /api/factory-reset?confirm=1 ---------- */
+
+/* The same checks as every write (CSRF, then the password); the request must say ?confirm=1 (the
+ * web UI asks the operator to type ERASE first). The erase is the one of BOOT held 10 s: the
+ * answer comes after it, and the gateway restarts in commissioning 0.5 s later. */
+static esp_err_t factory_reset_post(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    if (!query_flag(req, "confirm")) {
+        return send_error(req, "400 Bad Request", NULL,
+                          "missing ?confirm=1: the factory reset erases the configuration, the "
+                          "secrets, the web certificate, the web password and the counters");
+    }
+    ESP_LOGW(TAG, "factory reset requested through the REST API");
+    esp_err_t e = s_ctx.factory_reset();
+    if (e == ESP_ERR_INVALID_STATE) {
+        return send_error(req, "409 Conflict", NULL, "factory reset refused: nothing erased (see "
+                                                     "the log)");
+    }
+    char body[120];
+    snprintf(body, sizeof(body), "{\"ok\":true,\"erased\":%s,\"restart\":\"commissioning\"}\n",
+             e == ESP_OK ? "true" : "false");
+    return send_json(req, "202 Accepted", body);
+}
+
+/* ---------- #207: POST /api/identify ---------- */
+
+/* The LED and the buzzer identify the gateway for 10 s. Harmless, but a write all the same (CSRF,
+ * then the password). 409 while one runs: its time does not start again. */
+static esp_err_t identify_post(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    char body[120];
+    if (!gw_status_identify()) {
+        unsigned long left = (unsigned long)gw_status_identify_left_s();
+        snprintf(body, sizeof(body),
+                 "{\"ok\":false,\"error\":\"identify already runs: %lu s left\","
+                 "\"identify_left_s\":%lu}\n", left, left);
+        return send_json(req, "409 Conflict", body);
+    }
+    ESP_LOGI(TAG, "identify requested through the REST API");
+    snprintf(body, sizeof(body), "{\"ok\":true,\"identify_left_s\":%u}\n", GW_IDENT_MS / 1000);
+    return send_json(req, "202 Accepted", body);
+}
+
+/* ---------- #200: GET /api/log?since=<n> ---------- */
+
+/* One log line as a JSON string: a line can be up to GW_LOGRING_LINE_MAX bytes, and each '"' or
+ * '\\' takes two (the ring has no control characters). */
+static void out_line(out_t *o, const char *p, size_t n)
+{
+    char raw[GW_LOGRING_LINE_MAX + 1], e[2 * GW_LOGRING_LINE_MAX + 8];
+    n = n < GW_LOGRING_LINE_MAX ? n : GW_LOGRING_LINE_MAX;
+    memcpy(raw, p, n);
+    raw[n] = '\0';
+    json_escape(e, sizeof(e), raw);
+    outf(o, "\"%s\"", e);
+}
+
+/* The lines after number "since" (0: every line in the ring). The web UI asks only while its card
+ * Log is open (the decision of #200). "lost": the lines after "since" that the ring no longer
+ * has; "next" lower than "since": the gateway restarted (the numbers start again at 1). */
+static esp_err_t log_get(httpd_req_t *req)
+{
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
+    char q[48], v[16];
+    uint32_t since = 0;
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "since", v, sizeof(v)) == ESP_OK) {
+        since = (uint32_t)strtoul(v, NULL, 10);
+    }
+    const char *text;
+    size_t len;
+    gw_log_ring_info_t in;
+    if (!gw_log_ring_copy(since, &text, &len, &in)) {
+        return send_error(req, "503 Service Unavailable", NULL,
+                          "no live log: no memory for its buffer (or it is busy)");
+    }
+    if (since >= in.next && since != 0) {   /* a restart: every line again */
+        since = 0;
+        gw_log_ring_copy(0, &text, &len, &in);
+    }
+    uint32_t got = len > 0 ? in.from : in.next;   /* the first line after the lost ones */
+    uint32_t lost = since != 0 && got > since + 1 ? got - since - 1 : 0;
+    out_t *o = out_begin(req);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    outf(o, "{\"since\":%lu,\"last\":%lu,\"next\":%lu,\"first\":%lu,\"lost\":%lu,"
+            "\"count\":%lu,\"bytes\":%u,\"size\":%u,\"dropped\":%lu,\"lines\":[",
+         (unsigned long)since, (unsigned long)(len > 0 ? in.last : in.next - 1),
+         (unsigned long)in.next, (unsigned long)in.first, (unsigned long)lost,
+         (unsigned long)in.lines, (unsigned)in.used, (unsigned)in.size,
+         (unsigned long)in.dropped);
+    for (size_t at = 0, k = 0; at < len; k++) {
+        const char *nl = memchr(text + at, '\n', len - at);
+        size_t n = nl != NULL ? (size_t)(nl - (text + at)) : len - at;
+        if (k > 0) {
+            outf(o, ",");
+        }
+        out_line(o, text + at, n);
+        at += n + 1;
+    }
+    outf(o, "]}\n");
+    out_flush(o);
+    return o->err == ESP_OK ? httpd_resp_send_chunk(req, NULL, 0) : o->err;
+}
+
+/* ---------- #199: GET and POST /api/log/level ---------- */
+
+/* The levels that the build offers, the tags for the selector of the web UI (the tags of the
+ * firmware and the tags that the log showed; the web UI asks when its card Log opens) and the
+ * changed levels. */
+static esp_err_t log_level_get(httpd_req_t *req)
+{
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
+    const size_t cap = GW_LOGTAG_MAX * (GW_LOGTAG_SIZE + 32) + 8;
+    char *tags = gw_storage_malloc(2 * cap);   /* PSRAM, for this request only */
+    if (tags == NULL) {
+        return send_error(req, "503 Service Unavailable", NULL, "no memory");
+    }
+    char *changed = tags + cap;
+    gw_log_tags_json(false, tags, cap);
+    gw_log_tags_json(true, changed, cap);
+    out_t *o = out_begin(req);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    outf(o, "{\"build\":\"%s\",\"max\":\"%s\",\"levels\":[",
+         gw_loglevel_name(gw_log_build_level()), gw_loglevel_name(gw_log_max_level()));
+    for (int l = GW_LOGLV_NONE; l <= gw_log_max_level() && l <= GW_LOGLV_VERBOSE; l++) {
+        outf(o, "%s\"%s\"", l ? "," : "", gw_loglevel_name(l));
+    }
+    outf(o, "],\"tags\":");
+    out_flush(o);
+    if (o->err == ESP_OK) {
+        o->err = httpd_resp_send_chunk(req, tags, (ssize_t)strlen(tags));
+    }
+    outf(o, ",\"changed\":%s}\n", changed);
+    out_flush(o);
+    heap_caps_free(tags);
+    return o->err == ESP_OK ? httpd_resp_send_chunk(req, NULL, 0) : o->err;
+}
+
+/* {"tag": "poll", "level": "debug"} or {"reset": true}: esp_log_level_set, not saved (a restart
+ * sets the level of the build again). Same checks as every write (CSRF, then the password). */
+static esp_err_t log_level_post(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    size_t len;
+    const char *status;
+    char *body = req->content_len <= 128 ? read_body(req, &len, &status) : NULL;
+    if (body == NULL) {
+        return refuse_body(req, "400 Bad Request",
+                           "expected {\"tag\": \"<tag or *>\", \"level\": \"<level>\"} or "
+                           "{\"reset\": true} (at most 128 bytes)");
+    }
+    char tag[GW_LOGTAG_SIZE], why[120];
+    int level = 0;
+    bool reset = false;
+    bool ok = gw_logring_parse_set(body, len, gw_log_max_level(), tag, &level, &reset, why,
+                                   sizeof(why));
+    heap_caps_free(body);
+    if (!ok) {
+        return send_error(req, "400 Bad Request", NULL, why);
+    }
+    if (reset) {
+        gw_log_level_reset();
+        return send_json(req, "200 OK", "{\"ok\":true,\"reset\":true}\n");
+    }
+    if (gw_log_level_set(tag, level) != GW_LOG_SET_OK) {
+        return send_error(req, "409 Conflict", NULL, "no room for one more tag");
+    }
+    char answer[96];
+    snprintf(answer, sizeof(answer), "{\"ok\":true,\"tag\":\"%s\",\"level\":\"%s\"}\n", tag,
+             gw_loglevel_name(level));
+    return send_json(req, "200 OK", answer);
 }
 
 /* ---------- NET-5, issue #187: POST /api/ap/stop ---------- */
@@ -1120,6 +1322,61 @@ static esp_err_t rebirth_post(httpd_req_t *req)
     }
     ESP_LOGI(TAG, "rebirth requested through the REST API");
     return send_json(req, "202 Accepted", "{\"ok\":true,\"rebirth\":true}\n");
+}
+
+/* ---------- #204: POST /api/do ---------- */
+
+/* {"do": 1-8, "on": true|false}: switch a DO from the web UI. The command goes to the local_io
+ * task through the queue of the NCMD commands (gw_io_command_do), with the same checks: a DO
+ * that a local rule drives is refused (409), and the new state goes to the Sparkplug host in the
+ * next NDATA (tck-id-topics-ndata-payload), as for an NCMD. Only the DOs: the web UI does not
+ * write to the Modbus devices. Same checks as every write (CSRF, then the password). */
+static esp_err_t do_post(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    if (s_ctx.mode != GW_WEB_NORMAL) {
+        return refuse_body(req, "409 Conflict",
+                           s_ctx.mode == GW_WEB_FAULT
+                               ? "the local I/O does not run: the gateway does not start "
+                                 "(hardware fault, see the status)"
+                               : "the local I/O does not run: the gateway has no valid "
+                                 "configuration. Correct it and save it first");
+    }
+    size_t len;
+    const char *status;
+    char *body = req->content_len <= 128 ? read_body(req, &len, &status) : NULL;
+    if (body == NULL) {
+        return refuse_body(req, "400 Bad Request",
+                           "expected {\"do\": 1-8, \"on\": true|false} (at most 128 bytes)");
+    }
+    uint8_t index;
+    bool on;
+    char why[96];
+    bool parsed = gw_iocmd_parse(body, len, &index, &on, why, sizeof(why));
+    heap_caps_free(body);
+    if (!parsed) {
+        return send_error(req, "400 Bad Request", NULL, why);
+    }
+    gw_io_do_result_t r = gw_io_command_do(GW_IO_CALLER_WEB, index, on);
+    if (r == GW_IO_DO_RULE) {
+        snprintf(why, sizeof(why), "DO/%u is driven by a local rule (local_io.rules): refused",
+                 index + 1u);
+        return send_error(req, "409 Conflict", NULL, why);
+    }
+    if (r != GW_IO_DO_OK) {
+        return send_error(req, "503 Service Unavailable", NULL,
+                          r == GW_IO_DO_BUSY ? "the local I/O task did not answer: try again"
+                                             : "the output expander does not answer: the DOs "
+                                               "are unknown");
+    }
+    gw_local_io_t io;
+    gw_tagdb_get_io(&io);
+    char answer[96];
+    snprintf(answer, sizeof(answer), "{\"ok\":true,\"do\":%u,\"on\":%s,\"state\":%s}\n",
+             index + 1u, on ? "true" : "false", (io.dout >> index) & 1u ? "true" : "false");
+    return send_json(req, "200 OK", answer);
 }
 
 /* ---------- #160: POST /api/time ---------- */
@@ -1275,7 +1532,8 @@ static esp_err_t firmware_get(httpd_req_t *req)
         char other_why[2 * sizeof(((gw_fw_status_t *)0)->other_why)];
         gw_cfgprev_t prev;
         char prev_ver[2 * GW_CFGPREV_VERSION];
-        char body[2000];
+        char sha[2 * GW_OTA_SHA256_HEX + 48];
+        char body[2200];
     } fw_json_t;
     fw_json_t *j = gw_storage_malloc(sizeof(*j));
     if (j == NULL) {
@@ -1291,14 +1549,24 @@ static esp_err_t firmware_get(httpd_req_t *req)
      * mode (POST /api/config?restore_prev=1) */
     bool prev = gw_storage_cfgprev_get(&j->prev) && j->prev.version[0] != '\0';
     json_escape(j->prev_ver, sizeof(j->prev_ver), prev ? j->prev.version : "");
-    /* issue #144: both slots, the trial (expected mode, time left), the boot-loop counter */
-    bool can_boot = j->f.enabled && !j->f.trial && j->f.phase != GW_FW_DOWNLOADING &&
+    /* issue #215: the two SHA-256 values when they did not agree */
+    j->sha[0] = '\0';
+    if (j->f.sha_mismatch) {
+        char want[GW_OTA_SHA256_HEX], file[GW_OTA_SHA256_HEX];
+        gw_ota_sha256_hex(j->f.sha_expected, want);
+        gw_ota_sha256_hex(j->f.sha_file, file);
+        snprintf(j->sha, sizeof(j->sha), ",\"sha256_expected\":\"%s\",\"sha256_file\":\"%s\"",
+                 want, file);
+    }
+    /* issue #144: both slots, the trial (expected mode, time left), the boot-loop counter. #223:
+     * the button and the web upload are always possible ("mqtt": the value of ota.mqtt) */
+    bool can_boot = !j->f.trial && j->f.phase != GW_FW_DOWNLOADING &&
                     j->f.phase != GW_FW_RESTARTING && j->f.other_state != GW_FW_SLOT_EMPTY &&
                     j->f.other_state != GW_FW_SLOT_INVALID;
     snprintf(j->body, sizeof(j->body),
              "{\"running\":\"%s\",\"slot\":\"%s\",\"other\":\"%s\",\"other_slot\":\"%s\","
              "\"other_state\":\"%s\",\"other_why\":\"%s\",\"can_boot_other\":%s,"
-             "\"enabled\":%s,\"phase\":\"%s\",\"state\":\"%s\",\"detail\":\"%s\","
+             "\"mqtt\":%s,\"phase\":\"%s\",\"state\":\"%s\",\"detail\":\"%s\"%s,"
              "\"progress\":%u,\"bytes\":%lu,\"total\":%lu,\"trial\":%s,"
              "\"trial_left_s\":%lu,\"expected_mode\":\"%s\",\"boot_count\":%lu,"
              "\"safe_mode\":%s,\"cfg_prev\":{\"version\":\"%s\",\"saved\":%lld,"
@@ -1306,9 +1574,9 @@ static esp_err_t firmware_get(httpd_req_t *req)
              j->run, j->f.slot, j->other, j->f.other_slot,
              j->f.other_state < sizeof(k_fw_slot) / sizeof(k_fw_slot[0])
                  ? k_fw_slot[j->f.other_state] : "?",
-             j->other_why, can_boot ? "true" : "false", j->f.enabled ? "true" : "false",
+             j->other_why, can_boot ? "true" : "false", j->f.mqtt ? "true" : "false",
              j->f.phase < sizeof(k_fw_phase) / sizeof(k_fw_phase[0]) ? k_fw_phase[j->f.phase] : "?",
-             j->text, j->detail, j->f.progress, (unsigned long)j->f.bytes,
+             j->text, j->detail, j->sha, j->f.progress, (unsigned long)j->f.bytes,
              (unsigned long)j->f.total, j->f.trial ? "true" : "false",
              (unsigned long)j->f.trial_left_s,
              j->f.trial ? gw_ota_mode_name(j->f.expected) : "",
@@ -1327,11 +1595,44 @@ static bool media_type_is(const char *ctype, const char *type)
     return strncasecmp(ctype, type, n) == 0 && (ctype[n] == '\0' || ctype[n] == ';' || ctype[n] == ' ');
 }
 
+/* Issue #215: the SHA-256 of an uploaded file does not agree: 422 with the two values. The
+ * buffers are in PSRAM, not on the stack of the server task (it is not inlined into the upload). */
+static esp_err_t __attribute__((noinline)) send_sha_mismatch(httpd_req_t *req, const char *why)
+{
+    typedef struct {
+        gw_fw_status_t f;
+        char want[GW_OTA_SHA256_HEX];
+        char file[GW_OTA_SHA256_HEX];
+        char msg[2 * 160];
+        char body[2 * 160 + 2 * GW_OTA_SHA256_HEX + 128];
+    } sha_json_t;
+    sha_json_t *j = gw_storage_malloc(sizeof(*j));
+    if (j == NULL) {
+        return send_error(req, "422 Unprocessable Content", NULL, why);
+    }
+    gw_fw_get_status(&j->f);
+    j->want[0] = j->file[0] = '\0';
+    if (j->f.sha_mismatch) {
+        gw_ota_sha256_hex(j->f.sha_expected, j->want);
+        gw_ota_sha256_hex(j->f.sha_file, j->file);
+    }
+    json_escape(j->msg, sizeof(j->msg), why);
+    snprintf(j->body, sizeof(j->body),
+             "{\"ok\":false,\"error\":\"%s\",\"path\":\"\",\"line\":0,\"column\":0,"
+             "\"sha256_expected\":\"%s\",\"sha256_file\":\"%s\"}\n", j->msg, j->want, j->file);
+    esp_err_t r = send_json(req, "422 Unprocessable Content", j->body);
+    heap_caps_free(j);
+    return r;
+}
+
 /* {"url": "https://..."} (application/json): the gateway downloads it.
  * application/octet-stream: the body is the image itself, written as it arrives. Any other
  * content type is refused (issue #100: text/plain is what a foreign page can send).
  * Issue #144 item 3: "force": true in the JSON, or ?force=1 with an image, installs an image
- * that the pre-flight check refuses (409 without it); it must then reach recovery mode. */
+ * that the pre-flight check refuses (409 without it); it must then reach recovery mode.
+ * Issue #215: "sha256" in the JSON, or the header X-Image-SHA256 with an image: the SHA-256 that
+ * the file must have (64 hexadecimal characters; empty = no check). A file with another SHA-256
+ * is not installed: the upload answers 422 with the two values (GET gives them too). */
 static esp_err_t firmware_post(httpd_req_t *req)
 {
     if (!same_origin(req) || !authorized(req)) {
@@ -1354,13 +1655,15 @@ static esp_err_t firmware_post(httpd_req_t *req)
             return refuse_body(req, "400 Bad Request", "expected {\"url\": \"https://...\"}");
         }
         char url[GW_OTA_URL_MAX];
-        bool force = false;
-        bool parsed = gw_ota_parse_request(body, len, url, &force, why, sizeof(why));
+        bool force = false, has_sha = false;
+        uint8_t sha[GW_OTA_SHA256_LEN];
+        bool parsed = gw_ota_parse_request(body, len, url, &force, sha, &has_sha, why,
+                                           sizeof(why));
         heap_caps_free(body);
         if (!parsed) {
             return send_error(req, "400 Bad Request", NULL, why);
         }
-        esp_err_t e = gw_fw_start_url(url, force, why, sizeof(why));
+        esp_err_t e = gw_fw_start_url(url, has_sha ? sha : NULL, force, why, sizeof(why));
         if (e != ESP_OK) {
             return send_error(req, e == ESP_ERR_INVALID_ARG ? "400 Bad Request" : "409 Conflict",
                               NULL, why);
@@ -1371,8 +1674,23 @@ static esp_err_t firmware_post(httpd_req_t *req)
     if (req->content_len == 0) {
         return send_error(req, "411 Length Required", NULL, "image without Content-Length");
     }
-    esp_err_t e = gw_fw_upload_begin(req->content_len, query_flag(req, "force"), why,
-                                     sizeof(why));
+    /* issue #215: the optional SHA-256 of the image */
+    char hex[80] = "";
+    uint8_t sha[GW_OTA_SHA256_LEN];
+    bool has_sha = httpd_req_get_hdr_value_str(req, "X-Image-SHA256", hex, sizeof(hex)) == ESP_OK &&
+                   hex[0] != '\0';
+    if (has_sha) {
+        char reason[96];
+        if (!gw_ota_sha256_parse(hex, sha, reason, sizeof(reason))) {
+            snprintf(why, sizeof(why), "X-Image-SHA256: %s", reason);
+            return refuse_body(req, "400 Bad Request", why);
+        }
+    } else if (httpd_req_get_hdr_value_len(req, "X-Image-SHA256") >= sizeof(hex)) {
+        return refuse_body(req, "400 Bad Request",
+                           "X-Image-SHA256: expected 64 hexadecimal characters (0-9, a-f)");
+    }
+    esp_err_t e = gw_fw_upload_begin(req->content_len, has_sha ? sha : NULL,
+                                     query_flag(req, "force"), why, sizeof(why));
     if (e != ESP_OK) {
         return refuse_body(req, e == ESP_ERR_INVALID_SIZE ? "413 Content Too Large" : "409 Conflict",
                            why);
@@ -1404,6 +1722,9 @@ static esp_err_t firmware_post(httpd_req_t *req)
     }
     heap_caps_free(buf);
     e = gw_fw_upload_end(ok && got == req->content_len, why, sizeof(why));
+    if (e == ESP_ERR_INVALID_CRC) {
+        return send_sha_mismatch(req, why);   /* issue #215 */
+    }
     if (e != ESP_OK) {
         return refuse_body(req, !ok ? "503 Service Unavailable"
                                 : got < req->content_len ? "408 Request Timeout" : "400 Bad Request",
@@ -1541,6 +1862,252 @@ static esp_err_t coredump_summary_get(httpd_req_t *req)
     return r;
 }
 
+/* ---------- #208 #221: a JSON answer in a PSRAM buffer ---------- */
+
+typedef struct {
+    char *b;
+    size_t cap, n;
+} jbuf_t;
+
+static void jb_add(jbuf_t *j, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+
+static void jb_add(jbuf_t *j, const char *fmt, ...)
+{
+    if (j->n >= j->cap) {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vsnprintf(j->b + j->n, j->cap - j->n, fmt, ap);
+    va_end(ap);
+    j->n = r < 0 ? j->cap : j->n + (size_t)r;
+}
+
+/* "<key>":"<escaped text>" */
+static void jb_str(jbuf_t *j, const char *key, const char *s)
+{
+    char esc[2 * GW_PEM_SUBJECT_MAX + 8];
+    json_escape(esc, sizeof(esc), s);
+    jb_add(j, "\"%s\":\"%s\"", key, esc);
+}
+
+static esp_err_t jb_send(httpd_req_t *req, const char *status, jbuf_t *j)
+{
+    if (j->n >= j->cap) {
+        return send_error(req, "500 Internal Server Error", NULL, "answer too long");
+    }
+    esp_err_t r = send_json(req, status, j->b);
+    return r;
+}
+
+/* ---------- #208: GET /api/wifi/scan ---------- */
+
+#define WIFI_SCAN_MAX_AGE_S 10   /* a new scan only when the last result is older */
+
+static void scan_one(void *ctx, const gw_net_scan_ap_t *ap)
+{
+    jbuf_t *j = ctx;
+    char ssid[2 * sizeof(ap->ssid) + 8];
+    json_escape(ssid, sizeof(ssid), ap->ssid);
+    jb_add(j, "%s{\"ssid\":\"%s\",\"rssi\":%d,\"channel\":%u,\"security\":\"%s\",\"supported\":%s}",
+           j->b[j->n - 1] == '[' ? "" : ",", ssid, ap->rssi, ap->channel, ap->security,
+           ap->supported ? "true" : "false");
+}
+
+/* The Wi-Fi networks near the gateway, for the button "Find networks" of the web UI: ?new=1
+ * starts a scan (unless one runs, or the last result is younger than WIFI_SCAN_MAX_AGE_S); a
+ * request without it only reads the state. 202 while the scan runs, 200 with the networks. The
+ * scan also works with network.wifi off. QEMU has no radio: the list is simulated. */
+static esp_err_t wifi_scan_get(httpd_req_t *req)
+{
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
+    if (query_flag(req, "new")) {
+        gw_net_wifi_scan_start(WIFI_SCAN_MAX_AGE_S);
+    }
+    uint32_t age;
+    bool sim;
+    char why[64];
+    gw_net_scan_state_t st = gw_net_wifi_scan_result(NULL, NULL, &age, &sim, why, sizeof(why));
+    switch (st) {
+    case GW_NET_SCAN_UNAVAILABLE:
+        return send_error(req, "404 Not Found", NULL, "this build has no Wi-Fi radio");
+    case GW_NET_SCAN_IDLE:
+        return send_json(req, "200 OK", "{\"state\":\"idle\",\"networks\":[]}\n");
+    case GW_NET_SCAN_RUNNING:
+        return send_json(req, "202 Accepted", "{\"state\":\"scanning\"}\n");
+    case GW_NET_SCAN_FAILED: {
+        char body[160], esc[128];
+        json_escape(esc, sizeof(esc), why);
+        snprintf(body, sizeof(body), "{\"state\":\"failed\",\"error\":\"%s\"}\n", esc);
+        return send_json(req, "503 Service Unavailable", body);
+    }
+    default:
+        break;
+    }
+    jbuf_t j = {.cap = 192 + GW_NET_SCAN_MAX * 160};
+    j.b = gw_storage_malloc(j.cap);
+    if (j.b == NULL) {
+        return send_error(req, "503 Service Unavailable", NULL, "no memory");
+    }
+    jb_add(&j, "{\"state\":\"done\",\"age_s\":%u,\"simulated\":%s,\"networks\":[", (unsigned)age,
+           sim ? "true" : "false");
+    gw_net_wifi_scan_result(scan_one, &j, &age, &sim, why, sizeof(why));
+    jb_add(&j, "]}\n");
+    esp_err_t r = jb_send(req, "200 OK", &j);
+    gw_storage_free(j.b);
+    return r;
+}
+
+/* ---------- #221: the PEM files next to config.json ---------- */
+
+#define FILES_MAX 16   /* files that GET /api/files lists */
+
+typedef struct {
+    char (*names)[GW_FILE_SIZE];
+    size_t count;
+} names_t;
+
+static void file_name(void *ctx, const char *name, size_t size)
+{
+    names_t *n = ctx;
+    (void)size;
+    if (n->count < FILES_MAX) {
+        snprintf(n->names[n->count++], GW_FILE_SIZE, "%s", name);
+    }
+}
+
+static void jb_info(jbuf_t *j, const gw_pem_info_t *f)
+{
+    jb_add(j, "{");
+    jb_str(j, "name", f->name);
+    jb_add(j, ",\"size\":%u,\"kind\":\"%s\"", (unsigned)f->size,
+           f->kind == GW_PEM_CERTS ? "certificates" : f->kind == GW_PEM_KEY ? "key" : "other");
+    if (f->kind == GW_PEM_CERTS) {
+        jb_add(j, ",\"count\":%u,\"certs\":[", f->count);
+        for (unsigned i = 0; i < f->count && i < GW_PEM_CERTS_MAX; i++) {
+            jb_add(j, "%s{", i ? "," : "");
+            jb_str(j, "subject", f->certs[i].subject);
+            jb_add(j, ",\"not_after\":\"%s\",\"ca\":%s}", f->certs[i].not_after,
+                   f->certs[i].ca ? "true" : "false");
+        }
+        jb_add(j, "]");
+    } else if (f->kind == GW_PEM_KEY) {
+        jb_add(j, ",");
+        jb_str(j, "key_type", f->key_type);
+    }
+}
+
+/* GET /api/files: the files that the operator can name in mqtt.tls and ota (the selects of the
+ * card MQTT), with the subject and the expiry of each certificate, the type of each private key
+ * and the certificate files that it agrees with. Never the content of a file. */
+static esp_err_t files_get(httpd_req_t *req)
+{
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
+    names_t n = {.names = gw_storage_calloc(FILES_MAX, GW_FILE_SIZE)};
+    gw_pem_info_t *info = gw_storage_calloc(FILES_MAX, sizeof(*info));
+    jbuf_t j = {.cap = 256 + FILES_MAX * (200 + GW_PEM_CERTS_MAX * (2 * GW_PEM_SUBJECT_MAX + 64))};
+    j.b = gw_storage_malloc(j.cap);
+    esp_err_t r;
+    if (n.names == NULL || info == NULL || j.b == NULL) {
+        r = send_error(req, "503 Service Unavailable", NULL, "no memory");
+    } else {
+        gw_storage_list_files(file_name, &n);
+        size_t total = 0;
+        for (size_t i = 0; i < n.count; i++) {
+            char why[96];
+            if (!gw_pem_info(n.names[i], &info[i], why, sizeof(why))) {
+                info[i].kind = GW_PEM_OTHER;
+            }
+            total += info[i].size;
+        }
+        jb_add(&j, "{\"files\":[");
+        for (size_t i = 0; i < n.count; i++) {
+            jb_add(&j, "%s", i ? "," : "");
+            jb_info(&j, &info[i]);
+            if (info[i].kind == GW_PEM_KEY) {
+                jb_add(&j, ",\"agrees_with\":[");
+                unsigned m = 0;
+                for (size_t k = 0; k < n.count; k++) {
+                    if (info[k].kind == GW_PEM_CERTS && gw_pem_key_agrees(info[i].name, info[k].name)) {
+                        jb_add(&j, "%s\"%s\"", m++ ? "," : "", info[k].name);
+                    }
+                }
+                jb_add(&j, "]");
+            }
+            jb_add(&j, "}");
+        }
+        jb_add(&j, "],\"total_bytes\":%u,\"max_file_bytes\":%d}\n", (unsigned)total,
+               GW_STORAGE_FILE_MAX);
+        r = jb_send(req, "200 OK", &j);
+    }
+    gw_storage_free(n.names);
+    gw_storage_free(info);
+    gw_storage_free(j.b);
+    return r;
+}
+
+/* PUT /api/files?name=<name> with the PEM text: the buttons "Load a file..." of the file fields
+ * of the card MQTT. Certificates or an unencrypted private key, up to GW_STORAGE_FILE_MAX bytes.
+ * 201 with what the file holds; 409 if the file exists (#221: the replace of a file waits for the
+ * approval of the PEM file management). The configuration does not change: the web UI selects
+ * the file in its field, then the operator saves. */
+static esp_err_t files_put(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    char q[96], name[GW_FILE_SIZE + 8];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) != ESP_OK ||
+        httpd_query_key_value(q, "name", name, sizeof(name)) != ESP_OK || name[0] == '\0') {
+        return refuse_body(req, "400 Bad Request", "name: give the name of the file (?name=...)");
+    }
+    if (req->content_len > GW_STORAGE_FILE_MAX) {
+        char msg[80];
+        snprintf(msg, sizeof(msg), "body of %u bytes not accepted (maximum %d)",
+                 (unsigned)req->content_len, GW_STORAGE_FILE_MAX);
+        return refuse_body(req, "413 Content Too Large", msg);
+    }
+    size_t len;
+    const char *status;
+    char *body = read_body(req, &len, &status);
+    if (body == NULL) {
+        return refuse_body(req, status, "the body is empty or did not arrive");
+    }
+    gw_pem_info_t *info = gw_storage_calloc(1, sizeof(*info));
+    char why[160];
+    esp_err_t e = info != NULL ? gw_pem_put(name, body, len, info, why, sizeof(why))
+                               : ESP_ERR_NO_MEM;
+    memset(body, 0, len);   /* can be a private key */
+    heap_caps_free(body);
+    esp_err_t r;
+    if (e == ESP_OK) {
+        jbuf_t j = {.cap = 256 + GW_PEM_CERTS_MAX * (2 * GW_PEM_SUBJECT_MAX + 64)};
+        j.b = gw_storage_malloc(j.cap);
+        if (j.b == NULL) {
+            r = send_json(req, "201 Created", "{\"ok\":true}\n");
+        } else {
+            jb_add(&j, "{\"ok\":true,\"file\":");
+            jb_info(&j, info);
+            jb_add(&j, "}}\n");
+            r = jb_send(req, "201 Created", &j);
+            gw_storage_free(j.b);
+        }
+    } else {
+        r = send_error(req, e == ESP_ERR_INVALID_STATE  ? "409 Conflict"
+                            : e == ESP_ERR_NO_MEM       ? "503 Service Unavailable"
+                            : e == ESP_ERR_INVALID_SIZE ? "413 Content Too Large"
+                            : e == ESP_FAIL             ? "507 Insufficient Storage"
+                                                        : "400 Bad Request",
+                       NULL, e == ESP_ERR_NO_MEM ? "no memory" : why);
+    }
+    gw_storage_free(info);
+    return r;
+}
+
 /* ---------- / and /api/status ---------- */
 
 extern const char index_html_start[] asm("_binary_index_html_start");
@@ -1625,6 +2192,33 @@ static __attribute__((noinline)) void status_card(out_t *o, const gw_config_t *c
          (unsigned long)es.spill_extents, (unsigned long)es.spill_kb,
          (unsigned long)es.spill_blocks, (unsigned long)es.spill_checkpoints,
          (unsigned long)es.spill_boot_ms, (unsigned long)es.spill_gc_pending);
+}
+
+/* #206, #207, #209, #199 and #212: the name and the location of the gateway (not the comment:
+ * the decision of #206), the time left of the identify, safe mode, the changed log levels and
+ * the health values. Not inlined: its buffer stays off the stack frame of status_get. */
+static __attribute__((noinline)) void status_admin(out_t *o, const gw_config_t *c)
+{
+    outf(o, ",\"gateway\":{\"name\":");
+    out_str(o, c->gateway.name);
+    outf(o, ",\"location\":");
+    out_str(o, c->gateway.location);
+    bool requested;
+    uint32_t left_s;
+    bool safe = gw_fw_safe_mode_info(&requested, &left_s);
+    outf(o, "},\"identify_left_s\":%lu,\"safe_mode\":{\"active\":%s,\"cause\":\"%s\","
+            "\"left_s\":%lu}",
+         (unsigned long)gw_status_identify_left_s(), safe ? "true" : "false",
+         !safe ? "" : requested ? "request" : "crashes", (unsigned long)left_s);
+    char levels[512];
+    gw_log_tags_json(true, levels, sizeof(levels));
+    outf(o, ",\"log_levels\":%s", levels);
+    float t;
+    if (gw_temp_read(&t)) {
+        outf(o, ",\"temperature_c\":%.1f", (double)t);
+    } else {
+        outf(o, ",\"temperature_c\":null");
+    }
 }
 
 /* NET-5, issue #187: the access point, as an optional object (older clients ignore it).
@@ -1732,12 +2326,16 @@ static esp_err_t status_get(httpd_req_t *req)
         outf(o, "%s{\"name\":", d ? "," : "");
         out_str(o, dev->name);
         outf(o,
-             ",\"unit_id\":%u,\"online\":%s,\"cycles\":%lu,\"failed\":%lu,\"ok\":%lu,"
-             "\"timeout\":%lu,\"crc\":%lu,\"frame\":%lu,\"exception\":%lu,\"tags\":[",
-             dev->unit_id, online ? "true" : "false", (unsigned long)st.cycles,
+             ",\"unit_id\":%u,\"enabled\":%s,\"online\":%s,\"cycles\":%lu,\"failed\":%lu,"
+             "\"ok\":%lu,"
+             "\"timeout\":%lu,\"crc\":%lu,\"frame\":%lu,\"exception\":%lu,"
+             "\"write_refused\":%lu,\"tags\":[",
+             dev->unit_id, dev->enabled ? "true" : "false",   /* #214 */
+             online ? "true" : "false", (unsigned long)st.cycles,
              (unsigned long)st.failed_cycles, (unsigned long)st.bus.ok,
              (unsigned long)st.bus.timeout, (unsigned long)st.bus.crc,
-             (unsigned long)st.bus.frame, (unsigned long)st.bus.exception);
+             (unsigned long)st.bus.frame, (unsigned long)st.bus.exception,
+             (unsigned long)gw_tagdb_refused(d));   /* #196 */
         for (uint16_t t = 0; t < dev->tag_count; t++) {
             const gw_tag_value_t *v = &s_vals[t];
             outf(o, "%s{\"name\":", t ? "," : "");
@@ -1794,7 +2392,36 @@ static esp_err_t status_get(httpd_req_t *req)
     for (uint8_t r = 0; s_ctx.mode == GW_WEB_NORMAL && r < c->local_io.rule_count; r++) {
         rule_do |= (uint8_t)(1u << c->local_io.rules[r].dout);
     }
-    outf(o, "],\"rule_do\":%u}", rule_do);
+    outf(o, "],\"rule_do\":%u", rule_do);
+    /* #204 #210 #217 #218: the local rules (DI and mode of each DO with a rule), the pulse time
+     * of each DO, the fast counters, and the run hours (s; null for a channel that does not
+     * count them) */
+    bool normal = s_ctx.mode == GW_WEB_NORMAL;
+    static const char *const rule_modes[] = {"follow", "invert", "toggle"};
+    outf(o, ",\"rules\":[");
+    for (uint8_t r = 0; normal && r < c->local_io.rule_count; r++) {
+        outf(o, "%s{\"di\":%u,\"do\":%u,\"mode\":\"%s\"}", r ? "," : "",
+             c->local_io.rules[r].di + 1u, c->local_io.rules[r].dout + 1u,
+             rule_modes[c->local_io.rules[r].mode % 3]);
+    }
+    outf(o, "],\"pulse_ms\":[");
+    for (int k = 0; k < GW_LOCAL_IO_CHANNELS; k++) {
+        outf(o, "%s%u", k ? "," : "", normal ? c->local_io.do_pulse_ms[k] : 0u);
+    }
+    outf(o, "],\"fast\":%u,\"run_hours\":{", normal ? c->local_io.fast_mask : 0u);
+    for (int g = 0; g < 2; g++) {
+        outf(o, "%s\"%s\":[", g ? "," : "", g ? "do" : "di");
+        for (int k = 0; k < GW_LOCAL_IO_CHANNELS; k++) {
+            int ch = g * GW_LOCAL_IO_CHANNELS + k;
+            if (normal && (c->local_io.run_hours & (1u << ch))) {
+                outf(o, "%s%llu", k ? "," : "", (unsigned long long)io.run_s[ch]);
+            } else {
+                outf(o, "%snull", k ? "," : "");
+            }
+        }
+        outf(o, "]");
+    }
+    outf(o, "}}");
     static const char *const alarm_keys[] = {"none", "device_offline", "mqtt_down", "config_error"};
     gw_alarm_t alarm = gw_buzzer_alarm();
     uint8_t enabled = gw_buzzer_alarms();
@@ -1822,6 +2449,7 @@ static esp_err_t status_get(httpd_req_t *req)
     outf(o, ",\"stores\":%lu}}", (unsigned long)rtc.stores);
     status_card(o, c);
     status_ap(o, req);
+    status_admin(o, c);
     {   /* #132: is a core dump in flash (no flash access; the summary is a route of its own) */
         uint32_t size;
         gw_cdump_state_t cd = gw_coredump_state(&size);
@@ -1830,10 +2458,11 @@ static esp_err_t status_get(httpd_req_t *req)
         outf(o, ",\"core_dump\":%s", buf);
     }
     outf(o,
-         ",\"heap\":{\"internal_free\":%u,\"internal_min\":%u,"
+         ",\"heap\":{\"internal_free\":%u,\"internal_min\":%u,\"internal_largest\":%u,"
          "\"psram_free\":%u}}\n",
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
          (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),   /* #212 */
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     out_flush(o);
     return o->err == ESP_OK ? httpd_resp_send_chunk(req, NULL, 0) : o->err;
@@ -1995,7 +2624,12 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
                            h_cd_delete = {coredump_delete}, h_cd_summary = {coredump_summary_get},
                            h_time = {time_post}, h_claim_page = {claim_page_get},
                            h_claim_get = {claim_get}, h_claim_post = {claim_post},
-                           h_ap_stop = {ap_stop_post};
+                           h_ap_stop = {ap_stop_post}, h_identify = {identify_post},
+                           h_factory_reset = {factory_reset_post}, h_log = {log_get},
+                           h_log_level_get = {log_level_get},
+                           h_log_level_post = {log_level_post}, h_do = {do_post},
+                           h_wifi_scan = {wifi_scan_get}, h_files_get = {files_get},
+                           h_files_put = {files_put};
     static const struct {
         const char *uri;
         httpd_method_t method;
@@ -2022,6 +2656,15 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         {"/api/claim", HTTP_GET, &h_claim_get},
         {"/api/claim", HTTP_POST, &h_claim_post},
         {"/api/ap/stop", HTTP_POST, &h_ap_stop},           /* #187 */
+        {"/api/identify", HTTP_POST, &h_identify},         /* #207 */
+        {"/api/factory-reset", HTTP_POST, &h_factory_reset},   /* #203 */
+        {"/api/log", HTTP_GET, &h_log},                    /* #200 */
+        {"/api/log/level", HTTP_GET, &h_log_level_get},    /* #199 */
+        {"/api/log/level", HTTP_POST, &h_log_level_post},
+        {"/api/do", HTTP_POST, &h_do},                     /* #204 */
+        {"/api/wifi/scan", HTTP_GET, &h_wifi_scan},        /* #208 */
+        {"/api/files", HTTP_GET, &h_files_get},            /* #221 */
+        {"/api/files", HTTP_PUT, &h_files_put},
     };
     _Static_assert(sizeof(uris) / sizeof(uris[0]) == WEB_URI_HANDLERS, "WEB_URI_HANDLERS");
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {

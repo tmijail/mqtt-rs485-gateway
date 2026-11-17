@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include "gw_ident.h"
+
 static bool reached(uint32_t now, uint32_t at)
 {
     return (int32_t)(now - at) >= 0;
@@ -64,6 +66,23 @@ bool gw_buzz_tone(gw_buzz_t *b, uint32_t now_ms)
         }
     }
     return b->tone;
+}
+
+bool gw_buzz_out(gw_buzz_t *b, uint32_t now_ms, bool ident, uint32_t ident_elapsed_ms)
+{
+    if (ident) {
+        /* #207: the burst in progress, the requests and the alarm burst that comes due wait:
+         * their times are in the past at the end, so they continue at once */
+        return gw_ident_tone(ident_elapsed_ms);
+    }
+    return gw_buzz_tone(b, now_ms);
+}
+
+uint32_t gw_buzz_wait_ms(uint8_t beeps, uint32_t ident_left_ms, uint32_t tick_ms)
+{
+    /* an alarm burst in progress (3 beeps) plus these beeps, plus one beep of margin */
+    return (uint32_t)(beeps + 4u) * (GW_BUZZ_ON_MS + GW_BUZZ_OFF_MS) + 2u * tick_ms +
+           ident_left_ms;
 }
 
 bool gw_buzz_idle(const gw_buzz_t *b)

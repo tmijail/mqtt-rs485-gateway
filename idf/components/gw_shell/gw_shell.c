@@ -26,6 +26,7 @@
 #include "gw_coredump.h"
 #include "gw_edge.h"
 #include "gw_fw.h"
+#include "gw_ident.h"
 #include "gw_io.h"
 #include "gw_log.h"
 #include "gw_mbap.h"
@@ -36,6 +37,7 @@
 #include "gw_status.h"
 #include "gw_storage.h"
 #include "gw_tagdb.h"
+#include "gw_temp.h"
 #include "gw_web.h"
 #include "gw_wpa.h"
 #include "lwip/ip_addr.h"
@@ -299,12 +301,11 @@ static int cmd_status(int argc, char **argv)
         /* issue #144: both slots (item 6), the trial and its expected mode, the state */
         static const char *const slot_state[] = {"empty", "previous", "set to boot", "rejected",
                                                  "invalid"};
-        out("ota      %s in %s, other slot %s (%s%s%s)%s | %s", fw->running, fw->slot,
+        out("ota      %s in %s, other slot %s (%s%s%s) | %s", fw->running, fw->slot,
             fw->other[0] ? fw->other : "-",
             (unsigned)fw->other_state < sizeof(slot_state) / sizeof(slot_state[0])
                 ? slot_state[fw->other_state] : "?",
-            fw->other_why[0] ? ": " : "", fw->other_why,
-            fw->enabled ? "" : " (updates disabled)", fw->detail);
+            fw->other_why[0] ? ": " : "", fw->other_why, fw->detail);
         if (fw->trial) {
             out(" (testing: it must reach %s mode", gw_ota_mode_name(fw->expected));
             if (fw->trial_left_s > 0) {   /* 0: the confirmation is retried */
@@ -339,18 +340,27 @@ static int cmd_status(int argc, char **argv)
                "only\n");
         out("network  %s\n", (f & GW_ST_NET_UP) ? "up" : "down");
     } else {
-        uint16_t offline = 0;
+        uint16_t offline = 0, disabled = 0;
         for (uint16_t d = 0; d < s_ctx.cfg->device_count; d++) {
+            if (!s_ctx.cfg->devices[d].enabled) {
+                disabled++;   /* #214: not polled; not in the count */
+                continue;
+            }
             offline = (uint16_t)(offline + (device_online(d) ? 0u : 1u));
         }
         out("config   %s: ok%s\n", s_ctx.config_source,
             s_ctx.starting ? " (the gateway is still starting)" : "");
-        out("network  %s, MQTT %s, Modbus %u/%u devices online\n",
+        uint16_t enabled = (uint16_t)(s_ctx.cfg->device_count - disabled);
+        char off[24] = "";
+        if (disabled > 0) {
+            snprintf(off, sizeof(off), ", %u disabled", disabled);
+        }
+        out("network  %s, MQTT %s, Modbus %u/%u devices online%s\n",
                (f & GW_ST_NET_UP) ? "up" : "down",
                (f & GW_ST_MQTT_UP)    ? "connected"
                : (f & GW_ST_NO_CLOCK) ? "waiting for a valid clock"   /* #160 */
                                       : "disconnected",
-               s_ctx.cfg->device_count - offline, s_ctx.cfg->device_count);
+               enabled - offline, enabled, off);
         gw_edge_status_t es;
         gw_edge_get_status(&es);
         if (es.host != NULL) {
@@ -530,6 +540,15 @@ static int cmd_status(int argc, char **argv)
         out(" %d:%" PRIu64, i + 1, io.count[i]);
     }
     out("\n");
+    if (s_ctx.cfg != NULL && s_ctx.cfg->local_io.run_hours != 0) {   /* #217 */
+        out("run h   ");
+        for (int i = 0; i < GW_RUN_HOURS_CHANNELS; i++) {
+            if (s_ctx.cfg->local_io.run_hours & (1u << i)) {
+                out(" %s/%d:%" PRIu64 " s", i < 8 ? "DI" : "DO", i % 8 + 1, io.run_s[i]);
+            }
+        }
+        out("\n");
+    }
     /* Core of each task that matters for timing ("-" = no affinity; tasks not running, such as
      * the Ethernet RX task of the other MAC, are omitted). */
     static const char *const tasks[] = {"rs485_bus", "sparkplug", "tcpip", "mqtt_task",
@@ -578,6 +597,17 @@ static int cmd_status(int argc, char **argv)
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
         (unsigned)gw_storage_validation_min_block(),
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    float temp;   /* #212 */
+    if (gw_temp_read(&temp)) {
+        out("chip     temperature %.1f C\n", (double)temp);
+    } else {
+        out("chip     temperature not available (no sensor reading)\n");
+    }
+    uint32_t ident = gw_status_identify_left_s();   /* #207 */
+    if (ident > 0) {
+        out("identify the LED and the buzzer identify the gateway: %lu s left\n",
+            (unsigned long)ident);
+    }
     return 0;
 }
 
@@ -596,7 +626,8 @@ static int cmd_devices(int argc, char **argv)
         gw_tagdb_get_stats(d, &st);
         out("%-16s unit %3u %-7s cycles %lu failed %lu | ok %lu timeout %lu crc %lu frame %lu "
                "exception %lu",
-               dev->name, dev->unit_id, device_online(d) ? "online" : "offline",
+               dev->name, dev->unit_id,
+               !dev->enabled ? "disabled" : device_online(d) ? "online" : "offline",   /* #214 */
                (unsigned long)st.cycles, (unsigned long)st.failed_cycles, (unsigned long)st.bus.ok,
                (unsigned long)st.bus.timeout, (unsigned long)st.bus.crc,
                (unsigned long)st.bus.frame, (unsigned long)st.bus.exception);
@@ -606,6 +637,10 @@ static int cmd_devices(int argc, char **argv)
                 (unsigned long)t->timeout, (unsigned long)t->crc, (unsigned long)t->frame,
                 (unsigned long)t->exception);
         }
+        uint32_t refused = gw_tagdb_refused(d);   /* #196: DCMD writes out of the limits */
+        if (refused > 0) {
+            out(" | writes refused %lu", (unsigned long)refused);
+        }
         out("\n");
     }
     if (s_ctx.cfg->modbus_tcp.enabled) {
@@ -614,11 +649,12 @@ static int cmd_devices(int argc, char **argv)
         const mb_stats_t *o = &g.other_units;
         out("modbus_tcp connections %lu accepted %lu rejected | forwarded %lu | gateway "
             "exceptions 01 %lu 03 %lu 0A %lu 0B %lu | other units ok %lu timeout %lu crc %lu "
-            "frame %lu exception %lu\n",
+            "frame %lu exception %lu | local unit %lu\n",
             (unsigned long)g.accepted, (unsigned long)g.rejected, (unsigned long)g.forwarded,
             (unsigned long)g.ex_function, (unsigned long)g.ex_value, (unsigned long)g.ex_path,
             (unsigned long)g.ex_no_answer, (unsigned long)o->ok, (unsigned long)o->timeout,
-            (unsigned long)o->crc, (unsigned long)o->frame, (unsigned long)o->exception);
+            (unsigned long)o->crc, (unsigned long)o->frame, (unsigned long)o->exception,
+            (unsigned long)g.local);
     }
     return 0;
 }
@@ -857,7 +893,11 @@ static int cmd_config(int argc, char **argv)
     } else {
         out("ipv6       disabled\n");
     }
-    out("ntp        %s\n", c->ntp.server);
+    out("ntp        ");
+    for (unsigned i = 0; i < c->ntp.server_count; i++) {
+        out("%s%s", i ? ", " : "", c->ntp.servers[i]);
+    }
+    out("\n");
     static const char *const levels[8] = {[3] = "error", [4] = "warning", [6] = "info",
                                           [7] = "debug"};
     if (c->syslog.host[0] != '\0') {
@@ -870,7 +910,13 @@ static int cmd_config(int argc, char **argv)
            "inter-frame %u ms\n",
            (unsigned long)c->rs485.baud, parity[c->rs485.parity], c->rs485.stop_bits,
            c->rs485.response_timeout_ms, c->rs485.retries, c->rs485.inter_frame_delay_ms);
-    out("local_io   DI debounce %u ms", c->local_io.di_debounce_ms);
+    /* #211: the debounce of each DI, DI/1 first, with "i" after an inverted DI; #218 "f" after a
+     * fast counter (PCNT) */
+    out("local_io   DI debounce (ms)");
+    for (int i = 0; i < GW_LOCAL_IO_CHANNELS; i++) {
+        out(" %u%s%s", c->local_io.di_debounce_ms[i], (c->local_io.di_invert >> i) & 1u ? "i" : "",
+            (c->local_io.fast_mask >> i) & 1u ? "f" : "");
+    }
     /* IO-3: one letter per DO, DO/1 first: o = off, 1 = on, h = hold */
     char modes[GW_LOCAL_IO_CHANNELS + 1];
     for (int i = 0; i < GW_LOCAL_IO_CHANNELS; i++) {
@@ -882,6 +928,26 @@ static int cmd_config(int argc, char **argv)
             "MQTT\n", modes, (unsigned long)c->local_io.failsafe_s);
     } else {
         out(", DO safe state %s (o off, 1 on, h hold) at restart; no MQTT failsafe\n", modes);
+    }
+    for (int i = 0; i < GW_LOCAL_IO_CHANNELS; i++) {   /* #210 */
+        if (c->local_io.do_pulse_ms[i] != 0) {
+            out("           DO/%d: pulse of %u ms\n", i + 1, c->local_io.do_pulse_ms[i]);
+        }
+    }
+    for (int i = 0; i < GW_LOCAL_IO_CHANNELS; i++) {   /* #218 */
+        if (c->local_io.fast_mask & (1u << i)) {
+            out("           DI/%d: fast counter (PCNT), glitch filter %u ns\n", i + 1,
+                c->local_io.glitch_ns[i]);
+        }
+    }
+    if (c->local_io.run_hours != 0) {   /* #217 */
+        out("           run hours:");
+        for (int i = 0; i < GW_RUN_HOURS_CHANNELS; i++) {
+            if (c->local_io.run_hours & (1u << i)) {
+                out(" %s/%d", i < 8 ? "DI" : "DO", i % 8 + 1);
+            }
+        }
+        out("\n");
     }
     static const char *const rule_modes[] = {"follow", "invert", "toggle"};
     for (uint8_t i = 0; i < c->local_io.rule_count; i++) {   /* IO-7 */
@@ -900,10 +966,10 @@ static int cmd_config(int argc, char **argv)
         out("           buzzer alarms: none\n");
     }
     if (c->local_io.counter_save_s != 0) {
-        out("           DI pulse counters saved every %lu s\n",
+        out("           DI pulse counters and run hours saved every %lu s\n",
             (unsigned long)c->local_io.counter_save_s);
     } else {
-        out("           DI pulse counters not saved (lost at every restart)\n");
+        out("           DI pulse counters and run hours not saved (lost at every restart)\n");
     }
     out("devices    %u device(s), %u tag(s)\n", c->device_count, c->tag_count);
     for (uint16_t d = 0; d < c->device_count; d++) {
@@ -931,11 +997,20 @@ static int cmd_config(int argc, char **argv)
             snprintf(blocks, sizeof(blocks), "one request per tag%s",
                      dev->block_reads == GW_CFG_BUILD_DEFAULT ? " (default)" : "");
         }
+#if CONFIG_GW_MB_FORCE_MULTI_WRITE
+        const bool build_multi = true;
+#else
+        const bool build_multi = false;
+#endif
+        bool multi = dev->write_multiple == GW_CFG_BUILD_DEFAULT ? build_multi
+                                                                 : dev->write_multiple != 0;
         out("  %-16s unit %3u, poll %lu ms, slow %lu ms, offline after %u, %u tag(s) "
-            "(%u fast, %u slow), %s\n",
+            "(%u fast, %u slow), %s%s%s\n",
             dev->name, dev->unit_id, (unsigned long)dev->poll_ms,
             (unsigned long)dev->slow_poll_ms, dev->offline_after, dev->tag_count,
-            dev->tag_count - slow, slow, blocks);
+            dev->tag_count - slow, slow, blocks,
+            multi ? ", writes FC15/FC16" : "",   /* #197 */
+            dev->enabled ? "" : ", disabled (not polled)");   /* #214 */
     }
     if (c->modbus_tcp.enabled) {
         char clients[GW_MBTCP_MAX_ALLOWED * 20] = "";
@@ -950,6 +1025,10 @@ static int cmd_config(int argc, char **argv)
         out("modbus_tcp enabled, port %u, idle timeout %u s, clients %s\n", c->modbus_tcp.port,
             c->modbus_tcp.idle_timeout_s,
             c->modbus_tcp.client_count ? clients : "any (no authentication)");
+        if (c->modbus_tcp.local_unit_id != 0) {   /* #216 */
+            out("modbus_tcp local unit %u (DIs, DOs, counters), writes %s\n",
+                c->modbus_tcp.local_unit_id, c->modbus_tcp.local_writes ? "on" : "off");
+        }
     } else {
         out("modbus_tcp disabled\n");
     }
@@ -1142,15 +1221,158 @@ static int cmd_coredump(int argc, char **argv)
     return 0;
 }
 
+/* #207: the LED and the buzzer identify the gateway for 10 s (harmless: also without
+ * CONFIG_GW_SHELL_WRITE_COMMANDS). */
+static int cmd_identify(int argc, char **argv)
+{
+    (void)argv;
+    if (argc != 1) {
+        out("usage: identify\n");
+        return 1;
+    }
+    if (!gw_status_identify()) {
+        out("identify: already running, %lu s left\n", (unsigned long)gw_status_identify_left_s());
+        return 1;
+    }
+    out("identify: the LED shows red, green and blue in turn and the buzzer beeps for %u s\n",
+        GW_IDENT_MS / 1000);
+    return 0;
+}
+
+/* #199: the log level of each tag at run time; not saved (a restart sets the level of the build
+ * again). 'log' shows the levels and the tags, 'log <tag|*> <level>' sets one, 'log reset' sets
+ * every tag to the level of the build. */
+static int cmd_log(int argc, char **argv)
+{
+    if (argc == 2 && strcmp(argv[1], "reset") == 0) {
+        gw_log_level_reset();
+        out("log: every tag has the level of the build again (%s)\n",
+            gw_loglevel_name(gw_log_build_level()));
+        return 0;
+    }
+    if (argc == 3) {
+        int level = gw_loglevel_parse(argv[2]);
+        gw_log_set_t r = level < 0 ? GW_LOG_SET_BAD_LEVEL : gw_log_level_set(argv[1], level);
+        switch (r) {
+        case GW_LOG_SET_OK:
+            out("log: %s: %s (not saved)\n", argv[1], argv[2]);
+            return 0;
+        case GW_LOG_SET_BAD_TAG:
+            out("log: '%s' is not a tag (1 to %d characters without spaces and ':', or *)\n",
+                argv[1], GW_LOGTAG_SIZE - 1);
+            return 1;
+        case GW_LOG_SET_BAD_LEVEL:
+            out("log: '%s' is not a level of this build (none, error, warn, info%s)\n", argv[2],
+                gw_log_max_level() >= GW_LOGLV_VERBOSE ? ", debug, verbose"
+                : gw_log_max_level() >= GW_LOGLV_DEBUG ? ", debug" : "");
+            return 1;
+        default:
+            out("log: no room for one more tag (%d tags)\n", GW_LOGTAG_MAX);
+            return 1;
+        }
+    }
+    if (argc != 1) {
+        out("usage: log [<tag|*> <none|error|warn|info|debug|verbose> | reset]\n");
+        return 1;
+    }
+    /* from the heap for the command (not the console task's stack nor .bss, #80) */
+    gw_logtag_t *tags = gw_storage_malloc(GW_LOGTAG_MAX * sizeof(*tags));
+    size_t n = tags != NULL ? gw_log_tags(tags, GW_LOGTAG_MAX) : 0;
+    out("log      level of the build %s (maximum %s); changed levels (not saved):",
+        gw_loglevel_name(gw_log_build_level()), gw_loglevel_name(gw_log_max_level()));
+    unsigned changed = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (tags[i].level != GW_LOGTAG_DEFAULT) {
+            out(" %s=%s", tags[i].name, gw_loglevel_name(tags[i].level));
+            changed++;
+        }
+    }
+    out("%s\nlog      tags:", changed ? "" : " none");
+    for (size_t i = 0; i < n; i++) {
+        out(" %s", tags[i].name);
+    }
+    out("\n");
+    heap_caps_free(tags);
+    return 0;
+}
+
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
+/* Issue #209: 'restart safe' starts safe mode (no polling, no MQTT) for 60 min or until the next
+ * restart. */
 static int cmd_restart(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
+    if (argc == 2 && strcmp(argv[1], "safe") == 0) {
+        char why[160];
+        if (!gw_fw_request_safe_mode(why, sizeof(why))) {
+            out("restart safe: REFUSED: %s\n", why);
+            return 1;
+        }
+        out("restarting into safe mode: no polling and no MQTT for %d min, or until the next "
+            "restart\n", CONFIG_GW_FW_SAFE_MODE_MIN);
+        out_flush();
+        s_ctx.restart();
+        return 0;
+    }
+    if (argc != 1) {
+        out("usage: restart [safe]\n");
+        return 1;
+    }
     out("restarting\n");
     out_flush();
     s_ctx.restart();
     return 0;
+}
+
+#define ERASE_IDLE_MS 60000   /* the answer to 'factory-reset' must come in this time */
+
+/* #203: 'factory-reset' asks for the word ERASE, then erases what BOOT held 10 s erases and
+ * restarts in commissioning. The answer is read WITHOUT s_ctx_lock (as 'config load', issue #78). */
+static int cmd_factory_reset(int argc, char **argv)
+{
+    (void)argv;
+    s_out_len = 0;
+    if (argc != 1) {
+        out("usage: factory-reset\n");
+        out_flush();
+        return 1;
+    }
+    out("factory-reset: this erases the configuration, the secrets (for example the MQTT "
+        "password), the certificate of the web UI, the web password and the pulse counters of "
+        "the DIs. Then the gateway restarts in commissioning mode: no polling and no MQTT until "
+        "it gets a new configuration. Type ERASE to confirm (anything else aborts)\n");
+    out_flush();
+    char line[32] = "";
+    int64_t start = esp_timer_get_time();
+    bool got = false;
+    while (!got && esp_timer_get_time() - start < ERASE_IDLE_MS * 1000LL) {
+        if (fgets(line, sizeof(line), stdin) == NULL) {
+            clearerr(stdin);
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        got = true;
+    }
+    line[strcspn(line, "\r\n")] = '\0';
+    xSemaphoreTake(s_ctx_lock, portMAX_DELAY);
+    int rc = 1;
+    if (!got || strcmp(line, "ERASE") != 0) {
+        out("factory-reset: aborted, nothing erased\n");
+    } else {
+        out("factory-reset: erasing; the gateway restarts in commissioning mode\n");
+        out_flush();
+        esp_err_t e = s_ctx.factory_reset();
+        if (e == ESP_ERR_INVALID_STATE) {
+            out("factory-reset: REFUSED, nothing erased (see the log)\n");
+        } else {
+            rc = 0;
+            if (e != ESP_OK) {
+                out("factory-reset: the erase reported %s; restarting\n", esp_err_to_name(e));
+            }
+        }
+    }
+    out_flush();
+    xSemaphoreGive(s_ctx_lock);
+    return rc;
 }
 
 /* #124: 'card' shows the card's operation times and state; 'card format confirm' formats it
@@ -1282,6 +1504,25 @@ static int cmd_di(int argc, char **argv)
         return 1;
     }
     gw_io_sim_set_di((uint8_t)(ch - 1), level == 1);
+    return 0;
+}
+
+/* #218: pulses on the simulated PCNT unit of a fast counter (QEMU has no PCNT) */
+static int cmd_pcnt(int argc, char **argv)
+{
+    long ch = argc == 3 ? strtol(argv[1], NULL, 10) : 0;
+    long n = argc == 3 ? strtol(argv[2], NULL, 10) : -1;
+    if (ch < 1 || ch > 8 || n < 1 || n > 1000000) {
+        out("usage: pcnt <1-8> <1-1000000>\n");
+        return 1;
+    }
+    if (!up(GW_SHELL_UP_IO, "pcnt", "the local I/O")) {
+        return 1;
+    }
+    if (!gw_io_sim_pulses((uint8_t)(ch - 1), (uint32_t)n)) {
+        out("DI/%ld is not a fast counter (local_io.fast_counters)\n", ch);
+        return 1;
+    }
     return 0;
 }
 
@@ -1418,6 +1659,8 @@ static int cmd_config_entry(int argc, char **argv)
 ATOMIC(cmd_ping)
 ATOMIC(cmd_coredump)
 ATOMIC(cmd_ap)
+ATOMIC(cmd_identify)
+ATOMIC(cmd_log)
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
 ATOMIC(cmd_restart)
 ATOMIC(cmd_card)
@@ -1426,6 +1669,7 @@ ATOMIC(cmd_mbread)
 #endif
 #if CONFIG_GW_IO_SIMULATED
 ATOMIC(cmd_di)
+ATOMIC(cmd_pcnt)
 
 /* Issue #74: the simulated expander stays silent for a while after the next boot. */
 static int cmd_expander(int argc, char **argv)
@@ -1537,7 +1781,12 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
          ,
          .hint = "[show|load [discard-nvs-copy]|check]", .func = cmd_config_entry},
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
-        {.command = "restart", .help = "Orderly restart (NDEATH first)", .func = cmd_restart_atomic},
+        {.command = "restart", .help = "Orderly restart (NDEATH first); 'safe' restarts into safe "
+         "mode: no polling and no MQTT for 60 min or until the next restart (issue #209)",
+         .hint = "[safe]", .func = cmd_restart_atomic},
+        {.command = "factory-reset", .help = "Erase the configuration, the secrets, the web "
+         "certificate, the web password and the DI counters, then restart in commissioning "
+         "(asks for the word ERASE, #203)", .func = cmd_factory_reset},
         {.command = "rebirth", .help = "Re-issue NBIRTH and every DBIRTH", .func = cmd_rebirth_atomic},
         {.command = "card", .help = "microSD card: its state and operation times; 'format "
          "confirm' formats it as FAT32 with 32 KB clusters in the background (everything on it "
@@ -1552,6 +1801,11 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
 #endif
         {.command = "ping", .help = "ICMP echo (3 requests) to an IPv4 or IPv6 address",
          .hint = "<address>", .func = cmd_ping_atomic},
+        {.command = "identify", .help = "The LED shows red, green and blue in turn and the "
+         "buzzer beeps for 10 s (#207)", .func = cmd_identify_atomic},
+        {.command = "log", .help = "The log levels and the tags; '<tag|*> <level>' sets the level "
+         "of a tag, 'reset' sets every tag to the level of the build (not saved, #199)",
+         .hint = "[<tag|*> <none|error|warn|info|debug|verbose> | reset]", .func = cmd_log_atomic},
         {.command = "ap", .help = "The commissioning access point: its state"
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
          "; 'stop' closes it (a BOOT push of 2-10 s starts it again)"
@@ -1576,6 +1830,8 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
 #if CONFIG_GW_IO_SIMULATED
         {.command = "di", .help = "Emulator only: set a simulated input", .hint = "<1-8> <0|1>",
          .func = cmd_di_atomic},
+        {.command = "pcnt", .help = "Emulator only: pulses on the simulated PCNT unit of a fast "
+         "counter (#218)", .hint = "<1-8> <n>", .func = cmd_pcnt_atomic},
         {.command = "expander", .help = "Emulator only: the DO expander does not answer for a "
          "while after the next boot (issue #74)", .hint = "absent <ms>", .func = cmd_expander_atomic},
         {.command = "validation", .help = "Emulator only: the next configuration validation "

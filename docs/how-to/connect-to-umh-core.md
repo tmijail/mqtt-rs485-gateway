@@ -76,7 +76,7 @@ An example `config.json` for option A:
 ```json
 {
   "network": { "dhcp": true },
-  "ntp":     { "server": "pool.ntp.org" },
+  "ntp":     { "servers": ["pool.ntp.org"] },
   "mqtt":    { "host": "192.168.1.10", "port": 1883, "client_id": "",
                "username": "", "password": "", "keepalive_s": 30, "protocol": "3.1.1" },
   "sparkplug": { "group_id": "acme", "edge_node_id": "acme:berlin:packaging:gw01",
@@ -84,7 +84,7 @@ An example `config.json` for option A:
                  "primary_host_id": "", "store_forward": true },
   "rs485":   { "baud": 9600, "parity": "none", "stop_bits": 1,
                "response_timeout_ms": 200, "retries": 2, "inter_frame_delay_ms": 5 },
-  "local_io": { "di_debounce_ms": 20 },
+  "local_io": { "counter_save_s": 600 },
   "devices": [
     {
       "name": "meter1", "unit_id": 1, "poll_ms": 1000,

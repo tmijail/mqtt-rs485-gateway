@@ -3,7 +3,7 @@
 This document lists the routes of the REST API of the gateway, its authentication and its responses.
 
 - For the configuration document that `GET` and `PUT /api/config` use, refer to [The configuration document](configuration.md).
-- For the procedures, refer to [Change, back up and restore the configuration](../how-to/change-the-configuration.md) and [Update the firmware](../how-to/update-the-firmware.md).
+- For the procedures, refer to [Change, back up and restore the configuration](../how-to/change-the-configuration.md), [Update the firmware](../how-to/update-the-firmware.md), [Restart into safe mode or do a factory reset](../how-to/restart-into-safe-mode-or-reset.md) and [Read the live log](../how-to/read-the-live-log.md).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The E2E in QEMU examines the routes.
 
@@ -55,7 +55,7 @@ The responses of `PUT /api/config`:
 | Status | Body or cause |
 |---|---|
 | `200` | `{"ok":true,"saved":false,"warnings":[{"path":"devices[0].name","message":"…"}],"warning_count":1}`. After a save: `"saved":true,"restart":true`. The response has the first 50 warnings. `warning_count` gives the number of all the warnings |
-| `400` | `{"ok":false,"error":"…","path":"devices[0].tags[1].type","line":0,"column":0}`. With `restore_prev`: the firmware refuses the earlier document |
+| `400` | `{"ok":false,"error":"…","path":"devices[0].tags[1].type","line":0,"column":0}`. With `restore_prev`: the firmware refuses the earlier document. Also when a PEM file that the document names is not correct (refer to [The PEM files](#the-pem-files)) |
 | `404` | With `restore_prev`: there is no earlier document |
 | `409` | A new firmware image is on trial: `testing <version>: N s left` |
 | `413` | The document is larger than `CONFIG_GW_CONFIG_MAX_BYTES` (128 KiB) |
@@ -65,26 +65,49 @@ The responses of `PUT /api/config`:
 | Method and route | What it does |
 |---|---|
 | `GET /api/status` | The live state, also in recovery mode, in commissioning and in the fault mode. Refer to [`GET /api/status`](#get-apistatus) |
-| `POST /api/restart` | Restarts in order |
+| `POST /api/restart` | Restarts in order. `202 {"ok":true,"restart":true}`. `?safe=1` restarts into safe mode. Refer to [Safe mode on request](#safe-mode-on-request) |
+| `POST /api/identify` | For 10 s, the status LED shows red, green and blue in turn, and the buzzer beeps. `202 {"ok":true,"identify_left_s":10}`. `409` with `identify_left_s` while an identify runs: the time does not start again |
+| `POST /api/factory-reset?confirm=1` | Does a factory reset, then restarts in commissioning. Refer to [`POST /api/factory-reset`](#post-apifactory-reset) |
+| `GET /api/log` | The last lines of the log. Refer to [`GET /api/log`](#get-apilog) |
+| `GET /api/log/level`, `POST /api/log/level` | The log level of each tag. Refer to [The log level of a tag](#the-log-level-of-a-tag) |
 | `POST /api/rebirth` | Sends the NBIRTH and all the DBIRTHs again, with the same bdSeq. `202 {"ok":true,"rebirth":true}`. `409` when there is no Sparkplug session |
 | `POST /api/time` | Sets the clock and the RTC. Refer to [`POST /api/time`](#post-apitime) |
 | `POST /api/modbus/read` | One Modbus test read. Refer to [`POST /api/modbus/read`](#post-apimodbusread) |
+| `POST /api/do` | Sets a DO on or off. Refer to [`POST /api/do`](#post-apido) |
+| `GET /api/wifi/scan` | The Wi-Fi networks near the gateway. `?new=1` starts a scan. Refer to [`GET /api/wifi/scan`](#get-apiwifiscan) |
+
+### The PEM files
+
+| Method and route | What it does |
+|---|---|
+| `GET /api/files` | The files in the LittleFS partition that the configuration can name: what each file holds. Never the content of a file. Refer to [`GET /api/files`](#get-apifiles) |
+| `PUT /api/files?name=<name>` | Loads a PEM file. The body is the PEM text. Refer to [`PUT /api/files`](#put-apifiles) |
+
+The files are for `mqtt.tls.ca_file`, `mqtt.tls.cert_file`, `mqtt.tls.key_file` and `ota.ca_file`. A load does not change the configuration. Select the file in the configuration, then save it.
+
+A save or a dry run of `PUT /api/config` examines the files that the document names:
+
+- Each file exists, and `ca_file` and `cert_file` hold certificates, `key_file` an unencrypted private key.
+- The client key agrees with the client certificate.
+- Otherwise, the response is `400` with the path of the key, for example `{"error":"mqtt.tls.key_file: the key does not agree with the certificate gw01.crt","path":"mqtt.tls.key_file"}`.
 
 ### Firmware
 
 | Method and route | What it does |
 |---|---|
 | `GET /api/firmware` | The state of the update and of the two slots. Refer to [`GET /api/firmware`](#get-apifirmware) |
-| `POST /api/firmware` | `application/json` with `{"url": "https://…"}` downloads the image. `application/octet-stream` with the image as the body uploads it. `"force": true` or `?force=1` forces the image into recovery mode |
+| `POST /api/firmware` | `application/json` with `{"url": "https://…", "sha256": "…", "force": true}` downloads the image. Only `url` is necessary. `application/octet-stream` with the image as the body uploads it, with the optional header `X-Image-SHA256`. `"force": true` or `?force=1` forces the image into recovery mode. Refer to [`POST /api/firmware`](#post-apifirmware) |
 | `POST /api/firmware/other` | Restarts into the image of the other slot, on trial, after the pre-flight check. `?force=1` forces. `202 {"ok":true,"restart":true}` |
 
 The errors of the firmware routes:
 
 | Status | Cause |
 |---|---|
+| `400` | `POST /api/firmware`: the body or the URL is not valid, or the SHA-256 does not have 64 hexadecimal characters |
 | `404` | `/other`: the other slot is empty, or it failed its verification |
 | `409` | A trial is in progress (`testing <version>: N s left`), a transfer is in progress, or the pre-flight check refuses the image. The error lists the reasons |
 | `415` | `POST /api/firmware` with another `Content-Type` |
+| `422` | An upload whose SHA-256 does not agree with `X-Image-SHA256`. The gateway did not install the image |
 
 ### Access point and claim window
 
@@ -157,6 +180,85 @@ With the type `int64` or `uint64`, the response also has `value_text`, the same 
 | `503` | The bus does not run the read in time, or another test read waits |
 | `504` | `"result":"timeout"` |
 
+### `POST /api/do`
+
+Sets a digital output, as an NCMD does. Only the DOs: the web UI does not write to the Modbus devices.
+
+- Body: `{"do": 3, "on": true}`. `do` is 1 to 8.
+- The command goes through the queue of the task that owns the expander, the same queue as an NCMD. The next NDATA gives the new state to the Sparkplug host.
+- `on: true` on a pulse DO (`local_io.do_pulse_ms`) starts its pulse.
+- The safe state rules do not change: after `local_io.failsafe_s` without a session, the DO goes to its safe state.
+- The Status tab uses this route. Its first change in a page session asks for a confirmation.
+
+| Status | Cause |
+|---|---|
+| `200` | `{"ok":true,"do":3,"on":true,"state":true}`. `state` is the state that the gateway read back from the expander |
+| `400` | The body is not correct |
+| `409` | A local rule controls the DO (`local_io.rules`). Or recovery mode, commissioning or the fault mode: the local I/O does not run |
+| `503` | The expander does not respond, or the task did not answer in time |
+### `GET /api/wifi/scan`
+
+The list of the Wi-Fi networks near the gateway, for the button "Find networks" of the web UI. The scan also works when `network.wifi.enabled` is `false`: the radio starts for the scan, and stops after it.
+
+- `?new=1` starts a scan, unless a scan runs or the last result is younger than 10 s.
+- A request without `?new=1` only reads the state.
+- A scan takes approximately 3 s. The gateway uses 2.4 GHz only.
+- QEMU has no radio. In the emulator, the list is fixed, and `simulated` is `true`.
+
+| Status | Body |
+|---|---|
+| `200` | `{"state":"done","age_s":2,"simulated":false,"networks":[…]}`, or `{"state":"idle","networks":[]}` before the first scan |
+| `202` | `{"state":"scanning"}`: send the request again after 1 s |
+| `404` | The build has no Wi-Fi radio |
+| `503` | `{"state":"failed","error":"…"}`: the radio cannot scan now |
+
+Each network has these fields. The list is strongest first, with one item for each SSID (the strongest access point) and no hidden network.
+
+| Field | Content |
+|---|---|
+| `ssid` | The name of the network |
+| `rssi` | The signal, in dBm |
+| `channel` | The Wi-Fi channel |
+| `security` | `Open`, `WEP`, `WPA`, `WPA/WPA2`, `WPA2`, `WPA2/WPA3`, `WPA3`, `WPA-Enterprise`, `WPA2-Enterprise`, `WPA3-Enterprise`, `WPA2/WPA3-Enterprise`, `WAPI`, `OWE` or `Unknown` |
+| `supported` | `true` when the gateway can join the network: open, or WPA2 or WPA3 with a password. An enterprise network (802.1X) is not supported |
+
+### `GET /api/files`
+
+```json
+{"files":[{"name":"ca.pem","size":1302,"kind":"certificates","count":1,
+           "certs":[{"subject":"CN=ACME Plant Root CA","not_after":"2034-03-01","ca":true}]},
+          {"name":"gw01.key","size":227,"kind":"key","key_type":"EC P-256",
+           "agrees_with":["gw01.crt"]}],
+ "total_bytes":1529,"max_file_bytes":16384}
+```
+
+| Field | Content |
+|---|---|
+| `name`, `size` | The file name and its size in bytes |
+| `kind` | `certificates`, `key` (an unencrypted private key) or `other` |
+| `count`, `certs` | For certificates: the number of certificates, and the first 4 with the subject, the last day of validity (UTC) and whether the certificate is a CA |
+| `key_type` | For a key: for example `EC P-256` or `RSA 2048` |
+| `agrees_with` | For a key: the certificate files whose first certificate has the public key of this key |
+
+The list has up to 16 files. It leaves out `config.json` and the other files of the gateway.
+
+### `PUT /api/files`
+
+`PUT /api/files?name=<name>`, with the PEM text as the body (`Content-Type: application/x-pem-file`). The name rules are the rules of `mqtt.tls.ca_file`, and the name must not end with `.json`.
+
+| Status | Body or cause |
+|---|---|
+| `201` | `{"ok":true,"file":{…}}`: the file, with the fields of `GET /api/files` |
+| `400` | The name is not correct, or the body is not PEM certificates or an unencrypted PEM private key |
+| `409` | A file with this name exists. The gateway does not replace it |
+| `413` | The body is larger than 16 KiB |
+| `507` | The gateway cannot write the file, for example because the LittleFS partition is full |
+
+```sh
+curl -k -u admin:<web password> -H "X-Requested-With: curl" -X PUT \
+     --data-binary @ca.pem "https://<ip>/api/files?name=ca.pem"
+```
+
 ### `POST /api/time`
 
 Sets the clock of the gateway and the RTC to the time of the browser. Use it on a network without a time server.
@@ -200,17 +302,121 @@ Body: `{"password": "…"}`, with the rule of `web.password`: 8 to 63 printable 
 | `403` | A web password is set, no window is open, or the client is not a client of the access point. These refusals count as failed logins |
 | `503` | NVS does not store the password. The window stays open |
 
+### Safe mode on request
+
+`POST /api/restart?safe=1` restarts the gateway into safe mode. The gateway does not poll and does not connect to MQTT. The configuration stays.
+
+- In normal mode, the restart is in order: the gateway first sends the NDEATH.
+- Safe mode ends after 60 min, or at the next restart (`POST /api/restart`, the shell `restart`, a power cycle).
+- `GET /api/status` gives `safe_mode`: `active`, `cause` (`request` or `crashes`) and `left_s`.
+
+| Status | Cause |
+|---|---|
+| `202` | `{"ok":true,"restart":true,"safe_mode":true}` |
+| `409` | The gateway is in safe mode now, a new firmware image is on trial, or a firmware update is in progress |
+
+### `POST /api/factory-reset`
+
+The factory reset erases the same data as the BOOT button held for 10 s:
+
+- the configuration;
+- the secrets, for example the MQTT password;
+- the certificate of the web UI;
+- the web password;
+- the pulse counters of the DIs.
+
+Then the gateway restarts in commissioning mode, 0.5 s after the response. The restart also sets the Modbus counters to 0, because the gateway does not store them. The access point starts with a new commissioning password.
+
+| Status | Cause |
+|---|---|
+| `202` | `{"ok":true,"erased":true,"restart":"commissioning"}`. `erased` is `false` when the erase reported an error. The gateway restarts also then |
+| `400` | No `?confirm=1` |
+| `409` | The firmware refused the factory reset. Nothing is erased |
+
+### `GET /api/log`
+
+The gateway keeps the last log lines in a ring of 16 KB in PSRAM (`CONFIG_GW_LOG_RING_KB`), from the boot on. Each line has a number: the first line after the boot is 1. The web UI asks only while its card Log is open.
+
+`?since=<n>` gives the lines after the number `n`. Without it, the response has all the lines in the ring.
+
+```json
+{"since":120,"last":125,"next":126,"first":20,"lost":0,"count":106,"bytes":9874,
+ "size":16384,"dropped":0,"lines":["I (35210) web: identify requested through the REST API"]}
+```
+
+| Field | What it is |
+|---|---|
+| `last` | The number of the last line in `lines`. Ask again with `?since=<last>` |
+| `next`, `first` | The number of the next line, and of the oldest line in the ring |
+| `lost` | The lines after `since` that the ring does not have any more: it was full |
+| `count`, `bytes`, `size` | The lines and the bytes in the ring, and its size |
+| `dropped` | The lines that the ring did not get, because another task held it |
+
+When `since` is not lower than `next`, the gateway restarted. Then `since` is `0` in the response, and `lines` has all the lines of the ring. `503` when the ring has no memory.
+
+### The log level of a tag
+
+The level of a tag is the lowest severity that the tag writes to the log: the console, the syslog copy and the ring. The gateway does not save a change. A restart sets each tag to the level of the build (`info`). `syslog.level` filters only the copy to the syslog server.
+
+**`GET /api/log/level`** gives the levels and the tags:
+
+```json
+{"build":"info","max":"verbose","levels":["none","error","warn","info","debug","verbose"],
+ "tags":["ap","bus","edge","mb","poll","web","esp-tls"],"changed":[{"tag":"poll","level":"debug"}]}
+```
+
+- `max` is the highest level that the build keeps (`CONFIG_LOG_MAXIMUM_LEVEL`).
+- `tags` has the tags of the firmware and the tags that the log showed since the boot, up to 48.
+- `changed` has the tags with a level that is not the level of the build. `GET /api/status` gives the same list as `log_levels`.
+
+**`POST /api/log/level`** with `{"tag": "poll", "level": "debug"}` sets the level of a tag. The tag `*` sets the level of all the tags that have no level of their own. `{"reset": true}` sets all the tags to the level of the build again.
+
+| Status | Cause |
+|---|---|
+| `200` | `{"ok":true,"tag":"poll","level":"debug"}`, or `{"ok":true,"reset":true}` |
+| `400` | The body, the tag or the level is not correct |
+| `409` | The table of the tags is full |
+
 ### `GET /api/firmware`
 
 | Field | What it is |
 |---|---|
+| `running`, `slot` | The version of the firmware that runs, and its slot (`ota_0` or `ota_1`) |
 | `other`, `other_slot`, `other_state`, `other_why` | The other slot. `other_state` is `empty`, `previous`, `new`, `rejected` or `invalid` |
 | `can_boot_other` | The button "Restart into `<version>`" is available |
-| `phase`, `state`, `detail`, `progress`, `bytes`, `total` | The update. For the values of `state`, refer to [Update the firmware](../how-to/update-the-firmware.md#make-sure-that-the-update-is-complete) |
+| `mqtt` | The value of `ota.mqtt`: `true` when a Sparkplug host can start an update. In recovery mode it is `false` |
+| `phase`, `state`, `detail`, `progress`, `bytes`, `total` | The update. `phase` is `idle`, `downloading`, `restarting`, `failed`, `testing`, `installed` or `rolled_back`. For the values of `state`, refer to [Update the firmware](../how-to/update-the-firmware.md#make-sure-that-the-update-is-complete) |
+| `sha256_expected`, `sha256_file` | Only when the last update failed because the SHA-256 did not agree: the SHA-256 that the request gave, and the SHA-256 of the file. 64 small hexadecimal characters each |
 | `trial`, `trial_left_s`, `expected_mode` | The trial of a new image |
-| `boot_count`, `safe_mode` | The crash counter and safe mode |
+| `boot_count`, `safe_mode` | The crash counter and safe mode. The cause of safe mode and its time left are in `GET /api/status` |
 | `cfg_prev` | The configuration from before the update: `version`, `saved`, `schema`. `version` is empty when there is none |
 | `cfg_prev_restore` | Recovery mode: the web UI shows the restore button |
+
+### `POST /api/firmware`
+
+A download from a URL:
+
+```json
+{"url": "https://files.example.com/gw/rs485_spb_gateway-0.2.0.bin",
+ "sha256": "17bf8431d18e8d424fb300303419bebde3749ad415de75afdaf4ecb1776030dd", "force": false}
+```
+
+| Key | Rule |
+|---|---|
+| `url` | Necessary. An `https://` URL, 255 characters at most |
+| `sha256` | Optional. The SHA-256 of the image file: 64 hexadecimal characters, capital or small letters. Empty = no check |
+| `force` | Optional. `true` installs an image that the pre-flight check refuses. The image must then reach recovery mode |
+
+The answer is `202 {"ok":true,"started":true}`. The result comes later in `GET /api/firmware`.
+
+An upload: the body is the image, with `Content-Type: application/octet-stream` and `Content-Length`. The optional header `X-Image-SHA256` gives the SHA-256 of the file. `?force=1` forces the image. The answer is `200 {"ok":true,"restart":true}`.
+
+With a SHA-256, the gateway calculates the SHA-256 of the image that it wrote, before it sets the image as the boot image. When the two values do not agree, the gateway does not install the image, and the firmware that runs continues to run. The state is `failed: image <version>: the SHA-256 of the file does not agree`. An upload then gets this answer:
+
+```json
+{"ok":false,"error":"image 0.2.0: the SHA-256 of the file does not agree","path":"","line":0,"column":0,
+ "sha256_expected":"17bf8431…6030dd","sha256_file":"a1542ecc…5fef64b"}
+```
 
 ### `GET /api/status`
 
@@ -223,13 +429,23 @@ Body: `{"password": "…"}`, with the rule of `web.password`: 8 to 63 printable 
 | `network` | `up`, `interfaces` |
 | `mqtt` | `connected` |
 | `sparkplug` | `group_id`, `edge_node_id`, `diagnostics_s`. Only with a valid configuration |
-| `syslog`, `heap` | The syslog client and the memory |
+| `syslog` | The syslog client |
+| `heap` | `internal_free`, `internal_min`, `internal_largest` (the largest free block of the internal RAM) and `psram_free`, in bytes |
+| `temperature_c` | The temperature of the chip, in °C. `null` when there is no reading of the sensor, for example in QEMU |
+| `gateway` | `name` and `location` of the configuration. Not the comment |
+| `identify_left_s` | The seconds left of an identify. `0` when none runs |
+| `safe_mode` | `active`, `cause` (`request` or `crashes`, empty when not active) and `left_s` (the seconds to the restart into normal mode) |
+| `log_levels` | The tags with a changed log level: `[{"tag":"poll","level":"debug"}]` |
 | `devices` | Refer to the text below the table |
 | `io.di`, `io.do` | The bits of the DIs and DOs (bit n = channel n+1). `io.do` is `null` while the expander does not respond |
 | `io.do_unknown`, `io.expander` | The expander does not respond. `ready`, `retrying` and `attempts` |
 | `io.failsafe` | The DOs are in their safe state, because there is no Sparkplug session |
 | `io.rule_do` | The mask of the DOs that a local rule controls |
+| `io.rules` | The local rules: `[{"di":2,"do":5,"mode":"follow"}]`. Empty when the mode is not normal |
 | `io.counters` | The 8 pulse counters |
+| `io.fast` | The mask of the DIs that a PCNT unit counts (`local_io.fast_counters`) |
+| `io.pulse_ms` | The pulse time of each DO, `DO/1` first. 0 = a normal DO |
+| `io.run_hours` | `{"di":[…],"do":[…]}`: the run hours in seconds, 8 values each. `null` for a channel that is not in `local_io.run_hours` |
 | `buzzer.alarm`, `buzzer.enabled` | The alarm that sounds now (`none`, `device_offline`, `mqtt_down`, `config_error`), and the enabled alarms |
 | `time.utc_s`, `time.synced`, `time.valid`, `time.source`, `time.waiting` | The time (s UTC). `synced`: SNTP synchronized it. `valid`: the time is valid for timestamps. `source`: `sntp`, `rtc`, `browser` or `none`. `waiting`: the MQTT session waits for a valid clock |
 | `time.rtc` | `present`, `lost` (the RTC lost the time: examine its battery), `status` of the last read or write, and `stores` |
@@ -239,7 +455,10 @@ Body: `{"password": "…"}`, with the rule of `web.password`: 8 to 63 printable 
 | `core_dump` (optional) | `present`, `state` (`none`, `valid`, `corrupt`) and `size` |
 | `ap` (optional) | The access point. Refer to [The access point](access-point.md) |
 
-For each device, `devices` has `online`, `cycles`, `failed`, `ok`, `timeout`, `crc`, `frame`, `exception` and `tags`. Each tag has `name`, `valid` and `value`.
+For each device, `devices` has `enabled`, `online`, `cycles`, `failed`, `ok`, `timeout`, `crc`, `frame`, `exception`, `write_refused` and `tags`. Each tag has `name`, `valid` and `value`.
+
+- `enabled`: `false` for a device with `enabled: false` in the configuration. The gateway does not poll it, so its counters stay at 0 and its tags are not valid.
+- `write_refused`: the number of DCMD writes since the start that were out of the write limits of a tag (`write_min`, `write_max`).
 
 - The value is a number, an exact integer for `int64` and `uint64`, a text for `string`, and hexadecimal for `bytes`.
 - An `int64` or `uint64` tag also has `value_text`, the same integer as a text. A JSON reader that keeps each number as a double (for example a web browser) rounds an integer above 2^53.

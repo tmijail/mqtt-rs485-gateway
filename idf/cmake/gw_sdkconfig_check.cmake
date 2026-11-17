@@ -38,8 +38,12 @@ set(GW_SDKCONFIG_REQUIRED
     # #135: a board whose PSRAM is not detected still boots, only to report the fault (the
     # fault mode: network, web server and shell; the gateway does not start)
     SPIRAM_IGNORE_NOTFOUND
+    # #199: the debug and verbose lines stay in the image (the log level of a tag at run time)
+    LOG_MAXIMUM_LEVEL_VERBOSE
     # #122: no name buffer allocated on each microSD file operation (REL-2)
-    FATFS_LFN_NONE)
+    FATFS_LFN_NONE
+    # #201: the SNTP client gets all the servers of ntp.servers (gw_net.c checks it too)
+    LWIP_SNTP_MAX_SERVERS)
 
 # Reads CONFIG_ assignments of <file> into <prefix>_<NAME> variables (value "n" for "is not set",
 # and for "=n" in a defaults file) and appends the names to <prefix>_NAMES.

@@ -21,6 +21,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "gw_auth.h"
 #include "gw_bootloop.h"
 #include "gw_bus.h"
 #include "gw_storage.h"
@@ -63,7 +64,6 @@ _Static_assert(GW_OTA_CAPS_OFFSET == sizeof(esp_image_header_t) + sizeof(esp_ima
 
 static const gw_config_t *s_cfg;
 static gw_fw_hooks_t s_hooks;
-static bool s_enabled;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t s_fmt_lock;   /* s_st.text and s_st.detail (formatted in place) */
 static StaticSemaphore_t s_fmt_lock_buf;
@@ -79,6 +79,8 @@ static RTC_FAST_ATTR gw_fwlast_t s_last;    /* the fw_last record (issue #144 it
 static RTC_NOINIT_ATTR gw_bootloop_t s_loop;
 static uint32_t s_loop_count;
 static bool s_safe;
+static bool s_safe_requested;          /* issue #209: this safe mode is on request */
+static int64_t s_safe_end_us;          /* issue #209: the end of safe mode (esp_timer) */
 static atomic_bool s_planned;          /* the next restart is planned by gw_fw, not the operator */
 static gw_ota_mode_t s_mode;           /* the mode that this boot reached */
 static gw_ota_caps_info_t s_own;       /* gw_app_caps as gw_ota_caps_parse() reads it */
@@ -94,6 +96,9 @@ static char *s_url;                    /* allocated for a download only (#80) */
 static char *s_ca_pem;                 /* read for a download only (#80), freed after it */
 static const char *s_ca_name;          /* CA file of the update server, NULL: public CAs */
 static const char *s_ca_key;           /* its configuration key, for the messages */
+/* Issue #215: the SHA-256 that the running transfer must agree with (s_sha_on) */
+static bool s_sha_on;
+static RTC_FAST_ATTR uint8_t s_sha[GW_OTA_SHA256_LEN];
 
 /* upload state (web server task) */
 static esp_ota_handle_t s_up;
@@ -722,9 +727,15 @@ static void on_loop_clear(void *arg)
 static void on_safe_end(void *arg)
 {
     (void)arg;
-    gw_bootloop_set(&s_loop, GW_BOOTLOOP_SAFE - 1);
-    ESP_LOGW(TAG, "safe mode ends after %d min: restarting to try normal mode again (one more "
-                  "crash starts safe mode again)", CONFIG_GW_FW_SAFE_MODE_MIN);
+    if (s_safe_requested) {
+        /* issue #209: no crashes caused it: the count stays as it was */
+        ESP_LOGW(TAG, "safe mode (on request) ends after %d min: restarting into normal mode",
+                 CONFIG_GW_FW_SAFE_MODE_MIN);
+    } else {
+        gw_bootloop_set(&s_loop, GW_BOOTLOOP_SAFE - 1);
+        ESP_LOGW(TAG, "safe mode ends after %d min: restarting to try normal mode again (one more "
+                      "crash starts safe mode again)", CONFIG_GW_FW_SAFE_MODE_MIN);
+    }
     planned_restart();
 }
 
@@ -753,7 +764,41 @@ void gw_fw_mode(gw_ota_mode_t mode, const char *detail)
 void gw_fw_safe_mode(void)
 {
     s_mode = GW_OTA_MODE_RECOVERY;
+    s_safe_end_us = esp_timer_get_time() + CONFIG_GW_FW_SAFE_MODE_MIN * 60LL * 1000000LL;
     loop_timer(on_safe_end, "safe_mode", CONFIG_GW_FW_SAFE_MODE_MIN * 60ULL * 1000000ULL);
+}
+
+bool gw_fw_safe_mode_info(bool *requested, uint32_t *left_s)
+{
+    *requested = s_safe_requested;
+    int64_t left = s_safe_end_us - esp_timer_get_time();
+    *left_s = s_safe && s_safe_end_us != 0 && left > 0 ? (uint32_t)((left + 999999) / 1000000) : 0;
+    return s_safe;
+}
+
+/* Issue #209: the next boot starts safe mode; the caller then restarts the gateway. Refused
+ * during an update and during the trial of a new image (its restart would roll it back), and in
+ * safe mode (a restart ends it). */
+bool gw_fw_request_safe_mode(char *why, size_t cap)
+{
+    portENTER_CRITICAL(&s_mux);   /* not gw_fw_get_status(): its texts do not fit every stack */
+    bool trial = gw_ota_trial_open(&s_trial);
+    gw_fw_phase_t phase = s_st.phase;
+    portEXIT_CRITICAL(&s_mux);
+    if (s_safe) {
+        snprintf(why, cap, "the gateway is in safe mode now: a restart ends it");
+    } else if (trial) {
+        snprintf(why, cap, "a new firmware image is on trial: a restart now rolls it back; wait "
+                           "for the end of the trial");
+    } else if (atomic_load(&s_busy) || phase == GW_FW_DOWNLOADING || phase == GW_FW_RESTARTING) {
+        snprintf(why, cap, "a firmware update is in progress");
+    } else {
+        gw_bootloop_request(&s_loop);
+        ESP_LOGW(TAG, "safe mode requested: the next boot starts safe mode for %d min",
+                 CONFIG_GW_FW_SAFE_MODE_MIN);
+        return true;
+    }
+    return false;
 }
 
 void gw_fw_cannot_start(const char *cause)
@@ -921,12 +966,11 @@ static void prev_undo(void)
     }
 }
 
-static bool take(char *why, size_t cap)
+/* #223: no ota.enabled any more: an update from the web UI is always possible (the Sparkplug
+ * engine refuses the NCMD without ota.mqtt). @p sha256: the SHA-256 of the new transfer (#215),
+ * NULL: none (also for the other slot). */
+static bool take(const uint8_t *sha256, char *why, size_t cap)
 {
-    if (!s_enabled) {
-        snprintf(why, cap, "firmware updates are disabled (ota.enabled)");
-        return false;
-    }
     portENTER_CRITICAL(&s_mux);
     gw_ota_trial_t t = s_trial;
     portEXIT_CRITICAL(&s_mux);
@@ -940,7 +984,69 @@ static bool take(char *why, size_t cap)
         return false;
     }
     s_restore = false;
+    s_sha_on = sha256 != NULL;
+    if (s_sha_on) {
+        memcpy(s_sha, sha256, sizeof(s_sha));
+    }
+    portENTER_CRITICAL(&s_mux);
+    s_st.sha_mismatch = false;   /* a new transfer: the values of the last one go */
+    portEXIT_CRITICAL(&s_mux);
     return true;
+}
+
+/* Issue #215: the SHA-256 of the @p len bytes written to @p part (read back from the flash)
+ * against the one of the user, before the image is marked as the boot image. True without a
+ * SHA-256 to check. On a mismatch the status keeps the two values, and @p why says it. Runs in
+ * the task of the transfer; the buffer and the hash state are in PSRAM (#80). */
+static bool sha_verify(const esp_partition_t *part, size_t len, const char *version, char *why,
+                       size_t cap)
+{
+    if (!s_sha_on) {
+        return true;
+    }
+    const size_t chunk = 4096;
+    uint8_t *buf = gw_storage_malloc(chunk + sizeof(gw_sha256_t));
+    if (buf == NULL) {
+        snprintf(why, cap, "image %s: no memory to check its SHA-256", version);
+        return false;
+    }
+    gw_sha256_t *h = (gw_sha256_t *)(void *)(buf + chunk);
+    gw_sha256_init(h);
+    esp_err_t e = part != NULL ? ESP_OK : ESP_ERR_NOT_FOUND;
+    for (size_t off = 0; off < len && e == ESP_OK; off += chunk) {
+        size_t n = len - off < chunk ? len - off : chunk;
+        e = esp_partition_read(part, off, buf, n);
+        if (e == ESP_OK) {
+            gw_sha256_update(h, buf, n);
+        }
+        if ((off / chunk) % 16u == 15u) {
+            vTaskDelay(1);   /* the idle task of this core is watched by the TWDT */
+        }
+    }
+    uint8_t got[GW_OTA_SHA256_LEN];
+    gw_sha256_final(h, got);
+    heap_caps_free(buf);
+    if (e != ESP_OK) {
+        snprintf(why, cap, "image %s: its SHA-256 could not be calculated (%s)", version,
+                 esp_err_to_name(e));
+        return false;
+    }
+    char want[GW_OTA_SHA256_HEX], file[GW_OTA_SHA256_HEX];
+    gw_ota_sha256_hex(s_sha, want);
+    if (memcmp(got, s_sha, sizeof(got)) == 0) {
+        ESP_LOGI(TAG, "image %s: the SHA-256 agrees (%s)", version, want);
+        return true;
+    }
+    gw_ota_sha256_hex(got, file);
+    ESP_LOGE(TAG, "image %s: the SHA-256 does not agree: expected %s, file %s", version, want,
+             file);
+    portENTER_CRITICAL(&s_mux);
+    memcpy(s_st.sha_expected, s_sha, sizeof(s_st.sha_expected));
+    memcpy(s_st.sha_file, got, sizeof(s_st.sha_file));
+    s_st.sha_mismatch = true;
+    portEXIT_CRITICAL(&s_mux);
+    snprintf(why, cap, "image %s: the SHA-256 of the file does not agree", version);
+    return false;
 }
 
 /* The new image is written, verified and set to boot: restart into it. */
@@ -1083,6 +1189,14 @@ static void download_task(void *arg)
         download_fail(version, "download of %s interrupted after %lu bytes (%s)", version, got,
                       esp_err_to_name(e));
     }
+    /* issue #215: before the image can become the boot image */
+    char swhy[120];
+    if (!sha_verify(esp_ota_get_next_update_partition(NULL),
+                    (size_t)esp_https_ota_get_image_len_read(h), version, swhy, sizeof(swhy))) {
+        esp_https_ota_abort(h);
+        h = NULL;
+        download_fail(version, "%s", swhy);
+    }
     /* issue #144 items 2 and 5: the expected mode is stored before the boot partition */
     last_write(GW_FWLAST_RESTARTING, version, expected_now(s_force), "");
     char rwhy[120];
@@ -1109,7 +1223,8 @@ static void download_task(void *arg)
     vTaskDelete(NULL);
 }
 
-esp_err_t gw_fw_start_url(const char *url, bool force, char *why, size_t cap)
+esp_err_t gw_fw_start_url(const char *url, const uint8_t *sha256, bool force, char *why,
+                          size_t cap)
 {
     char reason[96];
     if (!gw_ota_url_ok(url, false, reason, sizeof(reason))) {
@@ -1117,7 +1232,7 @@ esp_err_t gw_fw_start_url(const char *url, bool force, char *why, size_t cap)
         refused(why);
         return ESP_ERR_INVALID_ARG;
     }
-    if (!take(why, cap)) {
+    if (!take(sha256, why, cap)) {
         refused(why);
         return ESP_ERR_INVALID_STATE;
     }
@@ -1172,9 +1287,10 @@ static void up_release(void)
     s_up_head = NULL;
 }
 
-esp_err_t gw_fw_upload_begin(size_t size, bool force, char *why, size_t cap)
+esp_err_t gw_fw_upload_begin(size_t size, const uint8_t *sha256, bool force, char *why,
+                             size_t cap)
 {
-    if (!take(why, cap)) {
+    if (!take(sha256, why, cap)) {
         refused(why);
         return ESP_ERR_INVALID_STATE;
     }
@@ -1211,8 +1327,8 @@ esp_err_t gw_fw_upload_begin(size_t size, bool force, char *why, size_t cap)
     s_up_version[0] = '\0';
     s_up_pct = 0;
     set_bytes(0, (uint32_t)size);
-    ESP_LOGW(TAG, "receiving a firmware upload (%u bytes) into %s%s", (unsigned)size,
-             s_up_part->label, force ? " (forced)" : "");
+    ESP_LOGW(TAG, "receiving a firmware upload (%u bytes) into %s%s%s", (unsigned)size,
+             s_up_part->label, force ? " (forced)" : "", s_sha_on ? " (SHA-256 check)" : "");
     set_status(GW_FW_DOWNLOADING, 0, NULL, "downloading");
     return ESP_OK;
 }
@@ -1327,6 +1443,12 @@ esp_err_t gw_fw_upload_end(bool complete, char *why, size_t cap)
         fail(s_up_version[0] ? s_up_version : NULL, "%s", why);
         return ESP_FAIL;
     }
+    /* issue #215: before esp_ota_end(), so that the image never becomes the boot image */
+    if (!sha_verify(s_up_part, s_up_done, s_up_version, why, cap)) {
+        esp_ota_abort(s_up);
+        fail(s_up_version, "%s", why);
+        return ESP_ERR_INVALID_CRC;
+    }
     /* issue #144 items 2 and 5: the expected mode is stored before the boot partition */
     last_write(GW_FWLAST_RESTARTING, s_up_version, expected_now(s_force), "");
     char rwhy[120];
@@ -1406,7 +1528,7 @@ static void boot_other_task(void *arg)
 
 esp_err_t gw_fw_boot_other(bool force, char *why, size_t cap)
 {
-    if (!take(why, cap)) {
+    if (!take(NULL, why, cap)) {
         refused(why);
         return ESP_ERR_INVALID_STATE;
     }
@@ -1482,8 +1604,13 @@ bool gw_fw_bootloop_start(void)
     esp_reset_reason_t why = esp_reset_reason();
     uint32_t before = gw_bootloop_count(&s_loop);
     s_loop_count = gw_bootloop_boot(&s_loop, reset_kind(why), pending);
-    s_safe = gw_bootloop_safe(s_loop_count, pending);
-    if (s_safe) {
+    /* issue #209: safe mode on request (one boot only; not for an image on trial) */
+    s_safe_requested = gw_bootloop_take_request(&s_loop) && !pending;
+    s_safe = gw_bootloop_safe(s_loop_count, pending) || s_safe_requested;
+    if (s_safe_requested) {
+        ESP_LOGW(TAG, "safe mode on request (web UI, REST API or shell); the configuration is not "
+                      "loaded: network, web UI, shell and firmware upload only");
+    } else if (s_safe) {
         ESP_LOGE(TAG, "safe mode: %lu crash resets in a row (boot-loop counter); the configuration "
                       "is not loaded: network, web UI, shell and firmware upload only",
                  (unsigned long)s_loop_count);
@@ -1600,14 +1727,13 @@ void gw_fw_early_init(void)
     }
 }
 
-esp_err_t gw_fw_init(const gw_config_t *cfg, bool enabled, const gw_fw_hooks_t *hooks)
+esp_err_t gw_fw_init(const gw_config_t *cfg, bool mqtt, const gw_fw_hooks_t *hooks)
 {
     gw_fw_early_init();
     s_cfg = cfg;
     s_hooks = *hooks;
-    s_enabled = enabled;
     portENTER_CRITICAL(&s_mux);
-    s_st.enabled = enabled;
+    s_st.mqtt = mqtt;
     bool pending = gw_ota_trial_open(&s_trial);
     portEXIT_CRITICAL(&s_mux);
     if (pending) {
@@ -1623,16 +1749,13 @@ esp_err_t gw_fw_init(const gw_config_t *cfg, bool enabled, const gw_fw_hooks_t *
     }
     gw_storage_set_commit_hook(on_commit);   /* issue #144 item 1 */
 
-    if (enabled) {
-        const char *ca = cfg->ota.ca_file[0] ? cfg->ota.ca_file
-                         : cfg->mqtt.tls.enabled && cfg->mqtt.tls.ca_file[0] ? cfg->mqtt.tls.ca_file
-                                                                              : NULL;
-        s_ca_name = ca;
-        s_ca_key = cfg->ota.ca_file[0] ? "ota.ca_file" : "mqtt.tls.ca_file";
-        ESP_LOGI(TAG, "firmware %s in %s; updates by URL trust %s%s", s_st.running, s_st.slot,
-                 ca != NULL ? "/cfg/" : "the public root CAs", ca != NULL ? ca : "");
-    } else {
-        ESP_LOGI(TAG, "firmware %s in %s; updates disabled (ota.enabled)", s_st.running, s_st.slot);
-    }
+    const char *ca = cfg->ota.ca_file[0] ? cfg->ota.ca_file
+                     : cfg->mqtt.tls.enabled && cfg->mqtt.tls.ca_file[0] ? cfg->mqtt.tls.ca_file
+                                                                          : NULL;
+    s_ca_name = ca;
+    s_ca_key = cfg->ota.ca_file[0] ? "ota.ca_file" : "mqtt.tls.ca_file";
+    ESP_LOGI(TAG, "firmware %s in %s; updates by URL trust %s%s; updates from MQTT %s (ota.mqtt)",
+             s_st.running, s_st.slot, ca != NULL ? "/cfg/" : "the public root CAs",
+             ca != NULL ? ca : "", mqtt ? "on" : "off");
     return ESP_OK;
 }

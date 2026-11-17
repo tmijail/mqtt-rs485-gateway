@@ -69,6 +69,9 @@ typedef struct {
     const gw_node_info_t *info;
     const char *commissioning_password;  /* accepted for "admin" while no web password is set */
     void (*restart)(void);               /* orderly restart, after the response went out */
+    /* #203: erase (as BOOT held 10 s), then a restart in commissioning 0.5 s later;
+     * ESP_ERR_INVALID_STATE: refused, nothing erased */
+    esp_err_t (*factory_reset)(void);
     /* #120: the IPv4 address and netmask of the running access point (gw_ap_ip4), for the
      * access point rule of the claim window */
     bool (*ap_ip4)(uint8_t ip[4], uint8_t mask[4]);

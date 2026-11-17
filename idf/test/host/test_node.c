@@ -20,6 +20,10 @@ static uint8_t cmd[512];
 #define SETPOINT 1
 #define RUN 2
 
+/* #206: the node metrics of an NBIRTH without gateway.name and gateway.location */
+#define BIRTH_NO_LABELS (GW_NODE_BIRTH_METRICS - 2)
+#define UMH_BIRTH_NO_LABELS (GW_NODE_UMH_BIRTH_METRICS - 2)
+
 void setUp(void)
 {
     cfg = support_spec_config();
@@ -85,7 +89,8 @@ static void test_nbirth_and_dbirth(void)
     TEST_ASSERT_FALSE(nb->retain);
     TEST_ASSERT_TRUE(dec.has_seq);
     TEST_ASSERT_EQUAL_UINT64(0, dec.seq);
-    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS - 1, dec.count);   /* no Modbus TCP table */
+    /* no Modbus TCP table; #223: no ota.mqtt */
+    TEST_ASSERT_EQUAL(BIRTH_NO_LABELS - 1 - GW_NODE_MQTT_OTA_METRICS, dec.count);
     int i = decoded_find_name(&dec, "bdSeq");
     TEST_ASSERT_TRUE(i >= 0);
     /* tck-id-message-flow-edge-node-birth-publish-nbirth-payload-bdSeq: the NBIRTH carries
@@ -360,6 +365,103 @@ static void test_pulse_counters(void)
     TEST_ASSERT_EQUAL_UINT64((1ull << 53) + 2, io.count[7]);
 }
 
+static void assert_birth_aliases_unique(void);
+
+/* #217: the run hours of local_io.run_hours are UInt64 metrics of the NBIRTH (the others are not:
+ * tck-id-topics-nbirth-metric-reqs), with aliases after the tags
+ * (tck-id-payloads-alias-uniqueness); an NDATA has a value that changed
+ * (tck-id-topics-ndata-payload); an NCMD cannot write them. */
+static void test_run_hours_metrics(void)
+{
+    static gw_config_t c;
+    c = *cfg;
+    c.local_io.run_hours = 0x0104;   /* DI/3 and DO/1 */
+    cfg = &c;
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    uint64_t run[GW_RUN_HOURS_CHANNELS] = {0};
+    run[2] = 3600;
+    run[3] = 99;   /* DI/4: not selected, never published */
+    gw_tagdb_set_run_hours(run, 500);
+    gw_node_session_up(&node, 0);
+    msg(0);
+    /* no Modbus TCP table, no gateway labels (#206), no ota.mqtt (#223); + the 2 run hours */
+    TEST_ASSERT_EQUAL(BIRTH_NO_LABELS - 1 - GW_NODE_MQTT_OTA_METRICS + 2, dec.count);
+    int i = decoded_find_name(&dec, "Run Hours/DI/3");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_RUN_HOURS_BASE + 2, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_UINT64(3600, dec.m[i].u64);
+    i = decoded_find_name(&dec, "Run Hours/DO/1");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_RUN_HOURS_BASE + 8, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_UINT64(0, dec.m[i].u64);
+    TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Run Hours/DI/4"));
+    assert_birth_aliases_unique();
+
+    recorder_clear();
+    run[2] = 3660;
+    run[3] = 100;
+    gw_tagdb_set_run_hours(run, 700);
+    gw_node_io_changed(&node);
+    msg(0);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_RUN_HOURS_BASE + 2, dec.m[0].alias);
+    TEST_ASSERT_FALSE(dec.m[0].has_name);
+    TEST_ASSERT_EQUAL_UINT64(3660, dec.m[0].u64);
+    TEST_ASSERT_EQUAL_UINT64(700, dec.m[0].timestamp);
+
+    /* read-only: an NCMD on a run hours metric changes nothing and publishes nothing */
+    recorder_clear();
+    spb_metric_t w = {.name = "Run Hours/DI/3", .datatype = SPB_DT_UINT64, .v.u64 = 0};
+    send("spBv1.0/Plant1/NCMD/GW01", &w, 1);
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    gw_local_io_t io;
+    gw_tagdb_get_io(&io);
+    TEST_ASSERT_EQUAL_UINT64(3660, io.run_s[2]);
+}
+
+/* #210: a pulse DO that went on and off before the NDATA: true in one NDATA, then false in the
+ * next one (tck-id-topics-ndata-payload); the same into the store. */
+static void test_short_pulse_gives_true_then_false(void)
+{
+    gw_tagdb_set_do(0x00, 100);
+    gw_node_session_up(&node, 0);
+    recorder_clear();
+    gw_tagdb_set_do(0x40, 200);   /* DO/7 on ... */
+    gw_tagdb_set_do(0x00, 250);   /* ... and off again before the Sparkplug task runs */
+    gw_node_io_changed(&node);
+    TEST_ASSERT_EQUAL(2, g_rec.count);
+    msg(0);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_DO_BASE + 6, dec.m[0].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(1, dec.m[0].num);
+    TEST_ASSERT_EQUAL_UINT64(200, dec.m[0].timestamp);
+    msg(1);
+    TEST_ASSERT_EQUAL(1, dec.count);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_DO_BASE + 6, dec.m[0].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[0].num);
+    TEST_ASSERT_EQUAL_UINT64(250, dec.m[0].timestamp);
+    /* a normal change: one NDATA */
+    recorder_clear();
+    gw_tagdb_set_do(0x40, 300);
+    gw_node_io_changed(&node);
+    TEST_ASSERT_EQUAL(1, g_rec.count);
+
+    static gw_sf_rec_t storage[16];
+    gw_sf_t sf;
+    gw_sf_init(&sf, storage, 16);
+    gw_node_set_store(&node, &sf);
+    gw_node_session_down(&node);
+    gw_tagdb_set_do(0x00, 400);
+    gw_tagdb_set_do(0x02, 410);   /* DO/2 on and off while offline */
+    gw_tagdb_set_do(0x00, 420);
+    gw_node_io_changed(&node);
+    TEST_ASSERT_EQUAL_size_t(3, gw_sf_count(&sf));   /* DO/2 true; then DO/7 and DO/2 false */
+}
+
 static void test_dcmd_writes(void)
 {
     set_meter(true, 1, 2, 0);
@@ -597,7 +699,8 @@ static void test_umh_plain_types_and_diagnostics(void)
         TEST_ASSERT_NOT_EQUAL_MESSAGE(SPB_DT_DATASET, dec.m[a].datatype, dec.m[a].name);
     }
     /* node metrics, uptime / 2 x heap / RSSI, 7 + 5 counters, Time Synced, Core Dump, 2 x Online */
-    TEST_ASSERT_EQUAL(GW_NODE_UMH_BIRTH_METRICS + 2, dec.count);
+    /* #223: without ota.mqtt */
+    TEST_ASSERT_EQUAL(UMH_BIRTH_NO_LABELS - GW_NODE_MQTT_OTA_METRICS + 2, dec.count);
     TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Info/Modbus"));
     TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Info/Modbus TCP"));
     TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Pump"));
@@ -662,14 +765,14 @@ static void test_umh_plain_types_and_diagnostics(void)
     gw_node_diag_tick(&node, 1000);
     gw_node_diag_tick(&node, 61000);
     msg(0);
-    TEST_ASSERT_EQUAL(4, dec.count);                         /* uptime, 2 x heap, RSSI */
+    TEST_ASSERT_EQUAL(7, dec.count);   /* uptime, 2 x heap, block, PSRAM, temperature, RSSI */
     recorder_clear();
     const gw_dev_stats_t s2 = {.cycles = 8, .failed_cycles = 1, .bus = {.ok = 21, .timeout = 3},
                                .tcp = {.ok = 4}};
     gw_tagdb_put_stats(0, &s2);
     gw_node_diag_tick(&node, 121000);
     msg(0);
-    TEST_ASSERT_EQUAL(4 + GW_MB_FLAT_COUNT + GW_TCP_FLAT_COUNT, dec.count);
+    TEST_ASSERT_EQUAL(7 + GW_MB_FLAT_COUNT + GW_TCP_FLAT_COUNT, dec.count);
     i = decoded_find_alias(&dec, GW_ALIAS_MB_FLAT_BASE + 0);
     TEST_ASSERT_TRUE(i >= 0);
     TEST_ASSERT_FALSE(dec.m[i].has_name);
@@ -699,6 +802,7 @@ static void test_umh_worst_case_nbirth_fits(void)
     gw_cfg_err_t err;
     TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(json, strlen(json), &c, &err), err.msg);
     TEST_ASSERT_EQUAL_size_t(39, strlen(c.devices[0].name));
+    c.ota.mqtt = true;   /* #223, #215: the worst case has the two firmware update commands */
     cfg = &c;
     gw_tagdb_reset();
     gw_node_ops_t ops = recorder_ops();
@@ -711,7 +815,7 @@ static void test_umh_worst_case_nbirth_fits(void)
     msg(0);
     printf("UMH preset worst NBIRTH: %u bytes, %u metrics\n", (unsigned)g_rec.msgs[0].len,
            (unsigned)dec.count);
-    TEST_ASSERT_EQUAL(GW_NODE_UMH_BIRTH_METRICS + GW_MAX_DEVICES,
+    TEST_ASSERT_EQUAL(UMH_BIRTH_NO_LABELS + GW_MAX_DEVICES,
                       dec.count);
     TEST_ASSERT_TRUE(decoded_find_name(&dec, "Devices/line15/energy-meter-with-a-long-name-xx/Online")
                      >= 0);
@@ -806,6 +910,124 @@ static void test_dcmd_strict_datatype_and_integer(void)
     TEST_ASSERT_EQUAL(3, g_rec.writes);
     TEST_ASSERT_DOUBLE_WITHIN(1e-6, 0.5, g_rec.last_write.value);
     gw_port_log_capture(NULL, 0);
+}
+
+/* #196: write_min / write_max of a tag. A DCMD in the limits writes; a DCMD out of the limits is
+ * refused (no write, a warning, the refusal counter of the device), and the other metrics of the
+ * same DCMD still apply. The host MUST send a compatible value
+ * (tck-id-operational-behavior-data-commands-dcmd-metric-value); Sparkplug has no answer to a
+ * command, so the next DDATA has the value of the device. */
+static void test_dcmd_write_limits(void)
+{
+    static const char doc[] =
+        "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+        " \"devices\": [{\"name\": \"M\", \"unit_id\": 1, \"tags\": ["
+        "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
+        "   \"scale\": 0.1, \"writable\": true, \"write_min\": 0, \"write_max\": 150.5},"
+        "  {\"name\": \"Gain\", \"area\": \"holding\", \"address\": 1, \"type\": \"int32\","
+        "   \"writable\": true, \"write_min\": -10},"
+        "  {\"name\": \"Count\", \"area\": \"holding\", \"address\": 3, \"type\": \"int64\","
+        "   \"writable\": true, \"write_max\": 9007199254740992},"
+        "  {\"name\": \"Free\", \"area\": \"holding\", \"address\": 7, \"type\": \"int16\","
+        "   \"writable\": true}]}]}";
+    static gw_config_t c;
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(doc, sizeof(doc) - 1, &c, &err), err.msg);
+    cfg = &c;
+    gw_tagdb_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    gw_tag_value_t v[4] = {{.value = 1, .ts_ms = 1000, .valid = true},
+                           {.value = 1, .ts_ms = 1000, .valid = true},
+                           {.i64 = 1, .ts_ms = 1000, .valid = true},
+                           {.value = 1, .ts_ms = 1000, .valid = true}};
+    gw_tagdb_put_device(cfg, 0, v, true);
+    gw_node_session_up(&node, 0);
+    recorder_clear();
+    const char *topic = "spBv1.0/G/DCMD/N/M";
+    static char log[2048];
+    gw_port_log_capture(log, sizeof(log));
+
+    /* in the limits, also at the limits (150.5 as a Float) */
+    spb_metric_t in = {.name = "Speed", .no_alias = true, .datatype = SPB_DT_FLOAT, .v.num = 150.5};
+    send(topic, &in, 1);
+    TEST_ASSERT_EQUAL(1, g_rec.writes);
+    spb_metric_t lo = {.name = "Gain", .no_alias = true, .datatype = SPB_DT_INT32, .v.num = -10};
+    send(topic, &lo, 1);
+    TEST_ASSERT_EQUAL(2, g_rec.writes);
+    TEST_ASSERT_EQUAL_DOUBLE(-10, g_rec.last_write.value);
+    TEST_ASSERT_EQUAL_UINT32(0, gw_tagdb_refused(0));
+
+    /* out of the limits: refused, logged and counted; nothing written */
+    in.v.num = 150.6;
+    send(topic, &in, 1);
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Speed' discarded: value 150.6"));
+    TEST_ASSERT_NOT_NULL(strstr(log, "out of the write limits [0, 150.5]"));
+    lo.v.num = -11;
+    send(topic, &lo, 1);
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Gain' discarded: value -11 out of the write limits "
+                                     "[-10, -]"));
+    in.v.num = -0.1;
+    send(topic, &in, 1);
+    TEST_ASSERT_EQUAL(2, g_rec.writes);
+    TEST_ASSERT_EQUAL_UINT32(3, gw_tagdb_refused(0));
+    TEST_ASSERT_EQUAL(0, g_rec.count);   /* no DDATA: nothing changed */
+
+    /* an exact 64-bit limit (2^53): 2^53 is accepted, 2^53 + 1 is refused (as doubles, the two
+     * values are the same) */
+    spb_metric_t big = {.name = "Count", .no_alias = true, .datatype = SPB_DT_INT64,
+                        .v.i64 = 9007199254740992ll};
+    send(topic, &big, 1);
+    TEST_ASSERT_EQUAL(3, g_rec.writes);
+    big.v.i64 = 9007199254740993ll;
+    send(topic, &big, 1);
+    TEST_ASSERT_EQUAL(3, g_rec.writes);
+    TEST_ASSERT_EQUAL_UINT32(4, gw_tagdb_refused(0));
+    /* one DCMD with a refused metric and an accepted one: the accepted one is written */
+    spb_metric_t two[2] = {
+        {.name = "Speed", .no_alias = true, .datatype = SPB_DT_FLOAT, .v.num = 999},
+        {.name = "Free", .no_alias = true, .datatype = SPB_DT_INT16, .v.num = 30000},
+    };
+    send(topic, two, 2);
+    TEST_ASSERT_EQUAL(4, g_rec.writes);
+    TEST_ASSERT_EQUAL(3, g_rec.last_write_tag);
+    TEST_ASSERT_EQUAL_UINT32(5, gw_tagdb_refused(0));
+    gw_port_log_capture(NULL, 0);
+}
+
+/* #214: a disabled device is never online (the poll engine does not poll it), so it gets no
+ * DBIRTH at the session start or at a rebirth (tck-id-operational-behavior-data-commands-
+ * rebirth-action-2: the DBIRTHs "if applicable"), no DDATA and no DDEATH; a DCMD for it is
+ * discarded with its own log line. */
+static void test_disabled_device_no_birth_and_dcmd_discarded(void)
+{
+    static gw_config_t c;
+    c = *support_spec_config();
+    c.devices[0].enabled = false;
+    cfg = &c;
+    gw_tagdb_reset();
+    set_meter(true, 230.5, 12.3, 1);     /* the guard: also an online flag gives no DBIRTH */
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    gw_node_session_up(&node, 0);
+    TEST_ASSERT_EQUAL(1, g_rec.count);   /* the NBIRTH only */
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NBIRTH/GW01", g_rec.msgs[0].topic);
+    gw_node_device_changed(&node, 0);
+    TEST_ASSERT_EQUAL(1, g_rec.count);   /* no DDEATH for a device that never had a DBIRTH */
+    static char log[512];
+    gw_port_log_capture(log, sizeof(log));
+    spb_metric_t sp = {.name = "Setpoint", .datatype = SPB_DT_FLOAT, .v.num = 12.3};
+    send("spBv1.0/Plant1/DCMD/GW01/Meter1", &sp, 1);
+    TEST_ASSERT_EQUAL(0, g_rec.writes);
+    TEST_ASSERT_NOT_NULL(strstr(log, "DCMD for disabled device 'Meter1' discarded"));
+    gw_port_log_capture(NULL, 0);
+    gw_node_rebirth(&node);
+    TEST_ASSERT_EQUAL(2, g_rec.count);   /* a new NBIRTH, no DBIRTH */
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NBIRTH/GW01", g_rec.msgs[1].topic);
 }
 
 /* Issue #60: a DCMD whose writes do not all fit in the bus queue is rejected whole. */
@@ -1261,7 +1483,7 @@ static void test_templates(void)
     TEST_ASSERT_EQUAL(3, g_rec.count);             /* NBIRTH, DBIRTH P1, DBIRTH Flat */
 
     msg(0);   /* NBIRTH: one definition for the two pumps, after the node's metrics */
-    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS - 1 + 1, dec.count);
+    TEST_ASSERT_EQUAL(BIRTH_NO_LABELS - 1 - GW_NODE_MQTT_OTA_METRICS + 1, dec.count);
     int i = decoded_find_name(&dec, "Pump");
     TEST_ASSERT_TRUE(i >= 0);
     TEST_ASSERT_EQUAL(SPB_DT_TEMPLATE, dec.m[i].datatype);
@@ -1368,6 +1590,11 @@ static void test_worst_case_nbirth_fits(void)
     TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(doc, strlen(doc), &c, &err), err.msg);
     cfg = &c;
     c.modbus_tcp.enabled = true;   /* #81: the Modbus TCP table too */
+    /* #206: the longest name and location (63 bytes) */
+    memset(c.gateway.name, 'n', sizeof(c.gateway.name) - 1);
+    memset(c.gateway.location, 'l', sizeof(c.gateway.location) - 1);
+    c.ota.mqtt = true;             /* #223, #215: the two firmware update commands too */
+    c.local_io.run_hours = 0xFFFF;   /* #217: every run hours metric */
     gw_tagdb_reset();
     gw_node_ops_t ops = recorder_ops();
     const gw_node_info_t info = {.firmware = "0.1.0+g0123456.dirty-xxxxxxxxxxxxxxxxxxxxxxxxx",
@@ -1377,7 +1604,9 @@ static void test_worst_case_nbirth_fits(void)
     support_node_buffer(&node);
     /* SPB-17: the widest diagnostics (RSSI, every counter of every device at its maximum) */
     g_rec.diag = (gw_node_diag_t){.uptime_s = UINT64_MAX, .free_heap = UINT32_MAX,
-                                  .min_free_heap = UINT32_MAX, .has_rssi = true,
+                                  .min_free_heap = UINT32_MAX, .largest_block = UINT32_MAX,
+                                  .free_psram = UINT32_MAX, .temp_valid = true,
+                                  .temp_c = -40.125f, .has_rssi = true,
                                   .rssi_valid = true, .rssi = -128};
     const gw_dev_stats_t full = {UINT32_MAX, UINT32_MAX,
                                  {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX},
@@ -1394,7 +1623,8 @@ static void test_worst_case_nbirth_fits(void)
            (unsigned)g_rec.msgs[0].len, (unsigned)GW_SPB_PAYLOAD_MAX);
     TEST_ASSERT_LESS_THAN(GW_SPB_PAYLOAD_MAX, g_rec.msgs[0].len);
     msg(0);
-    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS + types, dec.count);
+    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS + types + GW_NODE_RUN_HOURS_METRICS, dec.count);
+    TEST_ASSERT_LESS_OR_EQUAL(GW_NODE_METRICS_MAX, dec.count);
     /* without PSRAM the buffer is smaller (CONFIG_GW_SPB_PAYLOAD_INTERNAL): such a birth is
      * not published (and logged), never cut */
     static uint8_t small[8192];
@@ -1441,6 +1671,23 @@ static void test_diagnostics(void)
     TEST_ASSERT_EQUAL(SPB_DT_UINT32, dec.m[i].datatype);
     TEST_ASSERT_EQUAL_DOUBLE(150000, dec.m[i].num);
     TEST_ASSERT_TRUE(decoded_find_name(&dec, "Node Info/Min Free Heap") >= 0);
+    /* #212: the largest free block, the free PSRAM and the temperature, with name, alias and
+     * datatype in the NBIRTH (tck-id-topics-nbirth-metrics, tck-id-payloads-alias-birth-
+     * requirement, tck-id-payloads-metric-datatype-req); no sensor reading: null */
+    i = decoded_find_name(&dec, "Node Info/Largest Free Block");
+    TEST_ASSERT_EQUAL(SPB_DT_UINT32, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_LARGEST_BLOCK, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(110592, dec.m[i].num);
+    i = decoded_find_name(&dec, "Node Info/Free PSRAM");
+    TEST_ASSERT_EQUAL(SPB_DT_UINT32, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_FREE_PSRAM, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(8290000, dec.m[i].num);
+    i = decoded_find_name(&dec, "Node Info/Temperature");
+    TEST_ASSERT_EQUAL(SPB_DT_FLOAT, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TEMPERATURE, dec.m[i].alias);
+    TEST_ASSERT_TRUE(dec.m[i].is_null);
+    TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Info/Name"));   /* #206: not set */
+    TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Info/Location"));
     i = decoded_find_name(&dec, "Node Info/RSSI");
     TEST_ASSERT_EQUAL(SPB_DT_INT32, dec.m[i].datatype);
     TEST_ASSERT_TRUE(dec.m[i].is_null);                      /* Wi-Fi not associated */
@@ -1463,10 +1710,22 @@ static void test_diagnostics(void)
     g_rec.diag.uptime_s = 72;
     g_rec.diag.rssi_valid = true;
     g_rec.diag.rssi = -61;
+    g_rec.diag.temp_valid = true;
+    g_rec.diag.temp_c = 46.5f;
     gw_node_diag_tick(&node, 61000);                         /* counters unchanged */
     msg(0);
     TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", g_rec.msgs[0].topic);
-    TEST_ASSERT_EQUAL(4, dec.count);                         /* uptime, 2 x heap, RSSI */
+    /* uptime, 2 x heap, largest block, PSRAM, temperature (#212), RSSI */
+    TEST_ASSERT_EQUAL(7, dec.count);
+    /* #212: the alias only, no name and no datatype (tck-id-payloads-name-birth-data-requirement,
+     * tck-id-payloads-metric-datatype-not-req) */
+    i = decoded_find_alias(&dec, GW_ALIAS_TEMPERATURE);
+    TEST_ASSERT_FALSE(dec.m[i].is_null);
+    TEST_ASSERT_FALSE(dec.m[i].has_datatype);
+    TEST_ASSERT_FALSE(dec.m[i].has_name);
+    TEST_ASSERT_EQUAL_DOUBLE(46.5, dec.m[i].num);
+    TEST_ASSERT_TRUE(decoded_find_alias(&dec, GW_ALIAS_LARGEST_BLOCK) >= 0);
+    TEST_ASSERT_TRUE(decoded_find_alias(&dec, GW_ALIAS_FREE_PSRAM) >= 0);
     TEST_ASSERT_EQUAL_UINT64(72, dec.m[decoded_find_alias(&dec, GW_ALIAS_UPTIME)].u64);
     i = decoded_find_alias(&dec, GW_ALIAS_RSSI);
     TEST_ASSERT_FALSE(dec.m[i].is_null);
@@ -1479,7 +1738,7 @@ static void test_diagnostics(void)
     gw_tagdb_put_stats(0, &st2);
     gw_node_diag_tick(&node, 121000);
     msg(0);
-    TEST_ASSERT_EQUAL(5, dec.count);
+    TEST_ASSERT_EQUAL(8, dec.count);
     TEST_ASSERT_TRUE(decoded_find_alias(&dec, GW_ALIAS_MODBUS) >= 0);
     mb_rows = mb_cells = 0;
     TEST_ASSERT_TRUE(spb_decode_with(g_rec.msgs[0].payload, g_rec.msgs[0].len, NULL, &d));
@@ -1524,6 +1783,50 @@ static bool tcp_cell_cb(void *ctx, uint32_t row, uint32_t col, const spb_rx_valu
     return true;
 }
 
+/* #206: gateway.name and gateway.location as Node Info/Name and Node Info/Location (String) in
+ * the NBIRTH only, with their own aliases (tck-id-topics-nbirth-metrics,
+ * tck-id-payloads-alias-uniqueness); only the name when the location is empty. */
+static void test_gateway_labels(void)
+{
+    static gw_config_t c;
+    c = *cfg;
+    snprintf(c.gateway.name, sizeof(c.gateway.name), "Pump panel 2");
+    snprintf(c.gateway.location, sizeof(c.gateway.location), "Plant 2, hall B");
+    cfg = &c;
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    set_meter(true, 230.5, 12.3, 1);
+    gw_node_session_up(&node, 0);
+    msg(0);
+    /* no Modbus TCP table; #223: no ota.mqtt */
+    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS - 1 - GW_NODE_MQTT_OTA_METRICS, dec.count);
+    int i = decoded_find_name(&dec, "Node Info/Name");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_STRING, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_NAME, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_STRING("Pump panel 2", dec.m[i].str);
+    i = decoded_find_name(&dec, "Node Info/Location");
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_LOCATION, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_STRING("Plant 2, hall B", dec.m[i].str);
+    assert_birth_aliases_unique();
+    /* static: no NDATA carries them */
+    recorder_clear();
+    gw_node_diag_tick(&node, 1000);
+    gw_node_diag_tick(&node, 61000);
+    msg(0);
+    TEST_ASSERT_EQUAL(-1, decoded_find_alias(&dec, GW_ALIAS_NAME));
+    TEST_ASSERT_EQUAL(-1, decoded_find_alias(&dec, GW_ALIAS_LOCATION));
+    c.gateway.location[0] = '\0';
+    gw_node_session_down(&node);
+    recorder_clear();
+    gw_node_session_up(&node, 1);
+    msg(0);
+    TEST_ASSERT_TRUE(decoded_find_name(&dec, "Node Info/Name") >= 0);
+    TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Info/Location"));
+}
+
 static void test_modbus_tcp_table(void)
 {
     static gw_config_t c;
@@ -1543,7 +1846,7 @@ static void test_modbus_tcp_table(void)
     gw_mbap_stats_add(&g);
     gw_node_session_up(&node, 0);
     msg(0);
-    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS, dec.count);
+    TEST_ASSERT_EQUAL(BIRTH_NO_LABELS - GW_NODE_MQTT_OTA_METRICS, dec.count);   /* #223 */
     int i = decoded_find_name(&dec, "Node Info/Modbus TCP");
     TEST_ASSERT_TRUE(i >= 0);
     TEST_ASSERT_EQUAL(SPB_DT_DATASET, dec.m[i].datatype);
@@ -2205,10 +2508,132 @@ static void test_dbirth_larger_than_buffer(void)
     gw_port_log_capture(NULL, 0);
 }
 
-/* FW-1: NBIRTH declares the update command and its state; an NCMD with the URL reaches the
- * firmware_update op (only a non-empty string); state changes go out as NDATA. */
+/* #223: the node of the spec configuration with ota.mqtt on (updates from MQTT accepted). */
+static void use_mqtt_ota(void)
+{
+    static gw_config_t c;
+    c = *support_spec_config();
+    c.ota.mqtt = true;
+    cfg = &c;
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+}
+
+/* #223: with ota.mqtt off (the default) the NBIRTH has no Node Control/Firmware Update and no
+ * Node Control/Firmware SHA-256 (tck-id-topics-nbirth-metric-reqs), but it has the state and the
+ * progress (an update from the web UI changes them). An NCMD with them, by name or by alias, starts
+ * nothing and the log gives the cause (tck-id-operational-behavior-data-commands-ncmd-metric-name:
+ * the Edge Node is resilient to a metric that is not in the NBIRTH). */
+static void test_firmware_update_off_without_ota_mqtt(void)
+{
+    TEST_ASSERT_FALSE(cfg->ota.mqtt);
+    gw_node_session_up(&node, 0);
+    msg(0);
+    TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Control/Firmware Update"));
+    TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Control/Firmware SHA-256"));
+    TEST_ASSERT_TRUE(decoded_find_name(&dec, "Firmware Update/State") >= 0);
+    TEST_ASSERT_TRUE(decoded_find_name(&dec, "Firmware Update/Progress") >= 0);
+    TEST_ASSERT_TRUE(decoded_find_name(&dec, "Node Control/Boot Other Slot") >= 0);
+    char log[1024] = "";
+    gw_port_log_capture(log, sizeof(log));
+    recorder_clear();
+    spb_metric_t m[2] = {{.name = "Node Control/Firmware SHA-256", .datatype = SPB_DT_STRING,
+                          .v.str = "17bf8431d18e8d424fb300303419bebde3749ad415de75afdaf4ecb1776030dd"},
+                         {.name = "Node Control/Firmware Update", .datatype = SPB_DT_STRING,
+                          .v.str = "https://fw.example/gw-0.2.0.bin"}};
+    send("spBv1.0/Plant1/NCMD/GW01", m, 2);
+    spb_metric_t a = {.alias = GW_ALIAS_FW_UPDATE, .datatype = SPB_DT_STRING,
+                      .v.str = "https://fw.example/gw-0.2.0.bin"};
+    send("spBv1.0/Plant1/NCMD/GW01", &a, 1);
+    gw_port_log_capture(NULL, 0);
+    TEST_ASSERT_EQUAL(0, g_rec.fw_updates);
+    TEST_ASSERT_EQUAL(0, g_rec.fw_shas);
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    static const char why[] = "discarded: firmware updates from MQTT are off (ota.mqtt); no "
+                              "update started";
+    int found = 0;
+    for (const char *at = strstr(log, why); at != NULL; at = strstr(at + 1, why)) {
+        found++;
+    }
+    TEST_ASSERT_EQUAL(3, found);
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Node Control/Firmware Update'"));
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Node Control/Firmware SHA-256'"));
+    TEST_ASSERT_NOT_NULL(strstr(log, "(alias 40) discarded"));
+}
+
+/* #215 (with ota.mqtt): the NBIRTH declares Node Control/Firmware SHA-256 (String, empty,
+ * tck-id-topics-nbirth-metrics). The SHA-256 of an NCMD goes to the firmware_sha256 op before the
+ * URL of the same NCMD starts the update, also when it comes after the URL; "" clears it. A SHA-256
+ * that is not valid (tck-id-operational-behavior-data-commands-ncmd-metric-value) is discarded,
+ * and the URL of the same NCMD starts nothing. */
+static void test_firmware_sha256_command(void)
+{
+    use_mqtt_ota();
+    gw_node_session_up(&node, 0);
+    msg(0);
+    int h = decoded_find_name(&dec, "Node Control/Firmware SHA-256");
+    TEST_ASSERT_TRUE(h >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_STRING, dec.m[h].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_FW_SHA256, dec.m[h].alias);
+    TEST_ASSERT_EQUAL_STRING("", dec.m[h].str);
+    recorder_clear();
+    /* the URL first, the SHA-256 (capital letters) second: the SHA-256 applies to this update */
+    spb_metric_t both[2] = {{.name = "Node Control/Firmware Update", .datatype = SPB_DT_STRING,
+                             .v.str = "https://fw.example/gw-0.2.0.bin"},
+                            {.name = "Node Control/Firmware SHA-256", .datatype = SPB_DT_STRING,
+                             .v.str = "17BF8431D18E8D424FB300303419BEBDE3749AD415DE75AFDAF4ECB1776030DD"}};
+    send("spBv1.0/Plant1/NCMD/GW01", both, 2);
+    TEST_ASSERT_EQUAL(1, g_rec.fw_shas);
+    TEST_ASSERT_EQUAL(1, g_rec.fw_updates);
+    TEST_ASSERT_TRUE(g_rec.fw_sha_at_update);
+    TEST_ASSERT_EQUAL_HEX8(0x17, g_rec.fw_sha[0]);
+    TEST_ASSERT_EQUAL_HEX8(0xdd, g_rec.fw_sha[31]);
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    /* by alias, empty: clears it */
+    spb_metric_t clr = {.alias = GW_ALIAS_FW_SHA256, .datatype = SPB_DT_STRING, .v.str = ""};
+    send("spBv1.0/Plant1/NCMD/GW01", &clr, 1);
+    TEST_ASSERT_EQUAL(2, g_rec.fw_shas);
+    TEST_ASSERT_FALSE(g_rec.fw_sha_set);
+    /* not valid (63 characters, a space, not a string): discarded; the URL of the same NCMD
+     * starts nothing */
+    char log[1024] = "";
+    gw_port_log_capture(log, sizeof(log));
+    spb_metric_t bad[2] = {{.name = "Node Control/Firmware SHA-256", .datatype = SPB_DT_STRING,
+                            .v.str = "17bf8431d18e8d424fb300303419bebde3749ad415de75afdaf4ecb1776030d"},
+                           {.name = "Node Control/Firmware Update", .datatype = SPB_DT_STRING,
+                            .v.str = "https://fw.example/gw-0.2.0.bin"}};
+    send("spBv1.0/Plant1/NCMD/GW01", bad, 2);
+    spb_metric_t sp = {.alias = GW_ALIAS_FW_SHA256, .datatype = SPB_DT_STRING,
+                       .v.str = "17bf8431d18e8d424fb300303419bebde3749ad415de75afdaf4ecb1776030 d"};
+    send("spBv1.0/Plant1/NCMD/GW01", &sp, 1);
+    spb_metric_t num = {.alias = GW_ALIAS_FW_SHA256, .datatype = SPB_DT_UINT32, .v.num = 5};
+    send("spBv1.0/Plant1/NCMD/GW01", &num, 1);
+    gw_port_log_capture(NULL, 0);
+    TEST_ASSERT_EQUAL(2, g_rec.fw_shas);
+    TEST_ASSERT_EQUAL(1, g_rec.fw_updates);
+    TEST_ASSERT_NOT_NULL(strstr(log, "expected 64 hexadecimal characters (0-9, a-f), got 63"));
+    TEST_ASSERT_NOT_NULL(strstr(log, "got other characters in 64"));
+    TEST_ASSERT_NOT_NULL(strstr(log, "Firmware SHA-256 needs a string"));
+    TEST_ASSERT_NOT_NULL(strstr(log, "NCMD Firmware Update not started: the Firmware SHA-256 of "
+                                     "the same NCMD is not valid"));
+    /* two URLs in one NCMD: only the first starts */
+    spb_metric_t two[2] = {{.name = "Node Control/Firmware Update", .datatype = SPB_DT_STRING,
+                            .v.str = "https://fw.example/a.bin"},
+                           {.alias = GW_ALIAS_FW_UPDATE, .datatype = SPB_DT_STRING,
+                            .v.str = "https://fw.example/b.bin"}};
+    send("spBv1.0/Plant1/NCMD/GW01", two, 2);
+    TEST_ASSERT_EQUAL(2, g_rec.fw_updates);
+    TEST_ASSERT_EQUAL_STRING("https://fw.example/a.bin", g_rec.fw_url);
+}
+
+/* FW-1: with ota.mqtt (#223), the NBIRTH declares the update command and its state; an NCMD with
+ * the URL reaches the firmware_update op (only a non-empty string); state changes go out as
+ * NDATA. */
 static void test_firmware_update_metrics(void)
 {
+    use_mqtt_ota();
     gw_node_set_firmware_status(&node, "rolled back: 0.2.0", 0);   /* before the session */
     TEST_ASSERT_EQUAL(0, g_rec.count);
     gw_node_session_up(&node, 0);
@@ -2326,6 +2751,7 @@ static size_t raw_fw_ncmd(uint8_t *out, size_t n)
  * a longer one makes the NCMD undecodable: nothing applied, nothing cut. */
 static void test_firmware_url_limit(void)
 {
+    use_mqtt_ota();
     gw_node_session_up(&node, 0);
     recorder_clear();
     static uint8_t raw[512];
@@ -2520,6 +2946,8 @@ int main(void)
     RUN_TEST(test_ncmd_do_and_reboot);
     RUN_TEST(test_every_metric_has_a_timestamp);
     RUN_TEST(test_pulse_counters);
+    RUN_TEST(test_run_hours_metrics);
+    RUN_TEST(test_short_pulse_gives_true_then_false);
     RUN_TEST(test_dcmd_writes);
     RUN_TEST(test_device_prefix_topics);
     RUN_TEST(test_umh_device_online);
@@ -2527,6 +2955,8 @@ int main(void)
     RUN_TEST(test_umh_plain_types_and_diagnostics);
     RUN_TEST(test_umh_worst_case_nbirth_fits);
     RUN_TEST(test_dcmd_strict_datatype_and_integer);
+    RUN_TEST(test_dcmd_write_limits);
+    RUN_TEST(test_disabled_device_no_birth_and_dcmd_discarded);
     RUN_TEST(test_dcmd_rejected_whole_when_queue_lacks_room);
     RUN_TEST(test_scan_rate);
     RUN_TEST(test_mb6_birth_and_data);
@@ -2539,6 +2969,7 @@ int main(void)
     RUN_TEST(test_templates);
     RUN_TEST(test_store_and_forward_templates_bytes);
     RUN_TEST(test_diagnostics);
+    RUN_TEST(test_gateway_labels);
     RUN_TEST(test_time_synced);
     RUN_TEST(test_core_dump_metric);
     RUN_TEST(test_no_birth_before_valid_time);
@@ -2558,6 +2989,8 @@ int main(void)
     RUN_TEST(test_dbirth_too_large_not_retried_on_every_change);
     RUN_TEST(test_dbirth_larger_than_buffer);
     RUN_TEST(test_firmware_update_metrics);
+    RUN_TEST(test_firmware_update_off_without_ota_mqtt);
+    RUN_TEST(test_firmware_sha256_command);
     RUN_TEST(test_boot_other_slot_command);
     RUN_TEST(test_firmware_url_limit);
     RUN_TEST(test_store_and_forward_counters);

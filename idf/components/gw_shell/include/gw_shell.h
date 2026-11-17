@@ -7,7 +7,10 @@
  *   config show   the stored document, secrets masked
  *   config load   paste a JSON document: validated, saved atomically, restart
  *   config check  paste a JSON document: validated only
- *   restart       orderly restart (NDEATH first)
+ *   restart       orderly restart (NDEATH first); 'restart safe' into safe mode (#209)
+ *   factory-reset erase and restart in commissioning, after the word ERASE (#203)
+ *   identify      the LED and the buzzer identify the gateway for 10 s (#207)
+ *   log           the log level of each tag at run time (#199)
  *   rebirth       re-issue NBIRTH and every DBIRTH
  *   mbread        one Modbus read through the bus owner (MB-16)
  *   ping          ICMP echo
@@ -35,6 +38,9 @@ typedef struct {
     const char *fault;            /* #135: cfg is NULL because of a hardware fault (no PSRAM) */
     const gw_node_info_t *info;
     void (*restart)(void);        /* orderly restart (NDEATH first when a session is up) */
+    /* #203: erase (as BOOT held 10 s) and restart in commissioning; ESP_ERR_INVALID_STATE:
+     * refused, nothing erased */
+    esp_err_t (*factory_reset)(void);
 } gw_shell_ctx_t;
 
 /** Start the REPL task, as early as possible (issue #72): input typed during the boot is

@@ -12,23 +12,30 @@
  *   tck-id-operational-behavior-data-commands-rebirth-name-aliases requires; an NCMD with
  *   alias 2 is still accepted as a rebirth request), 3 Node Control/Reboot,
  *   4 Node Info/Firmware, 5 Node Info/Hardware, 6 Node Info/Reset Reason,
- *   7 Node Control/Scan Rate,
+ *   7 Node Control/Scan Rate, 8 Node Info/Name and 9 Node Info/Location (#206, String, only
+ *   when gateway.name or gateway.location is set),
  *   10..17 DI/1..DI/8, 20..27 DO/1..DO/8, 30..37 Counter/1..Counter/8 (IO-4, UInt64 pulse
- *   counters of the DIs), 40 Node Control/Firmware Update (FW-1, String URL), 41 Firmware
- *   Update/State (String), 42 Firmware Update/Progress (UInt32 %), 43 Node Control/Boot Other
- *   Slot (issue #144 item 6, Boolean), 100 + n device tag with global index n,
+ *   counters of the DIs), 40 Node Control/Firmware Update (FW-1, String URL; only with
+ *   ota.mqtt, #223), 41 Firmware Update/State (String), 42 Firmware Update/Progress (UInt32 %),
+ *   43 Node Control/Boot Other Slot (issue #144 item 6, Boolean), 44 Node Control/Firmware
+ *   SHA-256 (#215, String; only with ota.mqtt), 100 + n device tag with global index n,
  *   50..54 SPB-17 diagnostics: Node Info/Uptime (UInt64 s), Free Heap and Min Free Heap
  *   (UInt32 B, internal RAM), RSSI (Int32 dBm, only with Wi-Fi), Modbus (DataSet, one row per
  *   device with the MB-13 counters), 55 Node Info/Time Synced (TIME-3, Boolean: SNTP),
  *   56 Node Info/Modbus TCP (issue #81, DataSet: per device, the attempts of the Modbus TCP
  *   requests forwarded to its unit, plus one row for units without a device; only with
  *   modbus_tcp.enabled), 57 Node Info/Core Dump (issue #132, Boolean: a core dump is in
- *   flash).
+ *   flash), 58 Node Info/Largest Free Block (#212, UInt32 B, internal RAM), 59 Node Info/Free
+ *   PSRAM (#212, UInt32 B), 68 Node Info/Temperature (#212, Float, degrees C of the chip; null
+ *   without a reading of the sensor, for example in QEMU).
  *   60..66 and 70..74 #174 (UMH preset only, in place of the DataSets 54 and 56): Node
  *   Info/Modbus/<counter> (Cycles, Failed Cycles, OK, Timeout, CRC, Frame, Exception) and Node
  *   Info/Modbus TCP/<counter> (OK, Timeout, CRC, Frame, Exception), UInt64 sums of all devices.
  *   80..95 #173 (UMH preset only): Devices/<name>/Online (Boolean) of device 0..15, with each
  *   ':' of the name as '/'.
+ *   356..363 and 364..371 #217: Run Hours/DI/1..8 and Run Hours/DO/1..8 (UInt64 s), only for
+ *   the channels of local_io.run_hours (after the last tag alias, 100 + 255: the aliases below
+ *   100 are full).
  *
  * SPB-18 device types: a device with a `type` is published as one Template instance metric
  * (named after the type, alias 100 + its first tag) whose members are its tags, by name; the
@@ -68,6 +75,8 @@ extern "C" {
 #define GW_ALIAS_HARDWARE  5u
 #define GW_ALIAS_RESET_REASON 6u
 #define GW_ALIAS_SCAN_RATE 7u
+#define GW_ALIAS_NAME      8u    /* #206 */
+#define GW_ALIAS_LOCATION  9u
 
 /* SPB-15 "Node Control/Scan Rate" (UInt32, ms): 0 = every device polls at its own poll_ms;
  * otherwise this period replaces every device's poll_ms (and slow_poll_ms when shorter). */
@@ -80,6 +89,7 @@ extern "C" {
 #define GW_ALIAS_FW_STATE  41u
 #define GW_ALIAS_FW_PROGRESS 42u
 #define GW_ALIAS_BOOT_OTHER 43u  /* issue #144 item 6: NCMD, boot the image of the other slot */
+#define GW_ALIAS_FW_SHA256 44u   /* #215: NCMD, the SHA-256 for the next Firmware Update */
 #define GW_ALIAS_TAG_BASE  100u
 #define GW_ALIAS_UPTIME    50u   /* SPB-17 */
 #define GW_ALIAS_FREE_HEAP 51u
@@ -89,28 +99,42 @@ extern "C" {
 #define GW_ALIAS_TIME_SYNCED 55u  /* TIME-3 */
 #define GW_ALIAS_MODBUS_TCP 56u   /* issue #81 */
 #define GW_ALIAS_CORE_DUMP 57u    /* issue #132 */
+#define GW_ALIAS_LARGEST_BLOCK 58u /* #212 */
+#define GW_ALIAS_FREE_PSRAM 59u
+#define GW_ALIAS_TEMPERATURE 68u
 #define GW_ALIAS_MB_FLAT_BASE 60u /* #174: + counter, UMH preset only */
 #define GW_ALIAS_TCP_FLAT_BASE 70u
 #define GW_MB_FLAT_COUNT 7
 #define GW_TCP_FLAT_COUNT 5
 #define GW_ALIAS_ONLINE_BASE 80u  /* #173: + device index, UMH preset only */
+/* #217: + channel (DI/1..8, then DO/1..8); after the aliases of the tags */
+#define GW_ALIAS_RUN_HOURS_BASE (GW_ALIAS_TAG_BASE + GW_MAX_TAGS)
 
 #define GW_NODE_IO_COUNT        8
-#define GW_NODE_DIAG_METRICS    6   /* SPB-17, at most (RSSI only with Wi-Fi, Modbus with devices,
+#define GW_NODE_DIAG_METRICS    9   /* SPB-17, at most (RSSI only with Wi-Fi, Modbus with devices,
                                      * Modbus TCP with the gateway enabled) */
 /* #174: with the UMH preset: Uptime, Free Heap, Min Free Heap, RSSI and the plain counters */
-#define GW_NODE_UMH_DIAG_METRICS (4 + GW_MB_FLAT_COUNT + GW_TCP_FLAT_COUNT)
-/* Node metrics of the NBIRTH, without template definitions (4 of them FW-1; the last 2: Time
- * Synced and Core Dump) and without the UMH preset (it has no definitions, and its
- * Devices/<name>/Online come from spb_payload_t.extra) */
-#define GW_NODE_BIRTH_METRICS   (11 + 3 * GW_NODE_IO_COUNT + GW_NODE_DIAG_METRICS + 2)
+#define GW_NODE_UMH_DIAG_METRICS (7 + GW_MB_FLAT_COUNT + GW_TCP_FLAT_COUNT)
+/* Node metrics of the NBIRTH at most, without template definitions (5 of them FW-1, 2 of these
+ * only with ota.mqtt; the last 2: Time Synced and Core Dump) and without the UMH preset (it has
+ * no definitions, and its Devices/<name>/Online come from spb_payload_t.extra);
+ * 14 = 12 + Name and Location (#206) */
+#define GW_NODE_BIRTH_METRICS   (14 + 3 * GW_NODE_IO_COUNT + GW_NODE_DIAG_METRICS + 2)
 /* #174: the same with the UMH preset, without its Devices/<name>/Online */
-#define GW_NODE_UMH_BIRTH_METRICS (11 + 3 * GW_NODE_IO_COUNT + GW_NODE_UMH_DIAG_METRICS + 2)
+#define GW_NODE_UMH_BIRTH_METRICS (14 + 3 * GW_NODE_IO_COUNT + GW_NODE_UMH_DIAG_METRICS + 2)
+/* #223: the NBIRTH metrics that only ota.mqtt adds (Firmware Update and Firmware SHA-256) */
+#define GW_NODE_MQTT_OTA_METRICS 2
+/* #217: the NBIRTH has one more metric per channel of local_io.run_hours (not in the counts
+ * above: they are the NBIRTH without run hours) */
+#define GW_NODE_RUN_HOURS_METRICS GW_RUN_HOURS_CHANNELS
 /* Scratch metrics: a whole device (+1 template instance), or the NBIRTH with one template
- * definition per device type. */
+ * definition per device type and every run hours metric (the UMH preset has no definitions). */
+#define GW_NODE_BIRTH_MAX                                                         \
+    (GW_NODE_BIRTH_METRICS + GW_MAX_DEVICES > GW_NODE_UMH_BIRTH_METRICS           \
+         ? GW_NODE_BIRTH_METRICS + GW_MAX_DEVICES + GW_NODE_RUN_HOURS_METRICS     \
+         : GW_NODE_UMH_BIRTH_METRICS + GW_NODE_RUN_HOURS_METRICS)
 #define GW_NODE_METRICS_MAX \
-    (GW_MAX_TAGS_PER_DEVICE + 1 > GW_NODE_BIRTH_METRICS + GW_MAX_DEVICES \
-         ? GW_MAX_TAGS_PER_DEVICE + 1 : GW_NODE_BIRTH_METRICS + GW_MAX_DEVICES)
+    (GW_MAX_TAGS_PER_DEVICE + 1 > GW_NODE_BIRTH_MAX ? GW_MAX_TAGS_PER_DEVICE + 1 : GW_NODE_BIRTH_MAX)
 /* "Firmware Update/State" text with its NUL (< SPB_STRING_MAX, #87); longer is cut with a log,
  * the whole reason is in the shell and the web. 96, not more: the node (the Sparkplug engine,
  * one allocation) stays under 21 504 B, a TLSF size class of 1 KB steps (issue #80) */
@@ -132,6 +156,10 @@ typedef struct gw_node_diag {
     uint64_t uptime_s;
     uint32_t free_heap;        /* internal RAM, bytes */
     uint32_t min_free_heap;    /* lowest since boot */
+    uint32_t largest_block;    /* #212: the largest free block of the internal RAM, bytes */
+    uint32_t free_psram;       /* #212: bytes */
+    bool temp_valid;           /* #212: a reading of the temperature sensor (null otherwise) */
+    float temp_c;              /* #212: the chip, degrees C */
     bool has_rssi;             /* the node has Wi-Fi (the metric exists) */
     bool rssi_valid;           /* associated: rssi is meaningful (null otherwise) */
     int32_t rssi;              /* dBm */
@@ -156,8 +184,12 @@ typedef struct {
     /** Restart the gateway (called after NDEATH has been published). */
     void (*reboot)(void *ctx);
     /** FW-1: start a firmware update from @p url (NCMD "Node Control/Firmware Update"); the
-     *  result comes back through gw_node_set_firmware_status(). NULL = not supported. */
+     *  result comes back through gw_node_set_firmware_status(). NULL = not supported. Only
+     *  with ota.mqtt (#223). */
     void (*firmware_update)(void *ctx, const char *url);
+    /** #215: the SHA-256 (32 bytes) that the next firmware_update must agree with (NCMD "Node
+     *  Control/Firmware SHA-256"); NULL: no check. Only with ota.mqtt. NULL op: not supported. */
+    void (*firmware_sha256)(void *ctx, const uint8_t *sha256);
     /** Issue #144 item 6: boot the image of the other slot on trial (NCMD "Node Control/Boot
      *  Other Slot" true; no force); the result comes back as the firmware status. NULL = not
      *  supported. */
@@ -199,7 +231,11 @@ typedef struct {
     gw_rbe_t tag_rbe[GW_MAX_TAGS];
     uint8_t di_reported;
     uint8_t do_reported;
+    /* #215, per NCMD (here: in the padding before count_reported, issue #80: 21 504 B) */
+    bool cmd_fw_update;                /* the NCMD carried a valid Firmware Update URL */
+    bool cmd_fw_sha_bad;               /* ... and a Firmware SHA-256 that is not valid */
     uint64_t count_reported[GW_NODE_IO_COUNT];   /* IO-4 */
+    uint64_t run_reported[GW_RUN_HOURS_CHANNELS];   /* #217 */
     uint32_t scan_rate_ms;             /* SPB-15: current override, 0 = per-device poll_ms */
     /* SPB-17 */
     bool has_rssi;                     /* fixed by the NBIRTH */
@@ -218,8 +254,14 @@ typedef struct {
     char fw_state[GW_NODE_FW_STATE_MAX];   /* FW-1: "Firmware Update/State" */
     uint32_t fw_progress;                  /* FW-1: "Firmware Update/Progress" (%) */
 
-    /* Scratch, statically sized (REL-2). */
-    gw_tag_value_t vals[GW_MAX_TAGS_PER_DEVICE];
+    /* Scratch, statically sized (REL-2). #217: vals (the values of one device, for its births
+     * and DATA) and hist_str (the strings of one historical message, gw_node_flush_history) are
+     * never in use at the same time: they share their memory, so that the node stays under
+     * 21 504 B (issue #80) with the scratch metrics of the run hours. */
+    union {
+        gw_tag_value_t vals[GW_MAX_TAGS_PER_DEVICE];
+        char hist_str[GW_MAX_TAGS_PER_DEVICE][GW_STR_MAX + 1];   /* of a historical message */
+    };
     spb_metric_t metrics[GW_NODE_METRICS_MAX];
     spb_template_t tmpl;               /* SPB-18: the instance being published */
     spb_template_t defs[GW_MAX_DEVICES];   /* SPB-18: NBIRTH definitions, one per type */
@@ -231,8 +273,7 @@ typedef struct {
     /* Store & forward (SPB-14); sf NULL = changes while offline are coalesced (the MVP). */
     gw_sf_t *sf;
     bool born_once;                    /* an NBIRTH went out since boot: from then on, store */
-    gw_sf_rec_t hist[GW_NODE_HIST_RECS];
-    char hist_str[GW_MAX_TAGS_PER_DEVICE][GW_STR_MAX + 1];   /* strings of a historical message */
+    gw_sf_rec_t hist[GW_NODE_HIST_RECS];   /* (its strings: hist_str, above) */
     uint32_t sf_discarded;             /* stored samples of devices without DBIRTH when sent */
     uint32_t sf_sent;                  /* historical messages published */
 

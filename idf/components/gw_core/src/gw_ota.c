@@ -342,30 +342,80 @@ bool gw_ota_progress_update(gw_ota_progress_t *p, uint32_t done, uint32_t now_ms
 /* Issue #106: under the JSON lock, with the configuration allocator's hooks (the same ones every
  * other cJSON use installs), so it cannot change them, or the failure flag, under another task's
  * validation. */
-bool gw_ota_parse_request(const char *body, size_t len, char *out, bool *force, char *why,
-                          size_t cap)
+/* ---------- issue #215: the SHA-256 that the user gives ---------- */
+
+static int hex_digit(char c)
+{
+    return c >= '0' && c <= '9' ? c - '0'
+           : c >= 'a' && c <= 'f' ? c - 'a' + 10
+           : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                                  : -1;
+}
+
+bool gw_ota_sha256_parse(const char *hex, uint8_t out[GW_OTA_SHA256_LEN], char *why, size_t cap)
+{
+    size_t n = hex != NULL ? strlen(hex) : 0;
+    bool ok = n == 2u * GW_OTA_SHA256_LEN;
+    for (size_t i = 0; ok && i < n; i++) {
+        ok = hex_digit(hex[i]) >= 0;
+    }
+    if (!ok) {
+        if (why != NULL) {
+            snprintf(why, cap, "expected 64 hexadecimal characters (0-9, a-f), got %s%u%s",
+                     n == 2u * GW_OTA_SHA256_LEN ? "other characters in " : "", (unsigned)n,
+                     n == 2u * GW_OTA_SHA256_LEN ? "" : " characters");
+        }
+        return false;
+    }
+    for (size_t i = 0; i < GW_OTA_SHA256_LEN; i++) {
+        out[i] = (uint8_t)((hex_digit(hex[2 * i]) << 4) | hex_digit(hex[2 * i + 1]));
+    }
+    return true;
+}
+
+void gw_ota_sha256_hex(const uint8_t sha[GW_OTA_SHA256_LEN], char out[GW_OTA_SHA256_HEX])
+{
+    static const char digits[] = "0123456789abcdef";
+    for (size_t i = 0; i < GW_OTA_SHA256_LEN; i++) {
+        out[2 * i] = digits[sha[i] >> 4];
+        out[2 * i + 1] = digits[sha[i] & 0x0Fu];
+    }
+    out[2 * GW_OTA_SHA256_LEN] = '\0';
+}
+
+bool gw_ota_parse_request(const char *body, size_t len, char *out, bool *force,
+                          uint8_t sha[GW_OTA_SHA256_LEN], bool *has_sha, char *why, size_t cap)
 {
     gw_port_json_lock();
     gw_config_json_hooks();
     cJSON *root = cJSON_ParseWithLength(body, len);
+    const cJSON *f = cJSON_GetObjectItemCaseSensitive(root, "force");
+    const cJSON *h = cJSON_GetObjectItemCaseSensitive(root, "sha256");
     bool ok = false;
+    *has_sha = false;
     if (root == NULL && gw_config_json_alloc_failed()) {
         snprintf(why, cap, "out of memory parsing the request");
     } else if (root == NULL || !cJSON_IsObject(root)) {
         snprintf(why, cap, "expected a JSON object {\"url\": \"https://...\"}");
     } else if (!cJSON_IsString(cJSON_GetObjectItemCaseSensitive(root, "url")) ||
-               cJSON_GetArraySize(root) !=
-                   1 + (cJSON_GetObjectItemCaseSensitive(root, "force") != NULL ? 1 : 0)) {
-        snprintf(why, cap, "expected the key \"url\" with a string, and only \"force\" besides");
-    } else if (cJSON_GetObjectItemCaseSensitive(root, "force") != NULL &&
-               !cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(root, "force"))) {
+               cJSON_GetArraySize(root) != 1 + (f != NULL ? 1 : 0) + (h != NULL ? 1 : 0)) {
+        snprintf(why, cap, "expected the key \"url\" with a string, and only \"sha256\" and "
+                 "\"force\" besides");
+    } else if (f != NULL && !cJSON_IsBool(f)) {
         snprintf(why, cap, "\"force\" must be true or false");
+    } else if (h != NULL && !cJSON_IsString(h)) {
+        snprintf(why, cap, "\"sha256\" must be a string");
     } else {
-        *force = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "force"));
+        *force = cJSON_IsTrue(f);
         const char *u = cJSON_GetObjectItemCaseSensitive(root, "url")->valuestring;
+        char reason[80];
         if (strlen(u) >= GW_OTA_URL_MAX) {
             snprintf(why, cap, "URL longer than %d characters", GW_OTA_URL_MAX - 1);
+        } else if (h != NULL && h->valuestring[0] != '\0' &&
+                   !gw_ota_sha256_parse(h->valuestring, sha, reason, sizeof(reason))) {
+            snprintf(why, cap, "\"sha256\": %s", reason);
         } else {
+            *has_sha = h != NULL && h->valuestring[0] != '\0';
             strcpy(out, u);
             ok = true;
         }

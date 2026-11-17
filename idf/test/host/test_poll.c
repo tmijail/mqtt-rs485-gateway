@@ -241,6 +241,68 @@ static void test_write_forced_multi(void)
     TEST_ASSERT_TRUE(s.coils[0]);
 }
 
+/* #197: devices[].write_multiple replaces the build's setting (force_multi_write) for one
+ * device: true = FC16 / FC15 also for one register or coil, false = FC06 / FC05. */
+static void poller_for(const gw_config_t *c, bool force_multi)
+{
+    cfg = c;
+    gw_tagdb_reset();
+    sim_reset(&s, 1);
+    mb_transport_t t = sim_transport(&s);
+    mb_master_cfg_t mc = {.baud = 9600, .response_timeout_ms = 200, .retries = 2,
+                          .inter_frame_delay_ms = 5};
+    mb_master_init(&mb, &t, &mc);
+    gw_poller_opts_t o = {.merge_reads = true, .force_multi_write = force_multi,
+                          .offline_probe_max_ms = 10000};
+    gw_poller_init(&p, cfg, &mb, &o, 0);
+}
+
+static void test_write_multiple_per_device(void)
+{
+    static gw_config_t c;
+    c = *support_spec_config();
+    TEST_ASSERT_EQUAL_INT8(GW_CFG_BUILD_DEFAULT, c.devices[0].write_multiple);   /* no key */
+    c.devices[0].write_multiple = 1;                 /* true on a build without the option */
+    poller_for(&c, false);
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 1, 12.3));
+    TEST_ASSERT_EQUAL(MB_FC_WRITE_MULTIPLE_REGISTERS, s.last_write_fc);
+    TEST_ASSERT_EQUAL(123, s.holding[10]);
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 2, 1));
+    TEST_ASSERT_EQUAL(MB_FC_WRITE_MULTIPLE_COILS, s.last_write_fc);
+    TEST_ASSERT_TRUE(s.coils[0]);
+
+    c.devices[0].write_multiple = 0;                 /* false on a build with the option */
+    poller_for(&c, true);
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 1, 4.5));
+    TEST_ASSERT_EQUAL(MB_FC_WRITE_SINGLE_REGISTER, s.last_write_fc);
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 2, 1));
+    TEST_ASSERT_EQUAL(MB_FC_WRITE_SINGLE_COIL, s.last_write_fc);
+
+    /* the key in the document */
+    static const char doc[] =
+        "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+        " \"devices\": [{\"name\": \"A\", \"unit_id\": 1, \"write_multiple\": true, \"tags\": ["
+        "  {\"name\": \"B3\", \"area\": \"holding\", \"address\": 20, \"type\": \"bool\","
+        "   \"bit\": 3, \"writable\": true}]},"
+        "  {\"name\": \"B\", \"unit_id\": 1, \"write_multiple\": false, \"tags\": ["
+        "  {\"name\": \"R\", \"area\": \"holding\", \"address\": 30, \"type\": \"uint16\","
+        "   \"writable\": true}]}]}";
+    static gw_config_t d;
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(doc, sizeof(doc) - 1, &d, &err), err.msg);
+    TEST_ASSERT_EQUAL_INT8(1, d.devices[0].write_multiple);
+    TEST_ASSERT_EQUAL_INT8(0, d.devices[1].write_multiple);
+    poller_for(&d, false);
+    s.holding[20] = 0x0100;
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 0, 1));    /* a register bit: FC03 + FC16 */
+    TEST_ASSERT_EQUAL(MB_FC_WRITE_MULTIPLE_REGISTERS, s.last_write_fc);
+    TEST_ASSERT_EQUAL_HEX16(0x0108, s.holding[20]);
+    poller_for(&d, true);
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 1, 7));
+    TEST_ASSERT_EQUAL(MB_FC_WRITE_SINGLE_REGISTER, s.last_write_fc);
+    TEST_ASSERT_EQUAL(7, s.holding[30]);
+}
+
 /* ---- issue #4: offline devices are probed with a backoff ---- */
 
 static uint32_t sim_now_ms(void)
@@ -405,6 +467,61 @@ static void test_dead_devices_do_not_delay_the_healthy_one(void)
     /* one attempt per probe: at 0, 2, 6, 14 s, then every 10 s */
     TEST_ASSERT_LESS_OR_EQUAL_UINT32(4 + 12, st.bus.timeout);
     TEST_ASSERT_EQUAL_UINT32(10000, p.probe_ms[1]);
+}
+
+/* #214: a disabled device is never polled (no request on the bus, no time of the bus), stays
+ * not online (so no DBIRTH) and does not count as offline. Its unit can be the unit of an enabled
+ * device. */
+static void test_disabled_device_is_not_polled(void)
+{
+    static const char doc[] =
+        "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+        " \"devices\": ["
+        "  {\"name\": \"Off\", \"unit_id\": 1, \"enabled\": false, \"poll_ms\": 100, \"tags\":"
+        "   [{\"name\": \"T\", \"area\": \"holding\", \"address\": 40, \"type\": \"uint16\"}]},"
+        "  {\"name\": \"On\", \"unit_id\": 1, \"poll_ms\": 1000, \"tags\":"
+        "   [{\"name\": \"T\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\"}]}"
+        "]}";
+    static gw_config_t c;
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(doc, sizeof(doc) - 1, &c, &err), err.msg);
+    TEST_ASSERT_FALSE(c.devices[0].enabled);
+    TEST_ASSERT_TRUE(c.devices[1].enabled);
+    poller_for(&c, false);
+    unsigned polls[2] = {0, 0};
+    while (sim_now_ms() < 20000) {
+        uint32_t now = sim_now_ms(), wait;
+        int dev = gw_poller_next(&p, now, &wait);
+        if (dev < 0) {
+            TEST_ASSERT_TRUE(wait != UINT32_MAX);   /* the enabled device is always due later */
+            s.clock_us += (uint64_t)wait * 1000u;
+            continue;
+        }
+        polls[dev]++;
+        gw_poller_poll(&p, (uint16_t)dev, now);
+    }
+    TEST_ASSERT_EQUAL_UINT(0, polls[0]);
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT(19, polls[1]);
+    TEST_ASSERT_EQUAL_UINT(polls[1], s.requests);     /* one FC03 for each poll of "On" only */
+    gw_dev_stats_t st;
+    gw_tagdb_get_stats(0, &st);
+    TEST_ASSERT_EQUAL_UINT32(0, st.cycles);
+    TEST_ASSERT_EQUAL_UINT32(0, st.bus.ok + st.bus.timeout);
+    TEST_ASSERT_FALSE(gw_tagdb_device_online(0));
+    TEST_ASSERT_TRUE(gw_tagdb_device_online(1));
+    TEST_ASSERT_EQUAL(0, gw_poller_offline_count(&p));
+    /* a direct call does nothing either */
+    unsigned before = s.requests;
+    TEST_ASSERT_EQUAL(GW_DEV_NO_CHANGE, gw_poller_poll(&p, 0, sim_now_ms()));
+    TEST_ASSERT_EQUAL_UINT(before, s.requests);
+
+    /* only disabled devices: nothing is ever due */
+    c.devices[1].enabled = false;
+    poller_for(&c, false);
+    uint32_t wait;
+    TEST_ASSERT_EQUAL(-1, gw_poller_next(&p, 0, &wait));
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, wait);
+    TEST_ASSERT_EQUAL(0, gw_poller_offline_count(&p));
 }
 
 /* ---- MB-6: 64-bit types, strings, byte orders and register bits ---- */
@@ -819,10 +936,12 @@ int main(void)
     RUN_TEST(test_write_setpoint_fc06);
     RUN_TEST(test_write_coil_rejects_nan_and_inf);
     RUN_TEST(test_write_forced_multi);
+    RUN_TEST(test_write_multiple_per_device);
     RUN_TEST(test_offline_device_is_probed_with_backoff);
     RUN_TEST(test_never_seen_device_is_probed_from_the_start);
     RUN_TEST(test_probe_answered_but_cycle_incomplete_stays_offline);
     RUN_TEST(test_dead_devices_do_not_delay_the_healthy_one);
+    RUN_TEST(test_disabled_device_is_not_polled);
     RUN_TEST(test_mb6_decode);
     RUN_TEST(test_mb6_writes);
     RUN_TEST(test_scan_classes);

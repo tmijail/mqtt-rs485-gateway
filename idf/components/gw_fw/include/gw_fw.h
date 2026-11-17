@@ -3,11 +3,15 @@
  * other OTA slot, with automatic rollback (CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE). Issue #144
  * gives the process (README 3.6):
  *
- *   - gw_fw_start_url(): NCMD "Node Control/Firmware Update" or POST /api/firmware {"url"}.
+ *   - gw_fw_start_url(): NCMD "Node Control/Firmware Update" (only with ota.mqtt, #223) or
+ *     POST /api/firmware {"url"} (always).
  *     Downloads in its own task (created for the update, 8 KB, priority 2, core 0); the
  *     Sparkplug task never blocks on it. TLS: ota.ca_file, else mqtt.tls.ca_file, else the
  *     ESP-IDF bundle of public root CAs.
  *   - gw_fw_upload_*(): POST /api/firmware with the image as the body (web server task).
+ *   - Issue #215: a transfer with a SHA-256 from the user reads the written image back and
+ *     calculates its SHA-256 before it marks the image as the boot image. When the two do not
+ *     agree, the image is not installed (failed, with the two values in the status).
  *   - gw_fw_boot_other(): the "Restart into <version>" button (POST /api/firmware/other) and NCMD
  *     "Node Control/Boot Other Slot": the image in the other slot boots on trial.
  *   - Before any write, the pre-flight check (gw_ota_preflight) refuses an image that cannot read
@@ -73,7 +77,10 @@ typedef struct {
     bool trial;             /* the trial is open: saves, updates and the button are refused */
     uint32_t boot_count;    /* the boot-loop counter (crash resets in a row) */
     bool safe_mode;         /* this boot is in safe mode (repeated crashes) */
-    bool enabled;           /* updates accepted (ota.enabled) */
+    bool mqtt;              /* #223: updates from MQTT accepted (ota.mqtt) */
+    bool sha_mismatch;      /* #215: the last transfer failed: the SHA-256 did not agree */
+    uint8_t sha_expected[GW_OTA_SHA256_LEN];   /* #215: with sha_mismatch: the SHA-256 given */
+    uint8_t sha_file[GW_OTA_SHA256_LEN];       /* ... and the one of the file */
     unsigned gen;           /* incremented on every change */
 } gw_fw_status_t;
 
@@ -95,8 +102,9 @@ bool gw_fw_bootloop_start(void);
 void gw_fw_early_init(void);
 
 /** At boot, before the mode is reported. @p cfg: the running configuration (recovery, safe mode
- *  and commissioning: the network-only one); @p enabled: updates accepted. */
-esp_err_t gw_fw_init(const gw_config_t *cfg, bool enabled, const gw_fw_hooks_t *hooks);
+ *  and commissioning: the network-only one); @p mqtt: updates from MQTT accepted (ota.mqtt, #223;
+ *  only for the status: the Sparkplug engine refuses the NCMD). The web UI can always update. */
+esp_err_t gw_fw_init(const gw_config_t *cfg, bool mqtt, const gw_fw_hooks_t *hooks);
 
 /** Issue #144 item 2: the gateway reached @p mode (@p detail: the JSON path or the reason of a
  *  rejected configuration). A new image on trial below its expected mode is rejected at once
@@ -105,6 +113,15 @@ void gw_fw_mode(gw_ota_mode_t mode, const char *detail);
 
 /** Issue #144 item 4: this boot is in safe mode; normal mode is tried again after 60 min. */
 void gw_fw_safe_mode(void);
+
+/** Issue #209: true when this boot is in safe mode; @p requested: an operator asked for it (else:
+ *  repeated crashes); @p left_s: the seconds until the restart into normal mode. */
+bool gw_fw_safe_mode_info(bool *requested, uint32_t *left_s);
+
+/** Issue #209: the next boot starts safe mode (POST /api/restart?safe=1, the shell's 'restart
+ *  safe'); the caller then restarts the gateway. False (and the reason in @p why) during an
+ *  update, during the trial of a new image, and in safe mode. */
+bool gw_fw_request_safe_mode(char *why, size_t cap);
 
 /** The boot cannot go on (@p cause: "no memory to start", ...). A new image on trial is rejected
  *  at once (fw_last, then a restart: does not return then); otherwise nothing. Works after
@@ -123,18 +140,23 @@ void gw_fw_trial_wait(void);
  *  the boot-loop counter. The caller restarts anyway. */
 void gw_fw_restart_requested(void);
 
-/** Start a download; ESP_OK if it started (the result comes later in the status). @p force:
+/** Start a download; ESP_OK if it started (the result comes later in the status). @p sha256: the
+ *  SHA-256 (GW_OTA_SHA256_LEN bytes) that the file must have, NULL: no check (#215). @p force:
  *  install also when the pre-flight check refuses (not for NCMD). ESP_ERR_NOT_SUPPORTED: the
  *  pre-flight check refused before the download (cannot happen: the check needs the image head;
  *  see the status). */
-esp_err_t gw_fw_start_url(const char *url, bool force, char *why, size_t cap);
+esp_err_t gw_fw_start_url(const char *url, const uint8_t *sha256, bool force, char *why,
+                          size_t cap);
 
 /** Upload in pieces (one at a time, from one task). @p size: the image size if known (0).
- *  gw_fw_upload_write() returns ESP_ERR_NOT_SUPPORTED when the pre-flight check refuses the
- *  image (HTTP 409; @p why gives the reasons; force with @p force at begin). */
-esp_err_t gw_fw_upload_begin(size_t size, bool force, char *why, size_t cap);
+ *  @p sha256: as for gw_fw_start_url() (#215). gw_fw_upload_write() returns ESP_ERR_NOT_SUPPORTED
+ *  when the pre-flight check refuses the image (HTTP 409; @p why gives the reasons; force with
+ *  @p force at begin). */
+esp_err_t gw_fw_upload_begin(size_t size, const uint8_t *sha256, bool force, char *why,
+                             size_t cap);
 esp_err_t gw_fw_upload_write(const void *data, size_t len, char *why, size_t cap);
-/** @p complete false: abandon. On ESP_OK the gateway restarts into the new image. */
+/** @p complete false: abandon. On ESP_OK the gateway restarts into the new image.
+ *  ESP_ERR_INVALID_CRC: the SHA-256 of the file does not agree (#215; the status has the two). */
 esp_err_t gw_fw_upload_end(bool complete, char *why, size_t cap);
 
 /** Issue #144 item 6: boot the image of the other slot on trial (planned restart). Refused

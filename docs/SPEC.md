@@ -283,13 +283,13 @@ This is the schema of the configuration document (CFG-1). The keys of this examp
 {
   "network": { "dhcp": true, "ip": "192.168.1.50", "netmask": "255.255.255.0",
                "gateway": "192.168.1.1", "dns": "192.168.1.1" },
-  "ntp":     { "server": "pool.ntp.org" },
+  "ntp":     { "servers": ["pool.ntp.org"] },
   "mqtt":    { "host": "192.168.1.10", "port": 1883, "client_id": "",
                "username": "", "password": "", "keepalive_s": 30 },
   "sparkplug": { "group_id": "Plant1", "edge_node_id": "GW01", "primary_host_id": "" },
   "rs485":   { "baud": 9600, "parity": "none", "stop_bits": 1,
                "response_timeout_ms": 200, "retries": 2, "inter_frame_delay_ms": 5 },
-  "local_io": { "di_debounce_ms": 20 },
+  "local_io": { "counter_save_s": 600 },
   "devices": [
     {
       "name": "Meter1", "unit_id": 1, "poll_ms": 1000, "offline_after": 3,
@@ -312,7 +312,7 @@ This is the schema of the configuration document (CFG-1). The keys of this examp
 | Key | Default | Rule |
 |---|---|---|
 | `network.dhcp` | `true` | With `false`, `ip`, `netmask` and `gateway` are necessary |
-| `ntp.server` | `pool.ntp.org` | Name, IPv4 or IPv6 of the SNTP server |
+| `ntp.servers` | `["pool.ntp.org"]` | 1 to 3 names, IPv4 or IPv6 addresses of SNTP servers, asked in order (#201) |
 | `mqtt.host` | — | Necessary |
 | `mqtt.port` | `1883` | 1–65535 |
 | `mqtt.keepalive_s` | `30` | 5–3600 |
@@ -323,7 +323,8 @@ This is the schema of the configuration document (CFG-1). The keys of this examp
 | `rs485.response_timeout_ms` | `200` | 10–5000 |
 | `rs485.retries` | `2` | 0–5 |
 | `rs485.inter_frame_delay_ms` | `5` | 0–1000 |
-| `local_io.di_debounce_ms` | `20` | 0–1000 |
+| `local_io.di[].debounce_ms` | `20` | 0–1000, for each DI (#211) |
+| `local_io.di[].invert` | `false` | Inverts the DI, after the polarity of the board (#211) |
 | `devices[].name` | — | Necessary. 1–39 bytes |
 | `devices[].unit_id` | — | Necessary. 1–247 |
 | `devices[].poll_ms` | `1000` | 50–3 600 000 |
@@ -421,7 +422,7 @@ The DHCP requests of Ethernet and Wi-Fi also contain the hostname.
 | `address` | text | `""` | A static address for Ethernet, in the text form of RFC 4291. The prefix on the link is /64. Multicast, link-local, `::` and `::1` are not permitted |
 | `dns` | text | `""` | An IPv6 DNS server (the third position; DHCPv4 fills the first two positions) |
 
-The gateway learns the default IPv6 router from the RAs. There is no static IPv6 gateway. `mqtt.host`, `ntp.server` and `syslog.host` accept IPv6 literals (`fd00::10`) and names with an AAAA record.
+The gateway learns the default IPv6 router from the RAs. There is no static IPv6 gateway. `mqtt.host`, `ntp.servers` and `syslog.host` accept IPv6 literals (`fd00::10`) and names with an AAAA record.
 
 **`mqtt.tls` (MQTT-4, MQTT-5): TLS to the broker, with an optional client certificate.**
 
@@ -684,15 +685,15 @@ Without these keys, the build option applies (`CONFIG_GW_MB_BLOCK_READS`, `CONFI
 **`ota` (FW-1): firmware updates by NCMD and through the web UI.**
 
 ```json
-"ota": { "enabled": true, "ca_file": "fw-ca.pem" }
+"ota": { "mqtt": false, "ca_file": "fw-ca.pem" }
 ```
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `enabled` | bool | `true` | `false` rejects the updates by NCMD and by the web, and the other-slot button (in recovery mode, safe mode and commissioning the web can always upload an image) |
+| `mqtt` | bool | `false` | Issue #223: `true` accepts the NCMD `Node Control/Firmware Update` (and `Node Control/Firmware SHA-256`, issue #215). With `false` they are not in the NBIRTH, and the gateway refuses them. An update from the web UI is always possible. The key `enabled` of earlier versions is removed |
 | `ca_file` | text | `""` | The CA (PEM, in LittleFS next to `config.json`, the same name rules as `mqtt.tls.ca_file`) of the server of the images. Empty: the one of `mqtt.tls.ca_file` if TLS is active; else the public root CAs of ESP-IDF |
 
-- **Start:** an NCMD with the metric `Node Control/Firmware Update` (String, the `https://…` URL) or `POST /api/firmware` of the web (`{"url": "…"}`, or the image as the body). The URL has up to 255 characters; the gateway rejects a longer one with its cause (issue #87). Only `https://`; the image must be of this project (and, when signatures are required, FW-2, signed with the key of the device).
+- **Start:** an NCMD with the metric `Node Control/Firmware Update` (String, the `https://…` URL; only with `ota.mqtt`) or `POST /api/firmware` of the web (`{"url": "…", "sha256": "…"}`, or the image as the body with the optional header `X-Image-SHA256`). With a SHA-256 (issue #215), the gateway does not install a file whose SHA-256 does not agree. The URL has up to 255 characters; the gateway rejects a longer one with its cause (issue #87). Only `https://`; the image must be of this project (and, when signatures are required, FW-2, signed with the key of the device).
 - **Result:** the node metrics `Firmware Update/State` (String) and `Firmware Update/Progress` (UInt32, %), in the NBIRTH and by NDATA when they change. The state is `idle`, `downloading <v>`, `restarting into <v>`, `testing <v>`, `installed <v>`, `failed: <cause>` or `rolled back from <v>: <cause>`. Every NBIRTH publishes the result of the last update, also after a restart (issue #144).
 - **Trial and rollback (issue #144):** the new image boots on trial. A self-check of the gateway confirms it at the first instant when the uptime is at least 60 s, the gateway is in its expected mode, the network driver started and the loop of the web server is alive. The self-check does not depend on the broker, the Modbus slaves, NTP or the update server. If the self-check is not true at 5 min, the gateway rejects the image. A rejection, and any reset during the trial (crash, watchdog, power cut), return to the earlier image.
 - **Expected mode:** an image installed from normal mode must reach normal mode; if it rejects the configuration, the gateway returns to the earlier image at once, with the JSON path in the state. An image installed from recovery mode, safe mode, commissioning, or with force, must reach recovery mode or better; then it stays, and the operator corrects the configuration in the web UI.
@@ -705,7 +706,7 @@ Without these keys, the build option applies (`CONFIG_GW_MB_BLOCK_READS`, `CONFI
 **`local_io`: local I/O without a network. Safe state of the DOs (IO-3).** All keys of `local_io` are optional (IO-3, IO-4, IO-6 and IO-7).
 
 ```json
-"local_io": { "di_debounce_ms": 20, "failsafe_s": 30,
+"local_io": { "failsafe_s": 30,
               "do_failsafe": ["off", "on", "hold", "off", "off", "off", "off", "off"] }
 ```
 
@@ -723,7 +724,7 @@ Without these keys, the build option applies (`CONFIG_GW_MB_BLOCK_READS`, `CONFI
 **Pulse counters of the DIs (IO-4), in `local_io`.**
 
 ```json
-"local_io": { "di_debounce_ms": 20, "counter_save_s": 600 }
+"local_io": { "counter_save_s": 600 }
 ```
 
 | Key | Type | Default | Rule |
@@ -785,7 +786,8 @@ Without these keys, the build option applies (`CONFIG_GW_MB_BLOCK_READS`, `CONFI
 | BOOT pushed for more than 2 s | White, blinks at 4 Hz |
 | Claim window open (CFG-8), or access point open (no key; NET-5, issue #187) | Blue and white, alternately (each color 250 ms) |
 | Commissioning (no configuration after a reset) | Blue, blinks at 1 Hz |
-| Configuration not valid (recovery mode) | Red, blinks at 4 Hz |
+| Safe mode (on request or after 3 crashes, issue #209) | Blue and amber, alternately (1 Hz) |
+| Configuration not valid (recovery mode, but not safe mode) | Red, blinks at 4 Hz |
 | No network (no IP) | Red, continuous |
 | No valid clock: the MQTT session waits for SNTP, the RTC or the browser (TIME-1, issue #160) | Magenta, blinks at 1 Hz |
 | No broker | Amber, blinks at 1 Hz |

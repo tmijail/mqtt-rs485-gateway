@@ -50,7 +50,13 @@ table.tags{border-collapse:separate;border-spacing:0;table-layout:fixed}
 .tags th:first-child,.tags td:first-child{position:sticky;left:0;z-index:1;border-right:1px solid var(--line)}
 .tags td.chk{text-align:center}.tags td:last-child:not([colspan]){text-align:right}.tags td>button{padding:3px 8px;font-size:12px}.tags button.more{color:var(--acc);border-color:transparent;background:transparent}
 .tags tr.det td{position:static;background:var(--sub);padding:8px 10px 10px;border-right:0}
-.dgrid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:6px 12px;max-width:820px}
+.dgrid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:6px 12px;max-width:820px}.dgrid .nl{grid-column-start:1}
+/* #197 #221: the panel "More device settings" of a device; #214: a disabled device */
+button.more{color:var(--acc);border-color:transparent;background:transparent}button.dmore{padding-left:0}
+.dsub{background:var(--sub);border-radius:4px;padding:8px 10px 10px;margin:4px 0}.dsub .grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+.fld.hidden{display:none}#f-dev>.card.dis{border-style:dashed}.offnote{color:var(--warn);font-size:12.5px;margin:8px 0 0}
+@media (max-width:760px){.dsub .grid{grid-template-columns:minmax(0,1fr)}button.dmore{width:100%;min-height:44px;text-align:left}}
+@media (max-width:600px){.fld.ck{flex-direction:row-reverse;justify-content:flex-end;align-items:center;gap:8px;min-height:44px;font-size:14px}.fld.ck .lbl label{color:var(--fg)}.fld.ck input{width:20px;height:20px;margin:0;align-self:center}}
 @media (max-width:760px){#f-dev>.card{padding:10px}.tags col:nth-child(1){width:140px}.dgrid{position:sticky;left:10px;width:calc(var(--bw,320px) - 20px);grid-template-columns:repeat(2,minmax(0,1fr))}}
 /* #191 */
 body{min-height:100vh;display:flex;flex-direction:column}main{flex:1 0 auto;width:100%}html{scroll-padding-bottom:120px}
@@ -75,52 +81,203 @@ button.danger{border-color:var(--bad);color:var(--bad)}button.dgo{background:var
 #dlg ul{margin:0 0 14px;padding-left:20px}#dlg li{margin-bottom:4px}#dlg .warnline{color:var(--warn);font-weight:600}#dlg input{margin-top:4px;padding:6px 8px}
 #dlg .act{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
 @media (max-width:600px){#dlg{width:100%;max-width:100%;max-height:90vh;overflow:auto;margin:auto 0 0;border-width:1px 0 0;border-radius:12px 12px 0 0;box-shadow:0 -6px 24px rgba(0,0,0,.25);padding:20px 16px 24px}
- #dlg h3{font-size:17px}#dlg label{font-size:13px}#dlg input{padding:10px;font-size:16px}#dlg .act{flex-direction:column-reverse}#dlg .act button{min-height:44px;width:100%}
- #fw-card .row{flex-direction:column;align-items:stretch}#fw-card button{min-height:44px}#fw-card label.row{flex-direction:column!important;align-items:flex-start}
- #fw-card label.chk{flex-direction:row!important;align-items:center;min-height:44px;font-size:13px;color:var(--fg)}#fw-card label.chk input{align-self:center}#fw-url{width:100%;padding:8px;font-size:16px}}
+ #dlg h3{font-size:17px}#dlg label{font-size:13px}#dlg input{padding:10px;font-size:16px}#dlg .act{flex-direction:column-reverse}#dlg .act button{min-height:44px;width:100%}}
+/* #206 the name in the header; #207 Identify; #209 #203 the card Restart and reset; #200 #199 the card Log */
+header .who{flex:1;min-width:0}header .who h1{flex:none}header .sub{font-size:12px;color:var(--mut);margin-top:1px}
+#ident:disabled,#rr-card button:disabled{opacity:.45;cursor:default}
+.zone{border:1px solid var(--bad);background:var(--badbg);border-radius:6px;padding:10px 12px;margin-top:16px}.zone h3{font-size:14px;margin:0 0 6px;color:var(--bad)}.zone p{margin:0 0 10px;max-width:760px}
+details.card>summary{cursor:pointer}details.card>summary h2{display:inline;margin:0}
+.ldot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px;vertical-align:1px}.ldot.pz{background:var(--warn)}
+.log{margin-top:8px;height:300px;background:var(--card);border:1px solid var(--line);border-radius:4px;font:12px/1.55 ui-monospace,monospace;overflow:auto;padding:6px 8px;color:var(--fg)}
+.log .ln{white-space:pre}.log .w{color:var(--warn)}.log .e{color:var(--bad)}.log .d{color:var(--mut)}
+.lvl{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}
+.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:12px;padding:2px 3px 2px 10px;font-size:12px;background:var(--sub);color:var(--fg)}.pill button{padding:1px 8px;font-size:12px;border-radius:10px}
+.lvr{align-items:flex-end}
+@media (max-width:600px){#ident,#rr-card button{min-height:44px}#rr-card .row{flex-direction:column;align-items:stretch}
+ .log{height:250px;font-size:11.5px}.log .ln{white-space:pre-wrap;overflow-wrap:anywhere}#lg-card button:not(.qi),#lg-card select{min-height:44px}
+ #lg-card .lvl .row{flex-direction:column;align-items:stretch}#lg-card .pill{justify-content:space-between;border-radius:6px;padding:0 0 0 10px;font-size:13px}
+ #lg-card .pill button{min-height:44px;border-width:0 0 0 1px;border-radius:0 6px 6px 0}#lg-top{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}#lg-top span{grid-column:1/-1}}
+/* #215: the Firmware card: a summary, a panel for the state, one install area, the actions with a restart */
+#fw-card .sum{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);border-radius:6px;background:var(--sub)}
+#fw-card .sum>div{padding:8px 12px;border-left:1px solid var(--line);min-width:0}#fw-card .sum>div:first-child{border-left:0}
+#fw-card .sum .k{font-size:12px;color:var(--mut)}#fw-card .sum .v{font-size:16px;font-weight:600;margin-top:1px;overflow-wrap:anywhere}#fw-card .sum .s{font-size:12px;color:var(--mut);overflow-wrap:anywhere}
+#fw-card .dot.idle{background:var(--mut)}#fw-card .dot.run{background:var(--acc)}#fw-card .dot.bad{background:var(--bad)}#fw-card .dot.ok{background:var(--ok)}
+#fw-card .prevcfg{font-size:12px;color:var(--mut);margin-top:6px}
+#fw-card .panel{border:1px solid var(--line);border-left:4px solid var(--acc);border-radius:6px;padding:10px 12px;margin-top:12px;background:var(--card)}
+#fw-card .panel.pw{border-left-color:var(--warn)}#fw-card .panel.pb{border-color:var(--bad);border-left-color:var(--bad);background:var(--badbg)}
+#fw-card .panel h3{font-size:14px;margin:0 0 6px;overflow-wrap:anywhere}#fw-card .panel p{margin:6px 0 0;max-width:780px}
+#fw-card .prog{height:8px;border-radius:4px;background:var(--sub);overflow:hidden;border:1px solid var(--line);margin:6px 0;max-width:640px}#fw-card .prog>i{display:block;height:100%;background:var(--acc)}#fw-card .prog.warn>i{background:var(--warn)}
+#fw-card .hash{font-family:ui-monospace,monospace;font-size:12px;overflow-wrap:anywhere;margin:2px 0}#fw-card .mono{font-family:ui-monospace,monospace;font-size:12px}
+#fw-card .inst{margin-top:16px;border-top:1px solid var(--line);padding-top:12px}#fw-card h3{font-size:14px;margin:0}
+#fw-card .lockmsg{font-size:12.5px;color:var(--warn);margin:4px 0 0}#fw-card .locked{opacity:.5;pointer-events:none}
+#fw-card .src{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;max-width:640px;margin-top:4px}
+#fw-card .src button{text-align:left;padding:8px 12px;border-radius:6px;display:flex;gap:10px;align-items:flex-start}
+#fw-card .src .rd{width:14px;height:14px;border-radius:50%;border:2px solid var(--mut);margin-top:3px;flex:none}
+#fw-card .src button[aria-checked=true]{border-color:var(--acc);box-shadow:inset 0 0 0 1px var(--acc)}#fw-card .src button[aria-checked=true] .rd{border-color:var(--acc);background:radial-gradient(circle,var(--acc) 0 3px,transparent 4px)}
+#fw-card .src b{display:block;font-size:13px}#fw-card .src .d{display:block;font-size:12px;color:var(--mut)}
+#fw-card .slot{margin-top:10px;max-width:640px}#fw-card .hint0{font-size:12.5px;color:var(--mut);border:1px dashed var(--line);border-radius:6px;padding:8px 10px}
+#fw-card .fileb{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px solid var(--line);border-radius:6px;padding:6px 6px 6px 10px;background:var(--bg);color:var(--fg)}#fw-card .fileb .mono{flex:1;min-width:0;overflow-wrap:anywhere}
+#fw-card .act{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}#fw-card .note{font-size:12px;color:var(--mut);margin-top:6px;max-width:640px}
+#fw-card .fw-err{color:var(--bad);font-size:12px;margin-top:3px}#fw-card button:disabled{opacity:.45;cursor:default}
+#fw-card .zone{border:1px solid var(--bad);background:var(--badbg);border-radius:6px;padding:10px 12px;margin-top:16px}#fw-card .zone h3{color:var(--bad);margin-bottom:6px}
+#fw-card .zrow{display:flex;gap:12px;align-items:flex-start;margin-top:8px}#fw-card .zrow p{flex:1;margin:0;max-width:640px}#fw-card .zrow button{flex:none}
+#fw-card .hidden{display:none}
+@media (max-width:600px){#fw-card .sum{grid-template-columns:repeat(2,minmax(0,1fr))}#fw-card .sum>div:nth-child(3){border-left:0}#fw-card .sum>div:nth-child(n+3){border-top:1px solid var(--line)}
+ #fw-card .src{grid-template-columns:minmax(0,1fr)}#fw-card .src button{min-height:56px}#fw-card input{padding:10px;font-size:16px}#fw-card input.mono{font-size:13px}
+ #fw-card .act{flex-direction:column;align-items:stretch}#fw-card .act button{min-height:44px;width:100%}
+ #fw-card .zrow{flex-direction:column;align-items:stretch}#fw-card .zrow button{min-height:44px;width:100%}#fw-card .panel button,#fw-card .fileb button,#fw-card .refuse button{min-height:44px}}
+/* #204 #210 #211 #217 #218 #221: the card Local I/O (Configuration) and the DI and DO tables (Status) */
+.card h3{font-size:13px;margin:16px 0 6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.card h3 .mut{font-weight:400;font-size:12px}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(440px,100%),1fr));gap:14px 20px}.cols h3{margin-top:0}
+table.io th,table.io td{white-space:nowrap;padding:4px 8px;background:var(--card)}table.io th{font-weight:600;color:var(--mut);font-size:12px;vertical-align:bottom}
+table.io tr:last-child td{border-bottom:0}table.io td.chk,table.io th.chk{text-align:center}table.io th.chk .lbl{justify-content:center}table.io td.chk input{align-self:center}
+td.ch{font-weight:600;white-space:nowrap}td.num{font-variant-numeric:tabular-nums}#st-io td{height:34px}#st-io td button{padding:3px 10px;font-size:12px}
+fieldset.fld{border:0;padding:0;margin:0;min-width:0}fieldset.fld legend{padding:0}
+label.cb{display:inline-flex;flex-direction:row;align-items:center;gap:6px;color:var(--fg);font-size:13px}label.cb input{align-self:center;margin:0}
+@media (max-width:600px){#st-io td.ctl{width:116px}#st-io td.ctl button{width:100%;min-height:44px}}
+/* #201 #208 #216 #221: the cards of the network, the services and MQTT */
+.card h2.sub{margin-top:12px}.tsec{margin-top:16px}.info{font-size:12px;margin-top:3px;color:var(--fg)}.lwarn{font-size:12px;margin-top:3px;color:var(--warn)}
+.lfld{margin-top:10px}.lst{display:flex;flex-direction:column;gap:6px;margin-top:4px}.lrow{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.lrow .ferr,.lrow .fwarn{order:9;flex-basis:100%;margin:0 0 0 20px}
+.lrow .num{width:14px;text-align:right;color:var(--mut);font-size:12px;flex:none}.lrow input{margin:0;width:300px;max-width:100%}.lrow button{padding:4px 9px}.ladd{margin-top:6px}
+.srow{display:flex;gap:6px;align-items:center;margin-top:2px}.srow input{flex:1;min-width:0;margin:0}.span2{grid-column:span 2}
+.nets{border:1px solid var(--line);border-radius:4px;overflow:hidden;margin-top:8px}
+.nhd{display:flex;gap:6px 12px;align-items:center;flex-wrap:wrap;padding:6px 10px;background:var(--sub);font-size:12px;color:var(--mut)}.nhd b{color:var(--fg);font-weight:600}.nhd .grow{margin-left:auto}
+.ncol{display:grid;grid-template-columns:minmax(0,1fr) 170px 170px 110px;gap:12px;align-items:center;padding:6px 10px}.nth{font-size:12px;font-weight:600;color:var(--mut);border-bottom:1px solid var(--line)}
+button.net{width:100%;border:0;border-bottom:1px solid var(--line);border-radius:0;background:var(--card);color:var(--fg);text-align:left;font-size:13px}button.net:last-child{border-bottom:0}
+button.net.on{background:var(--sub)}button.net.no{color:var(--mut);cursor:default}.ss{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.use{color:var(--acc);font-size:12px;text-align:right}button.net.no .use{color:var(--mut)}
+.bars{display:inline-flex;align-items:flex-end;gap:2px;height:12px;margin-right:6px;vertical-align:-1px}.bars i{display:block;width:3px;background:var(--line);border-radius:1px}
+.bars i:nth-child(1){height:4px}.bars i:nth-child(2){height:6px}.bars i:nth-child(3){height:9px}.bars i:nth-child(4){height:12px}.bars i.f{background:var(--fg)}
+#f-bk .tbox{max-width:640px}#f-bk col:nth-child(1){width:90px}#f-bk col:nth-child(3){width:110px}#f-bk col:nth-child(4){width:52px}
+@media (max-width:600px){.span2{grid-column:auto}.srow{flex-direction:column;align-items:stretch}.srow button{min-height:44px}.lrow input{flex:1;min-width:0;width:auto}
+ .ncol{grid-template-columns:minmax(0,1fr) auto;gap:2px 8px}.nth{display:none}button.net .sec{grid-row:2;font-size:12px;color:var(--mut)}button.net .use{grid-row:2}}
+/* #222: the cards of the Configuration tab close and open; the groups of the cards; a device is a row that closes and opens */
+.cctools{display:flex;gap:8px;justify-content:flex-end;margin:0 0 6px}.cctools button{font-size:12.5px;padding:4px 10px}
+.grp{font-size:11.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);margin:18px 0 6px}
+.card.cc{padding:6px 14px}.card.cc.open{padding:6px 14px 12px}
+.card h2.ch,.dhd{display:flex;align-items:center;gap:2px 10px;flex-wrap:wrap;margin:0;min-height:32px}.card.cc.open>h2.ch{margin-bottom:10px}
+button.fload{align-self:flex-start;margin-top:4px;padding:3px 8px;font-size:12px}
+button.coll{font:inherit;font-size:14px;font-weight:600;color:var(--fg);padding:4px 6px 4px 0;border-color:transparent;background:transparent;text-align:left}
+button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
+.tsum{font-size:12.5px;color:var(--mut);font-weight:400;overflow-wrap:anywhere}.ebadge{font-size:12px;font-weight:600;color:var(--bad)}
+#f-dev>.card .dhd{margin:-4px 0 0}#f-dev>.card .dbody{margin-top:6px}
+@media (max-width:600px){button.coll{min-height:44px}.cctools button{min-height:44px;flex:1}}
+/* the visual review of #195: the form controls follow the theme (dark mode); on a phone, the tabs
+   get a row of their own, and each touch target is 44 px at least (a checkbox: its row) */
+:root{color-scheme:light dark}
+@media (max-width:600px){header .who{flex:1 1 100%}nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;width:100%}nav button{margin:0}
+ button:not(.qi){min-height:44px}.lrow button,td>button{min-width:44px}input[type=file]{min-height:44px}details.card>summary{min-height:44px}
+ input:not([type=checkbox]):not([type=radio]):not([type=file]),select{min-height:44px}
+ .fld>input:not([type=checkbox]):not([type=radio]):not([type=file]),.fld>select,.srow input,.lrow input{font-size:16px}
+ input[type=checkbox]{width:20px;height:20px}label.cb{min-height:44px}td.chk{height:44px}
+ .fld:has(>input[type=checkbox]){flex-direction:row;flex-wrap:wrap;align-items:center;gap:0 8px;min-height:44px;font-size:14px}
+ .fld:has(>input[type=checkbox])>input{order:-1;margin:0;align-self:center}.fld:has(>input[type=checkbox])>:not(.lbl):not(input){flex-basis:100%}
+ .fld:has(>input[type=checkbox]) .lbl label{color:var(--fg)}}
 </style>
 </head>
 <body>
-<header><h1>Gateway RS485 &rarr; MQTT Sparkplug B <span id="node" class="mut"></span></h1>
+<header><div class="who"><h1><span id="hprod">Gateway RS485 &rarr; MQTT Sparkplug B <span id="node" class="mut"></span></span><span id="hname" class="hidden"></span></h1><div id="hsub" class="sub hidden"></div></div>
 <nav><button data-tab="status" class="sel">Status</button><button data-tab="config">Configuration</button><button data-tab="json">JSON</button></nav></header>
 <main>
 <div id="banner" class="banner hidden"></div>
 
 <section id="tab-status">
  <div class="card"><h2>Gateway</h2><div id="st-dev" class="grid"></div>
+  <div class="row" style="margin-top:10px"><button id="ident" title="For 10 s, the status LED blinks and the buzzer beeps. Use it to find this gateway in the panel.">Identify</button><span id="id-msg" class="mut">For 10 s, the status LED blinks and the buzzer beeps.</span></div>
   <div id="st-cd" class="row hidden"><span id="cd-txt" class="bad"></span><a id="cd-get" href="/api/coredump" download>Download</a><button id="cd-del">Erase</button><span id="cd-msg" class="mut"></span></div></div>
  <div class="card"><h2>Network and MQTT</h2><div id="st-net"></div>
   <div class="row"><button id="rebirth" title="Send the NBIRTH and every DBIRTH again, with the same bdSeq. Use it when a host shows alias_N in place of the tag names.">Rebirth</button><span id="rb-msg" class="mut"></span></div></div>
  <div class="card"><h2>Access point</h2><div id="st-ap" class="mut"></div>
   <div class="row"><button id="ap-stop" class="hidden" title="Stop the Wi-Fi access point now. To start it again, push the BOOT button for 2 to 10 s.">Close the access point</button><span id="ap-msg" class="mut"></span></div></div>
  <div class="card"><h2>Modbus devices</h2><div id="st-mb" class="mut">no devices</div></div>
- <div class="card"><h2>Local I/O</h2><div id="st-io"></div>
-  <div class="row"><button id="settime" title="Send the time of this computer to the gateway and its RTC. Use it on a network with no time server: without a valid time the gateway does not connect to the MQTT broker.">Set the time from the browser</button><span id="tm-msg" class="mut"></span></div></div>
- <div class="card" id="fw-card"><h2>Firmware</h2><div id="st-fw" class="mut"></div>
-  <div class="row"><button id="fw-other" class="hidden"></button><button id="fw-prev" class="hidden" title="Recovery mode: replace the stored configuration with the one from before the update, then restart.">Restore the configuration from before the update</button><span id="fw-msg" class="mut"></span></div>
+ <div class="card"><h2>Local I/O</h2><div id="st-io"></div><div id="st-io2" style="margin-top:12px"></div>
+  <div class="row" style="margin-top:6px"><button id="settime" title="Send the time of this computer to the gateway and its RTC. Use it on a network with no time server: without a valid time the gateway does not connect to the MQTT broker.">Set the time from the browser</button><span id="tm-msg" class="mut"></span></div></div>
+ <div class="card" id="fw-card"><h2>Firmware</h2>
+  <div class="sum" id="fw-sum" role="group" aria-label="Firmware summary">
+   <div><div class="k">Running</div><div class="v" id="fw-run">…</div><div class="s" id="fw-run-s"></div></div>
+   <div><div class="k">Last update</div><div class="v" id="fw-last"></div><div class="s" id="fw-last-s"></div></div>
+   <div><div class="k">Other slot</div><div class="v" id="fw-oth"></div><div class="s" id="fw-oth-s"></div></div>
+   <div><div class="k">Update from MQTT</div><div class="v" id="fw-mq"></div><div class="s">Change it in <a href="#c-ota" id="fw-mq-go">Configuration › Firmware updates</a>.</div></div></div>
+  <div id="fw-pcfg" class="prevcfg hidden"></div>
+  <div id="fw-panel"></div>
   <div id="fw-ref" class="refuse hidden" role="alert"></div>
-  <div class="row"><input id="fw-url" placeholder="https://server/rs485_spb_gateway.bin" size="40" aria-label="Image URL"><button id="fw-get">Download and install</button><label class="row chk" style="flex-direction:row" title="For a download: install also an image that the pre-flight check refuses. The image must then reach recovery mode or better."><input type="checkbox" id="fw-force"> Force (into recovery mode)</label></div>
-  <div class="row"><label class="row" style="flex-direction:row">Upload an image <input type="file" id="fw-file" accept=".bin,application/octet-stream"></label></div></div>
+  <div class="inst"><h3>Install a new image</h3><div id="fw-lock" class="lockmsg hidden"></div>
+   <div id="fw-inst">
+    <div class="fld" style="margin-top:8px"><span class="lbl" id="fw-l-src">Source</span><div class="src" role="radiogroup" aria-labelledby="fw-l-src">
+     <button type="button" role="radio" aria-checked="false" data-src="url"><i class="rd"></i><span><b>From a URL</b><span class="d">The gateway downloads the image from an HTTPS server.</span></span></button>
+     <button type="button" role="radio" aria-checked="false" data-src="file"><i class="rd"></i><span><b>From a file</b><span class="d">This page uploads the image from this computer.</span></span></button></div></div>
+    <div class="slot"><div id="fw-s0" class="hint0">Choose a source. Then give the SHA-256 of the image, if you have it.</div>
+     <div id="fw-s1" class="fld hidden"><span class="lbl"><label for="fw-url">Image URL</label></span><input id="fw-url" placeholder="https://server/rs485_spb_gateway.bin" autocomplete="off" spellcheck="false"></div>
+     <div id="fw-s2" class="fld hidden"><span class="lbl" id="fw-l-file">Image file</span><div class="fileb" role="group" aria-labelledby="fw-l-file"><span class="mono" id="fw-fname">No file chosen.</span><span class="mut" id="fw-fsize"></span><button type="button" id="fw-fpick">Choose a file</button><input type="file" id="fw-file" class="hidden" accept=".bin,application/octet-stream"></div></div></div>
+    <div class="fld" style="margin-top:10px;max-width:640px"><span class="lbl"><label for="fw-sha">SHA-256 (optional)</label><button type="button" class="qi" data-x="fwsha" data-t="SHA-256 (optional)" aria-label="About SHA-256" aria-expanded="false" aria-controls="xpl">?</button></span><input id="fw-sha" class="mono" placeholder="64 hexadecimal characters" autocomplete="off" spellcheck="false" aria-describedby="fw-sha-h"><span class="hint" id="fw-sha-h">For the download and for the upload.</span><span class="fw-err hidden" id="fw-sha-e"></span></div>
+    <div class="act"><button class="pri" id="fw-go" disabled>Install</button><span id="fw-msg" class="mut" aria-live="polite">Choose a source first.</span></div>
+    <div class="note">The gateway asks for a confirmation, writes the image into the other slot and restarts. The new image runs on trial for 60&nbsp;s. If the trial fails, this firmware runs again.</div></div></div>
+  <div class="zone hidden" id="fw-zone"><h3>Actions with a restart</h3>
+   <div class="zrow hidden" id="fw-z-other"><button class="danger" id="fw-other"></button><p id="fw-other-p"></p></div>
+   <div class="zrow hidden" id="fw-z-prev"><button class="danger" id="fw-prev">Restore the configuration from before the update</button><p id="fw-prev-p"></p></div></div></div>
  <div class="card"><h2>microSD card</h2><div id="st-sd" class="mut"></div>
   <div class="row"><button id="sd-fmt">Format the card</button><button id="sd-rst" class="hidden">Restart now</button></div><div id="sd-msg" class="mut"></div></div>
+ <details class="card" id="lg-card"><summary><h2>Log</h2> <span id="lg-closed" class="mut">&middot; closed: the page does not ask for log lines. Open it to see the last lines.</span></summary>
+  <div class="row" id="lg-top" style="margin-top:10px"><button id="lg-pause">Pause</button><button id="lg-copy">Copy</button><span id="lg-st"></span><span id="lg-info" class="mut"></span><span id="lg-cp" class="ok" role="status"></span></div>
+  <div class="log" id="lg-lines" role="log" aria-label="Log lines" tabindex="0"></div>
+  <div class="lvl">
+   <div class="row lvr"><div class="fld"><span class="lbl"><label for="lg-tag">Tag</label></span><select id="lg-tag"></select></div><div class="fld"><span class="lbl"><label for="lg-lvl">Log level</label><button type="button" class="qi" data-x="loglvl" data-t="Log level" aria-label="About Log level" aria-expanded="false" aria-controls="xpl">?</button></span><select id="lg-lvl"></select></div><button id="lg-set">Set the level</button><span id="lg-msg" role="status"></span></div>
+   <div class="row hidden" id="lg-chg" style="margin-top:10px"></div>
+  </div></details>
+ <div class="card" id="rr-card"><h2>Restart and reset</h2>
+  <div class="row"><button id="rr-restart" title="The gateway disconnects from MQTT, stops the polling and starts again.">Restart</button><button id="rr-safe" title="Restart without the polling and MQTT, for 60 min or until the next restart.">Restart into safe mode</button><span id="rr-note" class="mut hidden">The gateway is in safe mode now. Restart ends it.</span></div>
+  <p class="mut" style="margin:6px 0 0">Safe mode stops the polling and MQTT for 60 min, or until the next restart. The configuration stays.</p>
+  <div id="rr-msg" class="mut"></div>
+  <div class="zone"><h3>Factory reset</h3><p>Erases the configuration, the secrets, the web certificate and the web password. The gateway then restarts in commissioning mode, with the access point on.</p><button class="danger" id="rr-reset">Factory reset</button></div></div>
 </section>
 
 <section id="tab-config" class="hidden">
- <div class="card"><h2>Network (Ethernet)</h2><div class="grid" id="f-net"></div></div>
- <div class="card"><h2>MQTT</h2><div class="grid" id="f-mqtt"></div></div>
- <div class="card"><h2>Sparkplug</h2><div class="grid" id="f-spb"></div>
+ <!-- #222: each card closes and opens (ccInit makes its header); the groups and the order of the cards: #201 #208 #216 #221 -->
+ <div class="cctools"><button type="button" id="cc-open">Open all</button><button type="button" id="cc-close">Close all</button></div>
+ <div class="card cc" data-cc="gw" data-t="Gateway"><div class="grid" id="f-gw"></div></div>
+ <div class="grp">Network</div>
+ <div class="card cc" data-cc="net" data-t="Network (Ethernet)"><div class="grid" id="f-net"></div></div>
+ <div class="card cc" data-cc="wifi" data-t="Wi-Fi" id="wifi-card"><div class="grid" id="f-wifi"></div><div class="grid" id="f-wifi2" style="margin-top:8px"></div>
+  <div class="nets hidden" id="w-nets" role="group" aria-label="Wi-Fi networks near the gateway"></div>
+  <h2 class="sub">IPv4 of the Wi-Fi interface</h2><div class="grid" id="f-wifi-ip"></div></div>
+ <div class="card cc" data-cc="v6" data-t="IPv6"><div class="grid" id="f-v6"></div></div>
+ <div class="card cc" data-cc="ntp" data-t="Time"><div id="f-ntp"></div></div>
+ <div class="grp">MQTT and Sparkplug</div>
+ <div class="card cc" data-cc="mqtt" data-t="MQTT"><div class="grid" id="f-mqtt"></div>
+  <div class="tsec"><h2 class="lbl">Backup brokers<button type="button" class="qi" data-x="bk" data-t="Backup brokers" aria-label="About Backup brokers" aria-expanded="false" aria-controls="xpl">?</button></h2>
+   <div id="f-bk" data-perr="mqtt.backup_brokers" tabindex="-1"></div><div class="grid" id="f-bk2" style="margin-top:10px"></div></div>
+  <div class="tsec"><h2 class="lbl">TLS<button type="button" class="qi" data-x="tls" data-t="TLS" aria-label="About TLS" aria-expanded="false" aria-controls="xpl">?</button></h2>
+   <div class="grid" id="f-tls"></div>
+   <div class="row" style="margin-top:10px"><input type="file" id="tls-file" class="hidden" accept=".pem,.crt,.cer,.key,application/x-pem-file"><span class="mut">Replace and remove the files in the card <a href="#certs">Certificates</a>.</span></div>
+   <div id="tls-msg" class="mut" aria-live="polite"></div></div></div>
+ <div class="card cc" data-cc="spb" data-t="Sparkplug"><div class="grid" id="f-spb"></div>
   <h2 class="lbl" style="margin-top:12px">Device prefix (location)<button type="button" class="qi" data-x="pfx" data-t="Device prefix (location)" aria-label="About Device prefix (location)" aria-expanded="false" aria-controls="xpl">?</button></h2>
   <div id="f-pfx" class="row" data-perr="sparkplug.device_prefix" tabindex="-1"></div></div>
- <div class="card"><h2>RS485</h2><div class="grid" id="f-rs485"></div></div>
- <div class="card"><h2>Web interface</h2><div class="grid" id="f-web"></div></div>
- <div class="card"><h2>Devices and tags</h2><div id="f-dev"></div><button id="add-dev">+ device</button></div>
- <div class="card"><h2>Modbus test read</h2>
+ <div class="card cc" data-cc="ota" data-t="Firmware updates" id="c-ota"><div class="grid" id="f-ota"></div><p class="mut" style="margin:10px 0 0">Install an image in the card Firmware of the Status tab.</p></div>
+ <div class="grp">Services</div>
+ <div class="card cc" data-cc="web" data-t="Web interface"><div class="grid" id="f-web"></div></div>
+ <!-- #205 #221: the content of the card Certificates (the HTTPS certificate, the PEM files) waits for the approval of the product owner -->
+ <div class="card cc" data-cc="certs" data-t="Certificates" id="certs"></div>
+ <div class="card cc" data-cc="mbtcp" data-t="Modbus TCP"><div class="grid" id="f-mbtcp"></div><div id="f-mbc"></div>
+  <h2 class="sub">The I/O of the gateway as a Modbus unit</h2><div class="grid" id="f-mbloc"></div></div>
+ <div class="card cc" data-cc="syslog" data-t="Remote syslog"><div class="grid" id="f-syslog"></div></div>
+ <div class="grp">Field</div>
+ <div class="card cc" data-cc="lio" data-t="Local I/O" id="lio-card"><div class="grid" id="f-lio"></div>
+  <h3>Digital inputs <span class="mut" id="lio-fastn"></span></h3>
+  <p class="tnote hidden">Push the table to the side for more columns.</p><div class="tw"><div class="tbox"><table class="io" id="lio-di"></table></div><div class="fade" aria-hidden="true"></div></div>
+  <h3>Digital outputs</h3>
+  <p class="tnote hidden">Push the table to the side for more columns.</p><div class="tw"><div class="tbox"><table class="io" id="lio-do"></table></div><div class="fade" aria-hidden="true"></div></div>
+  <h3>Buzzer</h3><div class="grid" id="f-bz"></div></div>
+ <div class="card cc" data-cc="rs485" data-t="RS485"><div class="grid" id="f-rs485"></div></div>
+ <!-- #213 (later): the card Device types is closed by default: data-closed -->
+ <div class="card cc" data-cc="dev" data-t="Devices and tags"><div id="f-dev"></div><button id="add-dev">+ device</button></div>
+ <div class="card cc" data-cc="mbr" data-t="Modbus test read">
   <p class="mut">One read through the RS485 bus, for example to find out if a device answers before you add its tags. The read does not change the configuration.</p>
   <div class="grid"><label>Unit ID (1-247)<input id="mb-unit" value="1"></label><label>Area<select id="mb-area"></select></label>
    <label>Address (0-65535)<input id="mb-addr" value="0"></label><label>Count (1-16, empty = 1 or the size of the type)<input id="mb-count"></label>
    <label>Type<select id="mb-type"></select></label><label>Word order<select id="mb-wo"></select></label></div>
   <div class="row"><button id="mb-read">Read</button></div><div id="mb-msg" class="mut"></div></div>
- <p class="mut">Edit Wi-Fi, IPv6, syslog and the other keys in the JSON tab. For each key, refer to the <a href="https://github.com/tmijail/mqtt-rs485-gateway/blob/main/docs/reference/configuration.md" target="_blank" rel="noopener">configuration reference</a> on GitHub (needs internet). The secrets show as ********. If you do not change them, the gateway keeps them.</p>
+ <p class="mut">The secrets show as ********. If you do not change them, the gateway keeps them. For each key, refer to the <a href="https://github.com/tmijail/mqtt-rs485-gateway/blob/main/docs/reference/configuration.md" target="_blank" rel="noopener">configuration reference</a> on GitHub (needs internet).</p>
 </section>
 
 <section id="tab-json" class="hidden">
@@ -150,6 +307,9 @@ const AREA=["coil","discrete","holding","input"];
 const TYPE=["bool","uint16","int16","uint32","int32","float32","uint64","int64","float64","string","bytes"];
 const WO=["big","little","ABCD","CDAB","BADC","DCBA"];
 const NAMING=["sparkplug","umh"];
+const PROTO=["3.1.1","5"];
+const ROLE=["backup","primary"];
+const LEVEL=["error","warning","info","debug"];
 async function api(method,path,body){
  const h={"X-Requested-With":"gateway"};if(body)h["Content-Type"]="application/json";
  let r;
@@ -159,9 +319,80 @@ async function api(method,path,body){
  return {status:r.status,json:j};
 }
 function msg(t,cls){const m=$("#msg");m.textContent=t;m.className=cls||"mut"}
+/* #222: each card of the Configuration tab (.card.cc, data-cc = its key, data-t = its title)
+   closes and opens with the button of its header. All the cards are open by default; a card with
+   data-closed is closed by default (decision of the product owner: only Device types, #213). The
+   browser keeps the state of each card and of each device row (localStorage; a private window or
+   a blocked storage gives the defaults). A closed card shows a summary of its values. */
+const CCKEY="gw.cfg.cards",DEVKEY="gw.cfg.devices";
+function lsGet(k,d){try{const v=JSON.parse(localStorage.getItem(k));return v&&typeof v==="object"?v:d}catch(e){return d}}
+function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+const ccSt=lsGet(CCKEY,{}),devClosed=new Set(Object.keys(lsGet(DEVKEY,{})));
+const ccHead=(id,body,t,open,cls)=>`<button type="button" class="coll" ${cls}="${esc(id)}" aria-expanded="${open}" aria-controls="${body}"><span class="car" aria-hidden="true">${open?"▾":"▸"}</span><span class="ct">${esc(t)}</span></button><span class="tsum${open&&cls==="data-cc"?" hidden":""}"></span><span class="ebadge hidden"></span>`;
+function ccInit(){document.querySelectorAll("#tab-config .card.cc").forEach(c=>{const id=c.dataset.cc,b=document.createElement("div"),h=document.createElement("h2");
+ b.className="ccb";b.id="ccb-"+id;b.append(...c.childNodes);h.className="ch";c.append(h,b);ccApply(c,ccOpenOf(c))})}
+function ccOpenOf(c){const v=ccSt[c.dataset.cc];return typeof v==="boolean"?v:!c.hasAttribute("data-closed")}
+/* open (true) or close a card; save: keep the state in the browser. The header button stays the
+   same element (a keyboard user keeps the focus): only its state and its caret change */
+function ccApply(c,open,save){const h=c.querySelector(":scope>h2.ch"),b=c.querySelector(":scope>.ccb"),btn=h.querySelector(":scope>button.coll");
+ if(btn){btn.setAttribute("aria-expanded",open);btn.querySelector(".car").textContent=open?"▾":"▸";h.querySelector(":scope>.tsum").classList.toggle("hidden",open)}
+ else h.innerHTML=ccHead(c.dataset.cc,b.id,c.dataset.t,open,"data-cc");
+ c.classList.toggle("open",open);b.classList.toggle("hidden",!open);
+ if(save){ccSt[c.dataset.cc]=open;lsSet(CCKEY,ccSt)}
+ if(open&&typeof tblUpd==="function")tblUpd();ccSum()}
+/* a device row: closed when its name is in devClosed */
+function devApply(i,open,save){const c=document.querySelector(`#f-dev>[data-dev="${i}"]`);if(!c)return;const b=c.querySelector(".coll"),d=$(`#dbody-${i}`),n=val(`devices.${i}.name`);
+ d.classList.toggle("hidden",!open);b.setAttribute("aria-expanded",open);b.querySelector(".car").textContent=open?"▾":"▸";
+ if(save){devClosed[open?"delete":"add"](n);lsSet(DEVKEY,Object.fromEntries([...devClosed].map(x=>[x,1])))}
+ if(open&&typeof tblUpd==="function")tblUpd()}
+function ccAll(open){document.querySelectorAll("#tab-config .card.cc").forEach(c=>ccApply(c,open,true));
+ document.querySelectorAll("#f-dev>[data-dev]").forEach(c=>devApply(c.dataset.dev,open,true))}
+/* #191: a field with an error or a warning opens its card and its device row */
+function ccReveal(el){if(!el||!el.closest)return;const d=el.closest(".dbody");if(d&&d.classList.contains("hidden"))devApply(d.id.slice(6),true,true);
+ const c=el.closest(".card.cc");if(c&&!c.classList.contains("open"))ccApply(c,true,true)}
+/* the number of errors at the fields of each card, in its header */
+function ccBadge(){document.querySelectorAll("#tab-config .card.cc").forEach(c=>{const n=c.querySelectorAll(".ferr").length,e=c.querySelector(":scope>h2.ch>.ebadge");
+ if(e){e.textContent=n?`${n} error${n>1?"s":""}`:"";e.classList.toggle("hidden",!n)}})}
+/* the summaries of the values, from the form (not the live status) */
+function ccBool(p,d){const e=document.querySelector(`[data-p="${p}"]`);if(e&&e.type==="checkbox")return e.checked;const v=get(cfg,p);return v==null?d:!!v}
+function ccList(p){return [...document.querySelectorAll(`[data-p^="${p}."]`)].map(e=>e.value.trim()).filter(x=>x)}
+const plur=(n,w)=>`${n} ${w}${n===1?"":"s"}`,jn=a=>a.filter(x=>x).join(" · ");
+const CCSUM={
+ gw:()=>jn([val("gateway.name"),val("gateway.location")])||"No name",
+ net:()=>ccBool("network.dhcp",true)?jn(["DHCP",val("network.hostname")]):jn(["Static",val("network.ip")]),
+ wifi:()=>ccBool("network.wifi.enabled",false)?jn([cap1(val("network.wifi.role")||"backup"),val("network.wifi.ssid")]):"Off",
+ v6:()=>ccBool("network.ipv6.enabled",false)?jn(["On",ccBool("network.ipv6.slaac",true)?"SLAAC":"",val("network.ipv6.address")]):"Off",
+ ntp:()=>ccList("ntp.servers").join(", ")||"pool.ntp.org",
+ mqtt:()=>{const t=ccBool("mqtt.tls.enabled",false),n=document.querySelectorAll('[data-p^="mqtt.backup_brokers."][data-p$=".host"]').length;
+  return jn([`${val("mqtt.host")}:${val("mqtt.port")||(t?8883:1883)}`,t?"TLS":"",val("mqtt.protocol")==="5"?"MQTT 5":"",n?plur(n,"backup broker"):""])},
+ spb:()=>`Group ${val("sparkplug.group_id")} · Edge Node ${val("sparkplug.edge_node_id")} · naming ${val("sparkplug.naming")||"sparkplug"}`,
+ ota:()=>`Update from MQTT: ${ccBool("ota.mqtt",false)?"on":"off"}`,
+ web:()=>ccBool("web.enabled",true)?jn([ccBool("web.https",true)?`HTTPS · port ${val("web.https_port")||443}`:`HTTP · port ${val("web.port")||80}`,`user ${val("web.username")||"admin"}`]):"Off",
+ certs:()=>{if(!FILES)return "";if(!FILES.length)return "No PEM files";const d=FILES.flatMap(f=>(f.certs||[]).map(c=>c.not_after)).filter(x=>x).sort()[0];
+  return jn([FILES.map(f=>f.name).join(", "),d?`first expiry ${d}`:""])},
+ mbtcp:()=>{if(!ccBool("modbus_tcp.enabled",false))return "Off";const n=ccList("modbus_tcp.allowed_clients").length,u=+val("modbus_tcp.local_unit_id")||0;
+  return jn([`port ${val("modbus_tcp.port")||502}`,n?plur(n,"allowed client"):"any client",u?`local unit ${u}`:""])},
+ syslog:()=>val("syslog.host")?`${val("syslog.host")}:${val("syslog.port")||514} · ${val("syslog.level")||"info"}`:"Off",
+ lio:()=>{const r=[...document.querySelectorAll('#lio-do [data-lio="rule"]')].filter(e=>e.value!=="0").length,f=[...document.querySelectorAll('#lio-di [data-lio="cnt"]')].filter(e=>e.value==="fast").length;
+  return jn(["8 DI","8 DO",r?plur(r,"rule"):"",f?plur(f,"fast counter"):""])},
+ rs485:()=>`${val("rs485.baud")||9600} baud · 8${({even:"E",odd:"O"})[val("rs485.parity")]||"N"}${val("rs485.stop_bits")||1}`,
+ dev:()=>`${plur(document.querySelectorAll("#f-dev>[data-dev]").length,"device")} · ${plur(document.querySelectorAll("#f-dev [data-del-tag]").length,"tag")}`,
+ mbr:()=>"Read registers of a device, to test the wiring"};
+function ccSum(){if(!cfg)return;document.querySelectorAll("#tab-config .card.cc").forEach(c=>{const f=CCSUM[c.dataset.cc],s=c.querySelector(":scope>h2.ch>.tsum");if(f&&s)s.textContent=f()});
+ document.querySelectorAll("#f-dev>[data-dev]").forEach(c=>{const i=c.dataset.dev,p=k=>`devices.${i}.${k}`,t=val(p("type"));
+  c.querySelector(".coll .ct").textContent=val(p("name"))||`Device ${+i+1}`;
+  c.querySelector(".dhd .tsum").textContent=jn([`unit ${val(p("unit_id"))}`,t?`type ${t}`:"",plur(c.querySelectorAll("[data-del-tag]").length,"tag"),ccBool(p("enabled"),true)?"":"disabled"])});ccBadge()}
+ccInit();
+$("#cc-open").onclick=()=>ccAll(true);$("#cc-close").onclick=()=>ccAll(false);
+$("#tab-config").addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("button.coll");
+ if(b&&b.dataset.cc!==undefined)ccApply(b.closest(".card.cc"),b.getAttribute("aria-expanded")!=="true",true);
+ else if(b&&b.dataset.dcc!==undefined)devApply(b.dataset.dcc,b.getAttribute("aria-expanded")!=="true",true);
+ /* a link to a card (for example "Certificates") opens it */
+ const a=e.target.closest&&e.target.closest('a[href^="#"]'),t=a&&a.getAttribute("href").length>1?document.getElementById(a.getAttribute("href").slice(1)):null;
+ if(t&&t.classList.contains("cc")&&!t.classList.contains("open"))ccApply(t,true,true)});
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
 function get(o,p){return p.split(".").reduce((a,k)=>a==null?undefined:a[k],o)}
-function set(o,p,v){const ks=p.split(".");let a=o;for(const k of ks.slice(0,-1)){if(a[k]==null||typeof a[k]!=="object")a[k]={};a=a[k]}a[ks[ks.length-1]]=v}
+function set(o,p,v){const ks=p.split(".");let a=o;ks.slice(0,-1).forEach((k,i)=>{if(a[k]==null||typeof a[k]!=="object")a[k]=/^\d+$/.test(ks[i+1])?[]:{};a=a[k]});a[ks[ks.length-1]]=v}
 /* #167: a <select> shows its first option when the value is not in its list, and a save writes
    that option back: an absent optional value gets an empty "(default)" option, and a value that
    is not in the list stays as an option of its own. A checkbox of an absent key shows the
@@ -182,7 +413,7 @@ function ctl(path,kind,opts,optional,x){
  return `<input${a} data-k="${kind}" ${kind==="pw"?'type="password" autocomplete="new-password"':""}${x.ml?` maxlength="${x.ml}"`:""}${x.ph?` placeholder="${esc(x.ph)}"`:""} value="${v==null?"":esc(v)}">`;
 }
 function field(path,lbl,kind,opts,optional,x){x=x||{};
- return `<div class="fld"><span class="lbl"><label for="i-${path}">${lbl}</label>${x.help?qi(x.help,lbl):""}</span>${ctl(path,kind,opts,optional,x)}</div>`;
+ return `<div class="fld${x.ck?" ck":""}"><span class="lbl"><label for="i-${path}">${lbl}</label>${x.help?qi(x.help,lbl):""}</span>${ctl(path,kind,opts,optional,x)}${x.hint?`<span class="hint">${esc(x.hint)}</span>`:""}</div>`;
 }
 // #189 #190
 /* #190: the explainers of the (?) buttons. A Sparkplug ID has 32 bytes at most, a device or tag
@@ -191,7 +422,7 @@ function field(path,lbl,kind,opts,optional,x){x=x||{};
 const HELP={
  host:"The name of the gateway in DHCP and mDNS. Use one DNS label: letters, digits and `-`, with no dots.\nEmpty = a name from the edge node ID: lower case, and `-` for each other character. Example: GW01 gives gw01.\n~1 to 63 characters. Default: empty.",
  mdns:"The gateway answers `<hostname>.local`, and it announces the web UI as a service. Example: https://gw01.local/.\n~Default: on.",
- broker:"The name, IPv4 or IPv6 address of the primary MQTT broker. Example: 192.168.1.10.\nFor TLS, MQTT 5 and the backup brokers, use the JSON tab.\n~Necessary.",
+ broker:"The name, IPv4 or IPv6 address of the primary MQTT broker. Example: 192.168.1.10.\nThe gateway connects to it first. The backup brokers come after it.\n~Necessary.",
  cid:"The client ID of the MQTT connection. Each client of a broker must have a different client ID.\n~Default: empty = the edge node ID.",
  keep:"The MQTT keepalive, in seconds. When the broker gets no packet from the gateway for 1.5 × the keepalive, it publishes the NDEATH of the gateway.\n~5 to 3600. Default: 30.",
  group:"The Sparkplug group of the gateway: the second level of each topic, `spBv1.0/<group>/…`. Example: Plant1.\n~1 to 32 bytes. Necessary. No `/`, `+` or `#`.",
@@ -204,7 +435,21 @@ const HELP={
  retry:"The number of times that the gateway sends a request again after a timeout or a damaged response. An exception response gets no retry.\n~0 to 5. Default: 2.",
  ifd:"The delay between two transactions on the bus. Make it longer for a slow device. The gateway always keeps the silence of 3.5 characters between two frames.\n~0 to 1000 ms. Default: 5.",
  deb:"A digital input must stay in its new state for this time before the gateway accepts the change. With 20 ms, the pulse counters count up to approximately 25 Hz.\n~0 to 1000 ms. Default: 20.",
+ fs:"After this time without a Sparkplug session, each DO goes to its safe state (column Safe state of the DOs). The time starts at the boot or at the loss of the session.\nA DO with a local rule does not change. When the session starts again, the DOs keep their state until the next NCMD.\n~0 to 86400 s. Default: 0 = a loss of MQTT does not change the DOs.",
+ csave:"The gateway saves the pulse counters and the run hours in the flash at this interval, only when they changed. After a power cut, the counts since the last save are lost. A restart from the gateway (for example Save and restart) saves them first.\n~0 = do not save, or 60 to 86400 s. Default: 600.",
+ inv:"The gateway inverts the input. Use it for a normally closed contact: the DI is then true when the contact opens.\nThe inversion applies after the polarity of the input circuit of the board. The pulse counter counts the activations after the inversion.\n~Default: off.",
+ cnt:"`debounced`: the gateway counts the activations of the debounced DI. With 20 ms, it counts up to approximately 25 Hz.\n`fast (PCNT)`: the pulse counter unit of the ESP32-S3 counts the input, for example for a flow meter or an energy meter. The glitch filter replaces the debounce for the count.\nThe metric Counter/n does not change. The maximum frequency depends on the input circuit of the board.\n~Up to 4 DIs with fast (PCNT). Default: debounced.",
+ glitch:"The PCNT unit ignores a pulse that is shorter than this time. Use it against noise on the input of a fast counter.\n~0 to 12787 ns. 0 = no filter. Default: 1000. Only for a fast (PCNT) counter.",
+ rh:"The gateway counts the time in the on state of this DI. It publishes the time as the metric `Run Hours/DI/n` (seconds, UInt64). The Status tab shows it in hours.\nThe gateway saves the value with the pulse counters (Counter save interval). An NCMD cannot write it. The factory reset sets it to 0.\n~Default: off.",
+ rhdo:"The gateway counts the time in the on state of this DO. It publishes the time as the metric `Run Hours/DO/n` (seconds, UInt64). The Status tab shows it in hours.\nThe gateway saves the value with the pulse counters (Counter save interval). An NCMD cannot write it. The factory reset sets it to 0.\n~Default: off.",
+ safe:"The state of the DO after a restart, and after the time of Safe state after without a Sparkplug session. `hold` keeps the state: after a restart, the state from before the restart (off after a power cut).\nA DO with a local rule follows its rule after the loss of the session. A pulse DO cannot use `on`, and it is off after a restart.\n~off, on or hold. Default: off.",
+ pulse:"A pulse DO: a write of `true` sets the DO on for this time, and then off. The NDATA gives `true` and then `false`. Use it for a latching relay or a reset input.\nThe time does not depend on the network. A local rule and the safe state on are not permitted for a pulse DO.\n~0 = a normal DO. 50 to 60000 ms. Default: 0.",
+ rule:"The gateway sets this DO from a DI, also without the network. The rule controls the DO: an NCMD and the Status tab cannot set it.\n~none, or DI 1 to DI 8. One rule for each DO. Not for a pulse DO. Default: none.",
+ mode:"`follow`: the DO has the state of the DI. `invert`: the DO has the opposite state of the DI. `toggle`: each activation of the DI changes the state of the DO.\n~Default: follow.",
+ alarms:"The conditions that sound the buzzer. Configuration rejected: 3 beeps. No MQTT session: 2 beeps. Device offline: 1 beep, for one or more Modbus devices. The pattern repeats each 10 s. When a number of alarms are active, the alarm with the most beeps sounds.\n~Default: none (the buzzer is silent).",
+ aafter:"No MQTT session and Device offline sound only after they last this time. Configuration rejected sounds immediately.\n~0 to 3600 s. Default: 30.",
  webpw:"8 to 63 characters: letters A-Z and a-z, digits, spaces and the symbols of a keyboard. It is also the Wi-Fi password of the access point GW-Setup-XXXXXX.\n~Empty = the commissioning password of the console.",
+ en:"Clear it to keep a device in the configuration, but stop it. Example: a slave that is not connected yet, during the commissioning.\nThe gateway does not poll a disabled device and does not send its DBIRTH. The device uses no time of the bus. The validation still examines its keys.\n~Default: on.",
  name:"The name of the device in Sparkplug. The device ID is the device prefix, ':' and this name. Example: Pump1.\nFor UMH Core, put ':' between the last levels of the location. Do not use `/`, `+` or `#`.\n~1 to 39 bytes. Necessary.",
  unit:"The Modbus address of the device on the RS485 bus (the slave ID). The manual or the display of the device gives it. Use the Modbus test read to find out if the device answers.\n~1 to 247. Necessary.",
  poll:"The time between two reads of the tags of the device. Example: 1000 = one read each second.\n~50 to 3 600 000 ms. Default: 1000.",
@@ -222,8 +467,53 @@ const HELP={
  db:"The gateway publishes a new value only when it differs from the last published value by more than the deadband. The deadband is in the units of the tag, after the scale. Example: 0.5 for a temperature.\n~Not negative. Default: 0 = each change. Not for bool, string and bytes tags.",
  englo:"The bottom of the normal range of the value, in the units of the tag (after the scale). The host uses it, for example, for the scale of a gauge or a trend.\nThe gateway does not limit the value and sends no alarm. Empty = no range.\n~Sparkplug property engLow (Float). Not for bool, string and bytes tags.",
  enghi:"The top of the normal range of the value, in the units of the tag (after the scale). The host uses it, for example, for the scale of a gauge or a trend.\nThe gateway does not limit the value and sends no alarm. With Eng. low, Eng. high must be more than Eng. low. Empty = no range.\n~Sparkplug property engHigh (Float). Not for bool, string and bytes tags.",
+ wmin:"The lowest value that a host can write to the tag with a DCMD, in the units of the tag (after the scale and the offset).\nThe gateway refuses a DCMD with a lower value. It does not write to the device, and it writes a warning to the log. The next DDATA has the value of the device.\n~Empty = no limit. Only for a writable tag. Not for bool, string and bytes tags. Modbus TCP requests have no limits.",
+ wmax:"The highest value that a host can write to the tag with a DCMD, in the units of the tag (after the scale and the offset).\nThe gateway refuses a DCMD with a higher value. It does not write to the device, and it writes a warning to the log. The next DDATA has the value of the device.\n~Empty = no limit. Only for a writable tag. With Write min, not less than Write min. Not for bool, string and bytes tags. Modbus TCP requests have no limits.",
+ slow:"The poll interval of the tags with Scan slow. Example: 30000 = one read of the slow tags each 30 s, for a serial number or a setting.\n~50 to 3 600 000 ms, and not less than Poll interval. Default: 10 × Poll interval (at most 3 600 000).",
+ blk:"The gateway reads the tags of one area that are near each other with one request (a block). Clear it for a device that answers with an exception when a block contains registers that it does not have. The gateway then sends one request for each tag.\n~Default: on (build option CONFIG_GW_MB_BLOCK_READS). A block has 125 registers or 2000 bits at most.",
+ gap:"The number of unused registers or bits that one block can include, to read two tags of one area with one request. Example: with 4, the tags at the addresses 0 and 5 go into one block.\n~0 to 1999. Default: 0 (build option CONFIG_GW_MB_BLOCK_MAX_GAP). Not permitted with Block reads off.",
+ fc16:"The gateway writes one register with FC16 and one coil with FC15, in place of FC06 and FC05. Set it for a device that does not accept FC06 or FC05.\nA write of two or more registers always uses FC16.\n~Default: off (build option CONFIG_GW_MB_FORCE_MULTI_WRITE).",
  bit:"One bit of a holding or input register, for a bool tag. 0 = the least significant bit.\nFor a write, the gateway reads the register, then writes the full register with the changed bit.\n~0 to 15. Necessary for a bool tag in holding or input, and only there.",
- len:"The number of registers of a string or bytes tag. Each register holds two characters or two bytes. Example: 8 for a text of up to 16 characters.\n~1 to 16. Necessary for string and bytes, and only for them."
+ scan:"fast = the gateway reads the tag each Poll interval. slow = each Slow poll interval of the device, for a value that changes rarely, for example a serial number.\nFast tags and slow tags are never in one read block.\n~Default: fast.",
+ len:"The number of registers of a string or bytes tag. Each register holds two characters or two bytes. Example: 8 for a text of up to 16 characters.\n~1 to 16. Necessary for string and bytes, and only for them.",
+ /* #206 */
+ gname:"A name for people, for example the name of the panel. The header and the title of the browser tab show it, with the location.\nIt does not change the Sparkplug IDs or the topics. The NBIRTH gives it as Node Info/Name.\n~Up to 63 bytes. Default: empty = the header shows the name of the product.",
+ gloc:"Where the gateway is, for example the plant and the hall. The header and the title of the browser tab show it after the name.\nIt does not change the Sparkplug IDs or the topics. The NBIRTH gives it as Node Info/Location.\n~Up to 63 bytes. Default: empty.",
+ gcom:"A note for the people who maintain the gateway, for example what it supplies and whom to call.\nOnly this tab shows it: the Status tab, the header and the NBIRTH do not.\n~Up to 255 bytes. Default: empty.",
+ /* #199 */
+ loglvl:"The lowest severity that a part of the firmware (a tag) writes to the log: the console, the syslog and this view. The tag `*` sets all the tags.\nThe gateway does not save the change. A restart sets all the tags to info again. `syslog.level` of the configuration filters only the copy to the syslog server.\n~none, error, warn, info, debug, verbose. Default: info.",
+ otamqtt:"On: a Sparkplug host can start a firmware update over MQTT. The host sends the NCMD `Node Control/Firmware Update` with the URL of the image. The gateway downloads the image over HTTPS.\nEach client that can publish to the NCMD topic of this node can then change the firmware. Turn it on only when the ACL of the broker lets only the Sparkplug host publish there.\nAn update from this page is always possible, for a user who knows the web password.\n~Default: off.",
+ fwsha:"The SHA-256 of the image file, for example from `sha256sum rs485_spb_gateway.bin` or from the release page.\nThe gateway calculates the SHA-256 of the file that it gets, from the URL or from the upload. When the two do not agree, the gateway stops the update, and this firmware continues to run.\nIt is a check of the file, not a signature.\n~64 hexadecimal characters. Empty = no check. For the download from a URL and for the upload of a file.",
+ /* #201 #208 #216 #221 */
+ role:"`backup`: Ethernet gets the default route. The gateway uses Wi-Fi only when Ethernet is down.\n`primary`: Wi-Fi gets the default route, and Ethernet is the backup.\nWhen all the brokers fail on the active interface, the MQTT session moves to the other interface.\n~Default: backup.",
+ fb:"The time that the preferred interface must stay up without a cut before the MQTT session moves back to it.\nThe preferred interface is Ethernet with the role backup, and Wi-Fi with the role primary.\n~0 to 3600 s. Default: 30.",
+ ssid:"The name of the Wi-Fi network. Find networks shows the networks near the gateway: click one to put its SSID into the field.\nThe gateway uses 2.4 GHz only. It cannot join an enterprise network (802.1X).\n~1 to 32 bytes. Necessary when Enabled is on.",
+ wpw:"The password of the Wi-Fi network: 8 to 63 characters (WPA2 or WPA3), or 64 hexadecimal digits (the PSK). Empty = an open network.\nThe gateway keeps it in NVS, not in the configuration document.\n~Default: empty.",
+ v6en:"IPv6 together with IPv4, on each interface. Each interface then gets a link-local address.\nThe gateway learns the default IPv6 router from the router advertisements. There is no static IPv6 gateway.\n~Default: off.",
+ slaac:"Stateless address autoconfiguration: each interface makes an address from the prefix in the router advertisements.\n~Default: on.",
+ v6addr:"A static IPv6 address for Ethernet. The prefix on the link is /64. Example: fd00:1::50.\nNot a multicast or a link-local address, not :: and not ::1.\n~Default: empty = no static address.",
+ v6dns:"An IPv6 DNS server. DHCPv4 fills the first two DNS positions, and this server is the third.\n~Default: empty.",
+ ntp:"The names, IPv4 or IPv6 addresses of the SNTP servers. Example: pool.ntp.org.\nThe gateway asks server 1 first. When a server does not answer, the gateway asks the next server.\nWithout a valid clock, the gateway does not connect to the MQTT broker and sends no NBIRTH.\n~1 to 3 servers, up to 127 bytes each. Default: pool.ntp.org.",
+ proto:"The MQTT version for all the brokers. With 5, each CONNECT has Clean Start = 1 and Session Expiry Interval = 0.\nThe topics, the QoS and the payloads are the same with the two versions.\n~3.1.1 or 5. Default: 3.1.1.",
+ bk:"Up to 3 brokers, in order, after the primary broker. When the gateway cannot connect to a broker, it goes to the next broker. After the last broker, it goes to the first broker.\nAll the brokers use the same user, password, client ID, keepalive, protocol and TLS. An empty port = the port of the primary broker.\n~0 to 3 brokers. Default: none.",
+ fo:"The number of failed attempts in sequence on a broker before the gateway goes to the next broker. A stable session sets the count to zero.\n~1 to 20. Default: 3.",
+ ret:"0 = the gateway stays on a backup broker until that broker fails.\nWith a value N, the gateway ends a stable session on a backup broker after N seconds (NDEATH). Then it tries the primary broker one time. If that attempt fails, it goes to the first backup broker.\n~0 to 86400. Default: 0.",
+ tls:"TLS between the gateway and each broker of the list, with TLS 1.2 or 1.3. The gateway examines the certificate of the broker and its name.\nThe gateway examines the dates of the certificates: the TLS connection waits for a valid clock.\nThe files are PEM files in the gateway. Load a file adds a file.",
+ tlsen:"On: TLS to each broker. The default port becomes 8883.\nOff: TCP without encryption. The gateway still examines the files that you select.\n~Default: off.",
+ ca:"The PEM file with the CA certificates that signed the certificate of the broker.\n(none) = the public root CAs of ESP-IDF, for a broker with a certificate of a public CA.\n~Default: none.",
+ sn:"The name that the certificate of the broker must contain (SAN or CN). Empty = the host of each broker in the list.\nUse it when all the brokers have one certificate with one name. You cannot disable the name check.\n~Default: empty.",
+ crt:"The certificate of the gateway for mutual TLS: the broker examines it. Select the client key together with it.\n~Default: none = no client certificate.",
+ key:"The private key of the client certificate, not encrypted (PKCS#1, SEC1 or PKCS#8). It must agree with the client certificate.\nThe gateway never sends a private key back to the browser.\n~Necessary with a client certificate, and only with it.",
+ webon:"Off: after the restart, the gateway starts no web server. This page and the REST API do not answer.\nA push of BOOT for 2 to 10 s starts the web server and the access point again. The web server also starts in recovery mode and in commissioning.\n~Default: on.",
+ https:"On: HTTPS with the self-signed certificate of the gateway. The HTTP port only sends the browser to the HTTPS port.\nOff: plain HTTP on the HTTP port. The password and the configuration then go over the network as clear text.\n~Default: on.",
+ http:"The TCP port of HTTP. With HTTPS on, it only sends the browser to the HTTPS port.\n~1 to 65535, not the HTTPS port. Default: 80.",
+ mben:"The Modbus TCP server: a PLC or a SCADA reads and writes the RS485 devices through the gateway, one request at a time.\nModbus TCP has no authentication. Limit the clients with Allowed clients.\n~Default: off.",
+ idle:"The gateway closes a connection without requests after this time.\n~0 to 3600 s. 0 = never. Default: 60.",
+ mbc:"The IPv4 addresses (a.b.c.d) or networks (a.b.c.d/n) that can connect. The gateway closes a connection from another source without a response.\nThe gateway always refuses a connection through the access point.\n~Up to 8. Empty = any client, with a warning in the log.",
+ lunit:"The gateway answers this unit itself, and does not send it to the RS485 bus. A PLC or a SCADA can read the DIs, the DOs and the pulse counters.\n`discrete` (FC02) 0 to 7: DI/1 to DI/8. `coil` (FC01) 0 to 7: DO/1 to DO/8. `input` (FC04) 0 to 31: the counters of DI/1 to DI/8, 4 registers each (uint64, big).\n~1 to 247, not the Unit ID of a device. Default: 0 = off.",
+ lwr:"On: a client can switch the DOs with FC05 and FC15 on the local unit. The gateway refuses a DO that a local rule drives (exception 03), as for an NCMD.\nOff: the gateway answers a write with exception 01.\n~Default: off.",
+ slhost:"The name, IPv4 or IPv6 address of the syslog server. The gateway sends a copy of its log on UDP (RFC 5424).\n~Up to 127 bytes. Default: empty = no remote syslog.",
+ sllvl:"The minimum severity that the gateway sends.\n~error, warning, info or debug. Default: info."
 };
 function qi(k,t){return `<button type="button" class="qi" data-x="${k}" data-t="${esc(t)}" aria-label="About ${esc(t)}" aria-expanded="false" aria-controls="xpl">?</button>`}
 /* #190: one explainer for all the (?) buttons. It opens on hover, on keyboard focus and on a click
@@ -277,9 +567,9 @@ document.addEventListener("pointerout",e=>{if(e.pointerType!=="mouse"||!xb||xpin
    other fields (n = the fields with a value). The table scrolls in its box on a narrow screen:
    the Tag column stays at the left, the details row stays in view, a shade shows more columns. */
 const TCOL=[["name","Tag","tag"],["area","Area","area"],["address","Address","addr"],["type","Type","type_t"],["word_order","Word order","wo"],["scale","Scale","scale"],["units","Units","units"],["writable","Writable","wr"]];
-const TDET=[["offset","Offset","offs"],["deadband","Deadband","db"],["eng_low","Eng. low","englo"],["eng_high","Eng. high","enghi"],["bit","Bit","bit"],["length","Length","len"]];
+const TDET=[["offset","Offset","offs"],["deadband","Deadband","db"],["eng_low","Eng. low","englo"],["eng_high","Eng. high","enghi"],["write_min","Write min","wmin"],["write_max","Write max","wmax"],["bit","Bit","bit"],["length","Length","len"],["scan","Scan","scan"]];
 const TK={name:["str",0,0,{ml:39}],area:["sel",AREA],address:["int"],type:["sel",TYPE],word_order:["sel",WO,true],scale:["num"],units:["str",0,0,{ml:15}],writable:["bool"],
- offset:["num"],deadband:["num"],eng_low:["num"],eng_high:["num"],bit:["int",0,0,{ph:"0-15"}],length:["int",0,0,{ph:"string, bytes"}]};
+ offset:["num"],deadband:["num"],eng_low:["num"],eng_high:["num"],write_min:["num",0,0,{ph:"no limit"}],write_max:["num",0,0,{ph:"no limit"}],bit:["int",0,0,{ph:"0-15"}],length:["int",0,0,{ph:"1-16"}],scan:["sel",["fast","slow"],true]};
 const detOpen=new Set();
 function tagTable(d,i){
  const p=(k,f)=>`devices.${i}.tags.${k}.${f}`;
@@ -299,12 +589,46 @@ function togDet(b){const r=document.getElementById(b.getAttribute("aria-controls
  detOpen[open?"add":"delete"](b.dataset.more);updMore(b);tblUpd(r.closest(".tw"))}
 /* #191 calls it before it focuses a field with an error: open the details row of the field */
 function revealField(el){const r=el&&el.closest?el.closest("tr.det"):null;
- if(r&&r.classList.contains("hidden"))togDet(r.previousElementSibling.querySelector("[data-more]"))}
+ if(r&&r.classList.contains("hidden"))togDet(r.previousElementSibling.querySelector("[data-more]"));
+ const d=el&&el.closest?el.closest(".dsub"):null;if(d&&d.classList.contains("hidden"))togDmore(document.querySelector(`[aria-controls="${d.id}"]`));ccReveal(el)}
 function tblUpd(tw){(tw?[tw]:document.querySelectorAll(".tw")).forEach(w=>{const b=w.firstElementChild,s=b.scrollWidth>b.clientWidth+1;
  w.classList.toggle("scr",s&&b.scrollLeft+b.clientWidth<b.scrollWidth-1);w.previousElementSibling.classList.toggle("hidden",!s);w.style.setProperty("--bw",b.clientWidth+"px")})}
-function tagsInit(){document.querySelectorAll("[data-more]").forEach(updMore);tblUpd()}
-$("#f-dev").addEventListener("click",e=>{const t=e.target.dataset||{};if(t.delTag||t.delDev)detOpen.clear();if(t.more)togDet(e.target)},true);
-$("#f-dev").addEventListener("input",e=>{const r=e.target.closest("tr.det");if(r)updMore(r.previousElementSibling.querySelector("[data-more]"))});
+/* #196: the placeholder of Write min and Write max tells if the tag is writable.
+   #221: the details row shows only the fields that apply to the type of the tag (a field with a
+   value stays, so that its error shows). Bit: a bool tag in holding or input (gw_config.c). */
+const TAPPLY={offset:(t)=>t.num,eng_low:(t)=>t.num,eng_high:(t)=>t.num,write_min:(t)=>t.num,write_max:(t)=>t.num,
+ deadband:(t)=>!t.blob,bit:(t)=>t.type==="bool"&&(t.area==="holding"||t.area==="input"),length:(t)=>t.blob,scan:()=>true};
+function tagUpd(i,k){const p=f=>document.getElementById(`i-devices.${i}.tags.${k}.${f}`),w=p("writable");if(!w)return;
+ ["write_min","write_max"].forEach(f=>{const e=p(f);if(e)e.placeholder=w.checked?"no limit":"writable only"});
+ const ty=p("type").value,t={type:ty,area:p("area").value,blob:ty==="string"||ty==="bytes"};t.num=ty!=="bool"&&!t.blob;
+ let nl=false;TDET.forEach(([f])=>{const e=p(f);if(!e)return;const d=e.closest(".fld"),on=TAPPLY[f](t)||e.value.trim()!=="";
+  d.classList.toggle("hidden",!on);d.classList.remove("nl");if(on&&!nl&&["bit","length","scan"].includes(f)){d.classList.add("nl");nl=true}})}
+/* #197 #221: the rare keys of a device, in the panel "More device settings (n)" below its fields.
+   n = the keys with a value in the document (a checkbox at its default without the key does not count). */
+const devOpen=new Set();
+function devMore(i){const p=k=>`devices.${i}.${k}`,o=devOpen.has(String(i));
+ return `<div class="row" style="margin-top:8px"><button type="button" class="more dmore" data-dmore="${i}" aria-expanded="${o}" aria-controls="dset-${i}">More device settings</button></div>`+
+  `<div class="dsub${o?"":" hidden"}" id="dset-${i}"><div class="grid">${
+  field(p("slow_poll_ms"),"Slow poll interval (ms)","int",0,0,{help:"slow",ph:String(slowDef(i))})+
+  field(p("block_reads"),"Block reads","bool",true,0,{help:"blk",ck:1})+
+  field(p("max_gap"),"Max gap","int",0,0,{help:"gap",ph:"0"})+
+  field(p("write_multiple"),"Write with FC15/FC16","bool",false,0,{help:"fc16",ck:1})}</div></div>`}
+/* the default of slow_poll_ms: 10 × poll_ms, at most 3 600 000 (gw_config.c) */
+function slowDef(i){const e=document.getElementById(`i-devices.${i}.poll_ms`),v=e?e.value.trim():get(cfg,`devices.${i}.poll_ms`),n=v===""||v==null||isNaN(+v)?1000:+v;return Math.min(10*n,3600000)}
+function updDmore(b){const r=document.getElementById(b.getAttribute("aria-controls")),open=!r.classList.contains("hidden");
+ const n=[...r.querySelectorAll("[data-p]")].filter(e=>e.dataset.k==="bool"?get(cfg,e.dataset.p)!==undefined||e.checked!==(e.dataset.def==="1"):e.value.trim()!=="").length;
+ b.textContent=`${open?"▾":"▸"} More device settings${n?` (${n})`:""}`;b.setAttribute("aria-expanded",open)}
+function togDmore(b){const r=document.getElementById(b.getAttribute("aria-controls")),open=r.classList.toggle("hidden")===false;
+ devOpen[open?"add":"delete"](b.dataset.dmore);updDmore(b)}
+function tagsInit(){document.querySelectorAll("[data-dmore]").forEach(updDmore);document.querySelectorAll("[data-more]").forEach(b=>{const[i,k]=b.dataset.more.split(".");tagUpd(i,k);updMore(b)});tblUpd()}
+$("#f-dev").addEventListener("click",e=>{const t=e.target.dataset||{};if(t.delTag||t.delDev)detOpen.clear();if(t.delDev)devOpen.clear();if(t.more)togDet(e.target);if(t.dmore)togDmore(e.target)},true);
+/* #214: a device with Enabled off gets the notice and a dashed border */
+function devEn(e){const m=/^devices\.(\d+)\.enabled$/.exec(e.dataset.p||"");if(!m)return;
+ e.closest(".card").classList.toggle("dis",!e.checked);$(`#off-${m[1]}`).classList.toggle("hidden",e.checked)}
+$("#f-dev").addEventListener("input",e=>{devEn(e.target);const pm=/^devices\.(\d+)\.poll_ms$/.exec(e.target.dataset.p||"");
+ if(pm){const sl=document.getElementById(`i-devices.${pm[1]}.slow_poll_ms`);if(sl)sl.placeholder=slowDef(pm[1])}const r=e.target.closest("tr.det");if(r)updMore(r.previousElementSibling.querySelector("[data-more]"));
+ const d=e.target.closest(".dsub");if(d)updDmore(document.querySelector(`[aria-controls="${d.id}"]`));
+ const m=/^devices\.(\d+)\.tags\.(\d+)\./.exec(e.target.dataset.p||"");if(m)tagUpd(m[1],m[2])});
 document.addEventListener("scroll",e=>{const w=e.target.parentElement;if(w&&w.classList.contains("tw"))tblUpd(w);if(xb)xPos()},true);
 addEventListener("resize",()=>{tblUpd();if(xb)xOpen(xb,false)});
 /* #170: the UMH topic of a metric, with the rules of UMH Core (docs/reference/umh-names-and-topics.md):
@@ -323,21 +647,181 @@ function updTopics(){
   const loc=umhLevels(id).map(l=>l[0]==="_"?`<span class="bad" title="UMH Core reads a level that starts with _ as the data contract">${esc(l)}</span>`:esc(l)).join(".");
   e.innerHTML=`Sparkplug: spBv1.0/${esc(g)}/DDATA/${esc(n)}/${esc(id)} <span class="mut">(${new TextEncoder().encode(id).length} bytes)</span><br>UMH: umh.v1.${loc}._raw.${esc(umhTag(t))}`;
  });
+ const h=$("#h-otamqtt");if(h)h.textContent=`Off by default. Turn it on only when the broker lets only your Sparkplug host publish to spBv1.0/${g}/NCMD/${n}.`;
 }
+/* #210 #211 #217 #218 #221: the card Local I/O. Its tables write local_io.di, do_failsafe,
+   do_pulse_ms, rules (two columns of the DO table: one rule for each DO), fast_counters,
+   run_hours and buzzer.alarms. readLio() changes a key only where a control differs from the
+   document, so the form alone gives no change; it also sets data-perr of each control to the
+   path of its error (#191), from the arrays that it writes. */
+const LIO_SAFE=["off","on","hold"],LIO_MODE=["follow","invert","toggle"],LIO_AL=[["config_error","Configuration rejected"],["mqtt_down","No MQTT session"],["device_offline","Device offline"]];
+const lioArr=(o,k)=>o&&Array.isArray(o[k])?o[k]:[];
+function lioEff(){const l=cfg&&cfg.local_io&&typeof cfg.local_io==="object"?cfg.local_io:{},di=lioArr(l,"di"),fs=lioArr(l,"do_failsafe"),pu=lioArr(l,"do_pulse_ms"),fc=lioArr(l,"fast_counters"),rh=lioArr(l,"run_hours"),ru=lioArr(l,"rules"),m={di:[],dout:[]};
+ for(let i=0;i<8;i++){const d=di[i]&&typeof di[i]==="object"?di[i]:{},f=fc.find(x=>x&&x.di===i+1),r=ru.find(x=>x&&x.do===i+1);
+  m.di.push({invert:d.invert??false,deb:d.debounce_ms??20,fast:!!f,glitch:f?(f.glitch_ns??1000):1000,rh:rh.includes(`DI/${i+1}`)});
+  m.dout.push({safe:fs[i]??"off",pulse:pu[i]??0,rule:r?r.di:0,mode:r?(r.mode??"follow"):"follow",rh:rh.includes(`DO/${i+1}`)})}
+ const bz=l.buzzer&&typeof l.buzzer==="object"?l.buzzer:{};m.alarms=lioArr(bz,"alarms");return m}
+const lioOpt=(v,opts)=>opts.map(([x,t])=>`<option value="${esc(x)}"${String(x)===String(v)?" selected":""}>${esc(t)}</option>`).join("")+(opts.some(([x])=>String(x)===String(v))?"":`<option value="${esc(v)}" selected>${esc(v)} (not in the list)</option>`);
+const lioTh=(l,h,c)=>`<th${c?' class="chk"':""}><span class="lbl">${l}${qi(h,l)}</span></th>`;
+function renderLio(){
+ const m=lioEff();
+ $("#f-lio").innerHTML=field("local_io.failsafe_s","Safe state after (s)","int",0,0,{help:"fs"})+field("local_io.counter_save_s","Counter save interval (s)","int",0,0,{help:"csave"});
+ $("#lio-di").innerHTML=`<colgroup><col style="width:64px"><col style="width:90px"><col style="width:150px"><col style="width:190px"><col style="width:170px"><col style="width:110px"><col></colgroup><tr><th>DI</th>${lioTh("Invert","inv",1)+lioTh("Debounce (ms)","deb")+lioTh("Counter","cnt")+lioTh("Glitch filter (ns)","glitch")+lioTh("Run hours","rh",1)}<th></th></tr>`+
+  m.di.map((d,i)=>{const n=`DI ${i+1}`;return `<tr data-i="${i}"><td class="ch">${n}</td><td class="chk"><input type="checkbox" data-lio="inv" data-perr="local_io.di.${i}.invert" aria-label="${n} · Invert"${d.invert?" checked":""}></td>`+
+   `<td><input data-lio="deb" data-perr="local_io.di.${i}.debounce_ms" aria-label="${n} · Debounce (ms)" value="${esc(d.deb)}"></td>`+
+   `<td><select data-lio="cnt" aria-label="${n} · Counter">${lioOpt(d.fast?"fast":"deb",[["deb","debounced"],["fast","fast (PCNT)"]])}</select></td>`+
+   `<td><span class="mut${d.fast?" hidden":""}">—</span><input data-lio="gl" class="${d.fast?"":"hidden"}" aria-label="${n} · Glitch filter (ns)" value="${esc(d.glitch)}"></td>`+
+   `<td class="chk"><input type="checkbox" data-lio="rh" aria-label="${n} · Run hours"${d.rh?" checked":""}></td><td></td></tr>`}).join("");
+ const rules=[["0","none"]].concat([...Array(8)].map((_,k)=>[String(k+1),`DI ${k+1}`]));
+ $("#lio-do").innerHTML=`<colgroup><col style="width:64px"><col style="width:190px"><col style="width:130px"><col style="width:130px"><col style="width:130px"><col style="width:110px"><col></colgroup><tr><th>DO</th>${lioTh("Safe state","safe")+lioTh("Pulse (ms)","pulse")+lioTh("Local rule","rule")+lioTh("Mode","mode")+lioTh("Run hours","rhdo",1)}<th></th></tr>`+
+  m.dout.map((d,i)=>{const n=`DO ${i+1}`;return `<tr data-i="${i}"><td class="ch">${n}</td><td style="white-space:normal"><select data-lio="safe" data-perr="local_io.do_failsafe.${i}" aria-label="${n} · Safe state">${lioOpt(d.safe,LIO_SAFE.map(x=>[x,x]))}</select></td>`+
+   `<td><input data-lio="pulse" data-perr="local_io.do_pulse_ms.${i}" aria-label="${n} · Pulse (ms)" value="${esc(d.pulse)}"></td>`+
+   `<td><select data-lio="rule" aria-label="${n} · Local rule">${lioOpt(d.rule,rules)}</select></td>`+
+   `<td><span class="mut${d.rule?" hidden":""}">—</span><select data-lio="mode" class="${d.rule?"":"hidden"}" aria-label="${n} · Mode">${lioOpt(d.mode,LIO_MODE.map(x=>[x,x]))}</select></td>`+
+   `<td class="chk"><input type="checkbox" data-lio="rh" aria-label="${n} · Run hours"${d.rh?" checked":""}></td><td></td></tr>`}).join("");
+ $("#f-bz").innerHTML=`<fieldset class="fld" style="grid-column:span 2" data-perr="local_io.buzzer.alarms" tabindex="-1"><legend class="lbl">Alarms ${qi("alarms","Alarms")}</legend><div class="row" style="gap:6px 18px;margin-top:6px">`+
+  LIO_AL.map(([k,t])=>`<label class="cb"><input type="checkbox" data-lio-al="${k}"${m.alarms.includes(k)?" checked":""}> ${t}</label>`).join("")+`</div></fieldset>`+
+  field("local_io.buzzer.alarm_after_s","Alarm after (s)","int",0,0,{help:"aafter"});
+ lioUpd();
+}
+/* the cells that depend on another cell: Glitch filter (a fast counter), Mode (a rule) */
+function lioUpd(){
+ let n=0;document.querySelectorAll("#lio-di tr[data-i]").forEach(r=>{const f=r.querySelector('[data-lio="cnt"]').value==="fast",g=r.querySelector('[data-lio="gl"]');n+=f;g.classList.toggle("hidden",!f);g.previousElementSibling.classList.toggle("hidden",f)});
+ const fn=$("#lio-fastn");if(fn)fn.textContent=`Fast counters: ${n} of 4 (PCNT units)`;
+ document.querySelectorAll("#lio-do tr[data-i]").forEach(r=>{const on=r.querySelector('[data-lio="rule"]').value!=="0",s=r.querySelector('[data-lio="mode"]');s.classList.toggle("hidden",!on);s.previousElementSibling.classList.toggle("hidden",on)});
+}
+function readLio(){
+ if(!cfg||!$("#lio-di tr[data-i]"))return;
+ const e=lioEff(),q=(r,k)=>r.querySelector(`[data-lio="${k}"]`),num=v=>v.trim()===""?undefined:Number(v);
+ const lio=()=>{if(!cfg.local_io||typeof cfg.local_io!=="object")cfg.local_io={};return cfg.local_io};
+ const at=(k,i,fill)=>{const l=lio();if(!Array.isArray(l[k]))l[k]=[];while(l[k].length<=i)l[k].push(fill());return l[k]};
+ const dr=[...document.querySelectorAll("#lio-di tr[data-i]")],or=[...document.querySelectorAll("#lio-do tr[data-i]")];
+ const u={di:dr.map(r=>({invert:q(r,"inv").checked,deb:num(q(r,"deb").value),fast:q(r,"cnt").value==="fast",glitch:num(q(r,"gl").value),rh:q(r,"rh").checked})),
+  dout:or.map(r=>({safe:q(r,"safe").value,pulse:num(q(r,"pulse").value),rule:Number(q(r,"rule").value),mode:q(r,"mode").value,rh:q(r,"rh").checked}))};
+ u.di.forEach((d,i)=>{const x=e.di[i];if(d.invert===x.invert&&d.deb===x.deb)return;const a=at("di",i,()=>({}));if(!a[i]||typeof a[i]!=="object")a[i]={};
+  if(d.invert!==x.invert)a[i].invert=d.invert;if(d.deb!==x.deb){if(d.deb===undefined)delete a[i].debounce_ms;else a[i].debounce_ms=d.deb}});
+ u.dout.forEach((d,i)=>{const x=e.dout[i];if(d.safe!==x.safe)at("do_failsafe",i,()=>"off")[i]=d.safe;if(d.pulse!==x.pulse)at("do_pulse_ms",i,()=>0)[i]=d.pulse===undefined?0:d.pulse});
+ /* a list of objects (rules, fast_counters) or of strings: the entries that stay keep their place */
+ const list=(k,keep,add)=>{const l=cfg.local_io&&typeof cfg.local_io==="object"?cfg.local_io:{},o=lioArr(l,k),r=[];o.forEach(x=>{const y=keep(x);if(y!==null)r.push(y)});add(r);
+  if(JSON.stringify(r)!==JSON.stringify(o)){if(r.length||o.length)lio()[k]=r;if(!r.length)delete lio()[k]}return JSON.stringify(r)===JSON.stringify(o)?o:r};
+ const okDo=x=>x&&typeof x==="object"&&Number.isInteger(x.do)&&x.do>=1&&x.do<=8,okDi=x=>x&&typeof x==="object"&&Number.isInteger(x.di)&&x.di>=1&&x.di<=8;
+ const ru=list("rules",x=>{if(!okDo(x))return x;const d=u.dout[x.do-1];if(!d.rule)return null;return d.rule===x.di&&d.mode===(x.mode??"follow")?x:Object.assign({},x,{di:d.rule,mode:d.mode})},
+  r=>u.dout.forEach((d,i)=>{if(d.rule&&!r.some(x=>okDo(x)&&x.do===i+1))r.push({di:d.rule,do:i+1,mode:d.mode})}));
+ or.forEach(r=>{q(r,"rule").removeAttribute("data-perr");q(r,"mode").removeAttribute("data-perr")});
+ ru.forEach((x,k)=>{if(okDo(x)){const r=or[x.do-1];q(r,"rule").dataset.perr=`local_io.rules.${k}`;q(r,"mode").dataset.perr=`local_io.rules.${k}.mode`}});
+ const fc=list("fast_counters",x=>{if(!okDi(x))return x;const d=u.di[x.di-1];if(!d.fast)return null;return d.glitch===(x.glitch_ns??1000)?x:Object.assign({},x,{glitch_ns:d.glitch})},
+  r=>u.di.forEach((d,i)=>{if(d.fast&&!r.some(x=>okDi(x)&&x.di===i+1))r.push(d.glitch===1000?{di:i+1}:{di:i+1,glitch_ns:d.glitch})}));
+ dr.forEach(r=>{q(r,"cnt").removeAttribute("data-perr");q(r,"gl").removeAttribute("data-perr")});
+ fc.forEach((x,k)=>{if(okDi(x)){const r=dr[x.di-1];q(r,"cnt").dataset.perr=k===4?"local_io.fast_counters":`local_io.fast_counters.${k}`;q(r,"gl").dataset.perr=`local_io.fast_counters.${k}.glitch_ns`}});
+ const ch=["DI","DO"].flatMap(g=>[...Array(8)].map((_,i)=>`${g}/${i+1}`)),on=c=>(c.startsWith("DI")?u.di:u.dout)[+c.slice(3)-1].rh;
+ list("run_hours",x=>typeof x==="string"&&ch.includes(x)&&!on(x)?null:x,r=>ch.forEach(c=>{if(on(c)&&!r.includes(c))r.push(c)}));
+ const al=[...document.querySelectorAll("[data-lio-al]")].filter(c=>c.checked).map(c=>c.dataset.lioAl),ao=e.alarms,ar=ao.filter(x=>typeof x!=="string"||al.includes(x)||!LIO_AL.some(([k])=>k===x)).concat(al.filter(x=>!ao.includes(x)));
+ if(JSON.stringify(ar)!==JSON.stringify(ao)){const l=lio();if(!l.buzzer||typeof l.buzzer!=="object")l.buzzer={};if(ar.length)l.buzzer.alarms=ar;else delete l.buzzer.alarms}
+}
+$("#lio-card").addEventListener("change",e=>{if(e.target.dataset.lio==="cnt"||e.target.dataset.lio==="rule")lioUpd()});
 function renderForms(){
+ $("#f-gw").innerHTML=field("gateway.name","Name","str",0,0,{ml:63,help:"gname",ph:"Pump panel 2"})+field("gateway.location","Location","str",0,0,{ml:63,help:"gloc",ph:"Plant 2, hall B"})+
+  field("gateway.comment","Comment","str",0,0,{ml:255,help:"gcom"}).replace('<div class="fld">','<div class="fld" style="grid-column:1/-1">');
  $("#f-net").innerHTML=field("network.dhcp","DHCP","bool",true)+field("network.ip","IP","str")+field("network.netmask","Netmask","str")+field("network.gateway","Gateway","str")+field("network.dns","DNS","str")+field("network.hostname","Hostname","str",0,0,{help:"host"})+field("network.mdns","mDNS (.local)","bool",true,0,{help:"mdns"});
- $("#f-mqtt").innerHTML=field("mqtt.host","Broker","str",0,0,{help:"broker"})+field("mqtt.port","Port","int")+field("mqtt.client_id","Client ID","str",0,0,{help:"cid"})+field("mqtt.username","User","str")+field("mqtt.password","Password","pw")+field("mqtt.keepalive_s","Keepalive (s)","int",0,0,{help:"keep"});
+ renderNet();
+ $("#f-mqtt").innerHTML=field("mqtt.host","Broker","str",0,0,{help:"broker"})+field("mqtt.port","Port","int")+field("mqtt.client_id","Client ID","str",0,0,{help:"cid"})+field("mqtt.username","User","str")+field("mqtt.password","Password","pw")+field("mqtt.keepalive_s","Keepalive (s)","int",0,0,{help:"keep"})+field("mqtt.protocol","Protocol","sel",PROTO,true,{help:"proto"});
+ renderBk();
+ $("#f-bk2").innerHTML=field("mqtt.failover_after","Failover after (attempts)","int",0,0,{help:"fo",ph:"3"})+field("mqtt.primary_return_s","Back to the primary after (s)","int",0,0,{help:"ret",ph:"0",hint:"0 = stay on the backup until it fails"});
+ renderTls();
  $("#f-spb").innerHTML=field("sparkplug.group_id","Group ID","str",0,0,{ml:32,help:"group"})+field("sparkplug.edge_node_id","Edge node ID","str",0,0,{ml:32,help:"edge"})+field("sparkplug.primary_host_id","Primary host ID","str",0,0,{ml:32,help:"phost"})+field("sparkplug.naming","Naming","sel",NAMING,true,{help:"naming"});
- $("#f-rs485").innerHTML=field("rs485.baud","Baud rate","int",0,0,{help:"baud"})+field("rs485.parity","Parity","sel",PAR,true)+field("rs485.stop_bits","Stop bits","int")+field("rs485.response_timeout_ms","Timeout (ms)","int",0,0,{help:"tmo"})+field("rs485.retries","Retries","int",0,0,{help:"retry"})+field("rs485.inter_frame_delay_ms","Inter-frame delay (ms)","int",0,0,{help:"ifd"})+field("local_io.di_debounce_ms","Debounce DI (ms)","int",0,0,{help:"deb"});
- $("#f-web").innerHTML=field("web.username","User","str")+field("web.password","Password (8 to 63)","pw",0,0,{ml:63,help:"webpw"})+PW2+field("web.port","Port","int");pw194();
+ $("#f-rs485").innerHTML=field("rs485.baud","Baud rate","int",0,0,{help:"baud"})+field("rs485.parity","Parity","sel",PAR,true)+field("rs485.stop_bits","Stop bits","int")+field("rs485.response_timeout_ms","Timeout (ms)","int",0,0,{help:"tmo"})+field("rs485.retries","Retries","int",0,0,{help:"retry"})+field("rs485.inter_frame_delay_ms","Inter-frame delay (ms)","int",0,0,{help:"ifd"});
+ /* #223: ota.mqtt, the only control of the card (an update from the Status tab is always possible) */
+ $("#f-ota").innerHTML=`<div class="fld"><span class="lbl"><label for="i-ota.mqtt">Update from MQTT</label>${qi("otamqtt","Update from MQTT")}</span>${ctl("ota.mqtt","bool",false)}<span class="hint" id="h-otamqtt"></span></div>`;
+ document.getElementById("i-ota.mqtt").setAttribute("aria-describedby","h-otamqtt");
+ renderLio();
+ $("#f-web").innerHTML=field("web.enabled","Enabled","bool",true,0,{help:"webon"})+field("web.https","HTTPS","bool",true,0,{help:"https"})+field("web.https_port","HTTPS port","int",0,0,{ph:"443"})+field("web.port","HTTP port","int",0,0,{help:"http",ph:"80"})+field("web.username","User","str")+field("web.password","Password (8 to 63)","pw",0,0,{ml:63,help:"webpw"})+PW2;pw194();webWarn();
+ renderServices();
  renderPrefix();
  const devs=cfg.devices||[];
- $("#f-dev").innerHTML=devs.map((d,i)=>`<div class="card"><div class="grid">${field(`devices.${i}.name`,"Name","str",0,0,{ml:39,help:"name"})+field(`devices.${i}.unit_id`,"Unit ID","int",0,0,{help:"unit"})+field(`devices.${i}.poll_ms`,"Poll interval (ms)","int",0,0,{help:"poll"})+field(`devices.${i}.offline_after`,"Offline after (cycles)","int",0,0,{help:"off"})+field(`devices.${i}.type`,"Type (template)","str",0,0,{ml:39,help:"type"})}</div>
+ $("#f-dev").innerHTML=devs.map((d,i)=>`<div class="card${d.enabled===false?" dis":""}" data-dev="${i}"><div class="dhd">${ccHead(i,`dbody-${i}`,d.name||`Device ${i+1}`,!devClosed.has(d.name),"data-dcc")}</div><div class="dbody${devClosed.has(d.name)?" hidden":""}" id="dbody-${i}"><div class="grid">${field(`devices.${i}.enabled`,"Enabled","bool",true,0,{help:"en",ck:1})+field(`devices.${i}.name`,"Name","str",0,0,{ml:39,help:"name"})+field(`devices.${i}.unit_id`,"Unit ID","int",0,0,{help:"unit"})+field(`devices.${i}.poll_ms`,"Poll interval (ms)","int",0,0,{help:"poll"})+field(`devices.${i}.offline_after`,"Offline after (cycles)","int",0,0,{help:"off"})+field(`devices.${i}.type`,"Type (template)","str",0,0,{ml:39,help:"type"})}</div>
+ <p class="offnote${d.enabled===false?"":" hidden"}" id="off-${i}">Disabled. The gateway does not poll this device and sends no DBIRTH. The validation still examines it.</p>
+ ${devMore(i)}
  <div class="topic" data-topic="${i}"></div>
  ${tagTable(d,i)}
- <div class="row" style="margin-top:10px"><button data-add-tag="${i}">+ tag</button><button data-del-dev="${i}">Remove device</button></div></div>`).join("");
- tagsInit();updTopics();
+ <div class="row" style="margin-top:10px"><button data-add-tag="${i}">+ tag</button><button data-del-dev="${i}">Remove device</button></div></div></div>`).join("");
+ tagsInit();updTopics();ccSum();
 }
+/* #201 #208 #221: the cards Wi-Fi, IPv6 and Time */
+function renderNet(){
+ $("#f-wifi").innerHTML=field("network.wifi.enabled","Enabled","bool",false)+field("network.wifi.role","Role","sel",ROLE,true,{help:"role"})+field("network.wifi.failback_s","Failback (s)","int",0,0,{help:"fb",ph:"30"});
+ $("#f-wifi2").innerHTML=`<div class="fld span2"><span class="lbl"><label for="i-network.wifi.ssid">SSID</label>${qi("ssid","SSID")}</span><div class="srow">${ctl("network.wifi.ssid","str",0,0,{ml:32})}<button type="button" id="w-find" aria-expanded="${!$("#w-nets").classList.contains("hidden")}" aria-controls="w-nets">Find networks</button></div></div>`+field("network.wifi.password","Password","pw",0,0,{ml:64,help:"wpw"});
+ $("#f-wifi-ip").innerHTML=field("network.wifi.dhcp","DHCP","bool",true)+field("network.wifi.ip","IP","str")+field("network.wifi.netmask","Netmask","str")+field("network.wifi.gateway","Gateway","str")+field("network.wifi.dns","DNS","str");
+ $("#f-v6").innerHTML=field("network.ipv6.enabled","Enabled","bool",false,0,{help:"v6en"})+field("network.ipv6.slaac","SLAAC","bool",true,0,{help:"slaac"})+field("network.ipv6.address","Static address (Ethernet)","str",0,0,{help:"v6addr"})+field("network.ipv6.dns","DNS (IPv6)","str",0,0,{help:"v6dns"});
+ $("#f-ntp").innerHTML=lstFld("ntp","SNTP servers","ntp");
+ wifiList();
+}
+/* #216 #221: the cards Modbus TCP and Remote syslog */
+function renderServices(){
+ $("#f-mbtcp").innerHTML=field("modbus_tcp.enabled","Enabled","bool",false,0,{help:"mben",hint:"No authentication. Limit the clients below."})+field("modbus_tcp.port","Port","int",0,0,{ph:"502"})+field("modbus_tcp.idle_timeout_s","Idle timeout (s)","int",0,0,{help:"idle",ph:"60"});
+ $("#f-mbc").innerHTML=lstFld("mbc","Allowed clients","mbc");
+ $("#f-mbloc").innerHTML=field("modbus_tcp.local_unit_id","Local unit ID","int",0,0,{help:"lunit",ph:"0 = off"})+field("modbus_tcp.local_writes","Local writes (DOs)","bool",false,0,{help:"lwr"});
+ $("#f-syslog").innerHTML=field("syslog.host","Host","str",0,0,{ml:127,ph:"empty = off",help:"slhost"})+field("syslog.port","Port (UDP)","int",0,0,{ph:"514"})+field("syslog.level","Level","sel",LEVEL,true,{help:"sllvl"});
+}
+/* #201 #216 #221: a list of the document (ntp.servers, modbus_tcp.allowed_clients,
+   mqtt.backup_brokers): a row for each item, x removes it, + adds an empty row (an empty row is
+   an error at its field, #191). A list that is not in the document shows its default. */
+const LISTS={ntp:{p:"ntp.servers",max:3,ml:127,lbl:"SNTP server",rm:"the server",add:"+ server",def:"pool.ntp.org",most:"3 servers at most."},
+ mbc:{p:"modbus_tcp.allowed_clients",max:8,ml:18,lbl:"Allowed client",rm:"the client",add:"+ client",ph:"a.b.c.d or a.b.c.d/n",hint:"Up to 8. Empty = any client."},
+ bk:{p:"mqtt.backup_brokers",max:3}};
+function lstFld(k,label,help){const L=LISTS[k],a=get(cfg,L.p),rows=Array.isArray(a)?a:L.def?[""]:[],id=`l-${k}`;
+ return `<div class="fld${L.def?"":" lfld"}" data-perr="${L.p}" tabindex="-1"><span class="lbl"><span id="${id}">${label}</span>${qi(help,label)}</span><div class="lst" role="group" aria-labelledby="${id}">`+
+  rows.map((v,i)=>`<div class="lrow"><span class="num">${i+1}</span>${ctl(`${L.p}.${i}`,"str",0,0,{aria:`${L.lbl} ${i+1}`,ml:L.ml,ph:!Array.isArray(a)&&L.def?`${L.def} (default)`:L.ph})}<button type="button" data-ldel="${k}.${i}" aria-label="Remove ${L.rm} ${i+1}"${L.def&&rows.length<2?" disabled":""}>x</button></div>`).join("")+
+  `</div><div class="row ladd"><button type="button" data-ladd="${k}"${rows.length>=L.max?" disabled":""}>${L.add}</button>${rows.length>=L.max&&L.most?`<span class="hint">${L.most}</span>`:L.hint?`<span class="hint">${L.hint}</span>`:""}</div></div>`}
+function bkPort(){return val("mqtt.port")||(ccBool("mqtt.tls.enabled",false)?"8883":"1883")}
+/* the port of the primary broker in its row, and as the placeholder of each backup port (a backup without a port uses it): live, at each input */
+function bkLive(){$("#bk-h").textContent=val("mqtt.host");const p=bkPort();$("#bk-p").textContent=p;document.querySelectorAll('[data-p^="mqtt.backup_brokers."][data-p$=".port"]').forEach(e=>e.placeholder=p)}
+function renderBk(){const a=get(cfg,"mqtt.backup_brokers"),bk=Array.isArray(a)?a:[],port=bkPort();
+ $("#f-bk").innerHTML=`<div class="tbox"><table><colgroup><col><col><col><col></colgroup><tr><th>Order</th><th>Host</th><th>Port</th><th></th></tr>`+
+  `<tr><td class="mut">Primary</td><td class="mut"><span id="bk-h">${esc(val("mqtt.host"))}</span> <span class="hint">(Broker and Port above)</span></td><td class="mut" id="bk-p">${esc(port)}</td><td></td></tr>`+
+  bk.map((b,i)=>`<tr><td>Backup ${i+1}</td><td>${ctl(`mqtt.backup_brokers.${i}.host`,"str",0,0,{aria:`Host of backup broker ${i+1}`,ml:127})}</td><td>${ctl(`mqtt.backup_brokers.${i}.port`,"int",0,0,{aria:`Port of backup broker ${i+1}`,ph:port})}</td><td><button type="button" data-ldel="bk.${i}" aria-label="Remove backup broker ${i+1}">x</button></td></tr>`).join("")+
+  `</table></div><div class="row" style="margin-top:8px"><button type="button" data-ladd="bk"${bk.length>=3?" disabled":""}>+ broker</button><span class="hint">Up to 3 backup brokers.</span></div>`}
+/* #221: the TLS keys of mqtt; the files come from GET /api/files (FILES; null: not known) */
+let FILES=null;
+async function loadFiles(){const r=await api("GET","/api/files");FILES=r.status===200&&r.json?r.json.files:null}
+function fileFld(path,lbl,help,kind,none){const v=get(cfg,path),names=(FILES||[]).filter(f=>f.kind===kind).map(f=>f.name);
+ const o=[["",none]].concat(names.map(n=>[n,n]));if(v&&!names.includes(v))o.push([v,FILES?`${v} (not in the gateway)`:v]);
+ return `<div class="fld"><span class="lbl"><label for="i-${path}">${lbl}</label>${qi(help,lbl)}</span><select id="i-${path}" data-p="${path}" data-k="sel">${o.map(([x,t])=>`<option value="${esc(x)}"${x===(v||"")?" selected":""}>${esc(t)}</option>`).join("")}</select><span class="info" id="fi-${path}"></span><button type="button" class="fload" data-load="${path}" data-kind="${kind}" data-lbl="${esc(lbl)}" aria-label="Load a file for ${esc(lbl)}">Load a file…</button></div>`}
+function renderTls(){
+ $("#f-tls").innerHTML=field("mqtt.tls.enabled","Encrypt (TLS)","bool",false,0,{help:"tlsen"})+fileFld("mqtt.tls.ca_file","CA file","ca","certificates","(none: public root CAs)")+field("mqtt.tls.server_name","Server name","str",0,0,{ml:127,ph:"the host of each broker",help:"sn"})+fileFld("mqtt.tls.cert_file","Client certificate","crt","certificates","(none)")+fileFld("mqtt.tls.key_file","Client key","key","key","(none)");
+ tlsInfo()}
+/* below each file: the subject and the expiry of its (first) certificate, or the type of the key */
+function until(d){const n=Math.floor((Date.parse(d+"T00:00:00Z")-Date.now())/864e5);return `until ${esc(d)}`+(n<0?' <span class="bad">(expired)</span>':n<=90?` <span class="warn">(in ${n} days)</span>`:"")}
+function tlsInfo(){const sel=p=>{const e=document.getElementById("i-"+p);return e?e.value:""},file=n=>(FILES||[]).find(f=>f.name===n),
+  put=(p,h)=>{const e=document.getElementById("fi-"+p);if(e)e.innerHTML=h};
+ ["mqtt.tls.ca_file","mqtt.tls.cert_file"].forEach(p=>{const f=file(sel(p)),c=f&&f.certs&&f.certs[0];put(p,c?`${esc(c.subject)} · ${until(c.not_after)}`:"")});
+ const k=file(sel("mqtt.tls.key_file")),c=sel("mqtt.tls.cert_file");
+ put("mqtt.tls.key_file",k&&k.kind==="key"?`Private key, ${esc(k.key_type)}`+(c&&(k.agrees_with||[]).includes(c)?` · agrees with ${esc(c)}`:""):"")}
+/* #208: the Wi-Fi networks near the gateway (GET /api/wifi/scan) */
+let wnets=null,wsim=false;
+function bars(r){const n=r>=-55?4:r>=-67?3:r>=-77?2:1;return `<span class="bars" aria-hidden="true">${[1,2,3,4].map(i=>`<i${i<=n?' class="f"':""}></i>`).join("")}</span>`}
+function wifiList(){const n=$("#w-nets"),cur=val("network.wifi.ssid");if(!wnets)return;
+ n.innerHTML=`<div class="nhd"><b>${wnets.length} network${wnets.length===1?"":"s"} near the gateway</b><span>Strongest first. 2.4 GHz only.${wsim?" Simulated list: QEMU has no radio.":""}</span><span class="grow">${narrow()?"Tap":"Click"} a network to put its SSID into the field.</span></div>`+
+  `<div class="ncol nth" aria-hidden="true"><span>SSID</span><span>Signal</span><span>Security</span><span></span></div>`+
+  wnets.map((w,i)=>`<button type="button" class="net ncol${w.supported?"":" no"}${w.ssid===cur?" on":""}" data-net="${i}" ${w.supported?`aria-pressed="${w.ssid===cur}"`:'aria-disabled="true"'}><span class="ss">${esc(w.ssid)}</span><span class="sg">${bars(w.rssi)}${w.rssi} dBm</span><span class="sec">${esc(w.security)}</span><span class="use">${!w.supported?"Not supported":w.ssid===cur?"In the field":""}</span></button>`).join("")}
+async function wifiScan(){const b=$("#w-find"),n=$("#w-nets");if(!b||b.disabled)return;
+ b.disabled=true;b.textContent="Finding networks…";n.classList.remove("hidden");b.setAttribute("aria-expanded","true");
+ n.innerHTML=`<div class="nhd" aria-live="polite"><span>The gateway looks for Wi-Fi networks. This takes approximately 3 s.</span></div>`;
+ let r=await api("GET","/api/wifi/scan?new=1");const end=Date.now()+20000;
+ while(r.status===202&&Date.now()<end){await new Promise(f=>setTimeout(f,1000));r=await api("GET","/api/wifi/scan")}
+ const f=$("#w-find");if(f){f.disabled=false;f.textContent="Find networks"}
+ if(r.status!==200||!r.json||r.json.state!=="done"){wnets=null;n.innerHTML=`<div class="nhd" aria-live="polite"><span class="bad">No list of the networks (${r.status}): ${esc((r.json||{}).error||"the search did not end")}</span></div>`;return}
+ wnets=r.json.networks||[];wsim=!!r.json.simulated;wifiList()}
+$("#w-nets").onclick=e=>{const b=e.target.closest&&e.target.closest("button.net");if(!b||b.classList.contains("no")||!wnets)return;
+ const i=document.getElementById("i-network.wifi.ssid");if(!i)return;i.value=wnets[+b.dataset.net].ssid;i.dispatchEvent(new Event("input",{bubbles:true}));wifiList()};
+/* #221: the warnings of web.enabled and web.https at their fields while they are off, and the
+   confirmation before a save that turns off the web interface (#193; on a phone a sheet) */
+const WEBOFF="https://github.com/tmijail/mqtt-rs485-gateway/blob/main/docs/how-to/recover-the-gateway.md#the-web-interface-is-off";
+function webWarn(){[["web.enabled",`After the restart, the web UI stops. To turn it on again, push the BOOT button for 2 to 10 s (1 beep). <a href="${WEBOFF}" target="_blank" rel="noopener">How to turn it on again</a>`],
+  ["web.https","Plain HTTP: the password and the configuration go over the network as clear text."]].forEach(([p,t])=>{const e=document.getElementById("i-"+p);if(!e)return;
+  let w=document.getElementById("lw-"+p);if(!e.checked&&!w){w=document.createElement("span");w.className="lwarn";w.id="lw-"+p;w.innerHTML=t;e.parentElement.append(w)}else if(e.checked&&w)w.remove()})}
+function webOff(b){const w=JSON.parse(b).web||{};if(w.enabled!==false||(base191&&base191.web&&base191.web.enabled===false))return Promise.resolve(true);
+ return ask({title:"Turn off the web interface?",action:"Save and restart",danger:true,fact:"Web interface · Enabled: off",
+  html:`<ul><li>After the restart, this page and the REST API do not answer.</li><li>MQTT, Modbus and the other services continue.</li></ul><p style="margin:0 0 4px"><b>To turn on the web interface again:</b></p><ol style="margin:0 0 10px;padding-left:20px"><li>Push the BOOT button of the gateway for 2 to 10 s, until you hear 1 beep. The web server and the access point start.</li><li>Open the web UI, on the network or on the access point.</li><li>In the card Web interface, turn on Enabled. Then select Save and restart.</li></ol><p style="font-size:13px"><a href="${WEBOFF}" target="_blank" rel="noopener">How to turn on the web interface again</a> <span class="mut">(GitHub, needs internet)</span></p>`})}
 /* #172: sparkplug.device_prefix as a list of levels (pfx while the form is open). An empty level
    stays in the form while the user edits it; the document gets only the levels with text. */
 function renderPrefix(){
@@ -351,7 +835,7 @@ function readPrefix(){
  if(v!=="")set(cfg,"sparkplug.device_prefix",v);else unset("sparkplug.device_prefix");
 }
 function readForms(){
- readPrefix();
+ readPrefix();readLio();
  document.querySelectorAll("[data-p]").forEach(e=>{
   const p=e.dataset.p.replace(/\.(\d+)(?=\.|$)/g,".$1"),k=e.dataset.k;let v;
   if(k==="bool"){v=e.checked;if(get(cfg,p)===undefined&&v===(e.dataset.def==="1"))return}else if(k==="int"||k==="num"){if(e.value.trim()===""){unset(p);return}v=Number(e.value)}
@@ -375,7 +859,7 @@ function show(t){
  ["status","config","json"].forEach(n=>$("#tab-"+n).classList.toggle("hidden",n!==t));
  $("#actions").classList.toggle("hidden",t==="status");
  $("#bar").classList.toggle("hidden",t==="status");
- if(cfg&&t==="config"){pfx=null;renderForms()}
+ if(cfg&&t==="config"){pfx=null;renderForms();loadFiles().then(()=>{if(tab==="config"){readForms();renderTls();ccSum()}})}
  if(cfg&&t==="json")$("#raw").value=JSON.stringify(cfg,null,2);
 }
 /* #194: a new web password needs the same value in a second field (a typing error locks the
@@ -402,14 +886,14 @@ let base191=null,fn191=0,t191=0;
 function fld191(path){return path?document.querySelector(pathSel(path)):null}
 function bare191(m,path){m=String(m||"");if(path&&m.startsWith(path+": "))m=m.slice(path.length+2);return m.charAt(0).toUpperCase()+m.slice(1)}
 function clear191(){document.querySelectorAll(".ferr,.fwarn").forEach(e=>e.remove());
- document.querySelectorAll(".err,.wrn").forEach(e=>{e.classList.remove("err","wrn");e.removeAttribute("aria-invalid");e.removeAttribute("aria-describedby")})}
+ document.querySelectorAll(".err,.wrn").forEach(e=>{e.classList.remove("err","wrn");e.removeAttribute("aria-invalid");e.removeAttribute("aria-describedby")});ccBadge()}
 function note191(el,text,cls){const s=document.createElement("span");s.className=cls==="err"?"ferr":"fwarn";s.id="fm"+(++fn191);s.textContent=text;
- el.classList.add(cls);el.insertAdjacentElement("afterend",s);if(cls==="err")el.setAttribute("aria-invalid","true");el.setAttribute("aria-describedby",s.id)}
+ el.classList.add(cls);el.insertAdjacentElement("afterend",s);if(cls==="err")el.setAttribute("aria-invalid","true");el.setAttribute("aria-describedby",s.id);ccReveal(el);ccBadge()}
 /* the device, the tag and the label of a field, for example "Pump1 · Unit ID" */
 function where191(el){
  const p=(el.dataset.p||el.dataset.perr||"").split("."),w=[];
  if(p[0]==="devices"){w.push(val(`devices.${p[1]}.name`)||`Device ${+p[1]+1}`);if(p[2]==="tags")w.push(val(`devices.${p[1]}.tags.${p[3]}.name`)||`Tag ${+p[3]+1}`)}
- else{const h=el.closest(".card"),h2=h&&h.querySelector("h2");if(h2)w.push(h2.textContent.replace(/\?$/,""))}
+ else{const h=el.closest(".card"),h2=h&&h.querySelector("h2");if(h&&h.dataset.t)w.push(h.dataset.t);else if(h2)w.push(h2.textContent.replace(/\?$/,""))}
  let l=el.getAttribute("aria-label")||"",f;
  if(!l&&el.id&&(f=document.querySelector(`label[for="${el.id}"]`)))l=f.textContent;
  if(!l&&(f=el.closest("label")))l=f.firstChild&&f.firstChild.nodeType===3?f.firstChild.textContent:f.textContent;
@@ -424,6 +908,7 @@ async function put(dry){
  if(!same194())return;
  const b=body();if(b==null)return;
  if(!dry&&!await keep194(b))return;
+ if(!dry&&!await webOff(b))return;
  clear191();
  msg(dry?"Validating…":"Saving…");
  const r=await api("PUT","/api/config"+(dry?"?dry_run=1":""),b),j=r.json||{},m=$("#msg"),form=tab==="config";
@@ -463,43 +948,143 @@ function upd191(){
  const d=doc191(),n=d===undefined?-1:ndiff191(base191,d);
  $("#b-chg").innerHTML=n<0?'<span class="dot"></span>JSON not valid, not saved':n?`<span class="dot"></span>${n} change${n>1?"s":""}, not saved`:'<span class="mut">No changes</span>';
 }
-["input","change","click"].forEach(t=>document.addEventListener(t,()=>{clearTimeout(t191);t191=setTimeout(upd191,150)}));
+["input","change","click"].forEach(t=>document.addEventListener(t,()=>{clearTimeout(t191);t191=setTimeout(()=>{upd191();if(tab==="config")ccSum()},150)}));
 async function load(){
  const r=await api("GET","/api/config");
  if(r.status===200){cfg=r.json;base191=JSON.parse(JSON.stringify(cfg));if(tab!=="status")show(tab);upd191();return}
  cfg={};base191={};msg(`Cannot read the saved configuration (${r.status}): ${(r.json||{}).error||""}. Paste or import a document in the JSON tab.`,"bad");
 }
 function yes(b,t,f){return `<span class="${b?"ok":"bad"}">${b?t:f}</span>`}
+/* #206: the name and the location of the gateway in the header and in the title of the browser
+   tab; with no name, the header and the title of before */
+const TITLE0=document.title;
+function hdr206(g,node){const n=g.name||"",l=g.location||"";
+ $("#hname").classList.toggle("hidden",!n);$("#hprod").classList.toggle("hidden",!!n);$("#hsub").classList.toggle("hidden",!n);
+ if(n){$("#hname").innerHTML=`${esc(n)}${l?` <span class="mut" style="font-weight:400">&middot; ${esc(l)}</span>`:""}`;$("#hsub").textContent=`Gateway RS485 \u2192 MQTT Sparkplug B${node?` \u00b7 ${node}`:""}`}
+ document.title=n?(l?`${n} \u00b7 ${l}`:n):TITLE0}
+const mins=s=>`${Math.max(1,Math.ceil(s/60))} min`;
+let st0=null,sm0={};
+/* #204 #217: the tables of the DIs and the DOs. A DO without a local rule has a button (only in
+   normal mode, with the expander that answers); the first change of the page session asks first
+   (#193). The run hours show in hours with one decimal. */
+let ioLast="",ioSt=null,doAsked=false,doMsg="";
+const grp=v=>String(v).replace(/\B(?=(\d{3})+(?!\d))/g,"\u202f");
+const rhTxt=v=>v==null?'<td class="mut">—</td>':`<td class="num">${grp((v/3600).toFixed(1))} h</td>`;
+function stIo(s){const io=s.io,rh=io.run_hours||{},pl=io.pulse_ms||[],ctl=s.mode==="normal"&&io.do!=null;ioSt=s;
+ const st=(b,u)=>u?'<td class="bad">unknown</td>':`<td class="${b?"ok":"mut"}">${b?"on":"off"}</td>`;
+ const di=[...Array(8)].map((_,i)=>`<tr><td class="ch">DI ${i+1}</td>${st(io.di>>i&1)}<td class="num">${grp(io.counters[i])}${io.fast>>i&1?' <span class="mut">fast</span>':""}</td>${rhTxt((rh.di||[])[i])}</tr>`).join("");
+ const dout=[...Array(8)].map((_,i)=>{const on=io.do!=null&&(io.do>>i&1),r=(io.rules||[]).find(x=>x.do===i+1),p=pl[i]||0;
+  const c=r?`<span class="mut">Local rule: DI ${r.di}, ${esc(r.mode)}</span>`:!ctl?'<span class="mut">—</span>':`<button data-do="${i+1}" data-on="${p||!on?1:0}" data-pulse="${p}">${p?`Pulse ${grp(p)} ms`:on?"Turn off":"Turn on"}</button>`;
+  return `<tr><td class="ch">DO ${i+1}</td>${st(on,io.do==null)}<td class="ctl">${c}</td>${rhTxt((rh.do||[])[i])}</tr>`}).join("");
+ const h=`<div class="cols"><div><h3>Digital inputs</h3><table><tr><th>DI</th><th>State</th><th>Counter</th><th>Run hours</th></tr>${di}</table></div>`+
+  `<div><h3>Digital outputs</h3><table><tr><th>DO</th><th>State</th><th>Control</th><th>Run hours</th></tr>${dout}</table>`+
+  (io.do==null?`<p class="bad" style="margin:8px 0 0">The expander of the DOs does not answer (${io.expander.retrying?"retrying, ":""}${io.expander.attempts} attempts): the DOs are unknown.</p>`:"")+
+  (doMsg?`<p class="mut" style="margin:8px 0 0" role="status">${doMsg}</p>`:"")+`</div></div>`;
+ if(h!==ioLast){$("#st-io").innerHTML=h;ioLast=h}}
+$("#st-io").addEventListener("click",async e=>{const b=e.target.closest?e.target.closest("button[data-do]"):null;if(!b||!ioSt)return;
+ const n=+b.dataset.do,on=b.dataset.on==="1",p=+b.dataset.pulse||0,now=ioSt.io.do>>(n-1)&1;
+ const act=p?`Pulse DO ${n}`:`Turn ${on?"on":"off"} DO ${n}`;
+ if(!doAsked){if(!await ask({title:`${act}?`,action:act,danger:true,fact:`DO ${n} · now ${now?"on":"off"} · ${p?`pulse DO, ${grp(p)} ms`:"no local rule"}`,
+  html:`<p class="warnline">${on?`Make sure that it is safe to start the machine on DO ${n}. A machine or a device on this output can start immediately.`:`Make sure that it is safe to stop the machine on DO ${n}. A machine or a device on this output can stop immediately.`}</p>`+
+   `<ul>${p?`<li>The DO is on for ${grp(p)} ms, and then off.</li>`:""}<li>The new state goes to the Sparkplug host in the next NDATA, as for an NCMD.</li><li>An NCMD from a host, or the safe state (failsafe), can change the DO again.</li><li>This page does not ask again for the next changes. It asks again after you load the page again.</li></ul>`}))return;doAsked=true}
+ b.disabled=true;const r=await api("POST","/api/do",JSON.stringify({do:n,on}));
+ doMsg=r.status===200?(p?`DO ${n} is on for ${grp(p)} ms, then off. The host gets the two states in the next NDATA messages.`:`DO ${n} is ${on?"on":"off"}. The host gets the new state in the next NDATA.`)
+  :`<span class="bad">DO ${n} did not change (${r.status}): ${esc((r.json||{}).error||"no answer")}</span>`;
+ poll()});
 async function poll(){
+ if(fwUp)return;   /* #215: during an upload the gateway does not answer the other requests */
  const r=await api("GET","/api/status");if(r.status!==200||!r.json)return;
- const s=r.json,ban=$("#banner");
+ const s=r.json,ban=$("#banner");st0=s;const sm=sm0=s.safe_mode||{};
  $("#node").textContent=s.sparkplug?`${s.sparkplug.group_id} / ${s.sparkplug.edge_node_id}`:"";
+ hdr206(s.gateway||{},$("#node").textContent);
  const tm=s.time||{rtc:{}},bat=tm.rtc&&tm.rtc.lost?" The RTC lost the time while the power was off. Examine the RTC battery: use a rechargeable 3 V cell (for example ML1220). Do not use a CR1220.":"";
- if(s.mode!=="normal"){ban.classList.remove("hidden");ban.textContent=(s.mode==="fault"?`Hardware fault: ${s.fault}. The gateway does not start: no polling and no MQTT. Only the network, this page and the console operate.`:s.mode==="commissioning"?"Commissioning: there is no configuration. Load a configuration and save it to start the gateway.":`Configuration rejected (${s.config.source}): ${s.config.error}. No polling and no MQTT. Correct the configuration and save it.`)+bat}
+ if(s.mode!=="normal"){ban.classList.remove("hidden");ban.textContent=(s.mode==="fault"?`Hardware fault: ${s.fault}. The gateway does not start: no polling and no MQTT. Only the network, this page and the console operate.`:s.mode==="commissioning"?"Commissioning: there is no configuration. Load a configuration and save it to start the gateway.":sm.active?`Safe mode ${sm.cause==="request"?"on request":"after repeated crashes"}: no polling and no MQTT. It ends in ${mins(sm.left_s)}, or with a restart.`:`Configuration rejected (${s.config.source}): ${s.config.error}. No polling and no MQTT. Correct the configuration and save it.`)+bat}
  else{const w=tm.waiting?"Waiting for a valid clock. The gateway does not connect to the MQTT broker and sends no NBIRTH until the clock is valid. Make sure that the gateway can reach the SNTP server, or push \"Set the time from the browser\" (card \"Local I/O\").":"";ban.classList.toggle("hidden",!(w||bat));ban.textContent=(w+bat).trim()}
- $("#st-dev").innerHTML=[["Firmware",s.firmware],["Reset reason",s.reset_reason],["Uptime",`${s.uptime_s} s`],["Mode",s.mode],["Configuration",s.config.source],["Free internal heap",`${s.heap.internal_free} B (min. ${s.heap.internal_min})`],["Free PSRAM",`${s.heap.psram_free} B`]].map(([k,v])=>`<div><div class="mut">${k}</div>${esc(v)}</div>`).join("");
+ $("#st-dev").innerHTML=[["Firmware",s.firmware],["Reset reason",s.reset_reason],["Uptime",`${s.uptime_s} s`],["Mode",sm.active?`${s.mode} (safe mode)`:s.mode],["Configuration",s.config.source],["Free internal heap",`${s.heap.internal_free} B (min. ${s.heap.internal_min})`],["Largest free internal block",`${s.heap.internal_largest} B`],["Free PSRAM",`${s.heap.psram_free} B`],["Chip temperature",s.temperature_c==null?"not available":`${s.temperature_c.toFixed(1)} \u00b0C`]].map(([k,v])=>`<div><div class="mut">${k}</div>${esc(v)}</div>`).join("");
+ if(s.identify_left_s>0&&!$("#ident").disabled)idShow(s.identify_left_s);
+ $("#rr-safe").disabled=!!sm.active||s.mode==="fault";$("#rr-note").classList.toggle("hidden",!sm.active);
+ $("#rr-restart").title=sm.active?"Ends safe mode. The gateway starts in normal mode.":"The gateway disconnects from MQTT, stops the polling and starts again.";
+ lgChg(s.log_levels);
  $("#st-net").innerHTML=`<p>Network ${yes(s.network.up,"up","no IP")} · MQTT ${yes(s.mqtt.connected,"connected",tm.waiting?"waiting for a valid clock":"disconnected")}${s.syslog?` · syslog ${esc(s.syslog)}`:""}</p><table><tr><th>Interface</th><th>State</th><th>IPv4</th><th>IPv6</th></tr>${s.network.interfaces.map(i=>`<tr><td>${i.name}${i.active?" (active)":""}</td><td>${!i.configured?"not configured":!i.link?"no link":i.usable?"up":"no address"}</td><td>${i.ipv4||""}</td><td>${(i.ipv6||[]).join("<br>")}</td></tr>`).join("")}</table>`;
- $("#st-mb").innerHTML=s.devices.length?`<table><tr><th>Device</th><th>Unit</th><th>State</th><th>Cycles / failed</th><th>OK / timeout / CRC / frame / exception</th><th>Values</th></tr>${s.devices.map(d=>`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td>${yes(d.online,"online","offline")}</td><td>${d.cycles} / ${d.failed}</td><td>${d.ok} / ${d.timeout} / ${d.crc} / ${d.frame} / ${d.exception}</td><td>${d.tags.map(t=>`${esc(t.name)}=${t.valid?esc(t.value_text??t.value):"—"}`).join(", ")}</td></tr>`).join("")}</table>`:"no devices";
- const bits=(v)=>[...Array(8)].map((_,i)=>`<span class="${v>>i&1?"ok":"mut"}">${i+1}</span>`).join(" ");
+ $("#st-mb").innerHTML=s.devices.length?`<table><tr><th>Device</th><th>Unit</th><th>State</th><th>Cycles / failed</th><th>OK / timeout / CRC / frame / exception</th><th>Values</th></tr>${s.devices.map(d=>d.enabled===false?`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td><span class="mut">disabled</span></td><td>—</td><td>—</td><td class="mut">not polled</td></tr>`:`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td>${yes(d.online,"online","offline")}</td><td>${d.cycles} / ${d.failed}</td><td>${d.ok} / ${d.timeout} / ${d.crc} / ${d.frame} / ${d.exception}</td><td>${d.tags.map(t=>`${esc(t.name)}=${t.valid?esc(t.value_text??t.value):"—"}`).join(", ")}</td></tr>`).join("")}</table>`:"no devices";
  const AL={none:"silent",device_offline:"device offline",mqtt_down:"no MQTT session",config_error:"configuration rejected"};
- const io=s.io,rules=io.rule_do?[...Array(8)].map((_,i)=>io.rule_do>>i&1?`DO/${i+1}`:"").filter(x=>x).join(", "):"none";
- $("#st-io").innerHTML=`DI: ${bits(io.di)}<br>DO: ${io.do==null?`<span class="bad">unknown: the expander does not answer</span> (${io.expander.retrying?"retrying, ":""}${io.expander.attempts} attempts)`:bits(io.do)}`+
-  `<br>Safe state (failsafe): ${io.failsafe?`<span class="bad">applied (no Sparkplug session)</span>`:"no"} · DOs with a local rule: ${rules}`+
-  `<br>Counters: ${io.counters.map((c,i)=>`${i+1}: ${c}`).join(" · ")}`+
+ const io=s.io;stIo(s);
+ $("#st-io2").innerHTML=`Safe state (failsafe): ${io.failsafe?`<span class="bad">applied (no Sparkplug session)</span>`:"no"}`+
   `<br>Buzzer: ${s.buzzer.alarm==="none"?"silent":`<span class="bad">${AL[s.buzzer.alarm]}</span>`} (alarms: ${s.buzzer.enabled.map(a=>AL[a]).join(", ")||"none"})`+
   `<br>Time: ${new Date(s.time.utc_s*1000).toISOString()} · ${s.time.synced?yes(true,"synchronized by SNTP",""):s.time.source==="rtc"?"from the RTC (not synchronized)":s.time.source==="browser"?"set from the browser (not synchronized)":`<span class="bad">no valid time: no MQTT session until the time is valid</span>`} · RTC ${esc(s.time.rtc.status)}${s.time.rtc.lost?` · <span class="bad">the RTC lost the time: examine its battery</span>`:""}`;
  const cd=s.core_dump||{};$("#st-cd").classList.toggle("hidden",!cd.present);$("#cd-txt").textContent=cd.present?`Core dump in flash: ${cd.size} B (${cd.state}). It can contain secrets: keep the file safe, and erase the dump after the download.`:"";
  sd(s);
  ap(s.ap);
- const f=await api("GET","/api/firmware");if(f.status!==200||!f.json)return;const w=f.json;
- const OS={empty:"empty",previous:"previous",new:"set to boot",rejected:"rejected",invalid:"invalid (its verification failed)"};
- $("#st-fw").innerHTML=`Running: ${esc(w.running)} in ${esc(w.slot)}${w.trial?` · <span class="bad">testing: it must reach ${esc(w.expected_mode)} mode${w.trial_left_s?`, ${w.trial_left_s} s left`:""}</span>`:""}`+
-  `<br>Other slot (${esc(w.other_slot)}): ${w.other?`${esc(w.other)}, `:""}${OS[w.other_state]||esc(w.other_state)}${w.other_why?` (${esc(w.other_why)})`:""}`+
-  `${w.enabled?"":"<br>Updates disabled (ota.enabled)"}${w.safe_mode?`<br><span class="bad">Safe mode: ${w.boot_count} crash resets in a row</span>`:""}`+
-  `<br>State: ${esc(w.state)}${w.phase==="downloading"?` (${w.progress} %)`:""}${w.detail&&w.detail!==w.state?`<br><span class="mut">${esc(w.detail)}</span>`:""}`+
-  `${w.cfg_prev&&w.cfg_prev.version?`<br>Configuration from before the update: ${esc(w.cfg_prev.version)}, ${w.cfg_prev.saved?`saved on ${new Date(w.cfg_prev.saved*1000).toISOString().slice(0,16).replace("T"," ")} UTC`:"saved at an unknown time"}`:""}`;
- $("#fw-prev").classList.toggle("hidden",!w.cfg_prev_restore);
- const ob=$("#fw-other");ob.textContent=`Restart into ${w.other||"the other slot"}`;ob.classList.toggle("hidden",w.other_state==="empty");ob.disabled=!w.can_boot_other;
+ fwMode=s.mode;fwCfgErr=(s.config||{}).error||"";
+ const f=await api("GET","/api/firmware");if(f.status!==200||!f.json||fwUp)return;fwW=f.json;fwRender();
+}
+/* #215: the Firmware card. fwW: the last GET /api/firmware; fwMode, fwCfgErr: the mode of
+   /api/status and the cause of a rejected configuration (#209: safe mode, sm0.active, also has the
+   mode "recovery", but its configuration was not rejected: no panel and no offer to restore);
+   fwSrc: the source ("url", "file" or "");
+   fwFile: the chosen file; fwUp: the upload of this page in progress (XMLHttpRequest gives its
+   progress); fwPend: the last download that this page started (for the #192 box of a refusal). */
+let fwW=null,fwMode="normal",fwCfgErr="",fwSrc="",fwFile=null,fwUp=null,fwPend=null;
+const FWTRIAL=60;   /* CONFIG_GW_FW_SELFCHECK_S */
+const FWOS={empty:"empty",previous:"previous",new:"set to boot",rejected:"rejected",invalid:"invalid: its verification failed"};
+const FWREF=/^pre-flight check: image (.+?) (?:refused|is unknown): (.*?)(?:; force installs it into recovery mode)?$/;
+const cap1=t=>t?t.charAt(0).toUpperCase()+t.slice(1):"";
+const fwShort=h=>`${h.slice(0,8)}…${h.slice(-6)}`;
+const fwDate=t=>t?`saved on ${new Date(t*1000).toISOString().slice(0,16).replace("T"," ")} UTC`:"saved at an unknown time";
+/* the "Last update" of the summary: [value, line below, dot, class of the value] */
+function fwLast(w){
+ if(fwUp)return ["uploading",`${fwUp.total?Math.floor(fwUp.sent*100/fwUp.total):0} %, from this page`,"run",""];
+ const st=w.state||"",i=st.indexOf(": "),head=i<0?st:st.slice(0,i),tail=i<0?"":cap1(st.slice(i+2));let m;
+ switch(w.phase){
+  case "downloading":return [head,`${w.progress} %`,"run",""];
+  case "restarting":return [head,"","run",""];
+  case "failed":return ["failed",w.sha256_file?"The SHA-256 does not agree.":(m=FWREF.exec(w.detail||""))?`The pre-flight check refused ${m[1]}.`:tail,"bad","bad"];
+  case "testing":return [head,w.trial_left_s?`${w.trial_left_s} s left`:"The confirmation is retried.","pz","warn"];
+  case "installed":return [head,"Confirmed after the trial.","ok","ok"];
+  case "rolled_back":return [head,tail,"bad","bad"];
+  default:return [head||"idle",st==="idle"?"No update since the boot.":tail,"idle",""];
+ }
+}
+function fwRender(){
+ const w=fwW||{},up=fwUp,dl=!up&&(w.phase==="downloading"||w.phase==="restarting"),rec=fwMode==="recovery"&&!sm0.active;
+ const run=w.running||"this firmware",other=w.other||"the other slot";
+ $("#fw-run").textContent=w.running||"…";
+ $("#fw-run-s").innerHTML=`in ${esc(w.slot||"?")}${rec?' · <span class="bad">recovery mode</span>':""}${w.safe_mode?` · <span class="bad">safe mode: ${sm0.cause==="request"?"on request":`${w.boot_count} crash resets in a row`}</span>`:""}`;
+ const [lv,ls,ld,lc]=fwLast(w);
+ $("#fw-last").className="v "+lc;$("#fw-last").innerHTML=`<span class="dot ${ld}"></span>${esc(lv)}`;$("#fw-last-s").textContent=ls;
+ const empty=w.other_state==="empty"||!w.other_state;
+ $("#fw-oth").className="v"+(empty?" mut":"");$("#fw-oth").textContent=empty?"empty":other;
+ $("#fw-oth-s").textContent=`${w.other_slot||""}${empty?"":` · ${FWOS[w.other_state]||w.other_state}`}${w.other_why?`: ${w.other_why}`:""}`;
+ $("#fw-mq").textContent=w.mqtt?"On":"Off";
+ const pc=w.cfg_prev&&w.cfg_prev.version;$("#fw-pcfg").classList.toggle("hidden",!pc);
+ if(pc)$("#fw-pcfg").textContent=`Configuration from before the update: ${w.cfg_prev.version}, ${fwDate(w.cfg_prev.saved)}.`;
+ /* the panel of the state, only when necessary */
+ let p="";
+ if(up){const pct=up.total?Math.floor(up.sent*100/up.total):0;
+  p=`<div class="panel" role="status"><h3>Upload of ${esc(up.name)}: ${pct} %</h3><div class="prog"><i style="width:${pct}%"></i></div><div class="mut">${up.sent} of ${up.total} B. SHA-256 check: ${up.sha?"on":"off"}.</div><p class="mut">Keep this page open until the end. During the upload, the gateway does not answer the other requests of this page.</p></div>`}
+ else if(w.phase==="downloading"){const v=(w.state||"").replace(/^downloading ?/,"")||"the image",pd=fwPend||{};let host="";try{host=pd.url?new URL(pd.url).host:""}catch(e){}
+  p=`<div class="panel" role="status"><h3>Download of ${esc(v)}: ${w.progress} %</h3><div class="prog"><i style="width:${w.progress}%"></i></div><div class="mut">${w.bytes}${w.total?` of ${w.total}`:""} B${host?`, from ${esc(host)}`:""}.${pd.url?` SHA-256 check: ${pd.sha?"on":"off"}.`:""}</div><p class="mut">At the end, the gateway verifies the image and restarts into it. The MQTT hosts get the NDEATH. You can close this page.</p></div>`}
+ else if(w.phase==="failed"&&w.sha256_file)
+  p=`<div class="panel pb" role="alert"><h3 class="bad">The update failed: the SHA-256 of the file does not agree</h3><div class="hash">Expected: ${esc(w.sha256_expected)}</div><div class="hash">File:&nbsp;&nbsp;&nbsp;&nbsp; ${esc(w.sha256_file)}</div><p>The gateway did not install the image. ${esc(run)} continues to run. Examine the URL (or the file) and the SHA-256. Then try again.</p></div>`;
+ else if(w.trial){const left=w.trial_left_s||0,pct=Math.max(0,Math.min(100,Math.round((FWTRIAL-left)*100/FWTRIAL)));
+  p=`<div class="panel pw" role="status"><h3>${esc(run)} runs on trial${left?`: ${left} s left`:""}</h3><div class="prog warn"><i style="width:${pct}%"></i></div><p>The gateway examines itself. When it is in ${esc(w.expected_mode||"normal")} mode for ${FWTRIAL} s, it confirms ${esc(run)}. No action is necessary.</p><p class="mut">If a reset occurs during the trial, ${esc(other)} runs again. Until the end of the trial, the gateway refuses a new update, a configuration save and the restart into ${esc(other)}.</p></div>`}
+ else if(rec)
+  p=`<div class="panel pb" role="alert"><h3 class="bad">Recovery mode: the configuration was rejected</h3>${fwCfgErr?`<p>${esc(fwCfgErr)}</p>`:""}<p>The gateway does not poll and does not connect to MQTT.</p><p class="mut">Change the configuration in the Configuration tab.${w.cfg_prev_restore?" Or restore the configuration from before the update (below).":""}</p></div>`;
+ $("#fw-panel").innerHTML=p;
+ /* #192: a download of this page that the pre-flight check refused: the box, with a button that sends it again with force */
+ if(fwPend&&w.phase==="failed"&&FWREF.test(w.detail||"")){const d=fwPend;fwPend=null;
+  fwref(w.detail,d.url.split("/").pop()||d.url,"Install into recovery mode",(v,er)=>fwForce(`Install ${v} into recovery mode?`,"Install into recovery mode",d.url,v,er,()=>fwDownload(d.url,d.sha,true)))}
+ else if(fwPend&&w.phase!=="downloading"&&w.phase!=="restarting")fwPend=null;
+ /* the install area: locked during a transfer and during the trial */
+ const lock=up||dl?"A transfer is in progress. A new update is possible after its end.":w.trial?`Possible after the trial${w.trial_left_s?` (${w.trial_left_s} s)`:""}.`:"";
+ $("#fw-lock").textContent=lock;$("#fw-lock").classList.toggle("hidden",!lock);$("#fw-inst").classList.toggle("locked",!!lock);
+ $("#fw-inst").inert=!!lock;
+ /* the actions with a restart */
+ const zo=!empty,zp=!!w.cfg_prev_restore&&rec;
+ $("#fw-zone").classList.toggle("hidden",!(zo||zp));$("#fw-z-other").classList.toggle("hidden",!zo);$("#fw-z-prev").classList.toggle("hidden",!zp);
+ const ob=$("#fw-other");ob.textContent=`Restart into ${other}`;ob.disabled=!w.can_boot_other;
+ $("#fw-other-p").textContent=w.trial?`Possible after the trial. Then you can go back to ${other} in ${w.other_slot}.`:w.other_state==="invalid"?`${other} in ${w.other_slot} cannot start: its verification failed.`:`Go back to ${other} in ${w.other_slot}. The gateway does a pre-flight check, then restarts into ${other} on trial. A reset during the trial goes back to the running image.`;
+ if(zp)$("#fw-prev-p").textContent=`The configuration of ${w.cfg_prev.version} (${fwDate(w.cfg_prev.saved)}) replaces the stored configuration. Then the gateway restarts.`;
 }
 const CS={unsupported:"not supported in this build",unchecked:"not checked",absent:"no card",not_mounted:"cannot mount",mounted:"mounted",formatting:"formatting",formatted:"formatted"},SP={off:"off",not_started:"did not start",on:"on",failed:"FAILED",stopped:"stopped"};
 let sdc={};
@@ -560,25 +1145,124 @@ function ask(o){const d=$("#dlg"),ok=$("#dlg-ok"),no=$("#dlg-no"),i=$("#dlg-i");
   d.showModal();(o.word?i:no).focus()})}
 // #192: a refusal of the pre-flight check ("pre-flight check: image <version> refused: <reason>; <reason>;
 // force installs it into recovery mode", gw_fw.c check_image; "; " is only between the reasons) as a box
-// with each reason; its button sends the request again with force. False for another error.
-function fwref(e,what,act,go){const b=$("#fw-ref"),m=/^pre-flight check: image (.+?) (?:refused|is unknown): (.*?)(?:; force installs it into recovery mode)?$/.exec(e||"");
+// with each reason; its button calls go(version, reason) (#215: a confirmation, then the request again
+// with force). The same box for an upload, a download and the other slot. False for another error.
+function fwref(e,what,act,go){const b=$("#fw-ref"),m=FWREF.exec(e||"");
  b.classList.toggle("hidden",!m);if(!m)return false;
- b.innerHTML=`<h3>The pre-flight check refused ${esc(what)} (${esc(m[1])})</h3><ul>${m[2].split("; ").map(x=>`<li>${esc(x.charAt(0).toUpperCase()+x.slice(1))}</li>`).join("")}</ul><p>You can ${act==="Install into recovery mode"?"install the image":"start the image"} in recovery mode. In recovery mode the gateway does not poll and does not connect to MQTT: only the network and this page operate. Then change or restore the configuration.</p><div class="row"><button class="danger" id="fw-rgo">${act}</button><button id="fw-rno">Cancel</button></div>`;
- $("#fw-rgo").onclick=()=>{fwref();go()};$("#fw-rno").onclick=()=>fwref();fwmsg("");return true}
-async function fwup(f,force){fwmsg(`Uploading ${f.name}…`);let r;try{r=await fetch("/api/firmware"+(force?"?force=1":""),{method:"POST",headers:{"Content-Type":"application/octet-stream","X-Requested-With":"gateway"},body:f})}catch(x){const w=(await api("GET","/api/firmware")).json;fwmsg(`Upload interrupted (${x.message})`+(w&&w.detail?`: ${w.detail}`:""),"bad");return}
- let j=null;try{j=await r.json()}catch(x){}const er=(j||{}).error||"";
- if(r.status===200)fwmsg("Image installed: restarting into the new version.","ok");else if(!(r.status===409&&fwref(er,f.name,"Install into recovery mode",()=>fwup(f,true))))fwmsg(`Refused (${r.status}): ${er}`,"bad")}
-async function fwother(force){const r=await api("POST","/api/firmware/other"+(force?"?force=1":"")),er=(r.json||{}).error||"";
- if(r.status===202)fwmsg("Restarting into the other slot…","ok");else if(!(r.status===409&&fwref(er,"the image of the other slot","Restart into recovery mode",()=>fwother(true))))fwmsg(`Not restarted (${r.status}): ${er}`,"bad")}
-// issue #144: a 409 of the pre-flight check gives the reasons; "Force" installs a download into recovery mode
-const fwforce=()=>$("#fw-force").checked;
+ b.innerHTML=`<h3>The pre-flight check refused ${esc(what)} (${esc(m[1])})</h3><ul>${m[2].split("; ").map(x=>`<li>${esc(cap1(x))}</li>`).join("")}</ul><p>You can ${act==="Install into recovery mode"?"install the image":"start the image"} in recovery mode. In recovery mode the gateway does not poll and does not connect to MQTT: only the network and this page operate. Then change or restore the configuration.</p>${/NVS/.test(m[2])?`<p class="warn"><b>Caution:</b> Do not install this image unless you accept the loss of the secrets. The image cannot read the NVS of this firmware, and it can erase it.</p>`:""}<div class="row"><button class="danger" id="fw-rgo">${act}</button><button id="fw-rno">Cancel</button></div>`;
+ $("#fw-rgo").onclick=()=>go(m[1],m[2]);$("#fw-rno").onclick=()=>fwref();fwmsg("");return true}
+/* #193: the confirmation of a forced install (into recovery mode) */
+async function fwForce(title,action,what,ver,er,go){
+ if(!await ask({title,action,danger:true,fact:`${esc(what)} · the pre-flight check refused it`,html:`<p>The gateway installs the image although the pre-flight check refused it. The image then must only reach recovery mode: no polling and no MQTT.</p>${/NVS/.test(er)?`<p class="warnline"><b>Caution:</b> Do not continue unless you accept the loss of the secrets. ${esc(ver)} cannot read the NVS of this firmware, and it can erase it.</p>`:""}`}))return;
+ fwref();go()}
 const fwmsg=(t,c)=>{const m=$("#fw-msg");m.textContent=t;m.className=c||"mut"};
-$("#fw-get").onclick=async()=>{const u=$("#fw-url").value.trim();if(!u)return;const b={url:u};if(fwforce())b.force=true;const r=await api("POST","/api/firmware",JSON.stringify(b));fwmsg(r.status===202?"Download started: the gateway restarts at the end.":`Not started (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};
-$("#fw-file").onchange=async e=>{const f=e.target.files[0];e.target.value="";if(!f)return;fwref();
- if(await ask({title:`Install ${f.name}?`,action:"Install and restart",fact:`${f.size} B`,html:"<p>The gateway writes the image into the other slot, then restarts into it. The new image runs on trial: if the trial fails, the gateway goes back to this firmware.</p>"}))fwup(f,false)};
+/* the SHA-256 field: its error below it (#191), in place of the hint */
+function fwShaErr(t){const e=$("#fw-sha"),x=$("#fw-sha-e");e.classList.toggle("err",!!t);x.textContent=t||"";x.classList.toggle("hidden",!t);$("#fw-sha-h").classList.toggle("hidden",!!t);
+ if(t)e.setAttribute("aria-invalid","true");else e.removeAttribute("aria-invalid");e.setAttribute("aria-describedby",t?"fw-sha-e":"fw-sha-h")}
+/* "" (no check), the SHA-256 in small letters, or null (an error at the field). Capital letters
+   change to small letters; a space is an error. */
+function fwShaRead(){const e=$("#fw-sha"),v=e.value.toLowerCase();e.value=v;fwShaErr("");
+ if(v===""||/^[0-9a-f]{64}$/.test(v))return v;
+ fwShaErr(`Give 64 hexadecimal characters (0-9, a-f), or keep the field empty. ${v.length!==64?`This value has ${v.length}.`:"This value has other characters."}`);return null}
+function fwGoUpd(){const b=$("#fw-go"),f=fwSrc==="file";
+ b.textContent=fwSrc==="url"?"Download and install":f?"Upload and install":"Install";b.disabled=!fwSrc||f&&!fwFile;
+ if(!fwSrc||f&&!fwFile)fwmsg(fwSrc?"Choose a file first.":"Choose a source first.")}
+function fwSrcSet(v){fwSrc=v;document.querySelectorAll("#fw-card [data-src]").forEach(b=>b.setAttribute("aria-checked",String(b.dataset.src===v)));
+ $("#fw-s0").classList.toggle("hidden",!!v);$("#fw-s1").classList.toggle("hidden",v!=="url");$("#fw-s2").classList.toggle("hidden",v!=="file");fwmsg("");fwGoUpd()}
+document.querySelectorAll("#fw-card [data-src]").forEach(b=>{b.onclick=()=>{fwSrcSet(b.dataset.src);(b.dataset.src==="url"?$("#fw-url"):$("#fw-fpick")).focus()};
+ b.onkeydown=e=>{if(e.key.startsWith("Arrow")){e.preventDefault();const o=$(`#fw-card [data-src="${b.dataset.src==="url"?"file":"url"}"]`);fwSrcSet(o.dataset.src);o.focus()}}});
+$("#fw-fpick").onclick=()=>$("#fw-file").click();
+/* #215: the choice of a file does not start the upload */
+$("#fw-file").onchange=e=>{const f=e.target.files[0];e.target.value="";if(!f)return;fwFile=f;fwref();
+ $("#fw-fname").textContent=f.name;$("#fw-fsize").textContent=`${f.size} B`;$("#fw-fpick").textContent="Choose another file";fwmsg("");fwGoUpd()};
+$("#fw-sha").oninput=()=>{if($("#fw-sha").classList.contains("err"))fwShaErr("")};
+$("#fw-mq-go").onclick=e=>{e.preventDefault();show("config");const c=$("#c-ota");if(c){ccReveal(c.firstElementChild);c.scrollIntoView({block:"start"})}};
+$("#fw-go").onclick=async()=>{fwref();const sha=fwShaRead();
+ if(sha===null){fwmsg("Not started: correct the SHA-256.","bad");$("#fw-sha").focus();return}
+ const w=fwW||{},slot=w.other_slot||"the other slot",run=w.running||"this firmware",
+  trial=`<p class="mut">The new image runs on trial for ${FWTRIAL}&nbsp;s. If the trial fails, the gateway goes back to ${esc(run)}.</p>`;
+ if(fwSrc==="url"){const u=$("#fw-url").value.trim();
+  if(!u){fwmsg("Not started: give the URL of the image.","bad");$("#fw-url").focus();return}
+  if(await ask({title:"Download and install the image?",action:"Download and install",fact:`${esc(u)} · ${sha?`SHA-256 ${fwShort(sha)}`:"SHA-256 check: off"}`,
+   html:`<p>The gateway downloads the image into ${esc(slot)} and verifies it. Then it restarts into the image. The MQTT hosts get the NDEATH.</p>${trial}`}))fwDownload(u,sha,false)}
+ else if(fwSrc==="file"&&fwFile){const f=fwFile;
+  if(await ask({title:`Install ${f.name}?`,action:"Upload and install",fact:`${f.size} B · SHA-256 check: ${sha?"on":"off"}`,
+   html:`<p>This page uploads the image into ${esc(slot)}. The gateway verifies it, then restarts into it. The MQTT hosts get the NDEATH.</p>${trial}`}))fwUpload(f,sha,false)}};
+async function fwDownload(u,sha,force){const b={url:u};if(sha)b.sha256=sha;if(force)b.force=true;
+ const r=await api("POST","/api/firmware",JSON.stringify(b)),er=(r.json||{}).error||"";
+ if(r.status===202){fwPend={url:u,sha};fwmsg("Download started: the gateway restarts at the end.","ok");poll()}
+ else if(er.startsWith('"sha256"')){fwShaErr(cap1(er.replace(/^"sha256": /,"")));fwmsg("Not started: correct the SHA-256.","bad")}
+ else fwmsg(`Not started (${r.status}): ${er}`,"bad")}
+/* #215: the upload with XMLHttpRequest, because fetch gives no progress of an upload */
+function fwUpload(f,sha,force){fwref();fwShaErr("");fwmsg("");fwUp={name:f.name,sent:0,total:f.size,sha:!!sha};fwRender();
+ const x=new XMLHttpRequest();x.open("POST","/api/firmware"+(force?"?force=1":""));
+ x.setRequestHeader("Content-Type","application/octet-stream");x.setRequestHeader("X-Requested-With","gateway");if(sha)x.setRequestHeader("X-Image-SHA256",sha);
+ x.upload.onprogress=e=>{if(!fwUp)return;fwUp.sent=e.loaded;if(e.lengthComputable)fwUp.total=e.total;fwRender()};
+ x.onerror=x.ontimeout=async()=>{fwUp=null;fwRender();const w=(await api("GET","/api/firmware")).json;fwmsg("Upload interrupted"+(w&&w.detail?`: ${w.detail}`:"."),"bad");poll()};
+ x.onload=()=>{fwUp=null;let j={};try{j=JSON.parse(x.responseText)||{}}catch(e){}const er=j.error||"";
+  if(x.status===200)fwmsg("Image installed: restarting into the new version.","ok");
+  else if(x.status===422)fwShaErr("The file has another SHA-256. Examine the file (or the URL) and the SHA-256.");
+  else if(!(x.status===409&&fwref(er,f.name,"Install into recovery mode",(v,r)=>fwForce(`Install ${v} into recovery mode?`,"Install into recovery mode",f.name,v,r,()=>fwUpload(f,sha,true)))))fwmsg(`Refused (${x.status}): ${er}`,"bad");
+  fwRender();poll()};
+ x.send(f)}
+async function fwother(force){const r=await api("POST","/api/firmware/other"+(force?"?force=1":"")),er=(r.json||{}).error||"";
+ if(r.status===202)fwmsg("Restarting into the other slot…","ok");else if(!(r.status===409&&fwref(er,"the image of the other slot","Restart into recovery mode",(v,x)=>fwForce(`Restart into ${v} in recovery mode?`,"Restart into recovery mode",`${v} in ${(fwW||{}).other_slot||"the other slot"}`,v,x,()=>fwother(true)))))fwmsg(`Not restarted (${r.status}): ${er}`,"bad")}
 // issue #146: in recovery mode, the configuration from before the update replaces the stored one
-$("#fw-prev").onclick=async()=>{if(!await ask({title:"Restore the configuration from before the update?",action:"Restore and restart",html:"<p>The configuration from before the update replaces the stored configuration. Then the gateway restarts.</p>"}))return;const r=await api("POST","/api/config?restore_prev=1");fwmsg(r.status===200?"Configuration restored: restarting…":`Not restored (${r.status}): ${(r.json||{}).error||""}`,r.status===200?"ok":"bad")};
-$("#fw-other").onclick=async()=>{const v=$("#fw-other").textContent;fwref();if(await ask({title:`${v}?`,action:v,html:"<p>The image of the other slot runs on trial. A reset during the trial goes back to this firmware.</p>"}))fwother(false)};
+$("#fw-prev").onclick=async()=>{const c=(fwW||{}).cfg_prev||{};if(!await ask({title:"Restore the configuration from before the update?",action:"Restore and restart",danger:true,fact:`${esc(c.version||"")} · ${fwDate(c.saved)}`,html:"<p>The configuration from before the update replaces the stored configuration. Then the gateway restarts.</p>"}))return;const r=await api("POST","/api/config?restore_prev=1");fwmsg(r.status===200?"Configuration restored: restarting…":`Not restored (${r.status}): ${(r.json||{}).error||""}`,r.status===200?"ok":"bad")};
+$("#fw-other").onclick=async()=>{const w=fwW||{},v=w.other||"the other slot";fwref();if(await ask({title:`Restart into ${v}?`,action:`Restart into ${v}`,danger:true,fact:`${esc(v)} in ${esc(w.other_slot||"")} · ${esc(FWOS[w.other_state]||w.other_state||"")}`,html:`<p>The image of the other slot runs on trial. A reset during the trial goes back to ${esc(w.running||"this firmware")}. The MQTT hosts get the NDEATH.</p>`}))fwother(false)};
+/* #207: Identify. The LED and the buzzer for 10 s; the button stays disabled for the time left
+   (a second push does not start the time again) */
+let idEnd=0,idT=0;
+function idShow(left){const b=$("#ident"),m=$("#id-msg");clearTimeout(idT);
+ if(left>0){idEnd=Date.now()+left*1000;b.disabled=true;m.className="ok";m.setAttribute("role","status");m.textContent=`The LED blinks and the buzzer beeps on the gateway: ${left} s left.`;idT=setTimeout(()=>idShow(Math.ceil((idEnd-Date.now())/1000)),1000)}
+ else{b.disabled=false;m.className="mut";m.removeAttribute("role");m.textContent="For 10 s, the status LED blinks and the buzzer beeps."}}
+$("#ident").onclick=async()=>{const r=await api("POST","/api/identify"),j=r.json||{};
+ if(r.status===202||(r.status===409&&j.identify_left_s))idShow(j.identify_left_s||10);else{const m=$("#id-msg");m.className="bad";m.textContent=`Not started (${r.status}): ${j.error||""}`}};
+/* #209 #203: the card Restart and reset. The first line of a dialog tells which gateway it is. */
+function rrmsg(t,c){const m=$("#rr-msg");m.textContent=t;m.className=c||"mut"}
+function who(){const s=st0||{},g=s.gateway||{},sp=s.sparkplug,i=((s.network||{}).interfaces||[]).find(x=>x.active);
+ return [g.name&&esc(g.name),sp&&esc(`${sp.group_id} / ${sp.edge_node_id}`),esc((i&&i.ipv4)||location.hostname),s.firmware&&`firmware ${esc(s.firmware)}`].filter(x=>x).join(" &middot; ")}
+const apOf=()=>{const a=(st0||{}).ap||{};return a.available&&a.ssid?a.ssid:""};
+$("#rr-restart").onclick=async()=>{if(!await ask(RST))return;const r=await api("POST","/api/restart");rrmsg(r.status===202?"Restarting…":`Not restarted (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"":"bad")};
+$("#rr-safe").onclick=async()=>{const ap=apOf();if(!await ask({title:"Restart into safe mode?",action:"Restart into safe mode",danger:true,fact:who(),
+  html:`<p>The gateway restarts in safe mode. It does not poll and does not connect to MQTT: the hosts get the NDEATH and show the tags as stale.</p><p>Only the network, this page, the shell and the firmware upload operate.${ap?` The access point <b>${esc(ap)}</b> starts.`:""} The configuration stays.</p><p class="mut">Safe mode ends after 60 min, or with a restart.</p>`}))return;
+ const r=await api("POST","/api/restart?safe=1");rrmsg(r.status===202?"Restarting into safe mode…":`Not restarted (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"":"bad")};
+$("#rr-reset").onclick=async()=>{const ap=apOf();if(!await ask({title:"Do a factory reset of the gateway?",action:"Erase and restart",danger:true,word:"ERASE",fact:who(),
+  html:`<ul><li>The gateway erases the configuration, the secrets (for example the MQTT password), the certificate of the web UI, the web password and the pulse counters of the DIs. The restart also sets the Modbus counters to 0.</li><li>Then it restarts in commissioning mode: no polling and no MQTT until it gets a new configuration.</li>${ap?`<li>The access point <b>${esc(ap)}</b> starts. Its Wi-Fi password is a new commissioning password: only the serial console shows it.</li>`:""}<li>The web UI gets a new certificate: the browser shows a warning again.</li></ul><p class="warnline">This page stops. <a href="/api/config?download=1" download>Export the configuration</a> first if you need it again.</p>`}))return;
+ const r=await api("POST","/api/factory-reset?confirm=1");rrmsg(r.status===202?"Erased: the gateway restarts in commissioning mode. This page stops: open the web UI again with the commissioning password of the serial console.":`Not erased (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};
+/* #200 #199: the card Log. The page asks for the log lines (GET /api/log, every 2 s) and for the
+   tags (GET /api/log/level) only while the card is open (the decision of #200): nothing before
+   the first open, and the requests stop when the card closes. Pause keeps the view; the new
+   lines wait. */
+let lgT=0,lgSince=0,lgPause=false,lgWait=[],lgBuild="info",lgBusy=false,lgLast="",lgCpT=0;
+const LGMAX=2000,lgOpen=()=>$("#lg-card").open;
+function lgLine(t){const d=document.createElement("div");d.className="ln"+(t.startsWith("--")?" d":({W:" w",E:" e",D:" d",V:" d"}[t.charAt(0)]||""));d.textContent=t;return d}
+function lgAdd(ls){const v=$("#lg-lines"),end=v.scrollTop+v.clientHeight>=v.scrollHeight-4,f=document.createDocumentFragment();
+ ls.forEach(t=>f.append(lgLine(t)));v.append(f);while(v.childElementCount>LGMAX)v.firstElementChild.remove();if(end)v.scrollTop=v.scrollHeight}
+function lgState(j){const n=lgWait.length;
+ $("#lg-st").innerHTML=lgPause?`<span class="ldot pz"></span>Paused: ${n} new line${n===1?"":"s"} wait${n===1?"s":""}`:'<span class="ldot"></span>Live: new lines every 2 s';
+ if(lgPause)$("#lg-info").textContent="\u00b7 the view does not change";else if(j)$("#lg-info").textContent=`\u00b7 ${j.count} lines in the buffer (${Math.round(j.size/1024)} KB)`}
+async function lgPoll(){if(lgBusy||!lgOpen())return;lgBusy=true;const r=await api("GET",`/api/log?since=${lgSince}`);lgBusy=false;if(!lgOpen())return;
+ const j=r.json;if(r.status!==200||!j||!j.lines){$("#lg-st").innerHTML=`<span class="bad">No log lines (${r.status}): ${esc((j||{}).error||"no answer")}</span>`;return}
+ const ls=[];if(j.since===0&&lgSince!==0)ls.push("-- the gateway restarted --");
+ if(j.lost)ls.push(`-- ${j.lost} line${j.lost>1?"s":""} lost: the buffer was full --`);
+ ls.push(...j.lines);lgSince=j.last;if(lgPause)lgWait.push(...ls);else lgAdd(ls);lgState(j)}
+function lgChg(c){c=c||[];const k=JSON.stringify(c);if(k===lgLast)return;lgLast=k;const e=$("#lg-chg");e.classList.toggle("hidden",!c.length);
+ e.innerHTML=c.length?'<span class="mut">Changed levels (not saved):</span>'+c.map(x=>`<span class="pill">${esc(x.tag)}: ${esc(x.level)} <button data-lr="${esc(x.tag)}" aria-label="Reset ${esc(x.tag)} to ${esc(lgBuild)}">Reset</button></span>`).join("")+'<button data-lr="">Reset all</button>':""}
+async function lgLevels(){const r=await api("GET","/api/log/level"),j=r.json;if(r.status!==200||!j)return;lgBuild=j.build;
+ const t=$("#lg-tag"),tv=t.value,l=$("#lg-lvl"),lv=l.value;
+ t.innerHTML='<option value="*">* (all the tags)</option>'+j.tags.filter(x=>x!=="*").sort().map(x=>`<option>${esc(x)}</option>`).join("");t.value=tv||"*";if(!t.value)t.value="*";
+ l.innerHTML=j.levels.map(x=>`<option>${x}</option>`).join("");l.value=lv||(j.levels.includes("debug")?"debug":j.build);lgLast="";lgChg(j.changed)}
+async function lgSet(b){const r=await api("POST","/api/log/level",JSON.stringify(b)),j=r.json||{},m=$("#lg-msg");
+ m.textContent=r.status===200?(j.reset?`Every tag: ${lgBuild}`:`${j.tag}: ${j.level}`):`Not set (${r.status}): ${j.error||""}`;m.className=r.status===200?"ok":"bad";lgLevels()}
+$("#lg-card").addEventListener("toggle",()=>{const o=lgOpen();$("#lg-closed").classList.toggle("hidden",o);clearInterval(lgT);lgT=0;
+ if(!o)return;lgState();lgLevels();lgPoll();lgT=setInterval(lgPoll,2000)});
+$("#lg-pause").onclick=()=>{lgPause=!lgPause;$("#lg-pause").textContent=lgPause?"Resume":"Pause";if(!lgPause){lgAdd(lgWait);lgWait=[]}lgState()};
+$("#lg-copy").onclick=async()=>{const v=$("#lg-lines"),t=[...v.children].map(d=>d.textContent).join("\n"),n=v.childElementCount;
+ try{await navigator.clipboard.writeText(t)}catch(x){const a=document.createElement("textarea");a.value=t;document.body.append(a);a.select();document.execCommand("copy");a.remove()}
+ const m=$("#lg-cp");m.textContent=`${n} line${n===1?"":"s"} copied.`;clearTimeout(lgCpT);lgCpT=setTimeout(()=>{m.textContent=""},4000)};
+$("#lg-set").onclick=()=>lgSet({tag:$("#lg-tag").value,level:$("#lg-lvl").value});
+$("#lg-chg").onclick=e=>{const t=e.target.dataset.lr;if(t===undefined)return;lgSet(t?{tag:t,level:lgBuild}:{reset:true})};
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>show(b.dataset.tab));
 $("#b-check").onclick=()=>put(true);$("#b-save").onclick=()=>put(false);
 $("#b-export").onclick=()=>{location.href="/api/config?download=1"};
@@ -592,7 +1276,40 @@ $("#f-dev").onclick=e=>{const t=e.target.dataset;if(!(t.addTag||t.delTag||t.delD
  if(t.addTag){const d=cfg.devices[+t.addTag];d.tags.push({name:"Tag"+(d.tags.length+1),area:"holding",address:0,type:"uint16"})}
  if(t.delTag){const[i,k]=t.delTag.split(".").map(Number);cfg.devices[i].tags.splice(k,1)}
  if(t.delDev)cfg.devices.splice(+t.delDev,1);renderForms()};
-$("#tab-config").addEventListener("input",e=>{if(e.target.id==="i-web.password")pw194();if(e.target.dataset.lvl!==undefined)pfx[+e.target.dataset.lvl]=e.target.value.trim().replace(/:/g,"");updTopics()});
+$("#tab-config").addEventListener("input",e=>{if(e.target.id==="i-web.password")pw194();if(e.target.dataset.lvl!==undefined)pfx[+e.target.dataset.lvl]=e.target.value.trim().replace(/:/g,"");updTopics();
+ const id=e.target.id;if(id==="i-network.wifi.ssid")wifiList();if(id==="i-mqtt.host"||id==="i-mqtt.port"||id==="i-mqtt.tls.enabled")bkLive()});
+/* #201 #208 #216 #221 */
+$("#tab-config").addEventListener("change",e=>{const id=e.target.id||"";if(id==="i-web.enabled"||id==="i-web.https")webWarn();if(id.startsWith("i-mqtt.tls."))tlsInfo()});
+$("#tab-config").addEventListener("click",e=>{if(e.target.id==="w-find"){wifiScan();return}
+ const t=e.target.closest&&e.target.closest("[data-ladd],[data-ldel]");if(!t)return;readForms();
+ const add=t.dataset.ladd!==undefined,[k,i]=(add?t.dataset.ladd:t.dataset.ldel).split("."),L=LISTS[k];let a=get(cfg,L.p);
+ if(add){if(!Array.isArray(a)){a=L.def?[L.def]:[];set(cfg,L.p,a)}if(a.length<L.max)a.push(k==="bk"?{host:""}:"")}
+ else if(Array.isArray(a)){a.splice(+i,1);if(!a.length)unset(L.p)}
+ renderForms();const ins=[...document.querySelectorAll(`[data-p^="${L.p}."]`)].filter(x=>!/\.port$/.test(x.dataset.p));if(add&&ins.length)ins[ins.length-1].focus()});
+/* #221: "Load a file…" of a file field: the PEM file goes to the gateway (PUT /api/files).
+   Decision of the product owner (option A): after the load, that field selects the new file; the
+   bar shows the change, and the TLS connection changes only after Save and restart. A file of
+   the other kind (a key for a certificate field) is loaded, but the field does not select it.
+   The JSON tab keeps its text: only the key of the field changes in it.
+   TODO(#221): the load dialog and the replace of an existing file wait for the approval of the
+   row "Load, replace and remove the PEM files"; until then a file with the same name is refused. */
+let tlsTo=null;
+$("#tab-config").addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("button[data-load]");if(!b)return;
+ tlsTo={p:b.dataset.load,kind:b.dataset.kind,lbl:b.dataset.lbl};$("#tls-file").click()});
+$("#tls-file").onchange=async e=>{const f=e.target.files[0],to=tlsTo;e.target.value="";if(!f||!to)return;const m=$("#tls-msg"),say=(t,c)=>{m.textContent=t;m.className=c};
+ if(f.size>16384){say(`${f.name}: ${f.size} B. The maximum is 16384 B.`,"bad");return}
+ say(`Loading ${f.name}…`,"mut");let r,j=null;
+ try{r=await fetch("/api/files?name="+encodeURIComponent(f.name),{method:"PUT",headers:{"Content-Type":"application/x-pem-file","X-Requested-With":"gateway"},body:await f.text(),cache:"no-store"})}
+ catch(x){say(`No answer from the gateway (${x.message})`,"bad");return}
+ try{j=await r.json()}catch(x){}
+ if(r.status!==201||!j||!j.file){say(r.status===409?`${f.name} is already in the gateway. Give the file another name, then load it again.`:`${f.name} is not loaded (${r.status}): ${(j||{}).error||""}`,"bad");return}
+ const fi=j.file,ok=fi.kind===to.kind;await loadFiles();
+ if(tab==="config"){readForms();if(ok)set(cfg,to.p,fi.name);renderTls()}
+ else if(ok&&tab==="json"){let c;try{c=JSON.parse($("#raw").value)}catch(x){say(`${fi.name} is in the gateway. The JSON is not valid: write "${fi.name}" into ${to.p} yourself.`,"warn");return}
+  set(c,to.p,fi.name);cfg=c;$("#raw").value=JSON.stringify(cfg,null,2)}
+ else if(ok)set(cfg,to.p,fi.name);   /* the Status tab: cfg holds the forms (show) */
+ if(!ok){say(`${fi.name} is in the gateway, but it is ${fi.kind==="key"?"a private key":"a certificate file"}. The field ${to.lbl} does not show it.`,"warn");return}
+ say(`${fi.name} is in the gateway. The field ${to.lbl} shows it. Select Save and restart to use it.`,"ok");upd191()};
 show("status");load();poll();setInterval(poll,2000);
 </script>
 </body>

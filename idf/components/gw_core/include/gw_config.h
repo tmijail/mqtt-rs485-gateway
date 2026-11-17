@@ -34,6 +34,8 @@ extern "C" {
 #define GW_USER_SIZE   33   /* web user name */
 #define GW_PWHASH_SIZE 128  /* "pbkdf2-sha256$<iterations>$<salt hex>$<hash hex>" (gw_auth.h) */
 #define GW_FILE_SIZE   33   /* name of a file next to config.json (TLS certificates, MQTT-4/5) */
+#define GW_LABEL_SIZE  64   /* #206: gateway.name and gateway.location, 0..63 bytes */
+#define GW_COMMENT_MAX 255  /* #206: gateway.comment, bytes (not kept: only the document has it) */
 #define GW_MAX_BACKUP_BROKERS 3  /* MQTT-6: besides mqtt.host */
 #define GW_CFG_ERR_SIZE 192
 #define GW_CFG_PATH_SIZE 96
@@ -47,10 +49,21 @@ extern "C" {
 #define GW_CFG_BUILD_DEFAULT (-1)   /* optional key absent: the build-time default applies */
 #define GW_MAX_GAP_LIMIT 1999       /* a block never spans more than 2000 bits */
 #define GW_MBTCP_MAX_ALLOWED 8      /* MB-15: entries of modbus_tcp.allowed_clients */
+#define GW_MAX_NTP_SERVERS 3        /* #201: entries of ntp.servers */
 #define GW_LOCAL_IO_CHANNELS 8      /* DI/1..8 and DO/1..8 */
 #define GW_FAILSAFE_MAX_S 86400     /* IO-3: local_io.failsafe_s */
 #define GW_COUNTER_SAVE_MIN_S 60    /* IO-4: local_io.counter_save_s (or 0) */
 #define GW_COUNTER_SAVE_MAX_S 86400
+#define GW_DI_DEBOUNCE_MAX_MS 1000  /* #211: local_io.di[].debounce_ms */
+#define GW_DI_DEBOUNCE_DEF_MS 20
+#define GW_DO_PULSE_MIN_MS 50       /* #210: local_io.do_pulse_ms (or 0: a normal DO) */
+#define GW_DO_PULSE_MAX_MS 60000
+#define GW_FAST_COUNTERS_MAX 4      /* #218: local_io.fast_counters, one PCNT unit each */
+/* #218: the glitch filter of the PCNT counts 1023 APB cycles at most (PCNT_LL_MAX_GLITCH_WIDTH,
+ * 12.5 ns at 80 MHz): 12 787 ns */
+#define GW_GLITCH_MAX_NS 12787
+#define GW_GLITCH_DEF_NS 1000
+#define GW_RUN_HOURS_CHANNELS (2 * GW_LOCAL_IO_CHANNELS)   /* #217: DI/1..8, then DO/1..8 */
 #define GW_DIAG_MIN_S 10             /* SPB-17: sparkplug.diagnostics_s (or 0) */
 #define GW_DIAG_MAX_S 86400
 #define GW_MAX_TEMPLATE_TAGS 64     /* SPB-18: tags of all template definitions together (NBIRTH) */
@@ -194,18 +207,29 @@ typedef struct {
     bool writable;
     bool has_eng_low;           /* SPB-16: engLow / engHigh properties (optional); in the */
     bool has_eng_high;          /* padding before the doubles: no growth of the structure */
+    bool has_write_min;         /* #196: write_min / write_max given (also in the padding) */
+    bool has_write_max;
     double scale;
     double offset;
     double deadband;
     char units[GW_UNITS_SIZE];  /* SPB-16: property engUnit in the birth ("" = none) */
     float eng_low;              /* published as Float: 8 B per tag instead of 16 (256 tags) */
     float eng_high;
+    /* #196: the range of a DCMD write, in engineering units (after scale and offset). Doubles,
+     * because a limit of a 32-bit or 64-bit integer tag must be exact. */
+    double write_min;
+    double write_max;
 } gw_tag_cfg_t;
 
 typedef struct {
     char name[GW_NAME_SIZE];    /* also the Sparkplug device_id */
     char type[GW_NAME_SIZE];    /* SPB-18: template (device type) name; "" = no template */
     uint8_t unit_id;
+    int8_t write_multiple;      /* #197: 1 = FC15/FC16 also for one coil or register, 0 = FC05/
+                                 * FC06, or GW_CFG_BUILD_DEFAULT (CONFIG_GW_MB_FORCE_MULTI_WRITE);
+                                 * in the padding after unit_id */
+    bool enabled;               /* #214: false = the device stays in the configuration (and the
+                                 * validation examines it), but is not polled and has no DBIRTH */
     uint32_t poll_ms;           /* fast scan period (MB-10) */
     uint32_t slow_poll_ms;      /* MB-12: period of the tags with "scan": "slow" */
     uint16_t offline_after;
@@ -229,8 +253,9 @@ typedef struct {
         gw_ipv6_cfg_t ipv6;
         gw_wifi_cfg_t wifi;
     } network;
-    struct {
-        char server[GW_HOST_SIZE];
+    struct {                     /* #201: tried in order by the SNTP client */
+        char servers[GW_MAX_NTP_SERVERS][GW_HOST_SIZE];
+        uint8_t server_count;    /* 1..GW_MAX_NTP_SERVERS */
     } ntp;
     struct {
         char host[GW_HOST_SIZE];
@@ -271,7 +296,12 @@ typedef struct {
         uint16_t inter_frame_delay_ms;
     } rs485;
     struct {
-        uint16_t di_debounce_ms;
+        uint8_t di_invert;       /* #211: bit n = DI/n+1 is inverted (after the board polarity) */
+        uint16_t di_debounce_ms[GW_LOCAL_IO_CHANNELS];   /* #211: per DI, 0 to 1000 */
+        uint16_t do_pulse_ms[GW_LOCAL_IO_CHANNELS];      /* #210: 0 = a normal DO */
+        uint8_t fast_mask;       /* #218: bit n = the PCNT counts DI/n+1 (at most 4 bits) */
+        uint16_t glitch_ns[GW_LOCAL_IO_CHANNELS];        /* #218: of each fast DI */
+        uint16_t run_hours;      /* #217: bit n = DI/n+1 (n < 8), bit 8+n = DO/n+1 */
         uint32_t failsafe_s;     /* IO-3: seconds without a Sparkplug session before the DOs
                                   * take their safe state; 0 = no reaction to an MQTT loss */
         uint8_t do_failsafe[GW_LOCAL_IO_CHANNELS];   /* gw_do_safe_t of DO/1..8 */
@@ -304,7 +334,8 @@ typedef struct {
     } web;
 
     struct {                     /* FW-1: firmware updates (NCMD and web) */
-        bool enabled;            /* default true */
+        bool mqtt;               /* #223: the NCMD Node Control/Firmware Update is accepted (and
+                                  * in the NBIRTH); default false. The web UI always can */
         char ca_file[GW_FILE_SIZE];  /* CA of the update server; "" = mqtt.tls.ca_file if
                                       * set, else the ESP-IDF bundle of public root CAs */
     } ota;
@@ -318,7 +349,15 @@ typedef struct {
             uint8_t ip[4];
             uint8_t prefix;      /* 0..32 */
         } clients[GW_MBTCP_MAX_ALLOWED];
+        uint8_t local_unit_id;   /* #216: the unit that the gateway answers itself (its DIs, DOs
+                                  * and counters); 0 = off. Never the unit_id of a device */
+        bool local_writes;       /* #216: FC05 and FC15 on the DOs of the local unit */
     } modbus_tcp;
+
+    struct {                     /* #206: for people; "" = none. gateway.comment is not kept */
+        char name[GW_LABEL_SIZE];
+        char location[GW_LABEL_SIZE];
+    } gateway;
 
     uint16_t device_count;
     uint16_t tag_count;
@@ -348,7 +387,7 @@ bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_
 /* Issue #144 item 3: the highest configuration schema that this firmware reads. Raise it (and
  * add the new keys and enum values to the "since" table in gw_config.c) when a key or an enum
  * value is added. Images declare it in their capabilities block (gw_ota.h). */
-#define GW_CONFIG_SCHEMA 1
+#define GW_CONFIG_SCHEMA 2
 
 /** gw_schema_init() with the "since" table of this firmware. */
 void gw_config_schema_init(gw_schema_report_t *rep);

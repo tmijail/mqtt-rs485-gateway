@@ -23,11 +23,15 @@ set(GW_CORE_SRCS
     src/gw_conv.c
     src/gw_debounce.c
     src/gw_mbap.c
+    src/gw_mblocal.c
     src/gw_devstate.c
     src/gw_dout.c
     src/gw_fwlast.c
+    src/gw_ident.c
+    src/gw_iocmd.c
     src/gw_lkgnet.c
     src/gw_localio.c
+    src/gw_logring.c
     src/gw_mbdiag.c
     src/gw_netsel.c
     src/gw_node.c
@@ -44,6 +48,7 @@ set(GW_CORE_SRCS
     src/gw_syslog.c
     src/gw_tagdb.c
     src/gw_utf8.c
+    src/gw_wifiown.c
     src/gw_wpa.c
     src/mb_master.c
     src/mb_rtu.c

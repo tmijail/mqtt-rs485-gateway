@@ -14,11 +14,17 @@ This folder has the documentation of the RS485 (Modbus RTU) to MQTT Sparkplug B 
 | Change the web password (also the Wi-Fi password of the access point) | [Change the web password](how-to/change-the-web-password.md) | How-to |
 | Open the web UI through the Wi-Fi of the gateway on a later visit | [Get on the access point on a later visit](how-to/get-on-the-access-point.md) | How-to |
 | Add a Modbus device and its tags | [Add a Modbus device and its tags](how-to/add-a-modbus-device.md) | How-to |
+| Connect the gateway to a Wi-Fi network, as a backup of Ethernet or as the primary interface | [Connect the gateway to a Wi-Fi network](how-to/connect-the-gateway-to-wi-fi.md) | How-to |
+| Encrypt the MQTT connection, with the CA of the broker and a client certificate | [Connect to a broker with TLS](how-to/connect-to-a-broker-with-tls.md) | How-to |
 | Change the configuration, keep a copy, or load a copy | [Change, back up and restore the configuration](how-to/change-the-configuration.md) | How-to |
 | Write a value to a device or set a digital output from a host | [Write a value to a Modbus device or a digital output](how-to/write-to-a-modbus-device.md) | How-to |
+| Set the DIs and DOs of the board (inversion, debounce, fast counters, pulse DOs, run hours, local rules), or set a DO from the web UI | [Set up the local inputs and outputs](how-to/set-up-the-local-io.md) | How-to |
 | Send the data to UMH Core | [Connect the gateway to UMH Core](how-to/connect-to-umh-core.md) | How-to |
 | Install a new firmware image, or go back to the earlier one | [Update the firmware](how-to/update-the-firmware.md) | How-to |
 | Repair a gateway that does not operate normally, or do a factory reset | [Recover a gateway](how-to/recover-the-gateway.md) | How-to |
+| Stop the polling and MQTT for a time, or erase the gateway from a distance | [Restart into safe mode or do a factory reset](how-to/restart-into-safe-mode-or-reset.md) | How-to |
+| Read the log in the browser, or get more log lines from one part of the firmware | [Read the live log](how-to/read-the-live-log.md) | How-to |
+| Find one gateway in a panel with a number of gateways | [Find the gateway in a panel](how-to/find-the-gateway-in-a-panel.md) | How-to |
 | Install the RTC battery | [Fit the RTC battery](how-to/fit-the-rtc-battery.md) | How-to |
 | Get the data of a crash | [Get and decode a core dump](how-to/decode-a-core-dump.md) | How-to |
 

@@ -62,9 +62,9 @@ static const char *key_name(void)
 #if CONFIG_GW_SOFTAP
 #include "esp_netif.h"
 #include "esp_wifi.h"
+#include "gw_net.h"
 
 static esp_netif_t *s_netif;
-static bool s_own_driver;   /* started by this module (no Wi-Fi station configured) */
 
 /* The configuration of the access point: WPA2-PSK with s_key, or open (no key) during the open
  * period of a claim window. A change while it runs disconnects its clients. */
@@ -92,43 +92,27 @@ static esp_err_t radio_apply(bool open)
     return e;
 }
 
+static esp_err_t ap_configure(void *ctx)
+{
+    return radio_apply(*(const bool *)ctx);
+}
+
+/* Issue #208: gw_net owns the driver (gw_wifiown). The access point is one of its users: the
+ * driver starts in AP mode when it is off, or gets the AP interface (APSTA) next to the station
+ * or a scan. */
 static esp_err_t radio_start(bool open)
 {
     if (s_netif == NULL) {
         s_netif = esp_netif_create_default_wifi_ap();
         ESP_RETURN_ON_FALSE(s_netif != NULL, ESP_FAIL, TAG, "AP netif");
     }
-    wifi_mode_t mode = WIFI_MODE_NULL;
-    esp_err_t e = esp_wifi_get_mode(&mode);
-    if (e == ESP_ERR_WIFI_NOT_INIT) {
-        const wifi_init_config_t wc = WIFI_INIT_CONFIG_DEFAULT();
-        ESP_RETURN_ON_ERROR(esp_wifi_init(&wc), TAG, "wifi init");
-        ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "storage");
-        s_own_driver = true;
-        mode = WIFI_MODE_NULL;
-    } else {
-        ESP_RETURN_ON_ERROR(e, TAG, "wifi mode");
-    }
-    bool sta = mode == WIFI_MODE_STA || mode == WIFI_MODE_APSTA;
-    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(sta ? WIFI_MODE_APSTA : WIFI_MODE_AP), TAG, "mode");
-    ESP_RETURN_ON_ERROR(radio_apply(open), TAG, "config");
-    if (s_own_driver) {
-        ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "start");
-    }
-    return ESP_OK;
+    return gw_net_wifi_acquire(GW_WIFI_USER_AP, ap_configure, &open);
 }
 
+/* The station and a scan go on; with no other user the driver stops and is deinitialised. */
 static void radio_stop(void)
 {
-    wifi_mode_t mode;
-    if (esp_wifi_get_mode(&mode) != ESP_OK) {
-        return;
-    }
-    if (mode == WIFI_MODE_APSTA) {
-        esp_wifi_set_mode(WIFI_MODE_STA);   /* the station of gw_net goes on */
-    } else if (s_own_driver) {
-        esp_wifi_stop();
-    }
+    gw_net_wifi_release(GW_WIFI_USER_AP);
 }
 
 static unsigned radio_clients(void)
@@ -439,6 +423,11 @@ void gw_ap_get_status(gw_ap_status_t *out)
     out->idle_s = s_life.idle_ms / 1000u;
     out->last_stop = s_life.stopped;
     xSemaphoreGive(s_lock);
+    if (out->ssid[0] == '\0') {
+        /* #203, #209: the name is known before the first start (it comes from the MAC); the
+         * dialogs of the web UI give it for the access point of the next boot */
+        gw_ap_ssid(out->ssid);
+    }
 }
 
 bool gw_ap_active(void)

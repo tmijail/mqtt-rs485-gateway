@@ -6,9 +6,11 @@
  *
  * Single owner of the expander: before the configuration is loaded, app_main sets the
  * outputs up (gw_io_outputs_boot, gw_io_outputs_all_off); from gw_io_start() on, only the
- * local_io task writes them: DO commands (gw_io_set_do, from the Sparkplug task), the local
- * rules (which own their DOs: NCMD on them is refused), the safe state and the retries of
- * an expander that does not answer. */
+ * local_io task writes them: DO commands (gw_io_set_do from the Sparkplug task, #204
+ * gw_io_command_do from the web task and #216 from the Modbus TCP local unit, through the same
+ * queue and checks), the local rules (which own their DOs: commands on them are refused), the #210 pulse ends, the safe state
+ * and the retries of an expander that does not answer. It also reads the #218 PCNT units of the
+ * fast counters and counts the #217 run hours. */
 #pragma once
 
 #include <stdbool.h>
@@ -59,10 +61,28 @@ void gw_io_get_expander(gw_io_expander_t *out);
  */
 esp_err_t gw_io_start(const gw_config_t *cfg, void (*on_change)(void));
 
+/** #204, #216: who sends a DO command; each has its own answer queue (one task each). */
+typedef enum {
+    GW_IO_CALLER_SPARKPLUG = 0,   /* NCMD */
+    GW_IO_CALLER_WEB,             /* POST /api/do */
+    GW_IO_CALLER_MBTCP,           /* #216: a write to the Modbus TCP local unit */
+    GW_IO_CALLERS
+} gw_io_caller_t;
+
+typedef enum {
+    GW_IO_DO_OK = 0,
+    GW_IO_DO_RULE,          /* a local rule drives that DO (IO-7): refused */
+    GW_IO_DO_UNAVAILABLE,   /* the expander does not answer, or the local I/O did not start */
+    GW_IO_DO_BUSY,          /* the local_io task did not answer in time */
+} gw_io_do_result_t;
+
 /** Switch DO @p index (0-7) on or off through the local_io task and wait for it (at most
- *  500 ms). The read-back state is in gw_tagdb. Single caller (the Sparkplug task).
- *  Returns false (and changes nothing) if the expander is not available or a local rule
- *  drives that DO (IO-7). */
+ *  500 ms). The read-back state is in gw_tagdb (the Sparkplug task publishes it in the next
+ *  NDATA). Refused (nothing changes) if the expander is not available or a local rule drives
+ *  that DO (IO-7). #210: "on" on a pulse DO starts its pulse. One task per @p caller. */
+gw_io_do_result_t gw_io_command_do(gw_io_caller_t caller, uint8_t index, bool on);
+
+/** The Sparkplug task's gw_io_command_do(): true when the DO was driven. */
 bool gw_io_set_do(uint8_t index, bool on);
 
 /* ---- TIME-2: PCF85063 RTC on the same I2C bus (same single owner) ---- */
@@ -90,6 +110,9 @@ void gw_io_rtc_get(gw_io_rtc_info_t *out);
 #if CONFIG_GW_IO_SIMULATED
 /** Emulator only: set the logical level of DI @p index (0-7); used by the console shell. */
 void gw_io_sim_set_di(uint8_t index, bool active);
+/** Emulator only (#218): @p n pulses on the simulated PCNT unit of DI @p index (0-7); false if
+ *  that DI is not a fast counter. */
+bool gw_io_sim_pulses(uint8_t index, uint32_t n);
 /** Emulator only (issue #74): the expander does not answer during the first @p ms of the next
  *  boot. */
 void gw_io_sim_expander_absent(uint32_t ms);

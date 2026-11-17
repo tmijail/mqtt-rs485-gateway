@@ -91,6 +91,27 @@ static void join(char *out, size_t cap, const char *path, const char *key)
  * for the key, since}. Add each new key or value here with GW_CONFIG_SCHEMA + 1 and raise
  * GW_CONFIG_SCHEMA. The last entry only ends the table. */
 static const gw_since_t k_since[] = {
+    /* schema 2: the keys of #195 (no migration before v1.0: the replaced keys were dropped) */
+    {"gateway", NULL, 2},                          /* #206 */
+    {"gateway.name", NULL, 2},
+    {"gateway.location", NULL, 2},
+    {"gateway.comment", NULL, 2},
+    {"ntp.servers", NULL, 2},                      /* #201 (replaces ntp.server) */
+    {"local_io.di", NULL, 2},                      /* #211 (replaces local_io.di_debounce_ms) */
+    {"local_io.di[].invert", NULL, 2},
+    {"local_io.di[].debounce_ms", NULL, 2},
+    {"local_io.do_pulse_ms", NULL, 2},             /* #210 */
+    {"local_io.fast_counters", NULL, 2},           /* #218 */
+    {"local_io.fast_counters[].di", NULL, 2},
+    {"local_io.fast_counters[].glitch_ns", NULL, 2},
+    {"local_io.run_hours", NULL, 2},               /* #217 */
+    {"modbus_tcp.local_unit_id", NULL, 2},         /* #216 */
+    {"modbus_tcp.local_writes", NULL, 2},          /* #216 */
+    {"ota.mqtt", NULL, 2},                         /* #223 (replaces ota.enabled) */
+    {"devices[].enabled", NULL, 2},                /* #214 */
+    {"devices[].write_multiple", NULL, 2},         /* #197 */
+    {"devices[].tags[].write_min", NULL, 2},       /* #196 */
+    {"devices[].tags[].write_max", NULL, 2},       /* #196 */
     {"", NULL, 0},
 };
 #define SINCE_COUNT (sizeof(k_since) / sizeof(k_since[0]) - 1)
@@ -673,20 +694,47 @@ static bool parse_network(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err
            parse_ipv6_section(o, cfg, err) && parse_wifi_section(o, cfg, err);
 }
 
+/* #201: "ntp": {"servers": ["pool.ntp.org", ...]}, 1 to GW_MAX_NTP_SERVERS names or addresses,
+ * tried in order by the SNTP client. Before v1.0 the old key "server" is gone, with no migration. */
 static bool parse_ntp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"server"};
+    static const char *const keys[] = {"servers"};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "ntp");
-    if (o == NULL) {
-        strcpy(cfg->ntp.server, "pool.ntp.org");
-        return true;
-    }
-    if (!check_keys(o, "ntp", keys, 1, err) ||
-        !get_string(o, "server", "ntp", false, "pool.ntp.org", cfg->ntp.server,
-                    sizeof(cfg->ntp.server), err)) {
+    const cJSON *list = o != NULL ? cJSON_GetObjectItemCaseSensitive(o, "servers") : NULL;
+    if (o != NULL && !check_keys(o, "ntp", keys, 1, err)) {
         return false;
     }
-    return cfg->ntp.server[0] != '\0' ? true : fail(err, "ntp.server", "cannot be empty");
+    if (list == NULL) {
+        strcpy(cfg->ntp.servers[0], "pool.ntp.org");
+        cfg->ntp.server_count = 1;
+        return true;
+    }
+    if (!cJSON_IsArray(list)) {
+        return fail(err, "ntp.servers", "expected an array of 1 to %d names or addresses",
+                    GW_MAX_NTP_SERVERS);
+    }
+    int n = cJSON_GetArraySize(list);
+    if (n < 1 || n > GW_MAX_NTP_SERVERS) {
+        return fail(err, "ntp.servers", "%d servers; expected 1 to %d", n, GW_MAX_NTP_SERVERS);
+    }
+    int i = 0;
+    for (const cJSON *it = list->child; it != NULL; it = it->next, i++) {
+        char p[24];
+        snprintf(p, sizeof(p), "ntp.servers[%d]", i);
+        if (!cJSON_IsString(it)) {
+            return fail(err, p, "expected a string (a name, an IPv4 or an IPv6 address)");
+        }
+        size_t len = strlen(it->valuestring);
+        if (len == 0) {
+            return fail(err, p, "cannot be empty");
+        }
+        if (len >= GW_HOST_SIZE) {
+            return fail(err, p, "%u bytes; the maximum is %d", (unsigned)len, GW_HOST_SIZE - 1);
+        }
+        memcpy(cfg->ntp.servers[i], it->valuestring, len + 1);
+    }
+    cfg->ntp.server_count = (uint8_t)n;
+    return true;
 }
 
 bool gw_config_file_name_ok(const char *name)
@@ -991,7 +1039,8 @@ static bool parse_buzzer(const cJSON *local_io, gw_config_t *cfg, gw_cfg_err_t *
 }
 
 /* IO-7: local_io.rules [{"di": 1-8, "do": 1-8, "mode": "follow|invert|toggle"}], one per DO.
- * Called once do_failsafe is parsed: a rule's DO cannot have the safe state "on". */
+ * Called once do_failsafe and do_pulse_ms are parsed: a rule's DO cannot have the safe state
+ * "on", and cannot be a pulse DO (#210). */
 static bool parse_rules(const cJSON *local_io, gw_config_t *cfg, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"di", "do", "mode"};
@@ -1027,6 +1076,11 @@ static bool parse_rules(const cJSON *local_io, gw_config_t *cfg, gw_cfg_err_t *e
                 return fail(err, q, "DO/%ld already has a rule: local_io.rules[%d]", dout, k);
             }
         }
+        if (cfg->local_io.do_pulse_ms[dout - 1] != 0) {
+            /* #210: a pulse DO goes off by itself: a rule cannot hold it */
+            return fail(err, p, "DO/%ld is a pulse DO (local_io.do_pulse_ms[%ld]): a local rule "
+                                "cannot drive it", dout, dout - 1);
+        }
         if (cfg->local_io.do_failsafe[dout - 1] == GW_DO_SAFE_ON) {
             char q[48];
             snprintf(q, sizeof(q), "local_io.do_failsafe[%ld]", dout - 1);
@@ -1041,19 +1095,160 @@ static bool parse_rules(const cJSON *local_io, gw_config_t *cfg, gw_cfg_err_t *e
     return true;
 }
 
+/* #211: local_io.di [{"invert": false, "debounce_ms": 20}, ...], DI/1 first; a missing entry
+ * or key takes the default. */
+static bool parse_di(const cJSON *local_io, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"invert", "debounce_ms"};
+    for (int i = 0; i < GW_LOCAL_IO_CHANNELS; i++) {
+        cfg->local_io.di_debounce_ms[i] = GW_DI_DEBOUNCE_DEF_MS;
+    }
+    const cJSON *list = cJSON_GetObjectItemCaseSensitive(local_io, "di");
+    if (list == NULL) {
+        return true;
+    }
+    if (!cJSON_IsArray(list)) {
+        return fail(err, "local_io.di", "expected an array (DI/1 first)");
+    }
+    int n = cJSON_GetArraySize(list);
+    if (n > GW_LOCAL_IO_CHANNELS) {
+        return fail(err, "local_io.di", "%d entries; there are %d inputs", n, GW_LOCAL_IO_CHANNELS);
+    }
+    int i = 0;
+    for (const cJSON *it = list->child; it != NULL; it = it->next, i++) {
+        char p[40];
+        snprintf(p, sizeof(p), "local_io.di[%d]", i);
+        bool inv;
+        long db;
+        if (!check_keys(it, p, keys, 2, err) || !get_bool(it, "invert", p, false, &inv, err) ||
+            !get_int(it, "debounce_ms", p, false, GW_DI_DEBOUNCE_DEF_MS, 0, GW_DI_DEBOUNCE_MAX_MS,
+                     &db, err)) {
+            return false;
+        }
+        if (inv) {
+            cfg->local_io.di_invert |= (uint8_t)(1u << i);
+        }
+        cfg->local_io.di_debounce_ms[i] = (uint16_t)db;
+    }
+    return true;
+}
+
+/* #210: local_io.do_pulse_ms [0, 500, ...], DO/1 first: 0 = a normal DO, 50 to 60000 = a pulse
+ * DO. Called once do_failsafe is parsed: a pulse DO cannot have the safe state "on". */
+static bool parse_pulse(const cJSON *local_io, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    const cJSON *list = cJSON_GetObjectItemCaseSensitive(local_io, "do_pulse_ms");
+    if (list == NULL) {
+        return true;
+    }
+    if (!cJSON_IsArray(list)) {
+        return fail(err, "local_io.do_pulse_ms", "expected an array (DO/1 first)");
+    }
+    int n = cJSON_GetArraySize(list);
+    if (n > GW_LOCAL_IO_CHANNELS) {
+        return fail(err, "local_io.do_pulse_ms", "%d entries; there are %d outputs", n,
+                    GW_LOCAL_IO_CHANNELS);
+    }
+    int i = 0;
+    for (const cJSON *it = list->child; it != NULL; it = it->next, i++) {
+        char p[40];
+        snprintf(p, sizeof(p), "local_io.do_pulse_ms[%d]", i);
+        if (!cJSON_IsNumber(it) || it->valuedouble != floor(it->valuedouble)) {
+            return fail(err, p, "expected an integer");
+        }
+        double v = it->valuedouble;
+        if (v != 0 && (v < GW_DO_PULSE_MIN_MS || v > GW_DO_PULSE_MAX_MS)) {
+            return fail(err, p, "value %.0f: 0 (a normal DO) or %d to %d ms", v, GW_DO_PULSE_MIN_MS,
+                        GW_DO_PULSE_MAX_MS);
+        }
+        if (v != 0 && cfg->local_io.do_failsafe[i] == GW_DO_SAFE_ON) {
+            char q[40];
+            snprintf(q, sizeof(q), "local_io.do_failsafe[%d]", i);
+            return fail(err, q, "not for a pulse DO. Use off or hold");
+        }
+        cfg->local_io.do_pulse_ms[i] = (uint16_t)v;
+    }
+    return true;
+}
+
+/* #218: local_io.fast_counters [{"di": 1-8, "glitch_ns": 1000}], one PCNT unit each. */
+static bool parse_fast(const cJSON *local_io, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"di", "glitch_ns"};
+    const cJSON *list = cJSON_GetObjectItemCaseSensitive(local_io, "fast_counters");
+    if (list == NULL) {
+        return true;
+    }
+    if (!cJSON_IsArray(list)) {
+        return fail(err, "local_io.fast_counters", "expected an array");
+    }
+    int n = cJSON_GetArraySize(list);
+    if (n > GW_FAST_COUNTERS_MAX) {
+        return fail(err, "local_io.fast_counters", "%d entries; the maximum is %d (PCNT units)", n,
+                    GW_FAST_COUNTERS_MAX);
+    }
+    int i = 0;
+    for (const cJSON *it = list->child; it != NULL; it = it->next, i++) {
+        char p[40];
+        snprintf(p, sizeof(p), "local_io.fast_counters[%d]", i);
+        long di, ns;
+        if (!check_keys(it, p, keys, 2, err) ||
+            !get_int(it, "di", p, true, 0, 1, GW_LOCAL_IO_CHANNELS, &di, err) ||
+            !get_int(it, "glitch_ns", p, false, GW_GLITCH_DEF_NS, 0, GW_GLITCH_MAX_NS, &ns, err)) {
+            return false;
+        }
+        if (cfg->local_io.fast_mask & (1u << (di - 1))) {
+            char q[48];
+            snprintf(q, sizeof(q), "%s.di", p);
+            return fail(err, q, "DI/%ld is already a fast counter", di);
+        }
+        cfg->local_io.fast_mask |= (uint8_t)(1u << (di - 1));
+        cfg->local_io.glitch_ns[di - 1] = (uint16_t)ns;
+    }
+    return true;
+}
+
+/* #217: local_io.run_hours ["DI/3", "DO/1"]: the channels that count their time in the on state. */
+static bool parse_run_hours(const cJSON *local_io, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    const cJSON *list = cJSON_GetObjectItemCaseSensitive(local_io, "run_hours");
+    if (list == NULL) {
+        return true;
+    }
+    if (!cJSON_IsArray(list)) {
+        return fail(err, "local_io.run_hours", "expected an array");
+    }
+    int i = 0;
+    for (const cJSON *it = list->child; it != NULL; it = it->next, i++) {
+        char p[40];
+        snprintf(p, sizeof(p), "local_io.run_hours[%d]", i);
+        const char *s = cJSON_IsString(it) ? it->valuestring : "";
+        bool di = strncmp(s, "DI/", 3) == 0, dout = strncmp(s, "DO/", 3) == 0;
+        if (!(di || dout) || s[3] < '1' || s[3] > '0' + GW_LOCAL_IO_CHANNELS || s[4] != '\0') {
+            return fail(err, p, "invalid value (expected DI/1 to DI/8 or DO/1 to DO/8)");
+        }
+        uint16_t bit = (uint16_t)(1u << ((dout ? GW_LOCAL_IO_CHANNELS : 0) + (s[3] - '1')));
+        if (cfg->local_io.run_hours & bit) {
+            return fail(err, p, "duplicate channel %s", s);
+        }
+        cfg->local_io.run_hours |= bit;
+    }
+    return true;
+}
+
 static bool parse_local_io(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"di_debounce_ms", "failsafe_s", "do_failsafe",
-                                       "counter_save_s", "buzzer", "rules"};
+    static const char *const keys[] = {"di",          "failsafe_s",     "do_failsafe",
+                                       "do_pulse_ms", "counter_save_s", "fast_counters",
+                                       "run_hours",   "buzzer",         "rules"};
     static const char *const safe_names[] = {"off", "on", "hold"};   /* gw_do_safe_t order */
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "local_io");
     static const cJSON empty = {.type = cJSON_Object};
-    long db, fs, save;
+    long fs, save;
     if (o == NULL) {
         o = &empty;
     }
     if (!check_keys(o, "local_io", keys, sizeof(keys) / sizeof(keys[0]), err) ||
-        !get_int(o, "di_debounce_ms", "local_io", false, 20, 0, 1000, &db, err) ||
         !get_int(o, "failsafe_s", "local_io", false, 0, 0, GW_FAILSAFE_MAX_S, &fs, err) ||
         !get_int(o, "counter_save_s", "local_io", false, 600, 0, GW_COUNTER_SAVE_MAX_S, &save,
                  err)) {
@@ -1064,9 +1259,11 @@ static bool parse_local_io(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *er
                     "value %ld: 0 (do not save) or at least %d s (wear of the flash)", save,
                     GW_COUNTER_SAVE_MIN_S);
     }
-    cfg->local_io.di_debounce_ms = (uint16_t)db;
     cfg->local_io.failsafe_s = (uint32_t)fs;
     cfg->local_io.counter_save_s = (uint32_t)save;
+    if (!parse_di(o, cfg, err)) {
+        return false;
+    }
     /* IO-3: one safe state per DO, in order (DO/1 first); missing entries are "off" */
     const cJSON *list = cJSON_GetObjectItemCaseSensitive(o, "do_failsafe");
     if (list != NULL && !cJSON_IsArray(list)) {
@@ -1092,7 +1289,8 @@ static bool parse_local_io(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *er
         }
         cfg->local_io.do_failsafe[i] = (uint8_t)mode;
     }
-    return parse_buzzer(o, cfg, err) && parse_rules(o, cfg, err);
+    return parse_pulse(o, cfg, err) && parse_fast(o, cfg, err) && parse_run_hours(o, cfg, err) &&
+           parse_buzzer(o, cfg, err) && parse_rules(o, cfg, err);
 }
 
 static bool parse_syslog(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
@@ -1120,17 +1318,53 @@ static bool parse_syslog(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     return true;
 }
 
-/* FW-1: "ota": {"enabled": true, "ca_file": ""}. */
+/* #206: "gateway": {"name": "", "location": "", "comment": ""}, all optional. The web UI shows
+ * the name and the location in its header and in the title of the browser tab, and the NBIRTH
+ * gives them as Node Info/Name and Node Info/Location (Sparkplug strings: valid UTF-8, issue
+ * #162). The comment is only in the document (the Configuration tab): it is validated, not kept. */
+static bool check_label(const char *s, const char *path, gw_cfg_err_t *err)
+{
+    for (const unsigned char *c = (const unsigned char *)s; *c; c++) {
+        if (*c < 0x20 || *c == 0x7f) {
+            return fail(err, path, "control characters are not allowed");
+        }
+    }
+    return check_utf8(s, path, err);
+}
+
+static bool parse_gateway(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"name", "location", "comment"};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "gateway");
+    static const cJSON empty = {.type = cJSON_Object};
+    char comment[GW_COMMENT_MAX + 1];
+    if (o == NULL) {
+        o = &empty;
+    }
+    return check_keys(o, "gateway", keys, 3, err) &&
+           get_string(o, "name", "gateway", false, "", cfg->gateway.name,
+                      sizeof(cfg->gateway.name), err) &&
+           check_label(cfg->gateway.name, "gateway.name", err) &&
+           get_string(o, "location", "gateway", false, "", cfg->gateway.location,
+                      sizeof(cfg->gateway.location), err) &&
+           check_label(cfg->gateway.location, "gateway.location", err) &&
+           get_string(o, "comment", "gateway", false, "", comment, sizeof(comment), err) &&
+           check_utf8(comment, "gateway.comment", err);
+}
+
+/* FW-1: "ota": {"mqtt": false, "ca_file": ""}. #223: "mqtt" lets a Sparkplug host start an
+ * update (NCMD); an update from the web UI is always possible. The old key "enabled" is unknown
+ * now (no migration before v1.0). */
 static bool parse_ota(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"enabled", "ca_file"};
+    static const char *const keys[] = {"mqtt", "ca_file"};
     static const cJSON empty = {.type = cJSON_Object};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "ota");
     if (o == NULL) {
         o = &empty;
     }
     return check_keys(o, "ota", keys, 2, err) &&
-           get_bool(o, "enabled", "ota", true, &cfg->ota.enabled, err) &&
+           get_bool(o, "mqtt", "ota", false, &cfg->ota.mqtt, err) &&
            get_file_name(o, "ca_file", "ota", cfg->ota.ca_file, err);
 }
 
@@ -1138,21 +1372,33 @@ static bool parse_ota(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
  * connect ("a.b.c.d" or "a.b.c.d/prefix"). */
 static bool parse_modbus_tcp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"enabled", "port", "allowed_clients", "idle_timeout_s"};
+    static const char *const keys[] = {"enabled", "port", "allowed_clients", "idle_timeout_s",
+                                       "local_unit_id", "local_writes"};
     static const cJSON empty = {.type = cJSON_Object};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "modbus_tcp");
     if (o == NULL) {
         o = &empty;
     }
-    long port, idle;
-    if (!check_keys(o, "modbus_tcp", keys, 4, err) ||
+    long port, idle, local;
+    if (!check_keys(o, "modbus_tcp", keys, 6, err) ||
         !get_bool(o, "enabled", "modbus_tcp", false, &cfg->modbus_tcp.enabled, err) ||
         !get_int(o, "port", "modbus_tcp", false, 502, 1, 65535, &port, err) ||
-        !get_int(o, "idle_timeout_s", "modbus_tcp", false, 60, 0, 3600, &idle, err)) {
+        !get_int(o, "idle_timeout_s", "modbus_tcp", false, 60, 0, 3600, &idle, err) ||
+        !get_int(o, "local_unit_id", "modbus_tcp", false, 0, 0, 247, &local, err) ||
+        !get_bool(o, "local_writes", "modbus_tcp", false, &cfg->modbus_tcp.local_writes, err)) {
         return false;
     }
     cfg->modbus_tcp.port = (uint16_t)port;
     cfg->modbus_tcp.idle_timeout_s = (uint16_t)idle;
+    /* #216: the gateway answers this unit itself and never sends it to the bus, so no device
+     * may have it (the devices are parsed before this section) */
+    for (uint16_t d = 0; local != 0 && d < cfg->device_count; d++) {
+        if (cfg->devices[d].unit_id == local) {
+            return fail(err, "modbus_tcp.local_unit_id", "unit %ld is the Unit ID of the device %s",
+                        local, cfg->devices[d].name);
+        }
+    }
+    cfg->modbus_tcp.local_unit_id = (uint8_t)local;
     const cJSON *list = cJSON_GetObjectItemCaseSensitive(o, "allowed_clients");
     if (list == NULL) {
         return true;
@@ -1251,11 +1497,24 @@ static bool parse_web(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     return true;
 }
 
+/* The shortest text of @p v that reads back as the same double (1500, 0.1, 9007199254740993). */
+static const char *num_text(double v, char *buf, size_t cap)
+{
+    for (int prec = 15; prec <= 17; prec++) {
+        snprintf(buf, cap, "%.*g", prec, v);
+        if (strtod(buf, NULL) == v) {
+            break;
+        }
+    }
+    return buf;
+}
+
 static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"name",   "area",     "address",  "type",  "word_order",
                                        "scale",  "offset",   "deadband", "writable", "units",
-                                       "bit",    "length",   "scan",  "eng_low", "eng_high"};
+                                       "bit",    "length",   "scan",  "eng_low", "eng_high",
+                                       "write_min", "write_max"};
     static const char *const scans[] = {"fast", "slow"};
     int area, type, word, scan;
     long addr, bit, length;
@@ -1276,9 +1535,13 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
         !get_int(o, "length", path, false, 0, 1, GW_STR_MAX_REGS, &length, err) ||
         !get_enum(o, "scan", path, false, 0, scans, 2, &scan, err) ||
         !get_double(o, "eng_low", path, 0.0, &eng_low, err) ||
-        !get_double(o, "eng_high", path, 0.0, &eng_high, err)) {
+        !get_double(o, "eng_high", path, 0.0, &eng_high, err) ||
+        !get_double(o, "write_min", path, 0.0, &t->write_min, err) ||
+        !get_double(o, "write_max", path, 0.0, &t->write_max, err)) {
         return false;
     }
+    t->has_write_min = cJSON_GetObjectItemCaseSensitive(o, "write_min") != NULL;
+    t->has_write_max = cJSON_GetObjectItemCaseSensitive(o, "write_max") != NULL;
     if (fabs(eng_low) > FLT_MAX || fabs(eng_high) > FLT_MAX) {
         join(p, sizeof(p), path, fabs(eng_low) > FLT_MAX ? "eng_low" : "eng_high");
         return fail(err, p, "out of the range of a Float (±3.4e38)");
@@ -1370,6 +1633,22 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
         join(p, sizeof(p), path, "eng_high");
         return fail(err, p, "must be greater than eng_low (%g)", t->eng_low);
     }
+    /* #196: the range of a DCMD write, in engineering units */
+    if (t->has_write_min || t->has_write_max) {
+        join(p, sizeof(p), path, t->has_write_min ? "write_min" : "write_max");
+        if (t->type == GW_TYPE_BOOL || blob) {
+            return fail(err, p, "not accepted in %s tags", k_type_names[t->type]);
+        }
+        if (!t->writable) {
+            return fail(err, p, "valid only with writable=true");
+        }
+    }
+    if (t->has_write_min && t->has_write_max && t->write_max < t->write_min) {
+        join(p, sizeof(p), path, "write_max");
+        char hi[32], lo[32];
+        return fail(err, p, "%s is less than write_min (%s)", num_text(t->write_max, hi, sizeof(hi)),
+                    num_text(t->write_min, lo, sizeof(lo)));
+    }
     return true;
 }
 
@@ -1432,9 +1711,10 @@ static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_
                          gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"name",        "unit_id", "poll_ms", "slow_poll_ms",
-                                       "offline_after", "block_reads", "max_gap", "tags", "type"};
+                                       "offline_after", "block_reads", "max_gap", "tags", "type",
+                                       "write_multiple", "enabled"};
     long unit, poll, off, gap, slow;
-    bool merge;
+    bool merge, multi;
     char p[96];
     if (!check_keys(o, path, keys, sizeof(keys) / sizeof(keys[0]), err) ||
         !get_string(o, "name", path, true, "", d->name, sizeof(d->name), err) ||
@@ -1445,16 +1725,22 @@ static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_
                  3600000, &slow, err) ||
         !get_int(o, "offline_after", path, false, 3, 1, 1000, &off, err) ||
         !get_bool(o, "block_reads", path, true, &merge, err) ||
-        !get_int(o, "max_gap", path, false, GW_CFG_BUILD_DEFAULT, 0, GW_MAX_GAP_LIMIT, &gap, err)) {
+        !get_int(o, "max_gap", path, false, GW_CFG_BUILD_DEFAULT, 0, GW_MAX_GAP_LIMIT, &gap, err) ||
+        !get_bool(o, "write_multiple", path, false, &multi, err) ||
+        !get_bool(o, "enabled", path, true, &d->enabled, err)) {
         return false;
     }
+    /* #197: an absent key keeps the build's setting (CONFIG_GW_MB_FORCE_MULTI_WRITE) */
+    d->write_multiple = cJSON_GetObjectItemCaseSensitive(o, "write_multiple") != NULL
+                            ? (int8_t)multi
+                            : (int8_t)GW_CFG_BUILD_DEFAULT;
     /* MB-11: absent keys keep the build's setting (CONFIG_GW_MB_BLOCK_READS / _MAX_GAP) */
     bool has_merge = cJSON_GetObjectItemCaseSensitive(o, "block_reads") != NULL;
     d->block_reads = has_merge ? (int8_t)merge : (int8_t)GW_CFG_BUILD_DEFAULT;
     d->max_gap = (int16_t)gap;
     if (has_merge && !merge && gap != GW_CFG_BUILD_DEFAULT) {
         join(p, sizeof(p), path, "max_gap");
-        return fail(err, p, "has no effect with block_reads=false");
+        return fail(err, p, "not permitted with block_reads=false");
     }
     join(p, sizeof(p), path, "name");
     if (!check_topic_id(d->name, p, false, err)) {
@@ -1639,7 +1925,7 @@ static bool parse_locked(const char *json, size_t len, gw_config_t *cfg, gw_cfg_
 {
     static const char *const keys[] = {"network", "ntp",      "mqtt",    "sparkplug", "rs485",
                                        "local_io", "devices", "syslog",  "web",
-                                       "modbus_tcp", "ota"};
+                                       "modbus_tcp", "ota", "gateway"};
     memset(cfg, 0, sizeof(*cfg));
     err->msg[0] = '\0';
     err->path[0] = '\0';
@@ -1676,7 +1962,8 @@ static bool parse_locked(const char *json, size_t len, gw_config_t *cfg, gw_cfg_
               parse_sparkplug(root, cfg, err) && parse_rs485(root, cfg, err) &&
               parse_local_io(root, cfg, err) && parse_devices(root, cfg, err) &&
               parse_syslog(root, cfg, err) && parse_web(root, cfg, err) &&
-              parse_modbus_tcp(root, cfg, err) && parse_ota(root, cfg, err);
+              parse_modbus_tcp(root, cfg, err) && parse_ota(root, cfg, err) &&
+              parse_gateway(root, cfg, err);
     cJSON_Delete(root);
 
     if (ok && cfg->mqtt.client_id[0] == '\0') {
