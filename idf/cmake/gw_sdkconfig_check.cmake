@@ -39,7 +39,9 @@ set(GW_SDKCONFIG_REQUIRED
     # fault mode: network, web server and shell; the gateway does not start)
     SPIRAM_IGNORE_NOTFOUND
     # #122: no name buffer allocated on each microSD file operation (REL-2)
-    FATFS_LFN_NONE)
+    FATFS_LFN_NONE
+    # #201: the SNTP client gets all the servers of ntp.servers (gw_net.c checks it too)
+    LWIP_SNTP_MAX_SERVERS)
 
 # Reads CONFIG_ assignments of <file> into <prefix>_<NAME> variables (value "n" for "is not set",
 # and for "=n" in a defaults file) and appends the names to <prefix>_NAMES.

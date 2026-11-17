@@ -74,6 +74,44 @@ bool gw_net_has_wifi(void);
 /** SPB-17: RSSI (dBm) of the associated access point; false while not associated. */
 bool gw_net_wifi_rssi(int8_t *rssi);
 
+/* ---- #208: the Wi-Fi networks near the gateway (the button "Find networks" of the web UI) */
+
+#define GW_NET_SCAN_MAX 20     /* networks kept from one scan, strongest first */
+
+typedef enum {
+    GW_NET_SCAN_IDLE = 0,      /* no scan yet */
+    GW_NET_SCAN_RUNNING,
+    GW_NET_SCAN_DONE,
+    GW_NET_SCAN_FAILED,
+    GW_NET_SCAN_UNAVAILABLE,   /* this build has no Wi-Fi radio (and is not the emulator) */
+} gw_net_scan_state_t;
+
+typedef struct {
+    char ssid[33];
+    int8_t rssi;               /* dBm */
+    uint8_t channel;
+    const char *security;      /* "Open", "WPA2", "WPA2/WPA3", "WPA2-Enterprise", ... */
+    bool supported;            /* the station can join it: open or WPA2/WPA3 personal */
+} gw_net_scan_ap_t;
+
+typedef void (*gw_net_scan_cb_t)(void *ctx, const gw_net_scan_ap_t *ap);
+
+/**
+ * Start a scan, unless one runs or the last result is younger than @p max_age_s. Works also
+ * with network.wifi off (the radio starts for the scan, and stops after it). In the emulator
+ * (CONFIG_GW_IO_SIMULATED, no radio) the result is a fixed list. Safe from any task; returns
+ * the state after the call.
+ */
+gw_net_scan_state_t gw_net_wifi_scan_start(uint32_t max_age_s);
+
+/**
+ * The last result: @p cb gets each network (strongest first, one record for each SSID, no
+ * hidden network) while the result is locked, only in the state GW_NET_SCAN_DONE. @p age_s:
+ * the seconds since the end of the scan; @p error: why it failed.
+ */
+gw_net_scan_state_t gw_net_wifi_scan_result(gw_net_scan_cb_t cb, void *ctx, uint32_t *age_s,
+                                            bool *simulated, char *error, size_t error_cap);
+
 /**
  * Issue #57: what the MQTT session found over interface @p ifname (the name given by
  * gw_net_active_ifname() when its client was created). @p reachable false: every broker

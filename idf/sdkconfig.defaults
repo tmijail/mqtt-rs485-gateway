@@ -32,6 +32,9 @@ CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 # TIME-1: query the NTP server as soon as an address is available (the default RFC 4330
 # random start-up delay of up to 5 s regularly pushes the first sync past the first NBIRTH)
 CONFIG_LWIP_SNTP_STARTUP_DELAY=n
+# #201: ntp.servers has up to 3 servers; when one does not answer (SNTP_RECV_TIMEOUT, 15 s),
+# the SNTP client asks the next one
+CONFIG_LWIP_SNTP_MAX_SERVERS=3
 
 # MB-2: in RS485 half-duplex mode the UART driver releases RTS (the transceiver's DE) in the
 # TX_DONE interrupt. With the ISR in flash it is deferred while the cache is disabled (the NVS

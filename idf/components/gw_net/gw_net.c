@@ -12,10 +12,13 @@
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
 #include "esp_random.h"
+#include "esp_sntp.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "gw_backoff.h"
 #include "gw_netsel.h"
+#include "gw_storage.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/ip6_addr.h"
 
@@ -309,10 +312,22 @@ static void on_eth_event(void *arg, esp_event_base_t base, int32_t id, void *dat
     }
 }
 
+_Static_assert(CONFIG_LWIP_SNTP_MAX_SERVERS >= GW_MAX_NTP_SERVERS,
+               "#201: the SNTP client must get all the servers of ntp.servers");
+
 static void on_time_sync(struct timeval *tv)
 {
     (void)tv;
-    atomic_store(&s_sntp_synced, true);
+    /* #201: the server that answered the last request (bit 0 of its reachability) */
+    if (!atomic_exchange(&s_sntp_synced, true)) {
+        for (uint8_t i = 0; i < s_cfg->ntp.server_count; i++) {
+            if (esp_sntp_getreachability(i) & 1u) {
+                ESP_LOGI(TAG, "SNTP: first time from server %u of %u (%s)", i + 1,
+                         s_cfg->ntp.server_count, s_cfg->ntp.servers[i]);
+                break;
+            }
+        }
+    }
     s_cb.time_synced();
 }
 
@@ -630,12 +645,325 @@ static esp_err_t start_wifi(const gw_config_t *cfg)
 }
 #endif
 
+/* ---------------------------------------------------------------- Wi-Fi scan (#208) */
+
+#if CONFIG_GW_WIFI || CONFIG_GW_IO_SIMULATED
+/* The result of the last scan, in PSRAM (allocated once in gw_net_start), under s_scan_lock.
+ * The scan works also when network.wifi is off: the button "Find networks" of the web UI. */
+typedef struct {
+    gw_net_scan_state_t state;
+    bool simulated;
+    int64_t done_us;
+    uint8_t count;
+    char error[64];
+    gw_net_scan_ap_t ap[GW_NET_SCAN_MAX];
+} scan_t;
+
+static scan_t *s_scan;
+static SemaphoreHandle_t s_scan_lock;
+static StaticSemaphore_t s_scan_lock_buf;
+
+/* Keep the strongest record of each SSID, strongest first; no hidden networks. Under the lock. */
+static void scan_add(const char *ssid, int8_t rssi, uint8_t channel, const char *security,
+                     bool supported)
+{
+    if (ssid[0] == '\0') {
+        return;
+    }
+    int at = -1;
+    for (int i = 0; i < s_scan->count; i++) {
+        if (strcmp(s_scan->ap[i].ssid, ssid) == 0) {
+            if (s_scan->ap[i].rssi >= rssi) {
+                return;
+            }
+            memmove(&s_scan->ap[i], &s_scan->ap[i + 1],
+                    (size_t)(s_scan->count - i - 1) * sizeof(s_scan->ap[0]));
+            s_scan->count--;
+            break;
+        }
+    }
+    for (int i = 0; i < s_scan->count && at < 0; i++) {
+        at = rssi > s_scan->ap[i].rssi ? i : -1;
+    }
+    if (at < 0) {
+        if (s_scan->count >= GW_NET_SCAN_MAX) {
+            return;
+        }
+        at = s_scan->count;
+    } else {
+        int keep = s_scan->count < GW_NET_SCAN_MAX ? s_scan->count : GW_NET_SCAN_MAX - 1;
+        memmove(&s_scan->ap[at + 1], &s_scan->ap[at], (size_t)(keep - at) * sizeof(s_scan->ap[0]));
+    }
+    gw_net_scan_ap_t *a = &s_scan->ap[at];
+    snprintf(a->ssid, sizeof(a->ssid), "%s", ssid);
+    a->rssi = rssi;
+    a->channel = channel;
+    a->security = security;
+    a->supported = supported;
+    if (s_scan->count < GW_NET_SCAN_MAX) {
+        s_scan->count++;
+    }
+}
+
+static void scan_finish(gw_net_scan_state_t state, const char *error)
+{
+    s_scan->state = state;
+    s_scan->done_us = esp_timer_get_time();
+    snprintf(s_scan->error, sizeof(s_scan->error), "%s", error ? error : "");
+    ESP_LOGI(TAG, "wifi scan: %s%s%s (%u networks)", state == GW_NET_SCAN_DONE ? "done" : "failed",
+             error ? ": " : "", error ? error : "", s_scan->count);
+}
+
+#if CONFIG_GW_WIFI
+static bool s_scan_own_driver;   /* the scan started the driver (no station, no access point) */
+static bool s_scan_added_sta;    /* the scan added the station to the running access point */
+
+/* The name of the security of a network, and whether the station of the gateway can join it:
+ * open or WPA2/WPA3 personal (network.wifi.password). No enterprise (802.1X), no WEP or WPA. */
+static const char *auth_name(wifi_auth_mode_t m, bool *supported)
+{
+    *supported = false;
+    switch (m) {
+    case WIFI_AUTH_OPEN:
+        *supported = true;
+        return "Open";
+    case WIFI_AUTH_WEP:
+        return "WEP";
+    case WIFI_AUTH_WPA_PSK:
+        return "WPA";
+    case WIFI_AUTH_WPA2_PSK:
+        *supported = true;
+        return "WPA2";
+    case WIFI_AUTH_WPA_WPA2_PSK:
+        *supported = true;
+        return "WPA/WPA2";
+    case WIFI_AUTH_WPA3_PSK:
+        *supported = true;
+        return "WPA3";
+    case WIFI_AUTH_WPA2_WPA3_PSK:
+        *supported = true;
+        return "WPA2/WPA3";
+    case WIFI_AUTH_WPA_ENTERPRISE:
+        return "WPA-Enterprise";
+    case WIFI_AUTH_WPA2_ENTERPRISE:
+        return "WPA2-Enterprise";
+    case WIFI_AUTH_WPA3_ENTERPRISE:
+    case WIFI_AUTH_WPA3_ENT_192:
+        return "WPA3-Enterprise";
+    case WIFI_AUTH_WPA2_WPA3_ENTERPRISE:
+        return "WPA2/WPA3-Enterprise";
+    case WIFI_AUTH_WAPI_PSK:
+        return "WAPI";
+    case WIFI_AUTH_OWE:
+        return "OWE";
+    default:
+        return "Unknown";
+    }
+}
+
+/* Back to the radio state from before the scan. */
+static void scan_radio_restore(void)
+{
+    wifi_mode_t mode;
+    if (s_scan_added_sta && esp_wifi_get_mode(&mode) == ESP_OK && mode == WIFI_MODE_APSTA &&
+        s_if[GW_NET_WIFI].netif == NULL) {
+        esp_wifi_set_mode(WIFI_MODE_AP);
+    }
+    if (s_scan_own_driver && esp_wifi_get_mode(&mode) == ESP_OK && mode == WIFI_MODE_STA) {
+        esp_wifi_stop();   /* gw_ap did not start meanwhile: the radio is off again */
+    }
+    s_scan_added_sta = false;
+}
+
+/* WIFI_EVENT_SCAN_DONE, in the default event loop task: one record at a time (no big buffer). */
+static void on_scan_done(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    (void)arg;
+    (void)base;
+    (void)id;
+    const wifi_event_sta_scan_done_t *ev = data;
+    xSemaphoreTake(s_scan_lock, portMAX_DELAY);
+    if (s_scan->state == GW_NET_SCAN_RUNNING) {
+        s_scan->count = 0;
+        wifi_ap_record_t rec;
+        while (esp_wifi_scan_get_ap_record(&rec) == ESP_OK) {
+            bool ok;
+            const char *sec = auth_name(rec.authmode, &ok);
+            scan_add((const char *)rec.ssid, rec.rssi, rec.primary, sec, ok);
+        }
+        esp_wifi_clear_ap_list();
+        scan_finish(ev != NULL && ev->status != 0 ? GW_NET_SCAN_FAILED : GW_NET_SCAN_DONE,
+                    ev != NULL && ev->status != 0 ? "the radio stopped the scan" : NULL);
+        scan_radio_restore();
+    }
+    xSemaphoreGive(s_scan_lock);
+}
+
+/* Start the radio for a scan if it is off. Under the lock. */
+static esp_err_t scan_radio_start(void)
+{
+    static bool handler;
+    if (!handler) {
+        ESP_RETURN_ON_ERROR(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_SCAN_DONE,
+                                                       on_scan_done, NULL),
+                            TAG, "scan event");
+        handler = true;
+    }
+    wifi_mode_t mode = WIFI_MODE_NULL;
+    esp_err_t e = esp_wifi_get_mode(&mode);
+    if (e == ESP_ERR_WIFI_NOT_INIT) {
+        const wifi_init_config_t wc = WIFI_INIT_CONFIG_DEFAULT();
+        ESP_RETURN_ON_ERROR(esp_wifi_init(&wc), TAG, "wifi init");
+        ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "wifi storage");
+        mode = WIFI_MODE_NULL;
+    } else {
+        ESP_RETURN_ON_ERROR(e, TAG, "wifi mode");
+    }
+    if (mode == WIFI_MODE_NULL) {
+        ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "wifi mode");
+        ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start");
+        s_scan_own_driver = true;
+    } else if (mode == WIFI_MODE_AP) {
+        ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), TAG, "wifi mode");
+        s_scan_added_sta = true;
+    }
+    return ESP_OK;
+}
+#endif
+
+#if CONFIG_GW_IO_SIMULATED && !CONFIG_GW_WIFI
+/* QEMU has no radio: a fixed list after 1.5 s, as a real scan takes approximately 3 s */
+static esp_timer_handle_t s_scan_sim_timer;
+
+static void scan_sim_done(void *arg)
+{
+    (void)arg;
+    static const struct {
+        const char *ssid;
+        int8_t rssi;
+        uint8_t channel;
+        const char *security;
+        bool supported;
+    } k_sim[] = {
+        {"Plant-IoT", -48, 6, "WPA2", true},          {"Plant-Office", -61, 1, "WPA2/WPA3", true},
+        {"Plant-Corp", -66, 11, "WPA2-Enterprise", false}, {"Warehouse-AP2", -71, 6, "WPA2", true},
+        {"Guest", -74, 1, "Open", true},              {"DIRECT-7F-HP M479", -83, 11, "WPA2", true},
+        {"Plant-IoT", -80, 11, "WPA2", true},         /* a second access point of Plant-IoT */
+        {"", -50, 3, "WPA2", true},                   /* a hidden network */
+    };
+    xSemaphoreTake(s_scan_lock, portMAX_DELAY);
+    s_scan->count = 0;
+    for (size_t i = 0; i < sizeof(k_sim) / sizeof(k_sim[0]); i++) {
+        scan_add(k_sim[i].ssid, k_sim[i].rssi, k_sim[i].channel, k_sim[i].security,
+                 k_sim[i].supported);
+    }
+    scan_finish(GW_NET_SCAN_DONE, NULL);
+    xSemaphoreGive(s_scan_lock);
+}
+#endif
+
+gw_net_scan_state_t gw_net_wifi_scan_start(uint32_t max_age_s)
+{
+    if (s_scan == NULL) {
+        return GW_NET_SCAN_UNAVAILABLE;
+    }
+    xSemaphoreTake(s_scan_lock, portMAX_DELAY);
+    gw_net_scan_state_t st = s_scan->state;
+    int64_t age_us = esp_timer_get_time() - s_scan->done_us;
+    if (st == GW_NET_SCAN_RUNNING ||
+        (st == GW_NET_SCAN_DONE && age_us < (int64_t)max_age_s * 1000000)) {
+        xSemaphoreGive(s_scan_lock);
+        return st;
+    }
+    s_scan->state = GW_NET_SCAN_RUNNING;
+    s_scan->count = 0;
+#if CONFIG_GW_WIFI
+    const wifi_scan_config_t sc = {.show_hidden = false, .scan_type = WIFI_SCAN_TYPE_ACTIVE};
+    esp_err_t e = scan_radio_start();
+    if (e == ESP_OK) {
+        e = esp_wifi_scan_start(&sc, false);
+    }
+    if (e != ESP_OK) {
+        char why[64];
+        snprintf(why, sizeof(why), "the radio cannot scan now (%s)", esp_err_to_name(e));
+        scan_finish(GW_NET_SCAN_FAILED, why);
+        scan_radio_restore();
+    } else {
+        ESP_LOGI(TAG, "wifi scan started");
+    }
+#else
+    s_scan->simulated = true;
+    ESP_LOGI(TAG, "wifi scan started (simulated: QEMU has no radio)");
+    esp_timer_start_once(s_scan_sim_timer, 1500 * 1000);
+#endif
+    st = s_scan->state;
+    xSemaphoreGive(s_scan_lock);
+    return st;
+}
+
+gw_net_scan_state_t gw_net_wifi_scan_result(gw_net_scan_cb_t cb, void *ctx, uint32_t *age_s,
+                                            bool *simulated, char *error, size_t error_cap)
+{
+    if (s_scan == NULL) {
+        return GW_NET_SCAN_UNAVAILABLE;
+    }
+    xSemaphoreTake(s_scan_lock, portMAX_DELAY);
+    gw_net_scan_state_t st = s_scan->state;
+    *age_s = (uint32_t)((esp_timer_get_time() - s_scan->done_us) / 1000000);
+    *simulated = s_scan->simulated;
+    snprintf(error, error_cap, "%s", s_scan->error);
+    for (uint8_t i = 0; st == GW_NET_SCAN_DONE && cb != NULL && i < s_scan->count; i++) {
+        cb(ctx, &s_scan->ap[i]);
+    }
+    xSemaphoreGive(s_scan_lock);
+    return st;
+}
+
+static void scan_init(void)
+{
+    s_scan = gw_storage_calloc(1, sizeof(*s_scan));
+    if (s_scan == NULL) {
+        ESP_LOGE(TAG, "wifi scan: no memory for the result");
+        return;
+    }
+    s_scan_lock = xSemaphoreCreateMutexStatic(&s_scan_lock_buf);
+#if CONFIG_GW_IO_SIMULATED && !CONFIG_GW_WIFI
+    const esp_timer_create_args_t ta = {.callback = scan_sim_done, .name = "wifi_scan_sim"};
+    if (esp_timer_create(&ta, &s_scan_sim_timer) != ESP_OK) {
+        s_scan = NULL;
+    }
+#endif
+}
+#else   /* no radio and not the emulator */
+gw_net_scan_state_t gw_net_wifi_scan_start(uint32_t max_age_s)
+{
+    (void)max_age_s;
+    return GW_NET_SCAN_UNAVAILABLE;
+}
+
+gw_net_scan_state_t gw_net_wifi_scan_result(gw_net_scan_cb_t cb, void *ctx, uint32_t *age_s,
+                                            bool *simulated, char *error, size_t error_cap)
+{
+    (void)cb;
+    (void)ctx;
+    *age_s = 0;
+    *simulated = false;
+    snprintf(error, error_cap, "this build has no Wi-Fi radio");
+    return GW_NET_SCAN_UNAVAILABLE;
+}
+
+static void scan_init(void)
+{
+}
+#endif
+
 /* ---------------------------------------------------------------- start */
 
 esp_err_t gw_net_start(const gw_config_t *cfg, const gw_net_callbacks_t *cb)
 {
     s_cfg = cfg;
     s_cb = *cb;
+    scan_init();
     bool wifi = cfg->network.wifi.enabled;
 #if !CONFIG_GW_WIFI
     if (wifi) {
@@ -668,7 +996,13 @@ esp_err_t gw_net_start(const gw_config_t *cfg, const gw_net_callbacks_t *cb)
             TAG, "net events");
     }
 
-    esp_sntp_config_t sc = ESP_NETIF_SNTP_DEFAULT_CONFIG(cfg->ntp.server);
+    /* #201: all the servers; lwIP asks the next one when a server does not answer in
+     * SNTP_RECV_TIMEOUT (15 s) */
+    esp_sntp_config_t sc = ESP_NETIF_SNTP_DEFAULT_CONFIG(cfg->ntp.servers[0]);
+    sc.num_of_servers = cfg->ntp.server_count;
+    for (uint8_t i = 0; i < cfg->ntp.server_count; i++) {
+        sc.servers[i] = cfg->ntp.servers[i];
+    }
     sc.start = false;            /* started once an address is available */
     sc.sync_cb = on_time_sync;
     ESP_RETURN_ON_ERROR(esp_netif_sntp_init(&sc), TAG, "sntp");
