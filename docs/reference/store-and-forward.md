@@ -64,7 +64,7 @@ The data on the card stays after a restart and after a power cut. The ring keeps
 | These changes start a new ring | These changes keep the data |
 |---|---|
 | A device or a tag that you add, remove, rename or move | `poll_ms`, `slow_poll_ms`, `scan`, `unit_id`, `offline_after`, `block_reads`, `max_gap` |
-| A change of the datatype of a tag (from `type`, `scale` and `offset`) | `area`, `address`, `bit`, `word_order`, `deadband`, `writable`, `units`, `eng_low`, `eng_high` |
+| A change of the datatype of a tag (from `type`, `scale` and `offset`) | `area`, `address`, `bit_offset`, `bit_width`, `word_order`, `deadband`, `writable`, `units`, `eng_low`, `eng_high` |
 | A change of the device `type`, `group_id`, `edge_node_id`, `device_prefix` or `naming` | A new `scale` or `offset` with the same datatype |
 | A change of the `length` of a `bytes` tag | The `length` of a `string` tag, and all the other sections |
 

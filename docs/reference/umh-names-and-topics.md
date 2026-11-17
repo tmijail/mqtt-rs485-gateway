@@ -19,7 +19,7 @@ The gateway counts the length in bytes. For ASCII text, one character is one byt
 | `sparkplug.device_prefix` | 0 to 96. No empty level | `/`, `+`, `#`, control characters | The start of the location of the device metrics. The gateway puts it before each device name, with `:` between them |
 | `devices[].name` | 1 to 39 | `/`, `+`, `#`, control characters | The end of the location of the device metrics |
 | The `device_id` (`<device_prefix>:<name>`, or the name) | The longest device topic must fit in 159 bytes: 78 bytes with a `group_id` and an `edge_node_id` of 32 bytes | As above | The location of the device metrics |
-| `devices[].type` | 1 to 39, or absent | `/`, `+`, `#`, control characters | Do not use it. UMH shows no value for a template instance |
+| `devices[].type` and `device_types[].name` | 1 to 39, or absent | `/`, `+`, `#`, control characters | Without the UMH preset, do not use a device type: UMH shows no value for a template instance. With the preset, the tags of the device go out as plain metrics |
 | `devices[].tags[].name` (the metric name) | 1 to 39 | None. The name must be unique in the device | The virtual path and the tag name |
 
 The sources are `GW_NAME_SIZE` (40), `GW_ID_SIZE` (33), `GW_PREFIX_SIZE` (97) and `GW_TOPIC_SIZE` (160) in `idf/components/gw_core/include/gw_config.h`, and `check_topic_id()` in `gw_config.c`. The Sparkplug rules are `tck-id-topic-structure-namespace-valid-group-id`, `tck-id-topic-structure-namespace-valid-edge-node-id` and `tck-id-topic-structure-namespace-valid-device-id`.
