@@ -583,6 +583,8 @@
     "port": 502,
     "allowed_clients": [
       "10.0.2.2"
-    ]
+    ],
+    "local_unit_id": 100,
+    "local_writes": true
   }
 }

@@ -1740,20 +1740,102 @@ def run_tls(args, work):
     # GW15: a CA file that is not in LittleFS: reported, nothing attempted
     node = "GW15"
     t0 = time.monotonic()
-    gw = boot_variant(args, work, "tlsmissing", node_config(node, port=p13, tls={
-        "enabled": True, "ca_file": "missing.pem"}))
+    cfg15 = node_config(node, port=p13, tls={"enabled": True, "ca_file": "missing.pem"})
+    cfg15["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    gw = boot_variant(args, work, "tlsmissing", cfg15)
     missing = gw.wait_log(r"mqtt\.tls\.ca_file: /cfg/missing\.pem: not in the LittleFS partition"
                           r".*MQTT not started", 30, t0)
     attempts = gw.find(r"connecting to .* as 'GW15'", t0)
-    gw.kill()
     check("MQTT-4 a CA file missing from LittleFS is reported and no connection is attempted",
           missing and not attempts,
           (gw.find(r"mqtt\.tls\.ca_file", t0) or ["no error logged"])[0])
+    try:
+        check_pem_files(gw, obs, node, pki, t0)
+    finally:
+        gw.kill()
     check_ram_margin(args, work, obs, p13, pki["ca.pem"].read_bytes())
     check_tls_during_validation(args, work, obs, p13, pki["ca.pem"].read_bytes())
     obs.close()
     broker.terminate()
     broker.wait()
+
+
+def check_pem_files(gw, obs, node, pki, t0):
+    """Issue #221 on GW15 (its document names /cfg/missing.pem, which is not there): the PEM files
+    of the web UI. A dry run refuses the missing file at its JSON path; PUT /api/files loads the
+    CA (201, its subject and the CA flag), refuses the same name again (409) and a file that is
+    not PEM (400); GET /api/files lists it, never with its content. A client key that does not
+    agree with the client certificate is refused at mqtt.tls.key_file, the right key is not, and
+    GET /api/files tells which certificate the key agrees with. After a restart the gateway
+    connects to the TLS broker with the loaded CA (the configuration did not change)."""
+    wait_http("/api/status", 30)
+    _, _, doc = http("GET", "/api/config")
+    doc = as_json(doc) or {}
+
+    def dry(tls):
+        d = json.loads(json.dumps(doc))
+        d["mqtt"]["tls"] = tls
+        st, _, body = http("PUT", "/api/config?dry_run=1", d)
+        return st, as_json(body) or {}
+
+    def put(name, data, q=""):
+        st, _, body = http("PUT", f"/api/files?name={name}{q}", data,
+                           headers={"Content-Type": "application/x-pem-file"})
+        return st, as_json(body) or {}
+
+    ca = pki["ca.pem"].read_bytes()
+    st0, j0 = dry({"enabled": True, "ca_file": "missing.pem"})
+    st1, j1 = put("missing.pem", ca)
+    st2, j2 = put("missing.pem", ca)
+    st3, j3 = put("notes.pem", b"not a certificate\n")
+    st4, _, b4 = http("GET", "/api/files")
+    files = {f.get("name"): f for f in (as_json(b4) or {}).get("files", [])}
+    st5, j5 = dry({"enabled": True, "ca_file": "missing.pem"})
+    loaded = st0 == 400 and j0.get("path") == "mqtt.tls.ca_file" and "not in the LittleFS" in \
+        j0.get("error", "") and st1 == 201 and j1.get("file", {}).get("kind") == "certificates" \
+        and j1["file"].get("certs", [{}])[0].get("subject") == "CN=E2E test CA" \
+        and j1["file"]["certs"][0].get("ca") is True and st2 == 409 and st3 == 400 \
+        and st4 == 200 and files.get("missing.pem", {}).get("count") == 1 \
+        and "notes.pem" not in files and b"BEGIN" not in b4 and st5 == 200 and j5.get("ok")
+    check("Issue #221 PEM files from the web UI: a dry run refuses a missing CA file at "
+          "mqtt.tls.ca_file; PUT /api/files loads it (201, subject, CA), refuses the same name "
+          "(409) and a file that is not PEM (400); GET /api/files lists it without its content; "
+          "then the dry run passes", loaded,
+          f"dry {st0} {j0.get('path')} {j0.get('error', '')[:80]!r}; put {st1} {j1.get('file')}; "
+          f"again {st2}; not PEM {st3} {j3.get('error', '')[:60]!r}; list {st4} "
+          f"{sorted(files)}; dry after {st5}")
+
+    # mutual TLS files: a key that agrees with the certificate, and one that does not
+    sk1, _ = put("gw15.crt", pki["client.crt"].read_bytes())
+    sk2, jk = put("gw15.key", pki["client.key"].read_bytes())
+    sk3, _ = put("other.key", pki["server.key"].read_bytes())
+    stk, _, bk = http("GET", "/api/files")
+    kf = {f.get("name"): f for f in (as_json(bk) or {}).get("files", [])}
+    st6, j6 = dry({"enabled": True, "ca_file": "missing.pem", "cert_file": "gw15.crt",
+                   "key_file": "other.key"})
+    st7, j7 = dry({"enabled": True, "ca_file": "missing.pem", "cert_file": "gw15.crt",
+                   "key_file": "gw15.key"})
+    key = kf.get("gw15.key", {})
+    check("Issue #221 the client key must agree with the client certificate: GET /api/files gives "
+          "the key type and the agreeing certificate (never the key); a dry run with another key "
+          "is refused at mqtt.tls.key_file, with the right key it passes",
+          sk1 == sk2 == sk3 == 201 and jk.get("file", {}).get("kind") == "key"
+          and key.get("key_type") == "EC P-256" and key.get("agrees_with") == ["gw15.crt"]
+          and kf.get("other.key", {}).get("agrees_with") == [] and b"PRIVATE" not in bk
+          and st6 == 400 and j6.get("path") == "mqtt.tls.key_file"
+          and "does not agree with the certificate gw15.crt" in j6.get("error", "")
+          and st7 == 200,
+          f"put {sk1} {sk2} {sk3}; key {key}; other {kf.get('other.key')}; mismatch {st6} "
+          f"{j6.get('path')} {j6.get('error', '')[:80]!r}; match {st7}")
+
+    # the restart: the CA is now there, the session comes up over TLS
+    asked = time.monotonic()
+    rs = http("POST", "/api/restart", b"")[0]
+    used = gw.wait_log(r"TLS: ca_file: 1 certificate\(s\) from /cfg/missing\.pem", 60, asked)
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 60) if used else None
+    check("Issue #221 after the load of the CA file and a restart, the gateway connects to the "
+          "TLS broker with it (NBIRTH)", rs == 202 and used and nb is not None,
+          f"restart {rs}; {(used and 'CA loaded') or 'no CA line'}; NBIRTH {nb is not None}")
 
 
 # Issue #80: internal RAM without PSRAM (see check_ram_margin for the reasoning)
@@ -7132,6 +7214,55 @@ def check_modbus_tcp_via_ap(gw, slave):
           f"{all(h2.values())}; answer after {again!r} (expected {expect!r})")
 
 
+LOCAL_UNIT = 100   # #216: modbus_tcp.local_unit_id of tools/e2e/fs/config.json
+
+
+def check_modbus_local(gw, obs, ndata_t):
+    """Issue #216: the local unit of the Modbus TCP server (modbus_tcp.local_unit_id 100,
+    local_writes true) answers from the I/O of the gateway, never from the bus: FC02 gives the
+    DIs (DI/4 set with the emulator), FC04 the counter of DI/4 (uint64 big, +1 after one pulse),
+    FC05 switches DO/1 through the local_io task (FC01 reads it back, the NDATA has it) and back.
+    A DO that a local rule drives (DO/5, rule di 2 -> do 5) gives exception 03; FC03 gives 01; an
+    address past DO/8 gives 02."""
+    def frame(pdu):
+        try:
+            return mbap_raw(pdu, unit=LOCAL_UNIT)
+        except OSError as e:
+            return f"{e}".encode()
+
+    def u64(a):
+        return struct.unpack(">Q", a[2:10])[0] if a and len(a) == 10 and a[0] == 4 else None
+
+    c0 = u64(frame(b"\x04\x00\x0c\x00\x04"))           # the counter of DI/4: registers 12..15
+    gw.console("di 4 1")
+    time.sleep(0.5)                                          # > the debounce of 20 ms
+    di = frame(b"\x02\x00\x00\x00\x08")
+    gw.console("di 4 0")
+    time.sleep(0.5)
+    c1 = u64(frame(b"\x04\x00\x0c\x00\x04"))
+    before = frame(b"\x01\x00\x00\x00\x08")
+    on0 = bool(before[2] & 1) if before and len(before) == 3 and before[0] == 1 else None
+    obs.drain()
+    wr = frame(b"\x05\x00\x00" + (b"\x00\x00" if on0 else b"\xff\x00"))
+    after = frame(b"\x01\x00\x00\x00\x01")
+    nd = obs.wait(ndata_t, 5, pred=lambda pl: metric(pl, alias=ALIAS["DO/1"]) is not None)
+    do1 = metric(nd[2], alias=ALIAS["DO/1"]) if nd else None
+    back = frame(b"\x05\x00\x00" + (b"\xff\x00" if on0 else b"\x00\x00"))
+    rule = frame(b"\x05\x00\x04\xff\x00")
+    hold = frame(b"\x03\x00\x00\x00\x01")
+    past = frame(b"\x01\x00\x08\x00\x01")
+    ok = c0 is not None and c1 == c0 + 1 and di[:2] == b"\x02\x01" and di[2] & 0x08 \
+        and on0 is not None and wr[:3] == b"\x05\x00\x00" and after == bytes([1, 1, 0 if on0 else 1]) \
+        and do1 is not None and do1.boolean_value == (not on0) and back[:1] == b"\x05" \
+        and rule == b"\x85\x03" and hold == b"\x83\x01" and past == b"\x81\x02"
+    check("Issue #216 Modbus TCP local unit 100: FC02 DIs, FC04 counter of DI/4 (uint64 big, +1 per "
+          "pulse), FC05 DO/1 through the local_io task (FC01 and NDATA confirm, then back); DO/5 of "
+          "a local rule -> 03, FC03 -> 01, coil 8 -> 02", ok,
+          f"counter {c0} -> {c1}; FC02 {di!r}; DO/1 {on0} -> FC05 {wr!r}, FC01 {after!r}, NDATA "
+          f"{do1.boolean_value if do1 else None}, back {back!r}; DO/5 {rule!r}; FC03 {hold!r}; "
+          f"coil 8 {past!r}")
+
+
 def check_diagnostics(obs, nbirth, ndata_t):
     """SPB-17 / MB-13: NBIRTH with Uptime, Free Heap, Min Free Heap (no RSSI: no Wi-Fi in QEMU) and
     the Modbus DataSet (a row per device, counters of the dead units too); then, with
@@ -7252,6 +7383,9 @@ def run_network_variant(args, work, slave):
                       "wifi": {"enabled": True, "ssid": "Plant WLAN", "password": "12345678",
                                "role": "backup", "failback_s": 30}}
     cfg["modbus_tcp"] = {"enabled": True, "allowed_clients": ["192.0.2.0/24"]}
+    # #201: the first SNTP server never answers (TEST-NET-1, no route), the second one is the
+    # harness' responder
+    cfg["ntp"] = {"servers": ["192.0.2.1", "10.0.2.2"]}
     cfg["devices"].append({"name": "Raw", "unit_id": 1, "poll_ms": 500, "tags": [
         {"name": "Block", "area": "holding", "address": 220, "type": "bytes", "length": 3,
          "writable": True}]})
@@ -7269,12 +7403,16 @@ def run_network_variant(args, work, slave):
     gw = Gateway(args, work / "uart0-network.log", flash)
     t0 = time.monotonic()
     gw.start()
+    # #201: lwIP asks the second server after SNTP_RECV_TIMEOUT (15 s) without an answer: wait for
+    # the evidence of the synchronisation first, then for the NBIRTH that follows it
+    synced = gw.wait_log(r"net: SNTP: first time from server 2 of 2 \(10\.0\.2\.2\)", 60, t0)
     nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
     ignored = gw.find(r"network\.wifi ignored: Wi-Fi is not available in this build", t0)
     asked, h = gw.shell(["status", "config"],
                         [r"^iface\s+ethernet up \d+\.\d+\.\d+\.\d+ \(active\) \| wifi not configured",
-                         r"^wifi\s+'Plant WLAN', backup of Ethernet, failback 30 s, DHCP"])
-    iface, shown = h.values()
+                         r"^wifi\s+'Plant WLAN', backup of Ethernet, failback 30 s, DHCP",
+                         r"^ntp\s+192\.0\.2\.1, 10\.0\.2\.2$"])
+    iface, shown, ntp_shown = h.values()
     # NET-7
     lla = gw.wait_log(r"net: ethernet: IPv6 fe80:[0-9a-f:]+ \(link-local\)", 10, t0)
     slaac = gw.wait_log(r"net: ethernet: IPv6 fec0::(?!1234 )[0-9a-f:]+ \(site local\)", 10, t0)
@@ -7310,6 +7448,10 @@ def run_network_variant(args, work, slave):
     gw.kill()
     obs.wait(f"{T}/NDEATH/{node}", 5)   # the will, before the main scenario starts
     obs.close()
+    check("Issue #201 two SNTP servers: the first one does not answer, the second one gives the "
+          "time; the clock becomes valid and the NBIRTH follows; the shell lists both servers",
+          synced and nb and ntp_shown,
+          " | ".join(gw.find(r"SNTP: first time|^ntp\s", t0)) + f"; NBIRTH {'yes' if nb else 'no'}")
     check("NET-4 network.wifi on a build without the radio (QEMU): accepted, reported, Ethernet "
           "carries the session as before",
           nb and ignored and iface and shown,
@@ -7389,6 +7531,61 @@ def check_templates_gw02(obs, slave, node, nb):
 WEB_DEVICE_PREFIX = "acme-corporation:berlin-tempelhof:packaging:line3:cell2"
 
 
+def check_wifi_scan(gw):
+    """Issue #208: GET /api/wifi/scan in the emulator (no radio, network.wifi off): without
+    ?new=1 only the state; ?new=1 starts the simulated scan (202 while it runs, the log line),
+    then 200 with the list: strongest first, one record for each SSID (the strongest), no hidden
+    network, the enterprise network not supported, simulated. A second ?new=1 within 10 s gives
+    the same result at once. Without credentials: 401."""
+    s0, _, b0 = http("GET", "/api/wifi/scan")
+    t = time.monotonic()
+    s1, _, _ = http("GET", "/api/wifi/scan?new=1")
+    started = gw.wait_log(r"net: wifi scan started \(simulated", 5, t)
+    end, s2, j = time.monotonic() + 15, None, {}
+    while time.monotonic() < end:
+        s2, _, b2 = http("GET", "/api/wifi/scan")
+        j = as_json(b2) or {}
+        if s2 != 202:
+            break
+        time.sleep(0.5)
+    nets = j.get("networks", [])
+    ssids = [n.get("ssid") for n in nets]
+    rssi = [n.get("rssi") for n in nets]
+    corp = [n for n in nets if n.get("ssid") == "Plant-Corp"]
+    s3, _, b3 = http("GET", "/api/wifi/scan?new=1")
+    s4, _, _ = http("GET", "/api/wifi/scan", auth=None)
+    check("Issue #208 GET /api/wifi/scan (simulated in QEMU): ?new=1 starts a scan (202), then 200 "
+          "with the networks strongest first, one record for each SSID, no hidden network, the "
+          "enterprise network not supported; a second ?new=1 within 10 s answers at once; 401 "
+          "without credentials",
+          s0 == 200 and (as_json(b0) or {}).get("state") == "idle" and s1 == 202 and started
+          and s2 == 200 and j.get("state") == "done" and j.get("simulated") is True
+          and ssids == ["Plant-IoT", "Plant-Office", "Plant-Corp", "Warehouse-AP2", "Guest",
+                        "DIRECT-7F-HP M479"]
+          and rssi == sorted(rssi, reverse=True) and rssi[0] == -48 and "" not in ssids
+          and corp and corp[0].get("supported") is False
+          and corp[0].get("security") == "WPA2-Enterprise"
+          and all(n.get("supported") for n in nets if n.get("ssid") != "Plant-Corp")
+          and s3 == 200 and (as_json(b3) or {}).get("networks") == nets and s4 == 401,
+          f"before {s0} {b0[:40]!r}; new {s1}, log {started is not None}; result {s2} "
+          f"{j.get('state')} simulated {j.get('simulated')} {list(zip(ssids, rssi))}; "
+          f"Plant-Corp {corp}; again {s3}; no auth {s4}")
+
+
+def check_local_writes_off():
+    """Issue #216: with modbus_tcp.local_writes false, the local unit answers the reads and
+    refuses a write of a DO with exception 01."""
+    try:
+        di = mbap_raw(b"\x02\x00\x00\x00\x08", unit=100)
+        wr = mbap_raw(b"\x05\x00\x00\xff\x00", unit=100)
+        mw = mbap_raw(b"\x0f\x00\x00\x00\x02\x01\x03", unit=100)
+    except OSError as e:
+        di = wr = mw = f"{e}".encode()
+    check("Issue #216 local unit without local_writes: FC02 answered, FC05 and FC15 -> exception 01",
+          di[:2] == b"\x02\x01" and wr == b"\x85\x01" and mw == b"\x8f\x01",
+          f"FC02 {di!r}; FC05 {wr!r}; FC15 {mw!r}")
+
+
 def run_web(args, work):
     """CFG-4 REST API (and the web UI, CFG-3), in boots of their own with separate edge node ids:
     authentication, export with masked secrets, invalid import -> 400 with the JSON path,
@@ -7398,6 +7595,7 @@ def run_web(args, work):
     cfg["sparkplug"]["edge_node_id"] = node
     cfg["mqtt"]["password"] = "mqtt-secret"      # the broker allows anonymous: ignored there
     cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    cfg["modbus_tcp"]["local_writes"] = False   # #216: the local unit refuses the writes
     flash = flash_variant(args, work, "web", {"config.json": json.dumps(cfg, indent=2).encode()})
     obs = Observer()
     gw = Gateway(args, work / "uart0-web.log", flash)
@@ -7435,6 +7633,8 @@ def run_web(args, work):
           f"/ {st_p} {len(page)} B; /api/status {st_s}: mode {status.get('mode')}, MQTT "
           f"{status.get('mqtt')}, {DEVICE} online {devs.get(DEVICE, {}).get('online')}, Voltage "
           f"{volt[0] if volt else None}")
+    check_wifi_scan(gw)
+    check_local_writes_off()
 
     # Issue #170: the form has the byte limits of the names (maxlength 39 for device and tag names,
     # 32 for the Sparkplug IDs), the help texts of primary_host_id, type and bytes, the topic
@@ -8250,7 +8450,8 @@ def run(args, log, slave, broker, conf, work):
                          r"\(9 fast, 2 slow\), blocks max_gap 10$",
                          r"^\s+Bulk\s+unit\s+2, poll 1000 ms, slow 10000 ms, offline after 3, 60 tag\(s\) "
                          r"\(60 fast, 0 slow\), blocks max_gap 0 \(default\)$",
-                         r"^modbus_tcp enabled, port 502, idle timeout 60 s, clients 10\.0\.2\.2/32$"])
+                         r"^modbus_tcp enabled, port 502, idle timeout 60 s, clients 10\.0\.2\.2/32$",
+                         r"^modbus_tcp local unit 100 \(DIs, DOs, counters\), writes on$"])
     check("Issue #68 shell 'config': per-device periods, scan classes and block reads, modbus_tcp line",
           all(h.values()), " | ".join(gw.find(r"^\s+(Meter1|Bulk)\s+unit\s+\d+, poll|^modbus_tcp", asked))
           or "no answer")
@@ -8387,12 +8588,14 @@ def run(args, log, slave, broker, conf, work):
                         [r"^Meter1\s+unit\s+1 online .*\| tcp ok 2 timeout 0 crc 0 frame 0 exception 0$",
                          r"^Dead3\s+unit\s+3 offline .*\| tcp ok 0 timeout 3 crc 0 frame 0 exception 0$",
                          r"^modbus_tcp connections 2 accepted 0 rejected \| forwarded 3 \| gateway exceptions "
-                         r"01 1 03 0 0A 0 0B 1 \| other units ok 0 timeout 0 crc 0 frame 0 exception 0$"])
+                         r"01 1 03 0 0A 0 0B 1 \| other units ok 0 timeout 0 crc 0 frame 0 exception 0 "
+                         r"\| local unit 0$"])
     check("Issue #69 Modbus TCP counters: forwarded transactions per unit, gateway connections, "
           "forwarded requests and its own exceptions (shell 'devices')", all(h.values()),
           " | ".join(gw.find(r"^(Meter1|Dead3)\s+unit|^modbus_tcp", asked)) or "no answer")
     check_modbus_tcp_table(obs, ndata_t)
     check_modbus_tcp_via_ap(gw, slave)
+    check_modbus_local(gw, obs, ndata_t)
 
     # 2. Slave off -> DDEATH; back on -> DBIRTH
     obs.drain()
