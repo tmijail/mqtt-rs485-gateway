@@ -4787,6 +4787,9 @@ def run_ota_wiring(args, work):
         up = gw.wait_log(r"edge: Sparkplug session up", 60, t0)
         pw = commissioning_password(gw, t0, 30)
         auth = ("admin", pw or "?")
+        # the HTTPS server answers (404) before it registers the handlers: wait for the evidence
+        # that the REST API is up, else "running" can be missing and base "?"
+        gw.wait_log(r"web: web UI and REST API on port 443", 30, t0)
         base = (as_json(wait_http("/api/firmware", 30, auth=auth)[2]) or {}).get("running", "?")
         asked = time.monotonic()
         st, body = upload("e2e-k2", pw)
