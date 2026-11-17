@@ -29,7 +29,7 @@ The LED shows the pattern of the highest state in the table.
 | No network (no IP address) | Red, continuous |
 | No valid clock: the MQTT session waits | Magenta, blinks at 1 Hz |
 | No broker | Amber, blinks at 1 Hz |
-| A Modbus device is offline | Green and orange, alternately (1 Hz) |
+| A Modbus device is offline (a disabled device does not count) | Green and orange, alternately (1 Hz) |
 | Normal operation | Green, continuous |
 
 While the access point runs with WPA2, a short cyan flash (125 ms) each 2 s replaces the pattern, from "Commissioning" to "Normal operation". The log gives the name of the pattern, for example `led: status: operating, access point`.
@@ -43,7 +43,7 @@ One beep is 150 ms of tone and 150 ms of silence.
 | 1 beep | You release BOOT after 2 to 10 s: the access point starts (and the claim window opens, if no web password is set) |
 | 1 beep | The claim window set the first web password |
 | 2 beeps | BOOT held for 10 s: the factory reset starts |
-| 1 beep each 10 s | Alarm `device_offline`: one or more Modbus devices are offline |
+| 1 beep each 10 s | Alarm `device_offline`: one or more Modbus devices are offline. A disabled device does not count |
 | 2 beeps each 10 s | Alarm `mqtt_down`: no Sparkplug session |
 | 3 beeps each 10 s | Alarm `config_error`: the configuration is rejected |
 

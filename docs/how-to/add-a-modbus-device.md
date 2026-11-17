@@ -81,10 +81,20 @@ Most fields of the device and of its tags have a (?) button after their label. T
 - To close the explainer, push Esc, or click outside the explainer.
 
 1. In the card **Devices and tags**, click **+ device**.
-2. Type the **Name** of the device. It is the last part of the Sparkplug device ID (1 to 39 bytes). Do not use `/`, `+` or `#`. For UMH Core, put `:` between the levels of the location.
-3. Type the **Unit ID**.
-4. Type the **Poll interval (ms)**: the time between two reads of the device (50 to 3 600 000).
-5. Type **Offline after (cycles)**: the number of failed polls in sequence before the gateway sends the DDEATH of the device.
+2. Keep **Enabled** set. Clear it only for a device that must stay in the configuration but must not be polled. Refer to [Disable a device](#disable-a-device).
+3. Type the **Name** of the device. It is the last part of the Sparkplug device ID (1 to 39 bytes). Do not use `/`, `+` or `#`. For UMH Core, put `:` between the levels of the location.
+4. Type the **Unit ID**.
+5. Type the **Poll interval (ms)**: the time between two reads of the device (50 to 3 600 000).
+6. Type **Offline after (cycles)**: the number of failed polls in sequence before the gateway sends the DDEATH of the device.
+7. As an option, click **More device settings** below the fields of the device. The panel has the rare keys of the device:
+   - **Slow poll interval (ms)**: the poll interval of the tags with **Scan** `slow`. Empty = 10 × the poll interval.
+   - **Block reads**: the gateway reads the tags of one area that are near each other with one request. Clear it for a device that answers with an exception when a block contains registers that it does not have.
+   - **Max gap**: the number of unused registers or bits that one block can include.
+   - **Write with FC15/FC16**: for a device that does not accept FC06 or FC05.
+
+   ![The device Meter1 with the panel 'More device settings' open below its fields: Slow poll interval (ms), Block reads, Max gap and Write with FC15/FC16. The explainer of Write with FC15/FC16 is open. It tells that the gateway then writes one register with FC16 and one coil with FC15, for a device that does not accept FC06 or FC05.](../images/device-settings.png)
+
+The button shows **More device settings (n)**, where n is the number of keys of the panel that have a value in the configuration.
 
 Under the device, the web UI shows its Sparkplug topic and its UMH topic. Make sure that they are correct before you save.
 
@@ -108,8 +118,12 @@ The row of a tag has the frequent fields. The other fields of the tag are in its
 11. As an option, type **Eng. low** and **Eng. high**. They go into the DBIRTH as metric properties.
 12. For a `bool` tag in a `holding` or `input` register, type the **Bit**.
 13. For a `string` or a `bytes` tag, type the **Length**.
+14. For a writable numeric tag, as an option, type **Write min** and **Write max**. The gateway refuses a DCMD with a value out of these limits. Refer to [Write to a Modbus device](write-to-a-modbus-device.md#set-the-write-limits-of-a-tag).
+15. As an option, select the **Scan**: `fast` (default) reads the tag each poll interval, `slow` each slow poll interval of the device.
 
-   ![The tag table of Meter1 with the details row of the tag Voltage open: Offset, Deadband, Eng. low, Eng. high, Bit and Length. The explainer of Eng. high is open below its (?) button. It tells that Eng. high is the top of the normal range of the value, and that the gateway does not limit the value.](../images/tag-explainer.png)
+   ![The tag table of Meter1 with the details row of the float32 tag Voltage open: Offset, Deadband, Eng. low, Eng. high, Write min, Write max and Scan. The explainer of Eng. high is open below its (?) button. It tells that Eng. high is the top of the normal range of the value, and that the gateway does not limit the value.](../images/tag-explainer.png)
+
+The details row shows only the fields that apply to the type of the tag. For example, a `string` tag shows Length and Scan, and a `bool` tag in a register shows Bit and Scan. A field with a value stays visible.
 
 The button shows **More (n)**, where n is the number of fields in the details row that have a value. Click the button again to close the details row.
 
@@ -135,10 +149,24 @@ A tag with a scale or an offset becomes a Float or a Double in Sparkplug. Refer 
 
 If the device stays offline, the LED shows green and orange, alternately. Do the test read of step 2 again, and examine the counters of the device in the shell (`devices`). Refer to [Connect the RS485 bus](connect-the-rs485-bus.md), "If there is a problem".
 
+## Disable a device
+
+A disabled device stays in the configuration, with its tags, but the gateway does not poll it. Use it, for example, for a slave that is not connected yet during the commissioning. The gateway then sends no DDEATH for it, and the polls of the other devices are not slower.
+
+1. In the card **Devices and tags**, clear **Enabled** of the device.
+
+   ![The device Meter1 with the check box Enabled cleared. The card has a dashed border, and a notice below the fields tells that the gateway does not poll this device and sends no DBIRTH, and that the validation still examines it.](../images/device-disabled.png)
+
+2. Click **Validate**. The validation examines the disabled device as any other device.
+3. Click **Save and restart**.
+4. In the tab **Status**, make sure that the card **Modbus devices** shows the device as **disabled**, with "not polled" for its values.
+
+The device has no DBIRTH, and the gateway discards a DCMD for it. To start the polls again, set **Enabled** and save. For the details, refer to [A disabled device](../reference/configuration.md#a-disabled-device).
+
 ## Limits
 
-- 16 devices, 64 tags for each device, and 256 tags in total.
+- 16 devices, 64 tags for each device, and 256 tags in total. A disabled device and its tags also count.
 - Two devices must not have names that differ only in case. Two tags of one device must not have names that differ only in case.
 - A tag name must not also be a folder of another tag name of the same device, for example `A` and `A/B`.
 
-For a slow scan of some tags, block reads, templates and the other optional keys, use the JSON tab. Refer to [The configuration document](../reference/configuration.md#devices).
+For each key of a device and of a tag, refer to [The configuration document](../reference/configuration.md#devices).

@@ -189,6 +189,32 @@ def tag_explainer(page):
     page.click('[data-more="0.0"]')
     page.click("#det-0-0 button.qi[data-x=enghi]")
 
+def device_settings(page):
+    """Issues #197 and #221: the panel 'More device settings' of Meter1, and the explainer of
+    'Write with FC15/FC16' (a click keeps it open). No save."""
+    page.click("nav button[data-tab=config]")
+    page.evaluate("document.querySelector('#f-dev>.card').scrollIntoView()")
+    page.click('[data-dmore="0"]')
+    page.click("#dset-0 button.qi[data-x=fc16]")
+
+
+def write_limits(page):
+    """Issue #196: the details row of the writable tag Setpoint of Meter1, with Write min 0 and
+    Write max 150, and the explainer of Write min. No save."""
+    page.click("nav button[data-tab=config]")
+    page.evaluate("document.querySelector('#f-dev>.card').scrollIntoView()")
+    page.click('[data-more="0.1"]')
+    page.fill('[data-p="devices.0.tags.1.write_min"]', "0")
+    page.fill('[data-p="devices.0.tags.1.write_max"]', "150")
+    page.click("#det-0-1 button.qi[data-x=wmin]")
+
+
+def device_disabled(page):
+    """Issue #214: Meter1 with Enabled cleared: the notice and the dashed border. No save."""
+    page.click("nav button[data-tab=config]")
+    page.uncheck('[data-p="devices.0.enabled"]')
+    page.wait_for_selector("#off-0:not(.hidden)")
+
 # ---------------------------------------------------------------- the frozen values
 
 # Issue #194, docs/how-to/change-the-web-password.md. These actions are also the test of #194
@@ -368,10 +394,31 @@ SHOTS = [
              "button 'More' for its other fields."),
     Shot("tag-explainer", "configured", DESKTOP, "/", actions=[tag_explainer],
          wait="#xpl:not(.hidden)",
-         alt="The tag table of Meter1 with the details row of the tag Voltage open: Offset, "
-             "Deadband, Eng. low, Eng. high, Bit and Length. The explainer of Eng. high is open "
-             "below its (?) button. It tells that Eng. high is the top of the normal range of "
-             "the value, and that the gateway does not limit the value."),
+         alt="The tag table of Meter1 with the details row of the float32 tag Voltage open: "
+             "Offset, Deadband, Eng. low, Eng. high, Write min, Write max and Scan. The "
+             "explainer of Eng. high is open below its (?) button. It tells that Eng. high is "
+             "the top of the normal range of the value, and that the gateway does not limit "
+             "the value."),
+    # issues #196, #197, #214 and #221: docs/how-to/add-a-modbus-device.md and
+    # write-to-a-modbus-device.md (no save: the state does not change)
+    Shot("device-settings", "configured", DESKTOP, "/", actions=[device_settings],
+         wait="#xpl:not(.hidden)",
+         alt="The device Meter1 with the panel 'More device settings' open below its fields: "
+             "Slow poll interval (ms), Block reads, Max gap and Write with FC15/FC16. The "
+             "explainer of Write with FC15/FC16 is open. It tells that the gateway then writes "
+             "one register with FC16 and one coil with FC15, for a device that does not accept "
+             "FC06 or FC05."),
+    Shot("tag-write-limits", "configured", DESKTOP, "/", actions=[write_limits],
+         wait="#xpl:not(.hidden)",
+         alt="The details row of the writable tag Setpoint of Meter1: Write min 0 and Write "
+             "max 150. The explainer of Write min is open. It tells that the gateway refuses a "
+             "DCMD with a lower value, does not write to the device and writes a warning to "
+             "the log."),
+    Shot("device-disabled", "configured", DESKTOP, "/", actions=[device_disabled],
+         element="#f-dev>.card",
+         alt="The device Meter1 with the check box Enabled cleared. The card has a dashed "
+             "border, and a notice below the fields tells that the gateway does not poll this "
+             "device and sends no DBIRTH, and that the validation still examines it."),
     # issue #191, docs/how-to/change-the-configuration.md and add-a-modbus-device.md: a Validate
     # (dry run, the state does not change) that the gateway refuses
     Shot("validate-error", "configured", DESKTOP, "/",

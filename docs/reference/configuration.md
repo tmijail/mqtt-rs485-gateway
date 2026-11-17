@@ -287,6 +287,7 @@ An array of up to 16 devices.
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
+| `enabled` | bool | `true` | `false` = the device stays in the configuration, but the gateway does not poll it. Refer to [A disabled device](#a-disabled-device) |
 | `name` | text | — | Necessary. 1 to 39 bytes |
 | `unit_id` | integer | — | Necessary. 1 to 247 |
 | `poll_ms` | integer | `1000` | 50 to 3 600 000 |
@@ -294,10 +295,28 @@ An array of up to 16 devices.
 | `slow_poll_ms` | integer | 10 × `poll_ms` (maximum 3 600 000) | 50 to 3 600 000, and not less than `poll_ms`. The poll interval of the tags with `scan: "slow"` |
 | `block_reads` | bool | `true` | `false` = one request for each tag. Use it for a slave that answers with an exception if a block contains registers that it does not map |
 | `max_gap` | integer | `0` | 0 to 1999. The number of unused registers or bits that a block can include to join two tags of the same area. Not permitted with `block_reads: false` |
+| `write_multiple` | bool | `false` | `true` = the gateway writes one register with FC16 and one coil with FC15, in place of FC06 and FC05. Use it for a slave that does not accept FC06 or FC05. A write of two or more registers always uses FC16 |
 | `type` | text | `""` | The device type, as a Sparkplug template. Refer to [Device types](#device-types) |
 | `tags` | array | — | Necessary. 1 to 64 tags |
 
-The defaults of `block_reads` and `max_gap` come from the build options `CONFIG_GW_MB_BLOCK_READS` and `CONFIG_GW_MB_BLOCK_MAX_GAP`. A block never has more than 125 registers or 2000 bits.
+The defaults of `block_reads`, `max_gap` and `write_multiple` come from the build options `CONFIG_GW_MB_BLOCK_READS`, `CONFIG_GW_MB_BLOCK_MAX_GAP` and `CONFIG_GW_MB_FORCE_MULTI_WRITE`. A block never has more than 125 registers or 2000 bits.
+
+In the web UI, `slow_poll_ms`, `block_reads`, `max_gap` and `write_multiple` are in the panel **More device settings** of each device.
+
+### A disabled device
+
+```json
+{ "name": "Meter2", "unit_id": 3, "enabled": false, "tags": [ … ] }
+```
+
+- The gateway sends no request to a disabled device. The device uses no time of the bus.
+- The device has no DBIRTH, no DDATA and no DDEATH. The gateway discards a DCMD for it.
+- The validation examines a disabled device as any other device. Its name, its tags and the device limits count.
+- A disabled device does not count as offline: it does not set the Modbus fault of the LED or the buzzer alarm `device_offline`.
+- The Status tab of the web UI, the shell command `devices` and `GET /api/status` give the state `disabled`.
+- Modbus TCP requests to its unit still go to the bus.
+
+Use it, for example, for a slave that is not connected yet during the commissioning.
 
 ### Fast and slow scan
 
@@ -346,11 +365,31 @@ For the messages of a template, refer to [Sparkplug messages and metrics](sparkp
 | `units` | text | `""` | Up to 15 characters. The property `engUnit` of the metric. Empty = no property |
 | `eng_low` | number | — | The property `engLow` (Float). In the range of a Float (±3.4e38) |
 | `eng_high` | number | — | The property `engHigh` (Float). With the two keys, `eng_high` > `eng_low` |
+| `write_min` | number | — | The lowest value that a DCMD can write, in the units of the tag (after `scale` and `offset`). Only with `writable: true`. Refer to [Write limits](#write-limits) |
+| `write_max` | number | — | The highest value that a DCMD can write. With the two keys, `write_max` ≥ `write_min` |
 
 - A `bool` tag has no `scale` and no `offset`.
 - A `string` tag has no `scale`, no `offset` and no `deadband`.
 - A `bytes` tag has no `scale`, `offset`, `deadband`, `eng_low` or `eng_high`.
 - `eng_low` and `eng_high` are not permitted on `bool`, `string` and `bytes` tags.
+- `write_min` and `write_max` are not permitted on `bool`, `string` and `bytes` tags, and not on a tag that is not writable.
+
+In the web UI, the details row of a tag (**More**) shows only the keys that apply to the type of the tag. A key with a value stays visible.
+
+### Write limits
+
+```json
+{ "name": "SpeedSetpoint", "area": "holding", "address": 1, "type": "uint16", "scale": 0.1,
+  "writable": true, "write_min": 0, "write_max": 1500 }
+```
+
+- The gateway refuses a DCMD metric with a value below `write_min` or above `write_max`. It does not write to the device. It writes a warning to the log, and adds 1 to the refusal counter of the device (`write_refused` in `GET /api/status`, `writes refused` in the shell command `devices`).
+- The other metrics of the same DCMD still apply.
+- Sparkplug has no answer to a command. The next DDATA has the value of the device.
+- No key = no limit on that side. A limit can be equal to the other limit.
+- For a tag that is a Float in Sparkplug, the gateway compares the values with the precision of a Float. For an `int64` or `uint64` tag, the comparison is exact.
+- The limits do not apply to Modbus TCP requests. That path sends the frames to the bus without a change.
+- `eng_low` and `eng_high` are only properties of the metric. The gateway does not use them to examine a write.
 
 ### The tag types
 
@@ -401,7 +440,7 @@ The word order applies to 32 and 64 bits. For 16 bits, only the byte swap applie
 - `bit` is necessary with `type: bool` in `holding` or `input`, and only there.
 - 0 = the least significant bit of the register, as it arrives.
 - With `bit`, `word_order` must be `big`.
-- For a write, the gateway reads the register (FC03). Then it writes the full register with the changed bit (FC06, or FC16 with `CONFIG_GW_MB_FORCE_MULTI_WRITE`).
+- For a write, the gateway reads the register (FC03). Then it writes the full register with the changed bit (FC06, or FC16 with `write_multiple: true`).
 
 ### The datatypes in Sparkplug
 
