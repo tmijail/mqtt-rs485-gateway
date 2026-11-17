@@ -212,6 +212,21 @@ void gw_storage_recovery_config(gw_config_t *cfg);
  */
 char *gw_storage_read_file(const char *name, size_t *len, char *why, size_t why_cap);
 
+/** #221: @p name can name a file that the operator loads next to config.json (a PEM file): the
+ *  rules of gw_config_file_name_ok(), not a .json file and not a temporary file. */
+bool gw_storage_user_file_name_ok(const char *name);
+
+/** #221: @p cb gets each such file of the LittleFS partition, with its size. Returns the count. */
+size_t gw_storage_list_files(void (*cb)(void *ctx, const char *name, size_t size), void *ctx);
+
+/**
+ * #221: write the file @p name next to config.json (temporary file and rename: never a mix).
+ * Without @p replace, an existing file is not changed (ESP_ERR_INVALID_STATE). The reason of an
+ * error is in @p why.
+ */
+esp_err_t gw_storage_write_file(const char *name, const void *data, size_t len, bool replace,
+                                char *why, size_t why_cap);
+
 /**
  * Small state of the local I/O kept in NVS (IO-3 outputs to hold across a restart, IO-4 pulse
  * counters, #217 run hours, ...): blob @p key of @p len bytes, 192 at most. Written only when it

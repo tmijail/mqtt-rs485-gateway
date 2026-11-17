@@ -17,7 +17,7 @@ This example has the usual keys:
 {
   "network": { "dhcp": true, "ip": "192.168.1.50", "netmask": "255.255.255.0",
                "gateway": "192.168.1.1", "dns": "192.168.1.1" },
-  "ntp":     { "server": "pool.ntp.org" },
+  "ntp":     { "servers": ["pool.ntp.org"] },
   "mqtt":    { "host": "192.168.1.10", "port": 1883, "client_id": "",
                "username": "", "password": "", "keepalive_s": 30 },
   "sparkplug": { "group_id": "Plant1", "edge_node_id": "GW01", "primary_host_id": "" },
@@ -156,13 +156,25 @@ IPv6 together with IPv4.
 | `address` | text | `""` | A static address for Ethernet (RFC 4291). The prefix on the link is /64. Multicast, link-local, `::` and `::1` are not permitted |
 | `dns` | text | `""` | An IPv6 DNS server. DHCPv4 fills the first two positions, and this server is the third |
 
-The gateway learns the default IPv6 router from the router advertisements. There is no static IPv6 gateway. `mqtt.host`, `ntp.server` and `syslog.host` accept IPv6 addresses and names with an AAAA record.
+The gateway learns the default IPv6 router from the router advertisements. There is no static IPv6 gateway. `mqtt.host`, `ntp.servers` and `syslog.host` accept IPv6 addresses and names with an AAAA record.
 
 ## `ntp`
 
+```json
+"ntp": { "servers": ["pool.ntp.org", "192.168.10.1"] }
+```
+
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `server` | text | `pool.ntp.org` | The name, IPv4 or IPv6 address of the SNTP server |
+| `servers` | array of texts | `["pool.ntp.org"]` | 1 to 3 names, IPv4 or IPv6 addresses of SNTP servers, 1 to 127 bytes each. An empty item is an error |
+
+- The gateway asks server 1 first. When a server does not answer in 15 s, the gateway asks the next server. After the last server, it asks the first server again.
+- Thus a first server that does not answer delays the first valid time by approximately 15 s. The log gives the wait: `edge: clock valid (source sntp) after a wait of 16 s: connecting`.
+- The old key `ntp.server` (one server) is not valid since #201. A document with it is refused.
+
+In the web UI, the card **Time** has one row for each server. An empty row is an error at its field.
+
+![The card 'Time' of the Configuration tab with two SNTP servers, pool.ntp.org and 192.168.10.1, and the explainer of SNTP servers: the gateway asks server 1 first, then the next server when a server does not answer.](../images/time-card.png)
 
 Without a valid clock, the gateway opens no MQTT session. Refer to [The clock and the RTC battery](clock-and-rtc-battery.md).
 
@@ -199,6 +211,8 @@ Each CONNECT has Clean Session = 1. With `protocol: "5"`, each CONNECT has Clean
 | `key_file` | text | `""` | The PEM private key of the client, **not encrypted** (PKCS#1, SEC1 or PKCS#8). Necessary with `cert_file`, and not permitted without it |
 
 - A file name has 1 to 32 characters `A-Z a-z 0-9 . _ -`, without `/`. It must not start with `.`, and it must not be `config.json`.
+- To put a file into the LittleFS partition, use **Load a file…** in the card MQTT of the web UI, or `PUT /api/files`. Refer to [Connect to a broker with TLS](../how-to/connect-to-a-broker-with-tls.md) and [The REST API](rest-api.md#the-pem-files).
+- A save of the configuration examines each file that `ca_file`, `cert_file`, `key_file` and `ota.ca_file` name: the file exists, it holds certificates (or an unencrypted private key for `key_file`), and the key agrees with the certificate. Otherwise, the error has the path of the key, for example `mqtt.tls.key_file: the key does not agree with the certificate gw01.crt`.
 - The gateway uses TLS 1.2 or 1.3, as the broker selects.
 - The gateway examines the validity dates of the certificate. Thus the TLS connection waits for a valid clock.
 - The gateway validates the TLS keys also when `enabled` is `false`.
@@ -498,11 +512,43 @@ A Modbus TCP server that gives access to the RTU slaves on the bus.
 | `port` | integer | `502` | 1 to 65535 |
 | `allowed_clients` | array of texts | `[]` | Up to 8 IPv4 addresses (`a.b.c.d`) or networks (`a.b.c.d/n`, n 0 to 32). The gateway closes a connection from another source without a response. Empty = any client, with a warning in the log |
 | `idle_timeout_s` | integer | `60` | 0 to 3600. The gateway closes a connection without requests after this time. 0 = never |
+| `local_unit_id` | integer | `0` | 0 to 247. The unit that the gateway answers itself, with its own I/O. 0 = off. It must not be the `unit_id` of a device. Refer to [The local unit](#the-local-unit) |
+| `local_writes` | bool | `false` | `true` permits FC05 and FC15 on the DOs of the local unit |
 
 - The gateway sends FC01 to FC06, FC15 and FC16 to the units 1 to 247, with or without a configured device.
 - The gateway itself answers with an exception: 01 for another function, 03 for data that is not valid, 0A for the units 0 and 248 to 255. If the unit does not respond after the retries of `rs485`, the exception is 0B.
 - The TCP requests go through the task that owns the bus, one at a time, between two poll requests. The priority is: DCMD writes, then Modbus TCP, then the poll.
 - The gateway always refuses a connection through the commissioning access point, also when `allowed_clients` contains the client. Refer to [The access point](access-point.md).
+
+### The local unit
+
+```json
+"modbus_tcp": { "enabled": true, "allowed_clients": ["192.168.1.20"],
+                "local_unit_id": 100, "local_writes": true }
+```
+
+A PLC or a SCADA without MQTT can read the I/O of the gateway itself on the unit `local_unit_id`. The gateway answers this unit at once, and does not send it to the RS485 bus.
+
+| Area | Function | Addresses | Content |
+|---|---|---|---|
+| Discrete inputs | FC02 | 0 to 7 | DI/1 to DI/8, after the debounce. 1 = active |
+| Coils | FC01 (read), FC05 and FC15 (write) | 0 to 7 | DO/1 to DO/8. 1 = on |
+| Input registers | FC04 | 0 to 31 | The pulse counters of DI/1 to DI/8, 4 registers each (uint64, `big`: the most significant register first). DI/1 is at 0 to 3, DI/8 at 28 to 31 |
+
+The exceptions of the local unit:
+
+| Code | Cause |
+|---|---|
+| 01 | FC03, FC06 or FC16: the local unit has no holding registers. Also FC05 and FC15 when `local_writes` is `false` |
+| 02 | An address outside the table above |
+| 03 | A write to a DO that a local rule drives. The gateway changes no DO of the request. An NCMD gets the same refusal |
+| 04 | The DO expander does not answer: the DOs are unknown. Also a write that the local I/O task did not apply |
+
+- A write goes through the local I/O task, the only writer of the DO expander, as an NCMD does. The NDATA then gives the new state of the DO.
+- The safe state after a loss of MQTT (`local_io.failsafe_s`) applies as for an NCMD. A Modbus write after the safe state changes the DO again.
+- The local unit has no authentication, as the other units. Limit the clients with `allowed_clients`, and keep `local_writes` off when no client must switch the DOs.
+
+![The card 'Modbus TCP' of the Configuration tab: Enabled, the port 502, the idle timeout, the allowed client 10.0.2.2, and the local unit 100 with Local writes. The explainer of Local unit ID gives the map: the DIs at discrete 0 to 7, the DOs at coil 0 to 7, the counters at input 0 to 31.](../images/modbus-tcp-card.png)
 
 ## `ota`
 
@@ -711,5 +757,9 @@ The web UI and the REST API.
 | `password` | text (secret) | `""` | Empty, or 8 to 63 printable ASCII characters (0x20 to 0x7E). The password is also the WPA2 key of the access point |
 
 While `web.password` is empty, the gateway accepts `admin` with its commissioning password (random; the console shows it). A push of BOOT then opens the claim window. Refer to [Set the first web password on site](../how-to/set-the-first-web-password.md).
+
+In the web UI, the field **Port** of the card **Web interface** is `web.port`, with the label **HTTP port**. While **Enabled** or **HTTPS** is off, a warning shows at the field. A save that turns off the web interface asks first, and gives the steps to turn it on again. Refer to [Recover a gateway](../how-to/recover-the-gateway.md#the-web-interface-is-off).
+
+![The confirmation 'Turn off the web interface?' after 'Save and restart' with Enabled off: after the restart, the page and the REST API do not answer. The steps to turn the web interface on again: push BOOT for 2 to 10 s, open the web UI, turn on Enabled and save. It has the red button 'Save and restart' and Cancel.](../images/web-off-dialog.png)
 
 For the routes, refer to [The REST API](rest-api.md).

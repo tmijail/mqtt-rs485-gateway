@@ -49,6 +49,7 @@ extern "C" {
 #define GW_CFG_BUILD_DEFAULT (-1)   /* optional key absent: the build-time default applies */
 #define GW_MAX_GAP_LIMIT 1999       /* a block never spans more than 2000 bits */
 #define GW_MBTCP_MAX_ALLOWED 8      /* MB-15: entries of modbus_tcp.allowed_clients */
+#define GW_MAX_NTP_SERVERS 3        /* #201: entries of ntp.servers */
 #define GW_LOCAL_IO_CHANNELS 8      /* DI/1..8 and DO/1..8 */
 #define GW_FAILSAFE_MAX_S 86400     /* IO-3: local_io.failsafe_s */
 #define GW_COUNTER_SAVE_MIN_S 60    /* IO-4: local_io.counter_save_s (or 0) */
@@ -252,8 +253,9 @@ typedef struct {
         gw_ipv6_cfg_t ipv6;
         gw_wifi_cfg_t wifi;
     } network;
-    struct {
-        char server[GW_HOST_SIZE];
+    struct {                     /* #201: tried in order by the SNTP client */
+        char servers[GW_MAX_NTP_SERVERS][GW_HOST_SIZE];
+        uint8_t server_count;    /* 1..GW_MAX_NTP_SERVERS */
     } ntp;
     struct {
         char host[GW_HOST_SIZE];
@@ -347,6 +349,9 @@ typedef struct {
             uint8_t ip[4];
             uint8_t prefix;      /* 0..32 */
         } clients[GW_MBTCP_MAX_ALLOWED];
+        uint8_t local_unit_id;   /* #216: the unit that the gateway answers itself (its DIs, DOs
+                                  * and counters); 0 = off. Never the unit_id of a device */
+        bool local_writes;       /* #216: FC05 and FC15 on the DOs of the local unit */
     } modbus_tcp;
 
     struct {                     /* #206: for people; "" = none. gateway.comment is not kept */

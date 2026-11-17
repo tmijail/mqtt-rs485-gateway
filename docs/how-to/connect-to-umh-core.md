@@ -76,7 +76,7 @@ An example `config.json` for option A:
 ```json
 {
   "network": { "dhcp": true },
-  "ntp":     { "server": "pool.ntp.org" },
+  "ntp":     { "servers": ["pool.ntp.org"] },
   "mqtt":    { "host": "192.168.1.10", "port": 1883, "client_id": "",
                "username": "", "password": "", "keepalive_s": 30, "protocol": "3.1.1" },
   "sparkplug": { "group_id": "acme", "edge_node_id": "acme:berlin:packaging:gw01",

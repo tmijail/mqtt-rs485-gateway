@@ -55,7 +55,7 @@ The responses of `PUT /api/config`:
 | Status | Body or cause |
 |---|---|
 | `200` | `{"ok":true,"saved":false,"warnings":[{"path":"devices[0].name","message":"…"}],"warning_count":1}`. After a save: `"saved":true,"restart":true`. The response has the first 50 warnings. `warning_count` gives the number of all the warnings |
-| `400` | `{"ok":false,"error":"…","path":"devices[0].tags[1].type","line":0,"column":0}`. With `restore_prev`: the firmware refuses the earlier document |
+| `400` | `{"ok":false,"error":"…","path":"devices[0].tags[1].type","line":0,"column":0}`. With `restore_prev`: the firmware refuses the earlier document. Also when a PEM file that the document names is not correct (refer to [The PEM files](#the-pem-files)) |
 | `404` | With `restore_prev`: there is no earlier document |
 | `409` | A new firmware image is on trial: `testing <version>: N s left` |
 | `413` | The document is larger than `CONFIG_GW_CONFIG_MAX_BYTES` (128 KiB) |
@@ -74,6 +74,22 @@ The responses of `PUT /api/config`:
 | `POST /api/time` | Sets the clock and the RTC. Refer to [`POST /api/time`](#post-apitime) |
 | `POST /api/modbus/read` | One Modbus test read. Refer to [`POST /api/modbus/read`](#post-apimodbusread) |
 | `POST /api/do` | Sets a DO on or off. Refer to [`POST /api/do`](#post-apido) |
+| `GET /api/wifi/scan` | The Wi-Fi networks near the gateway. `?new=1` starts a scan. Refer to [`GET /api/wifi/scan`](#get-apiwifiscan) |
+
+### The PEM files
+
+| Method and route | What it does |
+|---|---|
+| `GET /api/files` | The files in the LittleFS partition that the configuration can name: what each file holds. Never the content of a file. Refer to [`GET /api/files`](#get-apifiles) |
+| `PUT /api/files?name=<name>` | Loads a PEM file. The body is the PEM text. `&replace=1` replaces a file with the same name. Refer to [`PUT /api/files`](#put-apifiles) |
+
+The files are for `mqtt.tls.ca_file`, `mqtt.tls.cert_file`, `mqtt.tls.key_file` and `ota.ca_file`. A load does not change the configuration. Select the file in the configuration, then save it.
+
+A save or a dry run of `PUT /api/config` examines the files that the document names:
+
+- Each file exists, and `ca_file` and `cert_file` hold certificates, `key_file` an unencrypted private key.
+- The client key agrees with the client certificate.
+- Otherwise, the response is `400` with the path of the key, for example `{"error":"mqtt.tls.key_file: the key does not agree with the certificate gw01.crt","path":"mqtt.tls.key_file"}`.
 
 ### Firmware
 
@@ -180,6 +196,68 @@ Sets a digital output, as an NCMD does. Only the DOs: the web UI does not write 
 | `400` | The body is not correct |
 | `409` | A local rule controls the DO (`local_io.rules`). Or recovery mode, commissioning or the fault mode: the local I/O does not run |
 | `503` | The expander does not respond, or the task did not answer in time |
+### `GET /api/wifi/scan`
+
+The list of the Wi-Fi networks near the gateway, for the button "Find networks" of the web UI. The scan also works when `network.wifi.enabled` is `false`: the radio starts for the scan, and stops after it.
+
+- `?new=1` starts a scan, unless a scan runs or the last result is younger than 10 s.
+- A request without `?new=1` only reads the state.
+- A scan takes approximately 3 s. The gateway uses 2.4 GHz only.
+- QEMU has no radio. In the emulator, the list is fixed, and `simulated` is `true`.
+
+| Status | Body |
+|---|---|
+| `200` | `{"state":"done","age_s":2,"simulated":false,"networks":[…]}`, or `{"state":"idle","networks":[]}` before the first scan |
+| `202` | `{"state":"scanning"}`: send the request again after 1 s |
+| `404` | The build has no Wi-Fi radio |
+| `503` | `{"state":"failed","error":"…"}`: the radio cannot scan now |
+
+Each network has these fields. The list is strongest first, with one item for each SSID (the strongest access point) and no hidden network.
+
+| Field | Content |
+|---|---|
+| `ssid` | The name of the network |
+| `rssi` | The signal, in dBm |
+| `channel` | The Wi-Fi channel |
+| `security` | `Open`, `WEP`, `WPA`, `WPA/WPA2`, `WPA2`, `WPA2/WPA3`, `WPA3`, `WPA-Enterprise`, `WPA2-Enterprise`, `WPA3-Enterprise`, `WPA2/WPA3-Enterprise`, `WAPI`, `OWE` or `Unknown` |
+| `supported` | `true` when the gateway can join the network: open, or WPA2 or WPA3 with a password. An enterprise network (802.1X) is not supported |
+
+### `GET /api/files`
+
+```json
+{"files":[{"name":"ca.pem","size":1302,"kind":"certificates","count":1,
+           "certs":[{"subject":"CN=ACME Plant Root CA","not_after":"2034-03-01","ca":true}]},
+          {"name":"gw01.key","size":227,"kind":"key","key_type":"EC P-256",
+           "agrees_with":["gw01.crt"]}],
+ "total_bytes":1529,"max_file_bytes":16384}
+```
+
+| Field | Content |
+|---|---|
+| `name`, `size` | The file name and its size in bytes |
+| `kind` | `certificates`, `key` (an unencrypted private key) or `other` |
+| `count`, `certs` | For certificates: the number of certificates, and the first 4 with the subject, the last day of validity (UTC) and whether the certificate is a CA |
+| `key_type` | For a key: for example `EC P-256` or `RSA 2048` |
+| `agrees_with` | For a key: the certificate files whose first certificate has the public key of this key |
+
+The list has up to 16 files. It leaves out `config.json` and the other files of the gateway.
+
+### `PUT /api/files`
+
+`PUT /api/files?name=<name>`, with the PEM text as the body (`Content-Type: application/x-pem-file`). The name rules are the rules of `mqtt.tls.ca_file`, and the name must not end with `.json`.
+
+| Status | Body or cause |
+|---|---|
+| `201` | `{"ok":true,"file":{…}}`: the file, with the fields of `GET /api/files` |
+| `400` | The name is not correct, or the body is not PEM certificates or an unencrypted PEM private key |
+| `409` | A file with this name exists, and the request has no `replace=1` |
+| `413` | The body is larger than 16 KiB |
+| `507` | The gateway cannot write the file, for example because the LittleFS partition is full |
+
+```sh
+curl -k -u admin:<web password> -H "X-Requested-With: curl" -X PUT \
+     --data-binary @ca.pem "https://<ip>/api/files?name=ca.pem"
+```
 
 ### `POST /api/time`
 

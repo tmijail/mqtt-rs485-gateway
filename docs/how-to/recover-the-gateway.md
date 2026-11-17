@@ -101,6 +101,21 @@ Do not push BOOT when you connect the power. GPIO0 is a strapping pin: the ROM t
 4. With TLS, make sure that the clock is valid and that the CA of the broker is correct.
 5. With `sparkplug.primary_host_id`, make sure that the primary host is online. The gateway sends no NBIRTH until the host publishes its STATE `online`.
 
+## The web interface is off
+
+With `web.enabled: false`, the gateway starts no web server in normal mode. MQTT, Modbus and the other services continue. The BOOT button starts the web server again until the next restart.
+
+1. Push the BOOT button of the gateway for 2 to 10 s, until you hear 1 beep. Release the button.
+2. Make sure that the LED blinks white during the push. The web server and the access point start.
+3. Open the web UI on the plant network, or on the access point. Refer to [Get on the access point on a later visit](get-on-the-access-point.md).
+4. In the Configuration tab, go to the card **Web interface**.
+5. Turn on **Enabled**.
+6. Click **Save and restart**.
+
+After the restart, the web server starts at each boot. Without step 5, the web server stops again at the next restart.
+
+You can also set `"enabled": true` in `web` with the USB console. The steps are the same as in [With the USB console](#with-the-usb-console): `config show`, change the document, then `config load`.
+
 ## The web UI is not available in any mode
 
 Flash the firmware over USB. The owner of the board always keeps this access: the project burns no eFuses.

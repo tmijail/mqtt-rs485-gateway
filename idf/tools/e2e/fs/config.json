@@ -3,7 +3,9 @@
     "dhcp": true
   },
   "ntp": {
-    "server": "10.0.2.2"
+    "servers": [
+      "10.0.2.2"
+    ]
   },
   "mqtt": {
     "host": "10.0.2.2",
@@ -609,6 +611,8 @@
     "port": 502,
     "allowed_clients": [
       "10.0.2.2"
-    ]
+    ],
+    "local_unit_id": 100,
+    "local_writes": true
   }
 }

@@ -649,11 +649,12 @@ static int cmd_devices(int argc, char **argv)
         const mb_stats_t *o = &g.other_units;
         out("modbus_tcp connections %lu accepted %lu rejected | forwarded %lu | gateway "
             "exceptions 01 %lu 03 %lu 0A %lu 0B %lu | other units ok %lu timeout %lu crc %lu "
-            "frame %lu exception %lu\n",
+            "frame %lu exception %lu | local unit %lu\n",
             (unsigned long)g.accepted, (unsigned long)g.rejected, (unsigned long)g.forwarded,
             (unsigned long)g.ex_function, (unsigned long)g.ex_value, (unsigned long)g.ex_path,
             (unsigned long)g.ex_no_answer, (unsigned long)o->ok, (unsigned long)o->timeout,
-            (unsigned long)o->crc, (unsigned long)o->frame, (unsigned long)o->exception);
+            (unsigned long)o->crc, (unsigned long)o->frame, (unsigned long)o->exception,
+            (unsigned long)g.local);
     }
     return 0;
 }
@@ -892,7 +893,11 @@ static int cmd_config(int argc, char **argv)
     } else {
         out("ipv6       disabled\n");
     }
-    out("ntp        %s\n", c->ntp.server);
+    out("ntp        ");
+    for (unsigned i = 0; i < c->ntp.server_count; i++) {
+        out("%s%s", i ? ", " : "", c->ntp.servers[i]);
+    }
+    out("\n");
     static const char *const levels[8] = {[3] = "error", [4] = "warning", [6] = "info",
                                           [7] = "debug"};
     if (c->syslog.host[0] != '\0') {
@@ -1020,6 +1025,10 @@ static int cmd_config(int argc, char **argv)
         out("modbus_tcp enabled, port %u, idle timeout %u s, clients %s\n", c->modbus_tcp.port,
             c->modbus_tcp.idle_timeout_s,
             c->modbus_tcp.client_count ? clients : "any (no authentication)");
+        if (c->modbus_tcp.local_unit_id != 0) {   /* #216 */
+            out("modbus_tcp local unit %u (DIs, DOs, counters), writes %s\n",
+                c->modbus_tcp.local_unit_id, c->modbus_tcp.local_writes ? "on" : "off");
+        }
     } else {
         out("modbus_tcp disabled\n");
     }

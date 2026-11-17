@@ -1,4 +1,5 @@
 #include "gw_storage.h"
+#include "gw_pemfile.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -1361,7 +1362,8 @@ void gw_storage_recovery_config(gw_config_t *cfg)
         gw_hostname_from("", cfg->network.hostname, sizeof(cfg->network.hostname));
         cfg->network.mdns = true;
     }
-    strcpy(cfg->ntp.server, "pool.ntp.org");
+    strcpy(cfg->ntp.servers[0], "pool.ntp.org");
+    cfg->ntp.server_count = 1;
     cfg->web.enabled = true;
     strcpy(cfg->web.username, "admin");
     ESP_LOGW(TAG, "recovery network: %s", found ? "the last valid configuration's"
@@ -1705,6 +1707,69 @@ char *gw_storage_read_file(const char *name, size_t *len, char *why, size_t why_
     buf[size] = '\0';
     *len = size;
     return buf;
+}
+
+/* #221: a file next to config.json that the operator can load (a PEM file): the name rules of
+ * gw_config_file_name_ok(), and not one of the configuration files of the gateway
+ * (config.prev.json, config.next.json) or a temporary file. */
+bool gw_storage_user_file_name_ok(const char *name)
+{
+    size_t n = strlen(name);
+    return gw_config_file_name_ok(name) && !(n >= 5 && strcmp(name + n - 5, ".json") == 0) &&
+           !(n >= 4 && strcmp(name + n - 4, ".tmp") == 0);
+}
+
+size_t gw_storage_list_files(void (*cb)(void *ctx, const char *name, size_t size), void *ctx)
+{
+    size_t n = 0;
+    DIR *d = s_mounted ? opendir(CFG_MOUNT) : NULL;
+    for (struct dirent *e; d != NULL && (e = readdir(d)) != NULL;) {
+        char path[sizeof(CFG_MOUNT) + GW_FILE_SIZE + 1];
+        struct stat st;
+        if (!gw_storage_user_file_name_ok(e->d_name) ||
+            snprintf(path, sizeof(path), CFG_MOUNT "/%s", e->d_name) >= (int)sizeof(path) ||
+            stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+            continue;
+        }
+        cb(ctx, e->d_name, (size_t)st.st_size);
+        n++;
+    }
+    if (d != NULL) {
+        closedir(d);
+    }
+    return n;
+}
+
+esp_err_t gw_storage_write_file(const char *name, const void *data, size_t len, bool replace,
+                                char *why, size_t why_cap)
+{
+    char path[sizeof(CFG_MOUNT) + GW_FILE_SIZE + 1];
+    char tmp[sizeof(path) + 4];
+    struct stat st;
+    if (!gw_storage_user_file_name_ok(name) ||
+        snprintf(path, sizeof(path), CFG_MOUNT "/%s", name) >= (int)sizeof(path) ||
+        snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp)) {
+        snprintf(why, why_cap, "'%s' is not a valid file name (1-%d characters A-Z a-z 0-9 . _ -, "
+                 "not .json)", name, GW_FILE_SIZE - 1);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (len == 0 || len > GW_STORAGE_FILE_MAX) {
+        snprintf(why, why_cap, "%u bytes (1 to %d)", (unsigned)len, GW_STORAGE_FILE_MAX);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    xSemaphoreTake(s_save_lock, portMAX_DELAY);
+    esp_err_t r = ESP_OK;
+    if (!replace && s_mounted && stat(path, &st) == 0) {
+        snprintf(why, why_cap, "/cfg/%s exists", name);
+        r = ESP_ERR_INVALID_STATE;
+    } else if ((r = write_file_atomic(path, tmp, data, len)) != ESP_OK) {
+        snprintf(why, why_cap, "could not write /cfg/%s (%s): the LittleFS partition can be full",
+                 name, esp_err_to_name(r));
+    } else {
+        ESP_LOGI(TAG, "/cfg/%s written (%u B)", name, (unsigned)len);
+    }
+    xSemaphoreGive(s_save_lock);
+    return r;
 }
 
 /* The files next to config.json, kept in RAM across a wipe of the partition (CFG-7 migration):
@@ -2306,6 +2371,10 @@ esp_err_t gw_storage_save_config_lint(const char *json, size_t len, bool dry_run
     char hook_why[120];
     if (!applied) {
         ret = strstr(err->msg, "not enough memory") ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_ARG;
+    } else if (!gw_pem_check_config(cfg, err)) {
+        /* #221: the PEM files that the document names exist, and the key agrees with the
+         * certificate (the web UI shows the error at its field) */
+        ret = ESP_ERR_INVALID_ARG;
     } else if (!dry_run && s_copy_unknown && !s_mounted && !discard_copy) {
         /* issue #108 M1: formatting LittleFS to save would destroy the only copy */
         ret = ESP_ERR_INVALID_STATE;

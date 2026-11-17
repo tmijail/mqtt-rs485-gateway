@@ -109,15 +109,17 @@ static void test_validator_notes_the_document(void)
     gw_config_schema_init(&r);
     TEST_ASSERT_TRUE_MESSAGE(gw_config_parse_schema(json, len, cfg, &err, &r), err.msg);
     TEST_ASSERT_TRUE(r.valid);
-    /* the example has only keys of schema 1 (no ota.mqtt) */
-    TEST_ASSERT_EQUAL_UINT16(1, r.need);
+    /* #201: ntp.servers is the key of schema 2 in the example; all the others are schema 1 */
+    TEST_ASSERT_EQUAL_UINT16(GW_CONFIG_SCHEMA, r.need);
     TEST_ASSERT_TRUE(r.count > 50);
-    TEST_ASSERT_EQUAL_STRING("network", r.top[0].path);   /* the first key of the document */
+    TEST_ASSERT_EQUAL_STRING("ntp.servers", r.top[0].path);   /* the highest number first */
+    TEST_ASSERT_EQUAL_STRING("network", r.top[1].path);       /* then the first key */
     char why[200];
     TEST_ASSERT_TRUE(gw_schema_fits(&r, GW_CONFIG_SCHEMA, why, sizeof(why)));
     /* an image that read only an older schema would get the first paths */
     TEST_ASSERT_FALSE(gw_schema_fits(&r, 0, why, sizeof(why)));
-    const char *want = "the configuration needs schema 1, the image reads 0: network (1), ";
+    const char *want = "the configuration needs schema 2, the image reads 0: ntp.servers (2), "
+                       "network (1), ";
     TEST_ASSERT_EQUAL_STRING_LEN(want, why, strlen(want));
     /* #223: ota.mqtt is a key of schema 2: an image that reads schema 1 cannot read it */
     static const char ota[] = "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","

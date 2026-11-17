@@ -37,6 +37,7 @@
 #include "gw_mbdiag.h"
 #include "gw_net.h"
 #include "gw_ota.h"
+#include "gw_pemfile.h"
 #include "gw_status.h"
 #include "gw_storage.h"
 #include "gw_tagdb.h"
@@ -47,7 +48,7 @@
 static const char *TAG = "web";
 
 #define REALM_HDR "Basic realm=\"gateway\", charset=\"UTF-8\""
-#define WEB_URI_HANDLERS 27   /* the routes of gw_web_start (uris[]) */
+#define WEB_URI_HANDLERS 30   /* the routes of gw_web_start (uris[]) */
 
 static gw_web_ctx_t s_ctx;
 static httpd_handle_t s_server;
@@ -1861,6 +1862,252 @@ static esp_err_t coredump_summary_get(httpd_req_t *req)
     return r;
 }
 
+/* ---------- #208 #221: a JSON answer in a PSRAM buffer ---------- */
+
+typedef struct {
+    char *b;
+    size_t cap, n;
+} jbuf_t;
+
+static void jb_add(jbuf_t *j, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+
+static void jb_add(jbuf_t *j, const char *fmt, ...)
+{
+    if (j->n >= j->cap) {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vsnprintf(j->b + j->n, j->cap - j->n, fmt, ap);
+    va_end(ap);
+    j->n = r < 0 ? j->cap : j->n + (size_t)r;
+}
+
+/* "<key>":"<escaped text>" */
+static void jb_str(jbuf_t *j, const char *key, const char *s)
+{
+    char esc[2 * GW_PEM_SUBJECT_MAX + 8];
+    json_escape(esc, sizeof(esc), s);
+    jb_add(j, "\"%s\":\"%s\"", key, esc);
+}
+
+static esp_err_t jb_send(httpd_req_t *req, const char *status, jbuf_t *j)
+{
+    if (j->n >= j->cap) {
+        return send_error(req, "500 Internal Server Error", NULL, "answer too long");
+    }
+    esp_err_t r = send_json(req, status, j->b);
+    return r;
+}
+
+/* ---------- #208: GET /api/wifi/scan ---------- */
+
+#define WIFI_SCAN_MAX_AGE_S 10   /* a new scan only when the last result is older */
+
+static void scan_one(void *ctx, const gw_net_scan_ap_t *ap)
+{
+    jbuf_t *j = ctx;
+    char ssid[2 * sizeof(ap->ssid) + 8];
+    json_escape(ssid, sizeof(ssid), ap->ssid);
+    jb_add(j, "%s{\"ssid\":\"%s\",\"rssi\":%d,\"channel\":%u,\"security\":\"%s\",\"supported\":%s}",
+           j->b[j->n - 1] == '[' ? "" : ",", ssid, ap->rssi, ap->channel, ap->security,
+           ap->supported ? "true" : "false");
+}
+
+/* The Wi-Fi networks near the gateway, for the button "Find networks" of the web UI: ?new=1
+ * starts a scan (unless one runs, or the last result is younger than WIFI_SCAN_MAX_AGE_S); a
+ * request without it only reads the state. 202 while the scan runs, 200 with the networks. The
+ * scan also works with network.wifi off. QEMU has no radio: the list is simulated. */
+static esp_err_t wifi_scan_get(httpd_req_t *req)
+{
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
+    if (query_flag(req, "new")) {
+        gw_net_wifi_scan_start(WIFI_SCAN_MAX_AGE_S);
+    }
+    uint32_t age;
+    bool sim;
+    char why[64];
+    gw_net_scan_state_t st = gw_net_wifi_scan_result(NULL, NULL, &age, &sim, why, sizeof(why));
+    switch (st) {
+    case GW_NET_SCAN_UNAVAILABLE:
+        return send_error(req, "404 Not Found", NULL, "this build has no Wi-Fi radio");
+    case GW_NET_SCAN_IDLE:
+        return send_json(req, "200 OK", "{\"state\":\"idle\",\"networks\":[]}\n");
+    case GW_NET_SCAN_RUNNING:
+        return send_json(req, "202 Accepted", "{\"state\":\"scanning\"}\n");
+    case GW_NET_SCAN_FAILED: {
+        char body[160], esc[128];
+        json_escape(esc, sizeof(esc), why);
+        snprintf(body, sizeof(body), "{\"state\":\"failed\",\"error\":\"%s\"}\n", esc);
+        return send_json(req, "503 Service Unavailable", body);
+    }
+    default:
+        break;
+    }
+    jbuf_t j = {.cap = 192 + GW_NET_SCAN_MAX * 160};
+    j.b = gw_storage_malloc(j.cap);
+    if (j.b == NULL) {
+        return send_error(req, "503 Service Unavailable", NULL, "no memory");
+    }
+    jb_add(&j, "{\"state\":\"done\",\"age_s\":%u,\"simulated\":%s,\"networks\":[", (unsigned)age,
+           sim ? "true" : "false");
+    gw_net_wifi_scan_result(scan_one, &j, &age, &sim, why, sizeof(why));
+    jb_add(&j, "]}\n");
+    esp_err_t r = jb_send(req, "200 OK", &j);
+    gw_storage_free(j.b);
+    return r;
+}
+
+/* ---------- #221: the PEM files next to config.json ---------- */
+
+#define FILES_MAX 16   /* files that GET /api/files lists */
+
+typedef struct {
+    char (*names)[GW_FILE_SIZE];
+    size_t count;
+} names_t;
+
+static void file_name(void *ctx, const char *name, size_t size)
+{
+    names_t *n = ctx;
+    (void)size;
+    if (n->count < FILES_MAX) {
+        snprintf(n->names[n->count++], GW_FILE_SIZE, "%s", name);
+    }
+}
+
+static void jb_info(jbuf_t *j, const gw_pem_info_t *f)
+{
+    jb_add(j, "{");
+    jb_str(j, "name", f->name);
+    jb_add(j, ",\"size\":%u,\"kind\":\"%s\"", (unsigned)f->size,
+           f->kind == GW_PEM_CERTS ? "certificates" : f->kind == GW_PEM_KEY ? "key" : "other");
+    if (f->kind == GW_PEM_CERTS) {
+        jb_add(j, ",\"count\":%u,\"certs\":[", f->count);
+        for (unsigned i = 0; i < f->count && i < GW_PEM_CERTS_MAX; i++) {
+            jb_add(j, "%s{", i ? "," : "");
+            jb_str(j, "subject", f->certs[i].subject);
+            jb_add(j, ",\"not_after\":\"%s\",\"ca\":%s}", f->certs[i].not_after,
+                   f->certs[i].ca ? "true" : "false");
+        }
+        jb_add(j, "]");
+    } else if (f->kind == GW_PEM_KEY) {
+        jb_add(j, ",");
+        jb_str(j, "key_type", f->key_type);
+    }
+}
+
+/* GET /api/files: the files that the operator can name in mqtt.tls and ota (the selects of the
+ * card MQTT), with the subject and the expiry of each certificate, the type of each private key
+ * and the certificate files that it agrees with. Never the content of a file. */
+static esp_err_t files_get(httpd_req_t *req)
+{
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
+    names_t n = {.names = gw_storage_calloc(FILES_MAX, GW_FILE_SIZE)};
+    gw_pem_info_t *info = gw_storage_calloc(FILES_MAX, sizeof(*info));
+    jbuf_t j = {.cap = 256 + FILES_MAX * (200 + GW_PEM_CERTS_MAX * (2 * GW_PEM_SUBJECT_MAX + 64))};
+    j.b = gw_storage_malloc(j.cap);
+    esp_err_t r;
+    if (n.names == NULL || info == NULL || j.b == NULL) {
+        r = send_error(req, "503 Service Unavailable", NULL, "no memory");
+    } else {
+        gw_storage_list_files(file_name, &n);
+        size_t total = 0;
+        for (size_t i = 0; i < n.count; i++) {
+            char why[96];
+            if (!gw_pem_info(n.names[i], &info[i], why, sizeof(why))) {
+                info[i].kind = GW_PEM_OTHER;
+            }
+            total += info[i].size;
+        }
+        jb_add(&j, "{\"files\":[");
+        for (size_t i = 0; i < n.count; i++) {
+            jb_add(&j, "%s", i ? "," : "");
+            jb_info(&j, &info[i]);
+            if (info[i].kind == GW_PEM_KEY) {
+                jb_add(&j, ",\"agrees_with\":[");
+                unsigned m = 0;
+                for (size_t k = 0; k < n.count; k++) {
+                    if (info[k].kind == GW_PEM_CERTS && gw_pem_key_agrees(info[i].name, info[k].name)) {
+                        jb_add(&j, "%s\"%s\"", m++ ? "," : "", info[k].name);
+                    }
+                }
+                jb_add(&j, "]");
+            }
+            jb_add(&j, "}");
+        }
+        jb_add(&j, "],\"total_bytes\":%u,\"max_file_bytes\":%d}\n", (unsigned)total,
+               GW_STORAGE_FILE_MAX);
+        r = jb_send(req, "200 OK", &j);
+    }
+    gw_storage_free(n.names);
+    gw_storage_free(info);
+    gw_storage_free(j.b);
+    return r;
+}
+
+/* PUT /api/files?name=<name>[&replace=1] with the PEM text: the button "Load a file..." of the
+ * card MQTT. Certificates or an unencrypted private key, up to GW_STORAGE_FILE_MAX bytes. 201
+ * with what the file holds; 409 if the file exists and replace is not 1. The configuration does
+ * not change: the operator selects the file, then saves. */
+static esp_err_t files_put(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    char q[96], name[GW_FILE_SIZE + 8];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) != ESP_OK ||
+        httpd_query_key_value(q, "name", name, sizeof(name)) != ESP_OK || name[0] == '\0') {
+        return refuse_body(req, "400 Bad Request", "name: give the name of the file (?name=...)");
+    }
+    if (req->content_len > GW_STORAGE_FILE_MAX) {
+        char msg[80];
+        snprintf(msg, sizeof(msg), "body of %u bytes not accepted (maximum %d)",
+                 (unsigned)req->content_len, GW_STORAGE_FILE_MAX);
+        return refuse_body(req, "413 Content Too Large", msg);
+    }
+    size_t len;
+    const char *status;
+    char *body = read_body(req, &len, &status);
+    if (body == NULL) {
+        return refuse_body(req, status, "the body is empty or did not arrive");
+    }
+    gw_pem_info_t *info = gw_storage_calloc(1, sizeof(*info));
+    char why[160];
+    esp_err_t e = info != NULL ? gw_pem_put(name, body, len, query_flag(req, "replace"), info, why,
+                                            sizeof(why))
+                               : ESP_ERR_NO_MEM;
+    memset(body, 0, len);   /* can be a private key */
+    heap_caps_free(body);
+    esp_err_t r;
+    if (e == ESP_OK) {
+        jbuf_t j = {.cap = 256 + GW_PEM_CERTS_MAX * (2 * GW_PEM_SUBJECT_MAX + 64)};
+        j.b = gw_storage_malloc(j.cap);
+        if (j.b == NULL) {
+            r = send_json(req, "201 Created", "{\"ok\":true}\n");
+        } else {
+            jb_add(&j, "{\"ok\":true,\"file\":");
+            jb_info(&j, info);
+            jb_add(&j, "}}\n");
+            r = jb_send(req, "201 Created", &j);
+            gw_storage_free(j.b);
+        }
+    } else {
+        r = send_error(req, e == ESP_ERR_INVALID_STATE  ? "409 Conflict"
+                            : e == ESP_ERR_NO_MEM       ? "503 Service Unavailable"
+                            : e == ESP_ERR_INVALID_SIZE ? "413 Content Too Large"
+                            : e == ESP_FAIL             ? "507 Insufficient Storage"
+                                                        : "400 Bad Request",
+                       NULL, e == ESP_ERR_NO_MEM ? "no memory" : why);
+    }
+    gw_storage_free(info);
+    return r;
+}
+
 /* ---------- / and /api/status ---------- */
 
 extern const char index_html_start[] asm("_binary_index_html_start");
@@ -2380,7 +2627,9 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
                            h_ap_stop = {ap_stop_post}, h_identify = {identify_post},
                            h_factory_reset = {factory_reset_post}, h_log = {log_get},
                            h_log_level_get = {log_level_get},
-                           h_log_level_post = {log_level_post}, h_do = {do_post};
+                           h_log_level_post = {log_level_post}, h_do = {do_post},
+                           h_wifi_scan = {wifi_scan_get}, h_files_get = {files_get},
+                           h_files_put = {files_put};
     static const struct {
         const char *uri;
         httpd_method_t method;
@@ -2413,6 +2662,9 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         {"/api/log/level", HTTP_GET, &h_log_level_get},    /* #199 */
         {"/api/log/level", HTTP_POST, &h_log_level_post},
         {"/api/do", HTTP_POST, &h_do},                     /* #204 */
+        {"/api/wifi/scan", HTTP_GET, &h_wifi_scan},        /* #208 */
+        {"/api/files", HTTP_GET, &h_files_get},            /* #221 */
+        {"/api/files", HTTP_PUT, &h_files_put},
     };
     _Static_assert(sizeof(uris) / sizeof(uris[0]) == WEB_URI_HANDLERS, "WEB_URI_HANDLERS");
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {

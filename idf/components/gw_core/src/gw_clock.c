@@ -46,7 +46,7 @@ const char *gw_clock_hint_text(unsigned hint)
     switch (hint) {
     case GW_CLOCK_HINT_WAIT:
         return "waiting for a valid clock: no MQTT connection and no NBIRTH until then. Make sure "
-               "that the gateway can reach the SNTP server (ntp.server), or use \"Set the time "
+               "that the gateway can reach an SNTP server (ntp.servers), or use \"Set the time "
                "from the browser\" in the web UI (Status tab)";
     case GW_CLOCK_HINT_BATTERY:
         return "the RTC lost the time while the power was off (OS bit): examine the RTC battery "

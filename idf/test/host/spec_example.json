@@ -1,7 +1,7 @@
 {
   "network": { "dhcp": true, "ip": "192.168.1.50", "netmask": "255.255.255.0",
                "gateway": "192.168.1.1", "dns": "192.168.1.1" },
-  "ntp":     { "server": "pool.ntp.org" },
+  "ntp":     { "servers": ["pool.ntp.org"] },
   "mqtt":    { "host": "192.168.1.10", "port": 1883, "client_id": "",
                "username": "", "password": "", "keepalive_s": 30 },
   "sparkplug": { "group_id": "Plant1", "edge_node_id": "GW01", "primary_host_id": "" },

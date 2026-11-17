@@ -38,7 +38,7 @@ To change the web password, refer to [Change the web password](change-the-web-pa
 1. Open the web UI: `https://<ip>/` or `https://<hostname>.local/`.
 2. Click the tab **Configuration**. Change the values in the forms.
 
-   ![The Configuration tab of the web UI: the forms for the network, MQTT and Sparkplug. The bar at the bottom of the window shows 'No changes' and the buttons Validate and 'Save and restart'.](../images/configuration-page.png)
+   ![The Configuration tab of the web UI: the cards Network (Ethernet) and Wi-Fi at the top. The bar at the bottom of the window shows 'No changes' and the buttons Validate and 'Save and restart'.](../images/configuration-page.png)
 
 3. For a key that has no form (for example Wi-Fi, IPv6, syslog, TLS), click the tab **JSON**. Change the document.
 4. Click **Validate** in the bar at the bottom of the window. Read the message in the bar.

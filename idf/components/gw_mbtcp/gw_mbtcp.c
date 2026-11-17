@@ -7,8 +7,12 @@
 #include "freertos/task.h"
 #include "gw_ap.h"
 #include "gw_bus.h"
+#include "gw_io.h"
 #include "gw_mbap.h"
+#include "gw_mblocal.h"
+#include "gw_tagdb.h"
 #include "gw_net.h"
+#include "gw_storage.h"
 #include "lwip/sockets.h"
 
 static const char *TAG = "mbtcp";
@@ -28,6 +32,9 @@ typedef struct {
 static const gw_config_t *s_cfg;
 static client_t s_clients[CONFIG_GW_MBTCP_MAX_CLIENTS];
 static gw_mbap_txn_t s_txn;   /* one transaction at a time, shared with the bus owner */
+/* #216: the transaction of the local unit (s_txn can still run on the bus); PSRAM, allocated
+ * at the start, only with a local unit */
+static gw_mbap_txn_t *s_txn_local;
 static uint8_t s_out[GW_MBAP_ADU_MAX];
 static StaticTask_t s_task_buf;
 static StackType_t s_stack[STACK_WORDS];
@@ -75,9 +82,48 @@ static bool reply(client_t *c, const uint8_t *data, size_t len)
     return true;
 }
 
+/* #216: a parsed request for the local unit: answered from gw_tagdb, never sent to the bus. A
+ * DO write goes to the local_io task (gw_io_command_do, through the queue of the NCMD and of
+ * POST /api/do), the only writer of the expander, which refuses a DO that a local rule drives,
+ * as for an NCMD. */
+static void handle_local(gw_mbap_txn_t *txn)
+{
+    gw_local_io_t now;
+    gw_tagdb_get_io(&now);
+    gw_mblocal_io_t io = {.di = now.di, .dout = now.dout, .do_known = !now.do_unknown};
+    memcpy(io.counters, now.count, sizeof(io.counters));
+    for (uint8_t i = 0; i < s_cfg->local_io.rule_count; i++) {
+        io.rule_do |= (uint8_t)(1u << s_cfg->local_io.rules[i].dout);
+    }
+    gw_mblocal_write_t wr;
+    gw_mblocal_execute(s_cfg, &io, txn, &wr);
+    for (uint8_t i = 0; i < GW_LOCAL_IO_CHANNELS && wr.mask != 0; i++) {
+        bool on = ((wr.value >> i) & 1u) != 0;
+        if (((wr.mask >> i) & 1u) && gw_io_command_do(GW_IO_CALLER_MBTCP, i, on) != GW_IO_DO_OK) {
+            ESP_LOGW(TAG, "local unit %u: DO/%u not written", txn->rq.unit, i + 1);
+            gw_mblocal_write_failed(txn);
+            break;
+        }
+    }
+    if (txn->status == MB_ERR_EXCEPTION) {
+        ESP_LOGD(TAG, "local unit %u fc %u: exception %u", txn->rq.unit, txn->rq.fc,
+                 txn->exception);
+    }
+    gw_mbap_stats_add(&(const gw_mbap_stats_t){.local = 1});
+}
+
 /* One complete MBAP frame: answer it (from the slave, or with the gateway's own exception). */
 static bool handle_frame(client_t *c, const uint8_t *frame, size_t len)
 {
+    if (s_txn_local != NULL && gw_mblocal_is_local(s_cfg, frame[6])) {   /* #216: not the bus */
+        uint8_t code = gw_mbap_parse(frame, len, s_txn_local);
+        if (code != 0) {
+            gw_mbap_count_exception(code);
+            return reply(c, s_out, gw_mbap_exception(frame, code, s_out, sizeof(s_out)));
+        }
+        handle_local(s_txn_local);
+        return reply(c, s_out, gw_mbap_response(s_txn_local, s_out, sizeof(s_out)));
+    }
     /* A previous request that timed out may still be running on the bus: s_txn is shared. */
     if (!gw_bus_forward_idle(CONFIG_GW_MBTCP_RESPONSE_WAIT_MS)) {
         gw_mbap_count_exception(GW_MBAP_EX_TARGET_NO_ANSWER);
@@ -251,6 +297,15 @@ esp_err_t gw_mbtcp_start(const gw_config_t *cfg)
     s_cfg = cfg;
     for (int i = 0; i < CONFIG_GW_MBTCP_MAX_CLIENTS; i++) {
         s_clients[i].fd = -1;
+    }
+    if (cfg->modbus_tcp.local_unit_id != 0 &&
+        (s_txn_local = gw_storage_calloc(1, sizeof(*s_txn_local))) == NULL) {
+        ESP_LOGE(TAG, "local unit %u: no memory; the unit goes to the bus",
+                 cfg->modbus_tcp.local_unit_id);
+    } else if (cfg->modbus_tcp.local_unit_id != 0) {
+        ESP_LOGI(TAG, "local unit %u: DIs (discrete 0-7), DOs (coil 0-7, writes %s), counters "
+                      "(input 0-31, uint64 big)", cfg->modbus_tcp.local_unit_id,
+                 cfg->modbus_tcp.local_writes ? "on" : "off");
     }
     if (cfg->modbus_tcp.client_count == 0) {
         ESP_LOGW(TAG, "modbus_tcp.allowed_clients is empty: any host that reaches port %u can "

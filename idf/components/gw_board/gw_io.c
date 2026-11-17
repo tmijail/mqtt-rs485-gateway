@@ -68,16 +68,17 @@ static TaskHandle_t s_task;
 static bool s_recovery;   /* issue #74: task started without a configuration */
 static StaticTask_t s_task_buf;
 static StackType_t s_stack[STACK_WORDS];
-/* #204: one answer queue per caller (the Sparkplug task and the web task), so that a command
- * of one never takes the answer of the other; both use the same request queue and the same
- * checks (a DO of a local rule is refused for both) */
+/* #204, #216: one answer queue per caller (the Sparkplug task, the web task and the Modbus TCP
+ * task), so that a command of one never takes the answer of another; all use the same request
+ * queue and the same checks (a DO of a local rule is refused for each) */
 static QueueHandle_t s_req_q, s_rep_q[GW_IO_CALLERS];
 static StaticQueue_t s_req_buf, s_rep_buf[GW_IO_CALLERS];
-static uint8_t s_req_storage[4 * sizeof(do_req_t)];
+static uint8_t s_req_storage[2 * GW_IO_CALLERS * sizeof(do_req_t)];
 static uint8_t s_rep_storage[GW_IO_CALLERS][sizeof(do_rep_t)];
 static uint32_t s_req_id[GW_IO_CALLERS];   /* each caller's own (one task each) */
 static const char *const k_rule_modes[] = {"follow", "invert", "toggle"};   /* gw_rule_mode_t */
-static const char *const k_caller_cmd[GW_IO_CALLERS] = {"NCMD", "web command"};
+static const char *const k_caller_cmd[GW_IO_CALLERS] = {"NCMD", "web command",
+                                                         "Modbus TCP write"};
 
 /* ---- #218 fast counters (PCNT) and #217 run hours ---- */
 static uint8_t s_fast;                   /* DIs counted by the PCNT */
@@ -833,7 +834,7 @@ static void lio_task(void *arg)
 
 static void create_queues(void)
 {
-    s_req_q = xQueueCreateStatic(4, sizeof(do_req_t), s_req_storage, &s_req_buf);
+    s_req_q = xQueueCreateStatic(2 * GW_IO_CALLERS, sizeof(do_req_t), s_req_storage, &s_req_buf);
     for (int i = 0; i < GW_IO_CALLERS; i++) {
         s_rep_q[i] = xQueueCreateStatic(1, sizeof(do_rep_t), s_rep_storage[i], &s_rep_buf[i]);
     }

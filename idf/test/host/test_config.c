@@ -44,7 +44,8 @@ static void test_spec_example(void)
     TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(json, len, &cfg, &err), err.msg);
     TEST_ASSERT_TRUE(cfg.network.dhcp);
     TEST_ASSERT_EQUAL_UINT8_ARRAY(((uint8_t[]){192, 168, 1, 50}), cfg.network.ip, 4);
-    TEST_ASSERT_EQUAL_STRING("pool.ntp.org", cfg.ntp.server);
+    TEST_ASSERT_EQUAL_UINT8(1, cfg.ntp.server_count);
+    TEST_ASSERT_EQUAL_STRING("pool.ntp.org", cfg.ntp.servers[0]);
     TEST_ASSERT_EQUAL_STRING("192.168.1.10", cfg.mqtt.host);
     TEST_ASSERT_EQUAL(1883, cfg.mqtt.port);
     TEST_ASSERT_EQUAL_STRING("GW01", cfg.mqtt.client_id);  /* empty client_id -> edge_node_id */
@@ -1459,6 +1460,74 @@ static void test_modbus_tcp_section(void)
     ASSERT_REJECTED(parse(doc), "modbus_tcp.enable: unknown key");
 }
 
+/* #216: the local unit of the Modbus TCP server (the DIs, the DOs and the counters). */
+static void test_modbus_tcp_local_unit(void)
+{
+    const char *base = "\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+                       "\"devices\":[{\"name\":\"Meter1\",\"unit_id\":1,\"tags\":[{\"name\":\"T\","
+                       "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]";
+    char doc[640];
+    snprintf(doc, sizeof(doc), "{%s}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL(0, cfg.modbus_tcp.local_unit_id);      /* off by default */
+    TEST_ASSERT_FALSE(cfg.modbus_tcp.local_writes);
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"local_unit_id\":100,\"local_writes\":true}}",
+             base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL(100, cfg.modbus_tcp.local_unit_id);
+    TEST_ASSERT_TRUE(cfg.modbus_tcp.local_writes);
+    /* local_writes stays valid with the unit off (the web UI keeps the control editable) */
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"local_unit_id\":0,\"local_writes\":true}}",
+             base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"local_unit_id\":1}}", base);
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.local_unit_id: unit 1 is the Unit ID of the device Meter1");
+    TEST_ASSERT_EQUAL_STRING("modbus_tcp.local_unit_id", err.path);
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"local_unit_id\":248}}", base);
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.local_unit_id: value 248 out of range");
+    snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"local_writes\":1}}", base);
+    ASSERT_REJECTED(parse(doc), "modbus_tcp.local_writes");
+}
+
+/* #201: ntp.servers, 1 to 3 names or addresses; the old key ntp.server is gone. */
+static void test_ntp_servers(void)
+{
+    const char *base = "\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}";
+    char doc[1024];
+    snprintf(doc, sizeof(doc), "{%s}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_UINT8(1, cfg.ntp.server_count);
+    TEST_ASSERT_EQUAL_STRING("pool.ntp.org", cfg.ntp.servers[0]);
+    snprintf(doc, sizeof(doc), "{%s,\"ntp\":{}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_STRING("pool.ntp.org", cfg.ntp.servers[0]);
+    snprintf(doc, sizeof(doc),
+             "{%s,\"ntp\":{\"servers\":[\"pool.ntp.org\",\"192.168.10.1\",\"fd00::1\"]}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_UINT8(3, cfg.ntp.server_count);
+    TEST_ASSERT_EQUAL_STRING("192.168.10.1", cfg.ntp.servers[1]);
+    TEST_ASSERT_EQUAL_STRING("fd00::1", cfg.ntp.servers[2]);
+    snprintf(doc, sizeof(doc), "{%s,\"ntp\":{\"servers\":[]}}", base);
+    ASSERT_REJECTED(parse(doc), "ntp.servers: 0 servers; expected 1 to 3");
+    snprintf(doc, sizeof(doc), "{%s,\"ntp\":{\"servers\":[\"a\",\"b\",\"c\",\"d\"]}}", base);
+    ASSERT_REJECTED(parse(doc), "ntp.servers: 4 servers; expected 1 to 3");
+    snprintf(doc, sizeof(doc), "{%s,\"ntp\":{\"servers\":[\"a\",\"\"]}}", base);
+    ASSERT_REJECTED(parse(doc), "ntp.servers[1]: cannot be empty");
+    TEST_ASSERT_EQUAL_STRING("ntp.servers[1]", err.path);
+    snprintf(doc, sizeof(doc), "{%s,\"ntp\":{\"servers\":[1]}}", base);
+    ASSERT_REJECTED(parse(doc), "ntp.servers[0]: expected a string");
+    snprintf(doc, sizeof(doc), "{%s,\"ntp\":{\"servers\":\"pool.ntp.org\"}}", base);
+    ASSERT_REJECTED(parse(doc), "ntp.servers: expected an array");
+    char host[200];
+    memset(host, 'a', 128);
+    host[128] = 0;
+    snprintf(doc, sizeof(doc), "{%s,\"ntp\":{\"servers\":[\"%s\"]}}", base, host);
+    ASSERT_REJECTED(parse(doc), "ntp.servers[0]: 128 bytes; the maximum is 127");
+    /* before v1.0 the old key is removed, with no migration */
+    snprintf(doc, sizeof(doc), "{%s,\"ntp\":{\"server\":\"pool.ntp.org\"}}", base);
+    ASSERT_REJECTED(parse(doc), "ntp.server: unknown key");
+}
+
 /* IO-3 (and the other optional local_io keys): defaults keep the MVP behaviour. */
 static void test_local_io_section(void)
 {
@@ -1779,7 +1848,7 @@ static void test_duplicate_keys_rejected(void)
 static size_t build_spec_maximum(char *doc, size_t cap)
 {
     int n = snprintf(doc, cap,
-                     "{\"network\":{\"dhcp\":true},\"ntp\":{\"server\":\"pool.ntp.org\"},"
+                     "{\"network\":{\"dhcp\":true},\"ntp\":{\"servers\":[\"pool.ntp.org\"]},"
                      "\"mqtt\":{\"host\":\"192.168.1.10\",\"port\":1883,\"client_id\":\"\","
                      "\"username\":\"\",\"password\":\"\",\"keepalive_s\":30},"
                      "\"sparkplug\":{\"group_id\":\"Plant1\",\"edge_node_id\":\"GW01\"},"
@@ -1875,6 +1944,8 @@ int main(void)
     RUN_TEST(test_device_enabled);
     RUN_TEST(test_scan_classes);
     RUN_TEST(test_modbus_tcp_section);
+    RUN_TEST(test_modbus_tcp_local_unit);
+    RUN_TEST(test_ntp_servers);
     RUN_TEST(test_ota_section);
     RUN_TEST(test_local_io_section);
     RUN_TEST(test_local_io_channels);

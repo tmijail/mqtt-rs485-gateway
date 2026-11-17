@@ -6,9 +6,9 @@
  *
  * Single owner of the expander: before the configuration is loaded, app_main sets the
  * outputs up (gw_io_outputs_boot, gw_io_outputs_all_off); from gw_io_start() on, only the
- * local_io task writes them: DO commands (gw_io_set_do from the Sparkplug task, and #204
- * gw_io_command_do from the web task, through the same queue and checks), the local rules (which
- * own their DOs: NCMD and web commands on them are refused), the #210 pulse ends, the safe state
+ * local_io task writes them: DO commands (gw_io_set_do from the Sparkplug task, #204
+ * gw_io_command_do from the web task and #216 from the Modbus TCP local unit, through the same
+ * queue and checks), the local rules (which own their DOs: commands on them are refused), the #210 pulse ends, the safe state
  * and the retries of an expander that does not answer. It also reads the #218 PCNT units of the
  * fast counters and counts the #217 run hours. */
 #pragma once
@@ -61,10 +61,11 @@ void gw_io_get_expander(gw_io_expander_t *out);
  */
 esp_err_t gw_io_start(const gw_config_t *cfg, void (*on_change)(void));
 
-/** #204: who sends a DO command; each has its own answer queue (one task each). */
+/** #204, #216: who sends a DO command; each has its own answer queue (one task each). */
 typedef enum {
     GW_IO_CALLER_SPARKPLUG = 0,   /* NCMD */
     GW_IO_CALLER_WEB,             /* POST /api/do */
+    GW_IO_CALLER_MBTCP,           /* #216: a write to the Modbus TCP local unit */
     GW_IO_CALLERS
 } gw_io_caller_t;
 

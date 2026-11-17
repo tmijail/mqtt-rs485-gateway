@@ -92,6 +92,9 @@ static void join(char *out, size_t cap, const char *path, const char *key)
  * GW_CONFIG_SCHEMA. The last entry only ends the table. */
 static const gw_since_t k_since[] = {
     {"ota.mqtt", NULL, 2},   /* #223 (ota.enabled was dropped: no migration before v1.0) */
+    {"ntp.servers", NULL, 2},                /* #201 (replaces ntp.server) */
+    {"modbus_tcp.local_unit_id", NULL, 2},   /* #216 */
+    {"modbus_tcp.local_writes", NULL, 2},    /* #216 */
     {"", NULL, 0},
 };
 #define SINCE_COUNT (sizeof(k_since) / sizeof(k_since[0]) - 1)
@@ -674,20 +677,47 @@ static bool parse_network(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err
            parse_ipv6_section(o, cfg, err) && parse_wifi_section(o, cfg, err);
 }
 
+/* #201: "ntp": {"servers": ["pool.ntp.org", ...]}, 1 to GW_MAX_NTP_SERVERS names or addresses,
+ * tried in order by the SNTP client. Before v1.0 the old key "server" is gone, with no migration. */
 static bool parse_ntp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"server"};
+    static const char *const keys[] = {"servers"};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "ntp");
-    if (o == NULL) {
-        strcpy(cfg->ntp.server, "pool.ntp.org");
-        return true;
-    }
-    if (!check_keys(o, "ntp", keys, 1, err) ||
-        !get_string(o, "server", "ntp", false, "pool.ntp.org", cfg->ntp.server,
-                    sizeof(cfg->ntp.server), err)) {
+    const cJSON *list = o != NULL ? cJSON_GetObjectItemCaseSensitive(o, "servers") : NULL;
+    if (o != NULL && !check_keys(o, "ntp", keys, 1, err)) {
         return false;
     }
-    return cfg->ntp.server[0] != '\0' ? true : fail(err, "ntp.server", "cannot be empty");
+    if (list == NULL) {
+        strcpy(cfg->ntp.servers[0], "pool.ntp.org");
+        cfg->ntp.server_count = 1;
+        return true;
+    }
+    if (!cJSON_IsArray(list)) {
+        return fail(err, "ntp.servers", "expected an array of 1 to %d names or addresses",
+                    GW_MAX_NTP_SERVERS);
+    }
+    int n = cJSON_GetArraySize(list);
+    if (n < 1 || n > GW_MAX_NTP_SERVERS) {
+        return fail(err, "ntp.servers", "%d servers; expected 1 to %d", n, GW_MAX_NTP_SERVERS);
+    }
+    int i = 0;
+    for (const cJSON *it = list->child; it != NULL; it = it->next, i++) {
+        char p[24];
+        snprintf(p, sizeof(p), "ntp.servers[%d]", i);
+        if (!cJSON_IsString(it)) {
+            return fail(err, p, "expected a string (a name, an IPv4 or an IPv6 address)");
+        }
+        size_t len = strlen(it->valuestring);
+        if (len == 0) {
+            return fail(err, p, "cannot be empty");
+        }
+        if (len >= GW_HOST_SIZE) {
+            return fail(err, p, "%u bytes; the maximum is %d", (unsigned)len, GW_HOST_SIZE - 1);
+        }
+        memcpy(cfg->ntp.servers[i], it->valuestring, len + 1);
+    }
+    cfg->ntp.server_count = (uint8_t)n;
+    return true;
 }
 
 bool gw_config_file_name_ok(const char *name)
@@ -1325,21 +1355,33 @@ static bool parse_ota(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
  * connect ("a.b.c.d" or "a.b.c.d/prefix"). */
 static bool parse_modbus_tcp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"enabled", "port", "allowed_clients", "idle_timeout_s"};
+    static const char *const keys[] = {"enabled", "port", "allowed_clients", "idle_timeout_s",
+                                       "local_unit_id", "local_writes"};
     static const cJSON empty = {.type = cJSON_Object};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "modbus_tcp");
     if (o == NULL) {
         o = &empty;
     }
-    long port, idle;
-    if (!check_keys(o, "modbus_tcp", keys, 4, err) ||
+    long port, idle, local;
+    if (!check_keys(o, "modbus_tcp", keys, 6, err) ||
         !get_bool(o, "enabled", "modbus_tcp", false, &cfg->modbus_tcp.enabled, err) ||
         !get_int(o, "port", "modbus_tcp", false, 502, 1, 65535, &port, err) ||
-        !get_int(o, "idle_timeout_s", "modbus_tcp", false, 60, 0, 3600, &idle, err)) {
+        !get_int(o, "idle_timeout_s", "modbus_tcp", false, 60, 0, 3600, &idle, err) ||
+        !get_int(o, "local_unit_id", "modbus_tcp", false, 0, 0, 247, &local, err) ||
+        !get_bool(o, "local_writes", "modbus_tcp", false, &cfg->modbus_tcp.local_writes, err)) {
         return false;
     }
     cfg->modbus_tcp.port = (uint16_t)port;
     cfg->modbus_tcp.idle_timeout_s = (uint16_t)idle;
+    /* #216: the gateway answers this unit itself and never sends it to the bus, so no device
+     * may have it (the devices are parsed before this section) */
+    for (uint16_t d = 0; local != 0 && d < cfg->device_count; d++) {
+        if (cfg->devices[d].unit_id == local) {
+            return fail(err, "modbus_tcp.local_unit_id", "unit %ld is the Unit ID of the device %s",
+                        local, cfg->devices[d].name);
+        }
+    }
+    cfg->modbus_tcp.local_unit_id = (uint8_t)local;
     const cJSON *list = cJSON_GetObjectItemCaseSensitive(o, "allowed_clients");
     if (list == NULL) {
         return true;
