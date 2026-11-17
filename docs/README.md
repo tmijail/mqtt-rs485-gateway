@@ -19,6 +19,9 @@ This folder has the documentation of the RS485 (Modbus RTU) to MQTT Sparkplug B 
 | Send the data to UMH Core | [Connect the gateway to UMH Core](how-to/connect-to-umh-core.md) | How-to |
 | Install a new firmware image, or go back to the earlier one | [Update the firmware](how-to/update-the-firmware.md) | How-to |
 | Repair a gateway that does not operate normally, or do a factory reset | [Recover a gateway](how-to/recover-the-gateway.md) | How-to |
+| Stop the polling and MQTT for a time, or erase the gateway from a distance | [Restart into safe mode or do a factory reset](how-to/restart-into-safe-mode-or-reset.md) | How-to |
+| Read the log in the browser, or get more log lines from one part of the firmware | [Read the live log](how-to/read-the-live-log.md) | How-to |
+| Find one gateway in a panel with a number of gateways | [Find the gateway in a panel](how-to/find-the-gateway-in-a-panel.md) | How-to |
 | Install the RTC battery | [Fit the RTC battery](how-to/fit-the-rtc-battery.md) | How-to |
 | Get the data of a crash | [Get and decode a core dump](how-to/decode-a-core-dump.md) | How-to |
 

@@ -43,6 +43,8 @@ After 3 crashes in sequence, the gateway starts in safe mode. Safe mode is recov
 
 Safe mode ends after 60 min with a restart. A restart from the web UI or a power cycle also ends it.
 
+You can also start safe mode on request, for example to update the firmware with the polling stopped. Refer to [Restart into safe mode or do a factory reset](restart-into-safe-mode-or-reset.md).
+
 ## The gateway has no configuration
 
 After a factory reset, the gateway is in commissioning mode. It has no configuration, no web password and a new commissioning password.
@@ -71,6 +73,8 @@ Do a factory reset. A factory reset erases the configuration and all the secrets
 ## Do a factory reset
 
 > **Caution: Back up the configuration first, if you can.** The factory reset erases the configuration, the secrets, the web certificate and the commissioning password.
+
+This procedure uses the BOOT button at the panel. To do the factory reset from a distance, use the web UI, the REST API or the shell. Refer to [Restart into safe mode or do a factory reset](restart-into-safe-mode-or-reset.md#do-a-factory-reset).
 
 1. Make sure that the gateway completed its boot.
 2. Push the BOOT button, and hold it.
