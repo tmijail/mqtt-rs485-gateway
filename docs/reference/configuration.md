@@ -269,6 +269,8 @@ A stable session sets the count to zero. Each new broker starts with the minimum
 | `diagnostics_s` | integer | `60` | 0, or 10 to 86400. The period of the NDATA with the node diagnostics, in seconds. 0 = only in the NBIRTH |
 | `store_forward` | bool or object | `false` | Refer to [`sparkplug.store_forward`](#sparkplugstore_forward) |
 
+The card **Sparkplug** of the Configuration tab has a control for each key. The control of `diagnostics_s` is **Diagnostics period (s)**.
+
 ### The device prefix
 
 ```json
@@ -317,6 +319,18 @@ The object form, with the optional spill to a microSD card:
 | `sd.max_kb` | integer | `131072` | 64 to 4 194 304 (128 MB by default). The space that the gateway uses on the card |
 
 > **Caution: Read the GPIO45 warning in [`idf/README.md` §6.5](../../idf/README.md#65-slow-broker-and-command-limits) before you set `sd.enabled`.** GPIO45 (D0 of the card) is a strapping pin. A pull-up on D0 can stop the boot of the board.
+
+The web UI has the section **Store & forward** in the card **Sparkplug**:
+
+| Control | Key |
+|---|---|
+| Keep the changes without a session | `store_forward` (`true` or `false`), or `enabled` of the object |
+| Spill to the microSD card | `sd.enabled`. The control is disabled while store & forward is off. The GPIO45 caution shows while the spill is on |
+| Space on the card (KB) | `sd.max_kb`. The size in MB shows below the field |
+
+The web UI writes `store_forward` as `true` or `false` when `sd.enabled` and `sd.max_kb` have their default values. In the other cases, it writes the object. When the controls do not change, the web UI keeps the form of the document.
+
+![The card 'Sparkplug' of the Configuration tab: Group ID, Edge node ID, Primary host ID, Naming and 'Diagnostics period (s)', the device prefix, and the section 'Store & forward'. 'Keep the changes without a session' and 'Spill to the microSD card' are on, and a caution tells to make sure that the card slot has no pull-up on D0 (GPIO45). 'Space on the card (KB)' is 131072, '= 128 MB'.](../images/sparkplug-store-forward.png)
 
 For the buffer, the card, the retention and the duplicates, refer to [Store & forward](store-and-forward.md).
 
@@ -578,7 +592,7 @@ The exceptions of the local unit:
 | Key | Type | Default | Rule |
 |---|---|---|---|
 | `mqtt` | bool | `false` | `true` lets a Sparkplug host start an update with the NCMD `Node Control/Firmware Update`, and a restart into the other slot with `Node Control/Boot Other Slot`. With `false`, the NBIRTH does not contain `Node Control/Firmware Update`, `Node Control/Firmware SHA-256` and `Node Control/Boot Other Slot`, and the gateway refuses an NCMD that writes them. A change needs a save and a restart. The web UI control is **Update from MQTT** in the card **Firmware updates** |
-| `ca_file` | text | `""` | The CA of the server of the images (PEM, in LittleFS, with the name rules of `mqtt.tls.ca_file`). Empty = `mqtt.tls.ca_file` if TLS is on, else the public root CAs of ESP-IDF |
+| `ca_file` | text | `""` | The CA of the server of the images (PEM, in LittleFS, with the name rules of `mqtt.tls.ca_file`). Empty = `mqtt.tls.ca_file` if TLS is on, else the public root CAs of ESP-IDF. The web UI control is **CA file of the image server** in the card **Firmware updates**. Its button **Load a file…** loads a PEM file, and the field then selects it |
 
 An update from the web UI is always possible, for a user who knows the web password. The button "Restart into `<version>`" is always available after a trial.
 

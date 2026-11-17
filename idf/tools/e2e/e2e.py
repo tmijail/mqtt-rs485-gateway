@@ -7882,6 +7882,23 @@ def check_devices_gw02(obs, slave, gw, node, t0):
                 f"log {(gw.find(r'metric .Speed. discarded', since) or ['none'])[0]}; writes {wrote}; "
                 f"DDATA {late is not None}; register {slave.get(3, 250)[0]}; "
                 + " | ".join(gw.find(r"^Drive\s+unit", since)[:1])))
+    # #196: GET /api/status gives the count, and the Status tab shows it in the State cell of the
+    # device ("1 write refused", amber, with an explainer; nothing for 0). No scenario runs a
+    # browser: the served page must hold that code. No web password here: the API takes the
+    # commissioning password of the console.
+    auth = ("admin", commissioning_password(gw, t0, 5) or "?")
+    st_s, _, b_s = http("GET", "/api/status", auth=auth)
+    refusals = {d.get("name"): d.get("write_refused") for d in (as_json(b_s) or {}).get("devices", [])}
+    st_p, _, page = http("GET", "/", auth=auth)
+    text = page.decode(errors="replace") if st_p == 200 else ""
+    shown = ('${plur(d.write_refused,"write")} refused' in text and "d.write_refused>0?" in text
+             and 'data-x="wref"' in text and "wref:\"The number of DCMD writes" in text)
+    out.append(("#196 GET /api/status gives write_refused 1 for Drive (0 for the other devices), "
+                "and the Status tab shows '1 write refused' in the State cell, with an explainer",
+                st_s == 200 and refusals.get("Drive") == 1
+                and all(v == 0 for k, v in refusals.items() if k != "Drive") and shown,
+                f"/api/status {st_s}: {refusals}; page {st_p}, the code of the State cell "
+                f"{'present' if shown else 'missing'}"))
     # #214: Spare is never polled and has no DBIRTH; a DCMD for it is discarded
     since = time.monotonic()
     before = len(slave.ctx.writes)
@@ -8064,6 +8081,7 @@ def run_web(args, work):
           "save that removes the web password",
           st_p == 200 and all(pw_items.values()),
           f"missing: {[k for k, v in pw_items.items() if not v] or 'none'}")
+    check_web_controls_221(doc, page_text)
 
     # Issue #167: a <select> without the current value shows its first option, and a save writes
     # it back (a CDAB tag became "big"). The served page's lists must hold every value of the
@@ -8291,6 +8309,49 @@ def run_web(args, work):
 # #206: the name, the location and the comment of the web scenario's gateway
 GATEWAY_LABELS = {"name": "Pump panel 2", "location": "Plant 2, hall B",
                   "comment": "Feeds the cooling towers 1 and 2. Contact: maintenance, ext. 214."}
+
+
+def check_web_controls_221(doc, page_text):
+    """Issues #221 and #195 on the web scenario's gateway: the last keys of the configuration
+    document get a control (sparkplug.diagnostics_s, sparkplug.store_forward, ota.ca_file), and
+    Restart is only in the card Restart and reset. No scenario runs a browser (the browser check
+    is a shot of tools/docs_shots.py): the served page must hold the code. The validation gives
+    the errors of store_forward at the paths that the controls name (data-perr, #191), and accepts
+    the forms that the page writes (true or false with the default spill keys, else an object)."""
+    ui = {"diagnostics_s field": '"sparkplug.diagnostics_s","Diagnostics period (s)"' in page_text,
+          "store & forward section": 'id="f-sf"' in page_text and "readSf();" in page_text
+          and "Keep the changes without a session" in page_text
+          and "Spill to the microSD card" in page_text and "Space on the card (KB)" in page_text,
+          "store_forward paths": all(f'data-perr="sparkplug.store_forward{p}"' in page_text
+                                     for p in ("", ".enabled", ".sd.enabled", ".sd.max_kb")),
+          "GPIO45 caution": "pull-up on D0 (GPIO45)" in page_text,
+          "ota.ca_file field": 'fileFld("ota.ca_file","CA file of the image server"' in page_text
+          and 'id="ota-msg"' in page_text,
+          "no Restart in the bottom card": 'id="b-restart"' not in page_text
+          and 'id="rr-restart"' in page_text}
+
+    def dry(sf, diag=None):
+        d = json.loads(json.dumps(doc))
+        d["sparkplug"]["store_forward"] = sf
+        if diag is not None:
+            d["sparkplug"]["diagnostics_s"] = diag
+        st, _, b = http("PUT", "/api/config?dry_run=1", d)
+        return st, (as_json(b) or {}).get("path")
+    forms = [dry(True, 0), dry(False, 86400),
+             dry({"enabled": True, "sd": {"enabled": True, "max_kb": 262144}}),
+             dry({"enabled": False, "sd": {"enabled": False, "max_kb": 64}})]
+    errs = [dry({"enabled": False, "sd": {"enabled": True, "max_kb": 131072}}),
+            dry({"enabled": True, "sd": {"enabled": True, "max_kb": 32}}), dry(False, 5)]
+    check("Issues #221 #195: the Configuration tab has controls for sparkplug.diagnostics_s, "
+          "sparkplug.store_forward (with the GPIO45 caution) and ota.ca_file (a file field with "
+          "'Load a file…'), and Restart is only in the card Restart and reset; the documents that "
+          "the controls write are valid, and the errors have the paths of the controls",
+          all(ui.values()) and [s for s, _ in forms] == [200] * 4
+          and errs == [(400, "sparkplug.store_forward.sd.enabled"),
+                       (400, "sparkplug.store_forward.sd.max_kb"),
+                       (400, "sparkplug.diagnostics_s")],
+          f"missing: {[k for k, v in ui.items() if not v] or 'none'}; valid forms {forms}; "
+          f"errors {errs}")
 
 
 def check_admin_web(gw, nb, status, status_body, doc, page_text, t0):

@@ -309,6 +309,18 @@ def ota_explainer(page):
     page.click("#f-ota button.qi[data-x=otamqtt]")
 
 
+def store_forward(page):
+    """Issue #221: the card Sparkplug of the Configuration tab with the diagnostics period and the
+    section Store & forward: store & forward on, the spill to the microSD card on (the GPIO45
+    caution shows) and the space on the card at its default. No save."""
+    page.click("nav button[data-tab=config]")
+    page.wait_for_selector("#sf-en")
+    page.check("#sf-en")
+    page.check("#sf-sd")
+    page.wait_for_selector("#sf-sd-h.lwarn")
+    page.evaluate("document.querySelector('#f-spb').closest('.card').scrollIntoView()")
+
+
 def test_read(page):
     """The Modbus test read of the Configuration tab: the float32 Voltage of Meter1 (input 0)."""
     page.click("nav button[data-tab=config]")
@@ -722,7 +734,16 @@ SHOTS = [
          alt="The card 'Firmware updates' of the Configuration tab: the check box 'Update from "
              "MQTT' is off. The hint tells to turn it on only when the broker lets only the "
              "Sparkplug host publish to the NCMD topic of the gateway. The explainer of the "
-             "field is open."),
+             "field is open. The card also has the field 'CA file of the image server', with a "
+             "button 'Load a file…'."),
+    # issue #221: docs/reference/store-and-forward.md and docs/reference/configuration.md
+    Shot("sparkplug-store-forward", "configured", DESKTOP, "/", actions=[store_forward],
+         element='.card[data-cc="spb"]', wait="#sf-sd-h.lwarn",
+         alt="The card 'Sparkplug' of the Configuration tab: Group ID, Edge node ID, Primary host "
+             "ID, Naming and 'Diagnostics period (s)', the device prefix, and the section 'Store "
+             "& forward'. 'Keep the changes without a session' and 'Spill to the microSD card' "
+             "are on, and a caution tells to make sure that the card slot has no pull-up on D0 "
+             "(GPIO45). 'Space on the card (KB)' is 131072, '= 128 MB'."),
     # issue #192: docs/how-to/update-the-firmware.md
     Shot("firmware-refused", "configured", DESKTOP, "/", element="#fw-card",
          actions=[("wait_text", "#fw-mq", "Off"), refuse_upload], wait="#fw-rgo",
@@ -751,6 +772,13 @@ SHOTS = [
              "Safe state, Pulse, Local rule, Mode and Run hours: DO 7 is a pulse DO of 300 ms, DO 5 "
              "follows DI 2, DO 6 toggles with DI 3, DO 2 counts its run hours. Below are the alarms "
              "of the buzzer and Alarm after."),
+    # issue #196: docs/how-to/write-to-a-modbus-device.md and docs/reference/status-signals.md.
+    # A count of the refused writes (the docs configuration has no write limits)
+    Shot("status-writes-refused", "configured", DESKTOP, "/", element=".card:has(#st-mb)",
+         wait="#st-mb .wr", freeze={"devices.*.write_refused": 3},
+         alt="The card 'Modbus devices' of the Status tab: the device Meter1 is online, and below "
+             "'online' its State cell shows '3 writes refused' in amber, with a (?) button for "
+             "the explainer."),
     # #204 #217: docs/how-to/set-up-the-local-io.md
     Shot("status-local-io", "configured", DESKTOP, "/", element=".card:has(#st-io)",
          wait="#st-io table",
