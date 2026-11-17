@@ -186,13 +186,24 @@ size_t gw_config_lint(const gw_config_t *cfg, gw_lint_cb_t cb, void *ctx)
                    "UMH Core gives no value for a template instance: the tags of the device do "
                    "not get to the UNS");
         }
-        for (uint16_t k = 0; k < d->tag_count; k++) {
+        /* #213: the tags of a device with a type are a copy of the tags of the type: one
+         * finding at the tag of the type (device_types[n].tags[k]), for its first device */
+        bool own = d->type[0] == '\0', first = !own;
+        for (uint16_t j = 0; first && j < i; j++) {
+            first = strcmp(cfg->devices[j].type, d->type) != 0;
+        }
+        char base[32];
+        if (own) {
+            snprintf(base, sizeof(base), "devices[%u]", (unsigned)i);
+        } else {
+            snprintf(base, sizeof(base), "device_types[%d]", d->type_index);
+        }
+        for (uint16_t k = 0; (own || first) && k < d->tag_count; k++) {
             const gw_tag_cfg_t *t = &cfg->tags[d->first_tag + k];
-            snprintf(path, sizeof(path), "devices[%u].tags[%u].name", (unsigned)i, (unsigned)k);
+            snprintf(path, sizeof(path), "%s.tags[%u].name", base, (unsigned)k);
             check_metric(&l, path, t->name);
             if (t->type == GW_TYPE_BYTES) {
-                snprintf(path, sizeof(path), "devices[%u].tags[%u].type", (unsigned)i,
-                         (unsigned)k);
+                snprintf(path, sizeof(path), "%s.tags[%u].type", base, (unsigned)k);
                 report(&l, GW_LINT_WARNING, path,
                        "UMH Core gives no value for a Bytes metric: the tag does not get to the "
                        "UNS");

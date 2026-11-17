@@ -22,6 +22,13 @@ static mb_fc_t read_fc(gw_area_t area)
     }
 }
 
+/* #202: the bits of the field of @p t (bit_width 1 to 16), not yet moved to bit_offset. */
+static uint16_t field_mask(const gw_tag_cfg_t *t)
+{
+    unsigned w = t->bit_width != 0 ? t->bit_width : 1u;
+    return (uint16_t)((1u << w) - 1u);
+}
+
 /* Value of tag @p t from a read response that starts at address @p start. */
 static void decode_member(const gw_tag_cfg_t *t, const mb_response_t *rsp, uint16_t start,
                           gw_tag_value_t *out)
@@ -31,8 +38,13 @@ static void decode_member(const gw_tag_cfg_t *t, const mb_response_t *rsp, uint1
         out->value = mb_rsp_bit(rsp, off) ? 1.0 : 0.0;
         return;
     }
-    if (t->bit != GW_NO_BIT) {   /* MB-6: one bit of a holding/input register */
-        out->value = (mb_rsp_reg(rsp, off) >> t->bit) & 1u ? 1.0 : 0.0;
+    if (t->bit_offset != GW_NO_BIT) {   /* MB-6 #202: a bit or a field of bits of a register */
+        uint16_t field = (uint16_t)((mb_rsp_reg(rsp, off) >> t->bit_offset) & field_mask(t));
+        if (t->type == GW_TYPE_BOOL) {
+            out->value = field != 0 ? 1.0 : 0.0;
+        } else {
+            gw_conv_decode(t, &field, out);   /* uint16, word order big: the field as it is */
+        }
         return;
     }
     uint16_t regs[GW_TAG_MAX_REGS];
@@ -252,11 +264,13 @@ static bool multi_write(const gw_poller_t *p, const gw_device_cfg_t *d)
                                                      : d->write_multiple != 0;
 }
 
-/* Request for a register bit (MB-6): read-modify-write of the whole register. The read and the
- * write go back to back through this task, so no other gateway traffic comes in between, but
- * the device itself may change the other bits in that window (documented limitation). */
-static gw_write_status_t bit_request(gw_poller_t *p, uint16_t dev, const gw_tag_cfg_t *t, bool on,
-                                     mb_request_t *rq, uint16_t *reg)
+/* Request for a register bit (MB-6) or a field of bits (#202, @p field: the new raw value of
+ * the field): read-modify-write of the whole register; only the bits of the field change. The
+ * read and the write go back to back through this task, so no other gateway traffic comes in
+ * between, but the device itself may change the other bits in that window (documented
+ * limitation). */
+static gw_write_status_t bit_request(gw_poller_t *p, uint16_t dev, const gw_tag_cfg_t *t,
+                                     uint16_t field, mb_request_t *rq, uint16_t *reg)
 {
     const gw_device_cfg_t *d = &p->cfg->devices[dev];
     mb_request_t rd = {.unit = d->unit_id, .fc = MB_FC_READ_HOLDING_REGISTERS, .addr = t->address,
@@ -268,9 +282,9 @@ static gw_write_status_t bit_request(gw_poller_t *p, uint16_t dev, const gw_tag_
                 t->name, t->address, st);
         return GW_WRITE_BUS_ERROR;
     }
-    uint16_t mask = (uint16_t)(1u << t->bit);
+    uint16_t mask = (uint16_t)(field_mask(t) << t->bit_offset);
     uint16_t old = mb_rsp_reg(&rsp, 0);
-    *reg = on ? (uint16_t)(old | mask) : (uint16_t)(old & ~mask);
+    *reg = (uint16_t)((old & ~mask) | (((uint32_t)field << t->bit_offset) & mask));
     if (multi_write(p, d)) {
         rq->fc = MB_FC_WRITE_MULTIPLE_REGISTERS;
         rq->qty = 1;
@@ -313,7 +327,7 @@ gw_write_status_t gw_poller_write_value(gw_poller_t *p, uint16_t tag, const gw_t
         bool on = value->value != 0.0;
         confirmed.value = on ? 1.0 : 0.0;
         if (t->area == GW_AREA_HOLDING) {
-            gw_write_status_t ws = bit_request(p, dev, t, on, &rq, &regs[0]);
+            gw_write_status_t ws = bit_request(p, dev, t, on ? 1u : 0u, &rq, &regs[0]);
             if (ws != GW_WRITE_OK) {
                 gw_tagdb_put_stats(dev, &p->stats[dev]);
                 return ws;
@@ -335,7 +349,20 @@ gw_write_status_t gw_poller_write_value(gw_poller_t *p, uint16_t tag, const gw_t
             return GW_WRITE_BAD_VALUE;
         }
         gw_conv_decode(t, regs, &confirmed);
-        if (width == 1 && !multi_write(p, d)) {
+        if (t->bit_offset != GW_NO_BIT) {
+            /* #202: a field of bits (type uint16): the raw value must fit its bits */
+            if (regs[0] > field_mask(t)) {
+                gw_conv_format(t, value, text, sizeof(text));
+                GW_LOGW(TAG, "%s/%s: value %s does not fit the field of %u bits", d->name,
+                        t->name, text, (unsigned)t->bit_width);
+                return GW_WRITE_BAD_VALUE;
+            }
+            gw_write_status_t ws = bit_request(p, dev, t, regs[0], &rq, &regs[1]);
+            if (ws != GW_WRITE_OK) {
+                gw_tagdb_put_stats(dev, &p->stats[dev]);
+                return ws;
+            }
+        } else if (width == 1 && !multi_write(p, d)) {
             rq.fc = MB_FC_WRITE_SINGLE_REGISTER;
             rq.value = regs[0];
         } else {

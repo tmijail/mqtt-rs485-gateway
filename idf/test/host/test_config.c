@@ -728,14 +728,15 @@ static void test_mb6_tags(void)
                   "{\"name\":\"d\",\"area\":\"holding\",\"address\":12,\"type\":\"string\","
                   "\"length\":16,\"word_order\":\"BADC\",\"writable\":true},"
                   "{\"name\":\"e\",\"area\":\"holding\",\"address\":40,\"type\":\"bool\","
-                  "\"bit\":15,\"writable\":true},"
-                  "{\"name\":\"f\",\"area\":\"input\",\"address\":40,\"type\":\"bool\",\"bit\":0},"
+                  "\"bit_offset\":15,\"writable\":true},"
+                  "{\"name\":\"f\",\"area\":\"input\",\"address\":40,\"type\":\"bool\",\"bit_offset\":0},"
                   "{\"name\":\"g\",\"area\":\"input\",\"address\":41,\"type\":\"int32\","
                   "\"word_order\":\"ABCD\"}"),
         err.msg);
     TEST_ASSERT_EQUAL(GW_TYPE_UINT64, cfg.tags[0].type);
     TEST_ASSERT_EQUAL(4, gw_tag_width(&cfg.tags[0]));
-    TEST_ASSERT_EQUAL(GW_NO_BIT, cfg.tags[0].bit);
+    TEST_ASSERT_EQUAL(GW_NO_BIT, cfg.tags[0].bit_offset);
+    TEST_ASSERT_EQUAL(0, cfg.tags[0].bit_width);
     TEST_ASSERT_EQUAL(0, cfg.tags[0].length);
     TEST_ASSERT_EQUAL(GW_WORD_LITTLE, cfg.tags[1].word_order);
     TEST_ASSERT_EQUAL(GW_WORD_DCBA, cfg.tags[2].word_order);
@@ -743,9 +744,10 @@ static void test_mb6_tags(void)
     TEST_ASSERT_EQUAL(16, cfg.tags[3].length);
     TEST_ASSERT_EQUAL(16, gw_tag_width(&cfg.tags[3]));
     TEST_ASSERT_EQUAL(GW_WORD_BADC, cfg.tags[3].word_order);
-    TEST_ASSERT_EQUAL(15, cfg.tags[4].bit);
+    TEST_ASSERT_EQUAL(15, cfg.tags[4].bit_offset);
+    TEST_ASSERT_EQUAL(1, cfg.tags[4].bit_width);
     TEST_ASSERT_EQUAL(1, gw_tag_width(&cfg.tags[4]));
-    TEST_ASSERT_EQUAL(0, cfg.tags[5].bit);
+    TEST_ASSERT_EQUAL(0, cfg.tags[5].bit_offset);
     TEST_ASSERT_EQUAL(GW_WORD_BIG, cfg.tags[6].word_order);
 
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"string\"}"),
@@ -765,23 +767,69 @@ static void test_mb6_tags(void)
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":65533,\"type\":\"int64\"}"),
                     "65535");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bool\","
-                              "\"bit\":16}"),
-                    "devices[0].tags[0].bit: value 16 out of range [0, 15]");
+                              "\"bit_offset\":16}"),
+                    "devices[0].tags[0].bit_offset: value 16 out of range [0, 15]");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"coil\",\"address\":0,\"type\":\"bool\","
-                              "\"bit\":1}"),
-                    "bit: valid only with type=bool in the holding and input areas");
+                              "\"bit_offset\":1}"),
+                    "bit_offset: valid only in the holding and input areas");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\","
-                              "\"bit\":1}"),
-                    "bit: valid only with type=bool");
+                              "\"bit_offset\":1}"),
+                    "devices[0].tags[0].type: a field of 1 bit (bit_width 1, the default) needs "
+                    "type=bool");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bool\","
-                              "\"bit\":1,\"word_order\":\"BADC\"}"),
-                    "word_order: not accepted in a bit tag");
+                              "\"bit_offset\":1,\"word_order\":\"BADC\"}"),
+                    "word_order: not accepted with bit_offset");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"input\",\"address\":0,\"type\":\"bool\","
-                              "\"bit\":1,\"writable\":true}"),
+                              "\"bit_offset\":1,\"writable\":true}"),
                     "writable: only the coil and holding areas");
     ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bool\","
-                              "\"bit\":1,\"scale\":2}"),
+                              "\"bit_offset\":1,\"scale\":2}"),
                     "scale/offset not accepted in bool tags");
+}
+
+/* #202: a field of 2 to 16 bits of a holding or input register, type uint16 */
+static void test_bit_field(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse_tag("{\"name\":\"s\",\"area\":\"holding\",\"address\":20,\"type\":\"uint16\","
+                  "\"bit_offset\":4,\"bit_width\":3,\"writable\":true,\"write_max\":5},"
+                  "{\"name\":\"w\",\"area\":\"input\",\"address\":21,\"type\":\"uint16\","
+                  "\"bit_offset\":0,\"bit_width\":16,\"scale\":0.5},"
+                  "{\"name\":\"b\",\"area\":\"input\",\"address\":22,\"type\":\"bool\","
+                  "\"bit_offset\":15,\"bit_width\":1}"),
+        err.msg);
+    TEST_ASSERT_EQUAL(4, cfg.tags[0].bit_offset);
+    TEST_ASSERT_EQUAL(3, cfg.tags[0].bit_width);
+    TEST_ASSERT_EQUAL(1, gw_tag_width(&cfg.tags[0]));
+    TEST_ASSERT_EQUAL(16, cfg.tags[1].bit_width);
+    TEST_ASSERT_EQUAL(1, cfg.tags[2].bit_width);
+
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\","
+                              "\"bit_offset\":14,\"bit_width\":3}"),
+                    "devices[0].tags[0].bit_width: bit_offset + bit_width must be 16 or less "
+                    "(14 + 3 = 17)");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\","
+                              "\"bit_offset\":0,\"bit_width\":17}"),
+                    "devices[0].tags[0].bit_width: value 17 out of range [1, 16]");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\","
+                              "\"bit_width\":3}"),
+                    "devices[0].tags[0].bit_width: valid only with bit_offset");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"int16\","
+                              "\"bit_offset\":2,\"bit_width\":3}"),
+                    "devices[0].tags[0].type: a field of 3 bits (bit_width) needs type=uint16");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bool\","
+                              "\"bit_offset\":2,\"bit_width\":2}"),
+                    "devices[0].tags[0].type: a field of 2 bits (bit_width) needs type=uint16");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\","
+                              "\"bit_offset\":2,\"bit_width\":1}"),
+                    "devices[0].tags[0].type: a field of 1 bit");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\","
+                              "\"bit_offset\":2,\"bit_width\":2,\"word_order\":\"BADC\"}"),
+                    "word_order: not accepted with bit_offset");
+    /* the old key is gone (#202: no migration before v1.0) */
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bool\","
+                              "\"bit\":1}"),
+                    "devices[0].tags[0].bit: unknown key");
 }
 
 /* SPB-16: engineering range of a tag (units already existed). */
@@ -889,47 +937,142 @@ static void test_bytes_tags(void)
                     "the coil/discrete areas accept only type=bool");
 }
 
-/* SPB-18: devices of a type have the same tags; the definitions stay bounded. */
+/* #213 SPB-18: device_types holds the tag list of a model one time; a device with a type gets a
+ * copy of its tags. Each type that a device uses is one template definition in the NBIRTH
+ * (tck-id-payloads-template-definition-nbirth): the definitions stay bounded. */
 static void test_device_types(void)
 {
     static const char ok[] =
         "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+        "\"device_types\":["
+        "{\"name\":\"Meter\",\"tags\":[{\"name\":\"v\",\"area\":\"input\",\"address\":0,"
+        "\"type\":\"uint16\",\"units\":\"V\"},{\"name\":\"i\",\"area\":\"input\",\"address\":1,"
+        "\"type\":\"int16\"}]},"
+        "{\"name\":\"Spare\",\"tags\":[{\"name\":\"x\",\"area\":\"coil\",\"address\":0,"
+        "\"type\":\"bool\"}]}],"
         "\"devices\":["
-        "{\"name\":\"A\",\"unit_id\":1,\"type\":\"Meter\",\"tags\":[{\"name\":\"v\",\"area\":\"input\","
-        "\"address\":0,\"type\":\"uint16\"}]},"
-        "{\"name\":\"B\",\"unit_id\":2,\"type\":\"Meter\",\"tags\":[{\"name\":\"v\",\"area\":\"holding\","
-        "\"address\":7,\"type\":\"uint16\",\"units\":\"V\"}]},"
+        "{\"name\":\"A\",\"unit_id\":1,\"type\":\"Meter\"},"
         "{\"name\":\"C\",\"unit_id\":3,\"tags\":[{\"name\":\"v\",\"area\":\"input\","
-        "\"address\":0,\"type\":\"int16\"}]}]}";
-    TEST_ASSERT_TRUE_MESSAGE(parse(ok), err.msg);   /* area, address and units may differ */
-    TEST_ASSERT_EQUAL_STRING("Meter", cfg.devices[1].type);
-    TEST_ASSERT_EQUAL_STRING("", cfg.devices[2].type);
+        "\"address\":0,\"type\":\"int16\"}]},"
+        "{\"name\":\"B\",\"unit_id\":2,\"type\":\"Meter\",\"enabled\":false}]}";
+    TEST_ASSERT_TRUE_MESSAGE(parse(ok), err.msg);
+    TEST_ASSERT_EQUAL_UINT16(3, cfg.device_count);
+    TEST_ASSERT_EQUAL_UINT16(5, cfg.tag_count);   /* 2 + 1 + 2: a copy for each device */
+    TEST_ASSERT_EQUAL_STRING("Meter", cfg.devices[0].type);
+    TEST_ASSERT_EQUAL(0, cfg.devices[0].type_index);
+    TEST_ASSERT_EQUAL_UINT16(0, cfg.devices[0].first_tag);
+    TEST_ASSERT_EQUAL_UINT16(2, cfg.devices[0].tag_count);
+    TEST_ASSERT_EQUAL_STRING("", cfg.devices[1].type);
+    TEST_ASSERT_EQUAL(GW_NO_TYPE, cfg.devices[1].type_index);
+    TEST_ASSERT_EQUAL_UINT16(2, cfg.devices[1].first_tag);
+    TEST_ASSERT_EQUAL_UINT16(3, cfg.devices[2].first_tag);
+    TEST_ASSERT_EQUAL_UINT16(2, cfg.devices[2].tag_count);
+    TEST_ASSERT_EQUAL_STRING("i", cfg.tags[4].name);
+    TEST_ASSERT_EQUAL(GW_TYPE_INT16, cfg.tags[4].type);
+    TEST_ASSERT_EQUAL_STRING("V", cfg.tags[3].units);
+    TEST_ASSERT_EQUAL_UINT16(1, cfg.tags[4].address);
 
-    char doc[1024];
-    snprintf(doc, sizeof(doc), "%s", ok);
-    char *t = strstr(doc, "\"address\":7,\"type\":\"uint16\"");
-    memcpy(t + strlen("\"address\":7,\"type\":\""), "uint32", 6);   /* other datatype */
-    ASSERT_REJECTED(parse(doc), "devices[1].type: the type 'Meter' is already defined by devices[0] (A)");
-    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
-                          "\"devices\":[{\"name\":\"A\",\"unit_id\":1,\"type\":\"M/1\",\"tags\":[{\"name\":\"v\","
-                          "\"area\":\"input\",\"address\":0,\"type\":\"uint16\"}]}]}"),
-                    "devices[0].type: character not allowed '/'");
+#define TYPES(t) "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":" \
+                 "\"E\"},\"device_types\":[" t "]"
+#define TYPE1(n) "{\"name\":\"" n "\",\"tags\":[{\"name\":\"v\",\"area\":\"input\",\"address\":0," \
+                 "\"type\":\"uint16\"}]}"
+    /* a device that refers to a type that does not exist, or that also has own tags */
+    ASSERT_REJECTED(parse(TYPES(TYPE1("Meter")) ",\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"type\":\"Pump\"}]}"),
+                    "devices[0].type: no device type 'Pump' in device_types");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"type\":\"Pump\"}]}"),
+                    "devices[0].type: no device type 'Pump' in device_types");
+    ASSERT_REJECTED(parse(TYPES(TYPE1("Meter")) ",\"devices\":[{\"name\":\"A\",\"unit_id\":1,"
+                          "\"type\":\"Meter\",\"tags\":[]}]}"),
+                    "devices[0].tags: not permitted with type: the device uses the tags of the "
+                    "device type 'Meter'");
+    ASSERT_REJECTED(parse(TYPES(TYPE1("Meter")) ",\"devices\":[{\"name\":\"A\",\"unit_id\":1}]}"),
+                    "devices[0].tags: missing required field");
+    /* the names of the types */
+    ASSERT_REJECTED(parse(TYPES(TYPE1("Meter") "," TYPE1("Meter")) "}"),
+                    "device_types[1].name: duplicate device type name 'Meter'");
+    ASSERT_REJECTED(parse(TYPES(TYPE1("Meter") "," TYPE1("METER")) "}"),
+                    "device_types[1].name: 'METER' differs only in case from device_types[0]");
+    ASSERT_REJECTED(parse(TYPES(TYPE1("M/1")) "}"),
+                    "device_types[0].name: character not allowed '/'");
+    ASSERT_REJECTED(parse(TYPES(TYPE1("Node Control")) "}"), "the node metric 'Node Control'");
+    ASSERT_REJECTED(parse(TYPES(TYPE1("")) "}"), "device_types[0].name: cannot be empty");
+    ASSERT_REJECTED(parse(TYPES("{\"name\":\"T\"}") "}"), "device_types[0].tags: missing required field");
+    ASSERT_REJECTED(parse(TYPES("{\"name\":\"T\",\"tags\":[]}") "}"), "device_types[0].tags: the list has no tags");
+    ASSERT_REJECTED(parse(TYPES("{\"name\":\"T\",\"unit_id\":1,\"tags\":[]}") "}"),
+                    "device_types[0].unit_id: unknown key");
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"device_types\":{}}"),
+                    "device_types: expected an array");
+    /* a type that no device uses is examined too: the error has the path of its tag */
+    ASSERT_REJECTED(parse(TYPES("{\"name\":\"T\",\"tags\":[{\"name\":\"v\",\"area\":\"coil\","
+                                "\"address\":0,\"type\":\"uint16\"}]}") "}"),
+                    "device_types[0].tags[0].type: the coil/discrete areas accept only type=bool");
+    ASSERT_REJECTED(parse(TYPES("{\"name\":\"T\",\"tags\":[" "{\"name\":\"v\",\"area\":\"input\","
+                                "\"address\":0,\"type\":\"uint16\"},{\"name\":\"v\",\"area\":\"input\","
+                                "\"address\":1,\"type\":\"uint16\"}]}") "}"),
+                    "device_types[0].tags[1].name: duplicate tag name 'v'");
 
-    /* the definitions together: at most GW_MAX_TEMPLATE_TAGS tags */
+    /* at most GW_MAX_DEVICE_TYPES types */
     static char big[16384];
-    size_t n = (size_t)snprintf(big, sizeof(big), "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":"
-                                "{\"group_id\":\"G\",\"edge_node_id\":\"E\"},\"devices\":[");
-    for (int d = 0; d < 3; d++) {
-        n += (size_t)snprintf(big + n, sizeof(big) - n, "%s{\"name\":\"D%d\",\"unit_id\":1,"
-                              "\"type\":\"T%d\",\"tags\":[", d ? "," : "", d, d);
+    size_t n = (size_t)snprintf(big, sizeof(big), TYPES(""));
+    n--;   /* before the ']' */
+    for (int t = 0; t <= GW_MAX_DEVICE_TYPES; t++) {
+        n += (size_t)snprintf(big + n, sizeof(big) - n, "%s{\"name\":\"T%d\",\"tags\":[{\"name\":"
+                              "\"v\",\"area\":\"input\",\"address\":0,\"type\":\"uint16\"}]}",
+                              t ? "," : "", t);
+    }
+    snprintf(big + n, sizeof(big) - n, "]}");
+    ASSERT_REJECTED(parse(big), "device_types: 17 device types; the maximum is 16");
+
+    /* the definitions of the types that the devices use: at most GW_MAX_TEMPLATE_TAGS tags */
+    n = (size_t)snprintf(big, sizeof(big), TYPES(""));
+    n--;
+    for (int t = 0; t < 3; t++) {
+        n += (size_t)snprintf(big + n, sizeof(big) - n, "%s{\"name\":\"T%d\",\"tags\":[",
+                              t ? "," : "", t);
         for (int k = 0; k < 30; k++) {
             n += (size_t)snprintf(big + n, sizeof(big) - n, "%s{\"name\":\"t%d\",\"area\":\"input\","
                                   "\"address\":%d,\"type\":\"uint16\"}", k ? "," : "", k, k);
         }
         n += (size_t)snprintf(big + n, sizeof(big) - n, "]}");
     }
+    size_t types_end = n;
+    n += (size_t)snprintf(big + n, sizeof(big) - n, "],\"devices\":[{\"name\":\"D0\",\"unit_id\":1,"
+                          "\"type\":\"T0\"},{\"name\":\"D1\",\"unit_id\":2,\"type\":\"T1\"},"
+                          "{\"name\":\"D2\",\"unit_id\":3,\"type\":\"T0\"}]}");
+    TEST_ASSERT_TRUE_MESSAGE(parse(big), err.msg);   /* two types used: 60 tags; T2 unused */
+    TEST_ASSERT_EQUAL_UINT16(90, cfg.tag_count);
+    snprintf(big + types_end, sizeof(big) - types_end, "],\"devices\":[{\"name\":\"D0\",\"unit_id\":1,"
+             "\"type\":\"T0\"},{\"name\":\"D1\",\"unit_id\":2,\"type\":\"T1\"},"
+             "{\"name\":\"D2\",\"unit_id\":3,\"type\":\"T2\"}]}");
+    ASSERT_REJECTED(parse(big), "devices[2].type: the device types that the devices use describe "
+                                "more than 64 tags in total");
+#undef TYPES
+#undef TYPE1
+}
+
+/* #213: the copies of the tags of a type count against the total of GW_MAX_TAGS tags */
+static void test_device_types_total(void)
+{
+    static char big[32768];
+    size_t n = (size_t)snprintf(big, sizeof(big), "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":"
+                                "{\"group_id\":\"G\",\"edge_node_id\":\"E\"},\"device_types\":["
+                                "{\"name\":\"T\",\"tags\":[");
+    for (int k = 0; k < 60; k++) {
+        n += (size_t)snprintf(big + n, sizeof(big) - n, "%s{\"name\":\"t%d\",\"area\":\"input\","
+                              "\"address\":%d,\"type\":\"uint16\"}", k ? "," : "", k, k);
+    }
+    n += (size_t)snprintf(big + n, sizeof(big) - n, "]}],\"devices\":[");
+    for (int d = 0; d < 5; d++) {
+        n += (size_t)snprintf(big + n, sizeof(big) - n, "%s{\"name\":\"D%d\",\"unit_id\":%d,"
+                              "\"type\":\"T\"}", d ? "," : "", d, d + 1);
+    }
     snprintf(big + n, sizeof(big) - n, "]}");
-    ASSERT_REJECTED(parse(big), "devices[2].type: the device types describe more than 64 tags");
+    ASSERT_REJECTED(parse(big), "devices[4].type: the 60 tags of the device type 'T' make more "
+                                "than the total maximum of 256 tags");
 }
 
 /* Issue #162: well-formed UTF-8 (RFC 3629) */
@@ -1122,13 +1265,18 @@ static void test_lint_name_rules(void)
     /* other settings that UMH cannot use */
     TEST_ASSERT_TRUE_MESSAGE(parse(
         "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"gw\","
-        "\"primary_host_id\":\"SCADA\"},\"devices\":[{\"name\":\"m\",\"type\":\"Pump\","
-        "\"unit_id\":1,\"tags\":[{\"name\":\"b\",\"area\":\"input\",\"address\":0,"
-        "\"type\":\"bytes\",\"length\":2}]}]}"), err.msg);
-    TEST_ASSERT_EQUAL_size_t(3, lint());
+        "\"primary_host_id\":\"SCADA\"},\"device_types\":[{\"name\":\"Pump\",\"tags\":["
+        "{\"name\":\"b\",\"area\":\"input\",\"address\":0,\"type\":\"bytes\",\"length\":2},"
+        "{\"name\":\"x y\",\"area\":\"input\",\"address\":1,\"type\":\"uint16\"}]}],"
+        "\"devices\":[{\"name\":\"m\",\"type\":\"Pump\",\"unit_id\":1},"
+        "{\"name\":\"n\",\"type\":\"Pump\",\"unit_id\":2}]}"), err.msg);
+    /* #213: one finding at the tag of the type, not one for each device of the type */
+    TEST_ASSERT_EQUAL_size_t(5, lint());
     ASSERT_LINT("sparkplug.primary_host_id", "UMH Core cannot be the primary host");
     ASSERT_LINT("devices[0].type", "UMH Core gives no value for a template instance");
-    ASSERT_LINT("devices[0].tags[0].type", "UMH Core gives no value for a Bytes metric");
+    ASSERT_LINT("devices[1].type", "UMH Core gives no value for a template instance");
+    ASSERT_LINT("device_types[0].tags[0].type", "UMH Core gives no value for a Bytes metric");
+    ASSERT_LINT("device_types[0].tags[1].name", "has a space");
 
     /* a callback that returns false gets no more calls; the count includes all */
     TEST_ASSERT_TRUE_MESSAGE(parse(LINT_DOC("", "a b", "c d", "e f", LTAG("g h"))), err.msg);
@@ -1188,9 +1336,10 @@ static void test_lint_umh_preset(void)
     /* not name findings: warnings, also with the preset */
     TEST_ASSERT_TRUE_MESSAGE(parse(
         "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"gw\","
-        "\"primary_host_id\":\"SCADA\",\"naming\":\"umh\"},\"devices\":[{\"name\":\"m\","
-        "\"type\":\"Pump\",\"unit_id\":1,\"tags\":[{\"name\":\"b\",\"area\":\"input\","
-        "\"address\":0,\"type\":\"bytes\",\"length\":2}]}]}"), err.msg);
+        "\"primary_host_id\":\"SCADA\",\"naming\":\"umh\"},\"device_types\":[{\"name\":"
+        "\"Pump\",\"tags\":[{\"name\":\"b\",\"area\":\"input\",\"address\":0,\"type\":\"bytes\","
+        "\"length\":2}]}],\"devices\":[{\"name\":\"m\",\"type\":\"Pump\",\"unit_id\":1}]}"),
+        err.msg);
     TEST_ASSERT_EQUAL_size_t(2, lint());   /* #174: no type warning: plain metrics */
     TEST_ASSERT_EQUAL(0, lr.errors);
     TEST_ASSERT_EQUAL(-1, lint_find("devices[0].type", ""));
@@ -1246,19 +1395,19 @@ static void test_sparkplug_names(void)
     ASSERT_REJECTED(parse(DEVS(DEV("Meter1", "") "," DEV("meter1", ""))),
                     "devices[1].name: 'meter1' differs only in case from devices[0] 'Meter1'");
     ASSERT_REJECTED(parse(DEVS(DEV("M\xe9ter", ""))), "devices[0].name: not valid UTF-8 (byte 0xe9");
-    /* device types (template definitions in the NBIRTH, next to the node metrics) */
-    TEST_ASSERT_TRUE_MESSAGE(parse(DEVS(DEV("A", "\"type\":\"Meter\",") "," DEV("B", "\"type\":\"Meter\","))),
-                             err.msg);
-    ASSERT_REJECTED(parse(DEVS(DEV("A", "\"type\":\"Meter\",") "," DEV("B", "\"type\":\"METER\","))),
-                    "devices[1].type: 'METER' differs only in case from the type 'Meter' of devices[0]");
-    ASSERT_REJECTED(parse(DEVS(DEV("A", "\"type\":\"bdSeq\","))),
-                    "devices[0].type: 'bdSeq' is the name or a folder of the node metric 'bdSeq'");
-    ASSERT_REJECTED(parse(DEVS(DEV("A", "\"type\":\"node info\","))),
-                    "the node metric 'Node Info'");
-    ASSERT_REJECTED(parse(DEVS(DEV("A", "\"type\":\"DI\","))), "the node metric 'DI'");
-    ASSERT_REJECTED(parse(DEVS(DEV("A", "\"type\":\"T\xf8\","))), "devices[0].type: not valid UTF-8");
 #undef DEV
 #undef DEVS
+    /* #213: device types (template definitions in the NBIRTH, next to the node metrics) */
+#define TYPE(name) "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":" \
+                   "\"E\"},\"device_types\":[{\"name\":\"" name "\",\"tags\":[{\"name\":\"v\","   \
+                   "\"area\":\"input\",\"address\":0,\"type\":\"uint16\"}]}]}"
+    TEST_ASSERT_TRUE_MESSAGE(parse(TYPE("Meter \xc3\xa9")), err.msg);
+    ASSERT_REJECTED(parse(TYPE("bdSeq")),
+                    "device_types[0].name: 'bdSeq' is the name or a folder of the node metric 'bdSeq'");
+    ASSERT_REJECTED(parse(TYPE("node info")), "the node metric 'Node Info'");
+    ASSERT_REJECTED(parse(TYPE("DI")), "the node metric 'DI'");
+    ASSERT_REJECTED(parse(TYPE("T\xf8")), "device_types[0].name: not valid UTF-8");
+#undef TYPE
 
     /* metric names: UTF-8, case, folders; also the engUnit property */
     TEST_ASSERT_TRUE_MESSAGE(
@@ -1930,10 +2079,12 @@ int main(void)
     RUN_TEST(test_error_fields);
     RUN_TEST(test_schema_rules);
     RUN_TEST(test_mb6_tags);
+    RUN_TEST(test_bit_field);
     RUN_TEST(test_eng_range);
     RUN_TEST(test_write_limits);
     RUN_TEST(test_bytes_tags);
     RUN_TEST(test_device_types);
+    RUN_TEST(test_device_types_total);
     RUN_TEST(test_utf8_sequences);
     RUN_TEST(test_sparkplug_names);
     RUN_TEST(test_device_prefix);
