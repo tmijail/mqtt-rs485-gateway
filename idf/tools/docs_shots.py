@@ -28,6 +28,7 @@ import os
 import pathlib
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -40,6 +41,13 @@ sys.path.insert(0, str(HERE / "e2e"))
 import e2e  # noqa: E402  (the E2E harness: Gateway, flash_variant, brokers, the Modbus slave)
 
 DOCS_PASSWORD = "docs-pass-1"   # the web password of the configured states (it is in no image)
+# The browser opens the web UI at the mDNS name of the gateway (the default hostname gw01), as an
+# operator does on the network, not at 127.0.0.1: the card Certificates warns when the certificate
+# does not name the address of the page (#205), and the self-signed certificate names gw01.local.
+# Chromium maps the name to the forwarded port on 127.0.0.1 (--host-resolver-rules). The pages of
+# the access point (the state "claim") open at an address, as on the board (192.168.4.1).
+DOCS_HOST = "gw01.local"
+IP_STATES = {"claim"}
 
 # Viewports: a phone for the pages that the operator opens on the access point, a desktop for the
 # others. Playwright's own device list changes between releases: the values are fixed here.
@@ -287,7 +295,7 @@ def sha_mismatch(page):
         if r.request.method != "GET":
             r.fallback()
             return
-        w = json.loads(r.fetch().text())
+        w = json.loads(fetch(r).text())
         w.update({"phase": "failed", "state": "failed: image 0.2.0: the SHA-256 of the file does "
                   "not agree", "detail": "image 0.2.0: the SHA-256 of the file does not agree",
                   "sha256_expected": FW_SHA, "sha256_file": FW_FILE_SHA})
@@ -538,14 +546,37 @@ def pem_replace(page):
     choose(page, "k", "gw01-2027.key", pki["client.key"].read_bytes())
 
 
+def make_plant_pki():
+    """#205: a plant CA and a web certificate of the plant for this gateway (gw01: DNS:gw01.local,
+    as the self-signed certificate of the first boot), with openssl. e2e.make_web_pki makes a
+    certificate for gw22, and the dialog then warns that the SANs do not contain the hostname.
+    Returns (the chain: leaf + CA, the key) as bytes."""
+    d = pathlib.Path(tempfile.mkdtemp(prefix="docs-plantpki-"))
+
+    def ossl(*a):
+        subprocess.run(["openssl", *a], cwd=d, check=True, capture_output=True)
+
+    for k in ("ca", "web"):
+        ossl("ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", f"{k}.key")
+    ossl("req", "-x509", "-new", "-key", "ca.key", "-sha256", "-days", "3650", "-subj",
+         "/CN=Plant CA/O=Plant", "-out", "ca.pem")
+    ossl("req", "-new", "-key", "web.key", "-subj", "/CN=gw01.plant.local/O=Plant", "-out",
+         "web.csr")
+    (d / "web.ext").write_text("subjectAltName=DNS:gw01.plant.local,DNS:gw01.local,"
+                               "IP:192.168.1.50\n")
+    ossl("x509", "-req", "-in", "web.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial",
+         "-days", "365", "-sha256", "-extfile", "web.ext", "-out", "web.crt")
+    return (d / "web.crt").read_bytes() + (d / "ca.pem").read_bytes(), (d / "web.key").read_bytes()
+
+
 def web_cert_load(page):
-    """#205: Load a certificate in the card Certificates, with a certificate of a plant CA and its
-    key (e2e.make_web_pki, openssl): the dialog after the dry run of the gateway (no load)."""
+    """#205: Load a certificate in the card Certificates, with a certificate of a plant CA for
+    gw01 and its key (make_plant_pki): the dialog after the dry run of the gateway (no load)."""
     certificates_card(page)
-    pki = e2e.make_web_pki(pathlib.Path(tempfile.mkdtemp(prefix="docs-webpki-")))
+    chain, key = make_plant_pki()
     page.click("#wc-load")
-    choose(page, "c", "gw22-plant.pem", pki["plant.pem"].read_bytes())
-    choose(page, "k", "gw22-plant.key", pki["web.key"].read_bytes())
+    choose(page, "c", "gw01-plant.pem", chain)
+    choose(page, "k", "gw01-plant.key", key)
 
 
 def time_servers(page):
@@ -624,6 +655,13 @@ FREEZE["/api/wifi/scan"] = {"simulated": False}
 # (the card MQTT shows "in N days"): a fixed last day, more than 90 days away (no warning).
 FREEZE["/api/config"] = {"ntp.servers.*": "pool.ntp.org"}
 FREEZE["/api/files"] = {"files.*.certs.*.not_after": "2036-11-30"}
+# #205: the gateway makes its self-signed certificate at the first boot of each run (a new
+# SHA-256 fingerprint), and the last day of the plant certificate of the shot web-cert-load-dialog
+# (the dry run of PUT /api/web/certificate) is one year after each run: fixed values
+FREEZE["/api/web/certificate"] = {
+    "current.sha256": "A7:3C:51:E2:09:8B:D4:6F:20:C9:7E:13:B5:48:FA:02:6D:91:3A:C7:E4:58:0B:F6:"
+                      "2D:84:19:AE:63:CB:70:15",
+    "certificate.not_after": "2027-11-30"}
 
 
 def freeze(doc, paths):
@@ -922,19 +960,19 @@ SHOTS = [
              "content, subject, last day and the keys that use them, each with Replace and "
              "Remove, and the button 'Load a file…'."),
     Shot("pem-replace-dialog", "configured", DESKTOP, "/", actions=[pem_replace],
-         wait="#pf-ex .exam:not(.bad)",
+         wait="#pf-ex .exam b.ok",
          alt="The dialog 'Replace gw01.crt and gw01.key': the new certificate gw01-2027.crt and "
              "the new key gw01-2027.key are chosen. The gateway examined the files: a "
              "certificate CN=GW13 and a private key EC P-256 that agrees with it. It has the "
              "button 'Replace the files' and Cancel."),
     Shot("web-cert-load-dialog", "configured", DESKTOP, "/", actions=[web_cert_load],
-         wait="#wc-ex .exam:not(.bad)",
+         wait="#wc-ex .exam b.ok",
          alt="The dialog 'Load the HTTPS certificate of the plant': the certificate "
-             "gw22-plant.pem with its chain and the key gw22-plant.key are chosen. The gateway "
-             "examined the files: the subject, the issuer CN=E2E plant CA, a chain of 2 "
-             "certificates, the SANs, and the key agrees. The list says that the new "
-             "certificate applies after a restart. It has the button 'Load the certificate' and "
-             "Cancel."),
+             "gw01-plant.pem with its chain and the key gw01-plant.key are chosen. The gateway "
+             "examined the files: the subject, the issuer CN=Plant CA, a chain of 2 "
+             "certificates, the SANs with gw01.local, and the key agrees. The list says that "
+             "the new certificate applies after a restart. It has the button 'Load the "
+             "certificate' and Cancel."),
     # #201: docs/reference/configuration.md (ntp)
     Shot("time-card", "configured", DESKTOP, "/", actions=[time_servers],
          wait="#xpl:not(.hidden)",
@@ -947,7 +985,7 @@ SHOTS = [
          alt="The card 'Modbus TCP' of the Configuration tab: Enabled, the port 502, the idle "
              "timeout, the allowed client 10.0.2.2, and the local unit 100 with Local writes. "
              "The explainer of Local unit ID gives the map: the DIs at discrete 0 to 7, the DOs "
-             "at coil 0 to 7, the counters at input 0 to 31."),
+             "at coil 0 to 7, the counters at input 0 to 31, the run hours at input 32 to 95."),
     # #221: docs/how-to/recover-the-gateway.md ("The web interface is off")
     Shot("web-off-dialog", "configured", DESKTOP, "/", actions=[web_off], wait="#dlg[open]",
          alt="The confirmation 'Turn off the web interface?' after 'Save and restart' with "
@@ -1096,6 +1134,17 @@ class Harness:
 NO_TIMERS = "window.setInterval = () => 0;"   # the page polls once; no countdown runs
 
 
+def fetch(route):
+    """route.fetch() for the gateway. It sends the request from the Playwright driver, which does
+    not know the --host-resolver-rules of the browser: send it to 127.0.0.1 with the Host header
+    of the page (the CSRF check compares the Origin with the Host)."""
+    url = route.request.url
+    if f"//{DOCS_HOST}:" not in url:
+        return route.fetch()
+    return route.fetch(url=url.replace(f"//{DOCS_HOST}:", "//127.0.0.1:", 1),
+                       headers={**route.request.headers, "host": url.split("/")[2]})
+
+
 def route_freeze(route, extra=None):
     """Answer an API request with the real answer of the gateway, with FREEZE applied (and
     @extra, the freeze of the shot, for /api/status)."""
@@ -1104,7 +1153,7 @@ def route_freeze(route, extra=None):
     if extra and path == "api/status":
         paths = {**paths, **extra}
     try:
-        resp = route.fetch()
+        resp = fetch(route)
         body = resp.body()
     except Exception:   # noqa: BLE001 (a request of the page after the capture closed the context)
         return
@@ -1150,6 +1199,13 @@ def capture(browser, shot, auth, base):
             else:
                 raise SystemExit(f"{shot.name}: unknown action {act!r}")
         page.wait_for_load_state("networkidle")
+        # the Configuration tab reads the certificates and the PEM files after it shows (#205
+        # #221); the load state networkidle came before. Wait for them: the card Certificates,
+        # the file fields of the cards MQTT and Firmware updates and the card summaries use them
+        page.wait_for_function("(t => !t || t.classList.contains('hidden') ||"
+                               " (document.getElementById('wc-load') &&"
+                               " document.getElementById('pf-load')))"
+                               "(document.getElementById('tab-config'))")
         if shot.wait:
             page.wait_for_selector(shot.wait, state="visible")
         # the bar of the Configuration tab ("1 change, not saved") and the card summaries follow
@@ -1255,13 +1311,13 @@ def main():
     h = Harness(a)
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch()
-            base = f"https://127.0.0.1:{e2e.HTTPS_PORT}"
+            browser = pw.chromium.launch(args=[f"--host-resolver-rules=MAP {DOCS_HOST} 127.0.0.1"])
             for s in shots:
                 auth = h.enter(s.state)
                 if s.prep:
                     s.prep(h.gw)
-                png = capture(browser, s, auth, base)
+                host = "127.0.0.1" if s.state in IP_STATES else DOCS_HOST
+                png = capture(browser, s, auth, f"https://{host}:{e2e.HTTPS_PORT}")
                 written, size = write_png(png, out / f"{s.name}.png", a.lossless)
                 print(f"{s.name}.png: {'written' if written else 'unchanged'}, {size} bytes",
                       flush=True)

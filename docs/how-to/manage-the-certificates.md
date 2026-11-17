@@ -34,7 +34,7 @@ At the first boot, the gateway makes a self-signed certificate. The browser give
    - "The gateway examined the files": the dialog shows the subject, the issuer, the SANs and the last day. A yellow line tells you when the SANs do not contain the hostname or the address of the page.
    - "Not loaded: the key does not agree with the certificate": select the key that the plant CA sent with this certificate.
 
-   ![The dialog 'Load the HTTPS certificate of the plant': the certificate gw22-plant.pem with its chain and the key gw22-plant.key are chosen. The gateway examined the files: the subject, the issuer CN=E2E plant CA, a chain of 2 certificates, the SANs, and the key agrees. The list says that the new certificate applies after a restart. It has the button 'Load the certificate' and Cancel.](../images/web-cert-load-dialog.png)
+   ![The dialog 'Load the HTTPS certificate of the plant': the certificate gw01-plant.pem with its chain and the key gw01-plant.key are chosen. The gateway examined the files: the subject, the issuer CN=Plant CA, a chain of 2 certificates, the SANs with gw01.local, and the key agrees. The list says that the new certificate applies after a restart. It has the button 'Load the certificate' and Cancel.](../images/web-cert-load-dialog.png)
 
 6. Click **Load the certificate**. The card shows "A new certificate waits for the restart".
 7. Click **Restart now**. Then click **Restart** in the confirmation.
@@ -66,7 +66,8 @@ A replaced file keeps its name. The keys of the configuration that name the file
    ![The dialog 'Replace gw01.crt and gw01.key': the new certificate gw01-2027.crt and the new key gw01-2027.key are chosen. The gateway examined the files: a certificate CN=GW13 and a private key EC P-256 that agrees with it. It has the button 'Replace the files' and Cancel.](../images/pem-replace-dialog.png)
 
 6. Click **Replace the file** (or **Replace the files**).
-7. Replace the other files, if necessary. Then restart the gateway one time: click **Restart** at the bottom of the page, or **Save and restart** after a change of the configuration.
+7. Replace the other files, if necessary.
+8. Restart the gateway one time: in the tab **Status**, click **Restart** in the card **Restart and reset**. After a change of the configuration, click **Save and restart** instead.
 
 The gateway refuses a content of the other kind for a file in use. For example, a private key cannot replace the file of the CA.
 
