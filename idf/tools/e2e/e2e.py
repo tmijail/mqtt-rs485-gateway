@@ -7483,7 +7483,11 @@ def check_modbus_local(gw, obs, ndata_t):
     DIs (DI/4 set with the emulator), FC04 the counter of DI/4 (uint64 big, +1 after one pulse),
     FC05 switches DO/1 through the local_io task (FC01 reads it back, the NDATA has it) and back.
     A DO that a local rule drives (DO/5, rule di 2 -> do 5) gives exception 03; FC03 gives 01; an
-    address past DO/8 gives 02."""
+    address past DO/8 gives 02. Issue #234: FC04 32..95 gives the run hours of DI/1..8 and
+    DO/1..8, the values of the last Run Hours metrics (DI/4 and DO/2 of local_io.run_hours; 0
+    for the other channels). DO/2 (on since the boot) goes off by FC05 first, so that its value
+    is the time on since the boot (not 0), then on again for the later checks. Input register 96,
+    and a range that crosses 95, give 02."""
     def frame(pdu):
         try:
             return mbap_raw(pdu, unit=LOCAL_UNIT)
@@ -7521,6 +7525,43 @@ def check_modbus_local(gw, obs, ndata_t):
           f"counter {c0} -> {c1}; FC02 {di!r}; DO/1 {on0} -> FC05 {wr!r}, FC01 {after!r}, NDATA "
           f"{do1.boolean_value if do1 else None}, back {back!r}; DO/5 {rule!r}; FC03 {hold!r}; "
           f"coil 8 {past!r}")
+
+    # #234: the run hours. DO/2 is on since the boot (do_failsafe "on"): its value moves only
+    # every 60 s while on, so FC05 switches it off; the edge gives its time on at once. DI/4 got a
+    # new value when it went off above. The tagdb gives the value before the NDATA goes out, so
+    # wait (bounded) until the read agrees with the last published metrics.
+    rh_topics = (f"{T}/NBIRTH/{NODE}", ndata_t)
+    do2_on = bool(before[2] & 2) if before and len(before) == 3 and before[0] == 1 else None
+    do2_off = frame(b"\x05\x00\x01\x00\x00")
+
+    def published(ch):
+        return next((run_hours_of(m[2], ch) for m in reversed(list(CAPTURE))
+                     if m[1] in rh_topics and run_hours_of(m[2], ch) is not None), None)
+
+    want = got = rh = None
+    end = time.monotonic() + 5
+    while time.monotonic() < end:
+        rh = frame(b"\x04\x00\x20\x00\x40")                  # 32..95
+        time.sleep(0.5)                                        # the NDATA of a new value
+        got = list(struct.unpack(">16Q", rh[2:130])) if rh and len(rh) == 130 \
+            and rh[:2] == b"\x04\x80" else None
+        want = [0] * 16
+        want[3], want[9] = published("DI/4"), published("DO/2")
+        if got == want:
+            break
+    do2_back = frame(b"\x05\x00\x01\xff\x00")                # DO/2 on again
+    over = frame(b"\x04\x00\x60\x00\x01")                   # 96
+    cross = frame(b"\x04\x00\x5e\x00\x04")                  # 94..97
+    check("Issue #234 Modbus TCP local unit 100: FC04 32..95 = the run hours of DI/1..8 and "
+          "DO/1..8 (uint64 s, big), the same values as Run Hours/DI/4 and Run Hours/DO/2 (DO/2 "
+          "switched off by FC05 after its time on since the boot: not 0), 0 for the channels "
+          "outside local_io.run_hours; input 96 and 94..97 -> 02",
+          do2_on is True and do2_off == b"\x05\x00\x01\x00\x00" and got is not None
+          and got == want and None not in want and want[9] > 0
+          and do2_back == b"\x05\x00\x01\xff\x00" and over == b"\x84\x02"
+          and cross == b"\x84\x02",
+          f"DO/2 on {do2_on}, FC05 off {do2_off!r}, on again {do2_back!r}; FC04 32..95 "
+          f"{got if got is not None else rh!r}; metrics {want}; 96 {over!r}; 94..97 {cross!r}")
 
 
 def check_diagnostics(obs, nbirth, ndata_t):

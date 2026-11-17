@@ -550,21 +550,24 @@ A PLC or a SCADA without MQTT can read the I/O of the gateway itself on the unit
 | Discrete inputs | FC02 | 0 to 7 | DI/1 to DI/8, after the debounce. 1 = active |
 | Coils | FC01 (read), FC05 and FC15 (write) | 0 to 7 | DO/1 to DO/8. 1 = on |
 | Input registers | FC04 | 0 to 31 | The pulse counters of DI/1 to DI/8, 4 registers each (uint64, `big`: the most significant register first). DI/1 is at 0 to 3, DI/8 at 28 to 31 |
+| Input registers | FC04 | 32 to 63 | The run hours of DI/1 to DI/8 in seconds, 4 registers each (uint64, `big`). DI/1 is at 32 to 35, DI/8 at 60 to 63 |
+| Input registers | FC04 | 64 to 95 | The run hours of DO/1 to DO/8 in seconds, 4 registers each (uint64, `big`). DO/1 is at 64 to 67, DO/8 at 92 to 95 |
 
 The exceptions of the local unit:
 
 | Code | Cause |
 |---|---|
 | 01 | FC03, FC06 or FC16: the local unit has no holding registers. Also FC05 and FC15 when `local_writes` is `false` |
-| 02 | An address outside the table above |
+| 02 | An address outside the table above. Also a read that starts in the table and ends after it, for example FC04 from 94 to 97 |
 | 03 | A write to a DO that a local rule drives. The gateway changes no DO of the request. An NCMD gets the same refusal |
 | 04 | The DO expander does not answer: the DOs are unknown. Also a write that the local I/O task did not apply |
 
 - A write goes through the local I/O task, the only writer of the DO expander, as an NCMD does. The NDATA then gives the new state of the DO.
 - The safe state after a loss of MQTT (`local_io.failsafe_s`) applies as for an NCMD. A Modbus write after the safe state changes the DO again.
+- The run hours have the same value as the metric `Run Hours/DI/n` or `Run Hours/DO/n`: a new value when the channel changes its state, and each 60 s while it stays on. A channel that is not in `local_io.run_hours` gives 0. Refer to [Run hours](#run-hours).
 - The local unit has no authentication, as the other units. Limit the clients with `allowed_clients`, and keep `local_writes` off when no client must switch the DOs.
 
-![The card 'Modbus TCP' of the Configuration tab: Enabled, the port 502, the idle timeout, the allowed client 10.0.2.2, and the local unit 100 with Local writes. The explainer of Local unit ID gives the map: the DIs at discrete 0 to 7, the DOs at coil 0 to 7, the counters at input 0 to 31.](../images/modbus-tcp-card.png)
+![The card 'Modbus TCP' of the Configuration tab: Enabled, the port 502, the idle timeout, the allowed client 10.0.2.2, and the local unit 100 with Local writes. The explainer of Local unit ID gives the map: the DIs at discrete 0 to 7, the DOs at coil 0 to 7, the counters at input 0 to 31, the run hours at input 32 to 95.](../images/modbus-tcp-card.png)
 
 ## `ota`
 
@@ -689,6 +692,7 @@ Each item is `DI/1` to `DI/8` or `DO/1` to `DO/8`, one time only. The gateway co
 - The NBIRTH has the metric `Run Hours/DI/n` or `Run Hours/DO/n` (UInt64, seconds) for each channel of the list. Refer to [The Sparkplug messages and metrics](sparkplug-messages-and-metrics.md#local-io).
 - An NDATA gives a new value when the channel changes its state, and each 60 s while it stays on.
 - The Status tab of the web UI shows the run hours in hours, with one decimal.
+- The local unit of the Modbus TCP server gives the run hours as input registers. Refer to [The local unit](#the-local-unit).
 - The gateway saves the run hours with the pulse counters (`counter_save_s`). An NCMD cannot write them. The factory reset sets them to 0.
 - A channel that you remove from the list keeps its saved value. When you add it again, it continues from that value.
 - A DO that the expander does not read counts as off.
