@@ -12,7 +12,8 @@
  *   tck-id-operational-behavior-data-commands-rebirth-name-aliases requires; an NCMD with
  *   alias 2 is still accepted as a rebirth request), 3 Node Control/Reboot,
  *   4 Node Info/Firmware, 5 Node Info/Hardware, 6 Node Info/Reset Reason,
- *   7 Node Control/Scan Rate,
+ *   7 Node Control/Scan Rate, 8 Node Info/Name and 9 Node Info/Location (#206, String, only
+ *   when gateway.name or gateway.location is set),
  *   10..17 DI/1..DI/8, 20..27 DO/1..DO/8, 30..37 Counter/1..Counter/8 (IO-4, UInt64 pulse
  *   counters of the DIs), 40 Node Control/Firmware Update (FW-1, String URL), 41 Firmware
  *   Update/State (String), 42 Firmware Update/Progress (UInt32 %), 43 Node Control/Boot Other
@@ -23,7 +24,9 @@
  *   56 Node Info/Modbus TCP (issue #81, DataSet: per device, the attempts of the Modbus TCP
  *   requests forwarded to its unit, plus one row for units without a device; only with
  *   modbus_tcp.enabled), 57 Node Info/Core Dump (issue #132, Boolean: a core dump is in
- *   flash).
+ *   flash), 58 Node Info/Largest Free Block (#212, UInt32 B, internal RAM), 59 Node Info/Free
+ *   PSRAM (#212, UInt32 B), 68 Node Info/Temperature (#212, Float, degrees C of the chip; null
+ *   without a reading of the sensor, for example in QEMU).
  *   60..66 and 70..74 #174 (UMH preset only, in place of the DataSets 54 and 56): Node
  *   Info/Modbus/<counter> (Cycles, Failed Cycles, OK, Timeout, CRC, Frame, Exception) and Node
  *   Info/Modbus TCP/<counter> (OK, Timeout, CRC, Frame, Exception), UInt64 sums of all devices.
@@ -68,6 +71,8 @@ extern "C" {
 #define GW_ALIAS_HARDWARE  5u
 #define GW_ALIAS_RESET_REASON 6u
 #define GW_ALIAS_SCAN_RATE 7u
+#define GW_ALIAS_NAME      8u    /* #206 */
+#define GW_ALIAS_LOCATION  9u
 
 /* SPB-15 "Node Control/Scan Rate" (UInt32, ms): 0 = every device polls at its own poll_ms;
  * otherwise this period replaces every device's poll_ms (and slow_poll_ms when shorter). */
@@ -89,6 +94,9 @@ extern "C" {
 #define GW_ALIAS_TIME_SYNCED 55u  /* TIME-3 */
 #define GW_ALIAS_MODBUS_TCP 56u   /* issue #81 */
 #define GW_ALIAS_CORE_DUMP 57u    /* issue #132 */
+#define GW_ALIAS_LARGEST_BLOCK 58u /* #212 */
+#define GW_ALIAS_FREE_PSRAM 59u
+#define GW_ALIAS_TEMPERATURE 68u
 #define GW_ALIAS_MB_FLAT_BASE 60u /* #174: + counter, UMH preset only */
 #define GW_ALIAS_TCP_FLAT_BASE 70u
 #define GW_MB_FLAT_COUNT 7
@@ -96,16 +104,16 @@ extern "C" {
 #define GW_ALIAS_ONLINE_BASE 80u  /* #173: + device index, UMH preset only */
 
 #define GW_NODE_IO_COUNT        8
-#define GW_NODE_DIAG_METRICS    6   /* SPB-17, at most (RSSI only with Wi-Fi, Modbus with devices,
+#define GW_NODE_DIAG_METRICS    9   /* SPB-17, at most (RSSI only with Wi-Fi, Modbus with devices,
                                      * Modbus TCP with the gateway enabled) */
 /* #174: with the UMH preset: Uptime, Free Heap, Min Free Heap, RSSI and the plain counters */
-#define GW_NODE_UMH_DIAG_METRICS (4 + GW_MB_FLAT_COUNT + GW_TCP_FLAT_COUNT)
+#define GW_NODE_UMH_DIAG_METRICS (7 + GW_MB_FLAT_COUNT + GW_TCP_FLAT_COUNT)
 /* Node metrics of the NBIRTH, without template definitions (4 of them FW-1; the last 2: Time
  * Synced and Core Dump) and without the UMH preset (it has no definitions, and its
- * Devices/<name>/Online come from spb_payload_t.extra) */
-#define GW_NODE_BIRTH_METRICS   (11 + 3 * GW_NODE_IO_COUNT + GW_NODE_DIAG_METRICS + 2)
+ * Devices/<name>/Online come from spb_payload_t.extra); 13 = 11 + Name and Location (#206) */
+#define GW_NODE_BIRTH_METRICS   (13 + 3 * GW_NODE_IO_COUNT + GW_NODE_DIAG_METRICS + 2)
 /* #174: the same with the UMH preset, without its Devices/<name>/Online */
-#define GW_NODE_UMH_BIRTH_METRICS (11 + 3 * GW_NODE_IO_COUNT + GW_NODE_UMH_DIAG_METRICS + 2)
+#define GW_NODE_UMH_BIRTH_METRICS (13 + 3 * GW_NODE_IO_COUNT + GW_NODE_UMH_DIAG_METRICS + 2)
 /* Scratch metrics: a whole device (+1 template instance), or the NBIRTH with one template
  * definition per device type. */
 #define GW_NODE_METRICS_MAX \
@@ -132,6 +140,10 @@ typedef struct gw_node_diag {
     uint64_t uptime_s;
     uint32_t free_heap;        /* internal RAM, bytes */
     uint32_t min_free_heap;    /* lowest since boot */
+    uint32_t largest_block;    /* #212: the largest free block of the internal RAM, bytes */
+    uint32_t free_psram;       /* #212: bytes */
+    bool temp_valid;           /* #212: a reading of the temperature sensor (null otherwise) */
+    float temp_c;              /* #212: the chip, degrees C */
     bool has_rssi;             /* the node has Wi-Fi (the metric exists) */
     bool rssi_valid;           /* associated: rssi is meaningful (null otherwise) */
     int32_t rssi;              /* dBm */

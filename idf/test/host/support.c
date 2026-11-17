@@ -288,6 +288,7 @@ static void rec_boot_other(void *ctx)
 void recorder_default_diag(void)
 {
     g_rec.diag = (gw_node_diag_t){.uptime_s = 12, .free_heap = 150000, .min_free_heap = 140000,
+                                  .largest_block = 110592, .free_psram = 8290000,
                                   .has_rssi = true, .rssi_valid = false};
 }
 

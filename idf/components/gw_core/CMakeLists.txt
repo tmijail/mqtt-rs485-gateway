@@ -26,8 +26,10 @@ set(GW_CORE_SRCS
     src/gw_devstate.c
     src/gw_dout.c
     src/gw_fwlast.c
+    src/gw_ident.c
     src/gw_lkgnet.c
     src/gw_localio.c
+    src/gw_logring.c
     src/gw_mbdiag.c
     src/gw_netsel.c
     src/gw_node.c

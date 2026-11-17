@@ -39,6 +39,11 @@ static const char *const k_count_names[GW_NODE_IO_COUNT] = {
 #define NAME_TIME_SYNCED "Node Info/Time Synced"
 #define NAME_MODBUS_TCP "Node Info/Modbus TCP"
 #define NAME_CORE_DUMP "Node Info/Core Dump"
+#define NAME_NAME     "Node Info/Name"       /* #206 */
+#define NAME_LOCATION "Node Info/Location"
+#define NAME_LARGEST_BLOCK "Node Info/Largest Free Block"   /* #212 */
+#define NAME_FREE_PSRAM "Node Info/Free PSRAM"
+#define NAME_TEMPERATURE "Node Info/Temperature"
 
 /* Issue #81: "Node Info/Modbus TCP", the Modbus TCP gateway's forwarded requests per device
  * (gw_dev_stats_t.tcp, #69) and a last row for units with no device. A table of its own rather
@@ -453,6 +458,20 @@ static size_t diag_metrics(gw_node_t *n, size_t i, uint64_t now, bool birth, boo
         dg.free_heap;
     metric(n, k++, birth ? NAME_MIN_HEAP : NULL, GW_ALIAS_MIN_HEAP, SPB_DT_UINT32, now)->v.num =
         dg.min_free_heap;
+    /* #212: the health of the gateway. In the NBIRTH with name, alias and datatype, so that the
+     * diagnostics NDATA can give the alias only (tck-id-topics-nbirth-metrics,
+     * tck-id-payloads-alias-birth-requirement, tck-id-payloads-name-birth-data-requirement,
+     * tck-id-payloads-metric-datatype-req, tck-id-payloads-metric-datatype-not-req; the aliases
+     * are this metric's alone: tck-id-payloads-alias-uniqueness). The temperature is null
+     * without a reading of the sensor (QEMU has none). */
+    metric(n, k++, birth ? NAME_LARGEST_BLOCK : NULL, GW_ALIAS_LARGEST_BLOCK, SPB_DT_UINT32,
+           now)->v.num = dg.largest_block;
+    metric(n, k++, birth ? NAME_FREE_PSRAM : NULL, GW_ALIAS_FREE_PSRAM, SPB_DT_UINT32, now)
+        ->v.num = dg.free_psram;
+    spb_metric_t *temp = metric(n, k++, birth ? NAME_TEMPERATURE : NULL, GW_ALIAS_TEMPERATURE,
+                                SPB_DT_FLOAT, now);
+    temp->v.num = dg.temp_valid ? dg.temp_c : 0.0;
+    temp->is_null = !dg.temp_valid;
     if (birth) {
         n->has_rssi = dg.has_rssi;
     }
@@ -589,6 +608,15 @@ static bool publish_nbirth(gw_node_t *n)
         n->info.reset_reason;
     metric(n, i++, NAME_SCAN_RATE, GW_ALIAS_SCAN_RATE, SPB_DT_UINT32, now)->v.num =
         n->scan_rate_ms;
+    /* #206: the name and the location of gateway.*, for people. Static: only in the NBIRTH
+     * (tck-id-topics-nbirth-metrics), and only when set. */
+    if (n->cfg->gateway.name[0] != '\0') {
+        metric(n, i++, NAME_NAME, GW_ALIAS_NAME, SPB_DT_STRING, now)->v.str = n->cfg->gateway.name;
+    }
+    if (n->cfg->gateway.location[0] != '\0') {
+        metric(n, i++, NAME_LOCATION, GW_ALIAS_LOCATION, SPB_DT_STRING, now)->v.str =
+            n->cfg->gateway.location;
+    }
     metric(n, i++, NAME_FW_UPDATE, GW_ALIAS_FW_UPDATE, SPB_DT_STRING, now)->v.str = "";
     metric(n, i++, NAME_FW_STATE, GW_ALIAS_FW_STATE, SPB_DT_STRING, now)->v.str = n->fw_state;
     metric(n, i++, NAME_FW_PROGRESS, GW_ALIAS_FW_PROGRESS, SPB_DT_UINT32, now)->v.num =
