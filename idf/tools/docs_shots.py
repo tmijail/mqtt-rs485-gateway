@@ -1039,7 +1039,7 @@ def token_colours():
 def write_png(png, out, lossless):
     """Write @png to @out, reduced to 256 colours unless @lossless (the UI has few colours), only
     when its pixels differ from the file there. Returns (written, size in bytes)."""
-    from PIL import Image
+    from PIL import Image, ImageChops
     img = Image.open(io.BytesIO(png)).convert("RGB")
     if not lossless:
         # kmeans: without it, the median cut of a large page drops the small colours (the green
@@ -1049,10 +1049,15 @@ def write_png(png, out, lossless):
         tokens = token_colours()
         base = img.quantize(colors=256 - len(tokens), method=Image.Quantize.MEDIANCUT,
                             dither=Image.Dither.NONE, kmeans=1)
-        pal = base.getpalette()[:3 * (256 - len(tokens))] + [v for c in tokens for v in c]
-        ref = Image.new("P", (1, 1))
-        ref.putpalette(pal)
-        img = img.quantize(palette=ref, dither=Image.Dither.NONE)
+        first = 256 - len(tokens)
+        pal = base.getpalette()[:3 * first]
+        base.putpalette(pal + [0] * (3 * first - len(pal)) + [v for c in tokens for v in c])
+        # each pixel of a token colour gets the index of that colour
+        for k, c in enumerate(tokens):
+            diff = ImageChops.difference(img, Image.new("RGB", img.size, c)).split()
+            same = ImageChops.lighter(ImageChops.lighter(diff[0], diff[1]), diff[2])
+            base.paste(first + k, mask=same.point(lambda v: 255 if v == 0 else 0))
+        img = base
     if out.exists():
         old = Image.open(out)
         if old.size == img.size and old.convert("RGB").tobytes() == img.convert("RGB").tobytes():
