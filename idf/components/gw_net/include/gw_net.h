@@ -74,6 +74,22 @@ bool gw_net_has_wifi(void);
 /** SPB-17: RSSI (dBm) of the associated access point; false while not associated. */
 bool gw_net_wifi_rssi(int8_t *rssi);
 
+#if CONFIG_GW_WIFI
+#include "gw_wifiown.h"
+
+/**
+ * Issue #208: the Wi-Fi driver for @p user (gw_wifiown.h): the first user initialises and starts
+ * it; a new user changes the mode (STA, AP or APSTA). @p configure (or NULL) sets the
+ * configuration of the interface of the user, after the mode and before the start. On an error
+ * the driver stays as before the call. Safe from any task; not from the event loop task.
+ */
+esp_err_t gw_net_wifi_acquire(gw_wifi_user_t user, esp_err_t (*configure)(void *ctx), void *ctx);
+
+/** Issue #208: @p user gives the driver back. After the last user the driver stops and is
+ *  deinitialised (its internal RAM is free). Safe from any task; not from the event loop task. */
+void gw_net_wifi_release(gw_wifi_user_t user);
+#endif
+
 /* ---- #208: the Wi-Fi networks near the gateway (the button "Find networks" of the web UI) */
 
 #define GW_NET_SCAN_MAX 20     /* networks kept from one scan, strongest first */

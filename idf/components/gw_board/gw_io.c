@@ -764,20 +764,32 @@ static void failsafe(uint32_t now)
     }
 }
 
+/* The buffers of save_counters, in PSRAM (allocated once in gw_io_start) */
+typedef struct {
+    gw_local_io_t io;
+    uint64_t v[GW_LIO_SAVE_WORDS];   /* the counters, then the run hours (#217) */
+} save_buf_t;
+static save_buf_t *s_save_buf;
+
 /* IO-4: save the counters if they changed and it is time (or @p force: orderly restart). */
 static void save_counters(bool force)
 {
+    if (s_save_buf == NULL) {
+        return;
+    }
     if (xSemaphoreTake(s_save_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
         return;
     }
-    gw_local_io_t io;
-    gw_tagdb_get_io(&io);
+    /* not on the stack (s_save_buf, under s_save_lock): on_shutdown() runs in the task that calls
+     * esp_restart(), for example the esp_timer task (restart_soon), with a small stack */
+    gw_local_io_t *io = &s_save_buf->io;
+    uint64_t *v = s_save_buf->v;
+    gw_tagdb_get_io(io);
     uint32_t now = now_ms();
-    uint64_t v[GW_LIO_SAVE_WORDS];   /* the counters, then the run hours (#217) */
-    memcpy(v, io.count, sizeof(io.count));
+    memcpy(v, io->count, sizeof(io->count));
     gw_lio_rh_seconds(&s_rh, &v[GW_LOCAL_IO_CHANNELS]);
     if (gw_lio_save_due(&s_save, v, now, force)) {
-        esp_err_t err = gw_storage_set_blob(NVS_COUNTERS, v, sizeof(v));
+        esp_err_t err = gw_storage_set_blob(NVS_COUNTERS, v, sizeof(s_save_buf->v));
         if (err == ESP_OK) {
             gw_lio_saved(&s_save, v, now);
             ESP_LOGI(TAG, "pulse counters saved%s", force ? " before the restart" : "");
@@ -792,6 +804,9 @@ static void save_counters(bool force)
 static void on_shutdown(void)
 {
     save_counters(true);   /* esp_restart(): NCMD Reboot, new configuration, shell, web */
+    /* the stack that the save left in the task of esp_restart() (the E2E reads it) */
+    ESP_LOGI(TAG, "shutdown in task '%s': %u B of its stack never used", pcTaskGetName(NULL),
+             (unsigned)uxTaskGetStackHighWaterMark(NULL));
 }
 
 static void lio_task(void *arg)
@@ -889,6 +904,10 @@ esp_err_t gw_io_start(const gw_config_t *cfg, void (*on_change)(void))
     gw_tagdb_set_counters(count);
     gw_tagdb_set_run_hours(run_s, gw_port_time_ms());
     s_save_lock = xSemaphoreCreateMutexStatic(&s_save_lock_buf);
+    s_save_buf = gw_storage_calloc(1, sizeof(*s_save_buf));
+    if (s_save_buf == NULL) {
+        ESP_LOGE(TAG, "pulse counters: no memory for the save: they are not saved");
+    }
     gw_lio_save_init(&s_save, cfg, saved, now_ms());
     if (cfg->local_io.counter_save_s != 0) {
         esp_register_shutdown_handler(on_shutdown);

@@ -124,8 +124,7 @@ static void buzzer_task(void *arg)
                          (int)now_alarm, GW_BUZZ_PERIOD_MS / 1000);
             }
         }
-        bool on = gw_buzz_tone(&b, now);
-        uint32_t elapsed;
+        uint32_t elapsed = 0;
         bool ident_now = gw_status_identify_elapsed(&elapsed);
         if (ident_now != ident) {
             ident = ident_now;
@@ -135,9 +134,8 @@ static void buzzer_task(void *arg)
                 ESP_LOGI(TAG, "identify over" SIM_NOTE);
             }
         }
-        if (ident) {
-            on = gw_ident_tone(elapsed);   /* #207: in place of the alarm and the requests */
-        }
+        /* #207: the identify in place of the requests and the alarm bursts, which wait */
+        bool on = gw_buzz_out(&b, now, ident, elapsed);
         if (on != tone) {
             tone = on;
             hw_tone(on);
@@ -215,9 +213,12 @@ void gw_buzzer_beep_wait(uint8_t beeps)
     }
     gw_buzzer_beep(beeps);
     unsigned mine = atomic_load(&s_queued);
-    /* bounded: an alarm burst in progress (3 beeps) plus this one, plus one tick */
-    for (int waited = 0; waited < (beeps + 4) * 300 + 2 * TICK_MS &&
-                         (int)(atomic_load(&s_played) - mine) < 0;
+    /* bounded: an alarm burst in progress plus these beeps, plus the rest of an identify (#207:
+     * the beeps wait for its end; the 2 beeps of a factory reset must sound before the erase) */
+    uint32_t elapsed;
+    uint32_t ident_left = gw_status_identify_elapsed(&elapsed) ? GW_IDENT_MS - elapsed : 0;
+    uint32_t bound = gw_buzz_wait_ms(beeps, ident_left, TICK_MS);
+    for (uint32_t waited = 0; waited < bound && (int)(atomic_load(&s_played) - mine) < 0;
          waited += TICK_MS) {
         vTaskDelay(pdMS_TO_TICKS(TICK_MS));
     }

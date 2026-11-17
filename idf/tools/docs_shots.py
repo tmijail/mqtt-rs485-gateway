@@ -444,9 +444,12 @@ def mqtt_tls(page):
     page.click("nav button[data-tab=config]")
     page.wait_for_selector("#f-tls select")
     pki = e2e.make_pki(pathlib.Path(tempfile.mkdtemp(prefix="docs-pki-")))
-    for name, src in (("ca.pem", "ca.pem"), ("gw01.crt", "client.crt"), ("gw01.key", "client.key")):
-        page.set_input_files("#tls-file", files=[{"name": name, "mimeType": "application/x-pem-file",
-                                                  "buffer": pki[src].read_bytes()}])
+    for name, src, key in (("ca.pem", "ca.pem", "ca_file"), ("gw01.crt", "client.crt", "cert_file"),
+                           ("gw01.key", "client.key", "key_file")):
+        with page.expect_file_chooser() as fc:
+            page.click(f'button[data-load="mqtt.tls.{key}"]')
+        fc.value.set_files(files=[{"name": name, "mimeType": "application/x-pem-file",
+                                   "buffer": pki[src].read_bytes()}])
         page.wait_for_selector(f"#tls-msg.ok:has-text('{name}')")
     page.click('[data-ladd="bk"]')
     page.fill('[data-p="mqtt.backup_brokers.0.host"]', "broker2.plant.local")
@@ -761,8 +764,9 @@ SHOTS = [
          alt="The card 'MQTT' of the Configuration tab: the broker, the port 8883, the protocol, "
              "the table of the backup brokers, and the section TLS with Encrypt (TLS) on. The CA "
              "file ca.pem shows its subject and its last day, the client certificate gw01.crt "
-             "its subject, and the client key gw01.key 'Private key, EC P-256'. Below the "
-             "button 'Load a file…' a message tells that gw01.key is in the gateway."),
+             "its subject, and the client key gw01.key 'Private key, EC P-256'. Each file field "
+             "has a button 'Load a file…'. Below the section, a message tells that gw01.key is "
+             "in the gateway."),
     # #201: docs/reference/configuration.md (ntp)
     Shot("time-card", "configured", DESKTOP, "/", actions=[time_servers],
          wait="#xpl:not(.hidden)",

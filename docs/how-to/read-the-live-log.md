@@ -24,13 +24,13 @@ The colors show the severity of each line: brown for a warning, red for an error
 
 The level of a tag is the lowest severity that the tag writes to the log. The level applies to the console, to the syslog copy and to this card. The gateway does not save a change: a restart sets each tag to `info` again.
 
-> **Caution: Set the level back to `info` after the diagnosis.** The `debug` and `verbose` levels of a busy tag write many lines. The syslog copy and the console then get more data.
+> **Caution: Set the level to `info` again after the diagnosis.** The `debug` and `verbose` levels of a busy tag write many lines. The syslog copy and the console then get more data.
 
 1. Open the card **Log**.
 2. In **Tag**, select the part of the firmware, for example `poll` for the polling or `mb` for the Modbus master. The tag `*` sets all the tags.
 3. In **Log level**, select the level, for example `debug`.
 4. Click **Set the level**. The card shows the new level below the lines, in **Changed levels (not saved)**.
-5. To set one tag back to the level of the build, click **Reset** next to it. To set all the tags back, click **Reset all**.
+5. To set one tag to the level of the build again, click **Reset** next to it. To do this for all the tags, click **Reset all**.
 
 `syslog.level` of the configuration filters only the copy to the syslog server. It does not change the log level of a tag.
 

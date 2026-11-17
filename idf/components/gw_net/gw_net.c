@@ -15,6 +15,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "gw_backoff.h"
 #include "gw_netsel.h"
 #include "gw_storage.h"
@@ -543,6 +544,109 @@ void gw_net_sim_stop_eth(void)
 /* ---------------------------------------------------------------- Wi-Fi (NET-4) */
 
 #if CONFIG_GW_WIFI
+_Static_assert(GW_WIFI_MODE_STA == (int)WIFI_MODE_STA && GW_WIFI_MODE_AP == (int)WIFI_MODE_AP &&
+                   GW_WIFI_MODE_APSTA == (int)WIFI_MODE_APSTA,
+               "gw_wifi_mode_t has the values of wifi_mode_t");
+
+/* Issue #208: the users of the driver (gw_wifiown: the station, the access point of gw_ap, a
+ * scan), under s_wifi_lock. Only this code initialises, starts, stops and deinitialises it. */
+static uint8_t s_wifi_users;
+static SemaphoreHandle_t s_wifi_lock;
+static StaticSemaphore_t s_wifi_lock_buf;
+static atomic_int s_wifi_lock_state;   /* 0: not made, 1: in creation, 2: ready */
+
+/* The lock, made at the first use: gw_ap can come before gw_net_start. */
+static SemaphoreHandle_t wifi_lock(void)
+{
+    int none = 0;
+    if (atomic_load(&s_wifi_lock_state) != 2) {
+        if (atomic_compare_exchange_strong(&s_wifi_lock_state, &none, 1)) {
+            s_wifi_lock = xSemaphoreCreateMutexStatic(&s_wifi_lock_buf);
+            atomic_store(&s_wifi_lock_state, 2);
+        }
+        while (atomic_load(&s_wifi_lock_state) != 2) {
+            vTaskDelay(1);
+        }
+    }
+    return s_wifi_lock;
+}
+
+static esp_err_t wifi_apply(gw_wifiown_plan_t p, esp_err_t (*configure)(void *ctx), void *ctx)
+{
+    if (p.init) {
+        const wifi_init_config_t wc = WIFI_INIT_CONFIG_DEFAULT();
+        ESP_RETURN_ON_ERROR(esp_wifi_init(&wc), TAG, "wifi init");
+        /* the credentials live in config.json; do not keep a second copy in NVS */
+        ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "wifi storage");
+    }
+    if (p.set_mode) {
+        ESP_RETURN_ON_ERROR(esp_wifi_set_mode((wifi_mode_t)p.mode), TAG, "wifi mode");
+    }
+    if (configure != NULL) {
+        ESP_RETURN_ON_ERROR(configure(ctx), TAG, "wifi config");
+    }
+    if (p.start) {
+        ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start");
+    }
+    if (p.stop) {
+        esp_err_t e = esp_wifi_stop();
+        if (e != ESP_OK) {
+            ESP_LOGW(TAG, "wifi: esp_wifi_stop: %s", esp_err_to_name(e));
+        }
+    }
+    if (p.deinit) {
+        ESP_RETURN_ON_ERROR(esp_wifi_deinit(), TAG, "wifi deinit");
+    }
+    return ESP_OK;
+}
+
+static const char *user_name(gw_wifi_user_t u)
+{
+    return u == GW_WIFI_USER_STA ? "station" : u == GW_WIFI_USER_AP ? "access point" : "scan";
+}
+
+esp_err_t gw_net_wifi_acquire(gw_wifi_user_t user, esp_err_t (*configure)(void *ctx), void *ctx)
+{
+    SemaphoreHandle_t l = wifi_lock();
+    xSemaphoreTake(l, portMAX_DELAY);
+    uint8_t before = s_wifi_users, after = (uint8_t)(before | user);
+    gw_wifiown_plan_t p = gw_wifiown_plan(before, after);
+    esp_err_t e = wifi_apply(p, configure, ctx);
+    if (e == ESP_OK) {
+        s_wifi_users = after;
+        if (p.start) {
+            ESP_LOGI(TAG, "wifi: driver started for the %s", user_name(user));
+        }
+    } else if (before == 0) {
+        esp_wifi_stop();   /* back to no driver, as before the call */
+        esp_wifi_deinit();
+    } else if (p.set_mode) {
+        esp_wifi_set_mode((wifi_mode_t)gw_wifiown_mode(before));
+    }
+    xSemaphoreGive(l);
+    return e;
+}
+
+void gw_net_wifi_release(gw_wifi_user_t user)
+{
+    SemaphoreHandle_t l = wifi_lock();
+    xSemaphoreTake(l, portMAX_DELAY);
+    if ((s_wifi_users & user) != 0) {
+        uint8_t after = (uint8_t)(s_wifi_users & ~user);
+        gw_wifiown_plan_t p = gw_wifiown_plan(s_wifi_users, after);
+        esp_err_t e = wifi_apply(p, NULL, NULL);
+        s_wifi_users = after;
+        if (e != ESP_OK) {
+            ESP_LOGW(TAG, "wifi: the %s did not give the driver back: %s", user_name(user),
+                     esp_err_to_name(e));
+        } else if (p.deinit) {
+            ESP_LOGI(TAG, "wifi: driver stopped and released (the %s was the last user)",
+                     user_name(user));
+        }
+    }
+    xSemaphoreGive(l);
+}
+
 static esp_timer_handle_t s_wifi_retry_timer;
 static uint32_t s_wifi_attempt;
 
@@ -587,6 +691,22 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
     }
 }
 
+/* The configuration of the station, after the mode and before the start of the driver. */
+static esp_err_t sta_configure(void *ctx)
+{
+    const gw_wifi_cfg_t *w = ctx;
+    wifi_config_t sta = {0};
+    memcpy(sta.sta.ssid, w->ssid, strnlen(w->ssid, sizeof(sta.sta.ssid)));
+    memcpy(sta.sta.password, w->password, strnlen(w->password, sizeof(sta.sta.password)));
+    sta.sta.threshold.authmode = w->password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    sta.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    sta.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    sta.sta.pmf_cfg.capable = true;
+    esp_err_t e = esp_wifi_set_config(WIFI_IF_STA, &sta);
+    memset(&sta, 0, sizeof(sta));
+    return e;
+}
+
 static esp_err_t start_wifi(const gw_config_t *cfg)
 {
     const gw_wifi_cfg_t *w = &cfg->network.wifi;
@@ -605,26 +725,15 @@ static esp_err_t start_wifi(const gw_config_t *cfg)
                         TAG, "wifi ip config");
     ESP_RETURN_ON_ERROR(configure_ipv6_dns(netif, &cfg->network.ipv6), TAG, "wifi ipv6 dns");
 
-    const wifi_init_config_t wc = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_RETURN_ON_ERROR(esp_wifi_init(&wc), TAG, "wifi init");
-    /* the credentials live in config.json; do not keep a second copy in NVS */
-    ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "wifi storage");
-    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "wifi mode");
-    wifi_config_t sta = {0};
-    memcpy(sta.sta.ssid, w->ssid, strnlen(w->ssid, sizeof(sta.sta.ssid)));
-    memcpy(sta.sta.password, w->password, strnlen(w->password, sizeof(sta.sta.password)));
-    sta.sta.threshold.authmode = w->password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
-    sta.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
-    sta.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
-    sta.sta.pmf_cfg.capable = true;
-    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &sta), TAG, "wifi config");
-
     const esp_timer_create_args_t ta = {.callback = wifi_connect, .name = "wifi_retry"};
     ESP_RETURN_ON_ERROR(esp_timer_create(&ta, &s_wifi_retry_timer), TAG, "wifi timer");
     ESP_RETURN_ON_ERROR(
         esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi_event, NULL), TAG,
         "wifi events");
-    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start");
+    /* issue #208: the driver starts here (STA_START connects), or, with the access point of a
+     * BOOT gesture already on, gets the station interface (APSTA) */
+    ESP_RETURN_ON_ERROR(gw_net_wifi_acquire(GW_WIFI_USER_STA, sta_configure, (void *)w), TAG,
+                        "wifi start");
     /* latency of NCMD/DCMD matters more than the radio's power draw on a powered gateway */
     esp_wifi_set_ps(WIFI_PS_NONE);
     ESP_LOGI(TAG, "wifi: station for '%s' (%s, failback after %u s)", w->ssid,
@@ -705,8 +814,8 @@ static void scan_finish(gw_net_scan_state_t state, const char *error)
 }
 
 #if CONFIG_GW_WIFI
-static bool s_scan_own_driver;   /* the scan started the driver (no station, no access point) */
-static bool s_scan_added_sta;    /* the scan added the station to the running access point */
+static bool s_scan_radio;   /* the scan is a user of the driver (gw_net_wifi_acquire) */
+static esp_timer_handle_t s_scan_end_timer;
 
 /* The name of the security of a network, and whether the station of the gateway can join it:
  * open or WPA2/WPA3 personal (network.wifi.password). No enterprise (802.1X), no WEP or WPA. */
@@ -751,18 +860,27 @@ static const char *auth_name(wifi_auth_mode_t m, bool *supported)
     }
 }
 
-/* Back to the radio state from before the scan. */
-static void scan_radio_restore(void)
+/* Back to the radio state from before the scan (gw_wifiown: the driver stops and is
+ * deinitialised when no station and no access point use it). Under s_scan_lock. */
+static void scan_radio_release(void)
 {
-    wifi_mode_t mode;
-    if (s_scan_added_sta && esp_wifi_get_mode(&mode) == ESP_OK && mode == WIFI_MODE_APSTA &&
-        s_if[GW_NET_WIFI].netif == NULL) {
-        esp_wifi_set_mode(WIFI_MODE_AP);
+    if (s_scan_radio) {
+        gw_net_wifi_release(GW_WIFI_USER_SCAN);
+        s_scan_radio = false;
     }
-    if (s_scan_own_driver && esp_wifi_get_mode(&mode) == ESP_OK && mode == WIFI_MODE_STA) {
-        esp_wifi_stop();   /* gw_ap did not start meanwhile: the radio is off again */
+}
+
+/* The esp_timer task, just after WIFI_EVENT_SCAN_DONE: not in the event loop task, because
+ * esp_wifi_stop() waits for the Wi-Fi task, which posts its events to that loop. A new scan
+ * that started in between keeps the radio. */
+static void scan_end(void *arg)
+{
+    (void)arg;
+    xSemaphoreTake(s_scan_lock, portMAX_DELAY);
+    if (s_scan->state != GW_NET_SCAN_RUNNING) {
+        scan_radio_release();
     }
-    s_scan_added_sta = false;
+    xSemaphoreGive(s_scan_lock);
 }
 
 /* WIFI_EVENT_SCAN_DONE, in the default event loop task: one record at a time (no big buffer). */
@@ -784,12 +902,14 @@ static void on_scan_done(void *arg, esp_event_base_t base, int32_t id, void *dat
         esp_wifi_clear_ap_list();
         scan_finish(ev != NULL && ev->status != 0 ? GW_NET_SCAN_FAILED : GW_NET_SCAN_DONE,
                     ev != NULL && ev->status != 0 ? "the radio stopped the scan" : NULL);
-        scan_radio_restore();
+        esp_timer_stop(s_scan_end_timer);
+        esp_timer_start_once(s_scan_end_timer, 0);   /* scan_end gives the radio back */
     }
     xSemaphoreGive(s_scan_lock);
 }
 
-/* Start the radio for a scan if it is off. Under the lock. */
+/* The radio for a scan: the scan becomes a user of the driver (the driver starts in STA mode
+ * when it is off; APSTA with the access point; no change with the station). Under the lock. */
 static esp_err_t scan_radio_start(void)
 {
     static bool handler;
@@ -799,23 +919,9 @@ static esp_err_t scan_radio_start(void)
                             TAG, "scan event");
         handler = true;
     }
-    wifi_mode_t mode = WIFI_MODE_NULL;
-    esp_err_t e = esp_wifi_get_mode(&mode);
-    if (e == ESP_ERR_WIFI_NOT_INIT) {
-        const wifi_init_config_t wc = WIFI_INIT_CONFIG_DEFAULT();
-        ESP_RETURN_ON_ERROR(esp_wifi_init(&wc), TAG, "wifi init");
-        ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "wifi storage");
-        mode = WIFI_MODE_NULL;
-    } else {
-        ESP_RETURN_ON_ERROR(e, TAG, "wifi mode");
-    }
-    if (mode == WIFI_MODE_NULL) {
-        ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "wifi mode");
-        ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start");
-        s_scan_own_driver = true;
-    } else if (mode == WIFI_MODE_AP) {
-        ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), TAG, "wifi mode");
-        s_scan_added_sta = true;
+    if (!s_scan_radio) {
+        ESP_RETURN_ON_ERROR(gw_net_wifi_acquire(GW_WIFI_USER_SCAN, NULL, NULL), TAG, "radio");
+        s_scan_radio = true;
     }
     return ESP_OK;
 }
@@ -877,7 +983,7 @@ gw_net_scan_state_t gw_net_wifi_scan_start(uint32_t max_age_s)
         char why[64];
         snprintf(why, sizeof(why), "the radio cannot scan now (%s)", esp_err_to_name(e));
         scan_finish(GW_NET_SCAN_FAILED, why);
-        scan_radio_restore();
+        scan_radio_release();
     } else {
         ESP_LOGI(TAG, "wifi scan started");
     }
@@ -921,6 +1027,12 @@ static void scan_init(void)
     const esp_timer_create_args_t ta = {.callback = scan_sim_done, .name = "wifi_scan_sim"};
     if (esp_timer_create(&ta, &s_scan_sim_timer) != ESP_OK) {
         s_scan = NULL;
+    }
+#endif
+#if CONFIG_GW_WIFI
+    const esp_timer_create_args_t te = {.callback = scan_end, .name = "wifi_scan_end"};
+    if (esp_timer_create(&te, &s_scan_end_timer) != ESP_OK) {
+        s_scan = NULL;   /* no scan: the radio would not stop after it */
     }
 #endif
 }

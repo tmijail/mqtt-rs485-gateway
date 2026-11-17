@@ -33,8 +33,9 @@ void gw_buzzer_beep(uint8_t beeps);
  *  place of the alarms and the requests (they continue after it). */
 void gw_buzzer_wake(void);
 
-/** Play @p beeps beeps and wait until they are over (at most about beeps x 300 ms): for a
- *  confirmation that precedes a long flash operation (CFG-5 factory reset). */
+/** Play @p beeps beeps and wait until they are over (at most about beeps x 300 ms, plus the rest
+ *  of an identify that runs: #207, the beeps wait for its end): for a confirmation that precedes
+ *  a long flash operation (CFG-5 factory reset). */
 void gw_buzzer_beep_wait(uint8_t beeps);
 
 #ifdef __cplusplus

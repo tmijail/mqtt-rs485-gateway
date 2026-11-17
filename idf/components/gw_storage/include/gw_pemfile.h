@@ -52,10 +52,11 @@ bool gw_pem_key_agrees(const char *key, const char *cert);
 
 /**
  * The load of a file from the web UI: @p data must be PEM certificates or an unencrypted PEM
- * private key. Without @p replace an existing file is not changed. @p out gets what it holds.
+ * private key. An existing file is not changed (ESP_ERR_INVALID_STATE). @p out gets what it
+ * holds.
  */
-esp_err_t gw_pem_put(const char *name, const char *data, size_t len, bool replace,
-                     gw_pem_info_t *out, char *why, size_t why_cap);
+esp_err_t gw_pem_put(const char *name, const char *data, size_t len, gw_pem_info_t *out,
+                     char *why, size_t why_cap);
 
 /**
  * Before a configuration is saved: the files that @p cfg names exist and hold what their key

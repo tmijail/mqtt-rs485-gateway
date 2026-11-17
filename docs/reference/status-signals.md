@@ -19,7 +19,14 @@ This document lists the signals that the gateway gives at the panel: the modes, 
 
 ![The card Gateway of the Status tab, with the health values and the button Identify](../images/status-gateway-card.png)
 
-The card **Gateway** of the Status tab also gives the health of the gateway: the free internal heap and its minimum, the largest free internal block, the free PSRAM and the temperature of the chip. Without a reading of the temperature sensor (for example in QEMU), the temperature is "not available". The NBIRTH and the diagnostics give the same values. Refer to [The Node metrics](sparkplug-messages-and-metrics.md).
+The card **Gateway** of the Status tab also gives the health of the gateway:
+
+- the free internal heap and its minimum;
+- the largest free internal block;
+- the free PSRAM;
+- the temperature of the chip.
+
+Without a reading of the temperature sensor (for example in QEMU), the temperature is "not available". The NBIRTH and the diagnostics give the same values. Refer to [The Node metrics](sparkplug-messages-and-metrics.md).
 
 ## Status LED
 

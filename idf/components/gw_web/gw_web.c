@@ -2050,10 +2050,11 @@ static esp_err_t files_get(httpd_req_t *req)
     return r;
 }
 
-/* PUT /api/files?name=<name>[&replace=1] with the PEM text: the button "Load a file..." of the
- * card MQTT. Certificates or an unencrypted private key, up to GW_STORAGE_FILE_MAX bytes. 201
- * with what the file holds; 409 if the file exists and replace is not 1. The configuration does
- * not change: the operator selects the file, then saves. */
+/* PUT /api/files?name=<name> with the PEM text: the buttons "Load a file..." of the file fields
+ * of the card MQTT. Certificates or an unencrypted private key, up to GW_STORAGE_FILE_MAX bytes.
+ * 201 with what the file holds; 409 if the file exists (#221: the replace of a file waits for the
+ * approval of the PEM file management). The configuration does not change: the web UI selects
+ * the file in its field, then the operator saves. */
 static esp_err_t files_put(httpd_req_t *req)
 {
     if (!same_origin(req) || !authorized(req)) {
@@ -2078,8 +2079,7 @@ static esp_err_t files_put(httpd_req_t *req)
     }
     gw_pem_info_t *info = gw_storage_calloc(1, sizeof(*info));
     char why[160];
-    esp_err_t e = info != NULL ? gw_pem_put(name, body, len, query_flag(req, "replace"), info, why,
-                                            sizeof(why))
+    esp_err_t e = info != NULL ? gw_pem_put(name, body, len, info, why, sizeof(why))
                                : ESP_ERR_NO_MEM;
     memset(body, 0, len);   /* can be a private key */
     heap_caps_free(body);
