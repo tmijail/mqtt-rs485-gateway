@@ -2353,6 +2353,29 @@ def run_primary_host(args, work):
           f"NBIRTH metrics {[m.name for m in nb[2].metrics if 'irmware' in m.name] if nb else None}; "
           f"refused {len(named)} by name, by alias {off is not None}; started {started[:1]}")
 
+    # #144 item 6, #223: Node Control/Boot Other Slot needs ota.mqtt too: no metric in the NBIRTH
+    # (tck-id-topics-nbirth-metric-reqs), and an NCMD with it, by name or by alias, does not boot
+    # the other slot (tck-id-operational-behavior-data-commands-ncmd-metric-name)
+    since = time.monotonic()
+    obs.publish_cmd(f"{T}/NCMD/{node}", [{"name": "Node Control/Boot Other Slot", "datatype": 11,
+                                          "boolean_value": True}])
+    obs.publish_cmd(f"{T}/NCMD/{node}", [{"alias": 43, "datatype": 11, "boolean_value": True}])
+    boot_off = gw.wait_log(r"NCMD: metric '' \(alias 43\) discarded: firmware updates from MQTT "
+                           r"are off \(ota\.mqtt\); no boot of the other slot", 10, since)
+    boot_named = gw.find(r"NCMD: metric 'Node Control/Boot Other Slot' discarded: firmware "
+                         r"updates from MQTT are off \(ota\.mqtt\); no boot of the other slot",
+                         since)
+    time.sleep(1)
+    booted = gw.find(r"NCMD Boot Other Slot|booting the other slot", since)
+    check("Issue #144 item 6 without ota.mqtt (#223) the NBIRTH has no Node Control/Boot Other "
+          "Slot, and an NCMD with it (by name or by alias) does not boot the other slot; the log "
+          "gives the cause",
+          nb and metric(nb[2], name="Node Control/Boot Other Slot") is None
+          and metric(nb[2], alias=43) is None and boot_off and len(boot_named) == 1 and not booted,
+          f"NBIRTH has it: {metric(nb[2], name='Node Control/Boot Other Slot') is not None if nb else None}; "
+          f"refused {len(boot_named)} by name, by alias {boot_off is not None}; "
+          f"boot {booted[:1]}")
+
     since = time.monotonic()
     host_state(obs, host, False, ts + 500, retain=False)
     stale = obs.wait(ndeath_t, 3)
@@ -4764,6 +4787,9 @@ def run_ota_wiring(args, work):
         up = gw.wait_log(r"edge: Sparkplug session up", 60, t0)
         pw = commissioning_password(gw, t0, 30)
         auth = ("admin", pw or "?")
+        # the HTTPS server answers (404) before it registers the handlers: wait for the evidence
+        # that the REST API is up, else "running" can be missing and base "?"
+        gw.wait_log(r"web: web UI and REST API on port 443", 30, t0)
         base = (as_json(wait_http("/api/firmware", 30, auth=auth)[2]) or {}).get("running", "?")
         asked = time.monotonic()
         st, body = upload("e2e-k2", pw)
@@ -8290,7 +8316,9 @@ def check_admin_web(gw, nb, status, status_body, doc, page_text, t0):
     st_i2, _, b_i2 = http("POST", "/api/identify")
     j_i2 = as_json(b_i2) or {}
     over = gw.wait_log(r"buzzer: identify over \(simulated\)", 15, t_id)
-    back = gw.wait_log(r"led: status: (?!identify)", 3, over or t_id) if over else None
+    # the LED task and the buzzer task end the identify independently: the LED can go back a few
+    # ms before the buzzer logs "over", so the LED line is searched from the start of the pattern
+    back = gw.wait_log(r"led: status: (?!identify)", 3, led) if over and led else None
     asked = time.monotonic()
     gw.console("identify")
     sh1 = gw.wait_log(r"^identify: the LED shows red, green and blue in turn and the buzzer beeps "

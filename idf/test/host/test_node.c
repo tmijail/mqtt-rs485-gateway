@@ -2535,7 +2535,8 @@ static void test_firmware_update_off_without_ota_mqtt(void)
     TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Control/Firmware SHA-256"));
     TEST_ASSERT_TRUE(decoded_find_name(&dec, "Firmware Update/State") >= 0);
     TEST_ASSERT_TRUE(decoded_find_name(&dec, "Firmware Update/Progress") >= 0);
-    TEST_ASSERT_TRUE(decoded_find_name(&dec, "Node Control/Boot Other Slot") >= 0);
+    /* #144 item 6, #223: Boot Other Slot needs ota.mqtt too (test_boot_other_slot_off_...) */
+    TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Control/Boot Other Slot"));
     char log[1024] = "";
     gw_port_log_capture(log, sizeof(log));
     recorder_clear();
@@ -2693,10 +2694,12 @@ static void test_firmware_update_metrics(void)
     TEST_ASSERT_EQUAL(GW_NODE_FW_STATE_MAX - 1, strlen(dec.m[0].str));
 }
 
-/* Issue #144 item 6: the NBIRTH declares Node Control/Boot Other Slot (Boolean false); an NCMD
- * with true, by name or by alias, reaches the boot_other op; false or another type does not. */
+/* Issue #144 item 6: with ota.mqtt (#223), the NBIRTH declares Node Control/Boot Other Slot
+ * (Boolean false); an NCMD with true, by name or by alias, reaches the boot_other op; false or
+ * another type does not. */
 static void test_boot_other_slot_command(void)
 {
+    use_mqtt_ota();
     gw_node_session_up(&node, 0);
     msg(0);
     int b = decoded_find_name(&dec, "Node Control/Boot Other Slot");
@@ -2718,6 +2721,43 @@ static void test_boot_other_slot_command(void)
     spb_metric_t s = {.alias = GW_ALIAS_BOOT_OTHER, .datatype = SPB_DT_STRING, .v.str = "x"};
     send("spBv1.0/Plant1/NCMD/GW01", &s, 1);
     TEST_ASSERT_EQUAL(2, g_rec.boot_others);
+}
+
+/* Issue #144 item 6, #223: with ota.mqtt off (the default) the NBIRTH does not declare Node
+ * Control/Boot Other Slot (tck-id-topics-nbirth-metric-reqs), and an NCMD with true, by name or by
+ * alias, does not reach the boot_other op; the log gives the cause
+ * (tck-id-operational-behavior-data-commands-ncmd-metric-name: the Edge Node is resilient to a
+ * metric that is not in the NBIRTH). The other metrics of the same NCMD still apply. */
+static void test_boot_other_slot_off_without_ota_mqtt(void)
+{
+    TEST_ASSERT_FALSE(cfg->ota.mqtt);
+    gw_node_session_up(&node, 0);
+    msg(0);
+    TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Control/Boot Other Slot"));
+    for (size_t k = 0; k < dec.count; k++) {
+        TEST_ASSERT_FALSE(dec.m[k].has_alias && dec.m[k].alias == GW_ALIAS_BOOT_OTHER);
+    }
+    char log[1024] = "";
+    gw_port_log_capture(log, sizeof(log));
+    recorder_clear();
+    spb_metric_t t[2] = {{.name = "Node Control/Boot Other Slot", .datatype = SPB_DT_BOOLEAN,
+                          .v.num = 1},
+                         {.name = "DO/1", .datatype = SPB_DT_BOOLEAN, .v.num = 1}};
+    send("spBv1.0/Plant1/NCMD/GW01", t, 2);
+    spb_metric_t a = {.alias = GW_ALIAS_BOOT_OTHER, .datatype = SPB_DT_BOOLEAN, .v.num = 1};
+    send("spBv1.0/Plant1/NCMD/GW01", &a, 1);
+    gw_port_log_capture(NULL, 0);
+    TEST_ASSERT_EQUAL(0, g_rec.boot_others);
+    TEST_ASSERT_EQUAL_HEX8(0x01, g_rec.dout);   /* DO/1 of the same NCMD is applied */
+    static const char why[] = "discarded: firmware updates from MQTT are off (ota.mqtt); no boot "
+                              "of the other slot";
+    int found = 0;
+    for (const char *at = strstr(log, why); at != NULL; at = strstr(at + 1, why)) {
+        found++;
+    }
+    TEST_ASSERT_EQUAL(2, found);
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Node Control/Boot Other Slot'"));
+    TEST_ASSERT_NOT_NULL(strstr(log, "(alias 43) discarded"));
 }
 
 /* Issue #87: an NCMD with a String metric of @p n characters named "Node Control/Firmware
@@ -2992,6 +3032,7 @@ int main(void)
     RUN_TEST(test_firmware_update_off_without_ota_mqtt);
     RUN_TEST(test_firmware_sha256_command);
     RUN_TEST(test_boot_other_slot_command);
+    RUN_TEST(test_boot_other_slot_off_without_ota_mqtt);
     RUN_TEST(test_firmware_url_limit);
     RUN_TEST(test_store_and_forward_counters);
     return UNITY_END();

@@ -65,7 +65,7 @@ The field **SHA-256 (optional)** accepts 64 hexadecimal characters. The page cha
 
 ## Let a Sparkplug host start an update
 
-By default, a Sparkplug host cannot start an update (`ota.mqtt` is `false`). The NBIRTH then does not contain `Node Control/Firmware Update`, and the gateway refuses an NCMD that writes it.
+By default, a Sparkplug host cannot start an update (`ota.mqtt` is `false`). The NBIRTH then does not contain `Node Control/Firmware Update`, `Node Control/Firmware SHA-256` and `Node Control/Boot Other Slot`. The gateway refuses an NCMD that writes them.
 
 > **Caution: Turn on Update from MQTT only when the ACL of the broker lets only your Sparkplug host publish to the NCMD topic of the gateway.** Each client that can publish to `spBv1.0/<group_id>/NCMD/<edge_node_id>` can then change the firmware.
 
@@ -76,7 +76,7 @@ By default, a Sparkplug host cannot start an update (`ota.mqtt` is `false`). The
 
 ![The card 'Firmware updates' of the Configuration tab: the check box 'Update from MQTT' is off. The hint tells to turn it on only when the broker lets only the Sparkplug host publish to the NCMD topic of the gateway. The explainer of the field is open.](../images/firmware-updates-card.png)
 
-The host then sends the NCMD `Node Control/Firmware Update` with the URL as a String. As an option, it sends `Node Control/Firmware SHA-256` with the SHA-256 of the file, in the same NCMD or in an earlier one. The host reads the result in `Firmware Update/State` and `Firmware Update/Progress`. For the metrics, refer to [Sparkplug messages and metrics](../reference/sparkplug-messages-and-metrics.md).
+The host then sends the NCMD `Node Control/Firmware Update` with the URL as a String. As an option, it sends `Node Control/Firmware SHA-256` with the SHA-256 of the file, in the same NCMD or in an earlier one. The host reads the result in `Firmware Update/State` and `Firmware Update/Progress`. The host can also send `Node Control/Boot Other Slot` (Boolean `true`). The gateway then restarts into the image of the other slot, as the button **Restart into `<version>`** does. For the metrics, refer to [Sparkplug messages and metrics](../reference/sparkplug-messages-and-metrics.md).
 
 ## Make sure that the update is complete
 
@@ -106,7 +106,7 @@ Do this when the new image operates but does not do what you need, for example w
 3. Wait for the restart and the trial (60 s).
 4. Make sure that the card shows the earlier version.
 
-The button is not available during the trial of a new image. After the trial, the button is the rollback.
+The button is not available during the trial of a new image. After the trial, the button is the rollback. The button does not depend on **Update from MQTT**.
 
 You can also upload the earlier image. The earlier image possibly cannot read a configuration that you saved after the update. Then the gateway restores the configuration from before the update. It does this only if the configuration did not change after the first save with the new image. Else it refuses the image and gives the changed paths.
 

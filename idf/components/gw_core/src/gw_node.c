@@ -636,7 +636,12 @@ static bool publish_nbirth(gw_node_t *n)
     metric(n, i++, NAME_FW_STATE, GW_ALIAS_FW_STATE, SPB_DT_STRING, now)->v.str = n->fw_state;
     metric(n, i++, NAME_FW_PROGRESS, GW_ALIAS_FW_PROGRESS, SPB_DT_UINT32, now)->v.num =
         n->fw_progress;
-    metric(n, i++, NAME_BOOT_OTHER, GW_ALIAS_BOOT_OTHER, SPB_DT_BOOLEAN, now)->v.num = 0;
+    if (n->cfg->ota.mqtt) {
+        /* #144 item 6, #223: Boot Other Slot also changes the running firmware, thus it also needs
+         * ota.mqtt; without it the gateway refuses the metric, and the NBIRTH does not declare it
+         * (tck-id-topics-nbirth-metric-reqs). The web UI button does not depend on ota.mqtt. */
+        metric(n, i++, NAME_BOOT_OTHER, GW_ALIAS_BOOT_OTHER, SPB_DT_BOOLEAN, now)->v.num = 0;
+    }
     for (uint8_t k = 0; k < GW_NODE_IO_COUNT; k++) {
         metric(n, i++, k_di_names[k], GW_ALIAS_DI_BASE + k, SPB_DT_BOOLEAN,
                live_ts(n, io.di_ts_ms))
@@ -1343,7 +1348,13 @@ static bool on_ncmd_metric(void *ctx, const spb_rx_metric_t *m)
         return true;
     }
     if (by_name ? strcmp(m->name, NAME_BOOT_OTHER) == 0 : m->alias == GW_ALIAS_BOOT_OTHER) {
-        if (!rx_true(m)) {
+        if (!n->cfg->ota.mqtt) {
+            /* #144 item 6, #223: as Firmware Update above. Each client that can publish to the
+             * NCMD topic could otherwise change the running firmware to the image of the other
+             * slot (tck-id-operational-behavior-data-commands-ncmd-metric-name) */
+            log_discard("NCMD", m,
+                        "firmware updates from MQTT are off (ota.mqtt); no boot of the other slot");
+        } else if (!rx_true(m)) {
             log_discard("NCMD", m, "Boot Other Slot needs the Boolean true");
         } else if (n->ops.boot_other == NULL) {
             log_discard("NCMD", m, "booting the other slot not supported");

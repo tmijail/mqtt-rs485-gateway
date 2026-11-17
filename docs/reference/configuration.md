@@ -574,7 +574,7 @@ The exceptions of the local unit:
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `mqtt` | bool | `false` | `true` lets a Sparkplug host start an update with the NCMD `Node Control/Firmware Update`. With `false`, the NBIRTH does not contain `Node Control/Firmware Update` and `Node Control/Firmware SHA-256`, and the gateway refuses an NCMD that writes them. A change needs a save and a restart. The web UI control is **Update from MQTT** in the card **Firmware updates** |
+| `mqtt` | bool | `false` | `true` lets a Sparkplug host start an update with the NCMD `Node Control/Firmware Update`, and a restart into the other slot with `Node Control/Boot Other Slot`. With `false`, the NBIRTH does not contain `Node Control/Firmware Update`, `Node Control/Firmware SHA-256` and `Node Control/Boot Other Slot`, and the gateway refuses an NCMD that writes them. A change needs a save and a restart. The web UI control is **Update from MQTT** in the card **Firmware updates** |
 | `ca_file` | text | `""` | The CA of the server of the images (PEM, in LittleFS, with the name rules of `mqtt.tls.ca_file`). Empty = `mqtt.tls.ca_file` if TLS is on, else the public root CAs of ESP-IDF |
 
 An update from the web UI is always possible, for a user who knows the web password. The button "Restart into `<version>`" is always available after a trial.
