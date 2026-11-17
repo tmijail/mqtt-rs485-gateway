@@ -8316,7 +8316,9 @@ def check_admin_web(gw, nb, status, status_body, doc, page_text, t0):
     st_i2, _, b_i2 = http("POST", "/api/identify")
     j_i2 = as_json(b_i2) or {}
     over = gw.wait_log(r"buzzer: identify over \(simulated\)", 15, t_id)
-    back = gw.wait_log(r"led: status: (?!identify)", 3, over or t_id) if over else None
+    # the LED task and the buzzer task end the identify independently: the LED can go back a few
+    # ms before the buzzer logs "over", so the LED line is searched from the start of the pattern
+    back = gw.wait_log(r"led: status: (?!identify)", 3, led) if over and led else None
     asked = time.monotonic()
     gw.console("identify")
     sh1 = gw.wait_log(r"^identify: the LED shows red, green and blue in turn and the buzzer beeps "
