@@ -394,12 +394,19 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
     if (gw_io_start_recovery() != ESP_OK) {
         ESP_LOGE(TAG, "local I/O task unavailable: the output expander is not retried");
     }
+    /* #209: safe mode (on request or after crashes) did not reject the configuration: no
+     * "config_error" alarm and no configuration error state on the LED, but a pattern of its own */
+    const bool safe = mode == GW_WEB_RECOVERY && s_safe;
     uint8_t alarm = 0;
-    if (mode == GW_WEB_RECOVERY && gw_storage_get_blob(NVS_ALARM_CFG, &alarm, 1) && alarm) {
+    if (mode == GW_WEB_RECOVERY && !safe && gw_storage_get_blob(NVS_ALARM_CFG, &alarm, 1) &&
+        alarm) {
         gw_buzzer_configure(GW_ALARM_BIT(GW_ALARM_CONFIG_ERROR), 0);   /* IO-6 */
     }
     /* #135: the fault mode shows the configuration error state on the LED too */
-    gw_status_set(mode == GW_WEB_COMMISSIONING ? GW_ST_COMMISSIONING : GW_ST_CFG_ERROR, true);
+    gw_status_set(mode == GW_WEB_COMMISSIONING ? GW_ST_COMMISSIONING
+                  : safe                       ? GW_ST_SAFE_MODE
+                                               : GW_ST_CFG_ERROR,
+                  true);
     start_shell(NULL, source, false);
     gw_storage_recovery_config(s_cfg);
     /* FW-1: web uploads stay possible (the way out of a bad configuration). Issue #144 item 2:

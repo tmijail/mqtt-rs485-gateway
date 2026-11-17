@@ -8814,6 +8814,15 @@ def check_restart_admin(args, work, flash):
     pw = commissioning_password(gw, t0, 30)
     auth = ("admin", pw or "?")
     gw.shell("status", [r"^config\s"])
+    # #203, #209: the dialogs give the SSID of the access point of the next boot: /api/status
+    # has it also before the first start (it comes from the MAC)
+    st_a, _, b_a = http("GET", "/api/status", auth=auth)
+    a0 = (as_json(b_a) or {}).get("ap") or {}
+    check("Issues #203 and #209: /api/status gives the SSID of the access point before its first "
+          "start (the dialogs of the restart into safe mode and of the factory reset show it)",
+          st_a == 200 and a0.get("running") is False and a0.get("last_stop") == "none"
+          and re.fullmatch(AP_SSID_RX, a0.get("ssid") or "") is not None,
+          f"status {st_a}; ap {a0}")
     # #209: no CSRF header -> 403 and no restart; then 202, NDEATH, safe mode on request
     t1 = time.monotonic()
     st_x, _, _ = http("POST", "/api/restart?safe=1", auth=auth, headers={"X-Requested-With": None})
@@ -8845,6 +8854,17 @@ def check_restart_admin(args, work, flash):
           f"{bool(death)}; status {st_st} mode {s.get('mode')!r} safe_mode {sm} source "
           f"{s.get('config', {}).get('source')!r}; shell {bool(refused)}; second {st_r2} "
           f"{b_r2.decode(errors='replace').strip()[:80]}; NBIRTHs {len(births)}")
+    # #209: safe mode does not reject the configuration: the LED has a pattern of its own, and
+    # the "config_error" alarm (enabled by this configuration, kept in NVS) does not sound
+    led_safe = gw.wait_log(r"led: status: safe mode", 5, t1)
+    led_err = gw.find(r"led: status: config error", t1)
+    bz_err = gw.find(r"buzzer: alarm 'configuration error'", t1)
+    bz = s.get("buzzer") or {}
+    check("Issue #209: safe mode on request shows the LED pattern 'safe mode', not 'config error', "
+          "and the buzzer alarm 'config_error' of the configuration does not sound (/api/status "
+          "buzzer.alarm none)",
+          led_safe and not led_err and not bz_err and bz.get("alarm") == "none",
+          f"LED {(gw.find(r'led: status: ', t1) or ['none'])[-1]!r}; config error LED {led_err[:1]}; buzzer log {bz_err[:1]}; status buzzer {bz}")
     # a restart ends safe mode (the request was for one boot)
     t2 = time.monotonic()
     st_r, _, _ = http("POST", "/api/restart", auth=auth)

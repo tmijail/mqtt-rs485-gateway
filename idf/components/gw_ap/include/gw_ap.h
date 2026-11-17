@@ -42,7 +42,7 @@ typedef struct {
     bool open;             /* no key (the open period of a claim window) */
     bool key_is_pmk;       /* the WPA2 key is the PMK of the web password (else the
                             * commissioning password); the key of the last start */
-    char ssid[33];         /* "" before the first start */
+    char ssid[33];         /* also before the first start (from the MAC); "" if unknown */
     unsigned clients;
     bool limited;          /* left_s is valid (else no limit now: a client, no maximum time) */
     uint32_t left_s;       /* time to the stop if no client comes or goes */

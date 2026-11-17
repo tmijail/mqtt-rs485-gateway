@@ -534,6 +534,11 @@ FREEZE["/api/status"].update({"io.run_hours.do.*": lambda v: None if v is None e
 # battery), and the Wi-Fi scan of QEMU is a simulated list (#208): the values of the board
 FREEZE["/api/status"].update({"time.rtc.lost": False})
 FREEZE["/api/wifi/scan"] = {"simulated": False}
+# The SNTP server of the E2E configuration is the host of the emulator (10.0.2.2): the default
+# server of a board. The test certificates of e2e.make_pki are valid for 30 days from each run
+# (the card MQTT shows "in N days"): a fixed last day, more than 90 days away (no warning).
+FREEZE["/api/config"] = {"ntp.servers.*": "pool.ntp.org"}
+FREEZE["/api/files"] = {"files.*.certs.*.not_after": "2036-11-30"}
 
 
 def freeze(doc, paths):
@@ -1020,16 +1025,39 @@ def capture(browser, shot, auth, base):
         ctx.close()
 
 
+def token_colours():
+    """The colours of the CSS tokens of the pages (--name:#rrggbb in www/*.html), as RGB tuples."""
+    found = set()
+    for page in (HERE.parent / "components" / "gw_web" / "www").glob("*.html"):
+        text = page.read_text(encoding="utf-8")
+        for h in re.findall(r"--[a-z]+:#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b", text):
+            h = "".join(c * 2 for c in h) if len(h) == 3 else h
+            found.add(tuple(int(h[i:i + 2], 16) for i in (0, 2, 4)))
+    return sorted(found)
+
+
 def write_png(png, out, lossless):
     """Write @png to @out, reduced to 256 colours unless @lossless (the UI has few colours), only
     when its pixels differ from the file there. Returns (written, size in bytes)."""
-    from PIL import Image
+    from PIL import Image, ImageChops
     img = Image.open(io.BytesIO(png)).convert("RGB")
     if not lossless:
         # kmeans: without it, the median cut of a large page drops the small colours (the green
-        # of "online" and "connected" became grey)
-        img = img.quantize(colors=256, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE,
-                           kmeans=1)
+        # of "online" and "connected" became grey). A small mark of a token colour (the green dot
+        # "Live" of the card Log, 8 px) still became grey: the palette also holds each token
+        # colour of the pages exactly
+        tokens = token_colours()
+        base = img.quantize(colors=256 - len(tokens), method=Image.Quantize.MEDIANCUT,
+                            dither=Image.Dither.NONE, kmeans=1)
+        first = 256 - len(tokens)
+        pal = base.getpalette()[:3 * first]
+        base.putpalette(pal + [0] * (3 * first - len(pal)) + [v for c in tokens for v in c])
+        # each pixel of a token colour gets the index of that colour
+        for k, c in enumerate(tokens):
+            diff = ImageChops.difference(img, Image.new("RGB", img.size, c)).split()
+            same = ImageChops.lighter(ImageChops.lighter(diff[0], diff[1]), diff[2])
+            base.paste(first + k, mask=same.point(lambda v: 255 if v == 0 else 0))
+        img = base
     if out.exists():
         old = Image.open(out)
         if old.size == img.size and old.convert("RGB").tobytes() == img.convert("RGB").tobytes():

@@ -110,7 +110,7 @@ The image comes from the firmware in QEMU, with one simulated client.
 | `available` | bool | The build has an access point (the radio, or the simulated access point of the QEMU build) |
 | `simulated` | bool | The simulated access point of the QEMU build (no radio) |
 | `running` | bool | The access point is on |
-| `ssid` | text | The network name. `""` before the first start |
+| `ssid` | text | The network name. It comes from the MAC address, thus it is also known before the first start. `""` only when the gateway cannot read the MAC address |
 | `security` | text or `null` | `open` or `wpa2`. `null` when the access point is off |
 | `key` | text or `null` | `web_password` or `commissioning_password`. `null` when the access point is off |
 | `clients` | integer | The number of clients |

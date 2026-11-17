@@ -39,7 +39,8 @@ The LED shows the pattern of the highest state in the table.
 | Identify (10 s) | Red, green and blue in turn, each color 250 ms (4 Hz) |
 | Claim window open, or access point open (no key) | Blue and white, alternately (each color 250 ms) |
 | Commissioning | Blue, blinks at 1 Hz |
-| Configuration not valid (recovery mode) | Red, blinks at 4 Hz |
+| Safe mode (on request or after 3 crashes) | Blue and amber, alternately (1 Hz) |
+| Configuration not valid (recovery mode, but not safe mode) | Red, blinks at 4 Hz |
 | No network (no IP address) | Red, continuous |
 | No valid clock: the MQTT session waits | Magenta, blinks at 1 Hz |
 | No broker | Amber, blinks at 1 Hz |
@@ -62,7 +63,7 @@ One beep is 150 ms of tone and 150 ms of silence.
 | 1 short beep each 0.5 s, for 10 s | Identify. The beep is 150 ms of tone. The alarms and the other beeps wait until the end |
 | 1 beep each 10 s | Alarm `device_offline`: one or more Modbus devices are offline. A disabled device does not count |
 | 2 beeps each 10 s | Alarm `mqtt_down`: no Sparkplug session |
-| 3 beeps each 10 s | Alarm `config_error`: the configuration is rejected |
+| 3 beeps each 10 s | Alarm `config_error`: the configuration is rejected. Safe mode does not sound this alarm, because it does not reject the configuration |
 
 The alarms sound only when `local_io.buzzer.alarms` contains them. `mqtt_down` and `device_offline` sound after `local_io.buzzer.alarm_after_s` (30 s by default). `config_error` sounds immediately. If a number of alarms are active, the alarm with the most beeps sounds.
 
