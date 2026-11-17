@@ -1,5 +1,6 @@
 /* #216: the local unit of the Modbus TCP server: the DIs (FC02), the DOs (FC01, FC05, FC15) and
- * the pulse counters (FC04, uint64 big) of the gateway, from a snapshot of its I/O. */
+ * the pulse counters (FC04, uint64 big) of the gateway, from a snapshot of its I/O. #234: the run
+ * hours of DI/1..8 and DO/1..8 at FC04 32..95. */
 #include <string.h>
 
 #include "gw_mblocal.h"
@@ -22,6 +23,12 @@ void setUp(void)
     io.do_known = true;
     io.counters[0] = 0x0102030405060708ull;
     io.counters[7] = 42;
+    /* #234: run hours of DI/2, DO/1 and DO/8; DI/3 has a saved value but is not in the list */
+    cfg.local_io.run_hours = (1u << 1) | (1u << 8) | (1u << 15);
+    io.run_s[1] = 3600;
+    io.run_s[2] = 777;
+    io.run_s[8] = 0x0000000100000002ull;
+    io.run_s[15] = 0xFEDCBA9876543210ull;
 }
 void tearDown(void) {}
 
@@ -72,13 +79,52 @@ static void test_read_counters(void)
     TEST_ASSERT_EQUAL(9 + 64, n);
 }
 
+/* #234: FC04 32..63 the run hours of DI/1..8, 64..95 of DO/1..8 (uint64 s, big), the same value
+ * as the metric Run Hours/<DI|DO>/n; 0 for a channel that is not in local_io.run_hours */
+static void test_read_run_hours(void)
+{
+    size_t n = run((const uint8_t[]){0x04, 0x00, 0x20, 0x00, 0x40}, 5);   /* 32..95 */
+    TEST_ASSERT_EQUAL(9 + 128, n);
+    TEST_ASSERT_EQUAL_HEX8(128, out[8]);
+    const uint8_t *d = &out[9];
+    for (int k = 0; k < GW_RUN_HOURS_CHANNELS; k++) {
+        uint64_t v = 0;
+        for (int b = 0; b < 8; b++) {
+            v = v << 8 | d[8 * k + b];
+        }
+        uint64_t want = k == 1 ? 3600u : k == 8 ? 0x0000000100000002ull
+                                     : k == 15 ? 0xFEDCBA9876543210ull : 0u;
+        TEST_ASSERT_EQUAL_HEX64(want, v);   /* k 2 (DI/3): not in the list -> 0, not 777 */
+    }
+    /* one register: the second word of DO/8 (register 64 + 7 * 4 + 1 = 93) */
+    run((const uint8_t[]){0x04, 0x00, 0x5D, 0x00, 0x01}, 5);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(((uint8_t[]){0xBA, 0x98}), &out[9], 2);
+    /* the last two registers (94, 95) are in the map */
+    run((const uint8_t[]){0x04, 0x00, 0x5E, 0x00, 0x02}, 5);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(((uint8_t[]){0x04, 0x76, 0x54, 0x32, 0x10}), &out[8], 5);
+    /* a read across the counters and the run hours: 28..39 (DI/8's counter, DI/1, DI/2) */
+    n = run((const uint8_t[]){0x04, 0x00, 0x1C, 0x00, 0x0C}, 5);
+    TEST_ASSERT_EQUAL(9 + 24, n);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(((uint8_t[]){0, 0, 0, 0, 0, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                              0, 0, 0, 0, 0, 0x0E, 0x10}),
+                                 &out[9], 24);
+    /* the whole map in one request (96 registers) */
+    n = run((const uint8_t[]){0x04, 0x00, 0x00, 0x00, 0x60}, 5);
+    TEST_ASSERT_EQUAL(9 + 192, n);
+}
+
 static void test_addresses_outside_the_map(void)
 {
     run((const uint8_t[]){0x02, 0x00, 0x01, 0x00, 0x08}, 5);   /* 1..8: DI/9 does not exist */
     TEST_ASSERT_EQUAL_HEX8_ARRAY(((uint8_t[]){0x82, 0x02}), &out[7], 2);
     run((const uint8_t[]){0x01, 0x00, 0x08, 0x00, 0x01}, 5);
     TEST_ASSERT_EQUAL_HEX8_ARRAY(((uint8_t[]){0x81, 0x02}), &out[7], 2);
-    run((const uint8_t[]){0x04, 0x00, 0x1E, 0x00, 0x03}, 5);   /* 30..32 */
+    /* #234: the input registers end at 95; a range that crosses the end gives 02 as a whole */
+    run((const uint8_t[]){0x04, 0x00, 0x60, 0x00, 0x01}, 5);   /* 96 */
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(((uint8_t[]){0x84, 0x02}), &out[7], 2);
+    run((const uint8_t[]){0x04, 0x00, 0x5E, 0x00, 0x03}, 5);   /* 94..96 */
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(((uint8_t[]){0x84, 0x02}), &out[7], 2);
+    run((const uint8_t[]){0x04, 0x00, 0x00, 0x00, 0x61}, 5);   /* 0..96 */
     TEST_ASSERT_EQUAL_HEX8_ARRAY(((uint8_t[]){0x84, 0x02}), &out[7], 2);
     /* no holding registers */
     run((const uint8_t[]){0x03, 0x00, 0x00, 0x00, 0x01}, 5);
@@ -153,6 +199,7 @@ int main(void)
     RUN_TEST(test_is_local);
     RUN_TEST(test_read_dis_and_dos);
     RUN_TEST(test_read_counters);
+    RUN_TEST(test_read_run_hours);
     RUN_TEST(test_addresses_outside_the_map);
     RUN_TEST(test_writes_need_local_writes);
     RUN_TEST(test_writes);
