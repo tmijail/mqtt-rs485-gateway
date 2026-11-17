@@ -1750,9 +1750,11 @@ static bool parse_device_types(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t
 {
     static const char *const keys[] = {"name", "tags"};
     /* The definition is an NBIRTH metric named <type>, next to the node's own metrics (gw_node):
-     * not one of them, nor one of their folders, also without case (issue #162). */
+     * not one of them, nor one of their folders, also without case (issue #162). "Run Hours" is
+     * the folder of Run Hours/<DI|DO>/n (#217): a definition with that name would also be a
+     * folder of these metrics. */
     static const char *const node_names[] = {"bdSeq", "DI", "DO", "Counter", "Node Control",
-                                             "Node Info", "Firmware Update"};
+                                             "Node Info", "Firmware Update", "Run Hours"};
     const cJSON *arr = cJSON_GetObjectItemCaseSensitive(root, "device_types");
     if (arr == NULL) {
         return true;

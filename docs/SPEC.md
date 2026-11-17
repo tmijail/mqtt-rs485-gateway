@@ -348,7 +348,7 @@ This is the schema of the configuration document (CFG-1). The keys of this examp
   - The Sparkplug IDs must not contain the control characters U+0080–U+009F.
   - Two device names must not differ only in case (`tck-id-case-sensitivity-sparkplug-ids`). Two device types, or two tag names of one device, must not differ only in case (`tck-id-case-sensitivity-metric-names`). The comparison folds ASCII letters only.
   - A tag name must not also be a folder of another tag name of the same device (`A` and `A/B`).
-  - A device `type` must not be the name or the first folder of a node metric (`bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info`, `Firmware Update`).
+  - A device `type` must not be the name or the first folder of a node metric (`bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info`, `Firmware Update`, `Run Hours`).
 - With `sparkplug.device_prefix` (§6.1, #172), the `device_id` of a device is `<device_prefix>:<name>`. The longest device topic (`spBv1.0/<group_id>/DBIRTH/<edge_node_id>/<device_id>`) must fit in 159 bytes.
 
 **Limits:** a maximum of 16 devices, 64 tags for each device and 256 tags in total (REL-2).
