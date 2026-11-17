@@ -319,6 +319,18 @@ bool gw_webcert_get(bool pending, gw_webcert_info_t *out)
     return ok;
 }
 
+/* The reason of a failed store of the certificate that waits for the restart. */
+static void store_why(esp_err_t r, char *why, size_t why_cap)
+{
+    if (r == ESP_ERR_INVALID_SIZE) {   /* gw_storage_set_web_tls_pending: no NVS space */
+        snprintf(why, why_cap, "the NVS has not sufficient free space for this certificate and "
+                 "its key (with the copy at the restart): use a shorter chain or a smaller key");
+    } else {
+        snprintf(why, why_cap, "the certificate could not be stored in NVS (%s)",
+                 esp_err_to_name(r));
+    }
+}
+
 esp_err_t gw_webcert_put(const char *cert, size_t clen, const char *key, size_t klen, bool store,
                          gw_webcert_info_t *out, char *why, size_t why_cap)
 {
@@ -366,8 +378,8 @@ esp_err_t gw_webcert_put(const char *cert, size_t clen, const char *key, size_t 
     if (r == ESP_OK && store) {
         r = gw_storage_set_web_tls_pending(cert, key, GW_WEBCERT_SRC_LOADED);
         if (r != ESP_OK) {
-            snprintf(why, why_cap, "the certificate could not be stored in NVS (%s)",
-                     esp_err_to_name(r));
+            store_why(r, why, why_cap);
+            r = ESP_FAIL;   /* 507 */
         } else {
             ESP_LOGW(TAG, "HTTPS: a loaded certificate waits for the restart: %s, valid until %s",
                      out->subject, out->not_after);
@@ -390,8 +402,8 @@ esp_err_t gw_webcert_new(const char *hostname, gw_webcert_info_t *out, char *why
         snprintf(why, why_cap, "the certificate could not be made");
         r = ESP_FAIL;
     } else if ((r = gw_storage_set_web_tls_pending(cert, key, GW_WEBCERT_SRC_NEW)) != ESP_OK) {
-        snprintf(why, why_cap, "the certificate could not be stored in NVS (%s)",
-                 esp_err_to_name(r));
+        store_why(r, why, why_cap);
+        r = ESP_FAIL;   /* 507 */
     } else {
         snprintf(out->source, sizeof(out->source), "%s", GW_WEBCERT_SRC_NEW);
         ESP_LOGW(TAG, "HTTPS: a new self-signed certificate for %s waits for the restart "

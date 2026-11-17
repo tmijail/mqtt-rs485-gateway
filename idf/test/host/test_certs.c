@@ -201,6 +201,24 @@ static void test_san_host(void)
     TEST_ASSERT_FALSE(gw_san_has_host("DNS:gw01", ""));
 }
 
+/* #205: the NVS space of the certificate that waits for the restart */
+static void test_nvs_need(void)
+{
+    /* a header entry, then the text with its NUL in entries of 32 bytes */
+    TEST_ASSERT_EQUAL_UINT(2, gw_nvs_str_entries(0));
+    TEST_ASSERT_EQUAL_UINT(2, gw_nvs_str_entries(31));
+    TEST_ASSERT_EQUAL_UINT(3, gw_nvs_str_entries(32));
+    /* the longest NVS string (4000 bytes with the NUL) fills one page */
+    TEST_ASSERT_EQUAL_UINT(GW_NVS_PAGE_ENTRIES, gw_nvs_str_entries(3999));
+    /* the strings two times, and one page */
+    TEST_ASSERT_EQUAL_UINT(2 * (23 + 9 + 2) + GW_NVS_PAGE_ENTRIES,
+                           gw_webcert_nvs_need(700, 250, 6));
+    /* the NVS partition has 6 pages, one of them stays free: the largest certificate and key
+     * (3999 bytes each) cannot wait for the restart, a chain of 3.5 KB with an RSA key can */
+    TEST_ASSERT_TRUE(gw_webcert_nvs_need(3999, 3999, 6) > 5 * GW_NVS_PAGE_ENTRIES);
+    TEST_ASSERT_TRUE(gw_webcert_nvs_need(3500, 1700, 6) + 34 + 64 < 5 * GW_NVS_PAGE_ENTRIES);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -212,5 +230,6 @@ int main(void)
     RUN_TEST(test_plan_pair);
     RUN_TEST(test_plan_refused_requests);
     RUN_TEST(test_san_host);
+    RUN_TEST(test_nvs_need);
     return UNITY_END();
 }

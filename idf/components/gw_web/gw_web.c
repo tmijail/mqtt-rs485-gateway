@@ -2424,7 +2424,7 @@ static esp_err_t web_cert_new_post(httpd_req_t *req)
         return ESP_OK;
     }
     gw_webcert_info_t *c = gw_storage_calloc(1, sizeof(*c));
-    char why[120] = "no memory";
+    char why[200] = "no memory";
     esp_err_t e = c != NULL ? gw_webcert_new(s_ctx.cfg->network.hostname, c, why, sizeof(why))
                             : ESP_ERR_NO_MEM;
     esp_err_t r = e == ESP_OK ? send_cert(req, "201 Created", "\"saved\":true,\"restart\":true", c)

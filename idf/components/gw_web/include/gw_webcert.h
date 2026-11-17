@@ -51,7 +51,8 @@ bool gw_webcert_get(bool pending, gw_webcert_info_t *out);
  * its unencrypted private key @p key (NUL at key[klen]) parse, and the key agrees with the
  * first certificate. With @p store, they become the certificate that waits for the restart.
  * ESP_ERR_INVALID_ARG (the reason in @p why), ESP_ERR_INVALID_SIZE (over the limits),
- * ESP_ERR_NO_MEM, or the NVS error of the store.
+ * ESP_ERR_NO_MEM, or ESP_FAIL when the store in NVS fails (also when the NVS has not
+ * sufficient free space: gw_webcert_nvs_need).
  */
 esp_err_t gw_webcert_put(const char *cert, size_t clen, const char *key, size_t klen, bool store,
                          gw_webcert_info_t *out, char *why, size_t why_cap);
