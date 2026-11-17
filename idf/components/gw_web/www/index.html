@@ -92,8 +92,9 @@ details.card>summary{cursor:pointer}details.card>summary h2{display:inline;margi
 .log .ln{white-space:pre}.log .w{color:var(--warn)}.log .e{color:var(--bad)}.log .d{color:var(--mut)}
 .lvl{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}
 .pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:12px;padding:2px 3px 2px 10px;font-size:12px;background:var(--sub);color:var(--fg)}.pill button{padding:1px 8px;font-size:12px;border-radius:10px}
+.lvr{align-items:flex-end}
 @media (max-width:600px){#ident,#rr-card button{min-height:44px}#rr-card .row{flex-direction:column;align-items:stretch}
- .log{height:250px;font-size:11.5px}.log .ln{white-space:pre-wrap;overflow-wrap:anywhere}#lg-card button,#lg-card select{min-height:44px}
+ .log{height:250px;font-size:11.5px}.log .ln{white-space:pre-wrap;overflow-wrap:anywhere}#lg-card button:not(.qi),#lg-card select{min-height:44px}
  #lg-card .lvl .row{flex-direction:column;align-items:stretch}#lg-card .pill{justify-content:space-between;border-radius:6px;padding:0 0 0 10px;font-size:13px}
  #lg-card .pill button{min-height:44px;border-width:0 0 0 1px;border-radius:0 6px 6px 0}#lg-top{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}#lg-top span{grid-column:1/-1}}
 /* #215: the Firmware card: a summary, a panel for the state, one install area, the actions with a restart */
@@ -161,6 +162,17 @@ button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
 .tsum{font-size:12.5px;color:var(--mut);font-weight:400;overflow-wrap:anywhere}.ebadge{font-size:12px;font-weight:600;color:var(--bad)}
 #f-dev>.card .dhd{margin:-4px 0 0}#f-dev>.card .dbody{margin-top:6px}
 @media (max-width:600px){button.coll{min-height:44px}.cctools button{min-height:44px;flex:1}}
+/* the visual review of #195: the form controls follow the theme (dark mode); on a phone, the tabs
+   get a row of their own, and each touch target is 44 px at least (a checkbox: its row) */
+:root{color-scheme:light dark}
+@media (max-width:600px){header .who{flex:1 1 100%}nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;width:100%}nav button{margin:0}
+ button:not(.qi){min-height:44px}.lrow button,td>button[data-ldel]{min-width:44px}
+ input:not([type=checkbox]):not([type=radio]):not([type=file]),select{min-height:44px}
+ .fld>input:not([type=checkbox]):not([type=radio]):not([type=file]),.fld>select,.srow input,.lrow input{font-size:16px}
+ input[type=checkbox]{width:20px;height:20px}label.cb{min-height:44px}td.chk{height:44px}
+ .fld:has(>input[type=checkbox]){flex-direction:row;flex-wrap:wrap;align-items:center;gap:0 8px;min-height:44px;font-size:14px}
+ .fld:has(>input[type=checkbox])>input{order:-1;margin:0;align-self:center}.fld:has(>input[type=checkbox])>:not(.lbl):not(input){flex-basis:100%}
+ .fld:has(>input[type=checkbox]) .lbl label{color:var(--fg)}}
 </style>
 </head>
 <body>
@@ -209,7 +221,7 @@ button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
   <div class="row" id="lg-top" style="margin-top:10px"><button id="lg-pause">Pause</button><button id="lg-copy">Copy</button><span id="lg-st"></span><span id="lg-info" class="mut"></span><span id="lg-cp" class="ok" role="status"></span></div>
   <div class="log" id="lg-lines" role="log" aria-label="Log lines" tabindex="0"></div>
   <div class="lvl">
-   <div class="row" style="align-items:flex-end"><div class="fld"><span class="lbl"><label for="lg-tag">Tag</label></span><select id="lg-tag"></select></div><div class="fld"><span class="lbl"><label for="lg-lvl">Log level</label><button type="button" class="qi" data-x="loglvl" data-t="Log level" aria-label="About Log level" aria-expanded="false" aria-controls="xpl">?</button></span><select id="lg-lvl"></select></div><button id="lg-set">Set the level</button><span id="lg-msg" role="status"></span></div>
+   <div class="row lvr"><div class="fld"><span class="lbl"><label for="lg-tag">Tag</label></span><select id="lg-tag"></select></div><div class="fld"><span class="lbl"><label for="lg-lvl">Log level</label><button type="button" class="qi" data-x="loglvl" data-t="Log level" aria-label="About Log level" aria-expanded="false" aria-controls="xpl">?</button></span><select id="lg-lvl"></select></div><button id="lg-set">Set the level</button><span id="lg-msg" role="status"></span></div>
    <div class="row hidden" id="lg-chg" style="margin-top:10px"></div>
   </div></details>
  <div class="card" id="rr-card"><h2>Restart and reset</h2>
@@ -760,7 +772,9 @@ function lstFld(k,label,help){const L=LISTS[k],a=get(cfg,L.p),rows=Array.isArray
  return `<div class="fld${L.def?"":" lfld"}" data-perr="${L.p}" tabindex="-1"><span class="lbl"><span id="${id}">${label}</span>${qi(help,label)}</span><div class="lst" role="group" aria-labelledby="${id}">`+
   rows.map((v,i)=>`<div class="lrow"><span class="num">${i+1}</span>${ctl(`${L.p}.${i}`,"str",0,0,{aria:`${L.lbl} ${i+1}`,ml:L.ml,ph:!Array.isArray(a)&&L.def?`${L.def} (default)`:L.ph})}<button type="button" data-ldel="${k}.${i}" aria-label="Remove ${L.rm} ${i+1}"${L.def&&rows.length<2?" disabled":""}>x</button></div>`).join("")+
   `</div><div class="row ladd"><button type="button" data-ladd="${k}"${rows.length>=L.max?" disabled":""}>${L.add}</button>${rows.length>=L.max&&L.most?`<span class="hint">${L.most}</span>`:L.hint?`<span class="hint">${L.hint}</span>`:""}</div></div>`}
-function bkPort(){return val("mqtt.port")||(get(cfg,"mqtt.tls.enabled")===true?"8883":"1883")}
+function bkPort(){return val("mqtt.port")||(ccBool("mqtt.tls.enabled",false)?"8883":"1883")}
+/* the port of the primary broker in its row, and as the placeholder of each backup port (a backup without a port uses it): live, at each input */
+function bkLive(){$("#bk-h").textContent=val("mqtt.host");const p=bkPort();$("#bk-p").textContent=p;document.querySelectorAll('[data-p^="mqtt.backup_brokers."][data-p$=".port"]').forEach(e=>e.placeholder=p)}
 function renderBk(){const a=get(cfg,"mqtt.backup_brokers"),bk=Array.isArray(a)?a:[],port=bkPort();
  $("#f-bk").innerHTML=`<div class="tbox"><table><colgroup><col><col><col><col></colgroup><tr><th>Order</th><th>Host</th><th>Port</th><th></th></tr>`+
   `<tr><td class="mut">Primary</td><td class="mut"><span id="bk-h">${esc(val("mqtt.host"))}</span> <span class="hint">(Broker and Port above)</span></td><td class="mut" id="bk-p">${esc(port)}</td><td></td></tr>`+
@@ -1263,7 +1277,7 @@ $("#f-dev").onclick=e=>{const t=e.target.dataset;if(!(t.addTag||t.delTag||t.delD
  if(t.delTag){const[i,k]=t.delTag.split(".").map(Number);cfg.devices[i].tags.splice(k,1)}
  if(t.delDev)cfg.devices.splice(+t.delDev,1);renderForms()};
 $("#tab-config").addEventListener("input",e=>{if(e.target.id==="i-web.password")pw194();if(e.target.dataset.lvl!==undefined)pfx[+e.target.dataset.lvl]=e.target.value.trim().replace(/:/g,"");updTopics();
- const id=e.target.id;if(id==="i-network.wifi.ssid")wifiList();if(id==="i-mqtt.host"||id==="i-mqtt.port"){$("#bk-h").textContent=val("mqtt.host");$("#bk-p").textContent=bkPort()}});
+ const id=e.target.id;if(id==="i-network.wifi.ssid")wifiList();if(id==="i-mqtt.host"||id==="i-mqtt.port"||id==="i-mqtt.tls.enabled")bkLive()});
 /* #201 #208 #216 #221 */
 $("#tab-config").addEventListener("change",e=>{const id=e.target.id||"";if(id==="i-web.enabled"||id==="i-web.https")webWarn();if(id.startsWith("i-mqtt.tls."))tlsInfo()});
 $("#tab-config").addEventListener("click",e=>{if(e.target.id==="w-find"){wifiScan();return}
