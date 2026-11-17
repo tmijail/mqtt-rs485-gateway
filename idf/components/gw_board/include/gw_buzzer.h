@@ -29,6 +29,10 @@ uint8_t gw_buzzer_alarms(void);
 /** Play @p beeps beeps (asynchronous). */
 void gw_buzzer_beep(uint8_t beeps);
 
+/** #207: the identify started (gw_status_identify): the task plays its short beeps for 10 s, in
+ *  place of the alarms and the requests (they continue after it). */
+void gw_buzzer_wake(void);
+
 /** Play @p beeps beeps and wait until they are over (at most about beeps x 300 ms): for a
  *  confirmation that precedes a long flash operation (CFG-5 factory reset). */
 void gw_buzzer_beep_wait(uint8_t beeps);

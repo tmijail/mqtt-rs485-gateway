@@ -48,6 +48,8 @@ The NBIRTH contains these metrics.
 | `Node Info/Hardware` | 5 | String | The name of the board |
 | `Node Info/Reset Reason` | 6 | String | The cause of the last restart |
 | `Node Control/Scan Rate` | 7 | UInt32 | Writable. ms. 0 = each device uses its `poll_ms` |
+| `Node Info/Name` | 8 | String | `gateway.name`. Only when it is set. Only in the NBIRTH |
+| `Node Info/Location` | 9 | String | `gateway.location`. Only when it is set. Only in the NBIRTH |
 | `DI/1` to `DI/8` | 10 to 17 | Boolean | The digital inputs, after the debounce |
 | `DO/1` to `DO/8` | 20 to 27 | Boolean | Writable. The digital outputs. Null and BAD quality while the expander does not respond |
 | `Counter/1` to `Counter/8` | 30 to 37 | UInt64 | The pulse counters of the DIs |
@@ -63,12 +65,17 @@ The NBIRTH contains these metrics.
 | `Node Info/Time Synced` | 55 | Boolean | `true` when SNTP synchronized the clock at least one time since the boot |
 | `Node Info/Modbus TCP` | 56 | DataSet | Only with `modbus_tcp.enabled`. The Modbus TCP counters |
 | `Node Info/Core Dump` | 57 | Boolean | `true` while a core dump is in flash |
+| `Node Info/Largest Free Block` | 58 | UInt32 | The largest free block of the internal RAM, in bytes. A low value with much free heap shows a fragmented RAM |
+| `Node Info/Free PSRAM` | 59 | UInt32 | The free bytes of the PSRAM |
+| `Node Info/Temperature` | 68 | Float | The temperature of the chip, in °C, from its internal sensor. Null when there is no reading, for example in QEMU |
+
+`gateway.comment` is not in the NBIRTH: only the configuration document has it. A change of the name or the location needs a restart, as each change of the configuration. Thus the gateway sends them only in the NBIRTH (`tck-id-topics-nbirth-metrics`).
 
 ### Diagnostics
 
 The gateway publishes the diagnostics in an NDATA each `sparkplug.diagnostics_s` seconds (60 by default; 0 = only in the NBIRTH).
 
-- The uptime and the heap go in each diagnostic NDATA.
+- The uptime, the heap, the largest free block, the free PSRAM and the temperature go in each diagnostic NDATA, with their aliases only.
 - The Modbus tables go in the NDATA only if a counter or a state changed.
 - `Node Info/Time Synced` and `Node Info/Core Dump` go in an NDATA of their own, each time that they change.
 - The gateway also publishes the counters of a device that is offline.
@@ -185,5 +192,7 @@ With `sparkplug.naming: "umh"`, these items change. Each item obeys Sparkplug B 
 - **No DataSets.** The gateway does not publish `Node Info/Modbus` and `Node Info/Modbus TCP`. The NBIRTH and the diagnostic NDATA have UInt64 node metrics with the sums of all the devices:
   - `Node Info/Modbus/Cycles`, `Failed Cycles`, `OK`, `Timeout`, `CRC`, `Frame` and `Exception` (aliases 60 to 66);
   - `Node Info/Modbus TCP/OK`, `Timeout`, `CRC`, `Frame` and `Exception` (aliases 70 to 74, with `modbus_tcp.enabled`).
+
+  The other node metrics, for example `Node Info/Largest Free Block` and `Node Info/Temperature`, do not change.
 
 For the reasons, refer to [Sparkplug names and the UNS](../explanation/sparkplug-names-and-the-uns.md).

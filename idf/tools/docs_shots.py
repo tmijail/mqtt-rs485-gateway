@@ -50,15 +50,22 @@ DESKTOP = dict(viewport={"width": 1280, "height": 800}, device_scale_factor=1)
 
 # ---------------------------------------------------------------- the gateway states
 
-def docs_config(web_password=None):
+# #206: the name, the location and the comment of the state "named" (the prototype's values)
+GATEWAY_LABELS = {"name": "Pump panel 2", "location": "Plant 2, hall B",
+                  "comment": "Feeds the cooling towers 1 and 2. Contact: maintenance, ext. 214."}
+
+
+def docs_config(web_password=None, labels=None):
     """The E2E configuration (tools/e2e/fs/config.json) with only the device that answers
     (Meter1, unit 1 of the pymodbus slave), and the web password @web_password (None: no web
-    password, the claim window can open)."""
+    password, the claim window can open). @labels: the section "gateway" (#206)."""
     cfg = json.loads(e2e.config_json())
     cfg["devices"] = [d for d in cfg["devices"] if d["name"] == e2e.DEVICE]
     del cfg["syslog"]   # its counters change at each run
     if web_password:
         cfg["web"] = {"username": "admin", "password": web_password}
+    if labels:
+        cfg["gateway"] = dict(labels)
     return cfg
 
 
@@ -105,8 +112,93 @@ def state_claim(h):
     return gw, None
 
 
+def state_named(h):
+    """#206: a configured gateway with a name, a location and a comment (GATEWAY_LABELS), in
+    normal mode, with the web password DOCS_PASSWORD. The shots of #195 (Status tab and
+    administration) use it."""
+    gw = h.boot("named", docs_config(DOCS_PASSWORD, GATEWAY_LABELS))
+    auth = ("admin", DOCS_PASSWORD)
+    wait_ready(h, "named", gw, auth)
+    return gw, auth
+
+
 # name -> function(harness) that boots the gateway and returns (Gateway, Basic auth or None)
-STATES = {"configured": state_configured, "claim": state_claim}
+STATES = {"configured": state_configured, "claim": state_claim, "named": state_named}
+
+
+def safe_mode_restart(gw):
+    """#209: restart into safe mode through the REST API, as the button 'Restart into safe mode'
+    does; it changes the state for the shots after it."""
+    auth = ("admin", DOCS_PASSWORD)
+    t = time.monotonic()
+    st, _, body = e2e.http("POST", "/api/restart?safe=1", auth=auth)
+    if st != 202 or not gw.wait_log(r"fw: safe mode on request", 120, t):
+        raise SystemExit(f"safe mode did not start: POST {st} {body[:120]!r}")
+    end = time.monotonic() + 90
+    while time.monotonic() < end:
+        code, _, body = e2e.http("GET", "/api/status", auth=auth, timeout=10)
+        if code == 200 and ((e2e.as_json(body) or {}).get("safe_mode") or {}).get("active"):
+            return
+        time.sleep(1)
+    raise SystemExit("safe mode: no status of the web server")
+
+
+def name_explainer(page):
+    """#206: the card Gateway at the top of the Configuration tab, with the explainer of Name
+    (a click keeps it open)."""
+    page.click("nav button[data-tab=config]")
+    page.click("#f-gw button.qi[data-x=gname]")
+
+
+def ask_safe_mode(page):
+    """#209: the confirmation of 'Restart into safe mode' (the dialog stays open)."""
+    page.click("#rr-safe")
+    page.wait_for_selector("#dlg[open]")
+
+
+def ask_factory_reset(page):
+    """#203: the confirmation of 'Factory reset', with ERASE typed (the button is enabled)."""
+    page.click("#rr-reset")
+    page.fill("#dlg-i", "ERASE")
+
+
+def live_log(page):
+    """#200 and #199: the card Log open, with the explainer of the log level. This action is also
+    the browser test of the decision of #200 (no E2E scenario runs a browser): the page sends no
+    GET /api/log and no GET /api/log/level before the card opens."""
+    page.wait_for_timeout(2500)
+    asked = page.evaluate("performance.getEntriesByType('resource').map(e => e.name)"
+                          ".filter(n => /\\/api\\/log/.test(n))")
+    if asked:
+        raise SystemExit(f"issue #200: the web UI asked for the log before the card opened: {asked}")
+    page.evaluate("document.querySelector('#lg-card').scrollIntoView()")
+    page.click("#lg-card summary")
+    page.wait_for_selector("#lg-lines .ln")
+    page.wait_for_selector("#lg-tag option[value=poll]", state="attached")
+    page.select_option("#lg-tag", "poll")
+    page.select_option("#lg-lvl", "debug")
+    page.click("#lg-card button.qi[data-x=loglvl]")
+
+
+# #200: the lines of the shot live-log (the log of the firmware: each run has other times and
+# other lines), as the prototype shows them
+LOG_SAMPLE = [
+    "W (3590441) net: link down",
+    "W (3590442) net: active interface: ethernet -> none",
+    "W (3590951) edge: MQTT down; reconnect attempt 1 in 1000 ms",
+    "I (3592105) net: link up",
+    "I (3592870) net: IPv4 192.168.10.50 mask 255.255.255.0 gw 192.168.10.1",
+    "I (3592871) net: active interface: none -> ethernet",
+    "I (3593010) edge: connecting to 192.168.10.5:1883 as 'GW01', bdSeq=8",
+    "I (3593214) edge: Sparkplug session up (bdSeq=8): births sent in 182 ms",
+    "D (3598402) mb: unit 3 fc 3 addr 0: attempt 1 failed (1)",
+    "D (3598604) mb: unit 3 fc 3 addr 0: attempt 2 failed (1)",
+    "D (3598807) poll: Pump1: fc 3 addr 0 qty 4 unanswered (status 1); cycle failed",
+    "W (3600812) poll: Pump1 (unit 3) offline after 3 failed cycles",
+    "D (3600813) poll: Pump1 offline: next probe in 2000 ms",
+    "E (3601907) esp-tls-mbedtls: mbedtls_ssl_handshake returned -0x7780",
+    "W (3601908) httpd: httpd_accept_conn: session creation failed",
+]
 
 
 def ap_on_with_client(gw):
@@ -289,6 +381,8 @@ FREEZE = {
         "devices.*.timeout": 0, "devices.*.crc": 0, "devices.*.frame": 0, "devices.*.exception": 0,
     },
     "/api/firmware": {"running": no_hash, "other": no_hash},
+    # #200: the lines of the live log change at each run (LOG_SAMPLE)
+    "/api/log": {"lines": LOG_SAMPLE, "count": 212, "lost": 0},
     # the countdown of the claim page starts from the full window (claimsim 600)
     "/api/claim": {"left_s": 600},
 }
@@ -303,6 +397,9 @@ FREEZE["/api/status"].update({
     "ap.open_left_s": 0,
 })
 FREEZE["/api/claim"].update({"ap.url": "https://192.168.4.1/"})
+# #212: the largest free block changes at each run; QEMU has no temperature sensor (null): the
+# value of a board
+FREEZE["/api/status"].update({"heap.internal_largest": 110592, "temperature_c": 46.5})
 
 
 def freeze(doc, paths):
@@ -496,6 +593,54 @@ SHOTS = [
          alt="The card 'Access point' after the button 'Close the access point': the access "
              "point is off (closed on request). To start it, push the BOOT button of the "
              "gateway for 2 to 10 s."),
+    # #206: docs/reference/configuration.md (the state "named": the section gateway)
+    Shot("gateway-name", "named", DESKTOP, "/", actions=[name_explainer], wait="#xpl:not(.hidden)",
+         alt="The top of the Configuration tab. The header shows 'Pump panel 2 · Plant 2, hall B', "
+             "and below it the name of the product and Plant1 / GW01. The card Gateway has the "
+             "fields Name, Location and Comment. The explainer of Name is open: a name for "
+             "people, which the header and the title of the browser tab show; it does not change "
+             "the Sparkplug IDs or the topics."),
+    # #212 and #207: docs/reference/status-signals.md
+    Shot("status-gateway-card", "named", DESKTOP, "/", element=".card:has(#st-dev)",
+         wait="#st-dev div",
+         alt="The card Gateway of the Status tab: the firmware, the reset reason, the uptime, the "
+             "mode, the configuration, the free internal heap, the largest free internal block, "
+             "the free PSRAM and the chip temperature (46.5 °C). Below the values: the button "
+             "Identify and the text 'For 10 s, the status LED blinks and the buzzer beeps.'"),
+    # #209 and #203: docs/how-to/restart-into-safe-mode-or-reset.md
+    Shot("restart-reset-card", "named", DESKTOP, "/", element="#rr-card", wait="#rr-card",
+         alt="The card 'Restart and reset' at the bottom of the Status tab: the buttons Restart "
+             "and 'Restart into safe mode', the text about safe mode, and a red box Factory "
+             "reset with its button."),
+    Shot("safe-mode-dialog", "named", DESKTOP, "/", actions=[ask_safe_mode], wait="#dlg-ok",
+         alt="The confirmation 'Restart into safe mode?': the gateway Pump panel 2, Plant1 / "
+             "GW01, its address and firmware. In safe mode the gateway does not poll and does "
+             "not connect to MQTT; only the network, the web UI, the shell and the firmware "
+             "upload operate; the configuration stays. Safe mode ends after 60 min, or with a "
+             "restart. It has the red button 'Restart into safe mode' and Cancel."),
+    Shot("factory-reset-dialog", "named", DESKTOP, "/", actions=[ask_factory_reset],
+         wait="#dlg-ok:enabled",
+         alt="The confirmation 'Do a factory reset of the gateway?': the list of what the reset "
+             "erases (the configuration, the secrets, the certificate of the web UI, the web "
+             "password and the pulse counters of the DIs), the restart in commissioning mode, "
+             "the access point and the new certificate. A link exports the configuration first. "
+             "The field has ERASE, and the red button 'Erase and restart' is enabled."),
+    # #200 and #199: docs/how-to/read-the-live-log.md
+    Shot("live-log", "named", DESKTOP, "/", actions=[live_log],
+         wait="#xpl:not(.hidden)",
+         freeze={"log_levels": [{"tag": "poll", "level": "debug"}, {"tag": "mb", "level": "debug"}]},
+         alt="The card Log of the Status tab, open: the buttons Pause and Copy, 'Live: new lines "
+             "every 2 s', 212 lines in the buffer (16 KB), and the last log lines (the warnings "
+             "in brown, the errors in red, the debug lines in grey). Below: the tag poll, the "
+             "log level debug with its explainer open, the button 'Set the level', and the "
+             "changed levels poll: debug and mb: debug, each with Reset, and 'Reset all'."),
+    # #209: the last shot of the state "named": the restart into safe mode changes the state
+    Shot("safe-mode-status", "named", DESKTOP, "/", prep=safe_mode_restart, full_page=True,
+         wait="#banner:not(.hidden)", freeze={"safe_mode.left_s": 3540},
+         alt="The Status tab after a restart into safe mode: the red banner 'Safe mode on "
+             "request: no polling and no MQTT. It ends in 59 min, or with a restart.' The mode "
+             "is recovery (safe mode), the firmware card gives safe mode on request, and in the "
+             "card Restart and reset the button 'Restart into safe mode' is disabled."),
 ]
 
 

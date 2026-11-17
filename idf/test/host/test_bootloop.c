@@ -9,7 +9,7 @@ void tearDown(void) {}
 
 static void test_a_bad_record_starts_at_zero(void)
 {
-    gw_bootloop_t r;
+    gw_bootloop_t r = {0};
     memset(&r, 0xA5, sizeof(r));   /* RTC memory after a power-on, or of another image */
     TEST_ASSERT_EQUAL_UINT32(0, gw_bootloop_count(&r));
     TEST_ASSERT_EQUAL_UINT32(1, gw_bootloop_boot(&r, GW_RESET_PANIC, false));
@@ -26,7 +26,7 @@ static void test_crashes_count_up_to_safe_mode(void)
     const gw_reset_kind_t crash[] = {GW_RESET_PANIC, GW_RESET_INT_WDT, GW_RESET_TASK_WDT,
                                      GW_RESET_WDT, GW_RESET_CPU_LOCKUP};
     for (size_t i = 0; i < sizeof(crash) / sizeof(crash[0]); i++) {
-        gw_bootloop_t r;
+        gw_bootloop_t r = {0};
         gw_bootloop_set(&r, 0);
         TEST_ASSERT_EQUAL_UINT32(1, gw_bootloop_boot(&r, crash[i], false));
         TEST_ASSERT_FALSE(gw_bootloop_safe(1, false));
@@ -45,14 +45,14 @@ static void test_reset_reasons(void)
 {
     const gw_reset_kind_t zero[] = {GW_RESET_POWERON, GW_RESET_BROWNOUT, GW_RESET_PWR_GLITCH};
     for (size_t i = 0; i < sizeof(zero) / sizeof(zero[0]); i++) {
-        gw_bootloop_t r;
+        gw_bootloop_t r = {0};
         gw_bootloop_set(&r, 5);
         TEST_ASSERT_EQUAL_UINT32(0, gw_bootloop_boot(&r, zero[i], false));
         TEST_ASSERT_EQUAL_UINT32(0, gw_bootloop_count(&r));
     }
     const gw_reset_kind_t keep[] = {GW_RESET_SOFTWARE, GW_RESET_EXTERNAL, GW_RESET_OTHER};
     for (size_t i = 0; i < sizeof(keep) / sizeof(keep[0]); i++) {
-        gw_bootloop_t r;
+        gw_bootloop_t r = {0};
         gw_bootloop_set(&r, 3);
         TEST_ASSERT_EQUAL_UINT32(3, gw_bootloop_boot(&r, keep[i], false));
         TEST_ASSERT_EQUAL_UINT32(3, gw_bootloop_count(&r));
@@ -62,7 +62,7 @@ static void test_reset_reasons(void)
 /* a pending image ignores the counter: no count, never safe mode (a power-on still clears it) */
 static void test_pending_image_ignores_it(void)
 {
-    gw_bootloop_t r;
+    gw_bootloop_t r = {0};
     gw_bootloop_set(&r, 2);
     TEST_ASSERT_EQUAL_UINT32(2, gw_bootloop_boot(&r, GW_RESET_PANIC, true));
     TEST_ASSERT_FALSE(gw_bootloop_safe(5, true));
@@ -72,7 +72,7 @@ static void test_pending_image_ignores_it(void)
 /* cleared after 120 s in normal mode or by the operator; safe mode retries with N - 1 */
 static void test_clear_and_retry(void)
 {
-    gw_bootloop_t r;
+    gw_bootloop_t r = {0};
     gw_bootloop_set(&r, GW_BOOTLOOP_SAFE);
     gw_bootloop_set(&r, GW_BOOTLOOP_SAFE - 1);   /* the end of safe mode after 60 min */
     TEST_ASSERT_EQUAL_UINT32(GW_BOOTLOOP_SAFE - 1, gw_bootloop_boot(&r, GW_RESET_SOFTWARE, false));
@@ -84,6 +84,43 @@ static void test_clear_and_retry(void)
     TEST_ASSERT_EQUAL_UINT32(1, gw_bootloop_boot(&r, GW_RESET_TASK_WDT, false));
 }
 
+/* Issue #209: safe mode on request. The next boot takes the request (one boot only) and the
+ * count does not change; a planned restart and a crash keep it until a boot takes it; a power
+ * cut removes it; an operator restart (the count set to 0) keeps it. */
+static void test_safe_mode_on_request(void)
+{
+    gw_bootloop_t r = {0};
+    memset(&r, 0xA5, sizeof(r));
+    TEST_ASSERT_FALSE(gw_bootloop_take_request(&r));   /* a bad record has none */
+    gw_bootloop_set(&r, 1);
+    gw_bootloop_request(&r);
+    TEST_ASSERT_EQUAL_UINT32(1, gw_bootloop_count(&r));
+    gw_bootloop_set(&r, 0);   /* gw_fw_restart_requested(): an operator restart */
+    TEST_ASSERT_EQUAL_UINT32(0, gw_bootloop_boot(&r, GW_RESET_SOFTWARE, false));
+    TEST_ASSERT_TRUE(gw_bootloop_take_request(&r));
+    TEST_ASSERT_FALSE(gw_bootloop_take_request(&r));   /* one boot only */
+    TEST_ASSERT_EQUAL_UINT32(0, gw_bootloop_boot(&r, GW_RESET_SOFTWARE, false));
+    TEST_ASSERT_FALSE(gw_bootloop_take_request(&r));
+    /* a crash before the boot took it: counted, and the request stays */
+    gw_bootloop_request(&r);
+    TEST_ASSERT_EQUAL_UINT32(1, gw_bootloop_boot(&r, GW_RESET_PANIC, false));
+    TEST_ASSERT_TRUE(gw_bootloop_take_request(&r));
+    /* a power cut: no request */
+    const gw_reset_kind_t cut[] = {GW_RESET_POWERON, GW_RESET_BROWNOUT, GW_RESET_PWR_GLITCH};
+    for (size_t i = 0; i < sizeof(cut) / sizeof(cut[0]); i++) {
+        gw_bootloop_request(&r);
+        TEST_ASSERT_EQUAL_UINT32(0, gw_bootloop_boot(&r, cut[i], false));
+        TEST_ASSERT_FALSE(gw_bootloop_take_request(&r));
+    }
+    /* a changed request field with the old CRC: a bad record */
+    gw_bootloop_request(&r);
+    r.request = 0;
+    TEST_ASSERT_FALSE(gw_bootloop_take_request(&r));
+    r.request = GW_BOOTLOOP_REQUEST;
+    r.count = 2;
+    TEST_ASSERT_FALSE(gw_bootloop_take_request(&r));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -92,5 +129,6 @@ int main(void)
     RUN_TEST(test_reset_reasons);
     RUN_TEST(test_pending_image_ignores_it);
     RUN_TEST(test_clear_and_retry);
+    RUN_TEST(test_safe_mode_on_request);
     return UNITY_END();
 }

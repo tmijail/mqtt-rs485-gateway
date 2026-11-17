@@ -34,6 +34,8 @@ extern "C" {
 #define GW_USER_SIZE   33   /* web user name */
 #define GW_PWHASH_SIZE 128  /* "pbkdf2-sha256$<iterations>$<salt hex>$<hash hex>" (gw_auth.h) */
 #define GW_FILE_SIZE   33   /* name of a file next to config.json (TLS certificates, MQTT-4/5) */
+#define GW_LABEL_SIZE  64   /* #206: gateway.name and gateway.location, 0..63 bytes */
+#define GW_COMMENT_MAX 255  /* #206: gateway.comment, bytes (not kept: only the document has it) */
 #define GW_MAX_BACKUP_BROKERS 3  /* MQTT-6: besides mqtt.host */
 #define GW_CFG_ERR_SIZE 192
 #define GW_CFG_PATH_SIZE 96
@@ -330,6 +332,11 @@ typedef struct {
             uint8_t prefix;      /* 0..32 */
         } clients[GW_MBTCP_MAX_ALLOWED];
     } modbus_tcp;
+
+    struct {                     /* #206: for people; "" = none. gateway.comment is not kept */
+        char name[GW_LABEL_SIZE];
+        char location[GW_LABEL_SIZE];
+    } gateway;
 
     uint16_t device_count;
     uint16_t tag_count;

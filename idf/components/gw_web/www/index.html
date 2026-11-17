@@ -84,16 +84,31 @@ button.danger{border-color:var(--bad);color:var(--bad)}button.dgo{background:var
  #dlg h3{font-size:17px}#dlg label{font-size:13px}#dlg input{padding:10px;font-size:16px}#dlg .act{flex-direction:column-reverse}#dlg .act button{min-height:44px;width:100%}
  #fw-card .row{flex-direction:column;align-items:stretch}#fw-card button{min-height:44px}#fw-card label.row{flex-direction:column!important;align-items:flex-start}
  #fw-card label.chk{flex-direction:row!important;align-items:center;min-height:44px;font-size:13px;color:var(--fg)}#fw-card label.chk input{align-self:center}#fw-url{width:100%;padding:8px;font-size:16px}}
+/* #206 the name in the header; #207 Identify; #209 #203 the card Restart and reset; #200 #199 the card Log */
+header .who{flex:1;min-width:0}header .who h1{flex:none}header .sub{font-size:12px;color:var(--mut);margin-top:1px}
+#ident:disabled,#rr-card button:disabled{opacity:.45;cursor:default}
+.zone{border:1px solid var(--bad);background:var(--badbg);border-radius:6px;padding:10px 12px;margin-top:16px}.zone h3{font-size:14px;margin:0 0 6px;color:var(--bad)}.zone p{margin:0 0 10px;max-width:760px}
+details.card>summary{cursor:pointer}details.card>summary h2{display:inline;margin:0}
+.ldot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px;vertical-align:1px}.ldot.pz{background:var(--warn)}
+.log{margin-top:8px;height:300px;background:var(--card);border:1px solid var(--line);border-radius:4px;font:12px/1.55 ui-monospace,monospace;overflow:auto;padding:6px 8px;color:var(--fg)}
+.log .ln{white-space:pre}.log .w{color:var(--warn)}.log .e{color:var(--bad)}.log .d{color:var(--mut)}
+.lvl{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}
+.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:12px;padding:2px 3px 2px 10px;font-size:12px;background:var(--sub);color:var(--fg)}.pill button{padding:1px 8px;font-size:12px;border-radius:10px}
+@media (max-width:600px){#ident,#rr-card button{min-height:44px}#rr-card .row{flex-direction:column;align-items:stretch}
+ .log{height:250px;font-size:11.5px}.log .ln{white-space:pre-wrap;overflow-wrap:anywhere}#lg-card button,#lg-card select{min-height:44px}
+ #lg-card .lvl .row{flex-direction:column;align-items:stretch}#lg-card .pill{justify-content:space-between;border-radius:6px;padding:0 0 0 10px;font-size:13px}
+ #lg-card .pill button{min-height:44px;border-width:0 0 0 1px;border-radius:0 6px 6px 0}#lg-top{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}#lg-top span{grid-column:1/-1}}
 </style>
 </head>
 <body>
-<header><h1>Gateway RS485 &rarr; MQTT Sparkplug B <span id="node" class="mut"></span></h1>
+<header><div class="who"><h1><span id="hprod">Gateway RS485 &rarr; MQTT Sparkplug B <span id="node" class="mut"></span></span><span id="hname" class="hidden"></span></h1><div id="hsub" class="sub hidden"></div></div>
 <nav><button data-tab="status" class="sel">Status</button><button data-tab="config">Configuration</button><button data-tab="json">JSON</button></nav></header>
 <main>
 <div id="banner" class="banner hidden"></div>
 
 <section id="tab-status">
  <div class="card"><h2>Gateway</h2><div id="st-dev" class="grid"></div>
+  <div class="row" style="margin-top:10px"><button id="ident" title="For 10 s, the status LED blinks and the buzzer beeps. Use it to find this gateway in the panel.">Identify</button><span id="id-msg" class="mut">For 10 s, the status LED blinks and the buzzer beeps.</span></div>
   <div id="st-cd" class="row hidden"><span id="cd-txt" class="bad"></span><a id="cd-get" href="/api/coredump" download>Download</a><button id="cd-del">Erase</button><span id="cd-msg" class="mut"></span></div></div>
  <div class="card"><h2>Network and MQTT</h2><div id="st-net"></div>
   <div class="row"><button id="rebirth" title="Send the NBIRTH and every DBIRTH again, with the same bdSeq. Use it when a host shows alias_N in place of the tag names.">Rebirth</button><span id="rb-msg" class="mut"></span></div></div>
@@ -109,9 +124,22 @@ button.danger{border-color:var(--bad);color:var(--bad)}button.dgo{background:var
   <div class="row"><label class="row" style="flex-direction:row">Upload an image <input type="file" id="fw-file" accept=".bin,application/octet-stream"></label></div></div>
  <div class="card"><h2>microSD card</h2><div id="st-sd" class="mut"></div>
   <div class="row"><button id="sd-fmt">Format the card</button><button id="sd-rst" class="hidden">Restart now</button></div><div id="sd-msg" class="mut"></div></div>
+ <details class="card" id="lg-card"><summary><h2>Log</h2> <span id="lg-closed" class="mut">&middot; closed: the page does not ask for log lines. Open it to see the last lines.</span></summary>
+  <div class="row" id="lg-top" style="margin-top:10px"><button id="lg-pause">Pause</button><button id="lg-copy">Copy</button><span id="lg-st"></span><span id="lg-info" class="mut"></span><span id="lg-cp" class="ok" role="status"></span></div>
+  <div class="log" id="lg-lines" role="log" aria-label="Log lines" tabindex="0"></div>
+  <div class="lvl">
+   <div class="row" style="align-items:flex-end"><div class="fld"><span class="lbl"><label for="lg-tag">Tag</label></span><select id="lg-tag"></select></div><div class="fld"><span class="lbl"><label for="lg-lvl">Log level</label><button type="button" class="qi" data-x="loglvl" data-t="Log level" aria-label="About Log level" aria-expanded="false" aria-controls="xpl">?</button></span><select id="lg-lvl"></select></div><button id="lg-set">Set the level</button><span id="lg-msg" role="status"></span></div>
+   <div class="row hidden" id="lg-chg" style="margin-top:10px"></div>
+  </div></details>
+ <div class="card" id="rr-card"><h2>Restart and reset</h2>
+  <div class="row"><button id="rr-restart" title="The gateway disconnects from MQTT, stops the polling and starts again.">Restart</button><button id="rr-safe" title="Restart without the polling and MQTT, for 60 min or until the next restart.">Restart into safe mode</button><span id="rr-note" class="mut hidden">The gateway is in safe mode now. Restart ends it.</span></div>
+  <p class="mut" style="margin:6px 0 0">Safe mode stops the polling and MQTT for 60 min, or until the next restart. The configuration stays.</p>
+  <div id="rr-msg" class="mut"></div>
+  <div class="zone"><h3>Factory reset</h3><p>Erases the configuration, the secrets, the web certificate and the web password. The gateway then restarts in commissioning mode, with the access point on.</p><button class="danger" id="rr-reset">Factory reset</button></div></div>
 </section>
 
 <section id="tab-config" class="hidden">
+ <div class="card"><h2>Gateway</h2><div class="grid" id="f-gw"></div></div>
  <div class="card"><h2>Network (Ethernet)</h2><div class="grid" id="f-net"></div></div>
  <div class="card"><h2>MQTT</h2><div class="grid" id="f-mqtt"></div></div>
  <div class="card"><h2>Sparkplug</h2><div class="grid" id="f-spb"></div>
@@ -237,7 +265,13 @@ const HELP={
  fc16:"The gateway writes one register with FC16 and one coil with FC15, in place of FC06 and FC05. Set it for a device that does not accept FC06 or FC05.\nA write of two or more registers always uses FC16.\n~Default: off (build option CONFIG_GW_MB_FORCE_MULTI_WRITE).",
  bit:"One bit of a holding or input register, for a bool tag. 0 = the least significant bit.\nFor a write, the gateway reads the register, then writes the full register with the changed bit.\n~0 to 15. Necessary for a bool tag in holding or input, and only there.",
  scan:"fast = the gateway reads the tag each Poll interval. slow = each Slow poll interval of the device, for a value that changes rarely, for example a serial number.\nFast tags and slow tags are never in one read block.\n~Default: fast.",
- len:"The number of registers of a string or bytes tag. Each register holds two characters or two bytes. Example: 8 for a text of up to 16 characters.\n~1 to 16. Necessary for string and bytes, and only for them."
+ len:"The number of registers of a string or bytes tag. Each register holds two characters or two bytes. Example: 8 for a text of up to 16 characters.\n~1 to 16. Necessary for string and bytes, and only for them.",
+ /* #206 */
+ gname:"A name for people, for example the name of the panel. The header and the title of the browser tab show it, with the location.\nIt does not change the Sparkplug IDs or the topics. The NBIRTH gives it as Node Info/Name.\n~Up to 63 bytes. Default: empty = the header shows the name of the product.",
+ gloc:"Where the gateway is, for example the plant and the hall. The header and the title of the browser tab show it after the name.\nIt does not change the Sparkplug IDs or the topics. The NBIRTH gives it as Node Info/Location.\n~Up to 63 bytes. Default: empty.",
+ gcom:"A note for the people who maintain the gateway, for example what it supplies and whom to call.\nOnly this tab shows it: the Status tab, the header and the NBIRTH do not.\n~Up to 255 bytes. Default: empty.",
+ /* #199 */
+ loglvl:"The lowest severity that a part of the firmware (a tag) writes to the log: the console, the syslog and this view. The tag `*` sets all the tags.\nThe gateway does not save the change. A restart sets all the tags to info again. `syslog.level` of the configuration filters only the copy to the syslog server.\n~none, error, warn, info, debug, verbose. Default: info."
 };
 function qi(k,t){return `<button type="button" class="qi" data-x="${k}" data-t="${esc(t)}" aria-label="About ${esc(t)}" aria-expanded="false" aria-controls="xpl">?</button>`}
 /* #190: one explainer for all the (?) buttons. It opens on hover, on keyboard focus and on a click
@@ -373,6 +407,8 @@ function updTopics(){
  });
 }
 function renderForms(){
+ $("#f-gw").innerHTML=field("gateway.name","Name","str",0,0,{ml:63,help:"gname",ph:"Pump panel 2"})+field("gateway.location","Location","str",0,0,{ml:63,help:"gloc",ph:"Plant 2, hall B"})+
+  field("gateway.comment","Comment","str",0,0,{ml:255,help:"gcom"}).replace('<div class="fld">','<div class="fld" style="grid-column:1/-1">');
  $("#f-net").innerHTML=field("network.dhcp","DHCP","bool",true)+field("network.ip","IP","str")+field("network.netmask","Netmask","str")+field("network.gateway","Gateway","str")+field("network.dns","DNS","str")+field("network.hostname","Hostname","str",0,0,{help:"host"})+field("network.mdns","mDNS (.local)","bool",true,0,{help:"mdns"});
  $("#f-mqtt").innerHTML=field("mqtt.host","Broker","str",0,0,{help:"broker"})+field("mqtt.port","Port","int")+field("mqtt.client_id","Client ID","str",0,0,{help:"cid"})+field("mqtt.username","User","str")+field("mqtt.password","Password","pw")+field("mqtt.keepalive_s","Keepalive (s)","int",0,0,{help:"keep"});
  $("#f-spb").innerHTML=field("sparkplug.group_id","Group ID","str",0,0,{ml:32,help:"group"})+field("sparkplug.edge_node_id","Edge node ID","str",0,0,{ml:32,help:"edge"})+field("sparkplug.primary_host_id","Primary host ID","str",0,0,{ml:32,help:"phost"})+field("sparkplug.naming","Naming","sel",NAMING,true,{help:"naming"});
@@ -520,14 +556,28 @@ async function load(){
  cfg={};base191={};msg(`Cannot read the saved configuration (${r.status}): ${(r.json||{}).error||""}. Paste or import a document in the JSON tab.`,"bad");
 }
 function yes(b,t,f){return `<span class="${b?"ok":"bad"}">${b?t:f}</span>`}
+/* #206: the name and the location of the gateway in the header and in the title of the browser
+   tab; with no name, the header and the title of before */
+const TITLE0=document.title;
+function hdr206(g,node){const n=g.name||"",l=g.location||"";
+ $("#hname").classList.toggle("hidden",!n);$("#hprod").classList.toggle("hidden",!!n);$("#hsub").classList.toggle("hidden",!n);
+ if(n){$("#hname").innerHTML=`${esc(n)}${l?` <span class="mut" style="font-weight:400">&middot; ${esc(l)}</span>`:""}`;$("#hsub").textContent=`Gateway RS485 \u2192 MQTT Sparkplug B${node?` \u00b7 ${node}`:""}`}
+ document.title=n?(l?`${n} \u00b7 ${l}`:n):TITLE0}
+const mins=s=>`${Math.max(1,Math.ceil(s/60))} min`;
+let st0=null,sm0={};
 async function poll(){
  const r=await api("GET","/api/status");if(r.status!==200||!r.json)return;
- const s=r.json,ban=$("#banner");
+ const s=r.json,ban=$("#banner");st0=s;const sm=sm0=s.safe_mode||{};
  $("#node").textContent=s.sparkplug?`${s.sparkplug.group_id} / ${s.sparkplug.edge_node_id}`:"";
+ hdr206(s.gateway||{},$("#node").textContent);
  const tm=s.time||{rtc:{}},bat=tm.rtc&&tm.rtc.lost?" The RTC lost the time while the power was off. Examine the RTC battery: use a rechargeable 3 V cell (for example ML1220). Do not use a CR1220.":"";
- if(s.mode!=="normal"){ban.classList.remove("hidden");ban.textContent=(s.mode==="fault"?`Hardware fault: ${s.fault}. The gateway does not start: no polling and no MQTT. Only the network, this page and the console operate.`:s.mode==="commissioning"?"Commissioning: there is no configuration. Load a configuration and save it to start the gateway.":`Configuration rejected (${s.config.source}): ${s.config.error}. No polling and no MQTT. Correct the configuration and save it.`)+bat}
+ if(s.mode!=="normal"){ban.classList.remove("hidden");ban.textContent=(s.mode==="fault"?`Hardware fault: ${s.fault}. The gateway does not start: no polling and no MQTT. Only the network, this page and the console operate.`:s.mode==="commissioning"?"Commissioning: there is no configuration. Load a configuration and save it to start the gateway.":sm.active?`Safe mode ${sm.cause==="request"?"on request":"after repeated crashes"}: no polling and no MQTT. It ends in ${mins(sm.left_s)}, or with a restart.`:`Configuration rejected (${s.config.source}): ${s.config.error}. No polling and no MQTT. Correct the configuration and save it.`)+bat}
  else{const w=tm.waiting?"Waiting for a valid clock. The gateway does not connect to the MQTT broker and sends no NBIRTH until the clock is valid. Make sure that the gateway can reach the SNTP server, or push \"Set the time from the browser\" (card \"Local I/O\").":"";ban.classList.toggle("hidden",!(w||bat));ban.textContent=(w+bat).trim()}
- $("#st-dev").innerHTML=[["Firmware",s.firmware],["Reset reason",s.reset_reason],["Uptime",`${s.uptime_s} s`],["Mode",s.mode],["Configuration",s.config.source],["Free internal heap",`${s.heap.internal_free} B (min. ${s.heap.internal_min})`],["Free PSRAM",`${s.heap.psram_free} B`]].map(([k,v])=>`<div><div class="mut">${k}</div>${esc(v)}</div>`).join("");
+ $("#st-dev").innerHTML=[["Firmware",s.firmware],["Reset reason",s.reset_reason],["Uptime",`${s.uptime_s} s`],["Mode",sm.active?`${s.mode} (safe mode)`:s.mode],["Configuration",s.config.source],["Free internal heap",`${s.heap.internal_free} B (min. ${s.heap.internal_min})`],["Largest free internal block",`${s.heap.internal_largest} B`],["Free PSRAM",`${s.heap.psram_free} B`],["Chip temperature",s.temperature_c==null?"not available":`${s.temperature_c.toFixed(1)} \u00b0C`]].map(([k,v])=>`<div><div class="mut">${k}</div>${esc(v)}</div>`).join("");
+ if(s.identify_left_s>0&&!$("#ident").disabled)idShow(s.identify_left_s);
+ $("#rr-safe").disabled=!!sm.active||s.mode==="fault";$("#rr-note").classList.toggle("hidden",!sm.active);
+ $("#rr-restart").title=sm.active?"Ends safe mode. The gateway starts in normal mode.":"The gateway disconnects from MQTT, stops the polling and starts again.";
+ lgChg(s.log_levels);
  $("#st-net").innerHTML=`<p>Network ${yes(s.network.up,"up","no IP")} · MQTT ${yes(s.mqtt.connected,"connected",tm.waiting?"waiting for a valid clock":"disconnected")}${s.syslog?` · syslog ${esc(s.syslog)}`:""}</p><table><tr><th>Interface</th><th>State</th><th>IPv4</th><th>IPv6</th></tr>${s.network.interfaces.map(i=>`<tr><td>${i.name}${i.active?" (active)":""}</td><td>${!i.configured?"not configured":!i.link?"no link":i.usable?"up":"no address"}</td><td>${i.ipv4||""}</td><td>${(i.ipv6||[]).join("<br>")}</td></tr>`).join("")}</table>`;
  $("#st-mb").innerHTML=s.devices.length?`<table><tr><th>Device</th><th>Unit</th><th>State</th><th>Cycles / failed</th><th>OK / timeout / CRC / frame / exception</th><th>Values</th></tr>${s.devices.map(d=>d.enabled===false?`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td><span class="mut">disabled</span></td><td>—</td><td>—</td><td class="mut">not polled</td></tr>`:`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td>${yes(d.online,"online","offline")}</td><td>${d.cycles} / ${d.failed}</td><td>${d.ok} / ${d.timeout} / ${d.crc} / ${d.frame} / ${d.exception}</td><td>${d.tags.map(t=>`${esc(t.name)}=${t.valid?esc(t.value_text??t.value):"—"}`).join(", ")}</td></tr>`).join("")}</table>`:"no devices";
  const bits=(v)=>[...Array(8)].map((_,i)=>`<span class="${v>>i&1?"ok":"mut"}">${i+1}</span>`).join(" ");
@@ -545,7 +595,7 @@ async function poll(){
  const OS={empty:"empty",previous:"previous",new:"set to boot",rejected:"rejected",invalid:"invalid (its verification failed)"};
  $("#st-fw").innerHTML=`Running: ${esc(w.running)} in ${esc(w.slot)}${w.trial?` · <span class="bad">testing: it must reach ${esc(w.expected_mode)} mode${w.trial_left_s?`, ${w.trial_left_s} s left`:""}</span>`:""}`+
   `<br>Other slot (${esc(w.other_slot)}): ${w.other?`${esc(w.other)}, `:""}${OS[w.other_state]||esc(w.other_state)}${w.other_why?` (${esc(w.other_why)})`:""}`+
-  `${w.enabled?"":"<br>Updates disabled (ota.enabled)"}${w.safe_mode?`<br><span class="bad">Safe mode: ${w.boot_count} crash resets in a row</span>`:""}`+
+  `${w.enabled?"":"<br>Updates disabled (ota.enabled)"}${w.safe_mode?`<br><span class="bad">Safe mode: ${sm0.cause==="request"?"on request":`${w.boot_count} crash resets in a row`}${sm0.left_s?`, ${mins(sm0.left_s)} left`:""}</span>`:""}`+
   `<br>State: ${esc(w.state)}${w.phase==="downloading"?` (${w.progress} %)`:""}${w.detail&&w.detail!==w.state?`<br><span class="mut">${esc(w.detail)}</span>`:""}`+
   `${w.cfg_prev&&w.cfg_prev.version?`<br>Configuration from before the update: ${esc(w.cfg_prev.version)}, ${w.cfg_prev.saved?`saved on ${new Date(w.cfg_prev.saved*1000).toISOString().slice(0,16).replace("T"," ")} UTC`:"saved at an unknown time"}`:""}`;
  $("#fw-prev").classList.toggle("hidden",!w.cfg_prev_restore);
@@ -629,6 +679,59 @@ $("#fw-file").onchange=async e=>{const f=e.target.files[0];e.target.value="";if(
 // issue #146: in recovery mode, the configuration from before the update replaces the stored one
 $("#fw-prev").onclick=async()=>{if(!await ask({title:"Restore the configuration from before the update?",action:"Restore and restart",html:"<p>The configuration from before the update replaces the stored configuration. Then the gateway restarts.</p>"}))return;const r=await api("POST","/api/config?restore_prev=1");fwmsg(r.status===200?"Configuration restored: restarting…":`Not restored (${r.status}): ${(r.json||{}).error||""}`,r.status===200?"ok":"bad")};
 $("#fw-other").onclick=async()=>{const v=$("#fw-other").textContent;fwref();if(await ask({title:`${v}?`,action:v,html:"<p>The image of the other slot runs on trial. A reset during the trial goes back to this firmware.</p>"}))fwother(false)};
+/* #207: Identify. The LED and the buzzer for 10 s; the button stays disabled for the time left
+   (a second push does not start the time again) */
+let idEnd=0,idT=0;
+function idShow(left){const b=$("#ident"),m=$("#id-msg");clearTimeout(idT);
+ if(left>0){idEnd=Date.now()+left*1000;b.disabled=true;m.className="ok";m.setAttribute("role","status");m.textContent=`The LED blinks and the buzzer beeps on the gateway: ${left} s left.`;idT=setTimeout(()=>idShow(Math.ceil((idEnd-Date.now())/1000)),1000)}
+ else{b.disabled=false;m.className="mut";m.removeAttribute("role");m.textContent="For 10 s, the status LED blinks and the buzzer beeps."}}
+$("#ident").onclick=async()=>{const r=await api("POST","/api/identify"),j=r.json||{};
+ if(r.status===202||(r.status===409&&j.identify_left_s))idShow(j.identify_left_s||10);else{const m=$("#id-msg");m.className="bad";m.textContent=`Not started (${r.status}): ${j.error||""}`}};
+/* #209 #203: the card Restart and reset. The first line of a dialog tells which gateway it is. */
+function rrmsg(t,c){const m=$("#rr-msg");m.textContent=t;m.className=c||"mut"}
+function who(){const s=st0||{},g=s.gateway||{},sp=s.sparkplug,i=((s.network||{}).interfaces||[]).find(x=>x.active);
+ return [g.name&&esc(g.name),sp&&esc(`${sp.group_id} / ${sp.edge_node_id}`),esc((i&&i.ipv4)||location.hostname),s.firmware&&`firmware ${esc(s.firmware)}`].filter(x=>x).join(" &middot; ")}
+const apOf=()=>{const a=(st0||{}).ap||{};return a.available&&a.ssid?a.ssid:""};
+$("#rr-restart").onclick=async()=>{if(!await ask(RST))return;const r=await api("POST","/api/restart");rrmsg(r.status===202?"Restarting…":`Not restarted (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"":"bad")};
+$("#rr-safe").onclick=async()=>{const ap=apOf();if(!await ask({title:"Restart into safe mode?",action:"Restart into safe mode",danger:true,fact:who(),
+  html:`<p>The gateway restarts in safe mode. It does not poll and does not connect to MQTT: the hosts get the NDEATH and show the tags as stale.</p><p>Only the network, this page, the shell and the firmware upload operate.${ap?` The access point <b>${esc(ap)}</b> starts.`:""} The configuration stays.</p><p class="mut">Safe mode ends after 60 min, or with a restart.</p>`}))return;
+ const r=await api("POST","/api/restart?safe=1");rrmsg(r.status===202?"Restarting into safe mode…":`Not restarted (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"":"bad")};
+$("#rr-reset").onclick=async()=>{const ap=apOf();if(!await ask({title:"Do a factory reset of the gateway?",action:"Erase and restart",danger:true,word:"ERASE",fact:who(),
+  html:`<ul><li>The gateway erases the configuration, the secrets (for example the MQTT password), the certificate of the web UI, the web password and the pulse counters of the DIs. The restart also sets the Modbus counters to 0.</li><li>Then it restarts in commissioning mode: no polling and no MQTT until it gets a new configuration.</li>${ap?`<li>The access point <b>${esc(ap)}</b> starts. Its Wi-Fi password is a new commissioning password: only the serial console shows it.</li>`:""}<li>The web UI gets a new certificate: the browser shows a warning again.</li></ul><p class="warnline">This page stops. <a href="/api/config?download=1" download>Export the configuration</a> first if you need it again.</p>`}))return;
+ const r=await api("POST","/api/factory-reset?confirm=1");rrmsg(r.status===202?"Erased: the gateway restarts in commissioning mode. This page stops: open the web UI again with the commissioning password of the serial console.":`Not erased (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};
+/* #200 #199: the card Log. The page asks for the log lines (GET /api/log, every 2 s) and for the
+   tags (GET /api/log/level) only while the card is open (the decision of #200): nothing before
+   the first open, and the requests stop when the card closes. Pause keeps the view; the new
+   lines wait. */
+let lgT=0,lgSince=0,lgPause=false,lgWait=[],lgBuild="info",lgBusy=false,lgLast="",lgCpT=0;
+const LGMAX=2000,lgOpen=()=>$("#lg-card").open;
+function lgLine(t){const d=document.createElement("div");d.className="ln"+(t.startsWith("--")?" d":({W:" w",E:" e",D:" d",V:" d"}[t.charAt(0)]||""));d.textContent=t;return d}
+function lgAdd(ls){const v=$("#lg-lines"),end=v.scrollTop+v.clientHeight>=v.scrollHeight-4,f=document.createDocumentFragment();
+ ls.forEach(t=>f.append(lgLine(t)));v.append(f);while(v.childElementCount>LGMAX)v.firstElementChild.remove();if(end)v.scrollTop=v.scrollHeight}
+function lgState(j){const n=lgWait.length;
+ $("#lg-st").innerHTML=lgPause?`<span class="ldot pz"></span>Paused: ${n} new line${n===1?"":"s"} wait${n===1?"s":""}`:'<span class="ldot"></span>Live: new lines every 2 s';
+ if(lgPause)$("#lg-info").textContent="\u00b7 the view does not change";else if(j)$("#lg-info").textContent=`\u00b7 ${j.count} lines in the buffer (${Math.round(j.size/1024)} KB)`}
+async function lgPoll(){if(lgBusy||!lgOpen())return;lgBusy=true;const r=await api("GET",`/api/log?since=${lgSince}`);lgBusy=false;if(!lgOpen())return;
+ const j=r.json;if(r.status!==200||!j||!j.lines){$("#lg-st").innerHTML=`<span class="bad">No log lines (${r.status}): ${esc((j||{}).error||"no answer")}</span>`;return}
+ const ls=[];if(j.since===0&&lgSince!==0)ls.push("-- the gateway restarted --");
+ if(j.lost)ls.push(`-- ${j.lost} line${j.lost>1?"s":""} lost: the buffer was full --`);
+ ls.push(...j.lines);lgSince=j.last;if(lgPause)lgWait.push(...ls);else lgAdd(ls);lgState(j)}
+function lgChg(c){c=c||[];const k=JSON.stringify(c);if(k===lgLast)return;lgLast=k;const e=$("#lg-chg");e.classList.toggle("hidden",!c.length);
+ e.innerHTML=c.length?'<span class="mut">Changed levels (not saved):</span>'+c.map(x=>`<span class="pill">${esc(x.tag)}: ${esc(x.level)} <button data-lr="${esc(x.tag)}" aria-label="Reset ${esc(x.tag)} to ${esc(lgBuild)}">Reset</button></span>`).join("")+'<button data-lr="">Reset all</button>':""}
+async function lgLevels(){const r=await api("GET","/api/log/level"),j=r.json;if(r.status!==200||!j)return;lgBuild=j.build;
+ const t=$("#lg-tag"),tv=t.value,l=$("#lg-lvl"),lv=l.value;
+ t.innerHTML='<option value="*">* (all the tags)</option>'+j.tags.filter(x=>x!=="*").sort().map(x=>`<option>${esc(x)}</option>`).join("");t.value=tv||"*";if(!t.value)t.value="*";
+ l.innerHTML=j.levels.map(x=>`<option>${x}</option>`).join("");l.value=lv||(j.levels.includes("debug")?"debug":j.build);lgLast="";lgChg(j.changed)}
+async function lgSet(b){const r=await api("POST","/api/log/level",JSON.stringify(b)),j=r.json||{},m=$("#lg-msg");
+ m.textContent=r.status===200?(j.reset?`Every tag: ${lgBuild}`:`${j.tag}: ${j.level}`):`Not set (${r.status}): ${j.error||""}`;m.className=r.status===200?"ok":"bad";lgLevels()}
+$("#lg-card").addEventListener("toggle",()=>{const o=lgOpen();$("#lg-closed").classList.toggle("hidden",o);clearInterval(lgT);lgT=0;
+ if(!o)return;lgState();lgLevels();lgPoll();lgT=setInterval(lgPoll,2000)});
+$("#lg-pause").onclick=()=>{lgPause=!lgPause;$("#lg-pause").textContent=lgPause?"Resume":"Pause";if(!lgPause){lgAdd(lgWait);lgWait=[]}lgState()};
+$("#lg-copy").onclick=async()=>{const v=$("#lg-lines"),t=[...v.children].map(d=>d.textContent).join("\n"),n=v.childElementCount;
+ try{await navigator.clipboard.writeText(t)}catch(x){const a=document.createElement("textarea");a.value=t;document.body.append(a);a.select();document.execCommand("copy");a.remove()}
+ const m=$("#lg-cp");m.textContent=`${n} line${n===1?"":"s"} copied.`;clearTimeout(lgCpT);lgCpT=setTimeout(()=>{m.textContent=""},4000)};
+$("#lg-set").onclick=()=>lgSet({tag:$("#lg-tag").value,level:$("#lg-lvl").value});
+$("#lg-chg").onclick=e=>{const t=e.target.dataset.lr;if(t===undefined)return;lgSet(t?{tag:t,level:lgBuild}:{reset:true})};
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>show(b.dataset.tab));
 $("#b-check").onclick=()=>put(true);$("#b-save").onclick=()=>put(false);
 $("#b-export").onclick=()=>{location.href="/api/config?download=1"};

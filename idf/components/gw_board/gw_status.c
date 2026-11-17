@@ -4,8 +4,11 @@
 
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "gw_buzzer.h"
+#include "gw_ident.h"
 
 #if !CONFIG_GW_IO_SIMULATED
 #include "gw_bsp.h"
@@ -15,6 +18,46 @@
 static const char *TAG = "led";
 
 static atomic_uint s_flags;
+static atomic_uint s_ident_until;   /* #207: the end of the identify (ms), 0 = none */
+
+static uint32_t now_ms(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
+
+bool gw_status_identify(void)
+{
+    unsigned until = atomic_load(&s_ident_until);
+    for (;;) {
+        uint32_t end = gw_ident_start(until, now_ms());
+        if (end == 0) {
+            return false;   /* one runs: the time does not start again */
+        }
+        if (atomic_compare_exchange_weak(&s_ident_until, &until, end)) {
+            break;
+        }
+    }
+    ESP_LOGI(TAG, "identify: red, green and blue at 4 Hz and short beeps for %u s",
+             GW_IDENT_MS / 1000);
+    gw_buzzer_wake();
+    return true;
+}
+
+uint32_t gw_status_identify_left_s(void)
+{
+    return gw_ident_left_s(atomic_load(&s_ident_until), now_ms());
+}
+
+bool gw_status_identify_elapsed(uint32_t *elapsed_ms)
+{
+    uint32_t until = atomic_load(&s_ident_until), now = now_ms();
+    uint32_t left = gw_ident_left_ms(until, now);
+    if (left == 0) {
+        return false;
+    }
+    *elapsed_ms = GW_IDENT_MS - left;
+    return true;
+}
 
 void gw_status_set(uint32_t flag, bool on)
 {
@@ -81,6 +124,7 @@ static rgb_t base_pattern(uint32_t f, uint32_t tick, int *idx)
 /* Pattern for the current flags; @p tick advances every 125 ms. */
 static rgb_t pattern(uint32_t f, uint32_t tick, const char **name)
 {
+    const rgb_t ident[] = {RED, GREEN, BLUE};
     static const char *const plain[] = {"commissioning", "config error", "no network",
                                         "waiting for a valid clock", "no broker",
                                         "modbus device offline", "operating"};
@@ -98,6 +142,13 @@ static rgb_t pattern(uint32_t f, uint32_t tick, const char **name)
     if (f & GW_ST_BUTTON) {
         *name = "BOOT held";
         return (tick & 1) ? OFF : WHITE;
+    }
+    uint32_t elapsed;
+    if (gw_status_identify_elapsed(&elapsed)) {
+        /* #207: above every pattern of the gateway, below the BOOT gestures (the person at the
+         * panel needs those) */
+        *name = "identify";
+        return ident[gw_ident_color(elapsed)];
     }
     if (f & (GW_ST_CLAIM | GW_ST_AP_OPEN)) {
         /* issue #187: the open period of the access point is the claim window (and the few

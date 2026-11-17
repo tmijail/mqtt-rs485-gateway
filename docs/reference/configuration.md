@@ -41,7 +41,7 @@ This example has the usual keys:
 }
 ```
 
-The top-level sections are `network`, `ntp`, `mqtt`, `sparkplug`, `rs485`, `local_io`, `devices`, `syslog`, `web`, `modbus_tcp` and `ota`. The sections `mqtt` and `sparkplug` are necessary. The other sections are optional.
+The top-level sections are `gateway`, `network`, `ntp`, `mqtt`, `sparkplug`, `rs485`, `local_io`, `devices`, `syslog`, `web`, `modbus_tcp` and `ota`. The sections `mqtt` and `sparkplug` are necessary. The other sections are optional.
 
 ## General rules
 
@@ -77,6 +77,28 @@ The gateway keeps `mqtt.password`, `network.wifi.password` and `web.password` in
 - In the file `/cfg/config.json`, a secret that is not there, empty or `"********"` gets its value from NVS.
 - A secret in clear text in the file is valid. The gateway moves it to NVS and writes the file again without it.
 - The gateway keeps `web.password` only as a salted PBKDF2-HMAC-SHA256 hash, and as the PMK of the access point. For the reasons, refer to [The security of the access point](../explanation/access-point-security.md).
+
+## `gateway`
+
+A name, a location and a comment for the people who use the gateway. The card **Gateway** at the top of the Configuration tab has the three fields.
+
+```json
+"gateway": { "name": "Pump panel 2", "location": "Plant 2, hall B",
+             "comment": "Feeds the cooling towers 1 and 2. Contact: maintenance, ext. 214." }
+```
+
+| Key | Type | Default | Rule |
+|---|---|---|---|
+| `name` | text | `""` | 0 to 63 bytes of valid UTF-8, without control characters |
+| `location` | text | `""` | 0 to 63 bytes of valid UTF-8, without control characters |
+| `comment` | text | `""` | 0 to 255 bytes of valid UTF-8 |
+
+- With a name, the header of the web UI shows the name and the location, and the name of the product and the edge node ID go to a second line. The title of the browser tab is `name · location`. Without a name, the header and the title do not change.
+- `GET /api/status` gives `gateway.name` and `gateway.location`. The NBIRTH gives them as `Node Info/Name` and `Node Info/Location`, only when they are set. Refer to [Sparkplug messages and metrics](sparkplug-messages-and-metrics.md#node-metrics).
+- The comment is only in the document and in the Configuration tab. The Status tab, `GET /api/status` and the NBIRTH do not give it.
+- The name and the location do not change the Sparkplug IDs or the topics. They are not `sparkplug.device_prefix`.
+
+![The top of the Configuration tab: the header with the name and the location, and the card Gateway with the explainer of Name](../images/gateway-name.png)
 
 ## `network`
 
@@ -530,7 +552,7 @@ Before the gateway loads the configuration, it keeps the `hold` outputs of the l
 - At the boot, the gateway restores the counters from the last save.
 - An orderly restart saves them first: NCMD Reboot, a new configuration, the `restart` of the shell or of the web UI.
 - A power cut, a panic or the watchdog loses the count since the last save.
-- An NCMD cannot write the counters. The factory reset sets them to 0.
+- An NCMD cannot write the counters. The factory reset sets them to 0: BOOT held for 10 s, the web UI, `POST /api/factory-reset` or the shell `factory-reset`.
 
 ### Local rules
 
@@ -591,6 +613,8 @@ The format is RFC 5424 on UDP (RFC 5426), with one message in each datagram:
 - The message has `[meta sequenceId="n"]`.
 
 Example: `<134>1 2026-11-04T12:00:00.123Z GW01 edge - - [meta sequenceId="12"] Sparkplug session up (bdSeq=3)`.
+
+`level` filters only the copy to the syslog server. The log level of each tag sets which lines the firmware writes at all: to the console, to the syslog copy and to the live log of the web UI. You can change the level of a tag at run time, without a save. Refer to [Read the live log](../how-to/read-the-live-log.md).
 
 ## `web`
 

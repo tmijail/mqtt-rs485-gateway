@@ -106,6 +106,15 @@ void gw_fw_mode(gw_ota_mode_t mode, const char *detail);
 /** Issue #144 item 4: this boot is in safe mode; normal mode is tried again after 60 min. */
 void gw_fw_safe_mode(void);
 
+/** Issue #209: true when this boot is in safe mode; @p requested: an operator asked for it (else:
+ *  repeated crashes); @p left_s: the seconds until the restart into normal mode. */
+bool gw_fw_safe_mode_info(bool *requested, uint32_t *left_s);
+
+/** Issue #209: the next boot starts safe mode (POST /api/restart?safe=1, the shell's 'restart
+ *  safe'); the caller then restarts the gateway. False (and the reason in @p why) during an
+ *  update, during the trial of a new image, and in safe mode. */
+bool gw_fw_request_safe_mode(char *why, size_t cap);
+
 /** The boot cannot go on (@p cause: "no memory to start", ...). A new image on trial is rejected
  *  at once (fw_last, then a restart: does not return then); otherwise nothing. Works after
  *  gw_fw_early_init() alone. */

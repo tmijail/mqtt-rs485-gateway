@@ -285,6 +285,57 @@ static void test_syslog_section(void)
     ASSERT_REJECTED(parse(doc), "syslog.host: expected a string");
 }
 
+/* #206: the optional section "gateway": a name and a location for people (kept: the NBIRTH
+ * and the status give them) and a comment (validated only). */
+static void test_gateway_section(void)
+{
+    static const char base[] = "\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                               "\"edge_node_id\":\"E\"}";
+    char doc[1024];
+    snprintf(doc, sizeof(doc), "{%s}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_STRING("", cfg.gateway.name);
+    TEST_ASSERT_EQUAL_STRING("", cfg.gateway.location);
+    snprintf(doc, sizeof(doc),
+             "{%s,\"gateway\":{\"name\":\"Pump panel 2\",\"location\":\"Plant 2, hall B\","
+             "\"comment\":\"Feeds the cooling towers 1 and 2. \\u00c4 ext. 214\"}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    TEST_ASSERT_EQUAL_STRING("Pump panel 2", cfg.gateway.name);
+    TEST_ASSERT_EQUAL_STRING("Plant 2, hall B", cfg.gateway.location);
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":{}}", base);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    /* 63 bytes for the name and the location, 255 for the comment */
+    char s63[64], s64[65], s255[256], s256[257];
+    memset(s63, 'n', 63);
+    s63[63] = '\0';
+    memset(s64, 'n', 64);
+    s64[64] = '\0';
+    memset(s255, 'c', 255);
+    s255[255] = '\0';
+    memset(s256, 'c', 256);
+    s256[256] = '\0';
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":{\"name\":\"%s\",\"location\":\"%s\","
+             "\"comment\":\"%s\"}}", base, s63, s63, s255);
+    TEST_ASSERT_TRUE_MESSAGE(parse(doc), err.msg);
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":{\"name\":\"%s\"}}", base, s64);
+    ASSERT_REJECTED(parse(doc), "gateway.name: string too long (64 characters, maximum 63)");
+    TEST_ASSERT_EQUAL_STRING("gateway.name", err.path);
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":{\"location\":\"%s\"}}", base, s64);
+    ASSERT_REJECTED(parse(doc), "gateway.location: string too long");
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":{\"comment\":\"%s\"}}", base, s256);
+    ASSERT_REJECTED(parse(doc), "gateway.comment: string too long (256 characters, maximum 255)");
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":{\"name\":\"a\\tb\"}}", base);
+    ASSERT_REJECTED(parse(doc), "gateway.name: control characters are not allowed");
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":{\"location\":\"\xc3\"}}", base);
+    ASSERT_REJECTED(parse(doc), "gateway.location: not valid UTF-8");
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":{\"name\":7}}", base);
+    ASSERT_REJECTED(parse(doc), "gateway.name: expected a string");
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":{\"area\":\"x\"}}", base);
+    ASSERT_REJECTED(parse(doc), "gateway.area: unknown key");
+    snprintf(doc, sizeof(doc), "{%s,\"gateway\":\"GW\"}", base);
+    ASSERT_REJECTED(parse(doc), "gateway: expected a JSON object");
+}
+
 /* FW-1: "ota" section, optional; updates enabled by default. */
 static void test_ota_section(void)
 {
@@ -1695,6 +1746,7 @@ int main(void)
     RUN_TEST(test_ipv6_literals);
     RUN_TEST(test_ipv6_section);
     RUN_TEST(test_syslog_section);
+    RUN_TEST(test_gateway_section);
     RUN_TEST(test_tls_section);
     RUN_TEST(test_tls_client_certificate);
     RUN_TEST(test_backup_brokers);

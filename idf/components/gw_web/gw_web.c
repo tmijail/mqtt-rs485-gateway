@@ -18,6 +18,7 @@
 #include "freertos/task.h"
 #include "gw_ap.h"
 #include "gw_auth.h"
+#include "gw_ident.h"
 #include "gw_authlimit.h"
 #include "gw_bus.h"
 #include "gw_fw.h"
@@ -38,13 +39,14 @@
 #include "gw_status.h"
 #include "gw_storage.h"
 #include "gw_tagdb.h"
+#include "gw_temp.h"
 #include "gw_webcert.h"
 #include "lwip/sockets.h"
 
 static const char *TAG = "web";
 
 #define REALM_HDR "Basic realm=\"gateway\", charset=\"UTF-8\""
-#define WEB_URI_HANDLERS 21   /* the routes of gw_web_start (uris[]) */
+#define WEB_URI_HANDLERS 26   /* the routes of gw_web_start (uris[]) */
 
 static gw_web_ctx_t s_ctx;
 static httpd_handle_t s_server;
@@ -1076,10 +1078,208 @@ static esp_err_t restart_post(httpd_req_t *req)
     if (!same_origin(req) || !authorized(req)) {
         return ESP_OK;
     }
+    if (query_flag(req, "safe")) {
+        /* issue #209: safe mode (no polling, no MQTT) for 60 min or until the next restart */
+        char why[160];
+        if (!gw_fw_request_safe_mode(why, sizeof(why))) {
+            return send_error(req, "409 Conflict", NULL, why);
+        }
+        ESP_LOGW(TAG, "restart into safe mode requested through the REST API");
+        send_json(req, "202 Accepted", "{\"ok\":true,\"restart\":true,\"safe_mode\":true}\n");
+        s_ctx.restart();
+        return ESP_OK;
+    }
     ESP_LOGW(TAG, "restart requested through the REST API");
     send_json(req, "202 Accepted", "{\"ok\":true,\"restart\":true}\n");
     s_ctx.restart();
     return ESP_OK;
+}
+
+/* ---------- #203: POST /api/factory-reset?confirm=1 ---------- */
+
+/* The same checks as every write (CSRF, then the password); the request must say ?confirm=1 (the
+ * web UI asks the operator to type ERASE first). The erase is the one of BOOT held 10 s: the
+ * answer comes after it, and the gateway restarts in commissioning 0.5 s later. */
+static esp_err_t factory_reset_post(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    if (!query_flag(req, "confirm")) {
+        return send_error(req, "400 Bad Request", NULL,
+                          "missing ?confirm=1: the factory reset erases the configuration, the "
+                          "secrets, the web certificate, the web password and the counters");
+    }
+    ESP_LOGW(TAG, "factory reset requested through the REST API");
+    esp_err_t e = s_ctx.factory_reset();
+    if (e == ESP_ERR_INVALID_STATE) {
+        return send_error(req, "409 Conflict", NULL, "factory reset refused: nothing erased (see "
+                                                     "the log)");
+    }
+    char body[120];
+    snprintf(body, sizeof(body), "{\"ok\":true,\"erased\":%s,\"restart\":\"commissioning\"}\n",
+             e == ESP_OK ? "true" : "false");
+    return send_json(req, "202 Accepted", body);
+}
+
+/* ---------- #207: POST /api/identify ---------- */
+
+/* The LED and the buzzer identify the gateway for 10 s. Harmless, but a write all the same (CSRF,
+ * then the password). 409 while one runs: its time does not start again. */
+static esp_err_t identify_post(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    char body[120];
+    if (!gw_status_identify()) {
+        unsigned long left = (unsigned long)gw_status_identify_left_s();
+        snprintf(body, sizeof(body),
+                 "{\"ok\":false,\"error\":\"identify already runs: %lu s left\","
+                 "\"identify_left_s\":%lu}\n", left, left);
+        return send_json(req, "409 Conflict", body);
+    }
+    ESP_LOGI(TAG, "identify requested through the REST API");
+    snprintf(body, sizeof(body), "{\"ok\":true,\"identify_left_s\":%u}\n", GW_IDENT_MS / 1000);
+    return send_json(req, "202 Accepted", body);
+}
+
+/* ---------- #200: GET /api/log?since=<n> ---------- */
+
+/* One log line as a JSON string: a line can be up to GW_LOGRING_LINE_MAX bytes, and each '"' or
+ * '\\' takes two (the ring has no control characters). */
+static void out_line(out_t *o, const char *p, size_t n)
+{
+    char raw[GW_LOGRING_LINE_MAX + 1], e[2 * GW_LOGRING_LINE_MAX + 8];
+    n = n < GW_LOGRING_LINE_MAX ? n : GW_LOGRING_LINE_MAX;
+    memcpy(raw, p, n);
+    raw[n] = '\0';
+    json_escape(e, sizeof(e), raw);
+    outf(o, "\"%s\"", e);
+}
+
+/* The lines after number "since" (0: every line in the ring). The web UI asks only while its card
+ * Log is open (the decision of #200). "lost": the lines after "since" that the ring no longer
+ * has; "next" lower than "since": the gateway restarted (the numbers start again at 1). */
+static esp_err_t log_get(httpd_req_t *req)
+{
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
+    char q[48], v[16];
+    uint32_t since = 0;
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "since", v, sizeof(v)) == ESP_OK) {
+        since = (uint32_t)strtoul(v, NULL, 10);
+    }
+    const char *text;
+    size_t len;
+    gw_log_ring_info_t in;
+    if (!gw_log_ring_copy(since, &text, &len, &in)) {
+        return send_error(req, "503 Service Unavailable", NULL,
+                          "no live log: no memory for its buffer (or it is busy)");
+    }
+    if (since >= in.next && since != 0) {   /* a restart: every line again */
+        since = 0;
+        gw_log_ring_copy(0, &text, &len, &in);
+    }
+    uint32_t got = len > 0 ? in.from : in.next;   /* the first line after the lost ones */
+    uint32_t lost = since != 0 && got > since + 1 ? got - since - 1 : 0;
+    out_t *o = out_begin(req);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    outf(o, "{\"since\":%lu,\"last\":%lu,\"next\":%lu,\"first\":%lu,\"lost\":%lu,"
+            "\"count\":%lu,\"bytes\":%u,\"size\":%u,\"dropped\":%lu,\"lines\":[",
+         (unsigned long)since, (unsigned long)(len > 0 ? in.last : in.next - 1),
+         (unsigned long)in.next, (unsigned long)in.first, (unsigned long)lost,
+         (unsigned long)in.lines, (unsigned)in.used, (unsigned)in.size,
+         (unsigned long)in.dropped);
+    for (size_t at = 0, k = 0; at < len; k++) {
+        const char *nl = memchr(text + at, '\n', len - at);
+        size_t n = nl != NULL ? (size_t)(nl - (text + at)) : len - at;
+        if (k > 0) {
+            outf(o, ",");
+        }
+        out_line(o, text + at, n);
+        at += n + 1;
+    }
+    outf(o, "]}\n");
+    out_flush(o);
+    return o->err == ESP_OK ? httpd_resp_send_chunk(req, NULL, 0) : o->err;
+}
+
+/* ---------- #199: GET and POST /api/log/level ---------- */
+
+/* The levels that the build offers, the tags for the selector of the web UI (the tags of the
+ * firmware and the tags that the log showed; the web UI asks when its card Log opens) and the
+ * changed levels. */
+static esp_err_t log_level_get(httpd_req_t *req)
+{
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
+    const size_t cap = GW_LOGTAG_MAX * (GW_LOGTAG_SIZE + 32) + 8;
+    char *tags = gw_storage_malloc(2 * cap);   /* PSRAM, for this request only */
+    if (tags == NULL) {
+        return send_error(req, "503 Service Unavailable", NULL, "no memory");
+    }
+    char *changed = tags + cap;
+    gw_log_tags_json(false, tags, cap);
+    gw_log_tags_json(true, changed, cap);
+    out_t *o = out_begin(req);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    outf(o, "{\"build\":\"%s\",\"max\":\"%s\",\"levels\":[",
+         gw_loglevel_name(gw_log_build_level()), gw_loglevel_name(gw_log_max_level()));
+    for (int l = GW_LOGLV_NONE; l <= gw_log_max_level() && l <= GW_LOGLV_VERBOSE; l++) {
+        outf(o, "%s\"%s\"", l ? "," : "", gw_loglevel_name(l));
+    }
+    outf(o, "],\"tags\":");
+    out_flush(o);
+    if (o->err == ESP_OK) {
+        o->err = httpd_resp_send_chunk(req, tags, (ssize_t)strlen(tags));
+    }
+    outf(o, ",\"changed\":%s}\n", changed);
+    out_flush(o);
+    heap_caps_free(tags);
+    return o->err == ESP_OK ? httpd_resp_send_chunk(req, NULL, 0) : o->err;
+}
+
+/* {"tag": "poll", "level": "debug"} or {"reset": true}: esp_log_level_set, not saved (a restart
+ * sets the level of the build again). Same checks as every write (CSRF, then the password). */
+static esp_err_t log_level_post(httpd_req_t *req)
+{
+    if (!same_origin(req) || !authorized(req)) {
+        return ESP_OK;
+    }
+    size_t len;
+    const char *status;
+    char *body = req->content_len <= 128 ? read_body(req, &len, &status) : NULL;
+    if (body == NULL) {
+        return refuse_body(req, "400 Bad Request",
+                           "expected {\"tag\": \"<tag or *>\", \"level\": \"<level>\"} or "
+                           "{\"reset\": true} (at most 128 bytes)");
+    }
+    char tag[GW_LOGTAG_SIZE], why[120];
+    int level = 0;
+    bool reset = false;
+    bool ok = gw_logring_parse_set(body, len, gw_log_max_level(), tag, &level, &reset, why,
+                                   sizeof(why));
+    heap_caps_free(body);
+    if (!ok) {
+        return send_error(req, "400 Bad Request", NULL, why);
+    }
+    if (reset) {
+        gw_log_level_reset();
+        return send_json(req, "200 OK", "{\"ok\":true,\"reset\":true}\n");
+    }
+    if (gw_log_level_set(tag, level) != GW_LOG_SET_OK) {
+        return send_error(req, "409 Conflict", NULL, "no room for one more tag");
+    }
+    char answer[96];
+    snprintf(answer, sizeof(answer), "{\"ok\":true,\"tag\":\"%s\",\"level\":\"%s\"}\n", tag,
+             gw_loglevel_name(level));
+    return send_json(req, "200 OK", answer);
 }
 
 /* ---------- NET-5, issue #187: POST /api/ap/stop ---------- */
@@ -1627,6 +1827,33 @@ static __attribute__((noinline)) void status_card(out_t *o, const gw_config_t *c
          (unsigned long)es.spill_boot_ms, (unsigned long)es.spill_gc_pending);
 }
 
+/* #206, #207, #209, #199 and #212: the name and the location of the gateway (not the comment:
+ * the decision of #206), the time left of the identify, safe mode, the changed log levels and
+ * the health values. Not inlined: its buffer stays off the stack frame of status_get. */
+static __attribute__((noinline)) void status_admin(out_t *o, const gw_config_t *c)
+{
+    outf(o, ",\"gateway\":{\"name\":");
+    out_str(o, c->gateway.name);
+    outf(o, ",\"location\":");
+    out_str(o, c->gateway.location);
+    bool requested;
+    uint32_t left_s;
+    bool safe = gw_fw_safe_mode_info(&requested, &left_s);
+    outf(o, "},\"identify_left_s\":%lu,\"safe_mode\":{\"active\":%s,\"cause\":\"%s\","
+            "\"left_s\":%lu}",
+         (unsigned long)gw_status_identify_left_s(), safe ? "true" : "false",
+         !safe ? "" : requested ? "request" : "crashes", (unsigned long)left_s);
+    char levels[512];
+    gw_log_tags_json(true, levels, sizeof(levels));
+    outf(o, ",\"log_levels\":%s", levels);
+    float t;
+    if (gw_temp_read(&t)) {
+        outf(o, ",\"temperature_c\":%.1f", (double)t);
+    } else {
+        outf(o, ",\"temperature_c\":null");
+    }
+}
+
 /* NET-5, issue #187: the access point, as an optional object (older clients ignore it).
  * Issue #193: "request_via_ap" = this request came through the access point (the access point
  * rule of the claim window, claim_from_ap: the peer is a host of its subnet), so the web UI can
@@ -1826,6 +2053,7 @@ static esp_err_t status_get(httpd_req_t *req)
     outf(o, ",\"stores\":%lu}}", (unsigned long)rtc.stores);
     status_card(o, c);
     status_ap(o, req);
+    status_admin(o, c);
     {   /* #132: is a core dump in flash (no flash access; the summary is a route of its own) */
         uint32_t size;
         gw_cdump_state_t cd = gw_coredump_state(&size);
@@ -1834,10 +2062,11 @@ static esp_err_t status_get(httpd_req_t *req)
         outf(o, ",\"core_dump\":%s", buf);
     }
     outf(o,
-         ",\"heap\":{\"internal_free\":%u,\"internal_min\":%u,"
+         ",\"heap\":{\"internal_free\":%u,\"internal_min\":%u,\"internal_largest\":%u,"
          "\"psram_free\":%u}}\n",
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
          (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),   /* #212 */
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     out_flush(o);
     return o->err == ESP_OK ? httpd_resp_send_chunk(req, NULL, 0) : o->err;
@@ -1999,7 +2228,10 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
                            h_cd_delete = {coredump_delete}, h_cd_summary = {coredump_summary_get},
                            h_time = {time_post}, h_claim_page = {claim_page_get},
                            h_claim_get = {claim_get}, h_claim_post = {claim_post},
-                           h_ap_stop = {ap_stop_post};
+                           h_ap_stop = {ap_stop_post}, h_identify = {identify_post},
+                           h_factory_reset = {factory_reset_post}, h_log = {log_get},
+                           h_log_level_get = {log_level_get},
+                           h_log_level_post = {log_level_post};
     static const struct {
         const char *uri;
         httpd_method_t method;
@@ -2026,6 +2258,11 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         {"/api/claim", HTTP_GET, &h_claim_get},
         {"/api/claim", HTTP_POST, &h_claim_post},
         {"/api/ap/stop", HTTP_POST, &h_ap_stop},           /* #187 */
+        {"/api/identify", HTTP_POST, &h_identify},         /* #207 */
+        {"/api/factory-reset", HTTP_POST, &h_factory_reset},   /* #203 */
+        {"/api/log", HTTP_GET, &h_log},                    /* #200 */
+        {"/api/log/level", HTTP_GET, &h_log_level_get},    /* #199 */
+        {"/api/log/level", HTTP_POST, &h_log_level_post},
     };
     _Static_assert(sizeof(uris) / sizeof(uris[0]) == WEB_URI_HANDLERS, "WEB_URI_HANDLERS");
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {

@@ -3,7 +3,7 @@
 This document lists the routes of the REST API of the gateway, its authentication and its responses.
 
 - For the configuration document that `GET` and `PUT /api/config` use, refer to [The configuration document](configuration.md).
-- For the procedures, refer to [Change, back up and restore the configuration](../how-to/change-the-configuration.md) and [Update the firmware](../how-to/update-the-firmware.md).
+- For the procedures, refer to [Change, back up and restore the configuration](../how-to/change-the-configuration.md), [Update the firmware](../how-to/update-the-firmware.md), [Restart into safe mode or do a factory reset](../how-to/restart-into-safe-mode-or-reset.md) and [Read the live log](../how-to/read-the-live-log.md).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The E2E in QEMU examines the routes.
 
@@ -65,7 +65,11 @@ The responses of `PUT /api/config`:
 | Method and route | What it does |
 |---|---|
 | `GET /api/status` | The live state, also in recovery mode, in commissioning and in the fault mode. Refer to [`GET /api/status`](#get-apistatus) |
-| `POST /api/restart` | Restarts in order |
+| `POST /api/restart` | Restarts in order. `202 {"ok":true,"restart":true}`. `?safe=1` restarts into safe mode. Refer to [Safe mode on request](#safe-mode-on-request) |
+| `POST /api/identify` | For 10 s, the status LED shows red, green and blue in turn, and the buzzer beeps. `202 {"ok":true,"identify_left_s":10}`. `409` with `identify_left_s` while an identify runs: the time does not start again |
+| `POST /api/factory-reset?confirm=1` | Does a factory reset, then restarts in commissioning. Refer to [`POST /api/factory-reset`](#post-apifactory-reset) |
+| `GET /api/log` | The last lines of the log. Refer to [`GET /api/log`](#get-apilog) |
+| `GET /api/log/level`, `POST /api/log/level` | The log level of each tag. Refer to [The log level of a tag](#the-log-level-of-a-tag) |
 | `POST /api/rebirth` | Sends the NBIRTH and all the DBIRTHs again, with the same bdSeq. `202 {"ok":true,"rebirth":true}`. `409` when there is no Sparkplug session |
 | `POST /api/time` | Sets the clock and the RTC. Refer to [`POST /api/time`](#post-apitime) |
 | `POST /api/modbus/read` | One Modbus test read. Refer to [`POST /api/modbus/read`](#post-apimodbusread) |
@@ -200,6 +204,81 @@ Body: `{"password": "…"}`, with the rule of `web.password`: 8 to 63 printable 
 | `403` | A web password is set, no window is open, or the client is not a client of the access point. These refusals count as failed logins |
 | `503` | NVS does not store the password. The window stays open |
 
+### Safe mode on request
+
+`POST /api/restart?safe=1` restarts the gateway into safe mode. The gateway does not poll and does not connect to MQTT. The configuration stays.
+
+- In normal mode, the restart is in order: the gateway first sends the NDEATH.
+- Safe mode ends after 60 min, or at the next restart (`POST /api/restart`, the shell `restart`, a power cycle).
+- `GET /api/status` gives `safe_mode`: `active`, `cause` (`request` or `crashes`) and `left_s`.
+
+| Status | Cause |
+|---|---|
+| `202` | `{"ok":true,"restart":true,"safe_mode":true}` |
+| `409` | The gateway is in safe mode now, a new firmware image is on trial, or a firmware update is in progress |
+
+### `POST /api/factory-reset`
+
+The factory reset erases the same data as the BOOT button held for 10 s:
+
+- the configuration;
+- the secrets, for example the MQTT password;
+- the certificate of the web UI;
+- the web password;
+- the pulse counters of the DIs.
+
+Then the gateway restarts in commissioning mode, 0.5 s after the response. The restart also sets the Modbus counters to 0, because the gateway does not store them. The access point starts with a new commissioning password.
+
+| Status | Cause |
+|---|---|
+| `202` | `{"ok":true,"erased":true,"restart":"commissioning"}`. `erased` is `false` when the erase reported an error. The gateway restarts also then |
+| `400` | No `?confirm=1` |
+| `409` | The firmware refused the factory reset. Nothing is erased |
+
+### `GET /api/log`
+
+The gateway keeps the last log lines in a ring of 16 KB in PSRAM (`CONFIG_GW_LOG_RING_KB`), from the boot on. Each line has a number: the first line after the boot is 1. The web UI asks only while its card Log is open.
+
+`?since=<n>` gives the lines after the number `n`. Without it, the response has all the lines in the ring.
+
+```json
+{"since":120,"last":125,"next":126,"first":20,"lost":0,"count":106,"bytes":9874,
+ "size":16384,"dropped":0,"lines":["I (35210) web: identify requested through the REST API"]}
+```
+
+| Field | What it is |
+|---|---|
+| `last` | The number of the last line in `lines`. Ask again with `?since=<last>` |
+| `next`, `first` | The number of the next line, and of the oldest line in the ring |
+| `lost` | The lines after `since` that the ring does not have any more: it was full |
+| `count`, `bytes`, `size` | The lines and the bytes in the ring, and its size |
+| `dropped` | The lines that the ring did not get, because another task held it |
+
+When `since` is not lower than `next`, the gateway restarted. Then `since` is `0` in the response, and `lines` has all the lines of the ring. `503` when the ring has no memory.
+
+### The log level of a tag
+
+The level of a tag is the lowest severity that the tag writes to the log: the console, the syslog copy and the ring. The gateway does not save a change. A restart sets each tag to the level of the build (`info`). `syslog.level` filters only the copy to the syslog server.
+
+**`GET /api/log/level`** gives the levels and the tags:
+
+```json
+{"build":"info","max":"verbose","levels":["none","error","warn","info","debug","verbose"],
+ "tags":["ap","bus","edge","mb","poll","web","esp-tls"],"changed":[{"tag":"poll","level":"debug"}]}
+```
+
+- `max` is the highest level that the build keeps (`CONFIG_LOG_MAXIMUM_LEVEL`).
+- `tags` has the tags of the firmware and the tags that the log showed since the boot, up to 48.
+- `changed` has the tags with a level that is not the level of the build. `GET /api/status` gives the same list as `log_levels`.
+
+**`POST /api/log/level`** with `{"tag": "poll", "level": "debug"}` sets the level of a tag. The tag `*` sets the level of all the tags that have no level of their own. `{"reset": true}` sets all the tags to the level of the build again.
+
+| Status | Cause |
+|---|---|
+| `200` | `{"ok":true,"tag":"poll","level":"debug"}`, or `{"ok":true,"reset":true}` |
+| `400` | The body, the tag or the level is not correct |
+| `409` | The table of the tags is full |
+
 ### `GET /api/firmware`
 
 | Field | What it is |
@@ -208,7 +287,7 @@ Body: `{"password": "…"}`, with the rule of `web.password`: 8 to 63 printable 
 | `can_boot_other` | The button "Restart into `<version>`" is available |
 | `phase`, `state`, `detail`, `progress`, `bytes`, `total` | The update. For the values of `state`, refer to [Update the firmware](../how-to/update-the-firmware.md#make-sure-that-the-update-is-complete) |
 | `trial`, `trial_left_s`, `expected_mode` | The trial of a new image |
-| `boot_count`, `safe_mode` | The crash counter and safe mode |
+| `boot_count`, `safe_mode` | The crash counter and safe mode. The cause of safe mode and its time left are in `GET /api/status` |
 | `cfg_prev` | The configuration from before the update: `version`, `saved`, `schema`. `version` is empty when there is none |
 | `cfg_prev_restore` | Recovery mode: the web UI shows the restore button |
 
@@ -223,7 +302,13 @@ Body: `{"password": "…"}`, with the rule of `web.password`: 8 to 63 printable 
 | `network` | `up`, `interfaces` |
 | `mqtt` | `connected` |
 | `sparkplug` | `group_id`, `edge_node_id`, `diagnostics_s`. Only with a valid configuration |
-| `syslog`, `heap` | The syslog client and the memory |
+| `syslog` | The syslog client |
+| `heap` | `internal_free`, `internal_min`, `internal_largest` (the largest free block of the internal RAM) and `psram_free`, in bytes |
+| `temperature_c` | The temperature of the chip, in °C. `null` when there is no reading of the sensor, for example in QEMU |
+| `gateway` | `name` and `location` of the configuration. Not the comment |
+| `identify_left_s` | The seconds left of an identify. `0` when none runs |
+| `safe_mode` | `active`, `cause` (`request` or `crashes`, empty when not active) and `left_s` (the seconds to the restart into normal mode) |
+| `log_levels` | The tags with a changed log level: `[{"tag":"poll","level":"debug"}]` |
 | `devices` | Refer to the text below the table |
 | `io.di`, `io.do` | The bits of the DIs and DOs (bit n = channel n+1). `io.do` is `null` while the expander does not respond |
 | `io.do_unknown`, `io.expander` | The expander does not respond. `ready`, `retrying` and `attempts` |

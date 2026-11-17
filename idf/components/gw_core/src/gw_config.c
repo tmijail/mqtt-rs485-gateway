@@ -1120,6 +1120,40 @@ static bool parse_syslog(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     return true;
 }
 
+/* #206: "gateway": {"name": "", "location": "", "comment": ""}, all optional. The web UI shows
+ * the name and the location in its header and in the title of the browser tab, and the NBIRTH
+ * gives them as Node Info/Name and Node Info/Location (Sparkplug strings: valid UTF-8, issue
+ * #162). The comment is only in the document (the Configuration tab): it is validated, not kept. */
+static bool check_label(const char *s, const char *path, gw_cfg_err_t *err)
+{
+    for (const unsigned char *c = (const unsigned char *)s; *c; c++) {
+        if (*c < 0x20 || *c == 0x7f) {
+            return fail(err, path, "control characters are not allowed");
+        }
+    }
+    return check_utf8(s, path, err);
+}
+
+static bool parse_gateway(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"name", "location", "comment"};
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "gateway");
+    static const cJSON empty = {.type = cJSON_Object};
+    char comment[GW_COMMENT_MAX + 1];
+    if (o == NULL) {
+        o = &empty;
+    }
+    return check_keys(o, "gateway", keys, 3, err) &&
+           get_string(o, "name", "gateway", false, "", cfg->gateway.name,
+                      sizeof(cfg->gateway.name), err) &&
+           check_label(cfg->gateway.name, "gateway.name", err) &&
+           get_string(o, "location", "gateway", false, "", cfg->gateway.location,
+                      sizeof(cfg->gateway.location), err) &&
+           check_label(cfg->gateway.location, "gateway.location", err) &&
+           get_string(o, "comment", "gateway", false, "", comment, sizeof(comment), err) &&
+           check_utf8(comment, "gateway.comment", err);
+}
+
 /* FW-1: "ota": {"enabled": true, "ca_file": ""}. */
 static bool parse_ota(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
@@ -1679,7 +1713,7 @@ static bool parse_locked(const char *json, size_t len, gw_config_t *cfg, gw_cfg_
 {
     static const char *const keys[] = {"network", "ntp",      "mqtt",    "sparkplug", "rs485",
                                        "local_io", "devices", "syslog",  "web",
-                                       "modbus_tcp", "ota"};
+                                       "modbus_tcp", "ota", "gateway"};
     memset(cfg, 0, sizeof(*cfg));
     err->msg[0] = '\0';
     err->path[0] = '\0';
@@ -1716,7 +1750,8 @@ static bool parse_locked(const char *json, size_t len, gw_config_t *cfg, gw_cfg_
               parse_sparkplug(root, cfg, err) && parse_rs485(root, cfg, err) &&
               parse_local_io(root, cfg, err) && parse_devices(root, cfg, err) &&
               parse_syslog(root, cfg, err) && parse_web(root, cfg, err) &&
-              parse_modbus_tcp(root, cfg, err) && parse_ota(root, cfg, err);
+              parse_modbus_tcp(root, cfg, err) && parse_ota(root, cfg, err) &&
+              parse_gateway(root, cfg, err);
     cJSON_Delete(root);
 
     if (ok && cfg->mqtt.client_id[0] == '\0') {

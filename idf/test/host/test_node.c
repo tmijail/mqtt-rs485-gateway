@@ -20,6 +20,10 @@ static uint8_t cmd[512];
 #define SETPOINT 1
 #define RUN 2
 
+/* #206: the node metrics of an NBIRTH without gateway.name and gateway.location */
+#define BIRTH_NO_LABELS (GW_NODE_BIRTH_METRICS - 2)
+#define UMH_BIRTH_NO_LABELS (GW_NODE_UMH_BIRTH_METRICS - 2)
+
 void setUp(void)
 {
     cfg = support_spec_config();
@@ -85,7 +89,7 @@ static void test_nbirth_and_dbirth(void)
     TEST_ASSERT_FALSE(nb->retain);
     TEST_ASSERT_TRUE(dec.has_seq);
     TEST_ASSERT_EQUAL_UINT64(0, dec.seq);
-    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS - 1, dec.count);   /* no Modbus TCP table */
+    TEST_ASSERT_EQUAL(BIRTH_NO_LABELS - 1, dec.count);   /* no Modbus TCP table */
     int i = decoded_find_name(&dec, "bdSeq");
     TEST_ASSERT_TRUE(i >= 0);
     /* tck-id-message-flow-edge-node-birth-publish-nbirth-payload-bdSeq: the NBIRTH carries
@@ -597,7 +601,7 @@ static void test_umh_plain_types_and_diagnostics(void)
         TEST_ASSERT_NOT_EQUAL_MESSAGE(SPB_DT_DATASET, dec.m[a].datatype, dec.m[a].name);
     }
     /* node metrics, uptime / 2 x heap / RSSI, 7 + 5 counters, Time Synced, Core Dump, 2 x Online */
-    TEST_ASSERT_EQUAL(GW_NODE_UMH_BIRTH_METRICS + 2, dec.count);
+    TEST_ASSERT_EQUAL(UMH_BIRTH_NO_LABELS + 2, dec.count);
     TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Info/Modbus"));
     TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Info/Modbus TCP"));
     TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Pump"));
@@ -662,14 +666,14 @@ static void test_umh_plain_types_and_diagnostics(void)
     gw_node_diag_tick(&node, 1000);
     gw_node_diag_tick(&node, 61000);
     msg(0);
-    TEST_ASSERT_EQUAL(4, dec.count);                         /* uptime, 2 x heap, RSSI */
+    TEST_ASSERT_EQUAL(7, dec.count);   /* uptime, 2 x heap, block, PSRAM, temperature, RSSI */
     recorder_clear();
     const gw_dev_stats_t s2 = {.cycles = 8, .failed_cycles = 1, .bus = {.ok = 21, .timeout = 3},
                                .tcp = {.ok = 4}};
     gw_tagdb_put_stats(0, &s2);
     gw_node_diag_tick(&node, 121000);
     msg(0);
-    TEST_ASSERT_EQUAL(4 + GW_MB_FLAT_COUNT + GW_TCP_FLAT_COUNT, dec.count);
+    TEST_ASSERT_EQUAL(7 + GW_MB_FLAT_COUNT + GW_TCP_FLAT_COUNT, dec.count);
     i = decoded_find_alias(&dec, GW_ALIAS_MB_FLAT_BASE + 0);
     TEST_ASSERT_TRUE(i >= 0);
     TEST_ASSERT_FALSE(dec.m[i].has_name);
@@ -711,7 +715,7 @@ static void test_umh_worst_case_nbirth_fits(void)
     msg(0);
     printf("UMH preset worst NBIRTH: %u bytes, %u metrics\n", (unsigned)g_rec.msgs[0].len,
            (unsigned)dec.count);
-    TEST_ASSERT_EQUAL(GW_NODE_UMH_BIRTH_METRICS + GW_MAX_DEVICES,
+    TEST_ASSERT_EQUAL(UMH_BIRTH_NO_LABELS + GW_MAX_DEVICES,
                       dec.count);
     TEST_ASSERT_TRUE(decoded_find_name(&dec, "Devices/line15/energy-meter-with-a-long-name-xx/Online")
                      >= 0);
@@ -1379,7 +1383,7 @@ static void test_templates(void)
     TEST_ASSERT_EQUAL(3, g_rec.count);             /* NBIRTH, DBIRTH P1, DBIRTH Flat */
 
     msg(0);   /* NBIRTH: one definition for the two pumps, after the node's metrics */
-    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS - 1 + 1, dec.count);
+    TEST_ASSERT_EQUAL(BIRTH_NO_LABELS - 1 + 1, dec.count);
     int i = decoded_find_name(&dec, "Pump");
     TEST_ASSERT_TRUE(i >= 0);
     TEST_ASSERT_EQUAL(SPB_DT_TEMPLATE, dec.m[i].datatype);
@@ -1486,6 +1490,9 @@ static void test_worst_case_nbirth_fits(void)
     TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(doc, strlen(doc), &c, &err), err.msg);
     cfg = &c;
     c.modbus_tcp.enabled = true;   /* #81: the Modbus TCP table too */
+    /* #206: the longest name and location (63 bytes) */
+    memset(c.gateway.name, 'n', sizeof(c.gateway.name) - 1);
+    memset(c.gateway.location, 'l', sizeof(c.gateway.location) - 1);
     gw_tagdb_reset();
     gw_node_ops_t ops = recorder_ops();
     const gw_node_info_t info = {.firmware = "0.1.0+g0123456.dirty-xxxxxxxxxxxxxxxxxxxxxxxxx",
@@ -1495,7 +1502,9 @@ static void test_worst_case_nbirth_fits(void)
     support_node_buffer(&node);
     /* SPB-17: the widest diagnostics (RSSI, every counter of every device at its maximum) */
     g_rec.diag = (gw_node_diag_t){.uptime_s = UINT64_MAX, .free_heap = UINT32_MAX,
-                                  .min_free_heap = UINT32_MAX, .has_rssi = true,
+                                  .min_free_heap = UINT32_MAX, .largest_block = UINT32_MAX,
+                                  .free_psram = UINT32_MAX, .temp_valid = true,
+                                  .temp_c = -40.125f, .has_rssi = true,
                                   .rssi_valid = true, .rssi = -128};
     const gw_dev_stats_t full = {UINT32_MAX, UINT32_MAX,
                                  {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX},
@@ -1559,6 +1568,23 @@ static void test_diagnostics(void)
     TEST_ASSERT_EQUAL(SPB_DT_UINT32, dec.m[i].datatype);
     TEST_ASSERT_EQUAL_DOUBLE(150000, dec.m[i].num);
     TEST_ASSERT_TRUE(decoded_find_name(&dec, "Node Info/Min Free Heap") >= 0);
+    /* #212: the largest free block, the free PSRAM and the temperature, with name, alias and
+     * datatype in the NBIRTH (tck-id-topics-nbirth-metrics, tck-id-payloads-alias-birth-
+     * requirement, tck-id-payloads-metric-datatype-req); no sensor reading: null */
+    i = decoded_find_name(&dec, "Node Info/Largest Free Block");
+    TEST_ASSERT_EQUAL(SPB_DT_UINT32, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_LARGEST_BLOCK, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(110592, dec.m[i].num);
+    i = decoded_find_name(&dec, "Node Info/Free PSRAM");
+    TEST_ASSERT_EQUAL(SPB_DT_UINT32, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_FREE_PSRAM, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_DOUBLE(8290000, dec.m[i].num);
+    i = decoded_find_name(&dec, "Node Info/Temperature");
+    TEST_ASSERT_EQUAL(SPB_DT_FLOAT, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TEMPERATURE, dec.m[i].alias);
+    TEST_ASSERT_TRUE(dec.m[i].is_null);
+    TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Info/Name"));   /* #206: not set */
+    TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Info/Location"));
     i = decoded_find_name(&dec, "Node Info/RSSI");
     TEST_ASSERT_EQUAL(SPB_DT_INT32, dec.m[i].datatype);
     TEST_ASSERT_TRUE(dec.m[i].is_null);                      /* Wi-Fi not associated */
@@ -1581,10 +1607,22 @@ static void test_diagnostics(void)
     g_rec.diag.uptime_s = 72;
     g_rec.diag.rssi_valid = true;
     g_rec.diag.rssi = -61;
+    g_rec.diag.temp_valid = true;
+    g_rec.diag.temp_c = 46.5f;
     gw_node_diag_tick(&node, 61000);                         /* counters unchanged */
     msg(0);
     TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", g_rec.msgs[0].topic);
-    TEST_ASSERT_EQUAL(4, dec.count);                         /* uptime, 2 x heap, RSSI */
+    /* uptime, 2 x heap, largest block, PSRAM, temperature (#212), RSSI */
+    TEST_ASSERT_EQUAL(7, dec.count);
+    /* #212: the alias only, no name and no datatype (tck-id-payloads-name-birth-data-requirement,
+     * tck-id-payloads-metric-datatype-not-req) */
+    i = decoded_find_alias(&dec, GW_ALIAS_TEMPERATURE);
+    TEST_ASSERT_FALSE(dec.m[i].is_null);
+    TEST_ASSERT_FALSE(dec.m[i].has_datatype);
+    TEST_ASSERT_FALSE(dec.m[i].has_name);
+    TEST_ASSERT_EQUAL_DOUBLE(46.5, dec.m[i].num);
+    TEST_ASSERT_TRUE(decoded_find_alias(&dec, GW_ALIAS_LARGEST_BLOCK) >= 0);
+    TEST_ASSERT_TRUE(decoded_find_alias(&dec, GW_ALIAS_FREE_PSRAM) >= 0);
     TEST_ASSERT_EQUAL_UINT64(72, dec.m[decoded_find_alias(&dec, GW_ALIAS_UPTIME)].u64);
     i = decoded_find_alias(&dec, GW_ALIAS_RSSI);
     TEST_ASSERT_FALSE(dec.m[i].is_null);
@@ -1597,7 +1635,7 @@ static void test_diagnostics(void)
     gw_tagdb_put_stats(0, &st2);
     gw_node_diag_tick(&node, 121000);
     msg(0);
-    TEST_ASSERT_EQUAL(5, dec.count);
+    TEST_ASSERT_EQUAL(8, dec.count);
     TEST_ASSERT_TRUE(decoded_find_alias(&dec, GW_ALIAS_MODBUS) >= 0);
     mb_rows = mb_cells = 0;
     TEST_ASSERT_TRUE(spb_decode_with(g_rec.msgs[0].payload, g_rec.msgs[0].len, NULL, &d));
@@ -1642,6 +1680,49 @@ static bool tcp_cell_cb(void *ctx, uint32_t row, uint32_t col, const spb_rx_valu
     return true;
 }
 
+/* #206: gateway.name and gateway.location as Node Info/Name and Node Info/Location (String) in
+ * the NBIRTH only, with their own aliases (tck-id-topics-nbirth-metrics,
+ * tck-id-payloads-alias-uniqueness); only the name when the location is empty. */
+static void test_gateway_labels(void)
+{
+    static gw_config_t c;
+    c = *cfg;
+    snprintf(c.gateway.name, sizeof(c.gateway.name), "Pump panel 2");
+    snprintf(c.gateway.location, sizeof(c.gateway.location), "Plant 2, hall B");
+    cfg = &c;
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    set_meter(true, 230.5, 12.3, 1);
+    gw_node_session_up(&node, 0);
+    msg(0);
+    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS - 1, dec.count);   /* no Modbus TCP table */
+    int i = decoded_find_name(&dec, "Node Info/Name");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_STRING, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_NAME, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_STRING("Pump panel 2", dec.m[i].str);
+    i = decoded_find_name(&dec, "Node Info/Location");
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_LOCATION, dec.m[i].alias);
+    TEST_ASSERT_EQUAL_STRING("Plant 2, hall B", dec.m[i].str);
+    assert_birth_aliases_unique();
+    /* static: no NDATA carries them */
+    recorder_clear();
+    gw_node_diag_tick(&node, 1000);
+    gw_node_diag_tick(&node, 61000);
+    msg(0);
+    TEST_ASSERT_EQUAL(-1, decoded_find_alias(&dec, GW_ALIAS_NAME));
+    TEST_ASSERT_EQUAL(-1, decoded_find_alias(&dec, GW_ALIAS_LOCATION));
+    c.gateway.location[0] = '\0';
+    gw_node_session_down(&node);
+    recorder_clear();
+    gw_node_session_up(&node, 1);
+    msg(0);
+    TEST_ASSERT_TRUE(decoded_find_name(&dec, "Node Info/Name") >= 0);
+    TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Info/Location"));
+}
+
 static void test_modbus_tcp_table(void)
 {
     static gw_config_t c;
@@ -1661,7 +1742,7 @@ static void test_modbus_tcp_table(void)
     gw_mbap_stats_add(&g);
     gw_node_session_up(&node, 0);
     msg(0);
-    TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS, dec.count);
+    TEST_ASSERT_EQUAL(BIRTH_NO_LABELS, dec.count);
     int i = decoded_find_name(&dec, "Node Info/Modbus TCP");
     TEST_ASSERT_TRUE(i >= 0);
     TEST_ASSERT_EQUAL(SPB_DT_DATASET, dec.m[i].datatype);
@@ -2659,6 +2740,7 @@ int main(void)
     RUN_TEST(test_templates);
     RUN_TEST(test_store_and_forward_templates_bytes);
     RUN_TEST(test_diagnostics);
+    RUN_TEST(test_gateway_labels);
     RUN_TEST(test_time_synced);
     RUN_TEST(test_core_dump_metric);
     RUN_TEST(test_no_birth_before_valid_time);
