@@ -21,6 +21,8 @@ input[type=checkbox]{width:auto;align-self:flex-start}
 textarea{width:100%;min-height:360px;font-family:ui-monospace,monospace;font-size:12px}
 button{font:inherit;padding:6px 12px;border-radius:4px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
 button.pri{background:var(--acc);border-color:var(--acc);color:#fff}button.sel{border-color:var(--acc);color:var(--acc)}
+/* a disabled button looks disabled (for example "Remove type" of a type that devices use, #213) */
+button:disabled{opacity:.45;cursor:default}
 table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line)}
 td input,td select{width:100%;margin:0;padding:3px 4px}
 .ok{color:var(--ok)}.bad{color:var(--bad)}.mut{color:var(--mut)}.warn{color:var(--warn)}.err{outline:2px solid var(--bad)}.wrn{outline:2px solid var(--warn)}
@@ -281,8 +283,8 @@ button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
  <div class="card cc" data-cc="web" data-t="Web interface"><div class="grid" id="f-web"></div></div>
  <!-- #205 #221: the card Certificates. Its buttons change the gateway at once, without Save and restart -->
  <div class="card cc" data-cc="certs" data-t="Certificates" id="certs"><p class="mut" style="margin:0 0 8px">The buttons of this card change the gateway at once. They do not wait for Save and restart.</p>
-  <h2 class="lbl">HTTPS certificate of this page<button type="button" class="qi" data-x="wcert" data-t="HTTPS certificate of this page" aria-label="About HTTPS certificate of this page" aria-expanded="false" aria-controls="xpl">?</button></h2><div id="wc"></div>
-  <div class="tsec"><h2 class="lbl">Files for MQTT TLS and firmware updates<button type="button" class="qi" data-x="pemf" data-t="Files for MQTT TLS and firmware updates" aria-label="About Files for MQTT TLS and firmware updates" aria-expanded="false" aria-controls="xpl">?</button></h2><div id="pf"></div></div></div>
+  <h2 class="lbl">HTTPS certificate of this page<button type="button" class="qi" data-x="wcert" data-t="HTTPS certificate of this page" aria-label="About HTTPS certificate of this page" aria-expanded="false" aria-controls="xpl">?</button></h2><div id="wc"><p class="mut">Reading…</p></div>
+  <div class="tsec"><h2 class="lbl">Files for MQTT TLS and firmware updates<button type="button" class="qi" data-x="pemf" data-t="Files for MQTT TLS and firmware updates" aria-label="About Files for MQTT TLS and firmware updates" aria-expanded="false" aria-controls="xpl">?</button></h2><div id="pf"><p class="mut">Reading…</p></div></div></div>
  <div class="card cc" data-cc="mbtcp" data-t="Modbus TCP"><div class="grid" id="f-mbtcp"></div><div id="f-mbc"></div>
   <h2 class="sub">The I/O of the gateway as a Modbus unit</h2><div class="grid" id="f-mbloc"></div></div>
  <div class="card cc" data-cc="syslog" data-t="Remote syslog"><div class="grid" id="f-syslog"></div></div>
@@ -1599,7 +1601,7 @@ async function pfDialog(f){const fs=FILES||[],max=(FINFO&&FINFO.max_file_bytes)|
     const n=f?f.name:ni.value.trim(),kn=kk?(f?pkey:ki.value.trim()):"";
     if(!nameOk(n)||(kk&&!nameOk(kn))){ex.innerHTML=examBad("the name is not correct.","Use 1 to 32 characters: A-Z a-z 0-9 . _ -. The name cannot start with a dot or end with .json.");return}
     const q=`/api/files?name=${encodeURIComponent(n)}${kk?`&key_name=${encodeURIComponent(kn)}`:""}${f?"&replace=1":""}`,text=kk?ff.text+(ff.text.endsWith("\n")?"":"\n")+kk.text:ff.text;
-    ex.innerHTML='<div class="exam mut">The gateway examines the file…</div>';
+    ex.innerHTML=`<div class="exam mut">The gateway examines the file${kk?"s":""}…</div>`;
     const r=await pemPut(q+"&dry_run=1",text),j=r.json||{};if(my!==seq)return;
     if(r.status===200&&j.files){const fl=j.files.map((x,i)=>Object.assign({},x,{agrees:kk&&i===1}));
      ex.innerHTML=`<div class="exam" role="status"><b class="ok">The gateway examined the file${fl.length>1?"s":""}.</b>${fl.map(x=>`<p>${pfLine(x)}</p>`).join("")}${!f&&!fl.some(x=>x.replaced)?'<p class="mut">A new file. After the load, select it in the card MQTT or Firmware updates, and save.</p>':""}</div>`;
