@@ -187,14 +187,18 @@ class RecordingContext(ModbusSlaveContext):
 
 class ModbusSlave:
     """Unit 1 = Meter1 (SPEC example tags), unit 2 = Bulk (60 holding registers 100..159).
-    Units 3..5 (Dead3..Dead5 in the configuration) do not exist: requests to them get no answer."""
+    Units 3..5 (Dead3..Dead5 in the configuration) do not exist: requests to them get no answer.
+    Unit 7 = the second device of a device type (#213): the same addresses as a device on unit 1,
+    other values; unit 2 keeps only the FC03 of Bulk, which the main scenario checks."""
 
     def __init__(self):
         block = lambda: ModbusSequentialDataBlock(0, [0] * 300)  # noqa: E731
         self.ctx = RecordingContext(di=block(), co=block(), hr=block(), ir=block())
         self.bulk = RecordingContext(di=block(), co=block(), hr=block(), ir=block())
         self.bulk.setValues(3, 100, list(range(1000, 1060)))
-        self.server_ctx = ModbusServerContext(slaves={1: self.ctx, 2: self.bulk}, single=False)
+        self.unit7 = RecordingContext(di=block(), co=block(), hr=block(), ir=block())
+        self.server_ctx = ModbusServerContext(slaves={1: self.ctx, 2: self.bulk, 7: self.unit7},
+                                              single=False)
         self.reads = []  # (unit, function code, address, count) of every request received
         self.times = []  # monotonic arrival time of each entry of self.reads
         self.loop = asyncio.new_event_loop()
@@ -2583,13 +2587,15 @@ def run_stack_margin(args, work, slave):
     cfg = node_config(node, port=port)
     cfg["sparkplug"]["store_forward"] = True
     cfg["sparkplug"]["diagnostics_s"] = 10
-    for k in (0, 1):
-        cfg["devices"].append({"name": f"Pump{'AB'[k]}", "unit_id": 1, "type": "Pump", "poll_ms": 500,
-                               "tags": [{"name": "Speed", "area": "holding", "address": 232 + k,
-                                         "type": "uint16", "units": "rpm", "eng_high": 3000,
-                                         "writable": True},
-                                        {"name": "Run", "area": "coil", "address": 7 + k, "type": "bool"}]})
-        slave.ctx.setValues(3, 232 + k, [1000 + k])
+    # #213: the two pumps of the type Pump: the same addresses, on unit 1 and unit 7
+    cfg["device_types"] = [{"name": "Pump", "tags": [
+        {"name": "Speed", "area": "holding", "address": 232, "type": "uint16", "units": "rpm",
+         "eng_high": 3000, "writable": True},
+        {"name": "Run", "area": "coil", "address": 7, "type": "bool"}]}]
+    for k, (uid, unit) in enumerate(((1, slave.ctx), (7, slave.unit7))):
+        cfg["devices"].append({"name": f"Pump{'AB'[k]}", "unit_id": uid, "type": "Pump",
+                               "poll_ms": 500})
+        unit.setValues(3, 232, [1000 + k])
     cfg["devices"].append({"name": "Raw", "unit_id": 1, "poll_ms": 500, "tags": [
         {"name": "Block", "area": "holding", "address": 240, "type": "bytes", "length": 4,
          "writable": True}]})
@@ -2619,7 +2625,7 @@ def run_stack_margin(args, work, slave):
     # store & forward of a template instance and raw bytes
     relay.stop()
     gw.wait_log(r"MQTT down; reconnect attempt", 10, time.monotonic() - 1)
-    slave.ctx.setValues(3, 233, [1777])
+    slave.unit7.setValues(3, 232, [1777])   # PumpB
     slave.ctx.setValues(3, 240, [0x00FF, 0x00FE, 0x00FD, 0x00FC])
     time.sleep(2.5)
     relay.start()
@@ -5656,7 +5662,7 @@ UMH_TAGS = [
     ("Temp", {"area": "input", "address": 44, "type": "int32", "word_order": "BADC"},
      MB6["Temp"]),
     ("Serial", {"area": "holding", "address": 50, "type": "string", "length": 8}, MB6["Serial"]),
-    ("Ready", {"area": "input", "address": 46, "type": "bool", "bit": 15}, True),
+    ("Ready", {"area": "input", "address": 46, "type": "bool", "bit_offset": 15}, True),
     ("Neg16", {"area": "holding", "address": 70, "type": "int16"}, -2),
     ("Max16", {"area": "holding", "address": 71, "type": "uint16"}, 65535),
     ("Big32", {"area": "holding", "address": 72, "type": "uint32"}, 4000000000),
@@ -5813,13 +5819,14 @@ def umh_device_cfg(cfg, preset):
     if preset:
         cfg["sparkplug"]["naming"] = "umh"
     cfg.pop("modbus_tcp", None)
+    cfg["device_types"] = [{"name": "Pump", "tags": [   # #213
+        {"name": "Speed", "area": "holding", "address": 80, "type": "uint16", "units": "rpm"},
+        {"name": "Run", "area": "coil", "address": 5, "type": "bool"}]}]
     cfg["devices"] = [
         {"name": "cell2:meter1", "unit_id": 1, "poll_ms": 1000, "offline_after": 3, "max_gap": 10,
          "tags": [dict(t, name=n) for n, t, _ in UMH_TAGS] + [
              {"name": "Raw", "area": "holding", "address": 76, "type": "bytes", "length": 2}]},
-        {"name": "cell2:pump1", "unit_id": 1, "type": "Pump", "poll_ms": 1000, "tags": [
-            {"name": "Speed", "area": "holding", "address": 80, "type": "uint16", "units": "rpm"},
-            {"name": "Run", "area": "coil", "address": 5, "type": "bool"}]},
+        {"name": "cell2:pump1", "unit_id": 1, "type": "Pump", "poll_ms": 1000},
         {"name": "cell2:dead1", "unit_id": 3, "poll_ms": 1000, "offline_after": 3, "tags": [
             {"name": "Value", "area": "holding", "address": 0, "type": "uint16"}]}]
     return cfg
@@ -7632,11 +7639,13 @@ def run_network_variant(args, work, slave):
         host's ::1 and this container's kernel has no IPv6 (AF_INET6 is not supported).
       * SPB-19: a "bytes" tag (device Raw, unit 1 holding 220-222) is a Bytes metric with the raw
         register bytes, and a DCMD with Bytes writes them back (FC16).
-      * SPB-18: two devices of type "Pump" (PumpA and PumpB, both on unit 1 so that unit 2 keeps
-        the single FC03 the main scenario checks, at holding 230 and 231): one template
-        definition in the NBIRTH, an instance per DBIRTH, a DCMD member write and its DDATA.
-      * #196, #197, #214 (check_devices_gw02): a device with write_multiple and a tag with write
-        limits (Drive, unit 1 holding 250), and a disabled device (Spare, unit 1 holding 240)."""
+      * SPB-18 #213: two devices of the device type "Pump" (PumpA on unit 1 and PumpB on unit 7,
+        so that unit 2 keeps the single FC03 the main scenario checks; both at holding 230 and
+        coil 5): one template definition in the NBIRTH, an instance per DBIRTH, a DCMD member
+        write and its DDATA.
+      * #196, #197, #202, #214 (check_devices_gw02): a device with write_multiple, a tag with write
+        limits and a field of 3 bits (Drive, unit 1 holding 250 and 252), and a disabled device
+        (Spare, unit 1 holding 240)."""
     node = "GW02"
     cfg = json.loads(config_json())
     cfg["sparkplug"]["edge_node_id"] = node
@@ -7652,20 +7661,28 @@ def run_network_variant(args, work, slave):
         {"name": "Block", "area": "holding", "address": 220, "type": "bytes", "length": 3,
          "writable": True}]})
     slave.ctx.setValues(3, 220, [0x00FF, 0x1000, 0x7F80])
-    for k in (0, 1):
-        cfg["devices"].append({"name": f"Pump{'AB'[k]}", "unit_id": 1, "type": "Pump",
-                               "poll_ms": 500, "tags": [
-            {"name": "Speed", "area": "holding", "address": 230 + k, "type": "uint16", "units": "rpm",
-             "writable": True},
-            {"name": "Run", "area": "coil", "address": 5 + k, "type": "bool"}]})
-        slave.ctx.setValues(3, 230 + k, [1450 + 10 * k])
-        slave.ctx.setValues(1, 5 + k, [True])
+    # #213: two devices of one device type: the tag list is in device_types one time, and
+    # PumpA (unit 1) and PumpB (unit 7) read the same addresses
+    cfg["device_types"] = [{"name": "Pump", "tags": [
+        {"name": "Speed", "area": "holding", "address": 230, "type": "uint16", "units": "rpm",
+         "writable": True},
+        {"name": "Run", "area": "coil", "address": 5, "type": "bool"}]}]
+    for k, (uid, unit) in enumerate(((1, slave.ctx), (7, slave.unit7))):
+        cfg["devices"].append({"name": f"Pump{'AB'[k]}", "unit_id": uid, "type": "Pump",
+                               "poll_ms": 500})
+        unit.setValues(3, 230, [1450 + 10 * k])
+        unit.setValues(1, 5, [True])
     # #197 and #196: FC16 also for one register, and the write limits of a tag
+    # #202: State, a field of 3 bits (4 to 6) of the holding register 252
     cfg["devices"].append({"name": "Drive", "unit_id": 1, "poll_ms": 500, "write_multiple": True,
                            "tags": [{"name": "Speed", "area": "holding", "address": 250,
                                      "type": "uint16", "writable": True, "write_min": 0,
-                                     "write_max": 1500}]})
+                                     "write_max": 1500},
+                                    {"name": "State", "area": "holding", "address": 252,
+                                     "type": "uint16", "bit_offset": 4, "bit_width": 3,
+                                     "writable": True}]})
     slave.ctx.setValues(3, 250, [100])
+    slave.ctx.setValues(3, 252, [0xA0D9])   # bits 4 to 6 = 0b101 = 5
     # #214: a disabled device on a unit that answers: it must get no request
     cfg["devices"].append({"name": "Spare", "unit_id": 1, "poll_ms": 200, "enabled": False,
                            "tags": [{"name": "Level", "area": "holding", "address": 240,
@@ -7823,6 +7840,21 @@ def check_devices_gw02(obs, slave, gw, node, t0):
     out.append(("#197 write_multiple: a DCMD of one uint16 register is one FC16 (not FC06), and the "
                 "DDATA confirms it", drive is not None and wrote == [(16, 250, [1000])] and got == 1000,
                 f"DBIRTH {'yes' if drive else 'no'}; writes {wrote}; DDATA {got}"))
+    # #202: the field of 3 bits: its value in the DBIRTH (UInt16), and a DCMD changes only its bits
+    state = metric(drive[2], name="State") if drive else None
+    obs.drain()
+    before = len(slave.ctx.writes)
+    obs.publish_cmd(f"{T}/DCMD/{node}/Drive", [{"name": "State", "datatype": 6, "int_value": 3}])
+    dd = obs.wait(f"{T}/DDATA/{node}/Drive", 5)
+    wrote = slave.ctx.writes[before:]
+    got = dd[2].metrics[0].int_value if dd and dd[2].metrics else None
+    out.append(("#202 a field of 3 bits (bit_offset 4, bit_width 3, uint16): 5 from 0xA0D9 in the "
+                "DBIRTH; a DCMD of 3 reads the register and writes 0xA0B9 (the other bits stay), "
+                "and the DDATA confirms 3",
+                state is not None and state.datatype == 6 and state.int_value == 5
+                and wrote == [(16, 252, [0xA0B9])] and got == 3,
+                f"DBIRTH State {(state.datatype, state.int_value) if state else None}; writes "
+                f"{[(f, a, [hex(x) for x in v]) for f, a, v in wrote]}; DDATA {got}"))
     obs.drain()
     since = time.monotonic()
     before = len(slave.ctx.writes)
