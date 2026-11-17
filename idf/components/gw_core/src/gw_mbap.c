@@ -243,6 +243,7 @@ void gw_mbap_stats_add(const gw_mbap_stats_t *d)
     s_stats.ex_path += d->ex_path;
     s_stats.ex_no_answer += d->ex_no_answer;
     add_mb(&s_stats.other_units, &d->other_units);
+    s_stats.local += d->local;
     gw_port_unlock();
 }
 

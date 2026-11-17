@@ -73,6 +73,7 @@ typedef struct {
     uint32_t ex_path;          /*   0A gateway path unavailable (units 0, 248-255) */
     uint32_t ex_no_answer;     /*   0B: the unit did not answer, or the bus owner not in time */
     mb_stats_t other_units;    /* attempts of forwarded requests to units with no device */
+    uint32_t local;            /* #216: requests answered by the local unit (gw_mblocal.h) */
 } gw_mbap_stats_t;
 
 /** Add @p delta to the gateway counters (under gw_port_lock). */

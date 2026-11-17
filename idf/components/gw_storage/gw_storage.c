@@ -1360,7 +1360,8 @@ void gw_storage_recovery_config(gw_config_t *cfg)
         gw_hostname_from("", cfg->network.hostname, sizeof(cfg->network.hostname));
         cfg->network.mdns = true;
     }
-    strcpy(cfg->ntp.server, "pool.ntp.org");
+    strcpy(cfg->ntp.servers[0], "pool.ntp.org");
+    cfg->ntp.server_count = 1;
     cfg->web.enabled = true;
     strcpy(cfg->web.username, "admin");
     ESP_LOGW(TAG, "recovery network: %s", found ? "the last valid configuration's"

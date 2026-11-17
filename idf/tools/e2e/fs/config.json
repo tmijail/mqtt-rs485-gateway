@@ -3,7 +3,9 @@
     "dhcp": true
   },
   "ntp": {
-    "server": "10.0.2.2"
+    "servers": [
+      "10.0.2.2"
+    ]
   },
   "mqtt": {
     "host": "10.0.2.2",
