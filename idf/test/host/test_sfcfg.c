@@ -131,7 +131,7 @@ static void test_layout_of_this_build(void)
 {
 #ifdef GW_SFCFG_PACKED
     TEST_ASSERT_EQUAL_size_t(1, sizeof(gw_type_t));
-    TEST_ASSERT_EQUAL_size_t(offsetof(gw_tag_cfg_t, has_eng_high) + 1, offsetof(gw_tag_cfg_t, scale));
+    TEST_ASSERT_EQUAL_size_t(offsetof(gw_tag_cfg_t, has_write_max) + 1, offsetof(gw_tag_cfg_t, scale));
 #else
     TEST_ASSERT_EQUAL_size_t(sizeof(int), sizeof(gw_type_t));
     TEST_ASSERT_EQUAL_size_t(0, offsetof(gw_tag_cfg_t, scale) % _Alignof(double));

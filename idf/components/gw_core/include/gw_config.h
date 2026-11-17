@@ -194,12 +194,18 @@ typedef struct {
     bool writable;
     bool has_eng_low;           /* SPB-16: engLow / engHigh properties (optional); in the */
     bool has_eng_high;          /* padding before the doubles: no growth of the structure */
+    bool has_write_min;         /* #196: write_min / write_max given (also in the padding) */
+    bool has_write_max;
     double scale;
     double offset;
     double deadband;
     char units[GW_UNITS_SIZE];  /* SPB-16: property engUnit in the birth ("" = none) */
     float eng_low;              /* published as Float: 8 B per tag instead of 16 (256 tags) */
     float eng_high;
+    /* #196: the range of a DCMD write, in engineering units (after scale and offset). Doubles,
+     * because a limit of a 32-bit or 64-bit integer tag must be exact. */
+    double write_min;
+    double write_max;
 } gw_tag_cfg_t;
 
 typedef struct {

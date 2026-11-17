@@ -769,6 +769,49 @@ static void test_eng_range(void)
                     "devices[0].tags[0].units");
 }
 
+/* #196: write_min / write_max of a writable numeric tag, in engineering units. */
+static void test_write_limits(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse_tag("{\"name\":\"a\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\","
+                  "\"scale\":0.1,\"writable\":true,\"write_min\":0,\"write_max\":150.5},"
+                  "{\"name\":\"b\",\"area\":\"holding\",\"address\":1,\"type\":\"int32\","
+                  "\"writable\":true,\"write_max\":-5},"
+                  "{\"name\":\"c\",\"area\":\"holding\",\"address\":3,\"type\":\"uint16\","
+                  "\"writable\":true,\"write_min\":7,\"write_max\":7}"),
+        err.msg);
+    TEST_ASSERT_TRUE(cfg.tags[0].has_write_min);
+    TEST_ASSERT_TRUE(cfg.tags[0].has_write_max);
+    TEST_ASSERT_EQUAL_DOUBLE(0, cfg.tags[0].write_min);
+    TEST_ASSERT_EQUAL_DOUBLE(150.5, cfg.tags[0].write_max);
+    TEST_ASSERT_FALSE(cfg.tags[1].has_write_min);
+    TEST_ASSERT_TRUE(cfg.tags[1].has_write_max);
+    TEST_ASSERT_EQUAL_DOUBLE(-5, cfg.tags[1].write_max);
+    TEST_ASSERT_TRUE(cfg.tags[2].has_write_min);   /* min == max: one value only */
+
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"int16\","
+                              "\"writable\":true,\"write_min\":1500,\"write_max\":100}"),
+                    "devices[0].tags[0].write_max: 100 is less than write_min (1500)");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"int16\","
+                              "\"writable\":true,\"write_min\":0.1,\"write_max\":0.05}"),
+                    "devices[0].tags[0].write_max: 0.05 is less than write_min (0.1)");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"int16\","
+                              "\"write_min\":0}"),
+                    "devices[0].tags[0].write_min: valid only with writable=true");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"coil\",\"address\":0,\"type\":\"bool\","
+                              "\"writable\":true,\"write_max\":1}"),
+                    "devices[0].tags[0].write_max: not accepted in bool tags");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"string\","
+                              "\"length\":2,\"writable\":true,\"write_min\":1}"),
+                    "devices[0].tags[0].write_min: not accepted in string tags");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"bytes\","
+                              "\"length\":2,\"writable\":true,\"write_max\":1}"),
+                    "devices[0].tags[0].write_max: not accepted in bytes tags");
+    ASSERT_REJECTED(parse_tag("{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"int16\","
+                              "\"writable\":true,\"write_min\":\"0\"}"),
+                    "devices[0].tags[0].write_min: expected a number");
+}
+
 /* SPB-19: bytes tags are like strings without the text processing. */
 static void test_bytes_tags(void)
 {
@@ -1611,6 +1654,7 @@ int main(void)
     RUN_TEST(test_schema_rules);
     RUN_TEST(test_mb6_tags);
     RUN_TEST(test_eng_range);
+    RUN_TEST(test_write_limits);
     RUN_TEST(test_bytes_tags);
     RUN_TEST(test_device_types);
     RUN_TEST(test_utf8_sequences);

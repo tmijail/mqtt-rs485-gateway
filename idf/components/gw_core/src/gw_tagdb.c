@@ -7,6 +7,8 @@
 static gw_tag_value_t s_tags[GW_MAX_TAGS];
 static bool s_online[GW_MAX_DEVICES];
 static gw_dev_stats_t s_stats[GW_MAX_DEVICES];
+static uint32_t s_refused[GW_MAX_DEVICES];   /* #196: kept apart from s_stats (the poll engine
+                                                * writes those, the Sparkplug task these) */
 static gw_local_io_t s_io;
 
 void gw_tagdb_reset(void)
@@ -15,6 +17,7 @@ void gw_tagdb_reset(void)
     memset(s_tags, 0, sizeof(s_tags));
     memset(s_online, 0, sizeof(s_online));
     memset(s_stats, 0, sizeof(s_stats));
+    memset(s_refused, 0, sizeof(s_refused));
     memset(&s_io, 0, sizeof(s_io));
     gw_port_unlock();
 }
@@ -58,6 +61,27 @@ void gw_tagdb_get_stats(uint16_t dev, gw_dev_stats_t *stats)
     gw_port_lock();
     *stats = s_stats[dev];
     gw_port_unlock();
+}
+
+void gw_tagdb_count_refused(uint16_t dev)
+{
+    if (dev >= GW_MAX_DEVICES) {
+        return;
+    }
+    gw_port_lock();
+    s_refused[dev]++;
+    gw_port_unlock();
+}
+
+uint32_t gw_tagdb_refused(uint16_t dev)
+{
+    if (dev >= GW_MAX_DEVICES) {
+        return 0;
+    }
+    gw_port_lock();
+    uint32_t n = s_refused[dev];
+    gw_port_unlock();
+    return n;
 }
 
 void gw_tagdb_put_tag(uint16_t tag, const gw_tag_value_t *val)

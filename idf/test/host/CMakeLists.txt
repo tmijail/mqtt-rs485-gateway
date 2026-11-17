@@ -81,7 +81,7 @@ add_test(NAME sfcfg_guard
                  -I${cjson_SOURCE_DIR} -I${IDF_PROJECT_DIR}/components/nanopb
                  ${IDF_PROJECT_DIR}/components/gw_core/src/gw_sfcfg.c)
 set_tests_properties(sfcfg_guard PROPERTIES
-                     PASS_REGULAR_EXPRESSION "error: missing initializer for field .eng_high.")
+                     PASS_REGULAR_EXPRESSION "error: missing initializer for field .write_max.")
 
 # Writes representative Sparkplug payloads for the interoperability check
 # (tools/spb_decode.py, decoded with the official proto and Python protobuf).

@@ -1383,6 +1383,29 @@ static bool dcmd_resolve(const gw_node_t *n, const spb_rx_metric_t *m, bool quie
         }
         return false;
     }
+    /* #196: the write limits of the tag. A value outside them is not written. Sparkplug has no
+     * answer to a command: the host sees the value of the device in the next DDATA. The host
+     * MUST send a compatible value (tck-id-operational-behavior-data-commands-dcmd-metric-value);
+     * the gateway is strict and refuses a value that the operator excluded, as it refuses a
+     * datatype that is not the one of the DBIRTH (SPB-10, #163). */
+    if (!gw_conv_in_write_limits(t, value)) {
+        if (!quiet) {
+            char text[48], lo[24] = "-", hi[24] = "-";
+            gw_conv_format(t, value, text, sizeof(text));
+            if (t->has_write_min) {
+                snprintf(lo, sizeof(lo), "%.9g", t->write_min);
+            }
+            if (t->has_write_max) {
+                snprintf(hi, sizeof(hi), "%.9g", t->write_max);
+            }
+            char reason[160];
+            snprintf(reason, sizeof(reason), "value %s out of the write limits [%s, %s]", text,
+                     lo, hi);
+            log_discard("DCMD", m, reason);
+            gw_tagdb_count_refused((uint16_t)n->cmd_dev);
+        }
+        return false;
+    }
     *tag_out = tag;
     return true;
 }

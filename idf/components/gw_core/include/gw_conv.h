@@ -68,6 +68,14 @@ bool gw_conv_from_double(const gw_tag_cfg_t *tag, double value, gw_tag_value_t *
 /** The tag's value as a double (approximate above 2^53; 0 for strings), for logs and deadbands. */
 double gw_conv_as_double(const gw_tag_cfg_t *tag, const gw_tag_value_t *v);
 
+/**
+ * #196: true when @p v (member per gw_conv_kind, engineering units) is inside the write limits of
+ * @p tag (write_min / write_max; a tag without them accepts every value). Exact for 64-bit
+ * integers; a Float tag compares at the precision of a Float (the limit 0.1 accepts the Float
+ * 0.1). NaN is never inside a limit.
+ */
+bool gw_conv_in_write_limits(const gw_tag_cfg_t *tag, const gw_tag_value_t *v);
+
 /** Value as text for logs ("12.3", "-9007199254740993", "'SN-42'"). */
 void gw_conv_format(const gw_tag_cfg_t *tag, const gw_tag_value_t *v, char *buf, size_t cap);
 

@@ -27,7 +27,8 @@
  * Left out, because the record does not depend on them (the stored value is the engineering
  * value, already scaled and converted, and the replay never reads these):
  *   tag:    area, address, bit, word_order, slow, writable, deadband, units, eng_low/high and
- *           their flags; scale and offset (only whether a tag is scaled matters, and the
+ *           their flags, write_min/max and their flags (#196: they act before a write only);
+ *           scale and offset (only whether a tag is scaled matters, and the
  *           datatype carries it: Int16 -> Float, Int32/Int64 -> Double); length of a String
  *           tag (the record holds the text with its own length)
  *   device: unit_id, poll_ms, slow_poll_ms, offline_after, block_reads, max_gap
@@ -59,7 +60,7 @@
 /* test/host (sfcfg_guard): one initializer short, as after a new field: the build must fail */
 #define GW_SFCFG_LAST_TAG_FIELD
 #else
-#define GW_SFCFG_LAST_TAG_FIELD 0.0f, /* eng_high */
+#define GW_SFCFG_LAST_TAG_FIELD 0.0, /* write_max */
 #endif
 
 static const gw_tag_cfg_t s_tag_fields = {
@@ -74,11 +75,15 @@ static const gw_tag_cfg_t s_tag_fields = {
     false,        /* writable */
     false,        /* has_eng_low */
     false,        /* has_eng_high */
+    false,        /* has_write_min */
+    false,        /* has_write_max */
     1.0,          /* scale: hashed through the datatype */
     0.0,          /* offset: hashed through the datatype */
     0.0,          /* deadband */
     "",           /* units */
     0.0f,         /* eng_low */
+    0.0f,         /* eng_high */
+    0.0,          /* write_min */
     GW_SFCFG_LAST_TAG_FIELD
 };
 

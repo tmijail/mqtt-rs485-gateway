@@ -222,6 +222,8 @@ const HELP={
  db:"The gateway publishes a new value only when it differs from the last published value by more than the deadband. The deadband is in the units of the tag, after the scale. Example: 0.5 for a temperature.\n~Not negative. Default: 0 = each change. Not for bool, string and bytes tags.",
  englo:"The bottom of the normal range of the value, in the units of the tag (after the scale). The host uses it, for example, for the scale of a gauge or a trend.\nThe gateway does not limit the value and sends no alarm. Empty = no range.\n~Sparkplug property engLow (Float). Not for bool, string and bytes tags.",
  enghi:"The top of the normal range of the value, in the units of the tag (after the scale). The host uses it, for example, for the scale of a gauge or a trend.\nThe gateway does not limit the value and sends no alarm. With Eng. low, Eng. high must be more than Eng. low. Empty = no range.\n~Sparkplug property engHigh (Float). Not for bool, string and bytes tags.",
+ wmin:"The lowest value that a host can write to the tag with a DCMD, in the units of the tag (after the scale and the offset).\nThe gateway refuses a DCMD with a lower value. It does not write to the device, and it writes a warning to the log. The next DDATA has the value of the device.\n~Empty = no limit. Only for a writable tag. Not for bool, string and bytes tags. Modbus TCP requests have no limits.",
+ wmax:"The highest value that a host can write to the tag with a DCMD, in the units of the tag (after the scale and the offset).\nThe gateway refuses a DCMD with a higher value. It does not write to the device, and it writes a warning to the log. The next DDATA has the value of the device.\n~Empty = no limit. Only for a writable tag. With Write min, not less than Write min. Not for bool, string and bytes tags. Modbus TCP requests have no limits.",
  bit:"One bit of a holding or input register, for a bool tag. 0 = the least significant bit.\nFor a write, the gateway reads the register, then writes the full register with the changed bit.\n~0 to 15. Necessary for a bool tag in holding or input, and only there.",
  len:"The number of registers of a string or bytes tag. Each register holds two characters or two bytes. Example: 8 for a text of up to 16 characters.\n~1 to 16. Necessary for string and bytes, and only for them."
 };
@@ -277,9 +279,9 @@ document.addEventListener("pointerout",e=>{if(e.pointerType!=="mouse"||!xb||xpin
    other fields (n = the fields with a value). The table scrolls in its box on a narrow screen:
    the Tag column stays at the left, the details row stays in view, a shade shows more columns. */
 const TCOL=[["name","Tag","tag"],["area","Area","area"],["address","Address","addr"],["type","Type","type_t"],["word_order","Word order","wo"],["scale","Scale","scale"],["units","Units","units"],["writable","Writable","wr"]];
-const TDET=[["offset","Offset","offs"],["deadband","Deadband","db"],["eng_low","Eng. low","englo"],["eng_high","Eng. high","enghi"],["bit","Bit","bit"],["length","Length","len"]];
+const TDET=[["offset","Offset","offs"],["deadband","Deadband","db"],["eng_low","Eng. low","englo"],["eng_high","Eng. high","enghi"],["write_min","Write min","wmin"],["write_max","Write max","wmax"],["bit","Bit","bit"],["length","Length","len"]];
 const TK={name:["str",0,0,{ml:39}],area:["sel",AREA],address:["int"],type:["sel",TYPE],word_order:["sel",WO,true],scale:["num"],units:["str",0,0,{ml:15}],writable:["bool"],
- offset:["num"],deadband:["num"],eng_low:["num"],eng_high:["num"],bit:["int",0,0,{ph:"0-15"}],length:["int",0,0,{ph:"string, bytes"}]};
+ offset:["num"],deadband:["num"],eng_low:["num"],eng_high:["num"],write_min:["num",0,0,{ph:"no limit"}],write_max:["num",0,0,{ph:"no limit"}],bit:["int",0,0,{ph:"0-15"}],length:["int",0,0,{ph:"string, bytes"}]};
 const detOpen=new Set();
 function tagTable(d,i){
  const p=(k,f)=>`devices.${i}.tags.${k}.${f}`;
@@ -302,9 +304,13 @@ function revealField(el){const r=el&&el.closest?el.closest("tr.det"):null;
  if(r&&r.classList.contains("hidden"))togDet(r.previousElementSibling.querySelector("[data-more]"))}
 function tblUpd(tw){(tw?[tw]:document.querySelectorAll(".tw")).forEach(w=>{const b=w.firstElementChild,s=b.scrollWidth>b.clientWidth+1;
  w.classList.toggle("scr",s&&b.scrollLeft+b.clientWidth<b.scrollWidth-1);w.previousElementSibling.classList.toggle("hidden",!s);w.style.setProperty("--bw",b.clientWidth+"px")})}
-function tagsInit(){document.querySelectorAll("[data-more]").forEach(updMore);tblUpd()}
+/* #196: the placeholder of Write min and Write max tells if the tag is writable */
+function tagUpd(i,k){const p=f=>document.getElementById(`i-devices.${i}.tags.${k}.${f}`),w=p("writable");if(!w)return;
+ ["write_min","write_max"].forEach(f=>{const e=p(f);if(e)e.placeholder=w.checked?"no limit":"writable only"})}
+function tagsInit(){document.querySelectorAll("[data-more]").forEach(b=>{const[i,k]=b.dataset.more.split(".");tagUpd(i,k);updMore(b)});tblUpd()}
 $("#f-dev").addEventListener("click",e=>{const t=e.target.dataset||{};if(t.delTag||t.delDev)detOpen.clear();if(t.more)togDet(e.target)},true);
-$("#f-dev").addEventListener("input",e=>{const r=e.target.closest("tr.det");if(r)updMore(r.previousElementSibling.querySelector("[data-more]"))});
+$("#f-dev").addEventListener("input",e=>{const r=e.target.closest("tr.det");if(r)updMore(r.previousElementSibling.querySelector("[data-more]"));
+ const m=/^devices\.(\d+)\.tags\.(\d+)\./.exec(e.target.dataset.p||"");if(m)tagUpd(m[1],m[2])});
 document.addEventListener("scroll",e=>{const w=e.target.parentElement;if(w&&w.classList.contains("tw"))tblUpd(w);if(xb)xPos()},true);
 addEventListener("resize",()=>{tblUpd();if(xb)xOpen(xb,false)});
 /* #170: the UMH topic of a metric, with the rules of UMH Core (docs/reference/umh-names-and-topics.md):

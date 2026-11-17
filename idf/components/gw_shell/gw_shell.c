@@ -606,6 +606,10 @@ static int cmd_devices(int argc, char **argv)
                 (unsigned long)t->timeout, (unsigned long)t->crc, (unsigned long)t->frame,
                 (unsigned long)t->exception);
         }
+        uint32_t refused = gw_tagdb_refused(d);   /* #196: DCMD writes out of the limits */
+        if (refused > 0) {
+            out(" | writes refused %lu", (unsigned long)refused);
+        }
         out("\n");
     }
     if (s_ctx.cfg->modbus_tcp.enabled) {

@@ -406,3 +406,73 @@ void gw_conv_format(const gw_tag_cfg_t *tag, const gw_tag_value_t *v, char *buf,
         break;
     }
 }
+
+/* #196: integer @p v against the limit @p lim: -1 below it, 0 equal, 1 above it. Exact: a double
+ * of 2^53 or more is an integer, so the integer part of the limit is compared as an integer. */
+static int cmp_i64(int64_t v, double lim)
+{
+    if (lim >= 9223372036854775808.0) {
+        return -1;
+    }
+    if (lim < -9223372036854775808.0) {
+        return 1;
+    }
+    double c = ceil(lim);
+    int64_t ci = (int64_t)c;
+    if (v < ci) {
+        return -1;
+    }
+    if (v > ci) {
+        return 1;
+    }
+    return c != lim ? 1 : 0;   /* v == ceil(lim) > lim */
+}
+
+static int cmp_u64(uint64_t v, double lim)
+{
+    if (lim < 0.0) {
+        return 1;
+    }
+    if (lim >= 18446744073709551616.0) {
+        return -1;
+    }
+    double c = ceil(lim);
+    uint64_t ci = (uint64_t)c;
+    if (v < ci) {
+        return -1;
+    }
+    if (v > ci) {
+        return 1;
+    }
+    return c != lim ? 1 : 0;   /* v == ceil(lim) > lim */
+}
+
+bool gw_conv_in_write_limits(const gw_tag_cfg_t *tag, const gw_tag_value_t *v)
+{
+    if (!tag->has_write_min && !tag->has_write_max) {
+        return true;
+    }
+    switch (gw_conv_kind(tag)) {
+    case GW_VK_INT64:
+        return (!tag->has_write_min || cmp_i64(v->i64, tag->write_min) >= 0) &&
+               (!tag->has_write_max || cmp_i64(v->i64, tag->write_max) <= 0);
+    case GW_VK_UINT64:
+        return (!tag->has_write_min || cmp_u64(v->u64, tag->write_min) >= 0) &&
+               (!tag->has_write_max || cmp_u64(v->u64, tag->write_max) <= 0);
+    case GW_VK_DOUBLE: {
+        double x = v->value, lo = tag->write_min, hi = tag->write_max;
+        if (isnan(x)) {
+            return false;
+        }
+        if (gw_conv_datatype(tag) == SPB_DT_FLOAT) {
+            /* the host sends a Float: compare what it can express */
+            x = (double)(float)x;
+            lo = (double)(float)lo;
+            hi = (double)(float)hi;
+        }
+        return (!tag->has_write_min || x >= lo) && (!tag->has_write_max || x <= hi);
+    }
+    default:
+        return true;   /* the validation refuses limits on string and bytes tags */
+    }
+}

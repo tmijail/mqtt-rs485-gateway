@@ -1251,11 +1251,24 @@ static bool parse_web(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     return true;
 }
 
+/* The shortest text of @p v that reads back as the same double (1500, 0.1, 9007199254740993). */
+static const char *num_text(double v, char *buf, size_t cap)
+{
+    for (int prec = 15; prec <= 17; prec++) {
+        snprintf(buf, cap, "%.*g", prec, v);
+        if (strtod(buf, NULL) == v) {
+            break;
+        }
+    }
+    return buf;
+}
+
 static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"name",   "area",     "address",  "type",  "word_order",
                                        "scale",  "offset",   "deadband", "writable", "units",
-                                       "bit",    "length",   "scan",  "eng_low", "eng_high"};
+                                       "bit",    "length",   "scan",  "eng_low", "eng_high",
+                                       "write_min", "write_max"};
     static const char *const scans[] = {"fast", "slow"};
     int area, type, word, scan;
     long addr, bit, length;
@@ -1276,9 +1289,13 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
         !get_int(o, "length", path, false, 0, 1, GW_STR_MAX_REGS, &length, err) ||
         !get_enum(o, "scan", path, false, 0, scans, 2, &scan, err) ||
         !get_double(o, "eng_low", path, 0.0, &eng_low, err) ||
-        !get_double(o, "eng_high", path, 0.0, &eng_high, err)) {
+        !get_double(o, "eng_high", path, 0.0, &eng_high, err) ||
+        !get_double(o, "write_min", path, 0.0, &t->write_min, err) ||
+        !get_double(o, "write_max", path, 0.0, &t->write_max, err)) {
         return false;
     }
+    t->has_write_min = cJSON_GetObjectItemCaseSensitive(o, "write_min") != NULL;
+    t->has_write_max = cJSON_GetObjectItemCaseSensitive(o, "write_max") != NULL;
     if (fabs(eng_low) > FLT_MAX || fabs(eng_high) > FLT_MAX) {
         join(p, sizeof(p), path, fabs(eng_low) > FLT_MAX ? "eng_low" : "eng_high");
         return fail(err, p, "out of the range of a Float (±3.4e38)");
@@ -1369,6 +1386,22 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
     if (t->has_eng_low && t->has_eng_high && t->eng_low >= t->eng_high) {
         join(p, sizeof(p), path, "eng_high");
         return fail(err, p, "must be greater than eng_low (%g)", t->eng_low);
+    }
+    /* #196: the range of a DCMD write, in engineering units */
+    if (t->has_write_min || t->has_write_max) {
+        join(p, sizeof(p), path, t->has_write_min ? "write_min" : "write_max");
+        if (t->type == GW_TYPE_BOOL || blob) {
+            return fail(err, p, "not accepted in %s tags", k_type_names[t->type]);
+        }
+        if (!t->writable) {
+            return fail(err, p, "valid only with writable=true");
+        }
+    }
+    if (t->has_write_min && t->has_write_max && t->write_max < t->write_min) {
+        join(p, sizeof(p), path, "write_max");
+        char hi[32], lo[32];
+        return fail(err, p, "%s is less than write_min (%s)", num_text(t->write_max, hi, sizeof(hi)),
+                    num_text(t->write_min, lo, sizeof(lo)));
     }
     return true;
 }
