@@ -684,15 +684,15 @@ Without these keys, the build option applies (`CONFIG_GW_MB_BLOCK_READS`, `CONFI
 **`ota` (FW-1): firmware updates by NCMD and through the web UI.**
 
 ```json
-"ota": { "enabled": true, "ca_file": "fw-ca.pem" }
+"ota": { "mqtt": false, "ca_file": "fw-ca.pem" }
 ```
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `enabled` | bool | `true` | `false` rejects the updates by NCMD and by the web, and the other-slot button (in recovery mode, safe mode and commissioning the web can always upload an image) |
+| `mqtt` | bool | `false` | Issue #223: `true` accepts the NCMD `Node Control/Firmware Update` (and `Node Control/Firmware SHA-256`, issue #215). With `false` they are not in the NBIRTH, and the gateway refuses them. An update from the web UI is always possible. The key `enabled` of earlier versions is removed |
 | `ca_file` | text | `""` | The CA (PEM, in LittleFS next to `config.json`, the same name rules as `mqtt.tls.ca_file`) of the server of the images. Empty: the one of `mqtt.tls.ca_file` if TLS is active; else the public root CAs of ESP-IDF |
 
-- **Start:** an NCMD with the metric `Node Control/Firmware Update` (String, the `https://…` URL) or `POST /api/firmware` of the web (`{"url": "…"}`, or the image as the body). The URL has up to 255 characters; the gateway rejects a longer one with its cause (issue #87). Only `https://`; the image must be of this project (and, when signatures are required, FW-2, signed with the key of the device).
+- **Start:** an NCMD with the metric `Node Control/Firmware Update` (String, the `https://…` URL; only with `ota.mqtt`) or `POST /api/firmware` of the web (`{"url": "…", "sha256": "…"}`, or the image as the body with the optional header `X-Image-SHA256`). With a SHA-256 (issue #215), the gateway does not install a file whose SHA-256 does not agree. The URL has up to 255 characters; the gateway rejects a longer one with its cause (issue #87). Only `https://`; the image must be of this project (and, when signatures are required, FW-2, signed with the key of the device).
 - **Result:** the node metrics `Firmware Update/State` (String) and `Firmware Update/Progress` (UInt32, %), in the NBIRTH and by NDATA when they change. The state is `idle`, `downloading <v>`, `restarting into <v>`, `testing <v>`, `installed <v>`, `failed: <cause>` or `rolled back from <v>: <cause>`. Every NBIRTH publishes the result of the last update, also after a restart (issue #144).
 - **Trial and rollback (issue #144):** the new image boots on trial. A self-check of the gateway confirms it at the first instant when the uptime is at least 60 s, the gateway is in its expected mode, the network driver started and the loop of the web server is alive. The self-check does not depend on the broker, the Modbus slaves, NTP or the update server. If the self-check is not true at 5 min, the gateway rejects the image. A rejection, and any reset during the trial (crash, watchdog, power cut), return to the earlier image.
 - **Expected mode:** an image installed from normal mode must reach normal mode; if it rejects the configuration, the gateway returns to the earlier image at once, with the JSON path in the state. An image installed from recovery mode, safe mode, commissioning, or with force, must reach recovery mode or better; then it stays, and the operator corrects the configuration in the web UI.

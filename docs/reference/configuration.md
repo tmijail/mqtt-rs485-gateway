@@ -507,13 +507,19 @@ A Modbus TCP server that gives access to the RTU slaves on the bus.
 ## `ota`
 
 ```json
-"ota": { "enabled": true, "ca_file": "fw-ca.pem" }
+"ota": { "mqtt": false, "ca_file": "fw-ca.pem" }
 ```
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `enabled` | bool | `true` | `false` refuses the updates by NCMD and by the web UI, and the button "Restart into `<version>`". In recovery mode, safe mode and commissioning, the web UI can always upload an image |
+| `mqtt` | bool | `false` | `true` lets a Sparkplug host start an update with the NCMD `Node Control/Firmware Update`. With `false`, the NBIRTH does not contain `Node Control/Firmware Update` and `Node Control/Firmware SHA-256`, and the gateway refuses an NCMD that writes them. A change needs a save and a restart. The web UI control is **Update from MQTT** in the card **Firmware updates** |
 | `ca_file` | text | `""` | The CA of the server of the images (PEM, in LittleFS, with the name rules of `mqtt.tls.ca_file`). Empty = `mqtt.tls.ca_file` if TLS is on, else the public root CAs of ESP-IDF |
+
+An update from the web UI is always possible, for a user who knows the web password. The button "Restart into `<version>`" is always available after a trial.
+
+> **Caution: Set `mqtt` to `true` only when the ACL of the broker lets only the Sparkplug host publish to `spBv1.0/<group_id>/NCMD/<edge_node_id>`.** Each client that can publish to that topic can then change the firmware.
+
+The key `ota.enabled` of earlier firmware versions is not valid now. The validation refuses it as an unknown key. No gateway is installed yet, thus there is no migration: remove the key from an old document. `ota.mqtt` is a key of the configuration schema 2: an image that reads schema 1 cannot read a document that contains it.
 
 For the update process, refer to [Update the firmware](../how-to/update-the-firmware.md).
 

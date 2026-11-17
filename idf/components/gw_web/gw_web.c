@@ -1475,7 +1475,8 @@ static esp_err_t firmware_get(httpd_req_t *req)
         char other_why[2 * sizeof(((gw_fw_status_t *)0)->other_why)];
         gw_cfgprev_t prev;
         char prev_ver[2 * GW_CFGPREV_VERSION];
-        char body[2000];
+        char sha[2 * GW_OTA_SHA256_HEX + 48];
+        char body[2200];
     } fw_json_t;
     fw_json_t *j = gw_storage_malloc(sizeof(*j));
     if (j == NULL) {
@@ -1491,14 +1492,24 @@ static esp_err_t firmware_get(httpd_req_t *req)
      * mode (POST /api/config?restore_prev=1) */
     bool prev = gw_storage_cfgprev_get(&j->prev) && j->prev.version[0] != '\0';
     json_escape(j->prev_ver, sizeof(j->prev_ver), prev ? j->prev.version : "");
-    /* issue #144: both slots, the trial (expected mode, time left), the boot-loop counter */
-    bool can_boot = j->f.enabled && !j->f.trial && j->f.phase != GW_FW_DOWNLOADING &&
+    /* issue #215: the two SHA-256 values when they did not agree */
+    j->sha[0] = '\0';
+    if (j->f.sha_mismatch) {
+        char want[GW_OTA_SHA256_HEX], file[GW_OTA_SHA256_HEX];
+        gw_ota_sha256_hex(j->f.sha_expected, want);
+        gw_ota_sha256_hex(j->f.sha_file, file);
+        snprintf(j->sha, sizeof(j->sha), ",\"sha256_expected\":\"%s\",\"sha256_file\":\"%s\"",
+                 want, file);
+    }
+    /* issue #144: both slots, the trial (expected mode, time left), the boot-loop counter. #223:
+     * the button and the web upload are always possible ("mqtt": the value of ota.mqtt) */
+    bool can_boot = !j->f.trial && j->f.phase != GW_FW_DOWNLOADING &&
                     j->f.phase != GW_FW_RESTARTING && j->f.other_state != GW_FW_SLOT_EMPTY &&
                     j->f.other_state != GW_FW_SLOT_INVALID;
     snprintf(j->body, sizeof(j->body),
              "{\"running\":\"%s\",\"slot\":\"%s\",\"other\":\"%s\",\"other_slot\":\"%s\","
              "\"other_state\":\"%s\",\"other_why\":\"%s\",\"can_boot_other\":%s,"
-             "\"enabled\":%s,\"phase\":\"%s\",\"state\":\"%s\",\"detail\":\"%s\","
+             "\"mqtt\":%s,\"phase\":\"%s\",\"state\":\"%s\",\"detail\":\"%s\"%s,"
              "\"progress\":%u,\"bytes\":%lu,\"total\":%lu,\"trial\":%s,"
              "\"trial_left_s\":%lu,\"expected_mode\":\"%s\",\"boot_count\":%lu,"
              "\"safe_mode\":%s,\"cfg_prev\":{\"version\":\"%s\",\"saved\":%lld,"
@@ -1506,9 +1517,9 @@ static esp_err_t firmware_get(httpd_req_t *req)
              j->run, j->f.slot, j->other, j->f.other_slot,
              j->f.other_state < sizeof(k_fw_slot) / sizeof(k_fw_slot[0])
                  ? k_fw_slot[j->f.other_state] : "?",
-             j->other_why, can_boot ? "true" : "false", j->f.enabled ? "true" : "false",
+             j->other_why, can_boot ? "true" : "false", j->f.mqtt ? "true" : "false",
              j->f.phase < sizeof(k_fw_phase) / sizeof(k_fw_phase[0]) ? k_fw_phase[j->f.phase] : "?",
-             j->text, j->detail, j->f.progress, (unsigned long)j->f.bytes,
+             j->text, j->detail, j->sha, j->f.progress, (unsigned long)j->f.bytes,
              (unsigned long)j->f.total, j->f.trial ? "true" : "false",
              (unsigned long)j->f.trial_left_s,
              j->f.trial ? gw_ota_mode_name(j->f.expected) : "",
@@ -1527,11 +1538,44 @@ static bool media_type_is(const char *ctype, const char *type)
     return strncasecmp(ctype, type, n) == 0 && (ctype[n] == '\0' || ctype[n] == ';' || ctype[n] == ' ');
 }
 
+/* Issue #215: the SHA-256 of an uploaded file does not agree: 422 with the two values. The
+ * buffers are in PSRAM, not on the stack of the server task (it is not inlined into the upload). */
+static esp_err_t __attribute__((noinline)) send_sha_mismatch(httpd_req_t *req, const char *why)
+{
+    typedef struct {
+        gw_fw_status_t f;
+        char want[GW_OTA_SHA256_HEX];
+        char file[GW_OTA_SHA256_HEX];
+        char msg[2 * 160];
+        char body[2 * 160 + 2 * GW_OTA_SHA256_HEX + 128];
+    } sha_json_t;
+    sha_json_t *j = gw_storage_malloc(sizeof(*j));
+    if (j == NULL) {
+        return send_error(req, "422 Unprocessable Content", NULL, why);
+    }
+    gw_fw_get_status(&j->f);
+    j->want[0] = j->file[0] = '\0';
+    if (j->f.sha_mismatch) {
+        gw_ota_sha256_hex(j->f.sha_expected, j->want);
+        gw_ota_sha256_hex(j->f.sha_file, j->file);
+    }
+    json_escape(j->msg, sizeof(j->msg), why);
+    snprintf(j->body, sizeof(j->body),
+             "{\"ok\":false,\"error\":\"%s\",\"path\":\"\",\"line\":0,\"column\":0,"
+             "\"sha256_expected\":\"%s\",\"sha256_file\":\"%s\"}\n", j->msg, j->want, j->file);
+    esp_err_t r = send_json(req, "422 Unprocessable Content", j->body);
+    heap_caps_free(j);
+    return r;
+}
+
 /* {"url": "https://..."} (application/json): the gateway downloads it.
  * application/octet-stream: the body is the image itself, written as it arrives. Any other
  * content type is refused (issue #100: text/plain is what a foreign page can send).
  * Issue #144 item 3: "force": true in the JSON, or ?force=1 with an image, installs an image
- * that the pre-flight check refuses (409 without it); it must then reach recovery mode. */
+ * that the pre-flight check refuses (409 without it); it must then reach recovery mode.
+ * Issue #215: "sha256" in the JSON, or the header X-Image-SHA256 with an image: the SHA-256 that
+ * the file must have (64 hexadecimal characters; empty = no check). A file with another SHA-256
+ * is not installed: the upload answers 422 with the two values (GET gives them too). */
 static esp_err_t firmware_post(httpd_req_t *req)
 {
     if (!same_origin(req) || !authorized(req)) {
@@ -1554,13 +1598,15 @@ static esp_err_t firmware_post(httpd_req_t *req)
             return refuse_body(req, "400 Bad Request", "expected {\"url\": \"https://...\"}");
         }
         char url[GW_OTA_URL_MAX];
-        bool force = false;
-        bool parsed = gw_ota_parse_request(body, len, url, &force, why, sizeof(why));
+        bool force = false, has_sha = false;
+        uint8_t sha[GW_OTA_SHA256_LEN];
+        bool parsed = gw_ota_parse_request(body, len, url, &force, sha, &has_sha, why,
+                                           sizeof(why));
         heap_caps_free(body);
         if (!parsed) {
             return send_error(req, "400 Bad Request", NULL, why);
         }
-        esp_err_t e = gw_fw_start_url(url, force, why, sizeof(why));
+        esp_err_t e = gw_fw_start_url(url, has_sha ? sha : NULL, force, why, sizeof(why));
         if (e != ESP_OK) {
             return send_error(req, e == ESP_ERR_INVALID_ARG ? "400 Bad Request" : "409 Conflict",
                               NULL, why);
@@ -1571,8 +1617,23 @@ static esp_err_t firmware_post(httpd_req_t *req)
     if (req->content_len == 0) {
         return send_error(req, "411 Length Required", NULL, "image without Content-Length");
     }
-    esp_err_t e = gw_fw_upload_begin(req->content_len, query_flag(req, "force"), why,
-                                     sizeof(why));
+    /* issue #215: the optional SHA-256 of the image */
+    char hex[80] = "";
+    uint8_t sha[GW_OTA_SHA256_LEN];
+    bool has_sha = httpd_req_get_hdr_value_str(req, "X-Image-SHA256", hex, sizeof(hex)) == ESP_OK &&
+                   hex[0] != '\0';
+    if (has_sha) {
+        char reason[96];
+        if (!gw_ota_sha256_parse(hex, sha, reason, sizeof(reason))) {
+            snprintf(why, sizeof(why), "X-Image-SHA256: %s", reason);
+            return refuse_body(req, "400 Bad Request", why);
+        }
+    } else if (httpd_req_get_hdr_value_len(req, "X-Image-SHA256") >= sizeof(hex)) {
+        return refuse_body(req, "400 Bad Request",
+                           "X-Image-SHA256: expected 64 hexadecimal characters (0-9, a-f)");
+    }
+    esp_err_t e = gw_fw_upload_begin(req->content_len, has_sha ? sha : NULL,
+                                     query_flag(req, "force"), why, sizeof(why));
     if (e != ESP_OK) {
         return refuse_body(req, e == ESP_ERR_INVALID_SIZE ? "413 Content Too Large" : "409 Conflict",
                            why);
@@ -1604,6 +1665,9 @@ static esp_err_t firmware_post(httpd_req_t *req)
     }
     heap_caps_free(buf);
     e = gw_fw_upload_end(ok && got == req->content_len, why, sizeof(why));
+    if (e == ESP_ERR_INVALID_CRC) {
+        return send_sha_mismatch(req, why);   /* issue #215 */
+    }
     if (e != ESP_OK) {
         return refuse_body(req, !ok ? "503 Service Unavailable"
                                 : got < req->content_len ? "408 Request Timeout" : "400 Bad Request",

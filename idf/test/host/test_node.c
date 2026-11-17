@@ -89,7 +89,8 @@ static void test_nbirth_and_dbirth(void)
     TEST_ASSERT_FALSE(nb->retain);
     TEST_ASSERT_TRUE(dec.has_seq);
     TEST_ASSERT_EQUAL_UINT64(0, dec.seq);
-    TEST_ASSERT_EQUAL(BIRTH_NO_LABELS - 1, dec.count);   /* no Modbus TCP table */
+    /* no Modbus TCP table; #223: no ota.mqtt */
+    TEST_ASSERT_EQUAL(BIRTH_NO_LABELS - 1 - GW_NODE_MQTT_OTA_METRICS, dec.count);
     int i = decoded_find_name(&dec, "bdSeq");
     TEST_ASSERT_TRUE(i >= 0);
     /* tck-id-message-flow-edge-node-birth-publish-nbirth-payload-bdSeq: the NBIRTH carries
@@ -601,7 +602,8 @@ static void test_umh_plain_types_and_diagnostics(void)
         TEST_ASSERT_NOT_EQUAL_MESSAGE(SPB_DT_DATASET, dec.m[a].datatype, dec.m[a].name);
     }
     /* node metrics, uptime / 2 x heap / RSSI, 7 + 5 counters, Time Synced, Core Dump, 2 x Online */
-    TEST_ASSERT_EQUAL(UMH_BIRTH_NO_LABELS + 2, dec.count);
+    /* #223: without ota.mqtt */
+    TEST_ASSERT_EQUAL(UMH_BIRTH_NO_LABELS - GW_NODE_MQTT_OTA_METRICS + 2, dec.count);
     TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Info/Modbus"));
     TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Info/Modbus TCP"));
     TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Pump"));
@@ -703,6 +705,7 @@ static void test_umh_worst_case_nbirth_fits(void)
     gw_cfg_err_t err;
     TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(json, strlen(json), &c, &err), err.msg);
     TEST_ASSERT_EQUAL_size_t(39, strlen(c.devices[0].name));
+    c.ota.mqtt = true;   /* #223, #215: the worst case has the two firmware update commands */
     cfg = &c;
     gw_tagdb_reset();
     gw_node_ops_t ops = recorder_ops();
@@ -1383,7 +1386,7 @@ static void test_templates(void)
     TEST_ASSERT_EQUAL(3, g_rec.count);             /* NBIRTH, DBIRTH P1, DBIRTH Flat */
 
     msg(0);   /* NBIRTH: one definition for the two pumps, after the node's metrics */
-    TEST_ASSERT_EQUAL(BIRTH_NO_LABELS - 1 + 1, dec.count);
+    TEST_ASSERT_EQUAL(BIRTH_NO_LABELS - 1 - GW_NODE_MQTT_OTA_METRICS + 1, dec.count);
     int i = decoded_find_name(&dec, "Pump");
     TEST_ASSERT_TRUE(i >= 0);
     TEST_ASSERT_EQUAL(SPB_DT_TEMPLATE, dec.m[i].datatype);
@@ -1493,6 +1496,7 @@ static void test_worst_case_nbirth_fits(void)
     /* #206: the longest name and location (63 bytes) */
     memset(c.gateway.name, 'n', sizeof(c.gateway.name) - 1);
     memset(c.gateway.location, 'l', sizeof(c.gateway.location) - 1);
+    c.ota.mqtt = true;             /* #223, #215: the two firmware update commands too */
     gw_tagdb_reset();
     gw_node_ops_t ops = recorder_ops();
     const gw_node_info_t info = {.firmware = "0.1.0+g0123456.dirty-xxxxxxxxxxxxxxxxxxxxxxxxx",
@@ -1742,7 +1746,7 @@ static void test_modbus_tcp_table(void)
     gw_mbap_stats_add(&g);
     gw_node_session_up(&node, 0);
     msg(0);
-    TEST_ASSERT_EQUAL(BIRTH_NO_LABELS, dec.count);
+    TEST_ASSERT_EQUAL(BIRTH_NO_LABELS - GW_NODE_MQTT_OTA_METRICS, dec.count);   /* #223 */
     int i = decoded_find_name(&dec, "Node Info/Modbus TCP");
     TEST_ASSERT_TRUE(i >= 0);
     TEST_ASSERT_EQUAL(SPB_DT_DATASET, dec.m[i].datatype);
@@ -2404,10 +2408,132 @@ static void test_dbirth_larger_than_buffer(void)
     gw_port_log_capture(NULL, 0);
 }
 
-/* FW-1: NBIRTH declares the update command and its state; an NCMD with the URL reaches the
- * firmware_update op (only a non-empty string); state changes go out as NDATA. */
+/* #223: the node of the spec configuration with ota.mqtt on (updates from MQTT accepted). */
+static void use_mqtt_ota(void)
+{
+    static gw_config_t c;
+    c = *support_spec_config();
+    c.ota.mqtt = true;
+    cfg = &c;
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+}
+
+/* #223: with ota.mqtt off (the default) the NBIRTH has no Node Control/Firmware Update and no
+ * Node Control/Firmware SHA-256 (tck-id-topics-nbirth-metric-reqs), but it has the state and the
+ * progress (an update from the web UI changes them). An NCMD with them, by name or by alias, starts
+ * nothing and the log gives the cause (tck-id-operational-behavior-data-commands-ncmd-metric-name:
+ * the Edge Node is resilient to a metric that is not in the NBIRTH). */
+static void test_firmware_update_off_without_ota_mqtt(void)
+{
+    TEST_ASSERT_FALSE(cfg->ota.mqtt);
+    gw_node_session_up(&node, 0);
+    msg(0);
+    TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Control/Firmware Update"));
+    TEST_ASSERT_EQUAL(-1, decoded_find_name(&dec, "Node Control/Firmware SHA-256"));
+    TEST_ASSERT_TRUE(decoded_find_name(&dec, "Firmware Update/State") >= 0);
+    TEST_ASSERT_TRUE(decoded_find_name(&dec, "Firmware Update/Progress") >= 0);
+    TEST_ASSERT_TRUE(decoded_find_name(&dec, "Node Control/Boot Other Slot") >= 0);
+    char log[1024] = "";
+    gw_port_log_capture(log, sizeof(log));
+    recorder_clear();
+    spb_metric_t m[2] = {{.name = "Node Control/Firmware SHA-256", .datatype = SPB_DT_STRING,
+                          .v.str = "17bf8431d18e8d424fb300303419bebde3749ad415de75afdaf4ecb1776030dd"},
+                         {.name = "Node Control/Firmware Update", .datatype = SPB_DT_STRING,
+                          .v.str = "https://fw.example/gw-0.2.0.bin"}};
+    send("spBv1.0/Plant1/NCMD/GW01", m, 2);
+    spb_metric_t a = {.alias = GW_ALIAS_FW_UPDATE, .datatype = SPB_DT_STRING,
+                      .v.str = "https://fw.example/gw-0.2.0.bin"};
+    send("spBv1.0/Plant1/NCMD/GW01", &a, 1);
+    gw_port_log_capture(NULL, 0);
+    TEST_ASSERT_EQUAL(0, g_rec.fw_updates);
+    TEST_ASSERT_EQUAL(0, g_rec.fw_shas);
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    static const char why[] = "discarded: firmware updates from MQTT are off (ota.mqtt); no "
+                              "update started";
+    int found = 0;
+    for (const char *at = strstr(log, why); at != NULL; at = strstr(at + 1, why)) {
+        found++;
+    }
+    TEST_ASSERT_EQUAL(3, found);
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Node Control/Firmware Update'"));
+    TEST_ASSERT_NOT_NULL(strstr(log, "metric 'Node Control/Firmware SHA-256'"));
+    TEST_ASSERT_NOT_NULL(strstr(log, "(alias 40) discarded"));
+}
+
+/* #215 (with ota.mqtt): the NBIRTH declares Node Control/Firmware SHA-256 (String, empty,
+ * tck-id-topics-nbirth-metrics). The SHA-256 of an NCMD goes to the firmware_sha256 op before the
+ * URL of the same NCMD starts the update, also when it comes after the URL; "" clears it. A SHA-256
+ * that is not valid (tck-id-operational-behavior-data-commands-ncmd-metric-value) is discarded,
+ * and the URL of the same NCMD starts nothing. */
+static void test_firmware_sha256_command(void)
+{
+    use_mqtt_ota();
+    gw_node_session_up(&node, 0);
+    msg(0);
+    int h = decoded_find_name(&dec, "Node Control/Firmware SHA-256");
+    TEST_ASSERT_TRUE(h >= 0);
+    TEST_ASSERT_EQUAL(SPB_DT_STRING, dec.m[h].datatype);
+    TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_FW_SHA256, dec.m[h].alias);
+    TEST_ASSERT_EQUAL_STRING("", dec.m[h].str);
+    recorder_clear();
+    /* the URL first, the SHA-256 (capital letters) second: the SHA-256 applies to this update */
+    spb_metric_t both[2] = {{.name = "Node Control/Firmware Update", .datatype = SPB_DT_STRING,
+                             .v.str = "https://fw.example/gw-0.2.0.bin"},
+                            {.name = "Node Control/Firmware SHA-256", .datatype = SPB_DT_STRING,
+                             .v.str = "17BF8431D18E8D424FB300303419BEBDE3749AD415DE75AFDAF4ECB1776030DD"}};
+    send("spBv1.0/Plant1/NCMD/GW01", both, 2);
+    TEST_ASSERT_EQUAL(1, g_rec.fw_shas);
+    TEST_ASSERT_EQUAL(1, g_rec.fw_updates);
+    TEST_ASSERT_TRUE(g_rec.fw_sha_at_update);
+    TEST_ASSERT_EQUAL_HEX8(0x17, g_rec.fw_sha[0]);
+    TEST_ASSERT_EQUAL_HEX8(0xdd, g_rec.fw_sha[31]);
+    TEST_ASSERT_EQUAL(0, g_rec.count);
+    /* by alias, empty: clears it */
+    spb_metric_t clr = {.alias = GW_ALIAS_FW_SHA256, .datatype = SPB_DT_STRING, .v.str = ""};
+    send("spBv1.0/Plant1/NCMD/GW01", &clr, 1);
+    TEST_ASSERT_EQUAL(2, g_rec.fw_shas);
+    TEST_ASSERT_FALSE(g_rec.fw_sha_set);
+    /* not valid (63 characters, a space, not a string): discarded; the URL of the same NCMD
+     * starts nothing */
+    char log[1024] = "";
+    gw_port_log_capture(log, sizeof(log));
+    spb_metric_t bad[2] = {{.name = "Node Control/Firmware SHA-256", .datatype = SPB_DT_STRING,
+                            .v.str = "17bf8431d18e8d424fb300303419bebde3749ad415de75afdaf4ecb1776030d"},
+                           {.name = "Node Control/Firmware Update", .datatype = SPB_DT_STRING,
+                            .v.str = "https://fw.example/gw-0.2.0.bin"}};
+    send("spBv1.0/Plant1/NCMD/GW01", bad, 2);
+    spb_metric_t sp = {.alias = GW_ALIAS_FW_SHA256, .datatype = SPB_DT_STRING,
+                       .v.str = "17bf8431d18e8d424fb300303419bebde3749ad415de75afdaf4ecb1776030 d"};
+    send("spBv1.0/Plant1/NCMD/GW01", &sp, 1);
+    spb_metric_t num = {.alias = GW_ALIAS_FW_SHA256, .datatype = SPB_DT_UINT32, .v.num = 5};
+    send("spBv1.0/Plant1/NCMD/GW01", &num, 1);
+    gw_port_log_capture(NULL, 0);
+    TEST_ASSERT_EQUAL(2, g_rec.fw_shas);
+    TEST_ASSERT_EQUAL(1, g_rec.fw_updates);
+    TEST_ASSERT_NOT_NULL(strstr(log, "expected 64 hexadecimal characters (0-9, a-f), got 63"));
+    TEST_ASSERT_NOT_NULL(strstr(log, "got other characters in 64"));
+    TEST_ASSERT_NOT_NULL(strstr(log, "Firmware SHA-256 needs a string"));
+    TEST_ASSERT_NOT_NULL(strstr(log, "NCMD Firmware Update not started: the Firmware SHA-256 of "
+                                     "the same NCMD is not valid"));
+    /* two URLs in one NCMD: only the first starts */
+    spb_metric_t two[2] = {{.name = "Node Control/Firmware Update", .datatype = SPB_DT_STRING,
+                            .v.str = "https://fw.example/a.bin"},
+                           {.alias = GW_ALIAS_FW_UPDATE, .datatype = SPB_DT_STRING,
+                            .v.str = "https://fw.example/b.bin"}};
+    send("spBv1.0/Plant1/NCMD/GW01", two, 2);
+    TEST_ASSERT_EQUAL(2, g_rec.fw_updates);
+    TEST_ASSERT_EQUAL_STRING("https://fw.example/a.bin", g_rec.fw_url);
+}
+
+/* FW-1: with ota.mqtt (#223), the NBIRTH declares the update command and its state; an NCMD with
+ * the URL reaches the firmware_update op (only a non-empty string); state changes go out as
+ * NDATA. */
 static void test_firmware_update_metrics(void)
 {
+    use_mqtt_ota();
     gw_node_set_firmware_status(&node, "rolled back: 0.2.0", 0);   /* before the session */
     TEST_ASSERT_EQUAL(0, g_rec.count);
     gw_node_session_up(&node, 0);
@@ -2525,6 +2651,7 @@ static size_t raw_fw_ncmd(uint8_t *out, size_t n)
  * a longer one makes the NCMD undecodable: nothing applied, nothing cut. */
 static void test_firmware_url_limit(void)
 {
+    use_mqtt_ota();
     gw_node_session_up(&node, 0);
     recorder_clear();
     static uint8_t raw[512];
@@ -2760,6 +2887,8 @@ int main(void)
     RUN_TEST(test_dbirth_too_large_not_retried_on_every_change);
     RUN_TEST(test_dbirth_larger_than_buffer);
     RUN_TEST(test_firmware_update_metrics);
+    RUN_TEST(test_firmware_update_off_without_ota_mqtt);
+    RUN_TEST(test_firmware_sha256_command);
     RUN_TEST(test_boot_other_slot_command);
     RUN_TEST(test_firmware_url_limit);
     RUN_TEST(test_store_and_forward_counters);

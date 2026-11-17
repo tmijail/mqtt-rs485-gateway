@@ -79,16 +79,18 @@ The responses of `PUT /api/config`:
 | Method and route | What it does |
 |---|---|
 | `GET /api/firmware` | The state of the update and of the two slots. Refer to [`GET /api/firmware`](#get-apifirmware) |
-| `POST /api/firmware` | `application/json` with `{"url": "https://…"}` downloads the image. `application/octet-stream` with the image as the body uploads it. `"force": true` or `?force=1` forces the image into recovery mode |
+| `POST /api/firmware` | `application/json` with `{"url": "https://…", "sha256": "…", "force": true}` downloads the image. Only `url` is necessary. `application/octet-stream` with the image as the body uploads it, with the optional header `X-Image-SHA256`. `"force": true` or `?force=1` forces the image into recovery mode. Refer to [`POST /api/firmware`](#post-apifirmware) |
 | `POST /api/firmware/other` | Restarts into the image of the other slot, on trial, after the pre-flight check. `?force=1` forces. `202 {"ok":true,"restart":true}` |
 
 The errors of the firmware routes:
 
 | Status | Cause |
 |---|---|
+| `400` | `POST /api/firmware`: the body or the URL is not valid, or the SHA-256 does not have 64 hexadecimal characters |
 | `404` | `/other`: the other slot is empty, or it failed its verification |
 | `409` | A trial is in progress (`testing <version>: N s left`), a transfer is in progress, or the pre-flight check refuses the image. The error lists the reasons |
 | `415` | `POST /api/firmware` with another `Content-Type` |
+| `422` | An upload whose SHA-256 does not agree with `X-Image-SHA256`. The gateway did not install the image |
 
 ### Access point and claim window
 
@@ -283,13 +285,42 @@ The level of a tag is the lowest severity that the tag writes to the log: the co
 
 | Field | What it is |
 |---|---|
+| `running`, `slot` | The version of the firmware that runs, and its slot (`ota_0` or `ota_1`) |
 | `other`, `other_slot`, `other_state`, `other_why` | The other slot. `other_state` is `empty`, `previous`, `new`, `rejected` or `invalid` |
 | `can_boot_other` | The button "Restart into `<version>`" is available |
-| `phase`, `state`, `detail`, `progress`, `bytes`, `total` | The update. For the values of `state`, refer to [Update the firmware](../how-to/update-the-firmware.md#make-sure-that-the-update-is-complete) |
+| `mqtt` | The value of `ota.mqtt`: `true` when a Sparkplug host can start an update. In recovery mode it is `false` |
+| `phase`, `state`, `detail`, `progress`, `bytes`, `total` | The update. `phase` is `idle`, `downloading`, `restarting`, `failed`, `testing`, `installed` or `rolled_back`. For the values of `state`, refer to [Update the firmware](../how-to/update-the-firmware.md#make-sure-that-the-update-is-complete) |
+| `sha256_expected`, `sha256_file` | Only when the last update failed because the SHA-256 did not agree: the SHA-256 that the request gave, and the SHA-256 of the file. 64 small hexadecimal characters each |
 | `trial`, `trial_left_s`, `expected_mode` | The trial of a new image |
 | `boot_count`, `safe_mode` | The crash counter and safe mode. The cause of safe mode and its time left are in `GET /api/status` |
 | `cfg_prev` | The configuration from before the update: `version`, `saved`, `schema`. `version` is empty when there is none |
 | `cfg_prev_restore` | Recovery mode: the web UI shows the restore button |
+
+### `POST /api/firmware`
+
+A download from a URL:
+
+```json
+{"url": "https://files.example.com/gw/rs485_spb_gateway-0.2.0.bin",
+ "sha256": "17bf8431d18e8d424fb300303419bebde3749ad415de75afdaf4ecb1776030dd", "force": false}
+```
+
+| Key | Rule |
+|---|---|
+| `url` | Necessary. An `https://` URL, 255 characters at most |
+| `sha256` | Optional. The SHA-256 of the image file: 64 hexadecimal characters, capital or small letters. Empty = no check |
+| `force` | Optional. `true` installs an image that the pre-flight check refuses. The image must then reach recovery mode |
+
+The answer is `202 {"ok":true,"started":true}`. The result comes later in `GET /api/firmware`.
+
+An upload: the body is the image, with `Content-Type: application/octet-stream` and `Content-Length`. The optional header `X-Image-SHA256` gives the SHA-256 of the file. `?force=1` forces the image. The answer is `200 {"ok":true,"restart":true}`.
+
+With a SHA-256, the gateway calculates the SHA-256 of the image that it wrote, before it sets the image as the boot image. When the two values do not agree, the gateway does not install the image, and the firmware that runs continues to run. The state is `failed: image <version>: the SHA-256 of the file does not agree`. An upload then gets this answer:
+
+```json
+{"ok":false,"error":"image 0.2.0: the SHA-256 of the file does not agree","path":"","line":0,"column":0,
+ "sha256_expected":"17bf8431…6030dd","sha256_file":"a1542ecc…5fef64b"}
+```
 
 ### `GET /api/status`
 

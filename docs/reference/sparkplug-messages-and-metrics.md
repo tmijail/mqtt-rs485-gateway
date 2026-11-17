@@ -53,10 +53,11 @@ The NBIRTH contains these metrics.
 | `DI/1` to `DI/8` | 10 to 17 | Boolean | The digital inputs, after the debounce |
 | `DO/1` to `DO/8` | 20 to 27 | Boolean | Writable. The digital outputs. Null and BAD quality while the expander does not respond |
 | `Counter/1` to `Counter/8` | 30 to 37 | UInt64 | The pulse counters of the DIs |
-| `Node Control/Firmware Update` | 40 | String | Writable. Empty in the NBIRTH |
+| `Node Control/Firmware Update` | 40 | String | Writable. Empty in the NBIRTH. Only with `ota.mqtt: true` |
 | `Firmware Update/State` | 41 | String | The result of the last update |
 | `Firmware Update/Progress` | 42 | UInt32 | % |
 | `Node Control/Boot Other Slot` | 43 | Boolean | Writable |
+| `Node Control/Firmware SHA-256` | 44 | String | Writable. Empty in the NBIRTH. Only with `ota.mqtt: true` |
 | `Node Info/Uptime` | 50 | UInt64 | The seconds since the boot |
 | `Node Info/Free Heap` | 51 | UInt32 | The free bytes of the internal RAM |
 | `Node Info/Min Free Heap` | 52 | UInt32 | The minimum free internal RAM since the boot |
@@ -133,7 +134,8 @@ The gateway does not use template parameters.
 | `Node Control/Rebirth` | Boolean `true` | Stops the NDATA and DDATA. Sends the NBIRTH and all the DBIRTHs again. `seq` starts again at 0, and the NBIRTH keeps the `bdSeq` of the session |
 | `Node Control/Reboot` | Boolean `true` | Orderly restart, with the NDEATH |
 | `Node Control/Scan Rate` | UInt32 | One poll interval for all the devices: 50 to 3 600 000 ms. 0 = each device uses its `poll_ms` |
-| `Node Control/Firmware Update` | String | Downloads and installs the image at the `https://` URL (255 characters at most) |
+| `Node Control/Firmware Update` | String | Downloads and installs the image at the `https://` URL (255 characters at most). Only with `ota.mqtt: true` |
+| `Node Control/Firmware SHA-256` | String | The SHA-256 of the image file for the next `Node Control/Firmware Update`: 64 hexadecimal characters, capital or small letters. Empty = no check. In the same NCMD as the URL or in an earlier one. A value that is not valid also stops the URL of the same NCMD. Only with `ota.mqtt: true` |
 | `Node Control/Boot Other Slot` | Boolean `true` | Restarts into the image of the other slot, on trial, after the pre-flight check |
 | `DO/1` to `DO/8` | Boolean | Sets the output. A DO with a local rule refuses the command |
 

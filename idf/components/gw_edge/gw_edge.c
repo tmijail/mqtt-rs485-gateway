@@ -765,13 +765,30 @@ static bool op_request_write(void *ctx, uint16_t tag, const gw_tag_value_t *valu
     return gw_bus_request_write(tag, value);
 }
 
-/* FW-1: NCMD "Node Control/Firmware Update"; the outcome arrives through gw_fw's status. NCMD
- * has no force (issue #144 item 3): the pre-flight check refuses what it refuses. */
+/* #215: the SHA-256 of the NCMD "Node Control/Firmware SHA-256", for the next NCMD "Node
+ * Control/Firmware Update" (this task only; RTC FAST memory, not the DRAM heap's, issue #80) */
+static RTC_FAST_ATTR uint8_t s_fw_sha[GW_OTA_SHA256_LEN];
+static bool s_fw_sha_set;
+
+static void op_firmware_sha256(void *ctx, const uint8_t *sha256)
+{
+    (void)ctx;
+    s_fw_sha_set = sha256 != NULL;
+    if (s_fw_sha_set) {
+        memcpy(s_fw_sha, sha256, sizeof(s_fw_sha));
+    }
+}
+
+/* FW-1: NCMD "Node Control/Firmware Update" (only with ota.mqtt: gw_node refuses it otherwise,
+ * #223); the outcome arrives through gw_fw's status. NCMD has no force (issue #144 item 3): the
+ * pre-flight check refuses what it refuses. The SHA-256 of an earlier (or the same) NCMD applies
+ * to this update only (#215). */
 static void op_firmware_update(void *ctx, const char *url)
 {
     (void)ctx;
     char why[200];
-    gw_fw_start_url(url, false, why, sizeof(why));
+    gw_fw_start_url(url, s_fw_sha_set ? s_fw_sha : NULL, false, why, sizeof(why));
+    s_fw_sha_set = false;
 }
 
 /* Issue #144 item 6: NCMD "Node Control/Boot Other Slot"; the outcome arrives through gw_fw's
@@ -2030,6 +2047,7 @@ esp_err_t gw_edge_start(const gw_config_t *cfg, const gw_node_info_t *info)
         .set_scan_rate = op_set_scan_rate,
         .reboot = op_reboot,
         .firmware_update = op_firmware_update,
+        .firmware_sha256 = op_firmware_sha256,
         .boot_other = op_boot_other,
         .diagnostics = op_diagnostics,
         .ctx = NULL,

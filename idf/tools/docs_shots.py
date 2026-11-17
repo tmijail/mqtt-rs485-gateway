@@ -250,16 +250,58 @@ REFUSAL = ("pre-flight check: image 0.0.9 refused: the configuration needs schem
 
 def refuse_upload(page):
     """Issue #192: upload an image, accept the confirmation, and get the 409 of the pre-flight
-    check (REFUSAL): the box of the refused image shows."""
+    check (REFUSAL): the box of the refused image shows. Issue #215: the choice of the file does
+    not start the upload; the button 'Upload and install' does."""
     page.route(re.compile(r".*/api/firmware$"), lambda r: r.fulfill(
         status=409, content_type="application/json",
         body=json.dumps({"ok": False, "error": REFUSAL})) if r.request.method == "POST"
         else r.fallback())
+    page.click('#fw-card [data-src="file"]')
     page.set_input_files("#fw-file", {"name": "rs485_spb_gateway-0.0.9.bin",
                                       "mimeType": "application/octet-stream",
                                       "buffer": bytes([0xE9]) + bytes(4095)})
+    page.click("#fw-go")
     page.click("#dlg-ok")
     page.wait_for_selector("#fw-ref:not(.hidden)")
+
+
+# Issue #215: an image URL and its SHA-256 (the values of the prototype)
+FW_URL = "https://files.example.com/gw/rs485_spb_gateway-0.2.0.bin"
+FW_SHA = "17bf8431d18e8d424fb300303419bebde3749ad415de75afdaf4ecb1776030dd"
+FW_FILE_SHA = "a1542ecce24b2afa8515aab3436f5e32ea054fa57257faf50f63efc255fef64b"
+
+
+def firmware_url(page):
+    """Issue #215: the source 'From a URL', with the URL and the SHA-256 of the image."""
+    page.click('#fw-card [data-src="url"]')
+    page.fill("#fw-url", FW_URL)
+    page.fill("#fw-sha", FW_SHA)
+
+
+def sha_mismatch(page):
+    """Issue #215: the answer of GET /api/firmware after a download whose SHA-256 does not agree
+    (the QEMU build of the docs has no image server)."""
+    def answer(r):
+        if r.request.method != "GET":
+            r.fallback()
+            return
+        w = json.loads(r.fetch().text())
+        w.update({"phase": "failed", "state": "failed: image 0.2.0: the SHA-256 of the file does "
+                  "not agree", "detail": "image 0.2.0: the SHA-256 of the file does not agree",
+                  "sha256_expected": FW_SHA, "sha256_file": FW_FILE_SHA})
+        r.fulfill(status=200, content_type="application/json",
+                  body=json.dumps(freeze(w, FREEZE["/api/firmware"])))
+    page.route(re.compile(r".*/api/firmware$"), answer)
+    firmware_url(page)
+    page.wait_for_selector("#fw-panel .pb")
+
+
+def ota_explainer(page):
+    """Issue #223: the card 'Firmware updates' of the Configuration tab, with the explainer of
+    'Update from MQTT' (a click keeps it open)."""
+    page.click("nav button[data-tab=config]")
+    page.evaluate("document.querySelector('#c-ota').scrollIntoView()")
+    page.click("#f-ota button.qi[data-x=otamqtt]")
 
 
 def test_read(page):
@@ -549,15 +591,30 @@ SHOTS = [
              "push of BOOT opens the claim window. It has the red button 'Remove the password' "
              "and Cancel."),
     # docs/how-to/update-the-firmware.md
-    Shot("firmware-card", "configured", DESKTOP, "/", element=".card:has(#st-fw)",
-         actions=[("wait_text", "#st-fw", "Running")], wait="#st-fw",
-         alt="The card 'Firmware' of the Status tab: the running version, its slot, the state "
-             "of the last update, and the other slot. Below are the field for the URL of an "
-             "image with the button 'Download and install' and the check box 'Force (into "
-             "recovery mode)', and the field 'Upload an image'."),
+    # issue #215: the reorganized card
+    Shot("firmware-card", "configured", DESKTOP, "/", element="#fw-card",
+         actions=[("wait_text", "#fw-mq", "Off"), firmware_url], wait="#fw-go:enabled",
+         alt="The card 'Firmware' of the Status tab: a summary with the running version and its "
+             "slot, the last update (idle), the other slot and Update from MQTT (Off). Below is "
+             "the area 'Install a new image' with the source 'From a URL' selected, the field "
+             "'Image URL', the field 'SHA-256 (optional)' with a value, and the button 'Download "
+             "and install'."),
+    Shot("firmware-sha-mismatch", "configured", DESKTOP, "/", element="#fw-card",
+         actions=[("wait_text", "#fw-mq", "Off"), sha_mismatch], wait="#fw-panel .pb",
+         alt="The card 'Firmware' after a download whose SHA-256 does not agree: the last update "
+             "is failed, and a red panel gives the expected SHA-256 and the SHA-256 of the file. "
+             "The gateway did not install the image, and the running firmware continues to "
+             "run."),
+    # issue #223: docs/how-to/update-the-firmware.md and docs/reference/configuration.md
+    Shot("firmware-updates-card", "configured", DESKTOP, "/", actions=[ota_explainer],
+         wait="#xpl:not(.hidden)",
+         alt="The card 'Firmware updates' of the Configuration tab: the check box 'Update from "
+             "MQTT' is off. The hint tells to turn it on only when the broker lets only the "
+             "Sparkplug host publish to the NCMD topic of the gateway. The explainer of the "
+             "field is open."),
     # issue #192: docs/how-to/update-the-firmware.md
-    Shot("firmware-refused", "configured", DESKTOP, "/", element=".card:has(#st-fw)",
-         actions=[("wait_text", "#st-fw", "Running"), refuse_upload], wait="#fw-rgo",
+    Shot("firmware-refused", "configured", DESKTOP, "/", element="#fw-card",
+         actions=[("wait_text", "#fw-mq", "Off"), refuse_upload], wait="#fw-rgo",
          alt="The card 'Firmware' after an upload that the pre-flight check refused: a red box "
              "gives the file and its version, the reason (the configuration needs schema 2, "
              "the image reads 1) and what recovery mode is. It has the buttons 'Install into "

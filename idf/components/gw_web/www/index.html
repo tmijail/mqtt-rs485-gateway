@@ -81,9 +81,7 @@ button.danger{border-color:var(--bad);color:var(--bad)}button.dgo{background:var
 #dlg ul{margin:0 0 14px;padding-left:20px}#dlg li{margin-bottom:4px}#dlg .warnline{color:var(--warn);font-weight:600}#dlg input{margin-top:4px;padding:6px 8px}
 #dlg .act{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
 @media (max-width:600px){#dlg{width:100%;max-width:100%;max-height:90vh;overflow:auto;margin:auto 0 0;border-width:1px 0 0;border-radius:12px 12px 0 0;box-shadow:0 -6px 24px rgba(0,0,0,.25);padding:20px 16px 24px}
- #dlg h3{font-size:17px}#dlg label{font-size:13px}#dlg input{padding:10px;font-size:16px}#dlg .act{flex-direction:column-reverse}#dlg .act button{min-height:44px;width:100%}
- #fw-card .row{flex-direction:column;align-items:stretch}#fw-card button{min-height:44px}#fw-card label.row{flex-direction:column!important;align-items:flex-start}
- #fw-card label.chk{flex-direction:row!important;align-items:center;min-height:44px;font-size:13px;color:var(--fg)}#fw-card label.chk input{align-self:center}#fw-url{width:100%;padding:8px;font-size:16px}}
+ #dlg h3{font-size:17px}#dlg label{font-size:13px}#dlg input{padding:10px;font-size:16px}#dlg .act{flex-direction:column-reverse}#dlg .act button{min-height:44px;width:100%}}
 /* #206 the name in the header; #207 Identify; #209 #203 the card Restart and reset; #200 #199 the card Log */
 header .who{flex:1;min-width:0}header .who h1{flex:none}header .sub{font-size:12px;color:var(--mut);margin-top:1px}
 #ident:disabled,#rr-card button:disabled{opacity:.45;cursor:default}
@@ -98,6 +96,35 @@ details.card>summary{cursor:pointer}details.card>summary h2{display:inline;margi
  .log{height:250px;font-size:11.5px}.log .ln{white-space:pre-wrap;overflow-wrap:anywhere}#lg-card button,#lg-card select{min-height:44px}
  #lg-card .lvl .row{flex-direction:column;align-items:stretch}#lg-card .pill{justify-content:space-between;border-radius:6px;padding:0 0 0 10px;font-size:13px}
  #lg-card .pill button{min-height:44px;border-width:0 0 0 1px;border-radius:0 6px 6px 0}#lg-top{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}#lg-top span{grid-column:1/-1}}
+/* #215: the Firmware card: a summary, a panel for the state, one install area, the actions with a restart */
+#fw-card .sum{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--line);border-radius:6px;background:var(--sub)}
+#fw-card .sum>div{padding:8px 12px;border-left:1px solid var(--line);min-width:0}#fw-card .sum>div:first-child{border-left:0}
+#fw-card .sum .k{font-size:12px;color:var(--mut)}#fw-card .sum .v{font-size:16px;font-weight:600;margin-top:1px;overflow-wrap:anywhere}#fw-card .sum .s{font-size:12px;color:var(--mut);overflow-wrap:anywhere}
+#fw-card .dot.idle{background:var(--mut)}#fw-card .dot.run{background:var(--acc)}#fw-card .dot.bad{background:var(--bad)}#fw-card .dot.ok{background:var(--ok)}
+#fw-card .prevcfg{font-size:12px;color:var(--mut);margin-top:6px}
+#fw-card .panel{border:1px solid var(--line);border-left:4px solid var(--acc);border-radius:6px;padding:10px 12px;margin-top:12px;background:var(--card)}
+#fw-card .panel.pw{border-left-color:var(--warn)}#fw-card .panel.pb{border-color:var(--bad);border-left-color:var(--bad);background:var(--badbg)}
+#fw-card .panel h3{font-size:14px;margin:0 0 6px;overflow-wrap:anywhere}#fw-card .panel p{margin:6px 0 0;max-width:780px}
+#fw-card .prog{height:8px;border-radius:4px;background:var(--sub);overflow:hidden;border:1px solid var(--line);margin:6px 0;max-width:640px}#fw-card .prog>i{display:block;height:100%;background:var(--acc)}#fw-card .prog.warn>i{background:var(--warn)}
+#fw-card .hash{font-family:ui-monospace,monospace;font-size:12px;overflow-wrap:anywhere;margin:2px 0}#fw-card .mono{font-family:ui-monospace,monospace;font-size:12px}
+#fw-card .inst{margin-top:16px;border-top:1px solid var(--line);padding-top:12px}#fw-card h3{font-size:14px;margin:0}
+#fw-card .lockmsg{font-size:12.5px;color:var(--warn);margin:4px 0 0}#fw-card .locked{opacity:.5;pointer-events:none}
+#fw-card .src{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;max-width:640px;margin-top:4px}
+#fw-card .src button{text-align:left;padding:8px 12px;border-radius:6px;display:flex;gap:10px;align-items:flex-start}
+#fw-card .src .rd{width:14px;height:14px;border-radius:50%;border:2px solid var(--mut);margin-top:3px;flex:none}
+#fw-card .src button[aria-checked=true]{border-color:var(--acc);box-shadow:inset 0 0 0 1px var(--acc)}#fw-card .src button[aria-checked=true] .rd{border-color:var(--acc);background:radial-gradient(circle,var(--acc) 0 3px,transparent 4px)}
+#fw-card .src b{display:block;font-size:13px}#fw-card .src .d{display:block;font-size:12px;color:var(--mut)}
+#fw-card .slot{margin-top:10px;max-width:640px}#fw-card .hint0{font-size:12.5px;color:var(--mut);border:1px dashed var(--line);border-radius:6px;padding:8px 10px}
+#fw-card .fileb{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px solid var(--line);border-radius:6px;padding:6px 6px 6px 10px;background:var(--bg);color:var(--fg)}#fw-card .fileb .mono{flex:1;min-width:0;overflow-wrap:anywhere}
+#fw-card .act{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}#fw-card .note{font-size:12px;color:var(--mut);margin-top:6px;max-width:640px}
+#fw-card .fw-err{color:var(--bad);font-size:12px;margin-top:3px}#fw-card button:disabled{opacity:.45;cursor:default}
+#fw-card .zone{border:1px solid var(--bad);background:var(--badbg);border-radius:6px;padding:10px 12px;margin-top:16px}#fw-card .zone h3{color:var(--bad);margin-bottom:6px}
+#fw-card .zrow{display:flex;gap:12px;align-items:flex-start;margin-top:8px}#fw-card .zrow p{flex:1;margin:0;max-width:640px}#fw-card .zrow button{flex:none}
+#fw-card .hidden{display:none}
+@media (max-width:600px){#fw-card .sum{grid-template-columns:repeat(2,minmax(0,1fr))}#fw-card .sum>div:nth-child(3){border-left:0}#fw-card .sum>div:nth-child(n+3){border-top:1px solid var(--line)}
+ #fw-card .src{grid-template-columns:minmax(0,1fr)}#fw-card .src button{min-height:56px}#fw-card input{padding:10px;font-size:16px}#fw-card input.mono{font-size:13px}
+ #fw-card .act{flex-direction:column;align-items:stretch}#fw-card .act button{min-height:44px;width:100%}
+ #fw-card .zrow{flex-direction:column;align-items:stretch}#fw-card .zrow button{min-height:44px;width:100%}#fw-card .panel button,#fw-card .fileb button,#fw-card .refuse button{min-height:44px}}
 </style>
 </head>
 <body>
@@ -117,11 +144,29 @@ details.card>summary{cursor:pointer}details.card>summary h2{display:inline;margi
  <div class="card"><h2>Modbus devices</h2><div id="st-mb" class="mut">no devices</div></div>
  <div class="card"><h2>Local I/O</h2><div id="st-io"></div>
   <div class="row"><button id="settime" title="Send the time of this computer to the gateway and its RTC. Use it on a network with no time server: without a valid time the gateway does not connect to the MQTT broker.">Set the time from the browser</button><span id="tm-msg" class="mut"></span></div></div>
- <div class="card" id="fw-card"><h2>Firmware</h2><div id="st-fw" class="mut"></div>
-  <div class="row"><button id="fw-other" class="hidden"></button><button id="fw-prev" class="hidden" title="Recovery mode: replace the stored configuration with the one from before the update, then restart.">Restore the configuration from before the update</button><span id="fw-msg" class="mut"></span></div>
+ <div class="card" id="fw-card"><h2>Firmware</h2>
+  <div class="sum" id="fw-sum" role="group" aria-label="Firmware summary">
+   <div><div class="k">Running</div><div class="v" id="fw-run">…</div><div class="s" id="fw-run-s"></div></div>
+   <div><div class="k">Last update</div><div class="v" id="fw-last"></div><div class="s" id="fw-last-s"></div></div>
+   <div><div class="k">Other slot</div><div class="v" id="fw-oth"></div><div class="s" id="fw-oth-s"></div></div>
+   <div><div class="k">Update from MQTT</div><div class="v" id="fw-mq"></div><div class="s">Change it in <a href="#c-ota" id="fw-mq-go">Configuration › Firmware updates</a>.</div></div></div>
+  <div id="fw-pcfg" class="prevcfg hidden"></div>
+  <div id="fw-panel"></div>
   <div id="fw-ref" class="refuse hidden" role="alert"></div>
-  <div class="row"><input id="fw-url" placeholder="https://server/rs485_spb_gateway.bin" size="40" aria-label="Image URL"><button id="fw-get">Download and install</button><label class="row chk" style="flex-direction:row" title="For a download: install also an image that the pre-flight check refuses. The image must then reach recovery mode or better."><input type="checkbox" id="fw-force"> Force (into recovery mode)</label></div>
-  <div class="row"><label class="row" style="flex-direction:row">Upload an image <input type="file" id="fw-file" accept=".bin,application/octet-stream"></label></div></div>
+  <div class="inst"><h3>Install a new image</h3><div id="fw-lock" class="lockmsg hidden"></div>
+   <div id="fw-inst">
+    <div class="fld" style="margin-top:8px"><span class="lbl" id="fw-l-src">Source</span><div class="src" role="radiogroup" aria-labelledby="fw-l-src">
+     <button type="button" role="radio" aria-checked="false" data-src="url"><i class="rd"></i><span><b>From a URL</b><span class="d">The gateway downloads the image from an HTTPS server.</span></span></button>
+     <button type="button" role="radio" aria-checked="false" data-src="file"><i class="rd"></i><span><b>From a file</b><span class="d">This page uploads the image from this computer.</span></span></button></div></div>
+    <div class="slot"><div id="fw-s0" class="hint0">Choose a source. Then give the SHA-256 of the image, if you have it.</div>
+     <div id="fw-s1" class="fld hidden"><span class="lbl"><label for="fw-url">Image URL</label></span><input id="fw-url" placeholder="https://server/rs485_spb_gateway.bin" autocomplete="off" spellcheck="false"></div>
+     <div id="fw-s2" class="fld hidden"><span class="lbl" id="fw-l-file">Image file</span><div class="fileb" role="group" aria-labelledby="fw-l-file"><span class="mono" id="fw-fname">No file chosen.</span><span class="mut" id="fw-fsize"></span><button type="button" id="fw-fpick">Choose a file</button><input type="file" id="fw-file" class="hidden" accept=".bin,application/octet-stream"></div></div></div>
+    <div class="fld" style="margin-top:10px;max-width:640px"><span class="lbl"><label for="fw-sha">SHA-256 (optional)</label><button type="button" class="qi" data-x="fwsha" data-t="SHA-256 (optional)" aria-label="About SHA-256" aria-expanded="false" aria-controls="xpl">?</button></span><input id="fw-sha" class="mono" placeholder="64 hexadecimal characters" autocomplete="off" spellcheck="false" aria-describedby="fw-sha-h"><span class="hint" id="fw-sha-h">For the download and for the upload.</span><span class="fw-err hidden" id="fw-sha-e"></span></div>
+    <div class="act"><button class="pri" id="fw-go" disabled>Install</button><span id="fw-msg" class="mut" aria-live="polite">Choose a source first.</span></div>
+    <div class="note">The gateway asks for a confirmation, writes the image into the other slot and restarts. The new image runs on trial for 60&nbsp;s. If the trial fails, this firmware runs again.</div></div></div>
+  <div class="zone hidden" id="fw-zone"><h3>Actions with a restart</h3>
+   <div class="zrow hidden" id="fw-z-other"><button class="danger" id="fw-other"></button><p id="fw-other-p"></p></div>
+   <div class="zrow hidden" id="fw-z-prev"><button class="danger" id="fw-prev">Restore the configuration from before the update</button><p id="fw-prev-p"></p></div></div></div>
  <div class="card"><h2>microSD card</h2><div id="st-sd" class="mut"></div>
   <div class="row"><button id="sd-fmt">Format the card</button><button id="sd-rst" class="hidden">Restart now</button></div><div id="sd-msg" class="mut"></div></div>
  <details class="card" id="lg-card"><summary><h2>Log</h2> <span id="lg-closed" class="mut">&middot; closed: the page does not ask for log lines. Open it to see the last lines.</span></summary>
@@ -145,6 +190,7 @@ details.card>summary{cursor:pointer}details.card>summary h2{display:inline;margi
  <div class="card"><h2>Sparkplug</h2><div class="grid" id="f-spb"></div>
   <h2 class="lbl" style="margin-top:12px">Device prefix (location)<button type="button" class="qi" data-x="pfx" data-t="Device prefix (location)" aria-label="About Device prefix (location)" aria-expanded="false" aria-controls="xpl">?</button></h2>
   <div id="f-pfx" class="row" data-perr="sparkplug.device_prefix" tabindex="-1"></div></div>
+ <div class="card" id="c-ota"><h2>Firmware updates</h2><div class="grid" id="f-ota"></div><p class="mut" style="margin:10px 0 0">Install an image in the card Firmware of the Status tab.</p></div>
  <div class="card"><h2>RS485</h2><div class="grid" id="f-rs485"></div></div>
  <div class="card"><h2>Web interface</h2><div class="grid" id="f-web"></div></div>
  <div class="card"><h2>Devices and tags</h2><div id="f-dev"></div><button id="add-dev">+ device</button></div>
@@ -271,7 +317,9 @@ const HELP={
  gloc:"Where the gateway is, for example the plant and the hall. The header and the title of the browser tab show it after the name.\nIt does not change the Sparkplug IDs or the topics. The NBIRTH gives it as Node Info/Location.\n~Up to 63 bytes. Default: empty.",
  gcom:"A note for the people who maintain the gateway, for example what it supplies and whom to call.\nOnly this tab shows it: the Status tab, the header and the NBIRTH do not.\n~Up to 255 bytes. Default: empty.",
  /* #199 */
- loglvl:"The lowest severity that a part of the firmware (a tag) writes to the log: the console, the syslog and this view. The tag `*` sets all the tags.\nThe gateway does not save the change. A restart sets all the tags to info again. `syslog.level` of the configuration filters only the copy to the syslog server.\n~none, error, warn, info, debug, verbose. Default: info."
+ loglvl:"The lowest severity that a part of the firmware (a tag) writes to the log: the console, the syslog and this view. The tag `*` sets all the tags.\nThe gateway does not save the change. A restart sets all the tags to info again. `syslog.level` of the configuration filters only the copy to the syslog server.\n~none, error, warn, info, debug, verbose. Default: info.",
+ otamqtt:"On: a Sparkplug host can start a firmware update over MQTT. The host sends the NCMD `Node Control/Firmware Update` with the URL of the image. The gateway downloads the image over HTTPS.\nEach client that can publish to the NCMD topic of this node can then change the firmware. Turn it on only when the ACL of the broker lets only the Sparkplug host publish there.\nAn update from this page is always possible, for a user who knows the web password.\n~Default: off.",
+ fwsha:"The SHA-256 of the image file, for example from `sha256sum rs485_spb_gateway.bin` or from the release page.\nThe gateway calculates the SHA-256 of the file that it gets, from the URL or from the upload. When the two do not agree, the gateway stops the update, and this firmware continues to run.\nIt is a check of the file, not a signature.\n~64 hexadecimal characters. Empty = no check. For the download from a URL and for the upload of a file."
 };
 function qi(k,t){return `<button type="button" class="qi" data-x="${k}" data-t="${esc(t)}" aria-label="About ${esc(t)}" aria-expanded="false" aria-controls="xpl">?</button>`}
 /* #190: one explainer for all the (?) buttons. It opens on hover, on keyboard focus and on a click
@@ -405,6 +453,7 @@ function updTopics(){
   const loc=umhLevels(id).map(l=>l[0]==="_"?`<span class="bad" title="UMH Core reads a level that starts with _ as the data contract">${esc(l)}</span>`:esc(l)).join(".");
   e.innerHTML=`Sparkplug: spBv1.0/${esc(g)}/DDATA/${esc(n)}/${esc(id)} <span class="mut">(${new TextEncoder().encode(id).length} bytes)</span><br>UMH: umh.v1.${loc}._raw.${esc(umhTag(t))}`;
  });
+ const h=$("#h-otamqtt");if(h)h.textContent=`Off by default. Turn it on only when the broker lets only your Sparkplug host publish to spBv1.0/${g}/NCMD/${n}.`;
 }
 function renderForms(){
  $("#f-gw").innerHTML=field("gateway.name","Name","str",0,0,{ml:63,help:"gname",ph:"Pump panel 2"})+field("gateway.location","Location","str",0,0,{ml:63,help:"gloc",ph:"Plant 2, hall B"})+
@@ -413,6 +462,9 @@ function renderForms(){
  $("#f-mqtt").innerHTML=field("mqtt.host","Broker","str",0,0,{help:"broker"})+field("mqtt.port","Port","int")+field("mqtt.client_id","Client ID","str",0,0,{help:"cid"})+field("mqtt.username","User","str")+field("mqtt.password","Password","pw")+field("mqtt.keepalive_s","Keepalive (s)","int",0,0,{help:"keep"});
  $("#f-spb").innerHTML=field("sparkplug.group_id","Group ID","str",0,0,{ml:32,help:"group"})+field("sparkplug.edge_node_id","Edge node ID","str",0,0,{ml:32,help:"edge"})+field("sparkplug.primary_host_id","Primary host ID","str",0,0,{ml:32,help:"phost"})+field("sparkplug.naming","Naming","sel",NAMING,true,{help:"naming"});
  $("#f-rs485").innerHTML=field("rs485.baud","Baud rate","int",0,0,{help:"baud"})+field("rs485.parity","Parity","sel",PAR,true)+field("rs485.stop_bits","Stop bits","int")+field("rs485.response_timeout_ms","Timeout (ms)","int",0,0,{help:"tmo"})+field("rs485.retries","Retries","int",0,0,{help:"retry"})+field("rs485.inter_frame_delay_ms","Inter-frame delay (ms)","int",0,0,{help:"ifd"})+field("local_io.di_debounce_ms","Debounce DI (ms)","int",0,0,{help:"deb"});
+ /* #223: ota.mqtt, the only control of the card (an update from the Status tab is always possible) */
+ $("#f-ota").innerHTML=`<div class="fld"><span class="lbl"><label for="i-ota.mqtt">Update from MQTT</label>${qi("otamqtt","Update from MQTT")}</span>${ctl("ota.mqtt","bool",false)}<span class="hint" id="h-otamqtt"></span></div>`;
+ document.getElementById("i-ota.mqtt").setAttribute("aria-describedby","h-otamqtt");
  $("#f-web").innerHTML=field("web.username","User","str")+field("web.password","Password (8 to 63)","pw",0,0,{ml:63,help:"webpw"})+PW2+field("web.port","Port","int");pw194();
  renderPrefix();
  const devs=cfg.devices||[];
@@ -566,6 +618,7 @@ function hdr206(g,node){const n=g.name||"",l=g.location||"";
 const mins=s=>`${Math.max(1,Math.ceil(s/60))} min`;
 let st0=null,sm0={};
 async function poll(){
+ if(fwUp)return;   /* #215: during an upload the gateway does not answer the other requests */
  const r=await api("GET","/api/status");if(r.status!==200||!r.json)return;
  const s=r.json,ban=$("#banner");st0=s;const sm=sm0=s.safe_mode||{};
  $("#node").textContent=s.sparkplug?`${s.sparkplug.group_id} / ${s.sparkplug.edge_node_id}`:"";
@@ -591,15 +644,74 @@ async function poll(){
  const cd=s.core_dump||{};$("#st-cd").classList.toggle("hidden",!cd.present);$("#cd-txt").textContent=cd.present?`Core dump in flash: ${cd.size} B (${cd.state}). It can contain secrets: keep the file safe, and erase the dump after the download.`:"";
  sd(s);
  ap(s.ap);
- const f=await api("GET","/api/firmware");if(f.status!==200||!f.json)return;const w=f.json;
- const OS={empty:"empty",previous:"previous",new:"set to boot",rejected:"rejected",invalid:"invalid (its verification failed)"};
- $("#st-fw").innerHTML=`Running: ${esc(w.running)} in ${esc(w.slot)}${w.trial?` · <span class="bad">testing: it must reach ${esc(w.expected_mode)} mode${w.trial_left_s?`, ${w.trial_left_s} s left`:""}</span>`:""}`+
-  `<br>Other slot (${esc(w.other_slot)}): ${w.other?`${esc(w.other)}, `:""}${OS[w.other_state]||esc(w.other_state)}${w.other_why?` (${esc(w.other_why)})`:""}`+
-  `${w.enabled?"":"<br>Updates disabled (ota.enabled)"}${w.safe_mode?`<br><span class="bad">Safe mode: ${sm0.cause==="request"?"on request":`${w.boot_count} crash resets in a row`}${sm0.left_s?`, ${mins(sm0.left_s)} left`:""}</span>`:""}`+
-  `<br>State: ${esc(w.state)}${w.phase==="downloading"?` (${w.progress} %)`:""}${w.detail&&w.detail!==w.state?`<br><span class="mut">${esc(w.detail)}</span>`:""}`+
-  `${w.cfg_prev&&w.cfg_prev.version?`<br>Configuration from before the update: ${esc(w.cfg_prev.version)}, ${w.cfg_prev.saved?`saved on ${new Date(w.cfg_prev.saved*1000).toISOString().slice(0,16).replace("T"," ")} UTC`:"saved at an unknown time"}`:""}`;
- $("#fw-prev").classList.toggle("hidden",!w.cfg_prev_restore);
- const ob=$("#fw-other");ob.textContent=`Restart into ${w.other||"the other slot"}`;ob.classList.toggle("hidden",w.other_state==="empty");ob.disabled=!w.can_boot_other;
+ fwMode=s.mode;fwCfgErr=(s.config||{}).error||"";
+ const f=await api("GET","/api/firmware");if(f.status!==200||!f.json||fwUp)return;fwW=f.json;fwRender();
+}
+/* #215: the Firmware card. fwW: the last GET /api/firmware; fwMode, fwCfgErr: the mode of
+   /api/status and the cause of a rejected configuration; fwSrc: the source ("url", "file" or "");
+   fwFile: the chosen file; fwUp: the upload of this page in progress (XMLHttpRequest gives its
+   progress); fwPend: the last download that this page started (for the #192 box of a refusal). */
+let fwW=null,fwMode="normal",fwCfgErr="",fwSrc="",fwFile=null,fwUp=null,fwPend=null;
+const FWTRIAL=60;   /* CONFIG_GW_FW_SELFCHECK_S */
+const FWOS={empty:"empty",previous:"previous",new:"set to boot",rejected:"rejected",invalid:"invalid: its verification failed"};
+const FWREF=/^pre-flight check: image (.+?) (?:refused|is unknown): (.*?)(?:; force installs it into recovery mode)?$/;
+const cap1=t=>t?t.charAt(0).toUpperCase()+t.slice(1):"";
+const fwShort=h=>`${h.slice(0,8)}…${h.slice(-6)}`;
+const fwDate=t=>t?`saved on ${new Date(t*1000).toISOString().slice(0,16).replace("T"," ")} UTC`:"saved at an unknown time";
+/* the "Last update" of the summary: [value, line below, dot, class of the value] */
+function fwLast(w){
+ if(fwUp)return ["uploading",`${fwUp.total?Math.floor(fwUp.sent*100/fwUp.total):0} %, from this page`,"run",""];
+ const st=w.state||"",i=st.indexOf(": "),head=i<0?st:st.slice(0,i),tail=i<0?"":cap1(st.slice(i+2));let m;
+ switch(w.phase){
+  case "downloading":return [head,`${w.progress} %`,"run",""];
+  case "restarting":return [head,"","run",""];
+  case "failed":return ["failed",w.sha256_file?"The SHA-256 does not agree.":(m=FWREF.exec(w.detail||""))?`The pre-flight check refused ${m[1]}.`:tail,"bad","bad"];
+  case "testing":return [head,w.trial_left_s?`${w.trial_left_s} s left`:"The confirmation is retried.","pz","warn"];
+  case "installed":return [head,"Confirmed after the trial.","ok","ok"];
+  case "rolled_back":return [head,tail,"bad","bad"];
+  default:return [head||"idle",st==="idle"?"No update since the boot.":tail,"idle",""];
+ }
+}
+function fwRender(){
+ const w=fwW||{},up=fwUp,dl=!up&&(w.phase==="downloading"||w.phase==="restarting"),rec=fwMode==="recovery";
+ const run=w.running||"this firmware",other=w.other||"the other slot";
+ $("#fw-run").textContent=w.running||"…";
+ $("#fw-run-s").innerHTML=`in ${esc(w.slot||"?")}${rec?' · <span class="bad">recovery mode</span>':""}${w.safe_mode?` · <span class="bad">safe mode: ${sm0.cause==="request"?"on request":`${w.boot_count} crash resets in a row`}</span>`:""}`;
+ const [lv,ls,ld,lc]=fwLast(w);
+ $("#fw-last").className="v "+lc;$("#fw-last").innerHTML=`<span class="dot ${ld}"></span>${esc(lv)}`;$("#fw-last-s").textContent=ls;
+ const empty=w.other_state==="empty"||!w.other_state;
+ $("#fw-oth").className="v"+(empty?" mut":"");$("#fw-oth").textContent=empty?"empty":other;
+ $("#fw-oth-s").textContent=`${w.other_slot||""}${empty?"":` · ${FWOS[w.other_state]||w.other_state}`}${w.other_why?`: ${w.other_why}`:""}`;
+ $("#fw-mq").textContent=w.mqtt?"On":"Off";
+ const pc=w.cfg_prev&&w.cfg_prev.version;$("#fw-pcfg").classList.toggle("hidden",!pc);
+ if(pc)$("#fw-pcfg").textContent=`Configuration from before the update: ${w.cfg_prev.version}, ${fwDate(w.cfg_prev.saved)}.`;
+ /* the panel of the state, only when necessary */
+ let p="";
+ if(up){const pct=up.total?Math.floor(up.sent*100/up.total):0;
+  p=`<div class="panel" role="status"><h3>Upload of ${esc(up.name)}: ${pct} %</h3><div class="prog"><i style="width:${pct}%"></i></div><div class="mut">${up.sent} of ${up.total} B. SHA-256 check: ${up.sha?"on":"off"}.</div><p class="mut">Keep this page open until the end. During the upload, the gateway does not answer the other requests of this page.</p></div>`}
+ else if(w.phase==="downloading"){const v=(w.state||"").replace(/^downloading ?/,"")||"the image",pd=fwPend||{};let host="";try{host=pd.url?new URL(pd.url).host:""}catch(e){}
+  p=`<div class="panel" role="status"><h3>Download of ${esc(v)}: ${w.progress} %</h3><div class="prog"><i style="width:${w.progress}%"></i></div><div class="mut">${w.bytes}${w.total?` of ${w.total}`:""} B${host?`, from ${esc(host)}`:""}.${pd.url?` SHA-256 check: ${pd.sha?"on":"off"}.`:""}</div><p class="mut">At the end, the gateway verifies the image and restarts into it. The MQTT hosts get the NDEATH. You can close this page.</p></div>`}
+ else if(w.phase==="failed"&&w.sha256_file)
+  p=`<div class="panel pb" role="alert"><h3 class="bad">The update failed: the SHA-256 of the file does not agree</h3><div class="hash">Expected: ${esc(w.sha256_expected)}</div><div class="hash">File:&nbsp;&nbsp;&nbsp;&nbsp; ${esc(w.sha256_file)}</div><p>The gateway did not install the image. ${esc(run)} continues to run. Examine the URL (or the file) and the SHA-256. Then try again.</p></div>`;
+ else if(w.trial){const left=w.trial_left_s||0,pct=Math.max(0,Math.min(100,Math.round((FWTRIAL-left)*100/FWTRIAL)));
+  p=`<div class="panel pw" role="status"><h3>${esc(run)} runs on trial${left?`: ${left} s left`:""}</h3><div class="prog warn"><i style="width:${pct}%"></i></div><p>The gateway examines itself. When it is in ${esc(w.expected_mode||"normal")} mode for ${FWTRIAL} s, it confirms ${esc(run)}. No action is necessary.</p><p class="mut">If a reset occurs during the trial, ${esc(other)} runs again. Until the end of the trial, the gateway refuses a new update, a configuration save and the restart into ${esc(other)}.</p></div>`}
+ else if(rec)
+  p=`<div class="panel pb" role="alert"><h3 class="bad">Recovery mode: the configuration was rejected</h3>${fwCfgErr?`<p>${esc(fwCfgErr)}</p>`:""}<p>The gateway does not poll and does not connect to MQTT.</p><p class="mut">Change the configuration in the Configuration tab.${w.cfg_prev_restore?" Or restore the configuration from before the update (below).":""}</p></div>`;
+ $("#fw-panel").innerHTML=p;
+ /* #192: a download of this page that the pre-flight check refused: the box, with a button that sends it again with force */
+ if(fwPend&&w.phase==="failed"&&FWREF.test(w.detail||"")){const d=fwPend;fwPend=null;
+  fwref(w.detail,d.url.split("/").pop()||d.url,"Install into recovery mode",(v,er)=>fwForce(`Install ${v} into recovery mode?`,"Install into recovery mode",d.url,v,er,()=>fwDownload(d.url,d.sha,true)))}
+ else if(fwPend&&w.phase!=="downloading"&&w.phase!=="restarting")fwPend=null;
+ /* the install area: locked during a transfer and during the trial */
+ const lock=up||dl?"A transfer is in progress. A new update is possible after its end.":w.trial?`Possible after the trial${w.trial_left_s?` (${w.trial_left_s} s)`:""}.`:"";
+ $("#fw-lock").textContent=lock;$("#fw-lock").classList.toggle("hidden",!lock);$("#fw-inst").classList.toggle("locked",!!lock);
+ $("#fw-inst").inert=!!lock;
+ /* the actions with a restart */
+ const zo=!empty,zp=!!w.cfg_prev_restore;
+ $("#fw-zone").classList.toggle("hidden",!(zo||zp));$("#fw-z-other").classList.toggle("hidden",!zo);$("#fw-z-prev").classList.toggle("hidden",!zp);
+ const ob=$("#fw-other");ob.textContent=`Restart into ${other}`;ob.disabled=!w.can_boot_other;
+ $("#fw-other-p").textContent=w.trial?`Possible after the trial. Then you can go back to ${other} in ${w.other_slot}.`:w.other_state==="invalid"?`${other} in ${w.other_slot} cannot start: its verification failed.`:`Go back to ${other} in ${w.other_slot}. The gateway does a pre-flight check, then restarts into ${other} on trial. A reset during the trial goes back to the running image.`;
+ if(zp)$("#fw-prev-p").textContent=`The configuration of ${w.cfg_prev.version} (${fwDate(w.cfg_prev.saved)}) replaces the stored configuration. Then the gateway restarts.`;
 }
 const CS={unsupported:"not supported in this build",unchecked:"not checked",absent:"no card",not_mounted:"cannot mount",mounted:"mounted",formatting:"formatting",formatted:"formatted"},SP={off:"off",not_started:"did not start",on:"on",failed:"FAILED",stopped:"stopped"};
 let sdc={};
@@ -660,25 +772,71 @@ function ask(o){const d=$("#dlg"),ok=$("#dlg-ok"),no=$("#dlg-no"),i=$("#dlg-i");
   d.showModal();(o.word?i:no).focus()})}
 // #192: a refusal of the pre-flight check ("pre-flight check: image <version> refused: <reason>; <reason>;
 // force installs it into recovery mode", gw_fw.c check_image; "; " is only between the reasons) as a box
-// with each reason; its button sends the request again with force. False for another error.
-function fwref(e,what,act,go){const b=$("#fw-ref"),m=/^pre-flight check: image (.+?) (?:refused|is unknown): (.*?)(?:; force installs it into recovery mode)?$/.exec(e||"");
+// with each reason; its button calls go(version, reason) (#215: a confirmation, then the request again
+// with force). The same box for an upload, a download and the other slot. False for another error.
+function fwref(e,what,act,go){const b=$("#fw-ref"),m=FWREF.exec(e||"");
  b.classList.toggle("hidden",!m);if(!m)return false;
- b.innerHTML=`<h3>The pre-flight check refused ${esc(what)} (${esc(m[1])})</h3><ul>${m[2].split("; ").map(x=>`<li>${esc(x.charAt(0).toUpperCase()+x.slice(1))}</li>`).join("")}</ul><p>You can ${act==="Install into recovery mode"?"install the image":"start the image"} in recovery mode. In recovery mode the gateway does not poll and does not connect to MQTT: only the network and this page operate. Then change or restore the configuration.</p><div class="row"><button class="danger" id="fw-rgo">${act}</button><button id="fw-rno">Cancel</button></div>`;
- $("#fw-rgo").onclick=()=>{fwref();go()};$("#fw-rno").onclick=()=>fwref();fwmsg("");return true}
-async function fwup(f,force){fwmsg(`Uploading ${f.name}…`);let r;try{r=await fetch("/api/firmware"+(force?"?force=1":""),{method:"POST",headers:{"Content-Type":"application/octet-stream","X-Requested-With":"gateway"},body:f})}catch(x){const w=(await api("GET","/api/firmware")).json;fwmsg(`Upload interrupted (${x.message})`+(w&&w.detail?`: ${w.detail}`:""),"bad");return}
- let j=null;try{j=await r.json()}catch(x){}const er=(j||{}).error||"";
- if(r.status===200)fwmsg("Image installed: restarting into the new version.","ok");else if(!(r.status===409&&fwref(er,f.name,"Install into recovery mode",()=>fwup(f,true))))fwmsg(`Refused (${r.status}): ${er}`,"bad")}
-async function fwother(force){const r=await api("POST","/api/firmware/other"+(force?"?force=1":"")),er=(r.json||{}).error||"";
- if(r.status===202)fwmsg("Restarting into the other slot…","ok");else if(!(r.status===409&&fwref(er,"the image of the other slot","Restart into recovery mode",()=>fwother(true))))fwmsg(`Not restarted (${r.status}): ${er}`,"bad")}
-// issue #144: a 409 of the pre-flight check gives the reasons; "Force" installs a download into recovery mode
-const fwforce=()=>$("#fw-force").checked;
+ b.innerHTML=`<h3>The pre-flight check refused ${esc(what)} (${esc(m[1])})</h3><ul>${m[2].split("; ").map(x=>`<li>${esc(cap1(x))}</li>`).join("")}</ul><p>You can ${act==="Install into recovery mode"?"install the image":"start the image"} in recovery mode. In recovery mode the gateway does not poll and does not connect to MQTT: only the network and this page operate. Then change or restore the configuration.</p>${/NVS/.test(m[2])?`<p class="warn"><b>Caution:</b> Do not install this image unless you accept the loss of the secrets. The image cannot read the NVS of this firmware, and it can erase it.</p>`:""}<div class="row"><button class="danger" id="fw-rgo">${act}</button><button id="fw-rno">Cancel</button></div>`;
+ $("#fw-rgo").onclick=()=>go(m[1],m[2]);$("#fw-rno").onclick=()=>fwref();fwmsg("");return true}
+/* #193: the confirmation of a forced install (into recovery mode) */
+async function fwForce(title,action,what,ver,er,go){
+ if(!await ask({title,action,danger:true,fact:`${esc(what)} · the pre-flight check refused it`,html:`<p>The gateway installs the image although the pre-flight check refused it. The image then must only reach recovery mode: no polling and no MQTT.</p>${/NVS/.test(er)?`<p class="warnline"><b>Caution:</b> Do not continue unless you accept the loss of the secrets. ${esc(ver)} cannot read the NVS of this firmware, and it can erase it.</p>`:""}`}))return;
+ fwref();go()}
 const fwmsg=(t,c)=>{const m=$("#fw-msg");m.textContent=t;m.className=c||"mut"};
-$("#fw-get").onclick=async()=>{const u=$("#fw-url").value.trim();if(!u)return;const b={url:u};if(fwforce())b.force=true;const r=await api("POST","/api/firmware",JSON.stringify(b));fwmsg(r.status===202?"Download started: the gateway restarts at the end.":`Not started (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")};
-$("#fw-file").onchange=async e=>{const f=e.target.files[0];e.target.value="";if(!f)return;fwref();
- if(await ask({title:`Install ${f.name}?`,action:"Install and restart",fact:`${f.size} B`,html:"<p>The gateway writes the image into the other slot, then restarts into it. The new image runs on trial: if the trial fails, the gateway goes back to this firmware.</p>"}))fwup(f,false)};
+/* the SHA-256 field: its error below it (#191), in place of the hint */
+function fwShaErr(t){const e=$("#fw-sha"),x=$("#fw-sha-e");e.classList.toggle("err",!!t);x.textContent=t||"";x.classList.toggle("hidden",!t);$("#fw-sha-h").classList.toggle("hidden",!!t);
+ if(t)e.setAttribute("aria-invalid","true");else e.removeAttribute("aria-invalid");e.setAttribute("aria-describedby",t?"fw-sha-e":"fw-sha-h")}
+/* "" (no check), the SHA-256 in small letters, or null (an error at the field). Capital letters
+   change to small letters; a space is an error. */
+function fwShaRead(){const e=$("#fw-sha"),v=e.value.toLowerCase();e.value=v;fwShaErr("");
+ if(v===""||/^[0-9a-f]{64}$/.test(v))return v;
+ fwShaErr(`Give 64 hexadecimal characters (0-9, a-f), or keep the field empty. ${v.length!==64?`This value has ${v.length}.`:"This value has other characters."}`);return null}
+function fwGoUpd(){const b=$("#fw-go"),f=fwSrc==="file";
+ b.textContent=fwSrc==="url"?"Download and install":f?"Upload and install":"Install";b.disabled=!fwSrc||f&&!fwFile;
+ if(!fwSrc||f&&!fwFile)fwmsg(fwSrc?"Choose a file first.":"Choose a source first.")}
+function fwSrcSet(v){fwSrc=v;document.querySelectorAll("#fw-card [data-src]").forEach(b=>b.setAttribute("aria-checked",String(b.dataset.src===v)));
+ $("#fw-s0").classList.toggle("hidden",!!v);$("#fw-s1").classList.toggle("hidden",v!=="url");$("#fw-s2").classList.toggle("hidden",v!=="file");fwmsg("");fwGoUpd()}
+document.querySelectorAll("#fw-card [data-src]").forEach(b=>{b.onclick=()=>{fwSrcSet(b.dataset.src);(b.dataset.src==="url"?$("#fw-url"):$("#fw-fpick")).focus()};
+ b.onkeydown=e=>{if(e.key.startsWith("Arrow")){e.preventDefault();const o=$(`#fw-card [data-src="${b.dataset.src==="url"?"file":"url"}"]`);fwSrcSet(o.dataset.src);o.focus()}}});
+$("#fw-fpick").onclick=()=>$("#fw-file").click();
+/* #215: the choice of a file does not start the upload */
+$("#fw-file").onchange=e=>{const f=e.target.files[0];e.target.value="";if(!f)return;fwFile=f;fwref();
+ $("#fw-fname").textContent=f.name;$("#fw-fsize").textContent=`${f.size} B`;$("#fw-fpick").textContent="Choose another file";fwmsg("");fwGoUpd()};
+$("#fw-sha").oninput=()=>{if($("#fw-sha").classList.contains("err"))fwShaErr("")};
+$("#fw-mq-go").onclick=e=>{e.preventDefault();show("config");const c=$("#c-ota");if(c)c.scrollIntoView({block:"start"})};
+$("#fw-go").onclick=async()=>{fwref();const sha=fwShaRead();
+ if(sha===null){fwmsg("Not started: correct the SHA-256.","bad");$("#fw-sha").focus();return}
+ const w=fwW||{},slot=w.other_slot||"the other slot",run=w.running||"this firmware",
+  trial=`<p class="mut">The new image runs on trial for ${FWTRIAL}&nbsp;s. If the trial fails, the gateway goes back to ${esc(run)}.</p>`;
+ if(fwSrc==="url"){const u=$("#fw-url").value.trim();
+  if(!u){fwmsg("Not started: give the URL of the image.","bad");$("#fw-url").focus();return}
+  if(await ask({title:"Download and install the image?",action:"Download and install",fact:`${esc(u)} · ${sha?`SHA-256 ${fwShort(sha)}`:"SHA-256 check: off"}`,
+   html:`<p>The gateway downloads the image into ${esc(slot)} and verifies it. Then it restarts into the image. The MQTT hosts get the NDEATH.</p>${trial}`}))fwDownload(u,sha,false)}
+ else if(fwSrc==="file"&&fwFile){const f=fwFile;
+  if(await ask({title:`Install ${f.name}?`,action:"Upload and install",fact:`${f.size} B · SHA-256 check: ${sha?"on":"off"}`,
+   html:`<p>This page uploads the image into ${esc(slot)}. The gateway verifies it, then restarts into it. The MQTT hosts get the NDEATH.</p>${trial}`}))fwUpload(f,sha,false)}};
+async function fwDownload(u,sha,force){const b={url:u};if(sha)b.sha256=sha;if(force)b.force=true;
+ const r=await api("POST","/api/firmware",JSON.stringify(b)),er=(r.json||{}).error||"";
+ if(r.status===202){fwPend={url:u,sha};fwmsg("Download started: the gateway restarts at the end.","ok");poll()}
+ else if(er.startsWith('"sha256"')){fwShaErr(cap1(er.replace(/^"sha256": /,"")));fwmsg("Not started: correct the SHA-256.","bad")}
+ else fwmsg(`Not started (${r.status}): ${er}`,"bad")}
+/* #215: the upload with XMLHttpRequest, because fetch gives no progress of an upload */
+function fwUpload(f,sha,force){fwref();fwShaErr("");fwmsg("");fwUp={name:f.name,sent:0,total:f.size,sha:!!sha};fwRender();
+ const x=new XMLHttpRequest();x.open("POST","/api/firmware"+(force?"?force=1":""));
+ x.setRequestHeader("Content-Type","application/octet-stream");x.setRequestHeader("X-Requested-With","gateway");if(sha)x.setRequestHeader("X-Image-SHA256",sha);
+ x.upload.onprogress=e=>{if(!fwUp)return;fwUp.sent=e.loaded;if(e.lengthComputable)fwUp.total=e.total;fwRender()};
+ x.onerror=x.ontimeout=async()=>{fwUp=null;fwRender();const w=(await api("GET","/api/firmware")).json;fwmsg("Upload interrupted"+(w&&w.detail?`: ${w.detail}`:"."),"bad");poll()};
+ x.onload=()=>{fwUp=null;let j={};try{j=JSON.parse(x.responseText)||{}}catch(e){}const er=j.error||"";
+  if(x.status===200)fwmsg("Image installed: restarting into the new version.","ok");
+  else if(x.status===422)fwShaErr("The file has another SHA-256. Examine the file (or the URL) and the SHA-256.");
+  else if(!(x.status===409&&fwref(er,f.name,"Install into recovery mode",(v,r)=>fwForce(`Install ${v} into recovery mode?`,"Install into recovery mode",f.name,v,r,()=>fwUpload(f,sha,true)))))fwmsg(`Refused (${x.status}): ${er}`,"bad");
+  fwRender();poll()};
+ x.send(f)}
+async function fwother(force){const r=await api("POST","/api/firmware/other"+(force?"?force=1":"")),er=(r.json||{}).error||"";
+ if(r.status===202)fwmsg("Restarting into the other slot…","ok");else if(!(r.status===409&&fwref(er,"the image of the other slot","Restart into recovery mode",(v,x)=>fwForce(`Restart into ${v} in recovery mode?`,"Restart into recovery mode",`${v} in ${(fwW||{}).other_slot||"the other slot"}`,v,x,()=>fwother(true)))))fwmsg(`Not restarted (${r.status}): ${er}`,"bad")}
 // issue #146: in recovery mode, the configuration from before the update replaces the stored one
-$("#fw-prev").onclick=async()=>{if(!await ask({title:"Restore the configuration from before the update?",action:"Restore and restart",html:"<p>The configuration from before the update replaces the stored configuration. Then the gateway restarts.</p>"}))return;const r=await api("POST","/api/config?restore_prev=1");fwmsg(r.status===200?"Configuration restored: restarting…":`Not restored (${r.status}): ${(r.json||{}).error||""}`,r.status===200?"ok":"bad")};
-$("#fw-other").onclick=async()=>{const v=$("#fw-other").textContent;fwref();if(await ask({title:`${v}?`,action:v,html:"<p>The image of the other slot runs on trial. A reset during the trial goes back to this firmware.</p>"}))fwother(false)};
+$("#fw-prev").onclick=async()=>{const c=(fwW||{}).cfg_prev||{};if(!await ask({title:"Restore the configuration from before the update?",action:"Restore and restart",danger:true,fact:`${esc(c.version||"")} · ${fwDate(c.saved)}`,html:"<p>The configuration from before the update replaces the stored configuration. Then the gateway restarts.</p>"}))return;const r=await api("POST","/api/config?restore_prev=1");fwmsg(r.status===200?"Configuration restored: restarting…":`Not restored (${r.status}): ${(r.json||{}).error||""}`,r.status===200?"ok":"bad")};
+$("#fw-other").onclick=async()=>{const w=fwW||{},v=w.other||"the other slot";fwref();if(await ask({title:`Restart into ${v}?`,action:`Restart into ${v}`,danger:true,fact:`${esc(v)} in ${esc(w.other_slot||"")} · ${esc(FWOS[w.other_state]||w.other_state||"")}`,html:`<p>The image of the other slot runs on trial. A reset during the trial goes back to ${esc(w.running||"this firmware")}. The MQTT hosts get the NDEATH.</p>`}))fwother(false)};
 /* #207: Identify. The LED and the buzzer for 10 s; the button stays disabled for the time left
    (a second push does not start the time again) */
 let idEnd=0,idT=0;

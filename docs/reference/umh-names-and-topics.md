@@ -73,7 +73,8 @@ The gateway publishes these metrics in the NBIRTH, and their changes in NDATA. S
 | `Node Control/Rebirth` | Boolean | Always | `Node_Control.Rebirth` | Dropped |
 | `Node Control/Reboot` | Boolean | Always | `Node_Control.Reboot` | Dropped |
 | `Node Control/Scan Rate` | UInt32 | Always | `Node_Control.Scan_Rate` | Dropped |
-| `Node Control/Firmware Update` | String | Always | `Node_Control.Firmware_Update` | Dropped |
+| `Node Control/Firmware Update` | String | With `ota.mqtt: true` | `Node_Control.Firmware_Update` | Dropped |
+| `Node Control/Firmware SHA-256` | String | With `ota.mqtt: true` | `Node_Control.Firmware_SHA-256` | Dropped |
 | `Firmware Update/State` | String | Always | `Firmware_Update.State` | Dropped |
 | `Firmware Update/Progress` | UInt32 | Always | `Firmware_Update.Progress` | Dropped |
 | `Node Info/Firmware` | String | Always | `Node_Info.Firmware` | Kept |

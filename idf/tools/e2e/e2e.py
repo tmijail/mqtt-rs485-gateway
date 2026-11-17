@@ -2239,6 +2239,34 @@ def run_primary_host(args, work):
     check("SPB-13 STATE online -> NBIRTH (and the DBIRTHs)", nb and nb[2].seq == 0,
           f"NBIRTH {nb[0] - sent:.2f} s after STATE online" if nb else "no NBIRTH")
 
+    # #223: ota.mqtt is off by default: the NBIRTH has no Node Control/Firmware Update and no
+    # Node Control/Firmware SHA-256 (tck-id-topics-nbirth-metric-reqs), and an NCMD with them
+    # starts no update (tck-id-operational-behavior-data-commands-ncmd-metric-name); the log
+    # gives the cause
+    since = time.monotonic()
+    obs.publish_cmd(f"{T}/NCMD/{node}", [
+        {"name": "Node Control/Firmware SHA-256", "datatype": 12, "string_value": "a" * 64},
+        {"name": "Node Control/Firmware Update", "datatype": 12,
+         "string_value": "https://10.0.2.2:1/gw.bin"}])
+    obs.publish_cmd(f"{T}/NCMD/{node}", [{"alias": 40, "datatype": 12,
+                                          "string_value": "https://10.0.2.2:1/gw.bin"}])
+    off = gw.wait_log(r"NCMD: metric '' \(alias 40\) discarded: firmware updates from MQTT are "
+                      r"off \(ota\.mqtt\); no update started", 10, since)
+    named = gw.find(r"NCMD: metric 'Node Control/Firmware (Update|SHA-256)'.* discarded: firmware "
+                    r"updates from MQTT are off \(ota\.mqtt\)", since)
+    time.sleep(1)
+    started = gw.find(r"fw: downloading|fw: firmware update (refused|failed)|NCMD Firmware Update "
+                      r"from", since)
+    check("Issue #223 without ota.mqtt (the default) the NBIRTH has no Node Control/Firmware "
+          "Update and no Node Control/Firmware SHA-256, and an NCMD with them (by name or by "
+          "alias) starts no update; the log gives the cause",
+          nb and metric(nb[2], name="Node Control/Firmware Update") is None
+          and metric(nb[2], alias=40) is None
+          and metric(nb[2], name="Node Control/Firmware SHA-256") is None
+          and fw_state(nb[2]) is not None and off and len(named) == 2 and not started,
+          f"NBIRTH metrics {[m.name for m in nb[2].metrics if 'irmware' in m.name] if nb else None}; "
+          f"refused {len(named)} by name, by alias {off is not None}; started {started[:1]}")
+
     since = time.monotonic()
     host_state(obs, host, False, ts + 500, retain=False)
     stale = obs.wait(ndeath_t, 3)
@@ -3668,9 +3696,9 @@ def wait_progress(ready, token, stall_s, cap_s, poll_s=1.0, clock=time.monotonic
         sleep(poll_s)
 
 
-def upload_firmware(gw, data, auth=("admin", WEB_PASSWORD), force=False):
-    """POST /api/firmware with the image @data (@force: ?force=1, issue #144), as http() does it
-    (Basic auth, the CSRF header,
+def upload_firmware(gw, data, auth=("admin", WEB_PASSWORD), force=False, sha256=None):
+    """POST /api/firmware with the image @data (@force: ?force=1, issue #144; @sha256: the header
+    X-Image-SHA256, issue #215), as http() does it (Basic auth, the CSRF header,
     the device certificate into PEER_CERT): (status, headers dict, body bytes), or (None, {},
     reason) when the request failed, stalled or ran past its cap (issue #115, wait_progress()).
     Progress: the bytes written as @gw's shell reports them, and its console lines of the upload
@@ -3679,6 +3707,8 @@ def upload_firmware(gw, data, auth=("admin", WEB_PASSWORD), force=False):
     stall_s, cap_s = UPLOAD_STALL_S * scale, UPLOAD_CAP_S * scale
     h = {"X-Requested-With": "e2e", "Content-Type": "application/octet-stream",
          "Content-Length": str(len(data))}
+    if sha256 is not None:
+        h["X-Image-SHA256"] = sha256
     if auth is not None:
         h["Authorization"] = "Basic " + base64.b64encode(f"{auth[0]}:{auth[1]}".encode()).decode()
     first_line = len(gw.lines)
@@ -3751,6 +3781,15 @@ CAPS_OFFSET = 288   # gw_ota.h GW_OTA_CAPS_OFFSET: the capabilities block after 
 # the FreeRTOS tick of the boot); the bound to wait for its "installed" state after its NBIRTH (or
 # its boot)
 SELFCHECK_WAIT_S = 150
+
+
+def image_cfg_schema(src):
+    """The configuration schema that the app image @src declares in its capabilities block
+    (GW_CONFIG_SCHEMA of its build, issue #144)."""
+    b = pathlib.Path(src).read_bytes()
+    if struct.unpack_from("<I", b, CAPS_OFFSET)[0] != 0x50435747:
+        raise SystemExit(f"{src}: no capabilities block at {CAPS_OFFSET}")
+    return struct.unpack_from("<H", b, CAPS_OFFSET + 12)[0]
 
 
 def fw_image(src, version, dst, corrupt=False, caps_version=None, cfg_schema=None):
@@ -4095,23 +4134,32 @@ def run_ota(args, work):
     obs = Observer(port)
     cfg = node_config(node, port=port)
     cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
-    cfg["ota"] = {"ca_file": "ca.pem"}
+    # #223: the updates by NCMD need ota.mqtt (off by default)
+    cfg["ota"] = {"ca_file": "ca.pem", "mqtt": True}
     t0 = time.monotonic()
     gw = boot_variant(args, work, "ota", cfg, {"ca.pem": pki["ca.pem"].read_bytes()})
     nbirth_t, ndata_t, ncmd_t = f"{T}/NBIRTH/{node}", f"{T}/NDATA/{node}", f"{T}/NCMD/{node}"
     try:
         nb = obs.wait(nbirth_t, 40)
         if not check("FW-1 NBIRTH declares Node Control/Firmware Update (String) and the update's "
-                     "state and progress", nb and metric(nb[2], alias=40) is not None
+                     "state and progress; with ota.mqtt (#223) also Node Control/Firmware SHA-256 "
+                     "(String, #215; tck-id-topics-nbirth-metrics)",
+                     nb and metric(nb[2], alias=40) is not None
                      and metric(nb[2], alias=40).datatype == 12 and fw_state(nb[2]) == "idle"
-                     and metric(nb[2], alias=42) is not None,
+                     and metric(nb[2], alias=42) is not None
+                     and metric(nb[2], name="Node Control/Firmware SHA-256") is not None
+                     and metric(nb[2], name="Node Control/Firmware SHA-256").datatype == 12
+                     and metric(nb[2], name="Node Control/Firmware SHA-256").alias == 44,
                      f"state {fw_state(nb[2])!r}" if nb else "no NBIRTH"):
             return
         gw.wait_log(r"edge: time synchronised", 10, t0)   # the image server's certificate dates
 
-        def update(url):
+        def update(url, sha256=None):
+            # issue #215: the SHA-256 after the URL in the same NCMD still applies to it
             obs.publish_cmd(ncmd_t, [{"name": "Node Control/Firmware Update", "datatype": 12,
-                                      "string_value": url}])
+                                      "string_value": url}]
+                            + ([{"name": "Node Control/Firmware SHA-256", "datatype": 12,
+                                 "string_value": sha256}] if sha256 is not None else []))
 
         def states(since):
             return [fw_state(m[2]) for m in CAPTURE
@@ -4214,7 +4262,8 @@ def run_ota(args, work):
         # NCMD with the URL: download with progress, restart into it, on trial ("testing"), then
         # installed by its self-check (issue #144); a 250-character URL (issue #87: whole)
         asked = time.monotonic()
-        update(long_url(250))
+        v2_sha = hashlib.sha256(images["v2"].read_bytes()).hexdigest()
+        update(long_url(250), v2_sha.upper())   # issue #215: capital letters too
         nb2 = obs.wait(nbirth_t, 240, lambda p: metric(p, name="Node Info/Firmware").string_value
                        == "e2e-v2")
         conf2 = obs.wait(ndata_t, SELFCHECK_WAIT_S, lambda p: fw_state(p) == "installed e2e-v2")
@@ -4224,12 +4273,14 @@ def run_ota(args, work):
         took = [ln for ln in gw.find(r"fw: downloading firmware e2e-v2", asked)]
         selfcheck = gw.find(r"fw: firmware e2e-v2 installed: the self-check passed in normal mode",
                             asked)
+        agrees = gw.find(rf"fw: image e2e-v2: the SHA-256 agrees \({v2_sha}\)", asked)
         check("FW-1 update by NCMD over HTTPS (CA from ota.ca_file, a 250-character URL): progress "
               "as NDATA, restart into the new image, on trial (NBIRTH 'testing e2e-v2'), then "
-              "installed by its self-check in normal mode (issue #144)",
+              "installed by its self-check in normal mode (issue #144); issue #215: the NCMD "
+              "Firmware SHA-256 (capital letters, after the URL) is checked before the boot",
               nb2 and conf2 and "restarting into e2e-v2" in seen and fw_state(nb2[2]) ==
               "testing e2e-v2" and prog and max(prog) == 100 and len(prog) >= 5 and took
-              and selfcheck,
+              and selfcheck and agrees,
               f"states {list(dict.fromkeys(seen))}; progress {prog[:12]}; "
               f"{nb2[0] - asked:.1f} s to the new NBIRTH; self-check {bool(selfcheck)}"
               if nb2 else f"states {seen}")
@@ -4252,8 +4303,34 @@ def run_ota(args, work):
         # issue #144 items 1 and 6: a web upload of v3; during its trial the other-slot button
         # (web and NCMD) and a configuration save are refused; the self-check installs it
         gw.wait_log(r"edge: time synchronised", 10, nb3[0] - 5 if nb3 else t0)
+        # issue #215: an upload whose SHA-256 does not agree is not installed: 422 with the two
+        # values (also in GET /api/firmware), no restart; a wrong format is refused at once
+        v3 = images["v3"].read_bytes()
+        v3_sha = hashlib.sha256(v3).hexdigest()
+        wrong = "0" * 63 + "1"
         asked = time.monotonic()
-        st, _, body = upload_firmware(gw, images["v3"].read_bytes())
+        st_f, _, b_f = upload_firmware(gw, v3[:4096], sha256="12 34")
+        st_w, _, b_w = upload_firmware(gw, v3, sha256=wrong)
+        fw_w = as_json(http("GET", "/api/firmware")[2]) or {}
+        jw = as_json(b_w) or {}
+        time.sleep(2)
+        restarted = any(m[1] == f"{T}/NDEATH/{node}" for m in CAPTURE if m[0] >= asked)
+        mism = obs.wait(ndata_t, 10, lambda p: (fw_state(p) or "") ==
+                        "failed: image e2e-v3: the SHA-256 of the file does not agree")
+        check("Issue #215 an upload with X-Image-SHA256: a wrong format -> 400; a SHA-256 that does "
+              "not agree -> 422 with the two values (GET /api/firmware too), state failed, the "
+              "image is not installed and the gateway does not restart",
+              st_f == 400 and b"X-Image-SHA256: expected 64 hexadecimal characters" in b_f
+              and st_w == 422 and jw.get("sha256_expected") == wrong
+              and jw.get("sha256_file") == v3_sha and fw_w.get("sha256_expected") == wrong
+              and fw_w.get("sha256_file") == v3_sha and fw_w.get("phase") == "failed"
+              and fw_w.get("mqtt") is True and mism and not restarted,
+              f"format {st_f} {b_f[:100]!r}; mismatch {st_w} {b_w[:240]!r}; GET phase "
+              f"{fw_w.get('phase')!r} expected {fw_w.get('sha256_expected')!r} file "
+              f"{fw_w.get('sha256_file')!r} mqtt {fw_w.get('mqtt')!r}; NDATA {mism is not None}; "
+              f"restarted {restarted}")
+        asked = time.monotonic()
+        st, _, body = upload_firmware(gw, v3, sha256=v3_sha)
         nb4 = obs.wait(nbirth_t, 240, lambda p: metric(p, name="Node Info/Firmware").string_value
                        == "e2e-v3")
         st_b, _, b_b = http("POST", "/api/firmware/other", b"", timeout=30)
@@ -4369,20 +4446,24 @@ def run_ota_wiring(args, work):
     self-check, and stays after a power cut. Safe mode is in run_ota_trial (the budget of one
     attempt);
     (4) issue #146: after an update to an image that adds a key (the emulator counts
-    network.hostname as schema 2, sdkconfig.qemu), the first save of the key keeps the earlier
+    network.hostname as the schema after the one of the build, gw_storage.c), the first save of
+    the key keeps the earlier
     document as config.prev.json; a second change makes the button refuse the earlier image with
     the JSON path that changed; with the document of the capture again, the button restores the
     earlier document, and the earlier image starts in normal mode with it."""
     fwdir = work / "fw-wiring"
     fwdir.mkdir(exist_ok=True)
     src = app_source(args)
+    # the schema that the image under test reads (GW_CONFIG_SCHEMA); the emulator counts
+    # network.hostname as the next one (gw_storage.c, k_sim_since)
+    k2 = image_cfg_schema(src) + 1
     img = {
         "e2e-rej": signed_image(args, src, "e2e-rej", fwdir, "e2e-rej"),
         "e2e-rjn": signed_image(args, src, "e2e-rjn", fwdir, "e2e-rjn", cfg_schema=1),
         "e2e-s0": signed_image(args, src, "e2e-s0", fwdir, "e2e-s0", cfg_schema=0),
         "e2e-v1caps": signed_image(args, src, "e2e-v1caps", fwdir, "e2e-v1caps", caps_version=1),
         "e2e-com": signed_image(args, src, "e2e-com", fwdir, "e2e-com"),
-        "e2e-k2": signed_image(args, src, "e2e-k2", fwdir, "e2e-k2", cfg_schema=2),
+        "e2e-k2": signed_image(args, src, "e2e-k2", fwdir, "e2e-k2", cfg_schema=k2),
     }
 
     def upload(version, pw, force=False):
@@ -4557,8 +4638,9 @@ def run_ota_wiring(args, work):
     finally:
         gw.kill()
 
-    # 4. issue #146: the configuration from before an update. The base image reads schema 1;
-    # e2e-k2 declares schema 2, and in the QEMU build network.hostname is a schema 2 key
+    # 4. issue #146: the configuration from before an update. The base image reads schema k2 - 1;
+    # e2e-k2 declares schema k2, and in the QEMU build network.hostname is a schema k2 key (the
+    # documents without it need schema 1)
     cfg = node_config(WIRING_NODE)
     cfg["network"].pop("hostname", None)
     cfg_k = json.loads(json.dumps(cfg))
@@ -4622,7 +4704,7 @@ def run_ota_wiring(args, work):
         check("Issue #146 when the configuration changed since the capture, the button refuses the "
               "earlier image (409) with the paths that are too new and the paths that changed "
               "since the update; nothing restarts",
-              saved2 and st_r == 409 and b"network.hostname (2)" in b_r
+              saved2 and st_r == 409 and f"network.hostname ({k2})".encode() in b_r
               and b"it changed since (network.hostname)" in b_r and not booted,
               f"saved {saved2}; POST {st_r} {b_r[:300]!r}; booted {booted[:1]}; {notes}")
 
@@ -5142,7 +5224,7 @@ def run_nvs_ota(args, work):
     obs = observer_retry(port, auth=OBS_AUTH)
     # the password in clear in config.json: the plain build moves it to its (unencrypted) NVS
     cfg = node_config(node, port=port, username="gw42", password=secret)
-    cfg["ota"] = {"ca_file": "ca.pem"}
+    cfg["ota"] = {"ca_file": "ca.pem", "mqtt": True}   # #223: the update by NCMD needs it
     base = pathlib.Path(args.plain_flash)
     files = {"config.json": json.dumps(cfg, indent=2).encode(), "ca.pem": pki["ca.pem"].read_bytes()}
     flash = flash_variant(args, work, "nvsota", files, base=base)

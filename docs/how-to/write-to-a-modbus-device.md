@@ -121,7 +121,8 @@ The gateway publishes the outputs as the node metrics `DO/1` to `DO/8` (Boolean)
 | `Node Control/Rebirth` | Boolean `true` | Sends the NBIRTH and all the DBIRTHs again. The web UI button **Rebirth** does the same |
 | `Node Control/Reboot` | Boolean `true` | Orderly restart |
 | `Node Control/Scan Rate` | UInt32, ms | Sets one poll interval for all devices (50 to 3 600 000). 0 = each device uses its own poll interval |
-| `Node Control/Firmware Update` | String, an `https://` URL | Refer to [Update the firmware](update-the-firmware.md) |
+| `Node Control/Firmware Update` | String, an `https://` URL | Only with `ota.mqtt: true`. Refer to [Update the firmware](update-the-firmware.md) |
+| `Node Control/Firmware SHA-256` | String, 64 hexadecimal characters | Only with `ota.mqtt: true`. The SHA-256 of the image for the next update. Refer to [Update the firmware](update-the-firmware.md) |
 | `Node Control/Boot Other Slot` | Boolean `true` | Refer to [Update the firmware](update-the-firmware.md) |
 
 ## If the value does not change

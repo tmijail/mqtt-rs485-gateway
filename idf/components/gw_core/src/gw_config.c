@@ -91,6 +91,7 @@ static void join(char *out, size_t cap, const char *path, const char *key)
  * for the key, since}. Add each new key or value here with GW_CONFIG_SCHEMA + 1 and raise
  * GW_CONFIG_SCHEMA. The last entry only ends the table. */
 static const gw_since_t k_since[] = {
+    {"ota.mqtt", NULL, 2},   /* #223 (ota.enabled was dropped: no migration before v1.0) */
     {"", NULL, 0},
 };
 #define SINCE_COUNT (sizeof(k_since) / sizeof(k_since[0]) - 1)
@@ -1154,17 +1155,19 @@ static bool parse_gateway(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err
            check_utf8(comment, "gateway.comment", err);
 }
 
-/* FW-1: "ota": {"enabled": true, "ca_file": ""}. */
+/* FW-1: "ota": {"mqtt": false, "ca_file": ""}. #223: "mqtt" lets a Sparkplug host start an
+ * update (NCMD); an update from the web UI is always possible. The old key "enabled" is unknown
+ * now (no migration before v1.0). */
 static bool parse_ota(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"enabled", "ca_file"};
+    static const char *const keys[] = {"mqtt", "ca_file"};
     static const cJSON empty = {.type = cJSON_Object};
     const cJSON *o = cJSON_GetObjectItemCaseSensitive(root, "ota");
     if (o == NULL) {
         o = &empty;
     }
     return check_keys(o, "ota", keys, 2, err) &&
-           get_bool(o, "enabled", "ota", true, &cfg->ota.enabled, err) &&
+           get_bool(o, "mqtt", "ota", false, &cfg->ota.mqtt, err) &&
            get_file_name(o, "ca_file", "ota", cfg->ota.ca_file, err);
 }
 
