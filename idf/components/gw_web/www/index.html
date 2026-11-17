@@ -295,8 +295,8 @@ button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
   <h3>Buzzer</h3><div class="grid" id="f-bz"></div></div>
  <div class="card cc" data-cc="rs485" data-t="RS485"><div class="grid" id="f-rs485"></div></div>
  <!-- #213: the card Device types is closed by default (data-closed); with no type it stays open -->
- <div class="card cc" data-cc="dtypes" data-t="Device types" data-x="dtypes" data-closed id="dt-card"><div id="f-dt"></div><button id="add-dt">+ device type</button></div>
- <div class="card cc" data-cc="dev" data-t="Devices and tags"><div id="f-dev"></div><button id="add-dev">+ device</button></div>
+ <div class="card cc" data-cc="dtypes" data-t="Device types" data-x="dtypes" data-closed id="dt-card"><div id="f-dt" data-perr="device_types" tabindex="-1"></div><button id="add-dt">+ device type</button></div>
+ <div class="card cc" data-cc="dev" data-t="Devices and tags"><div id="f-dev" data-perr="devices" tabindex="-1"></div><button id="add-dev">+ device</button></div>
  <div class="card cc" data-cc="mbr" data-t="Modbus test read">
   <p class="mut">One read through the RS485 bus, for example to find out if a device answers before you add its tags. The read does not change the configuration.</p>
   <div class="grid"><label>Unit ID (1-247)<input id="mb-unit" value="1"></label><label>Area<select id="mb-area"></select></label>
@@ -1020,8 +1020,9 @@ function note191(el,text,cls){const s=document.createElement("span");s.className
 /* the device, the tag and the label of a field, for example "Pump1 · Unit ID" */
 function where191(el){
  const p=(el.dataset.p||el.dataset.perr||"").split("."),w=[];
- if(p[0]==="devices"){w.push(val(`devices.${p[1]}.name`)||`Device ${+p[1]+1}`);if(p[2]==="tags"&&p[3]!==undefined)w.push(val(`devices.${p[1]}.tags.${p[3]}.name`)||`Tag ${+p[3]+1}`)}
- else if(p[0]==="device_types"){w.push(`Type ${val(`device_types.${p[1]}.name`)||+p[1]+1}`);if(p[2]==="tags"&&p[3]!==undefined)w.push(val(`device_types.${p[1]}.tags.${p[3]}.name`)||`Tag ${+p[3]+1}`)}
+ /* "devices" or "device_types" without an index (the list itself): the card, as for other keys */
+ if(p[0]==="devices"&&p[1]!==undefined){w.push(val(`devices.${p[1]}.name`)||`Device ${+p[1]+1}`);if(p[2]==="tags"&&p[3]!==undefined)w.push(val(`devices.${p[1]}.tags.${p[3]}.name`)||`Tag ${+p[3]+1}`)}
+ else if(p[0]==="device_types"&&p[1]!==undefined){w.push(`Type ${val(`device_types.${p[1]}.name`)||+p[1]+1}`);if(p[2]==="tags"&&p[3]!==undefined)w.push(val(`device_types.${p[1]}.tags.${p[3]}.name`)||`Tag ${+p[3]+1}`)}
  else{const h=el.closest(".card"),h2=h&&h.querySelector("h2");if(h&&h.dataset.t)w.push(h.dataset.t);else if(h2)w.push(h2.textContent.replace(/\?$/,""))}
  let l=el.getAttribute("aria-label")||"",f;
  if(!l&&el.id&&(f=document.querySelector(`label[for="${el.id}"]`)))l=f.textContent;
