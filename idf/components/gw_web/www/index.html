@@ -160,7 +160,11 @@ button.fload{align-self:flex-start;margin-top:4px;padding:3px 8px;font-size:12px
 button.coll{font:inherit;font-size:14px;font-weight:600;color:var(--fg);padding:4px 6px 4px 0;border-color:transparent;background:transparent;text-align:left}
 button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
 .tsum{font-size:12.5px;color:var(--mut);font-weight:400;overflow-wrap:anywhere}.ebadge{font-size:12px;font-weight:600;color:var(--bad)}
-#f-dev>.card .dhd{margin:-4px 0 0}#f-dev>.card .dbody{margin-top:6px}
+#f-dev>.card .dhd,#f-dt>.card .dhd{margin:-4px 0 0}#f-dev>.card .dbody,#f-dt>.card .dbody{margin-top:6px}
+/* #213: the card Device types (a type is a row that closes and opens), and a device with a type */
+.tinfo{background:var(--sub);border-radius:4px;padding:10px 12px;margin:8px 0 2px;font-size:13px}.tinfo p{margin:0}
+.used{font-size:12px;color:var(--mut);margin:6px 0}.empty{background:var(--sub);border-radius:4px;padding:10px 12px;margin:4px 0 10px;font-size:13px}
+.err~.hint{display:none}@media (max-width:760px){#f-dt>.card{padding:10px}}
 @media (max-width:600px){button.coll{min-height:44px}.cctools button{min-height:44px;flex:1}}
 /* #196: the refused writes of a device, below online or offline in the Modbus devices of the Status tab */
 .wr{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
@@ -273,7 +277,8 @@ button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
   <p class="tnote hidden">Push the table to the side for more columns.</p><div class="tw"><div class="tbox"><table class="io" id="lio-do"></table></div><div class="fade" aria-hidden="true"></div></div>
   <h3>Buzzer</h3><div class="grid" id="f-bz"></div></div>
  <div class="card cc" data-cc="rs485" data-t="RS485"><div class="grid" id="f-rs485"></div></div>
- <!-- #213 (later): the card Device types is closed by default: data-closed -->
+ <!-- #213: the card Device types is closed by default (data-closed); with no type it stays open -->
+ <div class="card cc" data-cc="dtypes" data-t="Device types" data-x="dtypes" data-closed id="dt-card"><div id="f-dt"></div><button id="add-dt">+ device type</button></div>
  <div class="card cc" data-cc="dev" data-t="Devices and tags"><div id="f-dev"></div><button id="add-dev">+ device</button></div>
  <div class="card cc" data-cc="mbr" data-t="Modbus test read">
   <p class="mut">One read through the RS485 bus, for example to find out if a device answers before you add its tags. The read does not change the configuration.</p>
@@ -334,7 +339,8 @@ function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
 const ccSt=lsGet(CCKEY,{}),devClosed=new Set(Object.keys(lsGet(DEVKEY,{})));
 const ccHead=(id,body,t,open,cls)=>`<button type="button" class="coll" ${cls}="${esc(id)}" aria-expanded="${open}" aria-controls="${body}"><span class="car" aria-hidden="true">${open?"▾":"▸"}</span><span class="ct">${esc(t)}</span></button><span class="tsum${open&&cls==="data-cc"?" hidden":""}"></span><span class="ebadge hidden"></span>`;
 function ccInit(){document.querySelectorAll("#tab-config .card.cc").forEach(c=>{const id=c.dataset.cc,b=document.createElement("div"),h=document.createElement("h2");
- b.className="ccb";b.id="ccb-"+id;b.append(...c.childNodes);h.className="ch";c.append(h,b);ccApply(c,ccOpenOf(c))})}
+ b.className="ccb";b.id="ccb-"+id;b.append(...c.childNodes);h.className="ch";c.append(h,b);ccApply(c,ccOpenOf(c));
+ if(c.dataset.x)h.insertAdjacentHTML("beforeend",qi(c.dataset.x,c.dataset.t))})}
 function ccOpenOf(c){const v=ccSt[c.dataset.cc];return typeof v==="boolean"?v:!c.hasAttribute("data-closed")}
 /* open (true) or close a card; save: keep the state in the browser. The header button stays the
    same element (a keyboard user keeps the focus): only its state and its caret change */
@@ -349,10 +355,19 @@ function devApply(i,open,save){const c=document.querySelector(`#f-dev>[data-dev=
  d.classList.toggle("hidden",!open);b.setAttribute("aria-expanded",open);b.querySelector(".car").textContent=open?"▾":"▸";
  if(save){devClosed[open?"delete":"add"](n);lsSet(DEVKEY,Object.fromEntries([...devClosed].map(x=>[x,1])))}
  if(open&&typeof tblUpd==="function")tblUpd()}
+/* #213: a device type row: open when its name is in typeOpen (closed by default) */
+const TYPEKEY="gw.cfg.types",typeOpen=new Set(Object.keys(lsGet(TYPEKEY,{})));
+const typeSave=()=>lsSet(TYPEKEY,Object.fromEntries([...typeOpen].map(x=>[x,1])));
+function dtApply(j,open,save){const c=document.querySelector(`#f-dt>[data-dt="${j}"]`);if(!c)return;const b=c.querySelector(".coll"),d=$(`#tbody-${j}`),n=val(`device_types.${j}.name`);
+ d.classList.toggle("hidden",!open);b.setAttribute("aria-expanded",open);b.querySelector(".car").textContent=open?"▾":"▸";
+ if(save){typeOpen[open?"add":"delete"](n);typeSave()}
+ if(open&&typeof tblUpd==="function")tblUpd()}
 function ccAll(open){document.querySelectorAll("#tab-config .card.cc").forEach(c=>ccApply(c,open,true));
- document.querySelectorAll("#f-dev>[data-dev]").forEach(c=>devApply(c.dataset.dev,open,true))}
+ document.querySelectorAll("#f-dev>[data-dev]").forEach(c=>devApply(c.dataset.dev,open,true));
+ document.querySelectorAll("#f-dt>[data-dt]").forEach(c=>dtApply(c.dataset.dt,open,true))}
 /* #191: a field with an error or a warning opens its card and its device row */
-function ccReveal(el){if(!el||!el.closest)return;const d=el.closest(".dbody");if(d&&d.classList.contains("hidden"))devApply(d.id.slice(6),true,true);
+function ccReveal(el){if(!el||!el.closest)return;const d=el.closest(".dbody");
+ if(d&&d.classList.contains("hidden")){if(d.id.startsWith("tbody-"))dtApply(d.id.slice(6),true,true);else devApply(d.id.slice(6),true,true)}
  const c=el.closest(".card.cc");if(c&&!c.classList.contains("open"))ccApply(c,true,true)}
 /* the number of errors at the fields of each card, in its header */
 function ccBadge(){document.querySelectorAll("#tab-config .card.cc").forEach(c=>{const n=c.querySelectorAll(".ferr").length,e=c.querySelector(":scope>h2.ch>.ebadge");
@@ -380,17 +395,23 @@ const CCSUM={
  lio:()=>{const r=[...document.querySelectorAll('#lio-do [data-lio="rule"]')].filter(e=>e.value!=="0").length,f=[...document.querySelectorAll('#lio-di [data-lio="cnt"]')].filter(e=>e.value==="fast").length;
   return jn(["8 DI","8 DO",r?plur(r,"rule"):"",f?plur(f,"fast counter"):""])},
  rs485:()=>`${val("rs485.baud")||9600} baud · 8${({even:"E",odd:"O"})[val("rs485.parity")]||"N"}${val("rs485.stop_bits")||1}`,
- dev:()=>`${plur(document.querySelectorAll("#f-dev>[data-dev]").length,"device")} · ${plur(document.querySelectorAll("#f-dev [data-del-tag]").length,"tag")}`,
+ dtypes:()=>{const n=[...document.querySelectorAll("#f-dt>[data-dt]")].map(c=>val(`device_types.${c.dataset.dt}.name`));return n.length?n.join(", "):"No device types"},
+ dev:()=>{const d=[...document.querySelectorAll("#f-dev>[data-dev]")];return `${plur(d.length,"device")} · ${plur(d.reduce((a,c)=>a+devTagN(c.dataset.dev),0),"tag")}`},
  mbr:()=>"Read registers of a device, to test the wiring"};
 function ccSum(){if(!cfg)return;document.querySelectorAll("#tab-config .card.cc").forEach(c=>{const f=CCSUM[c.dataset.cc],s=c.querySelector(":scope>h2.ch>.tsum");if(f&&s)s.textContent=f()});
  document.querySelectorAll("#f-dev>[data-dev]").forEach(c=>{const i=c.dataset.dev,p=k=>`devices.${i}.${k}`,t=val(p("type"));
   c.querySelector(".coll .ct").textContent=val(p("name"))||`Device ${+i+1}`;
-  c.querySelector(".dhd .tsum").textContent=jn([`unit ${val(p("unit_id"))}`,t?`type ${t}`:"",plur(c.querySelectorAll("[data-del-tag]").length,"tag"),ccBool(p("enabled"),true)?"":"disabled"])});ccBadge()}
+  c.querySelector(".dhd .tsum").textContent=jn([`unit ${val(p("unit_id"))}`,t?`type ${t}`:"",plur(devTagN(i),"tag"),ccBool(p("enabled"),true)?"":"disabled"])});
+ /* #213: the number of types in the title of the card; each type row: its tags and its devices */
+ const dts=document.querySelectorAll("#f-dt>[data-dt]"),dct=document.querySelector("#dt-card>h2.ch .ct");if(dct)dct.textContent=`Device types (${dts.length})`;
+ dts.forEach(c=>{const j=c.dataset.dt,n=val(`device_types.${j}.name`),u=dtUsersNow(n);c.querySelector(".coll .ct").textContent=n||`Type ${+j+1}`;
+  c.querySelector(".dhd .tsum").textContent=`${plur(c.querySelectorAll("[data-del-tag]").length,"tag")} · used by ${u.length?u.join(", "):"no device"}`});ccBadge()}
 ccInit();
 $("#cc-open").onclick=()=>ccAll(true);$("#cc-close").onclick=()=>ccAll(false);
 $("#tab-config").addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("button.coll");
  if(b&&b.dataset.cc!==undefined)ccApply(b.closest(".card.cc"),b.getAttribute("aria-expanded")!=="true",true);
  else if(b&&b.dataset.dcc!==undefined)devApply(b.dataset.dcc,b.getAttribute("aria-expanded")!=="true",true);
+ else if(b&&b.dataset.tcc!==undefined)dtApply(b.dataset.tcc,b.getAttribute("aria-expanded")!=="true",true);
  /* a link to a card (for example "Certificates") opens it */
  const a=e.target.closest&&e.target.closest('a[href^="#"]'),t=a&&a.getAttribute("href").length>1?document.getElementById(a.getAttribute("href").slice(1)):null;
  if(t&&t.classList.contains("cc")&&!t.classList.contains("open"))ccApply(t,true,true)});
@@ -458,12 +479,14 @@ const HELP={
  unit:"The Modbus address of the device on the RS485 bus (the slave ID). The manual or the display of the device gives it. Use the Modbus test read to find out if the device answers.\n~1 to 247. Necessary.",
  poll:"The time between two reads of the tags of the device. Example: 1000 = one read each second.\n~50 to 3 600 000 ms. Default: 1000.",
  off:"The number of failed poll cycles in sequence before the device is offline. The gateway then sends a DDEATH for the device, and the hosts show its tags as stale.\nThe first cycle that reads all the tags makes the device online again (DBIRTH).\n~1 to 1000. Default: 3.",
- type:"Optional template (Sparkplug Template). Example: Pump, for the devices Pump1 and Pump2.\nAll the devices of one type must have the same tag names and types, in the same order.\nUMH Core shows no value for a template instance; with naming umh the tags go out as plain metrics.\n~Up to 39 bytes. Default: empty = no template, one metric for each tag.",
+ type:"The device gets the tags of this type. A device with a type has no tags of its own: edit the tags in the card Device types.\n(none) = the device has its own tags, in the table below its fields.\n~Default: (none). The list shows the types of the card Device types.",
+ tname:"The name of the device type, for example the model of the device: Meter. The gateway also sends it as the name of the Sparkplug template of each device of the type.\nUMH Core shows no value for a template instance. With naming umh, the tags go out as plain metrics.\n~1 to 39 bytes. Necessary. No /, + or #. Up to 64 tags in a type.",
+ dtypes:"A device type holds the tag list of a device model one time. Each device of the type uses these tags, with its own unit ID and poll interval.\nEach type that a device uses is a Sparkplug template: the NBIRTH has its definition, and the DBIRTH of each device of the type has an instance.\n~Up to 16 types. The types that devices use: 64 tags at most together. Each device counts the tags of its type in the limit of 256 tags.",
  tag:"The name of the metric in Sparkplug. Use '/' between the levels of a path, no ':' and no spaces. Example: Motor/Current.\nTwo tags of one device must not have names that differ only in case. A name must not also be a folder of another name, for example A and A/B.\n~1 to 39 bytes. Necessary.",
  area:"The Modbus table of the value. `coil` and `discrete` are bits. `holding` and `input` are 16-bit registers.\nOnly `coil` and `holding` can be writable.\n~coil = FC01, discrete = FC02, holding = FC03, input = FC04. Necessary.",
  addr:"The address of the first register or bit on the bus, from 0. Many manuals count from 1: the input register 30001 has the address 0, and the holding register 40011 has the address 10.\n~0 to 65535. Necessary.",
- type_t:"The data type of the value. A 16-bit type uses 1 register, a 32-bit type 2 registers, and a 64-bit type 4 registers.\n`bool` is one coil or discrete input, or one bit of a register (with Bit). `string` and `bytes` use Length registers.\nType bytes: the raw registers as a Sparkplug Bytes metric. UMH Core shows no value for Bytes.\n~Necessary.",
- wo:"The order of the bytes of a 32-bit or 64-bit value. The letters are the bytes, from the most significant (A).\n`ABCD` (big): the most significant register first. `CDAB` (little): the least significant register first. `BADC`, `DCBA`: also the two bytes of each register in the opposite order.\nThe manual of the device gives the order. If the value is very large or very small, try `CDAB`. Use the Modbus test read to compare.\n~Default: big. With Bit, only big.",
+ type_t:"The data type of the value. A 16-bit type uses 1 register, a 32-bit type 2 registers, and a 64-bit type 4 registers.\n`bool` is one coil or discrete input, or one bit of a register (with Bit offset). `uint16` with Bit offset and a Bit width of 2 to 16 is a field of bits. `string` and `bytes` use Length registers.\nType bytes: the raw registers as a Sparkplug Bytes metric. UMH Core shows no value for Bytes.\n~Necessary.",
+ wo:"The order of the bytes of a 32-bit or 64-bit value. The letters are the bytes, from the most significant (A).\n`ABCD` (big): the most significant register first. `CDAB` (little): the least significant register first. `BADC`, `DCBA`: also the two bytes of each register in the opposite order.\nThe manual of the device gives the order. If the value is very large or very small, try `CDAB`. Use the Modbus test read to compare.\n~Default: big. With Bit offset, only big.",
  scale:"The gateway multiplies the raw value by the scale, then adds the offset: value = raw × scale + offset. Example: 0.1 changes 2345 to 234.5.\nWith a scale other than 1, an integer tag goes out as a Float or a Double.\n~Not 0. Default: 1. Not for bool, string and bytes tags.",
  units:"The engineering unit of the value, for example V, A or rpm. It goes into the DBIRTH as the property engUnit.\n~Up to 15 characters. Default: empty = no property.",
  wr:"A host can write the value with a DCMD. The gateway then writes the coil or the register on the bus.\n~Only for coil and holding tags. Default: off.",
@@ -477,7 +500,8 @@ const HELP={
  blk:"The gateway reads the tags of one area that are near each other with one request (a block). Clear it for a device that answers with an exception when a block contains registers that it does not have. The gateway then sends one request for each tag.\n~Default: on (build option CONFIG_GW_MB_BLOCK_READS). A block has 125 registers or 2000 bits at most.",
  gap:"The number of unused registers or bits that one block can include, to read two tags of one area with one request. Example: with 4, the tags at the addresses 0 and 5 go into one block.\n~0 to 1999. Default: 0 (build option CONFIG_GW_MB_BLOCK_MAX_GAP). Not permitted with Block reads off.",
  fc16:"The gateway writes one register with FC16 and one coil with FC15, in place of FC06 and FC05. Set it for a device that does not accept FC06 or FC05.\nA write of two or more registers always uses FC16.\n~Default: off (build option CONFIG_GW_MB_FORCE_MULTI_WRITE).",
- bit:"One bit of a holding or input register, for a bool tag. 0 = the least significant bit.\nFor a write, the gateway reads the register, then writes the full register with the changed bit.\n~0 to 15. Necessary for a bool tag in holding or input, and only there.",
+ bit:"The position of the lowest bit of the value in a holding or input register. 0 = the least significant bit.\nWith the type bool, the tag is one bit. With the type uint16 and a Bit width of 2 to 16, the tag is a field of bits: an unsigned integer.\nFor a write, the gateway reads the register, then writes the full register with the changed bits.\n~0 to 15. Key `bit_offset`. Necessary for a bool tag in holding or input, and for a field of bits.",
+ bitw:"The number of bits of a field in a holding or input register. Bit offset gives the lowest bit of the field. Example: Bit offset 4 and Bit width 3 read the bits 4, 5 and 6 as a number from 0 to 7.\nWith a Bit width of 2 to 16, use the type uint16: the gateway publishes the field as an unsigned integer. For a write, it changes only the bits of the field.\n~1 to 16. Key `bit_width`. Bit offset + Bit width: 16 or less. Default: 1 = one bit, a bool tag.",
  scan:"fast = the gateway reads the tag each Poll interval. slow = each Slow poll interval of the device, for a value that changes rarely, for example a serial number.\nFast tags and slow tags are never in one read block.\n~Default: fast.",
  len:"The number of registers of a string or bytes tag. Each register holds two characters or two bytes. Example: 8 for a text of up to 16 characters.\n~1 to 16. Necessary for string and bytes, and only for them.",
  /* #206 */
@@ -578,17 +602,19 @@ document.addEventListener("pointerout",e=>{if(e.pointerType!=="mouse"||!xb||xpin
    other fields (n = the fields with a value). The table scrolls in its box on a narrow screen:
    the Tag column stays at the left, the details row stays in view, a shade shows more columns. */
 const TCOL=[["name","Tag","tag"],["area","Area","area"],["address","Address","addr"],["type","Type","type_t"],["word_order","Word order","wo"],["scale","Scale","scale"],["units","Units","units"],["writable","Writable","wr"]];
-const TDET=[["offset","Offset","offs"],["deadband","Deadband","db"],["eng_low","Eng. low","englo"],["eng_high","Eng. high","enghi"],["write_min","Write min","wmin"],["write_max","Write max","wmax"],["bit","Bit","bit"],["length","Length","len"],["scan","Scan","scan"]];
+const TDET=[["offset","Offset","offs"],["deadband","Deadband","db"],["eng_low","Eng. low","englo"],["eng_high","Eng. high","enghi"],["write_min","Write min","wmin"],["write_max","Write max","wmax"],["bit_offset","Bit offset","bit"],["bit_width","Bit width","bitw"],["length","Length (registers)","len"],["scan","Scan","scan"]];
 const TK={name:["str",0,0,{ml:39}],area:["sel",AREA],address:["int"],type:["sel",TYPE],word_order:["sel",WO,true],scale:["num"],units:["str",0,0,{ml:15}],writable:["bool"],
- offset:["num"],deadband:["num"],eng_low:["num"],eng_high:["num"],write_min:["num",0,0,{ph:"no limit"}],write_max:["num",0,0,{ph:"no limit"}],bit:["int",0,0,{ph:"0-15"}],length:["int",0,0,{ph:"1-16"}],scan:["sel",["fast","slow"],true]};
+ offset:["num"],deadband:["num"],eng_low:["num"],eng_high:["num"],write_min:["num",0,0,{ph:"no limit"}],write_max:["num",0,0,{ph:"no limit"}],bit_offset:["int",0,0,{ph:"0-15"}],bit_width:["int",0,0,{ph:"1-16"}],length:["int",0,0,{ph:"1-16"}],scan:["sel",["fast","slow"],true]};
 const detOpen=new Set();
-function tagTable(d,i){
- const p=(k,f)=>`devices.${i}.tags.${k}.${f}`;
- const rows=(d.tags||[]).map((t,k)=>{const id=`det-${i}-${k}`,open=detOpen.has(`${i}.${k}`);
+/* #213: @base is the owner of the tags: "devices.<i>" or "device_types.<j>". A key of a tag row
+   (data-more, data-del-tag, detOpen) is "<base>|<k>". */
+function tagTable(d,base){
+ const p=(k,f)=>`${base}.tags.${k}.${f}`,bid=base.replace(".","-");
+ const rows=(Array.isArray(d.tags)?d.tags:[]).map((t,k)=>{const id=`det-${bid}-${k}`,open=detOpen.has(`${base}|${k}`);
   return `<tr>${TCOL.map(([f,l])=>{const a=TK[f];return `<td${a[0]==="bool"?' class="chk"':""}>${ctl(p(k,f),a[0],a[1],a[2],Object.assign({aria:l},a[3]))}</td>`}).join("")}`+
-   `<td><button type="button" class="more" data-more="${i}.${k}" aria-expanded="${open}" aria-controls="${id}">More</button><button data-del-tag="${i}.${k}" aria-label="Remove the tag">x</button></td></tr>`+
+   `<td><button type="button" class="more" data-more="${base}|${k}" aria-expanded="${open}" aria-controls="${id}">More</button><button data-del-tag="${base}|${k}" aria-label="Remove the tag">x</button></td></tr>`+
    `<tr class="det${open?"":" hidden"}" id="${id}"><td colspan="9"><div class="dgrid">${TDET.map(([f,l,h])=>{const a=TK[f];return field(p(k,f),l,a[0],a[1],a[2],Object.assign({help:h},a[3]))}).join("")}</div></td></tr>`}).join("");
- return `<p class="tnote hidden">Push the table to the side for more columns.</p><div class="tw"><div class="tbox"><table class="tags"><colgroup>${"<col>".repeat(9)}</colgroup>`+
+ return `<p class="tnote hidden">Push the table to the side for more columns.</p><div class="tw" data-perr="${base}.tags" tabindex="-1"><div class="tbox"><table class="tags"><colgroup>${"<col>".repeat(9)}</colgroup>`+
   `<tr>${TCOL.map(([,l,h])=>`<th><span class="lbl">${l}${qi(h,l)}</span></th>`).join("")}<th></th></tr>${rows}</table></div><div class="fade" aria-hidden="true"></div></div>`;
 }
 function updMore(b){
@@ -605,15 +631,21 @@ function revealField(el){const r=el&&el.closest?el.closest("tr.det"):null;
 function tblUpd(tw){(tw?[tw]:document.querySelectorAll(".tw")).forEach(w=>{const b=w.firstElementChild,s=b.scrollWidth>b.clientWidth+1;
  w.classList.toggle("scr",s&&b.scrollLeft+b.clientWidth<b.scrollWidth-1);w.previousElementSibling.classList.toggle("hidden",!s);w.style.setProperty("--bw",b.clientWidth+"px")})}
 /* #196: the placeholder of Write min and Write max tells if the tag is writable.
-   #221: the details row shows only the fields that apply to the type of the tag (a field with a
-   value stays, so that its error shows). Bit: a bool tag in holding or input (gw_config.c). */
+   #221 #202: the details row shows only the fields that apply to the type of the tag (a field
+   with a value stays, so that its error shows). Bit offset and Bit width: a bool or uint16 tag in
+   holding or input (gw_config.c). Bit width gives the bits and the values of the field. */
 const TAPPLY={offset:(t)=>t.num,eng_low:(t)=>t.num,eng_high:(t)=>t.num,write_min:(t)=>t.num,write_max:(t)=>t.num,
- deadband:(t)=>!t.blob,bit:(t)=>t.type==="bool"&&(t.area==="holding"||t.area==="input"),length:(t)=>t.blob,scan:()=>true};
-function tagUpd(i,k){const p=f=>document.getElementById(`i-devices.${i}.tags.${k}.${f}`),w=p("writable");if(!w)return;
+ deadband:(t)=>!t.blob,bit_offset:(t)=>t.reg,bit_width:(t)=>t.reg,length:(t)=>t.blob,scan:()=>true};
+function tagUpd(base,k){const p=f=>document.getElementById(`i-${base}.tags.${k}.${f}`),w=p("writable");if(!w)return;
  ["write_min","write_max"].forEach(f=>{const e=p(f);if(e)e.placeholder=w.checked?"no limit":"writable only"});
- const ty=p("type").value,t={type:ty,area:p("area").value,blob:ty==="string"||ty==="bytes"};t.num=ty!=="bool"&&!t.blob;
+ const ty=p("type").value,ar=p("area").value,t={type:ty,area:ar,blob:ty==="string"||ty==="bytes"};t.num=ty!=="bool"&&!t.blob;
+ t.reg=(ty==="bool"||ty==="uint16")&&(ar==="holding"||ar==="input");
  let nl=false;TDET.forEach(([f])=>{const e=p(f);if(!e)return;const d=e.closest(".fld"),on=TAPPLY[f](t)||e.value.trim()!=="";
-  d.classList.toggle("hidden",!on);d.classList.remove("nl");if(on&&!nl&&["bit","length","scan"].includes(f)){d.classList.add("nl");nl=true}})}
+  d.classList.toggle("hidden",!on);d.classList.remove("nl");if(on&&!nl&&["bit_offset","bit_width","length","scan"].includes(f)){d.classList.add("nl");nl=true}});
+ const bo=p("bit_offset"),bw=p("bit_width");if(!bo||!bw)return;let h=bw.parentNode.querySelector(".hint");
+ if(!h){h=document.createElement("span");h.className="hint";h.id=`h-${bw.id}`;bw.parentNode.append(h)}
+ const o=bo.value.trim(),n=bw.value.trim(),a=+o,b=+n,ok=/^\d+$/.test(o)&&/^\d+$/.test(n)&&b>=2&&b<=16&&a+b<=16;
+ h.textContent=ok?`Bits ${a} to ${a+b-1}: values 0 to ${2**b-1}`:"";h.classList.toggle("hidden",!ok)}
 /* #197 #221: the rare keys of a device, in the panel "More device settings (n)" below its fields.
    n = the keys with a value in the document (a checkbox at its default without the key does not count). */
 const devOpen=new Set();
@@ -631,15 +663,17 @@ function updDmore(b){const r=document.getElementById(b.getAttribute("aria-contro
  b.textContent=`${open?"▾":"▸"} More device settings${n?` (${n})`:""}`;b.setAttribute("aria-expanded",open)}
 function togDmore(b){const r=document.getElementById(b.getAttribute("aria-controls")),open=r.classList.toggle("hidden")===false;
  devOpen[open?"add":"delete"](b.dataset.dmore);updDmore(b)}
-function tagsInit(){document.querySelectorAll("[data-dmore]").forEach(updDmore);document.querySelectorAll("[data-more]").forEach(b=>{const[i,k]=b.dataset.more.split(".");tagUpd(i,k);updMore(b)});tblUpd()}
-$("#f-dev").addEventListener("click",e=>{const t=e.target.dataset||{};if(t.delTag||t.delDev)detOpen.clear();if(t.delDev)devOpen.clear();if(t.more)togDet(e.target);if(t.dmore)togDmore(e.target)},true);
+function tagsInit(){document.querySelectorAll("[data-dmore]").forEach(updDmore);document.querySelectorAll("[data-more]").forEach(b=>{const[i,k]=b.dataset.more.split("|");tagUpd(i,k);updMore(b)});tblUpd()}
+const detClick=e=>{const t=e.target.dataset||{};if(t.delTag||t.delDev||t.delDt)detOpen.clear();if(t.delDev)devOpen.clear();if(t.more)togDet(e.target);if(t.dmore)togDmore(e.target)};
+$("#f-dev").addEventListener("click",detClick,true);$("#f-dt").addEventListener("click",detClick,true);
 /* #214: a device with Enabled off gets the notice and a dashed border */
 function devEn(e){const m=/^devices\.(\d+)\.enabled$/.exec(e.dataset.p||"");if(!m)return;
  e.closest(".card").classList.toggle("dis",!e.checked);$(`#off-${m[1]}`).classList.toggle("hidden",e.checked)}
-$("#f-dev").addEventListener("input",e=>{devEn(e.target);const pm=/^devices\.(\d+)\.poll_ms$/.exec(e.target.dataset.p||"");
+const tagInput=e=>{devEn(e.target);const pm=/^devices\.(\d+)\.poll_ms$/.exec(e.target.dataset.p||"");
  if(pm){const sl=document.getElementById(`i-devices.${pm[1]}.slow_poll_ms`);if(sl)sl.placeholder=slowDef(pm[1])}const r=e.target.closest("tr.det");if(r)updMore(r.previousElementSibling.querySelector("[data-more]"));
  const d=e.target.closest(".dsub");if(d)updDmore(document.querySelector(`[aria-controls="${d.id}"]`));
- const m=/^devices\.(\d+)\.tags\.(\d+)\./.exec(e.target.dataset.p||"");if(m)tagUpd(m[1],m[2])});
+ const m=/^((?:devices|device_types)\.\d+)\.tags\.(\d+)\./.exec(e.target.dataset.p||"");if(m)tagUpd(m[1],m[2])};
+$("#f-dev").addEventListener("input",tagInput);$("#f-dt").addEventListener("input",tagInput);
 document.addEventListener("scroll",e=>{const w=e.target.parentElement;if(w&&w.classList.contains("tw"))tblUpd(w);if(xb)xPos()},true);
 addEventListener("resize",()=>{tblUpd();if(xb)xOpen(xb,false)});
 /* #170: the UMH topic of a metric, with the rules of UMH Core (docs/reference/umh-names-and-topics.md):
@@ -654,7 +688,7 @@ function val(p){const e=document.querySelector(`[data-p="${p}"]`);return e?e.val
 function updTopics(){
  const g=val("sparkplug.group_id"),n=val("sparkplug.edge_node_id"),px=(pfx||[]).filter(x=>x!=="").join(":");
  document.querySelectorAll("[data-topic]").forEach(e=>{const i=+e.dataset.topic,name=val(`devices.${i}.name`),id=px?`${px}:${name}`:name;
-  const t=val(`devices.${i}.tags.0.name`)||"<tag>";
+  const ty=val(`devices.${i}.type`),j=ty?dtNames().indexOf(ty):-1,t=val(j>=0?`device_types.${j}.tags.0.name`:`devices.${i}.tags.0.name`)||"<tag>";
   const loc=umhLevels(id).map(l=>l[0]==="_"?`<span class="bad" title="UMH Core reads a level that starts with _ as the data contract">${esc(l)}</span>`:esc(l)).join(".");
   e.innerHTML=`Sparkplug: spBv1.0/${esc(g)}/DDATA/${esc(n)}/${esc(id)} <span class="mut">(${new TextEncoder().encode(id).length} bytes)</span><br>UMH: umh.v1.${loc}._raw.${esc(umhTag(t))}`;
  });
@@ -751,15 +785,45 @@ function renderForms(){
  $("#f-web").innerHTML=field("web.enabled","Enabled","bool",true,0,{help:"webon"})+field("web.https","HTTPS","bool",true,0,{help:"https"})+field("web.https_port","HTTPS port","int",0,0,{ph:"443"})+field("web.port","HTTP port","int",0,0,{help:"http",ph:"80"})+field("web.username","User","str")+field("web.password","Password (8 to 63)","pw",0,0,{ml:63,help:"webpw"})+PW2;pw194();webWarn();
  renderServices();
  renderPrefix();
+ renderTypes();
  const devs=cfg.devices||[];
- $("#f-dev").innerHTML=devs.map((d,i)=>`<div class="card${d.enabled===false?" dis":""}" data-dev="${i}"><div class="dhd">${ccHead(i,`dbody-${i}`,d.name||`Device ${i+1}`,!devClosed.has(d.name),"data-dcc")}</div><div class="dbody${devClosed.has(d.name)?" hidden":""}" id="dbody-${i}"><div class="grid">${field(`devices.${i}.enabled`,"Enabled","bool",true,0,{help:"en",ck:1})+field(`devices.${i}.name`,"Name","str",0,0,{ml:39,help:"name"})+field(`devices.${i}.unit_id`,"Unit ID","int",0,0,{help:"unit"})+field(`devices.${i}.poll_ms`,"Poll interval (ms)","int",0,0,{help:"poll"})+field(`devices.${i}.offline_after`,"Offline after (cycles)","int",0,0,{help:"off"})+field(`devices.${i}.type`,"Type (template)","str",0,0,{ml:39,help:"type"})}</div>
+ $("#f-dev").innerHTML=devs.map((d,i)=>{const typed=d.type!=null&&d.type!=="";return `<div class="card${d.enabled===false?" dis":""}" data-dev="${i}"><div class="dhd">${ccHead(i,`dbody-${i}`,d.name||`Device ${i+1}`,!devClosed.has(d.name),"data-dcc")}</div><div class="dbody${devClosed.has(d.name)?" hidden":""}" id="dbody-${i}"><div class="grid">${field(`devices.${i}.enabled`,"Enabled","bool",true,0,{help:"en",ck:1})+field(`devices.${i}.name`,"Name","str",0,0,{ml:39,help:"name"})+field(`devices.${i}.unit_id`,"Unit ID","int",0,0,{help:"unit"})+field(`devices.${i}.poll_ms`,"Poll interval (ms)","int",0,0,{help:"poll"})+field(`devices.${i}.offline_after`,"Offline after (cycles)","int",0,0,{help:"off"})+dtSel(i,d)}</div>
  <p class="offnote${d.enabled===false?"":" hidden"}" id="off-${i}">Disabled. The gateway does not poll this device and sends no DBIRTH. The validation still examines it.</p>
  ${devMore(i)}
  <div class="topic" data-topic="${i}"></div>
- ${tagTable(d,i)}
- <div class="row" style="margin-top:10px"><button data-add-tag="${i}">+ tag</button><button data-del-dev="${i}">Remove device</button></div></div></div>`).join("");
+ ${typed?devTinfo(d,i):tagTable(d,`devices.${i}`)}
+ <div class="row" style="margin-top:10px">${typed?"":`<button data-add-tag="devices.${i}">+ tag</button><button data-mk-type="${i}">Make a type from these tags</button>`}<button data-del-dev="${i}">Remove device</button></div></div></div>`}).join("");
  tagsInit();updTopics();ccSum();
 }
+/* #213: the card Device types. A type has a name and a tag list; a device with a type (the field
+   Device type) has no tags of its own: it shows the number of the tags of its type and a link to
+   the type. "Remove type" is disabled while devices use the type (decision of the product owner);
+   the validation also refuses a device with a type that does not exist. */
+function dtNames(){return (cfg&&Array.isArray(cfg.device_types)?cfg.device_types:[]).map(t=>t&&t.name!=null?String(t.name):"")}
+/* the devices that use the type @n: from the document, or (dtUsersNow) from the form */
+function dtUsers(n){return (cfg.devices||[]).map((d,i)=>d&&d.type!=null&&d.type!==""&&String(d.type)===n?(d.name||`Device ${i+1}`):null).filter(x=>x!==null)}
+function dtUsersNow(n){return [...document.querySelectorAll("[data-dtype]")].filter(s=>n!==""&&s.value===n).map(s=>val(`devices.${s.dataset.dtype}.name`)||`Device ${+s.dataset.dtype+1}`)}
+/* the number of tags of device @i: its own tags, or the tags of its type */
+function devTagN(i){const t=val(`devices.${i}.type`);if(!t)return document.querySelectorAll(`#f-dev [data-del-tag^="devices.${i}|"]`).length;
+ const j=dtNames().indexOf(t);return j<0?0:document.querySelectorAll(`#f-dt [data-del-tag^="device_types.${j}|"]`).length}
+function renderTypes(){
+ const ts=Array.isArray(cfg.device_types)?cfg.device_types:[];
+ $("#f-dt").innerHTML=(ts.length?'<p class="mut" style="font-size:12.5px;margin:0 0 8px">A device type holds the tag list one time. Each device of the type uses these tags.</p>':'<div class="empty">No device types. A device type holds the tag list one time for devices of the same model. A device can also have its own tags, with no type.</div>')+
+  ts.map((t,j)=>{t=t&&typeof t==="object"?t:{};const n=t.name!=null?String(t.name):"",open=typeOpen.has(n),u=dtUsers(n);
+   return `<div class="card" data-dt="${j}" id="dt-${j}"><div class="dhd">${ccHead(j,`tbody-${j}`,n||`Type ${j+1}`,open,"data-tcc")}</div><div class="dbody${open?"":" hidden"}" id="tbody-${j}"><div class="grid">${field(`device_types.${j}.name`,"Name","str",0,0,{ml:39,help:"tname"})}</div>
+ <div class="used">${u.length?`Used by ${plur(u.length,"device")}: ${u.map(esc).join(", ")}`:"Used by no device"}</div>
+ ${tagTable(t,`device_types.${j}`)}
+ <div class="row" style="margin-top:10px"><button data-add-tag="device_types.${j}">+ tag</button><button data-del-dt="${j}"${u.length?` disabled aria-describedby="dtu-${j}"`:""}>Remove type</button>${u.length?`<span class="mut" id="dtu-${j}">Used by ${plur(u.length,"device")}. Give them another type first.</span>`:""}</div></div></div>`}).join("");
+ const c=$("#dt-card");if(!ts.length&&ccSt.dtypes===undefined&&c&&!c.classList.contains("open"))ccApply(c,true)}
+function dtSel(i,d){const ns=dtNames(),v=d.type==null?"":String(d.type),o=[["","(none: own tags)"],...ns.map(n=>[n,n])];
+ if(v&&!ns.includes(v))o.push([v,`${v} (not in the list)`]);
+ return `<div class="fld"><span class="lbl"><label for="i-devices.${i}.type">Device type</label>${qi("type","Device type")}</span><select id="i-devices.${i}.type" data-p="devices.${i}.type" data-k="sel" data-dtype="${i}" data-prev="${esc(v)}">${o.map(([x,t])=>`<option value="${esc(x)}"${x===v?" selected":""}>${esc(t)}</option>`).join("")}</select></div>`}
+function devTinfo(d,i){const j=dtNames().indexOf(String(d.type)),t=j>=0?cfg.device_types[j]:null,n=t&&Array.isArray(t.tags)?t.tags.length:0;
+ return `<div class="tinfo" data-perr="devices.${i}.tags" tabindex="-1"><p>${j<0?`Tags: no device type <b>${esc(d.type)}</b> in the card Device types. Select a type in the list.`:`Tags: the ${plur(n,"tag")} of the device type <b>${esc(d.type)}</b>. Edit them in the card Device types. <a href="#dt-${j}" data-goto-dt="${j}">Go to the type ${esc(d.type)}</a>`}</p></div>`}
+/* the error of the name of a new type (the rules of gw_config.c), or null */
+function dtNameErr(v,ns){if(v==="")return "Give a name for the type.";if(new TextEncoder().encode(v).length>39)return "The name has more than 39 bytes.";
+ if(/[\/+#]/.test(v))return "No /, + or #.";const o=ns.find(n=>n.toLowerCase()===v.toLowerCase());
+ if(o!==undefined)return o===v?`The type ${v} already exists. Give a different name.`:`The type ${o} differs from this name only in case. Give a different name.`;return null}
 /* #201 #208 #221: the cards Wi-Fi, IPv6 and Time */
 function renderNet(){
  $("#f-wifi").innerHTML=field("network.wifi.enabled","Enabled","bool",false)+field("network.wifi.role","Role","sel",ROLE,true,{help:"role"})+field("network.wifi.failback_s","Failback (s)","int",0,0,{help:"fb",ph:"30"});
@@ -938,7 +1002,8 @@ function note191(el,text,cls){const s=document.createElement("span");s.className
 /* the device, the tag and the label of a field, for example "Pump1 · Unit ID" */
 function where191(el){
  const p=(el.dataset.p||el.dataset.perr||"").split("."),w=[];
- if(p[0]==="devices"){w.push(val(`devices.${p[1]}.name`)||`Device ${+p[1]+1}`);if(p[2]==="tags")w.push(val(`devices.${p[1]}.tags.${p[3]}.name`)||`Tag ${+p[3]+1}`)}
+ if(p[0]==="devices"){w.push(val(`devices.${p[1]}.name`)||`Device ${+p[1]+1}`);if(p[2]==="tags"&&p[3]!==undefined)w.push(val(`devices.${p[1]}.tags.${p[3]}.name`)||`Tag ${+p[3]+1}`)}
+ else if(p[0]==="device_types"){w.push(`Type ${val(`device_types.${p[1]}.name`)||+p[1]+1}`);if(p[2]==="tags"&&p[3]!==undefined)w.push(val(`device_types.${p[1]}.tags.${p[3]}.name`)||`Tag ${+p[3]+1}`)}
  else{const h=el.closest(".card"),h2=h&&h.querySelector("h2");if(h&&h.dataset.t)w.push(h.dataset.t);else if(h2)w.push(h2.textContent.replace(/\?$/,""))}
  let l=el.getAttribute("aria-label")||"",f;
  if(!l&&el.id&&(f=document.querySelector(`label[for="${el.id}"]`)))l=f.textContent;
@@ -1190,13 +1255,21 @@ $("#sd-rst").onclick=async()=>{if(!await ask(RST))return;const r=await api("POST
 // Cancel give false and do nothing.
 let apl={};
 const RST={title:"Restart the gateway?",action:"Restart",html:"<p>The gateway disconnects from MQTT, stops the polling and starts again. This page shows the state again after the restart.</p>"};
-function ask(o){const d=$("#dlg"),ok=$("#dlg-ok"),no=$("#dlg-no"),i=$("#dlg-i");
- $("#dlg-t").textContent=o.title;$("#dlg-b").innerHTML=(o.fact?`<p class="fact">${o.fact}</p>`:"")+(o.html||"");
+/* o.input = {label, value, ml, hint, check}: a text field (#213: the name of a new type); check(v)
+   gives its error, which shows at the field, or null. The promise then gives the text. */
+function ask(o){const d=$("#dlg"),ok=$("#dlg-ok"),no=$("#dlg-no"),i=$("#dlg-i"),f=o.input;
+ $("#dlg-t").textContent=o.title;$("#dlg-b").innerHTML=(o.fact?`<p class="fact">${o.fact}</p>`:"")+
+  (f?`<div class="fld"><span class="lbl"><label for="dlg-n">${esc(f.label)}</label></span><input id="dlg-n" maxlength="${f.ml||255}" autocomplete="off" spellcheck="false" value="${esc(f.value||"")}" aria-describedby="dlg-nh"><span class="hint" id="dlg-nh">${esc(f.hint||"")}</span></div>`:"")+(o.html||"");
  ok.textContent=o.action;ok.className=o.danger?"dgo":"pri";$("#dlg-w").classList.toggle("hidden",!o.word);i.value="";ok.disabled=!!o.word;
  if(o.word)$("#dlg-wl").textContent=`Type ${o.word} to confirm`;
  i.oninput=()=>{ok.disabled=i.value.trim()!==o.word};i.onkeydown=e=>{if(e.key==="Enter"&&!ok.disabled)ok.click()};
- return new Promise(res=>{const end=v=>{d.onclose=null;if(d.open)d.close();res(v)};ok.onclick=()=>end(true);no.onclick=()=>end(false);d.onclose=()=>end(false);
-  d.showModal();(o.word?i:no).focus()})}
+ const n=f?$("#dlg-n"):null,h=f?$("#dlg-nh"):null;
+ if(n){n.oninput=()=>{n.classList.remove("err");n.removeAttribute("aria-invalid");h.className="hint";h.textContent=f.hint||""};n.onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();ok.click()}}}
+ return new Promise(res=>{const end=v=>{d.onclose=null;if(d.open)d.close();res(v)};
+  ok.onclick=()=>{if(!n){end(true);return}const v=n.value.trim(),er=f.check?f.check(v):null;
+   if(er){n.classList.add("err");n.setAttribute("aria-invalid","true");h.className="ferr";h.textContent=er;n.focus();return}end(v)};
+  no.onclick=()=>end(false);d.onclose=()=>end(false);
+  d.showModal();(o.word?i:n||no).focus()})}
 // #192: a refusal of the pre-flight check ("pre-flight check: image <version> refused: <reason>; <reason>;
 // force installs it into recovery mode", gw_fw.c check_image; "; " is only between the reasons) as a box
 // with each reason; its button calls go(version, reason) (#215: a confirmation, then the request again
@@ -1325,10 +1398,42 @@ $("#f-pfx").onclick=e=>{const t=e.target.dataset;if(!(t.addLvl||t.delLvl))return
  if(t.addLvl)pfx.push("");else pfx.splice(+t.delLvl,1);
  renderPrefix();readPrefix();const ins=document.querySelectorAll("[data-lvl]");if(t.addLvl&&ins.length)ins[ins.length-1].focus()};
 $("#add-dev").onclick=()=>{readForms();(cfg.devices=cfg.devices||[]).push({name:"Dev"+(cfg.devices.length+1),unit_id:cfg.devices.length+1,poll_ms:1000,offline_after:3,tags:[{name:"Tag1",area:"holding",address:0,type:"uint16"}]});renderForms()};
-$("#f-dev").onclick=e=>{const t=e.target.dataset;if(!(t.addTag||t.delTag||t.delDev))return;readForms();
- if(t.addTag){const d=cfg.devices[+t.addTag];d.tags.push({name:"Tag"+(d.tags.length+1),area:"holding",address:0,type:"uint16"})}
- if(t.delTag){const[i,k]=t.delTag.split(".").map(Number);cfg.devices[i].tags.splice(k,1)}
- if(t.delDev)cfg.devices.splice(+t.delDev,1);renderForms()};
+/* #213: a new type opens */
+$("#add-dt").onclick=()=>{readForms();const a=cfg.device_types=Array.isArray(cfg.device_types)?cfg.device_types:[],ns=dtNames();let k=a.length+1;while(ns.includes("Type"+k))k++;
+ a.push({name:"Type"+k,tags:[{name:"Tag1",area:"holding",address:0,type:"uint16"}]});typeOpen.add("Type"+k);typeSave();renderForms()};
+/* + tag, x (a tag), Remove device and Remove type; @base of a tag: "devices.<i>" or "device_types.<j>" */
+function tagOps(e){const t=e.target.dataset||{};if(!(t.addTag||t.delTag||t.delDev||t.delDt))return;readForms();
+ if(t.addTag){const o=get(cfg,t.addTag);if(!Array.isArray(o.tags))o.tags=[];o.tags.push({name:"Tag"+(o.tags.length+1),area:"holding",address:0,type:"uint16"})}
+ if(t.delTag){const[b,k]=t.delTag.split("|"),o=get(cfg,b);if(o&&Array.isArray(o.tags))o.tags.splice(+k,1)}
+ if(t.delDev)cfg.devices.splice(+t.delDev,1);
+ if(t.delDt){cfg.device_types.splice(+t.delDt,1);if(!cfg.device_types.length)delete cfg.device_types}
+ renderForms()}
+$("#f-dev").onclick=tagOps;$("#f-dt").onclick=tagOps;
+/* #213: the field Device type. A device with own tags asks first (#193): its own tags go away.
+   (none) after a type gives the device a copy of the tags of the type, as its own tags. */
+$("#f-dev").addEventListener("change",async e=>{const s=e.target;if(s.dataset.dtype===undefined)return;const i=+s.dataset.dtype,prev=s.dataset.prev,nv=s.value;
+ readForms();const d=cfg.devices[i],own=Array.isArray(d.tags)?d.tags.length:0;
+ if(nv&&!prev&&own){const j=dtNames().indexOf(nv),n=j>=0&&Array.isArray(cfg.device_types[j].tags)?cfg.device_types[j].tags.length:0,nm=esc(d.name||`Device ${i+1}`);
+  if(!await ask({title:`Use the tags of the type ${nv}?`,action:`Use the type ${nv}`,fact:`${nm} · ${plur(own,"own tag")}`,
+   html:`<ul><li>${nm} then uses the ${plur(n,"tag")} of the device type <b>${esc(nv)}</b>.</li><li>The ${plur(own,"own tag")} of ${nm} ${own===1?"goes":"go"} away when you save.</li><li>To keep them, select Cancel, then use <b>Make a type from these tags</b>.</li></ul>`})){s.value="";delete d.type;updTopics();upd191();return}}
+ if(nv)delete d.tags;else if(prev){const j=dtNames().indexOf(prev);d.tags=j>=0?JSON.parse(JSON.stringify(cfg.device_types[j].tags||[])):[]}
+ renderForms();const f=document.getElementById(s.id);if(f)f.focus()});
+/* #213: "Make a type from these tags": a new type with a copy of the tags; the device then uses it */
+$("#f-dev").addEventListener("click",async e=>{const b=e.target.closest&&e.target.closest("[data-mk-type],[data-goto-dt]");if(!b)return;
+ if(b.dataset.gotoDt!==undefined){e.preventDefault();const j=b.dataset.gotoDt,c=$("#dt-card");if(!c.classList.contains("open"))ccApply(c,true,true);dtApply(j,true,true);
+  const f=document.getElementById(`i-device_types.${j}.name`);if(f){f.scrollIntoView({block:"center"});f.focus({preventScroll:true})}return}
+ readForms();const i=+b.dataset.mkType,d=cfg.devices[i],nm=d.name||`Device ${i+1}`,tags=Array.isArray(d.tags)?d.tags:[];
+ const name=await ask({title:`Make a device type from the tags of ${nm}`,action:"Make the type",fact:plur(tags.length,"tag"),
+  input:{label:"Name of the new type",value:nm,ml:39,hint:"1 to 39 bytes. No /, + or #. It is also the name of the Sparkplug template.",check:v=>dtNameErr(v,dtNames())},
+  html:`<ul style="margin-top:12px"><li>The new type gets a copy of the ${plur(tags.length,"tag")} of ${esc(nm)}.</li><li>${esc(nm)} then uses the type, and has no own tags.</li><li>Other devices can select the type.</li></ul>`});
+ if(!name)return;
+ (cfg.device_types=Array.isArray(cfg.device_types)?cfg.device_types:[]).push({name,tags:JSON.parse(JSON.stringify(tags))});
+ d.type=name;delete d.tags;typeOpen.add(name);typeSave();renderForms()});
+/* #213: a new name of a type: the devices of the type get it too */
+$("#f-dt").addEventListener("change",e=>{const m=/^device_types\.(\d+)\.name$/.exec(e.target.dataset.p||"");if(!m)return;const j=+m[1],old=String(get(cfg,`device_types.${j}.name`)??"");
+ readForms();const nv=String(get(cfg,`device_types.${j}.name`)??"");if(nv===old)return;
+ (cfg.devices||[]).forEach(d=>{if(d&&old!==""&&d.type===old)d.type=nv});if(typeOpen.delete(old)){typeOpen.add(nv);typeSave()}
+ const a=document.activeElement&&document.activeElement.id;renderForms();const f=a&&document.getElementById(a);if(f)f.focus()});
 $("#tab-config").addEventListener("input",e=>{if(e.target.id==="i-web.password")pw194();if(e.target.dataset.lvl!==undefined)pfx[+e.target.dataset.lvl]=e.target.value.trim().replace(/:/g,"");updTopics();
  const id=e.target.id;if(id==="i-network.wifi.ssid")wifiList();if(id==="sf-kb")sfUpd();if(id==="i-mqtt.host"||id==="i-mqtt.port"||id==="i-mqtt.tls.enabled")bkLive()});
 /* #201 #208 #216 #221 */

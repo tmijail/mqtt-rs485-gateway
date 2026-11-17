@@ -265,7 +265,7 @@ static void test_modbus_keys_round_trip(void)
         "\"tags\":[{\"name\":\"E\",\"area\":\"holding\",\"address\":0,\"type\":\"uint64\","
         "\"word_order\":\"DCBA\",\"scan\":\"slow\"},"
         "{\"name\":\"S\",\"area\":\"holding\",\"address\":4,\"type\":\"string\",\"length\":3},"
-        "{\"name\":\"B\",\"area\":\"input\",\"address\":9,\"type\":\"bool\",\"bit\":12}]},"
+        "{\"name\":\"B\",\"area\":\"input\",\"address\":9,\"type\":\"bool\",\"bit_offset\":12}]},"
         "{\"name\":\"N\",\"unit_id\":2,\"block_reads\":false,\"tags\":[{\"name\":\"T\","
         "\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}]");
     TEST_ASSERT_TRUE_MESSAGE(apply(in, GW_CFGDOC_UPDATE), err.msg);
@@ -287,7 +287,7 @@ static void test_modbus_keys_round_trip(void)
     TEST_ASSERT_TRUE(cfg.tags[0].slow);
     TEST_ASSERT_EQUAL(GW_WORD_DCBA, cfg.tags[0].word_order);
     TEST_ASSERT_EQUAL(3, cfg.tags[1].length);
-    TEST_ASSERT_EQUAL(12, cfg.tags[2].bit);
+    TEST_ASSERT_EQUAL(12, cfg.tags[2].bit_offset);
     TEST_ASSERT_EQUAL_MEMORY(&first.devices, &cfg.devices, sizeof(cfg.devices));
     TEST_ASSERT_EQUAL_MEMORY(&first.tags, &cfg.tags, sizeof(cfg.tags));
     TEST_ASSERT_EQUAL_MEMORY(&first.modbus_tcp, &cfg.modbus_tcp, sizeof(cfg.modbus_tcp));

@@ -265,10 +265,12 @@ def gateway_config(h, protocol, backup=False):
     cfg["sparkplug"].update(group_id=GROUP, edge_node_id=NODE, primary_host_id=HOST,
                             diagnostics_s=0)
     meter = next(d for d in cfg["devices"] if d["name"] == DEVICE)
-    pump = {"name": TYPED, "unit_id": 2, "type": "Pump", "poll_ms": 1000, "offline_after": 3,
-            "tags": [{"name": "Speed", "area": "holding", "address": 100, "type": "uint16",
-                      "units": "rpm", "eng_high": 3000},
-                     {"name": "Run", "area": "coil", "address": 7, "type": "bool"}]}
+    # #213: the tags of the template are in device_types
+    cfg["device_types"] = [{"name": "Pump", "tags": [
+        {"name": "Speed", "area": "holding", "address": 100, "type": "uint16", "units": "rpm",
+         "eng_high": 3000},
+        {"name": "Run", "area": "coil", "address": 7, "type": "bool"}]}]
+    pump = {"name": TYPED, "unit_id": 2, "type": "Pump", "poll_ms": 1000, "offline_after": 3}
     cfg["devices"] = [meter, pump]
     cfg["modbus_tcp"]["enabled"] = False
     return cfg

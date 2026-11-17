@@ -19,7 +19,14 @@ static gw_cfg_err_t err;
 
 /* Two devices, one with a template; the tags cover each value encoding of the records (double,
  * a scaled tag, UInt64 bits, a string, Bytes, Boolean, a scaled Int64). */
-#define DOC_HEAD "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+#define DOC_HEAD "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"}," \
+    "\"device_types\":[" PUMP "],"
+/* #213: the tags of P2 come from its device type: the hash of the parsed configuration is the
+ * same as with the tags in the device (the golden value did not change) */
+#define PUMP_TAGS                                                                                 \
+    "{\"name\":\"On\",\"area\":\"coil\",\"address\":0,\"type\":\"bool\"},"                        \
+    "{\"name\":\"N\",\"area\":\"holding\",\"address\":1,\"type\":\"int64\",\"scale\":2}"
+#define PUMP "{\"name\":\"Pump\",\"tags\":[" PUMP_TAGS "]}"
 #define DEV_M1                                                                                    \
     "{\"name\":\"M1\",\"unit_id\":1,\"poll_ms\":1000,\"tags\":["                                  \
     "{\"name\":\"V\",\"area\":\"input\",\"address\":0,\"type\":\"float32\",\"deadband\":0.1},"    \
@@ -27,10 +34,7 @@ static gw_cfg_err_t err;
     "{\"name\":\"C\",\"area\":\"holding\",\"address\":20,\"type\":\"uint64\"},"                   \
     "{\"name\":\"T\",\"area\":\"holding\",\"address\":30,\"type\":\"string\",\"length\":4},"      \
     "{\"name\":\"B\",\"area\":\"holding\",\"address\":40,\"type\":\"bytes\",\"length\":2}]}"
-#define DEV_P2                                                                                    \
-    "{\"name\":\"P2\",\"type\":\"Pump\",\"unit_id\":2,\"tags\":["                                 \
-    "{\"name\":\"On\",\"area\":\"coil\",\"address\":0,\"type\":\"bool\"},"                        \
-    "{\"name\":\"N\",\"area\":\"holding\",\"address\":1,\"type\":\"int64\",\"scale\":2}]}"
+#define DEV_P2 "{\"name\":\"P2\",\"type\":\"Pump\",\"unit_id\":2}"
 static const char k_doc[] = DOC_HEAD "\"devices\":[" DEV_M1 "," DEV_P2 "]}";
 
 /* The golden value of k_doc (format 3). It changes only with the canonical list: then also
@@ -161,7 +165,8 @@ static void test_excluded_fields_keep_the_hash(void)
     SAME(v->area = GW_AREA_HOLDING);
     SAME(v->address = 99);
     SAME(v->word_order = GW_WORD_DCBA);
-    SAME(var.tags[5].bit = 3);
+    SAME((var.tags[5].bit_offset = 3, var.tags[5].bit_width = 1));
+    SAME(var.devices[1].type_index = 3);
     SAME(v->slow = true);
     SAME(v->writable = true);
     SAME(v->deadband = 5.0);
@@ -237,11 +242,10 @@ static void test_included_fields_change_the_hash(void)
         "{\"name\":\"B\",\"area\":\"holding\",\"address\":40,\"type\":\"bytes\",\"length\":2}]},"
         DEV_P2 "]}";
     const char swapped_devices[] = DOC_HEAD "\"devices\":[" DEV_P2 "," DEV_M1 "]}";
-    const char added_tag[] = DOC_HEAD "\"devices\":[" DEV_M1 ","
-        "{\"name\":\"P2\",\"type\":\"Pump\",\"unit_id\":2,\"tags\":["
-        "{\"name\":\"On\",\"area\":\"coil\",\"address\":0,\"type\":\"bool\"},"
-        "{\"name\":\"N\",\"area\":\"holding\",\"address\":1,\"type\":\"int64\",\"scale\":2},"
-        "{\"name\":\"X\",\"area\":\"holding\",\"address\":9,\"type\":\"uint16\"}]}]}";
+    const char added_tag[] = "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+        "\"edge_node_id\":\"E\"},\"device_types\":[{\"name\":\"Pump\",\"tags\":[" PUMP_TAGS ","
+        "{\"name\":\"X\",\"area\":\"holding\",\"address\":9,\"type\":\"uint16\"}]}],"
+        "\"devices\":[" DEV_M1 "," DEV_P2 "]}";
     uint32_t h1 = parse_hash(swapped_tags), h2 = parse_hash(swapped_devices),
              h3 = parse_hash(added_tag);
     TEST_ASSERT_NOT_EQUAL(GOLDEN, h1);

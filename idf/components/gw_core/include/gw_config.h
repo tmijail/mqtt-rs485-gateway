@@ -46,6 +46,8 @@ extern "C" {
 #define GW_STR_MAX      (2 * GW_STR_MAX_REGS)
 #define GW_TAG_MAX_REGS GW_STR_MAX_REGS     /* widest tag: a string of 16 registers */
 #define GW_NO_BIT       (-1)
+#define GW_NO_TYPE      (-1)        /* #213: a device with its own tags */
+#define GW_MAX_DEVICE_TYPES 16      /* #213: entries of device_types */
 #define GW_CFG_BUILD_DEFAULT (-1)   /* optional key absent: the build-time default applies */
 #define GW_MAX_GAP_LIMIT 1999       /* a block never spans more than 2000 bits */
 #define GW_MBTCP_MAX_ALLOWED 8      /* MB-15: entries of modbus_tcp.allowed_clients */
@@ -200,7 +202,10 @@ typedef struct {
     gw_type_t type;
     gw_word_order_t word_order;
     uint16_t address;
-    int8_t bit;                 /* MB-6: bit 0..15 of a holding/input register (bool), or GW_NO_BIT */
+    int8_t bit_offset;          /* MB-6 #202: the lowest bit (0..15) of a bool or a field of bits
+                                 * in a holding/input register, or GW_NO_BIT */
+    uint8_t bit_width;          /* #202: the bits of the field (1 = bool, 2..16 = uint16) with
+                                 * bit_offset, else 0; in the padding: no growth */
     uint8_t length;             /* MB-6: registers of a string or bytes tag (1..GW_STR_MAX_REGS),
                                  * else 0 */
     bool slow;                  /* MB-12: read every slow_poll_ms of its device ("scan": "slow") */
@@ -223,13 +228,17 @@ typedef struct {
 
 typedef struct {
     char name[GW_NAME_SIZE];    /* also the Sparkplug device_id */
-    char type[GW_NAME_SIZE];    /* SPB-18: template (device type) name; "" = no template */
+    char type[GW_NAME_SIZE];    /* SPB-18 #213: the name of its device type (the template); "" =
+                                 * no type: own tags, no template */
     uint8_t unit_id;
     int8_t write_multiple;      /* #197: 1 = FC15/FC16 also for one coil or register, 0 = FC05/
                                  * FC06, or GW_CFG_BUILD_DEFAULT (CONFIG_GW_MB_FORCE_MULTI_WRITE);
                                  * in the padding after unit_id */
     bool enabled;               /* #214: false = the device stays in the configuration (and the
                                  * validation examines it), but is not polled and has no DBIRTH */
+    int8_t type_index;          /* #213: the index of its device type in device_types (its tags
+                                 * are a copy of the tags of the type), or GW_NO_TYPE: own tags;
+                                 * in the padding after enabled */
     uint32_t poll_ms;           /* fast scan period (MB-10) */
     uint32_t slow_poll_ms;      /* MB-12: period of the tags with "scan": "slow" */
     uint16_t offline_after;

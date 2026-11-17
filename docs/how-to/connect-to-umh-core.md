@@ -64,7 +64,7 @@ UMH makes the location path of a device from its Sparkplug `device_id`. The gate
 3. Set `sparkplug.edge_node_id` to the location of the gateway.
 4. Set `sparkplug.device_prefix` to the common levels of the location. Give each device the remaining levels as its `name`.
 5. Keep `sparkplug.primary_host_id` empty.
-6. You can give a device the key `type`. With the UMH preset, a typed device publishes plain metrics, not a template instance.
+6. You can give a device a device type (the key `type`, refer to [Add devices of one type](add-devices-of-one-type.md)). With the UMH preset, a device with a type publishes plain metrics, not a template instance.
 7. Do not use tags of the type `bytes`. UMH does not show them.
 8. Do not use `uint64` or `int64` tags for values larger than 2^53 (9 007 199 254 740 992). The `tag_processor` rounds them (refer to [the values](#examine-the-result)).
 9. Keep `mqtt.protocol` at `3.1.1` (the default).

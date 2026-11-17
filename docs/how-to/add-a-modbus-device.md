@@ -5,6 +5,7 @@ This procedure tells how to add a Modbus RTU device to the gateway in the web UI
 - For the cable, the termination and the bias of the bus, refer to [Connect the RS485 bus](connect-the-rs485-bus.md).
 - For all the keys of a device and of a tag, refer to [The configuration document](../reference/configuration.md#devices).
 - For the names that UMH Core needs, refer to [UMH names and topics](../reference/umh-names-and-topics.md).
+- For two or more devices of the same model, refer to [Add devices of one type](add-devices-of-one-type.md).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The RS485 hardware mode is compile-only. The images come from the firmware in QEMU, with a Modbus slave on the emulated UART.
 
@@ -30,8 +31,8 @@ All devices on one bus use the same baud rate, parity and stop bits. The RS485 s
 
 | Type | Registers | Note |
 |---|---|---|
-| `bool` | — | Only for `coil` and `discrete`. For one bit of a register, use `bool` with `bit` (0 to 15) |
-| `int16`, `uint16` | 1 | |
+| `bool` | — | Only for `coil` and `discrete`. For one bit of a register, use `bool` with **Bit offset** (0 to 15) |
+| `int16`, `uint16` | 1 | For a field of 2 to 16 bits in a register, use `uint16` with **Bit offset** and **Bit width** |
 | `int32`, `uint32`, `float32` | 2 | Set the word order |
 | `int64`, `uint64`, `float64` | 4 | Set the word order |
 | `string` | `length` | `length` is the number of registers. Each register holds two characters |
@@ -86,7 +87,8 @@ Most fields of the device and of its tags have a (?) button after their label. T
 4. Type the **Unit ID**.
 5. Type the **Poll interval (ms)**: the time between two reads of the device (50 to 3 600 000).
 6. Type **Offline after (cycles)**: the number of failed polls in sequence before the gateway sends the DDEATH of the device.
-7. As an option, click **More device settings** below the fields of the device. The panel has the rare keys of the device:
+7. Keep **Device type** at **(none: own tags)**. The device then has its own tag table. For a device type, refer to [Add devices of one type](add-devices-of-one-type.md).
+8. As an option, click **More device settings** below the fields of the device. The panel has the rare keys of the device:
    - **Slow poll interval (ms)**: the poll interval of the tags with **Scan** `slow`. Empty = 10 × the poll interval.
    - **Block reads**: the gateway reads the tags of one area that are near each other with one request. Clear it for a device that answers with an exception when a block contains registers that it does not have.
    - **Max gap**: the number of unused registers or bits that one block can include.
@@ -116,14 +118,20 @@ The row of a tag has the frequent fields. The other fields of the tag are in its
 9. As an option, type the **Offset**.
 10. As an option, type the **Deadband**. The gateway publishes a new value only when it changes by more than the deadband.
 11. As an option, type **Eng. low** and **Eng. high**. They go into the DBIRTH as metric properties.
-12. For a `bool` tag in a `holding` or `input` register, type the **Bit**.
-13. For a `string` or a `bytes` tag, type the **Length**.
-14. For a writable numeric tag, as an option, type **Write min** and **Write max**. The gateway refuses a DCMD with a value out of these limits. Refer to [Write to a Modbus device](write-to-a-modbus-device.md#set-the-write-limits-of-a-tag).
-15. As an option, select the **Scan**: `fast` (default) reads the tag each poll interval, `slow` each slow poll interval of the device.
+12. For a `bool` tag in a `holding` or `input` register, type the **Bit offset**: the bit of the register, from 0.
+13. For a field of 2 to 16 bits in a register, set the type `uint16`. Type the **Bit offset** (the lowest bit of the field) and the **Bit width** (the number of bits). The hint below **Bit width** gives the bits and the values, for example "Bits 4 to 6: values 0 to 7".
+
+    ![The details row of the tag Alarm of Meter1 with the type uint16: Bit offset 4 and Bit width 3, and below Bit width the hint 'Bits 4 to 6: values 0 to 7'. The row shows no Length (registers), because it applies only to string and bytes. The explainer of Bit width is open.](../images/tag-bit-field.png)
+
+14. For a `string` or a `bytes` tag, type the **Length (registers)**.
+15. For a writable numeric tag, as an option, type **Write min** and **Write max**. The gateway refuses a DCMD with a value out of these limits. Refer to [Write to a Modbus device](write-to-a-modbus-device.md#set-the-write-limits-of-a-tag).
+16. As an option, select the **Scan**: `fast` (default) reads the tag each poll interval, `slow` each slow poll interval of the device.
 
    ![The tag table of Meter1 with the details row of the float32 tag Voltage open: Offset, Deadband, Eng. low, Eng. high, Write min, Write max and Scan. The explainer of Eng. high is open below its (?) button. It tells that Eng. high is the top of the normal range of the value, and that the gateway does not limit the value.](../images/tag-explainer.png)
 
-The details row shows only the fields that apply to the type of the tag. For example, a `string` tag shows Length and Scan, and a `bool` tag in a register shows Bit and Scan. A field with a value stays visible.
+The details row shows only the fields that apply to the type of the tag. For example, a `string` tag shows Length (registers) and Scan, and a `bool` tag in a register shows Deadband, Bit offset, Bit width and Scan. A field with a value stays visible. For the full rule, refer to [`devices[].tags`](../reference/configuration.md#devicestags).
+
+A bit field (Bit width 2 to 16) needs the type `uint16`. With another type, Validate gives an error at the field **Type**. The web UI does not change the type.
 
 The button shows **More (n)**, where n is the number of fields in the details row that have a value. Click the button again to close the details row.
 
@@ -165,7 +173,7 @@ The device has no DBIRTH, and the gateway discards a DCMD for it. To start the p
 
 ## Limits
 
-- 16 devices, 64 tags for each device, and 256 tags in total. A disabled device and its tags also count.
+- 16 devices, 64 tags for each device, and 256 tags in total. A disabled device and its tags also count. A device with a device type counts the tags of its type.
 - Two devices must not have names that differ only in case. Two tags of one device must not have names that differ only in case.
 - A tag name must not also be a folder of another tag name of the same device, for example `A` and `A/B`.
 

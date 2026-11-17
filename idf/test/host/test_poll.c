@@ -3,9 +3,11 @@
 #include <math.h>
 #include <string.h>
 
+#include "gw_conv.h"
 #include "gw_poll.h"
 #include "gw_port.h"
 #include "gw_tagdb.h"
+#include "spb.h"
 #include "support.h"
 #include "unity.h"
 
@@ -283,7 +285,7 @@ static void test_write_multiple_per_device(void)
         "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
         " \"devices\": [{\"name\": \"A\", \"unit_id\": 1, \"write_multiple\": true, \"tags\": ["
         "  {\"name\": \"B3\", \"area\": \"holding\", \"address\": 20, \"type\": \"bool\","
-        "   \"bit\": 3, \"writable\": true}]},"
+        "   \"bit_offset\": 3, \"writable\": true}]},"
         "  {\"name\": \"B\", \"unit_id\": 1, \"write_multiple\": false, \"tags\": ["
         "  {\"name\": \"R\", \"area\": \"holding\", \"address\": 30, \"type\": \"uint16\","
         "   \"writable\": true}]}]}";
@@ -539,8 +541,8 @@ static const char k_mb6[] =
     "  {\"name\": \"Str\", \"area\": \"holding\", \"address\": 10, \"type\": \"string\","
     "   \"length\": 4, \"writable\": true},"
     "  {\"name\": \"B3\", \"area\": \"holding\", \"address\": 20, \"type\": \"bool\","
-    "   \"bit\": 3, \"writable\": true},"
-    "  {\"name\": \"B15\", \"area\": \"input\", \"address\": 6, \"type\": \"bool\", \"bit\": 15}"
+    "   \"bit_offset\": 3, \"writable\": true},"
+    "  {\"name\": \"B15\", \"area\": \"input\", \"address\": 6, \"type\": \"bool\", \"bit_offset\": 15}"
     "]}]}";
 
 static gw_config_t mb6;
@@ -639,6 +641,98 @@ static void test_mb6_writes(void)
     TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 5, 0));
     TEST_ASSERT_EQUAL(MB_FC_WRITE_MULTIPLE_REGISTERS, s.last_write_fc);
     TEST_ASSERT_EQUAL_HEX16(0x0101, s.holding[20]);
+}
+
+/* ---- #202: a field of bits of a register (type uint16) ---- */
+
+static const char k_field[] =
+    "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+    " \"devices\": [{\"name\": \"M\", \"unit_id\": 1, \"tags\": ["
+    "  {\"name\": \"State\", \"area\": \"holding\", \"address\": 20, \"type\": \"uint16\","
+    "   \"bit_offset\": 4, \"bit_width\": 3, \"writable\": true},"
+    "  {\"name\": \"Hi\", \"area\": \"holding\", \"address\": 20, \"type\": \"uint16\","
+    "   \"bit_offset\": 12, \"bit_width\": 4, \"scale\": 0.5},"
+    "  {\"name\": \"Low\", \"area\": \"input\", \"address\": 3, \"type\": \"uint16\","
+    "   \"bit_offset\": 0, \"bit_width\": 2},"
+    "  {\"name\": \"All\", \"area\": \"input\", \"address\": 4, \"type\": \"uint16\","
+    "   \"bit_offset\": 0, \"bit_width\": 16}"
+    "]}]}";
+
+static gw_config_t field_cfg;
+
+static void setup_field(bool force_multi)
+{
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(k_field, sizeof(k_field) - 1, &field_cfg, &err),
+                             err.msg);
+    cfg = &field_cfg;
+    gw_tagdb_reset();
+    sim_reset(&s, 1);
+    s.holding[20] = 0xA0D9;   /* bits 4..6 = 0b101 = 5; bits 12..15 = 0xA = 10 */
+    s.input[3] = 0xFFFE;      /* bits 0..1 = 0b10 = 2 */
+    s.input[4] = 0xFFFF;
+    mb_transport_t t = sim_transport(&s);
+    mb_master_cfg_t mc = {.baud = 9600, .response_timeout_ms = 200, .retries = 2,
+                          .inter_frame_delay_ms = 5};
+    mb_master_init(&mb, &t, &mc);
+    gw_poller_opts_t o = {.merge_reads = true, .force_multi_write = force_multi,
+                          .offline_probe_max_ms = 10000};
+    gw_poller_init(&p, cfg, &mb, &o, 0);
+}
+
+static void test_bit_field_read(void)
+{
+    setup_field(false);
+    TEST_ASSERT_EQUAL(GW_DEV_WENT_ONLINE, gw_poller_poll(&p, 0, 0));
+    TEST_ASSERT_TRUE(online());
+    TEST_ASSERT_EQUAL_DOUBLE(5.0, vals[0].value);
+    TEST_ASSERT_EQUAL_DOUBLE(5.0, vals[1].value);   /* 10 x 0.5 */
+    TEST_ASSERT_EQUAL_DOUBLE(2.0, vals[2].value);
+    TEST_ASSERT_EQUAL_DOUBLE(65535.0, vals[3].value);
+    TEST_ASSERT_EQUAL(SPB_DT_UINT16, gw_conv_datatype(&field_cfg.tags[0]));
+    TEST_ASSERT_EQUAL(SPB_DT_FLOAT, gw_conv_datatype(&field_cfg.tags[1]));
+    s.holding[20] = 0x0F8F;   /* bits 4..6 = 0 */
+    gw_poller_poll(&p, 0, 1000);
+    TEST_ASSERT_TRUE(online());
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, vals[0].value);
+}
+
+static void test_bit_field_write(void)
+{
+    setup_field(false);
+    gw_poller_poll(&p, 0, 0);
+    /* read-modify-write: only the bits 4..6 change */
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 0, 3));
+    TEST_ASSERT_EQUAL(MB_FC_WRITE_SINGLE_REGISTER, s.last_write_fc);
+    TEST_ASSERT_EQUAL_HEX16(0xA0B9, s.holding[20]);
+    gw_tag_value_t got;
+    gw_tagdb_get_tag(0, &got);
+    TEST_ASSERT_TRUE(got.valid);
+    TEST_ASSERT_EQUAL_DOUBLE(3.0, got.value);   /* the read-back of the field */
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 0, 7));
+    TEST_ASSERT_EQUAL_HEX16(0xA0F9, s.holding[20]);
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 0, 0));
+    TEST_ASSERT_EQUAL_HEX16(0xA089, s.holding[20]);
+    /* a value that does not fit 3 bits: no request at all */
+    unsigned before = s.requests;
+    TEST_ASSERT_EQUAL(GW_WRITE_BAD_VALUE, gw_poller_write(&p, 0, 8));
+    TEST_ASSERT_EQUAL(GW_WRITE_BAD_VALUE, gw_poller_write(&p, 0, -1));
+    TEST_ASSERT_EQUAL(before, s.requests);
+    TEST_ASSERT_EQUAL_HEX16(0xA089, s.holding[20]);
+    /* the device changed other bits meanwhile: they stay */
+    s.holding[20] = 0x5F0F;
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 0, 2));
+    TEST_ASSERT_EQUAL_HEX16(0x5F2F, s.holding[20]);
+    /* the read of the register fails: nothing is written */
+    s.offline = true;
+    TEST_ASSERT_EQUAL(GW_WRITE_BUS_ERROR, gw_poller_write(&p, 0, 1));
+    s.offline = false;
+    TEST_ASSERT_EQUAL_HEX16(0x5F2F, s.holding[20]);
+    /* FC16 forced: one register with FC16 */
+    setup_field(true);
+    TEST_ASSERT_EQUAL(GW_WRITE_OK, gw_poller_write(&p, 0, 1));
+    TEST_ASSERT_EQUAL(MB_FC_WRITE_MULTIPLE_REGISTERS, s.last_write_fc);
+    TEST_ASSERT_EQUAL_HEX16(0xA099, s.holding[20]);
 }
 
 /* ---- MB-12: fast and slow scan ---- */
@@ -944,6 +1038,8 @@ int main(void)
     RUN_TEST(test_disabled_device_is_not_polled);
     RUN_TEST(test_mb6_decode);
     RUN_TEST(test_mb6_writes);
+    RUN_TEST(test_bit_field_read);
+    RUN_TEST(test_bit_field_write);
     RUN_TEST(test_scan_classes);
     RUN_TEST(test_slow_blocks_stay_due_after_a_failure);
     RUN_TEST(test_only_slow_tags);

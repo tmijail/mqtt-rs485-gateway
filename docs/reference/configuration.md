@@ -41,25 +41,25 @@ This example has the usual keys:
 }
 ```
 
-The top-level sections are `gateway`, `network`, `ntp`, `mqtt`, `sparkplug`, `rs485`, `local_io`, `devices`, `syslog`, `web`, `modbus_tcp` and `ota`. The sections `mqtt` and `sparkplug` are necessary. The other sections are optional.
+The top-level sections are `gateway`, `network`, `ntp`, `mqtt`, `sparkplug`, `rs485`, `local_io`, `device_types`, `devices`, `syslog`, `web`, `modbus_tcp` and `ota`. The sections `mqtt` and `sparkplug` are necessary. The other sections are optional.
 
 ## General rules
 
 - An unknown key is an error. A duplicate key is an error.
 - The maximum size of the document is 128 KiB.
-- A maximum of 16 devices, 64 tags for each device, and 256 tags in total.
+- A maximum of 16 devices, 64 tags for each device, and 256 tags in total. A device with a device type counts the tags of its type.
 - An error gives the JSON path of the value, for example `devices[1].tags[2].type`. A JSON syntax error gives the line and the column.
 - A warning does not stop a save. The warnings are the name checks of [UMH names](#name-checks-for-umh-core).
 
 ### The rules of the names
 
-These rules apply to `group_id`, `edge_node_id`, `primary_host_id`, `device_prefix`, the device `name` and `type`, and the tag `name` and `units`:
+These rules apply to `group_id`, `edge_node_id`, `primary_host_id`, `device_prefix`, the device `name`, the `name` of a device type, and the tag `name` and `units`:
 
 - The names are valid UTF-8.
 - The Sparkplug IDs do not contain `/`, `+`, `#` or the control characters U+0080 to U+009F.
-- Two device names must not differ only in case. Two device types, or two tag names of one device, must not differ only in case. The comparison folds the ASCII letters only.
-- A tag name must not also be a folder of another tag name of the same device, for example `A` and `A/B`.
-- A device `type` must not be the name or the first folder of a node metric: `bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info` or `Firmware Update`.
+- Two device names must not differ only in case. Two device types, or two tag names of one device or of one device type, must not differ only in case. The comparison folds the ASCII letters only.
+- A tag name must not also be a folder of another tag name of the same device or device type, for example `A` and `A/B`.
+- The name of a device type must not be the name or the first folder of a node metric: `bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info` or `Firmware Update`.
 - The longest device topic, `spBv1.0/<group_id>/DBIRTH/<edge_node_id>/<device_id>`, must fit in 159 bytes.
 
 ### The configuration schema
@@ -75,8 +75,9 @@ The firmware of this version reads schema 2. These keys are schema 2. All the ot
 | `local_io` | `di` (with `invert` and `debounce_ms`), `do_pulse_ms`, `fast_counters` (with `di` and `glitch_ns`) and `run_hours` |
 | `modbus_tcp` | `local_unit_id` and `local_writes` |
 | `ota` | `mqtt` |
-| `devices[]` | `enabled` and `write_multiple` |
-| `devices[].tags[]` | `write_min` and `write_max` |
+| `device_types` | The section, and `name`, `tags`, and `bit_offset` and `bit_width` of its tags |
+| `devices[]` | `enabled`, `write_multiple` and `type` (the name of a device type) |
+| `devices[].tags[]` | `write_min`, `write_max`, `bit_offset` and `bit_width` |
 
 ### The secrets
 
@@ -362,8 +363,8 @@ An array of up to 16 devices.
 | `block_reads` | bool | `true` | `false` = one request for each tag. Use it for a slave that answers with an exception if a block contains registers that it does not map |
 | `max_gap` | integer | `0` | 0 to 1999. The number of unused registers or bits that a block can include to join two tags of the same area. Not permitted with `block_reads: false` |
 | `write_multiple` | bool | `false` | `true` = the gateway writes one register with FC16 and one coil with FC15, in place of FC06 and FC05. Use it for a slave that does not accept FC06 or FC05. A write of two or more registers always uses FC16 |
-| `type` | text | `""` | The device type, as a Sparkplug template. Refer to [Device types](#device-types) |
-| `tags` | array | — | Necessary. 1 to 64 tags |
+| `type` | text | — | The `name` of an entry of `device_types`. The device then uses the tags of that type. Refer to [`device_types`](#device_types) |
+| `tags` | array | — | 1 to 64 tags. Necessary without `type`. Not permitted with `type` |
 
 The defaults of `block_reads`, `max_gap` and `write_multiple` come from the build options `CONFIG_GW_MB_BLOCK_READS`, `CONFIG_GW_MB_BLOCK_MAX_GAP` and `CONFIG_GW_MB_FORCE_MULTI_WRITE`. A block never has more than 125 registers or 2000 bits.
 
@@ -399,20 +400,51 @@ Use it, for example, for a slave that is not connected yet during the commission
 - If a cycle fails before it reads the slow tags, the next cycle reads them.
 - The gateway polls a device with only slow tags each `slow_poll_ms`.
 
-### Device types
+### Devices of one type
+
+A device with `type` has no `tags` key. It uses the tags of the device type, and keeps its own `unit_id`, `poll_ms` and the other keys of the device. Refer to [`device_types`](#device_types).
 
 ```json
-{ "name": "PumpA", "unit_id": 1, "type": "Pump", "tags": [ … ] },
-{ "name": "PumpB", "unit_id": 2, "type": "Pump", "tags": [ … ] }
+{ "name": "PumpA", "unit_id": 1, "type": "Pump" },
+{ "name": "PumpB", "unit_id": 2, "type": "Pump", "poll_ms": 500 }
 ```
 
-- `type` has a maximum of 39 characters, valid UTF-8, without `/ + #`. Empty = no template: one metric for each tag.
-- All the devices of one `type` have the same tags: the same names and datatypes, in the same order. The area, the address, the scale and the units can be different. If not, the gateway refuses the configuration with the path `devices[i].type`.
-- All the definitions together describe a maximum of 64 tags. Each type counts one time.
+- `type` must be the `name` of an entry of `device_types`. If not, the gateway refuses the configuration with the path `devices[i].type`.
+- A device with `type` and `tags` is an error at `devices[i].tags`.
+- A device without `type` has its own tags. Such a device is not a Sparkplug template instance.
 
-For the messages of a template, refer to [Sparkplug messages and metrics](sparkplug-messages-and-metrics.md#templates).
+## `device_types`
+
+An array of up to 16 device types. A device type holds the tag list of a device model one time. Each device that gives the `name` of the type in its `type` key uses these tags.
+
+```json
+"device_types": [
+  { "name": "Pump", "tags": [
+      { "name": "Speed", "area": "holding", "address": 0, "type": "uint16", "units": "rpm",
+        "writable": true },
+      { "name": "Run",   "area": "coil",    "address": 0, "type": "bool" } ] }
+]
+```
+
+| Key | Type | Default | Rule |
+|---|---|---|---|
+| `name` | text | — | Necessary. 1 to 39 bytes, without `/ + #`. Refer to [The rules of the names](#the-rules-of-the-names) |
+| `tags` | array | — | Necessary. 1 to 64 tags, with the keys of [`devices[].tags`](#devicestags) |
+
+- Two device types must not have the same name. They must not have names that differ only in case.
+- The validation examines each type, also a type that no device uses. An error in a tag of a type has the path `device_types[n].tags[k]`.
+- Each device of the type gets a copy of the tags of the type. These copies count in the limit of 256 tags. For example, 5 devices of a type with 60 tags are 300 tags: the gateway refuses that configuration with the path `devices[4].type`.
+- Each type that a device uses is a Sparkplug template. The NBIRTH has one template definition for it, with the name of the type. The DBIRTH of each device of the type has one template instance. A type that no device uses has no definition in the NBIRTH.
+- The definitions of the types that the devices use describe a maximum of 64 tags together. Each type counts one time.
+- With `sparkplug.naming: "umh"`, the tags of a device with a type go out as plain metrics, not as a template instance.
+
+In the web UI, the card **Device types** above the card **Devices and tags** holds the types. Each type is a row that closes and opens. The types are closed by default; a new type opens. The field **Device type** of a device selects its type. The button **Remove type** is disabled while devices use the type. The button **Make a type from these tags** of a device with its own tags makes a new type with a copy of the tags, and the device then uses the type.
+
+For the messages of a template, refer to [Sparkplug messages and metrics](sparkplug-messages-and-metrics.md#templates). For the steps, refer to [Add devices of one type](../how-to/add-devices-of-one-type.md).
 
 ## `devices[].tags`
+
+The tags of a device without a type, and the tags of a device type (`device_types[].tags`), have the same keys and rules.
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
@@ -426,7 +458,8 @@ For the messages of a template, refer to [Sparkplug messages and metrics](sparkp
 | `deadband` | number | `0` | Not negative. An absolute deadband. The gateway publishes a new value only when it changes by more than the deadband |
 | `writable` | bool | `false` | Only for `coil` and `holding`. A host can write the value with a DCMD |
 | `scan` | `fast` or `slow` | `fast` | Refer to [Fast and slow scan](#fast-and-slow-scan) |
-| `bit` | integer | — | 0 to 15. Refer to [One bit of a register](#one-bit-of-a-register) |
+| `bit_offset` | integer | — | 0 to 15. The lowest bit of a bit or a field of bits in a register. Refer to [Bits of a register](#bits-of-a-register) |
+| `bit_width` | integer | `1` | 1 to 16. Only with `bit_offset`. `bit_offset` + `bit_width` must be 16 or less. Refer to [Bits of a register](#bits-of-a-register) |
 | `length` | integer | — | 1 to 16 registers. Necessary with `type: string` or `type: bytes`, and only with them |
 | `units` | text | `""` | Up to 15 characters. The property `engUnit` of the metric. Empty = no property |
 | `eng_low` | number | — | The property `engLow` (Float). In the range of a Float (±3.4e38) |
@@ -440,7 +473,11 @@ For the messages of a template, refer to [Sparkplug messages and metrics](sparkp
 - `eng_low` and `eng_high` are not permitted on `bool`, `string` and `bytes` tags.
 - `write_min` and `write_max` are not permitted on `bool`, `string` and `bytes` tags, and not on a tag that is not writable.
 
-In the web UI, the details row of a tag (**More**) shows only the keys that apply to the type of the tag. A key with a value stays visible.
+In the web UI, the details row of a tag (**More**) shows only the keys that apply to the type of the tag. A key with a value stays visible:
+
+- **Offset**, **Eng. low**, **Eng. high**, **Write min** and **Write max**: not for `bool`, `string` and `bytes`. **Deadband**: not for `string` and `bytes`.
+- **Bit offset** and **Bit width**: only for `bool` and `uint16` in `holding` or `input`.
+- **Length (registers)**: only for `string` and `bytes`.
 
 ### Write limits
 
@@ -461,7 +498,7 @@ In the web UI, the details row of a tag (**More**) shows only the keys that appl
 
 | Type | Registers | Areas |
 |---|---|---|
-| `bool` | 1 bit | `coil`, `discrete`. Also `holding` and `input` with `bit` |
+| `bool` | 1 bit | `coil`, `discrete`. Also `holding` and `input` with `bit_offset` |
 | `uint16`, `int16` | 1 | `holding`, `input` |
 | `uint32`, `int32`, `float32` | 2 | `holding`, `input` |
 | `uint64`, `int64`, `float64` | 4 | `holding`, `input` |
@@ -497,22 +534,26 @@ The word order applies to 32 and 64 bits. For 16 bits, only the byte swap applie
   - Report by exception compares all the bytes.
   - A write needs exactly `2 × length` bytes. The gateway writes them with one FC16.
 
-### One bit of a register
+### Bits of a register
 
 ```json
-{ "name": "Alarm", "area": "holding", "address": 60, "type": "bool", "bit": 3, "writable": true }
+{ "name": "Alarm", "area": "holding", "address": 60, "type": "bool", "bit_offset": 3, "writable": true },
+{ "name": "State", "area": "holding", "address": 20, "type": "uint16", "bit_offset": 4, "bit_width": 3 }
 ```
 
-- `bit` is necessary with `type: bool` in `holding` or `input`, and only there.
-- 0 = the least significant bit of the register, as it arrives.
-- With `bit`, `word_order` must be `big`.
-- For a write, the gateway reads the register (FC03). Then it writes the full register with the changed bit (FC06, or FC16 with `write_multiple: true`).
+- `bit_offset` is necessary with `type: bool` in `holding` or `input`, and only permitted in these two areas.
+- 0 = the least significant bit of the register, as it arrives. `bit_offset` is the lowest bit of the field.
+- `bit_width` 1 (the default) is one bit: the type must be `bool`.
+- `bit_width` 2 to 16 is a field of bits: the type must be `uint16`. The gateway publishes the field as an unsigned integer, for example 0 to 7 for 3 bits. `scale`, `offset` and the other keys of a `uint16` tag apply to the value of the field.
+- Another type with `bit_offset` is an error at `type`. A sum `bit_offset` + `bit_width` of more than 16 is an error at `bit_width`.
+- With `bit_offset`, `word_order` must be `big`.
+- For a write, the gateway reads the register (FC03). Then it writes the full register, with only the bits of the field changed (FC06, or FC16 with `write_multiple: true`). The gateway refuses a value that the field cannot hold, for example 8 for 3 bits. It sends no request.
 
 ### The datatypes in Sparkplug
 
 | Tag type | Sparkplug datatype |
 |---|---|
-| `bool`, also with `bit` | Boolean (11) |
+| `bool`, also with `bit_offset` | Boolean (11) |
 | `int16` | Int16 (2) |
 | `uint16` | UInt16 (6) |
 | `int32` | Int32 (3) |
