@@ -46,6 +46,9 @@ The gateway refuses a DCMD metric with a value out of the limits:
 - It does not write to the device.
 - It writes a warning to the log, for example `DCMD: metric 'Setpoint' discarded: value 200 out of the write limits [0, 150]`.
 - It adds 1 to the counter of refused writes of the device. The shell command `devices` gives `writes refused <n>`, and `GET /api/status` gives `write_refused`.
+- The card **Modbus devices** of the Status tab shows the counter in the State cell of the device, below online or offline: "1 write refused" or "<n> writes refused", in amber. A device with 0 refused writes shows nothing. The counter starts at 0 at each start of the gateway.
+
+  ![The card 'Modbus devices' of the Status tab: the device Meter1 is online, and below 'online' its State cell shows '3 writes refused' in amber, with a (?) button for the explainer.](../images/status-writes-refused.png)
 
 Sparkplug has no answer to a command, so the host sees no error. The next DDATA has the value of the device. The limits do not apply to Modbus TCP requests. For the rules, refer to [Write limits](../reference/configuration.md#write-limits).
 

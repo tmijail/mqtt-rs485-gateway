@@ -162,6 +162,8 @@ button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
 .tsum{font-size:12.5px;color:var(--mut);font-weight:400;overflow-wrap:anywhere}.ebadge{font-size:12px;font-weight:600;color:var(--bad)}
 #f-dev>.card .dhd{margin:-4px 0 0}#f-dev>.card .dbody{margin-top:6px}
 @media (max-width:600px){button.coll{min-height:44px}.cctools button{min-height:44px;flex:1}}
+/* #196: the refused writes of a device, below online or offline in the Modbus devices of the Status tab */
+.wr{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
 /* the visual review of #195: the form controls follow the theme (dark mode); on a phone, the tabs
    get a row of their own, and each touch target is 44 px at least (a checkbox: its row) */
 :root{color-scheme:light dark}
@@ -521,7 +523,8 @@ const HELP={
  sf:"Off: without an MQTT session, the gateway keeps only the last value of each metric.\nOn: the gateway keeps each change in a buffer in RAM (40 000 samples). In the next session, it publishes the changes with `is_historical = true`.\nThe spill to the microSD card moves the oldest samples to the card when the buffer is three quarters full.\n~Default: off. Spill: off, 131072 KB (128 MB).",
  sfsd:"The gateway moves the oldest samples of the RAM buffer to the microSD card, in blocks of 4 KB, when the buffer is three quarters full. In the next session, it publishes the samples of the card first.\nThe card is only for the gateway. The data on the card stays after a restart and after a power cut.\n~Default: off. Only with store & forward on.",
  sfkb:"The space that the gateway uses on the card for the samples, in KB. 1 MB holds approximately 43 000 samples. Example: 128 MB keeps approximately 31 h of 50 changes each second.\nOn a card that a PC formatted with clusters of 4 KB, the gateway uses 512 MB at most.\n~64 to 4 194 304 KB (4 GB). Default: 131072 (128 MB).",
- otaca:"The PEM file with the CA certificates that signed the certificate of the server of the images. The gateway uses it for an update from a URL: from the Status tab or from MQTT.\nEmpty = the CA file of the MQTT card when TLS is on, else the public root CAs of ESP-IDF.\n~Default: empty."
+ otaca:"The PEM file with the CA certificates that signed the certificate of the server of the images. The gateway uses it for an update from a URL: from the Status tab or from MQTT.\nEmpty = the CA file of the MQTT card when TLS is on, else the public root CAs of ESP-IDF.\n~Default: empty.",
+ wref:"The number of DCMD writes to this device that the gateway refused. The value was out of the write limits of the tag (Write min, Write max).\nThe gateway did not write these values to the device. The log has a warning for each refusal.\n~The count starts at 0 at each start of the gateway. The row shows it only when it is more than 0. Modbus TCP requests have no write limits."
 };
 function qi(k,t){return `<button type="button" class="qi" data-x="${k}" data-t="${esc(t)}" aria-label="About ${esc(t)}" aria-expanded="false" aria-controls="xpl">?</button>`}
 /* #190: one explainer for all the (?) buttons. It opens on hover, on keyboard focus and on a click
@@ -998,6 +1001,12 @@ async function load(){
  cfg={};base191={};msg(`Cannot read the saved configuration (${r.status}): ${(r.json||{}).error||""}. Paste or import a document in the JSON tab.`,"bad");
 }
 function yes(b,t,f){return `<span class="${b?"ok":"bad"}">${b?t:f}</span>`}
+/* #196: "1 write refused", "<n> writes refused" in amber, and nothing for 0. The poll writes the
+   table again every 2 s: xKeep(f) moves an open explainer to the new button, and the focus when @f. */
+const wref=(d,i)=>d.write_refused>0?`<br><span class="wr"><span class="warn">${plur(d.write_refused,"write")} refused</span><button type="button" class="qi" data-x="wref" data-t="Writes refused" data-k="wr-${i}" aria-label="About Writes refused" aria-expanded="false" aria-controls="xpl">?</button></span>`:"";
+function xKeep(f){if(!xb||xb.isConnected||!xb.dataset.k)return;const k=xb.dataset.k,n=document.querySelector(`button.qi[data-k="${k}"]`);
+ if(!n){xClose(false);return}
+ n.classList.add("on");n.setAttribute("aria-expanded","true");n.setAttribute("aria-describedby","xpl");xb=n;xPos();if(f){xskip=n;n.focus()}}
 /* #206: the name and the location of the gateway in the header and in the title of the browser
    tab; with no name, the header and the title of before */
 const TITLE0=document.title;
@@ -1049,7 +1058,9 @@ async function poll(){
  $("#rr-restart").title=sm.active?"Ends safe mode. The gateway starts in normal mode.":"The gateway disconnects from MQTT, stops the polling and starts again.";
  lgChg(s.log_levels);
  $("#st-net").innerHTML=`<p>Network ${yes(s.network.up,"up","no IP")} · MQTT ${yes(s.mqtt.connected,"connected",tm.waiting?"waiting for a valid clock":"disconnected")}${s.syslog?` · syslog ${esc(s.syslog)}`:""}</p><table><tr><th>Interface</th><th>State</th><th>IPv4</th><th>IPv6</th></tr>${s.network.interfaces.map(i=>`<tr><td>${i.name}${i.active?" (active)":""}</td><td>${!i.configured?"not configured":!i.link?"no link":i.usable?"up":"no address"}</td><td>${i.ipv4||""}</td><td>${(i.ipv6||[]).join("<br>")}</td></tr>`).join("")}</table>`;
- $("#st-mb").innerHTML=s.devices.length?`<table><tr><th>Device</th><th>Unit</th><th>State</th><th>Cycles / failed</th><th>OK / timeout / CRC / frame / exception</th><th>Values</th></tr>${s.devices.map(d=>d.enabled===false?`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td><span class="mut">disabled</span></td><td>—</td><td>—</td><td class="mut">not polled</td></tr>`:`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td>${yes(d.online,"online","offline")}</td><td>${d.cycles} / ${d.failed}</td><td>${d.ok} / ${d.timeout} / ${d.crc} / ${d.frame} / ${d.exception}</td><td>${d.tags.map(t=>`${esc(t.name)}=${t.valid?esc(t.value_text??t.value):"—"}`).join(", ")}</td></tr>`).join("")}</table>`:"no devices";
+ const xf=!!xb&&document.activeElement===xb;
+ $("#st-mb").innerHTML=s.devices.length?`<table><tr><th>Device</th><th>Unit</th><th>State</th><th>Cycles / failed</th><th>OK / timeout / CRC / frame / exception</th><th>Values</th></tr>${s.devices.map((d,i)=>d.enabled===false?`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td><span class="mut">disabled</span></td><td>—</td><td>—</td><td class="mut">not polled</td></tr>`:`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td>${yes(d.online,"online","offline")}${wref(d,i)}</td><td>${d.cycles} / ${d.failed}</td><td>${d.ok} / ${d.timeout} / ${d.crc} / ${d.frame} / ${d.exception}</td><td>${d.tags.map(t=>`${esc(t.name)}=${t.valid?esc(t.value_text??t.value):"—"}`).join(", ")}</td></tr>`).join("")}</table>`:"no devices";
+ xKeep(xf);
  const AL={none:"silent",device_offline:"device offline",mqtt_down:"no MQTT session",config_error:"configuration rejected"};
  const io=s.io;stIo(s);
  $("#st-io2").innerHTML=`Safe state (failsafe): ${io.failsafe?`<span class="bad">applied (no Sparkplug session)</span>`:"no"}`+

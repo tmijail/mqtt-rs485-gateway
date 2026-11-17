@@ -458,7 +458,7 @@ With a SHA-256, the gateway calculates the SHA-256 of the image that it wrote, b
 For each device, `devices` has `enabled`, `online`, `cycles`, `failed`, `ok`, `timeout`, `crc`, `frame`, `exception`, `write_refused` and `tags`. Each tag has `name`, `valid` and `value`.
 
 - `enabled`: `false` for a device with `enabled: false` in the configuration. The gateway does not poll it, so its counters stay at 0 and its tags are not valid.
-- `write_refused`: the number of DCMD writes since the start that were out of the write limits of a tag (`write_min`, `write_max`).
+- `write_refused`: the number of DCMD writes since the start that were out of the write limits of a tag (`write_min`, `write_max`). The Status tab shows it in the State cell of the device when it is more than 0.
 
 - The value is a number, an exact integer for `int64` and `uint64`, a text for `string`, and hexadecimal for `bytes`.
 - An `int64` or `uint64` tag also has `value_text`, the same integer as a text. A JSON reader that keeps each number as a double (for example a web browser) rounds an integer above 2^53.

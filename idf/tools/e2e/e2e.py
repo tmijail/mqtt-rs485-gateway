@@ -7841,6 +7841,23 @@ def check_devices_gw02(obs, slave, gw, node, t0):
                 f"log {(gw.find(r'metric .Speed. discarded', since) or ['none'])[0]}; writes {wrote}; "
                 f"DDATA {late is not None}; register {slave.get(3, 250)[0]}; "
                 + " | ".join(gw.find(r"^Drive\s+unit", since)[:1])))
+    # #196: GET /api/status gives the count, and the Status tab shows it in the State cell of the
+    # device ("1 write refused", amber, with an explainer; nothing for 0). No scenario runs a
+    # browser: the served page must hold that code. No web password here: the API takes the
+    # commissioning password of the console.
+    auth = ("admin", commissioning_password(gw, t0, 5) or "?")
+    st_s, _, b_s = http("GET", "/api/status", auth=auth)
+    refusals = {d.get("name"): d.get("write_refused") for d in (as_json(b_s) or {}).get("devices", [])}
+    st_p, _, page = http("GET", "/", auth=auth)
+    text = page.decode(errors="replace") if st_p == 200 else ""
+    shown = ('${plur(d.write_refused,"write")} refused' in text and "d.write_refused>0?" in text
+             and 'data-x="wref"' in text and "wref:\"The number of DCMD writes" in text)
+    out.append(("#196 GET /api/status gives write_refused 1 for Drive (0 for the other devices), "
+                "and the Status tab shows '1 write refused' in the State cell, with an explainer",
+                st_s == 200 and refusals.get("Drive") == 1
+                and all(v == 0 for k, v in refusals.items() if k != "Drive") and shown,
+                f"/api/status {st_s}: {refusals}; page {st_p}, the code of the State cell "
+                f"{'present' if shown else 'missing'}"))
     # #214: Spare is never polled and has no DBIRTH; a DCMD for it is discarded
     since = time.monotonic()
     before = len(slave.ctx.writes)

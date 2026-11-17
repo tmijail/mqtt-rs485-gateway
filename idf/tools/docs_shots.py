@@ -772,6 +772,13 @@ SHOTS = [
              "Safe state, Pulse, Local rule, Mode and Run hours: DO 7 is a pulse DO of 300 ms, DO 5 "
              "follows DI 2, DO 6 toggles with DI 3, DO 2 counts its run hours. Below are the alarms "
              "of the buzzer and Alarm after."),
+    # issue #196: docs/how-to/write-to-a-modbus-device.md and docs/reference/status-signals.md.
+    # A count of the refused writes (the docs configuration has no write limits)
+    Shot("status-writes-refused", "configured", DESKTOP, "/", element=".card:has(#st-mb)",
+         wait="#st-mb .wr", freeze={"devices.*.write_refused": 3},
+         alt="The card 'Modbus devices' of the Status tab: the device Meter1 is online, and below "
+             "'online' its State cell shows '3 writes refused' in amber, with a (?) button for "
+             "the explainer."),
     # #204 #217: docs/how-to/set-up-the-local-io.md
     Shot("status-local-io", "configured", DESKTOP, "/", element=".card:has(#st-io)",
          wait="#st-io table",
