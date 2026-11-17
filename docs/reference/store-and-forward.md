@@ -2,7 +2,7 @@
 
 This document gives the data of store & forward: the RAM buffer, the microSD card, the retention and the duplicates after a restart.
 
-- For the keys, refer to [`sparkplug.store_forward`](configuration.md#sparkplugstore_forward).
+- For the keys and their controls in the web UI (the section **Store & forward** of the card **Sparkplug**), refer to [`sparkplug.store_forward`](configuration.md#sparkplugstore_forward).
 - For the messages, refer to [Sparkplug messages and metrics](sparkplug-messages-and-metrics.md).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The SDMMC driver, the FAT file system and the format of the card are compile-only. The host tests and the E2E in QEMU examine the buffer and the ring with a simulated card.

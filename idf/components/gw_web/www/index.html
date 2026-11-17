@@ -252,8 +252,10 @@ button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
    <div id="tls-msg" class="mut" aria-live="polite"></div></div></div>
  <div class="card cc" data-cc="spb" data-t="Sparkplug"><div class="grid" id="f-spb"></div>
   <h2 class="lbl" style="margin-top:12px">Device prefix (location)<button type="button" class="qi" data-x="pfx" data-t="Device prefix (location)" aria-label="About Device prefix (location)" aria-expanded="false" aria-controls="xpl">?</button></h2>
-  <div id="f-pfx" class="row" data-perr="sparkplug.device_prefix" tabindex="-1"></div></div>
- <div class="card cc" data-cc="ota" data-t="Firmware updates" id="c-ota"><div class="grid" id="f-ota"></div><p class="mut" style="margin:10px 0 0">Install an image in the card Firmware of the Status tab.</p></div>
+  <div id="f-pfx" class="row" data-perr="sparkplug.device_prefix" tabindex="-1"></div>
+  <div class="tsec"><h2 class="lbl">Store &amp; forward<button type="button" class="qi" data-x="sf" data-t="Store &amp; forward" aria-label="About Store and forward" aria-expanded="false" aria-controls="xpl">?</button></h2>
+   <div class="grid" id="f-sf" data-perr="sparkplug.store_forward" tabindex="-1"></div></div></div>
+ <div class="card cc" data-cc="ota" data-t="Firmware updates" id="c-ota"><div class="grid" id="f-ota"></div><div id="ota-msg" class="mut" aria-live="polite"></div><p class="mut" style="margin:10px 0 0">Install an image in the card Firmware of the Status tab.</p></div>
  <div class="grp">Services</div>
  <div class="card cc" data-cc="web" data-t="Web interface"><div class="grid" id="f-web"></div></div>
  <!-- #205 #221: the content of the card Certificates (the HTTPS certificate, the PEM files) waits for the approval of the product owner -->
@@ -366,7 +368,7 @@ const CCSUM={
  mqtt:()=>{const t=ccBool("mqtt.tls.enabled",false),n=document.querySelectorAll('[data-p^="mqtt.backup_brokers."][data-p$=".host"]').length;
   return jn([`${val("mqtt.host")}:${val("mqtt.port")||(t?8883:1883)}`,t?"TLS":"",val("mqtt.protocol")==="5"?"MQTT 5":"",n?plur(n,"backup broker"):""])},
  spb:()=>`Group ${val("sparkplug.group_id")} · Edge Node ${val("sparkplug.edge_node_id")} · naming ${val("sparkplug.naming")||"sparkplug"}`,
- ota:()=>`Update from MQTT: ${ccBool("ota.mqtt",false)?"on":"off"}`,
+ ota:()=>jn([`Update from MQTT: ${ccBool("ota.mqtt",false)?"on":"off"}`,val("ota.ca_file")?`CA ${val("ota.ca_file")}`:""]),
  web:()=>ccBool("web.enabled",true)?jn([ccBool("web.https",true)?`HTTPS · port ${val("web.https_port")||443}`:`HTTP · port ${val("web.port")||80}`,`user ${val("web.username")||"admin"}`]):"Off",
  certs:()=>{if(!FILES)return "";if(!FILES.length)return "No PEM files";const d=FILES.flatMap(f=>(f.certs||[]).map(c=>c.not_after)).filter(x=>x).sort()[0];
   return jn([FILES.map(f=>f.name).join(", "),d?`first expiry ${d}`:""])},
@@ -513,7 +515,13 @@ const HELP={
  lunit:"The gateway answers this unit itself, and does not send it to the RS485 bus. A PLC or a SCADA can read the DIs, the DOs and the pulse counters.\n`discrete` (FC02) 0 to 7: DI/1 to DI/8. `coil` (FC01) 0 to 7: DO/1 to DO/8. `input` (FC04) 0 to 31: the counters of DI/1 to DI/8, 4 registers each (uint64, big).\n~1 to 247, not the Unit ID of a device. Default: 0 = off.",
  lwr:"On: a client can switch the DOs with FC05 and FC15 on the local unit. The gateway refuses a DO that a local rule drives (exception 03), as for an NCMD.\nOff: the gateway answers a write with exception 01.\n~Default: off.",
  slhost:"The name, IPv4 or IPv6 address of the syslog server. The gateway sends a copy of its log on UDP (RFC 5424).\n~Up to 127 bytes. Default: empty = no remote syslog.",
- sllvl:"The minimum severity that the gateway sends.\n~error, warning, info or debug. Default: info."
+ sllvl:"The minimum severity that the gateway sends.\n~error, warning, info or debug. Default: info.",
+ /* #221: the Sparkplug diagnostics, store & forward and the CA of the image server */
+ diag:"The gateway sends the node diagnostics in an NDATA at this period: the uptime, the heap, the largest free block, the free PSRAM, the temperature and the Modbus counters.\n0 = the diagnostics go only in the NBIRTH.\n~0, or 10 to 86400. Default: 60.",
+ sf:"Off: without an MQTT session, the gateway keeps only the last value of each metric.\nOn: the gateway keeps each change in a buffer in RAM (40 000 samples). In the next session, it publishes the changes with `is_historical = true`.\nThe spill to the microSD card moves the oldest samples to the card when the buffer is three quarters full.\n~Default: off. Spill: off, 131072 KB (128 MB).",
+ sfsd:"The gateway moves the oldest samples of the RAM buffer to the microSD card, in blocks of 4 KB, when the buffer is three quarters full. In the next session, it publishes the samples of the card first.\nThe card is only for the gateway. The data on the card stays after a restart and after a power cut.\n~Default: off. Only with store & forward on.",
+ sfkb:"The space that the gateway uses on the card for the samples, in KB. 1 MB holds approximately 43 000 samples. Example: 128 MB keeps approximately 31 h of 50 changes each second.\nOn a card that a PC formatted with clusters of 4 KB, the gateway uses 512 MB at most.\n~64 to 4 194 304 KB (4 GB). Default: 131072 (128 MB).",
+ otaca:"The PEM file with the CA certificates that signed the certificate of the server of the images. The gateway uses it for an update from a URL: from the Status tab or from MQTT.\nEmpty = the CA file of the MQTT card when TLS is on, else the public root CAs of ESP-IDF.\n~Default: empty."
 };
 function qi(k,t){return `<button type="button" class="qi" data-x="${k}" data-t="${esc(t)}" aria-label="About ${esc(t)}" aria-expanded="false" aria-controls="xpl">?</button>`}
 /* #190: one explainer for all the (?) buttons. It opens on hover, on keyboard focus and on a click
@@ -728,11 +736,14 @@ function renderForms(){
  renderBk();
  $("#f-bk2").innerHTML=field("mqtt.failover_after","Failover after (attempts)","int",0,0,{help:"fo",ph:"3"})+field("mqtt.primary_return_s","Back to the primary after (s)","int",0,0,{help:"ret",ph:"0",hint:"0 = stay on the backup until it fails"});
  renderTls();
- $("#f-spb").innerHTML=field("sparkplug.group_id","Group ID","str",0,0,{ml:32,help:"group"})+field("sparkplug.edge_node_id","Edge node ID","str",0,0,{ml:32,help:"edge"})+field("sparkplug.primary_host_id","Primary host ID","str",0,0,{ml:32,help:"phost"})+field("sparkplug.naming","Naming","sel",NAMING,true,{help:"naming"});
+ $("#f-spb").innerHTML=field("sparkplug.group_id","Group ID","str",0,0,{ml:32,help:"group"})+field("sparkplug.edge_node_id","Edge node ID","str",0,0,{ml:32,help:"edge"})+field("sparkplug.primary_host_id","Primary host ID","str",0,0,{ml:32,help:"phost"})+field("sparkplug.naming","Naming","sel",NAMING,true,{help:"naming"})+
+  field("sparkplug.diagnostics_s","Diagnostics period (s)","int",0,0,{help:"diag",ph:"60",hint:"0 = only in the NBIRTH"});
+ renderSf();
  $("#f-rs485").innerHTML=field("rs485.baud","Baud rate","int",0,0,{help:"baud"})+field("rs485.parity","Parity","sel",PAR,true)+field("rs485.stop_bits","Stop bits","int")+field("rs485.response_timeout_ms","Timeout (ms)","int",0,0,{help:"tmo"})+field("rs485.retries","Retries","int",0,0,{help:"retry"})+field("rs485.inter_frame_delay_ms","Inter-frame delay (ms)","int",0,0,{help:"ifd"});
  /* #223: ota.mqtt, the only control of the card (an update from the Status tab is always possible) */
- $("#f-ota").innerHTML=`<div class="fld"><span class="lbl"><label for="i-ota.mqtt">Update from MQTT</label>${qi("otamqtt","Update from MQTT")}</span>${ctl("ota.mqtt","bool",false)}<span class="hint" id="h-otamqtt"></span></div>`;
- document.getElementById("i-ota.mqtt").setAttribute("aria-describedby","h-otamqtt");
+ /* #221: ota.ca_file, a file field as the TLS files of the MQTT card */
+ $("#f-ota").innerHTML=`<div class="fld"><span class="lbl"><label for="i-ota.mqtt">Update from MQTT</label>${qi("otamqtt","Update from MQTT")}</span>${ctl("ota.mqtt","bool",false)}<span class="hint" id="h-otamqtt"></span></div>`+otaCaFld();
+ document.getElementById("i-ota.mqtt").setAttribute("aria-describedby","h-otamqtt");tlsInfo();
  renderLio();
  $("#f-web").innerHTML=field("web.enabled","Enabled","bool",true,0,{help:"webon"})+field("web.https","HTTPS","bool",true,0,{help:"https"})+field("web.https_port","HTTPS port","int",0,0,{ph:"443"})+field("web.port","HTTP port","int",0,0,{help:"http",ph:"80"})+field("web.username","User","str")+field("web.password","Password (8 to 63)","pw",0,0,{ml:63,help:"webpw"})+PW2;pw194();webWarn();
  renderServices();
@@ -786,16 +797,23 @@ async function loadFiles(){const r=await api("GET","/api/files");FILES=r.status=
 function fileFld(path,lbl,help,kind,none){const v=get(cfg,path),names=(FILES||[]).filter(f=>f.kind===kind).map(f=>f.name);
  const o=[["",none]].concat(names.map(n=>[n,n]));if(v&&!names.includes(v))o.push([v,FILES?`${v} (not in the gateway)`:v]);
  return `<div class="fld"><span class="lbl"><label for="i-${path}">${lbl}</label>${qi(help,lbl)}</span><select id="i-${path}" data-p="${path}" data-k="sel">${o.map(([x,t])=>`<option value="${esc(x)}"${x===(v||"")?" selected":""}>${esc(t)}</option>`).join("")}</select><span class="info" id="fi-${path}"></span><button type="button" class="fload" data-load="${path}" data-kind="${kind}" data-lbl="${esc(lbl)}" aria-label="Load a file for ${esc(lbl)}">Load a file…</button></div>`}
+function otaNone(){const t=document.getElementById("i-mqtt.tls.enabled"),c=document.getElementById("i-mqtt.tls.ca_file");
+ const on=t?t.checked:!!get(cfg,"mqtt.tls.enabled"),ca=c?c.value:get(cfg,"mqtt.tls.ca_file")||"";
+ return on&&ca?`(empty: the MQTT CA file, ${ca})`:"(empty: the public root CAs)"}
+const otaCaFld=()=>fileFld("ota.ca_file","CA file of the image server","otaca","certificates",otaNone());
 function renderTls(){
+ const oc=document.getElementById("i-ota.ca_file");
  $("#f-tls").innerHTML=field("mqtt.tls.enabled","Encrypt (TLS)","bool",false,0,{help:"tlsen"})+fileFld("mqtt.tls.ca_file","CA file","ca","certificates","(none: public root CAs)")+field("mqtt.tls.server_name","Server name","str",0,0,{ml:127,ph:"the host of each broker",help:"sn"})+fileFld("mqtt.tls.cert_file","Client certificate","crt","certificates","(none)")+fileFld("mqtt.tls.key_file","Client key","key","key","(none)");
+ if(oc)oc.closest(".fld").outerHTML=otaCaFld();
  tlsInfo()}
 /* below each file: the subject and the expiry of its (first) certificate, or the type of the key */
 function until(d){const n=Math.floor((Date.parse(d+"T00:00:00Z")-Date.now())/864e5);return `until ${esc(d)}`+(n<0?' <span class="bad">(expired)</span>':n<=90?` <span class="warn">(in ${n} days)</span>`:"")}
 function tlsInfo(){const sel=p=>{const e=document.getElementById("i-"+p);return e?e.value:""},file=n=>(FILES||[]).find(f=>f.name===n),
   put=(p,h)=>{const e=document.getElementById("fi-"+p);if(e)e.innerHTML=h};
- ["mqtt.tls.ca_file","mqtt.tls.cert_file"].forEach(p=>{const f=file(sel(p)),c=f&&f.certs&&f.certs[0];put(p,c?`${esc(c.subject)} · ${until(c.not_after)}`:"")});
+ ["mqtt.tls.ca_file","mqtt.tls.cert_file","ota.ca_file"].forEach(p=>{const f=file(sel(p)),c=f&&f.certs&&f.certs[0];put(p,c?`${esc(c.subject)} · ${until(c.not_after)}`:"")});
  const k=file(sel("mqtt.tls.key_file")),c=sel("mqtt.tls.cert_file");
- put("mqtt.tls.key_file",k&&k.kind==="key"?`Private key, ${esc(k.key_type)}`+(c&&(k.agrees_with||[]).includes(c)?` · agrees with ${esc(c)}`:""):"")}
+ put("mqtt.tls.key_file",k&&k.kind==="key"?`Private key, ${esc(k.key_type)}`+(c&&(k.agrees_with||[]).includes(c)?` · agrees with ${esc(c)}`:""):"");
+ const o=document.getElementById("i-ota.ca_file");if(o&&o.options[0]&&o.options[0].value==="")o.options[0].textContent=otaNone()}
 /* #208: the Wi-Fi networks near the gateway (GET /api/wifi/scan) */
 let wnets=null,wsim=false;
 function bars(r){const n=r>=-55?4:r>=-67?3:r>=-77?2:1;return `<span class="bars" aria-hidden="true">${[1,2,3,4].map(i=>`<i${i<=n?' class="f"':""}></i>`).join("")}</span>`}
@@ -822,6 +840,31 @@ function webWarn(){[["web.enabled",`After the restart, the web UI stops. To turn
 function webOff(b){const w=JSON.parse(b).web||{};if(w.enabled!==false||(base191&&base191.web&&base191.web.enabled===false))return Promise.resolve(true);
  return ask({title:"Turn off the web interface?",action:"Save and restart",danger:true,fact:"Web interface · Enabled: off",
   html:`<ul><li>After the restart, this page and the REST API do not answer.</li><li>MQTT, Modbus and the other services continue.</li></ul><p style="margin:0 0 4px"><b>To turn on the web interface again:</b></p><ol style="margin:0 0 10px;padding-left:20px"><li>Push the BOOT button of the gateway for 2 to 10 s, until you hear 1 beep. The web server and the access point start.</li><li>Open the web UI, on the network or on the access point.</li><li>In the card Web interface, turn on Enabled. Then select Save and restart.</li></ol><p style="font-size:13px"><a href="${WEBOFF}" target="_blank" rel="noopener">How to turn on the web interface again</a> <span class="mut">(GitHub, needs internet)</span></p>`})}
+/* #221: sparkplug.store_forward is true, false or {enabled, sd: {enabled, max_kb}} (gw_config.c
+   parse_store_forward). Decision of the product owner: the UI writes true or false when the spill
+   keys have their defaults, and an object in the other cases. readSf() changes the key only when a
+   control differs from the document, so the form alone gives no change. */
+const SFKB=131072,SFWARN='Make sure that the card slot has no pull-up on D0 (GPIO45). A pull-up can stop the boot of the board. <a href="https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/README.md#65-slow-broker-and-command-limits" target="_blank" rel="noopener">Read more</a>';
+function sfEff(){const v=get(cfg,"sparkplug.store_forward");
+ if(!v||typeof v!=="object"||Array.isArray(v))return {en:v===true,sd:false,kb:SFKB};
+ const sd=v.sd&&typeof v.sd==="object"?v.sd:{};return {en:v.enabled===undefined?true:!!v.enabled,sd:!!sd.enabled,kb:sd.max_kb===undefined?SFKB:sd.max_kb}}
+function renderSf(){const s=sfEff();
+ $("#f-sf").innerHTML=`<div class="fld"><span class="lbl"><label for="sf-en">Keep the changes without a session</label></span><input type="checkbox" id="sf-en" data-perr="sparkplug.store_forward.enabled"${s.en?" checked":""}></div>`+
+  `<div class="fld"><span class="lbl"><label for="sf-sd">Spill to the microSD card</label>${qi("sfsd","Spill to the microSD card")}</span><input type="checkbox" id="sf-sd" data-perr="sparkplug.store_forward.sd.enabled" aria-describedby="sf-sd-h"${s.sd?" checked":""}><span id="sf-sd-h"></span></div>`+
+  `<div class="fld"><span class="lbl"><label for="sf-kb">Space on the card (KB)</label>${qi("sfkb","Space on the card (KB)")}</span><input id="sf-kb" data-perr="sparkplug.store_forward.sd.max_kb" inputmode="numeric" placeholder="${SFKB}" value="${esc(s.kb)}" aria-describedby="sf-kb-h"><span class="hint" id="sf-kb-h"></span></div>`;
+ sfUpd()}
+/* without store & forward the two spill controls are disabled; the GPIO45 caution while the spill
+   is on; the size in MB below the field */
+function sfUpd(){const en=$("#sf-en"),sd=$("#sf-sd"),kb=$("#sf-kb");if(!en)return;
+ sd.disabled=kb.disabled=!en.checked;const h=$("#sf-sd-h");
+ h.className=!en.checked?"hint":sd.checked?"lwarn":"hidden";h.innerHTML=!en.checked?"Turn on store &amp; forward first.":sd.checked?SFWARN:"";
+ const t=kb.value.trim(),n=t===""?SFKB:Number(t);
+ $("#sf-kb-h").textContent=`${Number.isInteger(n)&&n>0?`= ${grp(Math.round(n/102.4)/10)} MB. `:""}64 to 4 194 304 KB.`}
+function readSf(){const en=$("#sf-en");if(!cfg||!en)return;
+ const c=sfEff(),sd=$("#sf-sd").checked,t=$("#sf-kb").value.trim();
+ if(en.checked===c.en&&sd===c.sd&&(t===String(c.kb)||t===""&&c.kb===SFKB))return;
+ const kb=t===""?SFKB:Number(t);
+ set(cfg,"sparkplug.store_forward",!sd&&kb===SFKB?en.checked:{enabled:en.checked,sd:{enabled:sd,max_kb:kb}})}
 /* #172: sparkplug.device_prefix as a list of levels (pfx while the form is open). An empty level
    stays in the form while the user edits it; the document gets only the levels with text. */
 function renderPrefix(){
@@ -835,7 +878,7 @@ function readPrefix(){
  if(v!=="")set(cfg,"sparkplug.device_prefix",v);else unset("sparkplug.device_prefix");
 }
 function readForms(){
- readPrefix();readLio();
+ readPrefix();readLio();readSf();
  document.querySelectorAll("[data-p]").forEach(e=>{
   const p=e.dataset.p.replace(/\.(\d+)(?=\.|$)/g,".$1"),k=e.dataset.k;let v;
   if(k==="bool"){v=e.checked;if(get(cfg,p)===undefined&&v===(e.dataset.def==="1"))return}else if(k==="int"||k==="num"){if(e.value.trim()===""){unset(p);return}v=Number(e.value)}
@@ -1276,9 +1319,10 @@ $("#f-dev").onclick=e=>{const t=e.target.dataset;if(!(t.addTag||t.delTag||t.delD
  if(t.delTag){const[i,k]=t.delTag.split(".").map(Number);cfg.devices[i].tags.splice(k,1)}
  if(t.delDev)cfg.devices.splice(+t.delDev,1);renderForms()};
 $("#tab-config").addEventListener("input",e=>{if(e.target.id==="i-web.password")pw194();if(e.target.dataset.lvl!==undefined)pfx[+e.target.dataset.lvl]=e.target.value.trim().replace(/:/g,"");updTopics();
- const id=e.target.id;if(id==="i-network.wifi.ssid")wifiList();if(id==="i-mqtt.host"||id==="i-mqtt.port"||id==="i-mqtt.tls.enabled")bkLive()});
+ const id=e.target.id;if(id==="i-network.wifi.ssid")wifiList();if(id==="sf-kb")sfUpd();if(id==="i-mqtt.host"||id==="i-mqtt.port"||id==="i-mqtt.tls.enabled")bkLive()});
 /* #201 #208 #216 #221 */
-$("#tab-config").addEventListener("change",e=>{const id=e.target.id||"";if(id==="i-web.enabled"||id==="i-web.https")webWarn();if(id.startsWith("i-mqtt.tls."))tlsInfo()});
+$("#tab-config").addEventListener("change",e=>{const id=e.target.id||"";if(id==="i-web.enabled"||id==="i-web.https")webWarn();if(id.startsWith("i-mqtt.tls.")||id==="i-ota.ca_file")tlsInfo();
+ if(id==="sf-en"&&!e.target.checked)$("#sf-sd").checked=false;if(id.startsWith("sf-"))sfUpd()});
 $("#tab-config").addEventListener("click",e=>{if(e.target.id==="w-find"){wifiScan();return}
  const t=e.target.closest&&e.target.closest("[data-ladd],[data-ldel]");if(!t)return;readForms();
  const add=t.dataset.ladd!==undefined,[k,i]=(add?t.dataset.ladd:t.dataset.ldel).split("."),L=LISTS[k];let a=get(cfg,L.p);
@@ -1295,7 +1339,7 @@ $("#tab-config").addEventListener("click",e=>{if(e.target.id==="w-find"){wifiSca
 let tlsTo=null;
 $("#tab-config").addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("button[data-load]");if(!b)return;
  tlsTo={p:b.dataset.load,kind:b.dataset.kind,lbl:b.dataset.lbl};$("#tls-file").click()});
-$("#tls-file").onchange=async e=>{const f=e.target.files[0],to=tlsTo;e.target.value="";if(!f||!to)return;const m=$("#tls-msg"),say=(t,c)=>{m.textContent=t;m.className=c};
+$("#tls-file").onchange=async e=>{const f=e.target.files[0],to=tlsTo;e.target.value="";if(!f||!to)return;const m=$(to.p.startsWith("ota.")?"#ota-msg":"#tls-msg"),say=(t,c)=>{m.textContent=t;m.className=c};
  if(f.size>16384){say(`${f.name}: ${f.size} B. The maximum is 16384 B.`,"bad");return}
  say(`Loading ${f.name}…`,"mut");let r,j=null;
  try{r=await fetch("/api/files?name="+encodeURIComponent(f.name),{method:"PUT",headers:{"Content-Type":"application/x-pem-file","X-Requested-With":"gateway"},body:await f.text(),cache:"no-store"})}
