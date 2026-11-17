@@ -590,9 +590,23 @@ SHOTS = [
              "card."),
     Shot("configuration-page", "configured", DESKTOP, "/",
          actions=[("click", "nav button[data-tab=config]")], wait="#f-mqtt input",
-         alt="The Configuration tab of the web UI: the cards Network (Ethernet) and Wi-Fi at "
-             "the top. The bar at the bottom of the window shows 'No changes' and the buttons "
+         alt="The Configuration tab of the web UI: the buttons 'Open all' and 'Close all' at "
+             "the top, the card Gateway, and the group Network with the cards Network (Ethernet) "
+             "and Wi-Fi. The bar at the bottom of the window shows 'No changes' and the buttons "
              "Validate and 'Save and restart'."),
+    # #222: docs/how-to/change-the-configuration.md. Each shot has a new browser context: the
+    # state of the cards (localStorage) of this shot does not go to the shots after it. A tall
+    # viewport, not a full-page capture: the full tab with the bar at the bottom of the window.
+    Shot("configuration-cards-closed", "configured",
+         dict(DESKTOP, viewport={"width": 1280, "height": 1400}), "/",
+         actions=[("click", "nav button[data-tab=config]"), ("wait", "#f-mqtt input"),
+                  ("click", "#cc-close")],
+         wait='#tab-config .card.cc[data-cc="dev"]:not(.open)',
+         alt="The Configuration tab after 'Close all': the card Gateway, and the groups Network, "
+             "MQTT and Sparkplug, Services and Field with their cards. Each card is closed and "
+             "shows a summary of its values in its header, for example 'DHCP' for Network "
+             "(Ethernet), 'Group Plant1 · Edge Node GW01 · naming sparkplug' for Sparkplug and "
+             "'9600 baud · 8N1' for RS485."),
     # docs/how-to/add-a-modbus-device.md and the tutorial
     Shot("modbus-test-read", "configured", DESKTOP, "/", actions=[test_read],
          element=".card:has(#mb-read)", wait="#mb-msg.ok",

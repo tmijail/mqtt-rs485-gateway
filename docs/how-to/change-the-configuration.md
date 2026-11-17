@@ -36,17 +36,35 @@ To change the web password, refer to [Change the web password](change-the-web-pa
 ## Change the configuration in the web UI
 
 1. Open the web UI: `https://<ip>/` or `https://<hostname>.local/`.
-2. Click the tab **Configuration**. Change the values in the forms.
+2. Click the tab **Configuration**.
 
-   ![The Configuration tab of the web UI: the cards Network (Ethernet) and Wi-Fi at the top. The bar at the bottom of the window shows 'No changes' and the buttons Validate and 'Save and restart'.](../images/configuration-page.png)
+   ![The Configuration tab of the web UI: the buttons 'Open all' and 'Close all' at the top, the card Gateway, and the group Network with the cards Network (Ethernet) and Wi-Fi. The bar at the bottom of the window shows 'No changes' and the buttons Validate and 'Save and restart'.](../images/configuration-page.png)
 
-3. For a key that has no form (for example Wi-Fi, IPv6, syslog, TLS), click the tab **JSON**. Change the document.
-4. Click **Validate** in the bar at the bottom of the window. Read the message in the bar.
-5. If the bar gives an error, click **Go to the field**. Read the error below the field, and correct the value.
+3. Find the card of the key. The card Gateway is at the top. The other cards are in four groups: Network, MQTT and Sparkplug, Services, and Field.
+4. If the card is closed, click its title. Change the values in the card.
+5. For a key that has no control in the card, click the tab **JSON**. Change the document.
+6. Click **Validate** in the bar at the bottom of the window. Read the message in the bar.
+7. If the bar gives an error, click **Go to the field**. Read the error below the field, and correct the value.
 
    ![The Configuration tab after Validate with the unit ID 300 for Meter1. Below the field Unit ID, the text 'Value 300 out of range [1, 247]' shows in red. The bar at the bottom of the window shows '1 change, not saved', '1 error: Meter1 · Unit ID' with the link 'Go to the field', and the buttons Validate and 'Save and restart'.](../images/validate-error.png)
 
-6. Click **Save and restart**. The page loads again after 15 s.
+8. Click **Save and restart**. The page loads again after 15 s.
+
+### The cards that close and open
+
+Each card of the Configuration tab closes and opens. Click the title of a card to close it or to open it. **Close all** and **Open all** at the top of the tab close or open all the cards. All the cards are open by default.
+
+A closed card shows a summary of its values in its header, for example `DHCP` or `9600 baud · 8N1`. The summary does not give the live status. The Status tab gives the live status.
+
+![The Configuration tab after 'Close all': the card Gateway, and the groups Network, MQTT and Sparkplug, Services and Field with their cards. Each card is closed and shows a summary of its values in its header, for example 'DHCP' for Network (Ethernet), 'Group Plant1 · Edge Node GW01 · naming sparkplug' for Sparkplug and '9600 baud · 8N1' for RS485.](../images/configuration-cards-closed.png)
+
+In the card **Devices and tags**, each device is a row that closes and opens. The header of the row gives the unit ID, the type, the number of tags, and `disabled` for a disabled device.
+
+The browser keeps the state of each card and of each device row for the address of the gateway. It keeps the state of a device row by the name of the device. Another browser or a private window shows all the cards open.
+
+When a field gets an error or a warning after **Validate** or **Save and restart**, its card and its device row open. The header of the card gives the number of errors.
+
+### The bar at the bottom of the window
 
 The bar stays in view in the Configuration tab and in the JSON tab. It shows the number of changes that are not saved. The web UI compares the document with the document that it loaded or saved last. Thus the number is 0 again after a reload of the page, and after an import of the same document.
 
