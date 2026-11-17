@@ -115,6 +115,30 @@ bool gw_pemload_plan(const gw_filerefs_t *refs, const gw_pemload_file_t *files, 
  */
 bool gw_san_has_host(const char *sans, const char *host);
 
+/* An NVS page has 126 entries of 32 bytes. A string uses one entry for its header, then entries
+ * of 32 bytes for its text with the NUL, all in one page. */
+#define GW_NVS_ENTRY_BYTES  32
+#define GW_NVS_PAGE_ENTRIES 126
+
+/** The NVS entries of a string of @p len bytes (without its NUL). */
+size_t gw_nvs_str_entries(size_t len);
+
+/**
+ * #205: the free NVS entries (available_entries of nvs_get_stats, with the strings of a
+ * certificate that waits already, which it replaces) that a certificate that waits for the
+ * restart needs before the gateway stores it:
+ *   - its three strings (@p cert_len, @p key_len, @p src_len bytes without the NUL);
+ *   - at the next boot, the copy into the certificate in use: NVS writes each new string before
+ *     it erases the old one, so the peak is the new certificate, and the part of the new key
+ *     that is larger than the old certificate (@p cur_cert_len, 0 if none) that it erased;
+ *   - one more page (GW_NVS_PAGE_ENTRIES) for the fragmentation (a string does not go across two
+ *     pages, and the garbage collection of NVS moves full pages only) and for the other NVS
+ *     writes (bdSeq, the local I/O state).
+ * The NVS partition has 6 pages (24 KiB), and NVS keeps one of them free.
+ */
+size_t gw_webcert_nvs_need(size_t cert_len, size_t key_len, size_t src_len,
+                           size_t cur_cert_len);
+
 #ifdef __cplusplus
 }
 #endif

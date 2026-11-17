@@ -59,7 +59,7 @@ These rules apply to `group_id`, `edge_node_id`, `primary_host_id`, `device_pref
 - The Sparkplug IDs do not contain `/`, `+`, `#` or the control characters U+0080 to U+009F.
 - Two device names must not differ only in case. Two device types, or two tag names of one device or of one device type, must not differ only in case. The comparison folds the ASCII letters only.
 - A tag name must not also be a folder of another tag name of the same device or device type, for example `A` and `A/B`.
-- The name of a device type must not be the name or the first folder of a node metric: `bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info` or `Firmware Update`.
+- The name of a device type must not be the name or the first folder of a node metric: `bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info`, `Firmware Update` or `Run Hours`.
 - The longest device topic, `spBv1.0/<group_id>/DBIRTH/<edge_node_id>/<device_id>`, must fit in 159 bytes.
 
 ### The configuration schema

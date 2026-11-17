@@ -336,7 +336,7 @@ The body holds the certificate of the plant (PEM, with its chain) and its unencr
 | `201` | `{"ok":true,"saved":true,"restart":true,"certificate":{…}}`: the certificate waits for the restart |
 | `400` | No private key, more than one key, a certificate that does not parse, or a key that does not agree |
 | `413` | The certificate with its chain, or the key, has more than 3999 bytes |
-| `507` | The gateway cannot store it in NVS |
+| `507` | The gateway cannot store it in NVS. Also when the NVS has not sufficient free space for the certificate, its key and their copy at the restart |
 
 ```sh
 cat gw01-plant.pem gw01-plant.key | curl -k -u admin:<web password> -H "X-Requested-With: curl" \

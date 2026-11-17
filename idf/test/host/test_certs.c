@@ -201,6 +201,34 @@ static void test_san_host(void)
     TEST_ASSERT_FALSE(gw_san_has_host("DNS:gw01", ""));
 }
 
+/* #205: the NVS space of the certificate that waits for the restart */
+static void test_nvs_need(void)
+{
+    /* a header entry, then the text with its NUL in entries of 32 bytes */
+    TEST_ASSERT_EQUAL_UINT(2, gw_nvs_str_entries(0));
+    TEST_ASSERT_EQUAL_UINT(2, gw_nvs_str_entries(31));
+    TEST_ASSERT_EQUAL_UINT(3, gw_nvs_str_entries(32));
+    /* the longest NVS string (4000 bytes with the NUL) fills one page */
+    TEST_ASSERT_EQUAL_UINT(GW_NVS_PAGE_ENTRIES, gw_nvs_str_entries(3999));
+    /* the strings, the copy of the certificate at the next boot, and one page: an EC certificate
+     * of 700 bytes (23 entries) and its key of 250 bytes (9) in place of the same */
+    TEST_ASSERT_EQUAL_UINT((23 + 9 + 2) + 23 + GW_NVS_PAGE_ENTRIES,
+                           gw_webcert_nvs_need(700, 250, 6, 700));
+    /* a key larger than the old certificate: its part above the erased certificate also */
+    TEST_ASSERT_EQUAL_UINT((23 + 105 + 2) + 23 + (105 - 23) + GW_NVS_PAGE_ENTRIES,
+                           gw_webcert_nvs_need(700, 3300, 6, 700));
+    /* no certificate in use yet: the full key */
+    TEST_ASSERT_EQUAL_UINT((23 + 9 + 2) + 23 + 9 + GW_NVS_PAGE_ENTRIES,
+                           gw_webcert_nvs_need(700, 250, 6, 0));
+    /* 5 pages of 126 entries for data (the sixth stays free), 59 entries in use in QEMU with the
+     * certificate of the first boot (E2E https): a chain of 3.5 KB (111) with an RSA 2048 key (55)
+     * fits, also as the renewal of the same; 3999 bytes with a key of 3999 bytes does not */
+    const size_t data = 5 * GW_NVS_PAGE_ENTRIES, first = 59, plant = 111 + 55 + 2;
+    TEST_ASSERT_TRUE(gw_webcert_nvs_need(3500, 1700, 6, 700) <= data - first);
+    TEST_ASSERT_TRUE(gw_webcert_nvs_need(3500, 1700, 6, 3500) <= data - first - plant + 34);
+    TEST_ASSERT_TRUE(gw_webcert_nvs_need(3999, 3999, 6, 700) > data - first);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -212,5 +240,6 @@ int main(void)
     RUN_TEST(test_plan_pair);
     RUN_TEST(test_plan_refused_requests);
     RUN_TEST(test_san_host);
+    RUN_TEST(test_nvs_need);
     return UNITY_END();
 }

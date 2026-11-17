@@ -181,7 +181,9 @@ bool gw_storage_get_web_tls_ex(bool pending, char *cert, size_t cert_cap, char *
  *  "loaded"). */
 esp_err_t gw_storage_set_web_tls(const char *cert, const char *key, const char *src);
 
-/** #205: store the certificate that waits for the restart (the next boot uses it). */
+/** #205: store the certificate that waits for the restart (the next boot uses it).
+ *  ESP_ERR_INVALID_SIZE: the NVS has not sufficient free entries (gw_webcert_nvs_need); the
+ *  certificate that waits does not change. */
 esp_err_t gw_storage_set_web_tls_pending(const char *cert, const char *key, const char *src);
 
 /** #205: discard the certificate that waits for the restart. ESP_ERR_NOT_FOUND: there is none. */

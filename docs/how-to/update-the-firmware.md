@@ -59,7 +59,7 @@ If the pre-flight check refuses the image, a red box shows in the card. Refer to
 7. Read the progress in the card. You can close the page. At the end, the gateway restarts.
 8. Do the steps of "Make sure that the update is complete".
 
-The gateway examines the certificate of the server with `ota.ca_file`. If that key is not set, it uses `mqtt.tls.ca_file`, then the public CA bundle of ESP-IDF. To set `ota.ca_file`, refer to [Set the CA of the image server](#set-the-ca-of-the-image-server).
+The gateway examines the certificate of the server with `ota.ca_file`. If that key is not set, it uses `mqtt.tls.ca_file` when TLS is on (`mqtt.tls.enabled`). Otherwise, it uses the public CA bundle of ESP-IDF. To set `ota.ca_file`, refer to [Set the CA of the image server](#set-the-ca-of-the-image-server).
 
 The field **SHA-256 (optional)** accepts 64 hexadecimal characters. The page changes capital letters to small letters. A space or another length is an error: the page shows it below the field, and it starts no download and no upload.
 

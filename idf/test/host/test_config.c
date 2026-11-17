@@ -1406,6 +1406,10 @@ static void test_sparkplug_names(void)
                     "device_types[0].name: 'bdSeq' is the name or a folder of the node metric 'bdSeq'");
     ASSERT_REJECTED(parse(TYPE("node info")), "the node metric 'Node Info'");
     ASSERT_REJECTED(parse(TYPE("DI")), "the node metric 'DI'");
+    /* #217: the folder of Run Hours/DI/n and Run Hours/DO/n */
+    ASSERT_REJECTED(parse(TYPE("run hours")),
+                    "device_types[0].name: 'run hours' is the name or a folder of the node metric "
+                    "'Run Hours'");
     ASSERT_REJECTED(parse(TYPE("T\xf8")), "device_types[0].name: not valid UTF-8");
 #undef TYPE
 

@@ -8623,6 +8623,22 @@ def check_web_controls_221(doc, page_text):
           f"missing: {[k for k, v in ui.items() if not v] or 'none'}; valid forms {forms}; "
           f"errors {errs}")
 
+    # #191 #213: an error of the list itself (17 device types, the maximum is 16) has the path
+    # "device_types": the card Device types has a field for it, as the card of the devices for
+    # "devices"
+    d = json.loads(json.dumps(doc))
+    d["device_types"] = [{"name": f"T{i}", "tags": [{"name": "v", "area": "holding",
+                                                     "address": 0, "type": "uint16"}]}
+                         for i in range(17)]
+    st, _, b = http("PUT", "/api/config?dry_run=1", d)
+    path = (as_json(b) or {}).get("path")
+    lists = 'id="f-dt" data-perr="device_types"' in page_text and \
+        'id="f-dev" data-perr="devices"' in page_text
+    check("Issues #191 #213: 17 device types are refused at the path device_types, and the "
+          "Configuration tab shows the error of that path, and of devices, at its card",
+          st == 400 and path == "device_types" and lists,
+          f"dry run {st} {path}; the fields of the lists {'present' if lists else 'missing'}")
+
 
 def check_admin_web(gw, nb, status, status_body, doc, page_text, t0):
     """The Status tab and the administration of #195 on the web scenario's gateway (GW04, normal

@@ -1345,8 +1345,52 @@ esp_err_t gw_storage_set_web_tls(const char *cert, const char *key, const char *
     return set_web_tls(false, cert, key, src);
 }
 
+/* #205: the NVS has space for the certificate that waits for the restart, and at the next boot
+ * for its copy into the certificate in use (gw_webcert_nvs_need). The strings of a certificate
+ * that waits already are replaced (erased first): they count as free. Without the statistics,
+ * the write decides. */
+static bool web_tls_fits(const char *cert, const char *key, const char *src, size_t *avail,
+                         size_t *need)
+{
+    size_t cur = 0;   /* the certificate in use, which the copy at the next boot replaces */
+    *avail = 0;
+    nvs_stats_t st;
+    nvs_handle_t h;
+    bool stats = nvs_get_stats(NULL, &st) == ESP_OK;
+    if (stats) {
+        *avail = st.available_entries;
+    }
+    if (nvs_open(NVS_SECRETS, NVS_READONLY, &h) == ESP_OK) {
+        for (unsigned i = 0; i < 3; i++) {
+            size_t len = 0;
+            if (nvs_get_str(h, k_webtls[1][i], NULL, &len) == ESP_OK && len > 0) {
+                *avail += gw_nvs_str_entries(len - 1);
+            }
+        }
+        size_t len = 0;
+        if (nvs_get_str(h, k_webtls[0][0], NULL, &len) == ESP_OK && len > 0) {
+            cur = len - 1;
+        }
+        nvs_close(h);
+    }
+    *need = gw_webcert_nvs_need(strlen(cert), strlen(key), strlen(src), cur);
+    return !stats || *avail >= *need;
+}
+
 esp_err_t gw_storage_set_web_tls_pending(const char *cert, const char *key, const char *src)
 {
+    if (!s_nvs_ok) {
+        return ESP_ERR_NVS_NOT_INITIALIZED;
+    }
+    size_t avail, need;
+    if (!web_tls_fits(cert, key, src, &avail, &need)) {
+        ESP_LOGW(TAG, "HTTPS: the new certificate is not stored: the NVS has %u free entries, "
+                      "it needs %u", (unsigned)avail, (unsigned)need);
+        return ESP_ERR_INVALID_SIZE;   /* the certificate that waits does not change */
+    }
+    ESP_LOGI(TAG, "HTTPS: NVS space for the new certificate: %u free entries, %u needed",
+             (unsigned)avail, (unsigned)need);
+    gw_storage_erase_web_tls_pending();   /* no two certificates that wait at one time */
     esp_err_t err = set_web_tls(true, cert, key, src);
     if (err != ESP_OK) {
         gw_storage_erase_web_tls_pending();   /* never half of a pair */

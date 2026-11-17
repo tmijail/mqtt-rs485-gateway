@@ -18,7 +18,7 @@ You need:
 
 The buttons of the card **Certificates** change the gateway at once. They do not wait for **Save and restart**.
 
-The gateway keeps 16 PEM files at most. Each PEM file has 16384 bytes at most. The HTTPS certificate with its chain has 3999 bytes at most, and its key also.
+The gateway keeps 16 PEM files at most. Each PEM file has 16384 bytes at most. The HTTPS certificate with its chain has 3999 bytes at most, and its key also. The two together must also fit in the free space of the NVS: a chain of 3.5 KB with an RSA 2048 key fits.
 
 ![The card 'Certificates' of the Configuration tab. The section 'HTTPS certificate of this page' shows the self-signed certificate of the first boot: its source, subject, SANs, last day and SHA-256 fingerprint, with the buttons 'Load a certificate…' and 'Make a new self-signed certificate'. The section 'Files for MQTT TLS and firmware updates' lists ca.pem, gw01.crt and gw01.key with their content, subject, last day and the keys that use them, each with Replace and Remove, and the button 'Load a file…'.](../images/certificates-card.png)
 
@@ -66,7 +66,7 @@ A replaced file keeps its name. The keys of the configuration that name the file
    ![The dialog 'Replace gw01.crt and gw01.key': the new certificate gw01-2027.crt and the new key gw01-2027.key are chosen. The gateway examined the files: a certificate CN=GW13 and a private key EC P-256 that agrees with it. It has the button 'Replace the files' and Cancel.](../images/pem-replace-dialog.png)
 
 6. Click **Replace the file** (or **Replace the files**).
-7. Replace the other files, if necessary. Then restart the gateway one time: click **Restart** at the bottom of the page, or **Save and restart** after a change of the configuration.
+7. Replace the other files, if necessary. Then restart the gateway one time. Click **Restart** in the card **Restart and reset** of the tab **Status**, or **Save and restart** after a change of the configuration.
 
 The gateway refuses a content of the other kind for a file in use. For example, a private key cannot replace the file of the CA.
 
