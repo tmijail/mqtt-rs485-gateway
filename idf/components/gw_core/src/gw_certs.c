@@ -200,11 +200,13 @@ size_t gw_nvs_str_entries(size_t len)
     return 1u + (len + 1u + GW_NVS_ENTRY_BYTES - 1u) / GW_NVS_ENTRY_BYTES;
 }
 
-size_t gw_webcert_nvs_need(size_t cert_len, size_t key_len, size_t src_len)
+size_t gw_webcert_nvs_need(size_t cert_len, size_t key_len, size_t src_len,
+                           size_t cur_cert_len)
 {
-    size_t one = gw_nvs_str_entries(cert_len) + gw_nvs_str_entries(key_len) +
-                 gw_nvs_str_entries(src_len);
-    return 2u * one + GW_NVS_PAGE_ENTRIES;
+    size_t c = gw_nvs_str_entries(cert_len), k = gw_nvs_str_entries(key_len);
+    size_t cur = cur_cert_len > 0 ? gw_nvs_str_entries(cur_cert_len) : 0u;
+    return c + k + gw_nvs_str_entries(src_len) + c + (k > cur ? k - cur : 0u) +
+           GW_NVS_PAGE_ENTRIES;
 }
 
 static bool same_ci(const char *a, size_t an, const char *b, size_t bn)
