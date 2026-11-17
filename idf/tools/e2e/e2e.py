@@ -7398,6 +7398,7 @@ def run_web(args, work):
     cfg["sparkplug"]["edge_node_id"] = node
     cfg["mqtt"]["password"] = "mqtt-secret"      # the broker allows anonymous: ignored there
     cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    cfg["gateway"] = dict(GATEWAY_LABELS)       # #206
     flash = flash_variant(args, work, "web", {"config.json": json.dumps(cfg, indent=2).encode()})
     obs = Observer()
     gw = Gateway(args, work / "uart0-web.log", flash)
@@ -7468,6 +7469,8 @@ def run_web(args, work):
           "/api/status ap.request_via_ap is false over the Ethernet",
           st_p == 200 and st_s == 200 and all(dlg_items.values()),
           f"missing: {[k for k, v in dlg_items.items() if not v] or 'none'}; ap {ap_s}")
+
+    check_admin_web(gw, nb, status, b_s, doc, page_text, t0)
 
     # Issue #194: a new web password needs the same value in a second field, and a save that
     # removes the web password asks first. The behaviour in a browser is checked by the shots
@@ -7704,6 +7707,177 @@ def run_web(args, work):
           moved and encrypted and enc and not leaks,
           f"{(moved or ['no migration log'])[0]}; {(encrypted or ['NVS not encrypted'])[0]}; "
           f"shell {bool(enc)}; secrets found in clear: {leaks or 'none'}")
+
+
+# #206: the name, the location and the comment of the web scenario's gateway
+GATEWAY_LABELS = {"name": "Pump panel 2", "location": "Plant 2, hall B",
+                  "comment": "Feeds the cooling towers 1 and 2. Contact: maintenance, ext. 214."}
+
+
+def check_admin_web(gw, nb, status, status_body, doc, page_text, t0):
+    """The Status tab and the administration of #195 on the web scenario's gateway (GW04, normal
+    mode): the name and the location (#206), the health values (#212), Identify (#207), the live
+    log (#200) and the log level of each tag (#199). The factory reset (#203) and safe mode (#209)
+    restart the gateway: they are in the reset scenario (check_restart_admin)."""
+    # #206: the name and the location in /api/status and in the NBIRTH (Node Info/Name and
+    # Node Info/Location, String, aliases 8 and 9); the comment only in the document
+    gl = status.get("gateway") or {}
+    nb_p = nb[2] if nb else None
+    m_name = metric(nb_p, name="Node Info/Name") if nb_p else None
+    m_loc = metric(nb_p, name="Node Info/Location") if nb_p else None
+    check("Issue #206: /api/status gives gateway.name and gateway.location (not the comment); the "
+          "NBIRTH has Node Info/Name and Node Info/Location (String, aliases 8 and 9; "
+          "tck-id-topics-nbirth-metrics); GET /api/config keeps the comment; the Configuration "
+          "tab has the card Gateway and the page sets the title of the browser tab",
+          gl.get("name") == GATEWAY_LABELS["name"] and gl.get("location") == GATEWAY_LABELS["location"]
+          and "comment" not in gl and b"cooling towers" not in status_body
+          and m_name is not None and m_name.string_value == GATEWAY_LABELS["name"]
+          and m_name.alias == 8 and m_name.datatype == 12
+          and m_loc is not None and m_loc.string_value == GATEWAY_LABELS["location"]
+          and m_loc.alias == 9 and m_loc.datatype == 12
+          and (doc.get("gateway") or {}).get("comment") == GATEWAY_LABELS["comment"]
+          and 'id="f-gw"' in page_text and '"gateway.comment"' in page_text
+          and "document.title=" in page_text,
+          f"status gateway {gl}; NBIRTH name {m_name.string_value if m_name else None!r} "
+          f"(alias {m_name.alias if m_name else None}), location "
+          f"{m_loc.string_value if m_loc else None!r}; config comment "
+          f"{(doc.get('gateway') or {}).get('comment')!r}")
+
+    # #212: the largest free block of the internal RAM, the free PSRAM and the temperature (QEMU
+    # has no sensor: null) in /api/status and in the NBIRTH (UInt32 58, UInt32 59, Float 68)
+    heap = status.get("heap") or {}
+    m_blk = metric(nb_p, name="Node Info/Largest Free Block") if nb_p else None
+    m_psr = metric(nb_p, name="Node Info/Free PSRAM") if nb_p else None
+    m_tmp = metric(nb_p, name="Node Info/Temperature") if nb_p else None
+    psram = ARGS.psram
+    check("Issue #212: /api/status gives heap.internal_largest and temperature_c (null: QEMU has no "
+          "sensor); the NBIRTH has Node Info/Largest Free Block (UInt32, alias 58), Node Info/Free "
+          "PSRAM (UInt32, alias 59) and Node Info/Temperature (Float, alias 68, null)",
+          0 < heap.get("internal_largest", 0) <= heap.get("internal_free", 0)
+          and "temperature_c" in status and status["temperature_c"] is None
+          and m_blk is not None and m_blk.alias == 58 and m_blk.datatype == 7 and m_blk.int_value > 0
+          and m_psr is not None and m_psr.alias == 59 and m_psr.datatype == 7
+          and (m_psr.int_value > 1000000 if psram else True)
+          and m_tmp is not None and m_tmp.alias == 68 and m_tmp.datatype == 9 and m_tmp.is_null,
+          f"heap {heap}; temperature_c {status.get('temperature_c', 'absent')}; NBIRTH block "
+          f"{m_blk.int_value if m_blk else None}, PSRAM {m_psr.int_value if m_psr else None}, "
+          f"temperature null {m_tmp.is_null if m_tmp else None}")
+
+    # #207: Identify. No CSRF header: 403 and nothing starts. Then 202 with 10 s, the LED pattern
+    # "identify" and the beeps (logged by the QEMU build), the time left in /api/status, a second
+    # request 409 (the time does not start again), the end after 10 s; then the shell command
+    t_id = time.monotonic()
+    st_x, _, _ = http("POST", "/api/identify", headers={"X-Requested-With": None})
+    forged = gw.find(r"web: identify requested", t_id)
+    st_i, _, b_i = http("POST", "/api/identify")
+    j_i = as_json(b_i) or {}
+    led = gw.wait_log(r"led: status: identify$", 3, t_id)
+    beeps = gw.wait_log(r"buzzer: identify: short beeps for 10 s \(simulated\)", 3, t_id)
+    st_s2, _, b_s2 = http("GET", "/api/status")
+    left = (as_json(b_s2) or {}).get("identify_left_s", 0)
+    st_i2, _, b_i2 = http("POST", "/api/identify")
+    j_i2 = as_json(b_i2) or {}
+    over = gw.wait_log(r"buzzer: identify over \(simulated\)", 15, t_id)
+    back = gw.wait_log(r"led: status: (?!identify)", 3, over or t_id) if over else None
+    asked = time.monotonic()
+    gw.console("identify")
+    sh1 = gw.wait_log(r"^identify: the LED shows red, green and blue in turn and the buzzer beeps "
+                      r"for 10 s$", 5, asked)
+    gw.console("identify")
+    sh2 = gw.wait_log(r"^identify: already running, \d+ s left$", 5, asked)
+    check("Issue #207: POST /api/identify -> 202 (10 s): the LED pattern 'identify' and the beeps; "
+          "/api/status identify_left_s; a second request -> 409 while it runs; the end after 10 s; "
+          "no CSRF header -> 403 and nothing; the shell 'identify' (and 'already running')",
+          st_x == 403 and not forged and st_i == 202 and j_i.get("identify_left_s") == 10
+          and led and beeps and 1 <= left <= 10 and st_i2 == 409 and j_i2.get("identify_left_s", 0) > 0
+          and over and 9.0 <= over - led <= 12.5 and back and sh1 and sh2
+          and "/api/identify" in page_text and 'id="ident"' in page_text,
+          f"no header {st_x}; POST {st_i} {j_i}; LED {bool(led)}, beeps {bool(beeps)}, left {left}; "
+          f"second {st_i2} {j_i2}; over after {(over - led) if over and led else None} s, LED "
+          f"{(gw.find(r'led: status: ', over or t_id) or ['?'])[0] if over else None}; shell "
+          f"{bool(sh1)} {bool(sh2)}")
+
+    # #200: GET /api/log has the lines of the console (the PSRAM ring of 16 KB); since=<last>
+    # gives only the newer lines; no credentials -> 401
+    st_l, _, b_l = http("GET", "/api/log")
+    j_l = as_json(b_l) or {}
+    lines = j_l.get("lines") or []
+    in_log = [x for x in lines if re.search(r"web: identify requested through the REST API", x)]
+    in_console = gw.find(r"web: identify requested through the REST API", t_id)
+    last = j_l.get("last", 0)
+    st_l2, _, b_l2 = http("GET", f"/api/log?since={last}")
+    j_l2 = as_json(b_l2) or {}
+    st_l3, _, _ = http("GET", "/api/log", auth=None)
+    ring = sdkconfig_int(ARGS.sdkconfig, "GW_LOG_RING_KB") * 1024
+    check("Issue #200: GET /api/log gives the log lines that the console shows (identify through "
+          "the REST API), with their numbers; ?since=<last> gives only the newer lines; no "
+          "credentials -> 401",
+          st_l == 200 and in_log and in_console
+          and in_log[0].strip() == re.sub(r"\x1b\[[0-9;]*m", "", in_console[0]).strip()
+          and j_l.get("size") == ring and j_l.get("count", 0) > 10 and last >= j_l.get("count", 0)
+          and j_l.get("lost") == 0 and st_l2 == 200 and j_l2.get("since") == last
+          and not [x for x in j_l2.get("lines") or [] if x in in_log] and st_l3 == 401,
+          f"GET {st_l}: {len(lines)} lines, count {j_l.get('count')}, last {last}, size "
+          f"{j_l.get('size')} (expected {ring}), in the log {in_log[:1]}, on the console "
+          f"{in_console[:1]}; since {st_l2} {len(j_l2.get('lines') or [])} lines; no auth {st_l3}")
+
+    # #199: the log level of a tag at run time. The tag spb has debug lines (each publish): none
+    # before; POST /api/log/level debug -> they show on the console and in GET /api/log; the shell
+    # 'log poll debug' (the offline probes of Dead3..5); /api/status log_levels; 'log reset'
+    lv = as_json(http("GET", "/api/log/level")[2]) or {}
+    before = gw.find(r"^D \(\d+\) spb: ", t0)
+    t_lv = time.monotonic()
+    st_bad, _, b_bad = http("POST", "/api/log/level", {"tag": "spb", "level": "trace"})
+    st_set, _, b_set = http("POST", "/api/log/level", {"tag": "spb", "level": "debug"})
+    dbg = gw.wait_log(r"^D \(\d+\) spb: spBv1\.0/", 25, t_lv)
+    asked = time.monotonic()
+    gw.console("log poll debug")
+    sh_set = gw.wait_log(r"^log: poll: debug \(not saved\)$", 5, asked)
+    dbg_poll = gw.wait_log(r"^D \(\d+\) poll: Dead\d offline: next probe", 25, asked)
+    st_lv = as_json(http("GET", "/api/status")[2]) or {}
+    j_dbg = as_json(http("GET", f"/api/log?since={last}")[2]) or {}
+    dbg_web = [x for x in j_dbg.get("lines") or [] if re.match(r"D \(\d+\) spb: spBv1\.0/", x)]
+    _, h_lv = gw.shell("log", [r"^log\s+level of the build info \(maximum verbose\); changed "
+                               r"levels \(not saved\):(?=.* spb=debug)(?=.* poll=debug)",
+                               r"^log\s+tags: .*\bweb\b"])
+    asked = time.monotonic()
+    gw.console("log reset")
+    sh_reset = gw.wait_log(r"^log: every tag has the level of the build again \(info\)$", 5, asked)
+    t_off = time.monotonic()
+    time.sleep(3)
+    after = gw.find(r"^D \(\d+\) (spb|poll): ", t_off + 1)
+    st_rs = as_json(http("GET", "/api/status")[2]) or {}
+    check("Issue #199: the log level of a tag at run time, not saved: GET /api/log/level (levels "
+          "none to verbose, tags of the firmware); POST {tag spb, level debug} -> the debug lines "
+          "of spb on the console and in GET /api/log; an unknown level -> 400; the shell 'log poll "
+          "debug'; /api/status log_levels; 'log reset' ends both",
+          lv.get("build") == "info" and lv.get("max") == "verbose"
+          and lv.get("levels") == ["none", "error", "warn", "info", "debug", "verbose"]
+          and {"web", "edge", "spb", "poll", "mb"} <= set(lv.get("tags") or []) and not before
+          and st_bad == 400 and b"level: one of" in b_bad and st_set == 200 and dbg and dbg_web
+          and sh_set and dbg_poll
+          and {"tag": "spb", "level": "debug"} in (st_lv.get("log_levels") or [])
+          and {"tag": "poll", "level": "debug"} in (st_lv.get("log_levels") or [])
+          and all(h_lv.values()) and sh_reset and not after and st_rs.get("log_levels") == [],
+          f"GET level {lv.get('build')}/{lv.get('max')} {lv.get('levels')} {len(lv.get('tags') or [])} "
+          f"tags; debug lines before {len(before)}; bad {st_bad} {b_bad[:80]!r}; set {st_set} "
+          f"{b_set[:80]!r}; console {bool(dbg)}, /api/log {len(dbg_web)}; shell {bool(sh_set)} "
+          f"{bool(dbg_poll)}; status {st_lv.get('log_levels')}; shell log {all(h_lv.values())}; reset "
+          f"{bool(sh_reset)}, debug lines after it {after[:2]}, status {st_rs.get('log_levels')}")
+
+    # #200 (the decision of the product owner): the page asks for GET /api/log only while the
+    # card Log is open. A browser test is in tools/docs_shots.py (the shot live-log); here the
+    # served page must hold that code: a closed <details>, and every request of the card behind
+    # its open state.
+    lg_items = {"closed card": '<details class="card" id="lg-card">' in page_text,
+                "log only while open": "async function lgPoll(){if(lgBusy||!lgOpen())return;" in page_text,
+                "tags only on open": "if(!o)return;lgState();lgLevels();lgPoll();" in page_text,
+                "stops on close": "clearInterval(lgT);lgT=0;" in page_text,
+                "one /api/log request": page_text.count("/api/log?since=") == 1,
+                "explainer": "`syslog.level` of the configuration filters only" in page_text}
+    check("Issue #200: the web UI reads GET /api/log only while the card Log is open (a closed "
+          "<details>; the poll stops when it closes), and the explainer of the log level",
+          all(lg_items.values()), f"missing: {[k for k, v in lg_items.items() if not v] or 'none'}")
 
 
 CLAIM_PASSWORD = "e2e-claimed-pw"   # issue #120: set through the claim window
@@ -8110,6 +8284,110 @@ def run_factory_reset(args, work):
     stale = [w for w in (b'"GW07"', WEB_PASSWORD.encode()) if w in image[so:so + ss]]
     check("CFG-5 the factory reset erased the storage partition (no block of the old configuration "
           "is left)", not stale and b'"GW08"' in image[so:so + ss], f"stale: {stale or 'none'}")
+    check_restart_admin(args, work, flash)
+
+
+def check_restart_admin(args, work, flash):
+    """Issues #209 and #203 on the flash of the reset scenario (GW08, no web password: the API
+    takes the commissioning password of the console), in one more boot: the restart into safe mode
+    (POST /api/restart?safe=1), its status and its end at a restart; then the shell
+    'factory-reset' with a wrong word (nothing erased) and POST /api/factory-reset?confirm=1 (the
+    erase of BOOT held 10 s, then commissioning)."""
+    node = "GW08"
+    obs = Observer()
+    gw = Gateway(args, work / "uart0-reset-admin.log", flash)
+    t0 = time.monotonic()
+    gw.start()
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 60)
+    pw = commissioning_password(gw, t0, 30)
+    auth = ("admin", pw or "?")
+    gw.shell("status", [r"^config\s"])
+    # #209: no CSRF header -> 403 and no restart; then 202, NDEATH, safe mode on request
+    t1 = time.monotonic()
+    st_x, _, _ = http("POST", "/api/restart?safe=1", auth=auth, headers={"X-Requested-With": None})
+    st_s, _, b_s = http("POST", "/api/restart?safe=1", auth=auth)
+    req = gw.wait_log(r"fw: safe mode requested: the next boot starts safe mode for 60 min", 5, t1)
+    death = obs.wait(f"{T}/NDEATH/{node}", 15)
+    safe = gw.wait_log(r"fw: safe mode on request \(web UI, REST API or shell\)", 60, t1)
+    st_st, _, b_st = wait_http("/api/status", 40, auth=auth)
+    s = as_json(b_st) or {}
+    sm = s.get("safe_mode") or {}
+    asked = time.monotonic()
+    gw.console("restart safe")
+    refused = gw.wait_log(r"^restart safe: REFUSED: the gateway is in safe mode now", 5, asked)
+    st_r2, _, b_r2 = http("POST", "/api/restart?safe=1", auth=auth)
+    time.sleep(3)
+    births = [m for m in CAPTURE if m[0] >= t1 and m[1] == f"{T}/NBIRTH/{node}"]
+    check("Issue #209: POST /api/restart?safe=1 -> 202, NDEATH, and the next boot in safe mode on "
+          "request: no NBIRTH, /api/status mode recovery with safe_mode {active, cause request, "
+          "about 60 min left}; in safe mode 'restart safe' and a second request are refused; no "
+          "CSRF header -> 403",
+          nb and pw and st_x == 403 and st_s == 202 and (as_json(b_s) or {}).get("safe_mode")
+          and req and death and safe and st_st == 200 and s.get("mode") == "recovery"
+          and sm.get("active") is True and sm.get("cause") == "request"
+          and 3500 <= sm.get("left_s", 0) <= 3600
+          and s.get("config", {}).get("source") == "not loaded (safe mode: on request)"
+          and refused and st_r2 == 409 and not births,
+          f"NBIRTH {bool(nb)}, password {'read' if pw else 'missing'}; no header {st_x}; POST {st_s} "
+          f"{b_s.decode(errors='replace').strip()}; log {bool(req)} {bool(safe)}; NDEATH "
+          f"{bool(death)}; status {st_st} mode {s.get('mode')!r} safe_mode {sm} source "
+          f"{s.get('config', {}).get('source')!r}; shell {bool(refused)}; second {st_r2} "
+          f"{b_r2.decode(errors='replace').strip()[:80]}; NBIRTHs {len(births)}")
+    # a restart ends safe mode (the request was for one boot)
+    t2 = time.monotonic()
+    st_r, _, _ = http("POST", "/api/restart", auth=auth)
+    nb2 = obs.wait(f"{T}/NBIRTH/{node}", 60, since=t2)
+    st_n, _, b_n = wait_http("/api/status", 30, auth=auth)
+    sm2 = (as_json(b_n) or {}).get("safe_mode") or {}
+    check("Issue #209: POST /api/restart in safe mode -> normal mode again (NBIRTH; safe_mode "
+          "active false)",
+          st_r == 202 and nb2 and st_n == 200 and (as_json(b_n) or {}).get("mode") == "normal"
+          and sm2.get("active") is False,
+          f"restart {st_r}; NBIRTH {bool(nb2)}; status {st_n} {(as_json(b_n) or {}).get('mode')!r} "
+          f"{sm2}")
+    # #203: the shell asks for ERASE (a wrong word erases nothing); the API needs ?confirm=1
+    gw.shell("status", [r"^config\s"])
+    asked = time.monotonic()
+    gw.console("factory-reset")
+    prompt = gw.wait_log(r"^factory-reset: this erases the configuration.*Type ERASE to confirm", 5,
+                         asked)
+    gw.console("erase")
+    aborted = gw.wait_log(r"^factory-reset: aborted, nothing erased$", 5, asked)
+    st_nc, _, b_nc = http("POST", "/api/factory-reset", auth=auth)
+    st_cs, _, _ = http("POST", "/api/factory-reset?confirm=1", auth=auth,
+                       headers={"X-Requested-With": None})
+    time.sleep(1)
+    still = gw.find(r"storage: factory reset", asked)
+    obs.drain()
+    t3 = time.monotonic()
+    st_f, _, b_f = http("POST", "/api/factory-reset?confirm=1", auth=auth)
+    beeps = gw.wait_log(r"buzzer: 2 beep\(s\) \(simulated\)", 5, t3)
+    erased = gw.wait_log(r"storage: factory reset: erasing LittleFS 'storage' and NVS", 10, t3)
+    death3 = obs.wait(f"{T}/NDEATH/{node}", 15)
+    comm = gw.wait_log(r"main: commissioning: no configuration since the factory reset", 60, t3)
+    pw2 = commissioning_password(gw, t3, 30)
+    st_c, _, b_c = wait_http("/api/status", 30, auth=("admin", pw2 or "?"))
+    st_old, _, _ = http("GET", "/api/status", auth=auth)
+    check("Issue #203: the shell 'factory-reset' with a wrong word erases nothing; POST "
+          "/api/factory-reset without ?confirm=1 -> 400, without the CSRF header -> 403; with "
+          "?confirm=1 -> 202, the 2 beeps, the erase, NDEATH and commissioning with a new "
+          "commissioning password",
+          prompt and aborted and st_nc == 400 and b"confirm=1" in b_nc and st_cs == 403 and not still
+          and st_f == 202 and (as_json(b_f) or {}).get("erased") is True and beeps and erased
+          and death3 and comm and pw2 and pw2 != pw and st_c == 200
+          and (as_json(b_c) or {}).get("mode") == "commissioning" and st_old == 401,
+          f"shell prompt {bool(prompt)}, aborted {bool(aborted)}; no confirm {st_nc}; no header "
+          f"{st_cs}; erase log before the request {len(still)}; POST {st_f} "
+          f"{b_f.decode(errors='replace').strip()}; beeps {bool(beeps)}, erase {bool(erased)}, NDEATH "
+          f"{bool(death3)}, commissioning {bool(comm)}; new password {bool(pw2 and pw2 != pw)}; "
+          f"status {st_c} {(as_json(b_c) or {}).get('mode')!r}; the old password {st_old}")
+    gw.kill()
+    obs.close()
+    image = pathlib.Path(flash).read_bytes()
+    so, ss = storage_partition()
+    check("Issue #203: the factory reset through the REST API erased the storage partition (no "
+          "block of the configuration GW08 is left)", b'"GW08"' not in image[so:so + ss],
+          "GW08 still in the storage partition" if b'"GW08"' in image[so:so + ss] else "erased")
 
 
 def run(args, log, slave, broker, conf, work):
