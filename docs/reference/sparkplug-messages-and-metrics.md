@@ -56,7 +56,7 @@ The NBIRTH contains these metrics.
 | `Node Control/Firmware Update` | 40 | String | Writable. Empty in the NBIRTH. Only with `ota.mqtt: true` |
 | `Firmware Update/State` | 41 | String | The result of the last update |
 | `Firmware Update/Progress` | 42 | UInt32 | % |
-| `Node Control/Boot Other Slot` | 43 | Boolean | Writable |
+| `Node Control/Boot Other Slot` | 43 | Boolean | Writable. `false` in the NBIRTH. Only with `ota.mqtt: true` |
 | `Node Control/Firmware SHA-256` | 44 | String | Writable. Empty in the NBIRTH. Only with `ota.mqtt: true` |
 | `Node Info/Uptime` | 50 | UInt64 | The seconds since the boot |
 | `Node Info/Free Heap` | 51 | UInt32 | The free bytes of the internal RAM |
@@ -150,7 +150,7 @@ The gateway does not use template parameters.
 | `Node Control/Scan Rate` | UInt32 | One poll interval for all the devices: 50 to 3 600 000 ms. 0 = each device uses its `poll_ms` |
 | `Node Control/Firmware Update` | String | Downloads and installs the image at the `https://` URL (255 characters at most). Only with `ota.mqtt: true` |
 | `Node Control/Firmware SHA-256` | String | The SHA-256 of the image file for the next `Node Control/Firmware Update`: 64 hexadecimal characters, capital or small letters. Empty = no check. In the same NCMD as the URL or in an earlier one. A value that is not valid also stops the URL of the same NCMD. Only with `ota.mqtt: true` |
-| `Node Control/Boot Other Slot` | Boolean `true` | Restarts into the image of the other slot, on trial, after the pre-flight check |
+| `Node Control/Boot Other Slot` | Boolean `true` | Restarts into the image of the other slot, on trial, after the pre-flight check. Only with `ota.mqtt: true` |
 | `DO/1` to `DO/8` | Boolean | Sets the output. A DO with a local rule refuses the command. `true` on a pulse DO starts its pulse |
 
 `POST /api/rebirth`, the web UI button **Rebirth** and the shell command `rebirth` do the same as `Node Control/Rebirth`. For the firmware commands, refer to [Update the firmware](../how-to/update-the-firmware.md).

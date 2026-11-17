@@ -384,7 +384,7 @@ The level of a tag is the lowest severity that the tag writes to the log: the co
 | `running`, `slot` | The version of the firmware that runs, and its slot (`ota_0` or `ota_1`) |
 | `other`, `other_slot`, `other_state`, `other_why` | The other slot. `other_state` is `empty`, `previous`, `new`, `rejected` or `invalid` |
 | `can_boot_other` | The button "Restart into `<version>`" is available |
-| `mqtt` | The value of `ota.mqtt`: `true` when a Sparkplug host can start an update. In recovery mode it is `false` |
+| `mqtt` | The value of `ota.mqtt`: `true` when a Sparkplug host can start an update or a restart into the other slot. In recovery mode it is `false` |
 | `phase`, `state`, `detail`, `progress`, `bytes`, `total` | The update. `phase` is `idle`, `downloading`, `restarting`, `failed`, `testing`, `installed` or `rolled_back`. For the values of `state`, refer to [Update the firmware](../how-to/update-the-firmware.md#make-sure-that-the-update-is-complete) |
 | `sha256_expected`, `sha256_file` | Only when the last update failed because the SHA-256 did not agree: the SHA-256 that the request gave, and the SHA-256 of the file. 64 small hexadecimal characters each |
 | `trial`, `trial_left_s`, `expected_mode` | The trial of a new image |
