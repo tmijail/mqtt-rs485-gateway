@@ -444,10 +444,10 @@ def mqtt_tls(page):
     page.click("nav button[data-tab=config]")
     page.wait_for_selector("#f-tls select")
     pki = e2e.make_pki(pathlib.Path(tempfile.mkdtemp(prefix="docs-pki-")))
-    for name, src, field in (("ca.pem", "ca.pem", "ca_file"), ("gw01.crt", "client.crt", "cert_file"),
-                             ("gw01.key", "client.key", "key_file")):
+    for name, src, key in (("ca.pem", "ca.pem", "ca_file"), ("gw01.crt", "client.crt", "cert_file"),
+                           ("gw01.key", "client.key", "key_file")):
         with page.expect_file_chooser() as fc:
-            page.click(f'button[data-load="mqtt.tls.{field}"]')
+            page.click(f'button[data-load="mqtt.tls.{key}"]')
         fc.value.set_files(files=[{"name": name, "mimeType": "application/x-pem-file",
                                    "buffer": pki[src].read_bytes()}])
         page.wait_for_selector(f"#tls-msg.ok:has-text('{name}')")
