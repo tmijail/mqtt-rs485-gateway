@@ -48,6 +48,7 @@ set(GW_CORE_SRCS
     src/gw_syslog.c
     src/gw_tagdb.c
     src/gw_utf8.c
+    src/gw_wifiown.c
     src/gw_wpa.c
     src/mb_master.c
     src/mb_rtu.c
