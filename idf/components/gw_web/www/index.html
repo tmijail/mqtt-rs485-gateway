@@ -78,6 +78,22 @@ button.danger{border-color:var(--bad);color:var(--bad)}button.dgo{background:var
  #dlg h3{font-size:17px}#dlg label{font-size:13px}#dlg input{padding:10px;font-size:16px}#dlg .act{flex-direction:column-reverse}#dlg .act button{min-height:44px;width:100%}
  #fw-card .row{flex-direction:column;align-items:stretch}#fw-card button{min-height:44px}#fw-card label.row{flex-direction:column!important;align-items:flex-start}
  #fw-card label.chk{flex-direction:row!important;align-items:center;min-height:44px;font-size:13px;color:var(--fg)}#fw-card label.chk input{align-self:center}#fw-url{width:100%;padding:8px;font-size:16px}}
+/* #201 #208 #216 #221: the cards of the network, the services and MQTT */
+.card h2.sub{margin-top:12px}.tsec{margin-top:16px}.info{font-size:12px;margin-top:3px;color:var(--fg)}.lwarn{font-size:12px;margin-top:3px;color:var(--warn)}
+.lfld{margin-top:10px}.lst{display:flex;flex-direction:column;gap:6px;margin-top:4px}.lrow{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.lrow .ferr,.lrow .fwarn{order:9;flex-basis:100%;margin:0 0 0 20px}
+.lrow .num{width:14px;text-align:right;color:var(--mut);font-size:12px;flex:none}.lrow input{margin:0;width:300px;max-width:100%}.lrow button{padding:4px 9px}.ladd{margin-top:6px}
+.srow{display:flex;gap:6px;align-items:center;margin-top:2px}.srow input{flex:1;min-width:0;margin:0}.span2{grid-column:span 2}
+.nets{border:1px solid var(--line);border-radius:4px;overflow:hidden;margin-top:8px}
+.nhd{display:flex;gap:6px 12px;align-items:center;flex-wrap:wrap;padding:6px 10px;background:var(--sub);font-size:12px;color:var(--mut)}.nhd b{color:var(--fg);font-weight:600}.nhd .grow{margin-left:auto}
+.ncol{display:grid;grid-template-columns:minmax(0,1fr) 170px 170px 110px;gap:12px;align-items:center;padding:6px 10px}.nth{font-size:12px;font-weight:600;color:var(--mut);border-bottom:1px solid var(--line)}
+button.net{width:100%;border:0;border-bottom:1px solid var(--line);border-radius:0;background:var(--card);color:var(--fg);text-align:left;font-size:13px}button.net:last-child{border-bottom:0}
+button.net.on{background:var(--sub)}button.net.no{color:var(--mut);cursor:default}.ss{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.use{color:var(--acc);font-size:12px;text-align:right}button.net.no .use{color:var(--mut)}
+.bars{display:inline-flex;align-items:flex-end;gap:2px;height:12px;margin-right:6px;vertical-align:-1px}.bars i{display:block;width:3px;background:var(--line);border-radius:1px}
+.bars i:nth-child(1){height:4px}.bars i:nth-child(2){height:6px}.bars i:nth-child(3){height:9px}.bars i:nth-child(4){height:12px}.bars i.f{background:var(--fg)}
+#f-bk .tbox{max-width:640px}#f-bk col:nth-child(1){width:90px}#f-bk col:nth-child(3){width:110px}#f-bk col:nth-child(4){width:52px}
+@media (max-width:600px){.span2{grid-column:auto}.srow{flex-direction:column;align-items:stretch}.srow button{min-height:44px}.lrow input{flex:1;min-width:0;width:auto}
+ .ncol{grid-template-columns:minmax(0,1fr) auto;gap:2px 8px}.nth{display:none}button.net .sec{grid-row:2;font-size:12px;color:var(--mut)}button.net .use{grid-row:2}}
 </style>
 </head>
 <body>
@@ -107,12 +123,28 @@ button.danger{border-color:var(--bad);color:var(--bad)}button.dgo{background:var
 
 <section id="tab-config" class="hidden">
  <div class="card"><h2>Network (Ethernet)</h2><div class="grid" id="f-net"></div></div>
- <div class="card"><h2>MQTT</h2><div class="grid" id="f-mqtt"></div></div>
+ <div class="card" id="wifi-card"><h2>Wi-Fi</h2><div class="grid" id="f-wifi"></div><div class="grid" id="f-wifi2" style="margin-top:8px"></div>
+  <div class="nets hidden" id="w-nets" role="group" aria-label="Wi-Fi networks near the gateway"></div>
+  <h2 class="sub">IPv4 of the Wi-Fi interface</h2><div class="grid" id="f-wifi-ip"></div></div>
+ <div class="card"><h2>IPv6</h2><div class="grid" id="f-v6"></div></div>
+ <div class="card"><h2>Time</h2><div id="f-ntp"></div></div>
+ <div class="card"><h2>MQTT</h2><div class="grid" id="f-mqtt"></div>
+  <div class="tsec"><h2 class="lbl">Backup brokers<button type="button" class="qi" data-x="bk" data-t="Backup brokers" aria-label="About Backup brokers" aria-expanded="false" aria-controls="xpl">?</button></h2>
+   <div id="f-bk" data-perr="mqtt.backup_brokers" tabindex="-1"></div><div class="grid" id="f-bk2" style="margin-top:10px"></div></div>
+  <div class="tsec"><h2 class="lbl">TLS<button type="button" class="qi" data-x="tls" data-t="TLS" aria-label="About TLS" aria-expanded="false" aria-controls="xpl">?</button></h2>
+   <div class="grid" id="f-tls"></div>
+   <div class="row" style="margin-top:10px"><button type="button" id="tls-load">Load a file…</button><input type="file" id="tls-file" class="hidden" accept=".pem,.crt,.cer,.key,application/x-pem-file"><span class="mut">Replace and remove the files in the card <a href="#certs">Certificates</a>.</span></div>
+   <div id="tls-msg" class="mut" aria-live="polite"></div></div></div>
  <div class="card"><h2>Sparkplug</h2><div class="grid" id="f-spb"></div>
   <h2 class="lbl" style="margin-top:12px">Device prefix (location)<button type="button" class="qi" data-x="pfx" data-t="Device prefix (location)" aria-label="About Device prefix (location)" aria-expanded="false" aria-controls="xpl">?</button></h2>
   <div id="f-pfx" class="row" data-perr="sparkplug.device_prefix" tabindex="-1"></div></div>
  <div class="card"><h2>RS485</h2><div class="grid" id="f-rs485"></div></div>
  <div class="card"><h2>Web interface</h2><div class="grid" id="f-web"></div></div>
+ <!-- #205 #221: the content of the card Certificates (the HTTPS certificate, the PEM files) waits for the approval of the product owner -->
+ <div class="card" id="certs"><h2>Certificates</h2></div>
+ <div class="card"><h2>Modbus TCP</h2><div class="grid" id="f-mbtcp"></div><div id="f-mbc"></div>
+  <h2 class="sub">The I/O of the gateway as a Modbus unit</h2><div class="grid" id="f-mbloc"></div></div>
+ <div class="card"><h2>Remote syslog</h2><div class="grid" id="f-syslog"></div></div>
  <div class="card"><h2>Devices and tags</h2><div id="f-dev"></div><button id="add-dev">+ device</button></div>
  <div class="card"><h2>Modbus test read</h2>
   <p class="mut">One read through the RS485 bus, for example to find out if a device answers before you add its tags. The read does not change the configuration.</p>
@@ -120,7 +152,7 @@ button.danger{border-color:var(--bad);color:var(--bad)}button.dgo{background:var
    <label>Address (0-65535)<input id="mb-addr" value="0"></label><label>Count (1-16, empty = 1 or the size of the type)<input id="mb-count"></label>
    <label>Type<select id="mb-type"></select></label><label>Word order<select id="mb-wo"></select></label></div>
   <div class="row"><button id="mb-read">Read</button></div><div id="mb-msg" class="mut"></div></div>
- <p class="mut">Edit Wi-Fi, IPv6, syslog and the other keys in the JSON tab. For each key, refer to the <a href="https://github.com/tmijail/mqtt-rs485-gateway/blob/main/docs/reference/configuration.md" target="_blank" rel="noopener">configuration reference</a> on GitHub (needs internet). The secrets show as ********. If you do not change them, the gateway keeps them.</p>
+ <p class="mut">The secrets show as ********. If you do not change them, the gateway keeps them. For each key, refer to the <a href="https://github.com/tmijail/mqtt-rs485-gateway/blob/main/docs/reference/configuration.md" target="_blank" rel="noopener">configuration reference</a> on GitHub (needs internet).</p>
 </section>
 
 <section id="tab-json" class="hidden">
@@ -150,6 +182,9 @@ const AREA=["coil","discrete","holding","input"];
 const TYPE=["bool","uint16","int16","uint32","int32","float32","uint64","int64","float64","string","bytes"];
 const WO=["big","little","ABCD","CDAB","BADC","DCBA"];
 const NAMING=["sparkplug","umh"];
+const PROTO=["3.1.1","5"];
+const ROLE=["backup","primary"];
+const LEVEL=["error","warning","info","debug"];
 async function api(method,path,body){
  const h={"X-Requested-With":"gateway"};if(body)h["Content-Type"]="application/json";
  let r;
@@ -161,7 +196,7 @@ async function api(method,path,body){
 function msg(t,cls){const m=$("#msg");m.textContent=t;m.className=cls||"mut"}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
 function get(o,p){return p.split(".").reduce((a,k)=>a==null?undefined:a[k],o)}
-function set(o,p,v){const ks=p.split(".");let a=o;for(const k of ks.slice(0,-1)){if(a[k]==null||typeof a[k]!=="object")a[k]={};a=a[k]}a[ks[ks.length-1]]=v}
+function set(o,p,v){const ks=p.split(".");let a=o;ks.slice(0,-1).forEach((k,i)=>{if(a[k]==null||typeof a[k]!=="object")a[k]=/^\d+$/.test(ks[i+1])?[]:{};a=a[k]});a[ks[ks.length-1]]=v}
 /* #167: a <select> shows its first option when the value is not in its list, and a save writes
    that option back: an absent optional value gets an empty "(default)" option, and a value that
    is not in the list stays as an option of its own. A checkbox of an absent key shows the
@@ -182,7 +217,7 @@ function ctl(path,kind,opts,optional,x){
  return `<input${a} data-k="${kind}" ${kind==="pw"?'type="password" autocomplete="new-password"':""}${x.ml?` maxlength="${x.ml}"`:""}${x.ph?` placeholder="${esc(x.ph)}"`:""} value="${v==null?"":esc(v)}">`;
 }
 function field(path,lbl,kind,opts,optional,x){x=x||{};
- return `<div class="fld"><span class="lbl"><label for="i-${path}">${lbl}</label>${x.help?qi(x.help,lbl):""}</span>${ctl(path,kind,opts,optional,x)}</div>`;
+ return `<div class="fld"><span class="lbl"><label for="i-${path}">${lbl}</label>${x.help?qi(x.help,lbl):""}</span>${ctl(path,kind,opts,optional,x)}${x.hint?`<span class="hint">${esc(x.hint)}</span>`:""}</div>`;
 }
 // #189 #190
 /* #190: the explainers of the (?) buttons. A Sparkplug ID has 32 bytes at most, a device or tag
@@ -191,7 +226,7 @@ function field(path,lbl,kind,opts,optional,x){x=x||{};
 const HELP={
  host:"The name of the gateway in DHCP and mDNS. Use one DNS label: letters, digits and `-`, with no dots.\nEmpty = a name from the edge node ID: lower case, and `-` for each other character. Example: GW01 gives gw01.\n~1 to 63 characters. Default: empty.",
  mdns:"The gateway answers `<hostname>.local`, and it announces the web UI as a service. Example: https://gw01.local/.\n~Default: on.",
- broker:"The name, IPv4 or IPv6 address of the primary MQTT broker. Example: 192.168.1.10.\nFor TLS, MQTT 5 and the backup brokers, use the JSON tab.\n~Necessary.",
+ broker:"The name, IPv4 or IPv6 address of the primary MQTT broker. Example: 192.168.1.10.\nThe gateway connects to it first. The backup brokers come after it.\n~Necessary.",
  cid:"The client ID of the MQTT connection. Each client of a broker must have a different client ID.\n~Default: empty = the edge node ID.",
  keep:"The MQTT keepalive, in seconds. When the broker gets no packet from the gateway for 1.5 × the keepalive, it publishes the NDEATH of the gateway.\n~5 to 3600. Default: 30.",
  group:"The Sparkplug group of the gateway: the second level of each topic, `spBv1.0/<group>/…`. Example: Plant1.\n~1 to 32 bytes. Necessary. No `/`, `+` or `#`.",
@@ -223,7 +258,37 @@ const HELP={
  englo:"The bottom of the normal range of the value, in the units of the tag (after the scale). The host uses it, for example, for the scale of a gauge or a trend.\nThe gateway does not limit the value and sends no alarm. Empty = no range.\n~Sparkplug property engLow (Float). Not for bool, string and bytes tags.",
  enghi:"The top of the normal range of the value, in the units of the tag (after the scale). The host uses it, for example, for the scale of a gauge or a trend.\nThe gateway does not limit the value and sends no alarm. With Eng. low, Eng. high must be more than Eng. low. Empty = no range.\n~Sparkplug property engHigh (Float). Not for bool, string and bytes tags.",
  bit:"One bit of a holding or input register, for a bool tag. 0 = the least significant bit.\nFor a write, the gateway reads the register, then writes the full register with the changed bit.\n~0 to 15. Necessary for a bool tag in holding or input, and only there.",
- len:"The number of registers of a string or bytes tag. Each register holds two characters or two bytes. Example: 8 for a text of up to 16 characters.\n~1 to 16. Necessary for string and bytes, and only for them."
+ len:"The number of registers of a string or bytes tag. Each register holds two characters or two bytes. Example: 8 for a text of up to 16 characters.\n~1 to 16. Necessary for string and bytes, and only for them.",
+ /* #201 #208 #216 #221 */
+ role:"`backup`: Ethernet gets the default route. The gateway uses Wi-Fi only when Ethernet is down.\n`primary`: Wi-Fi gets the default route, and Ethernet is the backup.\nWhen all the brokers fail on the active interface, the MQTT session moves to the other interface.\n~Default: backup.",
+ fb:"The time that the preferred interface must stay up without a cut before the MQTT session moves back to it.\nThe preferred interface is Ethernet with the role backup, and Wi-Fi with the role primary.\n~0 to 3600 s. Default: 30.",
+ ssid:"The name of the Wi-Fi network. Find networks shows the networks near the gateway: click one to put its SSID into the field.\nThe gateway uses 2.4 GHz only. It cannot join an enterprise network (802.1X).\n~1 to 32 bytes. Necessary when Enabled is on.",
+ wpw:"The password of the Wi-Fi network: 8 to 63 characters (WPA2 or WPA3), or 64 hexadecimal digits (the PSK). Empty = an open network.\nThe gateway keeps it in NVS, not in the configuration document.\n~Default: empty.",
+ v6en:"IPv6 together with IPv4, on each interface. Each interface then gets a link-local address.\nThe gateway learns the default IPv6 router from the router advertisements. There is no static IPv6 gateway.\n~Default: off.",
+ slaac:"Stateless address autoconfiguration: each interface makes an address from the prefix in the router advertisements.\n~Default: on.",
+ v6addr:"A static IPv6 address for Ethernet. The prefix on the link is /64. Example: fd00:1::50.\nNot a multicast or a link-local address, not :: and not ::1.\n~Default: empty = no static address.",
+ v6dns:"An IPv6 DNS server. DHCPv4 fills the first two DNS positions, and this server is the third.\n~Default: empty.",
+ ntp:"The names, IPv4 or IPv6 addresses of the SNTP servers. Example: pool.ntp.org.\nThe gateway asks server 1 first. When a server does not answer, the gateway asks the next server.\nWithout a valid clock, the gateway does not connect to the MQTT broker and sends no NBIRTH.\n~1 to 3 servers, up to 127 bytes each. Default: pool.ntp.org.",
+ proto:"The MQTT version for all the brokers. With 5, each CONNECT has Clean Start = 1 and Session Expiry Interval = 0.\nThe topics, the QoS and the payloads are the same with the two versions.\n~3.1.1 or 5. Default: 3.1.1.",
+ bk:"Up to 3 brokers, in order, after the primary broker. When the gateway cannot connect to a broker, it goes to the next broker. After the last broker, it goes to the first broker.\nAll the brokers use the same user, password, client ID, keepalive, protocol and TLS. An empty port = the port of the primary broker.\n~0 to 3 brokers. Default: none.",
+ fo:"The number of failed attempts in sequence on a broker before the gateway goes to the next broker. A stable session sets the count to zero.\n~1 to 20. Default: 3.",
+ ret:"0 = the gateway stays on a backup broker until that broker fails.\nWith a value N, the gateway ends a stable session on a backup broker after N seconds (NDEATH). Then it tries the primary broker one time. If that attempt fails, it goes to the first backup broker.\n~0 to 86400. Default: 0.",
+ tls:"TLS between the gateway and each broker of the list, with TLS 1.2 or 1.3. The gateway examines the certificate of the broker and its name.\nThe gateway examines the dates of the certificates: the TLS connection waits for a valid clock.\nThe files are PEM files in the gateway. Load a file adds a file.",
+ tlsen:"On: TLS to each broker. The default port becomes 8883.\nOff: TCP without encryption. The gateway still examines the files that you select.\n~Default: off.",
+ ca:"The PEM file with the CA certificates that signed the certificate of the broker.\n(none) = the public root CAs of ESP-IDF, for a broker with a certificate of a public CA.\n~Default: none.",
+ sn:"The name that the certificate of the broker must contain (SAN or CN). Empty = the host of each broker in the list.\nUse it when all the brokers have one certificate with one name. You cannot disable the name check.\n~Default: empty.",
+ crt:"The certificate of the gateway for mutual TLS: the broker examines it. Select the client key together with it.\n~Default: none = no client certificate.",
+ key:"The private key of the client certificate, not encrypted (PKCS#1, SEC1 or PKCS#8). It must agree with the client certificate.\nThe gateway never sends a private key back to the browser.\n~Necessary with a client certificate, and only with it.",
+ webon:"Off: after the restart, the gateway starts no web server. This page and the REST API do not answer.\nA push of BOOT for 2 to 10 s starts the web server and the access point again. The web server also starts in recovery mode and in commissioning.\n~Default: on.",
+ https:"On: HTTPS with the self-signed certificate of the gateway. The HTTP port only sends the browser to the HTTPS port.\nOff: plain HTTP on the HTTP port. The password and the configuration then go over the network as clear text.\n~Default: on.",
+ http:"The TCP port of HTTP. With HTTPS on, it only sends the browser to the HTTPS port.\n~1 to 65535, not the HTTPS port. Default: 80.",
+ mben:"The Modbus TCP server: a PLC or a SCADA reads and writes the RS485 devices through the gateway, one request at a time.\nModbus TCP has no authentication. Limit the clients with Allowed clients.\n~Default: off.",
+ idle:"The gateway closes a connection without requests after this time.\n~0 to 3600 s. 0 = never. Default: 60.",
+ mbc:"The IPv4 addresses (a.b.c.d) or networks (a.b.c.d/n) that can connect. The gateway closes a connection from another source without a response.\nThe gateway always refuses a connection through the access point.\n~Up to 8. Empty = any client, with a warning in the log.",
+ lunit:"The gateway answers this unit itself, and does not send it to the RS485 bus. A PLC or a SCADA can read the DIs, the DOs and the pulse counters.\n`discrete` (FC02) 0 to 7: DI/1 to DI/8. `coil` (FC01) 0 to 7: DO/1 to DO/8. `input` (FC04) 0 to 31: the counters of DI/1 to DI/8, 4 registers each (uint64, big).\n~1 to 247, not the Unit ID of a device. Default: 0 = off.",
+ lwr:"On: a client can switch the DOs with FC05 and FC15 on the local unit. The gateway refuses a DO that a local rule drives (exception 03), as for an NCMD.\nOff: the gateway answers a write with exception 01.\n~Default: off.",
+ slhost:"The name, IPv4 or IPv6 address of the syslog server. The gateway sends a copy of its log on UDP (RFC 5424).\n~Up to 127 bytes. Default: empty = no remote syslog.",
+ sllvl:"The minimum severity that the gateway sends.\n~error, warning, info or debug. Default: info."
 };
 function qi(k,t){return `<button type="button" class="qi" data-x="${k}" data-t="${esc(t)}" aria-label="About ${esc(t)}" aria-expanded="false" aria-controls="xpl">?</button>`}
 /* #190: one explainer for all the (?) buttons. It opens on hover, on keyboard focus and on a click
@@ -326,10 +391,15 @@ function updTopics(){
 }
 function renderForms(){
  $("#f-net").innerHTML=field("network.dhcp","DHCP","bool",true)+field("network.ip","IP","str")+field("network.netmask","Netmask","str")+field("network.gateway","Gateway","str")+field("network.dns","DNS","str")+field("network.hostname","Hostname","str",0,0,{help:"host"})+field("network.mdns","mDNS (.local)","bool",true,0,{help:"mdns"});
- $("#f-mqtt").innerHTML=field("mqtt.host","Broker","str",0,0,{help:"broker"})+field("mqtt.port","Port","int")+field("mqtt.client_id","Client ID","str",0,0,{help:"cid"})+field("mqtt.username","User","str")+field("mqtt.password","Password","pw")+field("mqtt.keepalive_s","Keepalive (s)","int",0,0,{help:"keep"});
+ renderNet();
+ $("#f-mqtt").innerHTML=field("mqtt.host","Broker","str",0,0,{help:"broker"})+field("mqtt.port","Port","int")+field("mqtt.client_id","Client ID","str",0,0,{help:"cid"})+field("mqtt.username","User","str")+field("mqtt.password","Password","pw")+field("mqtt.keepalive_s","Keepalive (s)","int",0,0,{help:"keep"})+field("mqtt.protocol","Protocol","sel",PROTO,true,{help:"proto"});
+ renderBk();
+ $("#f-bk2").innerHTML=field("mqtt.failover_after","Failover after (attempts)","int",0,0,{help:"fo",ph:"3"})+field("mqtt.primary_return_s","Back to the primary after (s)","int",0,0,{help:"ret",ph:"0",hint:"0 = stay on the backup until it fails"});
+ renderTls();
  $("#f-spb").innerHTML=field("sparkplug.group_id","Group ID","str",0,0,{ml:32,help:"group"})+field("sparkplug.edge_node_id","Edge node ID","str",0,0,{ml:32,help:"edge"})+field("sparkplug.primary_host_id","Primary host ID","str",0,0,{ml:32,help:"phost"})+field("sparkplug.naming","Naming","sel",NAMING,true,{help:"naming"});
  $("#f-rs485").innerHTML=field("rs485.baud","Baud rate","int",0,0,{help:"baud"})+field("rs485.parity","Parity","sel",PAR,true)+field("rs485.stop_bits","Stop bits","int")+field("rs485.response_timeout_ms","Timeout (ms)","int",0,0,{help:"tmo"})+field("rs485.retries","Retries","int",0,0,{help:"retry"})+field("rs485.inter_frame_delay_ms","Inter-frame delay (ms)","int",0,0,{help:"ifd"})+field("local_io.di_debounce_ms","Debounce DI (ms)","int",0,0,{help:"deb"});
- $("#f-web").innerHTML=field("web.username","User","str")+field("web.password","Password (8 to 63)","pw",0,0,{ml:63,help:"webpw"})+PW2+field("web.port","Port","int");pw194();
+ $("#f-web").innerHTML=field("web.enabled","Enabled","bool",true,0,{help:"webon"})+field("web.https","HTTPS","bool",true,0,{help:"https"})+field("web.https_port","HTTPS port","int",0,0,{ph:"443"})+field("web.port","HTTP port","int",0,0,{help:"http",ph:"80"})+field("web.username","User","str")+field("web.password","Password (8 to 63)","pw",0,0,{ml:63,help:"webpw"})+PW2;pw194();webWarn();
+ renderServices();
  renderPrefix();
  const devs=cfg.devices||[];
  $("#f-dev").innerHTML=devs.map((d,i)=>`<div class="card"><div class="grid">${field(`devices.${i}.name`,"Name","str",0,0,{ml:39,help:"name"})+field(`devices.${i}.unit_id`,"Unit ID","int",0,0,{help:"unit"})+field(`devices.${i}.poll_ms`,"Poll interval (ms)","int",0,0,{help:"poll"})+field(`devices.${i}.offline_after`,"Offline after (cycles)","int",0,0,{help:"off"})+field(`devices.${i}.type`,"Type (template)","str",0,0,{ml:39,help:"type"})}</div>
@@ -338,6 +408,80 @@ function renderForms(){
  <div class="row" style="margin-top:10px"><button data-add-tag="${i}">+ tag</button><button data-del-dev="${i}">Remove device</button></div></div>`).join("");
  tagsInit();updTopics();
 }
+/* #201 #208 #221: the cards Wi-Fi, IPv6 and Time */
+function renderNet(){
+ $("#f-wifi").innerHTML=field("network.wifi.enabled","Enabled","bool",false)+field("network.wifi.role","Role","sel",ROLE,true,{help:"role"})+field("network.wifi.failback_s","Failback (s)","int",0,0,{help:"fb",ph:"30"});
+ $("#f-wifi2").innerHTML=`<div class="fld span2"><span class="lbl"><label for="i-network.wifi.ssid">SSID</label>${qi("ssid","SSID")}</span><div class="srow">${ctl("network.wifi.ssid","str",0,0,{ml:32})}<button type="button" id="w-find" aria-expanded="${!$("#w-nets").classList.contains("hidden")}" aria-controls="w-nets">Find networks</button></div></div>`+field("network.wifi.password","Password","pw",0,0,{ml:64,help:"wpw"});
+ $("#f-wifi-ip").innerHTML=field("network.wifi.dhcp","DHCP","bool",true)+field("network.wifi.ip","IP","str")+field("network.wifi.netmask","Netmask","str")+field("network.wifi.gateway","Gateway","str")+field("network.wifi.dns","DNS","str");
+ $("#f-v6").innerHTML=field("network.ipv6.enabled","Enabled","bool",false,0,{help:"v6en"})+field("network.ipv6.slaac","SLAAC","bool",true,0,{help:"slaac"})+field("network.ipv6.address","Static address (Ethernet)","str",0,0,{help:"v6addr"})+field("network.ipv6.dns","DNS (IPv6)","str",0,0,{help:"v6dns"});
+ $("#f-ntp").innerHTML=lstFld("ntp","SNTP servers","ntp");
+ wifiList();
+}
+/* #216 #221: the cards Modbus TCP and Remote syslog */
+function renderServices(){
+ $("#f-mbtcp").innerHTML=field("modbus_tcp.enabled","Enabled","bool",false,0,{help:"mben",hint:"No authentication. Limit the clients below."})+field("modbus_tcp.port","Port","int",0,0,{ph:"502"})+field("modbus_tcp.idle_timeout_s","Idle timeout (s)","int",0,0,{help:"idle",ph:"60"});
+ $("#f-mbc").innerHTML=lstFld("mbc","Allowed clients","mbc");
+ $("#f-mbloc").innerHTML=field("modbus_tcp.local_unit_id","Local unit ID","int",0,0,{help:"lunit",ph:"0 = off"})+field("modbus_tcp.local_writes","Local writes (DOs)","bool",false,0,{help:"lwr"});
+ $("#f-syslog").innerHTML=field("syslog.host","Host","str",0,0,{ml:127,ph:"empty = off",help:"slhost"})+field("syslog.port","Port (UDP)","int",0,0,{ph:"514"})+field("syslog.level","Level","sel",LEVEL,true,{help:"sllvl"});
+}
+/* #201 #216 #221: a list of the document (ntp.servers, modbus_tcp.allowed_clients,
+   mqtt.backup_brokers): a row for each item, x removes it, + adds an empty row (an empty row is
+   an error at its field, #191). A list that is not in the document shows its default. */
+const LISTS={ntp:{p:"ntp.servers",max:3,ml:127,lbl:"SNTP server",rm:"the server",add:"+ server",def:"pool.ntp.org",most:"3 servers at most."},
+ mbc:{p:"modbus_tcp.allowed_clients",max:8,ml:18,lbl:"Allowed client",rm:"the client",add:"+ client",ph:"a.b.c.d or a.b.c.d/n",hint:"Up to 8. Empty = any client."},
+ bk:{p:"mqtt.backup_brokers",max:3}};
+function lstFld(k,label,help){const L=LISTS[k],a=get(cfg,L.p),rows=Array.isArray(a)?a:L.def?[""]:[],id=`l-${k}`;
+ return `<div class="fld${L.def?"":" lfld"}" data-perr="${L.p}" tabindex="-1"><span class="lbl"><span id="${id}">${label}</span>${qi(help,label)}</span><div class="lst" role="group" aria-labelledby="${id}">`+
+  rows.map((v,i)=>`<div class="lrow"><span class="num">${i+1}</span>${ctl(`${L.p}.${i}`,"str",0,0,{aria:`${L.lbl} ${i+1}`,ml:L.ml,ph:!Array.isArray(a)&&L.def?`${L.def} (default)`:L.ph})}<button type="button" data-ldel="${k}.${i}" aria-label="Remove ${L.rm} ${i+1}"${L.def&&rows.length<2?" disabled":""}>x</button></div>`).join("")+
+  `</div><div class="row ladd"><button type="button" data-ladd="${k}"${rows.length>=L.max?" disabled":""}>${L.add}</button>${rows.length>=L.max&&L.most?`<span class="hint">${L.most}</span>`:L.hint?`<span class="hint">${L.hint}</span>`:""}</div></div>`}
+function bkPort(){return val("mqtt.port")||(get(cfg,"mqtt.tls.enabled")===true?"8883":"1883")}
+function renderBk(){const a=get(cfg,"mqtt.backup_brokers"),bk=Array.isArray(a)?a:[],port=bkPort();
+ $("#f-bk").innerHTML=`<div class="tbox"><table><colgroup><col><col><col><col></colgroup><tr><th>Order</th><th>Host</th><th>Port</th><th></th></tr>`+
+  `<tr><td class="mut">Primary</td><td class="mut"><span id="bk-h">${esc(val("mqtt.host"))}</span> <span class="hint">(Broker and Port above)</span></td><td class="mut" id="bk-p">${esc(port)}</td><td></td></tr>`+
+  bk.map((b,i)=>`<tr><td>Backup ${i+1}</td><td>${ctl(`mqtt.backup_brokers.${i}.host`,"str",0,0,{aria:`Host of backup broker ${i+1}`,ml:127})}</td><td>${ctl(`mqtt.backup_brokers.${i}.port`,"int",0,0,{aria:`Port of backup broker ${i+1}`,ph:port})}</td><td><button type="button" data-ldel="bk.${i}" aria-label="Remove backup broker ${i+1}">x</button></td></tr>`).join("")+
+  `</table></div><div class="row" style="margin-top:8px"><button type="button" data-ladd="bk"${bk.length>=3?" disabled":""}>+ broker</button><span class="hint">Up to 3 backup brokers.</span></div>`}
+/* #221: the TLS keys of mqtt; the files come from GET /api/files (FILES; null: not known) */
+let FILES=null;
+async function loadFiles(){const r=await api("GET","/api/files");FILES=r.status===200&&r.json?r.json.files:null}
+function fileFld(path,lbl,help,kind,none){const v=get(cfg,path),names=(FILES||[]).filter(f=>f.kind===kind).map(f=>f.name);
+ const o=[["",none]].concat(names.map(n=>[n,n]));if(v&&!names.includes(v))o.push([v,FILES?`${v} (not in the gateway)`:v]);
+ return `<div class="fld"><span class="lbl"><label for="i-${path}">${lbl}</label>${qi(help,lbl)}</span><select id="i-${path}" data-p="${path}" data-k="sel">${o.map(([x,t])=>`<option value="${esc(x)}"${x===(v||"")?" selected":""}>${esc(t)}</option>`).join("")}</select><span class="info" id="fi-${path}"></span></div>`}
+function renderTls(){
+ $("#f-tls").innerHTML=field("mqtt.tls.enabled","Encrypt (TLS)","bool",false,0,{help:"tlsen"})+fileFld("mqtt.tls.ca_file","CA file","ca","certificates","(none: public root CAs)")+field("mqtt.tls.server_name","Server name","str",0,0,{ml:127,ph:"the host of each broker",help:"sn"})+fileFld("mqtt.tls.cert_file","Client certificate","crt","certificates","(none)")+fileFld("mqtt.tls.key_file","Client key","key","key","(none)");
+ tlsInfo()}
+/* below each file: the subject and the expiry of its (first) certificate, or the type of the key */
+function until(d){const n=Math.floor((Date.parse(d+"T00:00:00Z")-Date.now())/864e5);return `until ${esc(d)}`+(n<0?' <span class="bad">(expired)</span>':n<=90?` <span class="warn">(in ${n} days)</span>`:"")}
+function tlsInfo(){const sel=p=>{const e=document.getElementById("i-"+p);return e?e.value:""},file=n=>(FILES||[]).find(f=>f.name===n),
+  put=(p,h)=>{const e=document.getElementById("fi-"+p);if(e)e.innerHTML=h};
+ ["mqtt.tls.ca_file","mqtt.tls.cert_file"].forEach(p=>{const f=file(sel(p)),c=f&&f.certs&&f.certs[0];put(p,c?`${esc(c.subject)} · ${until(c.not_after)}`:"")});
+ const k=file(sel("mqtt.tls.key_file")),c=sel("mqtt.tls.cert_file");
+ put("mqtt.tls.key_file",k&&k.kind==="key"?`Private key, ${esc(k.key_type)}`+(c&&(k.agrees_with||[]).includes(c)?` · agrees with ${esc(c)}`:""):"")}
+/* #208: the Wi-Fi networks near the gateway (GET /api/wifi/scan) */
+let wnets=null,wsim=false;
+function bars(r){const n=r>=-55?4:r>=-67?3:r>=-77?2:1;return `<span class="bars" aria-hidden="true">${[1,2,3,4].map(i=>`<i${i<=n?' class="f"':""}></i>`).join("")}</span>`}
+function wifiList(){const n=$("#w-nets"),cur=val("network.wifi.ssid");if(!wnets)return;
+ n.innerHTML=`<div class="nhd"><b>${wnets.length} network${wnets.length===1?"":"s"} near the gateway</b><span>Strongest first. 2.4 GHz only.${wsim?" Simulated list: QEMU has no radio.":""}</span><span class="grow">${narrow()?"Tap":"Click"} a network to put its SSID into the field.</span></div>`+
+  `<div class="ncol nth" aria-hidden="true"><span>SSID</span><span>Signal</span><span>Security</span><span></span></div>`+
+  wnets.map((w,i)=>`<button type="button" class="net ncol${w.supported?"":" no"}${w.ssid===cur?" on":""}" data-net="${i}" ${w.supported?`aria-pressed="${w.ssid===cur}"`:'aria-disabled="true"'}><span class="ss">${esc(w.ssid)}</span><span class="sg">${bars(w.rssi)}${w.rssi} dBm</span><span class="sec">${esc(w.security)}</span><span class="use">${!w.supported?"Not supported":w.ssid===cur?"In the field":""}</span></button>`).join("")}
+async function wifiScan(){const b=$("#w-find"),n=$("#w-nets");if(!b||b.disabled)return;
+ b.disabled=true;b.textContent="Finding networks…";n.classList.remove("hidden");b.setAttribute("aria-expanded","true");
+ n.innerHTML=`<div class="nhd" aria-live="polite"><span>The gateway looks for Wi-Fi networks. This takes approximately 3 s.</span></div>`;
+ let r=await api("GET","/api/wifi/scan?new=1");const end=Date.now()+20000;
+ while(r.status===202&&Date.now()<end){await new Promise(f=>setTimeout(f,1000));r=await api("GET","/api/wifi/scan")}
+ const f=$("#w-find");if(f){f.disabled=false;f.textContent="Find networks"}
+ if(r.status!==200||!r.json||r.json.state!=="done"){wnets=null;n.innerHTML=`<div class="nhd" aria-live="polite"><span class="bad">No list of the networks (${r.status}): ${esc((r.json||{}).error||"the search did not end")}</span></div>`;return}
+ wnets=r.json.networks||[];wsim=!!r.json.simulated;wifiList()}
+$("#w-nets").onclick=e=>{const b=e.target.closest&&e.target.closest("button.net");if(!b||b.classList.contains("no")||!wnets)return;
+ const i=document.getElementById("i-network.wifi.ssid");if(!i)return;i.value=wnets[+b.dataset.net].ssid;i.dispatchEvent(new Event("input",{bubbles:true}));wifiList()};
+/* #221: the warnings of web.enabled and web.https at their fields while they are off, and the
+   confirmation before a save that turns off the web interface (#193; on a phone a sheet) */
+const WEBOFF="https://github.com/tmijail/mqtt-rs485-gateway/blob/main/docs/how-to/recover-the-gateway.md#the-web-interface-is-off";
+function webWarn(){[["web.enabled",`After the restart, the web UI stops. To turn it on again, push the BOOT button for 2 to 10 s (1 beep). <a href="${WEBOFF}" target="_blank" rel="noopener">How to turn it on again</a>`],
+  ["web.https","Plain HTTP: the password and the configuration go over the network as clear text."]].forEach(([p,t])=>{const e=document.getElementById("i-"+p);if(!e)return;
+  let w=document.getElementById("lw-"+p);if(!e.checked&&!w){w=document.createElement("span");w.className="lwarn";w.id="lw-"+p;w.innerHTML=t;e.parentElement.append(w)}else if(e.checked&&w)w.remove()})}
+function webOff(b){const w=JSON.parse(b).web||{};if(w.enabled!==false||(base191&&base191.web&&base191.web.enabled===false))return Promise.resolve(true);
+ return ask({title:"Turn off the web interface?",action:"Save and restart",danger:true,fact:"Web interface · Enabled: off",
+  html:`<ul><li>After the restart, this page and the REST API do not answer.</li><li>MQTT, Modbus and the other services continue.</li></ul><p style="margin:0 0 4px"><b>To turn on the web interface again:</b></p><ol style="margin:0 0 10px;padding-left:20px"><li>Push the BOOT button of the gateway for 2 to 10 s, until you hear 1 beep. The web server and the access point start.</li><li>Open the web UI, on the network or on the access point.</li><li>In the card Web interface, turn on Enabled. Then select Save and restart.</li></ol><p style="font-size:13px"><a href="${WEBOFF}" target="_blank" rel="noopener">How to turn on the web interface again</a> <span class="mut">(GitHub, needs internet)</span></p>`})}
 /* #172: sparkplug.device_prefix as a list of levels (pfx while the form is open). An empty level
    stays in the form while the user edits it; the document gets only the levels with text. */
 function renderPrefix(){
@@ -375,7 +519,7 @@ function show(t){
  ["status","config","json"].forEach(n=>$("#tab-"+n).classList.toggle("hidden",n!==t));
  $("#actions").classList.toggle("hidden",t==="status");
  $("#bar").classList.toggle("hidden",t==="status");
- if(cfg&&t==="config"){pfx=null;renderForms()}
+ if(cfg&&t==="config"){pfx=null;renderForms();loadFiles().then(()=>{if(tab==="config"){readForms();renderTls()}})}
  if(cfg&&t==="json")$("#raw").value=JSON.stringify(cfg,null,2);
 }
 /* #194: a new web password needs the same value in a second field (a typing error locks the
@@ -424,6 +568,7 @@ async function put(dry){
  if(!same194())return;
  const b=body();if(b==null)return;
  if(!dry&&!await keep194(b))return;
+ if(!dry&&!await webOff(b))return;
  clear191();
  msg(dry?"Validating…":"Saving…");
  const r=await api("PUT","/api/config"+(dry?"?dry_run=1":""),b),j=r.json||{},m=$("#msg"),form=tab==="config";
@@ -592,7 +737,33 @@ $("#f-dev").onclick=e=>{const t=e.target.dataset;if(!(t.addTag||t.delTag||t.delD
  if(t.addTag){const d=cfg.devices[+t.addTag];d.tags.push({name:"Tag"+(d.tags.length+1),area:"holding",address:0,type:"uint16"})}
  if(t.delTag){const[i,k]=t.delTag.split(".").map(Number);cfg.devices[i].tags.splice(k,1)}
  if(t.delDev)cfg.devices.splice(+t.delDev,1);renderForms()};
-$("#tab-config").addEventListener("input",e=>{if(e.target.id==="i-web.password")pw194();if(e.target.dataset.lvl!==undefined)pfx[+e.target.dataset.lvl]=e.target.value.trim().replace(/:/g,"");updTopics()});
+$("#tab-config").addEventListener("input",e=>{if(e.target.id==="i-web.password")pw194();if(e.target.dataset.lvl!==undefined)pfx[+e.target.dataset.lvl]=e.target.value.trim().replace(/:/g,"");updTopics();
+ const id=e.target.id;if(id==="i-network.wifi.ssid")wifiList();if(id==="i-mqtt.host"||id==="i-mqtt.port"){$("#bk-h").textContent=val("mqtt.host");$("#bk-p").textContent=bkPort()}});
+/* #201 #208 #216 #221 */
+$("#tab-config").addEventListener("change",e=>{const id=e.target.id||"";if(id==="i-web.enabled"||id==="i-web.https")webWarn();if(id.startsWith("i-mqtt.tls."))tlsInfo()});
+$("#tab-config").addEventListener("click",e=>{if(e.target.id==="w-find"){wifiScan();return}
+ const t=e.target.closest&&e.target.closest("[data-ladd],[data-ldel]");if(!t)return;readForms();
+ const add=t.dataset.ladd!==undefined,[k,i]=(add?t.dataset.ladd:t.dataset.ldel).split("."),L=LISTS[k];let a=get(cfg,L.p);
+ if(add){if(!Array.isArray(a)){a=L.def?[L.def]:[];set(cfg,L.p,a)}if(a.length<L.max)a.push(k==="bk"?{host:""}:"")}
+ else if(Array.isArray(a)){a.splice(+i,1);if(!a.length)unset(L.p)}
+ renderForms();const ins=[...document.querySelectorAll(`[data-p^="${L.p}."]`)].filter(x=>!/\.port$/.test(x.dataset.p));if(add&&ins.length)ins[ins.length-1].focus()});
+/* #221: "Load a file…": the PEM file goes to the gateway (PUT /api/files). Decision of the product
+   owner: the field of the file then selects it (a key: Client key; a CA certificate: CA file;
+   another certificate: Client certificate); the bar shows the change, and the TLS connection
+   changes only after Save and restart.
+   TODO(#221): the load dialog and the replace of an existing file wait for the approval of the
+   row "Load, replace and remove the PEM files"; until then a file with the same name is refused. */
+$("#tls-load").onclick=()=>$("#tls-file").click();
+$("#tls-file").onchange=async e=>{const f=e.target.files[0];e.target.value="";if(!f)return;const m=$("#tls-msg"),say=(t,c)=>{m.textContent=t;m.className=c};
+ if(f.size>16384){say(`${f.name}: ${f.size} B. The maximum is 16384 B.`,"bad");return}
+ say(`Loading ${f.name}…`,"mut");let r,j=null;
+ try{r=await fetch("/api/files?name="+encodeURIComponent(f.name),{method:"PUT",headers:{"Content-Type":"application/x-pem-file","X-Requested-With":"gateway"},body:await f.text(),cache:"no-store"})}
+ catch(x){say(`No answer from the gateway (${x.message})`,"bad");return}
+ try{j=await r.json()}catch(x){}
+ if(r.status!==201||!j||!j.file){say(r.status===409?`${f.name} is already in the gateway. Give the file another name, then load it again.`:`${f.name} is not loaded (${r.status}): ${(j||{}).error||""}`,"bad");return}
+ const fi=j.file,p=fi.kind==="key"?"mqtt.tls.key_file":fi.certs&&fi.certs[0]&&fi.certs[0].ca?"mqtt.tls.ca_file":"mqtt.tls.cert_file";
+ await loadFiles();readForms();set(cfg,p,fi.name);renderTls();
+ say(`${fi.name} is in the gateway. The field ${{"mqtt.tls.ca_file":"CA file","mqtt.tls.cert_file":"Client certificate","mqtt.tls.key_file":"Client key"}[p]} shows it. Select Save and restart to use it.`,"ok");upd191()};
 show("status");load();poll();setInterval(poll,2000);
 </script>
 </body>
