@@ -227,7 +227,9 @@ Each CONNECT has Clean Session = 1. With `protocol: "5"`, each CONNECT has Clean
 | `key_file` | text | `""` | The PEM private key of the client, **not encrypted** (PKCS#1, SEC1 or PKCS#8). Necessary with `cert_file`, and not permitted without it |
 
 - A file name has 1 to 32 characters `A-Z a-z 0-9 . _ -`, without `/`. It must not start with `.`, and it must not be `config.json`.
-- The button **Load a file…** below a file field of the card MQTT puts a file into the LittleFS partition. The REST API uses `PUT /api/files`. Refer to [Connect to a broker with TLS](../how-to/connect-to-a-broker-with-tls.md) and [The REST API](rest-api.md#the-pem-files).
+- The button **Load a file…** below a file field of the card MQTT puts a file into the LittleFS partition, and the field selects it. The REST API uses `PUT /api/files`. Refer to [Connect to a broker with TLS](../how-to/connect-to-a-broker-with-tls.md) and [The REST API](rest-api.md#the-pem-files).
+- The card **Certificates** lists the files, with the keys that use each file. It loads, replaces and removes them at once, without **Save and restart**. A replaced file keeps its name: the gateway uses the new content after the next restart. You cannot remove a file that the saved configuration names. Refer to [Manage the certificates](../how-to/manage-the-certificates.md).
+- The gateway keeps 16 PEM files at most, and each file has 16384 bytes at most.
 - A save of the configuration examines each file that `ca_file`, `cert_file`, `key_file` and `ota.ca_file` name. Each file must exist and hold certificates. The file of `key_file` must hold an unencrypted private key, and the key must agree with the certificate. Otherwise, the error has the path of the key, for example `mqtt.tls.key_file: the key does not agree with the certificate gw01.crt`.
 - The gateway uses TLS 1.2 or 1.3, as the broker selects.
 - The gateway examines the validity dates of the certificate. Thus the TLS connection waits for a valid clock.
@@ -767,7 +769,7 @@ The web UI and the REST API.
 |---|---|---|---|
 | `enabled` | bool | `true` | `false` = no web server with a valid configuration. The server always starts with a rejected configuration, in commissioning, in the fault mode, and after a push of BOOT |
 | `port` | integer | `80` | 1 to 65535, HTTP. With `https: true`, it only redirects to HTTPS |
-| `https` | bool | `true` | HTTPS with the self-signed certificate of the gateway (EC P-256). The gateway makes it at the first boot and keeps it in NVS. The console shows its SHA-256 fingerprint at each boot. `false` = plain HTTP |
+| `https` | bool | `true` | HTTPS with the certificate of the gateway. At the first boot, the gateway makes a self-signed certificate (EC P-256) and keeps it in NVS. The console shows its SHA-256 fingerprint at each boot. The card **Certificates** loads the certificate of the plant, or makes a new self-signed certificate (refer to [Manage the certificates](../how-to/manage-the-certificates.md)). `false` = plain HTTP |
 | `https_port` | integer | `443` | 1 to 65535, not the same as `port` |
 | `username` | text | `"admin"` | 1 to 32 visible ASCII characters, without `:` |
 | `password` | text (secret) | `""` | Empty, or 8 to 63 printable ASCII characters (0x20 to 0x7E). The password is also the WPA2 key of the access point |
