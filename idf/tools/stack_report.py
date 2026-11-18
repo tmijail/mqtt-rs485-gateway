@@ -239,6 +239,12 @@ def main():
     if not cis:
         sys.exit("no .ci file of the own components in %s: build with gw_warnings.cmake "
                  "(-fcallgraph-info=su)" % args.build)
+    # an object without its .ci file (a compiler launcher such as ccache gave the object again
+    # without it) leaves a hole in the call graph
+    missing = [o for o in own_files(args.build, ".c.obj") if not os.path.exists(o[:-4] + ".ci")]
+    if missing:
+        sys.exit("object files without a .ci file (compiled through ccache?):\n  " +
+                 "\n  ".join(missing))
     g = Graph()
     for path in cis:
         g.load(path)

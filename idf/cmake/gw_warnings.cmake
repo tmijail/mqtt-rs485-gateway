@@ -27,4 +27,7 @@ set(GW_STACK_FLAGS -fstack-usage -fcallgraph-info=su)
 
 function(gw_target_options target)
     target_compile_options(${target} PRIVATE ${GW_WARNING_FLAGS} ${GW_STACK_FLAGS})
+    # No ccache (IDF_CCACHE_ENABLE) for the own components: at a hit, ccache 4.9 gives the object
+    # and the .su file again, but not the .ci file, and the stack report then has no call graph.
+    set_property(TARGET ${target} PROPERTY RULE_LAUNCH_COMPILE "")
 endfunction()

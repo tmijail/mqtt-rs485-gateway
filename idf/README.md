@@ -869,6 +869,8 @@ python3 tools/stack_report.py build --task modbus_tcp=gw_mbtcp.c:server_task
 
 The `firmware` job of the CI puts `stack.txt` in its artifact `firmware-esp32s3`.
 
+The own components compile without ccache (`RULE_LAUNCH_COMPILE` is empty for their targets). At a hit, ccache 4.9 gives the object and the `.su` file again, but not the `.ci` file. The script fails when a C object file of the own components has no `.ci` file.
+
 - **How the script finds the functions of a task.** `-fcallgraph-info=su` writes the call graph of each source file, with the frame of each function. The script joins the graphs of all own source files. A function belongs to a task when the graph reaches it from the entry function of the task (`bus_task` in `gw_bus.c`, `edge_task` in `gw_edge.c`). A function of `gw_core` that two tasks call is in the list of the two tasks.
 - **Why the call graph, and not the component or the source file.** `gw_core` has no task of its own: the Modbus master and the poller run in `rs485_bus`, and the Sparkplug engine runs in `sparkplug`. Also, `gw_edge.c` has callbacks of esp-mqtt that run in the task of esp-mqtt, not in `sparkplug`. A list by file puts these functions in the incorrect task.
 - **The report gives these items for each task:**
@@ -1362,6 +1364,7 @@ The components of the project compile with the options of §3.8 (issue #227). Wi
 - `CCACHE_COMPILERCHECK=content` is necessary. Each configuration writes a new `-specs` file into the build directory. With the default check (`mtime`), ccache found no entry of an earlier build: 0 hits in 1 077 compilations.
 - Measured on the cloud container of #233 (4 CPUs): the firmware build took 91 s with an empty cache and 36 s with a full cache (1 075 hits of 1 077). The QEMU images of the default variant (`build-qemu` and `build-qemu-plain`) took 179 s and 70 s (2 148 hits of 2 152).
 - ccache keeps the compiler messages of each entry and gives them again at a hit. Thus the check for 0 warnings of the `firmware` job stays valid.
+- Since issue #227, the 76 C files of the own components (`gw_*`, `main`) compile without ccache (§3.8). At a hit, ccache 4.9 gives the `.su` file again, but not the `.ci` file of `-fcallgraph-info`. On the cloud container of #227 (4 CPUs, `-j4`), these files took 18 s.
 - The `e2e` and `e2e-poison` jobs keep the QEMU of `idf_tools.py` and the venv of the harness in `actions/cache`. The keys contain the digest of the image, and the key of the venv also contains the hash of `requirements.txt`.
 - These two caches save only some seconds. In the last CI run with results (2026-11-06), the full install step took 13 to 14 s. The start of the container took approximately 100 s, and no cache makes it shorter.
 - The CI has not run since 2026-11-06: GitHub does not start the jobs ("recent account payments have failed or your spending limit needs to be increased"). Thus there is no measurement of the caches in the CI yet.
