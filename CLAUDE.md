@@ -86,6 +86,13 @@ cmake -S idf/test/host -B build-o2 -DCMAKE_C_FLAGS=-O2 && cmake --build build-o2
 # The same host tests with AddressSanitizer and UndefinedBehaviorSanitizer (#225; CI job host-tests-sanitizers)
 cmake -S idf/test/host -B build-asan -DGW_SANITIZE=ON && cmake --build build-asan -j && ctest --test-dir build-asan --output-on-failure
 
+# Fuzz tests: 12 libFuzzer targets for the parsers of gw_core, with ASan and UBSan (#226; CI job fuzz
+# 60 s each, fuzz-weekly.yml 20 min each). Needs clang with libFuzzer (Ubuntu: clang-18 libclang-rt-18-dev)
+cmake -S idf/test/fuzz -B build-fuzz -DCMAKE_C_COMPILER=clang && cmake --build build-fuzz -j
+idf/test/fuzz/run_fuzz.sh build-fuzz 60                 # all targets, $(nproc) at a time (JOBS=n); a table per target
+idf/test/fuzz/run_fuzz.sh build-fuzz 300 fuzz_spb       # one target; a finding goes to build-fuzz/crashes/
+build-fuzz/fuzz_spb build-fuzz/crashes/<file>           # one input again; fix it in gw_core, add it to a Unity suite
+
 # Sparkplug interop: decode generated payloads with the official Tahu proto
 mkdir -p /tmp/spb && build-host/spb_dump /tmp/spb && python3 idf/tools/spb_decode.py --check /tmp/spb
 
@@ -129,7 +136,7 @@ npm ci --prefix idf/tools/lint && idf/tools/lint/node_modules/.bin/eslint --conf
 #  are in the firmware image: for them, change an option in eslint.config.mjs, not the page.
 ```
 
-CI (`.github/workflows/ci.yml`) runs host-tests, firmware, the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image. The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run of that variant (#121, #135). A change is done when the host tests pass and the full E2E passes: the full run of the `E2E_PSRAM=1` variant and the full run of the default variant. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
+CI (`.github/workflows/ci.yml`) runs host-tests, fuzz, firmware, the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image (fuzz and the host tests run directly on `ubuntu-24.04`). `.github/workflows/fuzz-weekly.yml` runs the fuzz targets longer each week and keeps their corpus (#226). The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run of that variant (#121, #135). A change is done when the host tests pass and the full E2E passes: the full run of the `E2E_PSRAM=1` variant and the full run of the default variant. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
 
 ### sdkconfig pitfalls
 
@@ -157,7 +164,7 @@ It holds:
 - raw NVS page parsing (`gw_nvsraw`);
 - auth and CSRF helpers.
 
-Platform calls go through `gw_port.h`, which has two implementations: `port/gw_port_esp.c` for the firmware and `port/gw_port_posix.c` for host tests. New logic belongs here, with a host test in `idf/test/host/`. The other components are thin IDF adapters around it.
+Platform calls go through `gw_port.h`, which has two implementations: `port/gw_port_esp.c` for the firmware and `port/gw_port_posix.c` for host tests. New logic belongs here, with a host test in `idf/test/host/`. A new parser of data from outside (the bus, the network, MQTT, the web, the flash, a card) also gets a fuzz target in `idf/test/fuzz/` (#226). The other components are thin IDF adapters around it.
 
 ### IDF components (`idf/components/`)
 
