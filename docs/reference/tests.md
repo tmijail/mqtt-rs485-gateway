@@ -31,7 +31,9 @@ A change is done when the host tests pass and the full E2E passes: the full run 
 | E2E checks, full run of the default variant | 18 |
 | Optional E2E scenarios | `umh` 15 checks, `tck` 19 checks, `downgrade` 7 checks |
 
-The last full run was on `main` 6288614 (stage 1 of #224), on a cloud container with 4 CPUs (`run_ci_groups.sh`, `PARALLEL=2`, `E2E_TIMEOUT_SCALE=1.5`). The PSRAM variant gave 284/284 checks in the groups, and the default variant gave 18/18. There were no retries and no QEMU exits. The #80 check gave a minimum free internal RAM of 155 192 B and a largest block of 118 784 B at a validation. The host tests gave 59/59 at `-O0`, at `-O2` and with the sanitizers, and the linters gave 0 results.
+The last local full run was on commit 3b6e3d7, on a cloud container with 4 CPUs (`run_ci_groups.sh`, `PARALLEL=5`, `E2E_TIMEOUT_SCALE=1.5`). The PSRAM variant gave 284/284 checks in the groups, and the default variant gave 18/18. There were no retries and no QEMU exits. The #80 check gave a minimum free internal RAM of 154 868 B and a largest block of 118 784 B at a validation. The host tests gave 59/59 at `-O0`, at `-O2` and with the sanitizers, and the linters gave 0 results.
+
+The last CI run was run 44367214752 on commit 3b6e3d7 (2026-11-18). All jobs passed: the host tests, the sanitizers, the linters, the firmware with 0 warnings, the 6 E2E groups (PSRAM 284/284, default 18/18, no retries, no QEMU exits) and the two `e2e-poison` jobs.
 
 The optional scenarios did not run on that commit. Their last results are in [The E2E scenarios](e2e-scenarios.md#optional-scenarios).
 

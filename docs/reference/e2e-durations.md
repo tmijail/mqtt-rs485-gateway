@@ -108,7 +108,22 @@ The CI jobs that build use ccache since #233. The measurement used one cache dir
 
 With the default check of ccache (`mtime`), the second build had 0 hits of 1 077: each configuration writes a new `-specs` file into the build directory.
 
-The venv of the harness took 4 s to make on this computer, and QEMU uses 71 MB. In the last CI run with results (2026-11-06), the full install step of an E2E job took 13 to 14 s, and the start of its container approximately 100 s. The CI has not run since 2026-11-06 (a billing problem of the account), so there is no CI measurement of the caches yet.
+The venv of the harness took 4 s to make on this computer, and QEMU uses 71 MB.
+
+### The caches in the CI
+
+The first CI run after the CI ran again (run 44353304685, 2026-11-18) had empty caches. Run 44367214752 (commit 3b6e3d7) had full caches. These are the durations of the steps on the GitHub runners:
+
+| Step | Empty caches | Full caches |
+|---|---|---|
+| `firmware`: build | 100 s | 37 s |
+| `e2e-build`, PSRAM variant: QEMU images | 80 s (without `build-qemu-plain`) | 63 s (with `build-qemu-plain`) |
+| `e2e-build`, default variant: QEMU images | 151 s (with `build-qemu-plain`) | 40 s (without `build-qemu-plain`) |
+| `e2e`: install of QEMU, mosquitto and the venv | 11 to 24 s | 5 to 11 s |
+
+The psram job builds `build-qemu-plain` since commit 7720ada, so the two `e2e-build` rows are not the same work. The start of the container of each job takes 60 to 100 s, and no cache makes it shorter.
+
+The full CI run with full caches took 16.7 min from the push to the last job. The `e2e` groups took 5.6 to 10.4 min each, and `e2e-summary` ended 15.5 min after the push. The PSRAM job of `e2e-poison` (FW-1 with heap poisoning) is the longest job: 15.0 min for its scenarios.
 
 ## Measurement on a Windows computer
 
