@@ -1,0 +1,3 @@
+# Issue #228: the exceptions of the self-test of check_rs485. The self-test has no main.c, so
+# the check must report this entry as not used.
+main/main.c       gw_rs485_init  An exception that the check does not use

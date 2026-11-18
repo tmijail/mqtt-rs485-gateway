@@ -110,6 +110,8 @@ The host tests `sdkconfig_check_*` run the check on files in [`idf/test/host/sdk
 
 The host test `check_kconfig_names` finds a misspelled `CONFIG_GW_` name. Refer to [Compiler warnings and the stack data](compiler-warnings-and-stack.md#no--wundef-in-the-firmware).
 
+The host test `check_efuse_options` (#228) fails when `sdkconfig.defaults`, one of its `.<target>` variants or an overlay that is not `sdkconfig.qemu*` sets an option that burns an eFuse. The check of the build does not examine these options. Refer to [The rule checks](tests.md#the-rule-checks).
+
 ## The size of the image
 
 CI runs `idf.py size` in the job `firmware`. The last result in the documentation is from the release build of issue #227:

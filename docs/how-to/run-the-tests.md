@@ -6,7 +6,8 @@ A change is done when the host tests pass and the full E2E of the two variants p
 
 ## Before you start
 
-- Install CMake, a C compiler and Python 3. The host tests do not need ESP-IDF.
+- Install CMake, GCC 10 or later, binutils and Python 3. The host tests do not need ESP-IDF.
+- With another compiler, add `-DGW_RULE_CHECKS=OFF` to the first `cmake` command. Then the three rule checks of the call graph do not run (refer to [The rule checks](../reference/tests.md#the-rule-checks)).
 - Make sure that the computer has network access for the first build. CMake downloads Unity and cJSON.
 - For the E2E tests, install ESP-IDF v6.1, `libslirp0`, `mosquitto` and `openssl` (refer to [Build the firmware](build-the-firmware.md)).
 

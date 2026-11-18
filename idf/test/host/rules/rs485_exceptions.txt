@@ -1,0 +1,5 @@
+# Issue #228: the accepted calls of the RS485 API outside gw_bus and gw_rs485, for check_rs485
+# (idf/tools/check_rules.py). An entry that the check does not use is an error.
+#
+# <file in idf/>  <function>     <reason>
+main/main.c       gw_rs485_init  The boot installs the UART driver and gives the transport to gw_bus_start(), before the rs485_bus task exists. No other task uses the UART at that time

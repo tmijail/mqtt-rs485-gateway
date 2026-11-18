@@ -1,0 +1,3 @@
+# Issue #228: the self-test of check_efuse_options. A QEMU overlay may burn the emulated eFuses.
+CONFIG_NVS_ENCRYPTION=y
+CONFIG_SECURE_BOOT=y

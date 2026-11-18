@@ -8,7 +8,7 @@ This document gives the test suites of the firmware, what each suite examines, t
 
 | Test | What it examines | Where it runs | Pass criterion |
 |---|---|---|---|
-| Host tests (QA-1) | The logic of `gw_core` in pure C, without ESP-IDF: 42 Unity suites, and checks of the `sdkconfig`, the Kconfig names and the web form | `idf/test/host`, CTest | Each CTest test passes. 0 warnings with `-Werror` |
+| Host tests (QA-1) | The logic of `gw_core` in pure C, without ESP-IDF: 42 Unity suites, and checks of the `sdkconfig`, the Kconfig names, the web form and the rules of `CLAUDE.md` | `idf/test/host`, CTest | Each CTest test passes. 0 warnings with `-Werror` |
 | Host tests at `-O2` | The same tests, with the warnings that only the optimizer gives | CI job `host-tests` | The same |
 | Host tests with sanitizers (#225) | The same tests with AddressSanitizer and UndefinedBehaviorSanitizer | CI job `host-tests-sanitizers` | No error from a sanitizer |
 | Sparkplug decode check | The payloads of the engine, decoded with the official Tahu proto | `spb_dump`, `idf/tools/spb_decode.py --check` | 0 structural errors |
@@ -24,14 +24,14 @@ A change is done when the host tests pass and the full E2E passes: the full run 
 
 | Item | Value |
 |---|---|
-| CTest tests | 59: 42 Unity suites, `test_sfcfg_packed` and 16 checks |
+| CTest tests | 67: 42 Unity suites, `test_sfcfg_packed` and 24 checks |
 | Unity cases | 448 in the 42 suites (453 with `test_sfcfg_packed`) |
 | Self-test of the decode rules | 26 tests |
 | E2E checks, full run of the PSRAM variant | 264 (284 in the 5 CI groups: each group repeats the 5 checks of the run) |
 | E2E checks, full run of the default variant | 18 |
 | Optional E2E scenarios | `umh` 15 checks, `tck` 19 checks, `downgrade` 7 checks |
 
-The last local full run was on commit 3b6e3d7, on a cloud container with 4 CPUs (`run_ci_groups.sh`, `PARALLEL=5`, `E2E_TIMEOUT_SCALE=1.5`). The PSRAM variant gave 284/284 checks in the groups, and the default variant gave 18/18. There were no retries and no QEMU exits. The #80 check gave a minimum free internal RAM of 154 868 B and a largest block of 118 784 B at a validation. The host tests gave 59/59 at `-O0`, at `-O2` and with the sanitizers, and the linters gave 0 results.
+The last local full run was on commit 3b6e3d7, on a cloud container with 4 CPUs (`run_ci_groups.sh`, `PARALLEL=5`, `E2E_TIMEOUT_SCALE=1.5`). The PSRAM variant gave 284/284 checks in the groups, and the default variant gave 18/18. There were no retries and no QEMU exits. The #80 check gave a minimum free internal RAM of 154 868 B and a largest block of 118 784 B at a validation. The host tests gave 59/59 at `-O0`, at `-O2` and with the sanitizers, and the linters gave 0 results. The 8 rule checks of #228 came after that run. With them, the host tests gave 67/67 at `-O0`, at `-O2` and with the sanitizers.
 
 The last CI run was run 44367214752 on commit 3b6e3d7 (2026-11-18). All jobs passed: the host tests, the sanitizers, the linters, the firmware with 0 warnings, the 6 E2E groups (PSRAM 284/284, default 18/18, no retries, no QEMU exits) and the two `e2e-poison` jobs.
 
@@ -55,9 +55,39 @@ The host tests build `gw_core` and its tests with the host compiler. Platform ca
 | `check_set_config` (#58) | `gw_edge.c` calls `esp_mqtt_set_config()` only through its guarded wrapper `set_config()`, because esp-mqtt 1.1.0 leaks `network.if_name` |
 | `check_web_lists` (#167) | The option lists of the configuration form in `index.html` hold each value that `gw_config.c` accepts |
 | `check_kconfig_names` and `check_kconfig_names_selftest` (#227) | Each `CONFIG_GW_` name is an option of a `Kconfig` file |
+| `check_noalloc` and `check_noalloc_selftest` (#228, REL-2) | No allocation, no cJSON and no JSON lock in the polling, encoding or publish path. Refer to [The rule checks](#the-rule-checks) |
+| `check_jsonlock` and `check_jsonlock_selftest` (#228, #106) | No cJSON outside `gw_core`. In `gw_core`, each call path to cJSON passes `gw_port_json_lock()` |
+| `check_rs485` and `check_rs485_selftest` (#228) | Only `gw_bus` and `gw_rs485` call the UART and the Modbus master |
+| `check_efuse_options` and `check_efuse_options_selftest` (#228, #133) | No option that burns an eFuse in `sdkconfig.defaults` or in an overlay that is not for QEMU |
 | 11 `sdkconfig_check_*` tests (#83, #93, #103, #135) | `cmake/gw_sdkconfig_check.cmake` stops the build when a required option drifts. A stale `sdkconfig` fails, and the `warn` mode only warns. An `sdkconfig` without the PSRAM fails, except with the QEMU overlay |
 
 The `sdkconfig` check (#83) covers only the options in `GW_SDKCONFIG_REQUIRED`. If the firmware starts to depend on a new option, add it to that list. An intentional change of one of these options in `menuconfig` also stops the build: use `-D GW_SDKCONFIG_CHECK=warn`.
+
+### The rule checks
+
+Four CTest tests examine the rules of `CLAUDE.md` (#228). Each check has a self-test. The self-test gives a small bad example to the check, and the check must refuse it. The bad examples are in `idf/test/host/rules/selftest/` and `idf/test/host/rules/efuse/`. A name with `good_` in the report of a self-test is a false positive, and the self-test fails.
+
+`check_noalloc`, `check_jsonlock` and `check_rs485` use `idf/tools/check_rules.py` and the call graph of the host build. `gw_core` and nanopb compile with `-fcallgraph-info=su`, and GCC writes a `.ci` file next to each object. The script joins these files into one call graph. These three checks need GCC 10 or later, `nm` and Python 3. With another compiler, configure with `-DGW_RULE_CHECKS=OFF`. Then CMake does not add these three checks.
+
+| Check | Rule | How it examines the rule |
+|---|---|---|
+| `check_noalloc` | REL-2: no allocation in the polling, encoding or publish path | `idf/test/host/rules/noalloc_path.txt` gives the files of the path, each with its reason. `nm -u` examines the object of each file. The call graph examines each function of these files, and each function of `gw_core` and nanopb that they call. A reference to `malloc`, `calloc`, `realloc`, `free`, `strdup`, `cJSON_*` or `gw_port_json_lock` fails. A call of `gw_config_alloc`, `gw_config_release` or `gw_config_json_hooks` also fails, because these functions allocate through a function pointer |
+| `check_jsonlock` | #106: each use of cJSON is under `gw_port_json_lock()` | A word `cJSON` in the code of a component other than `gw_core` fails. In `gw_core`, the entries are the functions without a caller and the functions of the public headers. A call path from an entry to a cJSON call must pass a function that calls `gw_port_json_lock()`. A function that calls `gw_port_json_lock()` must also call `gw_port_json_unlock()` |
+| `check_rs485` | Only the `rs485_bus` task touches the RS485 UART and the Modbus master | A call of `uart_*`, `mb_master_*` or `gw_rs485_*` in a component other than `gw_bus`, `gw_rs485` and `gw_core` fails. The call graph finds the functions of `gw_core` that reach `mb_master_*`, for example `gw_poller_poll`. A word with their name in another component also fails. A `uart_*` call in `gw_core` fails. `idf/test/host/rules/rs485_exceptions.txt` gives the accepted calls, each with its reason. An exception that the check does not use fails |
+| `check_efuse_options` | #133: no build in `main` burns an eFuse | `idf/test/host/check_efuse_options.cmake` reads `sdkconfig.defaults`, its `.<target>` variants and each overlay that is not `sdkconfig.qemu*`. An option of the list in `CLAUDE.md` with the value `y` fails. The QEMU overlays can set these options, because QEMU emulates the eFuses in a file |
+
+The current exception of `check_rs485` is `gw_rs485_init()` in `main/main.c`. The boot installs the UART driver before the `rs485_bus` task exists, and gives the transport to `gw_bus_start()`.
+
+The checks have these limits:
+
+- The call graph has only the direct calls. The checks do not follow a call through a function pointer (`__indirect_call`), for example the callbacks of nanopb, of the bus transport and of the card.
+- The call graph does not show a function that is only an argument or a value. For the listed files, `nm -u` finds such a reference to an allocator.
+- The call graph is of the host build of `gw_core`. The firmware port `gw_port_esp.c` and the IDF components are not in it. `gw_port_posix.c` is the limit of the graph, because it is not the code of the firmware.
+- The checks do not follow the calls into the C library. A `printf` that allocates is not found.
+- `check_noalloc` does not examine the IDF adapters of the path (`gw_bus`, `gw_edge`, `gw_board`). They can allocate one time at boot, and a text check cannot see the difference.
+- `check_jsonlock` does not examine the order of the calls in one function. A cJSON call before `gw_port_json_lock()` in the same function is not found.
+- The text checks of `check_jsonlock` and `check_rs485` remove the comments and the string literals. They do not run the preprocessor, thus a name that a macro makes is not found.
+- `check_efuse_options` examines the files of the repository, not the `sdkconfig` of a local build. An option set in `menuconfig` is not found.
 
 ### The Unity suites
 

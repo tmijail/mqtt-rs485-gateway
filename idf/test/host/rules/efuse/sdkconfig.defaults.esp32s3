@@ -1,0 +1,2 @@
+# Issue #228: the self-test of check_efuse_options, a variant for the target
+CONFIG_SECURE_BOOT=y

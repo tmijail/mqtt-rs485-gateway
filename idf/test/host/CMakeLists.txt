@@ -52,6 +52,22 @@ include(${IDF_PROJECT_DIR}/cmake/gw_warnings.cmake)
 add_subdirectory(${IDF_PROJECT_DIR}/components/nanopb nanopb)
 add_subdirectory(${IDF_PROJECT_DIR}/components/gw_core gw_core)
 
+# Issue #228: the call graph of gw_core and nanopb for the rule checks (idf/tools/check_rules.py,
+# at the end of this file). GCC writes <src>.c.ci next to each object; the generated code does
+# not change. GCC 10 or later. -DGW_RULE_CHECKS=OFF (another compiler, no Python) removes the
+# three checks of the call graph; the CI keeps them on.
+option(GW_RULE_CHECKS "The rule checks of the call graph (issue #228; needs GCC and Python 3)" ON)
+if(GW_RULE_CHECKS)
+    find_package(Python3 COMPONENTS Interpreter)
+    if(NOT CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_VERSION VERSION_LESS 10
+       OR NOT Python3_Interpreter_FOUND OR NOT CMAKE_NM)
+        message(FATAL_ERROR "The rule checks (issue #228) need GCC 10 or later, Python 3 and nm. "
+                            "Without them, configure with -DGW_RULE_CHECKS=OFF.")
+    endif()
+    target_compile_options(gw_core PRIVATE -fcallgraph-info=su)
+    target_compile_options(nanopb PRIVATE -fcallgraph-info=su)
+endif()
+
 enable_testing()
 foreach(t test_mb_rtu test_mb_master test_conv test_logic test_config test_plan test_spb test_node
           test_poll test_dout test_netsel test_syslog test_auth test_cfgdoc test_button
@@ -187,3 +203,74 @@ foreach(c "fresh;fresh;;;0" "stale;stale;;warn;0;MBEDTLS_DYNAMIC_BUFFER" "stale;
                              PASS_REGULAR_EXPRESSION "CMake Warning.*CONFIG_${expect}")
     endif()
 endforeach()
+
+# Issue #228: the checks of the rules of CLAUDE.md. Each check has a self-test: a small bad
+# example (rules/selftest/, rules/efuse/) that the check must refuse. A name with "good_" in the
+# report of a self-test is a false positive, and fails it.
+#   check_noalloc   REL-2: no allocation, no cJSON and no JSON lock in the polling, encoding or
+#                   publish path (the files of rules/noalloc_path.txt and each function that
+#                   they call; nm and the call graph)
+#   check_jsonlock  #106: no cJSON outside gw_core; in gw_core, each path to a cJSON call passes
+#                   gw_port_json_lock() (the call graph)
+#   check_rs485     uart_* and mb_master_* only in gw_bus and gw_rs485; the functions of gw_core
+#                   that reach the Modbus master only from them (rules/rs485_exceptions.txt)
+#   check_efuse_options  #133: no option that burns an eFuse outside a QEMU overlay
+# The details and the limits are in idf/tools/check_rules.py and check_efuse_options.cmake.
+add_test(NAME check_efuse_options
+         COMMAND ${CMAKE_COMMAND} -DDIR=${IDF_PROJECT_DIR}
+                 -P ${CMAKE_CURRENT_LIST_DIR}/check_efuse_options.cmake)
+add_test(NAME check_efuse_options_selftest
+         COMMAND ${CMAKE_COMMAND} -DDIR=${CMAKE_CURRENT_LIST_DIR}/rules/efuse
+                 -P ${CMAKE_CURRENT_LIST_DIR}/check_efuse_options.cmake)
+set_tests_properties(check_efuse_options_selftest PROPERTIES
+    PASS_REGULAR_EXPRESSION
+        "sdkconfig.defaults.esp32s3: CONFIG_SECURE_BOOT=y.*sdkconfig.release: CONFIG_BOOT_ROM_LOG_ON_GPIO_HIGH=y.*sdkconfig.release: CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC=y"
+    FAIL_REGULAR_EXPRESSION "qemu-good|SECURE_FLASH_ENC|no option that burns")
+
+if(GW_RULE_CHECKS)
+    set(GW_RULES ${Python3_EXECUTABLE} ${IDF_PROJECT_DIR}/tools/check_rules.py)
+    set(GW_RULES_DIR ${CMAKE_CURRENT_LIST_DIR}/rules)
+    add_library(rules_selftest STATIC rules/selftest/bad_path.c rules/selftest/bad_alloc.c
+                                      rules/selftest/bad_json.c rules/selftest/bad_bus.c)
+    target_link_libraries(rules_selftest PRIVATE cjson)
+    target_include_directories(rules_selftest PRIVATE
+                               ${IDF_PROJECT_DIR}/components/gw_core/include)
+    target_compile_options(rules_selftest PRIVATE -fcallgraph-info=su)
+    set(core_objs "$<TARGET_OBJECTS:gw_core>$<SEMICOLON>$<TARGET_OBJECTS:nanopb>")
+    set(bad_objs "$<TARGET_OBJECTS:rules_selftest>")
+
+    add_test(NAME check_noalloc
+             COMMAND ${GW_RULES} noalloc "--objects=${core_objs}" --nm ${CMAKE_NM}
+                     --list ${GW_RULES_DIR}/noalloc_path.txt)
+    add_test(NAME check_noalloc_selftest
+             COMMAND ${GW_RULES} noalloc "--objects=${bad_objs}" --nm ${CMAKE_NM}
+                     --list ${GW_RULES_DIR}/selftest/noalloc_path.txt)
+    set_tests_properties(check_noalloc_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION
+            "nm: bad_path.c refers to free.*bad_path.c:bad_poll -> bad_alloc.c:bad_alloc_helper -> calloc"
+        FAIL_REGULAR_EXPRESSION "good_")
+
+    add_test(NAME check_jsonlock
+             COMMAND ${GW_RULES} jsonlock "--objects=$<TARGET_OBJECTS:gw_core>"
+                     --root ${IDF_PROJECT_DIR} --core gw_core)
+    add_test(NAME check_jsonlock_selftest
+             COMMAND ${GW_RULES} jsonlock "--objects=${bad_objs}"
+                     --root ${GW_RULES_DIR}/selftest --core gw_core)
+    set_tests_properties(check_jsonlock_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION
+            "gw_web/bad_web.c:7: cJSON_Parse outside gw_core.*bad_json.c:bad_json_locked calls gw_port_json_lock and never gw_port_json_unlock.*bad_json.c:bad_json_parse -> bad_json.c:parse_unlocked calls cJSON_Parse"
+        FAIL_REGULAR_EXPRESSION "good_")
+
+    add_test(NAME check_rs485
+             COMMAND ${GW_RULES} rs485 "--objects=$<TARGET_OBJECTS:gw_core>"
+                     --root ${IDF_PROJECT_DIR} --core gw_core --owners gw_bus,gw_rs485
+                     --exceptions ${GW_RULES_DIR}/rs485_exceptions.txt)
+    add_test(NAME check_rs485_selftest
+             COMMAND ${GW_RULES} rs485 "--objects=${bad_objs}"
+                     --root ${GW_RULES_DIR}/selftest --core gw_core --owners gw_bus,gw_rs485
+                     --exceptions ${GW_RULES_DIR}/selftest/rs485_exceptions.txt)
+    set_tests_properties(check_rs485_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION
+            "bad_bus.c:bad_uart_core calls uart_flush.*gw_web/bad_web.c:8: bad_bus_entry outside.*gw_web/bad_web.c:9: gw_rs485_init outside.*gw_web/bad_web.c:10: uart_write_bytes outside.*the exception main/main.c gw_rs485_init is not used"
+        FAIL_REGULAR_EXPRESSION "good_")
+endif()

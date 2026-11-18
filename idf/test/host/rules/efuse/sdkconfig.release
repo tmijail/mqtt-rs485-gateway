@@ -1,0 +1,3 @@
+# Issue #228: the self-test of check_efuse_options, an overlay that is not for QEMU
+CONFIG_BOOT_ROM_LOG_ON_GPIO_HIGH=y
+CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC=y

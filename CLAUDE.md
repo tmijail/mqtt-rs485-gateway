@@ -77,7 +77,8 @@ Each key of the configuration document must have a control in the Configuration 
 The host tests and the decode check run from the repo root. The firmware commands are run from `idf/`, after `. $IDF_PATH/export.sh`.
 
 ```bash
-# Host tests (pure C, no IDF): 42 Unity suites + sdkconfig and guard checks, -Werror
+# Host tests (pure C, no IDF): 42 Unity suites + sdkconfig, guard and rule checks (#228), -Werror.
+# The rule checks need GCC 10 or later, nm and Python 3; with another compiler, add -DGW_RULE_CHECKS=OFF
 cmake -S idf/test/host -B build-host && cmake --build build-host -j && ctest --test-dir build-host --output-on-failure
 ctest --test-dir build-host -R test_poll      # one suite; or run build-host/test_poll directly
 # The host tests at -O2, as the CI job host-tests builds them: some warnings show only with the optimizer
@@ -160,7 +161,7 @@ Platform calls go through `gw_port.h`, which has two implementations: `port/gw_p
 
 ### IDF components (`idf/components/`)
 
-- `gw_bus`: owns the RS485 bus. Its `rs485_bus` task, pinned to core 1, is the **only** task that touches the UART/Modbus master; DCMD writes and Modbus-TCP requests (`gw_mbtcp`) are queued to it.
+- `gw_bus`: owns the RS485 bus. Its `rs485_bus` task, pinned to core 1, is the **only** task that touches the UART/Modbus master; DCMD writes and Modbus-TCP requests (`gw_mbtcp`) are queued to it. The host test `check_rs485` examines this rule: no `uart_*` or `mb_master_*` call outside `gw_bus` and `gw_rs485`, and no call of a `gw_core` function that reaches the Modbus master. The accepted exceptions are in `idf/test/host/rules/rs485_exceptions.txt`, each with its reason.
 - `gw_edge`: the `sparkplug` task on core 0. Runs the esp-mqtt client, bdSeq and will handling, backoff and broker failover, and drives `gw_node`.
 - `gw_board`: DI sampling, plus the `local_io` task, which is the only writer of the TCA9554 DO expander. Also the LED, buzzer and BOOT button.
 - `gw_bsp`: a declarative description of all board pins and polarities. Drivers contain no board data.
@@ -177,7 +178,7 @@ Platform calls go through `gw_port.h`, which has two implementations: `port/gw_p
 
 - Producers never block consumers. Device and DI updates are atomic dirty flags plus an optional wake, and the Sparkplug task reconciles every loop. Anything that must not be lost goes through bounded static queues.
 - `gw_tagdb` is the only shared memory, behind a short mutex.
-- All cJSON use goes through `gw_port_json_lock()`, because cJSON's hooks and error state are global (#106).
+- All cJSON use goes through `gw_port_json_lock()`, because cJSON's hooks and error state are global (#106). The host test `check_jsonlock` examines this rule: no cJSON outside `gw_core`, and in `gw_core` each call path to cJSON passes `gw_port_json_lock()`.
 - The network stack, esp-mqtt and the event loop are pinned to core 0, away from the bus on core 1.
 
 ### Memory rules (REL-2)
@@ -186,7 +187,7 @@ Platform calls go through `gw_port.h`, which has two implementations: `port/gw_p
 - **The firmware assumes the 8 MB of PSRAM of the board (#135).** It does not support a board without PSRAM. Do not add fallbacks or smaller sizes for a board without PSRAM.
 - All own memory is fixed-size, static or allocated once at boot. It goes to the PSRAM (`gw_storage_malloc`, `gw_storage_calloc`, `gw_storage_big_alloc`, and mbedTLS through them). These functions never use internal RAM when the PSRAM is full: the allocation fails.
 - A board whose PSRAM the boot does not detect runs the fault mode only (`CONFIG_SPIRAM_IGNORE_NOTFOUND`; `GW_WEB_FAULT` in `main.c`). The log, the shell and the web UI give the fault. Only the network, the web server and the shell start, from internal RAM. The gateway does not start.
-- **No malloc in the polling, encoding or publish path.**
+- **No malloc in the polling, encoding or publish path.** The host test `check_noalloc` examines this rule. It examines each function of the files in `idf/test/host/rules/noalloc_path.txt`, and each function of `gw_core` and nanopb that they call. Add a new file of this path to that list, with its reason.
 - Internal RAM is still shared with Wi-Fi, lwIP, esp-mqtt, the task stacks and DMA. The E2E enforces ≥ 8 KB minimum free and a ≥ 17 KB largest block at the worst-case config validation (#80). The check runs in the PSRAM variant, the configuration of the board (`tls` scenario, node GW29).
 - **Never lower these thresholds.** Measure any change in `.bss`, stack or heap with the `E2E_PSRAM=1 --only tls` / #80 checks.
 
@@ -215,7 +216,7 @@ Rules that tests and fixes must respect:
 ## Security constraints
 
 - Never burn eFuses on a real device, and never run `espefuse` against one. QEMU's emulated eFuse file is fine.
-- No build in `main` may burn an eFuse on the board (#133). A Kconfig option that burns eFuses (`CONFIG_SECURE_BOOT`, `CONFIG_SECURE_FLASH_ENC_ENABLED`, `CONFIG_SECURE_DISABLE_ROM_DL_MODE`, `CONFIG_SECURE_ENABLE_SECURE_ROM_DL_MODE`, `CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK`, `CONFIG_BOOT_ROM_LOG_ALWAYS_OFF`/`_ON_GPIO_*`, `CONFIG_NVS_ENCRYPTION` with the HMAC scheme) can appear only in a QEMU overlay.
+- No build in `main` may burn an eFuse on the board (#133). A Kconfig option that burns eFuses (`CONFIG_SECURE_BOOT`, `CONFIG_SECURE_FLASH_ENC_ENABLED`, `CONFIG_SECURE_DISABLE_ROM_DL_MODE`, `CONFIG_SECURE_ENABLE_SECURE_ROM_DL_MODE`, `CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK`, `CONFIG_BOOT_ROM_LOG_ALWAYS_OFF`/`_ON_GPIO_*`, `CONFIG_NVS_ENCRYPTION` with the HMAC scheme) can appear only in a QEMU overlay. The host test `check_efuse_options` examines `sdkconfig.defaults` and each overlay that is not for QEMU. When you change this list, change the list in `idf/test/host/check_efuse_options.cmake` too.
 - Signing keys for tests are generated into build or scratch dirs (e.g. `build-qemu/e2e_signing_key.pem`) and are never committed.
 
 ## Conventions

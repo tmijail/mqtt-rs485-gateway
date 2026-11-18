@@ -1,0 +1,23 @@
+# Issue #228, REL-2: the files of the polling, encoding and publish path. check_noalloc examines
+# each function of these files, and each own function that they call (the call graph of the
+# host build), for an allocation, cJSON or the JSON lock (idf/tools/check_rules.py). The files
+# of the other functions that the path calls need no entry: the call graph examines them
+# function by function (today gw_config.c, gw_mbap.c, gw_ota.c and nanopb).
+#
+# <file>         <reason>
+gw_poll.c        The poll cycle of the rs485_bus task: requests, decode, the tag store, MB-9 probes
+gw_plan.c        The block plan, built again in each poll cycle
+mb_master.c      The Modbus RTU master of each request (t3.5, retries, timeouts)
+mb_rtu.c         The RTU frames and the CRC of each request and response
+gw_conv.c        The decode and the encode of each register value (MB-6)
+gw_devstate.c    The online and offline state of each device after each cycle
+gw_tagdb.c       The tag store between rs485_bus and sparkplug (the only shared memory)
+gw_rbe.c         Report by exception on each value that the sparkplug task publishes
+gw_node.c        The Edge Node engine: births, DDATA, NDATA, NCMD, DCMD and the seq of each publish
+spb.c            The Sparkplug B encode and decode of each payload
+sparkplug_b.pb.c The nanopb field descriptors of the Sparkplug payload
+gw_sf.c          Store and forward: each sample when the broker is offline (SPB-14)
+gw_sfspill.c     The spill of store and forward to the microSD card, step by step
+gw_debounce.c    The debounce of each DI sample of the local_io task
+gw_localio.c     The IO-7 rules and the counters of each local_io cycle (published as metrics)
+gw_dout.c        The DO writes to the TCA9554 of each local_io cycle
