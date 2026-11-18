@@ -183,6 +183,15 @@ The IPv4 keys of `network` are the keys of Ethernet.
 
 An IPv4 address in the configuration is four decimal numbers from 0 to 255 with dots between them (`a.b.c.d`), as `inet_pton` reads it. A number has no leading zero, no sign and no space: the gateway rejects `010.0.0.1`, because other programs read `010` as an octal number (8). The same rule applies to the IPv4 part of an IPv6 address (`::ffff:192.0.2.1`) and to the prefix of `modbus_tcp.allowed_clients` (#226).
 
+The web UI corrects an IPv4 value with leading zeros, because a leading zero usually comes from a notation with zeros for the full width, and that notation is decimal:
+
+- When an IPv4 field of the Configuration tab loses the focus, the web UI removes the spaces before and after the value.
+- When the full value is `a.b.c.d`, each number has 1 to 3 digits, and the web UI also removes the leading zeros of each number. In `modbus_tcp.allowed_clients`, the value can also be `a.b.c.d/n`, and the web UI removes the leading zeros of `n` too. Thus `192.168.001.010` becomes `192.168.1.10`, and `010.000.000.001/08` becomes `10.0.0.1/8`.
+- The web UI does not change the value while you type. The changed value counts as a change in the bar at the bottom of the page.
+- The web UI does not change other values: a name, an IPv6 address, a sign (`+1.2.3.4`) or a number above 255. The validation gives the error at the field.
+- The IPv4 fields are `ip`, `netmask`, `gateway` and `dns` of `network` and of `network.wifi`, `mqtt.host`, the `host` of each item of `mqtt.backup_brokers`, `ntp.servers`, `syslog.host` and `modbus_tcp.allowed_clients`.
+- The JSON tab, `PUT /api/config` and the shell command `config load` do not change a value. They give the error.
+
 | Key | Type | Default | Rule |
 |---|---|---|---|
 | `dhcp` | bool | `true` | With `false`, `ip`, `netmask` and `gateway` are necessary |

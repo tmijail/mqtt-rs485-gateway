@@ -8393,6 +8393,7 @@ def run_web(args, work):
           st_p == 200 and all(pw_items.values()),
           f"missing: {[k for k, v in pw_items.items() if not v] or 'none'}")
     check_web_controls_221(doc, page_text)
+    check_ip4_norm_226(doc, page_text)
 
     # Issue #167: a <select> without the current value shows its first option, and a save writes
     # it back (a CDAB tag became "big"). The served page's lists must hold every value of the
@@ -8620,6 +8621,34 @@ def run_web(args, work):
 # #206: the name, the location and the comment of the web scenario's gateway
 GATEWAY_LABELS = {"name": "Pump panel 2", "location": "Plant 2, hall B",
                   "comment": "Feeds the cooling towers 1 and 2. Contact: maintenance, ext. 214."}
+
+
+def check_ip4_norm_226(doc, page_text):
+    """Issue #226: the firmware rejects an IPv4 number with a leading zero (other programs read
+    010 as the octal 8), with the error at its field. The web UI removes the leading zeros and the
+    spaces when an IPv4 field loses the focus (decision of the product owner). No scenario runs a
+    browser, and idf/test/web/test_ip4norm.mjs tests the functions in Node.js: here the served
+    page must hold the code, and the validation must refuse the typed forms and accept the forms
+    that the page writes."""
+    ui = {"ip4Norm": "function ip4Norm(v,net)" in page_text,
+          "ip4Kind": "function ip4Kind(p)" in page_text,
+          "focusout": '$("#tab-config").addEventListener("focusout",ip4Blur);' in page_text}
+
+    def dry(dns, clients):
+        d = json.loads(json.dumps(doc))
+        d.setdefault("network", {})["dns"] = dns
+        d.setdefault("modbus_tcp", {})["allowed_clients"] = clients
+        st, _, b = http("PUT", "/api/config?dry_run=1", d)
+        return st, (as_json(b) or {}).get("path")
+    typed = [dry("192.168.001.010", ["10.0.0.1/8"]), dry("192.168.1.10", ["010.000.000.001/08"])]
+    norm = dry("192.168.1.10", ["10.0.0.1/8"])
+    check("Issue #226: the web UI removes the leading zeros of an IPv4 value when its field loses "
+          "the focus; the validation refuses 192.168.001.010 and 010.000.000.001/08 at their "
+          "fields, and accepts 192.168.1.10 and 10.0.0.1/8",
+          all(ui.values()) and typed == [(400, "network.dns"), (400, "modbus_tcp.allowed_clients[0]")]
+          and norm[0] == 200,
+          f"missing: {[k for k, v in ui.items() if not v] or 'none'}; typed {typed}; "
+          f"normalized {norm}")
 
 
 def check_web_controls_221(doc, page_text):

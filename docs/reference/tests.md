@@ -15,6 +15,7 @@ This document gives the test suites of the firmware, what each suite examines, t
 | Sparkplug decode check | The payloads of the engine, decoded with the official Tahu proto | `spb_dump`, `idf/tools/spb_decode.py --check` | 0 structural errors |
 | Firmware build (QA-2) | The release build for `esp32s3`, and the QEMU builds | CI job `firmware` | 0 warnings |
 | Linters (#229) | The Python tools, the shell scripts, the workflows and the scripts of the web pages | CI job `host-tests` | 0 results |
+| Web UI unit test (#226) | The IPv4 normalization of the Configuration tab, in Node.js without a browser | `idf/test/web/test_ip4norm.mjs`, CI job `host-tests` | All tests pass |
 | Harness self-test | The retry, hang and progress logic of the E2E harness, with fake clocks | `idf/tools/e2e/test_harness.py` | All tests pass |
 | E2E in QEMU (QA-3) | The real firmware against mosquitto, a pymodbus RTU slave, SNTP, syslog and HTTPS clients | `idf/tools/e2e/run_e2e.sh` | Each check passes in the full run of the two variants |
 | Optional E2E scenarios | UMH Core (`umh`), the Sparkplug TCK (`tck`) and the downgrade (`downgrade`) | `run_e2e.sh --only <name>` | Each check passes |
@@ -29,11 +30,14 @@ A change is done when the host tests pass and the full E2E passes: the full run 
 | Unity cases | 449 in the 42 suites (454 with `test_sfcfg_packed`) |
 | Fuzz targets | 12, in `idf/test/fuzz`. Refer to [Fuzz tests](#fuzz-tests) |
 | Self-test of the decode rules | 26 tests |
-| E2E checks, full run of the PSRAM variant | 264 (284 in the 5 CI groups: each group repeats the 5 checks of the run) |
+| Web UI unit test | 9 tests |
+| E2E checks, full run of the PSRAM variant | 265 (285 in the 5 CI groups: each group repeats the 5 checks of the run) |
 | E2E checks, full run of the default variant | 18 |
 | Optional E2E scenarios | `umh` 15 checks, `tck` 19 checks, `downgrade` 7 checks |
 
-The last local full run was on commit 3b6e3d7, on a cloud container with 4 CPUs (`run_ci_groups.sh`, `PARALLEL=5`, `E2E_TIMEOUT_SCALE=1.5`). The PSRAM variant gave 284/284 checks in the groups, and the default variant gave 18/18. There were no retries and no QEMU exits. The #80 check gave a minimum free internal RAM of 154 868 B and a largest block of 118 784 B at a validation. The host tests gave 59/59 at `-O0`, at `-O2` and with the sanitizers, and the linters gave 0 results. The 8 rule checks of #228 came after that run. With them, the host tests gave 67/67 at `-O0`, at `-O2` and with the sanitizers.
+The last local full run was on the change of the IPv4 normalization of the web UI (#226), after commit 1994ff5, on a cloud container with 4 CPUs (`run_ci_groups.sh`, `PARALLEL=4`, `E2E_TIMEOUT_SCALE=1.5`). The PSRAM variant gave 285/285 checks in the groups, and the default variant gave 18/18. In the group `nvs-main`, QEMU stopped one time with "Bad ram pointer", and the harness repeated the scenario. A second run of that group gave 101/101 with no retries and no QEMU exits.
+
+The #80 check gave a minimum free internal RAM of 156 728 B and a largest block of 118 784 B at a validation. The host tests gave 67/67, and the linters gave 0 results.
 
 The last CI run was run 44367214752 on commit 3b6e3d7 (2026-11-18). All jobs passed: the host tests, the sanitizers, the linters, the firmware with 0 warnings, the 6 E2E groups (PSRAM 284/284, default 18/18, no retries, no QEMU exits) and the two `e2e-poison` jobs.
 
@@ -242,13 +246,23 @@ The `host-tests` job runs the linters (#229). Each linter uses only rules that f
 - A false positive gets `# noqa: <rule>` or `# shellcheck disable=SCnnnn`, with the reason.
 - Do not add an ESLint comment to a web page, because the comment goes into the firmware image. For a false positive, change an option in `eslint.config.mjs`.
 
+## Web UI unit test
+
+The pages of the web UI go into the firmware image as they are, with their inline `<script>`. `idf/test/web/test_ip4norm.mjs` tests three functions of `index.html` with the test runner of Node.js (`node --test`), without a browser (#226):
+
+- `ip4Norm` removes the spaces around a value, and the leading zeros of each number of a full `a.b.c.d` or `a.b.c.d/n` value. It does not change other values.
+- `ip4Kind` gives the fields of the Configuration tab that hold an IPv4 value.
+- `ip4Blur` changes the field when it loses the focus, and sends the events `input` and `change`, as a typed change.
+
+The test reads `index.html`, takes the source of each function and runs it in a separate V8 context (`node:vm`). The test also makes sure that the page calls `ip4Blur` on `focusout`. Refer to [`network`](configuration.md#network) for the rule.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on each push and pull request, in the `espressif/idf:v6.1` image, pinned by digest.
 
 | Job | What it does |
 |---|---|
-| `host-tests` | Builds the host tests with `-O2` and runs them. Decodes the `spb_dump` payloads (`spb_decode.py --check`). Runs `test_spb_decode.py`, `test_harness.py` and the linters |
+| `host-tests` | Builds the host tests with `-O2` and runs them. Decodes the `spb_dump` payloads (`spb_decode.py --check`). Runs `test_spb_decode.py`, `test_harness.py`, the linters and the unit test of the web UI |
 | `host-tests-sanitizers` | Builds the host tests with `-DGW_SANITIZE=ON` and runs them. Decodes the payloads of the sanitized `spb_dump` |
 | `fuzz` | Installs `clang-18` and `libclang-rt-18-dev`, builds `idf/test/fuzz` and runs each target for 60 s, 4 at a time (`run_fuzz.sh`). The start is the corpus of the weekly job (from `actions/cache`, read only) and the seeds. A finding stops the job, and the artifact `fuzz-findings` has the input and the logs. The job takes approximately 5 min, at the same time as the other jobs |
 | `firmware` | Runs `idf.py set-target esp32s3 build`. Fails on a `warning:`. Publishes the binaries, the `idf.py size` output and `stack.txt` |

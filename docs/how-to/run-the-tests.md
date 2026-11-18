@@ -94,6 +94,12 @@ When a target finds an error, the input is in `build-fuzz/crashes/` and the repo
    npm ci --prefix idf/tools/lint && idf/tools/lint/node_modules/.bin/eslint --config idf/tools/lint/eslint.config.mjs idf/components/gw_web/www/
    ```
 
+4. Run the unit test of the web UI (#226). All tests must pass:
+
+   ```bash
+   node --test idf/test/web/test_ip4norm.mjs
+   ```
+
 ESLint needs Node.js 20.19 or later. For a false positive, add `# noqa: <rule>` or `# shellcheck disable=SCnnnn` with the reason. Do not add an ESLint comment to a web page, because the comment goes into the firmware image. Change an option in `eslint.config.mjs` instead.
 
 ## Run the full E2E
@@ -131,7 +137,7 @@ The full E2E is the full run of the two variants. The PSRAM variant takes approx
    E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh
    ```
 
-7. Make sure that the last line of each run gives all checks passed, for example `264/264 checks passed`.
+7. Make sure that the last line of each run gives all checks passed, for example `265/265 checks passed`.
 
 Run the harness as root, or in a container with `--privileged`, to give each run its own network namespace. Without it, the harness uses the host loopback, and UDP 123 must be free.
 
