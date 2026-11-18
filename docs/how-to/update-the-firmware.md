@@ -44,7 +44,7 @@ The SHA-256 is a check of the file, not a signature. It finds a damaged or wrong
 9. Wait approximately 30 s. Then load the page again.
 10. Do the steps of "Make sure that the update is complete".
 
-   ![The card 'Firmware' of the Status tab: a summary with the running version, the last update, the other slot and Update from MQTT. Below is the area 'Install a new image' with the two sources 'From a URL' and 'From a file', the field 'SHA-256 (optional)' and the button 'Download and install'.](../images/firmware-card.png)
+   ![The card 'Firmware' of the Status tab: a summary with the running version and its slot, the last update (idle), the other slot and Update from MQTT (Off). Below is the area 'Install a new image' with the source 'From a URL' selected, the field 'Image URL', the field 'SHA-256 (optional)' with a value, and the button 'Download and install'.](../images/firmware-card.png)
 
 If the pre-flight check refuses the image, a red box shows in the card. Refer to [If the gateway refuses the image](#if-the-gateway-refuses-the-image).
 

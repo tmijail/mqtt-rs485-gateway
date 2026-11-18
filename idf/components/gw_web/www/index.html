@@ -37,7 +37,17 @@ td input,td select{width:100%;margin:0;padding:3px 4px}
 .lbl{display:inline-flex;align-items:center;gap:4px}.lbl label{display:inline}.card h2.lbl{display:flex}
 button.qi{width:16px;height:16px;padding:0;border-radius:50%;border:1px solid var(--mut);background:transparent;color:var(--mut);font-size:10px;font-weight:700;line-height:14px;text-align:center;flex:none;position:relative}
 button.qi.on{border-color:var(--acc);background:var(--acc);color:var(--card)}
-@media (pointer:coarse){button.qi::after{content:"";position:absolute;inset:-6px -14px}}
+/* on a touch screen the (?) is a touch target of 44 x 44 px (#190, the visual review of #195): the
+   padding box of the button is 14 px, and the ::after adds 15 px on each side. The circle stays
+   16 px. So that the target covers no other control: the row of the label is 44 px high, 15 px
+   are between the label and the (?), and a table header with a (?) is 44 px high. Above a field,
+   the label and the (?) stay at the bottom of their row (next to the field), and the target
+   covers the row: 29 px above the button and 1 px below its padding box (its border) */
+@media (pointer:coarse){button.qi::after{content:"";position:absolute;inset:-15px}
+ .lbl:has(>button.qi){min-height:44px}.lbl>button.qi{margin-left:11px}h2.ch>button.qi{margin-left:5px}
+ .fld:not(:has(>input[type=checkbox]))>.lbl:has(>button.qi){align-items:flex-end}
+ .fld:not(:has(>input[type=checkbox]))>.lbl>button.qi::after{inset:-29px -15px -1px}
+ th:has(button.qi){padding-top:0;padding-bottom:0}}
 .xpl{position:fixed;z-index:40;width:300px;background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:6px;box-shadow:0 6px 20px rgba(0,0,0,.18);padding:10px 12px;font-size:12.5px;line-height:1.45;white-space:normal}
 .xpl .hd{display:flex;align-items:center;gap:8px;margin-bottom:4px}.xpl .hd b{flex:1;font-size:13px}
 .xpl p{margin:0 0 6px}.xpl p:last-child{margin:0}.xpl code{font-family:ui-monospace,monospace;font-size:12px}.xpl .x{display:none}

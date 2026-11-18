@@ -17,7 +17,7 @@ This document lists the signals that the gateway gives at the panel: the modes, 
 
 **Safe mode.** Safe mode starts after 3 crashes in sequence, or on request: the button **Restart into safe mode** of the web UI, `POST /api/restart?safe=1` or the shell command `restart safe`. Safe mode ends after 60 min, or at the next restart. The mode is `recovery`. `GET /api/status` gives `safe_mode` with its cause (`request` or `crashes`) and the time left, and the web UI shows a banner of its own. For the procedure, refer to [Restart into safe mode or do a factory reset](../how-to/restart-into-safe-mode-or-reset.md).
 
-![The card Gateway of the Status tab, with the health values and the button Identify](../images/status-gateway-card.png)
+![The card Gateway of the Status tab: the firmware, the reset reason, the uptime, the mode, the configuration, the free internal heap, the largest free internal block, the free PSRAM and the chip temperature (46.5 °C). Below the values: the button Identify and the text 'For 10 s, the status LED blinks and the buzzer beeps.'](../images/status-gateway-card.png)
 
 The card **Gateway** of the Status tab also gives the health of the gateway:
 

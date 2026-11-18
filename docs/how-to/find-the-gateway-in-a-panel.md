@@ -11,7 +11,7 @@ This document tells how to find the gateway that has its web UI open in your bro
 2. In the card **Gateway**, click **Identify**.
 3. Look at the panel. For 10 s, the status LED of the gateway shows red, green and blue in turn, and its buzzer beeps.
 
-![The card Gateway with the button Identify](../images/status-gateway-card.png)
+![The card Gateway of the Status tab: the firmware, the reset reason, the uptime, the mode, the configuration, the free internal heap, the largest free internal block, the free PSRAM and the chip temperature (46.5 °C). Below the values: the button Identify and the text 'For 10 s, the status LED blinks and the buzzer beeps.'](../images/status-gateway-card.png)
 
 During the 10 s, the button is disabled, and the card gives the seconds left.
 
