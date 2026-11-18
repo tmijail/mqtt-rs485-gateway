@@ -384,14 +384,20 @@ bool gw_edge_request_rebirth(void)
 
 /* ---------- esp-mqtt glue (runs in the MQTT task) ---------- */
 
-static void enqueue_cmd(const esp_mqtt_event_t *ev)
+/* One MQTT_EVENT_DATA event: the fields topic, topic_len, data, data_len, total_data_len and
+ * current_data_offset of the esp-mqtt event. Issue #232: the CodeQL model pack
+ * (.github/codeql/extensions/esp-idf-models) names the parameters of this function as the
+ * source of the MQTT data, because CodeQL cannot take a field read as a source. Keep its name
+ * and the order of its parameters, or change the model too. */
+static void on_mqtt_data(const char *topic, int topic_len, const char *data, int data_len,
+                         int total_len, int offset)
 {
-    if (ev->current_data_offset != 0) {
+    if (offset != 0) {
         return;  /* continuation of a fragmented message, already rejected */
     }
-    if (ev->data_len != ev->total_data_len || ev->data_len > CONFIG_GW_CMD_MAX_PAYLOAD ||
-        ev->topic_len >= GW_TOPIC_MAX) {
-        ESP_LOGW(TAG, "command of %d bytes dropped (limit %d)", ev->total_data_len,
+    if (data_len != total_len || data_len > CONFIG_GW_CMD_MAX_PAYLOAD ||
+        topic_len >= GW_TOPIC_MAX) {
+        ESP_LOGW(TAG, "command of %d bytes dropped (limit %d)", total_len,
                  CONFIG_GW_CMD_MAX_PAYLOAD);
         return;
     }
@@ -401,10 +407,10 @@ static void enqueue_cmd(const esp_mqtt_event_t *ev)
         return;
     }
     cmd_slot_t *c = &s_slots[slot];
-    memcpy(c->topic, ev->topic, (size_t)ev->topic_len);
-    c->topic_len = (uint16_t)ev->topic_len;
-    memcpy(c->data, ev->data, (size_t)ev->data_len);
-    c->len = (uint16_t)ev->data_len;
+    memcpy(c->topic, topic, (size_t)topic_len);
+    c->topic_len = (uint16_t)topic_len;
+    memcpy(c->data, data, (size_t)data_len);
+    c->len = (uint16_t)data_len;
     const edge_ev_t e = {.type = EV_CMD, .arg = slot};
     if (xQueueSend(s_q, &e, 0) != pdTRUE) {
         xQueueSend(s_free_slots, &slot, 0);
@@ -573,7 +579,8 @@ static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *da
         wake();
         break;
     case MQTT_EVENT_DATA:
-        enqueue_cmd(ev);
+        on_mqtt_data(ev->topic, ev->topic_len, ev->data, ev->data_len, ev->total_data_len,
+                     ev->current_data_offset);
         break;
     case MQTT_EVENT_ERROR:
         if (ev->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT &&
@@ -1383,7 +1390,8 @@ static void on_subscribed(void)
     start_births();
 }
 
-/* SPB-13: a message on spBv1.0/STATE/<primary_host_id>. */
+/* SPB-13: a message on spBv1.0/STATE/<primary_host_id>. Issue #232: the CodeQL model pack names
+ * its parameters as a source (keep the name and the order of the parameters). */
 static void on_host_state(const uint8_t *data, size_t len)
 {
     if (!atomic_load(&s_mqtt_connected)) {
