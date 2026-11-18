@@ -6,6 +6,7 @@
 ![Hardware: not tested](https://img.shields.io/badge/hardware-not%20tested-red)
 ![ESP-IDF v6.1](https://img.shields.io/badge/ESP--IDF-v6.1-blue)
 ![Sparkplug B 3.0.0](https://img.shields.io/badge/Sparkplug%20B-3.0.0-blue)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
 > [!WARNING]
 > **Do not use this firmware in a plant. It is experimental, and it has never run on the board.**
@@ -190,4 +191,4 @@ The rules for contributors (code, tests, documentation in Simplified Technical E
 
 ## License
 
-The repository has no license file yet. Until it has one, the default copyright rules apply.
+The project uses the [MIT License](LICENSE). The third-party components keep their own licenses, for example [nanopb](idf/components/nanopb/LICENSE.txt).
