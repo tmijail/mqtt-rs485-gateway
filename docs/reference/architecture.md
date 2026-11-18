@@ -91,6 +91,8 @@ Each `idf_component.yml` pins the version with `==`, and `dependencies.lock` has
 - `joltwallet/littlefs` 1.23.1
 - `espressif/mdns` 1.14.1
 
+Two components come from third parties: nanopb (a copy in the repository) and `joltwallet/littlefs`. The project does not use the `livekit/nanopb` registry package, because that package has an ABI defect. The project does not use `espressif/esp_io_expander_tca9554` either. That component loads the latch with 0xFF, which is OFF with active-low DOs. But the host tests cannot examine its sequence or its polarity, so `gw_dout` drives the TCA9554. The feasibility study (`docs/feasibility-idf.md`, IO-2) rejected the component for a wrong reason: it assumed active-high DOs.
+
 A change of `littlefs` or of ESP-IDF can change a stored format. Such a change must pass the downgrade test (#148). Refer to [Firmware updates](firmware-updates.md).
 
 ## Tasks, queues and ownership
