@@ -174,6 +174,16 @@ The `host-tests` job runs the linters (#229). Each linter uses only rules that f
 
 The GitHub containers do not permit `unshare`. Thus each `e2e` job runs on the loopback interface of its container.
 
+The workflow pins each action to a commit hash, with the tag in a comment (#229). All the actions run on Node 24 (#235):
+
+| Action | Version |
+|---|---|
+| `actions/checkout` | v7.0.1 |
+| `actions/cache` | v6.1.0 |
+| `actions/upload-artifact` | v7.0.2 |
+| `actions/download-artifact` | v8.0.2 |
+| `actions/setup-node` | v6.5.0 |
+
 ### The E2E groups
 
 Each group has its own job, and the groups run at the same time (#121, #135, #233). The groups of a variant are exactly one full run of that variant.
