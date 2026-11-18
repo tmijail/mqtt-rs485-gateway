@@ -12,7 +12,7 @@
 >
 > - No version is released. The project is before v1.0, and the formats of the stored data can change without a migration.
 > - The firmware ran only in host tests and in QEMU (an emulated ESP32-S3), against a test broker and a simulated Modbus device.
-> - The Ethernet chip (W5500), the RS485 hardware mode, the I/O expander of the outputs, the digital inputs and the status LED are compile-only. Nobody has tested them (#1, #18).
+> - The Ethernet chip (W5500), the RS485 hardware mode, the I/O expander of the outputs, the digital inputs, the status LED, the Wi-Fi, the microSD card and the real PSRAM are compile-only. Nobody has tested them (#1, #18).
 > - Some board data comes from the vendor documentation and is not verified ([Board data to verify](docs/reference/board-data-to-verify.md)).
 >
 > For the status of each requirement, refer to [Requirements status](docs/reference/requirements-status.md) and [Known limitations](docs/reference/known-limitations.md).
@@ -77,14 +77,16 @@ flowchart LR
 
 - Births and deaths of the node and of the devices, bdSeq, seq and aliases, report by exception, and rebirth.
 - Writes from the host with NCMD and DCMD, with write limits for each tag.
+- Properties and quality, node diagnostics, templates for device types, DataSet, Bytes and File.
 - Primary Host awareness, and store & forward in RAM, with an optional spill to the microSD card.
 - Tested against the Eclipse Sparkplug TCK (Edge Node profile) and against UMH Core. Refer to [Sparkplug TCK results](docs/reference/sparkplug-tck-results.md).
 
 **Network and MQTT**
 
 - Ethernet with PoE, and Wi-Fi as a backup or as the primary interface. IPv4 and IPv6.
-- MQTT 3.1.1 or MQTT 5, TLS with a client certificate, and a list of brokers with failover.
-- SNTP, with the RTC of the board as the clock source when the network has no time server.
+- MQTT 3.1.1 or MQTT 5, TLS 1.2 or 1.3 with a client certificate, and a list of brokers with failover.
+- A hostname and mDNS.
+- UTC time from SNTP, from the RTC of the board or from the browser. The gateway opens no MQTT session without a valid clock, so the RTC battery is necessary.
 - Remote syslog.
 
 **Local I/O**

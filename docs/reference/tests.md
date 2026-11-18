@@ -10,7 +10,7 @@ This document gives the test suites of the firmware, what each suite examines, t
 |---|---|---|---|
 | Host tests (QA-1) | The logic of `gw_core` in pure C, without ESP-IDF: 42 Unity suites, and checks of the `sdkconfig`, the Kconfig names and the web form | `idf/test/host`, CTest | Each CTest test passes. 0 warnings with `-Werror` |
 | Host tests at `-O2` | The same tests, with the warnings that only the optimizer gives | CI job `host-tests` | The same |
-| Host tests with sanitizers (#225) | The same tests with AddressSanitizer and UndefinedBehaviorSanitizer | CI job `host-tests-sanitizers` | No finding |
+| Host tests with sanitizers (#225) | The same tests with AddressSanitizer and UndefinedBehaviorSanitizer | CI job `host-tests-sanitizers` | No error from a sanitizer |
 | Sparkplug decode check | The payloads of the engine, decoded with the official Tahu proto | `spb_dump`, `idf/tools/spb_decode.py --check` | 0 structural errors |
 | Firmware build (QA-2) | The release build for `esp32s3`, and the QEMU builds | CI job `firmware` | 0 warnings |
 | Linters (#229) | The Python tools, the shell scripts, the workflows and the scripts of the web pages | CI job `host-tests` | 0 results |
@@ -54,6 +54,8 @@ The host tests build `gw_core` and its tests with the host compiler. Platform ca
 | `check_web_lists` (#167) | The option lists of the configuration form in `index.html` hold each value that `gw_config.c` accepts |
 | `check_kconfig_names` and `check_kconfig_names_selftest` (#227) | Each `CONFIG_GW_` name is an option of a `Kconfig` file |
 | 11 `sdkconfig_check_*` tests (#83, #93, #103, #135) | `cmake/gw_sdkconfig_check.cmake` stops the build when a required option drifts. A stale `sdkconfig` fails, and the `warn` mode only warns. An `sdkconfig` without the PSRAM fails, except with the QEMU overlay |
+
+The `sdkconfig` check (#83) covers only the options in `GW_SDKCONFIG_REQUIRED`. If the firmware starts to depend on a new option, add it to that list. An intentional change of one of these options in `menuconfig` also stops the build: use `-D GW_SDKCONFIG_CHECK=warn`.
 
 ### The Unity suites
 
@@ -104,7 +106,7 @@ The host tests build `gw_core` and its tests with the host compiler. Platform ca
 
 ### The sanitizer build
 
-The CMake option `GW_SANITIZE` (default `OFF`) builds all the targets with `-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer`. This includes Unity, cJSON, nanopb and `gw_core`. The first finding stops the test, and LeakSanitizer is on.
+The CMake option `GW_SANITIZE` (default `OFF`) builds all the targets with `-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer`. This includes Unity, cJSON, nanopb and `gw_core`. The first error that a sanitizer finds stops the test. LeakSanitizer is on.
 
 - The sanitizer build stays at `-O0`. With the ASan instrumentation, GCC 13 at `-O2` does not give the `-Wformat-truncation` warning.
 - `test_sfcfg_packed` has `-fno-sanitize=alignment`, because its structures are packed on purpose (#145). The other checks stay on for this target.

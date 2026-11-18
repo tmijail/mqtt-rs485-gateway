@@ -58,7 +58,7 @@ The main boot of `GW01`, with the slave, the main broker and the shell.
 - **MQTT-2 (#5, #11, #89):** a broker that cuts each connection after the CONNACK gives a backoff that increases. A refused SUBACK (0x80) gives no NBIRTH: the gateway sends DISCONNECT and tries again. The check waits up to 15 s for the first three refused connections to end. It requires a DISCONNECT in each, and a backoff that increases strictly. The backoff returns to the minimum only after a session that lasted one keepalive.
 - **#71:** a connection cut after the SUBACK gives no "session up". **#72:** the shell answers a command before the configuration loads.
 - **Devices (§7.2, MB-9, #61):** a slave that stops gives DDEATH in its bound, and DBIRTH when it is back. A device that never answers gets one probe attempt with backoff from the boot (2–4–8–10 s), and a healthy device keeps its 1 s period.
-- **Modbus (MB-4, MB-6, MB-11, MB-12, MB-14, #38):** the MB-6 types in the DBIRTH with exact 64-bit values. DCMD writes: one FC16 for a 64-bit value, read-modify-write of a register bit, a string. Exact read requests with `max_gap` per device, 60 registers with one FC03. The slow scan of 3 s. A DCMD written between two requests of a running cycle.
+- **Modbus (MB-4, MB-6, MB-11, MB-12, MB-14, #38):** the MB-6 types in the DBIRTH with exact 64-bit values. DCMD writes: one FC16 for a 64-bit value, read-modify-write of a register bit, a string. Exact read requests with `max_gap` per device, 60 registers with one FC03. The slow scan of 3 s. A DCMD written between two requests of a cycle that is in progress.
 - **SPB-15:** `Node Control/Scan Rate`: an NCMD changes the poll period, a value below the minimum is discarded, 0 returns to the configuration.
 - **Modbus TCP (MB-15, #69, #81, #216, #234, #120):** reads and writes through port 502, exception 0B for a dead unit, FC 0x2B answered by the gateway. The counters in the shell and the `Node Info/Modbus TCP` DataSet. The local unit 100 (DIs, DOs, counters, run hours). A client through the access point gets no answer.
 - **Shell (CFG-6, #68, REL-5, MB-13):** `devices`, `config` and `status`. `Node Info/Reset Reason`.
@@ -124,7 +124,7 @@ Nodes `GW07`, `GW08`: the BOOT button, commissioning and the access point.
 
 MQTT-4, MQTT-5 and the memory checks of #80, #84 and #91.
 
-- **MQTT-4:** TLS 1.3 with the CA from LittleFS, and the name verified against the SAN. A wrong `server_name` and an expired certificate (#70) give a clear log line, and no session. A missing CA file gives no attempt.
+- **MQTT-4:** TLS 1.3 with the CA from LittleFS, and the name verified against the SAN. A wrong `server_name` and an expired certificate (#70) give a clear log line, and no session. A CA file that is not in LittleFS gives no connection attempt.
 - **MQTT-5:** mutual TLS 1.2 with a client certificate. Without the client certificate, the broker cuts the handshake.
 - **#221:** PEM files loaded from the web UI, the limits, `DELETE /api/files/<name>`, and the check that the client key agrees with the client certificate.
 - **#80 (`GW29`):** the memory thresholds at the worst case (refer to [Memory thresholds](e2e-harness.md#memory-thresholds)), and the stacks of the web tasks (#110).
@@ -169,7 +169,7 @@ Node `GW22`.
 Issue #160, node `GW31`. Without SNTP and with the RTC OS bit set:
 
 - NBIRTH and DBIRTH go out, but no NDATA or DDATA comes. `/api/status` gives `time.valid` false.
-- `POST /api/time` refuses a missing CSRF header, a wrong password, a time before 2025 and a bad body. With the time of the browser, it gives a rebirth with UTC timestamps.
+- `POST /api/time` refuses a request without the CSRF header, a wrong password, a time before 2025 and a bad body. With the time of the browser, it gives a rebirth with UTC timestamps.
 - A late SNTP gives a rebirth with `Time Synced` true. `POST /api/time` over a clock that SNTP synchronises gives 409.
 - No NDATA or DDATA has a timestamp before 2020.
 
@@ -243,6 +243,6 @@ A rollback or a manual downgrade runs an earlier image on the data that a later 
 2. The harness writes the app image of the earlier release over `ota_0`. The bootloader, `otadata`, the NVS and LittleFS stay as the later image left them.
 3. The earlier image must start in normal mode with the same configuration (`GET /api/config`) and the secrets. Its broker requires the MQTT password, and the web UI must accept the web password. The bdSeq is in RAM only (#161), so the scenario does not examine it.
 
-The scenario needs `E2E_DOWNGRADE_REF=<git ref>`. Before the tag `v1.0`, use the commit before the change. Each change that updates `littlefs` or ESP-IDF must pass this test in the two variants. If the earlier image cannot read the data, the pre-flight check must refuse that downgrade (refer to [Firmware updates](firmware-updates.md)).
+The scenario needs `E2E_DOWNGRADE_REF=<git ref>`. Before the tag `v1.0`, use the commit before the change. Each change that updates `littlefs` or ESP-IDF must pass this test in the two variants. If the earlier image cannot read the data, the pre-flight check must refuse that downgrade (refer to [The pre-flight check](firmware-updates.md#the-pre-flight-check)).
 
 The last run used the reference `761edf8`, the last commit before the NVS records of #144. It gave 7/7 in each variant. The earlier image ignores the NVS keys that it does not know (`fw_last`, `cfg_prev`). It reads `lkg_net` as a raw struct with a size check, so it does not use the new record.

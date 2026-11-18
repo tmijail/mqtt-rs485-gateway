@@ -99,7 +99,7 @@ On the same computer before #233, the longest PSRAM group was `ota-fw1` with 1 0
 
 ### Builds with ccache
 
-The CI jobs that build use ccache since #233. The measurement used one cache directory and the same build directory path for each build, as the CI does. `CCACHE_COMPILERCHECK=content` was set (refer to `idf/README.md` §4.5).
+The CI jobs that build use ccache since #233. The measurement used one cache directory and the same build directory path for each build, as the CI does. `CCACHE_COMPILERCHECK=content` was set (refer to [The caches of the CI](tests.md#the-caches-of-the-ci)).
 
 | Build | Empty cache | Full cache | Hits |
 |---|---|---|---|
@@ -207,7 +207,7 @@ The values come from `results.json` → `durations` of the groups above, in seco
 
 | Scenario | Variant | Result | Duration |
 |---|---|---|---|
-| `tck` (§4.7 of `idf/README.md`) | PSRAM | 19/19 checks passed, one test repeated (`PrimaryHostTest`, MQTT 3.1.1: no TCK result) | 406.9 s for the 14 tests and the repeated test |
+| `tck` ([Sparkplug TCK results](sparkplug-tck-results.md)) | PSRAM | 19/19 checks passed, one test repeated (`PrimaryHostTest`, MQTT 3.1.1: no TCK result) | 406.9 s for the 14 tests and the repeated test |
 
 The `umh` scenario did not run in this measurement.
 

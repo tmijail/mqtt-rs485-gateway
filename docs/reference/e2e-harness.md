@@ -191,7 +191,7 @@ CAUTION: Read the `uart0-*.log` files when `e2e-poison` fails. One time, with he
 
 The #80 worst case is MQTT over TLS 1.3, full births (the 60-tag DBIRTH of `Bulk`), one HTTPS session open, and `PUT /api/config?dry_run=1` of the full document on a second session. The harness configuration has 5 devices and 74 tags. A larger configuration, or more HTTPS clients at the same time, decrease the margin. mbedTLS, the configuration and the engine are in PSRAM, so the margin of the internal RAM is large on the board configuration.
 
-The other free stacks at the #80 worst case were `mqtt_task` 1 772 B, `rs485_bus` 2 328 B and `local_io` 2 400 B (`integration/195b` 91c852c). The fault mode without PSRAM (`nopsram`) had 129 020 B of free internal RAM.
+The values come from the last run that reported each of them: the #80 RAM values from `main` 6288614, the `sparkplug` stack from `main` 8c2e8be, and the other values from `integration/195b` 91c852c. On 91c852c, the other free stacks at the #80 worst case were `mqtt_task` 1 772 B, `rs485_bus` 2 328 B and `local_io` 2 400 B, and the fault mode without PSRAM (`nopsram`) had 129 020 B of free internal RAM.
 
 A TLS handshake during a validation needs no fix (#84, node `GW30`). With the dynamic buffers of mbedTLS, a reconnection replaces the earlier session and does not add to it. The web server has one task, so a new HTTPS handshake waits until the PUT ends. A PUT during a handshake, with no 32 KB block free, answers 503 with no hang. The E2E does not force this order.
 
@@ -212,7 +212,7 @@ A TLS handshake during a validation needs no fix (#84, node `GW30`). With the dy
 | mDNS | The responder starts, but `open_eth` has no multicast filter, so it does not answer | The mDNS answers |
 | IPv6 to the host | slirp sends `fec0::2` to `::1` of the host, and the container has no IPv6. The E2E examines only the addresses and ICMPv6 | MQTT over IPv6 |
 | Publish budget (#59) | 2 s (`sdkconfig.qemu`) | The 8 s of the board build, and the TWDT trigger |
-| PSRAM | The octal model | The timing, the chip detection, the cache with data in transit, and DMA from PSRAM for the SHA and AES accelerators |
+| PSRAM | The octal model | The time behaviour, the chip detection, the cache with data in transit, and DMA from PSRAM for the SHA and AES accelerators |
 | Public CA bundle, microSD card | Not executed. The spill uses a LittleFS directory in place of the card | The real card |
 
 ### Emulator problems and their workarounds
