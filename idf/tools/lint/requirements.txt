@@ -1,0 +1,5 @@
+# Issue #229: the linters of the shell scripts and of the workflows, as pinned wheels that hold
+# the binary of the tool. ruff, the linter of the Python tools, is in ../e2e/requirements.txt.
+shellcheck-py==0.11.0.1
+actionlint-py==1.7.12.25
+zizmor==1.32.0

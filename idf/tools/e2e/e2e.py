@@ -258,8 +258,8 @@ class ModbusSlave:
     def restore(self, snap):
         """Back to @snap (snapshot()): after an attempt that a fault or an exception ended
         before the scenario put back what it changed (a Voltage, the Bulk registers, a delay)."""
-        for ctx, vals, ref in zip((self.ctx, self.bulk), snap["values"], snap["refuse"]):
-            for fc, v in zip((1, 2, 3, 4), vals):
+        for ctx, vals, ref in zip((self.ctx, self.bulk), snap["values"], snap["refuse"], strict=True):
+            for fc, v in zip((1, 2, 3, 4), vals, strict=True):
                 ctx.setValues(fc, 0, list(v))
             ctx.refuse.clear()
             ctx.refuse.update(ref)
@@ -2479,7 +2479,7 @@ def run_max_packet(args, work, slave):
     asked, h = gw.shell("status", [rf"^limit\s+broker Maximum Packet Size {MAXPKT_B} B; 1 message\(s\) too "
                                    r"large, not published \(last: spBv1\.0/Plant1/DBIRTH/GW26/Bulk\)"])
     shown = list(h.values())[0]
-    bulk_cycles = len([r for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 2 and t >= t0])
+    bulk_cycles = len([r for t, r in zip(list(slave.times), list(slave.reads), strict=False) if r[0] == 2 and t >= t0])
     gw.console("rebirth")
     gw.wait_log(r"^rebirth: NBIRTH and every DBIRTH requested", 5, asked)
     time.sleep(3)
@@ -4178,7 +4178,7 @@ def fw_image(src, version, dst, corrupt=False, caps_version=None, cfg_schema=Non
     vo = first + 16
     new = version.encode().ljust(32, b"\0")
     x = 0
-    for o, n in zip(b[vo:vo + 32], new):
+    for o, n in zip(b[vo:vo + 32], new, strict=True):
         x ^= o ^ n
     b[vo:vo + 32] = new
     for off, value in ((4, caps_version), (12, cfg_schema)):   # u16 fields of the block
@@ -4188,7 +4188,7 @@ def fw_image(src, version, dst, corrupt=False, caps_version=None, cfg_schema=Non
                 raise SystemExit(f"{src}: no capabilities block at {CAPS_OFFSET}")
             old = bytes(b[at:at + 2])
             struct.pack_into("<H", b, at, value)
-            for o, n in zip(old, b[at:at + 2]):
+            for o, n in zip(old, b[at:at + 2], strict=True):
                 x ^= o ^ n
     # the checksum of the new version; a corrupt image gets it off by one bit (the stale one
     # matches whenever the old and new version strings XOR to 0, about one build in 256)
@@ -4331,7 +4331,7 @@ def run_park_storm(gw, image, obs, ndata_t):
     parks, inside, before, open_at, last_resume = [], 0, [], None, None
     lines = [(t, ln) for t, ln in list(gw.lines) if t >= asked]
     storm_lines, since_on = 0, 0
-    for t, ln in lines:
+    for _t, ln in lines:
         if re.search(r"console storm from the bus task for \d+ ms", ln):
             since_on = 0
         elif PARK_RX.search(ln):
@@ -4408,7 +4408,7 @@ def run_park_long_txn(args, work, slave):
         muted = True
         asked = time.monotonic()
         def unit1_attempts():
-            return [t for (u, *_), t in zip(slave.reads[n0:], slave.times[n0:]) if u == 1]
+            return [t for (u, *_), t in zip(slave.reads[n0:], slave.times[n0:], strict=False) if u == 1]
 
         def until(cond, seconds):   # a harness wait: ends the attempt after an emulator fault
             end = time.monotonic() + seconds
@@ -7100,7 +7100,7 @@ def check_offline_backoff(slave, t0):
     def bursts():
         """Requests to dead unit 3 grouped by proximity: a full cycle would be a burst of
         attempts 200 ms apart, a probe is alone."""
-        ts = [t for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 3 and t >= t0]
+        ts = [t for t, r in zip(list(slave.times), list(slave.reads), strict=False) if r[0] == 3 and t >= t0]
         out = []
         for t in ts:
             if out and t - out[-1][-1] <= 0.5:
@@ -7112,15 +7112,15 @@ def check_offline_backoff(slave, t0):
     end = t0 + 60
     while wait_left(end) > 0 and len(bursts()) < 5:
         time.sleep(0.5)
-    reads = list(zip(slave.times, slave.reads))
+    reads = list(zip(slave.times, slave.reads, strict=False))
     cl = bursts()
     single = bool(cl) and all(len(c) == 1 for c in cl)
-    gaps = [round(b[0] - a[0], 1) for a, b in zip(cl, cl[1:])]
+    gaps = [round(b[0] - a[0], 1) for a, b in zip(cl, cl[1:], strict=False)]
     full = [min(2.0 * 2 ** i, PROBE_MAX_S) for i in range(len(gaps) + 1)]
     # The very first request may be lost while QEMU's UART socket connects: then the series
     # starts one step later. A due probe may also wait for another device's cycle (~0.6 s).
     def fits(k):
-        return all(-0.2 <= g - e <= 0.7 for g, e in zip(gaps, full[k:]))
+        return all(-0.2 <= g - e <= 0.7 for g, e in zip(gaps, full[k:], strict=False))
     offset = next((k for k in (0, 1) if fits(k)), None)
     probes_ok = len(gaps) >= 4 and single and offset is not None
     check("MB-9 / issues #4 #61 never-answered device probed from boot with a single attempt and an "
@@ -7132,7 +7132,7 @@ def check_offline_backoff(slave, t0):
     kind = meter[0][1][1:] if meter else None
     starts = [t for t, r in meter if r[1:] == kind and t <= meter[0][0] + 20]
     span = starts[-1] - starts[0] if len(starts) > 1 else 0
-    worst = max((b - a for a, b in zip(starts, starts[1:])), default=0)
+    worst = max((b - a for a, b in zip(starts, starts[1:], strict=False)), default=0)
     # 1 s period; at worst one probe of each dead unit (200 ms timeout) in between + jitter
     ok = len(starts) >= 8 and span and (len(starts) - 1) / span >= 0.9 and worst <= 1.0 + 3 * 0.2 + 0.4
     return check("Issues #4 #61 healthy device keeps its 1 s period next to 3 dead ones, from boot",
@@ -7176,7 +7176,7 @@ def check_modbus_tcp(gw, slave):
     n0 = len(slave.reads)
     unknown = mbap_raw(b"\x2b\x0e\x01\x00")
     reached = [r for r in list(slave.reads)[n0:] if r[1] == 0x2B]
-    seen = [r for t, r in zip(list(slave.times), list(slave.reads)) if t >= since and r[0] == 1
+    seen = [r for t, r in zip(list(slave.times), list(slave.reads), strict=False) if t >= since and r[0] == 1
             and r[1:3] in ((3, 10), (6, 200))]
     log = gw.find(r"mbtcp: client 10\.0\.2\.2 connected", 0)
     ok = connected and read == [slave.get(3, 10)[0]] and wr is not None and not wr.isError() \
@@ -7347,13 +7347,13 @@ def check_scan_rate(obs, gw, slave, nbirth, ncmd_t, ndata_t):
         nd = obs.wait(ndata_t, 3, lambda q: metric(q, alias=7) is not None)
         return metric(nd[2], alias=7).int_value if nd else None
     def starts(since, until):
-        return [t for t, r in zip(list(slave.times), list(slave.reads))
+        return [t for t, r in zip(list(slave.times), list(slave.reads), strict=False)
                 if since <= t <= until and r[0] == 1 and r[1:] == (1, 0, 1)]
     t_set = time.monotonic()
     confirmed = set_rate(3000)
     time.sleep(11)
     slow = starts(t_set + 1.5, time.monotonic())
-    gaps3 = [round(b - a, 2) for a, b in zip(slow, slow[1:])]
+    gaps3 = [round(b - a, 2) for a, b in zip(slow, slow[1:], strict=False)]
     since = time.monotonic()
     refused = set_rate(10)
     logged = gw.wait_log(r"NCMD: metric 'Node Control/Scan Rate' .*discarded: Scan Rate must be", 2, since)
@@ -7361,7 +7361,7 @@ def check_scan_rate(obs, gw, slave, nbirth, ncmd_t, ndata_t):
     back = set_rate(0)
     time.sleep(5)
     fast = starts(t_back + 1.5, time.monotonic())
-    gaps1 = [round(b - a, 2) for a, b in zip(fast, fast[1:])]
+    gaps1 = [round(b - a, 2) for a, b in zip(fast, fast[1:], strict=False)]
     ok = birth is not None and birth.datatype == 7 and birth.int_value == 0 and confirmed == 3000 \
         and len(gaps3) >= 2 and all(2.7 <= g <= 3.6 for g in gaps3) and refused == 3000 and logged \
         and back == 0 and len(gaps1) >= 2 and all(g <= 1.6 for g in gaps1)
@@ -7394,18 +7394,18 @@ def check_write_between_blocks(obs, slave, dcmd_t, ddata_t):
             obs.publish_cmd(dcmd_t, [{"name": "Counter", "datatype": 4, "long_value": value}])
             dd = obs.wait(ddata_t, 6, lambda q: metric(q, alias=ALIAS["Counter"]) is not None)
             time.sleep(1.5)    # let the cycle finish
-            reads = [(t, r) for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 1]
+            reads = [(t, r) for t, r in zip(list(slave.times), list(slave.reads), strict=False) if r[0] == 1]
             w = next((i for i, (t, r) in enumerate(reads) if t >= sent and r[1:3] == (16, 34)), None)
             if w is None:
                 tries.append(f"attempt {attempt + 1}: no write seen")
                 continue
             before = 0
-            for t, r in reversed(reads[:w]):
+            for _t, r in reversed(reads[:w]):
                 if r[1:] == start:
                     break
                 before += 1
             after = 0
-            for t, r in reads[w + 2:]:      # w + 1 is the read-back
+            for _t, r in reads[w + 2:]:      # w + 1 is the read-back
                 if r[1:] == start:
                     break
                 after += 1
@@ -7427,15 +7427,15 @@ def check_scan_classes(slave):
     """MB-12: Meter1's slow-scan blocks (Energy at holding 30, Serial at 50; slow_poll_ms 3000)
     are read every third cycle, its fast ones (cycle start: coil 0) every second."""
     since = time.monotonic() - 12
-    reads = [(t, r[1:]) for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 1 and t >= since]
+    reads = [(t, r[1:]) for t, r in zip(list(slave.times), list(slave.reads), strict=False) if r[0] == 1 and t >= since]
     fast = [t for t, k in reads if k == (1, 0, 1)]
     slow = [t for t, k in reads if k == (3, 30, 4)]
     # a DCMD to Serial (check_mb6_writes) is read back right after its FC16: that request is not
     # a scan read (only the one that immediately follows each write)
     serial = [t for i, (t, k) in enumerate(reads)
               if k == (3, 50, 8) and not (i > 0 and reads[i - 1][1][:2] == (16, 50))]
-    gaps = [round(b - a, 2) for a, b in zip(slow, slow[1:])]
-    fgaps = [b - a for a, b in zip(fast, fast[1:])]
+    gaps = [round(b - a, 2) for a, b in zip(slow, slow[1:], strict=False)]
+    fgaps = [b - a for a, b in zip(fast, fast[1:], strict=False)]
     ok = len(slow) >= 3 and len(serial) == len(slow) and all(2.8 <= g <= 3.6 for g in gaps) \
         and len(fast) >= 10 and max(fgaps) <= 1.6
     return check("MB-12 slow-scan tags read every slow_poll_ms (3 s), fast ones every poll_ms (1 s)",
@@ -7706,7 +7706,7 @@ def check_birth_stamps(t0):
 def modbus_rows(m):
     """SPB-17: {device: {column: value}} of the 'Node Info/Modbus' DataSet."""
     ds = m.dataset_value
-    return {row.elements[0].string_value: {c: spb_decode.value_of(e) for c, e in zip(ds.columns, row.elements)}
+    return {row.elements[0].string_value: {c: spb_decode.value_of(e) for c, e in zip(ds.columns, row.elements, strict=False)}
             for row in ds.rows}
 
 
@@ -7718,7 +7718,7 @@ def check_modbus_tcp_table(obs, ndata_t):
     nd = obs.wait(ndata_t, 13, lambda q: metric(q, alias=56) is not None)
     m = metric(nd[2], alias=56) if nd else None
     ds = m.dataset_value if m is not None else None
-    rows = {r.elements[0].string_value: {c: spb_decode.value_of(e) for c, e in zip(ds.columns, r.elements)}
+    rows = {r.elements[0].string_value: {c: spb_decode.value_of(e) for c, e in zip(ds.columns, r.elements, strict=False)}
             for r in ds.rows} if ds is not None else {}
     meter, dead, other = rows.get("Meter1", {}), rows.get("Dead3", {}), rows.get("(other units)", {})
     ok = ds is not None and list(ds.columns) == ["Device", "Unit", "Online", "OK", "Timeout", "CRC",
@@ -7905,9 +7905,10 @@ def check_mb6_birth(db):
         if m is None:
             got[name] = None
             continue
-        value = {8: lambda: m.long_value, 4: lambda: int64_of(m), 10: lambda: m.double_value,
-                 3: lambda: m.int_value - 2 ** 32 if m.int_value >= 2 ** 31 else m.int_value,
-                 12: lambda: m.string_value, 11: lambda: m.boolean_value}[m.datatype]()
+        # B023: a false positive; the lambda is called at once, in the same iteration as its m
+        value = {8: lambda: m.long_value, 4: lambda: int64_of(m), 10: lambda: m.double_value,  # noqa: B023
+                 3: lambda: m.int_value - 2 ** 32 if m.int_value >= 2 ** 31 else m.int_value,  # noqa: B023
+                 12: lambda: m.string_value, 11: lambda: m.boolean_value}[m.datatype]()  # noqa: B023
         got[name] = (m.datatype, value)
     return check("MB-6 DBIRTH: uint64 ABCD (2^53+1 exact), int64 CDAB, float64 DCBA, int32 BADC, "
                  "string and register bits, with datatypes UInt64/Int64/Double/Int32/String/Boolean",
@@ -8218,7 +8219,7 @@ def check_devices_gw02(obs, slave, gw, node, t0):
                     [r"^network\s+.*Modbus \d+/9 devices online, 1 disabled$",
                      r"^\s+Spare\s+unit\s+1, poll 200 ms, .*, disabled \(not polled\)$"])
     status, summary = h.values()
-    asked = [r for t, r in zip(list(slave.times), list(slave.reads))
+    asked = [r for t, r in zip(list(slave.times), list(slave.reads), strict=False)
              if t >= t0 and r[0] == 1 and r[2] == 240]
     born = [m for m in CAPTURE if m[1] == f"{T}/DBIRTH/{node}/Spare"]
     out.append(("#214 a disabled device (enabled false, on unit 1, which answers) gets no request on "
@@ -8274,7 +8275,7 @@ def check_wifi_scan(gw):
           and all(n.get("supported") for n in nets if n.get("ssid") != "Plant-Corp")
           and s3 == 200 and (as_json(b3) or {}).get("networks") == nets and s4 == 401,
           f"before {s0} {b0[:40]!r}; new {s1}, log {started is not None}; result {s2} "
-          f"{j.get('state')} simulated {j.get('simulated')} {list(zip(ssids, rssi))}; "
+          f"{j.get('state')} simulated {j.get('simulated')} {list(zip(ssids, rssi, strict=True))}; "
           f"Plant-Corp {corp}; again {s3}; no auth {s4}")
 
 
@@ -9468,7 +9469,7 @@ def run(args, log, slave, broker, conf, work):
     # slow scan (MB-12, never merged with fast tags): Energy 30-33 and Serial 50-57 (gap 16).
     # Input 0-1 alone and 40-46 contiguous. No DCMD has run yet: only cycle reads so far.
     # this boot only: the earlier scenarios (web: diagnostic reads) share the slave
-    meter = {r[1:] for t, r in zip(list(slave.times), list(slave.reads)) if r[0] == 1 and t >= t0}
+    meter = {r[1:] for t, r in zip(list(slave.times), list(slave.reads), strict=False) if r[0] == 1 and t >= t0}
     want = {(1, 0, 1), (3, 10, 12), (3, 34, 4), (3, 60, 1), (3, 30, 4), (3, 50, 8), (4, 0, 2),
             (4, 40, 7)}
     # the issue #72 'mbread 1 holding 10' sent at the start reads the register when the bus is

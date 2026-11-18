@@ -103,9 +103,18 @@ E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_ci_groups.sh /tmp/gw-group
 #  E2E_POISON=1 (heap poisoning, use with --only ota), E2E_PLAIN=0 (skip the no-NVS-encryption build),
 #  E2E_TIMEOUT_SCALE / --timeout-scale (slow host), --web-stress N, JOBS=n (build parallelism)
 
-# Harness self-test and lint (both run in CI)
+# Harness self-test and the linters (all run in the CI job host-tests; each linter must give 0 results, #229)
 python3 idf/tools/e2e/test_harness.py
-python3 -m pyflakes idf/tools/e2e/*.py idf/tools/*.py
+#  Pinned versions: ruff in tools/e2e/requirements.txt; shellcheck, actionlint and zizmor in
+#  idf/tools/lint/requirements.txt; ESLint in idf/tools/lint/package-lock.json. Only rules that find errors.
+~/e2e/bin/pip install -r idf/tools/lint/requirements.txt
+~/e2e/bin/ruff check idf/tools                          # Python tools: F, E9, PLE, B (idf/tools/ruff.toml)
+git ls-files -z '*.sh' | xargs -0 ~/e2e/bin/shellcheck  # all shell scripts
+~/e2e/bin/actionlint -shellcheck ~/e2e/bin/shellcheck   # .github/workflows (and shellcheck on each run: script)
+~/e2e/bin/zizmor --offline .github/workflows            # workflow security (actions pinned to a commit hash)
+npm ci --prefix idf/tools/lint && idf/tools/lint/node_modules/.bin/eslint --config idf/tools/lint/eslint.config.mjs idf/components/gw_web/www/
+#  A false positive gets "# noqa: <rule>" or "# shellcheck disable=SCnnnn" with the reason. The web pages
+#  are in the firmware image: for them, change an option in eslint.config.mjs, not the page.
 ```
 
 CI (`.github/workflows/ci.yml`) runs host-tests, firmware, the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image. The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run of that variant (#121, #135). A change is done when the host tests pass and the full E2E passes: the full run of the `E2E_PSRAM=1` variant and the full run of the default variant. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
