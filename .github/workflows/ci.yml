@@ -15,6 +15,9 @@ concurrency:
   cancel-in-progress: true
 
 # The ESP-IDF v6.1 image is pinned by digest so a re-tagged image cannot change the build silently.
+# Issue #229: for the same reason, each action is pinned to a full commit hash, with its tag in
+# the comment. actions/checkout does not keep the token in .git/config (persist-credentials:
+# false, zizmor's artipacked audit): no step uses git with credentials.
 #
 # Issue #233: the caches. The jobs that build use ccache (IDF_CCACHE_ENABLE=1, CCACHE_DIR in
 # actions/cache, one key per job and variant: each run restores the newest one and saves its own).
@@ -28,7 +31,9 @@ jobs:
     name: Host tests (QA-1) and Sparkplug interop
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Build and run the host tests
         run: |
           cmake -S idf/test/host -B build-host
@@ -45,8 +50,24 @@ jobs:
         run: /tmp/venv/bin/python idf/tools/test_spb_decode.py
       - name: E2E harness self-test (fault signatures and retry rule, issues #92 and #96)
         run: /tmp/venv/bin/python idf/tools/e2e/test_harness.py
-      - name: pyflakes on the Python tools (issue #107)
-        run: /tmp/venv/bin/python -m pyflakes idf/tools/e2e/*.py idf/tools/*.py
+      # Issue #229: the linters, with pinned versions and only rules that find errors. ruff is in
+      # tools/e2e/requirements.txt, shellcheck, actionlint and zizmor in tools/lint/requirements.txt,
+      # ESLint in tools/lint/package-lock.json.
+      - name: ruff on the Python tools (issues #107 and #229)
+        run: /tmp/venv/bin/ruff check --no-cache idf/tools
+      - name: shellcheck on the shell scripts, actionlint and zizmor on the workflows (issue #229)
+        run: |
+          /tmp/venv/bin/pip install -q -r idf/tools/lint/requirements.txt
+          git ls-files -z '*.sh' | xargs -0 /tmp/venv/bin/shellcheck
+          /tmp/venv/bin/actionlint -shellcheck /tmp/venv/bin/shellcheck
+          /tmp/venv/bin/zizmor --offline .github/workflows
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+      - name: ESLint on the scripts of the web UI (issue #229)
+        run: |
+          npm ci --prefix idf/tools/lint --no-audit --no-fund
+          idf/tools/lint/node_modules/.bin/eslint --config idf/tools/lint/eslint.config.mjs idf/components/gw_web/www/
 
   # Issue #225: the same host tests and Sparkplug payloads with AddressSanitizer and
   # UndefinedBehaviorSanitizer (GW_SANITIZE=ON: -fsanitize=address,undefined
@@ -55,7 +76,9 @@ jobs:
     name: Host tests with ASan and UBSan (issue #225)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       # The ASan runtime of GCC 13 can crash at start with more than 28 bits of mmap
       # randomization (newer kernels permit 32). Set 28, as in the local runs of #225.
       - name: Limit the mmap randomization for ASan
@@ -87,10 +110,11 @@ jobs:
       CCACHE_COMPILERCHECK: content
       CCACHE_MAXSIZE: 400M
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           fetch-depth: 0   # FW-4: the version carries the git hash
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: /tmp/ccache
           key: ccache-firmware-f81b6e07-${{ github.sha }}
@@ -108,7 +132,7 @@ jobs:
           fi
           idf.py size | tee size.txt
           ccache -s
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: firmware-esp32s3
           path: |
@@ -134,7 +158,9 @@ jobs:
       build: ${{ steps.plan.outputs.build }}
       run: ${{ steps.plan.outputs.run }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - id: plan
         run: python3 idf/tools/e2e/scenarios.py matrix | tee -a "$GITHUB_OUTPUT"
 
@@ -155,10 +181,11 @@ jobs:
       CCACHE_COMPILERCHECK: content
       CCACHE_MAXSIZE: 600M
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           fetch-depth: 0   # FW-4: the version carries the git hash
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: /tmp/ccache
           key: ccache-e2e-${{ matrix.variant }}-f81b6e07-${{ github.sha }}
@@ -178,14 +205,14 @@ jobs:
             tar -C /tmp/e2e-images -czf /tmp/e2e-images-plain.tgz plain
           fi
       # the throwaway signing key of this run's QEMU images goes with them: kept for one day
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: e2e-images-${{ matrix.variant }}
           path: /tmp/e2e-images.tgz
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: matrix.plain == '1'
         with:
           name: e2e-images-plain
@@ -213,13 +240,15 @@ jobs:
       E2E_PSRAM: ${{ matrix.psram }}
       E2E_PLAIN: ${{ matrix.plain }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       # issue #233: idf_tools.py finds a QEMU of the cache and does not download it again
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: /opt/esp/tools/qemu-xtensa
           key: qemu-xtensa-f81b6e07
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: /tmp/e2e
           key: e2e-venv-f81b6e07-${{ hashFiles('idf/tools/e2e/requirements.txt') }}
@@ -232,11 +261,11 @@ jobs:
             python3 -m venv /tmp/e2e
             /tmp/e2e/bin/pip install -q -r idf/tools/e2e/requirements.txt
           fi
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: e2e-images-${{ matrix.variant }}
           path: /tmp/e2e-dl
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: matrix.plain == '1'
         with:
           name: e2e-images-plain
@@ -254,7 +283,7 @@ jobs:
         run: |
           python3 idf/tools/e2e/scenarios.py line --header "$VARIANT" "$GROUP" /tmp/e2e-work \
               | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: e2e-${{ matrix.variant }}-${{ matrix.group }}
@@ -268,7 +297,7 @@ jobs:
             /tmp/e2e-work/qemu/*/core-bt.txt
             /tmp/e2e-work/payloads/
       # only what e2e-summary reads
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: e2e-result-${{ matrix.variant }}-${{ matrix.group }}
@@ -282,8 +311,10 @@ jobs:
     if: always() && needs.e2e-plan.result == 'success'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         continue-on-error: true   # a missing group is reported below
         with:
           pattern: e2e-result-*
@@ -313,19 +344,20 @@ jobs:
       CCACHE_COMPILERCHECK: content
       CCACHE_MAXSIZE: 400M
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           fetch-depth: 0
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: /tmp/ccache
           key: ccache-e2e-poison-f81b6e07-${{ github.sha }}
           restore-keys: ccache-e2e-poison-f81b6e07-
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: /opt/esp/tools/qemu-xtensa
           key: qemu-xtensa-f81b6e07
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: /tmp/e2e
           key: e2e-venv-f81b6e07-${{ hashFiles('idf/tools/e2e/requirements.txt') }}
@@ -347,7 +379,7 @@ jobs:
           E2E_POISON=1 E2E_PLAIN=0 E2E_WORKDIR=/tmp/e2e-poison E2E_PYTHON=/tmp/e2e/bin/python \
               idf/tools/e2e/run_e2e.sh --only ota
           ccache -s
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: e2e-poison-artifacts

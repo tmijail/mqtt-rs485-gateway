@@ -1,0 +1,15 @@
+# Issue #229: ruff for the Python tools (idf/tools and idf/tools/e2e), in place of pyflakes.
+# Only rules that find errors, no style rules:
+#   F    pyflakes (undefined and unused names, ...)
+#   E9   syntax and I/O errors
+#   PLE  pylint errors
+#   B    flake8-bugbear (likely bugs)
+# B905 (zip() without strict=): strict=True where the lengths must be equal; strict=False where
+# the truncation is intended: neighbour pairs (zip(a, a[1:])), slave.times and slave.reads (the
+# slave thread appends while the harness copies them), and decoded payloads whose shape another
+# check reports.
+# The version of ruff is pinned in e2e/requirements.txt.
+target-version = "py310"
+
+[lint]
+select = ["F", "E9", "PLE", "B"]
