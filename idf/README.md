@@ -905,6 +905,12 @@ The product owner selected the limit of 2 048 B (2026-11-18). The firmware build
 
 ### 4.1 QA-1: host tests (CMake + Unity v2.6.1 + CTest)
 
+**The host tests at `-O2`.** The CI job `host-tests` builds the host tests with `-DCMAKE_C_FLAGS=-O2`. Some warnings of `-Wall` and `-Wextra` need the optimizer, and the build without optimization (`-O0`) does not give them. The firmware (`-Os`) did not give them either. The first build at `-O2` found two warnings in code that existed before:
+- `gw_lkgnet.c`, `put_str()` (`-Wstringop-overread`): the length of a string stopped at 255 bytes, but the fields have 33, 64 and 65 bytes. A string without its terminator could read the next field into the record. Now the length stops at the size of the field minus 1, the most that `get_str()` accepts. `test_lkgnet` (`test_unterminated_field`) examines it.
+- `gw_config.c`, `join()` (`-Wformat-truncation`): an unknown key of the document that is longer than the path buffer (96 bytes) cut the path of the error. This was not a memory error. Now a cut path ends with `...`. `test_config` examines it with a key of 120 characters.
+
+The sanitizer build (`GW_SANITIZE`) stays at `-O0`. With the ASan instrumentation, GCC 13 at `-O2` did not give the `-Wformat-truncation` warning. Only `-O3` gives 7 more `-Wmaybe-uninitialized` warnings in `gw_config.c`. They are false positives: the analyzer does not see that `fail()` always returns `false`. Issue #231 removes them.
+
 ```bash
 cmake -S idf/test/host -B build-host && cmake --build build-host -j3 && ctest --test-dir build-host
 ```
@@ -1352,7 +1358,7 @@ The components of the project compile with the options of §3.8 (issue #227). Wi
 
 | Job | What it does |
 |---|---|
-| `host-tests` | Runs the host tests (CTest). Decodes the `spb_dump` payloads with the official proto (`spb_decode.py --check`). Runs the self-test of the decode rules (`tools/test_spb_decode.py`: each rule rejects a payload that breaks it, §4.2). Runs the self-test of the harness (`tools/e2e/test_harness.py`: the fault signatures of the emulator and the retry rule, #92/#96). Runs the linters, with pinned versions and 0 results (#107, #229): ruff on the Python tools, shellcheck on the shell scripts, actionlint and zizmor on the workflow, and ESLint on the scripts of the web pages. Refer to "The linters of the CI" below |
+| `host-tests` | Builds the host tests with `-O2` and runs them (CTest). Some warnings show only with the optimizer (§4.1). A local build without `CMAKE_C_FLAGS` stays at `-O0`. Decodes the `spb_dump` payloads with the official proto (`spb_decode.py --check`). Runs the self-test of the decode rules (`tools/test_spb_decode.py`: each rule rejects a payload that breaks it, §4.2). Runs the self-test of the harness (`tools/e2e/test_harness.py`: the fault signatures of the emulator and the retry rule, #92/#96). Runs the linters, with pinned versions and 0 results (#107, #229): ruff on the Python tools, shellcheck on the shell scripts, actionlint and zizmor on the workflow, and ESLint on the scripts of the web pages. Refer to "The linters of the CI" below |
 | `host-tests-sanitizers` | Issue #225. Builds the host tests with `-DGW_SANITIZE=ON` (AddressSanitizer and UndefinedBehaviorSanitizer, §4.1), and runs them (CTest). Runs `spb_dump` of this build, and decodes its payloads with `spb_decode.py --check`. Sets `vm.mmap_rnd_bits` to 28 first, because the ASan runtime of GCC 13 can crash at start with a higher value. The job `host-tests` does not change |
 | `firmware` | Runs `idf.py set-target esp32s3 build` in the `espressif/idf:v6.1` image, pinned by digest. Fails if a `warning:` occurs. Publishes the binaries, the `idf.py size` output and `stack.txt` (the stack report of `tools/stack_report.py`, §3.8) as artifacts. Uses ccache, and keeps its directory in `actions/cache` (issue #233) |
 | `e2e-plan` | Issue #121. Reads the E2E groups from `tools/e2e/scenarios.py` (`CI_GROUPS`). Gives the matrix of the two next jobs |

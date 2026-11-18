@@ -61,9 +61,12 @@ static void put_u16(writer_t *w, uint8_t tag, unsigned v)
     put(w, tag, b, 2);
 }
 
-static void put_str(writer_t *w, uint8_t tag, const char *s)
+/* @cap: the size of the field that holds @s. The length stops at cap - 1 (the most that get_str()
+ * accepts), so a string that lost its terminator never reads past its field (-Wstringop-overread
+ * at -O2: the old bound of 255 was larger than every field). */
+static void put_str(writer_t *w, uint8_t tag, const char *s, size_t cap)
 {
-    put(w, tag, s, strnlen(s, 255));
+    put(w, tag, s, strnlen(s, cap - 1));
 }
 
 size_t gw_lkg_encode(const gw_config_t *cfg, uint8_t *buf, size_t cap)
@@ -76,7 +79,7 @@ size_t gw_lkg_encode(const gw_config_t *cfg, uint8_t *buf, size_t cap)
     buf[4] = GW_LKG_VERSION;
     w.n = 5;
     __typeof__(cfg->network) *n = &cfg->network;   /* const: cfg is const */
-    put_str(&w, T_HOSTNAME, n->hostname);
+    put_str(&w, T_HOSTNAME, n->hostname, sizeof(n->hostname));
     put_u8(&w, T_MDNS, n->mdns);
     put_u8(&w, T_DHCP, n->dhcp);
     put(&w, T_IP, n->ip, 4);
@@ -92,8 +95,8 @@ size_t gw_lkg_encode(const gw_config_t *cfg, uint8_t *buf, size_t cap)
         put(&w, T_V6_DNS, n->ipv6.dns, 16);
     }
     put_u8(&w, T_WIFI_ENABLED, n->wifi.enabled);
-    put_str(&w, T_WIFI_SSID, n->wifi.ssid);
-    put_str(&w, T_WIFI_PASSWORD, n->wifi.password);
+    put_str(&w, T_WIFI_SSID, n->wifi.ssid, sizeof(n->wifi.ssid));
+    put_str(&w, T_WIFI_PASSWORD, n->wifi.password, sizeof(n->wifi.password));
     put_u8(&w, T_WIFI_ROLE, (unsigned)n->wifi.role);
     put_u16(&w, T_WIFI_FAILBACK, n->wifi.failback_s);
     put_u8(&w, T_WIFI_DHCP, n->wifi.ipv4.dhcp);

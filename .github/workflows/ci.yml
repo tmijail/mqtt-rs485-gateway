@@ -34,9 +34,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - name: Build and run the host tests
+      # -O2: the warnings that need the optimizer (-Wformat-truncation, -Wstringop-overread,
+      # -Wnull-dereference) stop the build here, and the tests run on optimized code. A local
+      # build without CMAKE_C_FLAGS stays at -O0, for a debugger.
+      - name: Build and run the host tests (-O2)
         run: |
-          cmake -S idf/test/host -B build-host
+          cmake -S idf/test/host -B build-host -DCMAKE_C_FLAGS=-O2
           cmake --build build-host -j"$(nproc)"
           ctest --test-dir build-host --output-on-failure
       - name: Decode generated payloads with the official Tahu proto
