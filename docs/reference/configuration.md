@@ -115,7 +115,7 @@ A name, a location and a comment for the people who use the gateway. The card **
 - The comment is only in the document and in the Configuration tab. The Status tab, `GET /api/status` and the NBIRTH do not give it.
 - The name and the location do not change the Sparkplug IDs or the topics. They are not `sparkplug.device_prefix`.
 
-![The top of the Configuration tab: the header with the name and the location, and the card Gateway with the explainer of Name](../images/gateway-name.png)
+![The top of the Configuration tab. The header shows 'Pump panel 2 · Plant 2, hall B', and below it the name of the product and Plant1 / GW01. The card Gateway has the fields Name, Location and Comment. The explainer of Name is open: a name for people, which the header and the title of the browser tab show; it does not change the Sparkplug IDs or the topics.](../images/gateway-name.png)
 
 ## `network`
 

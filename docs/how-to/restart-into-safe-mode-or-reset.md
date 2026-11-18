@@ -10,7 +10,7 @@ This document tells how to restart the gateway into safe mode, and how to do a f
 
 The card **Restart and reset** is the last card of the Status tab. It has the buttons **Restart** and **Restart into safe mode**, and a red box with the button **Factory reset**.
 
-![The card Restart and reset of the Status tab](../images/restart-reset-card.png)
+![The card 'Restart and reset' at the bottom of the Status tab: the buttons Restart and 'Restart into safe mode', the text about safe mode, and a red box Factory reset with its button.](../images/restart-reset-card.png)
 
 ## Restart into safe mode
 
@@ -24,12 +24,12 @@ Use safe mode, for example, when you must update the firmware with the polling s
 2. In the card **Restart and reset**, click **Restart into safe mode**.
 3. In the confirmation, make sure that the first line gives the correct gateway: the name, the edge node ID, the address and the firmware.
 
-   ![The confirmation Restart into safe mode?](../images/safe-mode-dialog.png)
+   ![The confirmation 'Restart into safe mode?': the gateway Pump panel 2, Plant1 / GW01, its address and firmware. In safe mode the gateway does not poll and does not connect to MQTT, and the hosts show the tags as stale. Only the network, the web UI, the shell and the firmware upload operate, and the access point GW-Setup-000001 starts. The configuration stays. Safe mode ends after 60 min, or with a restart. It has Cancel and the red button 'Restart into safe mode'.](../images/safe-mode-dialog.png)
 
 4. Click the red button **Restart into safe mode**.
 5. Wait for the restart. Then the page shows the banner "Safe mode on request", with the time left.
 
-![The Status tab in safe mode](../images/safe-mode-status.png)
+![The Status tab after a restart into safe mode: the red banner 'Safe mode on request: no polling and no MQTT. It ends in 59 min, or with a restart.' The mode is recovery (safe mode) and the configuration is not loaded. The access point GW-Setup-000001 is on, the firmware card gives safe mode on request, and in the card Restart and reset the button 'Restart into safe mode' is disabled.](../images/safe-mode-status.png)
 
 In safe mode, the card **Gateway** gives the mode `recovery (safe mode)`. The card **Firmware** gives the cause and the time left. The button **Restart into safe mode** is disabled.
 
@@ -62,7 +62,7 @@ Then the gateway restarts in commissioning mode: no polling and no MQTT until it
 4. If you need the configuration again, click **Export the configuration**. Keep the file.
 5. Type `ERASE` in the field. The red button **Erase and restart** becomes enabled.
 
-   ![The confirmation of the factory reset, with ERASE in the field](../images/factory-reset-dialog.png)
+   ![The confirmation 'Do a factory reset of the gateway?': the list of what the reset erases (the configuration, the secrets, the certificate of the web UI, the web password and the pulse counters of the DIs; the restart also sets the Modbus counters to 0), the restart in commissioning mode, the access point and the new certificate. A link exports the configuration first. The field has ERASE, and the red button 'Erase and restart' is enabled.](../images/factory-reset-dialog.png)
 
 6. Click **Erase and restart**.
 7. Wait for the restart. The page stops, because the web password and the certificate are erased.

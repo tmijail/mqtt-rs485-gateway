@@ -117,6 +117,11 @@ For all the fields, refer to [Add a Modbus device and its tags](../how-to/add-a-
 ## 8. See the data of the device
 
 1. Click the tab **Status**. In the card **Modbus devices**, make sure that `Meter1` is online and that the tag has its value.
+
+   ![The Status tab of the web UI: the card Gateway with the mode normal, the network and MQTT (connected), the access point (off), the Modbus devices with Meter1 online and the values of its tags, the local I/O, the firmware, the microSD card, the log (closed), and the card 'Restart and reset'.](../images/status-page.png)
+
+   The image shows the example configuration, with all the tags of `Meter1`.
+
 2. Make sure that `mosquitto_sub` shows the DBIRTH of the device, and then a DDATA when the value changes:
 
    ```text

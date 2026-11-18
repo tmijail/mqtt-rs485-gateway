@@ -729,9 +729,10 @@ SHOTS = [
              "The steps tell how to connect again, and the page gives the addresses of the "
              "gateway on the plant network."),
     Shot("status-page", "configured", DESKTOP, "/", wait="#st-mb table", full_page=True,
-         alt="The Status tab of the web UI: the gateway, the network and MQTT, the access "
-             "point (off), the Modbus devices, the local I/O, the firmware and the microSD "
-             "card."),
+         alt="The Status tab of the web UI: the card Gateway with the mode normal, the network "
+             "and MQTT (connected), the access point (off), the Modbus devices with Meter1 "
+             "online and the values of its tags, the local I/O, the firmware, the microSD card, "
+             "the log (closed), and the card 'Restart and reset'."),
     Shot("configuration-page", "configured", DESKTOP, "/",
          actions=[("click", "nav button[data-tab=config]")], wait="#f-mqtt input",
          alt="The Configuration tab of the web UI: the buttons 'Open all' and 'Close all' at "
@@ -1034,15 +1035,17 @@ SHOTS = [
     Shot("safe-mode-dialog", "named", DESKTOP, "/", actions=[ask_safe_mode], wait="#dlg-ok",
          alt="The confirmation 'Restart into safe mode?': the gateway Pump panel 2, Plant1 / "
              "GW01, its address and firmware. In safe mode the gateway does not poll and does "
-             "not connect to MQTT; only the network, the web UI, the shell and the firmware "
-             "upload operate; the configuration stays. Safe mode ends after 60 min, or with a "
-             "restart. It has the red button 'Restart into safe mode' and Cancel."),
+             "not connect to MQTT, and the hosts show the tags as stale. Only the network, the "
+             "web UI, the shell and the firmware upload operate, and the access point "
+             "GW-Setup-000001 starts. The configuration stays. Safe mode ends after 60 min, or "
+             "with a restart. It has Cancel and the red button 'Restart into safe mode'."),
     Shot("factory-reset-dialog", "named", DESKTOP, "/", actions=[ask_factory_reset],
          wait="#dlg-ok:enabled",
          alt="The confirmation 'Do a factory reset of the gateway?': the list of what the reset "
              "erases (the configuration, the secrets, the certificate of the web UI, the web "
-             "password and the pulse counters of the DIs), the restart in commissioning mode, "
-             "the access point and the new certificate. A link exports the configuration first. "
+             "password and the pulse counters of the DIs; the restart also sets the Modbus "
+             "counters to 0), the restart in commissioning mode, the access point and the new "
+             "certificate. A link exports the configuration first. "
              "The field has ERASE, and the red button 'Erase and restart' is enabled."),
     # #200 and #199: docs/how-to/read-the-live-log.md
     Shot("live-log", "named", DESKTOP, "/", actions=[live_log],
@@ -1050,15 +1053,17 @@ SHOTS = [
          freeze={"log_levels": [{"tag": "poll", "level": "debug"}, {"tag": "mb", "level": "debug"}]},
          alt="The card Log of the Status tab, open: the buttons Pause and Copy, 'Live: new lines "
              "every 2 s', 212 lines in the buffer (16 KB), and the last log lines (the warnings "
-             "in brown, the errors in red, the debug lines in grey). Below: the tag poll, the "
-             "log level debug with its explainer open, the button 'Set the level', and the "
-             "changed levels poll: debug and mb: debug, each with Reset, and 'Reset all'."),
+             "in brown, the errors in red, the debug lines in grey). Below: the tag poll and "
+             "the log level debug with its explainer open. The explainer covers the button 'Set "
+             "the level' and most of the line 'Changed levels (not saved)'; the button 'Reset "
+             "all' shows at its end."),
     # #209: the last shot of the state "named": the restart into safe mode changes the state
     Shot("safe-mode-status", "named", DESKTOP, "/", prep=safe_mode_restart, full_page=True,
          wait="#banner:not(.hidden)", freeze={"safe_mode.left_s": 3540},
          alt="The Status tab after a restart into safe mode: the red banner 'Safe mode on "
              "request: no polling and no MQTT. It ends in 59 min, or with a restart.' The mode "
-             "is recovery (safe mode), the firmware card gives safe mode on request, and in the "
+             "is recovery (safe mode) and the configuration is not loaded. The access point "
+             "GW-Setup-000001 is on, the firmware card gives safe mode on request, and in the "
              "card Restart and reset the button 'Restart into safe mode' is disabled."),
 ]
 
