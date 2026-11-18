@@ -18,7 +18,8 @@ import sys
 
 # The scenarios of a run, in the order they run, each with the --only names that select it.
 # "ota" stays the union of the OTA scenarios for local use; the finer ota-* names let the CI put
-# them into separate jobs.
+# them into separate jobs. Issue #233: FW-1 OTA is two scenarios, each with its own boot (by NCMD,
+# by web upload); "ota-fw1" selects the two.
 SCENARIOS = (
     ("failsafe", ("failsafe",)),
     ("network", ("network",)),
@@ -34,7 +35,8 @@ SCENARIOS = (
     ("stack margin", ("sf",)),
     ("https", ("https",)),
     ("time", ("time",)),   # issue #160: no NDATA/DDATA before a valid clock
-    ("FW-1 OTA", ("ota", "ota-fw1")),
+    ("FW-1 OTA by NCMD", ("ota", "ota-fw1", "ota-fw1-ncmd")),
+    ("FW-1 OTA by web upload", ("ota", "ota-fw1", "ota-fw1-web")),
     ("issue #112 park in a long RS485 transaction", ("ota", "ota-park")),
     ("issue #97 OTA trial wiring", ("ota", "ota-wiring")),
     ("issue #144 OTA self-check", ("ota", "ota-trial")),
@@ -61,7 +63,7 @@ ONLY_NAMES = tuple(dict.fromkeys(n for _, names in SCENARIOS for n in names))
 # (the #80 margins of the internal RAM among them: "tls"). The variant without PSRAM ("default":
 # the QEMU build with CONFIG_GW_EMU_NO_PSRAM) keeps only these scenarios: they examine logic,
 # not memory, and they are 4 to 7 times slower with PSRAM (single-threaded TCG, #107, with the
-# software AES and SHA of sdkconfig.qemu-psram). FW-1 OTA stays with PSRAM: on the board its
+# software AES and SHA of sdkconfig.qemu-psram). FW-1 OTA (its two scenarios) stays with PSRAM: on the board its
 # transfer buffers and its TLS session are in PSRAM. --only selects in any variant.
 DEFAULT_VARIANT_SCENARIOS = {"issue #112 park in a long RS485 transaction",
                              "issue #97 OTA trial wiring", "issue #144 OTA self-check"}
@@ -108,13 +110,17 @@ def selected(only, variant=None):
 # The CI's E2E groups: (variant, id, --only). One job per group runs them in parallel; the union
 # of the groups of a variant must be the full run of that variant (issue #135), each scenario in
 # exactly one group (test_harness.py checks it, and the summary job checks it on the results).
-# Balanced on the durations of docs/reference/e2e-durations.md (s): with PSRAM FW-1 OTA 419,
-# main 191, the three nvs 170, sf spill 136, the rest 3-65; without PSRAM #97 wiring 100,
-# #99/#101 trial 83, #112 park 29.
+# Issue #233: balanced on the durations of docs/reference/e2e-durations.md (s, a host with 4 CPUs,
+# two groups at the same time, the QEMU self-check of 30 s). With PSRAM: FW-1 OTA by web upload
+# 556, by NCMD 376, main 235, #94 OTA to NVS encryption 202, sf spill 174, reset 154, tls 125,
+# https 114, web 82, the rest 8-70. The longest scenario (FW-1 by web upload) sets the floor.
+# Without PSRAM: #97 wiring 420, #144 self-check 195, #112 park 36.
 CI_GROUPS = (
-    ("psram", "ota-fw1", "ota-fw1,nopsram"),
+    ("psram", "ota-fw1-web", "ota-fw1-web,nopsram"),
+    ("psram", "ota-fw1-ncmd", "ota-fw1-ncmd,reset,slow"),
     ("psram", "nvs-main", "nvs,main"),
-    ("psram", "other", "failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,time,slow"),
+    ("psram", "sf-tls", "sf,tls,mqtt5,network,failover"),
+    ("psram", "other", "failsafe,web,phost,https,time"),
     ("default", "ota-trial", "ota-park,ota-wiring,ota-trial"),
 )
 # The CI's variants: the environment of their build and of their runs.

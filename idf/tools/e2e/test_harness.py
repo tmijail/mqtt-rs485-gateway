@@ -518,12 +518,13 @@ class CrashDiagnostics(unittest.TestCase):
                 e2e.WORK = work_before
 
     def test_tcg_mode(self):
-        self.assertEqual("single", e2e.tcg_mode("auto", "FW-1 OTA"))
+        self.assertEqual("single", e2e.tcg_mode("auto", "FW-1 OTA by NCMD"))
+        self.assertEqual("single", e2e.tcg_mode("auto", "FW-1 OTA by web upload"))
         self.assertEqual("single", e2e.tcg_mode("auto", "issue #144 OTA self-check"))
         self.assertEqual("multi", e2e.tcg_mode("auto", "main"))
         self.assertEqual("multi", e2e.tcg_mode("auto", None))
         self.assertEqual("single", e2e.tcg_mode("single", "main"))
-        self.assertEqual("multi", e2e.tcg_mode("multi", "FW-1 OTA"))
+        self.assertEqual("multi", e2e.tcg_mode("multi", "FW-1 OTA by NCMD"))
 
     def test_host_qemus(self):
         self.assertTrue(all(isinstance(p, int) for p in e2e.host_qemus()))
@@ -724,11 +725,17 @@ class CiGroups(unittest.TestCase):
         self.assertEqual(["main", "tck"], scenarios.selected({"main", "tck"}))
         self.assertEqual(["umh", "tck"], scenarios.selected({"tck", "umh"}))
         # the existing names select what they did before the finer OTA names
-        ota = ["FW-1 OTA", "issue #112 park in a long RS485 transaction",
+        fw1 = ["FW-1 OTA by NCMD", "FW-1 OTA by web upload"]
+        ota = fw1 + ["issue #112 park in a long RS485 transaction",
                "issue #97 OTA trial wiring", "issue #144 OTA self-check"]
         self.assertEqual(ota, scenarios.selected({"ota"}))
         self.assertEqual(ota, scenarios.selected({"ota-fw1", "ota-park", "ota-wiring",
                                                   "ota-trial"}))
+        # issue #233: ota-fw1 is the union of the two FW-1 scenarios, each with its own name
+        self.assertEqual(fw1, scenarios.selected({"ota-fw1"}))
+        self.assertEqual(fw1, scenarios.selected({"ota-fw1-ncmd", "ota-fw1-web"}))
+        self.assertEqual(fw1[:1], scenarios.selected({"ota-fw1-ncmd"}))
+        self.assertEqual(fw1[1:], scenarios.selected({"ota-fw1-web"}))
         self.assertEqual(["mqtt5", "max_packet"], scenarios.selected({"mqtt5"}))
         self.assertEqual(["sf", "sf spill", "stack margin"], scenarios.selected({"sf"}))
         self.assertEqual(3, len(scenarios.selected({"nvs"})))
@@ -737,7 +744,7 @@ class CiGroups(unittest.TestCase):
         self.assertEqual(sorted(scenarios.DEFAULT_VARIANT_SCENARIOS), sorted(default))
         self.assertEqual([], [n for n in default if n in psram])
         self.assertEqual(sorted(full), sorted(default + psram))
-        for name in ("tls", "main", "sf spill", "FW-1 OTA", "issue #135 no PSRAM"):
+        for name in ("tls", "main", "sf spill", *fw1, "issue #135 no PSRAM"):
             self.assertIn(name, psram)   # the real configuration: #80, the spill, OTA buffers
         self.assertEqual(ota, scenarios.selected({"ota"}, "psram"))
         self.assertEqual(["tls", "main"], scenarios.selected({"tls", "main"}, "default"))

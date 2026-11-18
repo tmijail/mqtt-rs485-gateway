@@ -779,7 +779,8 @@ MONITOR_ERRORS = []  # exceptions of the fault monitor (each fails the run)
 # (the #97 integration with PSRAM in single-threaded TCG, 477 s, results.json "durations"; main
 # is about 200 s): on a slower host raise --timeout-scale / E2E_TIMEOUT_SCALE.
 # Issue #146: the #97 integration also examines the configuration from before an update (one
-# more update with its 60 s self-check, three saves and the restart into the earlier image).
+# more update with its self-check (SELFCHECK_S), three saves and the restart into the earlier
+# image).
 SCENARIO_BUDGET_S = {"tck": 3600.0,   # issue #176: 14 TCK tests, each with a boot and a HiveMQ
                      "issue #97 OTA trial wiring": 1800.0}
 DEFAULT_BUDGET_S = 900.0
@@ -823,7 +824,8 @@ def core_backtrace(qemu, core):
 # fetches through the mapping being replaced ("Bad ram pointer", SIGSEGV in code_gen_buffer under
 # host load, docs/upstream-reports.md 7). They run both vCPUs on one host thread. The others keep
 # MTTCG: single-threaded TCG is about 1.5-2x slower, too slow for their latency bounds under load.
-SINGLE_TCG_SCENARIOS = {"FW-1 OTA", "issue #97 OTA trial wiring", "issue #144 OTA self-check",
+SINGLE_TCG_SCENARIOS = {"FW-1 OTA by NCMD", "FW-1 OTA by web upload", "issue #97 OTA trial wiring",
+                        "issue #144 OTA self-check",
                         "issue #94 OTA to NVS encryption"}
 
 
@@ -4138,10 +4140,13 @@ def upload_firmware(gw, data, auth=("admin", WEB_PASSWORD), force=False, sha256=
 
 
 CAPS_OFFSET = 288   # gw_ota.h GW_OTA_CAPS_OFFSET: the capabilities block after esp_app_desc_t
-# Issue #144: a new image is confirmed by its self-check at 60 s of uptime (CONFIG_GW_FW_SELFCHECK_S,
-# the FreeRTOS tick of the boot); the bound to wait for its "installed" state after its NBIRTH (or
-# its boot)
-SELFCHECK_WAIT_S = 150
+# Issue #144: a new image is confirmed by its self-check at SELFCHECK_S of uptime
+# (CONFIG_GW_FW_SELFCHECK_S, the FreeRTOS tick of the boot; read from --sdkconfig in main(): 30 s in
+# the QEMU build since #233, 60 s on the board). SELFCHECK_WAIT_S bounds the wait for its
+# "installed" state after its NBIRTH (or its boot): the self-check time plus SELFCHECK_MARGIN_S.
+SELFCHECK_MARGIN_S = 90
+SELFCHECK_S = 30
+SELFCHECK_WAIT_S = SELFCHECK_S + SELFCHECK_MARGIN_S
 
 
 def image_cfg_schema(src):
@@ -4452,17 +4457,25 @@ def run_park_long_txn(args, work, slave):
         broker.wait()
 
 
-def run_ota(args, work):
-    """FW-1 in one gateway (GW40) with its own broker: updates by NCMD (HTTPS download with the
-    CA from ota.ca_file) and by web upload; bad images rejected without a restart. Issue #144: a
-    new image on trial is installed by its self-check (NBIRTH "testing <v>", then "installed
-    <v>", and "installed <v>" again after a power cut); during a trial the other-slot button, NCMD
-    Boot Other Slot and a configuration save are refused; a reset during the trial (panic) returns
-    to the earlier image, whose NBIRTH gives the cause; the "Restart into <version>" button boots
-    that rejected image of the other slot on trial."""
-    node, port, fw_port = "GW40", MQTT_PORT + 20, MQTT_PORT + 21
+def run_ota(args, work, part):
+    """FW-1 in one gateway with its own broker and HTTPS image server. Issue #233: two scenarios,
+    each with its own boot, so that the CI can run them in different groups.
+    @part "ncmd" (FW-1 OTA by NCMD, GW40): the NBIRTH metrics of an update; updates by NCMD
+    (HTTPS download with the CA from ota.ca_file); bad images and bad URLs rejected without a
+    restart; the parks of a rejected upload (#111) and a download cut in the middle (#98); then an
+    update by NCMD whose new image on trial is installed by its self-check (issue #144: NBIRTH
+    "testing <v>", then "installed <v>", and "installed <v>" again after a power cut).
+    @part "web" (FW-1 OTA by web upload, GW45): an upload whose SHA-256 does not agree (#215); an
+    upload on trial: the other-slot button, NCMD Boot Other Slot and a configuration save are
+    refused, and the self-check installs it; a reset during the trial of the next update (panic)
+    returns to the earlier image, whose NBIRTH gives the cause; the "Restart into <version>"
+    button boots that rejected image of the other slot on trial."""
+    if part == "ncmd":
+        node, port, fw_port = "GW40", MQTT_PORT + 20, MQTT_PORT + 21
+    else:
+        node, port, fw_port = "GW45", MQTT_PORT + 18, MQTT_PORT + 19
     pki = make_pki(work)
-    fwdir = work / "fw"
+    fwdir = work / f"fw-{part}"
     fwdir.mkdir(exist_ok=True)
     app = pathlib.Path(args.elf).with_suffix(".bin")
     unsigned = pathlib.Path(args.elf).with_name(app.stem + "-unsigned.bin")
@@ -4498,11 +4511,17 @@ def run_ota(args, work):
     # #223: the updates by NCMD need ota.mqtt (off by default)
     cfg["ota"] = {"ca_file": "ca.pem", "mqtt": True}
     t0 = time.monotonic()
-    gw = boot_variant(args, work, "ota", cfg, {"ca.pem": pki["ca.pem"].read_bytes()})
+    gw = boot_variant(args, work, f"ota-{part}", cfg, {"ca.pem": pki["ca.pem"].read_bytes()})
     nbirth_t, ndata_t, ncmd_t = f"{T}/NBIRTH/{node}", f"{T}/NDATA/{node}", f"{T}/NCMD/{node}"
     try:
         nb = obs.wait(nbirth_t, 40)
-        if not check("FW-1 NBIRTH declares Node Control/Firmware Update (String) and the update's "
+        if part == "web" and not check(f"FW-1 {node} runs on its broker with ota.mqtt",
+                                       nb is not None and metric(nb[2], alias=40) is not None
+                                       and fw_state(nb[2]) == "idle",
+                                       f"state {fw_state(nb[2])!r}" if nb else "no NBIRTH"):
+            return
+        if part == "ncmd" and not check(
+                     "FW-1 NBIRTH declares Node Control/Firmware Update (String) and the update's "
                      "state and progress; with ota.mqtt (#223) also Node Control/Firmware SHA-256 "
                      "(String, #215; tck-id-topics-nbirth-metrics)",
                      nb and metric(nb[2], alias=40) is not None
@@ -4525,6 +4544,13 @@ def run_ota(args, work):
         def states(since):
             return [fw_state(m[2]) for m in CAPTURE
                     if m[0] >= since and m[1] in (ndata_t, nbirth_t) and fw_state(m[2]) is not None]
+
+        if part == "web":
+            # #233: on its own boot the uploads come right after the NBIRTH; the HTTPS server
+            # answers before it registers the handlers (a reset, no 400): wait for the evidence
+            gw.wait_log(r"web: web UI and REST API on port 443", 30, t0)
+            run_ota_web(gw, obs, cfg, images, node, fw_port, nb, update)
+            return
 
         # refused before any download: plain HTTP; an image with a stale checksum: rejected after
         # the download, no restart
@@ -4651,7 +4677,7 @@ def run_ota(args, work):
         # result of the last update (issue #144 item 5)
         gw.kill()
         obs.drain()
-        gw = Gateway(args, work / "uart0-ota.log", gw.flash)
+        gw = Gateway(args, work / "uart0-ota-ncmd.log", gw.flash)
         gw.start()
         nb3 = obs.wait(nbirth_t, 40)
         check("FW-1 a confirmed image stays after a power cut (shell shows the slots); issue #144: "
@@ -4661,113 +4687,121 @@ def run_ota(args, work):
               f"NBIRTH firmware {metric(nb3[2], name='Node Info/Firmware').string_value!r}, state "
               f"{fw_state(nb3[2])!r}; shell {list(h.values())}" if nb3 else "no NBIRTH")
 
-        # issue #144 items 1 and 6: a web upload of v3; during its trial the other-slot button
-        # (web and NCMD) and a configuration save are refused; the self-check installs it
-        gw.wait_log(r"edge: time synchronised", 10, nb3[0] - 5 if nb3 else t0)
-        # issue #215: an upload whose SHA-256 does not agree is not installed: 422 with the two
-        # values (also in GET /api/firmware), no restart; a wrong format is refused at once
-        v3 = images["v3"].read_bytes()
-        v3_sha = hashlib.sha256(v3).hexdigest()
-        wrong = "0" * 63 + "1"
-        asked = time.monotonic()
-        st_f, _, b_f = upload_firmware(gw, v3[:4096], sha256="12 34")
-        st_w, _, b_w = upload_firmware(gw, v3, sha256=wrong)
-        fw_w = as_json(http("GET", "/api/firmware")[2]) or {}
-        jw = as_json(b_w) or {}
-        time.sleep(2)
-        restarted = any(m[1] == f"{T}/NDEATH/{node}" for m in CAPTURE if m[0] >= asked)
-        mism = obs.wait(ndata_t, 10, lambda p: (fw_state(p) or "") ==
-                        "failed: image e2e-v3: the SHA-256 of the file does not agree")
-        check("Issue #215 an upload with X-Image-SHA256: a wrong format -> 400; a SHA-256 that does "
-              "not agree -> 422 with the two values (GET /api/firmware too), state failed, the "
-              "image is not installed and the gateway does not restart",
-              st_f == 400 and b"X-Image-SHA256: expected 64 hexadecimal characters" in b_f
-              and st_w == 422 and jw.get("sha256_expected") == wrong
-              and jw.get("sha256_file") == v3_sha and fw_w.get("sha256_expected") == wrong
-              and fw_w.get("sha256_file") == v3_sha and fw_w.get("phase") == "failed"
-              and fw_w.get("mqtt") is True and mism and not restarted,
-              f"format {st_f} {b_f[:100]!r}; mismatch {st_w} {b_w[:240]!r}; GET phase "
-              f"{fw_w.get('phase')!r} expected {fw_w.get('sha256_expected')!r} file "
-              f"{fw_w.get('sha256_file')!r} mqtt {fw_w.get('mqtt')!r}; NDATA {mism is not None}; "
-              f"restarted {restarted}")
-        asked = time.monotonic()
-        st, _, body = upload_firmware(gw, v3, sha256=v3_sha)
-        nb4 = obs.wait(nbirth_t, 240, lambda p: metric(p, name="Node Info/Firmware").string_value
-                       == "e2e-v3")
-        st_b, _, b_b = http("POST", "/api/firmware/other", b"", timeout=30)
-        obs.publish_cmd(ncmd_t, [{"name": "Node Control/Boot Other Slot", "datatype": 11,
-                                  "boolean_value": True}])
-        ncmd_refused = gw.wait_log(r"edge: NCMD Boot Other Slot refused: testing e2e-v3: \d+ s left",
-                                   20, nb4[0] if nb4 else asked)
-        st_c, _, b_c = http("PUT", "/api/config", cfg, timeout=30)
-        _, h_t = gw.shell("status", [r"^ota\s+e2e-v3 in ota_0, other slot e2e-v2 \(previous\) \| .*"
-                                     r"\(testing: it must reach normal mode, \d+ s left\)$"])
-        conf3 = obs.wait(ndata_t, SELFCHECK_WAIT_S, lambda p: fw_state(p) == "installed e2e-v3")
-        check("Issue #144 a web upload: NBIRTH 'testing e2e-v3'; during the trial the other-slot "
-              "button (409, 'testing e2e-v3: N s left'), NCMD Boot Other Slot and a configuration "
-              "save (409) are refused, and the shell shows the expected mode and the time left; "
-              "then the self-check installs it",
-              st == 200 and nb4 and fw_state(nb4[2]) == "testing e2e-v3" and st_b == 409
-              and b"testing e2e-v3: " in b_b and ncmd_refused and st_c == 409
-              and b"testing e2e-v3: " in b_c and all(h_t.values()) and conf3,
-              f"POST {st} {body[:60]!r}; NBIRTH {fw_state(nb4[2]) if nb4 else None!r}; button "
-              f"{st_b} {b_b[:80]!r}; NCMD refused {ncmd_refused is not None}; PUT {st_c} "
-              f"{b_c[:80]!r}; shell {list(h_t.values())}; installed {conf3 is not None}")
-
-        # a reset during the trial (panic) of v2, downloaded again into the other slot: the
-        # bootloader goes back to v3, and its NBIRTH gives the cause (issue #144 items 5 and 7)
-        gw.wait_log(r"edge: time synchronised", 10, nb4[0] - 5 if nb4 else t0)
-        asked = time.monotonic()
-        update(f"https://10.0.2.2:{fw_port}/v2.bin")
-        death = obs.wait(f"{T}/NDEATH/{node}", 240)
-        trial = gw.wait_log(r"fw: firmware e2e-v2 \(ota_1\) on trial: it must reach normal mode", 30,
-                            asked)
-        # the trial is logged before the shell starts (issue #101): the panic comes once
-        # gw_fw_init() ran (the shell is up, the configuration loaded; a panic in the middle of
-        # the configuration load once froze QEMU in the core dump write)
-        gw.wait_log(r"fw: firmware e2e-v2 in ota_1; updates by URL", 30, trial or asked)
-        gw.console("panic")
-        back = gw.wait_log(r"fw: firmware e2e-v2 was rolled back \(restarted during the test "
-                           r"\(panic\)\); running e2e-v3 again", 60, trial or asked)
-        nb5 = obs.wait(nbirth_t, 60, lambda p: metric(p, name="Node Info/Firmware").string_value
-                       == "e2e-v3")
-        _, h_r = gw.shell("status", [r"^ota\s+e2e-v3 in ota_0, other slot e2e-v2 \(rejected: "
-                                     r"restarted during the test \(panic\)\)"])
-        check("FW-1 a reset during the trial (panic) makes the bootloader boot the earlier image; "
-              "issue #144: its NBIRTH publishes 'rolled back from e2e-v2: restarted during the test "
-              "(panic)', and the shell shows the other slot as rejected with that cause",
-              death and trial and back and nb5
-              and metric(nb5[2], name="Node Info/Reset Reason").string_value == "panic"
-              and fw_state(nb5[2]) == "rolled back from e2e-v2: restarted during the test (panic)"
-              and all(h_r.values()),
-              f"NBIRTH firmware {metric(nb5[2], name='Node Info/Firmware').string_value!r}, reset "
-              f"{metric(nb5[2], name='Node Info/Reset Reason').string_value!r}, state "
-              f"{fw_state(nb5[2])!r}; shell {list(h_r.values())}" if nb5
-              else f"trial {trial}, back {back}")
-
-        # issue #144 item 6: the "Restart into e2e-v2" button boots the rejected image of the
-        # other slot on trial; its self-check installs it
-        asked = time.monotonic()
-        fw0 = as_json(http("GET", "/api/firmware")[2]) or {}
-        st_o, _, b_o = http("POST", "/api/firmware/other", b"", timeout=30)
-        nb6 = obs.wait(nbirth_t, 240, lambda p: metric(p, name="Node Info/Firmware").string_value
-                       == "e2e-v2")
-        conf6 = obs.wait(ndata_t, SELFCHECK_WAIT_S, lambda p: fw_state(p) == "installed e2e-v2")
-        check("Issue #144 the 'Restart into <version>' button (POST /api/firmware/other) boots the "
-              "image of the other slot (rejected before) on trial: NBIRTH 'testing e2e-v2', then "
-              "installed by its self-check",
-              fw0.get("other") == "e2e-v2" and fw0.get("other_state") == "rejected"
-              and fw0.get("can_boot_other") is True and st_o == 202 and nb6
-              and fw_state(nb6[2]) == "testing e2e-v2" and conf6,
-              f"before: other {fw0.get('other')!r} {fw0.get('other_state')!r} can boot "
-              f"{fw0.get('can_boot_other')!r}; POST {st_o} {b_o[:60]!r}; NBIRTH "
-              f"{fw_state(nb6[2]) if nb6 else None!r}; installed {conf6 is not None}")
     finally:
         gw.kill()
         obs.close()
         server.close()
         broker.terminate()
         broker.wait()
+
+
+def run_ota_web(gw, obs, cfg, images, node, fw_port, nb, update):
+    """Issue #233: the web part of FW-1 OTA (run_ota part "web") on the running gateway @gw (its
+    first NBIRTH @nb). The image of the build runs in ota_0: the upload goes to ota_1, and the
+    next update by NCMD (@update) to ota_0."""
+    nbirth_t, ndata_t, ncmd_t = f"{T}/NBIRTH/{node}", f"{T}/NDATA/{node}", f"{T}/NCMD/{node}"
+    base = metric(nb[2], name="Node Info/Firmware").string_value
+    # issue #215: an upload whose SHA-256 does not agree is not installed: 422 with the two
+    # values (also in GET /api/firmware), no restart; a wrong format is refused at once
+    v3 = images["v3"].read_bytes()
+    v3_sha = hashlib.sha256(v3).hexdigest()
+    wrong = "0" * 63 + "1"
+    asked = time.monotonic()
+    st_f, _, b_f = upload_firmware(gw, v3[:4096], sha256="12 34")
+    st_w, _, b_w = upload_firmware(gw, v3, sha256=wrong)
+    fw_w = as_json(http("GET", "/api/firmware")[2]) or {}
+    jw = as_json(b_w) or {}
+    time.sleep(2)
+    restarted = any(m[1] == f"{T}/NDEATH/{node}" for m in CAPTURE if m[0] >= asked)
+    mism = obs.wait(ndata_t, 10, lambda p: (fw_state(p) or "") ==
+                    "failed: image e2e-v3: the SHA-256 of the file does not agree")
+    check("Issue #215 an upload with X-Image-SHA256: a wrong format -> 400; a SHA-256 that does "
+          "not agree -> 422 with the two values (GET /api/firmware too), state failed, the "
+          "image is not installed and the gateway does not restart",
+          st_f == 400 and b"X-Image-SHA256: expected 64 hexadecimal characters" in b_f
+          and st_w == 422 and jw.get("sha256_expected") == wrong
+          and jw.get("sha256_file") == v3_sha and fw_w.get("sha256_expected") == wrong
+          and fw_w.get("sha256_file") == v3_sha and fw_w.get("phase") == "failed"
+          and fw_w.get("mqtt") is True and mism and not restarted,
+          f"format {st_f} {b_f[:100]!r}; mismatch {st_w} {b_w[:240]!r}; GET phase "
+          f"{fw_w.get('phase')!r} expected {fw_w.get('sha256_expected')!r} file "
+          f"{fw_w.get('sha256_file')!r} mqtt {fw_w.get('mqtt')!r}; NDATA {mism is not None}; "
+          f"restarted {restarted}")
+    # issue #144 items 1 and 6: a web upload of v3; during its trial the other-slot button
+    # (web and NCMD) and a configuration save are refused; the self-check installs it
+    asked = time.monotonic()
+    st, _, body = upload_firmware(gw, v3, sha256=v3_sha)
+    nb4 = obs.wait(nbirth_t, 240, lambda p: metric(p, name="Node Info/Firmware").string_value
+                   == "e2e-v3")
+    st_b, _, b_b = http("POST", "/api/firmware/other", b"", timeout=30)
+    obs.publish_cmd(ncmd_t, [{"name": "Node Control/Boot Other Slot", "datatype": 11,
+                              "boolean_value": True}])
+    ncmd_refused = gw.wait_log(r"edge: NCMD Boot Other Slot refused: testing e2e-v3: \d+ s left",
+                               20, nb4[0] if nb4 else asked)
+    st_c, _, b_c = http("PUT", "/api/config", cfg, timeout=30)
+    _, h_t = gw.shell("status", [rf"^ota\s+e2e-v3 in ota_1, other slot {re.escape(base)} "
+                                 r"\(previous\) \| .*\(testing: it must reach normal mode, \d+ s "
+                                 r"left\)$"])
+    conf3 = obs.wait(ndata_t, SELFCHECK_WAIT_S, lambda p: fw_state(p) == "installed e2e-v3")
+    check("Issue #144 a web upload: NBIRTH 'testing e2e-v3'; during the trial the other-slot "
+          "button (409, 'testing e2e-v3: N s left'), NCMD Boot Other Slot and a configuration "
+          "save (409) are refused, and the shell shows the expected mode and the time left; "
+          "then the self-check installs it",
+          st == 200 and nb4 and fw_state(nb4[2]) == "testing e2e-v3" and st_b == 409
+          and b"testing e2e-v3: " in b_b and ncmd_refused and st_c == 409
+          and b"testing e2e-v3: " in b_c and all(h_t.values()) and conf3,
+          f"POST {st} {body[:60]!r}; NBIRTH {fw_state(nb4[2]) if nb4 else None!r}; button "
+          f"{st_b} {b_b[:80]!r}; NCMD refused {ncmd_refused is not None}; PUT {st_c} "
+          f"{b_c[:80]!r}; shell {list(h_t.values())}; installed {conf3 is not None}")
+
+    # a reset during the trial (panic) of v2, downloaded again into the other slot: the
+    # bootloader goes back to v3, and its NBIRTH gives the cause (issue #144 items 5 and 7)
+    gw.wait_log(r"edge: time synchronised", 10, nb4[0] - 5 if nb4 else nb[0])
+    asked = time.monotonic()
+    update(f"https://10.0.2.2:{fw_port}/v2.bin")
+    death = obs.wait(f"{T}/NDEATH/{node}", 240)
+    trial = gw.wait_log(r"fw: firmware e2e-v2 \(ota_0\) on trial: it must reach normal mode", 30,
+                        asked)
+    # the trial is logged before the shell starts (issue #101): the panic comes once
+    # gw_fw_init() ran (the shell is up, the configuration loaded; a panic in the middle of
+    # the configuration load once froze QEMU in the core dump write)
+    gw.wait_log(r"fw: firmware e2e-v2 in ota_0; updates by URL", 30, trial or asked)
+    gw.console("panic")
+    back = gw.wait_log(r"fw: firmware e2e-v2 was rolled back \(restarted during the test "
+                       r"\(panic\)\); running e2e-v3 again", 60, trial or asked)
+    nb5 = obs.wait(nbirth_t, 60, lambda p: metric(p, name="Node Info/Firmware").string_value
+                   == "e2e-v3")
+    _, h_r = gw.shell("status", [r"^ota\s+e2e-v3 in ota_1, other slot e2e-v2 \(rejected: "
+                                 r"restarted during the test \(panic\)\)"])
+    check("FW-1 a reset during the trial (panic) makes the bootloader boot the earlier image; "
+          "issue #144: its NBIRTH publishes 'rolled back from e2e-v2: restarted during the test "
+          "(panic)', and the shell shows the other slot as rejected with that cause",
+          death and trial and back and nb5
+          and metric(nb5[2], name="Node Info/Reset Reason").string_value == "panic"
+          and fw_state(nb5[2]) == "rolled back from e2e-v2: restarted during the test (panic)"
+          and all(h_r.values()),
+          f"NBIRTH firmware {metric(nb5[2], name='Node Info/Firmware').string_value!r}, reset "
+          f"{metric(nb5[2], name='Node Info/Reset Reason').string_value!r}, state "
+          f"{fw_state(nb5[2])!r}; shell {list(h_r.values())}" if nb5
+          else f"trial {trial}, back {back}")
+
+    # issue #144 item 6: the "Restart into e2e-v2" button boots the rejected image of the
+    # other slot on trial; its self-check installs it
+    asked = time.monotonic()
+    fw0 = as_json(http("GET", "/api/firmware")[2]) or {}
+    st_o, _, b_o = http("POST", "/api/firmware/other", b"", timeout=30)
+    nb6 = obs.wait(nbirth_t, 240, lambda p: metric(p, name="Node Info/Firmware").string_value
+                   == "e2e-v2")
+    conf6 = obs.wait(ndata_t, SELFCHECK_WAIT_S, lambda p: fw_state(p) == "installed e2e-v2")
+    check("Issue #144 the 'Restart into <version>' button (POST /api/firmware/other) boots the "
+          "image of the other slot (rejected before) on trial: NBIRTH 'testing e2e-v2', then "
+          "installed by its self-check",
+          fw0.get("other") == "e2e-v2" and fw0.get("other_state") == "rejected"
+          and fw0.get("can_boot_other") is True and st_o == 202 and nb6
+          and fw_state(nb6[2]) == "testing e2e-v2" and conf6,
+          f"before: other {fw0.get('other')!r} {fw0.get('other_state')!r} can boot "
+          f"{fw0.get('can_boot_other')!r}; POST {st_o} {b_o[:60]!r}; NBIRTH "
+          f"{fw_state(nb6[2]) if nb6 else None!r}; installed {conf6 is not None}")
 
 
 WIRING_NODE = "GW46"   # issue #97: the commissioning gateway's edge node id (unique in this file)
@@ -4907,11 +4941,13 @@ def run_ota_wiring(args, work):
                            r"e2e\.simulated\); running \S+ again", 30, prev or asked)
         up2 = gw.wait_log(r"edge: Sparkplug session up", 60, prev or asked)
         fw2 = as_json(wait_http("/api/firmware", 30, auth=auth)[2]) or {}
-        fast = boot is not None and rej is not None and rej - boot < 30
+        # "at once": in half the self-check time (#233: the bound stays below SELFCHECK_S)
+        fast = boot is not None and rej is not None and rej - boot < SELFCHECK_S / 2
         check("Issue #144 item 2 an image installed from normal mode (accepted by the pre-flight "
               "check) that rejects the configuration goes back to the earlier image at once (a "
-              "planned restart, before its 60 s self-check), and the earlier image, in normal mode, "
-              "gives the path in the state and the other slot as rejected",
+              f"planned restart, in less than {SELFCHECK_S / 2:.0f} s: before its {SELFCHECK_S} s "
+              "self-check), and the earlier image, in normal mode, gives the path in the state and "
+              "the other slot as rejected",
               st2 == 200 and boot and trial and rej and fast and prev and back and up2
               and fw2.get("state") == "rolled back from e2e-rjn: configuration rejected: "
                                       "e2e.simulated"
@@ -6481,7 +6517,8 @@ def main():
                     help=f"comma-separated scenarios to run ({','.join(scenarios.ONLY_NAMES)}); "
                          "default the full run of the variant (issue #135: the PSRAM variant runs "
                          "all but the OTA trial scenarios, the variant without PSRAM only those). "
-                         "'ota' is ota-fw1,ota-park,ota-wiring,ota-trial; 'refuse' runs alone "
+                         "'ota' is ota-fw1,ota-park,ota-wiring,ota-trial; 'ota-fw1' is "
+                         "ota-fw1-ncmd,ota-fw1-web (issue #233); 'refuse' runs alone "
                          "only without 'main' (which includes it)")
     ap.add_argument("--web-stress", type=int, default=0, metavar="N",
                     help="issue #110: N extra rounds of cut sessions and accepted PUTs in the "
@@ -6515,8 +6552,10 @@ def main():
     MQTT_PORT, MODBUS_PORT, CONSOLE_PORT = args.mqtt_port, args.modbus_port, args.console_port
     SYSLOG_PORT, HTTP_PORT, HTTPS_PORT = args.syslog_port, args.http_port, args.https_port
     MBTCP_PORT = args.mbtcp_port
-    global PROBE_MAX_S
+    global PROBE_MAX_S, SELFCHECK_S, SELFCHECK_WAIT_S
     PROBE_MAX_S = sdkconfig_int(args.sdkconfig, "GW_MB_OFFLINE_PROBE_MAX_MS") / 1000
+    SELFCHECK_S = sdkconfig_int(args.sdkconfig, "GW_FW_SELFCHECK_S")
+    SELFCHECK_WAIT_S = SELFCHECK_S + SELFCHECK_MARGIN_S
     isolated = False if args.no_isolate else isolate_network()
     print(f"network: {'private namespace' if isolated else 'host loopback'}; ports MQTT {MQTT_PORT}, "
           f"Modbus {MODBUS_PORT}, console {CONSOLE_PORT}, syslog {SYSLOG_PORT}, HTTP {HTTP_PORT}, "
@@ -6567,7 +6606,8 @@ def main():
         "stack margin": lambda: run_stack_margin(args, work, slave),
         "https": lambda: run_https(args, work),
         "time": lambda: run_valid_time(args, work, slave),
-        "FW-1 OTA": lambda: run_ota(args, work),
+        "FW-1 OTA by NCMD": lambda: run_ota(args, work, "ncmd"),
+        "FW-1 OTA by web upload": lambda: run_ota(args, work, "web"),
         "issue #112 park in a long RS485 transaction": lambda: run_park_long_txn(args, work, slave),
         "issue #97 OTA trial wiring": lambda: run_ota_wiring(args, work),
         "issue #144 OTA self-check": lambda: run_ota_trial(args, work),
