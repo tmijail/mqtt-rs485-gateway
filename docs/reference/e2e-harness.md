@@ -151,9 +151,9 @@ The `open_eth` model of QEMU loses frames when slirp sends bursts (`opencores.em
 
 ### Heap poisoning
 
-The QEMU build has `CONFIG_HEAP_POISONING_DISABLED`, so freed memory keeps its value. `E2E_POISON=1` builds with `CONFIG_HEAP_POISONING_COMPREHENSIVE`: freed memory gets the value 0xFE, and each block has canaries. Thus a use-after-free, as in the #98 check, changes the reported number of bytes, and the check fails. The CI job `e2e-poison` runs `--only ota` with this build.
+The QEMU build has `CONFIG_HEAP_POISONING_DISABLED`, so freed memory keeps its value. `E2E_POISON=1` builds with `CONFIG_HEAP_POISONING_COMPREHENSIVE`: freed memory gets the value 0xFE, and each block has canaries. Thus a use-after-free, as in the #98 check, changes the reported number of bytes, and the check fails. The CI job `e2e-poison` runs `--only ota-fw1,ota-park,ota-trial` with this build.
 
-The poisoning headers and canaries use approximately 20 KB of internal RAM. Without PSRAM, the #80 validation then answers 503, so this build is not in the main variants.
+The poisoning headers and canaries use approximately 20 KB of internal RAM. Without PSRAM, the #80 validation then answers 503, so this build is not in the main variants. For the same reason, `e2e-poison` does not run `ota-wiring`: its #146 checks save the configuration, and each save gets 503. The full E2E runs `ota-wiring` without poisoning.
 
 CAUTION: Read the `uart0-*.log` files when `e2e-poison` fails. One time, with heap poisoning, a `LoadStorePIFAddrError` of the core 1 tick on SYSTIMER occurred at the boot of a trial image, without an image write before it. The harness counts it as a firmware fault, and does not retry it.
 

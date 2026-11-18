@@ -167,7 +167,7 @@ Without its tool or its variable, an optional scenario shows `[SKIP]` and gives 
 | `E2E_STAGE=<dir>` | Build the images into `<dir>`, and run nothing |
 | `E2E_PREBUILT=<dir>` | Run on the images of `<dir>`, with no build |
 | `E2E_PLAIN=0` | Skip the build without NVS encryption. The OTA to NVS encryption shows `SKIP` |
-| `E2E_POISON=1` | The build with heap poisoning. Use it with `--only ota` |
+| `E2E_POISON=1` | The build with heap poisoning. Use it with `--only ota-fw1,ota-park,ota-trial` (the CI job `e2e-poison`) |
 | `E2E_TIMEOUT_SCALE=<n>` or `--timeout-scale <n>` | Multiply the time limits. Use 1.5 or 2 on a slow or loaded computer |
 | `E2E_TCG_THREAD=auto\|single\|multi` | The TCG mode of QEMU. Keep `auto` |
 | `JOBS=<n>` | The parallel jobs of the builds |

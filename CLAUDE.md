@@ -111,7 +111,7 @@ E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_ci_groups.sh /tmp/gw-group
 #  Windows / no local IDF: the same in Docker (idf/tools/e2e/Dockerfile), see docs/how-to/run-e2e-in-docker.md
 #  E2E_STAGE=<dir> (build the images into <dir>, run nothing), E2E_PREBUILT=<dir> (run on them, no build),
 #  PARALLEL=n (groups at the same time); the groups are CI_GROUPS in tools/e2e/scenarios.py
-#  E2E_POISON=1 (heap poisoning, use with --only ota), E2E_PLAIN=0 (skip the no-NVS-encryption build),
+#  E2E_POISON=1 (heap poisoning, use with --only ota-fw1,ota-park,ota-trial as the CI), E2E_PLAIN=0 (skip the no-NVS-encryption build),
 #  E2E_TIMEOUT_SCALE / --timeout-scale (slow host), --web-stress N, JOBS=n (build parallelism)
 
 # Harness self-test and the linters (all run in the CI job host-tests; each linter must give 0 results, #229)

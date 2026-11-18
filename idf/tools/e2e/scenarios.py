@@ -125,8 +125,11 @@ CI_GROUPS = (
 )
 # The CI's variants: the environment of their build and of their runs.
 VARIANTS = (("default", "0"), ("psram", "1"))   # (id, E2E_PSRAM)
-# The variant whose build job also builds build-qemu-plain (without PSRAM in both variants).
-PLAIN_BUILDER = "default"
+# The variant whose build job also builds build-qemu-plain (without PSRAM in both variants). It
+# must be the variant of each group that needs that build: each build job makes its own throwaway
+# signing key, and the plain image accepts only an update that its own key signed (the first CI
+# run of #121 failed the #94 scenario on a signature mismatch). test_harness.py checks this.
+PLAIN_BUILDER = "psram"
 # Scenarios that need the build without NVS encryption (run_e2e.sh E2E_PLAIN; without it the
 # harness skips them).
 PLAIN_SCENARIOS = {"issue #94 OTA to NVS encryption"}

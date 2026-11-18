@@ -158,9 +158,9 @@ jobs:
   # forward ring in PSRAM; the harness writes otadata into the image first, docs/upstream-reports.md
   # section 4). e2e-plan reads the groups from idf/tools/e2e/scenarios.py (CI_GROUPS: together
   # one full run, each scenario in one group, as test_harness.py checks). e2e-build builds the
-  # QEMU images once per variant (run_e2e.sh with E2E_STAGE; the default variant also builds
-  # build-qemu-plain, the same for both variants). Each e2e job runs one group of one variant on
-  # those images, without a build (E2E_PREBUILT). e2e-summary puts one line per group into the
+  # QEMU images once per variant (run_e2e.sh with E2E_STAGE; the psram variant also builds
+  # build-qemu-plain for its group nvs-main: the images of one job share its signing key). Each
+  # e2e job runs one group of one variant on those images, without a build (E2E_PREBUILT). e2e-summary puts one line per group into the
   # job summary and fails unless the groups of each variant passed and ran one full run.
   e2e-plan:
     name: E2E groups (issue #121)
@@ -387,8 +387,11 @@ jobs:
           . "$IDF_PATH/export.sh"
           export PATH="$PATH:/usr/sbin"
           ccache -z
+          # not ota-wiring: its #146 checks save the configuration, and the validation of a save
+          # needs more internal RAM than this build has without PSRAM (503; heap poisoning in
+          # docs/reference/e2e-harness.md). The full E2E runs that scenario without poisoning.
           E2E_POISON=1 E2E_PLAIN=0 E2E_WORKDIR=/tmp/e2e-poison E2E_PYTHON=/tmp/e2e/bin/python \
-              idf/tools/e2e/run_e2e.sh --only ota
+              idf/tools/e2e/run_e2e.sh --only ota-fw1,ota-park,ota-trial
           ccache -s
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()

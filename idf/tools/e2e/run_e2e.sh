@@ -132,6 +132,7 @@ if [ -z "$PRE" ]; then
         if [ -n "${PLAIN:-}" ]; then
             cp "$PLAIN/rs485_spb_gateway-unsigned.bin" "$PLAIN/rs485_spb_gateway.elf" \
                 "$PLAIN/flash_args" "$STAGE/plain/"
+            cp "$KEY" "$STAGE/plain/e2e_signing_key.pem"
         fi
         echo "$VARIANT" > "$STAGE/variant"
         echo "images for E2E_PREBUILT ($VARIANT) in $STAGE"
@@ -158,11 +159,16 @@ else
     fi
     PLAIN_ARGS=()
     if [ "${E2E_PLAIN:-1}" = 1 ]; then
-        for f in flash-plain.bin rs485_spb_gateway-unsigned.bin rs485_spb_gateway.elf; do
+        for f in flash-plain.bin rs485_spb_gateway-unsigned.bin rs485_spb_gateway.elf \
+                 e2e_signing_key.pem; do
             [ -f "$PRE/plain/$f" ] || {
                 echo "E2E_PREBUILT: $PRE/plain/$f is missing (E2E_PLAIN=0 runs without it)" >&2
                 exit 2; }
         done
+        # the plain image accepts only an update signed with its own key (the #94 scenario)
+        cmp -s "$PRE/plain/e2e_signing_key.pem" "$KEY" || {
+            echo "E2E_PREBUILT: $PRE/plain comes from another build (another signing key)" >&2
+            exit 2; }
         cp "$PRE/plain/flash-plain.bin" "$WORK/flash-plain.bin"
         PLAIN_ARGS=(--plain-flash "$WORK/flash-plain.bin"
                     --plain-app "$PRE/plain/rs485_spb_gateway-unsigned.bin"
