@@ -53,7 +53,7 @@ The gateway sends a rebirth only on request: the NCMD `Node Control/Rebirth`, th
 - esp-mqtt 1.1.0 keeps its outbox after a disconnection. At the next CONNECT, it sends each item again, also to another broker of the list.
 - Thus an explicit QoS 1 NDEATH could go out again, with DUP 1 and the old bdSeq (`tck-id-operational-behavior-primary-application-state-with-multiple-servers-walk`).
 - When the outbox is not empty at a reconnection, the gateway replaces the MQTT client with a new one. The log gives `… new MQTT client, nothing of the old session goes out again`.
-- The data messages are QoS 0, and they never go into the outbox. The upstream report is in [`docs/upstream-reports.md` §9](../upstream-reports.md#9-espressifesp-mqtt-a-clean-session-sends-the-outbox-of-the-previous-session-again).
+- The data messages are QoS 0, and they never go into the outbox. The upstream report is #244.
 
 ### MQTT 5 (MQTT-8, #155)
 

@@ -225,7 +225,7 @@ This single large file runs every scenario. It:
 Rules that tests and fixes must respect:
 - Only known emulator faults are retried: QEMU process death, or the image-check PIF panic. Firmware failure lines (Guru Meditation, assert, task_wdt, CORRUPT HEAP, stack overflow) and hangs are never retried.
 - Discarded attempts are recorded in `results.json` (`retries`, `remeasured`).
-- The OTA scenarios run single-threaded TCG (`E2E_TCG_THREAD=auto`), because MTTCG crashes QEMU under load (`docs/upstream-reports.md` §7–8). This makes them 2–7× slower with PSRAM.
+- The OTA scenarios run single-threaded TCG (`E2E_TCG_THREAD=auto`), because MTTCG crashes QEMU under load (#242, #243). This makes them 2–7× slower with PSRAM.
 - The PSRAM variant is the main variant (#135). Its full run has every scenario except the three OTA trial scenarios (#97, #99/#101, #112): they examine logic, not memory, and they run only in the faster variant without PSRAM (`DEFAULT_VARIANT_SCENARIOS` in `scenarios.py`). Put a new scenario that depends on memory in the PSRAM variant. `test_harness.py` checks that each scenario is in one variant and in one CI group.
 - Timing flakes are fixed by waiting on evidence (progress, log lines) up to a bound, never by loosening what a check asserts.
 - `test_harness.py` unit-tests the retry, hang and progress logic with fake clocks. Extend it when changing that logic.

@@ -90,7 +90,7 @@ For the detail, refer to [Store & forward](store-and-forward.md).
 - The key cannot go to NVS, because esp-mqtt needs all of the key in memory. The gateway does not accept a key with a password (encrypted PEM).
 - The DS peripheral keeps a key out of reach of the firmware, but it burns an eFuse. It is out of scope (#133). Refer to [No eFuse features](../explanation/no-efuse-features.md).
 - The public CA bundle is the common subset of ESP-IDF (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN`). It is compile-only: the E2E uses its own CA.
-- With TLS 1.3, esp-tls does not give the cause of a certificate rejection. The firmware uses its own verification callback, and the log gives the cause (#70). The upstream report is in [`docs/upstream-reports.md` §2](../upstream-reports.md).
+- With TLS 1.3, esp-tls does not give the cause of a certificate rejection. The firmware uses its own verification callback, and the log gives the cause (#70). The upstream report is #237.
 - The firmware chains to the callback of the CA bundle through the public API `esp_crt_bundle_attach()` (#77). If a new ESP-IDF changes the callback type, the build fails. The gateway never accepts a certificate without verification.
 
 For the procedure, refer to [Connect to a broker with TLS](../how-to/connect-to-a-broker-with-tls.md).
@@ -114,7 +114,7 @@ For the procedure, refer to [Connect to a broker with TLS](../how-to/connect-to-
 - The gateway finds a broker that it cannot reach from its own attempts, not with a probe (#57). With one broker and the default values, the failover takes approximately 20 to 30 s.
 - The gateway does not probe the failed interface. The session goes back to it after a wait of 60 s, doubled up to 30 min. These are host tests only: QEMU has no Wi-Fi.
 - esp-mqtt 1.1.0 leaks approximately 17 B for each `esp_mqtt_set_config()` call with `network.if_name` or `key_password` (#58). A wrapper refuses these fields, and the host test `check_set_config` finds a direct call.
-- Remove the wrapper when esp-mqtt corrects the leak. The upstream report is in [`docs/upstream-reports.md` §1](../upstream-reports.md), not sent yet.
+- Remove the wrapper when esp-mqtt corrects the leak. The upstream report is #236. Nobody sent it yet.
 - If Wi-Fi gets an address before Ethernet at boot, the first session uses Wi-Fi. The session goes back to Ethernet after `failback_s`: one extra session.
 - The Wi-Fi reconnection uses a backoff with jitter from 1 to 30 s. The radio power save is off (`WIFI_PS_NONE`), for the latency of the commands.
 - The Wi-Fi driver keeps no credentials in its NVS (`WIFI_STORAGE_RAM`). The password is in the secrets in NVS (CFG-7).

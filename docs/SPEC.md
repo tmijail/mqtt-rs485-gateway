@@ -32,7 +32,13 @@ In Sparkplug, the gateway is an *Edge Node*. Each Modbus slave is a Sparkplug *D
 
 This repository has one implementation of this specification: the ESP-IDF v6.1 firmware in `idf/`.
 
-During the selection, a Zephyr prototype was also made for a comparison. That prototype is not on `main`, and the project does not maintain it. The branches `impl/zephyr` and `comparison/idf-vs-zephyr` keep it. `docs/RECOMMENDATION.md` gives the reasons for ESP-IDF.
+During the selection, a Zephyr prototype was also made for a comparison. That prototype is not on `main`, and the project does not maintain it. The branches `impl/zephyr` and `comparison/idf-vs-zephyr` keep it. The project selected ESP-IDF for these reasons:
+
+- The UART of the ESP32-S3 controls the RS485 direction in hardware. The Modbus subsystem of Zephyr prevents this.
+- ESP-IDF runs tasks on the two cores. The Zephyr prototype ran on one core only.
+- ESP-IDF has the Wi-Fi driver, OTA with rollback, and an MQTT client with keepalive and TLS.
+
+The full comparison (in Spanish) is `docs/RECOMMENDATION.md` at the tag `archive/studies` ([commit d645ec6](https://github.com/tmijail/mqtt-rs485-gateway/blob/d645ec6df5c11da5d2e22fdeb5151bb00bfdd88d/docs/RECOMMENDATION.md)).
 
 ### 2.3 Resources of the ESP32-S3-POE-ETH-8DI-8DO
 
