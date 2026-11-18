@@ -1,5 +1,6 @@
 #include "support.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +25,23 @@ const char *support_read_file(const char *path, size_t *len)
     buf[n] = '\0';
     *len = n;
     return buf;
+}
+
+void support_appendf(char *buf, size_t cap, size_t *len, const char *fmt, ...)
+{
+    if (*len >= cap) {
+        fprintf(stderr, "support_appendf: the buffer of %zu bytes is full\n", cap);
+        abort();
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vsnprintf(buf + *len, cap - *len, fmt, ap);
+    va_end(ap);
+    if (r < 0 || (size_t)r >= cap - *len) {
+        fprintf(stderr, "support_appendf: the buffer of %zu bytes is too small\n", cap);
+        abort();
+    }
+    *len += (size_t)r;
 }
 
 const gw_config_t *support_spec_config(void)

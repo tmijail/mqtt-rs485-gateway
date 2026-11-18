@@ -1046,29 +1046,29 @@ static void test_device_types(void)
     size_t n = (size_t)snprintf(big, sizeof(big), TYPES(""));
     n--;   /* before the ']' */
     for (int t = 0; t <= GW_MAX_DEVICE_TYPES; t++) {
-        n += (size_t)snprintf(big + n, sizeof(big) - n, "%s{\"name\":\"T%d\",\"tags\":[{\"name\":"
-                              "\"v\",\"area\":\"input\",\"address\":0,\"type\":\"uint16\"}]}",
-                              t ? "," : "", t);
+        support_appendf(big, sizeof(big), &n, "%s{\"name\":\"T%d\",\"tags\":[{\"name\":"
+                        "\"v\",\"area\":\"input\",\"address\":0,\"type\":\"uint16\"}]}",
+                        t ? "," : "", t);
     }
-    snprintf(big + n, sizeof(big) - n, "]}");
+    support_appendf(big, sizeof(big), &n, "]}");
     ASSERT_REJECTED(parse(big), "device_types: 17 device types; the maximum is 16");
 
     /* the definitions of the types that the devices use: at most GW_MAX_TEMPLATE_TAGS tags */
     n = (size_t)snprintf(big, sizeof(big), TYPES(""));
     n--;
     for (int t = 0; t < 3; t++) {
-        n += (size_t)snprintf(big + n, sizeof(big) - n, "%s{\"name\":\"T%d\",\"tags\":[",
-                              t ? "," : "", t);
+        support_appendf(big, sizeof(big), &n, "%s{\"name\":\"T%d\",\"tags\":[",
+                        t ? "," : "", t);
         for (int k = 0; k < 30; k++) {
-            n += (size_t)snprintf(big + n, sizeof(big) - n, "%s{\"name\":\"t%d\",\"area\":\"input\","
-                                  "\"address\":%d,\"type\":\"uint16\"}", k ? "," : "", k, k);
+            support_appendf(big, sizeof(big), &n, "%s{\"name\":\"t%d\",\"area\":\"input\","
+                            "\"address\":%d,\"type\":\"uint16\"}", k ? "," : "", k, k);
         }
-        n += (size_t)snprintf(big + n, sizeof(big) - n, "]}");
+        support_appendf(big, sizeof(big), &n, "]}");
     }
     size_t types_end = n;
-    n += (size_t)snprintf(big + n, sizeof(big) - n, "],\"devices\":[{\"name\":\"D0\",\"unit_id\":1,"
-                          "\"type\":\"T0\"},{\"name\":\"D1\",\"unit_id\":2,\"type\":\"T1\"},"
-                          "{\"name\":\"D2\",\"unit_id\":3,\"type\":\"T0\"}]}");
+    support_appendf(big, sizeof(big), &n, "],\"devices\":[{\"name\":\"D0\",\"unit_id\":1,"
+                    "\"type\":\"T0\"},{\"name\":\"D1\",\"unit_id\":2,\"type\":\"T1\"},"
+                    "{\"name\":\"D2\",\"unit_id\":3,\"type\":\"T0\"}]}");
     TEST_ASSERT_TRUE_MESSAGE(parse(big), err.msg);   /* two types used: 60 tags; T2 unused */
     TEST_ASSERT_EQUAL_UINT16(90, cfg.tag_count);
     snprintf(big + types_end, sizeof(big) - types_end, "],\"devices\":[{\"name\":\"D0\",\"unit_id\":1,"
@@ -1088,15 +1088,15 @@ static void test_device_types_total(void)
                                 "{\"group_id\":\"G\",\"edge_node_id\":\"E\"},\"device_types\":["
                                 "{\"name\":\"T\",\"tags\":[");
     for (int k = 0; k < 60; k++) {
-        n += (size_t)snprintf(big + n, sizeof(big) - n, "%s{\"name\":\"t%d\",\"area\":\"input\","
-                              "\"address\":%d,\"type\":\"uint16\"}", k ? "," : "", k, k);
+        support_appendf(big, sizeof(big), &n, "%s{\"name\":\"t%d\",\"area\":\"input\","
+                        "\"address\":%d,\"type\":\"uint16\"}", k ? "," : "", k, k);
     }
-    n += (size_t)snprintf(big + n, sizeof(big) - n, "]}],\"devices\":[");
+    support_appendf(big, sizeof(big), &n, "]}],\"devices\":[");
     for (int d = 0; d < 5; d++) {
-        n += (size_t)snprintf(big + n, sizeof(big) - n, "%s{\"name\":\"D%d\",\"unit_id\":%d,"
-                              "\"type\":\"T\"}", d ? "," : "", d, d + 1);
+        support_appendf(big, sizeof(big), &n, "%s{\"name\":\"D%d\",\"unit_id\":%d,"
+                        "\"type\":\"T\"}", d ? "," : "", d, d + 1);
     }
-    snprintf(big + n, sizeof(big) - n, "]}");
+    support_appendf(big, sizeof(big), &n, "]}");
     ASSERT_REJECTED(parse(big), "devices[4].type: the 60 tags of the device type 'T' make more "
                                 "than the total maximum of 256 tags");
 }
@@ -1945,45 +1945,48 @@ static void test_limits(void)
 {
     /* 65 tags in one device */
     static char doc[64 * 1024];
-    int n = snprintf(doc, sizeof(doc),
-                     "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":"
-                     "\"E\"},\"devices\":[{\"name\":\"D\",\"unit_id\":1,\"tags\":[");
+    size_t n = 0;
+    support_appendf(doc, sizeof(doc), &n,
+                    "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":"
+                    "\"E\"},\"devices\":[{\"name\":\"D\",\"unit_id\":1,\"tags\":[");
     for (int i = 0; i < 65; i++) {
-        n += snprintf(doc + n, sizeof(doc) - (size_t)n,
-                      "%s{\"name\":\"t%d\",\"area\":\"holding\",\"address\":%d,\"type\":\"uint16\"}",
-                      i ? "," : "", i, i);
+        support_appendf(doc, sizeof(doc), &n,
+                        "%s{\"name\":\"t%d\",\"area\":\"holding\",\"address\":%d,\"type\":\"uint16\"}",
+                        i ? "," : "", i, i);
     }
-    snprintf(doc + n, sizeof(doc) - (size_t)n, "]}]}");
+    support_appendf(doc, sizeof(doc), &n, "]}]}");
     ASSERT_REJECTED(parse(doc), "maximum per device is 64");
 
     /* 17 devices */
-    n = snprintf(doc, sizeof(doc),
-                 "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":"
-                 "\"E\"},\"devices\":[");
+    n = 0;
+    support_appendf(doc, sizeof(doc), &n,
+                    "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":"
+                    "\"E\"},\"devices\":[");
     for (int d = 0; d < 17; d++) {
-        n += snprintf(doc + n, sizeof(doc) - (size_t)n,
-                      "%s{\"name\":\"D%d\",\"unit_id\":%d,\"tags\":[{\"name\":\"t\",\"area\":"
-                      "\"coil\",\"address\":0,\"type\":\"bool\"}]}",
-                      d ? "," : "", d, d + 1);
+        support_appendf(doc, sizeof(doc), &n,
+                        "%s{\"name\":\"D%d\",\"unit_id\":%d,\"tags\":[{\"name\":\"t\",\"area\":"
+                        "\"coil\",\"address\":0,\"type\":\"bool\"}]}",
+                        d ? "," : "", d, d + 1);
     }
-    snprintf(doc + n, sizeof(doc) - (size_t)n, "]}");
+    support_appendf(doc, sizeof(doc), &n, "]}");
     ASSERT_REJECTED(parse(doc), "maximum is 16");
 
     /* 5 devices x 64 tags = 320 > 256 total */
-    n = snprintf(doc, sizeof(doc),
-                 "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":"
-                 "\"E\"},\"devices\":[");
+    n = 0;
+    support_appendf(doc, sizeof(doc), &n,
+                    "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":"
+                    "\"E\"},\"devices\":[");
     for (int d = 0; d < 5; d++) {
-        n += snprintf(doc + n, sizeof(doc) - (size_t)n, "%s{\"name\":\"D%d\",\"unit_id\":1,\"tags\":[",
-                      d ? "," : "", d);
+        support_appendf(doc, sizeof(doc), &n, "%s{\"name\":\"D%d\",\"unit_id\":1,\"tags\":[",
+                        d ? "," : "", d);
         for (int i = 0; i < 64; i++) {
-            n += snprintf(doc + n, sizeof(doc) - (size_t)n,
-                          "%s{\"name\":\"t%d\",\"area\":\"input\",\"address\":%d,\"type\":\"int16\"}",
-                          i ? "," : "", i, i);
+            support_appendf(doc, sizeof(doc), &n,
+                            "%s{\"name\":\"t%d\",\"area\":\"input\",\"address\":%d,\"type\":\"int16\"}",
+                            i ? "," : "", i, i);
         }
-        n += snprintf(doc + n, sizeof(doc) - (size_t)n, "]}");
+        support_appendf(doc, sizeof(doc), &n, "]}");
     }
-    snprintf(doc + n, sizeof(doc) - (size_t)n, "]}");
+    support_appendf(doc, sizeof(doc), &n, "]}");
     ASSERT_REJECTED(parse(doc), "devices[4].tags: more than the total maximum of 256");
     TEST_ASSERT_EQUAL(0, cfg.tag_count);  /* zeroed on failure */
 }
@@ -2034,29 +2037,30 @@ static void test_duplicate_keys_rejected(void)
  * IDF review: a legal document larger than the old 32 KB file limit). */
 static size_t build_spec_maximum(char *doc, size_t cap)
 {
-    int n = snprintf(doc, cap,
-                     "{\"network\":{\"dhcp\":true},\"ntp\":{\"servers\":[\"pool.ntp.org\"]},"
-                     "\"mqtt\":{\"host\":\"192.168.1.10\",\"port\":1883,\"client_id\":\"\","
-                     "\"username\":\"\",\"password\":\"\",\"keepalive_s\":30},"
-                     "\"sparkplug\":{\"group_id\":\"Plant1\",\"edge_node_id\":\"GW01\"},"
-                     "\"devices\":[");
+    size_t n = 0;
+    support_appendf(doc, cap, &n,
+                    "{\"network\":{\"dhcp\":true},\"ntp\":{\"servers\":[\"pool.ntp.org\"]},"
+                    "\"mqtt\":{\"host\":\"192.168.1.10\",\"port\":1883,\"client_id\":\"\","
+                    "\"username\":\"\",\"password\":\"\",\"keepalive_s\":30},"
+                    "\"sparkplug\":{\"group_id\":\"Plant1\",\"edge_node_id\":\"GW01\"},"
+                    "\"devices\":[");
     for (int d = 0; d < GW_MAX_DEVICES; d++) {
-        n += snprintf(doc + n, cap - (size_t)n,
-                      "%s{\"name\":\"Device%02d\",\"unit_id\":%d,\"poll_ms\":1000,"
-                      "\"offline_after\":3,\"tags\":[",
-                      d ? "," : "", d, d + 1);
+        support_appendf(doc, cap, &n,
+                        "%s{\"name\":\"Device%02d\",\"unit_id\":%d,\"poll_ms\":1000,"
+                        "\"offline_after\":3,\"tags\":[",
+                        d ? "," : "", d, d + 1);
         for (int t = 0; t < GW_MAX_TAGS / GW_MAX_DEVICES; t++) {
-            n += snprintf(doc + n, cap - (size_t)n,
-                          "%s{\"name\":\"Tag_%02d_%02d_ActivePowerPhaseL1\",\"area\":\"input\","
-                          "\"address\":%d,\"type\":\"float32\",\"word_order\":\"big\","
-                          "\"scale\":1.0,\"offset\":0.0,\"deadband\":0.1,\"writable\":false,"
-                          "\"units\":\"kW\"}",
-                          t ? "," : "", d, t, 2 * t);
+            support_appendf(doc, cap, &n,
+                            "%s{\"name\":\"Tag_%02d_%02d_ActivePowerPhaseL1\",\"area\":\"input\","
+                            "\"address\":%d,\"type\":\"float32\",\"word_order\":\"big\","
+                            "\"scale\":1.0,\"offset\":0.0,\"deadband\":0.1,\"writable\":false,"
+                            "\"units\":\"kW\"}",
+                            t ? "," : "", d, t, 2 * t);
         }
-        n += snprintf(doc + n, cap - (size_t)n, "]}");
+        support_appendf(doc, cap, &n, "]}");
     }
-    n += snprintf(doc + n, cap - (size_t)n, "]}");
-    return (size_t)n;
+    support_appendf(doc, cap, &n, "]}");
+    return n;
 }
 
 static void test_spec_maximum_document(void)

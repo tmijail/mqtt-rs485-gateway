@@ -1,5 +1,6 @@
 /* QA-1: remote syslog (REL-4): esp_log line parsing, RFC 5424 formatting, bounded ring. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "gw_syslog.h"
@@ -100,6 +101,24 @@ static void test_rfc5424_format(void)
     TEST_ASSERT_EQUAL_STRING("<134>1 2026-11-03T1", small);
 }
 
+/* Issue #232 (CodeQL cpp/offset-use-before-range-check): the HOSTNAME token stops at 64
+ * characters before it reads the next byte. A hostname of 64 bytes without a NUL is read only
+ * in its buffer (the sanitizer build stops at a read of byte 64). */
+static void test_hostname_read_bound(void)
+{
+    char *host = malloc(64);
+    TEST_ASSERT_NOT_NULL(host);
+    memset(host, 'h', 64);
+    char out[300];
+    gw_syslog_rec_t r = {.severity = 6, .tag = "t", .msg = "m"};
+    gw_syslog_format(&r, host, 1, out, sizeof(out));
+    free(host);
+    char want[200];
+    snprintf(want, sizeof(want), "<134>1 - %.64s t - - [meta sequenceId=\"1\"] m",
+             "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh");
+    TEST_ASSERT_EQUAL_STRING(want, out);
+}
+
 static void test_ring_bounded_and_drops(void)
 {
     gw_syslog_rec_t slots[4];
@@ -149,6 +168,7 @@ int main(void)
     RUN_TEST(test_parse_esp_log_lines);
     RUN_TEST(test_timestamp);
     RUN_TEST(test_rfc5424_format);
+    RUN_TEST(test_hostname_read_bound);
     RUN_TEST(test_ring_bounded_and_drops);
     return UNITY_END();
 }

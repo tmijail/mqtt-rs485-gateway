@@ -17,6 +17,12 @@ const char *support_read_file(const char *path, size_t *len);
 /* Parse the SPEC section 6 example into a static config. Aborts on error. */
 const gw_config_t *support_spec_config(void);
 
+/* Append printf output at buf[*len] and add its length to *len. Aborts when the text does not
+ * fit in @p cap (with its NUL). Issue #232: the pattern n += snprintf(buf + n, cap - n, ...)
+ * makes cap - n wrap after a truncation (CodeQL cpp/overflowing-snprintf). */
+void support_appendf(char *buf, size_t cap, size_t *len, const char *fmt, ...)
+    __attribute__((format(printf, 4, 5)));
+
 /* ---- simulated slave ---- */
 
 typedef struct {

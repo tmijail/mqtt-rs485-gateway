@@ -42,7 +42,7 @@ bool gw_syslog_parse_line(const char *line, gw_syslog_rec_t *rec);
  * RFC 5424 message: "<PRI>1 TIMESTAMP HOSTNAME APP-NAME - - [meta sequenceId="N"] MSG".
  * HOSTNAME and APP-NAME are reduced to printable US-ASCII without spaces; control
  * characters in MSG become spaces. Returns the length written (truncated to cap - 1, NUL
- * terminated).
+ * terminated). HOSTNAME is cut at 64 characters: at most 64 bytes of hostname are read.
  */
 size_t gw_syslog_format(const gw_syslog_rec_t *rec, const char *hostname, uint32_t sequence,
                         char *out, size_t cap);

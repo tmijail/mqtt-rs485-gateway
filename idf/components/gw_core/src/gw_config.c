@@ -2169,9 +2169,11 @@ int gw_config_find_device(const gw_config_t *cfg, const char *name, size_t len)
 int gw_config_find_tag(const gw_config_t *cfg, uint16_t dev, const char *name)
 {
     const gw_device_cfg_t *d = &cfg->devices[dev];
-    for (uint16_t i = d->first_tag; i < d->first_tag + d->tag_count; i++) {
+    /* unsigned, not uint16_t: the counter is as wide as the bound (issue #232, CodeQL
+     * cpp/comparison-with-wider-type). The bound is at most GW_MAX_TAGS. */
+    for (unsigned i = d->first_tag; i < (unsigned)d->first_tag + d->tag_count; i++) {
         if (strcmp(cfg->tags[i].name, name) == 0) {
-            return i;
+            return (int)i;
         }
     }
     return -1;
