@@ -138,3 +138,18 @@ The configuration step stops when a required option has a value that is differen
 3. To add a task, give its entry function, for example `--task modbus_tcp=gw_mbtcp.c:server_task`.
 
 The contents of the report and its limits are in [Compiler warnings and the stack data](../reference/compiler-warnings-and-stack.md#the-stack-report).
+
+## Run the static analyzer
+
+The CI job `analyzer` does these steps on each push (#230).
+
+1. In `idf/`, build the firmware with the analyzer in a separate folder:
+
+   ```bash
+   idf.py -B build-analyzer -D GW_ANALYZER=ON set-target esp32s3 build
+   ```
+
+2. Make sure that the build completes. A result of the analyzer stops the build with `error: ... [-Werror=analyzer-...]`.
+3. Correct each result. Refer to [Correct a result](../reference/compiler-warnings-and-stack.md#correct-a-result).
+
+> **Caution: Do not use the folder `build` for the analyzer.** `GW_ANALYZER` stays in the CMake cache of the folder, and the next build in that folder also uses the analyzer.

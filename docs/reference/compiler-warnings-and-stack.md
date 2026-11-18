@@ -1,6 +1,6 @@
 # Compiler warnings and the stack data
 
-This document gives the compiler options of the own components, the limit of the stack frame, and the stack report of the tasks (issue #227). For the command that makes the report, refer to [Build and flash the firmware](../how-to/build-the-firmware.md#make-the-stack-report).
+This document gives the compiler options of the own components, the limit of the stack frame, and the stack report of the tasks (issue #227). It also gives the build with the GCC static analyzer (issue #230). For the commands, refer to [Build and flash the firmware](../how-to/build-the-firmware.md#make-the-stack-report).
 
 ## The compiler options
 
@@ -19,11 +19,45 @@ This document gives the compiler options of the own components, the limit of the
 | `-Wundef` | no | yes | an undefined macro in `#if` |
 | `-fstack-usage -fcallgraph-info=su` | yes | `-fcallgraph-info=su` for `gw_core` and nanopb only | the stack data for `tools/stack_report.py`. On the host, the call graph for the rule checks of `tools/check_rules.py` (#228) |
 | `-Wstack-usage=2048` | yes | no | a function with a stack frame of more than 2 048 B |
+| `-fanalyzer` | only with `-D GW_ANALYZER=ON` (CI job `analyzer`) | no | the paths through a function that the analyzer can follow: a NULL dereference, a leak, a use after free, undefined behaviour. Refer to [The static analyzer](#the-static-analyzer) |
 
 - On the Xtensa target, `-Wcast-align=strict` is the same as `-Wcast-align`, because the target needs aligned access. On the host, only `=strict` gives the warning.
 - The default host build has no optimization (`-O0`), thus `-Wnull-dereference` finds nothing there. The firmware build (`-Os`) and the host build at `-O2` of CI do the check.
-- These options do not change the generated code. They only add diagnostics and the stack data.
+- These options do not change the generated code. They only add diagnostics and the stack data. The release build does not use `-fanalyzer`.
 - The project does not hide warnings with `#pragma`. Correct the code instead.
+
+## The static analyzer
+
+The host tests compile only `gw_core`. The IDF adapters (`gw_web`, `gw_fw`, `gw_storage`, `gw_edge`, `gw_net`, `gw_bus`, `main` and the other `gw_*` components) compile only in the firmware build. The CI job `analyzer` builds the firmware with the GCC static analyzer (`-fanalyzer`, GCC 15.2 of ESP-IDF v6.1) on all own components (issue #230).
+
+- The CMake variable `GW_ANALYZER` (default `OFF`) adds `-fanalyzer` in `gw_target_options()`. Thus it applies only to `gw_*` and `main`, in the release configuration.
+- The job uses a separate build folder, `build-analyzer`. The release build and the job `firmware` do not change.
+- The project does not use `CONFIG_COMPILER_STATIC_ANALYZER` of ESP-IDF. That option adds `-fanalyzer` to all components, also to ESP-IDF and the managed components, and ESP-IDF has known false positives.
+- With `-Werror`, a result of the analyzer stops the build. The job then gives each result in `components/gw_*` and `main`.
+- The analyzer examines only the source files of the own components. A result in a header of ESP-IDF is possible only on a path through the own code, and it also stops the build.
+
+### The results at #230
+
+The first build gave 5 results. Now the build gives 0 results.
+
+| Location | Check | Type | Correction |
+|---|---|---|---|
+| `gw_storage.c` `current_doc` | `-Wanalyzer-undefined-behavior-ptrdiff` | Real, but without effect with GCC | The length of the embedded default configuration came from `end - start`. For C, the linker symbols `_binary_*_start` and `_binary_*_end` are two objects, and a subtraction of pointers to two objects is undefined behaviour. The code now subtracts the two addresses (`uintptr_t`). `embedded_len()` in `gw_web.c` does the same for `index.html` and `claim.html` |
+| `gw_authlimit.c` `take` | `-Wanalyzer-null-argument` | False positive | The second pass always takes a slot. The analyzer does not follow the two passes. The code now takes slot 0 if no slot is found. This never occurs |
+| `gw_claim.c` `gw_claim_parse` | `-Wanalyzer-null-dereference` | False positive | `cJSON_IsObject(NULL)` gives false, but the analyzer does not see into cJSON. The code now examines the pointer for NULL first |
+| `gw_cfgdoc.c` `export_locked` | `-Wanalyzer-null-dereference` | False positive | The same, for `cJSON_IsString` |
+| `gw_certs.c` `copy_name` | `-Wanalyzer-null-dereference` | False positive | The same, for `cJSON_IsString` |
+
+The corrections do not change the behaviour. Each correction has a comment with the reason.
+
+### Correct a result
+
+1. Read the path of the result in the log of the job. The analyzer gives the events of the path that it followed.
+2. If the result is a real error, correct the code.
+3. If the result is a false positive, change the code so that the analyzer can follow it. Use only a change that does not change the behaviour.
+4. Write a comment next to the change, with the name of the check and the reason.
+
+> **Caution: Do not hide a result with `#pragma` or with `-Wno-analyzer-*`.** A hidden check also hides the real errors of that type in the file.
 
 ## No `-Wundef` in the firmware
 

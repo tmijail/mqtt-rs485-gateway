@@ -195,6 +195,56 @@ jobs:
             idf/size.txt
             idf/stack.txt
 
+  # Issue #230: the GCC static analyzer (-fanalyzer) on the own components (gw_* and main). The
+  # host tests compile only gw_core; this job also examines the IDF adapters (gw_web, gw_fw,
+  # gw_storage, gw_edge, gw_net, gw_bus, main, ...). -D GW_ANALYZER=ON (cmake/gw_warnings.cmake)
+  # adds -fanalyzer only to the own components, in the separate build directory build-analyzer:
+  # the release build of the job firmware does not change. ESP-IDF and the managed components
+  # compile without the analyzer, from ccache. With -Werror, a result of the analyzer stops the
+  # build. docs/reference/compiler-warnings-and-stack.md
+  analyzer:
+    name: GCC static analyzer of the own components (issue #230)
+    runs-on: ubuntu-24.04
+    container:
+      image: espressif/idf:v6.1@sha256:f81b6e077e6af93c312181cd7d4e7936cfbafc5c7f77cbacba8fdd34994f218a
+    defaults:
+      run:
+        shell: bash
+    env:
+      IDF_CCACHE_ENABLE: 1
+      CCACHE_DIR: /tmp/ccache
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: 400M
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/ccache
+          key: ccache-analyzer-f81b6e07-${{ github.sha }}
+          restore-keys: ccache-analyzer-f81b6e07-
+      - name: Build with -fanalyzer (0 results required)
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          . "$IDF_PATH/export.sh"
+          ccache -z
+          cd idf
+          rc=0
+          idf.py -B build-analyzer -D GW_ANALYZER=ON set-target esp32s3 build 2>&1 | tee analyzer.log || rc=$?
+          ccache -s
+          # the results in the own code, without the colour codes of -fdiagnostics-color=always
+          sed 's/\x1b\[[0-9;]*[mK]//g' analyzer.log > analyzer-plain.log
+          if grep -E "/idf/(components/gw_[a-z0-9_]+|main)/.*\[-W(error=)?analyzer-" analyzer-plain.log; then
+            echo "::error::the GCC static analyzer found a result in the own code"
+            exit 1
+          fi
+          if grep -E "warning:" analyzer-plain.log; then
+            echo "::error::the analyzer build produced warnings"
+            exit 1
+          fi
+          exit "$rc"
+
   # Issue #121: the E2E in parallel jobs, for the default variant and for the octal PSRAM one
   # (#85: the configuration, the Sparkplug engine and its payload buffer, mbedTLS and the store &
   # forward ring in PSRAM; the harness writes otadata into the image first, docs/upstream-reports.md

@@ -14,6 +14,7 @@ This document gives the test suites of the firmware, what each suite examines, t
 | Fuzz tests (#226) | The parsers of `gw_core` with libFuzzer, AddressSanitizer and UndefinedBehaviorSanitizer: 12 targets | `idf/test/fuzz`, CI jobs `fuzz` (60 s for each target) and `fuzz-weekly.yml` (20 min for each target) | No crash, no sanitizer error, no failed check of a target |
 | Sparkplug decode check | The payloads of the engine, decoded with the official Tahu proto | `spb_dump`, `idf/tools/spb_decode.py --check` | 0 structural errors |
 | Firmware build (QA-2) | The release build for `esp32s3`, and the QEMU builds | CI job `firmware` | 0 warnings |
+| Static analyzer (#230) | The own components (`gw_*`, `main`) of the release build, with the GCC static analyzer (`-fanalyzer`) | CI job `analyzer` | 0 results |
 | Linters (#229) | The Python tools, the shell scripts, the workflows and the scripts of the web pages | CI job `host-tests` | 0 results |
 | Web UI unit test (#226) | The IPv4 normalization of the Configuration tab, in Node.js without a browser | `idf/test/web/test_ip4norm.mjs`, CI job `host-tests` | All tests pass |
 | Harness self-test | The retry, hang and progress logic of the E2E harness, with fake clocks | `idf/tools/e2e/test_harness.py` | All tests pass |
@@ -29,6 +30,7 @@ A change is done when the host tests pass and the full E2E passes: the full run 
 | CTest tests | 67: 42 Unity suites, `test_sfcfg_packed` and 24 checks |
 | Unity cases | 449 in the 42 suites (454 with `test_sfcfg_packed`) |
 | Fuzz targets | 12, in `idf/test/fuzz`. Refer to [Fuzz tests](#fuzz-tests) |
+| Results of the static analyzer | 0 in the 76 C files of the own components. Refer to [Static analyzer](#static-analyzer) |
 | Self-test of the decode rules | 26 tests |
 | Web UI unit test | 9 tests |
 | E2E checks, full run of the PSRAM variant | 265 (285 in the 5 CI groups: each group repeats the 5 checks of the run) |
@@ -229,6 +231,16 @@ The payloads contain these items: UInt64, Int64, Double, String and register bit
 
 During the configuration, ESP-IDF v6.1 prints 5 CMake warnings of its own (`component_validation.cmake`: private directories of `esp_wifi` that `wpa_supplicant` uses). They do not come from the project or from the compiler.
 
+## Static analyzer
+
+The CI job `analyzer` builds the release configuration with `-D GW_ANALYZER=ON` in the folder `build-analyzer` (#230). Only the 76 C files of the own components (`gw_*`, `main`) compile with `-fanalyzer`. A result stops the build, because of `-Werror`. ESP-IDF and the managed components compile without the analyzer, from ccache.
+
+- The first build gave 5 results: 1 real error and 4 false positives. All are corrected. The list is in [The static analyzer](compiler-warnings-and-stack.md#the-static-analyzer).
+- Now the build gives 0 results. A trial build of the QEMU configuration with PSRAM (`CONFIG_GW_IO_SIMULATED`) also gave 0 results. The CI job does not build that configuration.
+- The analyzer adds approximately 28 s of compiler time to the 76 own files: 47 s in place of 19 s, in sum. The longest file is `gw_config.c`, with 6 s.
+- On a computer with 4 CPUs, 2 compiler jobs and no ccache, the full build with the analyzer took 127 s. The release build took 133 s. The difference is in the noise of the load of the computer.
+- The job runs at the same time as the E2E jobs (approximately 15 min). Thus it does not make the CI run longer.
+
 ## Linters
 
 The `host-tests` job runs the linters (#229). Each linter uses only rules that find errors, and no style rules. A result stops the job.
@@ -266,6 +278,7 @@ The test reads `index.html`, takes the source of each function and runs it in a 
 | `host-tests-sanitizers` | Builds the host tests with `-DGW_SANITIZE=ON` and runs them. Decodes the payloads of the sanitized `spb_dump` |
 | `fuzz` | Installs `clang-18` and `libclang-rt-18-dev`, builds `idf/test/fuzz` and runs each target for 60 s, 4 at a time (`run_fuzz.sh`). The start is the corpus of the weekly job (from `actions/cache`, read only) and the seeds. A finding stops the job, and the artifact `fuzz-findings` has the input and the logs. The job takes approximately 5 min, at the same time as the other jobs |
 | `firmware` | Runs `idf.py set-target esp32s3 build`. Fails on a `warning:`. Publishes the binaries, the `idf.py size` output and `stack.txt` |
+| `analyzer` | Runs `idf.py -B build-analyzer -D GW_ANALYZER=ON set-target esp32s3 build`: the own components with `-fanalyzer` (#230). Fails on a result of the analyzer or on a `warning:`, and gives the results in `components/gw_*` and `main`. The job runs at the same time as the other jobs. Refer to [Static analyzer](#static-analyzer) |
 | `e2e-plan` | Reads `CI_GROUPS` from `idf/tools/e2e/scenarios.py`, and gives the matrix of the two next jobs |
 | `e2e-build` | One job for each variant (`default`, `psram`). Runs `run_e2e.sh` with `E2E_STAGE`, and publishes the images. The `psram` job also builds `build-qemu-plain`, because the group `nvs-main` of that variant uses it. Each job makes its own throwaway signing key, and the plain image accepts only an update that the same key signed. GitHub keeps the images for 1 day, because they contain the signing key of the run |
 | `e2e` | One job for each group of `CI_GROUPS` (5 PSRAM groups and 1 default group). Runs `run_e2e.sh --only <group>` with `E2E_PREBUILT`. Publishes the logs, the payloads, `results.json`, `qemu-exits.txt` and the `fault-*.txt` dumps |
@@ -307,7 +320,7 @@ Each group has its own job, and the groups run at the same time (#121, #135, #23
 
 ### The caches of the CI
 
-- The jobs `firmware`, `e2e-build` and `e2e-poison` use ccache (`IDF_CCACHE_ENABLE=1`). `actions/cache` keeps its directory, with one key for each job and variant.
+- The jobs `firmware`, `analyzer`, `e2e-build` and `e2e-poison` use ccache (`IDF_CCACHE_ENABLE=1`). `actions/cache` keeps its directory, with one key for each job and variant.
 - `CCACHE_COMPILERCHECK=content` is necessary. Each configuration writes a new `-specs` file into the build directory, so the default check (`mtime`) finds no entry.
 - ccache gives the compiler messages again at a hit. Thus the check for 0 warnings of the `firmware` job stays valid.
 - The 76 C files of the own components (`gw_*`, `main`) compile without ccache (#227). At a hit, ccache 4.9 does not give the `.ci` file of `-fcallgraph-info` again.
