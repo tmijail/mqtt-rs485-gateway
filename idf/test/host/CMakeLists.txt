@@ -10,6 +10,19 @@ project(gw_host_tests C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+# Issue #225: AddressSanitizer and UndefinedBehaviorSanitizer on every target (compile and link),
+# also Unity, cJSON, nanopb and gw_core. -fno-sanitize-recover=all: the first finding stops the
+# test with a non-zero exit, so ctest reports it as a failure.
+#
+#   cmake -S idf/test/host -B build-asan -DGW_SANITIZE=ON
+option(GW_SANITIZE "Build the host tests with -fsanitize=address,undefined" OFF)
+if(GW_SANITIZE)
+    set(GW_SANITIZE_FLAGS -fsanitize=address,undefined -fno-sanitize-recover=all
+                          -fno-omit-frame-pointer)
+    add_compile_options(${GW_SANITIZE_FLAGS})
+    add_link_options(${GW_SANITIZE_FLAGS})
+endif()
+
 include(FetchContent)
 FetchContent_Declare(unity
     GIT_REPOSITORY https://github.com/ThrowTheSwitch/Unity.git
@@ -71,6 +84,12 @@ target_include_directories(test_sfcfg_packed PRIVATE ${CMAKE_CURRENT_LIST_DIR} $
 target_compile_options(test_sfcfg_packed PRIVATE -Wall -Wextra -Werror -fpack-struct -fshort-enums
                        -Wno-address-of-packed-member)
 target_compile_definitions(test_sfcfg_packed PRIVATE GW_SFCFG_PACKED)
+if(GW_SANITIZE)
+    # Issue #225: -fpack-struct puts the members at unaligned offsets on purpose (#145), and
+    # x86-64 permits unaligned access. UBSan's alignment check would stop at the first store
+    # (gw_config.c, a double in a packed gw_tag_cfg_t). The other checks stay on.
+    target_compile_options(test_sfcfg_packed PRIVATE -fno-sanitize=alignment)
+endif()
 add_test(NAME test_sfcfg_packed COMMAND test_sfcfg_packed)
 
 # Issue #145: the guard next to the canonical list fails the build when a field is added to

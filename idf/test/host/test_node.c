@@ -1779,20 +1779,35 @@ static void test_diagnostics(void)
 /* Issue #81: with the Modbus TCP gateway enabled, "Node Info/Modbus TCP" has a row per device
  * with the forwarded requests to its unit, and one for units without a device. */
 static uint32_t tcp_rows, tcp_cells, tcp_unit0, tcp_timeout_other, tcp_ok0;
-static bool tcp_online0;
+static bool tcp_online0, tcp_in_table;
 static char tcp_dev[2][16];
+/* The NDATA carries "Node Info/Modbus" too, and both tables start with "Device": the name of
+ * column 1 ("Unit") tells which table the next cells belong to (the columns of a DataSet come
+ * before its rows on the wire). */
+static bool tcp_column_cb(void *ctx, uint32_t col, const char *name)
+{
+    (void)ctx;
+    if (col == 1) tcp_in_table = strcmp(name, "Unit") == 0;
+    return true;
+}
+/* Issue #225: a union member is read only when the kind of the cell agrees with it (UBSan:
+ * "Cycles" of the RTU table, UInt32 5, read as a bool). A cell of a wrong kind leaves the value
+ * at its reset value, and the assertions below fail. */
 static bool tcp_cell_cb(void *ctx, uint32_t row, uint32_t col, const spb_rx_value_t *v)
 {
     (void)ctx;
     tcp_cells++;
+    if (!tcp_in_table) return true;
     tcp_rows = row + 1 > tcp_rows ? row + 1 : tcp_rows;
-    if (col == 0 && row < 2) {
+    if (col == 0 && row < 2 && v->kind == SPB_VAL_STRING) {
         snprintf(tcp_dev[row], sizeof(tcp_dev[row]), "%s", v->v.s);
     }
-    if (row == 0 && col == 1) tcp_unit0 = v->v.i;
-    if (row == 0 && col == 2) tcp_online0 = v->v.b;
-    if (row == 0 && col == 3) tcp_ok0 = v->v.i;
-    if (row == 1 && col == 4) tcp_timeout_other = v->v.i;
+    if (v->kind == SPB_VAL_INT) {
+        if (row == 0 && col == 1) tcp_unit0 = v->v.i;
+        if (row == 0 && col == 3) tcp_ok0 = v->v.i;
+        if (row == 1 && col == 4) tcp_timeout_other = v->v.i;
+    }
+    if (row == 0 && col == 2 && v->kind == SPB_VAL_BOOL) tcp_online0 = v->v.b;
     return true;
 }
 
@@ -1874,10 +1889,15 @@ static void test_modbus_tcp_table(void)
     TEST_ASSERT_TRUE(decoded_find_alias(&dec, GW_ALIAS_MODBUS_TCP) >= 0);
     TEST_ASSERT_TRUE(decoded_find_alias(&dec, GW_ALIAS_MODBUS) >= 0);   /* published together */
     /* the cells of both tables reach the callback, the TCP table's last (alias order) */
-    tcp_rows = tcp_cells = 0;
-    const spb_decoder_t d = {.cell = tcp_cell_cb};
+    tcp_rows = tcp_cells = tcp_unit0 = tcp_timeout_other = tcp_ok0 = 0;
+    tcp_online0 = tcp_in_table = false;
+    memset(tcp_dev, 0, sizeof(tcp_dev));
+    const spb_decoder_t d = {.column = tcp_column_cb, .cell = tcp_cell_cb};
     TEST_ASSERT_TRUE(spb_decode_with(g_rec.msgs[0].payload, g_rec.msgs[0].len, NULL, &d));
     TEST_ASSERT_EQUAL(9 + 2 * 8, tcp_cells);   /* RTU table (1 row x 9) + TCP table (2 x 8) */
+    TEST_ASSERT_TRUE(tcp_in_table);            /* the TCP table's last (alias order) */
+    TEST_ASSERT_EQUAL_UINT32(2, tcp_rows);
+    TEST_ASSERT_EQUAL_STRING("Meter1", tcp_dev[0]);
     TEST_ASSERT_EQUAL_STRING("(other units)", tcp_dev[1]);
     TEST_ASSERT_EQUAL_UINT32(3, tcp_timeout_other);           /* 2 + 1 */
     TEST_ASSERT_EQUAL_UINT32(1, tcp_unit0);                   /* Meter1 is unit 1 */
