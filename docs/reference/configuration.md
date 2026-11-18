@@ -181,6 +181,8 @@ A name, a location and a comment for the people who use the gateway. The card **
 
 The IPv4 keys of `network` are the keys of Ethernet.
 
+An IPv4 address in the configuration is four decimal numbers from 0 to 255 with dots between them (`a.b.c.d`), as `inet_pton` reads it. A number has no leading zero, no sign and no space: the gateway rejects `010.0.0.1`, because other programs read `010` as an octal number (8). The same rule applies to the IPv4 part of an IPv6 address (`::ffff:192.0.2.1`) and to the prefix of `modbus_tcp.allowed_clients` (#226).
+
 | Key | Type | Default | Rule |
 |---|---|---|---|
 | `dhcp` | bool | `true` | With `false`, `ip`, `netmask` and `gateway` are necessary |

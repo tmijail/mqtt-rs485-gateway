@@ -180,6 +180,19 @@ static void test_wifi_section(void)
     ASSERT_REJECTED(parse_network("{\"wifi\":{\"enabled\":true,\"ssid\":\"s\",\"dhcp\":false,"
                                   "\"ip\":\"10.0.0.2\",\"netmask\":\"255.0.0.0\",\"gateway\":\"10.0.0\"}}"),
                     "network.wifi.gateway: '10.0.0' is not a valid IPv4 address");
+    /* issue #226: decimal numbers without a leading zero, a sign or a space (inet_pton) */
+    static const char *const bad_ip[] = {"010.0.0.2", "10.0.0.02", "+10.0.0.2", " 10.0.0.2",
+                                         "10.0.0.2 ", "10.-0.0.2", "10.0.0.256", "10..0.2"};
+    for (size_t i = 0; i < sizeof(bad_ip) / sizeof(bad_ip[0]); i++) {
+        char doc[200];
+        snprintf(doc, sizeof(doc), "{\"wifi\":{\"enabled\":true,\"ssid\":\"s\",\"dhcp\":false,"
+                 "\"ip\":\"%s\",\"netmask\":\"255.0.0.0\",\"gateway\":\"10.0.0.1\"}}", bad_ip[i]);
+        TEST_ASSERT_FALSE_MESSAGE(parse_network(doc), bad_ip[i]);
+        TEST_ASSERT_NOT_NULL_MESSAGE(strstr(err.msg, "is not a valid IPv4 address"), err.msg);
+    }
+    TEST_ASSERT_TRUE_MESSAGE(parse_network("{\"wifi\":{\"enabled\":true,\"ssid\":\"s\",\"dhcp\":"
+                                           "false,\"ip\":\"0.0.0.0\",\"netmask\":\"255.255.255.0\","
+                                           "\"gateway\":\"10.100.0.1\"}}"), err.msg);
     ASSERT_REJECTED(parse_network("{\"wifi\":{\"sssid\":\"x\"}}"),
                     "network.wifi.sssid: unknown key");
     ASSERT_REJECTED(parse_network("{\"wifi\":true}"), "network.wifi: expected a JSON object");
@@ -208,6 +221,10 @@ static void test_ipv6_literals(void)
         "", ":", ":::", "1::2::3", "2001:db8::1:", ":2001:db8::1", "12345::1", "g::1",
         "1:2:3:4:5:6:7:8:9", "1:2:3:4:5:6:7", "1:2:3:4:5:6:7:8::", "::1.2.3", "::1.2.3.256",
         "1:2:3:4:5:6:7:1.2.3.4", "fe80::1%eth0", "2001:db8::1 ",
+        /* issue #226 (fuzz_text, against inet_pton): the dotted quad is decimal, without a
+         * leading zero, a sign or a space */
+        "::ffff:40.1.062.1", "::ffff:1.2.3.04", "::ffff:+1.2.3.4", "::ffff: 1.2.3.4",
+        "::ffff:1.-0.3.4", "::ffff:1.2.3.4 ", "::ffff:1.2.3.0004",
     };
     uint8_t a[16];
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
@@ -1606,6 +1623,14 @@ static void test_modbus_tcp_section(void)
     TEST_ASSERT_EQUAL(0, cfg.modbus_tcp.clients[2].prefix);
     snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"allowed_clients\":[\"10.0.0.0/33\"]}}", base);
     ASSERT_REJECTED(parse(doc), "modbus_tcp.allowed_clients[0]: invalid prefix");
+    /* issue #226: "-0" was prefix 0 (any client); a sign, a space or a leading zero is refused */
+    static const char *const bad_prefix[] = {"10.0.0.0/-0", "10.0.0.0/+8", "10.0.0.0/ 8",
+                                             "10.0.0.0/08", "10.0.0.0/", "10.0.0.0/8x"};
+    for (size_t i = 0; i < sizeof(bad_prefix) / sizeof(bad_prefix[0]); i++) {
+        snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"allowed_clients\":[\"%s\"]}}", base,
+                 bad_prefix[i]);
+        ASSERT_REJECTED(parse(doc), "modbus_tcp.allowed_clients[0]: invalid prefix");
+    }
     snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"allowed_clients\":[\"x\",1]}}", base);
     ASSERT_REJECTED(parse(doc), "modbus_tcp.allowed_clients[0]: 'x' is not an IPv4 address");
     snprintf(doc, sizeof(doc), "{%s,\"modbus_tcp\":{\"allowed_clients\":[\"1.2.3.4\",1]}}", base);

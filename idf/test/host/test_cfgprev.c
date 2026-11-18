@@ -192,6 +192,21 @@ static void test_diff(void)
     TEST_ASSERT_EQUAL(7, strlen(small));
 }
 
+/* Issue #226 (fuzz_cfgdoc): a repeated key. The items pair by key and by occurrence, so that a
+ * document has no difference from itself (before: the second "" against the first one). */
+static void test_diff_repeated_key(void)
+{
+    char out[160];
+    const char *dup = "{\"\":1,\"\":\"\"}";   /* the input that fuzz_cfgdoc found */
+    TEST_ASSERT_EQUAL(0, diff(dup, dup, out, sizeof(out)));
+    TEST_ASSERT_EQUAL_STRING("", out);
+    TEST_ASSERT_EQUAL(1, diff("{\"a\":1,\"a\":2}", "{\"a\":1,\"a\":3}", out, sizeof(out)));
+    TEST_ASSERT_EQUAL_STRING("a", out);
+    /* a second "a" that only one document has */
+    TEST_ASSERT_EQUAL(1, diff("{\"a\":1}", "{\"a\":1,\"a\":1}", out, sizeof(out)));
+    TEST_ASSERT_EQUAL(1, diff("{\"a\":1,\"a\":1}", "{\"a\":1}", out, sizeof(out)));
+}
+
 static void test_text(void)
 {
     gw_cfgprev_t p;
@@ -222,6 +237,7 @@ int main(void)
     RUN_TEST(test_on_save);
     RUN_TEST(test_decide);
     RUN_TEST(test_diff);
+    RUN_TEST(test_diff_repeated_key);
     RUN_TEST(test_text);
     return UNITY_END();
 }
