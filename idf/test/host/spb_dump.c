@@ -103,7 +103,7 @@ int main(int argc, char **argv)
         " {\"name\": \"Flow\", \"area\": \"input\", \"address\": 0, \"type\": \"float64\"},"
         " {\"name\": \"Serial\", \"area\": \"holding\", \"address\": 10, \"type\": \"string\","
         " \"length\": 8},"
-        " {\"name\": \"Alarm\", \"area\": \"holding\", \"address\": 20, \"type\": \"bool\", \"bit\": 3},"
+        " {\"name\": \"Alarm\", \"area\": \"holding\", \"address\": 20, \"type\": \"bool\", \"bit_offset\": 3},"
         " {\"name\": \"Raw\", \"area\": \"holding\", \"address\": 30, \"type\": \"bytes\","
         " \"length\": 3}]}]}";
     static gw_config_t mb6;
@@ -117,14 +117,13 @@ int main(int argc, char **argv)
      * DDATA) and an untyped one */
     static const char tmpl_json[] =
         "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"Plant1\","
-        " \"edge_node_id\": \"GW08\"}, \"devices\": ["
-        " {\"name\": \"PumpA\", \"unit_id\": 1, \"type\": \"Pump\", \"tags\": ["
+        " \"edge_node_id\": \"GW08\"}, \"device_types\": [{\"name\": \"Pump\", \"tags\": ["
         "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
         "   \"units\": \"rpm\", \"eng_high\": 3000},"
-        "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]},"
-        " {\"name\": \"PumpB\", \"unit_id\": 2, \"type\": \"Pump\", \"tags\": ["
-        "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\"},"
-        "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]}]}";
+        "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]}],"
+        " \"devices\": ["
+        " {\"name\": \"PumpA\", \"unit_id\": 1, \"type\": \"Pump\"},"
+        " {\"name\": \"PumpB\", \"unit_id\": 2, \"type\": \"Pump\"}]}";
     static gw_config_t tc;
     if (!gw_config_parse(tmpl_json, sizeof(tmpl_json) - 1, &tc, &err)) {
         fprintf(stderr, "template configuration rejected: %s\n", err.msg);
@@ -150,14 +149,13 @@ int main(int argc, char **argv)
         "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"Plant1\","
         " \"edge_node_id\": \"acme:berlin:gw09\", \"device_prefix\": \"acme:berlin:packaging\","
         " \"naming\": \"umh\", \"diagnostics_s\": 10}, \"modbus_tcp\": {\"enabled\": true},"
-        " \"devices\": ["
-        " {\"name\": \"line3:pump-a\", \"unit_id\": 1, \"type\": \"Pump\", \"tags\": ["
+        " \"device_types\": [{\"name\": \"Pump\", \"tags\": ["
         "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
         "   \"units\": \"rpm\"},"
-        "  {\"name\": \"Motor/Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]},"
-        " {\"name\": \"line3:pump-b\", \"unit_id\": 2, \"type\": \"Pump\", \"tags\": ["
-        "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\"},"
-        "  {\"name\": \"Motor/Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]}]}";
+        "  {\"name\": \"Motor/Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]}],"
+        " \"devices\": ["
+        " {\"name\": \"line3:pump-a\", \"unit_id\": 1, \"type\": \"Pump\"},"
+        " {\"name\": \"line3:pump-b\", \"unit_id\": 2, \"type\": \"Pump\"}]}";
     static gw_config_t uc;
     if (!gw_config_parse(umh_json, sizeof(umh_json) - 1, &uc, &err)) {
         fprintf(stderr, "UMH preset configuration rejected: %s\n", err.msg);

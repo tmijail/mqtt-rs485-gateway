@@ -165,9 +165,15 @@ static void test_schema2_keys(void)
         "\"fast_counters\":[{\"di\":8,\"glitch_ns\":1000}],\"run_hours\":[\"DI/4\"]},"
         "\"modbus_tcp\":{\"enabled\":true,\"local_unit_id\":100,\"local_writes\":true},"
         "\"ota\":{\"mqtt\":true},"
+        "\"device_types\":[{\"name\":\"P\",\"tags\":[{\"name\":\"f\",\"area\":\"input\","
+        "\"address\":1,\"type\":\"uint16\",\"bit_offset\":2,\"bit_width\":3}]}],"
         "\"devices\":[{\"name\":\"M\",\"unit_id\":1,\"enabled\":true,\"write_multiple\":true,"
         "\"tags\":[{\"name\":\"t\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\","
-        "\"writable\":true,\"write_min\":0,\"write_max\":100}]}]}";
+        "\"writable\":true,\"write_min\":0,\"write_max\":100},{\"name\":\"s\",\"area\":"
+        "\"holding\",\"address\":1,\"type\":\"uint16\",\"bit_offset\":4,\"bit_width\":2}]},"
+        /* #213: the tags of the type are noted once, also with two devices of the type */
+        "{\"name\":\"N\",\"unit_id\":2,\"type\":\"P\"},{\"name\":\"O\",\"unit_id\":3,\"type\":\"P\","
+        "\"enabled\":false}]}";
     gw_config_t *cfg = malloc(sizeof(*cfg));
     gw_cfg_err_t err;
     gw_schema_report_t r;
@@ -175,15 +181,17 @@ static void test_schema2_keys(void)
     TEST_ASSERT_TRUE_MESSAGE(gw_config_parse_schema(doc, strlen(doc), cfg, &err, &r), err.msg);
     size_t n;
     const gw_since_t *t = gw_config_since_table(&n);
-    TEST_ASSERT_EQUAL(20, n);
+    TEST_ASSERT_EQUAL(28, n);
     TEST_ASSERT_EQUAL_UINT16(2, r.need);
-    TEST_ASSERT_EQUAL_UINT16(n, r.hist[2]);
+    /* each entry once, but devices[].type and devices[].enabled are in two devices */
+    TEST_ASSERT_EQUAL_UINT16(n + 2, r.hist[2]);
     TEST_ASSERT_EQUAL_STRING("gateway", r.top[0].path);   /* the first noted key of schema 2 */
     char why[200];
     TEST_ASSERT_FALSE(gw_schema_fits(&r, 1, why, sizeof(why)));
     /* in the order of the parser (the sections), not of the document */
+    /* the keys of the root first */
     TEST_ASSERT_EQUAL_STRING("the configuration needs schema 2, the image reads 1: gateway (2), "
-                             "ntp.servers (2), local_io.di (2) and 17 more", why);
+                             "device_types (2), ntp.servers (2) and 27 more", why);
     /* any index matches; the keys of schema 1 next to them stay schema 1 */
     TEST_ASSERT_EQUAL_UINT16(2, gw_schema_since(t, n, "devices[3].tags[7].write_max", NULL));
     TEST_ASSERT_EQUAL_UINT16(2, gw_schema_since(t, n, "local_io.di[5].invert", NULL));

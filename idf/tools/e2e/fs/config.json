@@ -178,7 +178,7 @@
           "area": "holding",
           "address": 60,
           "type": "bool",
-          "bit": 3,
+          "bit_offset": 3,
           "writable": true
         },
         {
@@ -186,7 +186,7 @@
           "area": "input",
           "address": 46,
           "type": "bool",
-          "bit": 15
+          "bit_offset": 15
         }
       ]
     },

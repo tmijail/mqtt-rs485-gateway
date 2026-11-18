@@ -41,25 +41,25 @@ This example has the usual keys:
 }
 ```
 
-The top-level sections are `gateway`, `network`, `ntp`, `mqtt`, `sparkplug`, `rs485`, `local_io`, `devices`, `syslog`, `web`, `modbus_tcp` and `ota`. The sections `mqtt` and `sparkplug` are necessary. The other sections are optional.
+The top-level sections are `gateway`, `network`, `ntp`, `mqtt`, `sparkplug`, `rs485`, `local_io`, `device_types`, `devices`, `syslog`, `web`, `modbus_tcp` and `ota`. The sections `mqtt` and `sparkplug` are necessary. The other sections are optional.
 
 ## General rules
 
 - An unknown key is an error. A duplicate key is an error.
 - The maximum size of the document is 128 KiB.
-- A maximum of 16 devices, 64 tags for each device, and 256 tags in total.
+- A maximum of 16 devices, 64 tags for each device, and 256 tags in total. A device with a device type counts the tags of its type.
 - An error gives the JSON path of the value, for example `devices[1].tags[2].type`. A JSON syntax error gives the line and the column.
 - A warning does not stop a save. The warnings are the name checks of [UMH names](#name-checks-for-umh-core).
 
 ### The rules of the names
 
-These rules apply to `group_id`, `edge_node_id`, `primary_host_id`, `device_prefix`, the device `name` and `type`, and the tag `name` and `units`:
+These rules apply to `group_id`, `edge_node_id`, `primary_host_id`, `device_prefix`, the device `name`, the `name` of a device type, and the tag `name` and `units`:
 
 - The names are valid UTF-8.
 - The Sparkplug IDs do not contain `/`, `+`, `#` or the control characters U+0080 to U+009F.
-- Two device names must not differ only in case. Two device types, or two tag names of one device, must not differ only in case. The comparison folds the ASCII letters only.
-- A tag name must not also be a folder of another tag name of the same device, for example `A` and `A/B`.
-- A device `type` must not be the name or the first folder of a node metric: `bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info` or `Firmware Update`.
+- Two device names must not differ only in case. Two device types, or two tag names of one device or of one device type, must not differ only in case. The comparison folds the ASCII letters only.
+- A tag name must not also be a folder of another tag name of the same device or device type, for example `A` and `A/B`.
+- The name of a device type must not be the name or the first folder of a node metric: `bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info`, `Firmware Update` or `Run Hours`.
 - The longest device topic, `spBv1.0/<group_id>/DBIRTH/<edge_node_id>/<device_id>`, must fit in 159 bytes.
 
 ### The configuration schema
@@ -75,8 +75,9 @@ The firmware of this version reads schema 2. These keys are schema 2. All the ot
 | `local_io` | `di` (with `invert` and `debounce_ms`), `do_pulse_ms`, `fast_counters` (with `di` and `glitch_ns`) and `run_hours` |
 | `modbus_tcp` | `local_unit_id` and `local_writes` |
 | `ota` | `mqtt` |
-| `devices[]` | `enabled` and `write_multiple` |
-| `devices[].tags[]` | `write_min` and `write_max` |
+| `device_types` | The section, and `name`, `tags`, and `bit_offset` and `bit_width` of its tags |
+| `devices[]` | `enabled`, `write_multiple` and `type` (the name of a device type) |
+| `devices[].tags[]` | `write_min`, `write_max`, `bit_offset` and `bit_width` |
 
 ### The secrets
 
@@ -227,7 +228,9 @@ Each CONNECT has Clean Session = 1. With `protocol: "5"`, each CONNECT has Clean
 | `key_file` | text | `""` | The PEM private key of the client, **not encrypted** (PKCS#1, SEC1 or PKCS#8). Necessary with `cert_file`, and not permitted without it |
 
 - A file name has 1 to 32 characters `A-Z a-z 0-9 . _ -`, without `/`. It must not start with `.`, and it must not be `config.json`.
-- The button **Load a file…** below a file field of the card MQTT puts a file into the LittleFS partition. The REST API uses `PUT /api/files`. Refer to [Connect to a broker with TLS](../how-to/connect-to-a-broker-with-tls.md) and [The REST API](rest-api.md#the-pem-files).
+- The button **Load a file…** below a file field of the card MQTT puts a file into the LittleFS partition, and the field selects it. The REST API uses `PUT /api/files`. Refer to [Connect to a broker with TLS](../how-to/connect-to-a-broker-with-tls.md) and [The REST API](rest-api.md#the-pem-files).
+- The card **Certificates** lists the files, with the keys that use each file. It loads, replaces and removes them at once, without **Save and restart**. A replaced file keeps its name: the gateway uses the new content after the next restart. You cannot remove a file that the saved configuration names. Refer to [Manage the certificates](../how-to/manage-the-certificates.md).
+- The gateway keeps 16 PEM files at most, and each file has 16384 bytes at most.
 - A save of the configuration examines each file that `ca_file`, `cert_file`, `key_file` and `ota.ca_file` name. Each file must exist and hold certificates. The file of `key_file` must hold an unencrypted private key, and the key must agree with the certificate. Otherwise, the error has the path of the key, for example `mqtt.tls.key_file: the key does not agree with the certificate gw01.crt`.
 - The gateway uses TLS 1.2 or 1.3, as the broker selects.
 - The gateway examines the validity dates of the certificate. Thus the TLS connection waits for a valid clock.
@@ -268,6 +271,8 @@ A stable session sets the count to zero. Each new broker starts with the minimum
 | `naming` | `"sparkplug"` or `"umh"` | `"sparkplug"` | `"umh"` selects the UMH preset. Refer to [Name checks for UMH Core](#name-checks-for-umh-core) |
 | `diagnostics_s` | integer | `60` | 0, or 10 to 86400. The period of the NDATA with the node diagnostics, in seconds. 0 = only in the NBIRTH |
 | `store_forward` | bool or object | `false` | Refer to [`sparkplug.store_forward`](#sparkplugstore_forward) |
+
+The card **Sparkplug** of the Configuration tab has a control for each key. The control of `diagnostics_s` is **Diagnostics period (s)**.
 
 ### The device prefix
 
@@ -318,6 +323,18 @@ The object form, with the optional spill to a microSD card:
 
 > **Caution: Read the GPIO45 warning in [`idf/README.md` §6.5](../../idf/README.md#65-slow-broker-and-command-limits) before you set `sd.enabled`.** GPIO45 (D0 of the card) is a strapping pin. A pull-up on D0 can stop the boot of the board.
 
+The web UI has the section **Store & forward** in the card **Sparkplug**:
+
+| Control | Key |
+|---|---|
+| Keep the changes without a session | `store_forward` (`true` or `false`), or `enabled` of the object |
+| Spill to the microSD card | `sd.enabled`. The control is disabled while store & forward is off. The GPIO45 caution shows while the spill is on |
+| Space on the card (KB) | `sd.max_kb`. The size in MB shows below the field |
+
+The web UI writes `store_forward` as `true` or `false` when `sd.enabled` and `sd.max_kb` have their default values. In the other cases, it writes the object. When the controls do not change, the web UI keeps the form of the document.
+
+![The card 'Sparkplug' of the Configuration tab: Group ID, Edge node ID, Primary host ID, Naming and 'Diagnostics period (s)', the device prefix, and the section 'Store & forward'. 'Keep the changes without a session' and 'Spill to the microSD card' are on, and a caution tells to make sure that the card slot has no pull-up on D0 (GPIO45). 'Space on the card (KB)' is 131072, '= 128 MB'.](../images/sparkplug-store-forward.png)
+
 For the buffer, the card, the retention and the duplicates, refer to [Store & forward](store-and-forward.md).
 
 ## `rs485`
@@ -348,8 +365,8 @@ An array of up to 16 devices.
 | `block_reads` | bool | `true` | `false` = one request for each tag. Use it for a slave that answers with an exception if a block contains registers that it does not map |
 | `max_gap` | integer | `0` | 0 to 1999. The number of unused registers or bits that a block can include to join two tags of the same area. Not permitted with `block_reads: false` |
 | `write_multiple` | bool | `false` | `true` = the gateway writes one register with FC16 and one coil with FC15, in place of FC06 and FC05. Use it for a slave that does not accept FC06 or FC05. A write of two or more registers always uses FC16 |
-| `type` | text | `""` | The device type, as a Sparkplug template. Refer to [Device types](#device-types) |
-| `tags` | array | — | Necessary. 1 to 64 tags |
+| `type` | text | — | The `name` of an entry of `device_types`. The device then uses the tags of that type. Refer to [`device_types`](#device_types) |
+| `tags` | array | — | 1 to 64 tags. Necessary without `type`. Not permitted with `type` |
 
 The defaults of `block_reads`, `max_gap` and `write_multiple` come from the build options `CONFIG_GW_MB_BLOCK_READS`, `CONFIG_GW_MB_BLOCK_MAX_GAP` and `CONFIG_GW_MB_FORCE_MULTI_WRITE`. A block never has more than 125 registers or 2000 bits.
 
@@ -385,20 +402,51 @@ Use it, for example, for a slave that is not connected yet during the commission
 - If a cycle fails before it reads the slow tags, the next cycle reads them.
 - The gateway polls a device with only slow tags each `slow_poll_ms`.
 
-### Device types
+### Devices of one type
+
+A device with `type` has no `tags` key. It uses the tags of the device type, and keeps its own `unit_id`, `poll_ms` and the other keys of the device. Refer to [`device_types`](#device_types).
 
 ```json
-{ "name": "PumpA", "unit_id": 1, "type": "Pump", "tags": [ … ] },
-{ "name": "PumpB", "unit_id": 2, "type": "Pump", "tags": [ … ] }
+{ "name": "PumpA", "unit_id": 1, "type": "Pump" },
+{ "name": "PumpB", "unit_id": 2, "type": "Pump", "poll_ms": 500 }
 ```
 
-- `type` has a maximum of 39 characters, valid UTF-8, without `/ + #`. Empty = no template: one metric for each tag.
-- All the devices of one `type` have the same tags: the same names and datatypes, in the same order. The area, the address, the scale and the units can be different. If not, the gateway refuses the configuration with the path `devices[i].type`.
-- All the definitions together describe a maximum of 64 tags. Each type counts one time.
+- `type` must be the `name` of an entry of `device_types`. If not, the gateway refuses the configuration with the path `devices[i].type`.
+- A device with `type` and `tags` is an error at `devices[i].tags`.
+- A device without `type` has its own tags. Such a device is not a Sparkplug template instance.
 
-For the messages of a template, refer to [Sparkplug messages and metrics](sparkplug-messages-and-metrics.md#templates).
+## `device_types`
+
+An array of up to 16 device types. A device type holds the tag list of a device model one time. Each device that gives the `name` of the type in its `type` key uses these tags.
+
+```json
+"device_types": [
+  { "name": "Pump", "tags": [
+      { "name": "Speed", "area": "holding", "address": 0, "type": "uint16", "units": "rpm",
+        "writable": true },
+      { "name": "Run",   "area": "coil",    "address": 0, "type": "bool" } ] }
+]
+```
+
+| Key | Type | Default | Rule |
+|---|---|---|---|
+| `name` | text | — | Necessary. 1 to 39 bytes, without `/ + #`. Refer to [The rules of the names](#the-rules-of-the-names) |
+| `tags` | array | — | Necessary. 1 to 64 tags, with the keys of [`devices[].tags`](#devicestags) |
+
+- Two device types must not have the same name. They must not have names that differ only in case.
+- The validation examines each type, also a type that no device uses. An error in a tag of a type has the path `device_types[n].tags[k]`.
+- Each device of the type gets a copy of the tags of the type. These copies count in the limit of 256 tags. For example, 5 devices of a type with 60 tags are 300 tags: the gateway refuses that configuration with the path `devices[4].type`.
+- Each type that a device uses is a Sparkplug template. The NBIRTH has one template definition for it, with the name of the type. The DBIRTH of each device of the type has one template instance. A type that no device uses has no definition in the NBIRTH.
+- The definitions of the types that the devices use describe a maximum of 64 tags together. Each type counts one time.
+- With `sparkplug.naming: "umh"`, the tags of a device with a type go out as plain metrics, not as a template instance.
+
+In the web UI, the card **Device types** above the card **Devices and tags** holds the types. Each type is a row that closes and opens. The types are closed by default; a new type opens. The field **Device type** of a device selects its type. The button **Remove type** is disabled while devices use the type. The button **Make a type from these tags** of a device with its own tags makes a new type with a copy of the tags, and the device then uses the type.
+
+For the messages of a template, refer to [Sparkplug messages and metrics](sparkplug-messages-and-metrics.md#templates). For the steps, refer to [Add devices of one type](../how-to/add-devices-of-one-type.md).
 
 ## `devices[].tags`
+
+The tags of a device without a type, and the tags of a device type (`device_types[].tags`), have the same keys and rules.
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
@@ -412,7 +460,8 @@ For the messages of a template, refer to [Sparkplug messages and metrics](sparkp
 | `deadband` | number | `0` | Not negative. An absolute deadband. The gateway publishes a new value only when it changes by more than the deadband |
 | `writable` | bool | `false` | Only for `coil` and `holding`. A host can write the value with a DCMD |
 | `scan` | `fast` or `slow` | `fast` | Refer to [Fast and slow scan](#fast-and-slow-scan) |
-| `bit` | integer | — | 0 to 15. Refer to [One bit of a register](#one-bit-of-a-register) |
+| `bit_offset` | integer | — | 0 to 15. The lowest bit of a bit or a field of bits in a register. Refer to [Bits of a register](#bits-of-a-register) |
+| `bit_width` | integer | `1` | 1 to 16. Only with `bit_offset`. `bit_offset` + `bit_width` must be 16 or less. Refer to [Bits of a register](#bits-of-a-register) |
 | `length` | integer | — | 1 to 16 registers. Necessary with `type: string` or `type: bytes`, and only with them |
 | `units` | text | `""` | Up to 15 characters. The property `engUnit` of the metric. Empty = no property |
 | `eng_low` | number | — | The property `engLow` (Float). In the range of a Float (±3.4e38) |
@@ -426,7 +475,11 @@ For the messages of a template, refer to [Sparkplug messages and metrics](sparkp
 - `eng_low` and `eng_high` are not permitted on `bool`, `string` and `bytes` tags.
 - `write_min` and `write_max` are not permitted on `bool`, `string` and `bytes` tags, and not on a tag that is not writable.
 
-In the web UI, the details row of a tag (**More**) shows only the keys that apply to the type of the tag. A key with a value stays visible.
+In the web UI, the details row of a tag (**More**) shows only the keys that apply to the type of the tag. A key with a value stays visible:
+
+- **Offset**, **Eng. low**, **Eng. high**, **Write min** and **Write max**: not for `bool`, `string` and `bytes`. **Deadband**: not for `string` and `bytes`.
+- **Bit offset** and **Bit width**: only for `bool` and `uint16` in `holding` or `input`.
+- **Length (registers)**: only for `string` and `bytes`.
 
 ### Write limits
 
@@ -447,7 +500,7 @@ In the web UI, the details row of a tag (**More**) shows only the keys that appl
 
 | Type | Registers | Areas |
 |---|---|---|
-| `bool` | 1 bit | `coil`, `discrete`. Also `holding` and `input` with `bit` |
+| `bool` | 1 bit | `coil`, `discrete`. Also `holding` and `input` with `bit_offset` |
 | `uint16`, `int16` | 1 | `holding`, `input` |
 | `uint32`, `int32`, `float32` | 2 | `holding`, `input` |
 | `uint64`, `int64`, `float64` | 4 | `holding`, `input` |
@@ -483,22 +536,26 @@ The word order applies to 32 and 64 bits. For 16 bits, only the byte swap applie
   - Report by exception compares all the bytes.
   - A write needs exactly `2 × length` bytes. The gateway writes them with one FC16.
 
-### One bit of a register
+### Bits of a register
 
 ```json
-{ "name": "Alarm", "area": "holding", "address": 60, "type": "bool", "bit": 3, "writable": true }
+{ "name": "Alarm", "area": "holding", "address": 60, "type": "bool", "bit_offset": 3, "writable": true },
+{ "name": "State", "area": "holding", "address": 20, "type": "uint16", "bit_offset": 4, "bit_width": 3 }
 ```
 
-- `bit` is necessary with `type: bool` in `holding` or `input`, and only there.
-- 0 = the least significant bit of the register, as it arrives.
-- With `bit`, `word_order` must be `big`.
-- For a write, the gateway reads the register (FC03). Then it writes the full register with the changed bit (FC06, or FC16 with `write_multiple: true`).
+- `bit_offset` is necessary with `type: bool` in `holding` or `input`, and only permitted in these two areas.
+- 0 = the least significant bit of the register, as it arrives. `bit_offset` is the lowest bit of the field.
+- `bit_width` 1 (the default) is one bit: the type must be `bool`.
+- `bit_width` 2 to 16 is a field of bits: the type must be `uint16`. The gateway publishes the field as an unsigned integer, for example 0 to 7 for 3 bits. `scale`, `offset` and the other keys of a `uint16` tag apply to the value of the field.
+- Another type with `bit_offset` is an error at `type`. A sum `bit_offset` + `bit_width` of more than 16 is an error at `bit_width`.
+- With `bit_offset`, `word_order` must be `big`.
+- For a write, the gateway reads the register (FC03). Then it writes the full register, with only the bits of the field changed (FC06, or FC16 with `write_multiple: true`). The gateway refuses a value that the field cannot hold, for example 8 for 3 bits. It sends no request.
 
 ### The datatypes in Sparkplug
 
 | Tag type | Sparkplug datatype |
 |---|---|
-| `bool`, also with `bit` | Boolean (11) |
+| `bool`, also with `bit_offset` | Boolean (11) |
 | `int16` | Int16 (2) |
 | `uint16` | UInt16 (6) |
 | `int32` | Int32 (3) |
@@ -550,21 +607,24 @@ A PLC or a SCADA without MQTT can read the I/O of the gateway itself on the unit
 | Discrete inputs | FC02 | 0 to 7 | DI/1 to DI/8, after the debounce. 1 = active |
 | Coils | FC01 (read), FC05 and FC15 (write) | 0 to 7 | DO/1 to DO/8. 1 = on |
 | Input registers | FC04 | 0 to 31 | The pulse counters of DI/1 to DI/8, 4 registers each (uint64, `big`: the most significant register first). DI/1 is at 0 to 3, DI/8 at 28 to 31 |
+| Input registers | FC04 | 32 to 63 | The run hours of DI/1 to DI/8 in seconds, 4 registers each (uint64, `big`). DI/1 is at 32 to 35, DI/8 at 60 to 63 |
+| Input registers | FC04 | 64 to 95 | The run hours of DO/1 to DO/8 in seconds, 4 registers each (uint64, `big`). DO/1 is at 64 to 67, DO/8 at 92 to 95 |
 
 The exceptions of the local unit:
 
 | Code | Cause |
 |---|---|
 | 01 | FC03, FC06 or FC16: the local unit has no holding registers. Also FC05 and FC15 when `local_writes` is `false` |
-| 02 | An address outside the table above |
+| 02 | An address outside the table above. Also a read that starts in the table and ends after it, for example FC04 from 94 to 97 |
 | 03 | A write to a DO that a local rule drives. The gateway changes no DO of the request. An NCMD gets the same refusal |
 | 04 | The DO expander does not answer: the DOs are unknown. Also a write that the local I/O task did not apply |
 
 - A write goes through the local I/O task, the only writer of the DO expander, as an NCMD does. The NDATA then gives the new state of the DO.
 - The safe state after a loss of MQTT (`local_io.failsafe_s`) applies as for an NCMD. A Modbus write after the safe state changes the DO again.
+- The run hours have the same value as the metric `Run Hours/DI/n` or `Run Hours/DO/n`: a new value when the channel changes its state, and each 60 s while it stays on. A channel that is not in `local_io.run_hours` gives 0. Refer to [Run hours](#run-hours).
 - The local unit has no authentication, as the other units. Limit the clients with `allowed_clients`, and keep `local_writes` off when no client must switch the DOs.
 
-![The card 'Modbus TCP' of the Configuration tab: Enabled, the port 502, the idle timeout, the allowed client 10.0.2.2, and the local unit 100 with Local writes. The explainer of Local unit ID gives the map: the DIs at discrete 0 to 7, the DOs at coil 0 to 7, the counters at input 0 to 31.](../images/modbus-tcp-card.png)
+![The card 'Modbus TCP' of the Configuration tab: Enabled, the port 502, the idle timeout, the allowed client 10.0.2.2, and the local unit 100 with Local writes. The explainer of Local unit ID gives the map: the DIs at discrete 0 to 7, the DOs at coil 0 to 7, the counters at input 0 to 31, the run hours at input 32 to 95.](../images/modbus-tcp-card.png)
 
 ## `ota`
 
@@ -575,7 +635,7 @@ The exceptions of the local unit:
 | Key | Type | Default | Rule |
 |---|---|---|---|
 | `mqtt` | bool | `false` | `true` lets a Sparkplug host start an update with the NCMD `Node Control/Firmware Update`, and a restart into the other slot with `Node Control/Boot Other Slot`. With `false`, the NBIRTH does not contain `Node Control/Firmware Update`, `Node Control/Firmware SHA-256` and `Node Control/Boot Other Slot`, and the gateway refuses an NCMD that writes them. A change needs a save and a restart. The web UI control is **Update from MQTT** in the card **Firmware updates** |
-| `ca_file` | text | `""` | The CA of the server of the images (PEM, in LittleFS, with the name rules of `mqtt.tls.ca_file`). Empty = `mqtt.tls.ca_file` if TLS is on, else the public root CAs of ESP-IDF |
+| `ca_file` | text | `""` | The CA of the server of the images (PEM, in LittleFS, with the name rules of `mqtt.tls.ca_file`). Empty = `mqtt.tls.ca_file` if TLS is on, else the public root CAs of ESP-IDF. The web UI control is **CA file of the image server** in the card **Firmware updates**. Its button **Load a file…** loads a PEM file, and the field then selects it |
 
 An update from the web UI is always possible, for a user who knows the web password. The button "Restart into `<version>`" is always available after a trial.
 
@@ -689,6 +749,7 @@ Each item is `DI/1` to `DI/8` or `DO/1` to `DO/8`, one time only. The gateway co
 - The NBIRTH has the metric `Run Hours/DI/n` or `Run Hours/DO/n` (UInt64, seconds) for each channel of the list. Refer to [The Sparkplug messages and metrics](sparkplug-messages-and-metrics.md#local-io).
 - An NDATA gives a new value when the channel changes its state, and each 60 s while it stays on.
 - The Status tab of the web UI shows the run hours in hours, with one decimal.
+- The local unit of the Modbus TCP server gives the run hours as input registers. Refer to [The local unit](#the-local-unit).
 - The gateway saves the run hours with the pulse counters (`counter_save_s`). An NCMD cannot write them. The factory reset sets them to 0.
 - A channel that you remove from the list keeps its saved value. When you add it again, it continues from that value.
 - A DO that the expander does not read counts as off.
@@ -767,7 +828,7 @@ The web UI and the REST API.
 |---|---|---|---|
 | `enabled` | bool | `true` | `false` = no web server with a valid configuration. The server always starts with a rejected configuration, in commissioning, in the fault mode, and after a push of BOOT |
 | `port` | integer | `80` | 1 to 65535, HTTP. With `https: true`, it only redirects to HTTPS |
-| `https` | bool | `true` | HTTPS with the self-signed certificate of the gateway (EC P-256). The gateway makes it at the first boot and keeps it in NVS. The console shows its SHA-256 fingerprint at each boot. `false` = plain HTTP |
+| `https` | bool | `true` | HTTPS with the certificate of the gateway. At the first boot, the gateway makes a self-signed certificate (EC P-256) and keeps it in NVS. The console shows its SHA-256 fingerprint at each boot. The card **Certificates** loads the certificate of the plant, or makes a new self-signed certificate (refer to [Manage the certificates](../how-to/manage-the-certificates.md)). `false` = plain HTTP |
 | `https_port` | integer | `443` | 1 to 65535, not the same as `port` |
 | `username` | text | `"admin"` | 1 to 32 visible ASCII characters, without `:` |
 | `password` | text (secret) | `""` | Empty, or 8 to 63 printable ASCII characters (0x20 to 0x7E). The password is also the WPA2 key of the access point |

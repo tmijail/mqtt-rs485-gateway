@@ -83,7 +83,7 @@ static bool parse_root(const cJSON *root, gw_mbdiag_req_t *rq, char *why, size_t
     }
     bool bits = rq->area == GW_AREA_COIL || rq->area == GW_AREA_DISCRETE;
     rq->tag.scale = 1.0;
-    rq->tag.bit = GW_NO_BIT;
+    rq->tag.bit_offset = GW_NO_BIT;
     rq->tag.area = rq->area;
     rq->tag.word_order = GW_WORD_BIG;
     rq->convert = type != NULL;

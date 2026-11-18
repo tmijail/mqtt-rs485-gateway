@@ -59,9 +59,20 @@ If the pre-flight check refuses the image, a red box shows in the card. Refer to
 7. Read the progress in the card. You can close the page. At the end, the gateway restarts.
 8. Do the steps of "Make sure that the update is complete".
 
-The gateway examines the certificate of the server with `ota.ca_file`. If that key is not set, it uses `mqtt.tls.ca_file`, then the public CA bundle of ESP-IDF.
+The gateway examines the certificate of the server with `ota.ca_file`. If that key is not set, it uses `mqtt.tls.ca_file` when TLS is on (`mqtt.tls.enabled`). Otherwise, it uses the public CA bundle of ESP-IDF. To set `ota.ca_file`, refer to [Set the CA of the image server](#set-the-ca-of-the-image-server).
 
 The field **SHA-256 (optional)** accepts 64 hexadecimal characters. The page changes capital letters to small letters. A space or another length is an error: the page shows it below the field, and it starts no download and no upload.
+
+## Set the CA of the image server
+
+Do this procedure when a private CA signed the certificate of the image server, and the CA file of the MQTT card does not contain that CA.
+
+1. Open the tab **Configuration**.
+2. In the card **Firmware updates**, click **Load a file…** below **CA file of the image server**.
+3. Select the PEM file of the CA. The field then shows the new file, with the subject and the last day of its certificate.
+4. Click **Save and restart**.
+
+To use a file that is already in the gateway, select it in the field. The empty option of the field names the CA that the gateway uses without the key: the CA file of the MQTT card when TLS is on, else the public root CAs. For the key, refer to [`ota`](../reference/configuration.md#ota).
 
 ## Let a Sparkplug host start an update
 
@@ -74,7 +85,7 @@ By default, a Sparkplug host cannot start an update (`ota.mqtt` is `false`). The
 3. Click **Save and restart**.
 4. After the restart, make sure that the card **Firmware** of the tab **Status** shows **Update from MQTT: On**.
 
-![The card 'Firmware updates' of the Configuration tab: the check box 'Update from MQTT' is off. The hint tells to turn it on only when the broker lets only the Sparkplug host publish to the NCMD topic of the gateway. The explainer of the field is open.](../images/firmware-updates-card.png)
+![The card 'Firmware updates' of the Configuration tab: the check box 'Update from MQTT' is off. The hint tells to turn it on only when the broker lets only the Sparkplug host publish to the NCMD topic of the gateway. The explainer of the field is open. The card also has the field 'CA file of the image server', with a button 'Load a file…'.](../images/firmware-updates-card.png)
 
 The host then sends the NCMD `Node Control/Firmware Update` with the URL as a String. As an option, it sends `Node Control/Firmware SHA-256` with the SHA-256 of the file, in the same NCMD or in an earlier one. The host reads the result in `Firmware Update/State` and `Firmware Update/Progress`. The host can also send `Node Control/Boot Other Slot` (Boolean `true`). The gateway then restarts into the image of the other slot, as the button **Restart into `<version>`** does. For the metrics, refer to [Sparkplug messages and metrics](../reference/sparkplug-messages-and-metrics.md).
 

@@ -80,8 +80,9 @@ The bar stays in view in the Configuration tab and in the JSON tab. It shows the
 
 ## Back up the configuration
 
-1. In the web UI, click **Export**. The browser downloads the document.
-2. Keep the file in a safe place. Write the web password, the MQTT password and the Wi-Fi password in your password manager. The file does not contain them.
+1. In the web UI, click the tab **Configuration** or **JSON**.
+2. At the bottom of the page, click **Export**. The browser downloads the document.
+3. Keep the file in a safe place. Write the web password, the MQTT password and the Wi-Fi password in your password manager. The file does not contain them.
 
 From a script, use the REST API. Each write needs the header `X-Requested-With`. A read does not:
 
@@ -97,9 +98,10 @@ curl -k -u admin:<web password> "https://<ip>/api/config?download=1" -o gw01-con
 
 The stored secrets stay, because the copy has `"********"`.
 
-1. In the web UI, click **Import**, and select the file. The web UI shows the document in the JSON tab.
-2. Examine the document.
-3. Click **Validate**, then click **Save and restart**.
+1. In the web UI, click the tab **Configuration** or **JSON**.
+2. At the bottom of the page, click **Import**. Select the file. The web UI shows the document in the JSON tab.
+3. Examine the document.
+4. Click **Validate**, then click **Save and restart**.
 
 With the REST API:
 

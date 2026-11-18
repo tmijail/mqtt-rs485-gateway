@@ -27,6 +27,25 @@ static void pack_bits(gw_mbap_txn_t *txn, uint8_t bits, uint16_t addr, uint16_t 
     }
 }
 
+/* The uint64 of input registers 4 * @p k .. 4 * @p k + 3: the counters of DI/1..8 (k 0..7), then
+ * the run hours of DI/1..8 and DO/1..8 (#234; k 8..23). A channel that is not in
+ * local_io.run_hours has no Run Hours metric: it reads 0. */
+_Static_assert(GW_MBLOCAL_REG_RUN_DI == GW_LOCAL_IO_CHANNELS * GW_MBLOCAL_REGS_PER_COUNTER &&
+                   GW_MBLOCAL_REG_RUN_DO ==
+                       GW_MBLOCAL_REG_RUN_DI + GW_LOCAL_IO_CHANNELS * GW_MBLOCAL_REGS_PER_COUNTER &&
+                   GW_MBLOCAL_INPUT_REGS ==
+                       GW_MBLOCAL_REG_RUN_DO + GW_LOCAL_IO_CHANNELS * GW_MBLOCAL_REGS_PER_COUNTER,
+               "#234: the input registers are the counters, then the run hours of the DIs and DOs");
+
+static uint64_t input_value(const gw_config_t *cfg, const gw_mblocal_io_t *io, unsigned k)
+{
+    if (k < GW_LOCAL_IO_CHANNELS) {
+        return io->counters[k];
+    }
+    k -= GW_LOCAL_IO_CHANNELS;
+    return (cfg->local_io.run_hours & (1u << k)) ? io->run_s[k] : 0u;
+}
+
 void gw_mblocal_execute(const gw_config_t *cfg, const gw_mblocal_io_t *io, gw_mbap_txn_t *txn,
                         gw_mblocal_write_t *wr)
 {
@@ -58,14 +77,14 @@ void gw_mblocal_execute(const gw_config_t *cfg, const gw_mblocal_io_t *io, gw_mb
         }
         return;
     case MB_FC_READ_INPUT_REGISTERS:
-        if (end > GW_LOCAL_IO_CHANNELS * GW_MBLOCAL_REGS_PER_COUNTER) {
+        if (end > GW_MBLOCAL_INPUT_REGS) {   /* also a range that crosses the end */
             refuse(txn, GW_MBLOCAL_EX_ILLEGAL_ADDRESS);
             return;
         }
         for (uint16_t i = 0; i < rq->qty; i++) {
             unsigned r = rq->addr + i;
             unsigned shift = 16u * (GW_MBLOCAL_REGS_PER_COUNTER - 1u - r % GW_MBLOCAL_REGS_PER_COUNTER);
-            uint16_t v = (uint16_t)(io->counters[r / GW_MBLOCAL_REGS_PER_COUNTER] >> shift);
+            uint16_t v = (uint16_t)(input_value(cfg, io, r / GW_MBLOCAL_REGS_PER_COUNTER) >> shift);
             txn->data[2u * i] = (uint8_t)(v >> 8);
             txn->data[2u * i + 1u] = (uint8_t)v;
         }

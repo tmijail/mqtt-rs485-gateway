@@ -3,7 +3,7 @@
 This document lists the routes of the REST API of the gateway, its authentication and its responses.
 
 - For the configuration document that `GET` and `PUT /api/config` use, refer to [The configuration document](configuration.md).
-- For the procedures, refer to [Change, back up and restore the configuration](../how-to/change-the-configuration.md), [Update the firmware](../how-to/update-the-firmware.md), [Restart into safe mode or do a factory reset](../how-to/restart-into-safe-mode-or-reset.md) and [Read the live log](../how-to/read-the-live-log.md).
+- For the procedures, refer to [Change, back up and restore the configuration](../how-to/change-the-configuration.md), [Update the firmware](../how-to/update-the-firmware.md), [Restart into safe mode or do a factory reset](../how-to/restart-into-safe-mode-or-reset.md), [Read the live log](../how-to/read-the-live-log.md) and [Manage the certificates](../how-to/manage-the-certificates.md).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The E2E in QEMU examines the routes.
 
@@ -80,16 +80,30 @@ The responses of `PUT /api/config`:
 
 | Method and route | What it does |
 |---|---|
-| `GET /api/files` | The files in the LittleFS partition that the configuration can name: what each file holds. Never the content of a file. Refer to [`GET /api/files`](#get-apifiles) |
-| `PUT /api/files?name=<name>` | Loads a PEM file. The body is the PEM text. Refer to [`PUT /api/files`](#put-apifiles) |
+| `GET /api/files` | The files in the LittleFS partition that the configuration can name: what each file holds, and the keys that use it. Never the content of a file. Refer to [`GET /api/files`](#get-apifiles) |
+| `PUT /api/files?name=<name>` | Loads or replaces a PEM file, or a certificate and its key together. `?dry_run=1` only examines. Refer to [`PUT /api/files`](#put-apifiles) |
+| `DELETE /api/files/<name>` | Removes a file that the saved configuration does not use. Refer to [`DELETE /api/files/<name>`](#delete-apifilesname) |
 
-The files are for `mqtt.tls.ca_file`, `mqtt.tls.cert_file`, `mqtt.tls.key_file` and `ota.ca_file`. A load does not change the configuration. Select the file in the configuration, then save it.
+The files are for `mqtt.tls.ca_file`, `mqtt.tls.cert_file`, `mqtt.tls.key_file` and `ota.ca_file`. A load does not change the configuration. Select the file in the configuration, then save it. A replaced file keeps its name: the gateway uses the new content after the next restart.
+
+The gateway keeps 16 PEM files at most, and each file has 16384 bytes at most.
 
 A save or a dry run of `PUT /api/config` examines the files that the document names:
 
 - Each file exists, and `ca_file` and `cert_file` hold certificates, `key_file` an unencrypted private key.
 - The client key agrees with the client certificate.
 - Otherwise, the response is `400` with the path of the key, for example `{"error":"mqtt.tls.key_file: the key does not agree with the certificate gw01.crt","path":"mqtt.tls.key_file"}`.
+
+### The HTTPS certificate of the web UI
+
+| Method and route | What it does |
+|---|---|
+| `GET /api/web/certificate` | The certificate that the web server uses, and the certificate that waits for the restart. Never a key. Refer to [`GET /api/web/certificate`](#get-apiwebcertificate) |
+| `PUT /api/web/certificate` | Loads the certificate of the plant and its key. It waits for the restart. `?dry_run=1` only examines. Refer to [`PUT /api/web/certificate`](#put-apiwebcertificate) |
+| `POST /api/web/certificate/new` | Makes a new key and a self-signed certificate for the hostname. It waits for the restart. `201` with the certificate, as in `PUT` |
+| `DELETE /api/web/certificate/pending` | Discards the certificate that waits for the restart. `200 {"ok":true,"discarded":true}`. `404` when no certificate waits |
+
+The web server uses a new certificate only after a restart. Until then, it uses the certificate of this boot. A second load, or a new certificate, replaces the certificate that waits.
 
 ### Firmware
 
@@ -226,10 +240,12 @@ Each network has these fields. The list is strongest first, with one item for ea
 
 ```json
 {"files":[{"name":"ca.pem","size":1302,"kind":"certificates","count":1,
-           "certs":[{"subject":"CN=ACME Plant Root CA","not_after":"2034-03-01","ca":true}]},
+           "certs":[{"subject":"CN=ACME Plant Root CA","not_after":"2034-03-01","ca":true}],
+           "used_by":["mqtt.tls.ca_file"]},
           {"name":"gw01.key","size":227,"kind":"key","key_type":"EC P-256",
-           "agrees_with":["gw01.crt"]}],
- "total_bytes":1529,"max_file_bytes":16384}
+           "agrees_with":["gw01.crt"],"used_by":["mqtt.tls.key_file"]}],
+ "count":2,"total_bytes":1529,"max_files":16,"max_file_bytes":16384,"config_known":true,
+ "fs_total_bytes":1048576,"fs_used_bytes":28672}
 ```
 
 | Field | Content |
@@ -239,6 +255,11 @@ Each network has these fields. The list is strongest first, with one item for ea
 | `count`, `certs` | For certificates: the number of certificates, and the first 4 with the subject, the last day of validity (UTC) and whether the certificate is a CA |
 | `key_type` | For a key: for example `EC P-256` or `RSA 2048` |
 | `agrees_with` | For a key: the certificate files whose first certificate has the public key of this key |
+| `used_by` | The keys of the saved configuration that name the file, for example `mqtt.tls.ca_file`. An empty list = the file is not in use |
+| `count`, `total_bytes` | The number of files and their bytes |
+| `max_files`, `max_file_bytes` | The limits: 16 files, 16384 bytes for each file |
+| `config_known` | `false` when the gateway cannot read the saved configuration. Then `used_by` is empty, and `DELETE` refuses each file |
+| `fs_total_bytes`, `fs_used_bytes` | The size of the LittleFS partition and the bytes in use |
 
 The list has up to 16 files. It leaves out `config.json` and the other files of the gateway.
 
@@ -246,17 +267,80 @@ The list has up to 16 files. It leaves out `config.json` and the other files of 
 
 `PUT /api/files?name=<name>`, with the PEM text as the body (`Content-Type: application/x-pem-file`). The name rules are the rules of `mqtt.tls.ca_file`, and the name must not end with `.json`.
 
+| Query parameter | Effect |
+|---|---|
+| `name` | The name of the file in the gateway. Necessary |
+| `key_name` | The body holds a certificate and its private key. The gateway separates the key block: the certificates go to `name` and the key to `key_name`. The key must agree with the first certificate |
+| `replace=1` | A file with the same name is replaced. Without it, the response is `409` |
+| `dry_run=1` | The gateway examines the body and writes nothing. The response is `200` |
+
+The gateway also compares the load with the saved configuration:
+
+- When a key of the configuration names the file, the new content must be of the same kind. For example, a private key cannot replace the file of `mqtt.tls.ca_file`.
+- When the load replaces the file of `mqtt.tls.cert_file` or `mqtt.tls.key_file`, the client key must still agree with the client certificate. To change the two, load them together with `key_name`.
+
 | Status | Body or cause |
 |---|---|
-| `201` | `{"ok":true,"file":{…}}`: the file, with the fields of `GET /api/files` |
-| `400` | The name is not correct, or the body is not PEM certificates or an unencrypted PEM private key |
-| `409` | A file with this name exists. The gateway does not replace it |
-| `413` | The body is larger than 16 KiB |
-| `507` | The gateway cannot write the file, for example because the LittleFS partition is full |
+| `200` | `dry_run=1`: `{"ok":true,"saved":false,"files":[…]}`. Each file has the fields of `GET /api/files` and `"replaced"` |
+| `201` | `{"ok":true,"saved":true,"files":[…],"file":{…}}`. `file` is the first file |
+| `400` | The name is not correct, the body is not PEM certificates or an unencrypted PEM private key, the key does not agree, or the content does not agree with the key of the configuration. `path` gives that key, for example `mqtt.tls.ca_file`. A body with a certificate and a key without `key_name` is also refused |
+| `409` | A file with this name exists, and `replace=1` is not in the query |
+| `413` | A file is larger than 16384 bytes |
+| `507` | The gateway holds 16 files, or there is not sufficient space in the LittleFS partition, or the write failed |
 
 ```sh
 curl -k -u admin:<web password> -H "X-Requested-With: curl" -X PUT \
      --data-binary @ca.pem "https://<ip>/api/files?name=ca.pem"
+cat gw01.crt gw01.key | curl -k -u admin:<web password> -H "X-Requested-With: curl" -X PUT \
+     --data-binary @- "https://<ip>/api/files?name=gw01.crt&key_name=gw01.key&replace=1"
+```
+
+### `DELETE /api/files/<name>`
+
+| Status | Body or cause |
+|---|---|
+| `200` | `{"ok":true,"removed":true}` |
+| `404` | The file is not in the LittleFS partition |
+| `409` | The saved configuration names the file: `{"ok":false,"error":"…","path":"mqtt.tls.ca_file","used_by":["mqtt.tls.ca_file"]}`. Select another file, save, then remove it. Also when the gateway cannot read the saved configuration |
+
+### `GET /api/web/certificate`
+
+```json
+{"https":true,"hostname":"gw01",
+ "current":{"source":"first-boot","subject":"CN=gw01, O=RS485 Sparkplug gateway",
+            "issuer":"CN=gw01, O=RS485 Sparkplug gateway","sans":"DNS:gw01.local,DNS:gw01",
+            "not_before":"2025-01-01","not_after":"2099-12-31","sha256":"A7:3C:…:15",
+            "chain":1,"self_signed":true,"key_type":"EC P-256","hostname_in_sans":true},
+ "pending":null,"max_cert_bytes":3999,"max_key_bytes":3999}
+```
+
+| Field | Content |
+|---|---|
+| `https` | `true` when the web server uses HTTPS now (`web.https`) |
+| `current` | The certificate that the web server uses. With `web.https: false`, the stored certificate. `null` when there is none |
+| `pending` | The certificate that waits for the restart, with the same fields. `null` when there is none |
+| `source` | `first-boot` (the gateway made it at its first boot), `new` (the gateway made it on request), `loaded` (the certificate of the plant) |
+| `sans` | The DNS names and the IP addresses of the certificate |
+| `sha256` | The SHA-256 fingerprint of the first certificate, as the browser shows it |
+| `chain` | The number of certificates in the PEM |
+| `hostname_in_sans` | `true` when a DNS name of the SANs is `network.hostname`, `<hostname>.local` or `<hostname>.<domain>` |
+| `max_cert_bytes`, `max_key_bytes` | The limits of `PUT`: the PEM of the certificate with its chain, and of the key |
+
+### `PUT /api/web/certificate`
+
+The body holds the certificate of the plant (PEM, with its chain) and its unencrypted private key, one after the other (`Content-Type: application/x-pem-file`). The gateway separates the key block, parses the certificates and the key with mbedTLS, and makes sure that the key agrees with the first certificate. The key stays in NVS with the secrets.
+
+| Status | Body or cause |
+|---|---|
+| `200` | `?dry_run=1`: `{"ok":true,"saved":false,"certificate":{…}}`, with the fields of `GET` |
+| `201` | `{"ok":true,"saved":true,"restart":true,"certificate":{…}}`: the certificate waits for the restart |
+| `400` | No private key, more than one key, a certificate that does not parse, or a key that does not agree |
+| `413` | The certificate with its chain, or the key, has more than 3999 bytes |
+| `507` | The gateway cannot store it in NVS. Also when the NVS has not sufficient free space for the certificate, its key and their copy at the restart |
+
+```sh
+cat gw01-plant.pem gw01-plant.key | curl -k -u admin:<web password> -H "X-Requested-With: curl" \
+     -X PUT --data-binary @- "https://<ip>/api/web/certificate"
 ```
 
 ### `POST /api/time`
@@ -458,7 +542,7 @@ With a SHA-256, the gateway calculates the SHA-256 of the image that it wrote, b
 For each device, `devices` has `enabled`, `online`, `cycles`, `failed`, `ok`, `timeout`, `crc`, `frame`, `exception`, `write_refused` and `tags`. Each tag has `name`, `valid` and `value`.
 
 - `enabled`: `false` for a device with `enabled: false` in the configuration. The gateway does not poll it, so its counters stay at 0 and its tags are not valid.
-- `write_refused`: the number of DCMD writes since the start that were out of the write limits of a tag (`write_min`, `write_max`).
+- `write_refused`: the number of DCMD writes since the start that were out of the write limits of a tag (`write_min`, `write_max`). The Status tab shows it in the State cell of the device when it is more than 0.
 
 - The value is a number, an exact integer for `int64` and `uint64`, a text for `string`, and hexadecimal for `bytes`.
 - An `int64` or `uint64` tag also has `value_text`, the same integer as a text. A JSON reader that keeps each number as a double (for example a web browser) rounds an integer above 2^53.

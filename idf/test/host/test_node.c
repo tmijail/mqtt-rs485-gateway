@@ -567,17 +567,22 @@ static void setup_umh(bool tcp, bool typed)
              "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\":"
              " \"acme:gw01\", \"device_prefix\": \"acme:berlin\", \"naming\": \"umh\"},"
              " \"modbus_tcp\": {\"enabled\": %s},"
-             " \"devices\": ["
-             " {\"name\": \"line3:meter1\", \"unit_id\": 1, %s \"tags\": ["
+             " \"device_types\": [{\"name\": \"Pump\", \"tags\": ["
              "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
              "   \"units\": \"rpm\", \"writable\": true},"
-             "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]},"
-             " {\"name\": \"pump\", \"unit_id\": 2, %s \"tags\": ["
+             "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]}],"
+             " \"devices\": ["
+             " {\"name\": \"line3:meter1\", \"unit_id\": 1, %s},"
+             " {\"name\": \"pump\", \"unit_id\": 2, %s}]}",
+             tcp ? "true" : "false",
+             typed ? "\"type\": \"Pump\"" : "\"tags\": ["
+             "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
+             "   \"units\": \"rpm\", \"writable\": true},"
+             "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]",
+             typed ? "\"type\": \"Pump\"" : "\"tags\": ["
              "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
              "   \"writable\": true},"
-             "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]}]}",
-             tcp ? "true" : "false", typed ? "\"type\": \"Pump\"," : "",
-             typed ? "\"type\": \"Pump\"," : "");
+             "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]");
     static gw_config_t c;
     gw_cfg_err_t err;
     TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(json, strlen(json), &c, &err), err.msg);
@@ -1069,7 +1074,7 @@ static const char k_mb6[] =
     "  {\"name\": \"F64\", \"area\": \"input\", \"address\": 0, \"type\": \"float64\"},"
     "  {\"name\": \"Str\", \"area\": \"holding\", \"address\": 10, \"type\": \"string\","
     "   \"length\": 2, \"writable\": true},"
-    "  {\"name\": \"Bit\", \"area\": \"holding\", \"address\": 20, \"type\": \"bool\", \"bit\": 2,"
+    "  {\"name\": \"Bit\", \"area\": \"holding\", \"address\": 20, \"type\": \"bool\", \"bit_offset\": 2,"
     "   \"writable\": true}"
     "]}]}";
 
@@ -1455,15 +1460,15 @@ static void test_templates(void)
 {
     static const char json[] =
         "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
-        " \"devices\": ["
-        " {\"name\": \"P1\", \"unit_id\": 1, \"type\": \"Pump\", \"tags\": ["
+        " \"device_types\": [{\"name\": \"Pump\", \"tags\": ["
         "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
         "   \"units\": \"rpm\", \"writable\": true},"
         "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]},"
-        " {\"name\": \"P2\", \"unit_id\": 2, \"type\": \"Pump\", \"tags\": ["
-        "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
-        "   \"writable\": true},"
-        "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]},"
+        "  {\"name\": \"Unused\", \"tags\": ["
+        "  {\"name\": \"U\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\"}]}],"
+        " \"devices\": ["
+        " {\"name\": \"P1\", \"unit_id\": 1, \"type\": \"Pump\"},"
+        " {\"name\": \"P2\", \"unit_id\": 2, \"type\": \"Pump\"},"
         " {\"name\": \"Flat\", \"unit_id\": 3, \"tags\": ["
         "  {\"name\": \"X\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\"}]}]}";
     static gw_config_t c;
@@ -1482,8 +1487,11 @@ static void test_templates(void)
     gw_node_session_up(&node, 0);
     TEST_ASSERT_EQUAL(3, g_rec.count);             /* NBIRTH, DBIRTH P1, DBIRTH Flat */
 
-    msg(0);   /* NBIRTH: one definition for the two pumps, after the node's metrics */
+    /* NBIRTH: one definition for the two pumps, after the node's metrics
+     * (tck-id-payloads-template-definition-nbirth); none for the type that no device uses (#213) */
+    msg(0);
     TEST_ASSERT_EQUAL(BIRTH_NO_LABELS - 1 - GW_NODE_MQTT_OTA_METRICS + 1, dec.count);
+    TEST_ASSERT_TRUE(decoded_find_name(&dec, "Unused") < 0);
     int i = decoded_find_name(&dec, "Pump");
     TEST_ASSERT_TRUE(i >= 0);
     TEST_ASSERT_EQUAL(SPB_DT_TEMPLATE, dec.m[i].datatype);
@@ -1494,7 +1502,7 @@ static void test_templates(void)
     TEST_ASSERT_EQUAL_STRING("Speed", dec.mem[0].name);
     TEST_ASSERT_EQUAL(SPB_DT_UINT16, dec.mem[0].datatype);
     TEST_ASSERT_FALSE(dec.mem[0].has_alias);
-    TEST_ASSERT_EQUAL_STRING("rpm", dec.mem[0].eng_unit);   /* from the first device of the type */
+    TEST_ASSERT_EQUAL_STRING("rpm", dec.mem[0].eng_unit);   /* from the device type */
     TEST_ASSERT_FALSE(dec.mem[0].has_quality);
     TEST_ASSERT_EQUAL_STRING("Run", dec.mem[1].name);
 
@@ -1571,11 +1579,11 @@ static void test_worst_case_nbirth_fits(void)
     static char doc[32768];
     static gw_config_t c;
     size_t n = (size_t)snprintf(doc, sizeof(doc), "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": "
-                                "{\"group_id\": \"G\", \"edge_node_id\": \"N\"}, \"devices\": [");
+                                "{\"group_id\": \"G\", \"edge_node_id\": \"N\"}, \"device_types\": [");
     const int types = 16, per = GW_MAX_TEMPLATE_TAGS / 16;
     for (int d = 0; d < types; d++) {
-        n += (size_t)snprintf(doc + n, sizeof(doc) - n, "%s{\"name\": \"%039d\", \"unit_id\": 1, "
-                              "\"type\": \"%039d\", \"tags\": [", d ? "," : "", d, d);
+        n += (size_t)snprintf(doc + n, sizeof(doc) - n, "%s{\"name\": \"%039d\", \"tags\": [",
+                              d ? "," : "", d);
         for (int k = 0; k < per; k++) {
             n += (size_t)snprintf(doc + n, sizeof(doc) - n,
                                   "%s{\"name\": \"%038d%d\", \"area\": \"input\", \"address\": %d,"
@@ -1584,6 +1592,11 @@ static void test_worst_case_nbirth_fits(void)
                                   k ? "," : "", 0, k, 4 * k);
         }
         n += (size_t)snprintf(doc + n, sizeof(doc) - n, "]}");
+    }
+    n += (size_t)snprintf(doc + n, sizeof(doc) - n, "], \"devices\": [");
+    for (int d = 0; d < types; d++) {   /* #213: one device of each type */
+        n += (size_t)snprintf(doc + n, sizeof(doc) - n, "%s{\"name\": \"%039d\", \"unit_id\": 1, "
+                              "\"type\": \"%039d\"}", d ? "," : "", d, d);
     }
     snprintf(doc + n, sizeof(doc) - n, "]}");
     gw_cfg_err_t err;
@@ -2901,10 +2914,11 @@ static void test_store_and_forward_templates_bytes(void)
 {
     static const char json[] =
         "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
-        " \"devices\": [{\"name\": \"P\", \"unit_id\": 1, \"type\": \"Pump\", \"tags\": ["
+        " \"device_types\": [{\"name\": \"Pump\", \"tags\": ["
         "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\"},"
         "  {\"name\": \"Raw\", \"area\": \"holding\", \"address\": 1, \"type\": \"bytes\","
-        "   \"length\": 2}]}]}";
+        "   \"length\": 2}]}],"
+        " \"devices\": [{\"name\": \"P\", \"unit_id\": 1, \"type\": \"Pump\"}]}";
     static gw_config_t c;
     gw_cfg_err_t err;
     TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(json, sizeof(json) - 1, &c, &err), err.msg);

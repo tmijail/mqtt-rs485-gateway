@@ -21,6 +21,10 @@ input[type=checkbox]{width:auto;align-self:flex-start}
 textarea{width:100%;min-height:360px;font-family:ui-monospace,monospace;font-size:12px}
 button{font:inherit;padding:6px 12px;border-radius:4px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
 button.pri{background:var(--acc);border-color:var(--acc);color:#fff}button.sel{border-color:var(--acc);color:var(--acc)}
+/* dark theme: white text on the light blue --acc has a contrast of 2.4:1; dark text has 7.3:1 (WCAG AA: 4.5:1) */
+@media (prefers-color-scheme:dark){button.pri{color:var(--bg)}}
+/* a disabled button looks disabled (for example "Remove type" of a type that devices use, #213) */
+button:disabled{opacity:.45;cursor:default}
 table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line)}
 td input,td select{width:100%;margin:0;padding:3px 4px}
 .ok{color:var(--ok)}.bad{color:var(--bad)}.mut{color:var(--mut)}.warn{color:var(--warn)}.err{outline:2px solid var(--bad)}.wrn{outline:2px solid var(--warn)}
@@ -160,8 +164,16 @@ button.fload{align-self:flex-start;margin-top:4px;padding:3px 8px;font-size:12px
 button.coll{font:inherit;font-size:14px;font-weight:600;color:var(--fg);padding:4px 6px 4px 0;border-color:transparent;background:transparent;text-align:left}
 button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
 .tsum{font-size:12.5px;color:var(--mut);font-weight:400;overflow-wrap:anywhere}.ebadge{font-size:12px;font-weight:600;color:var(--bad)}
-#f-dev>.card .dhd{margin:-4px 0 0}#f-dev>.card .dbody{margin-top:6px}
+#f-dev>.card .dhd,#f-dt>.card .dhd{margin:-4px 0 0}#f-dev>.card .dbody,#f-dt>.card .dbody{margin-top:6px}
+/* #213: the card Device types (a type is a row that closes and opens), and a device with a type */
+.tinfo{background:var(--sub);border-radius:4px;padding:10px 12px;margin:8px 0 2px;font-size:13px}.tinfo p{margin:0}
+/* on a phone, "Go to the type" is a full-width touch target of 44 px (approved prototype of #213) */
+@media (max-width:600px){.tinfo a[data-goto-dt]{display:flex;align-items:center;justify-content:center;min-height:44px;margin-top:8px;border:1px solid var(--line);border-radius:4px;background:var(--card);text-decoration:none}}
+.used{font-size:12px;color:var(--mut);margin:6px 0}.empty{background:var(--sub);border-radius:4px;padding:10px 12px;margin:4px 0 10px;font-size:13px}
+.err~.hint{display:none}@media (max-width:760px){#f-dt>.card{padding:10px}}
 @media (max-width:600px){button.coll{min-height:44px}.cctools button{min-height:44px;flex:1}}
+/* #196: the refused writes of a device, below online or offline in the Modbus devices of the Status tab */
+.wr{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
 /* the visual review of #195: the form controls follow the theme (dark mode); on a phone, the tabs
    get a row of their own, and each touch target is 44 px at least (a checkbox: its row) */
 :root{color-scheme:light dark}
@@ -173,6 +185,21 @@ button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
  .fld:has(>input[type=checkbox]){flex-direction:row;flex-wrap:wrap;align-items:center;gap:0 8px;min-height:44px;font-size:14px}
  .fld:has(>input[type=checkbox])>input{order:-1;margin:0;align-self:center}.fld:has(>input[type=checkbox])>:not(.lbl):not(input){flex-basis:100%}
  .fld:has(>input[type=checkbox]) .lbl label{color:var(--fg)}}
+/* #205 #221: the card Certificates (the HTTPS certificate of this page, the PEM files of LittleFS) */
+#certs dl.kv{display:grid;grid-template-columns:110px minmax(0,1fr);gap:4px 12px;margin:0 0 12px;font-size:13px;max-width:820px}#certs dl.kv dt{color:var(--mut)}#certs dl.kv dd{margin:0}
+#certs .mono,#dlg .mono{font-family:ui-monospace,monospace;font-size:12px;overflow-wrap:anywhere}
+#certs .wbox{border:1px solid var(--warn);border-radius:6px;padding:8px 12px;margin:0 0 12px;max-width:820px}#certs .wbox b{color:var(--warn)}
+#certs .pend{border:1px solid var(--acc);border-radius:6px;padding:8px 12px;margin:0 0 12px;max-width:820px;display:flex;gap:8px 12px;align-items:center;flex-wrap:wrap}#certs .pend>div{flex:1;min-width:260px}
+#certs .pf-t{margin-bottom:6px}#certs .pf-t table{table-layout:fixed;min-width:860px}#certs .pf-t col:nth-child(1){width:120px}#certs .pf-t col:nth-child(2){width:150px}#certs .pf-t col:nth-child(4){width:160px}#certs .pf-t col:nth-child(5){width:170px}#certs .pf-t col:nth-child(6){width:150px}
+#certs .pf-t th{font-weight:600;color:var(--mut);font-size:12px}#certs .pf-t tr:last-child td{border-bottom:0}#certs .pf-t td{vertical-align:middle;overflow-wrap:anywhere}#certs .pf-t td.act{white-space:nowrap;text-align:right}#certs .pf-t td button{padding:3px 8px;font-size:12px}
+#certs .pf-l{display:none}#certs .fi{border:1px solid var(--line);border-radius:6px;padding:8px 10px 10px;margin-bottom:8px;font-size:13px}
+#certs .fi .hd{display:flex;justify-content:space-between;gap:8px;align-items:baseline}#certs .fi .fn{font-family:ui-monospace,monospace;font-weight:600;overflow-wrap:anywhere}
+#certs .fi .two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}#certs button:disabled,#dlg button:disabled{opacity:.45;cursor:default}
+#dlg .dfld{display:flex;flex-direction:column;font-size:12px;color:var(--mut);margin-bottom:12px}#dlg .pick{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px;color:var(--fg);font-size:13px}
+#dlg .exam{border:1px solid var(--line);border-radius:6px;background:var(--sub);padding:8px 10px;font-size:13px}#dlg .exam.bad{border-color:var(--bad);background:var(--badbg);color:var(--fg)}
+#dlg .exam b{display:block;margin-bottom:2px}#dlg .exam p{margin:0 0 4px}#dlg .exam p:last-child{margin:0}#dlg .exam code{font-family:ui-monospace,monospace;font-size:12px;overflow-wrap:anywhere}#dlg ul.cl{margin:12px 0 0}
+@media (max-width:600px){#certs .pf-t{display:none}#certs .pf-l{display:block}#certs dl.kv{display:block}#certs dl.kv dt{margin-top:6px;font-size:12px}
+ #wc>.row,#pf>.row{flex-direction:column;align-items:stretch}#certs .pend button{width:100%}#dlg .pick{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 6px}#dlg .pick button{grid-column:1/-1}}
 </style>
 </head>
 <body>
@@ -252,12 +279,16 @@ button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
    <div id="tls-msg" class="mut" aria-live="polite"></div></div></div>
  <div class="card cc" data-cc="spb" data-t="Sparkplug"><div class="grid" id="f-spb"></div>
   <h2 class="lbl" style="margin-top:12px">Device prefix (location)<button type="button" class="qi" data-x="pfx" data-t="Device prefix (location)" aria-label="About Device prefix (location)" aria-expanded="false" aria-controls="xpl">?</button></h2>
-  <div id="f-pfx" class="row" data-perr="sparkplug.device_prefix" tabindex="-1"></div></div>
- <div class="card cc" data-cc="ota" data-t="Firmware updates" id="c-ota"><div class="grid" id="f-ota"></div><p class="mut" style="margin:10px 0 0">Install an image in the card Firmware of the Status tab.</p></div>
+  <div id="f-pfx" class="row" data-perr="sparkplug.device_prefix" tabindex="-1"></div>
+  <div class="tsec"><h2 class="lbl">Store &amp; forward<button type="button" class="qi" data-x="sf" data-t="Store &amp; forward" aria-label="About Store and forward" aria-expanded="false" aria-controls="xpl">?</button></h2>
+   <div class="grid" id="f-sf" data-perr="sparkplug.store_forward" tabindex="-1"></div></div></div>
+ <div class="card cc" data-cc="ota" data-t="Firmware updates" id="c-ota"><div class="grid" id="f-ota"></div><div id="ota-msg" class="mut" aria-live="polite"></div><p class="mut" style="margin:10px 0 0">Install an image in the card Firmware of the Status tab.</p></div>
  <div class="grp">Services</div>
  <div class="card cc" data-cc="web" data-t="Web interface"><div class="grid" id="f-web"></div></div>
- <!-- #205 #221: the content of the card Certificates (the HTTPS certificate, the PEM files) waits for the approval of the product owner -->
- <div class="card cc" data-cc="certs" data-t="Certificates" id="certs"></div>
+ <!-- #205 #221: the card Certificates. Its buttons change the gateway at once, without Save and restart -->
+ <div class="card cc" data-cc="certs" data-t="Certificates" id="certs"><p class="mut" style="margin:0 0 8px">The buttons of this card change the gateway at once. They do not wait for Save and restart.</p>
+  <h2 class="lbl">HTTPS certificate of this page<button type="button" class="qi" data-x="wcert" data-t="HTTPS certificate of this page" aria-label="About HTTPS certificate of this page" aria-expanded="false" aria-controls="xpl">?</button></h2><div id="wc"><p class="mut">Reading…</p></div>
+  <div class="tsec"><h2 class="lbl">Files for MQTT TLS and firmware updates<button type="button" class="qi" data-x="pemf" data-t="Files for MQTT TLS and firmware updates" aria-label="About Files for MQTT TLS and firmware updates" aria-expanded="false" aria-controls="xpl">?</button></h2><div id="pf"><p class="mut">Reading…</p></div></div></div>
  <div class="card cc" data-cc="mbtcp" data-t="Modbus TCP"><div class="grid" id="f-mbtcp"></div><div id="f-mbc"></div>
   <h2 class="sub">The I/O of the gateway as a Modbus unit</h2><div class="grid" id="f-mbloc"></div></div>
  <div class="card cc" data-cc="syslog" data-t="Remote syslog"><div class="grid" id="f-syslog"></div></div>
@@ -269,8 +300,9 @@ button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
   <p class="tnote hidden">Push the table to the side for more columns.</p><div class="tw"><div class="tbox"><table class="io" id="lio-do"></table></div><div class="fade" aria-hidden="true"></div></div>
   <h3>Buzzer</h3><div class="grid" id="f-bz"></div></div>
  <div class="card cc" data-cc="rs485" data-t="RS485"><div class="grid" id="f-rs485"></div></div>
- <!-- #213 (later): the card Device types is closed by default: data-closed -->
- <div class="card cc" data-cc="dev" data-t="Devices and tags"><div id="f-dev"></div><button id="add-dev">+ device</button></div>
+ <!-- #213: the card Device types is closed by default (data-closed); with no type it stays open -->
+ <div class="card cc" data-cc="dtypes" data-t="Device types" data-x="dtypes" data-closed id="dt-card"><div id="f-dt" data-perr="device_types" tabindex="-1"></div><button id="add-dt">+ device type</button></div>
+ <div class="card cc" data-cc="dev" data-t="Devices and tags"><div id="f-dev" data-perr="devices" tabindex="-1"></div><button id="add-dev">+ device</button></div>
  <div class="card cc" data-cc="mbr" data-t="Modbus test read">
   <p class="mut">One read through the RS485 bus, for example to find out if a device answers before you add its tags. The read does not change the configuration.</p>
   <div class="grid"><label>Unit ID (1-247)<input id="mb-unit" value="1"></label><label>Area<select id="mb-area"></select></label>
@@ -284,10 +316,10 @@ button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
  <div class="card"><h2>Full document</h2><textarea id="raw" spellcheck="false"></textarea></div>
 </section>
 
+<!-- #195: Export and Import show only on the tabs Configuration and JSON (show); Restart is in the card Restart and reset of the Status tab -->
 <div class="card" id="actions">
  <div class="row">
   <button id="b-export">Export</button><label class="row" style="flex-direction:row">Import <input type="file" id="b-import" accept=".json,application/json"></label>
-  <button id="b-restart">Restart</button>
  </div>
 </div>
 </main>
@@ -330,7 +362,8 @@ function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
 const ccSt=lsGet(CCKEY,{}),devClosed=new Set(Object.keys(lsGet(DEVKEY,{})));
 const ccHead=(id,body,t,open,cls)=>`<button type="button" class="coll" ${cls}="${esc(id)}" aria-expanded="${open}" aria-controls="${body}"><span class="car" aria-hidden="true">${open?"▾":"▸"}</span><span class="ct">${esc(t)}</span></button><span class="tsum${open&&cls==="data-cc"?" hidden":""}"></span><span class="ebadge hidden"></span>`;
 function ccInit(){document.querySelectorAll("#tab-config .card.cc").forEach(c=>{const id=c.dataset.cc,b=document.createElement("div"),h=document.createElement("h2");
- b.className="ccb";b.id="ccb-"+id;b.append(...c.childNodes);h.className="ch";c.append(h,b);ccApply(c,ccOpenOf(c))})}
+ b.className="ccb";b.id="ccb-"+id;b.append(...c.childNodes);h.className="ch";c.append(h,b);ccApply(c,ccOpenOf(c));
+ if(c.dataset.x)h.insertAdjacentHTML("beforeend",qi(c.dataset.x,c.dataset.t))})}
 function ccOpenOf(c){const v=ccSt[c.dataset.cc];return typeof v==="boolean"?v:!c.hasAttribute("data-closed")}
 /* open (true) or close a card; save: keep the state in the browser. The header button stays the
    same element (a keyboard user keeps the focus): only its state and its caret change */
@@ -345,10 +378,19 @@ function devApply(i,open,save){const c=document.querySelector(`#f-dev>[data-dev=
  d.classList.toggle("hidden",!open);b.setAttribute("aria-expanded",open);b.querySelector(".car").textContent=open?"▾":"▸";
  if(save){devClosed[open?"delete":"add"](n);lsSet(DEVKEY,Object.fromEntries([...devClosed].map(x=>[x,1])))}
  if(open&&typeof tblUpd==="function")tblUpd()}
+/* #213: a device type row: open when its name is in typeOpen (closed by default) */
+const TYPEKEY="gw.cfg.types",typeOpen=new Set(Object.keys(lsGet(TYPEKEY,{})));
+const typeSave=()=>lsSet(TYPEKEY,Object.fromEntries([...typeOpen].map(x=>[x,1])));
+function dtApply(j,open,save){const c=document.querySelector(`#f-dt>[data-dt="${j}"]`);if(!c)return;const b=c.querySelector(".coll"),d=$(`#tbody-${j}`),n=val(`device_types.${j}.name`);
+ d.classList.toggle("hidden",!open);b.setAttribute("aria-expanded",open);b.querySelector(".car").textContent=open?"▾":"▸";
+ if(save){typeOpen[open?"add":"delete"](n);typeSave()}
+ if(open&&typeof tblUpd==="function")tblUpd()}
 function ccAll(open){document.querySelectorAll("#tab-config .card.cc").forEach(c=>ccApply(c,open,true));
- document.querySelectorAll("#f-dev>[data-dev]").forEach(c=>devApply(c.dataset.dev,open,true))}
+ document.querySelectorAll("#f-dev>[data-dev]").forEach(c=>devApply(c.dataset.dev,open,true));
+ document.querySelectorAll("#f-dt>[data-dt]").forEach(c=>dtApply(c.dataset.dt,open,true))}
 /* #191: a field with an error or a warning opens its card and its device row */
-function ccReveal(el){if(!el||!el.closest)return;const d=el.closest(".dbody");if(d&&d.classList.contains("hidden"))devApply(d.id.slice(6),true,true);
+function ccReveal(el){if(!el||!el.closest)return;const d=el.closest(".dbody");
+ if(d&&d.classList.contains("hidden")){if(d.id.startsWith("tbody-"))dtApply(d.id.slice(6),true,true);else devApply(d.id.slice(6),true,true)}
  const c=el.closest(".card.cc");if(c&&!c.classList.contains("open"))ccApply(c,true,true)}
 /* the number of errors at the fields of each card, in its header */
 function ccBadge(){document.querySelectorAll("#tab-config .card.cc").forEach(c=>{const n=c.querySelectorAll(".ferr").length,e=c.querySelector(":scope>h2.ch>.ebadge");
@@ -366,27 +408,34 @@ const CCSUM={
  mqtt:()=>{const t=ccBool("mqtt.tls.enabled",false),n=document.querySelectorAll('[data-p^="mqtt.backup_brokers."][data-p$=".host"]').length;
   return jn([`${val("mqtt.host")}:${val("mqtt.port")||(t?8883:1883)}`,t?"TLS":"",val("mqtt.protocol")==="5"?"MQTT 5":"",n?plur(n,"backup broker"):""])},
  spb:()=>`Group ${val("sparkplug.group_id")} · Edge Node ${val("sparkplug.edge_node_id")} · naming ${val("sparkplug.naming")||"sparkplug"}`,
- ota:()=>`Update from MQTT: ${ccBool("ota.mqtt",false)?"on":"off"}`,
+ ota:()=>jn([`Update from MQTT: ${ccBool("ota.mqtt",false)?"on":"off"}`,val("ota.ca_file")?`CA ${val("ota.ca_file")}`:""]),
  web:()=>ccBool("web.enabled",true)?jn([ccBool("web.https",true)?`HTTPS · port ${val("web.https_port")||443}`:`HTTP · port ${val("web.port")||80}`,`user ${val("web.username")||"admin"}`]):"Off",
- certs:()=>{if(!FILES)return "";if(!FILES.length)return "No PEM files";const d=FILES.flatMap(f=>(f.certs||[]).map(c=>c.not_after)).filter(x=>x).sort()[0];
-  return jn([FILES.map(f=>f.name).join(", "),d?`first expiry ${d}`:""])},
+ certs:()=>{const c=WCERT&&WCERT.current,w=c?`HTTPS ${c.source==="loaded"?"plant certificate":"self-signed"}${WCERT.pending?" (new one waits for the restart)":""}`:"";if(!FILES)return w;
+  const d=FILES.flatMap(f=>(f.certs||[]).map(c=>c.not_after)).filter(x=>x).sort()[0];
+  return jn([w,FILES.length?plur(FILES.length,"PEM file"):"No PEM files",d?`first expiry ${d}`:""])},
  mbtcp:()=>{if(!ccBool("modbus_tcp.enabled",false))return "Off";const n=ccList("modbus_tcp.allowed_clients").length,u=+val("modbus_tcp.local_unit_id")||0;
   return jn([`port ${val("modbus_tcp.port")||502}`,n?plur(n,"allowed client"):"any client",u?`local unit ${u}`:""])},
  syslog:()=>val("syslog.host")?`${val("syslog.host")}:${val("syslog.port")||514} · ${val("syslog.level")||"info"}`:"Off",
  lio:()=>{const r=[...document.querySelectorAll('#lio-do [data-lio="rule"]')].filter(e=>e.value!=="0").length,f=[...document.querySelectorAll('#lio-di [data-lio="cnt"]')].filter(e=>e.value==="fast").length;
   return jn(["8 DI","8 DO",r?plur(r,"rule"):"",f?plur(f,"fast counter"):""])},
  rs485:()=>`${val("rs485.baud")||9600} baud · 8${({even:"E",odd:"O"})[val("rs485.parity")]||"N"}${val("rs485.stop_bits")||1}`,
- dev:()=>`${plur(document.querySelectorAll("#f-dev>[data-dev]").length,"device")} · ${plur(document.querySelectorAll("#f-dev [data-del-tag]").length,"tag")}`,
+ dtypes:()=>{const n=[...document.querySelectorAll("#f-dt>[data-dt]")].map(c=>val(`device_types.${c.dataset.dt}.name`));return n.length?n.join(", "):"No device types"},
+ dev:()=>{const d=[...document.querySelectorAll("#f-dev>[data-dev]")];return `${plur(d.length,"device")} · ${plur(d.reduce((a,c)=>a+devTagN(c.dataset.dev),0),"tag")}`},
  mbr:()=>"Read registers of a device, to test the wiring"};
 function ccSum(){if(!cfg)return;document.querySelectorAll("#tab-config .card.cc").forEach(c=>{const f=CCSUM[c.dataset.cc],s=c.querySelector(":scope>h2.ch>.tsum");if(f&&s)s.textContent=f()});
  document.querySelectorAll("#f-dev>[data-dev]").forEach(c=>{const i=c.dataset.dev,p=k=>`devices.${i}.${k}`,t=val(p("type"));
   c.querySelector(".coll .ct").textContent=val(p("name"))||`Device ${+i+1}`;
-  c.querySelector(".dhd .tsum").textContent=jn([`unit ${val(p("unit_id"))}`,t?`type ${t}`:"",plur(c.querySelectorAll("[data-del-tag]").length,"tag"),ccBool(p("enabled"),true)?"":"disabled"])});ccBadge()}
+  c.querySelector(".dhd .tsum").textContent=jn([`unit ${val(p("unit_id"))}`,t?`type ${t}`:"",plur(devTagN(i),"tag"),ccBool(p("enabled"),true)?"":"disabled"])});
+ /* #213: the number of types in the title of the card; each type row: its tags and its devices */
+ const dts=document.querySelectorAll("#f-dt>[data-dt]"),dct=document.querySelector("#dt-card>h2.ch .ct");if(dct)dct.textContent=`Device types (${dts.length})`;
+ dts.forEach(c=>{const j=c.dataset.dt,n=val(`device_types.${j}.name`),u=dtUsersNow(n);c.querySelector(".coll .ct").textContent=n||`Type ${+j+1}`;
+  c.querySelector(".dhd .tsum").textContent=`${plur(c.querySelectorAll("[data-del-tag]").length,"tag")} · used by ${u.length?u.join(", "):"no device"}`});ccBadge()}
 ccInit();
 $("#cc-open").onclick=()=>ccAll(true);$("#cc-close").onclick=()=>ccAll(false);
 $("#tab-config").addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("button.coll");
  if(b&&b.dataset.cc!==undefined)ccApply(b.closest(".card.cc"),b.getAttribute("aria-expanded")!=="true",true);
  else if(b&&b.dataset.dcc!==undefined)devApply(b.dataset.dcc,b.getAttribute("aria-expanded")!=="true",true);
+ else if(b&&b.dataset.tcc!==undefined)dtApply(b.dataset.tcc,b.getAttribute("aria-expanded")!=="true",true);
  /* a link to a card (for example "Certificates") opens it */
  const a=e.target.closest&&e.target.closest('a[href^="#"]'),t=a&&a.getAttribute("href").length>1?document.getElementById(a.getAttribute("href").slice(1)):null;
  if(t&&t.classList.contains("cc")&&!t.classList.contains("open"))ccApply(t,true,true)});
@@ -454,12 +503,14 @@ const HELP={
  unit:"The Modbus address of the device on the RS485 bus (the slave ID). The manual or the display of the device gives it. Use the Modbus test read to find out if the device answers.\n~1 to 247. Necessary.",
  poll:"The time between two reads of the tags of the device. Example: 1000 = one read each second.\n~50 to 3 600 000 ms. Default: 1000.",
  off:"The number of failed poll cycles in sequence before the device is offline. The gateway then sends a DDEATH for the device, and the hosts show its tags as stale.\nThe first cycle that reads all the tags makes the device online again (DBIRTH).\n~1 to 1000. Default: 3.",
- type:"Optional template (Sparkplug Template). Example: Pump, for the devices Pump1 and Pump2.\nAll the devices of one type must have the same tag names and types, in the same order.\nUMH Core shows no value for a template instance; with naming umh the tags go out as plain metrics.\n~Up to 39 bytes. Default: empty = no template, one metric for each tag.",
+ type:"The device gets the tags of this type. A device with a type has no tags of its own: edit the tags in the card Device types.\n(none) = the device has its own tags, in the table below its fields.\n~Default: (none). The list shows the types of the card Device types.",
+ tname:"The name of the device type, for example the model of the device: Meter. The gateway also sends it as the name of the Sparkplug template of each device of the type.\nUMH Core shows no value for a template instance. With naming umh, the tags go out as plain metrics.\n~1 to 39 bytes. Necessary. No /, + or #. Up to 64 tags in a type.",
+ dtypes:"A device type holds the tag list of a device model one time. Each device of the type uses these tags, with its own unit ID and poll interval.\nEach type that a device uses is a Sparkplug template: the NBIRTH has its definition, and the DBIRTH of each device of the type has an instance.\n~Up to 16 types. The types that devices use: 64 tags at most together. Each device counts the tags of its type in the limit of 256 tags.",
  tag:"The name of the metric in Sparkplug. Use '/' between the levels of a path, no ':' and no spaces. Example: Motor/Current.\nTwo tags of one device must not have names that differ only in case. A name must not also be a folder of another name, for example A and A/B.\n~1 to 39 bytes. Necessary.",
  area:"The Modbus table of the value. `coil` and `discrete` are bits. `holding` and `input` are 16-bit registers.\nOnly `coil` and `holding` can be writable.\n~coil = FC01, discrete = FC02, holding = FC03, input = FC04. Necessary.",
  addr:"The address of the first register or bit on the bus, from 0. Many manuals count from 1: the input register 30001 has the address 0, and the holding register 40011 has the address 10.\n~0 to 65535. Necessary.",
- type_t:"The data type of the value. A 16-bit type uses 1 register, a 32-bit type 2 registers, and a 64-bit type 4 registers.\n`bool` is one coil or discrete input, or one bit of a register (with Bit). `string` and `bytes` use Length registers.\nType bytes: the raw registers as a Sparkplug Bytes metric. UMH Core shows no value for Bytes.\n~Necessary.",
- wo:"The order of the bytes of a 32-bit or 64-bit value. The letters are the bytes, from the most significant (A).\n`ABCD` (big): the most significant register first. `CDAB` (little): the least significant register first. `BADC`, `DCBA`: also the two bytes of each register in the opposite order.\nThe manual of the device gives the order. If the value is very large or very small, try `CDAB`. Use the Modbus test read to compare.\n~Default: big. With Bit, only big.",
+ type_t:"The data type of the value. A 16-bit type uses 1 register, a 32-bit type 2 registers, and a 64-bit type 4 registers.\n`bool` is one coil or discrete input, or one bit of a register (with Bit offset). `uint16` with Bit offset and a Bit width of 2 to 16 is a field of bits. `string` and `bytes` use Length registers.\nType bytes: the raw registers as a Sparkplug Bytes metric. UMH Core shows no value for Bytes.\n~Necessary.",
+ wo:"The order of the bytes of a 32-bit or 64-bit value. The letters are the bytes, from the most significant (A).\n`ABCD` (big): the most significant register first. `CDAB` (little): the least significant register first. `BADC`, `DCBA`: also the two bytes of each register in the opposite order.\nThe manual of the device gives the order. If the value is very large or very small, try `CDAB`. Use the Modbus test read to compare.\n~Default: big. With Bit offset, only big.",
  scale:"The gateway multiplies the raw value by the scale, then adds the offset: value = raw × scale + offset. Example: 0.1 changes 2345 to 234.5.\nWith a scale other than 1, an integer tag goes out as a Float or a Double.\n~Not 0. Default: 1. Not for bool, string and bytes tags.",
  units:"The engineering unit of the value, for example V, A or rpm. It goes into the DBIRTH as the property engUnit.\n~Up to 15 characters. Default: empty = no property.",
  wr:"A host can write the value with a DCMD. The gateway then writes the coil or the register on the bus.\n~Only for coil and holding tags. Default: off.",
@@ -473,7 +524,8 @@ const HELP={
  blk:"The gateway reads the tags of one area that are near each other with one request (a block). Clear it for a device that answers with an exception when a block contains registers that it does not have. The gateway then sends one request for each tag.\n~Default: on (build option CONFIG_GW_MB_BLOCK_READS). A block has 125 registers or 2000 bits at most.",
  gap:"The number of unused registers or bits that one block can include, to read two tags of one area with one request. Example: with 4, the tags at the addresses 0 and 5 go into one block.\n~0 to 1999. Default: 0 (build option CONFIG_GW_MB_BLOCK_MAX_GAP). Not permitted with Block reads off.",
  fc16:"The gateway writes one register with FC16 and one coil with FC15, in place of FC06 and FC05. Set it for a device that does not accept FC06 or FC05.\nA write of two or more registers always uses FC16.\n~Default: off (build option CONFIG_GW_MB_FORCE_MULTI_WRITE).",
- bit:"One bit of a holding or input register, for a bool tag. 0 = the least significant bit.\nFor a write, the gateway reads the register, then writes the full register with the changed bit.\n~0 to 15. Necessary for a bool tag in holding or input, and only there.",
+ bit:"The position of the lowest bit of the value in a holding or input register. 0 = the least significant bit.\nWith the type bool, the tag is one bit. With the type uint16 and a Bit width of 2 to 16, the tag is a field of bits: an unsigned integer.\nFor a write, the gateway reads the register, then writes the full register with the changed bits.\n~0 to 15. Key `bit_offset`. Necessary for a bool tag in holding or input, and for a field of bits.",
+ bitw:"The number of bits of a field in a holding or input register. Bit offset gives the lowest bit of the field. Example: Bit offset 4 and Bit width 3 read the bits 4, 5 and 6 as a number from 0 to 7.\nWith a Bit width of 2 to 16, use the type uint16: the gateway publishes the field as an unsigned integer. For a write, it changes only the bits of the field.\n~1 to 16. Key `bit_width`. Bit offset + Bit width: 16 or less. Default: 1 = one bit, a bool tag.",
  scan:"fast = the gateway reads the tag each Poll interval. slow = each Slow poll interval of the device, for a value that changes rarely, for example a serial number.\nFast tags and slow tags are never in one read block.\n~Default: fast.",
  len:"The number of registers of a string or bytes tag. Each register holds two characters or two bytes. Example: 8 for a text of up to 16 characters.\n~1 to 16. Necessary for string and bytes, and only for them.",
  /* #206 */
@@ -510,10 +562,17 @@ const HELP={
  mben:"The Modbus TCP server: a PLC or a SCADA reads and writes the RS485 devices through the gateway, one request at a time.\nModbus TCP has no authentication. Limit the clients with Allowed clients.\n~Default: off.",
  idle:"The gateway closes a connection without requests after this time.\n~0 to 3600 s. 0 = never. Default: 60.",
  mbc:"The IPv4 addresses (a.b.c.d) or networks (a.b.c.d/n) that can connect. The gateway closes a connection from another source without a response.\nThe gateway always refuses a connection through the access point.\n~Up to 8. Empty = any client, with a warning in the log.",
- lunit:"The gateway answers this unit itself, and does not send it to the RS485 bus. A PLC or a SCADA can read the DIs, the DOs and the pulse counters.\n`discrete` (FC02) 0 to 7: DI/1 to DI/8. `coil` (FC01) 0 to 7: DO/1 to DO/8. `input` (FC04) 0 to 31: the counters of DI/1 to DI/8, 4 registers each (uint64, big).\n~1 to 247, not the Unit ID of a device. Default: 0 = off.",
+ lunit:"The gateway answers this unit itself, and does not send it to the RS485 bus. A PLC or a SCADA can read the DIs, the DOs, the pulse counters and the run hours.\n`discrete` (FC02) 0 to 7: DI/1 to DI/8. `coil` (FC01) 0 to 7: DO/1 to DO/8. `input` (FC04) 0 to 31: the counters of DI/1 to DI/8. `input` 32 to 63 and 64 to 95: the run hours of DI/1 to DI/8 and DO/1 to DO/8, in seconds (0 when the channel does not count them). Each value has 4 registers (uint64, big).\n~1 to 247, not the Unit ID of a device. Default: 0 = off.",
  lwr:"On: a client can switch the DOs with FC05 and FC15 on the local unit. The gateway refuses a DO that a local rule drives (exception 03), as for an NCMD.\nOff: the gateway answers a write with exception 01.\n~Default: off.",
  slhost:"The name, IPv4 or IPv6 address of the syslog server. The gateway sends a copy of its log on UDP (RFC 5424).\n~Up to 127 bytes. Default: empty = no remote syslog.",
- sllvl:"The minimum severity that the gateway sends.\n~error, warning, info or debug. Default: info."
+ sllvl:"The minimum severity that the gateway sends.\n~error, warning, info or debug. Default: info.",
+ /* #221: the Sparkplug diagnostics, store & forward and the CA of the image server */
+ diag:"The gateway sends the node diagnostics in an NDATA at this period: the uptime, the heap, the largest free block, the free PSRAM, the temperature and the Modbus counters.\n0 = the diagnostics go only in the NBIRTH.\n~0, or 10 to 86400. Default: 60.",
+ sf:"Off: without an MQTT session, the gateway keeps only the last value of each metric.\nOn: the gateway keeps each change in a buffer in RAM (40 000 samples). In the next session, it publishes the changes with `is_historical = true`.\nThe spill to the microSD card moves the oldest samples to the card when the buffer is three quarters full.\n~Default: off. Spill: off, 131072 KB (128 MB).",
+ sfsd:"The gateway moves the oldest samples of the RAM buffer to the microSD card, in blocks of 4 KB, when the buffer is three quarters full. In the next session, it publishes the samples of the card first.\nThe card is only for the gateway. The data on the card stays after a restart and after a power cut.\n~Default: off. Only with store & forward on.",
+ sfkb:"The space that the gateway uses on the card for the samples, in KB. 1 MB holds approximately 43 000 samples. Example: 128 MB keeps approximately 31 h of 50 changes each second.\nOn a card that a PC formatted with clusters of 4 KB, the gateway uses 512 MB at most.\n~64 to 4 194 304 KB (4 GB). Default: 131072 (128 MB).",
+ otaca:"The PEM file with the CA certificates that signed the certificate of the server of the images. The gateway uses it for an update from a URL: from the Status tab or from MQTT.\nEmpty = the CA file of the MQTT card when TLS is on, else the public root CAs of ESP-IDF.\n~Default: empty.",
+ wref:"The number of DCMD writes to this device that the gateway refused. The value was out of the write limits of the tag (Write min, Write max).\nThe gateway did not write these values to the device. The log has a warning for each refusal.\n~The count starts at 0 at each start of the gateway. The row shows it only when it is more than 0. Modbus TCP requests have no write limits."
 };
 function qi(k,t){return `<button type="button" class="qi" data-x="${k}" data-t="${esc(t)}" aria-label="About ${esc(t)}" aria-expanded="false" aria-controls="xpl">?</button>`}
 /* #190: one explainer for all the (?) buttons. It opens on hover, on keyboard focus and on a click
@@ -567,17 +626,19 @@ document.addEventListener("pointerout",e=>{if(e.pointerType!=="mouse"||!xb||xpin
    other fields (n = the fields with a value). The table scrolls in its box on a narrow screen:
    the Tag column stays at the left, the details row stays in view, a shade shows more columns. */
 const TCOL=[["name","Tag","tag"],["area","Area","area"],["address","Address","addr"],["type","Type","type_t"],["word_order","Word order","wo"],["scale","Scale","scale"],["units","Units","units"],["writable","Writable","wr"]];
-const TDET=[["offset","Offset","offs"],["deadband","Deadband","db"],["eng_low","Eng. low","englo"],["eng_high","Eng. high","enghi"],["write_min","Write min","wmin"],["write_max","Write max","wmax"],["bit","Bit","bit"],["length","Length","len"],["scan","Scan","scan"]];
+const TDET=[["offset","Offset","offs"],["deadband","Deadband","db"],["eng_low","Eng. low","englo"],["eng_high","Eng. high","enghi"],["write_min","Write min","wmin"],["write_max","Write max","wmax"],["bit_offset","Bit offset","bit"],["bit_width","Bit width","bitw"],["length","Length (registers)","len"],["scan","Scan","scan"]];
 const TK={name:["str",0,0,{ml:39}],area:["sel",AREA],address:["int"],type:["sel",TYPE],word_order:["sel",WO,true],scale:["num"],units:["str",0,0,{ml:15}],writable:["bool"],
- offset:["num"],deadband:["num"],eng_low:["num"],eng_high:["num"],write_min:["num",0,0,{ph:"no limit"}],write_max:["num",0,0,{ph:"no limit"}],bit:["int",0,0,{ph:"0-15"}],length:["int",0,0,{ph:"1-16"}],scan:["sel",["fast","slow"],true]};
+ offset:["num"],deadband:["num"],eng_low:["num"],eng_high:["num"],write_min:["num",0,0,{ph:"no limit"}],write_max:["num",0,0,{ph:"no limit"}],bit_offset:["int",0,0,{ph:"0-15"}],bit_width:["int",0,0,{ph:"1-16"}],length:["int",0,0,{ph:"1-16"}],scan:["sel",["fast","slow"],true]};
 const detOpen=new Set();
-function tagTable(d,i){
- const p=(k,f)=>`devices.${i}.tags.${k}.${f}`;
- const rows=(d.tags||[]).map((t,k)=>{const id=`det-${i}-${k}`,open=detOpen.has(`${i}.${k}`);
+/* #213: @base is the owner of the tags: "devices.<i>" or "device_types.<j>". A key of a tag row
+   (data-more, data-del-tag, detOpen) is "<base>|<k>". */
+function tagTable(d,base){
+ const p=(k,f)=>`${base}.tags.${k}.${f}`,bid=base.replace(".","-");
+ const rows=(Array.isArray(d.tags)?d.tags:[]).map((t,k)=>{const id=`det-${bid}-${k}`,open=detOpen.has(`${base}|${k}`);
   return `<tr>${TCOL.map(([f,l])=>{const a=TK[f];return `<td${a[0]==="bool"?' class="chk"':""}>${ctl(p(k,f),a[0],a[1],a[2],Object.assign({aria:l},a[3]))}</td>`}).join("")}`+
-   `<td><button type="button" class="more" data-more="${i}.${k}" aria-expanded="${open}" aria-controls="${id}">More</button><button data-del-tag="${i}.${k}" aria-label="Remove the tag">x</button></td></tr>`+
+   `<td><button type="button" class="more" data-more="${base}|${k}" aria-expanded="${open}" aria-controls="${id}">More</button><button data-del-tag="${base}|${k}" aria-label="Remove the tag">x</button></td></tr>`+
    `<tr class="det${open?"":" hidden"}" id="${id}"><td colspan="9"><div class="dgrid">${TDET.map(([f,l,h])=>{const a=TK[f];return field(p(k,f),l,a[0],a[1],a[2],Object.assign({help:h},a[3]))}).join("")}</div></td></tr>`}).join("");
- return `<p class="tnote hidden">Push the table to the side for more columns.</p><div class="tw"><div class="tbox"><table class="tags"><colgroup>${"<col>".repeat(9)}</colgroup>`+
+ return `<p class="tnote hidden">Push the table to the side for more columns.</p><div class="tw" data-perr="${base}.tags" tabindex="-1"><div class="tbox"><table class="tags"><colgroup>${"<col>".repeat(9)}</colgroup>`+
   `<tr>${TCOL.map(([,l,h])=>`<th><span class="lbl">${l}${qi(h,l)}</span></th>`).join("")}<th></th></tr>${rows}</table></div><div class="fade" aria-hidden="true"></div></div>`;
 }
 function updMore(b){
@@ -594,15 +655,21 @@ function revealField(el){const r=el&&el.closest?el.closest("tr.det"):null;
 function tblUpd(tw){(tw?[tw]:document.querySelectorAll(".tw")).forEach(w=>{const b=w.firstElementChild,s=b.scrollWidth>b.clientWidth+1;
  w.classList.toggle("scr",s&&b.scrollLeft+b.clientWidth<b.scrollWidth-1);w.previousElementSibling.classList.toggle("hidden",!s);w.style.setProperty("--bw",b.clientWidth+"px")})}
 /* #196: the placeholder of Write min and Write max tells if the tag is writable.
-   #221: the details row shows only the fields that apply to the type of the tag (a field with a
-   value stays, so that its error shows). Bit: a bool tag in holding or input (gw_config.c). */
+   #221 #202: the details row shows only the fields that apply to the type of the tag (a field
+   with a value stays, so that its error shows). Bit offset and Bit width: a bool or uint16 tag in
+   holding or input (gw_config.c). Bit width gives the bits and the values of the field. */
 const TAPPLY={offset:(t)=>t.num,eng_low:(t)=>t.num,eng_high:(t)=>t.num,write_min:(t)=>t.num,write_max:(t)=>t.num,
- deadband:(t)=>!t.blob,bit:(t)=>t.type==="bool"&&(t.area==="holding"||t.area==="input"),length:(t)=>t.blob,scan:()=>true};
-function tagUpd(i,k){const p=f=>document.getElementById(`i-devices.${i}.tags.${k}.${f}`),w=p("writable");if(!w)return;
+ deadband:(t)=>!t.blob,bit_offset:(t)=>t.reg,bit_width:(t)=>t.reg,length:(t)=>t.blob,scan:()=>true};
+function tagUpd(base,k){const p=f=>document.getElementById(`i-${base}.tags.${k}.${f}`),w=p("writable");if(!w)return;
  ["write_min","write_max"].forEach(f=>{const e=p(f);if(e)e.placeholder=w.checked?"no limit":"writable only"});
- const ty=p("type").value,t={type:ty,area:p("area").value,blob:ty==="string"||ty==="bytes"};t.num=ty!=="bool"&&!t.blob;
+ const ty=p("type").value,ar=p("area").value,t={type:ty,area:ar,blob:ty==="string"||ty==="bytes"};t.num=ty!=="bool"&&!t.blob;
+ t.reg=(ty==="bool"||ty==="uint16")&&(ar==="holding"||ar==="input");
  let nl=false;TDET.forEach(([f])=>{const e=p(f);if(!e)return;const d=e.closest(".fld"),on=TAPPLY[f](t)||e.value.trim()!=="";
-  d.classList.toggle("hidden",!on);d.classList.remove("nl");if(on&&!nl&&["bit","length","scan"].includes(f)){d.classList.add("nl");nl=true}})}
+  d.classList.toggle("hidden",!on);d.classList.remove("nl");if(on&&!nl&&["bit_offset","bit_width","length","scan"].includes(f)){d.classList.add("nl");nl=true}});
+ const bo=p("bit_offset"),bw=p("bit_width");if(!bo||!bw)return;let h=bw.parentNode.querySelector(".hint");
+ if(!h){h=document.createElement("span");h.className="hint";h.id=`h-${bw.id}`;bw.parentNode.append(h)}
+ const o=bo.value.trim(),n=bw.value.trim(),a=+o,b=+n,ok=/^\d+$/.test(o)&&/^\d+$/.test(n)&&b>=2&&b<=16&&a+b<=16;
+ h.textContent=ok?`Bits ${a} to ${a+b-1}: values 0 to ${2**b-1}`:"";h.classList.toggle("hidden",!ok)}
 /* #197 #221: the rare keys of a device, in the panel "More device settings (n)" below its fields.
    n = the keys with a value in the document (a checkbox at its default without the key does not count). */
 const devOpen=new Set();
@@ -620,15 +687,17 @@ function updDmore(b){const r=document.getElementById(b.getAttribute("aria-contro
  b.textContent=`${open?"▾":"▸"} More device settings${n?` (${n})`:""}`;b.setAttribute("aria-expanded",open)}
 function togDmore(b){const r=document.getElementById(b.getAttribute("aria-controls")),open=r.classList.toggle("hidden")===false;
  devOpen[open?"add":"delete"](b.dataset.dmore);updDmore(b)}
-function tagsInit(){document.querySelectorAll("[data-dmore]").forEach(updDmore);document.querySelectorAll("[data-more]").forEach(b=>{const[i,k]=b.dataset.more.split(".");tagUpd(i,k);updMore(b)});tblUpd()}
-$("#f-dev").addEventListener("click",e=>{const t=e.target.dataset||{};if(t.delTag||t.delDev)detOpen.clear();if(t.delDev)devOpen.clear();if(t.more)togDet(e.target);if(t.dmore)togDmore(e.target)},true);
+function tagsInit(){document.querySelectorAll("[data-dmore]").forEach(updDmore);document.querySelectorAll("[data-more]").forEach(b=>{const[i,k]=b.dataset.more.split("|");tagUpd(i,k);updMore(b)});tblUpd()}
+const detClick=e=>{const t=e.target.dataset||{};if(t.delTag||t.delDev||t.delDt)detOpen.clear();if(t.delDev)devOpen.clear();if(t.more)togDet(e.target);if(t.dmore)togDmore(e.target)};
+$("#f-dev").addEventListener("click",detClick,true);$("#f-dt").addEventListener("click",detClick,true);
 /* #214: a device with Enabled off gets the notice and a dashed border */
 function devEn(e){const m=/^devices\.(\d+)\.enabled$/.exec(e.dataset.p||"");if(!m)return;
  e.closest(".card").classList.toggle("dis",!e.checked);$(`#off-${m[1]}`).classList.toggle("hidden",e.checked)}
-$("#f-dev").addEventListener("input",e=>{devEn(e.target);const pm=/^devices\.(\d+)\.poll_ms$/.exec(e.target.dataset.p||"");
+const tagInput=e=>{devEn(e.target);const pm=/^devices\.(\d+)\.poll_ms$/.exec(e.target.dataset.p||"");
  if(pm){const sl=document.getElementById(`i-devices.${pm[1]}.slow_poll_ms`);if(sl)sl.placeholder=slowDef(pm[1])}const r=e.target.closest("tr.det");if(r)updMore(r.previousElementSibling.querySelector("[data-more]"));
  const d=e.target.closest(".dsub");if(d)updDmore(document.querySelector(`[aria-controls="${d.id}"]`));
- const m=/^devices\.(\d+)\.tags\.(\d+)\./.exec(e.target.dataset.p||"");if(m)tagUpd(m[1],m[2])});
+ const m=/^((?:devices|device_types)\.\d+)\.tags\.(\d+)\./.exec(e.target.dataset.p||"");if(m)tagUpd(m[1],m[2])};
+$("#f-dev").addEventListener("input",tagInput);$("#f-dt").addEventListener("input",tagInput);
 document.addEventListener("scroll",e=>{const w=e.target.parentElement;if(w&&w.classList.contains("tw"))tblUpd(w);if(xb)xPos()},true);
 addEventListener("resize",()=>{tblUpd();if(xb)xOpen(xb,false)});
 /* #170: the UMH topic of a metric, with the rules of UMH Core (docs/reference/umh-names-and-topics.md):
@@ -643,7 +712,7 @@ function val(p){const e=document.querySelector(`[data-p="${p}"]`);return e?e.val
 function updTopics(){
  const g=val("sparkplug.group_id"),n=val("sparkplug.edge_node_id"),px=(pfx||[]).filter(x=>x!=="").join(":");
  document.querySelectorAll("[data-topic]").forEach(e=>{const i=+e.dataset.topic,name=val(`devices.${i}.name`),id=px?`${px}:${name}`:name;
-  const t=val(`devices.${i}.tags.0.name`)||"<tag>";
+  const ty=val(`devices.${i}.type`),j=ty?dtNames().indexOf(ty):-1,t=val(j>=0?`device_types.${j}.tags.0.name`:`devices.${i}.tags.0.name`)||"<tag>";
   const loc=umhLevels(id).map(l=>l[0]==="_"?`<span class="bad" title="UMH Core reads a level that starts with _ as the data contract">${esc(l)}</span>`:esc(l)).join(".");
   e.innerHTML=`Sparkplug: spBv1.0/${esc(g)}/DDATA/${esc(n)}/${esc(id)} <span class="mut">(${new TextEncoder().encode(id).length} bytes)</span><br>UMH: umh.v1.${loc}._raw.${esc(umhTag(t))}`;
  });
@@ -728,24 +797,57 @@ function renderForms(){
  renderBk();
  $("#f-bk2").innerHTML=field("mqtt.failover_after","Failover after (attempts)","int",0,0,{help:"fo",ph:"3"})+field("mqtt.primary_return_s","Back to the primary after (s)","int",0,0,{help:"ret",ph:"0",hint:"0 = stay on the backup until it fails"});
  renderTls();
- $("#f-spb").innerHTML=field("sparkplug.group_id","Group ID","str",0,0,{ml:32,help:"group"})+field("sparkplug.edge_node_id","Edge node ID","str",0,0,{ml:32,help:"edge"})+field("sparkplug.primary_host_id","Primary host ID","str",0,0,{ml:32,help:"phost"})+field("sparkplug.naming","Naming","sel",NAMING,true,{help:"naming"});
+ $("#f-spb").innerHTML=field("sparkplug.group_id","Group ID","str",0,0,{ml:32,help:"group"})+field("sparkplug.edge_node_id","Edge node ID","str",0,0,{ml:32,help:"edge"})+field("sparkplug.primary_host_id","Primary host ID","str",0,0,{ml:32,help:"phost"})+field("sparkplug.naming","Naming","sel",NAMING,true,{help:"naming"})+
+  field("sparkplug.diagnostics_s","Diagnostics period (s)","int",0,0,{help:"diag",ph:"60",hint:"0 = only in the NBIRTH"});
+ renderSf();
  $("#f-rs485").innerHTML=field("rs485.baud","Baud rate","int",0,0,{help:"baud"})+field("rs485.parity","Parity","sel",PAR,true)+field("rs485.stop_bits","Stop bits","int")+field("rs485.response_timeout_ms","Timeout (ms)","int",0,0,{help:"tmo"})+field("rs485.retries","Retries","int",0,0,{help:"retry"})+field("rs485.inter_frame_delay_ms","Inter-frame delay (ms)","int",0,0,{help:"ifd"});
  /* #223: ota.mqtt, the only control of the card (an update from the Status tab is always possible) */
- $("#f-ota").innerHTML=`<div class="fld"><span class="lbl"><label for="i-ota.mqtt">Update from MQTT</label>${qi("otamqtt","Update from MQTT")}</span>${ctl("ota.mqtt","bool",false)}<span class="hint" id="h-otamqtt"></span></div>`;
- document.getElementById("i-ota.mqtt").setAttribute("aria-describedby","h-otamqtt");
+ /* #221: ota.ca_file, a file field as the TLS files of the MQTT card */
+ $("#f-ota").innerHTML=`<div class="fld"><span class="lbl"><label for="i-ota.mqtt">Update from MQTT</label>${qi("otamqtt","Update from MQTT")}</span>${ctl("ota.mqtt","bool",false)}<span class="hint" id="h-otamqtt"></span></div>`+otaCaFld();
+ document.getElementById("i-ota.mqtt").setAttribute("aria-describedby","h-otamqtt");tlsInfo();
  renderLio();
  $("#f-web").innerHTML=field("web.enabled","Enabled","bool",true,0,{help:"webon"})+field("web.https","HTTPS","bool",true,0,{help:"https"})+field("web.https_port","HTTPS port","int",0,0,{ph:"443"})+field("web.port","HTTP port","int",0,0,{help:"http",ph:"80"})+field("web.username","User","str")+field("web.password","Password (8 to 63)","pw",0,0,{ml:63,help:"webpw"})+PW2;pw194();webWarn();
  renderServices();
  renderPrefix();
+ renderTypes();
  const devs=cfg.devices||[];
- $("#f-dev").innerHTML=devs.map((d,i)=>`<div class="card${d.enabled===false?" dis":""}" data-dev="${i}"><div class="dhd">${ccHead(i,`dbody-${i}`,d.name||`Device ${i+1}`,!devClosed.has(d.name),"data-dcc")}</div><div class="dbody${devClosed.has(d.name)?" hidden":""}" id="dbody-${i}"><div class="grid">${field(`devices.${i}.enabled`,"Enabled","bool",true,0,{help:"en",ck:1})+field(`devices.${i}.name`,"Name","str",0,0,{ml:39,help:"name"})+field(`devices.${i}.unit_id`,"Unit ID","int",0,0,{help:"unit"})+field(`devices.${i}.poll_ms`,"Poll interval (ms)","int",0,0,{help:"poll"})+field(`devices.${i}.offline_after`,"Offline after (cycles)","int",0,0,{help:"off"})+field(`devices.${i}.type`,"Type (template)","str",0,0,{ml:39,help:"type"})}</div>
+ $("#f-dev").innerHTML=devs.map((d,i)=>{const typed=d.type!=null&&d.type!=="";return `<div class="card${d.enabled===false?" dis":""}" data-dev="${i}"><div class="dhd">${ccHead(i,`dbody-${i}`,d.name||`Device ${i+1}`,!devClosed.has(d.name),"data-dcc")}</div><div class="dbody${devClosed.has(d.name)?" hidden":""}" id="dbody-${i}"><div class="grid">${field(`devices.${i}.enabled`,"Enabled","bool",true,0,{help:"en",ck:1})+field(`devices.${i}.name`,"Name","str",0,0,{ml:39,help:"name"})+field(`devices.${i}.unit_id`,"Unit ID","int",0,0,{help:"unit"})+field(`devices.${i}.poll_ms`,"Poll interval (ms)","int",0,0,{help:"poll"})+field(`devices.${i}.offline_after`,"Offline after (cycles)","int",0,0,{help:"off"})+dtSel(i,d)}</div>
  <p class="offnote${d.enabled===false?"":" hidden"}" id="off-${i}">Disabled. The gateway does not poll this device and sends no DBIRTH. The validation still examines it.</p>
  ${devMore(i)}
  <div class="topic" data-topic="${i}"></div>
- ${tagTable(d,i)}
- <div class="row" style="margin-top:10px"><button data-add-tag="${i}">+ tag</button><button data-del-dev="${i}">Remove device</button></div></div></div>`).join("");
+ ${typed?devTinfo(d,i):tagTable(d,`devices.${i}`)}
+ <div class="row" style="margin-top:10px">${typed?"":`<button data-add-tag="devices.${i}">+ tag</button><button data-mk-type="${i}">Make a type from these tags</button>`}<button data-del-dev="${i}">Remove device</button></div></div></div>`}).join("");
  tagsInit();updTopics();ccSum();
 }
+/* #213: the card Device types. A type has a name and a tag list; a device with a type (the field
+   Device type) has no tags of its own: it shows the number of the tags of its type and a link to
+   the type. "Remove type" is disabled while devices use the type (decision of the product owner);
+   the validation also refuses a device with a type that does not exist. */
+function dtNames(){return (cfg&&Array.isArray(cfg.device_types)?cfg.device_types:[]).map(t=>t&&t.name!=null?String(t.name):"")}
+/* the devices that use the type @n: from the document, or (dtUsersNow) from the form */
+function dtUsers(n){return (cfg.devices||[]).map((d,i)=>d&&d.type!=null&&d.type!==""&&String(d.type)===n?(d.name||`Device ${i+1}`):null).filter(x=>x!==null)}
+function dtUsersNow(n){return [...document.querySelectorAll("[data-dtype]")].filter(s=>n!==""&&s.value===n).map(s=>val(`devices.${s.dataset.dtype}.name`)||`Device ${+s.dataset.dtype+1}`)}
+/* the number of tags of device @i: its own tags, or the tags of its type */
+function devTagN(i){const t=val(`devices.${i}.type`);if(!t)return document.querySelectorAll(`#f-dev [data-del-tag^="devices.${i}|"]`).length;
+ const j=dtNames().indexOf(t);return j<0?0:document.querySelectorAll(`#f-dt [data-del-tag^="device_types.${j}|"]`).length}
+function renderTypes(){
+ const ts=Array.isArray(cfg.device_types)?cfg.device_types:[];
+ $("#f-dt").innerHTML=(ts.length?'<p class="mut" style="font-size:12.5px;margin:0 0 8px">A device type holds the tag list one time. Each device of the type uses these tags.</p>':'<div class="empty">No device types. A device type holds the tag list one time for devices of the same model. A device can also have its own tags, with no type.</div>')+
+  ts.map((t,j)=>{t=t&&typeof t==="object"?t:{};const n=t.name!=null?String(t.name):"",open=typeOpen.has(n),u=dtUsers(n);
+   return `<div class="card" data-dt="${j}" id="dt-${j}"><div class="dhd">${ccHead(j,`tbody-${j}`,n||`Type ${j+1}`,open,"data-tcc")}</div><div class="dbody${open?"":" hidden"}" id="tbody-${j}"><div class="grid">${field(`device_types.${j}.name`,"Name","str",0,0,{ml:39,help:"tname"})}</div>
+ <div class="used">${u.length?`Used by ${plur(u.length,"device")}: ${u.map(esc).join(", ")}`:"Used by no device"}</div>
+ ${tagTable(t,`device_types.${j}`)}
+ <div class="row" style="margin-top:10px"><button data-add-tag="device_types.${j}">+ tag</button><button data-del-dt="${j}"${u.length?` disabled aria-describedby="dtu-${j}"`:""}>Remove type</button>${u.length?`<span class="mut" id="dtu-${j}">Used by ${plur(u.length,"device")}. Give them another type first.</span>`:""}</div></div></div>`}).join("");
+ const c=$("#dt-card");if(!ts.length&&ccSt.dtypes===undefined&&c&&!c.classList.contains("open"))ccApply(c,true)}
+function dtSel(i,d){const ns=dtNames(),v=d.type==null?"":String(d.type),o=[["","(none: own tags)"],...ns.map(n=>[n,n])];
+ if(v&&!ns.includes(v))o.push([v,`${v} (not in the list)`]);
+ return `<div class="fld"><span class="lbl"><label for="i-devices.${i}.type">Device type</label>${qi("type","Device type")}</span><select id="i-devices.${i}.type" data-p="devices.${i}.type" data-k="sel" data-dtype="${i}" data-prev="${esc(v)}">${o.map(([x,t])=>`<option value="${esc(x)}"${x===v?" selected":""}>${esc(t)}</option>`).join("")}</select></div>`}
+function devTinfo(d,i){const j=dtNames().indexOf(String(d.type)),t=j>=0?cfg.device_types[j]:null,n=t&&Array.isArray(t.tags)?t.tags.length:0;
+ return `<div class="tinfo" data-perr="devices.${i}.tags" tabindex="-1"><p>${j<0?`Tags: no device type <b>${esc(d.type)}</b> in the card Device types. Select a type in the list.`:`Tags: the ${plur(n,"tag")} of the device type <b>${esc(d.type)}</b>. Edit them in the card Device types. <a href="#dt-${j}" data-goto-dt="${j}">Go to the type ${esc(d.type)}</a>`}</p></div>`}
+/* the error of the name of a new type (the rules of gw_config.c), or null */
+function dtNameErr(v,ns){if(v==="")return "Give a name for the type.";if(new TextEncoder().encode(v).length>39)return "The name has more than 39 bytes.";
+ if(/[\/+#]/.test(v))return "No /, + or #.";const o=ns.find(n=>n.toLowerCase()===v.toLowerCase());
+ if(o!==undefined)return o===v?`The type ${v} already exists. Give a different name.`:`The type ${o} differs from this name only in case. Give a different name.`;return null}
 /* #201 #208 #221: the cards Wi-Fi, IPv6 and Time */
 function renderNet(){
  $("#f-wifi").innerHTML=field("network.wifi.enabled","Enabled","bool",false)+field("network.wifi.role","Role","sel",ROLE,true,{help:"role"})+field("network.wifi.failback_s","Failback (s)","int",0,0,{help:"fb",ph:"30"});
@@ -781,21 +883,28 @@ function renderBk(){const a=get(cfg,"mqtt.backup_brokers"),bk=Array.isArray(a)?a
   bk.map((b,i)=>`<tr><td>Backup ${i+1}</td><td>${ctl(`mqtt.backup_brokers.${i}.host`,"str",0,0,{aria:`Host of backup broker ${i+1}`,ml:127})}</td><td>${ctl(`mqtt.backup_brokers.${i}.port`,"int",0,0,{aria:`Port of backup broker ${i+1}`,ph:port})}</td><td><button type="button" data-ldel="bk.${i}" aria-label="Remove backup broker ${i+1}">x</button></td></tr>`).join("")+
   `</table></div><div class="row" style="margin-top:8px"><button type="button" data-ladd="bk"${bk.length>=3?" disabled":""}>+ broker</button><span class="hint">Up to 3 backup brokers.</span></div>`}
 /* #221: the TLS keys of mqtt; the files come from GET /api/files (FILES; null: not known) */
-let FILES=null;
-async function loadFiles(){const r=await api("GET","/api/files");FILES=r.status===200&&r.json?r.json.files:null}
+let FILES=null,FINFO=null;
+async function loadFiles(){const r=await api("GET","/api/files");FINFO=r.status===200&&r.json?r.json:null;FILES=FINFO?FINFO.files:null}
 function fileFld(path,lbl,help,kind,none){const v=get(cfg,path),names=(FILES||[]).filter(f=>f.kind===kind).map(f=>f.name);
  const o=[["",none]].concat(names.map(n=>[n,n]));if(v&&!names.includes(v))o.push([v,FILES?`${v} (not in the gateway)`:v]);
  return `<div class="fld"><span class="lbl"><label for="i-${path}">${lbl}</label>${qi(help,lbl)}</span><select id="i-${path}" data-p="${path}" data-k="sel">${o.map(([x,t])=>`<option value="${esc(x)}"${x===(v||"")?" selected":""}>${esc(t)}</option>`).join("")}</select><span class="info" id="fi-${path}"></span><button type="button" class="fload" data-load="${path}" data-kind="${kind}" data-lbl="${esc(lbl)}" aria-label="Load a file for ${esc(lbl)}">Load a file…</button></div>`}
+function otaNone(){const t=document.getElementById("i-mqtt.tls.enabled"),c=document.getElementById("i-mqtt.tls.ca_file");
+ const on=t?t.checked:!!get(cfg,"mqtt.tls.enabled"),ca=c?c.value:get(cfg,"mqtt.tls.ca_file")||"";
+ return on&&ca?`(empty: the MQTT CA file, ${ca})`:"(empty: the public root CAs)"}
+const otaCaFld=()=>fileFld("ota.ca_file","CA file of the image server","otaca","certificates",otaNone());
 function renderTls(){
+ const oc=document.getElementById("i-ota.ca_file");
  $("#f-tls").innerHTML=field("mqtt.tls.enabled","Encrypt (TLS)","bool",false,0,{help:"tlsen"})+fileFld("mqtt.tls.ca_file","CA file","ca","certificates","(none: public root CAs)")+field("mqtt.tls.server_name","Server name","str",0,0,{ml:127,ph:"the host of each broker",help:"sn"})+fileFld("mqtt.tls.cert_file","Client certificate","crt","certificates","(none)")+fileFld("mqtt.tls.key_file","Client key","key","key","(none)");
+ if(oc)oc.closest(".fld").outerHTML=otaCaFld();
  tlsInfo()}
 /* below each file: the subject and the expiry of its (first) certificate, or the type of the key */
 function until(d){const n=Math.floor((Date.parse(d+"T00:00:00Z")-Date.now())/864e5);return `until ${esc(d)}`+(n<0?' <span class="bad">(expired)</span>':n<=90?` <span class="warn">(in ${n} days)</span>`:"")}
 function tlsInfo(){const sel=p=>{const e=document.getElementById("i-"+p);return e?e.value:""},file=n=>(FILES||[]).find(f=>f.name===n),
   put=(p,h)=>{const e=document.getElementById("fi-"+p);if(e)e.innerHTML=h};
- ["mqtt.tls.ca_file","mqtt.tls.cert_file"].forEach(p=>{const f=file(sel(p)),c=f&&f.certs&&f.certs[0];put(p,c?`${esc(c.subject)} · ${until(c.not_after)}`:"")});
+ ["mqtt.tls.ca_file","mqtt.tls.cert_file","ota.ca_file"].forEach(p=>{const f=file(sel(p)),c=f&&f.certs&&f.certs[0];put(p,c?`${esc(c.subject)} · ${until(c.not_after)}`:"")});
  const k=file(sel("mqtt.tls.key_file")),c=sel("mqtt.tls.cert_file");
- put("mqtt.tls.key_file",k&&k.kind==="key"?`Private key, ${esc(k.key_type)}`+(c&&(k.agrees_with||[]).includes(c)?` · agrees with ${esc(c)}`:""):"")}
+ put("mqtt.tls.key_file",k&&k.kind==="key"?`Private key, ${esc(k.key_type)}`+(c&&(k.agrees_with||[]).includes(c)?` · agrees with ${esc(c)}`:""):"");
+ const o=document.getElementById("i-ota.ca_file");if(o&&o.options[0]&&o.options[0].value==="")o.options[0].textContent=otaNone()}
 /* #208: the Wi-Fi networks near the gateway (GET /api/wifi/scan) */
 let wnets=null,wsim=false;
 function bars(r){const n=r>=-55?4:r>=-67?3:r>=-77?2:1;return `<span class="bars" aria-hidden="true">${[1,2,3,4].map(i=>`<i${i<=n?' class="f"':""}></i>`).join("")}</span>`}
@@ -822,6 +931,31 @@ function webWarn(){[["web.enabled",`After the restart, the web UI stops. To turn
 function webOff(b){const w=JSON.parse(b).web||{};if(w.enabled!==false||(base191&&base191.web&&base191.web.enabled===false))return Promise.resolve(true);
  return ask({title:"Turn off the web interface?",action:"Save and restart",danger:true,fact:"Web interface · Enabled: off",
   html:`<ul><li>After the restart, this page and the REST API do not answer.</li><li>MQTT, Modbus and the other services continue.</li></ul><p style="margin:0 0 4px"><b>To turn on the web interface again:</b></p><ol style="margin:0 0 10px;padding-left:20px"><li>Push the BOOT button of the gateway for 2 to 10 s, until you hear 1 beep. The web server and the access point start.</li><li>Open the web UI, on the network or on the access point.</li><li>In the card Web interface, turn on Enabled. Then select Save and restart.</li></ol><p style="font-size:13px"><a href="${WEBOFF}" target="_blank" rel="noopener">How to turn on the web interface again</a> <span class="mut">(GitHub, needs internet)</span></p>`})}
+/* #221: sparkplug.store_forward is true, false or {enabled, sd: {enabled, max_kb}} (gw_config.c
+   parse_store_forward). Decision of the product owner: the UI writes true or false when the spill
+   keys have their defaults, and an object in the other cases. readSf() changes the key only when a
+   control differs from the document, so the form alone gives no change. */
+const SFKB=131072,SFWARN='Make sure that the card slot has no pull-up on D0 (GPIO45). A pull-up can stop the boot of the board. <a href="https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/README.md#65-slow-broker-and-command-limits" target="_blank" rel="noopener">Read more</a>';
+function sfEff(){const v=get(cfg,"sparkplug.store_forward");
+ if(!v||typeof v!=="object"||Array.isArray(v))return {en:v===true,sd:false,kb:SFKB};
+ const sd=v.sd&&typeof v.sd==="object"?v.sd:{};return {en:v.enabled===undefined?true:!!v.enabled,sd:!!sd.enabled,kb:sd.max_kb===undefined?SFKB:sd.max_kb}}
+function renderSf(){const s=sfEff();
+ $("#f-sf").innerHTML=`<div class="fld"><span class="lbl"><label for="sf-en">Keep the changes without a session</label></span><input type="checkbox" id="sf-en" data-perr="sparkplug.store_forward.enabled"${s.en?" checked":""}></div>`+
+  `<div class="fld"><span class="lbl"><label for="sf-sd">Spill to the microSD card</label>${qi("sfsd","Spill to the microSD card")}</span><input type="checkbox" id="sf-sd" data-perr="sparkplug.store_forward.sd.enabled" aria-describedby="sf-sd-h"${s.sd?" checked":""}><span id="sf-sd-h"></span></div>`+
+  `<div class="fld"><span class="lbl"><label for="sf-kb">Space on the card (KB)</label>${qi("sfkb","Space on the card (KB)")}</span><input id="sf-kb" data-perr="sparkplug.store_forward.sd.max_kb" inputmode="numeric" placeholder="${SFKB}" value="${esc(s.kb)}" aria-describedby="sf-kb-h"><span class="hint" id="sf-kb-h"></span></div>`;
+ sfUpd()}
+/* without store & forward the two spill controls are disabled; the GPIO45 caution while the spill
+   is on; the size in MB below the field */
+function sfUpd(){const en=$("#sf-en"),sd=$("#sf-sd"),kb=$("#sf-kb");if(!en)return;
+ sd.disabled=kb.disabled=!en.checked;const h=$("#sf-sd-h");
+ h.className=!en.checked?"hint":sd.checked?"lwarn":"hidden";h.innerHTML=!en.checked?"Turn on store &amp; forward first.":sd.checked?SFWARN:"";
+ const t=kb.value.trim(),n=t===""?SFKB:Number(t);
+ $("#sf-kb-h").textContent=`${Number.isInteger(n)&&n>0?`= ${grp(Math.round(n/102.4)/10)} MB. `:""}64 to 4 194 304 KB.`}
+function readSf(){const en=$("#sf-en");if(!cfg||!en)return;
+ const c=sfEff(),sd=$("#sf-sd").checked,t=$("#sf-kb").value.trim();
+ if(en.checked===c.en&&sd===c.sd&&(t===String(c.kb)||t===""&&c.kb===SFKB))return;
+ const kb=t===""?SFKB:Number(t);
+ set(cfg,"sparkplug.store_forward",!sd&&kb===SFKB?en.checked:{enabled:en.checked,sd:{enabled:sd,max_kb:kb}})}
 /* #172: sparkplug.device_prefix as a list of levels (pfx while the form is open). An empty level
    stays in the form while the user edits it; the document gets only the levels with text. */
 function renderPrefix(){
@@ -835,7 +969,7 @@ function readPrefix(){
  if(v!=="")set(cfg,"sparkplug.device_prefix",v);else unset("sparkplug.device_prefix");
 }
 function readForms(){
- readPrefix();readLio();
+ readPrefix();readLio();readSf();
  document.querySelectorAll("[data-p]").forEach(e=>{
   const p=e.dataset.p.replace(/\.(\d+)(?=\.|$)/g,".$1"),k=e.dataset.k;let v;
   if(k==="bool"){v=e.checked;if(get(cfg,p)===undefined&&v===(e.dataset.def==="1"))return}else if(k==="int"||k==="num"){if(e.value.trim()===""){unset(p);return}v=Number(e.value)}
@@ -859,7 +993,7 @@ function show(t){
  ["status","config","json"].forEach(n=>$("#tab-"+n).classList.toggle("hidden",n!==t));
  $("#actions").classList.toggle("hidden",t==="status");
  $("#bar").classList.toggle("hidden",t==="status");
- if(cfg&&t==="config"){pfx=null;renderForms();loadFiles().then(()=>{if(tab==="config"){readForms();renderTls();ccSum()}})}
+ if(cfg&&t==="config"){pfx=null;renderForms();loadFiles().then(()=>{if(tab==="config"){readForms();renderTls();renderFiles();ccSum()}});loadCert().then(()=>{if(tab==="config"){renderCerts();ccSum()}})}
  if(cfg&&t==="json")$("#raw").value=JSON.stringify(cfg,null,2);
 }
 /* #194: a new web password needs the same value in a second field (a typing error locks the
@@ -892,7 +1026,9 @@ function note191(el,text,cls){const s=document.createElement("span");s.className
 /* the device, the tag and the label of a field, for example "Pump1 · Unit ID" */
 function where191(el){
  const p=(el.dataset.p||el.dataset.perr||"").split("."),w=[];
- if(p[0]==="devices"){w.push(val(`devices.${p[1]}.name`)||`Device ${+p[1]+1}`);if(p[2]==="tags")w.push(val(`devices.${p[1]}.tags.${p[3]}.name`)||`Tag ${+p[3]+1}`)}
+ /* "devices" or "device_types" without an index (the list itself): the card, as for other keys */
+ if(p[0]==="devices"&&p[1]!==undefined){w.push(val(`devices.${p[1]}.name`)||`Device ${+p[1]+1}`);if(p[2]==="tags"&&p[3]!==undefined)w.push(val(`devices.${p[1]}.tags.${p[3]}.name`)||`Tag ${+p[3]+1}`)}
+ else if(p[0]==="device_types"&&p[1]!==undefined){w.push(`Type ${val(`device_types.${p[1]}.name`)||+p[1]+1}`);if(p[2]==="tags"&&p[3]!==undefined)w.push(val(`device_types.${p[1]}.tags.${p[3]}.name`)||`Tag ${+p[3]+1}`)}
  else{const h=el.closest(".card"),h2=h&&h.querySelector("h2");if(h&&h.dataset.t)w.push(h.dataset.t);else if(h2)w.push(h2.textContent.replace(/\?$/,""))}
  let l=el.getAttribute("aria-label")||"",f;
  if(!l&&el.id&&(f=document.querySelector(`label[for="${el.id}"]`)))l=f.textContent;
@@ -955,6 +1091,12 @@ async function load(){
  cfg={};base191={};msg(`Cannot read the saved configuration (${r.status}): ${(r.json||{}).error||""}. Paste or import a document in the JSON tab.`,"bad");
 }
 function yes(b,t,f){return `<span class="${b?"ok":"bad"}">${b?t:f}</span>`}
+/* #196: "1 write refused", "<n> writes refused" in amber, and nothing for 0. The poll writes the
+   table again every 2 s: xKeep(f) moves an open explainer to the new button, and the focus when @f. */
+const wref=(d,i)=>d.write_refused>0?`<br><span class="wr"><span class="warn">${plur(d.write_refused,"write")} refused</span><button type="button" class="qi" data-x="wref" data-t="Writes refused" data-k="wr-${i}" aria-label="About Writes refused" aria-expanded="false" aria-controls="xpl">?</button></span>`:"";
+function xKeep(f){if(!xb||xb.isConnected||!xb.dataset.k)return;const k=xb.dataset.k,n=document.querySelector(`button.qi[data-k="${k}"]`);
+ if(!n){xClose(false);return}
+ n.classList.add("on");n.setAttribute("aria-expanded","true");n.setAttribute("aria-describedby","xpl");xb=n;xPos();if(f){xskip=n;n.focus()}}
 /* #206: the name and the location of the gateway in the header and in the title of the browser
    tab; with no name, the header and the title of before */
 const TITLE0=document.title;
@@ -1006,7 +1148,9 @@ async function poll(){
  $("#rr-restart").title=sm.active?"Ends safe mode. The gateway starts in normal mode.":"The gateway disconnects from MQTT, stops the polling and starts again.";
  lgChg(s.log_levels);
  $("#st-net").innerHTML=`<p>Network ${yes(s.network.up,"up","no IP")} · MQTT ${yes(s.mqtt.connected,"connected",tm.waiting?"waiting for a valid clock":"disconnected")}${s.syslog?` · syslog ${esc(s.syslog)}`:""}</p><table><tr><th>Interface</th><th>State</th><th>IPv4</th><th>IPv6</th></tr>${s.network.interfaces.map(i=>`<tr><td>${i.name}${i.active?" (active)":""}</td><td>${!i.configured?"not configured":!i.link?"no link":i.usable?"up":"no address"}</td><td>${i.ipv4||""}</td><td>${(i.ipv6||[]).join("<br>")}</td></tr>`).join("")}</table>`;
- $("#st-mb").innerHTML=s.devices.length?`<table><tr><th>Device</th><th>Unit</th><th>State</th><th>Cycles / failed</th><th>OK / timeout / CRC / frame / exception</th><th>Values</th></tr>${s.devices.map(d=>d.enabled===false?`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td><span class="mut">disabled</span></td><td>—</td><td>—</td><td class="mut">not polled</td></tr>`:`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td>${yes(d.online,"online","offline")}</td><td>${d.cycles} / ${d.failed}</td><td>${d.ok} / ${d.timeout} / ${d.crc} / ${d.frame} / ${d.exception}</td><td>${d.tags.map(t=>`${esc(t.name)}=${t.valid?esc(t.value_text??t.value):"—"}`).join(", ")}</td></tr>`).join("")}</table>`:"no devices";
+ const xf=!!xb&&document.activeElement===xb;
+ $("#st-mb").innerHTML=s.devices.length?`<table><tr><th>Device</th><th>Unit</th><th>State</th><th>Cycles / failed</th><th>OK / timeout / CRC / frame / exception</th><th>Values</th></tr>${s.devices.map((d,i)=>d.enabled===false?`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td><span class="mut">disabled</span></td><td>—</td><td>—</td><td class="mut">not polled</td></tr>`:`<tr><td>${esc(d.name)}</td><td>${d.unit_id}</td><td>${yes(d.online,"online","offline")}${wref(d,i)}</td><td>${d.cycles} / ${d.failed}</td><td>${d.ok} / ${d.timeout} / ${d.crc} / ${d.frame} / ${d.exception}</td><td>${d.tags.map(t=>`${esc(t.name)}=${t.valid?esc(t.value_text??t.value):"—"}`).join(", ")}</td></tr>`).join("")}</table>`:"no devices";
+ xKeep(xf);
  const AL={none:"silent",device_offline:"device offline",mqtt_down:"no MQTT session",config_error:"configuration rejected"};
  const io=s.io;stIo(s);
  $("#st-io2").innerHTML=`Safe state (failsafe): ${io.failsafe?`<span class="bad">applied (no Sparkplug session)</span>`:"no"}`+
@@ -1136,13 +1280,21 @@ $("#sd-rst").onclick=async()=>{if(!await ask(RST))return;const r=await api("POST
 // Cancel give false and do nothing.
 let apl={};
 const RST={title:"Restart the gateway?",action:"Restart",html:"<p>The gateway disconnects from MQTT, stops the polling and starts again. This page shows the state again after the restart.</p>"};
-function ask(o){const d=$("#dlg"),ok=$("#dlg-ok"),no=$("#dlg-no"),i=$("#dlg-i");
- $("#dlg-t").textContent=o.title;$("#dlg-b").innerHTML=(o.fact?`<p class="fact">${o.fact}</p>`:"")+(o.html||"");
+/* o.input = {label, value, ml, hint, check}: a text field (#213: the name of a new type); check(v)
+   gives its error, which shows at the field, or null. The promise then gives the text. */
+function ask(o){const d=$("#dlg"),ok=$("#dlg-ok"),no=$("#dlg-no"),i=$("#dlg-i"),f=o.input;
+ $("#dlg-t").textContent=o.title;$("#dlg-b").innerHTML=(o.fact?`<p class="fact">${o.fact}</p>`:"")+
+  (f?`<div class="fld"><span class="lbl"><label for="dlg-n">${esc(f.label)}</label></span><input id="dlg-n" maxlength="${f.ml||255}" autocomplete="off" spellcheck="false" value="${esc(f.value||"")}" aria-describedby="dlg-nh"><span class="hint" id="dlg-nh">${esc(f.hint||"")}</span></div>`:"")+(o.html||"");
  ok.textContent=o.action;ok.className=o.danger?"dgo":"pri";$("#dlg-w").classList.toggle("hidden",!o.word);i.value="";ok.disabled=!!o.word;
  if(o.word)$("#dlg-wl").textContent=`Type ${o.word} to confirm`;
  i.oninput=()=>{ok.disabled=i.value.trim()!==o.word};i.onkeydown=e=>{if(e.key==="Enter"&&!ok.disabled)ok.click()};
- return new Promise(res=>{const end=v=>{d.onclose=null;if(d.open)d.close();res(v)};ok.onclick=()=>end(true);no.onclick=()=>end(false);d.onclose=()=>end(false);
-  d.showModal();(o.word?i:no).focus()})}
+ const n=f?$("#dlg-n"):null,h=f?$("#dlg-nh"):null;
+ if(n){n.oninput=()=>{n.classList.remove("err");n.removeAttribute("aria-invalid");h.className="hint";h.textContent=f.hint||""};n.onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();ok.click()}}}
+ return new Promise(res=>{const end=v=>{d.onclose=null;if(d.open)d.close();res(v)};
+  ok.onclick=()=>{if(!n){end(true);return}const v=n.value.trim(),er=f.check?f.check(v):null;
+   if(er){n.classList.add("err");n.setAttribute("aria-invalid","true");h.className="ferr";h.textContent=er;n.focus();return}end(v)};
+  no.onclick=()=>end(false);d.onclose=()=>end(false);
+  d.showModal();(o.word?i:n||no).focus()})}
 // #192: a refusal of the pre-flight check ("pre-flight check: image <version> refused: <reason>; <reason>;
 // force installs it into recovery mode", gw_fw.c check_image; "; " is only between the reasons) as a box
 // with each reason; its button calls go(version, reason) (#215: a confirmation, then the request again
@@ -1267,19 +1419,51 @@ document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>show(b.dataset.
 $("#b-check").onclick=()=>put(true);$("#b-save").onclick=()=>put(false);
 $("#b-export").onclick=()=>{location.href="/api/config?download=1"};
 $("#b-import").onchange=async e=>{const f=e.target.files[0];if(!f)return;const t=await f.text();try{cfg=JSON.parse(t)}catch(x){msg("The file is not JSON: "+x.message,"bad");return}tab="";show("json");msg("Imported into the editor: examine it, then click Save and restart.");upd191()};
-$("#b-restart").onclick=async()=>{if(await ask(RST)){const r=await api("POST","/api/restart");msg(r.status===202?"Restarting…":`Not restarted (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"":"bad")}};
 $("#f-pfx").onclick=e=>{const t=e.target.dataset;if(!(t.addLvl||t.delLvl))return;readForms();
  if(t.addLvl)pfx.push("");else pfx.splice(+t.delLvl,1);
  renderPrefix();readPrefix();const ins=document.querySelectorAll("[data-lvl]");if(t.addLvl&&ins.length)ins[ins.length-1].focus()};
 $("#add-dev").onclick=()=>{readForms();(cfg.devices=cfg.devices||[]).push({name:"Dev"+(cfg.devices.length+1),unit_id:cfg.devices.length+1,poll_ms:1000,offline_after:3,tags:[{name:"Tag1",area:"holding",address:0,type:"uint16"}]});renderForms()};
-$("#f-dev").onclick=e=>{const t=e.target.dataset;if(!(t.addTag||t.delTag||t.delDev))return;readForms();
- if(t.addTag){const d=cfg.devices[+t.addTag];d.tags.push({name:"Tag"+(d.tags.length+1),area:"holding",address:0,type:"uint16"})}
- if(t.delTag){const[i,k]=t.delTag.split(".").map(Number);cfg.devices[i].tags.splice(k,1)}
- if(t.delDev)cfg.devices.splice(+t.delDev,1);renderForms()};
+/* #213: a new type opens */
+$("#add-dt").onclick=()=>{readForms();const a=cfg.device_types=Array.isArray(cfg.device_types)?cfg.device_types:[],ns=dtNames();let k=a.length+1;while(ns.includes("Type"+k))k++;
+ a.push({name:"Type"+k,tags:[{name:"Tag1",area:"holding",address:0,type:"uint16"}]});typeOpen.add("Type"+k);typeSave();renderForms()};
+/* + tag, x (a tag), Remove device and Remove type; @base of a tag: "devices.<i>" or "device_types.<j>" */
+function tagOps(e){const t=e.target.dataset||{};if(!(t.addTag||t.delTag||t.delDev||t.delDt))return;readForms();
+ if(t.addTag){const o=get(cfg,t.addTag);if(!Array.isArray(o.tags))o.tags=[];o.tags.push({name:"Tag"+(o.tags.length+1),area:"holding",address:0,type:"uint16"})}
+ if(t.delTag){const[b,k]=t.delTag.split("|"),o=get(cfg,b);if(o&&Array.isArray(o.tags))o.tags.splice(+k,1)}
+ if(t.delDev)cfg.devices.splice(+t.delDev,1);
+ if(t.delDt){cfg.device_types.splice(+t.delDt,1);if(!cfg.device_types.length)delete cfg.device_types}
+ renderForms()}
+$("#f-dev").onclick=tagOps;$("#f-dt").onclick=tagOps;
+/* #213: the field Device type. A device with own tags asks first (#193): its own tags go away.
+   (none) after a type gives the device a copy of the tags of the type, as its own tags. */
+$("#f-dev").addEventListener("change",async e=>{const s=e.target;if(s.dataset.dtype===undefined)return;const i=+s.dataset.dtype,prev=s.dataset.prev,nv=s.value;
+ readForms();const d=cfg.devices[i],own=Array.isArray(d.tags)?d.tags.length:0;
+ if(nv&&!prev&&own){const j=dtNames().indexOf(nv),n=j>=0&&Array.isArray(cfg.device_types[j].tags)?cfg.device_types[j].tags.length:0,nm=esc(d.name||`Device ${i+1}`);
+  if(!await ask({title:`Use the tags of the type ${nv}?`,action:`Use the type ${nv}`,fact:`${nm} · ${plur(own,"own tag")}`,
+   html:`<ul><li>${nm} then uses the ${plur(n,"tag")} of the device type <b>${esc(nv)}</b>.</li><li>The ${plur(own,"own tag")} of ${nm} ${own===1?"goes":"go"} away when you save.</li><li>To keep them, select Cancel, then use <b>Make a type from these tags</b>.</li></ul>`})){s.value="";delete d.type;updTopics();upd191();return}}
+ if(nv)delete d.tags;else if(prev){const j=dtNames().indexOf(prev);d.tags=j>=0?JSON.parse(JSON.stringify(cfg.device_types[j].tags||[])):[]}
+ renderForms();const f=document.getElementById(s.id);if(f)f.focus()});
+/* #213: "Make a type from these tags": a new type with a copy of the tags; the device then uses it */
+$("#f-dev").addEventListener("click",async e=>{const b=e.target.closest&&e.target.closest("[data-mk-type],[data-goto-dt]");if(!b)return;
+ if(b.dataset.gotoDt!==undefined){e.preventDefault();const j=b.dataset.gotoDt,c=$("#dt-card");if(!c.classList.contains("open"))ccApply(c,true,true);dtApply(j,true,true);
+  const f=document.getElementById(`i-device_types.${j}.name`);if(f){f.scrollIntoView({block:"center"});f.focus({preventScroll:true})}return}
+ readForms();const i=+b.dataset.mkType,d=cfg.devices[i],nm=d.name||`Device ${i+1}`,tags=Array.isArray(d.tags)?d.tags:[];
+ const name=await ask({title:`Make a device type from the tags of ${nm}`,action:"Make the type",fact:plur(tags.length,"tag"),
+  input:{label:"Name of the new type",value:nm,ml:39,hint:"1 to 39 bytes. No /, + or #. It is also the name of the Sparkplug template.",check:v=>dtNameErr(v,dtNames())},
+  html:`<ul style="margin-top:12px"><li>The new type gets a copy of the ${plur(tags.length,"tag")} of ${esc(nm)}.</li><li>${esc(nm)} then uses the type, and has no own tags.</li><li>Other devices can select the type.</li></ul>`});
+ if(!name)return;
+ (cfg.device_types=Array.isArray(cfg.device_types)?cfg.device_types:[]).push({name,tags:JSON.parse(JSON.stringify(tags))});
+ d.type=name;delete d.tags;typeOpen.add(name);typeSave();renderForms()});
+/* #213: a new name of a type: the devices of the type get it too */
+$("#f-dt").addEventListener("change",e=>{const m=/^device_types\.(\d+)\.name$/.exec(e.target.dataset.p||"");if(!m)return;const j=+m[1],old=String(get(cfg,`device_types.${j}.name`)??"");
+ readForms();const nv=String(get(cfg,`device_types.${j}.name`)??"");if(nv===old)return;
+ (cfg.devices||[]).forEach(d=>{if(d&&old!==""&&d.type===old)d.type=nv});if(typeOpen.delete(old)){typeOpen.add(nv);typeSave()}
+ const a=document.activeElement&&document.activeElement.id;renderForms();const f=a&&document.getElementById(a);if(f)f.focus()});
 $("#tab-config").addEventListener("input",e=>{if(e.target.id==="i-web.password")pw194();if(e.target.dataset.lvl!==undefined)pfx[+e.target.dataset.lvl]=e.target.value.trim().replace(/:/g,"");updTopics();
- const id=e.target.id;if(id==="i-network.wifi.ssid")wifiList();if(id==="i-mqtt.host"||id==="i-mqtt.port"||id==="i-mqtt.tls.enabled")bkLive()});
+ const id=e.target.id;if(id==="i-network.wifi.ssid")wifiList();if(id==="sf-kb")sfUpd();if(id==="i-mqtt.host"||id==="i-mqtt.port"||id==="i-mqtt.tls.enabled")bkLive()});
 /* #201 #208 #216 #221 */
-$("#tab-config").addEventListener("change",e=>{const id=e.target.id||"";if(id==="i-web.enabled"||id==="i-web.https")webWarn();if(id.startsWith("i-mqtt.tls."))tlsInfo()});
+$("#tab-config").addEventListener("change",e=>{const id=e.target.id||"";if(id==="i-web.enabled"||id==="i-web.https")webWarn();if(id.startsWith("i-mqtt.tls.")||id==="i-ota.ca_file")tlsInfo();
+ if(id==="sf-en"&&!e.target.checked)$("#sf-sd").checked=false;if(id.startsWith("sf-"))sfUpd()});
 $("#tab-config").addEventListener("click",e=>{if(e.target.id==="w-find"){wifiScan();return}
  const t=e.target.closest&&e.target.closest("[data-ladd],[data-ldel]");if(!t)return;readForms();
  const add=t.dataset.ladd!==undefined,[k,i]=(add?t.dataset.ladd:t.dataset.ldel).split("."),L=LISTS[k];let a=get(cfg,L.p);
@@ -1290,26 +1474,193 @@ $("#tab-config").addEventListener("click",e=>{if(e.target.id==="w-find"){wifiSca
    Decision of the product owner (option A): after the load, that field selects the new file; the
    bar shows the change, and the TLS connection changes only after Save and restart. A file of
    the other kind (a key for a certificate field) is loaded, but the field does not select it.
-   The JSON tab keeps its text: only the key of the field changes in it.
-   TODO(#221): the load dialog and the replace of an existing file wait for the approval of the
-   row "Load, replace and remove the PEM files"; until then a file with the same name is refused. */
+   The JSON tab keeps its text: only the key of the field changes in it. A file with the same
+   name is refused here (409): the card Certificates replaces it. */
 let tlsTo=null;
+/* #205 #221: each PUT of PEM text (the file fields, the card Certificates): {status, json} */
+async function pemPut(path,text){let r,j=null;
+ try{r=await fetch(path,{method:"PUT",headers:{"Content-Type":"application/x-pem-file","X-Requested-With":"gateway"},body:text,cache:"no-store"})}
+ catch(x){return {status:0,json:{error:`no answer from the gateway (${x.message})`}}}
+ try{j=await r.json()}catch(x){}return {status:r.status,json:j}}
 $("#tab-config").addEventListener("click",e=>{const b=e.target.closest&&e.target.closest("button[data-load]");if(!b)return;
  tlsTo={p:b.dataset.load,kind:b.dataset.kind,lbl:b.dataset.lbl};$("#tls-file").click()});
-$("#tls-file").onchange=async e=>{const f=e.target.files[0],to=tlsTo;e.target.value="";if(!f||!to)return;const m=$("#tls-msg"),say=(t,c)=>{m.textContent=t;m.className=c};
- if(f.size>16384){say(`${f.name}: ${f.size} B. The maximum is 16384 B.`,"bad");return}
- say(`Loading ${f.name}…`,"mut");let r,j=null;
- try{r=await fetch("/api/files?name="+encodeURIComponent(f.name),{method:"PUT",headers:{"Content-Type":"application/x-pem-file","X-Requested-With":"gateway"},body:await f.text(),cache:"no-store"})}
- catch(x){say(`No answer from the gateway (${x.message})`,"bad");return}
- try{j=await r.json()}catch(x){}
- if(r.status!==201||!j||!j.file){say(r.status===409?`${f.name} is already in the gateway. Give the file another name, then load it again.`:`${f.name} is not loaded (${r.status}): ${(j||{}).error||""}`,"bad");return}
- const fi=j.file,ok=fi.kind===to.kind;await loadFiles();
+$("#tls-file").onchange=async e=>{const f=e.target.files[0],to=tlsTo;e.target.value="";if(!f||!to)return;const m=$(to.p.startsWith("ota.")?"#ota-msg":"#tls-msg"),say=(t,c)=>{m.textContent=t;m.className=c};
+ const max=(FINFO&&FINFO.max_file_bytes)||16384;
+ if(f.size>max){say(`${f.name}: ${f.size} B. The maximum is ${max} B.`,"bad");return}
+ say(`Loading ${f.name}…`,"mut");
+ const r=await pemPut("/api/files?name="+encodeURIComponent(f.name),await f.text()),j=r.json;
+ if(r.status!==201||!j||!j.file){say(r.status===409?`${f.name} is already in the gateway. Replace it in the card Certificates, or give the file another name.`:`${f.name} is not loaded (${r.status}): ${(j||{}).error||""}`,"bad");return}
+ const fi=j.file,ok=fi.kind===to.kind;await loadFiles();renderFiles();
  if(tab==="config"){readForms();if(ok)set(cfg,to.p,fi.name);renderTls()}
  else if(ok&&tab==="json"){let c;try{c=JSON.parse($("#raw").value)}catch(x){say(`${fi.name} is in the gateway. The JSON is not valid: write "${fi.name}" into ${to.p} yourself.`,"warn");return}
   set(c,to.p,fi.name);cfg=c;$("#raw").value=JSON.stringify(cfg,null,2)}
  else if(ok)set(cfg,to.p,fi.name);   /* the Status tab: cfg holds the forms (show) */
  if(!ok){say(`${fi.name} is in the gateway, but it is ${fi.kind==="key"?"a private key":"a certificate file"}. The field ${to.lbl} does not show it.`,"warn");return}
  say(`${fi.name} is in the gateway. The field ${to.lbl} shows it. Select Save and restart to use it.`,"ok");upd191()};
+/* #205 #221: the card Certificates (approved prototype of #195, rows "#221 · Load, replace and
+   remove the PEM files" and "#205 · HTTPS certificate of the web UI"). Each button changes the
+   gateway at once, without Save and restart:
+   - the HTTPS certificate of this page: GET /api/web/certificate (also the certificate that waits
+     for the restart), PUT /api/web/certificate (the certificate of the plant with its key; a dry
+     run first), POST /api/web/certificate/new, DELETE /api/web/certificate/pending (Discard).
+     Decisions of the product owner: a warning when the SANs do not contain the hostname, and a
+     warning when the certificate does not name the address of this page (warnings only);
+   - the PEM files: GET /api/files, PUT /api/files (one file, or a certificate with its key; a dry
+     run first; replace=1 keeps the name), DELETE /api/files/<name> (409 when the saved
+     configuration uses the file). Decision of the product owner: no Restart button in the
+     replace dialog; the dialog says that MQTT uses the new file after the next restart. */
+Object.assign(HELP,{
+ wcert:"At the first boot, the gateway makes a self-signed certificate (EC P-256, valid until 2099). The console shows its SHA-256 fingerprint at each boot.\nLoad a certificate of the plant CA, so that the browsers give no warning. The SANs must contain the name in the address bar, for example gw01.local.\n~The certificate applies after a restart. The key stays in the gateway.",
+ pemf:"The PEM files for the TLS connection to the brokers (card MQTT) and for the download of a firmware image (Firmware updates). The gateway examines each file before it keeps it.\nReplace keeps the name of the file. A key of the configuration that uses the file uses the new content after the next restart.\nThe gateway never sends a file or a private key back to the browser.\n~Up to 16 files, 16 KB each."});
+let WCERT=null;
+async function loadCert(){const r=await api("GET","/api/web/certificate");WCERT=r.status===200&&r.json?r.json:null}
+const USEDBY={"mqtt.tls.ca_file":"MQTT · CA file","mqtt.tls.cert_file":"MQTT · Client certificate","mqtt.tls.key_file":"MQTT · Client key","ota.ca_file":"Firmware updates · CA file"};
+const days=d=>Math.floor((Date.parse(d+"T00:00:00Z")-Date.now())/864e5),kib=n=>`${(n/1024).toFixed(1)} KB`;
+const cn=s=>{const m=/(?:^|,\s*)CN=([^,]*)/.exec(s||"");return m?`CN=${m[1]}`:s||""};
+const WCSRC={"first-boot":"Self-signed by the gateway (first boot)","new":"Self-signed by the gateway (made on request)","loaded":"Loaded: plant CA","self-signed":"Self-signed"};
+const wcShort=c=>c.source==="loaded"?"from the plant CA":"self-signed";
+function wcUntil(d){const n=days(d);return esc(d)+(n<0?' <span class="bad">(expired)</span>':n<90?` <span class="warn">(in ${n} days)</span>`:n<3650?` <span class="mut">(in ${n} days)</span>`:"")}
+/* the names of a certificate (its SANs, else its CN), and the address of this page in them */
+function wcNames(c){const n=(c.sans||"").split(",").map(x=>x.replace(/^(DNS|IP):/,"").trim().toLowerCase()).filter(x=>x);
+ if(!n.length){const m=/(?:^|,\s*)CN=([^,]*)/.exec(c.subject||"");if(m)n.push(m[1].toLowerCase())}return n}
+const pageHost=()=>location.hostname.replace(/^\[|\]$/g,"").toLowerCase();
+function wcNamesPage(c){const h=pageHost();return wcNames(c).some(n=>n===h||n.startsWith("*.")&&h.endsWith(n.slice(1))&&h.split(".").length===n.split(".").length)}
+function wcmsg(t,c){const m=$("#wc-msg");if(m){m.textContent=t;m.className=c||"mut"}}
+function renderCerts(){const e=$("#wc");if(!e)return;const w=WCERT,c=w&&w.current,p=w&&w.pending,h=w?w.hostname:"",ph=pageHost();let x="";
+ if(!w)x='<p class="mut">The gateway did not send its certificate.</p>';
+ else{
+  if(!w.https)x+='<p class="lwarn" style="margin:0 0 10px">HTTPS is off (card Web interface). The web server does not use this certificate now.</p>';
+  if(c&&!c.hostname_in_sans)x+=`<div class="wbox" role="status"><b>The SANs do not contain the hostname ${esc(h)}.</b> The browser gives a name warning at https://${esc(h)}.local/. Make a new self-signed certificate, or load a certificate with ${esc(h)}.local in the SANs.</div>`;
+  const same=ph===h.toLowerCase()||ph===`${h}.local`.toLowerCase();
+  if(c&&w.https&&location.protocol==="https:"&&!wcNamesPage(c)&&!(same&&!c.hostname_in_sans))
+   x+=`<div class="wbox" role="status"><b>The certificate does not name the address of this page, ${esc(ph)}.</b> The browser gives a name warning for this address. Open the page with a name in the SANs, or load a certificate with ${esc(ph)} in the SANs.</div>`;
+  if(p)x+=`<div class="pend" role="status"><div><b>A new certificate waits for the restart.</b><br>${esc(cn(p.subject))} · ${p.self_signed?"self-signed":`issuer ${esc(cn(p.issuer))}`} · until ${esc(p.not_after)}<br><span class="mut">Until the restart, this page uses the certificate below.</span></div><button type="button" id="wc-rst">Restart now</button><button type="button" id="wc-dis">Discard</button></div>`;
+  if(c)x+=`<dl class="kv"><dt>Source</dt><dd>${esc(WCSRC[c.source]||c.source)}</dd><dt>Subject</dt><dd class="mono">${esc(c.subject)}</dd>${c.self_signed?"":`<dt>Issuer</dt><dd class="mono">${esc(c.issuer)}</dd>`}<dt>SANs</dt><dd class="mono">${esc((c.sans||"none").replace(/,/g,", "))}</dd><dt>Valid until</dt><dd>${wcUntil(c.not_after)}</dd><dt>SHA-256</dt><dd class="mono">${esc(c.sha256)}</dd></dl>`;
+  else x+='<p class="mut">No certificate yet. The gateway makes one at the next boot with HTTPS on.</p>';
+ }
+ e.innerHTML=x+'<div class="row"><button type="button" id="wc-load">Load a certificate…</button><button type="button" id="wc-new">Make a new self-signed certificate</button></div><div id="wc-msg" class="mut" aria-live="polite"></div>'}
+function pfKind(f){if(f.kind==="key")return `Private key, ${esc(f.key_type)}`;if(f.kind!=="certificates")return '<span class="bad">Not PEM</span>';
+ const ca=(f.certs||[]).length&&(f.certs||[]).every(c=>c.ca);return f.count>1?`${f.count} ${ca?"CA certificates":"certificates"}`:ca?"CA certificate":"Certificate"}
+function pfAgrees(f){const a=f.agrees_with||[];return a.length?`Agrees with ${esc(a.join(", "))}`:"Agrees with no certificate file"}
+function pfDate(d){const n=days(d);return n<0?`<span class="bad">${esc(d)} (expired)</span>`:n<90?`<span class="warn">${esc(d)} (in ${n} days)</span>`:esc(d)}
+const pfUsed=(f,sep)=>(f.used_by||[]).map(k=>esc(USEDBY[k]||k)).join(sep);
+function renderFiles(){const e=$("#pf");if(!e)return;const fs=FILES,i=FINFO||{},known=i.config_known!==false;let x="";
+ const rp=f=>`<button type="button" data-pfrep="${esc(f.name)}">Replace</button>`,
+  rm=f=>`<button type="button" class="danger" data-pfrm="${esc(f.name)}"${(f.used_by||[]).length||!known?' disabled aria-describedby="pf-note"':""}>Remove</button>`;
+ if(!fs)x='<p class="mut">The gateway did not send the list of the files.</p>';
+ else if(!fs.length)x='<p class="mut">There are no PEM files in the gateway.</p>';
+ else{
+  x=`<div class="tbox pf-t"><table><colgroup><col><col><col><col><col><col></colgroup><tr><th>File</th><th>Content</th><th>Subject</th><th>Valid until</th><th>Used by</th><th></th></tr>`+
+   fs.map(f=>`<tr><td class="mono">${esc(f.name)}</td><td>${pfKind(f)}</td><td class="mono">${f.kind==="key"?`<span class="mut">${pfAgrees(f)}</span>`:(f.certs||[]).map(c=>esc(c.subject)).join("<br>")}</td>`+
+    `<td>${f.kind==="certificates"?(f.certs||[]).map(c=>pfDate(c.not_after)).join("<br>"):'<span class="mut">—</span>'}</td><td>${pfUsed(f,"<br>")||'<span class="mut">Not used</span>'}</td><td class="act">${rp(f)} ${rm(f)}</td></tr>`).join("")+"</table></div>"+
+   '<div class="pf-l">'+fs.map(f=>`<div class="fi"><div class="hd"><span class="fn">${esc(f.name)}</span><span class="mut">${pfUsed(f,", ")||"Not used"}</span></div><div>${pfKind(f)}</div>`+
+    (f.kind==="certificates"?(f.certs||[]).map(c=>`<div class="mut">${esc(c.subject)} · until ${pfDate(c.not_after)}</div>`).join(""):f.kind==="key"?`<div class="mut">${pfAgrees(f)}</div>`:"")+
+    `<div class="two">${rp(f)}${rm(f)}</div></div>`).join("")+"</div>";
+ }
+ x+=`<p class="hint" id="pf-note" style="margin:6px 0 10px">You cannot remove a file that the saved configuration uses. Select another file in the card MQTT or Firmware updates, save, and then remove it. The gateway never sends a private key back to the browser.${known?"":" The gateway cannot read the saved configuration, so it removes no file."}</p>`+
+  `<div class="row"><button type="button" id="pf-load"${fs&&i.max_files&&i.count>=i.max_files?" disabled":""}>Load a file…</button><span class="mut">${fs?`${plur(i.count||fs.length,"file")} · ${kib(i.total_bytes||0)}`:""}</span>${i.max_files?`<span class="hint">Up to ${i.max_files} files, ${Math.round(i.max_file_bytes/1024)} KB each.</span>`:""}</div><div id="pf-msg" class="mut" aria-live="polite"></div>`;
+ e.innerHTML=x}
+function pfmsg(t,c){const m=$("#pf-msg");if(m){m.textContent=t;m.className=c||"mut"}}
+/* the dialog of a load (#193: a sheet on a phone): o.setup(body, ok) wires the fields, o.go() does
+   the load and gives true to close the dialog; Cancel gives false */
+function certDlg(o){const d=$("#dlg"),ok=$("#dlg-ok"),no=$("#dlg-no");
+ $("#dlg-t").textContent=o.title;$("#dlg-b").innerHTML=(o.fact?`<p class="fact">${o.fact}</p>`:"")+o.html;$("#dlg-w").classList.add("hidden");
+ ok.textContent=o.action;ok.className="pri";ok.disabled=true;
+ return new Promise(res=>{const end=v=>{d.onclose=null;if(d.open)d.close();res(v)};
+  ok.onclick=async()=>{ok.disabled=true;if(await o.go())end(true);else ok.disabled=false};
+  no.onclick=()=>end(false);d.onclose=()=>{if(!d.open)end(false)};d.showModal();o.setup($("#dlg-b"),ok);no.focus()})}
+/* a file picker of a dialog: the button, the name and the size of the chosen file */
+const pickHtml=(id,lbl,none)=>`<div class="dfld"><span id="pl-${id}">${lbl}</span><div class="pick"><button type="button" data-pick="${id}" aria-describedby="pl-${id}">Choose a file</button><span class="mono" id="pn-${id}">${esc(none||"No file")}</span><span class="mut" id="ps-${id}"></span></div><input type="file" class="hidden" id="pi-${id}" accept=".pem,.crt,.cer,.key,application/x-pem-file"></div>`;
+function pickWire(b,ids,changed){const got={};ids.forEach(id=>{const i=b.querySelector(`#pi-${id}`);
+  b.querySelector(`[data-pick="${id}"]`).onclick=()=>i.click();
+  i.onchange=async()=>{const f=i.files[0];if(!f)return;got[id]={name:f.name,size:f.size,text:f.size<=65536?await f.text():""};
+   b.querySelector(`#pn-${id}`).textContent=f.name;b.querySelector(`#ps-${id}`).textContent=`· ${kib(f.size)}`;changed(got,id)}});return got}
+const notPem=n=>`<div class="exam bad" role="alert"><b class="bad">Not loaded: the file is not PEM.</b><p>A PEM file is text that starts with <code>-----BEGIN</code>. To convert a DER file, use for example:</p><p><code>openssl x509 -inform der -in ${esc(n)} -out ${esc(n.replace(/\.[^.]*$/,""))}.pem</code></p></div>`;
+const examBad=(t,p)=>`<div class="exam bad" role="alert"><b class="bad">Not loaded: ${esc(t)}</b>${p?`<p>${esc(p.charAt(0).toUpperCase()+p.slice(1))}</p>`:""}</div>`;
+/* the text of one file of a load: what the gateway found in it */
+function pfLine(f){if(f.kind==="key")return `${pfKind(f)}${f.agrees?" · agrees with the certificate":""}`;
+ const c=(f.certs||[])[0]||{};return `${pfKind(f)} · ${esc(cn(c.subject))} · until ${esc(c.not_after||"?")}${f.count>1?` (and ${f.count-1} more)`:""}`}
+const nameOk=n=>/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,31}$/.test(n)&&!/\.(json|tmp)$/.test(n)&&!n.startsWith("config.json");
+/* Load (f null) or Replace (f: the file of the list) of the PEM files */
+async function pfDialog(f){const fs=FILES||[],max=(FINFO&&FINFO.max_file_bytes)||16384,by=n=>fs.find(x=>x.name===n);
+ const ckey=fs.find(x=>(x.used_by||[]).includes("mqtt.tls.key_file")),ccert=fs.find(x=>(x.used_by||[]).includes("mqtt.tls.cert_file"));
+ /* a replaced certificate can come with its key: the configured key, else a key that agrees with it */
+ const pkey=f&&f.kind==="certificates"?(ccert&&ccert.name===f.name&&ckey?ckey.name:(fs.find(x=>x.kind==="key"&&(x.agrees_with||[]).includes(f.name))||{}).name):null;
+ const isKey=f&&f.kind==="key",c0=f&&(f.certs||[])[0];
+ const fact=!f?"A CA file, or a client certificate with its key. PEM only.":`${pfUsed(f,", ")||"Not used"} · now ${f.kind==="key"?esc(f.key_type):`${esc(cn(c0&&c0.subject))} · until ${esc(c0?c0.not_after:"?")}`}`;
+ const html=(isKey?pickHtml("f","Private key (PEM, not encrypted)"):pickHtml("f",f?"Certificate (PEM)":"File (PEM)"))+
+  (!f?pickHtml("k","Private key (only with a client certificate)"):pkey?pickHtml("k","Private key (PEM, not encrypted)",`No file: keep ${pkey}`):"")+
+  (!f?'<div class="dfld"><label for="pf-n">Name in the gateway</label><input id="pf-n" maxlength="32" autocapitalize="off" spellcheck="false"><span class="hint">1 to 32 characters: A-Z a-z 0-9 . _ -</span></div><div class="dfld hidden" id="pf-kf"><label for="pf-kn">Name of the key in the gateway</label><input id="pf-kn" maxlength="32" autocapitalize="off" spellcheck="false"></div>':"")+
+  '<div id="pf-ex"></div>'+(f&&(f.used_by||[]).length?`<p class="mut" style="margin:10px 0 0" id="pf-names"></p>`:"");
+ let req=null,seq=0;
+ const title=k=>f?`Replace ${f.name}${k?` and ${pkey}`:""}`:"Load a file",act=k=>f?`Replace the file${k?"s":""}`:"Load the file";
+ return certDlg({title:title(false),action:act(false),fact,html,
+  setup:(b,ok)=>{const ex=b.querySelector("#pf-ex"),ni=b.querySelector("#pf-n"),ki=b.querySelector("#pf-kn"),nm=b.querySelector("#pf-names");
+   const check=async()=>{const g=got,ff=g.f,kk=g.k,my=++seq;req=null;ok.disabled=true;ex.innerHTML="";
+    $("#dlg-t").textContent=title(!!(f&&kk));ok.textContent=act(!!(f&&kk));
+    if(nm)nm.textContent=`The name${kk?"s stay":" stays"} ${f.name}${kk?` and ${pkey}`:""}. The MQTT connection uses the new file${kk?"s":""} after the next restart.`;
+    if(ki)b.querySelector("#pf-kf").classList.toggle("hidden",!kk);
+    if(!ff)return;
+    for(const x of [ff,kk].filter(x=>x)){if(x.size>max){ex.innerHTML=examBad(`${x.name} has ${x.size} bytes.`,`The maximum is ${max} bytes.`);return}
+     if(!x.text.includes("-----BEGIN")){ex.innerHTML=notPem(x.name);return}}
+    const n=f?f.name:ni.value.trim(),kn=kk?(f?pkey:ki.value.trim()):"";
+    if(!nameOk(n)||(kk&&!nameOk(kn))){ex.innerHTML=examBad("the name is not correct.","Use 1 to 32 characters: A-Z a-z 0-9 . _ -. The name cannot start with a dot or end with .json.");return}
+    const q=`/api/files?name=${encodeURIComponent(n)}${kk?`&key_name=${encodeURIComponent(kn)}`:""}${f?"&replace=1":""}`,text=kk?ff.text+(ff.text.endsWith("\n")?"":"\n")+kk.text:ff.text;
+    ex.innerHTML=`<div class="exam mut">The gateway examines the file${kk?"s":""}…</div>`;
+    const r=await pemPut(q+"&dry_run=1",text),j=r.json||{};if(my!==seq)return;
+    if(r.status===200&&j.files){const fl=j.files.map((x,i)=>Object.assign({},x,{agrees:kk&&i===1}));
+     ex.innerHTML=`<div class="exam" role="status"><b class="ok">The gateway examined the file${fl.length>1?"s":""}.</b>${fl.map(x=>`<p>${pfLine(x)}</p>`).join("")}${!f&&!fl.some(x=>x.replaced)?'<p class="mut">A new file. After the load, select it in the card MQTT or Firmware updates, and save.</p>':""}</div>`;
+     req={q,text,n,kn};ok.disabled=false;return}
+    const er=j.error||`no answer (${r.status})`;
+    ex.innerHTML=r.status===409?examBad("a file with this name is in the gateway.","Give another name, or select Replace in the list of the files."):
+     /does not agree/.test(er)?examBad("the key does not agree with the certificate.",er.replace(/^the key does not agree with the certificate:? ?/,"")):examBad(er)};
+   const got=pickWire(b,["f","k"].filter(id=>b.querySelector(`#pi-${id}`)),(g,id)=>{if(id==="f"&&ni&&!ni.value)ni.value=g.f.name.slice(0,32);if(id==="k"&&ki&&!ki.value)ki.value=g.k.name.slice(0,32);check()});
+   if(ni)ni.oninput=check;if(ki)ki.oninput=check;check()},
+  go:async()=>{if(!req)return false;const r=await pemPut(req.q,req.text),j=r.json||{};
+   if(r.status!==201){$("#pf-ex").innerHTML=examBad(j.error||`no answer (${r.status})`);return false}
+   await loadFiles();renderFiles();if(tab==="config"){readForms();renderTls()}ccSum();
+   const used=(j.files||[]).some(x=>(x.used_by||[]).length),names=[req.n,req.kn].filter(x=>x).join(" and ");
+   pfmsg(f?`${names} replaced.${used?" MQTT uses the new file after the next restart (Save and restart, or Restart).":""}`:`${names} loaded. Select it in the card MQTT or Firmware updates, and save.`,"ok");return true}})}
+async function pfRemove(n){const f=(FILES||[]).find(x=>x.name===n);if(!f)return;const c=(f.certs||[])[0];
+ if(!await ask({title:`Remove ${n}?`,action:"Remove the file",danger:true,fact:`${pfKind(f)}${c?` · ${esc(cn(c.subject))} · ${days(c.not_after)<0?"expired":"until"} ${esc(c.not_after)}`:""} · not used`,
+  html:"<p>The gateway deletes the file from its flash. You cannot get it back from the gateway.</p>"}))return;
+ const r=await api("DELETE","/api/files/"+encodeURIComponent(n));
+ await loadFiles();renderFiles();if(tab==="config"){readForms();renderTls()}ccSum();
+ pfmsg(r.status===200?`${n} removed.`:`${n} is not removed (${r.status}): ${(r.json||{}).error||""}`,r.status===200?"ok":"bad")}
+/* the load of the certificate of the plant: the certificate (with its chain) and its key, examined first */
+function wcLoad(){const c=WCERT&&WCERT.current,h=WCERT?WCERT.hostname:"";let req=null,seq=0;
+ return certDlg({title:"Load the HTTPS certificate of the plant",action:"Load the certificate",fact:c?`Now: ${wcShort(c)} · ${esc(cn(c.subject))} · until ${esc(c.not_after)}`:"",
+  html:pickHtml("c","Certificate (PEM, with the chain)")+pickHtml("k","Private key (PEM, not encrypted)")+'<div id="wc-ex"></div><ul class="cl"><li><b>The new certificate applies after a restart.</b> Until then, this page uses the current certificate.</li><li>The gateway keeps the key in NVS with the secrets. It never sends the key back.</li><li>Your computer must trust the plant CA. If not, the browser gives a warning also for the new certificate.</li></ul>',
+  setup:(b,ok)=>{const ex=b.querySelector("#wc-ex");
+   pickWire(b,["c","k"],async g=>{const my=++seq;req=null;ok.disabled=true;ex.innerHTML="";if(!g.c||!g.k)return;
+    const wmax=(WCERT&&WCERT.max_cert_bytes)||3999;
+    for(const x of [g.c,g.k]){if(x.size>wmax){ex.innerHTML=examBad(`${x.name} has ${x.size} bytes.`,`The gateway keeps ${wmax} bytes at most for the certificate with its chain, and for the key.`);return}
+     if(!x.text.includes("-----BEGIN")){ex.innerHTML=notPem(x.name);return}}
+    const text=g.c.text+(g.c.text.endsWith("\n")?"":"\n")+g.k.text;ex.innerHTML='<div class="exam mut">The gateway examines the files…</div>';
+    const r=await pemPut("/api/web/certificate?dry_run=1",text),j=r.json||{},e=j.certificate;if(my!==seq)return;
+    if(r.status===200&&e){const page=wcNamesPage(e);
+     ex.innerHTML=`<div class="exam" role="status"><b class="ok">The gateway examined the files.</b><p class="mono">${esc(e.subject)}</p><p>Issuer ${esc(cn(e.issuer))} · chain of ${e.chain} certificate${e.chain>1?"s":""} · until ${esc(e.not_after)}</p><p class="mono">${esc((e.sans||"no SANs").replace(/,/g,", "))}</p><p>The key agrees with the certificate.</p>`+
+      (e.hostname_in_sans?"":`<p class="warn">The SANs do not contain the hostname ${esc(h)}.</p>`)+(page||location.protocol!=="https:"?"":`<p class="warn">The certificate does not name the address of this page, ${esc(pageHost())}.</p>`)+"</div>";
+     req=text;ok.disabled=false;return}
+    const er=j.error||`no answer (${r.status})`;
+    ex.innerHTML=/does not agree/.test(er)?examBad("the key does not agree with the certificate.",`${g.k.name} is not the key of ${er.replace(/^the key does not agree with the certificate /,"")}. Choose the key that the plant CA sent with this certificate.`):examBad(er)})},
+  go:async()=>{const r=await pemPut("/api/web/certificate",req),j=r.json||{};
+   if(r.status!==201){$("#wc-ex").innerHTML=examBad(j.error||`no answer (${r.status})`);return false}
+   await loadCert();renderCerts();ccSum();wcmsg("The certificate of the plant waits for the restart.","ok");return true}})}
+$("#certs").addEventListener("click",async e=>{const t=e.target.closest?e.target.closest("button"):null;if(!t||t.disabled)return;
+ if(t.id==="pf-load")pfDialog(null);
+ else if(t.dataset.pfrep!==undefined){const f=(FILES||[]).find(x=>x.name===t.dataset.pfrep);if(f)pfDialog(f)}
+ else if(t.dataset.pfrm!==undefined)pfRemove(t.dataset.pfrm);
+ else if(t.id==="wc-load")wcLoad();
+ else if(t.id==="wc-new"){const c=WCERT&&WCERT.current,h=WCERT?WCERT.hostname:"gateway";
+  if(!await ask({title:"Make a new self-signed certificate?",action:"Make a new certificate",danger:true,fact:c?`Now: ${esc(cn(c.subject))} · ${wcShort(c)} · until ${esc(c.not_after)}`:"",
+   html:`<ul><li>The gateway makes a new key (EC P-256) and a certificate for ${esc(h)}.local and ${esc(h)}, valid until 2099-12-31.</li><li>${c&&c.source==="loaded"?"It deletes the certificate of the plant and its key. To use them again, load them again.":"It replaces the current certificate and its key."}</li><li><b>The new certificate applies after a restart.</b></li><li>Then the browser gives a warning, because no CA signs the new certificate. Compare its SHA-256 fingerprint with the console of the gateway.</li></ul>`}))return;
+  const r=await api("POST","/api/web/certificate/new");await loadCert();renderCerts();ccSum();
+  wcmsg(r.status===201?"A new self-signed certificate waits for the restart.":`No new certificate (${r.status}): ${(r.json||{}).error||""}`,r.status===201?"ok":"bad")}
+ else if(t.id==="wc-dis"){const r=await api("DELETE","/api/web/certificate/pending");await loadCert();renderCerts();ccSum();
+  wcmsg(r.status===200?"The new certificate is discarded. The gateway keeps the current certificate.":`Not discarded (${r.status}): ${(r.json||{}).error||""}`,r.status===200?"ok":"bad")}
+ else if(t.id==="wc-rst"){if(!await ask(RST))return;const r=await api("POST","/api/restart");
+  wcmsg(r.status===202?"Restarting… Open this page again after the restart. With a new self-signed certificate, the browser asks you to accept it again.":`Not restarted (${r.status}): ${(r.json||{}).error||""}`,r.status===202?"ok":"bad")}});
 show("status");load();poll();setInterval(poll,2000);
 </script>
 </body>

@@ -26,12 +26,13 @@
  *
  * Left out, because the record does not depend on them (the stored value is the engineering
  * value, already scaled and converted, and the replay never reads these):
- *   tag:    area, address, bit, word_order, slow, writable, deadband, units, eng_low/high and
+ *   tag:    area, address, bit_offset and bit_width (#202), word_order, slow, writable, deadband, units, eng_low/high and
  *           their flags, write_min/max and their flags (#196: they act before a write only);
  *           scale and offset (only whether a tag is scaled matters, and the
  *           datatype carries it: Int16 -> Float, Int32/Int64 -> Double); length of a String
  *           tag (the record holds the text with its own length)
- *   device: unit_id, write_multiple (#197), poll_ms, slow_poll_ms, offline_after, block_reads,
+ *   device: type_index (#213: the type name is hashed, and the tags of the type are the tags of
+ *           the device), unit_id, write_multiple (#197), poll_ms, slow_poll_ms, offline_after, block_reads,
  *           max_gap; enabled (#214: a disabled device has no DBIRTH, so the replay discards
  *           its records as those of any device without a DBIRTH)
  *   node metrics (GW_SF_NODE: DI, DO, counters): fixed aliases and datatypes, no configuration
@@ -71,7 +72,8 @@ static const gw_tag_cfg_t s_tag_fields = {
     GW_TYPE_BOOL, /* type: hashed through the datatype */
     GW_WORD_BIG,  /* word_order */
     0,            /* address */
-    GW_NO_BIT,    /* bit */
+    GW_NO_BIT,    /* bit_offset */
+    0,            /* bit_width */
     0,            /* length: hashed for a Bytes tag */
     false,        /* slow */
     false,        /* writable */
@@ -95,6 +97,7 @@ static const gw_device_cfg_t s_device_fields = {
     0,  /* unit_id */
     0,  /* write_multiple */
     0,  /* enabled */
+    0,  /* type_index */
     0,  /* poll_ms */
     0,  /* slow_poll_ms */
     0,  /* offline_after */

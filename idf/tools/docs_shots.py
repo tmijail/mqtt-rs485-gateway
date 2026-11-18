@@ -28,6 +28,7 @@ import os
 import pathlib
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -40,6 +41,13 @@ sys.path.insert(0, str(HERE / "e2e"))
 import e2e  # noqa: E402  (the E2E harness: Gateway, flash_variant, brokers, the Modbus slave)
 
 DOCS_PASSWORD = "docs-pass-1"   # the web password of the configured states (it is in no image)
+# The browser opens the web UI at the mDNS name of the gateway (the default hostname gw01), as an
+# operator does on the network, not at 127.0.0.1: the card Certificates warns when the certificate
+# does not name the address of the page (#205), and the self-signed certificate names gw01.local.
+# Chromium maps the name to the forwarded port on 127.0.0.1 (--host-resolver-rules). The pages of
+# the access point (the state "claim") open at an address, as on the board (192.168.4.1).
+DOCS_HOST = "gw01.local"
+IP_STATES = {"claim"}
 
 # Viewports: a phone for the pages that the operator opens on the access point, a desktop for the
 # others. Playwright's own device list changes between releases: the values are fixed here.
@@ -287,7 +295,7 @@ def sha_mismatch(page):
         if r.request.method != "GET":
             r.fallback()
             return
-        w = json.loads(r.fetch().text())
+        w = json.loads(fetch(r).text())
         w.update({"phase": "failed", "state": "failed: image 0.2.0: the SHA-256 of the file does "
                   "not agree", "detail": "image 0.2.0: the SHA-256 of the file does not agree",
                   "sha256_expected": FW_SHA, "sha256_file": FW_FILE_SHA})
@@ -309,6 +317,18 @@ def ota_explainer(page):
     page.click("#f-ota button.qi[data-x=otamqtt]")
 
 
+def store_forward(page):
+    """Issue #221: the card Sparkplug of the Configuration tab with the diagnostics period and the
+    section Store & forward: store & forward on, the spill to the microSD card on (the GPIO45
+    caution shows) and the space on the card at its default. No save."""
+    page.click("nav button[data-tab=config]")
+    page.wait_for_selector("#sf-en")
+    page.check("#sf-en")
+    page.check("#sf-sd")
+    page.wait_for_selector("#sf-sd-h.lwarn")
+    page.evaluate("document.querySelector('#f-spb').closest('.card').scrollIntoView()")
+
+
 def test_read(page):
     """The Modbus test read of the Configuration tab: the float32 Voltage of Meter1 (input 0)."""
     page.click("nav button[data-tab=config]")
@@ -325,8 +345,8 @@ def tag_explainer(page):
     explainer of its Eng. high field (a click keeps it open)."""
     page.click("nav button[data-tab=config]")
     page.evaluate("document.querySelector('#f-dev>.card').scrollIntoView()")
-    page.click('[data-more="0.0"]')
-    page.click("#det-0-0 button.qi[data-x=enghi]")
+    page.click('[data-more="devices.0|0"]')
+    page.click("#det-devices-0-0 button.qi[data-x=enghi]")
 
 def device_settings(page):
     """Issues #197 and #221: the panel 'More device settings' of Meter1, and the explainer of
@@ -342,10 +362,46 @@ def write_limits(page):
     Write max 150, and the explainer of Write min. No save."""
     page.click("nav button[data-tab=config]")
     page.evaluate("document.querySelector('#f-dev>.card').scrollIntoView()")
-    page.click('[data-more="0.1"]')
+    page.click('[data-more="devices.0|1"]')
     page.fill('[data-p="devices.0.tags.1.write_min"]', "0")
     page.fill('[data-p="devices.0.tags.1.write_max"]', "150")
-    page.click("#det-0-1 button.qi[data-x=wmin]")
+    page.click("#det-devices-0-1 button.qi[data-x=wmin]")
+
+
+def bit_field(page):
+    """Issue #202: the tag Alarm of Meter1 (holding 60) as a field of 3 bits: type uint16, Bit
+    offset 4 and Bit width 3, with the hint and the explainer of Bit width. No save."""
+    page.click("nav button[data-tab=config]")
+    page.evaluate("document.querySelector('#f-dev>.card').scrollIntoView()")
+    page.select_option('[data-p="devices.0.tags.9.type"]', "uint16")
+    page.click('[data-more="devices.0|9"]')
+    page.fill('[data-p="devices.0.tags.9.bit_offset"]', "4")
+    page.fill('[data-p="devices.0.tags.9.bit_width"]', "3")
+    page.click("#det-devices-0-9 button.qi[data-x=bitw]")
+
+
+def ask_make_type(page):
+    """Issue #213: the dialog of 'Make a type from these tags' of Meter1, with the name Meter. No
+    save."""
+    page.click("nav button[data-tab=config]")
+    page.click('[data-mk-type="0"]')
+    page.fill("#dlg-n", "Meter")
+
+
+def make_type(page):
+    """Issue #213: Meter1 after 'Make a type from these tags' (the type Meter): the card Device
+    types open with the type Meter open. No save."""
+    ask_make_type(page)
+    page.click("#dlg-ok")
+    page.wait_for_selector("#f-dt [data-dt]")
+    page.evaluate("document.querySelector('#dt-card').scrollIntoView()")
+
+
+def device_with_type(page):
+    """Issue #213: the device Meter1 with the device type Meter: no tag table, the number of the
+    tags of the type and the link to the type. No save."""
+    make_type(page)
+    page.evaluate("document.querySelector('#f-dev>.card').scrollIntoView()")
 
 
 def device_disabled(page):
@@ -463,6 +519,66 @@ def mqtt_tls(page):
     page.evaluate("document.querySelector('#f-mqtt').closest('.card').scrollIntoView()")
 
 
+def certificates_card(page):
+    """#205 #221: the card Certificates after mqtt_tls (ca.pem, gw01.crt and gw01.key are in
+    LittleFS): the HTTPS certificate of the first boot and the list of the PEM files."""
+    page.click("nav button[data-tab=config]")
+    page.wait_for_selector("#pf .pf-t")
+    page.wait_for_selector("#wc dl.kv")
+    page.evaluate("document.getElementById('certs').scrollIntoView()")
+
+
+def choose(page, pick, name, data):
+    """Choose the file @name (@data) with the picker @pick of the open dialog."""
+    with page.expect_file_chooser() as fc:
+        page.click(f'#dlg [data-pick="{pick}"]')
+    fc.value.set_files(files=[{"name": name, "mimeType": "application/x-pem-file",
+                               "buffer": data}])
+
+
+def pem_replace(page):
+    """#221: Replace gw01.crt in the card Certificates, with a new certificate and its key (the
+    files of the E2E PKI): the dialog after the dry run of the gateway (no replace)."""
+    certificates_card(page)
+    pki = e2e.make_pki(pathlib.Path(tempfile.mkdtemp(prefix="docs-pki-")))
+    page.click('#certs .pf-t [data-pfrep="gw01.crt"]')
+    choose(page, "f", "gw01-2027.crt", pki["client.crt"].read_bytes())
+    choose(page, "k", "gw01-2027.key", pki["client.key"].read_bytes())
+
+
+def make_plant_pki():
+    """#205: a plant CA and a web certificate of the plant for this gateway (gw01: DNS:gw01.local,
+    as the self-signed certificate of the first boot), with openssl. e2e.make_web_pki makes a
+    certificate for gw22, and the dialog then warns that the SANs do not contain the hostname.
+    Returns (the chain: leaf + CA, the key) as bytes."""
+    d = pathlib.Path(tempfile.mkdtemp(prefix="docs-plantpki-"))
+
+    def ossl(*a):
+        subprocess.run(["openssl", *a], cwd=d, check=True, capture_output=True)
+
+    for k in ("ca", "web"):
+        ossl("ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", f"{k}.key")
+    ossl("req", "-x509", "-new", "-key", "ca.key", "-sha256", "-days", "3650", "-subj",
+         "/CN=Plant CA/O=Plant", "-out", "ca.pem")
+    ossl("req", "-new", "-key", "web.key", "-subj", "/CN=gw01.plant.local/O=Plant", "-out",
+         "web.csr")
+    (d / "web.ext").write_text("subjectAltName=DNS:gw01.plant.local,DNS:gw01.local,"
+                               "IP:192.168.1.50\n")
+    ossl("x509", "-req", "-in", "web.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial",
+         "-days", "365", "-sha256", "-extfile", "web.ext", "-out", "web.crt")
+    return (d / "web.crt").read_bytes() + (d / "ca.pem").read_bytes(), (d / "web.key").read_bytes()
+
+
+def web_cert_load(page):
+    """#205: Load a certificate in the card Certificates, with a certificate of a plant CA for
+    gw01 and its key (make_plant_pki): the dialog after the dry run of the gateway (no load)."""
+    certificates_card(page)
+    chain, key = make_plant_pki()
+    page.click("#wc-load")
+    choose(page, "c", "gw01-plant.pem", chain)
+    choose(page, "k", "gw01-plant.key", key)
+
+
 def time_servers(page):
     """The card Time with a second SNTP server, and the explainer of the list."""
     page.click("nav button[data-tab=config]")
@@ -539,6 +655,13 @@ FREEZE["/api/wifi/scan"] = {"simulated": False}
 # (the card MQTT shows "in N days"): a fixed last day, more than 90 days away (no warning).
 FREEZE["/api/config"] = {"ntp.servers.*": "pool.ntp.org"}
 FREEZE["/api/files"] = {"files.*.certs.*.not_after": "2036-11-30"}
+# #205: the gateway makes its self-signed certificate at the first boot of each run (a new
+# SHA-256 fingerprint), and the last day of the plant certificate of the shot web-cert-load-dialog
+# (the dry run of PUT /api/web/certificate) is one year after each run: fixed values
+FREEZE["/api/web/certificate"] = {
+    "current.sha256": "A7:3C:51:E2:09:8B:D4:6F:20:C9:7E:13:B5:48:FA:02:6D:91:3A:C7:E4:58:0B:F6:"
+                      "2D:84:19:AE:63:CB:70:15",
+    "certificate.not_after": "2027-11-30"}
 
 
 def freeze(doc, paths):
@@ -664,6 +787,31 @@ SHOTS = [
              "max 150. The explainer of Write min is open. It tells that the gateway refuses a "
              "DCMD with a lower value, does not write to the device and writes a warning to "
              "the log."),
+    # issues #202 and #213: docs/how-to/add-a-modbus-device.md and
+    # docs/how-to/add-devices-of-one-type.md (no save: the state does not change)
+    Shot("tag-bit-field", "configured", DESKTOP, "/", actions=[bit_field],
+         wait="#xpl:not(.hidden)",
+         alt="The details row of the tag Alarm of Meter1 with the type uint16: Bit offset 4 "
+             "and Bit width 3, and below Bit width the hint 'Bits 4 to 6: values 0 to 7'. The "
+             "row shows no Length (registers), because it applies only to string and bytes. "
+             "The explainer of Bit width is open."),
+    Shot("device-type-make-dialog", "configured", DESKTOP, "/", actions=[ask_make_type],
+         wait="#dlg[open]",
+         alt="The dialog 'Make a device type from the tags of Meter1': the field 'Name of the new "
+             "type' with Meter, the hint '1 to 39 bytes. No /, + or #. It is also the name of "
+             "the Sparkplug template.', the list of what occurs, and the buttons Cancel and "
+             "'Make the type'."),
+    Shot("device-types-card", "configured", DESKTOP, "/", actions=[make_type],
+         element="#dt-card",
+         alt="The card 'Device types (1)' of the Configuration tab with the type Meter open: "
+             "its name, the line 'Used by 1 device: Meter1', the table of its tags and the "
+             "buttons '+ tag' and 'Remove type'. 'Remove type' is disabled, and the text next to "
+             "it tells to give the devices another type first."),
+    Shot("device-with-type", "configured", DESKTOP, "/", actions=[device_with_type],
+         element="#f-dev>.card",
+         alt="The device Meter1 with 'Meter' in the field Device type. In place of a tag table, "
+             "a grey box tells that the device uses the tags of the device type Meter, with the "
+             "link 'Go to the type Meter'. The device has no button '+ tag'."),
     Shot("device-disabled", "configured", DESKTOP, "/", actions=[device_disabled],
          element="#f-dev>.card",
          alt="The device Meter1 with the check box Enabled cleared. The card has a dashed "
@@ -722,7 +870,16 @@ SHOTS = [
          alt="The card 'Firmware updates' of the Configuration tab: the check box 'Update from "
              "MQTT' is off. The hint tells to turn it on only when the broker lets only the "
              "Sparkplug host publish to the NCMD topic of the gateway. The explainer of the "
-             "field is open."),
+             "field is open. The card also has the field 'CA file of the image server', with a "
+             "button 'Load a file…'."),
+    # issue #221: docs/reference/store-and-forward.md and docs/reference/configuration.md
+    Shot("sparkplug-store-forward", "configured", DESKTOP, "/", actions=[store_forward],
+         element='.card[data-cc="spb"]', wait="#sf-sd-h.lwarn",
+         alt="The card 'Sparkplug' of the Configuration tab: Group ID, Edge node ID, Primary host "
+             "ID, Naming and 'Diagnostics period (s)', the device prefix, and the section 'Store "
+             "& forward'. 'Keep the changes without a session' and 'Spill to the microSD card' "
+             "are on, and a caution tells to make sure that the card slot has no pull-up on D0 "
+             "(GPIO45). 'Space on the card (KB)' is 131072, '= 128 MB'."),
     # issue #192: docs/how-to/update-the-firmware.md
     Shot("firmware-refused", "configured", DESKTOP, "/", element="#fw-card",
          actions=[("wait_text", "#fw-mq", "Off"), refuse_upload], wait="#fw-rgo",
@@ -751,6 +908,13 @@ SHOTS = [
              "Safe state, Pulse, Local rule, Mode and Run hours: DO 7 is a pulse DO of 300 ms, DO 5 "
              "follows DI 2, DO 6 toggles with DI 3, DO 2 counts its run hours. Below are the alarms "
              "of the buzzer and Alarm after."),
+    # issue #196: docs/how-to/write-to-a-modbus-device.md and docs/reference/status-signals.md.
+    # A count of the refused writes (the docs configuration has no write limits)
+    Shot("status-writes-refused", "configured", DESKTOP, "/", element=".card:has(#st-mb)",
+         wait="#st-mb .wr", freeze={"devices.*.write_refused": 3},
+         alt="The card 'Modbus devices' of the Status tab: the device Meter1 is online, and below "
+             "'online' its State cell shows '3 writes refused' in amber, with a (?) button for "
+             "the explainer."),
     # #204 #217: docs/how-to/set-up-the-local-io.md
     Shot("status-local-io", "configured", DESKTOP, "/", element=".card:has(#st-io)",
          wait="#st-io table",
@@ -785,6 +949,30 @@ SHOTS = [
              "its subject, and the client key gw01.key 'Private key, EC P-256'. Each file field "
              "has a button 'Load a file…'. Below the section, a message tells that gw01.key is "
              "in the gateway."),
+    # #205 #221: docs/how-to/manage-the-certificates.md (after mqtt-tls: its files are in LittleFS)
+    Shot("certificates-card", "configured", DESKTOP, "/", actions=[certificates_card],
+         element="#certs", wait="#pf .pf-t",
+         alt="The card 'Certificates' of the Configuration tab. The section 'HTTPS certificate "
+             "of this page' shows the self-signed certificate of the first boot: its source, "
+             "subject, SANs, last day and SHA-256 fingerprint, with the buttons 'Load a "
+             "certificate…' and 'Make a new self-signed certificate'. The section 'Files for "
+             "MQTT TLS and firmware updates' lists ca.pem, gw01.crt and gw01.key with their "
+             "content, subject, last day and the keys that use them, each with Replace and "
+             "Remove, and the button 'Load a file…'."),
+    Shot("pem-replace-dialog", "configured", DESKTOP, "/", actions=[pem_replace],
+         wait="#pf-ex .exam b.ok",
+         alt="The dialog 'Replace gw01.crt and gw01.key': the new certificate gw01-2027.crt and "
+             "the new key gw01-2027.key are chosen. The gateway examined the files: a "
+             "certificate CN=GW13 and a private key EC P-256 that agrees with it. It has the "
+             "button 'Replace the files' and Cancel."),
+    Shot("web-cert-load-dialog", "configured", DESKTOP, "/", actions=[web_cert_load],
+         wait="#wc-ex .exam b.ok",
+         alt="The dialog 'Load the HTTPS certificate of the plant': the certificate "
+             "gw01-plant.pem with its chain and the key gw01-plant.key are chosen. The gateway "
+             "examined the files: the subject, the issuer CN=Plant CA, a chain of 2 "
+             "certificates, the SANs with gw01.local, and the key agrees. The list says that "
+             "the new certificate applies after a restart. It has the button 'Load the "
+             "certificate' and Cancel."),
     # #201: docs/reference/configuration.md (ntp)
     Shot("time-card", "configured", DESKTOP, "/", actions=[time_servers],
          wait="#xpl:not(.hidden)",
@@ -797,7 +985,7 @@ SHOTS = [
          alt="The card 'Modbus TCP' of the Configuration tab: Enabled, the port 502, the idle "
              "timeout, the allowed client 10.0.2.2, and the local unit 100 with Local writes. "
              "The explainer of Local unit ID gives the map: the DIs at discrete 0 to 7, the DOs "
-             "at coil 0 to 7, the counters at input 0 to 31."),
+             "at coil 0 to 7, the counters at input 0 to 31, the run hours at input 32 to 95."),
     # #221: docs/how-to/recover-the-gateway.md ("The web interface is off")
     Shot("web-off-dialog", "configured", DESKTOP, "/", actions=[web_off], wait="#dlg[open]",
          alt="The confirmation 'Turn off the web interface?' after 'Save and restart' with "
@@ -946,6 +1134,17 @@ class Harness:
 NO_TIMERS = "window.setInterval = () => 0;"   # the page polls once; no countdown runs
 
 
+def fetch(route):
+    """route.fetch() for the gateway. It sends the request from the Playwright driver, which does
+    not know the --host-resolver-rules of the browser: send it to 127.0.0.1 with the Host header
+    of the page (the CSRF check compares the Origin with the Host)."""
+    url = route.request.url
+    if f"//{DOCS_HOST}:" not in url:
+        return route.fetch()
+    return route.fetch(url=url.replace(f"//{DOCS_HOST}:", "//127.0.0.1:", 1),
+                       headers={**route.request.headers, "host": url.split("/")[2]})
+
+
 def route_freeze(route, extra=None):
     """Answer an API request with the real answer of the gateway, with FREEZE applied (and
     @extra, the freeze of the shot, for /api/status)."""
@@ -954,7 +1153,7 @@ def route_freeze(route, extra=None):
     if extra and path == "api/status":
         paths = {**paths, **extra}
     try:
-        resp = route.fetch()
+        resp = fetch(route)
         body = resp.body()
     except Exception:   # noqa: BLE001 (a request of the page after the capture closed the context)
         return
@@ -1000,6 +1199,13 @@ def capture(browser, shot, auth, base):
             else:
                 raise SystemExit(f"{shot.name}: unknown action {act!r}")
         page.wait_for_load_state("networkidle")
+        # the Configuration tab reads the certificates and the PEM files after it shows (#205
+        # #221); the load state networkidle came before. Wait for them: the card Certificates,
+        # the file fields of the cards MQTT and Firmware updates and the card summaries use them
+        page.wait_for_function("(t => !t || t.classList.contains('hidden') ||"
+                               " (document.getElementById('wc-load') &&"
+                               " document.getElementById('pf-load')))"
+                               "(document.getElementById('tab-config'))")
         if shot.wait:
             page.wait_for_selector(shot.wait, state="visible")
         # the bar of the Configuration tab ("1 change, not saved") and the card summaries follow
@@ -1105,13 +1311,13 @@ def main():
     h = Harness(a)
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch()
-            base = f"https://127.0.0.1:{e2e.HTTPS_PORT}"
+            browser = pw.chromium.launch(args=[f"--host-resolver-rules=MAP {DOCS_HOST} 127.0.0.1"])
             for s in shots:
                 auth = h.enter(s.state)
                 if s.prep:
                     s.prep(h.gw)
-                png = capture(browser, s, auth, base)
+                host = "127.0.0.1" if s.state in IP_STATES else DOCS_HOST
+                png = capture(browser, s, auth, f"https://{host}:{e2e.HTTPS_PORT}")
                 written, size = write_png(png, out / f"{s.name}.png", a.lossless)
                 print(f"{s.name}.png: {'written' if written else 'unchanged'}, {size} bytes",
                       flush=True)

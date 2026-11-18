@@ -1287,19 +1287,35 @@ esp_err_t gw_storage_set_web_password(const char *password, char *hash, size_t c
 
 /* ---------- device certificate of the web server (issue #64) ---------- */
 
-bool gw_storage_get_web_tls(char *cert, size_t cert_cap, char *key, size_t key_cap)
+/* #205: the certificate that the web server uses ("web_cert", "web_key", "web_src") and the
+ * certificate that waits for the restart (the same keys with "_n"). NVS strings: up to 4000
+ * bytes each with the NUL (GW_WEBCERT_PEM_MAX). The key stays with the secrets. */
+static const char *const k_webtls[2][3] = {{"web_cert", "web_key", "web_src"},
+                                           {"web_cert_n", "web_key_n", "web_src_n"}};
+
+bool gw_storage_get_web_tls_ex(bool pending, char *cert, size_t cert_cap, char *key,
+                               size_t key_cap, char *src, size_t src_cap)
 {
     nvs_handle_t h;
     if (!s_nvs_ok || nvs_open(NVS_SECRETS, NVS_READONLY, &h) != ESP_OK) {
         return false;
     }
-    bool ok = nvs_get_str(h, "web_cert", cert, &cert_cap) == ESP_OK &&
-              nvs_get_str(h, "web_key", key, &key_cap) == ESP_OK;
+    const char *const *k = k_webtls[pending ? 1 : 0];
+    bool ok = nvs_get_str(h, k[0], cert, &cert_cap) == ESP_OK &&
+              (key == NULL || nvs_get_str(h, k[1], key, &key_cap) == ESP_OK);
+    if (ok && src != NULL && src_cap > 0 && nvs_get_str(h, k[2], src, &src_cap) != ESP_OK) {
+        src[0] = '\0';   /* no source: the caller tells it from the certificate */
+    }
     nvs_close(h);
     return ok;
 }
 
-esp_err_t gw_storage_set_web_tls(const char *cert, const char *key)
+bool gw_storage_get_web_tls(char *cert, size_t cert_cap, char *key, size_t key_cap)
+{
+    return gw_storage_get_web_tls_ex(false, cert, cert_cap, key, key_cap, NULL, 0);
+}
+
+static esp_err_t set_web_tls(bool pending, const char *cert, const char *key, const char *src)
 {
     nvs_handle_t h;
     if (!s_nvs_ok) {
@@ -1309,15 +1325,100 @@ esp_err_t gw_storage_set_web_tls(const char *cert, const char *key)
     if (err != ESP_OK) {
         return err;
     }
-    err = nvs_set_str(h, "web_cert", cert);
+    const char *const *k = k_webtls[pending ? 1 : 0];
+    err = nvs_set_str(h, k[0], cert);
     if (err == ESP_OK) {
-        err = nvs_set_str(h, "web_key", key);
+        err = nvs_set_str(h, k[1], key);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_str(h, k[2], src);
     }
     if (err == ESP_OK) {
         err = nvs_commit(h);
     }
     nvs_close(h);
     return err;
+}
+
+esp_err_t gw_storage_set_web_tls(const char *cert, const char *key, const char *src)
+{
+    return set_web_tls(false, cert, key, src);
+}
+
+/* #205: the NVS has space for the certificate that waits for the restart, and at the next boot
+ * for its copy into the certificate in use (gw_webcert_nvs_need). The strings of a certificate
+ * that waits already are replaced (erased first): they count as free. Without the statistics,
+ * the write decides. */
+static bool web_tls_fits(const char *cert, const char *key, const char *src, size_t *avail,
+                         size_t *need)
+{
+    size_t cur = 0;   /* the certificate in use, which the copy at the next boot replaces */
+    *avail = 0;
+    nvs_stats_t st;
+    nvs_handle_t h;
+    bool stats = nvs_get_stats(NULL, &st) == ESP_OK;
+    if (stats) {
+        *avail = st.available_entries;
+    }
+    if (nvs_open(NVS_SECRETS, NVS_READONLY, &h) == ESP_OK) {
+        for (unsigned i = 0; i < 3; i++) {
+            size_t len = 0;
+            if (nvs_get_str(h, k_webtls[1][i], NULL, &len) == ESP_OK && len > 0) {
+                *avail += gw_nvs_str_entries(len - 1);
+            }
+        }
+        size_t len = 0;
+        if (nvs_get_str(h, k_webtls[0][0], NULL, &len) == ESP_OK && len > 0) {
+            cur = len - 1;
+        }
+        nvs_close(h);
+    }
+    *need = gw_webcert_nvs_need(strlen(cert), strlen(key), strlen(src), cur);
+    return !stats || *avail >= *need;
+}
+
+esp_err_t gw_storage_set_web_tls_pending(const char *cert, const char *key, const char *src)
+{
+    if (!s_nvs_ok) {
+        return ESP_ERR_NVS_NOT_INITIALIZED;
+    }
+    size_t avail, need;
+    if (!web_tls_fits(cert, key, src, &avail, &need)) {
+        ESP_LOGW(TAG, "HTTPS: the new certificate is not stored: the NVS has %u free entries, "
+                      "it needs %u", (unsigned)avail, (unsigned)need);
+        return ESP_ERR_INVALID_SIZE;   /* the certificate that waits does not change */
+    }
+    ESP_LOGI(TAG, "HTTPS: NVS space for the new certificate: %u free entries, %u needed",
+             (unsigned)avail, (unsigned)need);
+    gw_storage_erase_web_tls_pending();   /* no two certificates that wait at one time */
+    esp_err_t err = set_web_tls(true, cert, key, src);
+    if (err != ESP_OK) {
+        gw_storage_erase_web_tls_pending();   /* never half of a pair */
+    }
+    return err;
+}
+
+esp_err_t gw_storage_erase_web_tls_pending(void)
+{
+    nvs_handle_t h;
+    if (!s_nvs_ok) {
+        return ESP_ERR_NVS_NOT_INITIALIZED;
+    }
+    esp_err_t err = nvs_open(NVS_SECRETS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+    bool found = false;
+    for (unsigned i = 0; i < 3 && err == ESP_OK; i++) {
+        esp_err_t e = nvs_erase_key(h, k_webtls[1][i]);
+        found = found || e == ESP_OK;
+        err = e == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : e;
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    return err == ESP_OK && !found ? ESP_ERR_NOT_FOUND : err;
 }
 
 /* ---------- network of the last valid configuration (CFG-3 recovery) ----------
@@ -1782,9 +1883,59 @@ esp_err_t gw_storage_write_file(const char *name, const void *data, size_t len, 
     return r;
 }
 
+static char *current_doc(size_t *len, bool *from_file, gw_cfg_err_t *err);
+
+/* #221: the remove of a PEM file of the card Certificates. */
+esp_err_t gw_storage_delete_file(const char *name, char *why, size_t why_cap)
+{
+    char path[sizeof(CFG_MOUNT) + GW_FILE_SIZE + 1];
+    if (!gw_storage_user_file_name_ok(name) ||
+        snprintf(path, sizeof(path), CFG_MOUNT "/%s", name) >= (int)sizeof(path)) {
+        snprintf(why, why_cap, "'%s' is not the name of a PEM file", name);
+        return ESP_ERR_INVALID_ARG;
+    }
+    xSemaphoreTake(s_save_lock, portMAX_DELAY);
+    esp_err_t r = ESP_OK;
+    if (!s_mounted || unlink(path) != 0) {
+        int e = s_mounted ? errno : ENOENT;
+        r = e != ENOENT ? ESP_FAIL : ESP_ERR_NOT_FOUND;
+        if (r == ESP_FAIL) {
+            snprintf(why, why_cap, "could not remove /cfg/%s (errno %d)", name, e);
+        } else {
+            snprintf(why, why_cap, "/cfg/%s is not in the LittleFS partition", name);
+        }
+    } else {
+        ESP_LOGI(TAG, "/cfg/%s removed", name);
+    }
+    xSemaphoreGive(s_save_lock);
+    return r;
+}
+
+bool gw_storage_fs_info(size_t *total, size_t *used)
+{
+    *total = *used = 0;
+    return s_mounted && esp_littlefs_info("storage", total, used) == ESP_OK;
+}
+
+bool gw_storage_file_refs(gw_filerefs_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    xSemaphoreTake(s_save_lock, portMAX_DELAY);
+    size_t n = 0;
+    bool from_file = false, ok = false;
+    gw_cfg_err_t err;
+    char *text = s_mounted ? current_doc(&n, &from_file, &err) : NULL;
+    if (text != NULL) {
+        ok = gw_filerefs_parse(text, n, out);
+        heap_caps_free(text);
+    }
+    xSemaphoreGive(s_save_lock);
+    return ok;
+}
+
 /* The files next to config.json, kept in RAM across a wipe of the partition (CFG-7 migration):
  * only config.json carried secrets in clear; the certificates must survive. */
-#define KEEP_MAX 8
+#define KEEP_MAX (GW_PEM_FILES_MAX + 2)   /* the PEM files, config.prev.json, config.next.json */
 
 typedef struct {
     char name[GW_FILE_SIZE];

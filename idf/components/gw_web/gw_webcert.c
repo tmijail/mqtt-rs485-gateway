@@ -3,6 +3,12 @@
  * after a factory reset): an EC P-256 key and a self-signed X.509 certificate for its host
  * name, kept with the secrets in NVS. Nobody else can vouch for it, so the browser warns once;
  * the SHA-256 fingerprint printed on the console at every boot lets the user check it.
+ *
+ * #205: the card Certificates of the web UI loads the certificate of the plant (with its chain
+ * and its key) or makes a new self-signed certificate. The new certificate waits for the
+ * restart in NVS ("web_cert_n", "web_key_n"): the server keeps the certificate of this boot, and
+ * the next boot uses the new one (gw_webcert_load). The key never leaves the gateway: the
+ * information of a certificate has no key material, and nothing here logs a key.
  */
 #include "gw_webcert.h"
 
@@ -13,6 +19,7 @@
 #include "esp_random.h"
 #include "gw_auth.h"
 #include "gw_storage.h"
+#include "lwip/sockets.h"
 #include "mbedtls/pk.h"
 #include "mbedtls/x509_crt.h"
 #include "psa/crypto.h"
@@ -23,10 +30,13 @@ static const char *TAG = "web";
 #define NOT_BEFORE "20250101000000"
 #define NOT_AFTER  "20991231235959"
 
-static char s_cert[GW_WEBCERT_PEM_MAX];
-static char s_key[GW_WEBCERT_KEY_MAX];
+/* The certificate of this boot (PSRAM, allocated once by gw_webcert_load). */
+static char *s_cert;
+static char *s_key;
+static char s_src[16];
 
-static bool generate(const char *hostname)
+/* A new key and self-signed certificate for @p hostname into @p cert and @p key. */
+static bool generate(const char *hostname, char *cert, size_t ccap, char *key, size_t kcap)
 {
     psa_crypto_init();
     psa_key_attributes_t a = PSA_KEY_ATTRIBUTES_INIT;
@@ -54,13 +64,15 @@ static bool generate(const char *hostname)
     serial[0] |= 0x01;   /* and no leading zero byte */
     char dns[GW_HOSTNAME_SIZE + 8];
     snprintf(dns, sizeof(dns), "%s.local", hostname);
+    /* the writer puts the list into the certificate in the reverse order: the certificate has
+     * <hostname>.local first, then <hostname> (#205: the order that the card Certificates shows) */
     mbedtls_x509_san_list san[2] = {
-        {.node = {.type = MBEDTLS_X509_SAN_DNS_NAME,
-                  .san.unstructured_name = {.p = (unsigned char *)dns, .len = strlen(dns)}},
-         .next = &san[1]},
         {.node = {.type = MBEDTLS_X509_SAN_DNS_NAME,
                   .san.unstructured_name = {.p = (unsigned char *)hostname,
                                             .len = strlen(hostname)}},
+         .next = &san[1]},
+        {.node = {.type = MBEDTLS_X509_SAN_DNS_NAME,
+                  .san.unstructured_name = {.p = (unsigned char *)dns, .len = strlen(dns)}},
          .next = NULL},
     };
     if (r == 0) {
@@ -75,58 +87,341 @@ static bool generate(const char *hostname)
     r = r ? r : mbedtls_x509write_crt_set_validity(&crt, NOT_BEFORE, NOT_AFTER);
     r = r ? r : mbedtls_x509write_crt_set_basic_constraints(&crt, 0, -1);
     r = r ? r : mbedtls_x509write_crt_set_subject_alternative_name(&crt, san);
-    r = r ? r : mbedtls_x509write_crt_pem(&crt, (unsigned char *)s_cert, sizeof(s_cert));
-    r = r ? r : mbedtls_pk_write_key_pem(&pk, (unsigned char *)s_key, sizeof(s_key));
+    r = r ? r : mbedtls_x509write_crt_pem(&crt, (unsigned char *)cert, ccap);
+    r = r ? r : mbedtls_pk_write_key_pem(&pk, (unsigned char *)key, kcap);
     mbedtls_x509write_crt_free(&crt);
     mbedtls_pk_free(&pk);
     if (r != 0) {
         ESP_LOGE(TAG, "HTTPS: certificate generation failed (mbedTLS -0x%04x)", (unsigned)-r);
-        s_cert[0] = s_key[0] = '\0';
+        memset(key, 0, kcap);
+        cert[0] = '\0';
         return false;
     }
-    esp_err_t e = gw_storage_set_web_tls(s_cert, s_key);
-    if (e != ESP_OK) {
-        ESP_LOGE(TAG, "HTTPS: certificate not stored (%s): a new one at every boot",
-                 esp_err_to_name(e));
-    }
-    ESP_LOGW(TAG, "HTTPS: new device certificate for %s generated", hostname);
     return true;
 }
 
-/* SHA-256 of the DER form, as browsers show it ("AB:CD:..."). */
-static bool fingerprint(char *out, size_t cap)
+static void date_of(char *out, const mbedtls_x509_time *t)
 {
-    mbedtls_x509_crt c;
-    mbedtls_x509_crt_init(&c);
-    bool ok = mbedtls_x509_crt_parse(&c, (const unsigned char *)s_cert, strlen(s_cert) + 1) == 0;
-    if (ok) {
-        uint8_t d[GW_SHA256_LEN];
-        gw_sha256(c.raw.p, c.raw.len, d);
-        size_t n = 0;
-        for (size_t i = 0; i < sizeof(d) && n + 3 < cap; i++) {
-            n += (size_t)snprintf(out + n, cap - n, "%s%02X", i ? ":" : "", d[i]);
+    snprintf(out, 11, "%04u-%02u-%02u", (unsigned)t->year % 10000u, (unsigned)t->mon % 100u,
+             (unsigned)t->day % 100u);
+}
+
+static void key_type_of(const mbedtls_pk_context *pk, char *out, size_t cap)
+{
+    psa_key_type_t t = mbedtls_pk_get_key_type(pk);
+    size_t bits = mbedtls_pk_get_bitlen(pk);
+    if (PSA_KEY_TYPE_IS_ECC(t)) {
+        bool r1 = PSA_KEY_TYPE_ECC_GET_FAMILY(t) == PSA_ECC_FAMILY_SECP_R1;
+        snprintf(out, cap, r1 ? "EC P-%u" : "EC %u bits", (unsigned)bits);
+    } else if (PSA_KEY_TYPE_IS_RSA(t)) {
+        snprintf(out, cap, "RSA %u", (unsigned)bits);
+    } else {
+        snprintf(out, cap, "%u bits", (unsigned)bits);
+    }
+}
+
+/* The SANs of @p c as text: DNS names and IP addresses. */
+static void sans_of(const mbedtls_x509_crt *c, char *out, size_t cap)
+{
+    size_t n = 0;
+    out[0] = '\0';
+    for (const mbedtls_x509_sequence *s = &c->subject_alt_names; s != NULL && s->buf.p != NULL;
+         s = s->next) {
+        uint8_t tag = (uint8_t)(s->buf.tag & ~(MBEDTLS_ASN1_CONTEXT_SPECIFIC |
+                                               MBEDTLS_ASN1_CONSTRUCTED));
+        char ip[48] = "";
+        if (tag == MBEDTLS_X509_SAN_DNS_NAME) {
+            n += (size_t)snprintf(out + n, n < cap ? cap - n : 0, "%sDNS:%.*s", n ? "," : "",
+                                  (int)s->buf.len, s->buf.p);
+        } else if (tag == MBEDTLS_X509_SAN_IP_ADDRESS &&
+                   (s->buf.len == 4 || s->buf.len == 16) &&
+                   inet_ntop(s->buf.len == 4 ? AF_INET : AF_INET6, s->buf.p, ip, sizeof(ip))) {
+            n += (size_t)snprintf(out + n, n < cap ? cap - n : 0, "%sIP:%s", n ? "," : "", ip);
         }
     }
-    mbedtls_x509_crt_free(&c);
+    if (n >= cap && cap > 4) {
+        memcpy(out + cap - 4, "...", 4);   /* a cut list says so */
+    }
+}
+
+/* What the PEM @p pem (NUL at pem[len]) holds; false when no certificate parses. */
+static bool describe(const char *pem, size_t len, gw_webcert_info_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    mbedtls_x509_crt *crt = gw_storage_calloc(1, sizeof(*crt));
+    if (crt == NULL) {
+        return false;
+    }
+    psa_crypto_init();
+    mbedtls_x509_crt_init(crt);
+    bool ok = mbedtls_x509_crt_parse(crt, (const unsigned char *)pem, len + 1) == 0 &&
+              crt->raw.len > 0;
+    if (ok) {
+        if (mbedtls_x509_dn_gets(out->subject, sizeof(out->subject), &crt->subject) < 0) {
+            out->subject[0] = '\0';
+        }
+        if (mbedtls_x509_dn_gets(out->issuer, sizeof(out->issuer), &crt->issuer) < 0) {
+            out->issuer[0] = '\0';
+        }
+        out->self_signed = crt->issuer_raw.len == crt->subject_raw.len &&
+                           memcmp(crt->issuer_raw.p, crt->subject_raw.p, crt->subject_raw.len) == 0;
+        sans_of(crt, out->sans, sizeof(out->sans));
+        date_of(out->not_before, &crt->valid_from);
+        date_of(out->not_after, &crt->valid_to);
+        key_type_of(&crt->pk, out->key_type, sizeof(out->key_type));
+        uint8_t d[GW_SHA256_LEN];
+        gw_sha256(crt->raw.p, crt->raw.len, d);
+        size_t n = 0;
+        for (size_t i = 0; i < sizeof(d) && n + 3 < sizeof(out->fingerprint); i++) {
+            n += (size_t)snprintf(out->fingerprint + n, sizeof(out->fingerprint) - n, "%s%02X",
+                                  i ? ":" : "", d[i]);
+        }
+        for (const mbedtls_x509_crt *c = crt; c != NULL && c->raw.len > 0; c = c->next) {
+            out->chain++;
+        }
+    }
+    mbedtls_x509_crt_free(crt);
+    gw_storage_free(crt);
     return ok;
+}
+
+static void source_of(const char *src, gw_webcert_info_t *info)
+{
+    snprintf(info->source, sizeof(info->source), "%s",
+             src[0] != '\0' ? src : info->self_signed ? "self-signed" : GW_WEBCERT_SRC_LOADED);
+}
+
+/* #205: the certificate that waits for the restart becomes the certificate in use. Stored in
+ * the order certificate, key, source, then the pending keys are erased: a power cut on the way
+ * leaves the pending keys, and the next boot does it again. */
+static void promote(void)
+{
+    char *cert = gw_storage_malloc(GW_WEBCERT_PEM_MAX);
+    char *key = gw_storage_malloc(GW_WEBCERT_KEY_MAX);
+    gw_webcert_info_t *info = gw_storage_calloc(1, sizeof(*info));
+    char src[16];
+    if (cert != NULL && key != NULL && info != NULL &&
+        gw_storage_get_web_tls_ex(true, cert, GW_WEBCERT_PEM_MAX, key, GW_WEBCERT_KEY_MAX, src,
+                                  sizeof(src))) {
+        char why[96];
+        bool erase = true;
+        if (gw_webcert_put(cert, strlen(cert), key, strlen(key), false, info, why,
+                           sizeof(why)) != ESP_OK) {
+            ESP_LOGE(TAG, "HTTPS: the new certificate is not correct (%s): discarded", why);
+        } else if (gw_storage_set_web_tls(cert, key, src) != ESP_OK) {
+            ESP_LOGE(TAG, "HTTPS: the new certificate could not be stored: the next boot tries "
+                          "again");
+            erase = false;
+        } else {
+            ESP_LOGW(TAG, "HTTPS: the new certificate is in use now: %s, valid until %s (%s)",
+                     info->subject, info->not_after, src);
+        }
+        if (erase) {
+            gw_storage_erase_web_tls_pending();
+        }
+    }
+    if (key != NULL) {
+        memset(key, 0, GW_WEBCERT_KEY_MAX);
+    }
+    gw_storage_free(cert);
+    gw_storage_free(key);
+    gw_storage_free(info);
 }
 
 bool gw_webcert_load(const char *hostname, const char **cert, const char **key)
 {
-    if (!gw_storage_get_web_tls(s_cert, sizeof(s_cert), s_key, sizeof(s_key)) &&
-        !generate(hostname)) {
-        return false;
+    if (s_cert != NULL) {
+        *cert = s_cert;   /* one load for each boot */
+        *key = s_key;
+        return true;
     }
-    char fp[3 * GW_SHA256_LEN + 1] = "";
-    if (!fingerprint(fp, sizeof(fp))) {
-        /* a stored certificate that does not parse: replace it */
-        if (!generate(hostname) || !fingerprint(fp, sizeof(fp))) {
-            return false;
+    /* the PEMs are read into buffers of the largest size, then kept in buffers of their own
+     * size (the QEMU build without PSRAM has them in internal RAM) */
+    char *cbuf = gw_storage_malloc(GW_WEBCERT_PEM_MAX);
+    char *kbuf = gw_storage_malloc(GW_WEBCERT_KEY_MAX);
+    gw_webcert_info_t *info = gw_storage_calloc(1, sizeof(*info));
+    bool ok = cbuf != NULL && kbuf != NULL && info != NULL;
+    if (!ok) {
+        ESP_LOGE(TAG, "HTTPS: no memory for the certificate");
+    }
+    if (ok) {
+        promote();
+        bool have = gw_storage_get_web_tls_ex(false, cbuf, GW_WEBCERT_PEM_MAX, kbuf,
+                                              GW_WEBCERT_KEY_MAX, s_src, sizeof(s_src)) &&
+                    describe(cbuf, strlen(cbuf), info);
+        if (!have) {
+            /* none yet, or a stored certificate that does not parse: replace it */
+            ok = generate(hostname, cbuf, GW_WEBCERT_PEM_MAX, kbuf, GW_WEBCERT_KEY_MAX) &&
+                 describe(cbuf, strlen(cbuf), info);
+            if (ok) {
+                snprintf(s_src, sizeof(s_src), "%s", GW_WEBCERT_SRC_FIRST);
+                esp_err_t e = gw_storage_set_web_tls(cbuf, kbuf, s_src);
+                if (e != ESP_OK) {
+                    ESP_LOGE(TAG, "HTTPS: certificate not stored (%s): a new one at every boot",
+                             esp_err_to_name(e));
+                }
+                ESP_LOGW(TAG, "HTTPS: new device certificate for %s generated", hostname);
+            }
         }
     }
-    /* console and log: not a secret, and the user needs it to trust the page */
-    ESP_LOGI(TAG, "HTTPS certificate SHA-256 fingerprint %s", fp);
+    if (ok) {
+        size_t cn = strlen(cbuf) + 1, kn = strlen(kbuf) + 1;
+        s_cert = gw_storage_malloc(cn);
+        s_key = gw_storage_malloc(kn);
+        ok = s_cert != NULL && s_key != NULL;
+        if (ok) {
+            memcpy(s_cert, cbuf, cn);
+            memcpy(s_key, kbuf, kn);
+        } else {
+            gw_storage_free(s_cert);
+            gw_storage_free(s_key);
+            s_cert = s_key = NULL;
+            ESP_LOGE(TAG, "HTTPS: no memory for the certificate");
+        }
+    }
+    if (kbuf != NULL) {
+        memset(kbuf, 0, GW_WEBCERT_KEY_MAX);   /* a private key */
+    }
+    gw_storage_free(cbuf);
+    gw_storage_free(kbuf);
+    if (ok) {
+        /* console and log: not a secret, and the user needs it to trust the page */
+        ESP_LOGI(TAG, "HTTPS certificate SHA-256 fingerprint %s", info->fingerprint);
+    }
+    gw_storage_free(info);
+    if (!ok) {
+        return false;
+    }
     *cert = s_cert;
     *key = s_key;
     return true;
+}
+
+bool gw_webcert_get(bool pending, gw_webcert_info_t *out)
+{
+    if (!pending && s_cert != NULL && s_cert[0] != '\0') {
+        if (!describe(s_cert, strlen(s_cert), out)) {
+            return false;
+        }
+        source_of(s_src, out);
+        return true;
+    }
+    char *cert = gw_storage_malloc(GW_WEBCERT_PEM_MAX);
+    char src[16] = "";
+    bool ok = cert != NULL &&
+              gw_storage_get_web_tls_ex(pending, cert, GW_WEBCERT_PEM_MAX, NULL, 0, src,
+                                        sizeof(src)) &&
+              describe(cert, strlen(cert), out);
+    if (ok) {
+        source_of(src, out);
+    }
+    gw_storage_free(cert);
+    return ok;
+}
+
+/* The reason of a failed store of the certificate that waits for the restart. */
+static void store_why(esp_err_t r, char *why, size_t why_cap)
+{
+    if (r == ESP_ERR_INVALID_SIZE) {   /* gw_storage_set_web_tls_pending: no NVS space */
+        snprintf(why, why_cap, "the NVS has not sufficient free space for this certificate and "
+                 "its key (with the copy at the restart): use a shorter chain or a smaller key");
+    } else {
+        snprintf(why, why_cap, "the certificate could not be stored in NVS (%s)",
+                 esp_err_to_name(r));
+    }
+}
+
+esp_err_t gw_webcert_put(const char *cert, size_t clen, const char *key, size_t klen, bool store,
+                         gw_webcert_info_t *out, char *why, size_t why_cap)
+{
+    memset(out, 0, sizeof(*out));
+    why[0] = '\0';
+    if (clen == 0 || klen == 0) {
+        snprintf(why, why_cap, "give the certificate and its private key");
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (clen >= GW_WEBCERT_PEM_MAX || klen >= GW_WEBCERT_KEY_MAX) {
+        snprintf(why, why_cap, "the certificate has %u bytes and the key %u: the gateway keeps "
+                 "%d bytes of each at most", (unsigned)clen, (unsigned)klen,
+                 GW_WEBCERT_PEM_MAX - 1);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (!describe(cert, clen, out)) {
+        snprintf(why, why_cap, "the certificate is not PEM, or one of its certificates does not "
+                 "parse");
+        return ESP_ERR_INVALID_ARG;
+    }
+    mbedtls_pk_context *pk = gw_storage_calloc(1, sizeof(*pk));
+    mbedtls_x509_crt *crt = gw_storage_calloc(1, sizeof(*crt));
+    esp_err_t r = ESP_OK;
+    if (pk == NULL || crt == NULL) {
+        snprintf(why, why_cap, "no memory");
+        r = ESP_ERR_NO_MEM;
+    } else {
+        mbedtls_pk_init(pk);
+        mbedtls_x509_crt_init(crt);
+        if (mbedtls_pk_parse_key(pk, (const unsigned char *)key, klen + 1, NULL, 0) != 0) {
+            snprintf(why, why_cap, "the key is not an unencrypted PEM private key");
+            r = ESP_ERR_INVALID_ARG;
+        } else if (mbedtls_x509_crt_parse(crt, (const unsigned char *)cert, clen + 1) != 0 ||
+                   mbedtls_pk_check_pair(&crt->pk, pk) != 0) {
+            snprintf(why, why_cap, "the key does not agree with the certificate %s",
+                     out->subject);
+            r = ESP_ERR_INVALID_ARG;
+        }
+        mbedtls_pk_free(pk);
+        mbedtls_x509_crt_free(crt);
+    }
+    gw_storage_free(pk);
+    gw_storage_free(crt);
+    snprintf(out->source, sizeof(out->source), "%s", GW_WEBCERT_SRC_LOADED);
+    if (r == ESP_OK && store) {
+        r = gw_storage_set_web_tls_pending(cert, key, GW_WEBCERT_SRC_LOADED);
+        if (r != ESP_OK) {
+            store_why(r, why, why_cap);
+            r = ESP_FAIL;   /* 507 */
+        } else {
+            ESP_LOGW(TAG, "HTTPS: a loaded certificate waits for the restart: %s, valid until %s",
+                     out->subject, out->not_after);
+        }
+    }
+    return r;
+}
+
+esp_err_t gw_webcert_new(const char *hostname, gw_webcert_info_t *out, char *why, size_t why_cap)
+{
+    memset(out, 0, sizeof(*out));
+    char *cert = gw_storage_malloc(GW_WEBCERT_PEM_MAX);
+    char *key = gw_storage_malloc(GW_WEBCERT_KEY_MAX);
+    esp_err_t r = ESP_OK;
+    if (cert == NULL || key == NULL) {
+        snprintf(why, why_cap, "no memory");
+        r = ESP_ERR_NO_MEM;
+    } else if (!generate(hostname, cert, GW_WEBCERT_PEM_MAX, key, GW_WEBCERT_KEY_MAX) ||
+               !describe(cert, strlen(cert), out)) {
+        snprintf(why, why_cap, "the certificate could not be made");
+        r = ESP_FAIL;
+    } else if ((r = gw_storage_set_web_tls_pending(cert, key, GW_WEBCERT_SRC_NEW)) != ESP_OK) {
+        store_why(r, why, why_cap);
+        r = ESP_FAIL;   /* 507 */
+    } else {
+        snprintf(out->source, sizeof(out->source), "%s", GW_WEBCERT_SRC_NEW);
+        ESP_LOGW(TAG, "HTTPS: a new self-signed certificate for %s waits for the restart "
+                      "(SHA-256 %s)", hostname, out->fingerprint);
+    }
+    if (key != NULL) {
+        memset(key, 0, GW_WEBCERT_KEY_MAX);
+    }
+    gw_storage_free(cert);
+    gw_storage_free(key);
+    return r;
+}
+
+esp_err_t gw_webcert_discard(void)
+{
+    esp_err_t r = gw_storage_erase_web_tls_pending();
+    if (r == ESP_OK) {
+        ESP_LOGW(TAG, "HTTPS: the certificate that waited for the restart is discarded");
+    }
+    return r;
 }

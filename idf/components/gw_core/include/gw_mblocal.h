@@ -6,6 +6,10 @@
  *   coils           (FC01) 0..7   DO/1..DO/8 (FC05 and FC15 with modbus_tcp.local_writes)
  *   input registers (FC04) 0..31  the pulse counters of DI/1..DI/8, 4 registers each (uint64,
  *                                 the most significant register first: "big")
+ *                          32..63 #234: the run hours (s) of DI/1..DI/8, 4 registers each, the
+ *                                 same value as the metric Run Hours/DI/n; 0 for a channel
+ *                                 that is not in local_io.run_hours
+ *                          64..95 #234: the run hours (s) of DO/1..DO/8, the same way
  *
  * Pure functions on a snapshot of the I/O; the server task (gw_mbtcp) takes the snapshot from
  * gw_tagdb and sends the DO writes to the local_io task, the only writer of the DO expander.
@@ -24,7 +28,10 @@ extern "C" {
 
 #define GW_MBLOCAL_EX_ILLEGAL_ADDRESS 0x02   /* outside the map above */
 #define GW_MBLOCAL_EX_DEVICE_FAILURE  0x04   /* the DO expander does not answer */
-#define GW_MBLOCAL_REGS_PER_COUNTER   4
+#define GW_MBLOCAL_REGS_PER_COUNTER   4    /* also per run hours value (#234) */
+#define GW_MBLOCAL_REG_RUN_DI         32   /* #234: the first input register of the run hours */
+#define GW_MBLOCAL_REG_RUN_DO         64
+#define GW_MBLOCAL_INPUT_REGS         96   /* 0..95; a read past 95 gives exception 02 */
 
 /** The I/O of the gateway at the time of the request (logical states: 1 = active / on). */
 typedef struct {
@@ -33,6 +40,7 @@ typedef struct {
     bool do_known;              /* false: the expander does not answer, the DOs are unknown */
     uint8_t rule_do;            /* bit n: a local rule drives DO/n+1 (IO-7) */
     uint64_t counters[GW_LOCAL_IO_CHANNELS];
+    uint64_t run_s[GW_RUN_HOURS_CHANNELS];   /* #234: gw_tagdb run_s, DI/1..8 then DO/1..8 */
 } gw_mblocal_io_t;
 
 /** The DOs that a write request changes: for each bit of @p mask, the state in @p value. */

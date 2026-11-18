@@ -92,6 +92,7 @@ static void handle_local(gw_mbap_txn_t *txn)
     gw_tagdb_get_io(&now);
     gw_mblocal_io_t io = {.di = now.di, .dout = now.dout, .do_known = !now.do_unknown};
     memcpy(io.counters, now.count, sizeof(io.counters));
+    memcpy(io.run_s, now.run_s, sizeof(io.run_s));   /* #234: the values of Run Hours/<DI|DO>/n */
     for (uint8_t i = 0; i < s_cfg->local_io.rule_count; i++) {
         io.rule_do |= (uint8_t)(1u << s_cfg->local_io.rules[i].dout);
     }
@@ -304,7 +305,8 @@ esp_err_t gw_mbtcp_start(const gw_config_t *cfg)
                  cfg->modbus_tcp.local_unit_id);
     } else if (cfg->modbus_tcp.local_unit_id != 0) {
         ESP_LOGI(TAG, "local unit %u: DIs (discrete 0-7), DOs (coil 0-7, writes %s), counters "
-                      "(input 0-31, uint64 big)", cfg->modbus_tcp.local_unit_id,
+                      "(input 0-31) and run hours (input 32-95), uint64 big",
+                 cfg->modbus_tcp.local_unit_id,
                  cfg->modbus_tcp.local_writes ? "on" : "off");
     }
     if (cfg->modbus_tcp.client_count == 0) {

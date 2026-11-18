@@ -2,7 +2,7 @@
 
 This document gives the data of store & forward: the RAM buffer, the microSD card, the retention and the duplicates after a restart.
 
-- For the keys, refer to [`sparkplug.store_forward`](configuration.md#sparkplugstore_forward).
+- For the keys and their controls in the web UI (the section **Store & forward** of the card **Sparkplug**), refer to [`sparkplug.store_forward`](configuration.md#sparkplugstore_forward).
 - For the messages, refer to [Sparkplug messages and metrics](sparkplug-messages-and-metrics.md).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The SDMMC driver, the FAT file system and the format of the card are compile-only. The host tests and the E2E in QEMU examine the buffer and the ring with a simulated card.
@@ -64,7 +64,7 @@ The data on the card stays after a restart and after a power cut. The ring keeps
 | These changes start a new ring | These changes keep the data |
 |---|---|
 | A device or a tag that you add, remove, rename or move | `poll_ms`, `slow_poll_ms`, `scan`, `unit_id`, `offline_after`, `block_reads`, `max_gap` |
-| A change of the datatype of a tag (from `type`, `scale` and `offset`) | `area`, `address`, `bit`, `word_order`, `deadband`, `writable`, `units`, `eng_low`, `eng_high` |
+| A change of the datatype of a tag (from `type`, `scale` and `offset`) | `area`, `address`, `bit_offset`, `bit_width`, `word_order`, `deadband`, `writable`, `units`, `eng_low`, `eng_high` |
 | A change of the device `type`, `group_id`, `edge_node_id`, `device_prefix` or `naming` | A new `scale` or `offset` with the same datatype |
 | A change of the `length` of a `bytes` tag | The `length` of a `string` tag, and all the other sections |
 

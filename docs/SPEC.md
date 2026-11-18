@@ -172,7 +172,7 @@ The `device_id` is the device name, or `<device_prefix>:<name>` with `sparkplug.
 | MB-3 | The read functions FC01 (coils), FC02 (discrete inputs), FC03 (holding registers) and FC04 (input registers) | P0 | ✅ | Done |
 | MB-4 | The write functions FC05, FC06, FC15 and FC16. A 32-bit value always uses FC16 | P0 | ✅ | Done |
 | MB-5 | The datatypes `bool`, `uint16`, `int16`, `uint32`, `int32` and `float32`, with a word order that you can configure (`big` = ABCD, `little` = CDAB) | P0 | ✅ | Done |
-| MB-6 | The types `uint64`, `int64`, `float64` and `string`, the byte orders BADC and DCBA, and one bit of a register (`bit`: 0–15) | P1 | | Done |
+| MB-6 | The types `uint64`, `int64`, `float64` and `string`, the byte orders BADC and DCBA, one bit of a register (`bit_offset`: 0–15), and a field of 2 to 16 bits (`bit_width`, #202) | P1 | | Done |
 | MB-7 | A linear scale `value = raw * scale + offset`, and the inverse for a write | P0 | ✅ | Done |
 | MB-8 | A response timeout and retries that you can configure. The gateway keeps the silence of 3.5 characters between frames, and a delay between transactions that you can configure | P0 | ✅ | Done |
 | MB-9 | Offline detection: after `offline_after` failed cycles in sequence, the device is offline (DDEATH). The first valid response makes it online again (DBIRTH) | P0 | ✅ | Done |
@@ -338,7 +338,7 @@ This is the schema of the configuration document (CFG-1). The keys of this examp
 
 - `area` is one of `coil`, `discrete`, `holding` and `input`.
 - `type` is one of `bool`, `uint16`, `int16`, `uint32`, `int32` and `float32`. Out of the MVP, `type` can also be `uint64`, `int64`, `float64`, `string` and `bytes` (§6.1, MB-6, SPB-19).
-- `bool` is only for `coil` and `discrete`. Out of the MVP, `bool` can also be one bit of a `holding` or `input` register (key `bit`, §6.1).
+- `bool` is only for `coil` and `discrete`. Out of the MVP, `bool` can also be one bit of a `holding` or `input` register (key `bit_offset`, §6.1).
 - `writable` is only for `coil` and `holding`.
 - A `bool` tag has no `scale` and no `offset`.
 - If `client_id` is empty, the gateway uses `edge_node_id`.
@@ -348,7 +348,7 @@ This is the schema of the configuration document (CFG-1). The keys of this examp
   - The Sparkplug IDs must not contain the control characters U+0080–U+009F.
   - Two device names must not differ only in case (`tck-id-case-sensitivity-sparkplug-ids`). Two device types, or two tag names of one device, must not differ only in case (`tck-id-case-sensitivity-metric-names`). The comparison folds ASCII letters only.
   - A tag name must not also be a folder of another tag name of the same device (`A` and `A/B`).
-  - A device `type` must not be the name or the first folder of a node metric (`bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info`, `Firmware Update`).
+  - A device `type` must not be the name or the first folder of a node metric (`bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info`, `Firmware Update`, `Run Hours`).
 - With `sparkplug.device_prefix` (§6.1, #172), the `device_id` of a device is `<device_prefix>:<name>`. The longest device topic (`spBv1.0/<group_id>/DBIRTH/<edge_node_id>/<device_id>`) must fit in 159 bytes.
 
 **Limits:** a maximum of 16 devices, 64 tags for each device and 256 tags in total (REL-2).
@@ -367,7 +367,7 @@ This is the schema of the configuration document (CFG-1). The keys of this examp
 | `uint64` / `int64` (MB-6) | UInt64 (8) / Int64 (4), exact in `long_value` |
 | `float64` (MB-6). Also `int32`, `uint32`, `int64`, `uint64` or `float64` with `scale` ≠ 1 or `offset` ≠ 0. A Float has a 24-bit mantissa, thus a 32-bit counter above 2^24 loses its last digits in a Float (#165) | Double (10) |
 | `string` (MB-6) | String (12) |
-| `bool` with `bit` (MB-6) | Boolean (11) |
+| `bool` with `bit_offset` (MB-6) | Boolean (11) |
 | `bytes` (SPB-19) | Bytes (17) |
 
 ### 6.1 Optional keys out of the MVP
@@ -528,7 +528,7 @@ The object form, with the optional spill to a microSD card:
   - a change of the `type` (template) of a device, of `sparkplug.group_id`, of `sparkplug.edge_node_id`, of `sparkplug.device_prefix` or of `sparkplug.naming`;
   - a change of the `length` of a `bytes` tag.
 - **These changes keep the data on the card:**
-  - `poll_ms`, `slow_poll_ms`, `scan`, `unit_id`, `offline_after`, `block_reads`, `max_gap`, `area`, `address`, `bit`, `word_order`, `deadband`, `writable`, `units`, `eng_low`, `eng_high`;
+  - `poll_ms`, `slow_poll_ms`, `scan`, `unit_id`, `offline_after`, `block_reads`, `max_gap`, `area`, `address`, `bit_offset`, `bit_width`, `word_order`, `deadband`, `writable`, `units`, `eng_low`, `eng_high`;
   - a new `scale` or `offset` when the datatype stays the same;
   - the `length` of a `string` tag;
   - all other sections.
@@ -569,7 +569,7 @@ The RAM buffer adds 40 000 samples. The `deadband` is the main control: set it a
 { "name": "Counter", "area": "holding", "address": 34, "type": "int64", "word_order": "CDAB", "writable": true },
 { "name": "Flow",    "area": "input",   "address": 40, "type": "float64", "word_order": "DCBA" },
 { "name": "Serial",  "area": "holding", "address": 50, "type": "string", "length": 8 },
-{ "name": "Alarm",   "area": "holding", "address": 60, "type": "bool", "bit": 3, "writable": true }
+{ "name": "Alarm",   "area": "holding", "address": 60, "type": "bool", "bit_offset": 3, "writable": true }
 ```
 
 | Key | Type | Default | Rule |
@@ -577,7 +577,8 @@ The RAM buffer adds 40 000 samples. The `deadband` is the main control: set it a
 | `type` | also `uint64` \| `int64` \| `float64` \| `string` | — | 64 bits = 4 registers. `string` = `length` registers |
 | `word_order` | `big` \| `little` \| `ABCD` \| `CDAB` \| `BADC` \| `DCBA` | `big` | The letters are the bytes of the value, from the most significant (A) to the least significant, in the order of arrival. `big` = `ABCD`. `little` = `CDAB` (the least significant word first). `BADC` = the bytes of each register in the opposite order. `DCBA` = all bytes in the opposite order. This applies to 32 and 64 bits. For 16 bits, only the byte swap applies |
 | `length` | integer | — | 1–16 registers. Necessary with `type: string`, and only with it. Each register holds two ASCII characters. The first character is in the high byte (in the low byte with `BADC` or `DCBA`). The word order does not apply |
-| `bit` | integer | — | 0–15, with `type: bool` in `holding` or `input` (necessary there). 0 = the least significant bit of the register, as it arrives. With `bit`, `word_order` must be `big` |
+| `bit_offset` | integer | — | 0–15, with `type: bool` in `holding` or `input` (necessary there), or with `type: uint16` and `bit_width` 2–16 (#202). 0 = the least significant bit of the register, as it arrives. With `bit_offset`, `word_order` must be `big` |
+| `bit_width` | integer | `1` | 1–16, only with `bit_offset`. 1 = `bool`; 2–16 = a field of bits, `uint16`. `bit_offset` + `bit_width` ≤ 16 |
 
 - **Exact values.** The gateway publishes `int64` and `uint64` without a scale exactly (UInt64 or Int64), also above 2^53. With `scale` or `offset`, they become a Double.
 - **`string`:** the gateway cuts the text at the first NUL and removes the spaces at the end. It publishes each character that is not printable ASCII as `?`. For a write, it adds NUL characters at the end. It refuses a text that is longer than `2 × length`. A `string` tag has no `scale`, no `offset` and no `deadband`.
@@ -623,20 +624,23 @@ The RAM buffer adds 40 000 samples. The `deadband` is the main control: set it a
 
 Without these keys, the build option applies (`CONFIG_GW_MB_BLOCK_READS`, `CONFIG_GW_MB_BLOCK_MAX_GAP`), as in the MVP.
 
-**Device types as Sparkplug templates (SPB-18), in each device.**
+**Device types as Sparkplug templates (SPB-18), in the section `device_types` (#213).** The tag list of a type is in the document one time. A device with `type` has no `tags`.
 
 ```json
-{ "name": "PumpA", "unit_id": 1, "type": "Pump", "tags": [ … ] },
-{ "name": "PumpB", "unit_id": 2, "type": "Pump", "tags": [ … ] }
+"device_types": [ { "name": "Pump", "tags": [ … ] } ],
+"devices": [ { "name": "PumpA", "unit_id": 1, "type": "Pump" },
+             { "name": "PumpB", "unit_id": 2, "type": "Pump" } ]
 ```
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `type` | text | `""` | A maximum of 39 characters, valid UTF-8, no `/ + #`. Not the name or the folder of a node metric (§6, issue #162). Two types must not differ only in case. Empty = no template (one metric for each tag, as in the MVP) |
+| `device_types[].name` | text | — | A maximum of 39 characters, valid UTF-8, no `/ + #`. Not the name or the folder of a node metric (§6, issue #162). Two types must not differ only in case. A maximum of 16 types |
+| `device_types[].tags` | array | — | 1–64 tags, with the keys of a tag |
+| `devices[].type` | text | — | The name of an entry of `device_types`; another name is an error. Without it, the device has its own `tags` (no template, one metric for each tag, as in the MVP) |
 
-- All devices of one `type` have the same tags: the same names and datatypes, in the same order. The area, the address, the scale and the units can be different. If not, the gateway refuses the configuration with the path `devices[i].type`.
-- All the definitions together describe a maximum of **64 tags** (each type counts one time), because the NBIRTH contains all of them.
-- **NBIRTH:** one Template metric (19) for each type, with its name, `is_definition = true`, no alias and no `template_ref` (`tck-id-payloads-template-definition-nbirth`). Its members have a name, a datatype and a default value (0, false or an empty text). They also have the properties `engUnit`, `engLow` and `engHigh` of the first device of the type.
+- Each device of a type gets a copy of the tags of the type. The copies count in the limit of 256 tags.
+- The definitions of the types that devices use describe a maximum of **64 tags** together (each type counts one time), because the NBIRTH contains all of them.
+- **NBIRTH:** one Template metric (19) for each type that a device uses, with its name, `is_definition = true`, no alias and no `template_ref` (`tck-id-payloads-template-definition-nbirth`). Its members have a name, a datatype and a default value (0, false or an empty text). They also have the properties `engUnit`, `engLow` and `engHigh` of the tags of the type.
 - **DBIRTH:** one Template metric, the instance. Its name is the type, its alias is 100 + the first tag of the device, and its `template_ref` is the type. Its members are the tags, by name and without an alias, with a value and `Quality`.
 - **DDATA:** the instance by alias, with only the members that changed (by name).
 - **DCMD:** the instance with the members to write (by name). The gateway also accepts the tag by name as a separate metric. It does not accept a member by alias, because the members have no alias.

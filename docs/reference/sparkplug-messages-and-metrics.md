@@ -128,16 +128,18 @@ A time from the RTC or from the browser is valid, but it is not synchronized. Fo
 
 ### Templates
 
-A device with `type` publishes a Sparkplug template instance in place of one metric for each tag.
+A device with `type` uses the tags of an entry of `device_types` (refer to [`device_types`](configuration.md#device_types)). It publishes a Sparkplug template instance in place of one metric for each tag.
 
 | Message | Contents |
 |---|---|
-| NBIRTH | One Template metric (19) for each type: the definition, with `is_definition = true`, no alias and no `template_ref`. Its members have a name, a datatype, a default value, and the properties of the first device of the type |
+| NBIRTH | One Template metric (19) for each type that a device uses: the definition, with `is_definition = true`, no alias and no `template_ref`. Its name is the name of the type. Its members are the tags of the type, with a name, a datatype, a default value and the properties `engUnit`, `engLow` and `engHigh`. A type that no device uses has no definition |
 | DBIRTH | One Template metric, the instance. Its name is the type, its alias is 100 + the first tag of the device, and its `template_ref` is the type. Its members are the tags, by name and without an alias |
 | DDATA | The instance by alias, with only the members that changed, by name |
 | DCMD | The instance with the members to write, by name. The tag by name as a separate metric is also accepted. A member by alias is not accepted |
 
 The gateway does not use template parameters.
+
+All the devices of a type have the same tags, because they use the tag list of the type. Thus each instance has all the members of the definition and only these members (`tck-id-payloads-template-definition-members`, `tck-id-payloads-template-instance-members-birth`). The NBIRTH has the definition of each type that a DBIRTH uses (`tck-id-payloads-template-definition-nbirth`).
 
 ## Commands
 

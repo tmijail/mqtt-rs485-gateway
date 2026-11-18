@@ -112,6 +112,14 @@ static const gw_since_t k_since[] = {
     {"devices[].write_multiple", NULL, 2},         /* #197 */
     {"devices[].tags[].write_min", NULL, 2},       /* #196 */
     {"devices[].tags[].write_max", NULL, 2},       /* #196 */
+    {"devices[].tags[].bit_offset", NULL, 2},      /* #202 (replaces bit) */
+    {"devices[].tags[].bit_width", NULL, 2},       /* #202 */
+    {"devices[].type", NULL, 2},                   /* #213: the name of a device type */
+    {"device_types", NULL, 2},                     /* #213 */
+    {"device_types[].name", NULL, 2},
+    {"device_types[].tags", NULL, 2},
+    {"device_types[].tags[].bit_offset", NULL, 2},
+    {"device_types[].tags[].bit_width", NULL, 2},
     {"", NULL, 0},
 };
 #define SINCE_COUNT (sizeof(k_since) / sizeof(k_since[0]) - 1)
@@ -1513,11 +1521,11 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
 {
     static const char *const keys[] = {"name",   "area",     "address",  "type",  "word_order",
                                        "scale",  "offset",   "deadband", "writable", "units",
-                                       "bit",    "length",   "scan",  "eng_low", "eng_high",
-                                       "write_min", "write_max"};
+                                       "bit_offset", "bit_width", "length", "scan", "eng_low",
+                                       "eng_high", "write_min", "write_max"};
     static const char *const scans[] = {"fast", "slow"};
     int area, type, word, scan;
-    long addr, bit, length;
+    long addr, bit, width, length;
     double eng_low, eng_high;
     char p[96];
     if (!check_keys(o, path, keys, sizeof(keys) / sizeof(keys[0]), err) ||
@@ -1531,7 +1539,8 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
         !get_double(o, "deadband", path, 0.0, &t->deadband, err) ||
         !get_bool(o, "writable", path, false, &t->writable, err) ||
         !get_string(o, "units", path, false, "", t->units, sizeof(t->units), err) ||
-        !get_int(o, "bit", path, false, GW_NO_BIT, 0, 15, &bit, err) ||
+        !get_int(o, "bit_offset", path, false, GW_NO_BIT, 0, 15, &bit, err) ||
+        !get_int(o, "bit_width", path, false, 1, 1, 16, &width, err) ||
         !get_int(o, "length", path, false, 0, 1, GW_STR_MAX_REGS, &length, err) ||
         !get_enum(o, "scan", path, false, 0, scans, 2, &scan, err) ||
         !get_double(o, "eng_low", path, 0.0, &eng_low, err) ||
@@ -1555,7 +1564,7 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
     t->type = (gw_type_t)type;
     t->word_order = k_word_values[word];
     t->address = (uint16_t)addr;
-    t->bit = (int8_t)bit;
+    t->bit_offset = (int8_t)bit;
     t->length = (uint8_t)length;
 
     if (t->name[0] == '\0') {
@@ -1576,21 +1585,42 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
         join(p, sizeof(p), path, "type");
         return fail(err, p, "the coil/discrete areas accept only type=bool");
     }
-    bool has_bit = cJSON_GetObjectItemCaseSensitive(o, "bit") != NULL;
+    /* MB-6 #202: one bit (type bool) or a field of 2 to 16 bits (type uint16) of a register */
+    bool has_bit = cJSON_GetObjectItemCaseSensitive(o, "bit_offset") != NULL;
+    bool has_width = cJSON_GetObjectItemCaseSensitive(o, "bit_width") != NULL;
+    if (has_width && !has_bit) {
+        join(p, sizeof(p), path, "bit_width");
+        return fail(err, p, "valid only with bit_offset");
+    }
+    if (has_bit && bit_area) {
+        join(p, sizeof(p), path, "bit_offset");
+        return fail(err, p, "valid only in the holding and input areas");
+    }
     if (!bit_area && t->type == GW_TYPE_BOOL && !has_bit) {
         join(p, sizeof(p), path, "type");
-        return fail(err, p, "type=bool in holding/input needs the key bit (0-15); without bit, "
-                            "it is valid only in the coil and discrete areas");
+        return fail(err, p, "type=bool in holding/input needs the key bit_offset (0-15); "
+                            "without bit_offset, it is valid only in the coil and discrete areas");
     }
-    if (has_bit && (bit_area || t->type != GW_TYPE_BOOL)) {
-        join(p, sizeof(p), path, "bit");
-        return fail(err, p, "valid only with type=bool in the holding and input areas");
+    if (has_bit && bit + width > 16) {
+        join(p, sizeof(p), path, "bit_width");
+        return fail(err, p, "bit_offset + bit_width must be 16 or less (%ld + %ld = %ld)", bit,
+                    width, bit + width);
     }
+    if (has_bit && width == 1 && t->type != GW_TYPE_BOOL) {
+        join(p, sizeof(p), path, "type");
+        return fail(err, p, "a field of 1 bit (bit_width 1, the default) needs type=bool; a "
+                            "field of 2 to 16 bits needs type=uint16 and bit_width");
+    }
+    if (has_bit && width > 1 && t->type != GW_TYPE_UINT16) {
+        join(p, sizeof(p), path, "type");
+        return fail(err, p, "a field of %ld bits (bit_width) needs type=uint16", width);
+    }
+    t->bit_width = has_bit ? (uint8_t)width : 0;
     if (has_bit && cJSON_GetObjectItemCaseSensitive(o, "word_order") != NULL &&
         t->word_order != GW_WORD_BIG) {
         join(p, sizeof(p), path, "word_order");
-        return fail(err, p, "not accepted in a bit tag: bit 0 is the least significant bit of "
-                            "the register as it arrives");
+        return fail(err, p, "not accepted with bit_offset: bit 0 is the least significant bit "
+                            "of the register as it arrives");
     }
     bool has_length = cJSON_GetObjectItemCaseSensitive(o, "length") != NULL;
     bool blob = t->type == GW_TYPE_STRING || t->type == GW_TYPE_BYTES;
@@ -1652,63 +1682,148 @@ static bool parse_tag(const cJSON *o, const char *path, gw_tag_cfg_t *t, gw_cfg_
     return true;
 }
 
-/* SPB-18: every device of a type has the same tags (names and datatypes, in order): the type
- * is one Sparkplug template definition. The definitions together describe at most
- * GW_MAX_TEMPLATE_TAGS tags, so the NBIRTH that carries them stays bounded. */
-static bool check_device_type(const gw_config_t *cfg, const gw_device_cfg_t *d, const char *path,
-                              unsigned *template_tags, gw_cfg_err_t *err)
+/* The tags of the array @p tags at @p path ("devices[0].tags", "device_types[1].tags") into
+ * cfg->tags from cfg->tag_count on; cfg->tag_count grows by their number (@p count). */
+static bool parse_tags(const cJSON *tags, const char *path, gw_config_t *cfg, uint16_t *count,
+                       gw_cfg_err_t *err)
 {
-    if (d->type[0] == '\0') {
-        return true;
+    char p[96];
+    if (!cJSON_IsArray(tags)) {
+        return fail(err, path, tags == NULL ? "missing required field" : "expected an array");
     }
-    char p[48];
-    snprintf(p, sizeof(p), "%s.type", path);
-    if (!check_topic_id(d->type, p, false, err)) {
-        return false;
+    int n = cJSON_GetArraySize(tags);
+    if (n == 0) {
+        return fail(err, path, "the list has no tags");
     }
-    /* The definition is an NBIRTH metric named <type>, next to the node's own metrics (gw_node):
-     * not one of them, nor one of their folders, also without case (issue #162). */
-    static const char *const node_names[] = {"bdSeq", "DI", "DO", "Counter", "Node Control",
-                                             "Node Info", "Firmware Update"};
-    for (size_t k = 0; k < sizeof(node_names) / sizeof(node_names[0]); k++) {
-        if (strcasecmp(d->type, node_names[k]) == 0) {
-            return fail(err, p, "'%s' is the name or a folder of the node metric '%s'", d->type,
-                        node_names[k]);
-        }
+    if (n > GW_MAX_TAGS_PER_DEVICE) {
+        return fail(err, path, "%d tags; the maximum per device is %d", n, GW_MAX_TAGS_PER_DEVICE);
     }
-    for (uint16_t j = 0; j < cfg->device_count; j++) {
-        const gw_device_cfg_t *o = &cfg->devices[j];
-        /* issue #162: tck-id-case-sensitivity-metric-names */
-        if (same_but_case(o->type, d->type)) {
-            return fail(err, p, "'%s' differs only in case from the type '%s' of devices[%u] "
-                                "(Sparkplug metric names should not)", d->type, o->type, j);
-        }
-        if (strcmp(o->type, d->type) != 0) {
-            continue;
-        }
-        bool same = o->tag_count == d->tag_count;
-        for (uint16_t k = 0; same && k < d->tag_count; k++) {
-            const gw_tag_cfg_t *a = &cfg->tags[o->first_tag + k];
-            const gw_tag_cfg_t *b = &cfg->tags[d->first_tag + k];
-            same = strcmp(a->name, b->name) == 0 && gw_conv_datatype(a) == gw_conv_datatype(b);
-        }
-        if (!same) {
-            return fail(err, p, "the type '%s' is already defined by devices[%u] (%s) with other "
-                                "tags: the devices of one type must have the same names and "
-                                "datatypes, in the same order", d->type, j, o->name);
-        }
-        return true;
+    if (cfg->tag_count + n > GW_MAX_TAGS) {
+        return fail(err, path, "more than the total maximum of %d tags", GW_MAX_TAGS);
     }
-    if (*template_tags + d->tag_count > GW_MAX_TEMPLATE_TAGS) {
-        return fail(err, p, "the device types describe more than %d tags in total (the "
-                            "NBIRTH holds their definitions)", GW_MAX_TEMPLATE_TAGS);
+    uint16_t first = cfg->tag_count;
+    int i = 0;
+    for (const cJSON *it = tags->child; it != NULL; it = it->next, i++) {
+        char tp[96];
+        snprintf(tp, sizeof(tp), "%s[%d]", path, i);
+        gw_tag_cfg_t *t = &cfg->tags[cfg->tag_count];
+        if (!parse_tag(it, tp, t, err)) {
+            return false;
+        }
+        join(p, sizeof(p), tp, "name");
+        for (uint16_t j = first; j < cfg->tag_count; j++) {
+            const char *other = cfg->tags[j].name;
+            unsigned k = (unsigned)(j - first);
+            if (strcmp(other, t->name) == 0) {
+                return fail(err, p, "duplicate tag name '%s'", t->name);
+            }
+            /* issue #162: tck-id-case-sensitivity-metric-names */
+            if (same_but_case(other, t->name)) {
+                return fail(err, p, "'%s' differs only in case from tags[%u] '%s' (Sparkplug "
+                                    "metric names should not)", t->name, k, other);
+            }
+            if (folder_of(other, t->name) || folder_of(t->name, other)) {
+                return fail(err, p, "'%s' and tags[%u] '%s': a metric name cannot also be a "
+                                    "folder of another metric", t->name, k, other);
+            }
+        }
+        cfg->tag_count++;
     }
-    *template_tags += d->tag_count;
+    *count = (uint16_t)(cfg->tag_count - first);
     return true;
 }
 
-static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_device_cfg_t *d,
-                         gw_cfg_err_t *err)
+/* The name of device_types[@p i] (validated by parse_device_types), "" if none. */
+static const char *type_name_at(const cJSON *types, int i)
+{
+    const cJSON *t = cJSON_GetArrayItem(types, i);
+    const cJSON *v = t != NULL ? cJSON_GetObjectItemCaseSensitive(t, "name") : NULL;
+    return cJSON_IsString(v) && v->valuestring != NULL ? v->valuestring : "";
+}
+
+/* #213: device_types, a list of {name, tags}. A device with "type" uses the tags of its type
+ * (parse_device copies them), so the tag list of a model is in the document one time. Each type
+ * that a device uses is one Sparkplug template definition in the NBIRTH (SPB-18, gw_node.c):
+ * its name is the name of an NBIRTH metric. Nothing is kept here: the tags of each type are
+ * examined in the free part of cfg->tags, then cleared. */
+static bool parse_device_types(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"name", "tags"};
+    /* The definition is an NBIRTH metric named <type>, next to the node's own metrics (gw_node):
+     * not one of them, nor one of their folders, also without case (issue #162). "Run Hours" is
+     * the folder of Run Hours/<DI|DO>/n (#217): a definition with that name would also be a
+     * folder of these metrics. */
+    static const char *const node_names[] = {"bdSeq", "DI", "DO", "Counter", "Node Control",
+                                             "Node Info", "Firmware Update", "Run Hours"};
+    const cJSON *arr = cJSON_GetObjectItemCaseSensitive(root, "device_types");
+    if (arr == NULL) {
+        return true;
+    }
+    if (!cJSON_IsArray(arr)) {
+        return fail(err, "device_types", "expected an array");
+    }
+    int n = cJSON_GetArraySize(arr);
+    if (n > GW_MAX_DEVICE_TYPES) {
+        return fail(err, "device_types", "%d device types; the maximum is %d", n,
+                    GW_MAX_DEVICE_TYPES);
+    }
+    int i = 0;
+    for (const cJSON *it = arr->child; it != NULL; it = it->next, i++) {
+        char path[32], p[48];
+        char name[GW_NAME_SIZE];
+        snprintf(path, sizeof(path), "device_types[%d]", i);
+        if (!check_keys(it, path, keys, sizeof(keys) / sizeof(keys[0]), err) ||
+            !get_string(it, "name", path, true, "", name, sizeof(name), err)) {
+            return false;
+        }
+        snprintf(p, sizeof(p), "%s.name", path);
+        if (!check_topic_id(name, p, false, err)) {
+            return false;
+        }
+        for (size_t k = 0; k < sizeof(node_names) / sizeof(node_names[0]); k++) {
+            if (strcasecmp(name, node_names[k]) == 0) {
+                return fail(err, p, "'%s' is the name or a folder of the node metric '%s'", name,
+                            node_names[k]);
+            }
+        }
+        for (int j = 0; j < i; j++) {
+            const char *o = type_name_at(arr, j);
+            if (strcmp(o, name) == 0) {
+                return fail(err, p, "duplicate device type name '%s'", name);
+            }
+            /* issue #162: tck-id-case-sensitivity-metric-names */
+            if (same_but_case(o, name)) {
+                return fail(err, p, "'%s' differs only in case from device_types[%d] '%s' "
+                                    "(Sparkplug metric names should not)", name, j, o);
+            }
+        }
+        snprintf(p, sizeof(p), "%s.tags", path);
+        uint16_t count = 0;
+        bool ok = parse_tags(cJSON_GetObjectItemCaseSensitive(it, "tags"), p, cfg, &count, err);
+        memset(cfg->tags, 0, sizeof(cfg->tags[0]) * cfg->tag_count);
+        cfg->tag_count = 0;
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* #213: the index in device_types of the type @p name, or GW_NO_TYPE. */
+static int find_type(const cJSON *root, const char *name)
+{
+    const cJSON *arr = cJSON_GetObjectItemCaseSensitive(root, "device_types");
+    int n = cJSON_IsArray(arr) ? cJSON_GetArraySize(arr) : 0;
+    for (int i = 0; i < n; i++) {
+        if (strcmp(type_name_at(arr, i), name) == 0) {
+            return i;
+        }
+    }
+    return GW_NO_TYPE;
+}
+
+static bool parse_device(const cJSON *root, const cJSON *o, const char *path, gw_config_t *cfg,
+                         gw_device_cfg_t *d, gw_cfg_err_t *err)
 {
     static const char *const keys[] = {"name",        "unit_id", "poll_ms", "slow_poll_ms",
                                        "offline_after", "block_reads", "max_gap", "tags", "type",
@@ -1755,52 +1870,42 @@ static bool parse_device(const cJSON *o, const char *path, gw_config_t *cfg, gw_
     d->slow_poll_ms = (uint32_t)slow;
     d->offline_after = (uint16_t)off;
 
-    const cJSON *tags = cJSON_GetObjectItemCaseSensitive(o, "tags");
-    join(p, sizeof(p), path, "tags");
-    if (!cJSON_IsArray(tags)) {
-        return fail(err, p, tags == NULL ? "missing required field" : "expected an array");
-    }
-    int n = cJSON_GetArraySize(tags);
-    if (n == 0) {
-        return fail(err, p, "the device has no tags");
-    }
-    if (n > GW_MAX_TAGS_PER_DEVICE) {
-        return fail(err, p, "%d tags; the maximum per device is %d", n, GW_MAX_TAGS_PER_DEVICE);
-    }
-    if (cfg->tag_count + n > GW_MAX_TAGS) {
-        return fail(err, p, "more than the total maximum of %d tags", GW_MAX_TAGS);
-    }
     d->first_tag = cfg->tag_count;
     d->tag_count = 0;
-    int i = 0;
-    for (const cJSON *it = tags->child; it != NULL; it = it->next, i++) {
-        char tp[96];
-        snprintf(tp, sizeof(tp), "%s.tags[%d]", path, i);
-        gw_tag_cfg_t *t = &cfg->tags[cfg->tag_count];
-        if (!parse_tag(it, tp, t, err)) {
-            return false;
-        }
-        join(p, sizeof(p), tp, "name");
-        for (uint16_t j = d->first_tag; j < cfg->tag_count; j++) {
-            const char *other = cfg->tags[j].name;
-            unsigned k = (unsigned)(j - d->first_tag);
-            if (strcmp(other, t->name) == 0) {
-                return fail(err, p, "duplicate tag name '%s'", t->name);
-            }
-            /* issue #162: tck-id-case-sensitivity-metric-names */
-            if (same_but_case(other, t->name)) {
-                return fail(err, p, "'%s' differs only in case from tags[%u] '%s' (Sparkplug "
-                                    "metric names should not)", t->name, k, other);
-            }
-            if (folder_of(other, t->name) || folder_of(t->name, other)) {
-                return fail(err, p, "'%s' and tags[%u] '%s': a metric name cannot also be a "
-                                    "folder of another metric", t->name, k, other);
-            }
-        }
-        cfg->tag_count++;
-        d->tag_count++;
+    d->type_index = GW_NO_TYPE;
+    const cJSON *tags = cJSON_GetObjectItemCaseSensitive(o, "tags");
+    if (d->type[0] == '\0') {
+        join(p, sizeof(p), path, "tags");
+        return parse_tags(tags, p, cfg, &d->tag_count, err);
     }
-    return true;
+    /* #213: a device with a type uses the tags of the type, and has none of its own */
+    if (tags != NULL) {
+        join(p, sizeof(p), path, "tags");
+        return fail(err, p, "not permitted with type: the device uses the tags of the device "
+                            "type '%s'", d->type);
+    }
+    join(p, sizeof(p), path, "type");
+    int ti = find_type(root, d->type);
+    if (ti == GW_NO_TYPE) {
+        return fail(err, p, "no device type '%s' in device_types", d->type);
+    }
+    const cJSON *tt = cJSON_GetObjectItemCaseSensitive(
+        cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(root, "device_types"), ti), "tags");
+    int n = cJSON_GetArraySize(tt);
+    if (cfg->tag_count + n > GW_MAX_TAGS) {
+        return fail(err, p, "the %d tags of the device type '%s' make more than the total "
+                            "maximum of %d tags", n, d->type, GW_MAX_TAGS);
+    }
+    d->type_index = (int8_t)ti;
+    /* the copy of the tags of the type, examined by parse_device_types: the schema report
+     * (FW-1) has their keys already */
+    char tp[48];
+    snprintf(tp, sizeof(tp), "device_types[%d].tags", ti);
+    gw_schema_report_t *rep = s_rep;
+    s_rep = NULL;
+    bool ok = parse_tags(tt, tp, cfg, &d->tag_count, err);
+    s_rep = rep;
+    return ok;
 }
 
 static bool parse_devices(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
@@ -1822,7 +1927,7 @@ static bool parse_devices(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err
         char path[32];
         snprintf(path, sizeof(path), "devices[%d]", i);
         gw_device_cfg_t *d = &cfg->devices[cfg->device_count];
-        if (!parse_device(it, path, cfg, d, err)) {
+        if (!parse_device(root, it, path, cfg, d, err)) {
             return false;
         }
         for (uint16_t j = 0; j < cfg->device_count; j++) {
@@ -1837,9 +1942,21 @@ static bool parse_devices(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err
                                     "device IDs should not)", d->name, j, cfg->devices[j].name);
             }
         }
-        if (!check_device_type(cfg, d, path, &template_tags, err)) {
-            return false;
+        /* SPB-18: each type that a device uses is one template definition in the NBIRTH
+         * (tck-id-payloads-template-definition-nbirth). The definitions together describe at
+         * most GW_MAX_TEMPLATE_TAGS tags, so the NBIRTH stays bounded. */
+        bool first = d->type[0] != '\0';
+        for (uint16_t j = 0; first && j < cfg->device_count; j++) {
+            first = strcmp(cfg->devices[j].type, d->type) != 0;
         }
+        if (first && template_tags + d->tag_count > GW_MAX_TEMPLATE_TAGS) {
+            char p[48];
+            snprintf(p, sizeof(p), "%s.type", path);
+            return fail(err, p, "the device types that the devices use describe more than %d "
+                                "tags in total (the NBIRTH holds their definitions)",
+                        GW_MAX_TEMPLATE_TAGS);
+        }
+        template_tags += first ? d->tag_count : 0u;
         /* #172: the longest topic of the device ("spBv1.0/<group>/DBIRTH/<edge>/<device_id>")
          * fits GW_TOPIC_SIZE: gw_node builds it in a buffer of that size, with no allocation */
         size_t prefix = strlen(cfg->sparkplug.device_prefix);
@@ -1925,7 +2042,7 @@ static bool parse_locked(const char *json, size_t len, gw_config_t *cfg, gw_cfg_
 {
     static const char *const keys[] = {"network", "ntp",      "mqtt",    "sparkplug", "rs485",
                                        "local_io", "devices", "syslog",  "web",
-                                       "modbus_tcp", "ota", "gateway"};
+                                       "modbus_tcp", "ota", "gateway", "device_types"};
     memset(cfg, 0, sizeof(*cfg));
     err->msg[0] = '\0';
     err->path[0] = '\0';
@@ -1960,7 +2077,8 @@ static bool parse_locked(const char *json, size_t len, gw_config_t *cfg, gw_cfg_
     bool ok = check_keys(root, "", keys, sizeof(keys) / sizeof(keys[0]), err) && parse_network(root, cfg, err) &&
               parse_ntp(root, cfg, err) && parse_mqtt(root, cfg, err) &&
               parse_sparkplug(root, cfg, err) && parse_rs485(root, cfg, err) &&
-              parse_local_io(root, cfg, err) && parse_devices(root, cfg, err) &&
+              parse_local_io(root, cfg, err) && parse_device_types(root, cfg, err) &&
+              parse_devices(root, cfg, err) &&
               parse_syslog(root, cfg, err) && parse_web(root, cfg, err) &&
               parse_modbus_tcp(root, cfg, err) && parse_ota(root, cfg, err) &&
               parse_gateway(root, cfg, err);
