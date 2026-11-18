@@ -83,6 +83,13 @@ jobs:
           fi
           idf.py size | tee size.txt
           ccache -s
+      # issue #227: the largest frames and the deepest own call path of the tasks rs485_bus and
+      # sparkplug, from the -fstack-usage and -fcallgraph-info=su data of the build
+      - name: Stack report of the own code
+        run: |
+          cd idf
+          python3 tools/stack_report.py build > stack.txt
+          cat stack.txt
       - uses: actions/upload-artifact@v4
         with:
           name: firmware-esp32s3
@@ -92,6 +99,7 @@ jobs:
             idf/build/partition_table/partition-table.bin
             idf/build/flash_args
             idf/size.txt
+            idf/stack.txt
 
   # Issue #121: the E2E in parallel jobs, for the default variant and for the octal PSRAM one
   # (#85: the configuration, the Sparkplug engine and its payload buffer, mbedTLS and the store &

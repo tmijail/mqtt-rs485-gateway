@@ -34,6 +34,8 @@ add_library(cjson STATIC ${cjson_SOURCE_DIR}/cJSON.c)
 target_include_directories(cjson PUBLIC ${cjson_SOURCE_DIR})
 
 set(IDF_PROJECT_DIR ${CMAKE_CURRENT_LIST_DIR}/../..)
+# issue #227: the warnings of the own components, plus -Wundef (GW_HOST_WARNING_FLAGS)
+include(${IDF_PROJECT_DIR}/cmake/gw_warnings.cmake)
 add_subdirectory(${IDF_PROJECT_DIR}/components/nanopb nanopb)
 add_subdirectory(${IDF_PROJECT_DIR}/components/gw_core gw_core)
 
@@ -47,7 +49,7 @@ foreach(t test_mb_rtu test_mb_master test_conv test_logic test_config test_plan 
     add_executable(${t} ${t}.c support.c)
     target_link_libraries(${t} PRIVATE gw_core unity)
     target_include_directories(${t} PRIVATE ${CMAKE_CURRENT_LIST_DIR})
-    target_compile_options(${t} PRIVATE -Wall -Wextra -Werror)
+    target_compile_options(${t} PRIVATE ${GW_HOST_WARNING_FLAGS})
     target_compile_definitions(${t} PRIVATE
         GW_DEFAULT_CONFIG="${IDF_PROJECT_DIR}/components/gw_storage/default_config.json"
         GW_SPEC_EXAMPLE="${CMAKE_CURRENT_LIST_DIR}/spec_example.json")
@@ -88,6 +90,7 @@ set_tests_properties(sfcfg_guard PROPERTIES
 # (tools/spb_decode.py, decoded with the official proto and Python protobuf).
 add_executable(spb_dump spb_dump.c support.c)
 target_link_libraries(spb_dump PRIVATE gw_core unity)
+target_compile_options(spb_dump PRIVATE ${GW_HOST_WARNING_FLAGS})
 target_include_directories(spb_dump PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 target_compile_definitions(spb_dump PRIVATE
     GW_SPEC_EXAMPLE="${CMAKE_CURRENT_LIST_DIR}/spec_example.json")
@@ -97,6 +100,18 @@ target_compile_definitions(spb_dump PRIVATE
 add_test(NAME check_set_config
          COMMAND ${CMAKE_COMMAND} -DSRC=${IDF_PROJECT_DIR}/components/gw_edge/gw_edge.c
                  -P ${CMAKE_CURRENT_LIST_DIR}/check_set_config.cmake)
+
+# Issue #227: each CONFIG_GW_ name in the sources and in the sdkconfig files is an option of a
+# Kconfig file (the firmware can not use -Wundef, README §3.8); the self-test adds a misspelled one.
+add_test(NAME check_kconfig_names
+         COMMAND ${CMAKE_COMMAND} -DROOT=${IDF_PROJECT_DIR}
+                 -P ${CMAKE_CURRENT_LIST_DIR}/check_kconfig_names.cmake)
+add_test(NAME check_kconfig_names_selftest
+         COMMAND ${CMAKE_COMMAND} -DROOT=${IDF_PROJECT_DIR}
+                 -DEXTRA=${CMAKE_CURRENT_LIST_DIR}/kconfig_names/misspelled.h
+                 -P ${CMAKE_CURRENT_LIST_DIR}/check_kconfig_names.cmake)
+set_tests_properties(check_kconfig_names_selftest PROPERTIES
+                     PASS_REGULAR_EXPRESSION "misspelled.h: CONFIG_GW_IO_SIMULATD")
 
 # Issue #167: the option lists of the web UI's configuration form are the value sets of the
 # parser (a missing option silently changed a tag's word order on a save).

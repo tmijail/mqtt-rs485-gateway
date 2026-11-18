@@ -56,17 +56,20 @@ set(GW_CORE_SRCS
     src/spb.c
     proto/sparkplug_b.pb.c)
 
+include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/gw_warnings.cmake)
 if(ESP_PLATFORM)
     idf_component_register(SRCS ${GW_CORE_SRCS} port/gw_port_esp.c
                            INCLUDE_DIRS include
                            PRIV_INCLUDE_DIRS proto
                            REQUIRES log
                            PRIV_REQUIRES nanopb freertos)
-    target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)
+    # issue #227: the same warnings as the host build, plus the stack data (gw_warnings.cmake)
+    gw_target_options(${COMPONENT_LIB})
+    target_compile_options(${COMPONENT_LIB} PRIVATE -Wconversion -Wno-sign-conversion)
 else()
     add_library(gw_core STATIC ${GW_CORE_SRCS} port/gw_port_posix.c)
     target_include_directories(gw_core PUBLIC include PRIVATE proto)
     target_link_libraries(gw_core PUBLIC cjson nanopb m pthread)
-    target_compile_options(gw_core PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion
+    target_compile_options(gw_core PRIVATE ${GW_HOST_WARNING_FLAGS} -Wconversion
                                            -Wno-sign-conversion)
 endif()
