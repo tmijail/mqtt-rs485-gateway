@@ -17,7 +17,7 @@ You need:
 
 | Item | Data | Source | Status |
 |---|---|---|---|
-| UART and pins | UART1: TX GPIO17, RX GPIO18, DE (RTS) GPIO21. The UART runs in the RS485 half-duplex mode | `idf/components/gw_bsp/gw_bsp.c`, Waveshare demo (`idf/README.md` §2) | Compile-only |
+| UART and pins | UART1: TX GPIO17, RX GPIO18, DE (RTS) GPIO21. The UART runs in the RS485 half-duplex mode | `idf/components/gw_bsp/gw_bsp.c`, Waveshare demo ([Board data to verify](../reference/board-data-to-verify.md#the-data)) | Compile-only |
 | Isolation | The RS485 port is isolated from the ESP32-S3. The board has an integrated isolated power supply | Waveshare wiki: "Onboard isolated RS485 interface" | Not verified on the board, see #127 |
 | Terminals | A, B and a common terminal (GND). Read the labels that are printed on the board | General RS485 practice | Not verified on the board, see #127 |
 | Termination | A 120 Ω resistor between A and B, behind a jumper with the label 120R. The jumper is open at delivery | Waveshare FAQ, board review of #183 | Not verified on the board, see #127 |
@@ -90,7 +90,7 @@ Each device has a `unit_id` from 1 to 247. Give each physical device on the bus 
 
 ### The shell command `devices`
 
-1. Connect the computer to the USB-C port of the board. `idf/README.md` §2 gives the console.
+1. Connect the computer to the USB-C port of the board. [Board data to verify](../reference/board-data-to-verify.md#the-data) gives the console.
 2. Type `devices`.
 
 The command shows one line for each device. For example:
@@ -130,7 +130,7 @@ The test read in the web UI (#182) will do the same from the device table, witho
 | Green, continuous | Normal operation: all devices are online |
 | Green and orange, alternately (1 Hz) | One or more Modbus devices are offline |
 
-The other patterns are in `idf/README.md` §3.4. The LED is compile-only (#18).
+The other patterns are in [The status signals](../reference/status-signals.md#status-led). The LED is compile-only (#18).
 
 ## If there is a problem
 

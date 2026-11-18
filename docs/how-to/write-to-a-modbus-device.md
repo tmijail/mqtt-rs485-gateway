@@ -3,7 +3,7 @@
 This procedure tells how a Sparkplug host writes a value to a Modbus device (DCMD) or to a digital output of the board (NCMD). The gateway writes the value on the bus, reads it again, and publishes the confirmed value.
 
 - For the commands and the node metrics, refer to [Sparkplug messages and metrics](../reference/sparkplug-messages-and-metrics.md#commands).
-- For the limits of the commands on a slow broker, refer to [`idf/README.md` §6.5](../../idf/README.md#65-slow-broker-and-command-limits).
+- For the limits of the commands on a slow broker, refer to [Known limitations](../reference/known-limitations.md#commands).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The RS485 hardware mode and the digital outputs are compile-only. The E2E tests the commands in QEMU, with a Modbus slave and a model of the outputs.
 

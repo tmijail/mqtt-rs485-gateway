@@ -12,7 +12,14 @@ Firmware for an RS485 (Modbus RTU) → MQTT Sparkplug B 3.0 gateway on the Waves
 - Two items of #133 still need a decision of the product owner: the signed OTA images without Secure Boot (`SECURE_SIGNED_APPS_NO_SECURE_BOOT`) and the NVS encryption with its migration code. Both are only in the QEMU build. Do not add new work that depends on them until #133 decides.
 - When a requirement in `docs/SPEC.md` assumes a vendor product (factory stations, locked devices), question it before you implement it.
 
-`idf/README.md` is the authoritative, detailed reference. It covers architecture, task table, memory budget, build, configuration, verification results and known limitations. Read the relevant section before changing a subsystem. The existing README, docs and GitHub issues are in Spanish; all new writing follows **Writing standard** below.
+`docs/` is the authoritative, detailed reference (index: `docs/README.md`). Read the relevant document before changing a subsystem:
+- `docs/reference/architecture.md` and `docs/explanation/architecture.md`: the components, the task table, the concurrency rules and the memory budget.
+- `docs/how-to/build-the-firmware.md` and `docs/reference/build-configuration.md`: the build, the overlays and the partition table.
+- `docs/reference/configuration.md`, `docs/reference/commissioning-and-secrets.md` and `docs/reference/firmware-updates.md`.
+- `docs/reference/tests.md`, `docs/reference/e2e-harness.md` and `docs/reference/e2e-scenarios.md`: the tests, the test environment and the latest results.
+- `docs/reference/sparkplug-behavior.md`, `docs/reference/known-limitations.md` and `docs/reference/requirements-status.md`.
+
+The root `README.md` is the short project page: what the gateway does, the status of the project, the features and the links. Do not put measurements, test results or per-issue details in it; put them in `docs/`. `idf/README.md` is only a short guide to the folder `idf/`. Some old docs and GitHub issues are in Spanish; all new writing follows **Writing standard** below.
 
 ## Writing standard: ASD-STE100 Simplified Technical English
 
@@ -36,7 +43,7 @@ Write all new or changed prose in ASD-STE100 Simplified Technical English (STE).
 **The firmware has never run on real hardware.** It has only run in host tests and in QEMU. The W5500, RS485 hardware mode, TCA9554, GPIO DIs and LED are compile-only (issues #1 and #18).
 
 **No gateway is installed yet (before v1.0).** Until the product owner says that the first gateway is installed:
-- A change of a stored format (the configuration document, NVS keys and records, the microSD card format, RTC memory) needs no migration and no backward compatibility. Document the change in `idf/README.md`, and say in the commit that old data is dropped or reset.
+- A change of a stored format (the configuration document, NVS keys and records, the microSD card format, RTC memory) needs no migration and no backward compatibility. Document the change in the reference document of that format in `docs/reference/`, and say in the commit that old data is dropped or reset.
 - Do not add code that reads an earlier format only for compatibility.
 
 When the product owner says that the first gateway is installed, tag that commit `v1.0`. From then on, each change of a stored format needs an upgrade path and a downgrade path (see #144, #146, #147 and #148).
@@ -47,7 +54,7 @@ The gateway must obey the Eclipse Sparkplug B 3.0.0 specification fully. Do not 
 - Obey each MUST, MUST NOT, SHOULD and SHOULD NOT statement for an Edge Node. A deviation is a bug, also when a document records it.
 - The reference is the normative text with a `tck-id`, in the AsciiDoc chapters at the tag `v3.0.0` of `eclipse-sparkplug/sparkplug`. When an example does not agree with the normative text, obey the normative text.
 - When `docs/SPEC.md` does not agree with the Sparkplug specification, the Sparkplug specification is correct. Correct `docs/SPEC.md`.
-- When the specification permits a choice (MAY), write the choice and the reason in `idf/README.md`.
+- When the specification permits a choice (MAY), write the choice and the reason in `docs/reference/sparkplug-behavior.md`.
 - When a change concerns a Sparkplug rule, give its `tck-id` in the code comment, the test, the issue and the commit.
 - When a host does not obey the specification (for example, the Sparkplug 2.x STATE of UMH Core), write the limit in the documentation and report the problem to the host project. Do not change the default behaviour of the gateway for it.
 - An option for a specific host must obey the specification, if possible. A compatibility profile that does not obey it is a last resort. Add one only when all these conditions are true:
@@ -55,7 +62,7 @@ The gateway must obey the Eclipse Sparkplug B 3.0.0 specification fully. Do not 
   - The problem was reported to the host project first, and the host project did not correct it.
   - The product owner approves the profile.
 
-  The profile is off by default and changes only the necessary items. `idf/README.md` lists each deviation that it causes.
+  The profile is off by default and changes only the necessary items. `docs/reference/sparkplug-behavior.md` lists each deviation that it causes.
 
 ## The web UI configures everything
 
@@ -95,11 +102,11 @@ E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh --only ota,https   # subset of 
 #          (ota = ota-fw1,ota-park,ota-wiring,ota-trial; ota-fw1 = ota-fw1-ncmd,ota-fw1-web, #233; an
 #          unknown name is an error; nopsram needs E2E_PSRAM=1)
 #  Optional scenarios (never in a full run or in the CI groups; they SKIP when the tool is absent):
-#    umh  real benthos-umh v0.16.2 (UMH Core), E2E_BENTHOS_UMH=<binary>        (#175, README §4.6)
+#    umh  real benthos-umh v0.16.2 (UMH Core), E2E_BENTHOS_UMH=<binary>        (#175, docs/reference/e2e-scenarios.md)
 #    tck  Eclipse Sparkplug TCK 3.0.0 on HiveMQ CE, E2E_TCK_DIR=<dir from tools/e2e/tck_setup.sh>
-#         (#176, README §4.7, docs/how-to/run-the-sparkplug-tck.md)
+#         (#176, docs/how-to/run-the-sparkplug-tck.md)
 #    downgrade  the image of an earlier release on the flash that this image wrote,
-#               E2E_DOWNGRADE_REF=<git ref> (built once into build-downgrade/; #148, README §6.10)
+#               E2E_DOWNGRADE_REF=<git ref> (built once into build-downgrade/; #148, docs/reference/e2e-scenarios.md)
 E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_ci_groups.sh /tmp/gw-groups   # the CI groups of a variant: build once, run in parallel (run it for each variant)
 #  Windows / no local IDF: the same in Docker (idf/tools/e2e/Dockerfile), see docs/how-to/run-e2e-in-docker.md
 #  E2E_STAGE=<dir> (build the images into <dir>, run nothing), E2E_PREBUILT=<dir> (run on them, no build),
@@ -214,6 +221,6 @@ Rules that tests and fixes must respect:
 ## Conventions
 
 - Commits reference issues with `Fixes #N` or `Refs #N`. Feature and fix branches are merged into `main` with `--no-ff`.
-- When behaviour or measurements change, update `idf/README.md` (in STE): §4 has the verification results and test counts, §6 the known limitations, §6.10 the test environment notes.
+- When behaviour or measurements change, update the documents in `docs/` (in STE): `docs/reference/tests.md` has the latest results and the test counts, `docs/reference/known-limitations.md` the known limitations, and `docs/reference/e2e-harness.md` the notes on the test environment. Keep only the current values: no history of runs. The root `README.md` changes only when a feature or the status of the project changes.
 - Managed components are pinned with `==` in each `idf_component.yml` and hashed in `dependencies.lock`. Host-test dependencies (Unity, cJSON) are pinned by commit hash via FetchContent.
-- A change can update a managed component that writes data (`littlefs`) or ESP-IDF (the NVS format, `otadata`, the app descriptor, the partition table). Such a change must pass the downgrade test (#148). Run `E2E_DOWNGRADE_REF=<the last release> tools/e2e/run_e2e.sh --only downgrade` in both variants. Before the tag `v1.0`, use the commit before the change. The earlier image must start in normal mode with the same configuration and secrets. If it cannot, merge the change only when the pre-flight check refuses that downgrade (`nvs_format` and the LittleFS disk version in the capabilities block, README §3.6).
+- A change can update a managed component that writes data (`littlefs`) or ESP-IDF (the NVS format, `otadata`, the app descriptor, the partition table). Such a change must pass the downgrade test (#148). Run `E2E_DOWNGRADE_REF=<the last release> tools/e2e/run_e2e.sh --only downgrade` in both variants. Before the tag `v1.0`, use the commit before the change. The earlier image must start in normal mode with the same configuration and secrets. If it cannot, merge the change only when the pre-flight check refuses that downgrade (`nvs_format` and the LittleFS disk version in the capabilities block, `docs/reference/firmware-updates.md`).

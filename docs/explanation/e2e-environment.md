@@ -22,7 +22,7 @@ Both choices run on the same WSL 2 virtual machine. Docker Desktop on Windows us
 - **Network isolation.** With `--privileged`, the harness can make its own network namespace. Then each run has private ports, also UDP 123, and parallel runs do not collide.
 - **Easy removal.** `docker volume rm gw-e2e` and `docker image rm gw-e2e` remove all of it.
 
-A direct install in WSL is also possible: follow `idf/README.md` §3.1 and §4.3 in the WSL distribution. The project did not measure that choice.
+A direct install in WSL is also possible: follow [Build the firmware](../how-to/build-the-firmware.md) and [Run the tests](../how-to/run-the-tests.md) in the WSL distribution. The project did not measure that choice.
 
 ## Why the repository goes into a Docker volume
 

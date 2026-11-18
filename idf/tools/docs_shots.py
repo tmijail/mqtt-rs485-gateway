@@ -733,6 +733,11 @@ SHOTS = [
              "and MQTT (connected), the access point (off), the Modbus devices with Meter1 "
              "online and the values of its tags, the local I/O, the firmware, the microSD card, "
              "the log (closed), and the card 'Restart and reset'."),
+    # the top of the Status tab, for the project README
+    Shot("status-overview", "configured", DESKTOP, "/", wait="#st-mb table",
+         alt="The top of the Status tab of the web UI: the card Gateway (firmware, mode normal, "
+             "heap and PSRAM), the network and MQTT (connected), the access point (off), and "
+             "the Modbus device Meter1 online with the values of its tags."),
     Shot("configuration-page", "configured", DESKTOP, "/",
          actions=[("click", "nav button[data-tab=config]")], wait="#f-mqtt input",
          alt="The Configuration tab of the web UI: the buttons 'Open all' and 'Close all' at "

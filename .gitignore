@@ -8,6 +8,6 @@ __pycache__/
 .venv/
 .ruff_cache/
 node_modules/
-# signing keys never enter the repository (the QEMU test key of run_e2e.sh, README 3.6)
+# signing keys never enter the repository (the QEMU test key of run_e2e.sh, docs/how-to/build-the-firmware.md#build-a-qemu-image)
 *signing_key*.pem
 keys/

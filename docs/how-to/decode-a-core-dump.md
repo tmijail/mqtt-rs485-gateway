@@ -1,6 +1,6 @@
 # Get and decode a core dump
 
-This procedure tells how to get the core dump of a gateway after a crash, and how to decode it. You can do it through the network or at the console, without a USB cable. The reasons for the design are in `idf/README.md` §3.2 (Core dump).
+This procedure tells how to get the core dump of a gateway after a crash, and how to decode it. You can do it through the network or at the console, without a USB cable. The reasons for the design are in [The core dump](../explanation/core-dump.md).
 
 > **Warning: Keep the dump file as safe as the passwords of the gateway.** The dump is a copy of the RAM at the crash. It can contain the MQTT password, TLS session keys and the private key of the device certificate, in clear text.
 

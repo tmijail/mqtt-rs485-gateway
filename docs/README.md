@@ -49,16 +49,30 @@ The usual sequence for a new gateway is:
 - [The clock and the RTC battery](reference/clock-and-rtc-battery.md): the sources of the clock, and the signals while the gateway waits for a valid clock.
 - [UMH names and topics](reference/umh-names-and-topics.md): the name limits of the gateway, and the UMH topic of each metric.
 - [Sparkplug TCK results](reference/sparkplug-tck-results.md): the results of the Eclipse Sparkplug TCK, Edge Node profile.
-- [`idf/README.md`](../idf/README.md): the architecture, the build, the configuration, the tests and the known limits.
+- [Sparkplug behavior](reference/sparkplug-behavior.md): the choices of the gateway where the Sparkplug specification permits a choice, with the reasons.
+- [Commissioning and secrets](reference/commissioning-and-secrets.md): the modes, the HTTPS certificate, the claim window, the secrets in NVS, the factory reset and the limits of the web server.
+- [Firmware updates](reference/firmware-updates.md): the download, the pre-flight check, the trial, the rollback and the limits of the updates.
+- [Requirements status](reference/requirements-status.md): the status of each requirement of the specification, with the evidence.
+- [Known limitations](reference/known-limitations.md): the limits of the gateway, grouped by subsystem.
+- [Board data to verify](reference/board-data-to-verify.md): the data of the board that nobody verified on a board.
 
 ## Explanation
 
 - [The security of the access point](explanation/access-point-security.md): why the Wi-Fi password of the access point is the web password, and the residual risks.
 - [Sparkplug names and the UNS](explanation/sparkplug-names-and-the-uns.md): why the Sparkplug names control the place of the data in the UNS of UMH Core.
+- [The security of the web UI and the claim](explanation/web-and-claim-security.md): why the web server has its limits, and why the claim window is safe.
+- [Features that burn eFuses](explanation/no-efuse-features.md): why Secure Boot, flash encryption and the other eFuse features are not in `main`.
 
 ## For developers
 
+- [Build the firmware](how-to/build-the-firmware.md) and [Build configuration](reference/build-configuration.md): ESP-IDF, the build, the flash, the `sdkconfig` overlays and the partition table.
+- [The architecture](reference/architecture.md) and [the reasons for it](explanation/architecture.md): the components, the tasks, the concurrency rules and the memory budget.
+- [Run the tests](how-to/run-the-tests.md) and [Tests](reference/tests.md): the host tests, the linters, the E2E tests, the CI jobs and the latest results.
+- [The E2E harness](reference/e2e-harness.md) and [The E2E scenarios](reference/e2e-scenarios.md): the test bench in QEMU, the retry rules, and what each scenario examines.
 - [Run the E2E tests in Docker](how-to/run-e2e-in-docker.md), [The E2E environment on a Windows computer](explanation/e2e-environment.md) and [E2E durations](reference/e2e-durations.md).
+- [Compiler warnings and stack data](reference/compiler-warnings-and-stack.md): the warning options, the stack report and the limit of a stack frame.
+- [The core dump](explanation/core-dump.md): why the gateway keeps the core dump as it does.
 - [Run the Sparkplug TCK against the gateway](how-to/run-the-sparkplug-tck.md).
 - [Make the screenshots of the web UI for the docs](how-to/make-the-docs-screenshots.md).
 - `feasibility-idf.md`, `review-idf.md`, `RECOMMENDATION.md`, `review-feature-zephyr-ideas.md` and `upstream-reports.md`: the studies and the reports of the project.
+- The branches `impl/zephyr` and `comparison/idf-vs-zephyr` keep the alternative Zephyr implementation and the full comparison.

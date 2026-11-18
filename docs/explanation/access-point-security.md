@@ -4,7 +4,7 @@ This document tells why the commissioning access point of the gateway operates a
 
 - For the procedures, refer to [Set the first web password on site](../how-to/set-the-first-web-password.md) and [Get on the access point on a later visit](../how-to/get-on-the-access-point.md).
 - For the keys, the times and the signals, refer to [The access point](../reference/access-point.md).
-- For the choices of the implementation, refer to [`idf/README.md` §3.5](../../idf/README.md#35-commissioning-factory-reset-and-secrets) and §6.2.1.
+- For the choices of the implementation, refer to [The secrets in NVS](../reference/commissioning-and-secrets.md#the-secrets-in-nvs) and [What only the board can test](../reference/commissioning-and-secrets.md#what-only-the-board-can-test).
 
 ## The problem
 

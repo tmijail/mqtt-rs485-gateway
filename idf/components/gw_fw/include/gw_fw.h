@@ -1,7 +1,7 @@
 /*
  * FW-1: firmware updates over HTTPS (esp_https_ota) or uploaded through the web UI, into the
  * other OTA slot, with automatic rollback (CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE). Issue #144
- * gives the process (README 3.6):
+ * gives the process (docs/reference/firmware-updates.md):
  *
  *   - gw_fw_start_url(): NCMD "Node Control/Firmware Update" (only with ota.mqtt, #223) or
  *     POST /api/firmware {"url"} (always).

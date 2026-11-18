@@ -90,7 +90,7 @@ def uint32_cause(payloads):
 
 # FAILs of the TCK that are not gateway bugs: tck-id -> (message kind, rule). The rule gets the
 # messages of that kind that the harness captured during the test and returns the reason, or
-# None when the reason does not apply (then the FAIL counts). README 4.7 explains each entry.
+# None when the reason does not apply (then the FAIL counts). docs/reference/sparkplug-tck-results.md explains each entry.
 KNOWN_RULES = {
     "topics-nbirth-metrics": ("NBIRTH", uint32_cause),
     "operational-behavior-data-publish-nbirth-values": ("NBIRTH", uint32_cause),
@@ -372,7 +372,7 @@ def run_one(h, args, work, slave, root, test, protocol, name):
             slave.set_float(4, 0, 230.5)
             if test == "SendComplexDataTest":
                 # it ends only when every assertion has a result; the gateway has no template
-                # parameters (README 6.3.1), so the console ends it, as an operator would
+                # parameters (docs/reference/sparkplug-behavior.md#templates-spb-18), so the console ends it, as an operator would
                 time.sleep(5.0)
                 console.end_test()
         elif test == "SessionTerminationTest":

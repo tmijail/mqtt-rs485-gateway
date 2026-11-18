@@ -2,7 +2,7 @@
 
 Version: 2.0 · Date: 2026-11-11
 
-This document gives the requirements (§4), the minimum product or MVP (§5), the configuration schema (§6) and the acceptance criteria of the MVP (§7). `idf/README.md` gives the design, the evidence for each requirement and the known limitations.
+This document gives the requirements (§4), the minimum product or MVP (§5), the configuration schema (§6) and the acceptance criteria of the MVP (§7). [Architecture](reference/architecture.md) gives the design. [Requirements status](reference/requirements-status.md) gives the evidence for each requirement, and [Known limitations](reference/known-limitations.md) gives the known limitations.
 
 ## 1. Purpose
 
@@ -54,7 +54,7 @@ During the selection, a Zephyr prototype was also made for a comparison. That pr
 | Wi-Fi / BLE | 2.4 GHz, in the ESP32-S3 | — |
 | Power supply | 7–36 V on the terminal block, PoE, or 5 V on USB-C | — |
 
-The TCA9554 of the outputs and the RTC use the same I²C bus (GPIO 41 and 42). Nobody found a published schematic. `idf/README.md` §2 gives the source and the confidence of each item in this table.
+The TCA9554 of the outputs and the RTC use the same I²C bus (GPIO 41 and 42). Nobody found a published schematic. [Board data to verify](reference/board-data-to-verify.md) gives the source and the confidence of each item in this table.
 
 > **Caution: Do not install a CR1220 cell in the RTC battery holder.** The board charges the cell. A primary (not rechargeable) cell can be damaged. Install a rechargeable 3 V cell, for example an ML1220. `docs/how-to/fit-the-rtc-battery.md` gives the procedure.
 
@@ -77,7 +77,7 @@ The firmware assumes the 8 MB of PSRAM of the board (issue #135). When the boot 
 - It does not load the configuration. It does not poll, and it does not connect to MQTT. All DOs are off.
 - The network, the web UI, the shell and the access point (NET-5) start. They show the cause.
 
-`idf/README.md` §1.3 gives the details. Only the QEMU build without PSRAM (`CONFIG_GW_EMU_NO_PSRAM`) runs the gateway without PSRAM, for the tests.
+[Architecture](reference/architecture.md#memory-rel-2) gives the details. Only the QEMU build without PSRAM (`CONFIG_GW_EMU_NO_PSRAM`) runs the gateway without PSRAM, for the tests.
 
 ## 3. Conventions
 
@@ -93,7 +93,7 @@ The firmware assumes the 8 MB of PSRAM of the board (issue #135). When the boot 
   - **Partial**: the firmware has a part of the function. The cell tells which part is not done;
   - **Open**: the function is not done;
   - **Out of scope**: the project does not do it. The requirement gives the reason.
-- **Done does not mean a test on hardware.** The firmware has never run on the board (issues #1 and #18). The W5500, the RS485 hardware mode, the TCA9554, the GPIO DIs, the LED and the radio are compile-only. `idf/README.md` §5 gives the evidence for each requirement, and §6 gives the known limitations.
+- **Done does not mean a test on hardware.** The firmware has never run on the board (issues #1 and #18). The W5500, the RS485 hardware mode, the TCA9554, the GPIO DIs, the LED and the radio are compile-only. [Requirements status](reference/requirements-status.md) gives the evidence for each requirement, and [Known limitations](reference/known-limitations.md) gives the known limitations.
 - A text such as `#120` refers to a GitHub issue. A text such as `tck-id-…` refers to a normative statement of Sparkplug B 3.0.0.
 
 ## 4. Requirements
@@ -251,7 +251,7 @@ All these items obey Sparkplug B 3.0.0. None of them is a compatibility profile:
 | UMH-3 | **The UMH preset** (`sparkplug.naming: "umh"`, issues #169, #173 and #174). The name checks of UMH-2 become errors. Each device gets a Boolean node metric for its state (`Devices/<name>/Online`). A typed device publishes plain metrics, and the node publishes no DataSet. The preset is off by default (§6.1) | P2 | | Done |
 | UMH-4 | **A device prefix of free depth** (issue #172): `sparkplug.device_prefix` gives the location levels of all devices. The `device_id` of each device is `<device_prefix>:<name>`. The number of levels has no limit, other than the length of the topic (§6.1) | P2 | | Done |
 | UMH-5 | **The topic preview in the web UI** (issue #170): each device shows its Sparkplug topic and its UMH topic, with the length of the `device_id`. The previews change while you type. The fields have length limits and help texts | P2 | | Done |
-| UMH-6 | **The interoperability test** (issue #175): the optional E2E scenario `umh` runs the real benthos-umh against the firmware in QEMU. It uses the bridge configuration of the how-to (UMH-1). `idf/README.md` §4.6 gives the result | P1 | | Done. Optional scenario, not in the CI |
+| UMH-6 | **The interoperability test** (issue #175): the optional E2E scenario `umh` runs the real benthos-umh against the firmware in QEMU. It uses the bridge configuration of the how-to (UMH-1). [The E2E scenarios](reference/e2e-scenarios.md#umh-umh-core-interoperability-175) gives the checks | P1 | | Done. Optional scenario, not in the CI |
 | UMH-7 | **Rebirth on request** (issue #171): `POST /api/rebirth` and the Rebirth button of the web UI send the NBIRTH and all the DBIRTHs again (SPB-9). Use them when a host shows the tags as `alias_<n>` after its restart | P2 | | Done |
 | UMH-8 | **Reports to the UMH project** (issue #177): one upstream report for each gap of the `sparkplug_b` input. Examples: the Sparkplug 2.x STATE, Template, DataSet and Bytes values that become `null`, and no PropertySet | P2 | | Open |
 
@@ -506,8 +506,8 @@ The object form, with the optional spill to a microSD card:
 | Key | Type | Default | Rule |
 |---|---|---|---|
 | `enabled` | bool | `true` | The same as `store_forward: true` |
-| `sd.enabled` | bool | `false` | When the RAM buffer is three quarters full, its oldest samples go to the microSD card in blocks of 4 KB. When the session starts again, the gateway publishes the samples of the card first. It requires `enabled`. The QEMU build without PSRAM does not start the spill, and the boot log and the shell tell why. **GPIO45 (D0 of the card) is a *strapping* pin: read the warning in `idf/README.md` §6.5 before you enable it** |
-| `sd.max_kb` | integer | `131072` | 64–4 194 304 (128 MB by default). The space that the gateway uses on the card. It uses less when the cluster size limits it (§6.5 of the README). When the card is full of data, the gateway writes over the oldest blocks and counts their samples as lost |
+| `sd.enabled` | bool | `false` | When the RAM buffer is three quarters full, its oldest samples go to the microSD card in blocks of 4 KB. When the session starts again, the gateway publishes the samples of the card first. It requires `enabled`. The QEMU build without PSRAM does not start the spill, and the boot log and the shell tell why. **GPIO45 (D0 of the card) is a *strapping* pin: read the warning in [Store & forward](reference/store-and-forward.md#the-microsd-card-and-gpio45) before you enable it** |
+| `sd.max_kb` | integer | `131072` | 64–4 194 304 (128 MB by default). The space that the gateway uses on the card. It uses less when the cluster size limits it (refer to [Store & forward](reference/store-and-forward.md#extents-blocks-and-superblocks)). When the card is full of data, the gateway writes over the oldest blocks and counts their samples as lost |
 
 **The card.**
 

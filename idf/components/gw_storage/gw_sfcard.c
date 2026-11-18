@@ -426,7 +426,7 @@ static bool io_list(void *ctx, void (*each)(void *arg, uint32_t f), void *arg)
  * is formatted once in its life: no RAM is kept for it in normal operation). Low priority, on
  * core 0, away from the bus task: it waits on the SDMMC transfers, so it uses little CPU. The
  * stack: the deepest path is f_mkfs -> disk_write -> sdmmc_write_sectors -> the host driver,
- * plus a log line; 5 KB leaves more than 2 KB free by the static estimate (README 1.2). */
+ * plus a log line; 5 KB leaves more than 2 KB free by the static estimate (docs/reference/architecture.md#tasks-queues-and-ownership). */
 #define FORMAT_STACK_BYTES 5120
 #define FORMAT_PRIORITY 1
 #define RELEASE_WAIT_MS 10000u   /* the Sparkplug loop releases the card within one pass */

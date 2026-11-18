@@ -4,5 +4,5 @@
 # value (the issue #98 check of the cut download then fails on the old code) and an overrun
 # aborts. tools/e2e/run_e2e.sh with E2E_POISON=1 (build dir build-qemu-poison, or
 # build-qemu-psram-poison). It costs memory on every allocation and time on every malloc and
-# free: README 4.3 has its effect on the #80 margins. Never flash this build.
+# free: docs/reference/e2e-harness.md#heap-poisoning has its effect on the #80 margins. Never flash this build.
 CONFIG_HEAP_POISONING_COMPREHENSIVE=y

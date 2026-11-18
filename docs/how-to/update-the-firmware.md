@@ -2,7 +2,7 @@
 
 This procedure tells how to install a new firmware image on a gateway through the network, how to make sure that the update is complete, and how to go back to the earlier image.
 
-- For the full process, the trial and the rollback, refer to [`idf/README.md` §3.6](../../idf/README.md#36-firmware-updates-fw-1).
+- For the full process, the image checks, the trial and the rollback, refer to [Firmware updates](../reference/firmware-updates.md).
 - The owner of the board can always flash it over USB as well. The project burns no eFuses (#133).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The E2E tests the updates, the trial and the rollback in QEMU. The images come from the firmware in QEMU.
@@ -152,4 +152,4 @@ In recovery mode after an update, the area **Actions with a restart** also has t
 
 ## If the web UI is not available
 
-Flash the image over USB: refer to [`idf/README.md` §3.2](../../idf/README.md#32-firmware). For the other paths, refer to [Recover a gateway](recover-the-gateway.md).
+Flash the image over USB: refer to [Flash the board](build-the-firmware.md#flash-the-board). For the other paths, refer to [Recover a gateway](recover-the-gateway.md).

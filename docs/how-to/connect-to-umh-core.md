@@ -5,7 +5,7 @@ This procedure tells how to send the data of the gateway to the Unified Namespac
 - For the reasons of the name rules, refer to [Sparkplug names and the UNS](../explanation/sparkplug-names-and-the-uns.md).
 - For the name limits and the UMH topic of each metric, refer to [UMH names and topics](../reference/umh-names-and-topics.md).
 
-> **Warning: Do not use this procedure with a different version of benthos-umh before you test it.** The interoperability E2E (#175, `--only umh`) tested this procedure with benthos-umh **v0.16.2** (commit `0d3a203`) and the firmware in QEMU. It used the input and the `tag_processor` of this document. Another version can operate differently. Nobody tested a full UMH Core installation (the `uns` output, the Topic Browser, the downsampler). `idf/README.md` §4.6 gives the results.
+> **Warning: Do not use this procedure with a different version of benthos-umh before you test it.** The interoperability E2E (#175, `--only umh`) tested this procedure with benthos-umh **v0.16.2** (commit `0d3a203`) and the firmware in QEMU. It used the input and the `tag_processor` of this document. Another version can operate differently. Nobody tested a full UMH Core installation (the `uns` output, the Topic Browser, the downsampler). [The E2E scenarios](../reference/e2e-scenarios.md#umh-umh-core-interoperability-175) gives the checks of that test.
 
 > **Caution: Do not use UMH Core as the only copy of data that you must keep.** UMH cannot be the primary host of the gateway (#177). If UMH stops and the broker continues, the gateway continues to publish, and UMH loses that data. The [explanation](../explanation/sparkplug-names-and-the-uns.md#no-primary-host-data-can-be-lost) gives the details.
 
@@ -39,7 +39,7 @@ Option C works only when a CA that the two sides trust signs the broker certific
 - An empty `mqtt.tls.ca_file` makes the gateway use the public CA bundle of ESP-IDF (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN`). This bundle is compile-only: the E2E uses its own CA.
 - The broker needs a public DNS name. The gateway compares the name with `mqtt.host`, or with `mqtt.tls.server_name`.
 - On a plant network with no access from the Internet, a CA such as Let's Encrypt can sign the certificate with the DNS-01 challenge. Nobody examined this option with the gateway yet.
-- TLS needs a valid time on the gateway (SNTP or the RTC). Refer to `idf/README.md` §6.5.1.
+- TLS needs a valid time on the gateway (SNTP or the RTC). Refer to [Known limitations](../reference/known-limitations.md#tls-mqtt-4-mqtt-5).
 
 ## Select the names
 
@@ -101,7 +101,7 @@ An example `config.json` for option A:
 }
 ```
 
-Load the configuration with the web UI, `PUT /api/config` or the shell command `config load` (`idf/README.md` §3.4).
+Load the configuration with the web UI, `PUT /api/config` or the shell command `config load` (refer to [Save and export](../reference/configuration.md#save-and-export)).
 
 In the web UI, the Configuration tab shows the Sparkplug topic and the UMH topic of each device before you save. Compare the UMH topic with the location that you want. A level in red starts with `_`: correct it.
 

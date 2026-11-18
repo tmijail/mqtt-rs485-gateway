@@ -28,7 +28,7 @@ extern "C" {
 #endif
 
 /* #221, decision of the product owner: the implementation measures the free space of LittleFS
- * and proposes the limits (README 3.x, "The PEM files"). The product owner approves them later. */
+ * and proposes the limits (docs/reference/commissioning-and-secrets.md#the-pem-files). The product owner approves them later. */
 #define GW_PEM_FILES_MAX      16      /* PEM files in the LittleFS partition */
 #define GW_PEM_FILE_MAX_BYTES 16384   /* one PEM file (a chain of certificates, a key) */
 

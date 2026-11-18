@@ -1,17 +1,45 @@
 # Sparkplug TCK results (Edge Node profile)
 
-This document gives the result of each assertion of the Eclipse Sparkplug TCK 3.0.0, Edge Node profile, for the gateway firmware. The summary, the test environment and the reason for each failure are in `idf/README.md` §4.7. To run the TCK, refer to [Run the Sparkplug TCK against the gateway](../how-to/run-the-sparkplug-tck.md).
+This document gives the result of each assertion of the Eclipse Sparkplug TCK 3.0.0, Edge Node profile, for the gateway firmware. It also gives the test configuration, the steps of the scenario, and the reason for each failure. To run the TCK, refer to [Run the Sparkplug TCK against the gateway](../how-to/run-the-sparkplug-tck.md).
+
+The TCK is the official test kit of the specification. It is a HiveMQ extension: it examines each MQTT packet, it simulates the host application, and it gives one result for each `tck-id`. The optional E2E scenario `tck` (`idf/tools/e2e/tck.py`) runs the seven tests of the Edge Node profile against the firmware in QEMU, with MQTT 3.1.1 and with MQTT 5. A full run and the CI groups do not run it (refer to [The E2E scenarios](e2e-scenarios.md#optional-scenarios)).
 
 ## Run
 
 | Item | Value |
 |---|---|
-| Firmware | `main` at 6621c53, QEMU default build (no PSRAM). `MultipleBrokerTest`, `PrimaryHostTest` and `SessionTerminationTest` again after #186 (21b244d, PSRAM build) |
+| Firmware | The tables: `main` at 6621c53, QEMU default build (no PSRAM). `MultipleBrokerTest`, `PrimaryHostTest` and `SessionTerminationTest` again after #186 (21b244d, PSRAM build) |
+| Last run | `main` 8c2e8be, PSRAM build: 19/19 checks passed (the 14 tests and the 5 checks of the run), with the results of the tables. `PrimaryHostTest` (MQTT 3.1.1) gave no TCK result in its first attempt, and its second attempt passed |
 | TCK | Eclipse Sparkplug TCK 3.0.0 (`Eclipse-Sparkplug-TCK-3.0.0.zip`), from the tag `v3.0.0` |
 | Broker | HiveMQ CE 2025.5 with the TCK extension; mosquitto 2.0.18 as the second MQTT server of `MultipleBrokerTest` |
 | Java | Eclipse Temurin 21.0.13 |
-| Date | 2026-11-11, four runs with the same results; the tables show a run with the two MQTT versions |
-| Duration | 262 to 270 s for the 14 tests (7 tests × 2 MQTT versions) |
+| Repeatability | Four runs on 6621c53 gave the same results. Thus each test ran three times with each MQTT version |
+| Duration | 262 to 270 s for the 14 tests (7 tests × 2 MQTT versions), plus the image build. 407 s in the last run, with the repeated test |
+
+## Test configuration
+
+The configuration of the gateway has these items:
+
+- `Meter1`: unit 1, tags with aliases.
+- `Pump1`: unit 2, a template instance.
+- The primary host `TCKHost`: the host that the TCK simulates.
+- `diagnostics_s` 0.
+
+Each test has a new HiveMQ and a new boot of the gateway.
+
+## Steps of the scenario
+
+The TCK web console only sends `NEW_TEST` and `END_TEST` on `SPARKPLUG_TCK/TEST_CONTROL`, and shows the prompts to the operator. The scenario does the steps of the operator itself.
+
+| Test | Steps of the scenario |
+|---|---|
+| SessionEstablishmentTest | Start the test, then boot the gateway. The test ends at the last DBIRTH |
+| SessionTerminationTest | Boot. After the DBIRTH, stop the Modbus slave (DDEATH). Then `restart` in the shell (NDEATH and DISCONNECT) |
+| SendDataTest | Boot. After the DBIRTH, set `di 1 1` (NDATA) and change `Voltage` (DDATA) |
+| SendComplexDataTest | The same as SendDataTest. Then send `END_TEST`, because the test does not end alone |
+| ReceiveCommandTest | Boot. The TCK sends the NCMD rebirth and disconnects the gateway |
+| PrimaryHostTest | Boot the gateway first, and wait until it waits for its primary host. Then start the test |
+| MultipleBrokerTest | Start a mosquitto on port 1884 (the backup broker of the gateway). Start the test, then boot |
 
 ## Legend
 
@@ -42,6 +70,32 @@ The name of each assertion is its `tck-id` without the prefix `tck-id-`. A name 
 | PrimaryHostTest | 5 | 25 | 0 | 0 | 0 |
 | MultipleBrokerTest | 3.1.1 | 19 | 0 | 0 | 0 |
 | MultipleBrokerTest | 5 | 19 | 0 | 0 | 0 |
+
+## Reasons for the failures
+
+### FAIL (TCK bug): UInt32 in `int_value`
+
+`tck-id-topics-nbirth-metrics` and `tck-id-operational-behavior-data-publish-nbirth-values` fail on the metrics `Node Control/Scan Rate`, `Node Info/Free Heap`, `Node Info/Min Free Heap` and `Firmware Update/Progress`. These metrics are UInt32, and the gateway puts their value in `int_value`.
+
+- The datatype table of the specification (chapter 6, "UInt32: Google Protocol Buffer Type: uint32") requires `int_value`, the uint32 field of the proto. The gateway obeys it.
+- `Utils.hasValue()` of the TCK 3.0.0 accepts only `long_value` for UInt32. It comes from the old Java library (Tahu), which used `long_value`.
+- eclipse-sparkplug/sparkplug#102 recorded this conflict. The Tahu Java library was corrected (eclipse-tahu/tahu#202): it now writes `int_value` and reads both fields. The TCK was not corrected.
+- The harness accepts these FAILs only when it proves the cause from the captured NBIRTH (`uint32_cause` in `KNOWN_RULES`). Each metric must have a name, a datatype and the value field of the specification. The only metrics without the field that the TCK wants must be UInt32 metrics with `int_value`. Thus a different fault of the same assertion still fails the check.
+
+These two TCK bugs are the only failures of a full TCK run.
+
+### NOT EXECUTED
+
+- `tck-id-principles-persistence-clean-session-50` and `-311`, and `tck-id-payloads-ndeath-will-message-publisher-disconnect-mqtt50` and `-mqtt311`: each run examines only the assertion of its MQTT version. Each is PASS in its run.
+- The template parameters (`tck-id-payloads-template-definition-parameters`, `-parameters-default`, `tck-id-payloads-template-instance-parameters`, `tck-id-payloads-template-parameter-*`): the gateway does not use template parameters (refer to [Sparkplug behavior](sparkplug-behavior.md#templates-spb-18)). The TCK user guide says that templates are an optional group, and that a product that uses the group must pass all its assertions. Thus the template group is not complete for a certification, but no assertion failed.
+
+## Limits of the TCK that the scenario works around
+
+- The message monitor of the TCK keeps the last bdSeq of each edge node for the life of the broker. The gateway starts at bdSeq 0 at each boot (`tck-id-topics-nbirth-bdseq-increment`). A second boot on the same broker would give a false FAIL. Thus each test gets a new HiveMQ.
+- SendComplexDataTest ends alone only when each of its 39 assertions has a result. The template parameters never get one. Thus the scenario sends `END_TEST`, as an operator does with "Stop Test".
+- After the NCMD rebirth, the TCK fails `tck-id-operational-behavior-data-commands-rebirth-action-1` for each NDATA or DDATA before the NBIRTH, also a message that was already on its way. `diagnostics_s` 0 and constant register values keep the gateway quiet during the test.
+- The TCK clients connect to `tcp://localhost:1883`, a fixed address. Thus HiveMQ listens on 127.0.0.1:1883 in the network namespace of the harness.
+- In approximately one of 30 tests, the TCK extension stopped at `Creating new host "TCKHost"`, and the test gave no result. The simulated host connects to HiveMQ from inside the publish interceptor of the extension, and that connection did not return. The gateway was correct. When a test gives no result, the scenario runs it one more time with a new HiveMQ and a new boot, and records this in `retries` of `results.json`. A test with a result is never repeated. The harness stops HiveMQ before it closes its MQTT clients, so a hung HiveMQ does not stop the harness.
 
 ## SessionEstablishmentTest
 
@@ -327,7 +381,7 @@ The name of each assertion is its `tck-id` without the prefix `tck-id-`. A name 
 | `operational-behavior-edge-node-birth-sequence-wait` | PASS | PASS |
 | `operational-behavior-primary-application-state-with-multiple-servers-single-server` | PASS | PASS |
 | `operational-behavior-primary-application-state-with-multiple-servers-state-subs` | PASS | PASS |
-| `operational-behavior-primary-application-state-with-multiple-servers-walk` | PASS (FAIL before #186) | PASS (FAIL before #186) |
+| `operational-behavior-primary-application-state-with-multiple-servers-walk` | PASS | PASS |
 | `Monitor:case-sensitivity-sparkplug-ids` | PASS | PASS |
 | `Monitor:host-topic-phid-birth-payload` | PASS | PASS |
 | `Monitor:host-topic-phid-death-payload-timestamp-connect` | PASS | PASS |

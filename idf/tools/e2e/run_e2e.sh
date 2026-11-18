@@ -13,7 +13,7 @@
 # E2E_POISON=1 (issue #104): the same build with comprehensive heap poisoning on top
 # (sdkconfig.qemu-poison, build dir build-qemu-poison or build-qemu-psram-poison): freed memory is
 # overwritten, so a use after free changes what the firmware reports. Meant for --only ota (the
-# issue #98 check); its memory cost is in README 4.3.
+# issue #98 check); its memory cost is in docs/reference/e2e-harness.md#heap-poisoning.
 #
 # JOBS: parallel jobs of the builds (default: every CPU).
 #

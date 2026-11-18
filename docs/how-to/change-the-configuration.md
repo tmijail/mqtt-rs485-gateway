@@ -4,7 +4,7 @@ This document tells how to change the configuration of the gateway without a new
 
 - For the keys and their rules, refer to [The configuration document](../reference/configuration.md).
 - For the routes of the REST API, refer to [The REST API](../reference/rest-api.md).
-- For the details of the implementation, refer to [`idf/README.md` §3.4](../../idf/README.md#34-configuration).
+- For the load, the size limit and the save of the document, refer to [Load and recovery mode](../reference/configuration.md#load-and-recovery-mode) and [Save and export](../reference/configuration.md#save-and-export).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The procedures and the messages come from the firmware in QEMU.
 

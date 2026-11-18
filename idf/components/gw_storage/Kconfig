@@ -29,7 +29,8 @@ menu "Gateway: storage"
         help
             Where the store & forward ring spills when it is full, if the configuration
             enables it (off by default). GPIO45, the card's D0, is a strapping pin: see
-            README 6.5 before enabling it on a board.
+            docs/reference/store-and-forward.md#the-microsd-card-and-gpio45 before enabling it
+            on a board.
 
         config GW_SF_SPILL_SDMMC
             bool "microSD card on SDMMC, 1-bit (CLK 48, CMD 47, D0 45)"

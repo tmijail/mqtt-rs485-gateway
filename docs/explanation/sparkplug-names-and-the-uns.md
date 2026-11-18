@@ -5,7 +5,7 @@ This document tells why the names of the gateway control where its data goes in 
 - For the procedure, refer to [Connect the gateway to UMH Core](../how-to/connect-to-umh-core.md).
 - For the limits and the topics, refer to [UMH names and topics](../reference/umh-names-and-topics.md).
 
-The data about UMH is from benthos-umh **v0.16.2** (commit `0d3a203`). The E2E scenario `umh` (#175) runs that version against the firmware in QEMU and confirms the behaviour in this document (`idf/README.md` §4.6).
+The data about UMH is from benthos-umh **v0.16.2** (commit `0d3a203`). The E2E scenario `umh` (#175) runs that version against the firmware in QEMU and confirms the behaviour in this document (refer to [The E2E scenarios](../reference/e2e-scenarios.md#umh-umh-core-interoperability-175)).
 
 ## The Sparkplug names
 

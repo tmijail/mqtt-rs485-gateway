@@ -5,7 +5,7 @@ This guide runs the full QEMU E2E tests on a Windows computer, in the same ESP-I
 ## Before you start
 
 - Install Docker Desktop with the WSL 2 engine.
-- Give the Docker VM sufficient CPUs. `PARALLEL` groups need at least 2 × `PARALLEL` CPUs (`idf/README.md` §4.5). On WSL 2, the VM gets all the CPUs and up to half of the memory by default. The default was sufficient on the test computer (24 threads, 32 GB).
+- Give the Docker VM sufficient CPUs. `PARALLEL` groups need at least 2 × `PARALLEL` CPUs (refer to [The E2E test bench](../reference/e2e-harness.md#emulator-problems-and-their-workarounds)). On WSL 2, the VM gets all the CPUs and up to half of the memory by default. The default was sufficient on the test computer (24 threads, 32 GB).
 - Make sure that approximately 20 GB of disk are free. The image is 8.6 GB, and the volume grows to approximately 3 GB for each variant that you run.
 - Use PowerShell for the commands below.
 
@@ -81,7 +81,7 @@ The last line of the output gives the result, for example `181/181 checks passed
 
 The output ends with the summary table of the CI. A change is done only when both variants pass (refer to `CLAUDE.md`).
 
-CAUTION: Do not run more than one variant at the same time. A host with high load makes the real-time checks slower, and QEMU can crash in the OTA scenarios (`idf/README.md` §6.10).
+CAUTION: Do not run more than one variant at the same time. A host with high load makes the real-time checks slower, and QEMU can crash in the OTA scenarios (refer to [The E2E test bench](../reference/e2e-harness.md#emulator-problems-and-their-workarounds)).
 
 ## 5. Copy the results to Windows
 

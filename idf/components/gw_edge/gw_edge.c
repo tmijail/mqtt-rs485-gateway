@@ -420,12 +420,12 @@ static const char *broker_host(unsigned i);
  * it installed (the mbedTLS configuration field, type-checked below), then chains it from
  * tls_verify(). A future IDF that renames the bundle's function changes nothing here; one that
  * changes the callback's signature or the field fails the build with the messages below.
- * Verified with ESP-IDF 6.1 (mbedTLS 4.1); see README 3.1 for the supported versions. */
+ * Verified with ESP-IDF 6.1 (mbedTLS 4.1); see docs/reference/build-configuration.md#supported-esp-idf-versions. */
 typedef int (*tls_vrfy_fn)(void *, mbedtls_x509_crt *, int, uint32_t *);
 #if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(6, 0, 0) || ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(7, 0, 0)
 #error "gw_edge: TLS verify chaining (issue #77) is verified with ESP-IDF 6.x only: check that " \
        "esp_crt_bundle_attach() still installs its check with mbedtls_ssl_conf_verify(), then " \
-       "extend this range (README 3.1)"
+       "extend this range (docs/reference/build-configuration.md)"
 #endif
 _Static_assert(__builtin_types_compatible_p(
                    __typeof__(((mbedtls_ssl_config *)0)->MBEDTLS_PRIVATE(f_vrfy)), tls_vrfy_fn),
@@ -948,7 +948,7 @@ static __attribute__((noinline)) void spill_before_restart(void)
  * task after esp_mqtt_client_disconnect(). send_disconnect_msg() takes the disconnect property
  * and then clears it, so it is set again right before each of these calls. No allocation (no
  * user property). The broker then publishes the will NDEATH too: after an explicit NDEATH, the
- * hosts get the same bdSeq two times, which a Sparkplug host handles (README 6.5.3).
+ * hosts get the same bdSeq two times, which a Sparkplug host handles (docs/reference/sparkplug-behavior.md#mqtt-5-mqtt-8-155).
  */
 static void disconnect_with_will(void)
 {
@@ -1150,7 +1150,7 @@ static void schedule_retry(int64_t now)
  * only, and every set_config goes through here: a configuration that still carries it is
  * refused (and aborts debug builds) instead of leaking. test/host/check_set_config.cmake fails
  * the host tests if esp_mqtt_set_config() is called anywhere else. Remove when an esp-mqtt
- * release frees it (reported upstream; README 6.5). The same function also copies
+ * release frees it (reported upstream; docs/reference/known-limitations.md#the-network-net-4-net-6-net-7). The same function also copies
  * credentials.authentication.key_password every time without freeing it: never set. */
 static esp_err_t set_config(void)
 {
@@ -1954,7 +1954,7 @@ static void setup_spill(void)
 #if CONFIG_GW_SF_SPILL_SDMMC
     ESP_LOGW(TAG, "store & forward: microSD enabled. GPIO45 (its D0) is the VDD_SPI strapping "
                   "pin: a card that holds it high at reset can select 1.8 V for the flash and "
-                  "stop the board from booting (README 6.5)");
+                  "stop the board from booting (docs/reference/store-and-forward.md)");
 #endif
     static gw_sfspill_io_t io;
     char where[96], why[80];

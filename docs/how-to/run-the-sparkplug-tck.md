@@ -1,6 +1,6 @@
 # Run the Sparkplug TCK against the gateway
 
-This guide runs the Edge Node profile of the Eclipse Sparkplug TCK 3.0.0 against the real firmware in QEMU. The E2E harness runs the TCK as the optional scenario `tck`. For the last results and the reason for each failure, refer to `idf/README.md` §4.7. For the E2E environment in Docker, refer to [Run the E2E tests in Docker](run-e2e-in-docker.md).
+This guide runs the Edge Node profile of the Eclipse Sparkplug TCK 3.0.0 against the real firmware in QEMU. The E2E harness runs the TCK as the optional scenario `tck`. For the last results and the reason for each failure, refer to [Sparkplug TCK results](../reference/sparkplug-tck-results.md). For the E2E environment in Docker, refer to [Run the E2E tests in Docker](run-e2e-in-docker.md).
 
 The TCK is a HiveMQ extension. It examines each MQTT packet of the broker, it simulates the Sparkplug host application, and it gives one result for each `tck-id`. The scenario does the steps of the operator that the TCK web console asks for. It boots the gateway, changes a Modbus register, sets a DI, stops the Modbus slave and restarts the gateway.
 
@@ -61,7 +61,7 @@ To use images that you built before, add `-e E2E_PREBUILT=<dir>` and `-e E2E_PLA
 
 A check fails when an assertion is FAIL and the harness cannot explain it. The harness explains a FAIL only when it can prove a known cause from the messages that it captured (`KNOWN_RULES` in `tools/e2e/tck.py`). Such a FAIL shows `(known: <reason>)`, and it does not make the check fail.
 
-If a test gives no result, the scenario runs it one more time and shows `no result ... one more attempt`. This is a fault of the TCK extension, not of the gateway (`idf/README.md` §4.7). The run records it in `retries` of `results.json`.
+If a test gives no result, the scenario runs it one more time and shows `no result ... one more attempt`. This is a fault of the TCK extension, not of the gateway (refer to [Sparkplug TCK results](../reference/sparkplug-tck-results.md#limits-of-the-tck-that-the-scenario-works-around)). The run records it in `retries` of `results.json`.
 
 A NOT EXECUTED result is not a failure. It applies to an assertion that the test cannot examine, for example the MQTT 5 assertion in the MQTT 3.1.1 run, or the template parameters that the gateway does not use.
 
@@ -72,4 +72,4 @@ Do this procedure when you want a different TCK or HiveMQ version.
 1. Change the URL and the SHA-256 in `tools/e2e/tck_setup.sh`.
 2. Delete the directory of step 1.
 3. Do step 1 and step 2 again.
-4. Compare the results with `idf/README.md` §4.7.
+4. Compare the results with [Sparkplug TCK results](../reference/sparkplug-tck-results.md).

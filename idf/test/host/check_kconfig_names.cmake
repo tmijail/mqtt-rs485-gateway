@@ -1,7 +1,8 @@
 # Issue #227: fails when a source or an sdkconfig file names a CONFIG_GW_ option that no Kconfig
 # file of the project declares. ESP-IDF leaves a disabled bool option undefined, so a misspelled
 # "#if CONFIG_GW_..." or "#ifdef CONFIG_GW_..." is 0 without a word. -Wundef can not find it in the
-# firmware: the headers of ESP-IDF itself give thousands of -Wundef warnings (idf/README.md).
+# firmware: the headers of ESP-IDF itself give thousands of -Wundef warnings
+# (docs/reference/compiler-warnings-and-stack.md#no--wundef-in-the-firmware).
 #   cmake -DROOT=<idf dir> [-DEXTRA=<one more file to examine>] -P check_kconfig_names.cmake
 file(GLOB kconfigs "${ROOT}/components/*/Kconfig*" "${ROOT}/main/Kconfig*")
 set(known "")
