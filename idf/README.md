@@ -815,6 +815,89 @@ Until #133 decides, the project adds no work that depends on these two features.
 
 The measurements of the production build in §3.2 are from before the archive.
 
+### 3.8 Compiler warnings and the stack data (issue #227)
+
+`cmake/gw_warnings.cmake` holds the compiler options of the own components: `gw_*` and `main`. Each of these components calls `gw_target_options()`. The components of ESP-IDF, the managed components and `components/nanopb` keep their own options.
+
+| Option | Firmware (`gw_*`, `main`) | Host build of `gw_core`, host tests | What it finds |
+|---|---|---|---|
+| `-Wall -Wextra -Werror` | yes | yes | (as before) |
+| `-Wconversion -Wno-sign-conversion` | `gw_core` only | `gw_core` only | an implicit conversion that can change a value |
+| `-Wshadow` | yes | yes | a local variable that hides another variable |
+| `-Wformat=2` | yes | yes | a format string that is not a literal, and format security |
+| `-Wnull-dereference` | yes | yes (no effect at `-O0`) | a path where the optimizer proves a NULL dereference |
+| `-Wvla` | yes | yes | an array on the stack with a size that is not a constant |
+| `-Wstrict-prototypes` | yes | yes | `void f()` in place of `void f(void)` |
+| `-Wcast-align=strict` | yes | yes | a pointer cast to a type with a larger alignment |
+| `-Wundef` | no | yes | an undefined macro in `#if` |
+| `-fstack-usage -fcallgraph-info=su` | yes | no | the stack data for `tools/stack_report.py` |
+
+- On the Xtensa target, `-Wcast-align=strict` is the same as `-Wcast-align`, because the target needs aligned access. On the host, only `=strict` gives the warning.
+- The host build has no optimization (`-O0`), thus `-Wnull-dereference` finds nothing there. The firmware build (`-Os`) does the check.
+
+**No `-Wundef` in the firmware.** The headers of ESP-IDF evaluate undefined macros in `#if`, for example `BOOTLOADER_BUILD` and `CONFIG_FREERTOS_SMP`. With `-Wundef`, the release build gave 3 615 warnings, from 67 headers of ESP-IDF. Also, ESP-IDF does not define a bool option that is off. Thus `#if CONFIG_GW_IO_SIMULATED` is correct code, but `-Wundef` gave a warning at all 108 places of the own code that test a bool option. The project does not hide warnings with `#pragma`, thus the firmware does not use `-Wundef`.
+
+The host test `check_kconfig_names` finds a misspelled option name instead. It examines each `CONFIG_GW_` name in the sources of `gw_*` and `main`, and in the `sdkconfig` files. It fails when no `Kconfig` file of the project declares the name. This check also finds a misspelled name in `#ifdef`, where `-Wundef` finds nothing.
+
+**The result.** Each option was added one at a time. The table gives the warnings that each option found in the release build, in the QEMU builds (`build-qemu`, `build-qemu-plain`, `build-qemu-psram`, `build-qemu-poison`) and in the host build.
+
+| Option | Warnings | Correction |
+|---|---|---|
+| `-Wshadow` | 3, all in `test/host/test_sf.c`: a local `ram` hid the static array `ram` | The local variable has the name `in_ram`. The test had no error |
+| `-Wcast-align` | 2: `gw_log.c` (the tag table after the two buffers of the live log) and `gw_fw.c` (`esp_app_desc_t` in the head buffer of an upload) | `gw_log.c`: the tag table is first in the allocation, at the alignment of the allocation. `gw_fw.c`: `check_head()` reads the magic word with `memcpy()`, and the name and the version as `char` arrays. The two addresses were aligned in practice (a multiple of 1 KB, and offset 32 in a heap buffer), thus no error occurred |
+| `-Wconversion` (`gw_core` in the firmware) | 0 | The host build had it before |
+| `-Wformat=2`, `-Wnull-dereference`, `-Wvla`, `-Wstrict-prototypes` | 0 | — |
+| `-Wundef` | host: 0. Firmware: see above | — |
+
+The new options and `-fstack-usage` do not change the generated code. The code, the data and the relocations of 77 of the 79 own object files are the same as before, byte for byte (`objdump -s -d -r` after `objcopy --strip-debug`). Only `gw_fw.c` and `gw_log.c` changed, with their corrections. The result of `idf.py size` for the release build:
+
+| Region | Before (`main` 6288614) | After |
+|---|---|---|
+| Flash code (`.text`) | 1 184 440 B | 1 184 468 B (+28: `gw_fw.c` +27, `gw_log.c` +1) |
+| Flash data (`.rodata`) | 601 936 B | 601 936 B |
+| DIRAM `.bss` | 108 224 B | 108 224 B |
+| DIRAM `.data` | 25 642 B | 25 642 B |
+| Total image | 1 897 633 B | 1 897 661 B |
+
+**The stack report.** `tools/stack_report.py` reads the `.su` and `.ci` files of the own components in a build directory:
+
+```bash
+cd idf
+python3 tools/stack_report.py build > stack.txt                       # rs485_bus and sparkplug
+python3 tools/stack_report.py build --task modbus_tcp=gw_mbtcp.c:server_task
+```
+
+The `firmware` job of the CI puts `stack.txt` in its artifact `firmware-esp32s3`.
+
+The own components compile without ccache (`RULE_LAUNCH_COMPILE` is empty for their targets). At a hit, ccache 4.9 gives the object and the `.su` file again, but not the `.ci` file. The script fails when a C object file of the own components has no `.ci` file.
+
+- **How the script finds the functions of a task.** `-fcallgraph-info=su` writes the call graph of each source file, with the frame of each function. The script joins the graphs of all own source files. A function belongs to a task when the graph reaches it from the entry function of the task (`bus_task` in `gw_bus.c`, `edge_task` in `gw_edge.c`). A function of `gw_core` that two tasks call is in the list of the two tasks.
+- **Why the call graph, and not the component or the source file.** `gw_core` has no task of its own: the Modbus master and the poller run in `rs485_bus`, and the Sparkplug engine runs in `sparkplug`. Also, `gw_edge.c` has callbacks of esp-mqtt that run in the task of esp-mqtt, not in `sparkplug`. A list by file puts these functions in the incorrect task.
+- **The report gives these items for each task:**
+  - the functions of the task with the largest frames;
+  - the deepest call path through the own code, with the sum of the frames;
+  - the calls out of the own code (ESP-IDF, newlib, nanopb) and the indirect calls, with the own stack above them.
+- **The limits.** The script does not know the stack of ESP-IDF, newlib and nanopb (they compile without `-fstack-usage`), or of a call through a function pointer. Thus the deepest path is a lower bound. A recursion counts one time, and the report names it. The real high-water mark comes from `uxTaskGetStackHighWaterMark()` (`log_stacks()` in `gw_edge.c`) in the E2E.
+
+The values of the release build of this change:
+
+| Task | Stack | Deepest own path | The largest frames |
+|---|---|---|---|
+| `rs485_bus` | 4 096 B | 832 B: `bus_task` → `serve_pending` → `gw_poller_write_value` → `bit_request` → `execute_n` → `mb_master_execute_retries` → `mb_build_request` → `finish` → `mb_crc16` | `gw_poller_write_value` 304, `gw_poller_poll` 176, `serve_pending` 128, `bit_request` 112, `gw_poller_forward` 112 |
+| `sparkplug` | 6 144 B | 1 344 B: `edge_task` → `op_reboot` → `gw_fw_restart_requested` → `restart_confirm_on_core0` → `confirm` → `gw_storage_save_last_good` → `gw_lkg_encode` → `put_u16` → `put` | `gw_storage_save_last_good` 688, `publish_nbirth` 384, `gw_node_io_changed` 336, `publish_io` 336, `confirm` 304 |
+
+In `sparkplug`, `spb_encode()` calls `pb_encode()` of nanopb with 1 056 B of own stack above it. The stack of nanopb adds to this value. In `rs485_bus`, the UART read is an indirect call (`rx()` in `mb_master.c`), with 768 B of own stack above it.
+
+**`-Wstack-usage` (not enforced).** All 1 150 own functions have a static frame (no VLA and no `alloca`). These are the largest frames:
+
+- `gw_storage_load_config` 1 664 B (boot, main task);
+- `send_why` 1 520 B and `send_error` 1 360 B (`gw_web.c`, task of the web server);
+- `load_pem_certs` 1 152 B (`gw_edge.c`);
+- `status_card` 1 136 B (`gw_web.c`);
+- `decode_metric` 1 104 B (`spb.c`). It decodes a metric of an NCMD or a DCMD in a callback of `pb_decode()`. Thus the stack report can not put it in a task.
+
+88 functions have a frame of more than 256 B, 31 of more than 512 B, and 6 of more than 1 024 B. A limit of `-Wstack-usage=2048` gives no warning now. It stops a new frame of more than half of the stack of `rs485_bus`. A limit of 1 024 B needs a decision about the 6 functions above. The project does not enforce a limit yet.
+
 ## 4. Verification (real evidence)
 
 ### 4.1 QA-1: host tests (CMake + Unity v2.6.1 + CTest)
@@ -823,15 +906,16 @@ The measurements of the production build in §3.2 are from before the archive.
 cmake -S idf/test/host -B build-host && cmake --build build-host -j3 && ctest --test-dir build-host
 ```
 
-Result on `integration/195b` 91c852c (#202, #205, #213, #221, #196 and #234): **57/57 CTest tests and 452/452 cases OK**. The 57 tests are these:
+Result on `integration/195b` 91c852c (#202, #205, #213, #221, #196 and #234): **57/57 CTest tests and 452/452 cases OK**. With issue #227, there are 59 tests:
 
 - 42 Unity suites with 447 cases (the table below);
 - `test_sfcfg_packed` (issue #145): the 5 cases of `test_sfcfg` again, with another memory layout;
 - `sfcfg_guard` (issue #145) and `check_set_config` (issue #58);
 - `check_web_lists` (issue #167): the option lists of the configuration form in `index.html` hold each value that `gw_config.c` accepts;
+- `check_kconfig_names` and its self-test `check_kconfig_names_selftest` (issue #227, §3.8): each `CONFIG_GW_` name is an option of a `Kconfig` file;
 - 11 `sdkconfig_check_*` tests (#83, #93, #103 and #135).
 
-Issue #133 removed the 7 checks of the production overlay. Issue #135 added the 3 `nopsram` checks: an `sdkconfig` without the PSRAM fails, except with the QEMU overlay. Since the last update of this section (#145), these issues added 7 suites: #132 (`test_cdump`), #120 (`test_claim`), #182 (`test_mbdiag`) and #144 (`test_cfgschema`, `test_bootloop`, `test_fwlast`, `test_lkgnet`). Issue #144 also wrote `test_ota` again for the new update process. Issue #161 removed the 3 bdSeq cases of `test_nvsraw`, because the bdSeq is not in the NVS now. After #145, #120 also added `test_mbap` cases, and #187 added `test_wpa` and `test_aplife` and one `test_cfgdoc` case. The issues of #195 added 4 suites: #207 (`test_ident`), #199 and #200 (`test_logring`), #216 (`test_mblocal`) and #208 (`test_wifiown`). They also added cases to these suites: `test_conv` (#196), `test_logic` (#211), `test_config` (#196 to #223), `test_node` (#196 to #223), `test_poll` (#197, #214), `test_localio` (#204, #210, #217), `test_buzz` (#207), `test_ota` (#215), `test_cfgschema` (#223) and `test_bootloop` (#209). The table did not list `test_cfgprev` of #146, and it did not count the case of #160 in `test_rtc`. This update corrects the two items. After #195, #205 and #221 added the suite `test_certs`, #202 and #213 added cases to `test_config` and `test_poll`, and #234 added one case to `test_mblocal`. The test files compile with `-Wall -Wextra -Werror`. The host build of `gw_core` also uses `-Wshadow -Wconversion`.
+Issue #133 removed the 7 checks of the production overlay. Issue #135 added the 3 `nopsram` checks: an `sdkconfig` without the PSRAM fails, except with the QEMU overlay. Since the last update of this section (#145), these issues added 7 suites: #132 (`test_cdump`), #120 (`test_claim`), #182 (`test_mbdiag`) and #144 (`test_cfgschema`, `test_bootloop`, `test_fwlast`, `test_lkgnet`). Issue #144 also wrote `test_ota` again for the new update process. Issue #161 removed the 3 bdSeq cases of `test_nvsraw`, because the bdSeq is not in the NVS now. After #145, #120 also added `test_mbap` cases, and #187 added `test_wpa` and `test_aplife` and one `test_cfgdoc` case. The issues of #195 added 4 suites: #207 (`test_ident`), #199 and #200 (`test_logring`), #216 (`test_mblocal`) and #208 (`test_wifiown`). They also added cases to these suites: `test_conv` (#196), `test_logic` (#211), `test_config` (#196 to #223), `test_node` (#196 to #223), `test_poll` (#197, #214), `test_localio` (#204, #210, #217), `test_buzz` (#207), `test_ota` (#215), `test_cfgschema` (#223) and `test_bootloop` (#209). The table did not list `test_cfgprev` of #146, and it did not count the case of #160 in `test_rtc`. This update corrects the two items. After #195, #205 and #221 added the suite `test_certs`, #202 and #213 added cases to `test_config` and `test_poll`, and #234 added one case to `test_mblocal`. Issue #227 added the 2 `check_kconfig_names` tests: **59/59 CTest tests and 452/452 cases OK** on `main` 6288614 with the change. The test files and the host build of `gw_core` compile with the options of §3.8 (`GW_HOST_WARNING_FLAGS`), with 0 warnings. The host build of `gw_core` also uses `-Wconversion`.
 
 | Suite | Cases | Scope |
 |---|---|---|
@@ -1252,7 +1336,7 @@ The table does not have a row for each check. These checks are in the result par
 
 The production build and its checks (`tools/check_production.sh`, issue #95) are on the branch `archive/efuse-production` (§3.7).
 
-The components of the project compile with `-Wall -Wextra -Werror`.
+The components of the project compile with the options of §3.8 (issue #227). With them, the release build and the QEMU builds (`build-qemu`, `build-qemu-plain`, `build-qemu-psram` and `build-qemu-poison`) of `main` 6288614 with the change had 0 warnings.
 
 ### 4.5 QA-4: CI
 
@@ -1262,7 +1346,7 @@ The components of the project compile with `-Wall -Wextra -Werror`.
 |---|---|
 | `host-tests` | Runs the host tests (CTest). Decodes the `spb_dump` payloads with the official proto (`spb_decode.py --check`). Runs the self-test of the decode rules (`tools/test_spb_decode.py`: each rule rejects a payload that breaks it, §4.2). Runs the self-test of the harness (`tools/e2e/test_harness.py`: the fault signatures of the emulator and the retry rule, #92/#96). Runs the linters, with pinned versions and 0 results (#107, #229): ruff on the Python tools, shellcheck on the shell scripts, actionlint and zizmor on the workflow, and ESLint on the scripts of the web pages. Refer to "The linters of the CI" below |
 | `host-tests-sanitizers` | Issue #225. Builds the host tests with `-DGW_SANITIZE=ON` (AddressSanitizer and UndefinedBehaviorSanitizer, §4.1), and runs them (CTest). Runs `spb_dump` of this build, and decodes its payloads with `spb_decode.py --check`. Sets `vm.mmap_rnd_bits` to 28 first, because the ASan runtime of GCC 13 can crash at start with a higher value. The job `host-tests` does not change |
-| `firmware` | Runs `idf.py set-target esp32s3 build` in the `espressif/idf:v6.1` image, pinned by digest. Fails if a `warning:` occurs. Publishes the binaries and the `idf.py size` output as artifacts. Uses ccache, and keeps its directory in `actions/cache` (issue #233) |
+| `firmware` | Runs `idf.py set-target esp32s3 build` in the `espressif/idf:v6.1` image, pinned by digest. Fails if a `warning:` occurs. Publishes the binaries, the `idf.py size` output and `stack.txt` (the stack report of `tools/stack_report.py`, §3.8) as artifacts. Uses ccache, and keeps its directory in `actions/cache` (issue #233) |
 | `e2e-plan` | Issue #121. Reads the E2E groups from `tools/e2e/scenarios.py` (`CI_GROUPS`). Gives the matrix of the two next jobs |
 | `e2e-build` | One job for each variant: `default` and `psram` (`E2E_PSRAM=1`, the octal PSRAM of QEMU, #85). Runs `run_e2e.sh` with `E2E_STAGE`. The script builds `build-qemu` or `build-qemu-psram`, and copies into one directory all the files that the harness needs: the merged flash image, the ELF, the two app images, the `sdkconfig`, `flash_args`, the test signing key and the version of `littlefs-python`. The `default` job also builds `build-qemu-plain` (the same for the two variants; the group `nvs-main` of the PSRAM variant uses it). Publishes the artifacts `e2e-images-default`, `e2e-images-psram` and `e2e-images-plain`. GitHub keeps them for 1 day, because they contain the throwaway signing key of the run. Uses ccache, with one cache for each variant (issue #233) |
 | `e2e` | One job for each group of `CI_GROUPS` (6 jobs: 5 of the PSRAM variant and 1 of the default variant). Installs mosquitto. Gets QEMU and the venv of the harness from `actions/cache`, and installs them only when the cache has no entry (issue #233). Gets the images of its variant, and `e2e-images-plain` when the group contains the OTA to NVS encryption (`GW42`). Runs `run_e2e.sh --only <group>` with `E2E_PREBUILT`: no build. In the `psram` jobs, the configuration, the Sparkplug engine, its payload buffer, mbedTLS and the *store & forward* ring are in PSRAM, as on the board. The GitHub containers do not permit `unshare`, so each job runs on the loopback interface of its container. Writes one line to the job summary: `N/N checks passed`, the retries and `qemu-exits.txt`. Publishes the logs, the payloads, `results.json`, `qemu-exits.txt` and the `fault-*.txt` dumps (#92, #96) as the artifact `e2e-<variant>-<group>`. Publishes `results.json` and `qemu-exits.txt` also as `e2e-result-<variant>-<group>` |
@@ -1304,6 +1388,7 @@ The components of the project compile with `-Wall -Wextra -Werror`.
 - `CCACHE_COMPILERCHECK=content` is necessary. Each configuration writes a new `-specs` file into the build directory. With the default check (`mtime`), ccache found no entry of an earlier build: 0 hits in 1 077 compilations.
 - Measured on the cloud container of #233 (4 CPUs): the firmware build took 91 s with an empty cache and 36 s with a full cache (1 075 hits of 1 077). The QEMU images of the default variant (`build-qemu` and `build-qemu-plain`) took 179 s and 70 s (2 148 hits of 2 152).
 - ccache keeps the compiler messages of each entry and gives them again at a hit. Thus the check for 0 warnings of the `firmware` job stays valid.
+- Since issue #227, the 76 C files of the own components (`gw_*`, `main`) compile without ccache (§3.8). At a hit, ccache 4.9 gives the `.su` file again, but not the `.ci` file of `-fcallgraph-info`. On the cloud container of #227 (4 CPUs, `-j4`), these files took 18 s.
 - The `e2e` and `e2e-poison` jobs keep the QEMU of `idf_tools.py` and the venv of the harness in `actions/cache`. The keys contain the digest of the image, and the key of the venv also contains the hash of `requirements.txt`.
 - These two caches save only some seconds. In the last CI run with results (2026-11-06), the full install step took 13 to 14 s. The start of the container took approximately 100 s, and no cache makes it shorter.
 - The CI has not run since 2026-11-06: GitHub does not start the jobs ("recent account payments have failed or your spending limit needs to be increased"). Thus there is no measurement of the caches in the CI yet.

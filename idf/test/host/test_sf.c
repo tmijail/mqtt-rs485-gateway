@@ -1464,10 +1464,10 @@ static void test_flush_before_restart(void)
     push_n(1000);
     TEST_ASSERT_TRUE(sp.blocks > 0);
     TEST_ASSERT_TRUE(sf.count > 0);
-    size_t ram = gw_sf_ram_samples(&sf);
+    size_t in_ram = gw_sf_ram_samples(&sf);
     res = flush_now(5000);
     TEST_ASSERT_EQUAL_INT(GW_SF_FLUSH_DONE, res.result);
-    TEST_ASSERT_EQUAL_UINT32(ram, res.moved);
+    TEST_ASSERT_EQUAL_UINT32(in_ram, res.moved);
     boot(2, 8, 0x137);
     until_ready();
     memset(consumed, 0, sizeof(consumed));
@@ -1486,7 +1486,7 @@ static void test_flush_time_limit(void)
     now_ms += 1000;   /* no gap wait in this test */
     push_n(370);      /* 370 + 22 * 2 = 414 records: one block spills at 384 */
     TEST_ASSERT_EQUAL_UINT32(1, sp.blocks);
-    size_t ram = gw_sf_ram_samples(&sf);
+    size_t in_ram = gw_sf_ram_samples(&sf);
     card.op_ms = 300;
     uint32_t t0 = now_ms;
     /* the extent of the next block, then one block: the limit expires before the second */
@@ -1496,7 +1496,7 @@ static void test_flush_time_limit(void)
     TEST_ASSERT_EQUAL_UINT32(1, res.blocks);
     TEST_ASSERT_TRUE(res.moved > 0);
     TEST_ASSERT_TRUE(res.left > 0);
-    TEST_ASSERT_EQUAL_UINT32(ram, res.moved + res.left);
+    TEST_ASSERT_EQUAL_UINT32(in_ram, res.moved + res.left);
     TEST_ASSERT_EQUAL_size_t(res.left, gw_sf_ram_samples(&sf));
     int on_card = 0;
     for (int c = 0; c < produced; c++) {
@@ -1525,7 +1525,7 @@ static void test_flush_card_failure(void)
     until_ready();
     now_ms += 1000;
     push_n(300);
-    size_t ram = gw_sf_ram_samples(&sf);
+    size_t in_ram = gw_sf_ram_samples(&sf);
     card.mode = F_TORN;
     card.cut_at = card.changes + 1;   /* the extent, then the first block is torn */
     card.seed = 7;
@@ -1534,12 +1534,12 @@ static void test_flush_card_failure(void)
     TEST_ASSERT_FALSE(sp.ok);
     TEST_ASSERT_EQUAL_UINT32(2, res.steps);
     TEST_ASSERT_EQUAL_UINT32(0, res.moved);
-    TEST_ASSERT_EQUAL_UINT32(ram, res.left);
+    TEST_ASSERT_EQUAL_UINT32(in_ram, res.left);
     /* a failed spill: nothing */
     int changes = card.changes;
     res = flush_now(5000);
     TEST_ASSERT_EQUAL_INT(GW_SF_FLUSH_NO_SPILL, res.result);
-    TEST_ASSERT_EQUAL_UINT32(ram, res.left);
+    TEST_ASSERT_EQUAL_UINT32(in_ram, res.left);
     TEST_ASSERT_EQUAL_INT(changes, card.changes);
     /* the power comes back: the boot finds no valid block */
     card.off = false;

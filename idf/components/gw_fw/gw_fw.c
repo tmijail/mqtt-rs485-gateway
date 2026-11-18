@@ -2,6 +2,7 @@
 
 #include <stdarg.h>
 #include <stdatomic.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -106,6 +107,7 @@ static const esp_partition_t *s_up_part;
 static size_t s_up_done;
 static size_t s_up_total;
 #define HEAD_LEN (GW_OTA_CAPS_OFFSET + GW_OTA_CAPS_SIZE)   /* up to the capabilities (#102) */
+#define DESC_NAME_LEN sizeof(((const esp_app_desc_t *)0)->project_name)
 static uint8_t *s_up_head;             /* until the head is checked (#80: not in .bss) */
 static size_t s_up_head_len;
 static RTC_FAST_ATTR char s_up_version[32];
@@ -1353,16 +1355,20 @@ static esp_err_t up_fail(esp_err_t ret, char *why, size_t cap, const char *fmt, 
 static esp_err_t check_head(char *why, size_t cap)
 {
     const esp_image_header_t *h = (const esp_image_header_t *)s_up_head;
-    const esp_app_desc_t *d = (const esp_app_desc_t *)(s_up_head + sizeof(esp_image_header_t) +
-                                                       sizeof(esp_image_segment_header_t));
-    if (h->magic != ESP_IMAGE_HEADER_MAGIC || d->magic_word != ESP_APP_DESC_MAGIC_WORD) {
+    /* the fields of the app description, read as bytes: the compiler can not see that the
+     * buffer is aligned for esp_app_desc_t (#227, -Wcast-align) */
+    const uint8_t *d = s_up_head + sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t);
+    const char *d_name = (const char *)d + offsetof(esp_app_desc_t, project_name);
+    const char *d_version = (const char *)d + offsetof(esp_app_desc_t, version);
+    uint32_t d_magic;
+    memcpy(&d_magic, d + offsetof(esp_app_desc_t, magic_word), sizeof(d_magic));
+    if (h->magic != ESP_IMAGE_HEADER_MAGIC || d_magic != ESP_APP_DESC_MAGIC_WORD) {
         return up_fail(ESP_FAIL, why, cap, "not an application image");
     }
-    if (strncmp(d->project_name, project(), sizeof(d->project_name)) != 0) {
-        return up_fail(ESP_FAIL, why, cap, "image of '%.32s', not of '%s'", d->project_name,
-                       project());
+    if (strncmp(d_name, project(), DESC_NAME_LEN) != 0) {
+        return up_fail(ESP_FAIL, why, cap, "image of '%.32s', not of '%s'", d_name, project());
     }
-    snprintf(s_up_version, sizeof(s_up_version), "%.31s", d->version);
+    snprintf(s_up_version, sizeof(s_up_version), "%.31s", d_version);
     char reason[sizeof(s_st.detail)];
     esp_err_t c = check_image(s_up_head + GW_OTA_CAPS_OFFSET, s_up_version, s_force, reason,
                               sizeof(reason));
