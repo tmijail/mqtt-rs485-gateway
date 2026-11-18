@@ -3,7 +3,7 @@
  * ESP32-S3-POE-ETH-8DI-8DO. Every pin, bus address and active level of the
  * board lives in gw_bsp (gw_bsp.c); the drivers (gw_board, gw_rs485, gw_net)
  * read it and contain no board facts of their own. The evidence for each fact
- * and its confidence level are in README section 2.
+ * and its confidence level are in docs/reference/board-data-to-verify.md.
  *
  * Active levels of the 8-channel groups are bit masks: bit n set means channel
  * n+1 is active when its pin is LOW (see gw_dout.h for the conversion).

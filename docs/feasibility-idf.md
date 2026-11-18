@@ -24,7 +24,7 @@ Leyenda de **Viabilidad**:
 
 **Esfuerzo**: S ≤ 2 días · M ≤ 1–2 semanas · L > 2 semanas.
 
-Columna **MVP**: ✅ = implementado en `idf/` (ver `idf/README.md`).
+Columna **MVP**: ✅ = implementado en `idf/` (ver [`docs/reference/requirements-status.md`](reference/requirements-status.md)).
 
 ## 1. Red (NET)
 
@@ -117,7 +117,7 @@ El maestro propio son unas 400 líneas de C puro (`mb_rtu.c`, `mb_master.c`). Ad
 
 ## 6. E/S local (IO)
 
-Hechos de la placa verificados con el demo oficial `ESP32-S3-POE-ETH-8DI-8DO-Demo.zip` (Arduino) de files.waveshare.com y con la definición ESPHome de la placa hermana ESP32-S3-ETH-8DI-8RO (mismos pines de DI, I²C y RTC). Detalle y nivel de confianza en `idf/README.md`.
+Hechos de la placa verificados con el demo oficial `ESP32-S3-POE-ETH-8DI-8DO-Demo.zip` (Arduino) de files.waveshare.com y con la definición ESPHome de la placa hermana ESP32-S3-ETH-8DI-8RO (mismos pines de DI, I²C y RTC). Detalle y nivel de confianza en [`docs/reference/board-data-to-verify.md`](reference/board-data-to-verify.md).
 
 | ID | Viabilidad | Mecanismo concreto | Esf. | Riesgos / notas |
 |---|---|---|---|---|

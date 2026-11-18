@@ -2,7 +2,7 @@
  * FW-1: firmware update policy, pure C (host-tested). The IDF side (components/gw_fw)
  * downloads and writes the image; this decides when a new image is confirmed or rejected, what
  * an image may replace (the pre-flight check), which URLs are acceptable and when progress is
- * worth reporting. Issue #144 gives the design (README 3.6).
+ * worth reporting. Issue #144 gives the design (docs/reference/firmware-updates.md).
  *
  * The trial of a new image (ESP_OTA_IMG_PENDING_VERIFY on its first boot) is a self-check of the
  * gateway. It does not depend on external services (broker, Modbus slaves, NTP, update server):

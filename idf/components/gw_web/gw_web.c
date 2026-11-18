@@ -169,8 +169,8 @@ static void peer_addr(httpd_req_t *req, uint8_t out[16], char *text, size_t cap)
  * outside a handler (gw_webstall_stuck), the watchdog shuts its sessions down: the blocked
  * receive returns and httpd closes the session. Idle keep-alive sessions of the same server go
  * too: browsers reconnect. This shortens a slowloris hold to about CONFIG_GW_WEB_STALL_S; it
- * does not prevent one (README 6.2.1). The ping also records each server's task, so the shell
- * can tell the two "httpd" tasks apart.
+ * does not prevent one (docs/reference/commissioning-and-secrets.md#the-limits-of-the-web-server).
+ * The ping also records each server's task, so the shell can tell the two "httpd" tasks apart.
  */
 typedef struct {
     httpd_handle_t server;
@@ -1031,7 +1031,8 @@ static esp_err_t config_put(httpd_req_t *req)
     }
     bool dry_run = query_flag(req, "dry_run");
     /* issue #109: ?discard_nvs_copy=1, the explicit way out when LittleFS may hold an unreachable
-     * NVS migration copy (README 6.2.1): formats LittleFS, the copy is lost */
+     * NVS migration copy (docs/reference/commissioning-and-secrets.md#the-nvs-migration-in-the-qemu-build):
+     * formats LittleFS, the copy is lost */
     bool discard = query_flag(req, "discard_nvs_copy");
     gw_cfg_err_t err;
     lint_out_t lo = {.req = req, .dry_run = dry_run};

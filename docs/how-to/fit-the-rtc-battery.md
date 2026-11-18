@@ -3,7 +3,7 @@
 This procedure tells how to install the RTC battery of the gateway and how to make sure that the RTC keeps the time. Do this procedure before you install the gateway. The box of the board does not contain a cell. Without the cell, the gateway sends no data after a power cut until SNTP or an operator sets the time.
 
 - For the facts about the clock, the cell and the signals of the gateway, refer to [The clock and the RTC battery](../reference/clock-and-rtc-battery.md).
-- For the reasons, refer to [`idf/README.md` §6.4](../../idf/README.md#64-clock).
+- For the reasons, refer to [No session without a valid clock](../reference/sparkplug-behavior.md#no-session-without-a-valid-clock-time-1-160).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The real I²C access to the RTC is compile-only. The data of the holder comes from the Waveshare product page. The board tests of #126 will measure the holder and correct this document.
 

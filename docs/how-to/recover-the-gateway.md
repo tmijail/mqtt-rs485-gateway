@@ -3,7 +3,7 @@
 This document tells what to do when a gateway does not operate normally: the configuration is rejected, the gateway restarts again and again, nobody knows the web password, or the web UI is not available.
 
 - For the meaning of each LED pattern, refer to [The status signals](../reference/status-signals.md).
-- For the details of the modes, refer to [`idf/README.md` §3.4 to §3.6](../../idf/README.md#34-configuration).
+- For the details of the modes, refer to [The modes](../reference/commissioning-and-secrets.md#the-modes), [Load and recovery mode](../reference/configuration.md#load-and-recovery-mode) and [The boot-loop counter and safe mode](../reference/firmware-updates.md#the-boot-loop-counter-and-safe-mode).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The E2E tests these modes in QEMU.
 

@@ -1776,7 +1776,7 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
                  ", 'load' reads a new one from the console, validates, saves and restarts, "
                  "'check' only validates; 'load discard-nvs-copy' also formats a LittleFS that "
-                 "does not mount, losing an NVS migration copy it may hold (README 6.2.1)"
+                 "does not mount, losing an NVS migration copy it may hold (docs/reference/commissioning-and-secrets.md)"
 #endif
          ,
          .hint = "[show|load [discard-nvs-copy]|check]", .func = cmd_config_entry},

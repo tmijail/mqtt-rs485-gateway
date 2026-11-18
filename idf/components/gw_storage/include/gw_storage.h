@@ -51,7 +51,8 @@ esp_err_t gw_storage_save_config(const char *json, size_t len, bool dry_run, gw_
 
 /**
  * Issue #109: gw_storage_save_config(), and with @p discard_copy, in the boot without NVS where
- * LittleFS does not mount and may hold the copy of an NVS migration (README 6.2.1), the save is
+ * LittleFS does not mount and may hold the copy of an NVS migration
+ * (docs/reference/commissioning-and-secrets.md#the-nvs-migration-in-the-qemu-build), the save is
  * not refused: LittleFS is formatted and the copy is lost (whatever only it had: secrets, the
  * commissioning password). The operator's explicit way out of that state.
  */

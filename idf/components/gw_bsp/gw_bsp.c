@@ -38,7 +38,7 @@ const gw_bsp_t gw_bsp = {
     .status_led = {.gpio = GPIO_NUM_38, .order = GW_BSP_LED_ORDER_RGB},
     .buzzer = {.gpio = GPIO_NUM_46, .passive = true},
     /* microSD slot, 1-bit SDMMC. D0 on GPIO45 is the VDD_SPI strapping pin: a pull-up that
-     * holds it high at reset selects 1.8 V for the flash (README 6.5). */
+     * holds it high at reset selects 1.8 V for the flash (docs/reference/store-and-forward.md#the-microsd-card-and-gpio45). */
     .sd = {.clk = GPIO_NUM_48, .cmd = GPIO_NUM_47, .d0 = GPIO_NUM_45},
     /* BOOT, a strapping pin: pulled up on the board, low while pressed; read only after boot */
     .boot_button = {.gpio = GPIO_NUM_0, .active_low = true},

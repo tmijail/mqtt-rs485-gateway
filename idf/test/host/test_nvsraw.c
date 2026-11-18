@@ -756,7 +756,7 @@ static void test_page_states(void)
  * the boot opens the encrypted NVS and the old entries are lost, as they would be with any
  * reading of so damaged a partition. Note that a corrupt item header counts its data entries as
  * bad too (its span cannot be trusted): three corrupt strings or blobs on a page of eight items
- * are enough (README 6.2.1). */
+ * are enough (docs/reference/commissioning-and-secrets.md#the-nvs-migration-in-the-qemu-build). */
 static void test_more_bad_than_plain(void)
 {
     gw_nvsraw_scan_t s;

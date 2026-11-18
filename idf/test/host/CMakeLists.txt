@@ -121,7 +121,7 @@ add_test(NAME check_set_config
                  -P ${CMAKE_CURRENT_LIST_DIR}/check_set_config.cmake)
 
 # Issue #227: each CONFIG_GW_ name in the sources and in the sdkconfig files is an option of a
-# Kconfig file (the firmware can not use -Wundef, README §3.8); the self-test adds a misspelled one.
+# Kconfig file (the firmware can not use -Wundef, docs/reference/compiler-warnings-and-stack.md); the self-test adds a misspelled one.
 add_test(NAME check_kconfig_names
          COMMAND ${CMAKE_COMMAND} -DROOT=${IDF_PROJECT_DIR}
                  -P ${CMAKE_CURRENT_LIST_DIR}/check_kconfig_names.cmake)

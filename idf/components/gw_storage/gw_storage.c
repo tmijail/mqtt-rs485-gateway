@@ -2540,7 +2540,7 @@ esp_err_t gw_storage_save_config_lint(const char *json, size_t len, bool dry_run
         /* issue #108 M1: formatting LittleFS to save would destroy the only copy */
         ret = ESP_ERR_INVALID_STATE;
         reject(err, "configuration not saved: LittleFS does not mount and can hold the copy of an "
-                    "NVS migration; a format would lose it (to discard it: README 6.2.1)");
+                    "NVS migration; a format would lose it (to discard it: docs/reference/commissioning-and-secrets.md)");
     } else if (!dry_run && s_commit_hook != NULL &&
                s_commit_hook(GW_STORAGE_COMMIT_CONFIG, hook_why, sizeof(hook_why)) != ESP_OK) {
         /* issue #144 item 1: during the trial of a new image (the restart that applies it would

@@ -718,7 +718,7 @@ def set_do(obs, ncmd_t, ndata_t, states):
 
 # ---------------------------------------------------------------- emulator faults (issue #92)
 #
-# QEMU can fail in three ways the firmware has no part in (README 4.3, docs/upstream-reports.md):
+# QEMU can fail in three ways the firmware has no part in (docs/reference/e2e-harness.md#retry-rules, docs/upstream-reports.md):
 # it ends (signal or exit, #86/#90), it hangs while staying alive, or the guest takes a fault that
 # only the emulator causes. A monitor thread watches every emulator of the current scenario
 # attempt; on a fault it stops the attempt (every wait raises AttemptAborted), saves a state dump
@@ -5226,7 +5226,7 @@ def run_ota_trial(args, work):
             gw.wait_log(r"edge: Sparkplug session up", 60, since)
             gw.shell("status", [r"^config\s"])   # the shell is up: 'panic' is not lost
             asked = time.monotonic()
-            gw.console("panic net-off")   # QEMU's openeth survives a panic reset (README 6.10)
+            gw.console("panic net-off")   # QEMU's openeth survives a panic reset (docs/reference/e2e-harness.md)
             boots.append(gw.wait_log(r"main: rs485_spb_gateway \S+ .*reset reason: panic", 60,
                                      asked))
             since = boots[-1] or asked
@@ -6589,7 +6589,7 @@ def main():
     MAIN_BROKER["slave"] = slave
     # Issues #86/#90: every scenario through run_scenario: a QEMU that dies under one (at any
     # boot) is reported as such and the scenario runs once more; firmware failures are not
-    # retried. The OTA scenario is the one where it happens most (README 4.3). Issue #121: the
+    # retried. The OTA scenario is the one where it happens most (docs/reference/e2e-harness.md). Issue #121: the
     # selection and the order come from scenarios.SCENARIOS (the CI groups are checked on it).
     runners = {
         "failsafe": lambda: run_config_failsafe(args, work, slave),

@@ -152,4 +152,4 @@ In recovery mode after an update, the area **Actions with a restart** also has t
 
 ## If the web UI is not available
 
-Flash the image over USB: refer to [`idf/README.md` §3.2](../../idf/README.md#32-firmware). For the other paths, refer to [Recover a gateway](recover-the-gateway.md).
+Flash the image over USB: refer to [Flash the board](build-the-firmware.md#flash-the-board). For the other paths, refer to [Recover a gateway](recover-the-gateway.md).

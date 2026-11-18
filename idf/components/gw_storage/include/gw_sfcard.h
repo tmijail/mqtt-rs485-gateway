@@ -22,7 +22,7 @@
  *
  * GPIO45 is a strapping pin (VDD_SPI voltage): a card whose D0 pull-up holds it high at reset
  * selects 1.8 V for the flash and the board may not boot. Check the schematic before enabling
- * it (README 6.5).
+ * it (docs/reference/store-and-forward.md#the-microsd-card-and-gpio45).
  */
 #pragma once
 

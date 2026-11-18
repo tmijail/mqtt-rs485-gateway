@@ -4,7 +4,7 @@ This procedure tells how to set the first web password of an installed gateway w
 
 - For the keys, the times and the signals of the access point, refer to [The access point](../reference/access-point.md).
 - For the reasons and the residual risks, refer to [The security of the access point](../explanation/access-point-security.md).
-- For the choices of the implementation, refer to [`idf/README.md` §3.5](../../idf/README.md#35-commissioning-factory-reset-and-secrets) (The claim window) and §6.2.1.
+- For the rules of the claim window, refer to [Commissioning and secrets](../reference/commissioning-and-secrets.md#the-claim-window-cfg-8). For the reasons for the rules, refer to [The security of the web UI and the claim window](../explanation/web-and-claim-security.md#why-the-claim-window-has-these-rules).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The access point and its open period are compile-only. The E2E tests the window in QEMU over the emulated Ethernet. The images come from the firmware in QEMU.
 

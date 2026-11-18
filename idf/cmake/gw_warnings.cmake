@@ -1,5 +1,5 @@
 # Issue #227: the compiler options of the own components (gw_* and main), in one place
-# (idf/README.md §3.8). Components of ESP-IDF and managed components keep their own options.
+# (docs/reference/compiler-warnings-and-stack.md). Components of ESP-IDF and managed components keep their own options.
 #
 #   include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/gw_warnings.cmake)   # main: ../cmake/
 #   gw_target_options(${COMPONENT_LIB})

@@ -64,7 +64,7 @@ To get more time, push BOOT for 2 to 10 s again. This starts the times again. Wi
 
 The claim window does not open again while a web password is set (decision of #120). There are two paths:
 
-- **With a computer and a USB cable at the panel:** set a new web password through the shell. This keeps the configuration. Refer to [`idf/README.md` §3.5](../../idf/README.md#35-commissioning-factory-reset-and-secrets), "Get access again when you do not know the web password".
+- **With a computer and a USB cable at the panel:** set a new web password through the shell. This keeps the configuration. Refer to [Recover a gateway](recover-the-gateway.md#with-the-usb-console).
 - **Without a computer:** do a factory reset, then set a new first web password.
 
 > **Caution: Make sure that you have the configuration of the plant and its secrets before the factory reset.**

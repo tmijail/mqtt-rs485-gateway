@@ -470,7 +470,7 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
         } else {
             ESP_LOGE(TAG, "configuration rejected (%s): %s", source, s_cfg_err.msg);
             ESP_LOGE(TAG, "nothing is started (no polling, no MQTT); fix it with the web UI on "
-                          "port %u, the shell ('config load') or by reflashing (see README)",
+                          "port %u, the shell ('config load') or by reflashing (docs/how-to/recover-the-gateway.md)",
                      s_cfg->web.https ? s_cfg->web.https_port : s_cfg->web.port);
         }
         for (int i = 0; i < 10; i++) {   /* issue #144: the self-check of a new image on trial */

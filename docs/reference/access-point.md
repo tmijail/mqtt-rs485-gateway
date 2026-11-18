@@ -4,7 +4,7 @@ This document gives the facts about the commissioning access point of the gatewa
 
 - For the procedures, refer to [Set the first web password on site](../how-to/set-the-first-web-password.md) and [Get on the access point on a later visit](../how-to/get-on-the-access-point.md).
 - For the reasons and the residual risks, refer to [The security of the access point](../explanation/access-point-security.md).
-- For the choices of the implementation, refer to [`idf/README.md` §3.5](../../idf/README.md#35-commissioning-factory-reset-and-secrets) and §6.2.1.
+- For the choices of the implementation, refer to [The secrets in NVS](commissioning-and-secrets.md#the-secrets-in-nvs) and [What only the board can test](commissioning-and-secrets.md#what-only-the-board-can-test).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The radio of the access point is compile-only. The QEMU build runs a simulated access point with the same life, key and status, but with no radio. Nobody has examined the PMK as the key of the SoftAP on the board yet (#130 item N9).
 

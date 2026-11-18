@@ -38,7 +38,7 @@ The script writes the images directly into `docs/images` in Windows. It writes a
 
 To make only some shots, add `--only` and the names, for example `--only claim-page-phone,status-page`. To show the names and the text alternatives, add `--list`.
 
-CAUTION: Add `-e DOCS_LOCK=/work/e2e.lock` when a different E2E run can use the same volume at the same time. Two emulators at the same time make the host slower, and QEMU can crash (`idf/README.md` §6.10).
+CAUTION: Add `-e DOCS_LOCK=/work/e2e.lock` when a different E2E run can use the same volume at the same time. Two emulators at the same time make the host slower, and QEMU can crash (refer to [The E2E test bench](../reference/e2e-harness.md#emulator-problems-and-their-workarounds)).
 
 ## 4. Examine the images
 

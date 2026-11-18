@@ -12,7 +12,7 @@ The tutorial takes approximately one hour. For each step, it tells you what you 
 - A USB-C cable.
 - An Ethernet cable, and a network with a DHCP server and access to the Internet (for the time server `pool.ntp.org`).
 - A computer on the same network, with:
-  - ESP-IDF v6.1 (refer to [`idf/README.md` §3.1](../../idf/README.md#31-esp-idf));
+  - ESP-IDF v6.1 (refer to [Install ESP-IDF](../how-to/build-the-firmware.md#install-esp-idf));
   - the Mosquitto broker and its clients (`mosquitto`, `mosquitto_sub`);
   - a clone of this repository.
 - One Modbus RTU device with its register map, an RS485 cable, and a power supply for the device. A USB to RS485 adapter with a Modbus slave simulator on a second computer is also possible.

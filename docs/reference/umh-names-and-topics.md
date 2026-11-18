@@ -5,7 +5,7 @@ This reference gives the limits of the Sparkplug names of the gateway and the ch
 - For the procedure, refer to [Connect the gateway to UMH Core](../how-to/connect-to-umh-core.md).
 - For the reasons, refer to [Sparkplug names and the UNS](../explanation/sparkplug-names-and-the-uns.md).
 
-The UMH data is from benthos-umh **v0.16.2** (commit `0d3a203`). The E2E scenario `umh` (#175) measured the topics and the values in this document with that version and the firmware in QEMU (`idf/README.md` §4.6).
+The UMH data is from benthos-umh **v0.16.2** (commit `0d3a203`). The E2E scenario `umh` (#175) measured the topics and the values in this document with that version and the firmware in QEMU (refer to [The E2E scenarios](e2e-scenarios.md#umh-umh-core-interoperability-175)).
 
 ## Name limits of the gateway
 

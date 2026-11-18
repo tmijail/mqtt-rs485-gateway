@@ -1,5 +1,5 @@
 # QA-4: build the firmware, run the host tests and the QEMU end-to-end scenario on every push
-# and pull request. See idf/README.md §4 for what each step proves.
+# and pull request. See docs/reference/tests.md for what each step proves.
 name: CI
 
 on:
@@ -340,7 +340,7 @@ jobs:
   # Issue #104 (item 3): the OTA scenarios on a build with comprehensive heap poisoning
   # (sdkconfig.qemu-poison): freed memory is overwritten, so a use after free such as the one of
   # issue #98 changes what the firmware reports and the check fails. Only --only ota: with
-  # poisoning and no PSRAM the #80 memory margins are not met (README 4.3).
+  # poisoning and no PSRAM the #80 memory margins are not met (docs/reference/e2e-harness.md#heap-poisoning).
   e2e-poison:
     name: QEMU OTA scenarios with heap poisoning (issue #104)
     runs-on: ubuntu-24.04

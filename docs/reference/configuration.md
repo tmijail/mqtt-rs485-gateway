@@ -381,7 +381,7 @@ The object form, with the optional spill to a microSD card:
 | `sd.enabled` | bool | `false` | Moves the oldest samples to the microSD card when the RAM buffer is three quarters full. It requires `enabled` |
 | `sd.max_kb` | integer | `131072` | 64 to 4 194 304 (128 MB by default). The space that the gateway uses on the card |
 
-> **Caution: Read the GPIO45 warning in [Known limitations](known-limitations.md#slow-broker-and-command-limits) before you set `sd.enabled`.** GPIO45 (D0 of the card) is a strapping pin. A pull-up on D0 can stop the boot of the board.
+> **Caution: Read the GPIO45 warning in [Store & forward](store-and-forward.md#the-microsd-card-and-gpio45) before you set `sd.enabled`.** GPIO45 (D0 of the card) is a strapping pin. A pull-up on D0 can stop the boot of the board.
 
 The web UI has the section **Store & forward** in the card **Sparkplug**:
 
