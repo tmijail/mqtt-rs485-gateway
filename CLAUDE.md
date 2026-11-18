@@ -69,7 +69,8 @@ The gateway must obey the Eclipse Sparkplug B 3.0.0 specification fully. Do not 
 Each key of the configuration document must have a control in the Configuration tab of the web UI. The JSON tab alone is not sufficient. This is a principle of the project (decision of the product owner, #221).
 - A change that adds or changes a configuration key also adds or changes its control, in the same change. The control shows the validation error at its field (#191). A control that does not explain itself gets an explainer (#190).
 - A file that a key refers to (for example a PEM file in LittleFS) must be possible to load from the web UI.
-- A change of the web UI starts with a prototype in the design canvas (a Claude Design artifact, private to the product owner): https://claude.ai/artifact/FcFdKXktaEWXxS5bSnDNc7. Start the implementation only after the product owner approves the prototype in a comment on the issue. These issues have the label `design first`.
+- A large change of the web UI starts with a prototype in the design canvas (a Claude Design artifact, private to the product owner): https://claude.ai/artifact/FcFdKXktaEWXxS5bSnDNc7. A large change adds a tab, a card or a dialog, or changes a layout. Start its implementation only after the product owner approves the prototype in a comment on the issue. These issues have the label `design first`.
+- A small change of the web UI needs no prototype (decision of the product owner, 2026-11-18). A small change adjusts an existing control: its validation, the normalization of its input, its text or its explainer. The product owner can ask for a prototype for any change.
 - Some existing keys have no control yet (#221 lists them). Do not use this as a reason to add a new key without a control.
 
 ## Commands
@@ -77,13 +78,21 @@ Each key of the configuration document must have a control in the Configuration 
 The host tests and the decode check run from the repo root. The firmware commands are run from `idf/`, after `. $IDF_PATH/export.sh`.
 
 ```bash
-# Host tests (pure C, no IDF): 42 Unity suites + sdkconfig and guard checks, -Werror
+# Host tests (pure C, no IDF): 42 Unity suites + sdkconfig, guard and rule checks (#228), -Werror.
+# The rule checks need GCC 10 or later, nm and Python 3; with another compiler, add -DGW_RULE_CHECKS=OFF
 cmake -S idf/test/host -B build-host && cmake --build build-host -j && ctest --test-dir build-host --output-on-failure
 ctest --test-dir build-host -R test_poll      # one suite; or run build-host/test_poll directly
 # The host tests at -O2, as the CI job host-tests builds them: some warnings show only with the optimizer
 cmake -S idf/test/host -B build-o2 -DCMAKE_C_FLAGS=-O2 && cmake --build build-o2 -j && ctest --test-dir build-o2 --output-on-failure
 # The same host tests with AddressSanitizer and UndefinedBehaviorSanitizer (#225; CI job host-tests-sanitizers)
 cmake -S idf/test/host -B build-asan -DGW_SANITIZE=ON && cmake --build build-asan -j && ctest --test-dir build-asan --output-on-failure
+
+# Fuzz tests: 12 libFuzzer targets for the parsers of gw_core, with ASan and UBSan (#226; CI job fuzz
+# 60 s each, fuzz-weekly.yml 20 min each). Needs clang with libFuzzer (Ubuntu: clang-18 libclang-rt-18-dev)
+cmake -S idf/test/fuzz -B build-fuzz -DCMAKE_C_COMPILER=clang && cmake --build build-fuzz -j
+idf/test/fuzz/run_fuzz.sh build-fuzz 60                 # all targets, $(nproc) at a time (JOBS=n); a table per target
+idf/test/fuzz/run_fuzz.sh build-fuzz 300 fuzz_spb       # one target; a finding goes to build-fuzz/crashes/
+build-fuzz/fuzz_spb build-fuzz/crashes/<file>           # one input again; fix it in gw_core, add it to a Unity suite
 
 # Sparkplug interop: decode generated payloads with the official Tahu proto
 mkdir -p /tmp/spb && build-host/spb_dump /tmp/spb && python3 idf/tools/spb_decode.py --check /tmp/spb
@@ -128,7 +137,7 @@ npm ci --prefix idf/tools/lint && idf/tools/lint/node_modules/.bin/eslint --conf
 #  are in the firmware image: for them, change an option in eslint.config.mjs, not the page.
 ```
 
-CI (`.github/workflows/ci.yml`) runs host-tests, firmware, the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image. The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run of that variant (#121, #135). A change is done when the host tests pass and the full E2E passes: the full run of the `E2E_PSRAM=1` variant and the full run of the default variant. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
+CI (`.github/workflows/ci.yml`) runs host-tests, fuzz, firmware, the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image (fuzz and the host tests run directly on `ubuntu-24.04`). `.github/workflows/fuzz-weekly.yml` runs the fuzz targets longer each week and keeps their corpus (#226). The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run of that variant (#121, #135). A change is done when the host tests pass and the full E2E passes: the full run of the `E2E_PSRAM=1` variant and the full run of the default variant. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
 
 ### sdkconfig pitfalls
 
@@ -156,11 +165,11 @@ It holds:
 - raw NVS page parsing (`gw_nvsraw`);
 - auth and CSRF helpers.
 
-Platform calls go through `gw_port.h`, which has two implementations: `port/gw_port_esp.c` for the firmware and `port/gw_port_posix.c` for host tests. New logic belongs here, with a host test in `idf/test/host/`. The other components are thin IDF adapters around it.
+Platform calls go through `gw_port.h`, which has two implementations: `port/gw_port_esp.c` for the firmware and `port/gw_port_posix.c` for host tests. New logic belongs here, with a host test in `idf/test/host/`. A new parser of data from outside (the bus, the network, MQTT, the web, the flash, a card) also gets a fuzz target in `idf/test/fuzz/` (#226). The other components are thin IDF adapters around it.
 
 ### IDF components (`idf/components/`)
 
-- `gw_bus`: owns the RS485 bus. Its `rs485_bus` task, pinned to core 1, is the **only** task that touches the UART/Modbus master; DCMD writes and Modbus-TCP requests (`gw_mbtcp`) are queued to it.
+- `gw_bus`: owns the RS485 bus. Its `rs485_bus` task, pinned to core 1, is the **only** task that touches the UART/Modbus master; DCMD writes and Modbus-TCP requests (`gw_mbtcp`) are queued to it. The host test `check_rs485` examines this rule: no `uart_*` or `mb_master_*` call outside `gw_bus` and `gw_rs485`, and no call of a `gw_core` function that reaches the Modbus master. The accepted exceptions are in `idf/test/host/rules/rs485_exceptions.txt`, each with its reason.
 - `gw_edge`: the `sparkplug` task on core 0. Runs the esp-mqtt client, bdSeq and will handling, backoff and broker failover, and drives `gw_node`.
 - `gw_board`: DI sampling, plus the `local_io` task, which is the only writer of the TCA9554 DO expander. Also the LED, buzzer and BOOT button.
 - `gw_bsp`: a declarative description of all board pins and polarities. Drivers contain no board data.
@@ -177,7 +186,7 @@ Platform calls go through `gw_port.h`, which has two implementations: `port/gw_p
 
 - Producers never block consumers. Device and DI updates are atomic dirty flags plus an optional wake, and the Sparkplug task reconciles every loop. Anything that must not be lost goes through bounded static queues.
 - `gw_tagdb` is the only shared memory, behind a short mutex.
-- All cJSON use goes through `gw_port_json_lock()`, because cJSON's hooks and error state are global (#106).
+- All cJSON use goes through `gw_port_json_lock()`, because cJSON's hooks and error state are global (#106). The host test `check_jsonlock` examines this rule: no cJSON outside `gw_core`, and in `gw_core` each call path to cJSON passes `gw_port_json_lock()`.
 - The network stack, esp-mqtt and the event loop are pinned to core 0, away from the bus on core 1.
 
 ### Memory rules (REL-2)
@@ -186,7 +195,7 @@ Platform calls go through `gw_port.h`, which has two implementations: `port/gw_p
 - **The firmware assumes the 8 MB of PSRAM of the board (#135).** It does not support a board without PSRAM. Do not add fallbacks or smaller sizes for a board without PSRAM.
 - All own memory is fixed-size, static or allocated once at boot. It goes to the PSRAM (`gw_storage_malloc`, `gw_storage_calloc`, `gw_storage_big_alloc`, and mbedTLS through them). These functions never use internal RAM when the PSRAM is full: the allocation fails.
 - A board whose PSRAM the boot does not detect runs the fault mode only (`CONFIG_SPIRAM_IGNORE_NOTFOUND`; `GW_WEB_FAULT` in `main.c`). The log, the shell and the web UI give the fault. Only the network, the web server and the shell start, from internal RAM. The gateway does not start.
-- **No malloc in the polling, encoding or publish path.**
+- **No malloc in the polling, encoding or publish path.** The host test `check_noalloc` examines this rule. It examines each function of the files in `idf/test/host/rules/noalloc_path.txt`, and each function of `gw_core` and nanopb that they call. Add a new file of this path to that list, with its reason.
 - Internal RAM is still shared with Wi-Fi, lwIP, esp-mqtt, the task stacks and DMA. The E2E enforces ≥ 8 KB minimum free and a ≥ 17 KB largest block at the worst-case config validation (#80). The check runs in the PSRAM variant, the configuration of the board (`tls` scenario, node GW29).
 - **Never lower these thresholds.** Measure any change in `.bss`, stack or heap with the `E2E_PSRAM=1 --only tls` / #80 checks.
 
@@ -215,7 +224,7 @@ Rules that tests and fixes must respect:
 ## Security constraints
 
 - Never burn eFuses on a real device, and never run `espefuse` against one. QEMU's emulated eFuse file is fine.
-- No build in `main` may burn an eFuse on the board (#133). A Kconfig option that burns eFuses (`CONFIG_SECURE_BOOT`, `CONFIG_SECURE_FLASH_ENC_ENABLED`, `CONFIG_SECURE_DISABLE_ROM_DL_MODE`, `CONFIG_SECURE_ENABLE_SECURE_ROM_DL_MODE`, `CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK`, `CONFIG_BOOT_ROM_LOG_ALWAYS_OFF`/`_ON_GPIO_*`, `CONFIG_NVS_ENCRYPTION` with the HMAC scheme) can appear only in a QEMU overlay.
+- No build in `main` may burn an eFuse on the board (#133). A Kconfig option that burns eFuses (`CONFIG_SECURE_BOOT`, `CONFIG_SECURE_FLASH_ENC_ENABLED`, `CONFIG_SECURE_DISABLE_ROM_DL_MODE`, `CONFIG_SECURE_ENABLE_SECURE_ROM_DL_MODE`, `CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK`, `CONFIG_BOOT_ROM_LOG_ALWAYS_OFF`/`_ON_GPIO_*`, `CONFIG_NVS_ENCRYPTION` with the HMAC scheme) can appear only in a QEMU overlay. The host test `check_efuse_options` examines `sdkconfig.defaults` and each overlay that is not for QEMU. When you change this list, change the list in `idf/test/host/check_efuse_options.cmake` too.
 - Signing keys for tests are generated into build or scratch dirs (e.g. `build-qemu/e2e_signing_key.pem`) and are never committed.
 
 ## Conventions

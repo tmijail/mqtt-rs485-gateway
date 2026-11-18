@@ -1,12 +1,13 @@
 # Run the tests
 
-This guide runs the tests of the firmware on a Linux computer: the host tests, the Sparkplug decode check, the linters and the E2E tests in QEMU. For what each test examines, refer to [Tests](../reference/tests.md). On Windows, or without a local ESP-IDF, refer to [Run the E2E tests in Docker](run-e2e-in-docker.md).
+This guide runs the tests of the firmware on a Linux computer: the host tests, the fuzz targets, the Sparkplug decode check, the linters and the E2E tests in QEMU. For what each test examines, refer to [Tests](../reference/tests.md). On Windows, or without a local ESP-IDF, refer to [Run the E2E tests in Docker](run-e2e-in-docker.md).
 
 A change is done when the host tests pass and the full E2E of the two variants passes.
 
 ## Before you start
 
-- Install CMake, a C compiler and Python 3. The host tests do not need ESP-IDF.
+- Install CMake, GCC 10 or later, binutils and Python 3. The host tests do not need ESP-IDF.
+- With another compiler, add `-DGW_RULE_CHECKS=OFF` to the first `cmake` command. Then the three rule checks of the call graph do not run (refer to [The rule checks](../reference/tests.md#the-rule-checks)).
 - Make sure that the computer has network access for the first build. CMake downloads Unity and cJSON.
 - For the E2E tests, install ESP-IDF v6.1, `libslirp0`, `mosquitto` and `openssl` (refer to [Build the firmware](build-the-firmware.md)).
 
@@ -39,6 +40,28 @@ To run one suite, use `ctest --test-dir build-host -R test_poll`, or run `build-
    ```
 
 If the sanitizer build crashes at start, set `sudo sysctl -w vm.mmap_rnd_bits=28`. The ASan runtime of GCC 13 needs it.
+
+## Run the fuzz targets
+
+The fuzz targets need clang with libFuzzer and the sanitizer runtimes (on Ubuntu 24.04: `clang-18` and `libclang-rt-18-dev`). For the list of the targets, refer to [Fuzz tests](../reference/tests.md#fuzz-tests).
+
+1. Build the targets and their seed corpus:
+
+   ```bash
+   cmake -S idf/test/fuzz -B build-fuzz -DCMAKE_C_COMPILER=clang && cmake --build build-fuzz -j
+   ```
+
+2. Run each target for 60 s, as the CI does:
+
+   ```bash
+   idf/test/fuzz/run_fuzz.sh build-fuzz 60
+   ```
+
+3. Make sure that each line of the table says `passed`.
+
+To run one target, give its name: `idf/test/fuzz/run_fuzz.sh build-fuzz 300 fuzz_spb`. `JOBS=n` sets the number of targets that run at the same time (default: the CPU count).
+
+When a target finds an error, the input is in `build-fuzz/crashes/` and the report is in `build-fuzz/logs/<target>.log`. To run the target on that input again, give the file to the target: `build-fuzz/fuzz_spb build-fuzz/crashes/fuzz_spb-crash-<hash>`. Correct the error in `gw_core`, and add the input to a Unity suite as a regression test.
 
 ## Run the Sparkplug decode check
 

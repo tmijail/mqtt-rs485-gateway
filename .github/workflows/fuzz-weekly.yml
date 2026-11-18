@@ -1,0 +1,69 @@
+# Issue #226: the longer run of the libFuzzer targets of gw_core, one time each week (and on
+# request). Each target fuzzes 20 min, 4 at a time: approximately 60 min for the 12 targets. The
+# job starts from the corpus of the previous week (actions/cache), keeps only the inputs that add
+# coverage (FUZZ_MERGE=1), saves the new corpus in the cache for the next run and for the fuzz job
+# of ci.yml, and publishes it as the artifact fuzz-corpus. A crash stops the job; its input and
+# the logs are in the artifact fuzz-weekly-findings. Refer to docs/reference/tests.md.
+name: Fuzz (weekly)
+
+on:
+  schedule:
+    - cron: "17 2 * * 1"   # Monday 02:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-weekly
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: Fuzz the parsers of gw_core for 20 min each (issue #226)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install clang 18 and its sanitizer runtimes
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang-18 libclang-rt-18-dev >/dev/null
+      - name: Limit the mmap randomization for ASan
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build-fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+      - name: Build the fuzz targets
+        run: |
+          cmake -S idf/test/fuzz -B build-fuzz -DCMAKE_C_COMPILER=clang-18
+          cmake --build build-fuzz -j"$(nproc)"
+      - name: Run each target for 20 min, then merge the corpus
+        env:
+          FUZZ_MERGE: 1
+        run: |
+          set -o pipefail
+          idf/test/fuzz/run_fuzz.sh build-fuzz 1200 | tee -a "$GITHUB_STEP_SUMMARY"
+      # also after a crash: the corpus up to the crash is not lost
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: always()
+        with:
+          path: build-fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: fuzz-corpus
+          path: build-fuzz/corpus/
+          retention-days: 90
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: fuzz-weekly-findings
+          path: |
+            build-fuzz/crashes/
+            build-fuzz/logs/

@@ -196,6 +196,29 @@ static bool same_leaf(const cJSON *a, const cJSON *b)
 
 static void walk(diff_t *d, const cJSON *a, const cJSON *b, char *path, size_t at, int depth);
 
+/* Issue #226: cJSON keeps a key that a document repeats ({"a":1,"a":2}), and
+ * cJSON_GetObjectItemCaseSensitive() finds only its first item. The items of an object are
+ * paired by key and by occurrence of that key: the second "a" of one document with the second
+ * "a" of the other, so that a document has no difference from itself. */
+static int occurrence(const cJSON *obj, const cJSON *item)
+{
+    int n = 0;
+    for (const cJSON *c = obj->child; c != item; c = c->next) {
+        n += c->string != NULL && strcmp(c->string, item->string) == 0;
+    }
+    return n;
+}
+
+static const cJSON *nth_item(const cJSON *obj, const char *key, int n)
+{
+    for (const cJSON *c = obj->child; c != NULL; c = c->next) {
+        if (c->string != NULL && strcmp(c->string, key) == 0 && n-- == 0) {
+            return c;
+        }
+    }
+    return NULL;
+}
+
 static void child(diff_t *d, const cJSON *a, const cJSON *b, char *path, size_t at, int depth,
                   const char *key, int index)
 {
@@ -222,11 +245,10 @@ static void walk(diff_t *d, const cJSON *a, const cJSON *b, char *path, size_t a
     }
     if (obj) {
         for (const cJSON *x = a->child; x != NULL; x = x->next) {
-            child(d, x, cJSON_GetObjectItemCaseSensitive(b, x->string), path, at, depth,
-                  x->string, 0);
+            child(d, x, nth_item(b, x->string, occurrence(a, x)), path, at, depth, x->string, 0);
         }
         for (const cJSON *y = b->child; y != NULL; y = y->next) {
-            if (cJSON_GetObjectItemCaseSensitive(a, y->string) == NULL) {
+            if (nth_item(a, y->string, occurrence(b, y)) == NULL) {
                 child(d, NULL, y, path, at, depth, y->string, 0);
             }
         }

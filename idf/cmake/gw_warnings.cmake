@@ -14,6 +14,11 @@ set(GW_WARNING_FLAGS
     -Wstrict-prototypes  # "void f()" accepts any arguments; write "void f(void)"
     -Wcast-align=strict) # a cast to a type with a larger alignment (Xtensa traps on it); =strict
                          # warns on the host too, where unaligned access is permitted
+# Issue #226: clang (the fuzz targets, test/fuzz) has no "=strict" level. Its -Wcast-align warns
+# on each cast to a type with a larger alignment, also on x86-64, as the =strict level of GCC.
+if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    list(TRANSFORM GW_WARNING_FLAGS REPLACE "^-Wcast-align=strict$" "-Wcast-align")
+endif()
 
 # The host build of gw_core and the host tests (test/host): the same, plus -Wundef. The firmware
 # can not use -Wundef: the headers of ESP-IDF evaluate undefined macros in "#if" (more than

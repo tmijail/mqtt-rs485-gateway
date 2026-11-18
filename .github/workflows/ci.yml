@@ -99,6 +99,46 @@ jobs:
           build-asan/spb_dump /tmp/spb
           /tmp/venv/bin/python idf/tools/spb_decode.py --check /tmp/spb
 
+  # Issue #226: the libFuzzer targets of the parsers of gw_core (idf/test/fuzz), with ASan and
+  # UBSan. Each target fuzzes 60 s, as many at a time as the runner has CPUs (4: three rounds of
+  # 60 s for the 12 targets). The corpus that the weekly job (fuzz-weekly.yml) keeps in the cache
+  # is the start, together with the seeds; this job does not save it. A crash stops the job; its
+  # input and the logs are in the artifact fuzz-findings.
+  fuzz:
+    name: Fuzz the parsers of gw_core (issue #226)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install clang 18 and its sanitizer runtimes
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang-18 libclang-rt-18-dev >/dev/null
+      # The ASan runtime can crash at start with more than 28 bits of mmap randomization
+      - name: Limit the mmap randomization for ASan
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build-fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+      - name: Build the fuzz targets
+        run: |
+          cmake -S idf/test/fuzz -B build-fuzz -DCMAKE_C_COMPILER=clang-18
+          cmake --build build-fuzz -j"$(nproc)"
+      - name: Run each target for 60 s
+        run: |
+          set -o pipefail
+          idf/test/fuzz/run_fuzz.sh build-fuzz 60 | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: fuzz-findings
+          path: |
+            build-fuzz/crashes/
+            build-fuzz/logs/
+
   firmware:
     name: ESP32-S3 firmware build (QA-2)
     runs-on: ubuntu-24.04

@@ -1,0 +1,3 @@
+# Issue #228: the self-test of check_efuse_options. An option that is off is correct.
+# CONFIG_SECURE_FLASH_ENC_ENABLED is not set
+CONFIG_NVS_ENCRYPTION=n

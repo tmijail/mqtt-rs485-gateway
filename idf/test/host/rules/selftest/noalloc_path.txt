@@ -1,0 +1,2 @@
+# Issue #228: the list of the self-test of check_noalloc
+bad_path.c       The bad example: it allocates

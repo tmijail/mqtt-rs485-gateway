@@ -17,7 +17,7 @@ This document gives the compiler options of the own components, the limit of the
 | `-Wstrict-prototypes` | yes | yes | `void f()` in place of `void f(void)` |
 | `-Wcast-align=strict` | yes | yes | a pointer cast to a type with a larger alignment |
 | `-Wundef` | no | yes | an undefined macro in `#if` |
-| `-fstack-usage -fcallgraph-info=su` | yes | no | the stack data for `tools/stack_report.py` |
+| `-fstack-usage -fcallgraph-info=su` | yes | `-fcallgraph-info=su` for `gw_core` and nanopb only | the stack data for `tools/stack_report.py`. On the host, the call graph for the rule checks of `tools/check_rules.py` (#228) |
 | `-Wstack-usage=2048` | yes | no | a function with a stack frame of more than 2 048 B |
 
 - On the Xtensa target, `-Wcast-align=strict` is the same as `-Wcast-align`, because the target needs aligned access. On the host, only `=strict` gives the warning.

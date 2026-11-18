@@ -320,18 +320,43 @@ static bool get_enum(const cJSON *obj, const char *key, const char *path, bool r
     return fail(err, p, "invalid value (expected %s)", allowed);
 }
 
-static bool parse_ipv4(const char *s, uint8_t out[4])
+/* A decimal number of 1 to @p max_digits digits at *@p s, without a sign, a space or a leading
+ * zero ("0" itself is one). Moves *@p s past it. */
+static bool parse_dec(const char **s, unsigned max_digits, unsigned *out)
 {
-    unsigned a, b, c, d;
-    char tail;
-    if (sscanf(s, "%u.%u.%u.%u%c", &a, &b, &c, &d, &tail) != 4 || a > 255 || b > 255 || c > 255 ||
-        d > 255) {
+    const char *p = *s;
+    unsigned v = 0, digits = 0;
+    while (*p >= '0' && *p <= '9') {
+        if (++digits > max_digits) {
+            return false;
+        }
+        v = v * 10u + (unsigned)(*p++ - '0');
+    }
+    if (digits == 0 || (digits > 1 && **s == '0')) {
         return false;
     }
-    out[0] = (uint8_t)a;
-    out[1] = (uint8_t)b;
-    out[2] = (uint8_t)c;
-    out[3] = (uint8_t)d;
+    *s = p;
+    *out = v;
+    return true;
+}
+
+/* Issue #226: "a.b.c.d", four decimal numbers 0 to 255 (the dec-octet of RFC 3986, as
+ * inet_pton reads them). sscanf("%u") also took " 1", "+1", "-0" and "010", which some programs
+ * read as octal (8). */
+static bool parse_ipv4(const char *s, uint8_t out[4])
+{
+    uint8_t v4[4];
+    for (int i = 0; i < 4; i++) {
+        unsigned v;
+        if ((i > 0 && *s++ != '.') || !parse_dec(&s, 3, &v) || v > 255) {
+            return false;
+        }
+        v4[i] = (uint8_t)v;
+    }
+    if (*s != '\0') {
+        return false;
+    }
+    memcpy(out, v4, sizeof(v4));
     return true;
 }
 
@@ -1440,9 +1465,9 @@ static bool parse_modbus_tcp(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *
         unsigned prefix = 32;
         char *slash = strchr(buf, '/');
         if (slash != NULL) {
-            char tail;
             *slash = '\0';
-            if (sscanf(slash + 1, "%u%c", &prefix, &tail) != 1 || prefix > 32) {
+            const char *q = slash + 1;   /* issue #226: decimal only, as the address ("/-0") */
+            if (!parse_dec(&q, 2, &prefix) || *q != '\0' || prefix > 32) {
                 return fail(err, p, "invalid prefix in '%s' (0-32)", it->valuestring);
             }
         }
