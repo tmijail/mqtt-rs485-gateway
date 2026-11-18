@@ -1,0 +1,48 @@
+# Issue #232: where the data from outside comes into the own code of the firmware. ESP-IDF is
+# not in the database of the firmware analysis, thus CodeQL knows only the functions that its
+# own models name (for example recv and getaddrinfo). The kind "remote" puts these sources into
+# the default threat model of the query suite security-extended.
+#
+# A model can name a function, its arguments, its parameters or its return value. A model of
+# C/C++ cannot name a read of a field (CodeQL 2.27.4). Thus the fields of httpd_req_t
+# (content_len, uri) are not sources, and the esp-mqtt event goes through on_mqtt_data() in
+# gw_edge.c, which gets its fields as parameters.
+extensions:
+  - addsTo:
+      pack: codeql/cpp-all
+      extensible: sourceModel
+    data: # namespace, type, subtypes, name, signature, ext, output, kind, provenance
+      # esp_http_server: the body, the headers and the query string of a request
+      - ["", "", False, "httpd_req_recv", "", "", "Argument[*1]", "remote", "manual"]
+      - ["", "", False, "httpd_req_get_hdr_value_len", "", "", "ReturnValue", "remote", "manual"]
+      - ["", "", False, "httpd_req_get_hdr_value_str", "", "", "Argument[*2]", "remote", "manual"]
+      - ["", "", False, "httpd_req_get_url_query_len", "", "", "ReturnValue", "remote", "manual"]
+      - ["", "", False, "httpd_req_get_url_query_str", "", "", "Argument[*1]", "remote", "manual"]
+      - ["", "", False, "httpd_req_get_cookie_val", "", "", "Argument[*2]", "remote", "manual"]
+      - ["", "", False, "httpd_req_get_cookie_val", "", "", "Argument[*3]", "remote", "manual"]
+      # esp-mqtt: an MQTT_EVENT_DATA event (topic, topic_len, data, data_len, total_data_len,
+      # current_data_offset), as on_mqtt_event() in gw_edge.c gives it to on_mqtt_data()
+      - ["", "", False, "on_mqtt_data", "", "", "Parameter[*0]", "remote", "manual"]
+      - ["", "", False, "on_mqtt_data", "", "", "Parameter[*2]", "remote", "manual"]
+      - ["", "", False, "on_mqtt_data", "", "", "Parameter[1]", "remote", "manual"]
+      - ["", "", False, "on_mqtt_data", "", "", "Parameter[3..5]", "remote", "manual"]
+      # on_mqtt_data() copies the message into a slot, and a FreeRTOS queue gives the slot to the
+      # sparkplug task. CodeQL does not follow the queue, thus the two receivers of the slot are
+      # sources too: the Sparkplug commands (gw_node.c) and the STATE message of the host
+      - ["", "", False, "gw_node_handle_message", "", "", "Parameter[*1]", "remote", "manual"]
+      - ["", "", False, "gw_node_handle_message", "", "", "Parameter[2]", "remote", "manual"]
+      - ["", "", False, "gw_node_handle_message", "", "", "Parameter[*3]", "remote", "manual"]
+      - ["", "", False, "gw_node_handle_message", "", "", "Parameter[4]", "remote", "manual"]
+      - ["", "", False, "on_host_state", "", "", "Parameter[*0]", "remote", "manual"]
+      - ["", "", False, "on_host_state", "", "", "Parameter[1]", "remote", "manual"]
+      # esp_https_ota: the image from the update server
+      - ["", "", False, "esp_https_ota_get_img_desc", "", "", "Argument[*1]", "remote", "manual"]
+      - ["", "", False, "esp_https_ota_get_image_size", "", "", "ReturnValue", "remote", "manual"]
+      # the RS485 bus: the responses of the Modbus devices
+      - ["", "", False, "uart_read_bytes", "", "", "Argument[*1]", "remote", "manual"]
+  - addsTo:
+      pack: codeql/cpp-all
+      extensible: summaryModel
+    data: # namespace, type, subtypes, name, signature, ext, input, output, kind, provenance
+      # esp_http_server: one value of the query string
+      - ["", "", False, "httpd_query_key_value", "", "", "Argument[*0]", "Argument[*2]", "taint", "manual"]

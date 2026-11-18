@@ -305,39 +305,86 @@ The `host-tests` job runs the linters (#229). Each linter uses only rules that f
 
 ## Code scanning with CodeQL
 
-`.github/workflows/codeql.yml` runs GitHub code scanning with CodeQL (#232). CodeQL follows the data from a source (for example a socket, a file or a command-line argument) to a sink (for example `memcpy`, an array index or a length). The results go to the Security tab of the repository as alerts. An alert does not stop the workflow or the CI. To run CodeQL on a computer, refer to [Run CodeQL](../how-to/run-the-tests.md#run-codeql).
+`.github/workflows/codeql.yml` runs GitHub code scanning with CodeQL (#232). CodeQL follows the data from a source (for example a socket, an HTTP request or an MQTT message) to a sink (for example `memcpy`, an array index or a file path). The workflow has two analyses, each in its own job. The results go to the Security tab of the repository as alerts. An alert does not stop the workflow or the CI. To run CodeQL on a computer, refer to [Run CodeQL](../how-to/run-the-tests.md#run-codeql).
 
-| Item | Value |
-|---|---|
-| Language and build mode | `c-cpp`, `manual` |
-| Query suite | `security-extended` |
-| Build | The host build: `cmake -S idf/test/host -B build-host` and `cmake --build build-host`. It compiles `gw_core`, nanopb, Unity, cJSON and the tests, without ESP-IDF |
-| Removed results | `idf/components/nanopb/`, `idf/components/gw_core/proto/sparkplug_b.pb.c` and `build-host/_deps/` (Unity and cJSON) |
-| Events | Each push to `main`, each pull request, one time each week (Wednesday 03:41 UTC) and on request |
-| Artifact | `codeql-sarif`: the SARIF file after the removal, kept 30 days |
-| Version | `github/codeql-action` v4.39.3, with CodeQL 2.27.4 |
+| Item | Job `host` | Job `firmware` |
+|---|---|---|
+| SARIF category | `/language:c-cpp` | `/language:c-cpp/firmware` |
+| Runner | `ubuntu-24.04` | `ubuntu-24.04`, in the `espressif/idf:v6.1` image, pinned by digest |
+| Build | The host build: `cmake -S idf/test/host -B build-host` and `cmake --build build-host` | The release build (`idf.py set-target esp32s3 build`), with the ccache of the job `firmware` of `ci.yml` (read only). Then CodeQL traces a second `idf.py build`. Before it, the job changes the time of each C file in `idf/components/` and `idf/main/`, and sets `CCACHE_DISABLE=1` |
+| Code in the database | `gw_core`, nanopb, Unity, cJSON and the tests | The own components (`gw_*`, `main`) and nanopb. ESP-IDF and the managed components are not in it |
+| Sources | The models of CodeQL, for example `fread` and `argv` | The models of CodeQL (for example `recv`, `getaddrinfo` and `fgets`) and the model pack `esp-idf-models` |
+| Analysis | `codeql-action/analyze` | The CodeQL CLI of the `init` step: `database finalize`, then `database analyze` with `--additional-packs` and `--model-packs`. `codeql-action/analyze` cannot load a model pack from the repository |
+| Artifact (kept 30 days) | `codeql-sarif-host` | `codeql-sarif-firmware` |
 
-- CodeQL ignores `paths-ignore` for a compiled language. Thus the job removes the results in generated and third-party code from the SARIF file with `jq`. Then it uploads the file (`upload-sarif`). CodeQL still follows the data through that code.
-- The host build does not compile the IDF adapters (`gw_web`, `gw_mbtcp`, `gw_edge`). In `gw_core`, no function receives data from the network: the adapters give the data to it. Thus the data flow queries find sources only in the test programs. The queries that examine one function, for example the order of a range check and an access, examine all of `gw_core`.
+Both jobs use the query suite `security-extended`, `github/codeql-action` v4.39.3 and CodeQL 2.27.4. They run on each push to `main`, on each pull request, one time each week (Wednesday 03:41 UTC) and on request.
+
+- Each analysis has its own SARIF category. Thus the alerts of one analysis do not close the alerts of the other.
+- The two databases contain `gw_core`. Thus a result in `gw_core` can come from the two analyses, as two alerts.
+- On a local computer with 3 threads, the trace of the firmware build took 33 s, and the analysis took 41 s. The job `firmware` also builds the firmware and downloads the CodeQL bundle. The expected duration of the job is approximately 10 min.
 - Close an alert only with a reason. Use "False positive", "Used in tests" or "Won't fix", and write the reason in the comment.
 
-### The first analysis
+### The removed results
 
-CodeQL 2.27.4 gave 28 results on commit e4a072a, with the build and the query suite of the workflow:
+CodeQL ignores `paths-ignore` for a compiled language. Thus each job filters the SARIF file with `idf/tools/codeql_filter.py` before the upload (`upload-sarif`). The filter keeps only the results in `idf/components/` and `idf/main/`. It removes these results:
+
+- nanopb (`idf/components/nanopb/`) and the generated `idf/components/gw_core/proto/sparkplug_b.pb.c`.
+- The test programs (`idf/test/`). This is a decision of the product owner (2026-11-18).
+- Unity and cJSON (`build-host/_deps/`).
+- The files outside the repository, for example the headers of ESP-IDF.
+
+CodeQL still follows the data through the removed code. The job summary gives the count of the results for each rule.
+
+### Alerts in pull requests
+
+The repository uses the default setting of GitHub for code scanning in pull requests. A new alert with the security severity high or critical makes the check of code scanning fail. A failed check can block the merge of the pull request.
+
+### The model pack `esp-idf-models`
+
+ESP-IDF is not in the database of the job `firmware`. Thus CodeQL does not know where the network data comes into the own code. The model pack `.github/codeql/extensions/esp-idf-models` gives this information (`models/esp-idf.model.yml`). Each model has the kind `remote`, thus `security-extended` uses it.
+
+| Function | Model | The data |
+|---|---|---|
+| `httpd_req_recv` | Source: argument 1 | The body of an HTTP request |
+| `httpd_req_get_hdr_value_len`, `httpd_req_get_url_query_len` | Source: the return value | The length of a header or of the query string |
+| `httpd_req_get_hdr_value_str`, `httpd_req_get_url_query_str`, `httpd_req_get_cookie_val` | Source: the output argument | A header, the query string or a cookie |
+| `httpd_query_key_value` | Taint from argument 0 to argument 2 | One value of the query string |
+| `on_mqtt_data` (`gw_edge.c`) | Source: all parameters | The topic, the payload and the lengths of an MQTT message (`esp_mqtt_event_t`) |
+| `gw_node_handle_message` (`gw_node.c`), `on_host_state` (`gw_edge.c`) | Source: the topic, the payload and the lengths | The MQTT message after the queue of the `sparkplug` task |
+| `esp_https_ota_get_img_desc`, `esp_https_ota_get_image_size` | Source | The descriptor and the size of the image from the update server |
+| `uart_read_bytes` | Source: argument 1 | The responses of the Modbus devices on the RS485 bus |
+
+- A model of C/C++ can name a function, its arguments, its parameters and its return value. It cannot name a read of a field (CodeQL 2.27.4). Thus the fields `content_len` and `uri` of `httpd_req_t` are not sources.
+- For the same reason, `on_mqtt_event()` gives the fields of the esp-mqtt event to `on_mqtt_data()` as parameters. The model names these parameters.
+- CodeQL does not follow the data through a FreeRTOS queue. Thus the model also names the two functions that get the MQTT message from the queue.
+- The model names three own functions: `on_mqtt_data`, `on_host_state` and `gw_node_handle_message`. When you change the name or the parameters of one of them, change the model too. The job `firmware` fails when a function of the model is not in the sources.
+- The models work. In the local database, CodeQL found the sources at each call of the modeled functions, for example `httpd_req_recv` at `gw_web.c` lines 376, 823, 934 and 1717. The data of line 934 goes to `gw_cfgdoc_apply()` and `gw_config_parse()` in `gw_core`. Without the model pack, the analysis gave 4 results. With the model pack, it gave 6: the two `cpp/path-injection` results start at `httpd_req_get_url_query_str`.
+
+### The first analysis of the host build
+
+CodeQL 2.27.4 gave 28 results on commit e4a072a, with the build and the query suite of the job `host`:
 
 | Rule | Where | Results | Analysis and action |
 |---|---|---|---|
 | `cpp/offset-use-before-range-check` | `gw_syslog.c`, `put_token` | 1 | An error. The loop read `s[n]` before the check `n < max`. A hostname of 64 bytes without a NUL caused a read of 1 byte after the buffer. No caller gave such a hostname. The checks now come first. Regression test: `test_syslog`, `test_hostname_read_bound` |
 | `cpp/comparison-with-wider-type` | `gw_config.c`, `gw_config_find_tag` | 1 | A `uint16_t` counter and an `int` bound. The bound is at most 256 (`GW_MAX_TAGS`), thus the loop always stops. The counter is now `unsigned` |
 | `cpp/overflowing-snprintf` | `test_config.c`, `test_node.c` | 20 | The tests added text with `n += snprintf(buf + n, sizeof(buf) - n, ...)`. After a truncation, `sizeof(buf) - n` wraps. The buffers were sufficiently large. The tests now use `support_appendf`, which stops the test when the text does not fit |
-| `cpp/path-injection` and `cpp/world-writable-file-creation` | `spb_dump.c` | 3 and 3 | Not an error. `spb_dump` is a host test program. It writes the payloads into the directory of its command-line argument with `fopen`. Close these alerts with the reason "Used in tests" |
+| `cpp/path-injection` and `cpp/world-writable-file-creation` | `spb_dump.c` | 3 and 3 | Not an error. `spb_dump` is a host test program. It writes the payloads into the directory of its command-line argument with `fopen`. The filter removes the results in `idf/test/` |
 
-After the corrections, CodeQL gives 6 results: the alerts of `spb_dump.c`.
+After the corrections, the job `host` gives 0 results.
 
-The workflow does not examine the IDF adapters. One local analysis examined them in the release build: CodeQL traced a new compilation of `gw_*` and `main` only. It gave 5 more results:
+### The alerts of the firmware analysis
 
-- `cpp/comparison-with-wider-type` in `gw_shell.c` (the command `config`): the same loop as in `gw_config_find_tag`. The counter is now `unsigned`.
-- `cpp/toctou-race-condition` (2) and `cpp/world-writable-file-creation` (2) in `gw_storage.c`: not errors. LittleFS has no file modes and no users. The read after `stat` reads at most the size that `stat` gave, and the code rejects a short read.
+A local analysis of the firmware gave one more error before the job `firmware`: `cpp/comparison-with-wider-type` in `gw_shell.c` (the command `config`). It was the same loop as in `gw_config_find_tag`, and the counter is now `unsigned`.
+
+The job `firmware` gives 6 results. All are false positives. Close each alert with the reason "False positive", and write the reason of the table in the comment:
+
+| Rule | Where | Reason |
+|---|---|---|
+| `cpp/path-injection` | `gw_storage.c`, `gw_storage_read_file()` (`fopen`) | The name comes from the query (`name`, `key_name`) of `PUT /api/files`. `gw_config_file_name_ok()` accepts only the characters A-Z, a-z, 0-9, `.`, `_` and `-`, and no `.` at the start. Thus the path is always a file in `/cfg`. The query `cpp/path-injection` does not know this check |
+| `cpp/path-injection` | `gw_storage.c`, `gw_storage_write_file()` (`write_file_atomic`) | The same name. `gw_storage_user_file_name_ok()` makes the same check |
+| `cpp/toctou-race-condition` (2) | `gw_storage.c`, `gw_storage_read_file()` and `read_whole()` | The read after `stat` reads at most the size that `stat` gave, and the code rejects a short read. LittleFS has no users |
+| `cpp/world-writable-file-creation` (2) | `gw_storage.c`, `write_file_atomic()` and `copy_file_atomic()` | LittleFS has no file modes and no users |
 
 ## Web UI unit test
 
@@ -369,7 +416,7 @@ The test reads `index.html`, takes the source of each function and runs it in a 
 
 `.github/workflows/fuzz-weekly.yml` runs one time each week (Monday 02:17 UTC) and on request (#226). It runs each fuzz target for 20 min, 4 at a time (approximately 60 min), from the corpus of the previous week. Then it keeps only the inputs that add coverage (`FUZZ_MERGE=1`, `-merge=1` of libFuzzer). It saves the corpus in `actions/cache` (also after a finding) for the next week and for the `fuzz` job, and publishes it as the artifact `fuzz-corpus` (kept 90 days). A finding stops the job, and the artifact `fuzz-weekly-findings` has the input and the logs.
 
-`.github/workflows/codeql.yml` runs CodeQL on the host build, on each push to `main`, on each pull request and one time each week (Wednesday 03:41 UTC). Only its job has the permission `security-events: write`. Refer to [Code scanning with CodeQL](#code-scanning-with-codeql).
+`.github/workflows/codeql.yml` runs CodeQL on the host build (job `host`) and on the firmware build (job `firmware`), on each push to `main`, on each pull request and one time each week (Wednesday 03:41 UTC). Only its two jobs have the permission `security-events: write`. Refer to [Code scanning with CodeQL](#code-scanning-with-codeql).
 
 The GitHub containers do not permit `unshare`. Thus each `e2e` job runs on the loopback interface of its container.
 
@@ -406,6 +453,7 @@ Each group has its own job, and the groups run at the same time (#121, #135, #23
 ### The caches of the CI
 
 - The jobs `firmware`, `analyzer`, `e2e-build` and `e2e-poison` use ccache (`IDF_CCACHE_ENABLE=1`). `actions/cache` keeps its directory, with one key for each job and variant.
+- The job `firmware` of `codeql.yml` reads the cache of the job `firmware` of `ci.yml` (`actions/cache/restore`). It does not save a cache.
 - `CCACHE_COMPILERCHECK=content` is necessary. Each configuration writes a new `-specs` file into the build directory, so the default check (`mtime`) finds no entry.
 - ccache gives the compiler messages again at a hit. Thus the check for 0 warnings of the `firmware` job stays valid.
 - The 76 C files of the own components (`gw_*`, `main`) compile without ccache (#227). At a hit, ccache 4.9 does not give the `.ci` file of `-fcallgraph-info` again.

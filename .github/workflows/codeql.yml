@@ -1,14 +1,22 @@
 # Issue #232: GitHub code scanning with CodeQL. The query suite security-extended follows data
 # from a source to a memcpy, an array index or a length, and examines each function for unsafe
-# patterns. The build is the host build of the tests: it compiles gw_core, nanopb and the tests
-# without ESP-IDF (the IDF adapters, which receive the network data, are not in it).
+# patterns. Two analyses, each with its own SARIF category, thus the alerts of one do not close
+# the alerts of the other:
+# - host (/language:c-cpp): the host build of the tests. It compiles gw_core, nanopb and the
+#   tests without ESP-IDF.
+# - firmware (/language:c-cpp/firmware): the ESP32-S3 release build in the ESP-IDF image. The
+#   job builds the firmware first (with the ccache of the job firmware of ci.yml), then CodeQL
+#   traces a new compilation of the own components (gw_*, main) and nanopb only. ESP-IDF is not
+#   in the database, thus the model pack .github/codeql/extensions/esp-idf-models tells CodeQL
+#   where the network data comes in (httpd_req_recv, the headers and the query of a request,
+#   the esp-mqtt data, the OTA image, the RS485 bus).
 # The results go to the Security tab as alerts; an alert does not stop the workflow or the CI.
 #
-# CodeQL ignores paths-ignore for a compiled language. Thus the job removes the results in
-# generated and third-party code from the SARIF file before the upload: nanopb, the generated
-# sparkplug_b.pb.c and the FetchContent sources of Unity and cJSON (build-host/_deps). CodeQL
-# still follows the data through that code. The SARIF file is also the artifact codeql-sarif.
-# Refer to docs/reference/tests.md.
+# CodeQL ignores paths-ignore for a compiled language. Thus each job keeps only the results in
+# idf/components/ and idf/main/ (idf/tools/codeql_filter.py), without nanopb and the generated
+# sparkplug_b.pb.c: the test programs (idf/test/), Unity and cJSON (build-host/_deps) and ESP-IDF
+# give no alert. CodeQL still follows the data through that code. The SARIF files are also the
+# artifacts codeql-sarif-host and codeql-sarif-firmware. Refer to docs/reference/tests.md.
 name: CodeQL
 
 on:
@@ -26,7 +34,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  analyze:
+  host:
     name: CodeQL security-extended on the host build (issue #232)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -52,17 +60,8 @@ jobs:
           category: /language:c-cpp
           upload: failure-only   # the upload-sarif step below uploads the filtered file
           output: sarif-results
-      - name: Remove the results in generated and third-party code
-        run: |
-          set -eu
-          for f in sarif-results/*.sarif; do
-            jq '(.runs[].results) |= map(select(
-                  ([.locations[]?.physicalLocation.artifactLocation.uri] | first // "")
-                  | test("^(idf/components/nanopb/|idf/components/gw_core/proto/sparkplug_b\\.pb\\.c$|build-host/_deps/)")
-                  | not))' "$f" > "$f.tmp"
-            mv "$f.tmp" "$f"
-            echo "$f: $(jq '[.runs[].results[]] | length' "$f") results" | tee -a "$GITHUB_STEP_SUMMARY"
-          done
+      - name: Keep only the results in the own code
+        run: python3 idf/tools/codeql_filter.py sarif-results/*.sarif | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: sarif-results
@@ -70,6 +69,97 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: codeql-sarif
+          name: codeql-sarif-host
+          path: sarif-results/
+          retention-days: 30
+
+  firmware:
+    name: CodeQL security-extended on the firmware build (issue #232)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: espressif/idf:v6.1@sha256:f81b6e077e6af93c312181cd7d4e7936cfbafc5c7f77cbacba8fdd34994f218a
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      actions: read            # codeql-action reads the run of the workflow
+      contents: read           # actions/checkout, actions/cache/restore
+      security-events: write   # upload-sarif: the alerts in the Security tab
+    env:
+      IDF_CCACHE_ENABLE: 1
+      CCACHE_DIR: /tmp/ccache
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: 400M
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # read only: the job firmware of ci.yml saves this cache
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/ccache
+          key: ccache-firmware-f81b6e07-${{ github.sha }}
+          restore-keys: ccache-firmware-f81b6e07-
+      - name: Build the firmware (not traced)
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          . "$IDF_PATH/export.sh"
+          cd idf
+          idf.py set-target esp32s3 build
+          ccache -s
+      - name: Make sure that the functions of the model pack exist
+        run: |
+          . "$IDF_PATH/export.sh" > /dev/null
+          models=.github/codeql/extensions/esp-idf-models/models/esp-idf.model.yml
+          missing=0
+          while read -r f; do
+            if ! grep -rqw --include='*.c' --include='*.h' -- "$f" idf/components idf/main \
+                 idf/managed_components "$IDF_PATH/components"; then
+              echo "::error file=$models::the model names $f, which is not in the sources"
+              missing=1
+            fi
+          done < <(grep -oE '^ +- \["", "", False, "[A-Za-z0-9_]+"' "$models" | cut -d'"' -f6 | sort -u)
+          exit "$missing"
+      - id: init
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: c-cpp
+          build-mode: manual
+      # The tracer of CodeQL sees only the compilers that run. Thus the step changes the time of
+      # the own sources and nanopb, and turns off ccache: ninja compiles them again, and ESP-IDF
+      # stays as the step before built it.
+      - name: Compile the own components again (traced)
+        env:
+          CCACHE_DISABLE: 1
+        run: |
+          . "$IDF_PATH/export.sh"
+          find idf/main idf/components -name '*.c' -print0 | xargs -0 touch
+          cd idf
+          idf.py build
+      # codeql-action/analyze cannot load a model pack from the repository; the CLI of the
+      # init step can (--additional-packs, --model-packs).
+      - name: Analyze with the model pack
+        env:
+          CODEQL: ${{ steps.init.outputs.codeql-path }}
+        run: |
+          db="${CODEQL_ACTION_TEMP:-$RUNNER_TEMP}/codeql_databases/cpp"   # where init made it
+          "$CODEQL" database finalize "$db"
+          mkdir -p sarif-results
+          "$CODEQL" database analyze "$db" codeql/cpp-queries:codeql-suites/cpp-security-extended.qls \
+            --additional-packs=.github/codeql/extensions \
+            --model-packs=mqtt-rs485-gateway/esp-idf-models \
+            --format=sarif-latest --sarif-category=/language:c-cpp/firmware \
+            --output=sarif-results/cpp-firmware.sarif
+      - name: Keep only the results in the own code
+        run: python3 idf/tools/codeql_filter.py sarif-results/*.sarif | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: sarif-results
+          category: /language:c-cpp/firmware
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: codeql-sarif-firmware
           path: sarif-results/
           retention-days: 30
