@@ -2,6 +2,7 @@
 
 #include <stdarg.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -696,6 +697,14 @@ static bool claim_window_open(uint32_t *left_ms)
     return open;
 }
 
+/* The length of a file of EMBED_TXTFILES, without the NUL that ESP-IDF appends. The start and
+ * the end are two objects for C: a subtraction of the two pointers is undefined behaviour, a
+ * subtraction of the two addresses is not (-Wanalyzer-undefined-behavior-ptrdiff, #230). */
+static ssize_t embedded_len(const char *start, const char *end)
+{
+    return (ssize_t)((uintptr_t)end - (uintptr_t)start) - 1;
+}
+
 extern const char claim_html_start[] asm("_binary_claim_html_start");
 extern const char claim_html_end[] asm("_binary_claim_html_end");
 
@@ -704,7 +713,7 @@ static esp_err_t claim_page_get(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, claim_html_start, claim_html_end - claim_html_start - 1);
+    return httpd_resp_send(req, claim_html_start, embedded_len(claim_html_start, claim_html_end));
 }
 
 /* GET /api/claim: {"open": the window is open, "allowed": this client may use it, "left_s",
@@ -2477,7 +2486,7 @@ static esp_err_t index_get(httpd_req_t *req)
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     /* EMBED_TXTFILES appends a NUL */
-    return httpd_resp_send(req, index_html_start, index_html_end - index_html_start - 1);
+    return httpd_resp_send(req, index_html_start, embedded_len(index_html_start, index_html_end));
 }
 
 static gw_tag_value_t s_vals[GW_MAX_TAGS_PER_DEVICE];   /* server task only */

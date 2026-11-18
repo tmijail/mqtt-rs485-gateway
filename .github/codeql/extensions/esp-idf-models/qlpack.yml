@@ -1,0 +1,10 @@
+# Issue #232: a CodeQL model pack for the firmware analysis (job firmware of codeql.yml). That
+# database has only the own components, not ESP-IDF, thus CodeQL does not know where the network
+# data comes in. The models in models/ tell it. docs/reference/tests.md
+name: mqtt-rs485-gateway/esp-idf-models
+version: 0.0.0
+library: true
+extensionTargets:
+  codeql/cpp-all: "*"
+dataExtensions:
+  - models/*.model.yml

@@ -1,0 +1,47 @@
+# Issue #231: clang-tidy on gw_core and the host tests (CI job clang-tidy, docs/reference/tests.md).
+#
+#   cmake -S idf/test/host -B build-tidy -DCMAKE_C_COMPILER=clang -DGW_RULE_CHECKS=OFF \
+#         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+#   run-clang-tidy -p build-tidy -j4 -quiet 'idf/components/gw_core/(src|port)/|idf/test/host/'
+#
+# The checks of the static analyzer of clang, the bugprone checks and the warnings of clang (with
+# the options of the host build), without the checks below. Each of them gave only noise on this
+# code (the first run, docs/reference/tests.md):
+#   clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+#       asks for memcpy_s(), snprintf_s() and the other functions of C11 Annex K, at each call of
+#       memcpy(), memset(), snprintf() and the other standard functions. Newlib and glibc do not
+#       have Annex K.
+#   clang-analyzer-optin.performance.Padding
+#       the padding of a structure. Some layouts are part of a format (the spill of the store &
+#       forward, the RTC memory), and the memory budget comes from the measurements (REL-2).
+#   bugprone-easily-swappable-parameters
+#       two adjacent parameters of the same type: a style of the API, no error.
+#   bugprone-implicit-widening-of-multiplication-result
+#       an "unsigned" product used as a size_t. On the ESP32-S3, size_t is 32 bits, and each
+#       product is a small index or size.
+#   bugprone-narrowing-conversions
+#       the compiler examines the same with -Wconversion (gw_warnings.cmake). The results were
+#       a char in a conditional expression with a character constant (an int): no change of value.
+#   bugprone-assignment-in-if-condition
+#       "if ((p = f()) == NULL)": a style, no error.
+#   bugprone-casting-through-void
+#       a check for C++ (reinterpret_cast). In C, "(T *)(void *)p" tells -Wcast-align that the
+#       code knows the alignment (gw_sfspill.c: offsets of whole blocks).
+# A false positive gets "NOLINTNEXTLINE(<check>): <reason>" on the line before the result. The
+# CI job refuses a NOLINT without the check and the reason.
+Checks: >
+  -*,
+  clang-diagnostic-*,
+  clang-analyzer-*,
+  bugprone-*,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  -clang-analyzer-optin.performance.Padding,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -bugprone-narrowing-conversions,
+  -bugprone-assignment-in-if-condition,
+  -bugprone-casting-through-void
+WarningsAsErrors: '*'
+# The headers of gw_core and of the tests. Not the generated sparkplug_b.pb.h (proto/), nanopb,
+# cJSON and Unity.
+HeaderFilterRegex: '/idf/(components/gw_core/include|test/host)/'

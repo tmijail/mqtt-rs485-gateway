@@ -75,6 +75,7 @@ size_t gw_lkg_encode(const gw_config_t *cfg, uint8_t *buf, size_t cap)
     if (!w.ok) {
         return 0;
     }
+    /* NOLINTNEXTLINE(bugprone-not-null-terminated-result): 4 binary bytes, no string */
     memcpy(buf, GW_LKG_MAGIC, 4);
     buf[4] = GW_LKG_VERSION;
     w.n = 5;

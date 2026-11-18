@@ -258,7 +258,7 @@ static void put_marker(uint8_t *pg, unsigned i, uint8_t ns, uint8_t value)
     e[1] = 0x01;   /* u8 */
     e[2] = 1;
     memset(e + 8, 0, 16);
-    memcpy(e + 8, GW_NVSMIG_ERASE_KEY, strlen(GW_NVSMIG_ERASE_KEY));
+    memcpy(e + 8, GW_NVSMIG_ERASE_KEY, strlen(GW_NVSMIG_ERASE_KEY) + 1);
     set_u8(pg, i, value);
 }
 

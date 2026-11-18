@@ -12,9 +12,12 @@ This document gives the test suites of the firmware, what each suite examines, t
 | Host tests at `-O2` | The same tests, with the warnings that only the optimizer gives | CI job `host-tests` | The same |
 | Host tests with sanitizers (#225) | The same tests with AddressSanitizer and UndefinedBehaviorSanitizer | CI job `host-tests-sanitizers` | No error from a sanitizer |
 | Fuzz tests (#226) | The parsers of `gw_core` with libFuzzer, AddressSanitizer and UndefinedBehaviorSanitizer: 12 targets | `idf/test/fuzz`, CI jobs `fuzz` (60 s for each target) and `fuzz-weekly.yml` (20 min for each target) | No crash, no sanitizer error, no failed check of a target |
+| clang-tidy (#231) | The sources of `gw_core` and of the host tests: the static analyzer of clang, the `bugprone` checks and the warnings of clang | CI job `clang-tidy` | 0 results. Each `NOLINT` comment names its check and gives a reason |
 | Sparkplug decode check | The payloads of the engine, decoded with the official Tahu proto | `spb_dump`, `idf/tools/spb_decode.py --check` | 0 structural errors |
 | Firmware build (QA-2) | The release build for `esp32s3`, and the QEMU builds | CI job `firmware` | 0 warnings |
+| Static analyzer (#230) | The own components (`gw_*`, `main`) of the release build, with the GCC static analyzer (`-fanalyzer`) | CI job `analyzer` | 0 results |
 | Linters (#229) | The Python tools, the shell scripts, the workflows and the scripts of the web pages | CI job `host-tests` | 0 results |
+| Code scanning (#232) | The flow of data from a source to a `memcpy`, an array index or a length, with CodeQL `security-extended` on the host build | `.github/workflows/codeql.yml` | Each alert in the Security tab is corrected or closed with a reason |
 | Web UI unit test (#226) | The IPv4 normalization of the Configuration tab, in Node.js without a browser | `idf/test/web/test_ip4norm.mjs`, CI job `host-tests` | All tests pass |
 | Harness self-test | The retry, hang and progress logic of the E2E harness, with fake clocks | `idf/tools/e2e/test_harness.py` | All tests pass |
 | E2E in QEMU (QA-3) | The real firmware against mosquitto, a pymodbus RTU slave, SNTP, syslog and HTTPS clients | `idf/tools/e2e/run_e2e.sh` | Each check passes in the full run of the two variants |
@@ -27,8 +30,10 @@ A change is done when the host tests pass and the full E2E passes: the full run 
 | Item | Value |
 |---|---|
 | CTest tests | 67: 42 Unity suites, `test_sfcfg_packed` and 24 checks |
-| Unity cases | 449 in the 42 suites (454 with `test_sfcfg_packed`) |
+| Unity cases | 450 in the 42 suites (455 with `test_sfcfg_packed`) |
 | Fuzz targets | 12, in `idf/test/fuzz`. Refer to [Fuzz tests](#fuzz-tests) |
+| Results of the static analyzer | 0 in the 76 C files of the own components. Refer to [Static analyzer](#static-analyzer) |
+| clang-tidy | 0 results in 96 source files. 14 `NOLINT` comments. Refer to [clang-tidy](#clang-tidy) |
 | Self-test of the decode rules | 26 tests |
 | Web UI unit test | 9 tests |
 | E2E checks, full run of the PSRAM variant | 265 (285 in the 5 CI groups: each group repeats the 5 checks of the run) |
@@ -49,7 +54,7 @@ The host tests build `gw_core` and its tests with the host compiler. Platform ca
 
 - A local build without `CMAKE_C_FLAGS` uses `-O0`. The CI job `host-tests` uses `-O2`, because some warnings of `-Wall` and `-Wextra` need the optimizer (for example `-Wformat-truncation` and `-Wstringop-overread`).
 - The test files and the host build of `gw_core` use the warning options of `GW_HOST_WARNING_FLAGS` (refer to [Compiler warnings and the stack](compiler-warnings-and-stack.md)). The host build of `gw_core` also uses `-Wconversion`.
-- `-O3` gives 7 `-Wmaybe-uninitialized` warnings in `gw_config.c`. They are false positives: the analyzer does not see that `fail()` always returns `false`. Issue #231 removes them.
+- A build with `-O3` also gives 0 warnings, and all the tests pass (#231). The CI does not use `-O3`.
 
 ### The CTest tests
 
@@ -207,6 +212,48 @@ The local runs were on a cloud container with 4 CPUs, with clang 18.1.3, 4 targe
 
 `test_poll` (`test_unanswered_block_fails_the_cycle`) failed one time in 7 runs with `Expected …756 Was …757`. The timestamp of a tag that the firmware did not read changed by 1 ms. It seems to depend on the wall clock of the host.
 
+## clang-tidy
+
+The CI job `clang-tidy` runs clang-tidy 18 on the sources of `gw_core` (`src/`, `port/`) and on the host tests (`idf/test/host/`) (#231). The configuration is `idf/.clang-tidy`. A result stops the job. To run it, refer to [Run clang-tidy](../how-to/run-the-tests.md#run-clang-tidy).
+
+- **The compile database.** The job configures the host build with clang and `-DGW_RULE_CHECKS=OFF`, and does not build. Thus `compile_commands.json` has no option that only GCC knows (`-fcallgraph-info=su`).
+- **One entry for each source.** clang-tidy 18 examines each entry of a source in one process. A second entry of a source gave false `clang-analyzer-valist.Uninitialized` results. Thus `support.c` is the library `test_support`, and `test_sfcfg_packed` has no entry (`EXPORT_COMPILE_COMMANDS OFF`).
+- **The scope.** The headers of `gw_core/include` and of the tests are examined. The generated `sparkplug_b.pb.c` and `.h`, nanopb, cJSON and Unity are not examined.
+- **The IDF adapters.** clang-tidy does not examine the other components. `idf.py clang-check` needs the `pyclang` package and the `esp-clang` toolchain, and the `espressif/idf:v6.1` image has neither of them.
+
+The checks are `clang-analyzer-*`, `bugprone-*` and `clang-diagnostic-*` (the warnings of clang with the options of the host build), without the checks of this table. Each of them gave only noise on this code:
+
+| Check that is off | Reason |
+|---|---|
+| `clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling` | It asks for the functions of C11 Annex K (`memcpy_s`, `snprintf_s`) at each call of `memcpy`, `snprintf` and other standard functions. Newlib and glibc do not have Annex K |
+| `clang-analyzer-optin.performance.Padding` | The padding of a structure. Some layouts are part of a format, and the memory budget comes from measurements (REL-2) |
+| `bugprone-easily-swappable-parameters` | Two adjacent parameters of the same type. This is a style of the API |
+| `bugprone-implicit-widening-of-multiplication-result` | An `unsigned` product that becomes a `size_t`. On the ESP32-S3, `size_t` has 32 bits, and each product is a small index or size |
+| `bugprone-narrowing-conversions` | `-Wconversion` of the compiler examines the same. The results were a `char` in a conditional expression with a character constant |
+| `bugprone-assignment-in-if-condition` | `if ((p = f()) == NULL)` is a style |
+| `bugprone-casting-through-void` | A check for C++. In C, `(T *)(void *)p` tells `-Wcast-align` that the code knows the alignment |
+| `clang-analyzer-security.insecureAPI.strcpy` (only in `idf/test/host/.clang-tidy`) | The tests copy literals and values of known length into their own buffers |
+
+The first run of clang-tidy gave these results (the unique results in `gw_core` and the host tests). The column "Now" gives what changed.
+
+| Check | First run | Now |
+|---|---|---|
+| The checks that are off (table above) | 998 | Off |
+| `bugprone-reserved-identifier` | 12 | All in the generated `sparkplug_b.pb.h`, which clang-tidy does not examine now |
+| `clang-analyzer-core.uninitialized.Assign`, `core.UndefinedBinaryOperatorResult`, `core.CallAndMessage` | 23 | 0. All in `gw_config.c`: the analyzer does not follow a variadic function, so it did not see that `fail()` is always `false`. `fail()` is now a macro with the value `false`. GCC at `-O3` gave the same false positives |
+| `clang-analyzer-valist.Uninitialized` | 4 | 0. One entry for each source in the compile database |
+| `clang-analyzer-security.insecureAPI.strcpy` | 16 | 10 in `gw_core` have a `NOLINT` comment: each copy has a length check or a destination of the same or a larger size. 6 in the tests: off |
+| `clang-analyzer-core.NullDereference` | 6 | 6 `NOLINT` comments: `cJSON_IsString(NULL)` and `cJSON_IsObject(NULL)` are `false`, but cJSON is not in the translation unit |
+| `clang-analyzer-deadcode.DeadStores` | 5 | 0. The stores are removed (1 in `gw_config.c`, 4 in the tests) |
+| `bugprone-not-null-terminated-result` | 5 | 3 copies now include the terminator (NVS names). 2 `NOLINT` comments: binary data (a magic number, a protobuf field in a test) |
+| `clang-analyzer-optin.core.EnumCastOutOfRange` | 2 | 2 `NOLINT` comments: a test gives a bad value on purpose |
+| `bugprone-switch-missing-default-case` | 1 | 0. The switch of the web password in `gw_config.c` was on an `int`. It is now on a variable of the enum type, so `-Wswitch` finds a value with no case |
+| `bugprone-inc-dec-in-conditions` | 1 | 0. `parse_ipv4` has two conditions now |
+| `bugprone-too-small-loop-variable` | 1 | 0. A test |
+| `bugprone-suspicious-missing-comma` | 1 | 0. Parentheses around the joined literal of a test. Clang also gave `-Wstring-concatenation` for it |
+
+The run found no real error. A `NOLINT` comment names its check and gives a reason, for example `/* NOLINTNEXTLINE(clang-analyzer-core.NullDereference): cJSON_IsString(NULL) is false */`. The job refuses a `NOLINT` comment without the two. `NOLINTBEGIN` and `NOLINTEND` are permitted for a block (`gw_cfgdoc.c`).
+
 ## Sparkplug decode check
 
 `spb_dump` writes real NDEATH, NBIRTH, DBIRTH, DDATA and NDATA payloads of the engine. Each file name is `<n>_<group>+<TYPE>+<edge>[+<device>].bin`: the topic after `spBv1.0/`, with `+` for `/` (#166). `spb_decode.py` compiles the official `sparkplug_b.proto` of eclipse/tahu (an unchanged copy in `idf/components/gw_core/proto/`) with `grpc_tools.protoc`, and decodes the payloads with Google protobuf.
@@ -229,6 +276,16 @@ The payloads contain these items: UInt64, Int64, Double, String and register bit
 
 During the configuration, ESP-IDF v6.1 prints 5 CMake warnings of its own (`component_validation.cmake`: private directories of `esp_wifi` that `wpa_supplicant` uses). They do not come from the project or from the compiler.
 
+## Static analyzer
+
+The CI job `analyzer` builds the release configuration with `-D GW_ANALYZER=ON` in the folder `build-analyzer` (#230). Only the 76 C files of the own components (`gw_*`, `main`) compile with `-fanalyzer`. A result stops the build, because of `-Werror`. ESP-IDF and the managed components compile without the analyzer, from ccache.
+
+- The first build gave 5 results: 1 real error and 4 false positives. All are corrected. The list is in [The static analyzer](compiler-warnings-and-stack.md#the-static-analyzer).
+- Now the build gives 0 results. A trial build of the QEMU configuration with PSRAM (`CONFIG_GW_IO_SIMULATED`) also gave 0 results. The CI job does not build that configuration.
+- The analyzer adds approximately 28 s of compiler time to the 76 own files: 47 s in place of 19 s, in sum. The longest file is `gw_config.c`, with 6 s.
+- On a computer with 4 CPUs, 2 compiler jobs and no ccache, the full build with the analyzer took 127 s. The release build took 133 s. The difference is in the noise of the load of the computer.
+- The job runs at the same time as the E2E jobs (approximately 15 min). Thus it does not make the CI run longer.
+
 ## Linters
 
 The `host-tests` job runs the linters (#229). Each linter uses only rules that find errors, and no style rules. A result stops the job.
@@ -245,6 +302,89 @@ The `host-tests` job runs the linters (#229). Each linter uses only rules that f
 - Each `zip()` has a `strict=` argument (B905). Use `strict=False` only for an intended truncation.
 - A false positive gets `# noqa: <rule>` or `# shellcheck disable=SCnnnn`, with the reason.
 - Do not add an ESLint comment to a web page, because the comment goes into the firmware image. For a false positive, change an option in `eslint.config.mjs`.
+
+## Code scanning with CodeQL
+
+`.github/workflows/codeql.yml` runs GitHub code scanning with CodeQL (#232). CodeQL follows the data from a source (for example a socket, an HTTP request or an MQTT message) to a sink (for example `memcpy`, an array index or a file path). The workflow has two analyses, each in its own job. The results go to the Security tab of the repository as alerts. An alert does not stop the workflow or the CI. To run CodeQL on a computer, refer to [Run CodeQL](../how-to/run-the-tests.md#run-codeql).
+
+| Item | Job `host` | Job `firmware` |
+|---|---|---|
+| SARIF category | `/language:c-cpp` | `/language:c-cpp/firmware` |
+| Runner | `ubuntu-24.04` | `ubuntu-24.04`, in the `espressif/idf:v6.1` image, pinned by digest |
+| Build | The host build: `cmake -S idf/test/host -B build-host` and `cmake --build build-host` | The release build (`idf.py set-target esp32s3 build`), with the ccache of the job `firmware` of `ci.yml` (read only). Then CodeQL traces a second `idf.py build`. Before it, the job changes the time of each C file in `idf/components/` and `idf/main/`, and sets `CCACHE_DISABLE=1` |
+| Code in the database | `gw_core`, nanopb, Unity, cJSON and the tests | The own components (`gw_*`, `main`) and nanopb. ESP-IDF and the managed components are not in it |
+| Sources | The models of CodeQL, for example `fread` and `argv` | The models of CodeQL (for example `recv`, `getaddrinfo` and `fgets`) and the model pack `esp-idf-models` |
+| Analysis | `codeql-action/analyze` | The CodeQL CLI of the `init` step: `database finalize`, then `database analyze` with `--additional-packs` and `--model-packs`. `codeql-action/analyze` cannot load a model pack from the repository |
+| Artifact (kept 30 days) | `codeql-sarif-host` | `codeql-sarif-firmware` |
+
+Both jobs use the query suite `security-extended` (the job `firmware` without two queries, see below), `github/codeql-action` v4.39.3 and CodeQL 2.27.4. They run on each push to `main`, on each pull request, one time each week (Wednesday 03:41 UTC) and on request.
+
+- Each analysis has its own SARIF category. Thus the alerts of one analysis do not close the alerts of the other.
+- The two databases contain `gw_core`. Thus a result in `gw_core` can come from the two analyses, as two alerts.
+- On a local computer with 3 threads, the trace of the firmware build took 33 s, and the analysis took 41 s. The job `firmware` also builds the firmware and downloads the CodeQL bundle. The expected duration of the job is approximately 10 min.
+- Close an alert only with a reason. Use "False positive", "Used in tests" or "Won't fix", and write the reason in the comment.
+
+### The removed results
+
+CodeQL ignores `paths-ignore` for a compiled language. Thus each job filters the SARIF file with `idf/tools/codeql_filter.py` before the upload (`upload-sarif`). The filter keeps only the results in `idf/components/` and `idf/main/`. It removes these results:
+
+- nanopb (`idf/components/nanopb/`) and the generated `idf/components/gw_core/proto/sparkplug_b.pb.c`.
+- The test programs (`idf/test/`). This is a decision of the product owner (2026-11-18).
+- Unity and cJSON (`build-host/_deps/`).
+- The files outside the repository, for example the headers of ESP-IDF.
+
+CodeQL still follows the data through the removed code. The job summary gives the count of the results for each rule.
+
+### Alerts in pull requests
+
+The repository uses the default setting of GitHub for code scanning in pull requests. A new alert with the security severity high or critical makes the check of code scanning fail. A failed check can block the merge of the pull request.
+
+### The model pack `esp-idf-models`
+
+ESP-IDF is not in the database of the job `firmware`. Thus CodeQL does not know where the network data comes into the own code. The model pack `.github/codeql/extensions/esp-idf-models` gives this information (`models/esp-idf.model.yml`). Each model has the kind `remote`, thus `security-extended` uses it.
+
+| Function | Model | The data |
+|---|---|---|
+| `httpd_req_recv` | Source: argument 1 | The body of an HTTP request |
+| `httpd_req_get_hdr_value_len`, `httpd_req_get_url_query_len` | Source: the return value | The length of a header or of the query string |
+| `httpd_req_get_hdr_value_str`, `httpd_req_get_url_query_str`, `httpd_req_get_cookie_val` | Source: the output argument | A header, the query string or a cookie |
+| `httpd_query_key_value` | Taint from argument 0 to argument 2 | One value of the query string |
+| `on_mqtt_data` (`gw_edge.c`) | Source: all parameters | The topic, the payload and the lengths of an MQTT message (`esp_mqtt_event_t`) |
+| `gw_node_handle_message` (`gw_node.c`), `on_host_state` (`gw_edge.c`) | Source: the topic, the payload and the lengths | The MQTT message after the queue of the `sparkplug` task |
+| `esp_https_ota_get_img_desc`, `esp_https_ota_get_image_size` | Source | The descriptor and the size of the image from the update server |
+| `uart_read_bytes` | Source: argument 1 | The responses of the Modbus devices on the RS485 bus |
+
+- A model of C/C++ can name a function, its arguments, its parameters and its return value. It cannot name a read of a field (CodeQL 2.27.4). Thus the fields `content_len` and `uri` of `httpd_req_t` are not sources.
+- For the same reason, `on_mqtt_event()` gives the fields of the esp-mqtt event to `on_mqtt_data()` as parameters. The model names these parameters.
+- CodeQL does not follow the data through a FreeRTOS queue. Thus the model also names the two functions that get the MQTT message from the queue.
+- The model names three own functions: `on_mqtt_data`, `on_host_state` and `gw_node_handle_message`. When you change the name or the parameters of one of them, change the model too. The job `firmware` fails when a function of the model is not in the sources.
+- The models work. In the local database, CodeQL found the sources at each call of the modeled functions, for example `httpd_req_recv` at `gw_web.c` lines 376, 823, 934 and 1717. The data of line 934 goes to `gw_cfgdoc_apply()` and `gw_config_parse()` in `gw_core`. Without the model pack, the analysis gave 4 results. With the model pack, it gave 6: the two `cpp/path-injection` results start at `httpd_req_get_url_query_str`.
+
+### The first analysis of the host build
+
+CodeQL 2.27.4 gave 28 results on commit e4a072a, with the build and the query suite of the job `host`:
+
+| Rule | Where | Results | Analysis and action |
+|---|---|---|---|
+| `cpp/offset-use-before-range-check` | `gw_syslog.c`, `put_token` | 1 | An error. The loop read `s[n]` before the check `n < max`. A hostname of 64 bytes without a NUL caused a read of 1 byte after the buffer. No caller gave such a hostname. The checks now come first. Regression test: `test_syslog`, `test_hostname_read_bound` |
+| `cpp/comparison-with-wider-type` | `gw_config.c`, `gw_config_find_tag` | 1 | A `uint16_t` counter and an `int` bound. The bound is at most 256 (`GW_MAX_TAGS`), thus the loop always stops. The counter is now `unsigned` |
+| `cpp/overflowing-snprintf` | `test_config.c`, `test_node.c` | 20 | The tests added text with `n += snprintf(buf + n, sizeof(buf) - n, ...)`. After a truncation, `sizeof(buf) - n` wraps. The buffers were sufficiently large. The tests now use `support_appendf`, which stops the test when the text does not fit |
+| `cpp/path-injection` and `cpp/world-writable-file-creation` | `spb_dump.c` | 3 and 3 | Not an error. `spb_dump` is a host test program. It writes the payloads into the directory of its command-line argument with `fopen`. The filter removes the results in `idf/test/` |
+
+After the corrections, the job `host` gives 0 results.
+
+### The alerts of the firmware analysis
+
+A local analysis of the firmware gave one more error before the job `firmware`: `cpp/comparison-with-wider-type` in `gw_shell.c` (the command `config`). It was the same loop as in `gw_config_find_tag`, and the counter is now `unsigned`.
+
+The job `firmware` uses the query suite `.github/codeql/firmware.qls`: `security-extended` without `cpp/world-writable-file-creation` and `cpp/toctou-race-condition` (decision of the product owner, 2026-11-18). These two queries examine file modes, users and other programs, and LittleFS has none of them. Without the suite, the job gave 4 more false positives in `gw_storage.c`.
+
+The job gives 2 results. Both are false positives. Close each alert one time, with the reason "False positive", and write the reason of the table in the comment. GitHub keeps a closed alert closed in the next runs, unless the code near it changes:
+
+| Rule | Where | Reason |
+|---|---|---|
+| `cpp/path-injection` | `gw_storage.c`, `gw_storage_read_file()` (`fopen`) | The name comes from the query (`name`, `key_name`) of `PUT /api/files`. `gw_config_file_name_ok()` accepts only the characters A-Z, a-z, 0-9, `.`, `_` and `-`, and no `.` at the start. Thus the path is always a file in `/cfg`. The query `cpp/path-injection` does not know this check |
+| `cpp/path-injection` | `gw_storage.c`, `gw_storage_write_file()` (`write_file_atomic`) | The same name. `gw_storage_user_file_name_ok()` makes the same check |
 
 ## Web UI unit test
 
@@ -265,7 +405,9 @@ The test reads `index.html`, takes the source of each function and runs it in a 
 | `host-tests` | Builds the host tests with `-O2` and runs them. Decodes the `spb_dump` payloads (`spb_decode.py --check`). Runs `test_spb_decode.py`, `test_harness.py`, the linters and the unit test of the web UI |
 | `host-tests-sanitizers` | Builds the host tests with `-DGW_SANITIZE=ON` and runs them. Decodes the payloads of the sanitized `spb_dump` |
 | `fuzz` | Installs `clang-18` and `libclang-rt-18-dev`, builds `idf/test/fuzz` and runs each target for 60 s, 4 at a time (`run_fuzz.sh`). The start is the corpus of the weekly job (from `actions/cache`, read only) and the seeds. A finding stops the job, and the artifact `fuzz-findings` has the input and the logs. The job takes approximately 5 min, at the same time as the other jobs |
+| `clang-tidy` | Installs `clang-18` and `clang-tidy-18`. Makes sure that each `NOLINT` comment names its check and gives a reason. Configures the host build with clang and runs `run-clang-tidy-18` on `gw_core` and the host tests. A result stops the job. Locally, on a cloud container with 4 CPUs, the configuration and clang-tidy with 2 processes took 38 s |
 | `firmware` | Runs `idf.py set-target esp32s3 build`. Fails on a `warning:`. Publishes the binaries, the `idf.py size` output and `stack.txt` |
+| `analyzer` | Runs `idf.py -B build-analyzer -D GW_ANALYZER=ON set-target esp32s3 build`: the own components with `-fanalyzer` (#230). Fails on a result of the analyzer or on a `warning:`, and gives the results in `components/gw_*` and `main`. The job runs at the same time as the other jobs. Refer to [Static analyzer](#static-analyzer) |
 | `e2e-plan` | Reads `CI_GROUPS` from `idf/tools/e2e/scenarios.py`, and gives the matrix of the two next jobs |
 | `e2e-build` | One job for each variant (`default`, `psram`). Runs `run_e2e.sh` with `E2E_STAGE`, and publishes the images. The `psram` job also builds `build-qemu-plain`, because the group `nvs-main` of that variant uses it. Each job makes its own throwaway signing key, and the plain image accepts only an update that the same key signed. GitHub keeps the images for 1 day, because they contain the signing key of the run |
 | `e2e` | One job for each group of `CI_GROUPS` (5 PSRAM groups and 1 default group). Runs `run_e2e.sh --only <group>` with `E2E_PREBUILT`. Publishes the logs, the payloads, `results.json`, `qemu-exits.txt` and the `fault-*.txt` dumps |
@@ -274,9 +416,11 @@ The test reads `index.html`, takes the source of each function and runs it in a 
 
 `.github/workflows/fuzz-weekly.yml` runs one time each week (Monday 02:17 UTC) and on request (#226). It runs each fuzz target for 20 min, 4 at a time (approximately 60 min), from the corpus of the previous week. Then it keeps only the inputs that add coverage (`FUZZ_MERGE=1`, `-merge=1` of libFuzzer). It saves the corpus in `actions/cache` (also after a finding) for the next week and for the `fuzz` job, and publishes it as the artifact `fuzz-corpus` (kept 90 days). A finding stops the job, and the artifact `fuzz-weekly-findings` has the input and the logs.
 
+`.github/workflows/codeql.yml` runs CodeQL on the host build (job `host`) and on the firmware build (job `firmware`), on each push to `main`, on each pull request and one time each week (Wednesday 03:41 UTC). Only its two jobs have the permission `security-events: write`. Refer to [Code scanning with CodeQL](#code-scanning-with-codeql).
+
 The GitHub containers do not permit `unshare`. Thus each `e2e` job runs on the loopback interface of its container.
 
-The workflow pins each action to a commit hash, with the tag in a comment (#229). All the actions run on Node 24 (#235):
+The workflows pin each action to a commit hash, with the tag in a comment (#229). All the actions run on Node 24 (#235):
 
 | Action | Version |
 |---|---|
@@ -285,6 +429,7 @@ The workflow pins each action to a commit hash, with the tag in a comment (#229)
 | `actions/upload-artifact` | v7.0.2 |
 | `actions/download-artifact` | v8.0.2 |
 | `actions/setup-node` | v6.5.0 |
+| `github/codeql-action` (`init`, `analyze`, `upload-sarif`) | v4.39.3 |
 
 ### The E2E groups
 
@@ -307,7 +452,8 @@ Each group has its own job, and the groups run at the same time (#121, #135, #23
 
 ### The caches of the CI
 
-- The jobs `firmware`, `e2e-build` and `e2e-poison` use ccache (`IDF_CCACHE_ENABLE=1`). `actions/cache` keeps its directory, with one key for each job and variant.
+- The jobs `firmware`, `analyzer`, `e2e-build` and `e2e-poison` use ccache (`IDF_CCACHE_ENABLE=1`). `actions/cache` keeps its directory, with one key for each job and variant.
+- The job `firmware` of `codeql.yml` reads the cache of the job `firmware` of `ci.yml` (`actions/cache/restore`). It does not save a cache.
 - `CCACHE_COMPILERCHECK=content` is necessary. Each configuration writes a new `-specs` file into the build directory, so the default check (`mtime`) finds no entry.
 - ccache gives the compiler messages again at a hit. Thus the check for 0 warnings of the `firmware` job stays valid.
 - The 76 C files of the own components (`gw_*`, `main`) compile without ccache (#227). At a hit, ccache 4.9 does not give the `.ci` file of `-fcallgraph-info` again.

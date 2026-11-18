@@ -501,8 +501,8 @@ static void test_request_body(void)
                          "{\"url\":\"https://x\",\"force\":true,\"x\":1}", "{\"force\":true}",
                          "{\"url\":\"https://x\"",
                          "{\"url\":\"https://x\",\"sha256\":1}",
-                         "{\"url\":\"https://x\",\"sha256\":\"17bf8431d18e8d424fb300303419bebde3749a"
-                         "d415de75afdaf4ecb1776030d \"}",
+                         ("{\"url\":\"https://x\",\"sha256\":\"17bf8431d18e8d424fb300303419bebde3749a"
+                          "d415de75afdaf4ecb1776030d \"}"),
                          "{\"url\":\"https://x\",\"sha256\":\"\",\"force\":true,\"x\":1}"};
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
         TEST_ASSERT_FALSE_MESSAGE(PARSE(bad[i], strlen(bad[i])), bad[i]);

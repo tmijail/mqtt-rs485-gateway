@@ -94,11 +94,19 @@ idf/test/fuzz/run_fuzz.sh build-fuzz 60                 # all targets, $(nproc) 
 idf/test/fuzz/run_fuzz.sh build-fuzz 300 fuzz_spb       # one target; a finding goes to build-fuzz/crashes/
 build-fuzz/fuzz_spb build-fuzz/crashes/<file>           # one input again; fix it in gw_core, add it to a Unity suite
 
+# clang-tidy 18 on gw_core and the host tests (#231; CI job clang-tidy; checks in idf/.clang-tidy). Configure only,
+# with clang. A false positive gets /* NOLINTNEXTLINE(<check>): <reason> */; the CI refuses a NOLINT without both
+cmake -S idf/test/host -B build-tidy -DCMAKE_C_COMPILER=clang -DGW_RULE_CHECKS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+run-clang-tidy -p build-tidy -j4 -quiet 'idf/components/gw_core/(src|port)/|idf/test/host/'   # 0 results
+
 # Sparkplug interop: decode generated payloads with the official Tahu proto
 mkdir -p /tmp/spb && build-host/spb_dump /tmp/spb && python3 idf/tools/spb_decode.py --check /tmp/spb
 
 # Firmware build (CI requires 0 warnings)
 idf.py set-target esp32s3 build && idf.py size
+# GCC static analyzer (-fanalyzer) on the own components gw_* and main only, in its own build dir
+# (#230; CI job analyzer). With -Werror a result stops the build; the release build is unchanged
+idf.py -B build-analyzer -D GW_ANALYZER=ON set-target esp32s3 build
 
 # E2E: real firmware in QEMU against mosquitto + a pymodbus RTU slave. Each variant has its own
 # full run (#135, scenarios.py DEFAULT_VARIANT_SCENARIOS); the two together are the full E2E.
@@ -138,7 +146,7 @@ node --test idf/test/web/test_ip4norm.mjs             # the IPv4 normalization o
 #  are in the firmware image: for them, change an option in eslint.config.mjs, not the page.
 ```
 
-CI (`.github/workflows/ci.yml`) runs host-tests, fuzz, firmware, the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image (fuzz and the host tests run directly on `ubuntu-24.04`). `.github/workflows/fuzz-weekly.yml` runs the fuzz targets longer each week and keeps their corpus (#226). The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run of that variant (#121, #135). A change is done when the host tests pass and the full E2E passes: the full run of the `E2E_PSRAM=1` variant and the full run of the default variant. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
+CI (`.github/workflows/ci.yml`) runs host-tests, fuzz, clang-tidy (#231), firmware, analyzer (#230), the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image (fuzz, clang-tidy and the host tests run directly on `ubuntu-24.04`). `.github/workflows/fuzz-weekly.yml` runs the fuzz targets longer each week and keeps their corpus (#226). `.github/workflows/codeql.yml` runs CodeQL (`security-extended`) on the host build and on the firmware build on each push to `main`, on each pull request and each week; its alerts go to the Security tab and do not fail the CI (#232). The firmware analysis uses the source models of `.github/codeql/extensions/esp-idf-models`; they name `on_mqtt_data`, `on_host_state` and `gw_node_handle_message`, so change them with these functions. The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run of that variant (#121, #135). A change is done when the host tests pass and the full E2E passes: the full run of the `E2E_PSRAM=1` variant and the full run of the default variant. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
 
 ### sdkconfig pitfalls
 

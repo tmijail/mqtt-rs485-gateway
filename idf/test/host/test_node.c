@@ -797,12 +797,12 @@ static void test_umh_worst_case_nbirth_fits(void)
                                 "\"edge_node_id\":\"acme:gw01\",\"naming\":\"umh\"},"
                                 "\"modbus_tcp\":{\"enabled\":true},\"devices\":[");
     for (int d = 0; d < GW_MAX_DEVICES; d++) {
-        n += (size_t)snprintf(json + n, sizeof(json) - n,
-                              "%s{\"name\":\"line%02d:energy-meter-with-a-long-name-xx\","
-                              "\"unit_id\":%d,\"tags\":[{\"name\":\"v\",\"area\":\"input\","
-                              "\"address\":0,\"type\":\"uint16\"}]}", d ? "," : "", d, d + 1);
+        support_appendf(json, sizeof(json), &n,
+                        "%s{\"name\":\"line%02d:energy-meter-with-a-long-name-xx\","
+                        "\"unit_id\":%d,\"tags\":[{\"name\":\"v\",\"area\":\"input\","
+                        "\"address\":0,\"type\":\"uint16\"}]}", d ? "," : "", d, d + 1);
     }
-    snprintf(json + n, sizeof(json) - n, "]}");
+    support_appendf(json, sizeof(json), &n, "]}");
     static gw_config_t c;
     gw_cfg_err_t err;
     TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(json, strlen(json), &c, &err), err.msg);
@@ -1582,23 +1582,23 @@ static void test_worst_case_nbirth_fits(void)
                                 "{\"group_id\": \"G\", \"edge_node_id\": \"N\"}, \"device_types\": [");
     const int types = 16, per = GW_MAX_TEMPLATE_TAGS / 16;
     for (int d = 0; d < types; d++) {
-        n += (size_t)snprintf(doc + n, sizeof(doc) - n, "%s{\"name\": \"%039d\", \"tags\": [",
-                              d ? "," : "", d);
+        support_appendf(doc, sizeof(doc), &n, "%s{\"name\": \"%039d\", \"tags\": [",
+                        d ? "," : "", d);
         for (int k = 0; k < per; k++) {
-            n += (size_t)snprintf(doc + n, sizeof(doc) - n,
-                                  "%s{\"name\": \"%038d%d\", \"area\": \"input\", \"address\": %d,"
-                                  " \"type\": \"float64\", \"units\": \"uuuuuuuuuuuuuuu\","
-                                  " \"eng_low\": -3e38, \"eng_high\": 3e38}",
-                                  k ? "," : "", 0, k, 4 * k);
+            support_appendf(doc, sizeof(doc), &n,
+                            "%s{\"name\": \"%038d%d\", \"area\": \"input\", \"address\": %d,"
+                            " \"type\": \"float64\", \"units\": \"uuuuuuuuuuuuuuu\","
+                            " \"eng_low\": -3e38, \"eng_high\": 3e38}",
+                            k ? "," : "", 0, k, 4 * k);
         }
-        n += (size_t)snprintf(doc + n, sizeof(doc) - n, "]}");
+        support_appendf(doc, sizeof(doc), &n, "]}");
     }
-    n += (size_t)snprintf(doc + n, sizeof(doc) - n, "], \"devices\": [");
+    support_appendf(doc, sizeof(doc), &n, "], \"devices\": [");
     for (int d = 0; d < types; d++) {   /* #213: one device of each type */
-        n += (size_t)snprintf(doc + n, sizeof(doc) - n, "%s{\"name\": \"%039d\", \"unit_id\": 1, "
-                              "\"type\": \"%039d\"}", d ? "," : "", d, d);
+        support_appendf(doc, sizeof(doc), &n, "%s{\"name\": \"%039d\", \"unit_id\": 1, "
+                        "\"type\": \"%039d\"}", d ? "," : "", d, d);
     }
-    snprintf(doc + n, sizeof(doc) - n, "]}");
+    support_appendf(doc, sizeof(doc), &n, "]}");
     gw_cfg_err_t err;
     TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(doc, strlen(doc), &c, &err), err.msg);
     cfg = &c;
@@ -2489,13 +2489,13 @@ static void test_dbirth_larger_than_buffer(void)
                                 "{\"group_id\": \"Plant1\", \"edge_node_id\": \"GW01\"}, "
                                 "\"devices\": [{\"name\": \"Big\", \"unit_id\": 1, \"tags\": [");
     for (int k = 0; k < GW_MAX_TAGS_PER_DEVICE; k++) {
-        n += (size_t)snprintf(doc + n, sizeof(doc) - n,
-                              "%s{\"name\": \"T%036d%02d\", \"area\": \"input\", \"address\": %d,"
-                              " \"type\": \"float32\", \"units\": \"uuuuuuuuuuuuuuu\","
-                              " \"eng_low\": -3e38, \"eng_high\": 3e38}",
-                              k ? "," : "", 0, k, 2 * k);
+        support_appendf(doc, sizeof(doc), &n,
+                        "%s{\"name\": \"T%036d%02d\", \"area\": \"input\", \"address\": %d,"
+                        " \"type\": \"float32\", \"units\": \"uuuuuuuuuuuuuuu\","
+                        " \"eng_low\": -3e38, \"eng_high\": 3e38}",
+                        k ? "," : "", 0, k, 2 * k);
     }
-    snprintf(doc + n, sizeof(doc) - n, "]}]}");
+    support_appendf(doc, sizeof(doc), &n, "]}]}");
     gw_cfg_err_t err;
     TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(doc, strlen(doc), &c, &err), err.msg);
     cfg = &c;
@@ -2809,6 +2809,7 @@ static size_t raw_fw_ncmd(uint8_t *out, size_t n)
     m[k++] = 0x7a;
     m[k++] = (uint8_t)(0x80 | (n & 0x7f));
     m[k++] = (uint8_t)(n >> 7);
+    /* NOLINTNEXTLINE(bugprone-not-null-terminated-result): protobuf bytes, no terminator */
     memcpy(m + k, "https://", 8);
     memset(m + k + 8, 'a', n - 8);
     k += n;

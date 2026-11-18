@@ -156,7 +156,7 @@ static void test_writes(void)
     TEST_ASSERT_EQUAL_UINT8(0x02, wr.mask);
     TEST_ASSERT_EQUAL_UINT8(0x00, wr.value);
     /* FC15: DO/5..DO/7 = on, off, on */
-    n = run((const uint8_t[]){0x0F, 0x00, 0x04, 0x00, 0x03, 0x01, 0x05}, 7);
+    run((const uint8_t[]){0x0F, 0x00, 0x04, 0x00, 0x03, 0x01, 0x05}, 7);
     TEST_ASSERT_EQUAL_UINT8(0x70, wr.mask);
     TEST_ASSERT_EQUAL_UINT8(0x50, wr.value);
     TEST_ASSERT_EQUAL_HEX8_ARRAY(((uint8_t[]){0x0F, 0x00, 0x04, 0x00, 0x03}), &out[7], 5);

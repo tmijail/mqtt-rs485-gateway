@@ -3,6 +3,7 @@
 
 #include <errno.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1994,9 +1995,12 @@ static char *current_doc(size_t *len, bool *from_file, gw_cfg_err_t *err)
         return NULL;
     }
     *from_file = false;
-    /* EMBED_TXTFILES appends a NUL; strnlen excludes it. */
+    /* EMBED_TXTFILES appends a NUL; strnlen excludes it. The start and the end are two
+     * objects for C: a subtraction of the two pointers is undefined behaviour, a subtraction
+     * of the two addresses is not (-Wanalyzer-undefined-behavior-ptrdiff, #230). */
     size_t n = strnlen(default_config_json_start,
-                       (size_t)(default_config_json_end - default_config_json_start));
+                       (size_t)((uintptr_t)default_config_json_end -
+                                (uintptr_t)default_config_json_start));
     char *copy = boot_alloc(n + 1);
     if (copy == NULL) {
         reject(err, "no memory for the embedded configuration");

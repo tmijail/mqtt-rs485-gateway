@@ -168,7 +168,9 @@ static void test_answers(void)
     /* the QEMU build's refusal, as the E2E expects it */
     TEST_ASSERT_EQUAL_STRING_LEN("this build has no microSD card", gw_cardfmt_answer_text(GW_CARDFMT_NO_SUPPORT),
                                  30);
+    /* NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange): a bad value, on purpose */
     TEST_ASSERT_EQUAL_STRING("?", gw_cardfmt_answer_key((gw_cardfmt_answer_t)99));
+    /* NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange): the same */
     TEST_ASSERT_EQUAL_STRING("?", gw_cardfmt_phase_name((gw_cardfmt_phase_t)99));
     TEST_ASSERT_EQUAL_STRING("?", gw_card_state_name(GW_CARD_STATE_COUNT));
 }

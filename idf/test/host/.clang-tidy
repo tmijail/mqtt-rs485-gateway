@@ -1,0 +1,4 @@
+# Issue #231: the checks of idf/.clang-tidy, without one check. The tests copy literals and the
+# values of the code under test into buffers of known size: each strcpy() is bounded.
+InheritParentConfig: true
+Checks: '-clang-analyzer-security.insecureAPI.strcpy'

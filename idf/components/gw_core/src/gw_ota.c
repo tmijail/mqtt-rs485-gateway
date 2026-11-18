@@ -416,6 +416,7 @@ bool gw_ota_parse_request(const char *body, size_t len, char *out, bool *force,
             snprintf(why, cap, "\"sha256\": %s", reason);
         } else {
             *has_sha = h != NULL && h->valuestring[0] != '\0';
+            /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.strcpy): checked above */
             strcpy(out, u);
             ok = true;
         }

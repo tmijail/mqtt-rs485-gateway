@@ -25,7 +25,9 @@ static void copy_name(char *out, const cJSON *o, const char *key)
 {
     const cJSON *v = cJSON_IsObject(o) ? cJSON_GetObjectItemCaseSensitive(o, key) : NULL;
     out[0] = '\0';
-    if (cJSON_IsString(v) && v->valuestring != NULL && strlen(v->valuestring) < GW_FILE_SIZE) {
+    /* v != NULL for the GCC analyzer, which does not see into cJSON_IsString (#230) */
+    if (v != NULL && cJSON_IsString(v) && v->valuestring != NULL &&
+        strlen(v->valuestring) < GW_FILE_SIZE) {
         memcpy(out, v->valuestring, strlen(v->valuestring) + 1);
     }
 }

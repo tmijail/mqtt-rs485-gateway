@@ -1,0 +1,12 @@
+# The query suite of the CodeQL analysis of the firmware build (issue #232, codeql.yml, job
+# firmware): security-extended without two queries that have no meaning on LittleFS. Decision
+# of the product owner, 2026-11-18.
+- import: codeql-suites/cpp-security-extended.qls
+  from: codeql/cpp-queries
+- exclude:
+    id:
+      # LittleFS has no file modes and no users: no file can be world-writable
+      - cpp/world-writable-file-creation
+      # no other user and no other program can change a file of the LittleFS partition between
+      # the check and the use; each read after a stat is bounded and refuses a short read
+      - cpp/toctou-race-condition

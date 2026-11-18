@@ -125,7 +125,7 @@ static void test_overlap_of_the_access_point_and_a_scan(void)
     u = go(&d, u, GW_WIFI_USER_SCAN);     /* the access point stops during it */
     TEST_ASSERT_EQUAL(GW_WIFI_MODE_STA, d.mode);
     TEST_ASSERT_TRUE(d.started);
-    u = go(&d, u, 0);                     /* the scan ends: nothing is left */
+    go(&d, u, 0);                         /* the scan ends: nothing is left */
     TEST_ASSERT_FALSE(d.inited);
     TEST_ASSERT_EQUAL(1, d.deinits);
 }
@@ -143,7 +143,7 @@ static void test_station_keeps_the_driver(void)
     TEST_ASSERT_FALSE(p.init || p.set_mode || p.start || p.stop || p.deinit);
     u = go(&d, u, u | GW_WIFI_USER_AP);
     TEST_ASSERT_EQUAL(GW_WIFI_MODE_APSTA, d.mode);
-    u = go(&d, u, GW_WIFI_USER_STA);
+    go(&d, u, GW_WIFI_USER_STA);
     TEST_ASSERT_EQUAL(GW_WIFI_MODE_STA, d.mode);
     TEST_ASSERT_TRUE(d.started);
     TEST_ASSERT_EQUAL(1, d.inits);

@@ -93,11 +93,12 @@ void gw_syslog_timestamp(uint64_t time_ms, char out[25])
     out[24] = '\0';
 }
 
-/* PRINTUSASCII without spaces; "-" when empty. */
+/* PRINTUSASCII without spaces; "-" when empty. Reads at most max bytes of s: the bounds come
+ * before s[n] (issue #232, CodeQL cpp/offset-use-before-range-check). */
 static size_t put_token(char *out, size_t cap, const char *s, size_t max)
 {
     size_t n = 0;
-    for (; s[n] != '\0' && n < max && n + 1 < cap; n++) {
+    for (; n < max && n + 1 < cap && s[n] != '\0'; n++) {
         unsigned char c = (unsigned char)s[n];
         out[n] = (c > 32 && c < 127) ? (char)c : '_';
     }

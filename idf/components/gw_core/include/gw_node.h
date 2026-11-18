@@ -348,7 +348,9 @@ void gw_node_io_changed(gw_node_t *n);
 /** A requested write finished; on success the confirmed value is published (SPB-10). */
 void gw_node_write_done(gw_node_t *n, uint16_t tag, bool ok);
 
-/** Incoming NCMD/DCMD (other topics are ignored). */
+/** Incoming NCMD/DCMD (other topics are ignored). Issue #232: the CodeQL model pack
+ *  (.github/codeql/extensions/esp-idf-models) names the topic, the payload and their lengths as
+ *  a source: keep the order of the parameters. */
 void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
                             const uint8_t *payload, size_t len);
 

@@ -68,6 +68,15 @@ if(GW_RULE_CHECKS)
     target_compile_options(nanopb PRIVATE -fcallgraph-info=su)
 endif()
 
+# The helpers of the tests (support.c), compiled one time. Issue #231: one entry for each source
+# in compile_commands.json, for clang-tidy.
+add_library(test_support STATIC support.c)
+target_link_libraries(test_support PUBLIC gw_core unity)
+target_include_directories(test_support PUBLIC ${CMAKE_CURRENT_LIST_DIR})
+target_compile_options(test_support PRIVATE ${GW_HOST_WARNING_FLAGS})
+target_compile_definitions(test_support PRIVATE
+    GW_SPEC_EXAMPLE="${CMAKE_CURRENT_LIST_DIR}/spec_example.json")
+
 enable_testing()
 foreach(t test_mb_rtu test_mb_master test_conv test_logic test_config test_plan test_spb test_node
           test_poll test_dout test_netsel test_syslog test_auth test_cfgdoc test_button
@@ -75,8 +84,8 @@ foreach(t test_mb_rtu test_mb_master test_conv test_logic test_config test_plan 
           test_ota test_nvsraw test_cardfmt test_sfcfg test_mbdiag test_cdump test_claim
           test_cfgschema test_bootloop test_fwlast test_lkgnet test_cfgprev test_wpa test_aplife
           test_ident test_logring test_mblocal test_wifiown test_certs)
-    add_executable(${t} ${t}.c support.c)
-    target_link_libraries(${t} PRIVATE gw_core unity)
+    add_executable(${t} ${t}.c)
+    target_link_libraries(${t} PRIVATE test_support)
     target_include_directories(${t} PRIVATE ${CMAKE_CURRENT_LIST_DIR})
     target_compile_options(${t} PRIVATE ${GW_HOST_WARNING_FLAGS})
     target_compile_definitions(${t} PRIVATE
@@ -102,6 +111,10 @@ target_include_directories(test_sfcfg_packed PRIVATE ${CMAKE_CURRENT_LIST_DIR} $
 target_compile_options(test_sfcfg_packed PRIVATE -Wall -Wextra -Werror -fpack-struct -fshort-enums
                        -Wno-address-of-packed-member)
 target_compile_definitions(test_sfcfg_packed PRIVATE GW_SFCFG_PACKED)
+# Issue #231: clang-tidy examines the sources of gw_core with the flags of gw_core, not with these.
+# A second entry of a source in compile_commands.json also gave false results (clang-tidy 18
+# examines each entry of a file in one process, and its valist check then fails).
+set_target_properties(test_sfcfg_packed PROPERTIES EXPORT_COMPILE_COMMANDS OFF)
 if(GW_SANITIZE)
     # Issue #225: -fpack-struct puts the members at unaligned offsets on purpose (#145), and
     # x86-64 permits unaligned access. UBSan's alignment check would stop at the first store
@@ -125,8 +138,8 @@ set_tests_properties(sfcfg_guard PROPERTIES
 
 # Writes representative Sparkplug payloads for the interoperability check
 # (tools/spb_decode.py, decoded with the official proto and Python protobuf).
-add_executable(spb_dump spb_dump.c support.c)
-target_link_libraries(spb_dump PRIVATE gw_core unity)
+add_executable(spb_dump spb_dump.c)
+target_link_libraries(spb_dump PRIVATE test_support)
 target_compile_options(spb_dump PRIVATE ${GW_HOST_WARNING_FLAGS})
 target_include_directories(spb_dump PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 target_compile_definitions(spb_dump PRIVATE

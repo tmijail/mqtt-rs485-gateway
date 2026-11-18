@@ -1,6 +1,6 @@
 # Run the tests
 
-This guide runs the tests of the firmware on a Linux computer: the host tests, the fuzz targets, the Sparkplug decode check, the linters and the E2E tests in QEMU. For what each test examines, refer to [Tests](../reference/tests.md). On Windows, or without a local ESP-IDF, refer to [Run the E2E tests in Docker](run-e2e-in-docker.md).
+This guide runs the tests of the firmware on a Linux computer: the host tests, the fuzz targets, clang-tidy, the Sparkplug decode check, the linters, CodeQL and the E2E tests in QEMU. For what each test examines, refer to [Tests](../reference/tests.md). On Windows, or without a local ESP-IDF, refer to [Run the E2E tests in Docker](run-e2e-in-docker.md).
 
 A change is done when the host tests pass and the full E2E of the two variants passes.
 
@@ -63,6 +63,26 @@ To run one target, give its name: `idf/test/fuzz/run_fuzz.sh build-fuzz 300 fuzz
 
 When a target finds an error, the input is in `build-fuzz/crashes/` and the report is in `build-fuzz/logs/<target>.log`. To run the target on that input again, give the file to the target: `build-fuzz/fuzz_spb build-fuzz/crashes/fuzz_spb-crash-<hash>`. Correct the error in `gw_core`, and add the input to a Unity suite as a regression test.
 
+## Run clang-tidy
+
+clang-tidy needs clang 18 and clang-tidy 18 (on Ubuntu 24.04: `clang-18` and `clang-tidy-18`). For the checks and the rules, refer to [clang-tidy](../reference/tests.md#clang-tidy).
+
+1. Configure the host build with clang. The build is not necessary:
+
+   ```bash
+   cmake -S idf/test/host -B build-tidy -DCMAKE_C_COMPILER=clang -DGW_RULE_CHECKS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+   ```
+
+2. Run clang-tidy on `gw_core` and the host tests:
+
+   ```bash
+   run-clang-tidy -p build-tidy -j4 -quiet 'idf/components/gw_core/(src|port)/|idf/test/host/'
+   ```
+
+3. Make sure that the output has no line with `error:` and that the exit code is 0.
+
+Correct a real error in the code. When the code can be clearer for the analyzer, change the code. For a false positive, add `/* NOLINTNEXTLINE(<check>): <reason> */` on the line before the result. The CI refuses a `NOLINT` comment without the check and the reason.
+
 ## Run the Sparkplug decode check
 
 1. Install `grpcio-tools` and `protobuf`, for example with `idf/tools/e2e/requirements.txt`.
@@ -101,6 +121,81 @@ When a target finds an error, the input is in `build-fuzz/crashes/` and the repo
    ```
 
 ESLint needs Node.js 20.19 or later. For a false positive, add `# noqa: <rule>` or `# shellcheck disable=SCnnnn` with the reason. Do not add an ESLint comment to a web page, because the comment goes into the firmware image. Change an option in `eslint.config.mjs` instead.
+
+## Run CodeQL
+
+The workflow `codeql.yml` sends the results of two analyses to the Security tab (#232): the host build and the firmware build. Run CodeQL on the computer to examine a change before the push. For the scope, the model pack and the current alerts, refer to [Code scanning with CodeQL](../reference/tests.md#code-scanning-with-codeql).
+
+### Get the CodeQL bundle
+
+1. Download the CodeQL bundle of the workflow (approximately 700 MB) into a new directory:
+
+   ```bash
+   mkdir -p ~/codeql-bundle && curl -L -o ~/codeql-bundle/bundle.tar.gz https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.27.4/codeql-bundle-linux64.tar.gz
+   ```
+
+2. Extract the bundle (approximately 1.3 GB): `tar xzf ~/codeql-bundle/bundle.tar.gz -C ~/codeql-bundle`.
+
+The version of the bundle must agree with the pinned `github/codeql-action`. When the workflow gets a new version, change the bundle in step 1. The `bundleVersion` in `src/defaults.json` of the action gives it.
+
+### Run the host analysis
+
+1. Make the database. CodeQL examines only the files that the command compiles, thus use a new build directory:
+
+   ```bash
+   rm -rf build-codeql && ~/codeql-bundle/codeql/codeql database create /tmp/cqdb --language=c-cpp --source-root=. --overwrite --command='sh -c "cmake -S idf/test/host -B build-codeql && cmake --build build-codeql -j"'
+   ```
+
+2. Run the query suite of the workflow:
+
+   ```bash
+   ~/codeql-bundle/codeql/codeql database analyze /tmp/cqdb codeql/cpp-queries:codeql-suites/cpp-security-extended.qls --format=sarif-latest --output=/tmp/codeql.sarif
+   ```
+
+3. Remove the results that the workflow removes: `python3 idf/tools/codeql_filter.py /tmp/codeql.sarif`.
+4. Show the results:
+
+   ```bash
+   jq -r '.runs[].results[] | "\(.ruleId) \(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine)"' /tmp/codeql.sarif
+   ```
+
+### Run the firmware analysis
+
+1. Activate ESP-IDF:
+
+   ```bash
+   . $IDF_PATH/export.sh
+   ```
+
+2. Go to `idf/`.
+3. Build the firmware in a build directory for CodeQL:
+
+   ```bash
+   idf.py -B build-codeql-fw set-target esp32s3 build
+   ```
+
+4. Change the time of the C files of the own components and of nanopb. Then ninja compiles them again:
+
+   ```bash
+   find main components -name '*.c' -print0 | xargs -0 touch
+   ```
+
+5. Make the database. CodeQL traces the second build, without ccache:
+
+   ```bash
+   CCACHE_DISABLE=1 ~/codeql-bundle/codeql/codeql database create /tmp/cqdb-fw --language=c-cpp --source-root=.. --overwrite --command='idf.py -B build-codeql-fw build'
+   ```
+
+6. Run the query suite with the model pack:
+
+   ```bash
+   ~/codeql-bundle/codeql/codeql database analyze /tmp/cqdb-fw ../.github/codeql/firmware.qls --additional-packs=../.github/codeql/extensions --model-packs=mqtt-rs485-gateway/esp-idf-models --format=sarif-latest --output=/tmp/codeql-fw.sarif
+   ```
+
+7. Remove the results that the workflow removes: `python3 tools/codeql_filter.py /tmp/codeql-fw.sarif`.
+8. Show the results with the `jq` command of the host analysis, on `/tmp/codeql-fw.sarif`.
+
+When you change the model pack, add `--rerun` to step 6. Without it, `database analyze` uses the earlier results of the database again.
 
 ## Run the full E2E
 

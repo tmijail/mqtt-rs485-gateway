@@ -63,22 +63,26 @@ void gw_config_release(void *ptr)
 
 /* ---------- error reporting ---------- */
 
-static bool fail(gw_cfg_err_t *err, const char *path, const char *fmt, ...)
+/* Writes the error of @path into @err. The callers use fail(), which is always false. It is a
+ * macro, so that the compilers and the static analyzers see the value at each call: the analyzer
+ * of clang does not inline a variadic function, and GCC at -O3 does not always (issue #231). On a
+ * path where fail() could be true, they saw outputs that the parse did not set. */
+static void fail_report(gw_cfg_err_t *err, const char *path, const char *fmt, ...)
     __attribute__((format(printf, 3, 4)));
+#define fail(...) (fail_report(__VA_ARGS__), false)
 
-static bool fail(gw_cfg_err_t *err, const char *path, const char *fmt, ...)
+static void fail_report(gw_cfg_err_t *err, const char *path, const char *fmt, ...)
 {
     snprintf(err->path, sizeof(err->path), "%s", path);
     err->line = err->column = 0;
     int n = snprintf(err->msg, sizeof(err->msg), "%s: ", path);
     if (n < 0 || (size_t)n >= sizeof(err->msg)) {
-        return false;
+        return;
     }
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(err->msg + n, sizeof(err->msg) - (size_t)n, fmt, ap);
     va_end(ap);
-    return false;
 }
 
 /* The JSON path of @key under @path, for error messages. A path longer than @cap (only an
@@ -348,7 +352,10 @@ static bool parse_ipv4(const char *s, uint8_t out[4])
     uint8_t v4[4];
     for (int i = 0; i < 4; i++) {
         unsigned v;
-        if ((i > 0 && *s++ != '.') || !parse_dec(&s, 3, &v) || v > 255) {
+        if (i > 0 && *s++ != '.') {
+            return false;
+        }
+        if (!parse_dec(&s, 3, &v) || v > 255) {
             return false;
         }
         v4[i] = (uint8_t)v;
@@ -425,7 +432,6 @@ bool gw_parse_ipv6(const char *s, uint8_t out[16])
             unsigned *n = gap ? &nt : &nh;
             g[(*n)++] = (uint16_t)(v4[0] << 8 | v4[1]);
             g[(*n)++] = (uint16_t)(v4[2] << 8 | v4[3]);
-            p += strlen(p);
             break;
         }
         unsigned v = 0, digits = 0;
@@ -1520,7 +1526,10 @@ static bool parse_web(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
     }
     /* issue #187: the web password is also the WPA2 key of the access point (its PMK): the
      * rule of a WPA2 passphrase (gw_wpa.h). GW_SECRET_MASK obeys it. */
-    switch (cfg->web.password[0] == '\0' ? GW_WPA_PASS_OK : gw_wpa_pass_check(cfg->web.password)) {
+    /* Issue #231: a variable of the enum type, so that -Wswitch finds a value with no case */
+    gw_wpa_pass_t pass = cfg->web.password[0] == '\0' ? GW_WPA_PASS_OK
+                                                      : gw_wpa_pass_check(cfg->web.password);
+    switch (pass) {
     case GW_WPA_PASS_OK:
         break;
     case GW_WPA_PASS_SHORT:
@@ -1768,6 +1777,7 @@ static const char *type_name_at(const cJSON *types, int i)
 {
     const cJSON *t = cJSON_GetArrayItem(types, i);
     const cJSON *v = t != NULL ? cJSON_GetObjectItemCaseSensitive(t, "name") : NULL;
+    /* NOLINTNEXTLINE(clang-analyzer-core.NullDereference): cJSON_IsString(NULL) is false */
     return cJSON_IsString(v) && v->valuestring != NULL ? v->valuestring : "";
 }
 
@@ -2041,8 +2051,7 @@ static bool lint_refuse(void *ctx, gw_lint_level_t level, const char *path, cons
     if (level != GW_LINT_ERROR) {
         return true;
     }
-    fail(ctx, path, "%s", msg);
-    return false;
+    return fail(ctx, path, "%s", msg);
 }
 
 /* Issue #106: cJSON's hooks, its error pointer and s_alloc_failed are process-wide: the whole
@@ -2115,6 +2124,7 @@ static bool parse_locked(const char *json, size_t len, gw_config_t *cfg, gw_cfg_
     cJSON_Delete(root);
 
     if (ok && cfg->mqtt.client_id[0] == '\0') {
+        /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.strcpy): GW_ID_SIZE < GW_CRED_SIZE */
         strcpy(cfg->mqtt.client_id, cfg->sparkplug.edge_node_id);
     }
     if (ok && cfg->network.hostname[0] == '\0') {
@@ -2169,9 +2179,11 @@ int gw_config_find_device(const gw_config_t *cfg, const char *name, size_t len)
 int gw_config_find_tag(const gw_config_t *cfg, uint16_t dev, const char *name)
 {
     const gw_device_cfg_t *d = &cfg->devices[dev];
-    for (uint16_t i = d->first_tag; i < d->first_tag + d->tag_count; i++) {
+    /* unsigned, not uint16_t: the counter is as wide as the bound (issue #232, CodeQL
+     * cpp/comparison-with-wider-type). The bound is at most GW_MAX_TAGS. */
+    for (unsigned i = d->first_tag; i < (unsigned)d->first_tag + d->tag_count; i++) {
         if (strcmp(cfg->tags[i].name, name) == 0) {
-            return i;
+            return (int)i;
         }
     }
     return -1;

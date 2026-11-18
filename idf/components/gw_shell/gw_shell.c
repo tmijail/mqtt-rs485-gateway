@@ -976,7 +976,8 @@ static int cmd_config(int argc, char **argv)
     for (uint16_t d = 0; d < c->device_count; d++) {
         const gw_device_cfg_t *dev = &c->devices[d];
         unsigned slow = 0;
-        for (uint16_t t = dev->first_tag; t < dev->first_tag + dev->tag_count; t++) {
+        /* unsigned: as wide as the bound (issue #232, CodeQL cpp/comparison-with-wider-type) */
+        for (unsigned t = dev->first_tag; t < (unsigned)dev->first_tag + dev->tag_count; t++) {
             slow += c->tags[t].slow ? 1u : 0u;
         }
         /* #68: what the poll engine runs with. Block reads and gap: the device's keys, or the
