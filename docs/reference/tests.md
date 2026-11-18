@@ -168,7 +168,7 @@ The `host-tests` job runs the linters (#229). Each linter uses only rules that f
 | `e2e-build` | One job for each variant (`default`, `psram`). Runs `run_e2e.sh` with `E2E_STAGE`, and publishes the images. The `psram` job also builds `build-qemu-plain`, because the group `nvs-main` of that variant uses it. Each job makes its own throwaway signing key, and the plain image accepts only an update that the same key signed. GitHub keeps the images for 1 day, because they contain the signing key of the run |
 | `e2e` | One job for each group of `CI_GROUPS` (5 PSRAM groups and 1 default group). Runs `run_e2e.sh --only <group>` with `E2E_PREBUILT`. Publishes the logs, the payloads, `results.json`, `qemu-exits.txt` and the `fault-*.txt` dumps |
 | `e2e-summary` | Writes one table of all the groups. Fails when a group has no `results.json` or a failed check, ran other scenarios than its `--only` list, or when a scenario of a full run ran in no group or in two groups. Also fails when the groups of one variant repeated more scenarios than `MAX_RETRIES` (2) |
-| `e2e-poison` | Runs `E2E_POISON=1 E2E_PLAIN=0 run_e2e.sh --only ota-fw1,ota-park,ota-trial` on the build with full heap poisoning (#104). Refer to [Heap poisoning](e2e-harness.md#heap-poisoning) |
+| `e2e-poison` | Two jobs: `E2E_POISON=1 E2E_PLAIN=0 run_e2e.sh` with `--only ota-fw1` in the PSRAM variant, and with `--only ota-park,ota-trial` without PSRAM, on the build with full heap poisoning (#104). Refer to [Heap poisoning](e2e-harness.md#heap-poisoning) |
 
 The GitHub containers do not permit `unshare`. Thus each `e2e` job runs on the loopback interface of its container.
 
