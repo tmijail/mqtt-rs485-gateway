@@ -12,6 +12,7 @@
 #include "esp_console.h"
 #include "esp_heap_caps.h"
 #include "esp_ipc.h"
+#include "esp_private/cache_utils.h"   /* spi_flash_op_lock(): the emulator-only panic */
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -1614,6 +1615,13 @@ static void panic_task(void *arg)
 {
     (void)arg;
 #if !CONFIG_FREERTOS_UNICORE
+    /* No flash operation of another task may start or run while core 1 is parked: it would
+     * suspend core 0's scheduler and wait for core 1 to answer its IPC (spi_flash_op_block_func),
+     * which a parked core never does, and the emulator hangs. The CI hit this with 'panic' at the
+     * boot of a trial image, while the boot wrote the flash. With the lock of the flash operations
+     * held first, they wait on its mutex instead. The panic handler writes the core dump without
+     * this lock (g_flash_guard_no_os_ops). */
+    spi_flash_op_lock();
     esp_ipc_call(1, park_core, NULL);   /* returns once core 1 runs it: it never comes back */
 #endif
     printf("panic requested from the console\n");

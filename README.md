@@ -2,6 +2,7 @@
 
 **Open-source firmware that connects Modbus RTU devices on an RS485 bus to MQTT, as a Sparkplug B 3.0 Edge Node.** It runs on the Waveshare ESP32-S3-POE-ETH-8DI-8DO board and uses ESP-IDF v6.1.
 
+[![CI](https://github.com/tmijail/mqtt-rs485-gateway/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tmijail/mqtt-rs485-gateway/actions/workflows/ci.yml)
 ![Status: experimental](https://img.shields.io/badge/status-experimental-red)
 ![Hardware: not tested](https://img.shields.io/badge/hardware-not%20tested-red)
 ![ESP-IDF v6.1](https://img.shields.io/badge/ESP--IDF-v6.1-blue)

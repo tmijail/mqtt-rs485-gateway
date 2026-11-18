@@ -797,6 +797,10 @@ class CiGroups(unittest.TestCase):
         self.assertEqual(1, len(nvs))
         self.assertTrue(all(j["plain"] == "1" for j in nvs))
         self.assertEqual(["1"], [b["plain"] for b in m["build"]["include"] if b["plain"] == "1"])
+        # the images of one build job share its signing key: a group that needs the plain build
+        # runs in the variant whose job builds it
+        self.assertTrue(all(j["variant"] == scenarios.PLAIN_BUILDER
+                            for j in run if j["plain"] == "1"))
         self.assertEqual(e2e.MAX_RETRIES, scenarios.max_retries())
         for name in scenarios.NO_CAPTURE | scenarios.PLAIN_SCENARIOS:
             self.assertIn(name, dict(scenarios.SCENARIOS))

@@ -158,9 +158,9 @@ jobs:
   # forward ring in PSRAM; the harness writes otadata into the image first, docs/upstream-reports.md
   # section 4). e2e-plan reads the groups from idf/tools/e2e/scenarios.py (CI_GROUPS: together
   # one full run, each scenario in one group, as test_harness.py checks). e2e-build builds the
-  # QEMU images once per variant (run_e2e.sh with E2E_STAGE; the default variant also builds
-  # build-qemu-plain, the same for both variants). Each e2e job runs one group of one variant on
-  # those images, without a build (E2E_PREBUILT). e2e-summary puts one line per group into the
+  # QEMU images once per variant (run_e2e.sh with E2E_STAGE; the psram variant also builds
+  # build-qemu-plain for its group nvs-main: the images of one job share its signing key). Each
+  # e2e job runs one group of one variant on those images, without a build (E2E_PREBUILT). e2e-summary puts one line per group into the
   # job summary and fails unless the groups of each variant passed and ran one full run.
   e2e-plan:
     name: E2E groups (issue #121)
@@ -342,8 +342,22 @@ jobs:
   # issue #98 changes what the firmware reports and the check fails. Only --only ota: with
   # poisoning and no PSRAM the #80 memory margins are not met (docs/reference/e2e-harness.md#heap-poisoning).
   e2e-poison:
-    name: QEMU OTA scenarios with heap poisoning (issue #104)
+    name: QEMU OTA scenarios with heap poisoning, ${{ matrix.variant }} (issue #104)
     runs-on: ubuntu-24.04
+    # FW-1 in the PSRAM variant (the board's configuration): its checks save the configuration,
+    # and without PSRAM the poisoning leaves too little internal RAM for the validation of a save
+    # (503; heap poisoning in docs/reference/e2e-harness.md). ota-park and ota-trial save no
+    # configuration and run fast without PSRAM. ota-wiring runs without poisoning in the e2e jobs.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: psram
+            psram: "1"
+            only: ota-fw1
+          - variant: default
+            psram: "0"
+            only: ota-park,ota-trial
     container:
       image: espressif/idf:v6.1@sha256:f81b6e077e6af93c312181cd7d4e7936cfbafc5c7f77cbacba8fdd34994f218a
     defaults:
@@ -362,8 +376,8 @@ jobs:
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: /tmp/ccache
-          key: ccache-e2e-poison-f81b6e07-${{ github.sha }}
-          restore-keys: ccache-e2e-poison-f81b6e07-
+          key: ccache-e2e-poison-${{ matrix.variant }}-f81b6e07-${{ github.sha }}
+          restore-keys: ccache-e2e-poison-${{ matrix.variant }}-f81b6e07-
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: /opt/esp/tools/qemu-xtensa
@@ -382,18 +396,21 @@ jobs:
             /tmp/e2e/bin/pip install -q -r idf/tools/e2e/requirements.txt
           fi
       - name: Run the OTA scenarios with heap poisoning
+        env:
+          E2E_PSRAM: ${{ matrix.psram }}
+          ONLY: ${{ matrix.only }}
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           . "$IDF_PATH/export.sh"
           export PATH="$PATH:/usr/sbin"
           ccache -z
           E2E_POISON=1 E2E_PLAIN=0 E2E_WORKDIR=/tmp/e2e-poison E2E_PYTHON=/tmp/e2e/bin/python \
-              idf/tools/e2e/run_e2e.sh --only ota
+              idf/tools/e2e/run_e2e.sh --only "$ONLY"
           ccache -s
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: e2e-poison-artifacts
+          name: e2e-poison-artifacts-${{ matrix.variant }}
           path: |
             /tmp/e2e-poison/*.log
             /tmp/e2e-poison/*.qemu
