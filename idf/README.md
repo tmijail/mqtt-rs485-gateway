@@ -1031,6 +1031,11 @@ On Windows, or without a local ESP-IDF, run the E2E tests in the CI image with `
 
 Configuration used: `tools/e2e/fs/config.json` (keepalive of 10 s, syslog to the receiver of the harness). `run_e2e.sh` also passes the ELF and the IDF python, to decode the *core dump* with `esp_coredump`.
 
+**Result of stage 1 of #224** (#225 the sanitizers, #227 the compiler warnings and the stack report, #229 the linters; on `main` 6288614, the same cloud container, `tools/e2e/run_ci_groups.sh`, `PARALLEL=2`, `E2E_TIMEOUT_SCALE=1.5`). The PSRAM variant gave **284/284** in the groups (264 as one full run), and the default variant gave **18/18**. There were no retries and no QEMU exits.
+- The firmware changed in three places: `gw_log.c` and `gw_fw.c` (#227, `-Wcast-align`) and `index.html` (#229, ESLint). The release build, the QEMU builds and the host build have 0 warnings.
+- The #80 check (scenario `tls`, node `GW29`) gave a minimum free internal RAM of 155 188 B and a lowest largest block at a validation of 118 784 B. These values are the same as before, within the variation of one run.
+- The host tests gave **59/59**, with and without `GW_SANITIZE`. The five linters gave 0 results.
+
 **Result on the branch of #233** (on `main` 21f721d: the self-check of 30 s in the QEMU build, FW-1 OTA in two scenarios, five PSRAM groups and the caches of the CI; a cloud container with 4 CPUs, `tools/e2e/run_ci_groups.sh`, `PARALLEL=2`, `E2E_TIMEOUT_SCALE=1.5`). The PSRAM variant gave **284/284** in the groups (`ota-fw1-web` 11/11, `ota-fw1-ncmd` 36/36, `nvs-main` 101/101, `sf-tls` 53/53, `other` 83/83; 264 as one full run). The default variant gave **18/18**. There were no retries and no QEMU exits.
 - The full run has one new check, `FW-1 GW45 runs on its broker with ota.mqtt`, at the start of the new scenario `FW-1 OTA by web upload`. Each other check of FW-1 OTA is in one of its two scenarios.
 - The first run of `FW-1 OTA by web upload` found a race. On the new boot, the first upload came before the HTTPS server registered its handlers, and the connection got a reset. The scenario now waits for the log line `web UI and REST API on port 443`.
