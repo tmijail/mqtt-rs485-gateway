@@ -133,6 +133,7 @@ git ls-files -z '*.sh' | xargs -0 ~/e2e/bin/shellcheck  # all shell scripts
 ~/e2e/bin/actionlint -shellcheck ~/e2e/bin/shellcheck   # .github/workflows (and shellcheck on each run: script)
 ~/e2e/bin/zizmor --offline .github/workflows            # workflow security (actions pinned to a commit hash)
 npm ci --prefix idf/tools/lint && idf/tools/lint/node_modules/.bin/eslint --config idf/tools/lint/eslint.config.mjs idf/components/gw_web/www/
+node --test idf/test/web/test_ip4norm.mjs             # the IPv4 normalization of the web UI (#226; CI job host-tests)
 #  A false positive gets "# noqa: <rule>" or "# shellcheck disable=SCnnnn" with the reason. The web pages
 #  are in the firmware image: for them, change an option in eslint.config.mjs, not the page.
 ```
