@@ -86,9 +86,10 @@ python3 -m venv ~/e2e && ~/e2e/bin/pip install -r tools/e2e/requirements.txt
 E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh     # PSRAM variant: the board's configuration, all but 3 scenarios (~22 min)
 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh                 # variant without PSRAM: only the OTA trial scenarios (~4 min)
 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh --only ota,https   # subset of scenarios (--only selects in any variant)
-#  --only: failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,time,ota,ota-fw1,ota-park,ota-wiring,
-#          ota-trial,nvs,slow,nopsram,refuse,main,umh,tck,downgrade (ota = the four ota-* names; an unknown
-#          name is an error; nopsram needs E2E_PSRAM=1)
+#  --only: failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,time,ota,ota-fw1,ota-fw1-ncmd,
+#          ota-fw1-web,ota-park,ota-wiring,ota-trial,nvs,slow,nopsram,refuse,main,umh,tck,downgrade
+#          (ota = ota-fw1,ota-park,ota-wiring,ota-trial; ota-fw1 = ota-fw1-ncmd,ota-fw1-web, #233; an
+#          unknown name is an error; nopsram needs E2E_PSRAM=1)
 #  Optional scenarios (never in a full run or in the CI groups; they SKIP when the tool is absent):
 #    umh  real benthos-umh v0.16.2 (UMH Core), E2E_BENTHOS_UMH=<binary>        (#175, README §4.6)
 #    tck  Eclipse Sparkplug TCK 3.0.0 on HiveMQ CE, E2E_TCK_DIR=<dir from tools/e2e/tck_setup.sh>

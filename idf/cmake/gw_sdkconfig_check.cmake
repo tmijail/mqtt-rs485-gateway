@@ -43,7 +43,10 @@ set(GW_SDKCONFIG_REQUIRED
     # #122: no name buffer allocated on each microSD file operation (REL-2)
     FATFS_LFN_NONE
     # #201: the SNTP client gets all the servers of ntp.servers (gw_net.c checks it too)
-    LWIP_SNTP_MAX_SERVERS)
+    LWIP_SNTP_MAX_SERVERS
+    # #233: the QEMU build confirms a new image after 30 s (sdkconfig.qemu); a stale sdkconfig
+    # with the 60 s of the board makes each OTA scenario of the E2E 30 s longer per update
+    GW_FW_SELFCHECK_S)
 
 # Reads CONFIG_ assignments of <file> into <prefix>_<NAME> variables (value "n" for "is not set",
 # and for "=n" in a defaults file) and appends the names to <prefix>_NAMES.

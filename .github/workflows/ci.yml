@@ -15,6 +15,14 @@ concurrency:
   cancel-in-progress: true
 
 # The ESP-IDF v6.1 image is pinned by digest so a re-tagged image cannot change the build silently.
+#
+# Issue #233: the caches. The jobs that build use ccache (IDF_CCACHE_ENABLE=1, CCACHE_DIR in
+# actions/cache, one key per job and variant: each run restores the newest one and saves its own).
+# CCACHE_COMPILERCHECK=content: each configure writes a new -specs file into the build directory,
+# and with the default check (mtime) ccache then never finds an entry of an earlier build.
+# The e2e jobs keep the QEMU of idf_tools.py and the harness' venv in actions/cache; their keys
+# hold the image digest ("f81b6e07") and, for the venv, the hash of requirements.txt. Change the
+# digest in these keys when the image changes.
 jobs:
   host-tests:
     name: Host tests (QA-1) and Sparkplug interop
@@ -48,14 +56,25 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      IDF_CCACHE_ENABLE: 1
+      CCACHE_DIR: /tmp/ccache
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: 400M
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # FW-4: the version carries the git hash
+      - uses: actions/cache@v4
+        with:
+          path: /tmp/ccache
+          key: ccache-firmware-f81b6e07-${{ github.sha }}
+          restore-keys: ccache-firmware-f81b6e07-
       - name: Build (0 warnings required)
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           . "$IDF_PATH/export.sh"
+          ccache -z
           cd idf
           idf.py set-target esp32s3 build 2>&1 | tee build.log
           if grep -E "warning:" build.log; then
@@ -63,6 +82,7 @@ jobs:
             exit 1
           fi
           idf.py size | tee size.txt
+          ccache -s
       - uses: actions/upload-artifact@v4
         with:
           name: firmware-esp32s3
@@ -104,10 +124,20 @@ jobs:
         shell: bash
     strategy:
       matrix: ${{ fromJSON(needs.e2e-plan.outputs.build) }}
+    env:
+      IDF_CCACHE_ENABLE: 1
+      CCACHE_DIR: /tmp/ccache
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: 600M
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # FW-4: the version carries the git hash
+      - uses: actions/cache@v4
+        with:
+          path: /tmp/ccache
+          key: ccache-e2e-${{ matrix.variant }}-f81b6e07-${{ github.sha }}
+          restore-keys: ccache-e2e-${{ matrix.variant }}-f81b6e07-
       - name: Build the QEMU images
         env:
           E2E_PSRAM: ${{ matrix.psram }}
@@ -115,7 +145,9 @@ jobs:
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           . "$IDF_PATH/export.sh"
+          ccache -z
           E2E_STAGE=/tmp/e2e-images E2E_WORKDIR=/tmp/e2e-build idf/tools/e2e/run_e2e.sh
+          ccache -s
           tar -C /tmp/e2e-images --exclude=./plain -czf /tmp/e2e-images.tgz .
           if [ "$E2E_PLAIN" = 1 ]; then
             tar -C /tmp/e2e-images -czf /tmp/e2e-images-plain.tgz plain
@@ -157,13 +189,24 @@ jobs:
       E2E_PLAIN: ${{ matrix.plain }}
     steps:
       - uses: actions/checkout@v4
+      # issue #233: idf_tools.py finds a QEMU of the cache and does not download it again
+      - uses: actions/cache@v4
+        with:
+          path: /opt/esp/tools/qemu-xtensa
+          key: qemu-xtensa-f81b6e07
+      - uses: actions/cache@v4
+        with:
+          path: /tmp/e2e
+          key: e2e-venv-f81b6e07-${{ hashFiles('idf/tools/e2e/requirements.txt') }}
       - name: Install QEMU, mosquitto and the harness' Python packages
         run: |
           apt-get update -qq
           apt-get install -y -qq mosquitto libslirp0 >/dev/null
           python3 "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
-          python3 -m venv /tmp/e2e
-          /tmp/e2e/bin/pip install -q -r idf/tools/e2e/requirements.txt
+          if [ ! -x /tmp/e2e/bin/python ]; then
+            python3 -m venv /tmp/e2e
+            /tmp/e2e/bin/pip install -q -r idf/tools/e2e/requirements.txt
+          fi
       - uses: actions/download-artifact@v4
         with:
           name: e2e-images-${{ matrix.variant }}
@@ -239,24 +282,46 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      IDF_CCACHE_ENABLE: 1
+      CCACHE_DIR: /tmp/ccache
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: 400M
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: actions/cache@v4
+        with:
+          path: /tmp/ccache
+          key: ccache-e2e-poison-f81b6e07-${{ github.sha }}
+          restore-keys: ccache-e2e-poison-f81b6e07-
+      - uses: actions/cache@v4
+        with:
+          path: /opt/esp/tools/qemu-xtensa
+          key: qemu-xtensa-f81b6e07
+      - uses: actions/cache@v4
+        with:
+          path: /tmp/e2e
+          key: e2e-venv-f81b6e07-${{ hashFiles('idf/tools/e2e/requirements.txt') }}
       - name: Install QEMU, mosquitto and the harness' Python packages
         run: |
           apt-get update -qq
           apt-get install -y -qq mosquitto libslirp0 >/dev/null
           python3 "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
-          python3 -m venv /tmp/e2e
-          /tmp/e2e/bin/pip install -q -r idf/tools/e2e/requirements.txt
+          if [ ! -x /tmp/e2e/bin/python ]; then
+            python3 -m venv /tmp/e2e
+            /tmp/e2e/bin/pip install -q -r idf/tools/e2e/requirements.txt
+          fi
       - name: Run the OTA scenarios with heap poisoning
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           . "$IDF_PATH/export.sh"
           export PATH="$PATH:/usr/sbin"
+          ccache -z
           E2E_POISON=1 E2E_PLAIN=0 E2E_WORKDIR=/tmp/e2e-poison E2E_PYTHON=/tmp/e2e/bin/python \
               idf/tools/e2e/run_e2e.sh --only ota
+          ccache -s
       - uses: actions/upload-artifact@v4
         if: always()
         with:

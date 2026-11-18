@@ -65,12 +65,12 @@ The last line of the output gives the result, for example `181/181 checks passed
 
 ## 4. Run the CI groups in parallel (faster)
 
-`run_ci_groups.sh` builds the images of one variant one time. Then it runs the CI groups of that variant at the same time, each group in its own network namespace. The PSRAM variant has three groups, and the default variant has one group (`CI_GROUPS` in `idf/tools/e2e/scenarios.py`).
+`run_ci_groups.sh` builds the images of one variant one time. Then it runs the CI groups of that variant at the same time, each group in its own network namespace. The PSRAM variant has five groups, and the default variant has one group (`CI_GROUPS` in `idf/tools/e2e/scenarios.py`).
 
-1. Run the groups of the PSRAM variant:
+1. Run the groups of the PSRAM variant. Set `PARALLEL` to 5 only when the Docker VM has 10 CPUs or more. Otherwise, set it to the number of CPUs divided by 2.
 
    ```powershell
-   docker run --rm --privileged -v gw-e2e:/work -w /work/repo/idf -e PARALLEL=3 -e E2E_PSRAM=1 gw-e2e tools/e2e/run_ci_groups.sh /work/groups
+   docker run --rm --privileged -v gw-e2e:/work -w /work/repo/idf -e PARALLEL=5 -e E2E_PSRAM=1 gw-e2e tools/e2e/run_ci_groups.sh /work/groups
    ```
 
 2. Run the group of the default variant:
