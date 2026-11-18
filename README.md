@@ -107,7 +107,7 @@ flowchart LR
 | Item | Value |
 |---|---|
 | Board | Waveshare ESP32-S3-POE-ETH-8DI-8DO |
-| Module | ESP32-S3-WROOM-1U-N16R8: 16 MB flash, 8 MB octal PSRAM. **The firmware requires the PSRAM.** |
+| Module | ESP32-S3-WROOM-1U-N16R8: 16 MB flash, 8 MB octal PSRAM |
 | Network | W5500 Ethernet with PoE, Wi-Fi |
 | Field bus | RS485 on UART1 |
 | Local I/O | 8 digital inputs, 8 digital outputs on a TCA9554 expander |
