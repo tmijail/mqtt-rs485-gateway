@@ -9,7 +9,11 @@ This document lists all the keys of the configuration document of the gateway, w
 
 ## The document
 
-The configuration is one JSON document. The gateway keeps it in the LittleFS partition as `/cfg/config.json`. Without this file, the gateway uses the configuration in the firmware.
+The configuration is one JSON document. The gateway keeps it in the LittleFS partition (`storage`) as `/cfg/config.json`. Without this file, the gateway uses the configuration in the firmware. For the conditions of that rule, refer to [Load and recovery mode](#load-and-recovery-mode).
+
+- The firmware embeds [`default_config.json`](../../idf/components/gw_storage/default_config.json) as an example.
+- To flash a different document, copy it to `idf/fs/config.json`. `idf.py flash` writes the folder `idf/fs/` into the `storage` partition.
+- To change the document without a new flash, use the web UI, `PUT /api/config` or the shell command `config load`. Refer to [Change, back up and restore the configuration](../how-to/change-the-configuration.md).
 
 This example has the usual keys:
 
@@ -50,14 +54,25 @@ The top-level sections are `gateway`, `network`, `ntp`, `mqtt`, `sparkplug`, `rs
 - A maximum of 16 devices, 64 tags for each device, and 256 tags in total. A device with a device type counts the tags of its type.
 - An error gives the JSON path of the value, for example `devices[1].tags[2].type`. A JSON syntax error gives the line and the column.
 - A warning does not stop a save. The warnings are the name checks of [UMH names](#name-checks-for-umh-core).
+- These rules are the configuration schema of `docs/SPEC.md` §6. This firmware is the only implementation of the schema.
+
+**Removed keys.** These keys of earlier firmware versions are unknown keys now. The gateway rejects a stored document with one of them, and starts in recovery mode. No gateway is installed yet (before v1.0), thus there is no migration. Change the document, then save it again.
+
+| Removed key | Use now | Issue |
+|---|---|---|
+| `ntp.server` | `ntp.servers` | #201 |
+| `devices[].tags[].bit` | `bit_offset` | #202 |
+| `local_io.di_debounce_ms` | `local_io.di[].debounce_ms` | #211 |
+| `ota.enabled` | `ota.mqtt`. An update from the web UI is always possible | #223 |
+| The tags of each device of one model, with `devices[].type` as a free text | `device_types`, and `devices[].type` as the name of a device type. A device with `type` and `tags` is an error at `devices[i].tags` | #213 |
 
 ### The rules of the names
 
 These rules apply to `group_id`, `edge_node_id`, `primary_host_id`, `device_prefix`, the device `name`, the `name` of a device type, and the tag `name` and `units`:
 
-- The names are valid UTF-8.
-- The Sparkplug IDs do not contain `/`, `+`, `#` or the control characters U+0080 to U+009F.
-- Two device names must not differ only in case. Two device types, or two tag names of one device or of one device type, must not differ only in case. The comparison folds the ASCII letters only.
+- The names are valid UTF-8 (RFC 3629: no overlong form, no surrogate) (#162).
+- The Sparkplug IDs do not contain `/`, `+`, `#` or the control characters U+0080 to U+009F. A broker can close the connection for a topic with a control character.
+- Two device names must not differ only in case. Two device types, or two tag names of one device or of one device type, must not differ only in case. The comparison folds the ASCII letters only: `É` and `é` are two different names for the check. The specification says SHOULD NOT (`tck-id-case-sensitivity-sparkplug-ids`, `tck-id-case-sensitivity-metric-names`), and the gateway rejects the configuration.
 - A tag name must not also be a folder of another tag name of the same device or device type, for example `A` and `A/B`.
 - The name of a device type must not be the name or the first folder of a node metric: `bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info`, `Firmware Update` or `Run Hours`.
 - The longest device topic, `spBv1.0/<group_id>/DBIRTH/<edge_node_id>/<device_id>`, must fit in 159 bytes.
@@ -94,6 +109,51 @@ The gateway keeps `mqtt.password`, `network.wifi.password` and `web.password` in
 - In the file `/cfg/config.json`, a secret that is not there, empty or `"********"` gets its value from NVS.
 - A secret in clear text in the file is valid. The gateway moves it to NVS and writes the file again without it.
 - The gateway keeps `web.password` only as a salted PBKDF2-HMAC-SHA256 hash, and as the PMK of the access point. For the reasons, refer to [The security of the access point](../explanation/access-point-security.md).
+- For where the gateway keeps the secrets, refer to [Commissioning and secrets](commissioning-and-secrets.md#the-secrets-in-nvs).
+
+## Load and recovery mode
+
+**The firmware uses the embedded configuration only when `/cfg/config.json` does not exist**, and no factory reset occurred. After a factory reset, the gateway starts in commissioning mode. Refer to [Commissioning and secrets](commissioning-and-secrets.md#the-modes).
+
+All other problems put the gateway in **recovery mode**:
+
+- the LittleFS partition does not mount;
+- the file is empty, cannot be read or is larger than the limit;
+- the document is not valid.
+
+In recovery mode, **the polling and MQTT do not start**. The network, the web UI, the shell and the access point start. Thus you can correct the configuration without a new flash.
+
+- The network uses the network of the last valid configuration (`lkg_net` in NVS), or DHCP on Ethernet. If that network is not usable, for example a static IP of a different plant, use the access point or the shell.
+- The LED blinks red. Each 10 s, the log gives the cause again with the level ERROR.
+- A gateway flashed without the `storage` partition does not mount LittleFS, thus it starts in recovery mode. This is intentional: the gateway must never start with the Sparkplug identity of the example.
+
+Examples of the cause in the log:
+
+- `/cfg/config.json: 140000 bytes; the maximum is 131072 (CONFIG_GW_CONFIG_MAX_BYTES)`
+- `LittleFS partition 'storage' not mountable (ESP_FAIL)`
+- `devices[0].tags[1].writable: only the coil and holding areas are writable`
+- `devices[0].tags[0].scal: unknown key`
+- `JSON syntax error at line 5, column 3: invalid syntax`
+
+The firmware counts the line and the column in characters, from the error pointer of cJSON. It rejects content after the end of the document. It also rejects a duplicate key in all objects (`mqtt.host: duplicate key`): cJSON accepts duplicate keys, and its searches see only the first one.
+
+For the procedure, refer to [Recover a gateway](../how-to/recover-the-gateway.md#the-configuration-is-rejected).
+
+### The size limit and the memory
+
+- The maximum size of the file is 128 KiB (`CONFIG_GW_CONFIG_MAX_BYTES`, menu `Gateway: storage`).
+- The largest document of the schema (16 devices, 256 tags with all their keys) is approximately 46 KB in compact JSON, and 82 KB with an indent of 2 spaces.
+- At boot, the firmware allocates the file buffer and the cJSON tree in PSRAM: approximately 200 KB for 256 tags. It releases them before it starts the tasks.
+- The log gives the free heap before the parse: `/cfg/config.json: N bytes; free heap: internal … (largest block …), PSRAM …`.
+- With PSRAM (the board), the only limit is `CONFIG_GW_CONFIG_MAX_BYTES`.
+- The QEMU build without PSRAM (`CONFIG_GW_EMU_NO_PSRAM`) parses in the internal heap. There, a file of approximately 110 KB or less loads. A larger file gives `not enough memory to parse … bytes of JSON`.
+
+### Save and export
+
+- The web UI, `PUT /api/config` and the shell command `config load` use the same validation.
+- The firmware saves the document atomically: a temporary file, `fsync`, then `rename`. Then the gateway does an orderly restart (NDEATH).
+- `config show` and `GET /api/config` export the document with the secrets masked.
+- During the trial of a new firmware image, the gateway refuses a save (HTTP 409). Refer to [Firmware updates](firmware-updates.md#the-trial-of-a-new-image).
 
 ## `gateway`
 
@@ -321,7 +381,7 @@ The object form, with the optional spill to a microSD card:
 | `sd.enabled` | bool | `false` | Moves the oldest samples to the microSD card when the RAM buffer is three quarters full. It requires `enabled` |
 | `sd.max_kb` | integer | `131072` | 64 to 4 194 304 (128 MB by default). The space that the gateway uses on the card |
 
-> **Caution: Read the GPIO45 warning in [`idf/README.md` §6.5](../../idf/README.md#65-slow-broker-and-command-limits) before you set `sd.enabled`.** GPIO45 (D0 of the card) is a strapping pin. A pull-up on D0 can stop the boot of the board.
+> **Caution: Read the GPIO45 warning in [Known limitations](known-limitations.md#slow-broker-and-command-limits) before you set `sd.enabled`.** GPIO45 (D0 of the card) is a strapping pin. A pull-up on D0 can stop the boot of the board.
 
 The web UI has the section **Store & forward** in the card **Sparkplug**:
 
@@ -473,6 +533,7 @@ The tags of a device without a type, and the tags of a device type (`device_type
 - A `string` tag has no `scale`, no `offset` and no `deadband`.
 - A `bytes` tag has no `scale`, `offset`, `deadband`, `eng_low` or `eng_high`.
 - `eng_low` and `eng_high` are not permitted on `bool`, `string` and `bytes` tags.
+- `units`, `eng_low` and `eng_high` go only in the DBIRTH, as the properties `engUnit`, `engLow` and `engHigh` (SPB-16). `engLow` and `engHigh` are a Float for all tag types, thus the gateway rounds a value with more than 7 significant digits. A Float uses 4 B for each value, and the configuration is in memory two times while the gateway validates a new one.
 - `write_min` and `write_max` are not permitted on `bool`, `string` and `bytes` tags, and not on a tag that is not writable.
 
 In the web UI, the details row of a tag (**More**) shows only the keys that apply to the type of the tag. A key with a value stays visible:
@@ -840,3 +901,24 @@ In the web UI, the field **Port** of the card **Web interface** is `web.port`, w
 ![The confirmation 'Turn off the web interface?' after 'Save and restart' with Enabled off: after the restart, the page and the REST API do not answer. The steps to turn the web interface on again: push BOOT for 2 to 10 s, open the web UI, turn on Enabled and save. It has the red button 'Save and restart' and Cancel.](../images/web-off-dialog.png)
 
 For the routes, refer to [The REST API](rest-api.md).
+
+## Build options
+
+Some settings are build options, not keys of the document. Set them with `idf.py menuconfig`, in the menus `Gateway: …`. A change needs a new build and a new flash. For the `sdkconfig` files and their check, refer to [Build configuration](build-configuration.md).
+
+| Item | Option or menu |
+|---|---|
+| The polarity of the DIs and of the DOs. The pins are fixed in `gw_bsp` | `Gateway: board I/O` |
+| The priorities and the cores of the tasks, and the queue sizes | The menu of each component |
+| The defaults of block reads, the maximum gap and forced FC15/FC16. Each device can set its own value with `block_reads`, `max_gap` and `write_multiple` | `CONFIG_GW_MB_BLOCK_READS`, `CONFIG_GW_MB_BLOCK_MAX_GAP`, `CONFIG_GW_MB_FORCE_MULTI_WRITE` |
+| The maximum interval between two probes of an offline device | `CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS` |
+| The MQTT backoff | `CONFIG_GW_MQTT_BACKOFF_MIN_MS`, `CONFIG_GW_MQTT_BACKOFF_MAX_MS`, menu `Gateway: Sparkplug / MQTT` |
+| Wi-Fi in the build. Without it, the firmware ignores `network.wifi` and gives a warning | `CONFIG_GW_WIFI`, menu `Gateway: network` |
+| The number of lines that the remote syslog keeps (32 by default), and the priority of its task | `CONFIG_GW_SYSLOG_SLOTS`, menu `Gateway: remote syslog` |
+| The Modbus TCP gateway: the clients at the same time, the priority and the maximum wait for a bus response | `Gateway: Modbus TCP gateway` |
+| The shell commands that change something. With `n`, the console is read-only | `CONFIG_GW_SHELL_WRITE_COMMANDS` |
+| mDNS | `CONFIG_GW_MDNS` |
+| The access point, its maximum time after a push of BOOT (30 min, normal mode only), and the time without a client that stops it (5 min) | `CONFIG_GW_SOFTAP`, `CONFIG_GW_SOFTAP_TIMEOUT_MIN`, `CONFIG_GW_SOFTAP_IDLE_MIN`. Refer to [The access point](access-point.md#times) |
+| The time of the claim window (10 min) | `CONFIG_GW_WEB_CLAIM_WINDOW_MIN`, menu `Gateway: web` |
+| The times of the firmware trial and of safe mode | Menu `Gateway: firmware updates (FW-1)`. Refer to [Firmware updates](firmware-updates.md) |
+| The maximum size of the document (128 KiB) | `CONFIG_GW_CONFIG_MAX_BYTES`, menu `Gateway: storage` |

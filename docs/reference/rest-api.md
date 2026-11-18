@@ -3,6 +3,7 @@
 This document lists the routes of the REST API of the gateway, its authentication and its responses.
 
 - For the configuration document that `GET` and `PUT /api/config` use, refer to [The configuration document](configuration.md).
+- For the firmware update process, the trial and the pre-flight check, refer to [Firmware updates](firmware-updates.md). For the security facts of the web server, refer to [Commissioning and secrets](commissioning-and-secrets.md).
 - For the procedures, refer to [Change, back up and restore the configuration](../how-to/change-the-configuration.md), [Update the firmware](../how-to/update-the-firmware.md), [Restart into safe mode or do a factory reset](../how-to/restart-into-safe-mode-or-reset.md), [Read the live log](../how-to/read-the-live-log.md) and [Manage the certificates](../how-to/manage-the-certificates.md).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The E2E in QEMU examines the routes.
@@ -19,6 +20,7 @@ This document lists the routes of the REST API of the gateway, its authenticatio
 - During that time, the gateway does not examine the password, also not the correct one.
 - Each new lockout in sequence makes the time two times longer, up to 15 min.
 - A correct login removes the lockout.
+- The gateway keeps the state of 8 addresses. Behind a NAT, all clients share one address. For the other limits, refer to [Commissioning and secrets](commissioning-and-secrets.md#the-limits-of-the-web-server).
 
 ## Writes and CSRF
 
@@ -28,8 +30,11 @@ The client can also send `Origin`, or `Referer` when there is no `Origin`. Then 
 
 - The gateway compares them in a normal form. The name is in lower case and without the final dot, IPv6 is between brackets, and the port is decimal. The default port of the scheme is the same as no port.
 - Any name of the gateway is correct, if the page and the request use the same name: the IP, `<hostname>.local`, a DNS name of the plant.
-- A malformed `Host` or `Origin`, and `Origin: null`, are not correct.
+- A malformed `Host` or `Origin`, and `Origin: null`, are not correct. Malformed means, for example, a space, `@`, two `:`, a port outside 1 to 65535, or a bracket that is not closed.
+- A `Referer` of more than 255 characters, or an `Origin` of more than 127 characters, is not correct.
 - Otherwise, the response is `403`, before the password check. It does not count as a failed login.
+
+The gateway does not answer `OPTIONS`, and it sends no CORS headers. Thus a page of another site cannot add the header `X-Requested-With`. A `GET` changes nothing, and the gateway does not examine its origin. Another site can send a `GET`, but cannot read the response. For the limits of this check, for example DNS rebinding, refer to [The security of the web UI and the claim window](../explanation/web-and-claim-security.md#why-the-csrf-check-has-this-form).
 
 A client that is not a browser (`curl`, a script) does not send `Origin`. The header `X-Requested-With` is sufficient:
 
@@ -48,7 +53,8 @@ curl -k -u admin:<web password> -H "X-Requested-With: curl" -X PUT \
 |---|---|
 | `GET /api/config` | Exports the saved configuration, with the secrets masked. `?download=1` sends it as a file |
 | `PUT /api/config` (or `POST`) | Validates the document, saves it and restarts in order (NDEATH). `?dry_run=1` only validates |
-| `PUT /api/config?restore_prev=1` | No body. The configuration from before the last firmware update replaces the stored one. Then the gateway restarts |
+| `PUT /api/config?restore_prev=1` | No body. The configuration from before the last firmware update replaces the stored one. Then the gateway restarts. Refer to [Firmware updates](firmware-updates.md#the-configuration-from-before-the-update) |
+| `PUT /api/config?discard_nvs_copy=1` | Formats LittleFS and saves the document. Use it only when LittleFS does not mount and can hold the copy of an NVS migration (QEMU build). The secrets of the copy are lost. Refer to [Commissioning and secrets](commissioning-and-secrets.md#the-nvs-migration-in-the-qemu-build) |
 
 The responses of `PUT /api/config`:
 
@@ -493,7 +499,7 @@ A download from a URL:
 
 The answer is `202 {"ok":true,"started":true}`. The result comes later in `GET /api/firmware`.
 
-An upload: the body is the image, with `Content-Type: application/octet-stream` and `Content-Length`. The optional header `X-Image-SHA256` gives the SHA-256 of the file. `?force=1` forces the image. The answer is `200 {"ok":true,"restart":true}`.
+An upload: the body is the image, with `Content-Type: application/octet-stream` and `Content-Length`. The optional header `X-Image-SHA256` gives the SHA-256 of the file. `?force=1` forces the image. The answer is `200 {"ok":true,"restart":true}`. The upload runs in the task of the web server: the web UI does not answer other requests until the upload ends.
 
 With a SHA-256, the gateway calculates the SHA-256 of the image that it wrote, before it sets the image as the boot image. When the two values do not agree, the gateway does not install the image, and the firmware that runs continues to run. The state is `failed: image <version>: the SHA-256 of the file does not agree`. An upload then gets this answer:
 
