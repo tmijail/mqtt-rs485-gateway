@@ -251,6 +251,7 @@ static bool apply_locked(const char *json, size_t len, gw_cfgdoc_mode_t mode,
     for (int i = 0; i < SECRET_COUNT; i++) {
         cJSON *parent = secret_parent(root, (secret_t)i, false);
         cJSON *item = parent ? cJSON_GetObjectItemCaseSensitive(parent, "password") : NULL;
+        /* NOLINTNEXTLINE(clang-analyzer-core.NullDereference): cJSON_IsString(NULL) is false */
         const char *v = cJSON_IsString(item) ? item->valuestring : NULL;
         bool masked = v != NULL && strcmp(v, GW_SECRET_MASK) == 0;
         if (mode == GW_CFGDOC_UPDATE) {
@@ -265,9 +266,11 @@ static bool apply_locked(const char *json, size_t len, gw_cfgdoc_mode_t mode,
         value[i] = eff[i] == EFF_STORED ? stored_value(stored, (secret_t)i)
                    : eff[i] == EFF_NEW  ? v
                                         : "";
-        /* the effective values go to cfg and out->secrets before the tree is changed */
+        /* the effective values go to cfg and out->secrets before the tree is changed.
+         * NOLINTBEGIN(clang-analyzer-security.insecureAPI.strcpy): each destination has the size
+         * of its source in gw_secrets_t, and the parse checked the length of a new value. */
         if (i == SECRET_MQTT) {
-            strcpy(out->secrets.mqtt_password, value[i]);    /* lengths checked by the parse */
+            strcpy(out->secrets.mqtt_password, value[i]);
             strcpy(cfg->mqtt.password, value[i]);
         } else if (i == SECRET_WIFI) {
             strcpy(out->secrets.wifi_password, value[i]);
@@ -283,6 +286,7 @@ static bool apply_locked(const char *json, size_t len, gw_cfgdoc_mode_t mode,
                 strcpy(out->secrets.ap_pmk, stored->ap_pmk);
             }
         }
+        /* NOLINTEND(clang-analyzer-security.insecureAPI.strcpy) */
         if (item != NULL) {
             cJSON_DeleteItemFromObjectCaseSensitive(parent, "password");
         }

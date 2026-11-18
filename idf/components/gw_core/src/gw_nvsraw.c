@@ -277,8 +277,8 @@ size_t gw_nvsmig_add(uint8_t *buf, size_t cap, size_t used, const char *ns, cons
     }
     uint8_t *r = buf + used;
     memset(r, 0, 2 * GW_NVSRAW_NAME);
-    memcpy(r, ns, strlen(ns));
-    memcpy(r + GW_NVSRAW_NAME, key, strlen(key));
+    memcpy(r, ns, strlen(ns) + 1);   /* name_ok(): the terminator is in the field */
+    memcpy(r + GW_NVSRAW_NAME, key, strlen(key) + 1);
     r[32] = type;
     put16(r + 33, (uint32_t)len);
     if (len > 0) {

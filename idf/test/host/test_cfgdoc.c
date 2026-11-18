@@ -57,6 +57,7 @@ static const char *json_str(const char *text, const char *path)
     }
     const char *r = NULL;
     if (cJSON_IsString(o)) {
+        /* NOLINTNEXTLINE(clang-analyzer-core.NullDereference): cJSON_IsString(NULL) is false */
         snprintf(out, sizeof(out), "%s", o->valuestring);
         r = out;
     } else if (o != NULL) {

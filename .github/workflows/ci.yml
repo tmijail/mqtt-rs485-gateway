@@ -141,6 +141,35 @@ jobs:
             build-fuzz/crashes/
             build-fuzz/logs/
 
+  # Issue #231: clang-tidy on gw_core and the host tests, with the checks of idf/.clang-tidy (the
+  # static analyzer of clang, bugprone and the warnings of clang). The configuration of the host
+  # build with clang gives compile_commands.json; the job does not build. Each result is an error
+  # (WarningsAsErrors), and a NOLINT without its check and a reason also stops the job.
+  clang-tidy:
+    name: clang-tidy on gw_core and the host tests (issue #231)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install clang 18 and clang-tidy 18
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang-18 clang-tidy-18 >/dev/null
+      - name: Each NOLINT names its check and gives a reason
+        run: |
+          if grep -rnE 'NOLINT' --include='*.[ch]' idf/components/gw_core idf/test/host |
+             grep -vE 'NOLINT(NEXTLINE|BEGIN)?\([A-Za-z0-9.,*-]+\): [^ ]|NOLINTEND\('; then
+            echo "::error::a NOLINT without its check and a reason (issue #231)"
+            exit 1
+          fi
+      - name: Run clang-tidy
+        run: |
+          cmake -S idf/test/host -B build-tidy -DCMAKE_C_COMPILER=clang-18 -DGW_RULE_CHECKS=OFF \
+                -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          run-clang-tidy-18 -clang-tidy-binary clang-tidy-18 -p build-tidy -j"$(nproc)" -quiet \
+                            'idf/components/gw_core/(src|port)/|idf/test/host/'
+
   firmware:
     name: ESP32-S3 firmware build (QA-2)
     runs-on: ubuntu-24.04

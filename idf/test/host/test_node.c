@@ -2809,6 +2809,7 @@ static size_t raw_fw_ncmd(uint8_t *out, size_t n)
     m[k++] = 0x7a;
     m[k++] = (uint8_t)(0x80 | (n & 0x7f));
     m[k++] = (uint8_t)(n >> 7);
+    /* NOLINTNEXTLINE(bugprone-not-null-terminated-result): protobuf bytes, no terminator */
     memcpy(m + k, "https://", 8);
     memset(m + k + 8, 'a', n - 8);
     k += n;

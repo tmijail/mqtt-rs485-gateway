@@ -12,6 +12,7 @@ This document gives the test suites of the firmware, what each suite examines, t
 | Host tests at `-O2` | The same tests, with the warnings that only the optimizer gives | CI job `host-tests` | The same |
 | Host tests with sanitizers (#225) | The same tests with AddressSanitizer and UndefinedBehaviorSanitizer | CI job `host-tests-sanitizers` | No error from a sanitizer |
 | Fuzz tests (#226) | The parsers of `gw_core` with libFuzzer, AddressSanitizer and UndefinedBehaviorSanitizer: 12 targets | `idf/test/fuzz`, CI jobs `fuzz` (60 s for each target) and `fuzz-weekly.yml` (20 min for each target) | No crash, no sanitizer error, no failed check of a target |
+| clang-tidy (#231) | The sources of `gw_core` and of the host tests: the static analyzer of clang, the `bugprone` checks and the warnings of clang | CI job `clang-tidy` | 0 results. Each `NOLINT` comment names its check and gives a reason |
 | Sparkplug decode check | The payloads of the engine, decoded with the official Tahu proto | `spb_dump`, `idf/tools/spb_decode.py --check` | 0 structural errors |
 | Firmware build (QA-2) | The release build for `esp32s3`, and the QEMU builds | CI job `firmware` | 0 warnings |
 | Static analyzer (#230) | The own components (`gw_*`, `main`) of the release build, with the GCC static analyzer (`-fanalyzer`) | CI job `analyzer` | 0 results |
@@ -32,6 +33,7 @@ A change is done when the host tests pass and the full E2E passes: the full run 
 | Unity cases | 450 in the 42 suites (455 with `test_sfcfg_packed`) |
 | Fuzz targets | 12, in `idf/test/fuzz`. Refer to [Fuzz tests](#fuzz-tests) |
 | Results of the static analyzer | 0 in the 76 C files of the own components. Refer to [Static analyzer](#static-analyzer) |
+| clang-tidy | 0 results in 96 source files. 14 `NOLINT` comments. Refer to [clang-tidy](#clang-tidy) |
 | Self-test of the decode rules | 26 tests |
 | Web UI unit test | 9 tests |
 | E2E checks, full run of the PSRAM variant | 265 (285 in the 5 CI groups: each group repeats the 5 checks of the run) |
@@ -52,7 +54,7 @@ The host tests build `gw_core` and its tests with the host compiler. Platform ca
 
 - A local build without `CMAKE_C_FLAGS` uses `-O0`. The CI job `host-tests` uses `-O2`, because some warnings of `-Wall` and `-Wextra` need the optimizer (for example `-Wformat-truncation` and `-Wstringop-overread`).
 - The test files and the host build of `gw_core` use the warning options of `GW_HOST_WARNING_FLAGS` (refer to [Compiler warnings and the stack](compiler-warnings-and-stack.md)). The host build of `gw_core` also uses `-Wconversion`.
-- `-O3` gives 7 `-Wmaybe-uninitialized` warnings in `gw_config.c`. They are false positives: the analyzer does not see that `fail()` always returns `false`. Issue #231 removes them.
+- A build with `-O3` also gives 0 warnings, and all the tests pass (#231). The CI does not use `-O3`.
 
 ### The CTest tests
 
@@ -210,6 +212,48 @@ The local runs were on a cloud container with 4 CPUs, with clang 18.1.3, 4 targe
 
 `test_poll` (`test_unanswered_block_fails_the_cycle`) failed one time in 7 runs with `Expected …756 Was …757`. The timestamp of a tag that the firmware did not read changed by 1 ms. It seems to depend on the wall clock of the host.
 
+## clang-tidy
+
+The CI job `clang-tidy` runs clang-tidy 18 on the sources of `gw_core` (`src/`, `port/`) and on the host tests (`idf/test/host/`) (#231). The configuration is `idf/.clang-tidy`. A result stops the job. To run it, refer to [Run clang-tidy](../how-to/run-the-tests.md#run-clang-tidy).
+
+- **The compile database.** The job configures the host build with clang and `-DGW_RULE_CHECKS=OFF`, and does not build. Thus `compile_commands.json` has no option that only GCC knows (`-fcallgraph-info=su`).
+- **One entry for each source.** clang-tidy 18 examines each entry of a source in one process. A second entry of a source gave false `clang-analyzer-valist.Uninitialized` results. Thus `support.c` is the library `test_support`, and `test_sfcfg_packed` has no entry (`EXPORT_COMPILE_COMMANDS OFF`).
+- **The scope.** The headers of `gw_core/include` and of the tests are examined. The generated `sparkplug_b.pb.c` and `.h`, nanopb, cJSON and Unity are not examined.
+- **The IDF adapters.** clang-tidy does not examine the other components. `idf.py clang-check` needs the `pyclang` package and the `esp-clang` toolchain, and the `espressif/idf:v6.1` image has neither of them.
+
+The checks are `clang-analyzer-*`, `bugprone-*` and `clang-diagnostic-*` (the warnings of clang with the options of the host build), without the checks of this table. Each of them gave only noise on this code:
+
+| Check that is off | Reason |
+|---|---|
+| `clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling` | It asks for the functions of C11 Annex K (`memcpy_s`, `snprintf_s`) at each call of `memcpy`, `snprintf` and other standard functions. Newlib and glibc do not have Annex K |
+| `clang-analyzer-optin.performance.Padding` | The padding of a structure. Some layouts are part of a format, and the memory budget comes from measurements (REL-2) |
+| `bugprone-easily-swappable-parameters` | Two adjacent parameters of the same type. This is a style of the API |
+| `bugprone-implicit-widening-of-multiplication-result` | An `unsigned` product that becomes a `size_t`. On the ESP32-S3, `size_t` has 32 bits, and each product is a small index or size |
+| `bugprone-narrowing-conversions` | `-Wconversion` of the compiler examines the same. The results were a `char` in a conditional expression with a character constant |
+| `bugprone-assignment-in-if-condition` | `if ((p = f()) == NULL)` is a style |
+| `bugprone-casting-through-void` | A check for C++. In C, `(T *)(void *)p` tells `-Wcast-align` that the code knows the alignment |
+| `clang-analyzer-security.insecureAPI.strcpy` (only in `idf/test/host/.clang-tidy`) | The tests copy literals and values of known length into their own buffers |
+
+The first run of clang-tidy gave these results (the unique results in `gw_core` and the host tests). The column "Now" gives what changed.
+
+| Check | First run | Now |
+|---|---|---|
+| The checks that are off (table above) | 998 | Off |
+| `bugprone-reserved-identifier` | 12 | All in the generated `sparkplug_b.pb.h`, which clang-tidy does not examine now |
+| `clang-analyzer-core.uninitialized.Assign`, `core.UndefinedBinaryOperatorResult`, `core.CallAndMessage` | 23 | 0. All in `gw_config.c`: the analyzer does not follow a variadic function, so it did not see that `fail()` is always `false`. `fail()` is now a macro with the value `false`. GCC at `-O3` gave the same false positives |
+| `clang-analyzer-valist.Uninitialized` | 4 | 0. One entry for each source in the compile database |
+| `clang-analyzer-security.insecureAPI.strcpy` | 16 | 10 in `gw_core` have a `NOLINT` comment: each copy has a length check or a destination of the same or a larger size. 6 in the tests: off |
+| `clang-analyzer-core.NullDereference` | 6 | 6 `NOLINT` comments: `cJSON_IsString(NULL)` and `cJSON_IsObject(NULL)` are `false`, but cJSON is not in the translation unit |
+| `clang-analyzer-deadcode.DeadStores` | 5 | 0. The stores are removed (1 in `gw_config.c`, 4 in the tests) |
+| `bugprone-not-null-terminated-result` | 5 | 3 copies now include the terminator (NVS names). 2 `NOLINT` comments: binary data (a magic number, a protobuf field in a test) |
+| `clang-analyzer-optin.core.EnumCastOutOfRange` | 2 | 2 `NOLINT` comments: a test gives a bad value on purpose |
+| `bugprone-switch-missing-default-case` | 1 | 0. The switch of the web password in `gw_config.c` was on an `int`. It is now on a variable of the enum type, so `-Wswitch` finds a value with no case |
+| `bugprone-inc-dec-in-conditions` | 1 | 0. `parse_ipv4` has two conditions now |
+| `bugprone-too-small-loop-variable` | 1 | 0. A test |
+| `bugprone-suspicious-missing-comma` | 1 | 0. Parentheses around the joined literal of a test. Clang also gave `-Wstring-concatenation` for it |
+
+The run found no real error. A `NOLINT` comment names its check and gives a reason, for example `/* NOLINTNEXTLINE(clang-analyzer-core.NullDereference): cJSON_IsString(NULL) is false */`. The job refuses a `NOLINT` comment without the two. `NOLINTBEGIN` and `NOLINTEND` are permitted for a block (`gw_cfgdoc.c`).
+
 ## Sparkplug decode check
 
 `spb_dump` writes real NDEATH, NBIRTH, DBIRTH, DDATA and NDATA payloads of the engine. Each file name is `<n>_<group>+<TYPE>+<edge>[+<device>].bin`: the topic after `spBv1.0/`, with `+` for `/` (#166). `spb_decode.py` compiles the official `sparkplug_b.proto` of eclipse/tahu (an unchanged copy in `idf/components/gw_core/proto/`) with `grpc_tools.protoc`, and decodes the payloads with Google protobuf.
@@ -314,6 +358,7 @@ The test reads `index.html`, takes the source of each function and runs it in a 
 | `host-tests` | Builds the host tests with `-O2` and runs them. Decodes the `spb_dump` payloads (`spb_decode.py --check`). Runs `test_spb_decode.py`, `test_harness.py`, the linters and the unit test of the web UI |
 | `host-tests-sanitizers` | Builds the host tests with `-DGW_SANITIZE=ON` and runs them. Decodes the payloads of the sanitized `spb_dump` |
 | `fuzz` | Installs `clang-18` and `libclang-rt-18-dev`, builds `idf/test/fuzz` and runs each target for 60 s, 4 at a time (`run_fuzz.sh`). The start is the corpus of the weekly job (from `actions/cache`, read only) and the seeds. A finding stops the job, and the artifact `fuzz-findings` has the input and the logs. The job takes approximately 5 min, at the same time as the other jobs |
+| `clang-tidy` | Installs `clang-18` and `clang-tidy-18`. Makes sure that each `NOLINT` comment names its check and gives a reason. Configures the host build with clang and runs `run-clang-tidy-18` on `gw_core` and the host tests. A result stops the job. Locally, on a cloud container with 4 CPUs, the configuration and clang-tidy with 2 processes took 38 s |
 | `firmware` | Runs `idf.py set-target esp32s3 build`. Fails on a `warning:`. Publishes the binaries, the `idf.py size` output and `stack.txt` |
 | `analyzer` | Runs `idf.py -B build-analyzer -D GW_ANALYZER=ON set-target esp32s3 build`: the own components with `-fanalyzer` (#230). Fails on a result of the analyzer or on a `warning:`, and gives the results in `components/gw_*` and `main`. The job runs at the same time as the other jobs. Refer to [Static analyzer](#static-analyzer) |
 | `e2e-plan` | Reads `CI_GROUPS` from `idf/tools/e2e/scenarios.py`, and gives the matrix of the two next jobs |

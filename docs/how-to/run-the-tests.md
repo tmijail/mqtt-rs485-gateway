@@ -1,6 +1,6 @@
 # Run the tests
 
-This guide runs the tests of the firmware on a Linux computer: the host tests, the fuzz targets, the Sparkplug decode check, the linters, CodeQL and the E2E tests in QEMU. For what each test examines, refer to [Tests](../reference/tests.md). On Windows, or without a local ESP-IDF, refer to [Run the E2E tests in Docker](run-e2e-in-docker.md).
+This guide runs the tests of the firmware on a Linux computer: the host tests, the fuzz targets, clang-tidy, the Sparkplug decode check, the linters, CodeQL and the E2E tests in QEMU. For what each test examines, refer to [Tests](../reference/tests.md). On Windows, or without a local ESP-IDF, refer to [Run the E2E tests in Docker](run-e2e-in-docker.md).
 
 A change is done when the host tests pass and the full E2E of the two variants passes.
 
@@ -62,6 +62,26 @@ The fuzz targets need clang with libFuzzer and the sanitizer runtimes (on Ubuntu
 To run one target, give its name: `idf/test/fuzz/run_fuzz.sh build-fuzz 300 fuzz_spb`. `JOBS=n` sets the number of targets that run at the same time (default: the CPU count).
 
 When a target finds an error, the input is in `build-fuzz/crashes/` and the report is in `build-fuzz/logs/<target>.log`. To run the target on that input again, give the file to the target: `build-fuzz/fuzz_spb build-fuzz/crashes/fuzz_spb-crash-<hash>`. Correct the error in `gw_core`, and add the input to a Unity suite as a regression test.
+
+## Run clang-tidy
+
+clang-tidy needs clang 18 and clang-tidy 18 (on Ubuntu 24.04: `clang-18` and `clang-tidy-18`). For the checks and the rules, refer to [clang-tidy](../reference/tests.md#clang-tidy).
+
+1. Configure the host build with clang. The build is not necessary:
+
+   ```bash
+   cmake -S idf/test/host -B build-tidy -DCMAKE_C_COMPILER=clang -DGW_RULE_CHECKS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+   ```
+
+2. Run clang-tidy on `gw_core` and the host tests:
+
+   ```bash
+   run-clang-tidy -p build-tidy -j4 -quiet 'idf/components/gw_core/(src|port)/|idf/test/host/'
+   ```
+
+3. Make sure that the output has no line with `error:` and that the exit code is 0.
+
+Correct a real error in the code. When the code can be clearer for the analyzer, change the code. For a false positive, add `/* NOLINTNEXTLINE(<check>): <reason> */` on the line before the result. The CI refuses a `NOLINT` comment without the check and the reason.
 
 ## Run the Sparkplug decode check
 

@@ -1485,6 +1485,7 @@ static bool rx_value(const gw_tag_cfg_t *t, const spb_rx_metric_t *m, gw_tag_val
             *why = "string longer than the tag";
             return false;
         }
+        /* NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.strcpy): 2 * length < size */
         strcpy(out->str, m->v.s);
         return true;
     case GW_VK_BYTES:   /* SPB-19: exactly the tag's registers, nothing to pad */

@@ -68,9 +68,9 @@ static void test_addresses_and_table(void)
     TEST_ASSERT_NOT_EQUAL(0, gw_authlimit_check(&l, a, 200));
     TEST_ASSERT_EQUAL_UINT32(0, gw_authlimit_check(&l, b, 200));
     /* fill the rest of the table with addresses that failed once */
-    for (uint8_t i = 10; i < 10 + GW_AUTHLIMIT_SLOTS + 4; i++) {
+    for (unsigned i = 10; i < 10 + GW_AUTHLIMIT_SLOTS + 4; i++) {
         uint8_t x[16];
-        ip(x, i);
+        ip(x, (uint8_t)i);
         gw_authlimit_failed(&l, x, 300u + i);
     }
     TEST_ASSERT_NOT_EQUAL(0, gw_authlimit_check(&l, a, 400));   /* still blocked */
