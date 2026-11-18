@@ -1,0 +1,75 @@
+# Issue #232: GitHub code scanning with CodeQL. The query suite security-extended follows data
+# from a source to a memcpy, an array index or a length, and examines each function for unsafe
+# patterns. The build is the host build of the tests: it compiles gw_core, nanopb and the tests
+# without ESP-IDF (the IDF adapters, which receive the network data, are not in it).
+# The results go to the Security tab as alerts; an alert does not stop the workflow or the CI.
+#
+# CodeQL ignores paths-ignore for a compiled language. Thus the job removes the results in
+# generated and third-party code from the SARIF file before the upload: nanopb, the generated
+# sparkplug_b.pb.c and the FetchContent sources of Unity and cJSON (build-host/_deps). CodeQL
+# still follows the data through that code. The SARIF file is also the artifact codeql-sarif.
+# Refer to docs/reference/tests.md.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "41 3 * * 3"   # Wednesday 03:41 UTC
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: CodeQL security-extended on the host build (issue #232)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read            # codeql-action reads the run of the workflow
+      contents: read           # actions/checkout
+      security-events: write   # upload-sarif: the alerts in the Security tab
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: c-cpp
+          build-mode: manual
+          queries: security-extended
+      - name: Build the host tests (gw_core, nanopb, the tests)
+        run: |
+          cmake -S idf/test/host -B build-host
+          cmake --build build-host -j"$(nproc)"
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: /language:c-cpp
+          upload: failure-only   # the upload-sarif step below uploads the filtered file
+          output: sarif-results
+      - name: Remove the results in generated and third-party code
+        run: |
+          set -eu
+          for f in sarif-results/*.sarif; do
+            jq '(.runs[].results) |= map(select(
+                  ([.locations[]?.physicalLocation.artifactLocation.uri] | first // "")
+                  | test("^(idf/components/nanopb/|idf/components/gw_core/proto/sparkplug_b\\.pb\\.c$|build-host/_deps/)")
+                  | not))' "$f" > "$f.tmp"
+            mv "$f.tmp" "$f"
+            echo "$f: $(jq '[.runs[].results[]] | length' "$f") results" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: sarif-results
+          category: /language:c-cpp
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: codeql-sarif
+          path: sarif-results/
+          retention-days: 30

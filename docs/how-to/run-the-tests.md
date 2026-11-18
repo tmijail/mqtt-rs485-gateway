@@ -1,6 +1,6 @@
 # Run the tests
 
-This guide runs the tests of the firmware on a Linux computer: the host tests, the fuzz targets, the Sparkplug decode check, the linters and the E2E tests in QEMU. For what each test examines, refer to [Tests](../reference/tests.md). On Windows, or without a local ESP-IDF, refer to [Run the E2E tests in Docker](run-e2e-in-docker.md).
+This guide runs the tests of the firmware on a Linux computer: the host tests, the fuzz targets, the Sparkplug decode check, the linters, CodeQL and the E2E tests in QEMU. For what each test examines, refer to [Tests](../reference/tests.md). On Windows, or without a local ESP-IDF, refer to [Run the E2E tests in Docker](run-e2e-in-docker.md).
 
 A change is done when the host tests pass and the full E2E of the two variants passes.
 
@@ -101,6 +101,39 @@ When a target finds an error, the input is in `build-fuzz/crashes/` and the repo
    ```
 
 ESLint needs Node.js 20.19 or later. For a false positive, add `# noqa: <rule>` or `# shellcheck disable=SCnnnn` with the reason. Do not add an ESLint comment to a web page, because the comment goes into the firmware image. Change an option in `eslint.config.mjs` instead.
+
+## Run CodeQL
+
+The workflow `codeql.yml` sends the results to the Security tab (#232). Run CodeQL on the computer to examine a change before the push. For the scope and the first results, refer to [Code scanning with CodeQL](../reference/tests.md#code-scanning-with-codeql).
+
+1. Download the CodeQL bundle of the workflow (approximately 700 MB) into a new directory:
+
+   ```bash
+   mkdir -p ~/codeql-bundle && curl -L -o ~/codeql-bundle/bundle.tar.gz https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.27.4/codeql-bundle-linux64.tar.gz
+   ```
+
+2. Extract the bundle (approximately 1.3 GB): `tar xzf ~/codeql-bundle/bundle.tar.gz -C ~/codeql-bundle`.
+3. Make the database. CodeQL examines only the files that the command compiles, thus use a new build directory:
+
+   ```bash
+   rm -rf build-codeql && ~/codeql-bundle/codeql/codeql database create /tmp/cqdb --language=c-cpp --source-root=. --overwrite --command='sh -c "cmake -S idf/test/host -B build-codeql && cmake --build build-codeql -j"'
+   ```
+
+4. Run the query suite of the workflow:
+
+   ```bash
+   ~/codeql-bundle/codeql/codeql database analyze /tmp/cqdb codeql/cpp-queries:codeql-suites/cpp-security-extended.qls --format=sarif-latest --output=/tmp/codeql.sarif
+   ```
+
+5. Show the results:
+
+   ```bash
+   jq -r '.runs[].results[] | "\(.ruleId) \(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine)"' /tmp/codeql.sarif
+   ```
+
+6. Ignore the results in `idf/components/nanopb/`, `sparkplug_b.pb.c` and `build-codeql/_deps/`. The workflow removes them.
+
+The version of the bundle must agree with the pinned `github/codeql-action`. When the workflow gets a new version, change the bundle in step 1. The `bundleVersion` in `src/defaults.json` of the action gives it.
 
 ## Run the full E2E
 

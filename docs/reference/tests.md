@@ -16,6 +16,7 @@ This document gives the test suites of the firmware, what each suite examines, t
 | Firmware build (QA-2) | The release build for `esp32s3`, and the QEMU builds | CI job `firmware` | 0 warnings |
 | Static analyzer (#230) | The own components (`gw_*`, `main`) of the release build, with the GCC static analyzer (`-fanalyzer`) | CI job `analyzer` | 0 results |
 | Linters (#229) | The Python tools, the shell scripts, the workflows and the scripts of the web pages | CI job `host-tests` | 0 results |
+| Code scanning (#232) | The flow of data from a source to a `memcpy`, an array index or a length, with CodeQL `security-extended` on the host build | `.github/workflows/codeql.yml` | Each alert in the Security tab is corrected or closed with a reason |
 | Web UI unit test (#226) | The IPv4 normalization of the Configuration tab, in Node.js without a browser | `idf/test/web/test_ip4norm.mjs`, CI job `host-tests` | All tests pass |
 | Harness self-test | The retry, hang and progress logic of the E2E harness, with fake clocks | `idf/tools/e2e/test_harness.py` | All tests pass |
 | E2E in QEMU (QA-3) | The real firmware against mosquitto, a pymodbus RTU slave, SNTP, syslog and HTTPS clients | `idf/tools/e2e/run_e2e.sh` | Each check passes in the full run of the two variants |
@@ -28,7 +29,7 @@ A change is done when the host tests pass and the full E2E passes: the full run 
 | Item | Value |
 |---|---|
 | CTest tests | 67: 42 Unity suites, `test_sfcfg_packed` and 24 checks |
-| Unity cases | 449 in the 42 suites (454 with `test_sfcfg_packed`) |
+| Unity cases | 450 in the 42 suites (455 with `test_sfcfg_packed`) |
 | Fuzz targets | 12, in `idf/test/fuzz`. Refer to [Fuzz tests](#fuzz-tests) |
 | Results of the static analyzer | 0 in the 76 C files of the own components. Refer to [Static analyzer](#static-analyzer) |
 | Self-test of the decode rules | 26 tests |
@@ -258,6 +259,42 @@ The `host-tests` job runs the linters (#229). Each linter uses only rules that f
 - A false positive gets `# noqa: <rule>` or `# shellcheck disable=SCnnnn`, with the reason.
 - Do not add an ESLint comment to a web page, because the comment goes into the firmware image. For a false positive, change an option in `eslint.config.mjs`.
 
+## Code scanning with CodeQL
+
+`.github/workflows/codeql.yml` runs GitHub code scanning with CodeQL (#232). CodeQL follows the data from a source (for example a socket, a file or a command-line argument) to a sink (for example `memcpy`, an array index or a length). The results go to the Security tab of the repository as alerts. An alert does not stop the workflow or the CI. To run CodeQL on a computer, refer to [Run CodeQL](../how-to/run-the-tests.md#run-codeql).
+
+| Item | Value |
+|---|---|
+| Language and build mode | `c-cpp`, `manual` |
+| Query suite | `security-extended` |
+| Build | The host build: `cmake -S idf/test/host -B build-host` and `cmake --build build-host`. It compiles `gw_core`, nanopb, Unity, cJSON and the tests, without ESP-IDF |
+| Removed results | `idf/components/nanopb/`, `idf/components/gw_core/proto/sparkplug_b.pb.c` and `build-host/_deps/` (Unity and cJSON) |
+| Events | Each push to `main`, each pull request, one time each week (Wednesday 03:41 UTC) and on request |
+| Artifact | `codeql-sarif`: the SARIF file after the removal, kept 30 days |
+| Version | `github/codeql-action` v4.39.3, with CodeQL 2.27.4 |
+
+- CodeQL ignores `paths-ignore` for a compiled language. Thus the job removes the results in generated and third-party code from the SARIF file with `jq`. Then it uploads the file (`upload-sarif`). CodeQL still follows the data through that code.
+- The host build does not compile the IDF adapters (`gw_web`, `gw_mbtcp`, `gw_edge`). In `gw_core`, no function receives data from the network: the adapters give the data to it. Thus the data flow queries find sources only in the test programs. The queries that examine one function, for example the order of a range check and an access, examine all of `gw_core`.
+- Close an alert only with a reason. Use "False positive", "Used in tests" or "Won't fix", and write the reason in the comment.
+
+### The first analysis
+
+CodeQL 2.27.4 gave 28 results on commit e4a072a, with the build and the query suite of the workflow:
+
+| Rule | Where | Results | Analysis and action |
+|---|---|---|---|
+| `cpp/offset-use-before-range-check` | `gw_syslog.c`, `put_token` | 1 | An error. The loop read `s[n]` before the check `n < max`. A hostname of 64 bytes without a NUL caused a read of 1 byte after the buffer. No caller gave such a hostname. The checks now come first. Regression test: `test_syslog`, `test_hostname_read_bound` |
+| `cpp/comparison-with-wider-type` | `gw_config.c`, `gw_config_find_tag` | 1 | A `uint16_t` counter and an `int` bound. The bound is at most 256 (`GW_MAX_TAGS`), thus the loop always stops. The counter is now `unsigned` |
+| `cpp/overflowing-snprintf` | `test_config.c`, `test_node.c` | 20 | The tests added text with `n += snprintf(buf + n, sizeof(buf) - n, ...)`. After a truncation, `sizeof(buf) - n` wraps. The buffers were sufficiently large. The tests now use `support_appendf`, which stops the test when the text does not fit |
+| `cpp/path-injection` and `cpp/world-writable-file-creation` | `spb_dump.c` | 3 and 3 | Not an error. `spb_dump` is a host test program. It writes the payloads into the directory of its command-line argument with `fopen`. Close these alerts with the reason "Used in tests" |
+
+After the corrections, CodeQL gives 6 results: the alerts of `spb_dump.c`.
+
+The workflow does not examine the IDF adapters. One local analysis examined them in the release build: CodeQL traced a new compilation of `gw_*` and `main` only. It gave 5 more results:
+
+- `cpp/comparison-with-wider-type` in `gw_shell.c` (the command `config`): the same loop as in `gw_config_find_tag`. The counter is now `unsigned`.
+- `cpp/toctou-race-condition` (2) and `cpp/world-writable-file-creation` (2) in `gw_storage.c`: not errors. LittleFS has no file modes and no users. The read after `stat` reads at most the size that `stat` gave, and the code rejects a short read.
+
 ## Web UI unit test
 
 The pages of the web UI go into the firmware image as they are, with their inline `<script>`. `idf/test/web/test_ip4norm.mjs` tests three functions of `index.html` with the test runner of Node.js (`node --test`), without a browser (#226):
@@ -287,9 +324,11 @@ The test reads `index.html`, takes the source of each function and runs it in a 
 
 `.github/workflows/fuzz-weekly.yml` runs one time each week (Monday 02:17 UTC) and on request (#226). It runs each fuzz target for 20 min, 4 at a time (approximately 60 min), from the corpus of the previous week. Then it keeps only the inputs that add coverage (`FUZZ_MERGE=1`, `-merge=1` of libFuzzer). It saves the corpus in `actions/cache` (also after a finding) for the next week and for the `fuzz` job, and publishes it as the artifact `fuzz-corpus` (kept 90 days). A finding stops the job, and the artifact `fuzz-weekly-findings` has the input and the logs.
 
+`.github/workflows/codeql.yml` runs CodeQL on the host build, on each push to `main`, on each pull request and one time each week (Wednesday 03:41 UTC). Only its job has the permission `security-events: write`. Refer to [Code scanning with CodeQL](#code-scanning-with-codeql).
+
 The GitHub containers do not permit `unshare`. Thus each `e2e` job runs on the loopback interface of its container.
 
-The workflow pins each action to a commit hash, with the tag in a comment (#229). All the actions run on Node 24 (#235):
+The workflows pin each action to a commit hash, with the tag in a comment (#229). All the actions run on Node 24 (#235):
 
 | Action | Version |
 |---|---|
@@ -298,6 +337,7 @@ The workflow pins each action to a commit hash, with the tag in a comment (#229)
 | `actions/upload-artifact` | v7.0.2 |
 | `actions/download-artifact` | v8.0.2 |
 | `actions/setup-node` | v6.5.0 |
+| `github/codeql-action` (`init`, `analyze`, `upload-sarif`) | v4.39.3 |
 
 ### The E2E groups
 
