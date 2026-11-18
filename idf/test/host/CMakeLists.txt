@@ -96,14 +96,16 @@ add_test(NAME test_sfcfg_packed COMMAND test_sfcfg_packed)
 
 # Issue #145: the guard next to the canonical list fails the build when a field is added to
 # gw_tag_cfg_t (a positional initializer one short, as after a new field, with the flags of
-# gw_core). The firmware compiles gw_core with -Wall -Wextra -Werror too.
+# gw_core). The firmware compiles gw_core with -Wall -Wextra -Werror too. -std=gnu11 is the
+# standard of the host build (CMAKE_C_STANDARD 11 with extensions): with -std=c11, strnlen() has
+# no declaration. The quotes around the field name are ASCII or UTF-8, after the locale.
 add_test(NAME sfcfg_guard
-         COMMAND ${CMAKE_C_COMPILER} -std=c11 -fsyntax-only -Wall -Wextra -Werror
+         COMMAND ${CMAKE_C_COMPILER} -std=gnu11 -fsyntax-only -Wall -Wextra -Werror
                  -DGW_SFCFG_GUARD_SELFTEST -I${IDF_PROJECT_DIR}/components/gw_core/include
                  -I${cjson_SOURCE_DIR} -I${IDF_PROJECT_DIR}/components/nanopb
                  ${IDF_PROJECT_DIR}/components/gw_core/src/gw_sfcfg.c)
 set_tests_properties(sfcfg_guard PROPERTIES
-                     PASS_REGULAR_EXPRESSION "error: missing initializer for field .write_max.")
+                     PASS_REGULAR_EXPRESSION "error: missing initializer for field [^ ]*write_max")
 
 # Writes representative Sparkplug payloads for the interoperability check
 # (tools/spb_decode.py, decoded with the official proto and Python protobuf).
