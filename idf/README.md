@@ -880,6 +880,19 @@ Issue #133 removed the 7 checks of the production overlay. Issue #135 added the 
 
 The host tests download Unity (v2.6.1) and cJSON (v1.7.19) with `FetchContent` from GitHub. Both are **pinned by commit hash**.
 
+**The host tests with the sanitizers (issue #225).** The CMake option `GW_SANITIZE` (default `OFF`) builds all the targets with AddressSanitizer and UndefinedBehaviorSanitizer. The targets include Unity, cJSON, nanopb and `gw_core`:
+
+```bash
+cmake -S idf/test/host -B build-asan -DGW_SANITIZE=ON && cmake --build build-asan -j && ctest --test-dir build-asan --output-on-failure
+```
+
+- The flags are `-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer`, for the compiler and for the linker. The first finding stops the test, and CTest reports a failure. LeakSanitizer is on (the default of AddressSanitizer on Linux).
+- `test_sfcfg_packed` has `-fno-sanitize=alignment`. Its structures are packed (`-fpack-struct`) on purpose (#145), thus its members are not aligned. x86-64 permits this access. The other checks stay on for this target.
+- Result on the branch `feat/225-sanitizers` (from `main` 6288614; GCC 13.3, Ubuntu 24.04): **57/57 CTest tests OK** with the sanitizers, and 57/57 without them. `spb_dump` of the sanitized build ran without a finding, and `spb_decode.py --check` decoded its 21 payloads with 0 structural errors.
+- The first run had 2 findings, and #225 corrected them:
+  - `test_node`, `test_modbus_tcp_table`: UBSan gave `load of value 5, which is not a valid value for type '_Bool'`. The callback of the DataSet cells read the `bool` of the union for each cell of the NDATA. "Cycles" of the table "Node Info/Modbus" (UInt32, 5) came to the same row and column. This was an error of the test, not of `spb.c`. Now the callback reads a member of the union only when `kind` agrees with it. It also uses the column names to keep only the cells of the table "Node Info/Modbus TCP". The test now also examines the number of rows (2) and the device of row 0.
+  - `test_sfcfg_packed`: UBSan gave `store to misaligned address ... for type 'double'` in `gw_config.c`. This is the packed layout of #145, not an error. The flag above disables only this check for this target.
+
 ### 4.2 Sparkplug interoperability
 
 ```bash
@@ -1248,6 +1261,7 @@ The components of the project compile with `-Wall -Wextra -Werror`.
 | Job | What it does |
 |---|---|
 | `host-tests` | Runs the host tests (CTest). Decodes the `spb_dump` payloads with the official proto (`spb_decode.py --check`). Runs the self-test of the decode rules (`tools/test_spb_decode.py`: each rule rejects a payload that breaks it, §4.2). Runs the self-test of the harness (`tools/e2e/test_harness.py`: the fault signatures of the emulator and the retry rule, #92/#96). Runs `pyflakes` on the Python tools, with no warnings (#107) |
+| `host-tests-sanitizers` | Issue #225. Builds the host tests with `-DGW_SANITIZE=ON` (AddressSanitizer and UndefinedBehaviorSanitizer, §4.1), and runs them (CTest). Runs `spb_dump` of this build, and decodes its payloads with `spb_decode.py --check`. Sets `vm.mmap_rnd_bits` to 28 first, because the ASan runtime of GCC 13 can crash at start with a higher value. The job `host-tests` does not change |
 | `firmware` | Runs `idf.py set-target esp32s3 build` in the `espressif/idf:v6.1` image, pinned by digest. Fails if a `warning:` occurs. Publishes the binaries and the `idf.py size` output as artifacts. Uses ccache, and keeps its directory in `actions/cache` (issue #233) |
 | `e2e-plan` | Issue #121. Reads the E2E groups from `tools/e2e/scenarios.py` (`CI_GROUPS`). Gives the matrix of the two next jobs |
 | `e2e-build` | One job for each variant: `default` and `psram` (`E2E_PSRAM=1`, the octal PSRAM of QEMU, #85). Runs `run_e2e.sh` with `E2E_STAGE`. The script builds `build-qemu` or `build-qemu-psram`, and copies into one directory all the files that the harness needs: the merged flash image, the ELF, the two app images, the `sdkconfig`, `flash_args`, the test signing key and the version of `littlefs-python`. The `default` job also builds `build-qemu-plain` (the same for the two variants; the group `nvs-main` of the PSRAM variant uses it). Publishes the artifacts `e2e-images-default`, `e2e-images-psram` and `e2e-images-plain`. GitHub keeps them for 1 day, because they contain the throwaway signing key of the run. Uses ccache, with one cache for each variant (issue #233) |

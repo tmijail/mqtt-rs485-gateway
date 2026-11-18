@@ -73,6 +73,8 @@ The host tests and the decode check run from the repo root. The firmware command
 # Host tests (pure C, no IDF): 42 Unity suites + sdkconfig and guard checks, -Werror
 cmake -S idf/test/host -B build-host && cmake --build build-host -j && ctest --test-dir build-host --output-on-failure
 ctest --test-dir build-host -R test_poll      # one suite; or run build-host/test_poll directly
+# The same host tests with AddressSanitizer and UndefinedBehaviorSanitizer (#225; CI job host-tests-sanitizers)
+cmake -S idf/test/host -B build-asan -DGW_SANITIZE=ON && cmake --build build-asan -j && ctest --test-dir build-asan --output-on-failure
 
 # Sparkplug interop: decode generated payloads with the official Tahu proto
 mkdir -p /tmp/spb && build-host/spb_dump /tmp/spb && python3 idf/tools/spb_decode.py --check /tmp/spb

@@ -48,6 +48,31 @@ jobs:
       - name: pyflakes on the Python tools (issue #107)
         run: /tmp/venv/bin/python -m pyflakes idf/tools/e2e/*.py idf/tools/*.py
 
+  # Issue #225: the same host tests and Sparkplug payloads with AddressSanitizer and
+  # UndefinedBehaviorSanitizer (GW_SANITIZE=ON: -fsanitize=address,undefined
+  # -fno-sanitize-recover=all, on every target). The first finding stops the test with a failure.
+  host-tests-sanitizers:
+    name: Host tests with ASan and UBSan (issue #225)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # The ASan runtime of GCC 13 can crash at start with more than 28 bits of mmap
+      # randomization (newer kernels permit 32). Set 28, as in the local runs of #225.
+      - name: Limit the mmap randomization for ASan
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+      - name: Build and run the host tests with the sanitizers
+        run: |
+          cmake -S idf/test/host -B build-asan -DGW_SANITIZE=ON
+          cmake --build build-asan -j"$(nproc)"
+          ctest --test-dir build-asan --output-on-failure
+      - name: Decode the payloads of the sanitized spb_dump with the official Tahu proto
+        run: |
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install -q -r idf/tools/e2e/requirements.txt
+          mkdir -p /tmp/spb
+          build-asan/spb_dump /tmp/spb
+          /tmp/venv/bin/python idf/tools/spb_decode.py --check /tmp/spb
+
   firmware:
     name: ESP32-S3 firmware build (QA-2)
     runs-on: ubuntu-24.04
