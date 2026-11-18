@@ -6,6 +6,8 @@ managed_components/
 __pycache__/
 *.pyc
 .venv/
+.ruff_cache/
+node_modules/
 # signing keys never enter the repository (the QEMU test key of run_e2e.sh, README 3.6)
 *signing_key*.pem
 keys/

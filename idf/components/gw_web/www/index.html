@@ -1192,7 +1192,7 @@ function fwLast(w){
  switch(w.phase){
   case "downloading":return [head,`${w.progress} %`,"run",""];
   case "restarting":return [head,"","run",""];
-  case "failed":return ["failed",w.sha256_file?"The SHA-256 does not agree.":(m=FWREF.exec(w.detail||""))?`The pre-flight check refused ${m[1]}.`:tail,"bad","bad"];
+  case "failed":return ["failed",w.sha256_file?"The SHA-256 does not agree.":((m=FWREF.exec(w.detail||"")))?`The pre-flight check refused ${m[1]}.`:tail,"bad","bad"];
   case "testing":return [head,w.trial_left_s?`${w.trial_left_s} s left`:"The confirmation is retried.","pz","warn"];
   case "installed":return [head,"Confirmed after the trial.","ok","ok"];
   case "rolled_back":return [head,tail,"bad","bad"];
@@ -1592,7 +1592,7 @@ function pfLine(f){if(f.kind==="key")return `${pfKind(f)}${f.agrees?" · agrees 
  const c=(f.certs||[])[0]||{};return `${pfKind(f)} · ${esc(cn(c.subject))} · until ${esc(c.not_after||"?")}${f.count>1?` (and ${f.count-1} more)`:""}`}
 const nameOk=n=>/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,31}$/.test(n)&&!/\.(json|tmp)$/.test(n)&&!n.startsWith("config.json");
 /* Load (f null) or Replace (f: the file of the list) of the PEM files */
-async function pfDialog(f){const fs=FILES||[],max=(FINFO&&FINFO.max_file_bytes)||16384,by=n=>fs.find(x=>x.name===n);
+async function pfDialog(f){const fs=FILES||[],max=(FINFO&&FINFO.max_file_bytes)||16384;
  const ckey=fs.find(x=>(x.used_by||[]).includes("mqtt.tls.key_file")),ccert=fs.find(x=>(x.used_by||[]).includes("mqtt.tls.cert_file"));
  /* a replaced certificate can come with its key: the configured key, else a key that agrees with it */
  const pkey=f&&f.kind==="certificates"?(ccert&&ccert.name===f.name&&ckey?ckey.name:(fs.find(x=>x.kind==="key"&&(x.agrees_with||[]).includes(f.name))||{}).name):null;

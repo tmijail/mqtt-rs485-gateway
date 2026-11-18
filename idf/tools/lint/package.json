@@ -1,0 +1,11 @@
+{
+  "name": "gw-lint",
+  "private": true,
+  "description": "Issue #229: ESLint for the inline scripts of the web UI (idf/components/gw_web/www). CI only.",
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "eslint": "10.14.0",
+    "eslint-plugin-html": "8.2.1",
+    "globals": "17.13.0"
+  }
+}

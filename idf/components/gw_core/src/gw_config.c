@@ -81,9 +81,14 @@ static bool fail(gw_cfg_err_t *err, const char *path, const char *fmt, ...)
     return false;
 }
 
+/* The JSON path of @key under @path, for error messages. A path longer than @cap (only an
+ * unknown key of the document can make one) ends with "..." so that the cut is visible. */
 static void join(char *out, size_t cap, const char *path, const char *key)
 {
-    snprintf(out, cap, "%s%s%s", path, path[0] != '\0' ? "." : "", key);
+    int n = snprintf(out, cap, "%s%s%s", path, path[0] != '\0' ? "." : "", key);
+    if (n > 0 && (size_t)n >= cap && cap > 3) {
+        memcpy(out + cap - 4, "...", 4);
+    }
 }
 
 /* ---------- issue #144 item 3: the "since" schema of each key and enum value ----------

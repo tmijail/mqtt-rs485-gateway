@@ -2,4 +2,5 @@ idf_component_register(SRCS "gw_net.c"
                        INCLUDE_DIRS "include"
                        REQUIRES gw_core esp_netif
                        PRIV_REQUIRES gw_bsp gw_storage esp_eth esp_wifi esp_timer esp_driver_spi esp_driver_gpio esp_hw_support lwip)
-target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror)
+include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/gw_warnings.cmake)
+gw_target_options(${COMPONENT_LIB})

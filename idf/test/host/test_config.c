@@ -282,6 +282,15 @@ static void test_syslog_section(void)
     ASSERT_REJECTED(parse(doc), "syslog.level: invalid value (expected error|warning|info|debug)");
     snprintf(doc, sizeof(doc), "{%s,\"syslog\":{\"facility\":16}}", base);
     ASSERT_REJECTED(parse(doc), "syslog.facility: unknown key");
+    /* an unknown key longer than the path buffer: the path ends with "..." (the cut is visible) */
+    char key[121];
+    memset(key, 'k', sizeof(key) - 1);
+    key[sizeof(key) - 1] = '\0';
+    snprintf(doc, sizeof(doc), "{%s,\"syslog\":{\"%s\":1}}", base, key);
+    ASSERT_REJECTED(parse(doc), "...: unknown key");
+    TEST_ASSERT_EQUAL_size_t(GW_CFG_PATH_SIZE - 1, strlen(err.path));
+    TEST_ASSERT_EQUAL_STRING("...", err.path + GW_CFG_PATH_SIZE - 4);
+    TEST_ASSERT_EQUAL_STRING_LEN("syslog.kkk", err.path, 10);
     snprintf(doc, sizeof(doc), "{%s,\"syslog\":{\"host\":5}}", base);
     ASSERT_REJECTED(parse(doc), "syslog.host: expected a string");
 }

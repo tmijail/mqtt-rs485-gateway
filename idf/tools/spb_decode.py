@@ -80,7 +80,7 @@ def check_dataset(m):
         if len(row.elements) != len(ds.types):
             errors.append(f"alias {m.alias}: DataSet row {r} has {len(row.elements)} elements")
             continue
-        for c, (e, t) in enumerate(zip(row.elements, ds.types)):
+        for c, (e, t) in enumerate(zip(row.elements, ds.types, strict=True)):
             if e.WhichOneof("value") != CELL_FIELD.get(t):
                 errors.append(f"alias {m.alias}: DataSet cell [{r}][{c}] of type {t} in "
                               f"{e.WhichOneof('value')}")
@@ -107,7 +107,7 @@ def props_of(m):
     """SPB-16: the metric's properties as {key: PropertyValue}."""
     if not m.HasField("properties"):
         return {}
-    return dict(zip(m.properties.keys, m.properties.values))
+    return dict(zip(m.properties.keys, m.properties.values, strict=False))
 
 
 def check_properties(m):

@@ -61,6 +61,23 @@ static void test_round_trip(void)
     TEST_ASSERT_FALSE(b->network.ipv6.has_address);
 }
 
+/* A string field without its terminator: the record keeps the first size - 1 bytes of the
+ * field and reads nothing of the next field (the bound is the field, not 255). */
+static void test_unterminated_field(void)
+{
+    fill(a);
+    memset(a->network.hostname, 'h', sizeof(a->network.hostname));
+    memset(a->network.wifi.ssid, 's', sizeof(a->network.wifi.ssid));
+    uint8_t buf[GW_LKG_MAX];
+    size_t n = gw_lkg_encode(a, buf, sizeof(buf));
+    TEST_ASSERT_TRUE(n > 5);
+    memset(b, 0, sizeof(*b));
+    TEST_ASSERT_TRUE(gw_lkg_decode(buf, n, b));
+    TEST_ASSERT_EQUAL_size_t(sizeof(b->network.hostname) - 1, strlen(b->network.hostname));
+    TEST_ASSERT_EACH_EQUAL_CHAR('h', b->network.hostname, sizeof(b->network.hostname) - 1);
+    TEST_ASSERT_EQUAL_size_t(sizeof(b->network.wifi.ssid) - 1, strlen(b->network.wifi.ssid));
+}
+
 /* the largest record set fits GW_LKG_MAX; a buffer too small gives 0 */
 static void test_sizes(void)
 {
@@ -145,6 +162,7 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(test_round_trip);
     RUN_TEST(test_sizes);
+    RUN_TEST(test_unterminated_field);
     RUN_TEST(test_unknown_and_resized_fields);
     RUN_TEST(test_missing_and_damaged);
     int r = UNITY_END();

@@ -154,15 +154,16 @@ static void hook(void)
 esp_err_t gw_log_ring_start(void)
 {
     const size_t size = CONFIG_GW_LOG_RING_KB * 1024u;
-    /* the ring, the copy buffer of the reader and the tag table: one allocation (PSRAM) */
-    uint8_t *mem = gw_storage_malloc(2 * size + sizeof(gw_logtags_t));
-    ESP_RETURN_ON_FALSE(mem, ESP_ERR_NO_MEM, TAG, "no memory for the live log (%u KB)",
+    /* the tag table, the ring and the copy buffer of the reader: one allocation (PSRAM). The
+     * table is first, at the alignment of the allocation (#227, -Wcast-align). */
+    gw_logtags_t *tags = gw_storage_malloc(sizeof(gw_logtags_t) + 2 * size);
+    ESP_RETURN_ON_FALSE(tags, ESP_ERR_NO_MEM, TAG, "no memory for the live log (%u KB)",
                         (unsigned)(2 * size / 1024));
+    char *mem = (char *)(tags + 1);
     s_lring_lock = xSemaphoreCreateMutexStatic(&s_lring_lock_buf);
-    gw_logring_init(&s_lring, (char *)mem, size);
-    s_copy = (char *)mem + size;
+    gw_logring_init(&s_lring, mem, size);
+    s_copy = mem + size;
     s_copy_size = size;
-    gw_logtags_t *tags = (gw_logtags_t *)(mem + 2 * size);
     gw_logtags_init(tags);
     for (size_t i = 0; i < sizeof(k_own_tags) / sizeof(k_own_tags[0]); i++) {
         gw_logtags_add(tags, k_own_tags[i], strlen(k_own_tags[i]));
