@@ -25,8 +25,15 @@ set(GW_HOST_WARNING_FLAGS ${GW_WARNING_FLAGS} -Wundef)
 # call graph <object>.ci (-fcallgraph-info=su). They do not change the generated code.
 set(GW_STACK_FLAGS -fstack-usage -fcallgraph-info=su)
 
+# The largest stack frame of one own function in the firmware (with -Werror: an error). 2048 B is
+# half of the stack of rs485_bus (4096 B); the largest frame today is 1664 B
+# (gw_storage_load_config). Decision of the product owner, 2026-11-18 (#227). A frame that the
+# compiler can not bound (alloca) also fails. Only the firmware: frames on the host differ.
+set(GW_STACK_LIMIT_FLAGS -Wstack-usage=2048)
+
 function(gw_target_options target)
-    target_compile_options(${target} PRIVATE ${GW_WARNING_FLAGS} ${GW_STACK_FLAGS})
+    target_compile_options(${target} PRIVATE ${GW_WARNING_FLAGS} ${GW_STACK_FLAGS}
+                           ${GW_STACK_LIMIT_FLAGS})
     # No ccache (IDF_CCACHE_ENABLE) for the own components: at a hit, ccache 4.9 gives the object
     # and the .su file again, but not the .ci file, and the stack report then has no call graph.
     set_property(TARGET ${target} PROPERTY RULE_LAUNCH_COMPILE "")

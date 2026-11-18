@@ -831,6 +831,7 @@ The measurements of the production build in §3.2 are from before the archive.
 | `-Wcast-align=strict` | yes | yes | a pointer cast to a type with a larger alignment |
 | `-Wundef` | no | yes | an undefined macro in `#if` |
 | `-fstack-usage -fcallgraph-info=su` | yes | no | the stack data for `tools/stack_report.py` |
+| `-Wstack-usage=2048` | yes | no | a function with a stack frame of more than 2 048 B (§3.8, `-Wstack-usage`) |
 
 - On the Xtensa target, `-Wcast-align=strict` is the same as `-Wcast-align`, because the target needs aligned access. On the host, only `=strict` gives the warning.
 - The host build has no optimization (`-O0`), thus `-Wnull-dereference` finds nothing there. The firmware build (`-Os`) does the check.
@@ -888,7 +889,7 @@ The values of the release build of this change:
 
 In `sparkplug`, `spb_encode()` calls `pb_encode()` of nanopb with 1 056 B of own stack above it. The stack of nanopb adds to this value. In `rs485_bus`, the UART read is an indirect call (`rx()` in `mb_master.c`), with 768 B of own stack above it.
 
-**`-Wstack-usage` (not enforced).** All 1 150 own functions have a static frame (no VLA and no `alloca`). These are the largest frames:
+**`-Wstack-usage=2048` (enforced).** All 1 150 own functions have a static frame (no VLA and no `alloca`). These are the largest frames:
 
 - `gw_storage_load_config` 1 664 B (boot, main task);
 - `send_why` 1 520 B and `send_error` 1 360 B (`gw_web.c`, task of the web server);
@@ -896,7 +897,9 @@ In `sparkplug`, `spb_encode()` calls `pb_encode()` of nanopb with 1 056 B of own
 - `status_card` 1 136 B (`gw_web.c`);
 - `decode_metric` 1 104 B (`spb.c`). It decodes a metric of an NCMD or a DCMD in a callback of `pb_decode()`. Thus the stack report can not put it in a task.
 
-88 functions have a frame of more than 256 B, 31 of more than 512 B, and 6 of more than 1 024 B. A limit of `-Wstack-usage=2048` gives no warning now. It stops a new frame of more than half of the stack of `rs485_bus`. A limit of 1 024 B needs a decision about the 6 functions above. The project does not enforce a limit yet.
+88 functions have a frame of more than 256 B, 31 of more than 512 B, and 6 of more than 1 024 B. A limit of `-Wstack-usage=2048` gives no warning now. It stops a new frame of more than half of the stack of `rs485_bus`. A limit of 1 024 B needs a decision about the 6 functions above.
+
+The product owner selected the limit of 2 048 B (2026-11-18). The firmware build of the own components uses `-Wstack-usage=2048`, and with `-Werror` a larger frame stops the build. A frame that the compiler cannot bound (`alloca`) also stops it. The release build and the QEMU builds (default, PSRAM, poison) give 0 warnings with the limit. A trial with 1 024 B stopped the build at `decode_metric` (1 104 B), as expected. The host build has no limit, because the frames on the host are different.
 
 ## 4. Verification (real evidence)
 
