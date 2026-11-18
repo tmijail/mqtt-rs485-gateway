@@ -146,7 +146,7 @@ jobs:
           db="${CODEQL_ACTION_TEMP:-$RUNNER_TEMP}/codeql_databases/cpp"   # where init made it
           "$CODEQL" database finalize "$db"
           mkdir -p sarif-results
-          "$CODEQL" database analyze "$db" codeql/cpp-queries:codeql-suites/cpp-security-extended.qls \
+          "$CODEQL" database analyze "$db" .github/codeql/firmware.qls \
             --additional-packs=.github/codeql/extensions \
             --model-packs=mqtt-rs485-gateway/esp-idf-models \
             --format=sarif-latest --sarif-category=/language:c-cpp/firmware \

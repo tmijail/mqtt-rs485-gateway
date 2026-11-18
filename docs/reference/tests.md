@@ -317,7 +317,7 @@ The `host-tests` job runs the linters (#229). Each linter uses only rules that f
 | Analysis | `codeql-action/analyze` | The CodeQL CLI of the `init` step: `database finalize`, then `database analyze` with `--additional-packs` and `--model-packs`. `codeql-action/analyze` cannot load a model pack from the repository |
 | Artifact (kept 30 days) | `codeql-sarif-host` | `codeql-sarif-firmware` |
 
-Both jobs use the query suite `security-extended`, `github/codeql-action` v4.39.3 and CodeQL 2.27.4. They run on each push to `main`, on each pull request, one time each week (Wednesday 03:41 UTC) and on request.
+Both jobs use the query suite `security-extended` (the job `firmware` without two queries, see below), `github/codeql-action` v4.39.3 and CodeQL 2.27.4. They run on each push to `main`, on each pull request, one time each week (Wednesday 03:41 UTC) and on request.
 
 - Each analysis has its own SARIF category. Thus the alerts of one analysis do not close the alerts of the other.
 - The two databases contain `gw_core`. Thus a result in `gw_core` can come from the two analyses, as two alerts.
@@ -377,14 +377,14 @@ After the corrections, the job `host` gives 0 results.
 
 A local analysis of the firmware gave one more error before the job `firmware`: `cpp/comparison-with-wider-type` in `gw_shell.c` (the command `config`). It was the same loop as in `gw_config_find_tag`, and the counter is now `unsigned`.
 
-The job `firmware` gives 6 results. All are false positives. Close each alert with the reason "False positive", and write the reason of the table in the comment:
+The job `firmware` uses the query suite `.github/codeql/firmware.qls`: `security-extended` without `cpp/world-writable-file-creation` and `cpp/toctou-race-condition` (decision of the product owner, 2026-11-18). These two queries examine file modes, users and other programs, and LittleFS has none of them. Without the suite, the job gave 4 more false positives in `gw_storage.c`.
+
+The job gives 2 results. Both are false positives. Close each alert one time, with the reason "False positive", and write the reason of the table in the comment. GitHub keeps a closed alert closed in the next runs, unless the code near it changes:
 
 | Rule | Where | Reason |
 |---|---|---|
 | `cpp/path-injection` | `gw_storage.c`, `gw_storage_read_file()` (`fopen`) | The name comes from the query (`name`, `key_name`) of `PUT /api/files`. `gw_config_file_name_ok()` accepts only the characters A-Z, a-z, 0-9, `.`, `_` and `-`, and no `.` at the start. Thus the path is always a file in `/cfg`. The query `cpp/path-injection` does not know this check |
 | `cpp/path-injection` | `gw_storage.c`, `gw_storage_write_file()` (`write_file_atomic`) | The same name. `gw_storage_user_file_name_ok()` makes the same check |
-| `cpp/toctou-race-condition` (2) | `gw_storage.c`, `gw_storage_read_file()` and `read_whole()` | The read after `stat` reads at most the size that `stat` gave, and the code rejects a short read. LittleFS has no users |
-| `cpp/world-writable-file-creation` (2) | `gw_storage.c`, `write_file_atomic()` and `copy_file_atomic()` | LittleFS has no file modes and no users |
 
 ## Web UI unit test
 

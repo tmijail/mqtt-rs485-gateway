@@ -189,7 +189,7 @@ The version of the bundle must agree with the pinned `github/codeql-action`. Whe
 6. Run the query suite with the model pack:
 
    ```bash
-   ~/codeql-bundle/codeql/codeql database analyze /tmp/cqdb-fw codeql/cpp-queries:codeql-suites/cpp-security-extended.qls --additional-packs=../.github/codeql/extensions --model-packs=mqtt-rs485-gateway/esp-idf-models --format=sarif-latest --output=/tmp/codeql-fw.sarif
+   ~/codeql-bundle/codeql/codeql database analyze /tmp/cqdb-fw ../.github/codeql/firmware.qls --additional-packs=../.github/codeql/extensions --model-packs=mqtt-rs485-gateway/esp-idf-models --format=sarif-latest --output=/tmp/codeql-fw.sarif
    ```
 
 7. Remove the results that the workflow removes: `python3 tools/codeql_filter.py /tmp/codeql-fw.sarif`.
