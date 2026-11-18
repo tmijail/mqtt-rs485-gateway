@@ -98,7 +98,9 @@ gw_claim_result_t gw_claim_parse(const char *json, size_t len, char *pw, size_t 
     gw_config_json_hooks();
     cJSON *root = len > 0 && len <= GW_CLAIM_BODY_MAX ? cJSON_ParseWithLength(json, len) : NULL;
     gw_claim_result_t r = GW_CLAIM_BAD_REQUEST;
-    const cJSON *item = cJSON_IsObject(root) ? root->child : NULL;
+    /* root != NULL: cJSON_IsObject(NULL) is false, but the GCC analyzer does not see into
+       cJSON (#230) */
+    const cJSON *item = root != NULL && cJSON_IsObject(root) ? root->child : NULL;
     if (item != NULL && item->next == NULL && item->string != NULL &&
         strcmp(item->string, "password") == 0 && cJSON_IsString(item)) {
         size_t n = strlen(item->valuestring);

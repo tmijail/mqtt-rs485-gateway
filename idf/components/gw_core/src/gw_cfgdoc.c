@@ -366,8 +366,9 @@ static char *export_locked(const char *json, size_t len, const gw_secrets_t *sto
     for (int i = 0; i < SECRET_COUNT; i++) {
         cJSON *parent = secret_parent(root, (secret_t)i, false);
         cJSON *item = parent ? cJSON_GetObjectItemCaseSensitive(parent, "password") : NULL;
+        /* item != NULL for the GCC analyzer, which does not see into cJSON_IsString (#230) */
         bool set = stored_value(stored, (secret_t)i)[0] != '\0' ||
-                   (cJSON_IsString(item) && item->valuestring[0] != '\0');
+                   (item != NULL && cJSON_IsString(item) && item->valuestring[0] != '\0');
         if (item != NULL) {
             cJSON_DeleteItemFromObjectCaseSensitive(parent, "password");
         }

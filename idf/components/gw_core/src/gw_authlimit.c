@@ -38,6 +38,11 @@ static gw_authlimit_slot_t *take(gw_authlimit_t *l, const uint8_t addr[16], uint
             }
         }
     }
+    if (best == NULL) {
+        /* Never true: pass 1 takes a used slot also when it is blocked. The GCC analyzer does
+           not follow the two passes (-Wanalyzer-null-argument, #230). */
+        best = &l->slot[0];
+    }
     memset(best, 0, sizeof(*best));
     best->used = true;
     memcpy(best->addr, addr, 16);

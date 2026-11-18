@@ -36,9 +36,18 @@ set(GW_STACK_FLAGS -fstack-usage -fcallgraph-info=su)
 # compiler can not bound (alloca) also fails. Only the firmware: frames on the host differ.
 set(GW_STACK_LIMIT_FLAGS -Wstack-usage=2048)
 
+# Issue #230: the GCC static analyzer for the own components only, in a separate build:
+#   idf.py -B build-analyzer -D GW_ANALYZER=ON build
+# CONFIG_COMPILER_STATIC_ANALYZER of ESP-IDF adds -fanalyzer to all components, ESP-IDF too.
+# With -Werror, a result of the analyzer stops the build. The default (OFF) and thus the
+# release build do not change. docs/reference/compiler-warnings-and-stack.md
+
 function(gw_target_options target)
     target_compile_options(${target} PRIVATE ${GW_WARNING_FLAGS} ${GW_STACK_FLAGS}
                            ${GW_STACK_LIMIT_FLAGS})
+    if(GW_ANALYZER)
+        target_compile_options(${target} PRIVATE -fanalyzer)
+    endif()
     # No ccache (IDF_CCACHE_ENABLE) for the own components: at a hit, ccache 4.9 gives the object
     # and the .su file again, but not the .ci file, and the stack report then has no call graph.
     set_property(TARGET ${target} PROPERTY RULE_LAUNCH_COMPILE "")
