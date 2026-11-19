@@ -162,7 +162,14 @@ button.net{width:100%;border:0;border-bottom:1px solid var(--line);border-radius
 button.net.on{background:var(--sub)}button.net.no{color:var(--mut);cursor:default}.ss{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.use{color:var(--acc);font-size:12px;text-align:right}button.net.no .use{color:var(--mut)}
 .bars{display:inline-flex;align-items:flex-end;gap:2px;height:12px;margin-right:6px;vertical-align:-1px}.bars i{display:block;width:3px;background:var(--line);border-radius:1px}
 .bars i:nth-child(1){height:4px}.bars i:nth-child(2){height:6px}.bars i:nth-child(3){height:9px}.bars i:nth-child(4){height:12px}.bars i.f{background:var(--fg)}
-#f-bk .tbox{max-width:640px}#f-bk col:nth-child(1){width:90px}#f-bk col:nth-child(3){width:110px}#f-bk col:nth-child(4){width:52px}
+#f-bk .tbox{max-width:640px}#f-bk col:nth-child(1){width:90px}#f-bk col:nth-child(3){width:110px}#f-bk col:nth-child(4){width:52px}#f-bk .bkl{display:none}
+/* #250: on a phone, each broker is a block (prototype I221MqttTlsPhone): Backup N and the remove button, then Host and Port with their labels; the primary on one line */
+@media (max-width:600px){#f-bk .tbox{border:0;border-radius:0;overflow:visible;max-width:none}#f-bk table,#f-bk tbody{display:block}#f-bk colgroup,#f-bk tr.bkh{display:none}
+ #f-bk tr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;border:1px solid var(--line);border-radius:6px;padding:8px 10px 10px;margin-bottom:8px}
+ #f-bk td{display:block;padding:0;border:0}#f-bk .bko{font-weight:600;font-size:13px;color:var(--fg)}#f-bk td.bkx{grid-column:2;grid-row:1}#f-bk td.bkf{grid-column:1/-1}
+ #f-bk .bkl{display:block;margin-bottom:2px}#f-bk td.bkf input{width:100%}
+ #f-bk tr.bkp{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px;background:var(--sub);border-style:dashed}#f-bk tr.bkp td{display:contents}#f-bk tr.bkp .bko{flex-basis:100%}
+ #f-bk #bk-h{order:1}#f-bk #bk-p{order:2}#f-bk #bk-p::before{content:": "}#f-bk tr.bkp .hint{order:3}}
 @media (max-width:600px){.span2{grid-column:auto}.srow{flex-direction:column;align-items:stretch}.srow button{min-height:44px}.lrow input{flex:1;min-width:0;width:auto}
  .ncol{grid-template-columns:minmax(0,1fr) auto;gap:2px 8px}.nth{display:none}button.net .sec{grid-row:2;font-size:12px;color:var(--mut)}button.net .use{grid-row:2}}
 /* #222: the cards of the Configuration tab close and open; the groups of the cards; a device is a row that closes and opens */
@@ -453,22 +460,25 @@ function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;","
 function get(o,p){return p.split(".").reduce((a,k)=>a==null?undefined:a[k],o)}
 function set(o,p,v){const ks=p.split(".");let a=o;ks.slice(0,-1).forEach((k,i)=>{if(a[k]==null||typeof a[k]!=="object")a[k]=/^\d+$/.test(ks[i+1])?[]:{};a=a[k]});a[ks[ks.length-1]]=v}
 /* #167: a <select> shows its first option when the value is not in its list, and a save writes
-   that option back: an absent optional value gets an empty "(default)" option, and a value that
-   is not in the list stays as an option of its own. A checkbox of an absent key shows the
-   default of the parser (opts = true or false) and a save does not add the key. */
-function selOpts(v,opts,optional){
- const o=opts.map(x=>[x,x]);
- if(v==null){if(optional)o.unshift(["","(default)"])}
- else if(!opts.includes(v))o.unshift([String(v),`${v} (not in the list)`]);
- return o.map(([x,t])=>`<option value="${esc(x)}" ${v!=null&&x===String(v)||v==null&&x===""?"selected":""}>${esc(t)}</option>`).join("");
+   that option back: a value that is not in the list stays as an option of its own. #250: an
+   optional key gives the default of the parser (def); its option has the text "(default)", and
+   an absent key shows that option. A save does not add the key when the default stays selected
+   (readForms), as for a checkbox: a checkbox of an absent key shows the default of the parser
+   (opts = true or false) and a save does not add the key. */
+function selOpts(v,opts,def){
+ const o=opts.map(x=>[x,def!=null&&x===def?`${x} (default)`:x]);
+ if(v!=null&&!opts.includes(v))o.unshift([String(v),`${v} (not in the list)`]);
+ const s=v!=null?String(v):def;
+ return o.map(([x,t])=>`<option value="${esc(x)}" ${x===s?"selected":""}>${esc(t)}</option>`).join("");
 }
-/* #170: x = {ml: maxlength (the byte limits of gw_config.h), help: a key of HELP (#190: the
+/* #250: for a "sel", optional is the default value of an optional key (refer to selOpts).
+   #170: x = {ml: maxlength (the byte limits of gw_config.h), help: a key of HELP (#190: the
    explainer of the (?) button after the label), ph: a placeholder, aria: the accessible name of
    a control without a label (#189: a cell of the tag table)} */
 function ctl(path,kind,opts,optional,x){
  const v=get(cfg,path);x=x||{};const a=` id="i-${path}" data-p="${path}"${x.aria?` aria-label="${esc(x.aria)}"`:""}`;
  if(kind==="bool")return `<input type="checkbox"${a} data-k="bool" data-def="${opts?1:0}" ${(v==null?opts:v)?"checked":""}>`;
- if(kind==="sel")return `<select${a} data-k="sel">${selOpts(v,opts,optional)}</select>`;
+ if(kind==="sel"){const d=typeof optional==="string"?optional:undefined;return `<select${a} data-k="sel"${d!==undefined?` data-def="${esc(d)}"`:""}>${selOpts(v,opts,d)}</select>`}
  return `<input${a} data-k="${kind}" ${kind==="pw"?'type="password" autocomplete="new-password"':""}${x.ml?` maxlength="${x.ml}"`:""}${x.ph?` placeholder="${esc(x.ph)}"`:""} value="${v==null?"":esc(v)}">`;
 }
 function field(path,lbl,kind,opts,optional,x){x=x||{};
@@ -637,8 +647,8 @@ document.addEventListener("pointerout",e=>{if(e.pointerType!=="mouse"||!xb||xpin
    the Tag column stays at the left, the details row stays in view, a shade shows more columns. */
 const TCOL=[["name","Tag","tag"],["area","Area","area"],["address","Address","addr"],["type","Type","type_t"],["word_order","Word order","wo"],["scale","Scale","scale"],["units","Units","units"],["writable","Writable","wr"]];
 const TDET=[["offset","Offset","offs"],["deadband","Deadband","db"],["eng_low","Eng. low","englo"],["eng_high","Eng. high","enghi"],["write_min","Write min","wmin"],["write_max","Write max","wmax"],["bit_offset","Bit offset","bit"],["bit_width","Bit width","bitw"],["length","Length (registers)","len"],["scan","Scan","scan"]];
-const TK={name:["str",0,0,{ml:39}],area:["sel",AREA],address:["int"],type:["sel",TYPE],word_order:["sel",WO,true],scale:["num"],units:["str",0,0,{ml:15}],writable:["bool"],
- offset:["num"],deadband:["num"],eng_low:["num"],eng_high:["num"],write_min:["num",0,0,{ph:"no limit"}],write_max:["num",0,0,{ph:"no limit"}],bit_offset:["int",0,0,{ph:"0-15"}],bit_width:["int",0,0,{ph:"1-16"}],length:["int",0,0,{ph:"1-16"}],scan:["sel",["fast","slow"],true]};
+const TK={name:["str",0,0,{ml:39}],area:["sel",AREA],address:["int"],type:["sel",TYPE],word_order:["sel",WO,"big"],scale:["num"],units:["str",0,0,{ml:15}],writable:["bool"],
+ offset:["num"],deadband:["num"],eng_low:["num"],eng_high:["num"],write_min:["num",0,0,{ph:"no limit"}],write_max:["num",0,0,{ph:"no limit"}],bit_offset:["int",0,0,{ph:"0-15"}],bit_width:["int",0,0,{ph:"1-16"}],length:["int",0,0,{ph:"1-16"}],scan:["sel",["fast","slow"],"fast"]};
 const detOpen=new Set();
 /* #213: @base is the owner of the tags: "devices.<i>" or "device_types.<j>". A key of a tag row
    (data-more, data-del-tag, detOpen) is "<base>|<k>". */
@@ -803,14 +813,14 @@ function renderForms(){
   field("gateway.comment","Comment","str",0,0,{ml:255,help:"gcom"}).replace('<div class="fld">','<div class="fld" style="grid-column:1/-1">');
  $("#f-net").innerHTML=field("network.dhcp","DHCP","bool",true)+field("network.ip","IP","str")+field("network.netmask","Netmask","str")+field("network.gateway","Gateway","str")+field("network.dns","DNS","str")+field("network.hostname","Hostname","str",0,0,{help:"host"})+field("network.mdns","mDNS (.local)","bool",true,0,{help:"mdns"});
  renderNet();
- $("#f-mqtt").innerHTML=field("mqtt.host","Broker","str",0,0,{help:"broker"})+field("mqtt.port","Port","int")+field("mqtt.client_id","Client ID","str",0,0,{help:"cid"})+field("mqtt.username","User","str")+field("mqtt.password","Password","pw")+field("mqtt.keepalive_s","Keepalive (s)","int",0,0,{help:"keep"})+field("mqtt.protocol","Protocol","sel",PROTO,true,{help:"proto"});
+ $("#f-mqtt").innerHTML=field("mqtt.host","Broker","str",0,0,{help:"broker"})+field("mqtt.port","Port","int")+field("mqtt.client_id","Client ID","str",0,0,{help:"cid"})+field("mqtt.username","User","str")+field("mqtt.password","Password","pw")+field("mqtt.keepalive_s","Keepalive (s)","int",0,0,{help:"keep"})+field("mqtt.protocol","Protocol","sel",PROTO,"3.1.1",{help:"proto"});
  renderBk();
  $("#f-bk2").innerHTML=field("mqtt.failover_after","Failover after (attempts)","int",0,0,{help:"fo",ph:"3"})+field("mqtt.primary_return_s","Back to the primary after (s)","int",0,0,{help:"ret",ph:"0",hint:"0 = stay on the backup until it fails"});
  renderTls();
- $("#f-spb").innerHTML=field("sparkplug.group_id","Group ID","str",0,0,{ml:32,help:"group"})+field("sparkplug.edge_node_id","Edge node ID","str",0,0,{ml:32,help:"edge"})+field("sparkplug.primary_host_id","Primary host ID","str",0,0,{ml:32,help:"phost"})+field("sparkplug.naming","Naming","sel",NAMING,true,{help:"naming"})+
+ $("#f-spb").innerHTML=field("sparkplug.group_id","Group ID","str",0,0,{ml:32,help:"group"})+field("sparkplug.edge_node_id","Edge node ID","str",0,0,{ml:32,help:"edge"})+field("sparkplug.primary_host_id","Primary host ID","str",0,0,{ml:32,help:"phost"})+field("sparkplug.naming","Naming","sel",NAMING,"sparkplug",{help:"naming"})+
   field("sparkplug.diagnostics_s","Diagnostics period (s)","int",0,0,{help:"diag",ph:"60",hint:"0 = only in the NBIRTH"});
  renderSf();
- $("#f-rs485").innerHTML=field("rs485.baud","Baud rate","int",0,0,{help:"baud"})+field("rs485.parity","Parity","sel",PAR,true)+field("rs485.stop_bits","Stop bits","int")+field("rs485.response_timeout_ms","Timeout (ms)","int",0,0,{help:"tmo"})+field("rs485.retries","Retries","int",0,0,{help:"retry"})+field("rs485.inter_frame_delay_ms","Inter-frame delay (ms)","int",0,0,{help:"ifd"});
+ $("#f-rs485").innerHTML=field("rs485.baud","Baud rate","int",0,0,{help:"baud"})+field("rs485.parity","Parity","sel",PAR,"none")+field("rs485.stop_bits","Stop bits","int")+field("rs485.response_timeout_ms","Timeout (ms)","int",0,0,{help:"tmo"})+field("rs485.retries","Retries","int",0,0,{help:"retry"})+field("rs485.inter_frame_delay_ms","Inter-frame delay (ms)","int",0,0,{help:"ifd"});
  /* #223: ota.mqtt, the only control of the card (an update from the Status tab is always possible) */
  /* #221: ota.ca_file, a file field as the TLS files of the MQTT card */
  $("#f-ota").innerHTML=`<div class="fld"><span class="lbl"><label for="i-ota.mqtt">Update from MQTT</label>${qi("otamqtt","Update from MQTT")}</span>${ctl("ota.mqtt","bool",false)}<span class="hint" id="h-otamqtt"></span></div>`+otaCaFld();
@@ -860,7 +870,7 @@ function dtNameErr(v,ns){if(v==="")return "Give a name for the type.";if(new Tex
  if(o!==undefined)return o===v?`The type ${v} already exists. Give a different name.`:`The type ${o} differs from this name only in case. Give a different name.`;return null}
 /* #201 #208 #221: the cards Wi-Fi, IPv6 and Time */
 function renderNet(){
- $("#f-wifi").innerHTML=field("network.wifi.enabled","Enabled","bool",false)+field("network.wifi.role","Role","sel",ROLE,true,{help:"role"})+field("network.wifi.failback_s","Failback (s)","int",0,0,{help:"fb",ph:"30"});
+ $("#f-wifi").innerHTML=field("network.wifi.enabled","Enabled","bool",false)+field("network.wifi.role","Role","sel",ROLE,"backup",{help:"role"})+field("network.wifi.failback_s","Failback (s)","int",0,0,{help:"fb",ph:"30"});
  $("#f-wifi2").innerHTML=`<div class="fld span2"><span class="lbl"><label for="i-network.wifi.ssid">SSID</label>${qi("ssid","SSID")}</span><div class="srow">${ctl("network.wifi.ssid","str",0,0,{ml:32})}<button type="button" id="w-find" aria-expanded="${!$("#w-nets").classList.contains("hidden")}" aria-controls="w-nets">Find networks</button></div></div>`+field("network.wifi.password","Password","pw",0,0,{ml:64,help:"wpw"});
  $("#f-wifi-ip").innerHTML=field("network.wifi.dhcp","DHCP","bool",true)+field("network.wifi.ip","IP","str")+field("network.wifi.netmask","Netmask","str")+field("network.wifi.gateway","Gateway","str")+field("network.wifi.dns","DNS","str");
  $("#f-v6").innerHTML=field("network.ipv6.enabled","Enabled","bool",false,0,{help:"v6en"})+field("network.ipv6.slaac","SLAAC","bool",true,0,{help:"slaac"})+field("network.ipv6.address","Static address (Ethernet)","str",0,0,{help:"v6addr"})+field("network.ipv6.dns","DNS (IPv6)","str",0,0,{help:"v6dns"});
@@ -872,7 +882,7 @@ function renderServices(){
  $("#f-mbtcp").innerHTML=field("modbus_tcp.enabled","Enabled","bool",false,0,{help:"mben",hint:"No authentication. Limit the clients below."})+field("modbus_tcp.port","Port","int",0,0,{ph:"502"})+field("modbus_tcp.idle_timeout_s","Idle timeout (s)","int",0,0,{help:"idle",ph:"60"});
  $("#f-mbc").innerHTML=lstFld("mbc","Allowed clients","mbc");
  $("#f-mbloc").innerHTML=field("modbus_tcp.local_unit_id","Local unit ID","int",0,0,{help:"lunit",ph:"0 = off"})+field("modbus_tcp.local_writes","Local writes (DOs)","bool",false,0,{help:"lwr"});
- $("#f-syslog").innerHTML=field("syslog.host","Host","str",0,0,{ml:127,ph:"empty = off",help:"slhost"})+field("syslog.port","Port (UDP)","int",0,0,{ph:"514"})+field("syslog.level","Level","sel",LEVEL,true,{help:"sllvl"});
+ $("#f-syslog").innerHTML=field("syslog.host","Host","str",0,0,{ml:127,ph:"empty = off",help:"slhost"})+field("syslog.port","Port (UDP)","int",0,0,{ph:"514"})+field("syslog.level","Level","sel",LEVEL,"info",{help:"sllvl"});
 }
 /* #201 #216 #221: a list of the document (ntp.servers, modbus_tcp.allowed_clients,
    mqtt.backup_brokers): a row for each item, x removes it, + adds an empty row (an empty row is
@@ -886,11 +896,16 @@ function lstFld(k,label,help){const L=LISTS[k],a=get(cfg,L.p),rows=Array.isArray
   `</div><div class="row ladd"><button type="button" data-ladd="${k}"${rows.length>=L.max?" disabled":""}>${L.add}</button>${rows.length>=L.max&&L.most?`<span class="hint">${L.most}</span>`:L.hint?`<span class="hint">${L.hint}</span>`:""}</div></div>`}
 function bkPort(){return val("mqtt.port")||(ccBool("mqtt.tls.enabled",false)?"8883":"1883")}
 /* the port of the primary broker in its row, and as the placeholder of each backup port (a backup without a port uses it): live, at each input */
-function bkLive(){$("#bk-h").textContent=val("mqtt.host");const p=bkPort();$("#bk-p").textContent=p;document.querySelectorAll('[data-p^="mqtt.backup_brokers."][data-p$=".port"]').forEach(e=>e.placeholder=p)}
+/* #250: on a phone the placeholder says where the port comes from (prototype I221MqttTlsPhone); the table cell of the desktop is too narrow for that text */
+const BKPH=matchMedia("(max-width:600px)");
+const bkPh=p=>BKPH.matches?`${p} (the port of the primary broker)`:p;
+function bkLive(){$("#bk-h").textContent=val("mqtt.host");const p=bkPort();$("#bk-p").textContent=p;document.querySelectorAll('[data-p^="mqtt.backup_brokers."][data-p$=".port"]').forEach(e=>e.placeholder=bkPh(p))}
+BKPH.addEventListener("change",()=>{if($("#bk-h"))bkLive()});
 function renderBk(){const a=get(cfg,"mqtt.backup_brokers"),bk=Array.isArray(a)?a:[],port=bkPort();
- $("#f-bk").innerHTML=`<div class="tbox"><table><colgroup><col><col><col><col></colgroup><tr><th>Order</th><th>Host</th><th>Port</th><th></th></tr>`+
-  `<tr><td class="mut">Primary</td><td class="mut"><span id="bk-h">${esc(val("mqtt.host"))}</span> <span class="hint">(Broker and Port above)</span></td><td class="mut" id="bk-p">${esc(port)}</td><td></td></tr>`+
-  bk.map((b,i)=>`<tr><td>Backup ${i+1}</td><td>${ctl(`mqtt.backup_brokers.${i}.host`,"str",0,0,{aria:`Host of backup broker ${i+1}`,ml:127})}</td><td>${ctl(`mqtt.backup_brokers.${i}.port`,"int",0,0,{aria:`Port of backup broker ${i+1}`,ph:port})}</td><td><button type="button" data-ldel="bk.${i}" aria-label="Remove backup broker ${i+1}">x</button></td></tr>`).join("")+
+ $("#f-bk").innerHTML=`<div class="tbox"><table><colgroup><col><col><col><col></colgroup><tr class="bkh"><th>Order</th><th>Host</th><th>Port</th><th></th></tr>`+
+  `<tr class="bkp"><td class="mut"><span class="bko">Primary</span></td><td class="mut"><span id="bk-h">${esc(val("mqtt.host"))}</span> <span class="hint">(Broker and Port above)</span></td><td class="mut"><span id="bk-p">${esc(port)}</span></td><td></td></tr>`+
+  bk.map((b,i)=>{const h=`mqtt.backup_brokers.${i}.host`,q=`mqtt.backup_brokers.${i}.port`;
+   return `<tr><td class="bko">Backup ${i+1}</td><td class="bkf"><label class="bkl" for="i-${h}">Host</label>${ctl(h,"str",0,0,{aria:`Host of backup broker ${i+1}`,ml:127})}</td><td class="bkf"><label class="bkl" for="i-${q}">Port</label>${ctl(q,"int",0,0,{aria:`Port of backup broker ${i+1}`,ph:bkPh(port)})}</td><td class="bkx"><button type="button" data-ldel="bk.${i}" aria-label="Remove backup broker ${i+1}">x</button></td></tr>`}).join("")+
   `</table></div><div class="row" style="margin-top:8px"><button type="button" data-ladd="bk"${bk.length>=3?" disabled":""}>+ broker</button><span class="hint">Up to 3 backup brokers.</span></div>`}
 /* #221: the TLS keys of mqtt; the files come from GET /api/files (FILES; null: not known) */
 let FILES=null,FINFO=null;
@@ -983,7 +998,7 @@ function readForms(){
  document.querySelectorAll("[data-p]").forEach(e=>{
   const p=e.dataset.p.replace(/\.(\d+)(?=\.|$)/g,".$1"),k=e.dataset.k;let v;
   if(k==="bool"){v=e.checked;if(get(cfg,p)===undefined&&v===(e.dataset.def==="1"))return}else if(k==="int"||k==="num"){if(e.value.trim()===""){unset(p);return}v=Number(e.value)}
-  else if(k==="sel"){const cur=get(cfg,p);if(cur!=null&&e.value===String(cur))return;if(e.value===""){unset(p);return}v=e.value}else v=e.value;
+  else if(k==="sel"){const cur=get(cfg,p);if(cur!=null&&e.value===String(cur))return;if(cur===undefined&&e.dataset.def!==undefined&&e.value===e.dataset.def)return;if(e.value===""){unset(p);return}v=e.value}else v=e.value;
   if((k==="str"||k==="pw")&&v===""&&get(cfg,p)===undefined)return;
   set(cfg,p,v);
  });
@@ -1273,9 +1288,10 @@ $("#sd-fmt").onclick=async()=>{const c=sdc,n=c.other_entries||0;
 /* #182: a Modbus test read through the bus owner (POST /api/modbus/read) */
 $("#mb-area").innerHTML=AREA.map(a=>`<option ${a==="holding"?"selected":""}>${a}</option>`).join("");
 $("#mb-type").innerHTML=`<option value="">(none: raw values only)</option>`+TYPE.map(t=>`<option>${t}</option>`).join("");
-$("#mb-wo").innerHTML=`<option value="">(default: big)</option>`+WO.map(w=>`<option>${w}</option>`).join("");
+/* #250: no separate "(default)" option: big is selected and has the text "(default)" */
+$("#mb-wo").innerHTML=selOpts(null,WO,"big");
 $("#mb-read").onclick=async()=>{const q={unit:Number($("#mb-unit").value),area:$("#mb-area").value,address:Number($("#mb-addr").value)},c=$("#mb-count").value.trim(),m=$("#mb-msg");
- if(c!=="")q.count=Number(c);if($("#mb-type").value)q.type=$("#mb-type").value;if($("#mb-wo").value)q.word_order=$("#mb-wo").value;
+ if(c!=="")q.count=Number(c);if($("#mb-type").value){q.type=$("#mb-type").value;q.word_order=$("#mb-wo").value}
  m.textContent="Reading…";m.className="mut";$("#mb-read").disabled=true;
  const r=await api("POST","/api/modbus/read",JSON.stringify(q)),j=r.json||{};$("#mb-read").disabled=false;
  if(r.status===200&&j.ok){m.textContent=`Unit ${j.unit}, ${j.area} ${j.address}: ${j.values.join(" ")}`+("value" in j?` = ${"value_text" in j?j.value_text:JSON.stringify(j.value)} (${j.type}, ${j.word_order})`:"");m.className="ok"}
