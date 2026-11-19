@@ -1,6 +1,6 @@
 # Run the Sparkplug TCK against the gateway
 
-This guide runs the Edge Node profile of the Eclipse Sparkplug TCK 3.0.0 against the real firmware in QEMU. The E2E harness runs the TCK as the optional scenario `tck`. For the last results and the reason for each failure, refer to [Sparkplug TCK results](../reference/sparkplug-tck-results.md). For the E2E environment in Docker, refer to [Run the E2E tests in Docker](run-e2e-in-docker.md).
+This guide runs the Edge Node profile of the Eclipse Sparkplug TCK 3.0.0 against the real firmware in QEMU. The E2E harness runs the TCK as the optional scenario `tck`. For the results and the reason for each failure, refer to [Sparkplug TCK results](../reference/sparkplug-tck-results.md). For the E2E environment in Docker, refer to [Run the E2E tests in Docker](run-e2e-in-docker.md).
 
 The TCK is a HiveMQ extension. It examines each MQTT packet of the broker, it simulates the Sparkplug host application, and it gives one result for each `tck-id`. The scenario does the steps of the operator that the TCK web console asks for. It boots the gateway, changes a Modbus register, sets a DI, stops the Modbus slave and restarts the gateway.
 
@@ -30,7 +30,7 @@ The script installs nothing outside `/work/tck`. It puts the TCK extension into 
    docker run --rm --privileged -v gw-e2e:/work -w /work/repo/idf -e E2E_WORKDIR=/work/run-tck -e E2E_TCK_DIR=/work/tck gw-e2e tools/e2e/run_e2e.sh --only tck
    ```
 
-2. Wait for the last line, for example `19/19 checks passed`. There is one check for each test and MQTT version, and the five checks that the harness makes after each run.
+2. Wait for the last line: `N/N checks passed` when all checks pass. There is one check for each test and MQTT version, and the checks that the harness makes after each run.
 
 The scenario runs the seven Edge Node tests two times: one time with MQTT 3.1.1 and one time with MQTT 5. Each test has a new HiveMQ and a new boot of the gateway.
 
@@ -49,7 +49,7 @@ To use images that you built before, add `-e E2E_PREBUILT=<dir>` and `-e E2E_PLA
 1. Find the check of each test in the output:
 
    ```text
-   [PASS] Issue #176 TCK edge SendDataTest (MQTT 5): ... 41 PASS, 0 FAIL (0 known), 3 NOT EXECUTED
+   [PASS] Issue #176 TCK edge SendDataTest (MQTT 5): ... <n> PASS, 0 FAIL (0 known), <n> NOT EXECUTED
    ```
 
 2. Find the result of each assertion in the lines that start with `[TCK]`. A failure has the text of the specification after `--`.

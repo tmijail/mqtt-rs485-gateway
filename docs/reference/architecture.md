@@ -135,7 +135,7 @@ A change of `littlefs` or of ESP-IDF can change a stored format. Such a change m
 | `web_guard` (`gw_web`, #110) | — / 1 | 2.5 KB static | No | The watchdog of the web servers. Every 1 s, it sends a ping to each server. If a request holds a server, it calls `shutdown()` on the sessions of that server |
 | esp-mqtt (`mqtt_task`), lwIP (`tcpip`), Ethernet RX (`w5500_tsk` or `emac_rx`), Wi-Fi (only with `network.wifi`), event loop (`sys_evt`) | **0** / IDF | IDF | The TWDT watches the IDLE task | The event loop owns `gw_netsel`: the link and IP events, and the failback timer |
 
-The shell command `status` gives the core of each task (`tasks rs485_bus 1 sparkplug 0 tcpip 0 …`). Its `stack` line gives the minimum free stack of `sparkplug`, `mqtt_task`, `rs485_bus`, `local_io`, `web_guard`, `httpd` and `httpd_redirect`. The E2E examines these values. For the measured values, refer to [Memory thresholds](e2e-harness.md#memory-thresholds).
+The shell command `status` gives the core of each task (`tasks rs485_bus 1 sparkplug 0 tcpip 0 …`). Its `stack` line gives the minimum free stack of `sparkplug`, `mqtt_task`, `rs485_bus`, `local_io`, `web_guard`, `httpd` and `httpd_redirect`. The E2E examines these values. For the thresholds, refer to [Memory thresholds](e2e-harness.md#memory-thresholds).
 
 ### The `sparkplug` task
 
@@ -268,7 +268,7 @@ The internal RAM is shared with Wi-Fi, lwIP, esp-mqtt, the task stacks and DMA. 
 | The margin after the largest request of the validation print (#91) | ≥ 4 KB |
 | The free stack of `sparkplug` after the deepest paths | ≥ 1 KB |
 
-Never lower these thresholds. Measure each change of `.bss`, stack or heap with `E2E_PSRAM=1 --only tls`. For the measured values, refer to [Memory thresholds](e2e-harness.md#memory-thresholds).
+Never lower these thresholds. Measure each change of `.bss`, stack or heap with `E2E_PSRAM=1 --only tls`. For the thresholds, refer to [Memory thresholds](e2e-harness.md#memory-thresholds).
 
 The shell gives the current values on each gateway: the `heap` and `stack` lines of `status`. The log of each validation gives `validation: document N B, largest request N B, largest internal block before it N B`.
 

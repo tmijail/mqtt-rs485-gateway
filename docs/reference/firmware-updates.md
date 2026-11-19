@@ -263,4 +263,4 @@ These hooks exist only with `CONFIG_GW_IO_SIMULATED`:
 - The file `/cfg/.sim-reject-config` makes a new image on trial reject the stored configuration (path `e2e.simulated`). The E2E uses it to examine the rejection of an image installed from normal mode, because all the images that the E2E builds read the same schema.
 - The QEMU build counts the key `network.hostname` as the schema after the schema of the build (`GW_CONFIG_SCHEMA` + 1, `k_sim_since` in `gw_storage.c`) (#146). The other keys count as schema 1 in this build.
 - The E2E reads the schema of the image under test from its capabilities block. It writes the block of a copy of the image again, to declare the next schema. The images are the same binary, thus the E2E examines the decision and the restored document, not a real older parser.
-- The self-check time is 30 s (`sdkconfig.qemu`). For the durations, refer to [E2E durations](e2e-durations.md).
+- The self-check time is 30 s (`sdkconfig.qemu`). Refer to [The self-check time in QEMU](e2e-harness.md#the-self-check-time-in-qemu-233).

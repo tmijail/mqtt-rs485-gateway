@@ -41,7 +41,7 @@ To correct a result, refer to [Run the static analyzer](../how-to/build-the-firm
 
 ## No `-Wundef` in the firmware
 
-The headers of ESP-IDF evaluate undefined macros in `#if`, for example `BOOTLOADER_BUILD` and `CONFIG_FREERTOS_SMP`. With `-Wundef`, the release build gave 3 615 warnings from 67 headers of ESP-IDF.
+The headers of ESP-IDF evaluate undefined macros in `#if`, for example `BOOTLOADER_BUILD` and `CONFIG_FREERTOS_SMP`. With `-Wundef`, the release build gives many warnings from the headers of ESP-IDF.
 
 Also, ESP-IDF does not define a bool option that is off. Thus `#if CONFIG_GW_IO_SIMULATED` is correct code, but `-Wundef` gives a warning for it. The project does not hide warnings with `#pragma`, thus the firmware does not use `-Wundef`.
 
@@ -53,15 +53,7 @@ The host test `check_kconfig_names` finds a misspelled option name instead. It e
 
 The limit stops a new frame of more than half of the stack of `rs485_bus` (4 096 B).
 
-All own functions have a static frame (no VLA and no `alloca`). These are the largest frames, measured at #227:
-
-- `gw_storage_load_config` 1 664 B (boot, main task);
-- `send_why` 1 520 B and `send_error` 1 360 B (`gw_web.c`, task of the web server);
-- `load_pem_certs` 1 152 B (`gw_edge.c`);
-- `status_card` 1 136 B (`gw_web.c`);
-- `decode_metric` 1 104 B (`spb.c`). It decodes a metric of an NCMD or a DCMD in a callback of `pb_decode()`. Thus the stack report cannot put it in a task.
-
-Of 1 150 own functions, 88 have a frame of more than 256 B, 31 of more than 512 B, and 6 of more than 1 024 B. A limit of 1 024 B needs a decision about these 6 functions.
+All own functions have a static frame (no VLA and no `alloca`). The stack report gives the largest frames of each task.
 
 ## The stack report
 
@@ -93,16 +85,6 @@ For each task, the report gives:
 
 The own components compile without ccache: `RULE_LAUNCH_COMPILE` is empty for their targets. At a hit, ccache 4.9 gives the object and the `.su` file again, but not the `.ci` file. The script fails when a C object file of the own components has no `.ci` file.
 
-### The measured values
+### The values of a build
 
-The values come from the release build at #227.
-
-| Task | Stack | Deepest own path | The largest frames |
-|---|---|---|---|
-| `rs485_bus` | 4 096 B | 832 B: `bus_task` → `serve_pending` → `gw_poller_write_value` → `bit_request` → `execute_n` → `mb_master_execute_retries` → `mb_build_request` → `finish` → `mb_crc16` | `gw_poller_write_value` 304, `gw_poller_poll` 176, `serve_pending` 128, `bit_request` 112, `gw_poller_forward` 112 |
-| `sparkplug` | 6 144 B | 1 344 B: `edge_task` → `op_reboot` → `gw_fw_restart_requested` → `restart_confirm_on_core0` → `confirm` → `gw_storage_save_last_good` → `gw_lkg_encode` → `put_u16` → `put` | `gw_storage_save_last_good` 688, `publish_nbirth` 384, `gw_node_io_changed` 336, `publish_io` 336, `confirm` 304 |
-
-- In `sparkplug`, `spb_encode()` calls `pb_encode()` of nanopb with 1 056 B of own stack above it. The stack of nanopb adds to this value.
-- In `rs485_bus`, the UART read is an indirect call (`rx()` in `mb_master.c`), with 768 B of own stack above it.
-
-For the current values, read `stack.txt` in the artifact of the last CI run.
+The documentation does not record the values of the report, because each change of the code changes them. Read `stack.txt` in the artifact `firmware-esp32s3` of the CI run, or make the report from your build.

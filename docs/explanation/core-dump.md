@@ -53,4 +53,4 @@ A mutex serializes the reads, the summary and the erase. If an erase occurs duri
 
 ## Verification
 
-The E2E examines the core dump in QEMU with the shell command `panic`, which exists only in the emulator build. The results are in [Tests](../reference/tests.md).
+The E2E examines the core dump in QEMU with the shell command `panic`, which exists only in the emulator build. The checks are in [The E2E scenarios](../reference/e2e-scenarios.md).

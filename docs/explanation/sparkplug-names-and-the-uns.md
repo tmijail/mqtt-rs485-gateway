@@ -77,7 +77,7 @@ In v0.16.2, the `sparkplug_b` input has these limits:
 - It ignores the PropertySet of a metric. Thus the UNS does not receive the units and the Quality.
 - It cannot send a DCMD. UMH cannot write to a Modbus device through the gateway.
 - The default role `secondary_passive` never asks for a rebirth.
-- Without a BIRTH in its cache, the input uses the datatype of the DATA metric. The gateway sends no datatype in NDATA and DDATA, because the specification says so (`tck-id-payloads-metric-datatype-not-req`, #159). Thus, until the next BIRTH, a negative integer can show as a large number. The E2E measured -3 as 4294967293, with the name `alias_<n>`. The role `secondary_active` asks for that BIRTH, and the BIRTH came in less than 1 s.
+- Without a BIRTH in its cache, the input uses the datatype of the DATA metric. The gateway sends no datatype in NDATA and DDATA, because the specification says so (`tck-id-payloads-metric-datatype-not-req`, #159). Thus, until the next BIRTH, a negative integer can show as a large number. The E2E measured -3 as 4294967293, with the name `alias_<n>`. The role `secondary_active` asks for that BIRTH.
 - The `tag_processor` runs JavaScript, where each number is a double. Thus it rounds a 64-bit integer that is larger than 2^53. The input of the bridge has the exact value.
 
 The gateway keeps these items, because they are correct Sparkplug B 3.0 and other hosts use them:

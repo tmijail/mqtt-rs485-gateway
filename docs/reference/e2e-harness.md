@@ -18,7 +18,7 @@ The harness is one file, `idf/tools/e2e/e2e.py`. `idf/tools/e2e/scenarios.py` ho
 | Variant | Build | What its full run contains |
 |---|---|---|
 | PSRAM (`E2E_PSRAM=1`) | `build-qemu-psram`: `sdkconfig.qemu` and `sdkconfig.qemu-psram`. QEMU has the octal PSRAM model (`-global driver=ssi_psram,property=is_octal,value=true`, `-m 8M`) | All the scenarios except the three of the default variant. This is the memory configuration of the board, so each scenario that depends on memory goes here |
-| Default | `build-qemu`: `sdkconfig.qemu` only (`CONFIG_GW_EMU_NO_PSRAM`). The own memory is in internal RAM, with a 6 KB payload buffer and a store & forward ring of 512 samples | Only the park of #112, the #97 integration and the #144 self-check (`DEFAULT_VARIANT_SCENARIOS`). They examine logic, not memory, and they are 4 to 7 times slower with PSRAM |
+| Default | `build-qemu`: `sdkconfig.qemu` only (`CONFIG_GW_EMU_NO_PSRAM`). The own memory is in internal RAM, with a 6 KB payload buffer and a store & forward ring of 512 samples | Only the park of #112, the #97 integration and the #144 self-check (`DEFAULT_VARIANT_SCENARIOS`). They examine logic, not memory, and they are much slower with PSRAM |
 
 `--only` selects scenarios in each variant. The scenario `nopsram` needs the PSRAM build, so the harness skips it in the default variant.
 
@@ -35,13 +35,13 @@ Do not use `-m 32M`. QEMU then maps 31 MB, and no virtual space stays for the ma
 
 The OTA scenarios run with `-accel tcg,thread=single`: the two cores in one host thread. These are the two FW-1 OTA scenarios, the #97 integration, the #144 self-check and the OTA to encrypted NVS. With MTTCG, the QEMU default, the MMU model of the S3 has a race when one core maps flash pages while the other core runs. QEMU then crashes with a SIGSEGV or `Bad ram pointer` when the host load is high (#242). The OTA scenarios map the flash all the time, so they need one thread. The other scenarios keep MTTCG.
 
-With one thread, the guest is 1.5 to 2 times slower, and 2 to 7 times slower with PSRAM. `E2E_TCG_THREAD` (or `--tcg-thread`) selects `auto` (the default: the behaviour above), `single` or `multi` for all scenarios.
+With one thread, the guest is slower, and much slower with PSRAM. `E2E_TCG_THREAD` (or `--tcg-thread`) selects `auto` (the default: the behaviour above), `single` or `multi` for all scenarios.
 
 ### The self-check time in QEMU (#233)
 
 The QEMU build sets `CONFIG_GW_FW_SELFCHECK_S=30`. The board keeps the default of 60 s.
 
-- Each self-check that the E2E waits for adds its full time. A full E2E waits for approximately 11 self-checks.
+- Each self-check that the E2E waits for adds its full time.
 - The harness reads the value from the `sdkconfig` of the build (`SELFCHECK_S`). It waits for an "installed" state for the self-check time plus 90 s (`SELFCHECK_WAIT_S`).
 - The check of a rejection "at once" (#144 item 2) requires less than half of the self-check time (15 s).
 - Do not set less than 30 s. During a trial, the E2E pushes the other-slot button, sends an NCMD, saves the configuration and causes a panic. These actions need a sufficient window with PSRAM and single-threaded TCG.
@@ -153,7 +153,7 @@ The `open_eth` model of QEMU loses frames when slirp sends bursts (`opencores.em
 
 The QEMU build has `CONFIG_HEAP_POISONING_DISABLED`, so freed memory keeps its value. `E2E_POISON=1` builds with `CONFIG_HEAP_POISONING_COMPREHENSIVE`: freed memory gets the value 0xFE, and each block has canaries. Thus a use-after-free, as in the #98 check, changes the reported number of bytes, and the check fails. The CI job `e2e-poison` runs this build two times: `--only ota-fw1` in the PSRAM variant, and `--only ota-park,ota-trial` without PSRAM.
 
-The poisoning headers and canaries use approximately 20 KB of internal RAM. Without PSRAM, the #80 validation then answers 503, so this build is not in the main variants. For the same reason, `e2e-poison` runs FW-1 in the PSRAM variant: its checks save the configuration, and without PSRAM a save can get 503. `ota-park` and `ota-trial` save no configuration. `ota-wiring` saves the configuration and needs no PSRAM in the full E2E, so `e2e-poison` does not run it.
+The poisoning headers and canaries use more internal RAM. Without PSRAM, the #80 validation then answers 503, so this build is not in the main variants. For the same reason, `e2e-poison` runs FW-1 in the PSRAM variant: its checks save the configuration, and without PSRAM a save can get 503. `ota-park` and `ota-trial` save no configuration. `ota-wiring` saves the configuration and needs no PSRAM in the full E2E, so `e2e-poison` does not run it.
 
 CAUTION: Read the `uart0-*.log` files when `e2e-poison` fails. With heap poisoning, a `LoadStorePIFAddrError` of the core 1 tick on SYSTIMER can occur at the boot of a trial image, without an image write before it. The harness counts it as a firmware fault, and does not retry it.
 
@@ -178,19 +178,19 @@ CAUTION: Read the `uart0-*.log` files when `e2e-poison` fails. With heap poisoni
 
 **Never lower these thresholds.** Measure each change of `.bss`, stack or heap with `E2E_PSRAM=1 tools/e2e/run_e2e.sh --only tls`.
 
-| Check | Where | Threshold | Last measured value |
-|---|---|---|---|
-| #80 minimum free internal RAM | `tls`, node `GW29`, PSRAM variant | ≥ 8 KB (`RAM_MIN_FREE_B`) | 156 728 B |
-| #80 largest free internal block at the validation | `tls`, node `GW29` | ≥ 17 KB (`RAM_MIN_BLOCK_B`) | 118 784 B |
-| #91 spare of the largest block before the document print | `tls`, node `GW29` | ≥ 4 KB (`PRINT_MIN_SPARE_B`) | — |
-| `sparkplug` stack, deepest paths | `sf`, node `GW27` | ≥ 1 024 B (`STACK_MARGIN_B`) | 1 716 B |
-| `httpd` stack | `tls` and `https` | ≥ 2 048 B (`HTTPD_STACK_MIN_B`) | 5 572 B |
-| `httpd_redirect` and `web_guard` stacks | `tls` and `https` | ≥ 512 B (`REDIRECT_STACK_MIN_B`) | 1 652 B and 1 112 B |
-| Card format task stack (#139) | `sf`, node `GW23` | ≥ 1 024 B of 5 120 B (`CARD_STACK_MIN_B`) | 3 108 B |
+| Check | Where | Threshold |
+|---|---|---|
+| #80 minimum free internal RAM | `tls`, node `GW29`, PSRAM variant | ≥ 8 KB (`RAM_MIN_FREE_B`) |
+| #80 largest free internal block at the validation | `tls`, node `GW29` | ≥ 17 KB (`RAM_MIN_BLOCK_B`) |
+| #91 spare of the largest block before the document print | `tls`, node `GW29` | ≥ 4 KB (`PRINT_MIN_SPARE_B`) |
+| `sparkplug` stack, deepest paths | `sf`, node `GW27` | ≥ 1 024 B (`STACK_MARGIN_B`) |
+| `httpd` stack | `tls` and `https` | ≥ 2 048 B (`HTTPD_STACK_MIN_B`) |
+| `httpd_redirect` and `web_guard` stacks | `tls` and `https` | ≥ 512 B (`REDIRECT_STACK_MIN_B`) |
+| Card format task stack (#139) | `sf`, node `GW23` | ≥ 1 024 B of 5 120 B (`CARD_STACK_MIN_B`) |
 
 The #80 worst case is MQTT over TLS 1.3, full births (the 60-tag DBIRTH of `Bulk`), one HTTPS session open, and `PUT /api/config?dry_run=1` of the full document on a second session. The harness configuration has 5 devices and 74 tags. A larger configuration, or more HTTPS clients at the same time, decrease the margin. mbedTLS, the configuration and the engine are in PSRAM, so the margin of the internal RAM is large on the board configuration.
 
-The #80 values come from the last full run (after commit 1994ff5). The `sparkplug` stack comes from commit 8c2e8be, and the other values from commit 91c852c. In that run of 91c852c, the other free stacks at the #80 worst case were `mqtt_task` 1 772 B, `rs485_bus` 2 328 B and `local_io` 2 400 B. The fault mode without PSRAM (`nopsram`) had 129 020 B of free internal RAM.
+The harness writes the measured values of a run in the detail of each check, in its output and in `results.json`. The documentation does not record them.
 
 A TLS handshake during a validation needs no fix (#84, node `GW30`). With the dynamic buffers of mbedTLS, a reconnection replaces the earlier session and does not add to it. The web server has one task, so a new HTTPS handshake waits until the PUT ends. A PUT during a handshake, with no 32 KB block free, answers 503 with no hang. The E2E does not force this order.
 
@@ -225,7 +225,7 @@ Each workaround exists only in the QEMU build or in the harness. On the board, n
 - **UART1 after a restart.** The QEMU model does not clear UART1 in `uart_driver_install()`. A response at the time of a restart can keep the interrupt line active, and the next boot stops. `gw_rs485` masks the interrupts of the port before each restart, with a shutdown handler and a wrapper of `esp_restart_noos()` that also covers a panic. The E2E examines this with three panics while a Modbus response is in transit (#65).
 - **Cache freeze of the S3 (FW-1).** A map of the flash freezes the caches and does not stop the other core. QEMU does not model the freeze and aborts (`Bad ram pointer`) when the other core runs code from the flash (#241). `CONFIG_GW_FW_PARK_OTHER_CORE` parks core 1 in `waiti` during `esp_ota_begin()` and the image verification. The QEMU build has no secondary USB-Serial-JTAG console, and it installs an uploaded image from a task pinned to core 0.
 - **The park of core 1 (#111, #112).** The parked core must hold no lock. Before the park, the bus task stops between two transactions or two attempts (`gw_bus_hold()`), where it holds no lock. The wait is the longest attempt plus 1 s, at least 10 s. If the bus task does not stop, the park does not occur (`fw: core 1 park refused`). A park lasts 45 s at most (`fw: core 1 park bound reached`). The QEMU build wraps `esp_ipc_call()` and `esp_ipc_call_blocking()`, and reports a call to the parked core. The harness counts each of these lines as a firmware failure. A new task pinned to core 1 must stop in the same way as the bus task.
-- **QEMU deaths with a loaded host (#107).** With MTTCG, QEMU crashes in the OTA scenarios (refer to [Single-threaded TCG](#single-threaded-tcg-in-the-ota-scenarios-107)). With one thread, QEMU still dies sometimes during an OTA: a SIGSEGV with the PC in `code_gen_buffer`, `iotlb_to_section: Assertion ... failed`, or `atomic_mmu_lookup: code should not be reached` (#243). One time, QEMU aborted in `main` (MTTCG) with `malloc(): unsorted double linked list corrupted`. The retry covers these faults.
+- **QEMU deaths with a loaded host (#107).** With MTTCG, QEMU crashes in the OTA scenarios (refer to [Single-threaded TCG](#single-threaded-tcg-in-the-ota-scenarios-107)). With one thread, QEMU still dies sometimes during an OTA: a SIGSEGV with the PC in `code_gen_buffer`, `iotlb_to_section: Assertion ... failed`, or `atomic_mmu_lookup: code should not be reached` (#243). QEMU can also abort in `main` (MTTCG) with `malloc(): unsorted double linked list corrupted`. The retry covers these faults.
 - **Crashes in a row (#144).** The `open_eth` model keeps its state across a panic reset. A second panic with traffic can stop the next boot in an endless `open_eth` interrupt. The E2E uses the emulator command `panic net-off`: it stops the Ethernet driver, then aborts. On the board, a panic resets the W5500 driver.
 - **The uptime of the self-check (#144).** `esp_timer` does not restart at a software reset in QEMU. Thus the self-check uses the FreeRTOS tick of the boot.
 

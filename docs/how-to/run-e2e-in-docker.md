@@ -1,6 +1,6 @@
 # Run the E2E tests in Docker (Windows)
 
-This guide runs the full QEMU E2E tests on a Windows computer, in the same ESP-IDF image as the CI. It also works on Linux and macOS with Docker. For the reasons of this procedure, refer to [The E2E environment on a Windows computer](../explanation/e2e-environment.md). For the measured durations, refer to [E2E durations](../reference/e2e-durations.md).
+This guide runs the full QEMU E2E tests on a Windows computer, in the same ESP-IDF image as the CI. It also works on Linux and macOS with Docker. For the reasons of this procedure, refer to [The E2E environment on a Windows computer](../explanation/e2e-environment.md).
 
 ## Before you start
 
@@ -21,7 +21,7 @@ CAUTION: Do not run the commands from Git Bash without `MSYS_NO_PATHCONV=1`. Git
    docker build -t gw-e2e idf/tools/e2e
    ```
 
-The first build downloads `espressif/idf:v6.1` (8.5 GB when unpacked; 7 minutes on the test computer). Do this step again when `idf/tools/e2e/Dockerfile` or `requirements.txt` changes.
+The first build downloads `espressif/idf:v6.1` (8.5 GB when unpacked). Do this step again when `idf/tools/e2e/Dockerfile` or `requirements.txt` changes.
 
 ## 2. Put the repository into a Docker volume
 
@@ -61,7 +61,7 @@ Each command builds the QEMU images of one variant in the volume and runs the sc
    docker run --rm --privileged -v gw-e2e:/work -w /work/repo/idf -e E2E_WORKDIR=/work/run-default gw-e2e tools/e2e/run_e2e.sh
    ```
 
-The last line of the output gives the result, for example `265/265 checks passed`. To run only some scenarios, add `--only` at the end, for example `tools/e2e/run_e2e.sh --only ota,https`. `--only` selects the scenarios in each variant.
+The last line of the output gives the result: `N/N checks passed` when all checks pass. To run only some scenarios, add `--only` at the end, for example `tools/e2e/run_e2e.sh --only ota,https`. `--only` selects the scenarios in each variant.
 
 ## 4. Run the CI groups in parallel (faster)
 
@@ -91,7 +91,7 @@ The logs, `results.json` and `qemu-exits.txt` stay in the volume. To examine the
 docker run --rm -v gw-e2e:/work -v "$env:USERPROFILE\gw-e2e-out:/out" gw-e2e bash -c "cd /work && cp --parents run-default/*.log run-default/results.json run-default/qemu-exits.txt /out/"
 ```
 
-These files are approximately 1.5 MB for each run. A full work directory is approximately 800 MB, because it also contains the flash images.
+These files are small. A full work directory is much larger, because it also contains the flash images.
 
 ## Remove everything
 
@@ -112,4 +112,4 @@ These files are approximately 1.5 MB for each run. A full work directory is appr
 - **`network: host loopback` at the start of the run.** The container has no `--privileged`. One run at a time is correct in that mode. Parallel runs need `--privileged`.
 - **No `core` file in `qemu/`.** In the Docker Desktop VM, `core_pattern` sends core dumps to a WSL handler. The harness says so in its first line, and it continues without the QEMU trace.
 - **Windows has low memory during a run.** The Docker VM keeps its memory while it runs. Close other large programs, or set a lower limit in `%USERPROFILE%\.wslconfig` (`[wsl2]`, `memory=12GB`). Then restart WSL with `wsl --shutdown`.
-- **A run fails only on a slow or loaded computer.** Add `-e E2E_TIMEOUT_SCALE=2` to the `docker run` command. Do not change the checks.
+- **A run fails only on a slow or loaded computer.** Add `-e E2E_TIMEOUT_SCALE=2` to the `docker run` command. Do not change the checks. On a CPU with P-cores and E-cores, Windows can put the thread of an OTA scenario on an E-core, and that thread is then slower.

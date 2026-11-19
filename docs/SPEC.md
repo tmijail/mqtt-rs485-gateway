@@ -233,7 +233,7 @@ The `device_id` is the device name, or `<device_prefix>:<name>` with `sparkplug.
 | REL-3 | Logs with levels on the console UART | P0 | ✅ | Done |
 | REL-4 | Remote syslog, or logs through MQTT | P2 | | Partial. Syslog only |
 | REL-5 | The cause of the last restart, in the log and in the NBIRTH | P1 | | Done |
-| REL-6 | Less than 10 s from the boot to the NBIRTH when the network and the broker are available | P1 | | Done. 1.9 s in QEMU, no measurement on the board |
+| REL-6 | Less than 10 s from the boot to the NBIRTH when the network and the broker are available | P1 | | Done in QEMU, no measurement on the board |
 
 ### 4.10 Quality (QA)
 

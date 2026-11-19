@@ -2,7 +2,7 @@
 
 This document tells why the web UI, the REST API and the claim window have their security rules, and which risks stay. For the rules themselves, refer to [Commissioning and secrets](../reference/commissioning-and-secrets.md) and [The REST API](../reference/rest-api.md). For the access point, refer to [The security of the access point](access-point-security.md).
 
-> **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The measurements come from the E2E in QEMU.
+> **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The behaviour in this document comes from the E2E in QEMU.
 
 ## The basis: physical access is full access
 
@@ -53,12 +53,12 @@ Nobody examined the check in a real browser. The E2E sends the requests that a b
 
 `esp_http_server` has one task for each server. One client can keep that task busy while it sends its request. The gateway decreases this time, but it cannot prevent it. Thus the web UI and the API are for a trusted network, a VPN or a management network.
 
-**The stall watchdog (#110).** A slow client (slowloris) can send one header byte each 2 s. Each read waits up to 5 s, thus the server never releases that client. The task `web_guard` closes the sessions of a server that does not return to its loop in 8 s. It is a separate task with a low priority, not an `esp_timer` callback. The `esp_timer` task also samples the DIs at 1 kHz, and it must not block. In QEMU, a normal `GET` waited 8.9 s with the watchdog, and 30.2 s without it.
+**The stall watchdog (#110).** A slow client (slowloris) can send one header byte each 2 s. Each read waits up to 5 s, thus the server never releases that client. The task `web_guard` closes the sessions of a server that does not return to its loop in 8 s. It is a separate task with a low priority, not an `esp_timer` callback. The `esp_timer` task also samples the DIs at 1 kHz, and it must not block. In QEMU, the watchdog made the wait of a normal `GET` much shorter.
 
 **The bodies of rejected requests (#106).** After a response, `esp_http_server` reads and discards the remaining body in pieces of 32 B, in its single task. A large `POST` without credentials could keep the web busy for the full upload, again and again.
 
 - Some rejections are not trusted: no credentials were examined yet, or the request comes from another site. With a body of more than 1 KB, the server then stops the read and closes the session at once.
 - For a rejection of an authenticated request from the same origin, the server reads the full body. A cut would give the web UI a network error in place of the code and the reason. The cost is that an authenticated client can keep the web busy for the time of its upload.
-- In QEMU, with a 1.5 MB upload at 150 KB/s on the HTTP port, a `GET` waited 11.5 s without the cut, and 0.02 s with it. On HTTPS, the `GET` did not wait also without the cut, and the cause is not known.
+- In QEMU, with a slow upload on the HTTP port, a `GET` waited much longer without the cut than with it. On HTTPS, the `GET` did not wait also without the cut, and the cause is not known.
 
 **The limit of attempts (#64).** The limit stops a fast password search from one address. It does not stop many addresses. Behind a NAT, one user who makes errors blocks the other users for some time.

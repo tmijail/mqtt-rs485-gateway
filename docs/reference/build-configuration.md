@@ -114,15 +114,7 @@ The host test `check_efuse_options` (#228) fails when `sdkconfig.defaults`, one 
 
 ## The size of the image
 
-CI runs `idf.py size` in the job `firmware`, and puts the output in `size.txt` of the artifact `firmware-esp32s3`. These values come from the release build at #227:
-
-| Region | Used |
-|---|---|
-| Flash code (`.text`) | 1 184 468 B |
-| Flash data (`.rodata`) | 601 936 B |
-| DIRAM `.bss` | 108 224 B |
-| DIRAM `.data` | 25 642 B |
-| Total image | 1 897 661 B (45 % of a 4 MB OTA slot) |
+CI runs `idf.py size` in the job `firmware`, and puts the output in `size.txt` of the artifact `firmware-esp32s3`. The documentation does not record the values, because each change of the code changes them. A 4 MB OTA slot (`ota_0`, `ota_1`) is the limit of the image.
 
 IRAM is always 100 % full on the ESP32-S3. This is normal: the other IRAM code goes in DIRAM.
 

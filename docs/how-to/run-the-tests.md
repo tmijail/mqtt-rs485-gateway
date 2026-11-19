@@ -124,7 +124,7 @@ ESLint needs Node.js 20.19 or later. For a false positive, add `# noqa: <rule>` 
 
 ## Run CodeQL
 
-The workflow `codeql.yml` sends the results of two analyses to the Security tab (#232): the host build and the firmware build. Run CodeQL on the computer to examine a change before the push. For the scope, the model pack and the current alerts, refer to [Code scanning with CodeQL](../reference/tests.md#code-scanning-with-codeql).
+The workflow `codeql.yml` sends the results of two analyses to the Security tab (#232): the host build and the firmware build. Run CodeQL on the computer to examine a change before the push. For the scope, the model pack and the known false positives, refer to [Code scanning with CodeQL](../reference/tests.md#code-scanning-with-codeql).
 
 ### Get the CodeQL bundle
 
@@ -199,7 +199,7 @@ When you change the model pack, add `--rerun` to step 6. Without it, `database a
 
 ## Run the full E2E
 
-The full E2E is the full run of the two variants. On a computer with 4 CPUs, the scenarios of the PSRAM variant take approximately 40 min, and the scenarios of the default variant approximately 11 min. The CI groups take less time (refer to [Run the CI groups on one computer](#run-the-ci-groups-on-one-computer) and [E2E durations](../reference/e2e-durations.md)).
+The full E2E is the full run of the two variants. It takes much more time than the host tests, and the PSRAM variant takes much more time than the default variant. The CI groups take less time (refer to [Run the CI groups on one computer](#run-the-ci-groups-on-one-computer)).
 
 1. Activate ESP-IDF:
 
@@ -232,7 +232,7 @@ The full E2E is the full run of the two variants. On a computer with 4 CPUs, the
    E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh
    ```
 
-7. Make sure that the last line of each run gives all checks passed, for example `265/265 checks passed`.
+7. Make sure that the last line of each run gives all checks passed: `N/N checks passed`.
 
 Run the harness as root, or in a container with `--privileged`, to give each run its own network namespace. Without it, the harness uses the host loopback, and UDP 123 must be free.
 

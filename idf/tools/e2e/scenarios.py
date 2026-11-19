@@ -110,7 +110,7 @@ def selected(only, variant=None):
 # The CI's E2E groups: (variant, id, --only). One job per group runs them in parallel; the union
 # of the groups of a variant must be the full run of that variant (issue #135), each scenario in
 # exactly one group (test_harness.py checks it, and the summary job checks it on the results).
-# Issue #233: balanced on the durations of docs/reference/e2e-durations.md (s, a host with 4 CPUs,
+# Issue #233: balanced on the scenario durations of a full run (s, a host with 4 CPUs,
 # two groups at the same time, the QEMU self-check of 30 s). With PSRAM: FW-1 OTA by web upload
 # 556, by NCMD 376, main 235, #94 OTA to NVS encryption 202, sf spill 174, reset 154, tls 125,
 # https 114, web 82, the rest 8-70. The longest scenario (FW-1 by web upload) sets the floor.

@@ -77,7 +77,7 @@ If the NVS has not sufficient free entries, the response is `507`, and a certifi
 
 The PEM files for MQTT TLS and for the image server stay in the LittleFS partition, not in NVS. esp-mqtt needs the full client key in memory. For the keys that name the files, refer to [`mqtt.tls`](configuration.md#mqtttls). For the routes, refer to [The REST API](rest-api.md#the-pem-files).
 
-- The limits are 16 files (`GW_PEM_FILES_MAX`) and 16384 bytes for each file (`GW_PEM_FILE_MAX_BYTES`), in `gw_certs.h`. These values are a proposal: the product owner approves them later (#221).
+- The limits are 16 files (`GW_PEM_FILES_MAX`) and 16384 bytes for each file (`GW_PEM_FILE_MAX_BYTES`), in `gw_certs.h` (decision of the product owner, #221).
 - The `storage` partition has 1 MiB (256 blocks of 4 KiB). LittleFS gives one block or more to each file.
 - The worst case is approximately 800 KiB, less than the partition: 16 files of 16 KiB, three documents of 128 KiB (`config.json`, `config.prev.json` and `config.next.json`), and a temporary copy of a file during a write.
 - A replaced file keeps its name, thus the configuration does not change. The gateway uses the new content after the next restart. When the saved configuration uses the file, the new content must be of the same kind, and the client key must still agree with the client certificate.

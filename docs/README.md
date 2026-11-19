@@ -68,10 +68,9 @@ The usual sequence for a new gateway is:
 - [Build the firmware](how-to/build-the-firmware.md) and [Build configuration](reference/build-configuration.md): ESP-IDF, the build, the flash, the `sdkconfig` overlays and the partition table.
 - [The product specification](SPEC.md): the requirements (for example MB-6, SPB-14 and FW-1) that the code, the tests and the commits refer to.
 - [The architecture](reference/architecture.md) and [the reasons for it](explanation/architecture.md): the components, the tasks, the concurrency rules and the memory budget.
-- [Run the tests](how-to/run-the-tests.md) and [Tests](reference/tests.md): the host tests, the linters, the E2E tests, the CI jobs and the latest results.
+- [Run the tests](how-to/run-the-tests.md) and [Tests](reference/tests.md): the host tests, the linters, the E2E tests, the CI jobs and where the results of a run are.
 - [The E2E harness](reference/e2e-harness.md) and [The E2E scenarios](reference/e2e-scenarios.md): the test bench in QEMU, the retry rules, and what each scenario examines.
 - [Run the E2E tests in Docker](how-to/run-e2e-in-docker.md) and [the reasons for it](explanation/e2e-environment.md): the E2E tests on a Windows computer, in the ESP-IDF image of the CI.
-- [E2E durations](reference/e2e-durations.md): the measured durations of the scenarios, the CI groups and the builds.
 - [Compiler warnings and stack data](reference/compiler-warnings-and-stack.md): the warning options, the stack report and the limit of a stack frame.
 - [The core dump](explanation/core-dump.md): why the gateway keeps the core dump as it does.
 - [Run the Sparkplug TCK against the gateway](how-to/run-the-sparkplug-tck.md).

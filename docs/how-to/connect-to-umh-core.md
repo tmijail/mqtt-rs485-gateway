@@ -174,7 +174,7 @@ The E2E of #175 measured these items with v0.16.2:
 
 - Each value of the types `bool`, `int16`, `uint16`, `int32`, `uint32`, `float32`, `float64` and `string` gets to the UNS exact, also negative values.
 - A `uint64` or `int64` value gets to the UNS exact up to 2^53. The `tag_processor` runs JavaScript, where each number is a double. Thus 9007199254740993 becomes 9007199254740992.
-- After a restart of UMH, the bridge sends the rebirth request in less than 1 s. The topics come back with their names.
+- After a restart of UMH, the bridge sends a rebirth request. The topics come back with their names.
 
 The [reference](../reference/umh-names-and-topics.md#node-metrics) gives all the metrics.
 

@@ -3,7 +3,7 @@
 This document gives the status of each requirement ID of [the product specification](../SPEC.md), with the evidence and the main limit. Each row links to the document with the detail.
 
 - For the known limits by subsystem, refer to [Known limitations](known-limitations.md).
-- For the tests and their results, refer to [Tests](tests.md).
+- For the tests, refer to [Tests](tests.md).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). "Done" means that host tests or the E2E in QEMU examine the function, not the board.
 
@@ -78,8 +78,8 @@ The column MVP has ✅ for the IDs of the MVP (SPEC §5).
 | SPB-13 | | done | H + Q: STATE `false` and `true`, an old STATE (#157), an offline STATE with backup brokers (#156) | [Sparkplug behavior](sparkplug-behavior.md#the-primary-host-application-spb-13) |
 | SPB-14 | | done | H + Q: the RAM buffer, the replay, the spill to a LittleFS directory. C: SDMMC, FAT and the format. GPIO45 risk: off by default | [Store & forward](store-and-forward.md) |
 | SPB-15 | | done | H + Q. The value is not kept after a restart | [Sparkplug behavior](sparkplug-behavior.md#node-controlscan-rate-spb-15) |
-| SPB-16 | | done | H + P + Q. The worst DBIRTH is approximately 9.5 KB. The payload buffer is 16 KB (`GW_SPB_PAYLOAD_MAX`) | [Sparkplug behavior](sparkplug-behavior.md#quality-and-properties-spb-16) |
-| SPB-17 | | done | H + P + Q. C: the RSSI (QEMU has no radio). The worst NBIRTH, with `Node Info/Modbus TCP` (#81) and 64 template tags, is approximately 14.5 KB | [Diagnostics](sparkplug-messages-and-metrics.md#diagnostics) |
+| SPB-16 | | done | H + P + Q. A host test (`test_worst_case_birth_fits`) encodes the worst DBIRTH in the payload buffer of 16 KB (`GW_SPB_PAYLOAD_MAX`) | [Sparkplug behavior](sparkplug-behavior.md#quality-and-properties-spb-16) |
+| SPB-17 | | done | H + P + Q. C: the RSSI (QEMU has no radio). A host test (`test_worst_case_nbirth_fits`) encodes the worst NBIRTH, with `Node Info/Modbus TCP` (#81) and 64 template tags, in the payload buffer | [Diagnostics](sparkplug-messages-and-metrics.md#diagnostics) |
 | SPB-18 | | done | H + P + Q. No template parameters. No test with a real host | [Sparkplug behavior](sparkplug-behavior.md#templates-spb-18) |
 | SPB-19 | | done | H + P + Q. Bytes and File hold 64 B at most. File has no metadata | [Sparkplug behavior](sparkplug-behavior.md#dataset-bytes-and-file-spb-19) |
 
@@ -122,7 +122,7 @@ The column MVP has ✅ for the IDs of the MVP (SPEC §5).
 |---|---|---|---|---|
 | CFG-1 | ✅ | done | H: the largest document, JSON paths, duplicate keys. Q: a rejected file starts recovery mode | [The configuration document](configuration.md) |
 | CFG-2 | ✅ | done | Q: LittleFS. The embedded fallback applies only when the file is missing | [Configuration](configuration.md) |
-| CFG-3 | | done | H: the auth vectors, the lists of the page, the lockout (#64). Q: the page, the status, recovery mode, HTTPS. Some keys have no control yet (#221) | [Change the configuration](../how-to/change-the-configuration.md) |
+| CFG-3 | | done | H: the auth vectors, the lists of the page, the lockout (#64). Q: the page, the status, recovery mode, HTTPS. Each key of the configuration has a control in the Configuration tab (#221) | [Change the configuration](../how-to/change-the-configuration.md) |
 | CFG-4 | | done | H + Q: validation with the path, dry run, atomic write, masked export, CSRF (#100), rebirth (#171) | [The REST API](rest-api.md) |
 | CFG-5 | | done | H + Q: a simulated button. C: GPIO0, the LED and the buzzer | [Recover a gateway](../how-to/recover-the-gateway.md) |
 | CFG-6 | | done | Q: `status`, `devices`, `config` (`show`, `load`, `check`), `restart`, `rebirth`, `mbread`, `ping`. No password. `CONFIG_GW_SHELL_WRITE_COMMANDS=n` makes it read-only. The web UI also has a Modbus test read (#182) | [`POST /api/modbus/read`](rest-api.md#post-apimodbusread) |
@@ -147,7 +147,7 @@ The column MVP has ✅ for the IDs of the MVP (SPEC §5).
 | REL-3 | ✅ | done | Q | [Read the live log](../how-to/read-the-live-log.md) |
 | REL-4 | | partial | H + Q: syslog. No logs over MQTT, by choice | [Known limitations](known-limitations.md#remote-syslog-rel-4) |
 | REL-5 | | done | H + Q: `power-on`, then `software` after a Reboot | [Node metrics](sparkplug-messages-and-metrics.md#node-metrics) |
-| REL-6 | | done | Q: the E2E gives the time from the start of QEMU to the NBIRTH (1.9 s). It does not compare the time with the limit of 10 s. No measurement on the board | [Tests](tests.md) |
+| REL-6 | | done | Q: the E2E check `REL-6 less than 10 s from the boot to the NBIRTH` in the main scenario compares the time from the start of QEMU to the NBIRTH with the limit of 10 s. No measurement on the board | [Tests](tests.md) |
 
 ## Quality (QA)
 
@@ -164,7 +164,7 @@ The column MVP has ✅ for the IDs of the MVP (SPEC §5).
 |---|---|---|---|---|
 | UMH-1 | | done | The how-to, the explanation and the reference (#168) | [Connect the gateway to UMH Core](../how-to/connect-to-umh-core.md) |
 | UMH-2 | | done | Warnings with the JSON path (#169) | [Name checks](sparkplug-behavior.md#name-checks-169) |
-| UMH-3 | | done | `sparkplug.naming: "umh"` (#173, #174). The worst NBIRTH is 3 169 B | [The UMH preset](sparkplug-behavior.md#the-umh-preset-173-174) |
+| UMH-3 | | done | `sparkplug.naming: "umh"` (#173, #174). A host test encodes the worst NBIRTH of the preset | [The UMH preset](sparkplug-behavior.md#the-umh-preset-173-174) |
 | UMH-4 | | done | `sparkplug.device_prefix` (#172) | [The device prefix](sparkplug-behavior.md#the-device-prefix-172) |
 | UMH-5 | | done | The topic previews in the web UI (#170) | [UMH names and topics](umh-names-and-topics.md) |
 | UMH-6 | | done | The optional E2E scenario `umh` with benthos-umh v0.16.2 (#175). Not in the CI | [Tests](tests.md) |

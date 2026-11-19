@@ -16,10 +16,10 @@ Firmware for an RS485 (Modbus RTU) → MQTT Sparkplug B 3.0 gateway on the Waves
 - `docs/reference/architecture.md` and `docs/explanation/architecture.md`: the components, the task table, the concurrency rules and the memory budget.
 - `docs/how-to/build-the-firmware.md` and `docs/reference/build-configuration.md`: the build, the overlays and the partition table.
 - `docs/reference/configuration.md`, `docs/reference/commissioning-and-secrets.md` and `docs/reference/firmware-updates.md`.
-- `docs/reference/tests.md`, `docs/reference/e2e-harness.md` and `docs/reference/e2e-scenarios.md`: the tests, the test environment and the latest results.
+- `docs/reference/tests.md`, `docs/reference/e2e-harness.md` and `docs/reference/e2e-scenarios.md`: the tests, the test environment and the scenarios.
 - `docs/reference/sparkplug-behavior.md`, `docs/reference/known-limitations.md` and `docs/reference/requirements-status.md`.
 
-The root `README.md` is the short project page: what the gateway does, the status of the project, the features and the links. Do not put measurements, test results or per-issue details in it; put them in `docs/`. `idf/README.md` is only a short guide to the folder `idf/`. Some old docs and GitHub issues are in Spanish; all new writing follows **Writing standard** below.
+The root `README.md` is the short project page: what the gateway does, the status of the project, the features and the links. Do not put measurements, test results or per-issue details in it. `idf/README.md` is only a short guide to the folder `idf/`. Some old docs and GitHub issues are in Spanish; all new writing follows **Writing standard** below.
 
 ## Writing standard: ASD-STE100 Simplified Technical English
 
@@ -72,7 +72,7 @@ Each key of the configuration document must have a control in the Configuration 
 - A link from the web UI to the documentation goes to the documentation site (`https://mijail.ar/mqtt-rs485-gateway/<type>/<page>/#<anchor>`), not to a Markdown file on GitHub.
 - A large change of the web UI starts with a prototype in the design canvas (a Claude Design artifact, private to the product owner): https://claude.ai/artifact/FcFdKXktaEWXxS5bSnDNc7. A large change adds a tab, a card or a dialog, or changes a layout. Start its implementation only after the product owner approves the prototype in a comment on the issue. These issues have the label `design first`.
 - A small change of the web UI needs no prototype (decision of the product owner, 2026-11-18). A small change adjusts an existing control: its validation, the normalization of its input, its text or its explainer. The product owner can ask for a prototype for any change.
-- Some existing keys have no control yet (#221 lists them). Do not use this as a reason to add a new key without a control.
+- Each key has a control now (#221). Keep it so: a new key without a control is not accepted.
 
 ## Commands
 
@@ -112,8 +112,8 @@ idf.py -B build-analyzer -D GW_ANALYZER=ON set-target esp32s3 build
 # E2E: real firmware in QEMU against mosquitto + a pymodbus RTU slave. Each variant has its own
 # full run (#135, scenarios.py DEFAULT_VARIANT_SCENARIOS); the two together are the full E2E.
 python3 -m venv ~/e2e && ~/e2e/bin/pip install -r tools/e2e/requirements.txt
-E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh     # PSRAM variant: the board's configuration, all but 3 scenarios (~40 min with 4 CPUs)
-E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh                 # variant without PSRAM: only the OTA trial scenarios (~11 min)
+E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh     # PSRAM variant: the board's configuration, all but 3 scenarios (the longest run)
+E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh                 # variant without PSRAM: only the OTA trial scenarios
 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh --only ota,https   # subset of scenarios (--only selects in any variant)
 #  --only: failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,time,ota,ota-fw1,ota-fw1-ncmd,
 #          ota-fw1-web,ota-park,ota-wiring,ota-trial,nvs,slow,nopsram,refuse,main,umh,tck,downgrade
@@ -245,6 +245,7 @@ Rules that tests and fixes must respect:
 ## Conventions
 
 - Commits reference issues with `Fixes #N` or `Refs #N`. Feature and fix branches are merged into `main` with `--no-ff`.
-- When behaviour or measurements change, update the documents in `docs/` (in STE): `docs/reference/tests.md` has the latest results and the test counts, `docs/reference/known-limitations.md` the known limitations, and `docs/reference/e2e-harness.md` the notes on the test environment. Keep only the current values: no history of runs. The root `README.md` changes only when a feature or the status of the project changes.
+- When behaviour changes, update the documents in `docs/` (in STE): `docs/reference/known-limitations.md` has the known limitations, and `docs/reference/e2e-harness.md` the notes on the test environment. The root `README.md` changes only when a feature or the status of the project changes.
+- Do not put test results, check counts, durations or measured values (RAM, stack, payload sizes, times) in `docs/`: they change too fast (decision of the product owner, 2026-11-19). The documents give what a test examines, how to run it, its pass criterion and the limits. The results of a run go in the pull request description and the commit message, and the CI keeps them in the job summary and the artifacts.
 - Managed components are pinned with `==` in each `idf_component.yml` and hashed in `dependencies.lock`. Host-test dependencies (Unity, cJSON) are pinned by commit hash via FetchContent.
 - A change can update a managed component that writes data (`littlefs`) or ESP-IDF (the NVS format, `otadata`, the app descriptor, the partition table). Such a change must pass the downgrade test (#148). Run `E2E_DOWNGRADE_REF=<the last release> tools/e2e/run_e2e.sh --only downgrade` in both variants. Before the tag `v1.0`, use the commit before the change. The earlier image must start in normal mode with the same configuration and secrets. If it cannot, merge the change only when the pre-flight check refuses that downgrade (`nvs_format` and the LittleFS disk version in the capabilities block, `docs/reference/firmware-updates.md`).

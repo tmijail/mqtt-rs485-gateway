@@ -195,5 +195,5 @@ For the reasons, refer to [Sparkplug names and the UNS](../explanation/sparkplug
 - **Plain metrics.** A device with `type` publishes plain metrics. The NBIRTH has no template definition, because no device is an instance (`tck-id-payloads-template-definition-nbirth`).
 - **Sums, not one metric for each device.** The NBIRTH and the diagnostic NDATA have the sums of the Modbus counters, as UInt64. A sum of 16 UInt32 counters can be larger than 2^32.
 - Reason for the sums: 16 devices × 12 counters would add 192 metrics. The counters of each device stay in the shell (`devices`), in `GET /api/status` and in the DataSets without the preset.
-- The worst NBIRTH of the preset is 3 169 B, with 73 metrics (`test_umh_worst_case_nbirth_fits`). It has 16 devices with names of 39 characters, RSSI, Modbus TCP and `ota.mqtt`.
+- The host test `test_umh_worst_case_nbirth_fits` encodes the worst NBIRTH of the preset in a buffer of 6 KB, the payload buffer of the QEMU build without PSRAM. It has 16 devices with names of 39 characters, RSSI, Modbus TCP and `ota.mqtt`.
 - The preset is in the configuration hash of the microSD ring. Reason: a replay publishes a typed device as an instance or as plain metrics.
