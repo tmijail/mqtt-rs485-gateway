@@ -318,6 +318,8 @@ In the web UI, the keys are in the section **TLS** of the card **MQTT**: **Encry
 
 In the web UI, the keys are in the section **Backup brokers** of the card **MQTT**: the table of the brokers, **Failover after (attempts)** and **Back to the primary after (s)**. On a phone, each broker is a block with its fields **Host** and **Port**. An empty **Port** shows the port of the primary broker, which the backup broker then uses.
 
+![The section 'Backup brokers' of the card MQTT on a phone. Each broker is a block. The primary broker shows its host and the port 8883. Backup 1 has the host broker2.plant.local and an empty port that shows '8883 (the port of the primary broker)'. Backup 2 has the host 10.0.0.20 and the port 8884. Each backup has a remove button. Below are the button '+ broker' and the fields of the failover.](../images/backup-brokers-phone.png)
+
 ```json
 "mqtt": { "host": "broker1.plant.local", "port": 1883,
           "backup_brokers": [ { "host": "broker2.plant.local" },
