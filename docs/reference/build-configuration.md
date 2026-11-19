@@ -83,6 +83,7 @@ Thus an old `sdkconfig` can keep old values. The project has no installed gatewa
 | `FATFS_LFN_NONE` | FatFs allocates no name buffer on each microSD file operation (#122, REL-2) |
 | `LWIP_SNTP_MAX_SERVERS` | The SNTP client gets all the servers of `ntp.servers` (#201) |
 | `GW_FW_SELFCHECK_S` | The QEMU build confirms a new image after 30 s (#233) |
+| `BOOTLOADER_CUSTOM_RESERVE_RTC`, `BOOTLOADER_FACTORY_RESET`, `BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP` | Off. The bootloader writes no RTC memory (#149). Refer to [The RTC memory of the bootloader](#the-rtc-memory-of-the-bootloader) |
 
 When the firmware starts to depend on a new option, add it to `GW_SDKCONFIG_REQUIRED`.
 
@@ -111,6 +112,17 @@ The host tests `sdkconfig_check_*` run the check on files in [`idf/test/host/sdk
 The host test `check_kconfig_names` finds a misspelled `CONFIG_GW_` name. Refer to [Compiler warnings and the stack data](compiler-warnings-and-stack.md#no--wundef-in-the-firmware).
 
 The host test `check_efuse_options` (#228) fails when `sdkconfig.defaults`, one of its `.<target>` variants or an overlay that is not `sdkconfig.qemu*` sets an option that burns an eFuse. The check of the build does not examine these options. Refer to [The rule checks](tests.md#the-rule-checks).
+
+## The RTC memory of the bootloader
+
+The bootloader reserves no RTC memory (`CONFIG_BOOTLOADER_CUSTOM_RESERVE_RTC` is off, decision of #149).
+
+- **No function needs it.** The facts that go from one image to another are in NVS (`fw_last`, `lkg_net`) and in `otadata`. The core dump partition keeps the data of a crash.
+- **The boot-loop counter stays in the image.** It is `RTC_NOINIT` data in the RTC slow memory, with a magic number and a CRC. After an update or a rollback, the count starts again at 0. This is the safe direction.
+- **An OTA can add the area later.** The linker script of the app fixes the address of the area. A bootloader that was built without the option never writes RTC memory. Thus an app-only update can add the area also on an installed gateway.
+- **A bootloader with the option cannot be removed with an OTA.** That bootloader writes a header into the area on each boot. Each later app must then keep the same size, or the bootloader writes over the data of the app. Only a USB flash replaces the bootloader. `BOOTLOADER_FACTORY_RESET` and `BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP` also turn on this header.
+
+The three options are in `GW_SDKCONFIG_REQUIRED`. Thus a stale or changed `sdkconfig` that turns one of them on stops the configuration.
 
 ## The size of the image
 

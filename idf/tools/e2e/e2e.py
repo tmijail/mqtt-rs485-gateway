@@ -8878,6 +8878,20 @@ def check_admin_web(gw, nb, status, status_body, doc, page_text, t0):
           "<details>; the poll stops when it closes), and the explainer of the log level",
           all(lg_items.values()), f"missing: {[k for k, v in lg_items.items() if not v] or 'none'}")
 
+    # #222: a closed card with a validation error opens, and "Go to the field" opens it and shows
+    # the field. A browser test is in tools/docs_shots.py (closed_card_error, the shot
+    # validate-error); here the served page must hold that code.
+    cc_items = {"error opens the card": "ccReveal(el);ccBadge()}" in page_text,
+                "reveal opens a closed card": 'if(c&&!c.classList.contains("open"))ccApply(c,true,true)}'
+                in page_text,
+                "go to the field reveals": 'function goto191(el){if(typeof revealField==="function")'
+                'revealField(el);el.scrollIntoView({block:"center"});el.focus(' in page_text,
+                "reveal of a field": "togDmore(document.querySelector(`[aria-controls=\"${d.id}\"]`));"
+                "ccReveal(el)}" in page_text}
+    check("Issue #222: a validation error opens its closed card and device row, and 'Go to the "
+          "field' opens the card and focuses the field",
+          all(cc_items.values()), f"missing: {[k for k, v in cc_items.items() if not v] or 'none'}")
+
 
 CLAIM_PASSWORD = "e2e-claimed-pw"   # issue #120: set through the claim window
 PUT_WEB_PASSWORD = "e2e put pw ~!"  # issue #187: printable ASCII with spaces and symbols

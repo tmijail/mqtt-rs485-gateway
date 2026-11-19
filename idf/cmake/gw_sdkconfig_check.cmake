@@ -44,6 +44,12 @@ set(GW_SDKCONFIG_REQUIRED
     FATFS_LFN_NONE
     # #201: the SNTP client gets all the servers of ntp.servers (gw_net.c checks it too)
     LWIP_SNTP_MAX_SERVERS
+    # #149: the bootloader writes no RTC memory. A bootloader with the reserved area (or with the
+    # options that turn on its header) fixes the size of that area for each later app; a stale
+    # sdkconfig must not turn it on, because only a USB flash takes that bootloader away
+    BOOTLOADER_CUSTOM_RESERVE_RTC
+    BOOTLOADER_FACTORY_RESET
+    BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP
     # #233: the QEMU build confirms a new image after 30 s (sdkconfig.qemu); a stale sdkconfig
     # with the 60 s of the board makes each OTA scenario of the E2E 30 s longer per update
     GW_FW_SELFCHECK_S)

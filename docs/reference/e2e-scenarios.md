@@ -108,6 +108,7 @@ Nodes `GW04`, `GW05`, `GW06`: the REST API and the web UI.
 - **CFG-7:** the secrets move from `config.json` to the encrypted NVS at the first boot. No secret is in plaintext in the flash image.
 - **CFG-3 (#167, #170, #191, #192, #193, #194, #213, #221):** the lists of the form hold each value of the configuration, and an exported document is valid. The form has `maxlength`, help texts and the topic preview. The page has no `prompt()` and no `confirm()`. A new web password needs a second field. The controls of #221.
 - **#226:** the served page has the IPv4 normalization of the Configuration tab. The validation refuses `192.168.001.010` in `network.dns` and `010.000.000.001/08` in `modbus_tcp.allowed_clients`, at their paths. It accepts the values that the web UI writes: `192.168.1.10` and `10.0.0.1/8`.
+- **#222:** the served page has the code that opens a closed card at a validation error and at "Go to the field". The script `idf/tools/docs_shots.py` has the browser test of the same rule (the shot `validate-error`).
 - **#199, #200, #206, #207, #208, #212, #216:** the live log and its levels, the gateway labels, identify, the simulated Wi-Fi scan, the heap and temperature in `/api/status`, the local unit without `local_writes`.
 
 ## reset
