@@ -718,7 +718,7 @@ def set_do(obs, ncmd_t, ndata_t, states):
 
 # ---------------------------------------------------------------- emulator faults (issue #92)
 #
-# QEMU can fail in three ways the firmware has no part in (docs/reference/e2e-harness.md#retry-rules, docs/upstream-reports.md):
+# QEMU can fail in three ways the firmware has no part in (docs/reference/e2e-harness.md#retry-rules, issues with the label upstream):
 # it ends (signal or exit, #86/#90), it hangs while staying alive, or the guest takes a fault that
 # only the emulator causes. A monitor thread watches every emulator of the current scenario
 # attempt; on a fault it stops the attempt (every wait raises AttemptAborted), saves a state dump
@@ -822,7 +822,7 @@ def core_backtrace(qemu, core):
 # Issue #107: the scenarios that map flash all the time (downloads, uploads, image checks): with
 # MTTCG the S3 MMU write handler reads the flash image while the other vCPU keeps running and
 # fetches through the mapping being replaced ("Bad ram pointer", SIGSEGV in code_gen_buffer under
-# host load, docs/upstream-reports.md 7). They run both vCPUs on one host thread. The others keep
+# host load, issue #242). They run both vCPUs on one host thread. The others keep
 # MTTCG: single-threaded TCG is about 1.5-2x slower, too slow for their latency bounds under load.
 SINGLE_TCG_SCENARIOS = {"FW-1 OTA by NCMD", "FW-1 OTA by web upload", "issue #97 OTA trial wiring",
                         "issue #144 OTA self-check",
@@ -883,7 +883,7 @@ def symbol_at(pc):
 def known_panic(exception, excvaddr, before):
     """Issue #92: the known emulator panic, or None. QEMU does not model the S3 cache freeze
     while an image is mapped for its write or check: an access of the other core to a
-    peripheral then faults with LoadStorePIFAddrError (docs/upstream-reports.md section 6).
+    peripheral then faults with LoadStorePIFAddrError (issue #241).
     Only that exception, at a peripheral address, with an image being written or checked by the
     app in @before (the lines since app_main started, at most 40). Round 3: the fault with the
     PC in IRAM and no such line (the tick ISR at a trial image's start, seen only with heap
@@ -1519,7 +1519,7 @@ def write_otadata(path):
     """Issue #85: a valid first otadata entry (ota_seq 1 = ota_0, state VALID, CRC32 of the
     sequence as esp_rom_crc32_le computes it), as the 2nd stage bootloader writes it on the
     first boot of an erased otadata. With QEMU's octal ssi_psram that first write crashes QEMU
-    (SIGSEGV in psram_quad_read: docs/upstream-reports.md section 4), so the PSRAM variant boots
+    (SIGSEGV in psram_quad_read: issue #239), so the PSRAM variant boots
     images that already carry it. Checked against the bytes the bootloader writes."""
     offset, _ = storage_partition("otadata")
     seq = struct.pack("<I", 1)

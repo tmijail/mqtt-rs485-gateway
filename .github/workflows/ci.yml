@@ -276,8 +276,8 @@ jobs:
 
   # Issue #121: the E2E in parallel jobs, for the default variant and for the octal PSRAM one
   # (#85: the configuration, the Sparkplug engine and its payload buffer, mbedTLS and the store &
-  # forward ring in PSRAM; the harness writes otadata into the image first, docs/upstream-reports.md
-  # section 4). e2e-plan reads the groups from idf/tools/e2e/scenarios.py (CI_GROUPS: together
+  # forward ring in PSRAM; the harness writes otadata into the image first, for the QEMU
+  # defect of issue #239). e2e-plan reads the groups from idf/tools/e2e/scenarios.py (CI_GROUPS: together
   # one full run, each scenario in one group, as test_harness.py checks). e2e-build builds the
   # QEMU images once per variant (run_e2e.sh with E2E_STAGE; the psram variant also builds
   # build-qemu-plain for its group nvs-main: the images of one job share its signing key). Each

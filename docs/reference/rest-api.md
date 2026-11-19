@@ -88,7 +88,7 @@ The responses of `PUT /api/config`:
 |---|---|
 | `GET /api/files` | The files in the LittleFS partition that the configuration can name: what each file holds, and the keys that use it. Never the content of a file. Refer to [`GET /api/files`](#get-apifiles) |
 | `PUT /api/files?name=<name>` | Loads or replaces a PEM file, or a certificate and its key together. `?dry_run=1` only examines. Refer to [`PUT /api/files`](#put-apifiles) |
-| `DELETE /api/files/<name>` | Removes a file that the saved configuration does not use. Refer to [`DELETE /api/files/<name>`](#delete-apifilesname) |
+| `DELETE /api/files/{name}` | Removes a file that the saved configuration does not use. Refer to [`DELETE /api/files/{name}`](#delete-apifilesname) |
 
 The files are for `mqtt.tls.ca_file`, `mqtt.tls.cert_file`, `mqtt.tls.key_file` and `ota.ca_file`. A load does not change the configuration. Select the file in the configuration, then save it. A replaced file keeps its name: the gateway uses the new content after the next restart.
 
@@ -216,6 +216,7 @@ Sets a digital output, as an NCMD does. Only the DOs: the web UI does not write 
 | `400` | The body is not correct |
 | `409` | A local rule controls the DO (`local_io.rules`). Or recovery mode, commissioning or the fault mode: the local I/O does not run |
 | `503` | The expander does not respond, or the task did not answer in time |
+
 ### `GET /api/wifi/scan`
 
 The list of the Wi-Fi networks near the gateway, for the button "Find networks" of the web UI. The scan also works when `network.wifi.enabled` is `false`: the radio starts for the scan, and stops after it.
@@ -301,7 +302,7 @@ cat gw01.crt gw01.key | curl -k -u admin:<web password> -H "X-Requested-With: cu
      --data-binary @- "https://<ip>/api/files?name=gw01.crt&key_name=gw01.key&replace=1"
 ```
 
-### `DELETE /api/files/<name>`
+### `DELETE /api/files/{name}`
 
 | Status | Body or cause |
 |---|---|

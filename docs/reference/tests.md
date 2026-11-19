@@ -18,6 +18,7 @@ This document gives the test suites of the firmware, what each suite examines, t
 | Static analyzer (#230) | The own components (`gw_*`, `main`) of the release build, with the GCC static analyzer (`-fanalyzer`) | CI job `analyzer` | 0 results |
 | Linters (#229) | The Python tools, the shell scripts, the workflows and the scripts of the web pages | CI job `host-tests` | 0 results |
 | Code scanning (#232) | The flow of data from a source to a `memcpy`, an array index or a length, with CodeQL `security-extended` on the host build | `.github/workflows/codeql.yml` | Each alert in the Security tab is corrected or closed with a reason |
+| Documentation site | The links and the anchors of `docs/`, with a build of the site (Zensical `--strict`) | `.github/workflows/docs.yml`, job `docs` | No warning |
 | Web UI unit test (#226) | The IPv4 normalization of the Configuration tab, in Node.js without a browser | `idf/test/web/test_ip4norm.mjs`, CI job `host-tests` | All tests pass |
 | Harness self-test | The retry, hang and progress logic of the E2E harness, with fake clocks | `idf/tools/e2e/test_harness.py` | All tests pass |
 | E2E in QEMU (QA-3) | The real firmware against mosquitto, a pymodbus RTU slave, SNTP, syslog and HTTPS clients | `idf/tools/e2e/run_e2e.sh` | Each check passes in the full run of the two variants |
@@ -418,6 +419,8 @@ The test reads `index.html`, takes the source of each function and runs it in a 
 
 `.github/workflows/codeql.yml` runs CodeQL on the host build (job `host`) and on the firmware build (job `firmware`), on each push to `main`, on each pull request and one time each week (Wednesday 03:41 UTC). Only its two jobs have the permission `security-events: write`. Refer to [Code scanning with CodeQL](#code-scanning-with-codeql).
 
+`.github/workflows/docs.yml` builds the documentation site with Zensical `--strict` on each push and pull request (job `docs`). A link to a page or an anchor that does not exist stops the job. On a push to `main`, the job `docs-deploy` publishes the site to GitHub Pages. Only that job has the permissions `pages: write` and `id-token: write`. Refer to [Build the documentation site](../how-to/build-the-documentation-site.md).
+
 The GitHub containers do not permit `unshare`. Thus each `e2e` job runs on the loopback interface of its container.
 
 The workflows pin each action to a commit hash, with the tag in a comment (#229). All the actions run on Node 24 (#235):
@@ -428,6 +431,8 @@ The workflows pin each action to a commit hash, with the tag in a comment (#229)
 | `actions/cache` | v6.1.0 |
 | `actions/upload-artifact` | v7.0.2 |
 | `actions/download-artifact` | v8.0.2 |
+| `actions/upload-pages-artifact` | v5.0.0 |
+| `actions/deploy-pages` | v5.0.1 |
 | `actions/setup-node` | v6.5.0 |
 | `github/codeql-action` (`init`, `analyze`, `upload-sarif`) | v4.39.3 |
 

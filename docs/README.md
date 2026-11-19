@@ -1,6 +1,6 @@
 # Documentation
 
-This folder has the documentation of the RS485 (Modbus RTU) to MQTT Sparkplug B gateway. The documents follow the Diátaxis structure: tutorials, how-to guides, reference and explanation.
+This is the documentation of the RS485 (Modbus RTU) to MQTT Sparkplug B gateway. The documents follow the Diátaxis structure: tutorials, how-to guides, reference and explanation. You can read them on the [documentation site](https://tmijail.github.io/mqtt-rs485-gateway/) or in the folder `docs/` of the repository.
 
 > **Warning: The firmware has never run on the board (#1, #18).** The documents come from the firmware in host tests and in QEMU. Each document tells which parts are compile-only.
 
@@ -74,5 +74,7 @@ The usual sequence for a new gateway is:
 - [The core dump](explanation/core-dump.md): why the gateway keeps the core dump as it does.
 - [Run the Sparkplug TCK against the gateway](how-to/run-the-sparkplug-tck.md).
 - [Make the screenshots of the web UI for the docs](how-to/make-the-docs-screenshots.md).
-- `feasibility-idf.md`, `review-idf.md`, `RECOMMENDATION.md`, `review-feature-zephyr-ideas.md` and `upstream-reports.md`: the studies and the reports of the project.
+- [Build the documentation site](how-to/build-the-documentation-site.md): Zensical, the local server, the strict build and the rules for links.
+- The [issues with the label `upstream`](https://github.com/tmijail/mqtt-rs485-gateway/issues?q=label%3Aupstream): the defects of other projects (esp-mqtt, esp-tls, the QEMU of Espressif), with the text of each report.
+- The tag `archive/studies` ([commit d645ec6](https://github.com/tmijail/mqtt-rs485-gateway/tree/d645ec6df5c11da5d2e22fdeb5151bb00bfdd88d/docs)): the studies of the project before the implementation (feasibility, reviews and the selection of ESP-IDF), in Spanish.
 - The branches `impl/zephyr` and `comparison/idf-vs-zephyr` keep the alternative Zephyr implementation and the full comparison.

@@ -10,7 +10,7 @@ The firmware supports ESP-IDF 6.x. The project builds and tests with v6.1, and C
 
 ## The `sdkconfig` files
 
-The build reads `sdkconfig.defaults`, then the overlays of `SDKCONFIG_DEFAULTS` in their sequence. For each file, it also reads the `.esp32s3` variant if it exists. The last value of an option wins. All files are in [`idf/`](../../idf/).
+The build reads `sdkconfig.defaults`, then the overlays of `SDKCONFIG_DEFAULTS` in their sequence. For each file, it also reads the `.esp32s3` variant if it exists. The last value of an option wins. All files are in [`idf/`](https://github.com/tmijail/mqtt-rs485-gateway/tree/main/idf/).
 
 | File | Build | What it sets |
 |---|---|---|
@@ -64,7 +64,7 @@ Thus an old `sdkconfig` can keep old values. The project has no installed gatewa
 
 ## The `sdkconfig` check
 
-[`cmake/gw_sdkconfig_check.cmake`](../../idf/cmake/gw_sdkconfig_check.cmake) runs in each configuration step. It compares the `sdkconfig` in use with the defaults chain of that build.
+[`cmake/gw_sdkconfig_check.cmake`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/cmake/gw_sdkconfig_check.cmake) runs in each configuration step. It compares the `sdkconfig` in use with the defaults chain of that build.
 
 ### The required options
 
@@ -101,7 +101,7 @@ Flash encryption is not in `main`. Thus a build for the board with NVS encryptio
 
 ### The host tests of the check
 
-The host tests `sdkconfig_check_*` run the check on files in [`idf/test/host/sdkconfig_check/`](../../idf/test/host/sdkconfig_check/). They cover these cases:
+The host tests `sdkconfig_check_*` run the check on files in [`idf/test/host/sdkconfig_check/`](https://github.com/tmijail/mqtt-rs485-gateway/tree/main/idf/test/host/sdkconfig_check/). They cover these cases:
 
 - a current `sdkconfig` (`fresh`), an old one (`stale`) and an old one with `warn`;
 - a different watchdog value without an overlay (`wdt5`) and with an overlay (`wdt5_overlay`);

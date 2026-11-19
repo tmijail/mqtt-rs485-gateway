@@ -11,7 +11,7 @@ This document lists all the keys of the configuration document of the gateway, w
 
 The configuration is one JSON document. The gateway keeps it in the LittleFS partition (`storage`) as `/cfg/config.json`. Without this file, the gateway uses the configuration in the firmware. For the conditions of that rule, refer to [Load and recovery mode](#load-and-recovery-mode).
 
-- The firmware embeds [`default_config.json`](../../idf/components/gw_storage/default_config.json) as an example.
+- The firmware embeds [`default_config.json`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/components/gw_storage/default_config.json) as an example.
 - To flash a different document, copy it to `idf/fs/config.json`. `idf.py flash` writes the folder `idf/fs/` into the `storage` partition.
 - To change the document without a new flash, use the web UI, `PUT /api/config` or the shell command `config load`. Refer to [Change, back up and restore the configuration](../how-to/change-the-configuration.md).
 

@@ -1,0 +1,4 @@
+# The generator of the documentation site (zensical.toml, docs/how-to/build-the-documentation-site.md).
+# Pinned: Zensical is 0.x, and a new version can change the output or the strict checks.
+# requirements.txt in this folder is for the screenshots of the web UI (make_shots.sh).
+zensical==0.1.2

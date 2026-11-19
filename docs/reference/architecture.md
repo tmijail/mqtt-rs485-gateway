@@ -6,17 +6,17 @@ This document gives the structure of the firmware: the components, the tasks, th
 
 ## The components
 
-The components are in [`idf/components/`](../../idf/components/). `gw_core` holds all the logic that the host tests examine. The other components are thin adapters around it, on ESP-IDF.
+The components are in [`idf/components/`](https://github.com/tmijail/mqtt-rs485-gateway/tree/main/idf/components/). `gw_core` holds all the logic that the host tests examine. The other components are thin adapters around it, on ESP-IDF.
 
 | Component | Function | Uses IDF |
 |---|---|---|
-| `gw_core` | Pure C logic with no IDF. Refer to [The modules of `gw_core`](#the-modules-of-gw_core) | No. Only [`port/gw_port_esp.c`](../../idf/components/gw_core/port/gw_port_esp.c) uses IDF. The host tests use [`port/gw_port_posix.c`](../../idf/components/gw_core/port/gw_port_posix.c) |
+| `gw_core` | Pure C logic with no IDF. Refer to [The modules of `gw_core`](#the-modules-of-gw_core) | No. Only [`port/gw_port_esp.c`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/components/gw_core/port/gw_port_esp.c) uses IDF. The host tests use [`port/gw_port_posix.c`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/components/gw_core/port/gw_port_posix.c) |
 | `nanopb` | The vendored nanopb 0.4.9.1 runtime (Zlib license) | No |
 | `gw_rs485` | UART1 in `UART_MODE_RS485_HALF_DUPLEX` (RTS = GPIO21), as an `mb_transport_t` | Yes |
 | `gw_bus` | The task that is the **only owner of the RS485 bus**: the polling, the DCMD writes, the Modbus TCP requests and the test reads (MB-16) | Yes |
 | `gw_edge` | The Sparkplug task: the esp-mqtt client (TLS, MQTT 5, broker list), bdSeq, the Will, the backoff, the primary host, store & forward, the time limit of each publish, and the `gw_node` engine | Yes |
 | `gw_net` | The W5500 on SPI (openeth in QEMU). The optional Wi-Fi STA, as the primary interface or as a backup (NET-4). DHCP or a static IP address for each interface. The optional IPv6, with SLAAC and a static address (NET-7). The default route from `gw_netsel`. SNTP with 1 to 3 servers (#201). The scan of the Wi-Fi networks for the web UI, also with `network.wifi` off (#208) | Yes |
-| `gw_bsp` | **The declarative description of the board** ([`gw_bsp.c`](../../idf/components/gw_bsp/gw_bsp.c)): all the pins, the I²C address of the expander and the active levels (DI, DO, RS485 DE, I²C, LED and its color order, buzzer, W5500, microSD). The drivers read it and contain no board data. The RTC address is `GW_PCF85063_ADDR` in [`gw_rtc.h`](../../idf/components/gw_core/include/gw_rtc.h). Refer to [Board data to verify](board-data-to-verify.md) | Yes (types) |
+| `gw_bsp` | **The declarative description of the board** ([`gw_bsp.c`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/components/gw_bsp/gw_bsp.c)): all the pins, the I²C address of the expander and the active levels (DI, DO, RS485 DE, I²C, LED and its color order, buzzer, W5500, microSD). The drivers read it and contain no board data. The RTC address is `GW_PCF85063_ADDR` in [`gw_rtc.h`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/components/gw_core/include/gw_rtc.h). Refer to [Board data to verify](board-data-to-verify.md) | Yes (types) |
 | `gw_board` | The temperature of the chip (`gw_temp.c`, #212; no value in QEMU). The 8 DIs, sampled at 1 kHz, with an inversion and a debounce for each DI (#211) and pulse counters (IO-4, in NVS). Up to 4 DIs are fast counters on a PCNT unit (#218). The 8 DOs on the TCA9554, with the `local_io` task. The WS2812 status LED. The buzzer on GPIO46 (IO-6, LEDC). The BOOT button | Yes |
 | `gw_storage` | The configuration from LittleFS, or the embedded configuration when the file is missing. The atomic write of a new configuration. The secrets in encrypted NVS (CFG-7). The network of the last valid configuration, for recovery mode. The factory reset and the commissioning flag (CFG-5). The microSD card of the store & forward spill (`gw_sfcard.c`, #31). The core dump in flash: its state, summary, read and erase (`gw_coredump.c`, #132). The allocation functions of the PSRAM | Yes |
 | `gw_web` | The HTTPS server, with a certificate of the gateway, and a redirect from HTTP (#64). The card **Certificates** loads the certificate of the plant, or makes a new self-signed certificate (#205). It also loads, replaces and removes the PEM files (#221). The embedded web UI (CFG-3), the JSON REST API (CFG-4), Basic auth with a limit of the attempts, mDNS and `_https._tcp` (NET-6) | Yes |
@@ -29,7 +29,7 @@ The components are in [`idf/components/`](../../idf/components/). `gw_core` hold
 
 ### The modules of `gw_core`
 
-The source is in [`idf/components/gw_core/src/`](../../idf/components/gw_core/src/), and the host tests are in [`idf/test/host/`](../../idf/test/host/).
+The source is in [`idf/components/gw_core/src/`](https://github.com/tmijail/mqtt-rs485-gateway/tree/main/idf/components/gw_core/src/), and the host tests are in [`idf/test/host/`](https://github.com/tmijail/mqtt-rs485-gateway/tree/main/idf/test/host/).
 
 | Area | Module | Function |
 |---|---|---|
@@ -91,7 +91,7 @@ Each `idf_component.yml` pins the version with `==`, and `dependencies.lock` has
 - `joltwallet/littlefs` 1.23.1
 - `espressif/mdns` 1.14.1
 
-Two components come from third parties: nanopb (a copy in the repository) and `joltwallet/littlefs`. The project does not use the `livekit/nanopb` registry package, because that package has an ABI defect. The project does not use `espressif/esp_io_expander_tca9554` either. That component loads the latch with 0xFF, which is OFF with active-low DOs. But the host tests cannot examine its sequence or its polarity, so `gw_dout` drives the TCA9554. The feasibility study (`docs/feasibility-idf.md`, IO-2) rejected the component for a wrong reason: it assumed active-high DOs.
+Two components come from third parties: nanopb (a copy in the repository) and `joltwallet/littlefs`. The project does not use the `livekit/nanopb` registry package, because that package has an ABI defect. The project does not use `espressif/esp_io_expander_tca9554` either. That component loads the latch with 0xFF, which is OFF with active-low DOs. But the host tests cannot examine its sequence or its polarity, so `gw_dout` drives the TCA9554.
 
 A change of `littlefs` or of ESP-IDF can change a stored format. Such a change must pass the downgrade test (#148). Refer to [Firmware updates](firmware-updates.md).
 
@@ -231,7 +231,7 @@ The functions `gw_storage_malloc`, `gw_storage_calloc` and `gw_storage_big_alloc
 | Item | Where | Size | When |
 |---|---|---|---|
 | The configuration `gw_config_t` | PSRAM | Approximately 32 KB | At boot |
-| The Edge Node engine `gw_node_t` | PSRAM | 21 504 B at most (a `_Static_assert` in [`gw_edge.c`](../../idf/components/gw_edge/gw_edge.c), #80) | At boot |
+| The Edge Node engine `gw_node_t` | PSRAM | 21 504 B at most (a `_Static_assert` in [`gw_edge.c`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/components/gw_edge/gw_edge.c), #80) | At boot |
 | The payload buffer | PSRAM | 16 KB (`GW_SPB_PAYLOAD_MAX`) | At boot |
 | The store & forward ring (SPB-14, only with `sparkplug.store_forward`) | PSRAM | 40 000 samples of 24 B, 960 KB (`CONFIG_GW_SF_SAMPLES`) | At boot |
 | The live log of the web UI (#200), in each mode | PSRAM | 33 KB: the ring of the last log lines (16 KB, `CONFIG_GW_LOG_RING_KB`), the copy buffer of the reader (16 KB), and the table of the 48 log tags (#199) | At boot |
@@ -274,7 +274,7 @@ The shell gives the current values on each gateway: the `heap` and `stack` lines
 
 ### The fault mode: no PSRAM (#135)
 
-When the boot does not detect the PSRAM (a defective or missing chip), it continues only to report the fault (`CONFIG_SPIRAM_IGNORE_NOTFOUND`, `GW_WEB_FAULT` in [`main.c`](../../idf/main/main.c)). The gateway does not start: the firmware does not load the configuration, and there is no polling, MQTT or Modbus TCP. All the DOs go off.
+When the boot does not detect the PSRAM (a defective or missing chip), it continues only to report the fault (`CONFIG_SPIRAM_IGNORE_NOTFOUND`, `GW_WEB_FAULT` in [`main.c`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/main/main.c)). The gateway does not start: the firmware does not load the configuration, and there is no polling, MQTT or Modbus TCP. All the DOs go off.
 
 | Signal | What it gives |
 |---|---|

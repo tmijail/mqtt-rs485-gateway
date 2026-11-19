@@ -19,7 +19,7 @@
 #
 # E2E_TCG_THREAD (issue #107): auto (default: the OTA scenarios with both vCPUs on one host
 # thread, the rest with multi-threaded TCG), single or multi for every scenario. MTTCG crashes
-# QEMU now and then under host load in the OTA scenarios (docs/upstream-reports.md 7).
+# QEMU now and then under host load in the OTA scenarios (issue #242).
 #
 # E2E_STAGE=<dir> (issue #121): build the images as above, copy what the harness needs into <dir>
 # (the merged flash, the ELF and both app images, the sdkconfig, flash_args, the signing key, the
