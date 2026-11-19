@@ -833,7 +833,7 @@ def core_backtrace(qemu, core):
 # MTTCG: single-threaded TCG is about 1.5-2x slower, too slow for their latency bounds under load.
 SINGLE_TCG_SCENARIOS = {"FW-1 OTA by NCMD", "FW-1 OTA by web upload", "issue #97 OTA trial wiring",
                         "issue #144 OTA self-check",
-                        "issue #94 OTA to NVS encryption"}
+                        "issue #94 OTA to NVS encryption", "FW-2 OTA signature"}
 
 
 def tcg_mode(option, scenario):
@@ -4398,17 +4398,9 @@ def run_park_long_txn(args, work, slave):
     ('fw: core 1 park refused'). The upload is answered (rejected), every park ended, and the
     transaction went on after the parks (more attempts to unit 1)."""
     node, port = "GW47", MQTT_PORT + 27
-    app = pathlib.Path(args.elf).with_suffix(".bin")
-    unsigned = pathlib.Path(args.elf).with_name(app.stem + "-unsigned.bin")
-    src = unsigned if unsigned.exists() else app
     fwdir = work / "fw-longtxn"
     fwdir.mkdir(exist_ok=True)
-    image = fw_image(src, "e2e-long", fwdir / "long-unsigned.bin", corrupt=True)
-    if args.signing_key:
-        subprocess.run([args.idf_python, "-m", "espsecure", "sign-data", "--version", "2",
-                        "--keyfile", args.signing_key, "--output", str(fwdir / "long.bin"),
-                        str(image)], check=True, capture_output=True)
-        image = fwdir / "long.bin"
+    image = signed_image(args, app_source(args), "e2e-long", fwdir, "long", corrupt=True)
     conf = work / "broker-longtxn.conf"
     conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\n")
     broker = start_broker(conf, work / "mosquitto-longtxn.log")
@@ -4498,30 +4490,10 @@ def run_ota(args, work, part):
     pki = make_pki(work)
     fwdir = work / f"fw-{part}"
     fwdir.mkdir(exist_ok=True)
-    app = pathlib.Path(args.elf).with_suffix(".bin")
-    unsigned = pathlib.Path(args.elf).with_name(app.stem + "-unsigned.bin")
-    src = unsigned if unsigned.exists() else app
-    fw_image(src, "e2e-v2", fwdir / "v2.bin")
-    fw_image(src, "e2e-v3", fwdir / "v3.bin")
-    fw_image(src, "e2e-bad", fwdir / "bad.bin", corrupt=True)
-    images = {k: fwdir / f"{k}.bin" for k in ("v2", "v3", "bad")}
-    signed = bool(args.signing_key)
-    if signed:
-        # FW-2: the build requires signed images; "foreign" is valid but signed with another key
-        fw_image(src, "e2e-foreign", fwdir / "foreign.bin")
-        other = work / "foreign_signing_key.pem"
-        if not other.exists():
-            subprocess.run([args.idf_python, "-m", "espsecure", "generate-signing-key", "--version",
-                            "2", "--scheme", "rsa3072", str(other)], check=True, capture_output=True)
-        for k, key in (("v2", args.signing_key), ("v3", args.signing_key),
-                       ("bad", args.signing_key), ("foreign", str(other))):
-            # --keyfile takes several values: an explicit --output keeps the data file apart
-            unsigned_k = fwdir / f"{k}-unsigned.bin"
-            (fwdir / f"{k}.bin").rename(unsigned_k)
-            subprocess.run([args.idf_python, "-m", "espsecure", "sign-data", "--version", "2",
-                            "--keyfile", key, "--output", str(fwdir / f"{k}.bin"),
-                            str(unsigned_k)], check=True, capture_output=True)
-            images[k] = fwdir / f"{k}.bin"
+    src = app_source(args)
+    # issue #261: the signature check of an image (FW-2) is in run_ota_signature (secure build)
+    images = {k: signed_image(args, src, f"e2e-{k}", fwdir, k, corrupt=k == "bad")
+              for k in ("v2", "v3", "bad")}
     server = FirmwareServer(fw_port, fwdir, pki["server.crt"], pki["server.key"])
     conf = work / "broker-ota.conf"
     conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\n")
@@ -4582,22 +4554,12 @@ def run_ota(args, work, part):
         update(f"https://10.0.2.2:{fw_port}/bad.bin")
         bad = obs.wait(ndata_t, 120, lambda p: (fw_state(p) or "").startswith("failed: image e2e-bad "
                                                                              "rejected"))
-        foreign = True
-        if signed:
-            # FW-2: a valid image signed with a key other than the running firmware's
-            update(f"https://10.0.2.2:{fw_port}/foreign.bin")
-            foreign = obs.wait(ndata_t, 120, lambda p: (fw_state(p) or "").startswith(
-                "failed: image e2e-foreign rejected (checksum or signature)"))
         time.sleep(2)
         still = not any(m[1] == f"{T}/NDEATH/{node}" for m in CAPTURE if m[0] >= asked)
         check("FW-1 bad updates refused without a restart: http:// refused, an image that fails "
-              "verification rejected after the download (the running firmware stays)"
-              + ("; FW-2: an image signed with another key rejected (signature check of the OTA "
-                 "image, no eFuse)" if signed else ""),
-              refused and bad and still and foreign,
-              " | ".join(dict.fromkeys(states(asked))) + f"; restarted: {not still}"
-              + (f"; {(gw.find(r'secure_boot_v2|[Ss]ignature', asked) or ['no signature log'])[0][:120]}"
-                 if signed else ""))
+              "verification rejected after the download (the running firmware stays)",
+              refused and bad and still,
+              " | ".join(dict.fromkeys(states(asked))) + f"; restarted: {not still}")
 
         run_park_storm(gw, images["bad"], obs, ndata_t)
 
@@ -4825,16 +4787,133 @@ def run_ota_web(gw, obs, cfg, images, node, fw_port, nb, update):
           f"{fw_state(nb6[2]) if nb6 else None!r}; installed {conf6 is not None}")
 
 
+def run_ota_signature(args, work):
+    """FW-2, issue #261 (GW50; the secure build only, which requires a signed OTA image:
+    CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT, the key taken from the running app, no eFuse):
+    (1) an image with a correct checksum and no signature, by web upload into the erased slot:
+    400, rejected; (2) a correct image signed with another key, by NCMD: rejected after the
+    download. In the two cases the signature check ran, found no trusted key, and the gateway
+    did not restart. (3) the same image signed with the key of the build, by NCMD: the key is
+    trusted, the image boots on trial and its self-check installs it."""
+    node, port, fw_port = "GW50", MQTT_PORT + 32, MQTT_PORT + 33
+    pki = make_pki(work)
+    fwdir = work / "fw-signed"
+    fwdir.mkdir(exist_ok=True)
+    src = app_source(args)
+    other = work / "foreign_signing_key.pem"
+    if not other.exists():
+        subprocess.run([args.idf_python, "-m", "espsecure", "generate-signing-key", "--version",
+                        "2", "--scheme", "rsa3072", str(other)], check=True, capture_output=True)
+    unsigned = fw_image(src, "e2e-unsigned", fwdir / "unsigned.bin")
+    foreign = signed_image(args, src, "e2e-foreign", fwdir, "foreign", key=other)
+    good = signed_image(args, src, "e2e-signed", fwdir, "signed")
+    # the fixtures: the signed images are the image plus one signature sector, and the two keys
+    # give different signature sectors
+    sizes = (len(unsigned.read_bytes()), len(foreign.read_bytes()), len(good.read_bytes()))
+    if not (sizes[1] == sizes[2] == sizes[0] + 4096
+            and foreign.read_bytes()[-4096:] != good.read_bytes()[-4096:]):
+        raise SystemExit(f"signature fixtures: sizes {sizes} (unsigned, foreign, signed)")
+    server = FirmwareServer(fw_port, fwdir, pki["server.crt"], pki["server.key"])
+    conf = work / "broker-signed.conf"
+    conf.write_text(f"listener {port} 127.0.0.1\nallow_anonymous true\n")
+    broker = start_broker(conf, work / "mosquitto-signed.log")
+    obs = Observer(port)
+    cfg = node_config(node, port=port)
+    cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    cfg["ota"] = {"ca_file": "ca.pem", "mqtt": True}   # #223: the updates by NCMD need it
+    nbirth_t, ndata_t, ncmd_t = f"{T}/NBIRTH/{node}", f"{T}/NDATA/{node}", f"{T}/NCMD/{node}"
+    verify_rx = r"esp_image: Verifying image signature"
+    trusted_rx = r"secure_boot_v2: #\d+ app key digest == #\d+ trusted key digest"
+    why = "rejected (checksum or signature)"
+    t0 = time.monotonic()
+    gw = boot_variant(args, work, "ota-signed", cfg, {"ca.pem": pki["ca.pem"].read_bytes()})
+    try:
+        nb = obs.wait(nbirth_t, 60)
+        if not check(f"FW-2 {node} runs the secure build on its broker with ota.mqtt",
+                     nb is not None and fw_state(nb[2]) == "idle",
+                     f"state {fw_state(nb[2])!r}" if nb else "no NBIRTH"):
+            return
+        base = metric(nb[2], name="Node Info/Firmware").string_value
+        gw.wait_log(r"edge: time synchronised", 20, t0)   # the image server's certificate dates
+        gw.wait_log(r"web: web UI and REST API on port 443", 30, t0)
+
+        def update(name):
+            obs.publish_cmd(ncmd_t, [{"name": "Node Control/Firmware Update", "datatype": 12,
+                                      "string_value": f"https://10.0.2.2:{fw_port}/{name}.bin"}])
+
+        # 1. no signature: the slot is erased, so the sector after the image holds no signature
+        # of an earlier image
+        asked = time.monotonic()
+        st_u, _, b_u = upload_firmware(gw, unsigned.read_bytes())
+        b_u = b_u if isinstance(b_u, bytes) else str(b_u).encode()
+        rej_u = gw.wait_log(rf"fw: firmware update failed: image e2e-unsigned {re.escape(why)}",
+                            10, asked)
+        verify_u = gw.find(verify_rx, asked)
+        trusted_u = gw.find(trusted_rx, asked)
+        # 2. another key
+        asked2 = time.monotonic()
+        update("foreign")
+        rej_f = obs.wait(ndata_t, 180, lambda p: (fw_state(p) or "") ==
+                         f"failed: image e2e-foreign {why}")
+        gw.wait_log(rf"fw: firmware update failed: image e2e-foreign {re.escape(why)}", 10, asked2)
+        verify_f = gw.find(verify_rx, asked2)
+        trusted_f = gw.find(trusted_rx, asked2)
+        time.sleep(2)
+        restarted = any(m[1] == f"{T}/NDEATH/{node}" for m in CAPTURE if m[0] >= asked) \
+            or bool(gw.find(BOOT_RX.pattern, asked))
+        _, h = gw.shell("status", [rf"^ota\s+{re.escape(base)} in ota_0"])
+        check("FW-2 (secure build) an OTA image without a valid signature of the key of the "
+              "running firmware is rejected, and the running firmware stays (no restart): an "
+              "image with no signature by web upload (400), and an image signed with another key "
+              "by NCMD; in the two cases the signature check ran and trusted no key",
+              st_u == 400 and why.encode() in b_u and rej_u and verify_u and not trusted_u
+              and rej_f and verify_f and not trusted_f and not restarted and all(h.values()),
+              f"upload {st_u} {b_u[:80]!r}, signature check {bool(verify_u)}, trusted key "
+              f"{bool(trusted_u)}; NCMD state {fw_state(rej_f[2]) if rej_f else None!r}, "
+              f"signature check {bool(verify_f)}, trusted key {bool(trusted_f)}; restarted "
+              f"{restarted}; shell {list(h.values())}; "
+              f"{(gw.find(r'secure_boot_v2: .*(fail|not)|[Ss]ignature.*fail', asked) or ['no failure line'])[0][:110]}")
+
+        # 3. the key of the build: verified, on trial, installed by the self-check
+        asked3 = time.monotonic()
+        update("signed")
+        nb2 = obs.wait(nbirth_t, 240, lambda p: metric(p, name="Node Info/Firmware").string_value
+                       == "e2e-signed")
+        verify_s = gw.find(verify_rx, asked3)
+        trusted_s = gw.find(trusted_rx, asked3)
+        conf2 = obs.wait(ndata_t, SELFCHECK_WAIT_S, lambda p: fw_state(p) == "installed e2e-signed")
+        _, h2 = gw.shell("status", [r"^ota\s+e2e-signed in ota_1, other slot \S+ \(previous\) \| "
+                                    r"firmware e2e-signed installed"])
+        check("FW-2 (secure build) an OTA image signed with the key of the running firmware is "
+              "accepted: the signature check trusts its key, the image boots on trial (NBIRTH "
+              "'testing e2e-signed') and its self-check installs it",
+              nb2 and fw_state(nb2[2]) == "testing e2e-signed" and verify_s and trusted_s
+              and conf2 and all(h2.values()),
+              f"NBIRTH {fw_state(nb2[2]) if nb2 else None!r}; signature check {bool(verify_s)}; "
+              f"{(trusted_s or ['no trusted key'])[0][:80]}; installed {conf2 is not None}; shell "
+              f"{list(h2.values())}")
+    finally:
+        gw.kill()
+        obs.close()
+        server.close()
+        broker.terminate()
+        broker.wait()
+
+
 WIRING_NODE = "GW46"   # issue #97: the commissioning gateway's edge node id (unique in this file)
 
 
-def signed_image(args, src, version, fwdir, name, **caps):
-    """fw_image() of @src with @version (and the @caps fields) as @fwdir/@name.bin, signed with
-    the build's test key when the build requires signed images (FW-2)."""
+def signed_image(args, src, version, fwdir, name, key=None, **caps):
+    """fw_image() of @src with @version (and the @caps fields, or corrupt=True) as
+    @fwdir/@name.bin. FW-2, issue #261: signed with the test key of the build (or with @key) only
+    when the build requires signed images: the secure build (--signing-key). The board build
+    does not check a signature: its images stay unsigned, as the images of a release."""
     fw_image(src, version, fwdir / f"{name}-unsigned.bin", **caps)
-    if args.signing_key:
+    key = key or args.signing_key
+    if key:
+        # --keyfile takes several values: an explicit --output keeps the data file apart
         subprocess.run([args.idf_python, "-m", "espsecure", "sign-data", "--version", "2",
-                        "--keyfile", args.signing_key, "--output", str(fwdir / f"{name}.bin"),
+                        "--keyfile", str(key), "--output", str(fwdir / f"{name}.bin"),
                         str(fwdir / f"{name}-unsigned.bin")], check=True, capture_output=True)
     else:
         shutil.copy(fwdir / f"{name}-unsigned.bin", fwdir / f"{name}.bin")
@@ -5314,6 +5393,101 @@ def nvs_clear(flash, words):
     return [w for w in words if w in region]
 
 
+def secure_only(args, name, fn):
+    """Issue #261: the runner of scenario @name, which examines a function that only the secure
+    build has (NVS encryption, signed OTA images). On the board build it is a [SKIP]: the
+    scenario would examine a function that the build does not have."""
+    def run():
+        if args.secure:
+            return fn()
+        SKIPPED.append(name)
+        print(f"[SKIP] {name}: it needs the secure build (E2E_SECURE=1; issue #261)", flush=True)
+        return None
+    return run
+
+
+def run_nvs_encryption(args, work):
+    """CFG-7, issue #261 (GW51; the secure build only): the first boot of a device whose eFuse
+    KEY5 is blank (its own eFuse file), with the MQTT password and the web password in clear in
+    config.json. That boot generates the NVS keys (the HMAC key goes to the emulated eFuse),
+    starts the encrypted NVS and moves the secrets out of the file. The broker requires the
+    MQTT password, and the web UI the web password. After it, no secret is in clear anywhere in
+    the flash image. A second boot reads the secrets with the key of the eFuse: it generates no
+    key, moves nothing, and the eFuse file does not change."""
+    node, port = "GW51", MQTT_PORT + 34
+    secret = "s3cret-mqtt-cfg7"
+    cfg = node_config(node, port=port, username="gw51", password=secret)
+    cfg["web"] = {"username": "admin", "password": WEB_PASSWORD}
+    flash = flash_variant(args, work, "nvsenc", {"config.json": json.dumps(cfg, indent=2).encode()})
+    efuse = work / "efuse-nvsenc.bin"
+    shutil.copy(work / "efuse-blank.bin", efuse)
+    blank = efuse.read_bytes()
+    broker, _ = auth_broker(work, "nvsenc", port, {"gw51": secret})
+    obs = observer_retry(port, auth=OBS_AUTH)
+    log = work / "uart0-nvsenc.log"
+    nbirth_t = f"{T}/NBIRTH/{node}"
+    status_rx = r"^secrets\s+NVS encrypted \(HMAC key in eFuse KEY5\)"
+    # the keys of a blank NVS come from nvs_flash_init() itself (ESP-IDF); the migration of an
+    # unencrypted NVS makes them first (gw_storage, run_nvs_migration)
+    keygen_rx = r"nvs: Generating NVS encr-keys|storage: NVS keys not readable"
+    t0 = time.monotonic()
+    gw = Gateway(args, log, flash, efuse=efuse)
+    gw.start()
+    try:
+        nb = obs.wait(nbirth_t, 60)
+        keygen = gw.find(keygen_rx, t0)
+        moved = gw.find(r"storage: secrets moved from /cfg/config\.json to NVS", t0)
+        encrypted = gw.find(r'nvs: NVS partition "nvs" is encrypted', t0)
+        _, h = gw.shell("status", [status_rx])
+        st, _, body = wait_http("/api/config", 30)
+        doc = as_json(body) or {}
+        gw.kill()
+        obs.wait(f"{T}/NDEATH/{node}", 5)
+        burned = efuse.read_bytes()
+        image = pathlib.Path(flash).read_bytes()
+        regions = (("storage", storage_partition()), ("nvs", storage_partition("nvs")),
+                   ("image", (0, len(image))))
+        leaks = [(what.decode(), where) for what in (secret.encode(), WEB_PASSWORD.encode())
+                 for where, (o, n) in regions if what in image[o:o + n]]
+        check("CFG-7 (secure build) the first boot with a blank eFuse KEY5 generates the NVS keys "
+              "(the HMAC key in the emulated eFuse), starts the encrypted NVS and moves the "
+              "secrets out of config.json: the MQTT password from the NVS opens the broker "
+              "(which requires it), the web password opens the web UI, the shell shows the NVS "
+              "as encrypted, and no secret is in clear anywhere in the flash image",
+              nb and len(keygen) == 1 and burned != blank and moved and encrypted
+              and list(h.values())[0] and st == 200
+              and (doc.get("mqtt") or {}).get("password") == "********" and not leaks,
+              f"NBIRTH {nb is not None}; key generations {len(keygen)}, eFuse file changed "
+              f"{burned != blank}; {(moved or ['no secrets moved'])[0][:90]}; "
+              f"{(encrypted or ['NVS not encrypted'])[0][:60]}; shell {list(h.values())}; GET "
+              f"/api/config {st}; secrets found in clear: {leaks or 'none'}")
+        obs.drain()
+        t1 = time.monotonic()
+        gw = Gateway(args, log, flash, efuse=efuse)
+        gw.start()
+        nb2 = obs.wait(nbirth_t, 60)
+        encrypted2 = gw.find(r'nvs: NVS partition "nvs" is encrypted', t1)
+        again = gw.find(rf"{keygen_rx}|storage: secrets moved|NVS migration|"
+                        r"NVS layout changed|NVS unavailable", t1)
+        _, h2 = gw.shell("status", [status_rx])
+        st2 = wait_http("/api/config", 30)[0]
+        gw.kill()
+        check("CFG-7 (secure build) the next boot reads the encrypted NVS with the key of the "
+              "eFuse: no key generated, nothing moved or erased, the eFuse file unchanged; the "
+              "MQTT password still opens the broker, and the web password the web UI",
+              nb2 and encrypted2 and not again and efuse.read_bytes() == burned
+              and list(h2.values())[0] and st2 == 200,
+              f"NBIRTH {nb2 is not None}; {(encrypted2 or ['NVS not encrypted'])[0][:60]}; "
+              f"unexpected lines {again[:2]}; eFuse file unchanged "
+              f"{efuse.read_bytes() == burned}; shell {list(h2.values())}; GET /api/config {st2}")
+    finally:
+        if not gw.killed:   # a second kill() would read as a QEMU death (#86)
+            gw.kill()
+        obs.close()
+        broker.terminate()
+        broker.wait()
+
+
 def run_nvs_migration(args, work):
     """Issues #67 and #94 (GW41): a flash whose NVS was written without NVS encryption (the
     format of the default build, generated here with ESP-IDF's nvs_partition_gen.py: the
@@ -5614,39 +5788,34 @@ def run_nvs_full(args, work):
 
 
 def run_nvs_ota(args, work):
-    """Issue #94 (GW42): a device on the build WITHOUT NVS encryption (QEMU variant
-    sdkconfig.qemu-plain; commissioning password and MQTT password in its unencrypted NVS) is
-    updated by OTA to the encrypted build under test. On trial, the new image keeps the NVS
+    """Issue #94 (GW42): a device on the build WITHOUT NVS encryption (issue #261: the board
+    build of the PSRAM variant, --board-flash; commissioning password and MQTT password in its
+    unencrypted NVS) is updated by OTA to the secure build under test. The board build checks no
+    signature, so it accepts the signed image. On trial, the new image keeps the NVS
     unencrypted; a reset during the trial (panic) rolls it back and the old image finds its
     secrets. Updated again with the broker up: installed by its self-check (issue #144), one
-    restart, and that boot moves the NVS into the encrypted one. Issue #102: then the build without NVS encryption, sent back by
-    OTA, is refused before it is set to boot, and the NVS (secrets) stays intact. Issue #161:
-    each boot starts at bdSeq 0."""
-    if not args.plain_flash:
-        print("[SKIP] issue #94 OTA from a build without NVS encryption: no --plain-flash "
-              "(run_e2e.sh builds it)", flush=True)
+    restart, and that boot moves the NVS into the encrypted one. Issue #102: then the build
+    without NVS encryption (signed with the key of the secure build, so that only its
+    capabilities refuse it), sent back by OTA, is refused before it is set to boot, and the NVS
+    (secrets) stays intact. Issue #161: each boot starts at bdSeq 0."""
+    if not args.board_flash:
+        SKIPPED.append("issue #94 OTA to NVS encryption")
+        print("[SKIP] issue #94 OTA from a build without NVS encryption: no --board-flash "
+              "(run_e2e.sh builds it with E2E_SECURE=1, unless E2E_BOARD=0)", flush=True)
         return
     node, port, fw_port = "GW42", MQTT_PORT + 22, MQTT_PORT + 23
     secret = "s3cret-mqtt-94"
     pki = make_pki(work)
     fwdir = work / "fw-nvs"
     fwdir.mkdir(exist_ok=True)
-    app = pathlib.Path(args.elf).with_suffix(".bin")
-    unsigned = pathlib.Path(args.elf).with_name(app.stem + "-unsigned.bin")
-    fw_image(unsigned if unsigned.exists() else app, "e2e-enc", fwdir / "enc-unsigned.bin")
-    if args.signing_key:
-        subprocess.run([args.idf_python, "-m", "espsecure", "sign-data", "--version", "2",
-                        "--keyfile", args.signing_key, "--output", str(fwdir / "enc.bin"),
-                        str(fwdir / "enc-unsigned.bin")], check=True, capture_output=True)
-    else:
-        shutil.copy(fwdir / "enc-unsigned.bin", fwdir / "enc.bin")
+    signed_image(args, app_source(args), "e2e-enc", fwdir, "enc")
     server = FirmwareServer(fw_port, fwdir, pki["server.crt"], pki["server.key"])
     broker, conf = auth_broker(work, "nvsota", port, {"gw42": secret})
     obs = observer_retry(port, auth=OBS_AUTH)
-    # the password in clear in config.json: the plain build moves it to its (unencrypted) NVS
+    # the password in clear in config.json: the board build moves it to its (unencrypted) NVS
     cfg = node_config(node, port=port, username="gw42", password=secret)
     cfg["ota"] = {"ca_file": "ca.pem", "mqtt": True}   # #223: the update by NCMD needs it
-    base = pathlib.Path(args.plain_flash)
+    base = pathlib.Path(args.board_flash)
     files = {"config.json": json.dumps(cfg, indent=2).encode(), "ca.pem": pki["ca.pem"].read_bytes()}
     flash = flash_variant(args, work, "nvsota", files, base=base)
     if args.psram:
@@ -5658,15 +5827,9 @@ def run_nvs_ota(args, work):
     nbirth_t, ncmd_t = f"{T}/NBIRTH/{node}", f"{T}/NCMD/{node}"
     ndata_t = f"{T}/NDATA/{node}"
     words = (secret.encode(), b"commission", b"mqtt_pw")
-    if args.plain_app:
+    if args.board_app:
         # issue #102: the build without NVS encryption as an update, signed like the others
-        fw_image(args.plain_app, "e2e-plain", fwdir / "plain-unsigned.bin")
-        if args.signing_key:
-            subprocess.run([args.idf_python, "-m", "espsecure", "sign-data", "--version", "2",
-                            "--keyfile", args.signing_key, "--output", str(fwdir / "plain.bin"),
-                            str(fwdir / "plain-unsigned.bin")], check=True, capture_output=True)
-        else:
-            shutil.copy(fwdir / "plain-unsigned.bin", fwdir / "plain.bin")
+        signed_image(args, args.board_app, "e2e-board", fwdir, "board")
 
     def update(name="enc"):
         obs.publish_cmd(ncmd_t, [{"name": "Node Control/Firmware Update", "datatype": 12,
@@ -5773,8 +5936,8 @@ def run_nvs_ota(args, work):
         # 3. issue #102: the build without NVS encryption sent to the migrated device: refused
         # once its head is in the slot (before esp_ota_set_boot_partition), no restart; the next
         # boot still has the encrypted NVS (the password opens the broker)
-        if not args.plain_app:
-            print("[SKIP] issue #102 OTA back to the build without NVS encryption: no --plain-app",
+        if not args.board_app:
+            print("[SKIP] issue #102 OTA back to the build without NVS encryption: no --board-app",
                   flush=True)
             return
         obs.drain()
@@ -5784,9 +5947,9 @@ def run_nvs_ota(args, work):
         nb4 = obs.wait(nbirth_t, 60)
         gw.wait_log(r"edge: time synchronised", 20, t3)
         asked = time.monotonic()
-        update("plain")
+        update("board")
         refused = obs.wait(ndata_t, 120, lambda p: (fw_state(p) or "").startswith(
-            "failed: image e2e-plain refused: built without NVS encryption"))
+            "failed: image e2e-board refused: built without NVS encryption"))
         # the NDATA can arrive before the console line is read (issue #107: slower emulation)
         why = gw.wait_log(r"fw: update refused: the image built without NVS encryption \(this "
                           r"device's NVS is encrypted\)", 10, asked)
@@ -5833,7 +5996,8 @@ DOWNGRADE_NODE = "GW49"   # issue #148 (unique in this file)
 def run_downgrade(args, work):
     """Issue #148 (optional: only with --only downgrade and E2E_DOWNGRADE_REF, else [SKIP]): the
     image under test boots on a new flash, saves a configuration through the web UI (the MQTT
-    password and the web password go to the encrypted NVS) and runs in normal mode. Then the
+    password and the web password go to the NVS: not encrypted in the board build, encrypted in
+    the secure build, issue #261) and runs in normal mode. Then the
     image of an earlier release (run_e2e.sh builds it from the git ref E2E_DOWNGRADE_REF) is
     written over ota_0 of the same flash: the bootloader, the partition table, otadata, the NVS
     and LittleFS stay as the new image left them, as after an OTA rollback. The earlier image must
@@ -6499,8 +6663,8 @@ def main():
                          "every scenario. MTTCG crashes QEMU now and then under host load in the "
                          "OTA scenarios; single-threaded TCG is too slow for the latency bounds "
                          "of the others")
-    ap.add_argument("--plain-elf", default="",
-                    help="ELF of the --plain-flash build (symbols for the fault monitor)")
+    ap.add_argument("--board-elf", default="",
+                    help="ELF of the --board-flash build (symbols for the fault monitor)")
     ap.add_argument("--nm", default="xtensa-esp32s3-elf-nm",
                     help="nm of the toolchain (the fault monitor's symbols, issue #92)")
     ap.add_argument("--hang-timeout", type=float, default=HANG_S,
@@ -6514,17 +6678,23 @@ def main():
                     help="issue #92: factor on the scenario budgets (E2E_TIMEOUT_SCALE; a slower "
                          "host)")
     ap.add_argument("--signing-key", default="",
-                    help="FW-2: the QEMU build's test signing key (signed images required)")
-    ap.add_argument("--plain-flash", default="",
-                    help="issue #94: flash image of the QEMU build without NVS encryption "
-                         "(sdkconfig.qemu-plain), the image before the OTA update")
+                    help="FW-2: the test signing key of the secure build (signed images "
+                         "required); without it the harness signs no image (issue #261)")
+    ap.add_argument("--secure", action="store_true",
+                    help="issue #261: the image under test is the secure build "
+                         "(sdkconfig.qemu-secure: NVS encryption, signed OTA images); without it, "
+                         "the configuration of the board, and the scenarios of these two "
+                         "functions show [SKIP]")
+    ap.add_argument("--board-flash", default="",
+                    help="issues #94 and #261: with --secure, flash image of the board build "
+                         "(no NVS encryption), the image before the OTA update")
     ap.add_argument("--downgrade-app", default="",
                     help="issue #148: app image of an earlier release (run_e2e.sh builds it from "
                          "E2E_DOWNGRADE_REF) for the optional scenario 'downgrade'")
     ap.add_argument("--downgrade-ref", default="",
                     help="issue #148: the git ref of --downgrade-app (for the messages)")
-    ap.add_argument("--plain-app", default="",
-                    help="issue #102: the unsigned app image of that build (an OTA update the "
+    ap.add_argument("--board-app", default="",
+                    help="issue #102: the app image of that build (an OTA update the "
                          "device must refuse once its NVS is encrypted)")
     ap.add_argument("--mqtt-port", type=int, default=MQTT_PORT)
     ap.add_argument("--modbus-port", type=int, default=MODBUS_PORT)
@@ -6537,10 +6707,12 @@ def main():
     ap.add_argument("--only", default="",
                     help=f"comma-separated scenarios to run ({','.join(scenarios.ONLY_NAMES)}); "
                          "default the full run of the variant (issue #135: the PSRAM variant runs "
-                         "all but the OTA trial scenarios, the variant without PSRAM only those). "
+                         "all but the OTA trial scenarios, the variant without PSRAM only those; "
+                         "issue #261: the secure variant only the scenarios of the NVS encryption "
+                         "and of the signed OTA images). "
                          "'ota' is ota-fw1,ota-park,ota-wiring,ota-trial; 'ota-fw1' is "
-                         "ota-fw1-ncmd,ota-fw1-web (issue #233); 'refuse' runs alone "
-                         "only without 'main' (which includes it)")
+                         "ota-fw1-ncmd,ota-fw1-web (issue #233); 'nvs' is nvs-boot,nvs-ota; "
+                         "'refuse' runs alone only without 'main' (which includes it)")
     ap.add_argument("--web-stress", type=int, default=0, metavar="N",
                     help="issue #110: N extra rounds of cut sessions and accepted PUTs in the "
                          "https scenario (GW22), to reproduce a connection that never reached httpd")
@@ -6556,7 +6728,7 @@ def main():
     except ValueError as e:
         ap.error(str(e))
     ARGS, HANG_S = args, args.hang_timeout
-    SYMBOLS.update(load_symbols(args.nm, [args.elf, args.plain_elf]))
+    SYMBOLS.update(load_symbols(args.nm, [args.elf, args.board_elf]))
     global QEMU_VERSION
     try:
         QEMU_VERSION = subprocess.run([args.qemu, "--version"], capture_output=True, text=True,
@@ -6632,9 +6804,11 @@ def main():
         "issue #112 park in a long RS485 transaction": lambda: run_park_long_txn(args, work, slave),
         "issue #97 OTA trial wiring": lambda: run_ota_wiring(args, work),
         "issue #144 OTA self-check": lambda: run_ota_trial(args, work),
+        "CFG-7 NVS encryption": lambda: run_nvs_encryption(args, work),
         "issues #67/#94 NVS migration": lambda: run_nvs_migration(args, work),
         "issue #109 full unencrypted NVS": lambda: run_nvs_full(args, work),
         "issue #94 OTA to NVS encryption": lambda: run_nvs_ota(args, work),
+        "FW-2 OTA signature": lambda: run_ota_signature(args, work),
         "slow": lambda: run_slow_link(
             args, work, sdkconfig_int(args.sdkconfig, "GW_MQTT_PUBLISH_BUDGET_MS")),
         "issue #135 no PSRAM": lambda: run_no_psram(args, work, slave),
@@ -6648,8 +6822,12 @@ def main():
         "downgrade": lambda: run_downgrade(args, work),
     }
     assert set(runners) == {name for name, _ in scenarios.SCENARIOS}
-    # issue #135: without --only, the full run of this variant (scenarios.variant_of)
-    chosen = scenarios.selected(only, "psram" if args.psram else "default")
+    # issue #261: the scenarios of the two functions of the secure build need that build
+    for name in scenarios.SECURE_VARIANT_SCENARIOS:
+        runners[name] = secure_only(args, name, runners[name])
+    # issues #135 and #261: without --only, the full run of this variant (scenarios.variant_of)
+    chosen = scenarios.selected(only, "secure" if args.secure else
+                                "psram" if args.psram else "default")
     try:
         for name in chosen:
             run_scenario(name, runners[name])
@@ -8622,13 +8800,18 @@ def run_web(args, work):
           and (as_json(b9) or {}).get("mqtt", {}).get("password") == "********",
           " | ".join(gw.find(r"^config: ", asked)) + f"; NDEATH {node2}: {bool(death)}; NBIRTH "
           f"{node3}: {bool(nb3)}; GET {st9}")
-    _, h = gw.shell("status", [r"^secrets\s+NVS encrypted \(HMAC key in eFuse KEY5\)"])
-    enc = list(h.values())[0]
+    # issue #261: the board build does not encrypt the NVS (no build for the board does, #133);
+    # the secure build does
+    _, h = gw.shell("status", [r"^secrets\s+NVS encrypted \(HMAC key in eFuse KEY5\)" if args.secure
+                               else r"^secrets\s+NVS NOT encrypted \(default build\)"])
+    nvs_line = list(h.values())[0]
     gw.kill()
     obs.wait(f"{T}/NDEATH/{node3}", 5)
     obs.close()
-    # CFG-7: the secrets left the file at the first boot, NVS is encrypted, the web password is
-    # only stored as a hash: none of them appears anywhere in the flash image in clear.
+    # CFG-7: the secrets left the file at the first boot, and the web password is only stored as
+    # a hash. In the secure build the NVS is encrypted: no secret appears anywhere in the flash
+    # image in clear. In the board build the NVS is not encrypted: the MQTT password is in clear
+    # in the NVS partition, and only there.
     image = pathlib.Path(flash).read_bytes()
     so, ss = storage_partition()
     no, ns = storage_partition("nvs")
@@ -8637,12 +8820,27 @@ def run_web(args, work):
              if what in image[o:o + n]]
     moved = gw.find(r"storage: secrets moved from /cfg/config\.json to NVS", t0)
     encrypted = gw.find(r'nvs: NVS partition "nvs" is encrypted', t0)
-    check("CFG-7 secrets migrated out of config.json at the first boot (partition erased: no stale "
-          "copy), NVS encrypted with the HMAC key in eFuse, web password only as a hash: no secret "
-          "in clear anywhere in the flash image",
-          moved and encrypted and enc and not leaks,
-          f"{(moved or ['no migration log'])[0]}; {(encrypted or ['NVS not encrypted'])[0]}; "
-          f"shell {bool(enc)}; secrets found in clear: {leaks or 'none'}")
+    if args.secure:
+        check("CFG-7 secrets migrated out of config.json at the first boot (partition erased: no "
+              "stale copy), NVS encrypted with the HMAC key in eFuse, web password only as a "
+              "hash: no secret in clear anywhere in the flash image",
+              moved and encrypted and nvs_line and not leaks,
+              f"{(moved or ['no migration log'])[0]}; {(encrypted or ['NVS not encrypted'])[0]}; "
+              f"shell {bool(nvs_line)}; secrets found in clear: {leaks or 'none'}")
+    else:
+        mqtt_at = sorted(where for what, where in leaks if what == "mqtt-secret")
+        web_at = sorted(where for what, where in leaks if what == WEB_PASSWORD)
+        outside = image[:no] + image[no + ns:]
+        check("CFG-7 (board build: the NVS is not encrypted, #133) secrets migrated out of "
+              "config.json at the first boot (partition erased: no stale copy): the MQTT "
+              "password is in the NVS partition only, the web password is only a hash (in clear "
+              "nowhere in the flash image), and the shell shows the NVS as not encrypted",
+              moved and not encrypted and nvs_line and mqtt_at == ["image", "nvs"]
+              and b"mqtt-secret" not in outside and not web_at,
+              f"{(moved or ['no migration log'])[0]}; NVS encryption line {bool(encrypted)}; "
+              f"shell {bool(nvs_line)}; MQTT password in clear in {mqtt_at or 'none'} (outside "
+              f"the NVS partition: {b'mqtt-secret' in outside}); web password in clear in "
+              f"{web_at or 'none'}")
 
 
 # #206: the name, the location and the comment of the web scenario's gateway

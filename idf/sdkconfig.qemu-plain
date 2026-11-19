@@ -1,6 +1,0 @@
-# Issue #94: the QEMU build WITHOUT NVS encryption (the NVS format of the default build), applied
-# after sdkconfig.qemu. The E2E (tools/e2e/run_e2e.sh, build dir build-qemu-plain) boots it as the
-# firmware a device runs before an OTA update to the encrypted build under test: the new image
-# must keep that NVS readable while on trial (rollback) and move it into the encrypted NVS once
-# confirmed. Never flash this build.
-CONFIG_NVS_ENCRYPTION=n

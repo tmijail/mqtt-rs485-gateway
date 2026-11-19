@@ -7,9 +7,11 @@
 #   . $IDF_PATH/export.sh
 #   E2E_PYTHON=~/e2e/bin/python tools/e2e/run_ci_groups.sh /tmp/gw-groups            # all groups
 #   E2E_PSRAM=1 E2E_PYTHON=... tools/e2e/run_ci_groups.sh /tmp/gw-groups ota-fw1-web other
+#   E2E_SECURE=1 E2E_PYTHON=... tools/e2e/run_ci_groups.sh /tmp/gw-groups           # secure variant
 #
-# Issue #135: each variant has its own groups (the PSRAM variant runs most scenarios, the
-# variant without PSRAM only the OTA trial scenarios); run the script once for each variant.
+# Issues #135 and #261: each variant has its own groups (the PSRAM variant runs most scenarios,
+# the variant without PSRAM only the OTA trial scenarios, the secure variant only the scenarios
+# of the NVS encryption and of the signed OTA images); run the script once for each variant.
 #
 # Each group writes <dir>/e2e-result-<variant>-<group>/ (its E2E_WORKDIR: results.json,
 # qemu-exits.txt, logs) and <dir>/<variant>-<group>.out (its console output). PARALLEL (default
@@ -22,47 +24,47 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 [ $# -ge 1 ] || { sed -n '2,15p' "$0" >&2; exit 2; }
 DIR="$(mkdir -p "$1" && cd "$1" && pwd)"
 shift
-if [ "${E2E_PSRAM:-0}" = 1 ]; then VARIANT=psram; else VARIANT=default; fi
+if [ "${E2E_SECURE:-0}" = 1 ]; then VARIANT=secure
+elif [ "${E2E_PSRAM:-0}" = 1 ]; then VARIANT=psram
+else VARIANT=default; fi
 IMAGES="$DIR/images-$VARIANT"
 
-# the selected groups: id, --only, needs the build without NVS encryption
+# the selected groups: id, --only
 mapfile -t ROWS < <(python3 "$HERE/scenarios.py" groups "$VARIANT")
 SEL=()
-PLAIN=0
 for r in "${ROWS[@]}"; do
-    read -r id only plain <<< "$r"
+    read -r id only <<< "$r"
     if [ $# -eq 0 ] || [[ " $* " == *" $id "* ]]; then
         SEL+=("$r")
-        [ "$plain" = 0 ] || PLAIN=1
     fi
 done
 [ ${#SEL[@]} -gt 0 ] || { echo "no such group: $* (scenarios.py groups)" >&2; exit 2; }
 
 if [ "${E2E_SKIP_BUILD:-0}" != 1 ]; then
     rm -rf "$IMAGES"
-    E2E_STAGE="$IMAGES" E2E_PLAIN="$PLAIN" E2E_WORKDIR="$DIR/build-work" "$HERE/run_e2e.sh"
+    E2E_STAGE="$IMAGES" E2E_WORKDIR="$DIR/build-work" "$HERE/run_e2e.sh"
 fi
 
 run_group() {   # its exit status in <dir>/<variant>-<group>.rc
-    local id=$1 only=$2 plain=$3 work="$DIR/e2e-result-$VARIANT-$1" rc=0
+    local id=$1 only=$2 work="$DIR/e2e-result-$VARIANT-$1" rc=0
     rm -rf "$work"
-    E2E_PREBUILT="$IMAGES" E2E_PLAIN="$plain" E2E_WORKDIR="$work" \
+    E2E_PREBUILT="$IMAGES" E2E_WORKDIR="$work" \
         "$HERE/run_e2e.sh" --only "$only" > "$DIR/$VARIANT-$id.out" 2>&1 || rc=$?
     echo "$rc" > "$DIR/$VARIANT-$id.rc"
 }
 for r in "${SEL[@]}"; do
-    read -r id only plain <<< "$r"
+    read -r id only <<< "$r"
     while [ "$(jobs -rp | wc -l)" -ge "${PARALLEL:-2}" ]; do
         wait -n || true
     done
     echo "group $id (--only $only) -> $DIR/$VARIANT-$id.out"
     rm -f "$DIR/$VARIANT-$id.rc"
-    run_group "$id" "$only" "$plain" &
+    run_group "$id" "$only" &
 done
 wait
 status=0
 for r in "${SEL[@]}"; do
-    read -r id _ _ <<< "$r"
+    read -r id _ <<< "$r"
     if [ "$(cat "$DIR/$VARIANT-$id.rc" 2>/dev/null)" != 0 ]; then
         echo "group $id failed (see $DIR/$VARIANT-$id.out)"
         status=1
@@ -76,7 +78,7 @@ if [ $# -eq 0 ]; then
 else
     header=--header
     for r in "${SEL[@]}"; do
-        read -r id _ _ <<< "$r"
+        read -r id _ <<< "$r"
         python3 "$HERE/scenarios.py" line $header "$VARIANT" "$id" "$DIR/e2e-result-$VARIANT-$id"
         header=
     done

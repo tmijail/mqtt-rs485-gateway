@@ -25,7 +25,7 @@ WORK="$(cd "$WORK" && pwd)"
 IMAGES="${DOCS_PREBUILT:-}"
 if [ -z "$IMAGES" ]; then
     IMAGES="$WORK/images"
-    E2E_STAGE="$IMAGES" E2E_PSRAM="${DOCS_PSRAM:-1}" E2E_POISON=0 E2E_PLAIN=0 \
+    E2E_STAGE="$IMAGES" E2E_PSRAM="${DOCS_PSRAM:-1}" E2E_POISON=0 E2E_SECURE=0 \
         "$IDF_DIR/tools/e2e/run_e2e.sh"
 fi
 IMAGES="$(cd "$IMAGES" && pwd)"
