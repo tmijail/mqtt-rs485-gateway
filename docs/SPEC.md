@@ -17,7 +17,7 @@ In Sparkplug, the gateway is an *Edge Node*. Each Modbus slave is a Sparkplug *D
 
 **Open source.** The firmware runs on a board that anyone can buy. The owner of the board must always be able to read, flash and change it. Thus the firmware burns no eFuse and does not lock the board (FW-2, FW-3, CFG-7).
 
-**Sparkplug conformance.** The gateway obeys each MUST, MUST NOT, SHOULD and SHOULD NOT of Sparkplug B 3.0.0 for an Edge Node. The reference is the normative text with a `tck-id`, at the tag `v3.0.0` of `eclipse-sparkplug/sparkplug`. When this document does not agree with that text, the Sparkplug text is correct, and this document must change. [Sparkplug TCK results](reference/sparkplug-tck-results.md) gives the results of the Sparkplug TCK.
+**Sparkplug conformance.** The gateway obeys each MUST, MUST NOT, SHOULD and SHOULD NOT of Sparkplug B 3.0.0 for an Edge Node. The reference is the normative text with a `tck-id`, at the tag `v3.0.0` of `eclipse-sparkplug/sparkplug`. When this document does not agree with that text, the Sparkplug text is correct, and this document must change. [Sparkplug behavior](reference/sparkplug-behavior.md#the-sparkplug-tck-edge-node-profile-176) gives the known FAILs of the Sparkplug TCK and their causes.
 
 ## 2. Hardware
 

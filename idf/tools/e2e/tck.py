@@ -85,12 +85,12 @@ def uint32_cause(payloads):
         return None
     names = sorted({m.name for m in tck_bad})
     return (f"TCK bug: Utils.hasValue() wants long_value for UInt32; the specification gives "
-            f"uint32 (int_value), sparkplug#102, tahu#202 ({', '.join(names)})")
+            f"uint32 (int_value), sparkplug#102, #469 not released ({', '.join(names)})")
 
 
 # FAILs of the TCK that are not gateway bugs: tck-id -> (message kind, rule). The rule gets the
 # messages of that kind that the harness captured during the test and returns the reason, or
-# None when the reason does not apply (then the FAIL counts). docs/reference/sparkplug-tck-results.md explains each entry.
+# None when the reason does not apply (then the FAIL counts). docs/reference/sparkplug-behavior.md (The Sparkplug TCK) explains each entry.
 KNOWN_RULES = {
     "topics-nbirth-metrics": ("NBIRTH", uint32_cause),
     "operational-behavior-data-publish-nbirth-values": ("NBIRTH", uint32_cause),

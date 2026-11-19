@@ -81,7 +81,7 @@ flowchart LR
 - Writes from the host with NCMD and DCMD, with write limits for each tag.
 - Properties and quality, node diagnostics, templates for device types, DataSet, Bytes and File.
 - Primary Host awareness, and store & forward in RAM, with an optional spill to the microSD card.
-- Tested against the Eclipse Sparkplug TCK (Edge Node profile) and against UMH Core. Refer to [Sparkplug TCK results](docs/reference/sparkplug-tck-results.md).
+- Tested against the Eclipse Sparkplug TCK (Edge Node profile) and against UMH Core. Refer to [The Sparkplug TCK](docs/reference/sparkplug-behavior.md#the-sparkplug-tck-edge-node-profile-176).
 
 **Network and MQTT**
 

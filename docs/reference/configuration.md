@@ -233,6 +233,8 @@ Wi-Fi station, as an alternative interface or as a backup interface for Ethernet
 
 IPv6 together with IPv4. In the web UI, the keys are in the card **IPv6**.
 
+![The card 'IPv6' of the Configuration tab with Enabled and SLAAC on, the static address fd00:1::50 for Ethernet and the IPv6 DNS server fd00:1::1.](../images/ipv6-card.png)
+
 ```json
 "network": { "dhcp": true,
              "ipv6": { "enabled": true, "slaac": true, "address": "fd00:1::50", "dns": "" } }
@@ -871,6 +873,8 @@ For the patterns, refer to [The status signals](status-signals.md#buzzer).
 ## `syslog`
 
 A copy of the log to a syslog server. In the web UI, the keys are in the card **Remote syslog**.
+
+![The card 'Remote syslog' of the Configuration tab with the host 192.168.10.5, the UDP port 514 and the level (default).](../images/syslog-card.png)
 
 ```json
 "syslog": { "host": "192.168.1.20", "port": 514, "level": "info" }

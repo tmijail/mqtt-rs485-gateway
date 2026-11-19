@@ -50,7 +50,6 @@ nav = [
     "reference/configuration.md",
     "reference/sparkplug-messages-and-metrics.md",
     "reference/sparkplug-behavior.md",
-    "reference/sparkplug-tck-results.md",
     "reference/umh-names-and-topics.md",
     "reference/rest-api.md",
     "reference/store-and-forward.md",

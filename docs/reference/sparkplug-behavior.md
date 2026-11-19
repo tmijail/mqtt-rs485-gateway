@@ -4,7 +4,7 @@ This document gives the choices of the gateway where the Sparkplug B 3.0.0 speci
 
 - For the topics, the messages, the metrics and the commands, refer to [Sparkplug messages and metrics](sparkplug-messages-and-metrics.md).
 - For the limits of the gateway, refer to [Known limitations](known-limitations.md).
-- For the results of the Eclipse Sparkplug TCK, refer to [Sparkplug TCK results](sparkplug-tck-results.md).
+- For the Eclipse Sparkplug TCK, refer to [The Sparkplug TCK](#the-sparkplug-tck-edge-node-profile-176).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The host tests, the decode with the official proto, the TCK and the E2E in QEMU examine the behaviour.
 
@@ -197,3 +197,29 @@ For the reasons, refer to [Sparkplug names and the UNS](../explanation/sparkplug
 - Reason for the sums: 16 devices × 12 counters would add 192 metrics. The counters of each device stay in the shell (`devices`), in `GET /api/status` and in the DataSets without the preset.
 - The host test `test_umh_worst_case_nbirth_fits` encodes the worst NBIRTH of the preset in a buffer of 6 KB, the payload buffer of the QEMU build without PSRAM. It has 16 devices with names of 39 characters, RSSI, Modbus TCP and `ota.mqtt`.
 - The preset is in the configuration hash of the microSD ring. Reason: a replay publishes a typed device as an instance or as plain metrics.
+
+## The Sparkplug TCK (Edge Node profile, #176)
+
+The optional E2E scenario `tck` runs the Edge Node profile of the Eclipse Sparkplug TCK 3.0.0 against the firmware, with MQTT 3.1.1 and MQTT 5. For the procedure, refer to [Run the Sparkplug TCK against the gateway](../how-to/run-the-sparkplug-tck.md). For the steps of the scenario, refer to [The E2E scenarios](e2e-scenarios.md#tck-the-sparkplug-tck-176).
+
+### UInt32 in `int_value`: two FAILs of the TCK 3.0.0
+
+`tck-id-topics-nbirth-metrics` and `tck-id-operational-behavior-data-publish-nbirth-values` fail on the UInt32 node metrics: `Node Control/Scan Rate`, `Node Info/Free Heap`, `Node Info/Min Free Heap` and `Firmware Update/Progress`. A UInt32 tag of a device gives the same FAIL on `tck-id-topics-dbirth-metrics` and `tck-id-operational-behavior-data-publish-dbirth-values`.
+
+- The two rules ask for "the metric name, datatype, and current value". They name no value field.
+- The datatype table of the specification (chapter Payloads) gives "UInt32: Google Protocol Buffer Type: uint32". In the proto, `int_value` is the only uint32 field of the `value`. The gateway puts a UInt8, UInt16 or UInt32 value in `int_value` (`spb.c`).
+- `Utils.hasValue()` of the TCK 3.0.0 (`tck/.../test/common/Utils.java`) accepts only `long_value` for UInt32. Thus the TCK finds "no value" in a correct metric.
+- On receive, the gateway accepts a UInt32 value in `int_value` and in `long_value`.
+
+The reference implementation does not agree with itself. Tahu Java, C and JavaScript write UInt32 in `long_value`, and Tahu Python writes it in `int_value`. The specification text did not change.
+
+- eclipse-sparkplug/sparkplug#102 recorded the conflict. It was closed with a change of the Tahu Java decoder only (eclipse-tahu/tahu#202): the decoder reads the two fields, and the encoder still writes `long_value`.
+- eclipse-sparkplug/sparkplug#469 corrected the TCK on the branch `3.x`, but no TCK was released from that branch. eclipse-sparkplug/sparkplug#529 put UInt32 back on `long_value` on `develop` (the v4 schema). eclipse-sparkplug/sparkplug#630 was closed without a merge.
+
+Choice: the gateway obeys the datatype table of the specification. The harness accepts these FAILs only when it proves this cause from the captured messages (`uint32_cause` in `KNOWN_RULES`, `idf/tools/e2e/tck.py`). Each metric must have a name, a datatype and the value field of the table, and the only metrics without the field that the TCK wants must be UInt32 metrics with `int_value`. A different fault of the same assertion still fails.
+
+A host with a Tahu Java decoder from before eclipse-tahu/tahu#202 (2022) reads UInt32 only from `long_value`. Such a host does not read the UInt32 metrics of the gateway (for example Ignition MQTT Engine 4.0.5).
+
+### Template parameters: the template group of the TCK is not complete
+
+The gateway uses no template parameters (refer to [Templates](#templates-spb-18)). The TCK examines the parameter assertions (`tck-id-payloads-template-definition-parameters`, `-parameters-default`, `tck-id-payloads-template-instance-parameters`, `tck-id-payloads-template-parameter-*`) only when a definition has a parameter. Thus they are NOT EXECUTED. The TCK user guide says that templates are an optional group, and that a product that uses the group must pass all its assertions. The gateway uses templates, so the group is not complete for a certification.
