@@ -1083,7 +1083,7 @@ SHOTS = [
              "The field has ERASE, and the red button 'Erase and restart' is enabled."),
     # #200 and #199: docs/how-to/read-the-live-log.md
     Shot("live-log", "named", DESKTOP, "/", actions=[live_log],
-         wait="#lg-lines .ln",
+         element="#lg-card", wait="#lg-lines .ln",
          freeze={"log_levels": [{"tag": "poll", "level": "debug"}, {"tag": "mb", "level": "debug"}]},
          alt="The card Log of the Status tab, open: the buttons Pause and Copy, 'Live: new lines "
              "every 2 s', 212 lines in the buffer (16 KB), and the last log lines (the warnings "
