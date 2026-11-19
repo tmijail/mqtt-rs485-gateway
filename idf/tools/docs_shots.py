@@ -981,7 +981,8 @@ SHOTS = [
              "subject, SANs, last day and SHA-256 fingerprint, with the buttons 'Load a "
              "certificate…' and 'Make a new self-signed certificate'. The section 'Files for "
              "MQTT TLS and firmware updates' lists ca.pem, gw01.crt and gw01.key with their "
-             "content, subject, last day and the keys that use them, each with Replace and "
+             "content, subject and last day, 'Not used' in the column Used by, each with "
+             "Replace and "
              "Remove, and the button 'Load a file…'."),
     Shot("pem-replace-dialog", "configured", DESKTOP, "/", actions=[pem_replace],
          wait="#pf-ex .exam b.ok",
