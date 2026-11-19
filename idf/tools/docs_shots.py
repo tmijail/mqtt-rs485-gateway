@@ -527,6 +527,25 @@ def mqtt_tls(page):
     page.evaluate("document.querySelector('#f-mqtt').closest('.card').scrollIntoView()")
 
 
+def backup_brokers_phone(page):
+    """#250: the backup brokers on a phone, each one a block (prototype I221MqttTlsPhone): the
+    primary broker with TLS on port 8883, a backup without a port (its placeholder gives the port
+    of the primary broker) and a backup with its own port. No save."""
+    page.click("nav button[data-tab=config]")
+    page.wait_for_selector("#f-bk")
+    coll = page.locator('.card[data-cc="mqtt"] button.coll')
+    if coll.count() and coll.first.get_attribute("aria-expanded") != "true":
+        coll.first.click()
+    page.check('[data-p="mqtt.tls.enabled"]')
+    page.fill('[data-p="mqtt.port"]', "8883")
+    page.click('[data-ladd="bk"]')
+    page.fill('[data-p="mqtt.backup_brokers.0.host"]', "broker2.plant.local")
+    page.click('[data-ladd="bk"]')
+    page.fill('[data-p="mqtt.backup_brokers.1.host"]', "10.0.0.20")
+    page.fill('[data-p="mqtt.backup_brokers.1.port"]', "8884")
+    page.evaluate("document.activeElement.blur()")
+
+
 def certificates_card(page):
     """#205 #221: the card Certificates in the state "pem" (the saved configuration uses ca.pem,
     gw01.crt and gw01.key): the HTTPS certificate of the first boot and the list of the PEM
@@ -733,6 +752,9 @@ class Shot:
     element: str = ""
     pad: int = 8
     full_page: bool = False
+    # #250: Playwright's own element shot (the element scrolled into the window, no @pad). On a
+    # phone, the clip of a full page missed a section far down the Configuration tab
+    own: bool = False
     auth: bool = True
     freeze_timers: bool = True
     freeze: dict = field(default_factory=dict)   # more FREEZE paths of /api/status, this shot only
@@ -973,6 +995,14 @@ SHOTS = [
              "its subject, and the client key gw01.key 'Private key, EC P-256'. Each file field "
              "has a button 'Load a file…'. Below the section, a message tells that gw01.key is "
              "in the gateway."),
+    # #250: docs/reference/configuration.md (The list of brokers)
+    Shot("backup-brokers-phone", "configured", PHONE, "/", actions=[backup_brokers_phone],
+         element='.card[data-cc="mqtt"] .tsec:has(#f-bk)', wait="#f-bk", own=True,
+         alt="The section 'Backup brokers' of the card MQTT on a phone. Each broker is a block. "
+             "The primary broker shows its host and the port 8883. Backup 1 has the host "
+             "broker2.plant.local and an empty port that shows '8883 (the port of the primary "
+             "broker)'. Backup 2 has the host 10.0.0.20 and the port 8884. Each backup has a "
+             "remove button. Below are the button '+ broker' and the fields of the failover."),
     Shot("web-cert-load-dialog", "configured", DESKTOP, "/", actions=[web_cert_load],
          wait="#wc-ex .exam b.ok",
          alt="The dialog 'Load the HTTPS certificate of the plant': the certificate "
@@ -1001,7 +1031,7 @@ SHOTS = [
     Shot("syslog-card", "configured", DESKTOP, "/", actions=[syslog_card],
          element='.card[data-cc="syslog"]',
          alt="The card 'Remote syslog' of the Configuration tab with the host 192.168.10.5, the "
-             "UDP port 514 and the level (default)."),
+             "UDP port 514 and the level info (default)."),
     # #221: docs/how-to/recover-the-gateway.md ("The web interface is off")
     Shot("web-off-dialog", "configured", DESKTOP, "/", actions=[web_off], wait="#dlg[open]",
          alt="The confirmation 'Turn off the web interface?' after 'Save and restart' with "
@@ -1255,6 +1285,8 @@ def capture(browser, shot, auth, base):
             # the bar sticks to the bottom of the window, also over a card that is taller than the
             # window: keep it out of the image of a card
             page.add_style_tag(content="#bar{visibility:hidden}")
+            if shot.own:
+                return page.locator(shot.element).first.screenshot(**opts)
             box = page.locator(shot.element).first.bounding_box()
             # the box is relative to the viewport, the clip of a full page to the page: add the
             # scroll position (a click scrolls the page, and a reload keeps the position)

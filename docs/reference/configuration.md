@@ -56,6 +56,7 @@ The top-level sections are `gateway`, `network`, `ntp`, `mqtt`, `sparkplug`, `rs
 - A warning does not stop a save. The warnings are the name checks of [UMH names](#name-checks-for-umh-core).
 - These rules are the configuration schema of `docs/SPEC.md` §6.
 - The Configuration tab of the web UI has a control for each key. This document gives the card of each section.
+- A list of values in the web UI shows the default value of an optional key with the text "(default)", for example **3.1.1 (default)**. When the key is not in the document, the list shows its default value. A save then does not add the key, if you keep the default value. When you select a different value, the web UI writes it. When the key is in the document, the web UI writes the selected value, also the default value. A checkbox of an optional key has the same rule. The JSON tab and `PUT /api/config` keep each key as you write it.
 
 **Removed keys.** The gateway refuses these keys as unknown keys. A stored document with one of them puts the gateway in recovery mode. There is no migration before v1.0: change the document, then save it again.
 
@@ -315,7 +316,9 @@ In the web UI, the keys are in the section **TLS** of the card **MQTT**: **Encry
 
 ### The list of brokers
 
-In the web UI, the keys are in the section **Backup brokers** of the card **MQTT**: the table of the brokers, **Failover after (attempts)** and **Back to the primary after (s)**.
+In the web UI, the keys are in the section **Backup brokers** of the card **MQTT**: the table of the brokers, **Failover after (attempts)** and **Back to the primary after (s)**. On a phone, each broker is a block with its fields **Host** and **Port**. An empty **Port** shows the port of the primary broker, which the backup broker then uses.
+
+![The section 'Backup brokers' of the card MQTT on a phone. Each broker is a block. The primary broker shows its host and the port 8883. Backup 1 has the host broker2.plant.local and an empty port that shows '8883 (the port of the primary broker)'. Backup 2 has the host 10.0.0.20 and the port 8884. Each backup has a remove button. Below are the button '+ broker' and the fields of the failover.](../images/backup-brokers-phone.png)
 
 ```json
 "mqtt": { "host": "broker1.plant.local", "port": 1883,
@@ -874,7 +877,7 @@ For the patterns, refer to [The status signals](status-signals.md#buzzer).
 
 A copy of the log to a syslog server. In the web UI, the keys are in the card **Remote syslog**.
 
-![The card 'Remote syslog' of the Configuration tab with the host 192.168.10.5, the UDP port 514 and the level (default).](../images/syslog-card.png)
+![The card 'Remote syslog' of the Configuration tab with the host 192.168.10.5, the UDP port 514 and the level info (default).](../images/syslog-card.png)
 
 ```json
 "syslog": { "host": "192.168.1.20", "port": 514, "level": "info" }
