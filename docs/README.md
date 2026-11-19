@@ -48,7 +48,6 @@ The usual sequence for a new gateway is:
 - [The access point](reference/access-point.md): the keys, the times, the signals, the REST API and the shell commands of the access point.
 - [The clock and the RTC battery](reference/clock-and-rtc-battery.md): the sources of the clock, and the signals while the gateway waits for a valid clock.
 - [UMH names and topics](reference/umh-names-and-topics.md): the name limits of the gateway, and the UMH topic of each metric.
-- [Sparkplug TCK results](reference/sparkplug-tck-results.md): the results of the Eclipse Sparkplug TCK, Edge Node profile.
 - [Sparkplug behavior](reference/sparkplug-behavior.md): the choices of the gateway where the Sparkplug specification permits a choice, with the reasons.
 - [Commissioning and secrets](reference/commissioning-and-secrets.md): the modes, the HTTPS certificate, the claim window, the secrets in NVS, the factory reset and the limits of the web server.
 - [Firmware updates](reference/firmware-updates.md): the download, the pre-flight check, the trial, the rollback and the limits of the updates.

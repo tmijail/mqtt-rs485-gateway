@@ -4,7 +4,7 @@ This document lists the Sparkplug B 3.0.0 topics, messages, metrics and commands
 
 - For the configuration keys that change the messages, refer to [The configuration document](configuration.md).
 - For the UMH topic of each metric, refer to [UMH names and topics](umh-names-and-topics.md).
-- For the results of the Eclipse Sparkplug TCK, refer to [Sparkplug TCK results](sparkplug-tck-results.md).
+- For the Eclipse Sparkplug TCK, refer to [Sparkplug behavior](sparkplug-behavior.md#the-sparkplug-tck-edge-node-profile-176).
 - For the choices where the specification permits a choice, and their reasons, refer to [Sparkplug behavior](sparkplug-behavior.md).
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The host tests and the E2E in QEMU examine the messages. The DIs, the DOs and the expander are compile-only.

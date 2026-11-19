@@ -235,7 +235,32 @@ Not tested: the downsampler (`late_policy`), the `uns` output into Redpanda, the
 
 ### tck: the Sparkplug TCK (#176)
 
-The scenario runs the seven tests of the Edge Node profile of the Eclipse Sparkplug TCK 3.0.0, with MQTT 3.1.1 and MQTT 5. It needs `E2E_TCK_DIR` (from `tools/e2e/tck_setup.sh`). The procedure is in [Run the Sparkplug TCK against the gateway](../how-to/run-the-sparkplug-tck.md), and the results are in [Sparkplug TCK results](sparkplug-tck-results.md).
+The scenario runs the seven tests of the Edge Node profile of the Eclipse Sparkplug TCK 3.0.0, with MQTT 3.1.1 and MQTT 5. It needs `E2E_TCK_DIR` (from `tools/e2e/tck_setup.sh`). The procedure is in [Run the Sparkplug TCK against the gateway](../how-to/run-the-sparkplug-tck.md). The known FAILs of the TCK and their causes are in [Sparkplug behavior](sparkplug-behavior.md#the-sparkplug-tck-edge-node-profile-176).
+
+The configuration of the gateway has `Meter1` (unit 1, tags with aliases), `Pump1` (unit 2, a template instance), the primary host `TCKHost` that the TCK simulates, and `diagnostics_s` 0. Each test gets a new HiveMQ and a new boot of the gateway.
+
+The TCK web console only sends `NEW_TEST` and `END_TEST` on `SPARKPLUG_TCK/TEST_CONTROL`, and shows the prompts to the operator. The scenario does the steps of the operator:
+
+| Test | Steps of the scenario |
+|---|---|
+| SessionEstablishmentTest | Start the test, then boot the gateway. The test ends at the last DBIRTH |
+| SessionTerminationTest | Boot. After the DBIRTH, stop the Modbus slave (DDEATH). Then `restart` in the shell (NDEATH and DISCONNECT) |
+| SendDataTest | Boot. After the DBIRTH, set `di 1 1` (NDATA) and change `Voltage` (DDATA) |
+| SendComplexDataTest | The same as SendDataTest. Then send `END_TEST`, because the test does not end alone |
+| ReceiveCommandTest | Boot. The TCK sends the NCMD rebirth and disconnects the gateway |
+| PrimaryHostTest | Boot the gateway first, and wait until it waits for its primary host. Then start the test |
+| MultipleBrokerTest | Start a mosquitto on port 1884 (the backup broker of the gateway). Start the test, then boot |
+
+A check fails when an assertion is FAIL and the harness cannot prove a known cause (`KNOWN_RULES` in `tools/e2e/tck.py`). A NOT EXECUTED result is not a failure. Each run examines only the assertions of its MQTT version (for example `tck-id-principles-persistence-clean-session-50` and `-311`).
+
+#### Limits of the TCK that the scenario works around
+
+- The message monitor of the TCK keeps the last bdSeq of each edge node for the life of the broker. The gateway starts at bdSeq 0 at each boot (`tck-id-topics-nbirth-bdseq-increment`). A second boot on the same broker gives a false FAIL. Thus each test gets a new HiveMQ.
+- SendComplexDataTest ends alone only when each of its assertions has a result. The template parameters never get one. Thus the scenario sends `END_TEST`, as an operator does with "Stop Test".
+- After the NCMD rebirth, the TCK fails `tck-id-operational-behavior-data-commands-rebirth-action-1` for each NDATA or DDATA before the NBIRTH, also a message that was already on its way. `diagnostics_s` 0 and constant register values keep the gateway quiet during the test.
+- The TCK clients connect to `tcp://localhost:1883`, a fixed address. Thus HiveMQ listens on 127.0.0.1:1883 in the network namespace of the harness.
+- Sometimes the TCK extension stops at `Creating new host "TCKHost"`, and the test gives no result. The simulated host connects to HiveMQ from inside the publish interceptor of the extension, and that connection does not return. When a test gives no result, the scenario runs it one more time with a new HiveMQ and a new boot, and records this in `retries` of `results.json`. A test with a result is never repeated.
+- The test configuration has no UInt32 device tag. A UInt32 tag gives the known FAIL of the DBIRTH assertions (refer to [UInt32 in `int_value`](sparkplug-behavior.md#uint32-in-int_value-two-fails-of-the-tck-300)).
 
 ### downgrade: an earlier image on newer data (#148)
 
