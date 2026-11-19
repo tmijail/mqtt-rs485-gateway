@@ -2,7 +2,7 @@
 
 This guide runs the tests of the firmware on a Linux computer: the host tests, the fuzz targets, clang-tidy, the Sparkplug decode check, the linters, CodeQL and the E2E tests in QEMU. For what each test examines, refer to [Tests](../reference/tests.md). On Windows, or without a local ESP-IDF, refer to [Run the E2E tests in Docker](run-e2e-in-docker.md).
 
-A change is done when the host tests pass and the full E2E of the two variants passes.
+A change is done when the host tests pass and the full E2E of the three variants passes.
 
 ## Before you start
 
@@ -199,7 +199,7 @@ When you change the model pack, add `--rerun` to step 6. Without it, `database a
 
 ## Run the full E2E
 
-The full E2E is the full run of the two variants. It takes much more time than the host tests, and the PSRAM variant takes much more time than the default variant. The CI groups take less time (refer to [Run the CI groups on one computer](#run-the-ci-groups-on-one-computer)).
+The full E2E is the full run of the three variants: PSRAM, default and secure. It takes much more time than the host tests, and the PSRAM variant takes much more time than the other two variants. The CI groups take less time (refer to [Run the CI groups on one computer](#run-the-ci-groups-on-one-computer)).
 
 1. Activate ESP-IDF:
 
@@ -232,11 +232,19 @@ The full E2E is the full run of the two variants. It takes much more time than t
    E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh
    ```
 
-7. Make sure that the last line of each run gives all checks passed: `N/N checks passed`.
+7. Run the secure variant:
+
+   ```bash
+   E2E_SECURE=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh
+   ```
+
+8. Make sure that the last line of each run gives all checks passed: `N/N checks passed`.
+
+The PSRAM variant and the default variant run the configuration of the board. The secure variant runs only the scenarios of the NVS encryption and of the signed OTA images, on the build with `sdkconfig.qemu-secure`. Refer to [The variants](../reference/e2e-harness.md#the-variants-135-261).
 
 Run the harness as root, or in a container with `--privileged`, to give each run its own network namespace. Without it, the harness uses the host loopback, and UDP 123 must be free.
 
-CAUTION: Do not run the two variants at the same time. A high host load makes the real-time checks slower, and QEMU can crash in the OTA scenarios.
+CAUTION: Do not run two variants at the same time. A high host load makes the real-time checks slower, and QEMU can crash in the OTA scenarios.
 
 ## Run one E2E scenario
 
@@ -248,9 +256,9 @@ CAUTION: Do not run the two variants at the same time. A high host load makes th
    E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh --only tls
    ```
 
-`--only` accepts a list, for example `--only ota,https`. It selects the scenarios in each variant.
+`--only` accepts a list, for example `--only ota,https`. It selects the scenarios in each variant. A scenario of the secure variant (`nvs`, `signed`) shows `[SKIP]` without `E2E_SECURE=1`.
 
-To measure a change of `.bss`, stack or heap, run `E2E_PSRAM=1 ... --only tls`. The #80 check gives the margins of the internal RAM. Never lower the thresholds.
+To measure a change of `.bss`, stack or heap, run `E2E_PSRAM=1 ... --only tls`. The #80 check gives the margins of the internal RAM, on the configuration of the board. Never lower the thresholds.
 
 ## Run the CI groups on one computer
 
@@ -269,9 +277,15 @@ To measure a change of `.bss`, stack or heap, run `E2E_PSRAM=1 ... --only tls`. 
    E2E_PYTHON=~/e2e/bin/python tools/e2e/run_ci_groups.sh /tmp/gw-groups
    ```
 
-4. Read the summary table at the end of the output.
+4. Run the groups of the secure variant:
 
-Set `PARALLEL` to the number of CPUs divided by 2, or less. To run some groups only, add their names after the directory, for example `/tmp/gw-groups nvs-main other`.
+   ```bash
+   E2E_SECURE=1 E2E_PYTHON=~/e2e/bin/python PARALLEL=2 tools/e2e/run_ci_groups.sh /tmp/gw-groups
+   ```
+
+5. Read the summary table at the end of each output.
+
+Set `PARALLEL` to the number of CPUs divided by 2, or less. To run some groups only, add their names after the directory, for example `/tmp/gw-groups main other`.
 
 ## Run an optional scenario
 
@@ -279,7 +293,7 @@ Set `PARALLEL` to the number of CPUs divided by 2, or less. To run some groups o
 2. Do the steps for the scenario:
    - **UMH Core (`umh`):** download the release binary `benthos-linux-amd64` of benthos-umh v0.16.2 into a scratch directory. Make sure that its SHA-256 is `39a876816578efbd5b36474c079dbdca5ba376ae25cc8453ba52b8e7b46d7c33`. Then run `E2E_BENTHOS_UMH=<binary> E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh --only umh`.
    - **Sparkplug TCK (`tck`):** do the steps of [Run the Sparkplug TCK against the gateway](run-the-sparkplug-tck.md).
-   - **Downgrade (`downgrade`):** run `E2E_DOWNGRADE_REF=<git ref> E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh --only downgrade`. Do it again with `E2E_PSRAM=1`.
+   - **Downgrade (`downgrade`):** run `E2E_DOWNGRADE_REF=<git ref> E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh --only downgrade`. Do it again with `E2E_PSRAM=1`. These two runs examine the configuration of the board. A run with `E2E_SECURE=1` is optional (refer to [The E2E scenarios](../reference/e2e-scenarios.md#downgrade-an-earlier-image-on-newer-data-148)).
 
 Without its tool or its variable, an optional scenario shows `[SKIP]` and gives no evidence.
 
@@ -290,7 +304,8 @@ Without its tool or its variable, an optional scenario shows `[SKIP]` and gives 
 | `E2E_WORKDIR=<dir>` | The work directory of the run. The default is a new directory in `/tmp` |
 | `E2E_STAGE=<dir>` | Build the images into `<dir>`, and run nothing |
 | `E2E_PREBUILT=<dir>` | Run on the images of `<dir>`, with no build |
-| `E2E_PLAIN=0` | Skip the build without NVS encryption. The OTA to NVS encryption shows `SKIP` |
+| `E2E_SECURE=1` | The secure variant: the PSRAM build with `sdkconfig.qemu-secure`. Do not set `E2E_PSRAM=0` with it |
+| `E2E_BOARD=0` | With `E2E_SECURE=1`: skip the board build. The OTA to NVS encryption shows `SKIP` |
 | `E2E_POISON=1` | The build with heap poisoning. The CI job `e2e-poison` uses it with `--only ota-fw1` and `E2E_PSRAM=1`, and with `--only ota-park,ota-trial` |
 | `E2E_TIMEOUT_SCALE=<n>` or `--timeout-scale <n>` | Multiply the time limits. Use 1.5 or 2 on a slow or loaded computer |
 | `E2E_TCG_THREAD=auto\|single\|multi` | The TCG mode of QEMU. Keep `auto` |

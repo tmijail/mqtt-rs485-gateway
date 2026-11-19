@@ -61,7 +61,7 @@ This document gives the facts about the firmware updates of the gateway (FW-1): 
 - Only `https://`. The CA of the server is `ota.ca_file`. If it is not set, the firmware uses `mqtt.tls.ca_file` when TLS is on. If that is not set, it uses the public CA bundle of ESP-IDF.
 - The firmware needs a valid clock to examine the certificate of the server.
 - The image must be from this project: the `project_name` of its `esp_app_desc_t`. The firmware examines this before it writes past the header. Then it does the [pre-flight check](#the-pre-flight-check).
-- `esp_ota_end()` verifies the full image: the checksum and the SHA-256 of the image. The QEMU build also verifies a signature.
+- `esp_ota_end()` verifies the full image: the checksum and the SHA-256 of the image. The secure QEMU build (`sdkconfig.qemu-secure`) also verifies a signature.
 - If a step fails, the running firmware continues, and the state gives the cause.
 - If the image is valid, the firmware writes the record `fw_last` and sets the boot partition. Then it publishes `restarting into <version>` and does an orderly restart (NDEATH).
 - An interrupted download does not continue: it starts again from the start. The state gives the bytes that arrived: `failed: download of <version> interrupted after N bytes`.
@@ -110,7 +110,7 @@ The build reads `NVS_CONST_NVS_VERSION` and `LFS_DISK_VERSION` from the sources 
 
 ### Images that would lose the encrypted NVS
 
-This check applies only to a gateway with an encrypted NVS, thus only to the QEMU build (#133).
+This check applies only to a gateway with an encrypted NVS, thus only to the secure QEMU build (`sdkconfig.qemu-secure`, #133).
 
 - When the NVS is encrypted, or a migration waits, the firmware rejects an image that does not declare an encrypted NVS, also with force (#102). That image could not read the NVS and would erase it, and a later rollback would also find it erased.
 - The rejection occurs when the header arrives, much before `esp_ota_set_boot_partition()`: `failed: image <version> refused: built without NVS encryption (this device's NVS is encrypted)`.

@@ -1,6 +1,6 @@
 # The E2E test bench
 
-This document gives the E2E test bench of the firmware: the emulator, the two variants, the programs around the gateway, the result files, the retry rules, the memory thresholds and the limits of QEMU. The checks of each scenario are in [The E2E scenarios](e2e-scenarios.md). To run the tests, refer to [Run the tests](../how-to/run-the-tests.md). For the other test suites and the CI, refer to [Tests](tests.md).
+This document gives the E2E test bench of the firmware: the emulator, the variants, the programs around the gateway, the result files, the retry rules, the memory thresholds and the limits of QEMU. The checks of each scenario are in [The E2E scenarios](e2e-scenarios.md). To run the tests, refer to [Run the tests](../how-to/run-the-tests.md). For the other test suites and the CI, refer to [Tests](tests.md).
 
 The harness is one file, `idf/tools/e2e/e2e.py`. `idf/tools/e2e/scenarios.py` holds the list of the scenarios, their `--only` names, the variants and the CI groups. `idf/tools/e2e/run_e2e.sh` builds the QEMU images and starts the harness. It passes its extra arguments to `e2e.py`.
 
@@ -13,27 +13,39 @@ The harness is one file, `idf/tools/e2e/e2e.py`. `idf/tools/e2e/scenarios.py` ho
 - The flash uses DIO, not QIO (refer to [Limits of QEMU](#limits-of-qemu)).
 - QEMU runs without `-icount`. Thus 1 s of uptime is 1 s of wall time.
 
-### The two variants (#135)
+### The variants (#135, #261)
 
 | Variant | Build | What its full run contains |
 |---|---|---|
-| PSRAM (`E2E_PSRAM=1`) | `build-qemu-psram`: `sdkconfig.qemu` and `sdkconfig.qemu-psram`. QEMU has the octal PSRAM model (`-global driver=ssi_psram,property=is_octal,value=true`, `-m 8M`) | All the scenarios except the three of the default variant. This is the memory configuration of the board, so each scenario that depends on memory goes here |
+| PSRAM (`E2E_PSRAM=1`) | `build-qemu-psram`: `sdkconfig.qemu` and `sdkconfig.qemu-psram`. QEMU has the octal PSRAM model (`-global driver=ssi_psram,property=is_octal,value=true`, `-m 8M`) | All the scenarios except the three of the default variant and the five of the secure variant. This is the configuration of the board, so each scenario that depends on memory goes here |
 | Default | `build-qemu`: `sdkconfig.qemu` only (`CONFIG_GW_EMU_NO_PSRAM`). The own memory is in internal RAM, with a 6 KB payload buffer and a store & forward ring of 512 samples | Only the park of #112, the #97 integration and the #144 self-check (`DEFAULT_VARIANT_SCENARIOS`). They examine logic, not memory, and they are much slower with PSRAM |
+| Secure (`E2E_SECURE=1`) | `build-qemu-psram-secure`: the PSRAM build with `sdkconfig.qemu-secure` on top. It has the NVS encryption with an HMAC key in the emulated eFuse KEY5, and it requires a signed OTA image | Only the scenarios of these two functions (`SECURE_VARIANT_SCENARIOS`): the three `nvs-boot` scenarios, the OTA to encrypted NVS (`nvs-ota`) and the signature check (`signed`) |
 
-`--only` selects scenarios in each variant. The scenario `nopsram` needs the PSRAM build, so the harness skips it in the default variant.
+The PSRAM variant and the default variant are the configuration of the board for the NVS and for the OTA images (#261). The NVS is not encrypted, and the firmware checks no signature of an OTA image. The harness signs no test image for these builds.
+
+The secure variant keeps the two functions under test. No build for the board has them. They stay in `main` only in the QEMU build, for the optional owner profile of #255 (decision of #133).
+
+- The secure variant always has the PSRAM, because that is the memory configuration of the board (#135). `E2E_SECURE=1` with `E2E_PSRAM=0` is an error.
+- `run_e2e.sh` makes the throwaway signing key `build-qemu/e2e_signing_key.pem`, and gives it to the harness only in this variant. Never commit it.
+- `run_e2e.sh` also builds the board build `build-qemu-psram` in this variant. It is the firmware before the OTA of `GW42` (#94). `E2E_BOARD=0` skips this build, and the harness reports that scenario as `SKIP`.
+- `run_e2e.sh` examines the `sdkconfig` of each build. `CONFIG_NVS_ENCRYPTION` and `CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT` must be on in the secure build, and off in each other build.
+
+`--only` selects scenarios in each variant. The harness skips a scenario when the build cannot run it:
+
+- The scenario `nopsram` needs the PSRAM build. The harness skips it in the default variant.
+- The five scenarios of the secure variant need the secure build. The harness skips them in the other variants.
+- All the other scenarios can run on the secure build with `--only`, for example for the work on #255. No CI job does this.
 
 Do not use `-m 32M`. QEMU then maps 31 MB, and no virtual space stays for the map of the flash.
 
 ### Other builds
 
-- **The build without NVS encryption (#94).** `run_e2e.sh` also builds `build-qemu-plain` (`sdkconfig.qemu-plain`, without PSRAM in the two variants). It is the firmware before the OTA of `GW42`. `JOBS` sets its parallel jobs. `E2E_PLAIN=0` skips this build, and the harness reports that scenario as `SKIP`.
 - **The build with heap poisoning (#104).** `E2E_POISON=1` adds `sdkconfig.qemu-poison` (`build-qemu-poison`). Refer to [Heap poisoning](#heap-poisoning).
-- **The earlier release (#148).** `E2E_DOWNGRADE_REF=<git ref>` builds the image of that ref one time into `build-downgrade/<commit>/`, for the `downgrade` scenario.
-- The signing key of the test images goes into the build directory (for example `build-qemu/e2e_signing_key.pem`). Never commit it.
+- **The earlier release (#148).** `E2E_DOWNGRADE_REF=<git ref>` builds the image of that ref one time into `build-downgrade/<commit>/`, for the `downgrade` scenario. The build has the configuration of the variant of the run (refer to [The E2E scenarios](e2e-scenarios.md#downgrade-an-earlier-image-on-newer-data-148)).
 
 ### Single-threaded TCG in the OTA scenarios (#107)
 
-The OTA scenarios run with `-accel tcg,thread=single`: the two cores in one host thread. These are the two FW-1 OTA scenarios, the #97 integration, the #144 self-check and the OTA to encrypted NVS. With MTTCG, the QEMU default, the MMU model of the S3 has a race when one core maps flash pages while the other core runs. QEMU then crashes with a SIGSEGV or `Bad ram pointer` when the host load is high (#242). The OTA scenarios map the flash all the time, so they need one thread. The other scenarios keep MTTCG.
+The OTA scenarios run with `-accel tcg,thread=single`: the two cores in one host thread. These are the two FW-1 OTA scenarios, the #97 integration, the #144 self-check, the OTA to encrypted NVS and the signature check. With MTTCG, the QEMU default, the MMU model of the S3 has a race when one core maps flash pages while the other core runs. QEMU then crashes with a SIGSEGV or `Bad ram pointer` when the host load is high (#242). The OTA scenarios map the flash all the time, so they need one thread. The other scenarios keep MTTCG.
 
 With one thread, the guest is slower, and much slower with PSRAM. `E2E_TCG_THREAD` (or `--tcg-thread`) selects `auto` (the default: the behaviour above), `single` or `multi` for all scenarios.
 
@@ -121,7 +133,7 @@ The summary shows the firmware faults also when they cause no failure (`[PANIC]`
 
 ### Hangs and time limits (#92)
 
-- A live QEMU with no UART output for `--hang-timeout` seconds (default 60) is hung, if this occurs where the firmware always prints: a boot (from `ESP-ROM:` to the first `app_main` line) or the signature check of an image. After `Take trusted digest key(s)`, the limit is 30 s.
+- A live QEMU with no UART output for `--hang-timeout` seconds (default 60) is hung, if this occurs where the firmware always prints: a boot (from `ESP-ROM:` to the first `app_main` line) or the check of an image (its segments, and its signature in the secure build). After `Take trusted digest key(s)`, a line of the signature check, the limit is 30 s.
 - Each scenario attempt has a time limit: 900 s by default (`DEFAULT_BUDGET_S`). `SCENARIO_BUDGET_S` gives other limits: 1 800 s for the #97 integration and 3 600 s for `tck`. `--scenario-timeout` sets one limit for all scenarios.
 - `--timeout-scale` or `E2E_TIMEOUT_SCALE` multiplies all the limits. Use it on a slow or loaded host. Do not change the checks.
 - At a hang or an expired limit, the harness saves the state to `fault-NN-<log>.txt`, kills the emulators of the scenario, and the scenario fails without a retry.
@@ -168,8 +180,8 @@ CAUTION: Read the `uart0-*.log` files when `e2e-poison` fails. With heap poisoni
 | `boot` | SIGSEGV to the second emulator, 3 s after its start | One retry, pass |
 | `console` | SIGSEGV to the first emulator before it connects the console | One retry, pass |
 | `main` | SIGABRT in `main` after the replacement of the broker | One retry, pass |
-| `hang` | A guest pause with `stop` through the QEMU monitor, after the first `Take trusted digest key(s)` | No retry, fail |
-| `hang-mute` | The same hang, with QEMU stopped by SIGSTOP | No retry, fail |
+| `hang` | A guest pause with `stop` through the QEMU monitor, after the first `Take trusted digest key(s)`. Only the secure build writes this line, so use `E2E_SECURE=1` with `--only signed` | No retry, fail |
+| `hang-mute` | The same hang, with QEMU stopped by SIGSTOP. Also with `E2E_SECURE=1` | No retry, fail |
 | `ota-failed` | A failed check before the death | No retry, fail |
 | `ota-panic` | A firmware `StoreProhibited` panic before the death | No retry, fail |
 
@@ -177,7 +189,7 @@ CAUTION: Read the `uart0-*.log` files when `e2e-poison` fails. With heap poisoni
 
 ## Memory thresholds
 
-**Never lower these thresholds.** Measure each change of `.bss`, stack or heap with `E2E_PSRAM=1 tools/e2e/run_e2e.sh --only tls`.
+**Never lower these thresholds.** Measure each change of `.bss`, stack or heap with `E2E_PSRAM=1 tools/e2e/run_e2e.sh --only tls`. This run measures the configuration of the board: the PSRAM build has no NVS encryption and no signature check (#261).
 
 | Check | Where | Threshold |
 |---|---|---|

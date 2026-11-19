@@ -36,7 +36,7 @@ The scenario runs the seven Edge Node tests two times: one time with MQTT 3.1.1 
 
 CAUTION: Do not run the scenario without `E2E_TCK_DIR`. The scenario then shows `[SKIP]` and runs no test. This is correct for a computer without the TCK, but it gives no evidence.
 
-To use images that you built before, add `-e E2E_PREBUILT=<dir>` and `-e E2E_PLAIN=0`. To run some of the tests, add these variables:
+To use images that you built before, add `-e E2E_PREBUILT=<dir>`. To run some of the tests, add these variables:
 
 | Variable | Value | Default |
 |---|---|---|

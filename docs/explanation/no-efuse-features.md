@@ -1,6 +1,6 @@
 # Features that burn eFuses
 
-This document tells why the firmware in `main` burns no eFuse, what the archive branch keeps, and what it means for the security of a gateway. It also gives the two items of issue #133 that are still open.
+This document tells why the firmware in `main` burns no eFuse, what the archive branch keeps, and what it means for the security of a gateway. It also gives the two features that stay only in the secure QEMU build.
 
 ## The decision
 
@@ -42,16 +42,18 @@ The project examined the default build (`idf.py set-target esp32s3 build`, ESP-I
 
 A Kconfig option that burns eFuses can appear only in a QEMU overlay. These options are `CONFIG_SECURE_BOOT`, `CONFIG_SECURE_FLASH_ENC_ENABLED`, `CONFIG_SECURE_DISABLE_ROM_DL_MODE`, `CONFIG_SECURE_ENABLE_SECURE_ROM_DL_MODE`, `CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK`, `CONFIG_BOOT_ROM_LOG_ALWAYS_OFF` and `CONFIG_BOOT_ROM_LOG_ON_GPIO_*`, and `CONFIG_NVS_ENCRYPTION` with the HMAC scheme.
 
-## The two open items of #133
+## The two features of the secure QEMU build
 
-The QEMU build (`sdkconfig.qemu`) still has two features that issue #133 must decide. Each one uses the emulated eFuse file of the run. Nothing real is burned.
+The secure QEMU build (`sdkconfig.qemu-secure`) has two features that no build for the board has. Each one uses the emulated eFuse file of the run. Nothing real is burned.
 
 - **Signed OTA images without Secure Boot** (`CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT`). `esp_ota_end()` verifies the RSA-3072 signature of each image with the public key of the running app. This burns no eFuse, also on a board. `tools/e2e/run_e2e.sh` makes the test key in `build-qemu/`.
 - **NVS encryption** with the HMAC key in KEY5, and the migration from an unencrypted NVS (issues #67 and #94). Refer to [Commissioning and secrets](../reference/commissioning-and-secrets.md).
 
-Until #133 decides, the project adds no work that depends on these two features.
+Issue #133 decided that the two features stay in `main`, only in the QEMU build. The optional owner profile of #255 can use them. Until the work on #255 starts, the project adds no work that depends on these two features.
 
-> **Warning: Never flash the QEMU build on a board.** On a real chip, its first boot burns the HMAC key into KEY5 for the NVS encryption, and you cannot undo this. Also, the QEMU build simulates the I/O.
+The other QEMU builds have the configuration of the board for these two features: they are off (#261). The E2E runs its main scenarios on those builds. A small set of scenarios keeps the two features under test, on the secure QEMU build (refer to [The E2E test bench](../reference/e2e-harness.md#the-variants-135-261)).
+
+> **Warning: Never flash a QEMU build on a board.** A QEMU build simulates the I/O. On a real chip, the first boot of the secure QEMU build also burns the HMAC key into KEY5 for the NVS encryption, and you cannot undo this.
 
 ## What this means for the security of a gateway
 

@@ -10,7 +10,7 @@ Firmware for an RS485 (Modbus RTU) → MQTT Sparkplug B 3.0 gateway on the Waves
 - The default build must never burn eFuses or take away the owner's access: no Secure Boot, no flash encryption in release mode, and no disabled download mode.
 - The eFuse-burning features are not in `main` (decision of #133): Secure Boot V2 (FW-2), flash encryption (FW-3), NVS encryption with an HMAC key in eFuse on the board (the eFuse part of CFG-7), and the disabled download mode. The overlay `sdkconfig.production`, `partitions-production.csv`, the signing scripts and their CI job are on the branch `archive/efuse-production`, as they were in `main` at commit 4a0e01c. That branch gets no maintenance.
 - The project will add the eFuse-burning features again later, as an optional profile that uses the key of the owner of the board (#255, low priority). This is not for now. Until the work on #255 starts, do not bring them back to `main`, and do not add other features that burn eFuses (for example the DS peripheral for the MQTT client key).
-- The signed OTA images without Secure Boot (`SECURE_SIGNED_APPS_NO_SECURE_BOOT`) and the NVS encryption with its migration code stay in `main`, only in the QEMU build (decision of #133, 2026-11-19). Do not delete them, because #255 can use them. Do not add new work that depends on them before the work on #255 starts. #261 changes the E2E so that its main build uses the configuration of the board.
+- The signed OTA images without Secure Boot (`SECURE_SIGNED_APPS_NO_SECURE_BOOT`) and the NVS encryption with its migration code stay in `main`, only in the QEMU build (decision of #133, 2026-11-19). Do not delete them, because #255 can use them. Do not add new work that depends on them before the work on #255 starts. They are only in the overlay `sdkconfig.qemu-secure` (#261). The main QEMU builds of the E2E have the configuration of the board, and the secure variant (`E2E_SECURE=1`) keeps the two functions under test.
 - When a requirement in `docs/SPEC.md` assumes a vendor product (factory stations, locked devices), question it before you implement it.
 
 `docs/` is the authoritative, detailed reference (index: `docs/README.md`). Read the relevant document before changing a subsystem:
@@ -111,26 +111,32 @@ idf.py set-target esp32s3 build && idf.py size
 idf.py -B build-analyzer -D GW_ANALYZER=ON set-target esp32s3 build
 
 # E2E: real firmware in QEMU against mosquitto + a pymodbus RTU slave. Each variant has its own
-# full run (#135, scenarios.py DEFAULT_VARIANT_SCENARIOS); the two together are the full E2E.
+# full run (#135, #261; scenarios.py DEFAULT_VARIANT_SCENARIOS and SECURE_VARIANT_SCENARIOS); the
+# three together are the full E2E. The PSRAM and default variants are the configuration of the board
+# (no NVS encryption, unsigned OTA images); the secure variant adds sdkconfig.qemu-secure.
 python3 -m venv ~/e2e && ~/e2e/bin/pip install -r tools/e2e/requirements.txt
-E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh     # PSRAM variant: the board's configuration, all but 3 scenarios (the longest run)
+E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh     # PSRAM variant: the board's configuration, most scenarios (the longest run)
 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh                 # variant without PSRAM: only the OTA trial scenarios
+E2E_SECURE=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh    # secure variant: only the NVS encryption and signed OTA scenarios
 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh --only ota,https   # subset of scenarios (--only selects in any variant)
 #  --only: failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,time,ota,ota-fw1,ota-fw1-ncmd,
-#          ota-fw1-web,ota-park,ota-wiring,ota-trial,nvs,slow,nopsram,refuse,main,umh,tck,downgrade
-#          (ota = ota-fw1,ota-park,ota-wiring,ota-trial; ota-fw1 = ota-fw1-ncmd,ota-fw1-web, #233; an
-#          unknown name is an error; nopsram needs E2E_PSRAM=1)
+#          ota-fw1-web,ota-park,ota-wiring,ota-trial,nvs,nvs-boot,nvs-ota,signed,slow,nopsram,refuse,
+#          main,umh,tck,downgrade
+#          (ota = ota-fw1,ota-park,ota-wiring,ota-trial; ota-fw1 = ota-fw1-ncmd,ota-fw1-web, #233;
+#          nvs = nvs-boot,nvs-ota, #261; an unknown name is an error; nopsram needs E2E_PSRAM=1;
+#          nvs and signed need E2E_SECURE=1, and show [SKIP] without it)
 #  Optional scenarios (never in a full run or in the CI groups; they SKIP when the tool is absent):
 #    umh  real benthos-umh v0.16.2 (UMH Core), E2E_BENTHOS_UMH=<binary>        (#175, docs/reference/e2e-scenarios.md)
 #    tck  Eclipse Sparkplug TCK 3.0.0 on HiveMQ CE, E2E_TCK_DIR=<dir from tools/e2e/tck_setup.sh>
 #         (#176, docs/how-to/run-the-sparkplug-tck.md)
 #    downgrade  the image of an earlier release on the flash that this image wrote,
 #               E2E_DOWNGRADE_REF=<git ref> (built once into build-downgrade/; #148, docs/reference/e2e-scenarios.md)
-E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_ci_groups.sh /tmp/gw-groups   # the CI groups of a variant: build once, run in parallel (run it for each variant)
+E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_ci_groups.sh /tmp/gw-groups   # the CI groups of a variant: build once, run in parallel (run it for each variant: E2E_PSRAM=1, none, E2E_SECURE=1)
 #  Windows / no local IDF: the same in Docker (idf/tools/e2e/Dockerfile), see docs/how-to/run-e2e-in-docker.md
 #  E2E_STAGE=<dir> (build the images into <dir>, run nothing), E2E_PREBUILT=<dir> (run on them, no build),
 #  PARALLEL=n (groups at the same time); the groups are CI_GROUPS in tools/e2e/scenarios.py
-#  E2E_POISON=1 (heap poisoning: the CI runs ota-fw1 with E2E_PSRAM=1, and ota-park,ota-trial), E2E_PLAIN=0 (skip the no-NVS-encryption build),
+#  E2E_POISON=1 (heap poisoning: the CI runs ota-fw1 with E2E_PSRAM=1, and ota-park,ota-trial),
+#  E2E_BOARD=0 (with E2E_SECURE=1: skip the board build, the image before the OTA of nvs-ota),
 #  E2E_TIMEOUT_SCALE / --timeout-scale (slow host), --web-stress N, JOBS=n (build parallelism)
 
 # Harness self-test and the linters (all run in the CI job host-tests; each linter must give 0 results, #229)
@@ -153,7 +159,7 @@ python3 -m venv ~/docs-venv && ~/docs-venv/bin/pip install -r idf/tools/docs/req
 #  are in the firmware image: for them, change an option in eslint.config.mjs, not the page.
 ```
 
-CI (`.github/workflows/ci.yml`) runs host-tests, host-tests-sanitizers (#225), fuzz, clang-tidy (#231), firmware, analyzer (#230), the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image (fuzz, clang-tidy and the two host-test jobs run directly on `ubuntu-24.04`). `.github/workflows/fuzz-weekly.yml` runs the fuzz targets longer each week and keeps their corpus (#226). `.github/workflows/codeql.yml` runs CodeQL (`security-extended`) on the host build and on the firmware build on each push to `main`, on each pull request and each week; its alerts go to the Security tab and do not fail the CI (#232). `.github/workflows/docs.yml` builds the documentation site with Zensical `--strict` on each push, and publishes it to GitHub Pages from `main`. The firmware analysis uses the source models of `.github/codeql/extensions/esp-idf-models`; they name `on_mqtt_data`, `on_host_state` and `gw_node_handle_message`, so change them with these functions. The `e2e` and `e2e-poison` jobs run in the E2E image `ghcr.io/tmijail/gw-e2e`, pinned by digest (#253; `idf/tools/e2e/Dockerfile`, published by `.github/workflows/e2e-image.yml`). When the Dockerfile or `tools/e2e/requirements.txt` changes, pin the new digest in both jobs. The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run of that variant (#121, #135). A change is done when the host tests pass and the full E2E passes: the full run of the `E2E_PSRAM=1` variant and the full run of the default variant. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
+CI (`.github/workflows/ci.yml`) runs host-tests, host-tests-sanitizers (#225), fuzz, clang-tidy (#231), firmware, analyzer (#230), the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image (fuzz, clang-tidy and the two host-test jobs run directly on `ubuntu-24.04`). `.github/workflows/fuzz-weekly.yml` runs the fuzz targets longer each week and keeps their corpus (#226). `.github/workflows/codeql.yml` runs CodeQL (`security-extended`) on the host build and on the firmware build on each push to `main`, on each pull request and each week; its alerts go to the Security tab and do not fail the CI (#232). `.github/workflows/docs.yml` builds the documentation site with Zensical `--strict` on each push, and publishes it to GitHub Pages from `main`. The firmware analysis uses the source models of `.github/codeql/extensions/esp-idf-models`; they name `on_mqtt_data`, `on_host_state` and `gw_node_handle_message`, so change them with these functions. The `e2e` and `e2e-poison` jobs run in the E2E image `ghcr.io/tmijail/gw-e2e`, pinned by digest (#253; `idf/tools/e2e/Dockerfile`, published by `.github/workflows/e2e-image.yml`). When the Dockerfile or `tools/e2e/requirements.txt` changes, pin the new digest in both jobs. The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run of that variant (#121, #135). A change is done when the host tests pass and the full E2E passes: the full run of the `E2E_PSRAM=1` variant, the full run of the default variant and the full run of the `E2E_SECURE=1` variant. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
 
 ### sdkconfig pitfalls
 
@@ -161,8 +167,9 @@ CI (`.github/workflows/ci.yml`) runs host-tests, host-tests-sanitizers (#225), f
 - A stale `sdkconfig` shows up as undeclared `CONFIG_GW_*` symbols.
 - `cmake/gw_sdkconfig_check.cmake` fails the build when required options drift. If the firmware starts depending on a new option, add it to `GW_SDKCONFIG_REQUIRED`.
 - Overlays:
-  - `sdkconfig.qemu` (the QEMU build, with `CONFIG_GW_IO_SIMULATED`);
-  - `sdkconfig.qemu-psram`, `sdkconfig.qemu-plain` (no NVS encryption) and `sdkconfig.qemu-poison`, each stacked on `sdkconfig.qemu`.
+  - `sdkconfig.qemu` (the QEMU build, with `CONFIG_GW_IO_SIMULATED`; no NVS encryption and no signed OTA images, as the build for the board, #261);
+  - `sdkconfig.qemu-psram` and `sdkconfig.qemu-poison`, each stacked on `sdkconfig.qemu`;
+  - `sdkconfig.qemu-secure` (NVS encryption with the HMAC key in the emulated eFuse, signed OTA images), stacked on `sdkconfig.qemu` and `sdkconfig.qemu-psram`. Only the secure variant of the E2E uses it. Do not put its options in another overlay: `run_e2e.sh` stops when a build without `E2E_SECURE=1` has them.
 - There is no production overlay in `main`. The eFuse-burning overlay `sdkconfig.production` is on the branch `archive/efuse-production` (#133).
 
 ## Architecture
@@ -190,7 +197,7 @@ Platform calls go through `gw_port.h`, which has two implementations: `port/gw_p
 - `gw_board`: DI sampling, plus the `local_io` task, which is the only writer of the TCA9554 DO expander. Also the LED, buzzer and BOOT button.
 - `gw_bsp`: a declarative description of all board pins and polarities. Drivers contain no board data.
 - `gw_net`: W5500 Ethernet (openeth in QEMU), Wi-Fi backup, IPv6 and SNTP.
-- `gw_storage`: LittleFS config, NVS (encrypted) secrets, the NVS encryption migration and factory reset. The bdSeq is in RAM only (#161).
+- `gw_storage`: LittleFS config, the secrets in NVS and factory reset. The NVS encryption and its migration are only in the secure QEMU build (#133, #261). The bdSeq is in RAM only (#161).
 - `gw_web`: the HTTPS UI and REST API, with Basic auth, a CSRF check (`X-Requested-With` plus Origin/Host) and the `web_guard` stall watchdog.
 - `gw_fw`: OTA (HTTPS download or web upload), the trial period and rollback.
 - `gw_shell`: the `esp_console` shell (`status`, `devices`, `config`, …), which the E2E harness drives over UART0.
@@ -233,7 +240,9 @@ Rules that tests and fixes must respect:
 - Only known emulator faults are retried: QEMU process death, or the image-check PIF panic. Firmware failure lines (Guru Meditation, assert, task_wdt, CORRUPT HEAP, stack overflow) and hangs are never retried.
 - Discarded attempts are recorded in `results.json` (`retries`, `remeasured`).
 - The OTA scenarios run single-threaded TCG (`E2E_TCG_THREAD=auto`), because MTTCG crashes QEMU under load (#242, #243). This makes them 2–7× slower with PSRAM.
-- The PSRAM variant is the main variant (#135). Its full run has every scenario except the three OTA trial scenarios (#97, #99/#101, #112): they examine logic, not memory, and they run only in the faster variant without PSRAM (`DEFAULT_VARIANT_SCENARIOS` in `scenarios.py`). Put a new scenario that depends on memory in the PSRAM variant. `test_harness.py` checks that each scenario is in one variant and in one CI group.
+- The PSRAM variant is the main variant (#135). Its full run has every scenario except the three OTA trial scenarios (#97, #99/#101, #112): they examine logic, not memory, and they run only in the faster variant without PSRAM (`DEFAULT_VARIANT_SCENARIOS` in `scenarios.py`). Put a new scenario that depends on memory in the PSRAM variant.
+- The PSRAM variant and the default variant run the configuration of the board (#261). The secure variant (`E2E_SECURE=1`: the PSRAM build with `sdkconfig.qemu-secure`) runs only the scenarios that examine the NVS encryption or the signature check of an OTA image (`SECURE_VARIANT_SCENARIOS`). Put a new scenario there only when it examines one of these two functions. The harness signs a test image only in the secure variant.
+- `test_harness.py` checks that each scenario is in one variant and in one CI group.
 - Timing flakes are fixed by waiting on evidence (progress, log lines) up to a bound, never by loosening what a check asserts.
 - `test_harness.py` unit-tests the retry, hang and progress logic with fake clocks. Extend it when changing that logic.
 
@@ -249,4 +258,4 @@ Rules that tests and fixes must respect:
 - When behaviour changes, update the documents in `docs/` (in STE): `docs/reference/known-limitations.md` has the known limitations, and `docs/reference/e2e-harness.md` the notes on the test environment. The root `README.md` changes only when a feature or the status of the project changes.
 - Do not put test results, check counts, durations or measured values (RAM, stack, payload sizes, times) in `docs/`: they change too fast (decision of the product owner, 2026-11-19). The documents give what a test examines, how to run it, its pass criterion and the limits. The results of a run go in the pull request description and the commit message, and the CI keeps them in the job summary and the artifacts.
 - Managed components are pinned with `==` in each `idf_component.yml` and hashed in `dependencies.lock`. Host-test dependencies (Unity, cJSON) are pinned by commit hash via FetchContent.
-- A change can update a managed component that writes data (`littlefs`) or ESP-IDF (the NVS format, `otadata`, the app descriptor, the partition table). Such a change must pass the downgrade test (#148). Run `E2E_DOWNGRADE_REF=<the last release> tools/e2e/run_e2e.sh --only downgrade` in both variants. Before the tag `v1.0`, use the commit before the change. The earlier image must start in normal mode with the same configuration and secrets. If it cannot, merge the change only when the pre-flight check refuses that downgrade (`nvs_format` and the LittleFS disk version in the capabilities block, `docs/reference/firmware-updates.md`).
+- A change can update a managed component that writes data (`littlefs`) or ESP-IDF (the NVS format, `otadata`, the app descriptor, the partition table). Such a change must pass the downgrade test (#148). Run `E2E_DOWNGRADE_REF=<the last release> tools/e2e/run_e2e.sh --only downgrade` in the PSRAM variant and in the default variant (the configuration of the board; a run with `E2E_SECURE=1` is optional). Before the tag `v1.0`, use the commit before the change. The earlier image must start in normal mode with the same configuration and secrets. If it cannot, merge the change only when the pre-flight check refuses that downgrade (`nvs_format` and the LittleFS disk version in the capabilities block, `docs/reference/firmware-updates.md`).

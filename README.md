@@ -175,7 +175,7 @@ Run the host tests (no ESP-IDF necessary):
 cmake -S idf/test/host -B build-host && cmake --build build-host -j && ctest --test-dir build-host --output-on-failure
 ```
 
-The end-to-end (E2E) tests run the real firmware in QEMU, against mosquitto and a pymodbus slave. A change is complete only when the host tests and the full E2E of the two QEMU variants pass. Refer to:
+The end-to-end (E2E) tests run the real firmware in QEMU, against mosquitto and a pymodbus slave. A change is complete only when the host tests and the full E2E of the three QEMU variants pass. Refer to:
 
 - [Run the tests](docs/how-to/run-the-tests.md) and [Tests](docs/reference/tests.md);
 - [Run the E2E tests in Docker](docs/how-to/run-e2e-in-docker.md) (also on Windows);

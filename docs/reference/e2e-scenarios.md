@@ -27,15 +27,19 @@ The list of the scenarios, their order and their `--only` names are in `SCENARIO
 | issue #112 park in a long RS485 transaction | `ota`, `ota-park` | Default | `GW47` |
 | issue #97 OTA trial wiring | `ota`, `ota-wiring` | Default | — |
 | issue #144 OTA self-check | `ota`, `ota-trial` | Default | `GW43` |
-| issues #67/#94 NVS migration | `nvs` | PSRAM | `GW41` |
-| issue #109 full unencrypted NVS | `nvs` | PSRAM | `GW44` |
-| issue #94 OTA to NVS encryption | `nvs` | PSRAM | `GW42`, `GW49` |
+| CFG-7 NVS encryption | `nvs`, `nvs-boot` | Secure | `GW51` |
+| issues #67/#94 NVS migration | `nvs`, `nvs-boot` | Secure | `GW41` |
+| issue #109 full unencrypted NVS | `nvs`, `nvs-boot` | Secure | `GW44` |
+| issue #94 OTA to NVS encryption | `nvs`, `nvs-ota` | Secure | `GW42` |
+| FW-2 OTA signature | `signed` | Secure | `GW50` |
 | `slow` | `slow` | PSRAM | `GW21` |
 | issue #135 no PSRAM | `nopsram` | PSRAM | — |
 | `refuse` | `refuse` | PSRAM | — |
 | `main` | `main` | PSRAM | `GW01` |
 
 `refuse` runs as a separate scenario only when `--only` names it and not `main`. `main` includes it. An unknown `--only` name stops the harness with an error.
+
+The PSRAM variant and the default variant run the configuration of the board: no NVS encryption and no signature check of an OTA image (#261). The scenarios of the secure variant examine these two functions, and they need the secure build (`E2E_SECURE=1`). On another build, the harness shows them as `SKIP`. Refer to [The variants](e2e-harness.md#the-variants-135-261).
 
 ## Checks of each run
 
@@ -105,7 +109,7 @@ Nodes `GW04`, `GW05`, `GW06`: the REST API and the web UI.
 - **CFG-4 (#171):** `POST /api/rebirth` needs the CSRF header, then gives NBIRTH and the DBIRTHs.
 - **CFG-6 (#182):** `POST /api/modbus/read` through the bus owner: plain and typed reads, a timeout as 504, refused requests.
 - **CFG-6:** `config show` with masked secrets, `mbread`, `rebirth`, `config check` and `config load` in the shell.
-- **CFG-7:** the secrets move from `config.json` to the encrypted NVS at the first boot. No secret is in plaintext in the flash image.
+- **CFG-7:** the secrets move from `config.json` to the NVS at the first boot. The board build does not encrypt the NVS (#133), and the shell says so. The MQTT password is in plaintext in the NVS partition only. The web password is a hash, so it is in plaintext nowhere in the flash image. The scenario [CFG-7 NVS encryption](#scenarios-of-the-secure-variant) examines the encrypted NVS.
 - **CFG-3 (#167, #170, #191, #192, #193, #194, #213, #221):** the lists of the form hold each value of the configuration, and an exported document is valid. The form has `maxlength`, help texts and the topic preview. The page has no `prompt()` and no `confirm()`. A new web password needs a second field. The controls of #221.
 - **#226:** the served page has the IPv4 normalization of the Configuration tab. The validation refuses `192.168.001.010` in `network.dns` and `010.000.000.001/08` in `modbus_tcp.allowed_clients`, at their paths. It accepts the values that the web UI writes: `192.168.1.10` and `10.0.0.1/8`.
 - **#222:** the served page has the code that opens a closed card at a validation error and at "Go to the field". The script `idf/tools/docs_shots.py` has the browser test of the same rule (the shot `validate-error`).
@@ -185,7 +189,7 @@ Issue #59, node `GW21`. The relay runs at 700 B/s. A publish that goes past the 
 Node `GW40`, with its own broker and HTTPS image server.
 
 - The NBIRTH has `Node Control/Firmware Update` and `Firmware Update/State`.
-- Refused without a restart: an `http://` URL, an image that fails the checksum or signature, an image signed with another key, a URL over 255 characters (#87).
+- Refused without a restart: an `http://` URL, an image that fails the checksum, a URL over 255 characters (#87). The images of this scenario have no signature, as the images of a release. The scenario [FW-2 OTA signature](#scenarios-of-the-secure-variant) examines the signature check.
 - **#111:** a rejected web upload while the bus task floods the console: the parks of core 1 end, and the flood continues.
 - **#98:** a download cut at 300 000 bytes gives a `failed` state with the count, and no restart.
 - An update by NCMD with the CA from `ota.ca_file`: progress, `testing`, then `installed` by the self-check. After a power cut, the image stays.
@@ -205,11 +209,15 @@ Node `GW45`, with its own boot (#233), so the upload goes into `ota_1`.
 - **issue #97 OTA trial wiring:** #144 items 1 to 3: an image from normal mode that rejects the configuration goes back at once (in less than half of the self-check time). An image from recovery mode, or forced, stays. The pre-flight check refuses before any write. An image installed from commissioning stays after a power cut. #146: the configuration from before an update, and the button of the earlier version.
 - **issue #144 OTA self-check (`GW43`):** item 1: an image whose broker is down is installed by its self-check. Item 4: three crashes in a row start safe mode, and safe mode accepts a new image.
 
-## NVS scenarios
+## Scenarios of the secure variant
 
+These scenarios run only on the secure build (`E2E_SECURE=1`, `sdkconfig.qemu-secure`). No build for the board has the NVS encryption or the signature check of an OTA image (#133, #261).
+
+- **CFG-7 NVS encryption (`GW51`):** the first boot of a device with a blank eFuse KEY5, and with the MQTT password and the web password in `config.json`. That boot generates the NVS keys, burns the HMAC key in the eFuse file of QEMU, and moves the secrets to the encrypted NVS. The broker requires the MQTT password. No secret is in plaintext in the flash image. The next boot reads the secrets with the key of the eFuse: it generates no key, and the eFuse file does not change.
 - **issues #67/#94 NVS migration (`GW41`):** an unencrypted NVS meets the encrypted build, and the harness cuts the power at four points of the migration. The last boot completes it with `(0 skipped)`, connects with the password from the NVS, and leaves nothing in plaintext. #97: the first boot burns KEY5 in the eFuse file of QEMU, and no later boot does it again. #104, #108, #109: a boot with the copy out of reach opens no NVS and formats nothing. `config load discard-nvs-copy` is the way out.
 - **issue #109 full unencrypted NVS (`GW44`):** an unencrypted NVS with no free page is still migrated.
-- **issue #94 OTA to NVS encryption (`GW42`):** an OTA from the build without NVS encryption. The trial image keeps the NVS unencrypted. A panic rolls back, and the old image connects with its password. With the broker up, the self-check installs the image, and that boot migrates. #102: an update back to the build without NVS encryption is refused before the image is set to boot. This scenario needs `build-qemu-plain`.
+- **issue #94 OTA to NVS encryption (`GW42`):** an OTA from the board build, which has no NVS encryption, to the secure build. The board build checks no signature, so it accepts the signed image. The trial image keeps the NVS unencrypted. A panic rolls back, and the old image connects with its password. With the broker up, the self-check installs the image, and that boot migrates. #102: an update back to the build without NVS encryption is refused before the image is set to boot. The harness signs that image with the key of the secure build, so only its capabilities block refuses it. This scenario needs the board build `build-qemu-psram` (`E2E_BOARD=0` skips it).
+- **FW-2 OTA signature (`GW50`):** the secure build requires an OTA image with a signature of the key of the running firmware. A web upload of an image with a correct checksum and no signature gets 400. An update by NCMD to an image signed with another key fails after the download. In the two cases, the signature check trusts no key, and the gateway does not restart. An update by NCMD to an image signed with the key of the build passes the signature check, starts on trial, and its self-check installs it.
 
 ## issue #135 no PSRAM
 
@@ -267,10 +275,16 @@ A check fails when an assertion is FAIL and the harness cannot prove a known cau
 
 A rollback or a manual downgrade runs an earlier image on the data that a later image wrote. A library update can change a format that the earlier image cannot read: the LittleFS disk version, the NVS page format, `otadata`, the app descriptor or the partition table.
 
-1. The image under test boots on a new flash. It saves a configuration with an MQTT password and a web password, and runs in normal mode.
+1. The image under test boots on a new flash. It saves a configuration with an MQTT password and a web password, and runs in normal mode. The secrets go to the NVS.
 2. The harness writes the app image of the earlier release over `ota_0`. The bootloader, `otadata`, the NVS and LittleFS stay as the later image left them.
 3. The earlier image must start in normal mode with the same configuration (`GET /api/config`) and the secrets. Its broker requires the MQTT password, and the web UI must accept the web password. The bdSeq is in RAM only (#161), so the scenario does not examine it.
 
-The scenario needs `E2E_DOWNGRADE_REF=<git ref>`. Before the tag `v1.0`, use the commit before the change. Each change that updates `littlefs` or ESP-IDF must pass this test in the two variants. If the earlier image cannot read the data, the pre-flight check must refuse that downgrade (refer to [The pre-flight check](firmware-updates.md#the-pre-flight-check)).
+The scenario needs `E2E_DOWNGRADE_REF=<git ref>`. Before the tag `v1.0`, use the commit before the change. Each change that updates `littlefs` or ESP-IDF must pass this test in the PSRAM variant and in the default variant. If the earlier image cannot read the data, the pre-flight check must refuse that downgrade (refer to [The pre-flight check](firmware-updates.md#the-pre-flight-check)).
+
+`run_e2e.sh` builds the earlier image from the sources of the ref, with the configuration of the variant of the run (#261):
+
+- In the PSRAM variant and in the default variant, the two images have the configuration of the board. The NVS is not encrypted. This is the downgrade that a board does.
+- With `E2E_SECURE=1`, the two images are secure builds, and the NVS is encrypted. This run is optional. It examines that the earlier image reads an encrypted NVS with the key of the eFuse file.
+- A ref from before #261 has no `sdkconfig.qemu-secure`, and its `sdkconfig.qemu` has the NVS encryption and the signature check. For such a ref, the script adds an overlay that sets the two functions to off, except with `E2E_SECURE=1`. Thus an earlier image never meets an NVS of the other type, which would start a migration and not a downgrade.
 
 An image from before the NVS records of #144 (for example the commit `761edf8`) ignores the NVS keys that it does not know (`fw_last`, `cfg_prev`). It reads `lkg_net` as a raw struct with a size check, so it does not use the new record.

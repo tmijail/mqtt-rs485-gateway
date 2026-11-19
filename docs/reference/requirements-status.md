@@ -126,7 +126,7 @@ The column MVP has ✅ for the IDs of the MVP (SPEC §5).
 | CFG-4 | | done | H + Q: validation with the path, dry run, atomic write, masked export, CSRF (#100), rebirth (#171) | [The REST API](rest-api.md) |
 | CFG-5 | | done | H + Q: a simulated button. C: GPIO0, the LED and the buzzer | [Recover a gateway](../how-to/recover-the-gateway.md) |
 | CFG-6 | | done | Q: `status`, `devices`, `config` (`show`, `load`, `check`), `restart`, `rebirth`, `mbread`, `ping`. No password. `CONFIG_GW_SHELL_WRITE_COMMANDS=n` makes it read-only. The web UI also has a Modbus test read (#182) | [`POST /api/modbus/read`](rest-api.md#post-apimodbusread) |
-| CFG-7 | | done | H + Q: the secrets are in NVS, out of the configuration document. The NVS encryption with a key in eFuse is out of scope on the board (#133). Only the QEMU build has it, until #133 decides | [Commissioning and secrets](commissioning-and-secrets.md) |
+| CFG-7 | | done | H + Q: the secrets are in NVS, out of the configuration document. The NVS encryption with a key in eFuse is out of scope on the board (#133). Only the secure QEMU build has it (`sdkconfig.qemu-secure`, decision of #133, for #255) | [Commissioning and secrets](commissioning-and-secrets.md) |
 | CFG-8 | | done | H + Q: the claim window. C: the open access point | [Set the first web password on site](../how-to/set-the-first-web-password.md) |
 
 ## Firmware (FW)
@@ -134,7 +134,7 @@ The column MVP has ✅ for the IDs of the MVP (SPEC §5).
 | ID | MVP | Status | Evidence and limits | Detail |
 |---|---|---|---|---|
 | FW-1 | | done | H + Q: download, upload, refusals, the trial, the confirmation, the rollback. C: the rollback for low memory | [Firmware updates](firmware-updates.md) |
-| FW-2 | | out of scope | Secure Boot burns eFuses (#133). The QEMU build still requires signed OTA images; #133 decides | [Features that burn eFuses](../explanation/no-efuse-features.md) |
+| FW-2 | | out of scope | Secure Boot burns eFuses (#133). Only the secure QEMU build requires signed OTA images (`sdkconfig.qemu-secure`, decision of #133, for #255) | [Features that burn eFuses](../explanation/no-efuse-features.md) |
 | FW-3 | | out of scope | Flash encryption burns eFuses (#133) | [Features that burn eFuses](../explanation/no-efuse-features.md) |
 | FW-4 | ✅ | done | Q: `0.1.0+g<hash>[.dirty]` in `Node Info/Firmware` | [Node metrics](sparkplug-messages-and-metrics.md#node-metrics) |
 
