@@ -74,6 +74,7 @@ SYSLOG = []       # (t, datagram text) received by the syslog listener
 SNTP_BOUND = threading.Event()  # set when the SNTP responder owns UDP 123
 SNTP_PAUSED = threading.Event()  # TIME-2: while set, the responder stays silent
 PROBE_MAX_S = 10.0                # CONFIG_GW_MB_OFFLINE_PROBE_MAX_MS / 1000, read in main()
+REL6_LIMIT_S = 10.0               # REL-6 (docs/SPEC.md): from the boot to the NBIRTH
 GROUP, NODE, DEVICE, BULK = "Plant1", "GW01", "Meter1", "Bulk"
 T = f"spBv1.0/{GROUP}"
 ALIAS = {"bdSeq": 1, "DI/1": 10, "DO/1": 20, "DO/2": 21, "DO/3": 22, "DO/4": 23, "DO/5": 24, "DO/6": 25, "Counter/1": 30, "Voltage": 100, "Setpoint": 101, "Run": 102,
@@ -9439,8 +9440,15 @@ def run(args, log, slave, broker, conf, work):
           if ready and answered and first_up else
           f"ready {ready}, answered {answered}; {gw.find(r'^config |^firmware ', t0)[:2]}")
     if not check("1a. NBIRTH published", nb, "no NBIRTH within 40 s" if not nb else
-                 f"{nb[0] - t0:.1f} s after QEMU start (REL-6 asks < 10 s)"):
+                 f"{nb[0] - t0:.1f} s after QEMU start"):
         return
+    # REL-6: less than 10 s from the boot to the NBIRTH with the network and the broker up. t0 is
+    # before the start of QEMU, so the time also holds the start of the emulator (stricter than the
+    # boot of the chip). The limit scales with --timeout-scale, as every budget for a slow host.
+    rel6_limit = REL6_LIMIT_S * args.timeout_scale
+    check("REL-6 less than 10 s from the boot to the NBIRTH (network and broker available)",
+          nb[0] - t0 < rel6_limit,
+          f"{nb[0] - t0:.1f} s from the start of QEMU to the NBIRTH, limit {rel6_limit:.0f} s")
     if args.psram:
         # Issue #85: the board's memory path. The configuration, the Sparkplug engine and its
         # full payload buffer are allocated in the octal PSRAM, and the shell sees it.
