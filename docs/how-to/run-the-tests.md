@@ -48,7 +48,7 @@ The fuzz targets need clang with libFuzzer and the sanitizer runtimes (on Ubuntu
 1. Build the targets and their seed corpus:
 
    ```bash
-   cmake -S idf/test/fuzz -B build-fuzz -DCMAKE_C_COMPILER=clang && cmake --build build-fuzz -j
+   cmake -S idf/test/fuzz -B build-fuzz -DCMAKE_C_COMPILER=clang-18 && cmake --build build-fuzz -j
    ```
 
 2. Run each target for 60 s, as the CI does:
@@ -70,13 +70,13 @@ clang-tidy needs clang 18 and clang-tidy 18 (on Ubuntu 24.04: `clang-18` and `cl
 1. Configure the host build with clang. The build is not necessary:
 
    ```bash
-   cmake -S idf/test/host -B build-tidy -DCMAKE_C_COMPILER=clang -DGW_RULE_CHECKS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+   cmake -S idf/test/host -B build-tidy -DCMAKE_C_COMPILER=clang-18 -DGW_RULE_CHECKS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
    ```
 
 2. Run clang-tidy on `gw_core` and the host tests:
 
    ```bash
-   run-clang-tidy -p build-tidy -j4 -quiet 'idf/components/gw_core/(src|port)/|idf/test/host/'
+   run-clang-tidy-18 -clang-tidy-binary clang-tidy-18 -p build-tidy -j4 -quiet 'idf/components/gw_core/(src|port)/|idf/test/host/'
    ```
 
 3. Make sure that the output has no line with `error:` and that the exit code is 0.
@@ -124,7 +124,7 @@ ESLint needs Node.js 20.19 or later. For a false positive, add `# noqa: <rule>` 
 
 ## Run CodeQL
 
-The workflow `codeql.yml` sends the results of two analyses to the Security tab (#232): the host build and the firmware build. Run CodeQL on the computer to examine a change before the push. For the scope, the model pack and the current alerts, refer to [Code scanning with CodeQL](../reference/tests.md#code-scanning-with-codeql).
+The workflow `codeql.yml` sends the results of two analyses to the Security tab (#232): the host build and the firmware build. Run CodeQL on the computer to examine a change before the push. For the scope, the model pack and the known false positives, refer to [Code scanning with CodeQL](../reference/tests.md#code-scanning-with-codeql).
 
 ### Get the CodeQL bundle
 
@@ -199,7 +199,7 @@ When you change the model pack, add `--rerun` to step 6. Without it, `database a
 
 ## Run the full E2E
 
-The full E2E is the full run of the two variants. The PSRAM variant takes approximately 22 min, and the default variant approximately 4 min on a fast computer.
+The full E2E is the full run of the two variants. It takes much more time than the host tests, and the PSRAM variant takes much more time than the default variant. The CI groups take less time (refer to [Run the CI groups on one computer](#run-the-ci-groups-on-one-computer)).
 
 1. Activate ESP-IDF:
 
@@ -232,7 +232,7 @@ The full E2E is the full run of the two variants. The PSRAM variant takes approx
    E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh
    ```
 
-7. Make sure that the last line of each run gives all checks passed, for example `265/265 checks passed`.
+7. Make sure that the last line of each run gives all checks passed: `N/N checks passed`.
 
 Run the harness as root, or in a container with `--privileged`, to give each run its own network namespace. Without it, the harness uses the host loopback, and UDP 123 must be free.
 

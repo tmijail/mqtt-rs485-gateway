@@ -45,7 +45,6 @@ The gateway sends a rebirth only on request: the NCMD `Node Control/Rebirth`, th
 - If the publish of a birth fails while the connection stays open, the gateway ends the session. It publishes an NDEATH if the hosts saw the NBIRTH. Then it disconnects.
 - The next attempt has a new CONNECT, a new bdSeq and all the births. This applies to the births of a new session and to a rebirth.
 - An NBIRTH that went into the socket immediately before a cut can be lost on the network. The host finds this from the bdSeq of the next session.
-- The emulator-only shell command `pubfail <n>` makes the next publishes fail, for the E2E.
 
 ### A clean session on each connection (#186)
 
@@ -63,7 +62,6 @@ The gateway sends a rebirth only on request: the NCMD `Node Control/Rebirth`, th
 - This applies to an NCMD Reboot, a restart, a change of broker or interface, and a session that the gateway closes.
 - Thus the broker also publishes the NDEATH of the Will. After an explicit NDEATH, the hosts get two NDEATH messages with the same bdSeq. The second one has no new data.
 - When the gateway closes a session before the NBIRTH, the hosts get an NDEATH with a bdSeq that no NBIRTH had. A host ignores it.
-- esp-mqtt clears the disconnect property after each DISCONNECT. Thus `gw_edge` sets it again before each call that can send a DISCONNECT.
 
 ### The Maximum Packet Size of the broker (#73, #76)
 
@@ -125,7 +123,7 @@ For the STATE messages and the results, refer to [The primary host application](
 
 ### Write limits (#196)
 
-- The host must send a compatible value (`tck-id-operational-behavior-data-commands-dcmd-metric-value`). Sparkplug has no answer to a command. Thus the gateway discards only the metric out of the limits, and the next DDATA has the value of the device.
+- The host must send a compatible value (`tck-id-operational-behavior-data-commands-dcmd-metric-value`). Sparkplug has no answer to a command. Thus the gateway discards only the metric out of the limits, as each metric that is not valid. It writes the other metrics of the command, and the next DDATA has the value of the device.
 - The comparison is exact for `int64` and `uint64` tags: the limit is a double, and the gateway compares its integer part.
 - For a tag that is a Float in Sparkplug, the comparison uses the Float precision. Thus the limit 0.1 accepts the Float 0.1.
 - NaN is never in the limits.
@@ -193,9 +191,9 @@ For the reasons, refer to [Sparkplug names and the UNS](../explanation/sparkplug
 - **Device state.** Choice (MAY): the specification permits node metrics with any name. The preset puts the state of each device in a node metric, because UMH Core does not use the DDEATH (benthos-umh `sparkplug_b_input.go`).
 - The value is the Modbus state of the device (MB-9). It is `true` also when the DBIRTH is too large for the broker (#76).
 - Store & forward does not keep a change of the device state. The next NBIRTH gives the current state.
-- Each state metric adds approximately 32 B plus the length of its name to the NBIRTH. 16 names of 39 characters add approximately 1.1 KB.
+- Each state metric adds approximately 32 B plus the length of the device name to the NBIRTH. 16 device names of 39 characters add approximately 1.1 KB.
 - **Plain metrics.** A device with `type` publishes plain metrics. The NBIRTH has no template definition, because no device is an instance (`tck-id-payloads-template-definition-nbirth`).
 - **Sums, not one metric for each device.** The NBIRTH and the diagnostic NDATA have the sums of the Modbus counters, as UInt64. A sum of 16 UInt32 counters can be larger than 2^32.
 - Reason for the sums: 16 devices × 12 counters would add 192 metrics. The counters of each device stay in the shell (`devices`), in `GET /api/status` and in the DataSets without the preset.
-- The worst NBIRTH of the preset is 2 917 B, with 67 metrics (`test_umh_worst_case_nbirth_fits`). It has 16 devices with names of 39 characters, RSSI and Modbus TCP.
+- The host test `test_umh_worst_case_nbirth_fits` encodes the worst NBIRTH of the preset in a buffer of 6 KB, the payload buffer of the QEMU build without PSRAM. It has 16 devices with names of 39 characters, RSSI, Modbus TCP and `ota.mqtt`.
 - The preset is in the configuration hash of the microSD ring. Reason: a replay publishes a typed device as an instance or as plain metrics.

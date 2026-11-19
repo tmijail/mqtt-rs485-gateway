@@ -6,14 +6,14 @@ This document tells how the gateway keeps the core dump of a crash and gives it 
 
 ## Where the dump goes
 
-A panic, or the task watchdog, saves an ELF dump in the partition `coredump` (64 KB). Since ESP-IDF 6.0, ELF is the only format: the option `CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF` does not exist any more. The dump stays in flash until you erase it, also after more restarts.
+A panic, or the task watchdog, saves an ELF dump in the partition `coredump` (64 KB). ELF is the only format of ESP-IDF v6.1. The dump stays in flash until you erase it, also after more restarts.
 
 With a USB cable, `idf.py coredump-info` or `idf.py coredump-debug` reads the dump. A gateway in a panel often has no cable. Thus the running firmware also gives the dump through three channels:
 
 | Channel | What it gives | Reference |
 |---|---|---|
 | Sparkplug | The NBIRTH metric `Node Info/Core Dump` (Boolean, alias 57) is `true` while a dump is in flash. After an erase, an NDATA with only alias 57 sends `false`. The SCADA can thus tell the operator that a crash occurred | [Sparkplug messages and metrics](../reference/sparkplug-messages-and-metrics.md) |
-| REST API | `GET /api/coredump` downloads the raw dump, `GET /api/coredump/summary` gives the summary, `DELETE /api/coredump` erases the dump. `/api/status` has `core_dump`. The Status tab shows **Download** and **Erase** while a dump is in flash | [The REST API](../reference/rest-api.md#core-dump) |
+| REST API | `GET /api/coredump` downloads the raw dump, `GET /api/coredump/summary` gives the summary, `DELETE /api/coredump` erases the dump. `/api/status` has `core_dump`. The card **Gateway** of the Status tab shows **Download** and **Erase** while a dump is in flash | [The REST API](../reference/rest-api.md#core-dump) |
 | Shell | `coredump` gives the summary, `coredump dump` prints the dump in base64 between two marker lines, `coredump erase` erases it (a write command, `CONFIG_GW_SHELL_WRITE_COMMANDS`) | — |
 
 The shell lets a technician with a laptop at the panel get the dump without the network.
@@ -53,4 +53,4 @@ A mutex serializes the reads, the summary and the erase. If an erase occurs duri
 
 ## Verification
 
-The E2E examines the core dump in QEMU with the shell command `panic`, which exists only in the emulator build. The results are in [Tests](../reference/tests.md).
+The E2E examines the core dump in QEMU with the shell command `panic`, which exists only in the emulator build. The checks are in [The E2E scenarios](../reference/e2e-scenarios.md).

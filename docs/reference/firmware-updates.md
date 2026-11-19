@@ -6,12 +6,11 @@ This document gives the facts about the firmware updates of the gateway (FW-1): 
 - For the routes, refer to [The REST API](rest-api.md#firmware). For the metrics, refer to [Sparkplug messages and metrics](sparkplug-messages-and-metrics.md).
 - For the key `ota`, refer to [The configuration document](configuration.md#ota).
 
-> **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The E2E examines the updates, the trial and the rollback in QEMU. Nobody has measured the times on the board yet (#128).
+> **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The E2E examines the updates, the trial and the rollback in QEMU.
 
 ## Overview
 
 - The flash has two app slots, `ota_0` and `ota_1`, of 4 MiB each (`idf/partitions.csv`). An update writes the slot that does not run.
-- The process of an update and of a rollback comes from #144. The product owner approved it.
 - The decision logic is pure C with host tests, in `gw_core`: `gw_ota`, `gw_bootloop`, `gw_fwlast`, `gw_cfgschema`, `gw_lkgnet` and `gw_cfgprev`. The component `gw_fw` applies it, with `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`.
 - The default build does not require a signature, and it burns no eFuse. The owner of the board can always flash it over USB. Refer to [The features that burn eFuses](../explanation/no-efuse-features.md).
 
@@ -80,7 +79,7 @@ The firmware refuses the image (HTTP 409 for an upload and for the button, `fail
 - the stored configuration needs a higher schema than the image reads. The refusal lists the JSON paths that are too new, for example `the configuration needs schema 2, the image reads 1: <path>=<value> (2)`;
 - the image has a lower NVS format (either byte) than the running image;
 - the image has another major LittleFS disk version, or a lower minor version;
-- the image has no capabilities block of version 2 (all images before #144). Such an image is "unknown". The web UI tells that force is necessary.
+- the image has no capabilities block of version 2. Such an image is "unknown". The web UI tells that force is necessary.
 
 **Force.**
 
@@ -100,7 +99,7 @@ Each image declares its capabilities in a block of 32 B immediately after its `e
 | Field | Content |
 |---|---|
 | Magic | `GWCP` |
-| Version, size | Version 2 since #144 |
+| Version, size | Version 2 |
 | Flag *encrypted NVS* | `CONFIG_NVS_ENCRYPTION` |
 | Flag *encrypted flash* | Only for information. No build in `main` sets it |
 | Schema (version 2) | The highest configuration schema that the image reads (`GW_CONFIG_SCHEMA`) |
@@ -253,11 +252,9 @@ Recovery mode, safe mode and commissioning start the network with the network of
 - **A power cut during the trial also causes a rollback.** The bootloader cannot see a difference between a power cut and a crash. `fw_last` gives `rolled back from <v>: restarted during the test (power-on)`.
 - **The times are not measured on the board.** #128 must measure the self-check items and a web upload, to confirm `CONFIG_GW_FW_SELFCHECK_S` (60 s) and `CONFIG_GW_FW_BOOTLOOP_CLEAR_S` (120 s).
 - **The bootloader does not reserve the RTC memory of the boot-loop counter.** The E2E shows that the counter survives the panic resets in QEMU. #149 must reserve the memory before the first flash of a board.
-- **The text limits (#87).** A text of a Sparkplug metric has 256 characters at most (`SPB_STRING_MAX`). A text of a property or of a DataSet cell has 63 at most. The firmware rejects a longer text with a log, and never truncates it. Thus it does not apply such an NCMD or DCMD, and does not publish such a message of its own. The limit costs 193 B of stack for each metric in the encoder and in the decoder (`Payload_Metric` of nanopb).
 - **There is no anti-rollback of the version** (`CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK`). The gateway accepts each valid image of the project that passes the pre-flight check, also an older one. The anti-rollback burns an eFuse counter, and the project burns no eFuse (#133).
 - **If the firmware can never write `otadata`**, the image continues on trial, and the firmware tries again each 60 s. Saves and updates stay refused. A power cut, or a planned restart after one last attempt, causes a rollback (#99).
 - **Flash writes outside the polling path.** The confirmation of an image (it maps `otadata` with `esp_partition_mmap`), and the writes of `fw_last` and `lkg_net`, occur one time, in the `main` task. The backstop timer writes `fw_last` from the `esp_timer` task, one time. These writes take some ms, far from the 15 s of the watchdog.
-- **Images from before #144 are "unknown"** for the pre-flight check. They need force, and then they must reach recovery mode or better.
 
 ## Test hooks of the QEMU build
 
@@ -266,4 +263,4 @@ These hooks exist only with `CONFIG_GW_IO_SIMULATED`:
 - The file `/cfg/.sim-reject-config` makes a new image on trial reject the stored configuration (path `e2e.simulated`). The E2E uses it to examine the rejection of an image installed from normal mode, because all the images that the E2E builds read the same schema.
 - The QEMU build counts the key `network.hostname` as the schema after the schema of the build (`GW_CONFIG_SCHEMA` + 1, `k_sim_since` in `gw_storage.c`) (#146). The other keys count as schema 1 in this build.
 - The E2E reads the schema of the image under test from its capabilities block. It writes the block of a copy of the image again, to declare the next schema. The images are the same binary, thus the E2E examines the decision and the restored document, not a real older parser.
-- The self-check time is 30 s. For the durations, refer to [E2E durations](e2e-durations.md).
+- The self-check time is 30 s (`sdkconfig.qemu`). Refer to [The self-check time in QEMU](e2e-harness.md#the-self-check-time-in-qemu-233).

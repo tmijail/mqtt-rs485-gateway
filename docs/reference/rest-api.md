@@ -65,6 +65,7 @@ The responses of `PUT /api/config`:
 | `404` | With `restore_prev`: there is no earlier document |
 | `409` | A new firmware image is on trial: `testing <version>: N s left` |
 | `413` | The document is larger than `CONFIG_GW_CONFIG_MAX_BYTES` (128 KiB) |
+| `503` | There is not sufficient memory to parse the document |
 
 ### Operation
 
@@ -546,7 +547,7 @@ With a SHA-256, the gateway calculates the SHA-256 of the image that it wrote, b
 | `core_dump` (optional) | `present`, `state` (`none`, `valid`, `corrupt`) and `size` |
 | `ap` (optional) | The access point. Refer to [The access point](access-point.md) |
 
-For each device, `devices` has `enabled`, `online`, `cycles`, `failed`, `ok`, `timeout`, `crc`, `frame`, `exception`, `write_refused` and `tags`. Each tag has `name`, `valid` and `value`.
+For each device, `devices` has `name`, `unit_id`, `enabled`, `online`, `cycles`, `failed`, `ok`, `timeout`, `crc`, `frame`, `exception`, `write_refused` and `tags`. Each tag has `name`, `valid` and `value`.
 
 - `enabled`: `false` for a device with `enabled: false` in the configuration. The gateway does not poll it, so its counters stay at 0 and its tags are not valid.
 - `write_refused`: the number of DCMD writes since the start that were out of the write limits of a tag (`write_min`, `write_max`). The Status tab shows it in the State cell of the device when it is more than 0.

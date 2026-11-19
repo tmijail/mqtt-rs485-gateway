@@ -54,9 +54,10 @@ The top-level sections are `gateway`, `network`, `ntp`, `mqtt`, `sparkplug`, `rs
 - A maximum of 16 devices, 64 tags for each device, and 256 tags in total. A device with a device type counts the tags of its type.
 - An error gives the JSON path of the value, for example `devices[1].tags[2].type`. A JSON syntax error gives the line and the column.
 - A warning does not stop a save. The warnings are the name checks of [UMH names](#name-checks-for-umh-core).
-- These rules are the configuration schema of `docs/SPEC.md` §6. This firmware is the only implementation of the schema.
+- These rules are the configuration schema of `docs/SPEC.md` §6.
+- The Configuration tab of the web UI has a control for each key. This document gives the card of each section.
 
-**Removed keys.** These keys of earlier firmware versions are unknown keys now. The gateway rejects a stored document with one of them, and starts in recovery mode. No gateway is installed yet (before v1.0), thus there is no migration. Change the document, then save it again.
+**Removed keys.** The gateway refuses these keys as unknown keys. A stored document with one of them puts the gateway in recovery mode. There is no migration before v1.0: change the document, then save it again.
 
 | Removed key | Use now | Issue |
 |---|---|---|
@@ -71,7 +72,7 @@ The top-level sections are `gateway`, `network`, `ntp`, `mqtt`, `sparkplug`, `rs
 These rules apply to `group_id`, `edge_node_id`, `primary_host_id`, `device_prefix`, the device `name`, the `name` of a device type, and the tag `name` and `units`:
 
 - The names are valid UTF-8 (RFC 3629: no overlong form, no surrogate) (#162).
-- The Sparkplug IDs do not contain `/`, `+`, `#` or the control characters U+0080 to U+009F. A broker can close the connection for a topic with a control character.
+- The Sparkplug IDs do not contain `/`, `+`, `#` or control characters (U+0000 to U+001F and U+007F to U+009F). A broker can close the connection for a topic with a control character.
 - Two device names must not differ only in case. Two device types, or two tag names of one device or of one device type, must not differ only in case. The comparison folds the ASCII letters only: `É` and `é` are two different names for the check. The specification says SHOULD NOT (`tck-id-case-sensitivity-sparkplug-ids`, `tck-id-case-sensitivity-metric-names`), and the gateway rejects the configuration.
 - A tag name must not also be a folder of another tag name of the same device or device type, for example `A` and `A/B`.
 - The name of a device type must not be the name or the first folder of a node metric: `bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info`, `Firmware Update` or `Run Hours`.
@@ -179,7 +180,7 @@ A name, a location and a comment for the people who use the gateway. The card **
 
 ## `network`
 
-The IPv4 keys of `network` are the keys of Ethernet.
+The IPv4 keys of `network` are the keys of Ethernet. In the web UI, they are in the card **Network (Ethernet)**.
 
 An IPv4 address in the configuration is four decimal numbers from 0 to 255 with dots between them (`a.b.c.d`), as `inet_pton` reads it. A number has no leading zero, no sign and no space: the gateway rejects `010.0.0.1`, because other programs read `010` as an octal number (8). The same rule applies to the IPv4 part of an IPv6 address (`::ffff:192.0.2.1`) and to the prefix of `modbus_tcp.allowed_clients` (#226).
 
@@ -197,14 +198,14 @@ The web UI corrects an IPv4 value with leading zeros, because a leading zero usu
 | `dhcp` | bool | `true` | With `false`, `ip`, `netmask` and `gateway` are necessary |
 | `ip`, `netmask`, `gateway` | text | — | IPv4 addresses |
 | `dns` | text | — | An IPv4 DNS server |
-| `hostname` | text | `""` | One DNS label: 1 to 63 letters, digits and `-` (not at the start or the end), no dots. Empty = a name from `edge_node_id`: lower case, and `-` for each character that is not a letter or a digit (`GW01` → `gw01`). The DHCP requests contain the hostname |
+| `hostname` | text | `""` | One DNS label: 1 to 63 letters, digits and `-` (not at the start or the end), no dots. Empty = a name from `edge_node_id`: lower case, and one `-` for each group of characters that are not letters or digits (`GW01` → `gw01`). The DHCP requests contain the hostname |
 | `mdns` | bool | `true` | The gateway answers `<hostname>.local` with mDNS. It announces the web UI as the service `_https._tcp` on `web.https_port`, or `_http._tcp` on `web.port` with `web.https: false`. The instance name is `<group_id>/<edge_node_id>` |
 | `wifi` | object | — | Refer to [`network.wifi`](#networkwifi) |
 | `ipv6` | object | — | Refer to [`network.ipv6`](#networkipv6) |
 
 ### `network.wifi`
 
-Wi-Fi station, as an alternative interface or as a backup interface for Ethernet.
+Wi-Fi station, as an alternative interface or as a backup interface for Ethernet. In the web UI, the keys are in the card **Wi-Fi**. For the procedure, refer to [Connect the gateway to a Wi-Fi network](../how-to/connect-the-gateway-to-wi-fi.md).
 
 ```json
 "network": { "dhcp": true,
@@ -230,7 +231,7 @@ Wi-Fi station, as an alternative interface or as a backup interface for Ethernet
 
 ### `network.ipv6`
 
-IPv6 together with IPv4.
+IPv6 together with IPv4. In the web UI, the keys are in the card **IPv6**.
 
 ```json
 "network": { "dhcp": true,
@@ -258,7 +259,6 @@ The gateway learns the default IPv6 router from the router advertisements. There
 
 - The gateway asks server 1 first. When a server does not answer in 15 s, the gateway asks the next server. After the last server, it asks the first server again.
 - Thus a first server that does not answer delays the first valid time by approximately 15 s. The log gives the wait: `edge: clock valid (source sntp) after a wait of 16 s: connecting`.
-- The old key `ntp.server` (one server) is not valid since #201. A document with it is refused.
 
 In the web UI, the card **Time** has one row for each server. An empty row is an error at its field.
 
@@ -268,13 +268,15 @@ Without a valid clock, the gateway opens no MQTT session. Refer to [The clock an
 
 ## `mqtt`
 
+In the web UI, the keys are in the card **MQTT**. The field **Broker** is `host`, and **User** is `username`.
+
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `host` | text | — | Necessary. The name, IPv4 or IPv6 address of the primary broker |
+| `host` | text | — | Necessary. The name, IPv4 or IPv6 address of the primary broker, 1 to 127 bytes |
 | `port` | integer | `1883` (`8883` with TLS) | 1 to 65535 |
-| `client_id` | text | `""` | Empty = `edge_node_id` |
-| `username` | text | `""` | |
-| `password` | text (secret) | `""` | |
+| `client_id` | text | `""` | 0 to 64 bytes. Empty = `edge_node_id` |
+| `username` | text | `""` | 0 to 64 bytes |
+| `password` | text (secret) | `""` | 0 to 64 bytes |
 | `keepalive_s` | integer | `30` | 5 to 3600 |
 | `protocol` | `"3.1.1"` or `"5"` | `"3.1.1"` | The MQTT version for all the brokers of the list |
 | `tls` | object | — | Refer to [`mqtt.tls`](#mqtttls) |
@@ -283,6 +285,8 @@ Without a valid clock, the gateway opens no MQTT session. Refer to [The clock an
 Each CONNECT has Clean Session = 1. With `protocol: "5"`, each CONNECT has Clean Start = 1, Session Expiry Interval = 0 and Will Delay Interval = 0. Each DISCONNECT of the gateway has the reason code 0x04 (Disconnect with Will Message). The topics, the QoS, the retain flags and the payloads do not change. The gateway connects again with an exponential backoff and jitter (1 s to 60 s).
 
 ### `mqtt.tls`
+
+In the web UI, the keys are in the section **TLS** of the card **MQTT**: **Encrypt (TLS)**, **CA file**, **Server name**, **Client certificate** and **Client key**.
 
 ```json
 "mqtt": { "host": "broker.plant.local", "port": 8883,
@@ -294,7 +298,7 @@ Each CONNECT has Clean Session = 1. With `protocol: "5"`, each CONNECT has Clean
 |---|---|---|---|
 | `enabled` | bool | `false` | `false` = TCP without encryption. With `true`, the default of `mqtt.port` is `8883` |
 | `ca_file` | text | `""` | A PEM file with the CAs that sign the certificate of the broker, in the LittleFS partition (`/cfg/<name>`). Empty = the public root CAs of ESP-IDF |
-| `server_name` | text | `""` | The name that the certificate of the broker must contain (SAN or CN). Empty = the `host` of the connection. You cannot disable the name check |
+| `server_name` | text | `""` | 0 to 127 bytes. The name that the certificate of the broker must contain (SAN or CN). Empty = the `host` of the connection. You cannot disable the name check |
 | `cert_file` | text | `""` | The PEM certificate of the client, for mutual TLS, in LittleFS. Empty = no client certificate |
 | `key_file` | text | `""` | The PEM private key of the client, **not encrypted** (PKCS#1, SEC1 or PKCS#8). Necessary with `cert_file`, and not permitted without it |
 
@@ -309,6 +313,8 @@ Each CONNECT has Clean Session = 1. With `protocol: "5"`, each CONNECT has Clean
 
 ### The list of brokers
 
+In the web UI, the keys are in the section **Backup brokers** of the card **MQTT**: the table of the brokers, **Failover after (attempts)** and **Back to the primary after (s)**.
+
 ```json
 "mqtt": { "host": "broker1.plant.local", "port": 1883,
           "backup_brokers": [ { "host": "broker2.plant.local" },
@@ -318,7 +324,7 @@ Each CONNECT has Clean Session = 1. With `protocol: "5"`, each CONNECT has Clean
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `backup_brokers` | array | `[]` | Up to 3 backup brokers, in order, after `mqtt.host`. Each one has `host` (necessary, not empty) and `port` (default: `mqtt.port`). All the brokers use the same credentials, `client_id`, keepalive and `tls`. With TLS, the gateway examines the name against the `host` of each broker, or `tls.server_name` |
+| `backup_brokers` | array | `[]` | Up to 3 backup brokers, in order, after `mqtt.host`. Each one has `host` (necessary, 1 to 127 bytes) and `port` (default: `mqtt.port`). All the brokers use the same credentials, `client_id`, keepalive and `tls`. With TLS, the gateway examines the name against the `host` of each broker, or `tls.server_name` |
 | `failover_after` | integer | `3` | 1 to 20. The number of failed attempts in sequence on a broker before the gateway goes to the next broker. After the last broker, it goes to the first broker |
 | `primary_return_s` | integer | `0` | 0 to 86400. `0` = the gateway stays on a backup broker until it fails. With N > 0, the gateway ends a stable session on a backup broker after N s (NDEATH). Then it tries the primary broker one time. If that attempt fails, it goes to the first backup broker |
 
@@ -337,7 +343,7 @@ A stable session sets the count to zero. Each new broker starts with the minimum
 |---|---|---|---|
 | `group_id` | text | — | Necessary. 1 to 32 bytes |
 | `edge_node_id` | text | — | Necessary. 1 to 32 bytes |
-| `primary_host_id` | text | `""` | Empty = no primary host. Refer to [The primary host application](sparkplug-messages-and-metrics.md#the-primary-host-application) |
+| `primary_host_id` | text | `""` | 0 to 32 bytes. Empty = no primary host. Refer to [The primary host application](sparkplug-messages-and-metrics.md#the-primary-host-application) |
 | `device_prefix` | text | `""` | 0 to 96 bytes. Refer to [The device prefix](#the-device-prefix) |
 | `naming` | `"sparkplug"` or `"umh"` | `"sparkplug"` | `"umh"` selects the UMH preset. Refer to [Name checks for UMH Core](#name-checks-for-umh-core) |
 | `diagnostics_s` | integer | `60` | 0, or 10 to 86400. The period of the NDATA with the node diagnostics, in seconds. 0 = only in the NBIRTH |
@@ -410,6 +416,8 @@ For the buffer, the card, the retention and the duplicates, refer to [Store & fo
 
 ## `rs485`
 
+In the web UI, the keys are in the card **RS485**. The field **Timeout (ms)** is `response_timeout_ms`.
+
 | Key | Type | Default | Rule |
 |---|---|---|---|
 | `baud` | integer | `9600` | 1200 to 115200 |
@@ -423,7 +431,7 @@ The UART always uses 8 data bits. The gateway keeps the silence of 3.5 character
 
 ## `devices`
 
-An array of up to 16 devices.
+An array of up to 16 devices. In the web UI, the devices are in the card **Devices and tags**. For the procedure, refer to [Add a Modbus device and its tags](../how-to/add-a-modbus-device.md).
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
@@ -441,7 +449,7 @@ An array of up to 16 devices.
 
 The defaults of `block_reads`, `max_gap` and `write_multiple` come from the build options `CONFIG_GW_MB_BLOCK_READS`, `CONFIG_GW_MB_BLOCK_MAX_GAP` and `CONFIG_GW_MB_FORCE_MULTI_WRITE`. A block never has more than 125 registers or 2000 bits.
 
-In the web UI, `slow_poll_ms`, `block_reads`, `max_gap` and `write_multiple` are in the panel **More device settings** of each device.
+In the web UI, `slow_poll_ms`, `block_reads`, `max_gap` and `write_multiple` are in the panel **More device settings** of each device: **Slow poll interval (ms)**, **Block reads**, **Max gap** and **Write with FC15/FC16**.
 
 ### A disabled device
 
@@ -534,7 +542,7 @@ The tags of a device without a type, and the tags of a device type (`device_type
 | `bit_offset` | integer | — | 0 to 15. The lowest bit of a bit or a field of bits in a register. Refer to [Bits of a register](#bits-of-a-register) |
 | `bit_width` | integer | `1` | 1 to 16. Only with `bit_offset`. `bit_offset` + `bit_width` must be 16 or less. Refer to [Bits of a register](#bits-of-a-register) |
 | `length` | integer | — | 1 to 16 registers. Necessary with `type: string` or `type: bytes`, and only with them |
-| `units` | text | `""` | Up to 15 characters. The property `engUnit` of the metric. Empty = no property |
+| `units` | text | `""` | 0 to 15 bytes. The property `engUnit` of the metric. Empty = no property |
 | `eng_low` | number | — | The property `engLow` (Float). In the range of a Float (±3.4e38) |
 | `eng_high` | number | — | The property `engHigh` (Float). With the two keys, `eng_high` > `eng_low` |
 | `write_min` | number | — | The lowest value that a DCMD can write, in the units of the tag (after `scale` and `offset`). Only with `writable: true`. Refer to [Write limits](#write-limits) |
@@ -644,7 +652,7 @@ A Float has a 24-bit mantissa. Thus a 32-bit counter with a scale goes into a Do
 
 ## `modbus_tcp`
 
-A Modbus TCP server that gives access to the RTU slaves on the bus.
+A Modbus TCP server that gives access to the RTU slaves on the bus. In the web UI, the keys are in the card **Modbus TCP**.
 
 ```json
 "modbus_tcp": { "enabled": true, "port": 502, "allowed_clients": ["192.168.1.20", "10.0.5.0/24"],
@@ -713,8 +721,6 @@ An update from the web UI is always possible, for a user who knows the web passw
 
 > **Caution: Set `mqtt` to `true` only when the ACL of the broker lets only the Sparkplug host publish to `spBv1.0/<group_id>/NCMD/<edge_node_id>`.** Each client that can publish to that topic can then change the firmware.
 
-The key `ota.enabled` of earlier firmware versions is not valid now. The validation refuses it as an unknown key. No gateway is installed yet, thus there is no migration. For the change of an old document, refer to [Change the configuration](../how-to/change-the-configuration.md). `ota.mqtt` is a key of the configuration schema 2: an image that reads schema 1 cannot read a document that contains it.
-
 For the update process, refer to [Update the firmware](../how-to/update-the-firmware.md).
 
 ## `local_io`
@@ -732,8 +738,6 @@ All the keys of `local_io` are optional. The card Local I/O of the Configuration
 | `run_hours` | array of texts | `[]` | Refer to [Run hours](#run-hours) |
 | `rules` | array | `[]` | Refer to [Local rules](#local-rules) |
 | `buzzer` | object | — | Refer to [`local_io.buzzer`](#local_iobuzzer) |
-
-The key `di_debounce_ms` of earlier versions is not there now (#211). The validation refuses a document that has it. Use `di[].debounce_ms`.
 
 ### The DIs
 
@@ -866,7 +870,7 @@ For the patterns, refer to [The status signals](status-signals.md#buzzer).
 
 ## `syslog`
 
-A copy of the log to a syslog server.
+A copy of the log to a syslog server. In the web UI, the keys are in the card **Remote syslog**.
 
 ```json
 "syslog": { "host": "192.168.1.20", "port": 514, "level": "info" }
@@ -874,7 +878,7 @@ A copy of the log to a syslog server.
 
 | Key | Type | Default | Rule |
 |---|---|---|---|
-| `host` | text | `""` | The name, IPv4 or IPv6 address of the server. Empty = no remote syslog |
+| `host` | text | `""` | The name, IPv4 or IPv6 address of the server, 0 to 127 bytes. Empty = no remote syslog |
 | `port` | integer | `514` | 1 to 65535, UDP |
 | `level` | `error`, `warning`, `info` or `debug` | `info` | The minimum severity that the gateway sends |
 
@@ -907,7 +911,7 @@ The web UI and the REST API.
 
 While `web.password` is empty, the gateway accepts `admin` with its commissioning password (random; the console shows it). A push of BOOT then opens the claim window. Refer to [Set the first web password on site](../how-to/set-the-first-web-password.md).
 
-In the web UI, the field **Port** of the card **Web interface** is `web.port`, with the label **HTTP port**. While **Enabled** or **HTTPS** is off, a warning shows at the field. Before a save that disables the web interface, the web UI asks for a confirmation. The confirmation gives the steps to enable the web interface again. Refer to [Recover a gateway](../how-to/recover-the-gateway.md#the-web-interface-is-off).
+In the web UI, the keys are in the card **Web interface**. The field **HTTP port** is `web.port`, and **User** is `username`. While **Enabled** or **HTTPS** is off, a warning shows at the field. Before a save that disables the web interface, the web UI asks for a confirmation. The confirmation gives the steps to enable the web interface again. Refer to [Recover a gateway](../how-to/recover-the-gateway.md#the-web-interface-is-off).
 
 ![The confirmation 'Turn off the web interface?' after 'Save and restart' with Enabled off: after the restart, the page and the REST API do not answer. The steps to turn the web interface on again: push BOOT for 2 to 10 s, open the web UI, turn on Enabled and save. It has the red button 'Save and restart' and Cancel.](../images/web-off-dialog.png)
 

@@ -16,10 +16,10 @@ Firmware for an RS485 (Modbus RTU) → MQTT Sparkplug B 3.0 gateway on the Waves
 - `docs/reference/architecture.md` and `docs/explanation/architecture.md`: the components, the task table, the concurrency rules and the memory budget.
 - `docs/how-to/build-the-firmware.md` and `docs/reference/build-configuration.md`: the build, the overlays and the partition table.
 - `docs/reference/configuration.md`, `docs/reference/commissioning-and-secrets.md` and `docs/reference/firmware-updates.md`.
-- `docs/reference/tests.md`, `docs/reference/e2e-harness.md` and `docs/reference/e2e-scenarios.md`: the tests, the test environment and the latest results.
+- `docs/reference/tests.md`, `docs/reference/e2e-harness.md` and `docs/reference/e2e-scenarios.md`: the tests, the test environment and the scenarios.
 - `docs/reference/sparkplug-behavior.md`, `docs/reference/known-limitations.md` and `docs/reference/requirements-status.md`.
 
-The root `README.md` is the short project page: what the gateway does, the status of the project, the features and the links. Do not put measurements, test results or per-issue details in it; put them in `docs/`. `idf/README.md` is only a short guide to the folder `idf/`. Some old docs and GitHub issues are in Spanish; all new writing follows **Writing standard** below.
+The root `README.md` is the short project page: what the gateway does, the status of the project, the features and the links. Do not put measurements, test results or per-issue details in it. `idf/README.md` is only a short guide to the folder `idf/`. Some old docs and GitHub issues are in Spanish; all new writing follows **Writing standard** below.
 
 ## Writing standard: ASD-STE100 Simplified Technical English
 
@@ -38,7 +38,7 @@ Write all new or changed prose in ASD-STE100 Simplified Technical English (STE).
   - Use articles ("the", "a"), and avoid long noun clusters: write "the margin of the internal RAM", not "the internal RAM margin value".
 - **Warnings and cautions:** Start them with a clear instruction (the command). Then give the risk.
 - **Existing Spanish text:** When you change a section, rewrite that section in STE. Translate full files only when the user asks.
-- **Structure (Diátaxis):** Put each new document in `docs/` into one Diátaxis type: `docs/tutorials/`, `docs/how-to/`, `docs/reference/` or `docs/explanation/`. Do not mix the types in one document. Link to the other type instead (for example, from a procedure to the reasons for it). Add each new document to `nav` in `zensical.toml`, and write its links as `docs/how-to/build-the-documentation-site.md` tells (the CI job `docs` builds the site with `--strict`).
+- **Structure (Diátaxis):** Put each new document in `docs/` into one Diátaxis type: `docs/tutorials/`, `docs/how-to/`, `docs/reference/` or `docs/explanation/`. Do not mix the types in one document. Link to the other type instead (for example, from a procedure to the reasons for it). A procedure for the user does each step in the web UI, with the labels of `index.html`. The JSON tab, the configuration file and the shell are only a complement, or the main way when the web UI cannot do the step (for example the web UI is off). Add each new document to `nav` in `zensical.toml`, and write its links as `docs/how-to/build-the-documentation-site.md` tells (the CI job `docs` builds the site with `--strict`).
 
 **The firmware has never run on real hardware.** It has only run in host tests and in QEMU. The W5500, RS485 hardware mode, TCA9554, GPIO DIs and LED are compile-only (issues #1 and #18).
 
@@ -72,7 +72,7 @@ Each key of the configuration document must have a control in the Configuration 
 - A link from the web UI to the documentation goes to the documentation site (`https://mijail.ar/mqtt-rs485-gateway/<type>/<page>/#<anchor>`), not to a Markdown file on GitHub.
 - A large change of the web UI starts with a prototype in the design canvas (a Claude Design artifact, private to the product owner): https://claude.ai/artifact/FcFdKXktaEWXxS5bSnDNc7. A large change adds a tab, a card or a dialog, or changes a layout. Start its implementation only after the product owner approves the prototype in a comment on the issue. These issues have the label `design first`.
 - A small change of the web UI needs no prototype (decision of the product owner, 2026-11-18). A small change adjusts an existing control: its validation, the normalization of its input, its text or its explainer. The product owner can ask for a prototype for any change.
-- Some existing keys have no control yet (#221 lists them). Do not use this as a reason to add a new key without a control.
+- Each key has a control now (#221). Keep it so: a new key without a control is not accepted.
 
 ## Commands
 
@@ -90,15 +90,15 @@ cmake -S idf/test/host -B build-asan -DGW_SANITIZE=ON && cmake --build build-asa
 
 # Fuzz tests: 12 libFuzzer targets for the parsers of gw_core, with ASan and UBSan (#226; CI job fuzz
 # 60 s each, fuzz-weekly.yml 20 min each). Needs clang with libFuzzer (Ubuntu: clang-18 libclang-rt-18-dev)
-cmake -S idf/test/fuzz -B build-fuzz -DCMAKE_C_COMPILER=clang && cmake --build build-fuzz -j
+cmake -S idf/test/fuzz -B build-fuzz -DCMAKE_C_COMPILER=clang-18 && cmake --build build-fuzz -j
 idf/test/fuzz/run_fuzz.sh build-fuzz 60                 # all targets, $(nproc) at a time (JOBS=n); a table per target
 idf/test/fuzz/run_fuzz.sh build-fuzz 300 fuzz_spb       # one target; a finding goes to build-fuzz/crashes/
 build-fuzz/fuzz_spb build-fuzz/crashes/<file>           # one input again; fix it in gw_core, add it to a Unity suite
 
 # clang-tidy 18 on gw_core and the host tests (#231; CI job clang-tidy; checks in idf/.clang-tidy). Configure only,
 # with clang. A false positive gets /* NOLINTNEXTLINE(<check>): <reason> */; the CI refuses a NOLINT without both
-cmake -S idf/test/host -B build-tidy -DCMAKE_C_COMPILER=clang -DGW_RULE_CHECKS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-run-clang-tidy -p build-tidy -j4 -quiet 'idf/components/gw_core/(src|port)/|idf/test/host/'   # 0 results
+cmake -S idf/test/host -B build-tidy -DCMAKE_C_COMPILER=clang-18 -DGW_RULE_CHECKS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+run-clang-tidy-18 -p build-tidy -j4 -quiet 'idf/components/gw_core/(src|port)/|idf/test/host/'   # 0 results
 
 # Sparkplug interop: decode generated payloads with the official Tahu proto
 mkdir -p /tmp/spb && build-host/spb_dump /tmp/spb && python3 idf/tools/spb_decode.py --check /tmp/spb
@@ -112,8 +112,8 @@ idf.py -B build-analyzer -D GW_ANALYZER=ON set-target esp32s3 build
 # E2E: real firmware in QEMU against mosquitto + a pymodbus RTU slave. Each variant has its own
 # full run (#135, scenarios.py DEFAULT_VARIANT_SCENARIOS); the two together are the full E2E.
 python3 -m venv ~/e2e && ~/e2e/bin/pip install -r tools/e2e/requirements.txt
-E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh     # PSRAM variant: the board's configuration, all but 3 scenarios (~22 min)
-E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh                 # variant without PSRAM: only the OTA trial scenarios (~4 min)
+E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh     # PSRAM variant: the board's configuration, all but 3 scenarios (the longest run)
+E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh                 # variant without PSRAM: only the OTA trial scenarios
 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh --only ota,https   # subset of scenarios (--only selects in any variant)
 #  --only: failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,time,ota,ota-fw1,ota-fw1-ncmd,
 #          ota-fw1-web,ota-park,ota-wiring,ota-trial,nvs,slow,nopsram,refuse,main,umh,tck,downgrade
@@ -152,7 +152,7 @@ python3 -m venv ~/docs-venv && ~/docs-venv/bin/pip install -r idf/tools/docs/req
 #  are in the firmware image: for them, change an option in eslint.config.mjs, not the page.
 ```
 
-CI (`.github/workflows/ci.yml`) runs host-tests, fuzz, clang-tidy (#231), firmware, analyzer (#230), the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image (fuzz, clang-tidy and the host tests run directly on `ubuntu-24.04`). `.github/workflows/fuzz-weekly.yml` runs the fuzz targets longer each week and keeps their corpus (#226). `.github/workflows/codeql.yml` runs CodeQL (`security-extended`) on the host build and on the firmware build on each push to `main`, on each pull request and each week; its alerts go to the Security tab and do not fail the CI (#232). `.github/workflows/docs.yml` builds the documentation site with Zensical `--strict` on each push, and publishes it to GitHub Pages from `main`. The firmware analysis uses the source models of `.github/codeql/extensions/esp-idf-models`; they name `on_mqtt_data`, `on_host_state` and `gw_node_handle_message`, so change them with these functions. The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run of that variant (#121, #135). A change is done when the host tests pass and the full E2E passes: the full run of the `E2E_PSRAM=1` variant and the full run of the default variant. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
+CI (`.github/workflows/ci.yml`) runs host-tests, host-tests-sanitizers (#225), fuzz, clang-tidy (#231), firmware, analyzer (#230), the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image (fuzz, clang-tidy and the two host-test jobs run directly on `ubuntu-24.04`). `.github/workflows/fuzz-weekly.yml` runs the fuzz targets longer each week and keeps their corpus (#226). `.github/workflows/codeql.yml` runs CodeQL (`security-extended`) on the host build and on the firmware build on each push to `main`, on each pull request and each week; its alerts go to the Security tab and do not fail the CI (#232). `.github/workflows/docs.yml` builds the documentation site with Zensical `--strict` on each push, and publishes it to GitHub Pages from `main`. The firmware analysis uses the source models of `.github/codeql/extensions/esp-idf-models`; they name `on_mqtt_data`, `on_host_state` and `gw_node_handle_message`, so change them with these functions. The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run of that variant (#121, #135). A change is done when the host tests pass and the full E2E passes: the full run of the `E2E_PSRAM=1` variant and the full run of the default variant. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
 
 ### sdkconfig pitfalls
 
@@ -189,7 +189,7 @@ Platform calls go through `gw_port.h`, which has two implementations: `port/gw_p
 - `gw_board`: DI sampling, plus the `local_io` task, which is the only writer of the TCA9554 DO expander. Also the LED, buzzer and BOOT button.
 - `gw_bsp`: a declarative description of all board pins and polarities. Drivers contain no board data.
 - `gw_net`: W5500 Ethernet (openeth in QEMU), Wi-Fi backup, IPv6 and SNTP.
-- `gw_storage`: LittleFS config, NVS (encrypted) secrets, bdSeq, the NVS encryption migration and factory reset.
+- `gw_storage`: LittleFS config, NVS (encrypted) secrets, the NVS encryption migration and factory reset. The bdSeq is in RAM only (#161).
 - `gw_web`: the HTTPS UI and REST API, with Basic auth, a CSRF check (`X-Requested-With` plus Origin/Host) and the `web_guard` stall watchdog.
 - `gw_fw`: OTA (HTTPS download or web upload), the trial period and rollback.
 - `gw_shell`: the `esp_console` shell (`status`, `devices`, `config`, …), which the E2E harness drives over UART0.
@@ -209,7 +209,7 @@ Platform calls go through `gw_port.h`, which has two implementations: `port/gw_p
 - Limits: 16 devices, 64 tags per device, 256 tags in total.
 - **The firmware assumes the 8 MB of PSRAM of the board (#135).** It does not support a board without PSRAM. Do not add fallbacks or smaller sizes for a board without PSRAM.
 - All own memory is fixed-size, static or allocated once at boot. It goes to the PSRAM (`gw_storage_malloc`, `gw_storage_calloc`, `gw_storage_big_alloc`, and mbedTLS through them). These functions never use internal RAM when the PSRAM is full: the allocation fails.
-- A board whose PSRAM the boot does not detect runs the fault mode only (`CONFIG_SPIRAM_IGNORE_NOTFOUND`; `GW_WEB_FAULT` in `main.c`). The log, the shell and the web UI give the fault. Only the network, the web server and the shell start, from internal RAM. The gateway does not start.
+- A board whose PSRAM the boot does not detect runs the fault mode only (`CONFIG_SPIRAM_IGNORE_NOTFOUND`; `GW_WEB_FAULT` in `main.c`). The log, the shell and the web UI give the fault. Only the network, the web server, mDNS, the access point and the shell start, from internal RAM. The gateway does not start.
 - **No malloc in the polling, encoding or publish path.** The host test `check_noalloc` examines this rule. It examines each function of the files in `idf/test/host/rules/noalloc_path.txt`, and each function of `gw_core` and nanopb that they call. Add a new file of this path to that list, with its reason.
 - Internal RAM is still shared with Wi-Fi, lwIP, esp-mqtt, the task stacks and DMA. The E2E enforces ≥ 8 KB minimum free and a ≥ 17 KB largest block at the worst-case config validation (#80). The check runs in the PSRAM variant, the configuration of the board (`tls` scenario, node GW29).
 - **Never lower these thresholds.** Measure any change in `.bss`, stack or heap with the `E2E_PSRAM=1 --only tls` / #80 checks.
@@ -245,6 +245,7 @@ Rules that tests and fixes must respect:
 ## Conventions
 
 - Commits reference issues with `Fixes #N` or `Refs #N`. Feature and fix branches are merged into `main` with `--no-ff`.
-- When behaviour or measurements change, update the documents in `docs/` (in STE): `docs/reference/tests.md` has the latest results and the test counts, `docs/reference/known-limitations.md` the known limitations, and `docs/reference/e2e-harness.md` the notes on the test environment. Keep only the current values: no history of runs. The root `README.md` changes only when a feature or the status of the project changes.
+- When behaviour changes, update the documents in `docs/` (in STE): `docs/reference/known-limitations.md` has the known limitations, and `docs/reference/e2e-harness.md` the notes on the test environment. The root `README.md` changes only when a feature or the status of the project changes.
+- Do not put test results, check counts, durations or measured values (RAM, stack, payload sizes, times) in `docs/`: they change too fast (decision of the product owner, 2026-11-19). The documents give what a test examines, how to run it, its pass criterion and the limits. The results of a run go in the pull request description and the commit message, and the CI keeps them in the job summary and the artifacts.
 - Managed components are pinned with `==` in each `idf_component.yml` and hashed in `dependencies.lock`. Host-test dependencies (Unity, cJSON) are pinned by commit hash via FetchContent.
 - A change can update a managed component that writes data (`littlefs`) or ESP-IDF (the NVS format, `otadata`, the app descriptor, the partition table). Such a change must pass the downgrade test (#148). Run `E2E_DOWNGRADE_REF=<the last release> tools/e2e/run_e2e.sh --only downgrade` in both variants. Before the tag `v1.0`, use the commit before the change. The earlier image must start in normal mode with the same configuration and secrets. If it cannot, merge the change only when the pre-flight check refuses that downgrade (`nvs_format` and the LittleFS disk version in the capabilities block, `docs/reference/firmware-updates.md`).

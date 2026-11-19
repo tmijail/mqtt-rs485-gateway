@@ -1,6 +1,6 @@
 # Compiler warnings and the stack data
 
-This document gives the compiler options of the own components, the limit of the stack frame, and the stack report of the tasks (issue #227). It also gives the build with the GCC static analyzer (issue #230). For the commands, refer to [Build and flash the firmware](../how-to/build-the-firmware.md#make-the-stack-report).
+This document gives the compiler options of the own components, the limit of the stack frame, and the stack report of the tasks (issue #227). It also gives the build with the GCC static analyzer (issue #230). For the commands, refer to [Make the stack report](../how-to/build-the-firmware.md#make-the-stack-report) and [Run the static analyzer](../how-to/build-the-firmware.md#run-the-static-analyzer).
 
 ## The compiler options
 
@@ -35,33 +35,13 @@ The host tests compile only `gw_core`. The IDF adapters (`gw_web`, `gw_fw`, `gw_
 - The project does not use `CONFIG_COMPILER_STATIC_ANALYZER` of ESP-IDF. That option adds `-fanalyzer` to all components, also to ESP-IDF and the managed components, and ESP-IDF has known false positives.
 - With `-Werror`, a result of the analyzer stops the build. The job then gives each result in `components/gw_*` and `main`.
 - The analyzer examines only the source files of the own components. A result in a header of ESP-IDF is possible only on a path through the own code, and it also stops the build.
+- The code has some changes for false positives of the analyzer, so that the analyzer can follow the code. Each change keeps the behaviour, and has a comment with the name of the check and the reason. The project does not hide a result with `#pragma` or `-Wno-analyzer-*`.
 
-### The results at #230
-
-The first build gave 5 results. Now the build gives 0 results.
-
-| Location | Check | Type | Correction |
-|---|---|---|---|
-| `gw_storage.c` `current_doc` | `-Wanalyzer-undefined-behavior-ptrdiff` | Real, but without effect with GCC | The length of the embedded default configuration came from `end - start`. For C, the linker symbols `_binary_*_start` and `_binary_*_end` are two objects, and a subtraction of pointers to two objects is undefined behaviour. The code now subtracts the two addresses (`uintptr_t`). `embedded_len()` in `gw_web.c` does the same for `index.html` and `claim.html` |
-| `gw_authlimit.c` `take` | `-Wanalyzer-null-argument` | False positive | The second pass always takes a slot. The analyzer does not follow the two passes. The code now takes slot 0 if no slot is found. This never occurs |
-| `gw_claim.c` `gw_claim_parse` | `-Wanalyzer-null-dereference` | False positive | `cJSON_IsObject(NULL)` gives false, but the analyzer does not see into cJSON. The code now examines the pointer for NULL first |
-| `gw_cfgdoc.c` `export_locked` | `-Wanalyzer-null-dereference` | False positive | The same, for `cJSON_IsString` |
-| `gw_certs.c` `copy_name` | `-Wanalyzer-null-dereference` | False positive | The same, for `cJSON_IsString` |
-
-The corrections do not change the behaviour. Each correction has a comment with the reason.
-
-### Correct a result
-
-1. Read the path of the result in the log of the job. The analyzer gives the events of the path that it followed.
-2. If the result is a real error, correct the code.
-3. If the result is a false positive, change the code so that the analyzer can follow it. Use only a change that does not change the behaviour.
-4. Write a comment next to the change, with the name of the check and the reason.
-
-> **Caution: Do not hide a result with `#pragma` or with `-Wno-analyzer-*`.** A hidden check also hides the real errors of that type in the file.
+To correct a result, refer to [Run the static analyzer](../how-to/build-the-firmware.md#run-the-static-analyzer).
 
 ## No `-Wundef` in the firmware
 
-The headers of ESP-IDF evaluate undefined macros in `#if`, for example `BOOTLOADER_BUILD` and `CONFIG_FREERTOS_SMP`. With `-Wundef`, the release build gave 3 615 warnings from 67 headers of ESP-IDF.
+The headers of ESP-IDF evaluate undefined macros in `#if`, for example `BOOTLOADER_BUILD` and `CONFIG_FREERTOS_SMP`. With `-Wundef`, the release build gives many warnings from the headers of ESP-IDF.
 
 Also, ESP-IDF does not define a bool option that is off. Thus `#if CONFIG_GW_IO_SIMULATED` is correct code, but `-Wundef` gives a warning for it. The project does not hide warnings with `#pragma`, thus the firmware does not use `-Wundef`.
 
@@ -73,15 +53,7 @@ The host test `check_kconfig_names` finds a misspelled option name instead. It e
 
 The limit stops a new frame of more than half of the stack of `rs485_bus` (4 096 B).
 
-All own functions have a static frame (no VLA and no `alloca`). These are the largest frames, measured at #227:
-
-- `gw_storage_load_config` 1 664 B (boot, main task);
-- `send_why` 1 520 B and `send_error` 1 360 B (`gw_web.c`, task of the web server);
-- `load_pem_certs` 1 152 B (`gw_edge.c`);
-- `status_card` 1 136 B (`gw_web.c`);
-- `decode_metric` 1 104 B (`spb.c`). It decodes a metric of an NCMD or a DCMD in a callback of `pb_decode()`. Thus the stack report cannot put it in a task.
-
-Of 1 150 own functions, 88 have a frame of more than 256 B, 31 of more than 512 B, and 6 of more than 1 024 B. A limit of 1 024 B needs a decision about these 6 functions. A trial with 1 024 B stopped the build at `decode_metric`.
+All own functions have a static frame (no VLA and no `alloca`). The stack report gives the largest frames of each task.
 
 ## The stack report
 
@@ -113,14 +85,6 @@ For each task, the report gives:
 
 The own components compile without ccache: `RULE_LAUNCH_COMPILE` is empty for their targets. At a hit, ccache 4.9 gives the object and the `.su` file again, but not the `.ci` file. The script fails when a C object file of the own components has no `.ci` file.
 
-### The values at #227
+### The values of a build
 
-| Task | Stack | Deepest own path | The largest frames |
-|---|---|---|---|
-| `rs485_bus` | 4 096 B | 832 B: `bus_task` → `serve_pending` → `gw_poller_write_value` → `bit_request` → `execute_n` → `mb_master_execute_retries` → `mb_build_request` → `finish` → `mb_crc16` | `gw_poller_write_value` 304, `gw_poller_poll` 176, `serve_pending` 128, `bit_request` 112, `gw_poller_forward` 112 |
-| `sparkplug` | 6 144 B | 1 344 B: `edge_task` → `op_reboot` → `gw_fw_restart_requested` → `restart_confirm_on_core0` → `confirm` → `gw_storage_save_last_good` → `gw_lkg_encode` → `put_u16` → `put` | `gw_storage_save_last_good` 688, `publish_nbirth` 384, `gw_node_io_changed` 336, `publish_io` 336, `confirm` 304 |
-
-- In `sparkplug`, `spb_encode()` calls `pb_encode()` of nanopb with 1 056 B of own stack above it. The stack of nanopb adds to this value.
-- In `rs485_bus`, the UART read is an indirect call (`rx()` in `mb_master.c`), with 768 B of own stack above it.
-
-For the current values, read `stack.txt` in the artifact of the last CI run.
+The documentation does not record the values of the report, because each change of the code changes them. Read `stack.txt` in the artifact `firmware-esp32s3` of the CI run, or make the report from your build.

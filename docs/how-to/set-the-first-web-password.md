@@ -68,7 +68,7 @@ You can now do the work in the web UI. When you complete the work, close the acc
 | "a web password is set" | Somebody set the password. If it was not you, do a factory reset (push BOOT for more than 10 s), then do this procedure again |
 | "Use 8 to 63 characters", or "the web password must have …" | Type a password that obeys the rule. Do not use letters with accents |
 | "The two passwords are not the same." | Type the same password in the two fields |
-| HTTP 429 | Too many refused attempts from your address. Wait 30 s |
+| HTTP 429 | Too many refused attempts from your address. Wait 30 s or more |
 
 ## If the phone does not connect again (step 8)
 
@@ -77,6 +77,7 @@ You can now do the work in the web UI. When you complete the work, close the acc
 
 ## After the procedure
 
-- Load the configuration of the plant in the web UI. Keep `web.password` as `********`: this keeps the stored password and the Wi-Fi password of the access point. A configuration without the `web.password` key removes the password.
+- Load the configuration of the plant in the web UI. Refer to [Change, back up and restore the configuration](change-the-configuration.md). In the card **Web interface**, keep `********` in the field **Password (8 to 63)**: this keeps the stored password and the Wi-Fi password of the access point.
+- If the web UI asks "Remove the web password?" before the save, click **Cancel**. The document then has no web password, or an empty one. Refer to [Change the web password](change-the-web-password.md#do-not-remove-the-web-password-by-mistake).
 - The window does not open again while a web password is set. Only a factory reset removes the password.
 - On a later visit, refer to [Get on the access point on a later visit](get-on-the-access-point.md).

@@ -105,7 +105,7 @@ Under the device, the web UI shows its Sparkplug topic and its UMH topic. Make s
 The row of a tag has the frequent fields. The other fields of the tag are in its details row.
 
 1. Click **+ tag** for each value.
-2. Type the **Tag** name (1 to 39 bytes). Use `/` between the levels of a path, for example `L1/Current`. Do not use `:` or spaces.
+2. Type the **Tag** name (1 to 39 bytes). Use `/` between the levels of a path, for example `L1/Current`. For UMH Core, do not use `:` or spaces.
 3. Select the **Area** and the **Type**, and type the **Address**. Use the values of the test read.
 4. Select the **Word order** for a type with two or more registers.
 5. As an option, type the **Scale**. The gateway publishes `raw × scale + offset`.
@@ -173,8 +173,4 @@ The device has no DBIRTH, and the gateway discards a DCMD for it. To start the p
 
 ## Limits
 
-- 16 devices, 64 tags for each device, and 256 tags in total. A disabled device and its tags also count. A device with a device type counts the tags of its type.
-- Two devices must not have names that differ only in case. Two tags of one device must not have names that differ only in case.
-- A tag name must not also be a folder of another tag name of the same device, for example `A` and `A/B`.
-
-For each key of a device and of a tag, refer to [The configuration document](../reference/configuration.md#devices).
+The gateway accepts 16 devices, 64 tags for each device, and 256 tags in total. A disabled device and its tags also count. For all the limits and the rules of the names, refer to [General rules](../reference/configuration.md#general-rules).

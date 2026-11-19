@@ -84,7 +84,6 @@ nav = [
       "reference/tests.md",
       "reference/e2e-harness.md",
       "reference/e2e-scenarios.md",
-      "reference/e2e-durations.md",
       "reference/compiler-warnings-and-stack.md",
     ] },
     { "Explanation" = [

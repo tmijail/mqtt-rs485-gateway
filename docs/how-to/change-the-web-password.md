@@ -47,26 +47,7 @@ To change the user name, use the field **User** in the same card. The user name 
 
 ## Change the password with the REST API
 
-`PUT /api/config` replaces the full configuration document. Thus start from the stored document.
-
-1. Get the stored document:
-
-   ```sh
-   curl -k -u admin:<current password> "https://<ip>/api/config?download=1" -o gw-config.json
-   ```
-
-2. In `gw-config.json`, replace `"********"` of `web.password` with the new password. Do not change the other `"********"` values.
-3. Validate the document:
-
-   ```sh
-   curl -k -u admin:<current password> -H "X-Requested-With: curl" -X PUT \
-        --data-binary @gw-config.json "https://<ip>/api/config?dry_run=1"
-   ```
-
-4. Save the document. Use the same command without `?dry_run=1`.
-5. Delete `gw-config.json`. It contains the new password in clear text.
-
-For the routes and the responses, refer to [The REST API](../reference/rest-api.md).
+A script can change the password with `PUT /api/config`. The request replaces the full document. Thus start from the stored document (`GET /api/config?download=1`), and replace only the `"********"` of `web.password`. Send the document with `?dry_run=1` first to validate it. After the save, delete the file: it contains the new password in clear text. For the routes and the responses, refer to [The REST API](../reference/rest-api.md).
 
 ## Do not remove the web password by mistake
 
@@ -87,5 +68,5 @@ To set a web password again, do the procedure above with the commissioning passw
 ## If the new password does not open the web UI
 
 1. Make sure that you type the user name and the password correctly. Each letter must have the correct case (A or a).
-2. After 5 failed logins in sequence, the gateway refuses your address for 30 s (`429`). Wait 30 s before you try again.
+2. After 5 failed logins in sequence, the gateway refuses your address for 30 s (`429`). Each new block in sequence doubles the time. Wait, then try again.
 3. If the password still does not open the web UI, refer to [Recover a gateway](recover-the-gateway.md#nobody-knows-the-web-password). With the USB console, you set a new password and keep the configuration. Without the USB console, you must do a factory reset.

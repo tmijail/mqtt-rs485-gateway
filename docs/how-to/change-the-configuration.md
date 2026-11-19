@@ -20,14 +20,7 @@ The three paths use the same validation. After a save, the gateway does an order
 
 ## The secrets in the document
 
-The gateway keeps `mqtt.password`, `network.wifi.password` and `web.password` in NVS, not in the document. An export shows each secret that has a value as `"********"`. When you load a document:
-
-| Value of the secret | Result |
-|---|---|
-| `"********"` | The gateway keeps the stored secret |
-| A new text | The gateway replaces the secret |
-| `""` | The gateway deletes the secret |
-| The key is not in the document | The gateway deletes the secret |
+The gateway keeps `mqtt.password`, `network.wifi.password` and `web.password` in NVS, not in the document. An export shows each secret that has a value as `"********"`. A secret with the value `"********"` in a document that you load stays as it is. For the other values, refer to [The secrets](../reference/configuration.md#the-secrets).
 
 > **Caution: Keep `web.password` as `"********"` in each document that you load.** A document without this key removes the web password. The web password is also the Wi-Fi password of the access point. Before such a save, the web UI asks for a confirmation (#194).
 
@@ -42,13 +35,14 @@ To change the web password, refer to [Change the web password](change-the-web-pa
 
 3. Find the card of the key. The card Gateway is at the top. The other cards are in four groups: Network, MQTT and Sparkplug, Services, and Field.
 4. If the card is closed, click its title. Change the values in the card.
-5. For a key that has no control in the card, click the tab **JSON**. Change the document.
-6. Click **Validate** in the bar at the bottom of the window. Read the message in the bar.
-7. If the bar gives an error, click **Go to the field**. Read the error below the field, and correct the value.
+5. Click **Validate** in the bar at the bottom of the window. Read the message in the bar.
+6. If the bar gives an error, click **Go to the field**. Read the error below the field, and correct the value.
 
    ![The Configuration tab after Validate with the unit ID 300 for Meter1. Below the field Unit ID, the text 'Value 300 out of range [1, 247]' shows in red. The bar at the bottom of the window shows '1 change, not saved', '1 error: Meter1 · Unit ID' with the link 'Go to the field', and the buttons Validate and 'Save and restart'.](../images/validate-error.png)
 
-8. Click **Save and restart**. The page loads again after 15 s.
+7. Click **Save and restart**. The page loads again after 15 s.
+
+Each key of the document has a control in a card. The tab **JSON** shows the full document as text. Use it, for example, to paste a document.
 
 ### The cards that close and open
 

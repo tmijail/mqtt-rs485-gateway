@@ -6,7 +6,7 @@
 #
 #   . $IDF_PATH/export.sh
 #   E2E_PYTHON=~/e2e/bin/python tools/e2e/run_ci_groups.sh /tmp/gw-groups            # all groups
-#   E2E_PSRAM=1 E2E_PYTHON=... tools/e2e/run_ci_groups.sh /tmp/gw-groups ota-fw1 other
+#   E2E_PSRAM=1 E2E_PYTHON=... tools/e2e/run_ci_groups.sh /tmp/gw-groups ota-fw1-web other
 #
 # Issue #135: each variant has its own groups (the PSRAM variant runs most scenarios, the
 # variant without PSRAM only the OTA trial scenarios); run the script once for each variant.

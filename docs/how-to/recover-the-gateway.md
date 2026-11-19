@@ -11,7 +11,8 @@ This document tells what to do when a gateway does not operate normally: the con
 
 | LED | Mode | Go to |
 |---|---|---|
-| Red, blinks fast | Recovery: the configuration is not valid | [The configuration is rejected](#the-configuration-is-rejected) |
+| Red, blinks fast | Recovery: the configuration is not valid. The PSRAM fault mode shows the same pattern | [The configuration is rejected](#the-configuration-is-rejected) or [The web UI is not available in any mode](#the-web-ui-is-not-available-in-any-mode) |
+| Blue and amber, alternately | Safe mode: after 3 crashes in sequence, or on request | [The gateway restarts again and again](#the-gateway-restarts-again-and-again) |
 | Blue, blinks slowly | Commissioning: no configuration (after a factory reset) | [The gateway has no configuration](#the-gateway-has-no-configuration) |
 | Red, continuous | No network address | [The gateway has no network](#the-gateway-has-no-network) |
 | Magenta, blinks slowly | No valid clock: the MQTT session waits | [The clock and the RTC battery](../reference/clock-and-rtc-battery.md) |
@@ -95,9 +96,9 @@ Do not push BOOT when you connect the power. GPIO0 is a strapping pin: the ROM t
 
 ## The gateway does not connect to the broker
 
-1. Read the log of the gateway on the console or on the syslog server. It gives the cause of each failed connection.
+1. Read the log of the gateway in the card **Log** of the Status tab. It gives the cause of each failed connection. Refer to [Read the live log](read-the-live-log.md). The console and the syslog server give the same lines.
 2. Make sure that the broker address and the port are correct.
-3. Make sure that the gateway can reach the broker: type `ping <broker address>` in the shell.
+3. Make sure that the gateway can reach the broker: type `ping <broker address>` in the shell. The web UI has no ping.
 4. With TLS, make sure that the clock is valid and that the CA of the broker is correct.
 5. With `sparkplug.primary_host_id`, make sure that the primary host is online. The gateway sends no NBIRTH until the host publishes its STATE `online`.
 
@@ -105,8 +106,8 @@ Do not push BOOT when you connect the power. GPIO0 is a strapping pin: the ROM t
 
 With `web.enabled: false`, the gateway starts no web server in normal mode. MQTT, Modbus and the other services continue. The BOOT button starts the web server again until the next restart.
 
-1. Push the BOOT button of the gateway for 2 to 10 s, until you hear 1 beep. Release the button.
-2. Make sure that the LED blinks white during the push. The web server and the access point start.
+1. Push the BOOT button of the gateway for 2 to 10 s. Release it when the LED blinks white.
+2. Make sure that you hear 1 beep. The web server and the access point start.
 3. Open the web UI on the plant network, or on the access point. Refer to [Get on the access point on a later visit](get-on-the-access-point.md).
 4. In the Configuration tab, go to the card **Web interface**.
 5. Turn on **Enabled**.
@@ -126,4 +127,4 @@ Flash the firmware over USB. The owner of the board always keeps this access: th
 
 A flash with `idf.py flash` also writes the `fs/` folder into the LittleFS partition. Without a `config.json` in that folder, the gateway uses the embedded example configuration. After a factory reset, it stays in commissioning mode. The NVS (secrets, web password) stays. To erase all, type `idf.py -p <port> erase-flash` before the flash.
 
-The PSRAM fault mode is a different case: the boot did not find the PSRAM. Only the network, the web server and the shell start. Examine the board. The firmware does not operate without PSRAM.
+The PSRAM fault mode is a different case: the boot did not find the PSRAM. Only the network, the web server, the shell and the access point start. The banner of the web UI gives the fault. Examine the board. The firmware does not operate without PSRAM.

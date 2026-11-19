@@ -68,40 +68,25 @@ The web password is also the WPA2 key, thus it obeys the rule of a WPA2 passphra
 | No client | The idle time without a client | `idle` |
 | Maximum time | The end of the maximum time (normal mode only) | `time` |
 
-- A stop also closes an open claim window, also before the end of its 10 min. The window accepts only the clients of the access point.
+- A stop also closes an open claim window, also before the end of its time. The window accepts only the clients of the access point.
 - While a client is connected, the idle time does not apply. During a claim window, the access point then stays on until the claim or the end of the window.
 - A new push of BOOT for 2 to 10 s starts the access point again.
 - A restart stops the access point and closes the claim window.
 
-## LED
+## LED and buzzer
 
-The patterns of the access point in the table of the status LED (refer to [The status signals](status-signals.md#status-led)):
+The status LED and the buzzer give the state of the access point and the result of a push of BOOT. For the patterns and the beeps, refer to [The status signals](status-signals.md):
 
-| State | Pattern |
-|---|---|
-| Claim window open, or access point open (no key) | Blue and white, alternately (each color 250 ms) |
-| Access point on with WPA2 | A short cyan flash (125 ms) each 2 s. Between the flashes, the LED shows the pattern of the gateway, from "Commissioning" to "Normal operation" |
-
-The patterns "Factory reset in progress" (white, continuous) and "BOOT pushed for more than 2 s" (white, blinks at 4 Hz) have a higher priority. The log gives the name of the pattern, for example `led: status: operating, access point`.
-
-## Buzzer
-
-| Event | Beeps |
-|---|---|
-| BOOT released after 2 to 10 s, after the end of the boot | 1 beep: the access point starts. When no web password is set, the claim window opens |
-| BOOT released after 2 to 10 s, during the boot | No beep: the gateway ignores the push. The log gives `BOOT gesture ignored: still starting (no beep)` |
-| The claim window set the web password | 1 beep |
-| BOOT pushed for 10 s | 2 beeps: the factory reset starts |
-
-One beep is 150 ms of tone and 150 ms of silence.
+- The claim window, or an open access point: blue and white, alternately.
+- The access point with WPA2: a short cyan flash each 2 s over the pattern of the gateway.
+- BOOT released after 2 to 10 s, after the end of the boot: 1 beep. During the boot, no beep.
+- The claim window set the web password: 1 beep.
 
 ## The card "Access point" of the web UI
 
 The Status tab of the web UI has a card "Access point". It shows the network name, the key, the number of clients and the time to the stop. When the access point is on, the card has the button "Close the access point". The button opens a confirmation, and then sends `POST /api/ap/stop`. When `request_via_ap` is `true`, the confirmation also tells that the page stops, because the browser uses the access point.
 
 ![The card 'Access point' of the Status tab on a phone: the access point GW-Setup is on, its Wi-Fi password is the web password, it has 1 client, and it stops in 28 min. Below is the button 'Close the access point'.](../images/ap-card-phone.png)
-
-The image comes from the firmware in QEMU, with one simulated client.
 
 ## The `ap` object of `GET /api/status`
 

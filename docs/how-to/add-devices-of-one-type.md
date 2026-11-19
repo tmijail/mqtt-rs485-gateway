@@ -48,7 +48,7 @@ The card **Device types** is closed by default. Its header shows the number of t
 1. In the card **Devices and tags**, click **+ device** for each device.
 2. Type the **Name** and the **Unit ID** of the device.
 3. In the field **Device type**, select the type.
-4. The dialog asks before the own tags of the new device go away. Click **Use the type**.
+4. The dialog asks before the own tags of the new device go away. Click the button with the name of the type, for example **Use the type Meter**.
 
    If you click **Cancel**, the field goes back to **(none: own tags)**, and the device keeps its tags.
 

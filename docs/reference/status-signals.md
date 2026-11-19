@@ -11,7 +11,7 @@ This document lists the signals that the gateway gives at the panel: the modes, 
 | `normal` | The configuration is valid | All |
 | `recovery` | The configuration is rejected, or safe mode: 3 crashes in sequence, or a restart into safe mode on request | The network, the web UI, the shell, the access point and the firmware upload. No polling, no MQTT |
 | `commissioning` | After a factory reset: no configuration | The network (DHCP), the web UI, the shell and the access point |
-| `fault` | The boot did not find the PSRAM | The network, the web server and the shell. The gateway does not start |
+| `fault` | The boot did not find the PSRAM | The network, the web server, the shell and the access point. The gateway does not start |
 
 `GET /api/status` (`mode`), the card **Gateway** of the web UI and the shell command `status` give the mode.
 
@@ -40,7 +40,7 @@ The LED shows the pattern of the highest state in the table.
 | Claim window open, or access point open (no key) | Blue and white, alternately (each color 250 ms) |
 | Commissioning | Blue, blinks at 1 Hz |
 | Safe mode (on request or after 3 crashes) | Blue and amber, alternately (1 Hz) |
-| Configuration not valid (recovery mode, but not safe mode) | Red, blinks at 4 Hz |
+| Configuration not valid (recovery mode, but not safe mode), or the PSRAM fault mode | Red, blinks at 4 Hz |
 | No network (no IP address) | Red, continuous |
 | No valid clock: the MQTT session waits | Magenta, blinks at 1 Hz |
 | No broker | Amber, blinks at 1 Hz |
@@ -57,7 +57,7 @@ One beep is 150 ms of tone and 150 ms of silence.
 
 | Signal | When |
 |---|---|
-| 1 beep | You release BOOT after 2 to 10 s: the access point starts (and the claim window opens, if no web password is set) |
+| 1 beep | You release BOOT after 2 to 10 s, after the end of the boot: the access point starts (and the claim window opens, if no web password is set). During the boot, the gateway ignores the push and gives no beep. The log gives `BOOT gesture ignored: still starting (no beep)` |
 | 1 beep | The claim window set the first web password |
 | 2 beeps | BOOT held for 10 s, or a factory reset from the web UI, the REST API or the shell: the factory reset starts |
 | 1 short beep each 0.5 s, for 10 s | Identify. The beep is 150 ms of tone. The alarms and the other beeps wait until the end |

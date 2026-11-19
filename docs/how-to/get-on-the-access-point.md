@@ -65,14 +65,9 @@ To get more time, push BOOT for 2 to 10 s again. This starts the times again. Wi
 The claim window does not open again while a web password is set (decision of #120). There are two paths:
 
 - **With a computer and a USB cable at the panel:** set a new web password through the shell. This keeps the configuration. Refer to [Recover a gateway](recover-the-gateway.md#with-the-usb-console).
-- **Without a computer:** do a factory reset, then set a new first web password.
+- **Without a computer:** do a factory reset at the panel with the BOOT button, then set a new first web password.
 
 > **Caution: Make sure that you have the configuration of the plant and its secrets before the factory reset.**
 > The factory reset erases the configuration, the secrets (for example the MQTT password) and the certificate of the web UI. The gateway stops its work until it gets a new configuration.
 
-To do a factory reset:
-
-1. Push the BOOT button for more than 10 s. At 2 s, the LED changes to white.
-2. Release the button after you hear 2 beeps. The gateway erases the configuration and restarts in commissioning mode.
-3. Do the procedure [Set the first web password on site](set-the-first-web-password.md).
-4. Load the configuration of the plant in the web UI.
+To do the factory reset at the panel, refer to [Recover a gateway](recover-the-gateway.md#do-a-factory-reset). Then do the procedure [Set the first web password on site](set-the-first-web-password.md), and load the configuration of the plant in the web UI.

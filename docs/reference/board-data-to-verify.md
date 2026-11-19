@@ -38,6 +38,6 @@ Four strapping pins have board peripherals: GPIO0 (BOOT), GPIO3 (CAN RX, JTAG), 
 
 - The firmware sets GPIO0 and GPIO46 only from `app_main`, never before.
 - The firmware does not use GPIO3.
-- GPIO45 is the D0 line of the microSD card. The firmware uses it only when `sparkplug.store_forward.sd` is on.
+- GPIO45 is the D0 line of the microSD card. The firmware uses it only when `sparkplug.store_forward.sd.enabled` is `true`.
 
-> **Caution: Read the GPIO45 warning in [Known limitations](known-limitations.md) before you set `sparkplug.store_forward.sd`.** A pull-up on D0 can stop the boot of the board.
+> **Caution: Read [The microSD card and GPIO45](store-and-forward.md#the-microsd-card-and-gpio45) before you set `sparkplug.store_forward.sd.enabled`.** A pull-up on D0 can stop the boot of the board.

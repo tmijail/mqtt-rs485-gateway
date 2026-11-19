@@ -81,12 +81,17 @@ The gateway publishes these metrics in the NBIRTH, and their changes in NDATA. S
 | `Node Info/Firmware` | String | Always | `Node_Info.Firmware` | Kept |
 | `Node Info/Hardware` | String | Always | `Node_Info.Hardware` | Kept |
 | `Node Info/Reset Reason` | String | Always | `Node_Info.Reset_Reason` | Kept |
+| `Node Info/Name`, `Node Info/Location` | String | Only when `gateway.name` or `gateway.location` is set. Only in the NBIRTH | `Node_Info.Name`, `Node_Info.Location` | Kept |
 | `DI/1` to `DI/8` | Boolean | Always | `DI.1` to `DI.8` | Kept |
 | `DO/1` to `DO/8` | Boolean | Always. Null when the state of the DO expander is not known | `DO.1` to `DO.8` | Kept. A null value is dropped |
 | `Counter/1` to `Counter/8` | UInt64 | Always | `Counter.1` to `Counter.8` | Kept |
+| `Run Hours/DI/1` to `Run Hours/DO/8` | UInt64 | Only for the channels of `local_io.run_hours` | `Run_Hours.DI.1` to `Run_Hours.DO.8` | Kept |
 | `Node Info/Uptime` | UInt64 | Always | `Node_Info.Uptime` | Kept |
 | `Node Info/Free Heap` | UInt32 | Always | `Node_Info.Free_Heap` | Kept |
 | `Node Info/Min Free Heap` | UInt32 | Always | `Node_Info.Min_Free_Heap` | Kept |
+| `Node Info/Largest Free Block` | UInt32 | Always | `Node_Info.Largest_Free_Block` | Kept |
+| `Node Info/Free PSRAM` | UInt32 | Always | `Node_Info.Free_PSRAM` | Kept |
+| `Node Info/Temperature` | Float | Always. Null without a reading of the sensor | `Node_Info.Temperature` | Kept. A null value is dropped |
 | `Node Info/RSSI` | Int32 | Only with `network.wifi`. Null without a Wi-Fi connection | `Node_Info.RSSI` | Kept. A null value is dropped |
 | `Node Info/Modbus` | DataSet | With one or more devices, not with the UMH preset | None: UMH gives no value for a DataSet | Dropped |
 | `Node Info/Modbus TCP` | DataSet | Only with `modbus_tcp.enabled`, not with the UMH preset | None: UMH gives no value for a DataSet | Dropped |
@@ -97,7 +102,7 @@ The gateway publishes these metrics in the NBIRTH, and their changes in NDATA. S
 | `Devices/<name>/Online`, for example `Devices/line3/meter1/Online` | Boolean | Only with the UMH preset (#173), one for each device. Each `:` of the name becomes `/` | `Devices.line3.meter1.Online` | Kept |
 | A template definition for each device `type` | Template | Only with devices that have a `type`, not with the UMH preset | None: UMH gives no value for a Template | Dropped |
 
-`Node Info/Uptime`, `Free Heap`, `Min Free Heap` and `RSSI` also go in an NDATA each `sparkplug.diagnostics_s` (60 s by default, 0 = never). The DataSets go in this NDATA only when a counter changed.
+`Node Info/Uptime`, `Free Heap`, `Min Free Heap`, `Largest Free Block`, `Free PSRAM`, `Temperature` and `RSSI` also go in an NDATA each `sparkplug.diagnostics_s` (60 s by default, 0 = never). The Modbus DataSets, or the sums of the UMH preset, go in this NDATA only when a counter or the state of a device changed.
 
 ## Device metrics
 

@@ -8,13 +8,12 @@ The TCK is the official test kit of the specification. It is a HiveMQ extension:
 
 | Item | Value |
 |---|---|
-| Firmware | The tables: `main` at 6621c53, QEMU default build (no PSRAM). `MultipleBrokerTest`, `PrimaryHostTest` and `SessionTerminationTest` again after #186 (21b244d, PSRAM build) |
-| Last run | `main` 8c2e8be, PSRAM build: 19/19 checks passed (the 14 tests and the 5 checks of the run), with the results of the tables. `PrimaryHostTest` (MQTT 3.1.1) gave no TCK result in its first attempt, and its second attempt passed |
+| Firmware | `main` at 8c2e8be, QEMU build with PSRAM |
+| Result | 19/19 checks passed: the 14 tests and the 5 checks of the run |
 | TCK | Eclipse Sparkplug TCK 3.0.0 (`Eclipse-Sparkplug-TCK-3.0.0.zip`), from the tag `v3.0.0` |
 | Broker | HiveMQ CE 2025.5 with the TCK extension; mosquitto 2.0.18 as the second MQTT server of `MultipleBrokerTest` |
 | Java | Eclipse Temurin 21.0.13 |
-| Repeatability | Four runs on 6621c53 gave the same results. Thus each test ran three times with each MQTT version |
-| Duration | 262 to 270 s for the 14 tests (7 tests × 2 MQTT versions), plus the image build. 407 s in the last run, with the repeated test |
+| Duration | Approximately 270 s for the 14 tests (7 tests × 2 MQTT versions), plus the image build |
 
 ## Test configuration
 
@@ -82,7 +81,7 @@ The name of each assertion is its `tck-id` without the prefix `tck-id-`. A name 
 - eclipse-sparkplug/sparkplug#102 recorded this conflict. The Tahu Java library was corrected (eclipse-tahu/tahu#202): it now writes `int_value` and reads both fields. The TCK was not corrected.
 - The harness accepts these FAILs only when it proves the cause from the captured NBIRTH (`uint32_cause` in `KNOWN_RULES`). Each metric must have a name, a datatype and the value field of the specification. The only metrics without the field that the TCK wants must be UInt32 metrics with `int_value`. Thus a different fault of the same assertion still fails the check.
 
-These two TCK bugs are the only failures of a full TCK run.
+These two assertions are the only failures of a full TCK run, and they have this one cause.
 
 ### NOT EXECUTED
 

@@ -56,7 +56,7 @@ The firmware needs ESP-IDF 6.x. The project uses v6.1. The reason for the limit 
 > **Warning: Do not flash a QEMU build on the board.** On a real chip, its first boot burns an HMAC key into eFuse KEY5, and you cannot undo this. The reason is in [Features that burn eFuses](../explanation/no-efuse-features.md).
 
 1. Connect the board to the computer with the USB-C cable.
-2. Optional: to flash a site configuration, copy its `config.json` into `idf/fs/`.
+2. Optional: to flash a site configuration, copy its `config.json` into `idf/fs/`. To configure a gateway that runs, use the web UI. Refer to [Change, back up and restore the configuration](change-the-configuration.md).
 3. Flash the firmware and open the console. Use the serial port of the board, for example `/dev/ttyACM0` or `COM5`:
 
    ```bash
@@ -141,7 +141,7 @@ The contents of the report and its limits are in [Compiler warnings and the stac
 
 ## Run the static analyzer
 
-The CI job `analyzer` does these steps on each push (#230).
+The CI job `analyzer` does steps 1 and 2 on each push (#230).
 
 1. In `idf/`, build the firmware with the analyzer in a separate folder:
 
@@ -150,6 +150,13 @@ The CI job `analyzer` does these steps on each push (#230).
    ```
 
 2. Make sure that the build completes. A result of the analyzer stops the build with `error: ... [-Werror=analyzer-...]`.
-3. Correct each result. Refer to [Correct a result](../reference/compiler-warnings-and-stack.md#correct-a-result).
+3. For each result, read the path of the result in the log. The analyzer gives the events of the path that it followed.
+4. If the result is a real error, correct the code.
+5. If the result is a false positive, change the code so that the analyzer can follow it. Use only a change that keeps the behaviour.
+6. Write a comment next to the change, with the name of the check and the reason.
 
 > **Caution: Do not use the folder `build` for the analyzer.** `GW_ANALYZER` stays in the CMake cache of the folder, and the next build in that folder also uses the analyzer.
+
+> **Caution: Do not hide a result with `#pragma` or with `-Wno-analyzer-*`.** A hidden check also hides the real errors of that type in the file.
+
+The scope and the options of the analyzer are in [The static analyzer](../reference/compiler-warnings-and-stack.md#the-static-analyzer).

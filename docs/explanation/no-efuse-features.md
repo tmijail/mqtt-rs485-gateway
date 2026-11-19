@@ -33,7 +33,7 @@ The project does not maintain that branch. Do not put its features in `main` aga
 
 ## The default build burns no eFuse
 
-The default build (`idf.py set-target esp32s3 build`, ESP-IDF v6.1) was examined for eFuse writes:
+The project examined the default build (`idf.py set-target esp32s3 build`, ESP-IDF v6.1) for eFuse writes:
 
 - The `sdkconfig` has no option that burns an eFuse. These options are off: `CONFIG_SECURE_BOOT`, `CONFIG_SECURE_FLASH_ENC_ENABLED`, `CONFIG_SECURE_DISABLE_ROM_DL_MODE`, `CONFIG_SECURE_ENABLE_SECURE_ROM_DL_MODE`, `CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK` and `CONFIG_NVS_ENCRYPTION`.
 - The ROM log mode stays `CONFIG_BOOT_ROM_LOG_ALWAYS_ON`, the ESP-IDF default. The other ROM log modes burn an eFuse at the first boot.

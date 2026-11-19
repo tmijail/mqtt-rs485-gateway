@@ -54,6 +54,7 @@ The harness makes these checks one time per run, after the scenarios:
 The main boot of `GW01`, with the slave, the main broker and the shell.
 
 - **Session (§7.1, SPB-3, #161):** NBIRTH with seq 0 and a bdSeq of 0 at the boot. A killed TCP connection gives the NDEATH with the same bdSeq. The bdSeq increases by 1 for each CONNECT packet, and attempts without a CONNECT keep it. After a power cycle and after NCMD Reboot, the bdSeq is 0 again.
+- **REL-6:** the time from the start of QEMU to the first NBIRTH is less than 10 s. The time includes the start of the emulator. The limit scales with `--timeout-scale`.
 - **Broker restart and frozen broker:** the will at the close, a backoff that increases, then NBIRTH and the DBIRTHs. With the broker stopped for 20 s (SIGSTOP), the keepalive declares the session dead, and the new session stays alive.
 - **MQTT-2 (#5, #11, #89):** a broker that cuts each connection after the CONNACK gives a backoff that increases. A refused SUBACK (0x80) gives no NBIRTH: the gateway sends DISCONNECT and tries again. The check waits up to 15 s for the first three refused connections to end. It requires a DISCONNECT in each, and a backoff that increases strictly. The backoff returns to the minimum only after a session that lasted one keepalive.
 - **#71:** a connection cut after the SUBACK gives no "session up". **#72:** the shell answers a command before the configuration loads.
@@ -219,7 +220,7 @@ A full run and the CI groups do not run these scenarios (`OPTIONAL` in `scenario
 
 ### umh: UMH Core interoperability (#175)
 
-The scenario runs the real benthos-umh v0.16.2 (commit `0d3a203`), the program of the UMH Core bridges. It needs `E2E_BENTHOS_UMH=<binary>`. It takes approximately 25 s.
+The scenario runs the real benthos-umh v0.16.2 (commit `0d3a203`), the program of the UMH Core bridges. It needs `E2E_BENTHOS_UMH=<binary>`.
 
 The harness reads the input section and the `tag_processor` of the bridge from [Connect the gateway to UMH Core](../how-to/connect-to-umh-core.md). Thus the test uses the configuration that the document gives. Only the output changes: files of JSON lines in place of `uns: {}`.
 
@@ -228,7 +229,7 @@ The harness reads the input section and the `tag_processor` of the bridge from [
 - Gateway `acme:berlin:gw01`: the UMH preset, store & forward, a relay, a `device_prefix` of six levels, a device with each scalar type and a `bytes` tag, a typed device, and a device that never answers.
 - Gateway `acme:berlin:gw02`: the same devices without the UMH preset.
 
-The checks assert what v0.16.2 does, also its limits. Thus a new UMH version that changes its behaviour makes a check fail. The measured behaviour is in [UMH names and topics](umh-names-and-topics.md) and in the how-to. The last result was 15/15 in each variant (merge b3ec3e7, before #160).
+The checks assert what v0.16.2 does, also its limits. Thus a new UMH version that changes its behaviour makes a check fail. The measured behaviour is in [UMH names and topics](umh-names-and-topics.md) and in the how-to.
 
 Not tested: the downsampler (`late_policy`), the `uns` output into Redpanda, the role `primary` (#177), and a DDEATH.
 
@@ -246,4 +247,4 @@ A rollback or a manual downgrade runs an earlier image on the data that a later 
 
 The scenario needs `E2E_DOWNGRADE_REF=<git ref>`. Before the tag `v1.0`, use the commit before the change. Each change that updates `littlefs` or ESP-IDF must pass this test in the two variants. If the earlier image cannot read the data, the pre-flight check must refuse that downgrade (refer to [The pre-flight check](firmware-updates.md#the-pre-flight-check)).
 
-The last run used the reference `761edf8`, the last commit before the NVS records of #144. It gave 7/7 in each variant. The earlier image ignores the NVS keys that it does not know (`fw_last`, `cfg_prev`). It reads `lkg_net` as a raw struct with a size check, so it does not use the new record.
+An image from before the NVS records of #144 (for example the commit `761edf8`) ignores the NVS keys that it does not know (`fw_last`, `cfg_prev`). It reads `lkg_net` as a raw struct with a size check, so it does not use the new record.

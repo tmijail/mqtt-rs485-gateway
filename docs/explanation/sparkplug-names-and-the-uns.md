@@ -77,7 +77,7 @@ In v0.16.2, the `sparkplug_b` input has these limits:
 - It ignores the PropertySet of a metric. Thus the UNS does not receive the units and the Quality.
 - It cannot send a DCMD. UMH cannot write to a Modbus device through the gateway.
 - The default role `secondary_passive` never asks for a rebirth.
-- Without a BIRTH in its cache, the input uses the datatype of the DATA metric. The gateway sends no datatype in NDATA and DDATA, because the specification says so (`tck-id-payloads-metric-datatype-not-req`, #159). Thus, until the next BIRTH, a negative integer can show as a large number. The E2E measured -3 as 4294967293, with the name `alias_<n>`. The role `secondary_active` asks for that BIRTH, and the BIRTH came in less than 1 s.
+- Without a BIRTH in its cache, the input uses the datatype of the DATA metric. The gateway sends no datatype in NDATA and DDATA, because the specification says so (`tck-id-payloads-metric-datatype-not-req`, #159). Thus, until the next BIRTH, a negative integer can show as a large number. The E2E measured -3 as 4294967293, with the name `alias_<n>`. The role `secondary_active` asks for that BIRTH.
 - The `tag_processor` runs JavaScript, where each number is a double. Thus it rounds a 64-bit integer that is larger than 2^53. The input of the bridge has the exact value.
 
 The gateway keeps these items, because they are correct Sparkplug B 3.0 and other hosts use them:
@@ -114,7 +114,7 @@ Each Sparkplug metric has the time of its sample. UMH uses this time only if the
 
 - Store & forward samples arrive late, with `is_historical`. With the line, the UNS keeps the time of each sample. Without the line, all samples of the replay get the same arrival time. The E2E of #175 measured the two cases.
 - The gateway sends the DBIRTH with the current value first, then the stored samples. Thus the UNS receives samples that are older than the last value. A consumer that keeps only the last message shows the last stored sample until the next change.
-- Before the gateway has a valid time (SNTP, the RTC or the browser), it does not connect to the broker. Thus the UNS gets no timestamp near 1970 (#160). The first births come when the time becomes valid. A value that the gateway read before that time gets the time of the births. The web UI has a button that sets the time from the browser. The RTC battery keeps the time during a power cut (`docs/how-to/fit-the-rtc-battery.md`).
+- Before the gateway has a valid time (SNTP, the RTC or the browser), it does not connect to the broker. Thus the UNS gets no timestamp near 1970 (#160). The first births come when the time becomes valid. A value that the gateway read before that time gets the time of the births. The web UI has a button that sets the time from the browser. The RTC battery keeps the time during a power cut (refer to [Fit the RTC battery](../how-to/fit-the-rtc-battery.md)).
 - The UMH downsampler has the option `late_policy` (`passthrough` or `drop`) for samples that arrive out of order. Nobody examined its effect on a replay yet: the E2E has no downsampler.
 
 ## Why the gateway does not make the UMH bridge configuration

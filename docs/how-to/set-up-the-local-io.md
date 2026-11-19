@@ -50,7 +50,7 @@ Use a fast counter for a flow meter or an energy meter that gives more than appr
 
 1. In the row of the DI, set **Counter** to `fast (PCNT)`.
 2. Type the time of the **Glitch filter (ns)**: 0 to 12787. The PCNT unit ignores a shorter pulse. The default is 1000 ns.
-3. Make sure that the title of the table shows 4 fast counters or less. The ESP32-S3 has 4 PCNT units.
+3. Make sure that the text next to **Digital inputs** shows 4 fast counters or less, for example `Fast counters: 2 of 4 (PCNT units)`. The ESP32-S3 has 4 PCNT units.
 
 The metric `Counter/n` does not change. The state of the DI still uses the debounce.
 
