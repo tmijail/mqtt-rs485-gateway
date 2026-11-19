@@ -165,6 +165,16 @@ esp_err_t gw_fw_upload_end(bool complete, char *why, size_t cap);
  *  empty or invalid, (ESP_ERR_NOT_SUPPORTED) when the pre-flight check refuses and not @p force. */
 esp_err_t gw_fw_boot_other(bool force, char *why, size_t cap);
 
+/** Issue #256: run @p fn(@p arg), a call that maps the flash (esp_partition_mmap, for example
+ *  gw_coredump_summary()), with the precaution of the image verification. The QEMU build
+ *  (CONFIG_GW_FW_PARK_OTHER_CORE) runs @p fn on core 0 while core 1 is parked: the park first
+ *  waits for the bus task to stop (up to 10 s, longer with slow RS485 settings), and one park
+ *  runs at a time. @p fn must not log and must not wait for a task that can only run on core 1.
+ *  When the park is refused, @p fn runs without it (the refusal is logged). On the chip, and
+ *  before gw_fw_early_init(), it only calls @p fn. Any task, not from an ISR; returns when @p fn
+ *  returned. */
+void gw_fw_run_mapped(void (*fn)(void *), void *arg);
+
 void gw_fw_get_status(gw_fw_status_t *out);
 
 /** A new image is on trial (TESTING, CONFIRMING or REJECTED). */
