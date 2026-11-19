@@ -17,7 +17,7 @@ A mode is the state that the boot reached. For the table of the modes and the LE
 | `normal` | The configuration is valid. The web server starts only with `web.enabled: true`. A push of BOOT for 2 to 10 s starts it until the next restart |
 | `recovery` | The configuration is rejected, or safe mode. The web server always starts. The saved web password is valid with any user name, because the user name is in the rejected document |
 | `commissioning` | After a factory reset. The gateway does not use the embedded example configuration or its Sparkplug identity. It waits for a configuration from the web UI or the shell, with a new commissioning password. The saved web password, if there is one, is valid with any user name |
-| `fault` | The boot did not find the PSRAM. Only the network, the web server and the shell start |
+| `fault` | The boot did not find the PSRAM. Only the network, the web server, the shell and the access point start |
 
 For recovery mode, refer to [The configuration document](configuration.md#load-and-recovery-mode). For safe mode, refer to [Firmware updates](firmware-updates.md#the-boot-loop-counter-and-safe-mode).
 
@@ -125,7 +125,7 @@ These secrets are in NVS, never in `/cfg/config.json` (CFG-7):
 For the rules of a secret in a loaded document (`"********"`, a new text, `""`, no key), refer to [The configuration document](configuration.md#the-secrets).
 
 - **The PMK.** The gateway calculates it only when `web.password` gets a new value: the claim, `PUT /api/config`, `config load`, or a `config.json` with the password in clear text at boot. The calculation is approximately 16 000 SHA-1 compressions in software. It never occurs in the polling, encoding or publish path. The log gives its time: `storage: WPA2 key of the access point … calculated in N ms`.
-- **The SSID is the salt of the PMK.** The SSID comes from the MAC address, thus the PMK stays correct. If a later version makes the SSID configurable, the gateway must calculate the PMK again, and it needs the password for that.
+- **The SSID is the salt of the PMK.** The SSID comes from the MAC address and does not change, thus the PMK stays correct.
 - **Secrets in clear text in `config.json`.** The firmware accepts them, for example from `idf.py flash`. At boot, it moves them to NVS. Then it **erases the full LittleFS partition**, because LittleFS is copy-on-write and the old blocks would keep the text. Then it writes the file again without the secrets. During this time, the gateway has a commissioning mark: a power cut does not leave it with the example identity.
 - **RAM and the core dump.** The secrets are in RAM while the gateway runs. A core dump can contain them. `GET /api/coredump` needs the web password, and the shell command `coredump dump` needs physical access. Keep a downloaded dump as safe as the passwords, and erase it from the gateway after the download.
 - The NVS holds no bdSeq. The bdSeq is in RAM and starts at 0 at each boot (#161).
@@ -200,7 +200,6 @@ The restart also sets the Modbus counters to 0, because they are only in RAM. Th
 - When a server has no mark for more than `CONFIG_GW_WEB_STALL_S` (8 s) outside a handler, the task does a `shutdown()` on the sessions of that server. It closes only the sockets whose local port is the port of that server.
 - This releases the server from a slow TLS handshake, from a slowloris client, or from a client that stopped in a request.
 - The log gives `… server held for more than 8 s by a request that does not arrive`.
-- In QEMU, a client that sent one header byte each 2 s held a normal `GET` for 8.9 s. Without the watchdog, the `GET` waited 30.2 s.
 
 Limits of the watchdog:
 

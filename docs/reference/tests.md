@@ -14,7 +14,7 @@ This document gives the test suites of the firmware, what each suite examines, t
 | Fuzz tests (#226) | The parsers of `gw_core` with libFuzzer, AddressSanitizer and UndefinedBehaviorSanitizer: 12 targets | `idf/test/fuzz`, CI jobs `fuzz` (60 s for each target) and `fuzz-weekly.yml` (20 min for each target) | No crash, no sanitizer error, no failed check of a target |
 | clang-tidy (#231) | The sources of `gw_core` and of the host tests: the static analyzer of clang, the `bugprone` checks and the warnings of clang | CI job `clang-tidy` | 0 results. Each `NOLINT` comment names its check and gives a reason |
 | Sparkplug decode check | The payloads of the engine, decoded with the official Tahu proto | `spb_dump`, `idf/tools/spb_decode.py --check` | 0 structural errors |
-| Firmware build (QA-2) | The release build for `esp32s3`, and the QEMU builds | CI job `firmware` | 0 warnings |
+| Firmware build (QA-2) | The release build for `esp32s3` | CI job `firmware` | 0 warnings |
 | Static analyzer (#230) | The own components (`gw_*`, `main`) of the release build, with the GCC static analyzer (`-fanalyzer`) | CI job `analyzer` | 0 results |
 | Linters (#229) | The Python tools, the shell scripts, the workflows and the scripts of the web pages | CI job `host-tests` | 0 results |
 | Code scanning (#232) | The flow of data from a source to a `memcpy`, an array index or a length, with CodeQL `security-extended` on the host build | `.github/workflows/codeql.yml` | Each alert in the Security tab is corrected or closed with a reason |
@@ -41,13 +41,9 @@ A change is done when the host tests pass and the full E2E passes: the full run 
 | E2E checks, full run of the default variant | 18 |
 | Optional E2E scenarios | `umh` 15 checks, `tck` 19 checks, `downgrade` 7 checks |
 
-The last local full run was on the change of the IPv4 normalization of the web UI (#226), after commit 1994ff5, on a cloud container with 4 CPUs (`run_ci_groups.sh`, `PARALLEL=4`, `E2E_TIMEOUT_SCALE=1.5`). The PSRAM variant gave 285/285 checks in the groups, and the default variant gave 18/18. In the group `nvs-main`, QEMU stopped one time with "Bad ram pointer", and the harness repeated the scenario. A second run of that group gave 101/101 with no retries and no QEMU exits.
+The last local full run was after commit 1994ff5, on a cloud container with 4 CPUs (`run_ci_groups.sh`, `PARALLEL=4`, `E2E_TIMEOUT_SCALE=1.5`). The PSRAM variant gave 285/285 checks in the groups, and the default variant gave 18/18. In the group `nvs-main`, QEMU stopped one time with "Bad ram pointer", and the harness repeated the scenario. The host tests gave 67/67, and the linters gave 0 results. The memory values of that run are in [Memory thresholds](e2e-harness.md#memory-thresholds).
 
-The #80 check gave a minimum free internal RAM of 156 728 B and a largest block of 118 784 B at a validation. The host tests gave 67/67, and the linters gave 0 results.
-
-The last CI run was run 44367214752 on commit 3b6e3d7 (2026-11-18). All jobs passed: the host tests, the sanitizers, the linters, the firmware with 0 warnings, the 6 E2E groups (PSRAM 284/284, default 18/18, no retries, no QEMU exits) and the two `e2e-poison` jobs.
-
-The optional scenarios did not run on that commit. Their last results are in [The E2E scenarios](e2e-scenarios.md#optional-scenarios).
+The last recorded CI run on `main` is run 44427870136 on commit 8552978 (2026-11-19). All its jobs passed, also the two `e2e-poison` jobs. The optional scenarios do not run in CI. Their last results are in [The E2E scenarios](e2e-scenarios.md#optional-scenarios).
 
 ## Host tests
 
@@ -73,7 +69,7 @@ The host tests build `gw_core` and its tests with the host compiler. Platform ca
 | `check_efuse_options` and `check_efuse_options_selftest` (#228, #133) | No option that burns an eFuse in `sdkconfig.defaults` or in an overlay that is not for QEMU |
 | 11 `sdkconfig_check_*` tests (#83, #93, #103, #135) | `cmake/gw_sdkconfig_check.cmake` stops the build when a required option drifts. A stale `sdkconfig` fails, and the `warn` mode only warns. An `sdkconfig` without the PSRAM fails, except with the QEMU overlay |
 
-The `sdkconfig` check (#83) covers only the options in `GW_SDKCONFIG_REQUIRED`. If the firmware starts to depend on a new option, add it to that list. An intentional change of one of these options in `menuconfig` also stops the build: use `-D GW_SDKCONFIG_CHECK=warn`.
+The cases of the `sdkconfig` check are in [The host tests of the check](build-configuration.md#the-host-tests-of-the-check).
 
 ### The rule checks
 
@@ -120,7 +116,7 @@ The checks have these limits:
 | `test_sf` | 24 | SPB-14 store & forward and the spill to the microSD card (#124, #136, #142, #143, #151, #152), with a simulated card. Order, overflow, recovery in bounded steps, checkpoints, a maximum of 64 KB of duplicates, configuration changes, a full card, lost superblocks, damaged blocks, I/O failures (#134). A fault test of 376 restarts (power cut, torn write, lost writes, a damaged write). The move of the RAM ring before a planned restart (#136). Ten mutations of the code each make at least one case fail |
 | `test_sfcfg` | 5 | #145: the configuration hash of the spill. A golden value, 30 excluded fields that keep the hash, each field in the hash that changes it |
 | `test_authlimit` | 3 | #64 login lockout. #110 (`test_webstall`): the stall check of the web server, and the wrap of the 32-bit clock |
-| `test_syslog` | 5 | REL-4: severity, the line parser, RFC 3339 timestamps, the RFC 5424 format, a full ring without a wait, discards |
+| `test_syslog` | 6 | REL-4: severity, the line parser, RFC 3339 timestamps, the RFC 5424 format, a full ring without a wait, discards. #232: the hostname read stops at the end of its buffer |
 | `test_auth` | 6 | SHA-256, HMAC, PBKDF2, the password hash, Basic auth. #100 CSRF check. #106 canonical `Host` and `Origin`, and 17 malformed authorities |
 | `test_cfgdoc` | 11 | Secrets in the document (mask, delete, migration), errors with a path, masked export and re-import, the Modbus keys after re-import. #187 the PMK of the access point. #91 the print is byte for byte `cJSON_Print`. #106 the JSON lock with two threads |
 | `test_button` | 4 | BOOT: reset at 10 s, the 2–10 s gesture, a button pressed from boot, bounces, clock wrap |
@@ -181,16 +177,9 @@ The fuzz tests (#226) give data from outside to the parsers of `gw_core`. Each t
 - **Inputs from outside the gateway.** A buffer with a length goes to the function in a heap block of exactly that length, without a NUL after it (for example a topic, as esp-mqtt gives it). AddressSanitizer then finds a read of one byte past the end.
 - **Run.** `idf/test/fuzz/run_fuzz.sh <build> <seconds> [target ...]` runs the targets, one for each CPU at a time. It writes a table with the executions, the coverage and the corpus of each target. A finding goes to `<build>/crashes/` and stops the script with exit code 1.
 
-### The findings
-
-| Target | Input | Cause | Correction | Regression test |
-|---|---|---|---|---|
-| `fuzz_text` | `::ffff:40.1.062.1` | `parse_ipv4` in `gw_config.c` used `sscanf("%u")`. It accepted a leading zero (`062`), a sign (`+1`, `-0`) and a space before a number. `inet_pton` rejects them, and other programs read `062` as octal. The prefix of `modbus_tcp.allowed_clients` had the same problem: `/-0` gave the prefix 0, which permits each client | Decimal numbers without a leading zero, a sign or a space, in the IPv4 addresses and in the prefix | `test_config`: `test_ipv6_literals`, `test_wifi_section` and `test_modbus_tcp_section` |
-| `fuzz_cfgdoc` | `{"":1,"":""}` | `gw_cfgprev_diff` found a repeated key of an object only at its first item. A document with a repeated key had a difference from itself | The items of two objects pair by key and by the occurrence of that key | `test_cfgprev`: `test_diff_repeated_key` |
-
 ### Results of the fuzz tests
 
-The local runs were on a cloud container with 4 CPUs, with clang 18.1.3, 4 targets at a time (runs of 20 s, 60 s, 300 s, and 600 s or 900 s for the targets with the most code). The time and the executions are the sums of these runs. The coverage and the corpus are those at the end of the last run. The two findings above came in the first runs of 20 s. After their corrections, no target found an error.
+The local runs were on a cloud container with 4 CPUs, with clang 18.1.3, 4 targets at a time (runs of 20 s, 60 s, 300 s, and 600 s or 900 s for the targets with the most code). The time and the executions are the sums of these runs. The coverage and the corpus are those at the end of the last run. No target found an error in the last runs.
 
 | Target | Time (s) | Executions | Coverage (edges) | Corpus (inputs) |
 |---|---|---|---|---|
@@ -235,25 +224,7 @@ The checks are `clang-analyzer-*`, `bugprone-*` and `clang-diagnostic-*` (the wa
 | `bugprone-casting-through-void` | A check for C++. In C, `(T *)(void *)p` tells `-Wcast-align` that the code knows the alignment |
 | `clang-analyzer-security.insecureAPI.strcpy` (only in `idf/test/host/.clang-tidy`) | The tests copy literals and values of known length into their own buffers |
 
-The first run of clang-tidy gave these results (the unique results in `gw_core` and the host tests). The column "Now" gives what changed.
-
-| Check | First run | Now |
-|---|---|---|
-| The checks that are off (table above) | 998 | Off |
-| `bugprone-reserved-identifier` | 12 | All in the generated `sparkplug_b.pb.h`, which clang-tidy does not examine now |
-| `clang-analyzer-core.uninitialized.Assign`, `core.UndefinedBinaryOperatorResult`, `core.CallAndMessage` | 23 | 0. All in `gw_config.c`: the analyzer does not follow a variadic function, so it did not see that `fail()` is always `false`. `fail()` is now a macro with the value `false`. GCC at `-O3` gave the same false positives |
-| `clang-analyzer-valist.Uninitialized` | 4 | 0. One entry for each source in the compile database |
-| `clang-analyzer-security.insecureAPI.strcpy` | 16 | 10 in `gw_core` have a `NOLINT` comment: each copy has a length check or a destination of the same or a larger size. 6 in the tests: off |
-| `clang-analyzer-core.NullDereference` | 6 | 6 `NOLINT` comments: `cJSON_IsString(NULL)` and `cJSON_IsObject(NULL)` are `false`, but cJSON is not in the translation unit |
-| `clang-analyzer-deadcode.DeadStores` | 5 | 0. The stores are removed (1 in `gw_config.c`, 4 in the tests) |
-| `bugprone-not-null-terminated-result` | 5 | 3 copies now include the terminator (NVS names). 2 `NOLINT` comments: binary data (a magic number, a protobuf field in a test) |
-| `clang-analyzer-optin.core.EnumCastOutOfRange` | 2 | 2 `NOLINT` comments: a test gives a bad value on purpose |
-| `bugprone-switch-missing-default-case` | 1 | 0. The switch of the web password in `gw_config.c` was on an `int`. It is now on a variable of the enum type, so `-Wswitch` finds a value with no case |
-| `bugprone-inc-dec-in-conditions` | 1 | 0. `parse_ipv4` has two conditions now |
-| `bugprone-too-small-loop-variable` | 1 | 0. A test |
-| `bugprone-suspicious-missing-comma` | 1 | 0. Parentheses around the joined literal of a test. Clang also gave `-Wstring-concatenation` for it |
-
-The run found no real error. A `NOLINT` comment names its check and gives a reason, for example `/* NOLINTNEXTLINE(clang-analyzer-core.NullDereference): cJSON_IsString(NULL) is false */`. The job refuses a `NOLINT` comment without the two. `NOLINTBEGIN` and `NOLINTEND` are permitted for a block (`gw_cfgdoc.c`).
+A `NOLINT` comment names its check and gives a reason, for example `/* NOLINTNEXTLINE(clang-analyzer-core.NullDereference): cJSON_IsString(NULL) is false */`. The job refuses a `NOLINT` comment without the two. `NOLINTBEGIN` and `NOLINTEND` are permitted for a block (`gw_cfgdoc.c`).
 
 ## Sparkplug decode check
 
@@ -273,7 +244,7 @@ The payloads contain these items: UInt64, Int64, Double, String and register bit
 
 ## Firmware build
 
-`idf.py set-target esp32s3 build` gives 0 warnings. The QEMU builds (`build-qemu`, `build-qemu-psram`, `build-qemu-plain` and `build-qemu-poison`) also give 0 warnings. The components of the project compile with the options of [Compiler warnings and the stack](compiler-warnings-and-stack.md) (#227).
+`idf.py set-target esp32s3 build` gives 0 warnings. The QEMU builds (`build-qemu`, `build-qemu-psram`, `build-qemu-plain` and `build-qemu-poison`) also give 0 warnings, but no CI job examines their warnings. The components of the project compile with the options of [Compiler warnings and the stack](compiler-warnings-and-stack.md) (#227).
 
 During the configuration, ESP-IDF v6.1 prints 5 CMake warnings of its own (`component_validation.cmake`: private directories of `esp_wifi` that `wpa_supplicant` uses). They do not come from the project or from the compiler.
 
@@ -281,11 +252,11 @@ During the configuration, ESP-IDF v6.1 prints 5 CMake warnings of its own (`comp
 
 The CI job `analyzer` builds the release configuration with `-D GW_ANALYZER=ON` in the folder `build-analyzer` (#230). Only the 76 C files of the own components (`gw_*`, `main`) compile with `-fanalyzer`. A result stops the build, because of `-Werror`. ESP-IDF and the managed components compile without the analyzer, from ccache.
 
-- The first build gave 5 results: 1 real error and 4 false positives. All are corrected. The list is in [The static analyzer](compiler-warnings-and-stack.md#the-static-analyzer).
-- Now the build gives 0 results. A trial build of the QEMU configuration with PSRAM (`CONFIG_GW_IO_SIMULATED`) also gave 0 results. The CI job does not build that configuration.
+- The build gives 0 results. A trial build of the QEMU configuration with PSRAM (`CONFIG_GW_IO_SIMULATED`) also gave 0 results. The CI job does not build that configuration.
 - The analyzer adds approximately 28 s of compiler time to the 76 own files: 47 s in place of 19 s, in sum. The longest file is `gw_config.c`, with 6 s.
-- On a computer with 4 CPUs, 2 compiler jobs and no ccache, the full build with the analyzer took 127 s. The release build took 133 s. The difference is in the noise of the load of the computer.
-- The job runs at the same time as the E2E jobs (approximately 15 min). Thus it does not make the CI run longer.
+- The job runs at the same time as the E2E jobs, so it does not make the CI run longer.
+
+The options and the scope of the analyzer are in [The static analyzer](compiler-warnings-and-stack.md#the-static-analyzer).
 
 ## Linters
 
@@ -322,7 +293,7 @@ Both jobs use the query suite `security-extended` (the job `firmware` without tw
 
 - Each analysis has its own SARIF category. Thus the alerts of one analysis do not close the alerts of the other.
 - The two databases contain `gw_core`. Thus a result in `gw_core` can come from the two analyses, as two alerts.
-- On a local computer with 3 threads, the trace of the firmware build took 33 s, and the analysis took 41 s. The job `firmware` also builds the firmware and downloads the CodeQL bundle. The expected duration of the job is approximately 10 min.
+- The expected duration of the job `firmware` is approximately 10 min: the build, the download of the CodeQL bundle, the trace of a second build and the analysis.
 - Close an alert only with a reason. Use "False positive", "Used in tests" or "Won't fix", and write the reason in the comment.
 
 ### The removed results
@@ -359,26 +330,12 @@ ESP-IDF is not in the database of the job `firmware`. Thus CodeQL does not know 
 - For the same reason, `on_mqtt_event()` gives the fields of the esp-mqtt event to `on_mqtt_data()` as parameters. The model names these parameters.
 - CodeQL does not follow the data through a FreeRTOS queue. Thus the model also names the two functions that get the MQTT message from the queue.
 - The model names three own functions: `on_mqtt_data`, `on_host_state` and `gw_node_handle_message`. When you change the name or the parameters of one of them, change the model too. The job `firmware` fails when a function of the model is not in the sources.
-- The models work. In the local database, CodeQL found the sources at each call of the modeled functions, for example `httpd_req_recv` at `gw_web.c` lines 376, 823, 934 and 1717. The data of line 934 goes to `gw_cfgdoc_apply()` and `gw_config_parse()` in `gw_core`. Without the model pack, the analysis gave 4 results. With the model pack, it gave 6: the two `cpp/path-injection` results start at `httpd_req_get_url_query_str`.
 
-### The first analysis of the host build
+### The current alerts
 
-CodeQL 2.27.4 gave 28 results on commit e4a072a, with the build and the query suite of the job `host`:
+The job `host` gives 0 results.
 
-| Rule | Where | Results | Analysis and action |
-|---|---|---|---|
-| `cpp/offset-use-before-range-check` | `gw_syslog.c`, `put_token` | 1 | An error. The loop read `s[n]` before the check `n < max`. A hostname of 64 bytes without a NUL caused a read of 1 byte after the buffer. No caller gave such a hostname. The checks now come first. Regression test: `test_syslog`, `test_hostname_read_bound` |
-| `cpp/comparison-with-wider-type` | `gw_config.c`, `gw_config_find_tag` | 1 | A `uint16_t` counter and an `int` bound. The bound is at most 256 (`GW_MAX_TAGS`), thus the loop always stops. The counter is now `unsigned` |
-| `cpp/overflowing-snprintf` | `test_config.c`, `test_node.c` | 20 | The tests added text with `n += snprintf(buf + n, sizeof(buf) - n, ...)`. After a truncation, `sizeof(buf) - n` wraps. The buffers were sufficiently large. The tests now use `support_appendf`, which stops the test when the text does not fit |
-| `cpp/path-injection` and `cpp/world-writable-file-creation` | `spb_dump.c` | 3 and 3 | Not an error. `spb_dump` is a host test program. It writes the payloads into the directory of its command-line argument with `fopen`. The filter removes the results in `idf/test/` |
-
-After the corrections, the job `host` gives 0 results.
-
-### The alerts of the firmware analysis
-
-A local analysis of the firmware gave one more error before the job `firmware`: `cpp/comparison-with-wider-type` in `gw_shell.c` (the command `config`). It was the same loop as in `gw_config_find_tag`, and the counter is now `unsigned`.
-
-The job `firmware` uses the query suite `.github/codeql/firmware.qls`: `security-extended` without `cpp/world-writable-file-creation` and `cpp/toctou-race-condition` (decision of the product owner, 2026-11-18). These two queries examine file modes, users and other programs, and LittleFS has none of them. Without the suite, the job gave 4 more false positives in `gw_storage.c`.
+The job `firmware` uses the query suite `.github/codeql/firmware.qls`: `security-extended` without `cpp/world-writable-file-creation` and `cpp/toctou-race-condition` (decision of the product owner, 2026-11-18). These two queries examine file modes, users and other programs, and LittleFS has none of them.
 
 The job gives 2 results. Both are false positives. Close each alert one time, with the reason "False positive", and write the reason of the table in the comment. GitHub keeps a closed alert closed in the next runs, unless the code near it changes:
 
@@ -399,14 +356,14 @@ The test reads `index.html`, takes the source of each function and runs it in a 
 
 ## CI
 
-`.github/workflows/ci.yml` runs on each push and pull request, in the `espressif/idf:v6.1` image, pinned by digest.
+`.github/workflows/ci.yml` runs on each push and pull request. The jobs `firmware`, `analyzer`, `e2e-build`, `e2e` and `e2e-poison` run in the `espressif/idf:v6.1` image, pinned by digest. The other jobs run directly on `ubuntu-24.04`.
 
 | Job | What it does |
 |---|---|
 | `host-tests` | Builds the host tests with `-O2` and runs them. Decodes the `spb_dump` payloads (`spb_decode.py --check`). Runs `test_spb_decode.py`, `test_harness.py`, the linters and the unit test of the web UI |
 | `host-tests-sanitizers` | Builds the host tests with `-DGW_SANITIZE=ON` and runs them. Decodes the payloads of the sanitized `spb_dump` |
 | `fuzz` | Installs `clang-18` and `libclang-rt-18-dev`, builds `idf/test/fuzz` and runs each target for 60 s, 4 at a time (`run_fuzz.sh`). The start is the corpus of the weekly job (from `actions/cache`, read only) and the seeds. A finding stops the job, and the artifact `fuzz-findings` has the input and the logs. The job takes approximately 5 min, at the same time as the other jobs |
-| `clang-tidy` | Installs `clang-18` and `clang-tidy-18`. Makes sure that each `NOLINT` comment names its check and gives a reason. Configures the host build with clang and runs `run-clang-tidy-18` on `gw_core` and the host tests. A result stops the job. Locally, on a cloud container with 4 CPUs, the configuration and clang-tidy with 2 processes took 38 s |
+| `clang-tidy` | Installs `clang-18` and `clang-tidy-18`. Makes sure that each `NOLINT` comment names its check and gives a reason. Configures the host build with clang and runs `run-clang-tidy-18` on `gw_core` and the host tests. A result stops the job |
 | `firmware` | Runs `idf.py set-target esp32s3 build`. Fails on a `warning:`. Publishes the binaries, the `idf.py size` output and `stack.txt` |
 | `analyzer` | Runs `idf.py -B build-analyzer -D GW_ANALYZER=ON set-target esp32s3 build`: the own components with `-fanalyzer` (#230). Fails on a result of the analyzer or on a `warning:`, and gives the results in `components/gw_*` and `main`. The job runs at the same time as the other jobs. Refer to [Static analyzer](#static-analyzer) |
 | `e2e-plan` | Reads `CI_GROUPS` from `idf/tools/e2e/scenarios.py`, and gives the matrix of the two next jobs |
@@ -451,7 +408,7 @@ Each group has its own job, and the groups run at the same time (#121, #135, #23
 
 - The longest group sets the duration of the E2E jobs. `FW-1 OTA by web upload` is the longest scenario: it has two web uploads of 1 MB, each approximately 220 to 250 s with PSRAM. The durations are in [E2E durations](e2e-durations.md).
 - The check "6. payloads decode" of each run needs at least one payload. `nopsram` and the #97 integration have no MQTT observer, so each is in a group with a scenario that has one.
-- The harness makes 5 checks one time per run, after the scenarios: "6. payloads decode", #105, #92, #111 and SPB-5. Thus each group adds 5 checks. The total line of `e2e-summary` also gives the count as in one full run.
+- The harness makes 5 checks one time per run, after the scenarios (refer to [Checks of each run](e2e-scenarios.md#checks-of-each-run)). Thus each group adds 5 checks. The total line of `e2e-summary` also gives the count as in one full run.
 - `test_harness.py` (`CiGroups`) checks that the groups of each variant are one full run, that each scenario is in one group, that no group is empty, that each group has a scenario with an observer, and that the group of `GW42` gets the build without NVS encryption.
 - If the `psram` jobs are too long, you can set `E2E_TCG_THREAD=multi` in the `e2e` job. Then the OTA scenarios are faster, but QEMU deaths occur, and the harness retries them.
 

@@ -67,10 +67,11 @@ The broker `192.168.1.10` of the example is possibly not on your network. Then t
 2. In the web UI, click the tab **Configuration**.
 3. In the card **MQTT**, set **Broker** to the address of your computer. Keep **Port** 1883.
 4. In the card **Sparkplug**, keep **Group ID** `Plant1` and **Edge node ID** `GW01`, or type your own names.
-5. In the card **Web interface**, type a new **Password** (8 to 63 printable ASCII characters). Record it.
-6. Click **Validate** in the bar at the bottom of the window. Make sure that the bar shows "The configuration is valid."
-7. Click **Save and restart**.
-8. After the restart, log in with the user `admin` and the new password.
+5. In the card **Web interface**, type a new password in the field **Password (8 to 63)**. Use 8 to 63 printable ASCII characters. Record the password.
+6. Type the same password in the field **Confirm the password**.
+7. Click **Validate** in the bar at the bottom of the window. Make sure that the bar shows "The configuration is valid."
+8. Click **Save and restart**.
+9. After the restart, log in with the user `admin` and the new password.
 
 The new password is also the Wi-Fi password of the access point. The commissioning password is not valid now.
 
@@ -135,7 +136,8 @@ The gateway publishes a value only when it changes by more than the deadband of 
 
 ## 9. Back up the configuration
 
-1. In the web UI, click **Export**. Keep the file.
+1. In the web UI, click the tab **Configuration**.
+2. At the bottom of the page, click **Export**. Keep the file.
 
 The file has no secrets: they show as `********`. Refer to [Change, back up and restore the configuration](../how-to/change-the-configuration.md).
 

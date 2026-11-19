@@ -25,22 +25,26 @@ You need:
 4. Connect the power.
 5. Make sure that the gateway gets a valid time:
    - If the gateway can reach its SNTP server, wait for the synchronization.
-   - If not, open the web UI. On the Status tab, click "Set the time from the browser".
+   - If not, open the web UI. On the Status tab, in the card **Local I/O**, click **Set the time from the browser**.
 6. Make sure that the web UI shows no banner "Waiting for a valid clock". The gateway writes the time into the RTC.
 
 ## Make sure that the RTC keeps the time
 
 1. Disconnect all power from the board for 1 min.
-2. Connect the power, but do not let the gateway reach its SNTP server. For example, disconnect the network cable.
-3. Type `status` on the shell. Make sure that the `time` line shows `from the RTC (not synchronised); RTC ok`.
-4. Make sure that the shell shows no `battery` line.
-5. Connect the network cable again.
+2. Connect the power. Wait for the boot.
+3. Open the web UI, and go to the Status tab.
+4. Make sure that the page shows no banner about the RTC battery.
+5. In the card **Local I/O**, find the line **Time**. Make sure that it shows `RTC ok`, and not "the RTC lost the time: examine its battery".
+
+The gateway reads the RTC at boot. The result stays on the page until the next boot, also after SNTP sets the clock.
+
+With the USB console, the shell command `status` gives the same data: the `time` line shows `RTC ok`, and there is no `battery` line.
 
 If the test fails, refer to [If the gateway tells you to examine the battery](#if-the-gateway-tells-you-to-examine-the-battery).
 
 ## If the gateway tells you to examine the battery
 
-The gateway tells this when the RTC lost the time while the power was off (the OS bit of the PCF85063 was set at boot). The web UI shows it in a banner, the shell in the `battery` line of `status`, and the log in a line of `io` at boot.
+The gateway tells this when the RTC lost the time while the power was off (the OS bit of the PCF85063 was set at boot). The web UI shows it in a banner and in the line **Time** of the card **Local I/O**. The shell shows it in the `battery` line of `status`, and the log in a line of `io` at boot.
 
 1. Make sure that the holder contains a cell.
 2. Make sure that the cell is a rechargeable 3 V cell, not a CR1220.

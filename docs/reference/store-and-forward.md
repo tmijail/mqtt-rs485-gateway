@@ -73,7 +73,7 @@ The status page, the shell (`sdcard   NOT MOUNTED: …`) and `GET /api/status` (
 | `/sf/r0000.sf`, `/sf/r0001.sf`, … | The ring of blocks |
 | `/sf/ringa.sf`, `/sf/ringb.sf` | The two copies of the superblock |
 
-A PC does not need to read these files. The gateway deletes the files of the earlier card format (`NNNNNNNN.sf`) at the boot, and does not publish their data.
+A PC does not need to read these files.
 
 ### When the gateway starts a new ring
 

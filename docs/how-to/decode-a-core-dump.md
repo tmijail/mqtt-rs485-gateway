@@ -11,19 +11,25 @@ This procedure tells how to get the core dump of a gateway after a crash, and ho
 You need:
 
 - The ELF file of the same build as the firmware that crashed, for example `idf/build/rs485_spb_gateway.elf`. Without the ELF of that build, the decoder cannot read the dump. Keep the ELF of each firmware that you install.
-- ESP-IDF v6.1 (`. $IDF_PATH/export.sh`) or the Docker image of `docs/how-to/run-e2e-in-docker.md`. Both have `esp-coredump`.
+- ESP-IDF v6.1 (`. $IDF_PATH/export.sh`) or the Docker image of [Run the E2E in Docker](run-e2e-in-docker.md). Both have `esp-coredump`.
 - The web password of the gateway, or a computer with a USB-C cable for the console.
 
 ## Find out if a dump is present
 
-A panic writes the dump to the `coredump` partition, and the gateway restarts. The dump stays until you erase it. Each of these shows a dump:
+A panic writes the dump to the `coredump` partition, and the gateway restarts. The dump stays until you erase it.
 
-- The NBIRTH metric `Node Info/Core Dump` is `true`. `Node Info/Reset Reason` gives the cause of the last restart, for example `panic`.
-- The Status tab of the web UI shows the line "Core dump in flash".
+1. Open the web UI, and go to the Status tab.
+2. In the card **Gateway**, look for the line "Core dump in flash". The line gives the size and the state of the dump, and the button **Download**. The field **Reset reason** gives the cause of the last restart, for example `panic`.
+
+Other signs of a dump:
+
+- The NBIRTH metric `Node Info/Core Dump` is `true`.
 - `GET /api/status` has `"core_dump": {"present": true, …}`.
 - The shell command `status` shows a `coredump` line.
 
 ## Read the summary
+
+The web UI does not show the summary. Use the REST API or the shell.
 
 1. Send this request (use the IP address or the host name of your gateway):
 
@@ -39,15 +45,16 @@ The certificate of the gateway is self-signed. Use `--cacert` with the certifica
 
 ## Download the dump through the network
 
-1. Send this request:
+1. In the card **Gateway** of the Status tab, click **Download** in the line "Core dump in flash".
+2. Keep the file. The browser saves it as `coredump-<hostname>-….bin`. The steps below call it `coredump.bin`.
 
-   ```bash
-   curl -u admin:PASSWORD --cacert gateway.pem -o coredump.bin https://GATEWAY/api/coredump
-   ```
+A script can use the REST API:
 
-2. Make sure that `curl` ended without an error. An incomplete transfer means that the download stopped.
+```bash
+curl -u admin:PASSWORD --cacert gateway.pem -o coredump.bin https://GATEWAY/api/coredump
+```
 
-You can also use the **Download** button in the Status tab of the web UI.
+Make sure that `curl` ended without an error. An incomplete transfer means that the download stopped.
 
 ## Copy the dump from the console
 
@@ -96,18 +103,14 @@ For a GDB session on the dump, use `dbg_corefile` in place of `info_corefile`.
 
 Erase the dump after you saved it, or when you do not need it. Then the gateway can record the next crash.
 
-1. Send this request:
-
-   ```bash
-   curl -u admin:PASSWORD --cacert gateway.pem -X DELETE -H 'X-Requested-With: curl' https://GATEWAY/api/coredump
-   ```
-
-2. Make sure that the answer is `{"ok":true,"erased":true}`.
-
-You can also use the shell command `coredump erase`, or the web UI:
-
 1. In the card **Gateway** of the Status tab, click **Erase**.
 2. In the confirmation "Erase the core dump?", click the red button **Erase the core dump**. To keep the dump, click **Cancel**.
+
+You can also use the shell command `coredump erase`, or the REST API. The answer of the REST API is `{"ok":true,"erased":true}`:
+
+```bash
+curl -u admin:PASSWORD --cacert gateway.pem -X DELETE -H 'X-Requested-With: curl' https://GATEWAY/api/coredump
+```
 
 After the erase, the gateway publishes an NDATA with `Node Info/Core Dump` = `false`.
 

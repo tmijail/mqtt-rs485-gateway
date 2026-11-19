@@ -1,6 +1,6 @@
 # The security of the access point
 
-This document tells why the commissioning access point of the gateway operates as it does since issue #187. It gives the residual risks and compares the design with comparable projects.
+This document tells why the commissioning access point of the gateway operates as it does (#187). It gives the residual risks and compares the design with comparable projects.
 
 - For the procedures, refer to [Set the first web password on site](../how-to/set-the-first-web-password.md) and [Get on the access point on a later visit](../how-to/get-on-the-access-point.md).
 - For the keys, the times and the signals, refer to [The access point](../reference/access-point.md).
@@ -10,7 +10,7 @@ This document tells why the commissioning access point of the gateway operates a
 
 The board is in an electrical panel. On site, the operator almost never connects a computer to the USB-C connector. Thus a secret that only the serial console shows is not available to the operator.
 
-Before issue #187, the WPA2 key of the access point was the commissioning password, and only the console showed it. After the first web password, the operator could not use the access point: the commissioning password did not open the web UI, and the claim window did not open again. Also, the access point stayed open for the full claim window after the claim, and it ran for 30 min or with no limit.
+The access point must let the operator open the web UI on a later visit, also after the first web password. It must also not stay on, or stay open, when nobody needs it.
 
 ## Why the WPA2 key is the web password
 
@@ -62,7 +62,7 @@ After a stop, only a new push of BOOT starts the access point again, and a perso
 
 ## Why the idle stop also closes the claim window
 
-The claim window accepts only the clients of the access point. Without the access point, nobody can use the window. Thus, when the access point stops, the window closes too, also before the end of its 10 min (decision of 2026-11-14 in #187).
+The claim window accepts only the clients of the access point. Without the access point, nobody can use the window. Thus, when the access point stops, the window closes too, also before the end of its 10 min (decision of the product owner in #187).
 
 This has these effects:
 
@@ -84,7 +84,7 @@ The owner with a computer at the panel has a path that keeps the configuration: 
 
 ### The open period
 
-From the push of BOOT to the claim, the access point has no key. This period is usually 1 to 3 min. It is 10 min at most, or 5 min when no client connects. Before issue #187, it was 10 min in all cases.
+From the push of BOOT to the claim, the access point has no key. This period is usually 1 to 3 min. It is 10 min at most, or 5 min when no client connects.
 
 During this period:
 

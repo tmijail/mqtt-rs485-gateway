@@ -38,7 +38,7 @@ Write all new or changed prose in ASD-STE100 Simplified Technical English (STE).
   - Use articles ("the", "a"), and avoid long noun clusters: write "the margin of the internal RAM", not "the internal RAM margin value".
 - **Warnings and cautions:** Start them with a clear instruction (the command). Then give the risk.
 - **Existing Spanish text:** When you change a section, rewrite that section in STE. Translate full files only when the user asks.
-- **Structure (Diátaxis):** Put each new document in `docs/` into one Diátaxis type: `docs/tutorials/`, `docs/how-to/`, `docs/reference/` or `docs/explanation/`. Do not mix the types in one document. Link to the other type instead (for example, from a procedure to the reasons for it). Add each new document to `nav` in `zensical.toml`, and write its links as `docs/how-to/build-the-documentation-site.md` tells (the CI job `docs` builds the site with `--strict`).
+- **Structure (Diátaxis):** Put each new document in `docs/` into one Diátaxis type: `docs/tutorials/`, `docs/how-to/`, `docs/reference/` or `docs/explanation/`. Do not mix the types in one document. Link to the other type instead (for example, from a procedure to the reasons for it). A procedure for the user does each step in the web UI, with the labels of `index.html`. The JSON tab, the configuration file and the shell are only a complement, or the main way when the web UI cannot do the step (for example the web UI is off). Add each new document to `nav` in `zensical.toml`, and write its links as `docs/how-to/build-the-documentation-site.md` tells (the CI job `docs` builds the site with `--strict`).
 
 **The firmware has never run on real hardware.** It has only run in host tests and in QEMU. The W5500, RS485 hardware mode, TCA9554, GPIO DIs and LED are compile-only (issues #1 and #18).
 
@@ -90,15 +90,15 @@ cmake -S idf/test/host -B build-asan -DGW_SANITIZE=ON && cmake --build build-asa
 
 # Fuzz tests: 12 libFuzzer targets for the parsers of gw_core, with ASan and UBSan (#226; CI job fuzz
 # 60 s each, fuzz-weekly.yml 20 min each). Needs clang with libFuzzer (Ubuntu: clang-18 libclang-rt-18-dev)
-cmake -S idf/test/fuzz -B build-fuzz -DCMAKE_C_COMPILER=clang && cmake --build build-fuzz -j
+cmake -S idf/test/fuzz -B build-fuzz -DCMAKE_C_COMPILER=clang-18 && cmake --build build-fuzz -j
 idf/test/fuzz/run_fuzz.sh build-fuzz 60                 # all targets, $(nproc) at a time (JOBS=n); a table per target
 idf/test/fuzz/run_fuzz.sh build-fuzz 300 fuzz_spb       # one target; a finding goes to build-fuzz/crashes/
 build-fuzz/fuzz_spb build-fuzz/crashes/<file>           # one input again; fix it in gw_core, add it to a Unity suite
 
 # clang-tidy 18 on gw_core and the host tests (#231; CI job clang-tidy; checks in idf/.clang-tidy). Configure only,
 # with clang. A false positive gets /* NOLINTNEXTLINE(<check>): <reason> */; the CI refuses a NOLINT without both
-cmake -S idf/test/host -B build-tidy -DCMAKE_C_COMPILER=clang -DGW_RULE_CHECKS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-run-clang-tidy -p build-tidy -j4 -quiet 'idf/components/gw_core/(src|port)/|idf/test/host/'   # 0 results
+cmake -S idf/test/host -B build-tidy -DCMAKE_C_COMPILER=clang-18 -DGW_RULE_CHECKS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+run-clang-tidy-18 -p build-tidy -j4 -quiet 'idf/components/gw_core/(src|port)/|idf/test/host/'   # 0 results
 
 # Sparkplug interop: decode generated payloads with the official Tahu proto
 mkdir -p /tmp/spb && build-host/spb_dump /tmp/spb && python3 idf/tools/spb_decode.py --check /tmp/spb
@@ -112,8 +112,8 @@ idf.py -B build-analyzer -D GW_ANALYZER=ON set-target esp32s3 build
 # E2E: real firmware in QEMU against mosquitto + a pymodbus RTU slave. Each variant has its own
 # full run (#135, scenarios.py DEFAULT_VARIANT_SCENARIOS); the two together are the full E2E.
 python3 -m venv ~/e2e && ~/e2e/bin/pip install -r tools/e2e/requirements.txt
-E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh     # PSRAM variant: the board's configuration, all but 3 scenarios (~22 min)
-E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh                 # variant without PSRAM: only the OTA trial scenarios (~4 min)
+E2E_PSRAM=1 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh     # PSRAM variant: the board's configuration, all but 3 scenarios (~40 min with 4 CPUs)
+E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh                 # variant without PSRAM: only the OTA trial scenarios (~11 min)
 E2E_PYTHON=~/e2e/bin/python tools/e2e/run_e2e.sh --only ota,https   # subset of scenarios (--only selects in any variant)
 #  --only: failsafe,network,web,reset,tls,failover,mqtt5,phost,sf,https,time,ota,ota-fw1,ota-fw1-ncmd,
 #          ota-fw1-web,ota-park,ota-wiring,ota-trial,nvs,slow,nopsram,refuse,main,umh,tck,downgrade
@@ -152,7 +152,7 @@ python3 -m venv ~/docs-venv && ~/docs-venv/bin/pip install -r idf/tools/docs/req
 #  are in the firmware image: for them, change an option in eslint.config.mjs, not the page.
 ```
 
-CI (`.github/workflows/ci.yml`) runs host-tests, fuzz, clang-tidy (#231), firmware, analyzer (#230), the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image (fuzz, clang-tidy and the host tests run directly on `ubuntu-24.04`). `.github/workflows/fuzz-weekly.yml` runs the fuzz targets longer each week and keeps their corpus (#226). `.github/workflows/codeql.yml` runs CodeQL (`security-extended`) on the host build and on the firmware build on each push to `main`, on each pull request and each week; its alerts go to the Security tab and do not fail the CI (#232). `.github/workflows/docs.yml` builds the documentation site with Zensical `--strict` on each push, and publishes it to GitHub Pages from `main`. The firmware analysis uses the source models of `.github/codeql/extensions/esp-idf-models`; they name `on_mqtt_data`, `on_host_state` and `gw_node_handle_message`, so change them with these functions. The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run of that variant (#121, #135). A change is done when the host tests pass and the full E2E passes: the full run of the `E2E_PSRAM=1` variant and the full run of the default variant. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
+CI (`.github/workflows/ci.yml`) runs host-tests, host-tests-sanitizers (#225), fuzz, clang-tidy (#231), firmware, analyzer (#230), the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image (fuzz, clang-tidy and the two host-test jobs run directly on `ubuntu-24.04`). `.github/workflows/fuzz-weekly.yml` runs the fuzz targets longer each week and keeps their corpus (#226). `.github/workflows/codeql.yml` runs CodeQL (`security-extended`) on the host build and on the firmware build on each push to `main`, on each pull request and each week; its alerts go to the Security tab and do not fail the CI (#232). `.github/workflows/docs.yml` builds the documentation site with Zensical `--strict` on each push, and publishes it to GitHub Pages from `main`. The firmware analysis uses the source models of `.github/codeql/extensions/esp-idf-models`; they name `on_mqtt_data`, `on_host_state` and `gw_node_handle_message`, so change them with these functions. The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run of that variant (#121, #135). A change is done when the host tests pass and the full E2E passes: the full run of the `E2E_PSRAM=1` variant and the full run of the default variant. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
 
 ### sdkconfig pitfalls
 
@@ -189,7 +189,7 @@ Platform calls go through `gw_port.h`, which has two implementations: `port/gw_p
 - `gw_board`: DI sampling, plus the `local_io` task, which is the only writer of the TCA9554 DO expander. Also the LED, buzzer and BOOT button.
 - `gw_bsp`: a declarative description of all board pins and polarities. Drivers contain no board data.
 - `gw_net`: W5500 Ethernet (openeth in QEMU), Wi-Fi backup, IPv6 and SNTP.
-- `gw_storage`: LittleFS config, NVS (encrypted) secrets, bdSeq, the NVS encryption migration and factory reset.
+- `gw_storage`: LittleFS config, NVS (encrypted) secrets, the NVS encryption migration and factory reset. The bdSeq is in RAM only (#161).
 - `gw_web`: the HTTPS UI and REST API, with Basic auth, a CSRF check (`X-Requested-With` plus Origin/Host) and the `web_guard` stall watchdog.
 - `gw_fw`: OTA (HTTPS download or web upload), the trial period and rollback.
 - `gw_shell`: the `esp_console` shell (`status`, `devices`, `config`, …), which the E2E harness drives over UART0.
@@ -209,7 +209,7 @@ Platform calls go through `gw_port.h`, which has two implementations: `port/gw_p
 - Limits: 16 devices, 64 tags per device, 256 tags in total.
 - **The firmware assumes the 8 MB of PSRAM of the board (#135).** It does not support a board without PSRAM. Do not add fallbacks or smaller sizes for a board without PSRAM.
 - All own memory is fixed-size, static or allocated once at boot. It goes to the PSRAM (`gw_storage_malloc`, `gw_storage_calloc`, `gw_storage_big_alloc`, and mbedTLS through them). These functions never use internal RAM when the PSRAM is full: the allocation fails.
-- A board whose PSRAM the boot does not detect runs the fault mode only (`CONFIG_SPIRAM_IGNORE_NOTFOUND`; `GW_WEB_FAULT` in `main.c`). The log, the shell and the web UI give the fault. Only the network, the web server and the shell start, from internal RAM. The gateway does not start.
+- A board whose PSRAM the boot does not detect runs the fault mode only (`CONFIG_SPIRAM_IGNORE_NOTFOUND`; `GW_WEB_FAULT` in `main.c`). The log, the shell and the web UI give the fault. Only the network, the web server, mDNS, the access point and the shell start, from internal RAM. The gateway does not start.
 - **No malloc in the polling, encoding or publish path.** The host test `check_noalloc` examines this rule. It examines each function of the files in `idf/test/host/rules/noalloc_path.txt`, and each function of `gw_core` and nanopb that they call. Add a new file of this path to that list, with its reason.
 - Internal RAM is still shared with Wi-Fi, lwIP, esp-mqtt, the task stacks and DMA. The E2E enforces ≥ 8 KB minimum free and a ≥ 17 KB largest block at the worst-case config validation (#80). The check runs in the PSRAM variant, the configuration of the board (`tls` scenario, node GW29).
 - **Never lower these thresholds.** Measure any change in `.bss`, stack or heap with the `E2E_PSRAM=1 --only tls` / #80 checks.

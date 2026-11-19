@@ -50,7 +50,7 @@ The factory reset erases:
 - the secrets, for example the MQTT password;
 - the certificate of the web UI;
 - the web password;
-- the pulse counters of the DIs.
+- the pulse counters and the run hours of the local I/O.
 
 Then the gateway restarts in commissioning mode: no polling and no MQTT until it gets a new configuration. The restart also sets the Modbus counters to 0. The access point starts with a new commissioning password. Only the serial console shows this password.
 

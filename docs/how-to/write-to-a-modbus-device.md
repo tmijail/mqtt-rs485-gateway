@@ -9,22 +9,22 @@ This procedure tells how a Sparkplug host writes a value to a Modbus device (DCM
 
 ## Before you start
 
-- The tag must have `"writable": true` in the configuration. Only `coil` and `holding` tags can be writable. Refer to [Add a Modbus device and its tags](add-a-modbus-device.md), step 4.
+- The tag must be writable: in the tab **Configuration**, card **Devices and tags**, the column **Writable** of the tag is set. Only `coil` and `holding` tags can be writable. Refer to [Add the tags](add-a-modbus-device.md#4-add-the-tags).
 - The device must be enabled and online: the host received its DBIRTH. A disabled device has no DBIRTH, and the gateway discards a DCMD for it.
-- The host must use the Sparkplug datatype of the DBIRTH. For example, an `int16` tag with `"scale": 0.1` is a Float in Sparkplug, not an Int16.
+- The host must use the Sparkplug datatype of the DBIRTH. For example, an `int16` tag with the scale 0.1 is a Float in Sparkplug, not an Int16.
 
 ## The rules of a command
 
-| Rule | Result if the command does not obey it |
+| Rule | Result if a metric does not obey it |
 |---|---|
-| The metric has the name or the alias of the DBIRTH | The gateway discards the command |
-| The metric is writable | The gateway discards the command |
-| The datatype is the datatype of the DBIRTH. A metric without a datatype uses the datatype of the DBIRTH | The gateway discards the command |
-| An integer or Boolean tag gets a value without a fraction | The gateway discards the command |
-| The value fits in the register after the inverse scale: `raw = (value − offset) / scale` | The gateway discards the command |
-| The value is in the write limits of the tag (Write min and Write max) | The gateway discards that metric. It writes the other metrics of the command |
+| The metric has the name or the alias of the DBIRTH | The gateway discards the metric |
+| The metric is writable | The gateway discards the metric |
+| The datatype is the datatype of the DBIRTH. A metric without a datatype uses the datatype of the DBIRTH | The gateway discards the metric |
+| An integer or Boolean tag gets a value without a fraction | The gateway discards the metric |
+| The value fits in the register after the inverse scale: `raw = (value − offset) / scale` | The gateway does not write the value |
+| The value is in the write limits of the tag (Write min and Write max) | The gateway discards the metric, and adds 1 to the counter of refused writes |
 
-A command applies all its metrics or none. The log gives the reason of each discard. A write goes before the polls in the queue of the bus.
+The gateway writes the other metrics of the command. The log gives the reason of each discard. The gateway applies no metric of a command in two cases: it cannot decode the payload, or the queue of the bus has no space for all the writes. A write goes before the polls in the queue of the bus.
 
 The gateway writes one register with FC06 and one coil with FC05. A device with **Write with FC15/FC16** (`write_multiple`) gets FC16 and FC15. A value of two or more registers always goes with FC16.
 
@@ -121,14 +121,7 @@ The gateway publishes the outputs as the node metrics `DO/1` to `DO/8` (Boolean)
 
 ## Other commands of the node
 
-| NCMD metric | Datatype | What it does |
-|---|---|---|
-| `Node Control/Rebirth` | Boolean `true` | Sends the NBIRTH and all the DBIRTHs again. The web UI button **Rebirth** does the same |
-| `Node Control/Reboot` | Boolean `true` | Orderly restart |
-| `Node Control/Scan Rate` | UInt32, ms | Sets one poll interval for all devices (50 to 3 600 000). 0 = each device uses its own poll interval |
-| `Node Control/Firmware Update` | String, an `https://` URL | Only with `ota.mqtt: true`. Refer to [Update the firmware](update-the-firmware.md) |
-| `Node Control/Firmware SHA-256` | String, 64 hexadecimal characters | Only with `ota.mqtt: true`. The SHA-256 of the image for the next update. Refer to [Update the firmware](update-the-firmware.md) |
-| `Node Control/Boot Other Slot` | Boolean `true` | Only with `ota.mqtt: true`. Restarts into the image of the other slot. Refer to [Update the firmware](update-the-firmware.md) |
+A host can also send other NCMD metrics, for example `Node Control/Rebirth` and `Node Control/Reboot`. The button **Rebirth** of the card **Network and MQTT** in the Status tab does the same as `Node Control/Rebirth`. For all the NCMD metrics, refer to [NCMD](../reference/sparkplug-messages-and-metrics.md#ncmd).
 
 ## If the value does not change
 

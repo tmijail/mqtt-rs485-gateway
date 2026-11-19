@@ -32,9 +32,9 @@ This is the documentation of the RS485 (Modbus RTU) to MQTT Sparkplug B gateway.
 
 The usual sequence for a new gateway is:
 
-1. On the bench: flash the firmware and load the configuration of the site (the tutorial, then [Change, back up and restore the configuration](how-to/change-the-configuration.md)).
-2. On site: connect the bus and the network, and set the web password ([Connect the RS485 bus](how-to/connect-the-rs485-bus.md), [Set the first web password on site](how-to/set-the-first-web-password.md)).
-3. Add or correct the devices ([Add a Modbus device and its tags](how-to/add-a-modbus-device.md)).
+1. On the bench: flash the firmware and load the configuration of the site (the tutorial, then "Change, back up and restore the configuration").
+2. On site: connect the bus and the network, and set the web password ("Connect the RS485 bus", "Set the first web password on site").
+3. Add or correct the devices ("Add a Modbus device and its tags").
 4. Make a backup of the configuration.
 5. Later: update the firmware, and recover the gateway if necessary.
 
@@ -66,10 +66,12 @@ The usual sequence for a new gateway is:
 ## For developers
 
 - [Build the firmware](how-to/build-the-firmware.md) and [Build configuration](reference/build-configuration.md): ESP-IDF, the build, the flash, the `sdkconfig` overlays and the partition table.
+- [The product specification](SPEC.md): the requirements (for example MB-6, SPB-14 and FW-1) that the code, the tests and the commits refer to.
 - [The architecture](reference/architecture.md) and [the reasons for it](explanation/architecture.md): the components, the tasks, the concurrency rules and the memory budget.
 - [Run the tests](how-to/run-the-tests.md) and [Tests](reference/tests.md): the host tests, the linters, the E2E tests, the CI jobs and the latest results.
 - [The E2E harness](reference/e2e-harness.md) and [The E2E scenarios](reference/e2e-scenarios.md): the test bench in QEMU, the retry rules, and what each scenario examines.
-- [Run the E2E tests in Docker](how-to/run-e2e-in-docker.md), [The E2E environment on a Windows computer](explanation/e2e-environment.md) and [E2E durations](reference/e2e-durations.md).
+- [Run the E2E tests in Docker](how-to/run-e2e-in-docker.md) and [the reasons for it](explanation/e2e-environment.md): the E2E tests on a Windows computer, in the ESP-IDF image of the CI.
+- [E2E durations](reference/e2e-durations.md): the measured durations of the scenarios, the CI groups and the builds.
 - [Compiler warnings and stack data](reference/compiler-warnings-and-stack.md): the warning options, the stack report and the limit of a stack frame.
 - [The core dump](explanation/core-dump.md): why the gateway keeps the core dump as it does.
 - [Run the Sparkplug TCK against the gateway](how-to/run-the-sparkplug-tck.md).

@@ -63,7 +63,7 @@ The NBIRTH contains these metrics.
 | `Node Info/Free Heap` | 51 | UInt32 | The free bytes of the internal RAM |
 | `Node Info/Min Free Heap` | 52 | UInt32 | The minimum free internal RAM since the boot |
 | `Node Info/RSSI` | 53 | Int32 | dBm of the Wi-Fi network. Only with a Wi-Fi configuration. Null while the gateway is not associated |
-| `Node Info/Modbus` | 54 | DataSet | The Modbus counters, one row for each device |
+| `Node Info/Modbus` | 54 | DataSet | The Modbus counters, one row for each device. Only with one or more devices |
 | `Node Info/Time Synced` | 55 | Boolean | `true` when SNTP synchronized the clock at least one time since the boot |
 | `Node Info/Modbus TCP` | 56 | DataSet | Only with `modbus_tcp.enabled`. The Modbus TCP counters |
 | `Node Info/Core Dump` | 57 | Boolean | `true` while a core dump is in flash |
@@ -91,7 +91,7 @@ For the keys, refer to [`local_io`](configuration.md#local_io).
 
 The gateway publishes the diagnostics in an NDATA each `sparkplug.diagnostics_s` seconds (60 by default; 0 = only in the NBIRTH).
 
-- The uptime, the heap, the largest free block, the free PSRAM and the temperature go in each diagnostic NDATA, with their aliases only.
+- The uptime, the heap, the largest free block, the free PSRAM, the temperature and the RSSI go in each diagnostic NDATA, with their aliases only.
 - The Modbus tables go in the NDATA only if a counter or a state changed.
 - `Node Info/Time Synced` and `Node Info/Core Dump` go in an NDATA of their own, each time that they change.
 - The gateway also publishes the counters of a device that is offline.
@@ -162,18 +162,29 @@ All the devices of a type have the same tags, because they use the tag list of t
 
 The gateway writes the writable metrics to the Modbus device. It finds the tag by alias or by name.
 
-| Rule | Result if the command does not obey it |
-|---|---|
-| The metric has the name or the alias of the DBIRTH | The gateway discards the command |
-| The tag is writable | The gateway discards the command |
-| The datatype is the datatype of the DBIRTH. A metric without a datatype uses the datatype of the DBIRTH | The gateway discards the command |
-| An integer or Boolean tag gets a value without a fraction | The gateway discards the command |
-| The value fits in the register after the inverse scale: `raw = (value − offset) / scale` | The gateway discards the command |
-| The value is in the write limits of the tag (`write_min`, `write_max`, in the units of the tag) | The gateway discards the metric, and adds 1 to the refusal counter of the device |
-| The device is enabled | The gateway discards the command. A disabled device has no DBIRTH |
+The gateway examines each metric of a DCMD. A metric that does not obey a rule of this table is discarded alone, and the gateway writes the other metrics of the command.
 
-- A command applies all its metrics or none. The log gives the reason of each discard.
-- A value out of the write limits discards only that metric. The gateway writes the other metrics of the command. Sparkplug has no answer to a command, so the next DDATA has the value of the device. The shell command `devices` and `GET /api/status` (`write_refused`) give the number of refused writes. The limits do not apply to Modbus TCP requests.
+| Rule for each metric | Result if the metric does not obey it |
+|---|---|
+| The metric has the name or the alias of the DBIRTH | The gateway discards the metric |
+| The tag is writable | The gateway discards the metric |
+| The datatype is the datatype of the DBIRTH. A metric without a datatype uses the datatype of the DBIRTH | The gateway discards the metric |
+| An integer or Boolean tag gets a value without a fraction | The gateway discards the metric |
+| The value fits in the register after the inverse scale: `raw = (value − offset) / scale` | The gateway discards the metric |
+| The value is in the write limits of the tag (`write_min`, `write_max`, in the units of the tag) | The gateway discards the metric, and adds 1 to the refusal counter of the device |
+
+These rules apply to the full command. If the command does not obey one of them, the gateway writes no metric of the command:
+
+| Rule for the command | Result if the command does not obey it |
+|---|---|
+| The device is enabled | The gateway discards the command. A disabled device has no DBIRTH |
+| The device is online, and its DBIRTH went out in this session | The gateway discards the command |
+| The full payload decodes | The gateway discards the command |
+| The queue of the bus has space for all the writes of the command | The gateway discards the command |
+
+- The log gives the reason of each discard.
+- Sparkplug has no answer to a command. Thus the next DDATA has the value of the device for a discarded metric.
+- The shell command `devices` and `GET /api/status` (`write_refused`) give the number of writes that the write limits refused. The limits do not apply to Modbus TCP requests.
 - The writes go before the polls in the queue of the bus.
 - After the write, the gateway reads the register again and publishes the value in a DDATA. If this read fails, it publishes the value that the device acknowledged.
 - The functions: FC05 for a coil, FC06 for a tag of one register, FC16 for a tag of more registers. With `write_multiple: true` on the device, all its writes use FC15 or FC16. A device without the key uses the build option `CONFIG_GW_MB_FORCE_MULTI_WRITE` (default: off).

@@ -11,7 +11,7 @@ You need:
 - A twisted-pair cable for RS485, with a shield. Its impedance is usually 120 Ω.
 - One more conductor for the common (0 V reference) of the bus.
 - The data of each Modbus device: the unit ID, the baud rate, the parity and the stop bits.
-- A computer with a USB-C cable for the shell of the gateway, or access to the web UI.
+- Access to the web UI, with the web password. As an alternative, a computer with a USB-C cable for the shell of the gateway.
 
 ## The RS485 port of the board
 
@@ -73,55 +73,55 @@ When no device transmits, no transceiver drives the bus. Then noise can look lik
 
 ## Configure the gateway
 
-All devices on the bus must use the same baud rate, parity and stop bits. Set them in the `rs485` section of `config.json`:
+All devices on the bus must use the same baud rate, parity and stop bits.
 
-| Key | Range | Default | Description |
-|---|---|---|---|
-| `baud` | 1200 to 115200 | 9600 | The baud rate of the bus |
-| `parity` | `none`, `even`, `odd` | `none` | The parity |
-| `stop_bits` | 1, 2 | 1 | The stop bits |
-| `response_timeout_ms` | 10 to 5000 | 200 | The time that the gateway waits for the first bytes of a response |
-| `retries` | 0 to 5 | 2 | The attempts after the first attempt, for a timeout, a CRC error or a frame error |
-| `inter_frame_delay_ms` | 0 to 1000 | 5 | An extra delay between two transactions, after the silence of 3.5 characters |
+1. Open the web UI: `https://<ip>/` or `https://<hostname>.local/`.
+2. Click the tab **Configuration**.
+3. In the card **RS485**, set **Baud rate**, **Parity** and **Stop bits** to the values of the devices.
+4. If necessary, change **Timeout (ms)**, **Retries** and **Inter-frame delay (ms)**. The (?) button of each field gives its range and its default.
+5. Click **Validate** in the bar at the bottom of the window. Then click **Save and restart**.
 
-Each device has a `unit_id` from 1 to 247. Give each physical device on the bus a different unit ID. The Modbus specification uses 2 stop bits when there is no parity. Many devices use 1 stop bit: use the values of the device.
+The Modbus specification uses 2 stop bits when there is no parity. Many devices use 1 stop bit: use the values of the device. For the keys of the card, refer to [`rs485`](../reference/configuration.md#rs485).
+
+Give each physical device on the bus a different unit ID, from 1 to 247. To add the devices, refer to [Add a Modbus device and its tags](add-a-modbus-device.md).
 
 ## Examine the result
 
-### The shell command `devices`
+### The counters of the devices
 
-1. Connect the computer to the USB-C port of the board. [Board data to verify](../reference/board-data-to-verify.md#the-data) gives the console.
-2. Type `devices`.
+1. Click the tab **Status**.
+2. Find the device in the card **Modbus devices**.
 
-The command shows one line for each device. For example:
+The card shows one row for each device. The column **OK / timeout / CRC / frame / exception** has five counters. The shell command `devices` gives the same counters on the USB console. For example:
 
 ```
 Meter1           unit   1 online  cycles 120 failed 0 | ok 120 timeout 0 crc 0 frame 0 exception 0
 ```
 
-| Field | Meaning |
+| Column of the card, or field of `devices` | Meaning |
 |---|---|
-| `online` / `offline` | The state of the device. After `offline_after` failed cycles in sequence, the device is offline (DDEATH). The first good response makes it online again (DBIRTH) |
-| `cycles` | The poll cycles of the device |
-| `failed` | The cycles with a request that got no response after all its retries |
-| `ok` | The attempts with a correct response |
-| `timeout` | The attempts with no byte in `response_timeout_ms` |
-| `crc` | The attempts with a response that has a bad CRC |
-| `frame` | The attempts with a response that is not complete, or that is not a response to the request. A transmit failure also counts here |
-| `exception` | The attempts with a Modbus exception response. The bus operates, but the device rejects the request |
+| **State**, `online` / `offline` | The state of the device. After the number of failed cycles of **Offline after (cycles)** in sequence, the device is offline (DDEATH). The first cycle that reads all its blocks makes it online again (DBIRTH) |
+| **Cycles / failed**, `cycles`, `failed` | The poll cycles of the device, and the cycles with a request that got no response after all its retries |
+| **OK**, `ok` | The attempts with a correct response |
+| **timeout**, `timeout` | The attempts with no byte in the time of **Timeout (ms)** |
+| **CRC**, `crc` | The attempts with a response that has a bad CRC |
+| **frame**, `frame` | The attempts with a response that is not complete, or that is not a response to the request. A transmit failure also counts here |
+| **exception**, `exception` | The attempts with a Modbus exception response. The bus operates, but the device rejects the request |
 
-The counters `ok`, `timeout`, `crc`, `frame` and `exception` count each attempt, also each retry. Thus one failed request with `retries` 2 adds 3 to `timeout`. If Modbus TCP clients send requests to the device, the line also shows `| tcp ok … timeout … crc … frame … exception …`.
+The counters OK, timeout, CRC, frame and exception count each attempt, also each retry. Thus one failed request with 2 retries adds 3 to timeout. If Modbus TCP clients send requests to the device, the line of `devices` also shows `| tcp ok … timeout … crc … frame … exception …`.
 
-The command `status` shows the summary: `network up, MQTT connected, Modbus 1/1 devices online`. Sparkplug hosts get the same counters in the DataSet `Node Info/Modbus` of the node.
+The shell command `status` shows the summary: `network up, MQTT connected, Modbus 1/1 devices online`. Sparkplug hosts get the same counters in the DataSet `Node Info/Modbus` of the node.
 
 ### One read of a register
+
+Use the card **Modbus test read** of the Configuration tab. Refer to [Read one value with the test read](add-a-modbus-device.md#2-read-one-value-with-the-test-read).
+
+On the USB console, the shell command `mbread` does the same read:
 
 1. Type `mbread <unit> <coil|discrete|holding|input> <address> [count]`. For example: `mbread 1 holding 10 2`.
 2. Read the result. For example: `mbread: unit 1 holding 10: 123 0`.
 
 The address is the address in the Modbus frame, from 0. The command also gives `timeout`, `CRC error`, `framing error` or `exception <code>`. It is available when the build has `CONFIG_GW_SHELL_WRITE_COMMANDS` (the default).
-
-The test read in the web UI (#182) will do the same from the device table, without the shell.
 
 ### The status LED
 
@@ -136,11 +136,11 @@ The other patterns are in [The status signals](../reference/status-signals.md#st
 
 | Symptom | Probable cause | Action |
 |---|---|---|
-| All devices show `timeout`, and `ok` stays at 0 | A and B are interchanged. The baud rate, the parity or the stop bits are not correct. The common is not connected. The devices have no power | Interchange A and B at the gateway. Compare the `rs485` values with each device. Connect the common |
-| All devices show `timeout`, and the RS485 TX LED stays off | The gateway does not transmit | Type `status` and read the configuration line. Report the result in #127 |
-| `crc` errors only at a high baud rate | Reflections on the bus. There is no termination, or it is at the wrong point. A branch is too long. The cable is not twisted pair | Install the termination at the two ends only. Make the branches shorter. Decrease `baud` |
+| All devices show `timeout`, and `ok` stays at 0 | A and B are interchanged. The baud rate, the parity or the stop bits are not correct. The common is not connected. The devices have no power | Interchange A and B at the gateway. Compare the values of the card **RS485** with each device. Connect the common |
+| All devices show `timeout`, and the RS485 TX LED stays off | The gateway does not transmit | Type `status` in the shell and read the configuration line. Report the result in #127 |
+| `crc` errors only at a high baud rate | Reflections on the bus. There is no termination, or it is at the wrong point. A branch is too long. The cable is not twisted pair | Install the termination at the two ends only. Make the branches shorter. Decrease **Baud rate** |
 | `frame` errors, mostly before the first byte of a response | The bus floats when no device transmits. Noise. A second master on the bus | Add bias at one point. Make sure that the gateway is the only master |
 | Errors only when a motor or a frequency converter runs | Electrical noise | Connect the common and the shield as this procedure tells. Install the RS485 cable away from power cables |
-| Some `timeout` errors, but most attempts are `ok` | The device is slow | Increase `response_timeout_ms`. Increase `inter_frame_delay_ms` |
+| Some `timeout` errors, but most attempts are `ok` | The device is slow | Increase **Timeout (ms)**. Increase **Inter-frame delay (ms)** |
 | One device shows `timeout`, the other devices are `online` | The unit ID or the serial values of this device are not correct. Two devices use the same unit ID. Its A and B are interchanged. Its termination switch is closed in the middle of the line | Examine the unit ID and the serial values of the device. Examine its connection |
-| `exception` errors, but no `timeout` | The bus operates. The address, the area or the function of a tag is not correct for the device | Compare the tags with the register map of the device. Use `mbread` to read the register |
+| `exception` errors, but no `timeout` | The bus operates. The address, the area or the function of a tag is not correct for the device | Compare the tags with the register map of the device. Read the register with the card **Modbus test read** |

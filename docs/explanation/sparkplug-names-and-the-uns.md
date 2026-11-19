@@ -114,7 +114,7 @@ Each Sparkplug metric has the time of its sample. UMH uses this time only if the
 
 - Store & forward samples arrive late, with `is_historical`. With the line, the UNS keeps the time of each sample. Without the line, all samples of the replay get the same arrival time. The E2E of #175 measured the two cases.
 - The gateway sends the DBIRTH with the current value first, then the stored samples. Thus the UNS receives samples that are older than the last value. A consumer that keeps only the last message shows the last stored sample until the next change.
-- Before the gateway has a valid time (SNTP, the RTC or the browser), it does not connect to the broker. Thus the UNS gets no timestamp near 1970 (#160). The first births come when the time becomes valid. A value that the gateway read before that time gets the time of the births. The web UI has a button that sets the time from the browser. The RTC battery keeps the time during a power cut (`docs/how-to/fit-the-rtc-battery.md`).
+- Before the gateway has a valid time (SNTP, the RTC or the browser), it does not connect to the broker. Thus the UNS gets no timestamp near 1970 (#160). The first births come when the time becomes valid. A value that the gateway read before that time gets the time of the births. The web UI has a button that sets the time from the browser. The RTC battery keeps the time during a power cut (refer to [Fit the RTC battery](../how-to/fit-the-rtc-battery.md)).
 - The UMH downsampler has the option `late_policy` (`passthrough` or `drop`) for samples that arrive out of order. Nobody examined its effect on a replay yet: the E2E has no downsampler.
 
 ## Why the gateway does not make the UMH bridge configuration

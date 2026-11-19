@@ -15,7 +15,7 @@ The build reads `sdkconfig.defaults`, then the overlays of `SDKCONFIG_DEFAULTS` 
 | File | Build | What it sets |
 |---|---|---|
 | `sdkconfig.defaults` | All builds. Alone, it is the build for the board | The board (16 MB QIO flash, 8 MB octal PSRAM, `partitions.csv`), the task watchdog (REL-1), the core dump to flash, the RS485 UART ISR in IRAM (MB-2), the network stack on core 0, TLS 1.2 and 1.3 with dynamic buffers (MQTT-4, #80), MQTT 5 (MQTT-8), HTTPS (#64), the OTA rollback (FW-1) and the microSD names without LFN (#122). No option burns an eFuse |
-| `sdkconfig.qemu` | All QEMU builds | `CONFIG_GW_IO_SIMULATED`, OpenCores Ethernet, no PSRAM, DIO flash, no Wi-Fi, no RS485 hardware half-duplex mode. Also the NVS encryption with the HMAC key in KEY5 and the signed OTA images without Secure Boot (both open in #133), the spill of store & forward to LittleFS, `CONFIG_GW_FW_PARK_OTHER_CORE` (#107) and a self-check of 30 s (#233) |
+| `sdkconfig.qemu` | All QEMU builds | `CONFIG_GW_IO_SIMULATED`, OpenCores Ethernet, no PSRAM, DIO flash, no Wi-Fi, no RS485 hardware half-duplex mode. Also the NVS encryption with the HMAC key in KEY5 and the signed OTA images without Secure Boot (both open in #133), the spill of store & forward to LittleFS, a publish budget of 2 s (#59), `CONFIG_GW_FW_PARK_OTHER_CORE` (#107) and a self-check of 30 s (#233) |
 | `sdkconfig.qemu-psram` | QEMU with PSRAM, after `sdkconfig.qemu` | The octal PSRAM, software SHA and AES (the QEMU GDMA does not reach PSRAM, #85), 10 RX buffers of OpenCores Ethernet (#110) and a store & forward ring of 1 000 samples (#124) |
 | `sdkconfig.qemu-plain` | QEMU without NVS encryption, after `sdkconfig.qemu` | `CONFIG_NVS_ENCRYPTION=n`. The E2E uses it as the image before an update to the encrypted build (#94) |
 | `sdkconfig.qemu-poison` | QEMU with heap poisoning, after `sdkconfig.qemu` (and `sdkconfig.qemu-psram`) | `CONFIG_HEAP_POISONING_COMPREHENSIVE` (#104) |
@@ -114,7 +114,7 @@ The host test `check_efuse_options` (#228) fails when `sdkconfig.defaults`, one 
 
 ## The size of the image
 
-CI runs `idf.py size` in the job `firmware`. The last result in the documentation is from the release build of issue #227:
+CI runs `idf.py size` in the job `firmware`, and puts the output in `size.txt` of the artifact `firmware-esp32s3`. These values come from the release build at #227:
 
 | Region | Used |
 |---|---|

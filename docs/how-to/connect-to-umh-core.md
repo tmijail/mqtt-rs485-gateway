@@ -28,16 +28,18 @@ The `sparkplug_b` input of v0.16.2 has these limits:
 
 Select one of these options:
 
-| Option | Gateway | UMH Core |
+| Option | Gateway: the card **MQTT** of the tab **Configuration** | UMH Core |
 |---|---|---|
-| A. No TLS on a protected network | `mqtt.tls` off, port 1883 | `tcp://<broker>:1883` |
-| B. A listener on the loopback interface for UMH, TLS for the gateway | `mqtt.tls.enabled: true` with your private CA in `mqtt.tls.ca_file` | `tcp://127.0.0.1:1883`. UMH Core and the broker must run on the same computer |
-| C. A broker certificate from a public CA | `mqtt.tls.enabled: true`, `mqtt.tls.ca_file: ""` | `ssl://<broker DNS name>:8883` |
+| A. No TLS on a protected network | **Encrypt (TLS)** off, **Port** 1883 | `tcp://<broker>:1883` |
+| B. A listener on the loopback interface for UMH, TLS for the gateway | **Encrypt (TLS)** on. In **CA file**, select your private CA | `tcp://127.0.0.1:1883`. UMH Core and the broker must run on the same computer |
+| C. A broker certificate from a public CA | **Encrypt (TLS)** on. In **CA file**, select `(none: public root CAs)` | `ssl://<broker DNS name>:8883` |
+
+For the TLS steps and the load of the CA file, refer to [Connect to a broker with TLS](connect-to-a-broker-with-tls.md).
 
 Option C works only when a CA that the two sides trust signs the broker certificate:
 
-- An empty `mqtt.tls.ca_file` makes the gateway use the public CA bundle of ESP-IDF (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN`). This bundle is compile-only: the E2E uses its own CA.
-- The broker needs a public DNS name. The gateway compares the name with `mqtt.host`, or with `mqtt.tls.server_name`.
+- Without a CA file (`mqtt.tls.ca_file: ""`), the gateway uses the public CA bundle of ESP-IDF (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN`). This bundle is compile-only: the E2E uses its own CA.
+- The broker needs a public DNS name. The gateway compares the name with **Broker** (`mqtt.host`), or with **Server name** (`mqtt.tls.server_name`).
 - On a plant network with no access from the Internet, a CA such as Let's Encrypt can sign the certificate with the DNS-01 challenge. Nobody examined this option with the gateway yet.
 - TLS needs a valid time on the gateway (SNTP or the RTC). Refer to [Known limitations](../reference/known-limitations.md#tls-mqtt-4-mqtt-5).
 
@@ -52,58 +54,42 @@ UMH makes the location path of a device from its Sparkplug `device_id`. The gate
 5. Do not use spaces. UMH changes each space to `_`.
 6. Do not use `.` in a level. UMH reads `.` as one more level.
 7. Do not start a level with `_`. UMH reads such a level as the data contract.
-8. Keep each device name at 39 characters or less. The full `device_id` must fit in the topic: 78 bytes or more, refer to the [reference](../reference/umh-names-and-topics.md#name-limits-of-the-gateway).
+8. Keep each device name at 39 characters or less. The full `device_id` must fit in the topic. With a `group_id` and an `edge_node_id` of 32 bytes, the limit is 78 bytes (refer to the [reference](../reference/umh-names-and-topics.md#name-limits-of-the-gateway)).
 9. Write the `edge_node_id` in the same form, for example `acme:berlin:packaging:gw01`. Keep it at 32 characters or less.
 10. In tag names, use `/` between the levels of a virtual path. For example: `L1/Current`.
 11. Do not use `:` in tag names. UMH splits a name at the last `:` before it examines `/`.
 
 ## Configure the gateway
 
-1. Set `sparkplug.naming` to `"umh"`. The UMH preset refuses the names that UMH would change. It also publishes the state of each device and plain metrics that UMH can read.
-2. Set `sparkplug.group_id`. UMH does not use it in the location, but the bridge subscribes to it.
-3. Set `sparkplug.edge_node_id` to the location of the gateway.
-4. Set `sparkplug.device_prefix` to the common levels of the location. Give each device the remaining levels as its `name`.
-5. Keep `sparkplug.primary_host_id` empty.
-6. You can give a device a device type (the key `type`, refer to [Add devices of one type](add-devices-of-one-type.md)). With the UMH preset, a device with a type publishes plain metrics, not a template instance.
-7. Do not use tags of the type `bytes`. UMH does not show them.
-8. Do not use `uint64` or `int64` tags for values larger than 2^53 (9 007 199 254 740 992). The `tag_processor` rounds them (refer to [the values](#examine-the-result)).
-9. Keep `mqtt.protocol` at `3.1.1` (the default).
-10. Set `sparkplug.store_forward` to `true` if you want the data of a broker failure.
-11. Validate the configuration (the web UI button, `PUT /api/config?dry_run=1` or `config check`). Read the warnings, and correct each one.
+Do these steps in the tab **Configuration** of the web UI. For the cards and the bar at the bottom of the window, refer to [Change the configuration in the web UI](change-the-configuration.md#change-the-configuration-in-the-web-ui).
 
-An example `config.json` for option A:
+1. Open the card **Sparkplug**.
+2. In **Naming**, select `umh`. The UMH preset refuses the names that UMH would change. It also publishes the state of each device and plain metrics that UMH can read.
+3. In **Group ID**, type the group, for example `acme`. UMH does not use it in the location, but the bridge subscribes to it.
+4. In **Edge node ID**, type the location of the gateway, for example `acme:berlin:packaging:gw01`.
+5. Keep **Primary host ID** empty.
+6. In **Device prefix (location)**, click **+ level** one time for each common level of the location. Type one level in each field, for example `acme`, `berlin`, `packaging` and `line3`. The gateway puts `:` between the levels.
+7. In **Store & forward**, select **Keep the changes without a session** if you want the data of a broker failure.
+8. Open the card **MQTT**. Make sure that **Protocol** is `3.1.1` (the default).
+9. Open the card **Devices and tags**. In the **Name** of each device, type the remaining levels of its location, for example `meter1`.
+10. Below each device, read the Sparkplug topic and the UMH topic. Compare the UMH topic with the location that you want. A level in red starts with `_`: correct it.
+11. If you want, select a **Device type** for a device (refer to [Add devices of one type](add-devices-of-one-type.md)). With the UMH preset, a device with a type publishes plain metrics, not a template instance.
+12. Do not use tags of the type `bytes`. UMH does not show them.
+13. Do not use `uint64` or `int64` tags for values larger than 2^53 (9 007 199 254 740 992). The `tag_processor` rounds them (refer to [Examine the result](#examine-the-result)).
+14. In the bar at the bottom of the window, click **Validate**. Read the warnings, and correct each one.
+15. Click **Save and restart**.
+
+In the tab **JSON**, in `PUT /api/config` or in the shell command `config load`, the same settings are these keys (refer to [Save and export](../reference/configuration.md#save-and-export)):
 
 ```json
-{
-  "network": { "dhcp": true },
-  "ntp":     { "servers": ["pool.ntp.org"] },
-  "mqtt":    { "host": "192.168.1.10", "port": 1883, "client_id": "",
-               "username": "", "password": "", "keepalive_s": 30, "protocol": "3.1.1" },
-  "sparkplug": { "group_id": "acme", "edge_node_id": "acme:berlin:packaging:gw01",
-                 "device_prefix": "acme:berlin:packaging:line3", "naming": "umh",
-                 "primary_host_id": "", "store_forward": true },
-  "rs485":   { "baud": 9600, "parity": "none", "stop_bits": 1,
-               "response_timeout_ms": 200, "retries": 2, "inter_frame_delay_ms": 5 },
-  "local_io": { "counter_save_s": 600 },
-  "devices": [
-    {
-      "name": "meter1", "unit_id": 1, "poll_ms": 1000,
-      "offline_after": 3,
-      "tags": [
-        { "name": "Voltage",    "area": "input", "address": 0, "type": "float32",
-          "word_order": "big", "deadband": 0.1, "units": "V" },
-        { "name": "L1/Current", "area": "input", "address": 2, "type": "float32",
-          "word_order": "big", "deadband": 0.01, "units": "A" },
-        { "name": "Run",        "area": "coil",  "address": 0, "type": "bool" }
-      ]
-    }
-  ]
-}
+"mqtt":      { "protocol": "3.1.1" },
+"sparkplug": { "group_id": "acme", "edge_node_id": "acme:berlin:packaging:gw01",
+               "device_prefix": "acme:berlin:packaging:line3", "naming": "umh",
+               "primary_host_id": "", "store_forward": true },
+"devices":   [ { "name": "meter1" } ]
 ```
 
-Load the configuration with the web UI, `PUT /api/config` or the shell command `config load` (refer to [Save and export](../reference/configuration.md#save-and-export)).
-
-In the web UI, the Configuration tab shows the Sparkplug topic and the UMH topic of each device before you save. Compare the UMH topic with the location that you want. A level in red starts with `_`: correct it.
+The other keys of the `mqtt` object and of each device do not change for UMH. For the device keys, refer to [Add a Modbus device and its tags](add-a-modbus-device.md).
 
 ## Configure the UMH bridge
 
@@ -171,8 +157,8 @@ Do not use the role `primary`. It publishes the Sparkplug 2.x STATE text (`ONLIN
 
 1. Open the Topic Browser of UMH.
 2. Find the location of the device, for example `acme.berlin.packaging.line3.meter1`.
-3. Compare the topics with the table below.
-4. On the gateway shell, type `rebirth`.
+3. Compare the topics with the table below. The table uses the device `meter1` with the tags `Voltage`, `L1/Current` and `Run`.
+4. In the tab **Status** of the web UI, in the card **Network and MQTT**, click **Rebirth**. The shell command `rebirth` and `POST /api/rebirth` do the same.
 5. Make sure that the topics show the values again, with no `alias_<n>` tag.
 
 | Metric | UMH topic |
@@ -190,17 +176,21 @@ The E2E of #175 measured these items with v0.16.2:
 - A `uint64` or `int64` value gets to the UNS exact up to 2^53. The `tag_processor` runs JavaScript, where each number is a double. Thus 9007199254740993 becomes 9007199254740992.
 - After a restart of UMH, the bridge sends the rebirth request in less than 1 s. The topics come back with their names.
 
-The [reference](../reference/umh-names-and-topics.md#node-metrics) gives all the metrics. The Rebirth button of the Status tab of the web UI (`POST /api/rebirth`) does the same as the shell command `rebirth`.
+The [reference](../reference/umh-names-and-topics.md#node-metrics) gives all the metrics.
 
 ## Use Modbus TCP as a second path
 
 The `modbus` input of UMH uses only TCP (`TCP`, `RTUoverTCP`, `ASCIIoverTCP`). It cannot use serial RTU. The Modbus TCP server of the gateway lets UMH poll the RTU devices directly. Refer to [`modbus_tcp`](../reference/configuration.md#modbus_tcp).
 
-1. In `config.json`, add `"modbus_tcp": { "enabled": true, "port": 502, "allowed_clients": ["192.168.1.20"] }`.
-2. Replace `192.168.1.20` with the address of UMH Core.
-3. In UMH, set `controller` of the `modbus` input to `tcp://<gateway>:502`.
-4. Set `transmissionMode` to `TCP`.
-5. Set `slaveIDs` to the unit IDs of the devices.
+1. In the tab **Configuration** of the web UI, open the card **Modbus TCP**.
+2. Select **Enabled**. Keep **Port** empty for the default port 502.
+3. In **Allowed clients**, click **+ client**. Type the address of UMH Core, for example `192.168.1.20`.
+4. In the bar at the bottom of the window, click **Validate**. Then click **Save and restart**.
+5. In UMH, set `controller` of the `modbus` input to `tcp://<gateway>:502`.
+6. Set `transmissionMode` to `TCP`.
+7. Set `slaveIDs` to the unit IDs of the devices.
+
+In the tab **JSON**, steps 1 to 3 are `"modbus_tcp": { "enabled": true, "allowed_clients": ["192.168.1.20"] }`.
 
 This path has these limits:
 
@@ -213,17 +203,17 @@ This path has these limits:
 
 | Symptom | Probable cause | Action |
 |---|---|---|
-| The tags show as `alias_<n>` | The bridge has no BIRTH of the node, for example after a restart of UMH | Set `role: "secondary_active"`. Type `rebirth` on the gateway shell. The `tag_processor` of this document drops the `alias_<n>` tags |
-| A negative value shows as a large number, for example 4294967295 for -1 | The bridge has no BIRTH of the node. NDATA and DDATA have no datatype, thus the bridge cannot know that the integer has a sign | Set `role: "secondary_active"`. Type `rebirth` on the gateway shell |
-| A device has no data | The device has a `type`, and the UMH preset is off. The tags are `bytes`. The device is offline: its values are null | Set `sparkplug.naming` to `"umh"`. Use other tag types. Read `Devices/<name>/Online`, or type `devices` on the gateway shell |
-| A level is at the wrong place | The name has a space, a `.` or a level that starts with `_` | Set `sparkplug.naming` to `"umh"`, and correct each name that the validation refuses. The metadata `spb_original_device_id` shows the name before UMH changed it |
-| An enterprise has the name of the gateway, for example `GW01` | The `edge_node_id` is a short name. UMH uses it as the location of the node metrics | Write the `edge_node_id` as a location, or drop the node metrics in the bridge |
-| The device is the enterprise, for example `umh.v1.Meter1` | The `device_id` is not a location. Two gateways with `Meter1` then write to the same topic | Set `sparkplug.device_prefix` to the location of the devices |
-| The gateway sends nothing, and the web UI shows "Waiting for a valid clock" | The gateway has no valid time: no SNTP, no RTC time and no time from the browser. It does not connect to the broker before it has one (#160) | Make sure that the gateway gets SNTP. Or, in the web UI, click "Set the time from the browser". Type `status` on the gateway shell: the `time` and `clock` lines show the source and what to do |
-| After each power cut, the gateway waits for a valid clock, and the web UI tells you to examine the RTC battery | The RTC lost the time: the holder has no cell, or the cell is empty | Install a rechargeable 3 V cell (ML1220). Do not use a CR1220. See `docs/how-to/fit-the-rtc-battery.md` |
+| The tags show as `alias_<n>` | The bridge has no BIRTH of the node, for example after a restart of UMH | Set `role: "secondary_active"`. Click **Rebirth** in the tab **Status** of the web UI. The `tag_processor` of this document drops the `alias_<n>` tags |
+| A negative value shows as a large number, for example 4294967295 for -1 | The bridge has no BIRTH of the node. NDATA and DDATA have no datatype, thus the bridge cannot know that the integer has a sign | Set `role: "secondary_active"`. Click **Rebirth** in the tab **Status** of the web UI |
+| A device has no data | The device has a `type`, and the UMH preset is off. The tags are `bytes`. The device is offline: its values are null | In the card **Sparkplug**, set **Naming** to `umh`. Use other tag types. Read `Devices/<name>/Online`, or the card **Modbus devices** in the tab **Status** |
+| A level is at the wrong place | The name has a space, a `.` or a level that starts with `_` | In the card **Sparkplug**, set **Naming** to `umh`. Correct each name that the validation refuses. The metadata `spb_original_device_id` shows the name before UMH changed it |
+| An enterprise has the name of the gateway, for example `GW01` | The `edge_node_id` is a short name. UMH uses it as the location of the node metrics | In the card **Sparkplug**, type the location in **Edge node ID**. Or drop the node metrics in the bridge |
+| The device is the enterprise, for example `umh.v1.Meter1` | The `device_id` is not a location. Two gateways with `Meter1` then write to the same topic | In the card **Sparkplug**, put the location of the devices in **Device prefix (location)** |
+| The gateway sends nothing, and the web UI shows "Waiting for a valid clock" | The gateway has no valid time: no SNTP, no RTC time and no time from the browser. It does not connect to the broker before it has one (#160) | Make sure that the gateway gets SNTP. Or, in the tab **Status** of the web UI, click **Set the time from the browser**. Type `status` on the gateway shell: the `time` and `clock` lines show the source and what to do |
+| After each power cut, the gateway waits for a valid clock, and the web UI tells you to examine the RTC battery | The RTC lost the time: the holder has no cell, or the cell is empty | Install a rechargeable 3 V cell (ML1220). Do not use a CR1220. Refer to [Fit the RTC battery](fit-the-rtc-battery.md) |
 | A large counter shows a different last digit | A `uint64` or `int64` value is larger than 2^53. The JavaScript of the `tag_processor` rounds it | Keep the value at 2^53 or less |
 | The samples of a broker failure have the time of the replay | The `tag_processor` has no `timestamp_ms` line | Add `msg.meta.timestamp_ms = msg.meta.spb_timestamp` |
 | After a broker failure, the UNS shows an old value for a short time | The gateway sends the DBIRTH with the current value first, then the stored samples (`is_historical`). The last message of the topic is then the last stored sample | Use the timestamps, not the order of arrival. The next change of the value corrects the last value |
-| The gateway sends no NBIRTH, and the shell says that it waits for the primary host | `sparkplug.primary_host_id` is not empty | Set `primary_host_id` to `""` |
+| The gateway sends no NBIRTH, and the shell says that it waits for the primary host | `sparkplug.primary_host_id` is not empty | In the card **Sparkplug**, delete the text of **Primary host ID** |
 
 The UMH downsampler has the option `late_policy` (`passthrough` or `drop`) for samples that arrive out of order. A replay of store & forward sends samples that are older than the DBIRTH. Nobody examined the effect of `late_policy` on them: the E2E of #175 has no downsampler.

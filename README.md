@@ -98,7 +98,7 @@ flowchart LR
 
 **Configuration and maintenance**
 
-- An HTTPS web UI controls all the keys of the configuration. A REST API and a serial shell are also available.
+- An HTTPS web UI for the configuration and the live state. A REST API and a serial shell are also available.
 - A commissioning access point and a claim window: set the first web password on site with a phone.
 - Firmware updates by HTTPS or by upload in the web UI, with a trial period and an automatic rollback.
 - Safe mode, recovery mode, factory reset, a live log in the browser and core dumps.
@@ -188,7 +188,7 @@ The rules for contributors (code, tests, documentation in Simplified Technical E
 
 - **The owner keeps control of the board.** The firmware burns no eFuse and does not lock the board. The owner can always read, flash and change it. Refer to [Features that burn eFuses](docs/explanation/no-efuse-features.md).
 - **Full Sparkplug conformance.** The gateway obeys each MUST and SHOULD of Sparkplug B 3.0.0 for an Edge Node. Where the specification permits a choice, [Sparkplug behavior](docs/reference/sparkplug-behavior.md) gives the choice and the reason.
-- **The web UI configures everything.** Each key of the configuration has a control in the web UI.
+- **The web UI configures everything.** Each key of the configuration must have a control in the web UI.
 
 ## License
 

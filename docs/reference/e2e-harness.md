@@ -116,7 +116,7 @@ The summary shows the firmware faults also when they cause no failure (`[PANIC]`
 
 **A retry does not hide** a failed check, a hang, or a firmware panic, assert, watchdog, stack overflow or abort on the console. A retry can hide an error that the attempt did not examine yet before QEMU died. A regression that kills QEMU each time still shows, because the second attempt also fails.
 
-**A silence never causes a retry.** The only silence with a dump was a firmware fault: the deadline rollback ran in the `esp_timer` task, and the RSA-PSS verification overflowed its stack. The rollback now runs in its own task (`fw_trial`).
+**A silence never causes a retry.** A silent QEMU that is alive gives a hang or an expired time limit, and the scenario fails (refer to [Hangs and time limits](#hangs-and-time-limits-92)).
 
 ### Hangs and time limits (#92)
 
@@ -155,7 +155,7 @@ The QEMU build has `CONFIG_HEAP_POISONING_DISABLED`, so freed memory keeps its v
 
 The poisoning headers and canaries use approximately 20 KB of internal RAM. Without PSRAM, the #80 validation then answers 503, so this build is not in the main variants. For the same reason, `e2e-poison` runs FW-1 in the PSRAM variant: its checks save the configuration, and without PSRAM a save can get 503. `ota-park` and `ota-trial` save no configuration. `ota-wiring` saves the configuration and needs no PSRAM in the full E2E, so `e2e-poison` does not run it.
 
-CAUTION: Read the `uart0-*.log` files when `e2e-poison` fails. One time, with heap poisoning, a `LoadStorePIFAddrError` of the core 1 tick on SYSTIMER occurred at the boot of a trial image, without an image write before it. The harness counts it as a firmware fault, and does not retry it.
+CAUTION: Read the `uart0-*.log` files when `e2e-poison` fails. With heap poisoning, a `LoadStorePIFAddrError` of the core 1 tick on SYSTIMER can occur at the boot of a trial image, without an image write before it. The harness counts it as a firmware fault, and does not retry it.
 
 ### Self-tests of the harness
 
@@ -180,18 +180,17 @@ CAUTION: Read the `uart0-*.log` files when `e2e-poison` fails. One time, with he
 
 | Check | Where | Threshold | Last measured value |
 |---|---|---|---|
-| #80 minimum free internal RAM | `tls`, node `GW29`, PSRAM variant | ≥ 8 KB (`RAM_MIN_FREE_B`) | 155 192 B |
+| #80 minimum free internal RAM | `tls`, node `GW29`, PSRAM variant | ≥ 8 KB (`RAM_MIN_FREE_B`) | 156 728 B |
 | #80 largest free internal block at the validation | `tls`, node `GW29` | ≥ 17 KB (`RAM_MIN_BLOCK_B`) | 118 784 B |
 | #91 spare of the largest block before the document print | `tls`, node `GW29` | ≥ 4 KB (`PRINT_MIN_SPARE_B`) | — |
 | `sparkplug` stack, deepest paths | `sf`, node `GW27` | ≥ 1 024 B (`STACK_MARGIN_B`) | 1 716 B |
 | `httpd` stack | `tls` and `https` | ≥ 2 048 B (`HTTPD_STACK_MIN_B`) | 5 572 B |
 | `httpd_redirect` and `web_guard` stacks | `tls` and `https` | ≥ 512 B (`REDIRECT_STACK_MIN_B`) | 1 652 B and 1 112 B |
 | Card format task stack (#139) | `sf`, node `GW23` | ≥ 1 024 B of 5 120 B (`CARD_STACK_MIN_B`) | 3 108 B |
-| `fw_trial` rollback stack | FW-1 OTA | ≥ 1 KB | — |
 
 The #80 worst case is MQTT over TLS 1.3, full births (the 60-tag DBIRTH of `Bulk`), one HTTPS session open, and `PUT /api/config?dry_run=1` of the full document on a second session. The harness configuration has 5 devices and 74 tags. A larger configuration, or more HTTPS clients at the same time, decrease the margin. mbedTLS, the configuration and the engine are in PSRAM, so the margin of the internal RAM is large on the board configuration.
 
-The values come from the last run that reported each of them: the #80 RAM values from `main` 6288614, the `sparkplug` stack from `main` 8c2e8be, and the other values from `integration/195b` 91c852c. On 91c852c, the other free stacks at the #80 worst case were `mqtt_task` 1 772 B, `rs485_bus` 2 328 B and `local_io` 2 400 B, and the fault mode without PSRAM (`nopsram`) had 129 020 B of free internal RAM.
+The #80 values come from the last full run (after commit 1994ff5). The `sparkplug` stack comes from commit 8c2e8be, and the other values from commit 91c852c. In that run of 91c852c, the other free stacks at the #80 worst case were `mqtt_task` 1 772 B, `rs485_bus` 2 328 B and `local_io` 2 400 B. The fault mode without PSRAM (`nopsram`) had 129 020 B of free internal RAM.
 
 A TLS handshake during a validation needs no fix (#84, node `GW30`). With the dynamic buffers of mbedTLS, a reconnection replaces the earlier session and does not add to it. The web server has one task, so a new HTTPS handshake waits until the PUT ends. A PUT during a handshake, with no 32 KB block free, answers 503 with no hang. The E2E does not force this order.
 
@@ -234,6 +233,5 @@ CAUTION: Do not run two variants or other heavy work at the same time as an E2E 
 
 ## Other notes
 
-- The host tests need network access the first time (FetchContent of Unity and cJSON).
 - `idf.py` does not accept `-j`. The build uses the default ninja parallelism. `JOBS` sets the parallel jobs of `run_e2e.sh`.
 - `idf/tools/docs_shots.py` makes the screenshots of the web UI with the machinery of the harness (refer to [Make the screenshots of the web UI for the docs](../how-to/make-the-docs-screenshots.md)). The script and the CI do not compare the images, so a change of the web UI does not make a test fail.

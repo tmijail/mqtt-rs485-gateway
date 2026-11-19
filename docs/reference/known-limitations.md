@@ -67,6 +67,7 @@ For the rules of a DCMD, refer to [Sparkplug messages and metrics](sparkplug-mes
 - The aliases depend on the order of the tags in the configuration. A new order gives new aliases in the next births.
 - Templates have no parameters, no version and no nesting. No test used a real host such as Ignition (SPB-18).
 - Bytes and File hold 64 B at most. File has no metadata, and there is no file transfer (SPB-19).
+- A text of a metric has 256 characters at most (`SPB_STRING_MAX`). A text of a property or of a DataSet cell has 63 characters at most (#87). The firmware does not truncate a longer text: it rejects the message, and the log gives the cause.
 - The bdSeq is in RAM only, and starts at 0 at each boot (#161).
 
 For the detail, refer to [Sparkplug behavior](sparkplug-behavior.md).
@@ -181,10 +182,7 @@ For the keys, refer to [`local_io`](configuration.md#local_io). For the procedur
 - **Buzzer (IO-6).** The buzzer uses LEDC at 2.7 kHz. Nobody examined the buzzer type or its resonance frequency. The demo uses 1 kHz.
 - You cannot silence an alarm while its condition continues.
 - The `config_error` alarm uses the setting of the last valid configuration (NVS). A gateway that never had a valid configuration gives no `config_error` alarm.
-- Safe mode (#209) does not reject the configuration. Thus it gives no `config_error` alarm, and the LED shows the "safe mode" pattern.
-- A long flash erase stops the buzzer task. Thus the two beeps of a factory reset sound fully before the erase.
-- **Identify (#207).** For 10 s, the LED shows red, green and blue in turn at 4 Hz, and the buzzer beeps 150 ms each 0.5 s.
-- Identify has priority over all the patterns of the gateway, but not over the BOOT gestures and the factory reset. The alarms and the beeps wait until the end of identify.
+- The alarms and the other beeps wait until the end of an identify (10 s, #207).
 - **The temperature of the chip (#212).** The internal sensor has a range of 20 to 100 °C, with an error below 2 °C (data sheet). The chip is warmer than the air of the panel.
 - QEMU has no model of the sensor: `Node Info/Temperature` is null. The board test #129 must examine the value.
 - **The live log (#200).** The ring of 16 KB holds approximately 150 to 250 lines of `esp_log`.

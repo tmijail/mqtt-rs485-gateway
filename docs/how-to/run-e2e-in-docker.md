@@ -61,7 +61,7 @@ Each command builds the QEMU images of one variant in the volume and runs the sc
    docker run --rm --privileged -v gw-e2e:/work -w /work/repo/idf -e E2E_WORKDIR=/work/run-default gw-e2e tools/e2e/run_e2e.sh
    ```
 
-The last line of the output gives the result, for example `181/181 checks passed`. To run only some scenarios, add `--only` at the end, for example `tools/e2e/run_e2e.sh --only ota,https`. `--only` selects the scenarios in each variant.
+The last line of the output gives the result, for example `265/265 checks passed`. To run only some scenarios, add `--only` at the end, for example `tools/e2e/run_e2e.sh --only ota,https`. `--only` selects the scenarios in each variant.
 
 ## 4. Run the CI groups in parallel (faster)
 
@@ -79,7 +79,7 @@ The last line of the output gives the result, for example `181/181 checks passed
    docker run --rm --privileged -v gw-e2e:/work -w /work/repo/idf gw-e2e tools/e2e/run_ci_groups.sh /work/groups
    ```
 
-The output ends with the summary table of the CI. A change is done only when both variants pass (refer to `CLAUDE.md`).
+The output ends with the summary table of the CI. A change is done only when both variants pass (refer to [Tests](../reference/tests.md#the-test-levels)).
 
 CAUTION: Do not run more than one variant at the same time. A host with high load makes the real-time checks slower, and QEMU can crash in the OTA scenarios (refer to [The E2E test bench](../reference/e2e-harness.md#emulator-problems-and-their-workarounds)).
 

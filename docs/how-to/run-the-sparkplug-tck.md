@@ -18,7 +18,7 @@ The TCK is a HiveMQ extension. It examines each MQTT packet of the broker, it si
    docker run --rm -v gw-e2e:/work -w /work/repo/idf gw-e2e tools/e2e/tck_setup.sh /work/tck
    ```
 
-2. Make sure that the last line is `TCK ready in /work/tck`.
+2. Make sure that the last line starts with `TCK ready in /work/tck`.
 
 The script installs nothing outside `/work/tck`. It puts the TCK extension into `/work/tck/hivemq/extensions/sparkplug-tck`.
 
@@ -32,7 +32,7 @@ The script installs nothing outside `/work/tck`. It puts the TCK extension into 
 
 2. Wait for the last line, for example `19/19 checks passed`. There is one check for each test and MQTT version, and the five checks that the harness makes after each run.
 
-The scenario runs the seven Edge Node tests two times: one time with MQTT 3.1.1 and one time with MQTT 5. Each test has a new HiveMQ and a new boot of the gateway. On the test computer, the 14 tests took approximately 4.5 minutes, plus the build of the QEMU image.
+The scenario runs the seven Edge Node tests two times: one time with MQTT 3.1.1 and one time with MQTT 5. Each test has a new HiveMQ and a new boot of the gateway.
 
 CAUTION: Do not run the scenario without `E2E_TCK_DIR`. The scenario then shows `[SKIP]` and runs no test. This is correct for a computer without the TCK, but it gives no evidence.
 
