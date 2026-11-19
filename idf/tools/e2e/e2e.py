@@ -4789,12 +4789,14 @@ def run_ota_web(gw, obs, cfg, images, node, fw_port, nb, update):
 
 def run_ota_signature(args, work):
     """FW-2, issue #261 (GW50; the secure build only, which requires a signed OTA image:
-    CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT, the key taken from the running app, no eFuse):
-    (1) an image with a correct checksum and no signature, by web upload into the erased slot:
-    400, rejected; (2) a correct image signed with another key, by NCMD: rejected after the
-    download. In the two cases the signature check ran, found no trusted key, and the gateway
-    did not restart. (3) the same image signed with the key of the build, by NCMD: the key is
-    trusted, the image boots on trial and its self-check installs it."""
+    CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT, the key taken from the running app, no eFuse).
+    By NCMD: (1) an image with a correct checksum and no signature, into the erased slot;
+    (2) a correct image signed with another key. Each is rejected after its download: the
+    signature check ran, trusted no key, and the gateway did not restart. (3) By web upload: the
+    same image signed with the key of the build. The key is trusted, the image boots on trial
+    and its self-check installs it. The rejections go by NCMD and the accepted image by web
+    upload, because a web upload of an image takes much more time than its download, and one
+    upload covers the path that a person uses."""
     node, port, fw_port = "GW50", MQTT_PORT + 32, MQTT_PORT + 33
     pki = make_pki(work)
     fwdir = work / "fw-signed"
@@ -4837,46 +4839,45 @@ def run_ota_signature(args, work):
         gw.wait_log(r"edge: time synchronised", 20, t0)   # the image server's certificate dates
         gw.wait_log(r"web: web UI and REST API on port 443", 30, t0)
 
-        def update(name):
+        def rejected(name):
+            """An update by NCMD to @name.bin: (the NDATA with the failed state, whether the
+            signature check ran, the lines of a trusted key), after the console line of the
+            failure (the NDATA can arrive before it)."""
+            asked = time.monotonic()
             obs.publish_cmd(ncmd_t, [{"name": "Node Control/Firmware Update", "datatype": 12,
                                       "string_value": f"https://10.0.2.2:{fw_port}/{name}.bin"}])
+            state = obs.wait(ndata_t, 180, lambda p: (fw_state(p) or "") ==
+                             f"failed: image e2e-{name} {why}")
+            gw.wait_log(rf"fw: firmware update failed: image e2e-{name} {re.escape(why)}", 10,
+                        asked)
+            return state, gw.find(verify_rx, asked), gw.find(trusted_rx, asked)
 
         # 1. no signature: the slot is erased, so the sector after the image holds no signature
-        # of an earlier image
+        # of an earlier image. 2. another key
         asked = time.monotonic()
-        st_u, _, b_u = upload_firmware(gw, unsigned.read_bytes())
-        b_u = b_u if isinstance(b_u, bytes) else str(b_u).encode()
-        rej_u = gw.wait_log(rf"fw: firmware update failed: image e2e-unsigned {re.escape(why)}",
-                            10, asked)
-        verify_u = gw.find(verify_rx, asked)
-        trusted_u = gw.find(trusted_rx, asked)
-        # 2. another key
-        asked2 = time.monotonic()
-        update("foreign")
-        rej_f = obs.wait(ndata_t, 180, lambda p: (fw_state(p) or "") ==
-                         f"failed: image e2e-foreign {why}")
-        gw.wait_log(rf"fw: firmware update failed: image e2e-foreign {re.escape(why)}", 10, asked2)
-        verify_f = gw.find(verify_rx, asked2)
-        trusted_f = gw.find(trusted_rx, asked2)
+        rej_u, verify_u, trusted_u = rejected("unsigned")
+        rej_f, verify_f, trusted_f = rejected("foreign")
         time.sleep(2)
         restarted = any(m[1] == f"{T}/NDEATH/{node}" for m in CAPTURE if m[0] >= asked) \
             or bool(gw.find(BOOT_RX.pattern, asked))
         _, h = gw.shell("status", [rf"^ota\s+{re.escape(base)} in ota_0"])
+        failure = gw.find(r"secure_boot_v2: .*(fail|not)|[Ss]ignature.*fail", asked)
         check("FW-2 (secure build) an OTA image without a valid signature of the key of the "
-              "running firmware is rejected, and the running firmware stays (no restart): an "
-              "image with no signature by web upload (400), and an image signed with another key "
-              "by NCMD; in the two cases the signature check ran and trusted no key",
-              st_u == 400 and why.encode() in b_u and rej_u and verify_u and not trusted_u
-              and rej_f and verify_f and not trusted_f and not restarted and all(h.values()),
-              f"upload {st_u} {b_u[:80]!r}, signature check {bool(verify_u)}, trusted key "
-              f"{bool(trusted_u)}; NCMD state {fw_state(rej_f[2]) if rej_f else None!r}, "
-              f"signature check {bool(verify_f)}, trusted key {bool(trusted_f)}; restarted "
-              f"{restarted}; shell {list(h.values())}; "
-              f"{(gw.find(r'secure_boot_v2: .*(fail|not)|[Ss]ignature.*fail', asked) or ['no failure line'])[0][:110]}")
+              "running firmware is rejected after its download by NCMD, and the running firmware "
+              "stays (no restart): an image with no signature, and an image signed with another "
+              "key; in the two cases the signature check ran and trusted no key",
+              rej_u and verify_u and not trusted_u and rej_f and verify_f and not trusted_f
+              and not restarted and all(h.values()),
+              f"no signature: state {fw_state(rej_u[2]) if rej_u else None!r}, signature check "
+              f"{bool(verify_u)}, trusted key {bool(trusted_u)}; another key: state "
+              f"{fw_state(rej_f[2]) if rej_f else None!r}, signature check {bool(verify_f)}, "
+              f"trusted key {bool(trusted_f)}; restarted {restarted}; shell {list(h.values())}; "
+              f"{(failure or ['no failure line'])[0][:110]}")
 
-        # 3. the key of the build: verified, on trial, installed by the self-check
+        # 3. the key of the build, by web upload: verified, on trial, installed by the self-check
         asked3 = time.monotonic()
-        update("signed")
+        st, _, body = upload_firmware(gw, good.read_bytes())
+        body = body if isinstance(body, bytes) else str(body).encode()
         nb2 = obs.wait(nbirth_t, 240, lambda p: metric(p, name="Node Info/Firmware").string_value
                        == "e2e-signed")
         verify_s = gw.find(verify_rx, asked3)
@@ -4885,13 +4886,13 @@ def run_ota_signature(args, work):
         _, h2 = gw.shell("status", [r"^ota\s+e2e-signed in ota_1, other slot \S+ \(previous\) \| "
                                     r"firmware e2e-signed installed"])
         check("FW-2 (secure build) an OTA image signed with the key of the running firmware is "
-              "accepted: the signature check trusts its key, the image boots on trial (NBIRTH "
-              "'testing e2e-signed') and its self-check installs it",
-              nb2 and fw_state(nb2[2]) == "testing e2e-signed" and verify_s and trusted_s
-              and conf2 and all(h2.values()),
-              f"NBIRTH {fw_state(nb2[2]) if nb2 else None!r}; signature check {bool(verify_s)}; "
-              f"{(trusted_s or ['no trusted key'])[0][:80]}; installed {conf2 is not None}; shell "
-              f"{list(h2.values())}")
+              "accepted by web upload (200): the signature check trusts its key, the image boots "
+              "on trial (NBIRTH 'testing e2e-signed') and its self-check installs it",
+              st == 200 and nb2 and fw_state(nb2[2]) == "testing e2e-signed" and verify_s
+              and trusted_s and conf2 and all(h2.values()),
+              f"POST {st} {body[:60]!r}; NBIRTH {fw_state(nb2[2]) if nb2 else None!r}; signature "
+              f"check {bool(verify_s)}; {(trusted_s or ['no trusted key'])[0][:80]}; installed "
+              f"{conf2 is not None}; shell {list(h2.values())}")
     finally:
         gw.kill()
         obs.close()
