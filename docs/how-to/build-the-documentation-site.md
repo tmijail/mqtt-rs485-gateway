@@ -1,6 +1,6 @@
 # Build the documentation site
 
-This procedure tells how to build the documentation site from `docs/`, and how to examine it on your computer before you push a change. The site is at <https://tmijail.github.io/mqtt-rs485-gateway/>.
+This procedure tells how to build the documentation site from `docs/`, and how to examine it on your computer before you push a change. The site is at <https://mijail.ar/mqtt-rs485-gateway/>.
 
 Zensical builds the site. Its configuration is `zensical.toml` at the root of the repository. The version is pinned in `idf/tools/docs/requirements-site.txt`.
 

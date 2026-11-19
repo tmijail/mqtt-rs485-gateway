@@ -138,7 +138,7 @@ The tutorial [Your first gateway](docs/tutorials/first-gateway-on-the-bench.md) 
 
 ## Documentation
 
-The documentation is on the [documentation site](https://tmijail.github.io/mqtt-rs485-gateway/), and in [`docs/`](docs/README.md). It follows the Diátaxis structure: tutorials, how-to guides, reference and explanation.
+The documentation is on the [documentation site](https://mijail.ar/mqtt-rs485-gateway/), and in [`docs/`](docs/README.md). It follows the Diátaxis structure: tutorials, how-to guides, reference and explanation.
 
 | I want to … | Read |
 |---|---|

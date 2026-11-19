@@ -4,7 +4,7 @@
 [project]
 site_name = "RS485 to Sparkplug B gateway"
 site_description = "Firmware of an RS485 (Modbus RTU) to MQTT Sparkplug B 3.0 gateway on the Waveshare ESP32-S3-POE-ETH-8DI-8DO board"
-site_url = "https://tmijail.github.io/mqtt-rs485-gateway/"
+site_url = "https://mijail.ar/mqtt-rs485-gateway/"
 repo_url = "https://github.com/tmijail/mqtt-rs485-gateway"
 repo_name = "tmijail/mqtt-rs485-gateway"
 edit_uri = "edit/main/docs/"

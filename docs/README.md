@@ -1,6 +1,6 @@
 # Documentation
 
-This is the documentation of the RS485 (Modbus RTU) to MQTT Sparkplug B gateway. The documents follow the Diátaxis structure: tutorials, how-to guides, reference and explanation. You can read them on the [documentation site](https://tmijail.github.io/mqtt-rs485-gateway/) or in the folder `docs/` of the repository.
+This is the documentation of the RS485 (Modbus RTU) to MQTT Sparkplug B gateway. The documents follow the Diátaxis structure: tutorials, how-to guides, reference and explanation. You can read them on the [documentation site](https://mijail.ar/mqtt-rs485-gateway/) or in the folder `docs/` of the repository.
 
 > **Warning: The firmware has never run on the board (#1, #18).** The documents come from the firmware in host tests and in QEMU. Each document tells which parts are compile-only.
 

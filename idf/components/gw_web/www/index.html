@@ -319,7 +319,7 @@ button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
    <label>Address (0-65535)<input id="mb-addr" value="0"></label><label>Count (1-16, empty = 1 or the size of the type)<input id="mb-count"></label>
    <label>Type<select id="mb-type"></select></label><label>Word order<select id="mb-wo"></select></label></div>
   <div class="row"><button id="mb-read">Read</button></div><div id="mb-msg" class="mut"></div></div>
- <p class="mut">The secrets show as ********. If you do not change them, the gateway keeps them. For each key, refer to the <a href="https://github.com/tmijail/mqtt-rs485-gateway/blob/main/docs/reference/configuration.md" target="_blank" rel="noopener">configuration reference</a> on GitHub (needs internet).</p>
+ <p class="mut">The secrets show as ********. If you do not change them, the gateway keeps them. For each key, refer to the <a href="https://mijail.ar/mqtt-rs485-gateway/reference/configuration/" target="_blank" rel="noopener">configuration reference</a> on the documentation site (needs internet).</p>
 </section>
 
 <section id="tab-json" class="hidden">
@@ -934,7 +934,7 @@ $("#w-nets").onclick=e=>{const b=e.target.closest&&e.target.closest("button.net"
  const i=document.getElementById("i-network.wifi.ssid");if(!i)return;i.value=wnets[+b.dataset.net].ssid;i.dispatchEvent(new Event("input",{bubbles:true}));wifiList()};
 /* #221: the warnings of web.enabled and web.https at their fields while they are off, and the
    confirmation before a save that turns off the web interface (#193; on a phone a sheet) */
-const WEBOFF="https://github.com/tmijail/mqtt-rs485-gateway/blob/main/docs/how-to/recover-the-gateway.md#the-web-interface-is-off";
+const WEBOFF="https://mijail.ar/mqtt-rs485-gateway/how-to/recover-the-gateway/#the-web-interface-is-off";
 function webWarn(){[["web.enabled",`After the restart, the web UI stops. To turn it on again, push the BOOT button for 2 to 10 s (1 beep). <a href="${WEBOFF}" target="_blank" rel="noopener">How to turn it on again</a>`],
   ["web.https","Plain HTTP: the password and the configuration go over the network as clear text."]].forEach(([p,t])=>{const e=document.getElementById("i-"+p);if(!e)return;
   let w=document.getElementById("lw-"+p);if(!e.checked&&!w){w=document.createElement("span");w.className="lwarn";w.id="lw-"+p;w.innerHTML=t;e.parentElement.append(w)}else if(e.checked&&w)w.remove()})}
@@ -945,7 +945,7 @@ function webOff(b){const w=JSON.parse(b).web||{};if(w.enabled!==false||(base191&
    parse_store_forward). Decision of the product owner: the UI writes true or false when the spill
    keys have their defaults, and an object in the other cases. readSf() changes the key only when a
    control differs from the document, so the form alone gives no change. */
-const SFKB=131072,SFWARN='Make sure that the card slot has no pull-up on D0 (GPIO45). A pull-up can stop the boot of the board. <a href="https://github.com/tmijail/mqtt-rs485-gateway/blob/main/docs/reference/store-and-forward.md#the-microsd-card-and-gpio45" target="_blank" rel="noopener">Read more</a>';
+const SFKB=131072,SFWARN='Make sure that the card slot has no pull-up on D0 (GPIO45). A pull-up can stop the boot of the board. <a href="https://mijail.ar/mqtt-rs485-gateway/reference/store-and-forward/#the-microsd-card-and-gpio45" target="_blank" rel="noopener">Read more</a>';
 function sfEff(){const v=get(cfg,"sparkplug.store_forward");
  if(!v||typeof v!=="object"||Array.isArray(v))return {en:v===true,sd:false,kb:SFKB};
  const sd=v.sd&&typeof v.sd==="object"?v.sd:{};return {en:v.enabled===undefined?true:!!v.enabled,sd:!!sd.enabled,kb:sd.max_kb===undefined?SFKB:sd.max_kb}}
