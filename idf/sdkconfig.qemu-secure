@@ -1,4 +1,4 @@
-# Issue #261: the QEMU build with the two functions that no build for the board has (decision of
+# [variant] Issue #261: the QEMU build with the two functions that no build for the board has (decision of
 # #133: they stay in main, only in the QEMU build, for the optional owner profile of #255).
 # Applied after sdkconfig.qemu and sdkconfig.qemu-psram (tools/e2e/run_e2e.sh with E2E_SECURE=1,
 # build dir build-qemu-psram-secure). The E2E runs only the scenarios of these two functions on

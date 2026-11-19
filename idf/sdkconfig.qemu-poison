@@ -1,4 +1,4 @@
-# Issue #104 (item 3): the QEMU build with comprehensive heap poisoning, applied after
+# [variant] Issue #104 (item 3): the QEMU build with comprehensive heap poisoning, applied after
 # sdkconfig.qemu (and sdkconfig.qemu-psram). Freed memory is filled with 0xFE and every block
 # carries canaries checked when it is freed: a use after free reads garbage instead of the old
 # value (the issue #98 check of the cut download then fails on the old code) and an overrun

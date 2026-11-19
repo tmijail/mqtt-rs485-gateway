@@ -225,6 +225,15 @@ Platform calls go through `gw_port.h`, which has two implementations: `port/gw_p
 
 ### QEMU-only code
 
+This is a decision of the product owner (2026-11-19, after #261). The project permits a difference between a QEMU build and the build for the board only in one of these classes:
+- **Hardware:** QEMU does not have the hardware, and a model or another device replaces it. Examples: `CONFIG_GW_IO_SIMULATED`, the OpenCores Ethernet, the spill to LittleFS.
+- **Emulator:** QEMU has a fault or a limit, and the difference goes around it. Examples: `CONFIG_GW_FW_PARK_OTHER_CORE`, the DIO flash, the software SHA and AES.
+- **Test value:** The logic is the same as on the board, and only a number changes, so that a test is possible. Examples: the self-check of 30 s, the publish budget of 2 s.
+- **Variant:** A function or a diagnostic is on in QEMU and off on the board, or the opposite. Put it only in a variant with a name and a stated reason: `sdkconfig.qemu-secure`, `sdkconfig.qemu-poison`, the default variant without PSRAM. Never put it in all QEMU builds.
+
+Each option of a `sdkconfig.qemu*` overlay gives its class in its comment: `[hardware]`, `[emulator]`, `[test value]` or `[variant]`. New code or a new option for QEMU only needs one of these classes. If no class applies, do not add the difference: the E2E must examine what the board runs. For a difference of the first three classes, make sure that a hardware issue has the test on the board. Make sure also that "Limits of QEMU" in `docs/reference/e2e-harness.md` gives the limit.
+
+The QEMU-only options of the firmware:
 - `CONFIG_GW_IO_SIMULATED` replaces GPIO, the I²C expander and the LED with RAM models and enables emulator-only shell commands (`di`, `storm`, `validation hold`, `panic`, `pubfail`, `claimsim`, …). It must never be enabled on hardware.
 - `CONFIG_GW_EMU_NO_PSRAM` (hidden) is set only in the QEMU build without PSRAM (`sdkconfig.qemu`: `CONFIG_GW_IO_SIMULATED` and no `CONFIG_SPIRAM`). There the own memory goes to internal RAM, with a 6 KB payload buffer and a store & forward ring of 512 samples. A build without `CONFIG_SPIRAM` and without `CONFIG_GW_IO_SIMULATED` does not compile.
 - `CONFIG_GW_FW_PARK_OTHER_CORE` parks core 1 while flash is mapped, to work around QEMU MMU races (#107, #111). `gw_bus_hold()` makes the bus task step aside at a lock-free point first.

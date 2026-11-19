@@ -22,6 +22,21 @@ The build reads `sdkconfig.defaults`, then the overlays of `SDKCONFIG_DEFAULTS` 
 
 Each option in these files has a comment with its reason. Read the comment before you change an option.
 
+### The differences between a QEMU build and the build for the board
+
+A QEMU build can be different from the build for the board only for one of four reasons. The comment of each option in a `sdkconfig.qemu*` overlay starts with the class of its reason.
+
+| Class | Reason | Examples |
+|---|---|---|
+| `[hardware]` | QEMU does not have the hardware. A model or another device replaces it | `CONFIG_GW_IO_SIMULATED`, the OpenCores Ethernet, the spill of store & forward to LittleFS |
+| `[emulator]` | QEMU has a fault or a limit. The option goes around it | `CONFIG_GW_FW_PARK_OTHER_CORE`, the DIO flash, the software SHA and AES |
+| `[test value]` | The logic is the same as on the board. Only a number changes, so that a test is possible | The self-check of 30 s, the publish budget of 2 s |
+| `[variant]` | A function or a diagnostic is on in QEMU and off on the board, or the opposite | `sdkconfig.qemu-secure`, `sdkconfig.qemu-poison`, the default variant without PSRAM |
+
+A `[variant]` difference is only in a variant with a name and a stated reason. It is never in all QEMU builds. Thus the PSRAM variant of the E2E examines the functions that the board runs.
+
+An option that has none of these reasons does not go into a QEMU overlay. The limits that these differences cause are in [Limits of QEMU](e2e-harness.md#limits-of-qemu).
+
 > **Warning: Never flash a QEMU build on the board.** A QEMU build simulates the I/O. The first boot of the secure QEMU build on a real chip also burns the HMAC key into eFuse KEY5. You cannot undo this. Refer to [Features that burn eFuses](../explanation/no-efuse-features.md).
 
 ### The two functions of the secure QEMU build
