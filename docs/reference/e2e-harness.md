@@ -215,33 +215,49 @@ A TLS handshake during a validation needs no fix (#84, node `GW30`). With the dy
 
 ### What QEMU does not cover
 
-| Item | What the QEMU build does | What only the board or the host tests examine |
-|---|---|---|
-| W5500 | `open_eth` | The W5500 driver |
-| TCA9554, GPIO, RMT | `CONFIG_GW_IO_SIMULATED`: the DOs are in RAM, the DIs come from the `di` command, the LED is only in the log. The expander registers are in RTC memory, so they keep their values after a software restart or a panic | A real I²C failure (host tests only) |
-| TCA9554 absent | `expander absent <ms>` makes the model silent for the first ms of the next boot. The time starts at its first access, because `esp_timer` does not return to 0 at a software restart (#240) | — |
-| RS485 mode of the UART | The normal UART mode. `uart_wait_tx_done` causes an assert on `TX_DONE` in QEMU | The RS485 hardware mode |
-| Low baud rates | The E2E runs at 9600 baud | The wait for the end of transmission at 1200 baud (host test) |
-| Task watchdog | QEMU runs with `wdt_disable` on the timers, so the TWDT cannot trigger. The E2E reads the log to check that the Sparkplug task feeds the TWDT between publish operations | A real trigger |
-| Buzzer | The beeps and the alarms are only in the log | LEDC and GPIO46 |
-| Wi-Fi | `CONFIG_GW_WIFI=n` and `CONFIG_GW_SOFTAP=n`. A configuration with `network.wifi` boots with a warning and continues on Ethernet. The access point triggers get to `gw_ap`, and `apsim` simulates the access point | The radio. The interface switch by broker reachability (#57) is in host tests only |
-| mDNS | The responder starts, but `open_eth` has no multicast filter, so it does not answer | The mDNS answers |
-| IPv6 to the host | slirp sends `fec0::2` to `::1` of the host, and the container has no IPv6. The E2E examines only the addresses and ICMPv6 | MQTT over IPv6 |
-| Publish budget (#59) | 2 s (`sdkconfig.qemu`) | The 8 s of the board build, and the TWDT trigger |
-| PSRAM | The octal model | The time behaviour, the chip detection, the cache with data in transit, and DMA from PSRAM for the SHA and AES accelerators |
-| Public CA bundle, microSD card | Not executed. The spill uses a LittleFS directory in place of the card | The real card |
+Each item has a test on the board in a hardware issue (the last column). The board is necessary for these tests. When you add a limit here, add its test to a hardware issue also.
+
+| Item | What the QEMU build does | What only the board or the host tests examine | Issue with the test on the board |
+|---|---|---|---|
+| W5500 | `open_eth` | The W5500 driver | #18, #130 |
+| TCA9554, GPIO, RMT | `CONFIG_GW_IO_SIMULATED`: the DOs are in RAM, the DIs come from the `di` command, the LED is only in the log. The expander registers are in RTC memory, so they keep their values after a software restart or a panic | A real I²C failure (host tests only) | #1, #18, #126. The DOs after a panic or a watchdog reset: #129 |
+| TCA9554 absent | `expander absent <ms>` makes the model silent for the first ms of the next boot. The time starts at its first access, because `esp_timer` does not return to 0 at a software restart (#240) | — | #126 |
+| RS485 mode of the UART | The normal UART mode. `uart_wait_tx_done` causes an assert on `TX_DONE` in QEMU | The RS485 hardware mode | #18, #127 |
+| Low baud rates | The E2E runs at 9600 baud | The wait for the end of transmission at 1200 baud (host test) | #18, #127 |
+| Task watchdog | QEMU runs with `wdt_disable` on the timers, so the TWDT cannot trigger. The E2E reads the log to check that the Sparkplug task feeds the TWDT between publish operations | A real trigger | #129 |
+| Buzzer | The beeps and the alarms are only in the log | LEDC and GPIO46 | #126 |
+| Wi-Fi | `CONFIG_GW_WIFI=n` and `CONFIG_GW_SOFTAP=n`. A configuration with `network.wifi` boots with a warning and continues on Ethernet. The access point triggers get to `gw_ap`, and `apsim` simulates the access point | The radio. The interface switch by broker reachability (#57) is in host tests only | #129, #130 |
+| mDNS | The responder starts, but `open_eth` has no multicast filter, so it does not answer | The mDNS answers | #130 |
+| IPv6 to the host | slirp sends `fec0::2` to `::1` of the host, and the container has no IPv6. The E2E examines only the addresses and ICMPv6 | MQTT over IPv6 | #130 |
+| Publish budget (#59) | 2 s (`sdkconfig.qemu`) | The 8 s of the board build, and the TWDT trigger | #129 |
+| PSRAM | The octal model | The time behaviour, the chip detection, the cache with data in transit, and DMA from PSRAM for the SHA and AES accelerators | #18, #129 |
+| Public CA bundle, microSD card | Not executed. The spill uses a LittleFS directory in place of the card | The real card | #130 (the bundle), #131 (the card) |
+| PCNT (#218) | `CONFIG_GW_IO_SIMULATED`: a counter in RAM. The `di` and `pcnt` commands add the pulses | The PCNT units, the glitch filter and the limit of the input circuit | #126 |
+| RTC (PCF85063) | A model in RTC memory. It keeps the time across a software restart. After a start of QEMU, its OS bit is set | The I²C access, the drift and the battery | #126 |
+| BOOT button | The `boot 1` and `boot 0` commands | GPIO0 and the push times | #126 |
+| Temperature sensor (#212) | No model. `Node Info/Temperature` is null | The value of the sensor | #129 |
+| Wi-Fi scan (#208) | A fixed list, with `simulated` `true` | A scan with the radio | #130 |
+| Claim window (#120) | The window opens without the access point. `claimsim <s> eth` makes Ethernet count as the access point | A real client of the access point | #130 |
+| Card format (#139) | `card format simulate <ms>` runs the format task and writes nothing | The format of a real card | #131 |
+| Interrupt watchdog | With `wdt_disable`, the interrupt watchdog cannot trigger also | A real trigger | #129 |
+| Reset reasons | Only power-on, software and panic | The watchdog resets, a brownout, the RESET button, and the boot-loop counter after them | #128, #129 |
+| Power cut | The harness kills QEMU at a point that it selects. No write to the flash is cut | A power cut during a write to LittleFS, NVS or `otadata`, and a brownout | #128, #131 |
+| Store & forward ring | 1 000 samples in the PSRAM variant (`CONFIG_GW_SF_SAMPLES`) | The 40 000 samples of the board | #129, #131 |
+| Poll during a map of the flash | The bus task stops while core 1 is parked | The poll during an image verification and during the summary of the core dump | #127, #128, #129 |
+| Fault mode without PSRAM (#135) | The PSRAM build on a QEMU without the PSRAM model | The detection failure of the real chip, and the internal RAM with the W5500 and the radio | #129 |
 
 ### Emulator problems and their workarounds
 
 Each workaround exists only in the QEMU build or in the harness. On the board, nothing changes.
 
-- **Core dump and the other core (#62, #88).** The panic handler stops the other core with the software stall of `RTC_CNTL`, and QEMU does not emulate it (espressif/qemu#189, #238). The other core continues to run, and the dump can be invalid. The `panic` shell command first parks the other core, then aborts. The check accepts a dump only when `esp_coredump` decodes it and the boot check (`Core dump data checksum is correct`) accepts it. A dump with another task in the dump window, or with `Re-entered core dump`, is an emulator fault: the harness repeats the panic, up to two times. Each other invalid dump fails. `--panics N` repeats the panic N times. A real dump on the board must confirm this (#18).
+- **Core dump and the other core (#62, #88).** The panic handler stops the other core with the software stall of `RTC_CNTL`, and QEMU does not emulate it (espressif/qemu#189, #238). The other core continues to run, and the dump can be invalid. The `panic` shell command first parks the other core, then aborts. The check accepts a dump only when `esp_coredump` decodes it and the boot check (`Core dump data checksum is correct`) accepts it. A dump with another task in the dump window, or with `Re-entered core dump`, is an emulator fault: the harness repeats the panic, up to two times. Each other invalid dump fails. `--panics N` repeats the panic N times. A real dump on the board must confirm this (#18, #129).
+- **The restart after a panic.** QEMU writes its flash image file some time after the firmware writes the flash. A reset immediately after the core dump can lose the last write, which is the checksum. The QEMU build thus waits 1 s before the restart (`CONFIG_ESP_SYSTEM_PANIC_REBOOT_DELAY_SECONDS=1`). The board build does not wait. The test of a real core dump on the board is in #129.
 - **Octal PSRAM, first write of `otadata` (#85).** QEMU crashes with SIGSEGV in `psram_quad_read` when the bootloader writes `otadata` (#239). Before the boot, the harness writes the same `otadata` entry into the image (`write_otadata`), so no boot writes it.
 - **Octal PSRAM, GDMA (espressif/qemu#180).** The GDMA does not get to the PSRAM, so the SHA and AES accelerators get no data from mbedTLS buffers in PSRAM. `sdkconfig.qemu-psram` uses software SHA and AES (`CONFIG_MBEDTLS_HARDWARE_SHA=n`, `CONFIG_MBEDTLS_HARDWARE_AES=n`). The board keeps the accelerators.
 - **QIO flash.** The reads of the application arrive with an offset of 2 bytes. The QEMU build uses DIO.
 - **UART1 after a restart.** The QEMU model does not clear UART1 in `uart_driver_install()`. A response at the time of a restart can keep the interrupt line active, and the next boot stops. `gw_rs485` masks the interrupts of the port before each restart, with a shutdown handler and a wrapper of `esp_restart_noos()` that also covers a panic. The E2E examines this with three panics while a Modbus response is in transit (#65).
 - **Cache freeze of the S3 (FW-1).** A map of the flash freezes the caches and does not stop the other core. QEMU does not model the freeze and aborts (`Bad ram pointer`) when the other core runs code from the flash (#241). `CONFIG_GW_FW_PARK_OTHER_CORE` parks core 1 in `waiti` during `esp_ota_begin()` and the image verification. The QEMU build has no secondary USB-Serial-JTAG console, and it installs an uploaded image from a task pinned to core 0.
-- **The summary of the core dump (#256).** The summary of a valid dump also maps the flash: the shell command `coredump` and `GET /api/coredump/summary`. In QEMU, the tick of core 0 read SYSTIMER during this map and got `LoadStorePIFAddrError`. The QEMU build thus uses the precaution of the image verification: `gw_fw_run_mapped()` parks core 1 and runs the summary on core 0. The park waits for the bus task, as for an update. The board calls the summary directly.
+- **The summary of the core dump (#256).** The summary of a valid dump also maps the flash: the shell command `coredump` and `GET /api/coredump/summary`. In QEMU, the tick of core 0 read SYSTIMER during this map and got `LoadStorePIFAddrError`. The QEMU build thus uses the precaution of the image verification: `gw_fw_run_mapped()` parks core 1 and runs the summary on core 0. The park waits for the bus task, as for an update. The board calls the summary directly. The test of the summary on the board is in #129.
 - **The park of core 1 (#111, #112).** The parked core must hold no lock. Before the park, the bus task stops between two transactions or two attempts (`gw_bus_hold()`), where it holds no lock. The wait is the longest attempt plus 1 s, at least 10 s. If the bus task does not stop, the park does not occur (`fw: core 1 park refused`). A park lasts 45 s at most (`fw: core 1 park bound reached`). The QEMU build wraps `esp_ipc_call()` and `esp_ipc_call_blocking()`, and reports a call to the parked core. The harness counts each of these lines as a firmware failure. A new task pinned to core 1 must stop in the same way as the bus task.
 - **QEMU deaths with a loaded host (#107).** With MTTCG, QEMU crashes in the OTA scenarios (refer to [Single-threaded TCG](#single-threaded-tcg-in-the-ota-scenarios-107)). With one thread, QEMU still dies sometimes during an OTA: a SIGSEGV with the PC in `code_gen_buffer`, `iotlb_to_section: Assertion ... failed`, or `atomic_mmu_lookup: code should not be reached` (#243). QEMU can also abort in `main` (MTTCG) with `malloc(): unsorted double linked list corrupted`. The retry covers these faults.
 - **Crashes in a row (#144).** The `open_eth` model keeps its state across a panic reset. A second panic with traffic can stop the next boot in an endless `open_eth` interrupt. The E2E uses the emulator command `panic net-off`: it stops the Ethernet driver, then aborts. On the board, a panic resets the W5500 driver.
