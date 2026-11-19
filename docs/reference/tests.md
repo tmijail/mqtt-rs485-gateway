@@ -24,9 +24,9 @@ This document gives the test suites of the firmware, what each suite examines, t
 | E2E in QEMU (QA-3) | The real firmware against mosquitto, a pymodbus RTU slave, SNTP, syslog and HTTPS clients | `idf/tools/e2e/run_e2e.sh` | Each check passes in the full run of the three variants |
 | Optional E2E scenarios | UMH Core (`umh`), the Sparkplug TCK (`tck`) and the downgrade (`downgrade`) | `run_e2e.sh --only <name>` | Each check passes |
 
-A change is done when the host tests pass and the full E2E passes: the full run of the `E2E_PSRAM=1` variant, the full run of the default variant and the full run of the `E2E_SECURE=1` variant.
+A change is done when the host tests pass and the full E2E passes. The full E2E is the full run of each of the three variants: `E2E_PSRAM=1`, default and `E2E_SECURE=1`.
 
-The PSRAM variant and the default variant run the configuration of the board. The secure variant runs only the scenarios of the two functions that no build for the board has: the NVS encryption and the signed OTA images (#261). Refer to [The variants](e2e-harness.md#the-variants-135-261).
+The PSRAM variant and the default variant run the configuration of the board. The secure variant runs only the scenarios of the NVS encryption and of the signed OTA images (#261). No build for the board has these two functions. Refer to [The variants](e2e-harness.md#the-variants-135-261).
 
 ## The results of a run
 
@@ -329,9 +329,9 @@ The test reads `index.html`, takes the source of each function and runs it in a 
 | `analyzer` | Runs `idf.py -B build-analyzer -D GW_ANALYZER=ON set-target esp32s3 build`: the own components with `-fanalyzer` (#230). Fails on a result of the analyzer or on a `warning:`, and gives the results in `components/gw_*` and `main`. The job runs at the same time as the other jobs. Refer to [Static analyzer](#static-analyzer) |
 | `e2e-plan` | Reads `CI_GROUPS` from `idf/tools/e2e/scenarios.py`, and gives the matrix of the two next jobs |
 | `e2e-build` | One job for each variant (`default`, `psram`, `secure`). Runs `run_e2e.sh` with `E2E_STAGE`, and publishes the images. The `secure` job builds the secure build and the board build `build-qemu-psram`, because the group `nvs-ota` starts on the board build. Only the `secure` job makes a throwaway signing key. GitHub keeps the images for 1 day, because the images of the `secure` job contain the signing key of the run |
-| `e2e` | One job for each group of `CI_GROUPS` (5 PSRAM groups, 1 default group and 2 secure groups). Runs `run_e2e.sh --only <group>` with `E2E_PREBUILT`. Publishes the logs, the payloads, `results.json`, `qemu-exits.txt` and the `fault-*.txt` dumps |
-| `e2e-summary` | Writes one table of all the groups. Fails when a group has no `results.json` or a failed check, ran other scenarios than its `--only` list, or when a scenario of a full run ran in no group or in two groups. Also fails when the groups of one variant repeated more scenarios than `MAX_RETRIES` (2) |
-| `e2e-poison` | Two jobs: `E2E_POISON=1 run_e2e.sh` with `--only ota-fw1` in the PSRAM variant, and with `--only ota-park,ota-trial` without PSRAM, on the build with full heap poisoning (#104). Refer to [Heap poisoning](e2e-harness.md#heap-poisoning) |
+| `e2e` | One job for each group of `CI_GROUPS` (5 PSRAM groups, 1 default group and 2 secure groups). Runs `run_e2e.sh --only <group> --no-skip` with `E2E_PREBUILT`. With `--no-skip`, a scenario that shows `[SKIP]` is a failed check. Publishes the logs, the payloads, `results.json`, `qemu-exits.txt` and the `fault-*.txt` dumps |
+| `e2e-summary` | Writes one table of all the groups. Fails when a group has no `results.json` or a failed check, or ran other scenarios than its `--only` list. Fails when a group skipped a scenario (`skipped` in `results.json`, #261). Fails when a scenario of a full run ran in no group or in two groups. Also fails when the groups of one variant repeated more scenarios than `MAX_RETRIES` (2) |
+| `e2e-poison` | Two jobs: `E2E_POISON=1 run_e2e.sh --no-skip` with `--only ota-fw1` in the PSRAM variant, and with `--only ota-park,ota-trial` without PSRAM, on the build with full heap poisoning (#104). Refer to [Heap poisoning](e2e-harness.md#heap-poisoning) |
 
 `.github/workflows/fuzz-weekly.yml` runs one time each week (Monday 02:17 UTC) and on request (#226). It runs each fuzz target for 20 min, 4 at a time, from the corpus of the previous week. Then it keeps only the inputs that add coverage (`FUZZ_MERGE=1`, `-merge=1` of libFuzzer). It saves the corpus in `actions/cache` (also after a finding) for the next week and for the `fuzz` job, and publishes it as the artifact `fuzz-corpus` (kept 90 days). A finding stops the job, and the artifact `fuzz-weekly-findings` has the input and the logs.
 
@@ -376,8 +376,9 @@ Each group has its own job, and the groups run at the same time (#121, #135, #23
 - The longest group sets the duration of the E2E jobs. `FW-1 OTA by web upload` is the longest scenario, because it has two web uploads of 1 MB with PSRAM.
 - The check "6. payloads decode" of each run needs at least one payload. `nopsram` and the #97 integration have no MQTT observer, so each is in a group with a scenario that has one.
 - The harness makes some checks one time per run, after the scenarios (refer to [Checks of each run](e2e-scenarios.md#checks-of-each-run)). Thus each group adds these checks. The total line of `e2e-summary` also gives the count as in one full run.
-- `test_harness.py` (`CiGroups`) checks that the groups of each variant are one full run, and that each scenario is in one variant and in one group. It also checks that no group is empty, that each group has a scenario with an observer, and that a group has only scenarios of its variant.
-- `test_harness.py` (`SecureVariant`) checks that the harness skips a scenario of the secure variant on another build, and that it signs a test image only with a signing key.
+- `test_harness.py` (`CiGroups`) checks that the groups of each variant are one full run, and that each scenario is in one variant and in one group. It checks that no group is empty, and that each group has a scenario with an observer. It checks that a group has only scenarios of its variant, and no scenario that the harness skips in that variant.
+- `test_harness.py` (`CiGroups`) also checks the summary. A group that skipped a scenario is a problem, and that scenario does not count as a scenario that ran.
+- `test_harness.py` (`SecureVariant`) checks that the harness skips a scenario of the secure variant on another build. It checks that the harness signs a test image only with a signing key, and that a board build never uses an `-unsigned.bin` file. It checks that the arguments agree with the `sdkconfig` of the build.
 - If the `psram` jobs are too long, you can set `E2E_TCG_THREAD=multi` in the `e2e` job. Then the OTA scenarios are faster, but QEMU deaths occur, and the harness retries them.
 
 ### The caches of the CI

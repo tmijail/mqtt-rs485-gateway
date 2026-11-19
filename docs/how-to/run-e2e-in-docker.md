@@ -68,7 +68,7 @@ Each command builds the QEMU images of one variant in the volume and runs the sc
    docker run --rm --privileged -v gw-e2e:/work -w /work/repo/idf -e E2E_WORKDIR=/work/run-default gw-e2e tools/e2e/run_e2e.sh
    ```
 
-3. Run the secure variant (the PSRAM build with the NVS encryption and the signed OTA images, only the scenarios of these two functions):
+3. Run the secure variant (only the scenarios of the NVS encryption and of the signed OTA images):
 
    ```powershell
    docker run --rm --privileged -v gw-e2e:/work -w /work/repo/idf -e E2E_WORKDIR=/work/run-secure -e E2E_SECURE=1 gw-e2e tools/e2e/run_e2e.sh

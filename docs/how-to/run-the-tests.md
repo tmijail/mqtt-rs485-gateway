@@ -312,6 +312,7 @@ Without its tool or its variable, an optional scenario shows `[SKIP]` and gives 
 | `JOBS=<n>` | The parallel jobs of the builds |
 | `--web-stress <n>` | Add `n` rounds of web load to the `https` scenario |
 | `--panics <n>` | Repeat the `panic` check of `main` `n` times |
+| `--no-skip` | A scenario that shows `[SKIP]` is a failed check. The CI groups use it |
 | `--simulate-qemu-death <case>` | Test a retry path of the harness (refer to [The E2E test bench](../reference/e2e-harness.md#self-tests-of-the-harness)) |
 
 ## Read the results

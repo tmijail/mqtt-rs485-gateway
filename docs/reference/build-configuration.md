@@ -22,7 +22,7 @@ The build reads `sdkconfig.defaults`, then the overlays of `SDKCONFIG_DEFAULTS` 
 
 Each option in these files has a comment with its reason. Read the comment before you change an option.
 
-> **Warning: Never flash a QEMU build on the board.** A QEMU build simulates the I/O. The first boot of the secure QEMU build on a real chip also burns the HMAC key into eFuse KEY5, and you cannot undo this. Refer to [Features that burn eFuses](../explanation/no-efuse-features.md).
+> **Warning: Never flash a QEMU build on the board.** A QEMU build simulates the I/O. The first boot of the secure QEMU build on a real chip also burns the HMAC key into eFuse KEY5. You cannot undo this. Refer to [Features that burn eFuses](../explanation/no-efuse-features.md).
 
 ### The two functions of the secure QEMU build
 
@@ -32,6 +32,7 @@ The two functions stay in `main`, only in the overlay `sdkconfig.qemu-secure` (d
 
 - `tools/e2e/run_e2e.sh` adds the overlay only with `E2E_SECURE=1`. The secure variant of the E2E runs only the scenarios of these two functions (refer to [The E2E test bench](e2e-harness.md#the-variants-135-261)).
 - `run_e2e.sh` examines the `sdkconfig` of each build. A build without `E2E_SECURE=1` that has one of the two options stops the script.
+- Only a build that signs writes `rs485_spb_gateway-unsigned.bin`. A build folder from before #261 can hold such a file. `run_e2e.sh` removes it from each build that is not the secure build, and the harness does not use it there.
 
 There is no production overlay in `main`. The overlay `sdkconfig.production`, which burns eFuses, is on the branch `archive/efuse-production` (#133).
 

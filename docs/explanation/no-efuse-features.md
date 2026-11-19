@@ -53,7 +53,7 @@ Issue #133 decided that the two features stay in `main`, only in the QEMU build.
 
 The other QEMU builds have the configuration of the board for these two features: they are off (#261). The E2E runs its main scenarios on those builds. A small set of scenarios keeps the two features under test, on the secure QEMU build (refer to [The E2E test bench](../reference/e2e-harness.md#the-variants-135-261)).
 
-> **Warning: Never flash a QEMU build on a board.** A QEMU build simulates the I/O. On a real chip, the first boot of the secure QEMU build also burns the HMAC key into KEY5 for the NVS encryption, and you cannot undo this.
+> **Warning: Never flash a QEMU build on a board.** A QEMU build simulates the I/O. On a real chip, the first boot of the secure QEMU build also burns the HMAC key into KEY5. You cannot undo this.
 
 ## What this means for the security of a gateway
 

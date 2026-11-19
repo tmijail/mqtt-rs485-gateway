@@ -1,6 +1,6 @@
 # The E2E test bench
 
-This document gives the E2E test bench of the firmware: the emulator, the variants, the programs around the gateway, the result files, the retry rules, the memory thresholds and the limits of QEMU. The checks of each scenario are in [The E2E scenarios](e2e-scenarios.md). To run the tests, refer to [Run the tests](../how-to/run-the-tests.md). For the other test suites and the CI, refer to [Tests](tests.md).
+This document gives the E2E test bench of the firmware. It gives the emulator, the variants, the programs around the gateway, the result files, the retry rules, the memory thresholds and the limits of QEMU. The checks of each scenario are in [The E2E scenarios](e2e-scenarios.md). To run the tests, refer to [Run the tests](../how-to/run-the-tests.md). For the other test suites and the CI, refer to [Tests](tests.md).
 
 The harness is one file, `idf/tools/e2e/e2e.py`. `idf/tools/e2e/scenarios.py` holds the list of the scenarios, their `--only` names, the variants and the CI groups. `idf/tools/e2e/run_e2e.sh` builds the QEMU images and starts the harness. It passes its extra arguments to `e2e.py`.
 
@@ -29,12 +29,16 @@ The secure variant keeps the two functions under test. No build for the board ha
 - `run_e2e.sh` makes the throwaway signing key `build-qemu/e2e_signing_key.pem`, and gives it to the harness only in this variant. Never commit it.
 - `run_e2e.sh` also builds the board build `build-qemu-psram` in this variant. It is the firmware before the OTA of `GW42` (#94). `E2E_BOARD=0` skips this build, and the harness reports that scenario as `SKIP`.
 - `run_e2e.sh` examines the `sdkconfig` of each build. `CONFIG_NVS_ENCRYPTION` and `CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT` must be on in the secure build, and off in each other build.
+- The harness does the same check: `--secure` must agree with these two options in the `sdkconfig` of the build under test. `--secure` and `--signing-key` go together. A command line that does not agree stops the harness with an error.
+- Only a build that signs writes `rs485_spb_gateway-unsigned.bin`. `run_e2e.sh` removes a leftover file with this name from each other build folder. The harness takes this file as the source of its test images only with a signing key.
 
 `--only` selects scenarios in each variant. The harness skips a scenario when the build cannot run it:
 
 - The scenario `nopsram` needs the PSRAM build. The harness skips it in the default variant.
 - The five scenarios of the secure variant need the secure build. The harness skips them in the other variants.
 - All the other scenarios can run on the secure build with `--only`, for example for the work on #255. No CI job does this.
+
+`results.json` gives each skipped scenario in `skipped`. With `--no-skip`, each skipped scenario is also a failed check. The CI groups and `run_ci_groups.sh` use this option, because each scenario of a CI group must run. The summary of the groups reports a skipped scenario as a problem, and does not count it as a scenario that ran.
 
 Do not use `-m 32M`. QEMU then maps 31 MB, and no virtual space stays for the map of the flash.
 
@@ -93,7 +97,7 @@ The work directory (`E2E_WORKDIR`) keeps all the files of a run. The harness del
 
 | File | Content |
 |---|---|
-| `results.json` | `checks`; `durations` of each attempt; `retries` (the discarded attempts, with their passed checks and the fault); `remeasured` (#117); `faults` (scenario, attempt, type, signature, time, PC, analysis), also each firmware fault of the console (type `firmware failure`, #256); `emulators` (command line, pid, load, how it ended); the QEMU version |
+| `results.json` | `checks`; `durations` of each attempt; `retries` (the discarded attempts, with their passed checks and the fault); `remeasured` (#117); `skipped` (the scenarios that showed `[SKIP]`, #261); `faults` (scenario, attempt, type, signature, time, PC, analysis), also each firmware fault of the console (type `firmware failure`, #256); `emulators` (command line, pid, load, how it ended); the QEMU version |
 | `qemu-exits.txt` | Each QEMU that stopped without a request from the harness, or `none` |
 | `uart0-*.log`, `uart0-*.log.qemu` | The console of each boot, and the output of QEMU for that boot. The logs of a discarded attempt stay (append mode) |
 | `fault-NN-<log>.txt` | The state of a hung or faulty QEMU: two `info registers -a` outputs, the PC of each core and its region, the last 40 console lines, the stderr of QEMU |
@@ -133,7 +137,7 @@ The summary shows the firmware faults also when they cause no failure (`[PANIC]`
 
 ### Hangs and time limits (#92)
 
-- A live QEMU with no UART output for `--hang-timeout` seconds (default 60) is hung, if this occurs where the firmware always prints: a boot (from `ESP-ROM:` to the first `app_main` line) or the check of an image (its segments, and its signature in the secure build). After `Take trusted digest key(s)`, a line of the signature check, the limit is 30 s.
+- A live QEMU with no UART output for `--hang-timeout` seconds (default 60) is hung, if this occurs where the firmware always prints. These places are a boot (from `ESP-ROM:` to the first `app_main` line) and the check of an image. The check of an image prints its segments, and in the secure build also the lines of its signature check. After `Take trusted digest key(s)`, a line of the signature check, the limit is 30 s.
 - Each scenario attempt has a time limit: 900 s by default (`DEFAULT_BUDGET_S`). `SCENARIO_BUDGET_S` gives other limits: 1 800 s for the #97 integration and 3 600 s for `tck`. `--scenario-timeout` sets one limit for all scenarios.
 - `--timeout-scale` or `E2E_TIMEOUT_SCALE` multiplies all the limits. Use it on a slow or loaded host. Do not change the checks.
 - At a hang or an expired limit, the harness saves the state to `fault-NN-<log>.txt`, kills the emulators of the scenario, and the scenario fails without a retry.
@@ -180,8 +184,8 @@ CAUTION: Read the `uart0-*.log` files when `e2e-poison` fails. With heap poisoni
 | `boot` | SIGSEGV to the second emulator, 3 s after its start | One retry, pass |
 | `console` | SIGSEGV to the first emulator before it connects the console | One retry, pass |
 | `main` | SIGABRT in `main` after the replacement of the broker | One retry, pass |
-| `hang` | A guest pause with `stop` through the QEMU monitor, after the first `Take trusted digest key(s)`. Only the secure build writes this line, so use `E2E_SECURE=1` with `--only signed` | No retry, fail |
-| `hang-mute` | The same hang, with QEMU stopped by SIGSTOP. Also with `E2E_SECURE=1` | No retry, fail |
+| `hang` | A guest pause with `stop` through the QEMU monitor, after the first `Take trusted digest key(s)`. Only the secure build writes this line, so use `E2E_SECURE=1` with `--only signed`. Without `--secure`, the harness refuses this case with an error | No retry, fail |
+| `hang-mute` | The same hang, with QEMU stopped by SIGSTOP. Also only with `E2E_SECURE=1` | No retry, fail |
 | `ota-failed` | A failed check before the death | No retry, fail |
 | `ota-panic` | A firmware `StoreProhibited` panic before the death | No retry, fail |
 
