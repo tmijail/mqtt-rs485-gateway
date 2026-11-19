@@ -81,7 +81,7 @@ The work directory (`E2E_WORKDIR`) keeps all the files of a run. The harness del
 
 | File | Content |
 |---|---|
-| `results.json` | `checks`; `durations` of each attempt; `retries` (the discarded attempts, with their passed checks and the fault); `remeasured` (#117); `faults` (scenario, attempt, type, signature, time, PC, analysis); `emulators` (command line, pid, load, how it ended); the QEMU version |
+| `results.json` | `checks`; `durations` of each attempt; `retries` (the discarded attempts, with their passed checks and the fault); `remeasured` (#117); `faults` (scenario, attempt, type, signature, time, PC, analysis), also each firmware fault of the console (type `firmware failure`, #256); `emulators` (command line, pid, load, how it ended); the QEMU version |
 | `qemu-exits.txt` | Each QEMU that stopped without a request from the harness, or `none` |
 | `uart0-*.log`, `uart0-*.log.qemu` | The console of each boot, and the output of QEMU for that boot. The logs of a discarded attempt stay (append mode) |
 | `fault-NN-<log>.txt` | The state of a hung or faulty QEMU: two `info registers -a` outputs, the PC of each core and its region, the last 40 console lines, the stderr of QEMU |
@@ -110,9 +110,10 @@ The harness repeats the full scenario one time, for a maximum of two scenarios i
   - a `Guru Meditation Error` line with any reason, if it is not the known signature;
   - `assert failed:`, `task_wdt: Aborting`, `Task watchdog got triggered`, `ESP_ERROR_CHECK failed`, `CORRUPT HEAP`, `stack overflow`;
   - in the QEMU build: `fw: core 1 park bound reached`, `fw: core 1 park refused` (#111) and `fw: blocking IPC to core 1 while it was parked` (#112);
-  - `abort() was called` or `Backtrace:`, if it is not the `panic` that the harness requested (its marker `panic requested from the console` in the 20 lines before), and not the backtrace of the known signature.
+  - `abort() was called` or `Backtrace:`, if it is not the `panic` that the harness requested (its marker `panic requested from the console` in the 20 lines before), and not the backtrace of the known signature;
+  - `Core dump has been saved to flash`, if the same boot has no `panic` that the harness requested and no known signature (#256). The panic handler takes no console lock, and QEMU does not stall the other core (#238). Thus the panic lines can mix with the lines of the other core, character by character, and the harness finds no `Guru Meditation Error` line. This line of the dump writer comes out complete.
 
-The summary shows the firmware faults also when they cause no failure (`[PANIC]`). Each other case, an expired time limit and a second fault give a failed scenario, with all its checks and the reason for no retry.
+The summary shows the firmware faults also when they cause no failure (`[PANIC]`). `results.json` records each of them in `faults`, with the type `firmware failure`. A firmware fault never causes a retry. Each other case, an expired time limit and a second fault give a failed scenario, with all its checks and the reason for no retry.
 
 **A retry does not hide** a failed check, a hang, or a firmware panic, assert, watchdog, stack overflow or abort on the console. A retry can hide an error that the attempt did not examine yet before QEMU died. A regression that kills QEMU each time still shows, because the second attempt also fails.
 
