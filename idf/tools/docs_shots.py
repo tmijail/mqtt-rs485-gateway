@@ -543,7 +543,7 @@ def backup_brokers_phone(page):
     page.click('[data-ladd="bk"]')
     page.fill('[data-p="mqtt.backup_brokers.1.host"]', "10.0.0.20")
     page.fill('[data-p="mqtt.backup_brokers.1.port"]', "8884")
-    page.locator("#f-bk").scroll_into_view_if_needed()
+    page.evaluate("document.activeElement.blur()")
 
 
 def certificates_card(page):
@@ -752,6 +752,9 @@ class Shot:
     element: str = ""
     pad: int = 8
     full_page: bool = False
+    # #250: Playwright's own element shot (the element scrolled into the window, no @pad). On a
+    # phone, the clip of a full page missed a section far down the Configuration tab
+    own: bool = False
     auth: bool = True
     freeze_timers: bool = True
     freeze: dict = field(default_factory=dict)   # more FREEZE paths of /api/status, this shot only
@@ -994,7 +997,7 @@ SHOTS = [
              "in the gateway."),
     # #250: docs/reference/configuration.md (The list of brokers)
     Shot("backup-brokers-phone", "configured", PHONE, "/", actions=[backup_brokers_phone],
-         element='.card[data-cc="mqtt"] .tsec:has(#f-bk)', wait="#f-bk",
+         element='.card[data-cc="mqtt"] .tsec:has(#f-bk)', wait="#f-bk", own=True,
          alt="The section 'Backup brokers' of the card MQTT on a phone. Each broker is a block. "
              "The primary broker shows its host and the port 8883. Backup 1 has the host "
              "broker2.plant.local and an empty port that shows '8883 (the port of the primary "
@@ -1282,6 +1285,8 @@ def capture(browser, shot, auth, base):
             # the bar sticks to the bottom of the window, also over a card that is taller than the
             # window: keep it out of the image of a card
             page.add_style_tag(content="#bar{visibility:hidden}")
+            if shot.own:
+                return page.locator(shot.element).first.screenshot(**opts)
             box = page.locator(shot.element).first.bounding_box()
             # the box is relative to the viewport, the clip of a full page to the page: add the
             # scroll position (a click scrolls the page, and a reload keeps the position)
