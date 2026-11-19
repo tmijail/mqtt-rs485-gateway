@@ -1,0 +1,62 @@
+# Issue #253: the E2E image (idf/tools/e2e/Dockerfile: the pinned ESP-IDF image plus mosquitto,
+# libslirp0, QEMU and the venv of the harness) on ghcr.io. The e2e and e2e-poison jobs of ci.yml
+# run in it, pinned by its digest, so they install nothing from Ubuntu or PyPI at job time.
+#
+# It runs when the image changes (on any branch, so that a pull request can pin the new digest)
+# and on request. The digest is in the job summary: copy it to E2E_IMAGE in ci.yml.
+# The image is tagged with the commit; a tag is never reused.
+name: E2E image
+
+on:
+  push:
+    paths:
+      - idf/tools/e2e/Dockerfile
+      - idf/tools/e2e/requirements.txt
+      - .github/workflows/e2e-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: Build and publish ghcr.io/tmijail/gw-e2e
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the image
+        run: docker build -t gw-e2e idf/tools/e2e
+      - name: Smoke test (QEMU, mosquitto and the venv of the harness are in the image)
+        run: |
+          docker run --rm gw-e2e bash -c '. "$IDF_PATH/export.sh" >/dev/null &&
+              qemu-system-xtensa --version | head -1 && command -v mosquitto &&
+              "$E2E_PYTHON" -c "import paho.mqtt, pymodbus; print(\"venv ok\")"'
+      - name: Publish the image
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          SHA: ${{ github.sha }}
+        run: |
+          ref="ghcr.io/tmijail/gw-e2e:${SHA::12}"
+          echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker tag gw-e2e "$ref"
+          docker push "$ref"
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$ref")"
+          docker logout ghcr.io
+          echo "Published $ref as $digest"
+          {
+            echo "### E2E image"
+            echo
+            echo "Tag: \`$ref\`"
+            echo
+            echo "Pin in ci.yml (E2E_IMAGE): \`$digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -4,11 +4,14 @@
 #
 #   docker build -t gw-e2e idf/tools/e2e
 #
-# See docs/how-to/run-e2e-in-docker.md.
+# See docs/how-to/run-e2e-in-docker.md. Issue #253: .github/workflows/e2e-image.yml publishes it
+# as ghcr.io/tmijail/gw-e2e, and the e2e jobs of ci.yml run in it (pinned by digest).
 FROM espressif/idf:v6.1@sha256:f81b6e077e6af93c312181cd7d4e7936cfbafc5c7f77cbacba8fdd34994f218a
+LABEL org.opencontainers.image.source="https://github.com/tmijail/mqtt-rs485-gateway" \
+      org.opencontainers.image.description="The E2E environment of the RS485 to Sparkplug B gateway (QEMU, mosquitto, the harness)"
 
-RUN apt-get update -qq \
-    && apt-get install -y -qq --no-install-recommends mosquitto libslirp0 >/dev/null \
+RUN apt-get -o Acquire::Retries=3 update -qq \
+    && apt-get -o Acquire::Retries=3 install -y -qq --no-install-recommends mosquitto libslirp0 >/dev/null \
     && rm -rf /var/lib/apt/lists/*
 RUN python3 "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
 
