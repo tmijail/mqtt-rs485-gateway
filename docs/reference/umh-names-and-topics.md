@@ -72,11 +72,11 @@ The gateway publishes these metrics in the NBIRTH, and their changes in NDATA. S
 | `bdSeq` | Int64 | Always | `bdSeq` | Dropped |
 | `Node Control/Rebirth` | Boolean | Always | `Node_Control.Rebirth` | Dropped |
 | `Node Control/Reboot` | Boolean | Always | `Node_Control.Reboot` | Dropped |
-| `Node Control/Scan Rate` | UInt32 | Always | `Node_Control.Scan_Rate` | Dropped |
+| `Node Control/Scan Rate` | UInt64 | Always | `Node_Control.Scan_Rate` | Dropped |
 | `Node Control/Firmware Update` | String | With `ota.mqtt: true` | `Node_Control.Firmware_Update` | Dropped |
 | `Node Control/Firmware SHA-256` | String | With `ota.mqtt: true` | `Node_Control.Firmware_SHA-256` | Dropped |
 | `Firmware Update/State` | String | Always | `Firmware_Update.State` | Dropped |
-| `Firmware Update/Progress` | UInt32 | Always | `Firmware_Update.Progress` | Dropped |
+| `Firmware Update/Progress` | UInt64 | Always | `Firmware_Update.Progress` | Dropped |
 | `Node Control/Boot Other Slot` | Boolean | With `ota.mqtt: true` | `Node_Control.Boot_Other_Slot` | Dropped |
 | `Node Info/Firmware` | String | Always | `Node_Info.Firmware` | Kept |
 | `Node Info/Hardware` | String | Always | `Node_Info.Hardware` | Kept |
@@ -87,10 +87,10 @@ The gateway publishes these metrics in the NBIRTH, and their changes in NDATA. S
 | `Counter/1` to `Counter/8` | UInt64 | Always | `Counter.1` to `Counter.8` | Kept |
 | `Run Hours/DI/1` to `Run Hours/DO/8` | UInt64 | Only for the channels of `local_io.run_hours` | `Run_Hours.DI.1` to `Run_Hours.DO.8` | Kept |
 | `Node Info/Uptime` | UInt64 | Always | `Node_Info.Uptime` | Kept |
-| `Node Info/Free Heap` | UInt32 | Always | `Node_Info.Free_Heap` | Kept |
-| `Node Info/Min Free Heap` | UInt32 | Always | `Node_Info.Min_Free_Heap` | Kept |
-| `Node Info/Largest Free Block` | UInt32 | Always | `Node_Info.Largest_Free_Block` | Kept |
-| `Node Info/Free PSRAM` | UInt32 | Always | `Node_Info.Free_PSRAM` | Kept |
+| `Node Info/Free Heap` | UInt64 | Always | `Node_Info.Free_Heap` | Kept |
+| `Node Info/Min Free Heap` | UInt64 | Always | `Node_Info.Min_Free_Heap` | Kept |
+| `Node Info/Largest Free Block` | UInt64 | Always | `Node_Info.Largest_Free_Block` | Kept |
+| `Node Info/Free PSRAM` | UInt64 | Always | `Node_Info.Free_PSRAM` | Kept |
 | `Node Info/Temperature` | Float | Always. Null without a reading of the sensor | `Node_Info.Temperature` | Kept. A null value is dropped |
 | `Node Info/RSSI` | Int32 | Only with `network.wifi`. Null without a Wi-Fi connection | `Node_Info.RSSI` | Kept. A null value is dropped |
 | `Node Info/Modbus` | DataSet | With one or more devices, not with the UMH preset | None: UMH gives no value for a DataSet | Dropped |

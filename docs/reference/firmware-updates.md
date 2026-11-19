@@ -217,7 +217,7 @@ A downgrade often needs the document that the earlier image read (#146). The dec
 
 ## The state
 
-`Firmware Update/State` (String, alias 41) and `Firmware Update/Progress` (UInt32 %, alias 42) are in the NBIRTH, and in an NDATA when they change (each 10 %). The shell (`status`, line `ota`) and `GET /api/firmware` also give the details.
+`Firmware Update/State` (String, alias 41) and `Firmware Update/Progress` (UInt64 %, alias 42) are in the NBIRTH, and in an NDATA when they change (each 10 %). The shell (`status`, line `ota`) and `GET /api/firmware` also give the details.
 
 | State | Meaning |
 |---|---|

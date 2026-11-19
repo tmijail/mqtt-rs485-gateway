@@ -48,7 +48,7 @@ The NBIRTH contains these metrics.
 | `Node Info/Firmware` | 4 | String | The version and the git hash of the firmware |
 | `Node Info/Hardware` | 5 | String | The name of the board |
 | `Node Info/Reset Reason` | 6 | String | The cause of the last restart |
-| `Node Control/Scan Rate` | 7 | UInt32 | Writable. ms. 0 = each device uses its `poll_ms` |
+| `Node Control/Scan Rate` | 7 | UInt64 | Writable. ms. 0 = each device uses its `poll_ms` |
 | `Node Info/Name` | 8 | String | `gateway.name`. Only when it is set. Only in the NBIRTH |
 | `Node Info/Location` | 9 | String | `gateway.location`. Only when it is set. Only in the NBIRTH |
 | `DI/1` to `DI/8` | 10 to 17 | Boolean | The digital inputs, after the inversion and the debounce |
@@ -56,19 +56,19 @@ The NBIRTH contains these metrics.
 | `Counter/1` to `Counter/8` | 30 to 37 | UInt64 | The pulse counters of the DIs |
 | `Node Control/Firmware Update` | 40 | String | Writable. Empty in the NBIRTH. Only with `ota.mqtt: true` |
 | `Firmware Update/State` | 41 | String | The result of the last update |
-| `Firmware Update/Progress` | 42 | UInt32 | % |
+| `Firmware Update/Progress` | 42 | UInt64 | % |
 | `Node Control/Boot Other Slot` | 43 | Boolean | Writable. `false` in the NBIRTH. Only with `ota.mqtt: true` |
 | `Node Control/Firmware SHA-256` | 44 | String | Writable. Empty in the NBIRTH. Only with `ota.mqtt: true` |
 | `Node Info/Uptime` | 50 | UInt64 | The seconds since the boot |
-| `Node Info/Free Heap` | 51 | UInt32 | The free bytes of the internal RAM |
-| `Node Info/Min Free Heap` | 52 | UInt32 | The minimum free internal RAM since the boot |
+| `Node Info/Free Heap` | 51 | UInt64 | The free bytes of the internal RAM |
+| `Node Info/Min Free Heap` | 52 | UInt64 | The minimum free internal RAM since the boot |
 | `Node Info/RSSI` | 53 | Int32 | dBm of the Wi-Fi network. Only with a Wi-Fi configuration. Null while the gateway is not associated |
 | `Node Info/Modbus` | 54 | DataSet | The Modbus counters, one row for each device. Only with one or more devices |
 | `Node Info/Time Synced` | 55 | Boolean | `true` when SNTP synchronized the clock at least one time since the boot |
 | `Node Info/Modbus TCP` | 56 | DataSet | Only with `modbus_tcp.enabled`. The Modbus TCP counters |
 | `Node Info/Core Dump` | 57 | Boolean | `true` while a core dump is in flash |
-| `Node Info/Largest Free Block` | 58 | UInt32 | The largest free block of the internal RAM, in bytes. A low value with much free heap shows a fragmented RAM |
-| `Node Info/Free PSRAM` | 59 | UInt32 | The free bytes of the PSRAM |
+| `Node Info/Largest Free Block` | 58 | UInt64 | The largest free block of the internal RAM, in bytes. A low value with much free heap shows a fragmented RAM |
+| `Node Info/Free PSRAM` | 59 | UInt64 | The free bytes of the PSRAM |
 | `Node Info/Temperature` | 68 | Float | The temperature of the chip, in °C, from its internal sensor. Null when there is no reading, for example in QEMU |
 | `Run Hours/DI/1` to `Run Hours/DI/8` | 356 to 363 | UInt64 | Only for the DIs of `local_io.run_hours`. The seconds in the on state |
 | `Run Hours/DO/1` to `Run Hours/DO/8` | 364 to 371 | UInt64 | Only for the DOs of `local_io.run_hours`. The seconds in the on state |
@@ -150,7 +150,7 @@ All the devices of a type have the same tags, because they use the tag list of t
 |---|---|---|
 | `Node Control/Rebirth` | Boolean `true` | Stops the NDATA and DDATA. Sends the NBIRTH and all the DBIRTHs again. `seq` starts again at 0, and the NBIRTH keeps the `bdSeq` of the session |
 | `Node Control/Reboot` | Boolean `true` | Orderly restart, with the NDEATH |
-| `Node Control/Scan Rate` | UInt32 | One poll interval for all the devices: 50 to 3 600 000 ms. 0 = each device uses its `poll_ms` |
+| `Node Control/Scan Rate` | UInt64 | One poll interval for all the devices: 50 to 3 600 000 ms. 0 = each device uses its `poll_ms` |
 | `Node Control/Firmware Update` | String | Downloads and installs the image at the `https://` URL (255 characters at most). Only with `ota.mqtt: true` |
 | `Node Control/Firmware SHA-256` | String | The SHA-256 of the image file for the next `Node Control/Firmware Update`: 64 hexadecimal characters, capital or small letters. Empty = no check. In the same NCMD as the URL or in an earlier one. A value that is not valid also stops the URL of the same NCMD. Only with `ota.mqtt: true` |
 | `Node Control/Boot Other Slot` | Boolean `true` | Restarts into the image of the other slot, on trial, after the pre-flight check. Only with `ota.mqtt: true` |

@@ -237,7 +237,7 @@ Not tested: the downsampler (`late_policy`), the `uns` output into Redpanda, the
 
 The scenario runs the seven tests of the Edge Node profile of the Eclipse Sparkplug TCK 3.0.0, with MQTT 3.1.1 and MQTT 5. It needs `E2E_TCK_DIR` (from `tools/e2e/tck_setup.sh`). The procedure is in [Run the Sparkplug TCK against the gateway](../how-to/run-the-sparkplug-tck.md). The known FAILs of the TCK and their causes are in [Sparkplug behavior](sparkplug-behavior.md#the-sparkplug-tck-edge-node-profile-176).
 
-The configuration of the gateway has `Meter1` (unit 1, tags with aliases), `Pump1` (unit 2, a template instance), the primary host `TCKHost` that the TCK simulates, and `diagnostics_s` 0. Each test gets a new HiveMQ and a new boot of the gateway.
+The configuration of the gateway has `Meter1` (unit 1, tags with aliases, also the UInt32 tag `Hours`), `Pump1` (unit 2, a template instance), the primary host `TCKHost` that the TCK simulates, and `diagnostics_s` 0. Each test gets a new HiveMQ and a new boot of the gateway.
 
 The TCK web console only sends `NEW_TEST` and `END_TEST` on `SPARKPLUG_TCK/TEST_CONTROL`, and shows the prompts to the operator. The scenario does the steps of the operator:
 
@@ -260,7 +260,7 @@ A check fails when an assertion is FAIL and the harness cannot prove a known cau
 - After the NCMD rebirth, the TCK fails `tck-id-operational-behavior-data-commands-rebirth-action-1` for each NDATA or DDATA before the NBIRTH, also a message that was already on its way. `diagnostics_s` 0 and constant register values keep the gateway quiet during the test.
 - The TCK clients connect to `tcp://localhost:1883`, a fixed address. Thus HiveMQ listens on 127.0.0.1:1883 in the network namespace of the harness.
 - Sometimes the TCK extension stops at `Creating new host "TCKHost"`, and the test gives no result. The simulated host connects to HiveMQ from inside the publish interceptor of the extension, and that connection does not return. When a test gives no result, the scenario runs it one more time with a new HiveMQ and a new boot, and records this in `retries` of `results.json`. A test with a result is never repeated.
-- The test configuration has no UInt32 device tag. A UInt32 tag gives the known FAIL of the DBIRTH assertions (refer to [UInt32 in `int_value`](sparkplug-behavior.md#uint32-in-int_value-two-fails-of-the-tck-300)).
+- `Meter1` has the UInt32 tag `Hours`. It gives the known FAIL of the DBIRTH assertions, which the harness must explain (refer to [UInt32 in `int_value`](sparkplug-behavior.md#uint32-in-int_value-two-fails-of-the-tck-300)).
 
 ### downgrade: an earlier image on newer data (#148)
 

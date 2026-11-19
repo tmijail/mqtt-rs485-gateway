@@ -460,11 +460,16 @@ static size_t diag_metrics(gw_node_t *n, size_t i, uint64_t now, bool birth, boo
     memset(&dg, 0, sizeof(dg));
     n->ops.diagnostics(n->ops.ctx, &dg);
     size_t k = i;
+    /* The unsigned node metrics are UInt64 (long_value), not UInt32 (int_value): the TCK 3.0.0
+     * Utils.hasValue() accepts UInt32 only in long_value, against the datatype table of the
+     * specification (tck-id-topics-nbirth-metrics, tck-id-operational-behavior-data-publish-
+     * nbirth-values). UInt64 is correct for both (decision of the product owner, 2026-11-19;
+     * docs/reference/sparkplug-behavior.md, The Sparkplug TCK). */
     metric(n, k++, birth ? NAME_UPTIME : NULL, GW_ALIAS_UPTIME, SPB_DT_UINT64, now)->v.u64 =
         dg.uptime_s;
-    metric(n, k++, birth ? NAME_FREE_HEAP : NULL, GW_ALIAS_FREE_HEAP, SPB_DT_UINT32, now)->v.num =
+    metric(n, k++, birth ? NAME_FREE_HEAP : NULL, GW_ALIAS_FREE_HEAP, SPB_DT_UINT64, now)->v.u64 =
         dg.free_heap;
-    metric(n, k++, birth ? NAME_MIN_HEAP : NULL, GW_ALIAS_MIN_HEAP, SPB_DT_UINT32, now)->v.num =
+    metric(n, k++, birth ? NAME_MIN_HEAP : NULL, GW_ALIAS_MIN_HEAP, SPB_DT_UINT64, now)->v.u64 =
         dg.min_free_heap;
     /* #212: the health of the gateway. In the NBIRTH with name, alias and datatype, so that the
      * diagnostics NDATA can give the alias only (tck-id-topics-nbirth-metrics,
@@ -472,10 +477,10 @@ static size_t diag_metrics(gw_node_t *n, size_t i, uint64_t now, bool birth, boo
      * tck-id-payloads-metric-datatype-req, tck-id-payloads-metric-datatype-not-req; the aliases
      * are this metric's alone: tck-id-payloads-alias-uniqueness). The temperature is null
      * without a reading of the sensor (QEMU has none). */
-    metric(n, k++, birth ? NAME_LARGEST_BLOCK : NULL, GW_ALIAS_LARGEST_BLOCK, SPB_DT_UINT32,
-           now)->v.num = dg.largest_block;
-    metric(n, k++, birth ? NAME_FREE_PSRAM : NULL, GW_ALIAS_FREE_PSRAM, SPB_DT_UINT32, now)
-        ->v.num = dg.free_psram;
+    metric(n, k++, birth ? NAME_LARGEST_BLOCK : NULL, GW_ALIAS_LARGEST_BLOCK, SPB_DT_UINT64,
+           now)->v.u64 = dg.largest_block;
+    metric(n, k++, birth ? NAME_FREE_PSRAM : NULL, GW_ALIAS_FREE_PSRAM, SPB_DT_UINT64, now)
+        ->v.u64 = dg.free_psram;
     spb_metric_t *temp = metric(n, k++, birth ? NAME_TEMPERATURE : NULL, GW_ALIAS_TEMPERATURE,
                                 SPB_DT_FLOAT, now);
     temp->v.num = dg.temp_valid ? dg.temp_c : 0.0;
@@ -614,7 +619,7 @@ static bool publish_nbirth(gw_node_t *n)
     metric(n, i++, NAME_HARDWARE, GW_ALIAS_HARDWARE, SPB_DT_STRING, now)->v.str = n->info.hardware;
     metric(n, i++, NAME_RESET_REASON, GW_ALIAS_RESET_REASON, SPB_DT_STRING, now)->v.str =
         n->info.reset_reason;
-    metric(n, i++, NAME_SCAN_RATE, GW_ALIAS_SCAN_RATE, SPB_DT_UINT32, now)->v.num =
+    metric(n, i++, NAME_SCAN_RATE, GW_ALIAS_SCAN_RATE, SPB_DT_UINT64, now)->v.u64 =
         n->scan_rate_ms;
     /* #206: the name and the location of gateway.*, for people. Static: only in the NBIRTH
      * (tck-id-topics-nbirth-metrics), and only when set. */
@@ -634,7 +639,7 @@ static bool publish_nbirth(gw_node_t *n)
         metric(n, i++, NAME_FW_SHA256, GW_ALIAS_FW_SHA256, SPB_DT_STRING, now)->v.str = "";
     }
     metric(n, i++, NAME_FW_STATE, GW_ALIAS_FW_STATE, SPB_DT_STRING, now)->v.str = n->fw_state;
-    metric(n, i++, NAME_FW_PROGRESS, GW_ALIAS_FW_PROGRESS, SPB_DT_UINT32, now)->v.num =
+    metric(n, i++, NAME_FW_PROGRESS, GW_ALIAS_FW_PROGRESS, SPB_DT_UINT64, now)->v.u64 =
         n->fw_progress;
     if (n->cfg->ota.mqtt) {
         /* #144 item 6, #223: Boot Other Slot also changes the running firmware, thus it also needs
@@ -842,7 +847,7 @@ void gw_node_set_firmware_status(gw_node_t *n, const char *state, uint32_t progr
         metric(n, i++, NULL, GW_ALIAS_FW_STATE, SPB_DT_STRING, now)->v.str = n->fw_state;
     }
     if (pr) {
-        metric(n, i++, NULL, GW_ALIAS_FW_PROGRESS, SPB_DT_UINT32, now)->v.num = n->fw_progress;
+        metric(n, i++, NULL, GW_ALIAS_FW_PROGRESS, SPB_DT_UINT64, now)->v.u64 = n->fw_progress;
     }
     publish(n, "NDATA", NULL, i, 0);
 }
@@ -1289,7 +1294,7 @@ static bool on_ncmd_metric(void *ctx, const spb_rx_metric_t *m)
     if (by_name ? strcmp(m->name, NAME_SCAN_RATE) == 0 : m->alias == GW_ALIAS_SCAN_RATE) {
         double v;
         n->cmd_scan_rate = true;   /* NDATA confirms the rate in force, applied or not */
-        if (!spb_rx_number(m, m->has_datatype ? m->datatype : SPB_DT_UINT32, &v) ||
+        if (!spb_rx_number(m, m->has_datatype ? m->datatype : SPB_DT_UINT64, &v) ||
             v != floor(v) || (v != 0.0 && (v < GW_SCAN_RATE_MIN_MS || v > GW_SCAN_RATE_MAX_MS))) {
             log_discard("NCMD", m, "Scan Rate must be 0 (per-device poll_ms) or 50..3600000 ms");
             return true;
@@ -1658,7 +1663,7 @@ void gw_node_handle_message(gw_node_t *n, const char *topic, size_t topic_len,
             publish_io(n, n->cmd_do_mask);
         }
         if (n->cmd_scan_rate && n->time_valid) {   /* #160: a guard, as publish_io */
-            metric(n, 0, NULL, GW_ALIAS_SCAN_RATE, SPB_DT_UINT32, gw_port_time_ms())->v.num =
+            metric(n, 0, NULL, GW_ALIAS_SCAN_RATE, SPB_DT_UINT64, gw_port_time_ms())->v.u64 =
                 n->scan_rate_ms;
             publish(n, "NDATA", NULL, 1, 0);
         }

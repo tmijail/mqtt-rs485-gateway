@@ -7337,16 +7337,16 @@ def check_core_dump_api(gw, obs, args, work, nb, since, ndata_t, off):
 
 
 def check_scan_rate(obs, gw, slave, nbirth, ncmd_t, ndata_t):
-    """SPB-15: writable Node Control/Scan Rate (UInt32 ms, 0 = each device at its poll_ms).
+    """SPB-15: writable Node Control/Scan Rate (UInt64 ms, 0 = each device at its poll_ms).
     3000 makes Meter1 poll every 3 s, an invalid value is refused (NDATA keeps 3000), 0 brings
     back its 1 s."""
     name = "Node Control/Scan Rate"
     birth = metric(nbirth, name=name)
-    def set_rate(value, datatype=7):
+    def set_rate(value, datatype=8):
         obs.drain()
-        obs.publish_cmd(ncmd_t, [{"name": name, "datatype": datatype, "int_value": value}])
+        obs.publish_cmd(ncmd_t, [{"name": name, "datatype": datatype, "long_value": value}])
         nd = obs.wait(ndata_t, 3, lambda q: metric(q, alias=7) is not None)
-        return metric(nd[2], alias=7).int_value if nd else None
+        return metric(nd[2], alias=7).long_value if nd else None
     def starts(since, until):
         return [t for t, r in zip(list(slave.times), list(slave.reads), strict=False)
                 if since <= t <= until and r[0] == 1 and r[1:] == (1, 0, 1)]
@@ -7363,12 +7363,12 @@ def check_scan_rate(obs, gw, slave, nbirth, ncmd_t, ndata_t):
     time.sleep(5)
     fast = starts(t_back + 1.5, time.monotonic())
     gaps1 = [round(b - a, 2) for a, b in zip(fast, fast[1:], strict=False)]
-    ok = birth is not None and birth.datatype == 7 and birth.int_value == 0 and confirmed == 3000 \
+    ok = birth is not None and birth.datatype == 8 and birth.long_value == 0 and confirmed == 3000 \
         and len(gaps3) >= 2 and all(2.7 <= g <= 3.6 for g in gaps3) and refused == 3000 and logged \
         and back == 0 and len(gaps1) >= 2 and all(g <= 1.6 for g in gaps1)
-    return check("SPB-15 NCMD Node Control/Scan Rate: NBIRTH UInt32 0, 3000 -> Meter1 every 3 s "
+    return check("SPB-15 NCMD Node Control/Scan Rate: NBIRTH UInt64 0, 3000 -> Meter1 every 3 s "
                  "(NDATA), invalid 10 refused, 0 -> back to its poll_ms", ok,
-                 f"NBIRTH {(birth.datatype, birth.int_value) if birth else None}; NDATA {confirmed}, "
+                 f"NBIRTH {(birth.datatype, birth.long_value) if birth else None}; NDATA {confirmed}, "
                  f"cycles {gaps3} s apart; 10 -> NDATA {refused}, logged {bool(logged)}; 0 -> NDATA "
                  f"{back}, cycles {gaps1} s apart")
 
@@ -7861,8 +7861,8 @@ def check_diagnostics(obs, nbirth, ndata_t):
     mb = metric(nbirth, name="Node Info/Modbus")
     rows = modbus_rows(mb) if mb is not None and mb.datatype == 16 else {}
     birth_ok = up is not None and up.datatype == 8 and up.alias == 50 and heap is not None \
-        and heap.datatype == 7 and heap.int_value > 10000 and low is not None \
-        and low.int_value <= heap.int_value and metric(nbirth, name="Node Info/RSSI") is None \
+        and heap.datatype == 8 and heap.long_value > 10000 and low is not None \
+        and low.long_value <= heap.long_value and metric(nbirth, name="Node Info/RSSI") is None \
         and list(rows) == ["Meter1", "Bulk", "Dead3", "Dead4", "Dead5"] \
         and list(mb.dataset_value.columns) == ["Device", "Online", "Cycles", "Failed Cycles", "OK",
                                                "Timeout", "CRC", "Frame", "Exception"]
@@ -7882,7 +7882,7 @@ def check_diagnostics(obs, nbirth, ndata_t):
     check("SPB-17 / MB-13 node diagnostics: NBIRTH Uptime/Free Heap/Min Free Heap and the 'Node "
           "Info/Modbus' DataSet (one row per device, dead units too); NDATA every diagnostics_s (10 s), "
           "uptime moving, counters updated", ok,
-          f"NBIRTH uptime {up.long_value if up else None} s, heap {heap.int_value if heap else None} B "
+          f"NBIRTH uptime {up.long_value if up else None} s, heap {heap.long_value if heap else None} B "
           f"(min {low.int_value if low else None}), rows {list(rows)}; NDATA gap "
           f"{round(gap, 2) if gap else None} s, uptime {u1} -> {u2}; Meter1 {m1}; Dead3 {d3}")
 
@@ -8741,23 +8741,23 @@ def check_admin_web(gw, nb, status, status_body, doc, page_text, t0):
           f"{(doc.get('gateway') or {}).get('comment')!r}")
 
     # #212: the largest free block of the internal RAM, the free PSRAM and the temperature (QEMU
-    # has no sensor: null) in /api/status and in the NBIRTH (UInt32 58, UInt32 59, Float 68)
+    # has no sensor: null) in /api/status and in the NBIRTH (UInt64 58, UInt64 59, Float 68)
     heap = status.get("heap") or {}
     m_blk = metric(nb_p, name="Node Info/Largest Free Block") if nb_p else None
     m_psr = metric(nb_p, name="Node Info/Free PSRAM") if nb_p else None
     m_tmp = metric(nb_p, name="Node Info/Temperature") if nb_p else None
     psram = ARGS.psram
     check("Issue #212: /api/status gives heap.internal_largest and temperature_c (null: QEMU has no "
-          "sensor); the NBIRTH has Node Info/Largest Free Block (UInt32, alias 58), Node Info/Free "
-          "PSRAM (UInt32, alias 59) and Node Info/Temperature (Float, alias 68, null)",
+          "sensor); the NBIRTH has Node Info/Largest Free Block (UInt64, alias 58), Node Info/Free "
+          "PSRAM (UInt64, alias 59) and Node Info/Temperature (Float, alias 68, null)",
           0 < heap.get("internal_largest", 0) <= heap.get("internal_free", 0)
           and "temperature_c" in status and status["temperature_c"] is None
-          and m_blk is not None and m_blk.alias == 58 and m_blk.datatype == 7 and m_blk.int_value > 0
-          and m_psr is not None and m_psr.alias == 59 and m_psr.datatype == 7
-          and (m_psr.int_value > 1000000 if psram else True)
+          and m_blk is not None and m_blk.alias == 58 and m_blk.datatype == 8 and m_blk.long_value > 0
+          and m_psr is not None and m_psr.alias == 59 and m_psr.datatype == 8
+          and (m_psr.long_value > 1000000 if psram else True)
           and m_tmp is not None and m_tmp.alias == 68 and m_tmp.datatype == 9 and m_tmp.is_null,
           f"heap {heap}; temperature_c {status.get('temperature_c', 'absent')}; NBIRTH block "
-          f"{m_blk.int_value if m_blk else None}, PSRAM {m_psr.int_value if m_psr else None}, "
+          f"{m_blk.long_value if m_blk else None}, PSRAM {m_psr.long_value if m_psr else None}, "
           f"temperature null {m_tmp.is_null if m_tmp else None}")
 
     # #207: Identify. No CSRF header: 403 and nothing starts. Then 202 with 10 s, the LED pattern

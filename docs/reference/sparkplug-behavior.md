@@ -204,7 +204,7 @@ The optional E2E scenario `tck` runs the Edge Node profile of the Eclipse Sparkp
 
 ### UInt32 in `int_value`: two FAILs of the TCK 3.0.0
 
-`tck-id-topics-nbirth-metrics` and `tck-id-operational-behavior-data-publish-nbirth-values` fail on the UInt32 node metrics: `Node Control/Scan Rate`, `Node Info/Free Heap`, `Node Info/Min Free Heap` and `Firmware Update/Progress`. A UInt32 tag of a device gives the same FAIL on `tck-id-topics-dbirth-metrics` and `tck-id-operational-behavior-data-publish-dbirth-values`.
+`tck-id-topics-dbirth-metrics` and `tck-id-operational-behavior-data-publish-dbirth-values` fail on a UInt32 tag of a device (UInt8, UInt16 and UInt32 too). With UInt32 node metrics, `tck-id-topics-nbirth-metrics` and `tck-id-operational-behavior-data-publish-nbirth-values` fail in the same way.
 
 - The two rules ask for "the metric name, datatype, and current value". They name no value field.
 - The datatype table of the specification (chapter Payloads) gives "UInt32: Google Protocol Buffer Type: uint32". In the proto, `int_value` is the only uint32 field of the `value`. The gateway puts a UInt8, UInt16 or UInt32 value in `int_value` (`spb.c`).
@@ -216,9 +216,14 @@ The reference implementation does not agree with itself. Tahu Java, C and JavaSc
 - eclipse-sparkplug/sparkplug#102 recorded the conflict. It was closed with a change of the Tahu Java decoder only (eclipse-tahu/tahu#202): the decoder reads the two fields, and the encoder still writes `long_value`.
 - eclipse-sparkplug/sparkplug#469 corrected the TCK on the branch `3.x`, but no TCK was released from that branch. eclipse-sparkplug/sparkplug#529 put UInt32 back on `long_value` on `develop` (the v4 schema). eclipse-sparkplug/sparkplug#630 was closed without a merge.
 
-Choice: the gateway obeys the datatype table of the specification. The harness accepts these FAILs only when it proves this cause from the captured messages (`uint32_cause` in `KNOWN_RULES`, `idf/tools/e2e/tck.py`). Each metric must have a name, a datatype and the value field of the table, and the only metrics without the field that the TCK wants must be UInt32 metrics with `int_value`. A different fault of the same assertion still fails.
+Choices:
 
-A host with a Tahu Java decoder from before eclipse-tahu/tahu#202 (2022) reads UInt32 only from `long_value`. Such a host does not read the UInt32 metrics of the gateway (for example Ignition MQTT Engine 4.0.5).
+- A tag of a device keeps its datatype, for example UInt32 for a `uint32` register, with the value in `int_value`. The gateway obeys the datatype table of the specification.
+- The unsigned node metrics are UInt64, with the value in `long_value`: `Node Control/Scan Rate`, `Node Info/Free Heap`, `Node Info/Min Free Heap`, `Node Info/Largest Free Block`, `Node Info/Free PSRAM` and `Firmware Update/Progress`. The specification permits any datatype for them, and UInt64 agrees with the specification and with the TCK. Thus the NBIRTH gets no FAIL (decision of the product owner, 2026-11-19).
+
+The harness accepts these FAILs only when it proves this cause from the captured messages (`uint32_cause` in `KNOWN_RULES`, `idf/tools/e2e/tck.py`). Each metric must have a name, a datatype and the value field of the table, and the only metrics without the field that the TCK wants must be UInt32 metrics with `int_value`. A different fault of the same assertion still fails.
+
+A host with a Tahu Java decoder from before eclipse-tahu/tahu#202 (2022) reads UInt32 only from `long_value`. Such a host does not read the UInt32 tags of the gateway (for example Ignition MQTT Engine 4.0.5). It reads the node metrics, because they are UInt64.
 
 ### Template parameters: the template group of the TCK is not complete
 
