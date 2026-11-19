@@ -85,7 +85,7 @@ By default, a Sparkplug host cannot start an update (`ota.mqtt` is `false`). The
 3. Click **Save and restart**.
 4. After the restart, make sure that the card **Firmware** of the tab **Status** shows **Update from MQTT: On**.
 
-![The card 'Firmware updates' of the Configuration tab: the check box 'Update from MQTT' is off. The hint tells to turn it on only when the broker lets only the Sparkplug host publish to the NCMD topic of the gateway. The explainer of the field is open. The card also has the field 'CA file of the image server', with a button 'Load a file…'.](../images/firmware-updates-card.png)
+![The card 'Firmware updates' of the Configuration tab: the check box 'Update from MQTT' is off. The hint tells to turn it on only when the broker lets only the Sparkplug host publish to the NCMD topic of the gateway. The card also has the field 'CA file of the image server', with a button 'Load a file…'.](../images/firmware-updates-card.png)
 
 The host then sends the NCMD `Node Control/Firmware Update` with the URL as a String. As an option, it sends `Node Control/Firmware SHA-256` with the SHA-256 of the file, in the same NCMD or in an earlier one. The host reads the result in `Firmware Update/State` and `Firmware Update/Progress`. The host can also send `Node Control/Boot Other Slot` (Boolean `true`). The gateway then restarts into the image of the other slot, as the button **Restart into `<version>`** does. For the metrics, refer to [Sparkplug messages and metrics](../reference/sparkplug-messages-and-metrics.md).
 

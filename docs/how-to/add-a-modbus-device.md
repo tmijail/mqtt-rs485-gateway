@@ -94,7 +94,7 @@ Most fields of the device and of its tags have a (?) button after their label. T
    - **Max gap**: the number of unused registers or bits that one block can include.
    - **Write with FC15/FC16**: for a device that does not accept FC06 or FC05.
 
-   ![The device Meter1 with the panel 'More device settings' open below its fields: Slow poll interval (ms), Block reads, Max gap and Write with FC15/FC16. The explainer of Write with FC15/FC16 is open. It tells that the gateway then writes one register with FC16 and one coil with FC15, for a device that does not accept FC06 or FC05.](../images/device-settings.png)
+   ![The device Meter1 with the panel 'More device settings' open below its fields: Slow poll interval (ms), Block reads, Max gap and Write with FC15/FC16.](../images/device-settings.png)
 
 The button shows **More device settings (n)**, where n is the number of keys of the panel that have a value in the configuration.
 
@@ -121,7 +121,7 @@ The row of a tag has the frequent fields. The other fields of the tag are in its
 12. For a `bool` tag in a `holding` or `input` register, type the **Bit offset**: the bit of the register, from 0.
 13. For a field of 2 to 16 bits in a register, set the type `uint16`. Type the **Bit offset** (the lowest bit of the field) and the **Bit width** (the number of bits). The hint below **Bit width** gives the bits and the values, for example "Bits 4 to 6: values 0 to 7".
 
-    ![The details row of the tag Alarm of Meter1 with the type uint16: Bit offset 4 and Bit width 3, and below Bit width the hint 'Bits 4 to 6: values 0 to 7'. The row shows no Length (registers), because it applies only to string and bytes. The explainer of Bit width is open.](../images/tag-bit-field.png)
+    ![The details row of the tag Alarm of Meter1 with the type uint16: Bit offset 4 and Bit width 3, and below Bit width the hint 'Bits 4 to 6: values 0 to 7'. The row shows no Length (registers), because it applies only to string and bytes.](../images/tag-bit-field.png)
 
 14. For a `string` or a `bytes` tag, type the **Length (registers)**.
 15. For a writable numeric tag, as an option, type **Write min** and **Write max**. The gateway refuses a DCMD with a value out of these limits. Refer to [Write to a Modbus device](write-to-a-modbus-device.md#set-the-write-limits-of-a-tag).

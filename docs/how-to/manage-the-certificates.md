@@ -20,7 +20,7 @@ The buttons of the card **Certificates** change the gateway at once. They do not
 
 The gateway keeps 16 PEM files at most. Each PEM file has 16384 bytes at most. The HTTPS certificate with its chain has 3999 bytes at most, and its key also. The two together must also fit in the free space of the NVS: a chain of 3.5 KB with an RSA 2048 key fits.
 
-![The card 'Certificates' of the Configuration tab. The section 'HTTPS certificate of this page' shows the self-signed certificate of the first boot: its source, subject, SANs, last day and SHA-256 fingerprint, with the buttons 'Load a certificate…' and 'Make a new self-signed certificate'. The section 'Files for MQTT TLS and firmware updates' lists ca.pem, gw01.crt and gw01.key with their content, subject and last day, 'Not used' in the column Used by, each with Replace and Remove, and the button 'Load a file…'.](../images/certificates-card.png)
+![The card 'Certificates' of the Configuration tab. The section 'HTTPS certificate of this page' shows the self-signed certificate of the first boot: its source, subject, SANs, last day and SHA-256 fingerprint, with the buttons 'Load a certificate…' and 'Make a new self-signed certificate'. The section 'Files for MQTT TLS and firmware updates' lists ca.pem (used by MQTT · CA file and Firmware updates · CA file), gw01.crt (MQTT · Client certificate) and gw01.key (MQTT · Client key) with their content, subject and last day. Each file has Replace, and Remove is off because the configuration uses the file. Below: the button 'Load a file…'.](../images/certificates-card.png)
 
 ## Load the HTTPS certificate of the plant
 
@@ -63,7 +63,7 @@ A replaced file keeps its name. The keys of the configuration that name the file
 4. For a client certificate, also select its new key below **Private key (PEM, not encrypted)**. If the new certificate has a new key, the gateway refuses the certificate without it.
 5. Read the result of the examination in the dialog.
 
-   ![The dialog 'Replace gw01.crt and gw01.key': the new certificate gw01-2027.crt and the new key gw01-2027.key are chosen. The gateway examined the files: a certificate CN=GW13 and a private key EC P-256 that agrees with it. It has the button 'Replace the files' and Cancel.](../images/pem-replace-dialog.png)
+   ![The dialog 'Replace gw01.crt and gw01.key': the new certificate gw01-2027.crt and the new key gw01-2027.key are chosen. The gateway examined the files: a certificate CN=GW13 and a private key EC P-256 that agrees with it. The text says that the names stay gw01.crt and gw01.key, and that the MQTT connection uses the new files after the next restart. It has the button 'Replace the files' and Cancel.](../images/pem-replace-dialog.png)
 
 6. Click **Replace the file** (or **Replace the files**).
 7. Replace the other files, if necessary.

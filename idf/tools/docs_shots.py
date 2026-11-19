@@ -130,8 +130,26 @@ def state_named(h):
     return gw, auth
 
 
+def state_pem(h):
+    """#205 #221: a configured gateway whose saved configuration names PEM files of LittleFS:
+    mqtt.tls (CA, client certificate and key, TLS off: the broker of the shots is plain) and
+    ota.ca_file. The card Certificates then shows the keys that use each file."""
+    pki = e2e.make_pki(pathlib.Path(tempfile.mkdtemp(prefix="docs-pki-")))
+    cfg = docs_config(DOCS_PASSWORD)
+    cfg["mqtt"]["tls"] = {"enabled": False, "ca_file": "ca.pem", "cert_file": "gw01.crt",
+                          "key_file": "gw01.key"}
+    cfg["ota"] = dict(cfg.get("ota", {}), ca_file="ca.pem")
+    files = {"ca.pem": pki["ca.pem"].read_bytes(), "gw01.crt": pki["client.crt"].read_bytes(),
+             "gw01.key": pki["client.key"].read_bytes()}
+    gw = h.boot("pem", cfg, files)
+    auth = ("admin", DOCS_PASSWORD)
+    wait_ready(h, "pem", gw, auth)
+    return gw, auth
+
+
 # name -> function(harness) that boots the gateway and returns (Gateway, Basic auth or None)
-STATES = {"configured": state_configured, "claim": state_claim, "named": state_named}
+STATES = {"configured": state_configured, "claim": state_claim, "named": state_named,
+          "pem": state_pem}
 
 
 def safe_mode_restart(gw):
@@ -151,11 +169,9 @@ def safe_mode_restart(gw):
     raise SystemExit("safe mode: no status of the web server")
 
 
-def name_explainer(page):
-    """#206: the card Gateway at the top of the Configuration tab, with the explainer of Name
-    (a click keeps it open)."""
+def gateway_card(page):
+    """#206: the card Gateway at the top of the Configuration tab."""
     page.click("nav button[data-tab=config]")
-    page.click("#f-gw button.qi[data-x=gname]")
 
 
 def ask_safe_mode(page):
@@ -171,7 +187,7 @@ def ask_factory_reset(page):
 
 
 def live_log(page):
-    """#200 and #199: the card Log open, with the explainer of the log level. This action is also
+    """#200 and #199: the card Log open, with the tag poll at debug. This action is also
     the browser test of the decision of #200 (no E2E scenario runs a browser): the page sends no
     GET /api/log and no GET /api/log/level before the card opens."""
     page.wait_for_timeout(2500)
@@ -187,7 +203,6 @@ def live_log(page):
                            ".some(o => o.value === 'poll')")
     page.select_option("#lg-tag", "poll")
     page.select_option("#lg-lvl", "debug")
-    page.click("#lg-card button.qi[data-x=loglvl]")
 
 
 # #200: the lines of the shot live-log (the log of the firmware: each run has other times and
@@ -309,12 +324,10 @@ def sha_mismatch(page):
     page.wait_for_selector("#fw-panel .pb")
 
 
-def ota_explainer(page):
-    """Issue #223: the card 'Firmware updates' of the Configuration tab, with the explainer of
-    'Update from MQTT' (a click keeps it open)."""
+def ota_card(page):
+    """Issue #223: the card 'Firmware updates' of the Configuration tab."""
     page.click("nav button[data-tab=config]")
-    page.evaluate("document.querySelector('#c-ota').scrollIntoView()")
-    page.click("#f-ota button.qi[data-x=otamqtt]")
+    page.evaluate("document.querySelector('#c-ota').scrollIntoView({block: 'center'})")
 
 
 def store_forward(page):
@@ -349,35 +362,31 @@ def tag_explainer(page):
     page.click("#det-devices-0-0 button.qi[data-x=enghi]")
 
 def device_settings(page):
-    """Issues #197 and #221: the panel 'More device settings' of Meter1, and the explainer of
-    'Write with FC15/FC16' (a click keeps it open). No save."""
+    """Issues #197 and #221: the panel 'More device settings' of Meter1. No save."""
     page.click("nav button[data-tab=config]")
     page.evaluate("document.querySelector('#f-dev>.card').scrollIntoView()")
     page.click('[data-dmore="0"]')
-    page.click("#dset-0 button.qi[data-x=fc16]")
 
 
 def write_limits(page):
     """Issue #196: the details row of the writable tag Setpoint of Meter1, with Write min 0 and
-    Write max 150, and the explainer of Write min. No save."""
+    Write max 150. No save."""
     page.click("nav button[data-tab=config]")
     page.evaluate("document.querySelector('#f-dev>.card').scrollIntoView()")
     page.click('[data-more="devices.0|1"]')
     page.fill('[data-p="devices.0.tags.1.write_min"]', "0")
     page.fill('[data-p="devices.0.tags.1.write_max"]', "150")
-    page.click("#det-devices-0-1 button.qi[data-x=wmin]")
 
 
 def bit_field(page):
     """Issue #202: the tag Alarm of Meter1 (holding 60) as a field of 3 bits: type uint16, Bit
-    offset 4 and Bit width 3, with the hint and the explainer of Bit width. No save."""
+    offset 4 and Bit width 3, with the hint below Bit width. No save."""
     page.click("nav button[data-tab=config]")
     page.evaluate("document.querySelector('#f-dev>.card').scrollIntoView()")
     page.select_option('[data-p="devices.0.tags.9.type"]', "uint16")
     page.click('[data-more="devices.0|9"]')
     page.fill('[data-p="devices.0.tags.9.bit_offset"]', "4")
     page.fill('[data-p="devices.0.tags.9.bit_width"]', "3")
-    page.click("#det-devices-0-9 button.qi[data-x=bitw]")
 
 
 def ask_make_type(page):
@@ -500,8 +509,7 @@ def wifi_networks(page):
 def mqtt_tls(page):
     """The card MQTT with a backup broker and TLS on. "Load a file..." loads the CA, the client
     certificate and the client key of the E2E PKI (e2e.make_pki, openssl), and each field selects
-    its file (decision of the product owner, #221). The files stay in LittleFS for the shots
-    after this one; no save."""
+    its file (decision of the product owner, #221). No save."""
     page.click("nav button[data-tab=config]")
     page.wait_for_selector("#f-tls select")
     pki = e2e.make_pki(pathlib.Path(tempfile.mkdtemp(prefix="docs-pki-")))
@@ -520,8 +528,9 @@ def mqtt_tls(page):
 
 
 def certificates_card(page):
-    """#205 #221: the card Certificates after mqtt_tls (ca.pem, gw01.crt and gw01.key are in
-    LittleFS): the HTTPS certificate of the first boot and the list of the PEM files."""
+    """#205 #221: the card Certificates in the state "pem" (the saved configuration uses ca.pem,
+    gw01.crt and gw01.key): the HTTPS certificate of the first boot and the list of the PEM
+    files with the keys that use them."""
     page.click("nav button[data-tab=config]")
     page.wait_for_selector("#pf .pf-t")
     page.wait_for_selector("#wc dl.kv")
@@ -580,18 +589,16 @@ def web_cert_load(page):
 
 
 def time_servers(page):
-    """The card Time with a second SNTP server, and the explainer of the list."""
+    """The card Time with a second SNTP server."""
     page.click("nav button[data-tab=config]")
     page.click('[data-ladd="ntp"]')
     page.fill('[data-p="ntp.servers.1"]', "192.168.10.1")
-    page.click("button.qi[data-x=ntp]")
 
 
 def modbus_local(page):
-    """The card Modbus TCP with the local unit and the explainer of Local unit ID."""
+    """The card Modbus TCP with the local unit."""
     page.click("nav button[data-tab=config]")
     page.evaluate("document.querySelector('#f-mbloc').scrollIntoView({block: 'center'})")
-    page.click("button.qi[data-x=lunit]")
 
 
 def ipv6_card(page):
@@ -799,26 +806,20 @@ SHOTS = [
     # issues #196, #197, #214 and #221: docs/how-to/add-a-modbus-device.md and
     # write-to-a-modbus-device.md (no save: the state does not change)
     Shot("device-settings", "configured", DESKTOP, "/", actions=[device_settings],
-         wait="#xpl:not(.hidden)",
+         wait="#dset-0",
          alt="The device Meter1 with the panel 'More device settings' open below its fields: "
-             "Slow poll interval (ms), Block reads, Max gap and Write with FC15/FC16. The "
-             "explainer of Write with FC15/FC16 is open. It tells that the gateway then writes "
-             "one register with FC16 and one coil with FC15, for a device that does not accept "
-             "FC06 or FC05."),
+             "Slow poll interval (ms), Block reads, Max gap and Write with FC15/FC16."),
     Shot("tag-write-limits", "configured", DESKTOP, "/", actions=[write_limits],
-         wait="#xpl:not(.hidden)",
+         wait="#det-devices-0-1",
          alt="The details row of the writable tag Setpoint of Meter1: Write min 0 and Write "
-             "max 150. The explainer of Write min is open. It tells that the gateway refuses a "
-             "DCMD with a lower value, does not write to the device and writes a warning to "
-             "the log."),
+             "max 150."),
     # issues #202 and #213: docs/how-to/add-a-modbus-device.md and
     # docs/how-to/add-devices-of-one-type.md (no save: the state does not change)
     Shot("tag-bit-field", "configured", DESKTOP, "/", actions=[bit_field],
-         wait="#xpl:not(.hidden)",
+         wait="#det-devices-0-9",
          alt="The details row of the tag Alarm of Meter1 with the type uint16: Bit offset 4 "
              "and Bit width 3, and below Bit width the hint 'Bits 4 to 6: values 0 to 7'. The "
-             "row shows no Length (registers), because it applies only to string and bytes. "
-             "The explainer of Bit width is open."),
+             "row shows no Length (registers), because it applies only to string and bytes."),
     Shot("device-type-make-dialog", "configured", DESKTOP, "/", actions=[ask_make_type],
          wait="#dlg[open]",
          alt="The dialog 'Make a device type from the tags of Meter1': the field 'Name of the new "
@@ -889,13 +890,12 @@ SHOTS = [
              "The gateway did not install the image, and the running firmware continues to "
              "run."),
     # issue #223: docs/how-to/update-the-firmware.md and docs/reference/configuration.md
-    Shot("firmware-updates-card", "configured", DESKTOP, "/", actions=[ota_explainer],
-         wait="#xpl:not(.hidden)",
+    Shot("firmware-updates-card", "configured", DESKTOP, "/", actions=[ota_card],
+         element="#c-ota",
          alt="The card 'Firmware updates' of the Configuration tab: the check box 'Update from "
              "MQTT' is off. The hint tells to turn it on only when the broker lets only the "
-             "Sparkplug host publish to the NCMD topic of the gateway. The explainer of the "
-             "field is open. The card also has the field 'CA file of the image server', with a "
-             "button 'Load a file…'."),
+             "Sparkplug host publish to the NCMD topic of the gateway. The card also has the "
+             "field 'CA file of the image server', with a button 'Load a file…'."),
     # issue #221: docs/reference/store-and-forward.md and docs/reference/configuration.md
     Shot("sparkplug-store-forward", "configured", DESKTOP, "/", actions=[store_forward],
          element='.card[data-cc="spb"]', wait="#sf-sd-h.lwarn",
@@ -973,23 +973,6 @@ SHOTS = [
              "its subject, and the client key gw01.key 'Private key, EC P-256'. Each file field "
              "has a button 'Load a file…'. Below the section, a message tells that gw01.key is "
              "in the gateway."),
-    # #205 #221: docs/how-to/manage-the-certificates.md (after mqtt-tls: its files are in LittleFS)
-    Shot("certificates-card", "configured", DESKTOP, "/", actions=[certificates_card],
-         element="#certs", wait="#pf .pf-t",
-         alt="The card 'Certificates' of the Configuration tab. The section 'HTTPS certificate "
-             "of this page' shows the self-signed certificate of the first boot: its source, "
-             "subject, SANs, last day and SHA-256 fingerprint, with the buttons 'Load a "
-             "certificate…' and 'Make a new self-signed certificate'. The section 'Files for "
-             "MQTT TLS and firmware updates' lists ca.pem, gw01.crt and gw01.key with their "
-             "content, subject and last day, 'Not used' in the column Used by, each with "
-             "Replace and "
-             "Remove, and the button 'Load a file…'."),
-    Shot("pem-replace-dialog", "configured", DESKTOP, "/", actions=[pem_replace],
-         wait="#pf-ex .exam b.ok",
-         alt="The dialog 'Replace gw01.crt and gw01.key': the new certificate gw01-2027.crt and "
-             "the new key gw01-2027.key are chosen. The gateway examined the files: a "
-             "certificate CN=GW13 and a private key EC P-256 that agrees with it. It has the "
-             "button 'Replace the files' and Cancel."),
     Shot("web-cert-load-dialog", "configured", DESKTOP, "/", actions=[web_cert_load],
          wait="#wc-ex .exam b.ok",
          alt="The dialog 'Load the HTTPS certificate of the plant': the certificate "
@@ -1000,17 +983,15 @@ SHOTS = [
              "certificate' and Cancel."),
     # #201: docs/reference/configuration.md (ntp)
     Shot("time-card", "configured", DESKTOP, "/", actions=[time_servers],
-         wait="#xpl:not(.hidden)",
+         element='.card[data-cc="ntp"]',
          alt="The card 'Time' of the Configuration tab with two SNTP servers, pool.ntp.org and "
-             "192.168.10.1, and the explainer of SNTP servers: the gateway asks server 1 first, "
-             "then the next server when a server does not answer."),
+             "192.168.10.1, and the button '+ server'."),
     # #216: docs/reference/configuration.md (the local unit)
     Shot("modbus-tcp-card", "configured", DESKTOP, "/", actions=[modbus_local],
-         wait="#xpl:not(.hidden)",
+         element='.card[data-cc="mbtcp"]',
          alt="The card 'Modbus TCP' of the Configuration tab: Enabled, the port 502, the idle "
-             "timeout, the allowed client 10.0.2.2, and the local unit 100 with Local writes. "
-             "The explainer of Local unit ID gives the map: the DIs at discrete 0 to 7, the DOs "
-             "at coil 0 to 7, the counters at input 0 to 31, the run hours at input 32 to 95."),
+             "timeout, the allowed client 10.0.2.2, and the section 'The I/O of the gateway as "
+             "a Modbus unit' with the local unit 100 and Local writes on."),
     # #221: docs/reference/configuration.md (network.ipv6)
     Shot("ipv6-card", "configured", DESKTOP, "/", actions=[ipv6_card],
          element='.card[data-cc="v6"]',
@@ -1047,13 +1028,32 @@ SHOTS = [
          alt="The card 'Access point' after the button 'Close the access point': the access "
              "point is off (closed on request). To start it, push the BOOT button of the "
              "gateway for 2 to 10 s."),
+    # #205 #221: docs/how-to/manage-the-certificates.md (the state "pem": the saved configuration
+    # uses the files)
+    Shot("certificates-card", "pem", DESKTOP, "/", actions=[certificates_card],
+         element="#certs", wait="#pf .pf-t",
+         alt="The card 'Certificates' of the Configuration tab. The section 'HTTPS certificate "
+             "of this page' shows the self-signed certificate of the first boot: its source, "
+             "subject, SANs, last day and SHA-256 fingerprint, with the buttons 'Load a "
+             "certificate…' and 'Make a new self-signed certificate'. The section 'Files for "
+             "MQTT TLS and firmware updates' lists ca.pem (used by MQTT · CA file and Firmware "
+             "updates · CA file), gw01.crt (MQTT · Client certificate) and gw01.key (MQTT · "
+             "Client key) with their content, subject and last day. Each file has Replace, and "
+             "Remove is off because the configuration uses the file. Below: the button 'Load a "
+             "file…'."),
+    Shot("pem-replace-dialog", "pem", DESKTOP, "/", actions=[pem_replace],
+         wait="#pf-ex .exam b.ok",
+         alt="The dialog 'Replace gw01.crt and gw01.key': the new certificate gw01-2027.crt and "
+             "the new key gw01-2027.key are chosen. The gateway examined the files: a "
+             "certificate CN=GW13 and a private key EC P-256 that agrees with it. The text says "
+             "that the names stay gw01.crt and gw01.key, and that the MQTT connection uses the "
+             "new files after the next restart. It has the button 'Replace the files' and "
+             "Cancel."),
     # #206: docs/reference/configuration.md (the state "named": the section gateway)
-    Shot("gateway-name", "named", DESKTOP, "/", actions=[name_explainer], wait="#xpl:not(.hidden)",
+    Shot("gateway-name", "named", DESKTOP, "/", actions=[gateway_card], wait="#f-gw input",
          alt="The top of the Configuration tab. The header shows 'Pump panel 2 · Plant 2, hall B', "
              "and below it the name of the product and Plant1 / GW01. The card Gateway has the "
-             "fields Name, Location and Comment. The explainer of Name is open: a name for "
-             "people, which the header and the title of the browser tab show; it does not change "
-             "the Sparkplug IDs or the topics."),
+             "fields Name, Location and Comment."),
     # #212 and #207: docs/reference/status-signals.md
     Shot("status-gateway-card", "named", DESKTOP, "/", element=".card:has(#st-dev)",
          wait="#st-dev div",
@@ -1083,14 +1083,13 @@ SHOTS = [
              "The field has ERASE, and the red button 'Erase and restart' is enabled."),
     # #200 and #199: docs/how-to/read-the-live-log.md
     Shot("live-log", "named", DESKTOP, "/", actions=[live_log],
-         wait="#xpl:not(.hidden)",
+         element="#lg-card", wait="#lg-lines .ln",
          freeze={"log_levels": [{"tag": "poll", "level": "debug"}, {"tag": "mb", "level": "debug"}]},
          alt="The card Log of the Status tab, open: the buttons Pause and Copy, 'Live: new lines "
              "every 2 s', 212 lines in the buffer (16 KB), and the last log lines (the warnings "
              "in brown, the errors in red, the debug lines in grey). Below: the tag poll and "
-             "the log level debug with its explainer open. The explainer covers the button 'Set "
-             "the level' and most of the line 'Changed levels (not saved)'; the button 'Reset "
-             "all' shows at its end."),
+             "the log level debug, the button 'Set the level', and the line 'Changed levels (not "
+             "saved)' with the button 'Reset all'."),
     # #209: the last shot of the state "named": the restart into safe mode changes the state
     Shot("safe-mode-status", "named", DESKTOP, "/", prep=safe_mode_restart, full_page=True,
          wait="#banner:not(.hidden)", freeze={"safe_mode.left_s": 3540},
@@ -1135,10 +1134,11 @@ class Harness:
         self.slave.reset()
         self.slave.start()
 
-    def boot(self, name, cfg):
-        """Start the emulator on a copy of the image with @cfg as config.json."""
-        flash = e2e.flash_variant(self.args, self.work, name,
-                                  {"config.json": json.dumps(cfg, indent=2).encode() + b"\n"})
+    def boot(self, name, cfg, files=None):
+        """Start the emulator on a copy of the image with @cfg as config.json, and @files
+        ({name: bytes}) beside it in LittleFS."""
+        fs = {"config.json": json.dumps(cfg, indent=2).encode() + b"\n", **(files or {})}
+        flash = e2e.flash_variant(self.args, self.work, name, fs)
         gw = e2e.Gateway(self.args, self.work / f"uart0-{name}.log", flash)
         gw.start()
         return gw

@@ -253,9 +253,10 @@ class Console:
 
 
 def gateway_config(h, protocol, backup=False):
-    """The configuration of the gateway under test: Meter1 (unit 1, plain tags with aliases) and
-    Pump1 (unit 2, a template instance, SPB-18), the TCK's host as primary host (SPB-13), no
-    periodic diagnostics (an NDATA during a rebirth would fail the receive command test)."""
+    """The configuration of the gateway under test: Meter1 (unit 1, plain tags with aliases, one
+    of them UInt32) and Pump1 (unit 2, a template instance, SPB-18), the TCK's host as primary
+    host (SPB-13), no periodic diagnostics (an NDATA during a rebirth would fail the receive
+    command test)."""
     cfg = json.loads(h.config_json())
     cfg["mqtt"].update(host="10.0.2.2", port=TCK_PORT, keepalive_s=10)
     if protocol == "5":
@@ -265,6 +266,11 @@ def gateway_config(h, protocol, backup=False):
     cfg["sparkplug"].update(group_id=GROUP, edge_node_id=NODE, primary_host_id=HOST,
                             diagnostics_s=0)
     meter = next(d for d in cfg["devices"] if d["name"] == DEVICE)
+    # A UInt32 tag, as on a real meter: its value goes in int_value (the datatype table of the
+    # specification), and the TCK 3.0.0 fails the DBIRTH assertions on it. KNOWN_RULES must
+    # explain these FAILs (uint32_cause); docs/reference/sparkplug-behavior.md, The Sparkplug TCK.
+    meter["tags"] = meter["tags"] + [
+        {"name": "Hours", "area": "holding", "address": 70, "type": "uint32", "word_order": "ABCD"}]
     # #213: the tags of the template are in device_types
     cfg["device_types"] = [{"name": "Pump", "tags": [
         {"name": "Speed", "area": "holding", "address": 100, "type": "uint16", "units": "rpm",

@@ -704,7 +704,7 @@ Without these keys, the build option applies (`CONFIG_GW_MB_BLOCK_READS`, `CONFI
 | `ca_file` | text | `""` | The CA (PEM, in LittleFS next to `config.json`, the same name rules as `mqtt.tls.ca_file`) of the server of the images. Empty: the one of `mqtt.tls.ca_file` if TLS is active; else the public root CAs of ESP-IDF |
 
 - **Start:** an NCMD with the metric `Node Control/Firmware Update` (String, the `https://…` URL; only with `ota.mqtt`) or `POST /api/firmware` of the web (`{"url": "…", "sha256": "…"}`, or the image as the body with the optional header `X-Image-SHA256`). With a SHA-256 (issue #215), the gateway does not install a file whose SHA-256 does not agree. The URL has up to 255 characters; the gateway rejects a longer one with its cause (issue #87). Only `https://`; the image must be of this project. The QEMU build also requires the signature of its test key, until #133 decides (FW-2).
-- **Result:** the node metrics `Firmware Update/State` (String) and `Firmware Update/Progress` (UInt32, %), in the NBIRTH and by NDATA when they change. The state is `idle`, `downloading <v>`, `restarting into <v>`, `testing <v>`, `installed <v>`, `failed: <cause>` or `rolled back from <v>: <cause>`. Every NBIRTH publishes the result of the last update, also after a restart (issue #144).
+- **Result:** the node metrics `Firmware Update/State` (String) and `Firmware Update/Progress` (UInt64, %), in the NBIRTH and by NDATA when they change. The state is `idle`, `downloading <v>`, `restarting into <v>`, `testing <v>`, `installed <v>`, `failed: <cause>` or `rolled back from <v>: <cause>`. Every NBIRTH publishes the result of the last update, also after a restart (issue #144).
 - **Trial and rollback (issue #144):** the new image boots on trial. A self-check of the gateway confirms it at the first instant when the uptime is at least 60 s, the gateway is in its expected mode, the network driver started and the loop of the web server is alive. The self-check does not depend on the broker, the Modbus slaves, NTP or the update server. If the self-check is not true at 5 min, the gateway rejects the image. A rejection, and any reset during the trial (crash, watchdog, power cut), return to the earlier image.
 - **Expected mode:** an image installed from normal mode must reach normal mode; if it rejects the configuration, the gateway returns to the earlier image at once, with the JSON path in the state. An image installed from recovery mode, safe mode, commissioning, or with force, must reach recovery mode or better; then it stays, and the operator corrects the configuration in the web UI.
 - **Pre-flight check:** before any write, the gateway refuses an image that cannot read the stored configuration (each key and enum value has a "since" schema number; the image declares the highest schema that it reads), the NVS or LittleFS. The refusal lists the JSON paths that are too new. An image that declares no schema (older than issue #144) is unknown. The web UI and the API can force such an image; the NCMD cannot.
@@ -865,13 +865,13 @@ The node metrics in the NBIRTH and in this periodic NDATA:
 | Metric | Alias | Datatype | What it is |
 |---|---|---|---|
 | `Node Info/Uptime` | 50 | UInt64 | The seconds since the boot |
-| `Node Info/Free Heap` | 51 | UInt32 | The free bytes of the internal RAM |
-| `Node Info/Min Free Heap` | 52 | UInt32 | The minimum free internal RAM since the boot |
+| `Node Info/Free Heap` | 51 | UInt64 | The free bytes of the internal RAM |
+| `Node Info/Min Free Heap` | 52 | UInt64 | The minimum free internal RAM since the boot |
 | `Node Info/RSSI` | 53 | Int32 | The dBm of the Wi-Fi access point. Only when the gateway has a Wi-Fi configuration; `null` while it is not associated |
 | `Node Info/Modbus` | 54 | DataSet | One row for each device. The columns are `Device` (String), `Online` (Boolean), and `Cycles`, `Failed Cycles`, `OK`, `Timeout`, `CRC`, `Frame`, `Exception` (UInt32). The last three count the attempts, with the retries |
 | `Node Info/Modbus TCP` | 56 | DataSet | Only with `modbus_tcp.enabled`. The Modbus TCP requests that the gateway sends to each unit (MB-15). One row for each device: `Device` (String), `Unit`, `Online` (Boolean), `OK`, `Timeout`, `CRC`, `Frame`, `Exception` (UInt32, attempts). A last row `(other units)` (unit 0) is for the units that have no device |
-| `Node Info/Largest Free Block` | 58 | UInt32 | The largest free block of the internal RAM, in bytes |
-| `Node Info/Free PSRAM` | 59 | UInt32 | The free bytes of the PSRAM |
+| `Node Info/Largest Free Block` | 58 | UInt64 | The largest free block of the internal RAM, in bytes |
+| `Node Info/Free PSRAM` | 59 | UInt64 | The free bytes of the PSRAM |
 | `Node Info/Temperature` | 68 | Float | The temperature of the chip, in °C. `null` when there is no reading |
 
 - The Modbus tables go in the NDATA only if a counter or a state changed since the last time (the two tables together). The other metrics of this table go in each diagnostic NDATA.

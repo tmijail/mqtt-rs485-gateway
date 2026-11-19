@@ -29,8 +29,7 @@ jobs:
           persist-credentials: false
       - name: Install clang 18 and its sanitizer runtimes
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq clang-18 libclang-rt-18-dev >/dev/null
+          sudo idf/tools/ci/apt_install.sh clang-18 libclang-rt-18-dev
       - name: Limit the mmap randomization for ASan
         run: sudo sysctl -w vm.mmap_rnd_bits=28
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

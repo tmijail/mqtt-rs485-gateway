@@ -1229,9 +1229,10 @@ static void test_scan_rate(void)
     msg(0);
     int i = decoded_find_name(&dec, "Node Control/Scan Rate");
     TEST_ASSERT_TRUE(i >= 0);
-    TEST_ASSERT_EQUAL(SPB_DT_UINT32, dec.m[i].datatype);
+    /* UInt64 (long_value): the TCK 3.0.0 wants long_value for UInt32 (sparkplug-behavior.md) */
+    TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[i].datatype);
     TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_SCAN_RATE, dec.m[i].alias);
-    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[i].num);           /* each device at its poll_ms */
+    TEST_ASSERT_EQUAL_UINT64(0, dec.m[i].u64);           /* each device at its poll_ms */
     recorder_clear();
     spb_metric_t m = {.name = "Node Control/Scan Rate", .datatype = SPB_DT_UINT32, .v.num = 3000};
     send("spBv1.0/Plant1/NCMD/GW01", &m, 1);
@@ -1241,7 +1242,7 @@ static void test_scan_rate(void)
     TEST_ASSERT_EQUAL_STRING("spBv1.0/Plant1/NDATA/GW01", g_rec.msgs[0].topic);
     TEST_ASSERT_EQUAL(1, dec.count);
     TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_SCAN_RATE, dec.m[0].alias);
-    TEST_ASSERT_EQUAL_DOUBLE(3000, dec.m[0].num);
+    TEST_ASSERT_EQUAL_UINT64(3000, dec.m[0].u64);
     /* out of range or not integral: not applied, NDATA repeats the rate in force */
     const double bad[] = {10, 3600001, 1000.5, -1};
     for (size_t k = 0; k < sizeof(bad) / sizeof(bad[0]); k++) {
@@ -1250,7 +1251,7 @@ static void test_scan_rate(void)
         send("spBv1.0/Plant1/NCMD/GW01", &b, 1);
         TEST_ASSERT_EQUAL(0, g_rec.scan_rate_calls);
         msg(0);
-        TEST_ASSERT_EQUAL_DOUBLE(3000, dec.m[0].num);
+        TEST_ASSERT_EQUAL_UINT64(3000, dec.m[0].u64);
     }
     /* an Int64 sender (long_value), by alias; 0 goes back to the per-device periods */
     recorder_clear();
@@ -1264,7 +1265,7 @@ static void test_scan_rate(void)
     recorder_clear();
     gw_node_rebirth(&node);
     msg(0);
-    TEST_ASSERT_EQUAL_DOUBLE(500, dec.m[decoded_find_name(&dec, "Node Control/Scan Rate")].num);
+    TEST_ASSERT_EQUAL_UINT64(500, dec.m[decoded_find_name(&dec, "Node Control/Scan Rate")].u64);
 }
 
 /* Issue #8: while the expander does not answer, the DOs are published as null (the latch may
@@ -1681,20 +1682,20 @@ static void test_diagnostics(void)
     TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_UPTIME, dec.m[i].alias);
     TEST_ASSERT_EQUAL_UINT64(12, dec.m[i].u64);
     i = decoded_find_name(&dec, "Node Info/Free Heap");
-    TEST_ASSERT_EQUAL(SPB_DT_UINT32, dec.m[i].datatype);
-    TEST_ASSERT_EQUAL_DOUBLE(150000, dec.m[i].num);
+    TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL_UINT64(150000, dec.m[i].u64);
     TEST_ASSERT_TRUE(decoded_find_name(&dec, "Node Info/Min Free Heap") >= 0);
     /* #212: the largest free block, the free PSRAM and the temperature, with name, alias and
      * datatype in the NBIRTH (tck-id-topics-nbirth-metrics, tck-id-payloads-alias-birth-
      * requirement, tck-id-payloads-metric-datatype-req); no sensor reading: null */
     i = decoded_find_name(&dec, "Node Info/Largest Free Block");
-    TEST_ASSERT_EQUAL(SPB_DT_UINT32, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[i].datatype);
     TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_LARGEST_BLOCK, dec.m[i].alias);
-    TEST_ASSERT_EQUAL_DOUBLE(110592, dec.m[i].num);
+    TEST_ASSERT_EQUAL_UINT64(110592, dec.m[i].u64);
     i = decoded_find_name(&dec, "Node Info/Free PSRAM");
-    TEST_ASSERT_EQUAL(SPB_DT_UINT32, dec.m[i].datatype);
+    TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[i].datatype);
     TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_FREE_PSRAM, dec.m[i].alias);
-    TEST_ASSERT_EQUAL_DOUBLE(8290000, dec.m[i].num);
+    TEST_ASSERT_EQUAL_UINT64(8290000, dec.m[i].u64);
     i = decoded_find_name(&dec, "Node Info/Temperature");
     TEST_ASSERT_EQUAL(SPB_DT_FLOAT, dec.m[i].datatype);
     TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TEMPERATURE, dec.m[i].alias);
@@ -2680,8 +2681,8 @@ static void test_firmware_update_metrics(void)
     TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_FW_UPDATE, dec.m[u].alias);
     TEST_ASSERT_EQUAL_STRING("", dec.m[u].str);
     TEST_ASSERT_EQUAL_STRING("rolled back: 0.2.0", dec.m[st].str);
-    TEST_ASSERT_EQUAL(SPB_DT_UINT32, dec.m[pr].datatype);
-    TEST_ASSERT_EQUAL_DOUBLE(0, dec.m[pr].num);
+    TEST_ASSERT_EQUAL(SPB_DT_UINT64, dec.m[pr].datatype);
+    TEST_ASSERT_EQUAL_UINT64(0, dec.m[pr].u64);
 
     recorder_clear();
     spb_metric_t m = {.name = "Node Control/Firmware Update", .datatype = SPB_DT_STRING,
@@ -2704,7 +2705,7 @@ static void test_firmware_update_metrics(void)
     TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_FW_STATE, dec.m[0].alias);
     TEST_ASSERT_EQUAL_STRING("downloading", dec.m[0].str);
     TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_FW_PROGRESS, dec.m[1].alias);
-    TEST_ASSERT_EQUAL_DOUBLE(10, dec.m[1].num);
+    TEST_ASSERT_EQUAL_UINT64(10, dec.m[1].u64);
     gw_node_set_firmware_status(&node, "downloading", 10);   /* unchanged: nothing */
     TEST_ASSERT_EQUAL(1, g_rec.count);
     gw_node_set_firmware_status(&node, "downloading", 20);   /* only what changed */

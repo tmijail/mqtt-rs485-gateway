@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# CI: apt-get install of the packages in "$@", robust against a mirror that does not answer
+# (2026-11-19: archive.ubuntu.com and security.ubuntu.com timed out from the GitHub runners).
+# First the Azure mirror of the GitHub runners, then the Ubuntu archive, each with retries and a
+# short timeout. Issue #253 removes apt from the E2E jobs (a prebuilt image on ghcr.io).
+#
+#   idf/tools/ci/apt_install.sh mosquitto libslirp0        # as root (in a container)
+#   sudo idf/tools/ci/apt_install.sh clang-18              # on the runner
+set -euo pipefail
+[ "$#" -gt 0 ] || { echo "usage: apt_install.sh PACKAGE..." >&2; exit 2; }
+opts=(-qq -o Acquire::Retries=3 -o Acquire::http::Timeout=30)
+export DEBIAN_FRONTEND=noninteractive
+
+use_mirror() {
+    local f
+    for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+        [ -f "$f" ] || continue
+        sed -i -E "s#http://(azure\.)?(archive|security)\.ubuntu\.com/ubuntu#$1#g" "$f"
+    done
+}
+
+for mirror in http://azure.archive.ubuntu.com/ubuntu http://archive.ubuntu.com/ubuntu; do
+    echo "apt: $mirror"
+    use_mirror "$mirror"
+    if apt-get "${opts[@]}" update && apt-get "${opts[@]}" install -y "$@" >/dev/null; then
+        exit 0
+    fi
+    echo "apt: $mirror failed" >&2
+done
+exit 1

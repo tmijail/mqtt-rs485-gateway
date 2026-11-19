@@ -115,8 +115,7 @@ jobs:
           persist-credentials: false
       - name: Install clang 18 and its sanitizer runtimes
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq clang-18 libclang-rt-18-dev >/dev/null
+          sudo idf/tools/ci/apt_install.sh clang-18 libclang-rt-18-dev
       # The ASan runtime can crash at start with more than 28 bits of mmap randomization
       - name: Limit the mmap randomization for ASan
         run: sudo sysctl -w vm.mmap_rnd_bits=28
@@ -154,8 +153,7 @@ jobs:
           persist-credentials: false
       - name: Install clang 18 and clang-tidy 18
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq clang-18 clang-tidy-18 >/dev/null
+          sudo idf/tools/ci/apt_install.sh clang-18 clang-tidy-18
       - name: Each NOLINT names its check and gives a reason
         run: |
           if grep -rnE 'NOLINT' --include='*.[ch]' idf/components/gw_core idf/test/host |
@@ -386,8 +384,7 @@ jobs:
           key: e2e-venv-f81b6e07-${{ hashFiles('idf/tools/e2e/requirements.txt') }}
       - name: Install QEMU, mosquitto and the harness' Python packages
         run: |
-          apt-get update -qq
-          apt-get install -y -qq mosquitto libslirp0 >/dev/null
+          idf/tools/ci/apt_install.sh mosquitto libslirp0
           python3 "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
           if [ ! -x /tmp/e2e/bin/python ]; then
             python3 -m venv /tmp/e2e
@@ -509,8 +506,7 @@ jobs:
           key: e2e-venv-f81b6e07-${{ hashFiles('idf/tools/e2e/requirements.txt') }}
       - name: Install QEMU, mosquitto and the harness' Python packages
         run: |
-          apt-get update -qq
-          apt-get install -y -qq mosquitto libslirp0 >/dev/null
+          idf/tools/ci/apt_install.sh mosquitto libslirp0
           python3 "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
           if [ ! -x /tmp/e2e/bin/python ]; then
             python3 -m venv /tmp/e2e
