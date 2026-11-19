@@ -28,6 +28,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install clang 18 and its sanitizer runtimes
+        timeout-minutes: 45   # apt_install.sh: 2 mirrors, 20 min at most each
         run: |
           sudo idf/tools/ci/apt_install.sh clang-18 libclang-rt-18-dev
       - name: Limit the mmap randomization for ASan

@@ -116,6 +116,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install clang 18 and its sanitizer runtimes
+        timeout-minutes: 45   # apt_install.sh: 2 mirrors, 20 min at most each
         run: |
           sudo idf/tools/ci/apt_install.sh clang-18 libclang-rt-18-dev
       # The ASan runtime can crash at start with more than 28 bits of mmap randomization
@@ -154,6 +155,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install clang 18 and clang-tidy 18
+        timeout-minutes: 45   # apt_install.sh: 2 mirrors, 20 min at most each
         run: |
           sudo idf/tools/ci/apt_install.sh clang-18 clang-tidy-18
       - name: Each NOLINT names its check and gives a reason
