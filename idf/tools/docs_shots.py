@@ -420,6 +420,46 @@ def device_disabled(page):
     page.wait_for_selector("#off-0:not(.hidden)")
 
 
+# #222: the browser test of "a closed card with a validation error opens, and 'Go to the field'
+# shows the field" (no E2E scenario runs a browser). A Group ID with a '/' is an error of the
+# gateway (check_topic_id in gw_config.c), at the field of the card Sparkplug.
+SPB_CARD, SPB_GROUP = '#tab-config .card.cc[data-cc="spb"]', '[data-p="sparkplug.group_id"]'
+
+
+def field_shown(page, step):
+    """Fail when the card Sparkplug is closed, or when the Group ID field is not visible, not in
+    the window or not focused, after @step."""
+    try:
+        page.wait_for_selector(f"{SPB_CARD}.open {SPB_GROUP}.err", state="visible", timeout=10000)
+    except Exception as e:   # noqa: BLE001 (the Playwright timeout)
+        raise SystemExit(f"issue #222: after {step}, the card Sparkplug is closed or the field "
+                         "Group ID shows no error") from e
+    if not page.locator(SPB_GROUP).evaluate(
+            "e => { const r = e.getBoundingClientRect(); return document.activeElement === e"
+            " && r.top >= 0 && r.bottom <= innerHeight }"):
+        raise SystemExit(f"issue #222: after {step}, the field Group ID is not in the window "
+                         "or has no focus")
+
+
+def closed_card_error(page):
+    """Close all, an error in the closed card Sparkplug and Validate: the card opens and shows the
+    field. Close the card again: 'Go to the field' opens it and shows the field. Then the page
+    loads again with the default state of the cards (no localStorage) and no change, for the
+    actions of the shot after this one (a dry run: the state of the gateway does not change)."""
+    page.click("nav button[data-tab=config]")
+    page.fill(SPB_GROUP, "Plant/1")
+    page.click("#cc-close")
+    page.wait_for_selector(SPB_GROUP, state="hidden")
+    page.click("#b-check")
+    field_shown(page, "Validate")
+    page.click(f"{SPB_CARD}>h2.ch>button.coll")
+    page.wait_for_selector(SPB_GROUP, state="hidden")
+    page.click("#msg a:has-text('Go to the field')")
+    field_shown(page, "'Go to the field'")
+    page.evaluate("localStorage.clear()")
+    page.reload(wait_until="networkidle")
+
+
 def local_io_card(page):
     """#210 #211 #217 #218 #221: the card Local I/O of the Configuration tab, with the local_io keys
     of the E2E configuration (DI/5 inverted with 200 ms, DI/8 a fast counter, DO/7 a pulse DO, run
@@ -843,9 +883,10 @@ SHOTS = [
              "border, and a notice below the fields tells that the gateway does not poll this "
              "device and sends no DBIRTH, and that the validation still examines it."),
     # issue #191, docs/how-to/change-the-configuration.md and add-a-modbus-device.md: a Validate
-    # (dry run, the state does not change) that the gateway refuses
+    # (dry run, the state does not change) that the gateway refuses. closed_card_error is the
+    # test of #222 first; the image does not show it
     Shot("validate-error", "configured", DESKTOP, "/",
-         actions=[("click", "nav button[data-tab=config]"),
+         actions=[closed_card_error, ("click", "nav button[data-tab=config]"),
                   ("fill", '[data-p="devices.0.unit_id"]', "300"), ("click", "#b-check")],
          wait=".ferr",
          alt="The Configuration tab after Validate with the unit ID 300 for Meter1. Below the "

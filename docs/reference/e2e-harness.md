@@ -234,4 +234,4 @@ CAUTION: Do not run two variants or other heavy work at the same time as an E2E 
 ## Other notes
 
 - `idf.py` does not accept `-j`. The build uses the default ninja parallelism. `JOBS` sets the parallel jobs of `run_e2e.sh`.
-- `idf/tools/docs_shots.py` makes the screenshots of the web UI with the machinery of the harness (refer to [Make the screenshots of the web UI for the docs](../how-to/make-the-docs-screenshots.md)). The script and the CI do not compare the images, so a change of the web UI does not make a test fail.
+- `idf/tools/docs_shots.py` makes the screenshots of the web UI with the machinery of the harness (refer to [Make the screenshots of the web UI for the docs](../how-to/make-the-docs-screenshots.md)). The script and the CI do not compare the images, so a change of the web UI does not make a test fail. Some actions of the shots are also browser tests of the web UI (#194, #200, #222). When the page does not obey the rule, the script stops with an error. The CI does not run the script.
