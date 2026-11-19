@@ -23,6 +23,13 @@ CAUTION: Do not run the commands from Git Bash without `MSYS_NO_PATHCONV=1`. Git
 
 The first build downloads `espressif/idf:v6.1` (8.5 GB when unpacked). Do this step again when `idf/tools/e2e/Dockerfile` or `requirements.txt` changes.
 
+The CI uses the same image, from `ghcr.io/tmijail/gw-e2e` (#253). You can also pull that image and give it the name `gw-e2e`. Use the digest that `.github/workflows/ci.yml` pins:
+
+```powershell
+docker pull ghcr.io/tmijail/gw-e2e@sha256:<digest>
+docker tag ghcr.io/tmijail/gw-e2e@sha256:<digest> gw-e2e
+```
+
 ## 2. Put the repository into a Docker volume
 
 1. Make a volume for the work:

@@ -23,9 +23,11 @@ concurrency:
 # actions/cache, one key per job and variant: each run restores the newest one and saves its own).
 # CCACHE_COMPILERCHECK=content: each configure writes a new -specs file into the build directory,
 # and with the default check (mtime) ccache then never finds an entry of an earlier build.
-# The e2e jobs keep the QEMU of idf_tools.py and the harness' venv in actions/cache; their keys
-# hold the image digest ("f81b6e07") and, for the venv, the hash of requirements.txt. Change the
-# digest in these keys when the image changes.
+#
+# Issue #253: the e2e and e2e-poison jobs run in the E2E image on ghcr.io (idf/tools/e2e/Dockerfile,
+# published by e2e-image.yml), pinned by digest. It holds QEMU, mosquitto and the venv of the
+# harness, so these jobs install nothing. When the Dockerfile or idf/tools/e2e/requirements.txt
+# changes, e2e-image.yml publishes a new image: copy its digest (job summary) to both jobs.
 jobs:
   host-tests:
     name: Host tests (QA-1) and Sparkplug interop
@@ -355,8 +357,16 @@ jobs:
     name: QEMU end to end, ${{ matrix.variant }}, ${{ matrix.group }} (QA-3)
     needs: [e2e-plan, e2e-build]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
     container:
-      image: espressif/idf:v6.1@sha256:f81b6e077e6af93c312181cd7d4e7936cfbafc5c7f77cbacba8fdd34994f218a
+      # Issue #253: the E2E image (idf/tools/e2e/Dockerfile, e2e-image.yml): the IDF image above plus
+      # mosquitto, libslirp0, QEMU and the venv of the harness, so the job installs nothing
+      image: ghcr.io/tmijail/gw-e2e@sha256:a0411aa163a8a34a68748421204022d06ba39fa3639262d703c70ed0f95500b8
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     defaults:
       run:
         shell: bash
@@ -373,23 +383,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # issue #233: idf_tools.py finds a QEMU of the cache and does not download it again
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: /opt/esp/tools/qemu-xtensa
-          key: qemu-xtensa-f81b6e07
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: /tmp/e2e
-          key: e2e-venv-f81b6e07-${{ hashFiles('idf/tools/e2e/requirements.txt') }}
-      - name: Install QEMU, mosquitto and the harness' Python packages
-        run: |
-          idf/tools/ci/apt_install.sh mosquitto libslirp0
-          python3 "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
-          if [ ! -x /tmp/e2e/bin/python ]; then
-            python3 -m venv /tmp/e2e
-            /tmp/e2e/bin/pip install -q -r idf/tools/e2e/requirements.txt
-          fi
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: e2e-images-${{ matrix.variant }}
@@ -405,7 +398,7 @@ jobs:
           export PATH="$PATH:/usr/sbin"
           mkdir -p /tmp/e2e-images
           for t in /tmp/e2e-dl/*.tgz; do tar -C /tmp/e2e-images -xzf "$t"; done
-          E2E_PREBUILT=/tmp/e2e-images E2E_WORKDIR=/tmp/e2e-work E2E_PYTHON=/tmp/e2e/bin/python \
+          E2E_PREBUILT=/tmp/e2e-images E2E_WORKDIR=/tmp/e2e-work \
               idf/tools/e2e/run_e2e.sh --only "$ONLY"
       - name: Summary line
         if: always()
@@ -476,8 +469,16 @@ jobs:
           - variant: default
             psram: "0"
             only: ota-park,ota-trial
+    permissions:
+      contents: read
+      packages: read
     container:
-      image: espressif/idf:v6.1@sha256:f81b6e077e6af93c312181cd7d4e7936cfbafc5c7f77cbacba8fdd34994f218a
+      # Issue #253: the E2E image (idf/tools/e2e/Dockerfile, e2e-image.yml): the IDF image above plus
+      # mosquitto, libslirp0, QEMU and the venv of the harness, so the job installs nothing
+      image: ghcr.io/tmijail/gw-e2e@sha256:a0411aa163a8a34a68748421204022d06ba39fa3639262d703c70ed0f95500b8
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     defaults:
       run:
         shell: bash
@@ -496,22 +497,6 @@ jobs:
           path: /tmp/ccache
           key: ccache-e2e-poison-${{ matrix.variant }}-f81b6e07-${{ github.sha }}
           restore-keys: ccache-e2e-poison-${{ matrix.variant }}-f81b6e07-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: /opt/esp/tools/qemu-xtensa
-          key: qemu-xtensa-f81b6e07
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: /tmp/e2e
-          key: e2e-venv-f81b6e07-${{ hashFiles('idf/tools/e2e/requirements.txt') }}
-      - name: Install QEMU, mosquitto and the harness' Python packages
-        run: |
-          idf/tools/ci/apt_install.sh mosquitto libslirp0
-          python3 "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa
-          if [ ! -x /tmp/e2e/bin/python ]; then
-            python3 -m venv /tmp/e2e
-            /tmp/e2e/bin/pip install -q -r idf/tools/e2e/requirements.txt
-          fi
       - name: Run the OTA scenarios with heap poisoning
         env:
           E2E_PSRAM: ${{ matrix.psram }}
@@ -521,7 +506,7 @@ jobs:
           . "$IDF_PATH/export.sh"
           export PATH="$PATH:/usr/sbin"
           ccache -z
-          E2E_POISON=1 E2E_PLAIN=0 E2E_WORKDIR=/tmp/e2e-poison E2E_PYTHON=/tmp/e2e/bin/python \
+          E2E_POISON=1 E2E_PLAIN=0 E2E_WORKDIR=/tmp/e2e-poison \
               idf/tools/e2e/run_e2e.sh --only "$ONLY"
           ccache -s
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
