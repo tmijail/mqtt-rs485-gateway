@@ -339,6 +339,8 @@ The test reads `index.html`, takes the source of each function and runs it in a 
 
 The GitHub containers do not permit `unshare`. Thus each `e2e` job runs on the loopback interface of its container.
 
+Each job that installs Ubuntu packages (`fuzz`, `clang-tidy`, `e2e`, `e2e-poison` and `fuzz-weekly.yml`) uses `idf/tools/ci/apt_install.sh`. It tries the Azure mirror of the GitHub runners first and then the Ubuntu archive, each with retries and a timeout of 30 s. When no mirror answers, the job fails before a test runs. #253 removes apt from the E2E jobs.
+
 The workflows pin each action to a commit hash, with the tag in a comment (#229). All the actions run on Node 24 (#235):
 
 | Action | Version |
