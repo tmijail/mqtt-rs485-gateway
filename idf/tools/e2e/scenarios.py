@@ -85,6 +85,17 @@ SECURE_VARIANT_SCENARIOS = {"CFG-7 NVS encryption", "issues #67/#94 NVS migratio
 BOARD_BUILD_SCENARIOS = {"issue #94 OTA to NVS encryption"}
 
 
+def would_skip(name, variant):
+    """Issue #261: true when the harness shows the scenario @name as [SKIP] in @variant: an
+    OPTIONAL scenario (its program or its git ref is not in the CI), or a scenario that needs
+    another build. No CI group may hold such a scenario (test_harness.py), and the summary
+    reports a group that skipped one (results.json "skipped")."""
+    env = dict(VARIANTS)[variant]
+    return (name in OPTIONAL
+            or (name in SECURE_VARIANT_SCENARIOS and env["secure"] != "1")
+            or (name in PSRAM_BUILD_SCENARIOS and env["psram"] != "1"))
+
+
 def parse_only(text):
     """The set of --only names in @text (comma-separated); ValueError on an unknown name (a typo
     would otherwise select nothing and pass)."""
@@ -204,11 +215,13 @@ def row(variant, group, d):
         return f"| {variant} | {group} | no results.json | | |"
     checks = results.get("checks", [])
     ok = sum(1 for c in checks if c.get("ok"))
+    skipped = results.get("skipped", [])
+    stext = f"; SKIPPED: {', '.join(skipped)}" if skipped else ""
     retries = results.get("retries", [])
     rtext = "none" if not retries else "; ".join(f"{r['scenario']} ({r['qemu']})"
                                                  for r in retries)
     etext = "missing" if exits is None else ("none" if not exits else "; ".join(exits))
-    return (f"| {variant} | {group} | {ok}/{len(checks)} checks passed | retries: {rtext} | "
+    return (f"| {variant} | {group} | {ok}/{len(checks)} checks passed{stext} | retries: {rtext} | "
             f"qemu-exits: {etext} |")
 
 
@@ -218,8 +231,9 @@ HEADER = "| Variant | Group | Checks | Retries | QEMU exits |\n|---|---|---|---|
 def summary(root, variants=None):
     """Markdown for every (variant, group) of the CI in @root/e2e-result-<variant>-<group>/
     (@variants: these ids only; default all), and the problems: a group without results or with
-    a failed check, a scenario of the variant's full run that ran in no group or in two, more
-    retries than one full run may have (MAX_RETRIES)."""
+    a failed check, a scenario that a group skipped (issue #261: a [SKIP] has a duration, as a
+    scenario that ran, and no check), a scenario of the variant's full run that ran in no group
+    or in two, more retries than one full run may have (MAX_RETRIES)."""
     root = pathlib.Path(root)
     lines, problems = [HEADER], []
     for variant, _ in VARIANTS:
@@ -247,7 +261,14 @@ def summary(root, variants=None):
             want = group_scenarios(only)
             if got != want:
                 problems.append(f"{variant}/{group}: ran {got}, expected {want}")
-            seen += got
+            skipped = results.get("skipped")
+            if skipped is None:   # the harness always writes the list: no list, no evidence
+                problems.append(f"{variant}/{group}: results.json has no \"skipped\" list")
+                skipped = []
+            if skipped:
+                problems.append(f"{variant}/{group}: skipped {skipped}: each scenario of a CI "
+                                f"group must run")
+            seen += [name for name in got if name not in skipped]
         missing = [s for s in full if s not in seen]
         twice = sorted({s for s in seen if seen.count(s) > 1})
         if groups == len(groups_of(variant)) and (missing or twice):

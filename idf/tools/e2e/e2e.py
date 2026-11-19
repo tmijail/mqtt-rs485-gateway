@@ -4921,9 +4921,18 @@ def signed_image(args, src, version, fwdir, name, key=None, **caps):
 
 
 def app_source(args):
+    """The app image of the build under test without a signature: the source of each test image
+    (fw_image). The secure build (--signing-key) signs its app image and keeps the image from
+    before the signature as <name>-unsigned.bin. A board build has no such file. One next to its
+    ELF is a leftover of a build with another configuration in the same directory (the build
+    does not write it again): it holds another firmware, and it is never used (issue #261)."""
     app = pathlib.Path(args.elf).with_suffix(".bin")
+    if not args.signing_key:
+        return app
     unsigned = pathlib.Path(args.elf).with_name(app.stem + "-unsigned.bin")
-    return unsigned if unsigned.exists() else app
+    if not unsigned.exists():
+        raise SystemExit(f"{unsigned}: the secure build has no app image without a signature")
+    return unsigned
 
 
 def run_ota_wiring(args, work):
@@ -5827,9 +5836,9 @@ def run_nvs_ota(args, work):
     nbirth_t, ncmd_t = f"{T}/NBIRTH/{node}", f"{T}/NCMD/{node}"
     ndata_t = f"{T}/NDATA/{node}"
     words = (secret.encode(), b"commission", b"mqtt_pw")
-    if args.board_app:
-        # issue #102: the build without NVS encryption as an update, signed like the others
-        signed_image(args, args.board_app, "e2e-board", fwdir, "board")
+    # issue #102: the build without NVS encryption as an update, signed like the others
+    # (--board-app comes with --board-flash: check_args)
+    signed_image(args, args.board_app, "e2e-board", fwdir, "board")
 
     def update(name="enc"):
         obs.publish_cmd(ncmd_t, [{"name": "Node Control/Firmware Update", "datatype": 12,
@@ -5936,10 +5945,6 @@ def run_nvs_ota(args, work):
         # 3. issue #102: the build without NVS encryption sent to the migrated device: refused
         # once its head is in the slot (before esp_ota_set_boot_partition), no restart; the next
         # boot still has the encrypted NVS (the password opens the broker)
-        if not args.board_app:
-            print("[SKIP] issue #102 OTA back to the build without NVS encryption: no --board-app",
-                  flush=True)
-            return
         obs.drain()
         t3 = time.monotonic()
         gw = Gateway(args, log, flash, efuse=efuse)
@@ -6104,7 +6109,11 @@ UMH_PREFIX = "acme:berlin:tempelhof:packaging:hall2:line3"
 UMH_LOC = UMH_PREFIX.replace(":", ".")
 UMH_HOWTO = HERE.parent.parent.parent / "docs" / "how-to" / "connect-to-umh-core.md"
 UMH_TS_LINE = "msg.meta.timestamp_ms = msg.meta.spb_timestamp;"
-SKIPPED = []      # issue #175: scenarios that did not run (a program that they need is absent)
+# Issue #175: the scenarios that did not run (a program or a build that they need is absent).
+# Issue #261: results.json records them ("skipped"), so that the summary of the CI groups does
+# not count a scenario that was skipped as a scenario that ran (scenarios.summary), and
+# --no-skip makes each of them a failed check.
+SKIPPED = []
 # The tags of the device cell2:meter1 (unit 1): (name, tag configuration, value at the input of
 # the bridge). Each scalar type of the gateway, signed integers included.
 UMH_TAGS = [
@@ -6629,6 +6638,36 @@ def start_broker(conf, log):
     return proc
 
 
+SECURE_OPTIONS = ("NVS_ENCRYPTION", "SECURE_SIGNED_APPS_NO_SECURE_BOOT")
+
+
+def check_args(args, sdkconfig_text):
+    """Issue #261: why the arguments do not agree with each other or with the sdkconfig of the
+    build under test (@sdkconfig_text), or None. --secure must say what the build is: with a
+    wrong value, each scenario of the secure variant would be a [SKIP] (or would run on a build
+    without its function), and a run would pass with nothing examined."""
+    on = [o for o in SECURE_OPTIONS if re.search(rf"^CONFIG_{o}=y$", sdkconfig_text, re.M)]
+    if args.secure and len(on) != len(SECURE_OPTIONS):
+        missing = sorted(set(SECURE_OPTIONS) - set(on))
+        return (f"--secure, but --sdkconfig has not CONFIG_{' nor CONFIG_'.join(missing)}: not "
+                f"the secure build (sdkconfig.qemu-secure)")
+    if not args.secure and on:
+        return (f"--sdkconfig has CONFIG_{' and CONFIG_'.join(on)}: the secure build needs "
+                f"--secure (run_e2e.sh E2E_SECURE=1)")
+    if args.secure != bool(args.signing_key):
+        return ("--secure and --signing-key go together: only the secure build requires signed "
+                "images, and the harness signs only for it")
+    if not args.secure and (args.board_flash or args.board_app or args.board_elf):
+        return "--board-flash, --board-app and --board-elf are only for --secure"
+    if bool(args.board_flash) != bool(args.board_app):
+        return "--board-flash and --board-app go together (the scenario of issues #94 and #102)"
+    if args.simulate_qemu_death in ("hang", "hang-mute") and not args.secure:
+        return (f"--simulate-qemu-death {args.simulate_qemu_death} needs --secure: it stops the "
+                f"emulator at 'Take trusted digest key(s)', a line that only the secure build "
+                f"writes; on another build it does nothing and the run passes")
+    return None
+
+
 def main():
     global MQTT_PORT, MODBUS_PORT, CONSOLE_PORT, SYSLOG_PORT, HTTP_PORT, HTTPS_PORT, MBTCP_PORT
     global ARGS, HANG_S, MON_DIR, WORK
@@ -6650,9 +6689,10 @@ def main():
                          "observer subscribed), 'boot' (SIGSEGVs the second emulator 3 s into its "
                          "boot), 'console' (SIGSEGVs the first one before its console connects), "
                          "'main' (SIGABRTs it in the main scenario after its broker swap). Not "
-                         "repeated (the run fails): 'hang' (the guest paused through the QEMU "
-                         "monitor right after 'Take trusted digest key(s)': detected, dumped, never "
-                         "repeated), 'hang-mute' (the same with the QEMU process SIGSTOPped), "
+                         "repeated (the run fails): 'hang' (only with --secure: the guest paused "
+                         "through the QEMU monitor right after 'Take trusted digest key(s)': "
+                         "detected, dumped, never repeated), 'hang-mute' (the same with the QEMU "
+                         "process SIGSTOPped), "
                          "'ota-failed' (a failed check, then the death), 'ota-panic' (an unknown "
                          "firmware panic on the console, then the death)")
     ap.add_argument("--tcg-thread", choices=("auto", "single", "multi"),
@@ -6722,11 +6762,17 @@ def main():
                     help="issue #62: panics in the core dump check (each dump must decode)")
     ap.add_argument("--no-isolate", action="store_true",
                     help="stay on the host loopback instead of a private network namespace")
+    ap.add_argument("--no-skip", action="store_true",
+                    help="issue #261: a selected scenario that shows [SKIP] is a failed check "
+                         "(the CI groups: each of their scenarios must run)")
     args = ap.parse_args()
     try:
         only = scenarios.parse_only(args.only)   # issue #121: a typo must not select nothing
     except ValueError as e:
         ap.error(str(e))
+    wrong = check_args(args, pathlib.Path(args.sdkconfig).read_text())
+    if wrong:
+        ap.error(wrong)
     ARGS, HANG_S = args, args.hang_timeout
     SYMBOLS.update(load_symbols(args.nm, [args.elf, args.board_elf]))
     global QEMU_VERSION
@@ -6894,6 +6940,12 @@ def main():
               "refused; issue #112: no blocking IPC call reached core 1 while it was parked (all "
               "emulators of the run)", not gave_up,
               f"{len(parks)} parks, longest {max(parks) if parks else 0} ms; {gave_up[:2]}")
+        if args.no_skip:
+            # issue #261: in a CI group each scenario must run; a SKIP there is a broken build
+            # or a broken job, and it must not pass
+            for name in dict.fromkeys(SKIPPED):
+                check(f"--no-skip: the scenario '{name}' ran", False,
+                      "skipped (see its [SKIP] line above)")
         seq_errors = seq_continuity(CAPTURE)
         check("SPB-5 seq continuity per session", not seq_errors, "; ".join(seq_errors) or "ok")
         # issue #86: the retries next to the checks (their discarded checks included); #92:
@@ -6910,6 +6962,7 @@ def main():
         (work / "results.json").write_text(json.dumps({"checks": results, "retries": RETRIES,
                                                        "faults": FAULTS, "durations": DURATIONS,
                                                        "remeasured": REMEASURED,
+                                                       "skipped": list(dict.fromkeys(SKIPPED)),
                                                        "qemu": QEMU_VERSION, "emulators": emus},
                                                       indent=2))
         failed = [r for r in results if not r["ok"]]
@@ -7144,6 +7197,7 @@ def run_no_psram(args, work, slave):
     password of the console); nothing of the gateway starts (no configuration loaded, no polling,
     no MQTT); POST /api/rebirth gets 409 with the reason; no panic."""
     if not args.psram:
+        SKIPPED.append("issue #135 no PSRAM")
         print("[SKIP] issue #135 no PSRAM: it boots the PSRAM build (E2E_PSRAM=1)", flush=True)
         return
     polls = len(slave.reads)

@@ -390,7 +390,7 @@ jobs:
           mkdir -p /tmp/e2e-images
           for t in /tmp/e2e-dl/*.tgz; do tar -C /tmp/e2e-images -xzf "$t"; done
           E2E_PREBUILT=/tmp/e2e-images E2E_WORKDIR=/tmp/e2e-work \
-              idf/tools/e2e/run_e2e.sh --only "$ONLY"
+              idf/tools/e2e/run_e2e.sh --only "$ONLY" --no-skip
       - name: Summary line
         if: always()
         run: |
@@ -498,7 +498,7 @@ jobs:
           export PATH="$PATH:/usr/sbin"
           ccache -z
           E2E_POISON=1 E2E_WORKDIR=/tmp/e2e-poison \
-              idf/tools/e2e/run_e2e.sh --only "$ONLY"
+              idf/tools/e2e/run_e2e.sh --only "$ONLY" --no-skip
           ccache -s
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()

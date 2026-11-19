@@ -17,7 +17,8 @@
 # qemu-exits.txt, logs) and <dir>/<variant>-<group>.out (its console output). PARALLEL (default
 # 2): groups at the same time; QEMU uses up to 2 host threads per group, and a loaded host makes
 # the timing checks slower. E2E_SKIP_BUILD=1: use the images already in <dir>/images-<variant>.
-# Other variables (E2E_TIMEOUT_SCALE, E2E_TCG_THREAD, JOBS) go to run_e2e.sh.
+# Other variables (E2E_TIMEOUT_SCALE, E2E_TCG_THREAD, JOBS) go to run_e2e.sh. Each group runs with
+# --no-skip: a scenario of a CI group that shows [SKIP] is a failure (issue #261).
 set -euo pipefail
 : "${IDF_PATH:?source the ESP-IDF export.sh first}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -49,7 +50,7 @@ run_group() {   # its exit status in <dir>/<variant>-<group>.rc
     local id=$1 only=$2 work="$DIR/e2e-result-$VARIANT-$1" rc=0
     rm -rf "$work"
     E2E_PREBUILT="$IMAGES" E2E_WORKDIR="$work" \
-        "$HERE/run_e2e.sh" --only "$only" > "$DIR/$VARIANT-$id.out" 2>&1 || rc=$?
+        "$HERE/run_e2e.sh" --only "$only" --no-skip > "$DIR/$VARIANT-$id.out" 2>&1 || rc=$?
     echo "$rc" > "$DIR/$VARIANT-$id.rc"
 }
 for r in "${SEL[@]}"; do

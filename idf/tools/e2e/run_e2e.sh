@@ -109,7 +109,7 @@ fi
 # the repository
 KEY=build-qemu/e2e_signing_key.pem
 
-build_images() {   # <build dir> <SDKCONFIG_DEFAULTS>
+build_images() {   # <build dir> <SDKCONFIG_DEFAULTS> <1: the secure build, 0: a board build>
     local dir=$1 defaults=$2 f
     # sdkconfig.defaults and the overlays only apply to a fresh sdkconfig
     for f in ${defaults//;/ }; do
@@ -117,23 +117,36 @@ build_images() {   # <build dir> <SDKCONFIG_DEFAULTS>
             rm -f "$dir/sdkconfig"
         fi
     done
+    # Issue #261: only a build that signs writes <app>-unsigned.bin. In a board build, that file
+    # is a leftover of an earlier build of this directory with the signature on (a directory
+    # from before issue #261): another firmware, with the two functions of the secure variant.
+    # The build does not write it again, so remove it (the harness does not use it without a
+    # signing key, either)
+    if [ "$3" != 1 ]; then
+        rm -f "$dir/rs485_spb_gateway-unsigned.bin"
+    fi
     idf.py -B "$dir" -D SDKCONFIG="$dir/sdkconfig" -D "SDKCONFIG_DEFAULTS=$defaults" \
         -D GW_FS_DIR="$IDF_DIR/tools/e2e/fs" reconfigure   # picks up new Kconfig files
     cmake --build "$dir" -j "${JOBS:-$(nproc)}"
 }
 
 # Issue #261: the two functions of the secure variant are in its sdkconfig, and in no other one
-# (a stale sdkconfig, or an overlay that brings them back, must not pass as the board build)
-check_functions() {   # <sdkconfig> <1: the secure build, 0: a board build>
+# (a stale sdkconfig, or an overlay that brings them back, must not pass as the board build).
+# functions_ok: status 1 and the reason in WHY when the sdkconfig is not the one of the build.
+functions_ok() {   # <sdkconfig> <1: the secure build, 0: a board build>
     local o
+    [ -f "$1" ] || { WHY="$1 is missing"; return 1; }
     for o in NVS_ENCRYPTION SECURE_SIGNED_APPS_NO_SECURE_BOOT; do
         if [ "$2" = 1 ]; then
-            grep -q "^CONFIG_$o=y" "$1" || { echo "$1: CONFIG_$o is not set" >&2; exit 2; }
+            grep -q "^CONFIG_$o=y" "$1" || { WHY="$1: CONFIG_$o is not set"; return 1; }
         else
             grep -q "^# CONFIG_$o is not set" "$1" || {
-                echo "$1: CONFIG_$o is set; only E2E_SECURE=1 has it (issue #261)" >&2; exit 2; }
+                WHY="$1: CONFIG_$o is set; only E2E_SECURE=1 has it (issue #261)"; return 1; }
         fi
     done
+}
+check_functions() {   # the same arguments; stops the script
+    functions_ok "$1" "$2" || { echo "$WHY" >&2; exit 2; }
 }
 
 if [ -z "$PRE" ]; then
@@ -141,7 +154,7 @@ if [ -z "$PRE" ]; then
         mkdir -p build-qemu
         [ -f "$KEY" ] || python -m espsecure generate-signing-key --version 2 --scheme rsa3072 "$KEY"
     fi
-    build_images "$BUILD" "$DEFAULTS"
+    build_images "$BUILD" "$DEFAULTS" "$SECURE"
 
     OUT="${STAGE:-$WORK}"
     (cd "$BUILD" && python -m esptool --chip esp32s3 merge-bin --output "$OUT/flash.bin" \
@@ -154,7 +167,7 @@ if [ -z "$PRE" ]; then
     # of this variant. E2E_BOARD=0 skips it (and the scenario that needs it).
     BOARD_ARGS=()
     if [ "$BOARD" = 1 ]; then
-        build_images "$BOARD_BUILD" "$BOARD_DEFAULTS"
+        build_images "$BOARD_BUILD" "$BOARD_DEFAULTS" 0
         check_functions "$BOARD_BUILD/sdkconfig" 0
         BOUT="$OUT"
         [ -z "$STAGE" ] || { BOUT="$STAGE/board"; mkdir -p "$BOUT"; }
@@ -234,6 +247,15 @@ if [ -n "${E2E_DOWNGRADE_REF:-}" ] && [ -z "$STAGE" ]; then
     DSHA="$(git -C "$REPO" rev-parse --verify "${E2E_DOWNGRADE_REF}^{commit}")"
     DDIR="${E2E_DOWNGRADE_DIR:-$REPO/build-downgrade}/${DSHA:0:12}"
     DAPP="$DDIR/idf/$BUILD/rs485_spb_gateway.bin"
+    DCFG="$DDIR/idf/$BUILD/sdkconfig"
+    # Issue #261: an earlier image from another run is used again only when its build has the
+    # configuration of this variant. An image that this script made before issue #261 has the
+    # same path, with the signature and the NVS encryption on: build it again. The check after
+    # the build runs at each run, also on an image that is used again.
+    if [ -f "$DAPP" ] && ! functions_ok "$DCFG" "$SECURE"; then
+        echo "issue #148: $DAPP has another configuration ($WHY): the script builds it again"
+        rm -f "$DAPP" "$DCFG"
+    fi
     if [ ! -f "$DAPP" ]; then
         if [ ! -f "$DDIR/idf/CMakeLists.txt" ]; then   # the sources, once for all the variants
             rm -rf "$DDIR"
@@ -257,8 +279,8 @@ if [ -n "${E2E_DOWNGRADE_REF:-}" ] && [ -z "$STAGE" ]; then
         (cd "$DDIR/idf" && idf.py -B "$BUILD" -D SDKCONFIG="$BUILD/sdkconfig" \
             -D "SDKCONFIG_DEFAULTS=$DDEFAULTS" -D GW_FS_DIR="$DDIR/idf/tools/e2e/fs" reconfigure \
             && cmake --build "$BUILD" -j "${JOBS:-$(nproc)}")
-        check_functions "$DDIR/idf/$BUILD/sdkconfig" "$SECURE"
     fi
+    check_functions "$DCFG" "$SECURE"
     echo "issue #148: the earlier release $E2E_DOWNGRADE_REF ($DSHA): $DAPP"
     DOWNGRADE_ARGS=(--downgrade-app "$DAPP" --downgrade-ref "$E2E_DOWNGRADE_REF (${DSHA:0:12})")
 fi
