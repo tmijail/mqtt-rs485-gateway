@@ -816,7 +816,7 @@ SHOTS = [
     # issues #202 and #213: docs/how-to/add-a-modbus-device.md and
     # docs/how-to/add-devices-of-one-type.md (no save: the state does not change)
     Shot("tag-bit-field", "configured", DESKTOP, "/", actions=[bit_field],
-         wait="#xpl:not(.hidden)",
+         wait="#det-devices-0-9",
          alt="The details row of the tag Alarm of Meter1 with the type uint16: Bit offset 4 "
              "and Bit width 3, and below Bit width the hint 'Bits 4 to 6: values 0 to 7'. The "
              "row shows no Length (registers), because it applies only to string and bytes."),
