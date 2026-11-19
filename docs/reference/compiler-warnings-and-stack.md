@@ -4,7 +4,7 @@ This document gives the compiler options of the own components, the limit of the
 
 ## The compiler options
 
-[`cmake/gw_warnings.cmake`](../../idf/cmake/gw_warnings.cmake) holds the compiler options of the own components: `gw_*` and `main`. Each of these components calls `gw_target_options()`. The components of ESP-IDF, the managed components and `components/nanopb` keep their own options.
+[`cmake/gw_warnings.cmake`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/cmake/gw_warnings.cmake) holds the compiler options of the own components: `gw_*` and `main`. Each of these components calls `gw_target_options()`. The components of ESP-IDF, the managed components and `components/nanopb` keep their own options.
 
 | Option | Firmware (`gw_*`, `main`) | Host build of `gw_core`, host tests | What it finds |
 |---|---|---|---|
@@ -85,7 +85,7 @@ Of 1 150 own functions, 88 have a frame of more than 256 B, 31 of more than 512 
 
 ## The stack report
 
-[`tools/stack_report.py`](../../idf/tools/stack_report.py) reads the `.su` and `.ci` files of the own components in a build folder. By default, it reports the tasks `rs485_bus` and `sparkplug`. The option `--task NAME=FILE:FUNCTION` adds a task. The CI job `firmware` puts `stack.txt` in its artifact `firmware-esp32s3`.
+[`tools/stack_report.py`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/tools/stack_report.py) reads the `.su` and `.ci` files of the own components in a build folder. By default, it reports the tasks `rs485_bus` and `sparkplug`. The option `--task NAME=FILE:FUNCTION` adds a task. The CI job `firmware` puts `stack.txt` in its artifact `firmware-esp32s3`.
 
 ### How the script finds the functions of a task
 

@@ -1,0 +1,159 @@
+# The documentation site (docs/how-to/build-the-documentation-site.md). Zensical builds it from
+# docs/ into site/. The CI job docs builds it with --strict, and the job docs-deploy publishes it
+# to GitHub Pages from main (.github/workflows/docs.yml).
+[project]
+site_name = "RS485 to Sparkplug B gateway"
+site_description = "Firmware of an RS485 (Modbus RTU) to MQTT Sparkplug B 3.0 gateway on the Waveshare ESP32-S3-POE-ETH-8DI-8DO board"
+site_url = "https://tmijail.github.io/mqtt-rs485-gateway/"
+repo_url = "https://github.com/tmijail/mqtt-rs485-gateway"
+repo_name = "tmijail/mqtt-rs485-gateway"
+edit_uri = "edit/main/docs/"
+docs_dir = "docs"
+site_dir = "site"
+
+# The Diátaxis types are the tabs. The pages for the developers have their own tab, with the
+# same types inside it. A page without a title here takes the title of its first heading.
+nav = [
+  { "Home" = "README.md" },
+  { "Tutorials" = [
+    "tutorials/first-gateway-on-the-bench.md",
+  ] },
+  { "How-to guides" = [
+    { "Install" = [
+      "how-to/connect-the-rs485-bus.md",
+      "how-to/set-the-first-web-password.md",
+      "how-to/get-on-the-access-point.md",
+      "how-to/fit-the-rtc-battery.md",
+      "how-to/find-the-gateway-in-a-panel.md",
+    ] },
+    { "Configure" = [
+      "how-to/add-a-modbus-device.md",
+      "how-to/add-devices-of-one-type.md",
+      "how-to/set-up-the-local-io.md",
+      "how-to/connect-the-gateway-to-wi-fi.md",
+      "how-to/connect-to-a-broker-with-tls.md",
+      "how-to/manage-the-certificates.md",
+      "how-to/change-the-configuration.md",
+      "how-to/change-the-web-password.md",
+      "how-to/connect-to-umh-core.md",
+    ] },
+    { "Operate" = [
+      "how-to/write-to-a-modbus-device.md",
+      "how-to/read-the-live-log.md",
+      "how-to/update-the-firmware.md",
+      "how-to/restart-into-safe-mode-or-reset.md",
+      "how-to/recover-the-gateway.md",
+      "how-to/decode-a-core-dump.md",
+    ] },
+  ] },
+  { "Reference" = [
+    "reference/configuration.md",
+    "reference/sparkplug-messages-and-metrics.md",
+    "reference/sparkplug-behavior.md",
+    "reference/sparkplug-tck-results.md",
+    "reference/umh-names-and-topics.md",
+    "reference/rest-api.md",
+    "reference/store-and-forward.md",
+    "reference/status-signals.md",
+    "reference/access-point.md",
+    "reference/clock-and-rtc-battery.md",
+    "reference/commissioning-and-secrets.md",
+    "reference/firmware-updates.md",
+    "reference/requirements-status.md",
+    "reference/known-limitations.md",
+    "reference/board-data-to-verify.md",
+  ] },
+  { "Explanation" = [
+    "explanation/access-point-security.md",
+    "explanation/sparkplug-names-and-the-uns.md",
+    "explanation/web-and-claim-security.md",
+    "explanation/no-efuse-features.md",
+  ] },
+  { "Developers" = [
+    { "How-to guides" = [
+      "how-to/build-the-firmware.md",
+      "how-to/run-the-tests.md",
+      "how-to/run-e2e-in-docker.md",
+      "how-to/run-the-sparkplug-tck.md",
+      "how-to/make-the-docs-screenshots.md",
+      "how-to/build-the-documentation-site.md",
+    ] },
+    { "Reference" = [
+      "reference/architecture.md",
+      "reference/build-configuration.md",
+      "reference/tests.md",
+      "reference/e2e-harness.md",
+      "reference/e2e-scenarios.md",
+      "reference/e2e-durations.md",
+      "reference/compiler-warnings-and-stack.md",
+    ] },
+    { "Explanation" = [
+      "explanation/architecture.md",
+      "explanation/e2e-environment.md",
+      "explanation/core-dump.md",
+    ] },
+  ] },
+  { "Specification" = "SPEC.md" },
+]
+
+[project.theme]
+language = "en"
+features = [
+  "content.action.edit",
+  "content.action.view",
+  "content.code.copy",
+  "content.tooltips",
+  "navigation.footer",
+  "navigation.indexes",
+  "navigation.instant",
+  "navigation.path",
+  "navigation.sections",
+  "navigation.tabs",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight",
+  "toc.follow",
+]
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to system preference"
+
+# The screenshots of the web UI open in a lightbox.
+[project.plugins.glightbox]
+
+[project.markdown_extensions]
+abbr = {}
+admonition = {}
+attr_list = {}
+def_list = {}
+footnotes = {}
+md_in_html = {}
+tables = {}
+toc.permalink = true
+# GitHub-style anchors ("no--wundef-…"), so that one link works on GitHub and on the site.
+toc.slugify = { object = "pymdownx.slugs.slugify", kwds = { case = "lower" } }
+pymdownx.betterem = {}
+pymdownx.details = {}
+pymdownx.highlight.anchor_linenums = true
+pymdownx.highlight.pygments_lang_class = true
+pymdownx.inlinehilite = {}
+pymdownx.keys = {}
+pymdownx.magiclink = {}
+pymdownx.superfences.custom_fences = [
+  { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" },
+]
+pymdownx.tasklist.custom_checkbox = true

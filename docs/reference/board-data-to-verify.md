@@ -28,7 +28,7 @@ This document lists the data of the Waveshare ESP32-S3-POE-ETH-8DI-8DO board tha
 
 ## Where the firmware keeps the data
 
-- All the data is in [`gw_bsp.c`](../../idf/components/gw_bsp/gw_bsp.c). The RTC address is `GW_PCF85063_ADDR` in [`gw_rtc.h`](../../idf/components/gw_core/include/gw_rtc.h).
+- All the data is in [`gw_bsp.c`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/components/gw_bsp/gw_bsp.c). The RTC address is `GW_PCF85063_ADDR` in [`gw_rtc.h`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/components/gw_core/include/gw_rtc.h).
 - The DI and DO polarities come only from indirect evidence. You can invert them in `menuconfig`, in the menu `Gateway: board`. The other data is fixed.
 - At boot, `gw_dout` sets the latch of the expander to the OFF level of each channel (0xFF with active low) **before** the pins change to outputs. Thus the DOs give no pulse at boot. The firmware inverts the write and the read-back with the polarity mask.
 

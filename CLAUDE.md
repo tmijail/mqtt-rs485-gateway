@@ -38,7 +38,7 @@ Write all new or changed prose in ASD-STE100 Simplified Technical English (STE).
   - Use articles ("the", "a"), and avoid long noun clusters: write "the margin of the internal RAM", not "the internal RAM margin value".
 - **Warnings and cautions:** Start them with a clear instruction (the command). Then give the risk.
 - **Existing Spanish text:** When you change a section, rewrite that section in STE. Translate full files only when the user asks.
-- **Structure (Diátaxis):** Put each new document in `docs/` into one Diátaxis type: `docs/tutorials/`, `docs/how-to/`, `docs/reference/` or `docs/explanation/`. Do not mix the types in one document. Link to the other type instead (for example, from a procedure to the reasons for it).
+- **Structure (Diátaxis):** Put each new document in `docs/` into one Diátaxis type: `docs/tutorials/`, `docs/how-to/`, `docs/reference/` or `docs/explanation/`. Do not mix the types in one document. Link to the other type instead (for example, from a procedure to the reasons for it). Add each new document to `nav` in `zensical.toml`, and write its links as `docs/how-to/build-the-documentation-site.md` tells (the CI job `docs` builds the site with `--strict`).
 
 **The firmware has never run on real hardware.** It has only run in host tests and in QEMU. The W5500, RS485 hardware mode, TCA9554, GPIO DIs and LED are compile-only (issues #1 and #18).
 
@@ -142,11 +142,16 @@ git ls-files -z '*.sh' | xargs -0 ~/e2e/bin/shellcheck  # all shell scripts
 ~/e2e/bin/zizmor --offline .github/workflows            # workflow security (actions pinned to a commit hash)
 npm ci --prefix idf/tools/lint && idf/tools/lint/node_modules/.bin/eslint --config idf/tools/lint/eslint.config.mjs idf/components/gw_web/www/
 node --test idf/test/web/test_ip4norm.mjs             # the IPv4 normalization of the web UI (#226; CI job host-tests)
+
+# The documentation site (zensical.toml, docs/how-to/build-the-documentation-site.md; CI workflow docs.yml)
+python3 -m venv ~/docs-venv && ~/docs-venv/bin/pip install -r idf/tools/docs/requirements-site.txt
+~/docs-venv/bin/zensical serve                          # http://localhost:8000/, builds again at each change
+~/docs-venv/bin/zensical build --clean --strict         # as the CI: a broken link or anchor is an error
 #  A false positive gets "# noqa: <rule>" or "# shellcheck disable=SCnnnn" with the reason. The web pages
 #  are in the firmware image: for them, change an option in eslint.config.mjs, not the page.
 ```
 
-CI (`.github/workflows/ci.yml`) runs host-tests, fuzz, clang-tidy (#231), firmware, analyzer (#230), the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image (fuzz, clang-tidy and the host tests run directly on `ubuntu-24.04`). `.github/workflows/fuzz-weekly.yml` runs the fuzz targets longer each week and keeps their corpus (#226). `.github/workflows/codeql.yml` runs CodeQL (`security-extended`) on the host build and on the firmware build on each push to `main`, on each pull request and each week; its alerts go to the Security tab and do not fail the CI (#232). The firmware analysis uses the source models of `.github/codeql/extensions/esp-idf-models`; they name `on_mqtt_data`, `on_host_state` and `gw_node_handle_message`, so change them with these functions. The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run of that variant (#121, #135). A change is done when the host tests pass and the full E2E passes: the full run of the `E2E_PSRAM=1` variant and the full run of the default variant. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
+CI (`.github/workflows/ci.yml`) runs host-tests, fuzz, clang-tidy (#231), firmware, analyzer (#230), the E2E jobs and e2e-poison on every push, in the pinned `espressif/idf:v6.1` image (fuzz, clang-tidy and the host tests run directly on `ubuntu-24.04`). `.github/workflows/fuzz-weekly.yml` runs the fuzz targets longer each week and keeps their corpus (#226). `.github/workflows/codeql.yml` runs CodeQL (`security-extended`) on the host build and on the firmware build on each push to `main`, on each pull request and each week; its alerts go to the Security tab and do not fail the CI (#232). `.github/workflows/docs.yml` builds the documentation site with Zensical `--strict` on each push, and publishes it to GitHub Pages from `main`. The firmware analysis uses the source models of `.github/codeql/extensions/esp-idf-models`; they name `on_mqtt_data`, `on_host_state` and `gw_node_handle_message`, so change them with these functions. The E2E jobs build the QEMU images one time per variant (`e2e-build`). Then they run the groups of `scenarios.py` in parallel jobs (`e2e`), and `e2e-summary` makes sure that the groups of each variant are one full run of that variant (#121, #135). A change is done when the host tests pass and the full E2E passes: the full run of the `E2E_PSRAM=1` variant and the full run of the default variant. Its results go in `results.json`, `qemu-exits.txt` and the `retries` list.
 
 ### sdkconfig pitfalls
 

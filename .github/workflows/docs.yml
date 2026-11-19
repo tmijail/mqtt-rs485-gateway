@@ -1,0 +1,52 @@
+# The documentation site: build docs/ with Zensical on every push and pull request, and publish
+# it to GitHub Pages from main. See docs/how-to/build-the-documentation-site.md.
+#
+# --strict stops the build on a warning: a link to a page or an anchor that does not exist.
+# Each action is pinned to a full commit hash, with its tag in the comment (issue #229).
+name: Docs
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    name: Build the documentation site
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build with Zensical (--strict)
+        run: |
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install -q -r idf/tools/docs/requirements-site.txt
+          /tmp/venv/bin/zensical build --clean --strict
+      - name: Keep the site for GitHub Pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+
+  docs-deploy:
+    name: Publish the documentation site
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: docs
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
