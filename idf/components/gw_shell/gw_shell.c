@@ -1170,6 +1170,33 @@ static int coredump_dump(void)
     return rc;
 }
 
+/* Issue #256: the summary maps the coredump partition; in the QEMU build it runs on core 0 with
+ * core 1 parked (gw_fw_run_mapped) */
+typedef struct {
+    gw_cdump_info_t *info;
+    esp_err_t err;
+} cd_summary_call_t;
+
+static void cd_summary(void *arg)
+{
+    cd_summary_call_t *c = arg;
+    c->err = gw_coredump_summary(c->info);
+}
+
+/* Only the summary of a valid dump maps the partition. The state becomes valid only at boot, so
+ * a dump that is not valid now stays so. */
+static esp_err_t coredump_summary(gw_cdump_info_t *out)
+{
+    cd_summary_call_t c = {.info = out, .err = ESP_FAIL};
+    uint32_t size;
+    if (gw_coredump_state(&size) == GW_CDUMP_VALID) {
+        gw_fw_run_mapped(cd_summary, &c);
+    } else {
+        cd_summary(&c);
+    }
+    return c.err;
+}
+
 static int cmd_coredump(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "dump") == 0) {
@@ -1205,7 +1232,11 @@ static int cmd_coredump(int argc, char **argv)
         char text[768];
     } cd_text_t;
     cd_text_t *t = gw_storage_malloc(sizeof(*t));
-    if (t == NULL || gw_coredump_summary(&t->i) != ESP_OK) {
+    if (t == NULL) {
+        out("coredump: no memory\n");
+        return 1;
+    }
+    if (coredump_summary(&t->i) != ESP_OK) {
         heap_caps_free(t);
         out("coredump: no memory\n");
         return 1;

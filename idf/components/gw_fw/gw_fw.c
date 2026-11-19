@@ -286,8 +286,12 @@ static void park(bool on)
 }
 /* The parked core must be core 1: core 0's tick interrupt also runs the interrupt watchdog's
  * hook, which writes its timer group (TIMG1) and faulted in QEMU during the freeze
- * (LoadStorePIFAddrError in reconfigure_ticks, seen with an upload served by httpd on core 1);
- * core 1's hook only sets a flag. So @p fn runs on core 0: here, or in a task pinned there. */
+ * (LoadStorePIFAddrError in reconfigure_ticks, seen with an upload served by httpd on core 1;
+ * issue #256: on SYSTIMER, with the core dump summary of the shell on core 1); core 1's hook
+ * only sets a flag. So @p fn runs on core 0: here when the caller is pinned there, else in a task
+ * pinned there. Issue #256: the affinity of the caller, not the core it runs on now: a task with
+ * no affinity (the console, httpd) can move to core 1 while park(true) waits for the bus task,
+ * and park() would then park core 0. */
 typedef struct {
     void (*fn)(void *);
     void *arg;
@@ -304,7 +308,7 @@ static void core0_task(void *arg)
 
 static void on_core0(void (*fn)(void *), void *arg)
 {
-    if (xPortGetCoreID() == 0) {
+    if (xTaskGetCoreID(xTaskGetCurrentTaskHandle()) == 0) {
         fn(arg);
         return;
     }
@@ -316,6 +320,29 @@ static void on_core0(void (*fn)(void *), void *arg)
         return;
     }
     xSemaphoreTake(c.done, portMAX_DELAY);
+}
+
+typedef struct {
+    void (*fn)(void *);
+    void *arg;
+} mapped_call_t;
+
+static void run_parked(void *arg)
+{
+    mapped_call_t *m = arg;
+    park(true);
+    m->fn(m->arg);
+    park(false);
+}
+
+void gw_fw_run_mapped(void (*fn)(void *), void *arg)
+{
+    if (s_park_lock == NULL) {
+        fn(arg);   /* before gw_fw_early_init(): no park possible yet */
+        return;
+    }
+    mapped_call_t m = {.fn = fn, .arg = arg};
+    on_core0(run_parked, &m);
 }
 #else
 static void park_init(void)
@@ -330,6 +357,11 @@ static void park(bool on)
 static void on_core0(void (*fn)(void *), void *arg)
 {
     fn(arg);
+}
+
+void gw_fw_run_mapped(void (*fn)(void *), void *arg)
+{
+    fn(arg);   /* the chip freezes the caches: no precaution */
 }
 #endif
 

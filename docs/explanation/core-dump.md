@@ -24,7 +24,7 @@ Keep the ELF of each firmware that you install. Without the ELF of the same buil
 
 `gw_coredump_init()` reads the state at boot, before the other tasks start. The state is: is a dump present, its size, and is its checksum correct (`esp_core_dump_image_check`, one read of the dump). After that, only an erase changes the state.
 
-The summary comes from `esp_core_dump_get_summary` and `esp_core_dump_get_panic_reason`. It gives the task, the PC, the backtrace, the exception cause and address, and the panic reason. To make the summary, the firmware maps the partition. Thus only a request for the summary reads the partition, not `/api/status`.
+The summary comes from `esp_core_dump_get_summary` and `esp_core_dump_get_panic_reason`. It gives the task, the PC, the backtrace, the exception cause and address, and the panic reason. To make the summary, the firmware maps the partition. Thus only a request for the summary reads the partition, not `/api/status`. QEMU does not model the cache freeze of this map. Thus the QEMU build parks core 1 during the summary, as during an update (refer to [The E2E test bench](../reference/e2e-harness.md#emulator-problems-and-their-workarounds)).
 
 The summary also gives the reset reason of this boot. The dump can be older than this boot. The summary of a corrupt dump has the state only.
 

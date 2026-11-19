@@ -757,6 +757,12 @@ DELIBERATE_LINES = 20   # how far back an abort()/backtrace looks for it, on the
 # ("reason    abort() was called at ..."): a past failure that the harness asked about, not a
 # new one. The panic handler's own line starts with the reason itself.
 DUMP_QUOTE_RX = re.compile(r"^reason {4}")
+# Issue #256: the panic handler takes no console lock, and QEMU does not stall the other core
+# (#238): the two cores' output can mix character by character, and then GURU_RX, EXCVADDR_RX
+# and BACKTRACE_RX find nothing. The dump writer's last line came out whole. In a boot without
+# the shell's deliberate 'panic' and without a known emulator panic, it is a firmware failure
+# (it has no signature: never repeated).
+DUMP_SAVED_RX = re.compile(r"Core dump has been saved to flash")
 # An image being written or verified by the app (download, upload, esp_ota_end, a rollback's
 # check). Only lines after app_main's first line count (the bootloader prints esp_image too).
 OTA_RX = re.compile(r"esp_https_ota: |fw: downloading firmware|fw: receiving a firmware upload|"
@@ -1135,6 +1141,7 @@ class Gateway:
         self._panic = None           # (time, exception, line index) of a panic being read
         self.panics = []             # [time, what, known signature or None, line] (#96)
         self.app_line = None         # index of this boot's app_main line (#92 M1)
+        self.boot_line = 0           # index of this boot's first line (its ROM banner, #256)
         self.mon_path = None         # QEMU monitor (HMP) socket, for the state dump
 
     def start(self):
@@ -1228,7 +1235,7 @@ class Gateway:
         self.lines.append((t, text))
         i = len(self.lines) - 1
         if BOOT_RX.search(text):
-            self.phase, self.app_line = "boot", None
+            self.phase, self.app_line, self.boot_line = "boot", None, i
         elif APP_RX.search(text):
             self.phase, self.app_line = "run", i
         # issue #96 round 3: every firmware failure the console shows (see FAILURE_RX)
@@ -1243,6 +1250,9 @@ class Gateway:
                 and not self._excused(i):
             self.panics.append([t, "abort() not requested by the harness" if ABORT_RX.search(text)
                                 else "backtrace without a known emulator signature", None, i])
+        if DUMP_SAVED_RX.search(text) and not self._dump_excused(i):
+            self.panics.append([t, "core dump saved without a panic requested by the harness",
+                                None, i])
         m = EXCVADDR_RX.search(text)
         if m and self._panic and i - self._panic[2] <= 12:
             # issue #92 M1: only the app's lines of this boot (the bootloader prints esp_image)
@@ -1277,11 +1287,21 @@ class Gateway:
             return True
         return any(p[2] is not None and 0 < i - p[3] <= 30 for p in self.panics)
 
+    def _dump_excused(self, i):
+        """Issue #256: a core dump saved at line @i that is not a firmware failure: in the same
+        boot (since its ROM banner), the shell's deliberate 'panic' (its marker, at any distance:
+        the dump writer prints many lines), or a known emulator panic (its own fault)."""
+        lo = self.boot_line
+        if any(DELIBERATE_RX.search(ln) for _, ln in self.lines[lo:i]):
+            return True
+        return any(p[2] is not None and lo <= p[3] < i for p in self.panics)
+
     def unknown_panics(self):
         """Issue #96: the firmware failures seen on this emulator's console that matched no
         known emulator signature: a Guru Meditation panic of any reason, an assert, the task
         watchdog, ESP_ERROR_CHECK, a corrupt heap, a stack overflow, an abort() or a backtrace
-        other than the shell's deliberate 'panic'."""
+        other than the shell's deliberate 'panic', and (issue #256) a core dump saved in a boot
+        without that 'panic' or a known emulator panic."""
         return [p for p in self.panics if p[2] is None]
 
     def console(self, text):
@@ -6884,7 +6904,13 @@ def run_scenario(name, fn, retry_on_qemu_death=True):
         if unknown:   # visible even when nothing else went wrong
             print(f"[PANIC] {name}: firmware failure(s) on the console: {'; '.join(unknown[:5])}",
                   flush=True)
-        refusal = retry_refusal(first, failed, unknown, attempt, retry_on_qemu_death) if first \
+            # issue #256: in results.json too, as faults of this attempt (never repeated; no
+            # state dump: its emulators have ended). After `first`: they change no retry decision
+            for g in GATEWAYS[first_gw:]:
+                for p in g.unknown_panics():
+                    record_fault(g, "firmware failure", p[0], key=key,
+                                 detail=f"{p[1]}: {g.lines[p[3]][1][:200]!r}")
+        refusal =retry_refusal(first, failed, unknown, attempt, retry_on_qemu_death) if first \
             else None
         if first and refusal is None:
             discarded = results[first_check:]

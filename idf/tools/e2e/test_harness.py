@@ -189,6 +189,43 @@ class Signatures(unittest.TestCase):
         self.assertIsNotNone(g.signature)
         self.assertEqual([], g.unknown_panics())
 
+    def test_a_dump_without_a_requested_panic_is_a_failure(self):
+        # issue #256: the panic output of core 0 mixed with core 1's character by character: no
+        # Guru, EXCVADDR or backtrace line; only the dump writer's line came out whole
+        mixed = ["GD u(r1u 7M3editat8i5on) E rreors: pCor_e core 0_ dpaunmicp'e_d",
+                 "I (61234) esp_core_dump_flash: Save core dump to flash...",
+                 "I (61500) esp_core_dump_flash: Core dump has been saved to flash.",
+                 "Rebooting..."]
+        g = FakeGateway()
+        g.feed([APP, "I (1) edge: Sparkplug session up"] + mixed + BOOTLOADER)
+        self.assertEqual(["core dump saved without a panic requested by the harness"],
+                         [p[1] for p in g.unknown_panics()])
+        # the shell's 'panic' of an earlier boot does not excuse a dump of this boot
+        g = FakeGateway()
+        g.feed([APP, "panic requested from the console",
+                "I (500) esp_core_dump_flash: Core dump has been saved to flash."]
+               + BOOTLOADER + [APP, "I (1) edge: Sparkplug session up"] + mixed)
+        self.assertEqual(1, len(g.unknown_panics()))
+
+    def test_a_dump_of_a_requested_or_known_panic_is_not_a_failure(self):
+        # issue #256: the shell's 'panic', with the dump writer's lines far after the marker
+        g = FakeGateway()
+        g.feed([APP, "panic requested from the console",
+                "abort() was called at PC 0x42001234 on core 0", "",
+                "Backtrace: 0x40375c4e:0x3fcf2a30 0x4037a1b5:0x3fcf2a50",
+                "I (61234) esp_core_dump_flash: Save core dump to flash..."]
+               + [f"I ({n}) esp_core_dump_elf: noise" for n in range(3 * e2e.DELIBERATE_LINES)]
+               + ["I (61500) esp_core_dump_flash: Core dump has been saved to flash.",
+                  "Rebooting..."] + BOOTLOADER + [APP])
+        self.assertEqual([], g.unknown_panics())
+        # the dump of the known emulator panic belongs to that fault
+        g = FakeGateway()
+        g.feed([APP] + FLAKE + ["", "Backtrace: 0x4037c264:0x3fc935f0 0x40377acf:0x3fc93610"]
+               + [f"I ({n}) esp_core_dump_elf: noise" for n in range(40)]
+               + ["I (30000) esp_core_dump_flash: Core dump has been saved to flash."])
+        self.assertIsNotNone(g.signature)
+        self.assertEqual([], g.unknown_panics())
+
     def test_phases(self):
         g = FakeGateway()
         self.assertEqual("boot", g.phase)
@@ -317,6 +354,31 @@ class RetryRule(unittest.TestCase):
         e2e.run_scenario("s", fn)
         self.assertEqual(1, self.attempts)
         self.assertIn("matched no known emulator fault", e2e.results[-1]["detail"])
+
+    def test_unexpected_dump_is_a_fault_and_forbids_the_retry(self):
+        # issue #256: a dump saved without a requested panic goes to results.json's faults, and
+        # the known fault after it is not repeated
+        def fn():
+            self.attempts += 1
+            g = FakeGateway()
+            e2e.GATEWAYS.append(g)
+            g.feed([APP, "I (1) edge: Sparkplug session up",
+                    "I (61500) esp_core_dump_flash: Core dump has been saved to flash."])
+            self.fault()
+        e2e.run_scenario("s", fn)
+        self.assertEqual(1, self.attempts)
+        self.assertEqual([], e2e.RETRIES)
+        self.assertIn("matched no known emulator fault", e2e.results[-1]["detail"])
+        dumps = [f for f in e2e.FAULTS if f["kind"] == "firmware failure"]
+        self.assertEqual(1, len(dumps))
+        self.assertFalse(dumps[0]["retry"])
+        self.assertEqual("s", dumps[0]["scenario"])
+        self.assertIn("core dump saved without a panic requested by the harness",
+                      dumps[0]["detail"])
+        # a scenario with no failure on the console records none
+        self.setUp()
+        e2e.run_scenario("t", self.scenario("pass"))
+        self.assertEqual([], e2e.FAULTS)
 
     def test_unknown_fault_is_not_repeated(self):
         e2e.run_scenario("s", self.scenario("pass", "unknown"))

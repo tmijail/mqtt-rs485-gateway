@@ -1847,6 +1847,33 @@ static esp_err_t coredump_delete(httpd_req_t *req)
     return send_json(req, "200 OK", "{\"ok\":true,\"erased\":true}\n");
 }
 
+/* Issue #256: the summary maps the coredump partition; in the QEMU build it runs on core 0 with
+ * core 1 parked (gw_fw_run_mapped) */
+typedef struct {
+    gw_cdump_info_t *info;
+    esp_err_t err;
+} cd_summary_call_t;
+
+static void cd_summary(void *arg)
+{
+    cd_summary_call_t *c = arg;
+    c->err = gw_coredump_summary(c->info);
+}
+
+/* Only the summary of a valid dump maps the partition. The state becomes valid only at boot, so
+ * a dump that is not valid now stays so. */
+static esp_err_t coredump_summary(gw_cdump_info_t *out)
+{
+    cd_summary_call_t c = {.info = out, .err = ESP_FAIL};
+    uint32_t size;
+    if (gw_coredump_state(&size) == GW_CDUMP_VALID) {
+        gw_fw_run_mapped(cd_summary, &c);
+    } else {
+        cd_summary(&c);
+    }
+    return c.err;
+}
+
 /* The summary (task, PC, backtrace, panic reason, and the reset reason of this boot). It reads
  * the dump, so it is a route of its own and not part of /api/status, which the web UI polls. */
 static esp_err_t coredump_summary_get(httpd_req_t *req)
@@ -1863,7 +1890,7 @@ static esp_err_t coredump_summary_get(httpd_req_t *req)
         return send_error(req, "503 Service Unavailable", NULL, "no memory");
     }
     esp_err_t r;
-    if (gw_coredump_summary(&j->i) != ESP_OK ||
+    if (coredump_summary(&j->i) != ESP_OK ||
         gw_cdump_summary_json(&j->i, s_ctx.info->reset_reason, j->body, sizeof(j->body)) == 0) {
         r = send_error(req, "503 Service Unavailable", NULL, "no memory for the summary");
     } else {

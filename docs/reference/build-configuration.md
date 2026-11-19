@@ -26,6 +26,12 @@ Each option in these files has a comment with its reason. Read the comment befor
 
 There is no production overlay in `main`. The overlay `sdkconfig.production`, which burns eFuses, is on the branch `archive/efuse-production` (#133).
 
+## The log level of `espcoredump`
+
+The project `CMakeLists.txt` compiles the ESP-IDF component `espcoredump` with `LOG_LOCAL_LEVEL=ESP_LOG_INFO` (#256). The other components keep the maximum level of the `sdkconfig` (`LOG_MAXIMUM_LEVEL_VERBOSE`).
+
+The reason: `espcoredump` writes its lines with `esp_rom_printf()`. This function takes no console lock and ignores the log level at run time. With the verbose level, each summary of a dump wrote many debug lines into the lines of other tasks. With the INFO level, the I, W and E lines stay, for example `Core dump has been saved to flash`. The E2E reads this line. Do not set `CONFIG_ESP_COREDUMP_LOGS=n`, because it also removes these lines.
+
 ## The build folders
 
 | Folder | `SDKCONFIG_DEFAULTS` |

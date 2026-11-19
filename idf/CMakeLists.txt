@@ -24,6 +24,20 @@ set(GW_FS_DIR "${CMAKE_CURRENT_LIST_DIR}/fs" CACHE PATH "LittleFS image source d
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(rs485_spb_gateway)
 
+# Issue #256: the debug lines of espcoredump (ESP_COREDUMP_LOGD, esp_core_dump_types.h) compile
+# against LOG_LOCAL_LEVEL (CONFIG_LOG_MAXIMUM_LEVEL: verbose) and go out with esp_rom_printf(),
+# which takes no console lock and ignores the run-time level: each summary of a dump wrote
+# dozens of "D (...) esp_core_dump_elf:" lines into the lines of other tasks (as in #123). INFO
+# (the level of a default ESP-IDF build) keeps the I, W and E lines ("Core dump has been saved
+# to flash", which the E2E reads); do not set CONFIG_ESP_COREDUMP_LOGS=n, which removes them
+# too. Without CONFIG_ESP_COREDUMP_ENABLE the component has no sources (an INTERFACE library):
+# nothing to compile.
+idf_component_get_property(gw_cdump_lib espcoredump COMPONENT_LIB)
+get_target_property(gw_cdump_type ${gw_cdump_lib} TYPE)
+if(NOT gw_cdump_type STREQUAL "INTERFACE_LIBRARY")
+    target_compile_definitions(${gw_cdump_lib} PRIVATE LOG_LOCAL_LEVEL=ESP_LOG_INFO)
+endif()
+
 # Issue #83: IDF does not re-run the configuration when sdkconfig.defaults (or an overlay)
 # changes, so an existing build kept the sdkconfig it had; kconfgen applies a new default to a
 # value that it marked "# default:" only when it runs. The defaults files are now configure
