@@ -341,7 +341,7 @@ The GitHub containers do not permit `unshare`. Thus each `e2e` job runs on the l
 
 The `e2e` and `e2e-poison` jobs run in the E2E image `ghcr.io/tmijail/gw-e2e`, pinned by digest (#253). The image is `idf/tools/e2e/Dockerfile`: the pinned ESP-IDF image plus mosquitto, libslirp0, QEMU and the venv of the harness. Thus these jobs install nothing at run time. `.github/workflows/e2e-image.yml` builds and publishes the image when the Dockerfile or `idf/tools/e2e/requirements.txt` changes, and on request. Its job summary gives the digest to pin in `ci.yml`.
 
-The jobs that install Ubuntu packages (`fuzz`, `clang-tidy` and `fuzz-weekly.yml`) use `idf/tools/ci/apt_install.sh`. It tries the Azure mirror of the GitHub runners first and then the Ubuntu archive, each with retries and a timeout of 30 s. Each `apt-get` command has a time limit, because a mirror can send data too slowly for the timeout. When the limit stops a command, the script tries the next mirror. The step that runs the script has a time limit too.
+The jobs that install Ubuntu packages (`fuzz`, `clang-tidy` and `fuzz-weekly.yml`) use `idf/tools/ci/apt_install.sh`. It does not use a mirror for a package that the runner image has already. For the other packages, it tries the Azure mirror of the GitHub runners first and then the Ubuntu archive, each with retries and a timeout of 30 s. Each `apt-get` command has a time limit, because a mirror can send data too slowly for the timeout. When the limit stops a command, the script tries the next mirror. The step that runs the script has a time limit too.
 
 The workflows pin each action to a commit hash, with the tag in a comment (#229). All the actions run on Node 24 (#235):
 
