@@ -39,7 +39,7 @@ Write limits stop a host that sends a value that the device must not get, for ex
 3. Type **Write min**, **Write max**, or the two values. Use the units of the tag, after the scale and the offset. Empty = no limit on that side.
 4. Click **Validate**. Then click **Save and restart**.
 
-   ![The details row of the writable tag Setpoint of Meter1: Write min 0 and Write max 150. The explainer of Write min is open. It tells that the gateway refuses a DCMD with a lower value, does not write to the device and writes a warning to the log.](../images/tag-write-limits.png)
+   ![The details row of the writable tag Setpoint of Meter1: Write min 0 and Write max 150.](../images/tag-write-limits.png)
 
 The gateway refuses a DCMD metric with a value out of the limits:
 

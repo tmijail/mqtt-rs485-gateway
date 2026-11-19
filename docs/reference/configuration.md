@@ -176,7 +176,7 @@ A name, a location and a comment for the people who use the gateway. The card **
 - The comment is only in the document and in the Configuration tab. The Status tab, `GET /api/status` and the NBIRTH do not give it.
 - The name and the location do not change the Sparkplug IDs or the topics. They are not `sparkplug.device_prefix`.
 
-![The top of the Configuration tab. The header shows 'Pump panel 2 · Plant 2, hall B', and below it the name of the product and Plant1 / GW01. The card Gateway has the fields Name, Location and Comment. The explainer of Name is open: a name for people, which the header and the title of the browser tab show; it does not change the Sparkplug IDs or the topics.](../images/gateway-name.png)
+![The top of the Configuration tab. The header shows 'Pump panel 2 · Plant 2, hall B', and below it the name of the product and Plant1 / GW01. The card Gateway has the fields Name, Location and Comment.](../images/gateway-name.png)
 
 ## `network`
 
@@ -264,7 +264,7 @@ The gateway learns the default IPv6 router from the router advertisements. There
 
 In the web UI, the card **Time** has one row for each server. An empty row is an error at its field.
 
-![The card 'Time' of the Configuration tab with two SNTP servers, pool.ntp.org and 192.168.10.1, and the explainer of SNTP servers: the gateway asks server 1 first, then the next server when a server does not answer.](../images/time-card.png)
+![The card 'Time' of the Configuration tab with two SNTP servers, pool.ntp.org and 192.168.10.1, and the button '+ server'.](../images/time-card.png)
 
 Without a valid clock, the gateway opens no MQTT session. Refer to [The clock and the RTC battery](clock-and-rtc-battery.md).
 
@@ -706,7 +706,7 @@ The exceptions of the local unit:
 - The run hours have the same value as the metric `Run Hours/DI/n` or `Run Hours/DO/n`: a new value when the channel changes its state, and each 60 s while it stays on. A channel that is not in `local_io.run_hours` gives 0. Refer to [Run hours](#run-hours).
 - The local unit has no authentication, as the other units. Limit the clients with `allowed_clients`, and keep `local_writes` off when no client must switch the DOs.
 
-![The card 'Modbus TCP' of the Configuration tab: Enabled, the port 502, the idle timeout, the allowed client 10.0.2.2, and the local unit 100 with Local writes. The explainer of Local unit ID gives the map: the DIs at discrete 0 to 7, the DOs at coil 0 to 7, the counters at input 0 to 31, the run hours at input 32 to 95.](../images/modbus-tcp-card.png)
+![The card 'Modbus TCP' of the Configuration tab: Enabled, the port 502, the idle timeout, the allowed client 10.0.2.2, and the section 'The I/O of the gateway as a Modbus unit' with the local unit 100 and Local writes on.](../images/modbus-tcp-card.png)
 
 ## `ota`
 

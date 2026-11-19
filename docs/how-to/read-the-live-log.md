@@ -16,7 +16,7 @@ From the boot on, the gateway keeps the last log lines in a buffer of 16 KB in P
 3. To keep the view while you read, click **Pause**. The new lines wait. Click **Resume** to show them.
 4. To copy the lines, click **Copy**. Then paste the lines, for example, into an issue.
 
-![The card Log of the Status tab, open: the buttons Pause and Copy, 'Live: new lines every 2 s', 212 lines in the buffer (16 KB), and the last log lines (the warnings in brown, the errors in red, the debug lines in grey). Below: the tag poll and the log level debug with its explainer open. The explainer covers the button 'Set the level' and most of the line 'Changed levels (not saved)'; the button 'Reset all' shows at its end.](../images/live-log.png)
+![The card Log of the Status tab, open: the buttons Pause and Copy, 'Live: new lines every 2 s', 212 lines in the buffer (16 KB), and the last log lines (the warnings in brown, the errors in red, the debug lines in grey). Below: the tag poll and the log level debug, the button 'Set the level', and the line 'Changed levels (not saved)' with the button 'Reset all'.](../images/live-log.png)
 
 The colors show the severity of each line: brown for a warning, red for an error and grey for a debug line. A line "lines lost" tells that the buffer was full between two requests. A line "the gateway restarted" tells that the numbers of the lines started again.
 
