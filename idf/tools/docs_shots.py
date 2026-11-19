@@ -594,6 +594,26 @@ def modbus_local(page):
     page.click("button.qi[data-x=lunit]")
 
 
+def ipv6_card(page):
+    """#221: the card IPv6 with IPv6 on, SLAAC, a static address for Ethernet and an IPv6 DNS
+    server, and the explainer of Enabled. No save."""
+    page.click("nav button[data-tab=config]")
+    page.check('[data-p="network.ipv6.enabled"]')
+    page.fill('[data-p="network.ipv6.address"]', "fd00:1::50")
+    page.fill('[data-p="network.ipv6.dns"]', "fd00:1::1")
+    page.evaluate("document.querySelector('#f-v6').closest('.card').scrollIntoView({block: 'center'})")
+    page.click("button.qi[data-x=v6en]")
+
+
+def syslog_card(page):
+    """#221: the card Remote syslog with a server, its port and the level, and the explainer of
+    Host. No save."""
+    page.click("nav button[data-tab=config]")
+    page.fill('[data-p="syslog.host"]', "192.168.10.5")
+    page.evaluate("document.querySelector('#f-syslog').closest('.card').scrollIntoView({block: 'center'})")
+    page.click("button.qi[data-x=slhost]")
+
+
 def web_off(page):
     """Enabled off in the card Web interface, then Save: the confirmation with the steps to turn
     the web interface on again (no save: the dialog stays open for the image)."""
@@ -992,6 +1012,18 @@ SHOTS = [
              "timeout, the allowed client 10.0.2.2, and the local unit 100 with Local writes. "
              "The explainer of Local unit ID gives the map: the DIs at discrete 0 to 7, the DOs "
              "at coil 0 to 7, the counters at input 0 to 31, the run hours at input 32 to 95."),
+    # #221: docs/reference/configuration.md (network.ipv6)
+    Shot("ipv6-card", "configured", DESKTOP, "/", actions=[ipv6_card],
+         wait="#xpl:not(.hidden)",
+         alt="The card 'IPv6' of the Configuration tab with Enabled and SLAAC on, the static "
+             "address fd00:1::50 for Ethernet and the IPv6 DNS server fd00:1::1, and the "
+             "explainer of Enabled: IPv6 together with IPv4 on each interface."),
+    # #221: docs/reference/configuration.md (syslog)
+    Shot("syslog-card", "configured", DESKTOP, "/", actions=[syslog_card],
+         wait="#xpl:not(.hidden)",
+         alt="The card 'Remote syslog' of the Configuration tab with the host 192.168.10.5, the "
+             "UDP port and the level, and the explainer of Host: the gateway sends a copy of its "
+             "log on UDP (RFC 5424)."),
     # #221: docs/how-to/recover-the-gateway.md ("The web interface is off")
     Shot("web-off-dialog", "configured", DESKTOP, "/", actions=[web_off], wait="#dlg[open]",
          alt="The confirmation 'Turn off the web interface?' after 'Save and restart' with "
