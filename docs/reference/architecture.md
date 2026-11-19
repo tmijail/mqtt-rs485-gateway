@@ -298,6 +298,6 @@ Only the QEMU build of `sdkconfig.qemu` (`CONFIG_GW_IO_SIMULATED` without `CONFI
 - The payload buffer is 6 KB (`CONFIG_GW_SPB_PAYLOAD_INTERNAL`). The store & forward ring has 512 samples (12 KB). The live log uses rings of 2 KB.
 - The spill does not start.
 - A birth that does not fit the 6 KB buffer goes to the log, and the gateway does not publish it. Such a message uses no seq number (`tck-id-payloads-sequence-num-incrementing`, #158). A DBIRTH that does not fit leaves its device unborn (#76).
-- The E2E uses this build only for the scenarios that do not depend on memory. Refer to [The two variants](e2e-harness.md#the-two-variants-135).
+- The E2E uses this build only for the scenarios that do not depend on memory. Refer to [The variants](e2e-harness.md#the-variants-135-261).
 
 A build without `CONFIG_SPIRAM` and without `CONFIG_GW_IO_SIMULATED` does not compile. `GW_SDKCONFIG_REQUIRED` has `CONFIG_SPIRAM`. Refer to [Build the firmware](../how-to/build-the-firmware.md).

@@ -175,7 +175,8 @@ add_test(NAME check_web_lists
 # MODE=warn); wdt5: a different watchdog timeout fails, unless an overlay of the build sets it;
 # absent options (SPIRAM_IGNORE_NOTFOUND with SPIRAM off, as in the QEMU build) are skipped.
 # An overlay with "@" is a file of the project. Issue #103: NVS encryption without flash
-# encryption fails (reported with MODE=warn), except in the emulator build (GW_IO_SIMULATED).
+# encryption fails (reported with MODE=warn), except in the emulator build (GW_IO_SIMULATED; issue
+# #261: only its overlay sdkconfig.qemu-secure turns the NVS encryption on).
 # Issue #135: an sdkconfig without the PSRAM fails, except with the QEMU overlay (CONFIG_SPIRAM=n).
 set(GW_CFGCHK ${IDF_PROJECT_DIR}/cmake/gw_sdkconfig_check.cmake)
 set(GW_CFGCHK_DIR ${CMAKE_CURRENT_LIST_DIR}/sdkconfig_check)

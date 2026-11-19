@@ -103,7 +103,7 @@ endfunction()
 
 # Issue #103: combinations of options that the sdkconfig in use must not have, whatever the
 # defaults say. NVS encryption (CFG-7) without flash encryption (FW-3), outside the emulator
-# build: the reset-safe copy of an NVS migration (#94, secrets included) is a LittleFS file, and
+# build (issue #261: there only sdkconfig.qemu-secure turns it on): the reset-safe copy of an NVS migration (#94, secrets included) is a LittleFS file, and
 # LittleFS is copy-on-write: once deleted (or overwritten) its blocks keep the plaintext in the
 # "storage" partition until they are reused. Under flash encryption they are ciphertext.
 function(gw_sdkconfig_forbidden sdkconfig result)

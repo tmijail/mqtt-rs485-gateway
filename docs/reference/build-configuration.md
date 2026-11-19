@@ -15,14 +15,24 @@ The build reads `sdkconfig.defaults`, then the overlays of `SDKCONFIG_DEFAULTS` 
 | File | Build | What it sets |
 |---|---|---|
 | `sdkconfig.defaults` | All builds. Alone, it is the build for the board | The board (16 MB QIO flash, 8 MB octal PSRAM, `partitions.csv`), the task watchdog (REL-1), the core dump to flash, the RS485 UART ISR in IRAM (MB-2), the network stack on core 0, TLS 1.2 and 1.3 with dynamic buffers (MQTT-4, #80), MQTT 5 (MQTT-8), HTTPS (#64), the OTA rollback (FW-1) and the microSD names without LFN (#122). No option burns an eFuse |
-| `sdkconfig.qemu` | All QEMU builds | `CONFIG_GW_IO_SIMULATED`, OpenCores Ethernet, no PSRAM, DIO flash, no Wi-Fi, no RS485 hardware half-duplex mode. Also the NVS encryption with the HMAC key in KEY5 and the signed OTA images without Secure Boot (both open in #133), the spill of store & forward to LittleFS, a publish budget of 2 s (#59), `CONFIG_GW_FW_PARK_OTHER_CORE` (#107) and a self-check of 30 s (#233) |
+| `sdkconfig.qemu` | All QEMU builds | `CONFIG_GW_IO_SIMULATED`, OpenCores Ethernet, no PSRAM, DIO flash, no Wi-Fi, no RS485 hardware half-duplex mode. Also the spill of store & forward to LittleFS, a publish budget of 2 s (#59), `CONFIG_GW_FW_PARK_OTHER_CORE` (#107) and a self-check of 30 s (#233) |
 | `sdkconfig.qemu-psram` | QEMU with PSRAM, after `sdkconfig.qemu` | The octal PSRAM, software SHA and AES (the QEMU GDMA does not reach PSRAM, #85), 10 RX buffers of OpenCores Ethernet (#110) and a store & forward ring of 1 000 samples (#124) |
-| `sdkconfig.qemu-plain` | QEMU without NVS encryption, after `sdkconfig.qemu` | `CONFIG_NVS_ENCRYPTION=n`. The E2E uses it as the image before an update to the encrypted build (#94) |
+| `sdkconfig.qemu-secure` | The secure QEMU build, after `sdkconfig.qemu` and `sdkconfig.qemu-psram` | The NVS encryption with the HMAC key in KEY5 (`CONFIG_NVS_ENCRYPTION`) and the signed OTA images without Secure Boot (`CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT`). No build for the board has these two functions (#133, #261) |
 | `sdkconfig.qemu-poison` | QEMU with heap poisoning, after `sdkconfig.qemu` (and `sdkconfig.qemu-psram`) | `CONFIG_HEAP_POISONING_COMPREHENSIVE` (#104) |
 
 Each option in these files has a comment with its reason. Read the comment before you change an option.
 
-> **Warning: Never flash a QEMU build on the board.** Its first boot on a real chip burns the HMAC key into eFuse KEY5, and you cannot undo this. The QEMU build also simulates the I/O. Refer to [Features that burn eFuses](../explanation/no-efuse-features.md).
+> **Warning: Never flash a QEMU build on the board.** A QEMU build simulates the I/O. The first boot of the secure QEMU build on a real chip also burns the HMAC key into eFuse KEY5. You cannot undo this. Refer to [Features that burn eFuses](../explanation/no-efuse-features.md).
+
+### The two functions of the secure QEMU build
+
+For the NVS encryption and the signature check of an OTA image, the QEMU builds `build-qemu` and `build-qemu-psram` have the configuration of the board (#261). These two functions are off in them, as in the build for the board.
+
+The two functions stay in `main`, only in the overlay `sdkconfig.qemu-secure` (decision of #133). The optional owner profile of #255 can use them. QEMU emulates the eFuses in a file, so this build burns nothing real.
+
+- `tools/e2e/run_e2e.sh` adds the overlay only with `E2E_SECURE=1`. The secure variant of the E2E runs only the scenarios of these two functions (refer to [The E2E test bench](e2e-harness.md#the-variants-135-261)).
+- `run_e2e.sh` examines the `sdkconfig` of each build. A build without `E2E_SECURE=1` that has one of the two options stops the script.
+- Only a build that signs writes `rs485_spb_gateway-unsigned.bin`. A build folder from before #261 can hold such a file. `run_e2e.sh` removes it from each build that is not the secure build, and the harness does not use it there.
 
 There is no production overlay in `main`. The overlay `sdkconfig.production`, which burns eFuses, is on the branch `archive/efuse-production` (#133).
 
@@ -39,10 +49,10 @@ The reason: `espcoredump` writes its lines with `esp_rom_printf()`. This functio
 | `build` | `sdkconfig.defaults` (the default) |
 | `build-qemu` | `sdkconfig.defaults;sdkconfig.qemu` |
 | `build-qemu-psram` | `sdkconfig.defaults;sdkconfig.qemu;sdkconfig.qemu-psram` |
-| `build-qemu-plain` | `sdkconfig.defaults;sdkconfig.qemu;sdkconfig.qemu-plain` |
-| `build-qemu-poison`, `build-qemu-psram-poison` | the QEMU chain, then `sdkconfig.qemu-poison` |
+| `build-qemu-psram-secure` | `sdkconfig.defaults;sdkconfig.qemu;sdkconfig.qemu-psram;sdkconfig.qemu-secure` |
+| `build-qemu-poison`, `build-qemu-psram-poison`, `build-qemu-psram-secure-poison` | the QEMU chain, then `sdkconfig.qemu-poison` |
 
-`tools/e2e/run_e2e.sh` makes these builds. It deletes the `sdkconfig` of a folder when a defaults file is newer. It also makes the test signing key `build-qemu/e2e_signing_key.pem`. The project never commits this key.
+`tools/e2e/run_e2e.sh` makes these builds. It deletes the `sdkconfig` of a folder when a defaults file is newer. With `E2E_SECURE=1`, it makes `build-qemu-psram-secure` and `build-qemu-psram`, and the test signing key `build-qemu/e2e_signing_key.pem` of the secure build. The project never commits this key.
 
 ## The partition table
 

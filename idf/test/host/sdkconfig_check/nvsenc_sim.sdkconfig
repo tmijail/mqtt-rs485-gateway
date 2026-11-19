@@ -1,4 +1,5 @@
-# Issue #103: the same in the emulator build (sdkconfig.qemu): allowed
+# Issue #103: the same in the emulator build (sdkconfig.qemu with sdkconfig.qemu-secure, #261):
+# allowed
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 CONFIG_UART_ISR_IN_IRAM=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=15

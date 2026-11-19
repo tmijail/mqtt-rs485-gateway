@@ -276,15 +276,19 @@ jobs:
           fi
           exit "$rc"
 
-  # Issue #121: the E2E in parallel jobs, for the default variant and for the octal PSRAM one
+  # Issue #121: the E2E in parallel jobs, for the default variant, for the octal PSRAM one
   # (#85: the configuration, the Sparkplug engine and its payload buffer, mbedTLS and the store &
   # forward ring in PSRAM; the harness writes otadata into the image first, for the QEMU
-  # defect of issue #239). e2e-plan reads the groups from idf/tools/e2e/scenarios.py (CI_GROUPS: together
-  # one full run, each scenario in one group, as test_harness.py checks). e2e-build builds the
-  # QEMU images once per variant (run_e2e.sh with E2E_STAGE; the psram variant also builds
-  # build-qemu-plain for its group nvs-main: the images of one job share its signing key). Each
-  # e2e job runs one group of one variant on those images, without a build (E2E_PREBUILT). e2e-summary puts one line per group into the
-  # job summary and fails unless the groups of each variant passed and ran one full run.
+  # defect of issue #239) and for the secure one (#261). The default and PSRAM variants are the
+  # configuration of the board. The secure variant is the PSRAM build with sdkconfig.qemu-secure
+  # (NVS encryption, signed OTA images: only in the QEMU build, #133), and it runs only the
+  # scenarios of these two functions. e2e-plan reads the groups from idf/tools/e2e/scenarios.py
+  # (CI_GROUPS: together one full run, each scenario in one group, as test_harness.py checks).
+  # e2e-build builds the QEMU images once per variant (run_e2e.sh with E2E_STAGE; the secure
+  # variant also builds the board build of the PSRAM variant, the firmware before the OTA update
+  # of its group nvs-ota). Each e2e job runs one group of one variant on those images, without a
+  # build (E2E_PREBUILT). e2e-summary puts one line per group into the job summary and fails
+  # unless the groups of each variant passed and ran one full run.
   e2e-plan:
     name: E2E groups (issue #121)
     runs-on: ubuntu-24.04
@@ -327,30 +331,20 @@ jobs:
       - name: Build the QEMU images
         env:
           E2E_PSRAM: ${{ matrix.psram }}
-          E2E_PLAIN: ${{ matrix.plain }}
+          E2E_SECURE: ${{ matrix.secure }}
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           . "$IDF_PATH/export.sh"
           ccache -z
           E2E_STAGE=/tmp/e2e-images E2E_WORKDIR=/tmp/e2e-build idf/tools/e2e/run_e2e.sh
           ccache -s
-          tar -C /tmp/e2e-images --exclude=./plain -czf /tmp/e2e-images.tgz .
-          if [ "$E2E_PLAIN" = 1 ]; then
-            tar -C /tmp/e2e-images -czf /tmp/e2e-images-plain.tgz plain
-          fi
-      # the throwaway signing key of this run's QEMU images goes with them: kept for one day
+          tar -C /tmp/e2e-images -czf /tmp/e2e-images.tgz .
+      # the secure variant: the throwaway signing key of this run's QEMU image goes with it (kept
+      # for one day), and the board build that its group nvs-ota starts on (board/)
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-images-${{ matrix.variant }}
           path: /tmp/e2e-images.tgz
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: matrix.plain == '1'
-        with:
-          name: e2e-images-plain
-          path: /tmp/e2e-images-plain.tgz
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
@@ -380,7 +374,7 @@ jobs:
       GROUP: ${{ matrix.group }}
       ONLY: ${{ matrix.only }}
       E2E_PSRAM: ${{ matrix.psram }}
-      E2E_PLAIN: ${{ matrix.plain }}
+      E2E_SECURE: ${{ matrix.secure }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -389,11 +383,6 @@ jobs:
         with:
           name: e2e-images-${{ matrix.variant }}
           path: /tmp/e2e-dl
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: matrix.plain == '1'
-        with:
-          name: e2e-images-plain
-          path: /tmp/e2e-dl
       - name: Run the group's scenarios on the prebuilt images
         run: |
           . "$IDF_PATH/export.sh"
@@ -401,7 +390,7 @@ jobs:
           mkdir -p /tmp/e2e-images
           for t in /tmp/e2e-dl/*.tgz; do tar -C /tmp/e2e-images -xzf "$t"; done
           E2E_PREBUILT=/tmp/e2e-images E2E_WORKDIR=/tmp/e2e-work \
-              idf/tools/e2e/run_e2e.sh --only "$ONLY"
+              idf/tools/e2e/run_e2e.sh --only "$ONLY" --no-skip
       - name: Summary line
         if: always()
         run: |
@@ -508,8 +497,8 @@ jobs:
           . "$IDF_PATH/export.sh"
           export PATH="$PATH:/usr/sbin"
           ccache -z
-          E2E_POISON=1 E2E_PLAIN=0 E2E_WORKDIR=/tmp/e2e-poison \
-              idf/tools/e2e/run_e2e.sh --only "$ONLY"
+          E2E_POISON=1 E2E_WORKDIR=/tmp/e2e-poison \
+              idf/tools/e2e/run_e2e.sh --only "$ONLY" --no-skip
           ccache -s
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()

@@ -4,8 +4,7 @@ a full run into parallel jobs. No third-party imports: the CI reads it without t
 packages, e2e.py dispatches with it and test_harness.py checks the groups against it.
 
     python3 scenarios.py matrix                 # GitHub outputs: build=<json>, run=<json>
-    python3 scenarios.py groups [VARIANT]       # one line per CI group (of VARIANT): id, --only,
-                                                # plain 0/1
+    python3 scenarios.py groups [VARIANT]       # one line per CI group (of VARIANT): id, --only
     python3 scenarios.py line [--header] VARIANT GROUP DIR
                                                 # one Markdown table row for a group's workdir
     python3 scenarios.py summary DIR [VARIANT]  # every group's results (DIR/e2e-result-*/):
@@ -19,7 +18,8 @@ import sys
 # The scenarios of a run, in the order they run, each with the --only names that select it.
 # "ota" stays the union of the OTA scenarios for local use; the finer ota-* names let the CI put
 # them into separate jobs. Issue #233: FW-1 OTA is two scenarios, each with its own boot (by NCMD,
-# by web upload); "ota-fw1" selects the two.
+# by web upload); "ota-fw1" selects the two. Issue #261: "nvs" is the union of the scenarios of
+# the NVS encryption: "nvs-boot" (at a boot) and "nvs-ota" (with an OTA update).
 SCENARIOS = (
     ("failsafe", ("failsafe",)),
     ("network", ("network",)),
@@ -40,9 +40,11 @@ SCENARIOS = (
     ("issue #112 park in a long RS485 transaction", ("ota", "ota-park")),
     ("issue #97 OTA trial wiring", ("ota", "ota-wiring")),
     ("issue #144 OTA self-check", ("ota", "ota-trial")),
-    ("issues #67/#94 NVS migration", ("nvs",)),
-    ("issue #109 full unencrypted NVS", ("nvs",)),
-    ("issue #94 OTA to NVS encryption", ("nvs",)),
+    ("CFG-7 NVS encryption", ("nvs", "nvs-boot")),   # issue #261: only in the secure build
+    ("issues #67/#94 NVS migration", ("nvs", "nvs-boot")),
+    ("issue #109 full unencrypted NVS", ("nvs", "nvs-boot")),
+    ("issue #94 OTA to NVS encryption", ("nvs", "nvs-ota")),
+    ("FW-2 OTA signature", ("signed",)),             # issue #261: only in the secure build
     ("slow", ("slow",)),
     ("issue #135 no PSRAM", ("nopsram",)),
     ("refuse", ("refuse",)),   # part of "main"; alone only when "main" is not selected (#89)
@@ -69,6 +71,29 @@ DEFAULT_VARIANT_SCENARIOS = {"issue #112 park in a long RS485 transaction",
                              "issue #97 OTA trial wiring", "issue #144 OTA self-check"}
 # Scenarios that need the PSRAM build (the harness skips them without --psram).
 PSRAM_BUILD_SCENARIOS = {"issue #135 no PSRAM"}
+# Issue #261: the variants "psram" and "default" run the configuration of the board: no NVS
+# encryption, no signature check of an OTA image. These two functions stay in main only in the
+# QEMU build (decision of #133, for the optional owner profile of #255): the secure variant
+# ("secure": the PSRAM build with sdkconfig.qemu-secure, run_e2e.sh E2E_SECURE=1) has them, and
+# its full run has only the scenarios that examine them. They need that build: the harness skips
+# them without --secure. --only selects the other scenarios in the secure variant too.
+SECURE_VARIANT_SCENARIOS = {"CFG-7 NVS encryption", "issues #67/#94 NVS migration",
+                            "issue #109 full unencrypted NVS", "issue #94 OTA to NVS encryption",
+                            "FW-2 OTA signature"}
+# Scenarios that need the board build next to the secure build (run_e2e.sh E2E_BOARD; without it
+# the harness skips them): the firmware before the OTA update to NVS encryption.
+BOARD_BUILD_SCENARIOS = {"issue #94 OTA to NVS encryption"}
+
+
+def would_skip(name, variant):
+    """Issue #261: true when the harness shows the scenario @name as [SKIP] in @variant: an
+    OPTIONAL scenario (its program or its git ref is not in the CI), or a scenario that needs
+    another build. No CI group may hold such a scenario (test_harness.py), and the summary
+    reports a group that skipped one (results.json "skipped")."""
+    env = dict(VARIANTS)[variant]
+    return (name in OPTIONAL
+            or (name in SECURE_VARIANT_SCENARIOS and env["secure"] != "1")
+            or (name in PSRAM_BUILD_SCENARIOS and env["psram"] != "1"))
 
 
 def parse_only(text):
@@ -83,14 +108,16 @@ def parse_only(text):
 
 
 def variant_of(name):
-    """Issue #135: the variant whose full run runs the scenario @name."""
+    """Issues #135 and #261: the variant whose full run runs the scenario @name."""
+    if name in SECURE_VARIANT_SCENARIOS:
+        return "secure"
     return "default" if name in DEFAULT_VARIANT_SCENARIOS else "psram"
 
 
 def selected(only, variant=None):
     """Names of the scenarios a run with the --only set @only runs, in order. Without --only
-    (empty set): the full run of @variant (issue #135), or of both variants (None), without the
-    OPTIONAL scenarios (issue #175)."""
+    (empty set): the full run of @variant (issues #135 and #261), or of all the variants (None),
+    without the OPTIONAL scenarios (issue #175)."""
     out = []
     for name, names in SCENARIOS:
         if name in OPTIONAL:
@@ -110,29 +137,26 @@ def selected(only, variant=None):
 # The CI's E2E groups: (variant, id, --only). One job per group runs them in parallel; the union
 # of the groups of a variant must be the full run of that variant (issue #135), each scenario in
 # exactly one group (test_harness.py checks it, and the summary job checks it on the results).
-# Issue #233: balanced on the scenario durations of a full run (s, a host with 4 CPUs,
-# two groups at the same time, the QEMU self-check of 30 s). With PSRAM: FW-1 OTA by web upload
-# 556, by NCMD 376, main 235, #94 OTA to NVS encryption 202, sf spill 174, reset 154, tls 125,
-# https 114, web 82, the rest 8-70. The longest scenario (FW-1 by web upload) sets the floor.
-# Without PSRAM: #97 wiring 420, #144 self-check 195, #112 park 36.
+# Issue #233: balanced on the scenario durations of a full run (a host with 4 CPUs, two groups at
+# the same time, the QEMU self-check of 30 s). The longest scenario (FW-1 OTA by web upload) sets
+# the floor of the PSRAM variant. Issue #261: the secure variant has two groups, so that none is
+# longer than that floor.
 CI_GROUPS = (
     ("psram", "ota-fw1-web", "ota-fw1-web,nopsram"),
     ("psram", "ota-fw1-ncmd", "ota-fw1-ncmd,reset,slow"),
-    ("psram", "nvs-main", "nvs,main"),
+    ("psram", "main", "main,https,time"),
     ("psram", "sf-tls", "sf,tls,mqtt5,network,failover"),
-    ("psram", "other", "failsafe,web,phost,https,time"),
+    ("psram", "other", "failsafe,web,phost"),
     ("default", "ota-trial", "ota-park,ota-wiring,ota-trial"),
+    ("secure", "nvs-ota", "nvs-ota"),
+    ("secure", "nvs-signed", "nvs-boot,signed"),
 )
-# The CI's variants: the environment of their build and of their runs.
-VARIANTS = (("default", "0"), ("psram", "1"))   # (id, E2E_PSRAM)
-# The variant whose build job also builds build-qemu-plain (without PSRAM in both variants). It
-# must be the variant of each group that needs that build: each build job makes its own throwaway
-# signing key, and the plain image accepts only an update that its own key signed (the first CI
-# run of #121 failed the #94 scenario on a signature mismatch). test_harness.py checks this.
-PLAIN_BUILDER = "psram"
-# Scenarios that need the build without NVS encryption (run_e2e.sh E2E_PLAIN; without it the
-# harness skips them).
-PLAIN_SCENARIOS = {"issue #94 OTA to NVS encryption"}
+# The CI's variants: the environment of their build and of their runs (E2E_PSRAM, E2E_SECURE).
+# The build job of the secure variant also builds the board build of the PSRAM variant
+# (run_e2e.sh E2E_BOARD): the #94 scenario starts on it.
+VARIANTS = (("default", {"psram": "0", "secure": "0"}),
+            ("psram", {"psram": "1", "secure": "0"}),
+            ("secure", {"psram": "1", "secure": "1"}))
 # Scenarios with no MQTT observer: a run of only these fails the run-level check "6. payloads
 # decode" (it requires at least one captured payload).
 NO_CAPTURE = {"issue #97 OTA trial wiring", "https", "refuse", "issue #135 no PSRAM"}
@@ -147,22 +171,15 @@ def group_scenarios(only_text):
     return selected(parse_only(only_text))
 
 
-def needs_plain(only_text):
-    return bool(set(group_scenarios(only_text)) & PLAIN_SCENARIOS)
-
-
 def groups_of(variant):
     """[(id, --only)] of the CI groups of @variant."""
     return [(g, only) for v, g, only in CI_GROUPS if v == variant]
 
 
 def matrix():
-    build = [{"variant": v, "psram": p, "plain": "1" if v == PLAIN_BUILDER else "0"}
-             for v, p in VARIANTS]
-    psram = dict(VARIANTS)
-    run = [{"variant": v, "psram": psram[v], "group": g, "only": only,
-            "plain": "1" if needs_plain(only) else "0"}
-           for v, g, only in CI_GROUPS]
+    build = [{"variant": v, **env} for v, env in VARIANTS]
+    envs = dict(VARIANTS)
+    run = [{"variant": v, **envs[v], "group": g, "only": only} for v, g, only in CI_GROUPS]
     return {"build": {"include": build}, "run": {"include": run}}
 
 
@@ -198,11 +215,13 @@ def row(variant, group, d):
         return f"| {variant} | {group} | no results.json | | |"
     checks = results.get("checks", [])
     ok = sum(1 for c in checks if c.get("ok"))
+    skipped = results.get("skipped", [])
+    stext = f"; SKIPPED: {', '.join(skipped)}" if skipped else ""
     retries = results.get("retries", [])
     rtext = "none" if not retries else "; ".join(f"{r['scenario']} ({r['qemu']})"
                                                  for r in retries)
     etext = "missing" if exits is None else ("none" if not exits else "; ".join(exits))
-    return (f"| {variant} | {group} | {ok}/{len(checks)} checks passed | retries: {rtext} | "
+    return (f"| {variant} | {group} | {ok}/{len(checks)} checks passed{stext} | retries: {rtext} | "
             f"qemu-exits: {etext} |")
 
 
@@ -212,8 +231,9 @@ HEADER = "| Variant | Group | Checks | Retries | QEMU exits |\n|---|---|---|---|
 def summary(root, variants=None):
     """Markdown for every (variant, group) of the CI in @root/e2e-result-<variant>-<group>/
     (@variants: these ids only; default all), and the problems: a group without results or with
-    a failed check, a scenario of the variant's full run that ran in no group or in two, more
-    retries than one full run may have (MAX_RETRIES)."""
+    a failed check, a scenario that a group skipped (issue #261: a [SKIP] has a duration, as a
+    scenario that ran, and no check), a scenario of the variant's full run that ran in no group
+    or in two, more retries than one full run may have (MAX_RETRIES)."""
     root = pathlib.Path(root)
     lines, problems = [HEADER], []
     for variant, _ in VARIANTS:
@@ -241,7 +261,14 @@ def summary(root, variants=None):
             want = group_scenarios(only)
             if got != want:
                 problems.append(f"{variant}/{group}: ran {got}, expected {want}")
-            seen += got
+            skipped = results.get("skipped")
+            if skipped is None:   # the harness always writes the list: no list, no evidence
+                problems.append(f"{variant}/{group}: results.json has no \"skipped\" list")
+                skipped = []
+            if skipped:
+                problems.append(f"{variant}/{group}: skipped {skipped}: each scenario of a CI "
+                                f"group must run")
+            seen += [name for name in got if name not in skipped]
         missing = [s for s in full if s not in seen]
         twice = sorted({s for s in seen if seen.count(s) > 1})
         if groups == len(groups_of(variant)) and (missing or twice):
@@ -265,7 +292,7 @@ def main(argv):
     if argv[:1] == ["groups"] and len(argv) <= 2:
         for v, g, only in CI_GROUPS:
             if argv[1:] in ([], [v]):
-                print(g, only, "1" if needs_plain(only) else "0")
+                print(g, only)
         return 0
     if argv[:1] == ["line"]:
         args = [a for a in argv[1:] if a != "--header"]

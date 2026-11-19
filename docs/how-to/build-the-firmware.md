@@ -53,7 +53,7 @@ The firmware needs ESP-IDF 6.x. The project uses v6.1. The reason for the limit 
 
 > **Caution: Make a backup of the configuration before you flash a gateway that has a configuration.** `idf.py flash` replaces the LittleFS partition with the folder `idf/fs/`. This erases `config.json` and the PEM files on the gateway. The secrets in NVS stay.
 
-> **Warning: Do not flash a QEMU build on the board.** On a real chip, its first boot burns an HMAC key into eFuse KEY5, and you cannot undo this. The reason is in [Features that burn eFuses](../explanation/no-efuse-features.md).
+> **Warning: Do not flash a QEMU build on the board.** A QEMU build simulates the I/O. On a real chip, the first boot of the secure QEMU build also burns an HMAC key into eFuse KEY5. You cannot undo this. The reason is in [Features that burn eFuses](../explanation/no-efuse-features.md).
 
 1. Connect the board to the computer with the USB-C cable.
 2. Optional: to flash a site configuration, copy its `config.json` into `idf/fs/`. To configure a gateway that runs, use the web UI. Refer to [Change, back up and restore the configuration](change-the-configuration.md).
@@ -77,20 +77,33 @@ To install a new image on a gateway in service, use the OTA update. Refer to [Up
 The E2E script `tools/e2e/run_e2e.sh` builds the QEMU images itself. Use this procedure only to build one QEMU image by hand.
 
 1. Go to the folder `idf/`.
-2. Make the test signing key, if it is not there. The QEMU build signs its OTA images:
+2. Build the image without PSRAM:
+
+   ```bash
+   idf.py -B build-qemu -D SDKCONFIG=build-qemu/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.qemu" build
+   ```
+
+3. For the variant with PSRAM, use the build folder `build-qemu-psram`. Add `sdkconfig.qemu-psram` at the end of `SDKCONFIG_DEFAULTS`.
+
+These two builds have no NVS encryption and sign no image, as the build for the board (#261).
+
+### Build the secure QEMU image
+
+The secure QEMU build has the NVS encryption and the signed OTA images. Only the secure variant of the E2E uses it (refer to [Build configuration](../reference/build-configuration.md#the-two-functions-of-the-secure-qemu-build)).
+
+1. Go to the folder `idf/`.
+2. Make the test signing key, if it is not there. The secure QEMU build signs its OTA images:
 
    ```bash
    mkdir -p build-qemu
    python -m espsecure generate-signing-key --version 2 --scheme rsa3072 build-qemu/e2e_signing_key.pem
    ```
 
-3. Build the image without PSRAM:
+3. Build the image:
 
    ```bash
-   idf.py -B build-qemu -D SDKCONFIG=build-qemu/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.qemu" build
+   idf.py -B build-qemu-psram-secure -D SDKCONFIG=build-qemu-psram-secure/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.qemu;sdkconfig.qemu-psram;sdkconfig.qemu-secure" build
    ```
-
-4. For the variant with PSRAM, use the build folder `build-qemu-psram`. Add `sdkconfig.qemu-psram` at the end of `SDKCONFIG_DEFAULTS`.
 
 Do not commit the signing key. Keep it in the build folder.
 

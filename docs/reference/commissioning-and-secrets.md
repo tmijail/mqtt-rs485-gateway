@@ -135,9 +135,10 @@ For the rules of a secret in a loaded document (`"********"`, a new text, `""`, 
 | Build | NVS | eFuses |
 |---|---|---|
 | The default build, for the board (`idf.py set-target esp32s3 build`) | **Not encrypted.** The secrets are not in the JSON, but a person can read them from a dump of the flash. The shell gives `secrets  NVS NOT encrypted` | Burns no eFuse. You can flash any board, and flash it again |
-| The QEMU build (E2E only) | Encrypted with the HMAC scheme (`CONFIG_NVS_ENCRYPTION`, `CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC`), key in the eFuse block KEY5. The shell gives `secrets  NVS encrypted (HMAC key in eFuse KEY5)` | Burns KEY5 in the emulated eFuse file of each run. Nothing real is burned |
+| The QEMU builds for the main E2E scenarios (`build-qemu`, `build-qemu-psram`) | Not encrypted, as on the board (#261) | Burn no eFuse |
+| The secure QEMU build (`sdkconfig.qemu-secure`, E2E only) | Encrypted with the HMAC scheme (`CONFIG_NVS_ENCRYPTION`, `CONFIG_NVS_SEC_KEY_PROTECT_USING_HMAC`), key in the eFuse block KEY5. The shell gives `secrets  NVS encrypted (HMAC key in eFuse KEY5)` | Burns KEY5 in the emulated eFuse file of each run. Nothing real is burned |
 
-The project does not encrypt the NVS on the board (decision of #133). The HMAC key in eFuse is permanent, and the owner of the board must keep full control of it. For the reasons, refer to [The features that burn eFuses](../explanation/no-efuse-features.md). The QEMU build keeps the NVS encryption and its migration until #133 decides about them. For that migration, refer to [The NVS migration in the QEMU build](#the-nvs-migration-in-the-qemu-build).
+The project does not encrypt the NVS on the board (decision of #133). The HMAC key in eFuse is permanent, and the owner of the board must keep full control of it. For the reasons, refer to [The features that burn eFuses](../explanation/no-efuse-features.md). The secure QEMU build keeps the NVS encryption and its migration (decision of #133), because the optional owner profile of #255 can use them. For that migration, refer to [The NVS migration in the QEMU build](#the-nvs-migration-in-the-qemu-build).
 
 ## The factory reset (CFG-5)
 
@@ -212,9 +213,9 @@ Limits of the watchdog:
 
 ## The NVS migration in the QEMU build
 
-> **Caution: Do not add work that depends on the NVS encryption or on its migration.** Both are only in the QEMU build until #133 decides about them.
+> **Caution: Do not add work that depends on the NVS encryption or on its migration.** Both are only in the secure QEMU build (`sdkconfig.qemu-secure`, decision of #133), until the work on #255 starts.
 
-The QEMU build encrypts the NVS. Its first encrypted boot moves all entries of an unencrypted NVS to the encrypted NVS (#67, #94). The decision logic is pure C with host tests (`gw_nvsraw`, `gw_nvsmig_decide`, `gw_nvsmig_may_erase`).
+The secure QEMU build encrypts the NVS. Its first encrypted boot moves all entries of an unencrypted NVS to the encrypted NVS (#67, #94). The decision logic is pure C with host tests (`gw_nvsraw`, `gw_nvsmig_decide`, `gw_nvsmig_may_erase`).
 
 The sequence:
 

@@ -7,6 +7,8 @@ the CI host-tests job:
     python idf/tools/e2e/test_harness.py   (needs tools/e2e/requirements.txt)
 """
 import argparse
+import contextlib
+import io
 import pathlib
 import socket
 import ssl
@@ -15,6 +17,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -766,8 +769,8 @@ class RxDropWindow(unittest.TestCase):
 
 class CiGroups(unittest.TestCase):
     """Issue #121: the CI runs the scenarios in parallel groups (scenarios.CI_GROUPS); the groups
-    of a variant must be exactly one full run of that variant, and the two variants together
-    every scenario once (issue #135)."""
+    of a variant must be exactly one full run of that variant, and the variants together
+    every scenario once (issues #135 and #261)."""
 
     def test_selection(self):
         full = scenarios.selected(set())
@@ -800,17 +803,38 @@ class CiGroups(unittest.TestCase):
         self.assertEqual(fw1[1:], scenarios.selected({"ota-fw1-web"}))
         self.assertEqual(["mqtt5", "max_packet"], scenarios.selected({"mqtt5"}))
         self.assertEqual(["sf", "sf spill", "stack margin"], scenarios.selected({"sf"}))
-        self.assertEqual(3, len(scenarios.selected({"nvs"})))
+        # issue #261: nvs is the union of the scenarios of the NVS encryption
+        nvs = ["CFG-7 NVS encryption", "issues #67/#94 NVS migration",
+               "issue #109 full unencrypted NVS", "issue #94 OTA to NVS encryption"]
+        self.assertEqual(nvs, scenarios.selected({"nvs"}))
+        self.assertEqual(nvs, scenarios.selected({"nvs-boot", "nvs-ota"}))
+        self.assertEqual(nvs[:3], scenarios.selected({"nvs-boot"}))
+        self.assertEqual(nvs[3:], scenarios.selected({"nvs-ota"}))
+        self.assertEqual(["FW-2 OTA signature"], scenarios.selected({"signed"}))
         # issue #135: a full run of a variant runs its own scenarios; --only selects in any one
         default, psram = scenarios.selected(set(), "default"), scenarios.selected(set(), "psram")
+        secure = scenarios.selected(set(), "secure")
         self.assertEqual(sorted(scenarios.DEFAULT_VARIANT_SCENARIOS), sorted(default))
         self.assertEqual([], [n for n in default if n in psram])
-        self.assertEqual(sorted(full), sorted(default + psram))
-        for name in ("tls", "main", "sf spill", *fw1, "issue #135 no PSRAM"):
+        self.assertEqual(sorted(full), sorted(default + psram + secure))
+        for name in ("tls", "main", "web", "sf spill", *fw1, "issue #135 no PSRAM"):
             self.assertIn(name, psram)   # the real configuration: #80, the spill, OTA buffers
         self.assertEqual(ota, scenarios.selected({"ota"}, "psram"))
         self.assertEqual(["tls", "main"], scenarios.selected({"tls", "main"}, "default"))
         self.assertTrue(scenarios.PSRAM_BUILD_SCENARIOS <= set(psram))
+        # issue #261: the secure variant runs the scenarios of the NVS encryption and of the
+        # signed OTA images, and only them; no other variant runs one of them
+        self.assertEqual(nvs + ["FW-2 OTA signature"], secure)
+        self.assertEqual(sorted(scenarios.SECURE_VARIANT_SCENARIOS), sorted(secure))
+        self.assertEqual([], [n for n in secure if n in default + psram])
+        self.assertEqual(["secure"] * len(secure), [scenarios.variant_of(n) for n in secure])
+        self.assertEqual("psram", scenarios.variant_of("FW-1 OTA by NCMD"))
+        self.assertEqual("default", scenarios.variant_of("issue #144 OTA self-check"))
+        self.assertEqual(ota, scenarios.selected({"ota"}, "secure"))   # --only: in any variant
+        self.assertTrue(scenarios.BOARD_BUILD_SCENARIOS <= set(secure))
+        self.assertEqual(set(), scenarios.SECURE_VARIANT_SCENARIOS
+                         & (scenarios.DEFAULT_VARIANT_SCENARIOS | scenarios.PSRAM_BUILD_SCENARIOS
+                            | scenarios.OPTIONAL))
         with self.assertRaises(ValueError):
             scenarios.parse_only("ota,otaa")
         self.assertEqual({"ota", "main"}, scenarios.parse_only("ota, main,"))
@@ -833,8 +857,30 @@ class CiGroups(unittest.TestCase):
                                  f"{name!r} in {seen.count(name)} CI groups of {variant}")
             self.assertEqual(sorted(full), sorted(seen), variant)
             everything += seen
-        # issue #135: each scenario in exactly one variant
+        # issues #135 and #261: each scenario in exactly one variant
         self.assertEqual(sorted(scenarios.selected(set())), sorted(everything))
+        # issue #261: a group runs only scenarios of its own variant, and none that the harness
+        # skips there: the scenarios of the secure build on a board build, the scenario of the
+        # PSRAM build without PSRAM, an optional scenario (its program is not in the CI)
+        for variant, group, only in scenarios.CI_GROUPS:
+            for name in scenarios.group_scenarios(only):
+                self.assertEqual(variant, scenarios.variant_of(name), f"{name!r} in {group}")
+                self.assertFalse(scenarios.would_skip(name, variant), f"{name!r} in {group}")
+        # would_skip itself: each legitimate SKIP of the harness
+        for name in scenarios.SECURE_VARIANT_SCENARIOS:
+            self.assertEqual([True, True, False],
+                             [scenarios.would_skip(name, v) for v in ("default", "psram", "secure")])
+        for name in scenarios.PSRAM_BUILD_SCENARIOS:
+            self.assertEqual([True, False, False],
+                             [scenarios.would_skip(name, v) for v in ("default", "psram", "secure")])
+        for name in scenarios.OPTIONAL:
+            self.assertTrue(all(scenarios.would_skip(name, v) for v, _ in scenarios.VARIANTS))
+        self.assertFalse(any(scenarios.would_skip("main", v) for v, _ in scenarios.VARIANTS))
+        # each scenario that would skip in the variant of its full run is optional: a full run
+        # of a variant skips nothing
+        for variant, _ in scenarios.VARIANTS:
+            for name in scenarios.selected(set(), variant):
+                self.assertFalse(scenarios.would_skip(name, variant), f"{name!r} in {variant}")
         # issue #175: no CI group runs an optional scenario (the CI image has no benthos-umh)
         self.assertEqual(set(), set(everything) & scenarios.OPTIONAL)
         for _, _, only in scenarios.CI_GROUPS:
@@ -850,21 +896,29 @@ class CiGroups(unittest.TestCase):
         m = scenarios.matrix()
         run = m["run"]["include"]
         self.assertEqual(len(scenarios.CI_GROUPS), len(run))
+        envs = dict(scenarios.VARIANTS)
         for job in run:
-            self.assertEqual(job["plain"] == "1", scenarios.needs_plain(job["only"]))
-            self.assertEqual(job["psram"], dict(scenarios.VARIANTS)[job["variant"]])
-        # the GW42 scenario needs the build without NVS encryption: its group downloads it
+            self.assertEqual(envs[job["variant"]],
+                             {"psram": job["psram"], "secure": job["secure"]})
+        # one build job for each variant, with the environment of its runs
+        build = m["build"]["include"]
+        self.assertEqual([v for v, _ in scenarios.VARIANTS], [b["variant"] for b in build])
+        for b in build:
+            self.assertEqual(envs[b["variant"]], {"psram": b["psram"], "secure": b["secure"]})
+        # issue #261: only the secure variant has the two functions, and it has the memory
+        # configuration of the board (#135); the main variants are the configuration of the board
+        self.assertEqual({"default": "0", "psram": "0", "secure": "1"},
+                         {v: env["secure"] for v, env in scenarios.VARIANTS})
+        self.assertEqual("1", envs["secure"]["psram"])
+        # the GW42 scenario needs the board build next to the secure build: the build job of the
+        # secure variant makes the two (run_e2e.sh E2E_BOARD), so it runs in that variant
         nvs = [j for j in run if "issue #94 OTA to NVS encryption" in
                scenarios.group_scenarios(j["only"])]
-        self.assertEqual(1, len(nvs))
-        self.assertTrue(all(j["plain"] == "1" for j in nvs))
-        self.assertEqual(["1"], [b["plain"] for b in m["build"]["include"] if b["plain"] == "1"])
-        # the images of one build job share its signing key: a group that needs the plain build
-        # runs in the variant whose job builds it
-        self.assertTrue(all(j["variant"] == scenarios.PLAIN_BUILDER
-                            for j in run if j["plain"] == "1"))
+        self.assertEqual(["secure"], [j["variant"] for j in nvs])
         self.assertEqual(e2e.MAX_RETRIES, scenarios.max_retries())
-        for name in scenarios.NO_CAPTURE | scenarios.PLAIN_SCENARIOS:
+        for name in (scenarios.NO_CAPTURE | scenarios.BOARD_BUILD_SCENARIOS
+                     | scenarios.SECURE_VARIANT_SCENARIOS | scenarios.DEFAULT_VARIANT_SCENARIOS
+                     | scenarios.PSRAM_BUILD_SCENARIOS):
             self.assertIn(name, dict(scenarios.SCENARIOS))
         self.assertEqual(e2e.SINGLE_TCG_SCENARIOS - set(dict(scenarios.SCENARIOS)), set())
 
@@ -874,14 +928,18 @@ class CiGroups(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
 
-            def write(variant, group, only, ok=True, retries=0):
+            def write(variant, group, only, ok=True, retries=0, skipped=()):
                 d = root / f"e2e-result-{variant}-{group}"
                 d.mkdir(exist_ok=True)
                 names = scenarios.group_scenarios(only)
-                checks = [{"criterion": f"{n} works", "ok": ok} for n in names]
+                # a scenario that the harness skipped has a duration and no check
+                checks = [{"criterion": f"{n} works", "ok": ok} for n in names
+                          if n not in skipped]
                 checks += [{"criterion": c, "ok": True} for c in scenarios.RUN_CHECKS[:5]]
                 res = {"checks": checks, "durations": {f"{n} #1": 1.0 for n in names},
                        "retries": [{"scenario": names[0], "qemu": "SIGSEGV"}] * retries}
+                if skipped is not None:
+                    res["skipped"] = list(skipped)
                 (d / "results.json").write_text(e2e.json.dumps(res))
                 (d / "qemu-exits.txt").write_text("none\n")
 
@@ -894,6 +952,11 @@ class CiGroups(unittest.TestCase):
                 self.assertIn(f"| {v} | **all** | {n + 5 * k}/{n + 5 * k} checks passed "
                               f"({n + 5} as one full run)", text)
             self.assertIn("qemu-exits: none", text)
+            for v, _ in scenarios.VARIANTS:   # issue #261: the three variants have their rows
+                self.assertIn(f"| {v} | **all** |", text)
+            self.assertEqual(["secure"], [v for v, _ in scenarios.VARIANTS
+                                          if f"| {v} | **all** |" in
+                                          scenarios.summary(root, ["secure"])[0]])
             pg, ponly = scenarios.groups_of("psram")[0]
             write("psram", pg, ponly, ok=False)
             dg, donly = scenarios.groups_of("default")[0]
@@ -911,6 +974,211 @@ class CiGroups(unittest.TestCase):
             write("psram", scenarios.groups_of("psram")[1][0], "ota-park")
             problems = scenarios.summary(root)[1]
             self.assertTrue(any("expected" in p for p in problems), problems)
+            # issue #261: a secure group that did not run one of its scenarios (a SKIP on a
+            # board build has a duration; a scenario that never started has none)
+            write("psram", scenarios.groups_of("psram")[1][0], scenarios.groups_of("psram")[1][1])
+            self.assertEqual([], scenarios.summary(root)[1])
+            sg, sonly = scenarios.groups_of("secure")[0]
+            (root / f"e2e-result-secure-{sg}" / "results.json").write_text(e2e.json.dumps(
+                {"checks": [{"criterion": c, "ok": True} for c in scenarios.RUN_CHECKS[:5]],
+                 "durations": {}, "retries": [], "skipped": []}))
+            problems = scenarios.summary(root)[1]
+            self.assertTrue(any(p.startswith(f"secure/{sg}: ran []") for p in problems), problems)
+            self.assertTrue(any("scenarios in no group" in p for p in problems), problems)
+            write("secure", sg, sonly)
+            self.assertEqual([], scenarios.summary(root)[1])
+
+    def test_summary_skipped(self):
+        """Issue #261: a scenario that the harness skipped is not a scenario that ran. The two
+        groups of the secure variant on a board build (each scenario a [SKIP], each check of
+        the run passed, exit 0) are not a full run of the variant."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+
+            def write(variant, group, only, skipped):
+                d = root / f"e2e-result-{variant}-{group}"
+                d.mkdir(exist_ok=True)
+                names = scenarios.group_scenarios(only)
+                res = {"checks": [{"criterion": f"{n} works", "ok": True} for n in names
+                                  if skipped is None or n not in skipped]
+                       + [{"criterion": c, "ok": True} for c in scenarios.RUN_CHECKS[1:5]],
+                       "durations": {f"{n} #1": 0.0 for n in names}, "retries": []}
+                if skipped is not None:
+                    res["skipped"] = skipped
+                (d / "results.json").write_text(e2e.json.dumps(res))
+                (d / "qemu-exits.txt").write_text("none\n")
+
+            groups = scenarios.groups_of("secure")
+            for g, only in groups:
+                write("secure", g, only, [])
+            self.assertEqual([], scenarios.summary(root, ["secure"])[1])
+            # every scenario of the two groups skipped
+            for g, only in groups:
+                write("secure", g, only, scenarios.group_scenarios(only))
+            text, problems = scenarios.summary(root, ["secure"])
+            for g, only in groups:
+                self.assertTrue(any(p.startswith(f"secure/{g}: skipped ") for p in problems),
+                                problems)
+                self.assertIn(f"SKIPPED: {', '.join(scenarios.group_scenarios(only))}", text)
+            missing = [p for p in problems if "scenarios in no group" in p]
+            self.assertEqual(1, len(missing), problems)
+            for name in scenarios.SECURE_VARIANT_SCENARIOS:
+                self.assertIn(name, missing[0])
+            # one scenario of one group skipped (the #94 scenario without the board build)
+            for g, only in groups:
+                write("secure", g, only, [])
+            g, only = groups[0]
+            name = scenarios.group_scenarios(only)[0]
+            write("secure", g, only, [name])
+            problems = scenarios.summary(root, ["secure"])[1]
+            self.assertTrue(any(p == f"secure/{g}: skipped {[name]}: each scenario of a CI group "
+                                     f"must run" for p in problems), problems)
+            self.assertTrue(any("scenarios in no group" in p and name in p for p in problems),
+                            problems)
+            # a results.json without the list (not written by this harness): no evidence
+            write("secure", g, only, None)
+            problems = scenarios.summary(root, ["secure"])[1]
+            self.assertEqual([f'secure/{g}: results.json has no "skipped" list'], problems)
+
+
+class SecureVariant(unittest.TestCase):
+    """Issue #261: the scenarios of the NVS encryption and of the signed OTA images run only on
+    the secure build, and the harness signs a test image only for that build."""
+
+    def test_secure_only_skips_on_the_board_build(self):
+        ran = []
+        args = types.SimpleNamespace(secure=False)
+        del e2e.SKIPPED[:]
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                e2e.secure_only(args, "FW-2 OTA signature", lambda: ran.append(1))()
+            self.assertEqual([], ran)
+            self.assertEqual(["FW-2 OTA signature"], e2e.SKIPPED)
+            self.assertIn("[SKIP] FW-2 OTA signature", out.getvalue())
+            self.assertIn("E2E_SECURE=1", out.getvalue())
+            args.secure = True
+            e2e.secure_only(args, "FW-2 OTA signature", lambda: ran.append(1))()
+            self.assertEqual([1], ran)
+            self.assertEqual(["FW-2 OTA signature"], e2e.SKIPPED)
+        finally:
+            del e2e.SKIPPED[:]
+
+    def test_images_are_signed_only_with_a_key(self):
+        """The board build checks no signature: without --signing-key the image of a test is
+        the unsigned image, and no signing tool runs. With a key (the secure build, or the key
+        of another signer) espsecure signs it."""
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            out = pathlib.Path(cmd[cmd.index("--output") + 1])
+            out.write_bytes(pathlib.Path(cmd[-1]).read_bytes() + b"S" * 4096)
+
+        def fake_image(src, version, dst, **caps):
+            made.append((version, caps))
+            pathlib.Path(dst).write_bytes(b"image " + version.encode())
+            return dst
+
+        made = []
+        old = e2e.subprocess.run, e2e.fw_image
+        e2e.subprocess.run, e2e.fw_image = fake_run, fake_image
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                d = pathlib.Path(tmp)
+                board = types.SimpleNamespace(signing_key="", idf_python="python")
+                img = e2e.signed_image(board, "app.bin", "e2e-a", d, "a", corrupt=True)
+                self.assertEqual(d / "a.bin", img)
+                self.assertEqual(b"image e2e-a", img.read_bytes())
+                self.assertEqual([], calls)
+                self.assertEqual([("e2e-a", {"corrupt": True})], made)
+                secure = types.SimpleNamespace(signing_key="/k/build.pem", idf_python="python")
+                img = e2e.signed_image(secure, "app.bin", "e2e-b", d, "b")
+                self.assertEqual(b"image e2e-b" + b"S" * 4096, img.read_bytes())
+                self.assertEqual(1, len(calls))
+                self.assertEqual("/k/build.pem", calls[0][calls[0].index("--keyfile") + 1])
+                self.assertEqual(str(d / "b-unsigned.bin"), calls[0][-1])
+                # the key of another signer wins over the key of the build
+                e2e.signed_image(secure, "app.bin", "e2e-c", d, "c", key=d / "other.pem")
+                self.assertEqual(str(d / "other.pem"), calls[1][calls[1].index("--keyfile") + 1])
+        finally:
+            e2e.subprocess.run, e2e.fw_image = old
+
+    def test_app_source(self):
+        """A board build (no signing key) never takes <app>-unsigned.bin: one next to its ELF is
+        the leftover of a build with the signature on in the same directory (another
+        firmware). The secure build must have it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = pathlib.Path(tmp)
+            elf = d / "rs485_spb_gateway.elf"
+            board = types.SimpleNamespace(elf=str(elf), signing_key="")
+            secure = types.SimpleNamespace(elf=str(elf), signing_key="/k/build.pem")
+            self.assertEqual(d / "rs485_spb_gateway.bin", e2e.app_source(board))
+            with self.assertRaises(SystemExit):
+                e2e.app_source(secure)
+            (d / "rs485_spb_gateway-unsigned.bin").write_bytes(b"stale")
+            self.assertEqual(d / "rs485_spb_gateway.bin", e2e.app_source(board))
+            self.assertEqual(d / "rs485_spb_gateway-unsigned.bin", e2e.app_source(secure))
+
+    def test_check_args(self):
+        """The arguments agree with the build: --secure with the two options of the sdkconfig,
+        --signing-key with --secure, and the hang self-tests only on the secure build."""
+        board_cfg = ("CONFIG_GW_IO_SIMULATED=y\n# CONFIG_NVS_ENCRYPTION is not set\n"
+                     "# CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT is not set\n"
+                     "CONFIG_SECURE_BOOT_V2_PREFERRED=y\n")
+        secure_cfg = ("CONFIG_GW_IO_SIMULATED=y\nCONFIG_NVS_ENCRYPTION=y\n"
+                      "CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT=y\n")
+
+        def args(**kw):
+            a = dict(secure=False, signing_key="", board_flash="", board_app="", board_elf="",
+                     simulate_qemu_death=None)
+            a.update(kw)
+            return types.SimpleNamespace(**a)
+
+        sec = dict(secure=True, signing_key="k.pem")
+        self.assertIsNone(e2e.check_args(args(), board_cfg))
+        self.assertIsNone(e2e.check_args(args(**sec), secure_cfg))
+        self.assertIsNone(e2e.check_args(args(**sec, board_flash="f", board_app="a",
+                                              board_elf="e"), secure_cfg))
+        # --secure does not say what the build is (a job that lost E2E_SECURE on one side)
+        self.assertIn("not the secure build", e2e.check_args(args(**sec), board_cfg))
+        self.assertIn("needs --secure", e2e.check_args(args(), secure_cfg))
+        half = "CONFIG_NVS_ENCRYPTION=y\n# CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT is not set\n"
+        self.assertIn("SECURE_SIGNED_APPS_NO_SECURE_BOOT", e2e.check_args(args(**sec), half))
+        self.assertIn("NVS_ENCRYPTION", e2e.check_args(args(), half))
+        # the key and the build go together
+        self.assertIn("--signing-key", e2e.check_args(args(secure=True), secure_cfg))
+        self.assertIn("--signing-key", e2e.check_args(args(signing_key="k.pem"), board_cfg))
+        # the board build as the image before the OTA: only for the secure build, flash and app
+        self.assertIn("--board-flash", e2e.check_args(args(board_flash="f", board_app="a"),
+                                                      board_cfg))
+        self.assertIn("go together", e2e.check_args(args(**sec, board_flash="f"), secure_cfg))
+        self.assertIn("go together", e2e.check_args(args(**sec, board_app="a"), secure_cfg))
+        # the hang self-tests stop at a line that only the secure build writes: without it
+        # they do nothing, and the run would pass where the expected result is a failure
+        for case in ("hang", "hang-mute"):
+            self.assertIn("needs --secure",
+                          e2e.check_args(args(simulate_qemu_death=case), board_cfg))
+            self.assertIsNone(e2e.check_args(args(**sec, simulate_qemu_death=case), secure_cfg))
+        for case in ("ota", "boot", "console", "main", "ota-failed", "ota-panic"):
+            self.assertIsNone(e2e.check_args(args(simulate_qemu_death=case), board_cfg))
+
+    def test_no_psram_skip_is_recorded(self):
+        """Each [SKIP] of a scenario goes to SKIPPED (results.json "skipped"): the scenario of
+        the PSRAM build without --psram too."""
+        del e2e.SKIPPED[:]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                e2e.run_no_psram(types.SimpleNamespace(psram=False), None, None)
+            self.assertEqual(["issue #135 no PSRAM"], e2e.SKIPPED)
+        finally:
+            del e2e.SKIPPED[:]
+
+    def test_runners_and_tcg(self):
+        # the scenarios of the secure variant with an OTA transfer run on one TCG thread (#107)
+        for name in ("issue #94 OTA to NVS encryption", "FW-2 OTA signature"):
+            self.assertIn(name, e2e.SINGLE_TCG_SCENARIOS)
+            self.assertIn(name, scenarios.SECURE_VARIANT_SCENARIOS)
 
 
 class TckResults(unittest.TestCase):
