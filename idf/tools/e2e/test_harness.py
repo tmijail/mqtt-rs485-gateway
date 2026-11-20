@@ -1226,6 +1226,19 @@ class TckResults(unittest.TestCase):
         self.assertIsNone(e2e.tck.known_reason("topics-dbirth-metrics", captured))
         self.assertIsNone(e2e.tck.known_reason("payloads-nbirth-qos", captured))
 
+    def test_template_parameter_assertions_must_pass(self):
+        """#251: a template parameter assertion that is NOT EXECUTED, FAIL or absent is reported;
+        a test without such assertions reports nothing."""
+        ids = e2e.tck.REQUIRED_PASS["SendDataTest"]
+        rows = [{"id": i, "status": "PASS"} for i in ids]
+        self.assertEqual([], e2e.tck.not_passed("SendDataTest", rows))
+        rows[0]["status"] = "NOT EXECUTED"
+        self.assertEqual([f"{ids[0]}: NOT EXECUTED"], e2e.tck.not_passed("SendDataTest", rows))
+        self.assertEqual([f"{ids[0]}: NOT EXECUTED", f"{ids[2]}: no result"],
+                         e2e.tck.not_passed("SendDataTest", rows[:2]))
+        self.assertEqual(6, len(e2e.tck.not_passed("SendComplexDataTest", [])))
+        self.assertEqual([], e2e.tck.not_passed("PrimaryHostTest", []))
+
     def test_not_configured(self):
         import os
         old = os.environ.pop("E2E_TCK_DIR", None)
