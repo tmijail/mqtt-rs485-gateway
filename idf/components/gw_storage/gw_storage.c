@@ -2093,7 +2093,7 @@ bool gw_storage_load_config(gw_config_t *cfg, gw_cfg_err_t *err, const char **so
         hash_web_password(cfg, &doc.secrets);
     }
     if (from_file && doc.had_clear_secrets) {
-        /* Migration (CFG-7): a file written by hand or by an older firmware carries secrets
+        /* CFG-7: a file written by hand, or put in the flash with the image, carries secrets
          * in clear. They are used, moved to NVS and the file is rewritten without them.
          * LittleFS is copy-on-write: the old blocks would keep the secrets until reused, so
          * the partition (which only holds this file) is erased before the rewrite. A power
