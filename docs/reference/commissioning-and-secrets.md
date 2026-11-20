@@ -167,7 +167,7 @@ The restart also sets the Modbus counters to 0, because they are only in RAM. Th
 
 ### The sequence of the factory reset
 
-The reset erases two stores, LittleFS and the NVS, and an erase is not atomic. The commissioning mark is in the NVS, thus it cannot stay during the two erases. The gateway keeps a mark "reset pending" in one store while it erases the other store (#266). A power cut at each moment leaves a mark, and the next boot completes the reset.
+The reset erases two stores, LittleFS and the NVS, and an erase is not atomic. The commissioning mark is in the NVS, thus it cannot stay during the two erases. The gateway keeps a mark "the reset is not complete" in one store while it erases the other store (#266). After step 1, a power cut at each moment leaves a mark, and the next boot completes the reset.
 
 | Step | What the gateway does | Where the mark is after the step |
 |---|---|---|
@@ -188,7 +188,7 @@ The reset erases two stores, LittleFS and the NVS, and an erase is not atomic. T
 |---|---|
 | The intent in the NVS | Steps 2 to 6 again |
 | Only the mark file | Steps 4 to 6 again |
-| No mark | Nothing. No reset is pending |
+| No mark | Nothing. No factory reset started, or each one is complete |
 
 - The boot examines the intent first. While the NVS has the intent, the erase of the NVS did not complete, and a second erase of LittleFS loses nothing.
 - With the mark file, the boot always erases the NVS again. An NVS that is partly erased can have old secrets, and a commissioning mark of an earlier reset.
@@ -204,13 +204,16 @@ The reset erases two stores, LittleFS and the NVS, and an erase is not atomic. T
 | From that moment until the end of step 6 | The boot does steps 4 to 6, then the gateway starts in commissioning mode |
 
 - No moment gives the embedded example configuration in normal mode. No old secret stays after the boot completes the reset.
-- The gateway uses the embedded example configuration only when all these conditions are true: no reset is pending, the NVS has no commissioning mark, LittleFS mounts, and it has no `config.json`. This is the state of a board after its first flash.
+- The gateway uses the embedded example configuration only when all these conditions are true. This is the state of a board after its first flash.
+    - The boot finds no mark of a factory reset that is not complete.
+    - The NVS has no commissioning mark.
+    - LittleFS mounts, and it has no `config.json`.
 
-**A reset that stays pending.** The reset stays pending when a step fails again at the boot, and in safe mode.
+**A reset that the boot does not complete.** The marks stay when a step fails again at the boot, and in safe mode.
 
 - When a step fails at the boot, the gateway starts in recovery mode. The cause is `a factory reset is not complete (see the log): restart the gateway to complete it, or do the factory reset again`. Each boot tries the steps again.
 - Safe mode does not do the steps, because a step can be the cause of the crashes. The first boot that is not in safe mode does them.
-- While a reset is pending, the gateway reads no configuration, and it refuses a configuration save (`409`).
+- While a mark is there, the gateway reads no configuration, and it refuses a configuration save (`409`).
 - A flash of the `storage` partition does not remove the intent, because `idf.py flash` does not erase the NVS. The next boot erases the flashed configuration, and the gateway starts in commissioning mode. Flash the configuration again after that boot.
 
 **Limits.**

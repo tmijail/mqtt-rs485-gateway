@@ -115,7 +115,7 @@ The gateway keeps `mqtt.password`, `network.wifi.password` and `web.password` in
 
 ## Load and recovery mode
 
-**The firmware uses the embedded configuration only when `/cfg/config.json` does not exist**, and no factory reset occurred or is pending. After a factory reset, the gateway starts in commissioning mode. Refer to [Commissioning and secrets](commissioning-and-secrets.md#the-modes).
+**The firmware uses the embedded configuration only when `/cfg/config.json` does not exist**, and no factory reset occurred or stopped before its end. After a factory reset, the gateway starts in commissioning mode. Refer to [Commissioning and secrets](commissioning-and-secrets.md#the-modes).
 
 All other problems put the gateway in **recovery mode**:
 
