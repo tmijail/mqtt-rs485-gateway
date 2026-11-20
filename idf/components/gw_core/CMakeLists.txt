@@ -43,6 +43,7 @@ set(GW_CORE_SRCS
     src/gw_plan.c
     src/gw_poll.c
     src/gw_rbe.c
+    src/gw_rng.c
     src/gw_rtc.c
     src/gw_sf.c
     src/gw_sfcfg.c
@@ -63,7 +64,7 @@ if(ESP_PLATFORM)
                            INCLUDE_DIRS include
                            PRIV_INCLUDE_DIRS proto
                            REQUIRES log
-                           PRIV_REQUIRES nanopb freertos)
+                           PRIV_REQUIRES nanopb freertos bootloader_support)
     # issue #227: the same warnings as the host build, plus the stack data (gw_warnings.cmake)
     gw_target_options(${COMPONENT_LIB})
     target_compile_options(${COMPONENT_LIB} PRIVATE -Wconversion -Wno-sign-conversion)

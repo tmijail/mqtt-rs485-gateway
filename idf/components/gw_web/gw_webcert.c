@@ -18,6 +18,7 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "gw_auth.h"
+#include "gw_rng.h"
 #include "gw_storage.h"
 #include "lwip/sockets.h"
 #include "mbedtls/pk.h"
@@ -38,6 +39,9 @@ static char s_src[16];
 /* A new key and self-signed certificate for @p hostname into @p cert and @p key. */
 static bool generate(const char *hostname, char *cert, size_t ccap, char *key, size_t kcap)
 {
+    /* issue #267: PSA takes the key from esp_fill_random() at this time (no DRBG with an earlier
+     * seed): the source of the radio after gw_net_start */
+    gw_rng_note("the key and the serial number of the web certificate");
     psa_crypto_init();
     psa_key_attributes_t a = PSA_KEY_ATTRIBUTES_INIT;
     psa_set_key_type(&a, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));

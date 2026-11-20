@@ -117,7 +117,9 @@ For the procedure, refer to [Connect to a broker with TLS](../how-to/connect-to-
 - esp-mqtt 1.1.0 leaks approximately 17 B for each `esp_mqtt_set_config()` call with `network.if_name` or `key_password` (#58). A wrapper refuses these fields, and the host test `check_set_config` finds a direct call.
 - Remove the wrapper when esp-mqtt corrects the leak. The upstream report is #236. Nobody sent it yet.
 - If Wi-Fi gets an address before Ethernet at boot, the first session uses Wi-Fi. The session goes back to Ethernet after `failback_s`: one extra session.
-- The Wi-Fi reconnection uses a backoff with jitter from 1 to 30 s. The radio power save is off (`WIFI_PS_NONE`), for the latency of the commands.
+- The Wi-Fi reconnection uses a backoff with jitter from 1 to 30 s. The radio power save is off (`WIFI_PS_NONE`), for the latency of the commands and for the entropy source (#267).
+- The radio is on at each boot, also without `network.wifi`, because it is the entropy source of the random values (#267). Refer to [Commissioning and secrets](commissioning-and-secrets.md#the-random-values). It uses more power, and the chip is warmer. The Wi-Fi driver always uses its internal RAM. No configuration key turns the radio off. If a site does not permit a radio, open a new issue.
+- The station without a connection is compile-only. Nobody examined on the board that it transmits no frames and that the radio does not go into a sleep mode (#130).
 - The Wi-Fi driver keeps no credentials in its NVS (`WIFI_STORAGE_RAM`). The password is in the secrets in NVS (CFG-7).
 - The scan of the Wi-Fi networks is compile-only on the radio (#208, #130). A scan while the station tries to connect can fail (`503`).
 - With two interfaces on the same subnet, lwIP selects the interface for SNTP and DNS. Only MQTT is bound to the active interface.

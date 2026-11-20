@@ -4,6 +4,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "gw_rng.h"
 
 #if !CONFIG_GW_IO_SIMULATED
 #include "driver/temperature_sensor.h"
@@ -25,6 +26,7 @@ static int64_t s_at = -CACHE_US;
 esp_err_t gw_temp_start(void)
 {
     s_lock = xSemaphoreCreateMutexStatic(&s_lock_buf);
+    gw_rng_adc_starts("the temperature sensor starts");   /* issue #267: the same sequence */
     ESP_LOGI(TAG, "temperature sensor: none in the emulator (SIMULATED): no reading");
     return ESP_OK;
 }
@@ -40,6 +42,8 @@ static temperature_sensor_handle_t s_sensor;
 esp_err_t gw_temp_start(void)
 {
     s_lock = xSemaphoreCreateMutexStatic(&s_lock_buf);
+    /* issue #267: the sensor uses the SAR ADC; the SAR ADC entropy source must be off first */
+    gw_rng_adc_starts("the temperature sensor starts");
     /* the range of the ESP32-S3 sensor with an error below 2 degrees C that covers a panel: the
      * chip is warmer than the air around it */
     const temperature_sensor_config_t tc = TEMPERATURE_SENSOR_CONFIG_DEFAULT(20, 100);

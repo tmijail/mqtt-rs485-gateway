@@ -12,7 +12,8 @@
 extern "C" {
 #endif
 
-/** Install and enable the sensor (once, at boot). An error is logged; then no reading. */
+/** Install and enable the sensor (once, at boot, after gw_net_start). Issue #267: turns the SAR
+ *  ADC entropy source off first (gw_rng.h). An error is logged; then no reading. */
 esp_err_t gw_temp_start(void);
 
 /** The temperature of the chip in degrees C; false when there is no reading. */

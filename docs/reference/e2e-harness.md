@@ -237,6 +237,7 @@ Each item has a test on the board in a hardware issue (the last column). The boa
 | BOOT button | The `boot 1` and `boot 0` commands | GPIO0 and the push times | #126 |
 | Temperature sensor (#212) | No model. `Node Info/Temperature` is null | The value of the sensor | #129 |
 | Wi-Fi scan (#208) | A fixed list, with `simulated` `true` | A scan with the radio | #130 |
+| Entropy sources of the RNG (#267) | The same sequence as the board: the SAR ADC source is on from the start of the NVS until `gw_net_start`. There is no radio, so after `gw_net_start` no source with a guarantee is on. The log gives a warning for the certificate and for each later salt | The radio as the entropy source, the station without a connection, and the quality of the random values | #126 (item L18), #130 |
 | Claim window (#120) | The window opens without the access point. `claimsim <s> eth` makes Ethernet count as the access point | A real client of the access point | #130 |
 | Card format (#139) | `card format simulate <ms>` runs the format task and writes nothing | The format of a real card | #131 |
 | Interrupt watchdog | With `wdt_disable`, the interrupt watchdog cannot trigger also | A real trigger | #129 |

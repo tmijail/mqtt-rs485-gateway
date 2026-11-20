@@ -159,14 +159,14 @@ typedef enum {
 } gw_nvsmig_copy_t;
 
 /**
- * Issue #94: a copy file read whole (@p size bytes in @p buf of @p cap) into a valid copy of the
- * current version (@p out_size bytes). VALID; BAD when it is not a copy (no magic) or fails its
- * own version's check (the only case to delete it); UNREADABLE for a version this firmware does
- * not know (kept). Version 1 (16-byte header, written by ebc2aa4) is converted in place (needs 4
- * more bytes of @p cap) and @p legacy set: its "done" marker was a u8 1, not the CRC.
+ * Issue #94: a copy file read whole (@p size bytes in @p buf) as a valid copy of the current
+ * version (@p out_size bytes). VALID; BAD when it is not a copy (no magic) or fails its own
+ * version's check (the only case to delete it); UNREADABLE for a version this firmware does not
+ * know (kept). #248: there is no reader of an earlier version (version 1 of a development image,
+ * removed by decision of the product owner): such a copy is a version this firmware does not know.
  */
-gw_nvsmig_copy_t gw_nvsmig_load(uint8_t *buf, size_t size, size_t cap, size_t *out_size,
-                                bool *legacy, uint32_t *count);
+gw_nvsmig_copy_t gw_nvsmig_load(const uint8_t *buf, size_t size, size_t *out_size,
+                                uint32_t *count);
 
 typedef enum {
     GW_NVSMIG_OPEN_ENCRYPTED = 0,  /* the normal start of the encrypted NVS */

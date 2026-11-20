@@ -83,7 +83,7 @@ foreach(t test_mb_rtu test_mb_master test_conv test_logic test_config test_plan 
           test_brokersel test_phost test_sf test_authlimit test_mbap test_localio test_buzz test_rtc
           test_ota test_nvsraw test_cardfmt test_sfcfg test_mbdiag test_cdump test_claim
           test_cfgschema test_bootloop test_fwlast test_lkgnet test_cfgprev test_wpa test_aplife
-          test_ident test_logring test_mblocal test_wifiown test_certs test_freset)
+          test_ident test_logring test_mblocal test_wifiown test_certs test_freset test_rng)
     add_executable(${t} ${t}.c)
     target_link_libraries(${t} PRIVATE test_support)
     target_include_directories(${t} PRIVATE ${CMAKE_CURRENT_LIST_DIR})

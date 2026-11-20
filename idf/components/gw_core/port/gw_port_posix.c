@@ -14,6 +14,22 @@ static pthread_once_t s_json_once = PTHREAD_ONCE_INIT;
 static char *s_capture;
 static size_t s_capture_cap;
 static uint64_t s_fake_ms;   /* 0: real clock */
+static bool s_rng_sar;
+static unsigned s_rng_sar_calls;
+
+void gw_port_rng_sar(bool on)
+{
+    s_rng_sar = on;
+    s_rng_sar_calls++;
+}
+
+bool gw_port_rng_sar_state(unsigned *calls)
+{
+    if (calls != NULL) {
+        *calls = s_rng_sar_calls;
+    }
+    return s_rng_sar;
+}
 
 void gw_port_fake_time(uint64_t ms)
 {

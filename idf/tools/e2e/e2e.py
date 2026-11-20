@@ -2009,6 +2009,50 @@ def presented_fp():
     return ":".join(f"{b:02X}" for b in hashlib.sha256(der).digest()) if der else ""
 
 
+# Issue #267 (gw_rng.h): the steps of the entropy sources in a first boot, in this order
+RNG_BOOT_STEPS = [
+    r"rng: SAR ADC entropy source on \(issue #267\)",
+    r"rng: the commissioning password: made with the SAR ADC entropy source",
+    r"rng: the salt of the web password: made with the SAR ADC entropy source",
+    r"rng: SAR ADC entropy source off: the Wi-Fi driver starts",
+    r"net: no radio in this build \(CONFIG_GW_WIFI\)",
+    r"io: temperature sensor: none in the emulator",
+    r"W \(\d+\) rng: the key and the serial number of the web certificate: made with no entropy "
+    r"source with a guarantee",
+]
+
+
+def rng_steps_in_order(lines, steps):
+    """The index of the first line of each step after the line of the step before (None from the
+    first step that is not found)."""
+    at, pos = [], 0
+    for rx in steps:
+        i = next((k for k in range(pos, len(lines)) if re.search(rx, lines[k])), None)
+        at.append(i)
+        if i is None:
+            break
+        pos = i + 1
+    return at + [None] * (len(steps) - len(at))
+
+
+def check_rng_sequence(gw, since):
+    """Issue #267: a first boot of the QEMU build runs the sequence of the entropy sources of the
+    board. The SAR ADC source goes on after the NVS starts; the commissioning password and the
+    salt of the web password of config.json come from it; it goes off where the board starts the
+    Wi-Fi driver, before the temperature sensor. QEMU has no radio ([hardware], CONFIG_GW_WIFI=n):
+    the web certificate after it has no source with a guarantee, and the log gives a warning."""
+    lines = [line for t, line in list(gw.lines) if t >= since]
+    at = rng_steps_in_order(lines, RNG_BOOT_STEPS)
+    errors = gw.find(r"E \(\d+\) rng:", since)
+    missing = [RNG_BOOT_STEPS[i] for i, k in enumerate(at) if k is None]
+    check("Issue #267 the boot runs the sequence of the entropy sources: the SAR ADC source on for "
+          "the commissioning password and the salt, off before the Wi-Fi driver would start and "
+          "before the temperature sensor; no radio in QEMU (the certificate has no source)",
+          not missing and not errors,
+          f"first step not found in order: {missing[0]}" if missing
+          else (errors[0] if errors else f"{len(at)} steps in order"))
+
+
 def check_web_cert(gw, work, node):
     """#205 on GW22: the HTTPS certificate of the web UI. GET /api/web/certificate gives the
     certificate of the first boot (its SHA-256 is the one presented, the SANs contain the
@@ -3477,6 +3521,7 @@ def run_https(args, work):
           and hdr_p.get("location", "").startswith("https://"),
           f"GET -> {st_r} {loc}; PUT -> {st_p} {hdr_p.get('location')}")
 
+    check_rng_sequence(gw, t0)
     check_csrf(gw, t0)
     check_refused_bodies(gw, t0)
     check_slow_client(gw, t0)

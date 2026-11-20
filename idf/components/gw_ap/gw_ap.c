@@ -97,9 +97,9 @@ static esp_err_t ap_configure(void *ctx)
     return radio_apply(*(const bool *)ctx);
 }
 
-/* Issue #208: gw_net owns the driver (gw_wifiown). The access point is one of its users: the
- * driver starts in AP mode when it is off, or gets the AP interface (APSTA) next to the station
- * or a scan. */
+/* Issue #208: gw_net owns the driver (gw_wifiown). The access point is one of its users: it gets
+ * the AP interface (APSTA) next to the station, a scan or the radio of the entropy source (issue
+ * #267), or the driver starts in AP mode when it is off (only before gw_net_start). */
 static esp_err_t radio_start(bool open)
 {
     if (s_netif == NULL) {
@@ -109,7 +109,8 @@ static esp_err_t radio_start(bool open)
     return gw_net_wifi_acquire(GW_WIFI_USER_AP, ap_configure, &open);
 }
 
-/* The station and a scan go on; with no other user the driver stops and is deinitialised. */
+/* The station, a scan and the radio of the entropy source go on (issue #267: the driver goes
+ * back to STA mode and does not stop). */
 static void radio_stop(void)
 {
     gw_net_wifi_release(GW_WIFI_USER_AP);

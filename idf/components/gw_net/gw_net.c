@@ -18,6 +18,7 @@
 #include "freertos/task.h"
 #include "gw_backoff.h"
 #include "gw_netsel.h"
+#include "gw_rng.h"
 #include "gw_storage.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/ip6_addr.h"
@@ -574,7 +575,11 @@ static SemaphoreHandle_t wifi_lock(void)
 static esp_err_t wifi_apply(gw_wifiown_plan_t p, esp_err_t (*configure)(void *ctx), void *ctx)
 {
     if (p.init) {
-        const wifi_init_config_t wc = WIFI_INIT_CONFIG_DEFAULT();
+        wifi_init_config_t wc = WIFI_INIT_CONFIG_DEFAULT();
+        /* issue #267: the radio of the RNG is a station that never connects. With the default
+         * (CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE) a station without a connection goes into
+         * modem sleep, and the RF subsystem is then no entropy source */
+        wc.sta_disconnected_pm = false;
         ESP_RETURN_ON_ERROR(esp_wifi_init(&wc), TAG, "wifi init");
         /* the credentials live in config.json; do not keep a second copy in NVS */
         ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "wifi storage");
@@ -602,7 +607,10 @@ static esp_err_t wifi_apply(gw_wifiown_plan_t p, esp_err_t (*configure)(void *ct
 
 static const char *user_name(gw_wifi_user_t u)
 {
-    return u == GW_WIFI_USER_STA ? "station" : u == GW_WIFI_USER_AP ? "access point" : "scan";
+    return u == GW_WIFI_USER_STA  ? "station"
+           : u == GW_WIFI_USER_AP ? "access point"
+           : u == GW_WIFI_USER_RNG ? "entropy source"
+                                   : "scan";
 }
 
 esp_err_t gw_net_wifi_acquire(gw_wifi_user_t user, esp_err_t (*configure)(void *ctx), void *ctx)
@@ -611,6 +619,11 @@ esp_err_t gw_net_wifi_acquire(gw_wifi_user_t user, esp_err_t (*configure)(void *
     xSemaphoreTake(l, portMAX_DELAY);
     uint8_t before = s_wifi_users, after = (uint8_t)(before | user);
     gw_wifiown_plan_t p = gw_wifiown_plan(before, after);
+    if (p.refuse) {
+        ESP_LOGE(TAG, "wifi: the station cannot start after the STA interface (gw_wifiown)");
+        xSemaphoreGive(l);
+        return ESP_ERR_INVALID_STATE;
+    }
     esp_err_t e = wifi_apply(p, configure, ctx);
     if (e == ESP_OK) {
         s_wifi_users = after;
@@ -734,7 +747,8 @@ static esp_err_t start_wifi(const gw_config_t *cfg)
      * BOOT gesture already on, gets the station interface (APSTA) */
     ESP_RETURN_ON_ERROR(gw_net_wifi_acquire(GW_WIFI_USER_STA, sta_configure, (void *)w), TAG,
                         "wifi start");
-    /* latency of NCMD/DCMD matters more than the radio's power draw on a powered gateway */
+    /* latency of NCMD/DCMD matters more than the radio's power draw on a powered gateway; and
+     * issue #267: the RF subsystem is an entropy source only when it does not sleep */
     esp_wifi_set_ps(WIFI_PS_NONE);
     ESP_LOGI(TAG, "wifi: station for '%s' (%s, failback after %u s)", w->ssid,
              w->role == GW_WIFI_PRIMARY ? "primary, Ethernet is the backup"
@@ -743,6 +757,35 @@ static esp_err_t start_wifi(const gw_config_t *cfg)
     return ESP_OK;
 }
 #endif
+
+#if CONFIG_GW_WIFI
+/* Issue #267: no power save, so that the RF subsystem stays on (an entropy source). Before the
+ * start of the driver when the radio of the RNG starts it. */
+static esp_err_t rng_configure(void *ctx)
+{
+    (void)ctx;
+    return esp_wifi_set_ps(WIFI_PS_NONE);
+}
+#endif
+
+/* Issue #267 (gw_rng.h, step 3): the radio as the entropy source of the RNG, until the restart.
+ * After the station of network.wifi (gw_wifiown: the station comes first). With no station the
+ * Wi-Fi driver starts here in STA mode: no configuration, no esp_wifi_connect(), no access point.
+ * The scan and the access point then only add and remove their interface. */
+static void start_rng_radio(void)
+{
+#if CONFIG_GW_WIFI
+    esp_err_t e = gw_net_wifi_acquire(GW_WIFI_USER_RNG, rng_configure, NULL);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "wifi: the radio of the entropy source did not start (%s)",
+                 esp_err_to_name(e));
+    }
+    gw_rng_radio_on(e == ESP_OK);
+#else
+    ESP_LOGW(TAG, "no radio in this build (CONFIG_GW_WIFI): no entropy source after the SAR ADC "
+                  "source (issue #267)");
+#endif
+}
 
 /* ---------------------------------------------------------------- Wi-Fi scan (#208) */
 
@@ -860,8 +903,8 @@ static const char *auth_name(wifi_auth_mode_t m, bool *supported)
     }
 }
 
-/* Back to the radio state from before the scan (gw_wifiown: the driver stops and is
- * deinitialised when no station and no access point use it). Under s_scan_lock. */
+/* Back to the radio state from before the scan (gw_wifiown: the scan gives the driver back; the
+ * radio of the entropy source keeps it, issue #267). Under s_scan_lock. */
 static void scan_radio_release(void)
 {
     if (s_scan_radio) {
@@ -908,8 +951,9 @@ static void on_scan_done(void *arg, esp_event_base_t base, int32_t id, void *dat
     xSemaphoreGive(s_scan_lock);
 }
 
-/* The radio for a scan: the scan becomes a user of the driver (the driver starts in STA mode
- * when it is off; APSTA with the access point; no change with the station). Under the lock. */
+/* The radio for a scan: the scan becomes a user of the driver (APSTA with the access point; no
+ * change in STA mode: the station or the radio of the entropy source, issue #267). Under the
+ * lock. */
 static esp_err_t scan_radio_start(void)
 {
     static bool handler;
@@ -1109,9 +1153,16 @@ esp_err_t gw_net_start(const gw_config_t *cfg, const gw_net_callbacks_t *cb)
     sc.sync_cb = on_time_sync;
     ESP_RETURN_ON_ERROR(esp_netif_sntp_init(&sc), TAG, "sntp");
 
-    ESP_RETURN_ON_ERROR(start_ethernet(cfg), TAG, "ethernet");
+    esp_err_t eth = start_ethernet(cfg);
+    if (eth != ESP_OK) {
+        ESP_LOGE(TAG, "ethernet unavailable (%s)", esp_err_to_name(eth));
+    }
+    /* issue #267: the SAR ADC entropy source goes off before the Wi-Fi driver starts (gw_rng.h);
+     * also in a build with no radio, so that the sequence is the same. The radio of the entropy
+     * source starts also when Ethernet failed. */
+    gw_rng_radio_starts();
 #if CONFIG_GW_WIFI
-    if (wifi) {
+    if (wifi && eth == ESP_OK) {
         /* Ethernet keeps working if the radio cannot start */
         esp_err_t err = start_wifi(cfg);
         if (err != ESP_OK) {
@@ -1119,5 +1170,6 @@ esp_err_t gw_net_start(const gw_config_t *cfg, const gw_net_callbacks_t *cb)
         }
     }
 #endif
-    return ESP_OK;
+    start_rng_radio();
+    return eth;
 }

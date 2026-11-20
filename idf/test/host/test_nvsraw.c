@@ -632,62 +632,41 @@ static void test_decide_copy_out_of_reach(void)
     TEST_ASSERT_EQUAL(GW_NVSMIG_STAY_PLAIN, gw_nvsmig_decide(&st));   /* no place for a copy */
 }
 
-/* N5: the copy file as read: current version, version 1 (converted), unknown version (kept),
- * not a copy or damaged (the only cases to delete it) */
+/* N5: the copy file as read: current version, another version (kept), not a copy or damaged
+ * (the only cases to delete it). #248: version 1 of a development image is another version. */
 static void test_copy_load(void)
 {
-    static uint8_t buf[256], v1[256];
+    static uint8_t buf[256];
     uint8_t b = 41;
     size_t n = gw_nvsmig_begin(buf, sizeof(buf));
     n = gw_nvsmig_add(buf, sizeof(buf), n, "spb", "bdseq", 0x01, &b, 1);
     n = gw_nvsmig_add(buf, sizeof(buf), n, "secrets", "mqtt_pw", 0x21, "pw", 3);
     size_t size = gw_nvsmig_seal(buf, n, 0);
     size_t out = 0;
-    bool legacy = true;
     uint32_t count = 0;
-    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_VALID, gw_nvsmig_load(buf, size, sizeof(buf), &out, &legacy,
-                                                           &count));
+    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_VALID, gw_nvsmig_load(buf, size, &out, &count));
     TEST_ASSERT_EQUAL_size_t(size, out);
-    TEST_ASSERT_FALSE(legacy);
     TEST_ASSERT_EQUAL_UINT32(2, count);
 
-    /* the same copy as ebc2aa4 wrote it: 16-byte header, version 1 */
-    size_t body = size - GW_NVSMIG_HDR;
-    memcpy(v1, buf, 16);
-    v1[4] = 1;
-    v1[5] = 0;
-    memcpy(v1 + 16, buf + GW_NVSMIG_HDR, body);
-    wr32(v1 + 8, (uint32_t)body);
-    wr32(v1 + 12, gw_nvsraw_crc32(0, v1 + 16, body));
     static uint8_t w[256];
-    memcpy(w, v1, sizeof(w));
-    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_VALID, gw_nvsmig_load(w, 16 + body, sizeof(w), &out, &legacy,
-                                                           &count));
-    TEST_ASSERT_TRUE(legacy);
-    TEST_ASSERT_EQUAL_size_t(size, out);
-    TEST_ASSERT_EQUAL_MEMORY(buf, w, size);   /* converted into the current version */
-    /* valid v1, but no room to convert it: kept */
-    memcpy(w, v1, sizeof(w));
-    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_UNREADABLE, gw_nvsmig_load(w, 16 + body, 16 + body, &out,
-                                                                &legacy, &count));
-    /* damaged v1: deleted */
-    memcpy(w, v1, sizeof(w));
-    w[16 + 3] ^= 1;
-    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_BAD, gw_nvsmig_load(w, 16 + body, sizeof(w), &out, &legacy,
-                                                         &count));
+    /* the version of the development image ebc2aa4: no reader, kept, never deleted */
+    memcpy(w, buf, size);
+    w[4] = 1;
+    w[5] = 0;
+    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_UNREADABLE, gw_nvsmig_load(w, size, &out, &count));
+    TEST_ASSERT_EQUAL_size_t(0, out);
     /* an unknown (newer) version: kept, never deleted */
     memcpy(w, buf, size);
     w[4] = 3;
-    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_UNREADABLE, gw_nvsmig_load(w, size, sizeof(w), &out, &legacy,
-                                                                &count));
+    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_UNREADABLE, gw_nvsmig_load(w, size, &out, &count));
     /* not a copy, or too short to say: deleted; a damaged current one too */
     memcpy(w, buf, size);
     w[0] ^= 1;
-    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_BAD, gw_nvsmig_load(w, size, sizeof(w), &out, &legacy, &count));
-    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_BAD, gw_nvsmig_load(buf, 3, sizeof(buf), &out, &legacy, &count));
+    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_BAD, gw_nvsmig_load(w, size, &out, &count));
+    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_BAD, gw_nvsmig_load(buf, 3, &out, &count));
     memcpy(w, buf, size);
     w[GW_NVSMIG_HDR + 2] ^= 1;
-    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_BAD, gw_nvsmig_load(w, size, sizeof(w), &out, &legacy, &count));
+    TEST_ASSERT_EQUAL(GW_NVSMIG_COPY_BAD, gw_nvsmig_load(w, size, &out, &count));
 }
 
 /* ---------- issue #97: what the review found untested ---------- */

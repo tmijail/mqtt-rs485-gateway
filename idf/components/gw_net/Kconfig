@@ -17,9 +17,11 @@ menu "Gateway: network"
         depends on SOC_WIFI_SUPPORTED
         default y
         help
-            Compiles the Wi-Fi station driver. It is only started when the configuration
-            enables network.wifi; Ethernet-only configurations behave as without it.
-            QEMU does not emulate the radio: the emulator build disables this.
+            Compiles the Wi-Fi station driver. The station connects only when the configuration
+            enables network.wifi. Issue #267: the driver starts at each boot in station mode,
+            with no connection and no power save, because the radio is the entropy source of
+            the random number generator. QEMU does not emulate the radio: the emulator build
+            disables this.
 
     config GW_NET_NO_SERVICE_MIN_S
         int "Hold of an interface without a path to the broker, first time (s)"

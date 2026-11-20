@@ -28,7 +28,8 @@ CONFIG_GW_RS485_HW_HALF_DUPLEX=n
 CONFIG_SPIRAM=n
 # [emulator] QEMU does not model QIO flash reads by the app (data shifted by 2 bytes)
 CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
-# [hardware] No Wi-Fi radio
+# [hardware] No Wi-Fi radio. Issue #267: thus no radio as the entropy source of the RNG after
+# gw_net_start; the SAR ADC source before it is the same as on the board (#126 L18, #130)
 CONFIG_GW_WIFI=n
 # [emulator] QEMU writes the flash image asynchronously: a reset right after the panic handler
 # saved the core dump can drop its last write (the checksum) from the image. One second lets it

@@ -357,64 +357,21 @@ bool gw_nvsmig_check(const uint8_t *buf, size_t size, uint32_t *count)
     return true;
 }
 
-/* Version 1 (ebc2aa4): 16-byte header (magic, version, count, length, CRC), same records. */
-#define MIG_V1_HDR 16u
-
-static bool v1_ok(const uint8_t *buf, size_t size)
-{
-    if (size < MIG_V1_HDR || le32(buf + 8) != size - MIG_V1_HDR ||
-        le32(buf + 12) != gw_nvsraw_crc32(0, buf + MIG_V1_HDR, size - MIG_V1_HDR)) {
-        return false;
-    }
-    /* every record whole, the count right */
-    uint32_t n = 0;
-    size_t off = MIG_V1_HDR;
-    while (off < size) {
-        if (size - off < GW_NVSMIG_REC_HDR) {
-            return false;
-        }
-        size_t len = le16(buf + off + 33);
-        if (size - off - GW_NVSMIG_REC_HDR < len || !name_ok((const char *)buf + off) ||
-            !name_ok((const char *)buf + off + GW_NVSRAW_NAME)) {
-            return false;
-        }
-        off += GW_NVSMIG_REC_HDR + len;
-        n++;
-    }
-    return n == le16(buf + 6);
-}
-
-gw_nvsmig_copy_t gw_nvsmig_load(uint8_t *buf, size_t size, size_t cap, size_t *out_size,
-                                bool *legacy, uint32_t *count)
+gw_nvsmig_copy_t gw_nvsmig_load(const uint8_t *buf, size_t size, size_t *out_size,
+                                uint32_t *count)
 {
     *out_size = 0;
-    *legacy = false;
     if (size < 6 || le32(buf) != GW_NVSMIG_MAGIC) {
         return GW_NVSMIG_COPY_BAD;   /* not a copy at all (read whole) */
     }
-    uint32_t version = le16(buf + 4);
-    if (version == MIG_VERSION) {
-        if (!gw_nvsmig_check(buf, size, count)) {
-            return GW_NVSMIG_COPY_BAD;
-        }
-        *out_size = size;
-        return GW_NVSMIG_COPY_VALID;
+    if (le16(buf + 4) != MIG_VERSION) {
+        return GW_NVSMIG_COPY_UNREADABLE;   /* another format: kept for the firmware that wrote it */
     }
-    if (version != 1) {
-        return GW_NVSMIG_COPY_UNREADABLE;   /* a newer format: kept for the firmware that wrote it */
-    }
-    if (!v1_ok(buf, size)) {
+    if (!gw_nvsmig_check(buf, size, count)) {
         return GW_NVSMIG_COPY_BAD;
     }
-    size_t grown = size + (GW_NVSMIG_HDR - MIG_V1_HDR);
-    if (cap < grown) {
-        return GW_NVSMIG_COPY_UNREADABLE;   /* valid, but no room to convert it here */
-    }
-    memmove(buf + GW_NVSMIG_HDR, buf + MIG_V1_HDR, size - MIG_V1_HDR);
-    gw_nvsmig_seal(buf, grown, 0);
-    *legacy = true;
-    *out_size = grown;
-    return gw_nvsmig_check(buf, grown, count) ? GW_NVSMIG_COPY_VALID : GW_NVSMIG_COPY_BAD;
+    *out_size = size;
+    return GW_NVSMIG_COPY_VALID;
 }
 
 bool gw_nvsmig_find(const uint8_t *buf, size_t size, const char *ns, const char *key,

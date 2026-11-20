@@ -161,6 +161,6 @@ CI runs `idf.py size` in the job `firmware`, and puts the output in `size.txt` o
 
 IRAM is always 100 % full on the ESP32-S3. This is normal: the other IRAM code goes in DIRAM.
 
-The Wi-Fi driver (NET-4) adds approximately 27 KB of static DIRAM and 347 KB of flash, also when the configuration does not enable Wi-Fi. The project already moves from IRAM to flash all the Wi-Fi code that ESP-IDF permits (`CONFIG_ESP_WIFI_IRAM_OPT=n`, `CONFIG_ESP_WIFI_RX_IRAM_OPT=n`). If you do not need Wi-Fi, set `CONFIG_GW_WIFI=n` to recover this memory.
+The Wi-Fi driver (NET-4) adds approximately 27 KB of static DIRAM and 347 KB of flash, also when the configuration does not enable Wi-Fi. The project already moves from IRAM to flash all the Wi-Fi code that ESP-IDF permits (`CONFIG_ESP_WIFI_IRAM_OPT=n`, `CONFIG_ESP_WIFI_RX_IRAM_OPT=n`). `CONFIG_GW_WIFI=n` recovers this memory. Do not use it in a build for the board: that build has no radio, thus no entropy source with a guarantee after the boot (#267). Refer to [Commissioning and secrets](commissioning-and-secrets.md#the-random-values).
 
 The memory budget at run time is in [Architecture](architecture.md#memory-rel-2).

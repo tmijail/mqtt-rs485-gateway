@@ -15,7 +15,7 @@ The components are in [`idf/components/`](https://github.com/tmijail/mqtt-rs485-
 | `gw_rs485` | UART1 in `UART_MODE_RS485_HALF_DUPLEX` (RTS = GPIO21), as an `mb_transport_t` | Yes |
 | `gw_bus` | The task that is the **only owner of the RS485 bus**: the polling, the DCMD writes, the Modbus TCP requests and the test reads (MB-16) | Yes |
 | `gw_edge` | The Sparkplug task: the esp-mqtt client (TLS, MQTT 5, broker list), bdSeq, the Will, the backoff, the primary host, store & forward, the time limit of each publish, and the `gw_node` engine | Yes |
-| `gw_net` | The W5500 on SPI (openeth in QEMU). The optional Wi-Fi STA, as the primary interface or as a backup (NET-4). DHCP or a static IP address for each interface. The optional IPv6, with SLAAC and a static address (NET-7). The default route from `gw_netsel`. SNTP with 1 to 3 servers (#201). The scan of the Wi-Fi networks for the web UI, also with `network.wifi` off (#208) | Yes |
+| `gw_net` | The W5500 on SPI (openeth in QEMU). The optional Wi-Fi STA, as the primary interface or as a backup (NET-4). DHCP or a static IP address for each interface. The optional IPv6, with SLAAC and a static address (NET-7). The default route from `gw_netsel`. SNTP with 1 to 3 servers (#201). The scan of the Wi-Fi networks for the web UI, also with `network.wifi` off (#208). The Wi-Fi driver at each boot, as the entropy source of the RNG (#267) | Yes |
 | `gw_bsp` | **The declarative description of the board** ([`gw_bsp.c`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/components/gw_bsp/gw_bsp.c)): all the pins, the I²C address of the expander and the active levels (DI, DO, RS485 DE, I²C, LED and its color order, buzzer, W5500, microSD). The drivers read it and contain no board data. The RTC address is `GW_PCF85063_ADDR` in [`gw_rtc.h`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/components/gw_core/include/gw_rtc.h). Refer to [Board data to verify](board-data-to-verify.md) | Yes (types) |
 | `gw_board` | The temperature of the chip (`gw_temp.c`, #212; no value in QEMU). The 8 DIs, sampled at 1 kHz, with an inversion and a debounce for each DI (#211) and pulse counters (IO-4, in NVS). Up to 4 DIs are fast counters on a PCNT unit (#218). The 8 DOs on the TCA9554, with the `local_io` task. The WS2812 status LED. The buzzer on GPIO46 (IO-6, LEDC). The BOOT button | Yes |
 | `gw_storage` | The configuration from LittleFS, or the embedded configuration when the file is missing. The atomic write of a new configuration. The secrets in encrypted NVS (CFG-7). The network of the last valid configuration, for recovery mode. The factory reset and the commissioning flag (CFG-5). The microSD card of the store & forward spill (`gw_sfcard.c`, #31). The core dump in flash: its state, summary, read and erase (`gw_coredump.c`, #132). The allocation functions of the PSRAM | Yes |
@@ -70,8 +70,9 @@ The source is in [`idf/components/gw_core/src/`](https://github.com/tmijail/mqtt
 | | `gw_claim` | The claim window for the first web password, and the rule of the access point (CFG-8, #120) |
 | | `gw_wpa` | SHA-1, PBKDF2-HMAC-SHA1, the PMK of the access point (the WPA2 key from the web password) and the rule of a WPA2 passphrase (NET-5, #187) |
 | | `gw_aplife` | The life of the access point: the stop on request, after the idle time and at the maximum time, and the end of the open period at a claim (NET-5, #187) |
+| | `gw_rng` | The entropy sources of the random values: the SAR ADC source during the early boot, then the radio, and the order of the boot (#267). Refer to [Commissioning and secrets](commissioning-and-secrets.md#the-random-values) |
 | Network and time | `gw_netsel` | The active interface, Ethernet or Wi-Fi (NET-4), and the "no service" state of an interface (#57) |
-| | `gw_wifiown` | The users of the Wi-Fi driver (the station, the access point and a scan), and what the driver must do when a user starts or stops (#208) |
+| | `gw_wifiown` | The users of the Wi-Fi driver (the station, the access point, a scan and the radio as the entropy source), and what the driver must do when a user starts or stops (#208, #267) |
 | | `gw_rtc` | The PCF85063 registers ↔ UTC, with the BCD values and the OS bit (TIME-2) |
 | | `gw_clock` | The sources of the clock, when the clock is valid, the time from the browser and the hints for the operator (TIME-1, #160) |
 | Log and diagnostics | `gw_syslog` | The conversion of log lines to RFC 5424, and a bounded ring (REL-4) |
@@ -134,7 +135,7 @@ A change of `littlefs` or of ESP-IDF can change a stored format. Such a change m
 | `buzzer` (`gw_board`) | — / 2 | 2.5 KB static | No | GPIO46 and LEDC channel 7 (IO-6). The task reads the `gw_status` flags, selects the alarm (`gw_buzz`), and starts or stops the tone. It runs every 20 ms while the tone sounds, and every 250 ms in silence. A beep request wakes it |
 | `mdns` (component) | 0 / 1 | 4 KB | No | The mDNS responder |
 | `web_guard` (`gw_web`, #110) | — / 1 | 2.5 KB static | No | The watchdog of the web servers. Every 1 s, it sends a ping to each server. If a request holds a server, it calls `shutdown()` on the sessions of that server |
-| esp-mqtt (`mqtt_task`), lwIP (`tcpip`), Ethernet RX (`w5500_tsk` or `emac_rx`), Wi-Fi (only with `network.wifi`), event loop (`sys_evt`) | **0** / IDF | IDF | The TWDT watches the IDLE task | The event loop owns `gw_netsel`: the link and IP events, and the failback timer |
+| esp-mqtt (`mqtt_task`), lwIP (`tcpip`), Ethernet RX (`w5500_tsk` or `emac_rx`), Wi-Fi (at each boot on the board, #267), event loop (`sys_evt`) | **0** / IDF | IDF | The TWDT watches the IDLE task | The event loop owns `gw_netsel`: the link and IP events, and the failback timer |
 
 The shell command `status` gives the core of each task (`tasks rs485_bus 1 sparkplug 0 tcpip 0 …`). Its `stack` line gives the minimum free stack of `sparkplug`, `mqtt_task`, `rs485_bus`, `local_io`, `web_guard`, `httpd` and `httpd_redirect`. The E2E examines these values. For the thresholds, refer to [Memory thresholds](e2e-harness.md#memory-thresholds).
 
@@ -268,6 +269,13 @@ The internal RAM is shared with Wi-Fi, lwIP, esp-mqtt, the task stacks and DMA. 
 | The largest free internal block at the validation (#80) | ≥ 17 KB |
 | The margin after the largest request of the validation print (#91) | ≥ 4 KB |
 | The free stack of `sparkplug` after the deepest paths | ≥ 1 KB |
+
+On the board, the Wi-Fi driver runs at each boot, also without `network.wifi`, because the radio is the entropy source of the random values (#267). Thus the driver always uses its internal RAM, not only with the Wi-Fi backup, a scan or the access point:
+
+- the static RX buffers (`CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM`) and the static management buffers, which the driver allocates in `esp_wifi_init()`;
+- the stack of the Wi-Fi task on core 0, and the data of the PHY.
+
+`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP` puts the other allocations of the driver and of lwIP in the PSRAM first. `CONFIG_SPIRAM_IGNORE_NOTFOUND` (the fault mode) sets the buffer options of the driver to the values for a chip without PSRAM: dynamic TX buffers and no cache TX buffers. QEMU has no radio, so the E2E does not measure this RAM. The test on the board is #129.
 
 Never lower these thresholds. Measure each change of `.bss`, stack or heap with `E2E_PSRAM=1 --only tls`. For the thresholds, refer to [Memory thresholds](e2e-harness.md#memory-thresholds).
 

@@ -21,6 +21,7 @@
 #include "esp_partition.h"
 #include "esp_mac.h"
 #include "esp_random.h"
+#include "gw_rng.h"
 #include "esp_timer.h"
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
@@ -748,8 +749,7 @@ static void nvs_migrate(const esp_partition_t *p, const uint8_t *old, size_t old
 
 /* RESUME: the partition was erased; the copy of the interrupted migration (@p buf, @p size,
  * checked) is written encrypted. */
-static void nvs_resume(gw_nvsraw_kind_t kind, const uint8_t *buf, size_t size, unsigned count,
-                       bool legacy)
+static void nvs_resume(gw_nvsraw_kind_t kind, const uint8_t *buf, size_t size, unsigned count)
 {
     nvs_sec_cfg_t cfg;
     esp_err_t e = sec_cfg(&cfg);
@@ -781,12 +781,6 @@ static void nvs_resume(gw_nvsraw_kind_t kind, const uint8_t *buf, size_t size, u
         if (nvs_open_from_partition(NVS_DEFAULT_PART_NAME, NVS_GW, NVS_READONLY, &h) == ESP_OK) {
             esp_err_t m = nvs_get_u32(h, MIG_DONE, &done);
             marked = m == ESP_OK;
-            uint8_t one = 0;
-            if (m == ESP_ERR_NVS_TYPE_MISMATCH && legacy && nvs_get_u8(h, MIG_DONE, &one) == ESP_OK &&
-                one == 1) {
-                marked = true;   /* N5: ebc2aa4's marker (u8 1) for its version 1 copy */
-                done = gw_nvsmig_crc(buf);
-            }
             nvs_close(h);
         }
         if (marked && done == gw_nvsmig_crc(buf)) {   /* this very copy was finished */
@@ -830,13 +824,10 @@ static const char *kind_name(gw_nvsraw_kind_t k)
 
 #define MIG_COPY_MAX (1024u * 1024u)   /* larger than the LittleFS partition: never read */
 
-/* The copy of an earlier migration into a new buffer (@p cap: its size, with room for the header
- * of a version 2 copy). Deleted only when it was read whole and does not check (issue #94); one that cannot
+/* The copy of an earlier migration into a new buffer (@p cap: its size). Deleted only when it was read whole and does not check (issue #94); one that cannot
  * be read is kept. */
-static gw_nvsmig_copy_t copy_load(uint8_t **out, size_t *size, size_t *cap, uint32_t *count,
-                                   bool *legacy)
+static gw_nvsmig_copy_t copy_load(uint8_t **out, size_t *size, size_t *cap, uint32_t *count)
 {
-    *legacy = false;
     *out = NULL;
     *size = 0;
     struct stat st;
@@ -851,7 +842,7 @@ static gw_nvsmig_copy_t copy_load(uint8_t **out, size_t *size, size_t *cap, uint
     uint8_t *buf = NULL;
     bool whole = n == 0;   /* an empty file is read whole */
     if (n > 0 && n <= MIG_COPY_MAX) {
-        *cap = n + (GW_NVSMIG_HDR - 16u);   /* a v1 header becomes a v2 one */
+        *cap = n;
         buf = gw_storage_malloc(*cap);
         FILE *f = buf != NULL ? fopen(MIG_COPY, "rb") : NULL;
         whole = f != NULL && fread(buf, 1, n, f) == n;
@@ -871,7 +862,7 @@ static gw_nvsmig_copy_t copy_load(uint8_t **out, size_t *size, size_t *cap, uint
     }
     size_t valid = 0;
     gw_nvsmig_copy_t k = n == 0 ? GW_NVSMIG_COPY_BAD
-                                : gw_nvsmig_load(buf, n, *cap, &valid, legacy, count);
+                                : gw_nvsmig_load(buf, n, &valid, count);
     if (k != GW_NVSMIG_COPY_VALID) {
         if (k == GW_NVSMIG_COPY_BAD) {
             ESP_LOGE(TAG, "NVS migration: " MIG_COPY " (%u B) is damaged: discarded", (unsigned)n);
@@ -885,9 +876,6 @@ static gw_nvsmig_copy_t copy_load(uint8_t **out, size_t *size, size_t *cap, uint
             heap_caps_free(buf);
         }
         return k;
-    }
-    if (*legacy) {
-        ESP_LOGW(TAG, "NVS migration: " MIG_COPY " is a version 1 copy: converted");
     }
     *out = buf;
     *size = valid;
@@ -962,11 +950,10 @@ static void nvs_prepare(void)
     uint8_t *buf = NULL;
     size_t size = 0, cap = 0;
     uint32_t count = 0;
-    bool legacy = false;
     bool unknown = false, keys = false, busy = false, erase_marker = false;
     if (fs) {
         unlink(MIG_TMP);   /* a copy cut short before its rename: never used */
-        copy = copy_load(&buf, &size, &cap, &count, &legacy);
+        copy = copy_load(&buf, &size, &cap, &count);
     } else if (!storage_blank()) {
         /* issue #104: a copy may be in the LittleFS that does not mount this boot (#108 B2: also
          * with a plain partition, which may be partly erased) */
@@ -987,7 +974,7 @@ static void nvs_prepare(void)
                                      .erase_marker = erase_marker};
     switch (gw_nvsmig_decide(&state)) {
     case GW_NVSMIG_RESUME:
-        nvs_resume(kind, buf, size, count, legacy);
+        nvs_resume(kind, buf, size, count);
         break;
     case GW_NVSMIG_MIGRATE:
         nvs_migrate(p, buf, size);
@@ -1182,6 +1169,7 @@ void gw_storage_commissioning_password(char out[GW_COMMISSION_PW_LEN + 1])
         bool open = s_nvs_ok && nvs_open(NVS_SECRETS, NVS_READWRITE, &h) == ESP_OK;
         if (!open || nvs_get_str(h, "commission", s_pw, &len) != ESP_OK ||
             strlen(s_pw) != GW_COMMISSION_PW_LEN) {
+            gw_rng_note("the commissioning password");   /* issue #267: in the boot (main.c) */
             for (int i = 0; i < GW_COMMISSION_PW_LEN; i++) {
                 s_pw[i] = alphabet[esp_random() % (sizeof(alphabet) - 1)];
             }
@@ -1309,6 +1297,7 @@ static void ap_pmk(const char *password, char out[GW_WPA_PMK_HEX_SIZE])
 esp_err_t gw_storage_set_web_password(const char *password, char *hash, size_t cap)
 {
     uint8_t salt[GW_AUTH_SALT_LEN];
+    gw_rng_note("the salt of the web password");   /* issue #267 */
     esp_fill_random(salt, sizeof(salt));
     if (!gw_auth_hash_password(password, salt, GW_AUTH_ITERATIONS, hash, cap)) {
         return ESP_ERR_INVALID_SIZE;
@@ -2260,6 +2249,7 @@ static char *current_doc(size_t *len, bool *from_file, gw_cfg_err_t *err)
 static bool hash_web_password(gw_config_t *cfg, gw_secrets_t *sec)
 {
     uint8_t salt[GW_AUTH_SALT_LEN];
+    gw_rng_note("the salt of the web password");   /* issue #267 */
     esp_fill_random(salt, sizeof(salt));
     bool ok = gw_auth_hash_password(cfg->web.password, salt, GW_AUTH_ITERATIONS,
                                     sec->web_password_hash, sizeof(sec->web_password_hash));
