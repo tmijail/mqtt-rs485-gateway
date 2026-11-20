@@ -156,7 +156,7 @@ SPB-13 primary host, nodes `GW19` and `GW48`.
 ## sf, sf spill and stack margin
 
 - **sf (SPB-14, `GW20`):** the relay removes the broker while values change. At the return: NBIRTH, DBIRTH, then historical DDATA and NDATA with `is_historical`, in timestamp order. The ring holds 1 000 samples in PSRAM in this build (40 000 on the board).
-- **sf spill (`GW23`), #31, #122, #124, #151, #152:** a LittleFS directory takes the place of the card. The boot deletes old files in bounded steps without a replay. An outage of 40 s spills to the card, and all samples come back in order. A power cut while offline: the recovery finds the ring, and the replay sends each sample one time.
+- **sf spill (`GW23`), #31, #124, #134, #152, #248:** a LittleFS directory takes the place of the card. The boot deletes the extent files beyond the ring in bounded steps. The files that are not of the ring stay as they were. An outage of 40 s spills to the card, and all samples come back in order. A power cut while offline: the recovery finds the ring, and the replay sends each sample one time.
 - **#136:** a planned restart while offline moves the RAM ring to the card, and the samples come back one time.
 - **#145, #141:** a change outside the configuration hash keeps the ring. A tag rename starts a new ring, and the RAM ring is not moved.
 - **#139, #137:** `POST /api/card/format` with its auth, CSRF and confirmation, the status objects, and a simulated format in its own task.

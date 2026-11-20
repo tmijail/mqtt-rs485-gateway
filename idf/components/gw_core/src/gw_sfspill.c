@@ -197,8 +197,8 @@ static void gc_end(gw_sfspill_t *sp, bool done)
     }
 }
 
-/* One delete step (#122): a truncate of at most 128 allocation units, or the unlink of at most
- * that. Nothing reads a file in the delete queue, so a cut delete needs no mark (#151). */
+/* One delete step: a truncate of at most 128 allocation units, or the unlink of at most that.
+ * Nothing reads a file in the delete queue, so a cut delete needs no mark. */
 static bool gc_step(gw_sfspill_t *sp)
 {
     if (!sp->gc_busy && sp->gc_n == 0) {
@@ -441,24 +441,19 @@ static void boot_super(gw_sfspill_t *sp)
     sp->sb_last_ms = sp->boot_start_ms;
 }
 
+/* Only the extents count. A file id that is not an extent or a superblock copy is not of the
+ * ring: it is never read, never deleted and never counted (#134, #248). */
 static void list_each(void *arg, uint32_t f)
 {
     gw_sfspill_t *sp = arg;
-    uint32_t kind = f & GW_SFSPILL_F_KIND;
-    if (kind == GW_SFSPILL_F_SUPER) {
+    if ((f & GW_SFSPILL_F_KIND) != GW_SFSPILL_F_EXTENT) {
         return;
     }
-    if (kind == GW_SFSPILL_F_EXTENT) {
-        uint32_t e = f & ~GW_SFSPILL_F_KIND;
-        if (e < sp->nblocks / sp->ext_blocks) {
-            sp->probe_e++;   /* counted here; reset before the probe */
-        } else {
-            gc_push(sp, f);   /* beyond the ring */
-        }
-        return;
-    }
-    if (f < GW_SFSPILL_ID_LIMIT) {
-        gc_push(sp, f);   /* #151: a segment of the step 1 format: deleted, never replayed */
+    uint32_t e = f & ~GW_SFSPILL_F_KIND;
+    if (e < sp->nblocks / sp->ext_blocks) {
+        sp->probe_e++;   /* counted here; reset before the probe */
+    } else {
+        gc_push(sp, f);   /* beyond the ring */
     }
 }
 
