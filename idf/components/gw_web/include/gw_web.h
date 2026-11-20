@@ -27,6 +27,11 @@
  *   POST /api/ap/stop           #187: stop the access point a short time after the answer (202;
  *                               409 when it does not run)
  *
+ * Issue #274, the captive portal: on the plain HTTP port (the redirect server with HTTPS, the web
+ * server without it), a GET of a client of the running access point gets the guide page at
+ * GET /portal (www/portal.html: no form, no secret, no credential), and a 302 to it for a probe
+ * of a phone or another Host (gw_captive.h). Every other request keeps its behaviour.
+ *
  * Every other request needs HTTP Basic auth: the configured web.username and web.password, or,
  * while no web password is set, user "admin" with the device's commissioning password.
  * Errors are JSON: {"ok":false,"error":"...","path":"devices[0].tags[1].type","line":0,

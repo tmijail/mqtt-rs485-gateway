@@ -9,6 +9,8 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "gw_apdns.h"
+#include "gw_net.h"
 #include "gw_wpa.h"
 #include "sdkconfig.h"
 
@@ -46,6 +48,7 @@ static gw_aplife_t s_life;
 static char s_key[GW_AP_KEY_SIZE];   /* passphrase, or a PMK of 64 hexadecimal characters */
 static bool s_key_is_pmk;
 static char s_ssid[33];
+static int s_dns_netif = -1;   /* issue #274: the lwIP interface of the DNS server, -1 = off */
 
 static uint64_t now_ms(void)
 {
@@ -62,7 +65,6 @@ static const char *key_name(void)
 #if CONFIG_GW_SOFTAP
 #include "esp_netif.h"
 #include "esp_wifi.h"
-#include "gw_net.h"
 
 static esp_netif_t *s_netif;
 
@@ -131,6 +133,13 @@ static void radio_addr(char *out, size_t cap)
     }
 }
 
+/* Issue #274: the lwIP interface of the captive portal: the interface of the access point. */
+static int portal_netif(char *addr, size_t cap)
+{
+    radio_addr(addr, cap);
+    return s_netif != NULL ? esp_netif_get_netif_impl_index(s_netif) : -1;
+}
+
 bool gw_ap_ip4(uint8_t ip[4], uint8_t mask[4])
 {
     esp_netif_ip_info_t info;
@@ -152,11 +161,17 @@ void gw_ap_sim_idle_s(uint32_t s)
 {
     (void)s;
 }
+
+void gw_ap_sim_eth_as_ap(bool eth_as_ap)
+{
+    (void)eth_as_ap;   /* the radio has its own interface */
+}
 #endif
 
 #else   /* CONFIG_GW_IO_SIMULATED: QEMU has no radio */
 
 static volatile unsigned s_sim_clients;
+static bool s_sim_eth_as_ap;   /* under s_lock */
 
 static esp_err_t radio_apply(bool open)
 {
@@ -184,6 +199,18 @@ static void radio_addr(char *out, size_t cap)
     snprintf(out, cap, "(no radio)");
 }
 
+/* Issue #274: QEMU has no radio: with 'claimsim ... eth' the captive portal is on the emulated
+ * Ethernet (the interface that counts as the access point for the claim window); else nowhere. */
+static int portal_netif(char *addr, size_t cap)
+{
+    uint8_t ip[4], mask[4];
+    if (!s_sim_eth_as_ap || !gw_net_ip4_info(GW_NET_ETH, ip, mask)) {
+        return -1;
+    }
+    snprintf(addr, cap, "%u.%u.%u.%u (the Ethernet: claimsim ... eth)", ip[0], ip[1], ip[2], ip[3]);
+    return gw_net_lwip_index(GW_NET_ETH);
+}
+
 bool gw_ap_ip4(uint8_t ip[4], uint8_t mask[4])
 {
     (void)ip;
@@ -197,6 +224,19 @@ void gw_ap_sim_clients(unsigned n)
     ESP_LOGI(TAG, "sim: %u client(s) on the access point", n);
 }
 
+static void dns_follow(void);
+
+void gw_ap_sim_eth_as_ap(bool eth_as_ap)
+{
+    if (s_lock == NULL) {
+        return;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_sim_eth_as_ap = eth_as_ap;
+    dns_follow();
+    xSemaphoreGive(s_lock);
+}
+
 void gw_ap_sim_idle_s(uint32_t s)
 {
     ESP_LOGI(TAG, "sim: the access point stops after %lu s without a client",
@@ -208,6 +248,38 @@ void gw_ap_sim_idle_s(uint32_t s)
     }
 }
 #endif
+
+/* ---------- issue #274: the DNS server of the captive portal ---------- */
+
+/* The DNS server runs while the access point runs, on its interface (gw_apdns.c). Under s_lock. */
+static void dns_follow(void)
+{
+    char addr[64] = "?";
+    int idx = s_life.running ? portal_netif(addr, sizeof(addr)) : -1;
+    if (idx == s_dns_netif) {
+        return;
+    }
+    if (s_dns_netif > 0) {
+        gw_apdns_stop();
+        s_dns_netif = -1;
+        uint32_t answered, dropped;
+        gw_apdns_counts(&answered, &dropped);
+        ESP_LOGI(TAG, "captive portal: DNS server stopped (since boot: %lu answers, %lu queries "
+                      "without an answer)", (unsigned long)answered, (unsigned long)dropped);
+    }
+    if (idx <= 0) {
+        return;
+    }
+    esp_err_t e = gw_apdns_start(idx);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "captive portal: DNS server not started (%s): a phone does not open the "
+                      "guide page by itself", esp_err_to_name(e));
+        return;
+    }
+    s_dns_netif = idx;
+    ESP_LOGI(TAG, "captive portal: the DNS server answers each A query of a client of the access "
+                  "point with %s", addr);
+}
 
 /* ---------- the life (gw_aplife), under s_lock ---------- */
 
@@ -223,6 +295,7 @@ static bool apply_action(gw_aplife_action_t a, gw_ap_stop_t why)
 {
     if (a == GW_APLIFE_STOP) {
         esp_timer_stop(s_tick);
+        dns_follow();
         radio_stop();
         ESP_LOGW(TAG, "commissioning access point '%s' stopped (%s)", s_ssid,
                  why == GW_AP_STOP_IDLE ? "no client for the idle time" : gw_ap_stop_text(why));
@@ -238,6 +311,7 @@ static bool apply_action(gw_aplife_action_t a, gw_ap_stop_t why)
                      esp_err_to_name(e));
             gw_aplife_stop(&s_life, GW_AP_STOP_REQUEST);
             esp_timer_stop(s_tick);
+            dns_follow();
             radio_stop();
         }
         return true;
@@ -308,6 +382,7 @@ esp_err_t gw_ap_start(const char *key, bool key_is_pmk, uint32_t max_s, bool htt
         return e;
     }
     gw_aplife_start(&s_life, now_ms(), max_s * 1000u, open_s * 1000u);
+    dns_follow();
     if (!was_running) {
         esp_timer_start_periodic(s_tick, (uint64_t)TICK_MS * 1000u);
         char port[8] = "", addr[32];
