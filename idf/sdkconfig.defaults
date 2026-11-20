@@ -37,9 +37,11 @@ CONFIG_LWIP_SNTP_STARTUP_DELAY=n
 CONFIG_LWIP_SNTP_MAX_SERVERS=3
 
 # MB-2: in RS485 half-duplex mode the UART driver releases RTS (the transceiver's DE) in the
-# TX_DONE interrupt. With the ISR in flash it is deferred while the cache is disabled (the NVS
-# commit of the bdSeq on every MQTT attempt), DE stays active while the slave answers and the
-# response is lost.
+# TX_DONE interrupt. With the ISR in flash it is deferred while the cache is disabled by a flash
+# write, DE stays active while the slave answers and the response is lost. Flash writes occur
+# during the polling: for example the NVS save of the pulse counters and the run hours (IO-4,
+# local_io.counter_save_s), the download of an OTA image (FW-1) and a configuration save. The
+# bdSeq is not one of them: it is in RAM only (#161).
 CONFIG_UART_ISR_IN_IRAM=y
 
 # Network stack on core 0, away from the RS485 bus owner on core 1 (gw_bus): lwIP's tcpip
