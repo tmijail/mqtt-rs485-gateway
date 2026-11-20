@@ -1506,6 +1506,17 @@ static void test_templates(void)
     TEST_ASSERT_EQUAL_STRING("rpm", dec.mem[0].eng_unit);   /* from the device type */
     TEST_ASSERT_FALSE(dec.mem[0].has_quality);
     TEST_ASSERT_EQUAL_STRING("Run", dec.mem[1].name);
+    /* #251: the definition has the parameter of its instances, with a name, a type and the
+     * default 0 (tck-id-payloads-template-definition-parameters, -parameters-default,
+     * tck-id-payloads-template-parameter-name-required, -type-req, -type-value, -value) */
+    TEST_ASSERT_EQUAL(1, dec.m[i].params);
+    TEST_ASSERT_EQUAL(1, dec.param_count);
+    TEST_ASSERT_TRUE(dec.par[0].has_name);
+    TEST_ASSERT_EQUAL_STRING("Unit ID", dec.par[0].name);
+    TEST_ASSERT_TRUE(dec.par[0].has_type);
+    TEST_ASSERT_EQUAL(SPB_DT_INT32, dec.par[0].type);
+    TEST_ASSERT_EQUAL(SPB_VAL_INT, dec.par[0].kind);
+    TEST_ASSERT_EQUAL_UINT32(0, dec.par[0].i);
 
     msg(1);   /* DBIRTH P1: one instance metric */
     TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DBIRTH/N/P1", g_rec.msgs[1].topic);
@@ -1519,9 +1530,30 @@ static void test_templates(void)
     TEST_ASSERT_EQUAL_DOUBLE(1500, dec.mem[0].num);
     TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_GOOD, dec.mem[0].quality);
     TEST_ASSERT_EQUAL_STRING("rpm", dec.mem[0].eng_unit);
+    /* #251: the instance gives the unit ID of its device in the parameter of the definition
+     * (tck-id-payloads-template-instance-parameters) */
+    TEST_ASSERT_EQUAL(1, dec.m[0].params);
+    TEST_ASSERT_EQUAL(1, dec.param_count);
+    TEST_ASSERT_EQUAL_STRING("Unit ID", dec.par[0].name);
+    TEST_ASSERT_TRUE(dec.par[0].has_type);
+    TEST_ASSERT_EQUAL(SPB_DT_INT32, dec.par[0].type);
+    TEST_ASSERT_EQUAL(SPB_VAL_INT, dec.par[0].kind);
+    TEST_ASSERT_EQUAL_UINT32(1, dec.par[0].i);
     msg(2);   /* the untyped device as before */
     TEST_ASSERT_EQUAL_STRING("X", dec.m[0].name);
     TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TAG_BASE + 4, dec.m[0].alias);
+    TEST_ASSERT_EQUAL(0, dec.param_count);
+
+    /* #251: the second device of the type gives its own unit ID, when it comes online */
+    recorder_clear();
+    gw_tagdb_put_device(cfg, 1, v, true);
+    gw_node_device_changed(&node, 1);
+    msg(0);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DBIRTH/N/P2", g_rec.msgs[0].topic);
+    TEST_ASSERT_EQUAL_STRING("Pump", dec.m[0].ref);
+    TEST_ASSERT_EQUAL(1, dec.param_count);
+    TEST_ASSERT_EQUAL_STRING("Unit ID", dec.par[0].name);
+    TEST_ASSERT_EQUAL_UINT32(2, dec.par[0].i);
 
     /* DDATA: the instance by alias, with the changed member only (by name) */
     recorder_clear();
@@ -1540,6 +1572,9 @@ static void test_templates(void)
      * DATA; the DBIRTH and the NBIRTH definition have them (#159) */
     TEST_ASSERT_FALSE(dec.m[0].has_datatype);
     TEST_ASSERT_FALSE(dec.mem[0].has_datatype);
+    /* #251: no parameters in DATA: the DBIRTH gave the unit ID, and it cannot change in a session */
+    TEST_ASSERT_EQUAL(0, dec.m[0].params);
+    TEST_ASSERT_EQUAL(0, dec.param_count);
 
     /* DCMD: a member of the instance, or the tag by name; never by alias */
     recorder_clear();
@@ -1559,6 +1594,22 @@ static void test_templates(void)
     flat.alias = GW_ALIAS_TAG_BASE + 0;
     send("spBv1.0/G/DCMD/N/P1", &flat, 1);
     TEST_ASSERT_EQUAL(2, g_rec.writes);
+    /* #251: a host can send the instance with parameters. The engine ignores them: the member
+     * is written, and the unit ID of the device does not change */
+    const spb_param_t cmd_params[] = {
+        {.name = "Unit ID", .datatype = SPB_DT_INT32, .v.num = 9},
+        {.name = "Other", .datatype = SPB_DT_STRING, .v.str = "not in the definition"}};
+    const spb_metric_t member2 = {.name = "Speed", .no_alias = true, .datatype = SPB_DT_UINT16,
+                                  .v.num = 950};
+    const spb_template_t inst2 = {.ref = "Pump", .count = 1, .members = &member2,
+                                  .param_count = 2, .params = cmd_params};
+    const spb_metric_t cmd_p = {.name = "Pump", .alias = GW_ALIAS_TAG_BASE,
+                                .datatype = SPB_DT_TEMPLATE, .v.tmpl = &inst2};
+    send("spBv1.0/G/DCMD/N/P1", &cmd_p, 1);
+    TEST_ASSERT_EQUAL(3, g_rec.writes);
+    TEST_ASSERT_EQUAL_UINT16(0, g_rec.last_write_tag);
+    TEST_ASSERT_EQUAL_DOUBLE(950, g_rec.last_write.value);
+    TEST_ASSERT_EQUAL_UINT8(1, cfg->devices[0].unit_id);
 
     /* the write confirmation: the instance with that member */
     gw_tag_value_t w = {.value = 900, .ts_ms = 2000, .valid = true};
@@ -1571,6 +1622,23 @@ static void test_templates(void)
     TEST_ASSERT_EQUAL(1, dec.mem_count);
     TEST_ASSERT_EQUAL_DOUBLE(900, dec.mem[0].num);
     TEST_ASSERT_FALSE(dec.mem[0].has_datatype);
+    TEST_ASSERT_EQUAL(0, dec.param_count);       /* #251: DDATA */
+
+    /* #251: a rebirth gives the parameters again, in the definition and in each instance */
+    recorder_clear();
+    TEST_ASSERT_TRUE(gw_node_rebirth(&node));
+    TEST_ASSERT_EQUAL(4, g_rec.count);            /* NBIRTH, DBIRTH P1, P2 and Flat */
+    msg(0);
+    TEST_ASSERT_EQUAL(1, dec.param_count);
+    TEST_ASSERT_EQUAL_UINT32(0, dec.par[0].i);
+    msg(1);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DBIRTH/N/P1", g_rec.msgs[1].topic);
+    TEST_ASSERT_EQUAL(1, dec.param_count);
+    TEST_ASSERT_EQUAL_UINT32(1, dec.par[0].i);
+    msg(2);
+    TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DBIRTH/N/P2", g_rec.msgs[2].topic);
+    TEST_ASSERT_EQUAL(1, dec.param_count);
+    TEST_ASSERT_EQUAL_UINT32(2, dec.par[0].i);
 }
 
 /* SPB-18 + SPB-16: the largest NBIRTH the configuration allows (GW_MAX_TEMPLATE_TAGS template
@@ -2974,6 +3042,7 @@ static void test_store_and_forward_templates_bytes(void)
     TEST_ASSERT_EQUAL(SPB_VAL_TEMPLATE, dec.m[0].kind);
     TEST_ASSERT_FALSE(dec.m[0].has_datatype);        /* DDATA: no datatype (#159) */
     TEST_ASSERT_TRUE(dec.m[0].is_historical);
+    TEST_ASSERT_EQUAL(0, dec.param_count);           /* #251: no parameters in a replayed DDATA */
     TEST_ASSERT_EQUAL(2, dec.mem_count);
     TEST_ASSERT_EQUAL_STRING("Speed", dec.mem[0].name);
     TEST_ASSERT_FALSE(dec.mem[0].has_alias);

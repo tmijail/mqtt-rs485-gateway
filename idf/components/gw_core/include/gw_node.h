@@ -43,6 +43,9 @@
  * NBIRTH carries one Template definition per type (no alias). DDATA carries the instance with
  * the changed members only. Devices without a type keep one metric per tag. #174: with the UMH
  * preset, a typed device also has one metric per tag, and the NBIRTH has no definitions.
+ * #251: each definition has one parameter, "Unit ID" (Int32, default 0), and the instance of
+ * each DBIRTH gives the Modbus unit ID of its device in it. The instance of a DDATA has no
+ * parameters. The parameters of an instance in a DCMD are ignored.
  *
  * Store & forward (SPB-14, optional): with a gw_sf_t attached, changes that happen while the
  * node is not online (no session, or the primary host offline) are evaluated with the same
@@ -143,8 +146,9 @@ extern "C" {
 #define GW_NODE_FW_STATE_MAX    96
 #define GW_SPB_PAYLOAD_MAX      16384  /* > worst-case DBIRTH (64 tags with 39-char names and
                                          * every SPB-16 property, about 10 KB, test_spb) and
-                                         * NBIRTH (64 template tags and the SPB-17 DataSet of 16
-                                         * devices, about 12 KB, test_node) */
+                                         * NBIRTH (64 template tags in 16 definitions, each with
+                                         * its parameter, #251, and the SPB-17 DataSets of 16
+                                         * devices, about 15 KB, test_node) */
 #define GW_TOPIC_MAX            GW_TOPIC_SIZE   /* gw_config.h: the validation uses it */
 #define GW_NODE_HIST_RECS       (2 * GW_MAX_TAGS_PER_DEVICE)   /* records per historical message */
 
@@ -266,6 +270,7 @@ typedef struct {
     };
     spb_metric_t metrics[GW_NODE_METRICS_MAX];
     spb_template_t tmpl;               /* SPB-18: the instance being published */
+    spb_param_t tmpl_param;            /* #251: its parameter "Unit ID" (births only) */
     spb_template_t defs[GW_MAX_DEVICES];   /* SPB-18: NBIRTH definitions, one per type */
     gw_node_def_ctx_t def_ctx[GW_MAX_DEVICES];
     uint8_t *buf;                      /* payload buffer (gw_node_set_buffer) */

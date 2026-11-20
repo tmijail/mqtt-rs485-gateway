@@ -36,13 +36,67 @@ def is_template(m):
     return m.datatype == 19 or m.WhichOneof("value") == "template_value"
 
 
+def param_value(p):
+    """The value of a Template parameter, or None when it has no value."""
+    which = p.WhichOneof("value")
+    return None if which is None else getattr(p, which)
+
+
+def check_parameters(kind, m):
+    """#251: the parameters of the template metric @p m.
+
+    - tck-id-payloads-template-parameter-name-required: each parameter has a name (and only one
+      parameter of a template has that name).
+    - tck-id-payloads-template-parameter-type-req: each parameter of a birth has a type.
+    - tck-id-payloads-template-parameter-type-value: the type is a basic datatype (1 to 14).
+    - tck-id-payloads-template-parameter-value: a value is in the field of the type.
+    - The gateway: each template of a birth has the one parameter "Unit ID" (Int32). A definition
+      gives the default 0, an instance the unit ID of its device (1 to 247). The instance of a
+      DATA message has no parameters."""
+    t, errors = m.template_value, []
+    who = m.name or f"alias {m.alias}"
+    births = kind in ("NBIRTH", "DBIRTH")
+    names = [p.name for p in t.parameters]
+    if len(set(names)) != len(names):
+        errors.append(f"{who}: duplicated template parameters {names}")
+    for p in t.parameters:
+        if not p.HasField("name") or not p.name:
+            errors.append(f"{who}: template parameter without name")
+        if births and not p.HasField("type"):
+            errors.append(f"{who}: template parameter {p.name} without type in a birth")
+        if p.HasField("type") and p.type not in PARAM_FIELD:
+            errors.append(f"{who}: template parameter {p.name} of type {p.type}, "
+                          "not a basic datatype")
+        which = p.WhichOneof("value")
+        if which is not None and p.type in PARAM_FIELD and which != PARAM_FIELD[p.type]:
+            errors.append(f"{who}: template parameter {p.name} of type {p.type} in {which}")
+    if births:
+        if names != [UNIT_PARAM]:
+            errors.append(f"{who}: the parameters of a template in a birth must be "
+                          f"[{UNIT_PARAM!r}], not {names}")
+        for p in t.parameters:
+            if p.name != UNIT_PARAM:
+                continue
+            ok = p.type == 3 and p.WhichOneof("value") == "int_value" and (
+                p.int_value == 0 if t.is_definition else 1 <= p.int_value <= 247)
+            if not ok:
+                errors.append(f"{who}: parameter {UNIT_PARAM} must be Int32 (3) in int_value, "
+                              + ("0 in a definition" if t.is_definition
+                                 else "1 to 247 in an instance")
+                              + f": type {p.type}, {p.WhichOneof('value')} {param_value(p)!r}")
+    elif names:
+        errors.append(f"{who}: template parameters {names} in {kind} (the births give them)")
+    return errors
+
+
 def check_template(kind, m):
     """SPB-18: definitions only in NBIRTH, without alias or template_ref; instances name their
     definition; members carry a name and no alias, and are not templates. Members carry their
-    datatype in births and no datatype in DATA (tck-id-payloads-metric-datatype-not-req)."""
+    datatype in births and no datatype in DATA (tck-id-payloads-metric-datatype-not-req).
+    #251: the parameters (check_parameters)."""
     if not is_template(m) or m.is_null:
         return []
-    t, errors = m.template_value, []
+    t, errors = m.template_value, check_parameters(kind, m)
     data = kind in ("NDATA", "DDATA")
     if t.is_definition:
         if kind != "NBIRTH":
@@ -64,7 +118,11 @@ def check_template(kind, m):
             errors.append(f"member {mm.name}: datatype {mm.datatype} in {mm.WhichOneof('value')}")
         errors += check_properties(mm)
     return errors
+
+
 CELL_FIELD = {k: v for k, v in DATATYPE_FIELD.items() if k <= 14}   # SPB-19 DataSet columns
+PARAM_FIELD = CELL_FIELD   # #251: a Template parameter has a basic datatype, as a DataSet cell
+UNIT_PARAM = "Unit ID"     # #251: the parameter of each template of the gateway (gw_node.c)
 
 
 def check_dataset(m):
@@ -137,7 +195,10 @@ def value_of(m):
     if which == "template_value":
         t = m.template_value
         head = "definition" if t.is_definition else f"instance of {t.template_ref}"
-        return {head: {mm.name: value_of(mm) for mm in t.metrics}}
+        out = {head: {mm.name: value_of(mm) for mm in t.metrics}}
+        if t.parameters:   # #251
+            out["parameters"] = {q.name: param_value(q) for q in t.parameters}
+        return out
     if which == "dataset_value":
         ds = m.dataset_value
         return {"columns": list(ds.columns), "types": list(ds.types),
@@ -254,6 +315,33 @@ class BirthTypes:
     def __init__(self, strict=True):
         self.strict = strict
         self.nodes = {}   # node -> {device or None: {alias: (datatype, {member: datatype})}}
+        self.defs = {}    # node -> {definition name: {parameter name: type}} (#251)
+
+    def parameter_errors(self, kind, node, where, p):
+        """tck-id-payloads-template-definition-parameters (#251): each parameter of a template
+        instance is in its definition of the NBIRTH, with the same type."""
+        defs = self.defs.get(node)
+        if defs is None:
+            return []
+        errors = []
+        for m in p.metrics:
+            if m.WhichOneof("value") != "template_value" or m.template_value.is_definition:
+                continue
+            t = m.template_value
+            known = defs.get(t.template_ref)
+            if known is None:
+                if t.parameters:
+                    errors.append(f"{kind} {where} alias {m.alias}: parameters, and the NBIRTH "
+                                  f"has no definition {t.template_ref!r}")
+                continue
+            for q in t.parameters:
+                if q.name not in known:
+                    errors.append(f"{kind} {where} alias {m.alias}: parameter {q.name} is not in "
+                                  f"the definition {t.template_ref}")
+                elif q.HasField("type") and q.type != known[q.name]:
+                    errors.append(f"{kind} {where} alias {m.alias}: parameter {q.name} has the "
+                                  f"type {q.type}, the definition gives {known[q.name]}")
+        return errors
 
     @staticmethod
     def types_of(p):
@@ -275,20 +363,25 @@ class BirthTypes:
             return []
         if kind == "NDEATH":
             self.nodes.pop(node, None)
-            return []
-        if kind == "NBIRTH":
-            self.nodes[node] = {None: self.types_of(p)}
-            return []
-        if kind == "DBIRTH":
-            self.nodes.setdefault(node, {})[device] = self.types_of(p)
-            return []
-        if kind not in ("NDATA", "DDATA"):
+            self.defs.pop(node, None)
             return []
         where = "/".join(node) + (f"/{device}" if device else "")
+        if kind == "NBIRTH":
+            self.nodes[node] = {None: self.types_of(p)}
+            self.defs[node] = {
+                m.name: {q.name: q.type for q in m.template_value.parameters}
+                for m in p.metrics
+                if m.WhichOneof("value") == "template_value" and m.template_value.is_definition}
+            return self.parameter_errors(kind, node, where, p)
+        if kind == "DBIRTH":
+            self.nodes.setdefault(node, {})[device] = self.types_of(p)
+            return self.parameter_errors(kind, node, where, p)
+        if kind not in ("NDATA", "DDATA"):
+            return []
         known = self.nodes.get(node, {}).get(device if kind == "DDATA" else None)
         if known is None:
             return [f"{kind} {where}: no birth gave its datatypes"] if self.strict else []
-        errors = []
+        errors = self.parameter_errors(kind, node, where, p)
         for m in p.metrics:
             t = known.get(m.alias) if m.HasField("alias") else None
             if t is None:

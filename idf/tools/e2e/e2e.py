@@ -8382,8 +8382,10 @@ def run_network_variant(args, work, slave):
           f"DBIRTH {block.datatype if block else None} {block.bytes_value.hex() if block else None}; "
           f"writes {writes}; DDATA {got.hex() if got else None}")
     check("SPB-18 device type 'Pump': one template definition in the NBIRTH (no alias, members "
-          "Speed UInt16 'rpm' and Run Boolean), an instance per DBIRTH (template_ref, values, "
-          "Quality), DCMD on a member -> FC06 and DDATA with the instance and that member only",
+          "Speed UInt16 'rpm' and Run Boolean, #251 the parameter Unit ID Int32 with the default "
+          "0), an instance per DBIRTH (template_ref, values, Quality, #251 the unit ID of the "
+          "device in the parameter), DCMD on a member -> FC06 and DDATA with the instance and "
+          "that member only, without parameters",
           tmpl[0], tmpl[1])
     for name, ok, detail in devs:
         check(name, ok, detail)
@@ -8396,26 +8398,40 @@ def run_network_variant(args, work, slave):
 
 def check_templates_gw02(obs, slave, node, nb):
     """SPB-18 on the GW02 boot (see run_network_variant). Returns (ok, detail)."""
+    def params(t):
+        """#251: the parameters of a Template as [(name, type or None, value field, value)]."""
+        return [(q.name, q.type if q.HasField("type") else None, q.WhichOneof("value"),
+                 spb_decode.param_value(q)) for q in t.parameters]
+
     defs = [m for m in nb[2].metrics if m.datatype == 19] if nb else []
     d = defs[0] if defs else None
     members = [(mm.name, mm.datatype, props(mm).get("engUnit")) for mm in d.template_value.metrics] if d else []
+    # #251: tck-id-payloads-template-definition-parameters, -parameters-default: the definition
+    # has the parameter of its instances, with its type (Int32) and the default 0
+    def_params = params(d.template_value) if d else []
     def_ok = len(defs) == 1 and d.name == "Pump" and not d.HasField("alias") \
         and d.template_value.is_definition and not d.template_value.template_ref \
-        and members == [("Speed", 6, "rpm"), ("Run", 11, None)]
+        and members == [("Speed", 6, "rpm"), ("Run", 11, None)] \
+        and def_params == [("Unit ID", 3, "int_value", 0)]
     births = {}
     for name in ("PumpA", "PumpB"):
         b = next((m for m in CAPTURE if m[1] == f"{T}/DBIRTH/{node}/{name}"), None) \
             or obs.wait(f"{T}/DBIRTH/{node}/{name}", 10)
         births[name] = b
-    inst = {}
+    inst, inst_params = {}, {}
     for name, b in births.items():
         m = b[2].metrics[0] if b and len(b[2].metrics) == 1 else None
         if m is not None and m.datatype == 19 and m.template_value.template_ref == "Pump" \
                 and not m.template_value.is_definition:
             inst[name] = {mm.name: (spb_decode.value_of(mm), props(mm).get("Quality"))
                           for mm in m.template_value.metrics}
+            inst_params[name] = params(m.template_value)
+    # #251: tck-id-payloads-template-instance-parameters: each instance gives the unit ID of
+    # its device (PumpA unit 1, PumpB unit 7) in the parameter of the definition
     inst_ok = inst.get("PumpA") == {"Speed": (1450, 192), "Run": (True, 192)} \
-        and inst.get("PumpB") == {"Speed": (1460, 192), "Run": (True, 192)}
+        and inst.get("PumpB") == {"Speed": (1460, 192), "Run": (True, 192)} \
+        and inst_params.get("PumpA") == [("Unit ID", 3, "int_value", 1)] \
+        and inst_params.get("PumpB") == [("Unit ID", 3, "int_value", 7)]
     # DCMD: the instance metric with one member, by name
     p = spb.Payload()
     p.timestamp = int(time.time() * 1000)
@@ -8424,6 +8440,10 @@ def check_templates_gw02(obs, slave, node, nb):
     m.template_value.template_ref = "Pump"
     mm = m.template_value.metrics.add()
     mm.name, mm.datatype, mm.int_value = "Speed", 6, 1234
+    # #251: a host can send the instance with parameters. The gateway ignores them, also one
+    # that its codec cannot hold (a name of 70 characters): the member is written all the same
+    m.template_value.parameters.add(name="Unit ID", type=3, int_value=9)
+    m.template_value.parameters.add(name="x" * 70, type=12, string_value="y" * 70)
     obs.drain()
     before = len(slave.ctx.writes)
     obs.c.publish(f"{T}/DCMD/{node}/PumpA", p.SerializeToString(), qos=0)
@@ -8435,11 +8455,14 @@ def check_templates_gw02(obs, slave, node, nb):
     data_ok = dm is not None and not dm.HasField("name") and dm.alias == alias \
         and not dm.HasField("datatype") and datatype_of(dd[1], dm) == 19 \
         and not any(x.HasField("datatype") for x in dm.template_value.metrics) \
-        and [(x.name, x.int_value) for x in dm.template_value.metrics] == [("Speed", 1234)]
+        and [(x.name, x.int_value) for x in dm.template_value.metrics] == [("Speed", 1234)] \
+        and not dm.template_value.parameters   # #251: the DBIRTH gave the parameter
     ok = def_ok and inst_ok and wrote == [(6, 230, [1234])] and data_ok
-    return ok, (f"definition {members} (alias {'yes' if d is not None and d.HasField('alias') else 'no'}); "
-                f"instances {inst}; DCMD writes {wrote}; DDATA "
-                f"{[(x.name, x.int_value) for x in dm.template_value.metrics] if dm else None}")
+    return ok, (f"definition {members} (alias {'yes' if d is not None and d.HasField('alias') else 'no'}), "
+                f"parameters {def_params}; instances {inst}, parameters {inst_params}; DCMD "
+                f"writes {wrote}; DDATA "
+                f"{[(x.name, x.int_value) for x in dm.template_value.metrics] if dm else None}, "
+                f"parameters {params(dm.template_value) if dm else None}")
 
 
 def check_devices_gw02(obs, slave, gw, node, t0):
