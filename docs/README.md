@@ -22,6 +22,7 @@ This is the documentation of the RS485 (Modbus RTU) to MQTT Sparkplug B gateway.
 | Change the configuration, keep a copy, or load a copy | [Change, back up and restore the configuration](how-to/change-the-configuration.md) | How-to |
 | Write a value to a device or set a digital output from a host | [Write a value to a Modbus device or a digital output](how-to/write-to-a-modbus-device.md) | How-to |
 | Set the DIs and DOs of the board (inversion, debounce, fast counters, pulse DOs, run hours, local rules), or set a DO from the web UI | [Set up the local inputs and outputs](how-to/set-up-the-local-io.md) | How-to |
+| Give a PLC or a SCADA access to the RS485 devices and to the I/O of the gateway with Modbus TCP | [Connect a Modbus TCP client](how-to/connect-a-modbus-tcp-client.md) | How-to |
 | Send the data to UMH Core | [Connect the gateway to UMH Core](how-to/connect-to-umh-core.md) | How-to |
 | Install a new firmware image, or go back to the earlier one | [Update the firmware](how-to/update-the-firmware.md) | How-to |
 | Repair a gateway that does not operate normally, or do a factory reset | [Recover a gateway](how-to/recover-the-gateway.md) | How-to |

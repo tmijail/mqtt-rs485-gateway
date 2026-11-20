@@ -659,7 +659,7 @@ A Float has a 24-bit mantissa. Thus a 32-bit counter with a scale goes into a Do
 
 ## `modbus_tcp`
 
-A Modbus TCP server that gives access to the RTU slaves on the bus. In the web UI, the keys are in the card **Modbus TCP**.
+A Modbus TCP server that gives access to the RTU slaves on the bus. In the web UI, the keys are in the card **Modbus TCP**. For the procedure, refer to [Connect a Modbus TCP client](../how-to/connect-a-modbus-tcp-client.md).
 
 ```json
 "modbus_tcp": { "enabled": true, "port": 502, "allowed_clients": ["192.168.1.20", "10.0.5.0/24"],
