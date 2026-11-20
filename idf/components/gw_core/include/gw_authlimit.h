@@ -60,7 +60,9 @@ unsigned gw_authlimit_blocked(const gw_authlimit_t *l, uint64_t now_ms);
  * our handlers (a long upload, a validation) or drains the body of a refused authenticated
  * request, which may legitimately take long. Otherwise a task that has not been back for more
  * than @p limit_ms is held by a request that does not arrive: a TLS handshake or headers sent
- * byte by byte (slowloris), or a client that stopped half-way. Wrap-safe 32-bit milliseconds.
+ * byte by byte (slowloris), or a client that stopped half-way. Wrap-safe 32-bit milliseconds;
+ * an @p alive_ms after @p now_ms (the server marked itself alive after the read of the clock)
+ * is not a stall.
  */
 bool gw_webstall_stuck(uint32_t now_ms, uint32_t alive_ms, bool busy, uint32_t limit_ms);
 

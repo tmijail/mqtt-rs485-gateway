@@ -101,5 +101,11 @@ unsigned gw_authlimit_blocked(const gw_authlimit_t *l, uint64_t now_ms)
 
 bool gw_webstall_stuck(uint32_t now_ms, uint32_t alive_ms, bool busy, uint32_t limit_ms)
 {
-    return !busy && (uint32_t)(now_ms - alive_ms) > limit_ms;
+    /* The watchdog reads the clock, then alive_ms. It runs at the lowest priority: between the
+     * two reads the server task can mark itself alive with a time after now_ms (a drain marks
+     * it for each piece). The unsigned difference then wrapped to about 2^32 and a server that
+     * was alive was shut down as stalled. A signed difference reads that as "alive now"; it
+     * stays wrap-safe for differences under 2^31 ms (about 24 days). */
+    int32_t idle = (int32_t)(now_ms - alive_ms);
+    return !busy && idle > 0 && (uint32_t)idle > limit_ms;
 }
