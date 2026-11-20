@@ -9642,6 +9642,102 @@ def run_factory_reset(args, work):
           "is left)", not stale and b'"GW08"' in image[so:so + ss], f"stale: {stale or 'none'}")
     check_restart_admin(args, work, flash)
     check_ap_without_pmk(args, work)
+    check_reset_power_cut(args, work)
+
+
+def check_reset_power_cut(args, work):
+    """Issue #266 (CFG-5): a power cut during a factory reset, at the two points that gave the
+    example configuration in normal mode before: after the erase of LittleFS (the old secrets are
+    in the NVS), and after the erase of the NVS (no factory marker yet). The emulator-only shell
+    command 'resetcut <step>' makes the firmware stop after that step of the sequence
+    (gw_freset.h) with nothing more written, and the harness ends QEMU there: the power cut.
+    Each point has a flash of its own (GW10, with a web password). Expected at the next boot: the
+    firmware completes the reset from the marker that it finds (the intent in the NVS, or the
+    marker file in LittleFS), restarts, and comes up in commissioning mode: no configuration
+    (not the embedded example), no NBIRTH, the old web password is refused, and nothing of the
+    old configuration and of the old secrets is left in the flash. The host test test_freset
+    examines each cut point, also in the middle of a step; this check examines the two stores
+    and the boot path of the real firmware."""
+    node = "GW10"
+    cfg = node_config(node)
+    cfg["web"] = {"password": WEB_PASSWORD}
+    so, ss = storage_partition()
+    no, ns = storage_partition("nvs")
+    # (the step of gw_freset_step_t, what the cut leaves, what the next boot starts from)
+    points = ((2, "the erase of LittleFS", "LittleFS"), (4, "the erase of the NVS", "the NVS"))
+    for step, what, resume_from in points:
+        flash = flash_variant(args, work, f"resetcut{step}",
+                              {"config.json": json.dumps(cfg, indent=2).encode()})
+        log = work / f"uart0-resetcut{step}.log"
+        obs = Observer()
+        gw = Gateway(args, log, flash)
+        gw.start()
+        nb = obs.wait(f"{T}/NBIRTH/{node}", 60)
+        gw.shell("status", [r"^config\s"])
+        st_web, _, _ = wait_http("/api/status", 20)
+        _, h_cut = gw.shell(f"resetcut {step}",
+                            [rf"^the next factory reset stops after step {step} "])
+        asked = time.monotonic()
+        gw.console("factory-reset")
+        prompt = gw.wait_log(r"^factory-reset: this erases the configuration.*Type ERASE to confirm",
+                             5, asked)
+        gw.console("ERASE")
+        held = gw.wait_log(rf"storage: factory reset: emulated power cut after step {step} ", 60,
+                           asked)
+        time.sleep(2)   # QEMU writes the flash file behind: let the last writes land
+        gw.kill()
+        t_cut = time.monotonic()
+        obs.drain()
+        image = pathlib.Path(flash).read_bytes()
+        storage, nvs = image[so:so + ss], image[no:no + ns]
+        # the state that the cut leaves (the names of the NVS keys are in clear only in the NVS
+        # of the board, not in the encrypted NVS of the secure build)
+        if step == 2:
+            left = b'"%s"' % node.encode() not in storage and b".factory-reset" not in storage
+            left = left and (args.secure or (b"web_hash" in nvs and b"freset" in nvs))
+        else:
+            left = b'"%s"' % node.encode() not in storage and b".factory-reset" in storage
+            left = left and (args.secure or (b"web_hash" not in nvs and b"factory" not in nvs))
+        gw = Gateway(args, log, flash)
+        gw.start()
+        resumed = gw.wait_log(r"storage: factory reset: a power cut or an error stopped it; this "
+                              rf"boot completes it from the erase of {resume_from}$", 60, t_cut)
+        restarted = gw.wait_log(r"main: factory reset completed: restarting into commissioning mode",
+                                60, t_cut)
+        comm = gw.wait_log(r"main: commissioning: no configuration since the factory reset", 90,
+                           t_cut)
+        pw = commissioning_password(gw, restarted or t_cut, 30)
+        st_new, _, b_new = wait_http("/api/status", 30, auth=("admin", pw or "?"))
+        st_old, _, _ = http("GET", "/api/status")
+        _, h_cfg = gw.shell("status", [r"^config\s+NONE: commissioning after a factory reset"])
+        time.sleep(3)
+        loaded = gw.find(r"main: configuration from ", t_cut)
+        births = [m for m in CAPTURE if m[0] >= t_cut and "/NBIRTH/" in m[1]]
+        gw.kill()
+        obs.close()
+        image = pathlib.Path(flash).read_bytes()
+        storage, nvs = image[so:so + ss], image[no:no + ns]
+        stale = [w.decode() for w in (b'"%s"' % node.encode(), WEB_PASSWORD.encode())
+                 if w in storage]
+        if not args.secure:
+            stale += [w.decode() for w in (b"web_hash", b"ap_pmk", b"freset") if w in nvs]
+        check(f"Issue #266 (CFG-5) a power cut after {what} of a factory reset (the firmware stops "
+              f"after step {step}, the harness ends QEMU): the next boot completes the reset from "
+              f"the erase of {resume_from}, restarts, and is in commissioning mode with a new "
+              "commissioning password: no configuration is loaded (not the embedded example), no "
+              "NBIRTH, the old web password is refused, and the flash has nothing of the old "
+              "configuration and of the old secrets",
+              nb and st_web == 200 and all(h_cut.values()) and prompt and held and left
+              and resumed and restarted and comm and pw and st_new == 200
+              and (as_json(b_new) or {}).get("mode") == "commissioning" and st_old == 401
+              and all(h_cfg.values()) and not loaded and not births and not stale,
+              f"NBIRTH {bool(nb)}, web password {st_web}; resetcut {all(h_cut.values())}, prompt "
+              f"{bool(prompt)}, held {bool(held)}; the flash after the cut as expected: {left}; "
+              f"resumed {bool(resumed)}, restarted {bool(restarted)}, commissioning {bool(comm)}; "
+              f"new password {'read' if pw else 'missing'}: status {st_new} mode "
+              f"{(as_json(b_new) or {}).get('mode')!r}; the old password {st_old}; shell "
+              f"{all(h_cfg.values())}; configuration loaded: {loaded[:1] or 'none'}; NBIRTHs "
+              f"{len(births)}; stale in the flash: {stale or 'none'}")
 
 
 def check_ap_without_pmk(args, work):

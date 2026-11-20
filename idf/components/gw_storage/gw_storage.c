@@ -27,6 +27,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "gw_auth.h"
+#include "gw_freset.h"
 #include "gw_lkgnet.h"
 #include "gw_nvsraw.h"
 #include "gw_port.h"
@@ -50,6 +51,8 @@ static const char *TAG = "storage";
 #define NVS_GW      "gw"
 #define NVS_LKG     "lkg_net"     /* network of the last valid configuration (recovery) */
 #define NVS_FACTORY "factory"     /* set by a factory reset, cleared by the first save (CFG-5) */
+#define NVS_RESET_INTENT "freset" /* in NVS_GW: a factory reset is pending (#266, gw_freset.h) */
+#define RESET_MARK  CFG_MOUNT "/.factory-reset"   /* #266: the same, while the NVS is erased */
 
 extern const char default_config_json_start[] asm("_binary_default_config_json_start");
 extern const char default_config_json_end[] asm("_binary_default_config_json_end");
@@ -1194,6 +1197,55 @@ void gw_storage_commissioning_password(char out[GW_COMMISSION_PW_LEN + 1])
     memcpy(out, s_pw, sizeof(s_pw));
 }
 
+/* The string @p key of the open namespace @p h: "" when it is not stored. A value that cannot
+ * be read gives "?", which is different from each value that the gateway writes: the caller
+ * then writes the entry again. */
+static void stored_str(nvs_handle_t h, const char *key, char *out, size_t cap)
+{
+    size_t len = cap;
+    esp_err_t e = nvs_get_str(h, key, out, &len);
+    if (e == ESP_ERR_NVS_NOT_FOUND) {
+        out[0] = '\0';
+    } else if (e != ESP_OK) {
+        snprintf(out, cap, "?");
+    }
+}
+
+static esp_err_t erase_key(nvs_handle_t h, const char *key)
+{
+    esp_err_t err = nvs_erase_key(h, key);
+    return err == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : err;
+}
+
+/* Issue #269: the hash of the web password ("web_hash") and its PMK ("ap_pmk") are two entries.
+ * gw_wpa_store_plan() (host-tested) gives the order of the writes, so that a power cut or a
+ * write error never leaves a PMK that is not the PMK of the stored password. Each write is
+ * committed before the next one. "" removes an entry. */
+static esp_err_t put_web_password(nvs_handle_t h, const char *hash, const char *pmk)
+{
+    char old_hash[GW_PWHASH_SIZE], old_pmk[GW_WPA_PMK_HEX_SIZE];
+    stored_str(h, "web_hash", old_hash, sizeof(old_hash));
+    stored_str(h, "ap_pmk", old_pmk, sizeof(old_pmk));
+    gw_wpa_store_op_t ops[GW_WPA_STORE_OPS_MAX];
+    size_t n = gw_wpa_store_plan(old_hash, old_pmk, hash, pmk, ops);
+    memset(old_hash, 0, sizeof(old_hash));
+    memset(old_pmk, 0, sizeof(old_pmk));
+    esp_err_t err = ESP_OK;
+    for (size_t i = 0; err == ESP_OK && i < n; i++) {
+        switch (ops[i]) {
+        case GW_WPA_STORE_ERASE_PMK: err = erase_key(h, "ap_pmk"); break;
+        case GW_WPA_STORE_SET_HASH: err = nvs_set_str(h, "web_hash", hash); break;
+        case GW_WPA_STORE_ERASE_HASH: err = erase_key(h, "web_hash"); break;
+        case GW_WPA_STORE_SET_PMK: err = nvs_set_str(h, "ap_pmk", pmk); break;
+        default: err = ESP_ERR_INVALID_ARG; break;
+        }
+        if (err == ESP_OK) {
+            err = nvs_commit(h);
+        }
+    }
+    return err;
+}
+
 static esp_err_t put_secrets(const gw_secrets_t *in)
 {
     if (!s_nvs_ok) {
@@ -1206,16 +1258,19 @@ static esp_err_t put_secrets(const gw_secrets_t *in)
     }
     for (size_t i = 0; err == ESP_OK && i < sizeof(k_secret_keys) / sizeof(k_secret_keys[0]);
          i++) {
-        const char *v = (const char *)in + k_secret_keys[i].offset;
-        if (v[0] == '\0') {
-            err = nvs_erase_key(h, k_secret_keys[i].key);
-            err = err == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : err;
-        } else {
-            err = nvs_set_str(h, k_secret_keys[i].key, v);
+        if (k_secret_keys[i].offset == offsetof(gw_secrets_t, web_password_hash) ||
+            k_secret_keys[i].offset == offsetof(gw_secrets_t, ap_pmk)) {
+            continue;   /* issue #269: the two together, below */
         }
+        const char *v = (const char *)in + k_secret_keys[i].offset;
+        err = v[0] == '\0' ? erase_key(h, k_secret_keys[i].key)
+                           : nvs_set_str(h, k_secret_keys[i].key, v);
     }
     if (err == ESP_OK) {
         err = nvs_commit(h);
+    }
+    if (err == ESP_OK) {
+        err = put_web_password(h, in->web_password_hash, in->ap_pmk);
     }
     nvs_close(h);
     return err;
@@ -1266,16 +1321,7 @@ esp_err_t gw_storage_set_web_password(const char *password, char *hash, size_t c
                     : !s_nvs_ok  ? ESP_ERR_NVS_NOT_INITIALIZED
                                  : nvs_open(NVS_SECRETS, NVS_READWRITE, &h);
     if (err == ESP_OK) {
-        err = nvs_set_str(h, "web_hash", hash);
-        if (err == ESP_OK && pmk[0] != '\0') {
-            err = nvs_set_str(h, "ap_pmk", pmk);
-        } else if (err == ESP_OK) {
-            err = nvs_erase_key(h, "ap_pmk");
-            err = err == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : err;
-        }
-        if (err == ESP_OK) {
-            err = nvs_commit(h);
-        }
+        err = put_web_password(h, hash, pmk);   /* issue #269: the order of the two writes */
         nvs_close(h);
     }
     xSemaphoreGive(s_save_lock);
@@ -1482,12 +1528,17 @@ void gw_storage_recovery_config(gw_config_t *cfg)
 /* Erase the whole LittleFS partition, then format it. esp_littlefs_format only rewrites the
  * superblocks: the data blocks of old files (secrets in clear) would survive. Erased in 64 KiB
  * steps so the other tasks (and the idle task watchdog) keep running. */
-static esp_err_t wipe_storage(void)
+static void unmount(void)
 {
     if (s_mounted) {
         esp_vfs_littlefs_unregister("storage");
         s_mounted = false;
     }
+}
+
+static esp_err_t wipe_storage(void)
+{
+    unmount();
     const esp_partition_t *p =
         esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "storage");
     if (p == NULL) {
@@ -1585,16 +1636,206 @@ bool gw_storage_get_blob(const char *key, void *out, size_t len)
 
 /* ---------- factory reset (CFG-5) ---------- */
 
-static void set_factory_marker(bool on)
+/* An entry of 1 in NVS_GW (@p on), or its removal. */
+static esp_err_t set_gw_flag(const char *key, bool on)
 {
     nvs_handle_t h;
-    if (s_nvs_ok && nvs_open(NVS_GW, NVS_READWRITE, &h) == ESP_OK) {
-        esp_err_t e = on ? nvs_set_u8(h, NVS_FACTORY, 1) : nvs_erase_key(h, NVS_FACTORY);
-        if (e == ESP_OK) {
-            nvs_commit(h);
-        }
+    if (!s_nvs_ok) {
+        return ESP_ERR_NVS_NOT_INITIALIZED;
+    }
+    esp_err_t e = nvs_open(NVS_GW, NVS_READWRITE, &h);
+    if (e != ESP_OK) {
+        return e;
+    }
+    e = on ? nvs_set_u8(h, key, 1) : nvs_erase_key(h, key);
+    if (e == ESP_OK) {
+        e = nvs_commit(h);
+    } else if (!on && e == ESP_ERR_NVS_NOT_FOUND) {
+        e = ESP_OK;
+    }
+    nvs_close(h);
+    return e;
+}
+
+static bool gw_flag(const char *key)
+{
+    nvs_handle_t h;
+    uint8_t v = 0;
+    if (s_nvs_ok && nvs_open(NVS_GW, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, key, &v);
         nvs_close(h);
     }
+    return v != 0;
+}
+
+static void set_factory_marker(bool on)
+{
+    set_gw_flag(NVS_FACTORY, on);
+}
+
+/* Issue #266: the storage for the sequence of gw_freset.h. The order of the steps, and what the
+ * boot does after a power cut, are in gw_core (host test test_freset); here is only what each
+ * step does to the flash. */
+static esp_err_t s_freset_err;   /* why the last step failed */
+
+#if CONFIG_GW_IO_SIMULATED
+/* Emulator only: the E2E cuts the power after a step of the factory reset. The firmware stops
+ * there, with nothing more written, and the harness ends QEMU and starts it again on the same
+ * flash. QEMU has no power supply that a test can cut at a step of the firmware; on the board, a
+ * person removes the power (#128 F6). */
+static volatile int s_sim_reset_cut = -1;
+
+void gw_storage_sim_reset_cut(int step)
+{
+    s_sim_reset_cut = step;
+}
+
+static void sim_reset_cut(gw_freset_step_t step)
+{
+    if (s_sim_reset_cut != (int)step) {
+        return;
+    }
+    ESP_LOGW(TAG, "factory reset: emulated power cut after step %d (%s) (emulator only): holding",
+             (int)step, gw_freset_step_name(step));
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+#else
+#define sim_reset_cut(step) ((void)0)
+#endif
+
+static bool freset_nvs_usable(void *ctx)
+{
+    (void)ctx;
+    return s_nvs_ok;
+}
+
+static bool freset_intent(void *ctx)
+{
+    (void)ctx;
+    return gw_flag(NVS_RESET_INTENT);
+}
+
+static bool freset_fs_mark(void *ctx)
+{
+    (void)ctx;
+    struct stat st;
+    return mount(false, NULL) && stat(RESET_MARK, &st) == 0;
+}
+
+/* The NVS erased fully and started again: unencrypted while a new firmware is on trial (#94). */
+static esp_err_t freset_erase_nvs(void)
+{
+    nvs_flash_deinit();
+    s_nvs_ok = false;
+    esp_err_t e = nvs_flash_erase();
+    if (e == ESP_OK) {
+        e = nvs_init_default();
+    }
+    s_nvs_ok = e == ESP_OK;
+    return e;
+}
+
+/* The marker file, in the LittleFS that wipe_storage() formatted. An empty file: only its name
+ * counts. */
+static esp_err_t freset_write_mark(void)
+{
+    esp_err_t why = ESP_FAIL;
+    if (!mount(false, &why)) {
+        return why;
+    }
+    FILE *f = fopen(RESET_MARK, "wb");
+    if (f == NULL) {
+        return ESP_FAIL;
+    }
+    bool ok = fflush(f) == 0 && fsync(fileno(f)) == 0;
+    ok = fclose(f) == 0 && ok;
+    unmount();   /* no other task writes a file into the new LittleFS during the NVS erase */
+    return ok ? ESP_OK : ESP_FAIL;
+}
+
+static esp_err_t freset_remove_mark(void)
+{
+    esp_err_t why = ESP_FAIL;
+    if (!mount(false, &why)) {
+        return why;
+    }
+    return unlink(RESET_MARK) == 0 || errno == ENOENT ? ESP_OK : ESP_FAIL;
+}
+
+static bool freset_step(void *ctx, gw_freset_step_t step)
+{
+    (void)ctx;
+    esp_err_t e = ESP_ERR_INVALID_ARG;
+    switch (step) {
+    case GW_FRESET_NVS_OPEN:
+    case GW_FRESET_ERASE_NVS:
+        e = freset_erase_nvs();
+        break;
+    case GW_FRESET_INTENT:
+        e = set_gw_flag(NVS_RESET_INTENT, true);
+        break;
+    case GW_FRESET_WIPE_FS:
+        e = wipe_storage();
+        break;
+    case GW_FRESET_FS_MARK:
+        e = freset_write_mark();
+        break;
+    case GW_FRESET_FACTORY:
+        e = set_gw_flag(NVS_FACTORY, true);   /* next boot: commissioning, not the example */
+        break;
+    case GW_FRESET_FS_UNMARK:
+        e = freset_remove_mark();
+        break;
+    case GW_FRESET_STEPS:
+    default:
+        break;
+    }
+    if (e != ESP_OK) {
+        s_freset_err = e;
+        ESP_LOGE(TAG, "factory reset: step %d (%s) failed: %s", (int)step,
+                 gw_freset_step_name(step), esp_err_to_name(e));
+        return false;
+    }
+    sim_reset_cut(step);
+    return true;
+}
+
+static const gw_freset_ops_t k_freset_ops = {.ctx = NULL, .nvs_usable = freset_nvs_usable,
+                                             .intent = freset_intent, .fs_mark = freset_fs_mark,
+                                             .step = freset_step};
+
+/* The error of a reset that did not complete. Never ESP_ERR_INVALID_STATE, which tells the
+ * callers of gw_storage_factory_reset() that nothing was erased. */
+static esp_err_t freset_error(void)
+{
+    return s_freset_err == ESP_OK || s_freset_err == ESP_ERR_INVALID_STATE ? ESP_FAIL
+                                                                             : s_freset_err;
+}
+
+bool gw_storage_factory_reset_pending(void)
+{
+    return gw_freset_pending(&k_freset_ops) != GW_FRESET_IDLE;
+}
+
+esp_err_t gw_storage_factory_reset_resume(void)
+{
+    gw_freset_pending_t pending = gw_freset_pending(&k_freset_ops);
+    if (pending == GW_FRESET_IDLE) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    ESP_LOGW(TAG, "factory reset: a power cut or an error stopped it; this boot completes it "
+                  "from the erase of %s", pending == GW_FRESET_FROM_WIPE ? "LittleFS" : "the NVS");
+    s_freset_err = ESP_OK;
+    gw_freset_step_t failed = GW_FRESET_STEPS;
+    if (gw_freset_resume(&k_freset_ops, &failed) != GW_FRESET_DONE) {
+        ESP_LOGE(TAG, "factory reset: not complete (%s): the next boot tries it again",
+                 gw_freset_step_name(failed));
+        return freset_error();
+    }
+    ESP_LOGW(TAG, "factory reset: completed at boot; the next boot is commissioning mode");
+    return ESP_OK;
 }
 
 esp_err_t gw_storage_factory_reset(void)
@@ -1614,18 +1855,18 @@ esp_err_t gw_storage_factory_reset(void)
     xSemaphoreTake(s_save_lock, portMAX_DELAY);   /* no save in the middle; never given back */
     ESP_LOGW(TAG, "factory reset: erasing LittleFS 'storage' and NVS");
     s_reset_done = true;
-    esp_err_t fs = wipe_storage();
-    nvs_flash_deinit();
-    esp_err_t nv = nvs_flash_erase();
-    if (nv == ESP_OK) {
-        nv = nvs_init_default();   /* unencrypted while a new firmware is on trial (#94) */
+    s_freset_err = ESP_OK;
+    gw_freset_step_t failed = GW_FRESET_STEPS;
+    gw_freset_result_t done = gw_freset_run(&k_freset_ops, &failed);
+    unmount();   /* as before #266: no task writes a file into the new LittleFS before the restart */
+    if (done != GW_FRESET_DONE) {
+        /* issue #266: the markers stay, and the next boot does the remaining steps again */
+        ESP_LOGE(TAG, "factory reset: not complete (%s): the next boot goes on with it",
+                 gw_freset_step_name(failed));
+        return freset_error();
     }
-    s_nvs_ok = nv == ESP_OK;
-    if (nv == ESP_OK) {
-        set_factory_marker(true);   /* next boot: commissioning, not the embedded example */
-    }
-    ESP_LOGW(TAG, "factory reset: storage %s, NVS %s", esp_err_to_name(fs), esp_err_to_name(nv));
-    return fs != ESP_OK ? fs : nv;
+    ESP_LOGW(TAG, "factory reset: complete; the next boot is commissioning mode");
+    return ESP_OK;
 }
 
 void gw_storage_set_commit_hook(gw_storage_commit_hook_t hook)
@@ -1651,23 +1892,26 @@ bool gw_storage_secrets_encrypted(void)
 #endif
 }
 
+/* Issue #266: where this boot takes the configuration from (gw_freset_boot, host-tested). The
+ * embedded example configuration is only for a gateway with no pending factory reset and no
+ * factory marker. */
+static gw_freset_boot_t boot_source(bool *factory)
+{
+    struct stat st;
+    bool pending = gw_storage_factory_reset_pending();
+    bool fs = mount(false, NULL);
+    *factory = gw_flag(NVS_FACTORY);
+    return gw_freset_boot(pending, *factory, fs, fs && stat(CFG_PATH, &st) == 0);
+}
+
 bool gw_storage_commissioning_pending(void)
 {
-    nvs_handle_t h;
-    uint8_t v = 0;
-    if (s_nvs_ok && nvs_open(NVS_GW, NVS_READONLY, &h) == ESP_OK) {
-        nvs_get_u8(h, NVS_FACTORY, &v);
-        nvs_close(h);
-    }
-    if (v == 0) {
-        return false;
-    }
-    struct stat st;
-    if (mount(false, NULL) && stat(CFG_PATH, &st) == 0) {
+    bool factory;
+    gw_freset_boot_t src = boot_source(&factory);
+    if (src == GW_FRESET_BOOT_FILE && factory) {
         set_factory_marker(false);   /* a configuration was flashed since the reset */
-        return false;
     }
-    return true;
+    return src == GW_FRESET_BOOT_COMMISSIONING;
 }
 
 /* ---------- configuration file ---------- */
@@ -2063,11 +2307,23 @@ bool gw_storage_load_config(gw_config_t *cfg, gw_cfg_err_t *err, const char **so
         return false;
     }
 #endif
+    /* issue #266: no configuration, and above all not the embedded example, while a factory
+     * reset is not complete or the gateway waits for its commissioning */
+    bool factory;
+    gw_freset_boot_t src = boot_source(&factory);
+    if (src == GW_FRESET_BOOT_PENDING) {
+        return reject(err, "a factory reset is not complete (see the log): restart the gateway "
+                           "to complete it, or do the factory reset again");
+    }
     size_t len;
     bool from_file;
     char *text = current_doc(&len, &from_file, err);
     if (text == NULL) {
         return false;
+    }
+    if (!from_file && src != GW_FRESET_BOOT_EXAMPLE) {
+        heap_caps_free(text);
+        return reject(err, "no configuration: commissioning after a factory reset");
     }
     if (!from_file) {
         *source = "embedded default (no " CFG_PATH ")";
@@ -2545,6 +2801,11 @@ esp_err_t gw_storage_save_config_lint(const char *json, size_t len, bool dry_run
         ret = ESP_ERR_INVALID_STATE;
         reject(err, "configuration not saved: LittleFS does not mount and can hold the copy of an "
                     "NVS migration; a format would lose it (to discard it: docs/reference/commissioning-and-secrets.md)");
+    } else if (!dry_run && gw_storage_factory_reset_pending()) {
+        /* issue #266: the boot that completes the reset would erase this configuration */
+        ret = ESP_ERR_INVALID_STATE;
+        reject(err, "configuration not saved: a factory reset is not complete; restart the "
+                    "gateway to complete it, then load the configuration");
     } else if (!dry_run && s_commit_hook != NULL &&
                s_commit_hook(GW_STORAGE_COMMIT_CONFIG, hook_why, sizeof(hook_why)) != ESP_OK) {
         /* issue #144 item 1: during the trial of a new image (the restart that applies it would

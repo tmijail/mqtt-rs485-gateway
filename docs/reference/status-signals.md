@@ -9,7 +9,7 @@ This document lists the signals that the gateway gives at the panel: the modes, 
 | Mode | When | What runs |
 |---|---|---|
 | `normal` | The configuration is valid | All |
-| `recovery` | The configuration is rejected, or safe mode: 3 crashes in sequence, or a restart into safe mode on request | The network, the web UI, the shell, the access point and the firmware upload. No polling, no MQTT |
+| `recovery` | The configuration is rejected, or a factory reset is not complete, or safe mode: 3 crashes in sequence, or a restart into safe mode on request | The network, the web UI, the shell, the access point and the firmware upload. No polling, no MQTT |
 | `commissioning` | After a factory reset: no configuration | The network (DHCP), the web UI, the shell and the access point |
 | `fault` | The boot did not find the PSRAM | The network, the web server, the shell and the access point. The gateway does not start |
 
@@ -34,7 +34,7 @@ The LED shows the pattern of the highest state in the table.
 
 | State | Pattern |
 |---|---|
-| Factory reset in progress | White, continuous |
+| Factory reset in progress, also at a boot that completes a factory reset after a power cut | White, continuous |
 | BOOT pushed for more than 2 s | White, blinks at 4 Hz |
 | Identify (10 s) | Red, green and blue in turn, each color 250 ms (4 Hz) |
 | Claim window open, or access point open (no key) | Blue and white, alternately (each color 250 ms) |

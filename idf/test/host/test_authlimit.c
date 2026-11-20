@@ -100,6 +100,11 @@ static void test_webstall(void)
     /* the 32-bit millisecond clock wraps after 49 days */
     TEST_ASSERT_FALSE(gw_webstall_stuck(100, 0xFFFFFF00u, false, 8000));
     TEST_ASSERT_TRUE(gw_webstall_stuck(9000, 0xFFFFFF00u, false, 8000));
+    /* #110: the server marked itself alive after the watchdog read the clock (a drain marks it
+     * for each piece): not a stall, also across the wrap of the 32-bit clock */
+    TEST_ASSERT_FALSE(gw_webstall_stuck(18760, 18761, false, 8000));
+    TEST_ASSERT_FALSE(gw_webstall_stuck(18760, 18760 + 9000, false, 8000));
+    TEST_ASSERT_FALSE(gw_webstall_stuck(0xFFFFFFF0u, 5, false, 8000));
 }
 
 int main(void)

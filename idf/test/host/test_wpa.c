@@ -147,9 +147,140 @@ static void test_pmk_hex_valid(void)
         "g42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e"));
 }
 
+/* ---------- issue #269: the order of the writes of the hash and the PMK ---------- */
+
+/* The two NVS entries. Each password of the test has a hash and a PMK with its name in them, so
+ * that the test can tell whose PMK is stored. */
+typedef struct {
+    char hash[24];
+    char pmk[GW_WPA_PMK_HEX_SIZE];
+} pw_store_t;
+
+#define PMK_OLD "0000000000000000000000000000000000000000000000000000000000000a1d"
+#define PMK_NEW "00000000000000000000000000000000000000000000000000000000000002e3"
+
+static void store_apply(pw_store_t *s, gw_wpa_store_op_t op, const char *hash, const char *pmk)
+{
+    switch (op) {
+    case GW_WPA_STORE_ERASE_PMK: s->pmk[0] = '\0'; break;
+    case GW_WPA_STORE_SET_HASH: snprintf(s->hash, sizeof(s->hash), "%s", hash); break;
+    case GW_WPA_STORE_ERASE_HASH: s->hash[0] = '\0'; break;
+    case GW_WPA_STORE_SET_PMK: snprintf(s->pmk, sizeof(s->pmk), "%s", pmk); break;
+    default: TEST_FAIL_MESSAGE("not a store operation"); break;
+    }
+}
+
+/* The PMK of the password whose hash is @p hash ("" for a password with no PMK, or none). */
+static const char *pmk_of(const char *hash)
+{
+    return strcmp(hash, "hash-old") == 0 ? PMK_OLD : strcmp(hash, "hash-new") == 0 ? PMK_NEW : "";
+}
+
+/* A change from @p from to (@p hash, @p pmk), with a power cut after each number of writes: the
+ * store never has a PMK that is not the PMK of its password, and the access point never uses
+ * such a PMK. Returns the number of writes of the full change. */
+static size_t cut_each_write(const pw_store_t *from, const char *hash, const char *pmk)
+{
+    gw_wpa_store_op_t ops[GW_WPA_STORE_OPS_MAX];
+    size_t n = gw_wpa_store_plan(from->hash, from->pmk, hash, pmk, ops);
+    TEST_ASSERT_TRUE(n <= GW_WPA_STORE_OPS_MAX);
+    for (size_t cut = 0; cut <= n; cut++) {
+        pw_store_t s = *from;
+        for (size_t i = 0; i < cut; i++) {
+            store_apply(&s, ops[i], hash, pmk);
+        }
+        char msg[200];
+        snprintf(msg, sizeof(msg), "from ('%s','%.8s') to ('%s','%.8s'), cut after %u of %u "
+                                   "writes: ('%s','%.8s')", from->hash, from->pmk, hash, pmk,
+                 (unsigned)cut, (unsigned)n, s.hash, s.pmk);
+        /* a stored PMK is the PMK of the stored password */
+        if (s.pmk[0] != '\0' && s.hash[0] != '\0') {
+            TEST_ASSERT_EQUAL_STRING_MESSAGE(pmk_of(s.hash), s.pmk, msg);
+        }
+        /* a PMK without a password can only be one that was there before (an earlier fault) */
+        if (s.pmk[0] != '\0' && s.hash[0] == '\0') {
+            TEST_ASSERT_TRUE_MESSAGE(from->hash[0] == '\0' && cut == 0, msg);
+        }
+        /* the key of the access point: a PMK only when it is the PMK of the stored password */
+        if (gw_wpa_key_is_pmk(s.hash, s.pmk)) {
+            TEST_ASSERT_EQUAL_STRING_MESSAGE(pmk_of(s.hash), s.pmk, msg);
+        }
+        /* the stored password is the old one or the new one */
+        TEST_ASSERT_TRUE_MESSAGE(strcmp(s.hash, from->hash) == 0 || strcmp(s.hash, hash) == 0, msg);
+        if (cut == n) {
+            /* no cut: the new pair (a PMK without a hash is not written) */
+            TEST_ASSERT_EQUAL_STRING_MESSAGE(hash, s.hash, msg);
+            TEST_ASSERT_EQUAL_STRING_MESSAGE(hash[0] != '\0' ? pmk : "", s.pmk, msg);
+        }
+    }
+    return n;
+}
+
+static void test_store_order_with_a_cut_at_each_write(void)
+{
+    const pw_store_t none = {"", ""}, old = {"hash-old", PMK_OLD}, old_no_pmk = {"hash-old", ""};
+    gw_wpa_store_op_t ops[GW_WPA_STORE_OPS_MAX];
+
+    /* the first web password: the hash, then the PMK */
+    TEST_ASSERT_EQUAL_size_t(2, gw_wpa_store_plan("", "", "hash-new", PMK_NEW, ops));
+    TEST_ASSERT_EQUAL(GW_WPA_STORE_SET_HASH, ops[0]);
+    TEST_ASSERT_EQUAL(GW_WPA_STORE_SET_PMK, ops[1]);
+    TEST_ASSERT_EQUAL_size_t(2, cut_each_write(&none, "hash-new", PMK_NEW));
+
+    /* a change of the web password: the old PMK goes first. Before #269 the hash was written
+     * first, and a cut left the new hash with the PMK of the old password */
+    TEST_ASSERT_EQUAL_size_t(3, gw_wpa_store_plan("hash-old", PMK_OLD, "hash-new", PMK_NEW, ops));
+    TEST_ASSERT_EQUAL(GW_WPA_STORE_ERASE_PMK, ops[0]);
+    TEST_ASSERT_EQUAL(GW_WPA_STORE_SET_HASH, ops[1]);
+    TEST_ASSERT_EQUAL(GW_WPA_STORE_SET_PMK, ops[2]);
+    TEST_ASSERT_EQUAL_size_t(3, cut_each_write(&old, "hash-new", PMK_NEW));
+
+    /* the removal of the web password: the PMK goes first. Before #269 a cut left the PMK of
+     * the old password with no hash, and the access point used it */
+    TEST_ASSERT_EQUAL_size_t(2, gw_wpa_store_plan("hash-old", PMK_OLD, "", "", ops));
+    TEST_ASSERT_EQUAL(GW_WPA_STORE_ERASE_PMK, ops[0]);
+    TEST_ASSERT_EQUAL(GW_WPA_STORE_ERASE_HASH, ops[1]);
+    TEST_ASSERT_EQUAL_size_t(2, cut_each_write(&old, "", ""));
+
+    /* the password stays (a document with "********"): no write, so no time without a PMK */
+    TEST_ASSERT_EQUAL_size_t(0, cut_each_write(&old, "hash-old", PMK_OLD));
+    TEST_ASSERT_EQUAL_size_t(0, cut_each_write(&none, "", ""));
+    TEST_ASSERT_EQUAL_size_t(0, cut_each_write(&old_no_pmk, "hash-old", ""));
+
+    /* a new password whose PMK could not be calculated (no MAC address) */
+    TEST_ASSERT_EQUAL_size_t(2, cut_each_write(&old, "hash-new", ""));
+    TEST_ASSERT_EQUAL_size_t(1, cut_each_write(&none, "hash-new", ""));
+    /* a password with no PMK (the fault of #248) gets a new password, or is removed */
+    TEST_ASSERT_EQUAL_size_t(2, cut_each_write(&old_no_pmk, "hash-new", PMK_NEW));
+    TEST_ASSERT_EQUAL_size_t(1, cut_each_write(&old_no_pmk, "", ""));
+    /* a save that failed puts the old pair back */
+    const pw_store_t new_pair = {"hash-new", PMK_NEW};
+    TEST_ASSERT_EQUAL_size_t(3, cut_each_write(&new_pair, "hash-old", PMK_OLD));
+    /* a PMK is never written without a hash */
+    TEST_ASSERT_EQUAL_size_t(0, cut_each_write(&none, "", PMK_NEW));
+    TEST_ASSERT_EQUAL_size_t(2, cut_each_write(&old, "", PMK_NEW));
+
+    /* a PMK with no hash, from a cut of the firmware before #269: the next write removes it */
+    const pw_store_t orphan = {"", PMK_OLD};
+    TEST_ASSERT_EQUAL_size_t(1, gw_wpa_store_plan("", PMK_OLD, "", "", ops));
+    TEST_ASSERT_EQUAL(GW_WPA_STORE_ERASE_PMK, ops[0]);
+    TEST_ASSERT_EQUAL_size_t(3, cut_each_write(&orphan, "hash-new", PMK_NEW));
+}
+
+static void test_the_access_point_uses_a_pmk_only_with_a_web_password(void)
+{
+    TEST_ASSERT_TRUE(gw_wpa_key_is_pmk("pbkdf2-sha256$2048$00$00", PMK_OLD));
+    TEST_ASSERT_FALSE(gw_wpa_key_is_pmk("", PMK_OLD));                         /* no web password */
+    TEST_ASSERT_FALSE(gw_wpa_key_is_pmk("pbkdf2-sha256$2048$00$00", ""));      /* #248: no PMK */
+    TEST_ASSERT_FALSE(gw_wpa_key_is_pmk("pbkdf2-sha256$2048$00$00", "0123"));  /* not a PMK */
+    TEST_ASSERT_FALSE(gw_wpa_key_is_pmk("", ""));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
+    RUN_TEST(test_store_order_with_a_cut_at_each_write);
+    RUN_TEST(test_the_access_point_uses_a_pmk_only_with_a_web_password);
     RUN_TEST(test_sha1_vectors);
     RUN_TEST(test_hmac_sha1_vectors);
     RUN_TEST(test_pbkdf2_sha1_vectors);

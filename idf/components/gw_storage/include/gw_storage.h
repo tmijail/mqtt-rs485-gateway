@@ -199,8 +199,20 @@ void gw_storage_free(void *ptr);
  * CFG-5: format the LittleFS partition and erase NVS (configuration, secrets, the
  * commissioning password), then mark the device for commissioning. The caller restarts.
  * ESP_ERR_INVALID_STATE: refused by the commit hook, nothing erased.
+ * Issue #266: the steps and their markers are in gw_freset.h. After a power cut, or with another
+ * error (a step failed), the reset stays pending and the next boot goes on with it.
  */
 esp_err_t gw_storage_factory_reset(void);
+
+/** Issue #266: a factory reset started and is not complete (a power cut, or a step failed).
+ *  While it is true, no configuration is loaded or saved. After gw_storage_init(). */
+bool gw_storage_factory_reset_pending(void);
+
+/** Issue #266, at boot, before the mode is selected: does the remaining steps of a pending
+ *  factory reset. ESP_OK: complete, the caller restarts (the next boot is commissioning mode).
+ *  ESP_ERR_NOT_FOUND: nothing was pending. Another error: a step failed again, the reset stays
+ *  pending and gw_storage_load_config() rejects (recovery mode). */
+esp_err_t gw_storage_factory_reset_resume(void);
 
 /**
  * True after a factory reset until a configuration is saved (or flashed): the gateway then
@@ -325,6 +337,10 @@ size_t gw_storage_validation_min_block(void);
 /** Emulator only (issue #84): the next configuration validation keeps its buffers for @p ms at
  *  its peak, so the E2E can make a TLS handshake happen during it. */
 void gw_storage_sim_hold_validation(uint32_t ms);
+
+/** Emulator only (issue #266): the next factory reset stops after @p step (gw_freset_step_t) and
+ *  writes nothing more, as after a power cut; the E2E then ends QEMU. -1: no stop. */
+void gw_storage_sim_reset_cut(int step);
 #endif
 
 #ifdef __cplusplus

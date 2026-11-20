@@ -54,7 +54,24 @@ The web password is also the WPA2 key, thus it obeys the rule of a WPA2 passphra
 The gateway writes the PMK each time that it writes a web password. Thus a web password without a PMK in the stored secrets is a fault. It has one of these causes:
 
 - The gateway could not read the MAC address of the access point when it calculated the PMK. The log then shows `storage: no WPA2 key for the access point: MAC address not readable`.
-- The gateway wrote the hash of the password, but not the PMK. The two are different NVS entries. A write error or a power cut between the two writes causes this.
+- A write error or a power cut stopped a change of the web password. The hash and the PMK are different NVS entries (`web_hash` and `ap_pmk`), and the gateway writes them in a sequence.
+
+**The sequence of the writes (#269).** The sequence makes sure that the stored PMK is always the PMK of the stored password:
+
+1. The gateway erases the PMK, when one is stored and the password changes.
+2. It writes the hash of the new password. When the document removes the password, it erases the hash.
+3. It writes the new PMK, only when a hash is stored.
+
+| Operation | State after a write error or a power cut |
+|---|---|
+| The first web password | No password, or the new password without a PMK, or the new password with its PMK |
+| A change of the web password | The old password with its PMK, or the old password without a PMK, or the new password without a PMK, or the new password with its PMK |
+| The removal of the web password | The old password with its PMK, or the old password without a PMK, or no password |
+
+- No state has the PMK of the old password with the new password, or with no password.
+- A save that keeps the password (`"********"`) writes none of the two entries.
+- The access point uses the PMK only when the hash of a web password is stored (`gw_wpa_key_is_pmk`). A PMK without a web password is not a key.
+- The sequence is in `gw_core` (`gw_wpa_store_plan`). The host test `test_wpa` examines a cut after each write.
 
 The gateway has the same behaviour for each web password without a valid PMK (issue #248):
 

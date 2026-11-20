@@ -11,7 +11,7 @@ The list of the scenarios, their order and their `--only` names are in `SCENARIO
 | `failsafe` | `failsafe` | PSRAM | `GW03` |
 | `network` | `network` | PSRAM | `GW02` |
 | `web` | `web` | PSRAM | `GW04`, `GW05`, `GW06` |
-| `reset` | `reset` | PSRAM | `GW07`, `GW08`, `GW09` |
+| `reset` | `reset` | PSRAM | `GW07`, `GW08`, `GW09`, `GW10` |
 | `tls` | `tls` | PSRAM | `GW12`–`GW16`, `GW25`, `GW29`, `GW30` |
 | `failover` | `failover` | PSRAM | `GW17` |
 | `mqtt5` | `mqtt5` | PSRAM | `GW18` |
@@ -117,7 +117,7 @@ Nodes `GW04`, `GW05`, `GW06`: the REST API and the web UI.
 
 ## reset
 
-Nodes `GW07`, `GW08`, `GW09`: the BOOT button, commissioning and the access point.
+Nodes `GW07`, `GW08`, `GW09`, `GW10`: the BOOT button, commissioning and the access point.
 
 - **CFG-5:** `boot 1` held for 10 s gives the factory reset: a warning at 2 s, an orderly NDEATH, commissioning mode, no block of the old configuration in the partition. The old web password gives 401, and the new commissioning password works.
 - **NET-5:** a 2–10 s press starts the access point.
@@ -125,6 +125,7 @@ Nodes `GW07`, `GW08`, `GW09`: the BOOT button, commissioning and the access poin
 - **#187:** the WPA2 PMK of the access point is the web password, and a factory reset removes it. `POST /api/ap/stop`, and the stop after the idle time.
 - **#248 (`GW09`):** an NVS with the hash of a web password and no PMK, made with `nvs_partition_gen.py`. The access point uses the commissioning password, and the log shows the warning. The same password as a new value of `web.password` gives the PMK. This check does not run in the secure variant.
 - **#203, #209:** the factory reset by the shell and the API, and the restart into safe mode on request.
+- **#266 (`GW10`):** a power cut during a factory reset, at two points: after the erase of LittleFS, and after the erase of the NVS. The emulator-only command `resetcut <step>` stops the firmware after that step, and the harness ends QEMU. The next boot completes the reset and restarts in commissioning mode. It loads no configuration and publishes no NBIRTH, the old web password gives 401, and the flash has nothing of the old configuration and of the old secrets. The host test `test_freset` examines each cut point.
 - **#74:** a boot with the DO expander absent: the retry gets an answer, and all DOs are off.
 - **#192, #193:** `ap.request_via_ap` is true after `claimsim 600 eth`.
 

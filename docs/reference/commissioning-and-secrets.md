@@ -15,7 +15,7 @@ A mode is the state that the boot reached. For the table of the modes and the LE
 | Mode | What it means for the access |
 |---|---|
 | `normal` | The configuration is valid. The web server starts only with `web.enabled: true`. A push of BOOT for 2 to 10 s starts it until the next restart |
-| `recovery` | The configuration is rejected, or safe mode. The web server always starts. The saved web password is valid with any user name, because the user name is in the rejected document |
+| `recovery` | The configuration is rejected, or safe mode, or a factory reset that is not complete (refer to [The sequence of the factory reset](#the-sequence-of-the-factory-reset)). The web server always starts. The saved web password is valid with any user name, because the user name is in the rejected document |
 | `commissioning` | After a factory reset. The gateway does not use the embedded example configuration or its Sparkplug identity. It waits for a configuration from the web UI or the shell, with a new commissioning password. The saved web password, if there is one, is valid with any user name |
 | `fault` | The boot did not find the PSRAM. Only the network, the web server, the shell and the access point start |
 
@@ -125,6 +125,7 @@ These secrets are in NVS, never in `/cfg/config.json` (CFG-7):
 For the rules of a secret in a loaded document (`"********"`, a new text, `""`, no key), refer to [The configuration document](configuration.md#the-secrets).
 
 - **The PMK.** The gateway calculates it only when `web.password` gets a new value: the claim, `PUT /api/config`, `config load`, or a `config.json` with the password in clear text at boot. The calculation is approximately 16 000 SHA-1 compressions in software. It never occurs in the polling, encoding or publish path. The log gives its time: `storage: WPA2 key of the access point … calculated in N ms`.
+- **The hash and the PMK are two NVS entries** (`web_hash` and `ap_pmk`). At a change or a removal of the web password, the gateway erases the PMK first. Then it writes or erases the hash, and writes the new PMK last (#269). After a power cut, the stored PMK is thus the PMK of the stored password, or there is no PMK. Refer to [The access point](access-point.md#a-web-password-without-a-pmk).
 - **The SSID is the salt of the PMK.** The SSID comes from the MAC address and does not change, thus the PMK stays correct.
 - **Secrets in clear text in `config.json`.** The firmware accepts them, for example from `idf.py flash`. At boot, it moves them to NVS. Then it **erases the full LittleFS partition**, because LittleFS is copy-on-write and the old blocks would keep the text. Then it writes the file again without the secrets. During this time, the gateway has a commissioning mark: a power cut does not leave it with the example identity.
 - **RAM and the core dump.** The secrets are in RAM while the gateway runs. A core dump can contain them. `GET /api/coredump` needs the web password, and the shell command `coredump dump` needs physical access. Keep a downloaded dump as safe as the passwords, and erase it from the gateway after the download.
@@ -163,6 +164,63 @@ The restart also sets the Modbus counters to 0, because they are only in RAM. Th
 - A commit hook can refuse the reset. Then nothing is erased (`409`).
 - On real flash, the erase of the 1 MiB LittleFS partition takes some seconds (in steps of 64 KB).
 - In QEMU, the emulator-only shell commands `boot 1` and `boot 0` push and release the button.
+
+### The sequence of the factory reset
+
+The reset erases two stores, LittleFS and the NVS, and an erase is not atomic. The commissioning mark is in the NVS, thus it cannot stay during the two erases. The gateway keeps a mark "the reset is not complete" in one store while it erases the other store (#266). After step 1, a power cut at each moment leaves a mark, and the next boot completes the reset.
+
+| Step | What the gateway does | Where the mark is after the step |
+|---|---|---|
+| 1 | It writes the intent to the NVS (the key `freset` of the namespace `gw`) | The NVS |
+| 2 | It erases the full LittleFS partition, then formats it | The NVS |
+| 3 | It writes the mark file `/cfg/.factory-reset` to LittleFS | The NVS and LittleFS |
+| 4 | It erases the full NVS, then starts it again. This also erases the intent | LittleFS |
+| 5 | It writes the commissioning mark to the NVS (the key `factory` of the namespace `gw`) | LittleFS |
+| 6 | It deletes the mark file | No mark: the reset is complete |
+
+- If the NVS is not usable, or it refuses the intent (for example a full NVS), the gateway erases the NVS before step 1.
+- A step that fails stops the sequence. The marks stay. The gateway restarts, and `POST /api/factory-reset` gives `"erased":false`.
+- The sequence is in `gw_core` (`gw_freset.h`). `gw_storage` has only the operation of each step.
+
+**The boot after a power cut.** The boot reads the two marks before it selects the mode:
+
+| The boot finds | What the boot does |
+|---|---|
+| The intent in the NVS | Steps 2 to 6 again |
+| Only the mark file | Steps 4 to 6 again |
+| No mark | Nothing. No factory reset started, or each one is complete |
+
+- The boot examines the intent first. While the NVS has the intent, the erase of the NVS did not complete, and a second erase of LittleFS loses nothing.
+- With the mark file, the boot always erases the NVS again. An NVS that is partly erased can have old secrets, and a commissioning mark of an earlier reset.
+- After the last step, the gateway restarts. That boot starts in commissioning mode, with a new commissioning password and a new certificate.
+- The LED shows white during the steps. The log gives `storage: factory reset: a power cut or an error stopped it; this boot completes it from the erase of LittleFS` (or `of the NVS`).
+
+**The state after a power cut:**
+
+| Moment of the cut | State at the next boot |
+|---|---|
+| Before the intent is in the NVS (step 1) | The state before the reset. Nothing is erased. Do the factory reset again |
+| From the end of step 1 until step 4 erases the intent | The boot does steps 2 to 6, then the gateway starts in commissioning mode |
+| From that moment until the end of step 6 | The boot does steps 4 to 6, then the gateway starts in commissioning mode |
+
+- No moment gives the embedded example configuration in normal mode. No old secret stays after the boot completes the reset.
+- The gateway uses the embedded example configuration only when all these conditions are true. This is the state of a board after its first flash.
+    - The boot finds no mark of a factory reset that is not complete.
+    - The NVS has no commissioning mark.
+    - LittleFS mounts, and it has no `config.json`.
+
+**A reset that the boot does not complete.** The marks stay when a step fails again at the boot, and in safe mode.
+
+- When a step fails at the boot, the gateway starts in recovery mode. The cause is `a factory reset is not complete (see the log): restart the gateway to complete it, or do the factory reset again`. Each boot tries the steps again.
+- Safe mode does not do the steps, because a step can be the cause of the crashes. The first boot that is not in safe mode does them.
+- While a mark is there, the gateway reads no configuration, and it refuses a configuration save (`409`).
+- A flash of the `storage` partition does not remove the intent, because `idf.py flash` does not erase the NVS. The next boot erases the flashed configuration, and the gateway starts in commissioning mode. Flash the configuration again after that boot.
+
+**Limits.**
+
+- A reset that starts with an NVS that is not usable erases the NVS first. A power cut during that erase leaves the configuration, with all, a part or none of the old NVS. Do the factory reset again.
+- An NVS with a hardware fault cannot hold the intent. The reset then continues without it, because the owner must be able to erase the configuration. Only the short time between the format of LittleFS and the mark file has no mark.
+- The host test `test_freset` examines a power cut at each step, with each part result of an erase, also in the boots that follow. The E2E examines two cut points in QEMU, where no flash write is cut in the middle. The test on the board is item F6 of #128.
 
 ## The shell
 

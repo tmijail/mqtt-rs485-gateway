@@ -209,13 +209,16 @@ static void self_check(gw_ota_selfcheck_t *out)
  * calculation failed (the MAC address was not readable) or when its NVS entry was not written
  * after the entry of the hash (a write error, a power cut between the two). The key is then the
  * commissioning password too, with a warning: the owner can still use the access point. Only a
- * new web password gives a PMK again, because the gateway does not keep the password. */
+ * new web password gives a PMK again, because the gateway does not keep the password.
+ * Issue #269: a PMK is the key only with the hash of a web password. gw_storage erases the PMK
+ * before it changes or removes the hash, so a stored PMK is the PMK of the stored password; a
+ * PMK with no web password is not used. */
 static bool ap_key(char out[GW_AP_KEY_SIZE])
 {
     gw_storage_commissioning_password(s_commission_pw);
     gw_secrets_t sec;
     gw_storage_get_secrets(&sec);
-    bool pmk = gw_wpa_pmk_hex_valid(sec.ap_pmk);
+    bool pmk = gw_wpa_key_is_pmk(sec.web_password_hash, sec.ap_pmk);
     if (!pmk && sec.web_password_hash[0] != '\0') {
         ESP_LOGW(TAG, "access point: a web password is set, but its WPA2 key (PMK) is not in the "
                       "stored secrets: the key is the commissioning password. Set the web "
@@ -535,6 +538,19 @@ void app_main(void)
         ESP_LOGE(TAG, "status LED unavailable");
     }
     gw_storage_init();  /* failure is logged; no stored secrets then */
+    /* Issue #266: a factory reset that a power cut stopped is completed here, before anything
+     * reads the NVS or the configuration; then a restart, so that the boot into commissioning
+     * mode starts from the erased storage. When a step fails again, the reset stays pending and
+     * gw_storage_load_config() rejects: recovery mode. Safe mode (repeated crashes) does not do
+     * the steps, which can be what crashes; it loads no configuration in any case. */
+    if (!s_safe && gw_storage_factory_reset_pending()) {
+        gw_status_set(GW_ST_RESETTING, true);
+        if (gw_storage_factory_reset_resume() == ESP_OK) {
+            ESP_LOGW(TAG, "factory reset completed: restarting into commissioning mode");
+            esp_restart();
+        }
+        gw_status_set(GW_ST_RESETTING, false);
+    }
     /* #200: the live log of the web UI keeps the log lines from here on (PSRAM) */
     if (gw_log_ring_start() != ESP_OK) {
         ESP_LOGE(TAG, "live log of the web UI unavailable");

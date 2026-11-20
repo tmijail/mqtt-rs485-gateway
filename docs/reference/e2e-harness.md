@@ -241,7 +241,7 @@ Each item has a test on the board in a hardware issue (the last column). The boa
 | Card format (#139) | `card format simulate <ms>` runs the format task and writes nothing | The format of a real card | #131 |
 | Interrupt watchdog | With `wdt_disable`, the interrupt watchdog cannot trigger also | A real trigger | #129 |
 | Reset reasons | Only power-on, software and panic | The watchdog resets, a brownout, the RESET button, and the boot-loop counter after them | #128, #129 |
-| Power cut | The harness kills QEMU at a point that it selects. No write to the flash is cut | A power cut during a write to LittleFS, NVS or `otadata`, and a brownout | #128, #131 |
+| Power cut | The harness kills QEMU at a point that it selects. No write to the flash is cut. For the factory reset (#266), `resetcut <step>` stops the firmware after a step of the sequence, and the harness then kills QEMU | A power cut during a write to LittleFS, NVS or `otadata`, a power cut during an erase of the factory reset (host test `test_freset` and the board), and a brownout | #128, #131 |
 | Store & forward ring | 1 000 samples in the PSRAM variant (`CONFIG_GW_SF_SAMPLES`) | The 40 000 samples of the board | #129, #131 |
 | Poll during a map of the flash | The bus task stops while core 1 is parked | The poll during an image verification and during the summary of the core dump | #127, #128, #129 |
 | Fault mode without PSRAM (#135) | The PSRAM build on a QEMU without the PSRAM model | The detection failure of the real chip, and the internal RAM with the W5500 and the radio | #129 |

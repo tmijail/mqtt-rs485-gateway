@@ -1737,6 +1737,24 @@ static int cmd_validation(int argc, char **argv)
     return 0;
 }
 
+/* Issue #266: the next factory reset stops after a step, as after a power cut. */
+static int cmd_resetcut(int argc, char **argv)
+{
+    char *end = NULL;
+    long step = argc == 2 ? strtol(argv[1], &end, 10) : -2;
+    if (end == NULL || *end != '\0' || step < -1 || step > 6) {
+        out("usage: resetcut <-1|0-6>\n");
+        return 1;
+    }
+    gw_storage_sim_reset_cut((int)step);
+    if (step < 0) {
+        out("the next factory reset has no emulated power cut\n");
+    } else {
+        out("the next factory reset stops after step %ld (an emulated power cut)\n", step);
+    }
+    return 0;
+}
+
 /* Issue #111: the bus task (core 1) floods the console, so a park of core 1 finds it logging. */
 static int cmd_storm(int argc, char **argv)
 {
@@ -1771,6 +1789,7 @@ static int cmd_pubfail(int argc, char **argv)
 
 ATOMIC(cmd_expander)
 ATOMIC(cmd_validation)
+ATOMIC(cmd_resetcut)
 ATOMIC(cmd_storm)
 ATOMIC(cmd_pubfail)
 ATOMIC(cmd_boot)
@@ -1876,6 +1895,9 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
          "while after the next boot (issue #74)", .hint = "absent <ms>", .func = cmd_expander_atomic},
         {.command = "validation", .help = "Emulator only: the next configuration validation "
          "keeps its buffers for a while (issue #84)", .hint = "hold <ms>", .func = cmd_validation_atomic},
+        {.command = "resetcut", .help = "Emulator only: the next factory reset stops after a "
+         "step of its sequence, as after a power cut; -1: no stop (issue #266)",
+         .hint = "<-1|0-6>", .func = cmd_resetcut_atomic},
         {.command = "storm", .help = "Emulator only: the bus task (core 1) floods the console "
          "for a while (issue #111)", .hint = "<0-600000 ms>", .func = cmd_storm_atomic},
         {.command = "pubfail", .help = "Emulator only: the next N publishes of the Sparkplug "
