@@ -9631,6 +9631,9 @@ def check_ap_without_pmk(args, work):
     warning in the log, and opens no claim window; the same password as a new value of
     web.password gives the PMK, and the access point then uses the web password."""
     if args.secure:
+        print("[SKIP] Issue #248 a web password without a PMK: the check makes an NVS in the format "
+              "of the board (not encrypted), and the secure build would first move it into the "
+              "encrypted NVS", flush=True)
         return
     node, comm_pw = "GW09", "abcdefgh2345"
     salt = bytes(range(16))
