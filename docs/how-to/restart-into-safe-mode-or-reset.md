@@ -69,6 +69,8 @@ Then the gateway restarts in commissioning mode: no polling and no MQTT until it
 
 After the restart, the LED blinks blue: commissioning mode. To configure the gateway again, refer to [Recover a gateway](recover-the-gateway.md#the-gateway-has-no-configuration).
 
+If the power goes off during the factory reset, connect the power again. The gateway completes the reset at the next start, then it restarts in commissioning mode. If the gateway starts with the old configuration, the reset did not start: do the factory reset again. For the sequence, refer to [Commissioning and secrets](../reference/commissioning-and-secrets.md#the-sequence-of-the-factory-reset).
+
 You can also do the factory reset with:
 
 - the REST API: `POST /api/factory-reset?confirm=1`;

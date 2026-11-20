@@ -114,6 +114,7 @@ The checks have these limits:
 | `test_ota` | FW-1 (#144): the expected mode, the self-check, the backstop of 5 min, the rejection of a configuration, the retry of a failed confirmation (#99). The capability block and the pre-flight check (#102, #148). URLs, the request body, the progress |
 | `test_cfgschema` | FW-1 (#144 item 3): the schema that a stored configuration needs |
 | `test_bootloop` | FW-1 (#144 item 4): the boot-loop counter and safe mode |
+| `test_freset` | CFG-5 (#266): the sequence of the factory reset on a model of the two stores. A power cut at each step with each part result of an erase, also in the boots that follow, from each state of the stores. Steps that fail, a full NVS, safe mode, and the boot of a board after its first flash |
 | `test_fwlast` | FW-1 (#144 items 5 and 7): the record of the last update |
 | `test_lkgnet` | CFG-3 / FW-1 (#144 item 8): the network of the last valid configuration, readable by an earlier or a later image. A field without its terminator |
 | `test_claim` | CFG-3 / NET-5 (#120): the claim window and the password rules |

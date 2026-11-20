@@ -86,6 +86,8 @@ This procedure uses the BOOT button at the panel. To do the factory reset from a
 
 Do not push BOOT when you connect the power. GPIO0 is a strapping pin: the ROM then starts the download mode, and the firmware does not start.
 
+If the power goes off during the factory reset, connect the power again. The gateway completes the reset at the next start, then it restarts in commissioning mode. If the LED blinks red after that start, a step of the reset failed: read the cause in the log, and do the factory reset again. For the sequence, refer to [Commissioning and secrets](../reference/commissioning-and-secrets.md#the-sequence-of-the-factory-reset).
+
 ## The gateway has no network
 
 1. In the card **Network and MQTT**, read the state of each interface: `no link`, `no address` or `up`.
@@ -125,6 +127,6 @@ Flash the firmware over USB. The owner of the board always keeps this access: th
 2. In `idf/`, type `idf.py -p <port> flash`.
 3. If the flash does not start, disconnect all power. Hold BOOT, connect the USB cable, and release BOOT. The ROM then starts the download mode.
 
-A flash with `idf.py flash` also writes the `fs/` folder into the LittleFS partition. Without a `config.json` in that folder, the gateway uses the embedded example configuration. After a factory reset, it stays in commissioning mode. The NVS (secrets, web password) stays. To erase all, type `idf.py -p <port> erase-flash` before the flash.
+A flash with `idf.py flash` also writes the `fs/` folder into the LittleFS partition. Without a `config.json` in that folder, the gateway uses the embedded example configuration. After a factory reset, it stays in commissioning mode. The NVS (secrets, web password) stays. If a factory reset is not complete, its mark also stays in the NVS: the next boot completes the reset, and erases the flashed LittleFS partition. To erase all, type `idf.py -p <port> erase-flash` before the flash.
 
 The PSRAM fault mode is a different case: the boot did not find the PSRAM. Only the network, the web server, the shell and the access point start. The banner of the web UI gives the fault. Examine the board. The firmware does not operate without PSRAM.

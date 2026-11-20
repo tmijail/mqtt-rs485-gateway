@@ -115,13 +115,14 @@ The gateway keeps `mqtt.password`, `network.wifi.password` and `web.password` in
 
 ## Load and recovery mode
 
-**The firmware uses the embedded configuration only when `/cfg/config.json` does not exist**, and no factory reset occurred. After a factory reset, the gateway starts in commissioning mode. Refer to [Commissioning and secrets](commissioning-and-secrets.md#the-modes).
+**The firmware uses the embedded configuration only when `/cfg/config.json` does not exist**, and no factory reset occurred or is pending. After a factory reset, the gateway starts in commissioning mode. Refer to [Commissioning and secrets](commissioning-and-secrets.md#the-modes).
 
 All other problems put the gateway in **recovery mode**:
 
 - the LittleFS partition does not mount;
 - the file is empty, cannot be read or is larger than the limit;
-- the document is not valid.
+- the document is not valid;
+- a factory reset is not complete, and the boot could not complete it (refer to [Commissioning and secrets](commissioning-and-secrets.md#the-sequence-of-the-factory-reset)).
 
 In recovery mode, **the polling and MQTT do not start**. The network, the web UI, the shell and the access point start. Thus you can correct the configuration without a new flash.
 

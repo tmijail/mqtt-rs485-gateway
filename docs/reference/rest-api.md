@@ -421,7 +421,7 @@ Then the gateway restarts in commissioning mode, 0.5 s after the response. The r
 
 | Status | Cause |
 |---|---|
-| `202` | `{"ok":true,"erased":true,"restart":"commissioning"}`. `erased` is `false` when the erase reported an error. The gateway restarts also then |
+| `202` | `{"ok":true,"erased":true,"restart":"commissioning"}`. `erased` is `false` when a step of the reset failed. The gateway restarts also then, and the next boot does the remaining steps again (refer to [Commissioning and secrets](commissioning-and-secrets.md#the-sequence-of-the-factory-reset)) |
 | `400` | No `?confirm=1` |
 | `409` | The firmware refused the factory reset. Nothing is erased |
 
