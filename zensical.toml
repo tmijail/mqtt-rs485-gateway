@@ -31,6 +31,7 @@ nav = [
       "how-to/add-devices-of-one-type.md",
       "how-to/set-up-the-local-io.md",
       "how-to/connect-the-gateway-to-wi-fi.md",
+      "how-to/set-the-time-servers.md",
       "how-to/connect-to-a-broker-with-tls.md",
       "how-to/manage-the-certificates.md",
       "how-to/change-the-configuration.md",

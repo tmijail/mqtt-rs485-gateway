@@ -269,6 +269,8 @@ In the web UI, the card **Time** has one row for each server. An empty row is an
 
 Without a valid clock, the gateway opens no MQTT session. Refer to [The clock and the RTC battery](clock-and-rtc-battery.md).
 
+For the procedure, refer to [Set the time servers](../how-to/set-the-time-servers.md).
+
 ## `mqtt`
 
 In the web UI, the keys are in the card **MQTT**. The field **Broker** is `host`, and **User** is `username`.
