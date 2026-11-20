@@ -6,29 +6,48 @@
 # Issue #261: as the build for the board, this build has no NVS encryption and does not check a
 # signature of an OTA image. These two functions are in sdkconfig.qemu-secure (E2E_SECURE=1).
 # Never flash this build.
+#
+# The rule for a difference between a QEMU build and the build for the board (CLAUDE.md, "QEMU-only
+# code"): each option of a sdkconfig.qemu* overlay has one of these classes in its comment.
+#   [hardware]    QEMU does not have this hardware: a model or another device replaces it.
+#   [emulator]    A fault or a limit of QEMU: the option goes around it.
+#   [test value]  The same logic as on the board with another number, so that a test is possible.
+#   [variant]     A function or a diagnostic that the board build does not have, or the opposite.
+#                 Only in a variant with a name and a stated reason, never in all QEMU builds.
+# A class at the top of an overlay is the class of each option of that overlay.
+#
+# [hardware] No W5500: the OpenCores Ethernet MAC of QEMU
 CONFIG_GW_ETH_OPENETH=y
+# [hardware] No I2C expander, GPIO inputs or RMT (the LED): RAM models, and the shell commands
+# that drive them
 CONFIG_GW_IO_SIMULATED=y
+# [emulator] QEMU does not model the RS485 half-duplex mode of the UART (uart_wait_tx_done asserts)
 CONFIG_GW_RS485_HW_HALF_DUPLEX=n
+# [variant] The default variant has no PSRAM (issue #135): it runs only the OTA trial scenarios,
+# which examine logic and are faster so. sdkconfig.qemu-psram gives the PSRAM of the board back
 CONFIG_SPIRAM=n
+# [emulator] QEMU does not model QIO flash reads by the app (data shifted by 2 bytes)
 CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+# [hardware] No Wi-Fi radio
 CONFIG_GW_WIFI=n
-# QEMU writes the flash image asynchronously: a reset right after the panic handler saved the
-# core dump can drop its last write (the checksum) from the image. One second lets it land.
+# [emulator] QEMU writes the flash image asynchronously: a reset right after the panic handler
+# saved the core dump can drop its last write (the checksum) from the image. One second lets it
+# land.
 CONFIG_ESP_SYSTEM_PANIC_REBOOT_DELAY_SECONDS=1
-# Issue #59: the E2E slow link (700 B/s through a relay) must exceed the publish budget with
+# [test value] Issue #59: the E2E slow link (700 B/s through a relay) must exceed the publish budget with
 # payloads of at most 6 KB once slirp's buffers are full; 2 s does, the default 8 s would not
 CONFIG_GW_MQTT_PUBLISH_BUDGET_MS=2000
-# SPB-14: QEMU has no SDMMC: the store & forward spill goes to a LittleFS directory instead
+# [hardware] SPB-14: QEMU has no SDMMC: the store & forward spill goes to a LittleFS directory instead
 CONFIG_GW_SF_SPILL_LITTLEFS=y
-# FW-1: QEMU does not model the S3 cache freeze of a flash mapping; code fetched by the other
+# [emulator] FW-1: QEMU does not model the S3 cache freeze of a flash mapping; code fetched by the other
 # core while an OTA image is verified makes it abort ("Bad ram pointer"): park that core
 CONFIG_GW_FW_PARK_OTHER_CORE=y
-# Issue #233: the self-check confirms a new image after 30 s of uptime, not the 60 s of the board.
+# [test value] Issue #233: the self-check confirms a new image after 30 s of uptime, not the 60 s of the board.
 # QEMU runs without -icount (uptime = wall time), and the E2E waits for about 11 self-checks.
 # Not less than 30 s: the E2E does actions during a trial (the other-slot button, NCMD Boot
 # Other Slot, a configuration save, a panic) that need a window with PSRAM and single-threaded TCG
 CONFIG_GW_FW_SELFCHECK_S=30
-# FW-1: no USB-Serial-JTAG secondary console (QEMU has no USB host anyway). Its connection
+# [emulator] FW-1: no USB-Serial-JTAG secondary console (QEMU has no USB host anyway). Its connection
 # monitor runs in every tick interrupt and reads the USB peripheral; on the core parked during
 # an image verification that read faulted under QEMU's cache freeze (LoadStorePIFAddrError)
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
