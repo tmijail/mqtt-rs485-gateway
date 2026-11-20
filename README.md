@@ -19,7 +19,7 @@
 >
 > For the status of each requirement, refer to [Requirements status](docs/reference/requirements-status.md) and [Known limitations](docs/reference/known-limitations.md).
 
-![The Status tab of the web UI: the gateway, the network and MQTT, the access point and one Modbus device online with its values](docs/images/status-overview.png)
+![The top of the Status tab of the web UI: the card Gateway (firmware, mode normal, heap and PSRAM), the network and MQTT (connected), the access point (off), and the Modbus device Meter1 online with the values of its tags.](docs/images/status-overview.png)
 
 *The web UI in QEMU. The images of the documentation come from the real firmware in the emulator.*
 
