@@ -2,10 +2,11 @@
  * Issue #226: MQTT. A Sparkplug B payload from the broker (NCMD, DCMD, or any message of the
  * namespace): spb_decode_with() with every callback, and what the callbacks of gw_node read
  * from a metric (spb_rx_number for each datatype, spb_rx_prop, the strings, the bytes, the
- * DataSet columns and cells and the Template members).
+ * DataSet columns and cells, the Template members and the Template parameters, #251).
  *
  * Input: a control byte (bits 0-3: stop after that many callbacks, 0 = never; bit 4: validate
- * only, as the first pass of an NCMD), then the payload.
+ * only, as the first pass of an NCMD; bit 5: no param callback, as the decoder of gw_node,
+ * which skips the Template parameters), then the payload.
  */
 #include "fuzz.h"
 #include "spb.h"
@@ -96,6 +97,25 @@ static bool on_cell(void *ctx, uint32_t row, uint32_t col, const spb_rx_value_t 
     return more(c);
 }
 
+/* #251: a Template parameter: its name and its String value are terminated strings */
+static bool on_param(void *ctx, const spb_rx_param_t *p)
+{
+    ctx_t *c = ctx;
+    if (p->name != NULL) {
+        size_t n = strlen(p->name);
+        FZ_CHECK(n <= SPB_NAME_MAX);
+        c->sink += n;
+    }
+    c->sink += p->has_type ? p->type : 0;
+    if (p->value.kind == SPB_VAL_STRING) {
+        FZ_CHECK(p->value.v.s != NULL);
+        size_t n = strlen(p->value.v.s);
+        FZ_CHECK(n <= SPB_SHORT_STRING_MAX);
+        c->sink += n;
+    }
+    return more(c);
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     fz_t f = {data, size};
@@ -105,15 +125,19 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     uint8_t *buf = fz_dup(rest, len);
 
     ctx_t c = {.stop_at = ctl & 15u};
-    spb_decoder_t d = {on_metric, on_column, on_cell, on_member, &c};
+    spb_decoder_t d = {.metric = on_metric, .column = on_column, .cell = on_cell,
+                       .member = on_member, .param = (ctl & 32u) != 0 ? NULL : on_param,
+                       .ctx = &c};
     spb_rx_header_t hdr;
     bool ok = spb_decode_with(buf, len, &hdr, (ctl & 16u) != 0 ? NULL : &d);
     const char *why = spb_last_error();
     FZ_CHECK(why != NULL);
     FZ_CHECK(!ok || why[0] == '\0');
-    /* the two passes of a command: a payload that the validation accepts decodes in full */
+    /* the two passes of a command: a payload that the validation accepts decodes in full, with
+     * the decoder of gw_node (no param callback: the validation skips the parameters too) */
     if (ok && (ctl & 16u) != 0) {
         c.stop_at = 0;
+        d.param = NULL;
         FZ_CHECK(spb_decode_with(buf, len, &hdr, &d));
     }
     free(buf);

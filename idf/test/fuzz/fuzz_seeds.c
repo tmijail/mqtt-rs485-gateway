@@ -276,6 +276,27 @@ static void seeds_spb(void)
     };
     uint8_t buf[256];
     seed1("misc", 0, buf, encode(misc, 3, buf, sizeof(buf)));
+    /* #251: a Template instance with a member and a parameter of each value field; with the
+     * param callback, in a validation, and with the decoder of gw_node (no param callback) */
+    const spb_metric_t member = {.name = "Setpoint", .no_alias = true, .datatype = SPB_DT_FLOAT,
+                                 .v.num = 12.5};
+    const spb_param_t params[] = {
+        {.name = "Unit ID", .datatype = SPB_DT_INT32, .v.num = 2},
+        {.name = "Serial", .datatype = SPB_DT_UINT64, .v.u64 = 1234567890123ull},
+        {.name = "Gain", .datatype = SPB_DT_FLOAT, .v.num = 1.5},
+        {.name = "Span", .datatype = SPB_DT_DOUBLE, .v.num = -0.25},
+        {.name = "Spare", .datatype = SPB_DT_BOOLEAN, .v.num = 1},
+        {.name = "Model", .datatype = SPB_DT_STRING, .v.str = "PM-3"},
+    };
+    const spb_template_t inst = {.ref = "Pump", .count = 1, .members = &member,
+                                 .param_count = sizeof(params) / sizeof(params[0]),
+                                 .params = params};
+    const spb_metric_t tmpl = {.name = "Pump", .alias = GW_ALIAS_TAG_BASE,
+                               .datatype = SPB_DT_TEMPLATE, .v.tmpl = &inst};
+    size_t tl = encode(&tmpl, 1, buf, sizeof(buf));
+    seed1("template_params", 0, buf, tl);
+    seed1("template_params_validate", 16, buf, tl);
+    seed1("template_params_skipped", 32, buf, tl);
 }
 
 static void node_msg(uint8_t *out, size_t *p, uint8_t kind, const uint8_t *pay, size_t len)

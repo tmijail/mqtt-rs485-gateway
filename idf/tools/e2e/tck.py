@@ -99,6 +99,31 @@ KNOWN_RULES = {
 }
 
 
+# #251: the template parameter assertions. The TCK examines them only when a definition has a
+# parameter; each definition of the gateway has one ("Unit ID"), so each of them must be PASS. A
+# NOT EXECUTED result (or no result) of one of them fails the check of its test: the template
+# group of the TCK would not be complete (docs/reference/sparkplug-behavior.md, Template
+# parameters).
+REQUIRED_PASS = {
+    "SendDataTest": ("payloads-template-definition-parameters",
+                     "payloads-template-definition-parameters-default",
+                     "payloads-template-instance-parameters"),
+    "SendComplexDataTest": ("payloads-template-parameter-name-required",
+                            "payloads-template-parameter-name-type",
+                            "payloads-template-parameter-value-type",
+                            "payloads-template-parameter-type-value",
+                            "payloads-template-parameter-type-req",
+                            "payloads-template-parameter-value"),
+}
+
+
+def not_passed(test, rows):
+    """The REQUIRED_PASS assertions of @test that are not PASS in @rows, as "<id>: <status>"."""
+    status = {r["id"]: r["status"] for r in rows}
+    return [f"{i}: {status.get(i, 'no result')}" for i in REQUIRED_PASS.get(test, ())
+            if status.get(i) != "PASS"]
+
+
 def known_reason(ident, captured):
     """The reason why the FAIL of tck-id @ident is not a gateway bug, or None. @captured: the
     (topic, payload) pairs of the edge node under test during the test."""
@@ -317,12 +342,16 @@ def run(h, args, work, slave):
             fails = [r for r in rows if r["status"] == "FAIL" and not r["known"]]
             known = [r for r in rows if r["status"] == "FAIL" and r["known"]]
             counts = {s: sum(1 for r in rows if r["status"] == s) for s in ("PASS", "FAIL", "NOT EXECUTED")}
+            required = not_passed(test, rows)   # #251
             h.check(f"Issue #176 TCK edge {test} (MQTT {protocol}): a result came and no assertion "
-                    f"failed that is not explained (tools/e2e/tck.py KNOWN_RULES)",
-                    rows and not fails,
+                    f"failed that is not explained (tools/e2e/tck.py KNOWN_RULES)"
+                    + (f"; #251 the {len(REQUIRED_PASS[test])} template parameter assertions "
+                       f"are PASS" if test in REQUIRED_PASS else ""),
+                    rows and not fails and not required,
                     f"{counts['PASS']} PASS, {counts['FAIL']} FAIL ({len(known)} known), "
                     f"{counts['NOT EXECUTED']} NOT EXECUTED"
                     + (f"; failed: {', '.join(r['id'] for r in fails)}" if fails else "")
+                    + (f"; not PASS: {', '.join(required)}" if required else "")
                     + (f"; {'; '.join(notes)}" if notes else ""))
     (work / "tck-results.json").write_text(json.dumps(table, indent=2))
     print(f"[TCK] {len(table)} assertion results in {work / 'tck-results.json'}", flush=True)
@@ -376,11 +405,10 @@ def run_one(h, args, work, slave, root, test, protocol, name):
             time.sleep(3.0)
             gw.console("di 1 0")
             slave.set_float(4, 0, 230.5)
-            if test == "SendComplexDataTest":
-                # it ends only when every assertion has a result; the gateway has no template
-                # parameters (docs/reference/sparkplug-behavior.md#templates-spb-18), so the console ends it, as an operator would
-                time.sleep(5.0)
-                console.end_test()
+            # SendComplexDataTest ends alone when every assertion has a result. With the template
+            # parameter of the gateway (#251) each of them has one after the first DDATA and
+            # NDATA. If one has none, END_TEST below ends the test after the timeout, and
+            # REQUIRED_PASS fails the check for a parameter assertion that is NOT EXECUTED.
         elif test == "SessionTerminationTest":
             if not obs.wait(dbirth_t, 90):
                 notes.append("no DBIRTH of Meter1")

@@ -17,6 +17,11 @@ _Static_assert(sizeof(((Payload_PropertyValue *)0)->value.string_value) == SPB_S
 _Static_assert(sizeof(((Payload_DataSet_DataSetValue *)0)->value.string_value) ==
                    SPB_SHORT_STRING_MAX + 1,
                "nanopb options drift");
+_Static_assert(sizeof(((Payload_Template_Parameter *)0)->name) == SPB_NAME_MAX + 1,
+               "nanopb options drift");
+_Static_assert(sizeof(((Payload_Template_Parameter *)0)->value.string_value) ==
+                   SPB_SHORT_STRING_MAX + 1,
+               "nanopb options drift");
 
 /* nanopb's messages are string literals: the pointer is enough */
 static const char *s_last_error = "";
@@ -321,6 +326,60 @@ static bool enc_tmpl_members(pb_ostream_t *stream, const pb_field_iter_t *field,
     return true;
 }
 
+/* SPB-18 template parameters (#251). tck-id-payloads-template-parameter-name-required and
+ * -type-req: each one has its name and its type. tck-id-payloads-template-parameter-type-value
+ * and -value: only a basic datatype, in the value field of that datatype. */
+static bool enc_tmpl_params(pb_ostream_t *stream, const pb_field_iter_t *field, void *const *arg)
+{
+    const spb_template_t *t = *arg;
+    for (uint32_t i = 0; i < t->param_count; i++) {
+        const spb_param_t *p = &t->params[i];
+        Payload_Template_Parameter pp = Payload_Template_Parameter_init_zero;
+        pp.has_name = true;
+        if (!copy_str(pp.name, sizeof(pp.name), p->name)) {
+            return false;
+        }
+        pp.has_type = true;
+        pp.type = p->datatype;
+        scalar_t sc = scalar(p->datatype, &p->v);
+        switch (sc.wire) {
+        case W_INT:
+            pp.which_value = Payload_Template_Parameter_int_value_tag;
+            pp.value.int_value = sc.i;
+            break;
+        case W_LONG:
+            pp.which_value = Payload_Template_Parameter_long_value_tag;
+            pp.value.long_value = sc.l;
+            break;
+        case W_FLOAT:
+            pp.which_value = Payload_Template_Parameter_float_value_tag;
+            pp.value.float_value = sc.f;
+            break;
+        case W_DOUBLE:
+            pp.which_value = Payload_Template_Parameter_double_value_tag;
+            pp.value.double_value = sc.d;
+            break;
+        case W_BOOL:
+            pp.which_value = Payload_Template_Parameter_boolean_value_tag;
+            pp.value.boolean_value = sc.b;
+            break;
+        case W_STRING:
+            pp.which_value = Payload_Template_Parameter_string_value_tag;
+            if (!copy_str(pp.value.string_value, sizeof(pp.value.string_value), sc.s)) {
+                return false;
+            }
+            break;
+        default:
+            return false;   /* a datatype a parameter cannot carry */
+        }
+        if (!pb_encode_tag_for_field(stream, field) ||
+            !pb_encode_submessage(stream, Payload_Template_Parameter_fields, &pp)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool fill_metric(Payload_Metric *out, const spb_metric_t *m)
 {
     *out = (Payload_Metric)Payload_Metric_init_zero;
@@ -385,6 +444,10 @@ static bool fill_metric(Payload_Metric *out, const spb_metric_t *m)
         *pt = (Payload_Template)Payload_Template_init_zero;
         pt->metrics.funcs.encode = enc_tmpl_members;
         pt->metrics.arg = (void *)t;
+        if (t->param_count > 0) {
+            pt->parameters.funcs.encode = enc_tmpl_params;
+            pt->parameters.arg = (void *)t;
+        }
         if (t->ref != NULL) {
             pt->has_template_ref = true;
             if (!copy_str(pt->template_ref, sizeof(pt->template_ref), t->ref)) {
@@ -690,6 +753,51 @@ static bool dec_tmpl_member(pb_istream_t *stream, const pb_field_iter_t *field, 
     return decode_metric(stream, dv->d, true);
 }
 
+/* SPB-18 (#251): a template parameter, handed to the decoder's param callback. */
+static bool dec_tmpl_param(pb_istream_t *stream, const pb_field_iter_t *field, void **arg)
+{
+    (void)field;
+    dec_value_t *dv = *arg;
+    Payload_Template_Parameter pp = Payload_Template_Parameter_init_zero;
+    if (!pb_decode(stream, Payload_Template_Parameter_fields, &pp)) {
+        return false;
+    }
+    spb_rx_param_t p = {.name = pp.has_name ? pp.name : NULL, .has_type = pp.has_type,
+                        .type = pp.type, .value = {.kind = SPB_VAL_NONE}};
+    switch (pp.which_value) {
+    case Payload_Template_Parameter_int_value_tag:
+        p.value.kind = SPB_VAL_INT;
+        p.value.v.i = pp.value.int_value;
+        break;
+    case Payload_Template_Parameter_long_value_tag:
+        p.value.kind = SPB_VAL_LONG;
+        p.value.v.l = pp.value.long_value;
+        break;
+    case Payload_Template_Parameter_float_value_tag:
+        p.value.kind = SPB_VAL_FLOAT;
+        p.value.v.f = pp.value.float_value;
+        break;
+    case Payload_Template_Parameter_double_value_tag:
+        p.value.kind = SPB_VAL_DOUBLE;
+        p.value.v.d = pp.value.double_value;
+        break;
+    case Payload_Template_Parameter_boolean_value_tag:
+        p.value.kind = SPB_VAL_BOOL;
+        p.value.v.b = pp.value.boolean_value;
+        break;
+    case Payload_Template_Parameter_string_value_tag:
+        p.value.kind = SPB_VAL_STRING;
+        p.value.v.s = pp.value.string_value;
+        break;
+    default:
+        break;
+    }
+    if (dv->rx->tmpl.params < UINT32_MAX) {
+        dv->rx->tmpl.params++;
+    }
+    return dv->d->param(dv->d->ctx, &p);
+}
+
 /* nanopb calls this before it decodes a submessage of the value oneof: its callbacks are set
  * here (the union member was just cleared). */
 static bool dec_value_submsg(pb_istream_t *stream, const pb_field_t *field, void **arg)
@@ -700,6 +808,13 @@ static bool dec_value_submsg(pb_istream_t *stream, const pb_field_t *field, void
         Payload_Template *t = field->pData;
         t->metrics.funcs.decode = dec_tmpl_member;
         t->metrics.arg = dv;
+        /* #251: only for a decoder that asks for the parameters. Without the callback nanopb
+         * skips the field, so a command with parameters that this codec cannot hold (a long
+         * name or String) is still decoded: the engine ignores the parameters of a command. */
+        if (dv->d != NULL && dv->d->param != NULL) {
+            t->parameters.funcs.decode = dec_tmpl_param;
+            t->parameters.arg = dv;
+        }
         return true;
     }
     if (field->tag == Payload_Metric_dataset_value_tag) {

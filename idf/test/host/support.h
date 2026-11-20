@@ -130,7 +130,22 @@ typedef struct {
         char ref[40];
         bool is_definition;
         uint32_t members;
+        uint32_t params;         /* #251: parameters of this template */
 } dec_metric_t;
+
+/* #251: one decoded Template parameter */
+#define DEC_PARAMS 32   /* 16 template definitions, each with one parameter, and spare */
+typedef struct {
+    bool has_name;
+    char name[64];
+    bool has_type;
+    uint32_t type;
+    spb_val_kind_t kind;         /* SPB_VAL_NONE: no value */
+    uint32_t i;                  /* int_value */
+    uint64_t l;                  /* long_value */
+    double num;                  /* float_value, double_value or boolean_value */
+    char str[64];
+} dec_param_t;
 
 typedef struct {
     bool has_seq;
@@ -140,6 +155,8 @@ typedef struct {
     dec_metric_t m[DEC_MAX];
     size_t mem_count;            /* SPB-18: members of every template, in wire order */
     dec_metric_t mem[DEC_MAX];
+    size_t param_count;          /* #251: parameters of every template, in wire order */
+    dec_param_t par[DEC_PARAMS];
 } decoded_t;
 
 bool decode_payload(const uint8_t *buf, size_t len, decoded_t *out);

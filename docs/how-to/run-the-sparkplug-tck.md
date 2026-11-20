@@ -63,7 +63,7 @@ A check fails when an assertion is FAIL and the harness cannot explain it. The h
 
 If a test gives no result, the scenario runs it one more time and shows `no result ... one more attempt`. This is a fault of the TCK extension, not of the gateway (refer to [Limits of the TCK that the scenario works around](../reference/e2e-scenarios.md#limits-of-the-tck-that-the-scenario-works-around)). The run records it in `retries` of `results.json`.
 
-A NOT EXECUTED result is not a failure. It applies to an assertion that the test cannot examine, for example the MQTT 5 assertion in the MQTT 3.1.1 run, or the template parameters that the gateway does not use.
+A NOT EXECUTED result is not a failure. It applies to an assertion that the test cannot examine, for example the MQTT 5 assertion in the MQTT 3.1.1 run. The template parameter assertions are an exception: a check fails when one of them is not PASS (refer to [Template parameters](../reference/sparkplug-behavior.md#template-parameters-251)).
 
 ## 4. Make a new TCK installation
 

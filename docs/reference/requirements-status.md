@@ -80,7 +80,7 @@ The column MVP has ✅ for the IDs of the MVP (SPEC §5).
 | SPB-15 | | done | H + Q. The value is not kept after a restart | [Sparkplug behavior](sparkplug-behavior.md#node-controlscan-rate-spb-15) |
 | SPB-16 | | done | H + P + Q. A host test (`test_worst_case_birth_fits`) encodes the worst DBIRTH in the payload buffer of 16 KB (`GW_SPB_PAYLOAD_MAX`) | [Sparkplug behavior](sparkplug-behavior.md#quality-and-properties-spb-16) |
 | SPB-17 | | done | H + P + Q. C: the RSSI (QEMU has no radio). A host test (`test_worst_case_nbirth_fits`) encodes the worst NBIRTH, with `Node Info/Modbus TCP` (#81) and 64 template tags, in the payload buffer | [Diagnostics](sparkplug-messages-and-metrics.md#diagnostics) |
-| SPB-18 | | done | H + P + Q. No template parameters. No test with a real host | [Sparkplug behavior](sparkplug-behavior.md#templates-spb-18) |
+| SPB-18 | | done | H + P + Q. One template parameter, `Unit ID` (#251). No test with a real host | [Sparkplug behavior](sparkplug-behavior.md#templates-spb-18) |
 | SPB-19 | | done | H + P + Q. Bytes and File hold 64 B at most. File has no metadata | [Sparkplug behavior](sparkplug-behavior.md#dataset-bytes-and-file-spb-19) |
 
 ## Modbus RTU (MB)

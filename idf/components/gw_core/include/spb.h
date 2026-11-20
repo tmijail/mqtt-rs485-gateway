@@ -93,10 +93,26 @@ typedef struct spb_dataset {
 } spb_dataset_t;
 
 /**
+ * SPB-18 outgoing Template parameter (#251): a name, a datatype and a value. For a definition
+ * the value is the default of the parameter; for an instance it is the value of that instance.
+ * tck-id-payloads-template-parameter-name-required, -type-req: the name and the type are always
+ * on the wire. tck-id-payloads-template-parameter-type-value: @c datatype is a basic datatype
+ * (the numeric and Boolean datatypes, DateTime, String or Text); another one fails the encoding.
+ * A String value has at most SPB_SHORT_STRING_MAX characters and must stay valid until the
+ * payload is encoded.
+ */
+typedef struct {
+    const char *name;        /* at most SPB_NAME_MAX characters */
+    uint32_t datatype;
+    spb_value_t v;
+} spb_param_t;
+
+/**
  * SPB-18 outgoing Template: a definition (NBIRTH; @c ref NULL) or an instance of the definition
  * named @c ref. Its @c count members are @c members[i], or produced on demand by @c get (which
  * may be called more than once per member: it must be deterministic). Members name themselves
- * and carry no alias (no_alias); a member is not itself a template.
+ * and carry no alias (no_alias); a member is not itself a template. Its @c param_count
+ * parameters (#251) are @c params[i]; 0 = the Template has no parameters on the wire.
  */
 typedef struct spb_template {
     const char *ref;
@@ -105,6 +121,8 @@ typedef struct spb_template {
     const struct spb_metric *members;
     void (*get)(const void *ctx, uint32_t i, struct spb_metric *out);
     const void *ctx;
+    uint32_t param_count;
+    const spb_param_t *params;
 } spb_template_t;
 
 /** Outgoing metric. The oneof value field used on the wire follows @c datatype. */
@@ -220,6 +238,7 @@ typedef struct {
         char ref[40];                /* template_ref (an instance's definition) */
         bool is_definition;
         uint32_t members;
+        uint32_t params;             /* #251: parameters given to spb_decoder_t.param */
     } tmpl;
     uint8_t prop_count;              /* properties the metric carried (all of them counted) */
     spb_rx_prop_t props[SPB_RX_PROPS];
@@ -238,6 +257,14 @@ typedef struct {
 /** Return false to abort decoding. */
 typedef bool (*spb_metric_cb_t)(void *ctx, const spb_rx_metric_t *m);
 
+/** SPB-18 (#251): one incoming Template parameter, valid only for the duration of the callback. */
+typedef struct {
+    const char *name;        /* NULL when absent */
+    bool has_type;
+    uint32_t type;           /* SPB_DT_* */
+    spb_rx_value_t value;    /* kind SPB_VAL_NONE: the parameter carries no value */
+} spb_rx_param_t;
+
 /** Decoder callbacks; any may be NULL. The DataSet and Template callbacks run while their
  * metric is being decoded, before @c metric is called for it. */
 typedef struct {
@@ -247,6 +274,12 @@ typedef struct {
     /** SPB-18: each member of a Template value, before the template's own @c metric call.
      * Members of a member template are not descended into. */
     spb_metric_cb_t member;
+    /** SPB-18 (#251): each parameter of a top-level Template value, before the template's own
+     * @c metric call. The parameters are decoded only when this callback is set: without it
+     * (and in a validation with a NULL decoder) they are skipped, whatever they hold. With it,
+     * a parameter name or String value of more than 63 characters makes the payload
+     * undecodable, as a metric name does. */
+    bool (*param)(void *ctx, const spb_rx_param_t *p);
     void *ctx;
 } spb_decoder_t;
 

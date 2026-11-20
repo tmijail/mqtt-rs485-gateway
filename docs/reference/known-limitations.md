@@ -65,7 +65,7 @@ For the rules of a DCMD, refer to [Sparkplug messages and metrics](sparkplug-mes
 ## Sparkplug
 
 - The aliases depend on the order of the tags in the configuration. A new order gives new aliases in the next births.
-- Templates have no parameters, no version and no nesting. No test used a real host such as Ignition (SPB-18).
+- Templates have no version and no nesting. Their only parameter is the Modbus unit ID of the device (#251). No test used a real host such as Ignition (SPB-18).
 - Bytes and File hold 64 B at most. File has no metadata, and there is no file transfer (SPB-19).
 - A text of a metric has 256 characters at most (`SPB_STRING_MAX`). A text of a property or of a DataSet cell has 63 characters at most (#87). The firmware does not truncate a longer text: it rejects the message, and the log gives the cause.
 - The bdSeq is in RAM only, and starts at 0 at each boot (#161).

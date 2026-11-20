@@ -49,6 +49,11 @@ def errors(kind, p):
     return spb_decode.check(kind, p)
 
 
+def unit_param(t, value):
+    """#251: the parameter "Unit ID" (Int32) of the gateway on the Template @p t."""
+    return t.parameters.add(name=spb_decode.UNIT_PARAM, type=3, int_value=value)
+
+
 class Rebirth(unittest.TestCase):
     """tck-id-operational-behavior-data-commands-rebirth-name-aliases (#153)."""
 
@@ -102,6 +107,7 @@ class Timestamps(unittest.TestCase):
         p = spb.Payload(timestamp=TS, seq=1)
         inst = p.metrics.add(name="Pump", alias=100, datatype=19, timestamp=TS)
         inst.template_value.template_ref = "Pump"
+        unit_param(inst.template_value, 1)
         mm = inst.template_value.metrics.add(name="Speed", datatype=6, int_value=5)
         self.assertTrue(any("without timestamp: Speed" in x for x in errors("DBIRTH", p)))
         mm.timestamp = TS
@@ -194,6 +200,7 @@ def instance(kind_birth, seq, member_dt=6, field="int_value"):
     mm = inst.template_value.metrics.add(name="Speed", timestamp=TS)
     if kind_birth:
         mm.datatype = member_dt
+        unit_param(inst.template_value, 2)   # #251: births only
     setattr(mm, field, 5)
     return p, mm
 
@@ -235,10 +242,10 @@ class DataDatatypes(unittest.TestCase):
         self.assertTrue(any("birth datatype 9 is in float_value" in x for x in e), e)
 
     def test_member_value_in_the_field_of_the_birth_datatype(self):
-        ok = feed_all([("NBIRTH", None, nbirth()), ("DBIRTH", "P", instance(True, 1)[0]),
+        ok = feed_all([("NBIRTH", None, nbirth_pump()), ("DBIRTH", "P", instance(True, 1)[0]),
                        ("DDATA", "P", instance(False, 2)[0])])
         self.assertEqual(ok, [])
-        e = feed_all([("NBIRTH", None, nbirth()), ("DBIRTH", "P", instance(True, 1)[0]),
+        e = feed_all([("NBIRTH", None, nbirth_pump()), ("DBIRTH", "P", instance(True, 1)[0]),
                       ("DDATA", "P", instance(False, 2, field="long_value")[0])])
         self.assertTrue(any("member Speed: the birth datatype 6" in x for x in e), e)
 
@@ -255,6 +262,109 @@ class DataDatatypes(unittest.TestCase):
     def test_topic_parts(self):
         self.assertEqual(spb_decode.topic_parts("spBv1.0/G/DDATA/N/M"), ("DDATA", ("G", "N"), "M"))
         self.assertEqual(spb_decode.topic_parts("spBv1.0/G/NDATA/N"), ("NDATA", ("G", "N"), None))
+
+
+def definition(p, default=0):
+    """Add the template definition Pump (member Speed, the parameter of the gateway) to the
+    NBIRTH @p p. Returns its Template."""
+    d = p.metrics.add(name="Pump", datatype=19, timestamp=TS)
+    d.template_value.is_definition = True
+    d.template_value.metrics.add(name="Speed", datatype=6, int_value=0)
+    unit_param(d.template_value, default)
+    return d.template_value
+
+
+def nbirth_pump():
+    """An NBIRTH with the definition Pump."""
+    p = nbirth()
+    definition(p)
+    return p
+
+
+class TemplateParameters(unittest.TestCase):
+    """#251: the parameters of a template (tck-id-payloads-template-definition-parameters,
+    tck-id-payloads-template-instance-parameters, tck-id-payloads-template-parameter-*)."""
+
+    def birth(self):
+        p = nbirth()
+        return p, definition(p)
+
+    def test_definition_and_instance_pass(self):
+        p, _ = self.birth()
+        self.assertEqual(errors("NBIRTH", p), [])
+        inst = instance(True, 1)[0]
+        self.assertEqual(errors("DBIRTH", inst), [])
+        self.assertEqual(feed_all([("NBIRTH", None, p), ("DBIRTH", "P", inst),
+                                   ("DDATA", "P", instance(False, 2)[0])]), [])
+
+    def test_birth_template_without_the_parameter_fails(self):
+        p, t = self.birth()
+        del t.parameters[:]
+        self.assertTrue(any("must be ['Unit ID'], not []" in x for x in errors("NBIRTH", p)))
+        inst = instance(True, 1)[0]
+        del inst.metrics[0].template_value.parameters[:]
+        self.assertTrue(any("must be ['Unit ID'], not []" in x for x in errors("DBIRTH", inst)))
+
+    def test_parameter_without_name_or_type_fails(self):
+        p, t = self.birth()
+        t.parameters[0].ClearField("name")
+        self.assertTrue(any("template parameter without name" in x for x in errors("NBIRTH", p)))
+        p, t = self.birth()
+        t.parameters[0].ClearField("type")
+        self.assertTrue(any("without type in a birth" in x for x in errors("NBIRTH", p)))
+
+    def test_type_must_be_basic_and_agree_with_the_value_field(self):
+        for bad in (0, 15, 16, 19, 22):
+            p, t = self.birth()
+            t.parameters[0].type = bad
+            self.assertTrue(any("not a basic datatype" in x for x in errors("NBIRTH", p)), bad)
+        p, t = self.birth()
+        t.parameters[0].long_value = 0          # Int32 is a uint32: int_value
+        e = errors("NBIRTH", p)
+        self.assertTrue(any("of type 3 in long_value" in x for x in e), e)
+
+    def test_values_of_the_gateway_parameter(self):
+        p, t = self.birth()
+        t.parameters[0].int_value = 1           # the default of a definition is 0
+        self.assertTrue(any("0 in a definition" in x for x in errors("NBIRTH", p)))
+        for bad in (0, 248):
+            inst = instance(True, 1)[0]
+            inst.metrics[0].template_value.parameters[0].int_value = bad
+            self.assertTrue(any("1 to 247 in an instance" in x for x in errors("DBIRTH", inst)),
+                            bad)
+        inst = instance(True, 1)[0]
+        inst.metrics[0].template_value.parameters[0].type = 7
+        self.assertTrue(any("must be Int32 (3)" in x for x in errors("DBIRTH", inst)))
+
+    def test_duplicated_parameter_fails(self):
+        p, t = self.birth()
+        unit_param(t, 0)
+        self.assertTrue(any("duplicated template parameters" in x for x in errors("NBIRTH", p)))
+
+    def test_parameters_in_data_fail(self):
+        d = instance(False, 2)[0]
+        unit_param(d.metrics[0].template_value, 2)
+        self.assertTrue(any("template parameters ['Unit ID'] in DDATA" in x
+                            for x in errors("DDATA", d)))
+
+    def test_instance_parameter_must_be_in_the_definition(self):
+        # tck-id-payloads-template-definition-parameters
+        p, t = self.birth()
+        inst = instance(True, 1)[0]
+        self.assertEqual(feed_all([("NBIRTH", None, p), ("DBIRTH", "P", inst)]), [])
+        t.parameters[0].name = "Other"
+        e = feed_all([("NBIRTH", None, p), ("DBIRTH", "P", inst)])
+        self.assertTrue(any("parameter Unit ID is not in the definition Pump" in x for x in e), e)
+        p, t = self.birth()
+        t.parameters[0].type = 7
+        e = feed_all([("NBIRTH", None, p), ("DBIRTH", "P", inst)])
+        self.assertTrue(any("has the type 3, the definition gives 7" in x for x in e), e)
+        e = feed_all([("NBIRTH", None, nbirth()), ("DBIRTH", "P", inst)])
+        self.assertTrue(any("the NBIRTH has no definition 'Pump'" in x for x in e), e)
+
+    def test_describe_shows_the_parameters(self):
+        inst = instance(True, 1)[0]
+        self.assertIn("'parameters': {'Unit ID': 2}", spb_decode.describe("DBIRTH", inst))
 
 
 class FileNames(unittest.TestCase):

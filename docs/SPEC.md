@@ -166,7 +166,7 @@ The `device_id` is the device name, or `<device_prefix>:<name>` with `sparkplug.
 | SPB-15 | A writable `Node Control/Scan Rate`, that changes the poll period of all devices | P2 | | Done |
 | SPB-16 | Metric properties: `engUnit`, `engLow`, `engHigh` and the quality (`Quality`: 0 = BAD, 192 = GOOD) | P1 | | Done |
 | SPB-17 | Diagnostic metrics of the node: `Node Info/Uptime`, `Free Heap`, the Modbus counters (OK, timeout, CRC, exception) and the Wi-Fi RSSI | P1 | | Done |
-| SPB-18 | Sparkplug templates that describe the device types | P2 | | Done. No template parameters |
+| SPB-18 | Sparkplug templates that describe the device types | P2 | | Done. One template parameter, the Modbus unit ID of the device (#251) |
 | SPB-19 | The `DataSet` payload, and the types `Bytes` and `File` | P2 | | Done |
 
 ### 4.5 Modbus RTU master on RS485 (MB)
@@ -646,11 +646,12 @@ Without these keys, the build option applies (`CONFIG_GW_MB_BLOCK_READS`, `CONFI
 
 - Each device of a type gets a copy of the tags of the type. The copies count in the limit of 256 tags.
 - The definitions of the types that devices use describe a maximum of **64 tags** together (each type counts one time), because the NBIRTH contains all of them.
-- **NBIRTH:** one Template metric (19) for each type that a device uses, with its name, `is_definition = true`, no alias and no `template_ref` (`tck-id-payloads-template-definition-nbirth`). Its members have a name, a datatype and a default value (0, false or an empty text). They also have the properties `engUnit`, `engLow` and `engHigh` of the tags of the type.
-- **DBIRTH:** one Template metric, the instance. Its name is the type, its alias is 100 + the first tag of the device, and its `template_ref` is the type. Its members are the tags, by name and without an alias, with a value and `Quality`.
-- **DDATA:** the instance by alias, with only the members that changed (by name).
+- **NBIRTH:** one Template metric (19) for each type that a device uses, with its name, `is_definition = true`, no alias and no `template_ref` (`tck-id-payloads-template-definition-nbirth`). Its members have a name, a datatype and a default value (0, false or an empty text). They also have the properties `engUnit`, `engLow` and `engHigh` of the tags of the type. The definition has the parameter `Unit ID` (Int32) with the default 0 (`tck-id-payloads-template-definition-parameters`, #251).
+- **DBIRTH:** one Template metric, the instance. Its name is the type, its alias is 100 + the first tag of the device, and its `template_ref` is the type. Its members are the tags, by name and without an alias, with a value and `Quality`. Its parameter `Unit ID` has the `unit_id` of the device (`tck-id-payloads-template-instance-parameters`).
+- **DDATA:** the instance by alias, with only the members that changed (by name). It has no parameters.
 - **DCMD:** the instance with the members to write (by name). The gateway also accepts the tag by name as a separate metric. It does not accept a member by alias, because the members have no alias.
-- The gateway does not use template parameters. With the UMH preset (UMH-3), a typed device publishes plain metrics.
+- The gateway ignores the parameters of an instance in a DCMD. A model text of the device type as a second parameter is not done: it needs a configuration key (#251).
+- With the UMH preset (UMH-3), a typed device publishes plain metrics.
 
 **Fast and slow scan (MB-12).**
 
