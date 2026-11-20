@@ -141,6 +141,44 @@ For the rules of a secret in a loaded document (`"********"`, a new text, `""`, 
 
 The project does not encrypt the NVS on the board (decision of #133). The HMAC key in eFuse is permanent, and the owner of the board must keep full control of it. For the reasons, refer to [The features that burn eFuses](../explanation/no-efuse-features.md). The secure QEMU build keeps the NVS encryption and its migration (decision of #133), because the optional owner profile of #255 can use them. For that migration, refer to [The NVS migration in the QEMU build](#the-nvs-migration-in-the-qemu-build).
 
+## The random values
+
+The gateway makes its random values with the random number generator (RNG) of the ESP32-S3 (#267). ESP-IDF gives a guarantee of true random numbers only while one of two entropy sources is on:
+
+- the SAR ADC source (`bootloader_random_enable()`);
+- the radio: the RF subsystem of the Wi-Fi driver, after `esp_wifi_start()` and not in a sleep mode.
+
+The internal 8 MHz oscillator is always on, but it has no guarantee alone. mbedTLS gets each random value directly from the RNG (`esp_fill_random()`), and it keeps no seed from an earlier time. Thus the source that is on at the time of the request is the source of the value.
+
+| Value | When the gateway makes it | Entropy source on the board |
+|---|---|---|
+| The commissioning password | At the boot, when the NVS has none: the first boot, and the boot after a factory reset | The SAR ADC source |
+| The salt of the web password | At the boot, when `config.json` has `web.password` in clear text | The SAR ADC source |
+| The salt of the web password | At the claim, `PUT /api/config` and `config load` | The radio |
+| The key and the serial number of the HTTPS certificate | When the web server starts without a certificate, and with the button for a new self-signed certificate | The radio |
+| The random values of each TLS session: the web UI, MQTT and the image server | At each connection | The radio |
+
+**The sequence of the boot.**
+
+| Step | What the gateway does |
+|---|---|
+| 1 | It starts the NVS. With the NVS encryption (the secure QEMU build only), ESP-IDF makes the HMAC key with its own on and off of the SAR ADC source |
+| 2 | It turns the SAR ADC source on. It makes the commissioning password, and it loads the configuration |
+| 3 | It turns the SAR ADC source off. The source must be off before the Wi-Fi driver, the ADC and the temperature sensor start |
+| 4 | It starts the Wi-Fi driver in station mode. The station does not connect, and no access point starts. The power save is off: `WIFI_PS_NONE`, and no modem sleep while the station has no connection (`sta_disconnected_pm`). The radio stays on until the next restart |
+| 5 | It starts the temperature sensor, the web server and the other parts |
+
+- The radio starts at each boot, in each mode: normal, recovery, safe mode, commissioning and fault. It starts also when `network.wifi.enabled` is `false`, and also when Ethernet does not start.
+- The radio stays on when the Wi-Fi backup, a scan or the access point stops. The Wi-Fi backup, the scan and the access point add and remove only their interface.
+- No configuration key turns the radio off (decision of the product owner, #267).
+- The log gives the source of each value, for example `rng: the commissioning password: made with the SAR ADC entropy source`. When no source with a guarantee is on, the log gives a warning.
+
+Limits:
+
+- When the Wi-Fi driver does not start, no source with a guarantee is on after step 3. The log gives `rng: the radio did not start`.
+- A gateway that stops at the boot because it has no memory for the configuration keeps the SAR ADC source on. Only the shell runs.
+- QEMU has no radio. After step 3, no source with a guarantee is on. Refer to [The E2E test bench](e2e-harness.md#limits-of-qemu).
+
 ## The factory reset (CFG-5)
 
 The factory reset erases the full LittleFS partition and the NVS:
@@ -317,3 +355,4 @@ Residual risks:
 - The mDNS responses (NET-6). In QEMU, the responder starts, but `open_eth` has no multicast filter. Nobody examined the filter of the W5500 (`add_mac_filter`) on the board.
 - The claim window over the radio. The E2E runs the window over the emulated Ethernet with the emulator-only command `claimsim <s> eth`. The host test `test_claim` examines the rule with the addresses of the board.
 - The CSRF check in a real browser. The E2E sends the requests that a browser would send.
+- The entropy sources of the random values (#267). QEMU has no radio, and its RNG gives no evidence about the chip. The board tests are #126 item L18 (the random values with the radio on) and #130 (the station without a connection).

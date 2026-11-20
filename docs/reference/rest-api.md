@@ -220,7 +220,7 @@ Sets a digital output, as an NCMD does. Only the DOs: the web UI does not write 
 
 ### `GET /api/wifi/scan`
 
-The list of the Wi-Fi networks near the gateway, for the button "Find networks" of the web UI. The scan also works when `network.wifi.enabled` is `false`: the radio starts for the scan, and stops after it.
+The list of the Wi-Fi networks near the gateway, for the button "Find networks" of the web UI. The scan also works when `network.wifi.enabled` is `false`: the radio is on at each boot, as the entropy source of the random values (#267).
 
 - `?new=1` starts a scan, unless a scan runs or the last result is younger than 10 s.
 - A request without `?new=1` only reads the state.

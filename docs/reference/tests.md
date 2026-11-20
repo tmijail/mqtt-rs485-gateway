@@ -129,7 +129,8 @@ The checks have these limits:
 | `test_logring` | #199, #200: the ring of the live log and the log levels |
 | `test_mblocal` | #216: the local unit of the Modbus TCP server (DIs, DOs, counters) |
 | `test_certs` | #205, #221: the rules of the certificate files |
-| `test_wifiown` | #208: the owners of the Wi-Fi driver |
+| `test_wifiown` | #208: the owners of the Wi-Fi driver. #267: the radio as the entropy source never stops the driver, and a station that comes after the STA interface is refused |
+| `test_rng` | #267: the order of the two entropy sources at boot. The SAR ADC source goes off before the radio or the temperature sensor starts, and never comes on again after them. The log gives the source of each value, and a warning when no source is on |
 
 ### The sanitizer build
 
