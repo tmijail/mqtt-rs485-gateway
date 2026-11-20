@@ -203,15 +203,24 @@ static void self_check(gw_ota_selfcheck_t *out)
 }
 
 /* NET-5, issue #187: the WPA2 key of the access point: the PMK of the web password (64
- * hexadecimal characters) when one is stored, else the commissioning password. A web password
- * without a PMK (set by an earlier firmware) also gives the commissioning password, until the
- * next change of the web password. */
+ * hexadecimal characters) when one is stored, else the commissioning password.
+ * Issue #248: a stored web password with no valid PMK is a fault of the stored secrets, not a
+ * format: gw_storage writes the PMK with each web password. The PMK is absent only when its
+ * calculation failed (the MAC address was not readable) or when its NVS entry was not written
+ * after the entry of the hash (a write error, a power cut between the two). The key is then the
+ * commissioning password too, with a warning: the owner can still use the access point. Only a
+ * new web password gives a PMK again, because the gateway does not keep the password. */
 static bool ap_key(char out[GW_AP_KEY_SIZE])
 {
     gw_storage_commissioning_password(s_commission_pw);
     gw_secrets_t sec;
     gw_storage_get_secrets(&sec);
     bool pmk = gw_wpa_pmk_hex_valid(sec.ap_pmk);
+    if (!pmk && sec.web_password_hash[0] != '\0') {
+        ESP_LOGW(TAG, "access point: a web password is set, but its WPA2 key (PMK) is not in the "
+                      "stored secrets: the key is the commissioning password. Set the web "
+                      "password again to correct this");
+    }
     snprintf(out, GW_AP_KEY_SIZE, "%s", pmk ? sec.ap_pmk : s_commission_pw);
     memset(&sec, 0, sizeof(sec));
     return pmk;

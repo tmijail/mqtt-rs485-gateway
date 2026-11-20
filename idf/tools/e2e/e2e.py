@@ -9577,6 +9577,97 @@ def run_factory_reset(args, work):
     check("CFG-5 the factory reset erased the storage partition (no block of the old configuration "
           "is left)", not stale and b'"GW08"' in image[so:so + ss], f"stale: {stale or 'none'}")
     check_restart_admin(args, work, flash)
+    check_ap_without_pmk(args, work)
+
+
+def check_ap_without_pmk(args, work):
+    """Issue #248 (NET-5, #187) on a flash of its own (GW09), in two boots: the stored secrets
+    have the hash of a web password and no PMK. The firmware writes the two NVS entries one after
+    the other, so a write error or a power cut between them leaves this state. The harness makes
+    it with ESP-IDF's nvs_partition_gen.py (the NVS format of the board: not in the secure build,
+    which would first move this NVS into the encrypted one). Expected: the web password opens
+    the web UI; a BOOT gesture starts the access point with the commissioning password, with a
+    warning in the log, and opens no claim window; the same password as a new value of
+    web.password gives the PMK, and the access point then uses the web password."""
+    if args.secure:
+        return
+    node, comm_pw = "GW09", "abcdefgh2345"
+    salt = bytes(range(16))
+    web_hash = "pbkdf2-sha256$2048$%s$%s" % (
+        salt.hex(), hashlib.pbkdf2_hmac("sha256", WEB_PASSWORD.encode(), salt, 2048, 32).hex())
+    nvs_off, nvs_size = storage_partition("nvs")
+    csv = work / "nvs-nopmk.csv"
+    csv.write_text("key,type,encoding,value\nsecrets,namespace,,\n"
+                   f"commission,data,string,{comm_pw}\nweb_hash,data,string,{web_hash}\n")
+    gen = pathlib.Path(os.environ["IDF_PATH"]) / "components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py"
+    nvs = work / "nvs-nopmk.bin"
+    subprocess.run([args.idf_python, str(gen), "generate", str(csv), str(nvs), hex(nvs_size)],
+                   check=True, capture_output=True)
+    cfg = node_config(node)
+    cfg.pop("web", None)   # no web.password in the document: the boot takes the stored hash
+    flash = flash_variant(args, work, "nopmk", {"config.json": json.dumps(cfg, indent=2).encode()})
+    img = bytearray(flash.read_bytes())
+    img[nvs_off:nvs_off + nvs_size] = nvs.read_bytes()
+    flash.write_bytes(img)
+    obs = Observer()
+    gw = Gateway(args, work / "uart0-nopmk.log", flash)
+    t0 = time.monotonic()
+    gw.start()
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 60)
+    gw.shell("status", [r"^config\s"])
+    key0 = ap_key_digest(gw)
+    st_web, _, _ = wait_http("/api/status", 20)
+    st_comm, _, _ = http("GET", "/api/status", auth=("admin", comm_pw))
+    t_ap = time.monotonic()
+    boot_press(gw)
+    started = gw.wait_log(r"ap: SIMULATED \(QEMU has no radio\) commissioning access point '%s' "
+                          r"\(WPA2, the commissioning password\)" % AP_SSID_RX, 10, t_ap)
+    warned = gw.wait_log(r"main: access point: a web password is set, but its WPA2 key \(PMK\) is "
+                         r"not in the stored secrets: the key is the commissioning password", 5, t_ap)
+    console = gw.wait_log(r"^ap: WPA2 key = commissioning password '%s'" % comm_pw, 5, t_ap)
+    no_claim = gw.wait_log(r"main: claim window not opened: a web password is set", 5, t_ap)
+    a0 = ap_object(("admin", WEB_PASSWORD))
+    ssid = a0.get("ssid") or ""
+    check("Issue #248 (NET-5 #187) the stored secrets have a web password and no PMK (a fault of "
+          "the stored secrets, made here with nvs_partition_gen.py): the web password opens the "
+          "web UI and the commissioning password does not; a BOOT gesture starts the access point "
+          "with the commissioning password as its key (the console gives it), the log warns, and "
+          "no claim window opens",
+          nb and key0 == "none" and st_web == 200 and st_comm == 401 and started and warned
+          and console and no_claim and not gw.find(r"web: claim window open", t0)
+          and a0.get("running") is True and a0.get("security") == "wpa2"
+          and a0.get("key") == "commissioning_password",
+          f"NBIRTH {bool(nb)}; apsim key {key0}; web password {st_web}, commissioning password "
+          f"{st_comm}; {' | '.join(gw.find(r'ap: SIMULATED|main: access point: |claim window', t_ap)[:3]) or 'no log line'}; "
+          f"console line {bool(console)}; ap {a0}")
+    # the same password as a new value of web.password: its PMK goes to the NVS at the save
+    new = node_config(node)
+    new["web"] = {"password": WEB_PASSWORD}
+    obs.drain()
+    t_put = time.monotonic()
+    st_put, _, b_put = http("PUT", "/api/config", new)
+    nb2 = obs.wait(f"{T}/NBIRTH/{node}", 60, since=t_put)
+    gw.shell("status", [r"^config\s"])
+    key1 = ap_key_digest(gw)
+    t_ap2 = time.monotonic()
+    boot_press(gw)
+    started2 = gw.wait_log(r"ap: SIMULATED \(QEMU has no radio\) commissioning access point '%s' "
+                           r"\(WPA2, the web password\)" % AP_SSID_RX, 10, t_ap2)
+    time.sleep(1)
+    warned2 = gw.find(r"main: access point: a web password is set, but its WPA2 key", t_put)
+    a1 = ap_object(("admin", WEB_PASSWORD))
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node}", 5)
+    obs.close()
+    check("Issue #248 (NET-5 #187) the web password set again (PUT /api/config with the same "
+          "password as a new value) gives the PMK: after the restart the access point uses the "
+          "web password, with no warning",
+          st_put == 200 and nb2 and ssid and key1 == pmk_digest(WEB_PASSWORD, ssid) and started2
+          and not warned2 and a1.get("key") == "web_password",
+          f"PUT {st_put} {b_put.decode(errors='replace').strip()[:60]}; NBIRTH {bool(nb2)}; apsim "
+          f"key {key1} (expected {pmk_digest(WEB_PASSWORD, ssid) if ssid else '?'}); "
+          f"{(gw.find(r'ap: SIMULATED', t_ap2) or ['no access point line'])[0]}; warnings "
+          f"{len(warned2)}; ap {a1}")
 
 
 def check_restart_admin(args, work, flash):
