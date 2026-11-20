@@ -301,7 +301,7 @@ When LittleFS does not mount after a power cut, and the NVS looks like an interr
 - An intentional save that discards the copy: `config load discard-nvs-copy` in the shell, or `PUT /api/config?discard_nvs_copy=1`. The secrets that were only in the copy are lost. Save the document without new secrets, then load the secrets later.
 - A factory reset.
 
-Sometimes the gateway can never read the copy: damaged blocks, or a format of a newer firmware. Then each boot has no NVS and a new commissioning password. Do a factory reset.
+Sometimes the gateway can never read the copy: damaged blocks, or a format of another firmware (for example, version 1 of a development image). Then each boot has no NVS and a new commissioning password. Do a factory reset.
 
 Residual risks:
 

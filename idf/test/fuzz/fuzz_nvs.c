@@ -5,7 +5,7 @@
  * (gw_nvsmig_load, gw_nvsmig_check, gw_nvsmig_next, gw_nvsmig_find, gw_nvsmig_orphan_in_copy).
  *
  * Input: a selector byte (bit 0: raw pages, else a copy file; bit 1: correct the CRCs, so that
- * the input gets past them; bit 2: the CRC of a copy of version 1), then the data.
+ * the input gets past them), then the data.
  */
 #include "fuzz.h"
 #include "gw_nvsraw.h"
@@ -67,16 +67,15 @@ static void raw_pages(const uint8_t *data, size_t len, bool fix_crc)
     FZ_CHECK(k <= GW_NVSRAW_MIXED);
 }
 
-static void copy_file(const uint8_t *data, size_t len, bool fix_crc, bool v1)
+static void copy_file(const uint8_t *data, size_t len, bool fix_crc)
 {
-    /* the file, read whole into a buffer with 4 bytes more (a version 1 copy grows) */
-    size_t cap = len + 4;
-    uint8_t *buf = malloc(cap);
+    /* the file, read whole into a buffer of its size (one byte for an empty file) */
+    uint8_t *buf = malloc(len > 0 ? len : 1);
     if (buf == NULL) {
         abort();
     }
     memcpy(buf, data, len);
-    size_t hdr = v1 ? 16u : GW_NVSMIG_HDR;   /* the header of version 1 has 16 bytes */
+    size_t hdr = GW_NVSMIG_HDR;
     if (fix_crc && len >= hdr) {
         /* the CRC of the body, at offset 12 of the header (gw_nvsmig_seal) */
         put32(buf + 12, gw_nvsraw_crc32(0, buf + hdr, len - hdr));
@@ -106,10 +105,9 @@ static void copy_file(const uint8_t *data, size_t len, bool fix_crc, bool v1)
     (void)gw_nvsmig_orphan_in_copy(buf, len, "", "boot_count", NVS_TYPE_U8);
 
     size_t out_size = 0;
-    bool legacy = false;
-    gw_nvsmig_copy_t c = gw_nvsmig_load(buf, len, cap, &out_size, &legacy, &count);
+    gw_nvsmig_copy_t c = gw_nvsmig_load(buf, len, &out_size, &count);
     if (c == GW_NVSMIG_COPY_VALID) {
-        FZ_CHECK(out_size <= cap);
+        FZ_CHECK(out_size == len);
         FZ_CHECK(gw_nvsmig_check(buf, out_size, &count));
     }
     free(buf);
@@ -124,7 +122,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     if ((sel & 1u) != 0) {
         raw_pages(rest, len, (sel & 2u) != 0);
     } else {
-        copy_file(rest, len, (sel & 2u) != 0, (sel & 4u) != 0);
+        copy_file(rest, len, (sel & 2u) != 0);
     }
     return 0;
 }
