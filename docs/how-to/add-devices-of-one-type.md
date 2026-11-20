@@ -62,6 +62,7 @@ A device with a type has no tag table and no button **+ tag**. The grey box give
 2. If the bar gives an error, click **Go to the field**. An error in a tag of a type opens the card **Device types** and the type, and shows below the field.
 3. Click **Save and restart**.
 4. On the host, make sure that the NBIRTH has the template definition of the type, and that the DBIRTH of each device has a template instance.
+5. Make sure that the parameter `Unit ID` of each instance has the unit ID of its device.
 
 ## Change or remove a type
 

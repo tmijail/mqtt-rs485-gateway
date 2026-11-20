@@ -151,11 +151,29 @@ The NBIRTH gives `Node Control/Rebirth` without an alias (`tck-id-operational-be
 
 - Choice (MAY): the NBIRTH has a definition only for each type that a device uses, also a disabled device. A type that no device uses has no definition.
 - Reason: `tck-id-payloads-template-definition-nbirth` asks for the definitions of the instances only. More definitions make the NBIRTH larger. The limit of 64 tags in the definitions counts only these types.
-- The gateway uses no template parameters, no template version and no nested templates. It does not go into a member that is a template in a command.
+- The gateway uses no template version and no nested templates. It does not go into a member that is a template in a command.
 - There are no templates for the node metrics (DI, DO, counters).
 - A device with `type` publishes one instance, not one metric per tag. For example, a host that subscribed to `Meter1/Voltage` sees `Meter1/<type>/Voltage` (in Ignition: a UDT instance). The `type` is optional for each device.
 - The properties of the definition and of each instance come from the tags of the type (#213).
-- No test used a real Sparkplug host such as Ignition. The tests use the official proto and the rules of the specification.
+- No test used a real Sparkplug host such as Ignition. The tests use the official proto, the rules of the specification and the Sparkplug TCK.
+
+### The template parameter `Unit ID` (#251)
+
+Each template has one parameter: the Modbus unit ID of the device. A parameter is a fixed value of an instance that is not a measurement. A host such as Ignition can show it as a property of the UDT instance.
+
+- The value comes from `devices[].unit_id`. There is no configuration key for the parameter.
+- **The name is `Unit ID`.** The specification asks only for a UTF-8 text (`tck-id-payloads-template-parameter-name-required`, `tck-id-payloads-template-parameter-name-type`). `Unit ID` is the label of the key `unit_id` in the web UI. It has the form of the other Sparkplug names of the gateway, for example `Scan Rate` and `Failed Cycles`.
+- **The type is Int32**, as the property `Quality`. Int32 is a basic datatype, and its value goes in `int_value` (`tck-id-payloads-template-parameter-type-value`, `tck-id-payloads-template-parameter-value`).
+- **Each definition has the parameter**, with its name and its type (`tck-id-payloads-template-definition-parameters`, `tck-id-payloads-template-parameter-type-req`).
+- Choice (MAY, `tck-id-payloads-template-definition-parameters-default`): the definition gives the default 0.
+- Reason: 0 is not the unit ID of a device (1 to 247). Thus a host can see that an instance gave no value. The TCK 3.0.0 also examines `tck-id-payloads-template-parameter-value` on a definition, and a parameter without a value does not pass.
+- Choice (MAY, `tck-id-payloads-template-instance-parameters`): the instance of each DBIRTH gives the unit ID of its device. Thus no instance uses the default.
+- A rebirth gives the parameter again, in the NBIRTH and in each DBIRTH.
+- Choice (MAY): the instance of a DDATA has no parameters, also in a store & forward replay.
+- Reason: the unit ID changes only with a new configuration, and a new configuration restarts the gateway. The DBIRTH gave the value, and a DDATA has only the changes.
+- The specification gives the default of a definition to an instance without a parameter value "in the NBIRTH or DBIRTH messages". Thus the default does not apply to the instance of a DDATA.
+- The gateway ignores the parameters of an instance in a DCMD. A parameter is not a tag, so a DCMD cannot write it. The gateway writes the members of that DCMD as usual.
+- With the UMH preset there are no templates, so there are no parameters.
 
 ## DataSet, Bytes and File (SPB-19)
 
@@ -225,6 +243,15 @@ The harness accepts these FAILs only when it proves this cause from the captured
 
 A host with a Tahu Java decoder from before eclipse-tahu/tahu#202 (2022) reads UInt32 only from `long_value`. Such a host does not read the UInt32 tags of the gateway (for example Ignition MQTT Engine 4.0.5). It reads the node metrics, because they are UInt64.
 
-### Template parameters: the template group of the TCK is not complete
+### Template parameters (#251)
 
-The gateway uses no template parameters (refer to [Templates](#templates-spb-18)). The TCK examines the parameter assertions (`tck-id-payloads-template-definition-parameters`, `-parameters-default`, `tck-id-payloads-template-instance-parameters`, `tck-id-payloads-template-parameter-*`) only when a definition has a parameter. Thus they are NOT EXECUTED. The TCK user guide says that templates are an optional group, and that a product that uses the group must pass all its assertions. The gateway uses templates, so the group is not complete for a certification.
+The TCK examines the parameter assertions only when a definition has a parameter. Each definition of the gateway has the parameter `Unit ID` (refer to [The template parameter `Unit ID`](#the-template-parameter-unit-id-251)). Thus the TCK examines them:
+
+| Test | Assertions |
+|---|---|
+| SendDataTest | `tck-id-payloads-template-definition-parameters`, `tck-id-payloads-template-definition-parameters-default`, `tck-id-payloads-template-instance-parameters` |
+| SendComplexDataTest | `tck-id-payloads-template-parameter-name-required`, `-name-type`, `-value-type`, `-type-value`, `-type-req` and `-value` |
+
+The TCK user guide says that templates are an optional group, and that a product that uses the group must pass all its assertions. The gateway uses templates. Thus a run of the scenario `tck` must show PASS for each assertion of the table, not NOT EXECUTED. The harness makes the check of the test fail when one of them is not PASS (`REQUIRED_PASS` in `idf/tools/e2e/tck.py`).
+
+The TCK 3.0.0 has a defect in `Utils.hasValue(Parameter)` (`tck/.../test/common/Utils.java`). It compares the type of the parameter with the field numbers of the proto, not with the datatypes. For Int32 the two numbers are the same (3), so the function gives the correct answer for `Unit ID`. The TCK uses the function only in a debug log line, so it changes no result.

@@ -523,6 +523,7 @@ An array of up to 16 device types. A device type holds the tag list of a device 
 - The validation examines each type, also a type that no device uses. An error in a tag of a type has the path `device_types[n].tags[k]`.
 - Each device of the type gets a copy of the tags of the type. These copies count in the limit of 256 tags. For example, 5 devices of a type with 60 tags are 300 tags: the gateway refuses that configuration with the path `devices[4].type`.
 - Each type that a device uses is a Sparkplug template. The NBIRTH has one template definition for it, with the name of the type. The DBIRTH of each device of the type has one template instance. A type that no device uses has no definition in the NBIRTH.
+- The template has the parameter `Unit ID`. Each instance gives the `unit_id` of its device in it (#251).
 - The definitions of the types that the devices use describe a maximum of 64 tags together. Each type counts one time.
 - With `sparkplug.naming: "umh"`, the tags of a device with a type go out as plain metrics, not as a template instance.
 
