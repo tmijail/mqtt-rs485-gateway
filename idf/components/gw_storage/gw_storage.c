@@ -21,6 +21,7 @@
 #include "esp_partition.h"
 #include "esp_mac.h"
 #include "esp_random.h"
+#include "gw_rng.h"
 #include "esp_timer.h"
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
@@ -1168,6 +1169,7 @@ void gw_storage_commissioning_password(char out[GW_COMMISSION_PW_LEN + 1])
         bool open = s_nvs_ok && nvs_open(NVS_SECRETS, NVS_READWRITE, &h) == ESP_OK;
         if (!open || nvs_get_str(h, "commission", s_pw, &len) != ESP_OK ||
             strlen(s_pw) != GW_COMMISSION_PW_LEN) {
+            gw_rng_note("the commissioning password");   /* issue #267: in the boot (main.c) */
             for (int i = 0; i < GW_COMMISSION_PW_LEN; i++) {
                 s_pw[i] = alphabet[esp_random() % (sizeof(alphabet) - 1)];
             }
@@ -1295,6 +1297,7 @@ static void ap_pmk(const char *password, char out[GW_WPA_PMK_HEX_SIZE])
 esp_err_t gw_storage_set_web_password(const char *password, char *hash, size_t cap)
 {
     uint8_t salt[GW_AUTH_SALT_LEN];
+    gw_rng_note("the salt of the web password");   /* issue #267 */
     esp_fill_random(salt, sizeof(salt));
     if (!gw_auth_hash_password(password, salt, GW_AUTH_ITERATIONS, hash, cap)) {
         return ESP_ERR_INVALID_SIZE;
@@ -2246,6 +2249,7 @@ static char *current_doc(size_t *len, bool *from_file, gw_cfg_err_t *err)
 static bool hash_web_password(gw_config_t *cfg, gw_secrets_t *sec)
 {
     uint8_t salt[GW_AUTH_SALT_LEN];
+    gw_rng_note("the salt of the web password");   /* issue #267 */
     esp_fill_random(salt, sizeof(salt));
     bool ok = gw_auth_hash_password(cfg->web.password, salt, GW_AUTH_ITERATIONS,
                                     sec->web_password_hash, sizeof(sec->web_password_hash));

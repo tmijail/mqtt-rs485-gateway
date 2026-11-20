@@ -6,6 +6,7 @@
  */
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -33,6 +34,10 @@ void gw_port_unlock(void);
 void gw_port_json_lock(void);
 void gw_port_json_unlock(void);
 
+/** Issue #267: the SAR ADC entropy source of the chip on or off (bootloader_random_enable() and
+ *  bootloader_random_disable()). Only gw_rng calls it, and only to change the state. */
+void gw_port_rng_sar(bool on);
+
 #ifdef ESP_PLATFORM
 #include "esp_log.h"
 #define GW_LOGE(tag, fmt, ...) ESP_LOGE(tag, fmt, ##__VA_ARGS__)
@@ -46,6 +51,8 @@ void gw_port_log_capture(char *buf, size_t cap);
 /** Host tests: gw_port_time_ms() returns @p ms from now on (deterministic timestamps);
  * 0 goes back to the real clock. */
 void gw_port_fake_time(uint64_t ms);
+/** Host tests: the state that gw_port_rng_sar() gave last, and the number of its calls. */
+bool gw_port_rng_sar_state(unsigned *calls);
 #define GW_LOGE(tag, fmt, ...) gw_port_log('E', tag, fmt, ##__VA_ARGS__)
 #define GW_LOGW(tag, fmt, ...) gw_port_log('W', tag, fmt, ##__VA_ARGS__)
 #define GW_LOGI(tag, fmt, ...) gw_port_log('I', tag, fmt, ##__VA_ARGS__)

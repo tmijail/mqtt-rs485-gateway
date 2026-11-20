@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <sys/time.h>
 
+#include "bootloader_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
@@ -45,4 +46,14 @@ void gw_port_json_lock(void)
 void gw_port_json_unlock(void)
 {
     xSemaphoreGiveRecursive(s_json_lock);
+}
+
+/* Issue #267 (gw_rng.h). The bootloader turned the source off before it started the application. */
+void gw_port_rng_sar(bool on)
+{
+    if (on) {
+        bootloader_random_enable();
+    } else {
+        bootloader_random_disable();
+    }
 }

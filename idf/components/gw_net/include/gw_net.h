@@ -44,7 +44,9 @@ typedef struct {
     char ipv6[GW_NET_IPV6_MAX][GW_NET_IPV6_STR];   /* "" = none (NET-7) */
 } gw_net_if_status_t;
 
-/** Requires esp_netif_init() and the default event loop. */
+/** Requires esp_netif_init() and the default event loop. Issue #267: turns the SAR ADC entropy
+ *  source off, and starts the radio as the entropy source (gw_rng.h, step 3), also when Ethernet
+ *  fails (the error of Ethernet is the result). */
 esp_err_t gw_net_start(const gw_config_t *cfg, const gw_net_callbacks_t *cb);
 
 #if CONFIG_GW_IO_SIMULATED
@@ -86,7 +88,9 @@ bool gw_net_wifi_rssi(int8_t *rssi);
 esp_err_t gw_net_wifi_acquire(gw_wifi_user_t user, esp_err_t (*configure)(void *ctx), void *ctx);
 
 /** Issue #208: @p user gives the driver back. After the last user the driver stops and is
- *  deinitialised (its internal RAM is free). Safe from any task; not from the event loop task. */
+ *  deinitialised (its internal RAM is free); issue #267: the radio of the entropy source
+ *  (GW_WIFI_USER_RNG) never goes, so this does not occur after gw_net_start. Safe from any task;
+ *  not from the event loop task. */
 void gw_net_wifi_release(gw_wifi_user_t user);
 #endif
 
@@ -114,7 +118,8 @@ typedef void (*gw_net_scan_cb_t)(void *ctx, const gw_net_scan_ap_t *ap);
 
 /**
  * Start a scan, unless one runs or the last result is younger than @p max_age_s. Works also
- * with network.wifi off (the radio starts for the scan, and stops after it). In the emulator
+ * with network.wifi off (issue #267: the radio of the entropy source runs in STA mode). In the
+ * emulator
  * (CONFIG_GW_IO_SIMULATED, no radio) the result is a fixed list. Safe from any task; returns
  * the state after the call.
  */

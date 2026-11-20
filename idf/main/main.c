@@ -13,7 +13,8 @@
  *   syslog      (prio 2)           gw_log:   copies the log to a syslog server (if configured)
  *   modbus_tcp  (core 0, prio 3)   gw_mbtcp: Modbus TCP gateway to the RTU slaves (if enabled)
  *   httpd       (prio 3)           gw_web:   REST API (and web UI) for the configuration
- *   + IDF tasks: esp-mqtt, lwIP tcpip, esp_eth, Wi-Fi (if configured), event loop
+ *   + IDF tasks: esp-mqtt, lwIP tcpip, esp_eth, Wi-Fi (at each boot on the board: the radio is
+ *     the entropy source of the RNG, issue #267), event loop
  */
 #include <stdio.h>
 #include <string.h>
@@ -42,6 +43,7 @@
 #include "gw_mbtcp.h"
 #include "gw_net.h"
 #include "gw_port.h"
+#include "gw_rng.h"
 #include "gw_rs485.h"
 #include "gw_shell.h"
 #include "gw_status.h"
@@ -459,6 +461,7 @@ static void run_without_config(gw_web_mode_t mode, const char *source)
         s_net_started = true;
         gw_shell_mark_up(GW_SHELL_UP_NET);
     }
+    gw_temp_start();   /* #212; issue #267: after the radio starts (an error is logged) */
     start_web(mode, s_cfg, source);
     s_source = source;
     s_ready = true;
@@ -551,11 +554,23 @@ void app_main(void)
         }
         gw_status_set(GW_ST_RESETTING, false);
     }
+    /* Issue #267: the entropy sources of the random values (the sequence is in gw_rng.h).
+     *   - Here: the SAR ADC source on. Not before gw_storage_init(): with the NVS encryption,
+     *     nvs_sec_provider turns the source on and off itself. The commissioning password (made
+     *     now when NVS has none) and the salt of a web password in the configuration file
+     *     (gw_storage_load_config) come from this source.
+     *   - gw_net_start (both modes below): the SAR ADC source off, then the Wi-Fi driver in
+     *     station mode with no connection and WIFI_PS_NONE: the radio is the source until the
+     *     restart, also in the fault, recovery, safe and commissioning modes. The certificate of
+     *     the web UI (start_web), the later salts and the TLS sessions come from it.
+     *   - gw_temp_start, after gw_net_start: the temperature sensor uses the SAR ADC.
+     * QEMU has no radio: after gw_net_start no source with a guarantee is on (the log says so). */
+    gw_rng_boot();
+    gw_storage_commissioning_password(s_commission_pw);
     /* #200: the live log of the web UI keeps the log lines from here on (PSRAM) */
     if (gw_log_ring_start() != ESP_OK) {
         ESP_LOGE(TAG, "live log of the web UI unavailable");
     }
-    gw_temp_start();   /* #212: the chip temperature (an error is logged) */
     gw_coredump_init();   /* #132: before the shell, the web server and the Sparkplug task */
     /* Before the configuration: whatever happens next, no DO stays on from before a reset,
      * except those the last valid configuration holds across a restart (IO-3, kept in NVS). */
@@ -669,6 +684,7 @@ void app_main(void)
     ESP_ERROR_CHECK(gw_net_start(s_cfg, &net_cb));
     s_net_started = true;
     gw_shell_mark_up(GW_SHELL_UP_NET);
+    gw_temp_start();   /* #212: the chip temperature; issue #267: after the radio starts */
     if (gw_mbtcp_start(s_cfg) != ESP_OK) {   /* MB-15, only with modbus_tcp.enabled */
         ESP_LOGE(TAG, "Modbus TCP gateway unavailable");
     }
