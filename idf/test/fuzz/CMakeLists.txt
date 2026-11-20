@@ -1,5 +1,6 @@
 # Issue #226: libFuzzer targets for the parsers of gw_core (data from the RS485 bus, Modbus TCP,
-# MQTT, the web UI and the REST API, the flash, the RTC memory and the microSD card).
+# MQTT, the web UI and the REST API, the flash, the RTC memory, the microSD card and, #274, the
+# DNS queries and the HTTP requests of the clients of the access point).
 #
 #   cmake -S idf/test/fuzz -B build-fuzz -DCMAKE_C_COMPILER=clang && cmake --build build-fuzz -j
 #   idf/test/fuzz/run_fuzz.sh build-fuzz 60          # each target 60 s, $(nproc) at a time
@@ -50,7 +51,8 @@ set(GW_FUZZ_DEFS GW_FUZZ_E2E_CONFIG="${IDF_PROJECT_DIR}/tools/e2e/fs/config.json
                  GW_FUZZ_DEFAULT_CONFIG="${IDF_PROJECT_DIR}/components/gw_storage/default_config.json")
 
 set(GW_FUZZ_TARGETS fuzz_mb_rtu fuzz_mbap fuzz_spb fuzz_node fuzz_config fuzz_cfgdoc
-                    fuzz_web_json fuzz_web_text fuzz_flash fuzz_nvs fuzz_text fuzz_sfspill)
+                    fuzz_web_json fuzz_web_text fuzz_flash fuzz_nvs fuzz_text fuzz_sfspill
+                    fuzz_captive)
 foreach(t ${GW_FUZZ_TARGETS})
     add_executable(${t} ${t}.c)
     target_link_libraries(${t} PRIVATE gw_core)

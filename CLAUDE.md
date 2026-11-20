@@ -80,7 +80,7 @@ Each key of the configuration document must have a control in the Configuration 
 The host tests and the decode check run from the repo root. The firmware commands are run from `idf/`, after `. $IDF_PATH/export.sh`.
 
 ```bash
-# Host tests (pure C, no IDF): 43 Unity suites + sdkconfig, guard and rule checks (#228), -Werror.
+# Host tests (pure C, no IDF): 45 Unity suites + sdkconfig, guard and rule checks (#228), -Werror.
 # The rule checks need GCC 10 or later, nm and Python 3; with another compiler, add -DGW_RULE_CHECKS=OFF
 cmake -S idf/test/host -B build-host && cmake --build build-host -j && ctest --test-dir build-host --output-on-failure
 ctest --test-dir build-host -R test_poll      # one suite; or run build-host/test_poll directly
@@ -89,7 +89,7 @@ cmake -S idf/test/host -B build-o2 -DCMAKE_C_FLAGS=-O2 && cmake --build build-o2
 # The same host tests with AddressSanitizer and UndefinedBehaviorSanitizer (#225; CI job host-tests-sanitizers)
 cmake -S idf/test/host -B build-asan -DGW_SANITIZE=ON && cmake --build build-asan -j && ctest --test-dir build-asan --output-on-failure
 
-# Fuzz tests: 12 libFuzzer targets for the parsers of gw_core, with ASan and UBSan (#226; CI job fuzz
+# Fuzz tests: 13 libFuzzer targets for the parsers of gw_core, with ASan and UBSan (#226; CI job fuzz
 # 60 s each, fuzz-weekly.yml 20 min each). Needs clang with libFuzzer (Ubuntu: clang-18 libclang-rt-18-dev)
 cmake -S idf/test/fuzz -B build-fuzz -DCMAKE_C_COMPILER=clang-18 && cmake --build build-fuzz -j
 idf/test/fuzz/run_fuzz.sh build-fuzz 60                 # all targets, $(nproc) at a time (JOBS=n); a table per target

@@ -23,7 +23,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 targets=("$@")
 if [ ${#targets[@]} -eq 0 ]; then
     targets=(fuzz_mb_rtu fuzz_mbap fuzz_spb fuzz_node fuzz_config fuzz_cfgdoc fuzz_web_json
-             fuzz_web_text fuzz_flash fuzz_nvs fuzz_text fuzz_sfspill)
+             fuzz_web_text fuzz_flash fuzz_nvs fuzz_text fuzz_sfspill fuzz_captive)
 fi
 jobs=${JOBS:-$(nproc)}
 mkdir -p "$build/corpus" "$build/crashes" "$build/logs"

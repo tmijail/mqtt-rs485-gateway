@@ -67,6 +67,10 @@ bool gw_net_active_ifname(char *name, size_t cap);
  *  is not configured or has no address. Safe from any task. */
 bool gw_net_ip4_info(gw_net_if_t i, uint8_t ip[4], uint8_t mask[4]);
 
+/** Issue #274: the lwIP index of interface @p i (esp_netif_get_netif_impl_index), for a raw
+ *  lwIP PCB bound to it; -1 when it is not configured. Safe from any task. */
+int gw_net_lwip_index(gw_net_if_t i);
+
 /** Snapshot of every interface, for diagnostics (safe from any task). */
 void gw_net_get_status(gw_net_if_status_t out[GW_NET_IF_COUNT]);
 

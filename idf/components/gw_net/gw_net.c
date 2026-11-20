@@ -162,6 +162,13 @@ bool gw_net_ip4_info(gw_net_if_t i, uint8_t ip[4], uint8_t mask[4])
     return true;
 }
 
+int gw_net_lwip_index(gw_net_if_t i)
+{
+    return i < GW_NET_IF_COUNT && s_if[i].netif != NULL
+               ? esp_netif_get_netif_impl_index(s_if[i].netif)
+               : -1;
+}
+
 void gw_net_get_status(gw_net_if_status_t out[GW_NET_IF_COUNT])
 {
     portENTER_CRITICAL(&s_mux);

@@ -7,6 +7,10 @@
  * gw_wpa.h) when a web password is set, else with the commissioning password. Open (no key) only
  * for the open period of a claim window (issue #120), which ends a few seconds after the claim.
  *
+ * The captive portal (issue #274, gw_captive.h): while it runs, a DNS server on its interface
+ * answers each A query of a client with the address of the access point (gw_apdns.c), and the
+ * plain HTTP port of gw_web sends the probes of the phones to a guide page.
+ *
  * Its life (issue #187, gw_aplife.h): it stops on request (gw_ap_stop, gw_ap_stop_soon), after
  * CONFIG_GW_SOFTAP_IDLE_MIN without a client (in every mode), and at the end of its maximum time
  * (the caller's @p max_s: CONFIG_GW_SOFTAP_TIMEOUT_MIN in normal mode). A new BOOT gesture starts
@@ -100,6 +104,11 @@ void gw_ap_sim_clients(unsigned n);
 
 /** Emulator only: the time without a client that stops it (s; 0 = the Kconfig time). */
 void gw_ap_sim_idle_s(uint32_t s);
+
+/** Emulator only (issue #274): the Ethernet counts as the interface of the access point (the
+ *  shell's 'claimsim ... eth'): the DNS server of the captive portal runs there while the
+ *  simulated access point runs. */
+void gw_ap_sim_eth_as_ap(bool eth_as_ap);
 #endif
 
 #ifdef __cplusplus

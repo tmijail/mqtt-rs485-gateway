@@ -1570,7 +1570,8 @@ static int cmd_boot(int argc, char **argv)
 }
 
 /* Issue #120: the time of the next claim windows, and whether the Ethernet counts as the access
- * point (QEMU has no radio) for the claim window and for the Modbus TCP gateway. */
+ * point (QEMU has no radio) for the claim window, for the Modbus TCP gateway and (#274) for the
+ * captive portal. */
 static int cmd_claimsim(int argc, char **argv)
 {
     char *end = NULL;
@@ -1582,6 +1583,7 @@ static int cmd_claimsim(int argc, char **argv)
     }
     gw_web_sim_claim((uint32_t)s, eth);
     gw_mbtcp_sim_ap(eth);   /* the Modbus TCP gateway refuses the clients of the access point */
+    gw_ap_sim_eth_as_ap(eth);   /* issue #274: the DNS server of the captive portal */
     out("claim windows: %ld s%s; Ethernet %s the access point\n", s, s == 0 ? " (Kconfig)" : "",
         eth ? "counts as" : "is not");
     return 0;

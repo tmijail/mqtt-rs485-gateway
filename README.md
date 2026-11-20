@@ -99,7 +99,7 @@ flowchart LR
 **Configuration and maintenance**
 
 - An HTTPS web UI for the configuration and the live state. A REST API and a serial shell are also available.
-- A commissioning access point and a claim window: set the first web password on site with a phone.
+- A commissioning access point and a claim window: set the first web password on site with a phone. A captive portal opens a guide page to the secure web UI on the phone.
 - Firmware updates by HTTPS or by upload in the web UI, with a trial period and an automatic rollback.
 - Safe mode, recovery mode, factory reset, a live log in the browser and core dumps.
 

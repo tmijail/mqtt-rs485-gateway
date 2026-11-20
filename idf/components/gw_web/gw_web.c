@@ -25,6 +25,7 @@
 #include "gw_fw.h"
 #include "gw_buzz.h"
 #include "gw_buzzer.h"
+#include "gw_captive.h"
 #include "gw_cdump.h"
 #include "gw_certs.h"
 #include "gw_claim.h"
@@ -209,19 +210,46 @@ typedef struct {
     esp_err_t (*fn)(httpd_req_t *req);
 } handler_t;
 
-static esp_err_t guarded(httpd_req_t *req)
+static bool portal_take(httpd_req_t *req, esp_err_t *ret);
+
+/* Issue #274: on the plain HTTP port, the captive portal of the access point answers first
+ * (portal_take); every other request goes to @p fn. */
+static esp_err_t run_guarded(httpd_req_t *req, esp_err_t (*fn)(httpd_req_t *req))
 {
     web_guard_t *g = guard_of(req->handle);
     if (g != NULL) {
         atomic_store(&g->alive_ms, now_ms32());
         atomic_store(&g->in_handler, true);
     }
-    esp_err_t r = ((const handler_t *)req->user_ctx)->fn(req);
+    esp_err_t r;
+    if (!portal_take(req, &r)) {
+        r = fn(req);
+    }
     if (g != NULL) {
         atomic_store(&g->alive_ms, now_ms32());
         atomic_store(&g->in_handler, false);
     }
     return r;
+}
+
+static esp_err_t guarded(httpd_req_t *req)
+{
+    return run_guarded(req, ((const handler_t *)req->user_ctx)->fn);
+}
+
+/* The 404 of esp_http_server: the answer, then the session closes (ESP_FAIL). */
+static esp_err_t send_not_found(httpd_req_t *req)
+{
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, NULL);
+    return ESP_FAIL;
+}
+
+/* Issue #274: a path without a handler on the plain HTTP web server (web.https false): the
+ * captive portal (its page and its probes), else the 404 of esp_http_server. */
+static esp_err_t not_found(httpd_req_t *req, httpd_err_code_t err)
+{
+    (void)err;
+    return run_guarded(req, send_not_found);
 }
 
 static void guard_ping(void *arg)   /* runs in the server's task, from its loop */
@@ -2490,6 +2518,163 @@ static esp_err_t web_cert_discard(httpd_req_t *req)
     return send_json(req, "200 OK", "{\"ok\":true,\"discarded\":true}\n");
 }
 
+/* ---------- NET-5, issue #274: the captive portal of the access point ---------- */
+
+extern const char portal_html_start[] asm("_binary_portal_html_start");
+extern const char portal_html_end[] asm("_binary_portal_html_end");
+
+/* The plain HTTP server: the redirect server with HTTPS, else the web server. Only one of them
+ * serves the portal in a boot, thus the static buffers below belong to one task. */
+static bool portal_server(httpd_handle_t h)
+{
+    return h != NULL && (h == s_redirect || (!s_https && h == s_server));
+}
+
+/* The suffix of a port that is not the default of its scheme ("" or ":8080"). */
+static void port_sfx(char out[8], unsigned port, unsigned dflt)
+{
+    out[0] = '\0';
+    if (port != dflt) {
+        snprintf(out, 8, ":%u", port);
+    }
+}
+
+/* The chunked writer of the page: a buffer from the PSRAM, for this request only. */
+typedef struct {
+    httpd_req_t *req;
+    size_t len;
+    char buf[1024];
+} portal_out_t;
+
+static bool portal_write(void *ctx, const char *s, size_t n)
+{
+    portal_out_t *o = ctx;
+    while (n > 0) {
+        size_t k = sizeof(o->buf) - o->len < n ? sizeof(o->buf) - o->len : n;
+        memcpy(o->buf + o->len, s, k);
+        o->len += k;
+        s += k;
+        n -= k;
+        if (o->len == sizeof(o->buf)) {
+            if (httpd_resp_send_chunk(o->req, o->buf, o->len) != ESP_OK) {
+                return false;
+            }
+            o->len = 0;
+        }
+    }
+    return true;
+}
+
+/* GET /portal: the guide page (www/portal.html). It names the address of the web UI on this
+ * connection (the address of the access point), the mDNS name when mDNS is on, and, during the
+ * claim window, that the access point is open. No form, no secret. */
+static esp_err_t portal_page(httpd_req_t *req, const char *local)
+{
+    static char url[96], mdns[96], ssid[33];   /* the task of the plain HTTP server only */
+    const gw_config_t *c = s_ctx.cfg;
+    const char *scheme = s_https ? "https" : "http";
+    char sfx[8];
+    port_sfx(sfx, s_https ? c->web.https_port : c->web.port, s_https ? 443u : 80u);
+    snprintf(url, sizeof(url), "%s://%s%s/", scheme, local, sfx);
+    mdns[0] = '\0';
+#if CONFIG_GW_MDNS
+    if (c->network.mdns) {
+        snprintf(mdns, sizeof(mdns), "%s://%s.local%s/", scheme, c->network.hostname, sfx);
+    }
+#endif
+    gw_ap_ssid(ssid);
+    uint32_t left_ms;
+    /* the node name: the edge node ID; without a configuration (recovery, commissioning, fault)
+     * the host name */
+    const bool node = s_ctx.mode == GW_WEB_NORMAL && c->sparkplug.edge_node_id[0] != '\0';
+    const gw_captive_page_t v = {.node = node ? c->sparkplug.edge_node_id : c->network.hostname,
+                                 .url = url, .mdns = mdns, .ssid = ssid, .https = s_https,
+                                 .claim = claim_window_open(&left_ms)};
+    portal_out_t *o = gw_storage_malloc(sizeof(*o));
+    if (o == NULL) {
+        return send_error(req, "503 Service Unavailable", NULL, "no memory for the page");
+    }
+    o->req = req;
+    o->len = 0;
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    bool ok = gw_captive_render(portal_html_start, (size_t)embedded_len(portal_html_start,
+                                                                        portal_html_end),
+                                &v, portal_write, o) &&
+              (o->len == 0 || httpd_resp_send_chunk(req, o->buf, o->len) == ESP_OK);
+    heap_caps_free(o);
+    if (!ok) {
+        ESP_LOGW(TAG, "captive portal: the guide page was not sent in full");
+        return ESP_FAIL;   /* the session closes: the client sees a cut page */
+    }
+    return httpd_resp_send_chunk(req, NULL, 0);
+}
+
+/* A probe of a phone, or a request for another Host: a redirect to the guide page. iOS opens its
+ * captive portal window only for an answer with a body. */
+static esp_err_t portal_redirect(httpd_req_t *req, const char *local)
+{
+    static char loc[48], body[160];   /* the task of the plain HTTP server only */
+    char sfx[8];
+    port_sfx(sfx, s_ctx.cfg->web.port, 80u);
+    snprintf(loc, sizeof(loc), "http://%s%s" GW_CAPTIVE_PATH, local, sfx);
+    snprintf(body, sizeof(body),
+             "<!doctype html><title>Gateway</title><p><a href=\"%s\">Open the guide page of the "
+             "gateway</a></p>\n", loc);
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", loc);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    close_after_reply(req);
+    return httpd_resp_sendstr(req, body);
+}
+
+/* Issue #274: the captive portal on the plain HTTP port (gw_captive_route): only a GET of a
+ * client of the running access point (the rule of the claim window, claim_from_ap). True when it
+ * answered @p req (*ret). The cheap checks first: while the access point is off, a request costs
+ * one look at its state. */
+/* The local IPv4 address of the connection of @p req, as text. Not inlined: its socket address
+ * is not on the stack during the other calls of portal_take (the redirect task has 3 KB). */
+static __attribute__((noinline)) bool local_ip4_text(httpd_req_t *req, char out[16])
+{
+    struct sockaddr_storage la;
+    socklen_t ln = sizeof(la);
+    uint8_t ip[4];
+    if (getsockname(httpd_req_to_sockfd(req), (struct sockaddr *)&la, &ln) != 0 ||
+        !ipv4_of(&la, ip)) {
+        return false;
+    }
+    snprintf(out, 16, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+    return true;
+}
+
+static bool portal_take(httpd_req_t *req, esp_err_t *ret)
+{
+    if (req->method != HTTP_GET || !portal_server(req->handle) || !gw_ap_active() ||
+        !claim_from_ap(req)) {
+        return false;
+    }
+    static char host[96];   /* the task of the plain HTTP server only */
+    char local[16];
+    if (!local_ip4_text(req, local)) {
+        return false;
+    }
+    bool fits = header(req, "Host", host, sizeof(host));
+    switch (gw_captive_route(true, true, req->uri, fits ? host : NULL, local,
+                             s_ctx.cfg->network.hostname)) {
+    case GW_CAPTIVE_PAGE:
+        *ret = portal_page(req, local);
+        return true;
+    case GW_CAPTIVE_REDIRECT:
+        ESP_LOGD(TAG, "captive portal: %s (Host %s) goes to the guide page", req->uri,
+                 fits ? host : "too long");
+        *ret = portal_redirect(req, local);
+        return true;
+    default:
+        return false;
+    }
+}
+
 /* ---------- / and /api/status ---------- */
 
 extern const char index_html_start[] asm("_binary_index_html_start");
@@ -2993,6 +3178,10 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
         }
     } else {
         ESP_RETURN_ON_ERROR(httpd_start(&s_server, &hc), TAG, "httpd_start");
+        /* issue #274: the captive portal on the plain HTTP web server: its page and the probes
+         * have no handler of their own */
+        ESP_RETURN_ON_ERROR(httpd_register_err_handler(s_server, HTTPD_404_NOT_FOUND, not_found),
+                            TAG, "404 handler");
     }
 
     guard_add(0, s_server, s_https ? "HTTPS" : "HTTP",

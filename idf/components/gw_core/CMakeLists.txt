@@ -11,6 +11,7 @@ set(GW_CORE_SRCS
     src/gw_bootloop.c
     src/gw_button.c
     src/gw_buzz.c
+    src/gw_captive.c
     src/gw_cardfmt.c
     src/gw_certs.c
     src/gw_claim.c

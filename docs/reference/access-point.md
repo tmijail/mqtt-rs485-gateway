@@ -14,12 +14,70 @@ This document gives the facts about the commissioning access point of the gatewa
 |---|---|
 | Network name (SSID) | `GW-Setup-XXXXXX`. `XXXXXX` is the last 3 bytes of the MAC address of the access point, in hexadecimal |
 | Address of the gateway | `192.168.4.1`, the default of ESP-IDF. The subnet is `192.168.4.0/24`. You cannot change it |
-| Web UI | `https://192.168.4.1/`. With `web.https` set to `false`: `http://192.168.4.1/`. Plain HTTP only redirects to HTTPS |
-| Captive portal | None. Type the address in the browser |
+| Web UI | `https://192.168.4.1/`. With `web.https` set to `false`: `http://192.168.4.1/`. Plain HTTP redirects to HTTPS, except the requests of the captive portal |
+| Captive portal | A guide page over plain HTTP, `http://192.168.4.1/portal`. The phone opens it in its captive portal window. Refer to [The captive portal](#the-captive-portal) (issue #274) |
 | Security | WPA2-PSK, or open (no key) during a claim window. No WPA3 |
 | Modbus TCP | Always refused through the access point (issue #120) |
 
 The web server starts with the access point, also when `web.enabled` is `false`.
+
+## The captive portal
+
+While the access point runs, the gateway acts as a captive portal for the clients of the access point (issue #274). A phone that connects to the access point then opens its captive portal window by itself. That window shows only a guide page. The page tells you to open the web UI in the browser.
+
+### The DNS server
+
+| Item | Value |
+|---|---|
+| When it runs | Only while the access point runs. It starts and stops with the access point |
+| Interface | Only the interface of the access point. A client of the Ethernet or of the Wi-Fi station gets no answer |
+| Clients | Only the hosts of the subnet of the access point (the rule of the claim window) |
+| Address that the DHCP server of the access point gives as the DNS server | `192.168.4.1`, the default of ESP-IDF |
+| A query of type A, class IN | One A record with the address of the access point, `192.168.4.1`, for each name. TTL 10 s (`GW_CAPTIVE_DNS_TTL_S`) |
+| A query of another type (AAAA, HTTPS, PTR, …) or class | An answer with no records (RCODE `NOERROR`). The client then uses the A record |
+| No answer | A message that is not a standard query with one valid question. For example: a response, another opcode, or 2 questions. Also a compression pointer in the question, a label of more than 63 bytes, a name of more than 255 bytes, or a message of more than 512 bytes |
+| Where it runs | In the `tcpip` task of lwIP, as the receive function of a UDP PCB on port 53. It has no task of its own. Refer to [The architecture of the firmware](architecture.md#tasks-queues-and-ownership) |
+| Memory | No buffer of its own. It reads the query in the receive buffer of lwIP, and writes the answer into a send buffer of lwIP |
+
+The answer copies the ID, the question and the RD bit of the query. It sets QR and AA. It does not copy an EDNS option of the query.
+
+The log gives the start and the stop:
+
+- `ap: captive portal: the DNS server answers each A query of a client of the access point with 192.168.4.1`
+- `ap: captive portal: DNS server stopped (since boot: N answers, M queries without an answer)`
+
+### The HTTP port
+
+The captive portal uses only the plain HTTP port (`web.port`, default 80). With `web.https` set to `true`, this is the port that redirects to HTTPS. With `web.https` set to `false`, it is the port of the web UI.
+
+| Request | Client of the access point | Other client, or the access point is off |
+|---|---|---|
+| `GET /portal` | `200` with the guide page | As before #274: a redirect to HTTPS (`301`), or `404` with `web.https` set to `false` |
+| `GET` of a probe path: `/generate_204`, `/gen_204` (Android, Chrome), `/hotspot-detect.html`, `/library/test/success.html` (iOS, macOS), `/ncsi.txt`, `/connecttest.txt`, `/redirect` (Windows), `/canonical.html`, `/success.txt` (Firefox), `/check_network_status.txt` (GNOME), `/kindle-wifi/wifistub.html` (Kindle) | `302 Found` to `http://192.168.4.1/portal`, with a short HTML body (iOS needs a body) | As before |
+| `GET` with a `Host` that is not the gateway, for example `captive.apple.com` | `302 Found` to `http://192.168.4.1/portal` | As before |
+| `GET` with the `Host` of the gateway: `192.168.4.1`, `<hostname>` or `<hostname>.local` | As before: a redirect to HTTPS, or the web UI with `web.https` set to `false` | As before |
+| `PUT`, `POST`, `DELETE` | As before | As before |
+
+- The rule for the client is the rule of the claim window. The request came to the address of the access point, from a host of its subnet. Refer to [Commissioning and secrets](commissioning-and-secrets.md#the-claim-window-cfg-8).
+- With a `web.port` other than 80, the redirect has the port: `http://192.168.4.1:<port>/portal`.
+- The HTTPS port has no captive portal. A phone that sends an HTTPS probe gets the certificate of the gateway, and the phone does not accept it. This is the expected behaviour of a captive portal.
+
+### The guide page
+
+The guide page is plain HTTP. It has no form, no password field and no secret. It sends no request to the API. Its look is the look of the page of the claim window.
+
+| Item | Value |
+|---|---|
+| Node name | The edge node ID (`sparkplug.edge_node_id`) in normal mode. In recovery, commissioning, safe mode and the fault mode, the host name (`network.hostname`), because the gateway has no valid configuration |
+| Address | The address of the web UI on the access point, in a read-only field: `https://192.168.4.1/`. With `web.https` set to `false`: `http://192.168.4.1/`. A port other than the default is in the address |
+| mDNS address | Only when mDNS is on (`network.mdns`): `https://<hostname>.local/` |
+| Button "Open in the browser" | It copies the address to the clipboard, then opens the address in a new window. When the window cannot open the browser, the page shows a short text: "The address is in the clipboard". The captive network sheet of iOS and macOS cannot open Safari, thus there the button only copies the address |
+| Certificate note | "Your browser shows a certificate warning the first time. The gateway uses its own certificate." Only with HTTPS |
+| Note of the claim window | Only while the claim window is open. The note tells that the Wi-Fi network is open until you set the web password. It also tells you to set the web password only on the secure page |
+
+With `web.https` set to `false`, the page says "web page" in place of "secure web page".
+
+For the procedure with a phone, refer to [Set the first web password on site](../how-to/set-the-first-web-password.md). For the reasons of the design, refer to [The security of the access point](../explanation/access-point-security.md#why-the-captive-portal-shows-only-a-guide-page).
 
 ## When the access point starts
 

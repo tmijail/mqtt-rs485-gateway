@@ -37,7 +37,15 @@ The window opens only when no web password is set. This is the case on a new gat
 1. Push the BOOT button for 2 to 10 s. Release it when the LED blinks white.
 2. Make sure that you hear 1 beep, and that the LED shows blue and white, alternately.
 3. On the phone, connect to the Wi-Fi network `GW-Setup-XXXXXX` in 5 min or less. The network has no key during the window. `XXXXXX` is the end of the MAC address of the board.
-4. Open `https://192.168.4.1/` in the browser. Accept the certificate of the gateway (it is self-signed). The browser goes to the page "Set the web password".
+4. Open the secure page of the gateway in the browser:
+   1. Wait for the captive portal window of the phone. Android shows "Sign in to GW-Setup-XXXXXX". iOS shows a sheet with the name `GW-Setup-XXXXXX`.
+   2. Make sure that the window shows the guide page of the gateway. The guide page tells that the Wi-Fi network is open until you set the web password.
+   3. On the guide page, click "Open in the browser".
+   4. If the guide page shows "The address is in the clipboard", close the window. On iOS, tap "Cancel", then "Use Without Internet". Open the browser, and paste the address.
+   5. If no window opens in 10 s, open `https://192.168.4.1/` in the browser.
+   6. Accept the certificate of the gateway (it is self-signed). The browser goes to the page "Set the web password".
+
+   The guide page has no field for a password. Set the web password only on the secure page `https://192.168.4.1/`. For the guide page, refer to [The captive portal](../reference/access-point.md#the-captive-portal).
 
    ![The page 'Set the web password' on a phone: the claim window is open for 10 min. The page tells that the web password is also the Wi-Fi password of the access point, and it has two password fields and the button 'Set the password'.](../images/claim-page-phone.png)
 
@@ -48,7 +56,7 @@ The window opens only when no web password is set. This is the case on a new gat
 
 7. Wait until the phone loses the connection. 5 s after the claim, the access point changes to WPA2 with the new password.
 8. Connect the phone again to `GW-Setup-XXXXXX`. Use the new web password as the Wi-Fi password.
-9. Open `https://192.168.4.1/`. Type the user name and the new password in the login dialog of the browser. In commissioning and in recovery, any user name is valid.
+9. Open `https://192.168.4.1/` as in step 4: the phone can show the guide page again. Type the user name and the new password in the login dialog of the browser. In commissioning and in recovery, any user name is valid.
 10. Make sure that the web UI opens.
 
 You can now do the work in the web UI. When you complete the work, close the access point: refer to [Get on the access point on a later visit](get-on-the-access-point.md), step 7. From a computer on the plant network, use the addresses of step 6: `https://<ip>/` or `https://<hostname>.local/`.
@@ -65,6 +73,7 @@ You can now do the work in the web UI. When you complete the work, close the acc
 |---|---|
 | "No claim window is open" | The time is over, the access point stopped, or you did not push BOOT. Do step 1 again |
 | "accepts only a client of the access point" | You are on the plant network. Connect to `GW-Setup-XXXXXX` (step 3) |
+| The browser does not open `https://192.168.4.1/` (step 4) | Make sure that the phone is on `GW-Setup-XXXXXX`. The network has no Internet: tell the phone to stay on it. If the phone uses the mobile data for the browser, turn off the mobile data |
 | "a web password is set" | Somebody set the password. If it was not you, do a factory reset (push BOOT for more than 10 s), then do this procedure again |
 | "Use 8 to 63 characters", or "the web password must have …" | Type a password that obeys the rule. Do not use letters with accents |
 | "The two passwords are not the same." | Type the same password in the two fields |
