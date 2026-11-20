@@ -66,6 +66,39 @@ bool gw_wpa_pmk_hex_valid(const char *s);
 /** The SSID of the access point: "GW-Setup-" and the last 3 bytes of @p mac in hexadecimal. */
 void gw_wpa_ssid(const uint8_t mac[6], char out[GW_WPA_SSID_SIZE]);
 
+/*
+ * Issue #269: the stored hash of the web password and the stored PMK are two NVS entries, and
+ * no write puts the two at the same time. The order of the writes makes sure that a power cut,
+ * or a write error, never leaves a PMK that is not the PMK of the stored password:
+ *   1. erase the PMK, when one is stored and the hash or the PMK changes;
+ *   2. write the new hash, or erase the hash (the password is removed);
+ *   3. write the new PMK, only with a hash.
+ * After a cut, the stores have the old password with its PMK, the new password with its PMK, or
+ * a password with no PMK. A password with no PMK is the fault state of issue #248: the access
+ * point uses the commissioning password, with a warning.
+ */
+typedef enum {
+    GW_WPA_STORE_ERASE_PMK = 0,
+    GW_WPA_STORE_SET_HASH,
+    GW_WPA_STORE_ERASE_HASH,
+    GW_WPA_STORE_SET_PMK,
+} gw_wpa_store_op_t;
+
+#define GW_WPA_STORE_OPS_MAX 3
+
+/**
+ * The writes, in their order, that change the stored pair (@p old_hash, @p old_pmk) into
+ * (@p new_hash, @p new_pmk). "" is "not stored". Returns their number (0: the pair does not
+ * change). Each write must be durable before the next one starts. A new PMK without a new hash
+ * is not written.
+ */
+size_t gw_wpa_store_plan(const char *old_hash, const char *old_pmk, const char *new_hash,
+                         const char *new_pmk, gw_wpa_store_op_t ops[GW_WPA_STORE_OPS_MAX]);
+
+/** True when the access point uses the stored PMK as its key: @p pmk is a PMK, and the hash of
+ *  a web password (@p web_hash) is stored with it. A PMK without a web password is not used. */
+bool gw_wpa_key_is_pmk(const char *web_hash, const char *pmk);
+
 #ifdef __cplusplus
 }
 #endif

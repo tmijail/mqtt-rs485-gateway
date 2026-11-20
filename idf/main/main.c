@@ -209,13 +209,16 @@ static void self_check(gw_ota_selfcheck_t *out)
  * calculation failed (the MAC address was not readable) or when its NVS entry was not written
  * after the entry of the hash (a write error, a power cut between the two). The key is then the
  * commissioning password too, with a warning: the owner can still use the access point. Only a
- * new web password gives a PMK again, because the gateway does not keep the password. */
+ * new web password gives a PMK again, because the gateway does not keep the password.
+ * Issue #269: a PMK is the key only with the hash of a web password. gw_storage erases the PMK
+ * before it changes or removes the hash, so a stored PMK is the PMK of the stored password; a
+ * PMK with no web password is not used. */
 static bool ap_key(char out[GW_AP_KEY_SIZE])
 {
     gw_storage_commissioning_password(s_commission_pw);
     gw_secrets_t sec;
     gw_storage_get_secrets(&sec);
-    bool pmk = gw_wpa_pmk_hex_valid(sec.ap_pmk);
+    bool pmk = gw_wpa_key_is_pmk(sec.web_password_hash, sec.ap_pmk);
     if (!pmk && sec.web_password_hash[0] != '\0') {
         ESP_LOGW(TAG, "access point: a web password is set, but its WPA2 key (PMK) is not in the "
                       "stored secrets: the key is the commissioning password. Set the web "

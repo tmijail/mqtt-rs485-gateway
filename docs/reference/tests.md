@@ -118,7 +118,7 @@ The checks have these limits:
 | `test_fwlast` | FW-1 (#144 items 5 and 7): the record of the last update |
 | `test_lkgnet` | CFG-3 / FW-1 (#144 item 8): the network of the last valid configuration, readable by an earlier or a later image. A field without its terminator |
 | `test_claim` | CFG-3 / NET-5 (#120): the claim window and the password rules |
-| `test_wpa` | NET-5 (#187): SHA-1, HMAC-SHA1, PBKDF2-HMAC-SHA1, the WPA2 PMK vectors, the SSID |
+| `test_wpa` | NET-5 (#187): SHA-1, HMAC-SHA1, PBKDF2-HMAC-SHA1, the WPA2 PMK vectors, the SSID. #269: the order of the writes of the hash of the web password and of its PMK, with a cut after each write, and the rule that the access point uses a PMK only with a web password |
 | `test_aplife` | NET-5 (#187): the life of the access point, with a fake clock |
 | `test_cdump` | REL-1 (#132): base64 of the core dump, the status and summary JSON |
 | `test_mbdiag` | #182: `POST /api/modbus/read` |

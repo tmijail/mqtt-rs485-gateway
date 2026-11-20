@@ -33,6 +33,8 @@ A save restarts the gateway. The gateway sends the NDEATH, and the polling and t
 7. Click **Save and restart**. The page loads again after 15 s.
 8. When the browser asks for the user name and the password, type the user name and the new password.
 
+If the power goes off during the save, try the new password first, then the old password. Then do the procedure again. After such a power cut, the access point can ask for the commissioning password, not for the web password. Refer to [The access point](../reference/access-point.md#a-web-password-without-a-pmk).
+
 If the two values are not the same, the web UI does not save. The error shows below the field **Confirm the password**. Type the new password again in the two fields.
 
 ![The Configuration tab after 'Save and restart' with two different passwords. Below the field 'Confirm the password', a red text tells that the two passwords are not the same. The bar at the bottom of the window shows '1 error: Web interface · Confirm the password' with the link 'Go to the field'.](../images/web-password-mismatch.png)

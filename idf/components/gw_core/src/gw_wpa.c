@@ -262,3 +262,30 @@ void gw_wpa_ssid(const uint8_t mac[6], char out[GW_WPA_SSID_SIZE])
 {
     snprintf(out, GW_WPA_SSID_SIZE, "GW-Setup-%02X%02X%02X", mac[3], mac[4], mac[5]);
 }
+
+size_t gw_wpa_store_plan(const char *old_hash, const char *old_pmk, const char *new_hash,
+                         const char *new_pmk, gw_wpa_store_op_t ops[GW_WPA_STORE_OPS_MAX])
+{
+    /* a PMK goes only with a hash */
+    const char *pmk = new_hash[0] != '\0' ? new_pmk : "";
+    bool hash_changes = strcmp(old_hash, new_hash) != 0;
+    size_t n = 0;
+    if (!hash_changes && strcmp(old_pmk, pmk) == 0) {
+        return 0;
+    }
+    if (old_pmk[0] != '\0') {
+        ops[n++] = GW_WPA_STORE_ERASE_PMK;   /* first: the old PMK never stays with a new hash */
+    }
+    if (hash_changes) {
+        ops[n++] = new_hash[0] != '\0' ? GW_WPA_STORE_SET_HASH : GW_WPA_STORE_ERASE_HASH;
+    }
+    if (pmk[0] != '\0') {
+        ops[n++] = GW_WPA_STORE_SET_PMK;     /* last: the new PMK never comes before its hash */
+    }
+    return n;
+}
+
+bool gw_wpa_key_is_pmk(const char *web_hash, const char *pmk)
+{
+    return web_hash[0] != '\0' && gw_wpa_pmk_hex_valid(pmk);
+}

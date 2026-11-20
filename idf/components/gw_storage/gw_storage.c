@@ -1197,6 +1197,55 @@ void gw_storage_commissioning_password(char out[GW_COMMISSION_PW_LEN + 1])
     memcpy(out, s_pw, sizeof(s_pw));
 }
 
+/* The string @p key of the open namespace @p h: "" when it is not stored. A value that cannot
+ * be read gives "?", which is different from each value that the gateway writes: the caller
+ * then writes the entry again. */
+static void stored_str(nvs_handle_t h, const char *key, char *out, size_t cap)
+{
+    size_t len = cap;
+    esp_err_t e = nvs_get_str(h, key, out, &len);
+    if (e == ESP_ERR_NVS_NOT_FOUND) {
+        out[0] = '\0';
+    } else if (e != ESP_OK) {
+        snprintf(out, cap, "?");
+    }
+}
+
+static esp_err_t erase_key(nvs_handle_t h, const char *key)
+{
+    esp_err_t err = nvs_erase_key(h, key);
+    return err == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : err;
+}
+
+/* Issue #269: the hash of the web password ("web_hash") and its PMK ("ap_pmk") are two entries.
+ * gw_wpa_store_plan() (host-tested) gives the order of the writes, so that a power cut or a
+ * write error never leaves a PMK that is not the PMK of the stored password. Each write is
+ * committed before the next one. "" removes an entry. */
+static esp_err_t put_web_password(nvs_handle_t h, const char *hash, const char *pmk)
+{
+    char old_hash[GW_PWHASH_SIZE], old_pmk[GW_WPA_PMK_HEX_SIZE];
+    stored_str(h, "web_hash", old_hash, sizeof(old_hash));
+    stored_str(h, "ap_pmk", old_pmk, sizeof(old_pmk));
+    gw_wpa_store_op_t ops[GW_WPA_STORE_OPS_MAX];
+    size_t n = gw_wpa_store_plan(old_hash, old_pmk, hash, pmk, ops);
+    memset(old_hash, 0, sizeof(old_hash));
+    memset(old_pmk, 0, sizeof(old_pmk));
+    esp_err_t err = ESP_OK;
+    for (size_t i = 0; err == ESP_OK && i < n; i++) {
+        switch (ops[i]) {
+        case GW_WPA_STORE_ERASE_PMK: err = erase_key(h, "ap_pmk"); break;
+        case GW_WPA_STORE_SET_HASH: err = nvs_set_str(h, "web_hash", hash); break;
+        case GW_WPA_STORE_ERASE_HASH: err = erase_key(h, "web_hash"); break;
+        case GW_WPA_STORE_SET_PMK: err = nvs_set_str(h, "ap_pmk", pmk); break;
+        default: err = ESP_ERR_INVALID_ARG; break;
+        }
+        if (err == ESP_OK) {
+            err = nvs_commit(h);
+        }
+    }
+    return err;
+}
+
 static esp_err_t put_secrets(const gw_secrets_t *in)
 {
     if (!s_nvs_ok) {
@@ -1209,16 +1258,19 @@ static esp_err_t put_secrets(const gw_secrets_t *in)
     }
     for (size_t i = 0; err == ESP_OK && i < sizeof(k_secret_keys) / sizeof(k_secret_keys[0]);
          i++) {
-        const char *v = (const char *)in + k_secret_keys[i].offset;
-        if (v[0] == '\0') {
-            err = nvs_erase_key(h, k_secret_keys[i].key);
-            err = err == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : err;
-        } else {
-            err = nvs_set_str(h, k_secret_keys[i].key, v);
+        if (k_secret_keys[i].offset == offsetof(gw_secrets_t, web_password_hash) ||
+            k_secret_keys[i].offset == offsetof(gw_secrets_t, ap_pmk)) {
+            continue;   /* issue #269: the two together, below */
         }
+        const char *v = (const char *)in + k_secret_keys[i].offset;
+        err = v[0] == '\0' ? erase_key(h, k_secret_keys[i].key)
+                           : nvs_set_str(h, k_secret_keys[i].key, v);
     }
     if (err == ESP_OK) {
         err = nvs_commit(h);
+    }
+    if (err == ESP_OK) {
+        err = put_web_password(h, in->web_password_hash, in->ap_pmk);
     }
     nvs_close(h);
     return err;
@@ -1269,16 +1321,7 @@ esp_err_t gw_storage_set_web_password(const char *password, char *hash, size_t c
                     : !s_nvs_ok  ? ESP_ERR_NVS_NOT_INITIALIZED
                                  : nvs_open(NVS_SECRETS, NVS_READWRITE, &h);
     if (err == ESP_OK) {
-        err = nvs_set_str(h, "web_hash", hash);
-        if (err == ESP_OK && pmk[0] != '\0') {
-            err = nvs_set_str(h, "ap_pmk", pmk);
-        } else if (err == ESP_OK) {
-            err = nvs_erase_key(h, "ap_pmk");
-            err = err == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : err;
-        }
-        if (err == ESP_OK) {
-            err = nvs_commit(h);
-        }
+        err = put_web_password(h, hash, pmk);   /* issue #269: the order of the two writes */
         nvs_close(h);
     }
     xSemaphoreGive(s_save_lock);
