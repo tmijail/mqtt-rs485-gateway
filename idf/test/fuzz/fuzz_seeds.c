@@ -11,6 +11,7 @@
 #include "fuzz.h"
 #include "fuzz_card.h"
 #include "gw_auth.h"
+#include "gw_captive.h"
 #include "gw_cfgprev.h"
 #include "gw_config.h"
 #include "gw_fwlast.h"
@@ -559,6 +560,57 @@ static void seeds_sfspill(void)
     seed("card_fix", NULL, 0, img, n);
 }
 
+/* ---- the captive portal of the access point (#274) ---- */
+
+/* A DNS query for @p name with @p qtype, ID 0xBEEF, RD set; @p opt adds an EDNS OPT record. */
+static size_t dns_query(uint8_t *q, const char *name, unsigned qtype, bool opt)
+{
+    static const uint8_t hdr[12] = {0xBE, 0xEF, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0};
+    memcpy(q, hdr, sizeof(hdr));
+    size_t n = sizeof(hdr);
+    for (const char *s = name; *s != '\0';) {
+        size_t l = strcspn(s, ".");
+        q[n++] = (uint8_t)l;
+        memcpy(&q[n], s, l);
+        n += l;
+        s += l + (s[l] == '.' ? 1u : 0u);
+    }
+    q[n++] = 0;
+    q[n++] = (uint8_t)(qtype >> 8);
+    q[n++] = (uint8_t)qtype;
+    q[n++] = 0;
+    q[n++] = 1;   /* class IN */
+    if (opt) {
+        static const uint8_t rr[11] = {0, 0, 41, 0x04, 0xD0, 0, 0, 0, 0, 0, 0};
+        memcpy(&q[n], rr, sizeof(rr));
+        n += sizeof(rr);
+        q[11] = 1;
+    }
+    return n;
+}
+
+static void seeds_captive(void)
+{
+    target("fuzz_captive");
+    uint8_t in[300];
+    static const uint8_t ip[4] = {192, 168, 4, 1};
+    memcpy(in, ip, 4);
+    size_t n = dns_query(in + 4, "connectivitycheck.gstatic.com", 1, false);
+    seed1("dns_a", 0, in, 4 + n);
+    n = dns_query(in + 4, "captive.apple.com", 28, true);
+    seed1("dns_aaaa_edns", 0, in, 4 + n);
+    n = dns_query(in + 4, "www.msftconnecttest.com", 65, true);
+    seed1("dns_https", 0, in, 4 + n);
+    const char probe[] = "/generate_204\0connectivitycheck.gstatic.com\0192.168.4.1\0gw01";
+    seed1("http_probe", 1u | (6u << 2), probe, sizeof(probe) - 1);
+    const char page[] = "/portal?x\0gw01.local:80\0192.168.4.1\0gw01";
+    seed1("http_page", 1u | (6u << 2), page, sizeof(page) - 1);
+    const char tpl[] = "GW<01>\0GW-Setup-A1B2C3\0<h1>{{node}}</h1>{{#https}}s{{/https}}"
+                       "{{^https}}p{{/https}}{{#claim}}{{ssid}}{{#mdns}}{{mdns}}{{/mdns}}"
+                       "{{/claim}}{{url}}";
+    seed1("page", 2u | (7u << 2), tpl, sizeof(tpl) - 1);
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2) {
@@ -580,6 +632,7 @@ int main(int argc, char **argv)
     seeds_nvs();
     seeds_text();
     seeds_sfspill();
+    seeds_captive();
     printf("fuzz_seeds: %u seeds in %s\n", s_count, s_dir);
     return 0;
 }
