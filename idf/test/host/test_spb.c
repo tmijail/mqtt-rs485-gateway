@@ -432,6 +432,173 @@ static void test_template_round_trip(void)
     TEST_ASSERT_EQUAL(0, spb_encode(&p, buf, sizeof(buf)));
 }
 
+/* #251: the parameters of a Template. Each one has a name, a type and a value in the field of
+ * its datatype (tck-id-payloads-template-parameter-name-required, -type-req, -type-value,
+ * -value); they follow the members on the wire and decode through the param callback. */
+static void test_template_parameters(void)
+{
+    const spb_param_t def_params[] = {
+        {.name = "Unit ID", .datatype = SPB_DT_INT32, .v.num = 0},
+        {.name = "Offset", .datatype = SPB_DT_INT16, .v.num = -2},
+        {.name = "Serial", .datatype = SPB_DT_UINT64, .v.u64 = 9007199254740993ull},
+        {.name = "Gain", .datatype = SPB_DT_FLOAT, .v.num = 1.5},
+        {.name = "Span", .datatype = SPB_DT_DOUBLE, .v.num = -0.25},
+        {.name = "Spare", .datatype = SPB_DT_BOOLEAN, .v.num = 1},
+        {.name = "Model", .datatype = SPB_DT_STRING, .v.str = "PM-3"},
+    };
+    const spb_template_t def = {.is_definition = true, .count = 2, .get = gen_member,
+                                .param_count = 7, .params = def_params};
+    const spb_metric_t member = {.name = "Run", .no_alias = true, .datatype = SPB_DT_BOOLEAN,
+                                 .v.num = 1};
+    const spb_param_t inst_param = {.name = "Unit ID", .datatype = SPB_DT_INT32, .v.num = 247};
+    const spb_template_t inst = {.ref = "Meter", .count = 1, .members = &member,
+                                 .param_count = 1, .params = &inst_param};
+    const spb_template_t plain = {.ref = "Meter", .count = 1, .members = &member};
+    spb_metric_t m[] = {
+        {.name = "Meter", .no_alias = true, .datatype = SPB_DT_TEMPLATE, .v.tmpl = &def},
+        {.name = "Meter", .alias = 100, .datatype = SPB_DT_TEMPLATE, .v.tmpl = &inst},
+        {.name = "Meter", .alias = 101, .datatype = SPB_DT_TEMPLATE, .v.tmpl = &plain},
+    };
+    spb_payload_t p = {.timestamp = 1, .has_seq = true, .seq = 0, .metrics = m, .metric_count = 3};
+    size_t len = spb_encode(&p, buf, sizeof(buf));
+    TEST_ASSERT_GREATER_THAN(0, len);
+    TEST_ASSERT_TRUE(decode_payload(buf, len, &dec));
+    TEST_ASSERT_EQUAL(3, dec.count);
+    TEST_ASSERT_EQUAL(7, dec.m[0].params);
+    TEST_ASSERT_EQUAL(2, dec.m[0].members);        /* the members are still there */
+    TEST_ASSERT_TRUE(dec.m[0].is_definition);
+    TEST_ASSERT_EQUAL(1, dec.m[1].params);
+    TEST_ASSERT_EQUAL_STRING("Meter", dec.m[1].ref);
+    TEST_ASSERT_EQUAL(0, dec.m[2].params);         /* param_count 0: no parameters on the wire */
+    TEST_ASSERT_EQUAL(8, dec.param_count);
+    for (size_t i = 0; i < 7; i++) {
+        TEST_ASSERT_TRUE(dec.par[i].has_name);
+        TEST_ASSERT_EQUAL_STRING(def_params[i].name, dec.par[i].name);
+        TEST_ASSERT_TRUE(dec.par[i].has_type);
+        TEST_ASSERT_EQUAL(def_params[i].datatype, dec.par[i].type);
+    }
+    TEST_ASSERT_EQUAL(SPB_VAL_INT, dec.par[0].kind);   /* a default of 0 is on the wire */
+    TEST_ASSERT_EQUAL_UINT32(0, dec.par[0].i);
+    TEST_ASSERT_EQUAL(SPB_VAL_INT, dec.par[1].kind);
+    TEST_ASSERT_EQUAL_HEX32(0xFFFFFFFEu, dec.par[1].i);   /* two's complement, sign-extended */
+    TEST_ASSERT_EQUAL(SPB_VAL_LONG, dec.par[2].kind);
+    TEST_ASSERT_EQUAL_UINT64(9007199254740993ull, dec.par[2].l);
+    TEST_ASSERT_EQUAL(SPB_VAL_FLOAT, dec.par[3].kind);
+    TEST_ASSERT_EQUAL_DOUBLE(1.5, dec.par[3].num);
+    TEST_ASSERT_EQUAL(SPB_VAL_DOUBLE, dec.par[4].kind);
+    TEST_ASSERT_EQUAL_DOUBLE(-0.25, dec.par[4].num);
+    TEST_ASSERT_EQUAL(SPB_VAL_BOOL, dec.par[5].kind);
+    TEST_ASSERT_EQUAL_DOUBLE(1, dec.par[5].num);
+    TEST_ASSERT_EQUAL(SPB_VAL_STRING, dec.par[6].kind);
+    TEST_ASSERT_EQUAL_STRING("PM-3", dec.par[6].str);
+    TEST_ASSERT_EQUAL_STRING("Unit ID", dec.par[7].name);
+    TEST_ASSERT_EQUAL(SPB_DT_INT32, dec.par[7].type);
+    TEST_ASSERT_EQUAL(SPB_VAL_INT, dec.par[7].kind);
+    TEST_ASSERT_EQUAL_UINT32(247, dec.par[7].i);
+
+    /* the wire format of one parameter (field 3 of the Template, after its members):
+     * name = 1, type = 2 (Int32 = 3), int_value = 3 */
+    static const uint8_t wire[] = {0x1A, 0x0E, 0x0A, 0x07, 'U', 'n', 'i', 't', ' ', 'I', 'D',
+                                   0x10, 0x03, 0x18, 0xF7, 0x01};
+    bool found = false;
+    for (size_t i = 0; i + sizeof(wire) <= len && !found; i++) {
+        found = memcmp(&buf[i], wire, sizeof(wire)) == 0;
+    }
+    TEST_ASSERT_TRUE(found);
+
+    /* tck-id-payloads-template-parameter-type-value: only a basic datatype; a name or a String
+     * value that does not fit fails the encoding, never cut (#87) */
+    static const uint32_t bad_types[] = {0, SPB_DT_DATASET, SPB_DT_BYTES, SPB_DT_FILE,
+                                         SPB_DT_TEMPLATE, 22};
+    char longname[SPB_NAME_MAX + 2];
+    memset(longname, 'n', sizeof(longname) - 1);
+    longname[sizeof(longname) - 1] = '\0';
+    spb_param_t one = {.name = "P", .datatype = SPB_DT_INT32, .v.num = 1};
+    const spb_template_t t1 = {.ref = "Meter", .count = 1, .members = &member, .param_count = 1,
+                               .params = &one};
+    m[1].v.tmpl = &t1;
+    TEST_ASSERT_GREATER_THAN(0, spb_encode(&p, buf, sizeof(buf)));
+    for (size_t i = 0; i < sizeof(bad_types) / sizeof(bad_types[0]); i++) {
+        one.datatype = bad_types[i];
+        TEST_ASSERT_EQUAL(0, spb_encode(&p, buf, sizeof(buf)));
+    }
+    one = (spb_param_t){.name = longname, .datatype = SPB_DT_INT32, .v.num = 1};
+    TEST_ASSERT_EQUAL(0, spb_encode(&p, buf, sizeof(buf)));
+    longname[SPB_NAME_MAX] = '\0';                 /* 63 characters fit */
+    TEST_ASSERT_GREATER_THAN(0, spb_encode(&p, buf, sizeof(buf)));
+    one = (spb_param_t){.name = "P", .datatype = SPB_DT_STRING, .v.str = longname};
+    TEST_ASSERT_GREATER_THAN(0, spb_encode(&p, buf, sizeof(buf)));   /* SPB_SHORT_STRING_MAX */
+    longname[SPB_NAME_MAX] = 'n';
+    TEST_ASSERT_EQUAL(0, spb_encode(&p, buf, sizeof(buf)));
+}
+
+static bool count_metric(void *ctx, const spb_rx_metric_t *m)
+{
+    *(uint32_t *)ctx += 1 + m->tmpl.params;
+    return true;
+}
+
+static bool stop_at_param(void *ctx, const spb_rx_param_t *p)
+{
+    (void)p;
+    *(uint32_t *)ctx += 100;
+    return false;
+}
+
+/* #251: a decoder without the param callback (the engine, for a command) skips the parameters,
+ * whatever they hold; one with it gets each of them, and can stop the decoding. A parameter
+ * name that the codec cannot hold makes the payload undecodable only for that decoder. */
+static void test_template_parameters_decode_is_optional(void)
+{
+    /* by hand: a Template instance "T" (metric "P") with one parameter whose name has 70
+     * characters (more than SPB_NAME_MAX), type Int32, int_value 5 */
+    uint8_t raw[128];
+    size_t n = 0;
+    static const uint8_t head[] = {0x08, 0x01,             /* Payload.timestamp = 1 */
+                                   0x12, 91,               /* Payload.metrics[0], 91 B */
+                                   0x0A, 0x01, 'P',        /* name */
+                                   0x20, 0x13,             /* datatype = Template */
+                                   0x92, 0x01, 83,         /* template_value (field 18), 83 B */
+                                   0x1A, 76,               /* parameters[0] (field 3), 76 B */
+                                   0x0A, 70};              /* Parameter.name, 70 B */
+    memcpy(raw, head, sizeof(head));
+    n += sizeof(head);
+    memset(&raw[n], 'x', 70);
+    n += 70;
+    static const uint8_t tail[] = {0x10, 0x03, 0x18, 0x05,   /* type = Int32, int_value = 5 */
+                                   0x22, 0x01, 'T',          /* template_ref */
+                                   0x28, 0x00};              /* is_definition = false */
+    memcpy(&raw[n], tail, sizeof(tail));
+    n += sizeof(tail);
+    TEST_ASSERT_EQUAL(4 + 91, n);
+
+    spb_rx_header_t hdr;
+    uint32_t calls = 0;
+    TEST_ASSERT_TRUE(spb_decode(raw, n, &hdr, NULL, NULL));           /* validation only */
+    TEST_ASSERT_TRUE(spb_decode(raw, n, &hdr, count_metric, &calls));
+    TEST_ASSERT_EQUAL(1, calls);                    /* the metric, and no parameter counted */
+    TEST_ASSERT_FALSE(decode_payload(raw, n, &dec));                  /* with the callback */
+    TEST_ASSERT_EQUAL_STRING("string overflow", spb_last_error());
+
+    /* a name that fits: the callback gets the parameter, and false from it stops the decoding */
+    raw[3] = 91 - 7;
+    raw[11] = 83 - 7;
+    raw[13] = 76 - 7;
+    raw[15] = 70 - 7;
+    memmove(&raw[16 + 63], &raw[16 + 70], sizeof(tail));
+    n -= 7;
+    TEST_ASSERT_TRUE(decode_payload(raw, n, &dec));
+    TEST_ASSERT_EQUAL(1, dec.param_count);
+    TEST_ASSERT_EQUAL(63, strlen(dec.par[0].name));
+    TEST_ASSERT_EQUAL_UINT32(5, dec.par[0].i);
+    TEST_ASSERT_EQUAL(1, dec.m[0].params);
+    TEST_ASSERT_EQUAL_STRING("T", dec.m[0].ref);
+    calls = 0;
+    const spb_decoder_t stop = {.metric = count_metric, .param = stop_at_param, .ctx = &calls};
+    TEST_ASSERT_FALSE(spb_decode_with(raw, n, &hdr, &stop));
+    TEST_ASSERT_EQUAL(100, calls);                  /* the parameter, then nothing more */
+}
+
 static void test_worst_case_birth_fits(void)
 {
     /* SPB-16: the widest DBIRTH metric carries every property; 64 of them, either numeric with
@@ -546,6 +713,8 @@ int main(void)
     RUN_TEST(test_bytes_and_file);
     RUN_TEST(test_dataset_round_trip);
     RUN_TEST(test_template_round_trip);
+    RUN_TEST(test_template_parameters);
+    RUN_TEST(test_template_parameters_decode_is_optional);
     RUN_TEST(test_worst_case_birth_fits);
     RUN_TEST(test_string_limit);
     RUN_TEST(test_topics);

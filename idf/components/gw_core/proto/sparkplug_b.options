@@ -35,7 +35,10 @@ Payload.DataSet.DataSetValue.DataSetValueExtension skip_message:true
 # SPB-18 Template (members are metrics: a callback breaks the recursion)
 Payload.Template.version           type:FT_IGNORE
 Payload.Template.metrics           type:FT_CALLBACK
-Payload.Template.parameters        type:FT_IGNORE
+Payload.Template.parameters        type:FT_CALLBACK
 Payload.Template.template_ref      max_size:40
-Payload.Template.Parameter         skip_message:true
-Payload.Template.Parameter.*       skip_message:true
+# SPB-18 Template.Parameter (#251)
+Payload.Template.Parameter.name            max_size:64
+Payload.Template.Parameter.string_value    max_size:64
+Payload.Template.Parameter.extension_value type:FT_IGNORE
+Payload.Template.Parameter.ParameterValueExtension skip_message:true

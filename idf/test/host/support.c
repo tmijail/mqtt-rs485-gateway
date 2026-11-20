@@ -370,6 +370,7 @@ static void fill_dec(dec_metric_t *o, const spb_rx_metric_t *m)
     memcpy(o->ref, m->tmpl.ref, sizeof(o->ref));
     o->is_definition = m->tmpl.is_definition;
     o->members = m->tmpl.members;
+    o->params = m->tmpl.params;
     if (m->name) {
         o->has_name = true;
         snprintf(o->name, sizeof(o->name), "%s", m->name);
@@ -431,11 +432,53 @@ static bool dec_member_cb(void *ctx, const spb_rx_metric_t *m)
     return true;
 }
 
+/* #251: a Template parameter */
+static bool dec_param_cb(void *ctx, const spb_rx_param_t *p)
+{
+    decoded_t *d = ctx;
+    if (d->param_count >= DEC_PARAMS) {
+        return false;
+    }
+    dec_param_t *o = &d->par[d->param_count++];
+    memset(o, 0, sizeof(*o));
+    if (p->name != NULL) {
+        o->has_name = true;
+        snprintf(o->name, sizeof(o->name), "%s", p->name);
+    }
+    o->has_type = p->has_type;
+    o->type = p->type;
+    o->kind = p->value.kind;
+    switch (p->value.kind) {
+    case SPB_VAL_INT:
+        o->i = p->value.v.i;
+        break;
+    case SPB_VAL_LONG:
+        o->l = p->value.v.l;
+        break;
+    case SPB_VAL_FLOAT:
+        o->num = p->value.v.f;
+        break;
+    case SPB_VAL_DOUBLE:
+        o->num = p->value.v.d;
+        break;
+    case SPB_VAL_BOOL:
+        o->num = p->value.v.b ? 1.0 : 0.0;
+        break;
+    case SPB_VAL_STRING:
+        snprintf(o->str, sizeof(o->str), "%s", p->value.v.s);
+        break;
+    default:
+        break;
+    }
+    return true;
+}
+
 bool decode_payload(const uint8_t *buf, size_t len, decoded_t *out)
 {
     memset(out, 0, sizeof(*out));
     spb_rx_header_t hdr;
-    const spb_decoder_t d = {.metric = dec_cb, .member = dec_member_cb, .ctx = out};
+    const spb_decoder_t d = {.metric = dec_cb, .member = dec_member_cb, .param = dec_param_cb,
+                             .ctx = out};
     if (!spb_decode_with(buf, len, &hdr, &d)) {
         return false;
     }

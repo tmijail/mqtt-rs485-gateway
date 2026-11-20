@@ -65,12 +65,29 @@ typedef struct _Payload {
 
 typedef struct _Payload_Template {
     pb_callback_t metrics; /* Each metric includes a name, datatype, and optionally a value */
+    pb_callback_t parameters;
     bool has_template_ref;
     char template_ref[40]; /* MUST be a reference to a template definition if this is an instance (i.e. the name of the template definition) - MUST be omitted for template definitions */
     bool has_is_definition;
     bool is_definition;
     pb_extension_t *extensions;
 } Payload_Template;
+
+typedef struct _Payload_Template_Parameter {
+    bool has_name;
+    char name[64];
+    bool has_type;
+    uint32_t type;
+    pb_size_t which_value;
+    union {
+        uint32_t int_value;
+        uint64_t long_value;
+        float float_value;
+        double double_value;
+        bool boolean_value;
+        char string_value[64];
+    } value;
+} Payload_Template_Parameter;
 
 typedef struct _Payload_DataSet {
     bool has_num_of_columns;
@@ -171,9 +188,11 @@ extern "C" {
 
 
 
+
 /* Initializer values for message structs */
 #define Payload_init_default                     {false, 0, {{NULL}, NULL}, false, 0, NULL}
-#define Payload_Template_init_default            {{{NULL}, NULL}, false, "", false, 0, NULL}
+#define Payload_Template_init_default            {{{NULL}, NULL}, {{NULL}, NULL}, false, "", false, 0, NULL}
+#define Payload_Template_Parameter_init_default  {false, "", false, 0, 0, {0}}
 #define Payload_DataSet_init_default             {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, NULL}
 #define Payload_DataSet_DataSetValue_init_default {0, {0}}
 #define Payload_DataSet_Row_init_default         {{{NULL}, NULL}, NULL}
@@ -181,7 +200,8 @@ extern "C" {
 #define Payload_PropertySet_init_default         {{{NULL}, NULL}, {{NULL}, NULL}, NULL}
 #define Payload_Metric_init_default              {false, "", false, 0, false, 0, false, 0, false, 0, false, 0, false, 0, {{NULL}, NULL}, {{NULL}, NULL}, 0, {0}}
 #define Payload_init_zero                        {false, 0, {{NULL}, NULL}, false, 0, NULL}
-#define Payload_Template_init_zero               {{{NULL}, NULL}, false, "", false, 0, NULL}
+#define Payload_Template_init_zero               {{{NULL}, NULL}, {{NULL}, NULL}, false, "", false, 0, NULL}
+#define Payload_Template_Parameter_init_zero     {false, "", false, 0, 0, {0}}
 #define Payload_DataSet_init_zero                {false, 0, {{NULL}, NULL}, {{NULL}, NULL}, {{NULL}, NULL}, NULL}
 #define Payload_DataSet_DataSetValue_init_zero   {0, {0}}
 #define Payload_DataSet_Row_init_zero            {{{NULL}, NULL}, NULL}
@@ -194,8 +214,17 @@ extern "C" {
 #define Payload_metrics_tag                      2
 #define Payload_seq_tag                          3
 #define Payload_Template_metrics_tag             2
+#define Payload_Template_parameters_tag          3
 #define Payload_Template_template_ref_tag        4
 #define Payload_Template_is_definition_tag       5
+#define Payload_Template_Parameter_name_tag      1
+#define Payload_Template_Parameter_type_tag      2
+#define Payload_Template_Parameter_int_value_tag 3
+#define Payload_Template_Parameter_long_value_tag 4
+#define Payload_Template_Parameter_float_value_tag 5
+#define Payload_Template_Parameter_double_value_tag 6
+#define Payload_Template_Parameter_boolean_value_tag 7
+#define Payload_Template_Parameter_string_value_tag 8
 #define Payload_DataSet_num_of_columns_tag       1
 #define Payload_DataSet_columns_tag              2
 #define Payload_DataSet_types_tag                3
@@ -247,12 +276,26 @@ X(a, CALLBACK, OPTIONAL, EXTENSION, extensions,        6)
 
 #define Payload_Template_FIELDLIST(X, a) \
 X(a, CALLBACK, REPEATED, MESSAGE,  metrics,           2) \
+X(a, CALLBACK, REPEATED, MESSAGE,  parameters,        3) \
 X(a, STATIC,   OPTIONAL, STRING,   template_ref,      4) \
 X(a, STATIC,   OPTIONAL, BOOL,     is_definition,     5) \
 X(a, CALLBACK, OPTIONAL, EXTENSION, extensions,        6)
 #define Payload_Template_CALLBACK pb_default_field_callback
 #define Payload_Template_DEFAULT NULL
 #define Payload_Template_metrics_MSGTYPE Payload_Metric
+#define Payload_Template_parameters_MSGTYPE Payload_Template_Parameter
+
+#define Payload_Template_Parameter_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, STRING,   name,              1) \
+X(a, STATIC,   OPTIONAL, UINT32,   type,              2) \
+X(a, STATIC,   ONEOF,    UINT32,   (value,int_value,value.int_value),   3) \
+X(a, STATIC,   ONEOF,    UINT64,   (value,long_value,value.long_value),   4) \
+X(a, STATIC,   ONEOF,    FLOAT,    (value,float_value,value.float_value),   5) \
+X(a, STATIC,   ONEOF,    DOUBLE,   (value,double_value,value.double_value),   6) \
+X(a, STATIC,   ONEOF,    BOOL,     (value,boolean_value,value.boolean_value),   7) \
+X(a, STATIC,   ONEOF,    STRING,   (value,string_value,value.string_value),   8)
+#define Payload_Template_Parameter_CALLBACK NULL
+#define Payload_Template_Parameter_DEFAULT NULL
 
 #define Payload_DataSet_FIELDLIST(X, a) \
 X(a, STATIC,   OPTIONAL, UINT64,   num_of_columns,    1) \
@@ -327,6 +370,7 @@ X(a, STATIC,   ONEOF,    MSG_W_CB, (value,template_value,value.template_value), 
 
 extern const pb_msgdesc_t Payload_msg;
 extern const pb_msgdesc_t Payload_Template_msg;
+extern const pb_msgdesc_t Payload_Template_Parameter_msg;
 extern const pb_msgdesc_t Payload_DataSet_msg;
 extern const pb_msgdesc_t Payload_DataSet_DataSetValue_msg;
 extern const pb_msgdesc_t Payload_DataSet_Row_msg;
@@ -337,6 +381,7 @@ extern const pb_msgdesc_t Payload_Metric_msg;
 /* Defines for backwards compatibility with code written before nanopb-0.4.0 */
 #define Payload_fields &Payload_msg
 #define Payload_Template_fields &Payload_Template_msg
+#define Payload_Template_Parameter_fields &Payload_Template_Parameter_msg
 #define Payload_DataSet_fields &Payload_DataSet_msg
 #define Payload_DataSet_DataSetValue_fields &Payload_DataSet_DataSetValue_msg
 #define Payload_DataSet_Row_fields &Payload_DataSet_Row_msg
@@ -351,9 +396,10 @@ extern const pb_msgdesc_t Payload_Metric_msg;
 /* Payload_DataSet_Row_size depends on runtime parameters */
 /* Payload_PropertySet_size depends on runtime parameters */
 /* Payload_Metric_size depends on runtime parameters */
-#define ORG_ECLIPSE_TAHU_PROTOBUF_SPARKPLUG_B_PB_H_MAX_SIZE Payload_PropertyValue_size
+#define ORG_ECLIPSE_TAHU_PROTOBUF_SPARKPLUG_B_PB_H_MAX_SIZE Payload_Template_Parameter_size
 #define Payload_DataSet_DataSetValue_size        65
 #define Payload_PropertyValue_size               73
+#define Payload_Template_Parameter_size          136
 
 /* Mapping from canonical names (mangle_names or overridden package name) */
 #define org_eclipse_tahu_protobuf_DataType DataType
@@ -377,6 +423,7 @@ extern const pb_msgdesc_t Payload_Metric_msg;
 #define _org_eclipse_tahu_protobuf_DataType_ARRAYSIZE _DataType_ARRAYSIZE
 #define org_eclipse_tahu_protobuf_Payload_init_default Payload_init_default
 #define org_eclipse_tahu_protobuf_Payload_Template_init_default Payload_Template_init_default
+#define org_eclipse_tahu_protobuf_Payload_Template_Parameter_init_default Payload_Template_Parameter_init_default
 #define org_eclipse_tahu_protobuf_Payload_DataSet_init_default Payload_DataSet_init_default
 #define org_eclipse_tahu_protobuf_Payload_DataSet_DataSetValue_init_default Payload_DataSet_DataSetValue_init_default
 #define org_eclipse_tahu_protobuf_Payload_DataSet_Row_init_default Payload_DataSet_Row_init_default
@@ -385,6 +432,7 @@ extern const pb_msgdesc_t Payload_Metric_msg;
 #define org_eclipse_tahu_protobuf_Payload_Metric_init_default Payload_Metric_init_default
 #define org_eclipse_tahu_protobuf_Payload_init_zero Payload_init_zero
 #define org_eclipse_tahu_protobuf_Payload_Template_init_zero Payload_Template_init_zero
+#define org_eclipse_tahu_protobuf_Payload_Template_Parameter_init_zero Payload_Template_Parameter_init_zero
 #define org_eclipse_tahu_protobuf_Payload_DataSet_init_zero Payload_DataSet_init_zero
 #define org_eclipse_tahu_protobuf_Payload_DataSet_DataSetValue_init_zero Payload_DataSet_DataSetValue_init_zero
 #define org_eclipse_tahu_protobuf_Payload_DataSet_Row_init_zero Payload_DataSet_Row_init_zero
