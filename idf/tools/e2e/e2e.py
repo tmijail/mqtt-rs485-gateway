@@ -9,6 +9,8 @@ Runs the ESP32-S3 image built with sdkconfig.qemu in Espressif's QEMU:
   * Remote syslog (REL-4): a UDP listener on the host collects what the gateway forwards
   * Web server (CFG-3/CFG-4): slirp forwards the host's 127.0.0.1:HTTPS_PORT to the guest's port
     443 (HTTPS with the device certificate, issue #64) and HTTP_PORT to port 80 (redirect only)
+  * Captive portal (issue #274): slirp forwards the host's UDP 127.0.0.1:DNS_PORT to the guest's
+    port 53 (the DNS server of the access point)
 
 Isolation: by default the harness moves itself into a private network namespace (Linux,
 needs CAP_SYS_ADMIN, e.g. root in a container) with only a loopback interface. Every port,
@@ -68,6 +70,8 @@ SYSLOG_PORT = int(os.environ.get("E2E_SYSLOG_PORT", 15514))
 MBTCP_PORT = int(os.environ.get("E2E_MBTCP_PORT", 15502))
 HTTP_PORT = int(os.environ.get("E2E_HTTP_PORT", 18080))
 HTTPS_PORT = int(os.environ.get("E2E_HTTPS_PORT", 18443))
+# Issue #274: QEMU forwards this host UDP port to the DNS server of the captive portal (port 53)
+DNS_PORT = int(os.environ.get("E2E_DNS_PORT", 15053))
 PEER_CERT = {}    # DER of the certificate the gateway presented on the last HTTPS request
 WEB_PASSWORD = "e2e-pass-1"
 SYSLOG = []       # (t, datagram text) received by the syslog listener
@@ -1157,7 +1161,8 @@ class Gateway:
                *(["-global", "driver=ssi_psram,property=is_octal,value=true"] if psram else []),
                "-nic", f"user,model=open_eth,hostfwd=tcp:127.0.0.1:{HTTP_PORT}-:80,"
                        f"hostfwd=tcp:127.0.0.1:{HTTPS_PORT}-:443,"
-                       f"hostfwd=tcp:127.0.0.1:{MBTCP_PORT}-:502",
+                       f"hostfwd=tcp:127.0.0.1:{MBTCP_PORT}-:502,"
+                       f"hostfwd=udp:127.0.0.1:{DNS_PORT}-:53",
                "-chardev", f"socket,id=con,host=127.0.0.1,port={CONSOLE_PORT},server=on,wait=on",
                "-serial", "chardev:con",
                "-chardev", f"socket,id=rs485,host=127.0.0.1,port={MODBUS_PORT},reconnect-ms=500",
@@ -6757,6 +6762,7 @@ def check_args(args, sdkconfig_text):
 
 def main():
     global MQTT_PORT, MODBUS_PORT, CONSOLE_PORT, SYSLOG_PORT, HTTP_PORT, HTTPS_PORT, MBTCP_PORT
+    global DNS_PORT
     global ARGS, HANG_S, MON_DIR, WORK
     ap = argparse.ArgumentParser()
     ap.add_argument("--qemu", required=True)
@@ -6831,6 +6837,8 @@ def main():
                     help="host port QEMU forwards to the gateway's Modbus TCP port 502")
     ap.add_argument("--http-port", type=int, default=HTTP_PORT)
     ap.add_argument("--https-port", type=int, default=HTTPS_PORT)
+    ap.add_argument("--dns-port", type=int, default=DNS_PORT,
+                    help="issue #274: host UDP port QEMU forwards to the gateway's DNS port 53")
     ap.add_argument("--only", default="",
                     help=f"comma-separated scenarios to run ({','.join(scenarios.ONLY_NAMES)}); "
                          "default the full run of the variant (issue #135: the PSRAM variant runs "
@@ -6877,7 +6885,7 @@ def main():
     print(f"fault monitor symbols: {', '.join(sorted(SYMBOLS)) or 'none'}", flush=True)
     MQTT_PORT, MODBUS_PORT, CONSOLE_PORT = args.mqtt_port, args.modbus_port, args.console_port
     SYSLOG_PORT, HTTP_PORT, HTTPS_PORT = args.syslog_port, args.http_port, args.https_port
-    MBTCP_PORT = args.mbtcp_port
+    MBTCP_PORT, DNS_PORT = args.mbtcp_port, args.dns_port
     global PROBE_MAX_S, SELFCHECK_S, SELFCHECK_WAIT_S
     PROBE_MAX_S = sdkconfig_int(args.sdkconfig, "GW_MB_OFFLINE_PROBE_MAX_MS") / 1000
     SELFCHECK_S = sdkconfig_int(args.sdkconfig, "GW_FW_SELFCHECK_S")
@@ -9397,6 +9405,15 @@ def check_access_point(gw, auth):
           f"{b2.decode(errors='replace').strip()}; stopped "
           f"{(stopped - t_stop) if stopped else -1:.1f} s later; ap after {a1}; again {st3} "
           f"{b3.decode(errors='replace').strip()[:60]}; shell {all(h.values())}; LED {bool(led)}")
+    # issue #274: the DNS server stops with the access point; the HTTP port redirects to HTTPS
+    eth_ip = eth_ipv4(auth)
+    dns_off = gw.wait_log(r"ap: captive portal: DNS server stopped", 5, t_stop)
+    check_captive_portal_off(gw, eth_ip, "the access point is off (the Ethernet still counts "
+                             "as its interface)")
+    check("NET-5 #274 the DNS server of the captive portal stops with the access point",
+          dns_off is not None, (gw.find(r"ap: captive portal", t_stop) or ["no log line"])[-1])
+    # issue #274: with the Ethernet as a plant interface, the next start has no portal there
+    gw.shell("claimsim 600", [r"claim windows: 600 s; Ethernet is not the access point"])
     # 2. a BOOT gesture starts it again; a client keeps it on; the idle time stops it
     gw.shell("apsim idle 8", [r"access point: idle stop after 8 s"])
     gw.shell("apsim clients 1", [r"access point: 1 simulated client"])
@@ -9405,6 +9422,8 @@ def check_access_point(gw, auth):
     started = gw.wait_log(r"ap: SIMULATED \(QEMU has no radio\) commissioning access point '%s' "
                           r"\(WPA2, the web password\)" % AP_SSID_RX, 10, t_start)
     led_on = gw.wait_log(r"led: status: commissioning, access point", 5, t_start)
+    check_captive_portal_off(gw, eth_ip, "the access point is on, and the client is on the "
+                             "plant network (the Ethernet is not its interface)")
     time.sleep(12)
     kept = not gw.find(r"ap: commissioning access point .* stopped", t_start)
     a2 = ap_object(auth)
@@ -9417,6 +9436,7 @@ def check_access_point(gw, auth):
                        r"time\)" % AP_SSID_RX, 25, t_idle)
     a3 = ap_object(auth)
     gw.shell("apsim idle 0", [r"access point: idle stop after \d+ s \(Kconfig\)"])
+    gw.shell("claimsim 600 eth", [r"claim windows: 600 s; Ethernet counts as the access point"])
     check("NET-5 #187 a BOOT gesture starts the access point again (WPA2 with the web password, "
           "LED flash of the access point); it stays on while a client is connected (no time "
           "limit in commissioning), and stops after the idle time without a client (8 s here)",
@@ -9428,6 +9448,136 @@ def check_access_point(gw, auth):
           f"shell {all(h2.values())}; stopped {(idle - t_idle) if idle else -1:.1f} s after the "
           f"last client left; ap after {a3}")
     return a1.get("ssid") or a0.get("ssid") or ""
+
+
+def dns_query(name, qtype=1, timeout=3.0):
+    """Issue #274: one DNS query (class IN, RD set) to the gateway's port 53, through the UDP
+    forward of slirp. The answer as {"rcode", "flags", "qd", "an", "a": [IPv4 addresses],
+    "ttl": [TTLs]}, or None without an answer within @timeout."""
+    qid = int.from_bytes(os.urandom(2), "big")
+    q = struct.pack(">HHHHHH", qid, 0x0100, 1, 0, 0, 0)
+    for label in name.split("."):
+        q += bytes([len(label)]) + label.encode()
+    q += b"\0" + struct.pack(">HH", qtype, 1)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    end = time.monotonic() + timeout
+    try:
+        s.sendto(q, ("127.0.0.1", DNS_PORT))
+        while True:
+            s.settimeout(max(wait_left(end), 0.01))
+            data, _ = s.recvfrom(2048)
+            if len(data) >= 12 and data[:2] == q[:2]:
+                break
+    except OSError:   # the timeout, or an ICMP port unreachable
+        return None
+    finally:
+        s.close()
+    flags, qd, an = struct.unpack(">HHH", data[2:8])
+    out = {"rcode": flags & 0xF, "flags": flags, "qd": qd, "an": an, "a": [], "ttl": []}
+    p = len(q)   # the answer repeats the question
+    try:
+        for _ in range(an):
+            if data[p] & 0xC0 == 0xC0:
+                p += 2
+            else:
+                while data[p] != 0:
+                    p += data[p] + 1
+                p += 1
+            rtype, _, ttl, rdlen = struct.unpack(">HHIH", data[p:p + 10])
+            p += 10
+            if rtype == 1 and rdlen == 4:
+                out["a"].append(socket.inet_ntoa(data[p:p + 4]))
+                out["ttl"].append(ttl)
+            p += rdlen
+    except (IndexError, struct.error):
+        out["malformed"] = True
+    return out
+
+
+# Issue #274: the probe requests of the operating systems (Host, path), and a request for a
+# Host that is not the gateway
+CAPTIVE_PROBES = (("connectivitycheck.gstatic.com", "/generate_204"),   # Android
+                  ("captive.apple.com", "/hotspot-detect.html"),        # iOS, macOS
+                  ("www.msftconnecttest.com", "/connecttest.txt"),      # Windows
+                  ("example.com", "/"))                                 # another Host
+
+
+def eth_ipv4(auth):
+    """The IPv4 address of the Ethernet of the gateway (/api/status), or "" without it."""
+    st, _, body = http("GET", "/api/status", auth=auth)
+    ifs = ((as_json(body) or {}).get("network") or {}).get("interfaces") or [{}]
+    return (ifs[0].get("ipv4") or "") if st == 200 else ""
+
+
+def check_captive_portal(gw, eth_ip, since, claim, secret):
+    """NET-5, issue #274, on the simulated access point (QEMU has no radio: 'claimsim ... eth'
+    makes the Ethernet its interface): the DNS server answers an A query with the address of
+    that interface and an AAAA query with no records; the probes of Android, iOS and Windows and
+    a request for another Host on the plain HTTP port get a redirect (302, with a body) to the
+    guide page; the guide page has the node name, the address of the web UI on that interface,
+    its mDNS address, the button and the certificate note, the note of the claim window only
+    during the window (@claim), and no form, no password field and no secret (@secret); the
+    address of the gateway on the HTTP port still redirects to HTTPS. Returns the page."""
+    dns_on = gw.wait_log(r"ap: captive portal: the DNS server answers each A query of a client "
+                         r"of the access point with %s" % re.escape(eth_ip), 10, since)
+    a = dns_query("connectivitycheck.gstatic.com")
+    aaaa = dns_query("captive.apple.com", qtype=28)
+    loc = f"http://{eth_ip}/portal"
+    probes = [http("GET", path, auth=None, plain=True, headers={"Host": host})
+              for host, path in CAPTIVE_PROBES]
+    redirected = all(st == 302 and h.get("location") == loc and b"/portal" in b
+                     for st, h, b in probes)
+    st_p, h_p, b_p = http("GET", "/portal", auth=None, plain=True, headers={"Host": eth_ip})
+    page = b_p.decode(errors="replace")
+    node = re.search(r'<h1 id="node">([^<]*)</h1>', page)
+    mdns = re.search(r'<span class="mono">https://([^<]*)\.local/</span>', page)
+    note = re.search(r"The Wi-Fi network (%s) is open until you set the web password\."
+                     % AP_SSID_RX, page)
+    page_ok = (st_p == 200 and h_p.get("content-type", "").startswith("text/html")
+               and node is not None and node.group(1) != "" and mdns is not None
+               and mdns.group(1) == node.group(1)
+               and f'value="https://{eth_ip}/"' in page and ">Open in the browser</button>" in page
+               and "Your browser shows a certificate warning the first time." in page
+               and (note is not None) == claim and "<form" not in page
+               and 'type="password"' not in page and (not secret or secret not in page))
+    st_r, h_r, _ = http("GET", "/", auth=None, plain=True, headers={"Host": eth_ip})
+    asked, hs = gw.shell("status", [r"^stack\s.* httpd_redirect \d+"])
+    stack = (gw.find(r"^stack\s.* httpd_redirect \d+", asked) or [""])[-1]
+    check("NET-5 #274 captive portal on the access point (QEMU: the Ethernet counts as its "
+          "interface): the DNS server answers an A query with the address of the access point and "
+          "an AAAA query with no records; the probes of Android, iOS and Windows and another Host "
+          "on the HTTP port get a 302 to the guide page; the guide page gives the node name, the "
+          "address of the secure web UI, its mDNS address, the button and the certificate note"
+          + (", and the note of the open access point during the claim window" if claim else
+             ", and no note of the claim window after it")
+          + "; no form, no password field, no secret; the address of the gateway still redirects "
+          "to HTTPS",
+          dns_on and a is not None and a["rcode"] == 0 and a["a"] == [eth_ip]
+          and a["flags"] & 0x8000 and aaaa is not None and aaaa["rcode"] == 0
+          and aaaa["an"] == 0 and redirected and page_ok and st_r == 301
+          and h_r.get("location", "").startswith(f"https://{eth_ip}/") and all(hs.values()),
+          f"DNS server log {bool(dns_on)}; A {a}; AAAA {aaaa}; probes "
+          f"{[(st, h.get('location')) for st, h, _ in probes]} (expected 302 {loc}); page {st_p} "
+          f"{h_p.get('content-type')} node {node.group(1) if node else None!r} mDNS "
+          f"{mdns.group(1) if mdns else None!r} claim note {note.group(1) if note else None!r}; "
+          f"{len(page)} B; GET / {st_r} -> {h_r.get('location')}")
+    check_web_stacks(stack, "after the captive portal requests (#274)")
+    return page
+
+
+def check_captive_portal_off(gw, eth_ip, why):
+    """NET-5, issue #274: a client that is not a client of the running access point (@why) gets
+    no DNS answer, and the plain HTTP port gives it the usual redirect to HTTPS, also for a
+    probe and for the path of the guide page."""
+    a = dns_query("connectivitycheck.gstatic.com")
+    host, path = CAPTIVE_PROBES[0]
+    st, h, _ = http("GET", path, auth=None, plain=True, headers={"Host": host})
+    st_p, h_p, _ = http("GET", "/portal", auth=None, plain=True, headers={"Host": eth_ip})
+    check(f"NET-5 #274 {why}: no DNS answer, and the HTTP port gives the usual redirect to HTTPS "
+          "(also for a probe of a phone and for /portal)",
+          a is None and st == 301 and h.get("location") == f"https://{host}{path}"
+          and st_p == 301 and h_p.get("location") == f"https://{eth_ip}/portal",
+          f"DNS {a}; probe {st} -> {h.get('location')}; /portal {st_p} -> {h_p.get('location')}")
 
 
 def check_claim_window(gw, commissioning_pw):
@@ -9485,7 +9635,11 @@ def check_claim_window(gw, commissioning_pw):
           f"{b4.decode(errors='replace').strip()[:80]}; without a credential: status {st5}, config "
           f"{st6}, restart {st7}")
     # 4. the same window, with the Ethernet as the access point (emulator)
+    t_eth = time.monotonic()
     gw.shell("claimsim 600 eth", [r"claim windows: 600 s; Ethernet counts as the access point"])
+    # issue #274: the captive portal, with the note of the claim window
+    eth_ip = eth_ipv4(("admin", commissioning_pw or "?"))
+    check_captive_portal(gw, eth_ip, t_eth, True, commissioning_pw)
     st8, h8, _ = http("GET", "/", auth=None)
     st9, _, b9 = http("GET", "/claim", auth=None)
     st10, _, b10 = http("GET", "/api/claim", auth=None)
@@ -9531,6 +9685,8 @@ def check_claim_window(gw, commissioning_pw):
           f"{b15.decode(errors='replace').strip()}; commissioning password {st16}, new password "
           f"{st17} (request_via_ap {via17}); LED back {bool(led_back)}; new gesture {bool(again)}; shell {all(h.values())}; "
           f"password in the log: {leaked[:1] or 'no'}")
+    # issue #274: the access point now uses WPA2: the guide page without the note
+    check_captive_portal(gw, eth_ip, t_eth, False, CLAIM_PASSWORD)
     return CLAIM_PASSWORD if st13 == 200 else None
 
 
