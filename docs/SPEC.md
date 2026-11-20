@@ -527,7 +527,7 @@ The object form, with the optional spill to a microSD card:
 - Use an industrial card (pSLC) when you can. The gateway writes each block one time, with no FAT or directory write in normal operation.
 - The gateway keeps the data in the folder `/sf`. The ring is in the files `r0000.sf`, `r0001.sf` and the next numbers. The files `ringa.sf` and `ringb.sf` are the two copies of its superblock. A PC does not need to read them.
 - The data on the card stays after a restart and after a power cut. The ring keeps a hash of the configuration fields that identify a sample (issue #145). When this hash changes, the gateway starts a new ring. The gateway does not publish the old data, and it deletes no file for it.
-- The gateway deletes the files of the earlier card format (`NNNNNNNN.sf`) at the boot, and does not publish their data (issue #151).
+- The gateway never reads, changes or deletes a file in `/sf` with another name, and it does not publish its contents (issues #134 and #248). It reads no earlier card format.
 - **These changes start a new ring:**
   - a device or a tag that you add, remove, rename or move;
   - a change of the datatype of a tag (from `type`, `scale` and `offset`, for example a scale on an `int16` tag);

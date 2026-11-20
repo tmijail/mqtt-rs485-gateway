@@ -198,8 +198,10 @@ A sample on the card has a device index, a tag index and a value. The replay mak
 
 ### Files on the card
 
-- The gateway never touches a file in `/sf` with another name, or with a number at or above `0x80000000` (#134).
-- The gateway deletes the files of the earlier card format (`NNNNNNNN.sf`) at the boot, with no migration. It truncates each file in steps of 128 clusters at most, then removes it.
+- The gateway uses only the files of the table in [The files](#the-files). It reads no earlier card format (#248).
+- A file in `/sf` with another name is not a part of the ring. The gateway never reads, changes or deletes it (#134). It does not publish its contents, and it does not count the file. This is also the behaviour for a file that has the contents of a ring file.
+- Such a file only uses space on the card. The format of the card from the web UI removes it. The card is only for the gateway (#139): do not put other files on it.
+- The gateway deletes only an extent file beyond the ring (`rNNNN.sf` with a number above the last extent), for example after a decrease of `max_kb`. It truncates the file in steps of 128 clusters at most, then removes it.
 - The gateway never renames a file. Reason: a power cut during a FAT rename can link two files to the same clusters.
 
 ### Failures

@@ -151,8 +151,8 @@ static void test_overwritten_string_head(void)
 
 #define XB_MAX 8                 /* blocks of an extent, at most, in these tests */
 #define XE_MAX 24                /* extent files r0000 .. */
-#define NLEG   32                /* step 1 segment files 0 .. NLEG - 1 (#151: only deleted) */
-#define LEGB   8192
+#define NOTH   4                 /* files that are not of the ring (#134, #248: never touched) */
+#define OTHB   8192
 #define NVAL   14000             /* sample values of a scenario */
 #define RAMCAP 512
 #define BLK    GW_SFSPILL_BLOCK
@@ -164,7 +164,7 @@ typedef struct {
 } mfile_t;
 
 static uint8_t ext_mem[XE_MAX][XB_MAX * BLK];
-static uint8_t leg_mem[NLEG][LEGB];
+static uint8_t oth_mem[NOTH][OTHB];
 static uint8_t sb_mem[2][GW_SFSPILL_SB_BYTES];
 
 /* The faults of the card at one change (#124 "Tests"). */
@@ -185,7 +185,7 @@ typedef struct {
 } wlog_t;
 
 typedef struct {
-    mfile_t ext[XE_MAX], leg[NLEG], sb[2];
+    mfile_t ext[XE_MAX], oth[NOTH], sb[2];
     bool fail;              /* a broken card: every operation fails */
     bool off;               /* the power is off */
     int changes;            /* operations that changed the card */
@@ -197,6 +197,7 @@ typedef struct {
     uint32_t op_ms;         /* a slow card: each change takes this long (#136) */
     uint32_t unit;
     int allocs, writes, reads, truncs, removes, lists, sb_writes, block_writes;
+    int other_ops;          /* operations asked on a file that is not of the ring */
     uint32_t max_freed;
     wlog_t log[3];          /* the last writes, newest first */
     int nlog;
@@ -224,6 +225,13 @@ static unsigned rnd(void)
     return (card.seed >> 16) & 0x7FFFu;
 }
 
+/* The id that the simulated card lists for file @p i that is not of the ring: not an extent and
+ * not a superblock copy (the two other values of the kind bits). */
+static uint32_t other_id(uint32_t i)
+{
+    return ((i & 1u) != 0 ? 0x40000000u : 0u) | i;
+}
+
 static mfile_t *file_of(uint32_t f)
 {
     uint32_t kind = f & GW_SFSPILL_F_KIND, i = f & ~GW_SFSPILL_F_KIND;
@@ -233,7 +241,8 @@ static mfile_t *file_of(uint32_t f)
     if (kind == GW_SFSPILL_F_EXTENT) {
         return i < XE_MAX ? &card.ext[i] : NULL;
     }
-    return f < NLEG ? &card.leg[f] : NULL;
+    card.other_ops++;   /* the spill must never ask for such a file */
+    return i < NOTH && f == other_id(i) ? &card.oth[i] : NULL;
 }
 
 static uint32_t units(int32_t size)
@@ -487,9 +496,9 @@ static bool m_list(void *ctx, void (*each)(void *arg, uint32_t f), void *arg)
             each(arg, GW_SFSPILL_F_EXTENT | i);
         }
     }
-    for (uint32_t i = 0; i < NLEG; i++) {
-        if (card.leg[i].size >= 0) {
-            each(arg, i);
+    for (uint32_t i = 0; i < NOTH; i++) {
+        if (card.oth[i].size >= 0) {
+            each(arg, other_id(i));
         }
     }
     return true;
@@ -500,13 +509,13 @@ static void card_new(uint32_t unit)
 {
     memset(&card, 0, sizeof(card));
     memset(ext_mem, 0, sizeof(ext_mem));
-    memset(leg_mem, 0, sizeof(leg_mem));
+    memset(oth_mem, 0, sizeof(oth_mem));
     memset(sb_mem, 0, sizeof(sb_mem));
     for (int i = 0; i < XE_MAX; i++) {
         card.ext[i] = (mfile_t){-1, sizeof(ext_mem[i]), ext_mem[i]};
     }
-    for (int i = 0; i < NLEG; i++) {
-        card.leg[i] = (mfile_t){-1, LEGB, leg_mem[i]};
+    for (int i = 0; i < NOTH; i++) {
+        card.oth[i] = (mfile_t){-1, OTHB, oth_mem[i]};
     }
     for (int i = 0; i < 2; i++) {
         card.sb[i] = (mfile_t){-1, GW_SFSPILL_SB_BYTES, sb_mem[i]};
@@ -1089,59 +1098,94 @@ static void test_spill_hole(void)
     TEST_ASSERT_TRUE(n + lost >= 2000 - RAMCAP);
 }
 
-/* Write a file of the step 1 format (#122): its 16-byte header (magic "GWSF", version 1, the
- * record size, the configuration hash, the number), then @p n records of samples from @p from. */
-static void old_segment(uint32_t seg, uint32_t hash, int from, int n)
+/* #134, #248: a file that is not an extent or a superblock copy is not of the ring. The storage
+ * of the firmware (gw_sfcard) never lists such a file. When a storage lists one, the spill does
+ * nothing with it: no read, no delete, no count, also when the file holds sound blocks or a
+ * sound superblock of this configuration. The ring works as on an empty card. */
+static void test_spill_other_files_ignored(void)
 {
-    struct {
-        uint32_t magic;
-        uint16_t version, rec_size;
-        uint32_t cfg_hash, seg_id;
-    } h = {0x46535747u, 1, 24, hash, seg};
-    memcpy(leg_mem[seg], &h, sizeof(h));
-    for (int i = 0; i < n; i++) {
-        int c = from + i;
-        gw_sf_rec_t r = {.ts_ms = (uint64_t)c * 10u + 5u, .metric = (uint16_t)(c % 5), .batch = 1};
-        r.v.num = c;
-        memcpy(leg_mem[seg] + sizeof(h) + (size_t)i * sizeof(r), &r, sizeof(r));
-    }
-    card.leg[seg].size = (int32_t)(sizeof(h) + (size_t)n * sizeof(gw_sf_rec_t));
-}
-
-/* #151: no gateway was installed with the step 1 format, so there is no migration: its files
- * are deleted at boot in bounded steps (truncates of 128 clusters, then the unlink), and never
- * replayed, also when they have the hash of this configuration. The ring works as on an empty
- * card. */
-static void test_spill_step1_files_deleted(void)
-{
-    card_new(8);   /* a delete step: 128 units of 8 B, 1024 B */
-    old_segment(3, 0x31, 1, 16);      /* this configuration: 400 B */
-    old_segment(5, 0x99, 500, 300);   /* another configuration: 7216 B */
-    card.leg[7].size = 3;             /* a torn file */
+    static uint8_t blocks[2 * BLK], super[GW_SFSPILL_SB_BYTES];
+    /* a ring of this configuration gives the sound contents */
+    card_new(8);
     boot(2, 8, 0x31);
     until_ready();
-    TEST_ASSERT_EQUAL_UINT32(3, gw_sfspill_gc_pending(&sp));
+    push_n(1000);
+    TEST_ASSERT_TRUE(sp.blocks >= 2);
+    memcpy(blocks, ext_mem[0], sizeof(blocks));
+    memcpy(super, sb_mem[0], sizeof(super));
+    gw_sfspill_sb_t sb;
+    memcpy(&sb, super, sizeof(sb));
+    TEST_ASSERT_EQUAL_HEX32(GW_SFSPILL_SB_MAGIC, sb.magic);
+
+    card_new(8);
+    memcpy(oth_mem[0], blocks, sizeof(blocks));   /* sound blocks */
+    card.oth[0].size = (int32_t)sizeof(blocks);
+    memcpy(oth_mem[1], super, sizeof(super));     /* a sound superblock */
+    card.oth[1].size = (int32_t)sizeof(super);
+    memset(oth_mem[2], 0xA5, 7216);               /* larger than one delete step (1024 B) */
+    card.oth[2].size = 7216;
+    card.oth[3].size = 3;                         /* a short file */
+    boot(2, 8, 0x31);
+    until_ready();
+    TEST_ASSERT_EQUAL_INT(GW_SFSPILL_FOUND_NONE, sp.found);   /* an empty card for the ring */
+    TEST_ASSERT_EQUAL_UINT32(0, gw_sfspill_gc_pending(&sp));
     TEST_ASSERT_EQUAL_UINT64(0, gw_sfspill_waiting(&sp));
     TEST_ASSERT_EQUAL_size_t(0, gw_sf_count(&sf));
     TEST_ASSERT_FALSE(gw_sfspill_holds(&sp));
-    int writes = card.writes;
     steps_all();
-    for (int i = 0; i < NLEG; i++) {
-        TEST_ASSERT_EQUAL_INT32(-1, card.leg[i].size);   /* all deleted */
-    }
-    TEST_ASSERT_EQUAL_INT(writes, card.writes);   /* no mark: nothing reads them again */
-    TEST_ASSERT_TRUE(card.max_freed <= GW_SFSPILL_STEP_UNITS);
-    /* segment 3: the unlink; 5: 7 truncates and the unlink; 7: the unlink */
-    TEST_ASSERT_EQUAL_UINT32(1 + 8 + 1, sp.gc_steps);
-    TEST_ASSERT_EQUAL_UINT32(3, sp.gc_files);
     produced = 0;
     memset(consumed, 0, sizeof(consumed));
     push_n(1000);
     replay_reset();
-    TEST_ASSERT_EQUAL_INT(1000, replay(-1, "after the step 1 files"));
+    TEST_ASSERT_EQUAL_INT(1000, replay(-1, "with other files on the card"));
     for (int c = 0; c < 1000; c++) {
         TEST_ASSERT_TRUE(rp.seen[c]);
     }
+    steps_all();
+    /* nothing was asked on these files, and they are as before */
+    TEST_ASSERT_EQUAL_INT(0, card.other_ops);
+    TEST_ASSERT_EQUAL_INT(0, card.truncs + card.removes);
+    TEST_ASSERT_EQUAL_UINT32(0, sp.gc_steps + sp.gc_files + sp.gc_left);
+    TEST_ASSERT_EQUAL_INT32((int32_t)sizeof(blocks), card.oth[0].size);
+    TEST_ASSERT_EQUAL_INT32((int32_t)sizeof(super), card.oth[1].size);
+    TEST_ASSERT_EQUAL_INT32(7216, card.oth[2].size);
+    TEST_ASSERT_EQUAL_INT32(3, card.oth[3].size);
+    TEST_ASSERT_EQUAL_MEMORY(blocks, oth_mem[0], sizeof(blocks));
+    TEST_ASSERT_EQUAL_MEMORY(super, oth_mem[1], sizeof(super));
+}
+
+/* The delete of a file in bounded steps: an extent beyond the ring that is larger than one step
+ * (128 allocation units) loses one step in each pass (a truncate), then comes the unlink. A
+ * delete writes nothing: nothing reads a file in the delete queue, so it needs no mark. */
+static void test_spill_delete_in_steps(void)
+{
+    card_new(8);   /* a delete step: 128 units of 8 B, 1024 B; an extent of 2 blocks: 8 steps */
+    boot(2, 8, 0xC);
+    until_ready();
+    push_n(3000);
+    TEST_ASSERT_EQUAL_INT32(2 * BLK, card.ext[7].size);
+    card.ext[9].size = 3;   /* a short file with the name of an extent: only the unlink */
+    boot(2, 3, 0xC);
+    until_ready();
+    TEST_ASSERT_EQUAL_UINT32(6, gw_sfspill_gc_pending(&sp));
+    int truncs = card.truncs, removes = card.removes, writes = card.writes;
+    steps_all();
+    for (int i = 0; i < XE_MAX; i++) {
+        TEST_ASSERT_EQUAL(i < 3, card.ext[i].size >= 0);
+    }
+    TEST_ASSERT_EQUAL_INT(truncs + 5 * 7, card.truncs);   /* 8192 B to 1024 B: 7 truncates each */
+    TEST_ASSERT_EQUAL_INT(removes + 6, card.removes);
+    TEST_ASSERT_EQUAL_INT(writes, card.writes);
+    TEST_ASSERT_TRUE(card.max_freed <= GW_SFSPILL_STEP_UNITS);
+    TEST_ASSERT_EQUAL_UINT32(5 * 8 + 1, sp.gc_steps);
+    TEST_ASSERT_EQUAL_UINT32(6, sp.gc_files);
+    TEST_ASSERT_EQUAL_UINT32(0, sp.gc_left);
+    /* the smaller ring works */
+    produced = 0;
+    memset(consumed, 0, sizeof(consumed));
+    push_n(900);
+    replay_reset();
+    TEST_ASSERT_EQUAL_INT(900, replay(-1, "after the deletes"));
 }
 
 static int flush_ticks, flush_sleeps, tick_changes;
@@ -1581,7 +1625,8 @@ int main(void)
     RUN_TEST(test_spill_boot_result);
     RUN_TEST(test_spill_hole);
     RUN_TEST(test_spill_hint_under_load);
-    RUN_TEST(test_spill_step1_files_deleted);
+    RUN_TEST(test_spill_other_files_ignored);
+    RUN_TEST(test_spill_delete_in_steps);
     RUN_TEST(test_spill_checkpoint);
     RUN_TEST(test_spill_io_error);
     RUN_TEST(test_spill_faults);

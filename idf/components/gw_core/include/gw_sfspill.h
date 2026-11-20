@@ -30,9 +30,11 @@
  *  - Card full while the ring is allocated the first time: the ring stops at the extents it
  *    has (a new superblock, the same nonce: every block written so far stays valid).
  *
- * Files of the step 1 format (#122: numbered segments NNNNNNNN.sf) are deleted unreplayed at
- * boot (#151: no gateway was installed with that format, so there is no migration). A delete is
- * truncates of at most 128 clusters, then the unlink, one per step (never a rename).
+ * The only files of the format are the extents and the two superblock copies. Any other file
+ * of the directory is not of the ring: the spill never reads it, never deletes it and never
+ * counts it (#134, #248: no earlier card format is read or deleted). The spill deletes only an
+ * extent beyond the ring: truncates of at most 128 clusters, then the unlink, one per step
+ * (never a rename).
  *
  * Real time: the card work happens in gw_sfspill_prepare()/gw_sfspill_put_block() (one bounded
  * operation per call, at most a few small writes; the caller calls them once per pass of its
@@ -89,12 +91,11 @@ extern "C" {
 #define GW_SFSPILL_MAX_KB       4194304      /* 4 GiB */
 #define GW_SFSPILL_DEFAULT_KB   131072       /* 128 MiB (#124) */
 
-/* File ids of the storage: a step 1 segment is its number (below 0x80000000, only deleted); an
- * extent and a superblock copy carry these marks. */
+/* File ids of the storage: an extent and a superblock copy carry these marks. There is no other
+ * file id. */
 #define GW_SFSPILL_F_EXTENT     0x80000000u  /* | extent index: r%04x.sf */
 #define GW_SFSPILL_F_SUPER      0xC0000000u  /* | 0 (ringa.sf) or 1 (ringb.sf) */
 #define GW_SFSPILL_F_KIND       0xC0000000u
-#define GW_SFSPILL_ID_LIMIT     0x80000000u  /* step 1 segment numbers are below */
 
 typedef struct {
     uint32_t magic;          /* GW_SFSPILL_BLK_MAGIC */
@@ -153,8 +154,8 @@ typedef struct {
     bool (*remove)(void *ctx, uint32_t f);
     /** Size in bytes of file @p f, -1 if absent. */
     int32_t (*size)(void *ctx, uint32_t f);
-    /** Call @p each for every file of the directory that is one of ours (any order). False on
-     *  an I/O error. */
+    /** Call @p each for every extent and superblock copy of the directory (any order), and for
+     *  no other file. False on an I/O error. */
     bool (*list)(void *ctx, void (*each)(void *arg, uint32_t f), void *arg);
 } gw_sfspill_io_t;
 

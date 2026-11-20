@@ -139,6 +139,7 @@ For the procedure, refer to [Connect to a broker with TLS](../how-to/connect-to-
 - `allowed_clients` filters by source address. A device on the same network can use a false address.
 - The gateway always refuses a connection through the access point (#120). While the access point runs, it also refuses a client in `192.168.4.0/24`, also a plant client.
 - The server listens on IPv4 only.
+- The server accepts 2 clients at the same time (`CONFIG_GW_MBTCP_MAX_CLIENTS`). It closes a further connection without a response.
 - One transaction runs at a time for all the clients. After 8 s without the bus (`CONFIG_GW_MBTCP_RESPONSE_WAIT_MS`), the client gets the exception 0B.
 - The gateway answers FC07, FC08, FC17, FC22, FC23 and FC43 with the exception 01. There is no broadcast (unit 0).
 - The counters of the connections, the forwarded requests and the exceptions of the gateway are only in the shell (`devices`). The counters of each unit are also in `Node Info/Modbus TCP`.

@@ -156,7 +156,8 @@ static void test_pmk_follows_the_web_password(void)
     TEST_ASSERT_TRUE(doc.new_web_password);
     TEST_ASSERT_EQUAL_STRING("", doc.secrets.ap_pmk);
     TEST_ASSERT_TRUE(doc.secrets_changed);
-    /* a stored hash without a PMK (a password from an earlier firmware): stays without one */
+    /* a stored hash without a PMK (a fault of the stored secrets, #248): it stays without one,
+     * because only a new password gives a PMK */
     stored.ap_pmk[0] = '\0';
     TEST_ASSERT_TRUE_MESSAGE(apply(docf("", ""), GW_CFGDOC_FILE), err.msg);
     TEST_ASSERT_EQUAL_STRING(stored.web_password_hash, cfg.web.password_hash);

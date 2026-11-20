@@ -16,11 +16,13 @@ This is the documentation of the RS485 (Modbus RTU) to MQTT Sparkplug B gateway.
 | Add a Modbus device and its tags | [Add a Modbus device and its tags](how-to/add-a-modbus-device.md) | How-to |
 | Keep the tag list of a device model one time, for two or more devices | [Add devices of one type](how-to/add-devices-of-one-type.md) | How-to |
 | Connect the gateway to a Wi-Fi network, as a backup of Ethernet or as the primary interface | [Connect the gateway to a Wi-Fi network](how-to/connect-the-gateway-to-wi-fi.md) | How-to |
+| Use the NTP server of the site, and make sure that the clock is valid | [Set the time servers](how-to/set-the-time-servers.md) | How-to |
 | Encrypt the MQTT connection, with the CA of the broker and a client certificate | [Connect to a broker with TLS](how-to/connect-to-a-broker-with-tls.md) | How-to |
 | Load the HTTPS certificate of the plant, and load, replace or remove the PEM files | [Manage the certificates](how-to/manage-the-certificates.md) | How-to |
 | Change the configuration, keep a copy, or load a copy | [Change, back up and restore the configuration](how-to/change-the-configuration.md) | How-to |
 | Write a value to a device or set a digital output from a host | [Write a value to a Modbus device or a digital output](how-to/write-to-a-modbus-device.md) | How-to |
 | Set the DIs and DOs of the board (inversion, debounce, fast counters, pulse DOs, run hours, local rules), or set a DO from the web UI | [Set up the local inputs and outputs](how-to/set-up-the-local-io.md) | How-to |
+| Give a PLC or a SCADA access to the RS485 devices and to the I/O of the gateway with Modbus TCP | [Connect a Modbus TCP client](how-to/connect-a-modbus-tcp-client.md) | How-to |
 | Send the data to UMH Core | [Connect the gateway to UMH Core](how-to/connect-to-umh-core.md) | How-to |
 | Install a new firmware image, or go back to the earlier one | [Update the firmware](how-to/update-the-firmware.md) | How-to |
 | Repair a gateway that does not operate normally, or do a factory reset | [Recover a gateway](how-to/recover-the-gateway.md) | How-to |

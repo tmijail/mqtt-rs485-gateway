@@ -4,9 +4,9 @@
  * /sdcard/sf. In the QEMU build (CONFIG_GW_SF_SPILL_LITTLEFS) a directory of the LittleFS
  * partition, /cfg/sf, stands in for the card (QEMU has no SDMMC).
  *
- * #124: the files are the ring's extents (r0000.sf ..), its two superblock copies (ringa.sf,
- * ringb.sf) and, until they are deleted (#151), the segments of the earlier format
- * (NNNNNNNN.sf), all 8.3 names. They stay open between calls (one handle each for the extent being written, the
+ * #124: the files are the ring's extents (r0000.sf ..) and its two superblock copies (ringa.sf,
+ * ringb.sf), all 8.3 names. A file with another name is never read, changed or deleted (#134).
+ * The files stay open between calls (one handle each for the extent being written, the
  * one being read, a delete, and each superblock copy), so a card operation allocates nothing
  * except when it opens a file. A block or a superblock is whole aligned sectors with no fsync:
  * FatFs writes them straight to the card, with no FAT or directory write. The SDMMC transfers

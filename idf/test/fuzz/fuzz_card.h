@@ -5,9 +5,10 @@
  * The ring has CARD_EXTENTS extents of CARD_EXT_BLOCKS blocks. A card image (the input of
  * fuzz_sfspill) is a control byte, then the two superblock copies (512 bytes each) and the
  * extents, in that order. Bits 0-3 of the control byte: the files ringa.sf, ringb.sf, r0000.sf
- * and r0001.sf are on the card; bit 4: a segment file of the step 1 format too; bit 5: correct
- * the CRC of each superblock copy; bit 6: correct the CRC of each block (the fuzzer can then
- * change the fields behind the CRCs); bit 7: the card's allocation unit is 4 KiB (else unknown).
+ * and r0001.sf are on the card; bit 4: an empty extent file beyond the ring (r0002.sf) too, which
+ * the spill deletes; bit 5: correct the CRC of each superblock copy; bit 6: correct the CRC of
+ * each block (the fuzzer can then change the fields behind the CRCs); bit 7: the card's
+ * allocation unit is 4 KiB (else unknown).
  */
 #pragma once
 
@@ -21,8 +22,7 @@
 #define CARD_EXT_BLOCKS 2u
 #define CARD_EXTENTS    2u
 #define CARD_EXT_BYTES  (CARD_EXT_BLOCKS * GW_SFSPILL_BLOCK)
-#define CARD_LEGACY_ID  5u    /* a step 1 segment "00000005.sf" */
-#define CARD_FILES      5     /* ringa, ringb, r0000, r0001, the segment */
+#define CARD_FILES      5     /* ringa, ringb, r0000, r0001, and r0002 (beyond the ring) */
 #define CARD_IMAGE_SIZE (1u + 2u * GW_SFSPILL_SB_BYTES + CARD_EXTENTS * CARD_EXT_BYTES)
 
 typedef struct {
@@ -35,7 +35,7 @@ typedef struct {
     card_file_t f[CARD_FILES];
     uint8_t sb_mem[2][GW_SFSPILL_SB_BYTES];
     uint8_t ext_mem[CARD_EXTENTS][CARD_EXT_BYTES];
-    uint8_t legacy_mem[512];
+    uint8_t beyond_mem[512];
     uint32_t ops;
 } card_t;
 
@@ -46,9 +46,9 @@ static inline card_file_t *card_file(card_t *c, uint32_t id)
         return i < 2 ? &c->f[i] : NULL;
     }
     if (kind == GW_SFSPILL_F_EXTENT) {
-        return i < CARD_EXTENTS ? &c->f[2 + i] : NULL;
+        return i <= CARD_EXTENTS ? &c->f[2 + i] : NULL;   /* the last one is beyond the ring */
     }
-    return id == CARD_LEGACY_ID ? &c->f[4] : NULL;
+    return NULL;
 }
 
 static inline uint32_t card_id(int index)
@@ -56,10 +56,7 @@ static inline uint32_t card_id(int index)
     if (index < 2) {
         return GW_SFSPILL_F_SUPER | (uint32_t)index;
     }
-    if (index < 4) {
-        return GW_SFSPILL_F_EXTENT | (uint32_t)(index - 2);
-    }
-    return CARD_LEGACY_ID;
+    return GW_SFSPILL_F_EXTENT | (uint32_t)(index - 2);
 }
 
 static int card_alloc(void *ctx, uint32_t id, uint32_t size)
@@ -155,7 +152,7 @@ static inline void card_init(card_t *c)
     for (unsigned i = 0; i < CARD_EXTENTS; i++) {
         c->f[2 + i] = (card_file_t){-1, CARD_EXT_BYTES, c->ext_mem[i]};
     }
-    c->f[4] = (card_file_t){-1, sizeof(c->legacy_mem), c->legacy_mem};
+    c->f[4] = (card_file_t){-1, sizeof(c->beyond_mem), c->beyond_mem};
 }
 
 static inline gw_sfspill_io_t card_io(card_t *c, uint32_t unit)

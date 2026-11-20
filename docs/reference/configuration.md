@@ -269,6 +269,8 @@ In the web UI, the card **Time** has one row for each server. An empty row is an
 
 Without a valid clock, the gateway opens no MQTT session. Refer to [The clock and the RTC battery](clock-and-rtc-battery.md).
 
+For the procedure, refer to [Set the time servers](../how-to/set-the-time-servers.md).
+
 ## `mqtt`
 
 In the web UI, the keys are in the card **MQTT**. The field **Broker** is `host`, and **User** is `username`.
@@ -657,7 +659,7 @@ A Float has a 24-bit mantissa. Thus a 32-bit counter with a scale goes into a Do
 
 ## `modbus_tcp`
 
-A Modbus TCP server that gives access to the RTU slaves on the bus. In the web UI, the keys are in the card **Modbus TCP**.
+A Modbus TCP server that gives access to the RTU slaves on the bus. In the web UI, the keys are in the card **Modbus TCP**. For the procedure, refer to [Connect a Modbus TCP client](../how-to/connect-a-modbus-tcp-client.md).
 
 ```json
 "modbus_tcp": { "enabled": true, "port": 502, "allowed_clients": ["192.168.1.20", "10.0.5.0/24"],

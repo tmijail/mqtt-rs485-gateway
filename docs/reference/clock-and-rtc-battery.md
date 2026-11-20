@@ -3,6 +3,7 @@
 This document gives the facts about the clock of the gateway (issue #160): the RTC battery, the sources of the clock, and what the gateway shows while it waits for a valid clock.
 
 - For the procedure, refer to [Fit the RTC battery](../how-to/fit-the-rtc-battery.md).
+- To set the SNTP servers, refer to [Set the time servers](../how-to/set-the-time-servers.md).
 - For the Sparkplug reasons of the wait, refer to [No session without a valid clock](sparkplug-behavior.md#no-session-without-a-valid-clock-time-1-160).
 - For the other limits, refer to [Known limitations](known-limitations.md#the-clock-time-1-time-2).
 

@@ -37,7 +37,7 @@ A push of BOOT while the access point runs starts its times again. A push during
 | No web password | WPA2 with the commissioning password. Only the serial console shows this password: `ap: WPA2 key = commissioning password '…'` |
 | Claim window: no web password, after a push of BOOT | Open (no key), from the push of BOOT to the claim. 5 s after the response of the claim, WPA2 with the new web password. At the end of the window without a claim, WPA2 with the commissioning password |
 | Web password set | WPA2 with the web password. The gateway keeps only the PMK of the password |
-| Web password set, but no PMK stored | WPA2 with the commissioning password, until the next change of the web password. This applies to a web password that an earlier firmware set |
+| Web password set, but no PMK in the stored secrets | WPA2 with the commissioning password. This state is a fault of the stored secrets: refer to [A web password without a PMK](#a-web-password-without-a-pmk) |
 
 A change of the key disconnects the clients of the access point.
 
@@ -48,7 +48,23 @@ The web password is also the WPA2 key, thus it obeys the rule of a WPA2 passphra
 - 8 to 63 characters.
 - Each character is printable ASCII, from 0x20 (space) to 0x7E (`~`): the letters A to Z and a to z, the digits, the space and the symbols of a keyboard.
 - The same rule applies to `web.password` in the configuration and to `POST /api/claim`.
-- A stored password that does not obey this rule stays valid for the web UI until its next change. It has no PMK (see the table above).
+
+## A web password without a PMK
+
+The gateway writes the PMK each time that it writes a web password. Thus a web password without a PMK in the stored secrets is a fault. It has one of these causes:
+
+- The gateway could not read the MAC address of the access point when it calculated the PMK. The log then shows `storage: no WPA2 key for the access point: MAC address not readable`.
+- The gateway wrote the hash of the password, but not the PMK. The two are different NVS entries. A write error or a power cut between the two writes causes this.
+
+The gateway has the same behaviour for each web password without a valid PMK (issue #248):
+
+- The key of the access point is the commissioning password. Thus the owner can always use the access point. The serial console shows this password at each start of the access point.
+- At each start of the access point, the log shows a warning: `main: access point: a web password is set, but its WPA2 key (PMK) is not in the stored secrets: the key is the commissioning password. Set the web password again to correct this`.
+- `key` in the `ap` object of `GET /api/status` is `commissioning_password`. The shell command `apsim key` (QEMU build) shows `no PMK stored`.
+- The web password stays valid for the web UI.
+- The claim window does not open, because a web password is set.
+
+The gateway cannot calculate the PMK later, because it does not keep the password. Only a new value of `web.password` gives a PMK. The new value can be the same password. A document with `"********"` keeps the stored hash, and gives no PMK. To set the web password again, refer to [Change the web password](../how-to/change-the-web-password.md).
 
 ## Times
 

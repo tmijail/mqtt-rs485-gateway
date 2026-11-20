@@ -1536,6 +1536,23 @@ def flash_variant(args, work, name, files, base=None):
     return out
 
 
+def storage_files(args, work, name, flash):
+    """The files of the LittleFS partition in the flash image @flash ({path: bytes}), read with
+    littlefs-python. None when the partition cannot be read. Call it only while no emulator
+    writes the image (after gw.kill())."""
+    offset, size = storage_partition()
+    img = work / f"storage-read-{name}.bin"
+    img.write_bytes(pathlib.Path(flash).read_bytes()[offset:offset + size])
+    dst = work / f"fs-read-{name}"
+    shutil.rmtree(dst, ignore_errors=True)
+    dst.mkdir()
+    done = subprocess.run([args.littlefs_python, "-m", "littlefs", "extract", str(img), str(dst),
+                           "--name-max=64", "--block-size=4096"], capture_output=True)
+    if done.returncode != 0:
+        return None
+    return {p.relative_to(dst).as_posix(): p.read_bytes() for p in dst.rglob("*") if p.is_file()}
+
+
 def write_otadata(path):
     """Issue #85: a valid first otadata entry (ota_seq 1 = ota_0, state VALID, CRC32 of the
     sequence as esp_rom_crc32_le computes it), as the 2nd stage bootloader writes it on the
@@ -2961,21 +2978,27 @@ def run_slow_link(args, work, budget_ms):
           f"panics {panics[:1]}")
 
 
-# Issues #122/#151: files of the step 1 format on the "card" at the boot of GW23. No gateway was
-# installed with that format: each one is deleted unreplayed after the boot, in steps of 128 units
-# of 32 B (the stand-in's "cluster": one 4 KB LittleFS block), with no mark
-OLD_SPILL_FILES = {
-    # a segment (header and records): 5 truncates (20 480, 16 384, 12 288, 8 192 and 4 096 B)
-    # and the unlink
-    "sf/00000100.sf": struct.pack("<IHHII", 0x46535747, 1, 24, 0xDEADBEEF, 0x100) + bytes(range(256)) * 80,
-    # a file with no valid header: 2 truncates and the unlink
-    "sf/00000101.sf": struct.pack("<I", 0x44414544) + bytes(10236),
-    # a torn file (a cut while a segment was created): only the unlink
-    "sf/00000102.sf": b"GWS",
-    # issue #134: a number at or above 0x80000000 is not ours: never touched
-    "sf/80000001.sf": b"not a spill file",
+# Issue #124: extent files beyond the ring on the "card" at the boot of GW23 (the ring of this
+# configuration has the 32 extents r0000.sf to r001f.sf; a gateway has such files after a decrease
+# of max_kb). Each one is deleted after the boot, in steps of 128 units of 32 B (the stand-in's
+# "cluster": one 4 KB LittleFS block), with no mark
+SPILL_EXTRA_EXTENTS = {
+    # 5 truncates (20 480, 16 384, 12 288, 8 192 and 4 096 B) and the unlink
+    "sf/r0020.sf": bytes(range(256)) * 96,
+    # 2 truncates and the unlink
+    "sf/r0021.sf": struct.pack("<I", 0x44414544) + bytes(10236),
+    # a short file (a cut while the extent was made): only the unlink
+    "sf/r00ff.sf": b"GWS",
 }
-OLD_SPILL_STEPS = 6 + 3 + 1
+SPILL_EXTRA_STEPS = 6 + 3 + 1
+# Issues #134 and #248: files in the folder of the card that are not of the ring. The gateway
+# reads no earlier card format: it never reads, changes or deletes such a file, and does not count
+# it. The first one has the block magic "GSWB", version 2 and the record size of a ring block
+OTHER_SPILL_FILES = {
+    "sf/00000100.sf": struct.pack("<IHH", 0x42575347, 2, 24) + bytes(range(256)) * 80,
+    "sf/80000001.sf": b"not a spill file",
+    "sf/notes.txt": b"a file of the operator\n",
+}
 
 
 def spill_line(gw, since, rx=r"^spill\s"):
@@ -3178,9 +3201,11 @@ def run_store_forward_spill(args, work, slave):
     Default variant (no PSRAM): issue #124, the spill needs the PSRAM: it does not start, the
     boot log and the shell say why, and the card is not used.
     PSRAM variant (the ring has 1000 samples in this build: sdkconfig.qemu-psram):
-      1. The image holds OLD_SPILL_FILES (the step 1 format). The card is read after the
-         network starts: a new ring; the old files are deleted unreplayed in exactly
-         OLD_SPILL_STEPS bounded steps (#122, #151: no migration).
+      1. The image holds SPILL_EXTRA_EXTENTS (extent files beyond the ring) and
+         OTHER_SPILL_FILES (files that are not of the ring). The card is read after the
+         network starts: a new ring; the extra extents are deleted in exactly
+         SPILL_EXTRA_STEPS bounded steps (#124). The other files are not counted, and after
+         the power cut of step 3 they are in the flash as the image had them (#134, #248).
       2. The broker goes away (a relay) while the harness changes all 60 Bulk registers twice a
          second: the ring spills its oldest samples to the card, 4 KB blocks. Back: every stored
          sample comes as historical DDATA, oldest first, none lost or overwritten.
@@ -3204,7 +3229,7 @@ def run_store_forward_spill(args, work, slave):
     cfg = node_config(node, port=port)
     cfg["sparkplug"]["store_forward"] = {"enabled": True, "sd": {"enabled": True, "max_kb": 128}}
     t0 = time.monotonic()
-    gw = boot_variant(args, work, "sfsd", cfg, files=OLD_SPILL_FILES)
+    gw = boot_variant(args, work, "sfsd", cfg, files={**SPILL_EXTRA_EXTENTS, **OTHER_SPILL_FILES})
     nb = obs.wait(f"{T}/NBIRTH/{node}", 40)
     obs.wait(f"{T}/DBIRTH/{node}/{BULK}", 10)
     # the format command: never without "confirm", and no card to format in QEMU
@@ -3212,8 +3237,8 @@ def run_store_forward_spill(args, work, slave):
               r"^card format: REFUSED: this build has no microSD card")
     asked_f, hf = gw.shell(["card format", "card format confirm"], list(fmt_rx))
     fmt_ok = all(hf.values())
-    # #139: no web password in this configuration (its migration to NVS would format LittleFS,
-    # and the old files with it): the commissioning password
+    # #139: no web password in this configuration (its move to NVS would format LittleFS, and
+    # the files of the image with it): the commissioning password
     web = ("admin", commissioning_password(gw, t0) or "?")
     wait_http("/api/status", 20, auth=web)
     check_card_web(gw, t0, args.psram, web)
@@ -3289,7 +3314,7 @@ def run_store_forward_spill(args, work, slave):
     ops = {k: int(v) for k, v in re.findall(r" (\w+) (\d+) avg [\d.]+ max [\d.]+ ms", card_line)}
     unfed = re.search(r"longest unfed (\d+) ms", card_line)
     free = re.search(r"sparkplug (\d+)", stack_line)
-    gc_ok = (nfiles == 3 and nsteps == OLD_SPILL_STEPS and ops.get("step") == OLD_SPILL_STEPS
+    gc_ok = (nfiles == 3 and nsteps == SPILL_EXTRA_STEPS and ops.get("step") == SPILL_EXTRA_STEPS
              and "mark" not in ops and ckpts >= 1 and 0 <= ck_max <= 2730
              and all(ops.get(k, 0) > 0 for k in ("open", "block", "super", "read", "alloc", "list"))
              and re.search(r" 0 error\(s\)", card_line))
@@ -3305,10 +3330,10 @@ def run_store_forward_spill(args, work, slave):
           f"{(ring_log or ['no ring log'])[0]}; waiting before the reconnection {waiting}; "
           f"{total} historical metrics after it, register 100: {reg1[:2]}..{reg1[-2:]} "
           f"({len(reg1)} samples, in order {reg1 == sorted(reg1)}) | {before1}")
-    check(f"Issues #122/#124/#151 the card work in bounded steps after the network starts: the "
-          f"files of the step 1 format deleted unreplayed in {OLD_SPILL_STEPS} steps (truncates of "
-          f"4 KB, unlink, no mark; a file numbered 0x80000001 is not ours and is not touched), a "
-          f"checkpoint after the replay (at most 64 KB "
+    check(f"Issues #124/#134/#248 the card work in bounded steps after the network starts: the "
+          f"3 extent files beyond the ring deleted in {SPILL_EXTRA_STEPS} steps (truncates of "
+          f"4 KB, unlink, no mark; the {len(OTHER_SPILL_FILES)} files that are not of the ring "
+          f"are not counted), a checkpoint after the replay (at most 64 KB "
           f"replayed between two), the card's operation times in the shell, the Sparkplug task fed "
           f"within the task watchdog and >= {STACK_MARGIN_B} B of its stack free",
           nb and ready and gc_ok and unfed and int(unfed.group(1)) < 15000
@@ -3326,6 +3351,22 @@ def run_store_forward_spill(args, work, slave):
     on_card = re.search(r"^spill\s+on: (\d+) samples", before2)
     on_card = int(on_card.group(1)) if on_card else 0
     gw.kill()   # the power cut: what is in the RAM ring is lost, the card is not
+    # #134, #248: after the boot recovery, two spills, a replay and the deletes, the files that
+    # are not of the ring are in the flash as the image had them; the extra extents are gone
+    on_flash = storage_files(args, work, "sfsd", gw.flash)
+    kept = {n: (on_flash or {}).get(n) for n in OTHER_SPILL_FILES}
+    left = sorted(n for n in SPILL_EXTRA_EXTENTS if n in (on_flash or {}))
+    ring_files = sorted(n for n in (on_flash or {}) if re.fullmatch(r"sf/(r00[01][0-9a-f]|ring[ab])\.sf", n))
+    check("Issues #134/#248 a file in the folder of the card that is not of the ring (a name of 8 "
+          "hexadecimal digits with the header of a ring block, a number at or above 0x80000000, a "
+          "text file) is never changed and never deleted: after the boot recovery, the spill, the "
+          "replay and the deletes, the LittleFS of the flash has each one with the bytes of the "
+          "image, next to the files of the ring; the extent files beyond the ring are gone",
+          on_flash is not None and all(kept[n] == OTHER_SPILL_FILES[n] for n in OTHER_SPILL_FILES)
+          and not left and "sf/ringa.sf" in ring_files and "sf/r0000.sf" in ring_files,
+          f"LittleFS read back: {'no' if on_flash is None else len(on_flash)} file(s); not of the "
+          f"ring: {({n: ('same' if kept[n] == OTHER_SPILL_FILES[n] else 'absent' if kept[n] is None else 'CHANGED') for n in kept})}; "
+          f"extra extents left: {left or 'none'}; ring files: {len(ring_files)}")
     gw2 = Gateway(args, work / "uart0-sfsd-cut.log", gw.flash)
     t2 = time.monotonic()
     gw2.start()
@@ -9577,6 +9618,100 @@ def run_factory_reset(args, work):
     check("CFG-5 the factory reset erased the storage partition (no block of the old configuration "
           "is left)", not stale and b'"GW08"' in image[so:so + ss], f"stale: {stale or 'none'}")
     check_restart_admin(args, work, flash)
+    check_ap_without_pmk(args, work)
+
+
+def check_ap_without_pmk(args, work):
+    """Issue #248 (NET-5, #187) on a flash of its own (GW09), in two boots: the stored secrets
+    have the hash of a web password and no PMK. The firmware writes the two NVS entries one after
+    the other, so a write error or a power cut between them leaves this state. The harness makes
+    it with ESP-IDF's nvs_partition_gen.py (the NVS format of the board: not in the secure build,
+    which would first move this NVS into the encrypted one). Expected: the web password opens
+    the web UI; a BOOT gesture starts the access point with the commissioning password, with a
+    warning in the log, and opens no claim window; the same password as a new value of
+    web.password gives the PMK, and the access point then uses the web password."""
+    if args.secure:
+        print("[SKIP] Issue #248 a web password without a PMK: the check makes an NVS in the format "
+              "of the board (not encrypted), and the secure build would first move it into the "
+              "encrypted NVS", flush=True)
+        return
+    node, comm_pw = "GW09", "abcdefgh2345"
+    salt = bytes(range(16))
+    web_hash = "pbkdf2-sha256$2048$%s$%s" % (
+        salt.hex(), hashlib.pbkdf2_hmac("sha256", WEB_PASSWORD.encode(), salt, 2048, 32).hex())
+    nvs_off, nvs_size = storage_partition("nvs")
+    csv = work / "nvs-nopmk.csv"
+    csv.write_text("key,type,encoding,value\nsecrets,namespace,,\n"
+                   f"commission,data,string,{comm_pw}\nweb_hash,data,string,{web_hash}\n")
+    gen = pathlib.Path(os.environ["IDF_PATH"]) / "components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py"
+    nvs = work / "nvs-nopmk.bin"
+    subprocess.run([args.idf_python, str(gen), "generate", str(csv), str(nvs), hex(nvs_size)],
+                   check=True, capture_output=True)
+    cfg = node_config(node)
+    cfg.pop("web", None)   # no web.password in the document: the boot takes the stored hash
+    flash = flash_variant(args, work, "nopmk", {"config.json": json.dumps(cfg, indent=2).encode()})
+    img = bytearray(flash.read_bytes())
+    img[nvs_off:nvs_off + nvs_size] = nvs.read_bytes()
+    flash.write_bytes(img)
+    obs = Observer()
+    gw = Gateway(args, work / "uart0-nopmk.log", flash)
+    t0 = time.monotonic()
+    gw.start()
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 60)
+    gw.shell("status", [r"^config\s"])
+    key0 = ap_key_digest(gw)
+    st_web, _, _ = wait_http("/api/status", 20)
+    st_comm, _, _ = http("GET", "/api/status", auth=("admin", comm_pw))
+    t_ap = time.monotonic()
+    boot_press(gw)
+    started = gw.wait_log(r"ap: SIMULATED \(QEMU has no radio\) commissioning access point '%s' "
+                          r"\(WPA2, the commissioning password\)" % AP_SSID_RX, 10, t_ap)
+    warned = gw.wait_log(r"main: access point: a web password is set, but its WPA2 key \(PMK\) is "
+                         r"not in the stored secrets: the key is the commissioning password", 5, t_ap)
+    console = gw.wait_log(r"^ap: WPA2 key = commissioning password '%s'" % comm_pw, 5, t_ap)
+    no_claim = gw.wait_log(r"main: claim window not opened: a web password is set", 5, t_ap)
+    a0 = ap_object(("admin", WEB_PASSWORD))
+    ssid = a0.get("ssid") or ""
+    check("Issue #248 (NET-5 #187) the stored secrets have a web password and no PMK (a fault of "
+          "the stored secrets, made here with nvs_partition_gen.py): the web password opens the "
+          "web UI and the commissioning password does not; a BOOT gesture starts the access point "
+          "with the commissioning password as its key (the console gives it), the log warns, and "
+          "no claim window opens",
+          nb and key0 == "none" and st_web == 200 and st_comm == 401 and started and warned
+          and console and no_claim and not gw.find(r"web: claim window open", t0)
+          and a0.get("running") is True and a0.get("security") == "wpa2"
+          and a0.get("key") == "commissioning_password",
+          f"NBIRTH {bool(nb)}; apsim key {key0}; web password {st_web}, commissioning password "
+          f"{st_comm}; {' | '.join(gw.find(r'ap: SIMULATED|main: access point: |claim window', t_ap)[:3]) or 'no log line'}; "
+          f"console line {bool(console)}; ap {a0}")
+    # the same password as a new value of web.password: its PMK goes to the NVS at the save
+    new = node_config(node)
+    new["web"] = {"password": WEB_PASSWORD}
+    obs.drain()
+    t_put = time.monotonic()
+    st_put, _, b_put = http("PUT", "/api/config", new)
+    nb2 = obs.wait(f"{T}/NBIRTH/{node}", 60, since=t_put)
+    gw.shell("status", [r"^config\s"])
+    key1 = ap_key_digest(gw)
+    t_ap2 = time.monotonic()
+    boot_press(gw)
+    started2 = gw.wait_log(r"ap: SIMULATED \(QEMU has no radio\) commissioning access point '%s' "
+                           r"\(WPA2, the web password\)" % AP_SSID_RX, 10, t_ap2)
+    time.sleep(1)
+    warned2 = gw.find(r"main: access point: a web password is set, but its WPA2 key", t_put)
+    a1 = ap_object(("admin", WEB_PASSWORD))
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node}", 5)
+    obs.close()
+    check("Issue #248 (NET-5 #187) the web password set again (PUT /api/config with the same "
+          "password as a new value) gives the PMK: after the restart the access point uses the "
+          "web password, with no warning",
+          st_put == 200 and nb2 and ssid and key1 == pmk_digest(WEB_PASSWORD, ssid) and started2
+          and not warned2 and a1.get("key") == "web_password",
+          f"PUT {st_put} {b_put.decode(errors='replace').strip()[:60]}; NBIRTH {bool(nb2)}; apsim "
+          f"key {key1} (expected {pmk_digest(WEB_PASSWORD, ssid) if ssid else '?'}); "
+          f"{(gw.find(r'ap: SIMULATED', t_ap2) or ['no access point line'])[0]}; warnings "
+          f"{len(warned2)}; ap {a1}")
 
 
 def check_restart_admin(args, work, flash):

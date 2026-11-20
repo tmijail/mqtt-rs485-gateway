@@ -31,8 +31,7 @@
 static const char *TAG = "sfcard";
 
 /* QEMU stand-in: a "cluster" of 32 B makes an extent (128 units) one 4 KiB LittleFS block, and
- * the delete step of a step 1 file 4 KiB, so the E2E runs many extents and the stepwise
- * delete on small files. */
+ * a delete step 4 KiB, so the E2E runs many extents and the stepwise delete on small files. */
 #define LITTLEFS_UNIT 32u
 /* The DMA bounce buffer for transfers from and to PSRAM: 8 sectors per command. */
 #define DMA_BUF_BYTES 4096u
@@ -104,10 +103,8 @@ static void file_path(char *out, size_t cap, uint32_t f)
 {
     if (kind(f) == GW_SFSPILL_F_SUPER) {
         snprintf(out, cap, "%s/ring%c.sf", s_dir, (f & 1u) ? 'b' : 'a');
-    } else if (kind(f) == GW_SFSPILL_F_EXTENT) {
-        snprintf(out, cap, "%s/r%04lx.sf", s_dir, (unsigned long)(f & 0xFFFFu));
     } else {
-        snprintf(out, cap, "%s/%08lx.sf", s_dir, (unsigned long)f);
+        snprintf(out, cap, "%s/r%04lx.sf", s_dir, (unsigned long)(f & 0xFFFFu));
     }
 }
 
@@ -388,8 +385,8 @@ static bool hex_name(const char *s, size_t n, unsigned long *v)
     return true;
 }
 
-/* Our files: ringa.sf / ringb.sf, rXXXX.sf, NNNNNNNN.sf (below 0x80000000: the others are not
- * ours and are never touched, #134). */
+/* Our files: ringa.sf / ringb.sf and rXXXX.sf. A file with another name is not ours: it is
+ * never given to the spill, and so never read, changed or deleted (#134, #248). */
 static bool io_list(void *ctx, void (*each)(void *arg, uint32_t f), void *arg)
 {
     (void)ctx;
@@ -407,8 +404,6 @@ static bool io_list(void *ctx, void (*each)(void *arg, uint32_t f), void *arg)
             each(arg, GW_SFSPILL_F_SUPER | ((n[4] == 'b' || n[4] == 'B') ? 1u : 0u));
         } else if (len == 8 && (n[0] == 'r' || n[0] == 'R') && hex_name(n + 1, 4, &v)) {
             each(arg, GW_SFSPILL_F_EXTENT | (uint32_t)v);
-        } else if (len == 11 && hex_name(n, 8, &v) && v < GW_SFSPILL_ID_LIMIT) {
-            each(arg, (uint32_t)v);
         }
     }
     bool ok = d != NULL;

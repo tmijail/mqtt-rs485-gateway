@@ -11,7 +11,7 @@ The list of the scenarios, their order and their `--only` names are in `SCENARIO
 | `failsafe` | `failsafe` | PSRAM | `GW03` |
 | `network` | `network` | PSRAM | `GW02` |
 | `web` | `web` | PSRAM | `GW04`, `GW05`, `GW06` |
-| `reset` | `reset` | PSRAM | `GW07`, `GW08` |
+| `reset` | `reset` | PSRAM | `GW07`, `GW08`, `GW09` |
 | `tls` | `tls` | PSRAM | `GW12`–`GW16`, `GW25`, `GW29`, `GW30` |
 | `failover` | `failover` | PSRAM | `GW17` |
 | `mqtt5` | `mqtt5` | PSRAM | `GW18` |
@@ -117,12 +117,13 @@ Nodes `GW04`, `GW05`, `GW06`: the REST API and the web UI.
 
 ## reset
 
-Nodes `GW07`, `GW08`: the BOOT button, commissioning and the access point.
+Nodes `GW07`, `GW08`, `GW09`: the BOOT button, commissioning and the access point.
 
 - **CFG-5:** `boot 1` held for 10 s gives the factory reset: a warning at 2 s, an orderly NDEATH, commissioning mode, no block of the old configuration in the partition. The old web password gives 401, and the new commissioning password works.
 - **NET-5:** a 2–10 s press starts the access point.
 - **#120 claim window:** no window with a web password set. In commissioning, the gesture opens the window for its time. Only a client of the access point can set the password, with the CSRF header. After the set, the window is closed. The password is in no log line.
 - **#187:** the WPA2 PMK of the access point is the web password, and a factory reset removes it. `POST /api/ap/stop`, and the stop after the idle time.
+- **#248 (`GW09`):** an NVS with the hash of a web password and no PMK, made with `nvs_partition_gen.py`. The access point uses the commissioning password, and the log shows the warning. The same password as a new value of `web.password` gives the PMK. This check does not run in the secure variant.
 - **#203, #209:** the factory reset by the shell and the API, and the restart into safe mode on request.
 - **#74:** a boot with the DO expander absent: the retry gets an answer, and all DOs are off.
 - **#192, #193:** `ap.request_via_ap` is true after `claimsim 600 eth`.
@@ -155,7 +156,7 @@ SPB-13 primary host, nodes `GW19` and `GW48`.
 ## sf, sf spill and stack margin
 
 - **sf (SPB-14, `GW20`):** the relay removes the broker while values change. At the return: NBIRTH, DBIRTH, then historical DDATA and NDATA with `is_historical`, in timestamp order. The ring holds 1 000 samples in PSRAM in this build (40 000 on the board).
-- **sf spill (`GW23`), #31, #122, #124, #151, #152:** a LittleFS directory takes the place of the card. The boot deletes old files in bounded steps without a replay. An outage of 40 s spills to the card, and all samples come back in order. A power cut while offline: the recovery finds the ring, and the replay sends each sample one time.
+- **sf spill (`GW23`), #31, #124, #134, #152, #248:** a LittleFS directory takes the place of the card. The boot deletes the extent files beyond the ring in bounded steps. The files that are not of the ring stay as they were. An outage of 40 s spills to the card, and all samples come back in order. A power cut while offline: the recovery finds the ring, and the replay sends each sample one time.
 - **#136:** a planned restart while offline moves the RAM ring to the card, and the samples come back one time.
 - **#145, #141:** a change outside the configuration hash keeps the ring. A tag rename starts a new ring, and the RAM ring is not moved.
 - **#139, #137:** `POST /api/card/format` with its auth, CSRF and confirmation, the status objects, and a simulated format in its own task.

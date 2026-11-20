@@ -56,7 +56,7 @@ To get more time, push BOOT for 2 to 10 s again. This starts the times again. Wi
 | Problem | What to do |
 |---|---|
 | The phone does not show `GW-Setup-XXXXXX` | The access point stopped (no client for 5 min, or the maximum time). Do step 1 again |
-| The phone refuses the Wi-Fi password | Make sure that you use the web password. A web password that an earlier firmware set does not open the access point: the key is then the commissioning password, until the next change of the web password. Change the web password from the plant network, or use the USB console |
+| The phone refuses the Wi-Fi password | Make sure that you use the web password. If the phone refuses the correct password, open the web UI from the plant network. On the Status tab, read the card "Access point". The card can show the commissioning password as the Wi-Fi password. Then the gateway has no Wi-Fi key for the web password. Do the procedure [Change the web password](change-the-web-password.md): you can type the same password again. For the causes, refer to [A web password without a PMK](../reference/access-point.md#a-web-password-without-a-pmk) |
 | The browser does not open `https://192.168.4.1/` | Make sure that the phone is on `GW-Setup-XXXXXX`. Some phones leave a Wi-Fi network without Internet: tell the phone to stay on it |
 | The browser refuses the web password (HTTP 401, then 429) | After 5 refused attempts, the gateway blocks your address for 30 s or more. Wait, then type the password again |
 
