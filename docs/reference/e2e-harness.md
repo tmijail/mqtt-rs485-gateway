@@ -79,6 +79,7 @@ The QEMU build sets `CONFIG_GW_FW_SELFCHECK_S=30`. The board keeps the default o
 | Syslog receiver | UDP, `--syslog-port` (default 15514) |
 | Modbus TCP client | A pymodbus client. slirp forwards `--mbtcp-port` (default 15502) to port 502 of the gateway. The connections come from 10.0.2.2, the only address in `allowed_clients` |
 | HTTPS clients | slirp forwards `127.0.0.1:18443` to port 443 (`--https-port`) and `127.0.0.1:18080` to port 80 (`--http-port`). The clients do not verify the self-signed certificate. They compare its fingerprint with the fingerprint on the console |
+| DNS client (#274) | slirp forwards UDP `127.0.0.1:15053` (`--dns-port`, `E2E_DNS_PORT`) to port 53 of the gateway: the DNS server of the captive portal. The harness makes the queries and reads the answers itself |
 | OTA image servers | An HTTPS server for the images of the FW-1 scenarios, each with a dedicated broker |
 
 The harness writes its own `config.json` into the image under test (`idf/tools/e2e/fs/config.json`: keepalive of 10 s, syslog to the receiver of the harness). For the configuration boots, it makes variants of the image with a different `storage` partition (with `littlefs-python`, the tool of the build) or with the partition erased. It reads the size limit from `CONFIG_GW_CONFIG_MAX_BYTES`. `run_e2e.sh` also passes the ELF and the IDF Python, to decode the core dumps with `esp_coredump`.
@@ -202,7 +203,7 @@ CAUTION: Read the `uart0-*.log` files when `e2e-poison` fails. With heap poisoni
 | #91 spare of the largest block before the document print | `tls`, node `GW29` | ≥ 4 KB (`PRINT_MIN_SPARE_B`) |
 | `sparkplug` stack, deepest paths | `sf`, node `GW27` | ≥ 1 024 B (`STACK_MARGIN_B`) |
 | `httpd` stack | `tls` and `https` | ≥ 2 048 B (`HTTPD_STACK_MIN_B`) |
-| `httpd_redirect` and `web_guard` stacks | `tls` and `https` | ≥ 512 B (`REDIRECT_STACK_MIN_B`) |
+| `httpd_redirect` and `web_guard` stacks | `tls` and `https`. `httpd_redirect` also in `reset`, after the requests of the captive portal (#274) | ≥ 512 B (`REDIRECT_STACK_MIN_B`) |
 | Card format task stack (#139) | `sf`, node `GW23` | ≥ 1 024 B of 5 120 B (`CARD_STACK_MIN_B`) |
 
 The #80 worst case is MQTT over TLS 1.3, full births (the 60-tag DBIRTH of `Bulk`), one HTTPS session open, and `PUT /api/config?dry_run=1` of the full document on a second session. The harness configuration has 5 devices and 74 tags. A larger configuration, or more HTTPS clients at the same time, decrease the margin. mbedTLS, the configuration and the engine are in PSRAM, so the margin of the internal RAM is large on the board configuration.
@@ -239,6 +240,7 @@ Each item has a test on the board in a hardware issue (the last column). The boa
 | Wi-Fi scan (#208) | A fixed list, with `simulated` `true` | A scan with the radio | #130 |
 | Entropy sources of the RNG (#267) | The same sequence as the board: the SAR ADC source is on from the start of the NVS until `gw_net_start`. There is no radio, so after `gw_net_start` no source with a guarantee is on. The log gives a warning for the certificate and for each later salt | The radio as the entropy source, the station without a connection, and the quality of the random values | #126 (item L18), #130 |
 | Claim window (#120) | The window opens without the access point. `claimsim <s> eth` makes Ethernet count as the access point | A real client of the access point | #130 |
+| Captive portal (#274) | `claimsim <s> eth` makes Ethernet the interface of the captive portal. The DNS server and the guide page run there while the simulated access point runs. The DHCP server of the access point does not run | The DNS server that the DHCP server gives. The captive portal window of Android and iOS, and the button "Open in the browser" in it | #130 |
 | Card format (#139) | `card format simulate <ms>` runs the format task and writes nothing | The format of a real card | #131 |
 | Interrupt watchdog | With `wdt_disable`, the interrupt watchdog cannot trigger also | A real trigger | #129 |
 | Reset reasons | Only power-on, software and panic | The watchdog resets, a brownout, the RESET button, and the boot-loop counter after them | #128, #129 |

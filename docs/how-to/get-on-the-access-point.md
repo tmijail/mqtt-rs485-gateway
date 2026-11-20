@@ -24,7 +24,14 @@ When nobody knows the web password, refer to [If nobody knows the web password](
 2. Make sure that you hear 1 beep. If you hear no beep, the gateway did not complete its boot: wait, then do step 1 again.
 3. Make sure that the LED shows a short cyan flash each 2 s. This shows that the access point is on, with WPA2.
 4. On the phone, connect to the Wi-Fi network `GW-Setup-XXXXXX` in 5 min or less. Use the web password as the Wi-Fi password. `XXXXXX` is the end of the MAC address of the board.
-5. Open `https://192.168.4.1/` in the browser. Accept the certificate of the gateway (it is self-signed). Type the web user name and the web password in the login dialog of the browser.
+5. Open the web UI in the browser:
+   1. If the phone opens its captive portal window with the guide page of the gateway, click "Open in the browser".
+   2. If the guide page shows "The address is in the clipboard", close the window. On iOS, tap "Cancel", then "Use Without Internet". Open the browser, and paste the address.
+   3. If no window opens in 10 s, open `https://192.168.4.1/` in the browser.
+   4. Accept the certificate of the gateway (it is self-signed).
+   5. Type the web user name and the web password in the login dialog of the browser.
+
+   The guide page has no field for a password. For the guide page, refer to [The captive portal](../reference/access-point.md#the-captive-portal).
 6. Do the work in the web UI.
 7. When you complete the work, close the access point:
    1. On the Status tab, find the card "Access point".
@@ -57,7 +64,7 @@ To get more time, push BOOT for 2 to 10 s again. This starts the times again. Wi
 |---|---|
 | The phone does not show `GW-Setup-XXXXXX` | The access point stopped (no client for 5 min, or the maximum time). Do step 1 again |
 | The phone refuses the Wi-Fi password | Make sure that you use the web password. If the phone refuses the correct password, open the web UI from the plant network. On the Status tab, read the card "Access point". The card can show the commissioning password as the Wi-Fi password. Then the gateway has no Wi-Fi key for the web password. Do the procedure [Change the web password](change-the-web-password.md): you can type the same password again. For the causes, refer to [A web password without a PMK](../reference/access-point.md#a-web-password-without-a-pmk) |
-| The browser does not open `https://192.168.4.1/` | Make sure that the phone is on `GW-Setup-XXXXXX`. Some phones leave a Wi-Fi network without Internet: tell the phone to stay on it |
+| The browser does not open `https://192.168.4.1/` | Make sure that the phone is on `GW-Setup-XXXXXX`. Some phones leave a Wi-Fi network without Internet: tell the phone to stay on it. If the phone uses the mobile data for the browser, turn off the mobile data |
 | The browser refuses the web password (HTTP 401, then 429) | After 5 refused attempts, the gateway blocks your address for 30 s or more. Wait, then type the password again |
 
 ## If nobody knows the web password

@@ -129,6 +129,16 @@ For the procedure, refer to [Connect to a broker with TLS](../how-to/connect-to-
 - The mDNS instance name is `<group_id>/<edge_node_id>`, cut at 63 bytes at the boundary of a UTF-8 character.
 - The mDNS responses are compile-only (NET-6). Refer to [Commissioning and secrets](commissioning-and-secrets.md).
 
+## The captive portal of the access point (NET-5, #274)
+
+- Nobody examined the captive portal with a real phone (#130). The E2E examines the DNS answers, the redirects and the guide page over the emulated Ethernet. The QEMU build has no radio.
+- The captive network sheet of iOS and macOS cannot open Safari. There, the button "Open in the browser" copies the address to the clipboard. The operator then opens Safari and pastes the address.
+- The window of Android can open the address in the same window. That window does not accept the self-signed certificate of the gateway. When the window shows a certificate error, the address is also in the clipboard. Nobody examined this on a phone (#130).
+- The HTTPS port has no captive portal. A phone that sends an HTTPS probe gets the certificate of the gateway, and each probe costs a TLS handshake of the web server.
+- After the guide page, the phone tells that the network has no Internet. Some phones then send the traffic of the browser to the mobile data, and the browser does not get to `192.168.4.1`. The procedure tells the operator to stay on the network.
+- The DNS server answers each name with the address of the access point, with a TTL of 10 s. A phone that leaves the access point can use these answers for 10 s more.
+- A DNS query in more than one IP fragment gets no answer. A DNS query of a phone is one small datagram.
+
 ## Modbus (MB-6, MB-15)
 
 - A `string` tag holds 32 characters at most (16 registers), printable ASCII only. Report by exception compares a 64-bit FNV-1a hash of the text.

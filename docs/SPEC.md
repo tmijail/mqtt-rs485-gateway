@@ -112,7 +112,7 @@ The firmware assumes the 8 MB of PSRAM of the board (issue #135). When the boot 
 | NET-2 | IPv4 with DHCP or with a static address (IP, netmask, gateway and DNS). You can configure it | P0 | ✅ | Done |
 | NET-3 | The gateway finds the address of the broker host with DNS | P0 | ✅ | Done |
 | NET-4 | Wi-Fi STA as an alternative interface, or as a backup when Ethernet stops. You can configure the priority | P1 | | Done (compile-only: not tested with a radio) |
-| NET-5 | A Wi-Fi access point for commissioning. It starts when there is no valid configuration, and when you push the BOOT button for 2 to 10 s. Its WPA2 key is the web password: the gateway keeps only the PMK of the password (issue #187). While no web password is set, the key is the commissioning password. During a claim window (CFG-8), it is open (no key). It stops on request (`POST /api/ap/stop`, the shell `ap stop`), after 5 min without a client in all modes (Kconfig `GW_SOFTAP_IDLE_MIN`), and in normal mode after 30 min at the latest (Kconfig `GW_SOFTAP_TIMEOUT_MIN`). The Modbus TCP gateway (MB-15) refuses each connection through the access point (issue #120) | P1 | | Done. Not tested with a radio |
+| NET-5 | A Wi-Fi access point for commissioning. It starts when there is no valid configuration, and when you push the BOOT button for 2 to 10 s. Its WPA2 key is the web password: the gateway keeps only the PMK of the password (issue #187). While no web password is set, the key is the commissioning password. During a claim window (CFG-8), it is open (no key). It stops on request (`POST /api/ap/stop`, the shell `ap stop`), after 5 min without a client in all modes (Kconfig `GW_SOFTAP_IDLE_MIN`), and in normal mode after 30 min at the latest (Kconfig `GW_SOFTAP_TIMEOUT_MIN`). The Modbus TCP gateway (MB-15) refuses each connection through the access point (issue #120). While it runs, it is a captive portal for its clients (issue #274). A DNS server answers each A query with the address of the access point. The probes of the phones get a guide page over plain HTTP. The guide page gives the address of the secure web UI, and it has no form and no secret | P1 | | Done. Not tested with a radio |
 | NET-6 | A hostname that you can configure, and an mDNS announcement of the web UI (`_https._tcp`, or `_http._tcp` without HTTPS) | P2 | | Done |
 | NET-7 | IPv6 | P2 | | Done |
 
@@ -904,7 +904,7 @@ The format is RFC 5424 on UDP (RFC 5426), with one message in each datagram. The
 | Key | Type | Default | Rule |
 |---|---|---|---|
 | `enabled` | bool | `true` | `false` = no web server with a valid configuration. The server starts in all cases with a rejected configuration, in commissioning, in the fault mode, and after a push of BOOT (NET-5, CFG-8) |
-| `port` | integer | `80` | 1–65535, HTTP. With `https` set to `true`, it only redirects (301/308) to HTTPS |
+| `port` | integer | `80` | 1–65535, HTTP. With `https` set to `true`, it redirects (301/308) to HTTPS. For the clients of the access point, it is also the port of the captive portal (NET-5, issue #274) |
 | `https` | bool | `true` | HTTPS with the certificate of the gateway (EC P-256, self-signed). The gateway makes it at the first boot and keeps it with the secrets in NVS. The console shows its SHA-256 fingerprint at each boot. `false` = plain HTTP |
 | `https_port` | integer | `443` | 1–65535, not the same as `port` |
 | `username` | text | `"admin"` | 1–32 visible ASCII characters, without `:` |

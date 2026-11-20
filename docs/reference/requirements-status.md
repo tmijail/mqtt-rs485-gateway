@@ -34,7 +34,7 @@ The column MVP has ✅ for the IDs of the MVP (SPEC §5).
 | NET-2 | ✅ | done | Q: DHCP. C: the static IP and the manual DNS | [`network`](configuration.md#network) |
 | NET-3 | ✅ | compile-only | C: the E2E uses an IP literal, not DNS | [`mqtt`](configuration.md#mqtt) |
 | NET-4 | | compile-only | H: the interface selection, failback and "no service" (#57). Q: a Wi-Fi configuration without a radio. C: the Wi-Fi driver and the switch | [Known limitations](known-limitations.md#the-network-net-4-net-6-net-7) |
-| NET-5 | | done | H: the WPA2 PMK and the stops. Q: the simulated access point. C: the SoftAP (board test #130) | [The access point](access-point.md) |
+| NET-5 | | done | H: the WPA2 PMK, the stops, and the DNS answer, the probe paths and the guide page of the captive portal (#274). Q: the simulated access point, and the captive portal over the emulated Ethernet. C: the SoftAP, and the captive portal window of a real phone (board test #130) | [The access point](access-point.md) |
 | NET-6 | | done | H + Q: the hostname, and the start of the mDNS responder. C: the mDNS responses | [Commissioning and secrets](commissioning-and-secrets.md) |
 | NET-7 | | done | H + Q: link-local, SLAAC, static address, ping. No test: MQTT over IPv6. C: SNTP and DNS over IPv6 | [Known limitations](known-limitations.md#the-network-net-4-net-6-net-7) |
 

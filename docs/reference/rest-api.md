@@ -11,7 +11,7 @@ This document lists the routes of the REST API of the gateway, its authenticatio
 ## Authentication
 
 - All the routes require HTTP Basic with `web.username` and `web.password`, over HTTPS when `web.https` is on.
-- The only exceptions are the routes of the claim window: `GET /claim`, `GET /api/claim` and `POST /api/claim`.
+- The only exceptions are the routes of the claim window: `GET /claim`, `GET /api/claim` and `POST /api/claim`. The captive portal on the HTTP port also needs no credential: it has no data and no write (#274).
 - While `web.password` is empty, the gateway accepts `admin` with its commissioning password.
 - The responses are JSON.
 
@@ -138,6 +138,7 @@ The errors of the firmware routes:
 | `GET /api/claim` | The state of the claim window for this client. No credential |
 | `POST /api/claim` | Sets the first web password. No credential, but the CSRF check and the limit of attempts apply |
 | `POST /api/ap/stop` | Stops the access point approximately 2 s after the response. `202 {"ok":true,"stopping":true}`. `409` when the access point does not run |
+| `GET /portal` (HTTP port) | The guide page of the captive portal, only for a client of the access point while it runs (#274). No credential. The probes of the phones and a `GET` for another `Host` get `302` to it. Refer to [The captive portal](access-point.md#the-captive-portal) |
 
 For `GET /api/claim` and `POST /api/claim`, refer to [The claim window](#the-claim-window). For the access point, refer to [The access point](access-point.md).
 

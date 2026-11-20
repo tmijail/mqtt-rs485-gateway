@@ -914,7 +914,7 @@ The web UI and the REST API.
 | Key | Type | Default | Rule |
 |---|---|---|---|
 | `enabled` | bool | `true` | `false` = no web server with a valid configuration. The server always starts with a rejected configuration, in commissioning, in the fault mode, and after a push of BOOT |
-| `port` | integer | `80` | 1 to 65535, HTTP. With `https: true`, it only redirects to HTTPS |
+| `port` | integer | `80` | 1 to 65535, HTTP. With `https: true`, it redirects to HTTPS. For the clients of the access point, it is also the port of the captive portal (#274) |
 | `https` | bool | `true` | HTTPS with the certificate of the gateway. At the first boot, the gateway makes a self-signed certificate (EC P-256) and keeps it in NVS. The console shows its SHA-256 fingerprint at each boot. The card **Certificates** loads the certificate of the plant, or makes a new self-signed certificate (refer to [Manage the certificates](../how-to/manage-the-certificates.md)). `false` = plain HTTP |
 | `https_port` | integer | `443` | 1 to 65535, not the same as `port` |
 | `username` | text | `"admin"` | 1 to 32 visible ASCII characters, without `:` |

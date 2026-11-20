@@ -70,6 +70,20 @@ This has these effects:
 - **The LED tells the truth.** The pattern of the claim window (blue and white) stops when nobody can use the window.
 - **The operator has the full window when connected.** While a client is connected, the idle time does not apply. The access point stays on until the claim or the end of the window.
 
+## Why the captive portal shows only a guide page
+
+A phone that connects to a Wi-Fi network without Internet looks for a captive portal. When the network answers its probe with a redirect, the phone opens a small window with the page of the portal. The product owner selected a captive portal that shows only a guide page (decision D5, option B, issue #274). The window of the phone shows the guide page, and the web UI stays in the browser.
+
+These are the reasons:
+
+- **A password never goes over plain HTTP.** The window of the phone does not accept the self-signed certificate of the gateway. Thus a portal page in that window must use plain HTTP. During the claim window, the access point is open, and plain HTTP would send the new web password without encryption. The guide page has no form and no field for a password.
+- **The web UI needs the browser.** The browser can accept the certificate of the gateway, keep the login and download files. The window of the phone cannot do these steps on all phones.
+- **The phone finds the gateway by itself.** Before #274, the operator had to type `https://192.168.4.1/`. Now the window gives the address, and the button opens it or copies it.
+- **Only the clients of the access point see the portal.** The DNS server and the redirects apply the rule of the claim window. A computer on the plant network gets the same answers as before. The DNS server runs only while the access point runs, thus it is not an open DNS service on the plant network.
+- **The DNS server has no task of its own.** A query needs a short parse and one answer. A callback in the `tcpip` task of lwIP does this work. A task would need a stack in the internal RAM at each boot, also while the access point is off (#80).
+
+The product owner refused the full web UI in the window (option C of D5), because it needs plain HTTP. The product owner also refused Improv (D6).
+
 ## Why a forgotten web password needs a factory reset
 
 When a web password is set, the claim window never opens again. A password recovery that keeps the configuration is refused (decision of #120, confirmed in #187).
@@ -105,6 +119,7 @@ The NVS of the board is not encrypted (#133). A person with physical access and 
 
 - **No PAKE.** Matter and ESP-IDF provisioning authenticate the device with a PAKE (a password-authenticated key exchange). The gateway does not. No ESP firmware that we found shows the fingerprint of the TLS certificate to the operator.
 - **No test with a radio.** QEMU has no radio. The E2E examines the life, the key and the status of a simulated access point. The board test is #130 item N9.
+- **The captive portal is not authenticated.** A false access point can also show a guide page, with a different address. The guide page does not change this risk: the operator can also type a false address. Refer to [A false access point](#a-false-access-point).
 
 ## What comparable projects do
 

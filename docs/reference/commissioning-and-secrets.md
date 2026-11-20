@@ -23,7 +23,7 @@ For recovery mode, refer to [The configuration document](configuration.md#load-a
 
 ## Access to the web UI and the REST API
 
-- The web UI and the API use HTTPS by default (`web.https`). The HTTP port only redirects to HTTPS.
+- The web UI and the API use HTTPS by default (`web.https`). The HTTP port redirects to HTTPS. The only exception is the captive portal for the clients of the access point: a guide page with no form and no secret (#274). Refer to [The access point](access-point.md#the-captive-portal).
 - All routes require HTTP Basic with `web.username` and `web.password`. The only exceptions are the routes of the claim window.
 - While no web password is set, use the user `admin` and the **commissioning password**.
 - The commissioning password has 12 random characters, and it is different on each gateway. The gateway makes it at the first boot and after a factory reset, and keeps it in NVS.
@@ -354,5 +354,6 @@ Residual risks:
 - The PMK as the key of the SoftAP (#187). The documentation of ESP-IDF v6.1 does not say that the SoftAP accepts a PMK of 64 hexadecimal characters. In `libnet80211.a`, `wifi_softap_set_config` calls `hexstr2bin` and `wifi_pmk_is_valid`, and `hostapd_derive_psk` copies the PMK without PBKDF2. The board test is #130 item N9.
 - The mDNS responses (NET-6). In QEMU, the responder starts, but `open_eth` has no multicast filter. Nobody examined the filter of the W5500 (`add_mac_filter`) on the board.
 - The claim window over the radio. The E2E runs the window over the emulated Ethernet with the emulator-only command `claimsim <s> eth`. The host test `test_claim` examines the rule with the addresses of the board.
+- The captive portal with a real phone (#274). The E2E examines the DNS answers, the redirects and the guide page over the emulated Ethernet (`claimsim <s> eth`). Only a real phone shows if Android and iOS open the window, and what the button does there. The board test is #130.
 - The CSRF check in a real browser. The E2E sends the requests that a browser would send.
 - The entropy sources of the random values (#267). QEMU has no radio, and its RNG gives no evidence about the chip. The board tests are #126 item L18 (the random values with the radio on) and #130 (the station without a connection).
