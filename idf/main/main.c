@@ -535,6 +535,19 @@ void app_main(void)
         ESP_LOGE(TAG, "status LED unavailable");
     }
     gw_storage_init();  /* failure is logged; no stored secrets then */
+    /* Issue #266: a factory reset that a power cut stopped is completed here, before anything
+     * reads the NVS or the configuration; then a restart, so that the boot into commissioning
+     * mode starts from the erased storage. When a step fails again, the reset stays pending and
+     * gw_storage_load_config() rejects: recovery mode. Safe mode (repeated crashes) does not do
+     * the steps, which can be what crashes; it loads no configuration in any case. */
+    if (!s_safe && gw_storage_factory_reset_pending()) {
+        gw_status_set(GW_ST_RESETTING, true);
+        if (gw_storage_factory_reset_resume() == ESP_OK) {
+            ESP_LOGW(TAG, "factory reset completed: restarting into commissioning mode");
+            esp_restart();
+        }
+        gw_status_set(GW_ST_RESETTING, false);
+    }
     /* #200: the live log of the web UI keeps the log lines from here on (PSRAM) */
     if (gw_log_ring_start() != ESP_OK) {
         ESP_LOGE(TAG, "live log of the web UI unavailable");
