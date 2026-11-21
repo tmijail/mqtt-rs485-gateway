@@ -72,11 +72,11 @@ This document gives the facts about the firmware updates of the gateway (FW-1): 
 
 The check runs before the firmware writes past the header of the image: the first 320 B of an upload, the first KB of a download, or the head of the other slot for the button (#144, #148).
 
-**The configuration schema.** Each configuration key and enum value has a "since" schema number (`gw_config.c`, table `k_since`). The firmware reads schema 2 (`GW_CONFIG_SCHEMA`). For the list of the keys of schema 2, refer to [The configuration schema](configuration.md#the-configuration-schema). When the firmware loads or saves the configuration, it calculates the schema that the document needs (`gw_cfgschema`).
+**The configuration schema.** Each configuration key and enum value has a "since" schema number (`gw_config.c`, table `k_since`). The firmware reads schema 3 (`GW_CONFIG_SCHEMA`). For the list of the keys of schema 2 and of schema 3, refer to [The configuration schema](configuration.md#the-configuration-schema). When the firmware loads or saves the configuration, it calculates the schema that the document needs (`gw_cfgschema`).
 
 The firmware refuses the image (HTTP 409 for an upload and for the button, `failed: …` in the state) when:
 
-- the stored configuration needs a higher schema than the image reads. The refusal lists the JSON paths that are too new, for example `the configuration needs schema 2, the image reads 1: <path>=<value> (2)`;
+- the stored configuration needs a higher schema than the image reads. The refusal lists the JSON paths that are too new, for example `the configuration needs schema 2, the image reads 1: <path>=<value> (2)`. An image that reads schema 2 refuses a stored configuration with a parameter of a device type (schema 3, #276);
 - the image has a lower NVS format (either byte) than the running image;
 - the image has another major LittleFS disk version, or a lower minor version;
 - the image has no capabilities block of version 2. Such an image is "unknown". The web UI tells that force is necessary.

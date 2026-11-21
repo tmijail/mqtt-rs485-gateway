@@ -78,9 +78,9 @@ The column MVP has ✅ for the IDs of the MVP (SPEC §5).
 | SPB-13 | | done | H + Q: STATE `false` and `true`, an old STATE (#157), an offline STATE with backup brokers (#156) | [Sparkplug behavior](sparkplug-behavior.md#the-primary-host-application-spb-13) |
 | SPB-14 | | done | H + Q: the RAM buffer, the replay, the spill to a LittleFS directory. C: SDMMC, FAT and the format. GPIO45 risk: off by default | [Store & forward](store-and-forward.md) |
 | SPB-15 | | done | H + Q. The value is not kept after a restart | [Sparkplug behavior](sparkplug-behavior.md#node-controlscan-rate-spb-15) |
-| SPB-16 | | done | H + P + Q. A host test (`test_worst_case_birth_fits`) encodes the worst DBIRTH in the payload buffer of 16 KB (`GW_SPB_PAYLOAD_MAX`) | [Sparkplug behavior](sparkplug-behavior.md#quality-and-properties-spb-16) |
-| SPB-17 | | done | H + P + Q. C: the RSSI (QEMU has no radio). A host test (`test_worst_case_nbirth_fits`) encodes the worst NBIRTH, with `Node Info/Modbus TCP` (#81) and 64 template tags, in the payload buffer | [Diagnostics](sparkplug-messages-and-metrics.md#diagnostics) |
-| SPB-18 | | done | H + P + Q. One template parameter, `Unit ID` (#251). No test with a real host | [Sparkplug behavior](sparkplug-behavior.md#templates-spb-18) |
+| SPB-16 | | done | H + P + Q. A host test (`test_worst_case_birth_fits`) encodes the worst DBIRTH in the payload buffer of 32 KiB (`GW_SPB_PAYLOAD_MAX`) | [Sparkplug behavior](sparkplug-behavior.md#quality-and-properties-spb-16) |
+| SPB-17 | | done | H + P + Q. C: the RSSI (QEMU has no radio). A host test (`test_worst_case_nbirth_fits`) encodes the worst NBIRTH in the payload buffer. That NBIRTH has `Node Info/Modbus TCP` (#81), 64 template tags, and 8 parameters in each of 16 definitions (#276) | [Diagnostics](sparkplug-messages-and-metrics.md#diagnostics) |
+| SPB-18 | | done | H + P + Q. The user defines the template parameters of each device type (#276). No test with a real host | [Sparkplug behavior](sparkplug-behavior.md#templates-spb-18) |
 | SPB-19 | | done | H + P + Q. Bytes and File hold 64 B at most. File has no metadata | [Sparkplug behavior](sparkplug-behavior.md#dataset-bytes-and-file-spb-19) |
 
 ## Modbus RTU (MB)

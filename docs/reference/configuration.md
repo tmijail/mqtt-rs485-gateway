@@ -70,11 +70,11 @@ The top-level sections are `gateway`, `network`, `ntp`, `mqtt`, `sparkplug`, `rs
 
 ### The rules of the names
 
-These rules apply to `group_id`, `edge_node_id`, `primary_host_id`, `device_prefix`, the device `name`, the `name` of a device type, and the tag `name` and `units`:
+These rules apply to `group_id`, `edge_node_id`, `primary_host_id`, `device_prefix`, the device `name`, the `name` of a device type, the `name` of a parameter of a device type, and the tag `name` and `units`:
 
 - The names are valid UTF-8 (RFC 3629: no overlong form, no surrogate) (#162).
 - The Sparkplug IDs do not contain `/`, `+`, `#` or control characters (U+0000 to U+001F and U+007F to U+009F). A broker can close the connection for a topic with a control character.
-- Two device names must not differ only in case. Two device types, or two tag names of one device or of one device type, must not differ only in case. The comparison folds the ASCII letters only: `É` and `é` are two different names for the check. The specification says SHOULD NOT (`tck-id-case-sensitivity-sparkplug-ids`, `tck-id-case-sensitivity-metric-names`), and the gateway rejects the configuration.
+- Two device names must not differ only in case. Two device types must not differ only in case. The same rule applies to two parameters of one device type, and to two tag names of one device or of one device type. The comparison folds the ASCII letters only: `É` and `é` are two different names for the check. The specification says SHOULD NOT (`tck-id-case-sensitivity-sparkplug-ids`, `tck-id-case-sensitivity-metric-names`), and the gateway rejects the configuration.
 - A tag name must not also be a folder of another tag name of the same device or device type, for example `A` and `A/B`.
 - The name of a device type must not be the name or the first folder of a node metric: `bdSeq`, `DI`, `DO`, `Counter`, `Node Control`, `Node Info`, `Firmware Update` or `Run Hours`.
 - The longest device topic, `spBv1.0/<group_id>/DBIRTH/<edge_node_id>/<device_id>`, must fit in 159 bytes.
@@ -83,7 +83,7 @@ These rules apply to `group_id`, `edge_node_id`, `primary_host_id`, `device_pref
 
 Each key has a schema number. A firmware image declares the highest schema that it reads. Before an update, the gateway refuses an image that cannot read the stored document. For this check, refer to [Update the firmware](../how-to/update-the-firmware.md).
 
-The firmware of this version reads schema 2. These keys are schema 2. All the other keys and values are schema 1.
+The firmware of this version reads schema 3. The two tables give the keys of schema 2 and of schema 3. All the other keys and values are schema 1.
 
 | Section | Keys of schema 2 |
 |---|---|
@@ -95,6 +95,13 @@ The firmware of this version reads schema 2. These keys are schema 2. All the ot
 | `device_types` | The section, and `name`, `tags`, and `bit_offset` and `bit_width` of its tags |
 | `devices[]` | `enabled`, `write_multiple` and `type` (the name of a device type) |
 | `devices[].tags[]` | `write_min`, `write_max`, `bit_offset` and `bit_width` |
+
+| Section | Keys of schema 3 |
+|---|---|
+| `device_types[]` | `params` (with `name`, `type` and `default`) |
+| `devices[]` | `params` |
+
+A document needs the highest schema of the keys that it has. Thus a document without `params` needs schema 2 or schema 1. An image that reads schema 2 refuses a stored document that has a parameter (#276).
 
 ### The secrets
 
@@ -453,6 +460,7 @@ An array of up to 16 devices. In the web UI, the devices are in the card **Devic
 | `max_gap` | integer | `0` | 0 to 1999. The number of unused registers or bits that a block can include to join two tags of the same area. Not permitted with `block_reads: false` |
 | `write_multiple` | bool | `false` | `true` = the gateway writes one register with FC16 and one coil with FC15, in place of FC06 and FC05. Use it for a slave that does not accept FC06 or FC05. A write of two or more registers always uses FC16 |
 | `type` | text | — | The `name` of an entry of `device_types`. The device then uses the tags of that type. Refer to [`device_types`](#device_types) |
+| `params` | object | — | Only with `type`. The values of this device for the parameters of its type. Refer to [The parameters of a device type](#the-parameters-of-a-device-type) |
 | `tags` | array | — | 1 to 64 tags. Necessary without `type`. Not permitted with `type` |
 
 The defaults of `block_reads`, `max_gap` and `write_multiple` come from the build options `CONFIG_GW_MB_BLOCK_READS`, `CONFIG_GW_MB_BLOCK_MAX_GAP` and `CONFIG_GW_MB_FORCE_MULTI_WRITE`. A block never has more than 125 registers or 2000 bits.
@@ -500,11 +508,11 @@ A device with `type` has no `tags` key. It uses the tags of the device type, and
 
 - `type` must be the `name` of an entry of `device_types`. If not, the gateway refuses the configuration with the path `devices[i].type`.
 - A device with `type` and `tags` is an error at `devices[i].tags`.
-- A device without `type` has its own tags. Such a device is not a Sparkplug template instance.
+- A device without `type` has its own tags. Such a device is not a Sparkplug template instance, and `params` is an error at `devices[i].params`.
 
 ## `device_types`
 
-An array of up to 16 device types. A device type holds the tag list of a device model one time. Each device that gives the `name` of the type in its `type` key uses these tags.
+An array of up to 16 device types. A device type holds the tag list of a device model one time. Each device that gives the `name` of the type in its `type` key uses these tags. A device type can also have parameters.
 
 ```json
 "device_types": [
@@ -519,18 +527,83 @@ An array of up to 16 device types. A device type holds the tag list of a device 
 |---|---|---|---|
 | `name` | text | — | Necessary. 1 to 39 bytes, without `/ + #`. Refer to [The rules of the names](#the-rules-of-the-names) |
 | `tags` | array | — | Necessary. 1 to 64 tags, with the keys of [`devices[].tags`](#devicestags) |
+| `params` | array | — | A maximum of 8 parameters. Refer to [The parameters of a device type](#the-parameters-of-a-device-type) |
 
 - Two device types must not have the same name. They must not have names that differ only in case.
 - The validation examines each type, also a type that no device uses. An error in a tag of a type has the path `device_types[n].tags[k]`.
 - Each device of the type gets a copy of the tags of the type. These copies count in the limit of 256 tags. For example, 5 devices of a type with 60 tags are 300 tags: the gateway refuses that configuration with the path `devices[4].type`.
 - Each type that a device uses is a Sparkplug template. The NBIRTH has one template definition for it, with the name of the type. The DBIRTH of each device of the type has one template instance. A type that no device uses has no definition in the NBIRTH.
-- The template has the parameter `Unit ID`. Each instance gives the `unit_id` of its device in it (#251).
+- The parameters of the type are the parameters of the template. The firmware adds no parameter of its own (#276).
 - The definitions of the types that the devices use describe a maximum of 64 tags together. Each type counts one time.
 - With `sparkplug.naming: "umh"`, the tags of a device with a type go out as plain metrics, not as a template instance.
 
 In the web UI, the card **Device types** above the card **Devices and tags** holds the types. Each type is a row that closes and opens. The types are closed by default; a new type opens. The field **Device type** of a device selects its type. The button **Remove type** is disabled while devices use the type. The button **Make a type from these tags** of a device with its own tags makes a new type with a copy of the tags, and the device then uses the type.
 
 For the messages of a template, refer to [Sparkplug messages and metrics](sparkplug-messages-and-metrics.md#templates). For the steps, refer to [Add devices of one type](../how-to/add-devices-of-one-type.md).
+
+### The parameters of a device type
+
+A parameter is a fixed value of a device that the gateway does not read from the bus. Examples are the manufacturer, the model and the rated power. A device type defines its parameters in `device_types[].params`, and each device of the type can give its own values in `devices[].params` (#276). The gateway sends them as the parameters of the Sparkplug template.
+
+```json
+"device_types": [
+  { "name": "Pump",
+    "params": [
+      { "name": "Manufacturer", "type": "string",  "default": "Grundfos" },
+      { "name": "Rated kW",     "type": "float64", "default": 0.5 },
+      { "name": "Poles",        "type": "int64",   "default": 2 },
+      { "name": "Has VFD",      "type": "bool" } ],
+    "tags": [ … ] }
+],
+"devices": [
+  { "name": "Pump1", "unit_id": 2, "type": "Pump",
+    "params": { "Rated kW": 7.5, "Has VFD": true } },
+  { "name": "Pump2", "unit_id": 3, "type": "Pump" }
+]
+```
+
+In this example, `Pump1` has the values `Grundfos`, 7.5, 2 and `true`. `Pump2` has the defaults of the type: `Grundfos`, 0.5, 2 and `false`.
+
+`device_types[].params` is an array. Each entry has these keys:
+
+| Key | Type | Default | Rule |
+|---|---|---|---|
+| `name` | text | — | Necessary. 1 to 39 bytes, without `/ + #` and without control characters. A space and a hyphen are permitted. Refer to [The rules of the names](#the-rules-of-the-names) |
+| `type` | text | — | Necessary. `string`, `int64`, `float64` or `bool` |
+| `default` | The JSON type of `type` | `""`, `0` or `false` | The value of a device that gives no value of its own. It obeys the rule of its `type` in the table below |
+
+`devices[].params` is an object. Each key is the `name` of a parameter of the type of the device, and its value is the value of that device.
+
+| `type` | JSON value | Rule | Sparkplug datatype |
+|---|---|---|---|
+| `string` | Text | A maximum of 63 bytes, valid UTF-8 | String |
+| `int64` | Integer | From -2^53 to 2^53. A JSON number gives each integer in this range exactly | Int64 |
+| `float64` | Number | A finite number | Double |
+| `bool` | `true` or `false` | — | Boolean |
+
+- A device type has a maximum of 8 parameters. A ninth parameter is an error at `device_types[n].params`.
+- Two parameters of one type must not have the same name. They must not have names that differ only in case.
+- The gateway does not convert a value. For example, the text `"7.5"` for a `float64` parameter is an error.
+- A parameter that `devices[].params` does not give uses the default of the type.
+- A key of `devices[].params` that is not a parameter of the type is an error at `devices[i].params.<name>`. A value of an incorrect type has the same path.
+- `params` on a device without `type` is an error at `devices[i].params`.
+- The name `Unit ID` is not reserved. The fixed parameter `Unit ID` of each template (#251) is gone. With `modbus_tcp.enabled`, the DataSet `Node Info/Modbus TCP` gives the unit ID of each device.
+- The NBIRTH gives the defaults, and each DBIRTH gives each parameter of the device. Refer to [Template parameters](sparkplug-behavior.md#template-parameters-276).
+- With `sparkplug.naming: "umh"` there are no templates, so the gateway sends no parameters. The keys stay valid.
+- These keys are schema 3. Refer to [The configuration schema](#the-configuration-schema).
+
+In the web UI, each type of the card **Device types** has the heading **Parameters** above the heading **Tags**. Its table has the columns **Parameter**, **Type** and **Default**, a button **x** in each row, the button **+ parameter** and a counter, for example `4 of 8`. **Default** is a text field, or a check box for `bool`. A type without parameters shows "This type has no parameters." On a phone, each parameter is a group of fields.
+
+In the card **Devices and tags**, a device shows the heading **Parameters** above the grey box of the tags when its type has parameters. Each parameter has one field, and the label of the field is the name of the parameter. An empty field uses the default of the type, which shows as grey text in the field. A `bool` parameter is a list: `Default (no)` or `Default (yes)`, `Yes` and `No`.
+
+The web UI keeps the values of the devices in agreement with the table of the type:
+
+- A new name for a parameter: the values of the devices of the type get the new name.
+- The button **x** of a parameter: when a device of the type has its own value, a dialog shows each such device with its value. The title of the dialog is, for example, "Remove the parameter Rated kW?". The values go away with the parameter. When no device has its own value, the parameter goes away immediately.
+- Another **Device type** for a device: the parameter values of the device go away.
+- Another **Type** for a parameter: the default converts when it can, for example the text of a number to the number. If not, the default goes away. The values of the devices stay, and the validation examines them.
+- A validation error shows at the field, for example `Pump2 · Rated kW` with "Expected a number" (#191).
+- An empty field of a device always uses the default. Thus only the JSON tab can give an empty text as the value of a device when the default is not empty.
 
 ## `devices[].tags`
 

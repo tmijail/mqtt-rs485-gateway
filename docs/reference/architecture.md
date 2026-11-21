@@ -233,9 +233,9 @@ The functions `gw_storage_malloc`, `gw_storage_calloc` and `gw_storage_big_alloc
 
 | Item | Where | Size | When |
 |---|---|---|---|
-| The configuration `gw_config_t` | PSRAM | Approximately 32 KB | At boot |
+| The configuration `gw_config_t` | PSRAM | Approximately 58 KB, with the parameters of the device types (#276) | At boot |
 | The Edge Node engine `gw_node_t` | PSRAM | 21 504 B at most (a `_Static_assert` in [`gw_edge.c`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/components/gw_edge/gw_edge.c), #80) | At boot |
-| The payload buffer | PSRAM | 16 KB (`GW_SPB_PAYLOAD_MAX`) | At boot |
+| The payload buffer | PSRAM | 32 KiB (`GW_SPB_PAYLOAD_MAX`) | At boot |
 | The store & forward ring (SPB-14, only with `sparkplug.store_forward`) | PSRAM | 40 000 samples of 24 B, 960 KB (`CONFIG_GW_SF_SAMPLES`) | At boot |
 | The live log of the web UI (#200), in each mode | PSRAM | 33 KB: the ring of the last log lines (16 KB, `CONFIG_GW_LOG_RING_KB`), the copy buffer of the reader (16 KB), and the table of the 48 log tags (#199) | At boot |
 | The spill to the microSD card (only with `store_forward.sd`, #124) | PSRAM | 10 KB: two blocks (one to write, one to read) and the delete queue | At boot |
@@ -244,7 +244,7 @@ The functions `gw_storage_malloc`, `gw_storage_calloc` and `gw_storage_big_alloc
 | The format of the microSD card (#139, only on request) | Internal DMA-capable RAM | The `card_format` stack (5 KB), a buffer of 16 KB (4 KB when no block of 16 KB is free), the card descriptor and a FatFs volume | During the format. The SDMMC writes need no bounce buffer |
 | The state of the card and of the format | Internal `.bss` and `.data` | 268 B (QEMU build), 276 B (SDMMC build) | Static |
 | The LittleFS read of the configuration and the cJSON tree | PSRAM | Approximately 200 KB for 256 tags | At boot. Released before the tasks start. Refer to [The configuration document](configuration.md) |
-| A configuration validation: the second `gw_config_t`, the request body, the cJSON tree, and one block for the print of the document (#91) | PSRAM | Approximately 32 KB plus the size of the document | During the validation |
+| A configuration validation: the second `gw_config_t`, the request body, the cJSON tree, and one block for the print of the document (#91) | PSRAM | Approximately 58 KB plus the size of the document | During the validation |
 | A firmware transfer (FW-1): the download URL, the server CA, the header of an uploaded image, and the `fw_update` stack | PSRAM (the stack from the heap) | — | During the transfer |
 | The TLS sessions, the syslog ring, and the buffers of the shell and the web server | PSRAM | — | When in use |
 | The FW-1 state data | RTC FAST memory | Approximately 590 B | Static |
