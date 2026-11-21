@@ -48,6 +48,11 @@ extern "C" {
 #define GW_NO_BIT       (-1)
 #define GW_NO_TYPE      (-1)        /* #213: a device with its own tags */
 #define GW_MAX_DEVICE_TYPES 16      /* #213: entries of device_types */
+#define GW_MAX_TYPE_PARAMS 8        /* #276: template parameters of one device type */
+#define GW_PARAM_STR_SIZE 64        /* #276: a string parameter value with its NUL (the limit of
+                                     * the codec, SPB_SHORT_STRING_MAX + 1) */
+#define GW_PARAM_INT_MAX 9007199254740992.0   /* #276: 2^53; a JSON number gives each integer
+                                               * up to it exactly */
 #define GW_CFG_BUILD_DEFAULT (-1)   /* optional key absent: the build-time default applies */
 #define GW_MAX_GAP_LIMIT 1999       /* a block never spans more than 2000 bits */
 #define GW_MBTCP_MAX_ALLOWED 8      /* MB-15: entries of modbus_tcp.allowed_clients */
@@ -226,6 +231,37 @@ typedef struct {
     double write_max;
 } gw_tag_cfg_t;
 
+/* SPB-18 #276: a template parameter that the user defines for a device type. A parameter is a
+ * fixed value of a device that the gateway does not read from the bus (the manufacturer, the
+ * rated power). The four types are the Sparkplug datatypes that each examined decoder reads:
+ * String, Int64, Double and Boolean (docs/reference/sparkplug-behavior.md). */
+typedef enum {
+    GW_PARAM_STRING,            /* "string":  String,  string_value */
+    GW_PARAM_INT64,             /* "int64":   Int64,   long_value */
+    GW_PARAM_FLOAT64,           /* "float64": Double,  double_value */
+    GW_PARAM_BOOL,              /* "bool":    Boolean, boolean_value */
+} gw_param_type_t;
+
+typedef union {
+    char str[GW_PARAM_STR_SIZE];
+    int64_t i64;
+    double f64;
+    bool b;
+} gw_param_value_t;
+
+typedef struct {
+    char name[GW_NAME_SIZE];
+    uint8_t type;               /* gw_param_type_t */
+    gw_param_value_t def;       /* the default of the type; 0, false or "" when the document
+                                 * gives none (a parameter always has a value on the wire) */
+} gw_param_cfg_t;
+
+/* #276: what the configuration keeps of device_types[i]; its tags are in the devices of the type */
+typedef struct {
+    uint8_t param_count;
+    gw_param_cfg_t params[GW_MAX_TYPE_PARAMS];
+} gw_devtype_cfg_t;
+
 typedef struct {
     char name[GW_NAME_SIZE];    /* also the Sparkplug device_id */
     char type[GW_NAME_SIZE];    /* SPB-18 #213: the name of its device type (the template); "" =
@@ -372,6 +408,12 @@ typedef struct {
     uint16_t tag_count;
     gw_device_cfg_t devices[GW_MAX_DEVICES];
     gw_tag_cfg_t tags[GW_MAX_TAGS];
+    /* SPB-18 #276: the parameters of each device type, by gw_device_cfg_t.type_index, and the
+     * value of each parameter for each device of a type: its own value (devices[].params), or a
+     * copy of the default of the type. tck-id-payloads-template-instance-parameters (MAY): each
+     * DBIRTH gives each parameter, so the node needs only the value in effect. */
+    gw_devtype_cfg_t types[GW_MAX_DEVICE_TYPES];
+    gw_param_value_t dev_params[GW_MAX_DEVICES][GW_MAX_TYPE_PARAMS];
 } gw_config_t;
 
 typedef struct {
@@ -396,7 +438,7 @@ bool gw_config_parse(const char *json, size_t len, gw_config_t *cfg, gw_cfg_err_
 /* Issue #144 item 3: the highest configuration schema that this firmware reads. Raise it (and
  * add the new keys and enum values to the "since" table in gw_config.c) when a key or an enum
  * value is added. Images declare it in their capabilities block (gw_ota.h). */
-#define GW_CONFIG_SCHEMA 2
+#define GW_CONFIG_SCHEMA 3
 
 /** gw_schema_init() with the "since" table of this firmware. */
 void gw_config_schema_init(gw_schema_report_t *rep);

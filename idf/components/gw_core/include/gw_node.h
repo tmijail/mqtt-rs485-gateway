@@ -43,9 +43,11 @@
  * NBIRTH carries one Template definition per type (no alias). DDATA carries the instance with
  * the changed members only. Devices without a type keep one metric per tag. #174: with the UMH
  * preset, a typed device also has one metric per tag, and the NBIRTH has no definitions.
- * #251: each definition has one parameter, "Unit ID" (Int32, default 0), and the instance of
- * each DBIRTH gives the Modbus unit ID of its device in it. The instance of a DDATA has no
- * parameters. The parameters of an instance in a DCMD are ignored.
+ * #276: each definition has the parameters that the user defined for the type
+ * (device_types[].params), each with its default. The instance of each DBIRTH gives each of
+ * them, with the value of its device or the default. A type without parameters has a template
+ * without parameters. The instance of a DDATA has no parameters. The parameters of an instance
+ * in a DCMD are ignored. (The fixed parameter "Unit ID" of #251 is gone.)
  *
  * Store & forward (SPB-14, optional): with a gw_sf_t attached, changes that happen while the
  * node is not online (no session, or the primary host offline) are evaluated with the same
@@ -144,11 +146,12 @@ extern "C" {
  * the whole reason is in the shell and the web. 96, not more: the node (the Sparkplug engine,
  * one allocation) stays under 21 504 B, a TLSF size class of 1 KB steps (issue #80) */
 #define GW_NODE_FW_STATE_MAX    96
-#define GW_SPB_PAYLOAD_MAX      16384  /* > worst-case DBIRTH (64 tags with 39-char names and
-                                         * every SPB-16 property, about 10 KB, test_spb) and
-                                         * NBIRTH (64 template tags in 16 definitions, each with
-                                         * its parameter, #251, and the SPB-17 DataSets of 16
-                                         * devices, about 15 KB, test_node) */
+#define GW_SPB_PAYLOAD_MAX      32768  /* > worst-case DBIRTH (64 tags with 39-char names and
+                                         * every SPB-16 property, and 8 parameters, test_spb)
+                                         * and NBIRTH (64 template tags in 16 definitions, each
+                                         * with 8 parameters with a name of 39 bytes and a text
+                                         * of 63 bytes, #276, and the SPB-17 DataSets of 16
+                                         * devices, test_node). 16 KiB before #276 */
 #define GW_TOPIC_MAX            GW_TOPIC_SIZE   /* gw_config.h: the validation uses it */
 #define GW_NODE_HIST_RECS       (2 * GW_MAX_TAGS_PER_DEVICE)   /* records per historical message */
 
@@ -205,10 +208,11 @@ typedef struct {
     void *ctx;
 } gw_node_ops_t;
 
-/** SPB-18: what a template definition's members are produced from. */
+/** SPB-18: what the members and the parameters (#276) of a template are produced from. */
 typedef struct {
     const gw_config_t *cfg;
-    uint16_t dev;                      /* first device of the type */
+    uint16_t dev;                      /* a definition: the first device of the type; an
+                                        * instance: its device */
 } gw_node_def_ctx_t;
 
 /** Static node description published in NBIRTH ("Node Info/..."); strings must outlive the node. */
@@ -270,7 +274,7 @@ typedef struct {
     };
     spb_metric_t metrics[GW_NODE_METRICS_MAX];
     spb_template_t tmpl;               /* SPB-18: the instance being published */
-    spb_param_t tmpl_param;            /* #251: its parameter "Unit ID" (births only) */
+    gw_node_def_ctx_t tmpl_ctx;        /* #276: what its parameters come from (births only) */
     spb_template_t defs[GW_MAX_DEVICES];   /* SPB-18: NBIRTH definitions, one per type */
     gw_node_def_ctx_t def_ctx[GW_MAX_DEVICES];
     uint8_t *buf;                      /* payload buffer (gw_node_set_buffer) */

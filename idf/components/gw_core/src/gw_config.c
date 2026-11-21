@@ -129,6 +129,12 @@ static const gw_since_t k_since[] = {
     {"device_types[].tags", NULL, 2},
     {"device_types[].tags[].bit_offset", NULL, 2},
     {"device_types[].tags[].bit_width", NULL, 2},
+    /* schema 3: the template parameters of #276 */
+    {"device_types[].params", NULL, 3},
+    {"device_types[].params[].name", NULL, 3},
+    {"device_types[].params[].type", NULL, 3},
+    {"device_types[].params[].default", NULL, 3},
+    {"devices[].params", NULL, 3},
     {"", NULL, 0},
 };
 #define SINCE_COUNT (sizeof(k_since) / sizeof(k_since[0]) - 1)
@@ -1781,14 +1787,165 @@ static const char *type_name_at(const cJSON *types, int i)
     return cJSON_IsString(v) && v->valuestring != NULL ? v->valuestring : "";
 }
 
+/* ---------- SPB-18 #276: template parameters ---------- */
+
+static const char *const k_param_types[] = {"string", "int64", "float64", "bool"};
+
+/* The JSON value @p v as a value of a parameter of @p type, at @p path.
+ * tck-id-payloads-template-parameter-value: a parameter has a value of a basic datatype, so each
+ * type takes only its own JSON type (no text for a number, no number for a Boolean). */
+static bool parse_param_value(const cJSON *v, gw_param_type_t type, const char *path,
+                              gw_param_value_t *out, gw_cfg_err_t *err)
+{
+    memset(out, 0, sizeof(*out));
+    switch (type) {
+    case GW_PARAM_STRING: {
+        if (!cJSON_IsString(v) || v->valuestring == NULL) {
+            return fail(err, path, "expected a string");
+        }
+        size_t len = strlen(v->valuestring);
+        if (len >= sizeof(out->str)) {
+            return fail(err, path, "string too long (%zu characters, maximum %zu)", len,
+                        sizeof(out->str) - 1);
+        }
+        memcpy(out->str, v->valuestring, len + 1);
+        return check_utf8(out->str, path, err);   /* it goes into a Sparkplug string (#162) */
+    }
+    case GW_PARAM_INT64:
+        if (!cJSON_IsNumber(v) || v->valuedouble != floor(v->valuedouble)) {
+            return fail(err, path, "expected an integer");
+        }
+        /* cJSON keeps a number as a double: above 2^53 the integer of the document is lost */
+        if (fabs(v->valuedouble) > GW_PARAM_INT_MAX) {
+            return fail(err, path, "value %.0f out of range [-2^53, 2^53]", v->valuedouble);
+        }
+        out->i64 = (int64_t)v->valuedouble;
+        return true;
+    case GW_PARAM_FLOAT64:
+        if (!cJSON_IsNumber(v) || !isfinite(v->valuedouble)) {
+            return fail(err, path, "expected a number");
+        }
+        out->f64 = v->valuedouble;
+        return true;
+    case GW_PARAM_BOOL:
+    default:
+        if (!cJSON_IsBool(v)) {
+            return fail(err, path, "expected true or false");
+        }
+        out->b = cJSON_IsTrue(v);
+        return true;
+    }
+}
+
+/* device_types[i].params of the type object @p it (at @p path) into @p ty: a list of
+ * {name, type, default}. tck-id-payloads-template-parameter-name-required and -type-req: each
+ * parameter has a name and a type. The name obeys the rules of the other names of the gateway
+ * (decision of the product owner, #276). */
+static bool parse_type_params(const cJSON *it, const char *path, gw_devtype_cfg_t *ty,
+                              gw_cfg_err_t *err)
+{
+    static const char *const keys[] = {"name", "type", "default"};
+    char p[96];
+    const cJSON *arr = cJSON_GetObjectItemCaseSensitive(it, "params");
+    ty->param_count = 0;
+    if (arr == NULL) {
+        return true;
+    }
+    join(p, sizeof(p), path, "params");
+    if (!cJSON_IsArray(arr)) {
+        return fail(err, p, "expected an array");
+    }
+    int n = cJSON_GetArraySize(arr);
+    if (n > GW_MAX_TYPE_PARAMS) {
+        return fail(err, p, "%d parameters; the maximum is %d", n, GW_MAX_TYPE_PARAMS);
+    }
+    for (const cJSON *el = arr->child; el != NULL; el = el->next) {
+        gw_param_cfg_t *pc = &ty->params[ty->param_count];
+        char ep[64];
+        int type;
+        snprintf(ep, sizeof(ep), "%s.params[%u]", path, (unsigned)ty->param_count);
+        if (!check_keys(el, ep, keys, sizeof(keys) / sizeof(keys[0]), err) ||
+            !get_string(el, "name", ep, true, "", pc->name, sizeof(pc->name), err) ||
+            !get_enum(el, "type", ep, true, 0, k_param_types,
+                      sizeof(k_param_types) / sizeof(k_param_types[0]), &type, err)) {
+            return false;
+        }
+        join(p, sizeof(p), ep, "name");
+        if (!check_topic_id(pc->name, p, false, err)) {
+            return false;
+        }
+        for (uint8_t j = 0; j < ty->param_count; j++) {
+            const char *o = ty->params[j].name;
+            if (strcmp(o, pc->name) == 0) {
+                return fail(err, p, "duplicate parameter name '%s'", pc->name);
+            }
+            if (same_but_case(o, pc->name)) {
+                return fail(err, p, "'%s' differs only in case from params[%u] '%s'", pc->name,
+                            (unsigned)j, o);
+            }
+        }
+        pc->type = (uint8_t)type;
+        const cJSON *def = cJSON_GetObjectItemCaseSensitive(el, "default");
+        join(p, sizeof(p), ep, "default");
+        if (def == NULL) {
+            memset(&pc->def, 0, sizeof(pc->def));   /* 0, false or "" */
+        } else if (!parse_param_value(def, (gw_param_type_t)pc->type, p, &pc->def, err)) {
+            return false;
+        }
+        ty->param_count++;
+    }
+    return true;
+}
+
+/* devices[i].params (@p obj, of the device at @p path) into @p vals: {"<parameter>": value}
+ * for parameters of the type @p ty of the device. A parameter without a value here gets the
+ * default of the type. */
+static bool parse_device_params(const cJSON *obj, const char *path, const char *type_name,
+                                const gw_devtype_cfg_t *ty, gw_param_value_t *vals,
+                                gw_cfg_err_t *err)
+{
+    char p[96], vp[96];
+    for (uint8_t k = 0; k < ty->param_count; k++) {
+        vals[k] = ty->params[k].def;
+    }
+    if (obj == NULL) {
+        return true;
+    }
+    join(p, sizeof(p), path, "params");
+    if (!cJSON_IsObject(obj)) {
+        return fail(err, p, "expected a JSON object");
+    }
+    for (const cJSON *v = obj->child; v != NULL; v = v->next) {
+        join(vp, sizeof(vp), p, v->string);
+        uint8_t k = 0;
+        while (k < ty->param_count && strcmp(ty->params[k].name, v->string) != 0) {
+            k++;
+        }
+        if (k == ty->param_count) {
+            return fail(err, vp, "the device type '%s' has no parameter with this name",
+                        type_name);
+        }
+        for (const cJSON *prev = obj->child; prev != v; prev = prev->next) {
+            if (strcmp(prev->string, v->string) == 0) {
+                return fail(err, vp, "duplicate key");
+            }
+        }
+        if (!parse_param_value(v, (gw_param_type_t)ty->params[k].type, vp, &vals[k], err)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* #213: device_types, a list of {name, tags}. A device with "type" uses the tags of its type
  * (parse_device copies them), so the tag list of a model is in the document one time. Each type
  * that a device uses is one Sparkplug template definition in the NBIRTH (SPB-18, gw_node.c):
- * its name is the name of an NBIRTH metric. Nothing is kept here: the tags of each type are
- * examined in the free part of cfg->tags, then cleared. */
+ * its name is the name of an NBIRTH metric. Only the parameters of each type are kept here
+ * (#276, cfg->types): the tags of each type are examined in the free part of cfg->tags, then
+ * cleared. */
 static bool parse_device_types(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)
 {
-    static const char *const keys[] = {"name", "tags"};
+    static const char *const keys[] = {"name", "tags", "params"};
     /* The definition is an NBIRTH metric named <type>, next to the node's own metrics (gw_node):
      * not one of them, nor one of their folders, also without case (issue #162). "Run Hours" is
      * the folder of Run Hours/<DI|DO>/n (#217): a definition with that name would also be a
@@ -1842,7 +1999,7 @@ static bool parse_device_types(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t
         bool ok = parse_tags(cJSON_GetObjectItemCaseSensitive(it, "tags"), p, cfg, &count, err);
         memset(cfg->tags, 0, sizeof(cfg->tags[0]) * cfg->tag_count);
         cfg->tag_count = 0;
-        if (!ok) {
+        if (!ok || !parse_type_params(it, path, &cfg->types[i], err)) {
             return false;
         }
     }
@@ -1867,7 +2024,7 @@ static bool parse_device(const cJSON *root, const cJSON *o, const char *path, gw
 {
     static const char *const keys[] = {"name",        "unit_id", "poll_ms", "slow_poll_ms",
                                        "offline_after", "block_reads", "max_gap", "tags", "type",
-                                       "write_multiple", "enabled"};
+                                       "write_multiple", "enabled", "params"};
     long unit, poll, off, gap, slow;
     bool merge, multi;
     char p[96];
@@ -1914,7 +2071,14 @@ static bool parse_device(const cJSON *root, const cJSON *o, const char *path, gw
     d->tag_count = 0;
     d->type_index = GW_NO_TYPE;
     const cJSON *tags = cJSON_GetObjectItemCaseSensitive(o, "tags");
+    const cJSON *params = cJSON_GetObjectItemCaseSensitive(o, "params");
     if (d->type[0] == '\0') {
+        /* #276: only a template instance has parameters */
+        if (params != NULL) {
+            join(p, sizeof(p), path, "params");
+            return fail(err, p, "not permitted without type: only a device with a device type "
+                                "has parameters");
+        }
         join(p, sizeof(p), path, "tags");
         return parse_tags(tags, p, cfg, &d->tag_count, err);
     }
@@ -1945,7 +2109,8 @@ static bool parse_device(const cJSON *root, const cJSON *o, const char *path, gw
     s_rep = NULL;
     bool ok = parse_tags(tt, tp, cfg, &d->tag_count, err);
     s_rep = rep;
-    return ok;
+    return ok && parse_device_params(params, path, d->type, &cfg->types[ti],
+                                     cfg->dev_params[d - cfg->devices], err);
 }
 
 static bool parse_devices(const cJSON *root, gw_config_t *cfg, gw_cfg_err_t *err)

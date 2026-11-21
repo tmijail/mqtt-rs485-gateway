@@ -39,20 +39,26 @@ def is_template(m):
 def param_value(p):
     """The value of a Template parameter, or None when it has no value."""
     which = p.WhichOneof("value")
-    return None if which is None else getattr(p, which)
+    if which is None:
+        return None
+    v = getattr(p, which)
+    if p.type == 4 and which == "long_value" and v >= 1 << 63:   # Int64: two's complement
+        v -= 1 << 64
+    return v
 
 
 def check_parameters(kind, m):
-    """#251: the parameters of the template metric @p m.
+    """#251, #276: the parameters of the template metric @p m.
 
     - tck-id-payloads-template-parameter-name-required: each parameter has a name (and only one
       parameter of a template has that name).
     - tck-id-payloads-template-parameter-type-req: each parameter of a birth has a type.
     - tck-id-payloads-template-parameter-type-value: the type is a basic datatype (1 to 14).
     - tck-id-payloads-template-parameter-value: a value is in the field of the type.
-    - The gateway: each template of a birth has the one parameter "Unit ID" (Int32). A definition
-      gives the default 0, an instance the unit ID of its device (1 to 247). The instance of a
-      DATA message has no parameters."""
+    - The gateway (#276): the parameters are the parameters that the user defined for the device
+      type. A template of a birth has a maximum of 8 of them. Each one is a String, an Int64, a
+      Double or a Boolean, has a name of 1 to 39 bytes, and always has a value (a String of a
+      maximum of 63 bytes). The instance of a DATA message has no parameters."""
     t, errors = m.template_value, []
     who = m.name or f"alias {m.alias}"
     births = kind in ("NBIRTH", "DBIRTH")
@@ -71,19 +77,21 @@ def check_parameters(kind, m):
         if which is not None and p.type in PARAM_FIELD and which != PARAM_FIELD[p.type]:
             errors.append(f"{who}: template parameter {p.name} of type {p.type} in {which}")
     if births:
-        if names != [UNIT_PARAM]:
-            errors.append(f"{who}: the parameters of a template in a birth must be "
-                          f"[{UNIT_PARAM!r}], not {names}")
+        if len(names) > MAX_TYPE_PARAMS:
+            errors.append(f"{who}: {len(names)} template parameters in a birth; the gateway "
+                          f"has a maximum of {MAX_TYPE_PARAMS}")
         for p in t.parameters:
-            if p.name != UNIT_PARAM:
-                continue
-            ok = p.type == 3 and p.WhichOneof("value") == "int_value" and (
-                p.int_value == 0 if t.is_definition else 1 <= p.int_value <= 247)
-            if not ok:
-                errors.append(f"{who}: parameter {UNIT_PARAM} must be Int32 (3) in int_value, "
-                              + ("0 in a definition" if t.is_definition
-                                 else "1 to 247 in an instance")
-                              + f": type {p.type}, {p.WhichOneof('value')} {param_value(p)!r}")
+            which = p.WhichOneof("value")
+            if p.type not in GW_PARAM_TYPES:
+                errors.append(f"{who}: template parameter {p.name} of type {p.type}; the gateway "
+                              f"gives only {sorted(GW_PARAM_TYPES)}")
+            if which is None:
+                errors.append(f"{who}: template parameter {p.name} without value in a birth")
+            if not 1 <= len(p.name.encode()) <= 39:
+                errors.append(f"{who}: template parameter name {p.name!r} is not 1 to 39 bytes")
+            if which == "string_value" and len(p.string_value.encode()) > 63:
+                errors.append(f"{who}: template parameter {p.name} has a text of more than 63 "
+                              "bytes")
     elif names:
         errors.append(f"{who}: template parameters {names} in {kind} (the births give them)")
     return errors
@@ -122,7 +130,10 @@ def check_template(kind, m):
 
 CELL_FIELD = {k: v for k, v in DATATYPE_FIELD.items() if k <= 14}   # SPB-19 DataSet columns
 PARAM_FIELD = CELL_FIELD   # #251: a Template parameter has a basic datatype, as a DataSet cell
-UNIT_PARAM = "Unit ID"     # #251: the parameter of each template of the gateway (gw_node.c)
+# #276: the datatypes of the parameters that the gateway gives (gw_node.c param_out): Int64,
+# Double, Boolean and String. Each examined decoder reads them (sparkplug-behavior.md)
+GW_PARAM_TYPES = {4, 10, 11, 12}
+MAX_TYPE_PARAMS = 8        # GW_MAX_TYPE_PARAMS
 
 
 def check_dataset(m):
@@ -319,7 +330,9 @@ class BirthTypes:
 
     def parameter_errors(self, kind, node, where, p):
         """tck-id-payloads-template-definition-parameters (#251): each parameter of a template
-        instance is in its definition of the NBIRTH, with the same type."""
+        instance is in its definition of the NBIRTH, with the same type.
+        #276: the instance of a DBIRTH gives each parameter of its definition (the choice of the
+        gateway for tck-id-payloads-template-instance-parameters, a MAY)."""
         defs = self.defs.get(node)
         if defs is None:
             return []
@@ -341,6 +354,11 @@ class BirthTypes:
                 elif q.HasField("type") and q.type != known[q.name]:
                     errors.append(f"{kind} {where} alias {m.alias}: parameter {q.name} has the "
                                   f"type {q.type}, the definition gives {known[q.name]}")
+            if kind == "DBIRTH":
+                absent = [n for n in known if n not in {q.name for q in t.parameters}]
+                if absent:
+                    errors.append(f"{kind} {where} alias {m.alias}: the instance does not give "
+                                  f"the parameters {absent} of the definition {t.template_ref}")
         return errors
 
     @staticmethod

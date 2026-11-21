@@ -1456,19 +1456,52 @@ static void test_bytes_tag(void)
     TEST_ASSERT_EQUAL(1, g_rec.writes);
 }
 
-/* SPB-18: devices of a type are template instances; the NBIRTH defines each type once. */
+/* #276: parameter @p k of the decoded message: a name, a type and a value in the field of the
+ * type (tck-id-payloads-template-parameter-name-required, -type-req, -type-value, -value). */
+static void expect_param(size_t k, const char *name, uint32_t type, spb_val_kind_t kind)
+{
+    TEST_ASSERT_TRUE(k < dec.param_count);
+    TEST_ASSERT_TRUE(dec.par[k].has_name);
+    TEST_ASSERT_EQUAL_STRING(name, dec.par[k].name);
+    TEST_ASSERT_TRUE(dec.par[k].has_type);
+    TEST_ASSERT_EQUAL(type, dec.par[k].type);
+    TEST_ASSERT_EQUAL(kind, dec.par[k].kind);
+}
+
+/* #276: the four parameters of the type Pump of test_templates, with the values @p maker,
+ * @p kw, @p poles and @p vfd. String, Double, Int64 (long_value) and Boolean. */
+static void expect_pump_params(const char *maker, double kw, int64_t poles, bool vfd)
+{
+    TEST_ASSERT_EQUAL(4, dec.param_count);
+    expect_param(0, "Manufacturer", SPB_DT_STRING, SPB_VAL_STRING);
+    TEST_ASSERT_EQUAL_STRING(maker, dec.par[0].str);
+    expect_param(1, "Rated kW", SPB_DT_DOUBLE, SPB_VAL_DOUBLE);
+    TEST_ASSERT_EQUAL_DOUBLE(kw, dec.par[1].num);
+    expect_param(2, "Poles", SPB_DT_INT64, SPB_VAL_LONG);
+    TEST_ASSERT_EQUAL_INT64(poles, (int64_t)dec.par[2].l);
+    expect_param(3, "Has VFD", SPB_DT_BOOLEAN, SPB_VAL_BOOL);
+    TEST_ASSERT_EQUAL_DOUBLE(vfd ? 1.0 : 0.0, dec.par[3].num);
+}
+
+/* SPB-18: devices of a type are template instances; the NBIRTH defines each type once.
+ * #276: the type has four parameters, one of each type. P1 gives three values, P2 gives none. */
 static void test_templates(void)
 {
     static const char json[] =
         "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
-        " \"device_types\": [{\"name\": \"Pump\", \"tags\": ["
+        " \"device_types\": [{\"name\": \"Pump\", \"params\": ["
+        "  {\"name\": \"Manufacturer\", \"type\": \"string\", \"default\": \"Grundfos\"},"
+        "  {\"name\": \"Rated kW\", \"type\": \"float64\", \"default\": 0.5},"
+        "  {\"name\": \"Poles\", \"type\": \"int64\", \"default\": 2},"
+        "  {\"name\": \"Has VFD\", \"type\": \"bool\"}], \"tags\": ["
         "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
         "   \"units\": \"rpm\", \"writable\": true},"
         "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]},"
-        "  {\"name\": \"Unused\", \"tags\": ["
+        "  {\"name\": \"Unused\", \"params\": [{\"name\": \"x\", \"type\": \"bool\"}], \"tags\": ["
         "  {\"name\": \"U\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\"}]}],"
         " \"devices\": ["
-        " {\"name\": \"P1\", \"unit_id\": 1, \"type\": \"Pump\"},"
+        " {\"name\": \"P1\", \"unit_id\": 1, \"type\": \"Pump\","
+        "  \"params\": {\"Rated kW\": 7.5, \"Has VFD\": true, \"Poles\": -4}},"
         " {\"name\": \"P2\", \"unit_id\": 2, \"type\": \"Pump\"},"
         " {\"name\": \"Flat\", \"unit_id\": 3, \"tags\": ["
         "  {\"name\": \"X\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\"}]}]}";
@@ -1506,17 +1539,13 @@ static void test_templates(void)
     TEST_ASSERT_EQUAL_STRING("rpm", dec.mem[0].eng_unit);   /* from the device type */
     TEST_ASSERT_FALSE(dec.mem[0].has_quality);
     TEST_ASSERT_EQUAL_STRING("Run", dec.mem[1].name);
-    /* #251: the definition has the parameter of its instances, with a name, a type and the
-     * default 0 (tck-id-payloads-template-definition-parameters, -parameters-default,
-     * tck-id-payloads-template-parameter-name-required, -type-req, -type-value, -value) */
-    TEST_ASSERT_EQUAL(1, dec.m[i].params);
-    TEST_ASSERT_EQUAL(1, dec.param_count);
-    TEST_ASSERT_TRUE(dec.par[0].has_name);
-    TEST_ASSERT_EQUAL_STRING("Unit ID", dec.par[0].name);
-    TEST_ASSERT_TRUE(dec.par[0].has_type);
-    TEST_ASSERT_EQUAL(SPB_DT_INT32, dec.par[0].type);
-    TEST_ASSERT_EQUAL(SPB_VAL_INT, dec.par[0].kind);
-    TEST_ASSERT_EQUAL_UINT32(0, dec.par[0].i);
+    /* #276: the definition has each parameter of its instances, with a name, a type and its
+     * default; a parameter without a default in the document has false
+     * (tck-id-payloads-template-definition-parameters, -parameters-default,
+     * tck-id-payloads-template-parameter-name-required, -type-req, -type-value, -value). The
+     * fixed parameter "Unit ID" of #251 is gone */
+    TEST_ASSERT_EQUAL(4, dec.m[i].params);
+    expect_pump_params("Grundfos", 0.5, 2, false);
 
     msg(1);   /* DBIRTH P1: one instance metric */
     TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DBIRTH/N/P1", g_rec.msgs[1].topic);
@@ -1530,30 +1559,24 @@ static void test_templates(void)
     TEST_ASSERT_EQUAL_DOUBLE(1500, dec.mem[0].num);
     TEST_ASSERT_EQUAL_INT32(SPB_QUALITY_GOOD, dec.mem[0].quality);
     TEST_ASSERT_EQUAL_STRING("rpm", dec.mem[0].eng_unit);
-    /* #251: the instance gives the unit ID of its device in the parameter of the definition
+    /* #276: the instance gives each parameter of the definition: the three values of the
+     * device, and the default of the type for the one that it does not give
      * (tck-id-payloads-template-instance-parameters) */
-    TEST_ASSERT_EQUAL(1, dec.m[0].params);
-    TEST_ASSERT_EQUAL(1, dec.param_count);
-    TEST_ASSERT_EQUAL_STRING("Unit ID", dec.par[0].name);
-    TEST_ASSERT_TRUE(dec.par[0].has_type);
-    TEST_ASSERT_EQUAL(SPB_DT_INT32, dec.par[0].type);
-    TEST_ASSERT_EQUAL(SPB_VAL_INT, dec.par[0].kind);
-    TEST_ASSERT_EQUAL_UINT32(1, dec.par[0].i);
+    TEST_ASSERT_EQUAL(4, dec.m[0].params);
+    expect_pump_params("Grundfos", 7.5, -4, true);
     msg(2);   /* the untyped device as before */
     TEST_ASSERT_EQUAL_STRING("X", dec.m[0].name);
     TEST_ASSERT_EQUAL_UINT64(GW_ALIAS_TAG_BASE + 4, dec.m[0].alias);
     TEST_ASSERT_EQUAL(0, dec.param_count);
 
-    /* #251: the second device of the type gives its own unit ID, when it comes online */
+    /* #276: the second device of the type has no values: its instance gives each default */
     recorder_clear();
     gw_tagdb_put_device(cfg, 1, v, true);
     gw_node_device_changed(&node, 1);
     msg(0);
     TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DBIRTH/N/P2", g_rec.msgs[0].topic);
     TEST_ASSERT_EQUAL_STRING("Pump", dec.m[0].ref);
-    TEST_ASSERT_EQUAL(1, dec.param_count);
-    TEST_ASSERT_EQUAL_STRING("Unit ID", dec.par[0].name);
-    TEST_ASSERT_EQUAL_UINT32(2, dec.par[0].i);
+    expect_pump_params("Grundfos", 0.5, 2, false);
 
     /* DDATA: the instance by alias, with the changed member only (by name) */
     recorder_clear();
@@ -1572,7 +1595,7 @@ static void test_templates(void)
      * DATA; the DBIRTH and the NBIRTH definition have them (#159) */
     TEST_ASSERT_FALSE(dec.m[0].has_datatype);
     TEST_ASSERT_FALSE(dec.mem[0].has_datatype);
-    /* #251: no parameters in DATA: the DBIRTH gave the unit ID, and it cannot change in a session */
+    /* #276: no parameters in DATA: the DBIRTH gave them, and they cannot change in a session */
     TEST_ASSERT_EQUAL(0, dec.m[0].params);
     TEST_ASSERT_EQUAL(0, dec.param_count);
 
@@ -1594,10 +1617,10 @@ static void test_templates(void)
     flat.alias = GW_ALIAS_TAG_BASE + 0;
     send("spBv1.0/G/DCMD/N/P1", &flat, 1);
     TEST_ASSERT_EQUAL(2, g_rec.writes);
-    /* #251: a host can send the instance with parameters. The engine ignores them: the member
-     * is written, and the unit ID of the device does not change */
+    /* #276: a host can send the instance with parameters. The engine ignores them: the member
+     * is written, and the value of the parameter of the device does not change */
     const spb_param_t cmd_params[] = {
-        {.name = "Unit ID", .datatype = SPB_DT_INT32, .v.num = 9},
+        {.name = "Rated kW", .datatype = SPB_DT_DOUBLE, .v.num = 99},
         {.name = "Other", .datatype = SPB_DT_STRING, .v.str = "not in the definition"}};
     const spb_metric_t member2 = {.name = "Speed", .no_alias = true, .datatype = SPB_DT_UINT16,
                                   .v.num = 950};
@@ -1609,7 +1632,7 @@ static void test_templates(void)
     TEST_ASSERT_EQUAL(3, g_rec.writes);
     TEST_ASSERT_EQUAL_UINT16(0, g_rec.last_write_tag);
     TEST_ASSERT_EQUAL_DOUBLE(950, g_rec.last_write.value);
-    TEST_ASSERT_EQUAL_UINT8(1, cfg->devices[0].unit_id);
+    TEST_ASSERT_EQUAL_DOUBLE(7.5, cfg->dev_params[0][1].f64);
 
     /* the write confirmation: the instance with that member */
     gw_tag_value_t w = {.value = 900, .ts_ms = 2000, .valid = true};
@@ -1622,37 +1645,79 @@ static void test_templates(void)
     TEST_ASSERT_EQUAL(1, dec.mem_count);
     TEST_ASSERT_EQUAL_DOUBLE(900, dec.mem[0].num);
     TEST_ASSERT_FALSE(dec.mem[0].has_datatype);
-    TEST_ASSERT_EQUAL(0, dec.param_count);       /* #251: DDATA */
+    TEST_ASSERT_EQUAL(0, dec.param_count);       /* #276: DDATA */
 
-    /* #251: a rebirth gives the parameters again, in the definition and in each instance */
+    /* #276: a rebirth gives the parameters again, in the definition and in each instance */
     recorder_clear();
     TEST_ASSERT_TRUE(gw_node_rebirth(&node));
     TEST_ASSERT_EQUAL(4, g_rec.count);            /* NBIRTH, DBIRTH P1, P2 and Flat */
     msg(0);
-    TEST_ASSERT_EQUAL(1, dec.param_count);
-    TEST_ASSERT_EQUAL_UINT32(0, dec.par[0].i);
+    expect_pump_params("Grundfos", 0.5, 2, false);
     msg(1);
     TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DBIRTH/N/P1", g_rec.msgs[1].topic);
-    TEST_ASSERT_EQUAL(1, dec.param_count);
-    TEST_ASSERT_EQUAL_UINT32(1, dec.par[0].i);
+    expect_pump_params("Grundfos", 7.5, -4, true);
     msg(2);
     TEST_ASSERT_EQUAL_STRING("spBv1.0/G/DBIRTH/N/P2", g_rec.msgs[2].topic);
-    TEST_ASSERT_EQUAL(1, dec.param_count);
-    TEST_ASSERT_EQUAL_UINT32(2, dec.par[0].i);
+    expect_pump_params("Grundfos", 0.5, 2, false);
+}
+
+/* #276: a type without parameters has a template without parameters, in the definition and in
+ * the instance. The firmware adds no parameter of its own: the "Unit ID" of #251 is gone. Its
+ * unit ID stays in the table Node Info/Modbus TCP. */
+static void test_template_without_parameters(void)
+{
+    static const char json[] =
+        "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"G\", \"edge_node_id\": \"N\"},"
+        " \"device_types\": [{\"name\": \"Valve\", \"tags\": ["
+        "  {\"name\": \"Open\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]}],"
+        " \"devices\": [{\"name\": \"V1\", \"unit_id\": 7, \"type\": \"Valve\"}]}";
+    static gw_config_t c;
+    gw_cfg_err_t err;
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse(json, sizeof(json) - 1, &c, &err), err.msg);
+    cfg = &c;
+    gw_tagdb_reset();
+    gw_node_ops_t ops = recorder_ops();
+    const gw_node_info_t info = {.firmware = "f", .hardware = "h", .reset_reason = "r"};
+    gw_node_init(&node, cfg, &ops, &info);
+    support_node_buffer(&node);
+    gw_tag_value_t v = {.value = 1, .ts_ms = 1000, .valid = true};
+    gw_tagdb_put_device(cfg, 0, &v, true);
+    gw_node_session_up(&node, 0);
+    TEST_ASSERT_EQUAL(2, g_rec.count);             /* NBIRTH, DBIRTH V1 */
+    msg(0);
+    int i = decoded_find_name(&dec, "Valve");
+    TEST_ASSERT_TRUE(i >= 0);
+    TEST_ASSERT_TRUE(dec.m[i].is_definition);
+    TEST_ASSERT_EQUAL(0, dec.m[i].params);
+    TEST_ASSERT_EQUAL(0, dec.param_count);
+    msg(1);
+    TEST_ASSERT_EQUAL_STRING("Valve", dec.m[0].ref);
+    TEST_ASSERT_EQUAL(1, dec.mem_count);
+    TEST_ASSERT_EQUAL(0, dec.m[0].params);
+    TEST_ASSERT_EQUAL(0, dec.param_count);
 }
 
 /* SPB-18 + SPB-16: the largest NBIRTH the configuration allows (GW_MAX_TEMPLATE_TAGS template
- * tags with 39-character names, units and an engineering range) fits the payload buffer. */
+ * tags with 39-character names, units and an engineering range) fits the payload buffer.
+ * #276: each of the 16 definitions has GW_MAX_TYPE_PARAMS parameters, each with a name of 39
+ * bytes and a default text of 63 bytes. With these limits each valid configuration fits, so
+ * the validation needs no rule for the size of a birth. */
 static void test_worst_case_nbirth_fits(void)
 {
-    static char doc[32768];
+    static char doc[65536];
     static gw_config_t c;
     size_t n = (size_t)snprintf(doc, sizeof(doc), "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": "
                                 "{\"group_id\": \"G\", \"edge_node_id\": \"N\"}, \"device_types\": [");
     const int types = 16, per = GW_MAX_TEMPLATE_TAGS / 16;
     for (int d = 0; d < types; d++) {
-        support_appendf(doc, sizeof(doc), &n, "%s{\"name\": \"%039d\", \"tags\": [",
+        support_appendf(doc, sizeof(doc), &n, "%s{\"name\": \"%039d\", \"params\": [",
                         d ? "," : "", d);
+        for (int k = 0; k < GW_MAX_TYPE_PARAMS; k++) {
+            support_appendf(doc, sizeof(doc), &n,
+                            "%s{\"name\": \"%038d%d\", \"type\": \"string\","
+                            " \"default\": \"%062d%d\"}", k ? "," : "", 0, k, 0, k);
+        }
+        support_appendf(doc, sizeof(doc), &n, "], \"tags\": [");
         for (int k = 0; k < per; k++) {
             support_appendf(doc, sizeof(doc), &n,
                             "%s{\"name\": \"%038d%d\", \"area\": \"input\", \"address\": %d,"
@@ -1701,8 +1766,11 @@ static void test_worst_case_nbirth_fits(void)
     gw_mbap_stats_add(&gfull);
     gw_node_session_up(&node, 0);
     TEST_ASSERT_EQUAL(1, g_rec.count);   /* the NBIRTH went out (devices offline) */
-    printf("worst-case NBIRTH with %d template tags: %u bytes of %u\n", GW_MAX_TEMPLATE_TAGS,
-           (unsigned)g_rec.msgs[0].len, (unsigned)GW_SPB_PAYLOAD_MAX);
+    TEST_ASSERT_EQUAL_UINT8(GW_MAX_TYPE_PARAMS, c.types[15].param_count);
+    TEST_ASSERT_EQUAL(63, strlen(c.types[15].params[7].def.str));
+    printf("worst-case NBIRTH with %d template tags and %d parameters: %u bytes of %u\n",
+           GW_MAX_TEMPLATE_TAGS, 16 * GW_MAX_TYPE_PARAMS, (unsigned)g_rec.msgs[0].len,
+           (unsigned)GW_SPB_PAYLOAD_MAX);
     TEST_ASSERT_LESS_THAN(GW_SPB_PAYLOAD_MAX, g_rec.msgs[0].len);
     msg(0);
     TEST_ASSERT_EQUAL(GW_NODE_BIRTH_METRICS + types + GW_NODE_RUN_HOURS_METRICS, dec.count);
@@ -3112,6 +3180,7 @@ int main(void)
     RUN_TEST(test_properties_and_quality);
     RUN_TEST(test_bytes_tag);
     RUN_TEST(test_templates);
+    RUN_TEST(test_template_without_parameters);
     RUN_TEST(test_store_and_forward_templates_bytes);
     RUN_TEST(test_diagnostics);
     RUN_TEST(test_gateway_labels);

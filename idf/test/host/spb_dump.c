@@ -117,12 +117,18 @@ int main(int argc, char **argv)
      * DDATA) and an untyped one */
     static const char tmpl_json[] =
         "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"Plant1\","
-        " \"edge_node_id\": \"GW08\"}, \"device_types\": [{\"name\": \"Pump\", \"tags\": ["
+        " \"edge_node_id\": \"GW08\"}, \"device_types\": [{\"name\": \"Pump\", \"params\": ["
+        /* #276: a parameter of each type; PumpA gives three values, PumpB gives none */
+        "  {\"name\": \"Manufacturer\", \"type\": \"string\", \"default\": \"Grundfos\"},"
+        "  {\"name\": \"Rated kW\", \"type\": \"float64\"},"
+        "  {\"name\": \"Poles\", \"type\": \"int64\", \"default\": 2},"
+        "  {\"name\": \"Has VFD\", \"type\": \"bool\"}], \"tags\": ["
         "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
         "   \"units\": \"rpm\", \"eng_high\": 3000},"
         "  {\"name\": \"Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]}],"
         " \"devices\": ["
-        " {\"name\": \"PumpA\", \"unit_id\": 1, \"type\": \"Pump\"},"
+        " {\"name\": \"PumpA\", \"unit_id\": 1, \"type\": \"Pump\","
+        "  \"params\": {\"Rated kW\": 7.5, \"Poles\": -4, \"Has VFD\": true}},"
         " {\"name\": \"PumpB\", \"unit_id\": 2, \"type\": \"Pump\"}]}";
     static gw_config_t tc;
     if (!gw_config_parse(tmpl_json, sizeof(tmpl_json) - 1, &tc, &err)) {
@@ -149,7 +155,10 @@ int main(int argc, char **argv)
         "{\"mqtt\": {\"host\": \"h\"}, \"sparkplug\": {\"group_id\": \"Plant1\","
         " \"edge_node_id\": \"acme:berlin:gw09\", \"device_prefix\": \"acme:berlin:packaging\","
         " \"naming\": \"umh\", \"diagnostics_s\": 10}, \"modbus_tcp\": {\"enabled\": true},"
-        " \"device_types\": [{\"name\": \"Pump\", \"tags\": ["
+        /* #276: the UMH preset has no templates, so the parameter of the type is not published */
+        " \"device_types\": [{\"name\": \"Pump\", \"params\": ["
+        "  {\"name\": \"Manufacturer\", \"type\": \"string\", \"default\": \"Grundfos\"}],"
+        " \"tags\": ["
         "  {\"name\": \"Speed\", \"area\": \"holding\", \"address\": 0, \"type\": \"uint16\","
         "   \"units\": \"rpm\"},"
         "  {\"name\": \"Motor/Run\", \"area\": \"coil\", \"address\": 0, \"type\": \"bool\"}]}],"

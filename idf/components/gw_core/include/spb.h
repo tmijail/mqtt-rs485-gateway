@@ -112,7 +112,8 @@ typedef struct {
  * named @c ref. Its @c count members are @c members[i], or produced on demand by @c get (which
  * may be called more than once per member: it must be deterministic). Members name themselves
  * and carry no alias (no_alias); a member is not itself a template. Its @c param_count
- * parameters (#251) are @c params[i]; 0 = the Template has no parameters on the wire.
+ * parameters (#251) are @c params[i], or, with @c params NULL, produced on demand by @c param
+ * (#276; deterministic, as @c get); 0 = the Template has no parameters on the wire.
  */
 typedef struct spb_template {
     const char *ref;
@@ -123,6 +124,8 @@ typedef struct spb_template {
     const void *ctx;
     uint32_t param_count;
     const spb_param_t *params;
+    void (*param)(const void *ctx, uint32_t i, spb_param_t *out);
+    const void *param_ctx;
 } spb_template_t;
 
 /** Outgoing metric. The oneof value field used on the wire follows @c datatype. */

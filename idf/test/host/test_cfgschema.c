@@ -109,8 +109,9 @@ static void test_validator_notes_the_document(void)
     gw_config_schema_init(&r);
     TEST_ASSERT_TRUE_MESSAGE(gw_config_parse_schema(json, len, cfg, &err, &r), err.msg);
     TEST_ASSERT_TRUE(r.valid);
-    /* #201: ntp.servers is the key of schema 2 in the example; all the others are schema 1 */
-    TEST_ASSERT_EQUAL_UINT16(GW_CONFIG_SCHEMA, r.need);
+    /* #201: ntp.servers is the key of schema 2 in the example; all the others are schema 1.
+     * The example has no key of schema 3 (#276) */
+    TEST_ASSERT_EQUAL_UINT16(2, r.need);
     TEST_ASSERT_TRUE(r.count > 50);
     TEST_ASSERT_EQUAL_STRING("ntp.servers", r.top[0].path);   /* the highest number first */
     TEST_ASSERT_EQUAL_STRING("network", r.top[1].path);       /* then the first key */
@@ -181,10 +182,11 @@ static void test_schema2_keys(void)
     TEST_ASSERT_TRUE_MESSAGE(gw_config_parse_schema(doc, strlen(doc), cfg, &err, &r), err.msg);
     size_t n;
     const gw_since_t *t = gw_config_since_table(&n);
-    TEST_ASSERT_EQUAL(28, n);
+    TEST_ASSERT_EQUAL(33, n);   /* 28 of schema 2, and 5 of schema 3 (test_schema3_keys) */
     TEST_ASSERT_EQUAL_UINT16(2, r.need);
     /* each entry once, but devices[].type and devices[].enabled are in two devices */
-    TEST_ASSERT_EQUAL_UINT16(n + 2, r.hist[2]);
+    TEST_ASSERT_EQUAL_UINT16(28 + 2, r.hist[2]);
+    TEST_ASSERT_EQUAL_UINT16(0, r.hist[3]);
     TEST_ASSERT_EQUAL_STRING("gateway", r.top[0].path);   /* the first noted key of schema 2 */
     char why[200];
     TEST_ASSERT_FALSE(gw_schema_fits(&r, 1, why, sizeof(why)));
@@ -200,6 +202,40 @@ static void test_schema2_keys(void)
     free(cfg);
 }
 
+/* #276: the keys of schema 3, the template parameters. An image that reads schema 2 refuses a
+ * document with a parameter, and gives the paths. The name of a parameter in devices[].params
+ * is a key that the user selects: the report has the key params, not the names. */
+static void test_schema3_keys(void)
+{
+    static const char doc[] =
+        "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"E\"},"
+        "\"device_types\":[{\"name\":\"P\",\"params\":[{\"name\":\"Rated kW\",\"type\":"
+        "\"float64\",\"default\":0}],\"tags\":[{\"name\":\"f\",\"area\":\"input\","
+        "\"address\":1,\"type\":\"uint16\"}]}],"
+        "\"devices\":[{\"name\":\"N\",\"unit_id\":2,\"type\":\"P\",\"params\":{\"Rated kW\":7.5}}]}";
+    gw_config_t *cfg = malloc(sizeof(*cfg));
+    gw_cfg_err_t err;
+    gw_schema_report_t r;
+    gw_config_schema_init(&r);
+    TEST_ASSERT_TRUE_MESSAGE(gw_config_parse_schema(doc, strlen(doc), cfg, &err, &r), err.msg);
+    size_t n;
+    const gw_since_t *t = gw_config_since_table(&n);
+    TEST_ASSERT_EQUAL_UINT16(3, r.need);
+    TEST_ASSERT_EQUAL_UINT16(3, GW_CONFIG_SCHEMA);
+    TEST_ASSERT_EQUAL_UINT16(5, r.hist[3]);   /* each of the five entries one time */
+    char why[200];
+    TEST_ASSERT_TRUE(gw_schema_fits(&r, 3, why, sizeof(why)));
+    TEST_ASSERT_FALSE(gw_schema_fits(&r, 2, why, sizeof(why)));
+    TEST_ASSERT_EQUAL_STRING("the configuration needs schema 3, the image reads 2: "
+                             "device_types[0].params (3), device_types[0].params[0].name (3), "
+                             "device_types[0].params[0].type (3) and 2 more", why);
+    TEST_ASSERT_EQUAL_UINT16(3, gw_schema_since(t, n, "device_types[15].params[7].default", NULL));
+    TEST_ASSERT_EQUAL_UINT16(3, gw_schema_since(t, n, "devices[4].params", NULL));
+    /* a type without parameters stays a document of schema 2 */
+    TEST_ASSERT_EQUAL_UINT16(2, gw_schema_since(t, n, "device_types[0].tags", NULL));
+    free(cfg);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -209,5 +245,6 @@ int main(void)
     RUN_TEST(test_validator_notes_the_document);
     RUN_TEST(test_firmware_table);
     RUN_TEST(test_schema2_keys);
+    RUN_TEST(test_schema3_keys);
     return UNITY_END();
 }

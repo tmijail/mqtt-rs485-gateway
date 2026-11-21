@@ -3,6 +3,8 @@
 # the string literals of gw_config.c, gw_cfgdoc.c, gw_claim.c, gw_mbdiag.c, gw_iocmd.c,
 # gw_ota.c, gw_logring.c, gw_phost.c, gw_certs.c and gw_conv.c. Add a new key here when
 # the configuration gets one.
+kw="\"default\""
+kw="\"params\""
 kw="{"
 kw="}"
 kw="["

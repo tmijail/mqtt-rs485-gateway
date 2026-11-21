@@ -134,7 +134,7 @@ typedef struct {
 } dec_metric_t;
 
 /* #251: one decoded Template parameter */
-#define DEC_PARAMS 32   /* 16 template definitions, each with one parameter, and spare */
+#define DEC_PARAMS 136  /* #276: 16 template definitions, each with 8 parameters, and spare */
 typedef struct {
     bool has_name;
     char name[64];
