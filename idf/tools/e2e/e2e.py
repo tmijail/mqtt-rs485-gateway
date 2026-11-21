@@ -8627,7 +8627,7 @@ def check_devices_gw02(obs, slave, gw, node, t0):
     obs.publish_cmd(f"{T}/DCMD/{node}/Spare", [{"name": "Level", "datatype": 6, "int_value": 7}])
     dropped = gw.wait_log(r"DCMD for disabled device 'Spare' discarded", 5, since)
     _, h = gw.shell(["status", "config"],
-                    [r"^network\s+.*Modbus \d+/9 devices online, 1 disabled$",
+                    [r"^network\s+.*Modbus \d+/10 devices online, 1 disabled$",
                      r"^\s+Spare\s+unit\s+1, poll 200 ms, .*, disabled \(not polled\)$"])
     status, summary = h.values()
     asked = [r for t, r in zip(list(slave.times), list(slave.reads), strict=False)
