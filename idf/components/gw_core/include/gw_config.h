@@ -48,7 +48,14 @@ extern "C" {
 #define GW_NO_BIT       (-1)
 #define GW_NO_TYPE      (-1)        /* #213: a device with its own tags */
 #define GW_MAX_DEVICE_TYPES 16      /* #213: entries of device_types */
-#define GW_MAX_TYPE_PARAMS 8        /* #276: template parameters of one device type */
+/* #276: the template parameters of one device type. The configuration keeps a table of 16 types
+ * and a table of 16 devices with this number of parameters (about 22 KB with 8). Only the QEMU
+ * build without PSRAM (CONFIG_GW_EMU_NO_PSRAM, #135) sets a smaller number, in the CMakeLists.txt
+ * of this component: there the configuration and its second copy for a validation are in
+ * internal RAM, which cannot hold the two tables. */
+#ifndef GW_MAX_TYPE_PARAMS
+#define GW_MAX_TYPE_PARAMS 8
+#endif
 #define GW_PARAM_STR_SIZE 64        /* #276: a string parameter value with its NUL (the limit of
                                      * the codec, SPB_SHORT_STRING_MAX + 1) */
 #define GW_PARAM_INT_MAX 9007199254740992.0   /* #276: 2^53; a JSON number gives each integer

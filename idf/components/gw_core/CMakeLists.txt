@@ -69,6 +69,14 @@ if(ESP_PLATFORM)
     # issue #227: the same warnings as the host build, plus the stack data (gw_warnings.cmake)
     gw_target_options(${COMPONENT_LIB})
     target_compile_options(${COMPONENT_LIB} PRIVATE -Wconversion -Wno-sign-conversion)
+    # #276 [test value]: the QEMU build without PSRAM keeps gw_config_t, and its second copy for a
+    # validation, in internal RAM. The parameter tables of 8 parameters for each type do not fit
+    # there, so this build has 1. The logic is the same; the PSRAM variant of the E2E, the
+    # configuration of the board, examines the limit of 8. PUBLIC: each component that includes
+    # gw_config.h must see the same gw_config_t.
+    if(CONFIG_GW_EMU_NO_PSRAM)
+        target_compile_definitions(${COMPONENT_LIB} PUBLIC GW_MAX_TYPE_PARAMS=1)
+    endif()
 else()
     add_library(gw_core STATIC ${GW_CORE_SRCS} port/gw_port_posix.c)
     target_include_directories(gw_core PUBLIC include PRIVATE proto)

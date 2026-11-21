@@ -235,7 +235,7 @@ Each option of a `sdkconfig.qemu*` overlay gives its class in its comment: `[har
 
 The QEMU-only options of the firmware:
 - `CONFIG_GW_IO_SIMULATED` replaces GPIO, the I²C expander and the LED with RAM models and enables emulator-only shell commands (`di`, `storm`, `validation hold`, `panic`, `pubfail`, `claimsim`, …). It must never be enabled on hardware.
-- `CONFIG_GW_EMU_NO_PSRAM` (hidden) is set only in the QEMU build without PSRAM (`sdkconfig.qemu`: `CONFIG_GW_IO_SIMULATED` and no `CONFIG_SPIRAM`). There the own memory goes to internal RAM, with a 6 KB payload buffer and a store & forward ring of 512 samples. A build without `CONFIG_SPIRAM` and without `CONFIG_GW_IO_SIMULATED` does not compile.
+- `CONFIG_GW_EMU_NO_PSRAM` (hidden) is set only in the QEMU build without PSRAM (`sdkconfig.qemu`: `CONFIG_GW_IO_SIMULATED` and no `CONFIG_SPIRAM`). There the own memory goes to internal RAM, with a 6 KB payload buffer, a store & forward ring of 512 samples, and a maximum of 1 template parameter for each device type (`GW_MAX_TYPE_PARAMS`; the board has 8, #276). A build without `CONFIG_SPIRAM` and without `CONFIG_GW_IO_SIMULATED` does not compile.
 - `CONFIG_GW_FW_PARK_OTHER_CORE` parks core 1 while flash is mapped, to work around QEMU MMU races (#107, #111). `gw_bus_hold()` makes the bus task step aside at a lock-free point first.
 
 ## E2E harness (`idf/tools/e2e/e2e.py`)
