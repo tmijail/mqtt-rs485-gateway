@@ -7,7 +7,7 @@ This procedure tells how to give a Modbus TCP client, for example a PLC or a SCA
 - For the limits of the server, refer to [Known limitations](../reference/known-limitations.md#modbus-tcp-mb-15).
 - For UMH Core as the client, refer to [Use Modbus TCP as a second path](connect-to-umh-core.md#use-modbus-tcp-as-a-second-path).
 
-> **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The RS485 hardware mode and the local I/O are compile-only. The E2E examines the Modbus TCP server and the local unit in QEMU. The image comes from the firmware in QEMU.
+> **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The RS485 hardware mode and the local I/O are compile-only. The E2E examines the Modbus TCP server and the local unit in QEMU. The images come from the firmware in QEMU.
 
 > **Caution: Add only the clients that must have access.** Modbus TCP has no authentication: a permitted client can read and write each register of each slave on the bus. The write limits of the tags do not apply to these requests.
 
@@ -78,6 +78,8 @@ The validation gives these errors, for example:
 - "'10.0.5' is not an IPv4 address or network" below a row of **Allowed clients**. An empty row also gives this error: type an address, or remove the row.
 - "Unit 100 is the Unit ID of the device Pump1" below **Local unit ID**. Type a unit ID that no device has.
 
+![The card 'Modbus TCP' after Validate with 10.0.5 in row 1 of Allowed clients. The row has a red border, and below it the error of the gateway shows in red: '10.0.5' is not an IPv4 address or network.](../images/modbus-tcp-client-error.png)
+
 ## Make sure that the server operates
 
 1. In the client, set the address of the gateway, the port and the protocol Modbus TCP.
@@ -100,6 +102,8 @@ If the gateway has a local unit, read it from the client, with **Local unit ID**
 
 - Each counter and each run hours value has 4 registers: an unsigned integer of 64 bits, with the most significant register first.
 - The addresses of the table start at 0, as in the Modbus request. Some clients show numbers that start at 1.
+
+![The card 'Local I/O' of the Status tab: the table of the DIs with the state, the counter (DI 8: fast) and the run hours, and the table of the DOs with the state, a button Turn on or Turn off, Pulse 300 ms for DO 7, the local rules of DO 5 and DO 6 in place of a button, and the run hours of DO 2. Below are the safe state, the buzzer and the time.](../images/status-local-io.png)
 
 The web UI does not show the counters of the Modbus TCP server. As a complement:
 

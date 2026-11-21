@@ -77,10 +77,11 @@ def docs_config(web_password=None, labels=None):
     return cfg
 
 
-def wait_ready(h, name, gw, auth, timeout=180):
+def wait_ready(h, name, gw, auth, timeout=180, clock=True):
     """Wait until the shell answers and /api/status shows MQTT connected, a synchronized time and
-    each device online (the status page then shows a steady state). The last status goes to
-    status-<name>.json in the work directory (for the choice of the FREEZE paths)."""
+    each device online (the status page then shows a steady state). With @clock False: the
+    gateway waits for a valid clock (no MQTT session), and each device is online. The last status
+    goes to status-<name>.json in the work directory (for the choice of the FREEZE paths)."""
     gw.shell("status", [r"^config\s"], timeout=10, tries=int(timeout / 10))
     end = time.monotonic() + timeout
     st, code, ready = {}, None, False
@@ -88,8 +89,10 @@ def wait_ready(h, name, gw, auth, timeout=180):
         code, _, body = e2e.http("GET", "/api/status", auth=auth, timeout=10)
         st = (e2e.as_json(body) or {}) if code == 200 else {}
         devs = st.get("devices", [])
-        ready = bool(st.get("mqtt", {}).get("connected") and st.get("time", {}).get("synced")
-                     and devs and all(d.get("online") for d in devs))
+        tm = st.get("time", {})
+        session = (st.get("mqtt", {}).get("connected") and tm.get("synced")) if clock \
+            else tm.get("waiting")
+        ready = bool(session and devs and all(d.get("online") for d in devs))
         if not ready:
             time.sleep(1)
     (h.work / f"status-{name}.json").write_text(json.dumps(st, indent=2))
@@ -148,8 +151,23 @@ def state_pem(h):
 
 
 # name -> function(harness) that boots the gateway and returns (Gateway, Basic auth or None)
+def state_noclock(h):
+    """TIME-1 (#160): a configured gateway that waits for a valid clock. No SNTP server answers
+    (e2e.SNTP_PAUSED; Harness.leave clears it), and the RTC of the emulator has no time, as the
+    RTC of a board without its battery after a power cut. The gateway opens no MQTT session."""
+    e2e.SNTP_PAUSED.set()
+    t = time.monotonic()
+    gw = h.boot("noclock", docs_config(DOCS_PASSWORD))
+    auth = ("admin", DOCS_PASSWORD)
+    if not gw.wait_log(e2e.WAIT_CLOCK_RX, 180, t):
+        raise SystemExit(f"noclock: the gateway did not wait for a valid clock; see "
+                         f"uart0-noclock.log in {h.work}")
+    wait_ready(h, "noclock", gw, auth, clock=False)
+    return gw, auth
+
+
 STATES = {"configured": state_configured, "claim": state_claim, "named": state_named,
-          "pem": state_pem}
+          "pem": state_pem, "noclock": state_noclock}
 
 
 def safe_mode_restart(gw):
@@ -413,6 +431,56 @@ def device_with_type(page):
     page.evaluate("document.querySelector('#f-dev>.card').scrollIntoView()")
 
 
+# #276: the parameters of the type Meter in the shots, one of each type: (name, type, default;
+# None: no default typed, the check box of a bool stays clear)
+METER_PARAMS = [("Manufacturer", "string", "Acme"), ("CT ratio", "int64", "100"),
+                ("Accuracy class", "float64", "0.5"), ("Billing meter", "bool", None)]
+
+
+def type_params(page):
+    """Issue #276: the type Meter (make_type) with the four parameters of METER_PARAMS in its
+    table Parameters. A new name and a new type draw the forms again: the Tab ends the edit of
+    the name, as an operator does. No save."""
+    make_type(page)
+    for k, (name, typ, default) in enumerate(METER_PARAMS):
+        base = f"device_types.0.params.{k}"
+        page.click('[data-add-par="0"]')
+        page.fill(f'[data-p="{base}.name"]', name)
+        page.press(f'[data-p="{base}.name"]', "Tab")
+        page.select_option(f'[data-p="{base}.type"]', typ)
+        if default is not None:
+            page.fill(f'[data-p="{base}.default"]', default)
+    page.locator('#dt-0 [data-add-par="0"]').focus()   # the field Default loses the focus
+    page.evaluate("document.activeElement.blur()")
+    page.wait_for_selector(f"#dt-0 .prow:nth-child({len(METER_PARAMS) + 1})")
+    page.evaluate("document.querySelector('#dt-0').scrollIntoView()")
+
+
+def device_params(page, ct_ratio="200"):
+    """Issue #276: the block Parameters of Meter1 (type Meter, type_params): the value
+    @ct_ratio of its own for 'CT ratio'; the three other fields are empty and show the default
+    of the type. No save."""
+    type_params(page)
+    page.fill('[data-dpar="0"][data-pn="CT ratio"]', ct_ratio)
+    page.press('[data-dpar="0"][data-pn="CT ratio"]', "Tab")
+    page.evaluate("document.activeElement.blur()")
+    page.evaluate("document.querySelector('#f-dev>.card').scrollIntoView()")
+
+
+def ask_remove_param(page):
+    """Issue #276: the dialog of the button x of the parameter 'CT ratio', for which Meter1 has
+    its own value (device_params). No removal."""
+    device_params(page)
+    page.click('[data-del-par="0|1"]')
+
+
+def param_error(page):
+    """Issues #191 and #276: Validate (dry run) with the text '200 A' in the int64 parameter
+    'CT ratio' of Meter1. The gateway refuses it, and the error shows at the field."""
+    device_params(page, "200 A")
+    page.click("#b-check")
+
+
 def device_disabled(page):
     """Issue #214: Meter1 with Enabled cleared: the notice and the dashed border. No save."""
     page.click("nav button[data-tab=config]")
@@ -660,6 +728,16 @@ def modbus_local(page):
     page.evaluate("document.querySelector('#f-mbloc').scrollIntoView({block: 'center'})")
 
 
+def mbtcp_client_error(page):
+    """Issue #216 (#191): Validate (dry run) with '10.0.5' in row 1 of Allowed clients. The
+    gateway refuses it, and the error shows below the row."""
+    page.click("nav button[data-tab=config]")
+    page.fill('[data-p="modbus_tcp.allowed_clients.0"]', "10.0.5")
+    page.click("#b-check")
+    page.wait_for_selector('.card[data-cc="mbtcp"] .ferr')
+    page.evaluate("document.activeElement.blur()")
+
+
 def ipv6_card(page):
     """#221: the card IPv6 with IPv6 on, SLAAC, a static address for Ethernet and an IPv6 DNS
     server. No save."""
@@ -778,7 +856,8 @@ class Shot:
     @prep: a function(Gateway) that runs on the emulator before the page opens (for example
     a push of BOOT); it changes the state for the shots after it.
     @wait: a selector that must be visible before the capture. @element: capture only this
-    element (with @pad CSS pixels around it); else @full_page or the viewport. @auth: send the
+    element (with @pad CSS pixels around it), or the area from it to the element @until; else
+    @full_page or the viewport. @auth: send the
     credential of the state (False: open the page without it). @alt: the text alternative to put
     next to the image in the docs (the script prints it)."""
     name: str
@@ -790,6 +869,7 @@ class Shot:
     prep: object = None
     wait: str = ""
     element: str = ""
+    until: str = ""   # with @element: the image goes from @element to this element (both in it)
     pad: int = 8
     full_page: bool = False
     # #250: Playwright's own element shot (the element scrolled into the window, no @pad). On a
@@ -891,14 +971,45 @@ SHOTS = [
     Shot("device-types-card", "configured", DESKTOP, "/", actions=[make_type],
          element="#dt-card",
          alt="The card 'Device types (1)' of the Configuration tab with the type Meter open: "
-             "its name, the line 'Used by 1 device: Meter1', the table of its tags and the "
-             "buttons '+ tag' and 'Remove type'. 'Remove type' is disabled, and the text next to "
-             "it tells to give the devices another type first."),
+             "its name, the line 'Used by 1 device: Meter1', the heading Parameters with the "
+             "text 'This type has no parameters.' and the button '+ parameter', and below the "
+             "heading Tags the table of its tags and the buttons '+ tag' and 'Remove type'. "
+             "'Remove type' is disabled, and the text next to it tells to give the devices "
+             "another type first."),
     Shot("device-with-type", "configured", DESKTOP, "/", actions=[device_with_type],
          element="#f-dev>.card",
          alt="The device Meter1 with 'Meter' in the field Device type. In place of a tag table, "
              "a grey box tells that the device uses the tags of the device type Meter, with the "
              "link 'Go to the type Meter'. The device has no button '+ tag'."),
+    # issue #276: docs/how-to/add-devices-of-one-type.md and docs/reference/configuration.md
+    # (no save: the state does not change)
+    Shot("device-type-parameters", "configured", DESKTOP, "/", actions=[type_params],
+         element="#dt-0 .sect:has(.lbl)", until="#dt-0 .row:has([data-add-par])",
+         alt="The heading Parameters of the device type Meter, with its (?) button and the text "
+             "'Fixed values of each device of the type, for example the manufacturer. The "
+             "gateway sends them in the birth messages.' The table has the columns Parameter, "
+             "Type and Default and four rows: Manufacturer, string, Acme; CT ratio, int64, 100; "
+             "Accuracy class, float64, 0.5; and Billing meter, bool, with a clear check box. "
+             "Each row has a button x. Below are the button '+ parameter' and the counter '4 "
+             "of 8'."),
+    Shot("device-parameters", "configured", DESKTOP, "/", actions=[device_params],
+         element="#f-dev>.card",
+         alt="The device Meter1 with the device type Meter. Above the grey box of the tags, the "
+             "heading Parameters has one field for each parameter of the type. 'CT ratio' has "
+             "the value 200 of the device. Manufacturer and 'Accuracy class' are empty and show "
+             "the defaults Acme and 0.5 in grey. 'Billing meter' is a list that shows 'Default "
+             "(no)'."),
+    Shot("parameter-remove-dialog", "configured", DESKTOP, "/", actions=[ask_remove_param],
+         wait="#dlg[open]",
+         alt="The dialog 'Remove the parameter CT ratio?' with the line 'Type Meter · 1 "
+             "device'. It tells that Meter1 has its own value for this parameter, 200, that the "
+             "value goes away when you save, and that the gateway then does not send 'CT ratio' "
+             "in the birth messages. It has the buttons Cancel and 'Remove the parameter'."),
+    Shot("parameter-error", "configured", DESKTOP, "/", actions=[param_error], wait=".ferr",
+         alt="The Configuration tab after Validate with the text '200 A' in the parameter 'CT "
+             "ratio' of Meter1. Below the field, the error of the gateway shows in red. The bar "
+             "at the bottom of the window shows '1 error: Meter1 · CT ratio' with the link 'Go "
+             "to the field', and the buttons Validate and 'Save and restart'."),
     Shot("device-disabled", "configured", DESKTOP, "/", actions=[device_disabled],
          element="#f-dev>.card",
          alt="The device Meter1 with the check box Enabled cleared. The card has a dashed "
@@ -1063,6 +1174,12 @@ SHOTS = [
          alt="The card 'Modbus TCP' of the Configuration tab: Enabled, the port 502, the idle "
              "timeout, the allowed client 10.0.2.2, and the section 'The I/O of the gateway as "
              "a Modbus unit' with the local unit 100 and Local writes on."),
+    # #216: docs/how-to/connect-a-modbus-tcp-client.md (a dry run: the state does not change)
+    Shot("modbus-tcp-client-error", "configured", DESKTOP, "/", actions=[mbtcp_client_error],
+         element='.card[data-cc="mbtcp"]',
+         alt="The card 'Modbus TCP' after Validate with 10.0.5 in row 1 of Allowed clients. The "
+             "row has a red border, and below it the error of the gateway shows in red: "
+             "'10.0.5' is not an IPv4 address or network."),
     # #221: docs/reference/configuration.md (network.ipv6)
     Shot("ipv6-card", "configured", DESKTOP, "/", actions=[ipv6_card],
          element='.card[data-cc="v6"]',
@@ -1169,6 +1286,17 @@ SHOTS = [
              "is recovery (safe mode) and the configuration is not loaded. The access point "
              "GW-Setup-000001 is on, the firmware card gives safe mode on request, and in the "
              "card Restart and reset the button 'Restart into safe mode' is disabled."),
+    # TIME-1 (#160): docs/how-to/set-the-time-servers.md. The real values of a gateway without a
+    # valid clock: the clock counts from 1970, and the RTC has no time (FREEZE gives the values
+    # of a board with a synchronized clock)
+    Shot("status-waiting-for-clock", "noclock", DESKTOP, "/", wait="#banner:not(.hidden)",
+         freeze={"time.utc_s": 60, "uptime_s": 60, "time.rtc.lost": True},
+         alt="The Status tab of a gateway without a valid clock. A banner below the header "
+             "tells: 'Waiting for a valid clock. The gateway does not connect to the MQTT broker "
+             "and sends no NBIRTH until the clock is valid.' It tells to make sure that the "
+             "gateway can reach the SNTP server, or to push 'Set the time from the browser', "
+             "and to examine the RTC battery. The card 'Network and MQTT' shows 'Network up · "
+             "MQTT waiting for a valid clock'."),
 ]
 
 
@@ -1228,6 +1356,7 @@ class Harness:
         if self.gw is not None:
             self.gw.kill()
         self.gw, self.state = None, None
+        e2e.SNTP_PAUSED.clear()   # the state "noclock" set it
 
     def close(self):
         self.leave()
@@ -1329,6 +1458,12 @@ def capture(browser, shot, auth, base):
             if shot.own:
                 return page.locator(shot.element).first.screenshot(**opts)
             box = page.locator(shot.element).first.bounding_box()
+            if shot.until:
+                b2 = page.locator(shot.until).first.bounding_box()
+                x0, y0 = min(box["x"], b2["x"]), min(box["y"], b2["y"])
+                box = {"x": x0, "y": y0,
+                       "width": max(box["x"] + box["width"], b2["x"] + b2["width"]) - x0,
+                       "height": max(box["y"] + box["height"], b2["y"] + b2["height"]) - y0}
             # the box is relative to the viewport, the clip of a full page to the page: add the
             # scroll position (a click scrolls the page, and a reload keeps the position)
             sx, sy = page.evaluate("[window.scrollX, window.scrollY]")

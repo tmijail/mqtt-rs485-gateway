@@ -594,7 +594,13 @@ In this example, `Pump1` has the values `Grundfos`, 7.5, 2 and `true`. `Pump2` h
 
 In the web UI, each type of the card **Device types** has the heading **Parameters** above the heading **Tags**. Its table has the columns **Parameter**, **Type** and **Default**, a button **x** in each row, the button **+ parameter** and a counter, for example `4 of 8`. **Default** is a text field, or a check box for `bool`. A type without parameters shows "This type has no parameters." On a phone, each parameter is a group of fields.
 
+![The heading Parameters of the device type Meter, with its (?) button and the text 'Fixed values of each device of the type, for example the manufacturer. The gateway sends them in the birth messages.' The table has the columns Parameter, Type and Default and four rows: Manufacturer, string, Acme; CT ratio, int64, 100; Accuracy class, float64, 0.5; and Billing meter, bool, with a clear check box. Each row has a button x. Below are the button '+ parameter' and the counter '4 of 8'.](../images/device-type-parameters.png)
+
 In the card **Devices and tags**, a device shows the heading **Parameters** above the grey box of the tags when its type has parameters. Each parameter has one field, and the label of the field is the name of the parameter. An empty field uses the default of the type, which shows as grey text in the field. A `bool` parameter is a list: `Default (no)` or `Default (yes)`, `Yes` and `No`.
+
+![The device Meter1 with the device type Meter. Above the grey box of the tags, the heading Parameters has one field for each parameter of the type. 'CT ratio' has the value 200 of the device. Manufacturer and 'Accuracy class' are empty and show the defaults Acme and 0.5 in grey. 'Billing meter' is a list that shows 'Default (no)'.](../images/device-parameters.png)
+
+The two images show a type `Meter` with four parameters, not the type `Pump` of the example above.
 
 The web UI keeps the values of the devices in agreement with the table of the type:
 
