@@ -10,13 +10,15 @@ This guide makes the screenshots of the web UI in `docs/images/` again, for exam
 
 ## 1. Build the image
 
-1. Build the image `gw-docs`. It is the image `gw-e2e` with Playwright and Chromium:
+1. Build the image `gw-docs`. It is the image `gw-e2e` with Playwright, Chromium and the font of the images:
 
    ```powershell
    docker build -t gw-docs idf/tools/docs
    ```
 
-Do this step again when `idf/tools/docs/Dockerfile` or `idf/tools/docs/requirements.txt` changes, or after a new build of `gw-e2e`.
+Do this step again when a file in `idf/tools/docs/` changes, or after a new build of `gw-e2e`.
+
+The web UI asks the browser for the font of the system (`system-ui`). The image gives the font Inter for it, without hinting (`idf/tools/docs/56-gw-docs-fonts.conf`). Thus the script draws the same pixels on each computer.
 
 ## 2. Update the clone
 
@@ -55,11 +57,13 @@ CAUTION: Add `-e DOCS_LOCK=/work/e2e.lock` when a different E2E run can use the 
 
 1. Add an entry to `SHOTS` in `idf/tools/docs_shots.py`. Give the name, the state, the viewport (`PHONE` or `DESKTOP`), the page and the text alternative.
 2. If the shot needs a different state of the gateway, add a function to `STATES`. For a small change of a state (for example a push of BOOT), give a function in `prep`.
-3. If the page shows a value that changes at each run, add its path to `FREEZE`. Do the same for a value that only the emulator shows, and use the value of the board.
-4. Do step 3 with `--only` and the name of the new shot.
-5. Do step 4.
+3. To show only a part of a card, give its first element in `element` and its last element in `until`.
+4. If the page shows a value that changes at each run, add its path to `FREEZE`. Do the same for a value that only the emulator shows, and use the value of the board.
+5. Do step 3 with `--only` and the name of the new shot.
+6. Do step 4.
 
 ## If a problem occurs
 
 - **The gateway did not reach a steady state.** Read the console log `uart0-<state>.log` in the work folder (`/work/docs`). The file `status-<state>.json` contains the last status.
 - **Many images change, but the web UI did not change.** A new Playwright or Chromium version renders the text differently. Make all the screenshots again in one commit.
+- **The text of the images has a different font.** The script did not run in the image `gw-docs`, or the image is old. Do step 1 again.

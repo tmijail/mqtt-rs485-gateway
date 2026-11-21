@@ -5,7 +5,7 @@ This procedure tells how to set the SNTP servers of the gateway in the web UI, f
 - For the key `ntp.servers`, refer to [The configuration document](../reference/configuration.md#ntp).
 - For the sources of the clock and the signals of the wait, refer to [The clock and the RTC battery](../reference/clock-and-rtc-battery.md).
 
-> **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The E2E examines the SNTP servers and the wait for a valid clock in QEMU. The image comes from the firmware in QEMU.
+> **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The E2E examines the SNTP servers and the wait for a valid clock in QEMU. The images come from the firmware in QEMU.
 
 Without a valid clock, the gateway opens no MQTT session and sends no NBIRTH. The default server is `pool.ntp.org`. In a plant, the firewall often blocks this server. Then use the NTP server of the site.
 
@@ -56,6 +56,9 @@ For example, an empty row gives the error "Cannot be empty" below its field. Typ
 1. Click the tab **Status**.
 2. In the card **Local I/O**, find the line that starts with `Time:`.
 3. Make sure that the line shows `synchronized by SNTP`.
+
+   ![The card 'Local I/O' of the Status tab: the table of the DIs with the state, the counter (DI 8: fast) and the run hours, and the table of the DOs with the state, a button Turn on or Turn off, Pulse 300 ms for DO 7, the local rules of DO 5 and DO 6 in place of a button, and the run hours of DO 2. Below are the safe state, the buzzer and the time.](../images/status-local-io.png)
+
 4. In the card **Network and MQTT**, make sure that the first line shows `MQTT connected`.
 
 The line `Time:` shows the source of the clock:
@@ -70,6 +73,8 @@ The line `Time:` shows the source of the clock:
 The RTC keeps the time during a restart. Thus, after the restart, the line can show `from the RTC (not synchronized)` first, and MQTT can connect before a server answers. Only `synchronized by SNTP` shows that a server answers.
 
 While the gateway waits, the page shows the banner "Waiting for a valid clock". The card **Network and MQTT** then shows `MQTT waiting for a valid clock`.
+
+![The Status tab of a gateway without a valid clock. A banner below the header tells: 'Waiting for a valid clock. The gateway does not connect to the MQTT broker and sends no NBIRTH until the clock is valid.' It tells to make sure that the gateway can reach the SNTP server, or to push 'Set the time from the browser', and to examine the RTC battery. The card 'Network and MQTT' shows 'Network up · MQTT waiting for a valid clock'.](../images/status-waiting-for-clock.png)
 
 ## If no server answers
 
