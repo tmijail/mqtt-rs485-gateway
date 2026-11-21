@@ -334,6 +334,21 @@ static void seeds_config(const char *name)
     seed_str("default_config", 0, s_doc_default);
     seed_str("e2e_config", 0, s_doc_e2e);
     seed_str("e2e_config_schema", 64, s_doc_e2e);
+    /* #276: the template parameters of a device type, one of each type, and the values of a
+     * device */
+    static const char params[] =
+        "{\"mqtt\":{\"host\":\"h\"},\"sparkplug\":{\"group_id\":\"G\",\"edge_node_id\":\"N\"},"
+        "\"device_types\":[{\"name\":\"Pump\",\"params\":["
+        "{\"name\":\"Manufacturer\",\"type\":\"string\",\"default\":\"Grundfos\"},"
+        "{\"name\":\"Rated kW\",\"type\":\"float64\",\"default\":0.5},"
+        "{\"name\":\"Poles\",\"type\":\"int64\",\"default\":2},"
+        "{\"name\":\"Has VFD\",\"type\":\"bool\"}],"
+        "\"tags\":[{\"name\":\"Speed\",\"area\":\"holding\",\"address\":0,\"type\":\"uint16\"}]}],"
+        "\"devices\":[{\"name\":\"P1\",\"unit_id\":1,\"type\":\"Pump\","
+        "\"params\":{\"Rated kW\":7.5,\"Poles\":-4,\"Has VFD\":true,\"Manufacturer\":\"KSB\"}},"
+        "{\"name\":\"P2\",\"unit_id\":2,\"type\":\"Pump\"}]}";
+    seed_str("params_config", 0, params);
+    seed_str("params_config_schema", 64, params);
     if (strcmp(name, "fuzz_cfgdoc") == 0) {
         seed_str("e2e_config_update", 64, s_doc_e2e);
         const char *secrets = "{\"mqtt\":{\"host\":\"h\",\"password\":\"********\"},"

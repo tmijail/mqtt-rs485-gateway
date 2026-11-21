@@ -133,14 +133,23 @@ A device with `type` uses the tags of an entry of `device_types` (refer to [`dev
 
 | Message | Contents |
 |---|---|
-| NBIRTH | One Template metric (19) for each type that a device uses: the definition, with `is_definition = true`, no alias and no `template_ref`. Its name is the name of the type. Its members are the tags of the type, with a name, a datatype, a default value and the properties `engUnit`, `engLow` and `engHigh`. It has the parameter `Unit ID` (Int32) with the default 0. A type that no device uses has no definition |
-| DBIRTH | One Template metric, the instance. Its name is the type, its alias is 100 + the first tag of the device, and its `template_ref` is the type. Its members are the tags, by name and without an alias. Its parameter `Unit ID` has the Modbus unit ID of the device (`unit_id`) |
+| NBIRTH | One Template metric (19) for each type that a device uses: the definition, with `is_definition = true`, no alias and no `template_ref`. Its name is the name of the type. Its members are the tags of the type, with a name, a datatype, a default value and the properties `engUnit`, `engLow` and `engHigh`. It has each parameter of the type, with its name, its datatype and its default. A type that no device uses has no definition |
+| DBIRTH | One Template metric, the instance. Its name is the type, its alias is 100 + the first tag of the device, and its `template_ref` is the type. Its members are the tags, by name and without an alias. It gives each parameter of its definition, with the value of the device or the default of the type |
 | DDATA | The instance by alias, with only the members that changed, by name. It has no parameters |
 | DCMD | The instance with the members to write, by name. The tag by name as a separate metric is also accepted. A member by alias is not accepted. The gateway ignores the parameters of the instance |
 
-Each parameter has a name, a type and a value. The value of an Int32 parameter is in `int_value`. For the choices and their reasons, refer to [The template parameter `Unit ID`](sparkplug-behavior.md#the-template-parameter-unit-id-251).
+The user defines the parameters of a device type in the configuration (refer to [The parameters of a device type](configuration.md#the-parameters-of-a-device-type)). The firmware adds no parameter of its own, so a type without parameters has a template without parameters. Each parameter has a name, a datatype and a value in the field of that datatype:
 
-All the devices of a type have the same tags, because they use the tag list of the type. Thus each instance has all the members of the definition and only these members (`tck-id-payloads-template-definition-members`, `tck-id-payloads-template-instance-members-birth`). The NBIRTH has the definition of each type that a DBIRTH uses (`tck-id-payloads-template-definition-nbirth`). Each definition has the parameter of its instances (`tck-id-payloads-template-definition-parameters`).
+| `type` of the parameter | Datatype | Value field |
+|---|---|---|
+| `string` | String (12) | `string_value` |
+| `int64` | Int64 (4) | `long_value` |
+| `float64` | Double (10) | `double_value` |
+| `bool` | Boolean (11) | `boolean_value` |
+
+For the choices and their reasons, refer to [Template parameters](sparkplug-behavior.md#template-parameters-276).
+
+All the devices of a type have the same tags, because they use the tag list of the type. Thus each instance has all the members of the definition and only these members (`tck-id-payloads-template-definition-members`, `tck-id-payloads-template-instance-members-birth`). The NBIRTH has the definition of each type that a DBIRTH uses (`tck-id-payloads-template-definition-nbirth`). Each definition has each parameter of its instances (`tck-id-payloads-template-definition-parameters`).
 
 ## Commands
 

@@ -2099,6 +2099,194 @@ static void test_allocator_and_out_of_memory(void)
     gw_config_set_allocator(malloc, free);
 }
 
+/* SPB-18 #276: the template parameters that the user defines. device_types[].params gives the
+ * name, the type and the default of each parameter of a type; devices[].params gives the value
+ * of a device. tck-id-payloads-template-definition-parameters: the definition has each parameter
+ * of its instances, so a device cannot give a parameter that its type does not have.
+ * tck-id-payloads-template-parameter-value: a parameter always has a value, so a parameter
+ * without a default gets 0, false or "". */
+static void test_type_params(void)
+{
+#define PDOC(params, dev) "{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","      \
+                          "\"edge_node_id\":\"E\"},\"device_types\":[{\"name\":\"Meter\","    \
+                          "\"tags\":[{\"name\":\"v\",\"area\":\"input\",\"address\":0,"         \
+                          "\"type\":\"uint16\"}]},{\"name\":\"Pump\",\"params\":[" params "],"  \
+                          "\"tags\":[{\"name\":\"v\",\"area\":\"input\",\"address\":0,"         \
+                          "\"type\":\"uint16\"}]}],\"devices\":[" dev "]}"
+#define FOUR "{\"name\":\"Manufacturer\",\"type\":\"string\",\"default\":\"Grundfos\"},"        \
+             "{\"name\":\"Rated kW\",\"type\":\"float64\",\"default\":0.5},"                    \
+             "{\"name\":\"Poles\",\"type\":\"int64\",\"default\":2},"                           \
+             "{\"name\":\"Has VFD\",\"type\":\"bool\",\"default\":true}"
+#define PUMP(n, extra) "{\"name\":\"" n "\",\"unit_id\":1,\"type\":\"Pump\"" extra "}"
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse(PDOC(FOUR, "{\"name\":\"M\",\"unit_id\":9,\"type\":\"Meter\"},"
+                         PUMP("P1", ",\"params\":{\"Rated kW\":7.5,\"Has VFD\":false,"
+                                    "\"Manufacturer\":\"KSB\",\"Poles\":-4}") ","
+                         PUMP("P2", ) ","
+                         PUMP("P3", ",\"params\":{\"Poles\":6}"))),
+        err.msg);
+    /* the parameters of a type are at the index of the type in device_types */
+    TEST_ASSERT_EQUAL_UINT8(0, cfg.types[0].param_count);
+    const gw_devtype_cfg_t *ty = &cfg.types[cfg.devices[1].type_index];
+    TEST_ASSERT_EQUAL_UINT8(4, ty->param_count);
+    TEST_ASSERT_EQUAL_STRING("Manufacturer", ty->params[0].name);
+    TEST_ASSERT_EQUAL(GW_PARAM_STRING, ty->params[0].type);
+    TEST_ASSERT_EQUAL_STRING("Grundfos", ty->params[0].def.str);
+    TEST_ASSERT_EQUAL_STRING("Rated kW", ty->params[1].name);   /* a space is permitted */
+    TEST_ASSERT_EQUAL(GW_PARAM_FLOAT64, ty->params[1].type);
+    TEST_ASSERT_EQUAL_DOUBLE(0.5, ty->params[1].def.f64);
+    TEST_ASSERT_EQUAL(GW_PARAM_INT64, ty->params[2].type);
+    TEST_ASSERT_EQUAL_INT64(2, ty->params[2].def.i64);
+    TEST_ASSERT_EQUAL(GW_PARAM_BOOL, ty->params[3].type);
+    TEST_ASSERT_TRUE(ty->params[3].def.b);
+    /* P1 gives each value */
+    TEST_ASSERT_EQUAL_STRING("KSB", cfg.dev_params[1][0].str);
+    TEST_ASSERT_EQUAL_DOUBLE(7.5, cfg.dev_params[1][1].f64);
+    TEST_ASSERT_EQUAL_INT64(-4, cfg.dev_params[1][2].i64);
+    TEST_ASSERT_FALSE(cfg.dev_params[1][3].b);
+    /* P2 gives none: the value in effect is the default of the type */
+    TEST_ASSERT_EQUAL_STRING("Grundfos", cfg.dev_params[2][0].str);
+    TEST_ASSERT_EQUAL_DOUBLE(0.5, cfg.dev_params[2][1].f64);
+    TEST_ASSERT_EQUAL_INT64(2, cfg.dev_params[2][2].i64);
+    TEST_ASSERT_TRUE(cfg.dev_params[2][3].b);
+    /* P3 gives one */
+    TEST_ASSERT_EQUAL_STRING("Grundfos", cfg.dev_params[3][0].str);
+    TEST_ASSERT_EQUAL_INT64(6, cfg.dev_params[3][2].i64);
+
+    /* no default: 0, false or "" */
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse(PDOC("{\"name\":\"s\",\"type\":\"string\"},{\"name\":\"i\",\"type\":\"int64\"},"
+                   "{\"name\":\"f\",\"type\":\"float64\"},{\"name\":\"b\",\"type\":\"bool\"}",
+                   PUMP("P1", ))),
+        err.msg);
+    TEST_ASSERT_EQUAL_STRING("", cfg.types[1].params[0].def.str);
+    TEST_ASSERT_EQUAL_INT64(0, cfg.types[1].params[1].def.i64);
+    TEST_ASSERT_EQUAL_DOUBLE(0.0, cfg.types[1].params[2].def.f64);
+    TEST_ASSERT_FALSE(cfg.types[1].params[3].def.b);
+    /* a type without the key, and a type with an empty list: no parameters */
+    TEST_ASSERT_TRUE_MESSAGE(parse(PDOC("", PUMP("P1", ))), err.msg);
+    TEST_ASSERT_EQUAL_UINT8(0, cfg.types[1].param_count);
+    TEST_ASSERT_TRUE_MESSAGE(parse(PDOC("", PUMP("P1", ",\"params\":{}"))), err.msg);
+    /* the limits: 8 parameters, a name of 39 bytes, a text of 63 bytes, an integer of 2^53 */
+#define P8 "{\"name\":\"a\",\"type\":\"bool\"},{\"name\":\"b\",\"type\":\"bool\"},"              \
+           "{\"name\":\"c\",\"type\":\"bool\"},{\"name\":\"d\",\"type\":\"bool\"},"              \
+           "{\"name\":\"e\",\"type\":\"bool\"},{\"name\":\"f\",\"type\":\"bool\"},"              \
+           "{\"name\":\"g\",\"type\":\"bool\"},{\"name\":\"h\",\"type\":\"bool\"}"
+    TEST_ASSERT_TRUE_MESSAGE(parse(PDOC(P8, PUMP("P1", ))), err.msg);
+    TEST_ASSERT_EQUAL_UINT8(GW_MAX_TYPE_PARAMS, cfg.types[1].param_count);
+    ASSERT_REJECTED(parse(PDOC(P8 ",{\"name\":\"i\",\"type\":\"bool\"}", PUMP("P1", ))),
+                    "device_types[1].params: 9 parameters; the maximum is 8");
+#define N39 "123456789012345678901234567890123456789"
+#define S63 N39 "012345678901234567890123"
+    TEST_ASSERT_TRUE_MESSAGE(
+        parse(PDOC("{\"name\":\"" N39 "\",\"type\":\"string\",\"default\":\"" S63 "\"},"
+                   "{\"name\":\"i\",\"type\":\"int64\",\"default\":-9007199254740992}",
+                   PUMP("P1", ",\"params\":{\"" N39 "\":\"" S63 "\",\"i\":9007199254740992}"))),
+        err.msg);
+    TEST_ASSERT_EQUAL_STRING(S63, cfg.dev_params[0][0].str);
+    TEST_ASSERT_EQUAL_INT64(-9007199254740992LL, cfg.types[1].params[1].def.i64);
+    TEST_ASSERT_EQUAL_INT64(9007199254740992LL, cfg.dev_params[0][1].i64);
+    ASSERT_REJECTED(parse(PDOC("{\"name\":\"" N39 "0\",\"type\":\"bool\"}", PUMP("P1", ))),
+                    "device_types[1].params[0].name: string too long (40 characters, maximum 39)");
+    ASSERT_REJECTED(parse(PDOC("{\"name\":\"s\",\"type\":\"string\",\"default\":\"" S63 "x\"}",
+                               PUMP("P1", ))),
+                    "device_types[1].params[0].default: string too long (64 characters, "
+                    "maximum 63)");
+    ASSERT_REJECTED(parse(PDOC("{\"name\":\"i\",\"type\":\"int64\",\"default\":9007199254740994}",
+                               PUMP("P1", ))),
+                    "device_types[1].params[0].default: value 9007199254740994 out of range");
+    /* the list and its entries */
+    ASSERT_REJECTED(parse("{\"mqtt\":{\"host\":\"b\"},\"sparkplug\":{\"group_id\":\"G\","
+                          "\"edge_node_id\":\"E\"},\"device_types\":[{\"name\":\"T\",\"params\":{},"
+                          "\"tags\":[{\"name\":\"v\",\"area\":\"input\",\"address\":0,"
+                          "\"type\":\"uint16\"}]}]}"),
+                    "device_types[0].params: expected an array");
+    ASSERT_REJECTED(parse(PDOC("7", PUMP("P1", ))),
+                    "device_types[1].params[0]: expected a JSON object");
+    ASSERT_REJECTED(parse(PDOC("{\"type\":\"bool\"}", PUMP("P1", ))),
+                    "device_types[1].params[0].name: missing required field");
+    ASSERT_REJECTED(parse(PDOC("{\"name\":\"a\"}", PUMP("P1", ))),
+                    "device_types[1].params[0].type: missing required field");
+    ASSERT_REJECTED(parse(PDOC("{\"name\":\"a\",\"type\":\"int32\"}", PUMP("P1", ))),
+                    "device_types[1].params[0].type:");
+    ASSERT_REJECTED(parse(PDOC("{\"name\":\"a\",\"type\":\"bool\",\"units\":\"V\"}",
+                               PUMP("P1", ))),
+                    "device_types[1].params[0].units: unknown key");
+    /* the names: the rules of the other names of the gateway */
+    ASSERT_REJECTED(parse(PDOC("{\"name\":\"\",\"type\":\"bool\"}", PUMP("P1", ))),
+                    "device_types[1].params[0].name: cannot be empty");
+    ASSERT_REJECTED(parse(PDOC("{\"name\":\"a/b\",\"type\":\"bool\"}", PUMP("P1", ))),
+                    "device_types[1].params[0].name: character not allowed '/'");
+    ASSERT_REJECTED(parse(PDOC("{\"name\":\"a\\u0007\",\"type\":\"bool\"}", PUMP("P1", ))),
+                    "device_types[1].params[0].name: character not allowed");
+    ASSERT_REJECTED(parse(PDOC("{\"name\":\"a\",\"type\":\"bool\"},{\"name\":\"a\","
+                               "\"type\":\"int64\"}", PUMP("P1", ))),
+                    "device_types[1].params[1].name: duplicate parameter name 'a'");
+    ASSERT_REJECTED(parse(PDOC("{\"name\":\"kW\",\"type\":\"bool\"},{\"name\":\"KW\","
+                               "\"type\":\"bool\"}", PUMP("P1", ))),
+                    "device_types[1].params[1].name: 'KW' differs only in case from params[0] "
+                    "'kW'");
+    /* a default of each type takes only its JSON type */
+    ASSERT_REJECTED(parse(PDOC("{\"name\":\"a\",\"type\":\"string\",\"default\":7}",
+                               PUMP("P1", ))),
+                    "device_types[1].params[0].default: expected a string");
+    ASSERT_REJECTED(parse(PDOC("{\"name\":\"a\",\"type\":\"string\",\"default\":\"\xff\"}",
+                               PUMP("P1", ))),
+                    "device_types[1].params[0].default: not valid UTF-8");
+    ASSERT_REJECTED(parse(PDOC("{\"name\":\"a\",\"type\":\"int64\",\"default\":1.5}",
+                               PUMP("P1", ))),
+                    "device_types[1].params[0].default: expected an integer");
+    ASSERT_REJECTED(parse(PDOC("{\"name\":\"a\",\"type\":\"int64\",\"default\":\"1\"}",
+                               PUMP("P1", ))),
+                    "device_types[1].params[0].default: expected an integer");
+    ASSERT_REJECTED(parse(PDOC("{\"name\":\"a\",\"type\":\"float64\",\"default\":true}",
+                               PUMP("P1", ))),
+                    "device_types[1].params[0].default: expected a number");
+    ASSERT_REJECTED(parse(PDOC("{\"name\":\"a\",\"type\":\"float64\",\"default\":1e999}",
+                               PUMP("P1", ))),
+                    "device_types[1].params[0].default: expected a number");
+    ASSERT_REJECTED(parse(PDOC("{\"name\":\"a\",\"type\":\"bool\",\"default\":1}",
+                               PUMP("P1", ))),
+                    "device_types[1].params[0].default: expected true or false");
+    ASSERT_REJECTED(parse(PDOC("{\"name\":\"a\",\"type\":\"bool\",\"default\":null}",
+                               PUMP("P1", ))),
+                    "device_types[1].params[0].default: expected true or false");
+    /* the values of a device */
+    ASSERT_REJECTED(parse(PDOC(FOUR, PUMP("P1", ",\"params\":[]"))),
+                    "devices[0].params: expected a JSON object");
+    ASSERT_REJECTED(parse(PDOC(FOUR, PUMP("P1", ",\"params\":{\"Model\":\"x\"}"))),
+                    "devices[0].params.Model: the device type 'Pump' has no parameter with this "
+                    "name");
+    ASSERT_REJECTED(parse(PDOC(FOUR, PUMP("P1", ",\"params\":{\"rated kw\":1}"))),
+                    "devices[0].params.rated kw: the device type 'Pump' has no parameter");
+    ASSERT_REJECTED(parse(PDOC(FOUR, PUMP("P1", ",\"params\":{\"Poles\":2,\"Poles\":4}"))),
+                    "devices[0].params.Poles: duplicate key");
+    ASSERT_REJECTED(parse(PDOC(FOUR, PUMP("P1", ",\"params\":{\"Rated kW\":\"7.5\"}"))),
+                    "devices[0].params.Rated kW: expected a number");
+    ASSERT_REJECTED(parse(PDOC(FOUR, PUMP("P1", ",\"params\":{\"Poles\":2.5}"))),
+                    "devices[0].params.Poles: expected an integer");
+    ASSERT_REJECTED(parse(PDOC(FOUR, PUMP("P1", ",\"params\":{\"Has VFD\":\"yes\"}"))),
+                    "devices[0].params.Has VFD: expected true or false");
+    ASSERT_REJECTED(parse(PDOC(FOUR, PUMP("P1", ",\"params\":{\"Manufacturer\":null}"))),
+                    "devices[0].params.Manufacturer: expected a string");
+    ASSERT_REJECTED(parse(PDOC(FOUR, PUMP("P1", ",\"params\":{\"Manufacturer\":\"" S63 "x\"}"))),
+                    "devices[0].params.Manufacturer: string too long (64 characters, maximum 63)");
+    /* a device of a type without this parameter, and a device without a type */
+    ASSERT_REJECTED(parse(PDOC(FOUR, "{\"name\":\"M\",\"unit_id\":9,\"type\":\"Meter\","
+                                     "\"params\":{\"Poles\":2}}")),
+                    "devices[0].params.Poles: the device type 'Meter' has no parameter");
+    ASSERT_REJECTED(parse(PDOC(FOUR, "{\"name\":\"X\",\"unit_id\":9,\"params\":{},\"tags\":["
+                                     "{\"name\":\"v\",\"area\":\"input\",\"address\":0,"
+                                     "\"type\":\"uint16\"}]}")),
+                    "devices[0].params: not permitted without type");
+#undef PDOC
+#undef FOUR
+#undef PUMP
+#undef P8
+#undef N39
+#undef S63
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -2127,6 +2315,7 @@ int main(void)
     RUN_TEST(test_bytes_tags);
     RUN_TEST(test_device_types);
     RUN_TEST(test_device_types_total);
+    RUN_TEST(test_type_params);
     RUN_TEST(test_utf8_sequences);
     RUN_TEST(test_sparkplug_names);
     RUN_TEST(test_device_prefix);

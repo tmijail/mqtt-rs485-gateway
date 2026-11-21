@@ -157,23 +157,58 @@ The NBIRTH gives `Node Control/Rebirth` without an alias (`tck-id-operational-be
 - The properties of the definition and of each instance come from the tags of the type (#213).
 - No test used a real Sparkplug host such as Ignition. The tests use the official proto, the rules of the specification and the Sparkplug TCK.
 
-### The template parameter `Unit ID` (#251)
+### Template parameters (#276)
 
-Each template has one parameter: the Modbus unit ID of the device. A parameter is a fixed value of an instance that is not a measurement. A host such as Ignition can show it as a property of the UDT instance.
+A parameter is a fixed value of a device that is not a measurement, for example the manufacturer or the rated power. The user defines the parameters of each device type, and each device of the type can give its own values. For the configuration keys, refer to [The parameters of a device type](configuration.md#the-parameters-of-a-device-type). A host such as Ignition can show a parameter as a property of the UDT instance.
 
-- The value comes from `devices[].unit_id`. There is no configuration key for the parameter.
-- **The name is `Unit ID`.** The specification asks only for a UTF-8 text (`tck-id-payloads-template-parameter-name-required`, `tck-id-payloads-template-parameter-name-type`). `Unit ID` is the label of the key `unit_id` in the web UI. It has the form of the other Sparkplug names of the gateway, for example `Scan Rate` and `Failed Cycles`.
-- **The type is Int32**, as the property `Quality`. Int32 is a basic datatype, and its value goes in `int_value` (`tck-id-payloads-template-parameter-type-value`, `tck-id-payloads-template-parameter-value`).
-- **Each definition has the parameter**, with its name and its type (`tck-id-payloads-template-definition-parameters`, `tck-id-payloads-template-parameter-type-req`).
-- Choice (MAY, `tck-id-payloads-template-definition-parameters-default`): the definition gives the default 0.
-- Reason: 0 is not the unit ID of a device (1 to 247). Thus a host can see that an instance gave no value. The TCK 3.0.0 also examines `tck-id-payloads-template-parameter-value` on a definition, and a parameter without a value does not pass.
-- Choice (MAY, `tck-id-payloads-template-instance-parameters`): the instance of each DBIRTH gives the unit ID of its device. Thus no instance uses the default.
-- A rebirth gives the parameter again, in the NBIRTH and in each DBIRTH.
+- The firmware adds no parameter of its own. A type without parameters has a template without parameters, in the definition and in each instance.
+- The fixed parameter `Unit ID` of #251 is gone, and the name `Unit ID` is not reserved. With `modbus_tcp.enabled`, the DataSet `Node Info/Modbus TCP` gives the unit ID of each device.
+- Each parameter has a name, a basic datatype and a value in the field of that datatype (`tck-id-payloads-template-parameter-name-required`, `-name-type`, `-type-req`, `-type-value`, `-value-type`, `-value`).
+- **Each definition lists each parameter of its type**, with its name, its datatype and its default (`tck-id-payloads-template-definition-parameters`).
+- Choice (MAY, `tck-id-payloads-template-definition-parameters-default`): the definition always gives a default. Without `default` in the configuration, the default is an empty text, 0 or false.
+- Reason: the TCK 3.0.0 examines `tck-id-payloads-template-parameter-value` on a definition, and a parameter without a value does not pass.
+- Choice (MAY, `tck-id-payloads-template-instance-parameters`): the instance of each DBIRTH gives each parameter of its definition. The value is the value of the device, or the default of the type.
+- Reason: the result does not depend on a host that applies the default. The reference publishers do the same.
+- A rebirth gives the parameters again, in the NBIRTH and in each DBIRTH.
 - Choice (MAY): the instance of a DDATA has no parameters, also in a store & forward replay.
-- Reason: the unit ID changes only with a new configuration, and a new configuration restarts the gateway. The DBIRTH gave the value, and a DDATA has only the changes.
+- Reason: a value changes only with a new configuration, and a new configuration restarts the gateway. The DBIRTH gave the values, and a DDATA has only the changes.
 - The specification gives the default of a definition to an instance without a parameter value "in the NBIRTH or DBIRTH messages". Thus the default does not apply to the instance of a DDATA.
 - The gateway ignores the parameters of an instance in a DCMD. A parameter is not a tag, so a DCMD cannot write it. The gateway writes the members of that DCMD as usual.
-- With the UMH preset there are no templates, so there are no parameters.
+- With the UMH preset there are no templates, so there are no parameters. The configuration keys stay valid.
+
+#### The datatypes of a parameter
+
+| `type` in the configuration | Sparkplug datatype | Value field |
+|---|---|---|
+| `string` | String (12) | `string_value` |
+| `int64` | Int64 (4) | `long_value` |
+| `float64` | Double (10) | `double_value` |
+| `bool` | Boolean (11) | `boolean_value` |
+
+Choice: a parameter has one of these four datatypes only. The specification permits each basic datatype (`tck-id-payloads-template-parameter-type-value`). Reason: each examined decoder reads these four datatypes.
+
+- Tahu Java reads a parameter of each basic datatype.
+- The Tahu JavaScript library (`sparkplug-payload` 1.0.3, which Node-RED uses) reads a parameter only of Int64, Float, Double, Boolean or String. For a parameter of Int8, Int16, Int32, UInt8, UInt16, UInt32 or UInt64, it refuses the full message (eclipse-tahu/tahu#381 and eclipse-tahu/tahu#397).
+- The Integer parameter of an Ignition UDT is a 64-bit value.
+- The number with a fraction is Double, not Float. Reason: a 32-bit value is not exact, and a host shows the error as more digits.
+- An `int64` value is in the range -2^53 to 2^53. Reason: a JSON number gives each integer in this range exactly.
+
+#### The size of a birth with parameters
+
+- The limits of the configuration are 16 types, 8 parameters for each type, names of 39 bytes and texts of 63 bytes.
+- The payload buffer is 32 KiB (`GW_SPB_PAYLOAD_MAX`, in the PSRAM). Before #276, it was 16 KiB.
+- With these limits, the births of each valid configuration fit in the payload buffer. Thus the validation has no rule for the size of a birth.
+- Host tests encode the worst NBIRTH and the worst DBIRTH in the payload buffer (`test_worst_case_nbirth_fits`, `test_worst_case_template_birth_fits`).
+- The limit of the broker still applies. Refer to [The Maximum Packet Size of the broker](#the-maximum-packet-size-of-the-broker-73-76).
+
+#### Notes for Ignition
+
+These notes are only in the documentation. The web UI shows no warning for them (decision of the product owner, #276).
+
+- A parameter name with a hyphen or a space can fail in a `{Name}` reference of a UDT and in a Perspective binding. Letters, digits and `_` are safe.
+- MQTT Engine (Cirrus Link) does not update a UDT definition that it already has. Thus, after a change of the parameters of a type, the UDT definition in Ignition is out of date. When the user deletes the UDT definition in Ignition, MQTT Engine makes it again.
+- No document says how MQTT Engine reads a Boolean parameter. No document says what MQTT Engine does with a parameter that an instance does not give.
+- No test used a real Ignition.
 
 ## DataSet, Bytes and File (SPB-19)
 
@@ -243,9 +278,9 @@ The harness accepts these FAILs only when it proves this cause from the captured
 
 A host with a Tahu Java decoder from before eclipse-tahu/tahu#202 (2022) reads UInt32 only from `long_value`. Such a host does not read the UInt32 tags of the gateway (for example Ignition MQTT Engine 4.0.5). It reads the node metrics, because they are UInt64.
 
-### Template parameters (#251)
+### The template parameter assertions (#251, #276)
 
-The TCK examines the parameter assertions only when a definition has a parameter. Each definition of the gateway has the parameter `Unit ID` (refer to [The template parameter `Unit ID`](#the-template-parameter-unit-id-251)). Thus the TCK examines them:
+The TCK examines the parameter assertions only when a definition has a parameter. The firmware adds no parameter of its own (refer to [Template parameters](#template-parameters-276)). Thus the configuration of the scenario `tck` gives the type `Pump` a parameter of each type, and `Pump1` gives three values. The TCK then examines these assertions:
 
 | Test | Assertions |
 |---|---|
@@ -254,4 +289,6 @@ The TCK examines the parameter assertions only when a definition has a parameter
 
 The TCK user guide says that templates are an optional group, and that a product that uses the group must pass all its assertions. The gateway uses templates. Thus a run of the scenario `tck` must show PASS for each assertion of the table, not NOT EXECUTED. The harness makes the check of the test fail when one of them is not PASS (`REQUIRED_PASS` in `idf/tools/e2e/tck.py`).
 
-The TCK 3.0.0 has a defect in `Utils.hasValue(Parameter)` (`tck/.../test/common/Utils.java`). It compares the type of the parameter with the field numbers of the proto, not with the datatypes. For Int32 the two numbers are the same (3), so the function gives the correct answer for `Unit ID`. The TCK uses the function only in a debug log line, so it changes no result.
+Limit: with a configuration that has device types but no parameters, the TCK gives NOT EXECUTED for these assertions. Such a run does not examine the template group in full.
+
+The TCK 3.0.0 has a defect in `Utils.hasValue(Parameter)` (`tck/.../test/common/Utils.java`). It compares the type of the parameter with the field numbers of the proto, not with the datatypes. The TCK uses the function only in a debug log line, so the defect changes no result.

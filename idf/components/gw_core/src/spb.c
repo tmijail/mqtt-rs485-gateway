@@ -333,7 +333,15 @@ static bool enc_tmpl_params(pb_ostream_t *stream, const pb_field_iter_t *field, 
 {
     const spb_template_t *t = *arg;
     for (uint32_t i = 0; i < t->param_count; i++) {
-        const spb_param_t *p = &t->params[i];
+        spb_param_t made;
+        const spb_param_t *p = &made;
+        if (t->params != NULL) {
+            p = &t->params[i];
+        } else if (t->param != NULL) {
+            t->param(t->param_ctx, i, &made);   /* #276: no storage for the parameters */
+        } else {
+            return false;
+        }
         Payload_Template_Parameter pp = Payload_Template_Parameter_init_zero;
         pp.has_name = true;
         if (!copy_str(pp.name, sizeof(pp.name), p->name)) {

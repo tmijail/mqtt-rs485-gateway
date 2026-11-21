@@ -99,8 +99,9 @@ KNOWN_RULES = {
 }
 
 
-# #251: the template parameter assertions. The TCK examines them only when a definition has a
-# parameter; each definition of the gateway has one ("Unit ID"), so each of them must be PASS. A
+# #251, #276: the template parameter assertions. The TCK examines them only when a definition
+# has a parameter. The firmware adds no parameter of its own, so the configuration of this
+# scenario defines parameters for the type Pump (gateway_config): each assertion must be PASS. A
 # NOT EXECUTED result (or no result) of one of them fails the check of its test: the template
 # group of the TCK would not be complete (docs/reference/sparkplug-behavior.md, Template
 # parameters).
@@ -296,12 +297,16 @@ def gateway_config(h, protocol, backup=False):
     # explain these FAILs (uint32_cause); docs/reference/sparkplug-behavior.md, The Sparkplug TCK.
     meter["tags"] = meter["tags"] + [
         {"name": "Hours", "area": "holding", "address": 70, "type": "uint32", "word_order": "ABCD"}]
-    # #213: the tags of the template are in device_types
-    cfg["device_types"] = [{"name": "Pump", "tags": [
+    # #213: the tags of the template are in device_types.
+    # #276: the type has a parameter of each type (String, Double, Int64, Boolean), and Pump1
+    # gives three values. The TCK examines the parameter assertions only when a definition has a
+    # parameter (REQUIRED_PASS): the firmware adds none of its own.
+    cfg["device_types"] = [{"name": "Pump", "params": h.PUMP_PARAMS, "tags": [
         {"name": "Speed", "area": "holding", "address": 100, "type": "uint16", "units": "rpm",
          "eng_high": 3000},
         {"name": "Run", "area": "coil", "address": 7, "type": "bool"}]}]
-    pump = {"name": TYPED, "unit_id": 2, "type": "Pump", "poll_ms": 1000, "offline_after": 3}
+    pump = {"name": TYPED, "unit_id": 2, "type": "Pump", "poll_ms": 1000, "offline_after": 3,
+            "params": h.PUMP_OWN}
     cfg["devices"] = [meter, pump]
     cfg["modbus_tcp"]["enabled"] = False
     return cfg
@@ -406,7 +411,7 @@ def run_one(h, args, work, slave, root, test, protocol, name):
             gw.console("di 1 0")
             slave.set_float(4, 0, 230.5)
             # SendComplexDataTest ends alone when every assertion has a result. With the template
-            # parameter of the gateway (#251) each of them has one after the first DDATA and
+            # parameters of the configuration (#276) each of them has one after the first DDATA and
             # NDATA. If one has none, END_TEST below ends the test after the timeout, and
             # REQUIRED_PASS fails the check for a parameter assertion that is NOT EXECUTED.
         elif test == "SessionTerminationTest":

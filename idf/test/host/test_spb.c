@@ -637,6 +637,109 @@ static void test_worst_case_birth_fits(void)
     }
 }
 
+/* #276: the parameters of a Template that a callback produces (no storage for them). The four
+ * types of the gateway: String in string_value, Int64 in long_value, Double in double_value,
+ * Boolean in boolean_value (tck-id-payloads-template-parameter-type-value, -value). */
+static const char *const k_gen_names[] = {"Manufacturer", "Poles", "Rated kW", "Has VFD"};
+
+static void gen_param(const void *ctx, uint32_t i, spb_param_t *out)
+{
+    static const uint32_t types[] = {SPB_DT_STRING, SPB_DT_INT64, SPB_DT_DOUBLE, SPB_DT_BOOLEAN};
+    const char *text = ctx;
+    *out = (spb_param_t){.name = k_gen_names[i % 4], .datatype = types[i % 4]};
+    switch (i % 4) {
+    case 0:
+        out->v.str = text;
+        break;
+    case 1:
+        out->v.i64 = -9007199254740992LL;
+        break;
+    case 2:
+        out->v.num = 7.5;
+        break;
+    default:
+        out->v.num = 1;
+        break;
+    }
+}
+
+static void test_template_parameters_from_a_callback(void)
+{
+    const spb_metric_t member = {.name = "Run", .no_alias = true, .datatype = SPB_DT_BOOLEAN,
+                                 .v.num = 1};
+    const spb_template_t inst = {.ref = "Pump", .count = 1, .members = &member,
+                                 .param_count = 4, .param = gen_param, .param_ctx = "Grundfos"};
+    spb_metric_t m = {.name = "Pump", .alias = 100, .datatype = SPB_DT_TEMPLATE, .v.tmpl = &inst};
+    spb_payload_t p = {.timestamp = 1, .has_seq = true, .seq = 0, .metrics = &m, .metric_count = 1};
+    size_t len = spb_encode(&p, buf, sizeof(buf));
+    TEST_ASSERT_GREATER_THAN(0, len);
+    TEST_ASSERT_TRUE(decode_payload(buf, len, &dec));
+    TEST_ASSERT_EQUAL(4, dec.m[0].params);
+    TEST_ASSERT_EQUAL(4, dec.param_count);
+    for (size_t i = 0; i < 4; i++) {
+        TEST_ASSERT_EQUAL_STRING(k_gen_names[i], dec.par[i].name);
+        TEST_ASSERT_TRUE(dec.par[i].has_type);
+    }
+    TEST_ASSERT_EQUAL(SPB_DT_STRING, dec.par[0].type);
+    TEST_ASSERT_EQUAL(SPB_VAL_STRING, dec.par[0].kind);
+    TEST_ASSERT_EQUAL_STRING("Grundfos", dec.par[0].str);
+    TEST_ASSERT_EQUAL(SPB_DT_INT64, dec.par[1].type);
+    TEST_ASSERT_EQUAL(SPB_VAL_LONG, dec.par[1].kind);
+    TEST_ASSERT_EQUAL_INT64(-9007199254740992LL, (int64_t)dec.par[1].l);   /* two's complement */
+    TEST_ASSERT_EQUAL(SPB_DT_DOUBLE, dec.par[2].type);
+    TEST_ASSERT_EQUAL(SPB_VAL_DOUBLE, dec.par[2].kind);
+    TEST_ASSERT_EQUAL_DOUBLE(7.5, dec.par[2].num);
+    TEST_ASSERT_EQUAL(SPB_DT_BOOLEAN, dec.par[3].type);
+    TEST_ASSERT_EQUAL(SPB_VAL_BOOL, dec.par[3].kind);
+    TEST_ASSERT_EQUAL_DOUBLE(1.0, dec.par[3].num);
+    /* a count without an array and without a callback is an error of the caller: no payload */
+    const spb_template_t bad = {.ref = "Pump", .count = 1, .members = &member, .param_count = 1};
+    m.v.tmpl = &bad;
+    TEST_ASSERT_EQUAL(0, spb_encode(&p, buf, sizeof(buf)));
+}
+
+/* #276: the largest DBIRTH of a device with a type: an instance with 64 members with every
+ * property, and GW_MAX_TYPE_PARAMS parameters with a text of 63 bytes. A parameter name is a
+ * name of the configuration (39 bytes); the codec accepts SPB_NAME_MAX. */
+static void test_worst_case_template_birth_fits(void)
+{
+    static spb_metric_t m[GW_MAX_TAGS_PER_DEVICE];
+    static char text[SPB_SHORT_STRING_MAX + 1];
+    char name[40], units[GW_UNITS_SIZE];
+    memset(name, 'x', 39);
+    name[39] = '\0';
+    memset(units, 'u', GW_UNITS_SIZE - 1);
+    units[GW_UNITS_SIZE - 1] = '\0';
+    memset(text, 't', SPB_SHORT_STRING_MAX);
+    for (int i = 0; i < GW_MAX_TAGS_PER_DEVICE; i++) {
+        m[i] = (spb_metric_t){.name = name, .no_alias = true, .timestamp = 1900000000000ull,
+                              .datatype = SPB_DT_DOUBLE, .v.num = -1.0 / 3.0,
+                              .props = {.eng_unit = units, .has_quality = true,
+                                        .quality = SPB_QUALITY_GOOD, .has_eng_low = true,
+                                        .has_eng_high = true, .eng_low = -3e38f,
+                                        .eng_high = 3e38f}};
+    }
+    spb_param_t par[GW_MAX_TYPE_PARAMS];
+    for (int i = 0; i < GW_MAX_TYPE_PARAMS; i++) {
+        par[i] = (spb_param_t){.name = name, .datatype = SPB_DT_STRING, .v.str = text};
+    }
+    const spb_template_t inst = {.ref = name, .count = GW_MAX_TAGS_PER_DEVICE, .members = m,
+                                 .param_count = GW_MAX_TYPE_PARAMS, .params = par};
+    spb_metric_t top = {.name = name, .alias = 100 + 255, .timestamp = 1900000000000ull,
+                        .datatype = SPB_DT_TEMPLATE, .v.tmpl = &inst};
+    spb_payload_t p = {.timestamp = 1900000000000ull, .has_seq = true, .seq = 255,
+                       .metrics = &top, .metric_count = 1};
+    size_t len = spb_encode(&p, buf, sizeof(buf));
+    printf("worst-case DBIRTH (template, %d parameters): %u bytes of %u\n", GW_MAX_TYPE_PARAMS,
+           (unsigned)len, (unsigned)GW_SPB_PAYLOAD_MAX);
+    TEST_ASSERT_GREATER_THAN(0, len);
+    TEST_ASSERT_LESS_THAN(GW_SPB_PAYLOAD_MAX, len);
+    TEST_ASSERT_TRUE(decode_payload(buf, len, &dec));
+    TEST_ASSERT_EQUAL(GW_MAX_TYPE_PARAMS, dec.param_count);
+    TEST_ASSERT_EQUAL(SPB_SHORT_STRING_MAX, strlen(dec.par[GW_MAX_TYPE_PARAMS - 1].str));
+    TEST_ASSERT_EQUAL(0, spb_encode(&p, buf, len - 1));   /* overflow detected, not truncated */
+}
+
 /* Issue #87: a payload with one String metric "s" of @p n characters, built by hand (the
  * encoder itself refuses what does not fit). */
 static size_t raw_string_payload(uint8_t *out, size_t n)
@@ -715,7 +818,9 @@ int main(void)
     RUN_TEST(test_template_round_trip);
     RUN_TEST(test_template_parameters);
     RUN_TEST(test_template_parameters_decode_is_optional);
+    RUN_TEST(test_template_parameters_from_a_callback);
     RUN_TEST(test_worst_case_birth_fits);
+    RUN_TEST(test_worst_case_template_birth_fits);
     RUN_TEST(test_string_limit);
     RUN_TEST(test_topics);
     return UNITY_END();

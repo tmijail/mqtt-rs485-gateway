@@ -96,7 +96,10 @@ Node `GW02`, a separate boot with another configuration.
 - **NET-4:** a configuration with `network.wifi` boots in the build without radio, gives a warning, and publishes NBIRTH through Ethernet.
 - **NET-7:** IPv6 link-local, SLAAC and static addresses, and `ping fec0::2`.
 - **MB-15:** with `allowed_clients: ["192.0.2.0/24"]`, the gateway closes a connection from 10.0.2.2 without an answer.
-- **SPB-18:** the template definition `Pump` in the NBIRTH, one instance in each of two DBIRTHs, a DCMD on a member. The definition has the parameter `Unit ID` with the default 0, each instance has the unit ID of its device, and the DDATA has no parameters (#251). The DCMD has two parameters, which the gateway ignores.
+- **SPB-18:** the template definition `Pump` in the NBIRTH, one instance in each of two DBIRTHs, a DCMD on a member.
+- **SPB-18 (#276), the configuration:** the type `Pump` has a parameter of each type. `PumpA` gives three values, and `PumpB` gives none. The type `Valve` of the device `ValveA` has no parameters.
+- **SPB-18 (#276), the births:** the definition of the NBIRTH has each parameter with its default. Each DBIRTH has each parameter: the values of `PumpA`, and the defaults for `PumpB`. The definition and the instance of `Valve` have no parameters.
+- **SPB-18 (#276), the other messages:** the DDATA has no parameters. The gateway ignores the two parameters of a DCMD.
 - **SPB-19:** a `bytes` tag with a NUL in the DBIRTH, and a DCMD of Bytes as one FC16.
 - **#201:** two SNTP servers.
 
@@ -111,6 +114,7 @@ Nodes `GW04`, `GW05`, `GW06`: the REST API and the web UI.
 - **CFG-6:** `config show` with masked secrets, `mbread`, `rebirth`, `config check` and `config load` in the shell.
 - **CFG-7:** the secrets move from `config.json` to the NVS at the first boot. The board build does not encrypt the NVS (#133), and the shell says so. The MQTT password is in plaintext in the NVS partition only. The web password is a hash, so it is in plaintext nowhere in the flash image. The scenario [CFG-7 NVS encryption](#scenarios-of-the-secure-variant) examines the encrypted NVS.
 - **CFG-3 (#167, #170, #191, #192, #193, #194, #213, #221):** the lists of the form hold each value of the configuration, and an exported document is valid. The form has `maxlength`, help texts and the topic preview. The page has no `prompt()` and no `confirm()`. A new web password needs a second field. The controls of #221.
+- **CFG-3 (#276):** the validation accepts a device type with a parameter of each type and a device with values. It refuses a text for a `float64` parameter at `devices[n].params.<name>`, a ninth parameter at `device_types[0].params`, and `params` on a device without a type at `devices[0].params`. The page has the controls of the parameters.
 - **#226:** the served page has the IPv4 normalization of the Configuration tab. The validation refuses `192.168.001.010` in `network.dns` and `010.000.000.001/08` in `modbus_tcp.allowed_clients`, at their paths. It accepts the values that the web UI writes: `192.168.1.10` and `10.0.0.1/8`.
 - **#222:** the served page has the code that opens a closed card at a validation error and at "Go to the field". The script `idf/tools/docs_shots.py` has the browser test of the same rule (the shot `validate-error`).
 - **#199, #200, #206, #207, #208, #212, #216:** the live log and its levels, the gateway labels, identify, the simulated Wi-Fi scan, the heap and temperature in `/api/status`, the local unit without `local_writes`.
@@ -162,7 +166,7 @@ SPB-13 primary host, nodes `GW19` and `GW48`.
 - **#136:** a planned restart while offline moves the RAM ring to the card, and the samples come back one time.
 - **#145, #141:** a change outside the configuration hash keeps the ring. A tag rename starts a new ring, and the RAM ring is not moved.
 - **#139, #137:** `POST /api/card/format` with its auth, CSRF and confirmation, the status objects, and a simulated format in its own task.
-- **stack margin (`GW27`):** DCMDs on a template member and on Bytes, a diagnostic NDATA, and a replay of an instance. The `sparkplug` stack keeps at least 1 KB free.
+- **stack margin (`GW27`):** DCMDs on a template member and on Bytes, a diagnostic NDATA, and a replay of an instance. The type `Pump` has a parameter of each type, and one more with the longest name and the longest text (#276). The `sparkplug` stack keeps at least 1 KB free.
 
 ## https
 
@@ -238,7 +242,7 @@ The harness reads the input section and the `tag_processor` of the bridge from [
 
 - Bridge A: the configuration of the how-to (`role: "secondary_active"`), with three outputs: the input, the `tag_processor`, and the `tag_processor` without the timestamp line.
 - Bridge B: `include_edge_node_in_location: true` and `secondary_passive`.
-- Gateway `acme:berlin:gw01`: the UMH preset, store & forward, a relay, a `device_prefix` of six levels, a device with each scalar type and a `bytes` tag, a typed device, and a device that never answers.
+- Gateway `acme:berlin:gw01`: the UMH preset, store & forward, a relay, a `device_prefix` of six levels, a device with each scalar type and a `bytes` tag, a typed device, and a device that never answers. The type of the typed device has parameters (#276).
 - Gateway `acme:berlin:gw02`: the same devices without the UMH preset.
 
 The checks assert what v0.16.2 does, also its limits. Thus a new UMH version that changes its behaviour makes a check fail. The measured behaviour is in [UMH names and topics](umh-names-and-topics.md) and in the how-to.
@@ -249,7 +253,7 @@ Not tested: the downsampler (`late_policy`), the `uns` output into Redpanda, the
 
 The scenario runs the seven tests of the Edge Node profile of the Eclipse Sparkplug TCK 3.0.0, with MQTT 3.1.1 and MQTT 5. It needs `E2E_TCK_DIR` (from `tools/e2e/tck_setup.sh`). The procedure is in [Run the Sparkplug TCK against the gateway](../how-to/run-the-sparkplug-tck.md). The known FAILs of the TCK and their causes are in [Sparkplug behavior](sparkplug-behavior.md#the-sparkplug-tck-edge-node-profile-176).
 
-The configuration of the gateway has `Meter1` (unit 1, tags with aliases, also the UInt32 tag `Hours`), `Pump1` (unit 2, a template instance with the parameter `Unit ID`), the primary host `TCKHost` that the TCK simulates, and `diagnostics_s` 0. Each test gets a new HiveMQ and a new boot of the gateway.
+The configuration of the gateway has `Meter1` (unit 1, tags with aliases, also the UInt32 tag `Hours`), `Pump1` (unit 2, a template instance), the primary host `TCKHost` that the TCK simulates, and `diagnostics_s` 0. The type `Pump` has a parameter of each type, and `Pump1` gives three values (#276). Each test gets a new HiveMQ and a new boot of the gateway.
 
 The TCK web console only sends `NEW_TEST` and `END_TEST` on `SPARKPLUG_TCK/TEST_CONTROL`, and shows the prompts to the operator. The scenario does the steps of the operator:
 
@@ -263,12 +267,12 @@ The TCK web console only sends `NEW_TEST` and `END_TEST` on `SPARKPLUG_TCK/TEST_
 | PrimaryHostTest | Boot the gateway first, and wait until it waits for its primary host. Then start the test |
 | MultipleBrokerTest | Start a mosquitto on port 1884 (the backup broker of the gateway). Start the test, then boot |
 
-A check fails when an assertion is FAIL and the harness cannot prove a known cause (`KNOWN_RULES` in `tools/e2e/tck.py`). A NOT EXECUTED result is not a failure, with one exception. The checks of SendDataTest and SendComplexDataTest fail when a template parameter assertion is not PASS (`REQUIRED_PASS` in `tools/e2e/tck.py`, #251). Each run examines only the assertions of its MQTT version (for example `tck-id-principles-persistence-clean-session-50` and `-311`).
+A check fails when an assertion is FAIL and the harness cannot prove a known cause (`KNOWN_RULES` in `tools/e2e/tck.py`). A NOT EXECUTED result is not a failure, with one exception. The checks of SendDataTest and SendComplexDataTest fail when a template parameter assertion is not PASS (`REQUIRED_PASS` in `tools/e2e/tck.py`, #251). The TCK examines these assertions only when a definition has a parameter, and the firmware adds none. Thus the configuration of the scenario gives the parameters (#276). Each run examines only the assertions of its MQTT version (for example `tck-id-principles-persistence-clean-session-50` and `-311`).
 
 #### Limits of the TCK that the scenario works around
 
 - The message monitor of the TCK keeps the last bdSeq of each edge node for the life of the broker. The gateway starts at bdSeq 0 at each boot (`tck-id-topics-nbirth-bdseq-increment`). A second boot on the same broker gives a false FAIL. Thus each test gets a new HiveMQ.
-- SendComplexDataTest ends alone only when each of its assertions has a result. The template parameter of the gateway gives a result to the parameter assertions (#251), so the test ends alone. If a test gives no result before its time limit, the scenario sends `END_TEST`, as an operator does with "Stop Test".
+- SendComplexDataTest ends alone only when each of its assertions has a result. The template parameters of the configuration give a result to the parameter assertions (#276), so the test ends alone. If a test gives no result before its time limit, the scenario sends `END_TEST`, as an operator does with "Stop Test".
 - After the NCMD rebirth, the TCK fails `tck-id-operational-behavior-data-commands-rebirth-action-1` for each NDATA or DDATA before the NBIRTH, also a message that was already on its way. `diagnostics_s` 0 and constant register values keep the gateway quiet during the test.
 - The TCK clients connect to `tcp://localhost:1883`, a fixed address. Thus HiveMQ listens on 127.0.0.1:1883 in the network namespace of the harness.
 - Sometimes the TCK extension stops at `Creating new host "TCKHost"`, and the test gives no result. The simulated host connects to HiveMQ from inside the publish interceptor of the extension, and that connection does not return. When a test gives no result, the scenario runs it one more time with a new HiveMQ and a new boot, and records this in `retries` of `results.json`. A test with a result is never repeated.

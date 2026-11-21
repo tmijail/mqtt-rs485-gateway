@@ -65,7 +65,11 @@ For the rules of a DCMD, refer to [Sparkplug messages and metrics](sparkplug-mes
 ## Sparkplug
 
 - The aliases depend on the order of the tags in the configuration. A new order gives new aliases in the next births.
-- Templates have no version and no nesting. Their only parameter is the Modbus unit ID of the device (#251). No test used a real host such as Ignition (SPB-18).
+- Templates have no version and no nesting. No test used a real host such as Ignition (SPB-18).
+- A template parameter is String, Int64, Double or Boolean, and a device type has 8 parameters at most (#276). The gateway does not read a parameter from the bus, and a DCMD cannot write it.
+- A change of the parameters of a type needs a manual step in Ignition: MQTT Engine does not update a UDT definition that it already has. A parameter name with a hyphen or a space can fail in a `{Name}` reference of a UDT. Refer to [Notes for Ignition](sparkplug-behavior.md#notes-for-ignition).
+- No document says how MQTT Engine reads a Boolean parameter, or what it does with a parameter that an instance does not give (#276).
+- The Sparkplug TCK examines the template parameter assertions only when a device type has a parameter. Refer to [The template parameter assertions](sparkplug-behavior.md#the-template-parameter-assertions-251-276).
 - Bytes and File hold 64 B at most. File has no metadata, and there is no file transfer (SPB-19).
 - A text of a metric has 256 characters at most (`SPB_STRING_MAX`). A text of a property or of a DataSet cell has 63 characters at most (#87). The firmware does not truncate a longer text: it rejects the message, and the log gives the cause.
 - The bdSeq is in RAM only, and starts at 0 at each boot (#161).

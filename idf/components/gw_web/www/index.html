@@ -187,6 +187,15 @@ button.coll .car{display:inline-block;width:1.1em;color:var(--mut)}
 /* on a phone, "Go to the type" is a full-width touch target of 44 px (approved prototype of #213) */
 @media (max-width:600px){.tinfo a[data-goto-dt]{display:flex;align-items:center;justify-content:center;min-height:44px;margin-top:8px;border:1px solid var(--line);border-radius:4px;background:var(--card);text-decoration:none}}
 .used{font-size:12px;color:var(--mut);margin:6px 0}.empty{background:var(--sub);border-radius:4px;padding:10px 12px;margin:4px 0 10px;font-size:13px}
+/* #276: the parameters of a device type (a table; on a phone one group of fields for each parameter), and
+   the values of a device, which have the form of its other fields (approved prototype of #276) */
+.sect{font-size:13px;font-weight:600;margin:14px 0 4px}.snote{font-size:12px;color:var(--mut);margin:0 0 6px}.cnt{font-size:12px;color:var(--mut)}
+.pars{border:1px solid var(--line);border-radius:4px;max-width:722px}
+.prow{display:grid;grid-template-columns:240px 130px minmax(0,1fr) 50px;gap:0 6px;padding:4px 6px;border-bottom:1px solid var(--line);align-items:start}
+.prow:last-child{border-bottom:0}.prow.phd{font-size:12px;font-weight:600;color:var(--mut)}.prow>label{display:flex;flex-direction:column;min-width:0}.prow .pl{display:none}
+.prow input:not([type=checkbox]),.prow select{width:100%;margin:0;padding:3px 4px}.prow input[type=checkbox]{align-self:flex-start;margin:6px 0 0}.prow button{padding:3px 8px;font-size:12px;justify-self:start}
+@media (max-width:760px){.pars{border:0;max-width:none}.prow.phd{display:none}.prow,.prow:last-child{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 44px;gap:8px;border:1px solid var(--line);border-radius:4px;padding:8px;margin-bottom:8px;align-items:end}
+ .prow>label:first-child{grid-column:1/-1}.prow .pl{display:block;font-size:12px;color:var(--mut)}.prow input:not([type=checkbox]),.prow select{min-height:36px}.prow input[type=checkbox]{width:20px;height:20px;margin:8px 0}.prow button{min-height:36px;padding:0;justify-self:stretch}}
 .err~.hint{display:none}@media (max-width:760px){#f-dt>.card{padding:10px}}
 @media (max-width:600px){button.coll{min-height:44px}.cctools button{min-height:44px;flex:1}}
 /* #196: the refused writes of a device, below online or offline in the Modbus devices of the Status tab */
@@ -525,6 +534,8 @@ const HELP={
  off:"The number of failed poll cycles in sequence before the device is offline. The gateway then sends a DDEATH for the device, and the hosts show its tags as stale.\nThe first cycle that reads all the tags makes the device online again (DBIRTH).\n~1 to 1000. Default: 3.",
  type:"The device gets the tags of this type. A device with a type has no tags of its own: edit the tags in the card Device types.\n(none) = the device has its own tags, in the table below its fields.\n~Default: (none). The list shows the types of the card Device types.",
  tname:"The name of the device type, for example the model of the device: Meter. The gateway also sends it as the name of the Sparkplug template of each device of the type.\nUMH Core shows no value for a template instance. With naming umh, the tags go out as plain metrics.\n~1 to 39 bytes. Necessary. No /, + or #. Up to 64 tags in a type.",
+ params:"A parameter is a fixed value of a device that the gateway does not read from the bus. Examples: the manufacturer, the model, the rated power.\nThe gateway sends the parameters in the birth messages, as the parameters of the Sparkplug template. Each device of the type gives its own value, or uses the default.\n~Up to 8 parameters in a type. Name: 1 to 39 bytes, no /, + or #. A string value: up to 63 bytes.",
+ dpar:"The values of this device for the parameters of its device type. An empty field uses the default of the type, which shows in grey. For a bool parameter, Default (…) uses the default of the type.\nThe gateway sends each parameter in the DBIRTH of the device.\n~Edit the list of the parameters in the card Device types.",
  dtypes:"A device type holds the tag list of a device model one time. Each device of the type uses these tags, with its own unit ID and poll interval.\nEach type that a device uses is a Sparkplug template: the NBIRTH has its definition, and the DBIRTH of each device of the type has an instance.\n~Up to 16 types. The types that devices use: 64 tags at most together. Each device counts the tags of its type in the limit of 256 tags.",
  tag:"The name of the metric in Sparkplug. Use '/' between the levels of a path, no ':' and no spaces. Example: Motor/Current.\nTwo tags of one device must not have names that differ only in case. A name must not also be a folder of another name, for example A and A/B.\n~1 to 39 bytes. Necessary.",
  area:"The Modbus table of the value. `coil` and `discrete` are bits. `holding` and `input` are 16-bit registers.\nOnly `coil` and `holding` can be writable.\n~coil = FC01, discrete = FC02, holding = FC03, input = FC04. Necessary.",
@@ -835,7 +846,7 @@ function renderForms(){
  <p class="offnote${d.enabled===false?"":" hidden"}" id="off-${i}">Disabled. The gateway does not poll this device and sends no DBIRTH. The validation still examines it.</p>
  ${devMore(i)}
  <div class="topic" data-topic="${i}"></div>
- ${typed?devTinfo(d,i):tagTable(d,`devices.${i}`)}
+ ${typed?devParams(d,i)+devTinfo(d,i):tagTable(d,`devices.${i}`)}
  <div class="row" style="margin-top:10px">${typed?"":`<button data-add-tag="devices.${i}">+ tag</button><button data-mk-type="${i}">Make a type from these tags</button>`}<button data-del-dev="${i}">Remove device</button></div></div></div>`}).join("");
  tagsInit();updTopics();ccSum();
 }
@@ -856,6 +867,7 @@ function renderTypes(){
   ts.map((t,j)=>{t=t&&typeof t==="object"?t:{};const n=t.name!=null?String(t.name):"",open=typeOpen.has(n),u=dtUsers(n);
    return `<div class="card" data-dt="${j}" id="dt-${j}"><div class="dhd">${ccHead(j,`tbody-${j}`,n||`Type ${j+1}`,open,"data-tcc")}</div><div class="dbody${open?"":" hidden"}" id="tbody-${j}"><div class="grid">${field(`device_types.${j}.name`,"Name","str",0,0,{ml:39,help:"tname"})}</div>
  <div class="used">${u.length?`Used by ${plur(u.length,"device")}: ${u.map(esc).join(", ")}`:"Used by no device"}</div>
+ ${parTable(t,j)}
  ${tagTable(t,`device_types.${j}`)}
  <div class="row" style="margin-top:10px"><button data-add-tag="device_types.${j}">+ tag</button><button data-del-dt="${j}"${u.length?` disabled aria-describedby="dtu-${j}"`:""}>Remove type</button>${u.length?`<span class="mut" id="dtu-${j}">Used by ${plur(u.length,"device")}. Give them another type first.</span>`:""}</div></div></div>`}).join("");
  const c=$("#dt-card");if(!ts.length&&ccSt.dtypes===undefined&&c&&!c.classList.contains("open"))ccApply(c,true)}
@@ -864,6 +876,44 @@ function dtSel(i,d){const ns=dtNames(),v=d.type==null?"":String(d.type),o=[["","
  return `<div class="fld"><span class="lbl"><label for="i-devices.${i}.type">Device type</label>${qi("type","Device type")}</span><select id="i-devices.${i}.type" data-p="devices.${i}.type" data-k="sel" data-dtype="${i}" data-prev="${esc(v)}">${o.map(([x,t])=>`<option value="${esc(x)}"${x===v?" selected":""}>${esc(t)}</option>`).join("")}</select></div>`}
 function devTinfo(d,i){const j=dtNames().indexOf(String(d.type)),t=j>=0?cfg.device_types[j]:null,n=t&&Array.isArray(t.tags)?t.tags.length:0;
  return `<div class="tinfo" data-perr="devices.${i}.tags" tabindex="-1"><p>${j<0?`Tags: no device type <b>${esc(d.type)}</b> in the card Device types. Select a type in the list.`:`Tags: the ${plur(n,"tag")} of the device type <b>${esc(d.type)}</b>. Edit them in the card Device types. <a href="#dt-${j}" data-goto-dt="${j}">Go to the type ${esc(d.type)}</a>`}</p></div>`}
+/* #276: the template parameters that the user defines. A type has a list of {name, type, default}
+   (device_types[].params, a maximum of 8); a device of the type can give a value for each of them
+   (devices[].params, an object with the names as keys). The fields of a device are not [data-p]
+   fields: a name can have a dot or a space, which a path cannot hold. readParams() reads them. */
+const PTYPES=["string","int64","float64","bool"],PMAX=8;
+function typePars(n){const j=dtNames().indexOf(String(n)),t=j>=0?cfg.device_types[j]:null;return t&&Array.isArray(t.params)?t.params:[]}
+function parText(v){return typeof v==="boolean"?(v?"Yes":"No"):String(v)}
+function parTable(t,j){const ps=Array.isArray(t.params)?t.params:[],b=`device_types.${j}.params`;
+ return `<div class="sect"><span class="lbl">Parameters${qi("params","Parameters")}</span></div><p class="snote">Fixed values of each device of the type, for example the manufacturer. The gateway sends them in the birth messages.</p>`+
+  (ps.length?`<div class="pars" data-perr="${b}" tabindex="-1"><div class="prow phd" aria-hidden="true"><span>Parameter</span><span>Type</span><span>Default</span><span></span></div>${ps.map((q,k)=>{q=q&&typeof q==="object"?q:{};const ty=PTYPES.includes(q.type)?q.type:"string",n=q.name==null?"":String(q.name),d=q.default;
+   const def=ty==="bool"?`<input type="checkbox" id="i-${b}.${k}.default" data-p="${b}.${k}.default" data-k="bool" data-def="0" aria-label="Default"${d===true?" checked":""}>`:
+    `<input id="i-${b}.${k}.default" data-p="${b}.${k}.default" data-k="${ty==="string"?"str":"num"}"${ty==="string"?' maxlength="63"':""} aria-label="Default" value="${d==null?"":esc(d)}">`;
+   return `<div class="prow"><label><span class="pl">Parameter</span><input id="i-${b}.${k}.name" data-p="${b}.${k}.name" data-k="str" maxlength="39" aria-label="Parameter" data-parn="${j}|${k}" data-prev="${esc(n)}" value="${esc(n)}"></label>
+    <label><span class="pl">Type</span><select id="i-${b}.${k}.type" data-p="${b}.${k}.type" data-k="sel" aria-label="Type" data-part="${j}|${k}">${PTYPES.map(x=>`<option${x===ty?" selected":""}>${x}</option>`).join("")}</select></label>
+    <label><span class="pl">Default</span>${def}</label><button data-del-par="${j}|${k}" aria-label="Remove the parameter">x</button></div>`}).join("")}</div>`:
+   `<p class="mut" style="font-size:13px;margin:6px 0 0" data-perr="${b}" tabindex="-1">This type has no parameters.</p>`)+
+  `<div class="row" style="margin-top:10px"><button data-add-par="${j}"${ps.length>=PMAX?" disabled":""}>+ parameter</button><span class="cnt">${ps.length} of ${PMAX}</span></div><div class="sect">Tags</div>`}
+/* the block Parameters of a device with a type: one field for each parameter of the type, in the form of
+   the other fields of the device. An empty field uses the default of the type, which shows in grey;
+   a bool parameter is a list with Default (…), Yes and No. A type without parameters has no block. */
+function devParams(d,i){const ps=typePars(d.type);if(!ps.length)return "";
+ const own=d.params&&typeof d.params==="object"&&!Array.isArray(d.params)?d.params:{};
+ return `<div class="sect" data-perr="devices.${i}.params" tabindex="-1"><span class="lbl">Parameters${qi("dpar","Parameters")}</span></div><div class="grid">${ps.map((q,k)=>{q=q&&typeof q==="object"?q:{};
+  const n=q.name==null?"":String(q.name),ty=PTYPES.includes(q.type)?q.type:"string",has=Object.prototype.hasOwnProperty.call(own,n),v=own[n],id=`i-devices.${i}.params.${k}`,
+   a=` id="${id}" data-dpar="${i}" data-pn="${esc(n)}" data-pt="${ty}" data-perr="devices.${i}.params.${k}"`;let c;
+  if(ty==="bool"){const o=[["",`Default (${q.default===true?"yes":"no"})`],["true","Yes"],["false","No"]],bad=has&&typeof v!=="boolean",s=!has?"":bad?"raw":String(v);if(bad)o.push(["raw",`${parText(v)} (not valid)`]);
+   c=`<select${a}>${o.map(([x,l])=>`<option value="${x}"${x===s?" selected":""}>${esc(l)}</option>`).join("")}</select>`}
+  else c=`<input${a}${ty==="string"?' maxlength="63"':""} placeholder="${esc(q.default==null?(ty==="string"?"":"0"):q.default)}" value="${has?esc(v):""}">`;
+  return `<div class="fld"><span class="lbl"><label for="${id}">${esc(n)}</label></span>${c}</div>`}).join("")}</div>`}
+/* the fields of devParams into cfg.devices[].params. An empty field (or Default) removes the value of
+   the device: the default of the type applies. A number that is not a number stays as its text, so that
+   the validation shows the error at the field. */
+function readParams(){document.querySelectorAll("[data-dpar]").forEach(e=>{const d=(cfg.devices||[])[+e.dataset.dpar];if(!d||typeof d!=="object")return;
+  const n=e.dataset.pn,ty=e.dataset.pt,r=e.value,o=d.params&&typeof d.params==="object"&&!Array.isArray(d.params)?d.params:(d.params={});
+  if(ty==="bool"){if(r==="")delete o[n];else if(r!=="raw")o[n]=r==="true"}
+  else if(ty==="string"){if(r==="")delete o[n];else o[n]=r}
+  else if(r.trim()==="")delete o[n];else{const x=Number(r);o[n]=Number.isFinite(x)?x:r}
+  if(!Object.keys(o).length)delete d.params})}
 /* the error of the name of a new type (the rules of gw_config.c), or null */
 function dtNameErr(v,ns){if(v==="")return "Give a name for the type.";if(new TextEncoder().encode(v).length>39)return "The name has more than 39 bytes.";
  if(/[\/+#]/.test(v))return "No /, + or #.";const o=ns.find(n=>n.toLowerCase()===v.toLowerCase());
@@ -994,7 +1044,7 @@ function readPrefix(){
  if(v!=="")set(cfg,"sparkplug.device_prefix",v);else unset("sparkplug.device_prefix");
 }
 function readForms(){
- readPrefix();readLio();readSf();
+ readPrefix();readLio();readSf();readParams();
  document.querySelectorAll("[data-p]").forEach(e=>{
   const p=e.dataset.p.replace(/\.(\d+)(?=\.|$)/g,".$1"),k=e.dataset.k;let v;
   if(k==="bool"){v=e.checked;if(get(cfg,p)===undefined&&v===(e.dataset.def==="1"))return}else if(k==="int"||k==="num"){if(e.value.trim()===""){unset(p);return}v=Number(e.value)}
@@ -1042,7 +1092,11 @@ function pathSel(path){const p=path.replace(/\[(\d+)\]/g,".$1");return `[data-p=
 // #191: the result of Validate and Save below its field, and the bar with the number of changes,
 // the result, Validate and Save. base191: the document that was loaded or saved last.
 let base191=null,fn191=0,t191=0;
-function fld191(path){return path?document.querySelector(pathSel(path)):null}
+/* #276: "devices[i].params.<name>" is the field of that parameter (a name can have a dot or a quote, so
+   it is not in a selector) */
+function fld191(path){if(!path)return null;const m=/^devices\[(\d+)\]\.params\.(.+)$/.exec(path);
+ if(m)return [...document.querySelectorAll(`[data-dpar="${m[1]}"]`)].find(e=>e.dataset.pn===m[2])||document.querySelector(`[data-perr="devices.${m[1]}.params"]`);
+ try{return document.querySelector(pathSel(path))}catch(e){return null}}
 function bare191(m,path){m=String(m||"");if(path&&m.startsWith(path+": "))m=m.slice(path.length+2);return m.charAt(0).toUpperCase()+m.slice(1)}
 function clear191(){document.querySelectorAll(".ferr,.fwarn").forEach(e=>e.remove());
  document.querySelectorAll(".err,.wrn").forEach(e=>{e.classList.remove("err","wrn");e.removeAttribute("aria-invalid");e.removeAttribute("aria-describedby")});ccBadge()}
@@ -1053,7 +1107,8 @@ function where191(el){
  const p=(el.dataset.p||el.dataset.perr||"").split("."),w=[];
  /* "devices" or "device_types" without an index (the list itself): the card, as for other keys */
  if(p[0]==="devices"&&p[1]!==undefined){w.push(val(`devices.${p[1]}.name`)||`Device ${+p[1]+1}`);if(p[2]==="tags"&&p[3]!==undefined)w.push(val(`devices.${p[1]}.tags.${p[3]}.name`)||`Tag ${+p[3]+1}`)}
- else if(p[0]==="device_types"&&p[1]!==undefined){w.push(`Type ${val(`device_types.${p[1]}.name`)||+p[1]+1}`);if(p[2]==="tags"&&p[3]!==undefined)w.push(val(`device_types.${p[1]}.tags.${p[3]}.name`)||`Tag ${+p[3]+1}`)}
+ else if(p[0]==="device_types"&&p[1]!==undefined){w.push(`Type ${val(`device_types.${p[1]}.name`)||+p[1]+1}`);if(p[2]==="tags"&&p[3]!==undefined)w.push(val(`device_types.${p[1]}.tags.${p[3]}.name`)||`Tag ${+p[3]+1}`);
+  if(p[2]==="params"&&p[3]!==undefined&&p[4]!=="name")w.push(val(`device_types.${p[1]}.params.${p[3]}.name`)||`Parameter ${+p[3]+1}`)}
  else{const h=el.closest(".card"),h2=h&&h.querySelector("h2");if(h&&h.dataset.t)w.push(h.dataset.t);else if(h2)w.push(h2.textContent.replace(/\?$/,""))}
  let l=el.getAttribute("aria-label")||"",f;
  if(!l&&el.id&&(f=document.querySelector(`label[for="${el.id}"]`)))l=f.textContent;
@@ -1467,6 +1522,7 @@ $("#f-dev").addEventListener("change",async e=>{const s=e.target;if(s.dataset.dt
  if(nv&&!prev&&own){const j=dtNames().indexOf(nv),n=j>=0&&Array.isArray(cfg.device_types[j].tags)?cfg.device_types[j].tags.length:0,nm=esc(d.name||`Device ${i+1}`);
   if(!await ask({title:`Use the tags of the type ${nv}?`,action:`Use the type ${nv}`,fact:`${nm} · ${plur(own,"own tag")}`,
    html:`<ul><li>${nm} then uses the ${plur(n,"tag")} of the device type <b>${esc(nv)}</b>.</li><li>The ${plur(own,"own tag")} of ${nm} ${own===1?"goes":"go"} away when you save.</li><li>To keep them, select Cancel, then use <b>Make a type from these tags</b>.</li></ul>`})){s.value="";delete d.type;updTopics();upd191();return}}
+ delete d.params;   /* #276: the values are for the parameters of the type that the device had */
  if(nv)delete d.tags;else if(prev){const j=dtNames().indexOf(prev);d.tags=j>=0?JSON.parse(JSON.stringify(cfg.device_types[j].tags||[])):[]}
  renderForms();const f=document.getElementById(s.id);if(f)f.focus()});
 /* #213: "Make a type from these tags": a new type with a copy of the tags; the device then uses it */
@@ -1485,6 +1541,36 @@ $("#f-dt").addEventListener("change",e=>{const m=/^device_types\.(\d+)\.name$/.e
  readForms();const nv=String(get(cfg,`device_types.${j}.name`)??"");if(nv===old)return;
  (cfg.devices||[]).forEach(d=>{if(d&&old!==""&&d.type===old)d.type=nv});if(typeOpen.delete(old)){typeOpen.add(nv);typeSave()}
  const a=document.activeElement&&document.activeElement.id;renderForms();const f=a&&document.getElementById(a);if(f)f.focus()});
+/* #276: + parameter and x (a parameter). The removal asks first (#193) when a device of the type has its
+   own value for the parameter: these values go away. If no device has one, the button removes the
+   parameter immediately, as it removes a tag (approved prototype of #276). */
+$("#f-dt").addEventListener("click",async e=>{const t=e.target.dataset||{};if(t.addPar===undefined&&t.delPar===undefined)return;readForms();
+ if(t.addPar!==undefined){const ty=cfg.device_types[+t.addPar],a=ty.params=Array.isArray(ty.params)?ty.params:[];if(a.length>=PMAX)return;
+  const ns=a.map(q=>String(q&&q.name)),k0=a.length;let k=k0+1;while(ns.includes("Param"+k))k++;a.push({name:"Param"+k,type:"string"});renderForms();
+  const f=document.getElementById(`i-device_types.${t.addPar}.params.${k0}.name`);if(f){f.focus();f.select()}return}
+ const[j,k]=t.delPar.split("|").map(Number),ty=cfg.device_types[j],a=Array.isArray(ty.params)?ty.params:[],q=a[k]||{},n=String(q.name??""),tn=String(ty.name??""),
+  us=(cfg.devices||[]).map((d,i)=>({d,nm:d&&d.name||`Device ${i+1}`})).filter(u=>u.d&&tn!==""&&u.d.type===tn),has=u=>u.d.params&&typeof u.d.params==="object"&&Object.prototype.hasOwnProperty.call(u.d.params,n),
+  own=us.filter(has),dfl=us.filter(u=>!has(u));
+ if(own.length&&!await ask({title:`Remove the parameter ${n}?`,action:"Remove the parameter",fact:`Type ${esc(tn)} · ${plur(us.length,"device")}`,
+  html:`<ul><li>${own.length===1?`${esc(own[0].nm)} has its own value for this parameter: <b>${esc(parText(own[0].d.params[n]))}</b>. The value goes away when you save.`:
+    `${own.length} devices have their own value for this parameter: ${own.map(u=>`${esc(u.nm)} (<b>${esc(parText(u.d.params[n]))}</b>)`).join(", ")}. The values go away when you save.`}</li>${
+   dfl.length===1?`<li>${esc(dfl[0].nm)} uses the default of the type. It has no value to remove.</li>`:dfl.length?`<li>${dfl.length} devices use the default of the type: ${dfl.map(u=>esc(u.nm)).join(", ")}. They have no value to remove.</li>`:""}<li>The gateway then does not send <b>${esc(n)}</b> in the birth messages.</li></ul>`}))return;
+ a.splice(k,1);if(!a.length)delete ty.params;own.forEach(u=>{delete u.d.params[n];if(!Object.keys(u.d.params).length)delete u.d.params});renderForms()});
+/* #276: a new name of a parameter: the values of the devices of the type get it too. Another type for a
+   parameter: the default goes to the new type when it can (a text of a number to the number), else it
+   goes away. The values of the devices stay, and the validation examines them. parBusy: the new
+   forms remove the field that has the focus, and the browser can then send a second change event
+   from it, while the fields of the devices are still the old ones. */
+let parBusy=false;
+$("#f-dt").addEventListener("change",e=>{const s=e.target.dataset||{};if(parBusy||(s.parn===undefined&&s.part===undefined))return;
+ const[j,k]=(s.parn??s.part).split("|").map(Number),old=s.prev;readForms();const ty=cfg.device_types[j],q=ty&&Array.isArray(ty.params)?ty.params[k]:null;if(!q)return;
+ if(s.parn!==undefined){const nv=String(q.name??""),tn=String(ty.name??"");if(nv===old||nv==="")return;
+  (cfg.devices||[]).forEach(d=>{const o=d&&tn!==""&&d.type===tn&&d.params&&typeof d.params==="object"?d.params:null;
+   if(o&&Object.prototype.hasOwnProperty.call(o,old)&&!Object.prototype.hasOwnProperty.call(o,nv)){o[nv]=o[old];delete o[old]}})}
+ else{const d=q.default;if(d!==undefined){if(q.type==="string")q.default=String(d);
+   else if(q.type==="bool"){if(d==="true"||d==="false")q.default=d==="true";else if(typeof d!=="boolean")delete q.default}
+   else{const x=typeof d==="boolean"||String(d).trim()===""?NaN:Number(d);if(Number.isFinite(x))q.default=x;else delete q.default}}}
+ const a=document.activeElement&&document.activeElement.id;parBusy=true;try{renderForms()}finally{parBusy=false}const f=a&&document.getElementById(a);if(f)f.focus()});
 /* #226: the firmware accepts an IPv4 number only without a leading zero, a sign or a space (other
    programs read 010 as the octal 8). A leading zero comes from a zero-padded notation, which is
    decimal (decision of the product owner): when a field with an IPv4 value loses the focus, the

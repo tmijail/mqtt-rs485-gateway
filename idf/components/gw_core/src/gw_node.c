@@ -52,10 +52,6 @@ static const char *const k_run_names[GW_RUN_HOURS_CHANNELS] = {
 #define NAME_LARGEST_BLOCK "Node Info/Largest Free Block"   /* #212 */
 #define NAME_FREE_PSRAM "Node Info/Free PSRAM"
 #define NAME_TEMPERATURE "Node Info/Temperature"
-/* SPB-18 #251: the template parameter of each device type: the Modbus unit ID (devices[].unit_id)
- * of the instance, Int32. The name is the label of the key in the web UI. */
-#define NAME_PARAM_UNIT_ID "Unit ID"
-
 /* Issue #81: "Node Info/Modbus TCP", the Modbus TCP gateway's forwarded requests per device
  * (gw_dev_stats_t.tcp, #69) and a last row for units with no device. A table of its own rather
  * than a transport column in "Node Info/Modbus": that table keeps its columns for the hosts
@@ -724,6 +720,54 @@ static void publish_online(gw_node_t *n, uint16_t dev, bool online)
     publish(n, "NDATA", NULL, 1, 0);
 }
 
+/* ---------- SPB-18 #276: the template parameters that the user defines ---------- */
+
+/* The parameter @p pc with the value @p v. tck-id-payloads-template-parameter-name-required,
+ * -type-req and -value: a name, a type and a value, always. tck-id-payloads-template-parameter-
+ * type-value: the four types are basic datatypes, String, Int64, Double and Boolean. They are
+ * the datatypes that each examined decoder reads (docs/reference/sparkplug-behavior.md). */
+static void param_out(const gw_param_cfg_t *pc, const gw_param_value_t *v, spb_param_t *out)
+{
+    out->name = pc->name;
+    switch ((gw_param_type_t)pc->type) {
+    case GW_PARAM_STRING:
+        out->datatype = SPB_DT_STRING;
+        out->v.str = v->str;
+        break;
+    case GW_PARAM_INT64:
+        out->datatype = SPB_DT_INT64;
+        out->v.i64 = v->i64;
+        break;
+    case GW_PARAM_FLOAT64:
+        out->datatype = SPB_DT_DOUBLE;
+        out->v.num = v->f64;
+        break;
+    case GW_PARAM_BOOL:
+    default:
+        out->datatype = SPB_DT_BOOLEAN;
+        out->v.num = v->b ? 1.0 : 0.0;
+        break;
+    }
+}
+
+/* Parameter @p i of a definition: tck-id-payloads-template-definition-parameters, a definition
+ * has each parameter of its instances; -parameters-default (MAY), with its default. The TCK
+ * 3.0.0 does not pass a parameter without a value, so a default is always there. */
+static void def_param(const void *ctx, uint32_t i, spb_param_t *out)
+{
+    const gw_node_def_ctx_t *c = ctx;
+    const gw_param_cfg_t *pc = &c->cfg->types[c->cfg->devices[c->dev].type_index].params[i];
+    param_out(pc, &pc->def, out);
+}
+
+/* Parameter @p i of the instance of a device, in its DBIRTH: the value in effect. */
+static void inst_param(const void *ctx, uint32_t i, spb_param_t *out)
+{
+    const gw_node_def_ctx_t *c = ctx;
+    param_out(&c->cfg->types[c->cfg->devices[c->dev].type_index].params[i],
+              &c->cfg->dev_params[c->dev][i], out);
+}
+
 /* Publish @p dev's metrics: n->metrics[0..count) for a plain device; for a typed one (SPB-18)
  * the members are n->metrics[1..count] and n->metrics[0] becomes their template instance. */
 /* Returns 0, GW_NODE_PUBLISH_TOO_LARGE or -1 (publish_rc). */
@@ -737,13 +781,15 @@ static int publish_device_rc(gw_node_t *n, const char *type, uint16_t dev, size_
     n->tmpl = (spb_template_t){.ref = d->type, .is_definition = false, .count = (uint32_t)count,
                                .members = &n->metrics[1]};
     if (birth) {
-        /* #251, tck-id-payloads-template-instance-parameters (MAY): the instance of a DBIRTH
-         * gives its own value of the parameter of the definition. The instance of a DDATA has no
-         * parameters: the unit ID cannot change in a session, and the DBIRTH gave it. */
-        n->tmpl_param = (spb_param_t){.name = NAME_PARAM_UNIT_ID, .datatype = SPB_DT_INT32,
-                                      .v.num = d->unit_id};
-        n->tmpl.param_count = 1;
-        n->tmpl.params = &n->tmpl_param;
+        /* #276, tck-id-payloads-template-instance-parameters (MAY): the instance of a DBIRTH
+         * gives each parameter of its definition, with the value of the device or the default
+         * of the type. So the result does not depend on a host that applies the default. The
+         * instance of a DDATA has no parameters: a value changes only with a new configuration,
+         * which restarts the gateway, and the DBIRTH gave it. */
+        n->tmpl_ctx = (gw_node_def_ctx_t){.cfg = n->cfg, .dev = dev};
+        n->tmpl.param_count = n->cfg->types[d->type_index].param_count;
+        n->tmpl.param = inst_param;
+        n->tmpl.param_ctx = &n->tmpl_ctx;
     }
     omit_datatypes(&n->metrics[1], count, type);   /* the members; publish_rc does the instance */
     metric(n, 0, birth ? d->type : NULL, GW_ALIAS_TAG_BASE + d->first_tag, SPB_DT_TEMPLATE,
@@ -800,13 +846,6 @@ static void def_member(const void *ctx, uint32_t i, spb_metric_t *out)
     out->props.eng_high = t->eng_high;
 }
 
-/* #251: the parameter of each definition. tck-id-payloads-template-definition-parameters: a
- * definition has each parameter of its instances. tck-id-payloads-template-definition-parameters-
- * default (MAY): it gives a default, 0, which is not the unit ID of a device (1 to 247); each
- * instance of a birth gives its own value, so no instance uses the default. */
-static const spb_param_t k_def_param = {.name = NAME_PARAM_UNIT_ID, .datatype = SPB_DT_INT32,
-                                        .v.num = 0};
-
 /* SPB-18: one definition per device type, after the node's own metrics. Returns the count.
  * #174: none with the UMH preset: no device is an instance, and
  * tck-id-payloads-template-definition-nbirth asks for a definition only for the instances. */
@@ -829,7 +868,8 @@ static size_t template_definitions(gw_node_t *n, size_t i, uint64_t now)
         n->def_ctx[k].dev = dev;
         n->defs[k] = (spb_template_t){.ref = NULL, .is_definition = true, .count = d->tag_count,
                                       .get = def_member, .ctx = &n->def_ctx[k],
-                                      .param_count = 1, .params = &k_def_param};
+                                      .param_count = n->cfg->types[d->type_index].param_count,
+                                      .param = def_param, .param_ctx = &n->def_ctx[k]};
         spb_metric_t *m = metric(n, i + k, d->type, 0, SPB_DT_TEMPLATE, now);
         m->no_alias = true;
         m->v.tmpl = &n->defs[k];

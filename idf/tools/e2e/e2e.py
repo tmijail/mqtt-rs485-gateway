@@ -2893,6 +2893,21 @@ def run_store_forward(args, work, slave):
 STACK_MARGIN_B = 1024   # see run_stack_margin
 
 
+# #276: the parameters of the device type Pump in the scenarios, one of each type, and the values
+# that the first pump gives (it gives no Manufacturer: its instance has the default of the type).
+# PUMP_DEF and PUMP_A: the parameters of the definition and of that instance on the wire, as
+# [(name, datatype, value field, value)]: String 12, Double 10, Int64 4 (long_value), Boolean 11.
+PUMP_PARAMS = [{"name": "Manufacturer", "type": "string", "default": "Grundfos"},
+               {"name": "Rated kW", "type": "float64", "default": 0.5},
+               {"name": "Poles", "type": "int64", "default": 2},
+               {"name": "Has VFD", "type": "bool"}]
+PUMP_OWN = {"Rated kW": 7.5, "Poles": -4, "Has VFD": True}
+PUMP_DEF = [("Manufacturer", 12, "string_value", "Grundfos"), ("Rated kW", 10, "double_value", 0.5),
+            ("Poles", 4, "long_value", 2), ("Has VFD", 11, "boolean_value", False)]
+PUMP_A = [("Manufacturer", 12, "string_value", "Grundfos"), ("Rated kW", 10, "double_value", 7.5),
+          ("Poles", 4, "long_value", -4), ("Has VFD", 11, "boolean_value", True)]
+
+
 def run_stack_margin(args, work, slave):
     """SPB-16..19 and the 6 KB Sparkplug stack (review of 2ea6ffd), in one boot (GW27) with
     store & forward, diagnostics every 10 s, two template devices (Pump) and a bytes tag. Through
@@ -2914,13 +2929,18 @@ def run_stack_margin(args, work, slave):
     cfg["sparkplug"]["store_forward"] = True
     cfg["sparkplug"]["diagnostics_s"] = 10
     # #213: the two pumps of the type Pump: the same addresses, on unit 1 and unit 7
-    cfg["device_types"] = [{"name": "Pump", "tags": [
+    # #276: the type has the four parameters, and one more with the longest text (63 bytes), so
+    # that the births of this boot run the encoding of the parameters at its deepest
+    cfg["device_types"] = [{"name": "Pump",
+                            "params": PUMP_PARAMS + [{"name": "N" * 39, "type": "string",
+                                                      "default": "t" * 63}],
+                            "tags": [
         {"name": "Speed", "area": "holding", "address": 232, "type": "uint16", "units": "rpm",
          "eng_high": 3000, "writable": True},
         {"name": "Run", "area": "coil", "address": 7, "type": "bool"}]}]
     for k, (uid, unit) in enumerate(((1, slave.ctx), (7, slave.unit7))):
         cfg["devices"].append({"name": f"Pump{'AB'[k]}", "unit_id": uid, "type": "Pump",
-                               "poll_ms": 500})
+                               "poll_ms": 500, **({"params": PUMP_OWN} if k == 0 else {})})
         unit.setValues(3, 232, [1000 + k])
     cfg["devices"].append({"name": "Raw", "unit_id": 1, "poll_ms": 500, "tags": [
         {"name": "Block", "area": "holding", "address": 240, "type": "bytes", "length": 4,
@@ -6379,14 +6399,15 @@ def umh_device_cfg(cfg, preset):
     if preset:
         cfg["sparkplug"]["naming"] = "umh"
     cfg.pop("modbus_tcp", None)
-    cfg["device_types"] = [{"name": "Pump", "tags": [   # #213
+    # #213; #276: the parameters are valid with the preset too, and are not published
+    cfg["device_types"] = [{"name": "Pump", "params": PUMP_PARAMS, "tags": [
         {"name": "Speed", "area": "holding", "address": 80, "type": "uint16", "units": "rpm"},
         {"name": "Run", "area": "coil", "address": 5, "type": "bool"}]}]
     cfg["devices"] = [
         {"name": "cell2:meter1", "unit_id": 1, "poll_ms": 1000, "offline_after": 3, "max_gap": 10,
          "tags": [dict(t, name=n) for n, t, _ in UMH_TAGS] + [
              {"name": "Raw", "area": "holding", "address": 76, "type": "bytes", "length": 2}]},
-        {"name": "cell2:pump1", "unit_id": 1, "type": "Pump", "poll_ms": 1000},
+        {"name": "cell2:pump1", "unit_id": 1, "type": "Pump", "poll_ms": 1000, "params": PUMP_OWN},
         {"name": "cell2:dead1", "unit_id": 3, "poll_ms": 1000, "offline_after": 3, "tags": [
             {"name": "Value", "area": "holding", "address": 0, "type": "uint16"}]}]
     return cfg
@@ -8316,7 +8337,8 @@ def run_network_variant(args, work, slave):
       * SPB-18 #213: two devices of the device type "Pump" (PumpA on unit 1 and PumpB on unit 7,
         so that unit 2 keeps the single FC03 the main scenario checks; both at holding 230 and
         coil 5): one template definition in the NBIRTH, an instance per DBIRTH, a DCMD member
-        write and its DDATA.
+        write and its DDATA. #276: the type Pump has a parameter of each type; PumpA gives three
+        values and PumpB gives none. The type Valve (ValveA, unit 1 coil 5) has no parameters.
       * #196, #197, #202, #214 (check_devices_gw02): a device with write_multiple, a tag with write
         limits and a field of 3 bits (Drive, unit 1 holding 250 and 252), and a disabled device
         (Spare, unit 1 holding 240)."""
@@ -8337,13 +8359,17 @@ def run_network_variant(args, work, slave):
     slave.ctx.setValues(3, 220, [0x00FF, 0x1000, 0x7F80])
     # #213: two devices of one device type: the tag list is in device_types one time, and
     # PumpA (unit 1) and PumpB (unit 7) read the same addresses
-    cfg["device_types"] = [{"name": "Pump", "tags": [
+    cfg["device_types"] = [{"name": "Pump", "params": PUMP_PARAMS, "tags": [
         {"name": "Speed", "area": "holding", "address": 230, "type": "uint16", "units": "rpm",
          "writable": True},
-        {"name": "Run", "area": "coil", "address": 5, "type": "bool"}]}]
+        {"name": "Run", "area": "coil", "address": 5, "type": "bool"}]},
+        # #276: a type without parameters: its template has none
+        {"name": "Valve", "tags": [{"name": "Open", "area": "coil", "address": 5,
+                                    "type": "bool"}]}]
+    cfg["devices"].append({"name": "ValveA", "unit_id": 1, "type": "Valve", "poll_ms": 500})
     for k, (uid, unit) in enumerate(((1, slave.ctx), (7, slave.unit7))):
         cfg["devices"].append({"name": f"Pump{'AB'[k]}", "unit_id": uid, "type": "Pump",
-                               "poll_ms": 500})
+                               "poll_ms": 500, **({"params": PUMP_OWN} if k == 0 else {})})
         unit.setValues(3, 230, [1450 + 10 * k])
         unit.setValues(1, 5, [True])
     # #197 and #196: FC16 also for one register, and the write limits of a tag
@@ -8435,10 +8461,12 @@ def run_network_variant(args, work, slave):
           f"DBIRTH {block.datatype if block else None} {block.bytes_value.hex() if block else None}; "
           f"writes {writes}; DDATA {got.hex() if got else None}")
     check("SPB-18 device type 'Pump': one template definition in the NBIRTH (no alias, members "
-          "Speed UInt16 'rpm' and Run Boolean, #251 the parameter Unit ID Int32 with the default "
-          "0), an instance per DBIRTH (template_ref, values, Quality, #251 the unit ID of the "
-          "device in the parameter), DCMD on a member -> FC06 and DDATA with the instance and "
-          "that member only, without parameters",
+          "Speed UInt16 'rpm' and Run Boolean, #276 its four parameters String, Double, Int64 and "
+          "Boolean with their defaults), an instance per DBIRTH (template_ref, values, Quality, "
+          "#276 each parameter: the values of PumpA, the defaults for PumpB), DCMD on a member -> "
+          "FC06 and DDATA with the instance and that member only, without parameters; #276 the "
+          "type 'Valve' without parameters: no parameters in its definition and in its instance, "
+          "and no parameter 'Unit ID' in a template",
           tmpl[0], tmpl[1])
     for name, ok, detail in devs:
         check(name, ok, detail)
@@ -8457,34 +8485,40 @@ def check_templates_gw02(obs, slave, node, nb):
                  spb_decode.param_value(q)) for q in t.parameters]
 
     defs = [m for m in nb[2].metrics if m.datatype == 19] if nb else []
-    d = defs[0] if defs else None
+    d = next((m for m in defs if m.name == "Pump"), None)
     members = [(mm.name, mm.datatype, props(mm).get("engUnit")) for mm in d.template_value.metrics] if d else []
-    # #251: tck-id-payloads-template-definition-parameters, -parameters-default: the definition
-    # has the parameter of its instances, with its type (Int32) and the default 0
+    # #276: tck-id-payloads-template-definition-parameters, -parameters-default: the definition
+    # has each parameter of its instances, with its type and its default (false for the
+    # parameter without a default in the document). The definition of the type without
+    # parameters has none
     def_params = params(d.template_value) if d else []
-    def_ok = len(defs) == 1 and d.name == "Pump" and not d.HasField("alias") \
+    valve = next((m for m in defs if m.name == "Valve"), None)
+    def_ok = sorted(m.name for m in defs) == ["Pump", "Valve"] and not d.HasField("alias") \
         and d.template_value.is_definition and not d.template_value.template_ref \
         and members == [("Speed", 6, "rpm"), ("Run", 11, None)] \
-        and def_params == [("Unit ID", 3, "int_value", 0)]
+        and def_params == PUMP_DEF \
+        and valve.template_value.is_definition and not valve.template_value.parameters
     births = {}
-    for name in ("PumpA", "PumpB"):
+    for name in ("PumpA", "PumpB", "ValveA"):
         b = next((m for m in CAPTURE if m[1] == f"{T}/DBIRTH/{node}/{name}"), None) \
             or obs.wait(f"{T}/DBIRTH/{node}/{name}", 10)
         births[name] = b
     inst, inst_params = {}, {}
     for name, b in births.items():
         m = b[2].metrics[0] if b and len(b[2].metrics) == 1 else None
-        if m is not None and m.datatype == 19 and m.template_value.template_ref == "Pump" \
-                and not m.template_value.is_definition:
+        if m is not None and m.datatype == 19 and not m.template_value.is_definition \
+                and m.template_value.template_ref == ("Valve" if name == "ValveA" else "Pump"):
             inst[name] = {mm.name: (spb_decode.value_of(mm), props(mm).get("Quality"))
                           for mm in m.template_value.metrics}
             inst_params[name] = params(m.template_value)
-    # #251: tck-id-payloads-template-instance-parameters: each instance gives the unit ID of
-    # its device (PumpA unit 1, PumpB unit 7) in the parameter of the definition
+    # #276: tck-id-payloads-template-instance-parameters: each instance gives each parameter of
+    # its definition: PumpA its three values and the default of the fourth, PumpB the four
+    # defaults. The instance of the type without parameters gives none
     inst_ok = inst.get("PumpA") == {"Speed": (1450, 192), "Run": (True, 192)} \
         and inst.get("PumpB") == {"Speed": (1460, 192), "Run": (True, 192)} \
-        and inst_params.get("PumpA") == [("Unit ID", 3, "int_value", 1)] \
-        and inst_params.get("PumpB") == [("Unit ID", 3, "int_value", 7)]
+        and inst_params.get("PumpA") == PUMP_A \
+        and inst_params.get("PumpB") == PUMP_DEF \
+        and inst.get("ValveA") == {"Open": (True, 192)} and inst_params.get("ValveA") == []
     # DCMD: the instance metric with one member, by name
     p = spb.Payload()
     p.timestamp = int(time.time() * 1000)
@@ -8495,7 +8529,7 @@ def check_templates_gw02(obs, slave, node, nb):
     mm.name, mm.datatype, mm.int_value = "Speed", 6, 1234
     # #251: a host can send the instance with parameters. The gateway ignores them, also one
     # that its codec cannot hold (a name of 70 characters): the member is written all the same
-    m.template_value.parameters.add(name="Unit ID", type=3, int_value=9)
+    m.template_value.parameters.add(name="Rated kW", type=10, double_value=99.0)
     m.template_value.parameters.add(name="x" * 70, type=12, string_value="y" * 70)
     obs.drain()
     before = len(slave.ctx.writes)
@@ -8509,7 +8543,7 @@ def check_templates_gw02(obs, slave, node, nb):
         and not dm.HasField("datatype") and datatype_of(dd[1], dm) == 19 \
         and not any(x.HasField("datatype") for x in dm.template_value.metrics) \
         and [(x.name, x.int_value) for x in dm.template_value.metrics] == [("Speed", 1234)] \
-        and not dm.template_value.parameters   # #251: the DBIRTH gave the parameter
+        and not dm.template_value.parameters   # #276: the DBIRTH gave the parameters
     ok = def_ok and inst_ok and wrote == [(6, 230, [1234])] and data_ok
     return ok, (f"definition {members} (alias {'yes' if d is not None and d.HasField('alias') else 'no'}), "
                 f"parameters {def_params}; instances {inst}, parameters {inst_params}; DCMD "
@@ -8593,7 +8627,7 @@ def check_devices_gw02(obs, slave, gw, node, t0):
     obs.publish_cmd(f"{T}/DCMD/{node}/Spare", [{"name": "Level", "datatype": 6, "int_value": 7}])
     dropped = gw.wait_log(r"DCMD for disabled device 'Spare' discarded", 5, since)
     _, h = gw.shell(["status", "config"],
-                    [r"^network\s+.*Modbus \d+/9 devices online, 1 disabled$",
+                    [r"^network\s+.*Modbus \d+/10 devices online, 1 disabled$",
                      r"^\s+Spare\s+unit\s+1, poll 200 ms, .*, disabled \(not polled\)$"])
     status, summary = h.values()
     asked = [r for t, r in zip(list(slave.times), list(slave.reads), strict=False)
@@ -9105,6 +9139,40 @@ def check_web_controls_221(doc, page_text):
           "Configuration tab shows the error of that path, and of devices, at its card",
           st == 400 and path == "device_types" and lists,
           f"dry run {st} {path}; the fields of the lists {'present' if lists else 'missing'}")
+
+    # #276 #221: the template parameters. The validation accepts a type with a parameter of each
+    # type and a device with values; it refuses a value of the wrong type at the path of that
+    # parameter (the name has a space), a ninth parameter at the list, and a parameter on a
+    # device without a type. The page has the controls: the table of a type, the fields of a
+    # device and the dialog of the removal
+    d = json.loads(json.dumps(doc))
+    tag = {"name": "v", "area": "holding", "address": 0, "type": "uint16"}
+    d["device_types"] = [{"name": "Pump", "params": PUMP_PARAMS, "tags": [tag]}]
+    d["devices"] = d["devices"] + [{"name": "PumpA", "unit_id": 9, "type": "Pump",
+                                    "params": PUMP_OWN}]
+    good = http("PUT", "/api/config?dry_run=1", d)[0]
+    bad = []
+    for change in (lambda x: x["devices"][-1]["params"].update({"Rated kW": "7,5"}),
+                   lambda x: x["device_types"][0].update(params=[
+                       {"name": f"p{k}", "type": "bool"} for k in range(9)]),
+                   lambda x: x["devices"][0].update(params={})):
+        e = json.loads(json.dumps(d))
+        change(e)
+        st, _, b = http("PUT", "/api/config?dry_run=1", e)
+        bad.append((st, (as_json(b) or {}).get("path")))
+    n = len(d["devices"]) - 1
+    ui = {k: k in page_text for k in ("data-add-par=", "data-del-par=", "data-dpar=",
+                                      "function readParams()", "Remove the parameter")}
+    check("Issue #276 #221: the validation accepts a device type with a parameter of each type "
+          "and a device with values; a text for a float64 parameter is refused at "
+          "devices[n].params.<name>, a ninth parameter at device_types[0].params, and params on "
+          "a device without a type at devices[0].params; the Configuration tab has the table "
+          "of the parameters, the fields of a device and the dialog of the removal",
+          good == 200 and bad == [(400, f"devices[{n}].params.Rated kW"),
+                                  (400, "device_types[0].params"),
+                                  (400, "devices[0].params")] and all(ui.values()),
+          f"valid {good}; refused {bad}; missing in the page: "
+          f"{[k for k, v in ui.items() if not v] or 'none'}")
 
 
 def check_admin_web(gw, nb, status, status_body, doc, page_text, t0):
