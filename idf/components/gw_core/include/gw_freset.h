@@ -121,6 +121,19 @@ typedef enum {
  *  caller removes the factory marker. */
 gw_freset_boot_t gw_freset_boot(bool pending, bool factory, bool fs, bool file);
 
+/**
+ * Issue #280: a board whose LittleFS partition is blank: a new board, or a flash with a full
+ * erase that wrote no LittleFS image (the install tool of #219). True: the boot writes the
+ * factory marker to the NVS, and only then formats the partition, so that gw_freset_boot() gives
+ * GW_FRESET_BOOT_COMMISSIONING and never GW_FRESET_BOOT_EXAMPLE.
+ * @p pending: a factory reset is pending (its own steps format the partition). @p nvs_usable:
+ * the NVS can hold the factory marker (without it a format would give the example
+ * configuration). @p fs: LittleFS mounts. @p blank: the superblocks of the partition are erased
+ * (all 0xFF). A partition that does not mount and is not blank is never formatted here: it can
+ * hold a configuration, or the copy of an NVS migration (#104, #109).
+ */
+bool gw_freset_adopt_blank(bool pending, bool nvs_usable, bool fs, bool blank);
+
 #ifdef __cplusplus
 }
 #endif

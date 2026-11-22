@@ -16,7 +16,7 @@ A mode is the state that the boot reached. For the table of the modes and the LE
 |---|---|
 | `normal` | The configuration is valid. The web server starts only with `web.enabled: true`. A push of BOOT for 2 to 10 s starts it until the next restart |
 | `recovery` | The configuration is rejected, or safe mode, or a factory reset that is not complete (refer to [The sequence of the factory reset](#the-sequence-of-the-factory-reset)). The web server always starts. The saved web password is valid with any user name, because the user name is in the rejected document |
-| `commissioning` | After a factory reset. The gateway does not use the embedded example configuration or its Sparkplug identity. It waits for a configuration from the web UI or the shell, with a new commissioning password. The saved web password, if there is one, is valid with any user name |
+| `commissioning` | After a factory reset, or at the first boot of a board with a blank `storage` partition (refer to [A board with a blank `storage` partition](#a-board-with-a-blank-storage-partition)). The gateway does not use the embedded example configuration or its Sparkplug identity. It waits for a configuration from the web UI or the shell, with a new commissioning password. The saved web password, if there is one, is valid with any user name |
 | `fault` | The boot did not find the PSRAM. Only the network, the web server, the shell and the access point start |
 
 For recovery mode, refer to [The configuration document](configuration.md#load-and-recovery-mode). For safe mode, refer to [Firmware updates](firmware-updates.md#the-boot-loop-counter-and-safe-mode).
@@ -28,6 +28,7 @@ For recovery mode, refer to [The configuration document](configuration.md#load-a
 - While no web password is set, use the user `admin` and the **commissioning password**.
 - The commissioning password has 12 random characters, and it is different on each gateway. The gateway makes it at the first boot and after a factory reset, and keeps it in NVS.
 - The console shows the commissioning password at each boot: `web: no web password set; user 'admin', commissioning password '…'`. The firmware writes this line with `printf`. Thus the line never goes to syslog or to the live log of the web UI.
+- The shell command `access` shows the commissioning password and the other access data again on request. Refer to [The command `access`](#the-command-access).
 - After 5 failed logins in sequence from one address, the gateway blocks that address. For the times, refer to [The REST API](rest-api.md#authentication).
 
 There are three paths to the first web password:
@@ -35,7 +36,7 @@ There are three paths to the first web password:
 | Path | Document |
 |---|---|
 | The claim window: a phone at the panel, no computer | [Set the first web password on site](../how-to/set-the-first-web-password.md) |
-| The USB console: read the commissioning password, then set `web.password` in the web UI | [Your first gateway](../tutorials/first-gateway-on-the-bench.md) |
+| The USB console: read the commissioning password (the boot line, or the command `access`), then set `web.password` in the web UI | [Your first gateway](../tutorials/first-gateway-on-the-bench.md) |
 | On the bench: load a configuration with `web.password` through the shell (`config load`), then install the gateway | [Change, back up and restore the configuration](../how-to/change-the-configuration.md) |
 
 The web password is also the WPA2 key of the access point. Its rule is 8 to 63 printable ASCII characters (0x20 to 0x7E). Refer to [The access point](access-point.md#the-rule-of-the-web-password).
@@ -260,6 +261,18 @@ The reset erases two stores, LittleFS and the NVS, and an erase is not atomic. T
 - An NVS with a hardware fault cannot hold the intent. The reset then continues without it, because the owner must be able to erase the configuration. Only the short time between the format of LittleFS and the mark file has no mark.
 - The host test `test_freset` examines a power cut at each step, with each part result of an erase, also in the boots that follow. The E2E examines two cut points in QEMU, where no flash write is cut in the middle. The test on the board is item F6 of #128.
 
+## A board with a blank `storage` partition
+
+A flash that writes no LittleFS image leaves the `storage` partition blank after a full erase. The install tool of #219 does this, so that a flash without an erase keeps the configuration (#280).
+
+- At the boot, when LittleFS does not mount and the partition is blank, the gateway writes the commissioning mark to the NVS. Then it formats the partition, and it starts in commissioning mode.
+- The gateway formats the partition only after the NVS has the mark. Thus this board never uses the embedded example configuration.
+- If the NVS cannot keep the mark, the gateway does not format the partition. It starts in recovery mode.
+- The partition is blank when its first two blocks are erased.
+- A partition with data that does not mount is not blank. The gateway does not format it at the boot, because it can contain a configuration. It starts in recovery mode.
+- The gateway does not do this while a factory reset is not complete. The steps of the factory reset format the partition.
+- A flash with `idf.py flash` writes the LittleFS image of `fs/`. That board uses the embedded example configuration, as before.
+
 ## The shell
 
 - The shell has no password. The console needs physical access (USB-C), the same access that the BOOT button and the flash need.
@@ -270,6 +283,63 @@ The reset erases two stores, LittleFS and the NVS, and an erase is not atomic. T
 - While you paste, the shell does not take the lock of the shell context (#78). Thus the boot and the other tasks continue. The shell takes the lock only to validate, save and restart.
 - `mbread` goes through the bus queue (MB-16): it waits until the current transaction ends. A device that does not exist gives `timeout` or `framing error`, as a function of the other devices on the bus.
 - The shell gives the counters of the web server: `web … logins failed N, refused while blocked N, blocks N`, `bodies cut N` and `stalls N`.
+
+### The command `access`
+
+The command `access` gives the data that a person needs to open the web UI (#280). It changes nothing. The install tool of #219 reads its answer.
+
+- The answer goes only to the console, in one write. It never goes to syslog or to the live log of the web UI.
+- The answer has the commissioning password only while no web password is set.
+- The answer has a fixed form: one `key value` for each line, between two marker lines.
+
+```text
+access-data v1
+mode commissioning
+firmware 0.2.0
+hostname gw01
+web on https 443
+login commissioning
+user admin
+commissioning-password k7Qm2xPa9TbE
+fingerprint 4F:9A:21:…
+if eth up 192.168.1.57
+if wifi off
+if ap off
+url https://192.168.1.57/
+url https://gw01.local/
+access-data end
+```
+
+| Key | Value |
+|---|---|
+| `mode` | `normal`, `recovery`, `commissioning`, `fault`, or `starting` while the configuration loads |
+| `firmware` | The firmware version |
+| `hostname` | The hostname. The line is absent when the gateway does not know it |
+| `web` | `on`, then `https` or `http`, then the port of the web UI. `off` when no web server runs |
+| `login` | `commissioning`: the user `admin` with the commissioning password. `web-password`: the user of the line `user` with the web password. `web-password-any-user`: the web password with any user name (recovery, commissioning and fault mode) |
+| `user` | The user name. The line is absent with `web-password-any-user` |
+| `commissioning-password` | Only with `login commissioning` |
+| `fingerprint` | The SHA-256 fingerprint of the HTTPS certificate in use. The line is absent without HTTPS |
+| `if` | One line for each of `eth`, `wifi` and `ap`: `off`, `no-link`, `no-address`, or `up` and the IPv4 address |
+| `url` | One line for each IPv4 address of the web UI. Then the mDNS name, when mDNS is on and Ethernet or Wi-Fi has an address |
+| `url-none` | Only when there is no `url` line. `web-off`: no web server runs. `no-address`: no interface has an address |
+
+- A later firmware can add a key. A program that reads the answer ignores a key that it does not know.
+- A change of the meaning of a key changes the number of the first line.
+- A control character in a value from the configuration shows as `?`. Thus a value cannot make a line.
+
+### The command `web-password remove`
+
+The command `web-password remove` is for a gateway whose web password nobody knows (#280).
+
+- It removes the hash of the web password and the PMK of the access point from the NVS. It erases the PMK first (#269).
+- The configuration document and the other secrets stay.
+- The gateway then restarts. After the restart, the commissioning password is valid again, and the command `access` shows it.
+- The key of the access point is the commissioning password until a new web password is set.
+- With no web password, the command changes nothing, and the gateway does not restart.
+- During the trial of a new firmware, the command refuses. A restart then would start the earlier firmware again.
+- It is a write command: a build with `CONFIG_GW_SHELL_WRITE_COMMANDS=n` does not have it.
+- The command gives no new access. A person at the console can do the same with `config load`, and can flash the board. The claim window still cannot change a web password that is set (#120).
 
 ## The limits of the web server
 

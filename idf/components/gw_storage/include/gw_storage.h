@@ -143,6 +143,15 @@ void gw_storage_commissioning_password(char out[GW_COMMISSION_PW_LEN + 1]);
  */
 esp_err_t gw_storage_set_web_password(const char *password, char *hash, size_t cap);
 
+/**
+ * Issue #280: remove the web password: its hash and the PMK of the access point, in the order of
+ * issue #269 (the PMK first). The configuration document and the other secrets do not change.
+ * After the next restart, the commissioning password opens the web UI for "admin" again.
+ * ESP_ERR_NOT_FOUND when no web password is stored; ESP_ERR_INVALID_STATE after a factory reset;
+ * an NVS error otherwise. Safe from any task; it waits for a configuration save to end.
+ */
+esp_err_t gw_storage_clear_web_password(void);
+
 /** Issue #94: true in an encrypted build whose NVS is not encrypted yet: unencrypted this boot (a
  *  new firmware on trial keeps it as the previous image left it, or there was no place for the
  *  reset-safe copy), or no NVS this boot with a migration copy pending. The next boot of a
@@ -219,6 +228,15 @@ esp_err_t gw_storage_factory_reset_resume(void);
  * boots into commissioning mode instead of the embedded example configuration.
  */
 bool gw_storage_commissioning_pending(void);
+
+/**
+ * Issue #280: a blank LittleFS partition (a new board, or a flash with a full erase and no
+ * LittleFS image, as the install tool of #219 does): write the factory marker, then format the
+ * partition, so that this boot is commissioning mode and never the example configuration
+ * (gw_freset_adopt_blank). Call it one time at the boot, after a pending factory reset was
+ * completed and before gw_storage_commissioning_pending(). True when it formatted the partition.
+ */
+bool gw_storage_adopt_blank(void);
 
 /** Remember the network (and web port) of a configuration that was accepted, for recovery.
  *  Issue #144 item 8: only from a confirmed image in normal mode, as records that an earlier

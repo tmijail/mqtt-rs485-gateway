@@ -216,6 +216,29 @@ static esp_err_t nvs_init_default(void)
     return s_nvs_plain ? nvs_flash_init_partition(NVS_DEFAULT_PART_NAME) : nvs_flash_init();
 }
 
+/* Issue #104: the LittleFS partition is erased (its superblock pair, blocks 0 and 1, all 0xFF):
+ * no copy can be in it, nor come back. Raw reads: the same answer under flash encryption.
+ * Issue #280: in each build, for the boot of a board with a blank partition (gw_storage_adopt_blank). */
+static bool storage_blank(void)
+{
+    const esp_partition_t *p = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+                                                        ESP_PARTITION_SUBTYPE_ANY, "storage");
+    if (p == NULL) {
+        return true;
+    }
+    uint8_t *b = heap_caps_malloc(GW_NVSRAW_PAGE, MALLOC_CAP_8BIT);
+    bool blank = b != NULL;   /* no memory to look: a copy may be there */
+    for (uint32_t off = 0; blank && off < 2u * GW_NVSRAW_PAGE && off + GW_NVSRAW_PAGE <= p->size;
+         off += GW_NVSRAW_PAGE) {
+        blank = esp_partition_read_raw(p, off, b, GW_NVSRAW_PAGE) == ESP_OK;
+        for (size_t i = 0; blank && i < GW_NVSRAW_PAGE; i++) {
+            blank = b[i] == 0xFF;
+        }
+    }
+    heap_caps_free(b);
+    return blank;
+}
+
 #if CONFIG_NVS_ENCRYPTION
 /* ---------- issue #67/#94: unencrypted NVS -> encrypted NVS ----------
  * Initialising the encrypted NVS over an unencrypted one loses every entry (secrets,
@@ -882,28 +905,6 @@ static gw_nvsmig_copy_t copy_load(uint8_t **out, size_t *size, size_t *cap, uint
     return GW_NVSMIG_COPY_VALID;
 }
 
-/* Issue #104: the LittleFS partition is erased (its superblock pair, blocks 0 and 1, all 0xFF):
- * no copy can be in it, nor come back. Raw reads: the same answer under flash encryption. */
-static bool storage_blank(void)
-{
-    const esp_partition_t *p = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
-                                                        ESP_PARTITION_SUBTYPE_ANY, "storage");
-    if (p == NULL) {
-        return true;
-    }
-    uint8_t *b = heap_caps_malloc(GW_NVSRAW_PAGE, MALLOC_CAP_8BIT);
-    bool blank = b != NULL;   /* no memory to look: a copy may be there */
-    for (uint32_t off = 0; blank && off < 2u * GW_NVSRAW_PAGE && off + GW_NVSRAW_PAGE <= p->size;
-         off += GW_NVSRAW_PAGE) {
-        blank = esp_partition_read_raw(p, off, b, GW_NVSRAW_PAGE) == ESP_OK;
-        for (size_t i = 0; blank && i < GW_NVSRAW_PAGE; i++) {
-            blank = b[i] == 0xFF;
-        }
-    }
-    heap_caps_free(b);
-    return blank;
-}
-
 /* Issue #104: the encrypted NVS holds a migration's start marker and not its end one: it was cut
  * while writing. Read only with keys that already exist (never generated here). */
 static bool mig_started(const nvs_sec_cfg_t *cfg)
@@ -1317,6 +1318,30 @@ esp_err_t gw_storage_set_web_password(const char *password, char *hash, size_t c
     memset(pmk, 0, sizeof(pmk));
     if (err != ESP_OK) {
         hash[0] = '\0';
+    }
+    return err;
+}
+
+/* Issue #280: the shell command 'web-password remove'. put_web_password() with "" erases the PMK
+ * first, then the hash (#269): a power cut never leaves a PMK without its password. */
+esp_err_t gw_storage_clear_web_password(void)
+{
+    xSemaphoreTake(s_save_lock, portMAX_DELAY);   /* not in the middle of a configuration save */
+    nvs_handle_t h;
+    esp_err_t err = s_reset_done ? ESP_ERR_INVALID_STATE
+                    : !s_nvs_ok  ? ESP_ERR_NVS_NOT_INITIALIZED
+                                 : nvs_open(NVS_SECRETS, NVS_READWRITE, &h);
+    if (err == ESP_OK) {
+        char hash[GW_PWHASH_SIZE];
+        stored_str(h, "web_hash", hash, sizeof(hash));
+        err = hash[0] == '\0' ? ESP_ERR_NOT_FOUND : put_web_password(h, "", "");
+        memset(hash, 0, sizeof(hash));
+        nvs_close(h);
+    }
+    xSemaphoreGive(s_save_lock);
+    if (err == ESP_OK) {
+        ESP_LOGW(TAG, "the web password and the PMK of the access point were removed; the "
+                      "commissioning password is valid after the restart");
     }
     return err;
 }
@@ -1891,6 +1916,37 @@ static gw_freset_boot_t boot_source(bool *factory)
     bool fs = mount(false, NULL);
     *factory = gw_flag(NVS_FACTORY);
     return gw_freset_boot(pending, *factory, fs, fs && stat(CFG_PATH, &st) == 0);
+}
+
+/* Issue #280: the decision is gw_freset_adopt_blank() (host test test_freset). The factory marker
+ * is written and read back before the format: without it, a formatted partition with no file
+ * would give the embedded example configuration. */
+bool gw_storage_adopt_blank(void)
+{
+    bool fs = mount(false, NULL);
+    bool blank = !fs && storage_blank() &&
+                 esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY,
+                                          "storage") != NULL;   /* no partition is not "blank" */
+    if (!gw_freset_adopt_blank(gw_storage_factory_reset_pending(), s_nvs_ok, fs, blank)) {
+        return false;
+    }
+    esp_err_t e = set_gw_flag(NVS_FACTORY, true);
+    if (e != ESP_OK || !gw_flag(NVS_FACTORY)) {
+        ESP_LOGE(TAG, "LittleFS 'storage' is blank, but the NVS did not keep the factory marker "
+                      "(%s): not formatted", esp_err_to_name(e));
+        return false;
+    }
+    esp_err_t why = ESP_OK;
+    if (!mount(true, &why)) {
+        /* without the marker again: recovery mode ("not mountable"), as before this boot */
+        set_gw_flag(NVS_FACTORY, false);
+        ESP_LOGE(TAG, "LittleFS 'storage' is blank, and its format failed (%s)",
+                 esp_err_to_name(why));
+        return false;
+    }
+    ESP_LOGW(TAG, "LittleFS 'storage' was blank (a new board, or a flash with a full erase): "
+                  "formatted; the gateway starts in commissioning mode");
+    return true;
 }
 
 bool gw_storage_commissioning_pending(void)

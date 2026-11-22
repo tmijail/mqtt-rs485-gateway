@@ -18,6 +18,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "gw_access.h"
 #include "gw_ap.h"
 #include "gw_auth.h"
 #include "gw_bootbtn.h"
@@ -40,6 +41,7 @@
 #include "gw_tagdb.h"
 #include "gw_temp.h"
 #include "gw_web.h"
+#include "gw_webcert.h"
 #include "gw_wpa.h"
 #include "lwip/ip_addr.h"
 #include "ping/ping_sock.h"
@@ -279,6 +281,117 @@ static int cmd_ap(int argc, char **argv)
 #endif
     return 1;
 }
+
+/* ---------- #280: access ----------
+ * What a person with the USB cable needs to open the web UI, on request: the console showed the
+ * commissioning password and the fingerprint of the certificate only at the boot. The text has a
+ * fixed form (gw_access.h): the install tool of #219 reads it. It goes to the console with one
+ * write, never through esp_log: no syslog server and no live log of the web UI gets the
+ * commissioning password. The console needs physical access to the board, and that access also
+ * reads all of the flash through USB: the shell asks for no password (as 'coredump dump'). */
+static int cmd_access(int argc, char **argv)
+{
+    (void)argv;
+    if (argc != 1) {
+        out("usage: access\n");
+        return 1;
+    }
+    char *text = gw_storage_malloc(GW_ACCESS_TEXT_MAX);   /* not the console stack nor .bss (#80) */
+    gw_webcert_info_t *cert = gw_storage_malloc(sizeof(*cert));
+    if (text == NULL || cert == NULL) {
+        heap_caps_free(text);
+        heap_caps_free(cert);
+        out("access: no memory\n");
+        return 1;
+    }
+    gw_web_access_t web;
+    gw_web_get_access(&web);
+    char pw[GW_COMMISSION_PW_LEN + 1] = "";
+    if (!web.password_set) {
+        gw_storage_commissioning_password(pw);
+    }
+    bool have_cert = web.running && web.https && gw_webcert_get(false, cert);
+    gw_access_t a = {
+        .mode = s_ctx.starting ? "starting" : s_ctx.fault != NULL ? "fault"
+                : s_ctx.cfg != NULL ? "normal" : s_ctx.commissioning ? "commissioning" : "recovery",
+        .firmware = s_ctx.info->firmware,
+        .hostname = web.running ? web.hostname : s_ctx.cfg != NULL ? s_ctx.cfg->network.hostname : "",
+        .mdns = web.mdns,
+        .web_running = web.running,
+        .https = web.https,
+        .port = web.port,
+        .password_set = web.password_set,
+        .username = web.username,
+        .commissioning_password = pw,
+        .fingerprint = have_cert ? cert->fingerprint : "",
+        .n_ifs = 3,
+    };
+    static const char *const names[GW_NET_IF_COUNT] = {"eth", "wifi"};
+    gw_net_if_status_t ifs[GW_NET_IF_COUNT] = {0};
+    if ((__atomic_load_n(&s_up, __ATOMIC_SEQ_CST) & GW_SHELL_UP_NET) != 0) {
+        gw_net_get_status(ifs);
+    }
+    for (int i = 0; i < GW_NET_IF_COUNT; i++) {
+        a.ifs[i].name = names[i];
+        a.ifs[i].state = !ifs[i].configured ? GW_ACCESS_IF_OFF
+                         : !ifs[i].link     ? GW_ACCESS_IF_NO_LINK
+                         : !ifs[i].usable   ? GW_ACCESS_IF_NO_ADDRESS
+                                            : GW_ACCESS_IF_UP;
+        memcpy(a.ifs[i].ip, ifs[i].ipv4, 4);
+    }
+    uint8_t mask[4];
+    a.ifs[2].name = "ap";
+    a.ifs[2].no_mdns = true;
+    a.ifs[2].state = gw_ap_ip4(a.ifs[2].ip, mask) ? GW_ACCESS_IF_UP : GW_ACCESS_IF_OFF;
+    size_t n = gw_access_format(&a, text, GW_ACCESS_TEXT_MAX);
+    int rc = 0;
+    if (n >= GW_ACCESS_TEXT_MAX) {
+        out("access: the answer does not fit\n");
+        rc = 1;
+    } else {
+        out_flush();
+        write_locked(text, n);
+    }
+    memset(pw, 0, sizeof(pw));
+    memset(text, 0, GW_ACCESS_TEXT_MAX);
+    heap_caps_free(text);
+    heap_caps_free(cert);
+    return rc;
+}
+
+#if CONFIG_GW_SHELL_WRITE_COMMANDS
+/* ---------- #280: web-password remove ----------
+ * Nobody knows the web password: remove it and restart, so that the commissioning password of
+ * 'access' opens the web UI again, and the user sets a new web password there. The configuration
+ * and the other secrets stay. It gives no new access: 'config load' can do the same, and USB
+ * access can flash the board. */
+static int cmd_web_password(int argc, char **argv)
+{
+    if (argc != 2 || strcmp(argv[1], "remove") != 0) {
+        out("usage: web-password remove\n");
+        return 1;
+    }
+    if (gw_fw_on_trial()) {
+        /* the restart would end the trial of the new firmware with a rollback (#144) */
+        out("web-password: REFUSED: a new firmware is on trial; wait for the end of the trial\n");
+        return 1;
+    }
+    esp_err_t e = gw_storage_clear_web_password();
+    if (e == ESP_ERR_NOT_FOUND) {
+        out("web-password: no web password is set; 'access' gives the commissioning password\n");
+        return 1;
+    }
+    if (e != ESP_OK) {
+        out("web-password: NOT removed: %s\n", esp_err_to_name(e));
+        return 1;
+    }
+    out("web-password: removed; the configuration and the other secrets stay. Restarting: then "
+        "'access' gives the commissioning password\n");
+    out_flush();
+    s_ctx.restart();
+    return 0;
+}
+#endif
 
 static int cmd_status(int argc, char **argv)
 {
@@ -1701,9 +1814,11 @@ static int cmd_config_entry(int argc, char **argv)
 ATOMIC(cmd_ping)
 ATOMIC(cmd_coredump)
 ATOMIC(cmd_ap)
+ATOMIC(cmd_access)
 ATOMIC(cmd_identify)
 ATOMIC(cmd_log)
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
+ATOMIC(cmd_web_password)
 ATOMIC(cmd_restart)
 ATOMIC(cmd_card)
 ATOMIC(cmd_rebirth)
@@ -1867,6 +1982,15 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
         {.command = "log", .help = "The log levels and the tags; '<tag|*> <level>' sets the level "
          "of a tag, 'reset' sets every tag to the level of the build (not saved, #199)",
          .hint = "[<tag|*> <none|error|warn|info|debug|verbose> | reset]", .func = cmd_log_atomic},
+        {.command = "access", .help = "The access data of the web UI: the mode, the address of each "
+         "interface, the URL, the login and the fingerprint of the certificate (and the "
+         "commissioning password while no web password is set); a fixed form (#280)",
+         .func = cmd_access_atomic},
+#if CONFIG_GW_SHELL_WRITE_COMMANDS
+        {.command = "web-password", .help = "'remove' removes the web password and restarts; the "
+         "commissioning password then opens the web UI; the configuration stays (#280)",
+         .hint = "remove", .func = cmd_web_password_atomic},
+#endif
         {.command = "ap", .help = "The commissioning access point: its state"
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
          "; 'stop' closes it (a BOOT push of 2-10 s starts it again)"

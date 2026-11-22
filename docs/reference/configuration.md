@@ -122,7 +122,7 @@ The gateway keeps `mqtt.password`, `network.wifi.password` and `web.password` in
 
 ## Load and recovery mode
 
-**The firmware uses the embedded configuration only when `/cfg/config.json` does not exist**, and no factory reset occurred or stopped before its end. After a factory reset, the gateway starts in commissioning mode. Refer to [Commissioning and secrets](commissioning-and-secrets.md#the-modes).
+**The firmware uses the embedded configuration only when `/cfg/config.json` does not exist**, and no factory reset occurred or stopped before its end. After a factory reset, and on a board with a blank `storage` partition, the gateway starts in commissioning mode. Refer to [Commissioning and secrets](commissioning-and-secrets.md#the-modes).
 
 All other problems put the gateway in **recovery mode**:
 
@@ -135,7 +135,9 @@ In recovery mode, **the polling and MQTT do not start**. The network, the web UI
 
 - The network uses the network of the last valid configuration (`lkg_net` in NVS), or DHCP on Ethernet. If that network is not usable, for example a static IP of a different plant, use the access point or the shell.
 - The LED blinks red. Each 10 s, the log gives the cause again with the level ERROR.
-- A gateway flashed without the `storage` partition does not mount LittleFS, thus it starts in recovery mode. This is intentional: the gateway must never start with the Sparkplug identity of the example.
+- A `storage` partition with data that does not mount gives recovery mode. The gateway does not format it at the boot.
+- A blank `storage` partition is a different case (#280): the gateway formats it and starts in commissioning mode. Refer to [Commissioning and secrets](commissioning-and-secrets.md#a-board-with-a-blank-storage-partition).
+- In the two cases, the gateway does not start with the Sparkplug identity of the example.
 
 Examples of the cause in the log:
 

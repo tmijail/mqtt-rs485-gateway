@@ -11,7 +11,7 @@ The list of the scenarios, their order and their `--only` names are in `SCENARIO
 | `failsafe` | `failsafe` | PSRAM | `GW03` |
 | `network` | `network` | PSRAM | `GW02` |
 | `web` | `web` | PSRAM | `GW04`, `GW05`, `GW06` |
-| `reset` | `reset` | PSRAM | `GW07`, `GW08`, `GW09`, `GW10` |
+| `reset` | `reset` | PSRAM | `GW07`, `GW08`, `GW09`, `GW10`, `GW11` |
 | `tls` | `tls` | PSRAM | `GW12`–`GW16`, `GW25`, `GW29`, `GW30` |
 | `failover` | `failover` | PSRAM | `GW17` |
 | `mqtt5` | `mqtt5` | PSRAM | `GW18` |
@@ -80,7 +80,7 @@ The main boot of `GW01`, with the slave, the main broker and the shell.
 
 ## failsafe
 
-CFG-1, CFG-2, CFG-3, CFG-6, IO-2. The gateway boots with five rejected `config.json` files: 131 073 B, empty, a syntax error, a schema error, an erased partition.
+CFG-1, CFG-2, CFG-3, CFG-6, IO-2. The gateway boots with five rejected `config.json` files: 131 073 B, empty, a syntax error, a schema error, a partition with data that does not mount.
 
 - Nothing starts: no RS485 UART, no MQTT, no NBIRTH, no Modbus request. The check uses a positive signal: the line `nothing is started`, and 6 s later the answer of the shell `status`.
 - The LED shows the error, and the ERROR log gives the reason with the path, the line or the column.
@@ -88,6 +88,7 @@ CFG-1, CFG-2, CFG-3, CFG-6, IO-2. The gateway boots with five rejected `config.j
 - The network starts with DHCP. The web UI and `/api/status` answer with the commissioning password and the reason. `POST /api/modbus/read` and `POST /api/rebirth` answer 409 (#182, #171).
 - The test exports the document, corrects it and saves it through the API. The gateway restarts and publishes NBIRTH.
 - Without a file, the gateway uses the embedded configuration.
+- **#280:** a blank `storage` partition with a blank NVS, as after a flash with a full erase and no LittleFS image. The boot formats the partition and starts in commissioning mode: not the example configuration, no NBIRTH, no Modbus request. The shell command `access` gives the mode, the login, the state of each interface and the URL. Its commissioning password and its fingerprint are the values of the boot lines. The next boot mounts the partition and stays in commissioning mode, with the same commissioning password.
 
 ## network
 
@@ -121,7 +122,7 @@ Nodes `GW04`, `GW05`, `GW06`: the REST API and the web UI.
 
 ## reset
 
-Nodes `GW07`, `GW08`, `GW09`, `GW10`: the BOOT button, commissioning and the access point.
+Nodes `GW07`, `GW08`, `GW09`, `GW10`, `GW11`: the BOOT button, commissioning and the access point.
 
 - **CFG-5:** `boot 1` held for 10 s gives the factory reset: a warning at 2 s, an orderly NDEATH, commissioning mode, no block of the old configuration in the partition. The old web password gives 401, and the new commissioning password works.
 - **NET-5:** a 2–10 s press starts the access point.
@@ -130,6 +131,7 @@ Nodes `GW07`, `GW08`, `GW09`, `GW10`: the BOOT button, commissioning and the acc
 - **#248 (`GW09`):** an NVS with the hash of a web password and no PMK, made with `nvs_partition_gen.py`. The access point uses the commissioning password, and the log shows the warning. The same password as a new value of `web.password` gives the PMK. This check does not run in the secure variant.
 - **#203, #209:** the factory reset by the shell and the API, and the restart into safe mode on request.
 - **#266 (`GW10`):** a power cut during a factory reset, at two points: after the erase of LittleFS, and after the erase of the NVS. The emulator-only command `resetcut <step>` stops the firmware after that step, and the harness ends QEMU. The next boot completes the reset and restarts in commissioning mode. It loads no configuration and publishes no NBIRTH, the old web password gives 401, and the flash has nothing of the old configuration and of the old secrets. The host test `test_freset` examines each cut point.
+- **#280 (`GW11`):** with a web password set, the shell command `access` gives the login with the web password and no commissioning password. `web-password remove` gives an orderly restart: the old password gives 401, the commissioning password of `access` opens the web UI, the PMK is not in the NVS, and the exported configuration is the same. The commissioning password is in no syslog datagram and in no line of the live log. A second `web-password remove` changes nothing and does not restart the gateway.
 - **#74:** a boot with the DO expander absent: the retry gets an answer, and all DOs are off.
 - **#192, #193:** `ap.request_via_ap` is true after `claimsim 600 eth`.
 - **#274 captive portal:** with `claimsim 600 eth`, the Ethernet is the interface of the simulated access point. The DNS server answers an A query with the address of that interface, and an AAAA query with no records. The probes of Android, iOS and Windows and a request for another `Host` on the HTTP port get a `302` to `/portal`. The guide page has the node name, the address of the secure web UI, its mDNS address, the button and the certificate note. It has the note of the open access point only during the claim window, and no form, no password field and no secret. The address of the gateway on the HTTP port still redirects to HTTPS, and the stack of `httpd_redirect` keeps its threshold. After the stop of the access point, there is no DNS answer, and the HTTP port gives the usual redirect to HTTPS. The same applies with the Ethernet as a plant interface (`claimsim 600`).

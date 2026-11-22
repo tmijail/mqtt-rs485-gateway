@@ -1516,12 +1516,19 @@ def storage_partition(name="storage"):
     raise SystemExit(f"no {name} partition in partitions.csv")
 
 
+NOT_MOUNTABLE = "not-mountable"   # flash_variant: a partition with data that does not mount
+
+
 def flash_variant(args, work, name, files, base=None):
     """Copy of the flash image (@base, default the image under test) whose LittleFS partition
-    holds @files ({name: bytes}); files=None leaves the partition erased (not mountable)."""
+    holds @files ({name: bytes}). files=None leaves the partition erased (blank: issue #280, the
+    boot formats it and starts in commissioning mode); files=NOT_MOUNTABLE fills it with data
+    that is not a file system (the boot does not format it: recovery mode)."""
     offset, size = storage_partition()
     if files is None:
         image = b"\xff" * size
+    elif files == NOT_MOUNTABLE:
+        image = b"\x55" * size
     else:
         src = work / f"fs-{name}"
         shutil.rmtree(src, ignore_errors=True)
@@ -7373,7 +7380,8 @@ def run_config_failsafe(args, work, slave):
     cases = [
         ("oversized", {"config.json": good + b" " * (limit + 1 - len(good))},
          rf"config\.json: {limit + 1} bytes; the maximum is {limit}"),
-        ("unmountable", None, r"LittleFS partition 'storage' not mountable"),
+        # data that is not a file system: never formatted at the boot (#104, #109, #280)
+        ("unmountable", NOT_MOUNTABLE, r"LittleFS partition 'storage' not mountable"),
         ("empty", {"config.json": b""}, r"config\.json: empty file"),
         # without the ',' that closes "network" (line 4), the parser stops at the '"' of
         # "ntp": line 5, column 3
@@ -7465,7 +7473,90 @@ def run_config_failsafe(args, work, slave):
     gw.kill()
     check("CFG-2 missing config file -> embedded default", hit,
           (gw.find(r"configuration from", t0) or ["no 'configuration from' log"])[0])
+    check_blank_storage(args, work, obs, slave)
     obs.close()
+
+
+def access_data(gw):
+    """Issue #280: the answer of the shell command 'access' as {key: [values]} (the last full
+    answer between its two marker lines); {} without an answer."""
+    asked, _ = gw.shell("access", [r"^access-data end$"], timeout=5)
+    done, cur = {}, None
+    for t, line in list(gw.lines):
+        if t < asked:
+            continue
+        line = line.strip()
+        if re.fullmatch(r"access-data v\d+", line):
+            cur = {"access-data": [line.split()[1]]}
+        elif line == "access-data end":
+            done, cur = cur or done, None
+        elif cur is not None:
+            key, _, value = line.partition(" ")
+            cur.setdefault(key, []).append(value)
+    return done
+
+
+def check_blank_storage(args, work, obs, slave):
+    """Issue #280: a board with a blank LittleFS partition and a blank NVS: a new board that the
+    install tool of #219 flashed with a full erase (the tool writes no LittleFS image). The boot
+    writes the factory marker, formats the partition and starts in commissioning mode: never the
+    embedded example configuration, no NBIRTH, no polling. The shell command 'access' gives the
+    access data on request: the commissioning password and the fingerprint that the console
+    showed only at the boot. The next boot mounts the partition and stays in commissioning."""
+    flash = flash_variant(args, work, "blank", None)
+    log = work / "uart0-blank.log"
+    gw = Gateway(args, log, flash)
+    obs.drain()
+    polls = len(slave.reads)
+    t0 = time.monotonic()
+    gw.start()
+    adopted = gw.wait_log(r"storage: LittleFS 'storage' was blank .*formatted; the gateway starts "
+                          r"in commissioning mode", 40, t0)
+    pw = commissioning_password(gw, t0, 40)
+    st, _, body = wait_http("/api/status", 40, auth=("admin", pw or "?"))
+    status = as_json(body) or {}
+    _, h = gw.shell("status", [r"^config\s+NONE: commissioning"])
+    acc = access_data(gw)
+    printed = gw.find(r"HTTPS certificate SHA-256 fingerprint ([0-9A-F:]{95})", t0)
+    fp = re.search(r"fingerprint ([0-9A-F:]{95})", printed[0]).group(1) if printed else None
+    ips = gw.find(r"net: IPv4 (\d+\.\d+\.\d+\.\d+)", t0)
+    ip = re.search(r"net: IPv4 (\d+\.\d+\.\d+\.\d+)", ips[0]).group(1) if ips else None
+    births = [m for m in CAPTURE if m[0] >= t0 and "/NBIRTH/" in m[1]]
+    polled = len(slave.reads) - polls
+    example = gw.find(r"configuration from embedded default", t0)
+    check("Issue #280 a blank LittleFS partition and a blank NVS (a new board after a flash with a "
+          "full erase) -> the boot formats the partition and starts in commissioning mode: not the "
+          "example configuration, no NBIRTH, no Modbus request",
+          adopted and pw and st == 200 and status.get("mode") == "commissioning" and all(h.values())
+          and not example and not births and polled == 0,
+          f"{(gw.find(r'storage: LittleFS .storage. was blank', t0) or ['no blank log'])[0][-90:]}; "
+          f"password {'read' if pw else 'not found'}; /api/status {st} mode {status.get('mode')!r}; "
+          f"shell commissioning {all(h.values())}; example {example[:1]}; {len(births)} NBIRTH; "
+          f"{polled} Modbus requests")
+    check("Issue #280 shell 'access' in commissioning mode: the mode, the login, the commissioning "
+          "password and the fingerprint of the boot lines, the state of each interface and the URL",
+          acc.get("access-data") == ["v1"] and acc.get("mode") == ["commissioning"]
+          and acc.get("login") == ["commissioning"] and acc.get("user") == ["admin"]
+          and pw and acc.get("commissioning-password") == [pw]
+          and fp and acc.get("fingerprint") == [fp] and acc.get("web") == ["on https 443"]
+          and ip and f"eth up {ip}" in acc.get("if", []) and "ap off" in acc.get("if", [])
+          and f"https://{ip}/" in acc.get("url", []) and "url-none" not in acc,
+          f"{ {k: v for k, v in acc.items() if k != 'commissioning-password'} }; password "
+          f"{'as the boot line' if pw and acc.get('commissioning-password') == [pw] else 'DIFFERENT'}; "
+          f"boot fingerprint {fp}; boot IPv4 {ip}")
+    gw.kill()
+    t1 = time.monotonic()
+    gw = Gateway(args, log, flash)
+    gw.start()
+    pw2 = commissioning_password(gw, t1, 40)
+    _, h2 = gw.shell("status", [r"^config\s+NONE: commissioning"])
+    again = gw.find(r"was blank|not mountable", t1)
+    check("Issue #280 the next boot mounts the partition: commissioning mode again, the same "
+          "commissioning password, no second format",
+          pw and pw2 == pw and all(h2.values()) and not again,
+          f"password {'the same' if pw2 == pw else 'DIFFERENT'}; shell commissioning "
+          f"{all(h2.values())}; {again[:1] or 'no blank or mount log'}")
+    gw.kill()
 
 
 def check_offline_backoff(slave, t0):
@@ -9912,6 +10003,75 @@ def run_factory_reset(args, work):
     check_restart_admin(args, work, flash)
     check_ap_without_pmk(args, work)
     check_reset_power_cut(args, work)
+    check_web_password_remove(args, work)
+
+
+def check_web_password_remove(args, work):
+    """Issue #280: nobody knows the web password. The shell command 'web-password remove' removes
+    the hash and the PMK from the NVS and restarts the gateway: the old password is refused, the
+    commissioning password of 'access' opens the web UI, and the configuration is the same. With
+    a web password set, 'access' never gives the commissioning password. No syslog datagram and
+    no line of the live log has the commissioning password."""
+    node = "GW11"
+    cfg = node_config(node)
+    cfg["web"] = {"password": WEB_PASSWORD}
+    flash = flash_variant(args, work, "pwremove", {"config.json": json.dumps(cfg, indent=2).encode()})
+    obs = Observer()
+    gw = Gateway(args, work / "uart0-pwremove.log", flash)
+    gw.start()
+    nb = obs.wait(f"{T}/NBIRTH/{node}", 60)
+    gw.shell("status", [r"^config\s"])
+    acc0 = access_data(gw)
+    st0, _, b0 = http("GET", "/api/config", auth=("admin", WEB_PASSWORD))
+    key0 = ap_key_digest(gw)
+    check("Issue #280 shell 'access' with a web password set: normal mode, the login with the web "
+          "password and its user name, and no commissioning password in the answer",
+          nb and acc0.get("mode") == ["normal"] and acc0.get("login") == ["web-password"]
+          and acc0.get("user") == ["admin"] and "commissioning-password" not in acc0
+          and acc0.get("url"),
+          f"NBIRTH {bool(nb)}; {acc0}")
+    obs.drain()
+    t1 = time.monotonic()
+    gw.console("web-password remove")
+    removed = gw.wait_log(r"^web-password: removed", 10, t1)
+    nd = obs.wait(f"{T}/NDEATH/{node}", 20, since=t1)
+    nb1 = obs.wait(f"{T}/NBIRTH/{node}", 60, since=t1)
+    gw.shell("status", [r"^config\s"])
+    pw = commissioning_password(gw, t1, 5)
+    acc1 = access_data(gw)
+    st_old, _, _ = http("GET", "/api/status", auth=("admin", WEB_PASSWORD))
+    st_new, _, _ = http("GET", "/api/status", auth=("admin", pw or "?"))
+    st1, _, b1 = http("GET", "/api/config", auth=("admin", pw or "?"))
+    key1 = ap_key_digest(gw)
+    doc0, doc1 = as_json(b0) or {}, as_json(b1) or {}
+    web0, web1 = (doc0.get("web") or {}).pop("password", None), (doc1.get("web") or {}).pop("password", None)
+    st_l, _, b_l = http("GET", "/api/log", auth=("admin", pw or "?"))
+    leaks = [d[:60] for _, d in SYSLOG if pw and pw in d]
+    in_log = bool(pw) and pw.encode() in b_l
+    check("Issue #280 shell 'web-password remove': an orderly restart, the old web password gives "
+          "401, the commissioning password of 'access' opens the web UI, the PMK is not in the NVS "
+          "and the configuration is the same",
+          removed and nd and nb1 and st_old == 401 and st_new == 200 and pw
+          and acc1.get("login") == ["commissioning"] and acc1.get("commissioning-password") == [pw]
+          and key0 not in (None, "none") and key1 == "none"
+          and st0 == 200 and st1 == 200 and doc0 == doc1 and doc0.get("sparkplug"),
+          f"removed {bool(removed)}; NDEATH {bool(nd)}; NBIRTH {bool(nb1)}; old password {st_old}; "
+          f"commissioning password {st_new}; access login {acc1.get('login')}; apsim key {key0} -> "
+          f"{key1}; export {st0}/{st1}, the same {doc0 == doc1} (web.password {web0!r} -> {web1!r})")
+    check("Issue #280 the commissioning password of 'access' is in no syslog datagram and in no "
+          "line of the live log of the web UI",
+          pw and st_l == 200 and not leaks and not in_log,
+          f"GET /api/log {st_l}; in the live log: {in_log}; syslog datagrams with it: {leaks[:1]}")
+    t2 = time.monotonic()
+    gw.console("web-password remove")
+    none = gw.wait_log(r"^web-password: no web password is set", 5, t2)
+    restarted = gw.wait_log(r"restart requested|Restarting|rst:", 3, t2)
+    check("Issue #280 'web-password remove' with no web password: refused with the reason, no "
+          "restart", none and not restarted,
+          f"{(gw.find(r'^web-password: ', t2) or ['no answer'])[0][:80]}; restart {bool(restarted)}")
+    gw.kill()
+    obs.wait(f"{T}/NDEATH/{node}", 5)
+    obs.close()
 
 
 def check_reset_power_cut(args, work):

@@ -80,7 +80,7 @@ Each key of the configuration document must have a control in the Configuration 
 The host tests and the decode check run from the repo root. The firmware commands are run from `idf/`, after `. $IDF_PATH/export.sh`.
 
 ```bash
-# Host tests (pure C, no IDF): 45 Unity suites + sdkconfig, guard and rule checks (#228), -Werror.
+# Host tests (pure C, no IDF): 46 Unity suites + sdkconfig, guard and rule checks (#228), -Werror.
 # The rule checks need GCC 10 or later, nm and Python 3; with another compiler, add -DGW_RULE_CHECKS=OFF
 cmake -S idf/test/host -B build-host && cmake --build build-host -j && ctest --test-dir build-host --output-on-failure
 ctest --test-dir build-host -R test_poll      # one suite; or run build-host/test_poll directly

@@ -114,7 +114,7 @@ The checks have these limits:
 | `test_ota` | FW-1 (#144): the expected mode, the self-check, the backstop of 5 min, the rejection of a configuration, the retry of a failed confirmation (#99). The capability block and the pre-flight check (#102, #148). URLs, the request body, the progress |
 | `test_cfgschema` | FW-1 (#144 item 3): the schema that a stored configuration needs. #276 (`test_schema3_keys`): a document with a parameter needs schema 3 |
 | `test_bootloop` | FW-1 (#144 item 4): the boot-loop counter and safe mode |
-| `test_freset` | CFG-5 (#266): the sequence of the factory reset on a model of the two stores. A power cut at each step with each part result of an erase, also in the boots that follow, from each state of the stores. Steps that fail, a full NVS, safe mode, and the boot of a board after its first flash |
+| `test_freset` | CFG-5 (#266): the sequence of the factory reset on a model of the two stores. A power cut at each step with each part result of an erase, also in the boots that follow, from each state of the stores. Steps that fail, a full NVS, safe mode, and the boot of a board after its first flash. #280: a blank partition is formatted only when the NVS can hold the commissioning mark, the partition does not mount, and no reset is pending |
 | `test_fwlast` | FW-1 (#144 items 5 and 7): the record of the last update |
 | `test_lkgnet` | CFG-3 / FW-1 (#144 item 8): the network of the last valid configuration, readable by an earlier or a later image. A field without its terminator |
 | `test_claim` | CFG-3 / NET-5 (#120): the claim window and the password rules |
@@ -132,6 +132,7 @@ The checks have these limits:
 | `test_wifiown` | #208: the owners of the Wi-Fi driver. #267: the radio as the entropy source never stops the driver, and a station that comes after the STA interface is refused |
 | `test_captive` | NET-5 (#274): the captive portal of the access point. The DNS answer: the A record, no records for the other types and classes, and no EDNS option. No answer for a response, another opcode or a question count other than 1. No answer for a compression pointer, a label or name over its limit, a cut question or a query over 512 bytes. The list of probe paths, the Host rule, and the route of a request on the plain HTTP port. The template of the guide page (`www/portal.html`): the values as HTML text, the sections and the errors. The page with and without HTTPS, mDNS and the claim window, with no form and no password field |
 | `test_rng` | #267: the order of the two entropy sources at boot. The SAR ADC source goes off before the radio or the temperature sensor starts, and never comes on again after them. The log gives the source of each value, and a warning when no source is on |
+| `test_access` | #280: the answer of the shell command `access`. The full answer of a new board, line for line. No commissioning password with a web password set. The cause when there is no URL. Other ports, plain HTTP, more than one interface and the access point. A control character of a value cannot make a line. A buffer that is too small |
 
 ### The sanitizer build
 

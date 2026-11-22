@@ -3122,6 +3122,24 @@ void gw_web_get_stats(gw_web_stats_t *out)
     out->claim_refused = atomic_load(&s_claim_refused);
 }
 
+void gw_web_get_access(gw_web_access_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (s_server == NULL || s_ctx.cfg == NULL) {
+        return;
+    }
+    const gw_config_t *c = s_ctx.cfg;
+    out->running = true;
+    out->https = s_https;
+    out->port = s_https ? c->web.https_port : c->web.port;
+    out->password_set = atomic_load(&s_pw_set);
+    snprintf(out->username, sizeof(out->username), "%s", s_user);
+    snprintf(out->hostname, sizeof(out->hostname), "%s", c->network.hostname);
+#if CONFIG_GW_MDNS
+    out->mdns = c->network.mdns;
+#endif
+}
+
 /* ---------- start ---------- */
 
 esp_err_t gw_web_start(const gw_web_ctx_t *ctx)

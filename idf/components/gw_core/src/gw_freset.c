@@ -80,3 +80,8 @@ gw_freset_boot_t gw_freset_boot(bool pending, bool factory, bool fs, bool file)
     }
     return file ? GW_FRESET_BOOT_FILE : GW_FRESET_BOOT_EXAMPLE;
 }
+
+bool gw_freset_adopt_blank(bool pending, bool nvs_usable, bool fs, bool blank)
+{
+    return !pending && nvs_usable && !fs && blank;
+}
