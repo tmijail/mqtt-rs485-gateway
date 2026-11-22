@@ -57,6 +57,8 @@ jobs:
         run: /tmp/venv/bin/python idf/tools/e2e/test_harness.py
       - name: Release script self-test (each check refuses a bad build, issue #279)
         run: python3 idf/tools/release/test_make_manifest.py
+      - name: Site copy script self-test (each check refuses a damaged release, issue #219)
+        run: python3 idf/tools/release/test_site_releases.py
       # Issue #229: the linters, with pinned versions and only rules that find errors. ruff is in
       # tools/e2e/requirements.txt, shellcheck, actionlint and zizmor in tools/lint/requirements.txt,
       # ESLint in tools/lint/package-lock.json.
