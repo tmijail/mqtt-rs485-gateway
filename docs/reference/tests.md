@@ -21,6 +21,8 @@ This document gives the test suites of the firmware, what each suite examines, t
 | Documentation site | The links and the anchors of `docs/`, with a build of the site (Zensical `--strict`) | `.github/workflows/docs.yml`, job `docs` | No warning |
 | Web UI unit test (#226) | The IPv4 normalization of the Configuration tab, in Node.js without a browser | `idf/test/web/test_ip4norm.mjs`, CI job `host-tests` | All tests pass |
 | Harness self-test | The retry, hang and progress logic of the E2E harness, with fake clocks | `idf/tools/e2e/test_harness.py` | All tests pass |
+| Release script self-test (#279) | The manifest of a good build and each refusal of `make_manifest.py`, with a small fake build | `idf/tools/release/test_make_manifest.py`, CI job `host-tests` | All tests pass |
+| Release manifest (#279) | The build for the board against `idf/partitions.csv` and its `sdkconfig`: the offsets, the sizes and the options of the build | `idf/tools/release/make_manifest.py`, CI job `firmware` | The script gives no error |
 | E2E in QEMU (QA-3) | The real firmware against mosquitto, a pymodbus RTU slave, SNTP, syslog and HTTPS clients | `idf/tools/e2e/run_e2e.sh` | Each check passes in the full run of the three variants |
 | Optional E2E scenarios | UMH Core (`umh`), the Sparkplug TCK (`tck`) and the downgrade (`downgrade`) | `run_e2e.sh --only <name>` | Each check passes |
 
@@ -114,7 +116,7 @@ The checks have these limits:
 | `test_ota` | FW-1 (#144): the expected mode, the self-check, the backstop of 5 min, the rejection of a configuration, the retry of a failed confirmation (#99). The capability block and the pre-flight check (#102, #148). URLs, the request body, the progress |
 | `test_cfgschema` | FW-1 (#144 item 3): the schema that a stored configuration needs. #276 (`test_schema3_keys`): a document with a parameter needs schema 3 |
 | `test_bootloop` | FW-1 (#144 item 4): the boot-loop counter and safe mode |
-| `test_freset` | CFG-5 (#266): the sequence of the factory reset on a model of the two stores. A power cut at each step with each part result of an erase, also in the boots that follow, from each state of the stores. Steps that fail, a full NVS, safe mode, and the boot of a board after its first flash |
+| `test_freset` | CFG-5 (#266): the sequence of the factory reset on a model of the two stores. A power cut at each step with each part result of an erase, also in the boots that follow, from each state of the stores. Steps that fail, a full NVS, safe mode, and the boot of a board after its first flash. #280: a blank partition is formatted only when the NVS can hold the commissioning mark, the partition does not mount, and no reset is pending |
 | `test_fwlast` | FW-1 (#144 items 5 and 7): the record of the last update |
 | `test_lkgnet` | CFG-3 / FW-1 (#144 item 8): the network of the last valid configuration, readable by an earlier or a later image. A field without its terminator |
 | `test_claim` | CFG-3 / NET-5 (#120): the claim window and the password rules |
@@ -132,6 +134,7 @@ The checks have these limits:
 | `test_wifiown` | #208: the owners of the Wi-Fi driver. #267: the radio as the entropy source never stops the driver, and a station that comes after the STA interface is refused |
 | `test_captive` | NET-5 (#274): the captive portal of the access point. The DNS answer: the A record, no records for the other types and classes, and no EDNS option. No answer for a response, another opcode or a question count other than 1. No answer for a compression pointer, a label or name over its limit, a cut question or a query over 512 bytes. The list of probe paths, the Host rule, and the route of a request on the plain HTTP port. The template of the guide page (`www/portal.html`): the values as HTML text, the sections and the errors. The page with and without HTTPS, mDNS and the claim window, with no form and no password field |
 | `test_rng` | #267: the order of the two entropy sources at boot. The SAR ADC source goes off before the radio or the temperature sensor starts, and never comes on again after them. The log gives the source of each value, and a warning when no source is on |
+| `test_access` | #280: the answer of the shell command `access`. The full answer of a new board, line for line. No commissioning password with a web password set. The cause when there is no URL. Other ports, plain HTTP, more than one interface and the access point. A control character of a value cannot make a line. A buffer that is too small |
 
 ### The sanitizer build
 
@@ -329,11 +332,11 @@ The test reads `index.html`, takes the source of each function and runs it in a 
 
 | Job | What it does |
 |---|---|
-| `host-tests` | Builds the host tests with `-O2` and runs them. Decodes the `spb_dump` payloads (`spb_decode.py --check`). Runs `test_spb_decode.py`, `test_harness.py`, the linters and the unit test of the web UI |
+| `host-tests` | Builds the host tests with `-O2` and runs them. Decodes the `spb_dump` payloads (`spb_decode.py --check`). Runs `test_spb_decode.py`, `test_harness.py`, `test_make_manifest.py`, the linters and the unit test of the web UI |
 | `host-tests-sanitizers` | Builds the host tests with `-DGW_SANITIZE=ON` and runs them. Decodes the payloads of the sanitized `spb_dump` |
 | `fuzz` | Installs `clang-18` and `libclang-rt-18-dev`, builds `idf/test/fuzz` and runs each target for 60 s, 4 at a time (`run_fuzz.sh`). The start is the corpus of the weekly job (from `actions/cache`, read only) and the seeds. A finding stops the job, and the artifact `fuzz-findings` has the input and the logs. The job runs at the same time as the other jobs |
 | `clang-tidy` | Installs `clang-18` and `clang-tidy-18`. Makes sure that each `NOLINT` comment names its check and gives a reason. Configures the host build with clang and runs `run-clang-tidy-18` on `gw_core` and the host tests. A result stops the job |
-| `firmware` | Runs `idf.py set-target esp32s3 build`. Fails on a `warning:`. Publishes the binaries, the `idf.py size` output and `stack.txt` |
+| `firmware` | Runs `idf.py set-target esp32s3 build`. Fails on a `warning:`. Runs `make_manifest.py` on the build (#279), and fails when the script refuses the build. Publishes the binaries, the release files of the build, the `idf.py size` output and `stack.txt` |
 | `analyzer` | Runs `idf.py -B build-analyzer -D GW_ANALYZER=ON set-target esp32s3 build`: the own components with `-fanalyzer` (#230). Fails on a result of the analyzer or on a `warning:`, and gives the results in `components/gw_*` and `main`. The job runs at the same time as the other jobs. Refer to [Static analyzer](#static-analyzer) |
 | `e2e-plan` | Reads `CI_GROUPS` from `idf/tools/e2e/scenarios.py`, and gives the matrix of the two next jobs |
 | `e2e-build` | One job for each variant (`default`, `psram`, `secure`). Runs `run_e2e.sh` with `E2E_STAGE`, and publishes the images. The `secure` job builds the secure build and the board build `build-qemu-psram`, because the group `nvs-ota` starts on the board build. Only the `secure` job makes a throwaway signing key. GitHub keeps the images for 1 day, because the images of the `secure` job contain the signing key of the run |
@@ -346,6 +349,8 @@ The test reads `index.html`, takes the source of each function and runs it in a 
 `.github/workflows/codeql.yml` runs CodeQL on the host build (job `host`) and on the firmware build (job `firmware`), on each push to `main`, on each pull request and one time each week (Wednesday 03:41 UTC). Only its two jobs have the permission `security-events: write`. Refer to [Code scanning with CodeQL](#code-scanning-with-codeql).
 
 `.github/workflows/docs.yml` builds the documentation site with Zensical `--strict` on each push and pull request (job `docs`). A link to a page or an anchor that does not exist stops the job. On a push to `main`, the job `docs-deploy` publishes the site to GitHub Pages. Only that job has the permissions `pages: write` and `id-token: write`. Refer to [Build the documentation site](../how-to/build-the-documentation-site.md).
+
+`.github/workflows/release.yml` makes a release of the firmware (#279). It starts on a push of a tag `v0.<minor>.<patch>`, and on request as a dry run. The job `build` does the build for the board with `GW_RELEASE=ON` and runs `make_manifest.py`. For a tag, the job `publish` makes the GitHub pre-release. Only that job has the permission `contents: write`. Refer to [The release workflow](release-manifest.md#the-release-workflow).
 
 The GitHub containers do not permit `unshare`. Thus each `e2e` job runs on the loopback interface of its container.
 

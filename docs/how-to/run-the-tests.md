@@ -104,7 +104,8 @@ Correct a real error in the code. When the code can be clearer for the analyzer,
    ```
 
 2. Run the self-test of the harness: `python3 idf/tools/e2e/test_harness.py`.
-3. Run the linters. Each linter must give 0 results:
+3. Run the self-test of the release script (#279): `python3 idf/tools/release/test_make_manifest.py`.
+4. Run the linters. Each linter must give 0 results:
 
    ```bash
    ~/e2e/bin/ruff check idf/tools
@@ -114,7 +115,7 @@ Correct a real error in the code. When the code can be clearer for the analyzer,
    npm ci --prefix idf/tools/lint && idf/tools/lint/node_modules/.bin/eslint --config idf/tools/lint/eslint.config.mjs idf/components/gw_web/www/
    ```
 
-4. Run the unit test of the web UI (#226). All tests must pass:
+5. Run the unit test of the web UI (#226). All tests must pass:
 
    ```bash
    node --test idf/test/web/test_ip4norm.mjs

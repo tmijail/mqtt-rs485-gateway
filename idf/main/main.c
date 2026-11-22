@@ -625,6 +625,9 @@ void app_main(void)
         run_without_config(GW_WEB_RECOVERY, requested ? "not loaded (safe mode: on request)"
                                                       : "not loaded (safe mode: repeated crashes)");
     }
+    /* Issue #280: a blank LittleFS partition (a new board that the install tool of #219 flashed)
+     * is formatted with the factory marker set: commissioning mode, never the example */
+    gw_storage_adopt_blank();
     if (gw_storage_commissioning_pending()) {
         snprintf(s_cfg_err.msg, sizeof(s_cfg_err.msg),
                  "no configuration: commissioning after a factory reset");

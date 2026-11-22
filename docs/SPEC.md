@@ -222,7 +222,7 @@ The `device_id` is the device name, or `<device_prefix>:<name>` with `sparkplug.
 | FW-1 | **OTA** through HTTPS with A/B partitions, started from the web UI or by NCMD. A new image confirms itself with a local self-check; a reset or a failed self-check before that returns to the earlier image. A pre-flight check refuses an image that cannot read the stored data, a boot-loop counter starts a safe mode, and a button boots the other slot (issue #144) | P1 | | Done |
 | FW-2 | **Out of scope:** Secure Boot. Secure Boot burns eFuses, and after it the board accepts only the firmware of the owner of the key. This is a vendor lock, and the project is open source (#133). The branch `archive/efuse-production` keeps the archived feature. Only the secure QEMU build (`sdkconfig.qemu-secure`) requires signed OTA images without Secure Boot. Issue #133 decided that this stays there, for the optional owner profile of #255 | — | | Out of scope |
 | FW-3 | **Out of scope:** flash encryption. Flash encryption in release mode burns eFuses. After it, the owner cannot read or flash the board through USB (#133). The branch `archive/efuse-production` keeps the archived feature | — | | Out of scope |
-| FW-4 | The semantic version and the git hash are in the NBIRTH (`Node Info/Firmware`) | P0 | ✅ | Done |
+| FW-4 | The semantic version is in the NBIRTH (`Node Info/Firmware`). A build that is not a release also gives the git hash | P0 | ✅ | Done |
 
 ### 4.9 Reliability and observability (REL)
 

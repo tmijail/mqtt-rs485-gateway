@@ -43,6 +43,8 @@ Keep the monitor open for the next steps. To exit the monitor, push `Ctrl+]`.
 
 Each gateway has its own commissioning password and its own certificate. Only the console shows the password.
 
+If the lines are not on the screen, type `access` in the console. The answer gives the address, the commissioning password and the fingerprint again.
+
 ## 3. Open the web UI
 
 1. In the browser, open `https://<address of step 2>/`.

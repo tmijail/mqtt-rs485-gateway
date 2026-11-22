@@ -678,6 +678,25 @@ static void test_the_step_names(void)
     TEST_ASSERT_EQUAL_STRING("?", gw_freset_step_name(GW_FRESET_STEPS));
 }
 
+/* Issue #280: a blank LittleFS partition (a new board, a flash with a full erase and no LittleFS
+ * image) is formatted only when the NVS can hold the factory marker first, and never while a
+ * factory reset is pending or when the partition mounts or is not blank. */
+static void test_a_blank_partition_starts_in_commissioning(void)
+{
+    for (int i = 0; i < 16; i++) {
+        bool pending = (i & 1) != 0, nvs = (i & 2) != 0, fs = (i & 4) != 0, blank = (i & 8) != 0;
+        bool want = !pending && nvs && !fs && blank;
+        TEST_ASSERT_EQUAL(want, gw_freset_adopt_blank(pending, nvs, fs, blank));
+    }
+    /* after the adoption: the factory marker, a new LittleFS, no file */
+    TEST_ASSERT_EQUAL(GW_FRESET_BOOT_COMMISSIONING, gw_freset_boot(false, true, true, false));
+    /* no adoption without the NVS: the partition stays blank, recovery mode, not the example */
+    TEST_ASSERT_FALSE(gw_freset_adopt_blank(false, false, false, true));
+    TEST_ASSERT_EQUAL(GW_FRESET_BOOT_NO_FS, gw_freset_boot(false, false, false, false));
+    /* a partition with data that does not mount is never formatted here (#104, #109) */
+    TEST_ASSERT_FALSE(gw_freset_adopt_blank(false, true, false, false));
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -695,5 +714,6 @@ int main(void)
     RUN_TEST(test_a_cut_at_each_point_from_each_state);
     RUN_TEST(test_eight_cut_boots_of_a_configured_gateway);
     RUN_TEST(test_the_step_names);
+    RUN_TEST(test_a_blank_partition_starts_in_commissioning);
     return UNITY_END();
 }

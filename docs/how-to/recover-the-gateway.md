@@ -60,12 +60,19 @@ After a factory reset, the gateway is in commissioning mode. It has no configura
 The other settings stay.
 
 1. Connect a computer to the USB-C connector. Open a serial terminal at 115200 baud.
-2. Type `config show`. Copy the document. The secrets show as `********`.
-3. In the copy, replace the value of `web.password` with a new password (8 to 63 printable ASCII characters).
-4. Type `config load`, then paste the document.
-5. Make sure that the gateway restarts, and that the web UI accepts the new password.
+2. Type `web-password remove`. The gateway removes the web password and restarts.
+3. After the restart, type `access`. Record the lines `url`, `commissioning-password` and `fingerprint`.
+4. Open the web UI at the address of the line `url`. Make sure that the fingerprint of the certificate is the fingerprint of the line `fingerprint`.
+5. Log in with the user `admin` and the commissioning password.
+6. Click the tab **Configuration**. In the card **Web interface**, type a new password in the field **Password (8 to 63)**.
+7. Type the same password in the field **Confirm the password**.
+8. Click **Save and restart**.
 
-The new password is also the Wi-Fi password of the access point.
+The new password is also the Wi-Fi password of the access point. Until you set it, the Wi-Fi password of the access point is the commissioning password.
+
+During the trial of a new firmware, `web-password remove` refuses. Wait for the end of the trial.
+
+You can also set a new password with `config show` and `config load`. Refer to [Change, back up and restore the configuration](change-the-configuration.md#change-the-configuration-from-the-usb-console).
 
 ### Without the USB console
 

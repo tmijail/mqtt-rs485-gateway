@@ -28,6 +28,7 @@ set(GW_CORE_SRCS
     src/gw_mblocal.c
     src/gw_devstate.c
     src/gw_dout.c
+    src/gw_access.c
     src/gw_freset.c
     src/gw_fwlast.c
     src/gw_ident.c

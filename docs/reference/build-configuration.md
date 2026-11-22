@@ -1,6 +1,6 @@
 # Build configuration
 
-This document gives the facts about the build: the supported ESP-IDF versions, the `sdkconfig` files and overlays, the partition table, the check of the `sdkconfig` and the size of the image. For the procedures, refer to [Build and flash the firmware](../how-to/build-the-firmware.md).
+This document gives the facts about the build: the supported ESP-IDF versions, the `sdkconfig` files and overlays, the partition table, the check of the `sdkconfig` and the size of the image. For the procedures, refer to [Build and flash the firmware](../how-to/build-the-firmware.md). For the version of the firmware, the option `GW_RELEASE` and the files of a release, refer to [The release files and the manifest](release-manifest.md).
 
 ## Supported ESP-IDF versions
 
@@ -157,7 +157,7 @@ The three options are in `GW_SDKCONFIG_REQUIRED`. Thus a stale or changed `sdkco
 
 ## The size of the image
 
-CI runs `idf.py size` in the job `firmware`, and puts the output in `size.txt` of the artifact `firmware-esp32s3`. The documentation does not record the values, because each change of the code changes them. A 4 MB OTA slot (`ota_0`, `ota_1`) is the limit of the image.
+CI runs `idf.py size` in the job `firmware`, and puts the output in `size.txt` of the artifact `firmware-esp32s3`. The job also runs `make_manifest.py`, which fails when the image is larger than its slot (#279). The documentation does not record the values, because each change of the code changes them. A 4 MB OTA slot (`ota_0`, `ota_1`) is the limit of the image.
 
 IRAM is always 100 % full on the ESP32-S3. This is normal: the other IRAM code goes in DIRAM.
 

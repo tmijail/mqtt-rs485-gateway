@@ -67,6 +67,7 @@ The usual sequence for a new gateway is:
 ## For developers
 
 - [Build the firmware](how-to/build-the-firmware.md) and [Build configuration](reference/build-configuration.md): ESP-IDF, the build, the flash, the `sdkconfig` overlays and the partition table.
+- [Make a release](how-to/make-a-release.md) and [The release files and the manifest](reference/release-manifest.md): the version, the tag, the release workflow and the format of `manifest.json`.
 - [The product specification](SPEC.md): the requirements (for example MB-6, SPB-14 and FW-1) that the code, the tests and the commits refer to.
 - [The architecture](reference/architecture.md) and [the reasons for it](explanation/architecture.md): the components, the tasks, the concurrency rules and the memory budget.
 - [Run the tests](how-to/run-the-tests.md) and [Tests](reference/tests.md): the host tests, the linters, the E2E tests, the CI jobs and where the results of a run are.

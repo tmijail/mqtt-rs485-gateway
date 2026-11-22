@@ -104,6 +104,19 @@ typedef struct {
 
 void gw_web_get_stats(gw_web_stats_t *out);
 
+/** Issue #280: what the shell command 'access' needs for the URL and the login of the web UI. */
+typedef struct {
+    bool running;                       /* the web server answers; false: the fields below are not set */
+    bool https;
+    uint16_t port;                      /* the port of the web UI */
+    bool password_set;                  /* else: "admin" with the commissioning password */
+    char username[GW_USER_SIZE];        /* with password_set; "" = any user name */
+    char hostname[GW_HOSTNAME_SIZE];
+    bool mdns;                          /* <hostname>.local answers */
+} gw_web_access_t;
+
+void gw_web_get_access(gw_web_access_t *out);
+
 /** Issue #144 item 1: the web server is running and its loop answered the watchdog's ping (or a
  *  handler ran) in the last @p max_age_ms. False when no server runs. */
 bool gw_web_loop_alive(uint32_t max_age_ms);
