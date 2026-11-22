@@ -286,5 +286,5 @@ The workflow [`.github/workflows/docs.yml`](https://github.com/tmijail/mqtt-rs48
 
 ## Limits
 
-- The install tool in the browser is not made yet (#219). It will read `index.json` and `manifest.json`, and flash the parts with esptool-js.
+- The install tool in the browser reads `index.json` and `manifest.json`, and flashes the parts with esptool-js. Refer to [Flash the firmware from the browser](../how-to/flash-the-firmware-from-the-browser.md). Nobody flashed a board with it (#18).
 - The images have no signature. The project has no Secure Boot (#133).

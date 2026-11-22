@@ -7,6 +7,16 @@ This procedure tells how to install a new firmware image on a gateway through th
 
 > **Warning: Do not use this document as verified data for the board.** The firmware has never run on the board (#1, #18). The E2E tests the updates, the trial and the rollback in QEMU. The images come from the firmware in QEMU.
 
+## Select the path
+
+| The gateway | Use |
+|---|---|
+| Its web UI opens | This procedure: the card **Firmware** of the web UI. The gateway examines the image first, and it can go back to the earlier image |
+| A new board, or a start again from zero | **Install** of the install tool. Refer to [Install a new board](flash-the-firmware-from-the-browser.md#install-a-new-board) |
+| Its web UI does not open in any mode | **Repair** of the install tool. Refer to [Repair a gateway](flash-the-firmware-from-the-browser.md#repair-a-gateway) |
+
+A flash over USB has no pre-flight check, no trial and no rollback. For the effect of each path on the configuration and the secrets, refer to [The ways to change the firmware](../reference/firmware-updates.md#the-ways-to-change-the-firmware).
+
 ## Before you start
 
 You need:
@@ -152,4 +162,4 @@ In recovery mode after an update, the area **Actions with a restart** also has t
 
 ## If the web UI is not available
 
-Flash the image over USB: refer to [Flash the board](build-the-firmware.md#flash-the-board). For the other paths, refer to [Recover a gateway](recover-the-gateway.md).
+Flash the image over USB with the install tool: refer to [Repair a gateway](flash-the-firmware-from-the-browser.md#repair-a-gateway). With ESP-IDF, refer to [Flash the board](build-the-firmware.md#flash-the-board). For the other paths, refer to [Recover a gateway](recover-the-gateway.md).

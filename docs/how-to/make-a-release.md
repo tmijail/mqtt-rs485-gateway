@@ -8,7 +8,7 @@ For the files, the format of the manifest and the checks, refer to [The release 
 
 > **Warning: Do not use a release as verified firmware for the board.** The firmware has never run on the board (#1, #18).
 
-The install tool in the browser is not made yet (#219). It will read the images from the copy on the documentation site.
+The install tool in the browser reads the images from the copy on the documentation site (#219). Refer to [Flash the firmware from the browser](flash-the-firmware-from-the-browser.md).
 
 ## Before you start
 

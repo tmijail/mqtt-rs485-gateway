@@ -1,0 +1,19 @@
+esptool-js 0.7.1 (Espressif Systems, Apache License 2.0: see LICENSE in this folder)
+https://github.com/espressif/esptool-js
+https://www.npmjs.com/package/esptool-js/v/0.7.1
+
+esptool.js is the file bundle.js of the npm package esptool-js@0.7.1, without a change.
+It is one ES module with the flasher stubs of all chips, pako and atob-lite in it
+(pako: MIT and zlib licenses; atob-lite: MIT license).
+
+The npm package:   esptool-js-0.7.1.tgz
+  integrity        sha512-vw1isT5ROHgpRmMG3y6B81dceeZ7O1WhF1x05qFbAlH8N0N/pOQqODzJLA+36lCbOXCw06iA4CWctyrQQ7VeSA==
+esptool.js
+  sha256           d6a4b0b7c9b747a7370cfa976164a962f56332d5faa7c3b45cdb95a2a8b1d456
+
+Examine the copy:
+  npm pack esptool-js@0.7.1 && tar xzf esptool-js-0.7.1.tgz && sha256sum package/bundle.js
+
+Issue #219: the install tool loads no script from another server. To change the version, put the
+bundle.js of the new version in a new folder esptool-js-<version>/, and change the path in
+docs/flash/flasher.js.

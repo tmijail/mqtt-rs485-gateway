@@ -100,6 +100,23 @@ With no release, the script writes an `index.json` with an empty list. To examin
 
 3. Do steps 4 to 7 of the procedure above.
 
+## Examine the install tool
+
+The install tool is the page [Flash the firmware from the browser](flash-the-firmware-from-the-browser.md). Its modules are in `docs/flash/`. `zensical.toml` loads `docs/flash/boot.js` on each page, and that script loads the tool only on the page with the element `#gw-flash`. The unit test `idf/test/web/test_flash_tool.mjs` examines the logic without a browser. Refer to [Install tool unit test](../reference/tests.md#install-tool-unit-test).
+
+Do this procedure after a change in `docs/flash/`:
+
+1. Do the steps of [Add the release images to a local build](#add-the-release-images-to-a-local-build).
+2. Open <http://localhost:8001/how-to/flash-the-firmware-from-the-browser/> in Chrome or Edge. Web Serial operates on `localhost` without HTTPS.
+3. Make sure that the browser console shows no error.
+4. Make sure that the tab **Files** of the tool lists the releases of `index.json`.
+5. With a board: click **Connect the board**, and make sure that the panel shows the state of the board.
+6. Open the page in Firefox. Make sure that the tool shows "This browser cannot use a serial port" and the image files.
+
+Do not flash a board for a test of the page. The firmware has never run on the board (#1, #18).
+
+A change of the version of esptool-js puts the file `bundle.js` of the npm package into a new folder `docs/flash/vendor/esptool-js-<version>/`. `SOURCE.txt` in that folder tells how to examine the copy.
+
 ## Add a document
 
 1. Put the document in the folder of its Diátaxis type: `tutorials/`, `how-to/`, `reference/` or `explanation/`.

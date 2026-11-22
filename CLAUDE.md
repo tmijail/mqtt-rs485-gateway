@@ -17,6 +17,7 @@ Firmware for an RS485 (Modbus RTU) → MQTT Sparkplug B 3.0 gateway on the Waves
 - `docs/reference/architecture.md` and `docs/explanation/architecture.md`: the components, the task table, the concurrency rules and the memory budget.
 - `docs/how-to/build-the-firmware.md` and `docs/reference/build-configuration.md`: the build, the overlays and the partition table.
 - `docs/how-to/make-a-release.md` and `docs/reference/release-manifest.md`: the version, the tag, the release workflow and the manifest.
+- `docs/how-to/flash-the-firmware-from-the-browser.md`: the install tool of the site (#219). Its code is in `docs/flash/` (esptool-js is a pinned copy in `docs/flash/vendor/`); it reads the board with the shell command `access`, so a change of that answer (`gw_access.c`) needs a change of `docs/flash/access.js` and its test.
 - `docs/reference/configuration.md`, `docs/reference/commissioning-and-secrets.md` and `docs/reference/firmware-updates.md`.
 - `docs/reference/tests.md`, `docs/reference/e2e-harness.md` and `docs/reference/e2e-scenarios.md`: the tests, the test environment and the scenarios.
 - `docs/reference/sparkplug-behavior.md`, `docs/reference/known-limitations.md` and `docs/reference/requirements-status.md`.
@@ -160,8 +161,9 @@ python3 idf/tools/e2e/test_harness.py
 git ls-files -z '*.sh' | xargs -0 ~/e2e/bin/shellcheck  # all shell scripts
 ~/e2e/bin/actionlint -shellcheck ~/e2e/bin/shellcheck   # .github/workflows (and shellcheck on each run: script)
 ~/e2e/bin/zizmor --offline .github/workflows            # workflow security (actions pinned to a commit hash)
-npm ci --prefix idf/tools/lint && idf/tools/lint/node_modules/.bin/eslint --config idf/tools/lint/eslint.config.mjs idf/components/gw_web/www/
+npm ci --prefix idf/tools/lint && idf/tools/lint/node_modules/.bin/eslint --config idf/tools/lint/eslint.config.mjs idf/components/gw_web/www/ docs/flash/
 node --test idf/test/web/test_ip4norm.mjs             # the IPv4 normalization of the web UI (#226; CI job host-tests)
+node --test idf/test/web/test_flash_tool.mjs          # the logic of the install tool of the site, docs/flash/ (#219; CI job host-tests)
 
 # The documentation site (zensical.toml, docs/how-to/build-the-documentation-site.md; CI workflow docs.yml)
 python3 -m venv ~/docs-venv && ~/docs-venv/bin/pip install -r idf/tools/docs/requirements-site.txt

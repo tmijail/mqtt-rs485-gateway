@@ -20,6 +20,7 @@ nav = [
   ] },
   { "How-to guides" = [
     { "Install" = [
+      "how-to/flash-the-firmware-from-the-browser.md",
       "how-to/connect-the-rs485-bus.md",
       "how-to/set-the-first-web-password.md",
       "how-to/get-on-the-access-point.md",
@@ -97,6 +98,11 @@ nav = [
   ] },
   { "Specification" = "SPEC.md" },
 ]
+
+# Issue #219: the install tool of the page how-to/flash-the-firmware-from-the-browser.md.
+# boot.js is small: it loads the tool (flash/app.js) only on the page that has #gw-flash.
+extra_javascript = ["flash/boot.js"]
+extra_css = ["flash/flash.css"]
 
 [project.theme]
 language = "en"

@@ -263,7 +263,7 @@ The reset erases two stores, LittleFS and the NVS, and an erase is not atomic. T
 
 ## A board with a blank `storage` partition
 
-A flash that writes no LittleFS image leaves the `storage` partition blank after a full erase. The install tool of #219 does this, so that a flash without an erase keeps the configuration (#280).
+A flash that writes no LittleFS image leaves the `storage` partition blank after a full erase. The install tool of the site does this: refer to [Flash the firmware from the browser](../how-to/flash-the-firmware-from-the-browser.md). Its Install erases all, and its Repair writes no image into `storage`, so that the configuration stays (#219, #280).
 
 - At the boot, when LittleFS does not mount and the partition is blank, the gateway writes the commissioning mark to the NVS. Then it formats the partition, and it starts in commissioning mode.
 - The gateway formats the partition only after the NVS has the mark. Thus this board never uses the embedded example configuration.
@@ -286,7 +286,7 @@ A flash that writes no LittleFS image leaves the `storage` partition blank after
 
 ### The command `access`
 
-The command `access` gives the data that a person needs to open the web UI (#280). It changes nothing. The install tool of #219 reads its answer.
+The command `access` gives the data that a person needs to open the web UI (#280). It changes nothing. The install tool of the site reads its answer (#219): refer to [Flash the firmware from the browser](../how-to/flash-the-firmware-from-the-browser.md).
 
 - The answer goes only to the console, in one write. It never goes to syslog or to the live log of the web UI.
 - The answer has the commissioning password only while no web password is set.
