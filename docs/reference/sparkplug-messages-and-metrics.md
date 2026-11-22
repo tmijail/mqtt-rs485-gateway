@@ -45,7 +45,7 @@ The NBIRTH contains these metrics.
 | `bdSeq` | 1 | Int64 | The birth and death sequence number |
 | `Node Control/Rebirth` | — | Boolean | Writable. Always `false` in the NBIRTH. No alias |
 | `Node Control/Reboot` | 3 | Boolean | Writable |
-| `Node Info/Firmware` | 4 | String | The version and the git hash of the firmware |
+| `Node Info/Firmware` | 4 | String | The version of the firmware. A build that is not a release adds the git hash. Refer to [The tag and the version](release-manifest.md#the-tag-and-the-version) |
 | `Node Info/Hardware` | 5 | String | The name of the board |
 | `Node Info/Reset Reason` | 6 | String | The cause of the last restart |
 | `Node Control/Scan Rate` | 7 | UInt64 | Writable. ms. 0 = each device uses its `poll_ms` |
